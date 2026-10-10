@@ -1965,6 +1965,28 @@ export interface SessionState {
   openSubagentTranscript: (sessionId: string, taskId: string) => void;
   /** Clear the one-shot subagent-view request after consumption. */
   clearPendingSubagentView: () => void;
+  /**
+   * 把**已结束**的子代理从名册里清掉（`running` 的一律留着）。
+   *
+   * 从 2026-10-10 起右栏「任务列表」页把跑完的子代理也列出来（可回看转录），
+   * 而主进程那边**刻意按会话保留**它们（见 `RuntimeManager` 的 `rt.lastSubagents`）——
+   * 跑到第 N 轮时那份名册里可能堆着几十条很早以前的。这个动作给用户一个"收掉"的出口。
+   *
+   * ⚠️ **只动渲染端的内存副本，不写库、也不通知主进程。** 下一次 `subagent.update`
+   * （主进程重播整份名册，或新的一轮）会把它们**再带回来** —— 这是刻意的取舍：
+   * 真去改主进程的持久化语义是另一件事（那一份还喂着聊天流的活动区），
+   * 而这个按钮解决的是"列表里堆着几十条看不见的旧记录"这个眼前的观感问题。
+   * 按钮的 tooltip 会说清楚这一点，不让用户以为它永久删了什么。
+   */
+  clearFinishedSubagents: () => void;
+  /**
+   * 停掉某一个正在跑的子代理（右栏「任务列表」页那一行的停止按钮）。
+   *
+   * 与 `interrupt` 的粒度不同：那个停整轮，这个只停一个分身。停不成（已经跑完了、
+   * 这个引擎没这个能力）是**正常结果**，弹一条信息提示，不是错误 —— 同 `injectPrompt`
+   * 的口径。
+   */
+  stopSubagent: (sessionId: string, taskId: string) => Promise<void>;
   /** Queue a one-shot jump-to-bookmark for `sessionId`'s ChatPane (the
    *  palette's bookmark result). The caller is responsible for opening the
    *  session (selectProject/openTab) — this only stages the jump. */
@@ -8415,13 +8437,54 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   openSubagentTranscript: (sessionId, taskId) => {
     set({ pendingSubagentView: { sessionId, taskId }, rightOpen: true });
-    // `flow`（2026-09-21）：子代理转录的展开视图住在 `SideChatPanel` 里，而那个面板
-    // 现在长在「工作流运行」那张面板的下半部分 —— 独立的「子对话」tab 已删。
-    get().setRightPanelTab("flow");
+    // `tasks`（2026-10-10）：原生子代理的展开视图现在住在「任务列表」页
+    // （`ide/TaskListPanel`）—— 和终端、工作流节点同一页。2026-09-21 到 2026-10-10
+    // 之间它落在 `flow`，因为当时长在 `SideChatPanel` 里；那一页现在只管对话。
+    get().setRightPanelTab("tasks");
   },
 
   clearPendingSubagentView: () => {
     set({ pendingSubagentView: null });
+  },
+
+  clearFinishedSubagents: () => {
+    // 每个会话**各自**处理：有的会话那一格可能已经空了（`deleteSession` 那条路会把整个键删掉），
+    // 所以不能假设 `subagentsBySession[sid]` 一直都在。
+    set((s) => {
+      const next: typeof s.subagentsBySession = {};
+      let touched = false;
+      for (const [sid, list] of Object.entries(s.subagentsBySession)) {
+        const kept = (list ?? []).filter((a) => a && a.status === "running");
+        // 全清空了就把这个键收掉，不留一个空数组（与 `deleteSession` 那边的口径一致）。
+        if (kept.length > 0) next[sid] = kept;
+        if (kept.length !== (list ?? []).length) touched = true;
+      }
+      return touched ? { subagentsBySession: next } : {};
+    });
+  },
+
+  stopSubagent: async (sessionId, taskId) => {
+    const { locale } = get();
+    try {
+      const { stopped } = await api.claude.stopTask({ sessionId, taskId });
+      // **没停成不是错误**（已经跑完了 / 这个引擎没这个能力 / 这一轮已收尾）——
+      // 用 info 而不是 error：弹一条红字会把"它刚好跑完了"说成"出错了"。
+      if (!stopped) {
+        useToastStore.getState().push({
+          kind: "info",
+          title: translate(locale, "store.toast.stopSubagentNoop"),
+        });
+      }
+      // 停成了**不在这里改名册** —— 引擎会发 `task_notification`，
+      // `subagent.update` 把状态改成 `killed`，由那条事件走同一份既有通路。
+      // 自己抢先改一次会让"谁说了算"出现两处。
+    } catch (err) {
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(locale, "store.toast.stopSubagentFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+    }
   },
 
   setPendingBookmarkJump: (jump) => {

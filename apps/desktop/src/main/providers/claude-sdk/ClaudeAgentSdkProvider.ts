@@ -1754,6 +1754,17 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     adapter.setSettleGate(gate.release);
 
     let finished = false;
+    /**
+     * 这次 turn 当前**活着**的那个 SDK query 对象。
+     *
+     * 为什么另开一个变量而不是直接用下面 IIFE 里的 `activeQuery`：那个是 IIFE 的局部变量，
+     * 而 `stopTask` 要在**返回对象**里被调用（`await handle.done` 之后、turn 生命周期之外）——
+     * 够不到那个作用域。这里是同一个事实在两层之间的桥。
+     *
+     * ⚠️ 它和 `activeQuery` **必须一起更新**（下面两处赋值点）。漏一处的话，
+     * "空轮重试"换过 query 之后 `stopTask` 还指着旧的那个，而现象是"点了没反应"。
+     */
+    let liveQuery: typeof q | undefined;
     const done = (async () => {
       // Transport-level retry loop. The SDK already retries API-level
       // transient errors (429 / overloaded / 5xx) internally — surfaced via
@@ -1769,6 +1780,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // orphan the partial output in the message stream.
       let activeQuery = q;
       let activeAdapter = adapter;
+      // 与 `activeQuery` 同步（见上面 `liveQuery` 的说明）—— 这里补上第一处。
+      liveQuery = activeQuery;
       let attempt = 0;
       try {
         while (true) {
@@ -1841,6 +1854,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
               // 这是重试本来就有的取舍,不是插话这条新路带来的。
               channel = makePromptChannel(turnReq, retryGate, ac.signal);
               activeQuery = (await loadQuery())({ prompt: channel.stream, options });
+              // 同步到外层（`liveQuery`）—— 见那个变量的说明：漏了这里就会打旧引用。
+              liveQuery = activeQuery;
               activeAdapter = new SdkMessageAdapter(
                 ctx,
                 req.sessionId,
@@ -1892,6 +1907,28 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // 生成过程中插一句话 —— 见 `makePromptChannel`。这一轮已经收尾(或用户按了停止)
       // 时返回 false,让调用方**兜回普通的发送**,而不是让这句话石沉大海。
       inject: (text) => (!finished && !ac.signal.aborted ? channel.push(text) : false),
+      /**
+       * 停掉这一轮里某个正在跑的子任务（子代理）。
+       *
+       * ⚠️ 打的是 `liveQuery` —— **当前**那个 query，不是建这个 handle 时那个。
+       * "空轮重试"会换一个新 query（见上面 `activeQuery` 的两处赋值），
+       * 捕获旧引用的话重连之后这个按钮就打在一个已经死掉的 query 上，
+       * 而现象是"点了没反应"，看不出是引用过期。
+       *
+       * 返回 `false` 而不是抛：这一轮已经收尾、taskId 认不出来、或者引擎侧不认，
+       * 都是"没停成"，界面据实说一句就行。
+       */
+      stopTask: async (taskId: string): Promise<boolean> => {
+        if (finished || ac.signal.aborted) return false;
+        if (liveQuery === undefined) return false;
+        try {
+          await liveQuery.stopTask(taskId);
+          return true;
+        } catch {
+          // 可能是"没有这个 task"（它已经跑完了）—— 那不是错误，吞掉并返回 false。
+          return false;
+        }
+      },
     };
   }
 

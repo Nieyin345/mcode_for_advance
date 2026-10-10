@@ -7,6 +7,7 @@ import {
   ListSideChatsSchema,
   SendTurnSchema,
   InterruptSchema,
+  StopTaskSchema,
   InjectSchema,
   ApproveSchema,
   RespondQuestionSchema,
@@ -343,6 +344,22 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     }
     runtimeManager.interrupt(input.sessionId);
     SessionRepo.updateStatus(input.sessionId, "interrupted");
+  });
+
+  /**
+   * 停掉某一个正在跑的子任务（子代理）—— 右栏「任务列表」页那一行的停止按钮。
+   *
+   * ⚠️ **不碰会话状态、也不调 `cancelWorkflowRun`。** 它和 `interrupt` 的粒度不同：
+   * `interrupt` 是"停这一轮"（所以要把会话标成 interrupted、图要整张停），
+   * 这个是"停这一个分身"，主体继续跑、会话照旧 running。
+   * 拿 interrupt 那套语义套上来会**误停整轮** —— 那是灾难性的（用户只想收掉一个分身）。
+   *
+   * 返回 `{ stopped }` 而不是抛：停不成是正常的（已经跑完了、引擎没这个能力），
+   * 界面据实说一句就行。
+   */
+  ipcMain.handle(IPC.CLAUDE_STOP_TASK, async (_evt, raw) => {
+    const input = StopTaskSchema.parse(raw);
+    return runtimeManager.stopTask(input.sessionId, input.taskId);
   });
 
   /**

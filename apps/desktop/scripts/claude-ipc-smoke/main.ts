@@ -57,6 +57,8 @@ import {
   setDefaultResolve,
   setFailNextSendTurn,
   setRewindResult,
+  setStopTaskResult,
+  stopTasks,
   userAnswers,
 } from "./stubs/runtimeManager.js";
 import {
@@ -483,6 +485,43 @@ console.log("\n7. 打断:图型走一条路,普通会话走另一条");
   resetStub();
   await call(IPC.CLAUDE_INTERRUPT, { sessionId: s });
   eq("同一张图停第二次时落到会话回合上(不会静默什么都不做)", interrupts.length, 1);
+}
+
+/* ──────────────── 7b. 停一个子代理（不是停整轮） ──────────────── */
+
+console.log("\n7b. 停一个子代理:只停那一个分身,绝不动整轮");
+
+{
+  fresh();
+  const s = mkSession(nid("s"));
+  const res = await call<{ stopped: boolean }>(IPC.CLAUDE_STOP_TASK, { sessionId: s, taskId: "task_abc" });
+  eq("转发到宿主的 stopTask,带上会话与 taskId", JSON.stringify(stopTasks), JSON.stringify([{ sessionId: s, taskId: "task_abc" }]));
+  // ★ 最要紧的一条:停一个子代理**绝不能**顺手把整轮打断 —— 那是灾难性的
+  //   (用户只想收掉一个分身,结果整轮没了)。
+  eq("★ 没有顺手动 interrupt(粒度不同)", interrupts.length, 0);
+  eq("回复是 stopped:true(它发出去的那一刻停成了)", res.stopped, true);
+}
+
+{
+  // 「没停成」是**正常结果**(多半是它刚好跑完了),要如实回 false 而不是抛 ——
+  // 界面据此说一句平铺直叙的话,而不是弹一条红字。
+  fresh();
+  const s = mkSession(nid("s"));
+  setStopTaskResult(false);
+  const res = await call<{ stopped: boolean }>(IPC.CLAUDE_STOP_TASK, { sessionId: s, taskId: "task_gone" });
+  eq("宿主说没停成 → 如实回 false", res.stopped, false);
+  eq("没停成也不碰整轮", interrupts.length, 0);
+}
+
+{
+  // 参数校验:taskId 空串/超长都该被挡在门外（它会一路递给引擎的控制通道）。
+  fresh();
+  const s = mkSession(nid("s"));
+  const empty = await catching(IPC.CLAUDE_STOP_TASK, { sessionId: s, taskId: "" });
+  check("空 taskId 被拒(不是静默放行)", empty !== "", empty || "(没抛)");
+  const long = await catching(IPC.CLAUDE_STOP_TASK, { sessionId: s, taskId: "x".repeat(257) });
+  check("超长 taskId 被拒", long !== "", long || "(没抛)");
+  eq("两次坏输入都没有真的调进宿主", stopTasks.length, 0);
 }
 
 /* ──────────────── 8. 插话 ──────────────── */

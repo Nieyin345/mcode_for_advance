@@ -918,6 +918,10 @@ for (const path of [MOBILE_RPC, MOBILE_GIT_RPC]) {
  *     而手机端**明确没有**侧聊(`SessionTabs` 里的 `sideChatsByParent` 是桌面左栏的东西)。
  *   - `session:fork` / `claude:inject` / `claude:saveSubagents` —— `webApi.ts` 自己的
  *     注释就写着它们是"仅为满足 `Api[...]` 的类型完整性"而留的(手机上没有那几个入口)。
+ *   - `claude:stopTask` —— 同上一类（2026-10-10 加）：停一个子代理要靠"正在跑的那一轮"
+ *     的句柄，而那个句柄在桌面端的主进程里。唯一的调用方是 `ide/TaskListPanel` 那一行的
+ *     停止按钮，而**手机壳不挂 TaskListPanel**（它的右栏没有 `tasks` 页 —— 已核：
+ *     `AppMobile` 与 `components/mobile/` 下只有一句提到它名字的注释）。
  *   - `git:fileBlob` —— 调用方是 `components/ide/GitRepoCard.tsx`;手机端那个 Git 屏
  *     (`components/mobile/MobileGitScreen.tsx`)只调 discoverRepos/status/stage/unstage/
  *     commit/push/pull/listBranches/checkout/generateCommitMessage/cancelGenerateCommitMessage
@@ -931,6 +935,7 @@ const MOBILE_UNREACHABLE_ROUTES = new Set([
   "claude:inject",
   "claude:listSideChats",
   "claude:saveSubagents",
+  "claude:stopTask",
   "git:fileBlob",
   "session:fork",
   "session:listAll",

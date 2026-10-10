@@ -6,6 +6,10 @@ export const zh = {
   // ── event-ingest toasts (sessionStore.ingestEvent → pushToast) ──
   "store.toast.backgroundTaskDone": "后台任务完成",
   "store.toast.backgroundTaskDoneBody": "子代理任务已结束",
+  // 「停掉一个子代理」那条路。**没停成不是错误**（多半是它刚好跑完了）—— 所以是一句
+  // 平铺直叙的信息，不是报错。
+  "store.toast.stopSubagentNoop": "这个子代理已经不在跑了",
+  "store.toast.stopSubagentFailed": "停掉子代理失败",
   "store.toast.agentQuestion": "Agent 有问题要问你",
   "store.toast.toolApprovalNeeded": "需要审批工具调用",
   "store.toast.planApprovalPending": "计划待审批",

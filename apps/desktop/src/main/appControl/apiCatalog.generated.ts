@@ -292,9 +292,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "claude.rewindTurn",
   "channel": "claude:rewindTurn",
-  "doc": "Rewind a turn: restore the given files to their pre-turn state. Works for the latest turn, any historical turn, or a session reopened after restart (the renderer passes the explicit entries). Returns the list of paths that were actually restored (failed paths…",
+  "doc": "Rewind a turn: restore the given files to their pre-turn state. Works for the latest turn, any historical turn, or a session reopened after restart (the renderer passes the explicit entries). Returns the paths that were actually restored AND the ones that wer…",
   "input": "{ sessionId: string; files: { kind: 'modified' | 'created'; filePath: string; adds: number; dels: number; before: string; }[]; targetFiles: string[] }",
-  "output": "{ restored: string[]; }"
+  "output": "{ restored: string[]; failed: string[]; }"
  },
  {
   "method": "claude.saveSubagents",
@@ -316,6 +316,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "",
   "input": "{ projectId: string; effort: string; permissionMode: string; kind: 'chat' | 'side' // Session role: \"chat\" (default, normal left-bar session) or \"side\" (side-chat Q&A session …; title?: string | undefined; providerId?: string | undefined // Provider id — which AI backend to use.; model?: string | undefined; customModelId?: string | null | undefined // Id of a custom-model config to bind to this session (omit/null = built-in).; parentSessionId?: string | undefined // For kind=\"side\": the main session this Q&A thread belongs to.; envMode?: 'local' | 'worktree' | undefined // Working-environment intent for the new session.; wtStyle?: 'detached' | 'branch' | undefined // Worktree FORM for envMode=\"worktree\": \"branch\" materializes on a generated `mcode/*` bran…; worktreePath?: string | undefined // BIND to an existing managed worktree directory instead of creating a fresh one: the new s…; ag…",
   "output": "{ session: Session; }"
+ },
+ {
+  "method": "claude.stopTask",
+  "channel": "claude:stopTask",
+  "doc": "停掉某一个正在跑的子任务（子代理）。返回 `{ stopped }` —— 同 `claude.injectPrompt` 的 口径：**\"停了没有\"，不是\"发出去了没有\"**。引擎不支持、taskId 认不出来、或者它刚好 已经跑完，都是 `false`，界面据实说一句，不当作错误。",
+  "input": "{ taskId: string; sessionId: string }",
+  "output": "{ stopped: boolean; }"
  },
  {
   "method": "clipboard.saveFile",

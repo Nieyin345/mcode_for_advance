@@ -1553,6 +1553,30 @@ class RuntimeManager {
   }
 
   /**
+   * 停掉**某一个正在跑的子任务**（子代理）—— 右栏「任务列表」页里那一行的停止按钮。
+   *
+   * 与 {@link interrupt} 的差别是粒度：那个收掉整轮，这个只停一个分身、主体继续。
+   *
+   * 返回 `{ stopped }`，`false` 的四种来源都**不是错误**：会话空的、这一轮还没起、
+   * 这个引擎的 handle 没有这个能力（Codex / Pi）、或者引擎说"没这个 task"（它已经跑完了）。
+   * 界面据实说一句就行 —— 和 `injectPrompt` 同一个口径。
+   */
+  async stopTask(sessionId: string, taskId: string): Promise<{ stopped: boolean }> {
+    const rt = this.sessions.get(sessionId);
+    if (!rt) return { stopped: false };
+    // 启动中的那一轮还没有 handle（`rt.handle` 是上一轮已经结束的那个）——
+    // **不回退到它**：拿一个死 handle 去停会打在一个早就收了的 query 上，
+    // 而 `interrupt` 那边为这种情况专门留了 `interruptRequested` 补发通道。
+    // 子任务在这个窗口里几乎不可能已经在跑（要跑得先有 turn），所以直接说"没停成"。
+    if (this.startingSessions.has(sessionId)) return { stopped: false };
+    const handle = rt.handle;
+    if (!handle) return { stopped: false };
+    // 可选能力：不是每家引擎都有这个概念（见 `TurnHandle.stopTask?`）。
+    if (handle.stopTask === undefined) return { stopped: false };
+    return { stopped: await handle.stopTask(taskId) };
+  }
+
+  /**
    * 往**正在跑的那一轮**里塞一句话(生成过程中插话)。返回"收下了没有"。
    *
    * 三种"没收下"都要如实返回 `false`,因为调用方(IPC → 渲染端)据此**兜回普通的发送**:

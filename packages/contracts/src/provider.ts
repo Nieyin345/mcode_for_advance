@@ -398,6 +398,17 @@ export interface TurnHandle {
    * 只有文本 —— 图片那条路(内容块编码)还没接进来,见 Claude 提供方那里的说明。
    */
   inject?(text: string): boolean;
+  /**
+   * 停掉这一轮里**某一个正在跑的子任务**(Claude 的 Task 分身 / 后台作业)。
+   *
+   * 与 {@link interrupt} 的区别是**粒度**:`interrupt()` 收掉的是整轮,这个是"只停那一个分身,
+   * 主体继续". 右栏「任务列表」页里那一行的停止按钮走的就是这里。
+   *
+   * **可选,而且调用方必须先判存在** —— 不是每家引擎都有这个概念(Codex / Pi 的 handle
+   * 就没有),和 {@link inject} 同一个模式。宿主返回 `false` 表示"这个 taskId 认不出来"
+   * (可能它已经跑完了),不是错误。
+   */
+  stopTask?(taskId: string): boolean | Promise<boolean>;
 }
 
 /** Every AI backend implements this interface. */

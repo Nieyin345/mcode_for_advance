@@ -192,6 +192,21 @@ export const InterruptSchema = z.object({ sessionId: z.string() });
 export type InterruptInput = z.infer<typeof InterruptSchema>;
 
 /**
+ * 停掉某一个正在跑的子任务（子代理 / 后台作业）。
+ *
+ * `taskId` 是引擎给的身份（Claude 那边就是 Task 工具那个 `task_id`）。它有长度上限，
+ * 是因为它会被原样递给引擎的控制通道 —— 不设限的话一个超长串能一路灌进去。
+ *
+ * 返回 `{ stopped }`：`false` = 「这个 taskId 认不出来 / 已经跑完了 / 这个引擎没这个概念」，
+ * **不是错误** —— 界面据实提示，不弹一条红字把用户吓一跳。
+ */
+export const StopTaskSchema = z.object({
+  sessionId: z.string(),
+  taskId: z.string().min(1).max(256),
+});
+export type StopTaskInput = z.infer<typeof StopTaskSchema>;
+
+/**
  * 往**正在跑的那一轮**里塞一句话(生成过程中插话)。
  *
  * 只收文本:`max(2000)` 是一个**防手滑**的上界(这条路没有附件、没有图片,也没有

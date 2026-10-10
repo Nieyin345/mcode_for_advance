@@ -3,6 +3,8 @@ export const en = {
   // ── event-ingest toasts (sessionStore.ingestEvent → pushToast) ──
   "store.toast.backgroundTaskDone": "Background task finished",
   "store.toast.backgroundTaskDoneBody": "A subagent task has finished",
+  "store.toast.stopSubagentNoop": "That subagent is no longer running",
+  "store.toast.stopSubagentFailed": "Couldn't stop the subagent",
   "store.toast.agentQuestion": "The agent has a question for you",
   "store.toast.toolApprovalNeeded": "Tool call needs approval",
   "store.toast.planApprovalPending": "Plan awaiting approval",

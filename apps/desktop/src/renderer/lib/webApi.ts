@@ -500,6 +500,9 @@ const claude: Api["claude"] = {
   // 留着它是为了满足 `Api["claude"]` 的完整性 —— 调用方按 memory 里那条规矩包了
   // try/catch,失败会退回普通的发送。
   inject: (input) => rpc("claude:inject", input),
+  // 同理：停一个子代理要靠"正在跑的那一轮"的句柄，手机上够不到。留着它满足
+  // `Api["claude"]` 的完整性 —— 任务列表页在手机端也能打开，那一行只是停不了。
+  stopTask: (input) => rpc("claude:stopTask", input),
   approve: (input) => rpc("claude:approve", input),
   respondQuestion: (input) => rpc("claude:respondQuestion", input),
   respondPlanApproval: (input) => rpc("claude:respondPlanApproval", input),

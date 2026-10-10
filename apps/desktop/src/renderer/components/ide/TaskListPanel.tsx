@@ -5,6 +5,7 @@ import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
 import { useWorkflowLive, type LiveNode } from "@renderer/lib/workflowLive.js";
 import { MessageBlocks } from "@renderer/components/chat/MessageBlocks.js";
 import { mapTranscriptBlock } from "@renderer/components/chat/transcriptBlocks.js";
+import { SUBAGENT_STATUS_META, fmtUsage } from "@renderer/components/chat/activityShared.js";
 import {
   IconArrowLeft,
   IconListTree,
@@ -100,6 +101,8 @@ export function TaskListPanel() {
   // ── 子代理 / 工作流节点:都在 store 里,不需要轮询 ──
   const sessions = useSessionStore((s) => s.streamSessions);
   const subagentsBySession = useSessionStore((s) => s.subagentsBySession);
+  const clearFinishedSubagents = useSessionStore((s) => s.clearFinishedSubagents);
+  const stopSubagent = useSessionStore((s) => s.stopSubagent);
   const nodeTranscripts = useSessionStore((s) => s.workflowNodeTranscripts);
   const live = useWorkflowLive();
 
@@ -160,19 +163,43 @@ export function TaskListPanel() {
     };
   }, [refresh]);
 
-  /** 子代理:只看 `running` 的。 */
-  const runningAgents = useMemo(() => {
+  /**
+   * 子代理:**列全部**,不只是 running（2026-10-10 改）。
+   *
+   * 从前这里带 `status === "running"` 的过滤。改成列全部有两个理由:
+   *
+   *  1. 这一页现在**也**是原生子代理唯一的列表(2026-10-10 从 `SideChatPanel` 移过来) ——
+   *     那边一直是"跑完的留在下面可回看"。若这边只列 running,那些跑完的就**哪儿都看不到**
+   *     了(它们的转录还在 store 里,只是没有入口)。
+   *  2. 跑完的那几条本来就**一直在** store 的名册里(主进程刻意按会话保留,
+   *     见 `RuntimeManager` 那句 `rt.lastSubagents`),藏起来并没有让它们消失,
+   *     只是让用户看不到。既然收不掉,就显示出来 —— 再给一个「清空已结束」让用户能收。
+   *
+   * running 排前面(稳定排序保留到达顺序):正在跑的是用户此刻要盯的。
+   */
+  const orderedAgents = useMemo(() => {
     const out: Array<{ sessionId: string; agent: SubagentSnapshot }> = [];
     for (const [sessionId, list] of Object.entries(subagentsBySession)) {
       for (const agent of list ?? EMPTY_AGENTS) {
         // ⚠️ 判空要**在这里**,不能等渲染时再用可选链兜:`agents` 那个字段真的可能是
         //    undefined(见 store 里 `subagentsBySession` 的写入路径),而 `[]` 之外的
         //    任何假值放进去,下面 `agent.status` 就是一次当场崩。
-        if (agent && agent.status === "running") out.push({ sessionId, agent });
+        if (agent) out.push({ sessionId, agent });
       }
     }
-    return out;
+    return out.sort((a, b) => (a.agent.status === "running" ? 0 : 1) - (b.agent.status === "running" ? 0 : 1));
   }, [subagentsBySession]);
+
+  const runningAgents = useMemo(
+    () => orderedAgents.filter((x) => x.agent.status === "running"),
+    [orderedAgents],
+  );
+
+  /** 已结束的那几条 —— 「清空已结束」按钮按这个数决定显不显示。 */
+  const finishedAgentKeys = useMemo(
+    () => orderedAgents.filter((x) => x.agent.status !== "running").map((x) => `${x.sessionId}:${x.agent.taskId}`),
+    [orderedAgents],
+  );
 
   /** 工作流节点:只看没定案的(queued / running)。 */
   const activeNodes = useMemo(() => {
@@ -278,22 +305,50 @@ export function TaskListPanel() {
           ))}
           <More total={terminals.length} />
 
-          {/* ── 子代理:模型派出去的分身 ── */}
-          <Group label={t("ide.task.groupAgents")} total={runningAgents.length} />
-          {runningAgents.slice(0, GROUP_CAP).map(({ sessionId, agent }) => (
-            <Row
-              key={`${sessionId}:${agent.taskId}`}
-              icon={<IconRobot size={12} />}
-              lit
-              title={agent.description || t("ide.task.agentUntitled")}
-              sub={[titleOf(sessionId), agent.subagentType, agent.lastToolName]
-                .filter(Boolean)
-                .join(" · ")}
-              actionTitle={t("ide.task.view")}
-              onOpen={() => setDetail({ kind: "subagent", sessionId, agent })}
-            />
-          ))}
-          <More total={runningAgents.length} />
+          {/* ── 子代理:模型派出去的分身（含跑完的，可回看） ── */}
+          <Group
+            label={t("ide.task.groupAgents")}
+            total={orderedAgents.length}
+            action={
+              finishedAgentKeys.length > 0
+                ? {
+                    title: t("ide.task.clearFinishedHint"),
+                    label: t("ide.task.clearFinished", { n: finishedAgentKeys.length }),
+                    onClick: () => clearFinishedSubagents(),
+                  }
+                : undefined
+            }
+          />
+          {orderedAgents.slice(0, GROUP_CAP).map(({ sessionId, agent }) => {
+            const statusMeta = SUBAGENT_STATUS_META[agent.status];
+            const running = agent.status === "running";
+            const usage = fmtUsage(agent, t);
+            return (
+              <Row
+                key={`${sessionId}:${agent.taskId}`}
+                icon={<IconRobot size={12} />}
+                lit={running}
+                title={agent.description || t("ide.task.agentUntitled")}
+                // 状态与用量都摆在这一行的第二列 —— 与 Claude Code 桌面端那个面板
+                // 一样：**一眼看得出在跑还是跑完了、跑了多久**。`fmtUsage` 会拼
+                // `token · 工具次数 · Ns`，且单位词走 i18n（见 `activityShared`）。
+                sub={[t(statusMeta.labelKey), titleOf(sessionId), agent.subagentType, usage]
+                  .filter(Boolean)
+                  .join(" · ")}
+                actionTitle={t("ide.task.view")}
+                onOpen={() => setDetail({ kind: "subagent", sessionId, agent })}
+                trailing={
+                  running
+                    ? {
+                        title: t("ide.task.stopAgent"),
+                        onClick: () => void stopSubagent(sessionId, agent.taskId),
+                      }
+                    : undefined
+                }
+              />
+            );
+          })}
+          <More total={orderedAgents.length} />
 
           {/* ── 工作流节点:图上的某一步 ── */}
           <Group label={t("ide.task.groupNodes")} total={activeNodes.length} />
@@ -321,12 +376,35 @@ export function TaskListPanel() {
 
 /* ────────────────────────── 分组标题 / 溢出收口 ────────────────────────── */
 
-function Group({ label, total }: { label: string; total: number }) {
+/**
+ * 分组标题 + 计数。右边可挂**一个**小动作（目前只有子代理那一组用：
+ * 「清空已结束」）。做成可选槽而不是每种分组各写一段，是因为这几个分组标题
+ * 必须长得一样 —— 多一个动作不该让那行标题变形。
+ */
+function Group({
+  label,
+  total,
+  action,
+}: {
+  label: string;
+  total: number;
+  action?: { title: string; label: string; onClick: () => void };
+}) {
   if (total === 0) return null;
   return (
     <div className="mt-2 flex items-center gap-1.5 px-2 py-0.5">
       <span className="text-[9px] uppercase tracking-wide text-content-subtle">{label}</span>
       <span className="text-[9px] tabular-nums text-content-subtle/70">{total}</span>
+      {action && (
+        <button
+          type="button"
+          title={action.title}
+          onClick={action.onClick}
+          className="ml-auto shrink-0 rounded px-1 text-[9px] text-content-subtle hover:bg-surface-hover hover:text-content"
+        >
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }

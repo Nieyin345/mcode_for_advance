@@ -35,6 +35,18 @@ export interface SendTurnCall {
 export const sendTurns: SendTurnCall[] = [];
 /** 按顺序记下 `interrupt` 的会话 id。 */
 export const interrupts: string[] = [];
+/**
+ * 按顺序记下每一次 `stopTask` 的实参。
+ *
+ * 这个通道**最要紧的一条**:它**不能**顺手调 `interrupt` —— 那会把整轮停掉,
+ * 而用户只是想收掉一个分身。所以这里分开记两份,断言才分得开。
+ */
+export const stopTasks: Array<{ sessionId: string; taskId: string }> = [];
+/** `stopTask` 的返回值（默认 true = 停成了）。测「没停成」那一支时改它。 */
+export let stopTaskResult = true;
+export function setStopTaskResult(v: boolean): void {
+  stopTaskResult = v;
+}
 /** 按顺序记下 `injectMessage` 的 (会话, 文本)。 */
 export const injected: Array<{ sessionId: string; text: string }> = [];
 /** 按顺序记下 `resolveApproval` 的 (请求 id, 允许, 理由, 始终)。 */
@@ -94,6 +106,8 @@ export function setDefaultResolve(method: string, value: boolean): void {
 export function resetStub(): void {
   sendTurns.length = 0;
   interrupts.length = 0;
+  stopTasks.length = 0;
+  stopTaskResult = true;
   injected.length = 0;
   approvals.length = 0;
   notified.length = 0;
@@ -144,6 +158,10 @@ export const runtimeManager = {
   },
   interrupt(sessionId: string): void {
     interrupts.push(sessionId);
+  },
+  async stopTask(sessionId: string, taskId: string): Promise<{ stopped: boolean }> {
+    stopTasks.push({ sessionId, taskId });
+    return { stopped: stopTaskResult };
   },
   injectMessage(sessionId: string, text: string): boolean {
     injected.push({ sessionId, text });
