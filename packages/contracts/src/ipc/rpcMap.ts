@@ -1,4 +1,15 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
+import {
+  EXTENSION_STORE_GET_CHANNEL,
+  EXTENSION_STORE_SET_CHANNEL,
+  EXTENSION_STORE_REMOVE_CHANNEL,
+  type ExtensionStoreGetInput,
+  type ExtensionStoreGetResult,
+  type ExtensionStoreSetInput,
+  type ExtensionStoreSetResult,
+  type ExtensionStoreRemoveInput,
+  type ExtensionStoreRemoveResult,
+} from "../extensionStore.js";
 import { MEMORY_ASSISTANT_CHANNEL, type MemoryAssistantInput, type MemoryAssistantResult } from "../memoryAssistant.js";
 import { MEMORY_MANAGE_CHANNEL, type MemoryManageInput, type MemoryManageResult } from "../memory.js";
 /**
@@ -90,6 +101,13 @@ export interface RpcMap {
   "modules.task": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
   "modules.cancel": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
   "modules.tasks": (input: {projectPath:string}) => Promise<import("../modules.js").ModuleTask[]>;
+  // ── 扩展专用数据区(见 `@contracts/extensionStore`,报告 E12)──
+  /** 读一条扩展自己的键值。没有返回 `null`(同面板 `mcode.storage.get`)。 */
+  "extensionStore.get": (input: ExtensionStoreGetInput) => Promise<ExtensionStoreGetResult>;
+  /** 写一条。超配额回 `{ ok: false, reason: "tooLarge" }`。**写档**(经 `policyFor` 兜底)。 */
+  "extensionStore.set": (input: ExtensionStoreSetInput) => Promise<ExtensionStoreSetResult>;
+  /** 删一条。 */
+  "extensionStore.remove": (input: ExtensionStoreRemoveInput) => Promise<ExtensionStoreRemoveResult>;
   // Claude
   "claude.startSession": (input: StartSessionInput) => Promise<{ session: Session }>;
   /** List a main session's side chats (kind="side"), newest first. */
@@ -1318,6 +1336,10 @@ export const IPC = {
   MODULE_TASK: "modules:task",
   MODULE_CANCEL: "modules:cancel",
   MODULE_TASKS: "modules:tasks",
+  /** 扩展专用数据区(见 `@contracts/extensionStore`)。渠道字符串本体钉在契约模块里。 */
+  EXTENSION_STORE_GET: EXTENSION_STORE_GET_CHANNEL,
+  EXTENSION_STORE_SET: EXTENSION_STORE_SET_CHANNEL,
+  EXTENSION_STORE_REMOVE: EXTENSION_STORE_REMOVE_CHANNEL,
   // invoke/handle (RPC)
   CLAUDE_START_SESSION: "claude:startSession",
   CLAUDE_LIST_SIDE_CHATS: "claude:listSideChats",

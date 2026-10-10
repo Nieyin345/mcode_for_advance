@@ -43,6 +43,7 @@ import { registerOnlyOfficeHandlers } from "./onlyoffice.js";
 import { registerMemoryHandlers } from "./memory.js";
 import { registerMonitoringHandlers } from "./monitoring.js";
 import { registerCustomUiPanelHandlers } from "./customUiPanel.js";
+import { registerExtensionStoreHandlers } from "./extensions.js";
 
 /**
  * Wrap `ipcMain` so every `handle()` registration automatically awaits DB
@@ -114,6 +115,7 @@ export function registerIpcHandlers(): void {
   registerMemoryAssistantHandlers(ipc);
   registerMonitoringHandlers(ipc);
   registerCustomUiPanelHandlers(ipc);
+  registerExtensionStoreHandlers(ipc);
 }
 
 // Re-export channel constants so handlers stay aligned with the contract.

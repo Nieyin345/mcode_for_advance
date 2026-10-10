@@ -21,7 +21,6 @@ import {
 } from "@contracts/customUi";
 import {
   isSafePanelUrl,
-  PANEL_STORAGE_MAX,
   PANEL_THEME_VARS,
   type PanelMethod,
   type PanelTheme,
@@ -164,27 +163,23 @@ async function gate(host: PanelHost, description: string, confirmKey: MessageId)
   if (!ok) throw new PanelCallError(tr("customUi.panel.cancelled"));
 }
 
-const storageKey = (itemId: string) => `mcode.panel.v1.${itemId}`;
-
-function readStore(itemId: string): Record<string, unknown> {
-  try {
-    const raw = localStorage.getItem(storageKey(itemId));
-    const parsed: unknown = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
+/**
+ * 面板的隔离存储 —— 从前是渲染端 `localStorage`(键 `mcode.panel.v1.<itemId>`),现在走
+ * 主进程的扩展数据区(报告 E12):`<数据根>/extensions/<扩展 id>/store.json`。
+ *
+ * 扩展 id 就用**面板项自己的 id** —— 每个面板就是一个扩展,这正是它的身份。换到磁盘后:
+ * 不再和别的面板挤浏览器那一份 5 MB origin 配额、跟着数据根走(不是跟着某个项目)、
+ * 单个面板写爆也挤不到别人。配额语义保留(超了给面板同一个 `storageFull` 报错)。
+ */
+async function readStore(extensionId: string, key: string): Promise<unknown | null> {
+  const res = await api.extensionStore.get({ extensionId, key });
+  return res.value ?? null;
 }
 
-function writeStore(itemId: string, data: Record<string, unknown>): void {
-  const raw = JSON.stringify(data);
-  if (raw.length > PANEL_STORAGE_MAX) throw new PanelCallError(tr("customUi.panel.storageFull"));
-  try {
-    if (Object.keys(data).length === 0) localStorage.removeItem(storageKey(itemId));
-    else localStorage.setItem(storageKey(itemId), raw);
-  } catch (err) {
-    throw new PanelCallError(err instanceof Error ? err.message : String(err));
-  }
+async function writeStore(extensionId: string, key: string, value: unknown): Promise<void> {
+  const res = await api.extensionStore.set({ extensionId, key, value });
+  // 超配额整次拒绝 —— 与从前 `PANEL_STORAGE_MAX` 那条报错同一句话,面板不用改。
+  if (!res.ok) throw new PanelCallError(tr("customUi.panel.storageFull"));
 }
 
 const TOAST_KINDS: readonly ToastKind[] = ["info", "warning", "error"];
@@ -336,12 +331,11 @@ export async function handlePanelCall(host: PanelHost, method: PanelMethod, para
 
     case "storage.get": {
       const key = str(p, "key", 200);
-      return readStore(host.item.id)[key] ?? null;
+      return readStore(host.item.id, key);
     }
 
     case "storage.set": {
       const key = str(p, "key", 200);
-      const data = readStore(host.item.id);
       // 过一遍 JSON:函数 / undefined / 循环引用在这里就挡掉,别存一份读不回来的东西。
       let value: unknown;
       try {
@@ -349,18 +343,14 @@ export async function handlePanelCall(host: PanelHost, method: PanelMethod, para
       } catch {
         throw new PanelCallError("value: not JSON-serializable");
       }
-      data[key] = value;
-      writeStore(host.item.id, data);
+      await writeStore(host.item.id, key, value);
       return { ok: true };
     }
 
     case "storage.remove": {
       const key = str(p, "key", 200);
-      const data = readStore(host.item.id);
-      if (key in data) {
-        delete data[key];
-        writeStore(host.item.id, data);
-      }
+      // 没有这个键时主进程不落盘(不无谓重排文件),这里不做预读 —— 少一趟往返。
+      await api.extensionStore.remove({ extensionId: host.item.id, key });
       return { ok: true };
     }
 

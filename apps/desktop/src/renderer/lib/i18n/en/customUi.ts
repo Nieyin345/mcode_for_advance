@@ -266,5 +266,5 @@ export const en = {
   "customUi.panel.noWorkflow": "Automation not found: {id}",
   "customUi.panel.noTrigger": "Automation \"{name}\" has no usable trigger",
   "customUi.panel.relativeOnly": "files.list only accepts relative paths inside the project",
-  "customUi.panel.storageFull": "Panel storage exceeds the 1MB limit",
+  "customUi.panel.storageFull": "Panel storage exceeds the 4MB limit",
 } as const;

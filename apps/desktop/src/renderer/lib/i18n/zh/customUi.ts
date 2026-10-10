@@ -273,5 +273,5 @@ export const zh = {
   "customUi.panel.noWorkflow": "找不到自动化:{id}",
   "customUi.panel.noTrigger": "自动化「{name}」没有可用的触发器",
   "customUi.panel.relativeOnly": "files.list 只接受项目内的相对路径",
-  "customUi.panel.storageFull": "面板存储超过 1MB 上限",
+  "customUi.panel.storageFull": "面板存储超过 4MB 上限",
 } as const;

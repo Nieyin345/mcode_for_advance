@@ -17,6 +17,13 @@ const api = {
     cancel: ((input) => ipcRenderer.invoke(IPC.MODULE_CANCEL,input)) as RpcMap["modules.cancel"],
     tasks: ((input) => ipcRenderer.invoke(IPC.MODULE_TASKS,input)) as RpcMap["modules.tasks"],
   },
+  /** 扩展专用数据区(报告 E12):一个扩展一块私有键值存储,坐落在
+   *  `<数据根>/extensions/<扩展 id>/store.json`(见 `@contracts/extensionStore`)。 */
+  extensionStore: {
+    get: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_GET, input)) as RpcMap["extensionStore.get"],
+    set: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_SET, input)) as RpcMap["extensionStore.set"],
+    remove: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_REMOVE, input)) as RpcMap["extensionStore.remove"],
+  },
   // ── RPC (renderer → main) ──
   claude: {
     startSession: ((input) =>

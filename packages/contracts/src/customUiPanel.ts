@@ -26,6 +26,16 @@ export const PANEL_HTML_MAX = 400_000;
 /** 包好 SDK 之后的整份文档上限(主进程 stage 时校验)。 */
 export const PANEL_DOC_MAX = PANEL_HTML_MAX + 40_000;
 
+/**
+ * 面板渲染结果「读回」的上限(R41 / 报告 E10)。面板自己把 `document.body` 的文本与
+ * HTML 各截到这么长再回给宿主 —— 一个渲染出大表格 / 长列表的面板,不截会把一整坨
+ * DOM 塞进 agent 的上下文。
+ */
+export const PANEL_PROBE_TEXT_MAX = 200_000;
+export const PANEL_PROBE_HTML_MAX = 400_000;
+/** 宿主发起读回后,等面板回话的上限。超时 = 面板没在听(没加载好 / 脚本报错卡住)。 */
+export const PANEL_PROBE_TIMEOUT_MS = 2_000;
+
 export const CustomUiStagePanelSchema = z.object({
   html: z.string().min(1).max(PANEL_DOC_MAX),
   network: z.boolean().optional(),
@@ -325,7 +335,12 @@ export function buildPanelDocument(userHtml: string, opts: { title?: string; loc
   return `<!doctype html><html lang="${lang}"><head>${head}${title}</head><body>${userHtml}</body></html>`;
 }
 
-/** 面板的 localStorage 配额(每个面板一份 JSON)。 */
+/** 面板的 localStorage 配额(每个面板一份 JSON)。
+ *
+ *  ⚠️ **已被扩展专用数据区取代**(报告 E12):面板存储现在走
+ *  `@contracts/extensionStore` 的 `<数据根>/extensions/<扩展 id>/store.json`,
+ *  每个扩展各一份、配额 EXTENSION_STORE_MAX(4 MB)。这个常量只为兼容旧引用留着,
+ *  新代码不要再用。 */
 export const PANEL_STORAGE_MAX = 1_000_000;
 
 /** 只放行 http(s) / mailto(同 url 动作)。 */

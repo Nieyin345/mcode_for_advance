@@ -159,4 +159,7 @@ export * from "./ipc/rpcMap.js";
 
 export * from "./memoryAssistant.js";
 
+// 扩展专用数据区(报告 E12):形状 / 校验 / 配额 / 通道名。
+export * from "./extensionStore.js";
+
 export * from "./ipc/projectInit.js";
