@@ -46,7 +46,12 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     };
     ProjectRepo.create(project);
     const created = ProjectRepo.get(project.id);
-    if (!created) throw new Error(`project not found after create: ${project.id}`);
+    // ⚠️ 这些「写完读不回」的兜底**不能是裸英文**。它经 `ipcRenderer.invoke` 抛出后,
+    // 渲染端 `reportSessionOpFailed` 会把 `err.message` **原样**贴进 toast 正文
+    // (`Toaster.tsx` 的 `toast.body`)——中文界面上就冒出一句
+    // "project not found after rename: proj_xxx"。与 `secretStore.ts` 里
+    // 「找不到要更新的模型配置」同一条约定:给人看的句子用中文,并带上那个 id。
+    if (!created) throw new Error(`项目创建后找不到该记录(${project.id}),请重试`);
     log.info(`project created: ${created.name} (${created.path})`);
     // 项目行的每一种变动都广播一条 projects.changed,另一端(手机 / 桌面)重拉列表。
     broadcastProjectsChanged();
@@ -107,7 +112,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const input = ArchiveProjectSchema.parse(raw);
     ProjectRepo.setArchived(input.id, input.archived);
     const project = ProjectRepo.get(input.id);
-    if (!project) throw new Error(`project not found after archive: ${input.id}`);
+    if (!project) throw new Error(`找不到该项目(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
     log.info(`project ${input.archived ? "archived" : "restored"}: ${input.id}`);
     broadcastProjectsChanged();
     return { project };
@@ -118,7 +123,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const input = SetProjectGroupSchema.parse(raw);
     ProjectRepo.setGroup(input.id, input.group);
     const project = ProjectRepo.get(input.id);
-    if (!project) throw new Error(`project not found after setGroup: ${input.id}`);
+    if (!project) throw new Error(`找不到该项目(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
     log.info(`project group set: ${input.id} -> ${input.group ?? "(none)"}`);
     broadcastProjectsChanged();
     return { project };
@@ -139,7 +144,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const input = PinProjectSchema.parse(raw);
     ProjectRepo.setPinned(input.id, input.pinned);
     const project = ProjectRepo.get(input.id);
-    if (!project) throw new Error(`project not found after pin: ${input.id}`);
+    if (!project) throw new Error(`找不到该项目(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
     log.info(`project ${input.pinned ? "pinned" : "unpinned"}: ${input.id}`);
     broadcastProjectsChanged();
     return { project };
@@ -151,7 +156,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const input = RenameProjectSchema.parse(raw);
     ProjectRepo.rename(input.id, input.name);
     const project = ProjectRepo.get(input.id);
-    if (!project) throw new Error(`project not found after rename: ${input.id}`);
+    if (!project) throw new Error(`找不到该项目(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
     log.info(`project renamed: ${input.id} -> "${input.name}"`);
     broadcastProjectsChanged();
     return { project };
@@ -176,7 +181,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     // so unarchive → reopen → send just works.
     if (input.archived) runtimeManager.dispose(input.id);
     const session = SessionRepo.get(input.id);
-    if (!session) throw new Error(`session not found after archive: ${input.id}`);
+    if (!session) throw new Error(`找不到该会话(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
     broadcastSessionChanged(session);
     log.info(`session ${input.archived ? "archived" : "restored"}: ${input.id}`);
     return { session };
@@ -187,7 +192,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const input = RenameSessionSchema.parse(raw);
     SessionRepo.updateTitle(input.id, input.title);
     const session = SessionRepo.get(input.id);
-    if (!session) throw new Error(`session not found after rename: ${input.id}`);
+    if (!session) throw new Error(`找不到该会话(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
     broadcastSessionChanged(session);
     log.info(`session renamed: ${input.id} -> "${input.title}"`);
     return { session };
@@ -201,7 +206,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const input = PinSessionSchema.parse(raw);
     SessionRepo.setPinned(input.id, input.pinned);
     const session = SessionRepo.get(input.id);
-    if (!session) throw new Error(`session not found after pin: ${input.id}`);
+    if (!session) throw new Error(`找不到该会话(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
     broadcastSessionChanged(session);
     log.info(`session ${input.pinned ? "pinned" : "unpinned"}: ${input.id}`);
     return { session };
@@ -218,7 +223,7 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const bookmarks = input.bookmarks.map((b) => ({ ...b, title: b.title ?? null }));
     SessionRepo.updateBookmarks(input.id, bookmarks);
     const session = SessionRepo.get(input.id);
-    if (!session) throw new Error(`session not found after updateBookmarks: ${input.id}`);
+    if (!session) throw new Error(`找不到该会话(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
     broadcastSessionChanged(session);
     return { session };
   });

@@ -283,6 +283,12 @@ console.log("\n1. 项目的增改");
   // 认不出的 id:改名/分组/钉住/归档**都**要抛,不能静默什么都不做。
   // (对比:`claude-ipc-smoke` 里抓到过 `SESSION_UPDATE_SETTINGS` 只改模型时不查会话
   // 存在性、UPDATE 打不中静默通过 —— 这里把 projects 这一层的四个都钉住。)
+  //
+  // 判据立在**用户看到的那句话**上:这些 message 经 `ipcRenderer.invoke` 抛出后,
+  // 渲染端 `reportSessionOpFailed` 把 `err.message` **原样**贴进 toast 正文 ——
+  // 中文界面上不许冒英文。从前这里报的是 `project not found after rename: …`。
+  // ⚠️ 判据要**先把测试 id 抠掉**再找汉字:测试 id 本身就是中文(`没有这个项目`),
+  // 不抠的话英文原句(带上中文 id)也会"含汉字",断言就成了恒真(见 custom-model-smoke 同款)。
   fresh();
   for (const [channel, raw] of [
     [IPC.PROJECT_RENAME, { id: "没有这个项目", name: "x" }],
@@ -291,7 +297,12 @@ console.log("\n1. 项目的增改");
     [IPC.PROJECT_ARCHIVE, { id: "没有这个项目", archived: true }],
   ] as const) {
     const threw = await catching(channel, raw);
-    check(`${channel} 认不出的 id 抛出去(不静默)`, threw.includes("not found"), threw || "(没抛)");
+    check(`${channel} 认不出的 id 抛出去(不静默)`, threw !== "", threw || "(没抛)");
+    check(
+      `${channel} 报的是中文人话(不是裸英文)`,
+      /[一-鿿]/.test(threw.replace("没有这个项目", "")),
+      threw,
+    );
   }
 }
 
@@ -677,6 +688,7 @@ console.log("\n4. 会话的改");
 
 {
   // 认不出的会话:改名/归档/钉住都抛(和项目那一组同一个口径)。
+  // 同款判据:抛出去的话要**中文人话**(toast 正文原样显示),不是裸英文 `session not found`。
   fresh();
   for (const [channel, raw] of [
     [IPC.SESSION_RENAME, { id: "没有这个会话", title: "x" }],
@@ -685,7 +697,12 @@ console.log("\n4. 会话的改");
     [IPC.SESSION_UPDATE_BOOKMARKS, { id: "没有这个会话", bookmarks: [] }],
   ] as const) {
     const threw = await catching(channel, raw);
-    check(`${channel} 认不出的 id 抛出去(不静默)`, threw.includes("not found"), threw || "(没抛)");
+    check(`${channel} 认不出的 id 抛出去(不静默)`, threw !== "", threw || "(没抛)");
+    check(
+      `${channel} 报的是中文人话(不是裸英文)`,
+      /[一-鿿]/.test(threw.replace("没有这个会话", "")),
+      threw,
+    );
   }
 }
 
