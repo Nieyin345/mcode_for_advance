@@ -1118,6 +1118,33 @@ console.log("\n[15k] 回答提问 / 审批工具 / 审批计划 —— 递回执
   check("★ 三处回执递送失败都报了 toast(无静默'点了没反应')", silent.length === 0, silent);
 }
 
+console.log("\n[15l] 点「跳过」这张提问卡:回执没送到也要报出来(卡片已被收掉,没法重试)");{
+  // 跳过 = 让那一轮继续(按 dismissed 回掉主进程的 Deferred),而卡片会被**就地收掉**
+  // —— 若这条回执没送到,用户能重试的入口(那张卡)一起消失了,模型还在等。从前只
+  // `console.error`:屏幕上一个字都没有。判据立在**用户看到的 toast** 上。
+  const st = useSessionStore.getState();
+  const SID = "conv-dismiss";
+  useSessionStore.setState((s) => ({
+    activeSessionId: SID,
+    pendingQuestionBySession: {
+      ...s.pendingQuestionBySession,
+      [SID]: { sessionId: SID, requestId: "q-dismiss", questions: [] } as never,
+    },
+  }));
+  const msg = "dismiss IPC failed";
+  setApiStub("claude.respondQuestion", async () => { throw new Error(msg); });
+  useToastStore.getState().clear();
+  st.dismissQuestion();
+  await new Promise((r) => setTimeout(r, 0));
+  const got = useToastStore.getState().toasts.some(
+    (tt) => tt.kind === "error" && (tt.body ?? "").includes(msg),
+  );
+  check("★ 跳过的回执没送到时报了 toast(不是只落进控制台)", got, useToastStore.getState().toasts);
+  // 正控:卡片确实已经被收掉(这正是"没法重试"的前提 —— 若卡片还在,那句话就不成立)。
+  check("…正控:跳过之后那张卡确实没了(所以才必须靠 toast 告诉用户)", st.pendingQuestionBySession[SID] === undefined, st.pendingQuestionBySession[SID]);
+  setApiStub("claude.respondQuestion", null);
+}
+
 console.log("\n[15i] 用户显式改的偏好落盘失败,一票 setter 都要报出来(不只 displayMode 那几只)");{
   // `reportSettingSaveFailed` 是"用户显式改的偏好落盘失败要报给用户"的共享出口 ——
   // 它已经接在 setDisplayMode / setLocale / setThemeStyle / setChatDensity / … 上,

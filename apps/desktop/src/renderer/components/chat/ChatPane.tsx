@@ -564,15 +564,21 @@ function ChatPaneForSession({
     const requestId = pending.requestId ?? `sentinel_${sessionId}_${Date.now()}`;
     void api.claude
       .respondQuestion({ sessionId, requestId, answers: {}, dismissed: true })
-      .catch((err) => {
-        console.error("respondQuestion(dismiss) failed:", err);
+      .catch((err: unknown) => {
+        // 卡片下面就被收掉了 —— 回执没送到的话,用户能重试的入口一起没了、模型还在等。
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("store.toast.questionDismissFailed"),
+          body: err instanceof Error ? err.message : String(err),
+          sessionId,
+        });
       });
     useSessionStore.setState((s) => {
       if (s.pendingQuestionBySession[sessionId] !== pending) return {};
       const { [sessionId]: _drop, ...rest } = s.pendingQuestionBySession;
       return { pendingQuestionBySession: rest };
     });
-  }, [sessionId]);
+  }, [sessionId, t]);
   const submitQuestion = useSessionStore((s) => s.submitQuestion);
   // (No sessionId filter needed — the bucket lookup above already scopes
   // to this session.)

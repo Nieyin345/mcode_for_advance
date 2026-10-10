@@ -7612,7 +7612,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       void api.claude
         .respondQuestion({ sessionId, requestId, answers: {}, dismissed: true })
         .catch((err) => {
-          console.error("respondQuestion(dismiss) failed:", err);
+          // 卡片下面就被收掉了 —— 回执没送到的话,用户能重试的入口一起没了、模型还在等。
+          reportInteractionFailed("store.toast.questionDismissFailed", err);
         });
     }
     set((s) => {

@@ -19,6 +19,7 @@ export const en = {
   "store.toast.settingSaveFailed": "Couldn't save the setting",
   "store.toast.sessionOpFailed": "Action failed",
   "store.toast.questionReplyFailed": "Your answer wasn't delivered — press Submit again to retry",
+  "store.toast.questionDismissFailed": "The skip wasn't delivered — this turn may still be waiting on you",
   "store.toast.approvalFailed": "The approval wasn't delivered — press again to retry",
   "store.toast.planApprovalFailed": "The plan decision wasn't delivered — press again to retry",
   "store.toast.ideCloseBlockedTitle": "Some tabs weren't closed: unsaved changes",
