@@ -572,7 +572,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     const input = RenameSessionSchema.parse(raw);
     SessionRepo.updateTitle(input.id, input.title);
     const session = SessionRepo.get(input.id);
-    if (!session) throw new RpcError(`session not found after rename: ${input.id}`, 500);
+    if (!session) throw new RpcError(`找不到该会话(${input.id})——它可能已经在别处删掉了,请刷新后重试`, 500);
     broadcastSessionChanged(session);
     return { session };
   },
@@ -581,7 +581,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     const input = PinSessionSchema.parse(raw);
     SessionRepo.setPinned(input.id, input.pinned);
     const session = SessionRepo.get(input.id);
-    if (!session) throw new RpcError(`session not found after pin: ${input.id}`, 500);
+    if (!session) throw new RpcError(`找不到该会话(${input.id})——它可能已经在别处删掉了,请刷新后重试`, 500);
     broadcastSessionChanged(session);
     return { session };
   },
@@ -594,7 +594,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     const bookmarks = input.bookmarks.map((b) => ({ ...b, title: b.title ?? null }));
     SessionRepo.updateBookmarks(input.id, bookmarks);
     const session = SessionRepo.get(input.id);
-    if (!session) throw new RpcError(`session not found after updateBookmarks: ${input.id}`, 500);
+    if (!session) throw new RpcError(`找不到该会话(${input.id})——它可能已经在别处删掉了,请刷新后重试`, 500);
     broadcastSessionChanged(session);
     return { session };
   },
@@ -609,7 +609,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     // with the fresh row. Mirrors the desktop SESSION_ARCHIVE handler.
     if (input.archived) runtimeManager.dispose(input.id);
     const session = SessionRepo.get(input.id);
-    if (!session) throw new RpcError(`session not found after archive: ${input.id}`, 500);
+    if (!session) throw new RpcError(`找不到该会话(${input.id})——它可能已经在别处删掉了,请刷新后重试`, 500);
     broadcastSessionChanged(session);
     return { session };
   },
@@ -629,7 +629,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     const input = ArchiveProjectSchema.parse(raw);
     ProjectRepo.setArchived(input.id, input.archived);
     const project = ProjectRepo.get(input.id);
-    if (!project) throw new RpcError(`project not found after archive: ${input.id}`, 500);
+    if (!project) throw new RpcError(`找不到该项目(${input.id})——它可能已经在别处删掉了,请刷新后重试`, 500);
     broadcastProjectsChanged();
     return { project };
   },
@@ -652,7 +652,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     const input = SetProjectGroupSchema.parse(raw);
     ProjectRepo.setGroup(input.id, input.group);
     const project = ProjectRepo.get(input.id);
-    if (!project) throw new RpcError(`project not found after setGroup: ${input.id}`, 500);
+    if (!project) throw new RpcError(`找不到该项目(${input.id})——它可能已经在别处删掉了,请刷新后重试`, 500);
     broadcastProjectsChanged();
     return { project };
   },
@@ -661,7 +661,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     const input = PinProjectSchema.parse(raw);
     ProjectRepo.setPinned(input.id, input.pinned);
     const project = ProjectRepo.get(input.id);
-    if (!project) throw new RpcError(`project not found after pin: ${input.id}`, 500);
+    if (!project) throw new RpcError(`找不到该项目(${input.id})——它可能已经在别处删掉了,请刷新后重试`, 500);
     broadcastProjectsChanged();
     return { project };
   },
@@ -670,7 +670,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     const input = RenameProjectSchema.parse(raw);
     ProjectRepo.rename(input.id, input.name);
     const project = ProjectRepo.get(input.id);
-    if (!project) throw new RpcError(`project not found after rename: ${input.id}`, 500);
+    if (!project) throw new RpcError(`找不到该项目(${input.id})——它可能已经在别处删掉了,请刷新后重试`, 500);
     broadcastProjectsChanged();
     return { project };
   },

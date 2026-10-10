@@ -999,6 +999,25 @@ console.log(
     `\n    ${unsupportedRoutes.join(" ")}`,
 );
 
+/* ────────────────────── 手机端错误文案不能是裸英文 ──────────────────────
+ *
+ * `mobileRpc.ts` 的 `session:rename` / `:pin` / `:archive` / `:updateBookmarks` 与
+ * `project:archive` / `:setGroup` / `:pin` / `:rename` 在"写完读不回"时抛 `RpcError`,
+ * 这条 message 经手机 HTTP 桥到达 `MobileSessionDrawer.reportActionFailure`,被**原样**
+ * 贴进 toast 正文(`body: err.message`)——中文界面上就冒出一句
+ * `session not found after rename: s_xxx`。与 `ipc/projects.ts` 同一处修正(那边九条
+ * 已改中文、并有 `projects-ipc-smoke` 钉住),这里是手机侧的同族。判据立在**用户看到
+ * 的那行字**上:先把 `${input.id}` 那一段(测试 id 是中文)抠掉再找汉字。 */
+{
+  const src = read(MOBILE_RPC);
+  const offenders = [...src.matchAll(/`((?:session|project) not found after [a-zA-Z]+): \$\{input\.id\}`/g)].map((m) => m[1]);
+  check(
+    "★ mobileRpc 的行操作兜底不抛裸英文(手机 toast 会原样显示)",
+    offenders.length === 0,
+    offenders,
+  );
+}
+
 /* ────────────────────── 收尾 ────────────────────── */
 
 // 两个已退役的 composer 功能不能只藏按钮：各自的调用链也必须断开。
