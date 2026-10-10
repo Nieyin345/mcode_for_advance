@@ -279,6 +279,12 @@ export function EffortChip({
   const setEffort = useSessionStore((s) => s.setEffort);
   const providerId = useSessionStore((s) => s.providerId);
   const providers = useSessionStore((s) => s.providers);
+  // 当前会话选的自定义模型 + 它的「档位→网关值」映射（2026-10-11）。用户要
+  // 对话框里显示**映射后**的思考强度，而不是引擎原生的档位名 —— 因为不同网关
+  // 对同一档位用的标识符不一样，用户要看到实际会发出去的那个值。
+  const customModelId = useSessionStore((s) => s.customModelId);
+  const customModels = useSessionStore((s) => s.customModels);
+  const selectedModelId = useSessionStore((s) => s.model);
 
   const provider = providers.find((p) => p.id === providerId);
   const levels = provider?.capabilities.thinkingLevels;
@@ -286,8 +292,20 @@ export function EffortChip({
   // Provider declares no thinking levels → hide the chip.
   if (!levels || levels.length === 0) return null;
 
+  /** 当前会话所选自定义模型里，这个档位映射成的具体值（没配就 undefined）。 */
+  const mappedValueOf = (level: string): string | undefined => {
+    if (!customModelId) return undefined;
+    const cfg = customModels.find((m) => m.id === customModelId);
+    const entry = cfg?.models.find((m) => m.id === selectedModelId) ?? cfg?.models[0];
+    const v = entry?.thinkingLevelMap?.[level];
+    return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  };
+
   const activeLevel = levels.find((l) => l.value === effort);
-  const effortLabel = activeLevel?.label ?? effort;
+  // 配了映射就显示**映射后的值**（用户要看到实际发出去的那个标识符）；
+  // 否则回落到引擎原生的档位名。
+  const activeMapped = effort ? mappedValueOf(effort) : undefined;
+  const effortLabel = activeMapped ?? activeLevel?.label ?? effort;
   const fullHintOf = (m: ThinkingLevelOption): string => {
     const key = EFFORT_HINT_KEYS[`${providerId}:${m.value}`] ?? EFFORT_HINT_KEYS[m.value];
     return key ? t(key, { provider: provider?.displayName ?? "" }) : (m.hint ?? "");
@@ -360,7 +378,7 @@ export function EffortChip({
                     {m.label}
                   </span>
                   <span className="max-w-full truncate text-[9.5px] leading-tight text-content-subtle">
-                    {tileOf(m)}
+                    {mappedValueOf(m.value) ?? tileOf(m)}
                   </span>
                   {active && (
                     <IconCheck size={11} className="absolute top-1 right-1 text-accent-strong" />
