@@ -735,6 +735,10 @@ function InstalledPane({
   const [engineFilter, setEngineFilter] = useState<PluginEngineId | null>(null);
   const [installFormOpen, setInstallFormOpen] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // 勾选（批量启用/停用/删除）。用户 2026-10-11：「每个集合没有批量管理，批量选择」——
+  // 插件页此前**完全没有**勾选。
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [pendingBulkRemove, setPendingBulkRemove] = useState(false);
 
   const enabledCount = plugins.filter((p) => p.enabled).length;
   const activeEngine = ENGINES.find((e) => e.id === engineFilter) ?? null;
@@ -745,6 +749,60 @@ function InstalledPane({
       (!activeEngine || deliveredTo(p, activeEngine)) &&
       (!q || pluginHaystack(p).includes(q)),
   );
+
+  // 已删掉的插件不要留在勾选里（列表一变就收敛，和技能页那条同一个道理）。
+  useEffect(() => {
+    const names = new Set(plugins.map((p) => p.name));
+    setChecked((prev) => {
+      const next = new Set([...prev].filter((n) => names.has(n)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [plugins]);
+
+  /** 批量启用/停用。后端 `plugins.setEnabled` 是单条，一个 IPC 一条 —— 同技能页
+   *  组级删除的既有做法（毫秒级，失败如实计数、不中断其余）。 */
+  const bulkSetEnabled = async (want: boolean) => {
+    const names = plugins.filter((p) => checked.has(p.name) && p.enabled !== want).map((p) => p.name);
+    if (!names.length) return;
+    ops.setError(null);
+    const failures: string[] = [];
+    for (const name of names) {
+      ops.setBusyKey(`toggle:${name}`);
+      try {
+        const res = await api.plugins.setEnabled({ name, enabled: want });
+        if (!res.ok) failures.push(`${name}: ${res.error ?? t("settings.operationFailed")}`);
+      } catch (err) {
+        failures.push(`${name}: ${(err as Error).message}`);
+      }
+    }
+    ops.setBusyKey(null);
+    if (failures.length) ops.setError(failures.join("; "));
+    await ops.reload();
+  };
+
+  /** 批量卸载。危险动作，走确认框。 */
+  const bulkRemove = async () => {
+    setPendingBulkRemove(false);
+    const names = plugins.filter((p) => checked.has(p.name)).map((p) => p.name);
+    if (!names.length) return;
+    ops.setError(null);
+    const failures: string[] = [];
+    const removed = new Set<string>();
+    for (const name of names) {
+      ops.setBusyKey(`remove:${name}`);
+      try {
+        const res = await api.plugins.remove({ name });
+        if (res.ok) removed.add(name);
+        else failures.push(`${name}: ${res.error ?? t("settings.operationFailed")}`);
+      } catch (err) {
+        failures.push(`${name}: ${(err as Error).message}`);
+      }
+    }
+    ops.setBusyKey(null);
+    if (removed.size) setChecked((prev) => new Set([...prev].filter((n) => !removed.has(n))));
+    if (failures.length) ops.setError(failures.join("; "));
+    await ops.reload();
+  };
 
   const installLocal = async (key: string, pick: () => Promise<string | null>) => {
     const localPath = await pick();
@@ -855,6 +913,38 @@ function InstalledPane({
         </button>
       </div>
 
+      {/* 勾选批量条：勾了插件才出现。批量启用/停用/卸载。 */}
+      {checked.size > 0 && (
+        <div
+          data-testid="plugins-bulk-bar"
+          className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-edge bg-surface/60 px-3 py-1.5"
+        >
+          <span className="text-[0.8571em] font-medium text-content-muted">
+            {t("settings.plugins.bulkSelected", { n: checked.size })}
+          </span>
+          <Button variant="ghost" size="sm" data-testid="plugins-bulk-enable" disabled={ops.busyKey != null} onClick={() => void bulkSetEnabled(true)}>
+            {t("settings.plugins.bulkEnable")}
+          </Button>
+          <Button variant="ghost" size="sm" data-testid="plugins-bulk-disable" disabled={ops.busyKey != null} onClick={() => void bulkSetEnabled(false)}>
+            {t("settings.plugins.bulkDisable")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="plugins-bulk-remove"
+            disabled={ops.busyKey != null}
+            onClick={() => setPendingBulkRemove(true)}
+            className="ml-auto gap-1 text-danger hover:bg-danger/10"
+          >
+            <IconTrash size={12} />
+            {t("settings.plugins.bulkRemove")}
+          </Button>
+          <Button variant="ghost" size="sm" disabled={ops.busyKey != null} onClick={() => setChecked(new Set())}>
+            {t("settings.skills.clearSelection")}
+          </Button>
+        </div>
+      )}
+
       <div className="pb-4">
         {!loaded ? (
           <LoadingNote label={t("settings.plugins.loading")} />
@@ -883,6 +973,15 @@ function InstalledPane({
                 plugin={p}
                 busy={ops.busyKey}
                 expanded={expanded === p.name}
+                checked={checked.has(p.name)}
+                onCheckedChange={(next) =>
+                  setChecked((prev) => {
+                    const set = new Set(prev);
+                    if (next) set.add(p.name);
+                    else set.delete(p.name);
+                    return set;
+                  })
+                }
                 // Rows are addressed by name; keeping the expanded row open
                 // while the filter hides it is harmless (it re-appears as-is).
                 onExpand={() => setExpanded((cur) => (cur === p.name ? null : p.name))}
@@ -894,6 +993,18 @@ function InstalledPane({
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={pendingBulkRemove}
+        title={t("settings.plugins.bulkRemove")}
+        danger
+        description={t("settings.plugins.bulkRemoveDesc", { n: checked.size })}
+        confirmText={t("common.delete")}
+        onOpenChange={(open) => {
+          if (!open) setPendingBulkRemove(false);
+        }}
+        onConfirm={() => void bulkRemove()}
+      />
     </div>
   );
 }
@@ -967,6 +1078,8 @@ function PluginRow({
   onToggle,
   onEngine,
   onRemove,
+  checked,
+  onCheckedChange,
 }: {
   plugin: PluginState;
   /** Global busy key — disables this row's controls while any action runs. */
@@ -976,6 +1089,9 @@ function PluginRow({
   onToggle: () => void;
   onEngine: (engine: PluginEngineId, want: boolean) => void;
   onRemove: () => void;
+  /** 勾选（批量启用/停用/删除的源）。 */
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
 }) {
   const { t } = useI18n();
   const rowBusy =
@@ -999,6 +1115,16 @@ function PluginRow({
   return (
     <div>
       <div className="flex items-center gap-2.5 px-3 py-2.5">
+        {/* 勾选：批量启用/停用/删除的源。点勾不能顺带展开详情 —— 两件事。 */}
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onCheckedChange(e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          className="h-3.5 w-3.5 shrink-0 accent-accent"
+          aria-label={plugin.name}
+          data-plugin-check={plugin.name}
+        />
         <button
           type="button"
           className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
