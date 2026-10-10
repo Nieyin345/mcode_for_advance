@@ -804,6 +804,18 @@ export const NODE_PROMPT_PARAM_KEY = "instruction";
 export const NODE_CRITERIA_PARAM_KEY = "criteria";
 
 /**
+ * 「**把固定条件也传给下游节点**」的开关参数键（报告 P1）。只有入口节点用。
+ *
+ * 默认**关**（缺席 = 关，保老存档原样）：固定条件从前只注入根节点一次，下游读不到 ——
+ * 写图的人只能靠根节点把条件逐字抄进产出再逐跳传递，抄漏一处下游就**静默失效**。
+ * 打开之后，每次运行的固定条件会作为一整节拼进**每个**节点的提示词，下游直接读得到。
+ *
+ * 做成开关而不是默认行为，是因为"要不要让每一步都看见条件"是作者的决定：有的图希望
+ * 条件只在开头交代一次（省上下文），有的图希望每步都拿到权威值（防转述走样）。
+ */
+export const NODE_CRITERIA_PASS_DOWN_PARAM_KEY = "criteriaPassDown";
+
+/**
  * `runner.kind === "prompt"` 的节点,**这一步要用哪些技能**的参数键。
  *
  * 和 {@link NODE_PROMPT_PARAM_KEY} 同一条约定:不是 schema 上的字段,是一个**键名**。

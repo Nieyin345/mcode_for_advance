@@ -323,6 +323,40 @@ console.log("\n前置检查(三种都明确失败,而且往下传播)");
 console.log("\n提示词拼装");
 
 {
+  // **固定条件往下传**(报告 P1)。`RunArgs.criteriaSection` 由调用方(读得到设置表的
+  // `runner`)算好递进来 —— 这里不碰库,喂一段写死的正文,验的是**调度器怎么用它**:
+  // 每个**非根**节点都带,根节点不重复带(它开头那次由 `injectEntryCriteria` 注过)。
+  const SECTION = "## 这次的固定条件\n用户在输入框上方设好了下面这几条:\n- 时间范围:近三年";
+  const h = makePorts();
+  await runWorkflow({
+    doc: docOf([node("A"), node("B"), node("C")], [edge("A", "B"), edge("B", "C")]),
+    prompt: "找论文",
+    ports: h.ports,
+    signal: controller().signal,
+    criteriaSection: SECTION,
+  });
+  const a = h.calls.find((c) => c.id === "A");
+  const b = h.calls.find((c) => c.id === "B");
+  const c = h.calls.find((c) => c.id === "C");
+  check("下游节点带上了这一节", (b?.prompt ?? "").includes("## 这次的固定条件"), b?.prompt);
+  check("而且条件本身在里面", (b?.prompt ?? "").includes("- 时间范围:近三年"), b?.prompt);
+  check("再下游(第三格)也带", (c?.prompt ?? "").includes("## 这次的固定条件"), c?.prompt);
+  // 根节点**不带**:它开头那一次由 `injectEntryCriteria` 注,再带一遍就是同一段话
+  // 在同一个提示词里出现两次。
+  check("根节点不重复带", !(a?.prompt ?? "").includes("## 这次的固定条件"), a?.prompt);
+
+  // 不给(老路径 / 开关关着)→ 谁都不带。**这是默认**,老图一字不变。
+  const h2 = makePorts();
+  await runWorkflow({
+    doc: docOf([node("A"), node("B")], [edge("A", "B")]),
+    prompt: "找论文",
+    ports: h2.ports,
+    signal: controller().signal,
+  });
+  check("不给这一节 → 下游不带", !(h2.calls.find((c) => c.id === "B")?.prompt ?? "").includes("这次的固定条件"));
+}
+
+{
   const root = composeNodePrompt({
     userPrompt: "帮我把这篇论文读懂",
     upstream: "",

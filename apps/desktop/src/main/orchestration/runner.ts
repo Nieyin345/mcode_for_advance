@@ -79,7 +79,7 @@ import {
   type WorkflowCapability,
   type WorkflowNode,
 } from "@contracts/workflow";
-import { injectEntryCriteria } from "./criteriaInject.js";
+import { criteriaSectionForNodes, injectEntryCriteria } from "./criteriaInject.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
 import { createBuiltinExecutionEngine, createWorkflowInputBuilder } from "./executionEngine.js";
@@ -844,6 +844,19 @@ export async function startWorkflowRun(args: {
     } catch (err) {
       log.warn(`workflow: node criteria unread, skipping injection: ${String(err)}`);
     }
+  }
+
+  // **「把固定条件传给下游」**(报告 P1)—— 入口节点那个开关开着、且这次真填了条件时,
+  // 拼出**每个非根节点**要带的那一节;关着 / 没条件 → 空串(调度器据此不拼任何东西)。
+  //
+  // 在这里算而不是在调度器里算,是因为这一段要读设置表 —— 而调度器刻意不碰库
+  // (见 `scheduler.ts` 文件头)。续跑时**照算**:条件本身没变,下游该读到的还是同一份。
+  // 读不动就当没开这个开关 —— 少一节说明,总好过整次运行起不来。
+  let criteriaSection = "";
+  try {
+    criteriaSection = criteriaSectionForNodes(doc, session.workflowId);
+  } catch (err) {
+    log.warn(`workflow: node criteria pass-down unread, skipping: ${String(err)}`);
   }
 
   // **runId 沿用上一次那个。** 那张卡片是按 `runId + nodeId + attempt` 认的
@@ -2047,6 +2060,8 @@ export async function startWorkflowRun(args: {
       signal: active.abort.signal,
       // 这次由哪个触发器起(自动化执行器给的)。续跑时上面已经把它从存档里接回来了。
       ...(entry !== undefined ? { entry } : {}),
+      // 固定条件要不要往下传(报告 P1)。空串 = 没开这个开关,调度器不拼这一节。
+      ...(criteriaSection.length > 0 ? { criteriaSection } : {}),
       ...(resumed !== undefined
         ? {
             resume: {

@@ -65,6 +65,7 @@ import {
   NODE_CONDITION_EXPRESSION_KEY,
   NODE_CONTEXT_PARAM_KEY,
   NODE_CRITERIA_PARAM_KEY,
+  NODE_CRITERIA_PASS_DOWN_PARAM_KEY,
   NODE_DECIDER_KEY,
   NODE_FLOW_RECORD_HELP,
   NODE_FLOW_RECORD_PARAM_KEY,
@@ -460,6 +461,7 @@ function mainParams(): NodeParamSpec[] {
       help: MAIN_INSTRUCTION_HELP,
     },
     criteriaParam(),
+    criteriaPassDownParam(),
     ...ioParams(),
     ...memoryParam(),
   ];
@@ -480,6 +482,22 @@ function criteriaParam(): NodeParamSpec {
     kind: "selects",
     label: "固定条件",
     help: "配置后,输入框上方出现一排下拉框:选中值随对话第一轮注入一次,「不限」不注入。",
+  };
+}
+
+/**
+ * 「把固定条件也传给下游」的开关（报告 P1）。默认关。
+ *
+ * 关着 = 老行为：固定条件只进根节点一次，下游靠根节点转述。开着 = 每次运行的固定条件
+ * 作为一整节拼进**每个**节点的提示词，下游直接读得到，不必逐跳抄。放在「固定条件」
+ * 那一格**后面**（它正是对那一格的补充：那些条件要不要往下走）。
+ */
+function criteriaPassDownParam(): NodeParamSpec {
+  return {
+    key: NODE_CRITERIA_PASS_DOWN_PARAM_KEY,
+    kind: "boolean",
+    label: "把固定条件传给下游",
+    help: "打开后，这次的固定条件会拼进每一步的提示词，下游节点不必靠主代理转述就能直接读到（默认关：只注入开头一次）。",
   };
 }
 

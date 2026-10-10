@@ -28,7 +28,7 @@
 import { initDb, getDb } from "@main/store/db.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { WORKFLOW_NODE_PREFS_SETTING_PREFIX } from "@contracts/ipc";
-import { injectEntryCriteria, entryCriteriaOf } from "@main/orchestration/criteriaInject.js";
+import { injectEntryCriteria, entryCriteriaOf, criteriaPassedDown, criteriaSectionForNodes } from "@main/orchestration/criteriaInject.js";
 import { docWithMainNode } from "./doc.js";
 
 let failures = 0;
@@ -248,6 +248,60 @@ async function main(): Promise<void> {
     const gone = run({});
     check("查不到的 id 明说查不到", gone.includes("已删除的分类"), gone);
     check("而且没有编造一个名字", !gone.includes("导入到:lc_早就没了\n"), gone);
+  }
+
+  /**
+   * **「把固定条件传给下游」那个开关**(报告 P1)。
+   *
+   * 这一段钉的是**开关自己的判据**:开 / 关分别得出什么。它拼出来的那一节是否真进了
+   * 下游节点的提示词,由 `scheduler-smoke` 的「固定条件往下传」那一段验(那一头才有
+   * 调度器和假执行器)—— 这里只保证"开关读对了、节拼对了"。
+   */
+  console.log("\n固定条件传给下游 · 开关判据(报告 P1)");
+  {
+    setPrefs({ 时间范围: "近三年", 期刊层次: "T1" });
+
+    // 缺席 = 关:老存档(有 criteria、没 criteriaPassDown)必须还是老行为。
+    const off = docWithMainNode({ criteria: CRITERIA });
+    eq("没有那个参数 → 开关算关", criteriaPassedDown(off), false);
+    eq("关着 → 不拼下游那一节", criteriaSectionForNodes(off, WORKFLOW), "");
+    eq("而且不是一个布尔的东西也算关", criteriaPassedDown(docWithMainNode({ criteria: CRITERIA, criteriaPassDown: "yes" })), false);
+    eq("显式 false 也是关", criteriaPassedDown(docWithMainNode({ criteria: CRITERIA, criteriaPassDown: false })), false);
+
+    // 开着且有条件 → 拼出一整节,内容与根节点那次说的**同一件事**。
+    const on = docWithMainNode({ criteria: CRITERIA, criteriaPassDown: true });
+    eq("开了 → 开关算开", criteriaPassedDown(on), true);
+    const section = criteriaSectionForNodes(on, WORKFLOW);
+    check("开了 → 拼出那一节", section.includes("## 这次的固定条件"), section);
+    check("选中的条件在里面", section.includes("- 时间范围:近三年"), section);
+    check("格式与根节点那次一致", section.includes("- 期刊层次:T1 —— T1 = Q1 或中科院 1 区或 Top 期刊"), section);
+    // 根节点那次注入的正文就是这一节(开关不影响根节点:它本来就注一次)。
+    const rootPrompt = injectEntryCriteria({
+      doc: on,
+      workflowId: WORKFLOW,
+      prompt: "找论文",
+      resumed: false,
+      firstTurn: true,
+    });
+    // ⚠️ **先要求 section 非空**再比:`"".endsWith("")` 恒真 —— 少了这一半,把开关
+    // 改坏成"永远返回空串"时这条还是绿的(实测踩过)。
+    check(
+      "下游那一节与根节点注入的是同一段话",
+      section.length > 0 && rootPrompt.endsWith(section),
+      { rootPrompt, section },
+    );
+
+    // 开着但一个条件都没填 → 空(不拼一个空壳节)。
+    clearPrefs();
+    eq("开着但没填任何条件 → 空串", criteriaSectionForNodes(on, WORKFLOW), "");
+
+    // 开着、条件都填成「不限」→ 空(「不限」不进提示词,那一节也就空了)。
+    setPrefs({ 时间范围: "不限", 期刊层次: "不限", 每源条数: "不限" });
+    eq("全填「不限」→ 也空", criteriaSectionForNodes(on, WORKFLOW), "");
+
+    // 关着但填了条件 → 仍然空(开关优先)。**这是开关的全部意义**:老图不受影响。
+    setPrefs({ 时间范围: "近三年" });
+    eq("关着但填了条件 → 还是空", criteriaSectionForNodes(off, WORKFLOW), "");
   }
 
   console.log(`\n${total - failures}/${total} 通过`);

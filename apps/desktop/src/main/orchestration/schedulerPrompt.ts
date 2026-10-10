@@ -563,6 +563,12 @@ export function composeNodePrompt(args: {
    * 让模型一开始就知道自己这一步能写不能写,而不是做到一半才发现。空串 = 不提。
    */
   permissionNote?: string;
+  /**
+   * **这次的固定条件**(报告 P1)。只有入口节点打开了「把固定条件传给下游」时才有，
+   * 且**每个**节点都带上 —— 让下游直接读到权威值，不必靠根节点转述（转述会走样）。
+   * 已经渲染成整节(见 `criteriaInject.ts` 的 `criteriaSectionForNodes`)。空串 = 不提。
+   */
+  criteriaNote?: string;
 }): string {
   // 第 0 层就是根:有上游的节点一定在 ≥1 层(层 = 上游层最大值 + 1)。
   const isRoot = isRootOf(args.plan, args.nodeId);
@@ -579,6 +585,11 @@ export function composeNodePrompt(args: {
   // 让模型知道自己的手脚。空串等于没有(报告 P3)。
   if (args.permissionNote !== undefined && args.permissionNote.trim().length > 0) {
     sections.push(args.permissionNote.trim());
+  }
+  // 这次的固定条件(报告 P1)—— 只有入口节点开了「传给下游」时才给。摆在框架段之后:
+  // 它和"整条流程怎么读"同一层,是**这次运行**的权威参数,必须先于各步的指令。
+  if (args.criteriaNote !== undefined && args.criteriaNote.trim().length > 0) {
+    sections.push(args.criteriaNote.trim());
   }
   // 工作流作者的追加框架说明 —— 紧跟框架段:它和「整条流程」说的是同一层的事
   // (这张图怎么读、怎么跑)。空白等于没有。

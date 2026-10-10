@@ -157,6 +157,15 @@ export interface ModelInputScope {
   /** 这一步的权限档位(`node.capability ?? manifest.capability`)。`read` → plan 模式,
    *  写类工具弹审批。用来在提示词里**明说**这一步是只读的(报告 P3)。 */
   capability?: WorkflowCapability;
+  /**
+   * **这次的固定条件,整节已经渲染好**(报告 P1)。入口节点打开「把固定条件传给下游」
+   * 时,调度层给**每个非根节点**都递一份;关着 / 一个条件都没填 → 空(不发这一节)。
+   *
+   * 为什么整节递进来而不是在这儿现渲染:渲染要用工作流 id 去查候选现读那一支,那是
+   * 主进程的知识;而且它必须和根节点那次注入说的是同一句话(同一个 `nodeCriteriaPrompt`),
+   * 两处各渲染一遍迟早分家。
+   */
+  criteriaNote?: string;
   /** 工作流级的追加框架说明(`WorkflowDoc.frameworkNote`)。见 `composeNodePrompt`。 */
   frameworkNote?: string;
   /**
@@ -383,6 +392,11 @@ export function buildNodeInput(
     // 明说"没有审批"),不在这里。
     ...(scope.capability === "read" && showsNodeCapability(manifest)
       ? { permissionNote: READ_ONLY_PERMISSION_NOTE }
+      : {}),
+    // 固定条件往下传(报告 P1)—— 只有入口节点开了那个开关、且这次真填了条件才有。
+    // 摆在同一层:都是"这次运行的权威前提",必须先于各步的指令读到。
+    ...(scope.criteriaNote !== undefined && scope.criteriaNote.trim().length > 0
+      ? { criteriaNote: scope.criteriaNote }
       : {}),
   });
   return {

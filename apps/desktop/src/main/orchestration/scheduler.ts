@@ -696,6 +696,20 @@ export interface RunArgs {
    * `data.trigger`,节点参数里的 `{{trigger.<key>}}` 从这里取。
    */
   entry?: { nodeId: string; summary: string; payload?: Record<string, unknown> };
+  /**
+   * **这次运行的固定条件,整节已经渲染好**(报告 P1)—— 入口节点上那个开关开着、
+   * 且这次真填了条件时才有。给了就拼进**每个非根节点**的提示词,让下游直接读到权威值,
+   * 不必靠根节点逐字转述(转述会走样,抄漏一处下游就静默失效)。
+   *
+   * ## 为什么是调用方渲染好递进来,而不是调度器自己去读
+   *
+   * 这个类**刻意不 import 任何运行时东西**(见文件头):不碰库、不碰会话。而拼这一段
+   * 要读设置表(用户在输入框上方选的候选值),那是 `searchPrefs` + `repositories` 那一头
+   * 的知识 —— 拖进来的话三套 `scheduler-smoke` 就一行都跑不动了(它们只打 dataRoot 的桩)。
+   * 所以调用方(`runner.startWorkflowRun`)在起跑前算好,和 `prompt` / `entry` 一样从
+   * 参数进来。根节点不重复给:它开头那一次由 `injectEntryCriteria` 注过。
+   */
+  criteriaSection?: string;
 }
 /**
  * **一次运行的内部状态。**
@@ -719,6 +733,8 @@ class Run {
   prompt!: string;
   ports!: RunPorts;
   signal!: AbortSignal;
+  /** 这次运行的固定条件（报告 P1），开着「传给下游」时非空；每个非根节点都带它。 */
+  criteriaSection = "";
   entry!: { nodeId: string; summary: string; payload?: Record<string, unknown> } | undefined;
   deps!: Map<string, string[]>;
   dependents!: Map<string, string[]>;
@@ -1516,6 +1532,12 @@ class Run {
         // 这一步的权限档位(报告 P3):`read` 会以 plan 模式跑，写类工具一律弹审批。
         // 递到提示词那一层，让模型**一开始就知道自己能不能写**，而不是做到一半撞墙。
         capability: node.capability ?? manifest.capability,
+        // 固定条件要不要传给下游(报告 P1)—— 入口节点上那个开关，默认关。
+        // 开着时每个节点都带上这一节，下游直接读到权威值，不必靠根节点逐字转述。
+        // 根节点本来就在开跑时拿到过一次（`injectEntryCriteria`），这里不重复。
+        ...(this.criteriaSection.length > 0 && !isRootOf(this.plan, node.id)
+          ? { criteriaNote: this.criteriaSection }
+          : {}),
         // 工作流级追加框架说明:随文档走,这张图的每个节点同一段(见
         // `composeNodePrompt`)。空白不发 —— 提示词里不该出现一个空节。
         ...(typeof this.doc.frameworkNote === "string" && this.doc.frameworkNote.trim().length > 0
@@ -1646,6 +1668,9 @@ class Run {
   this.prompt = args.prompt;
   this.ports = args.ports;
   this.signal = args.signal;
+  // 固定条件往下传(报告 P1)—— 由调用方渲染好递进来(见 `RunArgs.criteriaSection`)。
+  // 算一次,整轮每个节点共用同一份;空串等于没开这个开关。
+  this.criteriaSection = args.criteriaSection ?? "";
   const resumed = args.resume;
   // **续跑时以存档为准**:那次运行是哪个触发器起的,不会因为进程重启就换个说法。
   this.entry = resumed?.entry ?? args.entry;

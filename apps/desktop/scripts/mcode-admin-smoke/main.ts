@@ -33,7 +33,7 @@ import { backEdgesOf, forwardEdgesOf, type WorkflowDoc } from "@contracts/workfl
 import { BUILTIN_WORKFLOWS } from "@main/orchestration/builtins.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { composeNodePrompt, planOf } from "@main/orchestration/schedulerPrompt.js";
-import { MAIN_NODE_TYPE_ID, NODE_MODEL_PARAM_KEY, NODE_PARAM_KINDS, NODE_PROVIDER_PARAM_KEY, TRIGGER_NODE_TYPE_ID } from "@contracts/nodeType";
+import { MAIN_NODE_TYPE_ID, NODE_CRITERIA_PARAM_KEY, NODE_CRITERIA_PASS_DOWN_PARAM_KEY, NODE_MODEL_PARAM_KEY, NODE_PARAM_KINDS, NODE_PROVIDER_PARAM_KEY, TRIGGER_NODE_TYPE_ID } from "@contracts/nodeType";
 // ⚠️ 这里**破例 import 一个渲染端的模块** —— `workflowEdit.ts` 才是"新建工作流"那条路
 // 的实现,而本套件要验的恰恰是"它种出来的东西能不能过**主进程**的校验"。两半各自单测
 // 都过、合起来不过,是这一层最典型的坏法(种出来的节点少一个必填参数 → 用户点「新建」
@@ -723,6 +723,26 @@ async function main(): Promise<void> {
       "子 agent 也不带它",
       agentEntry?.manifest.params.some((p) => p.kind === "selects") === false,
     );
+    // **紧挨着「固定条件」的是「把固定条件传给下游」那个开关**(报告 P1)。它在不在、
+    // 是不是布尔、是不是排在那张条件表**后面**,都是"用户能不能用它"的一部分 ——
+    // 参数不长在清单上,画布上就连那一格都没有,而代码里读它的地方还在(静默恒为关)。
+    {
+      const params = mainEntry?.manifest.params ?? [];
+      const atKey = (key: string): number => params.findIndex((p) => p.key === key);
+      const passDown = params[atKey(NODE_CRITERIA_PASS_DOWN_PARAM_KEY)];
+      check("主代理带「把固定条件传给下游」开关", passDown !== undefined, params.map((p) => p.key));
+      eq("它是一个布尔开关", passDown?.kind, "boolean");
+      check(
+        "排在「固定条件」那张表后面",
+        atKey(NODE_CRITERIA_PASS_DOWN_PARAM_KEY) > atKey(NODE_CRITERIA_PARAM_KEY),
+        params.map((p) => p.key),
+      );
+      // 子 agent 没有这个位置 —— 固定条件本来就只有入口节点声明。
+      check(
+        "子 agent 不带它",
+        (agentEntry?.manifest.params ?? []).some((p) => p.key === NODE_CRITERIA_PASS_DOWN_PARAM_KEY) === false,
+      );
+    }
     // 检索图的主节点**预填**了那四条条件 —— 这是"定义搬进节点"的落点:界面上的
     // 下拉框、注入提示词的内容,都从这份预填数据来。候选值里混进非字符串,渲染端和
     // 注入端都会一起瞎。(检索图现在住在预置文件里,见上面 `byId` 那段。)

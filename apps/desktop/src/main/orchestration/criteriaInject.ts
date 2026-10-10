@@ -22,7 +22,7 @@
  * 边才够得着存档和消息表。
  */
 import type { WorkflowDoc } from "@contracts/workflow";
-import { MAIN_NODE_TYPE_ID, NODE_CRITERIA_PARAM_KEY } from "@contracts/nodeType";
+import { MAIN_NODE_TYPE_ID, NODE_CRITERIA_PARAM_KEY, NODE_CRITERIA_PASS_DOWN_PARAM_KEY } from "@contracts/nodeType";
 import { nodeCriteriaPrompt, type CriteriaCondition } from "@main/lib/searchPrefs.js";
 
 /**
@@ -81,4 +81,31 @@ export function injectEntryCriteria(args: {
   const criteria = nodeCriteriaPrompt(args.workflowId, conditions);
   if (criteria.length === 0) return args.prompt;
   return args.prompt.length > 0 ? `${args.prompt}\n\n${criteria}` : criteria;
+}
+
+/**
+ * **要不要把固定条件传给下游节点**（报告 P1）—— 入口节点上那个开关，默认关。
+ *
+ * 关着（缺席）= 老行为：固定条件只在开跑时拼进根节点提示词一次。开着 = 每次运行把它
+ * 作为一整节拼进**每个**节点，下游直接读到权威值，不必靠根节点逐字转述（转述会走样，
+ * 抄漏一处下游就静默失效——报告称"本组最危险的一条"）。
+ *
+ * 判据只读根节点的这一个布尔，不看节点自己有没有下游：图上除根之外的每一步都受益，
+ * 而根节点本来就在 `injectEntryCriteria` 那里拿到过一次（那条保持不变）。
+ */
+export function criteriaPassedDown(doc: WorkflowDoc): boolean {
+  const params = doc.nodes.find((node) => node.type === MAIN_NODE_TYPE_ID)?.params;
+  return params?.[NODE_CRITERIA_PASS_DOWN_PARAM_KEY] === true;
+}
+
+/**
+ * 下游节点要带的那一节固定条件（报告 P1）。开关关着、或这次一个条件都没填 → 空串
+ * （调用方据此不拼任何东西）。文案与 `injectEntryCriteria` 走**同一个** `nodeCriteriaPrompt`，
+ * 所以根节点那次和下游这些节说的是同一件事、同一个格式。
+ */
+export function criteriaSectionForNodes(doc: WorkflowDoc, workflowId: string): string {
+  if (!criteriaPassedDown(doc)) return "";
+  const conditions = entryCriteriaOf(doc);
+  if (conditions.length === 0) return "";
+  return nodeCriteriaPrompt(workflowId, conditions);
 }
