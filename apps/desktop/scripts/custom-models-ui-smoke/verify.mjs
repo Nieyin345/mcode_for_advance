@@ -78,6 +78,20 @@ await withAuditPage(dir, async page => {
     assert.equal(claudeBtns.includes('取消'), true);
     assert.equal(piBtns.includes('取消'), true);
   });
+
+  // ── 自定义请求头：三个引擎的编辑器都在（2026-10-11 对齐）──
+  // 判据：「自定义请求头」这个标签在页面上出现（它只在 HeadersEditor 里）。
+  const hasHeaders = async () => page.eval(`document.body.innerText.includes('自定义请求头')`);
+  await test('headers-editor-present-in-all-three-engines', async () => {
+    await go(); await pickProvider('Gateway A');
+    // Claude：header 编辑器在「高级」区，先展开。
+    await clickExpr(`[...document.querySelectorAll('button')].find(e=>e.textContent.includes('高级选项'))`);
+    assert.equal(await hasHeaders(), true, 'Claude form must offer the headers editor');
+    await openTab('Pi'); await pickProvider('pi-a');
+    assert.equal(await hasHeaders(), true, 'Pi form must offer the headers editor (was missing)');
+    await openTab('Codex'); await pickProvider('codex-a');
+    assert.equal(await hasHeaders(), true, 'Codex form must offer the headers editor (was missing)');
+  });
 });
 const failed = results.filter(r => !r.ok).length;
 writeFileSync(join(dir, 'results.json'), JSON.stringify({ passed: results.length - failed, failed, results }, null, 2));

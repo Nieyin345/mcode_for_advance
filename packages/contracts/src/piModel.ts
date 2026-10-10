@@ -101,6 +101,9 @@ export interface PiProviderConfig {
   api?: string;
   /** Add `Authorization: Bearer <apiKey>` automatically when true. */
   authHeader?: boolean;
+  /** 额外的固定请求头（写进 models.json 该 provider 的 `headers`）。
+   *  与 Claude / Codex 两侧同一套语义：给需要固定路由/租户头的网关用。 */
+  headers?: Record<string, string>;
   /** Custom model definitions. */
   models?: PiModelDefinition[];
   /** Unknown fields (headers / compat / modelOverrides / …) preserved. */

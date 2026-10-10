@@ -156,6 +156,8 @@ export const SaveCodexProviderSchema = z.object({
       contextWindow: z.number().int().positive().optional(),
     }),
   ).min(1),
+  /** 额外请求头，落到该 provider 的 config.toml `http_headers`。 */
+  headers: z.record(z.string(), z.string()).optional(),
   /** Opt-in: unlock codex's image generation tool by injecting the
    *  `x-openai-actor-authorization` http_header into the provider's TOML
    *  table (gateway must back /v1/images/generations with gpt-image-2). */

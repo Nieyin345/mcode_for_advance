@@ -40,6 +40,11 @@ export interface CodexProviderConfig {
   baseUrl: string;
   /** Models offered by this provider (>= 1 required). */
   models: CodexModelOption[];
+  /** 额外的请求头，透传到 config.toml 该 provider 表的 `http_headers`。
+   *  给需要固定路由/租户头的网关用（与 Claude / Pi 两侧同一套语义）。
+   *  与下面的 `imageGeneration` 不冲突：后者只是往同一个 `http_headers`
+   *  里补一条固定的 actor 头。 */
+  headers?: Record<string, string>;
   /** Opt-in unlock for codex's standalone image generation tool
    *  (`image_gen.imagegen`). When true, the provider's config.toml table
    *  gets a nonempty `x-openai-actor-authorization` http_header — codex

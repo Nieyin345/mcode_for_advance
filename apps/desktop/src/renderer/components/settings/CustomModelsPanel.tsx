@@ -313,6 +313,56 @@ function customHeadersFromRows(
   return { ok: true, headers: Object.keys(out).length > 0 ? out : undefined };
 }
 
+/** 额外请求头的行编辑器 —— Claude / Pi / Codex 三个表单共用同一份（2026-10-11 统一）。
+ *  从前只有 Claude 有；Pi 的 models.json 与 Codex 的 config.toml 底层本来就收 headers，
+ *  只是没做界面。三处用同一个件，观感与校验才不会各长各的。 */
+function HeadersEditor({
+  rows,
+  onChange,
+}: {
+  rows: CustomHeaderRow[];
+  onChange: (rows: CustomHeaderRow[]) => void;
+}) {
+  const { t } = useI18n();
+  const update = (idx: number, patch: Partial<CustomHeaderRow>) =>
+    onChange(rows.map((h, i) => (i === idx ? { ...h, ...patch } : h)));
+  return (
+    <div className="space-y-1.5 border-t border-edge pt-2">
+      <div className="flex items-center justify-between">
+        <HintLabel hint={t("settings.customModels.customHeadersHint")} className="text-[0.7857em] text-content-muted">
+          {t("settings.customModels.customHeadersLabel")}
+        </HintLabel>
+        <Button variant="ghost" size="sm" onClick={() => onChange([...rows, { name: "", value: "" }])}>
+          <IconPlus size={12} />
+          {t("settings.customModels.customHeadersAdd")}
+        </Button>
+      </div>
+      {rows.map((h, idx) => (
+        <div key={idx} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5">
+          <Input
+            value={h.name}
+            onChange={(e) => update(idx, { name: e.target.value })}
+            placeholder={t("settings.customModels.customHeadersNamePlaceholder")}
+          />
+          <Input
+            value={h.value}
+            onChange={(e) => update(idx, { value: e.target.value })}
+            placeholder={t("settings.customModels.customHeadersValuePlaceholder")}
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onChange(rows.filter((_, i) => i !== idx))}
+            title={t("settings.customModels.customHeadersRemove")}
+          >
+            <IconTrash size={13} />
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface ClaudeFormState {
   id?: string;
   name: string;
@@ -393,6 +443,8 @@ interface PiFormState {
   api: string;
   apiKey: string;
   authHeader: boolean;
+  /** 额外请求头（落到 models.json 的 `headers`），与 Claude 侧同一套编辑器。 */
+  customHeaders: CustomHeaderRow[];
   models: PiModelFormState[];
 }
 
@@ -417,7 +469,7 @@ function emptyPiModel(): PiModelFormState {
 }
 
 function emptyPiForm(): PiFormState {
-  return { name: "", baseUrl: "", api: "openai-completions", apiKey: "", authHeader: false, models: [] };
+  return { name: "", baseUrl: "", api: "openai-completions", apiKey: "", authHeader: false, customHeaders: [], models: [] };
 }
 
 function piModelFromDef(def: PiModelDefinition): PiModelFormState {
@@ -450,6 +502,7 @@ function piFormFromConfig(name: string, cfg: PiProviderConfig): PiFormState {
     api: cfg.api ?? "openai-completions",
     apiKey: "",
     authHeader: cfg.authHeader ?? false,
+    customHeaders: Object.entries(cfg.headers ?? {}).map(([n, v]) => ({ name: n, value: String(v) })),
     models: (cfg.models ?? []).map(piModelFromDef),
   };
 }
@@ -495,6 +548,9 @@ function piConfigFromForm(form: PiFormState): PiProviderConfig {
   if (form.baseUrl.trim()) cfg.baseUrl = form.baseUrl.trim();
   if (form.api) cfg.api = form.api;
   if (form.authHeader) cfg.authHeader = true;
+  // 额外请求头：空行跳过；校验交回调用方（和 Claude 侧同一个 customHeadersFromRows）。
+  const headerResult = customHeadersFromRows(form.customHeaders);
+  if (headerResult.ok && headerResult.headers) cfg.headers = headerResult.headers;
   cfg.models = models;
   return cfg;
 }
@@ -519,6 +575,8 @@ interface CodexFormState {
    *  the provider's config.toml table). Requires a gateway backing the
    *  OpenAI images API (gpt-image-2). */
   imageGeneration: boolean;
+  /** 额外请求头（落到 config.toml 的 `http_headers`）。 */
+  customHeaders: CustomHeaderRow[];
   models: CodexModelFormState[];
 }
 
@@ -528,6 +586,7 @@ const emptyCodexForm = (): CodexFormState => ({
   baseUrl: "",
   apiKey: "",
   imageGeneration: false,
+  customHeaders: [],
   models: [{ id: "", context1m: false }],
 });
 
@@ -537,6 +596,7 @@ const codexFormFromConfig = (cfg: CodexProviderPublic): CodexFormState => ({
   baseUrl: cfg.baseUrl,
   apiKey: "",
   imageGeneration: Boolean(cfg.imageGeneration),
+  customHeaders: Object.entries(cfg.headers ?? {}).map(([n, v]) => ({ name: n, value: String(v) })),
   models: cfg.models.map((m) => ({ id: m.id, context1m: m.contextWindow === 1_000_000 })),
 });
 
@@ -922,6 +982,8 @@ export function CustomModelsPanel() {
     if (valid.length === 0) return setError(t("settings.customModels.errNeedModel"));
     if (selection?.id === "new" && !codexForm.apiKey.trim())
       return setError(t("settings.customModels.errApiKey"));
+    const headerResult = customHeadersFromRows(codexForm.customHeaders);
+    if (!headerResult.ok) return setError(t("settings.customModels.errHeader"));
     setSaving(true);
     setError(null);
     try {
@@ -930,6 +992,7 @@ export function CustomModelsPanel() {
         name: codexForm.name.trim(),
         baseUrl: codexForm.baseUrl.trim(),
         ...(codexForm.imageGeneration ? { imageGeneration: true } : {}),
+        ...(headerResult.ok && headerResult.headers ? { headers: headerResult.headers } : {}),
         models: valid.map((m) => ({
           id: m.id.trim(),
           ...(m.context1m ? { contextWindow: 1_000_000 } : {}),
@@ -937,6 +1000,7 @@ export function CustomModelsPanel() {
         apiKey: codexForm.apiKey,
       });
       setCodexProviders(providers);
+
       setSelection({ kind: "codex", id: codexForm.id.trim() });
       setCodexForm(null);
       void useSessionStore.getState().reloadCodexAvailableModels();
@@ -1237,6 +1301,10 @@ function CodexProviderForm({
         />
       </div>
 
+      {/* 额外请求头 —— 与 Claude / Pi 同一份编辑器（2026-10-11 统一），落进 config.toml 的
+          http_headers。开了图片生成时会和那条 actor 头合并进同一行。 */}
+      <HeadersEditor rows={form.customHeaders} onChange={(rows) => update("customHeaders", rows)} />
+
       {/* Models sub-table */}
       <ModelListSection
         count={form.models.filter((m) => m.id.trim()).length}
@@ -1362,16 +1430,6 @@ function ClaudeProviderForm({
   const addModel = () => setForm({ ...form, models: [...form.models, emptyClaudeModel()] });
   const removeModel = (idx: number) =>
     setForm({ ...form, models: form.models.filter((_, i) => i !== idx) });
-
-  const updateHeader = (idx: number, patch: Partial<CustomHeaderRow>) =>
-    update(
-      "customHeaders",
-      form.customHeaders.map((h, i) => (i === idx ? { ...h, ...patch } : h)),
-    );
-  const addHeader = () =>
-    update("customHeaders", [...form.customHeaders, { name: "", value: "" }]);
-  const removeHeader = (idx: number) =>
-    update("customHeaders", form.customHeaders.filter((_, i) => i !== idx));
 
   return (
     <div className="space-y-2.5">
@@ -1654,39 +1712,10 @@ function ClaudeProviderForm({
           {/* Extra request headers. Sent by BOTH delivery paths — the direct
               Anthropic one and the local protocol bridge — so a gateway that
               needs a routing/tenant hint works either way. */}
-          <div className="space-y-1.5 border-t border-edge pt-2">
-            <div className="flex items-center justify-between">
-              <HintLabel hint={t("settings.customModels.customHeadersHint")} className="text-[0.7857em] text-content-muted">
-                {t("settings.customModels.customHeadersLabel")}
-              </HintLabel>
-              <Button variant="ghost" size="sm" onClick={addHeader}>
-                <IconPlus size={12} />
-                {t("settings.customModels.customHeadersAdd")}
-              </Button>
-            </div>
-            {form.customHeaders.map((h, idx) => (
-              <div key={idx} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5">
-                <Input
-                  value={h.name}
-                  onChange={(e) => updateHeader(idx, { name: e.target.value })}
-                  placeholder={t("settings.customModels.customHeadersNamePlaceholder")}
-                />
-                <Input
-                  value={h.value}
-                  onChange={(e) => updateHeader(idx, { value: e.target.value })}
-                  placeholder={t("settings.customModels.customHeadersValuePlaceholder")}
-                />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => removeHeader(idx)}
-                  title={t("settings.customModels.customHeadersRemove")}
-                >
-                  <IconTrash size={13} />
-                </Button>
-              </div>
-            ))}
-          </div>
+          <HeadersEditor
+            rows={form.customHeaders}
+            onChange={(rows) => update("customHeaders", rows)}
+          />
         </div>
       )}
 
@@ -1783,6 +1812,9 @@ function PiProviderForm({
         <Switch checked={form.authHeader} onCheckedChange={(v) => update("authHeader", v)} label={t("settings.customModels.authHeaderLabel")} />
         <span className="text-[0.7857em] text-content-muted">{t("settings.customModels.authHeaderSpan")}</span>
       </div>
+
+      {/* 额外请求头 —— 与 Claude / Codex 同一份编辑器（2026-10-11 统一）。 */}
+      <HeadersEditor rows={form.customHeaders} onChange={(rows) => update("customHeaders", rows)} />
 
       {/* Models sub-table */}
       <ModelListSection

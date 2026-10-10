@@ -212,7 +212,16 @@ async function materializeConfigToml(): Promise<void> {
     lines.push(`base_url = ${tomlStr(p.baseUrl)}`);
     lines.push(`env_key = ${tomlStr(codexKeyEnvVar(p.id))}`);
     lines.push(`wire_api = "responses"`);
-    if (p.imageGeneration) {
+    // 用户自定义请求头 + 图片工具那条固定的 actor 头，**合并进同一行**
+    // `http_headers`（TOML 里同一个 key 出现两次是语法错误）。用户自己写了
+    // 同名头时以用户的为准（图片那条约等于开关，不该覆盖用户填的值）。
+    const headerEntries: Array<[string, string]> = [];
+    if (p.headers && typeof p.headers === "object") {
+      for (const [k, v] of Object.entries(p.headers)) {
+        if (typeof v === "string" && k.trim() !== "") headerEntries.push([k, v]);
+      }
+    }
+    if (p.imageGeneration && !headerEntries.some(([k]) => k === "x-openai-actor-authorization")) {
       // Opt-in unlock for codex's standalone imagegen tool (`image_gen.imagegen`).
       // codex gates that tool behind
       // `is_openai() || uses_openai_actor_authorization() || (requires_openai_auth && codex-backend auth)`
@@ -229,7 +238,11 @@ async function materializeConfigToml(): Promise<void> {
       // supports_search_tool=false. The images request posts to
       // `{baseUrl}/images/generations` with the model fixed to `gpt-image-2`,
       // so enabling this presumes a gateway that backs the OpenAI images API.
-      lines.push(`http_headers = { x-openai-actor-authorization = "mcode" }`);
+      headerEntries.push(["x-openai-actor-authorization", "mcode"]);
+    }
+    if (headerEntries.length > 0) {
+      const inner = headerEntries.map(([k, v]) => `${tomlStr(k)} = ${tomlStr(v)}`).join(", ");
+      lines.push(`http_headers = { ${inner} }`);
     }
     lines.push("");
   }
@@ -312,11 +325,17 @@ export const CodexModelsStore = {
     // else: empty + existing → preserve old key.
 
     const providers = readProviders();
+    const cleanHeaders = config.headers && typeof config.headers === "object"
+      ? Object.fromEntries(
+          Object.entries(config.headers).filter(([k, v]) => k.trim() !== "" && typeof v === "string"),
+        )
+      : undefined;
     const stored: StoredProvider = {
       id,
       name: config.name.trim(),
       baseUrl: config.baseUrl.trim(),
       ...(config.imageGeneration ? { imageGeneration: true } : {}),
+      ...(cleanHeaders && Object.keys(cleanHeaders).length > 0 ? { headers: cleanHeaders } : {}),
       models: config.models
         .filter((m) => m.id?.trim())
         .map((m: CodexModelOption) => ({
