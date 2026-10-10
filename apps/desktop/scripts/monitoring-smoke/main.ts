@@ -218,6 +218,36 @@ async function main(): Promise<void> {
   }
 
   busCollector();
+
+  // ── 渲染端:MonitoringPanel.refresh 的重叠竞态 ──
+  //
+  // `refresh` 由初始挂载、那颗「刷新」按钮、以及 StrictMode 的双挂载触发;按钮虽然
+  // `disabled={loading}`,但 `loading` 是异步 state,两次刷新可以同时在飞。回包无条件
+  // 写 state 的话,先发后回的那次会把新数据盖成旧的。仓库里同类加载都补了 *Seq 守卫
+  // (GitPanel.scanSeqRef / UsagePanel.loadSeqRef / useRpc.seqRef),这里是漏的那个。
+  //
+  // 组件挂不过无头 SSR(它 import 整棵 chat 组件树),所以判据钉在**源码**上。
+  {
+    const src = readFileSync(join(process.cwd(), "src/renderer/components/monitoring/MonitoringPanel.tsx"), "utf8");
+    const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    const at = code.indexOf("const refresh = useCallback");
+    const body = code.slice(at, code.indexOf("}, [", at));
+    check(
+      "★ MonitoringPanel.refresh 起手自增序号",
+      at >= 0 && /\+\+seqRef\.current|\+\+ ?monitorSeq|const seq = \+\+/.test(body),
+      body.slice(0, 320),
+    );
+    check(
+      "★ 回包比对序号(先发后回的不许盖掉新的)",
+      /seq !== seqRef\.current/.test(body),
+      body.slice(0, 320),
+    );
+    check(
+      "★ loading 复位也在序号守卫内(否则旧请求会把按钮提前放开)",
+      /if \(seq === seqRef\.current\) setLoading\(false\)/.test(body),
+      body.slice(0, 400),
+    );
+  }
 }
 
 main()

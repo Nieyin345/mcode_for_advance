@@ -18,7 +18,7 @@
  * 通道没就绪/读失败:**一句错误小字**,不弹错 —— 监控页不是关键路径,为一条还没
  * 就绪的通道常驻红字没有意义(同 `RunHistorySection` 的纪律)。概览卡与列表归空。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   MonitoringNodeSummary,
   MonitoringOverview,
@@ -147,23 +147,32 @@ export function MonitoringPanel() {
   const [runs, setRuns] = useState<MonitoringRunSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 单调序号:只有最新一次在飞的请求能写 state。`refresh` 由初始挂载、那颗「刷新」
+  // 按钮、以及 StrictMode 的双挂载触发,两次调用可以重叠 —— 没有它的话,先发后回的
+  // 那次会把新数据盖成旧的(点刷新看到的还是上一次的数,与按钮高亮对不上)。
+  // 仓库里同类加载都补了 *Seq 守卫(GitPanel.scanSeqRef / UsagePanel.loadSeqRef /
+  // useRpc.seqRef),这里补齐同一份。
+  const seqRef = useRef(0);
 
   const refresh = useCallback(async (): Promise<void> => {
+    const seq = ++seqRef.current;
     setLoading(true);
     try {
       const [ov, rows] = await Promise.all([
         api.monitoring.overview(),
         api.monitoring.runs({ limit: RECENT_RUNS_LIMIT }),
       ]);
+      if (seq !== seqRef.current) return; // 有更新的一次在飞,这次作废
       setOverview(ov);
       setRuns(rows);
       setError(null);
     } catch (err) {
+      if (seq !== seqRef.current) return;
       setOverview(null);
       setRuns([]);
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
   }, []);
 
