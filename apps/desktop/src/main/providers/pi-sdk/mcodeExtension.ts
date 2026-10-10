@@ -362,11 +362,30 @@ function registerToolCallGuard(
         if (denial) {
           return { block: true, reason: denial };
         }
+        const bashTargets = resolveBashWriteTargets(cwd, normalized);
+        // **资料库只读** —— 与 write/edit 的 `guardToolPath` 同一条独立硬规则,bypass 也拦。
+        //
+        // 为什么 bash 这里要另查一遍:上面 `guardBashCommand` 只做**项目边界**(且 strict=false
+        // 时整条跳过),而"写只能在项目内"顺带等于"库只读"只是**恰好**成立 —— 库根默认在
+        // `<数据根>/library`,与项目目录不重叠。一旦库被搬进项目(或项目设在数据根下),那条
+        // 就静默失效;bypass 档下更是完全不拦。e58d3e2e 给 write/edit 补上了这条独立规则,
+        // 但 bash 重定向(`> 库文件`、`tee`、`sed -i`…)能绕过 write/edit 直接落盘 —— 同一句话
+        // ("库的内容不能动")必须在这里也守住。判据复用 `library/paths.ts` 的 `isInsideLibrary`。
+        for (const target of bashTargets) {
+          if (isInsideLibrary(target.absPath)) {
+            return {
+              block: true,
+              reason:
+                `拒绝:bash 写入目标在**资料库**内(${target.absPath})。资料库是只读的 —— ` +
+                `请先把它读到项目目录里(或复制过去),在项目里改。`,
+            };
+          }
+        }
         // Bash can write without calling write/edit. Capture the recognized
         // literal targets BEFORE execution so the turn-files card and rewind
         // see the actual pre-write contents. Only in-project files are safe to
         // restore; expansions and unparsed shell forms remain out of scope.
-        for (const target of resolveBashWriteTargets(cwd, normalized)) {
+        for (const target of bashTargets) {
           if (target.insideProject) {
             await getFileSnapshot(sessionId).recordPre(cwd, target.absPath);
           }

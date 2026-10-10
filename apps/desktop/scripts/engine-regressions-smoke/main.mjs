@@ -594,6 +594,14 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
     assert.ok(bashBranch, "Pi bash tool_call guard moved; update the regression test");
     assert.match(bashBranch, /resolveBashWriteTargets\(cwd, normalized\)/);
     assert.match(bashBranch, /recordPre\(cwd, target\.absPath\)/);
+    // 库只读这条硬规则对 bash 也必须生效 —— 与 write/edit 的 guardToolPath 同一条。
+    // bash 重定向(`> 库文件` / tee / sed -i …)能绕过 write/edit 直接落盘;只在 write/edit
+    // 上守这条,库被移进项目(或会话是 bypass)时模型仍能经 bash 悄悄改掉库文件。判据复用
+    // 共享的 `isInsideLibrary`(与 Claude canUseTool、guardToolPath 同一份)。
+    assert.match(bashBranch, /isInsideLibrary\(target\.absPath\)/,
+      "bash write targets must enforce the library read-only rule");
+    assert.match(bashBranch, /资料库是只读的/,
+      "the bash library refusal must name the library (user-visible text)");
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
