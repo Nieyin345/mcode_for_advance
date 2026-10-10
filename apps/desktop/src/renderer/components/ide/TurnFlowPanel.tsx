@@ -240,7 +240,7 @@ export function TurnFlowPanel() {
         </span>
         <span className="ml-auto flex items-center gap-1.5 text-[10px] tabular-nums text-content-subtle">
           <span>{t("ide.turns.summaryTurns", { n: groups.length })}</span>
-          {totals.tokens > 0 && <span>· {fmtTokens(totals.tokens)} tokens</span>}
+          {totals.tokens > 0 && <span>· {fmtTokens(totals.tokens)} {t("ide.turns.tokenUnit")}</span>}
           {cacheHitPct != null && (
             <span>· {t("ide.turns.cacheHit", { n: cacheHitPct })}</span>
           )}
@@ -427,7 +427,7 @@ function TurnSection({
           )}
           {usage && (
             <span className="ml-auto rounded-full bg-surface-muted px-1.5 py-0.5 tabular-nums">
-              {fmtTokens(usage.totalProcessedTokens)} tok
+              {fmtTokens(usage.totalProcessedTokens)} {t("ide.turns.tokenUnit")}
             </span>
           )}
         </div>

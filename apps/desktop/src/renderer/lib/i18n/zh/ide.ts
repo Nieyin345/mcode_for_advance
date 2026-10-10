@@ -368,6 +368,10 @@ export const zh = {
   /* ── turn flow panel (right-panel "turns" tab) ── */
   "ide.turns.title": "轮次流程",
   "ide.turns.summaryTurns": "{n} 轮",
+  /** 用量单位词 —— 汇总头部与折叠回合的用量徽标**共用这一份**。从前两处各把英文
+   *  写死在 JSX 里(一处 "tokens"、一处 "tok"),中文界面上就嵌着英文,而且同一
+   *  文件里两个形态还打架(与 `activityShared.ts` 修过的同一类缺陷)。 */
+  "ide.turns.tokenUnit": "tokens",
   "ide.turns.loadOlder": "加载更早的轮次",
   "ide.turns.loading": "加载中…",
   "ide.turns.noSessionTitle": "未选择会话",

@@ -337,12 +337,42 @@ async function branchSwitchFailureScenario(): Promise<void> {
   check("★ 分支 chip 切换失败会报出来(不是静默 catch)", /useToastStore\.getState\(\)\.push\(/.test(code) && code.includes("chat.branch.switchFailed"));
 }
 
+/**
+ * 轮次流程面板里的 token **单位词**不许硬编码英文。
+ *
+ * 汇总头部和折叠回合的用量徽标从前各写死一处英文——一处 `tokens`、一处 `tok`——
+ * 于是中文界面(本仓库默认语言)上就嵌着英文,而且同一文件里两个形态还打架。这与
+ * `activityShared.ts` 注释里记过的同一类缺陷完全一样(那边明确写死 `"1.2k tokens"`
+ * 在中文界面上是 bug,并已把单位词收进词典)。组件在无头下跑不进(它只算派生、不落
+ * <input> 可驱动),所以判据钉在**源码**上:两处用量渲染都走 `t("ide.turns.tokenUnit")`,
+ * 且没有任何裸的 `tokens` / `tok` 直接跟在 `fmtTokens(...)` 的 `}` 之后。
+ */
+async function turnFlowTokenUnitScenario(): Promise<void> {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(
+    join(process.cwd(), "src/renderer/components/ide/TurnFlowPanel.tsx"),
+    "utf8",
+  );
+  // 去掉注释再扫,免得文档里的 "tokens" 字面量造成假红。
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ TurnFlow 用量渲染的 token 单位走词典(不硬编码英文)",
+    code.includes('t("ide.turns.tokenUnit")'),
+  );
+  check(
+    "★ TurnFlow 里没有裸的 tokens / tok 直接跟在 fmtTokens(...) 之后",
+    !/\}\s*(?:tokens|tok)\b/.test(code),
+  );
+}
+
 await scenario();
 await gitErrorBannerScenario();
 await searchDialogScenario();
 await statusCodeParityScenario();
 await fileTreeDeleteFailureScenario();
 await branchSwitchFailureScenario();
+await turnFlowTokenUnitScenario();
 
 console.log(`\nide-ime-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

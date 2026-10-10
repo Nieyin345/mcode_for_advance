@@ -358,6 +358,7 @@ export const en = {
   /* ── turn flow panel (right-panel "turns" tab) ── */
   "ide.turns.title": "Turn Flow",
   "ide.turns.summaryTurns": "{n} turns",
+  "ide.turns.tokenUnit": "tokens",
   "ide.turns.loadOlder": "Load earlier turns",
   "ide.turns.loading": "Loading…",
   "ide.turns.noSessionTitle": "No session selected",
