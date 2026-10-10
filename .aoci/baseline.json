@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-10T08:43:45Z",
+  "updated_at": "2026-10-10T09:30:23Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "cca7954aed9bd832abb562040ee560c12f2482418dfa50a2c36dff2db82f9653",
-      "size": 907042,
-      "normalized_sha256": "cca7954aed9bd832abb562040ee560c12f2482418dfa50a2c36dff2db82f9653"
+      "sha256": "551401c9a8489268e1da8ccd34be712d86c0a838ac33d7b0f2773ca720f3abab",
+      "size": 907332,
+      "normalized_sha256": "551401c9a8489268e1da8ccd34be712d86c0a838ac33d7b0f2773ca720f3abab"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -9903,9 +9903,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/en/customUi.ts": {
       "role": "index",
-      "sha256": "6093f01ae2e3556e3b5a3c42694ca777c954649aed4ea2bc3db7c093c7d785c9",
-      "size": 20857,
-      "normalized_sha256": "6093f01ae2e3556e3b5a3c42694ca777c954649aed4ea2bc3db7c093c7d785c9"
+      "sha256": "fe770a5a81779fbbc1e78496dd071dfcfdcaff43a45415f07c6944abc0159381",
+      "size": 20868,
+      "normalized_sha256": "fe770a5a81779fbbc1e78496dd071dfcfdcaff43a45415f07c6944abc0159381"
     },
     "apps/desktop/src/renderer/lib/i18n/en/ide.ts": {
       "role": "index",
@@ -10005,9 +10005,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/zh/customUi.ts": {
       "role": "index",
-      "sha256": "152b61e796b82bfbb458ed93c9f5083e7ac6b210d54e73467976ed1ed116f9f1",
-      "size": 21233,
-      "normalized_sha256": "152b61e796b82bfbb458ed93c9f5083e7ac6b210d54e73467976ed1ed116f9f1"
+      "sha256": "e221f4b2c5d4f051330dfca1b19235fe3b697bf16049d90a675b378620caffa1",
+      "size": 21187,
+      "normalized_sha256": "e221f4b2c5d4f051330dfca1b19235fe3b697bf16049d90a675b378620caffa1"
     },
     "apps/desktop/src/renderer/lib/i18n/zh/ide.ts": {
       "role": "index",
@@ -10053,9 +10053,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/zh/settings.ts": {
       "role": "index",
-      "sha256": "88542032aa3427cfce8533feaacabac93d81c24b5c3903b0ed878aa0807e08ac",
-      "size": 139407,
-      "normalized_sha256": "88542032aa3427cfce8533feaacabac93d81c24b5c3903b0ed878aa0807e08ac"
+      "sha256": "fb299a22028fd84668b0dab3e1a7207a30c138d2fad348844859717df439406d",
+      "size": 139398,
+      "normalized_sha256": "fb299a22028fd84668b0dab3e1a7207a30c138d2fad348844859717df439406d"
     },
     "apps/desktop/src/renderer/lib/i18n/zh/store.ts": {
       "role": "index",
