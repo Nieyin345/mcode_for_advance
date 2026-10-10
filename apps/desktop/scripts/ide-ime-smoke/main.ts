@@ -366,6 +366,35 @@ async function turnFlowTokenUnitScenario(): Promise<void> {
   );
 }
 
+/**
+ * `TaskListPanel.refresh` 的轮询竞态:面板按固定间隔轮询 `terminal.list`,弱网/慢机器
+ * 下一次请求可以盖在上一次还没回来的时候发出。没有序号守卫的话,先发后回的那一次会把
+ * 新列表盖成旧的(刚关掉的终端又冒出来 / 刚开的没出现)。仓库里同类轮询都补了 *Seq
+ * (GitPanel.scanSeqRef / UsagePanel.loadSeqRef),这里是漏的那个。组件挂不过无头 SSR,
+ * 判据钉源码。
+ */
+async function taskListPollSeqScenario(): Promise<void> {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(
+    join(process.cwd(), "src/renderer/components/ide/TaskListPanel.tsx"),
+    "utf8",
+  );
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const at = code.indexOf("const refresh = useCallback");
+  const body = code.slice(at, code.indexOf("}, [", at));
+  check(
+    "★ TaskListPanel.refresh 起手自增序号",
+    at >= 0 && /const seq = \+\+refreshSeqRef\.current/.test(body),
+    body.slice(0, 300),
+  );
+  check(
+    "★ 回包比对序号(先发后回的轮询结果不许盖掉新的)",
+    /seq !== refreshSeqRef\.current/.test(body),
+    body.slice(0, 300),
+  );
+}
+
 await scenario();
 await gitErrorBannerScenario();
 await searchDialogScenario();
@@ -373,6 +402,7 @@ await statusCodeParityScenario();
 await fileTreeDeleteFailureScenario();
 await branchSwitchFailureScenario();
 await turnFlowTokenUnitScenario();
+await taskListPollSeqScenario();
 
 console.log(`\nide-ime-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

@@ -124,15 +124,23 @@ export function TaskListPanel() {
     [titleOrNull],
   );
 
+  // 单调序号:只有最新一次在飞的 `terminal.list` 能写 state。这个面板按固定间隔轮询,
+  // 弱网/慢机器下一次的请求可以盖在上一次还没回来的时候发出 —— 没有它的话,先发后回的
+  // 那一次会把新列表盖成旧的(刚关掉的终端又冒出来 / 刚开的没出现)。仓库里同类轮询
+  // 都补了 *Seq 守卫(GitPanel.scanSeqRef / UsagePanel.loadSeqRef),这里补齐同一份。
+  const refreshSeqRef = useRef(0);
   const refresh = useCallback(async () => {
     // ⚠️ **必须包 try/catch,而且必须兜住整个调用。** 手机端(`webApi.ts`)虽然也实现了
     // `terminal.list`,但网络断、没配对、电脑端刚重启都会让这个 promise 直接 reject;而
     // 这个函数跑在 `useEffect` 的定时器里,一个没被接住的拒绝在 React 19 下会把整棵渲染
     // 树卸掉(这个仓库实测过)。
+    const seq = ++refreshSeqRef.current;
     try {
       const res = await api.terminal.list({});
+      if (seq !== refreshSeqRef.current) return; // 有更新的一次在飞,这次作废
       setTerminals(res?.terminals ?? EMPTY_TERMINALS);
     } catch {
+      if (seq !== refreshSeqRef.current) return;
       setTerminals(EMPTY_TERMINALS);
     }
   }, []);
