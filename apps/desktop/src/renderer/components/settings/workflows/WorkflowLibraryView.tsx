@@ -1090,7 +1090,17 @@ export function WorkflowLibraryView({
                       edges: reviewDoc.edges,
                     }, null, 2) : t("settings.workflows.reviewUnavailable")}</pre>
                   </details>
-                  {dirty && <p className="mt-1 text-content-muted">{t("settings.workflows.reviewSaveFirst")}</p>}
+                  {dirty && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <span className="text-content-muted">{t("settings.workflows.reviewSaveFirst")}</span>
+                      {/* 「放弃」从前只有一句话、没有动作 —— 外部覆盖导致永久 dirty 时
+                          用户被卡死（报告 E4）。复用页头那条已有的 `discard`（清草稿 +
+                          从磁盘重读），不另写一份。 */}
+                      <Button variant="ghost" size="sm" onClick={() => void discard()}>
+                        {t("settings.workflows.reviewDiscardReload")}
+                      </Button>
+                    </div>
+                  )}
                   <Button
                     variant="secondary"
                     size="sm"

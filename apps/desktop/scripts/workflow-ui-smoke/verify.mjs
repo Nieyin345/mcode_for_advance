@@ -126,6 +126,19 @@ await withAuditPage(here,async page=>{
   await page.size(1440,900);await page.eval('__ui.selectNode("汇总结果")');await page.sleep(80);const codeText=await page.eval('[...document.querySelectorAll("aside")].filter(e=>e.getClientRects().length>0).at(-1).innerText');check('Code form labels follow Chinese locale',codeText.includes('运行语言')&&codeText.includes('输入 JSON')&&!codeText.includes('Timeout (ms)'));await page.screenshot('fixed-code-node.png');
   check('no auto-save promise remains',!await page.eval('document.body.innerText.includes("改动会自动保存")'));
  });
+ await test('review-dirty-has-a-way-out',async()=>{
+  // 报告 E4：审核卡的「启用」在 dirty 时是灰的，配一句「先保存或放弃画布上的改动」——
+  // 但「放弃」从前没有动作。外部覆盖导致永久 dirty 时用户被卡死。这条钉住：
+  // dirty + 待审时，卡片里有一条**能点**的「放弃改动并重新加载」，点了之后脏被清掉。
+  await open('review-pending');
+  check('pending review shows the approve control',await page.eval(`!!__ui.button("我已检查，启用此版本")`));
+  // 制造脏：改一下名称。
+  await page.eval('__ui.set("名称","被外部覆盖前的本地改动")');await page.sleep(100);
+  check('canvas is dirty after an edit',await page.eval('__ui.button("我已检查，启用此版本").disabled'));
+  check('★ dirty review offers a way out (was a dead end)',await page.eval(`!!__ui.button("放弃改动并重新加载")`));
+  await page.eval('__ui.button("放弃改动并重新加载").click()');await page.waitFor('document.querySelector("div.group.absolute[title]")');await page.sleep(150);
+  check('★ discarding clears dirty → approve becomes clickable',await page.eval('!__ui.button("我已检查，启用此版本").disabled'));
+ });
  await test('dark-english',async()=>{
   await page.size(1440,900);await page.goto('case=workflow&theme=dark&locale=en');await page.eval(HELPERS);await page.waitFor('document.querySelector("#workflows-panel-library nav button")');await page.eval('__ui.open("资料整理流程")');await page.waitFor('document.querySelector("div.group.absolute[title]")');await page.eval('__ui.selectNode("汇总结果")');await page.sleep(100);
   const text=await page.eval('[...document.querySelectorAll("aside")].filter(e=>e.getClientRects().length>0).at(-1).innerText');

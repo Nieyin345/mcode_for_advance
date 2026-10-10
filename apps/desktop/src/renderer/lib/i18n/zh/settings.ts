@@ -1297,6 +1297,7 @@ export const zh = {
   "settings.workflows.reviewDetails": "查看当前存盘版本的触发器、节点与出边",
   "settings.workflows.reviewUnavailable": "无法读取待审查的版本，请重新打开这份工作流。",
   "settings.workflows.reviewSaveFirst": "先保存或放弃画布上的改动，才能批准确切版本。",
+  "settings.workflows.reviewDiscardReload": "放弃改动并重新加载",
   "settings.workflows.reviewEnable": "我已检查，启用此版本",
   "settings.workflows.reviewConfirmTitle": "允许执行这份工作流？",
   "settings.workflows.reviewConfirmDesc": "批准后，本版本已启用的触发器将开始工作，命令和代码节点可能在本机运行。以后修改执行内容需重新审查。",

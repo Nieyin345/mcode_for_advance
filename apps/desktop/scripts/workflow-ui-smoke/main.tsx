@@ -70,7 +70,7 @@ const impl = {
       return {profiles:[],problems:[]};
     },
     list:async()=>({workflows:Object.values(docs).map(d=>clone({...d,edited:false,nodeCount:d.nodes.length}))}),
-    get:async({id}:{id:string})=>({workflow:clone(docs[id] ?? null),review:{pending:false,revision:'fixture-revision'}}),
+    get:async({id}:{id:string})=>({workflow:clone(docs[id] ?? null),review:{pending:scenario==='review-pending',revision:'fixture-revision'}}),
     save:async({workflow:d}:{workflow:WorkflowDoc})=>{
       saves.push(clone(d));
       // Real backend canonicalization (AST-extracted); persistence is in memory only.

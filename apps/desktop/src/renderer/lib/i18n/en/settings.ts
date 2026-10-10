@@ -1300,6 +1300,7 @@ export const en = {
   "settings.workflows.reviewDetails": "Inspect the saved triggers, nodes and edges",
   "settings.workflows.reviewUnavailable": "The saved version could not be read. Reopen this workflow before approving it.",
   "settings.workflows.reviewSaveFirst": "Save or discard canvas changes before approving this exact version.",
+  "settings.workflows.reviewDiscardReload": "Discard changes and reload",
   "settings.workflows.reviewEnable": "I reviewed this version; enable it",
   "settings.workflows.reviewConfirmTitle": "Allow this workflow to run?",
   "settings.workflows.reviewConfirmDesc": "After approval, enabled triggers in this version will start listening. Command and code nodes may run on this computer. Changes to execution content require a new review.",
