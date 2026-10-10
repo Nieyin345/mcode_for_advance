@@ -121,7 +121,11 @@ export function ProjectSkillsView({
       });
       if (res.failed.length) setOperationError(res.failed.map((item) => `${item.name}: ${item.reason}`).join("; "));
       if (outcome.copied > 0) {
-        onClearSelection();
+        // ⚠️ **不清空勾选**（2026-10-11 改）。原先是 `onClearSelection()`,理由是
+        // "复制完就清"。但用户真正反复做的是**把同一批技能配到好几个项目**:
+        // 清空之后切到第二个项目,源已经没了,得从头再勾一遍。勾选是"这一批我要
+        // 复制过去"的意图,复制到 A 不影响"还要复制到 B"这个意图 —— 所以留着。
+        // 复制过去的那几个再复制到别处也不会重复(目标已有同名会走 `skipped`)。
         await onCopied();
       }
     } catch (err) {

@@ -199,6 +199,84 @@ function GroupEngineSwitches({
   );
 }
 
+/** Per-ROW engine switches —— 和组级那排同一个形状(`C / X / P`),但只作用于这一条。
+ *
+ *  为什么行上也要有一份:引擎权限以前**只在右侧编辑区**出现 —— 而右侧要先选中一条
+ *  才看得到,所以"这条技能给不给 Codex 用"这件事在列表上完全不可见,用户的原话是
+ *  「不能单独控制一个 skill 的引擎权限」。行上这排是**看得见**的那一份;右侧那套
+ *  保留不动(两处改同一份数据、走同一个 `setSkillEngines`)。
+ *
+ *  不可矩阵管理的行(项目技能、内置)不渲染 —— 与组级开关同一条判据。 */
+function RowEngineSwitches({
+  skill,
+  busy,
+  onToggle,
+}: {
+  skill: SkillInfo;
+  busy: boolean;
+  onToggle: (engine: MatrixEngine, want: boolean) => void;
+}) {
+  const { t } = useI18n();
+  if (!skill.perEngine) return null;
+  return (
+    <span className="ml-1 inline-flex shrink-0 items-center gap-0.5" data-testid="skill-row-engines">
+      {MATRIX_ENGINES.map((e) => {
+        const on = skill.perEngine?.[e] !== false;
+        const blocked = pluginBlocks(skill, e);
+        return (
+          <button
+            key={e}
+            type="button"
+            disabled={busy}
+            // 点开关不能顺带打开右侧编辑器 —— 两者是两件事(和勾选框同一个道理)。
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onToggle(e, !on);
+            }}
+            title={blocked ? t("settings.skills.pluginEngineOff", { engine: engineLabel(e) }) : engineLabel(e)}
+            aria-label={`${engineLabel(e)} · ${skill.name}`}
+            aria-pressed={on && !blocked}
+            className={cn(
+              "rounded px-1 leading-4 text-[9px] font-semibold transition-colors",
+              on && !blocked ? "bg-accent/15 text-accent" : "text-content-subtle/50 line-through hover:text-content-subtle",
+              blocked && "border border-dashed border-warning/60",
+              busy && "opacity-50",
+            )}
+          >
+            {e === "claude" ? "C" : e === "codex" ? "X" : "P"}
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
+/** 把一批技能**同一个引擎**的开关一起翻成 `want`，其余两个引擎保持各自现状。
+ *
+ *  批量 RPC（`enginesSetBulk`）只收一个统一的 `{claude,codex,pi}` 三元组，所以先把
+ *  这批按"翻完之后的最终状态"分组，每组发一条 —— 这样每条技能另外两个引擎的现状
+ *  不被误改。组级开关和勾选批量都走这一份实现（仓库硬规矩：共享实现只有一份）。 */
+async function writeEnginesPartitioned(
+  skills: SkillInfo[],
+  engine: keyof SkillEngineState,
+  want: boolean,
+): Promise<void> {
+  const byState = new Map<string, { names: string[]; state: SkillEngineState }>();
+  for (const s of skills) {
+    const state = { ...(s.perEngine ?? { claude: true, codex: true, pi: true }), [engine]: want };
+    const key = `${state.claude}|${state.codex}|${state.pi}`;
+    const bucket = byState.get(key);
+    if (bucket) bucket.names.push(s.name);
+    else byState.set(key, { names: [s.name], state });
+  }
+  await Promise.all(
+    [...byState.values()].map(async ({ names, state }) => {
+      const res = await api.skills.enginesSetBulk({ names, ...state });
+      if (!res.ok || !res.perEngine) throw new Error(res.error ?? "bulk toggle failed");
+    }),
+  );
+}
+
 export function SkillsPanel() {
   const { t } = useI18n();
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
@@ -365,6 +443,9 @@ export function SkillsPanel() {
     label: string;
     skills: SkillInfo[];
   } | null>(null);
+  // ── 勾选批量的删除确认。勾选本来是「复制到项目」的源，2026-10-11 起也用来
+  //    批量切引擎 / 批量删除（用户：「每个集合没有批量管理，批量选择」）。
+  const [pendingCheckedDelete, setPendingCheckedDelete] = useState(false);
 
   const loadPanelSkills = useCallback(async () => {
     await Promise.all([library.refetch(), bundleQuery.refetch()]);
@@ -651,28 +732,69 @@ export function SkillsPanel() {
     matrixBusyRef.current = true;
     setBulkBusy(true);
     try {
-      const byState = new Map<string, { names: string[]; state: SkillEngineState }>();
-      for (const s of editable) {
-        const state = {
-          ...(s.perEngine ?? { claude: true, codex: true, pi: true }),
-          [engine]: want,
-        };
-        const key = `${state.claude}|${state.codex}|${state.pi}`;
-        const bucket = byState.get(key);
-        if (bucket) bucket.names.push(s.name);
-        else byState.set(key, { names: [s.name], state });
-      }
-      await Promise.all(
-        [...byState.values()].map(async ({ names, state }) => {
-          const res = await api.skills.enginesSetBulk({ names, ...state });
-          if (!res.ok || !res.perEngine) throw new Error(res.error ?? "bulk toggle failed");
-        }),
-      );
+      await writeEnginesPartitioned(editable, engine, want);
       await refreshAfterMutation();
     } catch (err) {
       setError((err as Error).message);
     } finally {
       matrixBusyRef.current = false;
+      setBulkBusy(false);
+    }
+  };
+
+  /** 勾选的多条一起切一个引擎 —— 行上那排开关的批量版。用户原话：「每个集合没有
+   *  批量管理，批量选择」。只有矩阵管得着的（通用库 + 插件）参与；项目技能不进矩阵。
+   *  走的是和组级同一个 `writeEnginesPartitioned` —— 一份实现，「用户点的」和
+   *  「组级按钮点的」不会分叉。 */
+  const setCheckedEngines = async (engine: MatrixEngine, want: boolean) => {
+    if (matrixBusyRef.current) return;
+    const editable = panelSkills.filter(
+      (s) => checked.has(s.name) && (s.source === "global" || s.source === "plugin"),
+    );
+    if (!editable.length) return;
+    matrixBusyRef.current = true;
+    setBulkBusy(true);
+    setError(null);
+    try {
+      await writeEnginesPartitioned(editable, engine, want);
+      await refreshAfterMutation();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      matrixBusyRef.current = false;
+      setBulkBusy(false);
+    }
+  };
+
+  /** 勾选的多条一起删。只删通用库那几条（项目/插件/内置不归这一页管，同组级删除的
+   *  判据）；一个 IPC 一条，失败如实计数、不中断其余。 */
+  const confirmCheckedDelete = async () => {
+    if (mutationBusyRef.current) return;
+    const deletable = panelSkills.filter((s) => checked.has(s.name) && s.source === "global");
+    if (!deletable.length) return;
+    mutationBusyRef.current = true;
+    setBulkBusy(true);
+    setError(null);
+    setPendingCheckedDelete(false);
+    const failures: string[] = [];
+    const removed = new Set<string>();
+    try {
+      for (const skill of deletable) {
+        try {
+          const res = await api.skills.delete({ source: "global", name: skill.name });
+          if (res.ok) removed.add(skill.name);
+          else failures.push(`${skill.name}: ${res.error ?? t("settings.deleteFailed")}`);
+        } catch (err) {
+          failures.push(`${skill.name}: ${(err as Error).message}`);
+        }
+      }
+      if (removed.size) setChecked((prev) => new Set([...prev].filter((n) => !removed.has(n))));
+      if (failures.length) setError(failures.join("; "));
+      await refreshAfterMutation();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      mutationBusyRef.current = false;
       setBulkBusy(false);
     }
   };
@@ -873,6 +995,61 @@ export function SkillsPanel() {
             onCopyPreset={(skills) => setChecked(new Set(skills))}
           />
           <SkillProjectOverview refreshKey={overviewKey} />
+        </div>
+      )}
+
+      {/* ── 勾选批量条：勾了东西才出现。勾选本来只服务「复制到项目」，2026-10-11
+          起也能**批量切引擎 / 批量删除**（用户：「每个集合没有批量管理，批量选择」）。
+          放在左栏之上：勾选发生在列表里，操作就在旁边。 ── */}
+      {view === "library" && checked.size > 0 && (
+        <div
+          data-testid="skills-bulk-bar"
+          className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-edge bg-surface/60 px-3 py-1.5"
+        >
+          <span className="text-[0.8571em] font-medium text-content-muted">
+            {t("settings.skills.bulkSelected", { n: checked.size })}
+          </span>
+          <span className="ml-1 text-[0.7857em] text-content-subtle">
+            {t("settings.skills.bulkEngines")}
+          </span>
+          <span className="inline-flex items-center gap-0.5">
+            {MATRIX_ENGINES.map((e) => {
+              // 「全开 / 全关」：这一批里只要有没开的就算"打开"，否则"关闭"。
+              const anyOff = panelSkills.some(
+                (s) => checked.has(s.name) && s.perEngine?.[e] === false,
+              );
+              return (
+                <button
+                  key={e}
+                  type="button"
+                  disabled={bulkBusy}
+                  data-bulk-engine={e}
+                  title={engineLabel(e)}
+                  onClick={() => void setCheckedEngines(e, anyOff)}
+                  className={cn(
+                    "rounded border border-edge px-1.5 py-0.5 text-[0.7857em] transition-colors",
+                    "hover:bg-surface-hover/60 disabled:opacity-50",
+                  )}
+                >
+                  {engineLabel(e)}
+                </button>
+              );
+            })}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="skills-bulk-delete"
+            disabled={bulkBusy}
+            onClick={() => setPendingCheckedDelete(true)}
+            className="ml-auto gap-1 text-danger hover:bg-danger/10"
+          >
+            <IconTrash size={12} />
+            {t("settings.skills.bulkDelete")}
+          </Button>
+          <Button variant="ghost" size="sm" disabled={bulkBusy} onClick={() => setChecked(new Set())}>
+            {t("settings.skills.clearSelection")}
+          </Button>
         </div>
       )}
 
@@ -1108,6 +1285,15 @@ export function SkillsPanel() {
                           </span>
                         </div>
                       </button>
+                      {/* 这一条的引擎权限,不用点开右侧编辑器就能看见、能改。
+                          ⚠️ **必须在那个 `<button>` 外面**：button 不能套 button。 */}
+                      <RowEngineSwitches
+                        skill={s}
+                        busy={bulkBusy || engineBusyName === s.name}
+                        onToggle={(engine) => {
+                          if (s.perEngine) void setSkillEngines(s.name, s.perEngine, engine);
+                        }}
+                      />
                       {!isReadOnlySkill(s.source) && (
                         <Button
                           variant="ghost"
@@ -1217,6 +1403,20 @@ export function SkillsPanel() {
         open={importOpen}
         onOpenChange={setImportOpen}
         onImported={() => void refreshAfterMutation()}
+      />
+
+      <ConfirmDialog
+        open={pendingCheckedDelete}
+        title={t("settings.skills.bulkDelete")}
+        danger
+        description={t("settings.skills.bulkDeleteDesc", {
+          n: panelSkills.filter((s) => checked.has(s.name) && s.source === "global").length,
+        })}
+        confirmText={t("common.delete")}
+        onOpenChange={(open) => {
+          if (!open) setPendingCheckedDelete(false);
+        }}
+        onConfirm={() => void confirmCheckedDelete()}
       />
     </div>
   );

@@ -110,6 +110,74 @@ await withAuditPage(dir, async page => {
     assert.deepEqual(await page.eval("labEvents.filter(e=>e.method==='delete').at(-1).input"), { source: 'project', projectPath: '/workspace/B', name: 'b-only' });
     assert.equal(await page.eval("'a-only' in labContents['/workspace/A']"), true);
   });
+  await test('checked-rows-bulk-toggle-engines', async () => {
+    // 用户原话：「每个集合没有批量管理，批量选择」。勾选以前只服务「复制到项目」，
+    // 这条钉住它现在也能**一次给多条切同一个引擎**。
+    await go();
+    await click('input[aria-label=alpha]');
+    await click('input[aria-label=beta]');
+    await page.waitFor("!!document.querySelector('[data-testid=skills-bulk-bar]')", 3000);
+    await page.eval(`document.querySelector('[data-bulk-engine=codex]').click()`);
+    await page.sleep(150);
+    const bulk = await page.eval("labEvents.filter(e=>e.method==='enginesSetBulk')");
+    assert.equal(bulk.length, 1, 'one bulk write for the checked pair');
+    assert.deepEqual(bulk[0].input.names.slice().sort(), ['alpha', 'beta']);
+    assert.equal(bulk[0].input.codex, false, 'codex turned off for both');
+    assert.equal(bulk[0].input.claude, true, 'the other engines keep their current value');
+    assert.equal(bulk[0].input.pi, true);
+  });
+  await test('checked-rows-bulk-delete-with-confirm', async () => {
+    await go();
+    await click('input[aria-label=alpha]');
+    await click('input[aria-label=beta]');
+    await page.waitFor("!!document.querySelector('[data-testid=skills-bulk-bar]')", 3000);
+    await page.eval(`document.querySelector('[data-testid=skills-bulk-delete]').click()`);
+    await page.waitFor("document.querySelector('[role=dialog]')", 3000);
+    await clickExpr(`[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent.trim()==='删除')`);
+    await page.sleep(200);
+    assert.deepEqual(await page.eval("labEvents.filter(e=>e.method==='delete').map(e=>e.input.name).sort()"), ['alpha', 'beta']);
+    assert.equal(await page.eval("'alpha' in labContents.global"), false);
+    assert.equal(await page.eval("'beta' in labContents.global"), false);
+    assert.equal(await page.eval("'shared' in labContents.global"), true, 'unchecked skills are untouched');
+    assert.equal(await page.eval("!!document.querySelector('[data-testid=skills-bulk-bar]')"), false, 'bar disappears once the checked rows are gone');
+  });
+  await test('row-shows-engine-switches-without-opening-editor', async () => {
+    // 用户报的原话：「不能单独控制一个 skill 的引擎权限」。它以前只在右侧编辑区
+    // （要先选中一条才看得到），列表行上完全不可见。这条钉住"行上就有、且点了真
+    // 会写" —— 判据落在看得见的按钮和真实的 API 调用上，不落在源码写了什么。
+    await go();
+    const rowHasSwitches = `!!document.querySelector('[data-testid=skill-row-engines]')`;
+    assert.equal(await page.eval(rowHasSwitches), true, 'a global library row must expose its engine switches inline');
+    // 不用先点开编辑器 —— 这一点本身就是需求。
+    assert.equal(await page.eval("!!document.querySelector('textarea')"), false, 'switches must be reachable without opening the source editor');
+    // 点这一行的 Codex 开关 → 必须真的发出一条 enginesSet，且 codex 翻成 false。
+    // 按 aria-label 里的技能名精确定位到 alpha 那一行（列表里还有 plugin-skill 等）。
+    await page.eval(`(()=>{const b=[...document.querySelectorAll('[data-testid=skill-row-engines] button')].find(e=>e.getAttribute('aria-label')==='Codex · alpha');if(!b)throw Error('no codex switch on alpha row');b.click();})()`);
+    await page.sleep(150);
+    const calls = await page.eval("labEvents.filter(e=>e.method==='enginesSet')");
+    assert.equal(calls.length, 1, 'toggling a row switch writes exactly one enginesSet');
+    assert.deepEqual(calls[0].input, { name: 'alpha', claude: true, codex: false, pi: true });
+  });
+  await test('copy-keeps-selection-for-the-next-project', async () => {
+    // 用户报的原话：把同一批 skill 复制到不同项目要勾两次。
+    // 勾选是「复制到项目」的源；复制成功后**不该**清空 —— 否则切到下一个项目
+    // 时源已经没了，用户得从头再勾一遍。
+    await go();
+    await click('input[aria-label=alpha]');
+    await click('input[aria-label=beta]');
+    await projectTab();
+    assert.equal(await page.eval(`!!(${button('复制选中的 2 个')})`), true, 'two skills must be checked before copying');
+    await clickExpr(button('复制选中的 2 个'));
+    await page.waitFor("labContents['/workspace/A'].alpha==='GLOBAL ALPHA'", 3000);
+    assert.equal(await page.eval("labContents['/workspace/A'].beta==='GLOBAL BETA'"), true, 'both skills copied into project A');
+    // 切到项目 B —— 勾选必须还在，按钮仍报「2 个」。
+    await chooseProject('B');
+    assert.equal(await page.eval(`!!(${button('复制选中的 2 个')})`), true,
+      'selection must survive the copy so the same batch can go to another project');
+    await clickExpr(button('复制选中的 2 个'));
+    await page.waitFor("labContents['/workspace/B'].alpha==='GLOBAL ALPHA'", 3000);
+    assert.equal(await page.eval("labContents['/workspace/B'].beta==='GLOBAL BETA'"), true, 'the same batch copied into project B without re-checking');
+  });
   await test('project-editor-keeps-selected-project-identity', async () => {
     await go(); await projectTab(); await chooseProject('B');
     await click('[data-project-skill="shared"] [data-testid=project-skill-edit]');
