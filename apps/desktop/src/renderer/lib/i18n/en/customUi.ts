@@ -3,12 +3,12 @@
  * and runtime notices). Mirrors `zh/customUi.ts`.
  */
 export const en = {
-  "customUi.nav": "Custom UI",
-  "customUi.title": "Custom UI",
+  "customUi.nav": "Extensions",
+  "customUi.title": "Extensions",
   "customUi.intro":
     "The main window only hosts entry points: which feature items appear in context menus, right-panel tabs and the vertical toolbar, their order, and what they do are all defined here. Management items (rename, move, delete…) are fixed and not listed.",
 
-  "customUi.menu.customize": "Customize UI…",
+  "customUi.menu.customize": "Extensions…",
 
   "customUi.slot.library.item": "Library · Item menu",
   "customUi.slot.library.collection": "Library · Level-3 category menu",
@@ -143,7 +143,7 @@ export const en = {
   "customUi.template.literatureImport.files": "Literature files (PDF etc., multi-select)",
   "customUi.template.literatureImport.doi": "DOI (one or more, comma-separated)",
   "customUi.template.itemInfo.label": "Item info card",
-  "customUi.seed.done": "Literature menu set up from your automations (right-click items/collections; edit in Settings → Custom UI)",
+  "customUi.seed.done": "Literature menu set up from your automations (right-click items/collections; edit in Settings → Extensions)",
   "customUi.seed.bindTranscribe": "Transcribe → \"{name}\" (items with a transcript are skipped)",
   "customUi.seed.bindImport": "Literature import → \"{name}\" (pick PDFs or enter DOIs)",
   "customUi.seed.missingTranscribe": "No event-triggered automation found; transcribe entries not created",
@@ -181,7 +181,7 @@ export const en = {
   "customUi.template.readme.label": "Project README",
   "customUi.template.dailyNote.label": "Today's note",
   "customUi.template.projectInfo.label": "Project overview",
-  "customUi.template.projectInfo.body": "## {{project.name}}\n\n- Path: `{{project.path}}`\n- Current chat: {{session.title}}\n- Today: {{today}}\n\nEdit this in Settings → Custom UI → Right panel · Tabs.",
+  "customUi.template.projectInfo.body": "## {{project.name}}\n\n- Path: `{{project.path}}`\n- Current chat: {{session.title}}\n- Today: {{today}}\n\nEdit this in Settings → Extensions → Right panel · Tabs.",
   "customUi.toolbar.collapse": "Collapse toolbar",
   "customUi.toolbar.expand": "Expand toolbar",
   "customUi.toolbar.customize": "Customize toolbar…",
@@ -232,8 +232,8 @@ export const en = {
   "customUi.run.shellConfirmTitle": "Run \"{name}\"?",
   "customUi.run.shellConfirm": "Run",
   // R41 自定义面板
-  "customUi.editor.action.panel": "Custom panel",
-  "customUi.editor.tabAction.panel": "Custom panel (HTML)",
+  "customUi.editor.action.panel": "Extension panel",
+  "customUi.editor.tabAction.panel": "Extension panel (HTML)",
   "customUi.editor.errorPanel": "Enter the panel HTML",
   "customUi.editor.errorPanelTooLong": "Panel HTML is too long (max 400,000 characters)",
   "customUi.editor.panelTitle": "Window title",
@@ -249,7 +249,7 @@ export const en = {
   "customUi.editor.panelNetwork": "Allow network (https)",
   "customUi.editor.panelNetworkWarn": "With network access the panel can send anything it reads (files, library, model answers) to any website. Only enable it for code you wrote or trust. Importing someone else's settings turns this off.",
   "customUi.template.panelDemo.label": "Example panel",
-  "customUi.panel.desktopOnly": "Custom panels are only available in the desktop app",
+  "customUi.panel.desktopOnly": "Extension panels are only available in the desktop app",
   "customUi.panel.loading": "Loading panel…",
   "customUi.panel.loadFailed": "Panel failed to load: {error}",
   "customUi.panel.reload": "Reload panel",

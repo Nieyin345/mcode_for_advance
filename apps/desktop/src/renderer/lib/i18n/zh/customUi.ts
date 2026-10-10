@@ -6,13 +6,13 @@
  * 不在这里另写一份 —— 同一个菜单项两处文案迟早对不上。
  */
 export const zh = {
-  "customUi.nav": "自定义 UI",
-  "customUi.title": "自定义 UI",
+  "customUi.nav": "扩展",
+  "customUi.title": "扩展",
   "customUi.intro":
     "主界面只放入口：右键菜单里的功能项、右栏页签、竖向工具栏的按钮显示哪些、排第几、点了做什么，都在这里定义。重命名、移动、删除这类管理项是固定的，不在这里。",
 
   /* ── 菜单末尾那一项 ── */
-  "customUi.menu.customize": "自定义 UI…",
+  "customUi.menu.customize": "扩展…",
 
   /* ── 挂载位 ── */
   "customUi.slot.library.item": "资料库 · 条目右键",
@@ -150,7 +150,7 @@ export const zh = {
   "customUi.template.literatureImport.files": "文献文件（PDF 等，可多选）",
   "customUi.template.literatureImport.doi": "DOI（可多个，用逗号分隔）",
   "customUi.template.itemInfo.label": "条目信息卡",
-  "customUi.seed.done": "已按你的自动化预置好文献菜单（右键条目/分类可见；设置→自定义 UI 可改）",
+  "customUi.seed.done": "已按你的自动化预置好文献菜单（右键条目/分类可见；设置→扩展 可改）",
   "customUi.seed.bindTranscribe": "转录 → 「{name}」（已有转录的自动跳过）",
   "customUi.seed.bindImport": "文献导入 → 「{name}」（选 PDF 或填 DOI）",
   "customUi.seed.missingTranscribe": "没找到事件触发的自动化，转录项未建",
@@ -161,7 +161,7 @@ export const zh = {
   "customUi.run.confirm": "运行",
   "customUi.run.moduleUnavailable": "这个模块工具只能在 Files 面板里用",
   "customUi.view.close": "关闭",
-  "customUi.saveFailed": "保存自定义 UI 配置失败",
+  "customUi.saveFailed": "保存扩展配置失败",
 
   /* ── P3：右栏页签 / 竖向工具栏 ── */
   "customUi.slot.rightPanel.tab": "右栏 · 页签",
@@ -188,7 +188,7 @@ export const zh = {
   "customUi.template.readme.label": "项目 README",
   "customUi.template.dailyNote.label": "今日笔记",
   "customUi.template.projectInfo.label": "项目概况",
-  "customUi.template.projectInfo.body": "## {{project.name}}\n\n- 路径：`{{project.path}}`\n- 当前对话：{{session.title}}\n- 今天：{{today}}\n\n在「设置 → 自定义 UI → 右栏 · 页签」里改这段内容。",
+  "customUi.template.projectInfo.body": "## {{project.name}}\n\n- 路径：`{{project.path}}`\n- 当前对话：{{session.title}}\n- 今天：{{today}}\n\n在「设置 → 扩展 → 右栏 · 页签」里改这段内容。",
   "customUi.toolbar.collapse": "收起工具栏",
   "customUi.toolbar.expand": "展开工具栏",
   "customUi.toolbar.customize": "自定义工具栏…",
@@ -239,8 +239,8 @@ export const zh = {
   "customUi.run.shellConfirmTitle": "运行「{name}」?",
   "customUi.run.shellConfirm": "运行",
   // R41 自定义面板
-  "customUi.editor.action.panel": "自定义面板",
-  "customUi.editor.tabAction.panel": "自定义面板(HTML)",
+  "customUi.editor.action.panel": "扩展面板",
+  "customUi.editor.tabAction.panel": "扩展面板(HTML)",
   "customUi.editor.errorPanel": "请填写面板的 HTML",
   "customUi.editor.errorPanelTooLong": "面板 HTML 太长了(上限 40 万字符)",
   "customUi.editor.panelTitle": "浮窗标题",
@@ -256,7 +256,7 @@ export const zh = {
   "customUi.editor.panelNetwork": "允许联网(https)",
   "customUi.editor.panelNetworkWarn": "联网后面板能把它读到的内容(文件、资料库、模型回答)发到任何网站。只对你自己写、信得过的代码打开。导入别人的设置时这个开关会被关掉。",
   "customUi.template.panelDemo.label": "示例面板",
-  "customUi.panel.desktopOnly": "自定义面板只在桌面端可用",
+  "customUi.panel.desktopOnly": "扩展面板只在桌面端可用",
   "customUi.panel.loading": "正在加载面板…",
   "customUi.panel.loadFailed": "面板加载失败:{error}",
   "customUi.panel.reload": "重新加载面板",

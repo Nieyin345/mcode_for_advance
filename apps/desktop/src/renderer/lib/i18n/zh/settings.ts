@@ -1138,7 +1138,7 @@ export const zh = {
   "settings.titleGen.promptPlaceholder": "例如:用「动词 + 对象」的短语,不要标点,技术名词保留英文",
   "settings.titleGen.promptReset": "清空(恢复默认风格)",
   "settings.transfer.title": "备份与迁移",
-  "settings.transfer.desc": "把你的偏好(外观、快捷键、手势、自定义界面、通知、标题生成等)存成一个文件,换电脑或重装后导回来。不包含 API Key、令牌、密码、模型供应商配置、手机配对与远程访问配置,也不含本机路径和打开记录。",
+  "settings.transfer.desc": "把你的偏好(外观、快捷键、手势、扩展、通知、标题生成等)存成一个文件,换电脑或重装后导回来。不包含 API Key、令牌、密码、模型供应商配置、手机配对与远程访问配置,也不含本机路径和打开记录。",
   "settings.transfer.exportTitle": "导出设置",
   "settings.transfer.exportDesc": "保存为 JSON 文件。导出前会自动去掉任何像密钥的字段。",
   "settings.transfer.exportBtn": "导出…",
