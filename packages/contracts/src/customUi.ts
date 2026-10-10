@@ -359,6 +359,31 @@ export function whenKeysForSlot(slot: CustomUiSlot): readonly (keyof CustomUiWhe
   }
 }
 
+/**
+ * `automation` 动作的 `targetMode: "context"` 在哪些挂载位说得通。
+ *
+ * **只有分类 / 小类**(`targetKindOfSlot === "collection"`):它表达的是"这个分类是落点、
+ * 不展开条目",而主进程的 `runInContext` 对其它目标一律拒绝(大类没有唯一落点;条目 /
+ * 文件不是"地方")。在别处勾了它 = 运行时必报「要在具体的分类(或小类)上右键运行」——
+ * 设置页让用户勾一个必然失败的东西,是这类"允许配、实现永不生效"里最直白的一种。
+ */
+export function supportsTargetContext(slot: CustomUiSlot): boolean {
+  return targetKindOfSlot(slot) === "collection";
+}
+
+/**
+ * `automation` 动作的 `skipWhen` 在哪些挂载位说得通。
+ *
+ * 只有**展开成条目清单**的挂载位(条目 / 分类 / 小类 / 大类 → 主进程 `runAutomation` 的
+ * `expand` 逐条目过 `shouldSkipItem`)。文件目标**不过滤**(`expand` 的 file 分支直接返回,
+ * 注释写明"文件目标不过滤");工作区目标根本不展开 —— 在那些位置配 `skipWhen`,等于给
+ * 用户一条永不命中的筛子(他会以为"这个范围里处理过的都跳过了",其实一条都重跑)。
+ */
+export function supportsSkipWhen(slot: CustomUiSlot): boolean {
+  const k = targetKindOfSlot(slot);
+  return k === "item" || k === "collection" || k === "group";
+}
+
 /** 按 {@link whenKeysForSlot} 裁一份条件;裁完什么都不剩就返回 undefined。 */
 export function sanitizeWhen(when: CustomUiWhen | undefined, slot: CustomUiSlot): CustomUiWhen | undefined {
   if (!when) return undefined;
@@ -447,9 +472,18 @@ export function coerceCustomUiConfig(parsed: unknown): CustomUiConfig {
         const action =
           r.data.action.type === "automation"
             ? (() => {
-                const skipWhen = sanitizeSkipWhen(r.data.action.skipWhen);
-                const { skipWhen: _drop, ...rest } = r.data.action;
-                return skipWhen ? { ...rest, skipWhen } : rest;
+                // skipWhen 与 targetMode 各自**只在说得通的挂载位上**保留(见
+                // `supportsSkipWhen` / `supportsTargetContext`):它们都是"允许配、实现永不
+                // 生效"的那一类,和 when 一样按挂载位裁掉,而不是留着骗用户。
+                const skipWhen = supportsSkipWhen(r.data.slot) ? sanitizeSkipWhen(r.data.action.skipWhen) : undefined;
+                const { skipWhen: _drop, targetMode: _dropMode, ...rest } = r.data.action;
+                return {
+                  ...rest,
+                  ...(skipWhen ? { skipWhen } : {}),
+                  ...(supportsTargetContext(r.data.slot) && r.data.action.targetMode === "context"
+                    ? { targetMode: "context" as const }
+                    : {}),
+                };
               })()
             : r.data.action;
         const { when: _dropWhen, ...restItem } = r.data;

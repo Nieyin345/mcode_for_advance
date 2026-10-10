@@ -96,6 +96,7 @@ export const en = {
   "customUi.advanced.jsonHint":
     "Export / import the whole configuration. Paste and click Apply; broken entries are dropped, the rest is kept.",
   "customUi.advanced.copy": "Copy",
+  "customUi.advanced.copied": "Copied",
   "customUi.advanced.apply": "Apply",
   "customUi.advanced.applied": "Applied ({n} custom items kept)",
   "customUi.advanced.invalid": "Not valid JSON",

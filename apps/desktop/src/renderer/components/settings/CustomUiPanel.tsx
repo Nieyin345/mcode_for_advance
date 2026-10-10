@@ -30,6 +30,8 @@ import {
   moduleKey,
   normalizeExtension,
   sanitizeWhen,
+  supportsSkipWhen,
+  supportsTargetContext,
   targetKindOfSlot,
   unknownTemplateVars,
   whenKeysForSlot,
@@ -41,6 +43,7 @@ import {
 } from "@contracts/customUi";
 import { PANEL_HTML_MAX, panelExampleHtml } from "@contracts/customUiPanel";
 import { api } from "@renderer/lib/api.js";
+import { copyText } from "@renderer/lib/clipboard.js";
 import { cn } from "@renderer/lib/cn.js";
 import { translate, useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
@@ -244,8 +247,10 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
                   type: "automation",
                   workflowId: d.workflowId,
                   triggerNodeId: d.triggerNodeId,
-                  ...(d.targetIsContext ? { targetMode: "context" as const } : {}),
-                  ...(d.skipRequires ? { skipWhen: { requires: d.skipRequires } } : {}),
+                  // 用同一把尺(见契约的 `supportsTargetContext` / `supportsSkipWhen`):
+                  // 编辑器已按挂载位隐藏这两格,这里再兜一道,免得旧草稿里的残留值被写回去。
+                  ...(d.targetIsContext && supportsTargetContext(d.slot) ? { targetMode: "context" as const } : {}),
+                  ...(d.skipRequires && supportsSkipWhen(d.slot) ? { skipWhen: { requires: d.skipRequires } } : {}),
                   ...(d.inputs.length
                     ? {
                         inputs: d.inputs.map((i) => ({
@@ -786,6 +791,11 @@ function ItemEditor({
   const isLibrary = isLibraryKind(kind);
   // 没有「运行目标」的挂载位:工具栏 + R39 新加的几个(自动化走 runNow,没有 skipWhen / 落点 / 运行前输入)。
   const noRunTarget = !isLibrary && kind !== "file";
+  // skipWhen / targetMode 各自只在说得通的挂载位上放出来(见契约的 `supportsSkipWhen` /
+  // `supportsTargetContext`)。从前这两格跟着 `!noRunTarget` 一起显示,于是文件 / 条目 /
+  // 大类上也能勾 —— 而运行时它们要么整段跳过、要么必报错,勾了等于骗用户。
+  const canSkipWhen = supportsSkipWhen(draft.slot);
+  const canTargetContext = supportsTargetContext(draft.slot);
   const whenKeys = whenKeysForSlot(draft.slot);
   const configItems = useCustomUiStore((s) => s.config.items);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => onChange({ ...draft, [k]: v });
@@ -1083,8 +1093,9 @@ function ItemEditor({
                   </div>
                 )}
                 {/* skipWhen v1(通用原语):展开时跳过满足条件的条目 —— 手动转录选
-                    「已有转录」即得"检测过再跑"。工具栏没有条目目标,不显示。 */}
-                {!noRunTarget && (
+                    「已有转录」即得"检测过再跑"。只在**会展开成条目**的挂载位上显示
+                    (见契约的 `supportsSkipWhen`;文件目标不过滤、工作区不展开)。 */}
+                {canSkipWhen && (
                   <div className={LABEL}>
                     <HintLabel hint={t("customUi.editor.skipWhenHint")}>{t("customUi.editor.skipWhen")}</HintLabel>
                     <select
@@ -1099,8 +1110,10 @@ function ItemEditor({
                     </select>
                   </div>
                 )}
-                {/* 目标怎么用:展开成一批,还是只当落点。空分类那条路全靠它(见 targetMode)。 */}
-                {!noRunTarget && (
+                {/* 目标怎么用:展开成一批,还是只当落点。空分类那条路全靠它(见 targetMode)。
+                    只在分类 / 小类上显示(见契约的 `supportsTargetContext`)—— 大类没有唯一
+                    落点、条目 / 文件不是"地方",在别处勾了运行时必报错。 */}
+                {canTargetContext && (
                   <label className="flex items-center gap-2 text-[0.8571em]">
                     <input
                       type="checkbox"
@@ -1395,7 +1408,18 @@ function AdvancedSection() {
             }}
           />
           <div className="flex items-center gap-2">
-            <Button onClick={() => void navigator.clipboard.writeText(text)}>{t("customUi.advanced.copy")}</Button>
+            {/* 复制走共享的 `copyText`:它带非安全上下文的 textarea 兜底,并**返回成败**。
+                从前这里 `void navigator.clipboard.writeText(...)` —— 手机端网页(HTTP,
+                非安全上下文)根本没有 `navigator.clipboard`,点一下是同步抛错 + 一个没人接
+                的 rejection(渲染端没有全局 `unhandledrejection`),按钮看起来毫无反应;
+                桌面上写失败也是静默。与别处复制同一个出口。 */}
+            <Button
+              onClick={() => {
+                void copyText(text).then((ok) => setNote(ok ? t("customUi.advanced.copied") : t("customUi.run.copyFailed")));
+              }}
+            >
+              {t("customUi.advanced.copy")}
+            </Button>
             <Button variant="primary" onClick={apply}>
               {t("customUi.advanced.apply")}
             </Button>

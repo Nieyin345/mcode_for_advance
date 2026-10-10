@@ -102,6 +102,7 @@ export const zh = {
   "customUi.advanced.json": "配置 JSON",
   "customUi.advanced.jsonHint": "整份配置的导出 / 导入。粘贴后点「应用」，坏掉的条目会被丢掉，其余照常。",
   "customUi.advanced.copy": "复制",
+  "customUi.advanced.copied": "已复制",
   "customUi.advanced.apply": "应用",
   "customUi.advanced.applied": "已应用（保留 {n} 个自定义项）",
   "customUi.advanced.invalid": "不是合法的 JSON",

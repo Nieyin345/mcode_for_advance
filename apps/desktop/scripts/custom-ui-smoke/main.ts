@@ -33,6 +33,8 @@ import {
   normalizeExtension,
   parseCustomUiConfig,
   renderTemplate,
+  supportsSkipWhen,
+  supportsTargetContext,
   targetKindOfSlot,
   TEMPLATE_VARS_BY_SLOT,
   templateVarsOf,
@@ -692,6 +694,69 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
     dynImport.ok === false || dynImport.entries.length === 0,
     dynImport,
   );
+}
+
+/* ── automation:skipWhen / targetMode 只在说得通的挂载位上保留 ──
+ *
+ * 这一类是"允许配、实现永不生效":从前设置页在**任何**有目标的挂载位上都放出这两格,
+ * 而运行时 skipWhen 只在展开成条目清单时逐条过(`expand` 的 file 分支直接返回、不过滤),
+ * targetMode:"context" 只有分类 / 小类走得通(`runInContext` 对其它目标一律报错)。用户在
+ * 文件 / 条目 / 大类上勾了它们,得到的是静默失效或必报错 —— 契约这一层按挂载位裁掉,
+ * 读配置与编辑器保存走同一把尺。 */
+{
+  check("supportsSkipWhen:条目 / 分类 / 小类 / 大类为真,文件与工作区为假",
+    supportsSkipWhen("library.item") && supportsSkipWhen("library.collection")
+      && supportsSkipWhen("library.subcategory") && supportsSkipWhen("library.group")
+      && !supportsSkipWhen("files.context") && !supportsSkipWhen("toolbar") && !supportsSkipWhen("rightPanel.tab"),
+    CUSTOM_UI_SLOTS.map((s) => [s, supportsSkipWhen(s)]));
+  check("supportsTargetContext:只有分类 / 小类为真",
+    supportsTargetContext("library.collection") && supportsTargetContext("library.subcategory")
+      && !supportsTargetContext("library.item") && !supportsTargetContext("library.group")
+      && !supportsTargetContext("files.context") && !supportsTargetContext("toolbar"),
+    CUSTOM_UI_SLOTS.map((s) => [s, supportsTargetContext(s)]));
+
+  const autoItem = (id: string, slot: string) => ({
+    id, slot, label: { zh: id },
+    action: { type: "automation", workflowId: "w", triggerNodeId: "t", skipWhen: { requires: "markdown" }, targetMode: "context" },
+  });
+  // 文件挂载位:两格都不该留(文件不过滤、也不是落点)。
+  const fileCfg = coerceCustomUiConfig({ version: 1, items: [autoItem("f", "files.context")], layout: {} });
+  const fa = fileCfg.items[0]?.action;
+  check("文件挂载位:skipWhen 与 targetMode 都被裁掉",
+    fa?.type === "automation" && fa.skipWhen === undefined && fa.targetMode === undefined, fa);
+  // 大类:skipWhen 留(targetMode 不留,大类是批次不是落点)。
+  const groupCfg = coerceCustomUiConfig({ version: 1, items: [autoItem("g", "library.group")], layout: {} });
+  const ga = groupCfg.items[0]?.action;
+  check("大类挂载位:skipWhen 保留、targetMode 被裁掉",
+    ga?.type === "automation" && ga.skipWhen?.requires === "markdown" && ga.targetMode === undefined, ga);
+  // 分类:两格都留(context 的合法用法就是分类)。
+  const colCfg = coerceCustomUiConfig({ version: 1, items: [autoItem("c", "library.collection")], layout: {} });
+  const ca = colCfg.items[0]?.action;
+  check("分类挂载位:skipWhen 与 targetMode 都保留(文献导入靠它)",
+    ca?.type === "automation" && ca.skipWhen?.requires === "markdown" && ca.targetMode === "context", ca);
+  // 条目:skipWhen 留,targetMode 不留。
+  const itemCfg = coerceCustomUiConfig({ version: 1, items: [autoItem("i", "library.item")], layout: {} });
+  const ia = itemCfg.items[0]?.action;
+  check("条目挂载位:skipWhen 保留、targetMode 被裁掉",
+    ia?.type === "automation" && ia.skipWhen?.requires === "markdown" && ia.targetMode === undefined, ia);
+}
+
+/* ── 设置页「高级」里的复制按钮:必须走共享 `copyText`(带非安全上下文兜底 + 成败回执) ──
+ *
+ * 组件在无头下跑不出渲染结果,判据钉源码。从前是 `void navigator.clipboard.writeText(text)`:
+ * 手机端网页(HTTP,非安全上下文)根本没有 `navigator.clipboard`,点一下同步抛错 + 一个
+ * 没人接的 rejection(渲染端没有全局 `unhandledrejection`),按钮看起来毫无反应;桌面上
+ * 写失败也是静默。共享 `copyText` 两样都兜(见 `lib/clipboard.ts`)。 */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const stripComments = (s: string) => s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const panel = stripComments(
+    readFileSync(join(process.cwd(), "src/renderer/components/settings/CustomUiPanel.tsx"), "utf8"),
+  );
+  check("★ 高级复制按钮走共享 copyText(不再裸 navigator.clipboard)", /copyText\(text\)/.test(panel));
+  check("★ 不再有没接住的 `void navigator.clipboard.writeText`", !/void\s+navigator\.clipboard\.writeText/.test(panel));
+  check("★ 复制成败都回执(已复制 / 复制失败)", /advanced\.copied/.test(panel) && /run\.copyFailed/.test(panel));
 }
 
 /* ── 汇总 ── */
