@@ -286,6 +286,11 @@ interface ClaudeModelFormState {
   /** Gateway-side model id, e.g. "deepseek-v4-pro". */
   id: string;
   supports1m: boolean;
+  /** 每模型「档位 → 该网关要的值」映射（与 Pi 同一形状）。空串 = 用默认；
+   *  复选框勾上但值为空 = 该档位不支持（null）。这里用 `thinking`/`thinkingValue`
+   *  两个平行表，落到配置时再折算成 `{ [档位]: 值 | null }`。 */
+  thinking: Record<PiThinkingKey, "default" | "null" | "value">;
+  thinkingValue: Record<PiThinkingKey, string>;
 }
 
 /** One editable row of the custom-headers list. Held as rows rather than a
@@ -371,6 +376,57 @@ function HeadersEditor({
   );
 }
 
+/* ── 思考强度档位映射（三引擎共用同一形状）──
+ *
+ * 不同网关/引擎对同一个思考档位用的标识符不一样（A 家要 "high"、B 家要 "3"、
+ * C 家要 "reasoning_high"）。Pi 早在它的 models.json 里就有这套（`thinkingLevelMap`）；
+ * 2026-10-11 把同一套推广到 Claude 与 Codex 的每模型设置里。
+ *
+ * 表单里用两个平行表表示（与 Pi 表单一致）：`thinking[档位]` 是三态选择
+ * (default / null / value)，`thinkingValue[档位]` 在选 value 时填具体字符串。
+ * 落到配置时折成 `{ [档位]: 值 | null }`。 */
+function defaultThinkingModes(): Record<PiThinkingKey, "default" | "null" | "value"> {
+  return { off: "default", minimal: "default", low: "default", medium: "default", high: "default", xhigh: "default" };
+}
+function emptyThinkingValues(): Record<PiThinkingKey, string> {
+  return { off: "", minimal: "", low: "", medium: "", high: "", xhigh: "" };
+}
+
+/** 从配置里的 `thinkingLevelMap` 还原成表单的两张表。 */
+function thinkingFromMap(map: Record<string, string | null> | undefined): {
+  thinking: Record<PiThinkingKey, "default" | "null" | "value">;
+  thinkingValue: Record<PiThinkingKey, string>;
+} {
+  const thinking = defaultThinkingModes();
+  const thinkingValue = emptyThinkingValues();
+  for (const k of PI_THINKING_KEYS) {
+    const v = map?.[k];
+    if (v === null) thinking[k] = "null";
+    else if (typeof v === "string") {
+      thinking[k] = "value";
+      thinkingValue[k] = v;
+    }
+  }
+  return { thinking, thinkingValue };
+}
+
+/** 表单两张表 → 配置里的 `thinkingLevelMap`（全 default 就不写）。 */
+function thinkingMapFromForm(
+  thinking: Record<PiThinkingKey, "default" | "null" | "value">,
+  thinkingValue: Record<PiThinkingKey, string>,
+): Record<string, string | null> | undefined {
+  const out: Record<string, string | null> = {};
+  for (const k of PI_THINKING_KEYS) {
+    const mode = thinking[k];
+    if (mode === "null") out[k] = null;
+    else if (mode === "value") {
+      const v = thinkingValue[k].trim();
+      if (v) out[k] = v;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 interface ClaudeFormState {
   id?: string;
   name: string;
@@ -392,9 +448,8 @@ interface ClaudeFormState {
 }
 
 function emptyClaudeModel(): ClaudeModelFormState {
-  return { id: "", supports1m: false };
+  return { id: "", supports1m: false, thinking: defaultThinkingModes(), thinkingValue: emptyThinkingValues() };
 }
-
 function emptyClaudeForm(): ClaudeFormState {
   return {
     name: "",
@@ -420,7 +475,7 @@ function claudeFormFromConfig(m: CustomModelPublic): ClaudeFormState {
     protocol: m.protocol,
     webSiteId: m.webSiteId ?? "",
     authToken: "",
-    models: m.models.map((e) => ({ id: e.id, supports1m: Boolean(e.supports1m) })),
+    models: m.models.map((e) => ({ id: e.id, supports1m: Boolean(e.supports1m), ...thinkingFromMap(e.thinkingLevelMap) })),
     subagentModel: m.subagentModel ?? "",
     disableNonEssentialTraffic: m.disableNonEssentialTraffic ?? true,
     timeoutMs: m.timeoutMs ? String(m.timeoutMs) : "",
@@ -796,7 +851,12 @@ export function CustomModelsPanel() {
       const id = m.id.trim();
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      models.push(m.supports1m ? { id, supports1m: true } : { id });
+      const tmap = thinkingMapFromForm(m.thinking, m.thinkingValue);
+      models.push({
+        id,
+        ...(m.supports1m ? { supports1m: true } : {}),
+        ...(tmap ? { thinkingLevelMap: tmap } : {}),
+      });
     }
     // 网页端不需要 Base URL / Token（上游是浏览器扩展在用户自己浏览器里驱动的
     // 那个页面，不是某个 API），但必须选一个站点。
@@ -1498,6 +1558,8 @@ function ClaudeProviderForm({
   const [advancedOpen, setAdvancedOpen] = useState(
     Boolean(form.timeoutMs) || form.customHeaders.length > 0,
   );
+  /** 展开哪个模型行看它的思考强度映射（与 Pi 表单同一个交互）。 */
+  const [thinkingOpen, setThinkingOpen] = useState<number | null>(null);
   // 扩展桥配对信息：只在网页端需要。5s 轮询一次 —— "配上了"这件事发生在另一个
   // 程序里（用户在浏览器里装扩展），主进程没有事件可推，只能问。
   const [bridge, setBridge] = useState<ExtensionBridgeStatus | null>(null);
@@ -1565,7 +1627,7 @@ function ClaudeProviderForm({
               setForm({
                 ...form,
                 protocol: next,
-                models: [{ id: defaultWebModelId(form.webSiteId), supports1m: false }],
+                models: [{ id: defaultWebModelId(form.webSiteId), supports1m: false, thinking: defaultThinkingModes(), thinkingValue: emptyThinkingValues() }],
               });
               return;
             }
@@ -1735,36 +1797,51 @@ function ClaudeProviderForm({
         {form.models.map((m, idx) => {
           const testingThis = test.status === "testing" && test.idx === idx;
           return (
-            <div
-              key={idx}
-              className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 px-1.5 py-1"
-            >
-              <Input
-                value={m.id}
-                onChange={(e) => updateModel(idx, { id: e.target.value })}
-                placeholder={t(
-                  isWeb
-                    ? "settings.customModels.modelIdPlaceholderWeb"
-                    : "settings.customModels.modelIdPlaceholder",
-                )}
-                spellCheck={false}
-              />
-              <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.supports1mLabel")}>
-                <Switch checked={m.supports1m} onCheckedChange={(v) => updateModel(idx, { supports1m: v })} label={t("settings.customModels.supports1mLabel")} />
-                <span className="text-[0.6428em] text-content-muted">1M</span>
-              </label>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => onTest(idx)}
-                disabled={test.status === "testing"}
-                title={t("settings.customModels.testWithModel")}
-              >
-                {testingThis ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlugConnected size={12} />}
-              </Button>
-              <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
-                <IconTrash size={12} />
-              </Button>
+            <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
+              <div className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-1.5">
+                <Input
+                  value={m.id}
+                  onChange={(e) => updateModel(idx, { id: e.target.value })}
+                  placeholder={t(
+                    isWeb
+                      ? "settings.customModels.modelIdPlaceholderWeb"
+                      : "settings.customModels.modelIdPlaceholder",
+                  )}
+                  spellCheck={false}
+                />
+                <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.supports1mLabel")}>
+                  <Switch checked={m.supports1m} onCheckedChange={(v) => updateModel(idx, { supports1m: v })} label={t("settings.customModels.supports1mLabel")} />
+                  <span className="text-[0.6428em] text-content-muted">1M</span>
+                </label>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => onTest(idx)}
+                  disabled={test.status === "testing"}
+                  title={t("settings.customModels.testWithModel")}
+                >
+                  {testingThis ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlugConnected size={12} />}
+                </Button>
+                {/* 展开看这个模型的思考强度档位映射（与 Pi 同一交互）。 */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setThinkingOpen(thinkingOpen === idx ? null : idx)}
+                  title={t("settings.customModels.thinkingMapEdit")}
+                >
+                  {thinkingOpen === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
+                </Button>
+                <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
+                  <IconTrash size={12} />
+                </Button>
+              </div>
+              {thinkingOpen === idx && (
+                <ThinkingMapEditor
+                  thinking={m.thinking}
+                  thinkingValue={m.thinkingValue}
+                  onChange={(patch) => updateModel(idx, patch)}
+                />
+              )}
             </div>
           );
         })}
@@ -2114,6 +2191,64 @@ function PullModelsRow({
       <span className="text-[0.7143em] text-content-subtle">
         {baseUrl.trim() ? t("settings.customModels.pullModelsHint") : t("settings.customModels.pullModelsNeedUrl")}
       </span>
+    </div>
+  );
+}
+
+/** 展开一个模型行时看它的思考强度档位映射。
+ *
+ *  与 Pi 表单里那段**同一份 UI**（2026-10-11 统一）：六个档位，每个可选
+ *  「默认 / 不支持 / 具体值」。用户的诉求原话是「不同的 api 的思考强度的标识符
+ *  不一样」—— 不同网关对同一档位用的词不同，这一格就是把它接对的地方。 */
+function ThinkingMapEditor({
+  thinking,
+  thinkingValue,
+  onChange,
+}: {
+  thinking: Record<PiThinkingKey, "default" | "null" | "value">;
+  thinkingValue: Record<PiThinkingKey, string>;
+  onChange: (patch: { thinking?: Record<PiThinkingKey, "default" | "null" | "value">; thinkingValue?: Record<PiThinkingKey, string> }) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="mt-2 space-y-2 border-t border-edge/60 pt-1.5">
+      <span className="mb-1 block text-[0.7143em] text-content-muted">{t("settings.customModels.thinkingMapHint")}</span>
+      <div className="grid grid-cols-2 gap-1.5">
+        {PI_THINKING_KEYS.map((k) => (
+          <label key={k} className="flex items-center gap-1.5">
+            <span className="w-14 shrink-0 text-[0.7143em] text-content-muted">{k}</span>
+            <Select.Root
+              value={thinking[k]}
+              onValueChange={(v) => onChange({ thinking: { ...thinking, [k]: v as "default" | "null" | "value" } })}
+            >
+              <Select.Trigger className="flex-1">
+                <Select.Value>
+                  {(val: string) => {
+                    const o = THINKING_MODE_OPTIONS.find((x) => x.value === val) ?? THINKING_MODE_OPTIONS[0];
+                    return <span className="flex items-center gap-1.5">{o.icon}{t(o.labelKey)}</span>;
+                  }}
+                </Select.Value>
+              </Select.Trigger>
+              <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+                {THINKING_MODE_OPTIONS.map((o) => (
+                  <Select.Item key={o.value} value={o.value}>
+                    {o.icon}
+                    <Select.ItemText>{t(o.labelKey)}</Select.ItemText>
+                  </Select.Item>
+                ))}
+              </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+            </Select.Root>
+            {thinking[k] === "value" && (
+              <Input
+                value={thinkingValue[k]}
+                onChange={(e) => onChange({ thinkingValue: { ...thinkingValue, [k]: e.target.value } })}
+                placeholder={t("settings.customModels.thinkingValuePlaceholder")}
+                className="flex-1"
+              />
+            )}
+          </label>
+        ))}
+      </div>
     </div>
   );
 }

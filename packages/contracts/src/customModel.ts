@@ -122,6 +122,11 @@ export interface CustomModelEntry {
    *  ANTHROPIC_MODEL carries the `[1m]` suffix (the DeepSeek-style gateway
    *  convention). */
   supports1m?: boolean;
+  /** 每模型「思考强度档位 → 该网关要的具体值」映射（2026-10-11 加）。
+   *  与 Pi 的 `thinkingLevelMap` 同一形状、同一语义：不同网关对同一档位用的标识符
+   *  不一样（A 家要 "high"、B 家要 "3"），这一格让用户把它接对。
+   *  三态：缺席 = 用网关/引擎默认；字符串 = 具体值；null = 该档位不支持（下拉里隐藏）。 */
+  thinkingLevelMap?: Record<string, string | null>;
 }
 
 /** Fully-resolved config passed to the provider at turn time (main-process

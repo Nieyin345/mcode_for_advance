@@ -448,6 +448,7 @@ export const en = {
   "settings.customModels.displayNameLabel": "Display name (optional)",
   "settings.customModels.displayNamePlaceholder": "e.g. DeepSeek V4 Pro",
   "settings.customModels.thinkingMapHint": "Thinking-level mapping (Default = the model's default; Unsupported = hide this level in the UI; Mapped value = the exact string sent to the provider)",
+  "settings.customModels.thinkingMapEdit": "Thinking-level mapping",
   "settings.customModels.thinkingValuePlaceholder": "e.g. max / high",
   "settings.customModels.thinkingDefault": "Default",
   "settings.customModels.thinkingNull": "Unsupported",

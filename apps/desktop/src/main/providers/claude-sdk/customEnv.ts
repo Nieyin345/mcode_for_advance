@@ -147,6 +147,35 @@ export function resolveActiveModel(cfg: ApiConfig): string | undefined {
   return entry.supports1m ? with1MSuffix(entry.id) : entry.id;
 }
 
+/** Claude SDK `Options.effort` 只认这五个命名档（封闭联合）。 */
+const NAMED_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+export function isNamedEffort(v: string | undefined): v is "low" | "medium" | "high" | "xhigh" | "max" {
+  return v !== undefined && NAMED_EFFORTS.has(v);
+}
+
+/** 把会话级 effort **档位**按当前模型的 `thinkingLevelMap` 翻成网关要的具体值
+ *  （2026-10-11 加，三引擎功能对齐）。用户的诉求原话：「不同的 api 的思考强度的
+ *  标识符不一样」—— 不同网关对同一档位用的词不同（A 家 "high"、B 家 "3"）。
+ *
+ *  返回值是一个字符串档位名：
+ *   - 命中映射的字符串 → 用它（网关要什么就发什么）；
+ *   - 命中 null → 该档位不支持，返回 undefined（不传，用模型默认）；
+ *   - 未配 / "default" → 命名档原样返回，`default` 返回 undefined。
+ *
+ *  ⚠️ 调用方注意：`Options.effort` 是**封闭联合**，所以只有命名档能走它；自定义值
+ *  必须放进 `CLAUDE_CODE_EFFORT_LEVEL` env（见 startTurn 里的用法）。 */
+export function resolveMappedEffort(
+  effort: string | undefined,
+  apiConfig: Pick<ApiConfig, "selectedModel" | "models"> | undefined,
+): string | undefined {
+  if (!effort || effort === "default") return undefined;
+  const entry = apiConfig?.models?.find((m) => m.id === apiConfig.selectedModel);
+  const mapped = entry?.thinkingLevelMap?.[effort];
+  if (typeof mapped === "string" && mapped.trim()) return mapped.trim();
+  if (mapped === null) return undefined;
+  return effort;
+}
+
 /**
  * @param opts.sessionId Mcode session driving this turn. Only used to name the
  *   gateway's required session header — see the `ANTHROPIC_CUSTOM_HEADERS`

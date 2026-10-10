@@ -453,6 +453,7 @@ export const zh = {
   "settings.customModels.displayNameLabel": "显示名(可选)",
   "settings.customModels.displayNamePlaceholder": "如 DeepSeek V4 Pro",
   "settings.customModels.thinkingMapHint": "思考级别映射(默认=用模型默认;不支持=UI 隐藏该档;映射值=发送给 provider 的具体字符串)",
+  "settings.customModels.thinkingMapEdit": "思考强度映射",
   "settings.customModels.thinkingValuePlaceholder": "如 max / high",
   "settings.customModels.thinkingDefault": "默认",
   "settings.customModels.thinkingNull": "不支持",

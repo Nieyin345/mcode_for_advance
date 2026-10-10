@@ -14,6 +14,11 @@ import type { CustomModelInput } from "../customModel.js";
 const CustomModelEntrySchema = z.object({
   id: z.string().min(1),
   supports1m: z.boolean().optional(),
+  /** 每模型「思考强度档位 → 该网关要的具体值」映射（2026-10-11 加，与 Pi 的
+   *  `thinkingLevelMap` 同一形状、同一语义）。不同网关对同一档位用的标识符不一样，
+   *  这一格让用户在设置里把它接对。三态：缺席 = 用网关/引擎默认；字符串 = 具体值；
+   *  null = 这个档位不支持（下拉里隐藏）。 */
+  thinkingLevelMap: z.record(z.string(), z.union([z.string(), z.null()])).optional(),
 });
 
 const AuthModeSchema = z.enum(["auth_token", "api_key"]);

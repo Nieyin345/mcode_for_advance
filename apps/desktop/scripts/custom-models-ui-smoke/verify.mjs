@@ -113,6 +113,17 @@ await withAuditPage(dir, async page => {
     const values = await page.eval(`[...document.querySelectorAll('input')].map(i=>i.value)`);
     assert.equal(values.includes('pulled-a') && values.includes('pulled-b'), true, `pulled models must appear in the model rows (got ${JSON.stringify(values)})`);
   });
+
+  // ── 思考强度映射：Claude 表单也有一份（2026-10-11 对齐 Pi）──
+  await test('claude-model-row-offers-thinking-level-mapping', async () => {
+    await go(); await pickProvider('Gateway A');
+    // 点开那一行的「思考强度映射」展开按钮。
+    const btn = `[...document.querySelectorAll('button')].find(e=>e.offsetParent!==null && e.getAttribute('title')==='思考强度映射')`;
+    assert.equal(await page.eval(`!!(${btn})`), true, 'Claude model rows must offer a thinking-map toggle');
+    await clickExpr(btn);
+    await page.sleep(150);
+    assert.equal(await page.eval("document.body.innerText.includes('思考级别映射')"), true, 'expanding must show the mapping editor');
+  });
 });
 const failed = results.filter(r => !r.ok).length;
 writeFileSync(join(dir, 'results.json'), JSON.stringify({ passed: results.length - failed, failed, results }, null, 2));

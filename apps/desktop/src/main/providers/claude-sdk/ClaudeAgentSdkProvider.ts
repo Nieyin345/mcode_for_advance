@@ -22,7 +22,7 @@ import type {
 } from "@contracts/provider";
 import type { AskUserQuestionItem, AskUserQuestionOption, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
-import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel } from "./customEnv.js";
+import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel, resolveMappedEffort, isNamedEffort } from "./customEnv.js";
 import type { ClaudeContextWindowTag } from "./claudeTokenUsage.js";
 import { ASK_SYSTEM_PROMPT } from "@main/lib/askQuestion.js";
 import { CLAUDE_IDENTITY_PROMPT, CLAUDE_PLAN_MODE_NUDGE, fileArchitecturePrompt, joinPromptSections } from "@main/lib/systemPrompt.js";
@@ -830,6 +830,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // sendTurn, which shouldn't happen but we don't want a crash).
     const snapshot = getFileSnapshot(req.sessionId);
 
+    // 本轮的思考强度（按当前模型的映射翻译后的结果）。命名档走 Options.effort，
+    // 自定义值走 CLAUDE_CODE_EFFORT_LEVEL env（见 buildCustomEnv 与 resolveMappedEffort）。
+    const mappedEffort = resolveMappedEffort(req.effort, req.apiConfig);
+
     const options: Options = {
       abortController: ac,
       cwd: req.cwd,
@@ -841,7 +845,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // only the five named levels reach the wire, validated by the UI's
       // capabilities.thinkingLevels list.
       // See https://platform.claude.com/docs/en/build-with-claude/effort
-      effort: req.effort && req.effort !== "default" ? (req.effort as Options["effort"]) : undefined,
+      // Per-turn reasoning effort. `Options.effort` is a CLOSED union
+      // (low/medium/high/xhigh/max) — a per-model `thinkingLevelMap` mapping to
+      // an arbitrary gateway string can't ride this. Only pass it through when
+      // the resolved value IS one of the named levels; anything else goes via
+      // the `CLAUDE_CODE_EFFORT_LEVEL` env override below (see buildCustomEnv).
+      effort: isNamedEffort(mappedEffort) ? (mappedEffort as Options["effort"]) : undefined,
       // Permission mode: the contract is an open string; the SDK's type is a
       // narrow union. The UI only offers claude's 4 modes for this provider
       // (declared in capabilities.permissionModes), so the cast is safe. The
@@ -1013,6 +1022,11 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // settings.json、CLAUDE.md 都还是 Mcode 托管的那份），项目级一律不读。
     options.settingSources = ["user"];
     options.env = { ...options.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+    // 思考强度的**自定义值**（映射出的、不是命名档的那个）只能走 env ——
+    // Options.effort 是封闭联合。命名档上面已经经 Options.effort 传了，这里不重复。
+    if (mappedEffort && !isNamedEffort(mappedEffort)) {
+      options.env = { ...options.env, CLAUDE_CODE_EFFORT_LEVEL: mappedEffort };
+    }
     ensureMaterialized(instructionsSourcePath(dataRoot()), [memoryInstructionPath(MCODE_CONFIG_DIR, "CLAUDE.md")]);
 
     // Diagnostic: dump the effective env actually handed to the SDK

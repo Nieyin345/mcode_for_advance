@@ -737,6 +737,27 @@ eq("换令牌不影响桥地址", rotated.url, status.url);
 const { stopExtensionBridge } = await import("@main/providers/bridge/extensionBridge.js");
 stopExtensionBridge();
 
+/* ── 思考强度映射（resolveMappedEffort / isNamedEffort，2026-10-11 加）──
+ *  用户诉求：「不同的 api 的思考强度的标识符不一样」，所以每个模型可配一张
+ *  「档位 → 网关要的具体值」表。这一段钉住翻译规则（纯函数，无需起进程）。 */
+{
+  const { resolveMappedEffort, isNamedEffort } = await import("@main/providers/claude-sdk/customEnv.js");
+  const cfg = (selectedModel: string, map: Record<string, string | null>) => ({
+    selectedModel,
+    models: [{ id: selectedModel, thinkingLevelMap: map }],
+  });
+  eq("★ 映射命中：档位翻成网关要的值", resolveMappedEffort("high", cfg("m", { high: "3" })), "3");
+  eq("档位没配 → 命名档原样", resolveMappedEffort("high", cfg("m", { low: "1" })), "high");
+  eq("default → 不传", resolveMappedEffort("default", cfg("m", { high: "3" })), undefined);
+  eq("★ 映射为 null → 该档不支持，不传", resolveMappedEffort("high", cfg("m", { high: null })), undefined);
+  eq("空白值的映射不算数 → 回落到命名档", resolveMappedEffort("high", cfg("m", { high: "   " })), "high");
+  eq("没有 apiConfig → 命名档原样", resolveMappedEffort("medium", undefined), "medium");
+  eq("★ 只按**选中模型**的映射翻，不串到别的模型",
+    resolveMappedEffort("high", { selectedModel: "a", models: [{ id: "a" }, { id: "b", thinkingLevelMap: { high: "9" } }] }),
+    "high");
+  check("★ 命名档判定：只有那五个算命名档", isNamedEffort("high") && !isNamedEffort("3") && !isNamedEffort(undefined) && !isNamedEffort("default"));
+}
+
 /* ────────────────────────── 收尾 ────────────────────────── */
 
   rmSync(DATA, { recursive: true, force: true });
