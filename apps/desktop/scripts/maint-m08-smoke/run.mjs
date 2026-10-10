@@ -215,7 +215,13 @@ const NODE_ECHO = "let all = '';\nfor await (const c of process.stdin) all += c;
   check("协议行不进输出尾部(剩下的才是给人看的输出)", text(out).trim() === "after-protocol", text(out));
 
   const flood = await runCodeNode({ code: "import sys\nsys.stdout.write('M' * 20000 + 'TAIL-MARK')\n", language: "python", timeoutMs: 15000, cwd: evidence, signal: signal() });
-  check("超长输出只留尾部(上限之内,且结尾是最后写的那段)", flood.status === "success" && text(flood).length <= 16_000 && text(flood).endsWith("TAIL-MARK"), text(flood).length);
+  // 尾部窗口是刻意的(见 codeRunner 的文件头);**静默**才是缺陷 —— 现在超上限的正文
+  // 前面挂一行截断说明(共用 lib/outBuf.ts 的 markTruncatedTail)。判据落在正文上:
+  // 去掉第一行再量长度、看结尾。
+  const floodText = text(flood);
+  const floodBody = floodText.split("\n").slice(1).join("\n");
+  check("超长输出只留尾部(上限之内,且结尾是最后写的那段)", flood.status === "success" && floodBody.length <= 16_000 && floodBody.endsWith("TAIL-MARK"), floodBody.length);
+  check("★ 超长输出写明了被截断(不是静默丢头)", floodText.startsWith("…(输出超过") && floodText.includes("16000"), floodText.slice(0, 60));
   check("stderr 与 stdout 分开(代码节点是两个产出变量)", flood.outputs?.stderr === "", flood.outputs?.stderr);
 
   const nonzero = await runCodeNode({ code: "import sys\nsys.stderr.write('boom-stderr\\n')\nsys.exit(7)\n", language: "python", timeoutMs: 15000, cwd: evidence, signal: signal() });

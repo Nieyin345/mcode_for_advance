@@ -34,7 +34,7 @@ import {
   type HookRun,
   type HookSpec,
 } from "@contracts/hook";
-import { decodeOutput } from "@main/lib/outBuf.js";
+import { decodeOutput, markTruncatedTail } from "@main/lib/outBuf.js";
 import { killTree, spawnRun } from "@main/lib/spawnRun.js";
 
 // `decodeOutput` 从这一层**照旧导出**:`hooks-smoke` 直接喂字节给它验编码判定,
@@ -123,7 +123,13 @@ export function envOf(payload: HookPayload): Record<string, string> {
   };
 }
 
-/** 输出被截断过就加一句说明 —— 否则用户会以为命令只打印了这么多。 */
+/**
+ * 输出被截断过就加一句说明 —— 否则用户会以为命令只打印了这么多。
+ *
+ * ⚠️ **实现只有一份**:真正的拼装在 `lib/outBuf.ts` 的 `markTruncatedTail`(钩子、
+ * 命令节点、入口脚本、代码节点四处共用)。这里保留这个名字只是因为它是钩子这一层的
+ * 既有出口,不动调用方。
+ */
 export function markTail(text: string, truncated: boolean): string {
-  return truncated ? `…(输出超过 ${HOOK_OUTPUT_LIMIT} 字节,只留了结尾)\n${text}` : text;
+  return truncated ? markTruncatedTail(text, HOOK_OUTPUT_LIMIT) : text;
 }

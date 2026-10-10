@@ -41,6 +41,7 @@ import {
 } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
 import { spawnRun, type SpawnFn } from "@main/lib/spawnRun.js";
+import { markTruncatedTail } from "@main/lib/outBuf.js";
 
 interface ProtocolResult {
   summary?: string;
@@ -193,7 +194,9 @@ export async function runEntryScript(
     ...(deps?.spawn !== undefined ? { spawn: deps.spawn } : {}),
   });
 
-  const text = run.stdout.trim();
+  // **截断要说出来** —— 同命令节点(`markTruncatedTail`)。
+  const rawText = run.stdout.trim();
+  const text = run.stdoutTruncated ? markTruncatedTail(rawText, COMMAND_OUTPUT_TAIL_CHARS) : rawText;
   const protocol = protocolState.result;
   // 产出里的相对路径按**清单目录**解 —— 脚本是在那儿跑的,它说的 "./out.csv"
   // 相对的是它自己那一包(同上面 `cwd` 那条规矩)。

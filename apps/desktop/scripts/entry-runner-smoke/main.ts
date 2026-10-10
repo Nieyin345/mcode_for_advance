@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveEntryScript, runEntryScript } from "@main/orchestration/entryRunner.js";
 import type { SpawnFn } from "@main/lib/spawnRun.js";
+import { COMMAND_OUTPUT_TAIL_CHARS } from "@contracts/nodeType";
 
 let failures = 0;
 let total = 0;
@@ -211,6 +212,26 @@ function recordingSpawn(scripted: { stdout?: string; code?: number }): {
   eq("跑通 → success", out.status, "success");
   eq("输出尾部进 summary", out.summary, "hello");
   check("★ 退出码 0 进产出", (out.outputs as { exitCode?: number })?.exitCode === 0, out.outputs);
+}
+
+/* 外部脚本刷屏 → 输出被截到尾部时,**必须写出来**(与内置命令节点同一条规矩,
+   共用 `lib/outBuf.ts` 的 `markTruncatedTail`)。脚本的输出对下游是"它交了什么",
+   一段缺了头的输出若不加说明,下一步会当成完整的用。 */
+{
+  const fake = recordingSpawn({
+    stdout: "A".repeat(COMMAND_OUTPUT_TAIL_CHARS + 2000) + "TAILMARK",
+    code: 0,
+  });
+  const out = await runEntryScript(
+    { script: "./count.py", manifestDir: PLUGIN, timeoutMs: 0, signal: new AbortController().signal },
+    { spawn: fake.spawn },
+  );
+  eq("刷屏脚本照样 success", out.status, "success");
+  const text = String((out.outputs as { stdout?: string })?.stdout);
+  check("★ 截断写在了输出前面", text.startsWith("…(输出超过"), text.slice(0, 60));
+  check("★ 说明里带上限字节数", text.includes(String(COMMAND_OUTPUT_TAIL_CHARS)), text.slice(0, 60));
+  check("正文仍是尾部(TAILMARK 还在)", text.endsWith("TAILMARK"), text.slice(-30));
+  check("★ summary 也带说明(下游读的是它)", String(out.summary).includes("输出超过"), String(out.summary).slice(0, 50));
 }
 
 {

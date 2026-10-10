@@ -111,9 +111,30 @@ console.log("\nProtocol · malformed payload must not poison the outcome");
   }
 }
 
-console.log("\nLanguage · 用户可见的失败原因一律中文");
+console.log("\nOutput · 刷屏时代码被截到尾部,必须写明");
 {
-  // ★ 画在**失败节点卡片**上的那行字必须与兄弟节点同口径。`commandRunner` 里
+  // 代码节点的输出上限是 16000 字节(MAX_CAPTURE_BYTES),超了从头丢。**静默截断**是
+  // 缺陷:下游把一段缺了头的输出当成完整的用。这一条与命令节点/入口脚本共用
+  // `lib/outBuf.ts` 的 `markTruncatedTail`。
+  const big = 16_000 * 2;
+  const out = await runCodeNode({
+    code: `process.stdout.write("A".repeat(${big}) + "TAILMARK");`,
+    language: "node", timeoutMs: 10_000, signal: controller().signal,
+  });
+  eq("刷屏的代码照样 success", out.status, "success");
+  const stdout = String(out.outputs?.stdout);
+  check("★ 截断写在了输出前面", stdout.startsWith("…(输出超过"), stdout.slice(0, 60));
+  check("★ 说明里带上限字节数", stdout.includes("16000"), stdout.slice(0, 60));
+  check("正文仍是尾部(TAILMARK 还在)", stdout.endsWith("TAILMARK"), stdout.slice(-30));
+  // **没超长的不加那一行** —— 否则每段普通输出上都挂着一条假告警。
+  const small = await runCodeNode({
+    code: `process.stdout.write("short");`, language: "node", timeoutMs: 10_000, signal: controller().signal,
+  });
+  check("★ 没超长的输出不加截断说明", !String(small.outputs?.stdout).includes("输出超过"), small.outputs);
+}
+
+console.log("\nLanguage · 用户可见的失败原因一律中文");
+{  // ★ 画在**失败节点卡片**上的那行字必须与兄弟节点同口径。`commandRunner` 里
   //   「命令被信号终止…没有拿到退出码」/`进程退出码 未知` 都是中文,而这一支同一处境
   //   (`run.code === null` —— 进程被信号杀掉,拿不到退出码)从前写死英文 `unknown`。
   //   commit 4e1a9a0a 修了同一文件里**超时**那句英文,漏了这一句。整句写死,不做"读一个

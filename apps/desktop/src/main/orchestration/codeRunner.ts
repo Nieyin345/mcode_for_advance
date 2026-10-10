@@ -29,6 +29,7 @@ import * as path from "node:path";
 import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeOutcome } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
 import { spawnRun } from "@main/lib/spawnRun.js";
+import { markTruncatedTail } from "@main/lib/outBuf.js";
 
 export type CodeLanguage = "python" | "node" | "shell" | "powershell";
 export interface CodeProgress { percent?: number; message?: string; }
@@ -168,8 +169,14 @@ export async function runCodeNode(a: {
       onStdoutLine: consumeLine,
     });
 
-    const stdout = run.stdout.trim();
-    const stderr = run.stderr.trim();
+    // **截断要说出来**(见 `markTruncatedTail`)。两条流各自记 —— 代码节点不像命令节点
+    // 那样把两路并成一段(它分开交 `stdout` / `stderr`),所以各判各的标记。
+    const stdout = run.stdoutTruncated
+      ? markTruncatedTail(run.stdout.trim(), MAX_CAPTURE_BYTES)
+      : run.stdout.trim();
+    const stderr = run.stderrTruncated
+      ? markTruncatedTail(run.stderr.trim(), MAX_CAPTURE_BYTES)
+      : run.stderr.trim();
     const outputs = {
       ...(result?.outputs ?? {}),
       exitCode: run.code,

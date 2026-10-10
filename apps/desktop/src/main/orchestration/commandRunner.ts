@@ -27,6 +27,7 @@ import { COMMAND_OUTPUT_TAIL_CHARS } from "@contracts/nodeType";
 import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeArtifact, type NodeOutcome } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
 import { spawnRun, type SpawnFn } from "@main/lib/spawnRun.js";
+import { markTruncatedTail } from "@main/lib/outBuf.js";
 
 export interface CommandProgress {
   percent?: number;
@@ -125,7 +126,12 @@ export async function runCommandNode(
     ...(deps?.spawn !== undefined ? { spawn: deps.spawn } : {}),
   });
 
-  const text = run.stdout.trim();
+  // **截断要说出来**(见 `markTruncatedTail`)。`text` 同时是给下游读的正文和
+  // `{{那步.stdout}}` 取的值 —— 两处都得让人看见"这是尾巴",否则下游会把一段缺头的
+  // 输出当成完整的,据此下结论。
+  const rawText = run.stdout.trim();
+  const truncated = run.stdoutTruncated;
+  const text = truncated ? markTruncatedTail(rawText, COMMAND_OUTPUT_TAIL_CHARS) : rawText;
   const protocol = protocolState.result;
   const artifacts = normalizeNodeArtifacts(protocol?.artifacts, cwd ?? process.cwd());
 

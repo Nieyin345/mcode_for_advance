@@ -121,8 +121,25 @@ console.log("\n真进程 · 超长只留尾部");
 {
   const out = await runCommandNode({ command: NODE_FLOOD, timeoutMs: 0, signal: controller().signal });
   eq("仍然 success", out.status, "success");
-  eq("尾部不多不少就是上限", String(out.outputs?.["stdout"]).length, COMMAND_OUTPUT_TAIL_CHARS);
-  check("结尾是最后写的那段(尾部语义,不是头部)", String(out.outputs?.["stdout"]).endsWith("TAILMARK"), out.outputs);
+  const stdout = String(out.outputs?.["stdout"]);
+  check("结尾是最后写的那段(尾部语义,不是头部)", stdout.endsWith("TAILMARK"), out.outputs);
+  // **截断必须是说出来的,不能是静默的。** 从前的断言是"长度不多不少就是上限" —— 那
+  // 恰恰把缺陷钉住了:下游拿到一段缺了头的输出,而它自己看不出缺了。现在多出的那行
+  // 说明是**刻意**的,所以判据改成"正文之外还有一行截断说明"。
+  check("★ 输出前面写明了被截断", stdout.includes("输出超过") && stdout.includes("只留了结尾"), stdout.slice(0, 80));
+  check(
+    "★ 说明里带着上限字节数(用户知道丢了多少)",
+    stdout.includes(String(COMMAND_OUTPUT_TAIL_CHARS)),
+    stdout.slice(0, 80),
+  );
+  // 说明是**一行**,加在正文之前 —— 正文本身仍然是那个上限长度。
+  const bodyOnly = stdout.split("\n").slice(1).join("\n");
+  eq("正文仍然不多不少就是上限", bodyOnly.length, COMMAND_OUTPUT_TAIL_CHARS);
+  check("★ 说明在最前面(读者开始读之前就该知道这是尾巴)", stdout.startsWith("…(输出超过"), stdout.slice(0, 40));
+  // 没截断的输出**不该**被加那一行 —— 否则每条命令的输出上都挂着一条假告警。
+  const small = await runCommandNode({ command: NODE_EXIT0, timeoutMs: 0, signal: controller().signal });
+  check("★ 没超长的输出不加截断说明", !String(small.outputs?.["stdout"]).includes("输出超过"), small.outputs);
+  check("summary 也是带说明的那一份(下游读的是它)", String(out.summary).includes("输出超过"), String(out.summary).slice(0, 60));
 }
 
 console.log("\n真进程 · 超时杀掉");
@@ -275,10 +292,13 @@ console.log("\n假 spawn · 输出分多块到达时同样只留尾部");
   const out = await runCommandNode({ command: "x", timeoutMs: 0, signal: controller().signal }, { spawn });
   const text = String(out.outputs?.["stdout"]);
   eq("success", out.status, "success");
-  check("总长压在上限内", text.length <= COMMAND_OUTPUT_TAIL_CHARS, text.length);
-  check("最后一块在", text.endsWith("LASTCHUNK"), text.slice(-40));
-  check("最开头那块被整个挤掉了", !text.startsWith("A") && !text.includes("AAAA"), text.slice(0, 20));
-  check("中间那块还在", text.startsWith("B"), text.slice(0, 5));
+  // 这几条说的是**环形缓冲的语义**(只留尾部),而正文前面现在还挂着那行截断说明
+  // (见 `markTruncatedTail`)。判据落在正文上:去掉第一行再量。
+  const body = text.split("\n").slice(1).join("\n");
+  check("总长压在上限内", body.length <= COMMAND_OUTPUT_TAIL_CHARS, body.length);
+  check("最后一块在", body.endsWith("LASTCHUNK"), body.slice(-40));
+  check("最开头那块被整个挤掉了", !body.startsWith("A") && !body.includes("AAAA"), body.slice(0, 20));
+  check("中间那块还在", body.startsWith("B"), body.slice(0, 5));
 }
 
 console.log(`\n${total - failures}/${total} checks passed${failures === 0 ? "" : ` — ${failures} FAILED`}`);
