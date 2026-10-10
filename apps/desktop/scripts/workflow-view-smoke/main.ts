@@ -558,6 +558,22 @@ const blankFilter = (choices: string[]): string[] =>
   choices.filter((c) => c.trim() !== "");
 eq("下拉里的空候选值滤掉了", blankFilter(["不限", "", "  ", "近三年"]).join(","), "不限,近三年");
 
+// ★ `SearchFilterBar.pick` 落盘失败要说出来。它也是"先乐观改 state、再落盘"的偏好 ——
+//   静默的话用户以为设好了,而下一轮注入读到的仍是旧值。从前那里的注释写着"web shim
+//   没有这条 RPC",**已经不成立**:`setting:set` 在 `webApi.ts` 里是白名单里的一员。
+//   判据钉源码(组件挂在聊天壳里,无头跑不出这次点击)。
+{
+  const src = readFileSync("src/renderer/components/chat/SearchFilterBar.tsx", "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const at = code.indexOf("const pick = (");
+  const body = code.slice(at, code.indexOf("\n  };", at));
+  check(
+    "★ 固定条件条选中落盘失败走 toast(不再静默吞)",
+    at >= 0 && /\.catch\(/.test(body) && /useToastStore\.getState\(\)\.push\(/.test(body) && body.includes("store.toast.settingSaveFailed"),
+    body.slice(0, 320),
+  );
+}
+
 console.log("\n引用型清单的校验(装进来的时候就挡住)");
 const refManifest = (params: unknown[]): unknown => ({ ...AGENT_MANIFEST, params });
 check(

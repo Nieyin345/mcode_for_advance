@@ -33,6 +33,7 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { Tooltip } from "@renderer/components/ui/index.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { WORKFLOW_NODE_PREFS_SETTING_PREFIX } from "@contracts/ipc";
 import { MAIN_NODE_TYPE_ID, NODE_CRITERIA_PARAM_KEY, NodeParamRefSourceSchema } from "@contracts/nodeType";
 import type { NodeParamRefSource } from "@contracts/nodeType";
@@ -141,14 +142,24 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
     };
   }, [workflowId]);
 
-  /** 选中一格:落设置表(整份覆盖 —— 值就是一张小地图)。web shim 存不了就算了。 */
+  /** 选中一格:落设置表(整份覆盖 —— 值就是一张小地图)。 */
   const pick = (name: string, value: string): void => {
     const next = { ...(values ?? {}), [name]: value };
     setValues(next);
+    // ⚠️ **落盘失败要说出来。** 这是"先乐观改 state、再落盘"的偏好:失败静默的话
+    // 用户以为选好了,而下一轮注入读到的仍是旧值(或压根没存)。从前这里注释写着
+    // "web shim 没有这条 RPC" ——**已经不成立了**:`setting:set` 在 `webApi.ts` 里
+    // 是白名单里的一员(见那里的 `setting` 段),所以手机端也会真的写;写失败就是
+    // 写失败,不是"这端存不了"。走与 `uiPrefs` / `sessionStore` 那批同一句
+    // `store.toast.settingSaveFailed`。
     void api.setting
       .set({ key: WORKFLOW_NODE_PREFS_SETTING_PREFIX + workflowId, value: JSON.stringify(next) })
-      .catch(() => {
-        // 存不了:界面上的选择照常,只是这轮注入读不到(web shim 没有这条 RPC)。
+      .catch((err: unknown) => {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("store.toast.settingSaveFailed"),
+          body: err instanceof Error ? err.message : String(err),
+        });
       });
   };
 

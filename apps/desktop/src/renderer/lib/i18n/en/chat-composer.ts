@@ -457,6 +457,7 @@ export const en = {
   // placeholder while they are still loading. "Nothing to pick yet", not "none":
   // the latter would read as "your library is empty".
   "chat.nodeCriteria.noOptions": "Nothing to pick yet",
+  "chat.nodeCriteria.saveFailed": "Couldn't save this criterion",
 
   // ── new sub-conversation (the "+" menu item; see chat/NewSubChatPicker) ──
   "chat.newSubChat": "New sub-conversation",
