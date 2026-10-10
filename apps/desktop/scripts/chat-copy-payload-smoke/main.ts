@@ -37,8 +37,10 @@ import { blocksToText } from "@renderer/components/chat/MessageRow.js";
 import {
   composePromptWithTags,
   makeContentTag,
+  makeElementTag,
   makeFileTag,
   makeQuoteTag,
+  attachmentKindOfTag,
   pasteBlock,
   type ContentTag,
 } from "@renderer/lib/contentTag.js";
@@ -56,33 +58,34 @@ function check(name: string, cond: boolean, detail?: unknown): void {
   console.log(`  FAIL ${name}${detail === undefined ? "" : ` — ${JSON.stringify(detail)}`}`);
 }
 
-/** tag → 它在已发送消息里对应的 attachment 块（与 ChatPane.composeSendAttachments
- *  同一条映射：file/library → "file"，quote → "quote"，其余 → "paste"）。 */
+/** tag → 它在已发送消息里对应的 attachment 块（走**生产**的 `attachmentKindOfTag`，
+ *  不是测试里另抄一份映射 —— 抄一份的话映射本身漂了就测不出来）。 */
 function blockOf(tag: ContentTag): Block {
   return {
     kind: "attachment",
     preview: tag.preview,
     content: tag.content,
-    attachmentKind:
-      tag.kind === "file" || tag.kind === "library"
-        ? "file"
-        : tag.kind === "quote"
-          ? "quote"
-          : "paste",
+    attachmentKind: attachmentKindOfTag(tag.kind),
     filePath: tag.filePath,
   };
 }
 
-// 三种附件各来一个，另加第二个粘贴块（序号才显形）。
+// 四种附件各来一个，另加第二个粘贴块（序号才显形）。
 const fileTag = makeFileTag("D:/proj/src/index.ts");
 const paste1 = makeContentTag("第一段被粘贴的正文");
 const quoteTag = makeQuoteTag({
   text: "这段是我从别处摘来的",
   origin: { kind: "file", filePath: "D:/proj/notes.md", name: "notes.md", lines: { start: 3, end: 5 } },
 });
+const elementTag = makeElementTag({
+  selector: "div.card > p.title",
+  url: "https://example.com/a",
+  outerHTML: "<p class=\"title\">标题</p>",
+  preview: "p.title",
+} as never);
 const paste2 = makeContentTag("第二段被粘贴的正文");
 
-const tags: ContentTag[] = [fileTag, paste1, quoteTag, paste2];
+const tags: ContentTag[] = [fileTag, paste1, quoteTag, elementTag, paste2];
 const blocks: Block[] = tags.map(blockOf);
 
 // ── 1. 复制文本 == 发送文本（本套的核心判据）──────────────────────────
@@ -105,14 +108,20 @@ const blocks: Block[] = tags.map(blockOf);
 
   const copiedPaste = blocksToText([blockOf(paste1)]);
   check("★ paste 附件仍走带序号的分隔块 pasteBlock(1, …)", copiedPaste === pasteBlock(1, paste1.content), copiedPaste);
+
+  // ▼ element 支：从前它在 composeSendAttachments 里被折成 "paste"，于是复制出来是
+  //   `--- pasted content N (…) ---`，而真正发出去的是 `--- page element (…) ---`。
+  const copiedElement = blocksToText([blockOf(elementTag)]);
+  check("★ element 附件复制成原样的 page element 块（自带抬头，不再包成 paste）", copiedElement === elementTag.content, copiedElement);
+  check("…且不是 pasteBlock 包出来的", copiedElement !== pasteBlock(1, elementTag.content), copiedElement);
 }
 
-// ── 3. 序号只数 paste，file / quote 不占号（否则两个粘贴块的序号会错位）──
+// ── 3. 序号只数 paste，file / quote / element 不占号（否则两个粘贴块的序号会错位）──
 {
-  // tags 顺序是 [file, paste, quote, paste] → 粘贴块应是第 1、2 个。
+  // tags 顺序是 [file, paste, quote, element, paste] → 粘贴块应是第 1、2 个。
   const copied = blocksToText(blocks);
   check("★ 第一个粘贴块序号为 1（file 不占号）", copied.includes(pasteBlock(1, paste1.content)), copied);
-  check("★ 第二个粘贴块序号为 2（quote 不占号）", copied.includes(pasteBlock(2, paste2.content)), copied);
+  check("★ 第二个粘贴块序号为 2（quote / element 不占号）", copied.includes(pasteBlock(2, paste2.content)), copied);
   check("…不存在把 file 包成 pasteBlock 的痕迹", !copied.includes("pasted content 1 (") || copied.includes(pasteBlock(1, paste1.content)), copied);
 }
 

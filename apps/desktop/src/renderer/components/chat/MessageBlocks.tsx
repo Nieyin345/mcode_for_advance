@@ -14,6 +14,7 @@ import {
   IconFile,
   IconPhoto,
   IconQuote,
+  IconCode,
   // Tool-kind icons (left glyph of each action card).
   IconBulb,
   IconTerminal,
@@ -47,7 +48,7 @@ import { lineDiff, diffSummary, countLines } from "@renderer/lib/lineDiff.js";
 import { FileLink } from "./FileLink.js";
 import { ImageWithPreview } from "@renderer/components/ui/index.js";
 import { TagPopover } from "./TagPopover.js";
-import { isImageFilePath, type ContentTag } from "@renderer/lib/contentTag.js";
+import { isImageFilePath, tagKindOfAttachment, type ContentTag } from "@renderer/lib/contentTag.js";
 import { BUILT_IN_COMMANDS } from "@renderer/lib/slashCommands.js";
 import { isAgentMailTool } from "@renderer/lib/agentMail.js";
 import { AgentMailOutCard } from "./AgentMailCard.js";
@@ -1291,8 +1292,11 @@ function AttachmentCard({
   preview: string;
   content: string;
   /** "quote" = a side-chat's reference to its parent session's latest output
-   *  — rendered like a paste (inline content block, popover to expand). */
-  attachmentKind?: "paste" | "file" | "quote";
+   *  — rendered like a paste (inline content block, popover to expand).
+   *  "element" = a page element picked from the embedded browser; its content
+   *  is a delimited `--- page element (…) ---` block, so it must NOT be
+   *  re-wrapped as a paste. */
+  attachmentKind?: "paste" | "file" | "quote" | "element";
   filePath?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -1304,6 +1308,8 @@ function AttachmentCard({
   /** 用户摘来的引用（2026-09-24）—— 与 paste 同一种交互（点开看全文），
    *  只是图标不同，好让用户一眼分得清"这是我摘的"还是"这是我打的"。 */
   const isQuote = attachmentKind === "quote";
+  /** 网页取来的元素片段 —— 同 quote，图标自成一档（代码图标）。 */
+  const isElement = attachmentKind === "element";
 
   // Non-image file cards open the file in the IDE editor (per-type view
   // handled by the editor: markdown rendered, text edited). Paste cards AND
@@ -1333,7 +1339,7 @@ function AttachmentCard({
   // TagPopover expects a ContentTag; build a minimal one from the attachment.
   const tag: ContentTag = {
     id: "attachment",
-    kind: attachmentKind === "file" ? "file" : attachmentKind === "quote" ? "quote" : "paste",
+    kind: tagKindOfAttachment(attachmentKind),
     preview,
     content,
     filePath,
@@ -1370,6 +1376,8 @@ function AttachmentCard({
           )
         ) : isQuote ? (
           <IconQuote size={12} className="opacity-80" />
+        ) : isElement ? (
+          <IconCode size={12} className="opacity-80" />
         ) : (
           <IconClipboard size={12} className="opacity-80" />
         )}

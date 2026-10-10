@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { Project, Session, SessionBookmark } from "@contracts/session";
 import type { SessionRunningSnapshotEvent, TurnFilesEvent, CompactResultEvent, TurnRewoundEvent, RuntimeEvent, NodeArtifact, NodeExecutionRecord, PermissionMode, EffortLevel, AskUserQuestionItem, ApprovalRequestEvent, PlanApprovalRequestEvent, PlanUpdateEvent, WorkflowNodeResultEvent, WorkflowChoiceOption, SubagentSnapshot, TranscriptBlock, ContextSnapshot, TurnUsageRecord, EngineCommandInfo } from "@contracts/runtime";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
-import type { ContentTag } from "@renderer/lib/contentTag.js";
+import type { AttachmentKind, ContentTag } from "@renderer/lib/contentTag.js";
 import { type NavEntry } from "@renderer/lib/editorNav.js";
 import { disposeModel, getDisplayedPath } from "@renderer/lib/editorModelCache.js";
 import { ideDirtyTracker, partitionClosable, type IdeCloseResult } from "@renderer/lib/ideDirty.js";
@@ -105,7 +105,7 @@ export type Block =
     /** Raw text the engine printed, verbatim. Rendered as-is (monospace) —
     *  it is the command's own output, not prose to be markdown-parsed. */
     content: string }
-  | { kind: "attachment"; preview: string; content: string; attachmentKind?: "paste" | "file" | "quote"; filePath?: string }
+  | { kind: "attachment"; preview: string; content: string; attachmentKind?: AttachmentKind; filePath?: string }
   | {
       kind: "plan";
       /** Stable id for the in-turn live plan block — "current" while the turn
@@ -351,7 +351,7 @@ export interface QueuedPrompt {
 export interface PromptAttachment {
   preview: string;
   content: string;
-  attachmentKind?: "paste" | "file" | "quote";
+  attachmentKind?: AttachmentKind;
   filePath?: string;
 }
 
@@ -1443,7 +1443,7 @@ export interface SessionState {
 
   sendPrompt: (
     prompt: string,
-    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file" | "quote"; filePath?: string }[],
+    attachments?: { preview: string; content: string; attachmentKind?: AttachmentKind; filePath?: string }[],
     /** Text shown in the user message's text block. Defaults to `prompt`,
      *  but when attachments are present the caller passes just the typed
      *  text (without the inlined attachment content) so the card + text
@@ -1488,7 +1488,7 @@ export interface SessionState {
     sessionId: string,
     messageId: string,
     newPrompt: string,
-    attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file" | "quote"; filePath?: string }[],
+    attachments?: { preview: string; content: string; attachmentKind?: AttachmentKind; filePath?: string }[],
     displayText?: string,
     skillsUsed?: string[],
     images?: PromptImage[],

@@ -347,6 +347,45 @@ export function pasteBlock(index: number, content: string): string {
   return `--- pasted content ${index} (${content.length} chars) ---\n${content}\n--- end ---`;
 }
 
+/** 已发送消息里附件块记的 kind —— 比 composer 的 `ContentTagKind` **少一档**
+ *  (`library` 归 `file`)。"片段"(element)自成一档:它的 `content` 是一整块
+ *  `--- page element (…) ---` 抬头块,与粘贴块(generic)的落法不同。 */
+export type AttachmentKind = "paste" | "file" | "quote" | "element";
+
+/** `ContentTagKind` → 落库的 `AttachmentKind`。**唯一一份** —— 从前这条映射在
+ *  ChatPane 的 `composeSendAttachments` / `handleEditQueuedPrompt` / `handleEditSubmit`
+ *  各手写了一遍,其中前两处把 `element` 归成了 `paste`,于是「复制」把元素片段重建成
+ *  `--- pasted content N ---` 而真正发出去的是 `--- page element (…) ---`(见
+ *  `blocksToText` 的注释)。集中到这里,新加一档只需改一处。 */
+export function attachmentKindOfTag(kind: ContentTagKind): AttachmentKind {
+  switch (kind) {
+    case "file":
+    case "library":
+      return "file";
+    case "quote":
+      return "quote";
+    case "element":
+      return "element";
+    default:
+      return "paste";
+  }
+}
+
+/** 反向:已发送消息里的附件块 kind → 重建的 `ContentTagKind`(编辑重发 / 队列重编辑用)。
+ *  与 {@link attachmentKindOfTag} 是同一张表的两个方向,改一处必须改两处。 */
+export function tagKindOfAttachment(kind: AttachmentKind | undefined): ContentTagKind {
+  switch (kind) {
+    case "file":
+      return "file";
+    case "quote":
+      return "quote";
+    case "element":
+      return "element";
+    default:
+      return "paste";
+  }
+}
+
 /** Compose the final prompt string from the textarea text + all tags.
  *  Tags are appended so the model can clearly see "user typed X, plus these
  *  N attachments". Order: typed text first, then tags in array order.

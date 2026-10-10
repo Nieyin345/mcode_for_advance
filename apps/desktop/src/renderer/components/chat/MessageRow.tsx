@@ -393,16 +393,19 @@ export function blocksToText(blocks: Block[]): string {
       const t = b.text.trim();
       if (t) out.push(`> ${t.replace(/\n/g, "\n> ")}`);
     } else if (b.kind === "attachment") {
-      // **三种 kind 各有各的落法** —— 必须与 `composePromptWithTags` 逐字一致(见
+      // **四种 kind 各有各的落法** —— 必须与 `composePromptWithTags` 逐字一致(见
       // contentTag.ts 的 `pasteBlock` 注释),否则复制出来的东西 ≠ 实际发出去的那份:
-      //   · paste  → `pasteBlock(全局序号, …)`(带序号的分隔块);
-      //   · file   → 原样的 `@path` 一行(file/library tag 的 content 就是它,**不包块**);
-      //   · quote  → content 自带「user's quote(…)+ source」抬头,**原样发出**。
-      // 从前这里把**每一个**附件都塞进 `pasteBlock` —— 于是一份被引用的文件复制出来变成
+      //   · paste   → `pasteBlock(全局序号, …)`(带序号的分隔块);
+      //   · file    → 原样的 `@path` 一行(file/library tag 的 content 就是它,**不包块**);
+      //   · quote   → content 自带「user's quote(…)+ source」抬头,**原样发出**;
+      //   · element → content 自带「page element(selector)+ source」抬头,**原样发出**。
+      // 从前这里把**每一个**附件都塞进 `pasteBlock` —— 一份被引用的文件复制出来变成
       // "--- pasted content N (…chars) ---\n@路径\n--- end ---",与真正发送的 `@路径`
-      // 一行对不上(粘贴块的序号修正只堵了 paste 那一支,file / quote 两支仍旧漂着)。
+      // 一行对不上。后来补了 file / quote 两支,却把 **element 漏在 paste 那一支**里:
+      // 一次「网页取元素」复制出来是 `--- pasted content 1 (…) ---`,而真正发给模型的是
+      // `--- page element (…) ---`。四支现在都在这里。
       const kind = b.attachmentKind;
-      if (kind === "file" || kind === "quote") {
+      if (kind === "file" || kind === "quote" || kind === "element") {
         out.push(b.content);
       } else {
         pasteIdx += 1;

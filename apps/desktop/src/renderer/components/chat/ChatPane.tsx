@@ -42,6 +42,9 @@ import {
   makeElementTag,
   shouldPromoteToTag,
   FILE_DRAG_MIME,
+  attachmentKindOfTag,
+  tagKindOfAttachment,
+  type AttachmentKind,
 } from "@renderer/lib/contentTag.js";
 import type { SkillInfo, BuiltInCommand, EngineCommand } from "@renderer/lib/slashCommands.js";
 import { MessageBlocks, TurnPanel, BatchToolGroup, TURN_FOLD_MS, type BeforeContentMap } from "./MessageBlocks.js";
@@ -209,14 +212,14 @@ function LiveLedgerHead({ turnMeta, blocks }: { turnMeta?: TurnMeta; blocks: Blo
 type SendAttachment = {
   preview: string;
   content: string;
-  attachmentKind?: "paste" | "file" | "quote";
+  attachmentKind?: AttachmentKind;
   filePath?: string;
 };
 
-/** Stream-facing attachment records from the composer tags. Element tags fold
- *  into "paste" for display purposes (they're inline content blocks, same as
- *  a paste); the "element" kind only matters inside the composer's
- *  ContentTag, not in the persisted attachment record.
+/** Stream-facing attachment records from the composer tags. The whole
+ *  `ContentTagKind` → `AttachmentKind` mapping lives in
+ *  {@link attachmentKindOfTag} (one table, not one per call site) — see its
+ *  comment for the element/paste drift that per-site copies caused.
  *
  *  文献库 tag 归为 "file" —— 它在提示词里就是一行 `@路径`(指向库的清单文件),
  *  与文件附件同构,展示成附件卡片比展示成一大块"粘贴内容"更贴切。模版 tag 同理
@@ -225,16 +228,7 @@ function composeSendAttachments(tags: ReadonlyArray<ContentTag>): SendAttachment
   return tags.map((t) => ({
     preview: t.preview,
     content: t.content,
-    attachmentKind:
-      t.kind === "file" || t.kind === "library"
-        ? "file"
-        : // 引用单成一类（2026-09-24）。`SendAttachment` 里早就预留了 "quote"，
-          // 但从来没产出过 —— 于是引用在已发送的消息里长得和"粘贴内容"一样，
-          // 用户看不出哪块是自己摘来的、哪块是自己打的。`AttachmentCard` 那边的
-          // 分支也写好了，这里接上即可。
-          t.kind === "quote"
-          ? "quote"
-          : "paste",
+    attachmentKind: attachmentKindOfTag(t.kind),
     filePath: t.filePath,
   }));
 }
@@ -2206,14 +2200,9 @@ function ChatPaneForSession({
     if (item.attachments && item.attachments.length > 0) {
       const restored: ContentTag[] = item.attachments.map((a, i) => ({
         id: `reedit-${item.id}-${i}`,
-        // 三种都还原（同 `handleEditSubmit` 那段：quote 归成 paste 会多包一层
-        // `--- pasted content ---`，把来源抬头埋进正文）。
-        kind:
-          a.attachmentKind === "file"
-            ? "file"
-            : a.attachmentKind === "quote"
-              ? "quote"
-              : "paste",
+        // 四种都还原（同 `handleEditSubmit`：quote/element 归成 paste 会多包一层
+        // `--- pasted content ---`，把各自的来源抬头埋进正文）。
+        kind: tagKindOfAttachment(a.attachmentKind),
         preview: a.preview,
         content: a.content,
         filePath: a.filePath,
@@ -2362,15 +2351,11 @@ function ChatPaneForSession({
       const ab = b as Extract<Block, { kind: "attachment" }>;
       return {
         id: `edit-tag-${i}`,
-        // 三种 kind 都要还原（2026-09-24）：`quote` 的 `content` 自带「user's quote
-        // （…）+ 来源」抬头，重新拼进提示词时走 quote 那一支原样输出；若归成 paste
-        // 会被再包一层 `--- pasted content ---`，来源那几行就埋进正文里了。
-        kind:
-          ab.attachmentKind === "file"
-            ? "file"
-            : ab.attachmentKind === "quote"
-              ? "quote"
-              : "paste",
+        // 四种 kind 都要还原（2026-09-24）：`quote` 的 `content` 自带「user's quote
+        // （…）+ 来源」抬头，`element` 自带「page element（…）」抬头 —— 重新拼进提示词
+        // 时走各自那一支原样输出；若归成 paste 会被再包一层 `--- pasted content ---`，
+        // 来源那几行就埋进正文里了。
+        kind: tagKindOfAttachment(ab.attachmentKind),
         preview: ab.preview,
         content: ab.content,
         filePath: ab.filePath,
@@ -2380,12 +2365,7 @@ function ChatPaneForSession({
     const attachments = tags.map((t) => ({
       preview: t.preview,
       content: t.content,
-      attachmentKind:
-        t.kind === "file"
-          ? ("file" as const)
-          : t.kind === "quote"
-            ? ("quote" as const)
-            : ("paste" as const),
+      attachmentKind: attachmentKindOfTag(t.kind),
       filePath: t.filePath,
     }));
     // Preserve the original message's skill pills (if any) so the edited
