@@ -177,5 +177,23 @@ console.log("C. per-message caching");
   check("★ 键位回调不再直接调用闭包里的 handleSave()", mountAt >= 0 && !/addCommand\([\s\S]*?void\s+handleSave\(\)/.test(mountBody));
 }
 
+/* ── ModelDropdown:每个供应商子菜单的 Popup 都要带 `ref={subPopupRef}` ──
+ *
+ * `useSuppressBrowserView(open || hint !== null, [popupRef, subPopupRef, hintRef])` 只在
+ * **测量到**的弹层矩形与内嵌浏览器舞台重叠时收起那个原生 WebContentsView。子菜单里的
+ * Popup 没有这个 ref,量不到矩形 —— 打开供应商子菜单、而它恰好压住浏览器面板时,OS 级
+ * 视图仍盖在上面,子菜单画在它底下、点不动。三段子菜单(Pi / Codex / 自定义端点)几乎是
+ * 同一块代码抄了三遍,Codex 那一段**漂开了**(少了 ref)。判据钉源码:有多少个
+ * `Menu.SubmenuRoot`,就得有多少个 `ref={subPopupRef}`。 */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const strip = (s: string) => s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const md = strip(readFileSync(join(process.cwd(), "src/renderer/components/chat/ModelDropdown.tsx"), "utf8"));
+  const submenus = (md.match(/<Menu\.SubmenuRoot/g) ?? []).length;
+  const refs = (md.match(/ref=\{subPopupRef\}/g) ?? []).length;
+  check("★ 每个 ModelDropdown 子菜单 Popup 都带 ref={subPopupRef}(浏览器视图抑制要量到它)", submenus > 0 && submenus === refs, { submenus, refs });
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exit(1);

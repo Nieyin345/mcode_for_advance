@@ -431,6 +431,7 @@ export function ModelDropdown({
                       <Menu.Portal>
                         <Menu.Positioner side="right" align="start" sideOffset={4}>
                           <Menu.Popup
+                            ref={subPopupRef}
                             className={cn(
                               "z-50 min-w-[220px] origin-left rounded-lg border border-edge bg-surface py-1.5 shadow-2xl",
                               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
