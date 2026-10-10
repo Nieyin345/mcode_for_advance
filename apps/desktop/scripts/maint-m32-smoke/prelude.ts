@@ -21,6 +21,9 @@ export const server = {
   /** 这些方法的回包要手动放行 */
   hold: new Set<string>(),
   held: [] as Held[],
+  /** 这些方法直接 **reject**(模拟 IPC 真抛:参数不过校验 / 传输断)。 */
+  reject: new Set<string>(),
+  rejectMsg: "mock: IPC 传输中断",
 };
 
 export function callsOf(method: string): Array<Record<string, unknown>> {
@@ -66,6 +69,10 @@ globalTarget.fetch = async (url: string, init?: { body?: string }): Promise<unkn
     input: Record<string, unknown>;
   };
   server.calls.push({ method, input: input ?? {} });
+  // 强制 reject —— 用来驱动"IPC 真抛"那一类(读 diff 失败)。
+  if (server.reject.has(method)) {
+    return { status: 500, json: async () => ({ ok: false, error: server.rejectMsg }) };
+  }
   // 结果在**调用那一刻**算出来 —— 回包后到,带的仍是当时那份数据。
   const result = handle(method, input ?? {});
   const resp = { status: 200, json: async () => ({ ok: true, result }) };

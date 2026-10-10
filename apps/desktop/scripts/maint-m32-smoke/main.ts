@@ -28,7 +28,7 @@ import {
   __text,
 } from "./fakeReact.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { MobileGitScreen } from "@renderer/components/mobile/MobileGitScreen.js";
+import { MobileGitScreen, DiffOverlay } from "@renderer/components/mobile/MobileGitScreen.js";
 import { parsePatch } from "@renderer/components/mobile/PatchView.js";
 import type { GitRepo, GitStatusResult } from "@contracts/ipc";
 import type { Project } from "@contracts/session";
@@ -191,6 +191,30 @@ console.log("\n[3] PatchView:尾随换行不留幽灵行,内部空行仍算上�
     rows.some((r) => r.kind === "ctx" && r.text === "" && r.oldNo === 2 && r.newNo === 2),
     rows,
   );
+}
+
+// ── 3. 读某个文件的 diff 失败:不许伪装成「(无差异)」 ─────────────────────
+//
+// `DiffOverlay` 从前只有 `.then().finally()` —— `git:diff` 拒(仓库被移走 / 传输断)时
+// 异常落进未处理的 rejection(手机壳没有全局监听),而 `rows.length === 0` 于是画成
+// `(无差异)`:用户以为这个文件没改动过,其实只是没读出来。判据立在**用户看到的那行字**上。
+console.log("\n[3] 读 diff 失败:不许伪装成「(无差异)」");
+{
+  reset();
+
+  // 直接挂 `DiffOverlay`(fakeReact 不调用子组件,从 `MobileGitScreen` 点进去跑不到
+  // 它的 effect)。挂上它的 useEffect 就会去要 `git:diff`。
+  server.reject.add("git:diff");
+  __mount(() =>
+    DiffOverlay({ repoPath: "/w/p1/a", file: { path: "changed.ts", staged: false }, onClose: () => {} }),
+  );
+  await __flush();
+
+  check("失败后要过 git:diff", callsOf("git:diff").length > 0, callsOf("git:diff"));
+  const text = __text();
+  check("★ 读 diff 失败要说「读不出这个文件的改动」(不是「(无差异)」)", text.includes("读不出这个文件的改动"), text.slice(0, 300));
+  check("★ 没有把失败伪装成「(无差异)」", !text.includes("(无差异)"), text.slice(0, 300));
+  server.reject.clear();
 }
 
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"} — ${checks - failures}/${checks}`);

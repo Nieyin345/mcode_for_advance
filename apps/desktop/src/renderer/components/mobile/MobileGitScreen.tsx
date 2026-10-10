@@ -955,7 +955,9 @@ function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () =>
   );
 }
 
-function DiffOverlay({
+/** 单文件 diff 全屏浮层。导出是为了无头套件能直接挂载它(fakeReact 不调用子组件,
+ *  从 `MobileGitScreen` 点进去跑不到这里的 effect)——见 `maint-m32-smoke` 第 3 节。 */
+export function DiffOverlay({
   repoPath,
   file,
   onClose,
@@ -967,13 +969,22 @@ function DiffOverlay({
   const { t } = useI18n();
   const [patch, setPatch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setLoadFailed(false);
     void api.git
       .diff({ repoPath, filePath: file.path, staged: file.staged })
       .then((res) => {
         if (!cancelled) setPatch(res.patch);
+      })
+      // **失败要说出来,不能当成"没有差异"。** 读 diff 失败(仓库被移走 / 传输断)时
+      // 从前只有 `.finally` —— 异常落进未处理的 rejection(手机壳没有全局监听),
+      // 而下面 `rows.length === 0` 于是画成 `(无差异)`:用户以为这个文件没改动过,
+      // 其实只是没读出来。
+      .catch(() => {
+        if (!cancelled) setLoadFailed(true);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -1002,6 +1013,10 @@ function DiffOverlay({
       {loading ? (
         <div className="flex flex-1 items-center justify-center text-xs text-content-subtle">
           {t("common.loading")}
+        </div>
+      ) : loadFailed ? (
+        <div className="flex flex-1 items-center justify-center text-xs text-content-subtle">
+          {t("mobile.git.diffLoadFailed")}
         </div>
       ) : rows.length === 0 ? (
         <div className="flex flex-1 items-center justify-center text-xs text-content-subtle">

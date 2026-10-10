@@ -49,6 +49,7 @@ export const en = {
   "mobile.git.noUnstaged": "No unstaged changes",
   "mobile.git.noStaged": "No staged changes",
   "mobile.git.noDiff": "(no diff)",
+  "mobile.git.diffLoadFailed": "Couldn't read this file's changes",
   "mobile.git.cancelNewBranch": "Cancel new branch",
   "mobile.git.copyError": "Copy error message",
   "mobile.git.dismissError": "Dismiss error",

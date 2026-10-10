@@ -63,6 +63,8 @@ export const zh = {
   "mobile.git.noUnstaged": "没有未暂存的更改",
   "mobile.git.noStaged": "没有已暂存的更改",
   "mobile.git.noDiff": "(无差异)",
+  // 读这个文件的 diff 失败(**不是**"没有差异")。混为一谈的话用户以为文件没改动过。
+  "mobile.git.diffLoadFailed": "读不出这个文件的改动",
   "mobile.git.cancelNewBranch": "取消新建分支",
   "mobile.git.copyError": "复制错误信息",
   "mobile.git.dismissError": "关闭错误提示",
