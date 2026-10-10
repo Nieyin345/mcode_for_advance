@@ -995,9 +995,13 @@ export const NODE_MODEL_PARAM_KEY = "model";
 export const NODE_FLOW_RECORD_HELP =
   "开启后读到的是本流程至今每一步的产出,以及用户在各分支处做过的选择,而非仅直接上游。上下文会变长,按需开启;环上的步骤默认开启。";
 
-/** 「产出变量」那一格的说明。同上,**导出**给多个参数表共用。 */
+/** 「产出变量」那一格的说明。同上,**导出**给多个参数表共用。
+ *
+ * ⚠️ **长度必须留在 80 字以内** —— 它是悬停浮窗里的一段,`mcode-admin-smoke` 有断言钉着。
+ * 报告 P6 想要的那层"有下游→查 / 无下游→不查 / 表空→视为无产出"的完整语义塞不进这一格,
+ * 只能压成末尾那半句(`withOutputCheck` 的注释里写着完整判据)。 */
 export const NODE_OUTPUT_VARS_HELP =
-  "以表格逐项声明本步骤要交出的内容。声明之后,下游才能用 `{{某步.变量名}}` 取到对应的值。";
+  "以表格逐项声明本步骤要交出的内容。声明之后,下游才能用 `{{某步.变量名}}` 取到对应的值。留空=不检查;最后一步没有下游,填了也不查。";
 
 /** 从节点参数里取引擎 id。留空 = 跟着对话走。形状容忍度同 {@link skillNamesOf}。 */
 export function providerIdOf(params: Record<string, unknown>): string | undefined {

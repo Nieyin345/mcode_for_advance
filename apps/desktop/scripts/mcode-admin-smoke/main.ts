@@ -844,6 +844,17 @@ async function main(): Promise<void> {
     check(`内置参数的说明都在 ${MAX} 字以内`, tooLong.length === 0, tooLong);
     // **空着也是错的**:说明是"这个参数干什么"唯一的去处,漏了就只剩一个光秃秃的标签。
     check("每个内置参数都有说明", missing.length === 0, missing);
+    // **产出变量那一格要说清"查不查"**(报告 P6)。判据:那个参数在不在、说明里有没有
+    // 那句"最后一步……不查"。语义的完整版在 `withOutputCheck` 的注释里,但作者看的是
+    // 这一格,一句不清就得自己猜"我这步怎么没被检查"。同一句 `NODE_OUTPUT_VARS_HELP`
+    // 还被命令 / 代码 / 对话节点的参数表共用,所以只要一处带上就算全覆盖。
+    {
+      const entries2 = (await loadNodeTypes()).entries.filter((e) => e.source === "builtin");
+      const owners = entries2.filter((e) =>
+        e.manifest.params.some((p) => p.key === "outputVars" && (p.help ?? "").includes("最后一步")),
+      );
+      check("「产出变量」的说明讲清了「最后一步不查」", owners.length > 0, owners.map((e) => e.id));
+    }
   }
 
   console.log("\n预置工作流:改成图的那两个");
