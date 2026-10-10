@@ -314,8 +314,9 @@ function str(v: unknown): string {
  * ## 形状是开放的，一律防御着读
  *
  * 不同引擎的存法不完全一样（有的是数组、有的是 `{ content: [...] }` 包一层、
- * 有的直接是字符串）。这里**不假装知道全部形状**：认不出来的就跳过，最后拼不出东西
- * 时返回空串（调用方会写"(这条没有文本内容)"）。**宁可少给，也不编**。
+ * 有的直接是字符串），**真库还有一种 `{ blocks, turnMeta }` 的外壳**（一轮开场那条
+ * 助手消息，见 `toRecords`）。这里**不假装知道全部形状**：认不出来的就跳过，最后拼不出
+ * 东西时返回空串（调用方会写"(这条没有文本内容)"）。**宁可少给，也不编**。
  */
 function messageTextOf(content: unknown): string {
   const out: string[] = [];
@@ -346,6 +347,13 @@ function messageTextOf(content: unknown): string {
     }
     // 没有 kind/type 但有 `content`（引擎包了一层）→ 往里看一眼。
     if (kind === "" && type === "" && v["content"] !== undefined) take(v["content"]);
+    // ⚠️ **还有一个包了一层的外壳:`{ blocks, turnMeta }`。** 一轮的**开场那条**
+    // 助手消息就是这么落的库（见渲染端 `toRecords`:只有带 `turnMeta` 的才包壳，
+    // 其余照旧是裸块数组）。前两版判据都只认裸数组，于是**每个回合的第一条助手
+    // 回复读出来都是"(这条没有文本内容)"** —— 而这恰恰是用户最想看的那条（他说了
+    // 什么、助手怎么答的），现象正是报告 D8 的"读助手回复全为空"。
+    // 与 `fromRecords` 同一条读法：认 `blocks` 是数组才收，别把 `turnMeta` 当正文。
+    if (kind === "" && type === "" && Array.isArray(v["blocks"])) take(v["blocks"]);
   };
 
   take(content);

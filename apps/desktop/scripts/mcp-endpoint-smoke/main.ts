@@ -1016,6 +1016,16 @@ __seedSessionLogs({
       { role: "assistant", content: [{ kind: "thinking", text: "内部推理SECRET_MARKER" }] },
       { role: "user", content: [{ kind: "text", text: "用户问的问题" }] },
       { role: "assistant", content: [{ kind: "text", text: "助手的最终结论" }] },
+      // ⚠️ **一轮开场那条助手消息的**真形状是 `{ blocks, turnMeta }`**（见渲染端
+      // `toRecords`：只有带 `turnMeta` 的才包壳）。这条曾经漏读 —— 每个回合的**第一条**
+      // 助手回复读出来都是"(这条没有文本内容)"，而那一句恰恰是用户最想看的（报告 D8）。
+      {
+        role: "assistant",
+        content: {
+          blocks: [{ kind: "text", text: "开场那条助手回复" }],
+          turnMeta: { startedAt: 1000, model: "x" },
+        },
+      },
     ],
   },
 });
@@ -1041,6 +1051,24 @@ check(
   "`mode: result` 只给助手的回复",
   logResult.includes("助手的最终结论") && !logResult.includes("用户问的问题"),
   logResult,
+);
+// ⚠️ **一轮开场那条助手消息包在 `{ blocks, turnMeta }` 里**（真库形状，见 `toRecords`）。
+// 判据立在"读出了那句正文"上，不是"没报错"上 —— 从前这里只认裸块数组，这条会读出
+// "(这条没有文本内容)"，而 summary/result 两种模式都会漏掉它（报告 D8）。
+check(
+  "读得出「一轮开场那条助手消息」（真库的 `{blocks, turnMeta}` 外壳）",
+  logSummary.includes("开场那条助手回复") && logResult.includes("开场那条助手回复"),
+  logSummary,
+);
+check(
+  "…而且没有把外壳当正文读出来（不出现 turnMeta/blocks 字样）",
+  !logSummary.includes("turnMeta") && !logSummary.includes("blocks"),
+  logSummary,
+);
+check(
+  "…也没有把 turnMeta 里的字段(模型名)当正文倒出来",
+  !logSummary.includes('\"model\"') && !logSummary.includes("startedAt"),
+  logSummary,
 );
 
 /* ── `session_list`：列出对话，且**标清属于哪个项目**（用户明确要求）────── */
