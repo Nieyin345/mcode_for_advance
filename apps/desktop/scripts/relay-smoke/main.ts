@@ -687,6 +687,42 @@ await scenario("python3 转发器:SFTP 上传真的送出去了", {}, async (vps
   await vps2.close();
 });
 
+await scenario("python3 转发器但 VPS 不给 SFTP:面板上必须是中文人话", {}, async (vps) => {
+  void vps;
+  const vps2 = await startFakeVps({
+    sftp: "reject",
+    execReplies: [
+      { match: "which socat", stdout: "" },
+      { match: "which python3", stdout: "/usr/bin/python3\n" },
+    ],
+  });
+  saveVps(vps2.port);
+  windowStub.__reset();
+
+  const result = await relayManager.connect();
+  eq("SFTP 被拒时报失败", result.ok, false);
+  const st = relayManager.getStatus() as RelayStatusLike;
+  eq("状态不是 connected", st.state === "connected", false);
+  eq("endpoint 没留在面板上", st.endpoint, null);
+  // ⚠️ **判据立在用户看到的那行字上。** `conn.sftp()` 在服务端拒了子系统时抛的是
+  //    ssh2 的纯英文 `Unable to start subsystem: sftp`,它经 `ready` 处理器的 catch
+  //    原样进面板 —— 用户对着一句英文,不知道是哪一步、也不知道下一步做什么。
+  //    这一步的失败有明确出路(开 SFTP / 换 socat),文案必须是中文人话。
+  check(
+    "connect() 的文案是中文人话(不是 ssh2 的英文原话)",
+    /[一-龥]/.test(result.error ?? "") && !/^Unable to start subsystem/i.test(result.error ?? ""),
+    { error: result.error },
+  );
+  check("文案里交代了是 SFTP / 上传这一步", /SFTP|上传|转发脚本/.test(st.error ?? ""), { error: st.error });
+  check("文案里给了下一步(开 SFTP 或改用 socat)", /sftp|socat/i.test(st.error ?? ""), { error: st.error });
+  check(
+    "推给面板的链上也没有整句 ssh2 英文原话",
+    pushes().every((p) => !/^Unable to start subsystem/i.test(p.status.error ?? "")),
+    pushes().map((p) => p.status.error),
+  );
+  await vps2.close();
+});
+
 /* ═══════════════════════ 5b. 端口被占:上一轮的僵尸 vs 别人的服务 ═══════════════════════
  *
  * 这一节钉的是 2026-08-28 那次事故的**根**:端口上有东西在听时,中继起的新转发器

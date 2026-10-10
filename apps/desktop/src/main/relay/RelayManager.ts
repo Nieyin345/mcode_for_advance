@@ -493,8 +493,18 @@ class RelayManagerImpl {
   /** Upload forwarder.py to the VPS via SFTP. */
   private async uploadForwarderScript(conn: Client): Promise<void> {
     await new Promise<void>((resolveP, rejectP) => {
+      const fail = (err: unknown): void => {
+        // ⚠️ **不能让 ssh2 的英文原文直接上中文面板。** `conn.sftp()` 在服务端拒了
+        // SFTP 子系统时抛的是 `Unable to start subsystem: sftp`(纯英文),它经
+        // `ready` 处理器的 catch 原样进 `status.error` → `RemoteConnectPanel` 面板。
+        // 用户对着一句英文,既不知道是哪一步失败、也不知道该做什么。这一步的失败
+        // **有明确的下一步**(开 SFTP 或改用 socat),所以给一句带原因与出路的实话,
+        // 把英文细节留在冒号之后(同 `setupForwardIn` 的形状)。
+        const detail = err instanceof Error ? err.message : String(err);
+        rejectP(new Error(`无法通过 SFTP 上传转发脚本: ${detail}；请确认 VPS 的 sshd 开启了 SFTP 子系统(Subsystem sftp),或改用 socat 转发器`));
+      };
       conn.sftp((err: Error | undefined, sftp: SFTPWrapper) => {
-        if (err) return rejectP(err);
+        if (err) return fail(err);
         // Ensure ~/.mcode/ exists.
         // mkdir 的错误**有意忽略**:目录通常已存在(EEXIST),真正的失败(权限不足等)会在
         // 下一条 `createWriteStream` 上以 `stream.on("error")` 冒出来 —— 那里才是判据。
@@ -502,7 +512,7 @@ class RelayManagerImpl {
         sftp.mkdir(".mcode", () => {
           const remotePath = ".mcode/forwarder.py";
           const stream = sftp.createWriteStream(remotePath, { mode: 0o755 });
-          stream.on("error", rejectP);
+          stream.on("error", fail);
           stream.on("close", () => resolveP());
           stream.end(FORWARDER_PY);
         });
