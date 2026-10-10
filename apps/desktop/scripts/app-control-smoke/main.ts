@@ -56,12 +56,18 @@ check("清单里没有构建机绝对路径", !API_CATALOG.some((e) => /[A-Z]:\/
     bare.length <= 5,
     bare.map((e) => `${e.method} → ${e.output}`),
   );
-  // 抽样钉一个具名接口的返回**真的摊开了**(否则上面那条可能被"全都没摊"蒙混)。
-  const gitStatus = API_CATALOG.find((e) => e.method === "git.status");
+  // 抽样钉一个**具名接口**的返回**真的摊开了**。
+  //
+  // ⚠️ **样本必须是"修复前会退化成一个光秃秃类型名"的方法**,否则这条守着一条恒真的式子。
+  //   初版抽的是 `git.status`,而它返回内联对象 `{ status: GitStatusResult; }` —— 修复前后
+  //   都含 `{` 和 `GitStatusResult`,**区分不出修复**(独立复核实测:这条在变异下没红)。
+  //   `browser.create` 修复前是 `BrowserCreateResult`(裸名)、修复后是判别联合的字段 ——
+  //   拿它做判据才真的承重。
+  const sample = API_CATALOG.find((e) => e.method === "browser.create");
   check(
-    "抽样:git.status 的返回摊出了字段",
-    gitStatus !== undefined && gitStatus.output.includes("GitStatusResult") && gitStatus.output.includes("{"),
-    gitStatus?.output,
+    "抽样:browser.create 的返回摊出了字段(修复前只是一个裸的 BrowserCreateResult)",
+    sample !== undefined && sample.output.includes("browserId") && !/^\s*"?BrowserCreateResult"?\s*$/.test(sample.output.trim()),
+    sample?.output,
   );
 }
 const levels = new Map<string, number>();
