@@ -52,6 +52,18 @@ overrides:
   # ElectronDownloadCacheMode, which only exists from 3.1.0. With 3.0.0 packaging
   # dies at "Cannot read properties of undefined (reading 'ReadWrite')".
   'app-builder-lib>@electron/get': 3.1.0
+  # ── Correctness (not security) fix ───────────────────────────────────────
+  # Crepe's markdown pipeline loads mdast-util-math (via remark-math), whose
+  # inlineMath serializer calls `state.compilePattern(...)`. That method only
+  # exists from mdast-util-to-markdown 2.1.0. But remark-stringify declares
+  # ^2.0.0, so pnpm installed BOTH 2.0.0 and 2.1.0 — the extension came from
+  # 2.1.0 while the state object came from 2.0.0. Any document containing an
+  # inline `$...$` formula then threw "state.compilePattern is not a function"
+  # and the whole preview/save failed (MinerU transcripts of papers hit this
+  # constantly). 2.1.0 is a strict superset of 2.0.0 (it only adds that method),
+  # and every declarer (^2.0.0 / ^2.1.0) accepts it, so collapsing to one copy
+  # is behaviour-preserving. Guarded by scripts/markdown-preview-smoke.
+  'mdast-util-to-markdown': 2.1.0
 
 patchedDependencies:
   '@anthropic-ai/claude-agent-sdk@0.3.258': patches/@anthropic-ai__claude-agent-sdk@0.3.258.patch

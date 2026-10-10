@@ -11,6 +11,12 @@ await withAuditPage(here,async page=>{
   const actual=await page.eval('!!document.querySelector("[data-markdown-preview=crepe-readonly] .milkdown .ProseMirror")');
   check('PDF context-menu transcript side preview uses real Milkdown/Crepe',actual);
   if(!actual)return;
+  // 行内公式必须真的渲染出来。含 `$...$` 的转录是 MinerU 论文的常见形态，
+  // 而 Crepe 的 mdast 链里 mdast-util-math 与 mdast-util-to-markdown 版本不匹配时，
+  // 一碰行内公式就抛 "state.compilePattern is not a function"，整篇预览变成一行报错。
+  check('inline math renders instead of erroring the whole preview',
+    await page.eval('!!document.querySelector(".milkdown .ProseMirror [data-type=math_inline],.milkdown .ProseMirror .math-inline,.milkdown .ProseMirror .katex")'),
+    await page.eval('document.body.innerText.slice(0,200)'));
   await page.waitFor('Array.from(document.querySelectorAll(".milkdown img")).filter(i=>i.complete&&i.naturalWidth>0).length>=2');
   check('transcript selection wins over original PDF filePath',await page.eval('__previewAudit.fileReads[0].which==="md"'));
   const reads=await page.eval('__previewAudit.imageReads');
@@ -29,4 +35,4 @@ await withAuditPage(here,async page=>{
   check('source image references remain unchanged',await page.eval('__previewAudit.doc.includes("images/figure%201.png?rev=1#part")&&__previewAudit.audit.writes.length===0'));
  }finally{writeFileSync(join(here,'result.json'),JSON.stringify({checks},null,2));await page.screenshot('markdown-preview.png');}
 });
-if(checks.length<11||checks.some(c=>!c.pass))process.exitCode=1;
+if(checks.length<12||checks.some(c=>!c.pass))process.exitCode=1;

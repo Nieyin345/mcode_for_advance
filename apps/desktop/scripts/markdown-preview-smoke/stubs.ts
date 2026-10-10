@@ -12,7 +12,7 @@ export const audit = {
 export const imageReads:string[]=[];
 export const fileReads:Array<unknown>=[];
 export const png="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
-export const doc="# Transcript\n\nAlpha selected text.\n\n![Figure](images/figure%201.png?rev=1#part)\n\n![Reference][figure]\n\n[figure]: images/ref.png\n\n![Missing](images/missing.png)\n";
+export const doc="# Transcript\n\nAlpha selected text.\n\nInline math $E=mc^2$ must render.\n\n![Figure](images/figure%201.png?rev=1#part)\n\n![Reference][figure]\n\n[figure]: images/ref.png\n\n![Missing](images/missing.png)\n";
 export const api = {
  library: {
   async readFile(input:any){fileReads.push(input);return {content:{type:'text',text:doc}};},
