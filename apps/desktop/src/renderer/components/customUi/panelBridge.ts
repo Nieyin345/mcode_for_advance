@@ -218,6 +218,31 @@ export async function handlePanelCall(host: PanelHost, method: PanelMethod, para
       return { text: res.text ?? "" };
     }
 
+    case "api.call": {
+      // 面板的 `mcode.api.call(method, input)` —— 调**任意**主进程方法。权限分类在
+      // **主进程**(`panelApiCall` 复用 agent `app_api_call` 那一套);这里只负责一件事:
+      // 主进程回 `needsApproval` 时弹我们的确认框,用户点头后**带 `approved: true` 重调**。
+      // 面板脚本改不了这个位 —— 它只能经这条桥,而这条桥是我们写的。
+      const method = str(p, "method", 200).trim();
+      if (method.length === 0) throw new PanelCallError("method: empty");
+      const input = p.input ?? undefined;
+      const label = customUiLabel(host.item.label, useSessionStore.getState().locale);
+      const first = await api.customUi.panelApiCall({ method, input, panelLabel: label });
+      if (first.ok) return first.result ?? null;
+      if (!first.needsApproval) throw new PanelCallError(first.error ?? "api.call failed");
+      // 需要确认 —— 弹框。`danger` 档每次都必须确认(不提供「总是」);`write` 档同样
+      // 每次都问(面板没有 agent 那种「总是允许」的会话上下文可挂,保守起见一律每次问)。
+      const ok = await confirmAsync(
+        tr("customUi.panel.apiConfirmTitle", { name: label }),
+        first.description ?? method,
+        tr("customUi.panel.apiConfirm"),
+      );
+      if (!ok) throw new PanelCallError(tr("customUi.panel.cancelled"));
+      const second = await api.customUi.panelApiCall({ method, input, approved: true, panelLabel: label });
+      if (!second.ok) throw new PanelCallError(second.error ?? "api.call failed");
+      return second.result ?? null;
+    }
+
     case "automations": {
       const [{ workflows }, facts] = await Promise.all([api.workflow.list(), api.automation.statusAll()]);
       return workflows

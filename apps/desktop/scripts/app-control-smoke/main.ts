@@ -20,7 +20,7 @@ import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
 import { policyFor } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
-import { invokeAppTool, appMcpTools } from "@main/appControl/tools.js";
+import { invokeAppTool, appMcpTools, panelApiCall } from "@main/appControl/tools.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import { ApprovalBridge } from "@main/claude/ApprovalBridge.js";
@@ -472,6 +472,68 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
     "engineTools.get / engineTools.set 在清单里",
     catalogMethods.has("engineTools.get") && catalogMethods.has("engineTools.set"),
   );
+}
+
+/* ── 自定义面板的 `mcode.api.call`(`panelApiCall`)──
+ *
+ * 面板从前只能干写死的那 19 件事。这条把它接上**任意**主进程方法,复用 agent
+ * `app_api_call` 的同一套分类。三件事必须成立:
+ *   1. 只读方法直接执行(实测调到了那个 handler);
+ *   2. 写档 / 高风险档**没带 `approved` 就不执行** —— 回 `needsApproval`,交回界面去问;
+ *      带了 `approved` 才跑;
+ *   3. 密钥设置键前置拦、blocked 档直接拒、返回值打码。
+ * 还有一条**安全断言**:agent 经 `app_api_call` **够不到**这条口(否则传个
+ * `{approved:true}` 就把面板那层确认整个绕过)。
+ */
+{
+  check("★ customUi.panelApiCall 不在 agent 的可达范围(policyFor = blocked)",
+    policyFor("customUi.panelApiCall").level === "blocked", policyFor("customUi.panelApiCall"));
+
+  const panelCalls: Record<string, unknown[]> = {};
+  const fakePanel = (channel: string, ret: unknown = { ok: true }): void => {
+    panelCalls[channel] = [];
+    recordRpcHandler(channel, async (_e, raw) => { panelCalls[channel]!.push(raw); return ret; });
+  };
+  fakePanel("project:list", { projects: [{ id: "p1", name: "demo", path: "/x" }] });
+  fakePanel("session:rename", { session: { id: "s9", title: "new" } });
+  fakePanel("project:delete", { ok: true });
+  // 返回值里嵌着凭据 → 打码兜底。
+  recordRpcHandler("session:listAll", async () => ({ sessions: [], apiKey: "sk-SENTINEL_PANEL_KEY_1234567890" }));
+
+  const read = await panelApiCall("project.list", undefined, false, "我的面板");
+  check("面板·只读:直接执行、不问",
+    read.ok === true && panelCalls["project:list"]!.length === 1, read);
+
+  panelCalls["session:rename"] = [];
+  const writeNoApproval = await panelApiCall("session.rename", { id: "s9", title: "new" }, false, "我的面板");
+  check("★ 面板·写档:没带 approved → 不执行、回 needsApproval",
+    writeNoApproval.ok === false && writeNoApproval.needsApproval === true
+      && writeNoApproval.level === "write" && panelCalls["session:rename"]!.length === 0,
+    writeNoApproval);
+  const writeApproved = await panelApiCall("session.rename", { id: "s9", title: "new" }, true, "我的面板");
+  check("★ 面板·写档:带了 approved → 执行",
+    writeApproved.ok === true && panelCalls["session:rename"]!.length === 1, writeApproved);
+
+  panelCalls["project:delete"] = [];
+  const dangerNoApproval = await panelApiCall("project.delete", { id: "p1" }, false, "我的面板");
+  check("★ 面板·高风险档:同样要先确认(level = danger)",
+    dangerNoApproval.ok === false && dangerNoApproval.needsApproval === true
+      && dangerNoApproval.level === "danger" && panelCalls["project:delete"]!.length === 0,
+    dangerNoApproval);
+
+  const blocked = await panelApiCall("customModel.getToken", { id: "c1" }, true, "我的面板");
+  check("面板·不开放档:直接拒", blocked.ok === false && typeof blocked.error === "string", blocked);
+
+  const secret = await panelApiCall("setting.get", { key: "customModelKeys" }, true, "我的面板");
+  check("★ 面板·密钥设置键:前置拦,不给内容",
+    secret.ok === false && !JSON.stringify(secret).includes("RU5DSVBIRVJFRF9BUFBfS0VZ"), secret);
+
+  const unknown = await panelApiCall("no.such.method", {}, true, "我的面板");
+  check("面板·没有的方法:如实报错", unknown.ok === false && String(unknown.error).includes("没有这个方法"), unknown);
+
+  const leaked = await panelApiCall("session.listAll", {}, false, "我的面板");
+  check("★ 面板·返回值里的密钥被打码",
+    leaked.ok === true && !JSON.stringify(leaked.result).includes("SENTINEL_PANEL_KEY"), leaked);
 }
 
 console.log(`\n${passed}/${passed + failures.length} 通过`);

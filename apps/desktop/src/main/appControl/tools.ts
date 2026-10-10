@@ -114,7 +114,7 @@ export function isSecretSettingKey(key: unknown): boolean {
 }
 
 /** `setting.get` / `setting.getMany` 的入参里,有没有踩到密钥键。 */
-function secretSettingRefusal(method: string, input: unknown): string | null {
+export function secretSettingRefusal(method: string, input: unknown): string | null {
   if (method !== "setting.get" && method !== "setting.getMany") return null;
   const o = (input ?? {}) as { key?: unknown; keys?: unknown };
   const keys: unknown[] = Array.isArray(o.keys) ? [...o.keys] : [o.key];
@@ -134,7 +134,7 @@ const LEVEL_LABEL: Record<AppPolicyLevel, string> = {
 
 /* ───────────────────────── 目录 ───────────────────────── */
 
-interface ApiEntry extends ApiCatalogEntry {
+export interface ApiEntry extends ApiCatalogEntry {
   policy: AppPolicy;
   registered: boolean;
 }
@@ -163,7 +163,9 @@ export function apiEntries(): ApiEntry[] {
   return out;
 }
 
-function findEntry(method: string): ApiEntry | undefined {
+/** 按方法名找到目录项(权限档 + 通道)。自定义面板的 `mcode.api.call` 与 agent 的
+ *  `app_api_call` 共用这一份 —— 面板调什么、什么档,和 agent 完全一样。 */
+export function findEntry(method: string): ApiEntry | undefined {
   const m = method.trim();
   return apiEntries().find((e) => e.method === m || e.channel === m);
 }
@@ -233,6 +235,65 @@ export async function callRpc(entry: { channel: string }, input: unknown): Promi
   const handler = rpcHandlerFor(entry.channel);
   if (!handler) throw new Error(`这个功能在当前版本里没有注册(${entry.channel})`);
   return handler({}, input ?? {});
+}
+
+/**
+ * 自定义面板的 `mcode.api.call` —— 调任意 Mcode 主进程方法。
+ *
+ * ## 与 agent 的 `app_api_call` 走**同一套**判据,只是审批闸换了个落点
+ *
+ * 分类(`findEntry` → `policyFor`)、密钥前置拦截(`secretSettingRefusal`)、执行
+ * (`callRpc`)、结果打码(`redactValue`)全部复用 agent 那条路。**唯一**不同的是审批:
+ * agent 的 `gateAppAction` 走 `ctx.requestApproval`(回合里的审批卡);面板没有"回合",
+ * 它的用户交互就是那个 `confirm` 浮框 —— 所以这里**不发审批请求**,而是把
+ * `needsApproval` 交回渲染端的桥,由它弹框;用户点头后桥**带 `approved: true` 重调**。
+ *
+ * `approved` 只由我们写的桥补(面板脚本发不出它 —— 它只会经 `handlePanelCall`)。
+ * 与 `gateAppAction` 一样**fail-closed**:没有 `approved` 就不执行写档,交回给用户去点。
+ *
+ * 返回形状刻意**不抛**(除参数解析):面板脚本 `await mcode.api.call(...)` 拿到的是一个
+ * 普通对象,失败读 `error`;`needsApproval` 由桥吃掉、对脚本透明(桥点头后重调)。
+ */
+export async function panelApiCall(
+  method: string,
+  input: unknown,
+  approved: boolean,
+  panelLabel: string,
+): Promise<{
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+  needsApproval?: boolean;
+  level?: "write" | "danger";
+  description?: string;
+}> {
+  const entry = findEntry(method);
+  if (!entry) return { ok: false, error: `没有这个方法:${method}。` };
+  if (!entry.registered) return { ok: false, error: `这个方法在当前版本里没有注册(${entry.channel})。` };
+  const level = entry.policy.level;
+  if (level === "blocked") {
+    return { ok: false, error: `这个功能不开放:${entry.policy.reason ?? "安全原因"}` };
+  }
+  // 密钥设置键:在**调用之前**拦(见 `isSecretSettingKey` —— 结果打码拦不住它)。
+  const secretRefusal = secretSettingRefusal(entry.method, input);
+  if (secretRefusal) return { ok: false, error: secretRefusal };
+  if ((level === "write" || level === "danger") && approved !== true) {
+    const what = entry.policy.reason ?? entry.doc ?? entry.method;
+    return {
+      ok: false,
+      needsApproval: true,
+      level,
+      description: `面板「${panelLabel}」要调用 ${entry.method} —— ${clipLine(what, 200)}`,
+    };
+  }
+  try {
+    const result = await callRpc(entry, input);
+    // 结果打码 —— 与 agent 的 `renderResult` 同一份 `redactValue`。密钥类设置键上面已前置
+    // 拦掉,这里是兜底(如返回值里嵌着别的凭据字段)。
+    return { ok: true, result: redactValue(result) };
+  } catch (err) {
+    return { ok: false, error: errText(err) };
+  }
 }
 
 function errText(err: unknown): string {

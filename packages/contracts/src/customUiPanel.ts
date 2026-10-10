@@ -48,6 +48,51 @@ export const CustomUiPanelAskSchema = z.object({
 export type CustomUiPanelAskInput = z.infer<typeof CustomUiPanelAskSchema>;
 export type CustomUiPanelAskResult = { ok: boolean; text?: string; error?: string };
 
+/**
+ * 面板的 `mcode.api.call(method, input)` —— 调**任意一个 Mcode 主进程方法**
+ * (与界面点按钮、与 agent 的 `app_api_call` 走的是同一段 handler)。
+ *
+ * ## 为什么要有它
+ *
+ * 面板从前只能干那 19 件写死的事(读库、写项目文件、跑自动化……)。要做一个"新功能",
+ * 数据却没处放、库里的条目改不了 —— 因为面板够不到别的能力。这条把它们全接上:
+ * `library.saveNote`(把结果挂到那条论文)、`session.list`、`git.log`、`workflow.save`……
+ * 都能调。
+ *
+ * ## 权限:复用 agent 那一套,不在这一层另判
+ *
+ * 面板的调用与 agent 的 `app_api_call` **共用同一个分类器**(`main/appControl/policy.ts`
+ * 的 `policyFor`):只读 / 界面档直接执行;写档要先经用户确认;高风险档**每次**都确认;
+ * 不开放档(密钥类、重置令牌、公网 MCP 开关……)一律拒绝。分类与执行都在**主进程**做
+ * ——面板改不了 `approved` 这个位,它只能经 `PanelFrame` 的桥发出 `{method, input}`。
+ */
+export const CustomUiPanelApiSchema = z.object({
+  /** 方法名,如 `library.saveNote` / `session.list`(点号形式,同 `app_api_call`)。 */
+  method: z.string().min(1).max(200),
+  /** 该方法的入参;无参方法省略。 */
+  input: z.unknown().optional(),
+  /**
+   * 用户在确认框上点了头之后由**渲染端的桥**补上(面板自己发不出这个位 —— 它只能经
+   * `handlePanelCall`,而那一层是我们写的)。只对 write/danger 档有意义。
+   */
+  approved: z.boolean().optional(),
+  /** 面板的显示名 —— 只用于确认框正文(哪个面板要调什么),不参与任何判据。 */
+  panelLabel: z.string().max(200).optional(),
+});
+export type CustomUiPanelApiInput = z.infer<typeof CustomUiPanelApiSchema>;
+export type CustomUiPanelApiResult = {
+  ok: boolean;
+  /** 成功时的返回值(已打码)。 */
+  result?: unknown;
+  error?: string;
+  /** 需要用户确认:渲染端的桥据它弹确认框,点头后带 `approved: true` 重调。 */
+  needsApproval?: boolean;
+  /** 需要的档位(write = 一次确认;danger = 每次确认、不记「总是允许」)。 */
+  level?: "write" | "danger";
+  /** 确认框正文(方法名 + 说明)。 */
+  description?: string;
+};
+
 /** 面板文档的 CSP。`network` = 允许面板自己联网(fetch / 外链脚本、样式、图片)。 */
 export function panelCsp(network: boolean): string {
   const net = network ? " https:" : "";
@@ -74,6 +119,7 @@ export const PANEL_METHODS = [
   "context",
   "prompt",
   "ask",
+  "api.call",
   "automations",
   "runAutomation",
   "files.read",
@@ -220,6 +266,14 @@ var mcode = {
     return call("ask", { prompt: str(prompt), system: o.system, model: o.model }).then(function(r){ return r.text; });
   },
   automations: function(){ return call("automations"); },
+  api: {
+    call: function(method, input){
+      return call("api.call", { method: str(method), input: input === undefined ? null : input }).then(function(r){
+        if (!r || r.ok !== true) throw new Error((r && r.error) || "api.call failed");
+        return r.result;
+      });
+    }
+  },
   runAutomation: function(workflowId, triggerNodeId){ return call("runAutomation", { workflowId: str(workflowId), triggerNodeId: triggerNodeId }); },
   files: {
     read: function(path){ return call("files.read", { path: str(path) }).then(function(r){ return r.content; }); },

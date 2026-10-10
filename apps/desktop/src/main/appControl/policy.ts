@@ -56,7 +56,12 @@ const BLOCKED: Record<string, string> = {
   "setting.exportToFile": "会弹系统保存框等用户操作;导出设置请让用户在 设置 → 通用 里点「导出设置」",
   "setting.importFromFile": "会弹系统打开框并整批改写设置;只能由用户本人在设置页操作",
   "customUi.stagePanel": "自定义面板的界面内部接口;要建面板请改设置 customUi.config.v1",
-  "customUi.panelAsk": "自定义面板内部接口;要问模型请直接发消息"
+  "customUi.panelAsk": "自定义面板内部接口;要问模型请直接发消息",
+  // ⚠️ **绝不能开给 agent。** 这条是面板的通用调用口,它带一个 `approved` 位 —— 面板
+  // 脚本自己发不出它(要经渲染端的桥,由用户点头后补),但 agent 经 `app_api_call`
+  // 就能传 `{approved:true}` 把面板那层确认**整个绕过**、直接执行写/高风险操作。
+  // 面板要用它走的是渲染端 IPC(不经 `app_api_call`),所以这里拦掉不影响面板。
+  "customUi.panelApiCall": "自定义面板内部接口;要调功能请直接用 app_api_call(它自己会走审批)"
 };
 
 const DANGER: Record<string, string> = {

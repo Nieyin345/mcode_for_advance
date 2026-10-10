@@ -409,6 +409,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "TestCustomModelResult"
  },
  {
+  "method": "customUi.panelApiCall",
+  "channel": "customUi:panelApiCall",
+  "doc": "自定义面板的 `mcode.api.call(method, input)`:调**任意** Mcode 主进程方法, 复用 agent `app_api_call` 的同一套权限分类(写要确认、高风险每次确认、密钥类拒绝)。 桌面专属(手机白名单不列即不暴露)。",
+  "input": "{ method: string // 方法名,如 `library.saveNote` / `session.list`(点号形式,同 `app_api_call`)。; approved?: boolean | undefined // 用户在确认框上点了头之后由**渲染端的桥**补上(面板自己发不出这个位 —— 它只能经 `handlePanelCall`,而那一层是我们写的)。只对 write/danger …; input?: unknown // 该方法的入参;无参方法省略。; panelLabel?: string | undefined // 面板的显示名 —— 只用于确认框正文(哪个面板要调什么),不参与任何判据。 }",
+  "output": "CustomUiPanelApiResult"
+ },
+ {
   "method": "customUi.panelAsk",
   "channel": "customUi:panelAsk",
   "doc": "自定义面板的 `mcode.ask()`:一次性问模型(不带工具),返回纯文本。",
@@ -791,7 +798,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "library:adoptMarkdown",
   "doc": "直接把一份现成的 Markdown 挂到某条目上(不转录)。同级 `images/` 会一起搬。",
   "input": "{ path: string // 用户选中的 md 文件绝对路径。同级若有 `images/` 会一起搬。; id: string }",
-  "output": "{ ok: boolean; error?: string; imageCount: number; }"
+  "output": "{ ok: boolean; error?: string; imageCount: number; missing: string[]; }"
  },
  {
   "method": "library.assignCollection",

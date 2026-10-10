@@ -67,7 +67,7 @@ import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput,
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
 import type { CustomUiRunAutomationInput, CustomUiRunAutomationResult } from "../customUi.js";
-import type { CustomUiPanelAskInput, CustomUiPanelAskResult, CustomUiStagePanelInput, CustomUiStagePanelResult } from "../customUiPanel.js";
+import type { CustomUiPanelApiInput, CustomUiPanelApiResult, CustomUiPanelAskInput, CustomUiPanelAskResult, CustomUiStagePanelInput, CustomUiStagePanelResult } from "../customUiPanel.js";
 
 /* ──────────────────────────  RPC method map  ───────────────────────────────── */
 
@@ -841,6 +841,10 @@ export interface RpcMap {
   "customUi.stagePanel": (input: CustomUiStagePanelInput) => Promise<CustomUiStagePanelResult>;
   /** 自定义面板的 `mcode.ask()`:一次性问模型(不带工具),返回纯文本。 */
   "customUi.panelAsk": (input: CustomUiPanelAskInput) => Promise<CustomUiPanelAskResult>;
+  /** 自定义面板的 `mcode.api.call(method, input)`:调**任意** Mcode 主进程方法,
+   *  复用 agent `app_api_call` 的同一套权限分类(写要确认、高风险每次确认、密钥类拒绝)。
+   *  桌面专属(手机白名单不列即不暴露)。 */
+  "customUi.panelApiCall": (input: CustomUiPanelApiInput) => Promise<CustomUiPanelApiResult>;
   // ── 运行史(某个对话的全部图运行)──
   /** 某个对话的图运行历史(新的在前)。**从存档折出来**,只给轻量摘要 ——
    *  见 `PersistedWorkflowRunLite`(整份快照不为一行列表过 IPC)。 */
@@ -1718,6 +1722,7 @@ export const IPC = {
   CUSTOM_UI_RUN_AUTOMATION: "customUi:runAutomation",
   CUSTOM_UI_STAGE_PANEL: "customUi:stagePanel",
   CUSTOM_UI_PANEL_ASK: "customUi:panelAsk",
+  CUSTOM_UI_PANEL_API_CALL: "customUi:panelApiCall",
   /** 某个对话的图运行历史(从存档折出来的轻量摘要)。 */
   RUNS_HISTORY: "runs:history",
   // 记忆(main/memory/):渠道字符串本体钉在 `../memory.ts` 的那几个

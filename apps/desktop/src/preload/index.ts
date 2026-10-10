@@ -928,6 +928,9 @@ const api = {
     /** 自定义面板的 `mcode.ask()`:一次性问模型,不带工具(R41)。 */
     panelAsk: ((input) =>
       ipcRenderer.invoke(IPC.CUSTOM_UI_PANEL_ASK, input)) as RpcMap["customUi.panelAsk"],
+    /** 自定义面板的 `mcode.api.call()`:调任意主进程方法,复用 agent 的权限分类(R41)。 */
+    panelApiCall: ((input) =>
+      ipcRenderer.invoke(IPC.CUSTOM_UI_PANEL_API_CALL, input)) as RpcMap["customUi.panelApiCall"],
   },
 
   /** 运行史(某个对话的全部图运行,新的在前):从存档折出来的轻量摘要,
