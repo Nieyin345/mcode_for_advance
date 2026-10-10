@@ -48,14 +48,20 @@ export function MobileDomainPanel() {
 
   useEffect(() => {
     let alive = true;
+    // 单调序号:只有最新一次在飞的 `getTunnel` 能写 state。这一页 4s 轮询一次,慢回包
+    // (弱网/主进程卡一下)会盖在下一轮已经发出的请求上 —— 没有守卫时先发后回的那次把
+    // 新状态盖成旧的(隧道已连上却显示"未连接")。仓库里同类轮询都补了 *Seq 守卫
+    // (GitPanel.scanSeqRef / TaskListPanel.refreshSeqRef),这里补齐同一份。
+    let seq = 0;
     const load = async (first: boolean) => {
       // ⚠️ 预加载脚本是窗口创建时注入的:开发模式下渲染层热更新到了新代码,而主进程 /
       // preload 还是旧的,`api.mobile.getTunnel` 就不存在。原先这里直接调,同步抛出的
       // TypeError 冲出 useEffect,整个窗口白屏。现在认出来,提示重启。
       if (stalePreload) return;
+      const mySeq = ++seq;
       try {
         const s = await api.mobile.getTunnel();
-        if (!alive) return;
+        if (!alive || mySeq !== seq) return;
         setStatus(s);
         // 草稿只在第一次对齐 —— 之后的轮询不能把用户正在输入的内容冲掉。
         if (first) setDraft(s.mode === "off" ? "" : s.hostname);

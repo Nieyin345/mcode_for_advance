@@ -1319,6 +1319,30 @@ eq("收尾:设备清单空了", (await pairingManager.listDevices()).length, 0);
   );
 }
 
+// —— 手机隧道面板的 4s 轮询:慢回包不许盖掉新一轮 ——
+// `MobileDomainPanel` 每 4 秒 `getTunnel` 一次;没有序号守卫的话,弱网/主进程卡一下时
+// 先发后回的那次会把新状态盖成旧的(隧道已连上却显示"未连接")。仓库里同类轮询都补了
+// *Seq 守卫(GitPanel.scanSeqRef / TaskListPanel.refreshSeqRef),这里补齐同一份。
+// 判据钉源码(组件挂在手机壳的独立树上,无头跑不出这次轮询)。
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/mobile/MobileDomainPanel.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const at = code.indexOf("const load = async (first");
+  const body = code.slice(at, code.indexOf("void load(true)", at));
+  check(
+    "★ 隧道面板轮询起手自增序号",
+    at >= 0 && /\+\+seq/.test(body),
+    body.slice(0, 300),
+  );
+  check(
+    "★ 回包比对序号(先发后回的轮询结果不许盖掉新的)",
+    /mySeq !== seq/.test(body),
+    body.slice(0, 300),
+  );
+}
+
 // —— 全局泄露扫描:除"配对成功那一发"之外,**一个**令牌原文都不许出现 ——
 // 只逐条看"这个响应"是不够的:令牌登记在这次会话里,漏出去的那条未必是正在看的那条。
 // 所以扫的是 `req()` 攒下来的**全部**响应。
