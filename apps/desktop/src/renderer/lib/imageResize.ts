@@ -20,9 +20,15 @@
 import type { PromptImage } from "@renderer/stores/sessionStore.js";
 import { translate } from "@renderer/lib/i18n/core.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { SEND_TURN_IMAGE_MAX_B64_CHARS } from "@contracts/ipc";
 
-/** Decoded-byte ceiling per sent image (~4.5MB, under Anthropic's 5MB). */
-const MAX_SEND_BYTES = 4.5 * 1024 * 1024;
+/** 送图前的字符上限 —— **与主进程 `SendTurnImageSchema` 锚同一个常量**。
+ *
+ *  ⚠️ 从前这里写的是「解码字节 ≤ 4.5MiB」,换算回 base64 字符是 6,291,456,比契约
+ *  那边的 6,000,000 **大**:`[6_000_000, 6_291_456]` 这一段的图**渲染端放行、主进程
+ *  `SendTurnSchema.parse` 当场拒** —— 用户在点发送那一步才看到"没反应"。按字符数同锚,
+ *  就不会再有那道缝。(`approxBytes` 那个换算仍然只用于"要不要压",不再是放行判据。) */
+const MAX_SEND_CHARS = SEND_TURN_IMAGE_MAX_B64_CHARS;
 /** Longest-edge ceiling — anything larger is downscaled to fit this. */
 const MAX_DIMENSION = 2048;
 /** JPEG re-encode quality after downscale. */
@@ -39,13 +45,6 @@ const ALLOWED_MIME = new Set([
 export type ImagePrepResult =
   | { ok: true; image: PromptImage }
   | { ok: false; error: string };
-
-/** Approximate decoded byte size of a base64 payload (≈ len × 0.75). Good
- *  enough for the send cap — the contract's zod schema enforces the exact
- *  char ceiling downstream anyway. */
-function approxBytes(base64: string): number {
-  return Math.floor(base64.length * 0.75);
-}
 
 /** Load a data URL into an HTMLImageElement (rejects on corrupt bytes). */
 function loadImage(dataUrl: string): Promise<HTMLImageElement> {
@@ -80,7 +79,7 @@ export async function prepareImageForSend(
   }
 
   const oversized =
-    approxBytes(raw) > MAX_SEND_BYTES ||
+    raw.length > MAX_SEND_CHARS ||
     img.naturalWidth > MAX_DIMENSION ||
     img.naturalHeight > MAX_DIMENSION;
   const allowed = ALLOWED_MIME.has(mimeType);
@@ -108,7 +107,7 @@ export async function prepareImageForSend(
   const out = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
   const outMatch = /^data:image\/jpeg;base64,(.+)$/s.exec(out);
   if (!outMatch) return { ok: false, error: translate(locale, "lib.image.compressFailed", { name }) };
-  if (approxBytes(outMatch[1]) > MAX_SEND_BYTES) {
+  if (outMatch[1].length > MAX_SEND_CHARS) {
     return { ok: false, error: translate(locale, "lib.image.stillTooLarge", { name }) };
   }
   return { ok: true, image: { data: outMatch[1], mimeType: "image/jpeg" } };

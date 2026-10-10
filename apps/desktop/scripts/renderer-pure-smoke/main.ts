@@ -679,5 +679,37 @@ section("9. 命令:右栏类动作都得把右栏露出来");
   }
 }
 
+/* ── 送图前的字符上限必须与主进程契约同锚(否则中间那段图点发送没反应) ──
+ *
+ * `lib/imageResize.ts` 送图前预检,从前按「解码字节 ≤ 4.5MiB」判 —— 换算回 base64
+ * 字符是 6,291,456,比契约 `SendTurnImageSchema.data.max` 的 6,000,000 **大**。于是
+ * `[6_000_000, 6_291_456]` 这一段的图**渲染端放行、主进程 `SendTurnSchema.parse` 当场拒**
+ * —— 用户在点发送那一步才看到"没反应"。现在两边锚同一个导出常量
+ * (`SEND_TURN_IMAGE_MAX_B64_CHARS`),判据钉在这个同锚上。 */
+section("17. 送图上限与主进程契约同锚");
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/lib/imageResize.ts"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ imageResize 的送图上限取自契约常量(不自己再写一个数)",
+    code.includes("SEND_TURN_IMAGE_MAX_B64_CHARS") && !/MAX_SEND_BYTES/.test(code),
+    code.match(/MAX_SEND[A-Z_]*/g),
+  );
+  // 正控:契约那边这个常量确实还在、且是 6,000,000(改名 / 改值都该让这条红)。
+  const contract = readFileSync(join(process.cwd(), "../../packages/contracts/src/ipc/session.ts"), "utf8");
+  check(
+    "…正控:契约导出的字符上限仍是 6,000,000",
+    /SEND_TURN_IMAGE_MAX_B64_CHARS\s*=\s*6_000_000/.test(contract),
+    contract.match(/SEND_TURN_IMAGE_MAX_B64_CHARS[^\n]*/)?.[0],
+  );
+  check(
+    "…正控:SendTurnImageSchema.data 用的是那个常量(不是又一个字面量)",
+    /data:\s*z\.string\(\)\.min\(1\)\.max\(SEND_TURN_IMAGE_MAX_B64_CHARS\)/.test(contract),
+    contract.match(/data:\s*z\.string\(\)[^\n]*/)?.[0],
+  );
+}
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

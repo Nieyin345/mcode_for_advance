@@ -92,13 +92,24 @@ export type StartSessionInput = z.infer<typeof StartSessionSchema>;
 export const ListSideChatsSchema = z.object({ parentSessionId: z.string() });
 export type ListSideChatsInput = z.infer<typeof ListSideChatsSchema>;
 
+/** Base64 **字符**上限(一张内嵌图片)。6,000,000 base64 字符 ≈ 4.5MB 解码字节,
+ *  在 Anthropic ~5MB/图 的 API 上限之下。
+ *
+ *  ⚠️ **导出成常量,别在两处各写一个数。** 渲染端 `lib/imageResize.ts` 送图前按
+ *  「解码字节 ≤ 4.5MiB」预检 —— 那个判据换算回 base64 字符是 6,291,456,比这里的
+ *  6,000,000 **大**,于是 `[6_000_000, 6_291_456]` 这一段的图:**渲染端放行、主进程
+ *  `SendTurnSchema.parse` 当场拒**(错误在发送那一步才冒出来,用户看到点击发送没反应)。
+ *  两边必须锚同一个数。 */
+export const SEND_TURN_IMAGE_MAX_B64_CHARS = 6_000_000;
+
 /** One user-attached image sent inline with the turn (base64, no data: prefix).
  *  Media types match the Anthropic image-block allowlist (jpeg/png/gif/webp) —
- *  the Pi provider accepts the same values. The 6M-char cap keeps the decoded
- *  bytes under Anthropic's ~5MB-per-image API limit. */
+ *  the Pi provider accepts the same values. The char cap (see
+ *  {@link SEND_TURN_IMAGE_MAX_B64_CHARS}) keeps the decoded bytes under
+ *  Anthropic's ~5MB-per-image API limit. */
 export const SendTurnImageSchema = z.object({
   /** Base64-encoded image bytes (no data: prefix). */
-  data: z.string().min(1).max(6_000_000),
+  data: z.string().min(1).max(SEND_TURN_IMAGE_MAX_B64_CHARS),
   mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
 });
 export type SendTurnImage = z.infer<typeof SendTurnImageSchema>;
