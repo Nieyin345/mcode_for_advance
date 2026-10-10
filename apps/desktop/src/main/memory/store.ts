@@ -159,6 +159,40 @@ export function listMemoryFiles(filter?: MemoryListInput & { onUnreadable?: (pat
     MEMORY_CATEGORIES.indexOf(b.category as typeof MEMORY_CATEGORIES[number]) || b.updatedAt - a.updatedAt);
 }
 
+/**
+ * 把 Node 的文件系统错误翻成一句给人看的短语 —— **别让 `ENOENT: …, open 'C:\…'`
+ * 这种原始英文 + 绝对路径漏到界面/模型手上**。
+ *
+ * 记忆的读通路有两条:面板(`ipc/memory.ts` 的 `memory:read`)与 MCP 工具
+ * (`mcp/memoryServer.ts` 的 `memory_read`),两条都把 `message` 原样摆出来
+ * (`t("memory.readFailed", { error })` / `fail(...)`)。而 `readFileSync` / `lstatSync`
+ * 在读不到时抛的是 **OS 原文**,里面还带着**用户机器的绝对路径**(实测会漏出
+ * `ENOENT: no such file or directory, open 'C:\Users\…\memory\rules\x.md'`)。
+ * 与 `mcp/agentSearchSessions.ts` 的 `agent_search_read` 一条口径:常见 errno 翻成中文,
+ * 其余保留原文(至少不吞)。
+ */
+function describeFsError(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") return "文件不存在或已被移走";
+  if (code === "EACCES" || code === "EPERM") return "没有访问权限";
+  if (code === "EISDIR") return "不是一个文件";
+  if (code === "ENOTDIR") return "所在的位置不是一个目录";
+  if (code === "EEXIST") return "同名文件或目录已存在";
+  if (code === "ENOSPC") return "磁盘空间不足";
+  if (code === "EROFS") return "所在的位置是只读的";
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** 只有真正的 OS errno 错误(`err.code` 是字符串)才需要翻译;我们自己抛的中文错误、
+ *  `MemoryConflictError` 等原样透出。 */
+function translateFsError(err: unknown, what: string): never {
+  if (err instanceof MemoryConflictError) throw err;
+  if (err instanceof Error && typeof (err as NodeJS.ErrnoException).code === "string") {
+    throw new Error(`${what}:${describeFsError(err)}`);
+  }
+  throw err;
+}
+
 /** 读一条记忆的**正文**(不含 frontmatter)。路径不合法或读不到 → 抛(话直接给用户)。 */
 export function readMemoryFile(relPath: string): { content: string; revision: string } {
   const { content, revision } = readMemoryFileWithRaw(relPath);
@@ -173,7 +207,7 @@ export function readMemoryFileWithRaw(relPath: string): { content: string; raw: 
     const raw = readFileSync(target, "utf8");
     return { content: parseFrontmatter(raw).body, raw, revision: revisionOf(raw) };
   } catch (err) {
-    throw new Error(`读不到记忆「${relPath}」:${(err as Error).message}`);
+    throw new Error(`读不到记忆「${relPath}」:${describeFsError(err)}`);
   }
 }
 
@@ -199,7 +233,11 @@ function currentRaw(target: string): string | null {
   try { return readFileSync(target, "utf8"); }
   catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
+    // 读一个"本该是记忆文件"的位置失败(EISDIR —— 目录被命名成 `x.md` 那种半同步形态;
+    // EACCES —— 权限),抛的是 **OS 原文**(`EISDIR: illegal operation on a directory, read`)。
+    // 这句经 `saveMemoryFile`/`deleteMemoryFile` 的调用方原样摆进面板的 `{ ok:false, error }`
+    // 与 MCP 工具的 `fail(...)` —— 别让英文 errno 漏给人看(与读通路同一句判据)。
+    throw new Error(`记忆文件读不出来:${describeFsError(err)}`);
   }
 }
 
@@ -249,6 +287,10 @@ export function saveMemoryFile(input: MemorySaveInput, origin?: MemoryWriteOrigi
       saveRevision(input.path, before, "before-update");
       renameSync(tmp, target);
     }
+  } catch (err) {
+    // `mkdirSync`/`writeFileSync`/`renameSync` 的 OS 原文(`EEXIST: file already exists,
+    // mkdir 'C:\…'` 这种)带着绝对路径,会被面板摆成 `{ ok:false, error }` —— 翻成中文。
+    translateFsError(err, `保存记忆「${input.path}」失败`);
   } finally {
     try { rmSync(tmp, { force: true }); } catch { /* Best-effort orphan cleanup; never mask the write result. */ }
   }
@@ -263,8 +305,13 @@ export function deleteMemoryFile(relPath: string, expectedRevision?: string): { 
   if (raw === null) return { ok: true };
   if (expectedRevision === undefined) throw new MemoryConflictError();
   assertRevision(raw, expectedRevision);
-  saveRevision(relPath, raw, "before-delete");
-  rmSync(target, { force: true });
+  try {
+    saveRevision(relPath, raw, "before-delete");
+    rmSync(target, { force: true });
+  } catch (err) {
+    // 归档写不下 / 删不动时的 OS 原文同样带着绝对路径,别漏给用户。
+    translateFsError(err, `删除记忆「${relPath}」失败`);
+  }
   return { ok: true };
 }
 
@@ -303,8 +350,26 @@ export function memoryHistory(): { entries: Array<{ id: string; path: string; at
 export function readHistory(id: string): { id: string; path: string; at: number; reason: string; raw: string } {
   if (!/^[0-9]+-[a-f0-9-]+$/.test(id)) throw new Error("无效历史编号");
   const path = join(archiveRoot(), id + ".json");
-  if (lstatSync(path).isSymbolicLink()) throw new Error("历史文件不允许链接");
-  const v: unknown = JSON.parse(readFileSync(path, "utf8"));
+  let text: string;
+  try {
+    if (lstatSync(path).isSymbolicLink()) throw new Error("历史文件不允许链接");
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    // `lstatSync`/`readFileSync` 的 ENOENT 是**原始英文 OS 错误**,还带着数据根的
+    // 绝对路径(实测 `ENOENT: no such file or directory, lstat 'C:\Users\…\.history\…'`)。
+    // 这条经 `manage.ts` 的 `history`/`restore` 原样摆进设置面板的「读不出来:{error}」,
+    // 会漏给用户看 —— 翻成中文(与 `readMemoryFileWithRaw` 同一句判据)。历史文件不允许
+    // 链接那句是我们自己抛的中文,原样透出。
+    if (err instanceof Error && err.message === "历史文件不允许链接") throw err;
+    throw new Error(`恢复点不存在或已损坏:${describeFsError(err)}`);
+  }
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    // `JSON.parse` 抛的是英文 "Expected property name or '}' in JSON at position …"。
+    throw new Error("恢复点已损坏(内容不是合法 JSON)");
+  }
   if (!v || typeof v !== "object") throw new Error("历史记录损坏");
   const r = v as Record<string, unknown>;
   if (r.version !== 1 || r.id !== id || typeof r.path !== "string" || !memoryAddress(r.path) ||
@@ -315,15 +380,19 @@ export function restoreMemory(id: string): { path: string; revision: string } {
   const saved = readHistory(id), target = resolveSafeMemoryRelPath(saved.path);
   if (!target) throw new Error("恢复路径不安全");
   assertRevision(currentRaw(target), null);
-  mkdirSync(dirname(target), { recursive: true });
   const tmp = `${target}.${randomUUID()}.mcode-tmp`;
   try {
+    mkdirSync(dirname(target), { recursive: true });
     writeFileSync(tmp, saved.raw, { encoding: "utf8", flag: "wx", mode: 0o600 });
     if (resolveSafeMemoryRelPath(saved.path) !== target) throw new Error("恢复路径已改变");
     try { linkSync(tmp, target); } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new MemoryConflictError();
       throw err;
     }
+  } catch (err) {
+    // 恢复点写回目标位置的 OS 原文(`EEXIST: …, mkdir 'C:\…'` 之类)带着绝对路径,
+    // 会被设置面板的「读不出来:{error}」原样摆出 —— 翻成中文(与写通路同一句判据)。
+    translateFsError(err, `恢复记忆「${saved.path}」失败`);
   } finally { try { rmSync(tmp, { force: true }); } catch { /* orphan only */ } }
   return { path: saved.path, revision: revisionOf(saved.raw) };
 }

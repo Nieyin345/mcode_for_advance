@@ -178,6 +178,41 @@ deep("categories 固定六类", memoryCategories(), [...MEMORY_CATEGORIES]);
 
 deleteMemoryFile("rules/引用规范.md", readMemoryFile("rules/引用规范.md").revision);
 throws("删后读要抛", () => readMemoryFile("rules/引用规范.md"), "读不到");
+// ★ 读失败给用户/模型的是一句**中文**,不是 `ENOENT: no such file or directory, open
+//   'C:\Users\…\memory\rules\引用规范.md'` —— 那句里还带着用户机器的绝对路径。面板
+//   (`memory:read` → 「读不出来:{error}」)与 MCP 工具(`memory_read` 的 fail)两条都原样
+//   透出 message,所以判据立在 message 本身上:是中文、且没有 OS 原文的形状。
+{
+  let msg = "";
+  try { readMemoryFile("rules/引用规范.md"); } catch (err) { msg = (err as Error).message; }
+  check("★ 读不到记忆时是中文人话,不是原始 ENOENT/绝对路径", msg.includes("读不到") && msg.includes("不存在") && !/ENOENT|no such file|[A-Za-z]:\\/.test(msg), msg);
+}
+// ★ 同一条判据的写侧:记忆位置存在但读不出来(EISDIR —— 一个目录被命名成 `x.md` 那种
+//   半同步形态;EACCES —— 没权限)时,`currentRaw` 从前把 OS 原文原样 rethrow,经
+//   `saveMemoryFile`/`deleteMemoryFile` 摆进面板的 `{ ok:false, error }` 与 MCP 的 `fail`。
+{
+  mkdirSync(join(memoryRoot(), "rules", "trap.md"), { recursive: true });
+  let saveMsg = "", delMsg = "";
+  try { saveMemoryFile({ path: "rules/trap.md", content: "hi", expectedRevision: null }); } catch (err) { saveMsg = (err as Error).message; }
+  try { deleteMemoryFile("rules/trap.md", "0".repeat(64)); } catch (err) { delMsg = (err as Error).message; }
+  check("★ 记忆位置读不出来时写/删报的是中文人话,不是原始 EISDIR 英文",
+    /读不出来|不是一个文件/.test(saveMsg) && !/EISDIR|illegal operation/.test(saveMsg) &&
+    /读不出来|不是一个文件/.test(delMsg) && !/EISDIR|illegal operation/.test(delMsg), { saveMsg, delMsg });
+  rmSync(join(memoryRoot(), "rules", "trap.md"), { recursive: true, force: true });
+}
+// ★ 建目录/写文件阶段失败(`mkdirSync` 撞到同名**文件** → `EEXIST: …, mkdir 'C:\…'`)
+//   同样从前把 OS 原文漏给用户 —— 判据:中文、且没有 OS 原文的形状。
+{
+  // `rules/` 此刻已被上面清空(引用规范.md 删了、trap.md 删了),腾出那个目录名,
+  // 用一个**同名文件**顶替它 —— 这样 `mkdirSync('…/rules')` 才会以 OSError 失败。
+  rmSync(join(memoryRoot(), "rules"), { recursive: true, force: true });
+  writeFileSync(join(memoryRoot(), "rules"), "not a dir", "utf8");
+  let saveMsg = "";
+  try { saveMemoryFile({ path: "rules/blocked.md", content: "hi", expectedRevision: null }); } catch (err) { saveMsg = (err as Error).message; }
+  check("★ 建目录失败(同名文件挡路)时是中文人话,不是原始 EEXIST/绝对路径",
+    /已存在|失败/.test(saveMsg) && !/EEXIST|mkdir|[A-Za-z]:\\/.test(saveMsg), saveMsg);
+  rmSync(join(memoryRoot(), "rules"), { force: true });
+}
 check("删后列表里没有", listMemoryFiles().every((m) => m.path !== "rules/引用规范.md"));
 
 /* ────────────────────────── 2. 路径逃逸拒绝 ────────────────────────── */
@@ -808,6 +843,20 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   }
   blocked = false; try { readHistory("../escape"); } catch { blocked = true; }
   check("归档编号不能穿越路径", blocked);
+  // ★ 恢复点读失败(不存在 / 内容坏掉)经 `manage.ts` 的 history/restore 原样摆进设置
+  //   面板的「读不出来:{error}」—— 从前这里把 `lstatSync`/`JSON.parse` 的**原始英文**
+  //   (`ENOENT: no such file…lstat 'C:\…'` / `Expected property name…`)漏给用户看。
+  {
+    const missing = manageMemory({ action: "history", id: "1700000000000-cafebabe" });
+    check("★ 恢复点不存在时是中文人话,不是原始 ENOENT/绝对路径",
+      missing.ok === false && /不存在|已损坏/.test(missing.error ?? "") && !/ENOENT|no such file|[A-Za-z]:\\/.test(missing.error ?? ""), missing);
+    const archiveDir = join(memoryRoot(), ".history");
+    mkdirSync(archiveDir, { recursive: true });
+    writeFileSync(join(archiveDir, "1700000000000-deadbeef.json"), "{ not json", "utf8");
+    const corrupt = manageMemory({ action: "history", id: "1700000000000-deadbeef" });
+    check("★ 恢复点内容坏掉时是中文人话,不是原始 JSON.parse 英文",
+      corrupt.ok === false && /损坏/.test(corrupt.error ?? "") && !/Expected property|position/.test(corrupt.error ?? ""), corrupt);
+  }
   blocked = false; try { saveMemoryFile({ path: "global/rules/secret.md", content: "sk-" + "a".repeat(40) }); } catch { blocked = true; }
   check("真实密钥样式拒绝落库", blocked);
   // ★ 截断/畸形的私钥块(只有 BEGIN、没有 END)同样拒收。
