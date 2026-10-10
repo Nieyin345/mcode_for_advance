@@ -24,6 +24,7 @@ import {
   IconCircleOff,
   IconArrowsExchange,
   IconPlugConnected,
+  IconDownload,
 } from "@renderer/lib/icons.js";
 import { SiClaude, OpenAIBrandIcon, SiGoogle } from "@renderer/lib/icons.js";
 import type {
@@ -311,6 +312,13 @@ function customHeadersFromRows(
     out[name] = value;
   }
   return { ok: true, headers: Object.keys(out).length > 0 ? out : undefined };
+}
+
+/** 把 header 行换算成探测入参：无效行在**保存**时才拦（这里只要尽力而为），
+ *  所以 ok=false 或空就当作"没有额外头"。探测不该被一个待修的行卡住。 */
+function endpointHeaders(rows: CustomHeaderRow[]): Record<string, string> | undefined {
+  const r = customHeadersFromRows(rows);
+  return r.ok ? r.headers : undefined;
 }
 
 /** 额外请求头的行编辑器 —— Claude / Pi / Codex 三个表单共用同一份（2026-10-11 统一）。
@@ -1011,6 +1019,57 @@ export function CustomModelsPanel() {
     }
   };
 
+  /** Pi / Codex 的「测试连接」与「从端点拉模型」—— 两者共用 `lib/modelEndpoint` 那条
+   *  通道（Claude 走它自己的 `customModel.test`）。这里把「表单状态 → 探测入参」这层
+   *  收口一次，两个表单都不必各自拼。 */
+  const runEndpointTest = async (
+    kind: "pi" | "codex",
+    form: { baseUrl: string; apiKey: string; model: string; headers: Record<string, string> | undefined; authMode?: "bearer" | "x-api-key" },
+  ) => {
+    setError(null);
+    setTest({ status: "testing", idx: 0 });
+    try {
+      const call = kind === "pi" ? api.piModels.test : api.codexModels.test;
+      const res = await call({
+        baseUrl: form.baseUrl,
+        apiKey: form.apiKey || undefined,
+        authMode: form.authMode,
+        headers: form.headers,
+        model: form.model,
+      });
+      setTest(res.ok ? { status: "ok", detail: res.detail ?? t("settings.customModels.testOk") } : { status: "fail", error: res.error ?? t("settings.unknownError") });
+    } catch (err) {
+      setTest({ status: "fail", error: (err as Error).message });
+    }
+  };
+
+  /** 问端点要模型列表，填进该表单的模型行。拉不到时**明说**（抛出的错进错误条），
+   *  由界面回退到手输 —— 不静默失败。 */
+  const pullEndpointModels = async (
+    kind: "pi" | "codex",
+    form: { baseUrl: string; apiKey: string; headers: Record<string, string> | undefined; authMode?: "bearer" | "x-api-key" },
+  ): Promise<string[] | null> => {
+    setError(null);
+    try {
+      const call = kind === "pi" ? api.piModels.listEndpointModels : api.codexModels.listEndpointModels;
+      const { models } = await call({
+        baseUrl: form.baseUrl,
+        apiKey: form.apiKey || undefined,
+        authMode: form.authMode,
+        headers: form.headers,
+      });
+      if (models.length === 0) {
+        setError(t("settings.customModels.listModelsEmpty"));
+        return null;
+      }
+      return models;
+    } catch (err) {
+      // 端点没有这条路由是常见情形（很多第三方网关没有）—— 如实说，别装成"拉到了空"。
+      setError(t("settings.customModels.listModelsFailed", { error: (err as Error).message }));
+      return null;
+    }
+  };
+
   const confirmRemove = async () => {
     const target = pendingDelete;
     if (!target) return;
@@ -1160,8 +1219,21 @@ export function CustomModelsPanel() {
               setForm={setCodexForm}
               saving={saving}
               error={error}
+              test={test}
               revealToken={revealToken}
               isEdit={selection.id !== "new"}
+              onTest={(idx) => void runEndpointTest("codex", {
+                baseUrl: codexForm.baseUrl, apiKey: codexForm.apiKey,
+                model: codexForm.models[idx]?.id ?? "",
+                headers: endpointHeaders(codexForm.customHeaders),
+              })}
+              onPullModels={async () => {
+                const models = await pullEndpointModels("codex", {
+                  baseUrl: codexForm.baseUrl, apiKey: codexForm.apiKey,
+                  headers: endpointHeaders(codexForm.customHeaders),
+                });
+                if (models) setCodexForm({ ...codexForm, models: models.map((id) => ({ id, context1m: false })) });
+              }}
               onSave={() => void saveCodex()}
               onCancel={cancel}
               onDelete={selection.id !== "new" ? () => setPendingDelete({ kind: "codex", id: selection.id }) : undefined}
@@ -1173,8 +1245,24 @@ export function CustomModelsPanel() {
               setForm={setPiForm}
               saving={saving}
               error={error}
+              test={test}
               revealToken={revealToken}
               isEdit={selection.id !== "new"}
+              onTest={(idx) => void runEndpointTest("pi", {
+                baseUrl: piForm.baseUrl, apiKey: piForm.apiKey,
+                model: piForm.models[idx]?.id ?? "",
+                headers: endpointHeaders(piForm.customHeaders),
+                // Pi 的 authHeader 开关即「加不加 Bearer」；关了就走 x-api-key。
+                authMode: piForm.authHeader ? "bearer" : "x-api-key",
+              })}
+              onPullModels={async () => {
+                const models = await pullEndpointModels("pi", {
+                  baseUrl: piForm.baseUrl, apiKey: piForm.apiKey,
+                  headers: endpointHeaders(piForm.customHeaders),
+                  authMode: piForm.authHeader ? "bearer" : "x-api-key",
+                });
+                if (models) setPiForm({ ...piForm, models: models.map((id) => ({ ...emptyPiModel(), id })) });
+              }}
               onSave={() => void savePi()}
               onCancel={cancel}
               onDelete={selection.id !== "new" ? () => setPendingDelete({ kind: "pi", id: selection.id }) : undefined}
@@ -1237,8 +1325,11 @@ function CodexProviderForm({
   setForm,
   saving,
   error,
+  test,
   revealToken,
   isEdit,
+  onTest,
+  onPullModels,
   onSave,
   onCancel,
   onDelete,
@@ -1247,13 +1338,25 @@ function CodexProviderForm({
   setForm: (f: CodexFormState | null) => void;
   saving: boolean;
   error: string | null;
+  test: TestState;
   revealToken: () => Promise<string | null>;
   isEdit: boolean;
+  onTest: (idx: number) => void;
+  onPullModels: () => void | Promise<void>;
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
 }) {
   const { t } = useI18n();
+  const [pulling, setPulling] = useState(false);
+  const pull = async () => {
+    setPulling(true);
+    try {
+      await onPullModels();
+    } finally {
+      setPulling(false);
+    }
+  };
   const update = <K extends keyof CodexFormState>(key: K, value: CodexFormState[K]) =>
     setForm({ ...form, [key]: value });
   const updateModel = (idx: number, patch: Partial<CodexModelFormState>) =>
@@ -1305,6 +1408,9 @@ function CodexProviderForm({
           http_headers。开了图片生成时会和那条 actor 头合并进同一行。 */}
       <HeadersEditor rows={form.customHeaders} onChange={(rows) => update("customHeaders", rows)} />
 
+      {/* 从端点拉模型列表（2026-10-11 加，与 Pi 一致）。 */}
+      <PullModelsRow baseUrl={form.baseUrl} pulling={pulling} onPull={() => void pull()} />
+
       {/* Models sub-table */}
       <ModelListSection
         count={form.models.filter((m) => m.id.trim()).length}
@@ -1312,12 +1418,23 @@ function CodexProviderForm({
         isEmpty={form.models.length === 0}
       >
         {form.models.map((m, idx) => (
-          <div key={idx} className="grid grid-cols-[1fr_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 p-2">
+          <div key={idx} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 p-2">
             <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
             <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
               <Switch checked={m.context1m} onCheckedChange={(v) => updateModel(idx, { context1m: v })} label={t("settings.customModels.enable1m")} />
               <span className="text-[0.6428em] text-content-muted">1M</span>
             </label>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => onTest(idx)}
+              disabled={test.status === "testing"}
+              title={t("settings.customModels.testWithModel")}
+            >
+              {test.status === "testing" && test.idx === idx
+                ? <IconLoader2 size={12} className="animate-spin" />
+                : <IconPlugConnected size={12} />}
+            </Button>
             <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
               <IconTrash size={12} />
             </Button>
@@ -1332,6 +1449,7 @@ function CodexProviderForm({
       {/* 三个引擎共用同一条操作栏（2026-10-11 统一）—— 从前 Codex 这里是自己写的
           一排，按钮顺序与样式和 Claude / Pi 不一样。 */}
       <FormActions
+        testStatus={test}
         onDelete={onDelete}
         onCancel={onCancel}
         onSave={onSave}
@@ -1740,8 +1858,11 @@ function PiProviderForm({
   setForm,
   saving,
   error,
+  test,
   revealToken,
   isEdit,
+  onTest,
+  onPullModels,
   onSave,
   onCancel,
   onDelete,
@@ -1750,14 +1871,26 @@ function PiProviderForm({
   setForm: (f: PiFormState | null) => void;
   saving: boolean;
   error: string | null;
+  test: TestState;
   revealToken: () => Promise<string | null>;
   isEdit: boolean;
+  onTest: (idx: number) => void;
+  onPullModels: () => void | Promise<void>;
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
 }) {
   const { t } = useI18n();
   const [expandedModel, setExpandedModel] = useState<number | null>(null);
+  const [pulling, setPulling] = useState(false);
+  const pull = async () => {
+    setPulling(true);
+    try {
+      await onPullModels();
+    } finally {
+      setPulling(false);
+    }
+  };
 
   const update = <K extends keyof PiFormState>(key: K, value: PiFormState[K]) => setForm({ ...form, [key]: value });
   const updateModel = (idx: number, patch: Partial<PiModelFormState>) =>
@@ -1816,6 +1949,9 @@ function PiProviderForm({
       {/* 额外请求头 —— 与 Claude / Codex 同一份编辑器（2026-10-11 统一）。 */}
       <HeadersEditor rows={form.customHeaders} onChange={(rows) => update("customHeaders", rows)} />
 
+      {/* 从端点拉模型列表（Claude 那套也有；拉不到时错误条会说明原因，用户可以继续手输）。 */}
+      <PullModelsRow baseUrl={form.baseUrl} pulling={pulling} onPull={() => void pull()} />
+
       {/* Models sub-table */}
       <ModelListSection
         count={form.models.filter((m) => m.id.trim()).length}
@@ -1832,6 +1968,17 @@ function PiProviderForm({
                 <span className="text-[0.6428em] text-content-muted">1M</span>
               </label>
               <span className="flex items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onTest(idx)}
+                    disabled={test.status === "testing"}
+                    title={t("settings.customModels.testWithModel")}
+                  >
+                    {test.status === "testing" && test.idx === idx
+                      ? <IconLoader2 size={12} className="animate-spin" />
+                      : <IconPlugConnected size={12} />}
+                  </Button>
                   <button type="button" onClick={() => setExpandedModel(expandedModel === idx ? null : idx)} className="rounded p-0.5 text-content-muted hover:bg-surface-hover" title={expandedModel === idx ? t("settings.customModels.collapse") : t("settings.customModels.expandModel")}>
                     {expandedModel === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
                   </button>
@@ -1895,6 +2042,7 @@ function PiProviderForm({
       {error && <div className="rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7857em] text-danger">{error}</div>}
 
       <FormActions
+        testStatus={test}
         onDelete={onDelete}
         onCancel={onCancel}
         onSave={onSave}
@@ -1940,6 +2088,32 @@ function ModelListSection({
         </p>
       )}
       <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
+
+/** 「从端点拉取模型列表」那一行 —— Pi / Codex 共用（2026-10-11 加；Claude 侧无端点可拉
+ *  时用户手输，这两个引擎给了「问端点要」这条路）。地址为空时禁用并说明。 */
+function PullModelsRow({
+  baseUrl,
+  pulling,
+  onPull,
+}: {
+  baseUrl: string;
+  pulling: boolean;
+  onPull: () => void;
+}) {
+  const { t } = useI18n();
+  const disabled = pulling || !baseUrl.trim();
+  return (
+    <div className="flex items-center gap-2">
+      <Button variant="outline" size="sm" onClick={onPull} disabled={disabled}>
+        {pulling ? <IconLoader2 size={12} className="mr-1 animate-spin" /> : <IconDownload size={12} className="mr-1" />}
+        {t("settings.customModels.pullModels")}
+      </Button>
+      <span className="text-[0.7143em] text-content-subtle">
+        {baseUrl.trim() ? t("settings.customModels.pullModelsHint") : t("settings.customModels.pullModelsNeedUrl")}
+      </span>
     </div>
   );
 }

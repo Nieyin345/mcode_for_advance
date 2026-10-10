@@ -52,12 +52,16 @@ window.labApi = {
     delete: async input => { record('piModels.delete', input); return { providers: labPiProviders }; },
     getApiKey: async () => ({ apiKey: 'sk-plain' }),
     listAvailable: async () => ({ models: [] }),
+    test: async input => { record('piModels.test', input); return { ok: true, detail: 'ok' }; },
+    listEndpointModels: async input => { record('piModels.listEndpointModels', input); return { models: ['pulled-a', 'pulled-b'] }; },
   },
   codexModels: {
     list: async () => ({ providers: labCodexProviders }),
     save: async input => { record('codexModels.save', input); return { providers: labCodexProviders }; },
     delete: async input => { record('codexModels.delete', input); return { providers: labCodexProviders }; },
     getApiKey: async () => ({ apiKey: 'sk-plain' }),
+    test: async input => { record('codexModels.test', input); return { ok: true, detail: 'ok' }; },
+    listEndpointModels: async input => { record('codexModels.listEndpointModels', input); return { models: ['cx-a'] }; },
   },
   webBridge: { status: async () => ({ paired: false, url: 'http://127.0.0.1:1', token: 't' }), regenerateToken: async () => ({ paired: false, url: 'u', token: 't' }) },
   // 未选中供应商时右侧渲染的是「远程控制」面板，它挂载即调 publicMcp.status()。

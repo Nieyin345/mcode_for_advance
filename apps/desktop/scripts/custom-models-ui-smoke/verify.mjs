@@ -92,6 +92,27 @@ await withAuditPage(dir, async page => {
     await openTab('Codex'); await pickProvider('codex-a');
     assert.equal(await hasHeaders(), true, 'Codex form must offer the headers editor (was missing)');
   });
+
+  // ── 连通性测试 + 拉模型列表：Pi / Codex 也有（2026-10-11 对齐 Claude）──
+  const hasPull = async () => page.eval(`document.body.innerText.includes('从端点拉取模型')`);
+  await test('pull-models-and-test-present-in-pi-and-codex', async () => {
+    await go(); await openTab('Pi'); await pickProvider('pi-a');
+    assert.equal(await hasPull(), true, 'Pi form must offer "fetch models from endpoint"');
+    assert.equal(await page.eval(`!!document.querySelector('button[title*="测试"]')`), true, 'Pi form must offer a per-model test button');
+    await openTab('Codex'); await pickProvider('codex-a');
+    assert.equal(await hasPull(), true, 'Codex form must offer "fetch models from endpoint"');
+    assert.equal(await page.eval(`!!document.querySelector('button[title*="测试"]')`), true, 'Codex form must offer a per-model test button');
+  });
+
+  await test('pulling-models-fills-the-list-from-the-endpoint', async () => {
+    await go(); await openTab('Pi'); await pickProvider('pi-a');
+    await clickExpr(`[...document.querySelectorAll('button')].find(e=>e.offsetParent!==null && e.textContent.includes('从端点拉取模型'))`);
+    await page.waitFor("labEvents.some(e=>e.method==='piModels.listEndpointModels')", 3000);
+    // 模型 id 住在 <input> 的 value 里，不在 innerText —— 按 value 判。
+    await page.sleep(150);
+    const values = await page.eval(`[...document.querySelectorAll('input')].map(i=>i.value)`);
+    assert.equal(values.includes('pulled-a') && values.includes('pulled-b'), true, `pulled models must appear in the model rows (got ${JSON.stringify(values)})`);
+  });
 });
 const failed = results.filter(r => !r.ok).length;
 writeFileSync(join(dir, 'results.json'), JSON.stringify({ passed: results.length - failed, failed, results }, null, 2));
