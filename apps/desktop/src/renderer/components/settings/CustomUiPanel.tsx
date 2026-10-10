@@ -273,6 +273,11 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
     }
   }
   if (action.type === "file" && !action.path) return { ok: false, error: "customUi.editor.errorFile" };
+  // 「发给对话」「复制文本」必须有正文:空模板运行时是**静默 no-op**(`text.length > 0`
+  // 那一支不成立,点一下什么都不发生、连提示都没有)。其余动作早都各自校验了必填项,
+  // 这两条从前漏了 —— 与它们是同一类"允许配、点了没反应"。
+  if (action.type === "prompt" && !action.template.trim()) return { ok: false, error: "customUi.editor.errorPrompt" };
+  if (action.type === "copy" && !action.template.trim()) return { ok: false, error: "customUi.editor.errorCopy" };
   if (action.type === "openTab" && !action.tab) return { ok: false, error: "customUi.editor.errorOpenTab" };
   if (action.type === "url" && !action.url) return { ok: false, error: "customUi.editor.errorUrl" };
   if (action.type === "shell" && !action.command) return { ok: false, error: "customUi.editor.errorShell" };

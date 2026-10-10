@@ -757,6 +757,12 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
   check("★ 高级复制按钮走共享 copyText(不再裸 navigator.clipboard)", /copyText\(text\)/.test(panel));
   check("★ 不再有没接住的 `void navigator.clipboard.writeText`", !/void\s+navigator\.clipboard\.writeText/.test(panel));
   check("★ 复制成败都回执(已复制 / 复制失败)", /advanced\.copied/.test(panel) && /run\.copyFailed/.test(panel));
+  // 「发给对话」「复制文本」必须有正文 —— 空模板运行时是静默 no-op(`text.length > 0` 那一支
+  // 不成立,点一下什么都不发生);其余动作早都各自校验必填项,这两条从前漏了。
+  check("★ 编辑器挡住空的 prompt 模板(空模板 = 点了没反应)",
+    /action\.type === "prompt" && !action\.template\.trim\(\)/.test(panel));
+  check("★ 编辑器挡住空的 copy 模板",
+    /action\.type === "copy" && !action\.template\.trim\(\)/.test(panel));
 }
 
 /* ── 汇总 ── */

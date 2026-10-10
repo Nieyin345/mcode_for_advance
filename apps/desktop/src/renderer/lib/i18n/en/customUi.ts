@@ -77,6 +77,8 @@ export const en = {
   "customUi.editor.cancel": "Cancel",
   "customUi.editor.errorLabel": "Name is required",
   "customUi.editor.errorAutomation": "Pick an automation and a trigger",
+  "customUi.editor.errorPrompt": "Enter the text to send to the chat",
+  "customUi.editor.errorCopy": "Enter the text to copy",
 
   "customUi.template.transcribe": "Transcribe to Markdown (run automation)",
   "customUi.template.transcribe.label": "Transcribe to Markdown",

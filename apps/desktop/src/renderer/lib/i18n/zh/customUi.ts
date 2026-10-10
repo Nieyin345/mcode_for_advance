@@ -83,6 +83,8 @@ export const zh = {
   "customUi.editor.cancel": "取消",
   "customUi.editor.errorLabel": "名称不能为空",
   "customUi.editor.errorAutomation": "请选择自动化和触发器",
+  "customUi.editor.errorPrompt": "请填写要发给对话的内容",
+  "customUi.editor.errorCopy": "请填写要复制的内容",
 
   /* ── 模板 ── */
   "customUi.template.transcribe": "转录为 Markdown（运行自动化）",
