@@ -892,8 +892,10 @@ export interface RpcMap {
   // ── 记忆(对话记忆的直读直写)──
   // 契约与渠道字符串都在 `../memory.ts`(固定六类,目录即类目)。以下文件动作都是
   // **按 memory 根下的相对路径寻址**,主进程侧会校验路径不逃出 memory 根。
-  /** 列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。 */
   // Deterministic local scaffolds; deliberately excluded from mobile RPC.
+  /** 列**项目初始化模板**(`{templates, defaultId}`)。⚠️ 从前这里挂着上面那句记忆
+   *  文件的说明 —— 一段 JSDoc 误抄,把调用方引到 `memory.*` 上去找"记忆文件",而它
+   *  返回的其实是模板表(报告附录 E 的新-E1)。 */
   "projectInit.list": () => Promise<ProjectInitList>;
   "projectInit.get": (input: {id: string}) => Promise<ProjectInitTemplate>;
   "projectInit.save": (input: ProjectInitSaveInput) => Promise<ProjectInitTemplate>;
@@ -904,6 +906,7 @@ export interface RpcMap {
   "projectInit.setDefault": (input: {id: string | null}) => Promise<{ok: true}>;
   "memory.assistant": (input: MemoryAssistantInput) => Promise<MemoryAssistantResult>;
   "memory.manage": (input: MemoryManageInput) => Promise<MemoryManageResult>;
+  /** 列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。 */
   "memory.list": (input: MemoryListInput) => Promise<{ files: MemoryFileMeta[] }>;
   /** 读一条记忆的正文(不含 frontmatter)。 */
   "memory.read": (input: MemoryReadInput) => Promise<{ content: string; revision: string }>;

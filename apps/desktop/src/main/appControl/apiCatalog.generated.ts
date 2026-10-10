@@ -1412,7 +1412,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "memory.list",
   "channel": "memory:list",
-  "doc": "",
+  "doc": "列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。",
   "input": "{ category?: string | undefined }",
   "output": "{ files: MemoryFileMeta[] }"
  },
@@ -1916,7 +1916,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "projectInit.list",
   "channel": "projectInit:list",
-  "doc": "列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。",
+  "doc": "列**项目初始化模板**(`{templates, defaultId}`)。⚠️ 从前这里挂着上面那句记忆 文件的说明 —— 一段 JSDoc 误抄,把调用方引到 `memory.*` 上去找\"记忆文件\",而它 返回的其实是模板表(报告附录 E 的新-E1)。",
   "input": "(无参数)",
   "output": "{ templates: ProjectInitSummary[]; defaultId: string | null }"
  },
