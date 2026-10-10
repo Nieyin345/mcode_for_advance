@@ -1164,7 +1164,9 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_read_image",
       description:
         "读取本地 PNG/JPEG/GIF/WebP，并按 MCP 标准 image content block 返回给支持视觉输入的客户端/模型。" +
-        "最大 8MB；相对路径按会话工作目录解析。",
+        "最大 8MB；相对路径按会话工作目录解析。" +
+        "⚠️ **只有能读图的模型才看得到内容** —— 无视觉的模型收到的是一个尺寸占位，" +
+        "这时不要凭文件名／大小编造画面，改用文件路径交给能看到它的步骤或用户。",
       inputSchema: {
         path: z.string().min(1).describe("图片路径（PNG/JPEG/GIF/WebP）"),
       },
@@ -1186,7 +1188,23 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             return fail(`图片 ${st.size} B 超过 ${MAX_IMAGE_BYTES} B 上限`);
           }
           const data = await fs.readFile(abs);
-          return image(data.toString("base64"), mime, `[image ${path.basename(abs)} ${st.size} B]`);
+          return image(
+            data.toString("base64"),
+            mime,
+            // **caption 要如实说明"看不看得见"取决于读者**(报告 D10)。图片是**原样**
+            // 交出去的(标准 MCP image block),但**能不能读懂**由读它的模型决定:没有
+            // 视觉输入的模型收到的只是一块它读不出内容的字节,而它自己**无法分辨**
+            // "这图是空的"和"我没长眼睛"。从前 caption 只有 `[image x.png 247369 B]`
+            // —— 看着像一句成功回执,于是模型照着自己编,用户拿到的是编出来的描述。
+            // 这段话说清三件事:文件名/大小(给有视觉的模型当定位)、**这块图必须真的
+            // 被看见才算读到**、看不到就**明说看不到**,并从文件本身另找办法(路径
+            // 是给得出的 —— 可以交给有视觉的步骤,或让用户自己描述)。**不假装成功**,同
+            // `@contracts/outputConstraint` 那条"查不了就说查不了"。
+            `[image ${path.basename(abs)} ${st.size} B,${mime}]` +
+              " — 这是一张图片;**只有能读图的模型才看得到内容**。" +
+              "如果你读不到画面(收到的是尺寸而不是图像),不要凭文件名或大小编造它画了什么:" +
+              "改用文件路径让能看到它的步骤或用户来处理。",
+          );
         } catch (err) {
           return fail(err instanceof Error ? err.message : String(err));
         }

@@ -1232,6 +1232,20 @@ check(
   imageRead.content,
 );
 check("图片工具的文本投影不包含 base64", !imageRead.text.includes(tinyPngBase64.slice(0, 20)), imageRead.text);
+// ⚠️ **caption 要说清"看不看得见取决于读者"**(报告 D10)。报告实测:无视觉的模型拿到
+// 的是一块它读不出内容的字节,而 caption 只有一句 `[image x.png 247369 B]` —— 看着像
+// 成功回执,于是它照着自己编。判据立在那句提示**真的在文本里**,不是"没报错"上。
+const imageCaption = imageRead.content?.find((b) => b.type === "text")?.text ?? "";
+check(
+  "★ 图片 caption 明说「只有能读图的模型才看得到」",
+  imageCaption.includes("只有能读图的模型才看得到") && imageCaption.includes("编造"),
+  imageCaption,
+);
+check(
+  "caption 仍然给文件名与大小(有视觉的模型拿来定位)",
+  imageCaption.includes("pixel.png") && imageCaption.includes("image/png"),
+  imageCaption,
+);
 
 const richUnsupported = await host.callTool(
   "agent_read_document",
