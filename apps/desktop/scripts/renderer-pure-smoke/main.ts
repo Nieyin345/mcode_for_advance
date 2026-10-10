@@ -547,6 +547,15 @@ section("6. HTML 表格转换:围栏里的代码**不许被改写**");
   // 波浪号围栏同样保护。
   const tilde = "~~~\n<table><tr><td>x</td></tr></table>\n~~~";
   eq("波浪号围栏也保护", convertHtmlTables(tilde), tilde);
+
+  // ⚠️ **嵌套围栏**:外层用四个反引号包一个"里层演示三个反引号"的示例 —— 里层那个
+  //   ``` 不许把外层围栏**提前收尾**。从前收尾只认"同字符且≥3",于是四个反引号的外层
+  //   在里层 ``` 那一行就闭合了,夹在中间的 `<table>` 落到围栏外、被就地改写成管道表格
+  //   —— 正是本套要拦的"把讲 HTML 的示例代码改掉"。收尾必须不短于起始(CommonMark)。
+  const nestedFence = "````markdown\n```\n<table><tr><td>a</td></tr></table>\n```\n````";
+  eq("★ 四反引号围栏里含三反引号示例:整段原样保留(内层不许提前收尾)", convertHtmlTables(nestedFence), nestedFence);
+  // 正控:内层确实是内容(若外层误收尾,这段 table 就会消失/被改写,结果 ≠ 原串)。
+  check("…中间那段 table 仍在(未被改写或丢弃)", convertHtmlTables(nestedFence).includes("<table><tr><td>a</td></tr></table>"));
 }
 
 /* ──────────── 7. ideDirty：未保存文件不在"关闭"里被静默丢掉 ──────────── */

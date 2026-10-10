@@ -33,7 +33,13 @@ function splitFences(markdown: string): Array<{ text: string; fence: boolean }> 
   const out: Array<{ text: string; fence: boolean }> = [];
   let buf: string[] = [];
   let inFence = false;
-  let marker = "";
+  // 起始围栏的**字符**与**长度**都要记住 —— 收尾围栏必须同字符且不短于起始
+  // (CommonMark 规则)。只记字符、收尾时 `startsWith(字符×3)` 是不够的:一个用
+  // ```` 开的外层块(里面演示 ``` 代码)会被内层那个 ``` **提前收尾**,于是夹在
+  // 中间的 `<table>` 落到围栏外、被就地改写成管道表格 —— 正是本文件最想避免的
+  // "把讲 HTML 的示例代码改掉"。
+  let markerChar = "";
+  let markerLen = 0;
   const flush = (): void => {
     if (buf.length > 0) out.push({ text: buf.join("\n"), fence: inFence });
     buf = [];
@@ -44,8 +50,9 @@ function splitFences(markdown: string): Array<{ text: string; fence: boolean }> 
       if (!inFence) {
         flush();
         inFence = true;
-        marker = m[1]![0]!;
-      } else if (line.trimStart().startsWith(marker.repeat(3))) {
+        markerChar = m[1]![0]!;
+        markerLen = m[1]!.length;
+      } else if (line.trimStart().startsWith(markerChar.repeat(markerLen))) {
         buf.push(line);
         flush();
         inFence = false;

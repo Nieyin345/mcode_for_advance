@@ -105,6 +105,16 @@ check(
   otherQuote.content,
 );
 
+// ★ 展示名（chip 上显示的字）**只放标题**，不许把模型面向的英文抬头拼进去 ——
+//   `another conversation` 是给模型的类型说明，chip 却是中文界面。从前这一支把它拼进
+//   preview（`<标题> (another conversation)`），引用别的对话时 chip 上冒出一截英文，
+//   与 file/chat 两支（只放名字）也不一致。来源类型由 chip 图标与悬停展开的正文表达。
+check(
+  "★ otherSession 的展示名只有标题，不含模型面向的英文标签",
+  otherQuote.preview === "上周那条调研" && !otherQuote.preview.includes("another conversation"),
+  otherQuote.preview,
+);
+
 /* ── 3. 展示名截断（chip 宽度有上限）───────────────────────────────────── */
 
 const longTitle = "很".repeat(TAG_PREVIEW_CHARS + 10);

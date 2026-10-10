@@ -181,6 +181,17 @@ export function makeQuoteTag(params: { text: string; origin: QuoteOrigin }): Con
   const { origin } = params;
   const body = params.text.trim();
   const head = `--- user's quote (${QUOTE_ORIGIN_LABEL[origin.kind]}) ---`;
+  // 展示名：文件用文件名，对话用标题；太长就按 chip 的规矩截。
+  //
+  // ⚠️ **不要把模型面向的 `QUOTE_ORIGIN_LABEL` 拼进 preview。** 那是给模型的英文
+  //   抬头（`another conversation` / `a passage from a file` …），preview 却是**中文
+  //   界面上 chip 显示的字**。从前 `otherSession` 那支把它拼了进去（`<标题> (another
+  //   conversation)`），于是引用别的对话时 chip 上冒出一截英文 —— 与另两种来源
+  //   （只放名字）也不一致。展示名只放名字，来源类型由 chip 图标（IconQuote）与悬停
+  //   展开的正文抬头表达。
+  const displayName = origin.kind === "file" ? origin.name : origin.sessionTitle;
+  const preview =
+    displayName.length > TAG_PREVIEW_CHARS ? displayName.slice(0, TAG_PREVIEW_CHARS) + "…" : displayName;
   let sourceLine: string;
   if (origin.kind === "file") {
     // 文件：带上绝对路径 —— 用户明确要求"说清楚文件在哪里"。
@@ -195,7 +206,7 @@ export function makeQuoteTag(params: { text: string; origin: QuoteOrigin }): Con
     return {
       id: cryptoRandomId(),
       kind: "quote",
-      preview: `${origin.sessionTitle} (${QUOTE_ORIGIN_LABEL.otherSession})`,
+      preview,
       content: [
         head,
         sourceLine,
@@ -208,10 +219,6 @@ export function makeQuoteTag(params: { text: string; origin: QuoteOrigin }): Con
   } else {
     sourceLine = `source: conversation "${origin.sessionTitle}"`;
   }
-  // 展示名：文件用文件名，对话用标题；太长就按 chip 的规矩截。
-  const name = origin.kind === "file" ? origin.name : origin.sessionTitle;
-  const preview =
-    name.length > TAG_PREVIEW_CHARS ? name.slice(0, TAG_PREVIEW_CHARS) + "…" : name;
   return {
     id: cryptoRandomId(),
     kind: "quote",
