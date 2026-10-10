@@ -44,6 +44,9 @@ export type AppUiCommand =
       workflowId?: string;
       /** true = 建完(并发完第一条)切回原来那个对话,不把用户的视线带走。 */
       background?: boolean;
+      /** 给新对话起个标题(不必等自动标题生成)。省略则用默认占位,之后按会话标题
+       *  生成的设置自动起名。 */
+      title?: string;
     }
   | { op: "send"; sessionId: string; prompt: string; workflowId?: string; background?: boolean }
   | { op: "interrupt"; sessionId: string }

@@ -107,6 +107,8 @@ async function execute(cmd: AppUiCommand): Promise<AppUiReply> {
       await st.startSession(projectId, { providerId: cmd.providerId, model: cmd.model });
       const created = useSessionStore.getState().activeSessionId;
       if (!created || created === prev) return { ok: false, error: "新对话没有建起来" };
+      // 给了标题就直接用它 —— 不等自动标题生成（那条未必开着，也可能判不出好名字）。
+      if (cmd.title?.trim()) await useSessionStore.getState().renameSession(created, cmd.title.trim());
       let sent: AppUiReply | null = null;
       if (cmd.prompt?.trim()) sent = await sendTo(created, cmd.prompt, cmd.workflowId);
       if (cmd.background && prev && prev !== created) await useSessionStore.getState().selectSession(prev);

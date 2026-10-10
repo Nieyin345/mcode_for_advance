@@ -465,6 +465,7 @@ export function appMcpTools(): McpToolSpec[] {
         model: z.string().optional(),
         workflow_id: z.string().optional(),
         background: z.boolean().optional(),
+        title: z.string().optional().describe("新对话的标题;省略则用默认占位(之后按会话标题生成设置自动起名)"),
       },
       handler: async () => fail("内部错误:app_session_new 必须经 invokeAppTool 调用"),
     },
@@ -645,12 +646,12 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
       case "app_ui":
         return await runUiAction(args as UiArgs, ctx);
       case "app_session_new": {
-        const a = args as { project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; background?: boolean };
+        const a = args as { project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; background?: boolean; title?: string };
         const what = a.prompt ? `新开对话并发送:${clipLine(a.prompt, 200)}` : "新开一个对话";
         const denied = await gateAppAction(ctx, "write", "session_new", a, what);
         if (denied) return fail(denied);
         return uiResult(
-          await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background }),
+          await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title }),
           "已新建对话。",
         );
       }
