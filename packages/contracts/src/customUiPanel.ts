@@ -268,10 +268,12 @@ var mcode = {
   automations: function(){ return call("automations"); },
   api: {
     call: function(method, input){
-      return call("api.call", { method: str(method), input: input === undefined ? null : input }).then(function(r){
-        if (!r || r.ok !== true) throw new Error((r && r.error) || "api.call failed");
-        return r.result;
-      });
+      // 只解一层。call() 内部已经把回包的 result 解出来了
+      // (if (d.ok) p.resolve(d.result)),所以这里拿到的是数据本身 ——
+      // 从前这里又判了一次 r.ok !== true 并返回 r.result,等于多解一层:
+      // 数据里当然没有 ok,于是永远抛 "api call failed"(面板读资料库全废)。
+      // 与同文件的 files.read(它只取 r.content)对照即可看出。
+      return call("api.call", { method: str(method), input: input === undefined ? null : input });
     }
   },
   runAutomation: function(workflowId, triggerNodeId){ return call("runAutomation", { workflowId: str(workflowId), triggerNodeId: triggerNodeId }); },

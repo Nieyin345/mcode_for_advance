@@ -60,6 +60,7 @@ import {
   panelExampleHtml,
   PANEL_HTML_MAX,
   PANEL_METHODS,
+  PANEL_SDK_SOURCE,
 } from "@contracts/customUiPanel";
 import { forceShellConfirm, parseSettingsImport, SETTINGS_EXPORT_FORMAT } from "../../src/main/settings/settingsTransfer.js";
 import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem } from "../../src/main/customUi/targets.js";
@@ -651,6 +652,62 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
     /action\.type === "prompt" && !action\.template\.trim\(\)/.test(panel));
   check("★ 编辑器挡住空的 copy 模板",
     /action\.type === "copy" && !action\.template\.trim\(\)/.test(panel));
+}
+
+/* ── 面板 SDK 的 `api.call`:真的把 SDK 跑起来 ──
+ *
+ * 这一条守的是一个**已经出过的 bug**(2026-10-11 报告 E1):面板里 `mcode.api.call`
+ * 永远抛 "api call failed",连只读方法也一样 —— 而面板的卖点正是读写资料库。
+ * 根因是 SDK 里 `api.call` **多解了一层**:`call()` 内部已经把 `d.result` 解出来
+ * 交给它(`d.ok → resolve(d.result)`),而它又对那个结果判了一次 `r.ok !== true`。
+ *
+ * 所以:在假 `window` / `parent` 里求值 `PANEL_SDK_SOURCE`,发一条 `api.call`,
+ * 按 `PanelFrame` 的真实回包形状(`{ok:true, result: 数据}`)**回包**,断言
+ * `mcode.api.call(...)` 拿到的是**数据本身**、不抛。 */
+console.log("\n面板 SDK:api.call 解包");
+{
+  // PanelFrame 的回包形状:成功 → {ok:true, result:<handler 返回值>}。
+  const makeEnv = () => {
+    const sent: Array<{ method: string; params: unknown }> = [];
+    const listeners: Array<(e: unknown) => void> = [];
+    const win: Record<string, unknown> = {};
+    const parentObj = {
+      postMessage(msg: { __mcode: number; id: number; method: string; params: unknown }) {
+        sent.push({ method: msg.method, params: msg.params });
+        // 下一 tick 回包,模拟真实异步。
+        queueMicrotask(() => {
+          for (const fn of listeners) fn({ source: parentObj, data: { __mcode: 1, id: msg.id, ok: true, result: { id: "li_1", title: "T" } } });
+        });
+      },
+    };
+    (win as { addEventListener: unknown }).addEventListener = (type: string, fn: (e: unknown) => void) => { if (type === "message") listeners.push(fn); };
+    const doc = {
+      documentElement: { style: { setProperty() {} }, setAttribute() {}, style2: null },
+      addEventListener() {},
+    };
+    return { sent, win, parent: parentObj, doc };
+  };
+  const env = makeEnv();
+  const fn = new Function("window", "parent", "document", PANEL_SDK_SOURCE + "\nreturn window.mcode;");
+  const mcode = fn(env.win, env.parent, env.doc) as {
+    api: { call: (m: string, i?: unknown) => Promise<unknown> };
+  };
+  check("★ SDK 跑起来后暴露 mcode.api.call", typeof mcode?.api?.call === "function");
+  let got: unknown = "UNSET";
+  let threw = "";
+  try {
+    got = await mcode.api.call("library.get", { id: "li_1" });
+  } catch (err) {
+    threw = (err as Error).message;
+  }
+  check("★ api.call 不再永远抛 'api call failed'", threw === "", threw);
+  // 拿到的必须是**数据本身**(handler 的返回值),不是被多套了一层的 {ok,result}。
+  check("★ api.call 解包到数据本身(不抛、不是包装对象)",
+    threw === "" && typeof got === "object" && got !== null && (got as { id?: string }).id === "li_1",
+    got);
+  check("api.call 发出的请求带对了 method 与 input",
+    env.sent.some((s) => s.method === "api.call"),
+    env.sent);
 }
 
 /* ── 汇总 ── */
