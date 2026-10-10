@@ -1238,51 +1238,38 @@ function CodexProviderForm({
       </div>
 
       {/* Models sub-table */}
-      <div>
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-[0.7857em] font-medium text-content-muted">
-            {t("settings.customModels.modelListTitle", { n: form.models.filter((m) => m.id.trim()).length })}
-          </span>
-          <button type="button" onClick={addModel} className="flex items-center gap-1 text-[0.7857em] text-accent hover:text-accent/80">
-            <IconPlus size={11} /> {t("settings.customModels.addModel")}
-          </button>
-        </div>
-        {form.models.length === 0 && (
-          <p className="rounded border border-dashed border-edge px-2 py-3 text-center text-[0.7143em] text-content-subtle">
-            {t("settings.customModels.modelsEmpty")}
-          </p>
-        )}
-        <div className="space-y-1.5">
-          {form.models.map((m, idx) => (
-            <div key={idx} className="grid grid-cols-[1fr_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 p-2">
-              <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
-              <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
-                <Switch checked={m.context1m} onCheckedChange={(v) => updateModel(idx, { context1m: v })} label={t("settings.customModels.enable1m")} />
-                <span className="text-[0.6428em] text-content-muted">1M</span>
-              </label>
-              <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
-                <IconTrash size={12} />
-              </Button>
-            </div>
-          ))}
-        </div>
-      </div>
+      <ModelListSection
+        count={form.models.filter((m) => m.id.trim()).length}
+        onAdd={addModel}
+        isEmpty={form.models.length === 0}
+      >
+        {form.models.map((m, idx) => (
+          <div key={idx} className="grid grid-cols-[1fr_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 p-2">
+            <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
+            <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
+              <Switch checked={m.context1m} onCheckedChange={(v) => updateModel(idx, { context1m: v })} label={t("settings.customModels.enable1m")} />
+              <span className="text-[0.6428em] text-content-muted">1M</span>
+            </label>
+            <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
+              <IconTrash size={12} />
+            </Button>
+          </div>
+        ))}
+      </ModelListSection>
 
       {error && (
         <p className="rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-[0.7857em] text-danger">{error}</p>
       )}
 
-      <div className="flex items-center justify-end gap-2 pt-1">
-        {onDelete && (
-          <Button variant="ghost" size="sm" onClick={onDelete} className="mr-auto text-danger hover:text-danger">
-            <IconTrash size={12} /> {t("common.delete")}
-          </Button>
-        )}
-        <Button variant="outline" size="sm" onClick={onCancel}>{t("common.cancel")}</Button>
-        <Button size="sm" onClick={onSave} disabled={saving}>
-          {saving ? t("settings.saving") : isEdit ? t("settings.customModels.update") : t("common.save")}
-        </Button>
-      </div>
+      {/* 三个引擎共用同一条操作栏（2026-10-11 统一）—— 从前 Codex 这里是自己写的
+          一排，按钮顺序与样式和 Claude / Pi 不一样。 */}
+      <FormActions
+        onDelete={onDelete}
+        onCancel={onCancel}
+        onSave={onSave}
+        saving={saving}
+        isEdit={isEdit}
+      />
     </div>
   );
 }
@@ -1562,62 +1549,50 @@ function ClaudeProviderForm({
         </>
       )}
 
-      {/* Models sub-list — flat rows mirroring the Pi form: model id + 1M
-          toggle, with a per-row plug icon (next to delete) that fires the
-          connection test for that specific model. */}
-      <div>
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-[0.7857em] font-medium text-content-muted">
-            {t("settings.customModels.modelListTitle", { n: form.models.filter((m) => m.id.trim()).length })}
-          </span>
-          <button type="button" onClick={addModel} className="flex items-center gap-1 text-[0.7857em] text-accent hover:text-accent/80">
-            <IconPlus size={11} /> {t("settings.customModels.addModel")}
-          </button>
-        </div>
-        {form.models.length === 0 && (
-          <p className="rounded border border-dashed border-edge px-2 py-3 text-center text-[0.7143em] text-content-subtle">
-            {t("settings.customModels.modelsEmpty")}
-          </p>
-        )}
-        <div className="space-y-1.5">
-          {form.models.map((m, idx) => {
-            const testingThis = test.status === "testing" && test.idx === idx;
-            return (
-              <div
-                key={idx}
-                className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 px-1.5 py-1"
+      {/* Models sub-list — model id + 1M toggle, with a per-row plug icon
+          (next to delete) that fires the connection test for that model. */}
+      <ModelListSection
+        count={form.models.filter((m) => m.id.trim()).length}
+        onAdd={addModel}
+        isEmpty={form.models.length === 0}
+      >
+        {form.models.map((m, idx) => {
+          const testingThis = test.status === "testing" && test.idx === idx;
+          return (
+            <div
+              key={idx}
+              className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 px-1.5 py-1"
+            >
+              <Input
+                value={m.id}
+                onChange={(e) => updateModel(idx, { id: e.target.value })}
+                placeholder={t(
+                  isWeb
+                    ? "settings.customModels.modelIdPlaceholderWeb"
+                    : "settings.customModels.modelIdPlaceholder",
+                )}
+                spellCheck={false}
+              />
+              <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.supports1mLabel")}>
+                <Switch checked={m.supports1m} onCheckedChange={(v) => updateModel(idx, { supports1m: v })} label={t("settings.customModels.supports1mLabel")} />
+                <span className="text-[0.6428em] text-content-muted">1M</span>
+              </label>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => onTest(idx)}
+                disabled={test.status === "testing"}
+                title={t("settings.customModels.testWithModel")}
               >
-                <Input
-                  value={m.id}
-                  onChange={(e) => updateModel(idx, { id: e.target.value })}
-                  placeholder={t(
-                    isWeb
-                      ? "settings.customModels.modelIdPlaceholderWeb"
-                      : "settings.customModels.modelIdPlaceholder",
-                  )}
-                  spellCheck={false}
-                />
-                <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.supports1mLabel")}>
-                  <Switch checked={m.supports1m} onCheckedChange={(v) => updateModel(idx, { supports1m: v })} label={t("settings.customModels.supports1mLabel")} />
-                  <span className="text-[0.6428em] text-content-muted">1M</span>
-                </label>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => onTest(idx)}
-                  disabled={test.status === "testing"}
-                  title={t("settings.customModels.testWithModel")}
-                >
-                  {testingThis ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlugConnected size={12} />}
-                </Button>
-                <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
-                  <IconTrash size={12} />
-                </Button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+                {testingThis ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlugConnected size={12} />}
+              </Button>
+              <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
+                <IconTrash size={12} />
+              </Button>
+            </div>
+          );
+        })}
+      </ModelListSection>
 
       {/* Subagent-model pin — a per-config setting: Claude sessions running
           on THIS provider route Task-tool subagents through the picked model
@@ -1810,31 +1785,21 @@ function PiProviderForm({
       </div>
 
       {/* Models sub-table */}
-      <div>
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-[0.7857em] font-medium text-content-muted">
-            {t("settings.customModels.modelListTitle", { n: form.models.filter((m) => m.id.trim()).length })}
-          </span>
-          <button type="button" onClick={addModel} className="flex items-center gap-1 text-[0.7857em] text-accent hover:text-accent/80">
-            <IconPlus size={11} /> {t("settings.customModels.addModel")}
-          </button>
-        </div>
-        {form.models.length === 0 && (
-          <p className="rounded border border-dashed border-edge px-2 py-3 text-center text-[0.7143em] text-content-subtle">
-            {t("settings.customModels.modelsEmpty")}
-          </p>
-        )}
-        <div className="space-y-1.5">
-          {form.models.map((m, idx) => (
-            <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
-              <div className="grid grid-cols-[1fr_90px_70px_auto] items-center gap-1.5">
-                <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
-                <Input value={m.maxTokens} onChange={(e) => updateModel(idx, { maxTokens: e.target.value })} placeholder={t("settings.customModels.maxTokensPlaceholder")} title={t("settings.customModels.maxTokensTitle")} />
-                <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
-                  <Switch checked={m.enable1m} onCheckedChange={(v) => updateModel(idx, { enable1m: v })} label={t("settings.customModels.enable1m")} />
-                  <span className="text-[0.6428em] text-content-muted">1M</span>
-                </label>
-                <span className="flex items-center gap-0.5">
+      <ModelListSection
+        count={form.models.filter((m) => m.id.trim()).length}
+        onAdd={addModel}
+        isEmpty={form.models.length === 0}
+      >
+        {form.models.map((m, idx) => (
+          <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
+            <div className="grid grid-cols-[1fr_90px_70px_auto] items-center gap-1.5">
+              <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
+              <Input value={m.maxTokens} onChange={(e) => updateModel(idx, { maxTokens: e.target.value })} placeholder={t("settings.customModels.maxTokensPlaceholder")} title={t("settings.customModels.maxTokensTitle")} />
+              <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
+                <Switch checked={m.enable1m} onCheckedChange={(v) => updateModel(idx, { enable1m: v })} label={t("settings.customModels.enable1m")} />
+                <span className="text-[0.6428em] text-content-muted">1M</span>
+              </label>
+              <span className="flex items-center gap-0.5">
                   <button type="button" onClick={() => setExpandedModel(expandedModel === idx ? null : idx)} className="rounded p-0.5 text-content-muted hover:bg-surface-hover" title={expandedModel === idx ? t("settings.customModels.collapse") : t("settings.customModels.expandModel")}>
                     {expandedModel === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
                   </button>
@@ -1891,10 +1856,9 @@ function PiProviderForm({
                   </div>
                 </div>
               )}
-            </div>
-          ))}
-        </div>
-      </div>
+          </div>
+        ))}
+      </ModelListSection>
 
       {error && <div className="rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7857em] text-danger">{error}</div>}
 
@@ -1910,6 +1874,43 @@ function PiProviderForm({
 }
 
 /* ════════════════════════ shared action bar ════════════════════════ */
+
+/** 模型列表的共同外壳：标题带条数 + 「添加模型」+ 空状态 + 行容器。
+ *
+ *  三个引擎的行内容不一样（各自带 1M / maxTokens / 思考映射 那些开关），但**这一圈
+ *  是逐字相同的** —— 抽出来保证三页的观感与文案不会各长各的（2026-10-11 统一）。
+ *  从前这段在三个表单里各抄了一份。 */
+function ModelListSection({
+  count,
+  onAdd,
+  isEmpty,
+  children,
+}: {
+  count: number;
+  onAdd: () => void;
+  isEmpty: boolean;
+  children: ReactNode;
+}) {
+  const { t } = useI18n();
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[0.7857em] font-medium text-content-muted">
+          {t("settings.customModels.modelListTitle", { n: count })}
+        </span>
+        <button type="button" onClick={onAdd} className="flex items-center gap-1 text-[0.7857em] text-accent hover:text-accent/80">
+          <IconPlus size={11} /> {t("settings.customModels.addModel")}
+        </button>
+      </div>
+      {isEmpty && (
+        <p className="rounded border border-dashed border-edge px-2 py-3 text-center text-[0.7143em] text-content-subtle">
+          {t("settings.customModels.modelsEmpty")}
+        </p>
+      )}
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
 
 function FormActions({
   testStatus,
