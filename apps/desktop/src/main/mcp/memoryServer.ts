@@ -210,7 +210,16 @@ function rawMemoryMcpTools(): McpToolSpec[] {
         requireMemoryAccess(args.path, memoryProjectForSession(ctx.sessionId));
         try {
           const { content, revision } = readMemoryFile(args.path);
-          return text(`revision: ${revision}\n\n${content.trim().length === 0 ? "(这条记忆是空的)" : content}`);
+          // ⚠️ **去掉正文首尾的换行,读出来的才是能原样存回去的。** 存储层写盘时是
+          // `---\n…\n---\n\n<正文>`,所以 `readMemoryFile` 吐回的正文前面带着分隔行留下的
+          // 那个换行;而 `saveMemoryFile` 只 `\\s+$` 收尾(不收首)。模型照「先读 → 改 →
+          // 用同一个 path 覆盖」这条被工具说明写死的流程走一遍,那个前导换行就被原样写回,
+          // 每读存一轮文件多一个空行、正文越漂越远(实测 `"A"`→`"\nA"`→`"\n\nA"`)。
+          // 面板那条读通路(`main/ipc/memory.ts` 的 `memory:read`)早就按同一条判据收口了
+          // —— 这里漏了,于是同一个「读→存」不动点在 MCP 这条路上不成立。硬规矩 2:同一份
+          // 规则两处各写一遍必漂。这里照抄那处,只去换行(不吃正文里故意的空格/制表符)。
+          const body = content.replace(/^\n+|\n+$/g, "");
+          return text(`revision: ${revision}\n\n${body.length === 0 ? "(这条记忆是空的)" : body}`);
         } catch (err) {
           return fail((err as Error).message);
         }
@@ -284,11 +293,24 @@ function rawMemoryMcpTools(): McpToolSpec[] {
       handler: (args: { path: string; expectedRevision: string }, ctx) => {
         requireMemoryAccess(args.path, memoryProjectForSession(ctx.sessionId));
         try {
-          const { content } = readMemoryFile(args.path); // 先确认它真的存在(删除本身幂等,但对话里要说清楚)
+          // 先读一次拿正文预览;**读不到不等于失败**。存储层对不存在的路径直接回
+          // `{ ok: true }`(删除是幂等的),工具说明也写着"不存在的路径也算成功"、
+          // 面板那条删除同样幂等 —— 从前这里却拿**会抛的** `readMemoryFile` 当前置,
+          // 于是"幂等"只停在说明里:删一条本来就不在的路径变成 `fail`,回的还是一句
+          // 英文 `ENOENT: no such file...`,与兄弟路径的说辞对不上。
+          let preview = "";
+          let previewElided = false;
+          try {
+            const { content } = readMemoryFile(args.path);
+            const body = content.trim();
+            preview = body.slice(0, 60);
+            previewElided = body.length > 60;
+          } catch {
+            /* 不存在(或读不到)—— 删除本身幂等,不当作失败;下面照常删、照常报成功 */
+          }
           deleteMemoryFile(args.path, args.expectedRevision);
           notifyMemoryChanged(`forget:${args.path}`);
-          const preview = content.trim().slice(0, 60);
-          return text(`已删掉 \`${args.path}\`${preview ? `(原内容是「${preview}${content.length > 60 ? "…" : ""}」)` : ""}。`);
+          return text(`已删掉 \`${args.path}\`${preview ? `(原内容是「${preview}${previewElided ? "…" : ""}」)` : ""}。`);
         } catch (err) {
           return fail((err as Error).message);
         }

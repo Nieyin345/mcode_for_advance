@@ -695,6 +695,37 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   eq("被拒绝的操作不改变最新正文", readMemoryFile(path).content.trim(), "v2");
   const latest = readMemoryFile(path).revision;
   eq("真实工具最新版本删除成功", (await invoke("memory_forget", { path, expectedRevision: latest })).isError, undefined);
+
+  // ★ **读出来的正文必须能原样存回去(「读→存」不动点)。** 存盘时正文前面带着
+  //   frontmatter 分隔行留下的换行,而 `saveMemoryFile` 只收尾、不收首 —— 若 `memory_read`
+  //   把那个前导换行一起交给模型,模型照工具说明里写死的「先读 → 改 → 同一个 path 覆盖」
+  //   走一遍就会被写回,每读存一轮文件多一个空行。面板那条读通路(`main/ipc/memory.ts`)
+  //   早就按同一条判据收口,这里从前漏了 —— 同一个不动点在 MCP 这条路上不成立。判据钉行为:
+  //   工具读出的正文再存回去,**正文一个字符都不变**(时间戳每次盖章,比正文不比 raw)。
+  {
+    const rtPath = "projects/p_memory/rules/tool-roundtrip.md";
+    await invoke("memory_write", { category: "rules", path: rtPath, title: "RT", content: "round-trip body" });
+    // 比**正文**,不比整份 raw —— 存储层每次写都把 `updatedAt` 盖成现在,那份时间戳本来就会变。
+    const bodyBefore = readMemoryFile(rtPath).content;
+    const read = await invoke("memory_read", { path: rtPath });
+    const readText = read.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+    const shown = readText.slice(readText.indexOf("\n\n") + 2);
+    eq("★ memory_read 读出的正文不含 frontmatter 分隔行留下的前导换行", shown, "round-trip body");
+    await invoke("memory_write", { category: "rules", path: rtPath, title: "RT", content: shown, expectedRevision: readMemoryFile(rtPath).revision });
+    eq("★ 读出的正文原样存回,正文不再长胖(`读→存` 不动点)", readMemoryFile(rtPath).content, bodyBefore);
+    await invoke("memory_forget", { path: rtPath, expectedRevision: readMemoryFile(rtPath).revision });
+  }
+
+  // ★ **`memory_forget` 的幂等不能只停在说明里。** 工具说明写着"不存在的路径也算成功",
+  //   存储层对不存在的路径也直接回 `{ ok: true }`,面板那条删除同样幂等 —— 从前这里却拿
+  //   **会抛的** `readMemoryFile` 当前置,删一条本来就不在的路径反成 `fail`,且回的是一句
+  //   英文 `ENOENT: no such file...`(与本仓"给模型的话说中文"的约定也对不上)。
+  {
+    const gone = await invoke("memory_forget", { path: "projects/p_memory/rules/never-existed.md", expectedRevision: "0".repeat(64) });
+    eq("★ 删一条本来就不存在的记忆也算成功(与说明/面板一致的幂等)", gone.isError, undefined);
+    const goneText = gone.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+    check("★ 幂等删除报的是中文成功句,不是原始 ENOENT 英文", goneText.includes("已删掉") && !/ENOENT/.test(goneText), goneText);
+  }
 }
 
 /* Scope, recovery, preview-confirm import and the real neutral engine dispatcher. */
