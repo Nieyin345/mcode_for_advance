@@ -493,6 +493,27 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: boolean; error?: string; snapshot?: EngineToolsSnapshot; }"
  },
  {
+  "method": "extensionStore.get",
+  "channel": "extensionStore:get",
+  "doc": "读一条扩展自己的键值。没有返回 `null`(同面板 `mcode.storage.get`)。",
+  "input": "{ key: string; extensionId: string }",
+  "output": "ExtensionStoreGetResult"
+ },
+ {
+  "method": "extensionStore.remove",
+  "channel": "extensionStore:remove",
+  "doc": "删一条。",
+  "input": "{ key: string; extensionId: string }",
+  "output": "ExtensionStoreRemoveResult"
+ },
+ {
+  "method": "extensionStore.set",
+  "channel": "extensionStore:set",
+  "doc": "写一条。超配额回 `{ ok: false, reason: \"tooLarge\" }`。**写档**(经 `policyFor` 兜底)。",
+  "input": "{ key: string; extensionId: string; value?: unknown }",
+  "output": "ExtensionStoreSetResult"
+ },
+ {
   "method": "file.copy",
   "channel": "file:copy",
   "doc": "",

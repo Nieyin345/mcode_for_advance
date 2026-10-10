@@ -392,5 +392,6 @@ export const en = {
   "chatStream.welcome.automationsTitle": "Automations on watch",
   "chatStream.welcome.automationLastFire": "Last fired {when}",
   "chatStream.welcome.automationNeverFired": "Not fired yet",
+  "chatStream.welcome.automationMissed": "Missed {n} run(s)",
   "chatStream.welcome.automationFailed": "Last run failed",
 } as const;

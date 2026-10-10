@@ -379,5 +379,6 @@ export const zh = {
   "chatStream.welcome.automationsTitle": "正在守着的自动化",
   "chatStream.welcome.automationLastFire": "上次触发 {when}",
   "chatStream.welcome.automationNeverFired": "还没触发过",
+  "chatStream.welcome.automationMissed": "错过 {n} 次",
   "chatStream.welcome.automationFailed": "上次失败",
 } as const;

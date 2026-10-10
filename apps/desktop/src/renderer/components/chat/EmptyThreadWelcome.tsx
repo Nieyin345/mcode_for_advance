@@ -23,7 +23,9 @@
  *  - **矮窗口不画卡片**（高度 ≤ 640）：这一栏内容贴底、上面 `overflow-hidden`，四块摞高了
  *    会把标题顶出屏幕。卡片区自己也限高并可滚（窄栏一列时四块摞起来最高）。
  *  - **自动化上次失败要说出来**（`latestFailureOf`）：一条静悄悄坏掉的自动化，首屏是用户
- *    最可能顺眼看到的地方。
+ *    最可能顺眼看到的地方。**错过定时**同理（`missedNoticeOf`）：它不算失败（圆点不变红），
+ *    但「应用没运行时漏了几次」也要说出来 —— 否则 `armed` 仍是 true、`lastFireAt` 停在
+ *    几天前，这一行画成"上次触发 3 天前"加一颗绿点，用户以为一切正常（P8）。
  *
  * `data-home-section` / `data-home-row` 是给 `.tmp/home-preview` 量的，不要删。
  *
@@ -40,7 +42,7 @@ import { previewLibraryItem } from "@renderer/lib/libraryPreview.js";
 import { workflowDisplayDescription, workflowDisplayName, workflowIcon } from "@renderer/lib/workflowLabels.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { latestFailureOf } from "@contracts/ipc";
+import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import {
   IconArrowsSplit,
   IconBook,
@@ -201,6 +203,13 @@ function StartPoints() {
         <Section id="automations" icon={IconClock} title={t("chatStream.welcome.automationsTitle")}>
           {automations.map((f) => {
             const failure = latestFailureOf(f);
+            // **错过定时也要看得见**(P8)。`recordMissed` 刻意不碰 `armed`(错过不等
+            // 于坏了),于是错过的那条照旧 `armed`、照进这块列表;而它的 `lastFireAt`
+            // 停在上次成功那一刻 —— 光看那个会画成"上次触发 3 天前"加一颗绿点,用户
+            // 以为一切正常。契约里 `missedNoticeOf` 那段注释警告的正是这个分家:
+            // 设置页说"漏了 3 次"、首屏说"一切正常"。这里读**同一条事实**。
+            const missed = missedNoticeOf(f);
+            // 错过**不是**失败(圆点不该变红),所以它只换那句文字,不动圆点颜色。
             return (
               <Row
                 key={f.key}
@@ -216,6 +225,10 @@ function StartPoints() {
                   failure ? (
                     <span className="text-danger" title={failure}>
                       {t("chatStream.welcome.automationFailed")}
+                    </span>
+                  ) : missed > 0 ? (
+                    <span className="text-warning" title={t("settings.automation.facts.missed", { n: missed })}>
+                      {t("chatStream.welcome.automationMissed", { n: missed })}
                     </span>
                   ) : f.lastFireAt !== undefined ? (
                     t("chatStream.welcome.automationLastFire", { when: formatRelativeTime(f.lastFireAt) })

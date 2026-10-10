@@ -17,6 +17,7 @@ export async function buildAppMcpServer(opts: { sessionId: string; context?: Pro
     instructions:
       "控制 Mcode 软件本身的工具 —— 界面上能做的事,这里基本都能做。\n" +
       "- 找功能:app_api_list(不带参数看功能域)→ app_api_describe 看参数 → app_api_call 调用;\n" +
+      "- 写自定义面板/扩展:app_panel_api_list 查 window.mcode 面板 API、挂载位能用的动作与模板变量;\n" +
       "- 界面:app_ui_state 看当前状态,app_ui 切对话/开文件/开设置/开面板/弹提示/改界面偏好;\n" +
       "- 对话:app_session_new 开新对话(可带第一条消息),app_session_send 给别的对话发消息;\n" +
       "- 工作流:app_workflow_run 立即运行。\n" +
