@@ -98,8 +98,23 @@ const firstSentence = (s) => {
 };
 const docOf = (sym) => ts.displayPartsToString(sym.getDocumentationComment(checker));
 
-function describeInput(type, node) {
-  if (!type) return "(无参数)";
+/**
+ * 把一个类型摊成「第一层字段」那一段文字 —— **入参和返回都走它**。
+ *
+ * 从前只有入参走:返回一律 `checker.typeToString`,于是返回值是**具名接口**的方法
+ * (比如 `browser.*` 全返 `BrowserOpResult`)在清单里只写一个名字 —— agent 照着拼得到
+ * 参数,却**猜不出返回里有哪些字段**(报告附录 D 的 B3:`otherPath` / `item.id` 全栽在
+ * 这上面,只能试错)。名字在 `@contracts` 里是有定义的类型,展开一下就有了,没成本。
+ */
+function describeShape(type, node, emptyLabel) {
+  if (!type) return emptyLabel;
+  // 判别式联合(如 `CheckForUpdatesResult` = 三种 `{ status; … }`):逐支摊开 ——
+  // 名字对 agent 没用,它要看的是"每一步回报里有哪些字段"。
+  if (type.isUnion()) {
+    const parts = type.types.map((t) => describeShape(t, node, "")).filter((t) => t && t !== "void");
+    if (parts.length > 0) return clip(parts.join(" | "), LIMIT_OUTPUT);
+    return checker.typeToString(type, node, flags);
+  }
   const props = checker.getPropertiesOfType(type);
   const isObjectLike = (type.flags & ts.TypeFlags.Object) !== 0 || type.isIntersection();
   if (!isObjectLike || props.length === 0) return checker.typeToString(type, node, flags);
@@ -125,11 +140,12 @@ for (const member of rpcIface.members) {
   let output = "void";
   if (sig) {
     const param = sig.getParameters()[0];
-    if (param) input = describeInput(checker.getTypeOfSymbolAtLocation(param, member), member);
+    if (param) input = describeShape(checker.getTypeOfSymbolAtLocation(param, member), member, "(无参数)");
     let ret = sig.getReturnType();
     const awaited = checker.getAwaitedType?.(ret);
     if (awaited) ret = awaited;
-    output = checker.typeToString(ret, member, flags);
+    // 返回也摊开第一层 —— 具名接口从前只剩一个名字(见 `describeShape` 的说明)。
+    output = describeShape(ret, member, "void");
   }
   const channel = methodChannel.get(method);
   if (!channel) {
