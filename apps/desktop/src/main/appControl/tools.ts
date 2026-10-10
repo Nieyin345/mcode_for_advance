@@ -22,7 +22,16 @@
  * 只给本地三个引擎;浏览器扩展 / 公网 MCP 那条路(`webToolHost`)**不挂** —— 公网那条是
  * 免审批的,挂上去等于把整个软件交给拿到链接的人(用户 2026-10-02 明确选的)。
  */
-import { CUSTOM_UI_SETTING_KEY, CustomUiConfigSchema } from "@contracts/customUi";
+import {
+  ACTIONS_BY_SLOT,
+  CUSTOM_UI_ICONS,
+  CUSTOM_UI_SETTING_KEY,
+  CUSTOM_UI_SLOTS,
+  CustomUiConfigSchema,
+  TEMPLATE_VARS_BY_SLOT,
+  targetKindOfSlot,
+} from "@contracts/customUi";
+import { PANEL_METHODS, PANEL_THEME_VARS, type PanelMethod } from "@contracts/customUiPanel";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { notifyAppSettingWrite } from "@main/customUi/settingSync.js";
 import { randomUUID } from "node:crypto";
@@ -170,6 +179,76 @@ export function findEntry(method: string): ApiEntry | undefined {
   return apiEntries().find((e) => e.method === m || e.channel === m);
 }
 
+/**
+ * 「没有这个方法」时**猜一个最接近的**（报告 D3）。
+ *
+ * 报告的原话:工具名不可猜、无校验,agent 只能靠试错 —— 实测猜错 `session.list`
+ * (真名 `session.listAll`)、`browser.list`、`usage.stats` 都只得到一句"没有这个方法",
+ * 于是它**下一轮还是靠猜**。名字都在这张表里,给一句"你是不是要找 X"没有成本,却把
+ * 试错从"再猜一次"变成"照着改一个字"。
+ *
+ * ## 判据
+ *
+ * 同一个域(`a.b` 的 `a`)里,方法名最接近的那个。距离用**编辑距离**,但先把两边都
+ * 取小写、并去掉分隔符的意义不大(那会让 `list` 和 `listAll` 的距离看起来一样)——
+ * 所以直接对**全名**算,再挑最小的;`: `通道名也算候选(agent 可能照目录里的 channel
+ * 写)。**只给一个**,而且要求真的沾边(距离 ≤ 名字长度的一半,或前缀命中)——
+ * 否则宁可不说,免得指错方向。
+ */
+export function suggestMethod(method: string): string | undefined {
+  return nearestName(method, apiEntries().flatMap((e) => [e.method, e.channel]));
+}
+
+/**
+ * 从一组候选里挑出和 `want` 最接近的那个。**挑不出就返回 undefined** —— 报错里
+ * 宁可不说,也不要指错方向(指错比不说更费一轮)。
+ *
+ * 前缀命中排在最前(用户常常只漏了后半截,`session.list` vs `session.listAll`);
+ * 其余按编辑距离,且要求距离真的小(≤ 名字长度的一半,至少 3)—— 差太远的不是"像",
+ * 是"另一个东西"。
+ */
+export function nearestName(want: string, candidates: readonly string[]): string | undefined {
+  const w = want.trim().toLowerCase();
+  if (w === "") return undefined;
+  let best: { name: string; d: number } | undefined;
+  for (const raw of candidates) {
+    const name = raw.toLowerCase();
+    const prefixHit = name.startsWith(w) || w.startsWith(name);
+    const score = prefixHit ? -1 : editDistance(w, name);
+    if (best === undefined || score < best.d) best = { name: raw, d: score };
+  }
+  if (best === undefined) return undefined;
+  const limit = Math.max(3, Math.ceil(w.length / 2));
+  return best.d <= limit ? best.name : undefined;
+}
+
+/** 两个短串的编辑距离(Levenshtein)。方法名最长不过几十字符,朴素两行足够。 */
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diag = prev[0] as number;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const tmp = prev[j] as number;
+      prev[j] = Math.min(
+        (prev[j] as number) + 1,
+        (prev[j - 1] as number) + 1,
+        diag + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      diag = tmp;
+    }
+  }
+  return prev[b.length] as number;
+}
+
+/** 「没有这个方法」那一句 —— 附上最接近的一个名字(报告 D3),猜不出就只说没有。 */
+function unknownMethodHint(method: string): string {
+  const near = suggestMethod(method);
+  return near === undefined
+    ? `没有这个方法:${method}。用 app_api_list 查有哪些。`
+    : `没有这个方法:${method}。你是不是要找「${near}」?用 app_api_list 看全部。`;
+}
+
 function clipLine(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
@@ -268,7 +347,7 @@ export async function panelApiCall(
   description?: string;
 }> {
   const entry = findEntry(method);
-  if (!entry) return { ok: false, error: `没有这个方法:${method}。` };
+  if (!entry) return { ok: false, error: unknownMethodHint(method) };
   if (!entry.registered) return { ok: false, error: `这个方法在当前版本里没有注册(${entry.channel})。` };
   const level = entry.policy.level;
   if (level === "blocked") {
@@ -332,7 +411,146 @@ const UI_ACTIONS = [
 ] as const;
 
 /** 只读 / 界面类工具名(引擎侧若要按名字预放行可以用;真正的闸门在 handler 里)。 */
-export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_ui_state"]);
+export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_ui_state", "app_panel_api_list"]);
+
+/* ─────────────────── 自定义面板/扩展的对外接口(给 agent 查)─────────────────── */
+
+/**
+ * 面板 `window.mcode` 每个方法的一句话说明。
+ *
+ * ## 为什么需要它
+ *
+ * `app_api_list` 只列**能被 `app_api_call` 调**的主进程方法 —— 面板的 `window.mcode`
+ * 那套(读上下文、问模型、发到输入框、跑自动化、读写项目文件、读资料库……)不在其中。
+ * 从前 agent 想知道面板能干什么,只能去 grep `app.asar` 里的源码。这张表 + 下面那个
+ * `app_panel_api_list` 工具把那份接口变成**可查询**的。
+ *
+ * ## 数据从哪来
+ *
+ * 方法名从 `@contracts/customUiPanel` 的 `PANEL_METHODS` 来(那张表是权威清单,渲染端
+ * `PanelFrame` 逐个实现);这里只补"一句说明"。类型钉成 `Record<PanelMethod, …>`:
+ * `PANEL_METHODS` 加了方法而这里没补说明,**typecheck 就过不去** —— 与 `PanelFrame`
+ * 里那个穷举 switch 是同一条约束,防止说明表悄悄漂在清单后面。
+ *
+ * ⚠️ 说明是**给人/模型看的散文**,判据只在 `PanelMethod` 这个类型上 —— 别把它当成
+ * 又一份"实现",真正的行为在 `renderer/components/customUi/panelBridge.ts`。
+ */
+const PANEL_METHOD_DOCS: Record<PanelMethod, { doc: string; params?: string; returns?: string }> = {
+  context: { doc: "读当前上下文(面板所属条目、语言、目标种类、模板变量 vars、项目路径、主题)", returns: "{ itemId, title, locale, target, vars, projectPath, theme }" },
+  prompt: { doc: "把一段文字放进当前对话的输入框(不替你发送,用户先看一眼再发)", params: "text", returns: "{ ok }" },
+  ask: { doc: "一次性问一个模型,拿回纯文本。**不带任何工具** —— 面板里的文字驱动不了文件/命令", params: "prompt, system?, model?(@claude[:haiku|sonnet|opus] 或 自定义模型id)", returns: "string(纯文本)" },
+  "api.call": { doc: "调**任意** Mcode 主进程方法(与 agent 的 app_api_call 同一套权限分类与密钥拦截;写档每次弹确认;方法名去 app_api_list 查)", params: "method, input?", returns: "该方法的返回值(已打码)" },
+  automations: { doc: "列出可运行的自动化(带触发器的)及其触发器" },
+  runAutomation: { doc: "用指定的触发器手动跑一条自动化(默认每次弹确认)", params: "workflowId, triggerNodeId?", returns: "{ ok }" },
+  "files.read": { doc: "读项目里的一个文件(相对路径按当前项目解析;越界拒绝)", params: "path", returns: "{ content, path }" },
+  "files.list": { doc: "列项目里的一个目录(只收相对路径)", params: "path(相对,可省略=项目根)", returns: "[{ name, path, isDir, size? }]" },
+  "files.write": { doc: "写项目里的一个文件(默认每次弹确认)", params: "path, content", returns: "{ ok, path }" },
+  "library.list": { doc: "列/搜资料库条目(按标题或关键词,可分页)", params: "query?, collectionId?, limit?(1-200,默认50), offset?", returns: "{ total, items:[{ id, title, abstract?, url?, hasMarkdown, addedAt, updatedAt }] }" },
+  "library.search": { doc: "全文检索资料库条目", params: "query, limit?(1-100,默认30)", returns: "[匹配项]" },
+  "library.read": { doc: "读一条资料库条目的 Markdown 正文", params: "id", returns: "{ markdown, fileName }" },
+  "storage.get": { doc: "读这个面板自己存的一个键(按面板隔离,存在浏览器 localStorage)", params: "key", returns: "值 或 null" },
+  "storage.set": { doc: "存一个键(值须能 JSON 序列化;整块面板数据有 1MB 上限)", params: "key, value", returns: "{ ok }" },
+  "storage.remove": { doc: "删掉一个键", params: "key", returns: "{ ok }" },
+  copy: { doc: "把文本复制到剪贴板", params: "text", returns: "{ ok }" },
+  openUrl: { doc: "用系统浏览器打开一个链接(只放行 http(s)/mailto)", params: "url", returns: "{ ok }" },
+  openFile: { doc: "在编辑器里打开一个文件(项目内)", params: "path", returns: "{ ok }" },
+  shell: { doc: "在底部终端里跑一条命令(默认每次弹确认;用户看得见、可 Ctrl+C,不后台静默执行)", params: "command", returns: "{ ok }" },
+  toast: { doc: "在界面右下角弹一条提示(标题用面板名)", params: "message, kind?(info|warning|error)", returns: "{ ok }" },
+};
+
+/** 各挂载位的一句话说明(`app_panel_api_list({slot})` 与总览用)。 */
+const SLOT_DOCS: Record<(typeof CUSTOM_UI_SLOTS)[number], string> = {
+  "library.item": "资料库**条目行**右键(目标:一条条目)",
+  "library.collection": "资料库**分类**(第三级:有父分类的那种)右键",
+  "library.subcategory": "资料库**小类**(第二级:大类下直挂的根分类)右键",
+  "library.group": "资料库**大类**标题行右键",
+  "files.context": "右栏 Files 里的文件右键(目标:一个文件)",
+  "rightPanel.tab": "右栏顶上那排页签(内置的文件/Git/浏览器……也在这里排)",
+  toolbar: "主界面与右栏之间的竖向工具栏(右栏收起时在最右边)",
+  "chat.message": "聊天里一条消息的「⋯」菜单",
+  "text.selection": "选中文字:聊天里的选中浮条 + 代码编辑器的右键菜单",
+  "composer.toolbar": "输入框下面那排工具按钮",
+  "session.context": "左栏对话右键",
+  "project.context": "左栏项目右键",
+};
+
+/**
+ * `app_panel_api_list` —— 把**自定义面板/扩展的对外接口**报给 agent(只读)。
+ *
+ * 不带参数:总览(面板方法清单 + 挂载位清单)。带 method:展开说一个面板方法。
+ * 带 slot:展开说一个挂载位(允许的 action 类型 + 可用模板变量 vars)。
+ *
+ * 数据一律来自 `@contracts` 的既有 constants(`PANEL_METHODS` / `ACTIONS_BY_SLOT` /
+ * `TEMPLATE_VARS_BY_SLOT` / `CUSTOM_UI_SLOTS` / `targetKindOfSlot`),不另写一份 ——
+ * 契约加了方法/槽位,这里自动跟上。
+ */
+function panelApiList(args: { method?: string; slot?: string }): ToolResult {
+  const clean = (s: string) => s.replace(/^mcode\./, "").trim();
+  const methodName = args.method ? clean(args.method) : undefined;
+  const slotName = args.slot?.trim();
+
+  if (methodName) {
+    const known = (PANEL_METHODS as readonly string[]).includes(methodName);
+    if (!known) {
+      // 候选是**面板自己的**方法表(与 RPC 目录不同),所以另走一份名单。
+      const near = nearestName(methodName, PANEL_METHODS as readonly string[]);
+      return fail(
+        `面板没有这个方法:${methodName}。${near ? `你是不是要找「${near}」?` : ""}不带参数调用看全部方法。`,
+      );
+    }
+    const d = PANEL_METHOD_DOCS[methodName as PanelMethod];
+    return text(
+      [
+        `面板方法:mcode.${methodName}()`,
+        `说明:${d.doc}`,
+        d.params ? `参数:${d.params}` : "参数:(无)",
+        d.returns ? `返回:${d.returns}` : null,
+        `调用方式:面板脚本里 await mcode.${methodName}(…)(库风格的方法在 SDK 里已按子对象包好,如 mcode.files.read / mcode.api.call)。`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+
+  if (slotName) {
+    const known = (CUSTOM_UI_SLOTS as readonly string[]).includes(slotName);
+    if (!known) return fail(`没有这个挂载位:${slotName}。不带参数调用看全部挂载位。`);
+    const slot = slotName as (typeof CUSTOM_UI_SLOTS)[number];
+    return text(
+      [
+        `挂载位:${slot}`,
+        `位置:${SLOT_DOCS[slot]}`,
+        `目标种类:${targetKindOfSlot(slot)}`,
+        `允许的动作(action.type):${ACTIONS_BY_SLOT[slot].join(" / ")}`,
+        `可用的模板变量({{…}}):${TEMPLATE_VARS_BY_SLOT[slot].join(" / ")}`,
+      ].join("\n"),
+    );
+  }
+
+  const methodLines = (PANEL_METHODS as readonly PanelMethod[]).map(
+    (m) => `- mcode.${m} — ${clipLine(PANEL_METHOD_DOCS[m].doc, 90)}`,
+  );
+  const slotLines = (CUSTOM_UI_SLOTS as readonly (typeof CUSTOM_UI_SLOTS)[number][]).map(
+    (s) => `- ${s} [目标:${targetKindOfSlot(s)}] 动作:${ACTIONS_BY_SLOT[s].join("/")} · 变量:${TEMPLATE_VARS_BY_SLOT[s].join("/")}`,
+  );
+  return text(
+    [
+      `自定义面板/扩展的对外接口。面板在隔离的 iframe 里跑,能做的事全在下面这份清单里。`,
+      ``,
+      `一、面板 API(window.mcode,共 ${PANEL_METHODS.length} 个方法)`,
+      ...methodLines,
+      ``,
+      `二、挂载位(slot,共 ${CUSTOM_UI_SLOTS.length} 个挂载位)—— 自定义项放在哪里、能用哪些动作和变量`,
+      ...slotLines,
+      ``,
+      `三、图标白名单(CUSTOM_UI_ICONS,共 ${CUSTOM_UI_ICONS.length} 个):${CUSTOM_UI_ICONS.join(" / ")}`,
+      `四、主题变量(面板 --mc-<键>):${PANEL_THEME_VARS.join(" / ")}`,
+      ``,
+      `下一步:app_panel_api_list({method}) 看某个面板方法 → app_panel_api_list({slot}) 看某个挂载位。`,
+      `要在面板里调主进程方法用 mcode.api.call(method, input),method 去 app_api_list 查。`,
+    ].join("\n"),
+  );
+}
 
 export function appMcpTools(): McpToolSpec[] {
   return [
@@ -357,7 +575,8 @@ export function appMcpTools(): McpToolSpec[] {
           return text(
             `Mcode 共 ${all.length} 个功能,按域:\n${lines.join("\n")}\n\n` +
               "下一步:app_api_list({domain}) 看某个域的方法 → app_api_describe({method}) 看参数 → app_api_call 调用。\n" +
-              "切对话/开文件/开面板/像用户一样发消息用 app_ui / app_session_new / app_session_send,运行工作流用 app_workflow_run。",
+              "切对话/开文件/开面板/像用户一样发消息用 app_ui / app_session_new / app_session_send,运行工作流用 app_workflow_run。\n" +
+              "这里只有**主进程方法**;自定义面板/扩展的 window.mcode API、挂载位动作与变量用 app_panel_api_list 查。",
           );
         }
         const q = args.query?.trim().toLowerCase();
@@ -382,7 +601,7 @@ export function appMcpTools(): McpToolSpec[] {
       },
       handler: async (args: { method: string; setting_key?: string }) => {
         const e = findEntry(args.method);
-        if (!e) return fail(`没有这个方法:${args.method}。用 app_api_list 查。`);
+        if (!e) return fail(unknownMethodHint(args.method));
         return text(
           [
             `方法:${e.method}`,
@@ -398,6 +617,19 @@ export function appMcpTools(): McpToolSpec[] {
             .join("\n"),
         );
       },
+    },
+    {
+      name: "app_panel_api_list",
+      description:
+        "列出**自定义面板/扩展的对外接口**(与 app_api_list 并列,但那份只列主进程方法)。面板跑在隔离 iframe 里," +
+        "通过 window.mcode 和 Mcode 打交道 —— 这套 API、各挂载位(slot)能用的动作类型(action.type)、可用模板变量({{…}})、" +
+        "图标白名单、主题变量都在这里。不带参数给总览;method= 看一个面板方法;slot= 看一个挂载位。" +
+        "要在面板里调主进程方法,用 mcode.api.call(method, input),method 去 app_api_list 查。",
+      inputSchema: {
+        method: z.string().optional().describe("面板方法名,如 files.read / api.call / ask / runAutomation(带不带 mcode. 前缀都行)"),
+        slot: z.string().optional().describe("挂载位,如 library.item / files.context / toolbar / rightPanel.tab"),
+      },
+      handler: async (args: { method?: string; slot?: string }) => panelApiList(args),
     },
     {
       name: "app_api_call",
@@ -618,7 +850,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
       case "app_api_call": {
         const method = String(args.method ?? "");
         const entry = findEntry(method);
-        if (!entry) return fail(`没有这个方法:${method}。用 app_api_list 查。`);
+        if (!entry) return fail(unknownMethodHint(method));
         const denied = await gateAppAction(
           ctx,
           entry.policy.level,

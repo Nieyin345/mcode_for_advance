@@ -20,10 +20,17 @@ import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
 import { policyFor } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
-import { invokeAppTool, appMcpTools, panelApiCall } from "@main/appControl/tools.js";
+import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod } from "@main/appControl/tools.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import { ApprovalBridge } from "@main/claude/ApprovalBridge.js";
+import {
+  ACTIONS_BY_SLOT,
+  CUSTOM_UI_ICONS,
+  CUSTOM_UI_SLOTS,
+  TEMPLATE_VARS_BY_SLOT,
+} from "@contracts/customUi";
+import { PANEL_METHODS, PANEL_THEME_VARS } from "@contracts/customUiPanel";
 
 let passed = 0;
 const failures: string[] = [];
@@ -369,12 +376,107 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   const { ctx } = ctxWith();
   const r = await call("no.such", {}, ctx);
   check("未知方法", r.isError === true && textOf(r).includes("app_api_list"), textOf(r));
+
+  // **猜错名字要给"你是不是要找"**(报告 D3)。报告的原话:工具名不可猜、无校验,agent
+  // 实测栽在 `session.list`(真名 `session.listAll`)、`browser.list`、`usage.stats` 上,
+  // 每次都只得到一句"没有这个方法",于是下一轮**还是靠猜**。名字都在目录里,给一句
+  // 最接近的没有成本,却把试错变成"照着改一个字"。
+  {
+    // 报告里实测栽的那三个 —— 每一个都必须指到真名上。
+    const guess = await call("session.list", {}, ctx);
+    check(
+      "★ 猜 `session.list` → 提示 `session.listAll`",
+      textOf(guess).includes("session.listAll"),
+      textOf(guess),
+    );
+    // 目录里没有 `usage.stats`,但同域有 `usage.*` —— 至少不能指到毫不相干的域上去。
+    const usage = suggestMethod("usage.stats");
+    check(
+      "猜 `usage.stats` → 要么不提,要么提同域的",
+      usage === undefined || usage.startsWith("usage."),
+      usage,
+    );
+    // 前缀命中:漏了后半截是最常见的一种猜法。
+    check("suggestMethod 命中前缀", suggestMethod("session.list") === "session.listAll", suggestMethod("session.list"));
+    check("完全不像 → 不硬猜", suggestMethod("qqqzzz") === undefined, suggestMethod("qqqzzz"));
+    check("空串 → 不提", suggestMethod("  ") === undefined);
+    // **别指到另一件事上**:提示要么是那个真名,要么什么都没有 —— 不能给一个和输入
+    // 八竿子打不着的名字。`project.list` 真存在,所以这里得挑一个目录里明确没有的。
+    const nonsense = suggestMethod("nonsense.zzz");
+    check("八竿子打不着的不提", nonsense === undefined, nonsense);
+  }
   const listed = await invokeAppTool("app_api_list", {}, "me", ctx);
   check("app_api_list 目录", textOf(listed).includes("project(") && textOf(listed).includes("app_api_describe"), textOf(listed).slice(0, 200));
   const dom = await invokeAppTool("app_api_list", { domain: "plugins" }, "me", ctx);
   check("app_api_list 按域、带权限档", textOf(dom).includes("plugins.installGit [高风险·每次批准]"), textOf(dom).slice(0, 300));
   const desc = await invokeAppTool("app_api_describe", { method: "session.rename" }, "me", ctx);
   check("app_api_describe 有参数格式", textOf(desc).includes("参数:") && textOf(desc).includes("title"), textOf(desc));
+}
+
+/* ── 自定义面板/扩展的对外接口(app_panel_api_list)──
+ *
+ * 报告 E11:`app_api_list` 只列能被 `app_api_call` 调的主进程方法,**不含**面板
+ * `window.mcode` 那套,也不含挂载位(slot)能用的动作 / 变量 —— agent 想写面板只能去
+ * grep 源码。这段钉住:新工具**确实**能把面板 API、槽位动作、模板变量报出来,且
+ * 报的是 `@contracts` 里那份既有 constants(数量逐条对齐),不是另写的一份说明。
+ */
+{
+  const { ctx, asked } = ctxWith();
+  const panelTool = appMcpTools().find((t) => t.name === "app_panel_api_list");
+  check("app_panel_api_list 在工具表里", panelTool !== undefined);
+  check("★ app_panel_api_list 是只读(在 APP_READONLY_TOOLS,自动放行)", APP_READONLY_TOOLS.has("app_panel_api_list"));
+
+  // ★ 总览:面板方法 / 挂载位 / 图标 / 主题变量四份清单都要在,且条数与 constants 一致。
+  //   除非判据立在"报的内容 = constants 的内容"上,否则说明表与契约漂开了也照样绿。
+  const overview = await invokeAppTool("app_panel_api_list", {}, "me", ctx);
+  const ov = textOf(overview);
+  check("★ 面板方法全部列出(且只读,不问审批)", !overview.isError && asked.length === 0, ov.slice(0, 200));
+  check("★ 面板方法数 = PANEL_METHODS.length", PANEL_METHODS.every((m) => ov.includes(`mcode.${m}`)), {
+    missing: PANEL_METHODS.filter((m) => !ov.includes(`mcode.${m}`)),
+  });
+  // 每个挂载位都要出现,并带上它的动作与变量(判据落在真正的表格内容上,不是只数个数)。
+  const slotMissing = CUSTOM_UI_SLOTS.filter((s) => !ov.includes(s));
+  check("★ 挂载位全部列出", slotMissing.length === 0, slotMissing);
+  check(
+    "★ 每个挂载位都报了动作类型与模板变量",
+    CUSTOM_UI_SLOTS.every((s) => ov.includes(ACTIONS_BY_SLOT[s].join("/")) && ov.includes(TEMPLATE_VARS_BY_SLOT[s].join("/"))),
+    CUSTOM_UI_SLOTS.filter((s) => !(ov.includes(ACTIONS_BY_SLOT[s].join("/")) && ov.includes(TEMPLATE_VARS_BY_SLOT[s].join("/")))),
+  );
+  check("★ 图标白名单条数 = CUSTOM_UI_ICONS.length", CUSTOM_UI_ICONS.every((i) => ov.includes(i)));
+  check("★ 主题变量 = PANEL_THEME_VARS", PANEL_THEME_VARS.every((v) => ov.includes(v)));
+  // 名字里的"共 N 个"必须与 constants 的真实条数对上(防漂)。
+  check(`方法数标注与实际一致(${PANEL_METHODS.length})`, ov.includes(`共 ${PANEL_METHODS.length} 个方法`), ov.match(/共 \d+ 个方法/)?.[0]);
+  check(`挂载位数标注与实际一致(${CUSTOM_UI_SLOTS.length})`, ov.includes(`共 ${CUSTOM_UI_SLOTS.length} 个挂载位`), ov.match(/共 \d+ 个挂载位/)?.[0]);
+
+  // 展开一个面板方法:说明 + 参数 + 返回。
+  const read = await invokeAppTool("app_panel_api_list", { method: "files.read" }, "me", ctx);
+  check("★ 展开面板方法给说明/参数/返回", !read.isError && textOf(read).includes("mcode.files.read()") && textOf(read).includes("参数:") && textOf(read).includes("path"), textOf(read));
+  // 前缀带不带 `mcode.` 都认。
+  const dotted = await invokeAppTool("app_panel_api_list", { method: "mcode.api.call" }, "me", ctx);
+  check("★ 面板方法名接受 mcode. 前缀", !dotted.isError && textOf(dotted).includes("api.call"), textOf(dotted));
+  // 覆盖较隐晦的几个,靠说明能区分语义。
+  const shell = await invokeAppTool("app_panel_api_list", { method: "shell" }, "me", ctx);
+  check("★ shell 面板方法说明了它在哪跑/要确认", !shell.isError && textOf(shell).includes("终端") && textOf(shell).includes("确认"), textOf(shell));
+  // 不知道的方法如实报错。
+  const bad = await invokeAppTool("app_panel_api_list", { method: "no.such.panel.method" }, "me", ctx);
+  check("★ 未知面板方法:如实报错、不静默", bad.isError === true && textOf(bad).includes("没有这个方法"), textOf(bad));
+
+  // 展开一个挂载位:动作类型 + 模板变量。
+  const slot = await invokeAppTool("app_panel_api_list", { slot: "library.item" }, "me", ctx);
+  const st = textOf(slot);
+  check("★ 展开挂载位给动作类型与模板变量", !slot.isError && st.includes("library.item") && ACTIONS_BY_SLOT["library.item"].every((a) => st.includes(a)) && TEMPLATE_VARS_BY_SLOT["library.item"].every((v) => st.includes(v)), st);
+  // 不同的挂载位动作集不同 —— 页签只有 view/file/panel,不能被工具抹平成"都一样"。
+  const tab = await invokeAppTool("app_panel_api_list", { slot: "rightPanel.tab" }, "me", ctx);
+  check(
+    "★ 页签挂载位的动作集确实是它自己的(view/file/panel)",
+    !tab.isError && ACTIONS_BY_SLOT["rightPanel.tab"].every((a) => textOf(tab).includes(a)) && !textOf(tab).includes("automation"),
+    textOf(tab),
+  );
+  const badSlot = await invokeAppTool("app_panel_api_list", { slot: "no.such.slot" }, "me", ctx);
+  check("★ 未知挂载位:如实报错", badSlot.isError === true && textOf(badSlot).includes("没有这个挂载位"), textOf(badSlot));
+
+  // agent 经 app_api_call 够不到面板 API 本身(它不是主进程 RPC),但**能查** —— 这正是可发现性。
+  check("面板 API 不是 app_api_call 的主进程方法(靠工具查,不靠调)", !API_CATALOG.some((e) => e.method === "app_panel_api_list"));
 }
 
 /* ── 4. ApprovalBridge ── */
