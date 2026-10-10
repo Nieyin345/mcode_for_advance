@@ -238,6 +238,9 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
   const light = selected.filter((n) => !isBrowserSuite(appDir, n));
   let failed = 0;
   let interrupted = false;
+  /** 失败的套件名 —— 汇总行要连同名字一起印出来。从前只印数字，222 套跑完
+   *  得往上翻很大一段才找得到是哪几套挂了（用户 2026-10-11 报的就是这个）。 */
+  const failedNames = [];
 
   const runOneLogged = async (name) => {
     const logFile = join(logDir, `${name}.log`);
@@ -245,6 +248,7 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
     if (result.ok) logger.log(`PASS  ${name}`);
     else {
       failed++;
+      failedNames.push(name);
       logger.error(`FAIL  ${name} (exit=${result.code}, signal=${result.signal ?? "none"}${result.timedOut ? ", timeout" : ""}${result.interrupted ? ", interrupted" : ""}${result.error ? `, ${result.error}` : ""})`);
       logger.error(readFileSync(logFile, "utf8").split(/\r?\n/).slice(-24).join("\n"));
       if (result.interrupted) interrupted = true;
@@ -268,6 +272,11 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
     return 130;
   }
   logger.log(`Smoke summary: ${selected.length - failed} pass, ${failed} fail (${selected.length} suites)`);
+  // 失败套件名**单独再印一行** —— 汇总行只有数字时，得往上翻过几百行 PASS 才找得到
+  // 是哪几套挂了（用户 2026-10-11 报的就是这个）。这一行让"跑完最后一眼"就能看到。
+  if (failedNames.length > 0) {
+    logger.error(`Failed suites (${failedNames.length}): ${failedNames.join(", ")}`);
+  }
   return failed ? 1 : 0;
 }
 
