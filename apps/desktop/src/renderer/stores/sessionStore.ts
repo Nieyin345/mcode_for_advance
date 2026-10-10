@@ -12,7 +12,7 @@ import { api } from "@renderer/lib/api.js";
 import { textFileWrites } from "@renderer/lib/markdownFileWrites.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
-import { translate } from "@renderer/lib/i18n/core.js";
+import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 import { DEFAULT_GESTURE_SETTINGS } from "@renderer/lib/gestures.js";
 import { DEFAULT_EDITOR_THEME_CHOICE, parseEditorThemeChoice, type EditorThemeChoice, type EditorThemeId } from "@renderer/lib/editorThemes.js";
 import { DISPLAY_MODE_SETTING_KEY, TAB_BAR_MULTI_ROW_SETTING_KEY, LEFTBAR_MODE_SETTING_KEY, THEME_STYLE_SETTING_KEY, UI_LOCALE_SETTING_KEY, DEFAULT_PROVIDER_ID, UI_CHAT_FONT_SIZE_SETTING_KEY, UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY, UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY, WORKFLOW_MAX_PARALLEL_SETTING_KEY, UI_USER_MSG_COLOR_SETTING_KEY, UI_ACCENT_COLOR_SETTING_KEY, UI_RIGHT_PANEL_TAB_SETTING_KEY, UI_VOICE_LANG_SETTING_KEY, UI_VOICE_ENGINE_SETTING_KEY, UI_VOICE_MIC_PERMISSION_SETTING_KEY, UI_VOICE_MODEL_DIR_SETTING_KEY, UI_IDE_OPEN_FILES_SETTING_KEY, UI_IDE_ACTIVE_FILE_SETTING_KEY, UI_IDE_EXPANDED_DIRS_SETTING_KEY, UI_IDE_EDITOR_MODE_SETTING_KEY, UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, UI_COMMIT_GEN_MODEL_SETTING_KEY, UI_COMMIT_GEN_PROMPT_SETTING_KEY, UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, UI_COMPOSER_MODEL_SETTING_KEY, UI_TITLE_GEN_ENABLED_SETTING_KEY, UI_TITLE_GEN_MODEL_SETTING_KEY, AGENT_OUTPUT_STYLE_SETTING_KEY, UI_GIT_COLLAPSED_REPOS_SETTING_KEY, UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, UI_PANE_WIDTHS_SETTING_KEY, UI_PROJECT_VIEW_SETTING_KEY, UI_PROJECT_GROUPS_SETTING_KEY, UI_LAST_PROJECT_SETTING_KEY, UI_LAST_SESSION_SETTING_KEY, UI_STREAM_SCOPE_SETTING_KEY, UI_SHORTCUTS_SETTING_KEY, UI_GESTURES_SETTING_KEY, UI_CHAT_DENSITY_SETTING_KEY, UI_EDITOR_THEME_SETTING_KEY, AUTO_ARCHIVE_SETTING_KEY, DEFAULT_AUTO_ARCHIVE_CONFIG, parseAutoArchiveConfig, SESSION_WORKTREE_DEFAULT_SETTING_KEY, WORKTREE_NAMES_SETTING_KEY, PROJECT_COLORS_SETTING_KEY, ShortcutBindingsSchema, GestureSettingsSchema, RightPanelTabSchema, type AutoArchiveConfig, type DisplayMode, type LeftBarMode, type Locale, type VoiceEngine, type GestureSettings, type GestureSequence, type ChatDensity, type ProjectView, type GitWorktreeInfo, type ProjectGroupsMeta, type RightPanelTab, type IdeEditorMode, type GitDiffOpenMode, type FileViewMode, type CustomCommand, type SkillInfo, type ProviderInfo, type ProviderHealthCheckResult, type ProviderHealthStatusCode, type ShortcutBindings, type Accelerator, type LspLanguageState, type LspStateChangedPayload, type RuntimeAgentState, type RuntimeProgressPayload, type PickedElement, type BrowserDevicePreset, type BrowserOrientation } from "@contracts/ipc";
@@ -2567,6 +2567,22 @@ function reportSessionOpFailed(err: unknown): void {
   useToastStore.getState().push({
     kind: "error",
     title: translate(useSessionStore.getState().locale, "store.toast.sessionOpFailed"),
+    body: err instanceof Error ? err.message : String(err),
+  });
+}
+
+/** 回答 Agent 提问 / 审批工具调用 / 审批计划 —— 三处把回执递给主进程失败。
+ *
+ *  三处都**故意不撤销卡片**(`submitQuestion` / `decideApproval` /
+ *  `submitPlanApproval` 的注释都写了原因:留着让用户重试,别让他以为已经答了)。但
+ *  从前失败只 `console.error`:用户点「提交」、卡片纹丝不动、屏幕上**一个字都没有**
+ *  —— 渲染端没有全局 `unhandledrejection`,这跟"点了没反应"是同一类。卡片留着能重试
+ *  是对的一半,另一半是**得说一句**。`title` 由调用方按卡片类型给(toastStore 按标题
+ *  去重,同一张卡的连续重试不会刷屏)。 */
+function reportInteractionFailed(titleKey: MessageId, err: unknown): void {
+  useToastStore.getState().push({
+    kind: "error",
+    title: translate(useSessionStore.getState().locale, titleKey),
     body: err instanceof Error ? err.message : String(err),
   });
 }
@@ -7636,7 +7652,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return { pendingQuestionBySession: rest };
       });
     } catch (err) {
-      console.error("claude.respondQuestion failed:", err);
+      reportInteractionFailed("store.toast.questionReplyFailed", err);
     }
   },
 
@@ -7655,9 +7671,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       await api.claude.approve({ sessionId, requestId, granted, always });
     } catch (err) {
-      // Don't shift on failure; surface the error to the console so the
-      // user/dev can see it without a modal interrupting the queue flow.
-      console.error("claude.approve failed:", err);
+      // Don't shift on failure; the card stays so the user can retry. But say so
+      // — a click that leaves the queue untouched and prints nothing reads as a
+      // dead button (there is no global unhandledrejection handler here).
+      reportInteractionFailed("store.toast.approvalFailed", err);
       return;
     }
     set((s) => ({
@@ -7718,7 +7735,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         };
       });
     } catch (err) {
-      console.error("claude.respondPlanApproval failed:", err);
+      reportInteractionFailed("store.toast.planApprovalFailed", err);
     }
   },
 

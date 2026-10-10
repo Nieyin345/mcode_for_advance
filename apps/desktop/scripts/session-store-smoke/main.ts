@@ -1076,6 +1076,48 @@ console.log("\n[15j] 会话 / 项目行操作落库失败要在 store 层就地�
   check("★ 收口吞掉异常(await 调用点能继续跑到对话框闭合)", rethrew.length === 0, rethrew);
 }
 
+console.log("\n[15k] 回答提问 / 审批工具 / 审批计划 —— 递回执失败也要报出来(不只 console.error)");{
+  // 三处都**故意不撤销卡片**(留着让用户重试,见 store 里各自的注释)。但从前的失败只
+  // `console.error`:用户点「提交」、卡片纹丝不动、屏幕上一个字都没有 —— 渲染端没有全局
+  // unhandledrejection,这跟"点了没反应"是同一类。判据立在**用户看到的 toast** 上。
+  const st = useSessionStore.getState();
+  const SID = "conv-interaction";
+  // 摆好三张卡各自需要的前置状态,让三处都真的走到 `api.claude.*` 那一步(而不是提前 return)。
+  useSessionStore.setState((s) => ({
+    activeSessionId: SID,
+    pendingQuestionBySession: {
+      ...s.pendingQuestionBySession,
+      [SID]: { sessionId: SID, requestId: "q-1", questions: [] } as never,
+    },
+    pendingApprovals: [
+      { sessionId: SID, requestId: "a-1", toolName: "Bash" },
+    ] as unknown as ReturnType<typeof useSessionStore.getState>["pendingApprovals"],
+    pendingPlanApprovalBySession: {
+      ...s.pendingPlanApprovalBySession,
+      [SID]: { sessionId: SID, requestId: "p-1", plan: "# 计划" } as never,
+    },
+  }));
+
+  const cases: Array<[string, string, () => Promise<unknown>]> = [
+    ["submitQuestion", "claude.respondQuestion", () => st.submitQuestion({}, SID)],
+    ["decideApproval", "claude.approve", () => st.decideApproval("a-1", true)],
+    ["submitPlanApproval", "claude.respondPlanApproval", () => st.submitPlanApproval("p-1", true)],
+  ];
+  const silent: string[] = [];
+  for (const [name, apiPath, run] of cases) {
+    const msg = `${name} IPC failed`;
+    setApiStub(apiPath, async () => { throw new Error(msg); });
+    useToastStore.getState().clear();
+    await run().catch(() => {});
+    const got = useToastStore.getState().toasts.some(
+      (tt) => tt.kind === "error" && (tt.body ?? "").includes(msg),
+    );
+    if (!got) silent.push(name);
+    setApiStub(apiPath, null);
+  }
+  check("★ 三处回执递送失败都报了 toast(无静默'点了没反应')", silent.length === 0, silent);
+}
+
 console.log("\n[15i] 用户显式改的偏好落盘失败,一票 setter 都要报出来(不只 displayMode 那几只)");{
   // `reportSettingSaveFailed` 是"用户显式改的偏好落盘失败要报给用户"的共享出口 ——
   // 它已经接在 setDisplayMode / setLocale / setThemeStyle / setChatDensity / … 上,

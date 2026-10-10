@@ -30,6 +30,12 @@ export const zh = {
   // unhandled rejection:用户点了「删除」、那一行还在,屏幕上一个字都没有("点了没反应")。
   // 这些操作就地报出来,正文放主进程给的那句具体原因。
   "store.toast.sessionOpFailed": "操作失败",
+  // 回答 Agent 提问 / 审批工具调用 / 审批计划这三处把回执递给主进程失败。三处都**故意**
+  // 不撤销卡片(留着让用户重试),但从前的失败只 `console.error`:用户点了「提交」卡片
+  // 纹丝不动、屏幕上一个字都没有,像按钮坏了。卡片留着是因为能重试,但也得说一句。
+  "store.toast.questionReplyFailed": "回答没能送达 —— 再点一次「提交」重试",
+  "store.toast.approvalFailed": "审批没能送达 —— 再点一次重试",
+  "store.toast.planApprovalFailed": "计划审批没能送达 —— 再点一次重试",
   // 关闭标签时被守卫拦下的未保存文件 —— 编辑器没有自动保存,静默关掉就是丢改动。
   "store.toast.ideCloseBlockedTitle": "有文件没关：内容还没保存",
   "store.toast.ideCloseBlockedBody": "{names} 有未保存的修改，已保留。保存或撤销后即可关闭。",
