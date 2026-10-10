@@ -219,15 +219,28 @@ export function WorkflowBoardPanel() {
    *
    *  为什么每次都写而不是松手再写:`Divider` 报的是增量,拖动结束没有回调。每次写一条
    *  设置的开销很低(主进程里就是一个 upsert),而漏写最后一次的话用户拉到的位置下次就
-   *  丢了 —— 那比多写几十次严重得多。 */
+   *  丢了 —— 那比多写几十次严重得多。
+   *
+   *  ⚠️ **写失败要说出来。** 这是"先乐观改 state、再落盘"的偏好:失败时看板上高度已是新值,
+   *     只 `.catch(() => {})` 的话用户以为改好了,直到重启才发现弹回旧高度。走与
+   *     `uiPrefs` / `sessionStore` 那批外观 setter 同一个共享出口
+   *     (`store.toast.settingSaveFailed`,toastStore 按标题去重 —— 拖动时高频触发也只弹一张)。
+   */
+  const persistFlowH = (value: number): void => {
+    void api.setting.set({ key: FLOW_HEIGHT_SETTING_KEY, value: String(value) }).catch((err: unknown) => {
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("store.toast.settingSaveFailed"),
+        body: err instanceof Error ? err.message : String(err),
+        ...(sessionId ? { sessionId } : {}),
+      });
+    });
+  };
+
   const resizeFlow = (delta: number): void => {
     setFlowH((prev) => {
       const next = Math.min(FLOW_H_MAX, Math.max(FLOW_H_MIN, prev + delta));
-      if (next !== prev) {
-        void api.setting
-          .set({ key: FLOW_HEIGHT_SETTING_KEY, value: String(next) })
-          .catch(() => {});
-      }
+      if (next !== prev) persistFlowH(next);
       return next;
     });
   };
@@ -235,9 +248,7 @@ export function WorkflowBoardPanel() {
   /** 双击分隔条 → 还原默认高度(同时把设置里的值也改回去)。 */
   const resetFlowH = (): void => {
     setFlowH(FLOW_MAX_H);
-    void api.setting
-      .set({ key: FLOW_HEIGHT_SETTING_KEY, value: String(FLOW_MAX_H) })
-      .catch(() => {});
+    persistFlowH(FLOW_MAX_H);
   };
 
   /** 这个对话的现场。取**最近一次开始**的那一次 —— 一个对话同时只跑一张图

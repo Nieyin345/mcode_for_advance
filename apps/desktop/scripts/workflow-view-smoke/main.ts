@@ -3228,5 +3228,40 @@ console.log("\n保存归并、撤销重做、多入口与标签布局回归");
     code.match(/setOpenId\([^\n]*/g),
   );
 }
+
+// ★ 看板高度存在设置里(`resizeFlow` 每次拖动立刻写、`resetFlowH` 双击还原)——
+//   这是"先乐观改 state、再落盘"的偏好:落盘失败只 `.catch(() => {})` 的话,看板上
+//   高度已是新值、用户以为改好了,直到重启才发现弹回旧高度。两条写入口要走同一个
+//   报错出口(与 `uiPrefs` / `sessionStore` 那批外观 setter 同一句 `settingSaveFailed`)。
+{
+  const panel = readFileSync(
+    "src/renderer/components/chat/WorkflowBoardPanel.tsx",
+    "utf8",
+  );
+  const code = panel.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // ① 写高度的共用出口在,且用的是共享的失败出口 key。
+  check(
+    "★ 看板高度落盘失败走 settingSaveFailed 出口(不再 .catch(() => {}) 静默弹回)",
+    /persistFlowH[\s\S]{0,400}?store\.toast\.settingSaveFailed/.test(code),
+    code.match(/persistFlowH[\s\S]{0,200}/)?.[0],
+  );
+  // ② 两个入口都经它 —— 少改哪个,哪条就红。
+  check(
+    "★ resizeFlow(拖动)经 persistFlowH",
+    /const resizeFlow[\s\S]{0,300}?persistFlowH\(next\)/.test(code),
+    code.match(/const resizeFlow[\s\S]{0,200}/)?.[0],
+  );
+  check(
+    "★ resetFlowH(双击还原)经 persistFlowH",
+    /const resetFlowH[\s\S]{0,200}?persistFlowH\(FLOW_MAX_H\)/.test(code),
+    code.match(/const resetFlowH[\s\S]{0,200}/)?.[0],
+  );
+  // ③ 反向:那两处不许再出现裸 `.catch(() => {})`(就是这次的静默本身)。
+  check(
+    "★ 两个入口不再直接 .catch(() => {}) 吞掉",
+    !/FLOW_HEIGHT_SETTING_KEY[\s\S]{0,80}?\.catch\(\(\) => \{\}\)/.test(code),
+    code.match(/FLOW_HEIGHT_SETTING_KEY[^\n]*/g),
+  );
+}
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);
