@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-10T05:00:27Z",
+  "updated_at": "2026-10-10T05:55:09Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "b0239b0cfefad7a3b458e40dfe8943046194db9559a329f0b14fa75eff8d80c1",
-      "size": 902662,
-      "normalized_sha256": "b0239b0cfefad7a3b458e40dfe8943046194db9559a329f0b14fa75eff8d80c1"
+      "sha256": "b667cf1c6310bc5558cea8463b7db7d276a74a721497a0586b889cf9d4f8b976",
+      "size": 904303,
+      "normalized_sha256": "b667cf1c6310bc5558cea8463b7db7d276a74a721497a0586b889cf9d4f8b976"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -455,9 +455,9 @@
     },
     "apps/desktop/scripts/chat-derived-smoke/main.ts": {
       "role": "index",
-      "sha256": "e2da45e091573eb2741b92aaf396b8c683e3c2b2355eb073efaf4f1ed1391573",
-      "size": 11209,
-      "normalized_sha256": "e2da45e091573eb2741b92aaf396b8c683e3c2b2355eb073efaf4f1ed1391573"
+      "sha256": "ce69895d5afd63240044a28d4ab0957ca22383e20d692323c0a1a8cd7ad252a8",
+      "size": 12534,
+      "normalized_sha256": "ce69895d5afd63240044a28d4ab0957ca22383e20d692323c0a1a8cd7ad252a8"
     },
     "apps/desktop/scripts/chat-derived-smoke/react-stub.ts": {
       "role": "index",
@@ -833,9 +833,9 @@
     },
     "apps/desktop/scripts/custom-ui-smoke/main.ts": {
       "role": "index",
-      "sha256": "8a083e098aa05872bf3a8ed7522a0a4e0bbcc4c515038bd8f25c9cc672462804",
-      "size": 40952,
-      "normalized_sha256": "8a083e098aa05872bf3a8ed7522a0a4e0bbcc4c515038bd8f25c9cc672462804"
+      "sha256": "19e76ae7622fb7ca4a49114c03dba298e18e5aaade4ebd1bd22e04b048e02909",
+      "size": 46007,
+      "normalized_sha256": "19e76ae7622fb7ca4a49114c03dba298e18e5aaade4ebd1bd22e04b048e02909"
     },
     "apps/desktop/scripts/custom-ui-smoke/run.sh": {
       "role": "index",
@@ -1037,9 +1037,9 @@
     },
     "apps/desktop/scripts/engine-regressions-smoke/main.mjs": {
       "role": "index",
-      "sha256": "4e4e09964e39822861ce7e2c1db3ee94574918481896c22a3edfc00e9ace9801",
-      "size": 47534,
-      "normalized_sha256": "4e4e09964e39822861ce7e2c1db3ee94574918481896c22a3edfc00e9ace9801"
+      "sha256": "9608f85d35b1ee63393050e41faacf2d4b89166b8fac316b30ded4ff3f4e450b",
+      "size": 48224,
+      "normalized_sha256": "9608f85d35b1ee63393050e41faacf2d4b89166b8fac316b30ded4ff3f4e450b"
     },
     "apps/desktop/scripts/engine-regressions-smoke/run.sh": {
       "role": "index",
@@ -7799,9 +7799,9 @@
     },
     "apps/desktop/src/main/providers/pi-sdk/mcodeExtension.ts": {
       "role": "index",
-      "sha256": "77c2dd481bb3e554d08e9632aa5535d82c910beb3786bc888cd96e0bb3c92be9",
-      "size": 54511,
-      "normalized_sha256": "77c2dd481bb3e554d08e9632aa5535d82c910beb3786bc888cd96e0bb3c92be9"
+      "sha256": "51b065c2f805219e5feb49abca0d32481da9e5116b17723638503026bbb3ba51",
+      "size": 55794,
+      "normalized_sha256": "51b065c2f805219e5feb49abca0d32481da9e5116b17723638503026bbb3ba51"
     },
     "apps/desktop/src/main/providers/pi-sdk/piSdkLoader.ts": {
       "role": "index",
@@ -8260,9 +8260,9 @@
     },
     "apps/desktop/src/renderer/components/chat/ModelDropdown.tsx": {
       "role": "index",
-      "sha256": "e16fb49a6b7fea0b1d1ea78752fc9480b144fb1874c87a23627463a3360b25d5",
-      "size": 32979,
-      "normalized_sha256": "e16fb49a6b7fea0b1d1ea78752fc9480b144fb1874c87a23627463a3360b25d5"
+      "sha256": "f38bc307b2086fe631fba7e09fda55191f92692d778edc904daa9a58b39f59f8",
+      "size": 33025,
+      "normalized_sha256": "f38bc307b2086fe631fba7e09fda55191f92692d778edc904daa9a58b39f59f8"
     },
     "apps/desktop/src/renderer/components/chat/NewSubChatPicker.tsx": {
       "role": "index",
@@ -9028,9 +9028,9 @@
     },
     "apps/desktop/src/renderer/components/settings/CustomUiPanel.tsx": {
       "role": "index",
-      "sha256": "cde8ef7ff8bacceb3d94bee048c83c0409f9e767f46e1aaa5a316ed5dd310d18",
-      "size": 62292,
-      "normalized_sha256": "cde8ef7ff8bacceb3d94bee048c83c0409f9e767f46e1aaa5a316ed5dd310d18"
+      "sha256": "6f5b908d72e81b4e3bc83e5c6a800c1fdef992599ff0cc0ee901ead22100b658",
+      "size": 64665,
+      "normalized_sha256": "6f5b908d72e81b4e3bc83e5c6a800c1fdef992599ff0cc0ee901ead22100b658"
     },
     "apps/desktop/src/renderer/components/settings/DataRootPanel.tsx": {
       "role": "index",
@@ -9897,9 +9897,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/en/customUi.ts": {
       "role": "index",
-      "sha256": "1188787b1dc9cf30d529f403a5f447d5b7ce28b5d5037559f452327618ef9d85",
-      "size": 20381,
-      "normalized_sha256": "1188787b1dc9cf30d529f403a5f447d5b7ce28b5d5037559f452327618ef9d85"
+      "sha256": "27d47cdf8582c0f8a5068462da1050c84e7f985c5f0d006cee2b62324f20824e",
+      "size": 20549,
+      "normalized_sha256": "27d47cdf8582c0f8a5068462da1050c84e7f985c5f0d006cee2b62324f20824e"
     },
     "apps/desktop/src/renderer/lib/i18n/en/ide.ts": {
       "role": "index",
@@ -9999,9 +9999,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/zh/customUi.ts": {
       "role": "index",
-      "sha256": "b1980b17217ef6abe87e655eff0da99c9e1d6fba1878bdcdb12f5ec610ea6565",
-      "size": 20754,
-      "normalized_sha256": "b1980b17217ef6abe87e655eff0da99c9e1d6fba1878bdcdb12f5ec610ea6565"
+      "sha256": "20ffd683a17d1fe14a466a6084a63fc46328dc7371e26a5f2be2255045591412",
+      "size": 20929,
+      "normalized_sha256": "20ffd683a17d1fe14a466a6084a63fc46328dc7371e26a5f2be2255045591412"
     },
     "apps/desktop/src/renderer/lib/i18n/zh/ide.ts": {
       "role": "index",
@@ -11781,9 +11781,9 @@
     },
     "packages/contracts/src/customUi.ts": {
       "role": "index",
-      "sha256": "1fbdacff98cc115bd99639f3938c744be0a936ad79671245a0d7ec23fe1c88c0",
-      "size": 40185,
-      "normalized_sha256": "1fbdacff98cc115bd99639f3938c744be0a936ad79671245a0d7ec23fe1c88c0"
+      "sha256": "c1519f6e2090e1786004d4fa2ca89e90d6590ca3ca576c469dd3e6b7dd53f42b",
+      "size": 42171,
+      "normalized_sha256": "c1519f6e2090e1786004d4fa2ca89e90d6590ca3ca576c469dd3e6b7dd53f42b"
     },
     "packages/contracts/src/customUiPanel.ts": {
       "role": "index",
