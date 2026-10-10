@@ -304,5 +304,70 @@ section("7. 手机壳的 localStorage 读取不许裸调");
   check("★ webApi 里每处 localStorage.getItem 都有 try 守卫(存储被禁时不卡住手机壳)", unguarded.length === 0, unguarded);
 }
 
+/* ─────── 8. 统一标签栏:早退守卫必须与「四类标签来源」同一口径 ─────── */
+
+section("8. 统一中栏标签条:早退守卫不许漏掉预览标签");
+
+{
+  // `UnifiedTabsBar` 一条栏里装**四类**标签来源:会话(`openTabs`)、文件(`openFiles`)、
+  // 计划(`hasPlanTab`)、只读预览(`fileView`,来自 `fileViewStore`)。它**渲染**时把预览
+  // 也算一份(`{fileView !== null && …}`),但**早退守卫**从前只数了前三类 —— 于是
+  // 「只开着一个预览、其余都空」时整条栏 `return null` 收起:中间栏正显示着那个预览,
+  // 顶上却一个标签都没有,用户以为"点了没反应"(同文件里预览标签那段注释写明了这个后果)。
+  // 判据钉源码 —— 这条栏要 dnd-kit + zustand + ResizeObserver,跑不进无头。
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const src = fs.readFileSync(
+    path.join(process.cwd(), "src/renderer/components/layout/UnifiedTabsBar.tsx"),
+    "utf8",
+  );
+  // 先去注释,免得那句"守卫要含 fileView"的说明本身被当成证据(自证)。
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const guard = code
+    .split("\n")
+    .find((l) => l.includes("return null") && l.includes("tabs.length === 0"));
+  check(
+    "★ 早退守卫含预览标签来源(只开预览时不许把整条栏收起)",
+    !!guard && guard.includes("fileView"),
+    guard,
+  );
+  // 正控:渲染处确实按 `fileView !== null` 画那个预览标签 —— 守卫与渲染同一个口径。
+  check(
+    "渲染处也把预览当标签来源(fileView !== null)",
+    code.includes("fileView !== null"),
+    "",
+  );
+}
+
+/* ─────── 9. 标题栏:活动会话那一行必须走共享 findSession(含流式兜底) ─────── */
+
+section("9. 标题栏活动会话解析:不许漏掉流式行");
+
+{
+  // 「活动会话那一行在哪」这条规则在标签条与会话流侧栏里由**共享的** `findSession`
+  // 解析 —— 它会兜到 `streamSessions`(会话流第 2 页以后的行只在那里,见它的注释)。
+  // 而 `Titlebar` 的两处 chip(`ActiveThreadTitle` 标题 / `ActiveWorktreeChip` 工作树)
+  // 从前**手抄**了一份只看 `s.sessions`(活动项目窗口,仅 SESSION_PAGE_SIZE 条)+
+  // `pinnedSessions` 的版本:活动会话是流式行时,标题 chip 直接 `null` 消失 —— 而会话流
+  // 侧栏点出来的正是这种行(`syncConfigFromSession` 的注释也记着"title chip vanished"
+  // 这一类)。判据钉源码:标题栏里不许再有手抄的 `sessions.find(...activeSessionId)`,
+  // 必须调共享的 `findSession`。
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const src = fs.readFileSync(path.join(process.cwd(), "src/renderer/components/layout/Titlebar.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ 标题栏解析活动会话走共享 findSession(不手抄一份漏流的查找)",
+    /findSession\(s\.sessionsByProject,\s*s\.pinnedSessions,\s*s\.streamSessions,\s*s\.activeSessionId\)/.test(code),
+    "",
+  );
+  // 负控:手抄的那份特征 —— `s.sessions.find((x) => x.id === s.activeSessionId)` 不该再出现。
+  check(
+    "★ 标题栏不再手抄 `s.sessions.find(...activeSessionId)`",
+    !/s\.sessions\.find\(\(x\) => x\.id === s\.activeSessionId\)/.test(code),
+    "",
+  );
+}
+
 console.log(`\nrenderer-lib-audit-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

@@ -264,7 +264,12 @@ export function UnifiedTabsBar() {
     [tabs, openFiles, reorderTab, reorderIdeFile],
   );
 
-  if (tabs.length === 0 && openFiles.length === 0 && !hasPlanTab) return null;
+  // 早退守卫必须把**四个**标签来源都数进去 —— 会话、文件、计划**以及只读预览**。
+  // 从前这条只数了前三个,于是「只开着一个预览、没有会话/文件/计划标签」时整条栏
+  // `return null` 收起来,而中间栏正放着那个预览 —— 顶上却一个标签都没有,用户会
+  // 以为"点了没反应"(同下面 fileView tab 那段注释)。预览标签是这条栏的成员,不能
+  // 因为别的来源都空就把它一起藏掉。
+  if (tabs.length === 0 && openFiles.length === 0 && !hasPlanTab && fileView === null) return null;
   // The ⋯ overflow menu doubles as the multi-row toggle's home, so it stays
   // mounted in multi-row mode even though nothing scrolls horizontally.
   const showOverflowMenu = multiRow || canScrollLeft || canScrollRight;

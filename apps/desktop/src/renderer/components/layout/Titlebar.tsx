@@ -17,6 +17,8 @@ import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchI
 import { WorktreeMergeToolbarButton } from "@renderer/components/chat/WorktreeMergeBack.js";
 import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+// 解析"活动会话那一行"—— 与标签条共用**同一个** `findSession`,不要在这儿手抄一份。
+import { findSession } from "./SessionTabs.js";
 
 type Mode = "workspace" | "settings";
 
@@ -267,21 +269,21 @@ function ActiveThreadTitle() {
   // trip zustand's "snapshot should be cached" check (Object.is sees a
   // new ref every render → infinite loop). title and providerId are read
   // independently so each returns a primitive (or undefined) that's stable.
-  // `s.sessions` mirrors the ACTIVE project's list, which no longer holds
-  // pinned rows (they render in the global pinned section above the project
-  // tree) — the pinned bucket is the fallback lookup for those.
+  //
+  // 用共享的 `findSession`（标签条那两份也用它）解析活动会话那一行 ——
+  // **别在这儿手抄一份**。手抄的版本从前只看 `s.sessions`（活动项目那一页，
+  // 只有 SESSION_PAGE_SIZE 条）+ `pinnedSessions`，于是**活动会话是第 2 页以后的
+  // 流式行**（只在 `streamSessions` 里、既不在项目窗口也不在钉住区）时，标题 chip
+  // 直接 `null` 消失 —— 会话流侧栏里点出来的正是这种行。`findSession` 自带
+  // `streamSessions` 兜底（见它的注释），一处口径覆盖全部桶。
   const title = useSessionStore((s) => {
     if (!s.activeSessionId) return null;
-    const sess =
-      s.sessions.find((x) => x.id === s.activeSessionId) ??
-      s.pinnedSessions.find((x) => x.id === s.activeSessionId);
+    const sess = findSession(s.sessionsByProject, s.pinnedSessions, s.streamSessions, s.activeSessionId);
     return sess?.title ?? null;
   });
   const providerId = useSessionStore((s) => {
     if (!s.activeSessionId) return null;
-    const sess =
-      s.sessions.find((x) => x.id === s.activeSessionId) ??
-      s.pinnedSessions.find((x) => x.id === s.activeSessionId);
+    const sess = findSession(s.sessionsByProject, s.pinnedSessions, s.streamSessions, s.activeSessionId);
     return sess?.providerId ?? null;
   });
   if (!title) return null;
@@ -328,17 +330,12 @@ function ActiveProjectChip() {
  *  render nothing. Atomic selectors (primitive / stable ref) per the
  *  ActiveThreadTitle note; the session may live in any list bucket. */
 function ActiveWorktreeChip() {
+  // 同 `ActiveThreadTitle`：活动会话那一行走共享的 `findSession`（含流式兜底）,
+  // 否则流式行(第 2 页以后、只在 `streamSessions` 里)的工作树 chip 也会消失。
   const worktreePath = useSessionStore((s) => {
     if (!s.activeSessionId) return null;
-    const sess =
-      s.sessions.find((x) => x.id === s.activeSessionId) ??
-      s.pinnedSessions.find((x) => x.id === s.activeSessionId);
-    if (sess) return sess.worktreePath ?? null;
-    for (const list of Object.values(s.sessionsByProject)) {
-      const hit = list?.find((x) => x.id === s.activeSessionId);
-      if (hit) return hit.worktreePath ?? null;
-    }
-    return null;
+    const sess = findSession(s.sessionsByProject, s.pinnedSessions, s.streamSessions, s.activeSessionId);
+    return sess?.worktreePath ?? null;
   });
   const worktreeNames = useSessionStore((s) => s.worktreeNames);
   if (!worktreePath) return null;
