@@ -75,6 +75,7 @@ export const en = {
   "mobile.settings.unknownServer": "unknown server",
   "mobile.settings.confirmUnpair": "Confirm unpair",
   "mobile.settings.unpair": "Unpair from this computer",
+  "mobile.settings.themeChangeFailed": "Couldn't save the theme",
 
   /* ── pairing screen ── */
   "mobile.pair.deviceAndroid": "Android phone",

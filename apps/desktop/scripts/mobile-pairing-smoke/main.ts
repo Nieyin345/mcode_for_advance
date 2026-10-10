@@ -1300,6 +1300,25 @@ eq("收尾:设备清单空了", (await pairingManager.listDevices()).length, 0);
   );
 }
 
+// —— 手机设置卡换主题:落盘失败要说出来(与桌面同一条规矩) ——
+// `pickTheme` 先 `setTheme(next)` 乐观改了卡片外观,再 `api.theme.set` 落盘。落盘那步
+// 从前只 `.then(applyThemeClass)` —— 写盘失败时用户以为换好了,下次打开又弹回旧主题。
+// 桌面端 `uiPrefs.persist` / `sessionStore` 那批外观 setter 早走同一个 toast 出口,手机这处漏了。
+// 判据钉源码(组件挂在手机壳的独立树上,无头跑不出这次点击)。
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/mobile/MobileSettingsSheet.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const at = code.indexOf("const pickTheme = (");
+  const body = code.slice(at, code.indexOf("\n  };", at));
+  check(
+    "★ 手机设置卡换主题落盘失败走 toast(不再静默弹回)",
+    at >= 0 && /\.catch\(/.test(body) && /useToastStore\.getState\(\)\.push\(/.test(body) && body.includes("mobile.settings.themeChangeFailed"),
+    body.slice(0, 320),
+  );
+}
+
 // —— 全局泄露扫描:除"配对成功那一发"之外,**一个**令牌原文都不许出现 ——
 // 只逐条看"这个响应"是不够的:令牌登记在这次会话里,漏出去的那条未必是正在看的那条。
 // 所以扫的是 `req()` 攒下来的**全部**响应。

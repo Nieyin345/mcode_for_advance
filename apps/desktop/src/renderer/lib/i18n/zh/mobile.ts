@@ -90,6 +90,9 @@ export const zh = {
   "mobile.settings.unknownServer": "未知服务器",
   "mobile.settings.confirmUnpair": "确认解除配对",
   "mobile.settings.unpair": "解除与这台电脑的配对",
+  /* 手机上换主题失败 —— 卡片先乐观改了外观,落盘那步静默的话用户以为换好了,
+     下次打开(或换页)又弹回旧主题,而他从没被告知过。 */
+  "mobile.settings.themeChangeFailed": "主题没能保存",
 
   /* ── pairing screen ── */
   "mobile.pair.deviceAndroid": "Android 手机",

@@ -11,6 +11,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { applyThemeClass } from "@renderer/lib/theme.js";
 import { clearAuth } from "@renderer/lib/webApi.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import type { ThemeName } from "@contracts/theme";
@@ -63,9 +64,21 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
 
   const pickTheme = (next: ThemeName) => {
     setTheme(next);
-    void api.theme.set({ theme: next }).then((s) => {
-      applyThemeClass(s.effective);
-    });
+    // **落盘失败要说出来。** 上面那句 `setTheme(next)` 已经乐观改了卡片外观;
+    // 写盘那步静默的话,用户以为换好了,下次打开又弹回旧主题 —— 与桌面端
+    // `uiPrefs.persist` / `sessionStore` 那批外观 setter 同一条规矩。
+    void api.theme
+      .set({ theme: next })
+      .then((s) => {
+        applyThemeClass(s.effective);
+      })
+      .catch((err: unknown) => {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("mobile.settings.themeChangeFailed"),
+          body: err instanceof Error ? err.message : String(err),
+        });
+      });
   };
 
   const unpair = () => {
