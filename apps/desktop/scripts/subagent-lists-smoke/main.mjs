@@ -64,9 +64,11 @@ window.React=React;
 
 // 一个**固定**的名册：2 个跑完的 + 1 个正在跑的。判据就靠这三条。
 const agents=[
-  {taskId:'t_done_1',toolUseId:'tu1',description:'Running List non-node_modules top files',subagentType:'general-purpose',status:'completed',totalTokens:12000,toolUses:7,durationMs:41000},
-  {taskId:'t_done_2',toolUseId:'tu2',description:'Running Search memory markers',subagentType:'general-purpose',status:'killed',totalTokens:3000,toolUses:2,durationMs:8000},
-  {taskId:'t_run_1',toolUseId:'tu3',description:'Running Locate update/lsp anchors',subagentType:'general-purpose',status:'running',totalTokens:500,toolUses:1,durationMs:2000,lastToolName:'Grep'},
+  {taskId:'t_done_1',toolUseId:'tu1',description:'Running List non-node_modules top files',subagentType:'general-purpose',status:'completed',totalTokens:12000,toolUses:7,durationMs:41000,taskType:'local_agent',prompt:'把这个项目里所有非 node_modules 的顶层文件列一遍'},
+  {taskId:'t_done_2',toolUseId:'tu2',description:'Running Search memory markers',subagentType:'general-purpose',status:'killed',totalTokens:3000,toolUses:2,durationMs:8000,taskType:'local_agent'},
+  {taskId:'t_run_1',toolUseId:'tu3',description:'Running Locate update/lsp anchors',subagentType:'general-purpose',status:'running',totalTokens:500,toolUses:1,durationMs:2000,lastToolName:'Grep',taskType:'local_agent'},
+  // 一条 **bash** 任务 —— 用户要求两类都列、且能分出类型。
+  {taskId:'t_bash_1',description:'pnpm build',status:'completed',totalTokens:0,toolUses:0,durationMs:9000,taskType:'local_bash'},
 ];
 // 真 store + 播种。**用真 store 而不是桩**：清空已结束那条动作就是要验的真实现，
 // 而它读写的正是这些格子。
@@ -134,26 +136,40 @@ const check=(name,ok,detail)=>{results.push(!!ok);console.log(`${ok?'PASS':'FAIL
 
 try{
   await withAuditPage(dir,async page=>{
-    // ── A. 任务列表页:原生子代理在这儿,含跑完的 ──
+    // ── A. 任务列表页:两类任务都在这儿,含跑完的,且分得出类型 ──
     await page.goto('panel=tasks','window.__mounted===true');
-    await page.waitFor('document.body.innerText.includes("子代理")');
+    // 等**那一组**渲染出来（不是等 `mounted` —— 那只是个模块级标志，组件可能还没提交）。
+    await page.waitFor('document.body.innerText.includes("清空已结束")');
     await page.sleep(300);
     const tasksText=await page.eval('document.body.innerText');
-    check('任务列表页里有子代理那一组',tasksText.includes('子代理'),tasksText.slice(0,80));
+    // 徽标走 CSS `uppercase`，所以 innerText 里是 AGENT / BASH —— 判据不区分大小写。
+    check('★ 列表里同时有 Agent 与 Bash 两个分组',/agent/i.test(tasksText)&&/bash/i.test(tasksText),tasksText.slice(0,120));
     check('★ 跑完的子代理**也在**列表里(从前只列 running)',tasksText.includes('Running List non-node_modules top files'),tasksText.slice(0,300));
     check('★ 正在跑的那个也在',tasksText.includes('Running Locate update/lsp anchors'),tasksText.slice(0,300));
+    check('★ **bash 任务也列进来了**(从前被专门排除)',tasksText.includes('pnpm build'),tasksText.slice(0,400));
     check('★ 每行带状态文字(不是只有一个名字)',
       /运行中|已完成|已停止|失败/.test(tasksText), tasksText.slice(0,300));
-    check('★ 有「清空已结束」且带着条数(2 条跑完的)',(await page.eval('document.body.innerText')).includes('清空已结束(2)'),tasksText.slice(0,300));
+    check('★ 有「清空已结束」且带着条数(3 条跑完的)',tasksText.includes('清空已结束(3)'),tasksText.slice(0,300));
     // 停止按钮只该出现在正在跑的那一行上（正在跑 1 个，所以 title 恰好 1 个）。
     const stopBtns=await page.eval(`[...document.querySelectorAll('[title="停掉这个子代理"]')].length`);
     check('★ 只有正在跑的那一行有停止按钮',stopBtns===1,stopBtns);
+
+    // ── A2. 点开一条 agent 任务 → 顶部出现「主代理交给它的任务」原文 ──
+    await page.eval(`[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Running List non-node_modules top files'))?.click()`);
+    await page.sleep(300);
+    const agentDetail=await page.eval('document.body.innerText');
+    check('★ 点开 agent 后顶部标出了「主代理交给它的任务」',agentDetail.includes('主代理交给它的任务'),agentDetail.slice(0,300));
+    check('★ 而且任务原文真的显示出来了',agentDetail.includes('把这个项目里所有非 node_modules 的顶层文件列一遍'),agentDetail.slice(0,400));
+    // 回到列表
+    await page.eval(`document.querySelector('[title="返回列表"]')?.click()`);
+    await page.sleep(250);
 
     // ── B. 点「清空已结束」→ 跑完的消失,正在跑的不动 ──
     await page.eval(`[...document.querySelectorAll('button')].find(b=>b.textContent.includes('清空已结束'))?.click()`);
     await page.sleep(250);
     const afterClear=await page.eval('document.body.innerText');
     check('★ 点过之后跑完的那条没了',!afterClear.includes('Running List non-node_modules top files'),afterClear.slice(0,300));
+    check('★ 跑完的 bash 也跟着清了',!afterClear.includes('pnpm build'),afterClear.slice(0,300));
     check('★ 正在跑的那条**没被误清**',afterClear.includes('Running Locate update/lsp anchors'),afterClear.slice(0,300));
     check('清空之后按钮本身也收掉了(没有已结束的了)',!afterClear.includes('清空已结束'),afterClear.slice(0,200));
 

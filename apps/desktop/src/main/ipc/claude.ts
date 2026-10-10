@@ -8,6 +8,7 @@ import {
   SendTurnSchema,
   InterruptSchema,
   StopTaskSchema,
+  ReadTaskOutputSchema,
   InjectSchema,
   ApproveSchema,
   RespondQuestionSchema,
@@ -360,6 +361,20 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.CLAUDE_STOP_TASK, async (_evt, raw) => {
     const input = StopTaskSchema.parse(raw);
     return runtimeManager.stopTask(input.sessionId, input.taskId);
+  });
+
+  /**
+   * 读一个 **bash 任务**的输出（右栏「任务列表」页点开一条 bash 任务时用）。
+   *
+   * ⚠️ **这是一条读文件的口子，但路径不由渲染端决定** —— 渲染端只给 `(sessionId, taskId)`，
+   * 路径由 `RuntimeManager` 从**我们自己的快照**里查（见 `readTaskOutput`）。查完还要过
+   * `isAllowedTaskOutputPath` 那道正向校验（必须在 `tasks/` 下、`.output` 结尾）。
+   * 读不到时抛 —— 渲染端会画成一句红字（与 `stopTask` 的"回 false"不同：那是正常结果，
+   * 这是"你要看的东西读不出来"，该让人看见）。
+   */
+  ipcMain.handle(IPC.CLAUDE_READ_TASK_OUTPUT, async (_evt, raw) => {
+    const input = ReadTaskOutputSchema.parse(raw);
+    return runtimeManager.readTaskOutput(input.sessionId, input.taskId);
   });
 
   /**

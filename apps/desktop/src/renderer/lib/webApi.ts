@@ -503,6 +503,8 @@ const claude: Api["claude"] = {
   // 同理：停一个子代理要靠"正在跑的那一轮"的句柄，手机上够不到。留着它满足
   // `Api["claude"]` 的完整性 —— 任务列表页在手机端也能打开，那一行只是停不了。
   stopTask: (input) => rpc("claude:stopTask", input),
+  // 同理：bash 任务的输出文件在**桌面端那台机器**上，手机读不到。
+  readTaskOutput: (input) => rpc("claude:readTaskOutput", input),
   approve: (input) => rpc("claude:approve", input),
   respondQuestion: (input) => rpc("claude:respondQuestion", input),
   respondPlanApproval: (input) => rpc("claude:respondPlanApproval", input),

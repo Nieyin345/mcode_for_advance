@@ -672,6 +672,36 @@ export interface SubagentSnapshot {
    *  the CLI; the adapter avoids force-completing them at turn end so the
    *  renderer can keep the "busy" signal alive while they remain running. */
   isBackgrounded?: boolean;
+  /**
+   * 这个任务的**种类**（SDK `task_started.task_type`）。
+   *
+   * 目前见到的两样是右栏「任务列表」页要分开显示的那两类:
+   *  - `local_agent` —— Task 工具派出去的子代理（一个独立的模型回合）;
+   *  - `local_bash` —— 代理跑的一条 bash 命令（前台或后台）。
+   *
+   * ⚠️ 类型故意开成 `string`（而不是封闭联合）:**认不出的种类要保持可见**。
+   * 这条判断是从适配器那边既有的写法继承来的（未识别的 `task_type` 既不隐藏也不猜），
+   * 而 SDK 以后加新种类时，一个封闭联合会让 typecheck 当场崩 —— 那不该是一个
+   * 展示用字段的代价。
+   */
+  taskType?: string;
+  /**
+   * **主代理交给这个任务的原话**（SDK `task_started.prompt`）。
+   *
+   * 子代理是「主代理把这件事说给它听」——这句话就是它拿到的全部前提，
+   * 也正是用户点开一行时最想看的东西（cc 桌面端的任务面板就是这么做的）。
+   * bash 任务里它是那行命令。
+   */
+  prompt?: string;
+  /**
+   * bash 任务的输出文件（SDK `task_notification.output_file`，绝对路径）。
+   *
+   * ⚠️ **只有 bash 类任务有**：子代理的过程走 `subagent.transcript` 事件流，
+   * 而 bash 命令没有模型回合可转录 —— CLI 把它的输出写进一个文件，这里存的是那个
+   * 路径。渲染端要读它得走一条**校验过路径前缀**的 IPC（见 `claude.readTaskOutput`），
+   * 不能拿这个字段当"读任意文件"的把手。
+   */
+  outputFile?: string;
 }
 
 /**

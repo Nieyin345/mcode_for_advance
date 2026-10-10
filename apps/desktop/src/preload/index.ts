@@ -29,6 +29,8 @@ const api = {
       ipcRenderer.invoke(IPC.CLAUDE_INTERRUPT, input)) as RpcMap["claude.interrupt"],
     stopTask: ((input) =>
       ipcRenderer.invoke(IPC.CLAUDE_STOP_TASK, input)) as RpcMap["claude.stopTask"],
+    readTaskOutput: ((input) =>
+      ipcRenderer.invoke(IPC.CLAUDE_READ_TASK_OUTPUT, input)) as RpcMap["claude.readTaskOutput"],
     inject: ((input) =>
       ipcRenderer.invoke(IPC.CLAUDE_INJECT, input)) as RpcMap["claude.inject"],
     approve: ((input) =>

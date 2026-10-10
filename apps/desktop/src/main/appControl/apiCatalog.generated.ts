@@ -276,6 +276,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ sessions: Session[]; }"
  },
  {
+  "method": "claude.readTaskOutput",
+  "channel": "claude:readTaskOutput",
+  "doc": "读一个 bash 任务的输出（`task_notification.output_file`）。 `truncated` 表示读到的只是尾部 —— 那个文件可能很大，而主进程有窗口上限 （同 `COMMAND_OUTPUT_TAIL_CHARS` 的取舍：错误栈与结果都在尾部）。",
+  "input": "{ taskId: string; sessionId: string }",
+  "output": "{ text: string; truncated: boolean; }"
+ },
+ {
   "method": "claude.respondPlanApproval",
   "channel": "claude:respondPlanApproval",
   "doc": "Submit the user's approve/reject decision on a pending ExitPlanMode plan.",
@@ -320,7 +327,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "claude.stopTask",
   "channel": "claude:stopTask",
-  "doc": "停掉某一个正在跑的子任务（子代理）。返回 `{ stopped }` —— 同 `claude.injectPrompt` 的 口径：**\"停了没有\"，不是\"发出去了没有\"**。引擎不支持、taskId 认不出来、或者它刚好 已经跑完，都是 `false`，界面据实说一句，不当作错误。",
+  "doc": "停掉某一个正在跑的子任务（子代理）。返回 `{ stopped }` —— 同 `claude.inject` 的 口径：**\"停了没有\"，不是\"发出去了没有\"**。引擎不支持、taskId 认不出来、或者它刚好 已经跑完，都是 `false`，界面据实说一句，不当作错误。",
   "input": "{ taskId: string; sessionId: string }",
   "output": "{ stopped: boolean; }"
  },

@@ -342,6 +342,15 @@ export const zh = {
   "ide.task.listMore": "还有 {n} 个未展开(点上面那个「刷新」也不会多出来,它们只是没在这一屏)",
   "ide.task.groupTerminals": "终端",
   "ide.task.groupAgents": "子代理",
+  // 2026-10-11:按**任务类型**分两组（对标 cc 桌面端）。`kindAgent`/`kindBash` 是行首那枚
+  // 类别胶囊上的字，用户要求"显示出来任务类型，是 agent 还是 bash"。
+  "ide.task.groupAgentTasks": "Agent",
+  "ide.task.groupBashTasks": "Bash",
+  "ide.task.kindAgent": "Agent",
+  "ide.task.kindBash": "Bash",
+  "ide.task.agentBrief": "主代理交给它的任务",
+  "ide.task.bashCommand": "命令",
+  "ide.task.taskOutputUnreadable": "读不到这个任务的输出:{error}",
   // 2026-10-10:原生子代理(Task 分身)从对话列表搬到这一页,所以这一组现在
   // **也列跑完的**(可回看转录),并多了一个「清空已结束」。
   "ide.task.clearFinished": "清空已结束({n})",

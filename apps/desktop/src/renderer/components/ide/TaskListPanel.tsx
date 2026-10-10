@@ -195,6 +195,27 @@ export function TaskListPanel() {
     [orderedAgents],
   );
 
+  /**
+   * **按类型分两组**（2026-10-11，与 Claude Code 桌面端一致）。
+   *
+   * 用户的要求：「能够显示出来任务类型，是 agent 还是 bash」。分两组的理由与 cc 桌面端
+   * 一样：这两类的**点开内容**根本不是一回事 —— agent 点开是「主代理交给它的任务 +
+   * 它的对话过程」，bash 点开是「那行命令 + 它的输出」。混在一列里，用户得先看名字猜。
+   *
+   * 判据是 `taskType`（SDK 的 `task_type`）。**认不出的类型归到 agent 那组**：
+   * `local_agent` 是绝大多数，而且认不出时把一条模型任务塞进「Bash」组里读着是错的；
+   * 反过来（一条 bash 混进 Agent 组）至少不会说假话。老 CLI 不发 `taskType`，
+   * 那时所有条目都落进 Agent 组 —— 与这一页从前只有 agent 的样子一致。
+   */
+  const agentTasks = useMemo(
+    () => orderedAgents.filter((x) => x.agent.taskType !== "local_bash"),
+    [orderedAgents],
+  );
+  const bashTasks = useMemo(
+    () => orderedAgents.filter((x) => x.agent.taskType === "local_bash"),
+    [orderedAgents],
+  );
+
   /** 已结束的那几条 —— 「清空已结束」按钮按这个数决定显不显示。 */
   const finishedAgentKeys = useMemo(
     () => orderedAgents.filter((x) => x.agent.status !== "running").map((x) => `${x.sessionId}:${x.agent.taskId}`),
@@ -305,10 +326,12 @@ export function TaskListPanel() {
           ))}
           <More total={terminals.length} />
 
-          {/* ── 子代理:模型派出去的分身（含跑完的，可回看） ── */}
+          {/* ── 任务:Agent 与 Bash 分两组（2026-10-11，对标 cc 桌面端） ──
+              类别的徽标在 `TaskRow` 里画（`Agent` / `Bash`），不是只靠分组标题 ——
+              用户扫一行时就该看出它是哪一类。 */}
           <Group
-            label={t("ide.task.groupAgents")}
-            total={orderedAgents.length}
+            label={t("ide.task.groupAgentTasks")}
+            total={agentTasks.length}
             action={
               finishedAgentKeys.length > 0
                 ? {
@@ -319,36 +342,26 @@ export function TaskListPanel() {
                 : undefined
             }
           />
-          {orderedAgents.slice(0, GROUP_CAP).map(({ sessionId, agent }) => {
-            const statusMeta = SUBAGENT_STATUS_META[agent.status];
-            const running = agent.status === "running";
-            const usage = fmtUsage(agent, t);
-            return (
-              <Row
-                key={`${sessionId}:${agent.taskId}`}
-                icon={<IconRobot size={12} />}
-                lit={running}
-                title={agent.description || t("ide.task.agentUntitled")}
-                // 状态与用量都摆在这一行的第二列 —— 与 Claude Code 桌面端那个面板
-                // 一样：**一眼看得出在跑还是跑完了、跑了多久**。`fmtUsage` 会拼
-                // `token · 工具次数 · Ns`，且单位词走 i18n（见 `activityShared`）。
-                sub={[t(statusMeta.labelKey), titleOf(sessionId), agent.subagentType, usage]
-                  .filter(Boolean)
-                  .join(" · ")}
-                actionTitle={t("ide.task.view")}
-                onOpen={() => setDetail({ kind: "subagent", sessionId, agent })}
-                trailing={
-                  running
-                    ? {
-                        title: t("ide.task.stopAgent"),
-                        onClick: () => void stopSubagent(sessionId, agent.taskId),
-                      }
-                    : undefined
-                }
-              />
-            );
-          })}
-          <More total={orderedAgents.length} />
+          {agentTasks.slice(0, GROUP_CAP).map((entry) => (
+            <TaskRow
+              key={`${entry.sessionId}:${entry.agent.taskId}`}
+              entry={entry}
+              titleOf={titleOf}
+              onOpen={(sessionId, agent) => setDetail({ kind: "subagent", sessionId, agent })}
+            />
+          ))}
+          <More total={agentTasks.length} />
+
+          <Group label={t("ide.task.groupBashTasks")} total={bashTasks.length} />
+          {bashTasks.slice(0, GROUP_CAP).map((entry) => (
+            <TaskRow
+              key={`${entry.sessionId}:${entry.agent.taskId}`}
+              entry={entry}
+              titleOf={titleOf}
+              onOpen={(sessionId, agent) => setDetail({ kind: "subagent", sessionId, agent })}
+            />
+          ))}
+          <More total={bashTasks.length} />
 
           {/* ── 工作流节点:图上的某一步 ── */}
           <Group label={t("ide.task.groupNodes")} total={activeNodes.length} />
@@ -419,7 +432,74 @@ function More({ total }: { total: number }) {
   );
 }
 
-/* ────────────────────────── 一行 ────────────────────────── */
+/**
+ * 一个**任务**行（Agent 或 Bash）—— 与终端行共用 `Row`，只多两样:
+ *
+ *  1. **类别徽标**（`Agent` / `Bash`）—— 用户要求「显示出来任务类型，是 agent 还是 bash」。
+ *     徽标样式照抄仓里既有的"类型胶囊"（`SideChatPanel.SubagentRow` 那个 `subagent_type`
+ *     小标签），不再造第二套。
+ *  2. **图标分两类**：Agent 用 `IconRobot`，Bash 用 `IconTerminal2` —— 两个图标本文件
+ *     已经在别的行上用了。
+ *
+ * 点开走的是**外层那一个** `detail` 机制（`onOpen` 回调）—— 不在这里自建第二个详情态，
+ * 否则同一个面板里会有两套"点开"、两份状态，其中一套迟早忘记清理。
+ *
+ * 停止按钮只给正在跑的（与终端行的"关闭"同一个 `trailing` 槽）。bash 任务**同样点得开** ——
+ * 那是用户明确要的。
+ */
+function TaskRow({
+  entry,
+  titleOf,
+  onOpen,
+}: {
+  entry: { sessionId: string; agent: SubagentSnapshot };
+  titleOf: (sessionId: string) => string;
+  onOpen: (sessionId: string, agent: SubagentSnapshot) => void;
+}) {
+  const { t } = useI18n();
+  const stopSubagent = useSessionStore((s) => s.stopSubagent);
+  const { sessionId, agent } = entry;
+  const isBash = agent.taskType === "local_bash";
+  const running = agent.status === "running";
+  const statusMeta = SUBAGENT_STATUS_META[agent.status];
+  const usage = fmtUsage(agent, t);
+  return (
+    <Row
+      icon={isBash ? <IconTerminal2 size={12} /> : <IconRobot size={12} />}
+      lit={running}
+      badge={<TaskKindBadge kind={isBash ? "bash" : "agent"} />}
+      title={agent.description || t("ide.task.agentUntitled")}
+      // 状态与用量摆第二列 —— 与 cc 桌面端一样:一眼看得出在跑还是跑完了、跑了多久。
+      sub={[t(statusMeta.labelKey), titleOf(sessionId), agent.subagentType, usage]
+        .filter(Boolean)
+        .join(" · ")}
+      actionTitle={t("ide.task.view")}
+      onOpen={() => onOpen(sessionId, agent)}
+      trailing={
+        running
+          ? { title: t("ide.task.stopAgent"), onClick: () => void stopSubagent(sessionId, agent.taskId) }
+          : undefined
+      }
+    />
+  );
+}
+
+/** 类别胶囊。样式与 `SideChatPanel` 那个 `subagent_type` 标签同款（类型徽标已有实现，
+ *  不再造第二套配色）。两类各一个色:Agent 用 info,Bash 用 warning —— 与 `activityShared`
+ *  里给"子代理"那份配色同一个语汇。 */
+function TaskKindBadge({ kind }: { kind: "agent" | "bash" }) {
+  const { t } = useI18n();
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded px-1 text-[9px] font-medium uppercase tracking-wide",
+        kind === "bash" ? "bg-warning/20 text-warning" : "bg-info/20 text-info",
+      )}
+    >
+      {t(kind === "bash" ? "ide.task.kindBash" : "ide.task.kindAgent")}
+    </span>
+  );
+}
 
 /**
  * 一行 = 一整块可点区域(不是只有右边那个小图标能点)。这一页是**拿来点的**,
@@ -428,6 +508,7 @@ function More({ total }: { total: number }) {
 function Row({
   icon,
   lit,
+  badge,
   title,
   sub,
   full,
@@ -438,6 +519,8 @@ function Row({
   icon: React.ReactNode;
   /** 还活着 —— 图标高亮。已退出的终端也照样列(它仍占着一个面板),只是暗一点。 */
   lit: boolean;
+  /** 标题前的小徽标（目前只有任务行用：`Agent` / `Bash` 那个类别胶囊）。 */
+  badge?: React.ReactNode;
   title: string;
   sub: string;
   /** 悬停时给的完整文本(列表里那一行是截断的)。 */
@@ -459,8 +542,11 @@ function Row({
         {icon}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[11px] font-medium text-content" title={title}>
-          {title}
+        <span className="flex items-center gap-1.5">
+          {badge}
+          <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-content" title={title}>
+            {title}
+          </span>
         </span>
         <span className="block truncate font-mono text-[10px] text-content-subtle" title={full ?? sub}>
           {sub}
@@ -649,12 +735,87 @@ function TerminalOutputPanel({ info }: { info: TerminalInfo }) {
 
 /* ── 子代理 / 工作流节点:只读转录 ── */
 
+/**
+ * 一个任务的过程详情 —— **两类共用这一个**（2026-10-11，对标 cc 桌面端）。
+ *
+ * 两类各自的"内容"是不同的东西，但**外壳一样**（上面一段"这是什么任务"，下面一段正文）：
+ *
+ *  - **Agent**：上面是**主代理交给它的任务原文**（`agent.prompt`），下面是它的对话过程
+ *    （`subagent.transcript` 事件流）。用户点开一行最想看的就是"你让它干什么"——
+ *    从前它只在提示词里，界面上根本看不到。
+ *  - **Bash**：上面是那行命令（`description` 就是命令），下面是 CLI 写进 `outputFile`
+ *    的输出（经 `claude.readTaskOutput` 读回来 —— 那条 IPC 会**校验路径前缀**）。
+ *
+ * `source` 缺省（老 CLI 不发、或过程被容量裁掉）时那句空态**分开说**：
+ * "这个任务还没有输出" 与 "读不到它" 不是一回事，混成一句会让人以为任务没干活。
+ */
 function SubagentTranscript({ sessionId, agent }: { sessionId: string; agent: SubagentSnapshot }) {
   const { t } = useI18n();
+  const isBash = agent.taskType === "local_bash";
   const source = useSessionStore(
     (s) => s.subagentTranscriptsBySession[sessionId]?.[agent.toolUseId ?? ""],
   );
-  return <ReadonlyTranscript source={source} emptyHint={t("ide.task.transcriptWaiting")} />;
+
+  // bash 的输出不在事件流里 —— 它是一个文件。按需读一次（点开才读，不在列表里读）。
+  const [bashOut, setBashOut] = useState<{ text: string; truncated: boolean } | null>(null);
+  const [bashErr, setBashErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isBash) return undefined;
+    let cancelled = false;
+    setBashOut(null);
+    setBashErr(null);
+    void api.claude
+      .readTaskOutput({ sessionId, taskId: agent.taskId })
+      .then((res) => {
+        if (!cancelled) setBashOut(res);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setBashErr(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isBash, sessionId, agent.taskId]);
+
+  /** 上面那一段"这是什么任务"。两类都显示 —— 这正是用户要的"点开能看到交给它的任务"。 */
+  const brief = isBash ? agent.description : agent.prompt;
+
+  return (
+    <div className="flex h-full flex-col">
+      {brief !== undefined && brief.trim() !== "" && (
+        <div className="shrink-0 border-b border-edge px-3 py-2">
+          <div className="mb-1 text-[9px] uppercase tracking-wide text-content-subtle">
+            {t(isBash ? "ide.task.bashCommand" : "ide.task.agentBrief")}
+          </div>
+          {/* 任务原文可能很长且带换行（子代理的 brief 就是一整段提示词）——
+              限高 + 可滚，别把它撑成一屏把下面的过程挤没。 */}
+          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-content">
+            {brief}
+          </pre>
+        </div>
+      )}
+      <div className="min-h-0 flex-1">
+        {isBash ? (
+          bashErr !== null ? (
+            <p className="px-3 py-4 text-[11px] text-danger">{t("ide.task.taskOutputUnreadable", { error: bashErr })}</p>
+          ) : (
+            <ReadonlyTranscript
+              source={
+                bashOut === null
+                  ? undefined
+                  : // 复用同一套只读转录外观：把纯文本包成一条 text 块，与 agent 那一侧的
+                    // 观感一致（不新造一个"纯文本查看器"）。
+                    [{ kind: "text", text: bashOut.text } as TranscriptBlock]
+              }
+              emptyHint={t("ide.task.transcriptWaiting")}
+            />
+          )
+        ) : (
+          <ReadonlyTranscript source={source} emptyHint={t("ide.task.transcriptWaiting")} />
+        )}
+      </div>
+    </div>
+  );
 }
 
 function NodeTranscript({

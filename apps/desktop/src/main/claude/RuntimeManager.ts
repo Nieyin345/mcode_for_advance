@@ -28,6 +28,7 @@ import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
 import { pendingBackflowPrompt, pendingCreationMemoryPrompt, clearBackflow } from "@main/lib/pendingBackflow.js";
 import { clearAgentMail, mailNoticeText, peekAgentMailBatch, setDeliveryPort, type MailNotice } from "@main/lib/agentMail.js";
+import { readTaskOutputFile } from "@main/lib/taskOutput.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
 import { memorySectionFrom, type MemoryInjectionSection, type MemoryInjectionTrace } from "@contracts/memory";
 import { traceMemoryTurn } from "@main/memory/injection.js";
@@ -1574,6 +1575,33 @@ class RuntimeManager {
     // 可选能力：不是每家引擎都有这个概念（见 `TurnHandle.stopTask?`）。
     if (handle.stopTask === undefined) return { stopped: false };
     return { stopped: await handle.stopTask(taskId) };
+  }
+
+  /**
+   * 读一个 **bash 任务**的输出文件（右栏「任务列表」页点开一条 bash 任务时用）。
+   *
+   * 三条判据缺一不可 —— 这是一条"读文件"的口子:
+   *
+   *  1. **这个 taskId 必须真在本会话的名册里**（`rt.lastSubagents`），而且它有 `outputFile`。
+   *     路径**不是**从渲染端传上来的 —— 是从我们自己存的快照里取的，所以渲染端没法指定
+   *     读哪个文件。这是最要紧的一条:它把"读任意文件"变成"读这个任务自己那个文件"。
+   *  2. **路径必须落在 CLI 的任务输出目录下**（二次校验）。即便名册被污染了（比如第三方
+   *     网关发了个伪造的 `task_notification`），也不至于变成一个任意文件读。
+   *  3. **只读尾部**（窗口上限同命令节点的取舍：错误栈和结果都在尾部），并且如实报告
+   *     截断没截断。
+   *
+   * 读不到时**抛**（渲染端会把它画成一句红字）—— 与 `stopTask` 的"回 false"不同:
+   * 那是"没停成，正常"，这是"你要看的东西读不出来",该让人看见。
+   */
+  async readTaskOutput(sessionId: string, taskId: string): Promise<{ text: string; truncated: boolean }> {
+    const rt = this.sessions.get(sessionId);
+    if (!rt) throw new Error("这个对话已经不在了");
+    const agent = rt.lastSubagents.find((a) => a.taskId === taskId);
+    if (!agent) throw new Error("找不到这个任务");
+    if (agent.outputFile === undefined || agent.outputFile === "") {
+      throw new Error("这个任务没有输出文件");
+    }
+    return readTaskOutputFile(agent.outputFile);
   }
 
   /**

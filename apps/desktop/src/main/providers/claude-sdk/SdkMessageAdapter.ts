@@ -62,6 +62,27 @@ interface TaskStartedEnvelope {
   /** SDK flag: when true the parent agent does not block on this task and it
    *  may continue running after the parent turn's stream ends. */
   is_backgrounded?: boolean;
+  /**
+   * **主代理交给这个任务的原话**（用户点开一行时最想看的东西）。
+   * 只有 Task-tool 子代理会带它；bash 任务不带（它的"原话"就是那行命令，
+   * 在 `description` 里）。落进 `SubagentSnapshot.prompt`。
+   */
+  prompt?: string;
+}
+
+/** Minimal envelope for SDKTaskNotificationMessage — 任务**收场**的通知。
+ *  与上面两个 envelope 同理：只留这个文件真正要用的几项。 */
+interface TaskNotificationEnvelope {
+  type: "system";
+  subtype: "task_notification";
+  task_id: string;
+  tool_use_id?: string;
+  /** SDK 的三态。`stopped` = 用户/宿主主动停掉，我们映射成 `killed`。 */
+  status: "completed" | "failed" | "stopped";
+  /** bash 任务的输出文件（绝对路径）。子代理没有这一项。 */
+  output_file?: string;
+  summary?: string;
+  usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
 }
 
 interface TaskProgressEnvelope {
@@ -122,14 +143,23 @@ function readStr(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-/** CLI task kinds that are NOT subagents and must not enter the capsule
- *  roster. `local_bash` covers every bash command the CLI tracks as a task
- *  (e.g. `sleep N` waits) — those used to pile up as forever-"running"
- *  "subagents" because the CLI never sends a closing task_updated for them
- *  mid-turn. `local_workflow` runs script workflows, not model subagents.
- *  Unknown / missing task_type stays visible (older CLIs don't send the
- *  field, and future agent-ish kinds shouldn't be hidden). */
-const NON_AGENT_TASK_TYPES = new Set(["local_bash", "local_workflow"]);
+/**
+ * 哪些 `task_type` **不进**任务列表。
+ *
+ * ⚠️ **`local_bash` 在 2026-10-11 从这张名单里拿掉了**：它从前和 `local_workflow` 一起
+ * 被排除，理由是"它们会在子代理胶囊里显示成假子代理"（那时唯一的消费者是聊天流的
+ * 活动胶囊，那里确实只该有模型分身）。现在右栏「任务列表」页是它的正主 —— 用户要求
+ * 那一页和 cc 桌面端一样**同时列 Agent 和 Bash 两类**，所以放它进来。
+ *
+ * `local_workflow` 仍然排除：那是 cc 内部跑脚本工作流用的，与 mcode 自己的「工作流节点」
+ * 是两回事，混进来会和那一组重复。
+ *
+ * 认不出的 / 缺 `task_type` 的**保持可见**（老 CLI 不发这个字段，将来的新种类也不该
+ * 因为"我还没认识它"就从界面上消失）。
+ */
+function isExcludedTask(taskType: string | undefined): boolean {
+  return taskType === "local_workflow";
+}
 
 /** How long the turn-end snapshot (emitTurnEndSnapshot) waits for the
  *  `getContextUsage()` control channel (path B) before falling back to
@@ -322,12 +352,18 @@ interface AdapterState {
     string,
     { parent: string; block: Extract<TranscriptBlock, { kind: "tool_use" }> }
   >;
-  /** task_ids of non-agent tasks (bash commands, workflows) we deliberately
-   *  keep OUT of the subagent roster. task_started tags them with task_type,
-   *  but task_progress / task_updated don't carry it — without remembering
-   *  the ids here, the progress handler's synthesis branch would re-add
-   *  them to the roster. */
-  ignoredTaskIds: Set<string>;
+  /**
+   * task_id → 它的 `task_type`（`task_started` 带来的）。
+   *
+   * 为什么非记不可：**`task_progress` / `task_updated` 不带 `task_type`**
+   * （SDK 文档明确），而那两个处理函数里都有"没有 start 过就合成一条"的防御分支 ——
+   * 不记的话合成出来的条目就没有类型，界面上徽标是空的。
+   *
+   * 它同时接管了从前那个 `ignoredTaskIds` 的职责：那时是一个"要排除的 id"集合，
+   * 现在改成"每个 id 是什么类型"，排除与否由类型判断（见 `isExcludedTask`）。
+   * 一份数据回答两个问题，比两份各自维护不容易漂。
+   */
+  taskTypes: Map<string, string>;
   /** Whether the model is currently in plan mode. Set true on EnterPlanMode,
    *  false on the matching ExitPlanMode or when a `mode.change` to default
    *  arrives (covers rejection / interruption). Drives `plan.update` emit. */
@@ -521,7 +557,7 @@ export class SdkMessageAdapter {
       subagents: new Map(),
       subagentTranscripts: new Map(),
       subagentPendingTools: new Map(),
-      ignoredTaskIds: new Set(),
+      taskTypes: new Map(),
       inPlanMode: false,
       pendingContextUsage: null,
       assistantMessageCount: 0,
@@ -619,6 +655,8 @@ export class SdkMessageAdapter {
         this.handleTaskProgress(sys as unknown as TaskProgressEnvelope);
       } else if (subtype === "task_updated") {
         this.handleTaskUpdated(sys as unknown as TaskUpdatedEnvelope);
+      } else if (subtype === "task_notification") {
+        this.handleTaskNotification(sys as unknown as TaskNotificationEnvelope);
       } else if (subtype === "compact_boundary") {
         this.handleCompactBoundary(sys as unknown as {
           subtype: "compact_boundary";
@@ -949,16 +987,16 @@ export class SdkMessageAdapter {
    * types here to avoid dragging those deep generics into this file. */
 
   private handleTaskStarted(m: TaskStartedEnvelope): void {
-    // Non-agent tasks (bash commands / workflows) must not enter the
-    // subagent capsule: they'd render as fake "subagents", and the CLI
-    // doesn't emit a closing task_updated for them mid-turn, so they'd be
-    // stuck on "running" until turn end. Remember the id so the follow-up
-    // task_progress doesn't re-synthesize an entry either.
-    if (NON_AGENT_TASK_TYPES.has(m.task_type ?? "")) {
-      this.state.ignoredTaskIds.add(m.task_id);
+    // 每个 task_id 都要记住它是什么（见 `taskTypes` 的说明）—— **包括被排除的那些**：
+    // 免得后来一条不带类型的任务把它合成回名册。
+    if (m.task_type !== undefined) this.state.taskTypes.set(m.task_id, m.task_type);
+    // 脚本工作流不进任务列表（见 `isExcludedTask`）。
+    if (isExcludedTask(m.task_type)) {
+      // 防御：万一 progress/updated 抢在 start 前面合成了条目，这里把它撤掉。
+      // **有变化才广播** —— 否则每条被排除的任务都会白推一次 subagent.update。
+      if (this.state.subagents.delete(m.task_id)) this.flushSubagents();
       return;
     }
-    this.state.ignoredTaskIds.delete(m.task_id);
     const snapshot: SubagentSnapshot = {
       taskId: m.task_id,
       toolUseId: m.tool_use_id,
@@ -966,6 +1004,11 @@ export class SdkMessageAdapter {
       subagentType: m.subagent_type,
       status: "running",
       isBackgrounded: m.is_backgrounded ?? false,
+      // 种类与「主代理交给它的原话」—— 右栏任务列表就靠这两样分类与展开（见
+      // `SubagentSnapshot.taskType` / `.prompt`）。老 CLI 不发这两个字段，那时是
+      // undefined，界面按"认不出"处理（不猜）。
+      ...(m.task_type !== undefined ? { taskType: m.task_type } : {}),
+      ...(typeof m.prompt === "string" && m.prompt.trim() !== "" ? { prompt: m.prompt } : {}),
     };
     this.state.subagents.set(m.task_id, snapshot);
     // Open the transcript bucket so forwarded subagent messages have a home
@@ -977,7 +1020,8 @@ export class SdkMessageAdapter {
   }
 
   private handleTaskProgress(m: TaskProgressEnvelope): void {
-    if (this.state.ignoredTaskIds.has(m.task_id)) return; // non-agent task
+    // 脚本工作流不进名册（类型记在 `taskTypes` 里，见 `handleTaskStarted`）。
+    if (isExcludedTask(this.state.taskTypes.get(m.task_id))) return;
     // CLI semantics (verified against the bundled 2.1.238 binary):
     // usage.total_tokens = latestInputTokens + cumulativeOutputTokens, where
     // latestInputTokens is OVERWRITTEN from each assistant message's API
@@ -994,6 +1038,9 @@ export class SdkMessageAdapter {
     if (!cur) {
       // Progress without a prior start — synthesize a minimal snapshot so
       // the roster stays consistent. Defensive: SDK normally pairs these.
+      // ⚠️ `taskType` 从 `taskTypes` 回填（progress 自己不带给它）——
+      //    不回填的话这条合成出来的条目在界面上是个没有类型的空徽标。
+      const knownType = this.state.taskTypes.get(m.task_id);
       this.state.subagents.set(m.task_id, {
         taskId: m.task_id,
         toolUseId: m.tool_use_id,
@@ -1005,6 +1052,7 @@ export class SdkMessageAdapter {
         durationMs: m.usage?.duration_ms,
         lastToolName: m.last_tool_name,
         summary: m.summary,
+        ...(knownType !== undefined ? { taskType: knownType } : {}),
       });
     } else {
       this.state.subagents.set(m.task_id, {
@@ -1042,6 +1090,44 @@ export class SdkMessageAdapter {
       endedAt: typeof patch.end_time === "number" ? patch.end_time : cur.endedAt,
       error: patch.error ?? cur.error,
       isBackgrounded: patch.is_backgrounded ?? cur.isBackgrounded,
+    });
+    this.flushSubagents();
+  }
+
+  /**
+   * `task_notification` —— 一个任务**收场**的通知（2026-10-11 新增处理）。
+   *
+   * 从前这个 subtype 整个没接。它是**唯一**带来两样东西的事件：
+   *
+   *  1. `output_file` —— bash 任务把输出写进的那个文件（子代理没有它，它们的过程走
+   *     `subagent.transcript` 事件流）。没有它，bash 任务点开是空的 ——
+   *     而"两类都能点开看"正是用户要的。
+   *  2. `status: "stopped"` —— 用户主动停掉（`stopTask` 的结果）。我们的状态联合里
+   *     没有 `stopped`，映射到 `killed`：对用户而言"我停的"和"它被杀了"是同一件事，
+   *     而 `task_updated` 那一支也已经是这个映射（见上面 `patch.status === "killed"`）。
+   *
+   * ⚠️ **不在这里造条目**：既然没有 start 过就没有这个任务，凭空建一条会让任务列表里
+   * 冒出用户没见过的东西。`cur` 缺失就直接忽略（同 `handleTaskUpdated` 的"孤儿更新"）。
+   */
+  private handleTaskNotification(m: TaskNotificationEnvelope): void {
+    const cur = this.state.subagents.get(m.task_id);
+    if (!cur) return;
+    const status: SubagentSnapshot["status"] =
+      m.status === "completed" ? "completed" : m.status === "failed" ? "failed" : "killed";
+    this.state.subagents.set(m.task_id, {
+      ...cur,
+      status,
+      endedAt: cur.endedAt ?? Date.now(),
+      summary: m.summary !== undefined && m.summary !== "" ? m.summary : cur.summary,
+      // 输出文件只有 bash 类任务有；有就存下来（界面据此提供"点开看输出"）。
+      ...(typeof m.output_file === "string" && m.output_file !== ""
+        ? { outputFile: m.output_file }
+        : {}),
+      ...(m.usage?.total_tokens !== undefined
+        ? { totalTokens: Math.max(cur.totalTokens ?? 0, m.usage.total_tokens) }
+        : {}),
+      ...(m.usage?.tool_uses !== undefined ? { toolUses: m.usage.tool_uses } : {}),
+      ...(m.usage?.duration_ms !== undefined ? { durationMs: m.usage.duration_ms } : {}),
     });
     this.flushSubagents();
   }

@@ -39,7 +39,7 @@ import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, 
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { EngineToolsGetInput, EngineToolsSetInput, EngineToolsSnapshot } from "./engineTools.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
-import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, StopTaskInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
+import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, StopTaskInput, ReadTaskOutputInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
 import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput, ProviderHealthCheckInput, ProviderHealthCheckResult, ProviderCommandsInput, ProviderCommandsResult } from "./providers.js";
@@ -103,6 +103,13 @@ export interface RpcMap {
    * 已经跑完，都是 `false`，界面据实说一句，不当作错误。
    */
   "claude.stopTask": (input: StopTaskInput) => Promise<{ stopped: boolean }>;
+  /**
+   * 读一个 bash 任务的输出（`task_notification.output_file`）。
+   *
+   * `truncated` 表示读到的只是尾部 —— 那个文件可能很大，而主进程有窗口上限
+   * （同 `COMMAND_OUTPUT_TAIL_CHARS` 的取舍：错误栈与结果都在尾部）。
+   */
+  "claude.readTaskOutput": (input: ReadTaskOutputInput) => Promise<{ text: string; truncated: boolean }>;
   /**
    * 往正在跑的那一轮里塞一句话。返回 `{ delivered }` —— **"收下了没有",不是"发出去了
    * 没有"**:这一轮刚好收尾、或者引擎不支持,都是 `false`,渲染端据此**兜回普通的发送**
@@ -1309,6 +1316,7 @@ export const IPC = {
   CLAUDE_SEND_TURN: "claude:sendTurn",
   CLAUDE_INTERRUPT: "claude:interrupt",
   CLAUDE_STOP_TASK: "claude:stopTask",
+  CLAUDE_READ_TASK_OUTPUT: "claude:readTaskOutput",
   CLAUDE_INJECT: "claude:inject",
   CLAUDE_APPROVE: "claude:approve",
   CLAUDE_RESPOND_QUESTION: "claude:respondQuestion",

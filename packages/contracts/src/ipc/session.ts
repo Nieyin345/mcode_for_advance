@@ -207,6 +207,22 @@ export const StopTaskSchema = z.object({
 export type StopTaskInput = z.infer<typeof StopTaskSchema>;
 
 /**
+ * 读一个 **bash 任务**的输出（`task_notification.output_file` 那个文件的内容）。
+ *
+ * 子代理的过程走 `subagent.transcript` 事件流，**bash 没有那条路** —— CLI 把命令的输出
+ * 写进一个文件，这是读它的唯一方式。右栏「任务列表」页点开一条 bash 任务时用它。
+ *
+ * ⚠️ **这是一条"读文件"的口子，主进程必须正向校验路径前缀** —— 只能读 CLI 自己写在
+ * 任务输出目录下的文件，绝不能让 `taskId` / 会话带上来的路径变成"读任意文件"。
+ * 见 `main/ipc/claude.ts` 那个 handler 里的判据。
+ */
+export const ReadTaskOutputSchema = z.object({
+  sessionId: z.string(),
+  taskId: z.string().min(1).max(256),
+});
+export type ReadTaskOutputInput = z.infer<typeof ReadTaskOutputSchema>;
+
+/**
  * 往**正在跑的那一轮**里塞一句话(生成过程中插话)。
  *
  * 只收文本:`max(2000)` 是一个**防手滑**的上界(这条路没有附件、没有图片,也没有
