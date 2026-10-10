@@ -72,8 +72,11 @@ export function Titlebar({
   onBack,
 }: Props) {
   const { t } = useI18n();
-  const settingsOpen = useSessionStore((s) => s.settingsOpen);
-  const isSettings = mode === "settings" || settingsOpen;
+  // Settings renders its OWN titlebar inside the full-window settings overlay
+  // (see App.tsx SettingsOverlay) — this instance is then covered and must NOT
+  // re-render on the flip: it reads `mode` only, never `settingsOpen`. That
+  // keeps opening settings from touching the workspace tree at all.
+  const isSettings = mode === "settings";
   // The browser overlay toggle now lives in the right-panel rail, but the
   // overlay still forces the side panels closed and hides their toggles when
   // open. Read its state straight from the store; the "返回工作台" button

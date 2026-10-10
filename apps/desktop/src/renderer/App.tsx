@@ -72,15 +72,39 @@ const FileViewer = lazy(() =>
  * in App itself made opening settings reconcile the entire chat/editor tree.
  * The memo boundary also keeps unrelated App renders from re-rendering the
  * overlay while it is open.
+ *
+ * **The overlay is a full-window surface with its own titlebar.** It used to
+ * be `absolute inset-0` inside the main column, which only spanned the width
+ * once the left workspace rail had been `display:none`d — and un-hiding a flex
+ * sibling from 0 back to 20% reflows the whole workspace (chat virtual list
+ * re-measures every row, the unvirtualized Files tree relayouts, every mounted
+ * TerminalView refits and fires a pty.resize) on *every* settings open, all of
+ * it invisible. Now the rail keeps its width, the workspace tree is never
+ * touched, and the overlay simply covers the window — same shape as the
+ * browser overlay, and the settings chrome (back button + heading) rides in
+ * the overlay's own titlebar instead of switching the workspace one.
  */
 const SettingsOverlay = memo(function SettingsOverlay() {
   const open = useSessionStore((s) => s.settingsOpen);
+  const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   if (!open) return null;
   return (
-    <div className="settings-root absolute inset-0 z-30 flex bg-surface-muted">
-      <Suspense fallback={null}>
-        <SettingsPage />
-      </Suspense>
+    <div className="settings-root fixed inset-0 z-30 flex flex-col bg-surface-muted">
+      {/* Empty leftOpen/rightOpen: in settings mode the titlebar renders only
+          the back button + heading (the workspace toggles are gone), so the
+          panel flags below are inert. */}
+      <Titlebar
+        mode="settings"
+        leftOpen={false}
+        rightOpen={false}
+        bottomTerminalOpen={false}
+        onBack={() => setSettingsOpen(false)}
+      />
+      <div className="flex min-h-0 flex-1">
+        <Suspense fallback={null}>
+          <SettingsPage />
+        </Suspense>
+      </div>
     </div>
   );
 });
@@ -101,8 +125,16 @@ const WorkspaceSidebarContents = memo(function WorkspaceSidebarContents({ mode }
   );
 });
 
-/** Keep settings visibility out of App's subscription set: opening settings
- *  only needs to hide this rail, not reconcile the workspace below it. */
+/**
+ * 左侧工作区栏。**设置打开时不做布局变化** —— 见 `App` 里 `SettingsOverlay`
+ * 上面的那段注释:设置覆盖层是整窗的,这一栏本来就被盖住,再把它
+ * `display:none` 只会让它右边的主列从 80% 宽被撑到 100%,连带对话虚拟列表
+ * 重新测量折行、Files 树重排、每个挂着的 TerminalView 重 fit 并发一条
+ * `pty.resize`。那些重排全发生在**看不见**的树上,是"点设置很卡"的主因。
+ *
+ * 所以设置打开时这里一个字节都不变(宽度、Divider 都保持原样);视觉上照样
+ * 看不到它 —— 覆盖层不透明,且 z-30 在它上面。
+ */
 const WorkspaceSidebar = memo(function WorkspaceSidebar({
   leftOpen,
   leftBarMode,
@@ -110,19 +142,19 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
   onResizeLeft,
   onResetLeft,
 }: WorkspaceSidebarProps) {
-  const settingsOpen = useSessionStore((s) => s.settingsOpen);
   return (
     <>
       <aside
+        data-testid="workspace-sidebar"
         className={cn(
           "flex h-full min-w-0 shrink-0 flex-col rounded-tl-3xl bg-surface-muted",
-          (!leftOpen || settingsOpen) && "hidden",
+          !leftOpen && "hidden",
         )}
         style={{ flexGrow: 0, flexBasis: `${leftWidthPct}%` }}
       >
         <WorkspaceSidebarContents mode={leftBarMode} />
       </aside>
-      {leftOpen && !settingsOpen && (
+      {leftOpen && (
         <Divider
           orientation="vertical"
           hideLine
@@ -232,15 +264,11 @@ export function App() {
     void init();
   }, [init]);
 
-  /** Settings page visibility — opened from the LeftBar ⚙ footer, the
-   *  CLI-missing CTA, or the model-dropdown "manage models" entry. Renders as
-   *  a sibling view (not a modal) sharing the same titlebar + pane shell. */
-  const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
-
   /** Left / right sidebar + bottom terminal visibility. Lifted from local
    *  useState into the store so the command palette (and any other consumer)
-   *  can toggle them. Workspace-only — the settings view pins leftOpen=true /
-   *  rightOpen=false. NOT persisted (matches original behavior). */
+   *  can toggle them. Workspace-only — the settings overlay pins its own
+   *  workspace-side flags (see SettingsOverlay). NOT persisted (matches
+   *  original behavior). */
   const leftOpen = useSessionStore((s) => s.leftOpen);
   const leftBarMode = useSessionStore((s) => s.leftBarMode);
   const setLeftOpen = useSessionStore((s) => s.setLeftOpen);
@@ -357,28 +385,28 @@ export function App() {
         and the main panel below (center chat/editor pane + right IDE panel,
         plus the bottom terminal inside the center main).
       */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div data-testid="workspace-main" className="flex min-w-0 flex-1 flex-col">
         {/*
-          Workspace shell is ALWAYS mounted — the settings view renders as an
-          overlay on top of it, not as a mutually-exclusive sibling. This is
-          critical: BottomTerminalBar (→ TerminalPanel → every TerminalView)
-          lives inside ThreePaneLayout. A ternary swap `settingsOpen ?
-          <Settings> : <Workspace>` would unmount the whole workspace subtree
-          on every settings open, killing all live PTYs (TerminalView's
-          cleanup calls api.terminal.kill) and destroying scrollback — and
-          racing many concurrent pty.kill() calls on Windows occasionally
-          crashes the main process. Keeping the workspace mounted preserves
-          the carefully-built cross-project terminal keep-alive (see
-          TerminalPanel.tsx) exactly as designed. The Titlebar below switches
-          its mode + the settings overlay covers the main panel visually (the
-          left sidebar stays visible alongside it).
+          Workspace shell is ALWAYS mounted — the settings view renders as a
+          full-window overlay on top of it, not as a mutually-exclusive
+          sibling. This is critical: BottomTerminalBar (→ TerminalPanel →
+          every TerminalView) lives inside ThreePaneLayout. A ternary swap
+          `settingsOpen ? <Settings> : <Workspace>` would unmount the whole
+          workspace subtree on every settings open, killing all live PTYs
+          (TerminalView's cleanup calls api.terminal.kill) and destroying
+          scrollback — and racing many concurrent pty.kill() calls on Windows
+          occasionally crashes the main process. Keeping the workspace mounted
+          preserves the carefully-built cross-project terminal keep-alive (see
+          TerminalPanel.tsx) exactly as designed. Nothing below reads
+          `settingsOpen`: the workspace keeps its exact layout (including the
+          left rail's width) and the overlay just covers it — see
+          SettingsOverlay for why that matters for open latency.
         */}
         <Titlebar
           mode="workspace"
           leftOpen={leftOpen}
           rightOpen={rightOpen}
           bottomTerminalOpen={bottomTerminalOpen}
-          onBack={() => setSettingsOpen(false)}
           onToggleLeft={() => setLeftOpen(!leftOpen)}
           onToggleRight={() => setRightOpen(!rightOpen)}
           onToggleBottomTerminal={() => setBottomTerminalOpen(!bottomTerminalOpen)}
@@ -425,9 +453,12 @@ export function App() {
           <Suspense fallback={null}>
             <GitDiffDialog />
           </Suspense>
-          <SettingsOverlay />
         </div>
       </div>
+      {/* Settings is a full-window surface, mounted at the ROOT (not inside
+          the workspace column) so no workspace ancestor's overflow or
+          stacking context can clip it. It renders null when closed. */}
+      <SettingsOverlay/>
       {/* Global bottom-right corner: update notification card + toast stack
           share one fixed column so they stack vertically and never overlap.
           Both render null when they have nothing to show. */}
