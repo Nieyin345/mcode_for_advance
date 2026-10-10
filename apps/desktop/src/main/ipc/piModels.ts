@@ -17,11 +17,14 @@ import {
   SavePiProviderSchema,
   DeletePiProviderSchema,
   GetPiApiKeySchema,
+  TestEndpointSchema,
+  ListEndpointModelsSchema,
 } from "@contracts/ipc";
 import type { BuiltinModelOption } from "@contracts/provider";
 import { PI_1M_CONTEXT_WINDOW } from "@contracts/piModel";
 import type { PiProviderConfig } from "@contracts/piModel";
 import { PiModelsStore } from "@main/lib/piModelsStore.js";
+import { listEndpointModels, probeEndpoint } from "@main/lib/modelEndpoint.js";
 import { loadPiSdk } from "@main/providers/pi-sdk/piSdkLoader.js";
 import { log } from "@main/lib/logger.js";
 
@@ -112,5 +115,30 @@ export function registerPiModelsHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.PI_MODELS_LIST_AVAILABLE, async () => {
     return { models: await listAvailablePiModels() };
+  });
+
+  // 连通性测试 / 拉模型列表 —— 与 Claude 的 `customModel.test` 同一件事，
+  // 共用 `lib/modelEndpoint`（2026-10-11 加，让 Pi 也有 Claude 那两个能力）。
+  ipcMain.handle(IPC.PI_MODELS_TEST, async (_evt, raw) => {
+    const input = TestEndpointSchema.parse(raw);
+    return probeEndpoint({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      authMode: input.authMode,
+      headers: input.headers,
+      model: input.model,
+      anthropicVersion: input.anthropicVersion,
+    });
+  });
+
+  ipcMain.handle(IPC.PI_MODELS_LIST_ENDPOINT_MODELS, async (_evt, raw) => {
+    const input = ListEndpointModelsSchema.parse(raw);
+    return listEndpointModels({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      authMode: input.authMode,
+      headers: input.headers,
+      anthropicVersion: input.anthropicVersion,
+    });
   });
 }

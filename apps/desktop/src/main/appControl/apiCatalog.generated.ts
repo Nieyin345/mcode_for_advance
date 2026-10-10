@@ -367,11 +367,25 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ providers: CodexProviderPublic[]; }"
  },
  {
+  "method": "codexModels.listEndpointModels",
+  "channel": "codexModels:listEndpointModels",
+  "doc": "",
+  "input": "{ baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined; apiKey?: string | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
+  "output": "{ models: string[]; }"
+ },
+ {
   "method": "codexModels.save",
   "channel": "codexModels:save",
   "doc": "",
-  "input": "{ id: string; name: string; models: { id: string; label?: string | undefined; hint?: string | undefined; contextWindow?: number | undefined; }[]; baseUrl: string; apiKey?: string | undefined; imageGeneration?: boolean | undefined // Opt-in: unlock codex's image generation tool by injecting the `x-openai-actor-authorizati… }",
+  "input": "{ id: string; name: string; models: { id: string; label?: string | undefined; hint?: string | undefined; contextWindow?: number | undefined; }[]; baseUrl: string; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头，落到该 provider 的 config.toml `http_headers`。; imageGeneration?: boolean | undefined // Opt-in: unlock codex's image generation tool by injecting the `x-openai-actor-authorizati… }",
   "output": "{ providers: CodexProviderPublic[]; }"
+ },
+ {
+  "method": "codexModels.test",
+  "channel": "codexModels:test",
+  "doc": "同 `piModels.test`，给 Codex 表单用。",
+  "input": "{ model: string // 要探测哪个模型。; baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
+  "output": "EndpointProbeOutcome"
  },
  {
   "method": "context.get",
@@ -1683,11 +1697,25 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ models: BuiltinModelOption[]; }"
  },
  {
+  "method": "piModels.listEndpointModels",
+  "channel": "piModels:listEndpointModels",
+  "doc": "问端点要模型列表（填进设置页的下拉框）。拉不到时抛错，由界面回退到手输。",
+  "input": "{ baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined; apiKey?: string | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
+  "output": "{ models: string[]; }"
+ },
+ {
   "method": "piModels.save",
   "channel": "piModels:save",
   "doc": "",
   "input": "{ name: string; config: Record<string, unknown>; apiKey?: string | undefined }",
   "output": "{ providers: Record<string, PiProviderPublic>; }"
+ },
+ {
+  "method": "piModels.test",
+  "channel": "piModels:test",
+  "doc": "兼容性/连通性探测：向用户填的地址发一次最小请求，确认地址+密钥+模型名能用。 三个引擎共用同一形状（Claude 那条是 `customModel.test`，Pi/Codex 走这条）。",
+  "input": "{ model: string // 要探测哪个模型。; baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
+  "output": "EndpointProbeOutcome"
  },
  {
   "method": "plugins.enginesSet",

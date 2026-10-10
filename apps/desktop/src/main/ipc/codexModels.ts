@@ -16,8 +16,11 @@ import {
   SaveCodexProviderSchema,
   DeleteCodexProviderSchema,
   GetCodexApiKeySchema,
+  TestEndpointSchema,
+  ListEndpointModelsSchema,
 } from "@contracts/ipc";
 import { CodexModelsStore } from "@main/lib/codexModelsStore.js";
+import { listEndpointModels, probeEndpoint } from "@main/lib/modelEndpoint.js";
 import { log } from "@main/lib/logger.js";
 
 export function registerCodexModelsHandlers(ipcMain: IpcMain): void {
@@ -34,6 +37,7 @@ export function registerCodexModelsHandlers(ipcMain: IpcMain): void {
         name: input.name,
         baseUrl: input.baseUrl,
         models: input.models,
+        ...(input.headers ? { headers: input.headers } : {}),
         ...(input.imageGeneration ? { imageGeneration: true } : {}),
       },
       input.apiKey,
@@ -55,5 +59,29 @@ export function registerCodexModelsHandlers(ipcMain: IpcMain): void {
       log.error(`codexModels.getApiKey: ${(err as Error).message}`);
       return { apiKey: null };
     }
+  });
+
+  // 连通性测试 / 拉模型列表 —— 同 Pi，共用 lib/modelEndpoint（2026-10-11）。
+  ipcMain.handle(IPC.CODEX_MODELS_TEST, async (_evt, raw) => {
+    const input = TestEndpointSchema.parse(raw);
+    return probeEndpoint({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      authMode: input.authMode,
+      headers: input.headers,
+      model: input.model,
+      anthropicVersion: input.anthropicVersion,
+    });
+  });
+
+  ipcMain.handle(IPC.CODEX_MODELS_LIST_ENDPOINT_MODELS, async (_evt, raw) => {
+    const input = ListEndpointModelsSchema.parse(raw);
+    return listEndpointModels({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      authMode: input.authMode,
+      headers: input.headers,
+      anthropicVersion: input.anthropicVersion,
+    });
   });
 }

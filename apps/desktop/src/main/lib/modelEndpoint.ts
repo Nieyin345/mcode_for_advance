@@ -165,6 +165,8 @@ export async function probeEndpoint(args: {
   model: string;
   authMode?: "bearer" | "x-api-key";
   headers?: Record<string, string>;
+  /** Anthropic 风格端点要 `anthropic-version` 头（与 listEndpointModels 一致）。 */
+  anthropicVersion?: boolean;
   timeoutMs?: number;
 }): Promise<EndpointProbeResult> {
   const base = assertHttpUrl(args.baseUrl).toString();
@@ -201,7 +203,7 @@ export async function probeEndpoint(args: {
     return { ok: false, error: `端点返回 ${res.status}${snippet ? `:${snippet}` : ""}` };
   };
 
-  // Anthropic Messages 形态。
+  // Anthropic Messages 形态（始终带 anthropic-version —— 这条路由本来就是 Anthropic 的）。
   const anthropic = await attempt(
     joinUrl(base, "/v1/messages"),
     { model: args.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },

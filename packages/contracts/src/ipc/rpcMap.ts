@@ -42,7 +42,7 @@ import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySet
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, StopTaskInput, ReadTaskOutputInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
-import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput, ProviderHealthCheckInput, ProviderHealthCheckResult, ProviderCommandsInput, ProviderCommandsResult } from "./providers.js";
+import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput, ProviderHealthCheckInput, ProviderHealthCheckResult, ProviderCommandsInput, ProviderCommandsResult, TestEndpointInput, ListEndpointModelsInput, EndpointProbeOutcome } from "./providers.js";
 import type { GetThemeResult, SetThemeInput, AppInfoResult, CheckForUpdatesResult } from "./app.js";
 import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, ClipboardSaveFileInput, ClipboardSaveFileResult, ClipboardWriteImageInput, ClipboardWriteImageResult, FileListDirInput, FileTreeEntry, FileSearchInput, FileSearchResult, FileWriteInput, FileMkdirInput, FileDeleteInput, FileRenameInput, FileCopyInput, FileGrepInput, FileGrepResult, RgStatusResult, RgInstallInput, RgInstallResult, DialogPickFilesInput } from "./files.js";
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
@@ -296,6 +296,11 @@ export interface RpcMap {
    *  returns getAvailable() projected into BuiltinModelOption[] shape for
    *  the composer's model picker. */
   "piModels.listAvailable": () => Promise<{ models: BuiltinModelOption[] }>;
+  /** 兼容性/连通性探测：向用户填的地址发一次最小请求，确认地址+密钥+模型名能用。
+   *  三个引擎共用同一形状（Claude 那条是 `customModel.test`，Pi/Codex 走这条）。 */
+  "piModels.test": (input: TestEndpointInput) => Promise<EndpointProbeOutcome>;
+  /** 问端点要模型列表（填进设置页的下拉框）。拉不到时抛错，由界面回退到手输。 */
+  "piModels.listEndpointModels": (input: ListEndpointModelsInput) => Promise<{ models: string[] }>;
   // Codex model providers (visual editor for <CODEX_HOME>/config.toml's
   // [model_providers]; keys live in the encrypted settings map)
   "codexModels.list": () => Promise<{ providers: CodexProviderPublic[] }>;
@@ -304,6 +309,9 @@ export interface RpcMap {
   /** Settings UI eye-icon only — same security carve-out as
    *  customModel.getToken / piModels.getApiKey. */
   "codexModels.getApiKey": (input: GetCodexApiKeyInput) => Promise<{ apiKey: string | null }>;
+  /** 同 `piModels.test`，给 Codex 表单用。 */
+  "codexModels.test": (input: TestEndpointInput) => Promise<EndpointProbeOutcome>;
+  "codexModels.listEndpointModels": (input: ListEndpointModelsInput) => Promise<{ models: string[] }>;
   // Theme / color scheme
   "theme.get": () => Promise<GetThemeResult>;
   "theme.set": (input: SetThemeInput) => Promise<GetThemeResult>;
@@ -1497,11 +1505,15 @@ export const IPC = {
   PI_MODELS_DELETE: "piModels:delete",
   PI_MODELS_GET_API_KEY: "piModels:getApiKey",
   PI_MODELS_LIST_AVAILABLE: "piModels:listAvailable",
+  PI_MODELS_TEST: "piModels:test",
+  PI_MODELS_LIST_ENDPOINT_MODELS: "piModels:listEndpointModels",
   // Codex model providers (materialized into <CODEX_HOME>/config.toml)
   CODEX_MODELS_LIST: "codexModels:list",
   CODEX_MODELS_SAVE: "codexModels:save",
   CODEX_MODELS_DELETE: "codexModels:delete",
   CODEX_MODELS_GET_API_KEY: "codexModels:getApiKey",
+  CODEX_MODELS_TEST: "codexModels:test",
+  CODEX_MODELS_LIST_ENDPOINT_MODELS: "codexModels:listEndpointModels",
   // Theme / color scheme
   THEME_GET: "theme:get",
   THEME_SET: "theme:set",

@@ -169,6 +169,41 @@ export type SaveCodexProviderInput = z.infer<typeof SaveCodexProviderSchema>;
 export const DeleteCodexProviderSchema = z.object({ id: z.string().min(1) });
 export type DeleteCodexProviderInput = z.infer<typeof DeleteCodexProviderSchema>;
 
+/* ── 端点探测：连通性测试 + 拉模型列表（三个引擎共用同一形状）──
+ *  2026-10-11 加：用户要 Claude 那两个能力（「测试连接」与「列出模型」）在 Pi / Codex
+ *  上也有。两者的输入都是「地址 + 密钥 + 认证头形态 + 额外头」，与引擎无关 ——
+ *  所以用同一对 schema，三个引擎的 handler 都转调 `lib/modelEndpoint`。 */
+
+export const TestEndpointSchema = z.object({
+  baseUrl: z.string().min(1),
+  apiKey: z.string().optional(),
+  /** 认证头形态。缺省 = bearer（多数第三方网关）。 */
+  authMode: z.enum(["bearer", "x-api-key"]).optional(),
+  /** 额外请求头（与保存进配置的那份一致，测试才代表真回合）。 */
+  headers: z.record(z.string(), z.string()).optional(),
+  /** 要探测哪个模型。 */
+  model: z.string().min(1),
+  /** Anthropic 风格端点要 anthropic-version 头。 */
+  anthropicVersion: z.boolean().optional(),
+});
+export type TestEndpointInput = z.infer<typeof TestEndpointSchema>;
+
+export const ListEndpointModelsSchema = z.object({
+  baseUrl: z.string().min(1),
+  apiKey: z.string().optional(),
+  authMode: z.enum(["bearer", "x-api-key"]).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  anthropicVersion: z.boolean().optional(),
+});
+export type ListEndpointModelsInput = z.infer<typeof ListEndpointModelsSchema>;
+
+/** 两条探测通道的返回：`ok` + 人话的 detail/error（直接进设置页那行状态字）。 */
+export interface EndpointProbeOutcome {
+  ok: boolean;
+  detail?: string;
+  error?: string;
+}
+
 /** Cleartext apiKey getter — same security carve-out as
  *  customModel.getToken / piModels.getApiKey: settings-UI eye icon only,
  *  never a turn-time path (turn-time resolution happens inside main). */
@@ -202,7 +237,6 @@ export interface ProviderHealthCheckResult {
 }
 
 /* ── 引擎自己的斜杠命令清单（见 rpcMap 里 `provider.commands` 的说明）── */
-
 /**
  * 问哪个引擎要清单。`providerId` 是注册表里的 id（`"claude-sdk"` / `"codex-sdk"` /
  * `"pi-sdk"`）。

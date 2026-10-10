@@ -230,6 +230,10 @@ const api = {
     delete: ((input) =>
       ipcRenderer.invoke(IPC.PI_MODELS_DELETE, input)) as RpcMap["piModels.delete"],
     listAvailable: (() => ipcRenderer.invoke(IPC.PI_MODELS_LIST_AVAILABLE)) as RpcMap["piModels.listAvailable"],
+    test: ((input) =>
+      ipcRenderer.invoke(IPC.PI_MODELS_TEST, input)) as RpcMap["piModels.test"],
+    listEndpointModels: ((input) =>
+      ipcRenderer.invoke(IPC.PI_MODELS_LIST_ENDPOINT_MODELS, input)) as RpcMap["piModels.listEndpointModels"],
     /** Settings UI eye-icon only — returns cleartext apiKey for display. */
     getApiKey: ((input) =>
       ipcRenderer.invoke(IPC.PI_MODELS_GET_API_KEY, input)) as RpcMap["piModels.getApiKey"],
@@ -245,6 +249,10 @@ const api = {
       ipcRenderer.invoke(IPC.CODEX_MODELS_SAVE, input)) as RpcMap["codexModels.save"],
     delete: ((input) =>
       ipcRenderer.invoke(IPC.CODEX_MODELS_DELETE, input)) as RpcMap["codexModels.delete"],
+    test: ((input) =>
+      ipcRenderer.invoke(IPC.CODEX_MODELS_TEST, input)) as RpcMap["codexModels.test"],
+    listEndpointModels: ((input) =>
+      ipcRenderer.invoke(IPC.CODEX_MODELS_LIST_ENDPOINT_MODELS, input)) as RpcMap["codexModels.listEndpointModels"],
     getApiKey: ((input) =>
       ipcRenderer.invoke(IPC.CODEX_MODELS_GET_API_KEY, input)) as RpcMap["codexModels.getApiKey"],
   },
