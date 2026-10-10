@@ -111,9 +111,10 @@ export interface RpcMap {
   /** Rewind a turn: restore the given files to their pre-turn state.
    *  Works for the latest turn, any historical turn, or a session
    *  reopened after restart (the renderer passes the explicit entries).
-   *  Returns the list of paths that were actually restored (failed
-   *  paths are silently logged in main). */
-  "claude.rewindTurn": (input: RewindTurnInput) => Promise<{ restored: string[] }>;
+   *  Returns the paths that were actually restored AND the ones that were
+   *  not (so the card can say「N 个没还原」instead of showing a partial
+   *  rewind as if it were whole). */
+  "claude.rewindTurn": (input: RewindTurnInput) => Promise<{ restored: string[]; failed: string[] }>;
   /** Save the whole custom-subagent list (Settings → 子代理). Main validates
    *  each definition and persists to `claude.subagents`; returns the saved
    *  list so the editor can snap to what actually landed. */

@@ -24,40 +24,27 @@ import type { Locale } from "@contracts/ipc";
 import { BUILTIN_WORKFLOW_IDS, type BuiltinWorkflowId } from "@contracts/runtime";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 import {
-  IconBook,
   IconClipboardText,
-  IconCode,
   IconDownload,
   IconEye,
   IconFileText,
   IconMessage,
-  IconPencil,
-  IconWorldSearch,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 
-/** 列表项 / 标题上显示的名字。键与输入框那个选择器同源。 */
+/** 列表项 / 标题上显示的名字。键与输入框那个选择器同源。
+ *  ⚠️ 2026-10-10 可选内容外置后只剩 `default` —— 五个模式不再内置。 */
 export const BUILTIN_WORKFLOW_LABEL: Record<BuiltinWorkflowId, MessageId> = {
   default: "composer.mode.default",
-  search: "composer.mode.search",
-  read: "composer.mode.read",
-  write: "composer.mode.write",
-  review: "composer.mode.review",
-  code: "composer.mode.code",
 };
 
 /** 一句话说明。选择器与工作流库都用它 —— 同一份文案,不另写一套短的。 */
 export const BUILTIN_WORKFLOW_HINT: Record<BuiltinWorkflowId, MessageId> = {
   default: "composer.mode.defaultHint",
-  search: "composer.mode.searchHint",
-  read: "composer.mode.readHint",
-  write: "composer.mode.writeHint",
-  review: "composer.mode.reviewHint",
-  code: "composer.mode.codeHint",
 };
 
-/** id 是不是内置六个之一。收 `string` 而不是那个联合类型 —— 调用方手上是
- *  `WorkflowListEntry` / `WorkflowDoc`,它们的 id 是开放字符串(用户自建的 `wf_`)。 */
+/** id 是不是内置工作流(现在只剩 `default`)。收 `string` 而不是那个联合类型 ——
+ *  调用方手上是 `WorkflowListEntry` / `WorkflowDoc`,它们的 id 是开放字符串。 */
 export function isBuiltinWorkflowId(id: string): id is BuiltinWorkflowId {
   return (BUILTIN_WORKFLOW_IDS as readonly string[]).includes(id);
 }
@@ -87,11 +74,6 @@ export function workflowDisplayDescription(
  *  悄悄吞成通用气泡,和标签表漏配一样无声。 */
 const BUILTIN_WORKFLOW_ICON: Record<BuiltinWorkflowId, ComponentType<TablerIconProps>> = {
   default: IconMessage,
-  search: IconWorldSearch,
-  read: IconBook,
-  write: IconPencil,
-  review: IconClipboardText,
-  code: IconCode,
 };
 
 /* ── 守望与两条自动化(内置,但**不**在 BUILTIN_WORKFLOW_IDS 六个模式里)──

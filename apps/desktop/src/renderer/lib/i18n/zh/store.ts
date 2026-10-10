@@ -23,6 +23,7 @@ export const zh = {
   // 撤销本轮文件改动失败(`claude.rewindTurn` 抛)。这张卡会显示「已撤销 ✓」,从前
   // store 把错误吞了、照样 resolve —— 用户看到成功、文件其实一个字节没回滚。
   "store.toast.rewindFailed": "撤销本轮改动失败(文件可能没还原)",
+  "store.toast.rewindPartial": "撤销完成,但有 {n} / {total} 个文件没还原",
   "store.toast.settingSaveFailed": "设置没能保存",
   // 会话 / 项目行操作(改名、归档、删除、置顶、分组)落库失败 —— 主进程会抛
   // (`session not found` / `project not found` / zod / IO),而渲染端**没有**全局

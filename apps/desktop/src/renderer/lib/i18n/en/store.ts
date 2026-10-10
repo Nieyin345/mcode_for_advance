@@ -16,6 +16,7 @@ export const en = {
   "store.toast.turnIncomplete": "Task ended early",
   "store.toast.persistFailed": "Couldn't save the conversation (this turn may not be stored)",
   "store.toast.rewindFailed": "Couldn't undo this turn's changes (files may not be restored)",
+  "store.toast.rewindPartial": "Undone, but {n} of {total} file(s) weren't restored",
   "store.toast.settingSaveFailed": "Couldn't save the setting",
   "store.toast.sessionOpFailed": "Action failed",
   "store.toast.questionReplyFailed": "Your answer wasn't delivered — press Submit again to retry",

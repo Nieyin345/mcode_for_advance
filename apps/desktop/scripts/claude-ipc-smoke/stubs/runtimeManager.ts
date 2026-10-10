@@ -110,10 +110,14 @@ export function resetStub(): void {
 
 /** 按顺序记下每一次 `rewindTurn`。 */
 export const rewinds: Array<{ sessionId: string; files: unknown; targetFiles: unknown }> = [];
-/** 下一次 `rewindTurn` 该返回什么(恢复成功的路径列表)。 */
-export let rewindResult: string[] = [];
+/** 下一次 `rewindTurn` 该返回什么。**与真实的 `RuntimeManager.rewindTurn` 同形**
+ *  —— 它现在返回 `{restored, failed}`(部分还原失败要如实交回界面),桩必须跟。 */
+export let rewindResult: { restored: string[]; failed: string[] } = { restored: [], failed: [] };
 export function setRewindResult(v: string[]): void {
-  rewindResult = v;
+  rewindResult = { restored: v, failed: [] };
+}
+export function setRewindResultWithFailures(restored: string[], failed: string[]): void {
+  rewindResult = { restored, failed };
 }
 
 export const runtimeManager = {
@@ -164,7 +168,11 @@ export const runtimeManager = {
   notifyRequestResolved(sessionId: string, requestId: string, kind: string): void {
     notified.push({ sessionId, requestId, kind });
   },
-  async rewindTurn(sessionId: string, files: unknown, targetFiles: unknown): Promise<string[]> {
+  async rewindTurn(
+    sessionId: string,
+    files: unknown,
+    targetFiles: unknown,
+  ): Promise<{ restored: string[]; failed: string[] }> {
     rewinds.push({ sessionId, files, targetFiles });
     return rewindResult;
   },

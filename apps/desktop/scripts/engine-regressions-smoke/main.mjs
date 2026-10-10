@@ -575,7 +575,7 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
     const changes = await snapshot.freeze();
     assert.equal(changes.length, 1);
     assert.equal(changes[0].before, "before\n");
-    assert.deepEqual(await restoreFiles(cwd, changes), [file]);
+    assert.deepEqual(await restoreFiles(cwd, changes), { restored: [file], failed: [] });
     assert.equal(readFileSync(file, "utf8"), "before\n");
 
     const created = join(cwd, "new.md");
@@ -586,7 +586,7 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
     const createdChanges = await createdSnapshot.freeze();
     assert.equal(createdChanges.length, 1);
     assert.equal(createdChanges[0].kind, "created");
-    assert.deepEqual(await restoreFiles(cwd, createdChanges), [created]);
+    assert.deepEqual(await restoreFiles(cwd, createdChanges), { restored: [created], failed: [] });
     assert.equal(existsSync(created), false);
 
     const extension = readFileSync(resolve(here, "../../src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8");

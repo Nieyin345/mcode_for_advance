@@ -206,13 +206,23 @@ export class FileSnapshot {
  *  excluded from the result. This keeps the restore guard identical to
  *  the one that governed the original write.
  *
- *  Returns the paths actually restored (failures are logged and dropped,
- *  so the renderer knows what really landed back on disk). */
+ *  Returns the paths that landed back on disk, and the ones that did NOT. A
+ *  partial failure is**用户能看见的事实** —— 从前这里只 `console.warn` 就把它丢了,
+ *  调用方只拿到成功列表、卡片照样画「已恢复」,用户以为整轮都还原了。所以现在把
+ *  `failed` 一并交出去(越界被拒的路径也算失败 —— 它确实没还原)。 */
+export interface RestoreReport {
+  /** 真的写回/删掉的路径。 */
+  restored: string[];
+  /** 没还原成功的路径(越界被拒 / 写盘失败)。 */
+  failed: string[];
+}
+
 export async function restoreFiles(
   cwd: string,
   entries: TurnFileEntry[],
-): Promise<string[]> {
+): Promise<RestoreReport> {
   const restored: string[] = [];
+  const failed: string[] = [];
   // Process created-files first (unlink) so a parent that was also
   // modified can be cleanly rewritten without the child blocking.
   const created = entries.filter((e) => e.kind === "created");
@@ -220,6 +230,7 @@ export async function restoreFiles(
   for (const entry of [...created, ...modified]) {
     if (!safeResolveOk(cwd, entry.filePath)) {
       console.warn(`restoreFiles: refused, escapes cwd: ${entry.filePath}`);
+      failed.push(entry.filePath);
       continue;
     }
     try {
@@ -239,9 +250,10 @@ export async function restoreFiles(
       restored.push(entry.filePath);
     } catch (err) {
       console.warn(`restoreFiles: failed for ${entry.filePath} (${(err as Error).message})`);
+      failed.push(entry.filePath);
     }
   }
-  return restored;
+  return { restored, failed };
 }
 
 /* ──────────────────────────── path safety ──────────────────────────── */

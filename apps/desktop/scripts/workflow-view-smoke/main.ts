@@ -1094,7 +1094,8 @@ eq("重叠处取上面那张", hitTestNode(stacked, 100, 30), "over");
 /* ────────────────────── 5. 名字与说明 ────────────────────── */
 
 console.log("\nworkflowDisplayName / nodeTitle");
-check("read 是内置 id", isBuiltinWorkflowId("read"));
+check("default 是内置 id", isBuiltinWorkflowId("default"));
+check("read 不再是内置 id(可选内容已外置)", !isBuiltinWorkflowId("read"));
 check("wf_demo 不是内置 id", !isBuiltinWorkflowId("wf_demo"));
 eq("自带:显示数据里的名字(内置退役,词条不再盖)", workflowDisplayName(entryOf(BUILTIN), "zh"), "文献精读");
 eq("自带:en 也显示数据名(用户拍板的代价)", workflowDisplayName(entryOf(BUILTIN), "en"), "文献精读");

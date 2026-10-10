@@ -833,6 +833,7 @@ console.log("\n[14] ingestEvent:turn.rewound 标记那张卡片,但**不删**它
     type: "turn.rewound",
     sessionId: SID,
     files: files.map((f) => f.filePath),
+    failedFiles: [],
     targetFiles: files.map((f) => f.filePath),
   });
   eq("最新的那张被标成 rewound", blocksOf("m1")[0]?.["rewound"], true);
@@ -850,6 +851,7 @@ console.log("\n[14] ingestEvent:turn.rewound 标记那张卡片,但**不删**它
     type: "turn.rewound",
     sessionId: SID,
     files: ["D:\\p\\other.ts"],
+    failedFiles: [],
     targetFiles: ["D:\\p\\other.ts"],
   });
   eq("路径对不上 → 不标记", blocksOf("m1")[0]?.["rewound"], undefined);
@@ -863,6 +865,7 @@ console.log("\n[14] ingestEvent:turn.rewound 标记那张卡片,但**不删**它
     type: "turn.rewound",
     sessionId: SID,
     files: files.map((f) => f.filePath),
+    failedFiles: [],
     targetFiles: files.map((f) => f.filePath),
   });
   eq("历史卡片被标记", blocksOf("m1")[0]?.["rewound"], true);

@@ -63,7 +63,18 @@ import { isReadOnlyToolName, shouldAutoApprove, BROWSER_MCP_SERVER } from "@main
 import { MCP_ALWAYS_ON_SERVERS, MCP_MEMORY_SERVER, MCP_RESERVED_NAME } from "@contracts/ipc";
 import { __resetWorkflowRepo, WorkflowRepo } from "./stubs/repositories.js";
 import { __takeBroadcasts } from "./stubs/broadcast.js";
-import { COMPOSER_MODE_PROMPTS } from "@main/lib/systemPrompt.js";
+
+/** 提示词型模式(精读/评审/代码)的流程正文现在住在 `resources/presets/workflows.json`
+ *  —— 可选内容外置后不再内置,但正文本身没消失,只是换了住处。 */
+const PRESET_WORKFLOW_PROMPTS: Record<string, string> = Object.fromEntries(
+  (
+    JSON.parse(readFileSync(join(process.cwd(), "resources", "presets", "workflows.json"), "utf8")) as {
+      workflows: Array<{ id: string; prompt?: string }>;
+    }
+  ).workflows
+    .filter((w) => typeof w.prompt === "string" && w.prompt.length > 0)
+    .map((w) => [w.id, w.prompt as string]),
+);
 
 let failures = 0;
 let checks = 0;
@@ -712,10 +723,14 @@ async function main(): Promise<void> {
       "子 agent 也不带它",
       agentEntry?.manifest.params.some((p) => p.kind === "selects") === false,
     );
-    // 内置检索图的主节点**预填**了那四条条件 —— 这是"定义搬进节点"的落点:界面上的
+    // 检索图的主节点**预填**了那四条条件 —— 这是"定义搬进节点"的落点:界面上的
     // 下拉框、注入提示词的内容,都从这份预填数据来。候选值里混进非字符串,渲染端和
-    // 注入端都会一起瞎。
-    const searchDoc = BUILTIN_WORKFLOWS.find((w) => w.id === "search");
+    // 注入端都会一起瞎。(检索图现在住在预置文件里,见上面 `byId` 那段。)
+    const searchDoc = (
+      JSON.parse(readFileSync(join(process.cwd(), "resources", "presets", "workflows.json"), "utf8")) as {
+        workflows: WorkflowDoc[];
+      }
+    ).workflows.find((w) => w.id === "search");
     const searchCriteria = searchDoc?.nodes
       .find((n) => n.type === MAIN_NODE_TYPE_ID)
       ?.params["criteria"];
@@ -811,18 +826,25 @@ async function main(): Promise<void> {
     check("每个内置参数都有说明", missing.length === 0, missing);
   }
 
-  console.log("\n内置工作流:改成图的那两个");
-  // 文献检索与文献写作是**随应用发布**的图。它们出问题的样子很特别:用户什么都没做错,
-  // 一点「新建对话」就撞上「节点类型没有安装」/「参数是必填的」—— 而那是代码里写死的
-  // 一份文档,没有任何用户操作能触发它、也就没有任何人会先发现。所以在这里逐张过一遍
-  // 存盘那两道关(类型在不在 / 参数齐不齐 / 无环 / 无悬空边)。
+  console.log("\n预置工作流:改成图的那两个");
+  // 文献检索与文献写作原本**随应用发布**,2026-10-10 起外置到
+  // `resources/presets/workflows.json`(release 不内置,用户按需导入)。它们出问题的
+  // 样子很特别:用户导入后什么都没做错,一点「新建对话」就撞上「节点类型没有安装」/
+  // 「参数是必填的」—— 而那是预置里写死的一份文档。所以在这里逐张过一遍存盘那两道关
+  // (类型在不在 / 参数齐不齐 / 无环 / 无悬空边)。读的是**仓库里的预置**。
   {
-    const byId = new Map(BUILTIN_WORKFLOWS.map((w) => [w.id, w]));
+    const byId = new Map(
+      (
+        JSON.parse(readFileSync(join(process.cwd(), "resources", "presets", "workflows.json"), "utf8")) as {
+          workflows: WorkflowDoc[];
+        }
+      ).workflows.map((w) => [w.id, w]),
+    );
     const typeIds = new Set((await loadNodeTypes()).entries.map((e) => e.id));
 
     for (const id of ["search", "write"]) {
       const doc = byId.get(id);
-      check(`内置的 ${id} 还在`, doc !== undefined, [...byId.keys()]);
+      check(`预置的 ${id} 还在`, doc !== undefined, [...byId.keys()]);
       if (!doc) continue;
       check(`${id} 是图型(有节点)`, doc.nodes.length > 0, doc.nodes.length);
       // **不留第二份正文** —— 图型的流程文字在节点的指令里,`prompt` 再留一段就是
@@ -979,7 +1001,7 @@ async function main(): Promise<void> {
       text.includes("完成的样子") || text.includes("做完的样子");
     deepEq(
       "提示词型的每个模式都写了一句完成判据",
-      Object.entries(COMPOSER_MODE_PROMPTS)
+      Object.entries(PRESET_WORKFLOW_PROMPTS)
         .filter(([, text]) => !hasDoneCriterion(text))
         .map(([id]) => id),
       [],

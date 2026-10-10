@@ -88,8 +88,19 @@ export function TurnFilesCard({
       // in the stream as a trace that this turn was rolled back), whether
       // this is the latest turn or a historical one. Confirmation is now
       // handled by the ConfirmDialog before this runs.
-      await rewindTurn(files, files.map((f) => f.filePath));
+      const { failed } = await rewindTurn(files, files.map((f) => f.filePath));
       setDone(true);
+      // **部分失败要说出来。** 主进程可能还原了一半(某个文件写不进去、或路径越界
+      // 被拒),它现在如实把失败列表交回来 —— 不说的话这张卡画着「已撤销 ✓」,而用户
+      // 以为整轮都回滚了(破坏性动作,他不会再去看)。成功那几个已经落盘了,这张卡
+      // 照样收起来,只额外报一句"有几个没还原"。
+      if (failed.length > 0) {
+        useToastStore.getState().push({
+          kind: "warning",
+          title: t("store.toast.rewindPartial", { n: failed.length, total: files.length }),
+          body: failed.join("\n"),
+        });
+      }
       // Auto-collapse once rewound — the file list is now a stale snapshot
       // of rolled-back changes, so fold the card to keep the scroll-back
       // history calm. The card itself stays in the stream with the 已撤销

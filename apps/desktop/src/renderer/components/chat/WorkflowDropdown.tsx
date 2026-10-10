@@ -41,7 +41,6 @@ import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
 import { useNarrowViewport } from "@renderer/hooks/useNarrowViewport.js";
-import { BUILTIN_WORKFLOW_IDS } from "@contracts/runtime";
 import type { WorkflowListEntry } from "@contracts/workflow";
 import {
   BUILTIN_WORKFLOW_HINT as HINT_KEY,
@@ -91,24 +90,22 @@ export function WorkflowDropdown({ layout = "pill" }: { layout?: "pill" | "row" 
   }, [open]);
 
   const options = useMemo(() => {
-    if (library) {
-      // **自动化不进这个选择器。** 它挑的是"这次对话按哪条流程走",而自动化不是一条
-      // 跟着对话走的流程 —— 它等一个事件自己跑(见 `@contracts/workflow`)。列在这里
-      // 会让人以为选中它就会在本轮跑起来,而那个触发条件在这次对话里根本不会发生。
-      // 判据用 `trigger`(和库里分栏用的是同一个字段,见 `workflowView.purposeOf`)。
-      return library
-        .filter((entry) => !entry.trigger)
-        .map((entry) => ({
-          value: entry.id,
-          label: workflowDisplayName(entry, locale),
-          hint: workflowDisplayDescription(entry, locale),
-        }));
-    }
-    return BUILTIN_WORKFLOW_IDS.map((value) => ({
-      value,
-      label: t(LABEL_KEY[value]),
-      hint: t(HINT_KEY[value]),
-    }));
+    // **「默认」永远在。** 它代表"不追加任何流程",不需要库里真有一行
+    // (`getWorkflow("default")` 找不到就是空流程)。自 2026-10-10 可选内容外置后,
+    // 其余流程全在库里、由用户导入 —— 列表 = 「默认」+ 库里真实的、非自动化的流程。
+    const def = { value: "default", label: t(LABEL_KEY.default), hint: t(HINT_KEY.default) };
+    if (!library) return [def];
+    // **自动化不进这个选择器。** 它挑的是"这次对话按哪条流程走",而自动化不是一条
+    // 跟着对话走的流程 —— 它等一个事件自己跑(见 `@contracts/workflow`)。判据用
+    // `trigger`(和库里分栏用的是同一个字段,见 `workflowView.purposeOf`)。
+    const rows = library
+      .filter((entry) => !entry.trigger && entry.id !== "default")
+      .map((entry) => ({
+        value: entry.id,
+        label: workflowDisplayName(entry, locale),
+        hint: workflowDisplayDescription(entry, locale),
+      }));
+    return [def, ...rows];
   }, [library, locale, t]);
 
   // 认不出的 id(库读不到时的自建 id、或者刚被删掉的那个)显示它自己,不冒充「默认」。

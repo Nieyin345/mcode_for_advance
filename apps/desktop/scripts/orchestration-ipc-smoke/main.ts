@@ -809,7 +809,7 @@ console.log("\n删一份工作流");
 // (存储层 DELETE 一行不存在的不报错)。这条记录在报告里,没在这里编一个应当的行为。
 {
   resetSent();
-  const builtinBefore = obj(await callAsync(IPC.WORKFLOW_GET, { id: "search" }));
+  const builtinBefore = obj(await callAsync(IPC.WORKFLOW_GET, { id: "default" }));
   check("内置那份编辑前就在", builtinBefore.workflow !== null);
 
   const res = obj(await callAsync(IPC.WORKFLOW_REMOVE, { id: "wf_smoke" }));
@@ -1330,10 +1330,10 @@ console.log("\n导出");
   check("报的那句话里带得出 id", String(missing.error).includes("wf_没这个"), missing.error);
 
   // 取消:文件框返回"取消" → `{ok:false, canceled:true}`,界面据此静默。
-  // 用内置那份(`search`)—— 取消只可能发生在**找得到工作流之后**,给个不存在的 id
+  // 用内置那份(`default`)—— 取消只可能发生在**找得到工作流之后**,给个不存在的 id
   // 走的是上面那条"找不到"的路,根本到不了文件框。
   resetDialog();
-  const cancelled = obj(await callAsync(IPC.WORKFLOW_EXPORT, { id: "search" }));
+  const cancelled = obj(await callAsync(IPC.WORKFLOW_EXPORT, { id: "default" }));
   eq("用户取消 → ok:false", cancelled.ok, false);
   eq("标着 canceled", cancelled.canceled, true);
 
@@ -1587,9 +1587,13 @@ console.log("\n出厂版更新");
     SettingRepo.set("workflow.shippedRevisions", JSON.stringify(map));
   };
   const alive = new Set((await list()).map((e) => e.id));
-  const promptOne = BUILTIN_WORKFLOWS.find((d) => d.nodes.length === 0 && alive.has(d.id) && (d.prompt ?? "").length > 0);
+  // 出厂版更新现在能对上的**只剩按钮后端那几样**(可选内容外置后,库里播种的自带行
+  // 只有 `default` / `watch` / `memory-*`)。挑一份**无节点**的和一份**带触发器**的
+  // 来跑这套标记逻辑 —— `default` 无节点、`watch` 有触发器。(`default` 的 prompt 是
+  // 空串,但下面用的是"改成一个非空值再比对",空串照样能区分出厂版与用户改动。)
+  const promptOne = BUILTIN_WORKFLOWS.find((d) => d.nodes.length === 0 && alive.has(d.id));
   const withTrigger = BUILTIN_WORKFLOWS.find((d) => alive.has(d.id) && d.nodes.some((n) => n.type === "mcode.trigger"));
-  check("找得到一份提示词型、一份带触发器的自带工作流", promptOne !== undefined && withTrigger !== undefined, [...alive]);
+  check("找得到一份无节点的、一份带触发器的自带工作流", promptOne !== undefined && withTrigger !== undefined, [...alive]);
 
   if (promptOne && withTrigger) {
     const id = promptOne.id;

@@ -24,7 +24,6 @@ import {
 import { RightPanelTabSchema } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { translate } from "@renderer/lib/i18n/core.js";
-import { buildDefaultLibraryItems, type SeedNote } from "@renderer/components/customUi/seedDefaults.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 
@@ -110,57 +109,6 @@ interface CustomUiState {
 /** 工具栏收起状态存的键。 */
 export const CUSTOM_UI_TOOLBAR_COLLAPSED_KEY = "customUi.toolbar.collapsed";
 
-/**
- * **已经预置过**的标记键。
- *
- * 从前的判据是"一个自定义项都没有",于是一个**刻意把菜单清空**的用户每次开应用都会被
- * 重新塞回一整套默认项(还附带一条 toast)。判据改成这个标记:预置**一台机器只做一次**,
- * 成功与否都记(失败也记 —— 否则下次启动又来一遍,而失败的原因多半不会自己好)。
- */
-export const CUSTOM_UI_SEEDED_KEY = "customUi.seeded.v1";
-
-/** 首启预置:拿自动化清单 → 构建默认项 → 落盘,并把绑定结果 toast 出来。 */
-async function seedDefaults(save: (next: CustomUiConfig) => Promise<boolean>, current: () => CustomUiConfig): Promise<void> {
-  const { locale } = useSessionStore.getState();
-  // **先立标记再干活**:这一趟无论成败都不该在下次启动时重来(见 CUSTOM_UI_SEEDED_KEY)。
-  void api.setting.set({ key: CUSTOM_UI_SEEDED_KEY, value: "1" }).catch(() => {});
-  try {
-    const [wf, facts] = await Promise.all([api.workflow.list(), api.automation.statusAll()]);
-    const { items, notes } = buildDefaultLibraryItems(
-      (wf.workflows ?? []).map((w) => ({ id: w.id, name: w.name, hasTrigger: w.trigger !== undefined })),
-      (facts ?? []).map((f) => ({ workflowId: f.workflowId, nodeId: f.nodeId, title: f.title, kind: f.kind })),
-      locale,
-    );
-    if (items.length === 0) return;
-    // **合进现在这一份,不整份覆盖。** 取清单是异步的,这几百毫秒里用户完全可能已经在
-    // 设置页建了一项、排过序 —— 整份覆盖会把那些连同 layout 一起吃掉。
-    const now = current();
-    const taken = new Set(now.items.map((i) => i.id));
-    const merged = [...now.items, ...items.filter((i) => !taken.has(i.id))];
-    const ok = await save({ version: 1, items: merged, layout: now.layout });
-    if (!ok) return;
-    const line = (n: SeedNote): string =>
-      n.kind === "transcribe"
-        ? translate(locale, "customUi.seed.bindTranscribe", { name: n.workflowName })
-        : n.kind === "import"
-          ? translate(locale, "customUi.seed.bindImport", { name: n.workflowName })
-          : n.kind === "missingTranscribe"
-            ? translate(locale, "customUi.seed.missingTranscribe")
-            : translate(locale, "customUi.seed.missingImport");
-    useToastStore.getState().push({
-      kind: "info",
-      title: translate(locale, "customUi.seed.done"),
-      body: notes.map(line).join("\n"),
-    });
-  } catch (err) {
-    useToastStore.getState().push({
-      kind: "error",
-      title: translate(locale, "customUi.seed.failed"),
-      body: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
 let loading: Promise<void> | null = null;
 // A late read must never roll back a newer refresh or optimistic local save.
 let configEpoch = 0;
@@ -189,22 +137,17 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
     const epoch = configEpoch;
     loading = (async () => {
       try {
-        const [res, collapsed, seeded] = await Promise.all([
+        const [res, collapsed] = await Promise.all([
           api.setting.get({ key: CUSTOM_UI_SETTING_KEY }),
           api.setting.get({ key: CUSTOM_UI_TOOLBAR_COLLAPSED_KEY }).catch(() => ({ value: null })),
-          api.setting.get({ key: CUSTOM_UI_SEEDED_KEY }).catch(() => ({ value: null })),
         ]);
         const parsed = parseCustomUiConfig(res.value);
         if (epoch === configEpoch) confirmedConfig = parsed;
         set({ ...(epoch === configEpoch ? { config: parsed } : {}), loaded: true, toolbarCollapsed: collapsed.value === "1" });
-        // 首启预置(2026-09-28):从没配置过(一个自定义项都没有)时,按现有自动化
-        // 自动搭出文献菜单(seedDefaults 的绑定规则,冒烟钉住)。失败要说出来,
-        // 不静默 —— "没预置"读起来会像"功能不存在"。
-        // **只在从没预置过的机器上做**(见 CUSTOM_UI_SEEDED_KEY):清空过菜单的用户
-        // 不该每次开应用都被塞回默认项。
-        if (epoch === configEpoch && parsed.items.length === 0 && seeded.value !== "1") {
-          void seedDefaults(get().save, () => get().config);
-        }
+        // **不再首启预置**(2026-10-10):可选内容外置后,自定义 UI 的菜单也由用户自建
+        // —— release 版开箱是空的。从前这里按用户已有的自动化自动搭一整套文献菜单
+        // (见 git 历史里的 `seedDefaults`),那份预置依赖两个**已摘除的内置自动化 id**,
+        // 且用户明确要求"自定义 UI 也没有预置"。设置页手动加即可。
       } catch {
         // 读不到(手机端 shim、库还没就绪)就当默认:菜单照常显示全部内置项
         set({ loaded: true });

@@ -66,14 +66,6 @@ import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem }
 import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestration/automationPayload.js";
 import { LIT_IMPORT_PY } from "../../src/main/workflows/assets.js";
 import { spawnSync } from "node:child_process";
-import { buildDefaultLibraryItems, type SeedResult } from "../../src/renderer/components/customUi/seedDefaults.js";
-import {
-  AUTO_CONVERT_TRIGGER_NODE_ID,
-  AUTO_CONVERT_WORKFLOW_ID,
-  AUTO_DOWNLOAD_TRIGGER_NODE_ID,
-  AUTO_DOWNLOAD_WORKFLOW_ID,
-  BUILTIN_WORKFLOWS,
-} from "../../src/main/orchestration/builtins.js";
 
 let checks = 0;
 let passed = 0;
@@ -468,114 +460,10 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
   check("没 input 不加键", !("input.note" in payloadFactsOf({ kind: "file", files: [] })), payloadFactsOf({ kind: "file", files: [] }));
 }
 
-/* ── 首启预置(seedDefaults):按用户现有自动化自动搭出文献菜单,绑定要可解释 ── */
-
-{
-  const wfs = [
-    { id: "w-md", name: "文件到位后在线转 Markdown", hasTrigger: true },
-    { id: "w-dl", name: "DOI 文献下载", hasTrigger: true },
-  ];
-  const trs = [
-    { workflowId: "w-md", nodeId: "t1", title: "触发器", kind: "event" },
-    { workflowId: "w-dl", nodeId: "t2", title: "触发器", kind: "manual" },
-  ];
-  const r = buildDefaultLibraryItems(wfs, trs);
-  check("两条自动化都命中 → 6 个预置项", r.items.length === 6, r.items.map((i) => i.id));
-  const t = r.items.find((i) => i.id === "seed-transcribe");
-  check("手动转录绑 event 触发器 + skipWhen markdown",
-    t?.action.type === "automation" && t.action.workflowId === "w-md" && t.action.skipWhen?.requires === "markdown", t);
-  const imp = r.items.find((i) => i.id === "seed-lit-import");
-  check("文献导入绑名字含下载/doi 的自动化并带 files+doi 输入",
-    imp?.action.type === "automation" && imp.action.workflowId === "w-dl"
-      && imp.action.inputs?.map((x) => x.key).join(",") === "files,doi", imp);
-  check("绑定说明可解释", r.notes.some((n) => n.kind === "transcribe" && n.workflowName.includes("Markdown"))
-    && r.notes.some((n) => n.kind === "import"), r.notes);
-  check("预置项整体能过 schema", coerceCustomUiConfig({ version: 1, items: r.items, layout: {} }).items.length === 6);
-  // 文献导入是「只定位」那一种 —— 少了它,空分类会被「这个范围里没有条目」挡死。
-  const lit = r.items.find((i) => i.id === "seed-lit-import");
-  check("文献导入预置带 targetMode: context",
-    lit?.action.type === "automation" && lit.action.targetMode === "context", lit?.action);
-  check("批量转录仍是 scope(不带 targetMode)",
-    r.items.find((i) => i.id === "seed-batch-transcribe")?.action.type === "automation"
-      && (r.items.find((i) => i.id === "seed-batch-transcribe")?.action as { targetMode?: string }).targetMode === undefined);
-  check("targetMode 能过运行请求的 schema",
-    CustomUiRunAutomationSchema.safeParse({
-      workflowId: "w", triggerNodeId: "t", target: { kind: "collection", collectionId: "c" },
-      targetMode: "context", input: { files: ["C:/a.pdf"] },
-    }).success);
-}
-{
-  const r = buildDefaultLibraryItems([], []);
-  check("没有自动化 → 只有信息卡 + 两条缺失说明", r.items.length === 1 && r.items[0]?.id === "seed-item-info"
-    && r.notes.filter((n) => n.kind === "missingTranscribe" || n.kind === "missingImport").length === 2, r);
-}
-{
-  // 条目信息卡的正文**跟着界面语言走**(2026-10-08):从前它硬编码中文,英文界面
-  // 首次启动右键条目看到的是 `**语言**`/`**链接**` 那一整张中文卡,而设置页里同一个
-  // 模板一直是走词典的 —— 两处正文同源才对。判据立在**用户看到的那几个字**上。
-  const zh = buildDefaultLibraryItems([], [], "zh");
-  const en = buildDefaultLibraryItems([], [], "en");
-  const bodyOf = (r: SeedResult): string => {
-    const a = r.items.find((i) => i.id === "seed-item-info")?.action;
-    return a?.type === "view" ? a.body : "";
-  };
-  check("条目信息卡正文:中文界面仍是中文标签", bodyOf(zh).includes("**语言**"), bodyOf(zh));
-  check("条目信息卡正文:英文界面必须是英文标签(不硬编码中文)",
-    bodyOf(en).includes("**Language**") && !/[一-鿿]/.test(bodyOf(en)), bodyOf(en));
-  check("条目信息卡正文:两种语言都保留了模板变量",
-    bodyOf(en).includes("{{item.language}}") && bodyOf(en).includes("{{item.abstract}}"), bodyOf(en));
-}
-{
-  const r = buildDefaultLibraryItems(
-    [{ id: "w1", name: "普通自动化", hasTrigger: true }],
-    [{ workflowId: "w1", nodeId: "t", title: "触发器", kind: "event" }],
-  );
-  check("无关 event 自动化不能误绑成转录", !r.items.some((i) => i.id === "seed-transcribe")
-    && !r.items.some((i) => i.id === "seed-lit-import") && r.notes.some((n) => n.kind === "missingImport"), r);
-}
-
-{
-  for (const name of ["Markdown 转录", "DOI 下载"]) {
-    const r = buildDefaultLibraryItems(
-      [{ id: "a", name, hasTrigger: true }, { id: "b", name, hasTrigger: true }],
-      [{ workflowId: "a", nodeId: "t", title: name, kind: "event" }, { workflowId: "b", nodeId: "t", title: name, kind: "event" }],
-    );
-    check("歧义候选不自动绑定: " + name, r.items.length === 1, r);
-  }
-  const stale = buildDefaultLibraryItems([], [{workflowId:"gone",nodeId:"t",title:"Markdown DOI",kind:"event"}]);
-  check("已删除工作流的触发器不能预置", stale.items.length === 1, stale);
-}
-{
-  // **拿真的内置工作流喂**(2026-09-30):只用假名字钉规则时漏过一次 —— 内置「转 Markdown」
-  // 的触发器标题「文件导入或下载完成触发」含「下载」,让导入规则出现两个候选 → 不绑,
-  // 全新安装看不到「文献导入」。这一组直接读 BUILTIN_WORKFLOWS,改标题/改 id 都会红。
-  const wfs = BUILTIN_WORKFLOWS.map((w) => ({ id: w.id, name: w.name, hasTrigger: w.trigger !== undefined }));
-  const trs = BUILTIN_WORKFLOWS.flatMap((w) => w.nodes
-    .filter((n) => n.type === "mcode.trigger")
-    .map((n) => ({ workflowId: w.id, nodeId: n.id, title: n.title || n.id,
-      kind: String((n.params as Record<string, unknown>)["triggerKind"] ?? "unknown") })));
-  const r = buildDefaultLibraryItems(wfs, trs);
-  const bound = (id: string): { workflowId: string; triggerNodeId: string } | undefined => {
-    const a = r.items.find((i) => i.id === id)?.action;
-    return a?.type === "automation" ? { workflowId: a.workflowId, triggerNodeId: a.triggerNodeId } : undefined;
-  };
-  check("真实内置:预置 6 项(信息卡 + 3 转录 + 2 导入)", r.items.length === 6, r.items.map((i) => i.id));
-  check("真实内置:转录绑 wf_auto_convert 的触发器",
-    bound("seed-transcribe")?.workflowId === AUTO_CONVERT_WORKFLOW_ID
-      && bound("seed-transcribe")?.triggerNodeId === AUTO_CONVERT_TRIGGER_NODE_ID, bound("seed-transcribe"));
-  check("真实内置:文献导入绑 wf_auto_download 的触发器",
-    bound("seed-lit-import")?.workflowId === AUTO_DOWNLOAD_WORKFLOW_ID
-      && bound("seed-lit-import")?.triggerNodeId === AUTO_DOWNLOAD_TRIGGER_NODE_ID, bound("seed-lit-import"));
-  check("真实内置:首启说明里没有「缺」", !r.notes.some((n) => n.kind === "missingImport" || n.kind === "missingTranscribe"), r.notes);
-  // 用户另建一条同名风格的自动化,内置那条仍然是确定的落点(不因歧义退成不绑)。
-  const extra = buildDefaultLibraryItems(
-    [...wfs, { id: "mine", name: "我的 DOI 下载", hasTrigger: true }],
-    [...trs, { workflowId: "mine", nodeId: "t", title: "触发器", kind: "event" }],
-  );
-  check("真实内置 + 用户同类自动化:仍绑内置导入",
-    extra.items.find((i) => i.id === "seed-lit-import")?.action.type === "automation"
-      && (extra.items.find((i) => i.id === "seed-lit-import")?.action as { workflowId?: string }).workflowId === AUTO_DOWNLOAD_WORKFLOW_ID);
-}
+/* ── 首启预置已撤(2026-10-10)──
+   可选内容外置后,自定义 UI 的菜单不再首启预置 —— release 开箱是空的,用户自建。
+   从前这里钉的是 buildDefaultLibraryItems 的绑定规则(按用户已有自动化自动搭文献菜单);
+   该函数随预置一起删了。判据的落点移到「导入 presets 后流程能跑」(见 orchestration-ipc-smoke)。 */
 
 /* ── 文献导入:载荷 → 脚本 → importFiles 这道缝(2026-09-28)──
  *

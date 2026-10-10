@@ -1,0 +1,437 @@
+{
+  "version": 1,
+  "note": "Mcode 可选预置工作流/自动化（不随 release 内置，按需导入）",
+  "workflows": [
+    {
+      "id": "search",
+      "name": "文献检索",
+      "description": "确定检索方向,构造检索式,按期刊层次与年份筛选命中,逐条判断后入库。",
+      "icon": "world-search",
+      "nodes": [
+        {
+          "id": "main",
+          "type": "mcode.main",
+          "title": "定方向",
+          "params": {
+            "instruction": "先确认这一轮要找什么。用户给出的往往只是一句笼统的话 —— 用 AskUserQuestion 一次问 2–4 项,每项都给出可点击的选项(推荐的默认值放在第一项),尽量让用户点选而不是输入:\n\n- 他最想解决的**具体问题**是什么(不是大领域,而是这一轮要找什么);\n- 研究的**角度或切入点**;\n- 有没有**明确排除**的方向;\n- 有没有**已知的关键工作**可以作为锚点。\n\n⚠️ 提示词末尾「这次的固定条件」一段给出的那几项是用户设好的习惯,**不要再问他**;而且**要把那几条原样转写进你的产出「检索方向」的末尾**(一行一条,如「- 时间范围:近三年」)—— 下游步骤全靠产出里带的这几条执行筛选,漏了就没了。用户已经说清楚的部分直接采用,不必再走一遍流程问一遍。\n\n**先看一眼手上有什么检索工具。** 这个软件自己**不带**任何联网检索 / 下载文献的能力 —— 那些由用户接入的外部 MCP 服务提供(工具名各家不同,看你的工具表里有哪些)。一个能联网检索文献的工具都没有时,**开场就如实告诉用户**,并建议他在设置 → MCP 里接一个,不要硬走下面的步骤。\n\n**同时确认这批文献放进哪个分类。** 检查本次对话的附件里有没有资料库分类:\n\n- **有** → 直接使用,并用一句话告知用户;\n- **没有** → 让用户在两者之间选择:「挂一个现有的分类」或「新建一个分类」。挂现有的用 `library_collections` 列出候选,再用 `library_attach_to_chat` 挂上;新建用 `library_create_collection` 建好后挂上。**挂上之后用户的界面上会真的多出这个附件**,所以要说一句「已挂上」。\n\n**做完的样子**:这两件事都有了答案 —— 一句具体到能直接拿去构检索式的方向,以及一个**已经挂在这个对话上**的分类(他在左栏和输入框上看得见)。检索本身是后续步骤的事。",
+            "outputVars": [
+              {
+                "name": "检索方向",
+                "example": "卫星量子密钥分发里的波长选择方案对比。要的是近三年把波长选择和星地链路衰减放在一起做的那些工作;不要纯粹的诱骗态协议改进。锚点:用户手上已有的一篇 2023 年 NP 的星地 QKD 综述。"
+              }
+            ],
+            "criteria": [
+              {
+                "name": "时间范围",
+                "choices": [
+                  "不限",
+                  "近三年",
+                  "近五年",
+                  "近十年"
+                ]
+              },
+              {
+                "name": "期刊层次",
+                "choices": [
+                  "不限",
+                  "只要 T1(Q1 或中科院 1 区,或 Top)",
+                  "T1 或 T2(Q1/Q2,或中科院 1/2 区)"
+                ]
+              },
+              {
+                "name": "影响因子",
+                "choices": [
+                  "不限",
+                  "≥ 3",
+                  "≥ 5",
+                  "≥ 10"
+                ]
+              },
+              {
+                "name": "每源条数",
+                "choices": [
+                  "10 条",
+                  "20 条",
+                  "50 条"
+                ]
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "id": "query",
+          "type": "mcode.agent",
+          "title": "构造检索式",
+          "params": {
+            "instruction": "把上游给出的方向**转换成可用的检索式**,并**先经用户确认再继续**。\n\n**检索式用英文词写。** 常见的学术检索源(Crossref / arXiv / OpenAlex / Semantic Scholar…)都按英文元数据匹配,整句中文提交过去命中为零。所以:\n\n- 把方向拆成 **2–4 个概念块**(例:量子密钥分发 / 卫星 / 波长选择);\n- 每个概念块给一组**英文同义词**,块内用 OR 连接;\n- 概念块之间用 AND 连接;\n- 中文专有词(算法名、机构名)保留拉丁拼写;\n- 概念块越少命中越多 —— 先用最核心的两三个。\n\n把**概念块 → 同义词**整理成一张表交给用户,问一句「这样拆对吗?要加或去掉哪个词?」,**用 AskUserQuestion 让他确认**。他改动之后就地改完,确认之后再交出最终那一条。\n\n**做完的样子**:用户已经点过头,而你手上是一条**能原样提交给检索工具**的完整检索式 —— 概念块、同义词、连接词都在里面。中间那张对照表交出去了,改动也落进最终那一条了。",
+            "outputVars": [
+              {
+                "name": "检索式",
+                "example": "(\"quantum key distribution\" OR QKD) AND (satellite OR \"space-borne\" OR \"satellite-to-ground\") AND (\"wavelength selection\" OR \"wavelength division\" OR \"wavelength optimization\")"
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 116
+          }
+        },
+        {
+          "id": "run",
+          "type": "mcode.agent",
+          "title": "检索并按条件筛",
+          "params": {
+            "instruction": "用上游给出的检索式,调用**你工具表里那个外部检索工具**(由用户接入的 MCP 服务提供;这个软件自己不带检索)执行检索,每源条数按上游产出里带的固定条件。**把用过的检索式和用的是哪个工具告知用户** —— 他需要知道你在搜什么才能纠正你。\n\n**命中为零或明显跑偏时换用词重试**:先减少概念块,再替换同义词,把几轮尝试走完再下结论。拿跑偏的结果凑数,后面每一步都会跟着偏。\n\n取得命中之后,按上游产出里带的固定条件过一遍:\n\n- 年份直接按元数据筛;\n- **期刊层次和影响因子只能用工具查**(用户接入的期刊数据 / 分区查询工具,有就用),凭印象报的区号和影响因子会直接错;\n- 没有这样的工具、或查不到时,如实说明「期刊数据不可用,这次无法按层次筛选」,**不要编数字**;\n- 条件过严导致一篇都不剩时,如实说明并询问用户是否放宽,放宽与否由他定。\n\n交出筛选之后**仍然保留**的那一份清单,一篇一行,带齐后续判断需要的字段(标题、年份、期刊、DOI)。\n\n**做完的样子**:清单上每一条都来自真实命中,而且都过了上游带来的那几项条件;用过的检索式已经告诉用户;筛选中的例外(数据缺失、条件过严)已经如实交代。清单为空也是一个说得出理由的结论。",
+            "outputVars": [
+              {
+                "name": "候选清单",
+                "example": "[1] Wavelength selection for satellite QKD | 2023 | Optics Express | 10.1364/OE.480123\n[2] Optimal wavelength in space-borne QKD | 2022 | PRApplied | 10.1103/PhysRevApplied.17.034056"
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 232
+          }
+        },
+        {
+          "id": "pick",
+          "type": "mcode.agent",
+          "title": "判断并入库",
+          "capability": "write",
+          "params": {
+            "instruction": "逐条审阅这份候选清单,判断哪些确实和方向相关。看标题和摘要即可。\n\n**挑中一篇就立刻处理一篇**:用外部检索 / 下载工具把它的 PDF 拿到本地,再用 `library_import_files` 收进库。拿不到 PDF 时,当前工具没有创建无文件条目的入口:不要调用 `library_write_note`、不要声称已经入库;在最终答复里列出来源和待入库原因。**给成功入库的每篇写一句总结**(30–80 字,说清:这篇讲了什么、**为什么值得收录**、和用户的方向是什么关系,用 `library_write_note` 写在该条目上)。用户左栏里会立刻多出成功入库的条目,所以他随时看得见进度、也随时可以叫停 —— 攒到最后一次性导入,他要等到底才知道你收了什么。\n\n**总结写「为什么值得收」**,不复述标题或摘要。不相关的跳过就行,不必逐条解释原因。\n\n导入前先用 `library_search` 查一下库里有没有,已有的跳过(除非用户明确要求)。\n\n全部处理完之后用一段话收尾:实际入库了几篇、哪些因未取得 PDF 待入库、分别属于哪个方向、有什么缺口(某个子方向一篇都没找到)。**转录由用户配的自动化接手**(成功入库会发事件),这一步到此为止。\n\n**做完的样子**:清单上每一条都有了结论(入库、待入库或跳过);每一条实际入库的都带着自己那句总结;**收尾那段话留到清单上每一条都处理完之后再写**。\n\n**边界**:每一条入库的都必须来自检索工具的**真实命中** —— DOI、作者、年份一律从命中结果里抄进总结,凭记忆写出来的 DOI 会往库里塞一篇不存在的文献。宁可少而准:用户的库要能一眼看懂。"
+          },
+          "position": {
+            "x": 0,
+            "y": 348
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_main__query",
+          "from": "main",
+          "to": "query"
+        },
+        {
+          "id": "e_query__run",
+          "from": "query",
+          "to": "run"
+        },
+        {
+          "id": "e_run__pick",
+          "from": "run",
+          "to": "pick"
+        }
+      ],
+      "builtin": false,
+      "updatedAt": 0
+    },
+    {
+      "id": "read",
+      "name": "文献精读",
+      "description": "定位、读全文、拆问题/方法/实验/局限。",
+      "icon": "book",
+      "prompt": "## 文献精读模式\n本次走**精读流程**,按步进行:\n\n1. **定位**。用户可能挂了附件,也可能只说「这篇」。先用 `library.py show <关键词>` 或读清单确认到底是哪一条,拿到它的**绝对文件路径**。库里的文件名是 sha256,以查出来的路径为准。\n2. **通读全文**。优先读 Markdown(清单里标了「尚未转 Markdown」的才读 PDF)。先完整读一遍再下结论 —— 中途跳过的部分往往正是结论所依赖的地方。\n3. **拆解**。四项走全:\n   - 它要解决什么问题,既有做法差在哪里 —— 这是它存在的理由;\n   - 方法:关键假设是什么、每一步为什么这么做、有没有更简单的替代;\n   - 实验:结论是否被数据支撑、基线是否公平、有没有被略过的失败情形;\n   - 局限,以及它对后续工作的意义。\n4. **落笔**。引用原文里具体的东西 —— 数字、公式编号、图表编号、定理名。原文没写清楚、或你自己不确定的地方,直接写「此处原文没有交代」,把作者没说的地方留空。\n\n**交付**:一份可以直接阅读的精读结论,而不是一句「已读」的交代。\n**完成的样子**:四项都拆到了,每条结论都挂着原文里的具体位置。\n**边界**:本模式只读。要把结论留档,先问用户写到哪里。",
+      "nodes": [],
+      "edges": [],
+      "builtin": false,
+      "updatedAt": 0
+    },
+    {
+      "id": "write",
+      "name": "文献写作",
+      "description": "先核实每一条引用确实存在,再落笔成稿;成稿之后由用户决定是再改一轮,还是就此定稿。",
+      "icon": "pencil",
+      "nodes": [
+        {
+          "id": "main",
+          "type": "mcode.main",
+          "title": "明确写什么",
+          "params": {
+            "instruction": "先弄清这次要写的是什么:**哪一段 / 哪一节、给谁看、大概多长、中文还是英文**。说不清楚就先用 AskUserQuestion 问一句(给出可点击的选项),拿到答案再动笔 —— 这四项里错一项,整篇都要重写。\n\n用户手上已有的稿子或材料,在这一步一并问清楚放在哪里。\n\n**做完的样子**:这四项都有了明确答案,而且用户那份材料的位置也记下来了。正文留到后续步骤。",
+            "outputVars": [
+              {
+                "name": "写作要求",
+                "example": "《引言》的第一节,投稿用的中文期刊论文,600 字左右。要交代清楚这个方向为什么值得做,并在结尾点出本文要解决的问题。"
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "id": "refs",
+          "type": "mcode.agent",
+          "title": "核对引用",
+          "params": {
+            "instruction": "把这一步要用到的文献**逐条核实** —— 这是整条流程最硬的一步。\n\n- 用 `library_search` / `library_items` 在库里确认每一条**确实存在**,并从它的笔记 / 转录正文里抄录真实的引用信息(作者、年份、期刊、DOI)—— 库里的条目本身只记标题,引用字段要从内容里读;\n- 手上有 `.bib` 时执行 `python \"<脚本目录>/check_citations.py\" refs.bib` —— 它逐条对库,把「库里没有、也对不上」的挑出来。**那一档一律不引。**\n- 核不到的,**如实列出**交给用户决定。作者、年份、DOI 一律从库里的查询结果抄 —— 编出来的引用会往用户的库里塞一篇不存在的文献。\n\n**这一步只核对,落笔留给下游。**\n\n**做完的样子**:两样都交齐 —— 能引的那几条(**每条都带着库里查到的真实字段**),以及**没能核到的那几条**(把用户原本提到的样子照抄下来,而不是一句「有几条没找到」)。两样都可能是空的,空的写成「无」,照样交。",
+            "outputVars": [
+              {
+                "name": "可引文献",
+                "example": "[1] 张三, 李四. 星地量子密钥分发中的波长优化. 物理学报, 2023. DOI: 10.7498/aps.72.20230456\n[2] Alice B, et al. Wavelength selection for satellite QKD. Opt. Express, 2022. DOI: 10.1364/OE.470123"
+              },
+              {
+                "name": "没核到的",
+                "example": "用户提到的「2024 年那篇 Nature Photonics 的星地 QKD 综述」在库里没有,检索也没找到对应条目。"
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 116
+          }
+        },
+        {
+          "id": "draft",
+          "type": "mcode.agent",
+          "title": "成稿",
+          "capability": "write",
+          "params": {
+            "instruction": "按上游给出的写作要求写作。中文学术写作规范:\n\n- 结论先行,一段一个论点,顺着论证往下走(「首先 / 其次 / 最后」式的流水叙述会让论证散成一张清单);\n- 术语前后一致,首次出现时给出中英文对照;\n- 每句话都落到具体的对象、数字或机制上(「具有重要意义」「取得了良好效果」这类句子没有信息量,写进去等于占位);\n- **只引「可引文献」里那几条**,引用处给出真实的作者 / 年份 / DOI;\n- 「没核到的」那几样**一律不进正文** —— 需要它们的地方写「此处待补」,让那个空位留在明面上。\n\n**需要成段写作时直接给出成稿**,「写作建议」对下游没有用。要落成文件就写成**新文件**:`library/` 下的 PDF 与 Markdown 是资料(按内容哈希寻址,重新转换会覆盖编辑),用户的笔记是别人的稿子 —— 这两处除非用户明确说写的就是那一份,否则另起新文件。\n\n**当上下文里出现「流程记录」时**:如果其中已经有这一步此前的产出,说明用户在分支处选择了「再改一轮」—— **这一轮是改稿,不是重写。** 以前一版为基础修改:\n\n- 用户点到的地方按他说的改,未提及的部分**原样保留**(另行润色、调整结构、更换术语都会让他以为改错了地方);\n- 改完把**完整的正文**重新交一遍(不是只交改动的那几句),用户下一眼看到的就是这一份;\n- 用户说的若是别的意思(例如提问,或让你解释某处为什么这么写),**先回答他**,并说明正文这次没有改动。\n\n**做完的样子**:交出的是一份**可以直接读的完整正文** —— 不是提纲、不是片段、不是写作建议;正文里出现的每一条引用都能在上游的「可引文献」里找到;需要未核实内容的地方写着「此处待补」。"
+          },
+          "position": {
+            "x": 0,
+            "y": 232
+          }
+        },
+        {
+          "id": "fork",
+          "type": "mcode.branch",
+          "title": "稿子怎么样",
+          "params": {},
+          "position": {
+            "x": 0,
+            "y": 348
+          }
+        },
+        {
+          "id": "final",
+          "type": "mcode.agent",
+          "title": "定稿",
+          "capability": "write",
+          "params": {
+            "flowRecord": true,
+            "instruction": "用户认为可以了。把稿子整理成**最终交付的样子**:\n\n- 交完整的正文,内容保持这一版(定稿是整理,不是又一轮写作);\n- 需要落成文件就写成新文件,并说明写到哪儿了;\n- 收尾交代一句:这次写了什么、引了哪几篇、**有哪些地方仍然是「此处待补」** —— 没核到的引用即使定稿也照样留在清单上。\n\n**做完的样子**:用户手上是一份可以直接用的完整稿子,而且他知道哪里还空着。"
+          },
+          "position": {
+            "x": 0,
+            "y": 464
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_main__refs",
+          "from": "main",
+          "to": "refs"
+        },
+        {
+          "id": "e_refs__draft",
+          "from": "refs",
+          "to": "draft"
+        },
+        {
+          "id": "e_draft__fork",
+          "from": "draft",
+          "to": "fork"
+        },
+        {
+          "id": "e_fork__draft",
+          "from": "fork",
+          "to": "draft",
+          "label": "再改一轮",
+          "note": "用户对现在这版还不满意。按他下面说的改，**只改他提到的地方**，其余原样保留。"
+        },
+        {
+          "id": "e_fork__final",
+          "from": "fork",
+          "to": "final",
+          "label": "就这样，定稿",
+          "note": "用户认为可以了。把稿子整理成最终交付的样子，内容保持这一版。"
+        }
+      ],
+      "builtin": false,
+      "updatedAt": 0
+    },
+    {
+      "id": "review",
+      "name": "文献评审",
+      "description": "查贡献、查方法、查实验、查可复现性,逐条给可执行意见。",
+      "icon": "clipboard-text",
+      "prompt": "## 文献评审模式\n本次走**评审流程**,按步进行:\n\n1. **通读被评审的对象**(稿件 / 章节 / 申请)。先完整读一遍再下结论。\n2. **查贡献**:是否清晰、是否确实新、与最接近的已有工作差在哪里。判断「确实新」时用 `library.py find` 把库里最接近的那几篇找出来,**把差别摆在明处说** —— 泛泛的「相关工作不充分」帮不到作者。\n3. **查方法**:关键假设是否成立、推导有没有漏洞、有没有更简单的做法能达到同样效果。\n4. **查实验**:基线是否公平、数据划分与指标是否合理、有没有显著性、结论是否被数据支撑、有没有选择性报告。\n5. **查可复现性**:复现所需的细节(超参、数据、代码、环境)是否给全。\n6. **逐条写意见**。每条都给出**具体位置**(章节、公式、图表或页码)和**可执行的修改建议**,分「必须修改」与「建议」两档。整体不足以支撑其结论时,直接说明。\n\n**交付**:一份分档的、逐条带位置的评审意见。\n**完成的样子**:五查都走完;每一条意见都指得出位置、说得出怎么改。\n**边界**:本模式只评不改 —— 被评审的稿件原样留着。",
+      "nodes": [],
+      "edges": [],
+      "builtin": false,
+      "updatedAt": 0
+    },
+    {
+      "id": "code",
+      "name": "代码编辑",
+      "description": "遵循代码库既有约定改代码,如实报告校验结果。",
+      "icon": "code",
+      "prompt": "## 代码编辑模式\n当前任务是修改代码。遵循这次任务所在代码库的既有约定,而不是你自己的偏好:动手之前先读相邻代码,匹配它的命名、注释密度与惯用法;只做被要求的那一件事,改动范围收在任务内。注释留给代码本身说不清的约束与理由,复述代码在做什么的那几句可以不留。\n改完如实报告类型检查与测试的实际情况:失败就说失败。面向用户的文案,中英文都走项目既有的 i18n 机制。\n**完成的样子**:被要求的那件事已经做完,类型检查与测试的真实结果已经报告。",
+      "nodes": [],
+      "edges": [],
+      "builtin": false,
+      "updatedAt": 0
+    },
+    {
+      "id": "wf_auto_download",
+      "name": "文献导入(PDF / DOI)",
+      "description": "自定义 UI 的「文献导入」入口:表单里选中的 PDF 由 code 节点收进库,填的 DOI 交给模型用外部下载工具取原文。",
+      "icon": "download",
+      "nodes": [
+        {
+          "id": "auto-download-trigger",
+          "type": "mcode.trigger",
+          "title": "导入触发",
+          "params": {
+            "enabled": false,
+            "triggerKind": "event",
+            "project": "",
+            "task": "从「文献导入」表单来:选中的文件由第一步收进库,填的 DOI 由模型那一步用外部下载工具取回原文。转录由「文件在线转 MD」那条接手。",
+            "events": "library.item.imported",
+            "eventFilter": ""
+          },
+          "position": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "id": "auto-download-agent",
+          "type": "mcode.agent",
+          "title": "按 DOI / arXiv 号取原文",
+          "capability": "write",
+          "params": {
+            "instruction": "用户在「文献导入」表单里填的标识是:{{trigger.input.doi}}\n\n可能是多个,用逗号分隔。**上游那道判断只确认了它非空**,具体是什么由你认:DOI(`10.1038/…`)、\ndoi.org 链接、arXiv 号(`2401.12345` / `arXiv:2401.12345` / arxiv.org 链接)都算数;\n要是看着根本不是文献标识(比如一句话、一个书名),别硬猜,如实说这条认不出来。\n\n对每一条:\n\n- 用你手上的**外部 MCP 下载工具**(检索 / 下载文献的那些,名字各家不同,看你的工具表)找到并下载 PDF 到本地;\n- 下到了就调 `library_attach_pdf` 挂到对应条目上;库里还没有这一条时,先用 `library_import_files` 把 PDF 收进库,**不要另建空条目**;\n- 找不到可下载版本的、或认不出是什么的,**如实说明**,不要编造 DOI、链接或文件路径。\n\n⚠️ 这个软件自己**不会下载**任何东西(内置下载队列已随学术功能退役)。一个下载工具都没有时,如实说一句「没有可用的下载工具」,**不要用浏览器硬凑**。\n\n挂上 PDF 会触发「文件在线转 MD」那条自动化,**转录和挂回都不用你管**。\n\n**做完的样子**:每个 DOI 都交代过了(挂上的、拿不到的),各自什么标题、什么原因。"
+          },
+          "position": {
+            "x": 0,
+            "y": 232
+          }
+        },
+        {
+          "id": "auto-download-collect",
+          "type": "mcode.code",
+          "title": "收下选中的文件",
+          "params": {
+            "language": "python",
+            "code": "\n#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n\"\"\"把「文献导入」表单里选中的文件收进资料库。\n\n## 这一步在整条链的什么位置\n\n    自定义 UI「文献导入(PDF / DOI)」\n        → 弹表单:files(选文件) + doi(填编号)\n        → 这个 code 节点:把 files 收进库        ← 你在这儿\n        → 库发 library.item.imported 事件\n        → 「文件到位后在线转 Markdown」自动化接手:MinerU 转录 + 挂回条目\n        → (DOI 那半交给下一步的子代理:调外部下载工具取原文)\n\n## 为什么收文件不能在这儿自己干\n\n写库只能在主进程做:资料库的底是 sql.js，整个库在主进程内存里、落盘是把\n「mcode.db」整个文件重写一遍 —— 子进程在旁边写同一个文件会把库覆盖掉。\n\n所以这里只**报一句**「收这些文件进库」，由宿主调 「importAnyFiles」（界面上那两颗\n「导入文件 / 导入文件夹」按钮同一个函数）真去收。判断在脚本里，写库在主进程。\n\n## 输入\n\nstdin 一行 JSON，是这次运行的数据上下文。要的两样在触发器事实里:\n\n    trigger[\"input.files\"]  —— 表单里选的文件路径(数组，或逗号分隔的一串)\n    trigger[\"collectionId\"] —— 右键点的那个分类(有就把条目归进去)\n\n⚠️ **键名是拍平的字符串「input.files」，不是嵌套的 input 字典。** 运行前输入在\n「automationPayload.ts」的「inputFactsOf」里被拍成「input.<键>」——那是为了让\n「{{trigger.input.doi}}」这种插值按字面查一个键就能解出来。照嵌套字典去取的话\n取到的永远是空，而且**不报错**:表现为\"选了 PDF 却一个都没进库\"。\n\n没选文件是**正常情况**(用户只填了 DOI) —— 那就什么都不做，说一句，正常退出。\n\"\"\"\n\nimport json\nimport sys\n\nfor _stream in (sys.stdout, sys.stderr):\n    try:\n        _stream.reconfigure(encoding=\"utf-8\", errors=\"replace\")\n    except Exception:\n        pass\n\nPROTOCOL = \"@@mcode:result \"\n\n\ndef emit(summary, outputs=None):\n    payload = {\"summary\": summary}\n    if outputs:\n        payload[\"outputs\"] = outputs\n    sys.stdout.write(PROTOCOL + json.dumps(payload, ensure_ascii=False) + chr(10))\n    sys.stdout.flush()\n\n\ndef as_list(value, split_commas=True):\n    \"\"\"表单的值可能是数组，也可能是一串。数组是正路。\n\n    ⚠️ 文件那一路 **不按逗号切**(split_commas=False):路径里带逗号的文件会被切成\n    两半，而那两半都不存在——报出来的错是\"文件不存在\"，看不出是切坏了。\n    只按换行切，那是用户手敲多行路径时唯一说得通的分隔。\n    \"\"\"\n    if isinstance(value, list):\n        return [str(v).strip() for v in value if str(v).strip()]\n    if isinstance(value, str):\n        text = value.replace(\";\", \",\") if split_commas else value\n        seps = \",\" if split_commas else chr(10)\n        chunks = text.replace(chr(10), \",\").split(\",\") if split_commas else text.split(seps)\n        out = []\n        for chunk in chunks:\n            chunk = chunk.strip().strip('\"')\n            if chunk:\n                out.append(chunk)\n        return out\n    return []\n\n\ndef main():\n    raw = sys.stdin.readline()\n    try:\n        payload = json.loads(raw) if raw.strip() else {}\n    except Exception:\n        emit(\"交给这一步的载荷不是合法 JSON，没法知道要收哪些文件。\")\n        sys.exit(1)\n        return\n\n    # 触发器事实可能就在顶层，也可能裹在 trigger / data 里(见 MINERU_PY 同样的找法)。\n    # 认的判据是**拍平后的键**:kind 一定在，input.* 是表单带来的。\n    scope = payload if isinstance(payload, dict) else {}\n    for key in (\"trigger\", \"data\"):\n        inner = scope.get(key) if isinstance(scope, dict) else None\n        if isinstance(inner, dict) and (\"kind\" in inner or any(str(k).startswith(\"input.\") for k in inner)):\n            scope = inner\n            break\n\n    # 拍平的键(\"input.files\")是正路;嵌套的 input 字典只是万一哪天载荷换了形状的兜底。\n    nested = scope.get(\"input\") if isinstance(scope.get(\"input\"), dict) else {}\n    files = as_list(scope.get(\"input.files\", nested.get(\"files\")), split_commas=False)\n    collection_id = scope.get(\"collectionId\") or \"\"\n\n    if not files:\n        # 只填了 DOI 的那条路 —— 这一步没活干，是正常的。\n        emit(\"这次没有选文件（只填了 DOI 的话，取原文交给下一步）。\", outputs={\"importFiles\": None})\n        return\n\n    emit(\n        f\"要收 {len(files)} 个文件进库：\" + \"、\".join(files),\n        outputs={\n            # ↓ 宿主认的就是这一项(见 orchestration/adoptFromCode.ts)。\n            \"importFiles\": {\n                \"paths\": files,\n                \"collectionIds\": [collection_id] if collection_id else [],\n            }\n        },\n    )\n\n\nif __name__ == \"__main__\":\n    main()\n",
+            "timeoutMs": 300000
+          },
+          "position": {
+            "x": 200,
+            "y": 232
+          }
+        },
+        {
+          "id": "auto-download-doi-gate",
+          "type": "mcode.condition",
+          "title": "填了标识吗",
+          "params": {
+            "expression": {
+              "logic": "and",
+              "rules": [
+                {
+                  "ref": "{{trigger.input.doi}}",
+                  "op": "contains",
+                  "value": "."
+                }
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 116
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_auto-download-trigger__auto-download-collect",
+          "from": "auto-download-trigger",
+          "to": "auto-download-collect"
+        },
+        {
+          "id": "e_auto-download-trigger__auto-download-doi-gate",
+          "from": "auto-download-trigger",
+          "to": "auto-download-doi-gate"
+        },
+        {
+          "id": "e_auto-download-doi-gate__auto-download-agent",
+          "from": "auto-download-doi-gate",
+          "to": "auto-download-agent",
+          "label": "true",
+          "note": "表单里填了标识(DOI / arXiv 号)—— 用外部下载工具把原文取回来。"
+        },
+        {
+          "id": "e_auto-download-doi-gate__auto-download-collect",
+          "from": "auto-download-doi-gate",
+          "to": "auto-download-collect",
+          "label": "false",
+          "note": "这一栏是空的,这一路没活可干(收文件那步照常跑)。"
+        }
+      ],
+      "trigger": "event",
+      "builtin": false,
+      "updatedAt": 0
+    },
+    {
+      "id": "wf_auto_convert",
+      "name": "文件到位后在线转 Markdown",
+      "description": "启用并配置此自动化后，导入或下载完成的文件会上传到 MinerU 在线转录，再挂回对应条目。核心导入本身不转录；屏蔽设置只控制 AI 可见性，不是上传开关。",
+      "icon": "file-text",
+      "nodes": [
+        {
+          "id": "auto-convert-trigger",
+          "type": "mcode.trigger",
+          "title": "文件导入或下载完成触发",
+          "params": {
+            "triggerKind": "event",
+            "project": "",
+            "task": "资料库里有一批文件刚导入或下载完成（见载荷中的条目列表，可能不止一条；尚无本地文件的跳过）。只用 MinerU 在线 API 转录并挂回对应条目；禁止本地抽取。",
+            "events": "library.item.imported,library.item.downloaded",
+            "eventFilter": ""
+          },
+          "position": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "id": "auto-convert-code",
+          "type": "mcode.code",
+          "title": "调 MinerU 转 Markdown",
+          "params": {
+            "language": "python",
+            "code": "#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n\"\"\"把一条条目的 PDF 交给 MinerU 的**在线解析 API**，拿回 Markdown + 配图。\n\n## 为什么是在线 API 而不是本地跑 MinerU\n\n本地跑要下模型（basic 档 ~0.8GB）、要 8GB 以上的内存，而这台机器是老 Xeon 无 GPU。\n在线 API 走 HTTP，什么都不用装。\n\n## 走的是「精准解析」那一路（要 token）\n\nMinerU 有两条 API（见 https://mineru.net/apiManage/docs）：\n\n| | 精准解析（这一条） | Agent 轻量 |\n|---|---|---|\n| token | 要 | 不要 |\n| 输出 | **zip：full.md + images/** | 只有 Markdown，图/表/公式**是占位符** |\n| 限制 | 200MB / 200 页 | 10MB / 20 页 |\n\n⚠️ **选精准那一路是因为配图。** 轻量那条只给一份 Markdown，图全变成占位符 —— 而\n「library_adopt_markdown」 的整包替换语义正是要 「full.md」 配上它引用的那些图。拿轻量那条\n转出来的东西挂上去，预览里全是断图，用户会以为导入坏了。\n\n## token 从哪来\n\n两条路，**脚本里那一行优先**：\n\n1. 直接填在下面的 「TOKEN_INLINE」 —— 打开节点的代码编辑器，粘进引号里就行；\n2. 留空则回退读 「MINERU_TOKEN」 环境变量（老做法，仍然有效）。\n\n两条都没有时：**用户手动点的**（右键「转录」、「立刻运行一次」，载荷里带 「manual」）\n**明确报错退出**；**导入 / 下载事件自动叫起来的**只记一句「没配 token，已跳过」、\n正常退出 —— 没配 token 的人每导入一篇就亮一盏红灯，那不是提醒，是噪音。\n两种情形都**不静默降级去打轻量那条** —— 降级的话用户拿到的是没有配图的转录，而它\n看起来\"成功了\"，比直接报错难查得多。\n\n## 输入 / 输出（工作流 code 节点的约定）\n\nstdin 收一行 JSON：\n\n    {\"itemId\": \"li_xxx\", \"pdfPath\": \"papers/ab/cd/<sha>.pdf\"}\n\n⚠️ 「pdfPath」 是**库内相对路径**（见 「@contracts/hook」 的 「pdfPath」 那一项）—— 这里自己\n把数据根找出来拼成绝对路径（「find_data_root」，与 「workflows/scripts/library.py」 同一条\n逻辑：环境变量 > Mcode 的指针文件 > ~/Mcode）。\n\n产物落在 **cwd** 下（「normalizeNodeArtifacts」 按 cwd 解析相对路径）：\n\n    <cwd>/mineru/<itemId>/full.md\n    <cwd>/mineru/<itemId>/images/*\n\nstdout 打一行 「@@mcode:result {...}」（见 「orchestration/codeRunner.ts」 的协议解析）。\n\n## 挂回库也是这一步的事（不再交给子代理）\n\n产出的 「outputs.adoptMarkdown」 里每转成一条就报一项 「{itemId, path}」，code 节点跑完后\n由**主进程**逐条调 「adoptMarkdownFile」（与 MCP 工具、界面按钮同一个函数）。\n\n为什么不在这里自己写库：资料库的底是 sql.js —— 整个库在主进程内存里、落盘是把\n「mcode.db」 整个重写一遍，子进程在旁边写同一个文件会把库覆盖掉。判断留在脚本里\n（它才知道哪条转成了），写库留在主进程（只有它能安全地写），中间不经过模型。\n详见 「orchestration/adoptFromCode.ts」 的文件头。\n\n## 失败就是失败\n\ncode 节点的语义是「非零退出码 = 这一步失败」。所以任何一处走不通都**带着原因退出 1**，\n把话写在 「@@mcode:result」 的 summary 里（那才是用户看得到的那个字段）。\n\"\"\"\n\nimport json\nimport os\nimport sys\nimport time\nimport urllib.error\nimport urllib.request\nimport zipfile\nfrom pathlib import Path\n\n# 输出一律 UTF-8。Windows 上 Python 默认按控制台代码页（简体中文是 GBK）写 stdout，\n# 而读它的那一端（Mcode 的 codeRunner）按 UTF-8 解 —— 中文会变成一堆问号。\nfor _stream in (sys.stdout, sys.stderr):\n    try:\n        _stream.reconfigure(encoding=\"utf-8\", errors=\"replace\")\n    except Exception:\n        pass\n\n# 协议前缀 + 分段标记，与 「@contracts/nodeType」 的 NODE_STDOUT_PROTOCOL_PREFIX 一致。\nPROTOCOL = \"@@mcode:result \"\n\nBASE_URL = os.environ.get(\"MINERU_BASE_URL\", \"https://mineru.net\").rstrip(\"/\")\n\n# ─────────────────────────────────────────────────────────────────────\n#  ↓↓↓  在这里填 MinerU 的 API token  ↓↓↓\n#\n#  去 https://mineru.net 的「API 管理」建一个，把它粘到下面这对引号中间。\n#  留空 = 回退去读环境变量 「MINERU_TOKEN」。\n#\n#  ⚠️ 填在这里的 token 会**随这条自动化一起存进数据库**，导出 / 分享这条工作流时\n#     会跟着走。要发给别人之前记得先清空这一行。\n# ─────────────────────────────────────────────────────────────────────\nTOKEN_INLINE = \"\"\n\nTOKEN = (TOKEN_INLINE or os.environ.get(\"MINERU_TOKEN\") or \"\").strip()\n# vlm 是文档推荐的档（复杂版式明显更好）；pipeline 更快更便宜。给个开关，默认 vlm。\nMODEL_VERSION = (os.environ.get(\"MINERU_MODEL_VERSION\") or \"vlm\").strip()\n\n# 轮询：每 3 秒看一眼，单条最多等 30 分钟（长论文 + 排队要时间）。\nPOLL_INTERVAL_S = 3\nPOLL_TIMEOUT_S = 30 * 60\n\n# ⚠️ **整次运行的时间预算，必须小于节点超时**（见 「builtins.ts」 的\n# 「AUTO_CONVERT_CODE_NODE_ID」：30 分钟）。\n#\n# 这一条是算出来的坑：合并窗口里常常是**好几条**一起进来（下载是并发的），而上面那个\n# 30 分钟是**每条**的。两条各等 20 分钟，节点在 30 分钟处被**杀掉** —— 杀掉的进程发不出\n# 协议行，于是**第一条明明已经转好了，也一起丢**（宿主没收到 adoptMarkdown，什么都没挂回），\n# 报出来只有一句冷冰冰的超时。\n#\n# 所以这里自己先收手：到点就把**已经转好的**照常报上去，没轮到的如实说\"预算用完了\"。\n# 留 2 分钟余量给上传/解压/挂回那几步。\nRUN_BUDGET_S = 28 * 60\n\n# 只转这三类:PDF 和 Word。\n#\n# MinerU 精准解析本身还吃图片 / PPT / Excel / 网页，但那几类在这个库里转出来的东西\n# 多半没人看：一张截图转出来是几行 OCR，一个 xlsx 转出来是一张烂掉的表。它们照转的\n# 代价是真金白银的额度和几分钟的排队。\n#\n# ⚠️ 不在这张单子里的**直接跳过，不算失败** —— 往库里拖一张图片不该让这条自动化\n# 亮红灯（它没做错什么，只是没什么可做）。\nSUPPORTED_EXTS = {\".pdf\", \".doc\", \".docx\"}\n\n\ndef is_manual_run(payload):\n    \"\"\"这次是不是**用户手动**起的（右键「转录」/「立刻运行一次」）。\n\n    宿主在手动起跑时往触发器事实里加 「manual: true」（见 「automationRunner.fire」）。\n    stdin 可能是事实本身，也可能外面裹着 「trigger」 / 「data」，逐层看一眼。\n    \"\"\"\n    seen = [payload]\n    if isinstance(payload, dict):\n        for key in (\"trigger\", \"data\"):\n            inner = payload.get(key)\n            if isinstance(inner, dict):\n                seen.append(inner)\n                nested = inner.get(\"trigger\")\n                if isinstance(nested, dict):\n                    seen.append(nested)\n    return any(isinstance(d, dict) and d.get(\"manual\") is True for d in seen)\n\n\ndef source_of(item):\n    \"\"\"条目的源文件路径：linked 是绝对路径，attached 是库内相对路径，旧论文条目是 pdfPath。\"\"\"\n    return (item or {}).get(\"filePath\") or (item or {}).get(\"pdfPath\") or \"\"\n\n\ndef emit(summary, outputs=None, artifacts=None):\n    \"\"\"打一行协议。**这是这一步交给下游的唯一通道** —— 别的 stdout 都只是日志。\"\"\"\n    payload = {\"summary\": summary}\n    if outputs:\n        payload[\"outputs\"] = outputs\n    if artifacts:\n        payload[\"artifacts\"] = artifacts\n    # ⚠️ 换行用 chr(10) 拼，不写字面的反斜杠 n —— 整段 Python 是 **TS 模板字面量**，\n    # 里面写的反斜杠 n 会被 TS 先解成**真换行**，落成一个跨行的 Python 字符串字面量\n    # （语法错，脚本整个起不来）。同文件下面那个 chr(10).join(...) 是同一个理由。\n    sys.stdout.write(PROTOCOL + json.dumps(payload, ensure_ascii=False) + chr(10))\n    sys.stdout.flush()\n\n\ndef die(summary, outputs=None):\n    \"\"\"失败：先把话说给用户（summary 是他在卡片上看到的那一行），再非零退出。\"\"\"\n    emit(summary, outputs)\n    sys.exit(1)\n\n\ndef find_data_root(explicit=None):\n    \"\"\"数据根：显式参数 > 环境变量 > Mcode 的指针文件 > ~/Mcode。\n\n    与 「workflows/scripts/library.py」 同一条顺序 —— 两处不一致的话，会出现\n    「查库的脚本找得到、转录的脚本找不到」这种一半好一半坏的状态。\n    \"\"\"\n    if explicit:\n        return Path(explicit)\n    env = os.environ.get(\"MCODE_DATA_ROOT\")\n    if env:\n        return Path(env)\n    home = Path.home()\n    candidates = []\n    appdata = os.environ.get(\"APPDATA\")\n    if appdata:\n        candidates.append(Path(appdata) / \"@mcode\" / \"desktop\" / \"data-root.json\")\n    candidates.append(home / \"Library\" / \"Application Support\" / \"@mcode\" / \"desktop\" / \"data-root.json\")\n    candidates.append(home / \".config\" / \"@mcode\" / \"desktop\" / \"data-root.json\")\n    for c in candidates:\n        try:\n            return Path(json.loads(c.read_text(encoding=\"utf-8\"))[\"root\"])\n        except Exception:\n            continue\n    return home / \"Mcode\"\n\n\ndef http_json(url, method=\"GET\", body=None, headers=None):\n    \"\"\"发一个 JSON 请求，返回解析后的对象。任何 HTTP/网络错都抛 「RuntimeError」（带人话）。\"\"\"\n    data = None\n    hdrs = {\"Accept\": \"application/json\"}\n    if body is not None:\n        data = json.dumps(body).encode(\"utf-8\")\n        hdrs[\"Content-Type\"] = \"application/json\"\n    if headers:\n        hdrs.update(headers)\n    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)\n    try:\n        with urllib.request.urlopen(req, timeout=120) as resp:\n            raw = resp.read()\n    except urllib.error.HTTPError as err:\n        detail = \"\"\n        try:\n            detail = err.read().decode(\"utf-8\", \"replace\")[:400]\n        except Exception:\n            pass\n        raise RuntimeError(f\"HTTP {err.code}（{url}）{detail}\") from err\n    except Exception as err:\n        raise RuntimeError(f\"请求失败（{url}）：{err}\") from err\n    try:\n        return json.loads(raw.decode(\"utf-8\"))\n    except Exception as err:\n        raise RuntimeError(f\"响应不是 JSON（{url}）：{raw[:200]!r}\") from err\n\n\ndef upload(url, path):\n    \"\"\"把文件字节 PUT 到签名链接上。**不设 Content-Type** —— API 文档明说不用设。\"\"\"\n    body = path.read_bytes()\n    req = urllib.request.Request(url, data=body, method=\"PUT\")\n    try:\n        with urllib.request.urlopen(req, timeout=600) as resp:\n            if resp.status not in (200, 201):\n                raise RuntimeError(f\"上传返回 HTTP {resp.status}\")\n    except urllib.error.HTTPError as err:\n        raise RuntimeError(f\"上传失败（HTTP {err.code}）\") from err\n    except Exception as err:\n        raise RuntimeError(f\"上传失败：{err}\") from err\n\n\ndef download(url, dest):\n    req = urllib.request.Request(url, method=\"GET\")\n    try:\n        with urllib.request.urlopen(req, timeout=600) as resp:\n            dest.write_bytes(resp.read())\n    except Exception as err:\n        raise RuntimeError(f\"下载结果包失败：{err}\") from err\n\n\ndef safe_extract(zip_path, dest_dir):\n    \"\"\"解压到 「dest_dir」。**拒绝目录穿越条目**（「../」 / 绝对路径）。\n\n    结果包来自远端，解压前必须过这一道：一个 「../../x」 的条目会把文件写到工作目录之外，\n    而那种写坏是**静默**的（用户只看到产物莫名其妙出现在别处）。\n    \"\"\"\n    dest_dir.mkdir(parents=True, exist_ok=True)\n    base = dest_dir.resolve()\n    with zipfile.ZipFile(zip_path) as zf:\n        for name in zf.namelist():\n            target = (base / name).resolve()\n            try:\n                target.relative_to(base)\n            except ValueError:\n                raise RuntimeError(f\"结果包里有越界条目，拒绝解压：{name}\")\n        zf.extractall(base)\n\n\ndef transcribe_one(item, index, deadline=None):\n    \"\"\"转一条。成功返回产物描述，失败抛 RuntimeError（带人话）。\n\n    「deadline」 是**整次运行**的截止时刻（time.time() 的秒数）：到点就停下这一条，\n    让 main() 把已经转好的那些报上去 —— 见 「RUN_BUDGET_S」。\n    \"\"\"\n    item_id = (item or {}).get(\"itemId\") or \"\"\n    # 资料库：优先读通用文件路径（linked 为绝对路径，attached 为库内相对路径），\n    # 兼容论文/下载条目的旧 pdfPath。\n    source_rel = (item or {}).get(\"filePath\") or (item or {}).get(\"pdfPath\") or \"\"\n    label = f\"第 {index} 条\" if index else \"那一条\"\n    if not item_id or not source_rel:\n        raise RuntimeError(f\"{label}缺 itemId / 文件路径，转不了。\")\n\n    # itemId 是结果落点的目录名（见下面的 out_dir）。它来自载荷，而载荷可以被\n    # code 节点 / 外部触发器喂进来 —— 含路径分隔符或 \".\"/\"..\" 的值会把结果目录\n    # 写到 cwd/mineru 之外（\"../x\" 甚至写出工作目录）。目录名只认单个路径分量。\n    if \"/\" in item_id or \"\\\\\" in item_id or item_id in (\".\", \"..\"):\n        raise RuntimeError(f\"{label}的 itemId 含路径分隔符（{item_id!r}），拒绝用它建结果目录。\")\n\n    source_abs = Path(source_rel)\n    if not source_abs.is_absolute():\n        source_abs = find_data_root() / \"library\" / source_rel\n    if not source_abs.is_file():\n        raise RuntimeError(f\"{label}的源文件不在了：{source_abs}\")\n\n    # 兜底再查一次。正常情况下 main() 已经把不转的挑走了 —— 这一条防的是有人直接\n    # 调 transcribe_one（比如以后加一条手动重试的路）。绝不改走本地抽取。\n    ext = source_abs.suffix.lower()\n    if ext not in SUPPORTED_EXTS:\n        raise RuntimeError(f\"{label}不是要转的格式（{ext or '无扩展名'}）；只转 PDF 和 Word。\")\n    model_version = MODEL_VERSION\n\n    out_dir = Path.cwd() / \"mineru\" / item_id\n    out_dir.mkdir(parents=True, exist_ok=True)\n\n    # ── 申请上传链接（批量接口，这里一次只放一条：一条失败不该拖垮别的）──\n    res = http_json(\n        f\"{BASE_URL}/api/v4/file-urls/batch\",\n        method=\"POST\",\n        headers={\"Authorization\": f\"Bearer {TOKEN}\"},\n        body={\n            \"files\": [{\"name\": source_abs.name, \"data_id\": item_id}],\n            \"model_version\": model_version,\n        },\n    )\n    if res.get(\"code\") != 0:\n        raise RuntimeError(f\"MinerU 拒绝了这次提交：{res.get('msg') or res}\")\n    data = res.get(\"data\") or {}\n    batch_id = data.get(\"batch_id\") or \"\"\n    urls = data.get(\"file_urls\") or []\n    if not batch_id or not urls:\n        raise RuntimeError(f\"MinerU 没给回 batch_id / 上传链接：{res}\")\n\n    # ── 上传字节（传完服务端会自动开始解析，不用再调一次提交）──\n    upload(urls[0], source_abs)\n\n    # ── 轮询到 done / failed ──\n    started = time.time()\n    zip_url = \"\"\n    while True:\n        now = time.time()\n        if now - started > POLL_TIMEOUT_S:\n            raise RuntimeError(\n                f\"{label}解析超过 {POLL_TIMEOUT_S // 60} 分钟还没完（batch {batch_id}）。\"\n                \"任务可能还在跑，稍后可以重试这一步。\"\n            )\n        if deadline is not None and now > deadline:\n            # 整次运行的预算到了。**这不是这一条的错**，说清楚，别让用户以为文件有问题。\n            raise RuntimeError(\n                f\"{label}还没解析完，而这次运行的时间预算（{RUN_BUDGET_S // 60} 分钟）已经用完\"\n                f\"（batch {batch_id}）。任务在 MinerU 那边还在跑，稍后重试这一步即可。\"\n            )\n        time.sleep(POLL_INTERVAL_S)\n        poll = http_json(\n            f\"{BASE_URL}/api/v4/extract-results/batch/{batch_id}\",\n            headers={\"Authorization\": f\"Bearer {TOKEN}\"},\n        )\n        if poll.get(\"code\") != 0:\n            raise RuntimeError(f\"MinerU 查询被拒：{poll.get('msg') or poll}\")\n        results = (poll.get(\"data\") or {}).get(\"extract_result\") or []\n        if not results:\n            continue\n        first = results[0]\n        state = first.get(\"state\") or \"\"\n        if state == \"done\":\n            zip_url = first.get(\"full_zip_url\") or \"\"\n            if not zip_url:\n                raise RuntimeError(f\"{label}解析完成了，却没给结果包地址。\")\n            break\n        if state == \"failed\":\n            raise RuntimeError(f\"{label}解析失败：{first.get('err_msg') or '没给原因'}\")\n\n    # ── 下载结果包并解压 ──\n    zip_path = out_dir / \"result.zip\"\n    try:\n        download(zip_url, zip_path)\n        safe_extract(zip_path, out_dir)\n    finally:\n        try:\n            zip_path.unlink()\n        except Exception:\n            pass\n\n    md = out_dir / \"full.md\"\n    if not md.is_file():\n        raise RuntimeError(f\"{label}的结果包里没有 full.md。落点里是：{[p.name for p in out_dir.iterdir()][:20]}\")\n\n    images_dir = out_dir / \"images\"\n    image_count = len([p for p in images_dir.iterdir() if p.is_file()]) if images_dir.is_dir() else 0\n    chars = len(md.read_text(encoding=\"utf-8\", errors=\"replace\"))\n    return {\n        \"itemId\": item_id,\n        \"itemTitle\": (item or {}).get(\"itemTitle\") or \"\",\n        \"mdPath\": str(md),\n        \"relMdPath\": md.relative_to(Path.cwd()).as_posix(),\n        \"imageCount\": image_count,\n        \"chars\": chars,\n    }\n\n\ndef main():\n    raw = sys.stdin.readline()\n    try:\n        payload = json.loads(raw) if raw.strip() else {}\n    except Exception:\n        die(\"交给这一步的载荷不是合法 JSON，没法知道要转哪一条。\")\n        return\n\n    # 载荷可能是单条（触发器的 items 只有一条时就是扁平的那个对象），也可能外面裹着\n    # 「trigger」 / 「data」（code 节点不填 Input JSON 时收到的是整个 data 上下文）。\n    scope = payload\n    if isinstance(payload, dict):\n        for key in (\"trigger\", \"data\", \"item\"):\n            inner = payload.get(key)\n            if isinstance(inner, dict) and (inner.get(\"itemId\") or inner.get(\"items\")):\n                scope = inner\n                break\n\n    # ⚠️ **要办的是全部条目，不是第一条。** 触发器有合并窗口（默认 2 秒），下载又是\n    # 并发跑的 —— 两篇同时下完就攒在同一个窗口里。只取第一条的话，另一篇**再也没人转**，\n    # 而且不报错。这正是 「automationPayload.ts」 的 「TriggerPayloadFacts.items」 存在的理由。\n    items = []\n    if isinstance(scope, dict):\n        raw_items = scope.get(\"items\")\n        if isinstance(raw_items, list) and raw_items:\n            items = [it for it in raw_items if isinstance(it, dict)]\n        elif scope.get(\"itemId\"):\n            items = [scope]\n\n    if not items:\n        die(\"载荷里没有 itemId / items，没法知道要转哪份文档。\")\n        return\n\n    # imported 事件也会覆盖 DOI/arXiv 占位记录；那类记录此刻没有本地文件，应留给\n    # 下载完成事件稍后再转，而不是把正常导入报成转录失败。\n    ready = [it for it in items if source_of(it)]\n    if not ready:\n        emit(\"本次导入尚无本地源文件，等待文件到位后再由下载事件转录。\",\n             outputs={\"items\": [], \"skipped\": len(items), \"failed\": []})\n        return\n\n    # ── 只留 PDF / Word，其余的挑出来放一边 ──\n    todo = []\n    skipped = []\n    for it in ready:\n        ext = Path(source_of(it)).suffix.lower()\n        if ext in SUPPORTED_EXTS:\n            todo.append(it)\n        else:\n            skipped.append(f\"{(it or {}).get('itemTitle') or (it or {}).get('itemId') or '?'}（{ext or '无扩展名'}）\")\n\n    if not todo:\n        # **这是成功，不是失败。** 拖进来的这批里没有要转的东西，说清楚就行。\n        emit(\n            \"这批文件里没有 PDF 或 Word，不转录：\" + \"、\".join(skipped),\n            outputs={\"items\": [], \"skipped\": skipped, \"failed\": []},\n        )\n        return\n\n    if not TOKEN and not is_manual_run(payload):\n        # **自动叫起来的**（导入 / 下载事件）：没配 token 就跳过，不算失败。\n        # 用户多半只是没打算用 MinerU —— 每导入一篇就报一次错只会刷屏。\n        emit(\n            \"未配置 MinerU API token，已跳过自动转录（\" + str(len(todo)) + \" 个文件）。\"\n            \"要用的话去 https://mineru.net 的「API 管理」建一个，\"\n            \"填到这个节点代码顶上的 TOKEN_INLINE 那一行（或设环境变量 MINERU_TOKEN）。\",\n            outputs={\"items\": [], \"skipped\": len(todo), \"failed\": [], \"noToken\": True},\n        )\n        return\n\n    if not TOKEN:\n        # **手动点的**：用户正等着结果，必须明确报错。\n        # **不复用轻量那条免 token 的路**：它不给配图，而挂着断图的转录看起来是成功的。\n        die(\n            \"没有 MinerU 的 API token。去 https://mineru.net 的「API 管理」建一个，\"\n            \"然后打开这个节点的代码编辑器，填到顶上的 TOKEN_INLINE 那一行里\"\n            \"（或者设成环境变量 MINERU_TOKEN，设完要重启应用）。\"\n        )\n        return\n\n    # 逐条转：**一条失败不停下**。剩下几条照转，最后把失败原因一并报出来 ——\n    # 「两篇一起下来，其中一篇是扫描件抽不出正文」时，另一篇不该跟着遭殃。\n    ok = []\n    failed = []\n    deadline = time.time() + RUN_BUDGET_S\n    for i, item in enumerate(todo, start=1):\n        if time.time() > deadline:\n            # 预算用完了,后面这些**连试都不要试** —— 试了也只会把节点拖到被杀，\n            # 连前面转好的一起赔进去。\n            failed.append(f\"（{i}）这次运行的时间预算用完了，这一条没轮到；稍后重试这一步。\")\n            continue\n        try:\n            ok.append(transcribe_one(item, i if len(todo) > 1 else 0, deadline))\n        except Exception as err:\n            # ⚠️ **不能只接 RuntimeError。** 上面那些 helper 确实都转成了 RuntimeError，\n            # 可 「zipfile.BadZipFile」（结果包坏了）、「OSError」（磁盘满、Windows 路径过长、\n            # 权限）这些是**在它们之外**抛的 —— 漏出去一个，整批就当场死掉：\n            # 已经转好的那几条连同产物一起丢，而报出来的是一段 Python 栈。\n            failed.append(f\"（{i}）{err}\")\n\n    if not ok:\n        # 全失败 = 这一步失败（code 节点：非零退出）。\n        die(\"一条都没转成。\" + (\"；\".join(failed) if failed else \"\"))\n        return\n\n    lines = [\n        f\"已用 MinerU 转出 {len(ok)} 份 Markdown\"\n        + (f\"，另有 {len(failed)} 条没转成。\" if failed else \"。\"),\n    ]\n    if skipped:\n        lines.append(f\"跳过 {len(skipped)} 个非 PDF/Word 的文件：\" + \"、\".join(skipped))\n    if failed:\n        lines.append(\"没转成的：\")\n        lines.extend(failed)\n\n    emit(\n        chr(10).join(lines),\n        # 「adoptMarkdown」 是给**宿主**看的那一项：跑完由主进程逐条挂回资料库\n        # （见 「orchestration/adoptFromCode.ts」）。「items」 保留给下游节点当依据。\n        outputs={\n            \"items\": ok,\n            \"failed\": failed,\n            \"skipped\": skipped,\n            \"adoptMarkdown\": [{\"itemId\": r[\"itemId\"], \"path\": r[\"mdPath\"]} for r in ok],\n        },\n        artifacts=[\n            {\"kind\": \"file\", \"uri\": r[\"relMdPath\"], \"name\": \"full.md\", \"mimeType\": \"text/markdown\"}\n            for r in ok\n        ],\n    )\n\n\nif __name__ == \"__main__\":\n    main()\n",
+            "timeoutMs": 1800000
+          },
+          "position": {
+            "x": 0,
+            "y": 116
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_auto-convert-trigger__auto-convert-code",
+          "from": "auto-convert-trigger",
+          "to": "auto-convert-code"
+        }
+      ],
+      "trigger": "event",
+      "builtin": false,
+      "updatedAt": 0
+    }
+  ]
+}

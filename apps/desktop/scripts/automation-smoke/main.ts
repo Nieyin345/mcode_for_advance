@@ -32,7 +32,7 @@ import { withAutomationOrigin } from "@main/orchestration/automationEventOrigin.
  *
  * Run: scripts/automation-smoke/run.sh
  */
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
 import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, type HookEvent } from "@contracts/hook";
@@ -77,12 +77,27 @@ import { approveWorkflowRevision, requireWorkflowReview, workflowRevision } from
 import type { AutomationFactsSeed } from "@main/orchestration/automationStatus.js";
 import { builtinTriggerManifest } from "@main/orchestration/nodeTypes.js";
 import {
-  AUTO_CONVERT_WORKFLOW_ID,
-  AUTO_DOWNLOAD_WORKFLOW_ID,
   WATCH_WORKFLOW_ID,
   WATCH_TRIGGER_NODE_ID,
   getBuiltinWorkflow,
 } from "@main/orchestration/builtins.js";
+
+/**
+ * 被摘出去的两条自动化(`wf_auto_download` / `wf_auto_convert`)现在住在
+ * `resources/presets/workflows.json` —— release 不内置,用户按需导入。这一套仍然要
+ * 盯它们图上的东西(脚本正文、边、触发器),所以从那份预置文件读。
+ *
+ * ⚠️ 读的是**仓库里的预置** —— 摘出去**不等于内容消失**,只是不再随安装包走。这条
+ * 路径变了(比如以后预置挪窝),读不到会抛,不会静默跳过一整套断言。
+ */
+const PRESET_WORKFLOWS: WorkflowDoc[] = (
+  JSON.parse(readFileSync(join(process.cwd(), "resources", "presets", "workflows.json"), "utf8")) as {
+    workflows: WorkflowDoc[];
+  }
+).workflows;
+const presetById = (id: string): WorkflowDoc | undefined => PRESET_WORKFLOWS.find((w) => w.id === id);
+const AUTO_DOWNLOAD_WORKFLOW_ID = "wf_auto_download";
+const AUTO_CONVERT_WORKFLOW_ID = "wf_auto_convert";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
 import { initDb, getDb } from "@main/store/db.js";
 import { CollectionRepo, LibraryRepo, ProjectRepo, SessionRepo, SettingRepo, WorkflowRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
@@ -1770,14 +1785,17 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   // ⚠️ **守望不在这一轮里**,而这不是漏了:它的触发器**故意**是"项目没填"的
   // (见 `WATCH_NODES` 那段注释)—— 起跑时由 `startWatch` 把发起会话的项目写进去,
   // 在那之前它本来就该是"挂不上"的。硬把它塞进来只会逼着模板去编一个项目 id。
+  //
+  // 这两条自动化**已从内置摘出**(2026-10-10,release 不内置、用户按需导入),所以
+  // 从**预置文件**读 —— 内容没消失,只是换了住处。判据不变:预置里的图必须过存盘那一关。
   for (const [id, what] of [
     [AUTO_DOWNLOAD_WORKFLOW_ID, "导入后取原文"],
     [AUTO_CONVERT_WORKFLOW_ID, "下载完自动转 Markdown"],
   ] as const) {
-    const doc = getBuiltinWorkflow(id);
-    check(`内置工作流「${what}」还在`, doc !== undefined, id);
+    const doc = presetById(id);
+    check(`预置工作流「${what}」还在 presets/workflows.json 里`, doc !== undefined, id);
     if (!doc) continue;
-    // `deriveTrigger` 就是**存盘那一关**跑的那个函数 —— 它拒了就说明这份内置图在界面上
+    // `deriveTrigger` 就是**存盘那一关**跑的那个函数 —— 它拒了就说明这份预置图在界面上
     // 一存就报错;它过了才谈得上"能跑"。
     const derived = deriveTrigger(doc, types);
     check(`「${what}」的触发器解得开`, derived.ok, derived.ok ? undefined : derived.error);
@@ -1789,14 +1807,14 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   check("内置工作流「守望」还在", getBuiltinWorkflow(WATCH_WORKFLOW_ID) !== undefined);
 
   // 本地导入与后续下载都由配置的自动化接手；无本地文件的占位项由脚本跳过。
-  const convertDoc = getBuiltinWorkflow(AUTO_CONVERT_WORKFLOW_ID);
+  const convertDoc = presetById(AUTO_CONVERT_WORKFLOW_ID);
   const convertTrigger = convertDoc?.nodes.find((n) => n.type === "mcode.trigger");
   const events = String(convertTrigger?.params[NODE_TRIGGER_EVENTS_PARAM_KEY] ?? "");
   eq("在线转录监听文件导入与下载完成", events, "library.item.imported,library.item.downloaded");
   check("在线转录的触发器默认开着(自动转录靠它)", triggerEnabledOf(convertTrigger?.params ?? {}), convertTrigger?.params);
   // 「文献导入」**只手动跑**(2026-09-30):正门是右键表单(`runWithTarget` 不看开关),
   // 开着的话每导入一个文件就空跑一次 —— 连它自己收进库的文件也会再叫醒它。
-  const importTrigger = getBuiltinWorkflow(AUTO_DOWNLOAD_WORKFLOW_ID)?.nodes.find((n) => n.type === "mcode.trigger");
+  const importTrigger = presetById(AUTO_DOWNLOAD_WORKFLOW_ID)?.nodes.find((n) => n.type === "mcode.trigger");
   eq("「文献导入」的触发器默认关着(不监听导入事件)", importTrigger?.params[NODE_TRIGGER_ENABLED_PARAM_KEY], false);
   // 项目**故意留空** —— 它做的事(转录、挂回库)拿的都是绝对路径,不需要工作目录。
   // 「没绑项目」在这个仓里**一直**是空串这一个编码(守望那块也是),`buildTriggers`
@@ -1843,7 +1861,7 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
 console.log("\n「下载完自动转 Markdown」· 触发 → code(MinerU + 报出挂回)");
 
 {
-  const doc = getBuiltinWorkflow(AUTO_CONVERT_WORKFLOW_ID);
+  const doc = presetById(AUTO_CONVERT_WORKFLOW_ID);
   const codeNode = doc?.nodes.find((n) => n.type === "mcode.code");
   const agentNode = doc?.nodes.find((n) => n.type === "mcode.agent");
 
@@ -1931,7 +1949,7 @@ console.log("\n内置自动化的指令 ↔ 载荷(拿真事件对账)");
   check("★ 导入载荷不提「类型」", !impText.includes("类型"), impText);
 
   const instrOf = (id: string): string => {
-    const agent = getBuiltinWorkflow(id)?.nodes.find((n) => n.type === "mcode.agent");
+    const agent = presetById(id)?.nodes.find((n) => n.type === "mcode.agent");
     return String(agent?.params["instruction"] ?? "");
   };
   const dlInstr = instrOf(AUTO_DOWNLOAD_WORKFLOW_ID);

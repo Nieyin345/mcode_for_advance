@@ -466,12 +466,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   //    "N 个文件已恢复" breadcrumb. ──
   ipcMain.handle(IPC.CLAUDE_REWIND_TURN, async (_evt, raw) => {
     const input = RewindTurnSchema.parse(raw);
-    const restored = await runtimeManager.rewindTurn(
+    const { restored, failed } = await runtimeManager.rewindTurn(
       input.sessionId,
       input.files,
       input.targetFiles,
     );
-    return { restored };
+    return { restored, failed };
   });
 
   // ── Settings → 子代理：保存自定义子代理列表（Claude provider 专用，见

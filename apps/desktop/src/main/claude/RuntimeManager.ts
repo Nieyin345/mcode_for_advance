@@ -1766,7 +1766,7 @@ class RuntimeManager {
    *  in place — for BOTH latest-turn and historical rewinds. The card is
    *  never removed: it stays in the stream as a visible trace that the
    *  user rolled this turn back. */
-  async rewindTurn(sessionId: string, files: TurnFileEntry[], targetFiles: string[]): Promise<string[]> {
+  async rewindTurn(sessionId: string, files: TurnFileEntry[], targetFiles: string[]): Promise<{ restored: string[]; failed: string[] }> {
     const rt = this.sessions.get(sessionId);
     // Resolve the cwd: prefer the live runtime's lastCwd (set on the first
     // sendTurn). When that's missing - the common case for the "会话重开后
@@ -1784,9 +1784,9 @@ class RuntimeManager {
       })();
     if (!cwd) {
       log.warn(`rewindTurn: cwd not available for session ${sessionId} (no runtime, no project?)`);
-      return [];
+      return { restored: [], failed: [] };
     }
-    const restored = await restoreFiles(cwd, files);
+    const { restored, failed } = await restoreFiles(cwd, files);
     // After a successful restore, drop the in-memory snapshot ONLY when
     // the rewind targeted exactly its contents (i.e. the latest live
     // turn). `hasPaths` is the authoritative check: the live snapshot
@@ -1811,10 +1811,11 @@ class RuntimeManager {
         type: "turn.rewound",
         sessionId,
         files: restored,
+        failedFiles: failed,
         targetFiles,
       } satisfies RuntimeEvent,
     });
-    return restored;
+    return { restored, failed };
   }
 
   /** Resolve an approval request from the renderer. On success, broadcast the

@@ -151,6 +151,11 @@ console.log("C. per-message caching");
   const cAt = card.indexOf("const handleRewind");
   const cBody = card.slice(cAt, card.indexOf("\n  };", cAt));
   check("★ 撤销失败时卡片报出来(不再无条件画「已撤销 ✓」)", cAt >= 0 && /catch\s*\([^)]*\)\s*\{[\s\S]*?useToastStore[\s\S]*?push\(/.test(cBody) && cBody.includes("store.toast.rewindFailed"), cBody.slice(0, 300));
+  // ★ **部分还原失败要说出来**(2026-10-10)。主进程可能只还原一半(某文件写不进 /
+  // 路径越界被拒);store 现在把 `{restored, failed}` 一起交回来,卡片必须读 `failed`
+  // 并报一句 —— 否则画着「已撤销 ✓」而用户以为整轮都回滚了(破坏性动作,他不会再去看)。
+  check("★ store 的 rewindTurn 把失败列表交回来(不是只报成功数)", at >= 0 && /return res;/.test(body) && !/await api\.claude\.rewindTurn\([\s\S]{0,120}\n\s*\};/.test(body));
+  check("★ 卡片读 failed 并报「N 个没还原」", cAt >= 0 && /const \{ failed \} = await rewindTurn/.test(cBody) && /failed\.length > 0/.test(cBody) && cBody.includes("store.toast.rewindPartial"), cBody.slice(0, 400));
 }
 
 /**

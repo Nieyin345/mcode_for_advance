@@ -163,8 +163,12 @@ export const CLAUDE_PERMISSION_MODES = [
  *
  * ⚠️ 会话上那个字段(`WorkflowIdSchema`)是**开放字符串**,不是这个联合类型:用户可以
  * 自建工作流(`wf_` 前缀)。这个联合类型只用来约束"内置的那几个"。
+ *
+ * ⚠️ 自 2026-10-10 可选内容外置后,这份列表**只剩 `default`** —— 五个对话模式
+ * (检索/精读/写作/评审/代码)不再内置,用户从 `resources/presets/workflows.json`
+ * 导入。`default` 留着:它代表"不追加任何流程",是模式下拉里恒在的落点。
  */
-export const BUILTIN_WORKFLOW_IDS = ["default", "search", "read", "write", "review", "code"] as const;
+export const BUILTIN_WORKFLOW_IDS = ["default"] as const;
 export type BuiltinWorkflowId = (typeof BUILTIN_WORKFLOW_IDS)[number];
 
 /**
@@ -532,9 +536,12 @@ export interface TurnRewoundEvent {
   type: "turn.rewound";
   sessionId: string;
   /** Paths that were successfully restored (subset of the requested
-   *  files; failed paths are logged in main but not surfaced here
-   *  beyond the implicit "not in this list"). */
+   *  files). */
   files: string[];
+  /** Paths that did NOT restore (write failed / refused for path safety).
+   *  Surfaced so the card can say「N 个没还原」instead of silently showing
+   *  a partial rewind as if it were whole. Empty on a clean rewind. */
+  failedFiles: string[];
   /** The ORIGINAL set of paths the rewind targeted (before any were
    *  dropped due to failure). Always present — the renderer matches the
    *  `turn-files` block by this path set to mark it `rewound`. */

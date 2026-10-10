@@ -1820,7 +1820,7 @@ export interface SessionState {
    *  `turn.rewound` event carries it; the handler then marks the matching
    *  card `rewound: true` in place — for both latest-turn and historical
    *  rewinds. The card is never removed, so the stream keeps a trace. */
-  rewindTurn: (files: TurnFileEntry[], targetFiles: string[]) => Promise<void>;
+  rewindTurn: (files: TurnFileEntry[], targetFiles: string[]) => Promise<{ restored: string[]; failed: string[] }>;
 
   /** Reveal a file in the IDE right panel's file tree: switches the panel to
    *  the files tab, bumps ideFocusNonce (App's effect opens the panel if
@@ -7931,18 +7931,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   rewindTurn: async (files, targetFiles) => {
     const sessionId = get().activeSessionId;
-    if (!sessionId) return;
+    if (!sessionId) return { restored: [], failed: [] };
     if (files.length === 0) {
       // Nothing to rewind — defensive (UI shouldn't allow the click).
-      return;
+      return { restored: [], failed: [] };
     }
     try {
-      await api.claude.rewindTurn({ sessionId, files, targetFiles });
+      const res = await api.claude.rewindTurn({ sessionId, files, targetFiles });
       // Don't optimistically clear turnFiles — wait for the `turn.rewound`
       // event from main so the UI only updates when files are actually
-      // back on disk. If the IPC call returns successfully but main fails
-      // partway through restore, the (smaller) restored list still
-      // arrives via the event and we clear from there.
+      // back on disk. The `failed` list is surfaced by the caller (card)
+      // so a partial rewind is never shown as if it were whole.
+      return res;
     } catch (err) {
       // **别吞掉。** `TurnFilesCard` 是 `await rewindTurn(...)` 之后无条件
       // `setDone(true)` —— 把「已撤销 ✓」画在卡上。从前这里只 `console.error`、
