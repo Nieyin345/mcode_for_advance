@@ -242,6 +242,8 @@ export const en = {
   "customUi.editor.panelHtmlPlaceholder": "<h1>Hello</h1>\n<script>\n  mcode.context().then(c => console.log(c));\n</script>",
   "customUi.editor.panelSdkHint": "Write HTML (with <script>/<style> if you like). It runs in an isolated sandbox with theme-aware base styles (color variables --mc-surface / --mc-content / --mc-accent …). Scripts talk to the app through the global **mcode**; every call returns a Promise:\n**context()** current project / chat / theme; **prompt(text)** put text in the composer; **ask(prompt, opts)** one-shot model call, returns text; **automations()** / **runAutomation(id)** list / run automations; **files.read / list / write(path)** project files (relative to the project root); **library.list / search / read** the library; **storage.get / set / remove** the panel's own small store; **copy / openUrl / openFile / shell / toast**; **api.call(method, input)** call any Mcode main-process method (e.g. `library.saveNote`, `session.list`, `git.log`) — read-only ones return directly, side-effecting ones pop a confirm; **on('theme' | 'context', fn)** subscribe to changes.",
   "customUi.editor.panelInsertExample": "Insert example",
+  "customUi.editor.panelOpenEditor": "Open in editor",
+  "customUi.editor.panelHtmlLiveHint": "Edits write back to the draft live; closing this window leaves the draft as is.",
   "customUi.editor.panelPreview": "Preview",
   "customUi.editor.panelPreviewing": "Preview (unsaved draft; click Preview again to reload with the latest content)",
   "customUi.editor.panelPreviewSample":

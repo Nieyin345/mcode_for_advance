@@ -117,7 +117,7 @@ function PanelDialog({ panel, onClose }: { panel: CustomUiPanelOpen; onClose: ()
             </button>
           </div>
           <div className="min-h-0 flex-1" data-testid="custom-ui-panel">
-            <PanelFrame item={panel.item} target={panel.target} reloadKey={reloadKey} />
+            <PanelFrame item={panel.item} target={panel.target} reloadKey={reloadKey} probeMode="float" />
           </div>
           <Dialog.Close className="top-2.5" />
         </Dialog.Popup>

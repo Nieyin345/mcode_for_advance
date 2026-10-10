@@ -167,6 +167,31 @@ export function isPanelRequest(d: unknown): d is PanelRequest {
   return r.__mcode === 1 && typeof r.id === "number" && Number.isFinite(r.id) && typeof r.method === "string";
 }
 
+/**
+ * 面板对「读回」probe 的回话(报告 E10)。SDK 收到 `probe` 事件后自己读 `document.body`
+ * 的文本与整份 HTML,截到上限,再带 `probeId` 回给宿主。宿主侧 `PanelFrame` 按
+ * `probeId` 配对,凑不齐(超时 / 面板没加载好)**如实说**,不静默。
+ */
+export interface PanelProbeReply {
+  __mcode: 1;
+  /** 对应请求里的 probeId(SDK 原样带回)。 */
+  probe: string;
+  /** `document.body.innerText`(渲染出来的可见文字),已按上限截断。 */
+  text: string;
+  /** `document.documentElement.outerHTML`,已按上限截断。 */
+  html: string;
+  /** 截断前的**完整**字符数 —— 宿主据此说明「截了多少」。 */
+  textLength: number;
+  htmlLength: number;
+  url: string;
+}
+
+export function isPanelProbeReply(d: unknown): d is PanelProbeReply {
+  if (!d || typeof d !== "object") return false;
+  const r = d as Partial<PanelProbeReply>;
+  return r.__mcode === 1 && typeof r.probe === "string" && typeof r.text === "string" && typeof r.html === "string";
+}
+
 /** 主题:颜色是 CSS 颜色串(`rgb(…)`),键名去掉前缀 —— SDK 设成 `--mc-<键>`。 */
 export interface PanelTheme {
   mode: "light" | "dark";
@@ -238,6 +263,22 @@ function applyTheme(t){
   root.setAttribute("data-theme", t.mode === "dark" ? "dark" : "light");
   root.style.colorScheme = t.mode === "dark" ? "dark" : "light";
 }
+/* 「读回」(报告 E10):宿主发一个 probe 事件,面板把此刻**渲染出来的**文本与 HTML 回给它。
+   iframe 是 opaque origin(没有 allow-same-origin),外面的窗口读不到它的 DOM —— 只能由
+   面板**自己**读,所以这段必须活在 SDK 里。截到上限再回,免得一个大面板把整坨 DOM 传出去;
+   同时把**完整长度**一并回,宿主据此说明「截了多少」。 */
+function probeReply(data){
+  var id = data && data.probeId;
+  var text = "", html = "", textLen = 0, htmlLen = 0;
+  try { text = (document.body && document.body.innerText) || ""; } catch (e) { text = ""; }
+  try { html = (document.documentElement && document.documentElement.outerHTML) || ""; } catch (e) { html = ""; }
+  textLen = text.length; htmlLen = html.length;
+  if (textLen > ${PANEL_PROBE_TEXT_MAX}) text = text.slice(0, ${PANEL_PROBE_TEXT_MAX});
+  if (htmlLen > ${PANEL_PROBE_HTML_MAX}) html = html.slice(0, ${PANEL_PROBE_HTML_MAX});
+  try {
+    parent.postMessage({ __mcode: 1, probe: id, text: text, html: html, textLength: textLen, htmlLength: htmlLen, url: String(location.href || "") }, "*");
+  } catch (e) { /* 宿主已经没了 */ }
+}
 window.addEventListener("message", function(e){
   if (e.source !== parent) return;
   var d = e.data;
@@ -251,6 +292,7 @@ window.addEventListener("message", function(e){
   }
   if (typeof d.event === "string") {
     if (d.event === "theme") applyTheme(d.data);
+    if (d.event === "probe") probeReply(d.data);
     (listeners[d.event] || []).slice().forEach(function(fn){ try { fn(d.data); } catch (err) { console.error(err); } });
   }
 });

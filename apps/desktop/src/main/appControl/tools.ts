@@ -254,6 +254,9 @@ function clipLine(s: string, n: number): string {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
+/** `read_panel` 一次给 agent 看的面板可见文本上限(与 renderResult 的尺度一致)。 */
+const PANEL_TEXT_SHOWN = 40_000;
+
 /* ───────────────────────── 审批 ───────────────────────── */
 
 const BYPASS_MODES = new Set(["bypassPermissions", "full-access"]);
@@ -408,6 +411,8 @@ const UI_ACTIONS = [
   "notify",
   "set_pref",
   "interrupt_session",
+  "read_panel",
+  "open_panel",
 ] as const;
 
 /** 只读 / 界面类工具名(引擎侧若要按名字预放行可以用;真正的闸门在 handler 里)。 */
@@ -671,6 +676,11 @@ export function appMcpTools(): McpToolSpec[] {
         "- set_pref {key, value}:改界面偏好 —— locale(zh/en)、themeStyle(classic/sketch)、displayMode、chatFontSize、" +
         "chatDensity、workflowId(输入框的工作流)、permissionMode(输入框的权限模式,高风险)\n" +
         "- interrupt_session {session_id}:停止某个正在运行的对话(需批准)\n" +
+        "- read_panel {item_id?}:读回一个**正在渲染的自定义面板**的渲染结果(可见文本 + HTML)。面板在沙箱 iframe 里,\n" +
+        "  常规办法看不到它渲染成什么样;这条让 agent 能自验扩展 UI。item_id 省略 = 读当前在意的那个(浮窗 > 设置页预览 > 右栏页签)。\n" +
+        "  要读**草稿**(还没保存)的面板:先在设置页点「预览」再读。没有面板挂着时如实报错并列出可读的。\n" +
+        "- open_panel {item_id}:打开一个**已保存的**自定义面板(像用户右键那样弹浮窗),喂的是一份按挂载位造的**样例目标**。\n" +
+        "  典型用法:open_panel → read_panel,开一个立即看它渲染成什么样(agent 自验扩展 UI 的闭环)。\n" +
         "界面类操作自动执行;set_pref 需批准,改 permissionMode 每次都要批准。",
       inputSchema: {
         action: z.enum(UI_ACTIONS),
@@ -688,6 +698,7 @@ export function appMcpTools(): McpToolSpec[] {
         kind: z.enum(["info", "warning", "error"]).optional(),
         key: z.enum(["locale", "themeStyle", "displayMode", "chatFontSize", "chatDensity", "workflowId", "permissionMode"]).optional(),
         value: z.union([z.string(), z.number()]).optional(),
+        item_id: z.string().optional().describe("read_panel:要读的面板条目 id;省略 = 当前最该读的那个"),
       },
       handler: async () => fail("内部错误:app_ui 必须经 invokeAppTool 调用"),
     },
@@ -756,6 +767,7 @@ type UiArgs = {
   kind?: "info" | "warning" | "error";
   key?: "locale" | "themeStyle" | "displayMode" | "chatFontSize" | "chatDensity" | "workflowId" | "permissionMode";
   value?: string | number;
+  item_id?: string;
 };
 
 function need<T>(v: T | undefined, name: string): T {
@@ -797,6 +809,34 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext): Promise<ToolResult>
       const denied = await gateAppAction(ctx, "write", "ui.interrupt_session", { sessionId }, `停止对话 ${sessionId} 正在运行的那一轮`);
       if (denied) return fail(denied);
       return uiResult(await ui({ op: "interrupt", sessionId }), "已停止。");
+    }
+    case "read_panel": {
+      // 只读(读渲染结果,不改任何东西)—— 不问批准,与 app_ui_state 同一档。
+      const reply = await ui({ op: "read_panel", ...(a.item_id ? { itemId: a.item_id } : {}) });
+      if (!reply.ok) return fail(reply.error ?? "读面板失败");
+      const d = (reply.data ?? {}) as {
+        label?: string; mode?: string; text?: string; textLength?: number; htmlLength?: number; html?: string;
+      };
+      // 面板文本上限(契约 PANEL_PROBE_TEXT_MAX)比 agent 一次该看的量大得多 —— 这里再按
+      // 与 renderResult 同一个尺度(40k)截一道,并说清完整长度,免得一个渲染出长列表的面板
+      // 把上下文撑爆。
+      const FULL = d.text ?? "";
+      const textTrunc = FULL.length > PANEL_TEXT_SHOWN;
+      const shown = textTrunc ? FULL.slice(0, PANEL_TEXT_SHOWN) : FULL;
+      const head =
+        `面板「${d.label ?? "?"}」(${d.mode ?? "?"})渲染结果:\n` +
+        `— 可见文本${textTrunc ? `(已截断:完整 ${FULL.length} 字符,这里显示前 ${PANEL_TEXT_SHOWN})` : ""} —\n` +
+        `${shown.trim() ? shown : "(没有可见文本)"}`;
+      // HTML 只在**确实想看结构**时才回一大坨:文本已经给了绝大多数答案,默认不塞 HTML。
+      // 但"文本为空、多半是还没渲染出来"时,HTML 能告诉 agent 是空壳还是 DOM 在但没文字。
+      const tail = d.html && d.html.trim() ? `\n\n— HTML(共 ${d.htmlLength} 字符) —\n${d.html.slice(0, 20_000)}${(d.htmlLength ?? 0) > 20_000 ? "…(已截断)" : ""}` : "";
+      return text(head + tail);
+    }
+    case "open_panel": {
+      // 打开一个已保存的面板(纯界面动作,与 `panel` 同一档,不问批准)。它跑起来后
+      // 若调有副作用的 api.call,那道确认闸在渲染端 —— 这里只负责"开"。
+      const reply = await ui({ op: "open_panel", itemId: need(a.item_id, "item_id") });
+      return uiResult(reply, "面板已打开;用 read_panel 读它的渲染结果。");
     }
   }
 }

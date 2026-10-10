@@ -175,7 +175,7 @@ function PanelTab({ item, title, target }: { item: CustomUiItem; title: string; 
         }
       />
       <div className="min-h-0 flex-1">
-        <PanelFrame item={item} target={target} reloadKey={reloadKey} />
+        <PanelFrame item={item} target={target} reloadKey={reloadKey} probeMode="tab" />
       </div>
     </div>
   );

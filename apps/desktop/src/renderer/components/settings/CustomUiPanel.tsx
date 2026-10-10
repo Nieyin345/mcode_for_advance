@@ -15,7 +15,7 @@
  * 配置整份存一个设置键(见 `@contracts/customUi`)。每一次改动都是「算出下一份 → save」,
  * 不原地改 store 里那一份(选择器要稳定引用)。
  */
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import {
   CUSTOM_UI_ICONS,
   ACTIONS_BY_SLOT,
@@ -57,6 +57,7 @@ import {
   IconAdjustmentsHorizontal,
   IconArrowDown,
   IconArrowUp,
+  IconCode,
   IconPencil,
   IconPlus,
   IconTemplate,
@@ -67,6 +68,12 @@ import { PanelFrame } from "../customUi/PanelFrame.js";
 import { useWorkspaceTarget } from "../customUi/useWorkspaceTarget.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
+
+/** 面板 HTML 的大编辑器(Monaco)—— 懒加载,单独一个文件就是为了能切出独立 chunk
+ *  (Monaco 不许进设置页的静态图,见 `settings-lazy-smoke`)。 */
+const PanelHtmlDialog = lazy(async () => ({
+  default: (await import("./PanelHtmlDialog.js")).PanelHtmlDialog,
+}));
 
 const FIELD =
   "w-full rounded-md border border-edge bg-surface px-2.5 py-1.5 text-xs text-content outline-none focus:border-accent";
@@ -901,8 +908,12 @@ function ItemEditor({
     setPreview((prev) => ({ item: r.item, n: (prev?.n ?? 0) + 1 }));
   };
   const isPanel = draft.actionType === "panel";
+  // 面板 HTML 的大编辑器(Monaco,懒加载)。写一段带样式的完整 HTML 才需要它 ——
+  // 窄栏里那格 textarea 依然能直接敲短片段(见报告 E8)。
+  const [htmlEditorOpen, setHtmlEditorOpen] = useState(false);
 
   return (
+    <>
     <Dialog.Root
       open
       // 写面板代码时点到框外不关(一大段 HTML 说没就没);面板弹的确认框也在框外。
@@ -1299,13 +1310,17 @@ function ItemEditor({
                     <span className="ml-auto text-[0.8571em] tabular-nums text-content-subtle">
                       {draft.panelHtml.length.toLocaleString()} / {PANEL_HTML_MAX.toLocaleString()}
                     </span>
+                    <Button size="sm" variant="ghost" onClick={() => set("panelHtml", panelExampleHtml(locale))} data-testid="custom-ui-panel-example">
+                      {t("customUi.editor.panelInsertExample")}
+                    </Button>
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => set("panelHtml", panelExampleHtml(locale))}
-                      data-testid="custom-ui-panel-example"
+                      onClick={() => setHtmlEditorOpen(true)}
+                      data-testid="custom-ui-panel-open-editor"
                     >
-                      {t("customUi.editor.panelInsertExample")}
+                      <IconCode size={13} />
+                      {t("customUi.editor.panelOpenEditor")}
                     </Button>
                     <Button size="sm" variant="secondary" onClick={previewPanel} data-testid="custom-ui-panel-preview">
                       {t("customUi.editor.panelPreview")}
@@ -1361,7 +1376,7 @@ function ItemEditor({
                       </p>
                     )}
                     <div className="h-[360px]">
-                      <PanelFrame item={preview.item} target={previewTarget} reloadKey={preview.n} />
+                      <PanelFrame item={preview.item} target={previewTarget} reloadKey={preview.n} probeMode="preview" />
                     </div>
                   </div>
                 )}
@@ -1387,6 +1402,18 @@ function ItemEditor({
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+    {/* 面板 HTML 的大编辑器 —— 叠在编辑框上面一层(仓库里浮层叠浮层是常态:
+        CustomUiHost 的面板 + 确认框就是这么摞的)。关掉它不碰草稿。 */}
+    {htmlEditorOpen && (
+      <Suspense fallback={null}>
+        <PanelHtmlDialog
+          value={draft.panelHtml}
+          onChange={(v) => set("panelHtml", v)}
+          onClose={() => setHtmlEditorOpen(false)}
+        />
+      </Suspense>
+    )}
+    </>
   );
 }
 

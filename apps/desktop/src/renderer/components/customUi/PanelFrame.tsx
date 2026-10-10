@@ -17,17 +17,20 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { customUiLabel, templateVarsOf, type CustomUiItem, type CustomUiTarget } from "@contracts/customUi";
-import { buildPanelDocument, isPanelMethod, isPanelRequest } from "@contracts/customUiPanel";
+import { buildPanelDocument, isPanelMethod, isPanelProbeReply, isPanelRequest, PANEL_PROBE_TIMEOUT_MS, type PanelProbeReply } from "@contracts/customUiPanel";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { handlePanelCall, panelContextOf, readPanelTheme, type PanelHost } from "./panelBridge.js";
+import { registerPanelProbe, type PanelProbeHandle } from "./panelReadback.js";
 
 export interface PanelFrameProps {
   item: CustomUiItem;
   target: CustomUiTarget;
   /** 变了就整页重新加载(「重新加载」按钮)。 */
   reloadKey?: number;
+  /** 这个面板在哪儿渲染 —— 决定「读回」时它算不算首选(见 `panelReadback`)。 */
+  probeMode?: PanelProbeHandle["mode"];
 }
 
 /** 主窗口 → 面板的事件(`mcode.on(event, fn)` 收)。 */
@@ -39,7 +42,7 @@ function postEvent(frame: HTMLIFrameElement | null, event: string, data: unknown
   }
 }
 
-export function PanelFrame({ item, target, reloadKey = 0 }: PanelFrameProps) {
+export function PanelFrame({ item, target, reloadKey = 0, probeMode = "float" }: PanelFrameProps) {
   const { t, locale } = useI18n();
   const action = item.action.type === "panel" ? item.action : null;
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -52,10 +55,48 @@ export function PanelFrame({ item, target, reloadKey = 0 }: PanelFrameProps) {
     hostRef.current = action ? { item, action, target } : null;
   });
 
+  // 「读回」(报告 E10):在飞的一次性 probe,按 probeId 配对。回话由上面那个消息
+  // 处理器接(消息处理器只注册一次,得能拿到最新的 pending,所以用 ref)。
+  const pendingProbes = useRef<Map<string, { resolve: (r: PanelProbeReply) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
+  const probeSeq = useRef(0);
+  const probe = (): Promise<PanelProbeReply> => {
+    return new Promise<PanelProbeReply>((resolve, reject) => {
+      const win = frameRef.current?.contentWindow;
+      if (!win) {
+        reject(new Error("panel not mounted"));
+        return;
+      }
+      const probeId = `pb${++probeSeq.current}`;
+      const timer = setTimeout(() => {
+        pendingProbes.current.delete(probeId);
+        reject(new Error("panel did not answer"));
+      }, PANEL_PROBE_TIMEOUT_MS);
+      pendingProbes.current.set(probeId, { resolve, reject, timer });
+      try {
+        // 与 `context` / `theme` 事件同一条路:面板 SDK 认 `{__mcode:1, event, data}`。
+        win.postMessage({ __mcode: 1, event: "probe", data: { probeId } }, "*");
+      } catch (err) {
+        window.clearTimeout(timer);
+        pendingProbes.current.delete(probeId);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  };
+
   const enabled = action !== null && isElectron;
   const html = action?.html ?? "";
   const network = action?.network === true;
   const title = customUiLabel(item.label, locale);
+
+  // 挂载即把「读回」能力登记进注册表(agent 经 app_ui read_panel 找到它);卸载注销。
+  useEffect(() => {
+    if (!enabled) return;
+    const off = registerPanelProbe({ itemId: item.id, label: title, mode: probeMode, probe });
+    return off;
+    // `probe` 每次渲染都是新引用,但它只是薄薄一层、读的是 ref —— 不必进依赖;登记表要的
+    // 是"这一项在哪里"。item.id / probeMode 变了才需要重登记。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, item.id, probeMode, title]);
 
   // ── 挂载:HTML → mcode-panel:// 地址(内容寻址,同一份 HTML 地址不变)──
   useEffect(() => {
@@ -82,6 +123,16 @@ export function PanelFrame({ item, target, reloadKey = 0 }: PanelFrameProps) {
       const win = frameRef.current?.contentWindow;
       if (!win || e.source !== win) return;
       const data: unknown = e.data;
+      // 「读回」的回话(报告 E10):面板自己读了 DOM 回过来。先于请求那条分支认。
+      if (isPanelProbeReply(data)) {
+        const p = pendingProbes.current.get(data.probe);
+        if (p) {
+          pendingProbes.current.delete(data.probe);
+          window.clearTimeout(p.timer);
+          p.resolve(data);
+        }
+        return;
+      }
       if (!isPanelRequest(data)) return;
       const { id, method, params } = data;
       const reply = (msg: { ok: true; result: unknown } | { ok: false; error: string }) => {

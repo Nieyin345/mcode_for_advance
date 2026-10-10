@@ -56,17 +56,21 @@ import type { LibraryItem } from "@contracts/library";
 import {
   buildPanelDocument,
   isPanelMethod,
+  isPanelProbeReply,
   isPanelRequest,
   isSafePanelUrl,
   panelCsp,
   panelExampleHtml,
   PANEL_HTML_MAX,
   PANEL_METHODS,
+  PANEL_PROBE_HTML_MAX,
+  PANEL_PROBE_TEXT_MAX,
   PANEL_SDK_SOURCE,
 } from "@contracts/customUiPanel";
 import { forceShellConfirm, parseSettingsImport, SETTINGS_EXPORT_FORMAT } from "../../src/main/settings/settingsTransfer.js";
 import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem } from "../../src/main/customUi/targets.js";
 import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestration/automationPayload.js";
+import { listPanelProbes, pickPanelProbe, registerPanelProbe } from "../../src/renderer/components/customUi/panelReadback.js";
 import { LIT_IMPORT_PY } from "../../src/main/workflows/assets.js";
 import { spawnSync } from "node:child_process";
 
@@ -709,6 +713,30 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
     /data-testid="custom-ui-vars"/.test(panel) && /<details/.test(panel));
   check("★ 编辑器:vars 列表来自 TEMPLATE_VARS_BY_SLOT[draft.slot]",
     /TEMPLATE_VARS_BY_SLOT\[draft\.slot\]/.test(panel));
+
+  /* ── 报告 E8:面板 HTML 是一段**真字符串**、多行编辑,不逼作者手打 `\n` ──
+   *
+   * 面板 html 是 `customUi.config.v1` 里一个字段值,但设置页这块**不**把它当 JSON 串
+   * 展示 —— 它就是一格 `value={draft.panelHtml}` 的 `whitespace-pre` textarea(换行原样),
+   * 另配一扇 Monaco 大编辑器(懒加载)。这里钉两件事:值直连草稿、大编辑器入口在。 */
+  check("★ 面板 HTML 编辑框直连 draft.panelHtml(不是把 JSON 串塞进去)",
+    /value=\{draft\.panelHtml\}/.test(panel) && /onChange=\{\(e\) => set\("panelHtml", e\.target\.value\)\}/.test(panel));
+  check("★ 面板 HTML 编辑框保留换行(whitespace-pre)", /whitespace-pre/.test(panel));
+  check("★ 面板 HTML 有「在编辑器中打开」入口(Monaco 大编辑器)", /data-testid="custom-ui-panel-open-editor"/.test(panel));
+  check("★ 大编辑器走懒加载(Monaco 不进设置页静态图,settings-lazy-smoke 盯着)",
+    /lazy\(/.test(panel) && /import\("\.\/PanelHtmlDialog\.js"\)/.test(panel));
+
+  /* ── 报告 E10:渲染端的接线(读回 / 开面板)──
+   *
+   * `appControlHost` 没有无头套件(它 import store),这里钉源码:两个 op 都在,
+   * 读回走 `panelReadback` 的 `pickPanelProbe`(而不是又自己扫一遍 DOM)。 */
+  const host = stripComments(
+    readFileSync(join(process.cwd(), "src/renderer/lib/appControlHost.ts"), "utf8"),
+  );
+  check("★ appControlHost 认 read_panel 这个 op", /case "read_panel"/.test(host));
+  check("★ appControlHost 读回走注册表 pickPanelProbe(不另扫 DOM)", /pickPanelProbe/.test(host));
+  check("★ appControlHost 认 open_panel 这个 op", /case "open_panel"/.test(host));
+  check("★ open_panel 喂的是样例目标(不碰真实资料库目标)", /sampleTargetOf\(item\.slot\)/.test(host));
 }
 
 /* ── 面板 SDK 的 `api.call`:真的把 SDK 跑起来 ──
@@ -765,6 +793,114 @@ console.log("\n面板 SDK:api.call 解包");
   check("api.call 发出的请求带对了 method 与 input",
     env.sent.some((s) => s.method === "api.call"),
     env.sent);
+}
+
+/* ── 面板「读回」(报告 E10):SDK 收到 probe 事件后把渲染出来的文本 / HTML 回给宿主 ──
+ *
+ * 面板在沙箱 iframe(opaque origin),外面的窗口**读不到它的 DOM** —— 只能由面板自己读、
+ * 经 SDK 回话。这一条把那段 SDK 真的有、且真的去读 document 且真的按 probeId 回包钉住。 */
+console.log("\n面板 SDK:读回(probe)");
+{
+  const makeProbeEnv = () => {
+    const posted: Array<Record<string, unknown>> = [];
+    const listeners: Array<(e: unknown) => void> = [];
+    const win: Record<string, unknown> = {
+      addEventListener: (type: string, fn: (e: unknown) => void) => { if (type === "message") listeners.push(fn); },
+    };
+    const parentObj = { postMessage(msg: Record<string, unknown>) { posted.push(msg); } };
+    const doc = {
+      documentElement: {
+        style: { setProperty() {} },
+        setAttribute() {},
+        outerHTML: "<html><body><h1>Hello</h1></body></html>",
+      },
+      body: { innerText: "Hello world" },
+      addEventListener() {},
+    };
+    return { posted, win, parent: parentObj, doc, listeners };
+  };
+  const env = makeProbeEnv();
+  const fn = new Function("window", "parent", "document", "location", PANEL_SDK_SOURCE + "\nreturn window.mcode;");
+  fn(env.win, env.parent, env.doc, { href: "mcode-panel://panel/abc" });
+  check("★ SDK 装上了 message 监听(probe 靠它进来)", env.listeners.length === 1, env.listeners.length);
+  // 宿主发一条 probe 事件。
+  env.listeners[0]!({ source: env.parent, data: { __mcode: 1, event: "probe", data: { probeId: "pb1" } } });
+  const reply = env.posted.find((m) => m["probe"] === "pb1");
+  check("★ 收到 probe 事件后按 probeId 回包", reply !== undefined, env.posted);
+  check("★ 回包是 isPanelProbeReply 认得的形状", isPanelProbeReply(reply), reply);
+  check("★ 回包带的是面板此刻真实的可见文本(document.body.innerText)",
+    reply?.["text"] === "Hello world", reply?.["text"]);
+  check("★ 回包带的是整份 HTML(documentElement.outerHTML)",
+    typeof reply?.["html"] === "string" && (reply["html"] as string).includes("<h1>Hello</h1>"), reply?.["html"]);
+  check("★ 回包带完整长度(宿主据此说明截了多少)",
+    reply?.["textLength"] === 11 && reply?.["htmlLength"] === "<html><body><h1>Hello</h1></body></html>".length, reply);
+
+  // 超长文本 / HTML 各截到上限上。
+  const big = makeProbeEnv();
+  (big.doc.body as { innerText: string }).innerText = "x".repeat(PANEL_PROBE_TEXT_MAX + 50);
+  (big.doc.documentElement as { outerHTML: string }).outerHTML = "y".repeat(PANEL_PROBE_HTML_MAX + 50);
+  const fn2 = new Function("window", "parent", "document", "location", PANEL_SDK_SOURCE + "\nreturn window.mcode;");
+  fn2(big.win, big.parent, big.doc, { href: "mcode-panel://x" });
+  big.listeners[0]!({ source: big.parent, data: { __mcode: 1, event: "probe", data: { probeId: "pb2" } } });
+  const reply2 = big.posted.find((m) => m["probe"] === "pb2");
+  check("★ 文本超过上限时截到 PANEL_PROBE_TEXT_MAX",
+    (reply2?.["text"] as string)?.length === PANEL_PROBE_TEXT_MAX, (reply2?.["text"] as string)?.length);
+  check("★ HTML 超过上限时截到 PANEL_PROBE_HTML_MAX",
+    (reply2?.["html"] as string)?.length === PANEL_PROBE_HTML_MAX, (reply2?.["html"] as string)?.length);
+  check("★ 截断后仍带上截断前的完整长度(不然宿主以为这就是全部)",
+    reply2?.["textLength"] === PANEL_PROBE_TEXT_MAX + 50 && reply2?.["htmlLength"] === PANEL_PROBE_HTML_MAX + 50, reply2);
+
+  // 不是 parent 发来的 probe 不回 —— 与桥其它消息同一条来源校验。
+  const alien = makeProbeEnv();
+  const fn3 = new Function("window", "parent", "document", "location", PANEL_SDK_SOURCE + "\nreturn window.mcode;");
+  fn3(alien.win, alien.parent, alien.doc, { href: "mcode-panel://x" });
+  alien.listeners[0]!({ source: { not: "parent" }, data: { __mcode: 1, event: "probe", data: { probeId: "pb3" } } });
+  check("★ 不是父窗口发来的 probe 不回包", alien.posted.every((m) => m["probe"] !== "pb3"), alien.posted);
+}
+
+/* ── 「读回」注册表(报告 E10):挑一个当前该读的面板 ──
+ *
+ * 同一时刻可能挂着多个面板(草稿预览 + 用户右键开的浮窗 + 右栏页签)。读哪个要有确定
+ * 口径:浮窗 > 设置页预览 > 右栏页签;同 id 取优先级最高的,并列取后挂载的。 */
+console.log("\n面板读回:注册表选择");
+{
+  const fake = (itemId: string, mode: "float" | "preview" | "tab") =>
+    ({ itemId, label: itemId, mode, probe: async () => ({ __mcode: 1 as const, probe: "x", text: "", html: "", textLength: 0, htmlLength: 0, url: "" }) });
+  // 空表:挑不出来(调用方据此如实报「没有面板可读」)。
+  check("★ 没有面板挂着时挑不出来", pickPanelProbe() === undefined && listPanelProbes().length === 0);
+
+  // ⚠️ 登记顺序**故意与优先级相反**:页签最后登记。若选择逻辑退化成"取后挂载的"
+  // (即丢掉优先级),下面几条会真红 —— 最初那版正是把优先级最高的排最后登记,
+  // 变异成"全打平"也照样绿(顺序巧合上覆盖了判据),是假绿。
+  const offTab = registerPanelProbe(fake("a", "tab"));
+  const offPrev = registerPanelProbe(fake("b", "preview"));
+  // 后登记的页签插到最前登记之前?不 —— 这里再补一个**页签**让它最后登记。
+  const offTab2 = registerPanelProbe(fake("d", "tab"));
+  check("登记三个后面板能列出", listPanelProbes().length === 3);
+  check("★ 没给 id 时优先读预览(浮窗 > 预览 > 页签),哪怕页签是最后登记的", pickPanelProbe()?.itemId === "b");
+
+  // 浮窗**最先**登记 —— 若丢掉优先级,最后登记的页签会赢;有优先级则浮窗赢。
+  const offFloat = registerPanelProbe(fake("c", "float"));
+  offFloat();
+  const offFloat2 = registerPanelProbe(fake("e", "float"));
+  check("★ 有浮窗时浮窗优先(用户显式开的最可能是他现在看的),哪怕浮窗先登记", pickPanelProbe()?.itemId === "e");
+
+  // 按 id 挑:即便不是优先级最高的那个,给了 id 就挑它。
+  check("★ 给了 id 就挑它(不受全局优先级影响)", pickPanelProbe("a")?.itemId === "a" && pickPanelProbe("a")?.mode === "tab");
+
+  // 同 id 两个挂载点(比如同一面板既在预览又是页签)→ 取优先级高的。
+  // 这里让**页签后登记**,若丢掉优先级就会选到 tab。
+  const offPrevDup = registerPanelProbe(fake("a", "preview"));
+  check("★ 同 id 取优先级最高的(预览 > 页签),不受登记顺序影响", pickPanelProbe("a")?.mode === "preview");
+  offPrevDup();
+
+  // 注销后不再能挑到。
+  offFloat2();
+  check("★ 注销后的浮窗挑不到(浮窗关了就不再读它)", pickPanelProbe()?.itemId === "b");
+  offPrev();
+  offTab();
+  offTab2();
+  check("全部注销后回到空", listPanelProbes().length === 0 && pickPanelProbe() === undefined);
 }
 
 /* ── 汇总 ── */

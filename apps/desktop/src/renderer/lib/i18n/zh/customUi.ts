@@ -249,6 +249,8 @@ export const zh = {
   "customUi.editor.panelHtmlPlaceholder": "<h1>你好</h1>\n<script>\n  mcode.context().then(c => console.log(c));\n</script>",
   "customUi.editor.panelSdkHint": "写一段 HTML(可以带 <script>/<style>),在隔离的沙箱里运行,自带跟随主题的基础样式(颜色变量 --mc-surface / --mc-content / --mc-accent …)。脚本里用全局的 **mcode** 调用应用,全部返回 Promise:\n**context()** 当前项目 / 对话 / 主题;**prompt(text)** 放进输入框;**ask(prompt, opts)** 问一次模型,返回文本;**automations()** / **runAutomation(id)** 列出 / 运行自动化;**files.read / list / write(path)** 读写项目里的文件(相对路径按项目根);**library.list / search / read** 读资料库;**storage.get / set / remove** 面板自己的小存储;**copy / openUrl / openFile / shell / toast**;**api.call(method, input)** 调 Mcode 的任意一个主进程方法(如 `library.saveNote`、`session.list`、`git.log`)—— 只读的直接返回,有副作用的会弹确认框;**on('theme' | 'context', fn)** 订阅变化。",
   "customUi.editor.panelInsertExample": "插入示例",
+  "customUi.editor.panelOpenEditor": "在编辑器中打开",
+  "customUi.editor.panelHtmlLiveHint": "改动即时写回草稿;关掉这扇窗不影响草稿。",
   "customUi.editor.panelPreview": "预览",
   "customUi.editor.panelPreviewing": "预览(未保存的草稿;再点「预览」用最新内容重新加载)",
   "customUi.editor.panelPreviewSample":

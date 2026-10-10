@@ -56,7 +56,19 @@ export type AppUiCommand =
   | { op: "panel"; panel: AppUiPanel; open: boolean; tab?: AppUiRightTab }
   | { op: "open_url"; url: string }
   | { op: "notify"; title: string; body?: string; kind?: "info" | "warning" | "error" }
-  | { op: "set_pref"; key: AppUiPrefKey; value: string | number };
+  | { op: "set_pref"; key: AppUiPrefKey; value: string | number }
+  /**
+   * 读回一个正在渲染的自定义面板的**渲染结果**(报告 E10)。面板在沙箱 iframe 里(opaque
+   * origin),外面读不到它的 DOM —— 由面板自己读、经 `PanelFrame` 的桥回话。`itemId`
+   * 省略 = 读当前最该读的那个(浮窗 > 设置页预览 > 右栏页签)。
+   */
+  | { op: "read_panel"; itemId?: string }
+  /**
+   * 打开一个**已保存的**自定义面板(报告 E10 的自验闭环):像用户右键那样弹浮窗。面板先
+   * 得在配置里(`customUi.config.v1`),这里只负责打开。配合 `read_panel` 就能
+   * 「开 → 读 → 看渲染成什么样」。喂的是按挂载位造的样例目标(不碰真实资料库)。
+   */
+  | { op: "open_panel"; itemId: string };
 
 export interface AppUiReply {
   ok: boolean;

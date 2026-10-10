@@ -45,6 +45,25 @@ const textOf = (r: { content: Array<{ type: string; text?: string }> }): string 
 check("清单不为空", API_CATALOG.length > 300, API_CATALOG.length);
 check("清单每条都有 domain:verb 通道", API_CATALOG.every((e) => /^[A-Za-z]+[:.]/.test(e.channel)), API_CATALOG.find((e) => !/^[A-Za-z]+[:.]/.test(e.channel)));
 check("清单里没有构建机绝对路径", !API_CATALOG.some((e) => /[A-Z]:\/|\/home\//.test(e.input + e.output)));
+// **返回结构也要摊开**(报告附录 D 的 B3)。从前只有入参摊第一层字段,返回值是具名接口的
+// 方法(如 `browser.*` 返 `BrowserOpResult`)在清单里只写一个名字 —— agent 拼得出参数却
+// **猜不出返回里有哪些字段**,只能试错。判据立在"绝大多数方法的返回不再是光秃秃一个类型名"
+// 上:留一点余量给 `Record<string,string>` 这种本来就该原样显示的。
+{
+  const bare = API_CATALOG.filter((e) => /^"?[A-Z][A-Za-z0-9]*"?$/.test(e.output.trim()));
+  check(
+    "绝大多数方法的返回结构已摊开(不再是光秃秃的类型名)",
+    bare.length <= 5,
+    bare.map((e) => `${e.method} → ${e.output}`),
+  );
+  // 抽样钉一个具名接口的返回**真的摊开了**(否则上面那条可能被"全都没摊"蒙混)。
+  const gitStatus = API_CATALOG.find((e) => e.method === "git.status");
+  check(
+    "抽样:git.status 的返回摊出了字段",
+    gitStatus !== undefined && gitStatus.output.includes("GitStatusResult") && gitStatus.output.includes("{"),
+    gitStatus?.output,
+  );
+}
 const levels = new Map<string, number>();
 for (const e of API_CATALOG) levels.set(policyFor(e.method).level, (levels.get(policyFor(e.method).level) ?? 0) + 1);
 check("五档都有人", ["read", "write", "danger", "blocked", "ui"].every((l) => (levels.get(l) ?? 0) > 0), [...levels]);
@@ -511,7 +530,20 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     [APP_CONTROL_RENDERER_GLOBAL]: async (raw: string) => {
       const cmd = JSON.parse(raw);
       seen.push(cmd);
-      return JSON.stringify(cmd.op === "state" ? { ok: true, data: { activeSession: { id: "s1" } } } : { ok: true, data: { sessionId: "s2" } });
+      if (cmd.op === "state") return JSON.stringify({ ok: true, data: { activeSession: { id: "s1" } } });
+      // 「读回」面板(报告 E10):渲染端返回它问到的渲染结果。
+      if (cmd.op === "read_panel") {
+        if (cmd.itemId === "missing") return JSON.stringify({ ok: false, error: "没有正在渲染 id 为「missing」的面板。" });
+        return JSON.stringify({
+          ok: true,
+          data: { itemId: "p1", label: "我的面板", mode: "float", url: "mcode-panel://panel/x", text: "Hello panel", html: "<h1>Hello panel</h1>", textLength: 11, htmlLength: 22 },
+        });
+      }
+      if (cmd.op === "open_panel") {
+        if (cmd.itemId === "nope") return JSON.stringify({ ok: false, error: "配置里没有 id 为「nope」的自定义项。" });
+        return JSON.stringify({ ok: true, data: { itemId: cmd.itemId, label: "我的面板", note: "面板已打开" } });
+      }
+      return JSON.stringify({ ok: true, data: { sessionId: "s2" } });
     },
   };
   (globalThis as Record<string, unknown>).window = win;
@@ -527,6 +559,28 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   check("纯界面操作不问", !nav.isError && asked.length === 1, textOf(nav));
   const pm = await invokeAppTool("app_ui", { action: "set_pref", key: "permissionMode", value: "bypassPermissions" }, "me", ctx);
   check("改权限模式 = 高风险", !pm.isError && asked.at(-1)!.req.toolName.startsWith(APP_DANGER_APPROVAL_PREFIX), asked.at(-1)?.req.toolName);
+
+  // ★ 读回面板(报告 E10):只读 —— 不问审批,把渲染出来的文本给 agent。
+  const askedBefore = asked.length;
+  const read = await invokeAppTool("app_ui", { action: "read_panel" }, "me", ctx);
+  check("★ read_panel 是只读(不问审批)", asked.length === askedBefore && !read.isError, { asked: asked.length, err: textOf(read) });
+  check("★ read_panel 把面板渲染出来的可见文本给 agent",
+    textOf(read).includes("Hello panel") && textOf(read).includes("我的面板"), textOf(read));
+  check("★ read_panel 下发给渲染端的指令是对的", (seen.at(-1) as { op: string }).op === "read_panel", seen.at(-1));
+  const readById = await invokeAppTool("app_ui", { action: "read_panel", item_id: "p1" }, "me", ctx);
+  check("★ read_panel 带 item_id 时原样传给渲染端", !readById.isError && (seen.at(-1) as { itemId?: string }).itemId === "p1", seen.at(-1));
+  const readMissing = await invokeAppTool("app_ui", { action: "read_panel", item_id: "missing" }, "me", ctx);
+  check("★ 没有这个面板时如实报错(不静默)", readMissing.isError === true && textOf(readMissing).includes("missing"), textOf(readMissing));
+
+  // ★ 开面板(自验闭环):open_panel 只读界面动作,不问审批,把 item_id 原样传下去。
+  const askedBeforeOpen = asked.length;
+  const opened = await invokeAppTool("app_ui", { action: "open_panel", item_id: "p1" }, "me", ctx);
+  check("★ open_panel 不问审批(纯界面动作)", opened.isError !== true && asked.length === askedBeforeOpen, { asked: asked.length, err: textOf(opened) });
+  check("★ open_panel 把 item_id 原样传给渲染端", (seen.at(-1) as { op: string; itemId?: string }).op === "open_panel" && (seen.at(-1) as { itemId?: string }).itemId === "p1", seen.at(-1));
+  const openMissing = await invokeAppTool("app_ui", { action: "open_panel", item_id: "nope" }, "me", ctx);
+  check("★ open_panel 缺 item_id 时报缺少参数", (await invokeAppTool("app_ui", { action: "open_panel" }, "me", ctx)).isError === true);
+  check("★ open_panel 找不到配置项时如实报错", openMissing.isError === true && textOf(openMissing).includes("nope"), textOf(openMissing));
+
   const badUrl = await invokeAppTool("app_ui", { action: "open_url", url: "file:///etc/passwd" }, "me", ctx);
   check("open_url 只收 http(s)", badUrl.isError === true, textOf(badUrl));
   (globalThis as Record<string, unknown>).window = {};

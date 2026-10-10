@@ -160,6 +160,70 @@ async function execute(cmd: AppUiCommand): Promise<AppUiReply> {
       return { ok: true };
     case "set_pref":
       return setPref(st, cmd.key, cmd.value);
+    case "read_panel": {
+      // 「读回」一个正在渲染的自定义面板(报告 E10)。面板在沙箱 iframe 里,外面读不到它
+      // 的 DOM —— 只能问 `PanelFrame`。它挂载时把自己的 probe 登记在 `panelReadback`。
+      const { pickPanelProbe, listPanelProbes } = await import("@renderer/components/customUi/panelReadback.js");
+      const handle = pickPanelProbe(cmd.itemId);
+      if (!handle) {
+        const all = listPanelProbes();
+        const hint = cmd.itemId
+          ? `没有正在渲染 id 为「${cmd.itemId}」的面板。`
+          : "现在没有正在渲染的自定义面板。";
+        const open = all.length > 0 ? `当前挂着的面板:${all.map((p) => `${p.itemId}(${p.label}·${p.mode})`).join("、")}。` : "";
+        return { ok: false, error: `${hint}${open}先在设置页「预览」它,或用右键/工具栏打开那个面板,再读。` };
+      }
+      try {
+        const r = await handle.probe();
+        return {
+          ok: true,
+          data: {
+            itemId: handle.itemId,
+            label: handle.label,
+            mode: handle.mode,
+            url: r.url,
+            text: r.text,
+            html: r.html,
+            textLength: r.textLength,
+            htmlLength: r.htmlLength,
+          },
+        };
+      } catch (err) {
+        return { ok: false, error: `读面板失败:${err instanceof Error ? err.message : String(err)}(面板可能还没加载好,稍后再试)。` };
+      }
+    }
+    case "open_panel": {
+      // 打开一个**已保存的**自定义面板(报告 E10 的自验闭环:开 → 读 → 看渲染成什么样)。
+      // 面板得先在配置里;这里按它挂载位造一份样例目标喂进去(不碰真实资料库目标)。
+      const [{ useCustomUiStore }, { sampleTargetOf }] = await Promise.all([
+        import("@renderer/stores/customUiStore.js"),
+        import("@contracts/customUi"),
+      ]);
+      const ui = useCustomUiStore.getState();
+      if (!ui.loaded) await ui.load();
+      const item = useCustomUiStore.getState().config.items.find((i) => i.id === cmd.itemId);
+      if (!item) {
+        const ids = useCustomUiStore.getState().config.items.filter((i) => i.action.type === "panel").map((i) => i.id);
+        return {
+          ok: false,
+          error: `配置里没有 id 为「${cmd.itemId}」的自定义项。${ids.length ? `已保存的面板:${ids.join("、")}。` : "现在一个面板都没配(设置 → 扩展里新建)。"}`,
+        };
+      }
+      if (item.action.type !== "panel") {
+        return { ok: false, error: `「${cmd.itemId}」不是面板动作,是 ${item.action.type}(只有面板能这样打开预览)。` };
+      }
+      // 喂一份按挂载位造的样例目标(工具栏 / 页签的 workspace 分支也在其中)—— 不碰真实
+      // 资料库 / 文件目标,agent 自验时不至于误读用户的真数据。
+      useCustomUiStore.getState().openPanel({ item, target: sampleTargetOf(item.slot) });
+      // 等**「读回」注册表**里真的出现这个面板,而不是只等 store 状态翻转 —— iframe 要
+      // stage + 加载,晚于那次 setState 一拍。这样 open_panel → read_panel 之间不再有
+      // 「面板刚开、还没挂上」的窗口。
+      const { pickPanelProbe } = await import("@renderer/components/customUi/panelReadback.js");
+      const ready = await waitFor(() => pickPanelProbe(item.id) !== undefined, 3000);
+      return ready
+        ? { ok: true, data: { itemId: item.id, label: item.label.zh, note: "面板已打开;紧接着用 read_panel 读它的渲染结果。" } }
+        : { ok: false, error: "面板没能在 3s 内打开(配置读不到 / 界面还没准备好)。" };
+    }
   }
 }
 
