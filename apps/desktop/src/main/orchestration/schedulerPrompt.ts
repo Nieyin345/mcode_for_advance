@@ -556,6 +556,13 @@ export function composeNodePrompt(args: {
   decision?: string;
   /** 「这一步要产出什么」的**变量表**(硬约束,已经渲染成给模型看的样例;空串 = 没有)。 */
   outputVars?: string;
+  /**
+   * **这一步的权限档位说明**(报告 P3)。只读节点(`capability: "read"`)会以 `plan`
+   * 模式跑 —— 写类工具一律弹审批。从前这件事**不告诉模型**:它可能正确判断"该写库",
+   * 却撞上 plan 模式被拒,退回只读,而事先毫不知情。把这一条摆在**最前面**(紧随框架段),
+   * 让模型一开始就知道自己这一步能写不能写,而不是做到一半才发现。空串 = 不提。
+   */
+  permissionNote?: string;
 }): string {
   // 第 0 层就是根:有上游的节点一定在 ≥1 层(层 = 上游层最大值 + 1)。
   const isRoot = isRootOf(args.plan, args.nodeId);
@@ -568,6 +575,11 @@ export function composeNodePrompt(args: {
   // **放在最前面**:它是这一整段话的读法说明。摆在后面的话,模型已经先读过"用户要
   // 一篇综述"了,那时再告诉它"你只负责第一步"是往回拽,效果差得多。
   sections.push(planSection(args.plan, args.nodeId, hasUpstreamText));
+  // 权限档位说明 —— 紧随框架段:和"你怎么读这一步"同一层,而且必须先于"我要做什么"
+  // 让模型知道自己的手脚。空串等于没有(报告 P3)。
+  if (args.permissionNote !== undefined && args.permissionNote.trim().length > 0) {
+    sections.push(args.permissionNote.trim());
+  }
   // 工作流作者的追加框架说明 —— 紧跟框架段:它和「整条流程」说的是同一层的事
   // (这张图怎么读、怎么跑)。空白等于没有。
   const frameworkNote = (args.frameworkNote ?? "").trim();

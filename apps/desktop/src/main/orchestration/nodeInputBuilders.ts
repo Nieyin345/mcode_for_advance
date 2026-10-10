@@ -1,4 +1,5 @@
 import type { NodeRunInput, WorkflowChoiceOption, WorkflowDataContext } from "@contracts/runtime";
+import type { WorkflowCapability } from "@contracts/workflow";
 import { MEMORY_PARAM_KEY, memorySectionFrom, isMemoryInjectionEnabled, type MemoryInjectionSection } from "@contracts/memory";
 import { expandTriggerVars } from "./triggerVars.js";
 import {
@@ -16,6 +17,7 @@ import {
   pluginNamesOf,
   providerIdOf,
   returnModeOf,
+  showsNodeCapability,
   skillNamesOf,
   type NodeArtifact,
   type NodeContextKind,
@@ -34,6 +36,18 @@ import type { ContextLine } from "./contextInherit.js";
  * `signal` 是 host-only 的,不进 contracts(见 `@contracts/runtime` 的文件头)。
  */
 export type RunnableNodeInput = NodeRunInput & { signal: AbortSignal };
+
+/**
+ * 只读节点（`capability: "read"` → `plan` 权限模式）在提示词里明说的那一句（报告 P3）。
+ *
+ * 这些节点上任何写类工具都会弹审批 —— 这不只是"多一步确认"：模型如果事先不知道，
+ * 很可能**正确判断"该写库"却一头撞上 plan 模式被拒**，退回只读，表象成了"判断对了
+ * 却做不了"。把它摆到提示词前面，让模型一开始就按"我只能读"来规划，
+ * 该产出「建议怎么做」而不是「动手去做」。
+ */
+const READ_ONLY_PERMISSION_NOTE =
+  "## 这一步的权限\n你这一步是**只读**的：写文件、执行命令这类动作会被拦下要求审批。" +
+  "请只做读取与判断，把「建议怎么做」写进产出，不要试图直接改动任何东西。";
 
 /* ────────────────────────── 专用 builder(seam)────────────────────────── */
 
@@ -140,6 +154,9 @@ export interface ModelInputScope {
   /** 这一步是谁 / 整条流程长什么样 —— 「整条流程」那一节的内容。 */
   nodeId: string;
   plan: WorkflowPlan;
+  /** 这一步的权限档位(`node.capability ?? manifest.capability`)。`read` → plan 模式,
+   *  写类工具弹审批。用来在提示词里**明说**这一步是只读的(报告 P3)。 */
+  capability?: WorkflowCapability;
   /** 工作流级的追加框架说明(`WorkflowDoc.frameworkNote`)。见 `composeNodePrompt`。 */
   frameworkNote?: string;
   /**
@@ -359,6 +376,14 @@ export function buildNodeInput(
     outputContract: stringParamOf(expanded, NODE_OUTPUT_CONTRACT_KEY),
     // **终末节点不发变量表**(调度器那边的 `withOutputCheck` 同一条规矩的另一端)。
     outputVars: scope.terminal ? "" : describeOutputVars(vars),
+    // 只读节点写明权限(报告 P3) —— 让模型知道这一步写不了,别做到一半才发现。
+    // ⚠️ **只在 capability 真的算数时才发**:它只对 `runner.kind === "prompt"` 生效
+    // (见 `showsNodeCapability`) —— 命令 / 代码节点的"能力"旋钮根本不接权限,
+    // 对它们说"你是只读"是假话。命令/代码节点的权限说明另有出处(commandRunner 里
+    // 明说"没有审批"),不在这里。
+    ...(scope.capability === "read" && showsNodeCapability(manifest)
+      ? { permissionNote: READ_ONLY_PERMISSION_NOTE }
+      : {}),
   });
   return {
     prompt: memorySection.length > 0 ? `${prompt}\n\n${memorySection}` : prompt,

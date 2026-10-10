@@ -1513,6 +1513,9 @@ class Run {
         ),
         nodeId: node.id,
         plan: this.plan,
+        // 这一步的权限档位(报告 P3):`read` 会以 plan 模式跑，写类工具一律弹审批。
+        // 递到提示词那一层，让模型**一开始就知道自己能不能写**，而不是做到一半撞墙。
+        capability: node.capability ?? manifest.capability,
         // 工作流级追加框架说明:随文档走,这张图的每个节点同一段(见
         // `composeNodePrompt`)。空白不发 —— 提示词里不该出现一个空节。
         ...(typeof this.doc.frameworkNote === "string" && this.doc.frameworkNote.trim().length > 0

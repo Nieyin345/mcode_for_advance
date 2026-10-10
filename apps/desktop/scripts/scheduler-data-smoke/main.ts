@@ -192,6 +192,19 @@ console.log("\ncomposeNodePrompt(上下文那一段)");
   check("空数组 = 没有那一段", !noContext.includes("可以读的资料"), noContext);
 }
 
+console.log("\ncomposeNodePrompt(权限说明那一段,报告 P3)");
+{
+  const base = { userPrompt: "用户的请求", upstream: "", instruction: "写论文", nodeId: "A", plan: PLAN };
+  const withNote = composeNodePrompt({ ...base, permissionNote: "## 这一步的权限\n你这一步是**只读**的。" });
+  check("★ 给了说明就渲染出来", withNote.includes("这一步的权限") && withNote.includes("只读"), withNote.slice(0, 200));
+  // 摆在前面:它和"你怎么读这一步"同一层,必须先于"我要做什么"。
+  check("★ 权限说明排在指令之前", withNote.indexOf("这一步的权限") < withNote.indexOf("写论文"), withNote.slice(0, 400));
+  const noNote = composeNodePrompt(base);
+  check("不给就没有那一段(空串等于没有)", !noNote.includes("这一步的权限"), noNote.slice(0, 200));
+  const blank = composeNodePrompt({ ...base, permissionNote: "   " });
+  check("纯空白也不渲染", !blank.includes("这一步的权限"));
+}
+
 console.log("\n附件路径 → 类目(认不出来就什么都不给)");
 
 // 假的库根 + 两次"按 id 查类目"。**用 `resolve` 而不是写死 `/fake/...`**:Windows 上
