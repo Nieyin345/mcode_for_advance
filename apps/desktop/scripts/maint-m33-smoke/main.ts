@@ -50,7 +50,7 @@ const { initDb } = await import("@main/store/db.js");
 const { LibraryRepo, CollectionRepo } = await import("@main/store/repositories.js");
 const { libraryRoot } = await import("@main/library/paths.js");
 const { importGenericFiles, readEntryFile } = await import("@main/library/fileImport.js");
-const { importNoteFiles } = await import("@main/library/notesImport.js");
+const { importNoteFiles, createNote } = await import("@main/library/notesImport.js");
 
 let failures = 0;
 let checks = 0;
@@ -205,6 +205,34 @@ console.log("\n4. 同标题笔记重复导入 → 已有条目归入新选的分
   eq("★ 给回来的是原来那条(不是空手而归)", r2.items[0]?.id, noteId);
 }
 
+/* ── 4b. 笔记查重不许被一条静默的行数上限截断 ── */
+
+console.log("\n4b. 库里匹配行多到超过上限时,同标题笔记仍要认出重复(不静默又建一条)");
+{
+  const first = join(SRC, "项目周会.md");
+  writeFileSync(first, "# 项目周会\n\n第一版", "utf8");
+  const r1 = importNoteFiles([first]);
+  eq("首次导入成功", r1.added, 1);
+  const noteId = r1.items[0]!.id;
+
+  // 造一堆**标题里含同一个子串**的其它条目(没有 mdPath,不会被当成那篇笔记本身),
+  // 它们比原笔记新,于是把原笔记挤出按 added_at 倒序的前 N 行窗口。
+  // 从前查重是 `LibraryRepo.list({ query: title, limit: 50 })` —— 上限 50 在**精确匹配
+  // 之前**把结果截掉,原笔记一旦落在这个窗口外,`find` 就找不到它,于是同一个标题
+  // **静默又建一条**(而不是 skipped)。`findLinkedByPath` 的注释点名的正是这类:
+  // "list() 有上限,超了就翻不到,重复导入静默变成又建了一条"。
+  await new Promise((r) => setTimeout(r, 5)); // 保证填充条目比原笔记新(added_at 严格更大)
+  for (let i = 0; i < 60; i += 1) LibraryRepo.upsert({ title: `项目周会 纪要副本 ${String(i)}` });
+
+  // 另一个文件、同一个正文标题 —— 与 §4 同一个语义,只是库里多了足够多的匹配行。
+  const second = join(SRC, "项目周会-又导了一次.md");
+  writeFileSync(second, "# 项目周会\n\n第二次", "utf8");
+  const r2 = importNoteFiles([second]);
+  eq("★ 仍判成重复(skipped=1)", r2.skipped, 1);
+  eq("★ 没有又建一条", r2.added, 0);
+  eq("★ 给回来的是原来那条", r2.items[0]?.id, noteId);
+}
+
 /* ──────────────── 5. 笔记导入失败:不留半截行,重试不被卡死 ──────────────── */
 
 console.log("\n5. 笔记复制失败 → 清理半截行;重试成功而不是被判『已存在』");
@@ -232,6 +260,35 @@ console.log("\n5. 笔记复制失败 → 清理半截行;重试成功而不是�
   eq("这次没有 skipped", r2.skipped, 0);
   const saved = r2.items[0];
   check("md 真的落在 notes/ 下", Boolean(saved?.mdPath) && existsSync(join(ROOT, saved!.mdPath!)), saved?.mdPath);
+}
+
+/* ── 5b. `createNote` 与 `importNoteFiles` 是同一支流水,失败清理必须一样 ── */
+
+console.log("\n5b. 新建笔记落文件失败 → 不留半截条目(与 importNoteFiles 同一口径)");
+{
+  // `createNote`(应用内新建空笔记)与 `importNoteFiles`(导入 md 笔记)在 notesImport.ts
+  // 里是同一支流水的两处入口:都是 upsert 一行 → 往 `<库根>/notes/<id>.md` 落文件 →
+  // setMarkdown。§5 已经给导入那一侧补了"失败就删掉半截行"的清理;新建那一侧漏了 ——
+  // 落文件一抛,那行记录留在库里,界面上是一行打不开的空条目,而它**没有任何入口**够得着。
+  const notesPath = join(ROOT, "notes");
+  if (existsSync(notesPath)) rmSync(notesPath, { recursive: true, force: true });
+  writeFileSync(notesPath, "占位:让 notes/ 落点不可用", "utf8");
+
+  let threw: unknown = null;
+  try {
+    createNote("半截笔记");
+  } catch (err) {
+    threw = err;
+  }
+  check("★ 新建失败要抛出(不静默回一条空条目)", threw !== null);
+  eq("★ 失败不留半截条目", allItems().filter((i) => i.title === "半截笔记").length, 0);
+
+  // 修好环境,同一句重试要真的建成 —— 失败清理不能把正常路弄坏。
+  rmSync(notesPath, { force: true });
+  mkdirSync(notesPath, { recursive: true });
+  const created = createNote("半截笔记");
+  check("★ 环境修好后新建成功", created !== null && Boolean(created?.mdPath), created);
+  check("md 真的落在 notes/ 下", Boolean(created?.mdPath) && existsSync(join(ROOT, created!.mdPath!)), created?.mdPath);
 }
 
 /* ──────────────── 6. library.addItems 的分类归属:同一条守门规则 ──────────────── */

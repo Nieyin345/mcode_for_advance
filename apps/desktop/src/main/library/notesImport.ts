@@ -87,8 +87,16 @@ export function importNoteFiles(paths: string[], collectionIds?: string[]): Note
       //
       // 只认**有 md 文件**的行:半截行(建了记录、文件没落成 —— 见下面失败清理那
       // 一段的理由)不许把重试判成"已存在",否则这篇笔记就永远进不来了。
-      const dup = LibraryRepo.list({ query: title, limit: 50 }).items.find(
-        (i) => Boolean(i.mdPath) && i.title.trim().toLowerCase() === title.trim().toLowerCase(),
+      //
+      // ⚠️ **查重必须扫全库,不能用 `list({ query, limit })`。** 那个 `query` 是
+      // title/abstract/file_path/url 的**子串**匹配且默认按 added_at 倒序,`limit` 又是
+      // **在精确匹配之前**把结果切掉 —— 库里只要有一批子串撞上、但比这篇新的条目,真正的
+      // 那篇就被挤出窗口,`find` 找不到,于是同一个标题**静默又建一条**(而不是 skipped)。
+      // `findLinkedByPath` 的注释点名的正是这一类(`list` 的上限让"重复导入静默变成又建
+      // 一条")。用 `listAllItems`(全量,专给这种判据用),在内存里做精确匹配。
+      const needle = title.trim().toLowerCase();
+      const dup = LibraryRepo.listAllItems().find(
+        (i) => Boolean(i.mdPath) && i.title.trim().toLowerCase() === needle,
       );
       if (dup) {
         // 「这一份已经收过了」不改变「用户要它出现在这个分类里」—— 与 PDF 管线
@@ -141,12 +149,22 @@ export function createNote(title: string, collectionIds?: string[]): LibraryItem
   ensureLibraryDirs();
   const clean = title.trim() || "未命名笔记";
   const item = LibraryRepo.upsert({ title: clean });
-  const dest = notePathForId(item.id);
-  mkdirSync(dirname(dest), { recursive: true });
-  writeFileSync(dest, `# ${clean}
+  // ⚠️ **落文件失败要把刚建的那行删掉** —— 与 `importNoteFiles` 里那条清理同一条规矩。
+  // 顺序是"先 upsert 拿 id,再往 `notes/<id>.md` 落文件"(文件按 id 命名,不先建行就没有
+  // id)。落文件一抛,那一行就留在库里变成**无文件的半截条目**:界面上是一行点开就报错的
+  // 空记录,而它不属于任何分类、也没有任何入口够得着。从前这里没有 `catch` 清理,注释还
+  // 写着"不让它在文件落盘之后整个抛掉" —— 抛掉是对的,但**留下半截行没人收拾**才是问题。
+  try {
+    const dest = notePathForId(item.id);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, `# ${clean}
 
 `, "utf8");
-  LibraryRepo.setMarkdown(item.id, noteRelPathForId(item.id));
+    LibraryRepo.setMarkdown(item.id, noteRelPathForId(item.id));
+  } catch (err) {
+    LibraryRepo.delete([item.id]);
+    throw err;
+  }
   // 同上:失效的分类 id 跳过,不让"新建笔记"在文件已落盘之后整个抛掉。
   assignImportedToCollections(item.id, collectionIds);
   return LibraryRepo.get(item.id);
