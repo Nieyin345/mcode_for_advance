@@ -559,6 +559,7 @@ export const en = {
   "settings.toolchain.tool.pythonDeps.label": "Python document packages",
   "settings.toolchain.tool.pythonDeps.what": "The Python packages Excel / PPT reading needs (openpyxl, markitdown, python-pptx, …)",
   "settings.toolchain.tool.pythonDeps.howto": "No usable Python found. Install Python yourself first, then come back and click Check again.",
+  "settings.toolchain.bundledPython": "The only Python on this machine is the one bundled with {name} — installing packages goes into its own private environment, and the `python` you run in a terminal may not be this one. To use your own, install Python first and click Check again.",
   "settings.toolchain.tool.zip.what": "Required to edit docx / pptx: unpack → edit the XML → repack",
   "settings.toolchain.tool.zip.howto": "On Windows install Git for Windows (it ships unzip); macOS / Linux usually have both already.",
   "settings.toolchain.tool.soffice.what": "Rendering and format conversion (LibreOffice's command line)",
@@ -1810,7 +1811,7 @@ export const en = {
   "settings.libraryTypes.saved": "Saved",
   "settings.libraryTypes.section.suppress": "Suppression",
   "settings.libraryTypes.suppressHint":
-    "Suppressed items **never** enter the AI's context — even when you attach them by hand. Ticking a group/category blocks everything under it, including nested sub-categories.",
+    "Suppressed items **never enter the AI's context on their own** — not even when you attach them by hand. Ticking a group/category blocks everything under it, including nested sub-categories. ⚠️ This means \"**don't feed it to the AI**\", not \"**lock it away**\": the AI can still search and read it on its own (same as it reads project files) — you just stop putting it into the conversation. If you truly don't want the AI to touch it, keep it out of this library.",
   "settings.libraryTypes.suppressNodes": "By category",
   "settings.libraryTypes.suppressExts": "By file type",
   "settings.libraryTypes.suppressExtPh": "e.g. pdf, then Enter",

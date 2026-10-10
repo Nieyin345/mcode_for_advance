@@ -564,6 +564,7 @@ export const zh = {
   "settings.toolchain.tool.pythonDeps.label": "Python 文档处理库",
   "settings.toolchain.tool.pythonDeps.what": "Excel / PPT 读取要的 Python 包（openpyxl、markitdown、python-pptx 等）",
   "settings.toolchain.tool.pythonDeps.howto": "没找到可用的 Python。先自己装一个 Python，再回来点「重新检测」。",
+  "settings.toolchain.bundledPython": "这台机器上只找到 {name} 自带的 Python —— 装包会进它自己的私有环境，你在终端里敲的 python 未必是它。想用你自己的那份，先装一个 Python 再点「重新检测」。",
   "settings.toolchain.tool.zip.what": "编辑 docx / pptx 的必经步骤：解包 → 改 XML → 重新打包",
   "settings.toolchain.tool.zip.howto": "Windows 上装 Git for Windows（自带 unzip）；macOS / Linux 一般自带。",
   "settings.toolchain.tool.soffice.what": "渲染与格式转换（LibreOffice 的命令行）",
@@ -1776,7 +1777,7 @@ export const zh = {
   "settings.libraryTypes.section.collection": "集合提示词",
   "settings.libraryTypes.section.suppress": "屏蔽",
   "settings.libraryTypes.suppressHint":
-    "被屏蔽的东西**不会**进入 AI 的上下文 —— 哪怕你手动挂它。勾一个大类/分类，它下面的全部内容(含子分类里的条目)都跟着被挡。",
+    "被屏蔽的东西**不会自动进 AI 的上下文** —— 哪怕你手动挂它。勾一个大类/分类，它下面的全部内容(含子分类里的条目)都跟着被挡。⚠️ 这是「**不喂给它**」，不是「**锁住**」：AI 仍可主动检索 / 读取到它(和读项目文件一样)，只是你不再把它塞进对话。要真正不让 AI 碰，别放进这个资料库。",
   "settings.libraryTypes.suppressNodes": "按分类屏蔽",
   "settings.libraryTypes.suppressExts": "按文件类型屏蔽",
   "settings.libraryTypes.suppressExtPh": "如 pdf，回车添加",
