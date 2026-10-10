@@ -24,6 +24,7 @@ import type { LibraryItem } from "@contracts/library";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 import { atomicWrite } from "@main/lib/appContext.js";
+import { emitItemImported } from "./broadcast.js";
 import { assignImportedToCollections } from "./operations.js";
 import { ensureLibraryDirs, fromLibraryRelative, isInsideLibrary, notePathForId, noteRelPathForId, toLibraryRelative } from "./paths.js";
 
@@ -129,6 +130,14 @@ export function importNoteFiles(paths: string[], collectionIds?: string[]): Note
       const saved = LibraryRepo.get(item.id);
       if (saved) out.items.push(saved);
       out.added += 1;
+      // **入库信号**,与另外两条导入管线(`fileImport` 的通用文件 / `pdfImport` 的
+      // PDF)同一条:自动化的「事件发生时」触发器与钩子靠 `library.item.imported` 认出
+      // "有条目进库了"。从前这一支漏了 —— `.md`/`.txt`/`.markdown`/`.mdown` 从
+      // 「导入文件」进来时**永远不发事件**,而同一批里的 PDF/其余文件都发:用户看到
+      // 的是"东西进库了、自动化就是不响",而且只有这一种扩展名不响(最难看出来的那种)。
+      // 归属在事件**之前**做完(同 `pdfImport`):事件起来的自动化立刻去查这一条时,
+      // 看到的状态该是已经归好类的。
+      emitItemImported(saved ?? item);
       log.info(`library: imported note ${basename(path)} as ${item.id}`);
     } catch (err) {
       out.errors.push({ path, error: (err as Error).message });
@@ -167,7 +176,12 @@ export function createNote(title: string, collectionIds?: string[]): LibraryItem
   }
   // 同上:失效的分类 id 跳过,不让"新建笔记"在文件已落盘之后整个抛掉。
   assignImportedToCollections(item.id, collectionIds);
-  return LibraryRepo.get(item.id);
+  const created = LibraryRepo.get(item.id);
+  // **入库信号**:新建一篇笔记 = 库里多了一条,与 `library.addItems`(另一条应用内
+  // "先记一条"的路)同一条 —— 都发 `library.item.imported`。少了它,用户新建笔记
+  // 时挂在"有条目入库"上的自动化永远不响,而新建 PDF / 拖入文件都会响。
+  if (created) emitItemImported(created);
+  return created;
 }
 
 /**

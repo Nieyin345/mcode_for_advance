@@ -26,12 +26,21 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 #
 # `paths.ts` 自己**不用换桩**:它原先 import 了 electron 的 `app` 但一行都没用到,
 # 已经删掉 —— 所以它能原样打进无头包。这是这套脚本成立的前提。
+#
+# ⚠️ **`@main/window.js` 要换桩。** 这套直接 import `notesImport.writeNote`(§4 那个真实
+# 调用点),而 `notesImport` 现在走 `./broadcast.js` 发 `library.item.imported`(笔记导库
+# 的信号,与另外两条导入管线一致)—— `broadcast` 里有一句 `sendToRenderer`,
+# 来自 `@main/window.js`,真的那个拿 BrowserWindow、也就 import 了 `electron`。少了这个
+# 别名,整包会把 electron 打进来(顶层 `require("path")` 在 ESM 里抛
+# ERR_AMBIGUOUS_MODULE_SYNTAX)。与 `maint-m33-smoke` / `library-import-smoke` 等所有
+# import `notesImport` 的套件同一条。
 "$ESBUILD" scripts/library-paths-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@main/lib/dataRoot.js=./scripts/db-migrate-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/db-migrate-smoke/stubs/logger.ts \
+  --alias:@main/window.js=./scripts/fixtures/library-stubs/window.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

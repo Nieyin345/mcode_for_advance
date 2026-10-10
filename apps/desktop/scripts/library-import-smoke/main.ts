@@ -54,7 +54,7 @@ const { importGenericFiles, readEntryFile, entryFileAbsPath } = await import(
   "@main/library/fileImport.js"
 );
 const { libraryRoot } = await import("@main/library/paths.js");
-const { importedIds, externals } = await import("./stubs/runtimeManager.js");
+const { importedIds, externals, resetExternals } = await import("./stubs/runtimeManager.js");
 // 库导入/下载事件的发出口由**装配点**注入(main/index.ts 里 configureLibraryEvents)。
 // `broadcast.ts` 早先直接 import RuntimeManager;为了不让 codeExecutor 的打包链把整条
 // provider 图(→ ssh2 原生模块)拖进来,那一刀换成了注入 —— 于是无头套件要自己接上,
@@ -550,6 +550,46 @@ console.log("\nPDF 导入 · 选定的分类要真的生效(而不是掉进回�
     check("不创建 Markdown 关联", !result.items[0]?.mdPath);
     check("正常发事件供配置的自动化接手", importedIds().includes(result.items[0]?.id));
   }
+}
+
+/* ──────────────── 5b. 笔记入库也要发「有条目入库」那条事件 ──────────────── */
+
+// 三条导入管线(`pdfImport.importPdfFiles` / `fileImport.importGenericFiles` /
+// `notesImport.importNoteFiles`)对宿主发出的**唯一**信号都是 `library.item.imported`
+// —— 自动化的事件触发器与钩子挂在它上面。前两条一直发,**笔记那条从前漏了**:
+// `.md`/`.txt`/`.markdown`/`.mdown` 从「导入文件」进来时永远不发事件,而同一批里的
+// PDF / 其余文件都发 —— 用户看到的是"东西进库了、自动化就是不响",且只有这一种
+// 扩展名不响(最难看出来的一种)。
+console.log("\n笔记入库 · 发 library.item.imported(与 PDF / 通用导入同一条)");
+{
+  const { importNoteFiles, createNote } = await import("@main/library/notesImport.js");
+  const noteSrc = join(SRC, "笔记入库信号.md");
+  writeFileSync(noteSrc, "# 入库信号验证\n\n正文", "utf8");
+
+  resetExternals();
+  const noteRes = importNoteFiles([noteSrc]);
+  eq("笔记导入成功", noteRes.added, 1);
+  const noteId = noteRes.items[0]!.id;
+  check(
+    "★ 导入的笔记发了 library.item.imported",
+    importedIds().includes(noteId),
+    { emitted: importedIds(), want: noteId },
+  );
+
+  // 新建笔记 = 库里多了一条,与 `library.addItems` 同一条:都要发。
+  resetExternals();
+  const created = createNote("新建笔记入库信号");
+  check("新建的笔记也发了 library.item.imported", created !== null && importedIds().includes(created!.id), {
+    emitted: importedIds(),
+    want: created?.id,
+  });
+
+  // 重复导入(**跳过**、没新入库)不该再发一次 —— 那会让挂在事件上的自动化对一条
+  // 根本没进库的东西重跑。与 PDF 管线 `alreadyPresent` 那条口径一致。
+  resetExternals();
+  const againNote = importNoteFiles([noteSrc]);
+  eq("同标题再次导入被判成重复", againNote.skipped, 1);
+  eq("★ 跳过的那次不发事件", importedIds().length, 0);
 }
 
 /* ──────────────── 收尾 ──────────────── */
