@@ -1013,6 +1013,34 @@ console.log("\nuiPrefs 落盘失败出口");
   );
 }
 
+// ★ `WorktreeRootSetting.save`(工作树根目录)—— 与同目录 SettingsBrowserPanel /
+//   SettingsTerminalPanel 同一处境:写设置表失败要报出来,不能只有 try/finally。
+//   从前 `save` 抛出去被吞:用户点「浏览…」选完目录、面板上一个字都没有(目录没变、
+//   也没说为什么),像按钮坏了。判据钉在源码上(组件无头跑不出来)。
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    join(process.cwd(), "src/renderer/components/settings/WorktreeRootSetting.tsx"),
+    "utf8",
+  );
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const at = code.indexOf("const save = async");
+  // 截到 `catch (…` 那一段 —— 判据要钉在 **catch 块里**,不是整个 save:
+  // save 开头那句 `setError(null)` 会让"只要出现 setError 就算过"的断言恒真。
+  const catchAt = code.indexOf("catch (", at);
+  const catchBody = catchAt >= 0 ? code.slice(catchAt, code.indexOf("} finally {", catchAt)) : "";
+  check(
+    "★ WorktreeRootSetting.save 写失败 catch 块里把错误记进 state(不是吞掉)",
+    at >= 0 && catchAt > at && /setError\(\s*err/.test(catchBody),
+    catchBody.slice(0, 320),
+  );
+  check(
+    "…正控:错误行真的渲染出来(不只是一个没人读的 state)",
+    code.includes("<ErrorNote") && /error\s*!==\s*null/.test(code),
+    "缺 ErrorNote / error 判空",
+  );
+}
+
 /* ────────────────────────── 收尾 ────────────────────────── */
 
 console.log(`\nsettings-panel-smoke:${total - failures}/${total} 通过`);

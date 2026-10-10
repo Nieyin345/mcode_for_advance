@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { WORKTREE_ROOT_SETTING_KEY } from "@contracts/ipc";
-import { Button } from "@renderer/components/ui/index.js";
+import { Button, ErrorNote } from "@renderer/components/ui/index.js";
 import { IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
@@ -18,6 +18,7 @@ export function WorktreeRootSetting() {
   const [root, setRoot] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.setting
@@ -29,9 +30,15 @@ export function WorktreeRootSetting() {
 
   const save = async (value: string | null) => {
     setBusy(true);
+    setError(null);
     try {
       await api.setting.set({ key: WORKTREE_ROOT_SETTING_KEY, value: value ?? "" });
       setRoot(value);
+    } catch (err) {
+      // **失败要说出来。** 从前只有 try/finally —— 写设置表失败时抛出去被吞,
+      // 用户点「浏览…」选完目录、面板上一个字都没有(目录没变、也没说为什么),
+      // 像按钮坏了。与同目录 SettingsBrowserPanel / SettingsTerminalPanel 同一规矩。
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -79,6 +86,11 @@ export function WorktreeRootSetting() {
           </Button>
         )}
       </div>
+      {error !== null && (
+        <ErrorNote title={t("settings.saveFailed")} className="mt-1">
+          {error}
+        </ErrorNote>
+      )}
     </div>
   );
 }
