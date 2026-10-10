@@ -16,9 +16,16 @@ export const server = {
   worktreeDirty: {} as Record<string, boolean>,
   /** repoPath → 该仓库的工作树列表(回值在调用那一刻快照)。 */
   worktreeLists: {} as Record<string, Array<Record<string, unknown>>>,
+  /** source(HEAD)→ mergePreview 回值;测切树竞态时给不同树不同的 incoming。 */
+  mergePreviews: {} as Record<string, Record<string, unknown>>,
   calls: [] as Array<{ method: string; input: Record<string, unknown> }>,
   hold: new Set<string>(),
   held: [] as Held[],
+  /** method → 直接返回的覆盖值(替代 handle 的默认回值)。 */
+  overrides: {} as Record<string, unknown>,
+  /** 这些 method 直接 **reject**(模拟 IPC 真抛:参数不过校验 / 传输断)。 */
+  reject: new Set<string>(),
+  rejectMsg: "mock: IPC 传输中断",
 };
 
 export function callsOf(method: string): Array<Record<string, unknown>> {
@@ -54,6 +61,9 @@ export function resetApi(): void {
   server.statusBranch = {};
   server.statusFiles = {};
   server.worktreeLists = {};
+  server.mergePreviews = {};
+  server.overrides = {};
+  server.reject.clear();
   server.hold.clear();
 }
 
@@ -86,6 +96,11 @@ function handle(method: string, input: Record<string, unknown>): unknown {
       const rp = (input.repoPath as string) ?? "";
       return { worktrees: server.worktreeLists[rp] ?? [] };
     }
+    case "git:mergePreview": {
+      // 按 source(源的 HEAD)区分 —— 每棵树给不同的 incoming,切树竞态才可判。
+      const src = (input.source as string) ?? "";
+      return server.mergePreviews[src] ?? { ok: true, upToDate: false, fastForward: true, incomingCommits: 1 };
+    }
     default:
       return {};
   }
@@ -100,9 +115,13 @@ function makeNs(ns: string): unknown {
         return (input: Record<string, unknown>) => {
           const method = `${ns}:${prop}`;
           server.calls.push({ method, input: input ?? {} });
+          // 覆盖值 / 强制 reject —— 用来驱动"IPC 真抛"那一类(删工作树失败).
+          if (server.reject.has(method)) {
+            return Promise.reject(new Error(server.rejectMsg));
+          }
+          const result = method in server.overrides ? server.overrides[method] : handle(method, input ?? {});
           // 结果在调用那一刻算出 —— 回包后到,带的仍是当时那份数据。
           // 直接把 **result** 给出去(桌面端 preload 就是这么解包的),不是 {ok,result} 信封。
-          const result = handle(method, input ?? {});
           if (server.hold.has(method)) {
             return new Promise((res) => {
               server.held.push({ method, input: input ?? {}, release: () => res(result) });

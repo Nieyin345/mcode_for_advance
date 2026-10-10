@@ -36,10 +36,15 @@ window.labState.customModels = window.labModels.claude;
 // 哨兵覆盖:`?sentinel=models` 时,把模型配置表单那三个标签键换成**醒目的替换文案** ——
 // 只要源码走的是 `t(...)`,界面就会显示替换值;硬编码则显示原文。因为 zh/en 两份值都是
 // 同样的专有名词("Base URL"),光切语言分辨不出"走了 key"还是"写死了字面量"。
-window.labI18nOverride = new URLSearchParams(location.search).get('sentinel')==='models' ? {
+// `?sentinel=approval` 同理,把审批卡展开区那段「输入」标签键换成 OVR::toolInput ——
+// 用于验证审批卡没有把 "Input" 写死(它的孪生 MessageBlocks 走的是同一把 key)。
+const sentinel = new URLSearchParams(location.search).get('sentinel');
+window.labI18nOverride = sentinel==='models' ? {
   'settings.customModels.baseUrlLabel':'OVR::baseUrl',
   'settings.customModels.apiKeyLabel':'OVR::apiKey',
   'settings.customModels.authTokenLabel':'OVR::authToken',
+} : sentinel==='approval' ? {
+  'chatStream.tool.input':'OVR::toolInput',
 } : null;
 
 // ── 引擎工具页(EngineToolsPanel)夹具 ──

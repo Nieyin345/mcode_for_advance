@@ -30,9 +30,35 @@ import "./prelude.js";
 import { __mount, __render, __flush, __text, __nodes } from "./fakeReact.js";
 import { server, resetApi, release, releaseLast } from "./api-stub.js";
 import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
-import { WorktreeMergeToolbarButton } from "@renderer/components/chat/WorktreeMergeBack.js";
+import { WorktreeMergeToolbarButton, WorktreeRemoveDialog, WorktreeMergeBackDialog } from "@renderer/components/chat/WorktreeMergeBack.js";
 import { WorktreeManagerPanel } from "@renderer/components/ide/WorktreeManagerPanel.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+
+// fakeReact 不调用子组件,`<Button>`(ui-stub 里是 Pass)停在 `{type, props}` 这一层 ——
+// 它的 `onClick` 就在 props 上,children 里是图标元素 + 文案节点。按**文本 + onClick**
+// 找按钮(不认 type:"button",因为 Button 不是原生 <button>)。
+function findClickable(label: string): { props: Record<string, unknown> } | undefined {
+  return __nodes().find(
+    (n) => typeof n.props.onClick === "function" && nodeText(n as never).includes(label),
+  ) as { props: Record<string, unknown> } | undefined;
+}
+
+function nodeText(n: { props: Record<string, unknown> }): string {
+  const parts: string[] = [];
+  const walk = (c: unknown): void => {
+    if (c === null || c === undefined || c === true || c === false) return;
+    if (typeof c === "string" || typeof c === "number") return void parts.push(String(c));
+    if (Array.isArray(c)) return void c.forEach(walk);
+    if (typeof c === "object") walk((c as { props?: { children?: unknown } }).props?.children);
+  };
+  walk(n.props.children);
+  return parts.join("");
+}
+
+// 渲染端没有全局 unhandledrejection 监听 —— 这里挂一个,**只用来观测**"失败是不是
+// 只落进了未处理的 rejection"(那正是这个缺陷的症状),不吞掉它。
+const unhandled: unknown[] = [];
+process.on("unhandledRejection", (r) => { unhandled.push(r); });
 
 let failures = 0;
 let checks = 0;
@@ -216,10 +242,151 @@ async function worktreeManagerScenario(): Promise<void> {
   check("★ 迟到的旧列表回包不许把已删的 t1 弄回来", !listedWorktreePaths().includes("/wt/t1"), listedWorktreePaths());
 }
 
+// ── [5] WorktreeRemoveDialog:IPC 真 reject 时的静默失败 ──
+//
+// `handleRemove` 从前只有 `try/finally`:IPC reject(参数不过校验 / 传输断)时异常穿过
+// `onClick={() => void handleRemove()}` 变成未处理的 rejection —— 渲染端没有全局监听,
+// 对话框既不关也不报错,用户看到的是"点了删除,没反应"。孪生 `WorktreeManagerPanel.
+// handleRemove` 早已补上 catch(注释逐字写着这件事),这两处漏了。
+//
+// 判据立在**用户看到的那条错误**上:reject 后对话框里必须画出错误文案,且不冒出未处理的
+// rejection。`removeWorktree` 内部把 git/fs 失败收成 `{ok:false}`;这里测的是它**真抛**
+// 的那一类(传输断),所以强制 `git:worktreeRemove` reject。
+async function worktreeReplaceDialogRejectScenario(): Promise<void> {
+  resetApi();
+  server.overrides["git:worktreeStatus"] = { status: { dirty: false, merged: true } };
+  server.reject.add("git:worktreeRemove");
+  unhandled.length = 0;
+
+  let open = true;
+  __mount(() =>
+    WorktreeRemoveDialog({
+      open,
+      onOpenChange: (o: boolean) => { open = o; },
+      repoPath: "/w/repo",
+      worktreePath: "/wt/t1",
+      onRemoved: () => {},
+    }) as never,
+  );
+  await __flush();
+
+  const removeBtn = findClickable("删除工作树");
+  check("★ 删除工作树按钮渲染出来了", !!removeBtn, __nodes().filter((n) => typeof n.props.onClick === "function").map((n) => nodeText(n as never)));
+  (removeBtn?.props.onClick as (() => void))?.();
+  await __flush();
+
+  const shown = __text();
+  check("★ IPC reject 后对话框里画出错误(不是「点了没反应」)", shown.includes(server.rejectMsg), shown);
+  check("★ IPC reject 没有变成未处理的 rejection", unhandled.length === 0, unhandled.map((u) => String(u)));
+  check("失败后对话框不关闭(留着重试)", open === true);
+}
+
+// ── [6] WorktreeMergeBackDialog.handleRemove:同一道孪生缺口 ──
+//
+// 合并完成后那颗"删除工作树"按钮走的是 MergeBackDialog 自己的 handleRemove —— 同样只有
+// try/finally。判据同上。
+async function worktreeMergeBackDialogRejectScenario(): Promise<void> {
+  resetApi();
+  // 先让 load 跑通:worktreeList 有这棵树、mergePreview 说"没有活"(upToDate)。
+  server.overrides["git:worktreeList"] = {
+    worktrees: [
+      { path: "/w/repo", head: "main0", branch: "main", main: true, dirty: false, missing: false, referencedBy: 0, merged: true },
+      { path: "/wt/t1", head: "abc1234", branch: "mcode/x", main: false, dirty: false, missing: false, referencedBy: 1, merged: false },
+    ],
+  };
+  server.overrides["git:mergePreview"] = { ok: true, upToDate: false, fastForward: true, incomingCommits: 1 };
+  server.reject.add("git:worktreeRemove");
+  unhandled.length = 0;
+
+  let open = true;
+  __mount(() =>
+    WorktreeMergeBackDialog({
+      open,
+      onOpenChange: (o: boolean) => { open = o; },
+      sessionId: "s1",
+      worktreePath: "/wt/t1",
+      repoPath: "/w/repo",
+    }) as never,
+  );
+  await __flush();
+
+  // 先合并(默认回值 {} → res.ok 为假会走 setError;这里给个成功的覆盖)。
+  server.overrides["git:worktreeMergeBack"] = { ok: true, targetBranch: "main", fastForward: true };
+  const mergeBtn = findClickable("合并");
+  check("★ 合并按钮可用并渲染", !!mergeBtn, __nodes().filter((n) => typeof n.props.onClick === "function").map((n) => nodeText(n as never)));
+  (mergeBtn?.props.onClick as (() => void))?.();
+  await __flush();
+
+  // 合并成功 → 出现"删除工作树"。
+  const removeBtn = findClickable("删除工作树");
+  check("★ 合并完成后「删除工作树」按钮出现", !!removeBtn, __text());
+  (removeBtn?.props.onClick as (() => void))?.();
+  await __flush();
+
+  const shown = __text();
+  check("★ IPC reject 后合并对话框里画出错误", shown.includes(server.rejectMsg), shown);
+  check("★ IPC reject 没有变成未处理的 rejection", unhandled.length === 0, unhandled.map((u) => String(u)));
+}
+
+// ── [7] WorktreeMergeBackDialog.load():切工作树后旧回包盖掉新的预览 ──
+//
+// 与 toolbar 的 `refresh`(#117)同一类:对话框是同一个实例、只换 prop(worktreePath)——
+// 弱网下旧树的 `worktreeList` 回包会后到,把新树的 info/preview 盖掉,弹层显示的是**另一棵
+// 树**的「将合入 N 个提交」。同文件里 `refresh` 已经加了 `changesSeqRef`(注释逐字写着
+// "对话框是同一个实例、只换 prop"),`load` 漏了 —— 同一道闸两处实现只做了一处。
+//
+// 判据立在用户看到的那行字上:两棵树的 incoming 不同(1 vs 99),切到 B、放完所有回包后,
+// 必须显示 B 的 99;迟到的 A 回包不许把它盖成 1。
+async function worktreeDialogLoadRaceScenario(): Promise<void> {
+  resetApi();
+  const main = { path: "/w/repo", head: "main0", branch: "main", main: true, dirty: false, missing: false, referencedBy: 0, merged: true };
+  const wtA = { path: "/wt/A", head: "aaaa", branch: "mcode/a", main: false, dirty: false, missing: false, referencedBy: 1, merged: false };
+  const wtB = { path: "/wt/B", head: "bbbb", branch: "mcode/b", main: false, dirty: false, missing: false, referencedBy: 1, merged: false };
+  server.mergePreviews["aaaa"] = { ok: true, upToDate: false, fastForward: true, incomingCommits: 1 };
+  server.mergePreviews["bbbb"] = { ok: true, upToDate: false, fastForward: true, incomingCommits: 99 };
+  // 扣住 worktreeList —— 两次 load 的回包由测试按任意顺序放行。
+  server.hold.add("git:worktreeList");
+  server.worktreeLists["/w/repo"] = [main, wtA];
+
+  let path = "/wt/A";
+  __mount(() =>
+    WorktreeMergeBackDialog({
+      open: true,
+      onOpenChange: () => {},
+      sessionId: "s1",
+      worktreePath: path,
+      repoPath: "/w/repo",
+    }) as never,
+  );
+  await __flush();
+  check("A 的 worktreeList 在飞(被扣住)", server.held.some((h) => h.input.repoPath === "/w/repo"), server.held.map((h) => h.input));
+
+  // 换到 B(同一个对话框实例换 prop)→ 触发第二次 load。列表回值在**调用那一刻**快照:
+  // 先换上含 B 的列表,再让第二次 load 发出。
+  path = "/wt/B";
+  server.worktreeLists["/w/repo"] = [main, wtB];
+  __render();
+  await __flush();
+  check("换到 B 后发出的是 B 的 worktreeList", server.held.filter((h) => h.input.repoPath === "/w/repo").length >= 2, server.held.map((h) => h.input));
+
+  // B(新)先回 → 预览是 B 的 99。
+  releaseLast("git:worktreeList", (i) => i.repoPath === "/w/repo"); // 最后一条 = 第二次 = B
+  await __flush();
+  check("B 先回 → 显示 B 的「将合入 99 个提交」", __text().includes("99"), __text());
+
+  // A(旧,含 wtA)迟到 → 不许把 B 的预览盖成 A 的 1。
+  release("git:worktreeList", (i) => i.repoPath === "/w/repo");
+  await __flush();
+  check("★ 迟到的 A 回包不许把 B 的预览盖成 A 的", __text().includes("99") && !__text().includes("将合入 1 个提交"), __text());
+}
+
 await scenario();
 await reverseScenario();
 await worktreeScenario();
 await worktreeManagerScenario();
+await worktreeReplaceDialogRejectScenario();
+await worktreeMergeBackDialogRejectScenario();
+await worktreeDialogLoadRaceScenario();
 
 console.log(`\nproject-branch-race-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

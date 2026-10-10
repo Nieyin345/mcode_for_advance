@@ -216,6 +216,13 @@ export function WorktreeRemoveDialog({
       }
       onOpenChange(false);
       onRemoved?.();
+    } catch (err) {
+      // **IPC 本身抛了(参数不过校验 / 传输断)也要有话说。** 从前只有 try/finally:
+      // 异常穿过 `onClick={() => void handleRemove()}` 变成未处理的 rejection(渲染端
+      // 没有全局监听),对话框既不关也不报错,用户看到的是"点了没反应"。`removeWorktree`
+      // 内部已把 git/fs 失败收成 `{ok:false}`,但这一层仍要挡住真正 reject 的那一类 ——
+      // 与 `WorktreeManagerPanel.handleRemove` 的孪生分支同一道闸。
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -326,6 +333,11 @@ export function WorktreeMergeBackDialog({
   void sessionId; // reserved (future: per-session result phrasing)
   const { t } = useI18n();
   const [info, setInfo] = useState<GitWorktreeInfo | null>(null);
+  // 请求序号:对话框是同一个实例、只换 prop(worktreePath/repoPath)—— 切到另一棵树时
+  // 旧的 `worktreeList` / `mergePreview` 回包不许把新的 info/preview 盖掉(弱网下旧回包后到)。
+  // 与同文件 toolbar 的 `refresh`(`changesSeqRef`)、`ProjectBranchIndicator` /
+  // `GitPanel` / `GitHistoryView` 同一类守卫 —— 从前只有 toolbar 那半加了。
+  const loadSeqRef = useRef(0);
   // The MAIN worktree's current branch — the merge-back target, stated in
   // the dialog so the direction is unambiguous.
   const [mainBranch, setMainBranch] = useState<string>("");
@@ -409,6 +421,7 @@ export function WorktreeMergeBackDialog({
 
   const load = useCallback(async () => {
     if (!repoPath) return;
+    const seq = ++loadSeqRef.current;
     setError(null);
     setDone(null);
     setConflictFiles(null);
@@ -427,6 +440,7 @@ export function WorktreeMergeBackDialog({
     setPreviewLoading(true);
     try {
       const { worktrees } = await api.git.worktreeList({ repoPath });
+      if (seq !== loadSeqRef.current) return; // superseded (worktree switched)
       setMainBranch(worktrees.find((w) => w.main)?.branch ?? "");
       // Match by NORMALIZED path: git's porcelain echoes the worktree path in
       // its own surface form (forward slashes on win32) while the DB stores
@@ -439,17 +453,25 @@ export function WorktreeMergeBackDialog({
       if (mine?.head) {
         api.git
           .mergePreview({ repoPath, source: mine.head })
-          .then(setPreview)
+          .then((p) => {
+            if (seq !== loadSeqRef.current) return; // superseded (worktree switched)
+            setPreview(p);
+          })
           .catch((err) => {
+            if (seq !== loadSeqRef.current) return;
             // Surface the real failure instead of the generic fallback copy.
             setPreview(null);
             setError((err as Error).message || null);
           })
-          .finally(() => setPreviewLoading(false));
+          .finally(() => {
+            if (seq !== loadSeqRef.current) return;
+            setPreviewLoading(false);
+          });
       } else {
         setPreviewLoading(false);
       }
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       setError((err as Error).message);
       setPreviewLoading(false);
     }
@@ -560,6 +582,10 @@ export function WorktreeMergeBackDialog({
         return;
       }
       onOpenChange(false);
+    } catch (err) {
+      // 同 `WorktreeRemoveDialog.handleRemove`:IPC 真 reject 时也要把话说出来,
+      // 而不是让它落进未处理的 rejection、对话框停在原地不响。
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRemoving(false);
     }

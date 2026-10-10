@@ -11,6 +11,19 @@ await withAuditPage(here,async page=>{
  const key=async(key,code=key,vk=key==='Enter'?13:key==='Escape'?27:key==='Tab'?9:37)=>{await page.send('Input.dispatchKeyEvent',{type:'keyDown',key,code,windowsVirtualKeyCode:vk});await page.send('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:vk});await page.sleep(80);};
  const test=async(name,fn)=>{try{await fn();check(name+' / no uncaught errors',page.exceptions.length===0,page.exceptions.slice());}catch(e){check(name,false,String(e));}await page.screenshot(name+'.png');};
  await test('approval-scope',async()=>{await go('approval');await click('[aria-label="B 会话输入"]');await key('Escape');check('background approval untouched',await page.eval('labEvents.length===0'));});
+ // 审批卡展开区那段「输入」标签必须走 i18n key —— 它的孪生 MessageBlocks(工具卡)用的是
+ // 同一把 key `chatStream.tool.input`。用哨兵把该 key 换成 OVR::toolInput:源码走 key 则
+ // 界面显示替换值;写死 "Input" 则显示原文(zh/en 两份值本就一样,光靠切语言分辨不出)。
+ // 卡片在 display:none 里,但 React 已把它渲染进 DOM,`详情` 按钮的 click 仍能触发。
+ await test('approval-input-label-i18n',async()=>{
+  await go('approval&sentinel=approval');
+  await page.eval(`(()=>{const b=[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='详情');b&&b.click();})()`);
+  await page.sleep(120);
+  const label=await page.eval(`(()=>{const d=[...document.querySelectorAll('div')].find(e=>e.children.length===0&&e.textContent.trim()==='OVR::toolInput');return d?d.textContent.trim():null;})()`);
+  check('★ 审批卡的「输入」标签走 i18n key(哨兵替换可见)',label==='OVR::toolInput',label);
+  const raw=await page.eval(`[...document.querySelectorAll('div')].some(e=>e.children.length===0&&e.textContent.trim()==='Input')`);
+  check('审批卡没有把 Input 写死',!raw);
+ });
  await test('question-scope-ime',async()=>{await go('question');await input('[role=dialog] input','typed');await click('[aria-label="另一个界面的输入框"]');await key('Enter');check('unrelated input cannot submit question',await page.eval('labEvents.length===0'));await page.eval(`document.querySelector('[role=dialog] input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);check('composing Enter does not submit',await page.eval('labEvents.length===0'));await click('[role=dialog] input');await key('Enter');check('local normal Enter submits exactly once',await page.eval('labEvents.filter(x=>x.startsWith("submit:")).length===1'));});
  await test('plan-ime',async()=>{
   await go('plan');await input('main input','feedback');await page.eval(`document.querySelector('main input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);check('IME cannot approve a plan',await page.eval('labEvents.length===0'));await key('Enter');check('normal Enter approves plan once',await page.eval('labEvents.join()==="approved"'));

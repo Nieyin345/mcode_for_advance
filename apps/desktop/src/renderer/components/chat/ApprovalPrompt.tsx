@@ -166,7 +166,7 @@ export function ApprovalPrompt({
       {/* Expandable input */}
       {open && (
         <div className="mb-2.5">
-          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-content-subtle">Input</div>
+          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-content-subtle">{t("chatStream.tool.input")}</div>
           <pre className="max-h-40 overflow-auto rounded-lg bg-surface-muted/60 p-2 text-[11px] text-content-muted">
             {safeStringify(input)}
           </pre>
