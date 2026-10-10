@@ -1,0 +1,38 @@
+// 真 McpPanel + 真 i18n + 真 UI 原语 + 真 CSS，挂进独立 Chromium。
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readdirSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync } from 'node:fs';
+import { buildTailwindCached } from "../lib/tailwind-cache.mjs";
+const source = dirname(fileURLToPath(import.meta.url)), desktop = resolve(source, '../..');
+const root = join(desktop, 'src/renderer'), pnpm = resolve(desktop, '../../node_modules/.pnpm');
+const pkg = (prefix, sub) => {
+  const n = readdirSync(pnpm).filter(n => n.startsWith(prefix)).sort().at(-1);
+  if (!n) throw Error('Missing installed dependency ' + prefix);
+  return join(pnpm, n, 'node_modules', sub);
+};
+const esbuild = await import(pathToFileURL(pkg('esbuild@', 'esbuild/lib/main.js')).href);
+mkdirSync(join(desktop, '.tmp'), { recursive: true });
+const dir = mkdtempSync(join(desktop, '.tmp/mcp-ui-'));
+console.log('MCP UI artifacts: ' + dir);
+for (const file of ['verify.mjs']) copyFileSync(join(source, file), join(dir, file));
+copyFileSync(join(desktop, 'scripts/ui-interaction-smoke/browser.mjs'), join(dir, 'browser.mjs'));
+const stubs = {
+  '@renderer/lib/api.js': 'export const api=window.labApi;',
+  '@renderer/stores/sessionStore.js': "import {useSyncExternalStore} from 'react';export const useSessionStore=fn=>fn(useSyncExternalStore(window.labSubscribe,()=>window.labState));useSessionStore.getState=()=>window.labState;",
+  '@renderer/stores/toastStore.js': 'export const useToastStore={getState:()=>({push:message=>window.labToasts.push(message)})};',
+  '@renderer/components/ui/index.js': ['button', 'dialog', 'empty-state', 'error-note', 'field', 'spinner', 'confirm-dialog', 'select', 'info-hint', 'card', 'input', 'switch', 'badge'].map(n => `export * from ${JSON.stringify(join(root, 'components/ui', n + '.tsx'))};`).join('\n'),
+};
+await esbuild.build({
+  entryPoints: [join(source, 'main.jsx')], bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
+  tsconfig: join(desktop, 'tsconfig.json'), absWorkingDir: desktop,
+  define: { 'process.env.NODE_ENV': '"production"' }, outfile: join(dir, 'bundle.js'), logLevel: 'error',
+  plugins: [{ name: 'isolated-ipc-and-session', setup(b) {
+    b.onResolve({ filter: /.*/ }, a => a.path in stubs ? { path: a.path, namespace: 'mock' } : undefined);
+    b.onLoad({ filter: /.*/, namespace: 'mock' }, a => ({ contents: stubs[a.path], loader: 'tsx', resolveDir: desktop }));
+  } }],
+});
+const configPath = join(dir, 'tailwind.config.cjs');
+writeFileSync(configPath, readFileSync(join(desktop, 'tailwind.config.js'), 'utf8').replace('export default', 'module.exports =').replace('content: ["./src/renderer/**/*.{ts,tsx,html}"]', 'content: ' + JSON.stringify([root.replaceAll('\\', '/') + '/**/*.{ts,tsx,html}', join(source, 'main.jsx').replaceAll('\\', '/')])));
+const css = buildTailwindCached({ cliPath: pkg('tailwindcss@','tailwindcss/lib/cli.js'), configPath: configPath, inputCss: 'src/renderer/styles.css', outPath: join(dir,'app.css'), cwd: desktop });if (css.status !== undefined && css.status !== 0) throw Error('tailwind failed');
+writeFileSync(join(dir, 'index.html'), '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Isolated MCP management regression</title><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script>' + readFileSync(join(source, 'mocks.js'), 'utf8') + '</script><script src="/bundle.js"></script></body></html>');
+await import(pathToFileURL(join(dir, 'verify.mjs')).href);

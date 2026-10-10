@@ -266,6 +266,11 @@ export function McpPanel() {
   // 新增 / 编辑对话框的目标:null = 总库(用户级);非空 = 这个项目的 .mcp.json。
   const [dialogProject, setDialogProject] = useState<string | null>(null);
   const [projectRefresh, setProjectRefresh] = useState(0);
+  // 勾选（批量启用/停用/删除）。用户 2026-10-11：「每个集合没有批量管理，批量选择」。
+  // ⚠️ 只有**用户级**那组能勾：插件带来的服务器归插件管、内置的不可删 —— 同技能页
+  //    "只有总库可勾选复制"、插件页"只有已装的可勾"是同一条规矩。
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
 
   /** `load` 的序号守卫 —— 它在挂载/每次 toggle/authorize/import 后都会并发触发,
    *  旧回包(成功或失败)不能盖掉更新的那次。 */
@@ -353,6 +358,53 @@ export function McpPanel() {
     } finally {
       setPendingDelete(null);
     }
+  };
+
+  /** 勾选批量的启用/停用。后端 `mcp.toggle` 是单条，前端逐条循环 —— 同技能页 /
+   *  插件页的既有做法。只作用于勾中的用户级服务器（只有那组能勾）。 */
+  const bulkSetEnabled = async (want: boolean) => {
+    const targets = servers.filter(
+      (s) => s.scope === "user" && checked.has(s.name) && s.enabled !== want,
+    );
+    if (!targets.length) return;
+    setError(null);
+    const failures: string[] = [];
+    for (const s of targets) {
+      setBusyKey(rowKey(s));
+      try {
+        const res = await api.mcp.toggle({ name: s.name, scope: s.scope, enabled: want });
+        if (!res.ok) failures.push(`${s.name}: ${res.error ?? t("settings.operationFailed")}`);
+      } catch (err) {
+        failures.push(`${s.name}: ${(err as Error).message}`);
+      }
+    }
+    setBusyKey(null);
+    await load();
+    if (failures.length) setError(failures.join("; "));
+  };
+
+  /** 勾选批量的删除。危险动作，走确认框；失败如实计数。 */
+  const bulkDelete = async () => {
+    setPendingBulkDelete(false);
+    const targets = servers.filter((s) => s.scope === "user" && checked.has(s.name));
+    if (!targets.length) return;
+    setError(null);
+    const failures: string[] = [];
+    const removed = new Set<string>();
+    for (const s of targets) {
+      setBusyKey(rowKey(s));
+      try {
+        const res = await api.mcp.remove({ name: s.name });
+        if (res.ok) removed.add(s.name);
+        else failures.push(`${s.name}: ${res.error ?? t("settings.deleteFailed")}`);
+      } catch (err) {
+        failures.push(`${s.name}: ${(err as Error).message}`);
+      }
+    }
+    setBusyKey(null);
+    if (removed.size) setChecked((prev) => new Set([...prev].filter((n) => !removed.has(n))));
+    await load();
+    if (failures.length) setError(failures.join("; "));
   };
 
   /** OAuth browser login for a remote server flagged needsAuth. Blocks until
@@ -514,6 +566,37 @@ export function McpPanel() {
       )}
 
       <div className={cn("space-y-4", view === "library" ? "" : "hidden")}>
+      {/* 勾选批量条：勾了用户级服务器才出现。 */}
+      {checked.size > 0 && (
+        <div
+          data-testid="mcp-bulk-bar"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-edge bg-surface/60 px-3 py-1.5"
+        >
+          <span className="text-[0.8571em] font-medium text-content-muted">
+            {t("settings.mcp.bulkSelected", { n: checked.size })}
+          </span>
+          <Button variant="ghost" size="sm" data-testid="mcp-bulk-enable" disabled={busyKey != null} onClick={() => void bulkSetEnabled(true)}>
+            {t("settings.mcp.bulkEnable")}
+          </Button>
+          <Button variant="ghost" size="sm" data-testid="mcp-bulk-disable" disabled={busyKey != null} onClick={() => void bulkSetEnabled(false)}>
+            {t("settings.mcp.bulkDisable")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="mcp-bulk-delete"
+            disabled={busyKey != null}
+            onClick={() => setPendingBulkDelete(true)}
+            className="ml-auto gap-1 text-danger hover:bg-danger/10"
+          >
+            <IconTrash size={12} />
+            {t("settings.mcp.bulkDelete")}
+          </Button>
+          <Button variant="ghost" size="sm" disabled={busyKey != null} onClick={() => setChecked(new Set())}>
+            {t("settings.skills.clearSelection")}
+          </Button>
+        </div>
+      )}
       {/* ───────── 用户级 ───────── */}
       <SettingsSection
         title={t("settings.mcp.userSection")}
@@ -534,6 +617,23 @@ export function McpPanel() {
           userServers.map((s) => (
             <SettingRow
               key={rowKey(s)}
+              leading={
+                <input
+                  type="checkbox"
+                  checked={checked.has(s.name)}
+                  onChange={(e) =>
+                    setChecked((prev) => {
+                      const set = new Set(prev);
+                      if (e.target.checked) set.add(s.name);
+                      else set.delete(s.name);
+                      return set;
+                    })
+                  }
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent"
+                  aria-label={s.name}
+                  data-mcp-check={s.name}
+                />
+              }
               title={
                 <span className="flex items-center gap-1.5">
                   <span className="font-mono">{s.name}</span>
@@ -710,6 +810,18 @@ export function McpPanel() {
           if (!open) setPendingDelete(null);
         }}
         onConfirm={() => void confirmDelete()}
+      />
+
+      <ConfirmDialog
+        open={pendingBulkDelete}
+        title={t("settings.mcp.bulkDelete")}
+        danger
+        description={t("settings.mcp.bulkDeleteDesc", { n: checked.size })}
+        confirmText={t("common.delete")}
+        onOpenChange={(open) => {
+          if (!open) setPendingBulkDelete(false);
+        }}
+        onConfirm={() => void bulkDelete()}
       />
 
       <AddServerDialog

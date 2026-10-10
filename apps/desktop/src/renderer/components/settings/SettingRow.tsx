@@ -79,6 +79,7 @@ export function SettingRow({
   controlAlign = "center",
   layout = "horizontal",
   className,
+  leading,
   children,
 }: {
   title: ReactNode;
@@ -95,6 +96,9 @@ export function SettingRow({
   /** Layout direction: horizontal = side-by-side, vertical = stacked. */
   layout?: "horizontal" | "vertical";
   className?: string;
+  /** 标题左侧的槽（给批量勾选这类"选这一行"的控件用）。不传就还是原来的样子，
+   *  所以已有调用方一律不受影响。 */
+  leading?: ReactNode;
   children: ReactNode;
 }) {
   const head = <RowHead title={title} hint={hint} desc={desc} descExtra={descExtra} descMode={descMode} htmlFor={htmlFor} />;
@@ -102,7 +106,10 @@ export function SettingRow({
   if (layout === "vertical") {
     return (
       <div className={cn("flex flex-col gap-2 px-4 py-3", className)}>
-        <div>{head}</div>
+        <div className="flex items-start gap-2">
+          {leading}
+          <div className="min-w-0 flex-1">{head}</div>
+        </div>
         <div className="w-full">{children}</div>
       </div>
     );
@@ -115,7 +122,10 @@ export function SettingRow({
         className,
       )}
     >
-      <div className="min-w-0 flex-1">{head}</div>
+      <div className="flex min-w-0 flex-1 items-start gap-2">
+        {leading}
+        <div className="min-w-0 flex-1">{head}</div>
+      </div>
       <div
         style={{ width: CONTROL_SLOT_WIDTH }}
         className={cn(
