@@ -87,6 +87,29 @@ function isPasteTempPath(abs: string): boolean {
   return pathWithin(pasteTempDir(), abs);
 }
 
+/** 把 Node 的 errno 翻成一句给人看的中文 —— **别让 `EEXIST: file already exists,
+ *  mkdir 'C:\Users\…\mcode-pastes'` 这种 OS 英文原文(还带着用户机器的绝对路径)
+ *  漏到界面**。
+ *
+ *  `clipboard:saveFile` 的失败回执是 `{ ok:false, error }`,而渲染端
+ *  (`ChatPane` 粘贴外部文件那段)把它原样塞进 `chat.toast.attachFailedBody: "{reason}"`
+ *  —— 也就是**中文 toast 里蹦出一行英文 + 绝对路径**(实测:`mkdir` 撞到同名文件时漏出
+ *  `EEXIST: …, mkdir 'C:\Users\…\AppData\Local\Temp\mcode-pastes'`)。这条通路的另外
+ *  两个 errno 来源(`writeFile` 的 ENOSPC/EACCES)同理。与 `memory/store.ts` 的
+ *  `describeFsError`、`lib/rgInstall.ts` 的 `describePrepErr` 同一口径:常见 errno 翻中文,
+ *  其余保留原文(至少不吞)。 */
+function describeFsError(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") return "文件不存在或已被移走";
+  if (code === "EACCES" || code === "EPERM") return "没有访问权限";
+  if (code === "EISDIR") return "目标不是一个文件";
+  if (code === "ENOTDIR") return "所在的位置不是一个目录";
+  if (code === "EEXIST") return "同名文件或目录已存在,挡住了写入";
+  if (code === "ENOSPC") return "磁盘空间不足";
+  if (code === "EROFS") return "所在的位置是只读的";
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Directory/file names hidden from the file tree. These are build artifacts
  *  or VCS internals the user never wants to click through. Kept as a Set for
  *  O(1) lookup during listing. Dotfiles are NOT hidden — users expect to see
@@ -936,7 +959,8 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
     } catch (err) {
       const msg = (err as Error).message;
       log.warn(`clipboard.saveFile failed: ${msg}`);
-      return { ok: false, error: msg };
+      // 这句会经 `ChatPane` 原样显示在中文 toast 里,所以交出去的是人话(见 describeFsError)。
+      return { ok: false, error: describeFsError(err) };
     }
   });
 
@@ -961,7 +985,9 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
     } catch (err) {
       const msg = (err as Error).message;
       log.warn(`clipboard.writeImage failed: ${msg}`);
-      return { ok: false, error: msg };
+      // 上一条分支(空图)已经交回中文(「图片数据无法解码」);这条 catch 从前交的是
+      // OS/Electron 的英文原文,同一个 handler 两种口径。统一成人话。
+      return { ok: false, error: describeFsError(err) };
     }
   });
 }
