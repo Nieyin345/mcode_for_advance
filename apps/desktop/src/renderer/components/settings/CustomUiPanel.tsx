@@ -29,6 +29,7 @@ import {
   customUiLabel,
   moduleKey,
   normalizeExtension,
+  sampleTargetOf,
   sanitizeWhen,
   supportsSkipWhen,
   supportsTargetContext,
@@ -821,10 +822,25 @@ function ItemEditor({
       .map((i) => ({ key: customKey(i.id), label: customUiLabel(i.label, locale) })),
   ];
   const vars = TEMPLATE_VARS_BY_SLOT[draft.slot];
+  // E6:各槽位能用的 vars 键这里直接从契约的 TEMPLATE_VARS_BY_SLOT 列出 —— 从前作者只能
+  // 去 grep 源码才知道。做成可折叠、默认收起的小块,不喧宾夺主。
   const varsHint = (
-    <p className="text-[0.7857em] text-content-subtle">
-      {t("customUi.editor.vars")} {vars.map((v) => `{{${v}}}`).join("  ")}
-    </p>
+    <details
+      className="rounded-md border border-edge px-2 py-1 text-[0.7857em] text-content-subtle"
+      data-testid="custom-ui-vars"
+    >
+      <summary className="cursor-pointer select-none">
+        {t("customUi.editor.vars")}
+        <span className="ml-1 tabular-nums">({vars.length})</span>
+      </summary>
+      <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 font-mono">
+        {vars.map((v) => (
+          <code key={v} className="rounded bg-surface-muted px-1 py-px">
+            {`{{${v}}}`}
+          </code>
+        ))}
+      </div>
+    </details>
   );
   // 模板变量 lint（B1）：打错的变量运行时会静默渲染成空串（那是对的——原样发给模型
   // 会被当成要填的槽），所以「打错了」必须在这里点名。宽容运行、严格提示：不拦保存。
@@ -863,8 +879,17 @@ function ItemEditor({
 
   // 面板「预览」:草稿的一份快照,**就地**显示在编辑框下面(不另开浮窗 —— 两个模态框
   // 叠着,点到上面那个会被下面那个当成「点了外面」而关掉,草稿就没了)。再点一次 = 用
-  // 最新的草稿重新加载。目标 = 当前工作区。
+  // 最新的草稿重新加载。
+  //
+  // **目标**:从前预览一律喂当前工作区(`useWorkspaceTarget`,只有 project.*/session.*/today)
+  // —— 于是任何依赖 `item.*` / `collection.*` / `file.*` 的面板在预览里必然读到空串,作者
+  // 以为是自己代码写错了(其实预览喂错了目标,和右键打开时根本不是一回事)。
+  // 现在:有目标种类的槽位(条目 / 分类 / 文件 / 消息 / 选中 / 对话 / 项目)喂一份
+  // `sampleTargetOf` 造出来的**样例目标**(字段齐全、值带 (sample) 标记);只有工作区槽位
+  // 才用真实工作区。用了样例的,气泡里显式标注「模拟上下文」。
   const workspaceTarget = useWorkspaceTarget();
+  const usesSampleTarget = targetKindOfSlot(draft.slot) !== "workspace";
+  const previewTarget = usesSampleTarget ? sampleTargetOf(draft.slot) : workspaceTarget;
   const [preview, setPreview] = useState<{ item: CustomUiItem; n: number } | null>(null);
   const previewPanel = () => {
     const r = itemOf(draft);
@@ -1321,14 +1346,22 @@ function ItemEditor({
                 )}
                 {preview !== null && (
                   <div className="overflow-hidden rounded-md border border-edge" data-testid="custom-ui-panel-preview-box">
-                    <div className="flex h-7 items-center border-b border-edge bg-surface-muted px-2 text-[0.7857em] text-content-subtle">
+                    <div className="flex h-7 items-center gap-2 border-b border-edge bg-surface-muted px-2 text-[0.7857em] text-content-subtle">
                       <span className="flex-1">{t("customUi.editor.panelPreviewing")}</span>
                       <button type="button" className="hover:text-content" onClick={() => setPreview(null)}>
                         {t("customUi.editor.panelPreviewClose")}
                       </button>
                     </div>
+                    {usesSampleTarget && (
+                      <p
+                        className="border-b border-edge bg-warning/10 px-2 py-1 text-[0.7857em] leading-relaxed text-warning"
+                        data-testid="custom-ui-panel-preview-sample"
+                      >
+                        {t("customUi.editor.panelPreviewSample")}
+                      </p>
+                    )}
                     <div className="h-[360px]">
-                      <PanelFrame item={preview.item} target={workspaceTarget} reloadKey={preview.n} />
+                      <PanelFrame item={preview.item} target={previewTarget} reloadKey={preview.n} />
                     </div>
                   </div>
                 )}

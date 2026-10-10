@@ -244,6 +244,8 @@ export const en = {
   "customUi.editor.panelInsertExample": "Insert example",
   "customUi.editor.panelPreview": "Preview",
   "customUi.editor.panelPreviewing": "Preview (unsaved draft; click Preview again to reload with the latest content)",
+  "customUi.editor.panelPreviewSample":
+    "Simulated context: this is a settings-page preview running on made-up sample data (entry / category / file / project fields are filled in, but all fake) — not your real data.",
   "customUi.editor.panelPreviewClose": "Hide",
   "customUi.editor.panelConfirm": "Confirm before writing files / running automations / commands",
   "customUi.editor.panelNetwork": "Allow network (https)",

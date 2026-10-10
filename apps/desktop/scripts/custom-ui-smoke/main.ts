@@ -33,6 +33,8 @@ import {
   normalizeExtension,
   parseCustomUiConfig,
   renderTemplate,
+  sampleTargetOf,
+  SAMPLE_PREFIX,
   supportsSkipWhen,
   supportsTargetContext,
   targetKindOfSlot,
@@ -359,6 +361,42 @@ eq("没项目 → 拼不出", resolveWorkspacePath("README.md", undefined), null
 eq("空路径 → null", resolveWorkspacePath("   ", "/w/proj"), null);
 eq("本地日期补零", localDateString(new Date(2026, 0, 5)), "2026-01-05");
 
+/* ── 设置页「预览」的合成目标（报告 E5）─────────────────────────────────
+ *
+ * 从前预览**一律**拿当前工作区目标去喂面板。工作区目标只有 project.* / session.* /
+ * today（见 `templateVarsOf`），于是任何依赖 `item.*` / `collection.*` / `file.*` 的
+ * 面板在预览里读到空串 —— 作者以为是自己的代码错了。这里钉住修法：每个挂载位的样例
+ * 目标都**字段齐全**（与 TEMPLATE_VARS_BY_SLOT 一致），且样例值非空、带 (sample) 标记。 */
+
+{
+  // 工作区目标**没有** item.* / collection.* / file.* —— 这正是旧行为在条目面板上失败的原因。
+  const wsVars = templateVarsOf(ws);
+  check("★ 工作区目标没有 item.title（旧预览喂它 → 条目面板必然读空）", !Object.hasOwn(wsVars, "item.title"), Object.keys(wsVars));
+  check("★ 工作区目标没有 collection.name（同上，分类面板）", !Object.hasOwn(wsVars, "collection.name"), Object.keys(wsVars));
+  check("★ 工作区目标没有 file.path（同上，文件面板）", !Object.hasOwn(wsVars, "file.path"), Object.keys(wsVars));
+
+  for (const slot of CUSTOM_UI_SLOTS) {
+    const sample = sampleTargetOf(slot);
+    // 目标种类要与挂载位对得上（否则模板变量表也对不上）。
+    eq(`★ 样例目标的种类与挂载位一致(${slot})`, sample.kind, targetKindOfSlot(slot));
+    const vars = templateVarsOf(sample);
+    // 每个挂载位列出的变量，样例都得填（否则预览里那个变量还是空串）。
+    check(
+      `★ 样例目标字段齐全(${slot})`,
+      TEMPLATE_VARS_BY_SLOT[slot].every((v) => Object.hasOwn(vars, v)),
+      { listed: TEMPLATE_VARS_BY_SLOT[slot], vars: Object.keys(vars) },
+    );
+    // 值非空：空值等于没修（面板读到的还是空）。
+    const empty = TEMPLATE_VARS_BY_SLOT[slot].filter((v) => (vars[v] ?? "") === "");
+    check(`★ 样例目标的值都非空(${slot})`, empty.length === 0, empty);
+  }
+
+  // 样例要**看得出来是样例**：喂给用户的字符串带上标记，别让人误当真实数据。
+  check("★ 条目样例的标题带 (sample) 标记", templateVarsOf(sampleTargetOf("library.item"))["item.title"].startsWith(SAMPLE_PREFIX));
+  check("★ 分类样例的名字带 (sample) 标记", templateVarsOf(sampleTargetOf("library.collection"))["collection.name"].startsWith(SAMPLE_PREFIX));
+  check("★ 文件样例的路径在项目根下（files.list 需要项目）", sampleTargetOf("files.context").kind === "file" && (sampleTargetOf("files.context") as { projectPath: string }).projectPath.length > 0);
+}
+
 /* ── 模板变量 lint（设置页保存前的提示；规矩 6：打错的变量要能被看见）── */
 
 eq("已知变量 → 无未知", unknownTemplateVars("A {{item.title}} B", "library.item"), []);
@@ -652,6 +690,25 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
     /action\.type === "prompt" && !action\.template\.trim\(\)/.test(panel));
   check("★ 编辑器挡住空的 copy 模板",
     /action\.type === "copy" && !action\.template\.trim\(\)/.test(panel));
+
+  /* ── 报告 E5:预览必须喂「有目标种类」的槽位一份合成目标，不再一律喂工作区 ──
+   *
+   * 组件在无头下渲染不出来，判据钉源码：预览的 target 要来自 `sampleTargetOf`（工作区
+   * 槽位除外）。从前这里写死 `target={workspaceTarget}` —— 条目 / 分类 / 文件面板预览
+   * 必然读空。撤掉 `sampleTargetOf` 那一支 → 断言真红。 */
+  check("★ 预览:导入了 sampleTargetOf（合成目标）", /sampleTargetOf/.test(panel));
+  check("★ 预览:按槽位的目标种类决定用样例还是真工作区",
+    /usesSampleTarget\s*=\s*targetKindOfSlot\(draft\.slot\)\s*!==\s*"workspace"/.test(panel));
+  check("★ 预览:PanelFrame 拿到的是 previewTarget（不再是写死的 workspaceTarget）",
+    /<PanelFrame\s+item=\{preview\.item\}\s+target=\{previewTarget\}/.test(panel));
+  check("★ 预览:用了样例时气泡显式标注「模拟上下文」",
+    /data-testid="custom-ui-panel-preview-sample"/.test(panel) && /panelPreviewSample/.test(panel));
+
+  /* ── 报告 E6:编辑器里就地列出当前槽位可用的 vars 键（数据来自契约）── */
+  check("★ 编辑器:vars 提示块带 testid、可折叠",
+    /data-testid="custom-ui-vars"/.test(panel) && /<details/.test(panel));
+  check("★ 编辑器:vars 列表来自 TEMPLATE_VARS_BY_SLOT[draft.slot]",
+    /TEMPLATE_VARS_BY_SLOT\[draft\.slot\]/.test(panel));
 }
 
 /* ── 面板 SDK 的 `api.call`:真的把 SDK 跑起来 ──

@@ -866,6 +866,81 @@ export function targetKindOfSlot(slot: CustomUiSlot): CustomUiTarget["kind"] {
   return "workspace";
 }
 
+/** 样例数据一律带上这个前缀 —— 设置页预览时一眼看出「这是编的,不是你的真条目」。 */
+export const SAMPLE_PREFIX = "(sample) ";
+
+/**
+ * 某个挂载位的**合成目标** —— 设置页「预览」用。
+ *
+ * 面板要读 `item.title` / `collection.name` 这些,可预览时手边没有真实的右键目标。
+ * 从前预览**一律**拿当前工作区目标(`useWorkspaceTarget`)去喂:那是 `workspace` 目标,
+ * `templateVarsOf` 只给 `project.* / session.* / today` —— 于是任何依赖条目 / 分类 / 文件
+ * 信息的面板在预览里**必然读到空串**,作者以为是自己代码写错了(实际是预览喂错了目标)。
+ *
+ * 这里按挂载位的目标种类**造一份字段齐全的样例**:键齐全(与
+ * {@link TEMPLATE_VARS_BY_SLOT} 一致)、值非空且带 {@link SAMPLE_PREFIX} 标记。调方仍
+ * 要显式告诉用户「这是模拟上下文」——样例就是样例。
+ *
+ * `workspace` 请**不要**用它:那个种类有真实的工作区目标可用(`useWorkspaceTarget`)。
+ */
+export function sampleTargetOf(slot: CustomUiSlot): CustomUiTarget {
+  const today = localDateString(new Date());
+  const project = { path: `${SAMPLE_PREFIX}/project`, name: `${SAMPLE_PREFIX}project` };
+  const session = { id: "sample-session", title: `${SAMPLE_PREFIX}chat` };
+  switch (targetKindOfSlot(slot)) {
+    case "item":
+      return {
+        kind: "item",
+        groupId: "sample-group",
+        item: {
+          id: "sample-item",
+          title: `${SAMPLE_PREFIX}Example paper`,
+          abstract: `${SAMPLE_PREFIX}An abstract.`,
+          url: "https://example.com/paper",
+          language: "en",
+          pdfPath: "sample/paper.pdf",
+          mdPath: "sample/paper.md",
+          filePath: "sample/paper.pdf",
+        },
+      };
+    case "collection":
+      return {
+        kind: "collection",
+        level: slot === "library.subcategory" ? "subcategory" : "collection",
+        groupId: "sample-group",
+        collection: { id: "sample-collection", name: `${SAMPLE_PREFIX}category` },
+      };
+    case "group":
+      return { kind: "group", group: { id: "sample-group", name: `${SAMPLE_PREFIX}group` } };
+    case "file":
+      return { kind: "file", projectPath: project.path, path: `${project.path}/docs/report.pdf` };
+    case "message":
+      return {
+        kind: "message",
+        message: { id: "sample-message", role: "assistant", text: `${SAMPLE_PREFIX}message text` },
+        project,
+        session,
+        today,
+      };
+    case "selection":
+      return {
+        kind: "selection",
+        text: `${SAMPLE_PREFIX}selected text`,
+        source: "chat",
+        path: `${project.path}/src/sample.ts`,
+        project,
+        session,
+        today,
+      };
+    case "session":
+      return { kind: "session", session, project, today };
+    case "project":
+      return { kind: "project", project: { id: "sample-project", ...project }, today };
+    case "workspace":
+      return { kind: "workspace", project, session, today };
+  }
+}
+
 /**
  * 「文件」动作的路径 → 绝对路径。相对路径按项目目录接上;没有项目又是相对路径 → `null`
  * (调用方提示「先打开一个项目」)。

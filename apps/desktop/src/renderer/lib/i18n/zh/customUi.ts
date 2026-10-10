@@ -251,6 +251,8 @@ export const zh = {
   "customUi.editor.panelInsertExample": "插入示例",
   "customUi.editor.panelPreview": "预览",
   "customUi.editor.panelPreviewing": "预览(未保存的草稿;再点「预览」用最新内容重新加载)",
+  "customUi.editor.panelPreviewSample":
+    "模拟上下文：这里在设置页里预览，喂给面板的是编造的样例数据（条目 / 分类 / 文件 / 项目这些字段都填满了，但都是假值），不是你的真实数据。",
   "customUi.editor.panelPreviewClose": "收起",
   "customUi.editor.panelConfirm": "写文件 / 运行自动化 / 跑命令前确认",
   "customUi.editor.panelNetwork": "允许联网(https)",
