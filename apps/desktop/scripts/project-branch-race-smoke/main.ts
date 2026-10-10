@@ -242,6 +242,29 @@ async function worktreeManagerScenario(): Promise<void> {
   check("★ 迟到的旧列表回包不许把已删的 t1 弄回来", !listedWorktreePaths().includes("/wt/t1"), listedWorktreePaths());
 }
 
+// ── [4b] WorktreeManagerPanel:一个仓库列不出来,不许把整块变成「暂无工作树」 ──
+//
+// `load` 从前用裸 `Promise.all(repos.map(...))`:任何**一个**仓库的 `worktreeList` 拒
+// (仓库被移走 / 权限 / git 报错)整批 reject → `entries` 清空 → 上面 `total === 0` 于是
+// 画成"一个工作树都没有"。可别的仓库明明有,那是一条**假信息**。改成每个仓库各记各的:
+// 失败的仓库出现在列表里、单独说一句,其余照常列。
+async function worktreeManagerPerRepoFailureScenario(): Promise<void> {
+  resetApi();
+  const ROK = "/w/ok";
+  const RBAD = "/w/bad";
+  server.worktreeLists[ROK] = [wtRow("/wt/ok1", true)];
+  // 只让 RBAD 那次调用拒 —— 覆盖整个 method 会连 ROK 一起打掉,测不出"隔离"。
+  server.worktreeListReject.add(RBAD);
+
+  __mount(() => WorktreeManagerPanel({ repos: [{ path: ROK, name: "ok", isRepo: true }, { path: RBAD, name: "bad", isRepo: true }] as never }));
+  await __flush();
+
+  check("★ 好仓库的工作树照常列出来(一个仓库失败不拖累全场)", listedWorktreePaths().includes("/wt/ok1"), listedWorktreePaths());
+  check("★ 没有伪装成「暂无工作树」(那读起来跟一个都没有一样)", !__text().includes("暂无工作树"), __text());
+  check("★ 失败的仓库单独说了一句", __text().includes("这一个仓库的工作树没读出来"), __text());
+  server.worktreeListReject.clear();
+}
+
 // ── [5] WorktreeRemoveDialog:IPC 真 reject 时的静默失败 ──
 //
 // `handleRemove` 从前只有 `try/finally`:IPC reject(参数不过校验 / 传输断)时异常穿过
@@ -384,6 +407,7 @@ await scenario();
 await reverseScenario();
 await worktreeScenario();
 await worktreeManagerScenario();
+await worktreeManagerPerRepoFailureScenario();
 await worktreeReplaceDialogRejectScenario();
 await worktreeMergeBackDialogRejectScenario();
 await worktreeDialogLoadRaceScenario();

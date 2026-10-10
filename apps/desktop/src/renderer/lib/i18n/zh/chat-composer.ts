@@ -415,6 +415,9 @@ export const zh = {
   "chat.worktree.loading": "读取工作树…",
   "chat.worktree.managerEmpty": "暂无工作树",
   "chat.worktree.managerEmptyHint": "在输入框切换「工作环境」为隔离,发送首条消息后会话将创建独立工作树",
+  // 某个仓库列不出来时**别把整块变成「暂无工作树」** —— 那读起来是"一个都没有",
+  // 用户会以为别处真没建过。这一个仓库单独说一句,其余仓库照常列。
+  "chat.worktree.repoLoadFailed": "这一个仓库的工作树没读出来",
   "chat.worktree.mainIs": "本地分支:{branch}",
   "chat.worktree.badgeMissing": "目录缺失",
   "chat.worktree.badgeMerged": "已合并",

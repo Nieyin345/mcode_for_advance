@@ -394,6 +394,7 @@ export const en = {
   "chat.worktree.loading": "Reading worktrees…",
   "chat.worktree.managerEmpty": "No worktrees",
   "chat.worktree.managerEmptyHint": "Flip the composer's Environment chip to Isolated — the first message creates a dedicated worktree",
+  "chat.worktree.repoLoadFailed": "Couldn't read this repo's worktrees",
   "chat.worktree.mainIs": "Local branch: {branch}",
   "chat.worktree.badgeMissing": "Missing",
   "chat.worktree.badgeMerged": "Merged",

@@ -26,6 +26,8 @@ export const server = {
   /** 这些 method 直接 **reject**(模拟 IPC 真抛:参数不过校验 / 传输断)。 */
   reject: new Set<string>(),
   rejectMsg: "mock: IPC 传输中断",
+  /** 只让 `git:worktreeList` 对这些 repoPath 拒 —— 用来验"一个仓库失败不拖累别的"。 */
+  worktreeListReject: new Set<string>(),
 };
 
 export function callsOf(method: string): Array<Record<string, unknown>> {
@@ -64,6 +66,7 @@ export function resetApi(): void {
   server.mergePreviews = {};
   server.overrides = {};
   server.reject.clear();
+  server.worktreeListReject.clear();
   server.hold.clear();
 }
 
@@ -117,6 +120,10 @@ function makeNs(ns: string): unknown {
           server.calls.push({ method, input: input ?? {} });
           // 覆盖值 / 强制 reject —— 用来驱动"IPC 真抛"那一类(删工作树失败).
           if (server.reject.has(method)) {
+            return Promise.reject(new Error(server.rejectMsg));
+          }
+          // 逐仓库拒(只 worktreeList):验"一个仓库失败不拖累别的仓库"用。
+          if (method === "git:worktreeList" && server.worktreeListReject.has(input.repoPath as string)) {
             return Promise.reject(new Error(server.rejectMsg));
           }
           const result = method in server.overrides ? server.overrides[method] : handle(method, input ?? {});

@@ -27,6 +27,8 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
   const { t } = useI18n();
   const [entries, setEntries] = useState<Record<string, GitWorktreeInfo[]>>({});
+  /** 哪些仓库这次没列出来(单独说一句,不拖累别的仓库)。 */
+  const [failedRepos, setFailedRepos] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   /** 请求序号:只有最新一次 `load` 的响应能写 `entries`(见 `load` 内的说明)。 */
   const loadSeqRef = useRef(0);
@@ -45,18 +47,29 @@ export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
     const seq = ++loadSeqRef.current;
     setLoading(true);
     try {
+      // **一个仓库列不出来,不该把整块变成「暂无工作树」。** `Promise.all` 一拒全拒:
+      // 从前任何一个仓库的 `worktreeList` 抛(仓库被移走 / 权限 / git 报错),`entries`
+      // 就被清成空 —— 上面 `total === 0` 于是画成"一个工作树都没有",而别的仓库明明有。
+      // 改成**每个仓库各记各的**:失败的仓库记下来单独说一句,其余照常列。
       const next: Record<string, GitWorktreeInfo[]> = {};
+      const failed = new Set<string>();
       await Promise.all(
         repos.map(async (r) => {
-          const { worktrees } = await api.git.worktreeList({ repoPath: r.path });
-          next[r.path] = worktrees;
+          try {
+            const { worktrees } = await api.git.worktreeList({ repoPath: r.path });
+            next[r.path] = worktrees;
+          } catch {
+            failed.add(r.path);
+          }
         }),
       );
       if (seq !== loadSeqRef.current) return; // superseded
       setEntries(next);
+      setFailedRepos(failed);
     } catch {
       if (seq !== loadSeqRef.current) return;
       setEntries({});
+      setFailedRepos(new Set());
     } finally {
       if (seq === loadSeqRef.current) setLoading(false);
     }
@@ -80,7 +93,9 @@ export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
     .map((list) => list.filter((w) => !w.main).length)
     .reduce((a, b) => a + b, 0);
 
-  if (total === 0) {
+  // 只有"真的一条都没有"才画空状态。有仓库没读出来时画空状态是**假信息**(读起来跟
+  // "一个都没有"一样),所以那种情况走下面的列表 + 逐仓库提示。
+  if (total === 0 && failedRepos.size === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
         <IconGitFork size={20} className="text-content-subtle" />
@@ -98,10 +113,27 @@ export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
     <div className="min-h-0 flex-1 overflow-y-auto p-2">
       <div className="space-y-2">
         {repos.map((repo) => {
+          const loadFailed = failedRepos.has(repo.path);
           const list = entries[repo.path] ?? [];
           const linked = list.filter((w) => !w.main);
           const main = list.find((w) => w.main);
-          if (linked.length === 0) return null;
+          // 读不出来的仓库也要出现 —— 只是换成一句"没读出来",而不是静默消失。
+          if (linked.length === 0 && !loadFailed) return null;
+          if (loadFailed) {
+            return (
+              <div key={repo.path} className="rounded-md border border-edge px-2 py-1.5">
+                <div className="flex items-center gap-1.5">
+                  <IconAlertTriangle size={12} className="shrink-0 text-content-subtle" />
+                  <span className="truncate text-xs font-medium text-content" title={repo.path}>
+                    {repo.name}
+                  </span>
+                </div>
+                <p className="mt-0.5 [font-size:var(--right-panel-font-size)] text-content-subtle">
+                  {t("chat.worktree.repoLoadFailed")}
+                </p>
+              </div>
+            );
+          }
           return (
             <div key={repo.path} className="rounded-md border border-edge">
               <div className="flex items-center gap-1.5 border-b border-edge px-2 py-1.5">
