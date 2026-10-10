@@ -407,6 +407,15 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   }
   const listed = await invokeAppTool("app_api_list", {}, "me", ctx);
   check("app_api_list 目录", textOf(listed).includes("project(") && textOf(listed).includes("app_api_describe"), textOf(listed).slice(0, 200));
+  // **几道门要在总览里说清**(报告 D4)。agent 从前得自己猜走哪道门 —— 在 app_api_list
+  // 里找不到 browser_*/agent_*,就以为那些能力不存在。判据立在"每道门的名字都在总览里"
+  // 上,而不是"有说明文字"。
+  {
+    const overview = textOf(listed);
+    for (const door of ["app_panel_api_list", "browser_*", "agent_*", "app_ui", "app_workflow_run"]) {
+      check(`总览点到了这道门:${door}`, overview.includes(door), overview.slice(0, 500));
+    }
+  }
   const dom = await invokeAppTool("app_api_list", { domain: "plugins" }, "me", ctx);
   check("app_api_list 按域、带权限档", textOf(dom).includes("plugins.installGit [高风险·每次批准]"), textOf(dom).slice(0, 300));
   const desc = await invokeAppTool("app_api_describe", { method: "session.rename" }, "me", ctx);

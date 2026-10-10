@@ -575,8 +575,15 @@ export function appMcpTools(): McpToolSpec[] {
           return text(
             `Mcode 共 ${all.length} 个功能,按域:\n${lines.join("\n")}\n\n` +
               "下一步:app_api_list({domain}) 看某个域的方法 → app_api_describe({method}) 看参数 → app_api_call 调用。\n" +
-              "切对话/开文件/开面板/像用户一样发消息用 app_ui / app_session_new / app_session_send,运行工作流用 app_workflow_run。\n" +
-              "这里只有**主进程方法**;自定义面板/扩展的 window.mcode API、挂载位动作与变量用 app_panel_api_list 查。",
+              // **几道门一次说清**(报告 D4)。这个软件有好几个调用入口,agent 从前得自己
+              // 猜走哪道 —— 猜错的代价是"以为没有这个功能"(实测:在 app_api_list 里找不到
+              // browser_*/agent_*,就以为截图这类能力不存在)。给它们各自的范围。
+              "**不止一道门,各有各的范围 —— 别在一道门上找另一道的功能**:\n" +
+              "  ① 通用门(这里):app_api_list → app_api_describe → app_api_call,覆盖主进程全部功能;\n" +
+              "  ② 常用动作的专用工具:app_ui / app_ui_state(界面)、app_session_new / app_session_send(别的对话)、app_workflow_run(跑工作流)—— 它们**不是** app_api_call 的方法;\n" +
+              "  ③ 浏览器与电脑操作:browser_* / agent_*(开网页、读 PDF/Office、跑命令、传文件)—— 自成一组,也不在这张表里;\n" +
+              "  ④ 自定义面板/扩展的 window.mcode API、挂载位动作与变量:用 app_panel_api_list 查。\n" +
+              "要找**有没有**某个能力,先 app_api_list({domain}) 或按关键词搜,别凭名字猜。",
           );
         }
         const q = args.query?.trim().toLowerCase();
