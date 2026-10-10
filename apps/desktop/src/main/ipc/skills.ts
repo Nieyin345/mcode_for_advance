@@ -141,6 +141,42 @@ export function projectSkillsRoot(projectPath: string | undefined): string | nul
   return path.join(projectPath, PROJECT_SKILLS_REL);
 }
 
+/**
+ * 把 Node 的文件系统错误翻成一句给人看的短语 —— **别让 `ENOTDIR: …, mkdir 'C:\…'`
+ * 这种原始英文 + 绝对路径漏到设置面板/手机技能页上**。
+ *
+ * 本文件所有写/删/导入/复制的 `catch` 都把 `(err as Error).message` 原样放进
+ * `{ ok:false, error }` 或 `failed[].reason` / `errors[].error`,而 `SkillsPanel`
+ * 是 `setError(res.error)`,ProjectSkillsView 是 `setOperationError(item.reason)` ——
+ * 中文界面上就会冒出一整句 OS 英文 + 用户机器的绝对路径(实测:
+ * `ENOTDIR: not a directory, mkdir 'C:\Users\…\.mcode\skills'`、
+ * `ENOENT: no such file or directory, open 'C:\…\SKILL.md'`)。
+ *
+ * 与 `memory/store.ts` 的 `describeFsError`、`mcp/agentSearchSessions.ts` 的
+ * `agent_search_read` 同一口径:常见 errno 翻中文,其余保留原文(至少不吞)。
+ */
+function describeFsError(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") return "文件或目录不存在(可能已被移走)";
+  if (code === "EACCES" || code === "EPERM") return "没有访问权限";
+  if (code === "ENOTDIR") return "所在的位置不是一个目录";
+  if (code === "EISDIR") return "目标是一个目录,不能按文件处理";
+  if (code === "EEXIST") return "同名文件或目录已存在";
+  if (code === "ENOSPC") return "磁盘空间不足";
+  if (code === "EROFS") return "所在的位置是只读的";
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** `catch` 里给用户看的统一出口:真正的 OS errno(带 `err.code`)翻成上句中文短语,
+ *  我们自己抛的中文错误(如「无效的 skill 路径」)原样透出。 */
+function fsErrorMessage(err: unknown): string {
+  return typeof (err as NodeJS.ErrnoException)?.code === "string"
+    ? describeFsError(err)
+    : err instanceof Error
+      ? err.message
+      : String(err);
+}
+
 /** Resolves to an absolute path, following symlinks. Returns null on any
  *  error (missing / no access) so the caller can skip cleanly. */
 async function safeRealPath(p: string): Promise<string | null> {
@@ -787,7 +823,7 @@ async function importGithubPackage(input: { url: string }): Promise<SkillsImport
         await fs.cp(dir, dest, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
         imported.push(name);
       } catch (err) {
-        errors.push({ name, error: (err as Error).message });
+        errors.push({ name, error: fsErrorMessage(err) });
       }
     }
 
@@ -843,7 +879,7 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
       };
     } catch (err) {
       log.warn(`skills.enginesSet failed: ${(err as Error).message}`);
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   });
 
@@ -886,7 +922,7 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
       return { ok: true, perEngine };
     } catch (err) {
       log.warn(`skills.enginesSetBulk failed: ${(err as Error).message}`);
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   });
 
@@ -939,7 +975,7 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
       await fs.writeFile(path.join(targetDir, "SKILL.md"), input.content, "utf-8");
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   });
 
@@ -970,7 +1006,7 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
       }
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   });
 
@@ -1034,7 +1070,7 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
         destinationSkills.set(name, destDir);
         result.copied.push(name);
       } catch (err) {
-        result.failed.push({ name, reason: (err as Error).message });
+        result.failed.push({ name, reason: fsErrorMessage(err) });
       }
     }
 
@@ -1131,7 +1167,7 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
       return { ok: true };
     } catch (err) {
       log.warn(`skills.presets.save failed: ${(err as Error).message}`);
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   });
 
@@ -1146,7 +1182,7 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
       );
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   });
 
@@ -1178,7 +1214,7 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
     } catch (err) {
       return {
         rows: [],
-        problems: [{ projectId: "", projectName: "", error: (err as Error).message }],
+        problems: [{ projectId: "", projectName: "", error: fsErrorMessage(err) }],
       };
     }
 
@@ -1202,7 +1238,7 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
           missing: names === null,
         });
       } catch (err) {
-        problems.push({ projectId: p.id, projectName: p.name, error: (err as Error).message });
+        problems.push({ projectId: p.id, projectName: p.name, error: fsErrorMessage(err) });
       }
     }
 
@@ -1320,7 +1356,7 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
         }
         imported.push(item.name);
       } catch (err) {
-        errors.push({ name: item.name, error: (err as Error).message });
+        errors.push({ name: item.name, error: fsErrorMessage(err) });
       }
     }
     return { imported, skipped, errors };

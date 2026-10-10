@@ -89,6 +89,31 @@ import {
 /** Description line for the built-in browser server row. */
 const BUILTIN_DETAIL = "browser_navigate / browser_snapshot / browser_click 等应用内浏览器工具";
 
+/**
+ * MCP 面板错误出口:把 OS errno 翻成一句给人看的中文短语 —— **别让
+ * `EISDIR: illegal operation on a directory, open 'C:\…\mcp-engines.json'` 这类
+ * 原始英文 + 绝对路径漏到设置面板**。
+ *
+ * 本文件所有 mutation 的 `catch` 都 `return { ok:false, error: (err as Error).message }`,
+ * 而面板是 `setError(res.error ?? t("settings.operationFailed"))`(McpPanel 的
+ * toggle / enginesSet / save / delete / marketImport 各处)。配置写盘失败时
+ * (`~/.mcode/mcp-engines.json` 或 `.claude.json` 写不动:被占用、成了目录、无权限),
+ * 抛的就是原始 OS 英文 + 用户机器绝对路径。
+ *
+ * 与 `ipc/skills.ts` 的 `fsErrorMessage`、`memory/store.ts` 的 `describeFsError` 同一条口径。
+ */
+function fsErrorMessage(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") return "文件或目录不存在(可能已被移走)";
+  if (code === "EACCES" || code === "EPERM") return "没有访问权限";
+  if (code === "ENOTDIR") return "所在的位置不是一个目录";
+  if (code === "EISDIR") return "目标是一个目录,不能按文件处理";
+  if (code === "EEXIST") return "同名文件或目录已存在";
+  if (code === "ENOSPC") return "磁盘空间不足";
+  if (code === "EROFS") return "所在的位置是只读的";
+  return err instanceof Error ? err.message : String(err);
+}
+
 /* ── OAuth needs-auth state ──
  * The CLI records remote servers that demanded OAuth but hold no stored
  * token in `<CLAUDE_CONFIG_DIR>/mcp-needs-auth-cache.json`
@@ -638,7 +663,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       await materializeMcpViewsOrRollback(() => saveMcpManagement(previous));
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   }));
 
@@ -664,7 +689,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
         },
       };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   }));
 
@@ -822,7 +847,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       await materializeMcpViewsOrRollback(() => saveMcpManagement(previous));
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   }));
 
@@ -845,7 +870,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       await materializeMcpViewsOrRollback(() => saveMcpManagement(previous));
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   }));
 
@@ -908,7 +933,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       return {
         imported,
         skipped,
-        errors: [...errors, { name: "(批量写入)", error: (err as Error).message }],
+        errors: [...errors, { name: "(批量写入)", error: fsErrorMessage(err) }],
       };
     }
   }));
@@ -927,7 +952,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     try {
       return await saveProjectMcp(input.projectPath, input.name, input.config, input.replace === true);
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   }));
 
@@ -936,7 +961,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     try {
       return await removeProjectMcp(input.projectPath, input.name);
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   }));
 
@@ -945,7 +970,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     try {
       return trustProjectMcp(input.projectPath, input.name, input.trusted);
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: fsErrorMessage(err) };
     }
   }));
 
@@ -958,7 +983,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       const configs: Record<string, McpServerConfig> = { ...(state.userDisabled ?? {}), ...(state.userServers ?? {}) };
       return await copyUserServersToProject(input.projectPath, input.names, configs);
     } catch (err) {
-      return { copied: [], skipped: [], failed: input.names.map((name) => ({ name, reason: (err as Error).message })) };
+      return { copied: [], skipped: [], failed: input.names.map((name) => ({ name, reason: fsErrorMessage(err) })) };
     }
   }));
 
