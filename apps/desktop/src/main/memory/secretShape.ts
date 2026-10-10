@@ -31,9 +31,23 @@ export const PEM_PRIVATE_KEY_RE =
 /** `sk-…` / `sk-proj-…` / `AKIA…` 这类访问密钥。 */
 export const ACCESS_KEY_RE = /\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{24,}|AKIA[A-Z0-9]{16})\b/;
 
-/** 整条"疑似凭据"判据(PEM 或访问密钥)。两处共用,不再各写一份。 */
+/**
+ * **带前缀的令牌** —— GitHub(`ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_`)、Slack
+ * (`xoxa/xoxb/xoxp/xoxr/xoxs-`)、以及公网 MCP 链接里的明文密钥(`/mcp/<secret>`，报告
+ * 附录 F 的 M2)。
+ *
+ * ⚠️ **这几支应用自己早就认得** —— `appControl/redact.ts` 的 `SECRET_VALUE_PREFIXED`
+ * 就是同一批形状,它们在返回值里会被打码。而记忆这边从前只认 `sk-…` / `AKIA…` ——
+ * 于是用户可以**把一条 GitHub token(`ghp_…`)存进记忆而不被拒**,尽管应用别处明知
+ * 这种形状是密钥。**两者必须一致**:同一条内容,一个地方当秘密、另一个地方当场外,
+ * 就是"密钥换条路就漏"。这几支的字符集 / 长度阈值照抄 `redact.ts`,别各写一份。
+ */
+export const PREFIXED_TOKEN_RE =
+  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|\/mcp\/[A-Za-z0-9_-]{24,})\b/;
+
+/** 整条"疑似凭据"判据(PEM / 访问密钥 / 带前缀令牌)。两处共用,不再各写一份。 */
 export const SECRET_SHAPE_RE = new RegExp(
-  `(?:${PEM_PRIVATE_KEY_RE.source}|${ACCESS_KEY_RE.source})`,
+  `(?:${PEM_PRIVATE_KEY_RE.source}|${ACCESS_KEY_RE.source}|${PREFIXED_TOKEN_RE.source})`,
 );
 
 /** 文本里是否含疑似凭据。 */

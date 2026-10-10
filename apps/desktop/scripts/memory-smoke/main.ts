@@ -865,6 +865,37 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   //   同一份判据(`secretShape.ts`),所以闸门与遮蔽对同一条内容给出同样的答案。
   blocked = false; try { saveMemoryFile({ path: "global/rules/secret.md", content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA" }); } catch { blocked = true; }
   check("★ 只有 BEGIN 的残块也拒绝落库(与遮蔽同一份判据)", blocked);
+  // ★ **带前缀的令牌也要拒**(报告附录 F 的 M2)。GitHub / Slack / 公网 MCP 链接里的
+  //   明文密钥,应用自己的打码器(`appControl/redact.ts` 的 `SECRET_VALUE_PREFIXED`)
+  //   早就认得 —— 而记忆这边从前只认 `sk-…`/`AKIA…`,于是"往记忆里存一条 GitHub token"
+  //   成了**漏网**。判据立在这几种形状上,与打码器那份逐支对齐。
+  //
+  // ⚠️ **每种形状存到各自的、全新的路径**。存到同一个路径会在第二次撞 `MemoryConflictError`
+  //   (没带 expectedRevision),那是**另一个理由的抛** —— 断言会假绿(实测踩过:变异时
+  //   一条都不红)。全新路径没有冲突可言,唯一能抛的就是"内容像密钥"。同一条内容另存一份
+  //   到另一个新路径必须成功,反证"抛的是内容、不是路径"。
+  for (const [name, sample] of [
+    ["GitHub PAT(ghp_)", "ghp_" + "A".repeat(36)],
+    ["Slack token(xoxb-)", "xoxb-" + "1".repeat(12) + "-" + "a".repeat(24)],
+    ["公网 MCP 链接密钥(/mcp/)", "https://x.example/mcp/" + "Z".repeat(40)],
+  ] as const) {
+    const slug = name.replace(/[^a-z0-9]/gi, "_");
+    let blockedByToken = false;
+    try { saveMemoryFile({ path: `global/rules/${slug}-a.md`, content: `我的 ${name}: ${sample}` }); } catch { blockedByToken = true; }
+    // 反证:同样的路径形状、正常内容 → 存得进去(所以上面那次抛只可能来自内容)。
+    let plainOk = true;
+    try { saveMemoryFile({ path: `global/rules/${slug}-b.md`, content: "普通内容" }); } catch { plainOk = false; }
+    check(`★ 带前缀的令牌被拒:${name}`, blockedByToken && plainOk, { blockedByToken, plainOk });
+  }
+  // 反证:普通的十六进制串不该被误拒(别把判据放宽成"什么都拦")。
+  {
+    let ok = true;
+    try { saveMemoryFile({ path: "global/rules/plain.md", content: "提交哈希 abc123def456,窗口大小 40" }); } catch { ok = false; }
+    check("普通内容不被误拒(判据没有放成什么都拦)", ok);
+    let sha = true;
+    try { saveMemoryFile({ path: "global/rules/sha.md", content: "pdf_sha256 = " + "a".repeat(64) }); } catch { sha = false; }
+    check("裸 64 位 sha256 不被误拒(它不是令牌形状)", sha);
+  }
   const preview = manageMemory({ action: "preview", source: `legacy:${legacy}` });
   check("旧记录可预览并带摘要", preview.ok && !!preview.digest && !!preview.content?.includes("legacy-private-needle"));
   const imported = manageMemory({ action: "import", source: `legacy:${legacy}`, digest: preview.digest!, category: "rules", projectId: "p_memory", global: false, confirmed: true });

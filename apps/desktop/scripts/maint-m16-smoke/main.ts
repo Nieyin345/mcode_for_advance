@@ -58,6 +58,19 @@ check("sk- 访问密钥被替换", redactSecrets(`k=sk-${"a".repeat(40)} .`).inc
 check("AKIA 访问密钥被替换", redactSecrets("AKIAABCDEFGHIJKLMNOP x").includes("[已隐藏疑似密钥]"));
 check("遮蔽是幂等的", redactSecrets(redactSecrets(pemBlock)) === redactSecrets(pemBlock));
 check("普通文本不被误伤", redactSecrets("这是一段普通说明 sk-short") === "这是一段普通说明 sk-short");
+// ★ **带前缀的令牌也要遮**(报告附录 F 的 M2)。GitHub / Slack / 公网 MCP 链接里的
+//   明文密钥,应用的打码器(`appControl/redact.ts`)早就认得 —— 记忆这条送进模型的
+//   路上从前不遮,于是"存得进去的"在进上下文时同样没被挡。遮与拒一起补齐。
+for (const [name, sample] of [
+  ["GitHub PAT(ghp_)", "ghp_" + "A".repeat(36)],
+  ["Slack token(xoxb-)", "xoxb-" + "1".repeat(12) + "-" + "a".repeat(24)],
+  ["公网 MCP 链接密钥(/mcp/)", "https://x.example/mcp/" + "Z".repeat(40)],
+] as const) {
+  const out = redactSecrets(`前 ${sample} 后`);
+  check(`★ 带前缀令牌被遮:${name}`, out.includes("[已隐藏疑似令牌]") && !out.includes(sample), out.slice(0, 80));
+}
+check("…而且是幂等的(遮两次和遮一次一样)",
+  redactSecrets(redactSecrets("ghp_" + "A".repeat(36))) === redactSecrets("ghp_" + "A".repeat(36)));
 
 // ★ 截断 / 畸形的私钥块(**只有 BEGIN、没有 END**)也必须被遮掉。
 //

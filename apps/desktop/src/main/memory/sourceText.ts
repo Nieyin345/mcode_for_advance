@@ -11,7 +11,7 @@
 
 // 凭据判据与保存闸门共用一份(`secretShape.ts` 也是零依赖的叶子,不破坏本模块"纯"的
 // 前提 —— 见那边文件头:这条规则从前两处各写一遍,而且 PEM 那支已经漂了)。
-import { ACCESS_KEY_RE, PEM_PRIVATE_KEY_RE } from "./secretShape.js";
+import { ACCESS_KEY_RE, PEM_PRIVATE_KEY_RE, PREFIXED_TOKEN_RE } from "./secretShape.js";
 
 /** 来源材料的总预算(字符)。 */
 export const SOURCE_BUDGET = 32_000;
@@ -28,19 +28,23 @@ export const MAX_DEPTH = 5;
 /**
  * 已知形式的疑似凭据 → 占位符。
  *
- * ⚠️ **这不是完备的敏感信息识别**(交接文档里已经这么写了),只认两类最常见的形状:
- * PEM 私钥块、`sk-…` / `AKIA…` 这类访问密钥。
+ * ⚠️ **这不是完备的敏感信息识别**(交接文档里已经这么写了),只认三类最常见的形状:
+ * PEM 私钥块、`sk-…` / `AKIA…` 这类访问密钥、以及带前缀的令牌(`ghp_…` / `xox…-` /
+ * `/mcp/…` —— 见 `secretShape.ts` 的 `PREFIXED_TOKEN_RE`)。
  *
  * 判据从 {@link ./secretShape.ts} 取 —— 与保存闸门(`store.ts`)共用同一份。从前这里
  * 要求**完整** BEGIN…END 块,而保存闸门只要求 BEGIN:一条被裁断/畸形的私钥块能过这里、
- * 进到模型上下文,却被保存拒收。同一份内容两处必须一致,所以合成一份正则。
+ * 进到模型上下文,却被保存拒收。同一份内容两处必须一致,所以合成一份正则。带前缀令牌
+ * 那支是同一个道理的第二例:保存闸门先前也不认它,于是"存得进去的"在送进模型时同样
+ * 没被遮 —— 遮和拒**必须**一起改(报告附录 F 的 M2)。
  */
 export function redactSecrets(text: string): string {
-  // 两个 replace 分开走是为了给不同的占位符(私钥 vs 访问密钥);但两组正则从共享
-  // 模块取,不再各写一份。PEM 那支带 `g`,访问密钥那支带 `g`。
+  // 三个 replace 分开走是为了给不同的占位符(私钥 / 访问密钥 / 带前缀令牌);但三组正则
+  // 从共享模块取,不再各写一份。三支都带 `g`。
   return text
     .replace(new RegExp(PEM_PRIVATE_KEY_RE.source, "g"), "[已隐藏私钥]")
-    .replace(new RegExp(ACCESS_KEY_RE.source, "g"), "[已隐藏疑似密钥]");
+    .replace(new RegExp(ACCESS_KEY_RE.source, "g"), "[已隐藏疑似密钥]")
+    .replace(new RegExp(PREFIXED_TOKEN_RE.source, "g"), "[已隐藏疑似令牌]");
 }
 
 /** 只取文本的有界快照;不序列化图片、思考块或任意完整工具参数。
