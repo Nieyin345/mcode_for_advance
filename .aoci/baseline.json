@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-11T01:45:02Z",
+  "updated_at": "2026-10-11T01:59:36Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "21d4d86ff74a492bcac07342305dd3a3da3705242a17b2f75fa067d26ab96218",
-      "size": 943475,
-      "normalized_sha256": "21d4d86ff74a492bcac07342305dd3a3da3705242a17b2f75fa067d26ab96218"
+      "sha256": "34ebb20e6b792d6b3ce2d04c41df053130a59ab2db5afceed260af19691e83b3",
+      "size": 943719,
+      "normalized_sha256": "34ebb20e6b792d6b3ce2d04c41df053130a59ab2db5afceed260af19691e83b3"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3695,9 +3695,9 @@
     },
     "apps/desktop/scripts/mobile-static-compress-smoke/main.ts": {
       "role": "index",
-      "sha256": "3e5f96c3ca7b9792d084255a4b761daa4ab8960dbc851dc3c0291adbead7fd8e",
-      "size": 9653,
-      "normalized_sha256": "3e5f96c3ca7b9792d084255a4b761daa4ab8960dbc851dc3c0291adbead7fd8e"
+      "sha256": "8d3994e7a9d34ef4c3c094a7e04dc8ddba2b4d4f9f219e876beb98fc010f2d90",
+      "size": 10226,
+      "normalized_sha256": "8d3994e7a9d34ef4c3c094a7e04dc8ddba2b4d4f9f219e876beb98fc010f2d90"
     },
     "apps/desktop/scripts/mobile-static-compress-smoke/run.sh": {
       "role": "index",
@@ -10263,9 +10263,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/en/settings.ts": {
       "role": "index",
-      "sha256": "c1b5c26dedbb39f14268574c3b416a60474ffb170f8a5b90b534d1f1905f4ca4",
-      "size": 144873,
-      "normalized_sha256": "c1b5c26dedbb39f14268574c3b416a60474ffb170f8a5b90b534d1f1905f4ca4"
+      "sha256": "58ca8a614b3a0b8477823a4f1ac844421f64e5e23c1c467630e5609c4b6c4fa9",
+      "size": 145110,
+      "normalized_sha256": "58ca8a614b3a0b8477823a4f1ac844421f64e5e23c1c467630e5609c4b6c4fa9"
     },
     "apps/desktop/src/renderer/lib/i18n/en/store.ts": {
       "role": "index",
@@ -10365,9 +10365,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/zh/settings.ts": {
       "role": "index",
-      "sha256": "911994e8a9d2ffcebcf9455f3aef98e92ecaccea529b5e414511094351df2a76",
-      "size": 143936,
-      "normalized_sha256": "911994e8a9d2ffcebcf9455f3aef98e92ecaccea529b5e414511094351df2a76"
+      "sha256": "271a1b5b8ac37887d676bdc829d02ecfeaf0850aa1ca9a68f1c4795419fa2b97",
+      "size": 144186,
+      "normalized_sha256": "271a1b5b8ac37887d676bdc829d02ecfeaf0850aa1ca9a68f1c4795419fa2b97"
     },
     "apps/desktop/src/renderer/lib/i18n/zh/store.ts": {
       "role": "index",
