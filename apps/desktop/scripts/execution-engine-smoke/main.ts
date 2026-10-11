@@ -101,4 +101,82 @@ ok(exact.summary === "exact", "registered kind wins over fallback");
   ok(cmdOut.status === "failed" && /没有填/.test(cmdOut.error ?? ""), "command 节点未配置 -> 中文失败原因");
 }
 
+// —— 【MC-075】settle 钩子报错不得翻转已成功的执行 / 不得逃出 ——
+// 从前 start/execute/settle 共用一个 try:settle(成功) 一抛就落进 catch,再拿**失败**结果
+// 调一次 settle,把已提交(副作用已落)的节点反向标成 failed;settle 若再抛,异常还逃出引擎。
+{
+  const settleEngine = new ExecutionEngine();
+  let commitCount = 0;
+  const settleCalls: string[] = [];
+  settleEngine.register({
+    kind: "test",
+    async execute(): Promise<NodeOutcome> {
+      commitCount += 1; // 业务已提交(副作用落定)
+      return { status: "success", summary: "done" };
+    },
+    async settle(_ctx, outcome): Promise<void> {
+      settleCalls.push(outcome.status);
+      // 第一次(成功结果)抛,第二次(若被错误地当失败收尾)不抛 —— 复现"翻转"路径。
+      if (outcome.status === "success" && settleCalls.length === 1) throw new Error("notify failure");
+    },
+  });
+  let settled: NodeOutcome | undefined;
+  let escaped: unknown;
+  try {
+    settled = await settleEngine.execute(context("test"));
+  } catch (err) {
+    escaped = err;
+  }
+  ok(escaped === undefined, "★ settle 抛错不逃出执行引擎(返回 NodeOutcome)");
+  ok(settled?.status === "success", `★ settle 抛错不得把已成功的执行翻转成失败(实际 ${settled?.status})`);
+  ok(commitCount === 1, "★ 业务只提交一次");
+  ok(settleCalls.length === 1 && settleCalls[0] === "success", `★ settle 只被调用一次且带**真实**结果(实际 ${JSON.stringify(settleCalls)})`);
+  ok(/收尾钩子报错/.test(settled?.summary ?? ""), "★ settle 的错作为告警进 summary(用户可见)");
+
+  // settle 始终抛错:业务成功仍报成功,引擎不抛。
+  const alwaysEngine = new ExecutionEngine();
+  alwaysEngine.register({
+    kind: "test",
+    async execute(): Promise<NodeOutcome> {
+      return { status: "success", summary: "done" };
+    },
+    async settle(): Promise<void> {
+      throw new Error("notify offline");
+    },
+  });
+  let alwaysOut: NodeOutcome | undefined;
+  let alwaysEscaped: unknown;
+  try {
+    alwaysOut = await alwaysEngine.execute(context("test"));
+  } catch (err) {
+    alwaysEscaped = err;
+  }
+  ok(alwaysEscaped === undefined, "★ settle 始终抛错也不逃出引擎");
+  ok(alwaysOut?.status === "success", "★ settle 始终抛错,业务成功仍是 success");
+
+  // 业务本身失败(start/execute 抛):settle 收到**失败**结果,且 settle 再抛也不逃出。
+  const failEngine = new ExecutionEngine();
+  const failSettle: string[] = [];
+  failEngine.register({
+    kind: "test",
+    async execute(): Promise<NodeOutcome> {
+      throw new Error("boom");
+    },
+    async settle(_ctx, outcome): Promise<void> {
+      failSettle.push(outcome.status);
+      throw new Error("cleanup failed");
+    },
+  });
+  let failOut: NodeOutcome | undefined;
+  let failEscaped: unknown;
+  try {
+    failOut = await failEngine.execute(context("test"));
+  } catch (err) {
+    failEscaped = err;
+  }
+  ok(failEscaped === undefined, "★ execute 抛错 + settle 抛错都不逃出引擎");
+  ok(failOut?.status === "failed" && /boom/.test(failOut.error ?? ""), "★ 业务失败的根因保留");
+  ok(failSettle.length === 1 && failSettle[0] === "failed", `★ 失败路径 settle 也只调一次且带失败结果(实际 ${JSON.stringify(failSettle)})`);
+}
+
 console.log(`PASS: ${checks.length} checks`);
