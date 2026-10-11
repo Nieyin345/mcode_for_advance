@@ -23,6 +23,7 @@
  * 不走这里。
  */
 import path from "node:path";
+import { pathWithin as realPathWithin } from "@main/lib/realPathWithin.js";
 import { defaultSkillsRoot } from "@main/lib/skillEngines.js";
 import { libraryRoot, markdownArtifact } from "@main/library/paths.js";
 import { aiVisibleFilesOf, readableFilesOf } from "@main/library/fileImport.js";
@@ -54,8 +55,9 @@ export interface AiLibraryEntry {
 export type LibraryForAi = (limit: number) => { items: AiLibraryEntry[]; hidden: number } | null;
 
 function within(root: string, abs: string): boolean {
-  const rel = path.relative(path.resolve(root), path.resolve(abs));
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  // 【MC-001/MC-006】统一复用零依赖叶子的物理包含判据(symlink/junction + 带分隔符的
+  // `..` 前缀),与 files/git/LSP/快照/agentTools 同一份实现。
+  return realPathWithin(root, abs);
 }
 
 interface OwnedRoot {

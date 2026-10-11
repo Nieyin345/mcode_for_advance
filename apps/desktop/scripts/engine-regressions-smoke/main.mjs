@@ -272,7 +272,7 @@ test("Pi's write/edit guard enforces the library read-only rule like Claude's ca
 
   const make = (absPath, insideProject) => {
     const mod = { exports: {} };
-    new Function("normalizeToolFilePath", "expandTilde", "isInsideLibrary", "module", "exports", js)(
+    new Function("normalizeToolFilePath", "expandTilde", "writeLandsInLibrary", "module", "exports", js)(
       () => ({ absPath, insideProject }),
       (p) => p,
       (abs) => abs.startsWith("/lib"),
@@ -535,9 +535,17 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
       }).outputText;
     };
     writeFileSync(join(temp, "msys.mjs"), compile(readFileSync(join(lib, "msysPath.ts"), "utf8")));
+    // fileSnapshot 现在也 import 了零依赖叶子的 @main/lib/realPathWithin.js（物理包含性
+    // 判据,MC-001）。这个夹具只重写它认得的 import,多出来的那条会 ERR_MODULE_NOT_FOUND
+    // —— 所以把那个叶子也一并编译出来、把 import 指过去（叶子本身只 import node:*,
+    // 不需要再替换任何东西）。
+    writeFileSync(join(temp, "realPathWithin.mjs"), compile(readFileSync(join(lib, "realPathWithin.ts"), "utf8")));
     writeFileSync(join(temp, "snapshot.mjs"), compile(
       readFileSync(join(lib, "fileSnapshot.ts"), "utf8"),
-      [['"@main/lib/msysPath.js"', '"./msys.mjs"']],
+      [
+        ['"@main/lib/msysPath.js"', '"./msys.mjs"'],
+        ['"@main/lib/realPathWithin.js"', '"./realPathWithin.mjs"'],
+      ],
     ));
     writeFileSync(join(temp, "bashGuard.mjs"), compile(
       readFileSync(guardPath, "utf8"),
@@ -550,7 +558,9 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
     const file = join(cwd, "draft.md");
     writeFileSync(file, "before\n");
     assert.equal(guardBashCommand(cwd, "printf after > draft.md", true), null);
-    assert.deepEqual(resolveBashWriteTargets(cwd, "printf after > draft.md"),
+    // 用只取关心的字段的映射:实现新增了 `escaped` 字段(MC-001),这里不该被它绊到。
+    const brief = (t) => ({ absPath: t.absPath, insideProject: t.insideProject });
+    assert.deepEqual(resolveBashWriteTargets(cwd, "printf after > draft.md").map(brief),
       [{ absPath: file, insideProject: true }]);
     for (const command of [
       "printf after >> ./draft.md",
@@ -558,7 +568,7 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
       "dd if=/dev/null of=./draft.md",
       "sed -i 's/before/after/' draft.md",
     ]) {
-      assert.deepEqual(resolveBashWriteTargets(cwd, command),
+      assert.deepEqual(resolveBashWriteTargets(cwd, command).map(brief),
         [{ absPath: file, insideProject: true }], command);
     }
     const external = resolveBashWriteTargets(cwd, "printf oops > ../outside.md");
@@ -575,7 +585,7 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
     const changes = await snapshot.freeze();
     assert.equal(changes.length, 1);
     assert.equal(changes[0].before, "before\n");
-    assert.deepEqual(await restoreFiles(cwd, changes), { restored: [file], failed: [] });
+    assert.deepEqual(await restoreFiles(cwd, changes), { restored: [file], failed: [], conflicts: [] });
     assert.equal(readFileSync(file, "utf8"), "before\n");
 
     const created = join(cwd, "new.md");
@@ -586,7 +596,7 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
     const createdChanges = await createdSnapshot.freeze();
     assert.equal(createdChanges.length, 1);
     assert.equal(createdChanges[0].kind, "created");
-    assert.deepEqual(await restoreFiles(cwd, createdChanges), { restored: [created], failed: [] });
+    assert.deepEqual(await restoreFiles(cwd, createdChanges), { restored: [created], failed: [], conflicts: [] });
     assert.equal(existsSync(created), false);
 
     const extension = readFileSync(resolve(here, "../../src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8");
@@ -598,7 +608,7 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
     // bash 重定向(`> 库文件` / tee / sed -i …)能绕过 write/edit 直接落盘;只在 write/edit
     // 上守这条,库被移进项目(或会话是 bypass)时模型仍能经 bash 悄悄改掉库文件。判据复用
     // 共享的 `isInsideLibrary`(与 Claude canUseTool、guardToolPath 同一份)。
-    assert.match(bashBranch, /isInsideLibrary\(target\.absPath\)/,
+    assert.match(bashBranch, /writeLandsInLibrary\(target\.absPath\)/,
       "bash write targets must enforce the library read-only rule");
     assert.match(bashBranch, /资料库是只读的/,
       "the bash library refusal must name the library (user-visible text)");
@@ -896,4 +906,32 @@ test("Codex turn diff still reconstructs a normal modified file and a deletion",
   assert.equal(d.deleted, true);
   assert.equal(d.path, "old.txt");
   assert.equal(reverseApplySection("", d), "bye\nnow\n");
+});
+
+test("MC-057: Pi/Codex resume failure must NOT silently start a fresh session", () => {
+  // 从前 Pi 的 SessionManager.open 失败后直接 create(cwd)、Codex 的 thread/resume 失败
+  // 后直接 thread/start —— 界面仍显示原历史,模型却在一个全新 context 里从头开始,之前的
+  // 执行结果与约束全丢,而且没有任何地方报出来。现在必须变成明确的失败。
+  //
+  // 判据立在**失败是显式的**上:重试分支里不能再出现"开新会话"的调用,而且要能抛。
+  const pi = readFileSync(resolve(here, "../../src/main/providers/pi-sdk/PiAgentSdkProvider.ts"), "utf8");
+  // resume 分支里:catch 之后必须 throw,且不得再调 create(cwd) 兜底。
+  // 只看 resume 的 try/catch 那一段(catch 体)。整段 else 分支里的 create 是合法的。
+  const piOpen = pi.indexOf("sdk.SessionManager.open(req.resumeProviderSessionId)");
+  const piCatch = pi.slice(piOpen, pi.indexOf("} else {", piOpen));
+  assert.ok(piCatch.length > 0, "Pi resume try/catch moved; update the regression test");
+  assert.match(piCatch, /catch \(err\)/, "Pi resume must have a catch");
+  assert.match(piCatch, /throw new Error\(/, "Pi resume failure must throw, not fall through");
+  // 剥掉注释再验 —— 注释里正讲着"从前会 create(cwd)",别把那段散文当代码。
+  const piCatchCode = piCatch.replace(/\/\/[^\r\n]*/g, "");
+  assert.doesNotMatch(piCatchCode, /SessionManager\.create\(/,
+    "Pi must NOT open a fresh session in the resume-failure catch");
+
+  const codex = readFileSync(resolve(here, "../../src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
+  const codexResume = codex.slice(codex.indexOf("const resumeRequested"), codex.indexOf("activeTurn.threadId = threadId"));
+  assert.ok(codexResume.length > 0, "Codex resume branch moved; update the regression test");
+  assert.match(codexResume, /throw new Error\(/, "Codex resume failure must throw");
+  // thread/start 只能在没有要求恢复时跑 —— 要求恢复那一支要么拿到 threadId、要么抛。
+  assert.match(codexResume, /if \(resumeRequested\)\s*\{[\s\S]*?throw new Error\(/,
+    "Codex must refuse to thread/start when resume was requested but yielded nothing");
 });

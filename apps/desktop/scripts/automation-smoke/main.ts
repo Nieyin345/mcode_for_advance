@@ -35,7 +35,7 @@ import { withAutomationOrigin } from "@main/orchestration/automationEventOrigin.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, shouldIgnoreWatchPath, isSpecificGlob, type HookEvent } from "@contracts/hook";
 import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
@@ -2026,6 +2026,9 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     start(): Promise<void>;
     reloadAll(): Promise<void>;
     dispose(): void;
+    /** 第三个参是 `protectedMinute`(实现的默认值 = 当前分钟);测试显式传,好把
+     *  "当前分钟"与要灌的历史分钟分开。 */
+    rememberLastMinute(key: string, minute: number | null, protectedMinute?: number): void;
   }
   // 单例是由同一个类 `new` 出来的,只是没导出那个类。拿到原型上的构造器 = 拿到类本身
   // (这样被测的是**真实的那个类**,不是另抄一份)。
@@ -2044,6 +2047,28 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     (globalThis as unknown as { Date: typeof Date }).Date = Frozen as unknown as typeof Date;
     try {
       return fn();
+    } finally {
+      (globalThis as unknown as { Date: typeof Date }).Date = Real;
+    }
+  }
+
+  /**
+   * 与 {@link withClock} 同一条,但等 `fn()` 的 promise 落地。
+   *
+   * ⚠️ **`start()` 现在会当场 tick 一次(MC-021)。** 于是那些"冻结时钟跑某一分钟"
+   * 的用例必须先**把时钟冻住再 start** —— 否则启动那一跳落在**真实当前分钟**上,而
+   * 触发器 `* * * * *` 什么分钟都命中,平白多出一次运行,后面所有按分钟算的计数全错位。
+   */
+  async function withClockAsync<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+    const Real = Date;
+    const Frozen = function (...args: unknown[]): Date {
+      if (args.length === 0) return new Real(ms);
+      return new (Real as unknown as new (...a: unknown[]) => Date)(...args);
+    };
+    (Frozen as unknown as { now: () => number }).now = () => ms;
+    (globalThis as unknown as { Date: typeof Date }).Date = Frozen as unknown as typeof Date;
+    try {
+      return await fn();
     } finally {
       (globalThis as unknown as { Date: typeof Date }).Date = Real;
     }
@@ -2146,11 +2171,15 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       },
     });
 
-    const runner = await startRunner();
+    // ⚠️ **`start()` 现在会当场 tick 一次(MC-021)。** 所以先把时钟冻在要测的那一分钟
+    // 再 start —— 启动那一跳就落在本分钟上,成为"本分钟的第一次";否则它会落在**真实
+    // 当前分钟**上,而 `* * * * *` 什么分钟都命中,平白多出一次运行,后面按分钟算的
+    // 计数全错位。
     const minute = 1_000_000; // 冻结的那一分钟(毫秒 = minute * 60_000)
     const at = minute * 60_000;
+    const runner = await withClockAsync(at, () => startRunner());
 
-    // **同一分钟内 tick 两次** —— ticker 30 秒一跳,同一分钟真的会被看两次(见 TICK_MS
+    // **同一分钟内再 tick 两次** —— ticker 30 秒一跳,同一分钟真的会被看两次(见 TICK_MS
     // 的注释)。不去重的话「每分钟一次」会变成一分钟两次。
     withClock(at, () => runner.onTick());
     withClock(at + 20_000, () => runner.onTick());
@@ -2169,18 +2198,17 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
 
     /* ── 重启:新建一个实例(进程重开),同一分钟**不再**触发 ── */
 
-    const revived = await startRunner();
     const restartMinute = 2_000_000;
     const restartAt = restartMinute * 60_000;
-    // 先在新实例的正常时钟下补一次「这一分钟跑过」——用冻结时钟把它钉在 restartMinute。
-    withClock(restartAt, () => revived.onTick());
+    // 同样:冻在 restartMinute 再 start,启动那一跳就是"这一分钟跑过一次"。
+    const revived = await withClockAsync(restartAt, () => startRunner());
     const beforeRestart2 = runsOfNode(nodeId).length;
     eq("重启前:这一分钟跑过一次", beforeRestart2, 3);
     revived.dispose();
 
     // **再起一个进程**(磁盘上那张表就是唯一的记忆)。这一跳若还是"本分钟没见过",
     // 就会多起一次运行 —— 那正是"每次开应用那个每分钟的自动化多跑一次"的症状。
-    const second = await startRunner();
+    const second = await withClockAsync(restartAt + 10_000, () => startRunner());
     withClock(restartAt + 10_000, () => second.onTick());
     eq("重启之后同一分钟不再触发", runsOfNode(nodeId).length, 3);
     second.dispose();
@@ -2196,20 +2224,31 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
       task: "旧记录回收不影响下一次调度",
     } });
-    const runner = (await startRunner()) as RunnerInternals & {
+    const base = 5_000_000;
+    // 冻在 base+1000 再 start,让启动那一跳也落在同一条"逻辑时间线"上 —— 这一节用
+    // 的是 `base+1000` 那个分钟,启动 tick 若落真实当前分钟会额外多跑一次。
+    const runner = (await withClockAsync((base + 1000) * 60_000, () => startRunner())) as RunnerInternals & {
       rememberLastMinute(key: string, minute: number | null): void;
     };
     try {
-      eq("起手读回空去重表", runner.lastMinute.size, 0);
-      const base = 5_000_000;
+      // ⚠️ `start()` 现在会当场 tick 一次(MC-021),叠在 base+1000 上,于是起手时这张表
+      // **已经有一条**(本分钟内这条触发器的去重记录)。这一节验的是**历史修剪**,只有
+      // **非当前分钟**的那些参与 60 条预算,所以按 protected 那一格把当前分钟的行排除出去再数。
+      const protectedMinute = base + 1000;
       withClock((base + 1000) * 60_000, () => {
-        for (let i = 1; i <= 65; i++) runner.rememberLastMinute(`wf_trim:t${i}`, base + i);
+        for (let i = 1; i <= 65; i++) runner.rememberLastMinute(`wf_trim:t${i}`, base + i, protectedMinute);
       });
-      eq("非当前分钟的历史只保留60条", Object.keys(onDisk()).length, 60);
-      eq("历史清理同步内存与持久化表", runner.lastMinute.size, 60);
+      const disk = onDisk();
+      eq(
+        "非当前分钟的历史只保留60条",
+        Object.keys(disk).filter((k) => disk[k] !== protectedMinute).length,
+        60,
+      );
       check("淘汰最旧的历史记录", !runner.lastMinute.has("wf_trim:t1") && !runner.lastMinute.has("wf_trim:t5") && runner.lastMinute.has("wf_trim:t6"), [...runner.lastMinute.keys()]);
-      eq("最新历史记录仍在", onDisk()["wf_trim:t65"], base + 65);
-      withClock((base + 1000) * 60_000, () => runner.onTick());
+      eq("最新历史记录仍在", disk["wf_trim:t65"], base + 65);
+      // 旧记录回收之后,新的一分钟里这条触发器照常调度。
+      resetRuns();
+      withClock((base + 1001) * 60_000, () => runner.onTick());
       eq("旧记录回收不阻止后续分钟正常调度", runsOfNode(nodeId).length, 1);
     } finally { runner.dispose(); }
   }
@@ -2240,7 +2279,10 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     // 实现一旦退回"直接抛",整个冒烟文件会以一个未捕获的 `SyntaxError` 结束(退出码 1,
     // 一条 FAIL 都打不出来)—— 那种形状看不出是哪条断言在红,也就谈不上"确认红"。包成
     // 一个可判的失败,红的时候才有 `FAIL 坏 JSON:不当成抛错…` 这一行。
-    const bad = await startRunner().then(
+    const at = 3_000_000 * 60_000;
+    // 冻在 `at` 再 start:启动那一跳(MC-021)会为 `* * * * *` 在**这一分钟**跑一次并
+    // 记下去重;下面再 onTick 同一分钟就该命中去重、不再多跑。所以两次合起来**恰好一次**。
+    const bad = await withClockAsync(at, () => startRunner()).then(
       (r) => ({ runner: r, error: null as string | null }),
       (err: unknown) => ({ runner: null, error: (err as Error).message }),
     );
@@ -2251,8 +2293,15 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     );
     if (bad.runner !== null) {
       const r1 = bad.runner;
-      eq("坏 JSON:当空表(这条触发器照挂上)", r1.lastMinute.size, 0);
-      const at = 3_000_000 * 60_000;
+      // ⚠️ `start()` 会当场 tick 一次(MC-021),在 `at` 这一分钟跑过一次 —— 因此起手时
+      // 表里有**本分钟这一条**(坏表被当空表读了,但启动那一跳又写了一条)。判据从"空表"
+      // 改成"除本分钟外没有别的记录":那才真正验到"坏表没被当数据读进来"。
+      const bootMinute = Math.floor(at / 60_000);
+      check(
+        "坏 JSON:当空表(只余启动那一跳写下的本分钟记录)",
+        [...r1.lastMinute.values()].every((m) => m === bootMinute),
+        [...r1.lastMinute.entries()],
+      );
       withClock(at, () => r1.onTick());
       eq(
         "坏 JSON 之后照常触发(退化成「重启后可能多跑一次」,但不静默停摆)",
@@ -2275,11 +2324,19 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     ] as const) {
       SettingRepo.set(LAST_MINUTE_KEY, bad);
       const r = await startRunner();
-      eq(`坏形状(${what}):当空表,不抛`, r.lastMinute.size, 0);
+      // 同①c:坏形状被当空表,但 `start()` 的启动 tick 会为 `* * * * *` 写下本分钟一条。
+      const bootMinute = Math.floor(Date.now() / 60_000);
+      check(
+        `坏形状(${what}):当空表,不抛`,
+        [...r.lastMinute.values()].every((m) => m === bootMinute),
+        [...r.lastMinute.entries()],
+      );
       r.dispose();
     }
 
     // ③ 对照:一份**形状对**的表照常读回来(别把降级写成"一律丢")。
+    // 注意 `start()` 的启动 tick 会为 `* * * * *` 写下本分钟一条,所以只断言 `wf_ok:t`
+    // 那条被读了回来,而不是整张表的大小。
     SettingRepo.set(LAST_MINUTE_KEY, JSON.stringify({ "wf_ok:t": 42 }));
     const r3 = await startRunner();
     eq("形状对的表照常读回来", r3.lastMinute.get("wf_ok:t"), 42);
@@ -2375,11 +2432,14 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     await sleep(700); // 越过 300(settle)+ 400(debounce)
 
     const fired = runsOfNode(nodeId2);
-    eq("flush 时不再把它交给模型", (fired[0]?.entry?.payload?.files as string[] | undefined)?.length ?? -1, 0);
+    // 【MC-022】攒着的那批收口时**全都不在了** → 这一次**根本不跑**(从前是照跑一次
+    // 空载荷,叫模型白跑一趟、白花钱)。所以这里断言的是"没有这次运行",而不是
+    // "运行照跑、只是载荷空"。
+    eq("收口时整批都不在了 → 这一次不跑(不再空载荷唤醒模型)", fired.length, 0);
     check(
-      "那一次运行照跑,只是载荷里没有它(取舍见注释:不因此取消整批)",
-      fired.length === 1 && !JSON.stringify(fired[0]?.entry?.payload ?? {}).includes("vanishes-later"),
-      fired[0]?.entry?.payload,
+      "而且没有哪次运行的载荷里带着那个已删文件",
+      !runs.some((r) => JSON.stringify(r.entry?.payload ?? {}).includes("vanishes-later")),
+      fired.map((r) => r.entry?.payload),
     );
 
     runner.dispose();
@@ -3083,8 +3143,11 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       task: "同分钟至多一次派发",
     } });
     type Writable = RunnerInternals & { rememberLastMinute(key: string, minute: number | null): void };
-    let runner = await startRunner() as Writable;
+    // ⚠️ 冻在 `minute` 再 start:`start()` 现在会当场 tick 一次(MC-021),72 条
+    // `* * * * *` 会在启动那一刻全跑掉——若不冻住时钟,那一跳落在**真实当前分钟**上,
+    // 于是这批触发器被真实分钟和 `minute` 各派发一次,后面所有计数翻倍。
     const minute = Math.floor(Date.now() / 60_000) + 10;
+    let runner = await withClockAsync(minute * 60_000, () => startRunner()) as Writable;
     const allRemembered = (): boolean => ids.every(({workflowId,nodeId}) => runner.lastMinute.get(`${workflowId}:${nodeId}`) === minute);
     const allSaved = (): boolean => { const rows = onDisk(); return ids.every(({workflowId,nodeId}) => rows[`${workflowId}:${nodeId}`] === minute); };
     try {
@@ -3116,7 +3179,9 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       check("删除记录触发的写入也保留全部本分钟记录", allRemembered() && allSaved(), runner.lastMinute.size);
 
       runner.dispose();
-      runner = await startRunner() as Writable;
+      // 重启也要冻在 `minute`:`start()` 的启动 tick 会看本分钟,而 72 条的 `minute`
+      // 去重记录刚从盘上恢复 —— 冻在同一分钟才会命中去重、不重复派发(这正是本节要验的)。
+      runner = await withClockAsync(minute * 60_000, () => startRunner()) as Writable;
       check("重建执行器从settings恢复全部72条去重记录", allRemembered(), runner.lastMinute.size);
       withClock(minute * 60_000 + 40_000, () => runner.onTick());
       eq("重建执行器后同分钟不再派发", batchRuns(), count);
@@ -3133,6 +3198,65 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     } finally { runner.dispose(); }
   }
 
+  /* ── MC-020 目录监听挂失败后有上限地自主重挂 ──
+   *
+   * 从前 `watcher === null` 只有 reload 会补挂,而 30 秒的 onTick 只看定时那一类 ——
+   * 目录一坏(初始不存在 / 监听出错被关),不显式 reload 就**永远不响**。这条钉的是
+   * "ticker 会给没挂上的目录排一次**有上限**的重挂,而不是每秒敲或永不重试"。 */
+  {
+    resetRuns();
+    // 让这条自动化的**项目目录不存在** —— 监听就会挂失败,走进重挂那条路。
+    const ghostPath = join(PROJ_DIR, "ghost-project-dir-does-not-exist");
+    const ghostId = `proj_ghost_${Math.random().toString(36).slice(2, 7)}`;
+    const now = Date.now();
+    ProjectRepo.create({ id: ghostId, name: "幽灵项目", path: ghostPath, archived: false, group: null, sortOrder: 0, pinnedAt: null, createdAt: now, updatedAt: now });
+    const wf = nextId();
+    const nodeId = "t_watchretry";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+      [NODE_TRIGGER_PROJECT_PARAM_KEY]: ghostId,
+      [NODE_TRIGGER_PATHS_PARAM_KEY]: "**",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+      task: "目录回来之后该复活",
+    } });
+    const runner = await startRunner();
+    try {
+      const internals = runner as RunnerInternals & { watchers: Map<string, { watcher: unknown; nextRetryAt?: number; retryMs?: number }> };
+      const entry = internals.watchers.get(ghostPath);
+      check("不存在的目录也建了监听条目(不是静默消失)", entry !== undefined, [...internals.watchers.keys()]);
+      if (entry !== undefined) {
+        check("挂失败后条目记了退避时间(会自己再试)", typeof entry.nextRetryAt === "number", entry);
+        check("退避间隔从下限起(≥30 秒,不是高频轮询)", (entry.retryMs ?? 0) >= 30_000, entry.retryMs);
+        // 关键不变量:退避**到点之前**不动手。
+        const before = entry.nextRetryAt!;
+        withClock(before - 1000, () => (runner as unknown as { retryWatchers(): void }).retryWatchers());
+        check("退避没到点 → 不重挂(不每秒敲)", internals.watchers.get(ghostPath)?.nextRetryAt === before, internals.watchers.get(ghostPath));
+      }
+    } finally { runner.dispose(); }
+  }
+
+  /* ── MC-051 定时派发前必须先把去重记录**同步落盘** ──
+   *
+   * 从前 onTick 先 `rememberLastMinute`(走 SettingRepo.set 的**异步** persist、还吞错)再立刻
+   * `fire` —— "记下了"与"落盘了"之间有个窗口:应用若在这窗口里被杀/断电,重启后表里没有
+   * 这一分钟,启动即 tick(MC-021)会对本分钟**再跑一次**,而对有外部副作用的自动化那是重复执行。
+   * 现在派发前先过 `rememberLastMinuteDurable`(同步 `persistNowOrThrow`),写不进去就跳过这次
+   * 触发。(完整版 durable claim/dispatch ledger 是台账 MC-051 建议的后续架构改造。)
+   *
+   * 这里钉的是**接线**(无头里让 SettingRepo/persist 真失败很牵强):派发那一条必须被
+   * `rememberLastMinuteDurable` 的返回值守着。撤掉那个 `if (!...)` 即红。 */
+  {
+    const src = readFileSync(join(process.cwd(), "src/main/orchestration/automationRunner.ts"), "utf8");
+    check(
+      "★ MC-051:定时派发前的去重记录是**同步落盘**的(rememberLastMinuteDurable)",
+      /rememberLastMinuteDurable\s*\(/.test(src) && /persistNowOrThrow\s*\(/.test(src),
+    );
+    check(
+      "★ MC-051:该落盘失败即**跳过这次触发**(用返回值守着,不是照常 fire)",
+      /if\s*\(\s*!\s*this\.rememberLastMinuteDurable\(/.test(src),
+    );
+  }
+
   /* ── 收尾:这一节的实例都 dispose 了,别让 timer / watcher 挂着 ── */
 }
 
@@ -3145,6 +3269,22 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
   eq("已有 PDF 的本地导入仍保留 PDF 路径", item?.pdfPath, "pdf/report.pdf");
   const facts = payloadFactsOf(mergeEventPayload(undefined, "library.item.imported", {}, item));
   eq("可选路径传到触发器载荷", facts.filePath, "files/report.docx");
+}
+
+
+/* ── 【ARC-015】文件监听的默认忽略目录:纯函数矩阵 ── */
+console.log("\n【ARC-015】文件监听默认忽略目录的 policy");
+{
+  const d = (p: string, globs: string[], pol: "SAFE_DEFAULT" | "EXPLICIT_OVERRIDE") => shouldIgnoreWatchPath(p, globs, pol);
+  check("SAFE_DEFAULT:dist 下的路径被忽略", d("dist/bundle.js", ["dist/*.js"], "SAFE_DEFAULT") === true);
+  check("SAFE_DEFAULT:node_modules 下的被忽略", d("node_modules/x/i.js", ["**"], "SAFE_DEFAULT") === true);
+  check("正常路径(src/*.ts)不忽略", d("src/a.ts", ["src/*.ts"], "SAFE_DEFAULT") === false);
+  check("EXPLICIT_OVERRIDE:dist/*.js 明确命中 → 不忽略", d("dist/bundle.js", ["dist/*.js"], "EXPLICIT_OVERRIDE") === false);
+  check("EXPLICIT_OVERRIDE:build/report.json 命中 → 不忽略", d("build/report.json", ["build/report.json"], "EXPLICIT_OVERRIDE") === false);
+  check("EXPLICIT_OVERRIDE:** 不解保护 dist", d("dist/bundle.js", ["**"], "EXPLICIT_OVERRIDE") === true);
+  check("EXPLICIT_OVERRIDE:只写目录名 dist 不解保护", d("dist/bundle.js", ["dist"], "EXPLICIT_OVERRIDE") === true);
+  check("isSpecificGlob:** 不具体", isSpecificGlob("**") === false);
+  check("isSpecificGlob:dist/*.js 具体", isSpecificGlob("dist/*.js") === true);
 }
 
 console.log(`\nautomation-smoke:${total - failures}/${total} 通过`);

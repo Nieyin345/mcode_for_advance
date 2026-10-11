@@ -346,6 +346,165 @@ export const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
   "projects.changed": null,
 };
 
+/* ── 交付策略(deliveryPolicy) ──
+ *
+ * 今天的 `HookRunner` 只有一条**写死**的策略:同一条钩子同时只跑一个进程,忙时把这一次
+ * 记一条 `skipped`。它对"用户盯着的一场对话"够用,但对**无人值守的长期场景**不够 ——
+ * 那种场景里"钩子没跑"和"钩子跑失败了"是两件后果完全不同的事,而这个差别今天只体现在
+ * 环里那一条记录上,没有一个可以断言、可以计数的契约。
+ *
+ * 这里把"一条钩子/触发器/能力任务该如何交付"声明成一个**有限集合**里的选择,并把它和
+ * "跳过 / 丢 / 合并"的**可观测计数**绑在一起 —— 交付决定不再是"安静地不见了",而是
+ * 明写在计数器上的一条事实。 */
+
+/**
+ * 四种交付策略。**只有四种**,因为它们各自对应一类**已经存在**的真实诉求,而多一种
+ * 就要多解释一遍"它和相邻那种差在哪":
+ *
+ *  - `BEST_EFFORT` —— 只求"提示一下",**可丢**。桌面 toast / 桌面通知是原型例:
+ *    通知慢了一点、丢了一条,没人在乎。**今天所有已有钩子的默认就在这里。**
+ *  - `COALESCE` —— 输入**合并**:高频文件变化、高频事件,不必每条都跑,但要跑一次
+ *    "把攒着的那几条一起处理"。形成的运行次数是**有界**的(见 {@link decideDelivery})。
+ *  - `AT_MOST_ONCE` —— **不可重复**,但允许**明确地丢**。适用于"重复执行有副作用、
+ *    但漏一次可以接受"的动作(比如"发一条状态更新")。
+ *  - `DURABLE_AT_LEAST_ONCE` —— 需要**持久领取**(重启后待办还在),因此消费者**必须
+ *    有幂等键**(否则重复投递会变成重复副作用)。⚠️ **本版尚未实现**:见
+ *    {@link decideDelivery} 对它的处置 —— **明确报 unsupported,不假装已经持久化**。
+ *
+ * ⚠️ **故意没有 `EXACTLY_ONCE`。** 一个"恰好一次"的承诺,在没有一个统一的、可验证的
+ * 分布式事务的前提下,**无法在这里被证明**,而写下一个证明不了的保证比不写更坏 ——
+ * 它会让人据此省掉幂等键。对不可幂等的外部动作,故障后的正确结论是 **UNCERTAIN**
+ * (要求人 / 外部系统核对),不是一个漂亮的"保证恰好一次"。
+ */
+export const DELIVERY_POLICY_KINDS = [
+  "BEST_EFFORT",
+  "COALESCE",
+  "AT_MOST_ONCE",
+  "DURABLE_AT_LEAST_ONCE",
+] as const;
+export type DeliveryPolicyKind = (typeof DELIVERY_POLICY_KINDS)[number];
+
+/**
+ * 一条交付策略的**声明**。除 `kind` 外全可选 —— 省略的字段走 {@link DEFAULT_DELIVERY_POLICY}
+ * 的默认值,所以"只声明一个 `kind`"始终是合法的。
+ */
+export const DeliveryPolicySchema = z.object({
+  kind: z.enum(DELIVERY_POLICY_KINDS),
+  /**
+   * 同一条钩子/触发器**同时在跑的进程数上限**。默认 1(与今天一致)。
+   * 超过上限时按 `kind` 决定合并还是丢,而不是无限起进程。
+   */
+  maxConcurrency: z.number().int().min(1).max(64).optional(),
+  /**
+   * 输入合并的**窗口**(毫秒)。给 `COALESCE` 用:这段时间内来的事件算一批。
+   * 省略 = 0(不额外等,只做"忙时攒一次"的合并)。
+   */
+  debounceMs: z.number().int().min(0).max(600_000).optional(),
+  /** 覆盖 `HookSpec.timeoutMs`。省略就沿用钩子自己那个(或 {@link DEFAULT_HOOK_TIMEOUT_MS})。 */
+  timeoutMs: z.number().int().min(100).max(600_000).optional(),
+  /** 失败后允许的重试次数预算(本版只被记录与校验,重试调度是后续切片)。 */
+  retryBudget: z.number().int().min(0).max(100).optional(),
+  /** 输出字节预算。省略 = {@link HOOK_OUTPUT_LIMIT}。 */
+  outputLimit: z.number().int().min(256).max(10_000_000).optional(),
+  /** 归属的场景 id —— "按 scene 可查询收到了什么、跳过了什么、实际跑了什么"的键。 */
+  ownerScene: z.string().max(120).optional(),
+});
+export type DeliveryPolicy = z.infer<typeof DeliveryPolicySchema>;
+
+/**
+ * 省略策略时用的那一条 —— **刻意等于今天的行为**:`BEST_EFFORT` + 并发上限 1,
+ * 即"同一条钩子同时只跑一个进程,忙时明确记一条 skipped"。这样"没声明策略的老钩子"
+ * 不会因为这次改动而改变行为(ARC-007 的硬要求:旧 Hook 配置兼容)。
+ */
+export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = { kind: "BEST_EFFORT", maxConcurrency: 1 };
+
+/**
+ * 一条钩子的**生效**策略:声明的字段盖在默认值上。纯函数,不碰文件系统。
+ *
+ * `kind` 是必填的(见 schema),所以这里只补那些可选的默认 —— 别的地方读策略一律走这个,
+ * 别自己写 `?? 1`(两份默认值迟早分家,而分家的表现是"某一路的并发上限悄悄变成了别的数")。
+ */
+export function resolveDeliveryPolicy(spec: HookSpec): DeliveryPolicy {
+  const declared = spec.deliveryPolicy;
+  if (declared === undefined) return { ...DEFAULT_DELIVERY_POLICY };
+  return { ...DEFAULT_DELIVERY_POLICY, ...declared };
+}
+
+/* ── 交付决定(纯函数) ── */
+
+export type DeliveryAction = "accept" | "coalesce" | "drop" | "unsupported";
+
+export interface DeliveryDecision {
+  action: DeliveryAction;
+  /** 为什么这么决定 —— 它会进 `HookRun.error`(skipped 那条),也可以只被计数。 */
+  reason: string;
+}
+
+export interface DeliveryDecisionInput {
+  /** 同一条钩子/触发器**当前正在跑**的进程数。 */
+  inFlight: number;
+  /** 是否**已经攒着**一次"合并后要跑"的待办(只对 `COALESCE` 有意义)。 */
+  coalescePending: boolean;
+  /**
+   * 最近的事件速率(每秒),可选。**只作判据的证据**,不做精确令牌桶 ——
+   * 这一版不需要精确限流,需要的是"决定了就说清楚凭什么"。
+   */
+  eventRatePerSec?: number;
+}
+
+/**
+ * 【ARC-007】**交付决定** —— 纯函数,可直测。
+ *
+ * 给定一条**已解析**的策略、当前在跑的进程数、是否已有待合并项,返回
+ * `accept`(现在就跑)/ `coalesce`(并入待合并项,不另起进程)/ `drop`(明确丢)/
+ * `unsupported`(这个策略本版实现不了)。
+ *
+ * ## 四种 `kind` 的规则
+ *
+ *  - `DURABLE_AT_LEAST_ONCE` → **一律 `unsupported`**。本版没有持久领取的账本
+ *    (`DurableOperationLedger`),也没有消费方幂等键的位置 —— 假装它"至少一次"了,
+ *    出事时用户会以为待办还在,**比不支持更危险**。所以明确报出来。
+ *  - `COALESCE` → 已经攒着一次合并、或已到并发上限 → `coalesce`(并入,不另起);
+ *    否则 `accept`。合并形成的运行数因此**有界**:每一次"在跑的"最多兑现一次合并。
+ *  - `AT_MOST_ONCE` → 到并发上限 → `drop`(不重复,明确丢);否则 `accept`。
+ *  - `BEST_EFFORT`(默认)→ 同上 `drop`;但语义上"丢"本就可接受。
+ */
+export function decideDelivery(
+  policy: DeliveryPolicy,
+  input: DeliveryDecisionInput,
+): DeliveryDecision {
+  const cap = policy.maxConcurrency ?? 1;
+  // 速率只作**判据的证据**,不做精确令牌桶 —— 有就写进原因,让它可观测,而不是死字段。
+  const rate = input.eventRatePerSec !== undefined ? `,最近 ${input.eventRatePerSec}/秒` : "";
+  if (policy.kind === "DURABLE_AT_LEAST_ONCE") {
+    return {
+      action: "unsupported",
+      reason:
+        "DURABLE_AT_LEAST_ONCE 尚未支持:需要持久领取(DurableOperationLedger)与消费方幂等键,本版不假装已经持久化",
+    };
+  }
+  const busy = input.inFlight >= cap;
+  if (policy.kind === "COALESCE") {
+    if (input.coalescePending) {
+      return { action: "coalesce", reason: `已攒着一次合并,这一条并进去${rate}` };
+    }
+    if (busy) {
+      return {
+        action: "coalesce",
+        reason: `在跑的已有 ${input.inFlight} 个(上限 ${cap})${rate},攒一次合并后再跑`,
+      };
+    }
+    return { action: "accept", reason: "空闲,立即跑" };
+  }
+  if (busy) {
+    if (policy.kind === "AT_MOST_ONCE") {
+      return { action: "drop", reason: `上一条还在跑(并发上限 ${cap})${rate},AT_MOST_ONCE 不重复,明确丢` };
+    }
+    return { action: "drop", reason: `上一条还在跑(并发上限 ${cap})${rate}` };
+  }
+  return { action: "accept", reason: "空闲,立即跑" };
+}
+
 /* ── 一条钩子 ── */
 
 export const HookSpecSchema = z.object({
@@ -369,6 +528,14 @@ export const HookSpecSchema = z.object({
   enabled: z.boolean(),
   /** 超时(毫秒)。默认 {@link DEFAULT_HOOK_TIMEOUT_MS}。超时的进程会被杀掉。 */
   timeoutMs: z.number().int().min(100).max(600_000).optional(),
+  /**
+   * 【ARC-007】**声明的交付策略**。**省略 = 今天的行为**(见 {@link resolveDeliveryPolicy}:
+   * `BEST_EFFORT` + 并发上限 1,即"同一条钩子同时只跑一个进程,忙时明确丢")。
+   *
+   * 它回答的是"这条钩子在高频事件下该怎么处置",而不是"怎么跑一条命令"(那是 `command` /
+   * `timeoutMs`)。见 {@link DeliveryPolicy} 那一段的取舍说明。
+   */
+  deliveryPolicy: DeliveryPolicySchema.optional(),
 });
 export type HookSpec = z.infer<typeof HookSpecSchema>;
 
@@ -641,4 +808,88 @@ export interface HookRun {
   stderr?: string;
   /** 没能跑起来(命令不存在、spawn 就失败)或者被跳过(上一条还在跑)的原因。 */
   error?: string;
+}
+
+/**
+ * 【MC-061】Claude 原生 hook 事件名 → Mcode 统一 {@link HookEvent}。
+ *
+ * 插件里带的是 Claude 的 hooks.json 事件名(`PreToolUse` / `PostToolUse` / `Stop` / …)。
+ * 台账要求:接上执行通道时,**映射不到的事件必须明确报 UNSUPPORTED,不得静默不跑** ——
+ * 所以这里给出唯一一份映射表,映射不到就返回 `null`(调用方据此标 `unmappable`)。
+ *
+ * 只映射语义**明确对应**的;边界不清的宁可返回 null(报不可用)也不猜 —— 猜错会让一条
+ * 钩子挂在一个它本不该响应的事件上。
+ */
+export const CLAUDE_HOOK_EVENT_MAP: Readonly<Record<string, HookEvent | null>> = {
+  UserPromptSubmit: "user.message",
+  PreToolUse: "tool.use",
+  PostToolUse: "tool.result",
+  Notification: "approval.request",
+  Stop: "turn.done",
+  SubagentStop: "subagent.update",
+  // 明确不映射(语义在 Mcode 的统一事件里没有对应):会话起止、压缩前后等。
+  SessionStart: null,
+  SessionEnd: null,
+  PreCompact: null,
+};
+
+/** 映射一个原生 hook 事件名到统一 {@link HookEvent};未知或不支持的返回 null。 */
+export function mapClaudeHookEvent(nativeEvent: string): HookEvent | null {
+  return CLAUDE_HOOK_EVENT_MAP[nativeEvent] ?? null;
+}
+
+/**
+ * 【ARC-015】文件监听的**默认忽略目录**。一次 `npm i` 是几万条事件,让它们各自去跑一遍
+ * glob 纯属白烧 CPU —— 所以这些目录下的动静默认不看。
+ *
+ * ⚠️ 但这不该**无条件**盖住用户显式选的触发源:「dist/*.js 构建完后处理」是开发场景的
+ * 合理需求。所以是否忽略由 {@link shouldIgnoreWatchPath} 判,而不是进 onFsChange 就 return。
+ */
+export const WATCH_SAFE_IGNORED_DIRS: readonly string[] = [
+  "node_modules", ".git", "dist", "build", "out", "target", ".next",
+];
+
+/**
+ * 【ARC-015】这条文件事件该不该被默认忽略目录挡掉 —— 纯函数,可直测。
+ *
+ * 判据:
+ * - 路径里没有默认忽略目录段 → **不看**(正常处理);
+ * - 有,但 `policy === "SAFE_DEFAULT"`(缺省)→ **忽略**;
+ * - 有,且 `policy === "EXPLICIT_OVERRIDE"` → 再看用户的 include glob 是否**明确、具体**
+ *   地命中:命中才放行。**泛化 glob(`**`、`*`、仅目录名)**不给解保护 —— 一个根 glob
+ *   等于把整个仓库解保护,那不是"显式选择触发源",是误配置。
+ *
+ * @param relPath 相对触发器 cwd 的路径(调用方已归一成正斜杠;也接受绝对路径,取段即可)
+ * @param includeGlobs 用户写的 include glob 列表
+ * @param policy spec.defaultIgnorePolicy(缺省按 SAFE_DEFAULT)
+ */
+export function shouldIgnoreWatchPath(
+  relPath: string,
+  includeGlobs: readonly string[],
+  policy: "SAFE_DEFAULT" | "EXPLICIT_OVERRIDE" = "SAFE_DEFAULT",
+): boolean {
+  const segs = relPath.split(/[\/]/).filter(Boolean);
+  const hitIgnored = segs.some((seg) => WATCH_SAFE_IGNORED_DIRS.includes(seg));
+  if (!hitIgnored) return false;
+  if (policy !== "EXPLICIT_OVERRIDE") return true;
+  // EXPLICIT_OVERRIDE:只有**具体**的 include glob 命中被忽略目录下的路径才放行。
+  return !includeGlobs.some((g) => isSpecificGlob(g) && globToRegExp(g).test(relPath));
+}
+
+/**
+ * 【ARC-015】这条 glob 够不够"具体",足以解除默认忽略保护?
+ *
+ * 不够具体的:空串、`**`、纯 `*`、只写一个默认忽略目录名(如 `dist`,那等于说"整个 dist
+ * 都看")。够具体的:`dist/*.js`、`build/report.json`、`node_modules/x/index.js` 这类带
+ * **具体名字/扩展**的。判据要窄 —— 宁可让用户再写细一点,也不给一个 `**` 把整仓解保护。
+ */
+export function isSpecificGlob(glob: string): boolean {
+  const g = glob.trim();
+  if (g.length === 0) return false;
+  if (g === "**" || g === "*" || g === "**/*" || g === "*/**") return false;
+  // 去掉纯通配的段后,必须还剩至少一个"带字面字符"的段(不是纯 * / **)。
+  const literalSegs = g
+    .split(/[\/]/)
+    .filter((seg) => seg.length > 0 && seg !== "*" && seg !== "**" && /[A-Za-z0-9_.\-]/.test(seg));
+  return literalSegs.length > 0;
 }

@@ -21,8 +21,10 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import initSqlJs from "sql.js/dist/sql-asm.js";
+import { armFault, clearFault, faultHits } from "../db-persistence-smoke/stubs/fs.js";
 import { dataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
-import { initDb, getDb, flushDb, closeDb, persist } from "@main/store/db.js";
+import { initDb, getDb, flushDb, closeDb, persist, awaitDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, MessageRepo } from "@main/store/repositories.js";
 import type { Project, Session } from "@contracts/session";
 
@@ -166,6 +168,160 @@ closeDb();
   const dbSrc = readFileSync(resolve(process.cwd(), "src/main/store/db.ts"), "utf8");
   check("initDb 调用 dataRoot 的 dbPath() 解析器", /resolveDbPath\(\)/.test(dbSrc));
   check("initDb 不再自行拼接数据库路径", !/dbPath\s*=\s*join\(/.test(dbSrc));
+}
+
+/* ── 9. 迁移失败必须 fail-closed,且故障解除后能干净重试(MC-019) ──────────────
+ *
+ * 从前 `initDb()` 在开库之后**立刻**把句柄赋给模块级 `db`,随后才 `migrate()` ——
+ * 迁移一抛,`db` 已非 null 而 `dbReadyPromise` 已 reject;再调 `initDb()` 会因
+ * `if (db)` 返回那个**半迁移**的句柄,`getDb()` 也照样把它交出去。现在改成:先用
+ * **局部**句柄开库 + 跑 PRAGMA + 迁移,全过关之后才发布 `db`;任何一步失败都关库、
+ * 清状态,下一次调用能干净重试。
+ *
+ * 故障精确落在 migrate **中途**:把库文件写成**不是 sqlite** 的垃圾字节 —— sql.js 的
+ * `new SQL.Database(bytes)` 不抛,要到第一次 `run()`(migrate 里第一个 `CREATE TABLE`)
+ * 才抛 `file is not a database`。这正是"半初始化数据库"那个窗口。
+ */
+console.log("\nmaint-m01-smoke: 迁移失败 fail-closed + 可重试 …");
+{
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const corruptPath = join(dataRoot(), DATA_DB_FILENAME);
+
+  // 库先关掉、文件清掉,再把垃圾字节写进去。
+  closeDb();
+  rmSync(corruptPath, { force: true });
+  writeFileSync(corruptPath, Buffer.from("not a sqlite database — MC-019 corruption fixture"));
+
+  // 9a. 首次 initDb 必须 reject(迁移失败),失败后 getDb() 不能交出半迁移的句柄。
+  let init1Err: unknown = null;
+  try { await initDb(); } catch (e) { init1Err = e; }
+  check("★ 迁移失败时 initDb reject", init1Err !== null, String(init1Err));
+  check(
+    "★ 失败后 getDb() 仍然抛(不把半迁移句柄暴露给调用方)",
+    (() => { try { getDb(); return false; } catch { return true; } })(),
+  );
+
+  // 9b. **再调 initDb 不能静默返回那个坏句柄。** 这是 MC-019 的核心:从前 `if (db)`
+  //     会返回一个"成功"的 db(其实是半迁移的),现在必须仍旧 reject(可重试)。
+  let init2Returned = false;
+  let init2Err: unknown = null;
+  try { await initDb(); init2Returned = true; } catch (e) { init2Err = e; }
+  check(
+    "★ 失败后再调 initDb 不会静默返回坏句柄(仍 reject,可重试)",
+    !init2Returned && init2Err !== null,
+    { init2Returned, err: String(init2Err) },
+  );
+
+  // 9c. awaitDb() 不能永久停在一个已 reject 的 promise 上(否则本进程里再也重试不了)。
+  let awaitErr: unknown = null;
+  try { await awaitDb(); } catch (e) { awaitErr = e; }
+  check("★ 失败后 awaitDb() 不永久停在 rejected promise 上", awaitErr === null, String(awaitErr));
+
+  // 9d. **故障解除**:清掉坏文件,initDb 应能恢复(新建空库),且库可用。
+  rmSync(corruptPath, { force: true });
+  await initDb();
+  check("★ 故障解除后 initDb 恢复成功(新建空库)", !!getDb());
+  check("恢复后外键开关为 ON", fkOn());
+  ProjectRepo.create(project("p_recover"));
+  flushDb();
+  check("恢复后库文件落到了临时数据根(能正常落盘)", existsSync(corruptPath));
+  eq("恢复后的库可读写", count("SELECT COUNT(*) FROM projects WHERE id='p_recover'"), 1);
+  closeDb();
+}
+
+/* ── 10. 迁移落盘必须是 durable 的:磁盘失败 + 重试,不许产出「内存 ready / 磁盘没写」 ──
+ *
+ * 【MC-019 · 第 16 轮复核】§9 覆盖的是"迁移中途 SQL 失败"。这一节盯的是**另一格**:
+ * 迁移本身的 SQL 全过了,但**把它落盘**那一步在磁盘上坏了(写/fsync/rename 失败)。
+ *
+ * 从前的写法:migrate 只置位 `migrateNeedsPersist`,`initDb` 在发布句柄之后用**协程化的**
+ * `persist()` 落盘 —— 排一个 microtask,失败还会被吞掉转成后台重试。后果是 `initDb()`
+ * 已经 resolve(= 对外宣布"库就绪",`awaitDb()` 从此返回已就绪)、内存里也是**新结构**,
+ * 可磁盘上仍旧是老结构,而"迁移落盘失败了"这件事调用方一个字都看不到。若此刻进程被杀,
+ * 新版代码用新列去查老库就是 `no such column` —— 台账点名的那种"内存 ready / 磁盘未 ready"。
+ *
+ * 现在:initDb 在发布句柄之后走**同一份** durable 同步写盘(`persistNowOrThrow`,与退出
+ * 前落盘、workflow durable 闸门同源)。写成功才 resolve;写失败即抛出、落进 §9 那个 catch,
+ * 把 db/dbPath/dbReadyPromise 清回 null,initDb **reject**。故障解除后重试能干净重来。
+ *
+ * 造一个**老结构**的库文件(缺后来补的列)才能让 migrate 真的有结构变更可落盘;故障精确
+ * 落在把新结构写回磁盘那一步(见 db-persistence-smoke/stubs/fs.ts 的 write 注入)。
+ */
+console.log("\nmaint-m01-smoke: 迁移落盘 durable —— 磁盘失败不许留「内存 ready / 磁盘未 ready」 …");
+{
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const dbFile = join(dataRoot(), DATA_DB_FILENAME);
+
+  closeDb();
+  rmSync(dbFile, { force: true });
+
+  // 老结构:三张核心表,**没有** provider_id / kind / env_mode / composer_mode 等后补列。
+  const SQL = await initSqlJs();
+  const legacy = new SQL.Database();
+  legacy.run(`
+    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, claude_session_id TEXT, title TEXT NOT NULL, status TEXT NOT NULL, model TEXT NOT NULL, permission_mode TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO projects VALUES ('p_legacy', '老项目', 'C:/legacy', 1, 1);
+  `);
+  const legacyBytes = legacy.export();
+  legacy.close();
+  writeFileSync(dbFile, Buffer.from(legacyBytes));
+
+  const columnOnDisk = (column: string): boolean => {
+    const fresh = new SQL.Database(new Uint8Array(readFileSync(dbFile)));
+    try {
+      const stmt = fresh.prepare("SELECT name FROM pragma_table_info('sessions') WHERE name = ?");
+      stmt.bind([column]);
+      const found = stmt.step();
+      stmt.free();
+      return found;
+    } finally { fresh.close(); }
+  };
+  check("前置:老库磁盘上没有 provider_id 列(迁移真的有事可做)", !columnOnDisk("provider_id"));
+
+  // 10a. 迁移的 SQL 会成功,但把它写回磁盘那一步坏掉 → initDb 必须 reject。
+  armFault(dbFile, "write");
+  let init1Err: unknown = null;
+  try { await initDb(); } catch (e) { init1Err = e; }
+  clearFault();
+  check("★ 迁移落盘失败时 initDb 必须 reject(不许假报就绪)", init1Err !== null, String(init1Err));
+  check("★ 故障确实击中了数据库写入", faultHits > 0);
+  check(
+    "★ 落盘失败后 getDb() 仍抛:绝无「内存 ready / 磁盘未 ready」的句柄",
+    (() => { try { getDb(); return false; } catch { return true; } })(),
+  );
+
+  // 10b. 磁盘文件必须**逐字节**还是那份老库(rename 从未发生),老结构原样在。
+  check("★ 磁盘文件逐字节未变(没被半写的迁移结果污染)", readFileSync(dbFile).equals(Buffer.from(legacyBytes)));
+  check("★ 磁盘上仍是老结构(没有 provider_id 这种新列)", !columnOnDisk("provider_id"));
+  eq("磁盘上老数据一行不少", (() => {
+    const fresh = new SQL.Database(new Uint8Array(readFileSync(dbFile)));
+    try {
+      const stmt = fresh.prepare("SELECT name FROM projects WHERE id='p_legacy'");
+      stmt.step();
+      const name = String(stmt.get()[0]);
+      stmt.free();
+      return name;
+    } finally { fresh.close(); }
+  })(), "老项目");
+
+  // 10c. awaitDb() 不许永久停在 rejected promise 上(否则本进程里再也重试不了)。
+  let awaitErr: unknown = null;
+  try { await awaitDb(); } catch (e) { awaitErr = e; }
+  check("★ 落盘失败后 awaitDb() 不永久停在 rejected promise 上", awaitErr === null, String(awaitErr));
+
+  // 10d. 故障解除后重试:initDb 成功,且新结构**真的落到了磁盘**(不只是内存里有)。
+  await initDb();
+  check("★ 故障解除后 initDb 恢复成功", !!getDb());
+  check("恢复后外键开关为 ON", fkOn());
+  check("★ 重试成功之后新结构确实落到了磁盘(迁移 durable)", columnOnDisk("provider_id"));
+  check("恢复后磁盘上老数据仍在", (() => {
+    try { return scalar("SELECT name FROM projects WHERE id='p_legacy'") === "老项目"; }
+    catch { return false; }
+  })());
+  closeDb();
 }
 
 console.log(`\nmaint-m01-smoke: ${checks - failures}/${checks} checks passed`);

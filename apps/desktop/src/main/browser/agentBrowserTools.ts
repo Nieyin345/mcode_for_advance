@@ -30,8 +30,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { app } from "electron";
-import { BrowserManager, type BrowserDownloadEntry } from "./BrowserManager.js";
+// 走 `@main/...` 包名(而非相对 `./BrowserManager.js`):这样无头 smoke 能用
+// `--alias:@main/browser/BrowserManager.js=…` 换掉它来验跨项目隔离(MC-043),而
+// 相对 import 换不掉 —— 换了会得到两份模块实例。仓库里 ipc/browser.ts 与 index.ts
+// 也是用这个包名 import 的。
+import { BrowserManager, type BrowserDownloadEntry } from "@main/browser/BrowserManager.js";
 import { SNAPSHOT_DISPLAY_CAP } from "./snapshotScript.js";
+import { resolveBrowserTarget, fileUrlWorkspaceError } from "./agentTargeting.js";
 import { log } from "@main/lib/logger.js";
 import { savePngArtifact } from "@main/lib/screenshotStore.js";
 import { SettingRepo } from "@main/store/repositories.js";
@@ -55,8 +60,20 @@ function coerceDevice(v: unknown): BrowserDevicePreset {
 /** The agent's active view — the implicit target for browserId-less calls.
  *  Set by browser_navigate (on the view it went to) and browser_switch_tab;
  *  cleared lazily when the view dies. Module state (main process, shared by
- *  all providers since they run in the same process). */
+ *  all providers since they run in the same process).
+ *
+ *  ⚠️ **两套指针,不是一个(MC-043)。** 从前只有一个全局 `activeBrowserId`,于是
+ *  项目 A 的会话 navigate 之后,项目 B 的会话一次无 browserId 的调用就会落到 A 的标签上
+ *  —— 跨项目读写别人打开的页面。现在:
+ *
+ *   - `activeByProject`:按**项目根**记的指针 —— 会话知道自己的 projectPath 时用这一套,
+ *     每个项目各有各的"当前标签",互不串台;
+ *   - `activeBrowserId`:全局兜底 —— 调用方**没有** projectPath 时(老调用方 / 还没有
+ *     被改造的 provider 路径)才用,行为与从前一致。
+ *
+ *  两者由 navigate 同时更新,所以没有 projectPath 的那条老路不会被改坏。 */
 let activeBrowserId: string | null = null;
+const activeByProject = new Map<string, string>();
 
 /** Last snapshot's index→selector map per browserId, so `index` handles on
  *  click/type/select resolve to stable selectors. Stale entries are pruned
@@ -195,33 +212,48 @@ function normalizeFileUrl(url: string): string {
     .replace(/^file:\/\/(?:localhost\/|(?=[A-Za-z]:))/i, "file:///");
 }
 
+/** Does a `file:` URL point at a path INSIDE a known workspace root? (MC-044.)
+ *  Delegates to {@link fileUrlWorkspaceError} (the pure, unit-tested core). */
+function checkFileUrlWithinWorkspace(url: string): { ok: true } | { ok: false; reason: string } {
+  const err = fileUrlWorkspaceError(url);
+  return err === null ? { ok: true } : { ok: false, reason: err };
+}
+
 /** Drop index maps (and the active pointer) for views that no longer exist. */
 function pruneDeadBrowserState(liveIds: Set<string>): void {
   for (const id of snapshotIndexMaps.keys()) {
     if (!liveIds.has(id)) snapshotIndexMaps.delete(id);
   }
   if (activeBrowserId && !liveIds.has(activeBrowserId)) activeBrowserId = null;
+  for (const [project, id] of activeByProject) {
+    if (!liveIds.has(id)) activeByProject.delete(project);
+  }
 }
 
-/** Find a browserId to operate on. When the caller passed one, validate it
- *  exists. Otherwise prefer the agent's active view, then the first live
- *  view. Returns `kind:"none"` when no usable view is found, so the caller
- *  can decide whether to auto-create (navigate does; the others surface an
- *  error). */
-function resolveBrowserId(browserId?: string):
+/** Record the agent's active view — per project (when known) and globally. */
+function setActiveBrowser(projectPath: string | undefined, browserId: string): void {
+  activeBrowserId = browserId;
+  if (projectPath) activeByProject.set(projectPath, browserId);
+}
+
+/** Find a browserId to operate on. Thin wrapper over the pure
+ *  {@link resolveBrowserTarget} (the unit-tested core, MC-043): it feeds in the
+ *  live views + the two active pointers and prunes dead state. Project
+ *  isolation lives in the pure module. */
+function resolveBrowserId(browserId?: string, projectPath?: string):
   | { ok: true; browserId: string }
   | { ok: false; reason: string } {
   const infos = BrowserManager.list();
   pruneDeadBrowserState(new Set(infos.map((i) => i.browserId)));
-  if (browserId) {
-    if (infos.some((i) => i.browserId === browserId)) return { ok: true, browserId };
-    return { ok: false, reason: `browserId "${browserId}" 不存在或已关闭` };
-  }
-  if (activeBrowserId) {
-    if (infos.some((i) => i.browserId === activeBrowserId)) return { ok: true, browserId: activeBrowserId };
-  }
-  if (infos.length > 0) return { ok: true, browserId: infos[0].browserId };
-  return { ok: false, reason: "no-live-browser" };
+  return resolveBrowserTarget(
+    infos.map((i) => ({ browserId: i.browserId, projectPath: i.projectPath })),
+    {
+      browserId,
+      projectPath,
+      activeGlobal: activeBrowserId,
+      activeForProject: projectPath ? activeByProject.get(projectPath) ?? null : null,
+    },
+  );
 }
 
 /** Resolve an element handle to a CSS selector: an `index` from the most
@@ -265,17 +297,28 @@ function noBrowserError(): ToolResult {
   return errorResult("当前没有打开的浏览器。请先调用 browser_navigate({ url })。");
 }
 
-/** `browser_list` — list all live browser views with their current url/title.
- *  Safe to call with no browser open (returns an empty list). */
-export function browserList(): ToolResult {
-  const infos = BrowserManager.list();
-  pruneDeadBrowserState(new Set(infos.map((i) => i.browserId)));
+/** `browser_list` — list live browser views with their current url/title.
+ *  Safe to call with no browser open (returns an empty list).
+ *
+ *  **按项目隔离(MC-043)**:带上 `projectPath` 时只列出**本项目**的视图,别的项目
+ *  打开的标签既不出现在列表里、也不泄露它的 URL/标题。不带 projectPath 的老调用方
+ *  (还没被改造的 provider 路径)保持改造前行为 —— 列出全部视图。 */
+export function browserList(projectPath?: string): ToolResult {
+  const all = BrowserManager.list();
+  pruneDeadBrowserState(new Set(all.map((i) => i.browserId)));
+  const infos = projectPath ? all.filter((i) => i.projectPath === projectPath) : all;
   if (infos.length === 0) {
-    return text("当前没有打开的浏览器视图。先调用 browser_navigate({ url }) 打开一个页面。");
+    return text(
+      projectPath
+        ? "本项目当前没有打开的浏览器视图。先调用 browser_navigate({ url }) 打开一个页面。"
+        : "当前没有打开的浏览器视图。先调用 browser_navigate({ url }) 打开一个页面。",
+    );
   }
+  // 当前目标指针:本项目会话看本项目的指针,老调用方看全局指针。
+  const active = projectPath ? activeByProject.get(projectPath) ?? null : activeBrowserId;
   const lines = infos.map((i, idx) => {
-    const active = i.browserId === activeBrowserId ? "(agent 当前目标)" : "";
-    return `[${idx}] browserId=${i.browserId}${active}\n    url=${i.url || "(about:blank)"}\n    title=${i.title || "(无标题)"}`;
+    const activeMark = i.browserId === active ? "(agent 当前目标)" : "";
+    return `[${idx}] browserId=${i.browserId}${activeMark}\n    url=${i.url || "(about:blank)"}\n    title=${i.title || "(无标题)"}`;
   });
   return text(`当前浏览器视图(${infos.length} 个):\n\n${lines.join("\n\n")}`);
 }
@@ -291,7 +334,8 @@ export function browserList(): ToolResult {
  *  across navigations, so re-applying it would only clobber the user's
  *  choice. */
 export async function browserNavigate(
-  args: { url: string; browserId?: string; device?: AgentDevicePreset; newTab?: boolean },
+  args: { url: string; browserId?: string;
+  projectPath?: string; device?: AgentDevicePreset; newTab?: boolean },
   projectPath: string,
 ): Promise<ToolResult> {
   const raw = (args.url ?? "").trim();
@@ -302,6 +346,9 @@ export async function browserNavigate(
       `仅支持 http/https/file 协议(收到 "${raw.slice(0, 40)}")。网页用完整 http(s):// 地址;本地文件用 file:/// 绝对路径(Windows 形如 file:///D:/dir/page.html)。`,
     );
   }
+  // file:// 走与 agent 文件工具同一道项目根围栏(MC-044):只能读工作区内的本地文件。
+  const fileGuard = checkFileUrlWithinWorkspace(url);
+  if (!fileGuard.ok) return errorResult(fileGuard.reason);
   const device = coerceDevice(args.device);
 
   let browserId: string;
@@ -315,7 +362,7 @@ export async function browserNavigate(
     browserId = created.browserId;
     log.info(`agent browser created (newTab): ${browserId} project=${projectPath} device=${device}`);
   } else {
-    const resolved = resolveBrowserId(args.browserId);
+    const resolved = resolveBrowserId(args.browserId, projectPath);
     if (resolved.ok) {
       browserId = resolved.browserId;
     } else if (resolved.reason === "no-live-browser" && !args.browserId) {
@@ -333,8 +380,9 @@ export async function browserNavigate(
       return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
     }
   }
-  // The view the agent just navigated becomes its implicit target.
-  activeBrowserId = browserId;
+  // The view the agent just navigated becomes its implicit target — per project
+  // (when known) and globally (legacy callers).
+  setActiveBrowser(projectPath || undefined, browserId);
 
   // Tell the renderer to surface the browser panel + adopt this view as a tab.
   // The renderer's BrowserPanel takes over showing the view at precise bounds
@@ -360,8 +408,8 @@ export async function browserNavigate(
  *  carries a 1-based `index` handle (pass to click/type/select), its form
  *  state (value/checked/disabled/href), an 视口外 marker when it's outside the
  *  viewport, and the fallback CSS selector. */
-export async function browserSnapshot(args: { browserId?: string }): Promise<ToolResult> {
-  const resolved = resolveBrowserId(args.browserId);
+export async function browserSnapshot(args: { browserId?: string; projectPath?: string }): Promise<ToolResult> {
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -418,8 +466,9 @@ export async function browserClick(args: {
   coordinateX?: number;
   coordinateY?: number;
   browserId?: string;
+  projectPath?: string;
 }): Promise<ToolResult> {
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -463,9 +512,10 @@ export async function browserType(args: {
   text: string;
   clear?: boolean;
   browserId?: string;
+  projectPath?: string;
 }): Promise<ToolResult> {
   const value = (args.text ?? "").toString();
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -485,10 +535,10 @@ export async function browserType(args: {
  *  "ArrowDown", "PageDown", "Control+a", "Shift+Enter"). Goes through the real
  *  input pipeline, so Enter submits forms and Tab moves focus. One combo per
  *  call. Side-effecting (Enter can submit) → approval flow. */
-export async function browserKeys(args: { keys: string; browserId?: string }): Promise<ToolResult> {
+export async function browserKeys(args: { keys: string; browserId?: string; projectPath?: string }): Promise<ToolResult> {
   const keys = (args.keys ?? "").trim();
   if (!keys) return errorResult("keys 不能为空,如 \"Enter\" / \"Escape\" / \"Control+a\"");
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -509,10 +559,11 @@ export async function browserScroll(args: {
   pages?: number;
   selector?: string;
   browserId?: string;
+  projectPath?: string;
 }): Promise<ToolResult> {
   const direction = args.direction === "up" ? "up" : "down";
   const pages = typeof args.pages === "number" && Number.isFinite(args.pages) && args.pages > 0 ? Math.min(args.pages, 10) : 1;
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -535,8 +586,9 @@ export async function browserWait(args: {
   seconds?: number;
   timeoutSeconds?: number;
   browserId?: string;
+  projectPath?: string;
 }): Promise<ToolResult> {
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -579,12 +631,13 @@ export async function browserWait(args: {
 export async function browserHistory(args: {
   action: "back" | "forward" | "reload";
   browserId?: string;
+  projectPath?: string;
 }): Promise<ToolResult> {
   const action = args.action;
   if (action !== "back" && action !== "forward" && action !== "reload") {
     return errorResult('action 必须是 "back" | "forward" | "reload"');
   }
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -606,10 +659,11 @@ export async function browserSelect(args: {
   selector?: string;
   value: string;
   browserId?: string;
+  projectPath?: string;
 }): Promise<ToolResult> {
   const value = (args.value ?? "").toString();
   if (!value.trim()) return errorResult("value 不能为空(选项的 value 或可见文本)");
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -644,8 +698,9 @@ export async function browserFind(args: {
   attributes?: string[];
   cssScope?: string;
   browserId?: string;
+  projectPath?: string;
 }): Promise<ToolResult> {
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -680,12 +735,13 @@ export async function browserFind(args: {
 /** `browser_switch_tab` — point the agent's implicit target (browserId-less
  *  calls) at another live view. Read-only targeting aid; the panel also
  *  surfaces the tab so the user sees what the agent is working on. */
-export async function browserSwitchTab(args: { browserId: string }): Promise<ToolResult> {
-  const resolved = resolveBrowserId(args.browserId);
+export async function browserSwitchTab(args: { browserId: string; projectPath?: string }): Promise<ToolResult> {
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
-  activeBrowserId = resolved.browserId;
+  // 同时更新本项目指针与全局兜底(MC-043);带 projectPath 时只让本项目会话改到它。
+  setActiveBrowser(args.projectPath, resolved.browserId);
   BrowserManager.notifyAgentOpened(resolved.browserId);
   const info = BrowserManager.list().find((i) => i.browserId === resolved.browserId);
   return text(
@@ -695,15 +751,19 @@ export async function browserSwitchTab(args: { browserId: string }): Promise<Too
 
 /** `browser_close_tab` — close a live view by browserId. Destructive (kills
  *  the page session) → approval flow. */
-export async function browserCloseTab(args: { browserId: string }): Promise<ToolResult> {
-  const resolved = resolveBrowserId(args.browserId);
+export async function browserCloseTab(args: { browserId: string; projectPath?: string }): Promise<ToolResult> {
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
   const res = BrowserManager.close(resolved.browserId);
   if (!res.ok) return errorResult(res.error ?? "关闭失败");
   snapshotIndexMaps.delete(resolved.browserId);
+  // 清掉指向这个 id 的所有指针(全局 + 各项目),免得留下指向已关视图的死指针。
   if (activeBrowserId === resolved.browserId) activeBrowserId = null;
+  for (const [project, id] of activeByProject) {
+    if (id === resolved.browserId) activeByProject.delete(project);
+  }
   const remaining = BrowserManager.list().length;
   return text(`已关闭 browserId=${resolved.browserId}。剩余 ${remaining} 个浏览器视图。`);
 }
@@ -716,10 +776,11 @@ export async function browserCloseTab(args: { browserId: string }): Promise<Tool
 export async function browserEvaluate(args: {
   script: string;
   browserId?: string;
+  projectPath?: string;
 }): Promise<ToolResult> {
   const script = (args.script ?? "").trim();
   if (!script) return errorResult("script 不能为空");
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -738,12 +799,13 @@ export async function browserEvaluate(args: {
  *  the screenshot) AND, when `ctx.onImage` is wired (Pi path), emits it for
  *  inline conversation rendering. */
 export async function browserScreenshot(
-  args: { browserId?: string; fullPage?: boolean },
+  args: { browserId?: string;
+  projectPath?: string; fullPage?: boolean },
   ctx: BrowserToolContext & { toolCallId: string },
 ): Promise<ToolResult> {
   const live = BrowserManager.list();
   log.info(`browserScreenshot called: requestedId=${args.browserId ?? "(none)"} fullPage=${args.fullPage === true} liveCount=${live.length} liveIds=${JSON.stringify(live.map((l) => l.browserId))}`);
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     log.warn(`browserScreenshot resolveBrowserId failed: ${resolved.reason}`);
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
@@ -795,10 +857,11 @@ export async function browserSavePdf(
     scale?: number;
     headerFooter?: boolean;
     browserId?: string;
+  projectPath?: string;
   },
   ctx: { toolCallId: string; sessionId?: string; turnNumber?: number },
 ): Promise<ToolResult> {
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, args.projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }
@@ -836,7 +899,7 @@ export async function browserUploadFile(
     .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
     .map((p) => p.trim());
   if (!paths.length) return errorResult("paths 不能为空(本地文件绝对路径,或相对项目根的路径)");
-  const resolved = resolveBrowserId(args.browserId);
+  const resolved = resolveBrowserId(args.browserId, projectPath);
   if (!resolved.ok) {
     return resolved.reason === "no-live-browser" ? noBrowserError() : errorResult(resolved.reason);
   }

@@ -125,13 +125,25 @@ export function resetStub(): void {
 /** 按顺序记下每一次 `rewindTurn`。 */
 export const rewinds: Array<{ sessionId: string; files: unknown; targetFiles: unknown }> = [];
 /** 下一次 `rewindTurn` 该返回什么。**与真实的 `RuntimeManager.rewindTurn` 同形**
- *  —— 它现在返回 `{restored, failed}`(部分还原失败要如实交回界面),桩必须跟。 */
-export let rewindResult: { restored: string[]; failed: string[] } = { restored: [], failed: [] };
+ *  —— 它现在返回 `{restored, failed, conflicts}`(部分还原失败 / 冲突要如实交回界面),
+ *  桩必须跟,否则 handler 解构出的 `conflicts` 是 undefined。 */
+export let rewindResult: { restored: string[]; failed: string[]; conflicts: string[] } = {
+  restored: [],
+  failed: [],
+  conflicts: [],
+};
 export function setRewindResult(v: string[]): void {
-  rewindResult = { restored: v, failed: [] };
+  rewindResult = { restored: v, failed: [], conflicts: [] };
 }
 export function setRewindResultWithFailures(restored: string[], failed: string[]): void {
-  rewindResult = { restored, failed };
+  rewindResult = { restored, failed, conflicts: [] };
+}
+export function setRewindResultFull(
+  restored: string[],
+  failed: string[],
+  conflicts: string[],
+): void {
+  rewindResult = { restored, failed, conflicts };
 }
 
 export const runtimeManager = {
@@ -190,7 +202,7 @@ export const runtimeManager = {
     sessionId: string,
     files: unknown,
     targetFiles: unknown,
-  ): Promise<{ restored: string[]; failed: string[] }> {
+  ): Promise<{ restored: string[]; failed: string[]; conflicts: string[] }> {
     rewinds.push({ sessionId, files, targetFiles });
     return rewindResult;
   },

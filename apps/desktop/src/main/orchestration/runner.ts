@@ -186,6 +186,7 @@ const NODE_STALL_CHECK_MS = 30_000;
  */
 const USAGE_BACKFILL_DELAY_MS = 6_000;
 import { getWorkflow } from "./library.js";
+import { agentProfileContentHash } from "./agentProfiles.js";
 import { workflowReplayError, workflowResumeError, workflowReviewError, workflowRevision } from "./workflowTrust.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import {
@@ -195,6 +196,7 @@ import {
   retryableRun,
   saveRun,
   type RunSnapshot,
+  type RunConfigSnapshot,
 } from "./runStore.js";
 import {
   runWorkflow,
@@ -227,6 +229,40 @@ export function permissionModeForCapability(capability: WorkflowCapability): Per
     case "net":
       return "default";
   }
+}
+
+/**
+ * ARC-016: 锁下这次运行**生效时**的配置版本(档案内容哈希 + 技能 + 引擎 + 模型),
+ * 供审计回答「这一轮到底用了哪一版指令/技能/模型」。只记引用与哈希,不含档案正文/密钥。
+ *
+ * 普通 chat 的 role 指令是**建会话时快照**进 `session.agentProfile`(改源档案不影响该会话);
+ * 工作流节点则可能**每轮现读**当前档案。这里记录**起跑这一刻**的事实:同一 id 在不同时刻
+ * 若源档案被改,哈希就不同,于是"R1 用的是哪一版"可判。
+ */
+function buildRunConfigSnapshot(
+  session: Session,
+  doc: { nodes: ReadonlyArray<{ type: string; params: Record<string, unknown> }> } | null,
+): RunConfigSnapshot {
+  const profiles: Record<string, string | null> = {};
+  // 会话自带的角色(普通 chat 快照)。
+  if (session.agentProfile?.id) {
+    profiles[session.agentProfile.id] = agentProfileContentHash(session.agentProfile.id);
+  }
+  // 节点参数里可能点名了档案 id(键名以 profileId 结尾的都收),记它们的当前哈希。
+  for (const node of doc?.nodes ?? []) {
+    for (const [k, v] of Object.entries(node.params ?? {})) {
+      if (k.toLowerCase().endsWith("profileid") && typeof v === "string" && v.length > 0 && profiles[v] === undefined) {
+        profiles[v] = agentProfileContentHash(v);
+      }
+    }
+  }
+  return {
+    takenAt: Date.now(),
+    profiles,
+    skills: Array.isArray((session as { skills?: unknown }).skills) ? ((session as { skills?: string[] }).skills ?? []) : [],
+    ...(session.providerId ? { providerId: session.providerId } : {}),
+    ...(session.model ? { model: session.model } : {}),
+  };
 }
 
 /** 这个工作流是一张**图**吗(有节点)。提示词型工作流不走调度器。 */
@@ -912,6 +948,9 @@ export async function startWorkflowRun(args: {
     prompt,
     cwd,
     attempts: [],
+    // 【ARC-016】锁下这次运行**生效时**的配置版本(档案内容哈希 + 技能 + 引擎 + 模型),
+    // 供审计回答「R1 到底用了哪一版指令」。只记引用与哈希,不拷贝档案正文/密钥。
+    configSnapshot: buildRunConfigSnapshot(session, doc),
     // `entry` 必须在**第一份**存档里:它是"这次由哪个触发器起"的唯一记录,而下面那句
     // `writeRun("running", ...)` 是紧接着就写出去的(`stateOf` 之后每次都会带上它,
     // 但那时已经过了开跑那一刻)。
@@ -1789,7 +1828,24 @@ export async function startWorkflowRun(args: {
       // 去睡觉,应用被硬杀(关机 / 崩溃)在这条路上比任何别的地方都常见。非 durable 的
       // 写只落进内存里的 sql.js,要等到别处某次 durable 写或退出时的 flushDb 才真正上
       // 文件 —— 硬杀就全丢。代价是一次同步整库写,而岔路口是"人的手速"级别的事件,值得。
-      writeRun("running", latest.state, true);
+      //
+      // ⚠️ **返回值必须看**(MC-028)。这一句声称"停在哪儿 + 问过几次"已经落盘;存盘
+      // 失败却照常摆出选择卡,就是在对用户承诺一个磁盘上并不存在的状态 —— 硬杀之后重启
+      // 续跑会认回**上一轮**的 attempt,改掉一张已经答过的卡(见上面那段)。所以失败时
+      // **不摆卡**:发一条 error 说清原因,并把这次运行取消掉(与"用户按了停止"同一条
+      // 收场),而不是让用户对着一张点了也存不住的选择卡。**不在这里无限重试写盘** ——
+      // 磁盘真写不进去时重试只会转圈,说清楚才是对的。
+      if (!writeRun("running", latest.state, true)) {
+        const message = `工作流「${doc.name}」停在岔路口的状态没能保存到磁盘;已取消这次运行,请检查存储空间后重试`;
+        log.warn(`workflow run ${runId}: ${message}`);
+        try {
+          emitWorkflowEvent({ type: "error", sessionId: session.id, message });
+        } catch (err) {
+          log.warn(`workflow run ${runId}: 岔路口存盘失败提示广播失败:${(err as Error).message}`);
+        }
+        active.abort.abort();
+        return { edgeId: "" };
+      }
       // 取标题要在**广播之前** —— `manifests` 是懒加载的,调度器开跑前已经取过一轮,
       // 所以这里基本一定有;真没有也只是标题回落成类型 id,不影响流程。
       const title = displayTitle(node, manifests?.get(node.type));
@@ -2185,7 +2241,22 @@ export async function startWorkflowRun(args: {
     // 一张旧卡片点下去,**一次已经结束的运行会被接起来重跑**(还会因为状态对不上而报错)。
     // 代价是一次同步整库写,而这是**每次运行只有一次**的收口,值得。
     const settled: RunResult["status"] = result === null ? "failed" : result.status;
-    writeRun(settled, result?.state ?? latest.state, true);
+    // ⚠️ **返回值必须看**(MC-028)。这一列是"能不能续跑"的唯一判据 —— 存盘失败却照常
+    // 广播 `turn.done`、解除运行态,用户看到的是"流程结束",而磁盘上留的可能是更早的
+    // `running` / `interrupted`。重启后 `resumableFor` 会拿那份陈旧的快照去比对,于是
+    // 一张过期 / 错误的可续卡冒出来,点下去重跑一次已经结束的运行。**不在这里无限重试
+    // 写盘** —— 磁盘真写不进去时转圈只会更糟。失败时给会话发一条 error,让用户**当场**
+    // 知道"这次运行的结局没能保存",而不是被蒙过去。
+    if (!writeRun(settled, result?.state ?? latest.state, true)) {
+      const message =
+        `工作流「${doc.name}」的最终状态没能保存到磁盘;重启后这次运行的记录可能停留在较早的状态,请检查存储空间`;
+      log.warn(`workflow run ${runId}: 终态存档写不进磁盘:${message}`);
+      try {
+        emitWorkflowEvent({ type: "error", sessionId: session.id, message });
+      } catch (err) {
+        log.warn(`workflow run ${runId}: 终态存盘失败提示广播失败:${(err as Error).message}`);
+      }
+    }
 
     // 这一轮对用户来说结束了。**用既有的 `turn.done` 收口**,不另发明一个事件:
     // 渲染端的"运行中"状态、这一轮消息的落盘、其他客户端的同步、以及系统通知全都挂在

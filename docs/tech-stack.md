@@ -1,8 +1,10 @@
 # 技术栈文档
 
-> Mcode — 基于 Claude Agent SDK 的桌面端 GUI
+> Mcode — 本地优先的**通用 Agent 桌面客户端**
 >
 > 本文档记录项目**实际使用**的技术栈与依赖,以及关键的技术决策与踩坑记录。所有版本号来自 `package.json`,与实际安装一致。
+>
+> ⚠️ **本文 2026-10-11 校正过一次**：此前正文长期写着"Claude-only 单 provider""Electron ^33"等早已过时的定位与版本（报告 MC-011）。当前事实是**多引擎**（Claude / Pi / Codex 三家，外加一条"网页模型"桥），版本见下表。历史技术决策保留在文末，但**不要**拿旧表述推断当前兼容性或开发指令。
 
 ---
 
@@ -11,10 +13,10 @@
 | 维度 | 选型 |
 |------|------|
 | 应用形态 | Electron 桌面应用(三栏 IDE 布局) |
-| 核心理念 | **不重新实现 agent,只做 Claude 的交互界面**。通过 Agent SDK(封装了 claude 原生的 agent loop)驱动,本项目提供会话管理、流式渲染、工具审批、IDE 能力 |
-| 与 Claude 的关系 | 使用 `@anthropic-ai/claude-agent-sdk` 驱动(内部仍 spawn 打包的二进制,由 SDK 管理);项目自身 MIT,可独立开源 |
+| 核心理念 | **不自己实现 agent,只做引擎的交互界面**。把 Claude Code SDK / Pi / Codex 三家引擎接进来,本项目提供会话管理、流式渲染、工具审批、IDE 能力、工作流编排、自动化触发器、资料库与插件系统 |
+| 与各引擎的关系 | Claude 走 `@anthropic-ai/claude-agent-sdk`(内部 spawn 打包的二进制);Pi 走 `@earendil-works/pi-coding-agent`;Codex 走其 app-server。三者之间靠 `AgentProvider` 抽象层 + 归一化的 `RuntimeEvent` 抹平差异;项目自身 MIT,可独立开源 |
 | 架构参考 | [Synara](https://github.com/Emanuele-web04/synara) 的分层设计(provider adapter、归一化 runtime 事件、IPC 边界),但用**主流 TS**重写(无 effect-ts、无 bun) |
-| 扩展性 | 内置 `AgentProvider` 抽象层 + `ProviderRegistry`,后续扩展其他 agent 平台(OpenAI Codex、Gemini CLI 等)只需实现接口并注册
+| 扩展性 | 内置 `AgentProvider` 抽象层 + `ProviderRegistry`;新增引擎只需实现接口并注册。此外有插件系统(技能/命令/agent/MCP/节点类型)与自建 HTML 面板(`mcode-panel` 协议 + 沙箱 iframe) |
 
 ---
 
@@ -38,16 +40,13 @@
 │  │(持ProviderReg│ (SQLite 持久化)│  terminal/git/diff   │   │
 │  │ istry)       │                │                      │   │
 │  ├──────────────┴────────────────┴─────────────────────┤   │
-│  │ AgentProvider (claude-sdk / codex / gemini / ...)   │   │
-│  │ ClaudeAgentSdkProvider: query() → stream → emit     │   │
+│  │ AgentProvider                                        │   │
+│  │  claude-sdk │ pi-sdk │ codex-sdk │ bridge(网页模型)  │   │
 │  └─────────────────────────────────────────────────────┘   │
-│          │ @anthropic-ai/claude-agent-sdk (query)           │
-└──────────┼──────────────────────────────────────────────────┘
-           ▼
-      SDK 内打包的 claude 原生二进制
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**为什么三进程而非像 Synara 那样再拆出独立 server 进程**:Synara 拆独立 server 是为了支持 9 个 provider 和多客户端。本项目只需 claude 一个 provider,Electron 主进程内直接持有 `ClaudeRuntime` 即可——少一层进程边界 = 少一层 WebSocket = 更简单更快。架构上预留了"可拆出独立 server"的接口,但默认不拆。
+**为什么三进程而非像 Synara 那样再拆出独立 server 进程**:Synara 拆独立 server 是为了支持 9 个 provider 和多客户端。本项目只需在本机驱动这几个引擎,Electron 主进程内直接持有 `RuntimeManager` 即可——少一层进程边界 = 少一层 WebSocket = 更简单更快。架构上预留了"可拆出独立 server"的接口(手机端就是走一条 HTTP/SSE 桥),但桌面默认不拆。
 
 ---
 
@@ -57,18 +56,18 @@
 
 | 工具 | 版本 | 用途 |
 |------|------|------|
-| **Node.js** | ≥ 22.13(pnpm 11 要求,本机 v25.9.0) | 运行时 |
+| **Node.js** | ≥ 22.19.0(pnpm 11 要求,本机 v25.9.0) | 运行时 |
 | **pnpm** | ≥ 9(本机 11.16.0,经 corepack 启用) | 包管理 + workspace |
-| **Turbo** | ^2.9 | monorepo 任务编排(dev/build/test/typecheck 并行) |
+| **Turbo** | ^2.10.9 | monorepo 任务编排(dev/build/test/typecheck 并行) |
 | **TypeScript** | ^5.7 | 全量 TS,strict 模式 |
 
 ### 3.2 桌面壳层(apps/desktop)
 
 | 依赖 | 版本 | 角色 |
 |------|------|------|
-| **Electron** | ^33 | 跨平台桌面运行时 |
-| **electron-vite** | ^2.3 | 统一 main/preload/renderer 三路构建,HMR |
-| **electron-builder** | ^25 | 打包成安装包(P6) |
+| **Electron** | 44.4.5 | 跨平台桌面运行时 |
+| **electron-vite** | 3.1.0 | 统一 main/preload/renderer 三路构建,HMR |
+| **electron-builder** | 26.15.3 | 打包成安装包(P6) |
 
 ### 3.3 前端(apps/desktop/src/renderer)
 
@@ -78,6 +77,7 @@
 | **react-dom** | ^19 | React 渲染器 |
 | **Zustand** | ^5.0 | 本地状态管理(会话、消息流、UI 状态) |
 | **Vite** | ^6 | 构建 + HMR |
+| **Zod** | 3.25.76 | 契约与入参校验(应用与 contracts 用 Zod 3;Claude SDK 隔离开 Zod 4.4.3,见 `.pnpmfile.cjs`) |
 | **@vitejs/plugin-react** | ^4.3 | Vite 的 React 支持(Fast Refresh) |
 | **Tailwind CSS** | ^3.4 | 原子化 CSS |
 | **autoprefixer** / **postcss** | ^10.4 / ^8.4 | Tailwind 配套 |
@@ -133,10 +133,18 @@ mcode/
 │   │   └── ApprovalBridge.ts       # 工具审批/AskUserQuestion IPC 桥接
 │   ├── providers/
 │   │   ├── registry.ts             # ProviderRegistry 单例
-│   │   └── claude-sdk/
-	            │   │       ├── ClaudeAgentSdkProvider.ts  # AgentProvider 实现(query 包装)
-	            │   │       ├── SdkMessageAdapter.ts       # SDKMessage → RuntimeEvent 归一化
-	            │   │       └── index.ts
+│   │   ├── claude-sdk/
+│   │   │       ├── ClaudeAgentSdkProvider.ts  # AgentProvider 实现(query 包装)
+│   │   │       ├── SdkMessageAdapter.ts       # SDKMessage → RuntimeEvent 归一化
+│   │   │       └── index.ts
+│   │   ├── pi-sdk/                 # Pi 引擎(createAgentSession + 内联 mcodeExtension)
+│   │   │       ├── PiAgentSdkProvider.ts
+│   │   │       ├── PiMessageAdapter.ts
+│   │   │       └── mcodeExtension.ts          # 内联 Extension:tool_call 守卫/审批 + AskUserQuestion
+│   │   ├── codex-sdk/              # Codex 引擎(app-server)
+│   │   │       ├── CodexAgentSdkProvider.ts
+│   │   │       └── CodexMessageAdapter.ts
+│   │   └── bridge/                 # 网页模型(浏览器扩展桥驱动真实网页 LLM 页面)
 	            │   ├── ipc/
 	            │   │   ├── index.ts      # 注册所有 handler
 	            │   │   ├── claude.ts     # 会话/turn/interrupt/approve/healthCheck/provider.list
@@ -178,7 +186,7 @@ Synara 全栈用 effect-ts(Layer/Service 函数式框架)且依赖**预发布版
 
 ### 5.3 为什么 IPC 用 Electron IPC 而非独立 WebSocket?
 
-Synara 拆独立 server 后用 WebSocket 通信(为多客户端/多 provider)。本项目单 provider + 单窗口,用 Electron 原生 `ipcMain.handle` / `webContents.send` 足矣,少一层协议。所有 IPC 消息经 zod 校验后才放行,防渲染层被攻破后任意 spawn。
+Synara 拆独立 server 后用 WebSocket 通信(为多客户端/多 provider)。本项目是**单窗口、单机**驱动多家引擎(Claude / Pi / Codex + 网页模型桥),不需要多客户端并发,用 Electron 原生 `ipcMain.handle` / `webContents.send` 足矣,少一层协议。所有 IPC 消息经 zod 校验后才放行,防渲染层被攻破后任意 spawn。
 
 ---
 

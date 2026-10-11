@@ -369,6 +369,22 @@ export interface ProviderContext {
    * so the host can persist it and the next turn can resume. */
   onProviderSessionId?(id: string): void;
 
+  /**
+   * 【ARC-008】这一轮开始时,底层会话是怎么来的 —— 供宿主如实呈现,绝不假装等价。
+   *
+   * 用户历史(聊天窗口里那些消息)与「SDK 模型实际还记着的那段上下文」是两回事:窗口里
+   * 看着有历史,不等于这次模型还接着那段跑。这个回调把「本轮到底接上了原会话、还是显式
+   * 开了新的、还是需要迁移」变成可观察的事实,而不是靠界面猜。
+   *
+   * - RESUMED —— 成功接上了请求的 resumeProviderSessionId;
+   * - FRESH_EXPLICIT —— 本就没事要恢复(全新会话),不是降级;
+   * - FAILED —— 请求了恢复但底层失败(provider 必须已抛错,这里只是记一条结构化事实);
+   * - REQUIRES_MIGRATION —— 底层上下文无法直接继承,需要显式交接(迁移通道尚未实现)。
+   *
+   * 没实现这条的 provider 缺席即可;宿主以「未声明」对待,不回退成「假装 RESUMED」。
+   */
+  onResumeOutcome?(outcome: ResumeOutcome): void;
+
   /** Logger (writes to file + stderr). */
   log: {
     info(...args: unknown[]): void;
@@ -478,4 +494,36 @@ export interface EngineCommandEntry {
   description: string;
   argumentHint: string;
   aliases: string[];
+}
+
+/**
+ * 【ARC-008】三 SDK 的会话/上下文语义显式交付,不做隐藏降级。
+ *
+ * 见 {@link ProviderContext.onResumeOutcome}。「聊天窗口仍有历史」不能证明「SDK 模型仍有
+ * 该历史」—— 这个枚举就是那条分界线。
+ */
+export type ResumeOutcome =
+  | { kind: "RESUMED"; providerSessionId: string }
+  | { kind: "FRESH_EXPLICIT" }
+  | { kind: "FAILED"; requestedId: string; error: string }
+  | { kind: "REQUIRES_MIGRATION"; requestedId: string; reason: string };
+
+/**
+ * 【ARC-008】一轮实际跑在哪个底层会话边界上 —— 由宿主在每轮记录,供审计与跨引擎交接。
+ * 刻意与「用户看到的历史」分开:后者可能仍在,而这里记录的才是模型真正接上的。
+ */
+export interface ProviderSessionBoundary {
+  providerId: string;
+  /** 这一条会话这一代(迁移/显式重开后 +1),区分「同一 providerSessionId 被复用」与
+   *  「换了一个底层上下文却沿用旧记录」。 */
+  sessionGeneration: number;
+  /** 本轮实际接上的 SDK 会话 id(FRESH_EXPLICIT 时是新开的那个)。 */
+  providerSessionId: string | null;
+  /** 本轮上下文从哪来。 */
+  contextSource: "resumed" | "fresh" | "migrated";
+  toolPermissions?: string[];
+  /** 本轮请求要的能力 id。 */
+  requestedCapabilities?: string[];
+  /** 本轮实际可用的能力 id —— 与 requestedCapabilities 不等即为降级/缺失,须如实呈现。 */
+  effectiveCapabilities?: string[];
 }

@@ -229,6 +229,38 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       if (reviewError !== null) throw new Error(reviewError);
     }
 
+    // ── MC-049: 忙判断 / 启动权预检必须在**改会话状态之前**完成。 ──
+    // 图型会话这一轮的落点(推图 / 等收尾 / 拒绝)先在这里定下来。从前这段在
+    // `updateStatus(running)` **之后**,而且 `parkedRunTeardown` 返回 null(有节点真在跑)
+    // 时直接抛出去 —— 那个 catch 会把会话状态**放回 idle**,可图其实**还在跑**:
+    // 数据库说 idle、真实图说 running,两边分家(`findFreshByProject` 于是会复用一条
+    // 其实正忙的会话;与 MC-013 的状态时序同源)。把预检提到状态变更之前,拒绝就发生在
+    // 碰状态之前;下面的 catch 只覆盖"已经决定要跑、并且已经置了 running"的那一段 ——
+    // 那时回滚 idle 才是对的。
+    //
+    // ⚠️ `graphRunIntent` 只读 `kind` / `workflowId` / `hasActiveRun`,不依赖 cwd,
+    // 所以放在 `resolveSessionCwd` 之前定下,不会和物化那段互相影响。
+    let run = graphRunIntent(updated);
+    if (run === "busy") {
+      // **图停在原地等人,而用户直接说了句话。** 没去点那些卡片本身就是一种回答 ——
+      // 放弃那一次,按他刚说的重来(见 `parkedRunTeardown`)。
+      //
+      // 有节点**真在跑**的时候它返回 null,照旧拦住:半路掐掉一个正在干活的步骤是
+      // 另一件事(那是「停止」按钮),不该由"我发了条消息"顺手做掉。
+      const teardown = parkedRunTeardown(updated.id);
+      if (teardown === null) {
+        // 上一轮图还没跑完(多半是某个节点正在干活)。**抛出去**,
+        // 别默默把这条消息丢掉 —— 渲染端会把 IPC 的拒绝弹成一句话。正常情况下发送时
+        // 输入框是禁用的,这条兜的是手机端 / 竞态。**此刻还没碰会话状态**,所以那个
+        // catch 不会把正在跑的图误标成 idle。
+        throw new Error("这个工作流还在跑:先回答它的问题,或者按停止");
+      }
+      // **等他收干净再起新的。** 那次运行的收尾会补一个 `turn.done`(渲染端靠它收掉
+      // 当前回合),不等的话它落在新那次中间。见 `parkedRunTeardown`。
+      await teardown;
+      run = "start";
+    }
+
     SessionRepo.updateStatus(session.id, "running");
     // 状态置 running 之后、本轮真正被运行时接管之前，任何一步抛错都必须把状态**放回**。
     // 否则会话永远停在 running：`findFreshByProject`(要求 idle)不再复用它、其它客户端
@@ -275,26 +307,8 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     // ⚠️ **不 await 整张图跑完** —— 用户可能要在中间回答某个节点的问题,那要几分钟;
     // 这个 IPC 该立刻返回,让输入框回到可用状态。这一轮的收口由调度器最后补的那个
     // `turn.done` 完成。
-    let run = graphRunIntent(updated);
-    if (run === "busy") {
-      // **图停在原地等人,而用户直接说了句话。** 没去点那些卡片本身就是一种回答 ——
-      // 放弃那一次,按他刚说的重来(见 `parkedRunTeardown`)。
-      //
-      // 有节点**真在跑**的时候它返回 null,照旧拦住:半路掐掉一个正在干活的步骤是
-      // 另一件事(那是「停止」按钮),不该由"我发了条消息"顺手做掉。
-      const teardown = parkedRunTeardown(updated.id);
-      if (teardown === null) {
-        // 上一轮图还没跑完(多半是某个节点正在干活)。**抛出去**,
-        // 别默默把这条消息丢掉 —— 渲染端会把 IPC 的拒绝弹成一句话(与上面
-        // `resolveSessionCwd` 那几处失败同一个做法)。正常情况下发送时输入框是禁用的,
-        // 这条兜的是手机端 / 竞态。
-        throw new Error("这个工作流还在跑:先回答它的问题,或者按停止");
-      }
-      // **等他收干净再起新的。** 那次运行的收尾会补一个 `turn.done`(渲染端靠它收掉
-      // 当前回合),不等的话它落在新那次中间。见 `parkedRunTeardown`。
-      await teardown;
-      run = "start";
-    }
+    //
+    // 岔路的**判断**已在上面(改状态之前)定下,这里只落点。
     if (run === "start") {
       // 不 await(一次图运行可能几分钟),但也不能裸 `void`:引擎预检失败会抛,
       // 裸 void 让它成为主进程 unhandledRejection,渲染端却停在“正在运行” ——
@@ -498,12 +512,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   //    "N 个文件已恢复" breadcrumb. ──
   ipcMain.handle(IPC.CLAUDE_REWIND_TURN, async (_evt, raw) => {
     const input = RewindTurnSchema.parse(raw);
-    const { restored, failed } = await runtimeManager.rewindTurn(
+    const { restored, failed, conflicts } = await runtimeManager.rewindTurn(
       input.sessionId,
       input.files,
       input.targetFiles,
     );
-    return { restored, failed };
+    return { restored, failed, conflicts };
   });
 
   // ── Settings → 子代理：保存自定义子代理列表（Claude provider 专用，见

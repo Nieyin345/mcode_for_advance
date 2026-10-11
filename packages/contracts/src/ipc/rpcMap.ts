@@ -58,7 +58,7 @@ import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.
 import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, FullTextMatch, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { EngineToolsGetInput, EngineToolsSetInput, EngineToolsSnapshot } from "./engineTools.js";
-import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
+import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, SettingImportFileInput, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, StopTaskInput, ReadTaskOutputInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
@@ -169,8 +169,9 @@ export interface RpcMap {
    *  reopened after restart (the renderer passes the explicit entries).
    *  Returns the paths that were actually restored AND the ones that were
    *  not (so the card can say「N 个没还原」instead of showing a partial
-   *  rewind as if it were whole). */
-  "claude.rewindTurn": (input: RewindTurnInput) => Promise<{ restored: string[]; failed: string[] }>;
+   *  rewind as if it were whole). `conflicts` lists files that were changed
+   *  again after the turn and were therefore left untouched (MC-002). */
+  "claude.rewindTurn": (input: RewindTurnInput) => Promise<{ restored: string[]; failed: string[]; conflicts: string[] }>;
   /** Save the whole custom-subagent list (Settings → 子代理). Main validates
    *  each definition and persists to `claude.subagents`; returns the saved
    *  list so the editor can snap to what actually landed. */
@@ -271,7 +272,7 @@ export interface RpcMap {
   /** 导出设置到 JSON 文件(主进程弹保存框;不含密钥与本机状态)。 */
   "setting.exportToFile": () => Promise<SettingExportFileResult>;
   /** 从 JSON 文件导入设置(主进程弹打开框;先备份当前设置)。 */
-  "setting.importFromFile": () => Promise<SettingImportFileResult>;
+  "setting.importFromFile": (input?: SettingImportFileInput) => Promise<SettingImportFileResult>;
   // Voice input
   /** 起一次语音识别会话:`sessionId` 是**渲染端自个儿的一次听写令牌**(不是聊天会话 id),引擎会按 `lang` 建解码器、按需懒惰下模型。 */
   "voice.start": (input: VoiceStartInput) => Promise<void>;

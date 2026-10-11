@@ -235,6 +235,9 @@ export const en = {
   "chatStream.turnFiles.rewinding": "Undoing…",
   "chatStream.turnFiles.rewoundCheck": "Undone ✓",
   "chatStream.turnFiles.rewoundBadge": "Undone",
+  "chatStream.turnFiles.rewindPartialBadge": "{n}/{total} not restored",
+  "chatStream.turnFiles.partialFailed": "{n} file(s) weren't restored (write failed or refused) — you can retry",
+  "chatStream.turnFiles.partialConflicts": "{n} file(s) changed again afterwards — left untouched to avoid overwriting the newer edits",
   "chatStream.turnFiles.rewindLatestTitle": "Restore all files from this turn to their pre-turn state",
   "chatStream.turnFiles.rewindHistoryTitle":
     "Restore this past turn's file changes to their pre-edit state (may affect later turns)",

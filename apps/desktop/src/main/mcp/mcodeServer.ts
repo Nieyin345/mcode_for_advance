@@ -101,6 +101,7 @@ import {
   resolvePeer,
   selfPeerOf,
   takeAsk,
+  MAX_AGENT_MESSAGE_CHARS,
   undeliveredCount,
   unknownPeerMessage,
 } from "@main/lib/agentMail.js";
@@ -1043,7 +1044,7 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
         "用 `agent_peers` 拿名字或 id。",
       inputSchema: {
         to: z.string().describe("发给谁:代理的名字或 id(见 agent_peers)"),
-        text: z.string().describe("要说的话"),
+        text: z.string().max(MAX_AGENT_MESSAGE_CHARS).describe("要说的话(有长度上限)"),
         re: z
           .string()
           .optional()
@@ -1077,8 +1078,12 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
             re: ask.askId,
           });
           if (r.outcome === "failed") return fail(r.detail);
-          // 同步投递已被接受（插播/叫醒/排队），此时才销掉挂账。
-          takeAsk(ask.askId);
+          // 【MC-032】**这里不再销挂账。** 销账时机挪到了"这段答复被目标会话**真正取走**"
+          // 那一刻(见 `agentMail.clearAgentMail`)。投递被"接受"只说明插播/叫醒/排队成功:
+          // 排队的那些目标在被读到之前若进程重启,答复会随内存收件箱一起丢,而挂账若此刻已销,
+          // 提问方就再也查不到这条问题、回信无痕消失。挂账同时是回信**授权凭据**
+          // (上面的 `ask.toSessionId === ctx.sessionId` 比对),提前销还会让这份真实存在的
+          // 凭据作废、这份回信被当成"不是发给你的"而拒掉。
           return text(`答复已送回给「${back.name}」。${r.detail}`);
         }
 
@@ -1105,7 +1110,7 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
         "把答复交给你。所以你可以一边等一边干别的,也不用担心两个代理互相等死。",
       inputSchema: {
         to: z.string().describe("问谁:代理的名字或 id(见 agent_peers)"),
-        text: z.string().describe("你要问的问题"),
+        text: z.string().max(MAX_AGENT_MESSAGE_CHARS).describe("你要问的问题(有长度上限)"),
       },
       handler: async (args: { to: string; text: string }, ctx: McpToolContext) => {
         const self = selfPeerOf(ctx.sessionId);

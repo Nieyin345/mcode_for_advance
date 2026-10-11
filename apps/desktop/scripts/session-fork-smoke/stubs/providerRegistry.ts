@@ -21,11 +21,25 @@ export function setFakeProvider(provider: FakeProvider): void {
 }
 
 export const providerRegistry = {
+  // ⚠️ **必须与真注册表的回退语义逐字一致**:查不到 id 时返回**默认引擎**(第一家注册的),
+  // 而不是一个空对象。上一版这里给空对象,于是 MC-056 那条断言在变异(把 getRequired 退回
+  // resolve)下**照样绿** —— 因为空对象没有 forkSession,报的是"不支持分叉"而不是"引擎不可用",
+  // 断言测到了别人的职责。现在它会像真注册表那样回退到已注册的默认引擎。
   resolve(id: string): FakeProvider {
     const found = providers.get(id);
-    // 认不出来时给一个"没有 forkSession"的空引擎 —— 与真注册表认不出 id 时的表现
-    // (返回 undefined、调用方自己处理)不同,但这里要验的是**调用方在引擎不支持分叉
-    // 时会不会停手**,给个空对象比让它崩掉更能验到那一条。
-    return found ?? { id, calls: [] };
+    if (found) return found;
+    const dflt = [...providers.values()][0];
+    return dflt ?? { id, calls: [] };
+  },
+  /** 【MC-056】真注册表语义:取不到就**抛** —— 调用方(forkSession)靠它拒绝在引擎
+   *  不可用时静默换默认引擎。与上面 `resolve` 的"回退默认"刻意相反,这正是要区分的两问。 */
+  getRequired(id: string): FakeProvider {
+    const found = providers.get(id);
+    if (!found) {
+      const err = new Error(`引擎「${id}」现在不可用(被卸载、升级不兼容,或配置里存的值已失效)。`) as Error & { code?: string };
+      err.code = "PROVIDER_UNAVAILABLE";
+      throw err;
+    }
+    return found;
   },
 };

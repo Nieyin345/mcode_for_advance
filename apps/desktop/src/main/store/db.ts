@@ -20,6 +20,7 @@ import { log } from "@main/lib/logger.js";
 import { migrateLegacyIntoDataRoot, dbPath as resolveDbPath } from "@main/lib/dataRoot.js";
 import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
 import { DEFAULT_LIBRARY_GROUPS, parseLibraryGroupsJson, LIBRARY_GROUPS_SETTING_KEY } from "@contracts/libraryTypes";
+import type { CommitResult } from "@contracts/commit";
 
 let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
@@ -28,6 +29,10 @@ let dbPath: string | null = null;
  *  「模块体先跑完、再调用 migrate」这个顺序 —— 那样只要将来有人在 await 之前调用
  *  migrate,就会撞上 let 的暂时性死区。 */
 let schemaChanged = false;
+/** 迁移结束时是否留下了**需要立刻落盘**的改动(结构变更或分类回填)。由 migrate()
+ *  置位,由 initDb() 在**发布句柄之后**读取并 persist —— 之前是 migrate() 自己调
+ *  persist(),而那时 db 尚未发布(见 initDb),写盘会落空。 */
+let migrateNeedsPersist = false;
 /** True once persist() is already scheduled - collapses rapid writes into one flush. */
 let persistPending = false;
 /** Backstop timer for {@link persist}. See the comment there. */
@@ -66,28 +71,75 @@ export function awaitDb(): Promise<void> {
  * holding the handle. Safe to fire-and-forget (`void initDb()`) to start DB
  * init in the background while the window loads. */
 export function initDb(): Promise<Database> {
+  // A previously-failed attempt must not poison this one: a rejected
+  // dbReadyPromise is cleared in the failure handler below (we null it before
+  // the microtask that awaits it runs), so reaching here again starts fresh.
   if (db) return Promise.resolve(db);
   if (dbReadyPromise) return dbReadyPromise.then(() => db!);
 
   dbReadyPromise = (async () => {
-    SQL = await initSqlJs();
-    // 先把老位置(旧版把库和数据库放在 userData 下)搬进统一数据根,**再**定路径 ——
-    // 顺序反了就会读到一个还不存在的文件、当成空库建一个新的。
-    migrateLegacyIntoDataRoot();
-    // 用 `dataRoot.ts` 的 `dbPath()` 而不是自己 join —— 它带**安全网**:搬迁失败
-    // (老库还在 userData、新位置没有)时继续用老库,避免在建空库让聊天记录看起来
-    // "全丢了"。过去这里自己 join,把那道网绕过了。
-    dbPath = resolveDbPath();
+    // ── fail-closed 初始化(整条链一个最终 catch)─────────────────────────────
+    // 【MC-019 · 第 6/12 轮复核】从前只有 `new SQL.Database` / PRAGMA / migrate 那一段
+    // 在 try 里,而 `initSqlJs()`(WASM 加载)与 `migrateLegacyIntoDataRoot()`(搬老库)
+    // 在它**外面** —— 那两步任一 reject,`dbReadyPromise` 就永远指向一个已拒绝的 Promise,
+    // 再调 initDb 仍返回它,本进程内**无法重试**。现在把整条链包进一个 catch:
+    // 任何失败都清掉本地状态(db/dbPath/dbReadyPromise/标志回 null),下一次调用
+    // 就能干净重来。
+    let localDb: Database | null = null;
+    try {
+      SQL = await initSqlJs();
+      // 先把老位置(旧版把库和数据库放在 userData 下)搬进统一数据根,**再**定路径 ——
+      // 顺序反了就会读到一个还不存在的文件、当成空库建一个新的。
+      migrateLegacyIntoDataRoot();
+      // 用 `dataRoot.ts` 的 `dbPath()` 而不是自己 join —— 它带**安全网**:搬迁失败
+      // (老库还在 userData、新位置没有)时继续用老库,避免在建空库让聊天记录看起来
+      // "全丢了"。过去这里自己 join,把那道网绕过了。
+      const path = resolveDbPath();
 
-    if (existsSync(dbPath)) {
-      db = new SQL.Database(new Uint8Array(readFileSync(dbPath)));
-      log.info(`sqlite opened from existing file: ${dbPath}`);
-    } else {
-      db = new SQL.Database();
-      log.info(`sqlite created new database: ${dbPath}`);
+      // 先用**局部**句柄开库 + 跑 PRAGMA + 迁移,全部成功之后才发布到模块级 `db`。
+      // 之前是"开库立刻赋值给 db、随后才 migrate":迁移一抛,`db` 已非 null 而
+      // `dbReadyPromise` 已 reject —— 再调 initDb 会因首个 `if (db)` 返回那个**半迁移**
+      // 的句柄,getDb() 也照样把它交出去。
+      localDb = existsSync(path)
+        ? new SQL.Database(new Uint8Array(readFileSync(path)))
+        : new SQL.Database();
+      localDb.run("PRAGMA foreign_keys = ON");
+      migrate(localDb);
+
+      // 迁移成功 —— 现在才发布句柄,并记下路径。
+      db = localDb;
+      dbPath = path;
+      log.info(existsSync(path) ? `sqlite opened from existing file: ${path}` : `sqlite created new database: ${path}`);
+      // 结构变更/分类回填的落盘放在**句柄发布之后**(migrate() 内部只置位、不写盘):
+      // persistNowOrThrow() 要读模块级 db/dbPath,发布前调它会静默跳过。
+      //
+      // 【MC-019】这里**必须**走**同步 durable** 那一份写盘(persistNowOrThrow),不能用
+      // 协程化的 `persist()`。理由就是"内存 ready / 磁盘未 ready"那个窗口:`initDb()`
+      // resolve 等于向外声明"数据库就绪"——`awaitDb()` 从这一刻起就返回已就绪。若此刻
+      // 迁移后的结构还只在内存里、写盘只是排了一个 microtask,那么在这条 microtask 跑
+      // 完之前进程被杀(或被别的调用方抢到一次 `getDb()`),磁盘上留着的仍是**老结构**:
+      // 新版代码用新列去查老库就是 `no such column`,而调用方同时看到"库 ready"与
+      // "初始化没报错"。`persist()` 还会把写盘失败**吞掉**(notify + 退避重试),于是
+      // "写盘失败"这条路上内存是 ready 的、磁盘永远没写成 —— 正是台账要求消除的那种态。
+      //
+      // 改成同步 durable 之后有两条明确结果,没有第三种:
+      //   · 写成功 → 句柄发布,initDb resolve,磁盘与内存一致(迁移真的落了盘);
+      //   · 写失败 → persistNowOrThrow 抛出,落进下面同一个 catch:关掉局部句柄、把
+      //     db/dbPath/dbReadyPromise 清回 null,initDb **reject**。故障解除后重试
+      //     initDb 能干净重来 —— "磁盘失败 + 重试"绝不会产出 ready 的内存库而磁盘没写。
+      // 这是**唯一一份** durable 写盘实现(writeSnapshot + persistNowOrThrow),initDb
+      // 与退出前落盘、workflow durable 闸门走的是同一条,不存在第二套。
+      if (migrateNeedsPersist) persistNowOrThrow();
+    } catch (err) {
+      // 任何一步失败(initSqlJs / 搬老库 / 定路径 / 开库 / PRAGMA / 迁移)→ 全部回滚到
+      // "没初始化过"的状态,让下一次 initDb 能重试。局部句柄关掉,不让它泄漏。
+      try { localDb?.close(); } catch { /* 真正的错是上面那个,别盖过它 */ }
+      db = null;
+      dbPath = null;
+      dbReadyPromise = null;
+      migrateNeedsPersist = false;
+      throw err instanceof Error ? err : new Error(String(err));
     }
-    db.run("PRAGMA foreign_keys = ON");
-    migrate(db);
   })();
 
   return dbReadyPromise.then(() => db!);
@@ -337,14 +389,18 @@ function migrate(database: Database): void {
   // ── 机构登录退役(2026-10-11)──
   // `institution.*`(机构认证入口档案:list/save/delete/authStatus/clearCookies)是知网/
   // 图书馆登录场景,纯学术专属,按「学术功能全部通过扩展、工作流实现,core 不留学术」
-  // 的原则整体移出核心。`institution_profiles` 表只存「常用入口 + 域名」的组织性元数据
-  // (⚠️ **不含凭据** —— 真正的登录态在内嵌浏览器分区 `persist:mcode-browser` 的 cookie 里,
-  // 由 BrowserManager 保管,与本表无关),删掉不会登出任何站点。与 `download_jobs` 同做法:
-  // 纯可弃的表直接 DROP,不留老列。
-  if (tableExists(database, "institution_profiles")) {
-    database.run("DROP TABLE institution_profiles");
-    schemaChanged = true;
-  }
+  // 的原则整体移出核心。**退役 = 代码不再读写,不是把用户的历史记录删掉。**
+  //
+  // `institution_profiles` 表只存「常用入口 + 域名」的组织性元数据(⚠️ **不含凭据** ——
+  // 真正的登录态在内嵌浏览器分区 `persist:mcode-browser` 的 cookie 里,由 BrowserManager
+  // 保管,与本表无关),它是用户**自己整理的机构入口书签**(机构名称、入口网址、域名),
+  // 属于用户资产。从前这里直接 `DROP TABLE` —— 升级一次就把这些记录抹掉,而用户没有
+  // 任何办法找回。与 `library_items` 的学术列(kind / doi / authors …)同一条规矩:
+  // **保留老表但不再读写**,退役模块不在核心继续生效即可,数据留着不碍事。
+  // (对比 `download_jobs`:那是**纯派生**的任务队列,可弃才 DROP;本表是用户数据,不弃。)
+  //
+  // 于是这里**不做任何事** —— 留着原表(旧库升级后仍在),将来若用户想导出这些历史入口
+  // 仍然能读到。刻意不设 `schemaChanged`(没有结构变更需要落盘)。
 
   // ── kind 退役（2026-09-24）──
   // 两列 `kind` **保留在库里但代码全面停止读写**（sql.js 没有 DROP COLUMN 的
@@ -450,10 +506,14 @@ function migrate(database: Database): void {
   //
   // 回填也是数据修改：否则空串分类只在内存里恢复，退出后又变回隐藏状态。
   // 没改的情况下不落盘，避免每次启动白白重写整个库文件。
-  if (schemaChanged || recoveredCollections > 0) {
+  //
+  // ⚠️ 只**置位**,不在这里调 persist() —— migrate() 现在跑在句柄发布**之前**
+  // (initDb 用局部句柄调它),此时 `db`/`dbPath` 还是 null,persist() 会静默跳过。
+  // 由 initDb() 在 `db = localDb` 之后据此落盘(见那里的注释)。
+  migrateNeedsPersist = schemaChanged || recoveredCollections > 0;
+  if (migrateNeedsPersist) {
     log.info(schemaChanged ? "sqlite: schema changed — persisting migrated database"
       : `sqlite: recovered ${recoveredCollections} ungrouped library collections`);
-    persist();
   }
 }
 
@@ -584,7 +644,33 @@ export function flushDb(): void {
 /** Durable workflow barrier: write the in-flight marker before invoking a
  * command/model/plugin. Also the single commit path for ordinary/quit saves. */
 export function persistNowOrThrow(): void {
-  if (!db || !dbPath) throw new Error("sqlite database is not initialized");
+  const result = commitNow();
+  if (result.outcome !== "DURABLE") {
+    throw new Error(result.reason ?? "sqlite commit failed");
+  }
+}
+
+/**
+ * 【ARC-005 步②】把这一次落盘的结果**结构化**地交出来,而不是只有"成功 / 抛错"。
+ *
+ * {@link persistNowOrThrow} 是它上面的一层薄包装 —— **落盘实现只有这一份**,谁都不许
+ * 再抄一遍 `writeSnapshot` + 失败记录。调用方该问"内存改了、磁盘 durable 没有"时用本函数,
+ * 该用"失败即抛"的旧语义时用 `persistNowOrThrow`。
+ *
+ * 三种结果(**判据见 `@contracts/commit`**):
+ *  - `DURABLE` —— fsync + rename 都成了,磁盘上就是这一份;
+ *  - `APPLIED_NOT_DURABLE` —— 写盘失败(内存里的改动还在,进程仍握着它;`persistDirty`
+ *    保持为真并排退避重试)。**调用方绝不能把它当成功** —— 重启就没了;
+ *  - `FAILED` —— 数据库尚未初始化,一个字节都没动。
+ *
+ * ⚠️ 「内存已应用」是**调用方**已经改过的事(如 `WorkflowRunRepo.save` 先写了内存表),
+ * 本函数只负责把它 fsync 到磁盘。所以 `APPLIED_NOT_DURABLE` 说的是"你那份内存改动没能落盘",
+ * 不是"本函数自己改了内存"。
+ */
+export function commitNow(): CommitResult {
+  if (!db || !dbPath) {
+    return { outcome: "FAILED", reason: "sqlite database is not initialized" };
+  }
   cancelScheduledPersist();
   persistDirty = true;
   try {
@@ -598,9 +684,11 @@ export function persistNowOrThrow(): void {
       loggedFirstFlush = true;
       log.info(`sqlite persisted ${size}B via atomic replacement`);
     }
+    return { outcome: "DURABLE", bytes: size };
   } catch (error) {
-    recordPersistenceFailure(error);
-    throw error;
+    const err = error instanceof Error ? error : new Error(String(error));
+    recordPersistenceFailure(err);
+    return { outcome: "APPLIED_NOT_DURABLE", reason: err.message };
   }
 }
 

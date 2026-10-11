@@ -396,6 +396,30 @@ const HANDLERS: Record<string, RpcHandler> = {
       if (reviewError !== null) throw new RpcError(reviewError, 409);
     }
 
+    // ── MC-049: 忙判断 / 启动权预检必须在**改会话状态之前**完成。 ──
+    // 与桌面端 `ipc/claude.ts` 同一条(那边也把这段提到了 `updateStatus` 之前)。
+    // 从前这里先 `updateStatus(running)`,再问 `graphRunIntent`;当图正跑着节点、
+    // `parkedRunTeardown` 返回 null 时抛出去 —— catch 却把状态**放回 idle**,而图其实
+    // 还在跑:库里说 idle、真实的图说 running,两边分家(与 MC-013 同源)。预检提到
+    // 状态变更之前,拒绝就发生在碰状态之前。
+    //
+    // 图型工作流:与桌面端同一个判断(见 `graphRunIntent`)。手机上也能选工作流
+    // (`workflow:list` 那条 RPC),所以这里不能只有"跑一个普通回合"。
+    let run = graphRunIntent(updated);
+    if (run === "busy") {
+      // 与桌面端同一处判断:**图停在原地等人时,用户直接说话 = 放弃那一次、按他说的
+      // 重来**(见 `parkedRunTeardown`)。手机上尤其要紧 —— 图停在岔路口等人的时候,
+      // 用户多半不在电脑前面。
+      const teardown = parkedRunTeardown(updated.id);
+      if (teardown === null) {
+        // 有节点真在跑 —— 同桌面端:上一轮图还在跑就**明确拒绝**,别把这条消息丢掉。
+        // 此刻还没碰会话状态,所以不会被下面的 catch 误标成 idle。
+        throw new RpcError("这个工作流还在跑:先回答它的问题,或者按停止", 409);
+      }
+      await teardown;
+      run = "start";
+    }
+
     SessionRepo.updateStatus(session.id, "running");
     runtimeManager.bindSession(updated);
     // 状态置 running 后到运行时真正接管前，任何抛错都要把状态放回去（同桌面端
@@ -408,21 +432,6 @@ const HANDLERS: Record<string, RpcHandler> = {
       void generateSessionTitle(updated, input.prompt).catch((err) =>
         log.warn(`mobile: title generation failed for ${session.id}: ${(err as Error).message}`),
       );
-    }
-    // 图型工作流:与桌面端同一个判断(见 `graphRunIntent`)。手机上也能选工作流
-    // (`workflow:list` 那条 RPC),所以这里不能只有"跑一个普通回合"。
-    let run = graphRunIntent(updated);
-    if (run === "busy") {
-      // 与桌面端同一处判断:**图停在原地等人时,用户直接说话 = 放弃那一次、按他说的
-      // 重来**(见 `parkedRunTeardown`)。手机上尤其要紧 —— 图停在岔路口等人的时候,
-      // 用户多半不在电脑前面。
-      const teardown = parkedRunTeardown(updated.id);
-      if (teardown === null) {
-        // 有节点真在跑 —— 同桌面端:上一轮图还在跑就**明确拒绝**,别把这条消息丢掉。
-        throw new RpcError("这个工作流还在跑:先回答它的问题,或者按停止", 409);
-      }
-      await teardown;
-      run = "start";
     }
     if (run === "start") {
       // 同桌面端(ipc/claude.ts):预检失败不能变成 unhandledRejection,手机端
@@ -468,12 +477,19 @@ const HANDLERS: Record<string, RpcHandler> = {
   // works from any client for any historical turn.
   "claude:rewindTurn": async (raw) => {
     const input = RewindTurnSchema.parse(raw);
-    const restored = await runtimeManager.rewindTurn(
+    // ⚠️ **三个字段都要平铺带回来。** `RuntimeManager.rewindTurn` 现在返回
+    // `{ restored, failed, conflicts }`(MC-002 加了 `conflicts` —— "之后又被改过、
+    // 故意没动"的那批与 `failed` 分开报)。从前这里写成 `return { restored }`,把
+    // 整个对象当成 `restored` 一个字段套进去 —— 手机上 `TurnFilesCard` 解构
+    // `failed` / `conflicts` 拿到 `undefined`,`undefined.length` 直接 TypeError,
+    // 卡片既报不出冲突、也报不出失败,静默画成"已撤销"。与桌面 `ipc/claude.ts` 的
+    // `CLAUDE_REWIND_TURN` 返回同一份形状(契约见 rpcMap 的 `claude.rewindTurn`)。
+    const { restored, failed, conflicts } = await runtimeManager.rewindTurn(
       input.sessionId,
       input.files,
       input.targetFiles,
     );
-    return { restored };
+    return { restored, failed, conflicts };
   },
 
   // Per-session composer config (model / effort / permissionMode / workflowId /

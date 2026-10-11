@@ -38,9 +38,13 @@
  *
  * Run: scripts/library-paths-smoke/run.sh
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { createRequire } from "node:module";
+import { normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
+import { expandTilde, resolveBashWriteTargets } from "@main/providers/pi-sdk/bashWriteGuard.js";
+import type * as TypeScript from "typescript";
 
 let failures = 0;
 let checks = 0;
@@ -66,6 +70,7 @@ process.env.MCODE_SMOKE_DATA_ROOT = DATA;
 
 const {
   isInsideLibrary,
+  writeLandsInLibrary,
   libraryRoot,
   toLibraryRelative,
   fromLibraryRelative,
@@ -82,6 +87,9 @@ const { LibraryRepo } = await import("@main/store/repositories.js");
 const { initDb } = await import("@main/store/db.js");
 
 const ROOT = libraryRoot();
+// ⚠️ 库根必须**真实存在**:`physicalPath()` 对不存在的路径返回 null(失败关闭),于是
+// 物理那一层的用例会"因为根不存在"而红/绿,而不是因为链接 —— 那是不诚实的断言。先落盘。
+mkdirSync(ROOT, { recursive: true });
 console.log(`\nlibrary root = ${ROOT} (${ROOT.length} chars)\n`);
 
 /* ──────────────── 1. 库内 / 库外 ──────────────── */
@@ -120,6 +128,116 @@ for (const [what, p] of SHORTER_OUTSIDE) {
 // `startsWith(库根)` 那种写法会把它误判成库内 —— 这是收口时必须一并挡掉的一档。
 const SIBLING = `${ROOT}-old`;
 check(`库外的兄弟目录(${SIBLING.slice(-24)}…)—— 必须拒`, !isInsideLibrary(join(SIBLING, "papers", "a.pdf")));
+
+/* ──────────── 1b. MC-006:库内合法的点文件名(**不被**当成逃逸)────────────
+ *
+ * `..` 前缀判据必须带分隔符。裸 `startsWith("..")` 会把库内合法的 `..config` /
+ * `..backup` 当成"爬出去了"而拒掉 —— 独立复核实测反例正是这一格。 */
+console.log("\nMC-006:库内合法的两点前缀文件名");
+check("库内的 `..config`(合法点文件)—— 认作库内", isInsideLibrary(join(ROOT, "..config")));
+check("库内的 `..backup` —— 认作库内", isInsideLibrary(join(ROOT, "papers", "..backup")));
+check("库内的 `..hidden.txt` —— 认作库内", isInsideLibrary(join(ROOT, "notes", "..hidden.txt")));
+// 反向控制:真逃逸仍然拒(`..` 与 `../`)。
+check("`../escape` —— 仍拒", !isInsideLibrary(join(ROOT, "..", "escape")));
+check("`..` 本身(库根的上一级)—— 仍拒", !isInsideLibrary(join(ROOT, "..")));
+
+/* ──────────── 1c. MC-001:symlink / junction 指向库外必须拒 ────────────
+ *
+ * 库里的一个链接可以指向库外,而**字面**路径看着仍在库里 —— 纯字面判据对此无感。
+ * 独立复核实测:`library/link` 指向外部目录时,旧的纯字面判据返回"在库内"。 */
+console.log("\nMC-001:经 symlink / junction 指向库外");
+{
+  const outsideDir = join(DATA, "outside-lib-target");
+  mkdirSync(outsideDir, { recursive: true });
+  const linkPath = join(ROOT, "escape-link");
+  let made = false;
+  try {
+    symlinkSync(outsideDir, linkPath, process.platform === "win32" ? "junction" : "dir");
+    made = true;
+  } catch {
+    made = false; // 平台不允许(Windows 非管理员)—— 跳过这组,不判红
+  }
+  if (made) {
+    check(
+      "★ 经链接指向库外的文件 —— 必须拒(字面在里面,物理在外面)",
+      !isInsideLibrary(join(linkPath, "secret.txt")),
+    );
+  } else {
+    check("平台不允许创建链接 —— 跳过物理越界用例(不判红)", true);
+  }
+}
+
+/* ──────────── 1d. MC-001(反方向):项目里指向库的 junction ────────────
+ *
+ * 第十三轮独立复查的反例:`isInsideLibrary` 兼了两种语义,**漏判"写进来"**。
+ * 项目目录里建一个 `project/alias` → 库根,于是 `project/alias/note.md`:
+ *   - `isInsideLibrary` = **false**(字面在库外 —— 它字面上确实是别处的别名);
+ *   - `writeLandsInLibrary` = **true**(真实目的地就是那篇库内笔记)。
+ * Claude 的 `canUseTool`、Pi 的 `guardToolPath` 与 bash 重定向检查拿的是**后者**,
+ * 所以这里两个函数都要按各自的语义给对答案 —— 不是"谁对谁错",是**两问两答**。 */
+console.log("\nMC-001:项目里指向库的 junction(反方向 —— 写进来)");
+{
+  // ⚠️ 库根本身要**真实存在** —— `physicalPath()` 对不存在的路径返回 null(失败关闭),
+  // 那样两个判据都会是 false,用例就成了"假红"。先落盘再建链接。
+  mkdirSync(join(ROOT, "notes"), { recursive: true });
+  const projectDir = join(DATA, "some-project");
+  mkdirSync(projectDir, { recursive: true });
+  const aliasIntoLib = join(projectDir, "alias");
+  let made = false;
+  try {
+    // 已存在就先删(重跑),再建 junction 指向库根。
+    rmSync(aliasIntoLib, { recursive: true, force: true });
+    symlinkSync(ROOT, aliasIntoLib, process.platform === "win32" ? "junction" : "dir");
+    made = true;
+  } catch {
+    made = false; // 平台不允许 —— 跳过物理那一半,不判红
+  }
+  if (made) {
+    const viaAlias = join(aliasIntoLib, "notes", "n1.md");
+    check(
+      "★ 经项目别名写库 —— writeLandsInLibrary 必须为 true(拦下来)",
+      writeLandsInLibrary(viaAlias),
+    );
+    check(
+      "同一个路径 isInsideLibrary 为 false —— 它字面上是别处的别名(两问两答,不是矛盾)",
+      !isInsideLibrary(viaAlias),
+    );
+    // 反向控制:库内的正常路径两个函数都该为真,别名不该把正常情况也搞乱。
+    check("库内正常笔记路径 —— 两个判据都为 true", isInsideLibrary(join(ROOT, "notes", "n1.md")) && writeLandsInLibrary(join(ROOT, "notes", "n1.md")));
+    // 反向控制:库外的普通目录(不指向库)—— 写也不该被判成落进库。
+    check("库外的普通目录 —— writeLandsInLibrary 为 false(不许过敏)", !writeLandsInLibrary(join(projectDir, "src", "main.ts")));
+    // 反向控制:库内一个链接指向库外 —— "写出去"仍然要拦(旧行为不许被这次改动弄丢)。
+    const libLink = join(ROOT, "out-link");
+    rmSync(libLink, { recursive: true, force: true });
+    const outsideDir2 = join(DATA, "out-target-2");
+    mkdirSync(outsideDir2, { recursive: true });
+    let made2 = false;
+    try {
+      symlinkSync(outsideDir2, libLink, process.platform === "win32" ? "junction" : "dir");
+      made2 = true;
+    } catch {
+      made2 = false;
+    }
+    if (made2) {
+      // 库内一个链接指向库外:写它**不会**碰到库(目的地是库外的目录),所以
+      // `writeLandsInLibrary` = false —— 这不是漏判,是**判得准**。库外那一段由
+      // **项目边界**那一道管(它拦的是"写到项目外"),与"库只读"是两回事。
+      // 这条反向控制是防"有人把 writeLandsInLibrary 写成只看字面" —— 那样这里会
+      // 变成 true,等于把库内合法的外指链接也一并算作"库内写入"。
+      check(
+        "库内链接指向库外 —— writeLandsInLibrary 为 false(目的地是库外,库只读管不着)",
+        !writeLandsInLibrary(join(libLink, "x.txt")),
+      );
+      check(
+        "同一个链接 isInsideLibrary 也为 false(两个判据都看物理落点)",
+        !isInsideLibrary(join(libLink, "x.txt")),
+      );
+    }
+  } else {
+    check("平台不允许创建链接 —— 跳过反方向物理用例(不判红)", true);
+    check("平台不允许创建链接 —— 跳过别名 isInsideLibrary 用例(不判红)", true);
+  }
+}
 
 /* ──────────────── 2. 从库内相对路径构造回来的,一定在库内 ──────────────── */
 
@@ -189,7 +307,6 @@ eq("坏记录解析出来确实指向库外那个文件", fromLibraryRelative(".
 const refused = writeNote(bad.id, "被覆盖了");
 eq("越界路径被拒", refused.ok, false);
 check("而且说了原因", refused.error?.includes("越界") === true, refused.error);
-const { readFileSync } = await import("node:fs");
 eq("库外那个文件一个字节都没动", readFileSync(OUTSIDE_FILE, "utf-8"), "原始内容");
 
 /* ──────────────── 5. 一份 md 产物占的是文件还是一个目录 ──────────────── */
@@ -296,19 +413,154 @@ const providerSrc = readFileSync(
 // ⚠️ 判据要盯**生效的形状**,不是"文本里出现过这个词" —— 第一版写成
 // `includes("isInsideLibrary(norm.absPath)")`,结果是变异"把 if 改成 if (false && …)"
 // 照样过:字符串还在,规则却已经死了。所以这里剥掉注释后找那条**真的 if 语句**。
+//
+// 【MC-001,第十三轮复查】判据从 `isInsideLibrary` 换成 `writeLandsInLibrary`:前者
+// 要求**字面也在**库下,项目里一个指向库的 junction 字面在库外 → 规则静默漏判。
+// 这条断言同时钉住"用的是**职责对**的那个函数" —— 谁把它改回 `isInsideLibrary`,
+// 这里就该红。
 const providerCode = providerSrc.replace(/\/\/[^\n]*/g, "");
 check(
   "canUseTool 里有一条**生效的**库内拒绝（不是被注释/短路掉的）",
-  /if\s*\(\s*isInsideLibrary\(norm\.absPath\)\s*\)/.test(providerCode),
+  /if\s*\(\s*writeLandsInLibrary\(norm\.absPath\)\s*\)/.test(providerCode),
 );
 check(
   "库内写入那条拒在 project 边界判定**之前**（bypass 也拦不住它）",
-  providerCode.indexOf("isInsideLibrary(norm.absPath)") !== -1 &&
-    providerCode.indexOf("isInsideLibrary(norm.absPath)") <
+  providerCode.indexOf("writeLandsInLibrary(norm.absPath)") !== -1 &&
+    providerCode.indexOf("writeLandsInLibrary(norm.absPath)") <
       providerCode.indexOf("if (!norm.insideProject && !bypass)"),
 );
 check("拒绝文案说清「资料库是只读的」", providerSrc.includes("资料库是只读的"));
 check("…并给出正确出路（先复制进项目再改）", providerSrc.includes("在项目里改"));
+// 库只读那条**不是**条件于 bypass 的 —— 它是独立硬边界,不能写成 `… && !bypass`。
+// (能在 bypass 下拦,靠的是它跟权限模式无关,而不是靠项目边界顺带。)
+check(
+  "库只读那条**没有**和 bypass 挂钩(不是 `&& !bypass`)",
+  !/writeLandsInLibrary\(norm\.absPath\)\s*&&\s*!?\s*bypass/.test(providerCode),
+);
+
+/* ──────────── 8. 真实执行点:两方向别名 × 真实 junction 树（MC-001 完整验收）────────────
+ *
+ * §1c/§1d 证明的是**判据**在真实 junction 上给对答案;§7 证明的是**调用点文本**里确实
+ * 调了那个判据。但 §18.1/§21.2 的验收要求的是「**真实执行点**」—— 不能只证明函数
+ * 返回 true/false、或文本里出现过那个名字,而忽略了实际执行点到底有没有调它、调了以后
+ * 拦不拦得住。所以这一段把 Pi 的**真** `guardToolPath`(从源码里用 TS AST 抽出来、依赖
+ * 注入**真**实现)跑在**真建出来的 junction 树**上,两个方向、严格/默认/bypass 三档都过:
+ *
+ *   (A) **库内一个链接指向库外**:写它**物理落点在库外** —— 库只读规则**不该**触发
+ *       (它根本没碰库),由项目边界/OS 那一层管。这一条防的是"把库只读写成只看字面",
+ *       那样 `library/outlink/x` 会被误当成"库内写入"而拒 —— 判得**过宽**,也是错。
+ *   (B) **项目里一个别名指向库**:写它**物理落点在库内** —— 库只读规则**必须**触发,
+ *       且 strict=false(bypass)也不能放。这正是第十三轮复查记下的漏判点。
+ *
+ * 最后加两条反向控制:合法项目文件在每一档都必须**写得进去**(守卫不许过敏),以及
+ * bash 重定向目标经**真**解析器 + **真**判据也点得中库路径(bash 分支的直接证据)。
+ */
+console.log("\nMC-001 完整验收:真实 guardToolPath × 真实 junction 树");
+
+// 从真源码里抽出 guardToolPath(与 engine-regressions 抽 guardToolPath 同一手法),
+// 依赖注入**真实现**,而不是替身 —— 这样测的是"真执行点 + 真判据"。
+{
+  const ts = createRequire(join(process.cwd(), "package.json"))("typescript") as typeof TypeScript;
+  const extSrc = readFileSync(
+    join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtension.ts"),
+    "utf-8",
+  );
+  const extFile = ts.createSourceFile("mcodeExtension.ts", extSrc, ts.ScriptTarget.Latest, true);
+  const gDecl = extFile.statements.find(
+    (n): n is TypeScript.FunctionDeclaration =>
+      ts.isFunctionDeclaration(n) && n.name?.text === "guardToolPath",
+  );
+  check("真源码里找得到 guardToolPath", !!gDecl);
+  const gJs = ts.transpileModule(
+    `${gDecl!.getText(extFile)}\nmodule.exports.guardToolPath = guardToolPath;\n`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } },
+  ).outputText;
+  const gMod = { exports: {} as { guardToolPath: (cwd: string, raw: string, strict: boolean) =>
+    { denied: true; message: string } | { denied: false; path: string } } };
+  new Function(
+    "normalizeToolFilePath",
+    "expandTilde",
+    "writeLandsInLibrary",
+    "module",
+    "exports",
+    gJs,
+  )(normalizeToolFilePath, expandTilde, writeLandsInLibrary, gMod, gMod.exports);
+  const realGuardToolPath = gMod.exports.guardToolPath;
+
+  // 真建一棵树:库根(已在上文落盘)、一个项目目录、一个库外目录。
+  const projDir = join(DATA, "proj");
+  mkdirSync(join(projDir, "src"), { recursive: true });
+  writeFileSync(join(projDir, "src", "main.ts"), "export const ok = 1;\n");
+  mkdirSync(join(ROOT, "notes"), { recursive: true });
+  writeFileSync(join(ROOT, "notes", "protected.md"), "受保护的库内笔记\n");
+  const outsideDir = join(DATA, "outside-of-lib");
+  mkdirSync(outsideDir, { recursive: true });
+
+  // (B) 项目里一个别名 → 库根。
+  const aliasIntoLib = join(projDir, "alias");
+  rmSync(aliasIntoLib, { recursive: true, force: true });
+  // (A) 库内一个链接 → 库外。
+  const linkOutOfLib = join(ROOT, "outlink");
+  rmSync(linkOutOfLib, { recursive: true, force: true });
+  let linksMade = false;
+  try {
+    symlinkSync(ROOT, aliasIntoLib, process.platform === "win32" ? "junction" : "dir");
+    symlinkSync(outsideDir, linkOutOfLib, process.platform === "win32" ? "junction" : "dir");
+    linksMade = true;
+  } catch {
+    linksMade = false;
+  }
+
+  if (linksMade) {
+    const viaAliasB = join(aliasIntoLib, "notes", "protected.md");
+    // (B) bypass 档 —— 项目边界关掉了,只有库只读那条硬规则能拦。
+    const bBypass = realGuardToolPath(projDir, viaAliasB, false);
+    check("★ (B) 项目别名→库:真 guardToolPath 在 **bypass** 档必须拒", bBypass.denied === true, bBypass);
+    check("★ …而且拒绝文案点名「资料库」", bBypass.denied === true && /资料库/.test(bBypass.message));
+    // (B) 严格/默认档 —— 也必须拒。
+    const bStrict = realGuardToolPath(projDir, viaAliasB, true);
+    check("★ (B) 项目别名→库:真 guardToolPath 在 **严格** 档必须拒", bStrict.denied === true, bStrict);
+    // 真判据对这根别名给的方向也要**真**:
+    check("★ (B) 真 writeLandsInLibrary 对项目别名判断为 true(物理落点在库)", writeLandsInLibrary(viaAliasB));
+    check("…同路径真 isInsideLibrary 为 false(两问两答,记录语义不变)", !isInsideLibrary(viaAliasB));
+    check("…两个判据合起来证明库内笔记**不会被本次改动漏放**", writeLandsInLibrary(viaAliasB) && !isInsideLibrary(viaAliasB));
+
+    // (A) 库内链接 → 库外:写它落点在**库外**,库只读规则**不该**触发。
+    const viaOutA = join(linkOutOfLib, "a.txt");
+    const aBypass = realGuardToolPath(projDir, viaOutA, false);
+    check("(A) 库内链接→库外:bypass 档**不**被库只读规则误拦(落点不在库)", aBypass.denied === false, aBypass);
+    check("(A) 真 writeLandsInLibrary 对库外落点为 false(不把库外当成库内)", !writeLandsInLibrary(viaOutA));
+    // (A) 严格档由**项目边界**(不是库只读)拦 —— 拒绝语里不该出现「资料库」。
+    const aStrict = realGuardToolPath(projDir, viaOutA, true);
+    check(
+      "(A) 严格档即使拦,拒绝语也**不**该说是资料库(是项目边界在拦,别错报原因)",
+      aStrict.denied === false || !/资料库/.test(aStrict.message),
+      aStrict,
+    );
+
+    // 反向控制:合法项目文件每一档都必须写得进去(守卫不许过敏)。
+    check("★ 合法项目文件在 bypass 档可写", realGuardToolPath(projDir, join(projDir, "src", "main.ts"), false).denied === false);
+    check("★ 合法项目文件在严格档也可写", realGuardToolPath(projDir, join(projDir, "src", "main.ts"), true).denied === false);
+
+    // bash 分支的直接证据:真 `resolveBashWriteTargets` 解析出的目标,经真判据点得中库。
+    const cmd = `printf x > "${viaAliasB}"`;
+    const bashTargets = resolveBashWriteTargets(projDir, cmd);
+    check(
+      "★ bash 重定向(`> 项目别名/库文件`)经真解析器 + 真判据点得中库路径",
+      bashTargets.some((t) => writeLandsInLibrary(t.absPath)),
+      bashTargets,
+    );
+    // 反向控制:库内链接→库外 的 bash 目标,真判据不该点中库。
+    const bashTargetsA = resolveBashWriteTargets(projDir, `printf x > "${viaOutA}"`);
+    check(
+      "bash 目标落在库外时真判据不误报(不把库外算成库)",
+      !bashTargetsA.some((t) => writeLandsInLibrary(t.absPath)),
+      bashTargetsA,
+    );
+  } else {
+    check("平台不允许创建链接 —— 跳过真实执行点两方向用例(不判红)", true);
+  }
+}
 
 /* ──────────────── 收尾 ──────────────── */
 

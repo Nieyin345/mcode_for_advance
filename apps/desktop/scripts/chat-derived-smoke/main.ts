@@ -152,10 +152,27 @@ console.log("C. per-message caching");
   const cBody = card.slice(cAt, card.indexOf("\n  };", cAt));
   check("★ 撤销失败时卡片报出来(不再无条件画「已撤销 ✓」)", cAt >= 0 && /catch\s*\([^)]*\)\s*\{[\s\S]*?useToastStore[\s\S]*?push\(/.test(cBody) && cBody.includes("store.toast.rewindFailed"), cBody.slice(0, 300));
   // ★ **部分还原失败要说出来**(2026-10-10)。主进程可能只还原一半(某文件写不进 /
-  // 路径越界被拒);store 现在把 `{restored, failed}` 一起交回来,卡片必须读 `failed`
-  // 并报一句 —— 否则画着「已撤销 ✓」而用户以为整轮都回滚了(破坏性动作,他不会再去看)。
+  // 路径越界被拒);store 现在把 `{restored, failed, conflicts}` 一起交回来,卡片必须读
+  // `failed` 并报一句 —— 否则画着「已撤销 ✓」而用户以为整轮都回滚了(破坏性动作,他不会再去看)。
+  //
+  // 2026-10-11(MC-002):解构从 `{ failed }` 扩成 `{ failed, conflicts }` —— 多了一档
+  // "之后又被改过、故意没动"的文件,卡片也要单独报。判据跟着放宽成"解构里有 failed",
+  // 别把它钉死在那一个字段名上(那样加字段就会误红)。
   check("★ store 的 rewindTurn 把失败列表交回来(不是只报成功数)", at >= 0 && /return res;/.test(body) && !/await api\.claude\.rewindTurn\([\s\S]{0,120}\n\s*\};/.test(body));
-  check("★ 卡片读 failed 并报「N 个没还原」", cAt >= 0 && /const \{ failed \} = await rewindTurn/.test(cBody) && /failed\.length > 0/.test(cBody) && cBody.includes("store.toast.rewindPartial"), cBody.slice(0, 400));
+  check("★ 卡片读 failed 并报「N 个没还原」", cAt >= 0 && /\{\s*failed\s*[,}]/.test(cBody) && /failed\.length > 0/.test(cBody) && cBody.includes("store.toast.rewindPartial"), cBody.slice(0, 400));
+  // ★ MC-002:冲突那档也要说 —— "之后又被改过、故意没动"与"还原失败"是两回事,不能混。
+  check("★ 卡片也报冲突档(「N 个之后又改过,没动它们」)", cAt >= 0 && /conflicts\.length > 0/.test(cBody) && cBody.includes("store.toast.rewindConflicts"), cBody.slice(0, 400));
+
+  // 【MC-012】表头**不得**再有嵌套的交互控件:从前是 `div[role="button"] tabIndex=0`
+  // 里面套一个可聚焦的 `<button>`(撤销本轮),读屏器/键盘遍历分不清回车触发哪一下。
+  // 判据(剥注释后):`role="button"` 不再出现;`aria-expanded` 挂在**真 `<button>`** 上
+  // (即 `aria-expanded` 之前最近的控件开启标签是 `<button`,不是 `<div`);撤销入口
+  // (`setConfirmOpen`)与折叠入口(`setOpen`)处于同级。
+  check("★ 表头不再用 role=\"button\" 伪装(嵌套交互控件已拆)", !/role="button"/.test(card));
+  const expandedAt = card.indexOf("aria-expanded");
+  const beforeExpanded = card.slice(Math.max(0, expandedAt - 220), expandedAt);
+  check("★ aria-expanded 挂在真 <button> 上(不是 div[role=button])", expandedAt >= 0 && /<button[\s\S]*$/.test(beforeExpanded), beforeExpanded.slice(-120));
+  check("★ 折叠与撤销是同级控件(撤销不再被 role=button 包住)", card.includes("aria-controls") && card.includes("setConfirmOpen(true)") && !/role="button"/.test(card));
 }
 
 /**

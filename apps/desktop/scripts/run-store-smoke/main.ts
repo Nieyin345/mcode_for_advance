@@ -35,7 +35,7 @@ import { workflowReplayError } from "@main/orchestration/workflowTrust.js";
 import type { Session } from "@contracts/session";
 import type { NodeOutcome } from "@contracts/nodeType";
 import initSqlJs from "sql.js/dist/sql-asm.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { armFault, clearFault, faultHits } from "../db-persistence-smoke/stubs/fs.js";
 import { join } from "node:path";
 import { initDb, getDb } from "@main/store/db.js";
@@ -195,6 +195,16 @@ if (MODE === "write") {
   const pinned = { ...snapshotOf([]), workflowRevision: "a".repeat(64), inFlightNodeIds: ["command"] };
   eq("新存档的图版本往返后没有丢", decodeSnapshot(JSON.stringify(pinned))?.workflowRevision, pinned.workflowRevision);
   eq("新存档的执行中节点往返不丢", decodeSnapshot(JSON.stringify(pinned))?.inFlightNodeIds?.[0], "command");
+  // 【ARC-016】配置快照:往返不丢、形状坏就丢。
+  {
+    const withCfg = { ...snapshotOf([]), configSnapshot: { takenAt: 12345, profiles: { p_research_v1: "deadbeef" }, skills: ["lit"], providerId: "pi-sdk", model: "m1" } };
+    const rt = decodeSnapshot(JSON.stringify(withCfg));
+    eq("配置快照往返后还在", rt?.configSnapshot?.takenAt, 12345);
+    eq("配置快照里的档案哈希往返不丢", rt?.configSnapshot?.profiles?.p_research_v1, "deadbeef");
+    eq("配置快照里的技能往返不丢", rt?.configSnapshot?.skills?.[0], "lit");
+    check("配置快照形状坏(profiles 是数组)→ 丢弃,不塞给审计",
+      decodeSnapshot(JSON.stringify({ ...withCfg, configSnapshot: { takenAt: 1, profiles: [], skills: [] } }))?.configSnapshot === undefined);
+  }
   check("存档中伪造的坏图版本拒绝读取", decodeSnapshot(JSON.stringify({ ...pinned, workflowRevision: "bad" })) === null);
   check("存档中坏执行列表拒绝读取", decodeSnapshot(JSON.stringify({ ...pinned, inFlightNodeIds: [1] })) === null);
   check("已绑定图的坏结局不能被丢弃后重跑已执行节点", decodeSnapshot(JSON.stringify({
@@ -262,13 +272,16 @@ if (MODE === "write") {
   const SQL = await initSqlJs();
   const dbFile = join(dataRoot(), DATA_DB_FILENAME);
   const diskPayload = (id: string): string | null => {
-    const copy = new SQL.Database(readFileSync(dbFile));
-    const stmt = copy.prepare("SELECT payload FROM workflow_runs WHERE id = ?");
-    stmt.bind([id]);
-    const payload = stmt.step() ? String(stmt.getAsObject().payload) : null;
-    stmt.free();
-    copy.close();
-    return payload;
+    let copy: InstanceType<typeof SQL.Database>;
+    try { copy = new SQL.Database(readFileSync(dbFile)); }
+    catch { return null; } // 磁盘文件被半写污染时,读侧干净地返回"读不到",别让整套崩在解析上
+    try {
+      const stmt = copy.prepare("SELECT payload FROM workflow_runs WHERE id = ?");
+      stmt.bind([id]);
+      const payload = stmt.step() ? String(stmt.getAsObject().payload) : null;
+      stmt.free();
+      return payload;
+    } catch { return null; } finally { copy.close(); }
   };
   const critical = { ...snapshotOf([]), workflowRevision: "a".repeat(64), inFlightNodeIds: ["command"] };
   eq("关键快照的调用成功", saveRun({
@@ -292,8 +305,172 @@ if (MODE === "write") {
     clearFault();
   }
 
+  /* ── 【MC-053】编码失败的存档**不得**覆盖上一次有效快照 ──────────────
+   *
+   * 从前 `saveRun` 在快照无法序列化(循环引用 / BigInt)时把 payload 置成**空串**
+   * 照样写库 —— "落一行空的也比不落强"。结果是**上一次好好的可恢复快照被空串覆盖**,
+   * 而 `decodeSnapshot("")` 必然读不回来:失败返回 false 已经晚了,旧存档已经毁在这一句里。
+   * 这只是"return false 前就已经做了破坏性写入",调用方再检查布尔值也救不回旧快照。
+   *
+   * 现在:编码**先于任何仓储写入**,失败即 return false、**一个字节都不落库**。 */
+  saveRun({
+    runId: "run_encode_v1", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "failed",
+    snapshot: snapshotOf([]),
+  }, { durable: true });
+  const v1Raw = diskPayload("run_encode_v1") ?? "";
+  check("前置:V1 是一份有效快照(可解码)", decodeSnapshot(v1Raw) !== null, v1Raw.length);
+
+  // V2:造一个**循环引用**的快照 → encode 必抛。
+  const circular: RunSnapshot = snapshotOf([]);
+  (circular as unknown as Record<string, unknown>).self = circular;
+  const encoded = saveRun({
+    runId: "run_encode_v1", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "failed",
+    snapshot: circular,
+  }, { durable: true });
+  eq("★ 编码失败的存档返回 false", encoded, false);
+  const v1After = diskPayload("run_encode_v1") ?? "";
+  eq("★ 上一次有效快照**逐字节未变**(没被空串覆盖)", v1After, v1Raw);
+  check("★ 旧快照仍可解码(重启还能续跑)", decodeSnapshot(v1After) !== null, v1After.length);
+
   // ⚠️ 这一趟**故意把 RUN_LEFT 留成 `running`** —— 第二趟那个新进程启动时跑迁移,
   //    它就该变成 `interrupted`。那正是"应用被关掉"这件事在磁盘上留下的样子。
+
+  /* ── 【MC-053 后半】能编码 ≠ 可解码:结构坏掉的快照不得覆盖上一次有效快照 ──
+   *
+   * 上面那条只挡住"JSON.stringify 抛错"(循环引用/BigInt)。可 JSON 能序列化**远远
+   * 多于** decodeSnapshot 能读回的东西:一份 `state.record` 被写成字符串的快照,
+   * 编码不抛、写库成功、返回 true —— 而读侧 `decodeSnapshot` 对刚落盘的这行返回 null,
+   * 调用方以为"可续"、重启却续不上。第 13 轮复查的隔离反例就是这个 `invalidAccepted`。 */
+  saveRun({
+    runId: "run_shape_v1", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "failed",
+    snapshot: snapshotOf([]),
+  }, { durable: true });
+  const s1Raw = diskPayload("run_shape_v1") ?? "";
+  check("前置:可解码的快照写得进去(返回 true)", decodeSnapshot(s1Raw) !== null, s1Raw.length);
+
+  // V2:结构坏掉 —— `state.record` 不是数组。JSON.stringify 照样能吐出来。
+  const broken: RunSnapshot = snapshotOf([]);
+  (broken.state as unknown as Record<string, unknown>).record = "not-an-array";
+  const rawBroken = JSON.stringify({ ...broken, version: 1, capturedAt: Date.now() });
+  check(
+    "前置:这份坏快照 JSON 编码**不抛**(正是「能编码」骗过旧判据的那一格)",
+    typeof rawBroken === "string" && rawBroken.length > 0,
+    rawBroken.length,
+  );
+  const shapeSaved = saveRun({
+    runId: "run_shape_v1", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "failed",
+    snapshot: broken,
+  }, { durable: true });
+  eq("★ 结构通不过解码器的快照返回 false(不谎称可恢复)", shapeSaved, false);
+  const s1After = diskPayload("run_shape_v1") ?? "";
+  eq("★ 上一次有效快照**逐字节未变**(没被坏结构覆盖)", s1After, s1Raw);
+  check("★ 旧快照仍可解码(重启还能续跑)", decodeSnapshot(s1After) !== null, s1After.length);
+
+  /* ── 【MC-053 反例三】durable 落盘失败必须**回滚内存那一行** ──────────────
+   *
+   * 上面两条挡住的是"写库之前"的坏快照。但写库与落盘**不是原子的**:`WorkflowRunRepo.save`
+   * 改的是**内存**里的 sql.js 表,`persistNowOrThrow` 才 fsync 到磁盘。第 16 轮复查抓住了
+   * 这个窗口:先 save(内存行已被换成新快照)→ persistNowOrThrow 抛(磁盘故障)→ 只
+   * return false。结果是**内存里那一行已经变了**(status=success、payload=新),而磁盘上还是
+   * 上一次的 V1 —— 调用方以为"没写成、旧快照留着",可同一进程后续 `resumableRun`/`get` 读的
+   * 是被污染的内存行,重启后又变回 V1,两处对不上(台账实测 oldCheckpointMutated=true)。
+   *
+   * 判据:落盘失败后,**内存**读回的仍是 V1(不是新提交的 V2)。 */
+  saveRun({
+    runId: "run_durable_rollback", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "running",
+    snapshot: snapshotOf([]),
+  }, { durable: true });
+  const memV1 = WorkflowRunRepo.get("run_durable_rollback");
+  const diskV1 = diskPayload("run_durable_rollback") ?? "";
+  check("前置:V1 内存与磁盘都在", memV1 !== null && diskV1.length > 0 && decodeSnapshot(diskV1) !== null);
+
+  armFault(dbFile, "write");
+  try {
+    const ok = saveRun({
+      runId: "run_durable_rollback", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "success",
+      snapshot: snapshotOf([]),
+    }, { durable: true });
+    eq("★ 落盘失败的 durable 保存返回 false", ok, false);
+    const memAfter = WorkflowRunRepo.get("run_durable_rollback");
+    eq("★★ 内存那一行**没有被污染**(status 仍是 V1 的 running,不是 V2 的 success)", memAfter?.status, "running");
+    eq("★★ 内存 payload 仍是 V1(没被新快照覆盖)", memAfter?.payload, memV1?.payload);
+    eq("磁盘仍是 V1(逐字节未变)", diskPayload("run_durable_rollback") ?? "", diskV1);
+  } finally {
+    clearFault();
+  }
+
+  /* ── 【MC-028】durable 关口在**真实 fsync / rename 失败**下的边界 ──────────
+   *
+   * runner 的两个"声称 durable"的关口(岔路口等待用户 / 整图收口)现在都 `if (!writeRun(...))`
+   * 检查了返回值 —— 但 maint-m28-smoke §3 钉的是**源码级**判据。台账要的比这更强:在
+   * **真的**让落盘那一步坏掉(写 / fsync / rename)时,durable 写必须返回 false、磁盘上那份
+   * 旧快照一个字节不动、重启后读到的仍是旧快照 —— 而**绝不能**出现"报告成功、磁盘却没有"。
+   * 这里把三种物理故障各撞一次。核心不变量:**durable 写说成功 ⟺ 磁盘上真有这一份**;
+   * 失败时既不许假报成功、也不许把内存/磁盘的旧状态丢掉。 */
+  console.log("\n【MC-028】durable 在真实 fsync/rename 故障下:报成功 ⟺ 磁盘上真有(无假成功、无丢状态)");
+  {
+    // 从**独立**句柄读磁盘上的 awaiting 列 —— "提交没提交"的判据不能靠内存。
+    const diskAwaiting = (id: string): string | null => {
+      let copy: InstanceType<typeof SQL.Database>;
+      try { copy = new SQL.Database(readFileSync(dbFile)); }
+      catch { return null; } // 磁盘被半写污染 → 干净地返回"读不到"
+      try {
+        const stmt = copy.prepare("SELECT awaiting_node FROM workflow_runs WHERE id = ?");
+        stmt.bind([id]);
+        const a = stmt.step() ? String(stmt.getAsObject().awaiting_node) : null;
+        stmt.free();
+        return a;
+      } catch { return null; } finally { copy.close(); }
+    };
+    for (const fault of ["write", "sync", "rename"] as const) {
+      const label = `run_durable_${fault}`;
+      // V1:先落一份完好的快照(成功路径)—— awaiting 为空。
+      saveRun({
+        runId: label, sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "running",
+        snapshot: snapshotOf([]),
+      }, { durable: true });
+      const v1Disk = diskPayload(label) ?? "";
+      check(`[${fault}] 前置:V1 已在磁盘上(可解码)`, decodeSnapshot(v1Disk) !== null, v1Disk.length);
+      eq(`[${fault}] 前置:磁盘上 V1 的 awaiting 为空`, diskAwaiting(label), "");
+
+      // 注入物理故障,提交 V2(改成 success,awaiting=["H"])。
+      armFault(dbFile, fault);
+      let ok = true;
+      try {
+        ok = saveRun({
+          runId: label, sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "success",
+          snapshot: snapshotOf(["H"]),
+        }, { durable: true });
+      } finally {
+        clearFault();
+      }
+      eq(`[${fault}] ★ 物理落盘失败时 durable 写返回 false(绝不假报成功)`, ok, false);
+      check(`[${fault}] 故障确实击中了落盘`, faultHits > 0);
+      // ★★ 磁盘：旧快照逐字节未变、未提交的 V2 一个字节都没落上。
+      eq(`[${fault}] ★★ 磁盘仍是旧快照 V1(逐字节未变,没被半写污染)`, diskPayload(label) ?? "", v1Disk);
+      eq(`[${fault}] ★★ 磁盘上未提交的 V2 状态没有出现(awaiting 仍是空)`, diskAwaiting(label), "");
+      check(`[${fault}] ★★ 磁盘旧快照仍可解码(重启还能续跑)`, decodeSnapshot(diskPayload(label) ?? "") !== null);
+      // ★★ 内存也被回滚到 V1 —— 否则同进程后续查询会读到被污染的"已成功"行。
+      const mem = WorkflowRunRepo.get(label);
+      eq(`[${fault}] ★★ 内存没被污染(status 仍是 V1 的 running,不是 V2 的 success)`, mem?.status, "running");
+      eq(`[${fault}] ★★ 内存 payload 仍是 V1`, mem?.payload, v1Disk);
+
+      // 故障解除后重试 → 成功,且磁盘 == 内存(V2 真的落上了)。
+      const retry = saveRun({
+        runId: label, sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "success",
+        snapshot: snapshotOf(["H"]),
+      }, { durable: true });
+      eq(`[${fault}] ★ 故障解除后重试返回成功`, retry, true);
+      const diskAfter = diskPayload(label) ?? "";
+      eq(`[${fault}] ★★ 重试成功后磁盘真的有了 V2(awaiting=H)`, diskAwaiting(label), "H");
+      eq(`[${fault}] ★★ 重试成功后磁盘 == 内存(同一份 payload)`, WorkflowRunRepo.get(label)?.payload, diskAfter);
+    }
+    check(
+      "★ 三次故障注入后没有遗留 .persist-*.tmp 暂存文件",
+      readdirSync(dataRoot()).every((f) => !f.includes(".persist-")),
+      readdirSync(dataRoot()),
+    );
+  }
   console.log("\n(第一趟结束:那个对话里留着一行 `running`)");
 } else {
   console.log("\n重启之后:上一次还在跑的那些会被标成「被中断」");
@@ -310,6 +487,23 @@ if (MODE === "write") {
   check("★ 列表里的第二格同样找得到", WorkflowRunRepo.resumableFor(SESSION_RESUMABLE, "H") !== null);
   check("不在列表里的一格找不到", WorkflowRunRepo.resumableFor(SESSION_RESUMABLE, "Z") === null);
   check("别的对话找不到", WorkflowRunRepo.resumableFor(SESSION_PRUNED, "F") === null);
+
+  /* ── 【MC-028】durable 提交跨**真实进程重启**仍成立 ─────────────────────────
+   *
+   * 第一趟里那三条 `run_durable_{write,sync,rename}`:先落 V1、注入物理落盘故障(写/fsync/
+   * rename),_V2 提交失败但旧快照与内存都保住_,再在故障解除后重试成功。这一趟是**全新的
+   * node 进程**,库是从磁盘重新打开的 —— 磁盘上到底是什么,只有此刻才说了算。
+   *
+   * 判据:重启后那三行必须是 V2(success + awaiting=H)—— 说明重试那一次的 durable 提交
+   * 真的落到了盘上、跨进程还在;而**不是**停在 V1(running)或某份被半写污染的态。注意启动
+   * 迁移会把遗留的 `running` 行标成 `interrupted`,而 V2 是 `success`,不受影响 —— 所以"看到
+   * success"同时证明了"V2 真的落上、没有被故障期的旧态盖回去"。 */
+  for (const fault of ["write", "sync", "rename"] as const) {
+    const row = WorkflowRunRepo.get(`run_durable_${fault}`);
+    eq(`★ MC-028 重启后 run_durable_${fault} 是 durable 提交的 V2(success)`, row?.status, "success");
+    eq(`★ MC-028 重启后 run_durable_${fault} 的 awaiting 是 V2(H)`, row?.awaiting.join(","), "H");
+    check(`★ MC-028 重启后 run_durable_${fault} 的存档仍可解码`, decodeSnapshot(row?.payload ?? "") !== null);
+  }
 
   console.log("\n把存档读回来(这一趟是全新的进程)");
   const found = resumableRun(SESSION_RESUMABLE, "F");

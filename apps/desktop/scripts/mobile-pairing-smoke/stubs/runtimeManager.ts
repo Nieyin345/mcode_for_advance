@@ -43,6 +43,26 @@ export const runtimeManager = {
   resolveUserInput(): boolean {
     return false;
   },
+  /** `session:updateSettings` 带 permissionMode 时会同步进运行时桥(见桌面同款)。
+   *  ⚠️ 这个桩方法**非有不可**:没有它,MC-048 那条"改已删除会话必须 ok:false"的
+   *  permissionMode 断言会在**更新成功**之后撞上 `setPermissionMode is not a function`
+   *  的 TypeError → 400 → 也回 ok:false —— **为错误的理由变绿**。补上它,断言才真的
+   *  在验「存在性检查有没有挡住这次更新」。 */
+  setPermissionMode(): void {
+    /* 无头环境没有真运行时桥,接住即可。 */
+  },
+  /** `claude:rewindTurn` 那一路 —— MC-047 要验的是**手机 RPC 返回的形状**:
+   *  handler 必须把 `{restored, failed, conflicts}` 三个数组**平铺**交回来,而不是把
+   *  整个对象塞进 `restored` 一个字段。桩返回一份三个数组各不相同的记号,脚本据
+   *  HTTP 响应 JSON 断言它们的落点。 */
+  rewindTurn(
+    sessionId: string,
+    files: unknown,
+    targetFiles: unknown,
+  ): { restored: string[]; failed: string[]; conflicts: string[] } {
+    rewindCalls.push({ sessionId, files, targetFiles });
+    return { restored: ["REW_A", "REW_B"], failed: ["REW_FAIL"], conflicts: ["REW_CONFLICT"] };
+  },
   emitExternal(): void {
     /* 事件广播本套不验 —— MobileEventBus 由脚本自己直接驱(bus.broadcast) */
   },
@@ -50,3 +70,6 @@ export const runtimeManager = {
 
 /** 脚本读它来核对"那一轮被送进了哪个目录"(sentinel 断言用)。 */
 export const turnCwds: Array<{ sessionId: string; cwd: string; workflowId: string }> = [];
+
+/** 脚本读它来核对 `rewindTurn` 的实参。(MC-047 的正文断言看 HTTP 响应的形状。) */
+export const rewindCalls: Array<{ sessionId: string; files: unknown; targetFiles: unknown }> = [];

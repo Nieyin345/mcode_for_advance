@@ -58,7 +58,7 @@ import type { ProviderContext } from "@contracts/provider";
 import { normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { normalizeBashCommand } from "@main/lib/msysPath.js";
-import { isInsideLibrary } from "@main/library/paths.js";
+import { writeLandsInLibrary } from "@main/library/paths.js";
 import { guardBashCommand, resolveBashWriteTargets, expandTilde } from "./bashWriteGuard.js";
 import { shouldAutoApproveForPi } from "./piToolApproval.js";
 import {
@@ -117,14 +117,15 @@ export function guardToolPath(
   const norm = normalizeToolFilePath(cwd, expandTilde(rawPath));
   if (!norm) return { denied: false, path: rawPath };
   // **资料库只读** —— 独立于项目边界的一条硬规则，bypass 也拦。与 Claude 的
-  // `canUseTool` 同一判据（复用 `library/paths.ts` 的 `isInsideLibrary`）。
+  // `canUseTool` 同一判据（复用 `library/paths.ts` 的 `writeLandsInLibrary` ——
+  // **只看真实目的地**,项目里指向库的 junction 也算落进库里,见该函数注释）。
   //
   // 为什么不能只靠下面那条"越出项目就拒"：那只是**恰好**成立 —— 库根默认在
   // `<数据根>/library`，与用户项目目录不重叠，于是"写只能在项目内"顺带等于"库只读"。
   // 可一旦库被搬进项目目录（或项目设在数据根下），那条规则就**静默失效**，而
   // bypassPermissions 档下项目边界本就不拦 —— 两种情形下 Pi 都会悄悄改掉库文件。
   // 用户明确要求"库的内容不能动"，所以它得是显式的一条，不是巧合的副产品。
-  if (isInsideLibrary(norm.absPath)) {
+  if (writeLandsInLibrary(norm.absPath)) {
     return {
       denied: true,
       message:
@@ -370,9 +371,10 @@ function registerToolCallGuard(
         // `<数据根>/library`,与项目目录不重叠。一旦库被搬进项目(或项目设在数据根下),那条
         // 就静默失效;bypass 档下更是完全不拦。e58d3e2e 给 write/edit 补上了这条独立规则,
         // 但 bash 重定向(`> 库文件`、`tee`、`sed -i`…)能绕过 write/edit 直接落盘 —— 同一句话
-        // ("库的内容不能动")必须在这里也守住。判据复用 `library/paths.ts` 的 `isInsideLibrary`。
+        // ("库的内容不能动")必须在这里也守住。判据复用 `library/paths.ts` 的
+        // `writeLandsInLibrary`(只看真实目的地,与上面 guardToolPath 同一份)。
         for (const target of bashTargets) {
-          if (isInsideLibrary(target.absPath)) {
+          if (writeLandsInLibrary(target.absPath)) {
             return {
               block: true,
               reason:
@@ -573,7 +575,7 @@ function registerBrowserTools(
     promptSnippet: BROWSER_TOOL_SPECS.browser_list.promptSnippet,
     parameters: Type.Object({}),
     async execute() {
-      return toPiResult(browserList());
+      return toPiResult(browserList(projectPath));
     },
   });
 
@@ -620,7 +622,7 @@ function registerBrowserTools(
     }),
     async execute(_toolCallId, params) {
       const { browserId } = params as { browserId?: string };
-      return toPiResult(await browserSnapshot({ browserId }));
+      return toPiResult(await browserSnapshot({ browserId, projectPath }));
     },
   });
 
@@ -644,7 +646,7 @@ function registerBrowserTools(
         coordinateY?: number;
         browserId?: string;
       };
-      return toPiResult(await browserClick({ index, selector, coordinateX, coordinateY, browserId }));
+      return toPiResult(await browserClick({ index, selector, coordinateX, coordinateY, browserId, projectPath }));
     },
   });
 
@@ -668,7 +670,7 @@ function registerBrowserTools(
         clear?: boolean;
         browserId?: string;
       };
-      return toPiResult(await browserType({ index, selector, text, clear, browserId }));
+      return toPiResult(await browserType({ index, selector, text, clear, browserId, projectPath }));
     },
   });
 
@@ -683,7 +685,7 @@ function registerBrowserTools(
     }),
     async execute(_toolCallId, params) {
       const { keys, browserId } = params as { keys: string; browserId?: string };
-      return toPiResult(await browserKeys({ keys, browserId }));
+      return toPiResult(await browserKeys({ keys, browserId, projectPath }));
     },
   });
 
@@ -705,7 +707,7 @@ function registerBrowserTools(
         selector?: string;
         browserId?: string;
       };
-      return toPiResult(await browserScroll({ direction, pages, selector, browserId }));
+      return toPiResult(await browserScroll({ direction, pages, selector, browserId, projectPath }));
     },
   });
 
@@ -729,7 +731,7 @@ function registerBrowserTools(
         timeoutSeconds?: number;
         browserId?: string;
       };
-      return toPiResult(await browserWait({ selector, text, seconds, timeoutSeconds, browserId }));
+      return toPiResult(await browserWait({ selector, text, seconds, timeoutSeconds, browserId, projectPath }));
     },
   });
 
@@ -747,7 +749,7 @@ function registerBrowserTools(
     }),
     async execute(_toolCallId, params) {
       const { action, browserId } = params as { action: "back" | "forward" | "reload"; browserId?: string };
-      return toPiResult(await browserHistory({ action, browserId }));
+      return toPiResult(await browserHistory({ action, browserId, projectPath }));
     },
   });
 
@@ -769,7 +771,7 @@ function registerBrowserTools(
         value: string;
         browserId?: string;
       };
-      return toPiResult(await browserSelect({ index, selector, value, browserId }));
+      return toPiResult(await browserSelect({ index, selector, value, browserId, projectPath }));
     },
   });
 
@@ -803,7 +805,7 @@ function registerBrowserTools(
           browserId?: string;
         };
       return toPiResult(
-        await browserFind({ selector, text, regex, caseSensitive, contextChars, maxResults, attributes, cssScope, browserId }),
+        await browserFind({ selector, text, regex, caseSensitive, contextChars, maxResults, attributes, cssScope, browserId, projectPath }),
       );
     },
   });
@@ -818,7 +820,7 @@ function registerBrowserTools(
     }),
     async execute(_toolCallId, params) {
       const { browserId } = params as { browserId: string };
-      return toPiResult(await browserSwitchTab({ browserId }));
+      return toPiResult(await browserSwitchTab({ browserId, projectPath }));
     },
   });
 
@@ -832,7 +834,7 @@ function registerBrowserTools(
     }),
     async execute(_toolCallId, params) {
       const { browserId } = params as { browserId: string };
-      return toPiResult(await browserCloseTab({ browserId }));
+      return toPiResult(await browserCloseTab({ browserId, projectPath }));
     },
   });
 
@@ -896,7 +898,7 @@ function registerBrowserTools(
       };
       return toPiResult(
         await browserSavePdf(
-          { fileName, paperFormat, landscape, printBackground, scale, headerFooter, browserId },
+          { fileName, paperFormat, landscape, printBackground, scale, headerFooter, browserId, projectPath },
           { toolCallId: _toolCallId, sessionId, turnNumber },
         ),
       );
@@ -925,7 +927,7 @@ function registerBrowserTools(
     }),
     async execute(_toolCallId, params) {
       const { script, browserId } = params as { script: string; browserId?: string };
-      return toPiResult(await browserEvaluate({ script, browserId }));
+      return toPiResult(await browserEvaluate({ script, browserId, projectPath }));
     },
   });
 
@@ -940,7 +942,7 @@ function registerBrowserTools(
     }),
     async execute(toolCallId, params) {
       const { browserId, fullPage } = params as { browserId?: string; fullPage?: boolean };
-      const r = await browserScreenshot({ browserId, fullPage }, {
+      const r = await browserScreenshot({ browserId, fullPage, projectPath }, {
         toolCallId,
         sessionId,
         turnNumber,

@@ -64,6 +64,11 @@ function eq(name: string, actual: unknown, expected: unknown): void {
   check(name, Object.is(actual, expected), { actual, expected });
 }
 
+/** 深比较(数组/对象)—— `eq` 的 `Object.is` 对数组永远为 false。 */
+function same(name: string, actual: unknown, expected: unknown): void {
+  check(name, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
+}
+
 /* ───────────────────────── 环境 ─────────────────────────
  *
  * 数据根:本套**真的**建一个 sqlite 库(令牌住在 settings 表里),所以这里指向
@@ -1089,6 +1094,89 @@ console.log("\n本轮工作流覆盖值");
   rmSync(pathT, { recursive: true, force: true });
 }
 
+/* ────────────── 7h. 回滚的返回形状:三个数组必须平铺 ──────────────
+ *
+ * `RuntimeManager.rewindTurn` 返回 `{ restored, failed, conflicts }`(MC-002 加了
+ * `conflicts`)。桌面 `ipc/claude.ts` 正确平铺返回,而手机 handler 从前写成
+ * `const restored = await rewindTurn(...); return { restored };` —— 实际发出去的是
+ * `{restored:{restored:[...],failed:[...],conflicts:[...]}}`。手机 webApi 再转一手,
+ * 渲染端 `TurnFilesCard` 解构 `failed` / `conflicts` 得到 `undefined`,`undefined.length`
+ * 直接 TypeError —— **手机回滚后卡片不报冲突/失败,静默画成"已撤销"**。
+ *
+ * 判据立在"客户端拿到的 JSON 形状"上:三个数组必须各自平铺在顶层。
+ */
+console.log("\n回滚返回形状");
+
+{
+  const res = await rpcTok(tA, "claude:rewindTurn", {
+    sessionId: "rw_s",
+    files: [
+      { filePath: "a.ts", kind: "modified", adds: 3, dels: 1, before: "原内容" },
+    ],
+    targetFiles: ["a.ts", "REW_B"],
+  });
+  eq("手机 rewindTurn → 200", res.status, 200);
+  const result = (JSON.parse(res.text) as { result: { restored?: unknown; failed?: unknown; conflicts?: unknown } }).result;
+  same("restored 平铺在顶层(不是把整个对象套进 restored)", result.restored, ["REW_A", "REW_B"]);
+  same("★ failed 平铺在顶层(缺了就是 undefined.length 崩溃)", result.failed, ["REW_FAIL"]);
+  same("★ conflicts 平铺在顶层(缺了就是 undefined.length 崩溃)", result.conflicts, ["REW_CONFLICT"]);
+}
+
+/* ────────────── 7i. 更新不存在的会话必须报错,不能假成功 ──────────────
+ *
+ * MC-048:只提供普通字段(model / permissionMode…)时,更新路径从前**不确认 sessionId
+ * 存在**。`updateSettings` 直接 `UPDATE … WHERE id=?`,打不中任何行也静默成功;手机
+ * handler 无值时 `return {ok:true}`。于是一条**已经删掉的**会话从手机上"改"设置会回
+ * 一个假 `ok:true`,界面以为改成功了。现在 `SessionRepo.updateSettings` 用
+ * affectedRows 判存在性,不存在就抛 → 手机 RPC 回 `ok:false`。
+ *
+ * 判据立在"用户看到的那个回执"上:不存在 → ok:false;真实存在 → ok:true 且落库。
+ */
+console.log("\n更新不存在的会话");
+
+{
+  const { ProjectRepo, SessionRepo } = await import("@main/store/repositories.js");
+  const pathU = mkdtempSync(join(tmpdir(), "mcode-mobile-us-proj-"));
+  const now = Date.now();
+  ProjectRepo.create({ id: "us_p", name: "us_p", path: pathU, archived: false, pinnedAt: null, sortOrder: 0, createdAt: now, updatedAt: now } as never);
+  SessionRepo.create({
+    id: "us_s", projectId: "us_p", providerId: "claude-sdk", claudeSessionId: null, kind: "chat",
+    parentSessionId: null, nodeId: null, title: "New session", status: "idle",
+    model: "default", effort: "default", permissionMode: "default", workflowId: "default",
+    customModelId: null, envMode: "local", worktreePath: null, archived: false, pinnedAt: null,
+    contextSnapshot: null, todos: null, subagents: null, planDraft: null, turnFiles: null,
+    usageHistory: null, bookmarks: null, subagentTranscripts: null, createdAt: now, updatedAt: now,
+  } as never);
+
+  // 删掉它,再从手机上"改"设置 —— 必须回 ok:false,不是假 ok:true。
+  SessionRepo.delete("us_s");
+  const gone = await rpcTok(tA, "session:updateSettings", { sessionId: "us_s", model: "新模型" });
+  const goneEnv = JSON.parse(gone.text) as { ok: boolean; error?: string };
+  eq("★ 改一条已删除的会话:回执是 ok:false(不是假 ok:true)", goneEnv.ok, false);
+  check("★ 拒绝理由点明了会话没了", (goneEnv.error ?? "").includes("unknown session"), goneEnv.error);
+  eq("★ 而且它是个 4xx/5xx(不是 200)", gone.status === 200, false);
+
+  // 顺带:permissionMode 那条普通字段也一样(它走的是同一个 handler)。
+  const gonePerm = await rpcTok(tA, "session:updateSettings", { sessionId: "us_s", permissionMode: "acceptEdits" });
+  eq("★ permissionMode 同样拒绝已删除会话", (JSON.parse(gonePerm.text) as { ok: boolean }).ok, false);
+
+  // 反面:真实存在的会话照常更新并落库(不能被存在性检查误伤)。
+  // 上面那条已删,重建一条存在的来验落库。
+  SessionRepo.create({
+    id: "us_s2", projectId: "us_p", providerId: "claude-sdk", claudeSessionId: null, kind: "chat",
+    parentSessionId: null, nodeId: null, title: "New session", status: "idle",
+    model: "default", effort: "default", permissionMode: "default", workflowId: "default",
+    customModelId: null, envMode: "local", worktreePath: null, archived: false, pinnedAt: null,
+    contextSnapshot: null, todos: null, subagents: null, planDraft: null, turnFiles: null,
+    usageHistory: null, bookmarks: null, subagentTranscripts: null, createdAt: now, updatedAt: now,
+  } as never);
+  const live = await rpcTok(tA, "session:updateSettings", { sessionId: "us_s2", model: "落库的模型" });
+  eq("存在的会话更新 → 200", live.status, 200);
+  eq("存在的会话真的落库了", SessionRepo.get("us_s2")?.model, "落库的模型");
+
+  rmSync(pathU, { recursive: true, force: true });
+}
+
 /* ───────────────────── 8. 出厂状态 ───────────────────── */
 
 console.log("\n收尾");
@@ -1149,9 +1237,38 @@ console.log("\n账号密码登录");
   const locked = await loginReq({ username: "alice", password: PW });
   eq("连错 5 次后锁定:密码对了也 429", locked.status, 429);
   check("锁定时不发令牌", !locked.text.includes("deviceToken"), locked.text.slice(0, 120));
-  const other = await loginReq({ username: "alice", password: PW, deviceName: "别处" }, { "x-forwarded-for": "10.9.9.9" });
-  eq("别的来源不受这台的锁影响", other.status, 200);
-  if (other.status === 200) issuedSecrets.push((JSON.parse(other.text) as { deviceToken: string }).deviceToken);
+
+  // ── MC-016:直连时伪造来源头换不掉身份 ──────────────────────────────────
+  // 未配置可信代理(默认空)时,`cf-connecting-ip` / `x-forwarded-for` 一律被忽略,来源
+  // 就是**套接字地址**。于是伪造一串 CF 头轮换 key 也绕不开同一把来源锁 —— 这一发密码
+  // 是对的,仍必须被这台来源的锁挡下。(旧代码无条件认 CF 头 → 换 key → 放行 200。)
+  const forged = await loginReq({ username: "alice", password: PW, deviceName: "伪造头" }, { "cf-connecting-ip": "6.6.6.6" });
+  eq("★ 直连伪造 CF 头换不掉身份,仍被本来源的锁挡下 → 429", forged.status, 429);
+  check("★ 伪造头也没换来令牌", !forged.text.includes("deviceToken"), forged.text.slice(0, 120));
+
+  // ── MC-016:并发失败不能全数绕过前置限流(配额原子预留) ──────────────────
+  // 旧代码只在 scrypt **之后**记录,一批并发请求会在任何一次 scrypt 出结果前全部通过
+  // 锁定检测。现在配额在进 scrypt **之前**原子预留,超出免费额度的当场 429。
+  login.resetLoginThrottle();
+  const burst = await Promise.all(
+    Array.from({ length: 20 }, (_, i) => loginReq({ username: "alice", password: `burst-${i}-wrong` })),
+  );
+  const burst429 = burst.filter((r) => r.status === 429).length;
+  const burst401 = burst.filter((r) => r.status === 401).length;
+  eq("★ 并发 20 次失败认证:响应合计 20", burst429 + burst401, 20);
+  check("★ 有一批在进 scrypt 之前就被限流挡下(429)", burst429 >= 1, { burst429, burst401 });
+  check("★ 不是 20 次全部跑到 scrypt(旧行为是 20)", burst401 <= 8, { burst401 });
+
+  // ── MC-016:可信代理配置下,转发头才被采信 ──────────────────────────────
+  // 只有当直连来源本身写进可信代理白名单,才读转发头 —— 这时不同的 XFF 才是不同来源。
+  SettingRepo.set("mobile.login.trustedProxy", "127.0.0.1");
+  login.resetLoginThrottle();
+  for (let i = 0; i < 5; i += 1) await loginReq({ username: "alice", password: `tp-${i}-wrong` }, { "x-forwarded-for": "10.1.1.1" });
+  eq("★ 可信代理下:来源 A 连错 5 次后密码对了也 429", (await loginReq({ username: "alice", password: PW }, { "x-forwarded-for": "10.1.1.1" })).status, 429);
+  const otherOrigin = await loginReq({ username: "alice", password: PW, deviceName: "另一来源" }, { "x-forwarded-for": "10.1.1.2" });
+  eq("★ 可信代理下:来源 B 不受 A 的锁影响 → 200", otherOrigin.status, 200);
+  if (otherOrigin.status === 200) issuedSecrets.push((JSON.parse(otherOrigin.text) as { deviceToken: string }).deviceToken);
+  SettingRepo.set("mobile.login.trustedProxy", "");
 
   login.resetLoginThrottle();
   login.clearMobileLogin();
@@ -1412,6 +1529,131 @@ console.log("\n健康检查:库未就绪时也不崩");
   }
 
   await initDb();
+}
+
+/* ────────────── 10. 安全默认值:未显式开启就不开 LAN 服务(MC-004) ──────────────
+ *
+ * 从前 `readEnabled()` 是「没显式写 0 就当开」—— 全新安装、用户没做过任何选择,就已经
+ * 把 `0.0.0.0` 敞在局域网上(明文 HTTP 传口令与 Bearer)。安全默认值改成**关**:只有
+ * 显式存了 `mobile.enabled=1` 才开。这里直接测那个闸(不起真服务 —— 起真服务要么绑
+ * 0.0.0.0 要么绑 127,前者会把跑测试的机器挂到 LAN 上,本套刻意不做)。
+ */
+console.log("\n安全默认值:LAN 服务默认不启用(MC-004)");
+
+{
+  const { readEnabled } = await import("@main/mobile/MobileHttpServer.js");
+  SettingRepo.delete("mobile.enabled");
+  eq("★ 没设 mobile.enabled → 不启用(安全默认)", await readEnabled(), false);
+  SettingRepo.set("mobile.enabled", "0");
+  eq("★ mobile.enabled=0 → 不启用", await readEnabled(), false);
+  SettingRepo.set("mobile.enabled", "1");
+  eq("★ mobile.enabled=1(显式开启)→ 启用", await readEnabled(), true);
+  SettingRepo.delete("mobile.enabled");
+}
+
+/* ────────────── 11. SSE 背压:慢客户端被断开、别的设备不受影响(MC-007) ──────────
+ *
+ * 从前 `handleEvents` 的每一条 `res.write` 都不检查回压:一台只连不读的手机能让主进程
+ * 为它无限缓冲 `text.delta`,直到 OOM,而且拖慢别的设备。现在超软阈值给宽限期、超硬
+ * 上限立即断;断开的是**这一台**,别的订阅者各自的连接照常收。
+ *
+ * 判别法:开两条流,让慢的那条"从不读"(socket 暂停),向它猛灌事件直到它越过硬上限被
+ * 服务端断开;同时快的那条持续读、必须一直收到事件、不被误断。
+ */
+console.log("\nSSE 背压(MC-007)");
+
+{
+  // 独立的短超时 client:慢客户端要能"连上但不读",fetch/AbortSignal.timeout 都带读超时,
+  // 不适合。这里用原生 socket 手读 HTTP 响应头,之后**暂停**不再消费。
+  const net = await import("node:net");
+  const slowToken = await (async () => {
+    const s = pairingManager.startPairing(ENDPOINT, { force: true });
+    const r = await req("/api/pair/verify", { method: "POST", body: { nonce: s.nonce, code: s.code, deviceName: "慢手机" } });
+    const t = (JSON.parse(r.text) as { deviceToken: string }).deviceToken;
+    issuedSecrets.push(t);
+    return t;
+  })();
+
+  const baseline = mobileEventBus.size;
+  // ⚠️ 把 socket 放进一个**数组**持着:无论断言结果如何,收尾都**必须** destroy 它 ——
+  // 否则当被验的修复不在时(慢客户端永不被服务端断开),这个 socket 会一直挂着,后面
+  // `server.close()` 会等它到天荒地老,整套 suite **卡死**(看起来像"测试写坏了"),而不是
+  // 给出干净的 FAIL。(用数组而不是 `let sock = null`,是因为赋值发生在 Promise 回调里,
+  // TS 不会把那里的赋值反映到外层收窄,`let null` 会被收窄成 `never`。)
+  const slowHold: Array<{ destroy(): void }> = [];
+  const slowClosed = await new Promise<boolean>((resolve) => {
+    let done = false;
+    const settle = (v: boolean): void => { if (!done) { done = true; resolve(v); } };
+    const sock = net.connect(addr.port, "127.0.0.1", () => {
+      sock.write(
+        `GET /api/events?token=${encodeURIComponent(slowToken)} HTTP/1.1\r\n` +
+        `Host: 127.0.0.1\r\nAuthorization: Bearer ${slowToken}\r\nAccept: text/event-stream\r\n\r\n`,
+      );
+    });
+    slowHold.push(sock);
+    // 读到头之后**暂停**socket —— 不再把数据从内核搬走,内核窗口填满 → 服务端的
+    // `res.write` 开始在自己的可写缓冲里堆积 → `res.writableLength` 增长。这才是
+    // "卡住的手机"。只注册 data 处理而不 pause 等于一直在读,根本不会有回压。
+    sock.once("data", () => sock.pause());
+    // ⚠️ 暂停的 socket **不会**处理 end/close(要 resume 才派发),所以不能只等 close。
+    // 主信号用**订阅数落回 baseline** —— 服务端断开会 unsubscribe + releaseDevice。
+    sock.on("close", () => settle(true));
+    sock.on("end", () => settle(true));
+    sock.on("error", () => settle(true));
+    const pump = async (): Promise<void> => {
+      const deadline = Date.now() + 3000;
+      while (mobileEventBus.size <= baseline && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+      const big = "x".repeat(16 * 1024);
+      for (let i = 0; i < 400 && !done; i += 1) {
+        mobileEventBus.broadcast({ type: "text.delta", sessionId: "s_slow", messageId: i, text: big } as never);
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      // 断开后 resume 一次,让内核里积压的 FIN/RST 派发出来(close/end/error 任一都算)。
+      try { sock.resume(); } catch { /* already destroyed */ }
+      const until = Date.now() + 2000;
+      while (Date.now() < until && !done && mobileEventBus.size > baseline) await new Promise((r) => setTimeout(r, 20));
+      settle(mobileEventBus.size <= baseline);
+    };
+    void pump();
+  });
+  check("★ 慢客户端(从不读)被服务端断开,而不是无限缓冲", slowClosed, { slowClosed, size: mobileEventBus.size, baseline });
+  // 收尾:无论如何都销毁慢 socket(断开已被断言,别让它拖住 server.close)。
+  for (const s of slowHold) { try { s.destroy(); } catch { /* already gone */ } }
+  // 等服务端把这条连接的订阅释放掉,免得影响后面"收尾:服务已关"。
+  {
+    const until = Date.now() + 1000;
+    while (Date.now() < until && mobileEventBus.size > baseline) await new Promise((r) => setTimeout(r, 10));
+  }
+
+  // 快客户端(正常读)不被误断:另开一条流、持续读,广播一条哨兵必须能收到。
+  {
+    const s = pairingManager.startPairing(ENDPOINT, { force: true });
+    const r0 = await req("/api/pair/verify", { method: "POST", body: { nonce: s.nonce, code: s.code, deviceName: "快手机" } });
+    const fastToken = (JSON.parse(r0.text) as { deviceToken: string }).deviceToken;
+    issuedSecrets.push(fastToken);
+    const ctrl = new AbortController();
+    const res = await fetch(`${BASE}/api/events?token=${encodeURIComponent(fastToken)}`, { signal: ctrl.signal });
+    eq("快客户端 SSE → 200", res.status, 200);
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    const state = { buf: "" };
+    const reading = (async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          state.buf += dec.decode(value, { stream: true });
+        }
+      } catch { /* aborted by us */ }
+    })();
+    mobileEventBus.broadcast({ type: "session.title", sessionId: "s_fast", title: "FAST_SENTINEL" } as never);
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && !state.buf.includes("FAST_SENTINEL")) await new Promise((r) => setTimeout(r, 10));
+    check("★ 慢客户端被断的同时,快客户端照样收到事件(没被拖累)", state.buf.includes("FAST_SENTINEL"), state.buf.slice(-200));
+    ctrl.abort();
+    await reading;
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 await new Promise<void>((resolve) => server.close(() => resolve()));

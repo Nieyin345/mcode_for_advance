@@ -19,10 +19,11 @@ export MCODE_SMOKE_SHOT_DIR="$SHOT"
   --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@main/window.js=./scripts/panel-screenshot-smoke/stubs/window.ts \
+  --alias:@main/claude/RuntimeManager.js=./scripts/app-control-smoke/stubs/runtimeManager.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@renderer/stores/sessionStore.js=./scripts/panel-screenshot-smoke/stubs/session.ts \
   --alias:@renderer/stores/toastStore.js=./scripts/panel-screenshot-smoke/stubs/toast.ts \
-  --external:electron \
+  --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"

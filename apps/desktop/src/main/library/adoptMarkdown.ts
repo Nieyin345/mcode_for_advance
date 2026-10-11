@@ -225,8 +225,10 @@ function copyReferencedAssets(
 
     // 越界(爬到源目录外面 / 变成另一个盘的绝对路径)→ 不搬。这不是"配图没了",
     // 而是这条引用本来就不属于这份产物。
+    // 【MC-006】判据只用 `rel === ".."` 或 `".." + sep` 前缀 —— 不用裸 `startsWith("..")`,
+    // 否则源目录里合法的点文件 `..config` 会被当成逃逸而漏搬。
     const rel = relative(sourceDir, abs);
-    if (rel === "" || rel.startsWith("..") || /^[A-Za-z]:/.test(rel) || rel.startsWith(sep)) {
+    if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || /^[A-Za-z]:/.test(rel) || rel.startsWith(sep)) {
       continue;
     }
     if (!existsSync(abs)) {
@@ -280,7 +282,17 @@ export function adoptMarkdownFile(itemId: string, sourcePath: string): AdoptResu
     const from = resolve(sourcePath);
     const to = resolve(destDir);
     const inside = relative(to, from);
-    if (inside === "" || (!inside.startsWith("..") && !/^[A-Za-z]:/.test(inside) && !inside.startsWith(sep))) {
+    // 【MC-006】"在里面"= 不是往上爬(`..` 或 `../` 开头)、不是另一个盘、不是从分隔符起。
+    // `..` 前缀判据必须带分隔符 —— 别把合法的 `..config` 当成"爬出去了"(那会让
+    // 里层的正常文件漏挂),也别把 `../x` 当成"在里面"。语义与原 `!(startsWith(".."))`
+    // 一致,只收紧了"两点前缀"那格。
+    const atRoot = inside === "" || inside === ".";
+    const escaping =
+      inside === ".." ||
+      inside.startsWith(`..${sep}`) ||
+      /^[A-Za-z]:/.test(inside) ||
+      inside.startsWith(sep);
+    if (atRoot || !escaping) {
       return fail("这份文件已经在这个条目的库里了,不用再挂一次");
     }
   }

@@ -941,6 +941,29 @@ class RuntimeManager {
     return [...ids];
   }
 
+  /** 【MC-013】给**客户端看的**运行集合 —— 在 {@link runningSessionIds} 之上再排除
+   *  "已经发出 turn.done、只等引擎收尾"的那几条。
+   *
+   *  两家用途不能混:
+   *
+   *   - {@link runningSessionIds} 是**卸载护栏**(`runtimes.remove` / `plugins.remove` /
+   *     `removeWorktree` 拿它挡在回合脚下抽走东西)。收尾期间 handle 还在读文件、结算用量,
+   *     这时**仍算忙**——不能因为 turn.done 已发就放行卸载。
+   *   - 这一份是**推给客户端的状态**:turn.done 一发,用户眼里那一轮就结束了,该显示空闲、
+   *     该能接着发。若把还在收尾的也算 running,桌面/手机就会长久误判"它还在跑"(发不出
+   *     消息)—— 这正是三家 provider 的顺序决定的:它们都**先 emit turn.done、后**在
+   *     `finally` 里把 finished 置真,中间隔着文件快照/用量结算几步 await,而
+   *     `broadcastRunningState` 是**同步**挂在 turn.done 上的,那一刻 `isRunning()` 还是真。
+   *
+   *  `turnDoneSeen` 只由**本轮自己**的 turn.done 置位(`turnToken` 那层守卫),旧轮的迟到
+   *  turn.done 不会误清新一轮。 */
+  private clientRunningSessionIds(): string[] {
+    return this.runningSessionIds().filter((id) => {
+      const rt = this.sessions.get(id);
+      return rt === undefined || !rt.turnDoneSeen;
+    });
+  }
+
   /**
    * 把**权威的「哪些会话正在跑」**推给所有客户端(桌面渲染端 + 手机)。
    *
@@ -975,7 +998,9 @@ class RuntimeManager {
       type: "session.runningSnapshot",
       // 全局快照,sessionId 只为信封兼容(见 `SessionRunningSnapshotEvent`)。
       sessionId: "",
-      running: this.runningSessionIds(),
+      // 客户端看的是 `clientRunningSessionIds`(排除已发 turn.done、只等收尾的)—— 见那条
+      // 注释:同步挂在 turn.done 上时 `isRunning()` 还是真,直接推会把刚结束的会话又标成在跑。
+      running: this.clientRunningSessionIds(),
       desktopAttached: hasLiveRendererWindow(),
     });
   }
@@ -1147,7 +1172,26 @@ class RuntimeManager {
       throw new Error(this.reportInvalidCustomModel(session, rt, input));
     }
 
-    const provider = providerRegistry.resolve(session.providerId);
+    // 【MC-056】已有会话必须**按它记的引擎**跑;引擎取不到就结构化失败,绝不静默回退默认。
+    // 从前这里 `resolve(session.providerId)` 在 providerId 有值但没注册时悄悄返回默认引擎
+    // (claude-sdk),一段标着 pi-sdk 的历史会话再发一轮就换 Claude 跑了,而审批模式/工具/
+    // 成本全对不上,界面也不报。现在先查存在性,给用户"装回原引擎 / 显式迁移"的明确出路。
+    const provider = providerRegistry.get(session.providerId);
+    if (!provider) {
+      const message =
+        `这段对话用的引擎「${session.providerId}」现在不可用(被卸载、升级不兼容,或存值已失效)。` +
+        `已拒绝发送 —— 不会悄悄改用别的引擎跑。请装回该引擎,或新建一个会话显式选择其它引擎。`;
+      log.error(`sendTurn: provider unavailable for session ${session.id} (provider=${session.providerId})`);
+      rt.turnDoneSeen = false;
+      try {
+        SessionRepo.updateStatus(session.id, "errored");
+      } catch (err) {
+        log.error(`sendTurn: failed to persist unavailable-provider status: ${(err as Error).message}`);
+      }
+      if (input?.userMessage) this.echoUserMessage(session.id, input.userMessage, input.automationOrigin);
+      withAutomationOrigin(rt.ctx.emit, input?.automationOrigin)({ type: "error", sessionId: session.id, message, code: "provider_unavailable" });
+      throw new Error(message);
+    }
     const baseEmit = withAutomationOrigin(rt.ctx.emit, input.automationOrigin);
     let handoffDeliveryId: string | undefined;
     const turnToken = {};
@@ -1865,7 +1909,7 @@ class RuntimeManager {
    *  in place — for BOTH latest-turn and historical rewinds. The card is
    *  never removed: it stays in the stream as a visible trace that the
    *  user rolled this turn back. */
-  async rewindTurn(sessionId: string, files: TurnFileEntry[], targetFiles: string[]): Promise<{ restored: string[]; failed: string[] }> {
+  async rewindTurn(sessionId: string, files: TurnFileEntry[], targetFiles: string[]): Promise<{ restored: string[]; failed: string[]; conflicts: string[] }> {
     const rt = this.sessions.get(sessionId);
     // Resolve the cwd: prefer the live runtime's lastCwd (set on the first
     // sendTurn). When that's missing - the common case for the "会话重开后
@@ -1882,10 +1926,27 @@ class RuntimeManager {
         return project?.path ?? null;
       })();
     if (!cwd) {
+      // 【MC-002】没有 cwd = **没法处理任何文件**,不是"处理了 0 个文件"。从前这里
+      // 返回三个空数组,而卡片以"failed/conflicts 都空"判成功 → 一个文件都没碰却显示
+      // 「已撤销 ✓」。把**每个目标文件**都列进 `failed`,让"什么都没做成"如实可见,
+      // 用户还能再点一次。空数组只能是"确实处理完了"的样子,不能兼作"拒绝"。
       log.warn(`rewindTurn: cwd not available for session ${sessionId} (no runtime, no project?)`);
-      return { restored: [], failed: [] };
+      const all = files.map((f) => f.filePath);
+      sendToRenderer(IPC.CLAUDE_EVENT, {
+        channel: IPC.CLAUDE_EVENT,
+        sessionId,
+        event: {
+          type: "turn.rewound",
+          sessionId,
+          files: [],
+          failedFiles: all,
+          conflicts: [],
+          targetFiles,
+        } satisfies RuntimeEvent,
+      });
+      return { restored: [], failed: all, conflicts: [] };
     }
-    const { restored, failed } = await restoreFiles(cwd, files);
+    const { restored, failed, conflicts } = await restoreFiles(cwd, files);
     // After a successful restore, drop the in-memory snapshot ONLY when
     // the rewind targeted exactly its contents (i.e. the latest live
     // turn). `hasPaths` is the authoritative check: the live snapshot
@@ -1903,6 +1964,8 @@ class RuntimeManager {
     // requested path set, before any failure dropped entries) is ALWAYS
     // forwarded so the renderer can locate the exact card to mark in
     // place — the card stays in the stream as the rewind trace.
+    // `conflicts`（MC-002）是"之后又被改过、故意没动"的那批，与 failed 分开报，
+    // 免得把"为避免毁掉后续改动而保留"混说成"还原失败"。
     sendToRenderer(IPC.CLAUDE_EVENT, {
       channel: IPC.CLAUDE_EVENT,
       sessionId,
@@ -1911,10 +1974,11 @@ class RuntimeManager {
         sessionId,
         files: restored,
         failedFiles: failed,
+        conflicts,
         targetFiles,
       } satisfies RuntimeEvent,
     });
-    return { restored, failed };
+    return { restored, failed, conflicts };
   }
 
   /** Resolve an approval request from the renderer. On success, broadcast the

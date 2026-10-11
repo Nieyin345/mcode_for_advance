@@ -11,6 +11,8 @@
  * 数据根是临时目录;夹具、替身复用 node-session-smoke(只读)。Run: scripts/maint-m28-smoke/run.sh
  */
 import "../node-session-smoke/stubs/prelude.js";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 let failures = 0;
 let checks = 0;
@@ -115,6 +117,40 @@ console.log("maint-m28-smoke —— 续跑/重试启动竞态与启动失败可�
   const after = rt.published.slice(eventsBefore) as Array<{ type?: string; message?: string; reason?: string }>;
   check("失败原因作为 error 事件发给会话", after.some((e) => e.type === "error" && (e.message ?? "").includes("预检")), after);
   check("并以 turn.done(error) 收掉这一回合", after.some((e) => e.type === "turn.done" && e.reason === "error"), after);
+}
+
+/* 3. MC-028:两个"声称 durable"的关口必须**检查 writeRun 的返回值**。
+ *
+ * 上下文的两个关口 —— 岔路口等待用户前(`writeRun("running", …, true)`)与整图收口
+ * (`writeRun(settled, …, true)`)—— 都在对用户承诺"磁盘上就是这个状态"。存盘失败却
+ * 照常摆卡 / 照常广播「流程结束」,就是对着一个磁盘上并不存在的状态讲话:硬杀之后重启
+ * 会认回旧快照,改掉一张已答过的卡、或冒出一张过期可续卡。
+ *
+ * ## 为什么是**源级**断言而不是跑一遍
+ *
+ * 这两处的失败是"磁盘写不进去"——无头套件里要真造出来得往 `db.persistNowOrThrow` 里塞
+ * 故障,而那条注入缝会牵动整套 runner 的存储路径(风险远大于收益)。而这条错误**错了的
+ * 样子恰好是"那一个 `if (...)` 不见了"** —— 一个离散的源码事实,真正的行为差异在别处
+ * (由本套上面那两条 + automation-smoke 的收尾覆盖)。所以这里钉住那个判据本身:两处
+ * `writeRun(..., true)` 都必须被一个 `if (!writeRun(...))` 包着。改回"忽略返回值"即红。 */
+{
+  // 套件由 run.sh 从 **apps/desktop** 里跑,所以 cwd 相对路径稳;`import.meta.url`
+  // 不行 —— 产物被 esbuild 打进临时目录,那个 URL 指向的是 bundle 不是源码。
+  const src = readFileSync(resolve(process.cwd(), "src/main/orchestration/runner.ts"), "utf8");
+  const durableChecks = src.match(/if\s*\(\s*!\s*writeRun\(/g) ?? [];
+  check(
+    "★ MC-028:两处 durable 关口都检查了 writeRun 的返回值(岔路口 + 收口)",
+    durableChecks.length >= 2,
+    { found: durableChecks.length },
+  );
+  check(
+    "★ MC-028:岔路口存盘失败时不摆卡(发 error 而不是照常 choose)",
+    /if\s*\(\s*!\s*writeRun\("running",[\s\S]{0,220}?emitWorkflowEvent\(\{\s*type:\s*"error"/.test(src),
+  );
+  check(
+    "★ MC-028:收口存盘失败时发 error(不让「流程结束」盖过去)",
+    /if\s*\(\s*!\s*writeRun\(\s*settled,[\s\S]{0,220}?emitWorkflowEvent\(\{\s*type:\s*"error"/.test(src),
+  );
 }
 
 console.log(`\n${checks - failures}/${checks} passed; ${failures} failed`);

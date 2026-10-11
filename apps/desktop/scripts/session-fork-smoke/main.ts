@@ -27,7 +27,7 @@
  *
  * Run: scripts/session-fork-smoke/run.sh
  */
-import { initDb } from "@main/store/db.js";
+import { initDb, getDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, MessageRepo } from "@main/store/repositories.js";
 import { forkSession } from "@main/lib/sessionFork.js";
 import { setFakeProvider, type FakeProvider } from "./stubs/providerRegistry.js";
@@ -248,6 +248,61 @@ console.log("\n引擎不支持复制时,明确拒绝而不是建一个空壳");
   eq("同样没有多出会话", countSessions(), before);
 }
 
+console.log("\nMC-027:消息复制中途失败时,会话行与消息**同一个事务**一起回滚(不留半截)");
+{
+  fakeClaude(); // 引擎侧成功
+  const db = getDb();
+  const sessionsBefore = countSessions();
+  const countAllMessages = (): number => {
+    const stmt = db.prepare("SELECT COUNT(*) AS n FROM messages");
+    stmt.step();
+    const n = Number((stmt.getAsObject() as { n: number }).n);
+    stmt.free();
+    return n;
+  };
+  const msgsBefore = countAllMessages();
+
+  // 在**消息插入**这一步注入确定性失败:凡是往 `sess_*` 会话(即新分叉)写消息就 RAISE。
+  // 注意这发生在 `s_src` 自己的消息之外 —— 源会话 id 是 `s_src`,不命中。
+  db.run("DROP TRIGGER IF EXISTS mc027_boom");
+  db.run(
+    "CREATE TRIGGER mc027_boom BEFORE INSERT ON messages WHEN NEW.session_id LIKE 'sess_%' " +
+      "BEGIN SELECT RAISE(ABORT, 'MC027 injected message failure'); END;",
+  );
+
+  let threw = "";
+  try {
+    await forkSession("s_src", "消息会写失败的一份");
+  } catch (err) {
+    threw = (err as Error).message;
+  } finally {
+    db.run("DROP TRIGGER IF EXISTS mc027_boom");
+  }
+
+  check("错误冒到调用方(不是被吞掉)", threw.includes("MC027 injected message failure"), threw);
+  eq("★ 消息复制失败后**没有**留下新会话行", countSessions(), sessionsBefore);
+  eq("★ 库里的消息总数一条没变(没有半截复制)", countAllMessages(), msgsBefore);
+  // 直接钉住"没有孤立的空壳会话行" —— 这是文件头那句承诺的判据。
+  {
+    const stmt = db.prepare("SELECT COUNT(*) AS n FROM sessions");
+    stmt.step();
+    const n = Number((stmt.getAsObject() as { n: number }).n);
+    stmt.free();
+    const stmt2 = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)");
+    stmt2.step();
+    const orphan = Number((stmt2.getAsObject() as { n: number }).n);
+    stmt2.free();
+    check("库里会话总数没变", n >= 1, { n });
+    eq("★ 没有指向不存在会话的孤儿消息", orphan, 0);
+  }
+
+  // 正控:拆掉触发器后,正常复制又成功、消息真的落库(证明上一条断的是"消息那步失败",
+  // 不是"分叉整体坏了")。
+  const ok = await forkSession("s_src", "正常的一份");
+  eq("正控:拆掉触发器后分叉成功", ok.id.startsWith("sess_"), true);
+  eq("正控:消息复制过来了", MessageRepo.listBySession(ok.id).messages.length, 2);
+}
+
 console.log("\n还没发过言的会话:没上下文可分,但照样复制得出来");
 {
   fakeClaude();
@@ -288,6 +343,30 @@ console.log("\n找不着的源对话");
     threw = (err as Error).message;
   }
   check("明确报错", threw.includes("s_nope"), threw);
+}
+
+/* 【MC-056】源会话记的引擎没注册 → 拒绝,不得静默用默认引擎(claude-sdk)去 fork。
+ *
+ * 从前 forkSession 调 `providerRegistry.resolve(source.providerId)`,而 resolve 在 id
+ * 有值但查不到时**悄悄返回默认引擎**。于是一段标着 `pi-sdk` 的历史(引擎被卸 / 存值
+ * 失效)会被当成 Claude 会话去 copy —— 底层会话文件格式根本对不上,用户却以为复制的是
+ * 原引擎的上下文,而且没有任何地方报出来。 */
+console.log("\n源会话的引擎没注册:必须拒绝,不得悄悄换成默认引擎");
+{
+  const ghostClaude = fakeClaude(); // 只注册 claude-sdk
+  SessionRepo.create(
+    mkSession({ id: "s_ghost", claudeSessionId: "cli-ghost", providerId: "pi-sdk", title: "换了引擎的旧会话" }),
+  );
+  MessageRepo.replaceAll("s_ghost", [mkMessage("mg1", "s_ghost", "之前那句", 40)]);
+  let threw = "";
+  try {
+    await forkSession("s_ghost", "幽灵引擎 副本");
+  } catch (err) {
+    threw = (err as Error).message;
+  }
+  check("★ 引擎不可用时明确拒绝(不是静默 fork)", threw.includes("pi-sdk") || threw.includes("不可用"), threw);
+  check("★ 没有偷偷用默认引擎跑", ghostClaude.calls.length === 0);
+  check("★ 拒绝时不留半成品(源会话原样)", SessionRepo.get("s_ghost")?.claudeSessionId === "cli-ghost");
 }
 
 console.log(`\n${total - failures}/${total} 通过`);

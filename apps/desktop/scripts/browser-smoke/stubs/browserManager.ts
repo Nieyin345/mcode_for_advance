@@ -58,6 +58,33 @@ export function clearOverrides(): void {
   overrides.clear();
 }
 
+/* ──────────────── MC-043 跨项目隔离:可配置的活视图清单 ────────────────
+ *
+ * §2(书签 / IPC)根本不碰 list/snapshot/click,所以这些方法在这里是**给
+ * §5(跨项目隔离)用的**。测试用 `setViews([...])` 摆两个项目各一个视图,再调
+ * agentBrowserTools.ts 的真函数,看它们会不会串到别的项目。每个视图的正文
+ * (`body`)就是那句 sentinel —— 断言"B 看不到 A"时看的就是它有没有漏出来。
+ *
+ * 每次进 `list()` / `snapshot()` / `click()` 都记为一次调用,断言据此判
+ * "该不该落到某个视图上"。 */
+
+export interface FakeView {
+  browserId: string;
+  projectPath: string;
+  url: string;
+  title: string;
+  /** 快照正文的 sentinel —— 用于判"B 读到的是不是 A 的内容"。 */
+  body: string;
+}
+
+let fakeViews: FakeView[] = [];
+export function setViews(v: FakeView[]): void {
+  fakeViews = v;
+}
+export function viewById(id: string): FakeView | undefined {
+  return fakeViews.find((v) => v.browserId === id);
+}
+
 function rec<T>(fn: string, args: unknown[], fallback: T): T {
   calls.push({ fn, args });
   return (overrides.has(fn) ? overrides.get(fn) : fallback) as T;
@@ -71,6 +98,58 @@ export const BrowserManager = {
     });
   },
 
+  list(): Array<{ browserId: string; projectPath: string; url: string; title: string }> {
+    return rec(
+      "list",
+      [],
+      fakeViews.map((v) => ({ browserId: v.browserId, projectPath: v.projectPath, url: v.url, title: v.title })),
+    );
+  },
+
+  notifyAgentOpened(id: string, opts?: unknown): void {
+    rec("notifyAgentOpened", [id, opts], undefined);
+  },
+
+  async snapshot(id: string): Promise<unknown> {
+    const v = viewById(id);
+    return rec(
+      "snapshot",
+      [id],
+      v
+        ? {
+            ok: true,
+            data: {
+              url: v.url,
+              title: v.title,
+              readyState: "complete",
+              html: `<body>${v.body}</body>`,
+              bodyText: v.body,
+              interactive: [],
+            },
+          }
+        : { ok: false, error: `no view ${id}` },
+    );
+  },
+
+  async click(id: string, selector: string): Promise<unknown> {
+    const v = viewById(id);
+    return rec("click", [id, selector], v ? { ok: true, url: v.url, title: v.title } : { ok: false, error: `no view ${id}` });
+  },
+
+  async clickAt(id: string, x: number, y: number): Promise<unknown> {
+    const v = viewById(id);
+    return rec("clickAt", [id, x, y], v ? { ok: true, url: v.url, title: v.title } : { ok: false, error: `no view ${id}` });
+  },
+
+  async type(id: string, selector: string, text: string, clear = true): Promise<unknown> {
+    const v = viewById(id);
+    return rec("type", [id, selector, text, clear], v ? { ok: true, url: v.url, title: v.title } : { ok: false, error: `no view ${id}` });
+  },
+
+  async sendKeys(id: string, keys: string): Promise<unknown> {
+    const v = viewById(id);
+    return rec("sendKeys", [id, keys], v ? { ok: true, url: v.url, title: v.title } : { ok: false, error: `no view ${id}` });
+  },
   loadUrl(id: string, url: string): BrowserOpResult {
     return rec("loadUrl", [id, url], { ok: true });
   },

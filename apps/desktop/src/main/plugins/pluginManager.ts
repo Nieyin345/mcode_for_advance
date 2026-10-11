@@ -56,6 +56,8 @@ import {
   type PluginEcosystem,
   type PluginEngineSwitches,
   type PluginProjectOverride,
+  type ComponentDeliveryEntry,
+  type ComponentDeliveryReport,
   type PluginProjectRow,
   type PluginManifest,
   type PluginMarketEntry,
@@ -619,6 +621,62 @@ export function compatibleProviderIdsForPlugin(
   if (hasSkills || hasMcp) out.push("codex-sdk");
   if (hasSkills) out.push("pi-sdk");
   return out;
+}
+
+/**
+ * 【ARC-014】逐组件交付报告 —— 补上 `compatibleProviderIdsForPlugin` 的 ANY/ALL 语义差。
+ *
+ * 那份兼容列表给的是 **ANY**(至少一个组件能投递);场景依赖通常是 **ALL**。这个纯函数
+ * 对**每个**声明组件问「这个 provider 收不收得到」,给场景 Planner 一个可判 ALL 的事实,
+ * 而不是靠"兼容列表里有 Pi"就放行一个需要 Claude Command 的 Pi 场景。
+ *
+ * 交付规则(与既有投递实现一致,不另造一套):
+ *   - skill  → 三家都收(各自走自己的 skill 通道);
+ *   - mcp    → Claude / Codex 收;**Pi 不原生挂 MCP**(用扩展自定义工具)→ INCOMPATIBLE;
+ *   - command / agent / hook → **Claude 专属**;Pi/Codex 的 components 里这些部件不投递
+ *     → INCOMPATIBLE;
+ *   - app(Codex apps)→ 只在 Codex 有意义(需要 ChatGPT 账号登录)→ 别的 provider INCOMPATIBLE;
+ *   - nodeType → 主机侧能力,与 provider 无关 → 三家都 DELIVERED。
+ *
+ * `pluginEnabled=false` 时全部 DISABLED。这是**只读**报告,不改变任何真实投递路径。
+ */
+export function componentDeliveryReport(
+  pluginId: string,
+  version: string | undefined,
+  providerId: string,
+  components: PluginComponents,
+  pluginEnabled: boolean,
+): ComponentDeliveryReport {
+  const entries: ComponentDeliveryEntry[] = [];
+  const add = (
+    componentId: string,
+    type: ComponentDeliveryEntry["type"],
+    source: string,
+    supported: boolean,
+    why: string,
+  ): void => {
+    if (!pluginEnabled) {
+      entries.push({ componentId, type, source, status: "DISABLED", reason: "插件已被禁用" });
+    } else if (!supported) {
+      entries.push({ componentId, type, source, status: "INCOMPATIBLE", reason: why });
+    } else {
+      entries.push({ componentId, type, source, status: "DELIVERED" });
+    }
+  };
+  components.skills.forEach((s, i) => add(`skill:${i}`, "skill", s.name, true, ""));
+  components.commands.forEach((c, i) => add(`command:${i}`, "command", c.name, providerId === "claude-sdk", "命令只有 Claude 引擎投递"));
+  components.agents.forEach((a, i) => add(`agent:${i}`, "agent", a.name, providerId === "claude-sdk", "子代理定义只有 Claude 引擎投递"));
+  components.hooks.forEach((h, i) => add(`hook:${i}`, "hook", h.event, providerId === "claude-sdk", "插件 hooks 只有 Claude 引擎通道"));
+  components.mcpServers.forEach((m, i) => add(`mcp:${i}`, "mcp", m.name, providerId !== "pi-sdk", "Pi 不原生挂 MCP"));
+  (components.apps ?? []).forEach((name, i) => add(`app:${i}`, "app", name, providerId === "codex-sdk", "Codex apps 只在 Codex 有意义"));
+  return {
+    pluginId,
+    ...(version ? { version } : {}),
+    providerId,
+    pluginEnabled,
+    entries,
+    allDelivered: entries.every((e) => e.status === "DELIVERED"),
+  };
 }
 
 /** Build one PluginState row; null when the directory holds no valid

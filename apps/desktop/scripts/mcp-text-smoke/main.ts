@@ -5,7 +5,7 @@ import path from "node:path";
 import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
 import { fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
-import type { ToolResult } from "@main/mcp/sdk.js";
+import { textBlocksOf, toolTextOf, type ToolResult } from "@main/mcp/sdk.js";
 
 const root = mkdtempSync(path.join(tmpdir(), "mcode-text-contract-"));
 const tools = agentMcpTools({ cwdFor: () => root });
@@ -149,6 +149,21 @@ try {
         /await resolvePythonExe\(\)/.test(toolsSrc) &&
         !/for \(const exe of (candidates|process\.platform)/.test(toolsSrc),
     );
+  }
+  // 【ARC-017】共享文本提取器:纯文本 / 纯图片 / 混合 / 未知块 都有确定返回,不靠宽泛断言。
+  {
+    const t = (content: ToolResult["content"]): ToolResult => ({ content });
+    assert.deepEqual(textBlocksOf(t([{ type: "text", text: "abc" }])), ["abc"], "纯文本");
+    assert.deepEqual(textBlocksOf(t([{ type: "image", data: "x", mimeType: "image/png" }])), [], "纯图片→无文本");
+    assert.deepEqual(
+      textBlocksOf(t([{ type: "text", text: "a" }, { type: "image", data: "y", mimeType: "image/png" }, { type: "text", text: "b" }])),
+      ["a", "b"], "混合→只取 text", 
+    );
+    // 未知块类型:跳过不抛。(SDK 将来加块时,这里保证不崩、不丢 text。)
+    assert.deepEqual(textBlocksOf(t([{ type: "weird" } as unknown as ToolResult["content"][number], { type: "text", text: "ok" }])), ["ok"], "未知块被跳过,text 保留");
+    assert.equal(toolTextOf(t([{ type: "text", text: "a" }, { type: "text", text: "b" }])), "a\nb", "多文本块换行连接");
+    assert.equal(toolTextOf(t([{ type: "image", data: "z", mimeType: "image/png" }])), "", "纯图片→空串");
+    check("ARC-017 共享文本提取器:纯文本/纯图片/混合/未知块都有确定返回", true);
   }
   console.log(`MCP text contract: ${checks} checks passed`);
 } finally { rmSync(root, { recursive: true, force: true }); }

@@ -57,3 +57,6 @@ apps/desktop/build/pi-runtime-dist/
 # AOCI agent host integration (machine-bound; do not commit)
 .mcp.json
 .mcp.json.backup.*
+
+# 本地审查台账与审查规范（不进入版本控制）
+/audit-ledgers/

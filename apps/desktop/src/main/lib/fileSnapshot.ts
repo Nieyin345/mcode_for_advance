@@ -28,14 +28,29 @@
  * dependency.
  */
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TurnFileEntry } from "@contracts/runtime";
 import { msysToWindowsPath } from "@main/lib/msysPath.js";
+import { pathWithin } from "@main/lib/realPathWithin.js";
 
 /** Strict decoder for pre-turn snapshots: throws on invalid UTF-8 instead of
  *  substituting U+FFFD, and keeps a leading BOM (like readFile "utf-8") so a
  *  rewind writes back the exact original text. */
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/** 行级 diff 的**总格数上限**。【MC-003】
+ *
+ *  `countLineDiff` 的 LCS 表是 `(m+1) × (n+1)` 个 int32。1 万行旧 + 1 万行新 ≈ 1 亿
+ *  格 ≈ 400MB(还只是表),5 万行级别理论上是 10GB —— 足以让主进程在收尾时卡死或
+ *  直接 OOM。文件改动细微也照样付这份钱,因为表的大小只由文件**行数**决定。
+ *
+ *  超过这个格数就不建表,直接退化成"整段计数"(把旧的全算删除、新的全算新增)。
+ *  数字偏大是可接受的 —— 它是给用户看的 `+N -M` 摘要,不是机器要用的精确 diff;
+ *  而且行数比这还大的文件本来就没有逐行对照的可读性。宁可数字粗一点也不卡死。
+ *
+ *  400 万格 ≈ 16MB(临时),对 2000×2000 行以内的文件仍是精确的。 */
+const MAX_DIFF_CELLS = 4_000_000;
 
 /** Internal record per snapshotted file. */
 interface FileRecord {
@@ -62,6 +77,18 @@ export class FileSnapshot {
   protected originals = new Map<string, FileRecord>();
   /** Paths whose pre-turn content was not valid UTF-8 (see recordPre). */
   private readonly unrestorable = new Set<string>();
+  /** 【MC-008】正在读取中的路径 → 该次读取的 promise。
+   *
+   *  只靠 `originals.has(abs)` 挡不住并发:那个检查发生在 `await readFile` **之前**,
+   *  而 `originals.set` 在异步读取**之后** —— 两次并发 recordPre 同一路径会在
+   *  await 之间双双通过检查,各自读一次,后完成的那个 set 覆盖先完成的。
+   *  万一第一次写入动作恰好夹在两次异步读之间,后完成的那次读到的就是**改过之后**
+   *  的内容,于是"首次原始内容"被悄悄换掉,撤销会把用户的改动写回去。
+   *
+   *  这里给每条路径预占一个 promise:同路径的第二次调用 await 它,而不是再读一遍。
+   *  无论成功、失败(ENOENT/EACCES)还是不可恢复,都在 finally 里摘掉占位,
+   *  绝不留一个永远 pending 的洞。 */
+  private readonly inflight = new Map<string, Promise<void>>();
   /** Once frozen, recordPre() is a no-op. Lets us safely call
    *  freeze() at turn end and have any straggling tool_use events
    *  (rare, but possible) be ignored. */
@@ -74,15 +101,38 @@ export class FileSnapshot {
   }
 
   /** Snapshot a file's pre-turn state. Safe to call concurrently — the
-   *  Map.set is atomic, and only the first call per path does real
-   *  work. Returns silently on any error (ENOENT = created, anything
-   *  else = log + skip, never crash the event stream). */
+   *  first call per path does the read; concurrent calls for the same path
+   *  await it instead of re-reading (see `inflight`). Returns silently on any
+   *  error (ENOENT = created, anything else = log + skip, never crash the
+   *  event stream). */
   async recordPre(cwd: string, filePath: string): Promise<void> {
     if (this.frozen) return;
     const abs = safeResolve(cwd, filePath);
     if (abs === null) return; // path escapes cwd — silently ignore
     if (this.originals.has(abs)) return; // already snapshotted
     if (this.unrestorable.has(abs)) return; // pre-turn bytes not representable
+    const pending = this.inflight.get(abs);
+    if (pending) {
+      // 同路径的读取已在飞 —— 等它落地,别读第二遍(否则后完成的那次可能读到写后的内容)。
+      await pending;
+      return;
+    }
+    const job = this.capturePre(abs);
+    this.inflight.set(abs, job);
+    try {
+      await job;
+    } finally {
+      this.inflight.delete(abs);
+    }
+  }
+
+  /** The actual first-read-and-record. Protected (not private) so a test can
+   *  subclass and count how many times a read actually happens — that count IS
+   *  the MC-008 invariant (concurrent calls for one path must read once, not
+   *  once each), and counting it avoids a nondeterministic filesystem race
+   *  between the read and a concurrent write. Split out from `recordPre` so
+   *  that method can register the in-flight promise before awaiting it. */
+  protected async capturePre(abs: string): Promise<void> {
     try {
       const bytes = await readFile(abs);
       let content: string;
@@ -135,31 +185,50 @@ export class FileSnapshot {
     const out: TurnFileEntry[] = [];
     for (const [path, rec] of this.originals) {
       const before = rec.exists ? rec.content : "";
-      let after = "";
+      // exists=false 时 `after` 读不到 → 用 null 与"读到了空文件"区分开(见下)。
+      let after: string | null = null;
       try {
         after = await readFile(rec.absPath, "utf-8");
       } catch {
-        // File is unreadable (gone, binary, EACCES, …). Fall back to an
-        // empty "after" so the tallies show the whole `before` as deleted.
-        after = "";
+        // File is unreadable (gone, binary, EACCES, …). Keep null so the net-zero
+        // check below doesn't mistake "read failed" for "empty file".
+        after = null;
       }
-      const { adds, dels } = countLineDiff(before, after);
-      // Net-zero against the pre-turn state: the content is byte-identical
-      // (no-op rewrite), or a created file that is gone again by turn end
-      // (written then deleted mid-turn, or the write never landed). Such an
-      // entry has nothing to review and nothing to restore, so drop it from
-      // BOTH the emitted list and the snapshot — the card's path set must
-      // keep matching hasPaths()/restore() for the rewind flow.
-      if (adds === 0 && dels === 0) {
+      // 【MC-005】"净零"必须按**原始字节**判,不能按 `adds === 0 && dels === 0`。
+      // 行数统计有个角落:文件内容只是**末尾换行**变了("hello" ⇄ "hello\n"),
+      // splitLines 把末尾单个换行当终止符丢掉,于是两边都是 ["hello"],adds=dels=0
+      // —— 而磁盘上字节确实变了。原先就据此把这条当成"无变化"从卡片和快照里剔掉,
+      // 用户改了换行却在界面上看不见、也回滚不了。
+      // 判据改成逐字节相等:真的没变才丢;变了就留着(行数可以是 0/0,卡片按"无行变化"
+      // 显示,但文件在、能回滚)。
+      //
+      // 两种情况仍要剔:
+      //   ① 读到了内容且与 before 逐字节相同 —— 真·无变化的空转重写;
+      //   ② 本轮**创建**的文件收尾时已不存在(`after === null` 且 `!rec.exists`)
+      //      —— 写了又被删,没有东西可看也没有东西可还原。
+      // 而"改过的文件收尾时读不到"(`after === null` 但 `rec.exists`)一律**保留**:
+      // 那可能是被删/无权限/二进制,宁可留一张说得出话的卡,也别把磁盘上真实发生过
+      // 的改动当成没发生。
+      if (after === null) {
+        if (!rec.exists) {
+          this.originals.delete(path);
+          continue;
+        }
+      } else if (after === before) {
         this.originals.delete(path);
         continue;
       }
+      const { adds, dels } = countLineDiff(before, after ?? "");
       out.push({
         filePath: rec.absPath,
         kind: rec.exists ? "modified" : "created",
         adds,
         dels,
         before,
+        // 【MC-002】记下"本轮收尾时磁盘上的样子"。历史回滚前拿它跟当前磁盘比一比:
+        // 不一致 = 这个文件在本轮之后又被改过(第二轮、或用户自己改的),直接写回
+        // before 会把那些改动也一起抹掉 —— 那正是"撤销第 1 轮顺手毁了第 2 轮"。
+        afterHash: hashText(after ?? ""),
       });
     }
     // Hand the contents to the GC: the entries above carry `before` to the
@@ -215,6 +284,16 @@ export interface RestoreReport {
   restored: string[];
   /** 没还原成功的路径(越界被拒 / 写盘失败)。 */
   failed: string[];
+  /** 【MC-002】本轮之后**又被改过**、因此拒绝覆盖的路径。
+   *
+   *  历史回滚最危险的样子:第 1 轮把 X 从 A 改成 B;第 2 轮(或用户手动)又改成 C;
+   *  现在回滚第 1 轮 —— 老实现直接把 `before`(=A)写回去,**C 连同第 2 轮一起没了**。
+   *  确认弹窗不是冲突检测。现在:收尾时把当时的 `after`(B)指纹存进快照,回滚前拿它
+   *  跟当前磁盘比,B ≠ 当前 → 这个文件**原样保留**,列进这里,由 UI 明说「这几个没还原」
+   *  (它们不是"失败",是"故意不动")。
+   *
+   *  没有 `afterHash` 的旧快照(本次改动前落盘的历史条目)无从比对,按老行为处理。 */
+  conflicts: string[];
 }
 
 export async function restoreFiles(
@@ -223,6 +302,7 @@ export async function restoreFiles(
 ): Promise<RestoreReport> {
   const restored: string[] = [];
   const failed: string[] = [];
+  const conflicts: string[] = [];
   // Process created-files first (unlink) so a parent that was also
   // modified can be cleanly rewritten without the child blocking.
   const created = entries.filter((e) => e.kind === "created");
@@ -232,6 +312,42 @@ export async function restoreFiles(
       console.warn(`restoreFiles: refused, escapes cwd: ${entry.filePath}`);
       failed.push(entry.filePath);
       continue;
+    }
+    // 【MC-002】先看这个文件在本轮之后有没有被再改过。
+    if (entry.afterHash !== undefined) {
+      let current: string | null;
+      try {
+        current = await readFile(entry.filePath, "utf-8");
+      } catch {
+        // 读不到(被删了 / 二进制 / 无权限)。对 created 条目来说"文件不在了"
+        // 等于目标状态已达成(创建的东西不再存在)——不算冲突;对 modified
+        // 条目则是"没法确认",按冲突处理,绝不盲目覆盖。
+        current = entry.kind === "created" ? null : "";
+      }
+      if (current !== null && hashText(current) !== entry.afterHash) {
+        // 【MC-002】磁盘上现在的内容 ≠ 本轮收尾时的样子。**但先别急着判冲突** ——
+        // 有一种"不一致"是**上一次撤销已经成功**:那之后文件停在 `before`,与
+        // `afterHash` 当然对不上。第 13 轮复查点名的"额外幂等陷阱"正是这一格:用户
+        // 见有文件没还原、点重试,整批原样再送一遍,已成功的那几个被重新读成"冲突",
+        // 于是**越重试越糟** —— 明明已经好了的也被拒。
+        //
+        // 所以"当前 == before"要认作**已达目标态**,幂等放行(不重写、不报错)。
+        // 只有既不是 `afterHash`、也不是 `before` 的,才是真被后来的动作改过。
+        if (entry.kind === "modified" && hashText(current) === hashText(entry.before)) {
+          restored.push(entry.filePath);
+          continue;
+        }
+        // 磁盘上现在的内容 ≠ 本轮收尾时的样子 —— 被后来的动作改过了。
+        // 直接写回/删除会把那些改动一并抹掉,所以**什么都不做**,如实列进 conflicts。
+        console.warn(`restoreFiles: skip ${entry.filePath} (changed after the turn; refusing to clobber)`);
+        conflicts.push(entry.filePath);
+        continue;
+      }
+      if (entry.kind === "created" && current === null) {
+        // 本轮创建的文件现在不存在了 —— 目标状态已达成,算已还原(不报错)。
+        restored.push(entry.filePath);
+        continue;
+      }
     }
     try {
       if (entry.kind === "modified") {
@@ -253,7 +369,7 @@ export async function restoreFiles(
       failed.push(entry.filePath);
     }
   }
-  return { restored, failed };
+  return { restored, failed, conflicts };
 }
 
 /* ──────────────────────────── path safety ──────────────────────────── */
@@ -281,6 +397,20 @@ export function getToolFilePath(toolName: string, input: unknown): string {
   return typeof raw === "string" ? raw : "";
 }
 
+/** Whether a raw (pre-resolve) path ascends above its root via a literal `..`
+ *  path segment. Splits on BOTH separators so it behaves the same whichever
+ *  dialect the model emitted.
+ *
+ *  【MC-001/MC-006】这是一个"意图"信号,不是包含性证明 —— normalizeToolFilePath
+ *  最终仍以物理 `insideProject` 为准。它的价值在于把"模型主动写了 `../`"与
+ *  "模型写了个合法的 `..config` 点文件名"分开:
+ *   - `../escape`、`a/../../b`  → true(在爬出去);
+ *   - `..config`、`..backup`     → false(合法的点文件名,`..` 是名字的一部分);
+ *   - `..`                       → true(裸的父目录)。 */
+export function containsDotDotEscape(rawPath: string): boolean {
+  return rawPath.split(/[/\\]/).some((seg) => seg === "..");
+}
+
 /** Normalize a file path coming out of a file-mutating tool input:
  *  fix the WSL/MSYS-path footguns and classify it relative to the project
  *  root.
@@ -292,15 +422,23 @@ export function getToolFilePath(toolName: string, input: unknown): string {
  *  in a garbage `D:\mnt\d\foo.md` folder. We translate both dialects to
  *  native paths first, then resolve against cwd.
  *
- *  Returns `{ absPath, insideProject }`:
+ *  Returns `{ absPath, insideProject, escaped }`:
  *    - absPath: the absolute path the write should actually target (the
  *      provider rewrites the tool input to this).
- *    - insideProject: whether absPath stays within cwd (the project root).
+ *    - insideProject: whether absPath stays PHYSICALLY within cwd — lexical
+ *      containment AND its symlink/junction destination (MC-001). A worktree
+ *      link pointing outside no longer reads as "inside".
+ *    - escaped: the raw path, after dialect translation, ascends above cwd via
+ *      a literal `..` segment (MC-001). The lexical+physical check already
+ *      rejects such paths, but this flag lets a caller distinguish a genuine
+ *      escape attempt from a path that merely happens to be outside (e.g. an
+ *      absolute path in a different tree), which matters for how loudly to
+ *      refuse.
  *  Returns null when the path can't be resolved (caller skips silently). */
 export function normalizeToolFilePath(
   cwd: string,
   filePath: string,
-): { absPath: string; insideProject: boolean } | null {
+): { absPath: string; insideProject: boolean; escaped: boolean } | null {
   // WSL/MSYS dialect → native Windows path: /mnt/d/foo → D:\foo, /d/foo →
   // D:/foo (shared with the Pi read-tool override and the bash-command
   // normalizer, so every path check agrees on the same translation).
@@ -311,7 +449,11 @@ export function normalizeToolFilePath(
   } catch {
     return null;
   }
-  return { absPath: abs, insideProject: safeResolveOk(cwd, abs) };
+  return {
+    absPath: abs,
+    insideProject: safeResolveOk(cwd, abs),
+    escaped: containsDotDotEscape(win),
+  };
 }
 
 /** Resolve `filePath` against `cwd` and refuse any path that escapes.
@@ -333,8 +475,28 @@ export function safeResolveOk(cwd: string, abs: string): boolean {
   // path.relative with the second arg outside cwd returns a path
   // starting with "..". On Windows an absolute result also means
   //  "different root" (different drive).
+  //
+  // 【MC-006】越界判据只能是 `rel === ".."` 或 `rel` 以 `".." + sep` 开头 ——
+  // **不能**是 `startsWith("..")`。后者会把 `..config`、`..backup` 这种**合法**的
+  // 点文件当成逃逸路径拒掉(它们在根目录内,只是名字恰好以两个点开头)。
+  // 这不是理论问题:项目里放 `.env`、`..config` 这类文件很常见,一写就被静默拒绝,
+  // 用户看到的是"改不了这个文件"而没有任何提示。
   const rel = relative(cwd, abs);
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  if (rel === "") return false; // cwd 本身不是"cwd 内的文件"
+  if (isAbsolute(rel)) return false; // 不同盘(Windows)或不同根
+  if (rel === "..") return false;
+  if (rel.startsWith(`..${sep}`)) return false;
+  // 物理包含性:工作区里的 symlink/junction 可以指向外面,而字面路径看着还在里面。
+  // 复用 pathGuard 同一份 `pathWithin`(经零依赖叶子模块),不另写一套。
+  return pathWithin(cwd, abs);
+}
+
+/** 内容指纹(SHA-256 十六进制)。用于两处:
+ *   - 【MC-002】把某轮 `after` 的指纹存进快照,历史回滚前比对当前磁盘;
+ *   - 同轮运行时判断"文件现在还是不是我收尾时看到的样子"。
+ *  纯函数,零额外依赖。 */
+function hashText(text: string): string {
+  return createHash("sha256").update(text, "utf-8").digest("hex");
 }
 
 /* ──────────────────────────── line counting ──────────────────────────── */
@@ -363,6 +525,14 @@ function countLineDiff(oldText: string, newText: string): { adds: number; dels: 
   // Fast paths: identical, or one side empty.
   if (m === 0) return { adds: n, dels: 0 };
   if (n === 0) return { adds: 0, dels: m };
+
+  // 【MC-003】表太大就别建 —— 退化成"整段计数"而不是拿主进程的内存去赌。
+  // (m+1)×(n+1) 个 int32:两边各 1 万行就要 ≈400MB,5 万行级别理论上 10GB。
+  // 对超限的大文件给出 adds=n / dels=m:数字偏大,但它是给用户看的摘要,且这种
+  // 体量的文件本来就没有逐行对照的可读性 —— 卡死主进程才是真问题。
+  if ((m + 1) * (n + 1) > MAX_DIFF_CELLS) {
+    return { adds: n, dels: m };
+  }
 
   const cols = n + 1;
   const lcs = new Int32Array((m + 1) * cols);

@@ -322,9 +322,28 @@ export function envelopePrompt(env: Envelope): string {
 
 /* ────────────────────────────── 收件箱 ────────────────────────────── */
 
+/** 收件箱里的一段。`askId` 只在**回信**上有 —— 它记住这段答复在回哪一条 `agent_ask`,
+ *  以便这段被**真正取走**时销掉那条挂账(见 {@link clearAgentMail} 与 MC-032)。 */
+interface InboxItem {
+  serial: number;
+  body: string;
+  askId?: string;
+}
+
 /** sessionId → 还没被带进去的那几段。序号供 sendTurn 确认“只清本轮读到的前缀”。 */
-const inbox = new Map<string, Array<{ serial: number; body: string }>>();
+const inbox = new Map<string, InboxItem[]>();
 let nextInboxSerial = 0;
+
+/** 【MC-033】单个会话收件箱的**总字节上限**。
+ *
+ *  `MAX_MESSAGES_PER_SESSION` 只限**十分钟窗口内的条数**,窗口过了自动重置;每条消息的
+ *  `text` 长度原本无界。一个长期唤不醒的目标(图没在跑、引擎起不来)会被反复投递,收件箱
+ *  Map 跨多个窗口只涨不落 —— 主进程内存、以及**下一次拼进提示词**的体积都不受控。
+ *  超了就**从头挤掉最早的**(与挂账 `MAX_PENDING_ASKS` 同一取舍:丢老的,别撑爆进程)。 */
+const MAX_INBOX_BYTES_PER_SESSION = 256 * 1024;
+
+/** 【MC-033】单条代理消息的字符上限(供 `mcodeServer` 的 zod `max()` 用,挡住超大正文)。 */
+export const MAX_AGENT_MESSAGE_CHARS = 16_000;
 
 /** 拼进提示词时用的抬头 —— 与 `backflowPrompt` 同一个理由(别让对方去回复这一段)。 */
 function inboxPrompt(text: string): string {
@@ -353,7 +372,16 @@ export function peekAgentMail(sessionId: string): string {
   return peekAgentMailBatch(sessionId).text;
 }
 
-/** 回合真正起来后,只清它读过的那些;启动期间新收到的不能被顺手抹掉。 */
+/** 回合真正起来后,只清它读过的那些;启动期间新收到的不能被顺手抹掉。
+ *
+ *  【MC-032】每清掉一段**带 `askId` 的回信**,就把对应的 `agent_ask` 挂账也销掉 ——
+ *  **销账的正确时机是这一刻**(这段答复被目标会话真正取走),不是投递被接受那一刻。
+ *  投递只保证"插播 / 叫醒 / 排队"成功;排队的那些目标若在被读到之前随进程重启没了,
+ *  挂账若已提前销,提问方再也查不到这条问题、回信无痕消失。挂在这里:清走的才是真交付的。
+ *
+ *  ⚠️ 挂账同时是**回信授权凭据**(`agent_notify(re=)` 要 `ask.toSessionId === ctx.sessionId`
+ *  才放行),所以绝不能提前销 —— 提前销会让那份真实存在的凭据作废、该回信被当成"不是发给
+ *  你的"而拒掉。 */
 export function clearAgentMail(sessionId: string, through: number): void {
   if (through <= 0) return;
   const list = inbox.get(sessionId);
@@ -361,9 +389,17 @@ export function clearAgentMail(sessionId: string, through: number): void {
   let count = 0;
   while (count < list.length && list[count].serial <= through) count++;
   if (count === 0) return;
+  const cleared = list.slice(0, count);
+  // 先销账(真交付的答复对应的挂账),再动队列 —— 销账失败不该拦住消息出队。
+  const askIds = cleared.map((item) => item.askId).filter((id): id is string => id !== undefined);
+  if (askIds.length > 0) {
+    const asks = loadAsks();
+    const kept = asks.filter((a) => !askIds.includes(a.askId));
+    if (kept.length !== asks.length) saveAsks(kept);
+  }
   if (count === list.length) inbox.delete(sessionId);
   else inbox.set(sessionId, list.slice(count));
-  log.info(`agentMail: 已带进会话 ${sessionId}(${list.slice(0, count).reduce((n, item) => n + item.body.length, 0)} 字)`);
+  log.info(`agentMail: 已带进会话 ${sessionId}(${cleared.reduce((n, item) => n + item.body.length, 0)} 字)`);
 }
 
 /** 会话没了 → 收件箱一起清掉(留着也永远没人取了)。 */
@@ -624,7 +660,7 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
       announce(peer.id, env, "injected");
       return { outcome: "injected", detail: `已插进「${peer.name}」正在跑的那一轮,它下一个安全点就会看到。` };
     }
-    pushInbox(peer.id, body);
+    pushInbox(peer.id, body, env.kind === "notify" ? env.re : undefined);
     bumpCount(peer.id, now);
     announce(peer.id, env, "queued");
     return {
@@ -638,7 +674,7 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
   // ③ 对方**空闲** —— 能不能替它起一轮,还要看图的管理状态/启动闸门(见 `canWake`)。
   //    管着的时候只能排队:节点会话的 `turn.done` 是调度器的完成信号,插一脚就废一步产出。
   if (port === null || !port.canWake(peer.id)) {
-    pushInbox(peer.id, body);
+    pushInbox(peer.id, body, env.kind === "notify" ? env.re : undefined);
     bumpCount(peer.id, now);
     announce(peer.id, env, "queued");
     return {
@@ -653,7 +689,7 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
   // ④ 先存再叫醒:桥/引擎启动可能在 wake 返回 true **之后**才失败。
   //    本轮请求从收件箱读这段,拿到句柄后才确认它;失败则仍能重试。
   //    wake 只传提示词,不能再传 body,否则同一封信会在 prompt 里出现两遍。
-  pushInbox(peer.id, body);
+  pushInbox(peer.id, body, env.kind === "notify" ? env.re : undefined);
   let woke = false;
   try { woke = port.wake(peer.id, WAKE_MAIL_PROMPT); }
   catch (err) { log.warn(`agentMail: 叫醒 ${peer.id} 失败: ${(err as Error).message}`); }
@@ -673,8 +709,15 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
   };
 }
 
-function pushInbox(sessionId: string, body: string): void {
+function pushInbox(sessionId: string, body: string, askId?: string): void {
   const list = inbox.get(sessionId) ?? [];
-  list.push({ serial: ++nextInboxSerial, body });
+  list.push({ serial: ++nextInboxSerial, body, askId });
+  // 【MC-033】按**总字节**封顶:超了从头挤掉最早的。见 MAX_INBOX_BYTES_PER_SESSION。
+  let bytes = list.reduce((n, item) => n + item.body.length, 0);
+  while (list.length > 1 && bytes > MAX_INBOX_BYTES_PER_SESSION) {
+    const dropped = list.shift();
+    bytes -= dropped?.body.length ?? 0;
+    log.warn(`agentMail: 会话 ${sessionId} 收件箱超 ${MAX_INBOX_BYTES_PER_SESSION} 字,挤掉最早一条(代理消息积压)`);
+  }
   inbox.set(sessionId, list);
 }

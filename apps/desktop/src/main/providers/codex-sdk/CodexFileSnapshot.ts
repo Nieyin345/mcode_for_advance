@@ -16,7 +16,8 @@
  * (writing the original content back).
  */
 import { readFile } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { FileSnapshot } from "@main/lib/fileSnapshot.js";
 import type { TurnFileEntry } from "@contracts/runtime";
 import { parseUnifiedDiff, reverseApplySection } from "./codexTurnDiff.js";
@@ -76,6 +77,10 @@ export class CodexFileSnapshot extends FileSnapshot {
         adds: section.adds,
         dels: section.dels,
         before,
+        // 【MC-002】收尾时磁盘上的样子;历史回滚拿它做冲突检测(见 lib/fileSnapshot)。
+        // 这里 `after` 就是刚读到的当前内容(读失败时为空串,与 modified 的"读不到
+        // 即冲突"约定一致)。
+        afterHash: createHash("sha256").update(after, "utf-8").digest("hex"),
       });
     }
     return base;
@@ -93,8 +98,11 @@ export class CodexFileSnapshot extends FileSnapshot {
     } catch {
       return null;
     }
+    // 【MC-006】同 safeResolveOk:越界只能是 `..` 本身或以 `..` + 分隔符开头,
+    // 不能是 `startsWith("..")` —— 那会把合法的 `..config` 点文件名也拒掉。
     const rel = relative(this.cwd, abs);
-    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
+    if (rel === "" || isAbsolute(rel)) return null;
+    if (rel === ".." || rel.startsWith(`..${sep}`)) return null;
     return abs;
   }
 }

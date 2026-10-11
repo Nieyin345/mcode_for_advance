@@ -75,13 +75,20 @@ function valueOf(d: Database, sql: string): unknown {
   return row[0];
 }
 
+/** 同 {@link valueOf},但查询本身抛(如表不存在)时返回一个哨兵 —— 表被误删时,断言
+ *  应该**干净地红**,而不是让整条 suite 崩在这行、后面的断言一条都跑不到。 */
+function valueOr<T>(d: Database, sql: string, fallback: T): unknown {
+  try { return valueOf(d, sql); } catch { return fallback; }
+}
+
 // ── 第一步:手工造一个"老版本"的库 ──────────────────────────────────────
 // 结构就是 `migrate()` 兼容段动手之前的样子:三张核心表,**没有**后来加的列;
 // workflows / workflow_runs / library_* 这些后加的表整个不存在(老库里就没有),
 // 由 migrate() 的 CREATE TABLE IF NOT EXISTS 自己建出来。
-// 例外是被**删掉**的那两张(见下面的 fixture),要造出来才验得到 DROP:
-//   - `download_jobs`(2026-09-27 学术字段退役一并删);
-//   - `institution_profiles`(2026-10-11 机构登录退役,学术域移出 core)。
+// 例外是被**删掉**的那张(见下面的 fixture),要造出来才验得到 DROP:
+//   - `download_jobs`(2026-09-27 学术字段退役一并删 —— 纯派生的任务队列,可弃);
+// `institution_profiles`(2026-10-11 机构登录退役)**不再**被删(MC-023):它是用户
+// 自己整理的机构入口书签,退役只表示代码不再读写,历史记录必须保留。造出来验它**留下**。
 console.log("db-migrate-smoke: 造老结构的库 …");
 const SQL = await initSqlJs();
 const old = new SQL.Database();
@@ -148,7 +155,9 @@ old.run(`
     attempts INTEGER NOT NULL DEFAULT 0, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   );
   INSERT INTO download_jobs VALUES ('job_old', 'item_old', 'failed', 1, '老任务', 1000, 1000);
-  -- 老库里的机构认证入口表(2026-10-11 起由 migrate() DROP 掉):同上,造出来验 DROP 真被执行。
+  -- 老库里的机构认证入口表(2026-10-11 起由 migrate() **保留**,不再 DROP —— 它是
+  -- 用户自己整理的入口书签(名称/网址/域名),退役只停读写,历史记录必须留着。造出来
+  -- 验升级后它**还在**,且那一行老记录一字不差。
   CREATE TABLE institution_profiles (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, login_url TEXT, domains TEXT,
     proxy_prefix TEXT, notes TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
@@ -238,8 +247,13 @@ for (const c of ["entry_mode", "file_path"]) {
 }
 // download_jobs 是纯派生数据(下载队列),随学术功能退役一起 DROP。
 check("download_jobs 表已被迁移删掉", !valueOf(d, "SELECT name FROM sqlite_master WHERE type='table' AND name='download_jobs'"));
-// institution_profiles 只存「入口书签」元数据(不含凭据),随机构登录退役一起 DROP。
-check("institution_profiles 表已被迁移删掉", !valueOf(d, "SELECT name FROM sqlite_master WHERE type='table' AND name='institution_profiles'"));
+// institution_profiles **不删**(MC-023):它是用户自己整理的机构入口书签(名称 / 网址 /
+// 域名),退役只表示代码不再读写,历史记录必须保留 —— 升级后表还在、那一行老记录一字不差。
+// (表被误删时 valueOr 回落成哨兵,让这几条**干净地红**,而不是让 suite 崩在 no such table。)
+check("institution_profiles 表被保留(MC-023:不再 DROP)", !!valueOr(d, "SELECT name FROM sqlite_master WHERE type='table' AND name='institution_profiles'", null));
+eq("旧机构入口记录升级后仍在(名称)", valueOr(d, "SELECT name FROM institution_profiles WHERE id='inst_old'", "<TABLE GONE>"), "老入口");
+eq("旧机构入口记录升级后仍在(入口网址)", valueOr(d, "SELECT login_url FROM institution_profiles WHERE id='inst_old'", "<TABLE GONE>"), "https://example.edu");
+eq("旧机构入口记录升级后仍在(域名)", valueOr(d, "SELECT domains FROM institution_profiles WHERE id='inst_old'", "<TABLE GONE>"), '["example.edu"]');
 
 // ⑤ 迁移**立刻落盘**:重新打开磁盘上的文件验证,不信任内存句柄
 {
@@ -251,6 +265,8 @@ check("institution_profiles 表已被迁移删掉", !valueOf(d, "SELECT name FRO
   eq("磁盘文件里老数据还在", valueOf(fresh, "SELECT title FROM sessions WHERE id='sess_old'"), "老对话");
   eq("磁盘上的旧插件名单未被销毁", valueOf(fresh, "SELECT active_plugin_names FROM sessions WHERE id='sess_old'"), '["legacy-plugin"]');
   eq("磁盘上的旧长任务未被销毁", valueOf(fresh, "SELECT goal FROM long_tasks WHERE id='ltask_old'"), "旧任务");
+  // MC-023:机构入口书签落盘后也必须在磁盘上留着(不是只在内存里苟活)。
+  eq("磁盘上的旧机构入口记录未被销毁", valueOr(fresh, "SELECT name FROM institution_profiles WHERE id='inst_old'", "<TABLE GONE>"), "老入口");
   fresh.close();
 }
 

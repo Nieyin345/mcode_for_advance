@@ -35,6 +35,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
+import { toolTextOf, type ToolResult } from "@main/mcp/sdk.js";
 
 let failures = 0;
 let total = 0;
@@ -633,6 +634,298 @@ console.log("\nIPC:authRespond 的合法入参");
       "…正控:清空历史**先报失败再刷新**(两者都在场,失败出口在前)",
       at >= 0 && report >= 0 && refresh >= 0 && report < refresh,
       body.slice(0, 300),
+    );
+  }
+}
+
+/* ──────────────── 3. MC-043 跨项目目标隔离 ────────────────
+ *
+ * `agentTargeting.resolveBrowserTarget` 是"一次无 browserId 的 agent 调用该落到哪个
+ * 视图"的纯逻辑。判据立在**会话 A 能不能隐式操作会话 B 打开的标签**上 —— 这正是
+ * MC-043 要挡住的事。
+ */
+
+console.log("\nMC-043:agent 浏览器目标按项目隔离");
+
+{
+  const { resolveBrowserTarget } = await import("@main/browser/agentTargeting.js");
+  const PA = "P:甲项目";
+  const PB = "P:乙项目";
+  const views = [
+    { browserId: "a1", projectPath: PA },
+    { browserId: "b1", projectPath: PB },
+  ];
+
+  // 甲项目会话:无 browserId,带上自己的 projectPath → 只在自己项目里挑。
+  eq(
+    "甲项目的会话解析到甲项目自己的活动视图",
+    resolveBrowserTarget(views, { projectPath: PA, activeForProject: "a1" }),
+    { ok: true, browserId: "a1" },
+  );
+  // ★ 核心:甲项目会话**永远**解析不到乙项目的视图 —— 哪怕甲还没有任何活动指针,
+  //   也只能落到甲自己的第一个视图(这里没有 → 报 no-live-browser),而不是 a1/b1 串台。
+  eq(
+    "★ 甲项目的会话在没有自己视图时,不会落到乙项目的标签上(报 no-live-browser)",
+    resolveBrowserTarget([{ browserId: "b1", projectPath: PB }], { projectPath: PA, activeForProject: null }),
+    { ok: false, reason: "no-live-browser" },
+  );
+  // ★ 显式指定乙项目的 browserId,但调用方属于甲 → 拒绝(不许跨项目显式操作)。
+  {
+    const r = resolveBrowserTarget(views, { browserId: "b1", projectPath: PA });
+    check("★ 甲项目显式要乙项目的 browserId → 拒绝(不许跨项目操作)", r.ok === false, r);
+  }
+  // 显式指定本项目自己的 browserId → 放行。
+  eq(
+    "甲项目显式要自己项目的 browserId → 放行",
+    resolveBrowserTarget(views, { browserId: "a1", projectPath: PA }),
+    { ok: true, browserId: "a1" },
+  );
+  // 活动指针指向一个已经不存在的 id(被关掉了)→ 落到本项目第一个,而不是串到乙项目。
+  eq(
+    "活动指针指向已关闭的视图 → 退回本项目第一个(不串项目)",
+    resolveBrowserTarget([{ browserId: "a2", projectPath: PA }, views[1]!], {
+      projectPath: PA,
+      activeForProject: "a_dead",
+    }),
+    { ok: true, browserId: "a2" },
+  );
+
+  // 老调用方(不带 projectPath)行为与改造前逐字一致:全局活动指针 → 第一个活视图。
+  eq(
+    "不带 projectPath 的老调用方:沿用全局活动指针(行为不变)",
+    resolveBrowserTarget(views, { activeGlobal: "b1" }),
+    { ok: true, browserId: "b1" },
+  );
+  eq(
+    "不带 projectPath 且没有全局指针:第一个活视图(行为不变)",
+    resolveBrowserTarget(views, {}),
+    { ok: true, browserId: "a1" },
+  );
+  eq(
+    "没有任何活视图 → no-live-browser",
+    resolveBrowserTarget([], { projectPath: PA }),
+    { ok: false, reason: "no-live-browser" },
+  );
+}
+
+/* ──────────────── 4. MC-044 file:// 工作区围栏 ──────────────── */
+
+console.log("\nMC-044:browser_navigate 的 file:// 受项目根围栏约束");
+
+{
+  const { fileUrlWorkspaceError } = await import("@main/browser/agentTargeting.js");
+  // PROJECT 已在上面 §2 注册进 ProjectRepo(它是本仓库根,真实存在)。
+  const fileUrl = (p: string): string => "file:///" + p.replace(/\\/g, "/").replace(/^\//, "");
+  const insideUrl = fileUrl(join(PROJECT, "docs", "page.html"));
+  const outsideUrl = process.platform === "win32" ? "file:///C:/Windows/system.ini" : "file:///etc/hostname";
+
+  eq("★ 项目内的 file:// → 放行(null 表示无错)", fileUrlWorkspaceError(insideUrl), null);
+  check(
+    "★ 项目外的 file:// → 拒绝(不绕过 agent 文件工具的项目根护栏)",
+    typeof fileUrlWorkspaceError(outsideUrl) === "string",
+    { err: fileUrlWorkspaceError(outsideUrl) },
+  );
+  eq("http(s) URL 不受路径围栏约束 → 放行", fileUrlWorkspaceError("https://example.com/x"), null);
+}
+
+/* ──────────────── 5. MC-043 跨项目隔离:真工具函数 + 假视图清单 ────────────────
+ *
+ * §3 验的是**纯判定** `resolveBrowserTarget`(喂数组)。这里再往上走一层:直接调
+ * `agentBrowserTools.ts` 的**真 `browser_*` 函数**,把 `BrowserManager` 换成桩
+ * (文件头 §2 已说明 `--alias:@main/browser/BrowserManager.js=…` 是与主 bundle 共享
+ * 同一份实例的那一刀),摆两个项目各一个视图,看 B 项目的 agent 会不会串到 A:
+ *
+ *   - B 调 `browser_list({projectPath:B})` 不得出现 A 的 browserId / URL / 标题;
+ *   - B 的无 browserId 调用**即使全局活动指针指着 A**,也必须落到 B 自己的视图;
+ *   - B 显式传 A 的 browserId → 拒绝,且**一次都不落到 A 上**;
+ *   - 同项目调用照常工作(不误伤)。
+ *
+ * 判据立在**返回给 agent 的那段文字**(含 sentinel 正文)与**桩记下的目标 id**上 ——
+ * 两样都是"用户/模型真能看到、真会作用到"的东西。
+ */
+
+console.log("\nMC-043:agent 浏览器工具的跨项目隔离(真工具函数 + 假视图)");
+
+{
+  const tools = await import("@main/browser/agentBrowserTools.js");
+  const PA = "P:甲项目";
+  const PB = "P:乙项目";
+  const SENT_A = "SENTINEL-A-甲项目私密正文";
+  const SENT_B = "SENTINEL-B-乙项目正文";
+
+  // 取一个工具结果里的全部文字。【ARC-017】用权威合同导出的唯一一份提取器,不再本地
+  // 手写"把 content 断言成 { type; text? }[]"—— SDK 加块时那种写法会与真实结构漂移。
+  const toolText = (r: ToolResult): string => toolTextOf(r);
+
+  stub.setViews([
+    { browserId: "a1", projectPath: PA, url: "https://a.example/secret", title: "A 页", body: SENT_A },
+    { browserId: "b1", projectPath: PB, url: "https://b.example/home", title: "B 页", body: SENT_B },
+  ]);
+
+  // 制造"全局活动指针指着 A"的处境:让 A 项目的会话 switch 到 a1(它会同时写全局兜底)。
+  stub.resetRecorded();
+  await tools.browserSwitchTab({ browserId: "a1", projectPath: PA });
+  check(
+    "前置:B 项目会话无 browserId 时,全局活动指针确实指着 A(制造串台处境)",
+    stub.lastCall("notifyAgentOpened")?.args[0] === "a1",
+    stub.lastCall("notifyAgentOpened")?.args,
+  );
+
+  // ── 1. B 的 browser_list 不得暴露 A 的任何东西 ──
+  {
+    stub.resetRecorded();
+    const r = tools.browserList(PB);
+    const t = toolText(r);
+    check("★ B 的 browser_list 不出现 A 的 browserId", !t.includes("a1"), t.slice(0, 200));
+    check("★ B 的 browser_list 不出现 A 的 URL", !t.includes("a.example"), t.slice(0, 200));
+    check("★ B 的 browser_list 不出现 A 的标题", !t.includes("A 页"), t.slice(0, 200));
+    check("B 的 browser_list 正常列出自己的 b1", t.includes("b1"), t.slice(0, 200));
+  }
+
+  // ── 2. B 无 browserId 的 snapshot:全局指针在 A,也必须落到 B ──
+  {
+    stub.resetRecorded();
+    const r = await tools.browserSnapshot({ projectPath: PB });
+    const t = toolText(r);
+    check("★ B 无 browserId 的 snapshot 落到 B 自己的视图(不被全局指针带到 A)",
+      stub.lastCall("snapshot")?.args[0] === "b1", stub.lastCall("snapshot")?.args);
+    check("★ B 的 snapshot 正文是自己的 sentinel,读不到 A 的正文",
+      t.includes(SENT_B) && !t.includes(SENT_A), t.slice(0, 200));
+  }
+
+  // ── 3. B 显式要 A 的 browserId → 拒绝,且不落到 A ──
+  {
+    stub.resetRecorded();
+    const r = await tools.browserSnapshot({ browserId: "a1", projectPath: PB });
+    const t = toolText(r);
+    check("★ B 显式传 A 的 browserId 的 snapshot → 拒绝", /❌|拒绝|另一个项目/.test(t), t.slice(0, 200));
+    check("★ 被拒绝的 snapshot 一次都没落到 A 上",
+      stub.lastCall("snapshot") === undefined || stub.lastCall("snapshot")?.args[0] !== "a1",
+      stub.lastCall("snapshot")?.args);
+  }
+
+  // ── 4. B 显式传自己项目的 browserId → 放行 ──
+  {
+    stub.resetRecorded();
+    const r = await tools.browserSnapshot({ browserId: "b1", projectPath: PB });
+    const t = toolText(r);
+    check("B 显式传自己项目的 browserId → 放行且读到自己的正文",
+      stub.lastCall("snapshot")?.args[0] === "b1" && t.includes(SENT_B) && !t.includes(SENT_A),
+      { call: stub.lastCall("snapshot")?.args });
+  }
+
+  // ── 5. B 的 click 无 browserId → 落到 B,不点到 A ──
+  {
+    stub.resetRecorded();
+    await tools.browserClick({ selector: "#btn", projectPath: PB });
+    check("★ B 无 browserId 的 click 落到自己的视图(不点到 A)",
+      stub.lastCall("click")?.args[0] === "b1", stub.lastCall("click")?.args);
+  }
+
+  // ── 6. B 显式要 A 的 browserId 的 click → 拒绝,不点到 A ──
+  {
+    stub.resetRecorded();
+    const r = await tools.browserClick({ browserId: "a1", selector: "#btn", projectPath: PB });
+    const t = toolText(r);
+    check("★ B 显式传 A 的 browserId 的 click → 拒绝", /❌|拒绝|另一个项目/.test(t), t.slice(0, 200));
+    check("★ 被拒绝的 click 一次都没点到 A",
+      stub.lastCall("click") === undefined || stub.lastCall("click")?.args[0] !== "a1",
+      stub.lastCall("click")?.args);
+  }
+
+  // ── 7. 同项目(A 自己)照常工作,不误伤 ──
+  {
+    stub.resetRecorded();
+    const r = await tools.browserSnapshot({ projectPath: PA });
+    const t = toolText(r);
+    check("A 项目自己的无 browserId snapshot 照常落到 a1 并读到自己的正文",
+      stub.lastCall("snapshot")?.args[0] === "a1" && t.includes(SENT_A) && !t.includes(SENT_B),
+      { call: stub.lastCall("snapshot")?.args });
+  }
+
+  // ── 8. 老调用方(不带 projectPath)行为不变:沿用全局指针 ──
+  {
+    stub.resetRecorded();
+    const r = await tools.browserSnapshot({});
+    check("老调用方(无 projectPath)沿用全局活动指针 → 仍是 a1(行为不改坏)",
+      stub.lastCall("snapshot")?.args[0] === "a1", stub.lastCall("snapshot")?.args);
+    const list = toolText(tools.browserList());
+    check("老调用方的 browser_list(无 projectPath)仍列出全部视图(兼容旧行为)",
+      list.includes("a1") && list.includes("b1"), list.slice(0, 200));
+  }
+}
+
+/* ──────────────── 6. 每个 provider 都把调用者项目身份接进每个浏览器工具 ────────────────
+ *
+ * §5 验的是**工具函数本身**真的按 projectPath 隔离。但把那条隔离接上,靠的是三个
+ * provider 在注册每个 browser_* 工具时**记得把会话的项目身份(`projectPath` / `req.cwd`)
+ * 传进去** —— 漏传一个,那个工具就又退回"全局活动指针"的旧路(台账 §19.2 的根因:
+ * "一个函数的 scoped 单测绿了,调用点仍可以触发 permissive legacy 路径")。
+ *
+ * 这条**不跑代码、只在源码上扫**:每个 provider 的每次 `browserXxx(` 调用都必须带上
+ * `projectPath`(Claude/Pi,来自闭包)或 `req.cwd`(Codex)。`browserNavigate` /
+ * `browserUploadFile` 的位置参数版早已传了,不在扫描范围(它们第二参就是 projectPath)。
+ * 换写法(动态拼参数)会让扫描器扫不到而以红的形式告诉你 —— 那正是要的。
+ */
+
+console.log("\nMC-043:三个 provider 都把自己的项目身份接进每个浏览器工具");
+
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+
+  // 有位置参数 projectPath 的两个(早已接好),不计入本扫描。
+  const POSITIONAL = new Set(["browserNavigate", "browserUploadFile"]);
+  // 要扫的工具函数名(排除 browserToolsUsagePrompt 之类的非工具 helper)。
+  // `browserDownloads` **不在内**:它列的是全局下载历史(`BrowserManager.listDownloads()`),
+  // 与某个浏览器视图/项目无关,本就不该带 projectPath(要按项目隔离得改 BrowserManager,
+  // 不在 MC-043 的范围)。
+  const TOOL_FNS = new Set([
+    "browserList", "browserSnapshot", "browserClick", "browserType", "browserKeys",
+    "browserScroll", "browserWait", "browserHistory", "browserSelect", "browserFind",
+    "browserSwitchTab", "browserCloseTab", "browserSavePdf", "browserEvaluate",
+    "browserScreenshot",
+  ]);
+  // 一个调用片段里必须出现的"项目身份"记号:Claude/Pi 用闭包 `projectPath`,Codex 用 `req.cwd`。
+  const IDENTITY_RE = /projectPath|req\.cwd/;
+
+  const providers: Array<[string, string]> = [
+    ["Claude", "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"],
+    ["Codex", "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"],
+    ["Pi", "src/main/providers/pi-sdk/mcodeExtension.ts"],
+  ];
+
+  for (const [name, rel] of providers) {
+    const src = readFileSync(join(process.cwd(), rel), "utf8");
+    const misses: string[] = [];
+    // 扫每次 `browserXxx(` 调用,取其**配平到参数表结束**的那段文本(含嵌套对象/数组),
+    // 在这段里找项目身份记号。用括号配平而不是"抓一行",因为多参调用跨行。
+    const callRe = /(browser[A-Z]\w*)\(/g;
+    let m: RegExpExecArray | null;
+    while ((m = callRe.exec(src)) !== null) {
+      const fn = m[1]!;
+      if (POSITIONAL.has(fn) || !TOOL_FNS.has(fn)) continue;
+      const open = m.index + m[0].length - 1; // 该 `(` 的下标
+      let depth = 0;
+      let end = -1;
+      for (let j = open; j < src.length; j += 1) {
+        if (src[j] === "(") depth += 1;
+        else if (src[j] === ")") {
+          depth -= 1;
+          if (depth === 0) { end = j; break; }
+        }
+      }
+      if (end < 0) continue;
+      const seg = src.slice(open, end + 1);
+      if (!IDENTITY_RE.test(seg)) misses.push(`${fn}${seg.slice(0, 90)}`);
+    }
+    // 防断言空过:至少扫到过一堆 browser 调用(否则 callRe 没匹配上,misses 恒空)。
+    const scanned = [...src.matchAll(/browser[A-Z]\w*\(/g)].length;
+    check(`对照:${name} 扫到浏览器工具调用(防空过)`, scanned >= 14, scanned);
+    check(
+      `★ ${name}:每个浏览器工具调用都带上调用者项目身份(projectPath / req.cwd)`,
+      misses.length === 0,
+      misses,
     );
   }
 }

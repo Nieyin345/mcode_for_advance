@@ -174,6 +174,9 @@ export const NODE_TRIGGER_FILTER_PARAM_KEY = "eventFilter";
 /** 合并窗口(毫秒):文件连着变、事件连着来,合成一次运行。 */
 export const NODE_TRIGGER_DEBOUNCE_PARAM_KEY = "debounceMs";
 
+/** ARC-015: official switch for default-ignored dirs (see TriggerSpec file branch). */
+export const NODE_TRIGGER_IGNORE_POLICY_PARAM_KEY = "defaultIgnorePolicy";
+
 /**
  * 这条触发器**开不开**。关掉的留在图里,只是不响。
  *
@@ -321,7 +324,13 @@ export const DEFAULT_TRIGGER_DEBOUNCE_MS = 2000;
 export type TriggerSpec =
   | { kind: "manual" }
   | { kind: "schedule"; cron: CronSpec }
-  | { kind: "file"; globs: string[]; excludeGlobs: string[]; debounceMs: number }
+  | { kind: "file"; globs: string[]; excludeGlobs: string[]; debounceMs: number;
+      /** 【ARC-015】对**默认忽略目录**(node_modules/dist/.git…)的态度:
+       *  - `SAFE_DEFAULT`(缺省)—— 照旧忽略,性能优先;
+       *  - `EXPLICIT_OVERRIDE` —— 用户的 include glob **明确命中**了某个默认忽略目录下的
+       *    路径时,允许让它被观测(例如「dist/*.js 构建完后处理」)。**只对明确、具体的路径
+       *    生效**,泛化的 `**` / 根 glob 不给解保护(见 `FileWatchPolicy`)。 */
+      defaultIgnorePolicy?: "SAFE_DEFAULT" | "EXPLICIT_OVERRIDE" }
   | { kind: "event"; events: HookEvent[]; matcher: string; debounceMs: number };
 
 /** 一次触发条件的解读结果。**存盘与执行器共用这一份判定**(见 `parseTriggerSpec`)。 */
@@ -396,7 +405,9 @@ export function parseTriggerSpec(
       return { ok: false, error: "触发方式是「文件变化」,但没写监听哪些文件 —— 逗号分隔,例如 `*.md, src/*.ts`" };
     }
     const excludeGlobs = patternListOf(params[NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY]);
-    return { ok: true, spec: { kind: "file", globs, excludeGlobs, debounceMs: debounce.value } };
+    const rawPolicy = params[NODE_TRIGGER_IGNORE_POLICY_PARAM_KEY];
+    const defaultIgnorePolicy = rawPolicy === "EXPLICIT_OVERRIDE" ? ("EXPLICIT_OVERRIDE" as const) : undefined;
+    return { ok: true, spec: { kind: "file", globs, excludeGlobs, debounceMs: debounce.value, ...(defaultIgnorePolicy ? { defaultIgnorePolicy } : {}) } };
   }
 
   const names = patternListOf(params[NODE_TRIGGER_EVENTS_PARAM_KEY]);

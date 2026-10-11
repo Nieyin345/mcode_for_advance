@@ -26,6 +26,7 @@
  * 互不 import。目录名在这里复述一遍是那条规矩的代价(见 `nodeTypes.ts` 同款注释)。
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import * as path from "node:path";
 import {
   parseAgentProfile,
@@ -45,6 +46,20 @@ const FILE_SUFFIX = ".json";
 
 /** 读全部档案。**目录不存在、单个文件坏了都不抛** —— 档案是附加能力,它坏了不该让
  *  工作流页打不开(同 `loadNodeTypes` 对坏清单的处理)。 */
+/**
+ * ARC-016: 一份档案**内容**的哈希(供运行记录锁版)。读不到/坏了 → null。
+ * 只哈希文件字节,不含任何解密后的密钥字段。
+ */
+export function agentProfileContentHash(id: string): string | null {
+  if (!id) return null;
+  const file = path.join(agentProfilesDir(), id.endsWith(FILE_SUFFIX) ? id : id + FILE_SUFFIX);
+  try {
+    return createHash("sha256").update(readFileSync(file, "utf-8")).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 export function readAgentProfiles(): AgentProfileCatalog {
   const dir = agentProfilesDir();
   const out: AgentProfileCatalog = { profiles: [], problems: [] };

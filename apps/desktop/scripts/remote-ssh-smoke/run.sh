@@ -9,6 +9,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/remote-ssh-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --packages=external --tsconfig=tsconfig.json \
+  --alias:@main/store/repositories.js=./scripts/remote-ssh-smoke/stubs/settingRepo.ts \
   --outfile=./.tmp/remote-ssh-smoke/smoke.mjs --log-level=error
 
 node ./.tmp/remote-ssh-smoke/smoke.mjs

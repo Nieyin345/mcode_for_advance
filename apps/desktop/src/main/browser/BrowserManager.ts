@@ -1055,6 +1055,14 @@ class BrowserManagerImpl {
     const live = this.get(id);
     if (!live) return { ok: false, error: "浏览器不存在或已关闭" };
     const wc = live.view.webContents;
+    // ⚠️ **等 cookie 恢复就绪再判"加载完成"(MC-045)。** `loadUrl` 把真正的
+    // `wc.loadURL()` 排在 `live.ready` 之后(cookie 保管库要先注入),调用端却可能
+    // 在恢复还没完成时就来问"加载完了吗"——那时 `isLoading()` 是 false(导航根本还没
+    // 开始),于是这里会把**上一页 / about:blank**判成"目标页加载成功"。
+    // 先 await `ready`,让"是否开始加载"这个判断落在真实起点上。恢复过程本身不该
+    // 拒绝(内部逐条 try/catch),真拒绝了也继续按普通加载等待,别把异常抛给调用端。
+    await live.ready.catch(() => {});
+    if (wc.isDestroyed()) return { ok: false, error: "浏览器已销毁" };
     if (wc.isLoading() === false) {
       // Already loaded (or hasn't started yet). Give a brief grace period for a
       // just-kicked-off loadURL to register as loading, then return current state.

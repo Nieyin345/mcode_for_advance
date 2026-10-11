@@ -8,6 +8,9 @@
  *  - 密钥类:API Key、令牌、密码、cookie、公网 MCP 密钥、手机配对设备、隧道 token。
  *    按 key 名拦,再对 JSON 值做一遍深度清洗(值里嵌着 `apiKey` / `env.OPENAI_API_KEY`
  *    这类字段的整条删掉)。模型供应商配置(含 Key)根本不在这张表里,也不会带上。
+ *    ⚠️ 嵌套清洗**超过上限时 fail-closed**:整条设置丢弃(在 `skipped` 里计数),
+ *    绝不退回"原样保留"—— 否则深层叶节点里的密钥会绕过 `SECRET_FIELD_RE` 走出去
+ *    (MC-024)。
  *  - 本机状态:数据目录、上次打开的会话 / 文件、浏览历史、按项目 id 存的东西(换台电脑
  *    项目 id 对不上)、资料库内部结构、更新状态、自动化运行链路。
  *
@@ -39,6 +42,38 @@ const SECRET_KEY_RE =
  *  `EXCLUDED_KEYS` 里加是**追着漏**的写法 —— 下一个人再加一个 `xxxKeys` 又会忘。
  *  这里按键名的**形状**一次挡住,和 `.enc` 尾缀是同一类判据。 */
 const SECRET_STORE_KEY_RE = /(Keys|Tokens|Secrets|Credentials|Passwords)$/i;
+
+/** **安全授信**键 —— 这些存的是"用户在本机明确批准过的信任决定"(SSH 主机指纹、
+ *  项目 MCP 信任、设备信任)。它们**绝不是"跟着人走的偏好"**,一律不可导入导出。
+ *
+ *  【MC-031 / MC-052 —— 独立复核实测反例后加】从前这里只有一批零散的"排除式"条目,
+ *  逐个往 {@link EXCLUDED_KEYS} 里加是**追着漏**的写法:`mcp.projectTrust`(项目 MCP
+ *  信任指纹)与 `agentSsh.knownHosts`(SSH 主机指纹)都不在密钥正则里,于是能随设置
+ *  备份**导入** —— 一份被诱导导入的"设置备份"就能把用户对某台服务器 / 某个仓库的
+ *  信任**预先写好**(配合一份配套的 `.mcp.json` 或一次网络层冒充即可利用)。
+ *
+ *  所以这里把"安全授信"单列成一类,而**不是**再往 `EXCLUDED_KEYS` 里加一条:
+ *
+ *   - **形状判据** {@link SECURITY_GRANT_PREFIXES} 覆盖已知的授信键前缀;
+ *   - **显式清单** {@link SECURITY_GRANT_KEYS} 兜住形状不一、或将来新增的零散授信键。
+ *
+ *  ⚠️ **新增授信键必须同步加到这里** —— 台账反复点名的一个要求是"新增安全设置不可
+ *  被无差别导入"。如果你的授信键恰好落在某个前缀下(如 `agentSsh.` / `mcp.trust`)
+ *  就不必单列;否则加进 {@link SECURITY_GRANT_KEYS}。 */
+const SECURITY_GRANT_KEYS = new Set<string>([
+  // 项目级 MCP 信任指纹(用户对某个仓库的 .mcp.json 命令的批准)。
+  "mcp.projectTrust",
+  // SSH agent 的 known-hosts 指纹表(用户核对过的远端服务器身份)。
+  "agentSsh.knownHosts",
+]);
+
+/** 安全授信键的**前缀**(一族授信状态)。命中的一律不可迁移。 */
+const SECURITY_GRANT_PREFIXES = [
+  "agentSsh.",     // SSH agent 的 known-hosts 等
+  "mcp.trust",     // 项目 MCP 信任相关
+  "trust.",        // 通用信任族
+  "securityGrant.",
+];
 
 /** 精确排除的键(本机路径 / 运行状态 / 含密钥的整块配置)。 */
 const EXCLUDED_KEYS = new Set<string>([
@@ -124,6 +159,9 @@ export function isTransferableSettingKey(key: string): boolean {
   if (!key || key.length > 200) return false;
   if (SECRET_KEY_RE.test(key)) return false;
   if (SECRET_STORE_KEY_RE.test(key)) return false;
+  // 【MC-031 / MC-052】安全授信一律不可迁移 —— 单列一类,不是再往排除表里加一条。
+  if (SECURITY_GRANT_KEYS.has(key)) return false;
+  if (SECURITY_GRANT_PREFIXES.some((p) => key.startsWith(p))) return false;
   if (EXCLUDED_KEYS.has(key)) return false;
   return !EXCLUDED_PREFIXES.some((p) => key.startsWith(p));
 }
@@ -145,42 +183,101 @@ export function isTransferableSettingKey(key: string): boolean {
 const SECRET_FIELD_RE =
   /(^|[-_.])(api[-_.]?keys?|apikeys?|access[-_.]?tokens?|refresh[-_.]?tokens?|auth(orization)?[-_.]?tokens?|tokens?|secrets?|client[-_.]?secrets?|passw(or)?ds?|passwd|authorization|credentials?|cookies?|private[-_.]?keys?)([-_.]|$)/i;
 
-/** 深度去掉值里像密钥的字段。返回 [清洗后的值, 删了几处]。 */
-export function scrubSecrets(value: unknown, depth = 0): [unknown, number] {
-  if (depth > 20 || value === null || typeof value !== "object") return [value, 0];
+/** 递归清洗的上限。**超过就 fail-closed**:不再往下走,而是把整条设置标成"清洗不干净"
+ *  交给调用方丢弃 —— 绝不能像从前那样把没洗过的子树原样留下(那正是密钥从深处漏出的口子)。 */
+const SCRUB_MAX_DEPTH = 20;
+/** 单条设置值最多清洗多少个节点 / 多长字符串 —— 防御"极端大对象拖死 / 卡死主进程"。 */
+const SCRUB_MAX_NODES = 200_000;
+const SCRUB_MAX_BYTES = 8_000_000;
+
+/** 深度去掉值里像密钥的字段。返回 `[清洗后的值, 删了几处, 是否溢出]`。
+ *
+ *  ⚠️ **第三个返回值 `overflow` 是 MC-024 补的那个洞。** 从前 `depth > 20` 时直接
+ *  `return [value, 0]` —— 把没洗过的整棵子树原样留下。于是只要有人把密钥塞进一个
+ *  21 层深的 `{a:{a:{…}}}` 里,`SECRET_FIELD_RE` 就永远够不到那个叶节点,导出文件里
+ *  带着明文密钥走出去 —— 而文件头那句"绝不导出密钥"照旧写着。改用 fail-closed 之后,
+ *  深度/节点/字节任一超限都置 `overflow = true`,调用方据此**整条丢弃**,不留原样。
+ *  (清洗"删多了"只丢一个字段,是安全的一侧;"漏删"是把真令牌写进一个专门拿去分享
+ *  的文件。两者不对等,所以这里宁可偏严,同 {@link SECRET_FIELD_RE} 那条。) */
+export function scrubSecrets(
+  value: unknown,
+  depth = 0,
+  budget: { nodes: number; bytes: number } = { nodes: SCRUB_MAX_NODES, bytes: SCRUB_MAX_BYTES },
+): [unknown, number, boolean] {
+  // 深度超限,或节点/字节预算耗尽 —— **fail-closed**:告诉调用方这条清洗不干净,
+  // 由它整条丢弃。绝不把没洗过的子树原样返回(那会把深层密钥放出去)。
+  if (depth > SCRUB_MAX_DEPTH || budget.nodes <= 0 || budget.bytes <= 0) return [undefined, 0, true];
+  if (value === null || typeof value !== "object") {
+    budget.nodes -= 1;
+    if (typeof value === "string") budget.bytes -= value.length;
+    return [value, 0, false];
+  }
+  budget.nodes -= 1;
   if (Array.isArray(value)) {
     let n = 0;
-    const out = value.map((v) => {
-      const [c, k] = scrubSecrets(v, depth + 1);
+    let overflow = false;
+    const out: unknown[] = [];
+    for (const item of value) {
+      const [c, k, o] = scrubSecrets(item, depth + 1, budget);
       n += k;
-      return c;
-    });
-    return [out, n];
+      if (o) overflow = true;
+      out.push(c);
+    }
+    return [out, n, overflow];
   }
   let n = 0;
+  let overflow = false;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     if (SECRET_FIELD_RE.test(k)) {
       n += 1;
       continue;
     }
-    const [c, m] = scrubSecrets(v, depth + 1);
+    const [c, m, o] = scrubSecrets(v, depth + 1, budget);
     n += m;
+    if (o) overflow = true;
     out[k] = c;
   }
-  return [out, n];
+  return [out, n, overflow];
 }
 
-/** 值是 JSON 就清洗后再序列化;不是 JSON 原样返回。 */
-function scrubValue(raw: string): { value: string; scrubbed: number } {
+/** 值是 JSON 就清洗后再序列化;不是 JSON 原样返回。
+ *
+ *  `rejected = true` 表示**清洗不干净**(递归/预算超限)—— 调用方必须**整条丢弃**,
+ *  不许回落到"原样导出 / 原样导入"。 */
+function scrubValue(raw: string): { value: string; scrubbed: number; rejected: boolean } {
   const t = raw.trim();
-  if (!(t.startsWith("{") || t.startsWith("["))) return { value: raw, scrubbed: 0 };
+  if (!(t.startsWith("{") || t.startsWith("["))) return { value: raw, scrubbed: 0, rejected: false };
+  let parsed: unknown;
   try {
-    const [clean, n] = scrubSecrets(JSON.parse(t));
-    return n > 0 ? { value: JSON.stringify(clean), scrubbed: n } : { value: raw, scrubbed: 0 };
+    parsed = JSON.parse(t);
   } catch {
-    return { value: raw, scrubbed: 0 };
+    return { value: raw, scrubbed: 0, rejected: false };
   }
+  const [clean, n, overflow] = scrubSecrets(parsed);
+  if (overflow) return { value: "", scrubbed: n, rejected: true };
+  return n > 0 ? { value: JSON.stringify(clean), scrubbed: n, rejected: false } : { value: raw, scrubbed: 0, rejected: false };
+}
+
+/**
+ * 【MC-029】算出「把这份导出档**恢复**成当前设置」要**删掉**哪些键。
+ *
+ * 普通导入是 **upsert(只合并)**:写进档里有的键,**不动**表里其它键。于是"导入前只有 A、
+ * 导入新增 B,再拿只含 A 的备份导回来"— B 仍然留着 —— 所谓"导坏了用备份导回来"并没有
+ * 真正回到导入前的状态。要让"完整恢复"成立,就得**删掉备份里没有的键**,但只能删**允许
+ * 迁移范围内的键**:敏感/本机设置(密钥、本机路径、授信)不在导出档里,也就绝不能被"恢复"
+ * 当成"备份里没有"而误删 —— 那会把用户本机的密钥、SSH 授信一起清掉。
+ *
+ * 判据 =「当前表里的键 ∩ 可迁移集合」减去「备份档里的键」。返回要删的键(已按可迁移过滤)。
+ * 只在库里有值(`currentKeysWithValues`)的键会被列出 —— 值为 null 的空键没什么可删。
+ */
+export function restoreKeysToDelete(
+  currentKeysWithValues: readonly string[],
+  exportedKeys: ReadonlySet<string>,
+): string[] {
+  return currentKeysWithValues
+    .filter((k) => isTransferableSettingKey(k) && !exportedKeys.has(k))
+    .sort();
 }
 
 export interface SettingsExportDoc {
@@ -206,6 +303,13 @@ export function buildSettingsExport(
       continue;
     }
     const r = scrubValue(raw);
+    // 清洗不干净(嵌套/体积超限)= **fail-closed 丢弃整条**。绝不能让它以原样进导出文件
+    // —— 那正是密钥从深层漏出的口子(MC-024)。宁可丢掉一条带不走的偏好,也不留下一条
+    // 可能含密钥的整块配置。
+    if (r.rejected) {
+      skipped += 1;
+      continue;
+    }
     scrubbed += r.scrubbed;
     settings[key] = r.value;
   }
@@ -287,7 +391,14 @@ export function parseSettingsImport(text: string): ParsedSettingsImport {
       skipped.push(k);
       continue;
     }
-    const clean = scrubValue(v).value;
+    const scrubbed = scrubValue(v);
+    // 导入侧与导出侧同一道 fail-closed:清洗不干净(嵌套/体积超限)就**整条拒绝**,
+    // 绝不写进库(文件可能是手改的,正是 MC-024 说的那条口子的另一个入口)。
+    if (scrubbed.rejected) {
+      skipped.push(k);
+      continue;
+    }
+    const clean = scrubbed.value;
     if (k === CUSTOM_UI_SETTING_KEY) {
       // 导入是 customUi.config.v1 的**第二个写者**,必须过 `setting.set` 那道同一份校验
       // (`validateCustomUiWrite`:重复 id / 非法动作组合 / 动态 shell 模板)—— 否则同一份

@@ -38,7 +38,7 @@ import {
   normalizeToolFilePath,
 } from "@main/lib/fileSnapshot.js";
 // 「库只读」那条硬规则要用它判"落点在不在库里"(见 canUseTool)。
-import { isInsideLibrary } from "@main/library/paths.js";
+import { writeLandsInLibrary } from "@main/library/paths.js";
 import { resolveSdkBinaryPath } from "./sdkBinaryPath.js";
 import { resolveGitBash } from "@main/lib/binaryResolve.js";
 import {
@@ -319,7 +319,7 @@ async function buildBrowserMcpServer(
         name: "browser_list",
         description: BROWSER_TOOL_SPECS.browser_list.description,
         inputSchema: {},
-        handler: async () => browserList(),
+        handler: async () => browserList(projectPath),
       },
       {
         name: "browser_navigate",
@@ -351,7 +351,7 @@ async function buildBrowserMcpServer(
           browserId: z.string().optional().describe("目标浏览器视图 id;省略则用当前目标视图"),
         },
         handler: async (args: Record<string, unknown>) =>
-          browserSnapshot({ browserId: args.browserId as string | undefined }),
+          browserSnapshot({ browserId: args.browserId as string | undefined, projectPath }),
       },
       {
         name: "browser_click",
@@ -370,6 +370,7 @@ async function buildBrowserMcpServer(
             coordinateX: typeof args.coordinateX === "number" ? args.coordinateX : undefined,
             coordinateY: typeof args.coordinateY === "number" ? args.coordinateY : undefined,
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -389,6 +390,7 @@ async function buildBrowserMcpServer(
             text: typeof args.text === "string" ? args.text : "",
             clear: args.clear !== false,
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -402,6 +404,7 @@ async function buildBrowserMcpServer(
           browserKeys({
             keys: typeof args.keys === "string" ? args.keys : "",
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -419,6 +422,7 @@ async function buildBrowserMcpServer(
             pages: typeof args.pages === "number" ? args.pages : undefined,
             selector: typeof args.selector === "string" ? args.selector : undefined,
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -438,6 +442,7 @@ async function buildBrowserMcpServer(
             seconds: typeof args.seconds === "number" ? args.seconds : undefined,
             timeoutSeconds: typeof args.timeoutSeconds === "number" ? args.timeoutSeconds : undefined,
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -451,6 +456,7 @@ async function buildBrowserMcpServer(
           browserHistory({
             action: args.action as "back" | "forward" | "reload",
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -468,6 +474,7 @@ async function buildBrowserMcpServer(
             selector: typeof args.selector === "string" ? args.selector : undefined,
             value: typeof args.value === "string" ? args.value : "",
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -495,6 +502,7 @@ async function buildBrowserMcpServer(
             attributes: Array.isArray(args.attributes) ? (args.attributes as unknown[]).filter((a): a is string => typeof a === "string") : undefined,
             cssScope: typeof args.cssScope === "string" ? args.cssScope : undefined,
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -504,7 +512,7 @@ async function buildBrowserMcpServer(
           browserId: z.string().describe("要切换到的浏览器视图 id(browser_list 查询)"),
         },
         handler: async (args: Record<string, unknown>) =>
-          browserSwitchTab({ browserId: args.browserId as string }),
+          browserSwitchTab({ browserId: args.browserId as string, projectPath }),
       },
       {
         name: "browser_close_tab",
@@ -513,7 +521,7 @@ async function buildBrowserMcpServer(
           browserId: z.string().describe("要关闭的浏览器视图 id"),
         },
         handler: async (args: Record<string, unknown>) =>
-          browserCloseTab({ browserId: args.browserId as string }),
+          browserCloseTab({ browserId: args.browserId as string, projectPath }),
       },
       {
         name: "browser_upload_file",
@@ -557,6 +565,7 @@ async function buildBrowserMcpServer(
               scale: typeof args.scale === "number" ? args.scale : undefined,
               headerFooter: args.headerFooter === true,
               browserId: args.browserId as string | undefined,
+              projectPath,
             },
             {
               toolCallId: randomUUID(),
@@ -582,6 +591,7 @@ async function buildBrowserMcpServer(
           browserEvaluate({
             script: args.script as string,
             browserId: args.browserId as string | undefined,
+            projectPath,
           }),
       },
       {
@@ -602,7 +612,7 @@ async function buildBrowserMcpServer(
           // needed here — unlike the Pi path, the toolCallId isn't available
           // in the MCP handler's extra, so we rely solely on the tool_result.
           return browserScreenshot(
-            { browserId: args.browserId as string | undefined, fullPage: args.fullPage === true },
+            { browserId: args.browserId as string | undefined, fullPage: args.fullPage === true, projectPath },
             {
               toolCallId: randomUUID(),
               sessionId,
@@ -856,8 +866,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // (declared in capabilities.permissionModes), so the cast is safe. The
       // UI "plan" mode is translated to "default" (see isUiPlanMode above).
       permissionMode: (isUiPlanMode ? "default" : req.permissionMode) as Options["permissionMode"],
-      resume: req.resumeProviderSessionId ?? undefined,
-      includePartialMessages: true,
+      resume: req.resumeProviderSessionId ?? undefined,      includePartialMessages: true,
       // Forward the subagents' full conversation (text/thinking included, not
       // just tool_use/tool_result) as assistant/user messages carrying the
       // spawning Task tool_use id in `parent_tool_use_id`. The adapter routes
@@ -1194,9 +1203,11 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
             // **静默失效**,而没有任何东西会提醒。用户明确要求"库的内容不能动",所以
             // 它得是显式的一条,不是巧合的副产品。
             //
-            // 判据复用 `library/paths.ts` 的 `isInsideLibrary`(那里本来就负责
-            // "别让人写坏库路径",不另写一份)。
-            if (isInsideLibrary(norm.absPath)) {
+            // 判据用 `writeLandsInLibrary`(**只看真实目的地**),不是 `isInsideLibrary`:
+            // 后者要求字面与物理都在库下,而项目里一个指向库的 junction 字面在库外 ——
+            // 于是"写出去"挡得住、"写进来"会漏(第十三轮复查的反例)。这里问的是
+            // "往这个路径写会不会碰库",所以只看物理落点。
+            if (writeLandsInLibrary(norm.absPath)) {
               ctx.log.info(`denied library-write ${toolName}: ${norm.absPath}`);
               return {
                 behavior: "deny",
@@ -1761,6 +1772,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       req.initialTodos ?? [],
       configured,
       !req.apiConfig,
+      Boolean(req.resumeProviderSessionId),
     );
     // Wire the settle gate: the adapter releases the prompt iterable's hold
     // once the turn is settled (result + no running subagents / background
@@ -1881,6 +1893,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
                 req.initialTodos ?? [],
                 configured,
                 !req.apiConfig,
+                Boolean(req.resumeProviderSessionId),
               );
               activeAdapter.setSettleGate(retryGate.release);
               continue;

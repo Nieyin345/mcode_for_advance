@@ -73,6 +73,15 @@ export const providerRegistry = {
   resolve(id?: string): AgentProvider {
     return makeProvider(id ?? "claude-sdk");
   },
+  /**
+   * 【MC-056】`sessionFork` 现在用 `getRequired`。真注册表里它"取不到就抛" —— 但本套的
+   * 分叉夹具验的是**引擎不支持复制对话**(挂在 provider 上没有 `forkSession` 那一支),
+   * 而不是"引擎没注册"。所以这里照 `resolve` 一样返回一个 provider(带不带 `forkSession`
+   * 由夹具决定),让那条判断仍然执行得到;真正的"未注册引擎必须拒绝"在 session-fork-smoke 验。
+   */
+  getRequired(id: string): AgentProvider {
+    return makeProvider(id);
+  },
   get default(): AgentProvider {
     // `claude:healthCheck` 在没有默认引擎时走"没有 healthCheck 就报 installed:true"
     // 那条兜底。真的那边 `default` 会抛 —— 但那是在**装好之后**才可能发生的状态。

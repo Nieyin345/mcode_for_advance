@@ -266,6 +266,51 @@ export function findContainingProject(repoPath: string): string | null {
   return findContainingWorkspaceRoot(repoPath);
 }
 
+/** Resolve the **real** repository root git would operate on for `repoPath`
+ *  (`git rev-parse --show-toplevel` — git walks UP the directory tree to find
+ *  the enclosing `.git`). Returns null when repoPath isn't inside a repository,
+ *  when git can't run, or when rev-parse fails (e.g. detached `.git`). */
+export async function resolveGitTopLevel(repoPath: string): Promise<string | null> {
+  try {
+    const git = (await loadSimpleGit())(repoPath);
+    const top = (await git.revparse(["--show-toplevel"])).trim();
+    return top || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Repo-containment guard for every git operation (MC-041).
+ *
+ *  Verifying only that `repoPath` sits inside a known workspace root is NOT
+ *  enough: `repoPath` can pass that check (it's a real directory inside the
+ *  project) while the git command actually operates on a repository OUTSIDE
+ *  the project — git discovers the nearest `.git` by walking UP, so a `.git`
+ *  in a parent / grandparent directory silently redirects every status / stage
+ *  / commit / checkout to a repo the user never authorized.
+ *
+ *  So we resolve the repo root git would really use and require THAT to be
+ *  inside a known workspace root too (reusing `findContainingWorkspaceRoot`,
+ *  the same guard the file/terminal/LSP handlers share — not a second copy).
+ *  The workspace-root check is a CONTAINMENT test (`findContainingWorkspaceRoot`,
+ *  not `isKnownWorkspaceRoot`): a monorepo project legitimately hosts several
+ *  nested repos, so the repo root may be a SUBdirectory of a project root.
+ *
+ *  Returns false to refuse. Exported so callers that surface their own refusal
+ *  payload can share one implementation. */
+export async function isRepoPathContained(repoPath: string): Promise<boolean> {
+  if (!findContainingProject(repoPath)) return false;
+  const top = await resolveGitTopLevel(repoPath);
+  if (!top) return false;
+  if (!findContainingWorkspaceRoot(top)) {
+    log.warn(
+      `git refused — repoPath "${repoPath}" resolves to repo root "${top}" outside any workspace root`,
+    );
+    return false;
+  }
+  return true;
+}
+
 /** Resolve a custom-model config for an LLM-driven git operation (commit
  *  message / conflict resolution), activating the OpenAI→Anthropic bridge when
  *  the config speaks the OpenAI wire protocol.
@@ -633,7 +678,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:status — status of a single repo ── */
   ipcMain.handle(IPC.GIT_STATUS, async (_evt, raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       log.warn(`git.status refused — repoPath outside any project: ${input.repoPath}`);
       return { status: { branch: "", ahead: 0, behind: 0, files: [] } };
     }
@@ -650,7 +695,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:stage — git add specific files ── */
   ipcMain.handle(IPC.GIT_STAGE, async (_evt, raw) => {
     const input = GitStageSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
@@ -671,7 +716,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:unstage — git reset specific files ── */
   ipcMain.handle(IPC.GIT_UNSTAGE, async (_evt, raw) => {
     const input = GitUnstageSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
@@ -690,7 +735,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:commit — commit staged changes ── */
   ipcMain.handle(IPC.GIT_COMMIT, async (_evt, raw) => {
     const input = GitCommitSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
@@ -709,7 +754,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:push — push to upstream ── */
   ipcMain.handle(IPC.GIT_PUSH, async (_evt, raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
@@ -728,7 +773,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:pull — pull from upstream ── */
   ipcMain.handle(IPC.GIT_PULL, async (_evt, raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
@@ -773,7 +818,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:diff — diff of a single file (staged or unstaged) ── */
   ipcMain.handle(IPC.GIT_DIFF, async (_evt, raw) => {
     const input = GitDiffSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { patch: "" };
     }
     try {
@@ -795,7 +840,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
      (untracked / newly added / staged deletion) surface as "". */
   ipcMain.handle(IPC.GIT_FILE_BLOB, async (_evt, raw) => {
     const input = GitFileBlobSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { content: "" };
     }
     try {
@@ -814,7 +859,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:discard — discard local changes (checkout tracked / clean untracked) ── */
   ipcMain.handle(IPC.GIT_DISCARD, async (_evt, raw) => {
     const input = GitDiscardSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
@@ -877,7 +922,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:log — paginated commit history ── */
   ipcMain.handle(IPC.GIT_LOG, async (_evt, raw) => {
     const input = GitLogSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       log.warn(`git.log refused — repoPath outside any project: ${input.repoPath}`);
       return { commits: [], hasMore: false };
     }
@@ -915,7 +960,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:showCommit — meta + changed files for one commit ── */
   ipcMain.handle(IPC.GIT_SHOW_COMMIT, async (_evt, raw) => {
     const input = GitShowCommitSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       log.warn(`git.showCommit refused — repoPath outside any project: ${input.repoPath}`);
       return null;
     }
@@ -934,7 +979,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:showFile — parent vs commit blob contents for one path ── */
   ipcMain.handle(IPC.GIT_SHOW_FILE, async (_evt, raw) => {
     const input = GitShowFileSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       log.warn(`git.showFile refused — repoPath outside any project: ${input.repoPath}`);
       return { before: "", after: "" };
     }
@@ -956,7 +1001,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:generateCommitMessage — LLM-generated commit message from staged diff ── */
   ipcMain.handle(IPC.GIT_GENERATE_COMMIT, async (_evt, raw) => {
     const input = GitGenerateCommitSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     return generateCommitMessageForRepo({
@@ -979,7 +1024,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:listBranches - local / remote branches + tags (grouped) ── */
   ipcMain.handle(IPC.GIT_LIST_BRANCHES, async (_evt, raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       log.warn(`git.listBranches refused - repoPath outside any project: ${input.repoPath}`);
       return { branches: { current: "", detached: false, local: [], remote: [], tags: [] } };
     }
@@ -994,7 +1039,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:checkout - switch branch / tag / ref (optionally create new) ── */
   ipcMain.handle(IPC.GIT_CHECKOUT, async (_evt, raw) => {
     const input = GitCheckoutSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     return checkoutRef(input.repoPath, input.branch, input.newBranch);
@@ -1003,7 +1048,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:deleteBranch - delete a local branch (-d / -D with force) ── */
   ipcMain.handle(IPC.GIT_DELETE_BRANCH, async (_evt, raw) => {
     const input = GitDeleteBranchSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     return deleteLocalBranchForRepo(input.repoPath, input.branch, input.force);
@@ -1012,7 +1057,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:mergePreview - read-only preview of merging `source` into HEAD ── */
   ipcMain.handle(IPC.GIT_MERGE_PREVIEW, async (_evt, raw) => {
     const input = GitMergeSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       log.warn(`git.mergePreview refused - repoPath outside any project: ${input.repoPath}`);
       return { ok: false, upToDate: false, fastForward: false, incomingCommits: 0, error: "仓库路径不在任何已添加的项目内" };
     }
@@ -1029,7 +1074,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:merge - merge `source` into the current branch ── */
   ipcMain.handle(IPC.GIT_MERGE, async (_evt, raw) => {
     const input = GitMergeSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
@@ -1100,7 +1145,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   /* ── git:mergeAbort - abort an in-progress merge, restoring the pre-merge state ── */
   ipcMain.handle(IPC.GIT_MERGE_ABORT, async (_evt, raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     try {
@@ -1126,7 +1171,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
    * worktree itself lives outside every project root by design. */
   ipcMain.handle(IPC.GIT_WORKTREE_LIST, async (_evt, raw) => {
     const input = GitWorktreeListSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       log.warn(`git.worktreeList refused — repoPath outside any project: ${input.repoPath}`);
       return { worktrees: [] };
     }
@@ -1140,7 +1185,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.GIT_WORKTREE_STATUS, async (_evt, raw) => {
     const input = GitWorktreeStatusSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       log.warn(`git.worktreeStatus refused — repoPath outside any project: ${input.repoPath}`);
       return { status: null };
     }
@@ -1154,7 +1199,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.GIT_WORKTREE_MERGE_BACK, async (_evt, raw) => {
     const input = GitWorktreeMergeBackSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     const res = await mergeBackWorktree(input.repoPath, input.worktreePath, {
@@ -1166,7 +1211,7 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.GIT_WORKTREE_REMOVE, async (_evt, raw) => {
     const input = GitWorktreeRemoveSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { ok: false, error: "仓库路径不在任何已添加的项目内" };
     }
     const res = await removeWorktree(input.repoPath, input.worktreePath, {

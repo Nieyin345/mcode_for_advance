@@ -16,10 +16,13 @@
  * 1. **绝不把异常抛回事件流。** 这里是 `subscribe` 的回调,而它在 RuntimeManager 发
  *    每一个事件时同步执行 —— 从这里抛出去,炸的是整个回合。同步异常由 try/catch
  *    截住,异步拒绝由 Promise.catch 截住,并且**不 await**:钩子跑多久都不该让对话卡住。
- * 2. **同一条钩子同时只跑一个进程。** 一个挂在 `tool.use` 上的钩子,一轮里会被触发
- *    几十次;每次都起一个进程的话,一个慢脚本能瞬间攒出几十个进程。正在跑的那条再来
- *    事件就记一条 `skipped`,不另起进程。
- * 3. **结果只进环,不进对话流。** 理由见 `@contracts/hook` 的 `HookRun`。
+ * 2. **同一条钩子的并发由交付策略定,默认仍是一个进程。** 一个挂在 `tool.use` 上的
+ *    钩子,一轮里会被触发几十次;每次都起一个进程的话,一个慢脚本能瞬间攒出几十个进程。
+ *    所以并发上限默认 1(见 `@contracts/hook` 的 `DEFAULT_DELIVERY_POLICY`),到上限
+ *    的再来事件按**声明的策略**处置(BEST_EFFORT / AT_MOST_ONCE 明确丢,COALESCE 攒
+ *    一次合并),**不是悄悄丢掉** —— 每一次决定都记一条 `skipped`(带原因)并进计数。
+ * 3. **结果只进环,不进对话流。** 理由见 `@contracts/hook` 的 `HookRun`。跳过/丢/合并
+ *    的**计数**另有一份不会被环顶掉的账(见 `DeliveryCounts`)。
  *
  * ## 钩子定义每次事件都重新看一遍文件
  *
@@ -32,7 +35,9 @@ import { homedir } from "node:os";
 import type { RuntimeEvent } from "@contracts/runtime";
 import {
   HOOK_EVENT_OF,
+  decideDelivery,
   matchesHook,
+  resolveDeliveryPolicy,
   type HookPayload,
   type HookRun,
   type HookSpec,
@@ -48,12 +53,35 @@ import { hooksFilePath, readHooks } from "./store.js";
 /** 执行记录最多留这么多条(新的在前)。超了丢最旧的 —— 这是**排错用的窗口**,不是账本。 */
 const RUN_RING = 50;
 
+/**
+ * 【ARC-007】一次交付决定的计数。跳过/丢/合并/不支持各多少次 —— 它们是**可观测事实**:
+ * "我的钩子到底跑了没有、为什么没跑"要能从这里数出来,而不是从 50 条会被顶掉的环里猜。
+ */
+export interface DeliveryCounts {
+  /** 真的起了进程的次数。 */
+  accepted: number;
+  /** 到了并发上限、这一次明确没跑(BEST_EFFORT / AT_MOST_ONCE)。 */
+  dropped: number;
+  /** 并进了待跑的合并批次(COALESCE),**不等于丢了** —— 后面会兑现一次。 */
+  coalesced: number;
+  /** 声明的策略本版实现不了(DURABLE_AT_LEAST_ONCE),明确报出来而不是假装跑过。 */
+  unsupported: number;
+}
+
+function emptyCounts(): DeliveryCounts {
+  return { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0 };
+}
+
 class HookRunner {
   private started = false;
   /** 缓存的钩子定义 + 它对应的文件时间戳(`null` = 文件当时不存在)。 */
   private cache: { hooks: HookSpec[]; stamp: number | null } = { hooks: [], stamp: null };
-  /** 正在跑的那些钩子 id。见文件头第 2 条不变量。 */
-  private running = new Set<string>();
+  /** 每条钩子**正在跑**的进程数。见文件头第 2 条不变量与 `deliveryPolicy.maxConcurrency`。 */
+  private inFlight = new Map<string, number>();
+  /** 【ARC-007】`COALESCE` 策略下**攒着待跑**的那一批(每条钩子至多一格)。 */
+  private coalescePending = new Map<string, HookPayload>();
+  /** 【ARC-007】交付决定的计数(按 hookId)。见 {@link DeliveryCounts}。 */
+  private deliveryCounts = new Map<string, DeliveryCounts>();
   private runs: HookRun[] = [];
   /** 事件→匹配主语(`tool.result` 要回查工具名,所以它**有状态**)。与自动化触发器
    *  共用一份逻辑,各持一个实例 —— 见 `eventSubjects.ts`。 */
@@ -80,6 +108,30 @@ class HookRunner {
   /** 最近的执行记录(新的在前)。 */
   listRuns(): HookRun[] {
     return this.runs;
+  }
+
+  /**
+   * 【ARC-007】交付决定的**计数**(按 hookId 一条)。`undefined` = 这条钩子还没被交付过。
+   *
+   * 环(`listRuns`)只有 50 条、会被顶掉,所以"跳过了多少次"在环里数不出来 —— 那才是
+   * "我的钩子为什么没跑"最需要的一个数。这里是**累加的、不会被环顶掉**的那一份。
+   */
+  deliveryCountsOf(hookId: string): DeliveryCounts | undefined {
+    const c = this.deliveryCounts.get(hookId);
+    return c === undefined ? undefined : { ...c };
+  }
+
+  /** 所有钩子的交付计数(按 hookId),副本。给设置页 / 断言用。 */
+  allDeliveryCounts(): Record<string, DeliveryCounts> {
+    const out: Record<string, DeliveryCounts> = {};
+    for (const [id, c] of this.deliveryCounts) out[id] = { ...c };
+    return out;
+  }
+
+  private bumpCount(hookId: string, field: keyof DeliveryCounts): void {
+    const c = this.deliveryCounts.get(hookId) ?? emptyCounts();
+    c[field] += 1;
+    this.deliveryCounts.set(hookId, c);
   }
 
   /**
@@ -166,37 +218,90 @@ class HookRunner {
   }
 
   private async runOne(spec: HookSpec, payload: HookPayload): Promise<void> {
-    const runId = uid("hrun_");
-    const startedAt = Date.now();
+    const policy = resolveDeliveryPolicy(spec);
+    // 在跑的进程数 + 是否已有待合并项 —— 都是 `decideDelivery` 的判据。策略的**决定**
+    // 是纯函数(见 `@contracts/hook`),这里只负责把决定落到进程与记录上。
+    const decision = decideDelivery(policy, {
+      inFlight: this.inFlight.get(spec.id) ?? 0,
+      coalescePending: this.coalescePending.has(spec.id),
+    });
+
+    if (decision.action === "unsupported") {
+      // ARC-007:本版实现不了 `DURABLE_AT_LEAST_ONCE`(没有持久领取的账本,也没有消费方
+      // 幂等键的位置)。**明确报出来**,不假装已经持久化 —— 假装的话,出事时用户会以为待办
+      // 还在。记一条 `skipped`(带原因)+ 计数,环里与计数器上都看得见。
+      this.pushRun(spec, payload, "skipped", decision.reason);
+      this.bumpCount(spec.id, "unsupported");
+      log.warn(`[hooks] 「${spec.name}」的交付策略不支持:${decision.reason}`);
+      return;
+    }
+
+    if (decision.action === "coalesce") {
+      // 把这一条**攒起来**(每条钩子至多一格)。它不算丢:等在跑的那一次收口时会兑现一批。
+      this.coalescePending.set(spec.id, payload);
+      this.pushRun(spec, payload, "skipped", decision.reason);
+      this.bumpCount(spec.id, "coalesced");
+      return;
+    }
+
+    if (decision.action === "drop") {
+      // 明确丢。记一条带原因的 `skipped`(旧行为:见文件头第 2 条)+ 计数。
+      this.pushRun(spec, payload, "skipped", decision.reason);
+      this.bumpCount(spec.id, "dropped");
+      return;
+    }
+
+    // accept —— 真的起进程。
+    this.bumpCount(spec.id, "accepted");
+    const record = this.pushRun(spec, payload, "running");
+    this.inFlight.set(spec.id, (this.inFlight.get(spec.id) ?? 0) + 1);
+    // 生效的超时:策略的 `timeoutMs` 盖过钩子自己的 `timeoutMs`(那是更细的一层声明)。
+    const effective: HookSpec =
+      policy.timeoutMs !== undefined ? { ...spec, timeoutMs: policy.timeoutMs } : spec;
+    try {
+      Object.assign(record, await runHookCommand(effective, payload));
+    } finally {
+      record.durationMs = Date.now() - record.startedAt;
+      const left = (this.inFlight.get(spec.id) ?? 1) - 1;
+      if (left <= 0) this.inFlight.delete(spec.id);
+      else this.inFlight.set(spec.id, left);
+      // 这一条跑完了 —— 若 `COALESCE` 攒着一批,此刻把它兑现成一次运行(把有界的合并
+      // 真正跑出来)。**不 await**:兑现是另起一次,别让 current 的收口等它。
+      const pending = this.coalescePending.get(spec.id);
+      if (pending !== undefined) {
+        this.coalescePending.delete(spec.id);
+        void this.runOne(spec, pending).catch((err: unknown) => {
+          log.warn(`[hooks] ${spec.name} 合并批次执行失败:${(err as Error).message}`);
+        });
+      }
+    }
+  }
+
+  /**
+   * 往环里塞一条执行记录,返回它(调用方接着 `Object.assign` 真结果)。新的在前,超过
+   * {@link RUN_RING} 丢最旧的 —— 这是**排错用的窗口**,不是账本(账本语义见
+   * {@link DeliveryCounts})。
+   */
+  private pushRun(
+    spec: HookSpec,
+    payload: HookPayload,
+    status: HookRun["status"],
+    error?: string,
+  ): HookRun {
     const record: HookRun = {
-      runId,
+      runId: uid("hrun_"),
       hookId: spec.id,
       hookName: spec.name,
       event: payload.event,
       sessionId: payload.session.id,
       sessionKind: payload.session.kind,
-      startedAt,
-      status: "running",
+      startedAt: Date.now(),
+      status,
+      ...(error !== undefined ? { durationMs: 0, error } : {}),
     };
     this.runs.unshift(record);
     if (this.runs.length > RUN_RING) this.runs.length = RUN_RING;
-
-    if (this.running.has(spec.id)) {
-      // 见文件头第 2 条。**记一条而不是悄悄丢掉**:用户看到的"我的钩子没跑"要能在这里
-      // 找到答案 —— 它是因为上一条还在跑。
-      record.status = "skipped";
-      record.durationMs = 0;
-      record.error = "上一条还在跑(同一条钩子同时只跑一个进程)";
-      return;
-    }
-
-    this.running.add(spec.id);
-    try {
-      Object.assign(record, await runHookCommand(spec, payload));
-    } finally {
-      record.durationMs = Date.now() - startedAt;
-      this.running.delete(spec.id);
-    }
+    return record;
   }
 
   /** 最近的钩子定义。见文件头"每次事件都重新看一遍文件"。 */

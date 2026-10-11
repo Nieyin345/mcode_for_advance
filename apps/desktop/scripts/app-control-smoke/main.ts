@@ -20,13 +20,15 @@ import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
 import { DOMAIN_LABELS, policyFor } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
-import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod } from "@main/appControl/tools.js";
+import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog } from "@main/appControl/tools.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import { ApprovalBridge } from "@main/claude/ApprovalBridge.js";
+import { __setSendToRendererThrows } from "./stubs/window.js";
 import {
   ACTIONS_BY_SLOT,
   CUSTOM_UI_ICONS,
+  CUSTOM_UI_SETTING_KEY,
   CUSTOM_UI_SLOTS,
   TEMPLATE_VARS_BY_SLOT,
 } from "@contracts/customUi";
@@ -40,6 +42,9 @@ function check(name: string, ok: boolean, detail?: unknown): void {
 }
 const textOf = (r: { content: Array<{ type: string; text?: string }> }): string =>
   r.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n");
+/** 取 `app_api_call` 返回里的结构化 OperationResult(ARC-009)。 */
+const opResultOf = (r: { structuredContent?: Record<string, unknown> }): Record<string, unknown> | undefined =>
+  r.structuredContent?.operation_result as Record<string, unknown> | undefined;
 
 /* ── 1. 权限表 ── */
 check("清单不为空", API_CATALOG.length > 300, API_CATALOG.length);
@@ -595,6 +600,112 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
 
   // agent 经 app_api_call 够不到面板 API 本身(它不是主进程 RPC),但**能查** —— 这正是可发现性。
   check("面板 API 不是 app_api_call 的主进程方法(靠工具查,不靠调)", !API_CATALOG.some((e) => e.method === "app_panel_api_list"));
+}
+
+/* ── 3b. ARC-009:控制命令必须区分「操作成功 / 通知失败 / 持久化不确定」──
+ *
+ * ## 这条守的是一个真洞(源码可确认的旧行为)
+ *
+ * `app_api_call` 从前在 RPC **已经成功**之后调 `notifyAppSettingWrite`(界面刷新通知)。
+ * 通知一抛错,就 `return fail("操作已完成,但桌面刷新通知失败…")` —— 返回给 Agent 的是
+ * **失败**,可数据副作用已经落定。Agent 按 fail 重试一个非幂等操作(发消息 / 建资源)
+ * 就会**重复执行**。
+ *
+ * ## 失败注入怎么做的
+ *
+ * `setting.set` 的 `notifyAppSettingWrite` 只有当 `key === CUSTOM_UI_SETTING_KEY` 时才走
+ * `sendToRenderer`。本套的 `--alias:@main/window.js=./stubs/window.ts` 让被测代码与脚本
+ * 解析到**同一个**桩文件,桩里的 `__setSendToRendererThrows(true)` 就能让"通知"这一步真的
+ * 抛 —— 而 RPC(`setting:set`)照常提交。于是精确复现"业务已提交、通知失败"那一刻。
+ *
+ * 旧行为下:该调用返回的 ToolResult `isError === true` → 下面第一条断言就红。
+ */
+{
+  __clearOperationLog();
+  __setSendToRendererThrows(false);
+  const setCalls: unknown[] = [];
+  recordRpcHandler("setting:set", async (_e, raw) => {
+    setCalls.push(raw);
+    // **副作用真的发生了一次**(这里以"记录到第 N 次"代表写档 + persist 成功)。
+    return { ok: true, saved: true };
+  });
+  const opArgs = (extra: Record<string, unknown> = {}) => ({
+    method: "setting.set",
+    input: { key: CUSTOM_UI_SETTING_KEY, value: JSON.stringify({ items: [] }) },
+    ...extra,
+  });
+
+  // ① 正常路径:提交 + 通知都成功 → SUCCEEDED,没有 warning。
+  {
+    const { ctx } = ctxWith({ allow: true }); // setting.set 是 danger 档 → 需批准(这里放行)
+    const r = await invokeAppTool("app_api_call", opArgs(), "me", ctx);
+    check("ARC-009 正常路径:是 SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED", opResultOf(r));
+    check("ARC-009 正常路径:无 warning", (opResultOf(r)?.warnings as unknown[] | undefined)?.length === 0, opResultOf(r));
+    check("ARC-009 正常路径:副作用恰好一次", setCalls.length === 1, setCalls.length);
+  }
+
+  // ② 失败注入:通知抛错,但 RPC 已提交 → 必须是 SUCCEEDED_WITH_WARNINGS,**不是失败**。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    __setSendToRendererThrows(true);
+    const opId = "arc009-notify-fail-1";
+    const r = await invokeAppTool("app_api_call", opArgs({ operation_id: opId }), "me", ctx);
+    __setSendToRendererThrows(false);
+    const op = opResultOf(r);
+    // ★ 核心:旧行为这里 isError===true(整个调用被判失败)。修复后绝不设 isError。
+    check("★ ARC-009:通知失败**不再**返回失败(isError 不设)", r.isError !== true, { isError: r.isError, text: textOf(r) });
+    check("★ ARC-009:通知失败 → SUCCEEDED_WITH_WARNINGS", op?.resultKind === "SUCCEEDED_WITH_WARNINGS", op);
+    // 警告必须**可观测**(字段层)—— 不是吞掉异常报一句纯成功。
+    const w = (op?.warnings as Array<{ code?: string; message?: string }> | undefined)?.[0];
+    check("★ ARC-009:warning 可观测(code = ui_refresh_failed)", w?.code === "ui_refresh_failed", w);
+    check("★ ARC-009:warning 带真实原因(不吞异常)", typeof w?.message === "string" && w!.message!.includes("刷新通知失败"), w);
+    // 文本层也要带上 —— 三个 SDK 都读这行字。
+    check("★ ARC-009:文本里能读到「已提交」与警告原因", textOf(r).includes("已提交") && textOf(r).includes("刷新通知失败"), textOf(r).slice(0, 240));
+    check("★ ARC-009:文本提醒不要因警告重复执行", textOf(r).includes("不要"), textOf(r).slice(0, 240));
+    // 已提交的操作**不可重试**(不然 Agent 会盲目重跑非幂等操作)。
+    check("★ ARC-009:已提交的操作 retryable=false", op?.retryable === false, op?.retryable);
+    check("★ ARC-009:通知失败这次副作用也只执行一次", setCalls.length === 2, setCalls.length);
+  }
+
+  // ③ 幂等重放:带**同一 operationId** 再调一次 → 不重复执行(即便通知现在能成功)。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const opId = "arc009-notify-fail-1";
+    const r = await invokeAppTool("app_api_call", opArgs({ operation_id: opId }), "me", ctx);
+    check("★ ARC-009:同一 operationId 重放**不再重复执行**", setCalls.length === 2, setCalls.length);
+    check("★ ARC-009:重放返回同一 resultKind(不升级成成功)", opResultOf(r)?.resultKind === "SUCCEEDED_WITH_WARNINGS", opResultOf(r));
+    check("★ ARC-009:重放文本点明未重复执行", textOf(r).includes("重放"), textOf(r).slice(0, 160));
+  }
+
+  // ④ RPC **未执行** → REJECTED(没有副作用)。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const before = setCalls.length;
+    const r = await invokeAppTool("app_api_call", { method: "no.such.method", input: {} }, "me", ctx);
+    check("★ ARC-009:方法不存在 = REJECTED", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+    check("★ ARC-009:REJECTED 仍是错误返回(isError)", r.isError === true, r.isError);
+    check("★ ARC-009:REJECTED 没有副作用", setCalls.length === before, setCalls.length);
+
+    // 审批被拒也是"命令没执行" → REJECTED(不是 FAILED)。
+    const { ctx: denyCtx } = ctxWith({ allow: false });
+    const rej = await invokeAppTool("app_api_call", opArgs(), "me", denyCtx);
+    check("★ ARC-009:审批被拒 = REJECTED(命令没执行)", opResultOf(rej)?.resultKind === "REJECTED" && setCalls.length === before, opResultOf(rej));
+    check("★ ARC-009:REJECTED 可安全重试(retryable=true)", opResultOf(rej)?.retryable === true, opResultOf(rej));
+  }
+
+  // ⑤ 写档 RPC 抛错(可能已部分落定)→ **UNCERTAIN,绝不标成功**,且不可重试。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    recordRpcHandler("setting:set", async () => { throw new Error("fsync 失败:磁盘不可写"); });
+    const r = await invokeAppTool("app_api_call", opArgs({ operation_id: "arc009-unc-1" }), "me", ctx);
+    check("★ ARC-009:写档 RPC 抛错 = UNCERTAIN(不是 SUCCEEDED)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+    check("★ ARC-009:UNCERTAIN 仍带 isError", r.isError === true, r.isError);
+    check("★ ARC-009:UNCERTAIN 不可重试(retryable=false,不盲目重跑)", opResultOf(r)?.retryable === false, opResultOf(r));
+    check("★ ARC-009:UNCERTAIN 文本提醒先查状态再决定", textOf(r).includes("不确定") && textOf(r).includes("不要"), textOf(r).slice(0, 240));
+    // 恢复一个正常 handler,免得后面若有用到。
+    recordRpcHandler("setting:set", async (_e, raw) => { setCalls.push(raw); return { ok: true, saved: true }; });
+  }
+  __setSendToRendererThrows(false);
 }
 
 /* ── 4. ApprovalBridge ── */

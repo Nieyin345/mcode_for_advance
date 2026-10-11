@@ -33,6 +33,9 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
+// 【MC-001】物理包含性判据(realpath/lstat,symlink/junction 一并跟)。复用零依赖叶子,
+// 不把 store/repositories → electron 那条链拉进这个模块。
+import { pathWithin, physicalTargetInRoot } from "@main/lib/realPathWithin.js";
 
 /**
  * 库根目录 —— **统一数据根下的 `library/`**(`<数据根>/library`)。
@@ -119,21 +122,70 @@ export function toLibraryRelative(absPath: string): string {
 }
 
 /**
- * 这个绝对路径是不是落在**库根里面**。
+ * 这个绝对路径是不是**落在库根里面**。
  *
- * 判据和仓库里其它几处越界判断同一条:`relative()` 之后看有没有往上爬、有没有变成
- * 另一个盘的绝对路径。三档都要挡住:
+ * ## 判据分两层(2026-10-11,MC-001 / MC-006 —— 独立复核实测反例后修)
+ *
+ * **第一层:字面路径。** `relative()` 之后看有没有往上爬、有没有变成另一个盘的绝对
+ * 路径。三档都要挡住:
  *
  * - 库外且比库根长(`C:/Windows/...`)—— 老写法放过去的那一批;
  * - 库外且比库根短(上一级目录、盘根)—— 老写法靠"切出来是空串"碰巧挡住;
  * - **前缀撞上但不是同一个目录**(库根是 `…/library`,兄弟目录 `…/library-old`)——
- *   `startsWith(库根)` 那种写法会把它当成库内,这是收口时必须一并挡掉的一档。
+ *   `startsWith(库根)` 那种写法会把它当成库内。
+ *
+ * 【MC-006】越界只能是 `rel === ".."` 或 `rel` 以 `".." + sep` 开头 —— **不能**用
+ * `startsWith("..")`:那会把库内合法的点文件 `..config` / `..backup` 也当成逃逸拒掉。
+ *
+ * **第二层:物理路径。** 光看字面**不够** —— 库里的一个 symlink / Windows junction
+ * 可以指向库外,而字面路径看着仍在库里(独立复核实测:`library/link` 指向外部目录时,
+ * 旧的纯字面判据返回"在库内")。所以这里复用 {@link pathWithin}(与 `lib/pathGuard`
+ * 同一份 `realPathWithin` 实现,不另写一套),把真实目的地也判一遍。
  *
  * 库根本身算库内(`relative` 给回空串)。
+ *
+ * ⚠️ 本函数问的是"这份路径**是不是库里的东西**"(记录合法性、删除范围)。问"往这儿写
+ * 会不会碰库"要用 {@link writeLandsInLibrary} —— 两者对"库外别名指向库内"给出的
+ * 答案**故意不同**,见后者的注释。
  */
 export function isInsideLibrary(absPath: string): boolean {
-  const rel = relative(libraryRoot(), resolve(absPath));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  const root = libraryRoot();
+  const abs = resolve(absPath);
+  const rel = relative(root, abs);
+  // 第一层:字面包含性(含 MC-006 的两点前缀修正)。
+  if (rel !== "") {
+    if (isAbsolute(rel)) return false;        // 另一个盘 / 根
+    if (rel === "..") return false;
+    if (rel.startsWith(`..${sep}`)) return false;
+  }
+  // 第二层:物理包含性 —— 挡 symlink / junction 指向库外(MC-001)。
+  return pathWithin(root, abs);
+}
+
+/**
+ * 往这个路径**写东西**会不会落到资料库里?(资料库硬只读的那道闸用这个。)
+ *
+ * ## 为什么不是 {@link isInsideLibrary}
+ *
+ * 2026-10-11 第十三轮独立复查的反例:项目目录里建一个 junction `project/alias` →
+ * `<数据根>/library`,于是 `isInsideLibrary("project/alias/note.md")` 返回 **false**
+ * —— 字面路径不在库下(`relative` 给出 `../../…`),第一层就给否了。可这个写的**真实
+ * 目的地**正是那篇库内笔记。Claude 的 `canUseTool` 与 Pi 的 `guardToolPath` /
+ * bash 重定向检查都拿 `isInsideLibrary` 当"库只读"判据,于是在 bypass 档下这条别名
+ * 能把库文件改掉。**漏判的根因是这一个函数兼了两种语义**:
+ *
+ * - "这份路径是不是库里的东西"(字面 ∧ 物理)—— 记录合法性、删除范围,用
+ *   {@link isInsideLibrary};
+ * - "往这儿写会不会碰库"(**只问物理目的地**)—— 只读闸,用本函数。
+ *
+ * 单看字面不够:库内一个 symlink 指向库外,字面在库内而写出去(旧判据,**仍要在**);
+ * 库外一个别名指向库内,字面在库外而写进来(本函数补的那半边)。两者都要过物理这一关。
+ *
+ * ⚠️ 与所有 realpath 判据一样,这不消解 TOCTOU(查与用之间链接被换)。它是"拒绝明显
+ * 越界"的一道闸,不是原子隔离 —— 真正的隔离靠 OS 账户/只读位,不在本模块职责内。
+ */
+export function writeLandsInLibrary(absPath: string): boolean {
+  return physicalTargetInRoot(libraryRoot(), resolve(absPath));
 }
 
 /** 库内相对路径 → 绝对路径(读文件时用)。 */
@@ -181,9 +233,12 @@ export function markdownArtifact(absMdPath: string): { path: string; recursive: 
   // 从 `markdown/` 往下数 —— 但**先确认它真在 `markdown/` 下面**。不在的话下面数出来的
   // 层数是没有意义的(短路成 0 层后会被读成"整个目录"),而那种路径只可能是笔记那一类。
   const relFromMarkdown = relative(join(root, "markdown"), parent);
+  // 【MC-006】`..` 前缀判据带分隔符(别把合法的 `..config` 误判成不在 markdown/ 下)。
   const inside =
     relFromMarkdown === "" ||
-    (!relFromMarkdown.startsWith("..") && !isAbsolute(relFromMarkdown));
+    (relFromMarkdown !== ".." &&
+      !relFromMarkdown.startsWith(`..${sep}`) &&
+      !isAbsolute(relFromMarkdown));
   if (!inside) return flat(abs);
   const rel = relFromMarkdown.split(/[/\\]/).filter(Boolean);
   // 平的那种:正好两层,且两层都是两位的哈希前缀目录。

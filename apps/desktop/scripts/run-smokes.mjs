@@ -15,6 +15,17 @@ export const CRITICAL_SUITES = Object.freeze([
   // 调度器拆成三套(A5,2026-10-07):核心/数据/控制流。都是核心逻辑,一起算关键集。
   "scheduler-smoke", "scheduler-data-smoke", "scheduler-flow-smoke",
   "ipc-wiring-smoke", "path-guard-smoke",
+  // 【MC-010】PR 门禁此前只覆盖上面这 10 套 —— 三引擎、插件、公网 MCP、回滚快照
+  // 这些**高风险面**都要等 master push 之后的全量跑才会被发现,太晚。下面这几套
+  // 补的是"用户数据安全 + 三家引擎关键链路 + 外部端点",都是真实行为断言、跑得快,
+  // 适合进 PR 门禁(不必把全部几十套都塞进来 —— 那只是让 PR 变慢,不是变稳)。
+  "file-snapshot-smoke",        // 快照/回滚:符号链接越界、冲突检测、大文件、并发(MC-001/002/003/005/006/008)
+  "engine-regressions-smoke",   // 三引擎回归:Pi/Codex 取消/审批/库只读/用量与 turn 收尾
+  "claude-ipc-smoke",           // Claude 会话/turn/审批/fork/中断的 IPC 全链
+  "plugins-ipc-smoke",          // 插件安装/卸载/路径围栏/运行中拒绝卸载
+  "mcp-endpoint-smoke",         // 公网 MCP 端点的鉴权、工具审批、路径沙箱
+  "mcp-trust-identity-smoke",   // 【MC-055】项目 MCP 授信身份不可伪造(伪造 .git / worktree 回指)
+  "library-paths-smoke",        // 【MC-001/006】资料库只读物理边界 + 两点前缀合法文件名
 ]);
 const SUITE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-smoke$/;
 

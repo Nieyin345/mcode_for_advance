@@ -102,12 +102,26 @@ export class PiAgentSdkProvider implements AgentProvider {
     if (req.resumeProviderSessionId) {
       try {
         sessionManager = sdk.SessionManager.open(req.resumeProviderSessionId);
+        // 【ARC-008】如实报出:这一轮**真的**接上了原会话(不是"窗口里有历史"就算)。
+        ctx.onResumeOutcome?.({ kind: "RESUMED", providerSessionId: req.resumeProviderSessionId });
       } catch (err) {
-        ctx.log.warn(`pi: failed to open session file ${req.resumeProviderSessionId}, starting fresh: ${(err as Error).message}`);
-        sessionManager = sdk.SessionManager.create(req.cwd);
+        // 【MC-057】恢复失败**不**静默开新会话。从前这里 catch 掉之后直接
+        // `SessionManager.create(cwd)` —— 界面还显示原来的历史,模型却在一个**全新的
+        // context** 里从头开始,之前跑过的结果、用户给过的约束全部丢掉,而用户毫不知情。
+        // 对自动执行外部动作的场景,静默丢上下文比直接报错更危险。现在把它变成一个**明确
+        // 的失败**:用户看到原因,可以重试,或新建一个会话显式重开。
+        ctx.log.error(`pi: failed to open session file ${req.resumeProviderSessionId}: ${(err as Error).message}`);
+        // 【ARC-008】记一条结构化事实(宿主据此呈现,不靠 warn 猜)。
+        ctx.onResumeOutcome?.({ kind: "FAILED", requestedId: req.resumeProviderSessionId, error: (err as Error).message });
+        throw new Error(
+          `无法恢复这段对话的 Pi 底层会话(${req.resumeProviderSessionId}):${(err as Error).message}。` +
+            `已拒绝发送 —— 静默开一个新会话会让模型丢掉之前的执行结果与约束。请重试,或新建一个会话。`,
+        );
       }
     } else {
       sessionManager = sdk.SessionManager.create(req.cwd);
+      // 【ARC-008】本就是全新会话,不是降级。
+      ctx.onResumeOutcome?.({ kind: "FRESH_EXPLICIT" });
     }
 
     // Tools allowlist. We do NOT restrict tools by permission mode here.

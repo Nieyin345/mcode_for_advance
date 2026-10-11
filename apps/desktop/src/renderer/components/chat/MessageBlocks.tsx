@@ -1201,6 +1201,7 @@ const BlockView = memo(function BlockView({
           files={block.files}
           isLatestTurn={block.isLatestTurn}
           rewound={block.rewound}
+          rewindPartial={block.rewindPartial}
         />
       );
 

@@ -39,16 +39,22 @@ export function findContainingWorkspaceRoot(absPath: string): string | null {
   return [...known].find((r) => within(r, absPath)) ?? null;
 }
 
-/* 真的那一份还有这几个导出,本套用不到,显式抛而不是静默返回。 */
+/** 物理包含判据的替身:字面 `within`(本桩不做 realpath —— 夹具不摆符号链接)。
+ *  被测代码用它把「文件必须属于**该工作区对应**的根」这条判据加上(MC-035)。 */
+export function pathWithin(root: string, abs: string): boolean {
+  return within(root, abs);
+}
+
+/** 真的一份返回「包含该路径的项目根」。本桩里项目根就是登记的 workspace 根
+ *  (夹具里两者一一对应)。返回 null 表示不在任何根里。 */
+export function findContainingProject(absPath: string): string | null {
+  return [...known].find((r) => within(r, absPath)) ?? null;
+}
+
+/* 真的那一份还有这两个导出,本套用不到,显式抛而不是静默返回。 */
 export function isKnownProjectPath(): never {
   throw new Error("lsp-smoke 的 pathGuard 桩没造 isKnownProjectPath");
 }
-export function findContainingProject(): never {
-  throw new Error("lsp-smoke 的 pathGuard 桩没造 findContainingProject");
-}
 export function samePath(): never {
   throw new Error("lsp-smoke 的 pathGuard 桩没造 samePath");
-}
-export function pathWithin(): never {
-  throw new Error("lsp-smoke 的 pathGuard 桩没造 pathWithin");
 }

@@ -453,6 +453,8 @@ same("…而且尺寸真的交给了那条终端的 PTY", pty1.resizes, [[100, 3
 
 windowStub.resetSent();
 pty1.__emitData("hello from shell\r\n");
+// MC-046 之后输出是**按帧合批**推送的 —— 不是 emit 的同一拍就到,得等合并窗口放行。
+await flushAsync();
 const dataMsgs = windowStub.sentOf(IPC.TERMINAL_DATA);
 eq("shell 吐了一段 → 界面上收到一条 terminal:data", dataMsgs.length, 1);
 eq("…那条带的是这个 terminalId", dataMsgs[0]?.terminalId, id1);
@@ -1073,6 +1075,154 @@ eq(
   ((await list({})).terminals as unknown[]).length,
   0,
 );
+
+/* ───────────────────────── 9. MC-046:输出推送合并(背压) ─────────────────────────
+ *
+ * PTY 每来一段就 `sendToRenderer` 一发的话,`yes` / `cat 大文件` 那种刷屏输出会把 IPC
+ * 通道打爆、界面卡住。修法:按帧(16ms)把多段合并成一次推送 —— **不能丢数据**。
+ *
+ * 判据立在两件事上,缺一不可:
+ *   ① 高频输出下 IPC 发送**次数显著低于** chunk 数(真的合批了);
+ *   ② 所有字节**拼起来一字不差**(顺序保持、没丢)。
+ */
+section("9. MC-046:高频输出合并成批量推送(不丢字节)");
+
+TerminalManager.disposeAll();
+await flushAsync();
+ptyStub.resetSpawns();
+windowStub.resetSent();
+{
+  const burst = await create({ projectPath: PROJECT });
+  const ptyBurst = ptyStub.spawns[0].pty;
+  windowStub.resetSent();
+
+  // 连打 200 段,每段都不同(好验顺序与完整性)。合并窗口 16ms 内它们应被合批。
+  const chunks: string[] = [];
+  for (let i = 0; i < 200; i++) {
+    const c = `#${i};`;
+    chunks.push(c);
+    ptyBurst.__emitData(c);
+  }
+  // 窗口到期前:不该有 200 条推送(那正是要挡的"每 chunk 一发")。
+  const duringBurst = windowStub.sentOf(IPC.TERMINAL_DATA).length;
+  check(
+    "★ 200 段紧挨着吐出来时,IPC 推送次数远少于 200(合批了,不是每 chunk 一发)",
+    duringBurst < 200,
+    { pushes: duringBurst, chunks: 200 },
+  );
+
+  // 等合并窗口到期,把剩下的 flush 出来。
+  await flushAsync();
+  const msgs = windowStub.sentOf(IPC.TERMINAL_DATA);
+  check("★ 合批后确实有推送发出(不是一条都不发)", msgs.length >= 1, { msgs: msgs.length });
+  // ★ 内容一字不差、顺序不乱 —— 合并的是推送频率,不是丢数据。
+  const reassembled = msgs.map((m) => String(m.data ?? "")).join("");
+  eq("★ 合起来的内容与逐段发的一字不差(顺序保持、没丢字节)", reassembled, chunks.join(""));
+  check(
+    "★ 每一条推送都带着正确的 terminalId",
+    msgs.every((m) => m.terminalId === burst.terminalId),
+    { ids: msgs.map((m) => m.terminalId) },
+  );
+
+  // 退出时必须把还没推出去的尾巴 flush 掉 —— 否则最后几行随合并窗口一起丢。
+  windowStub.resetSent();
+  ptyBurst.__emitData("LAST-LINE\r\n");
+  ptyBurst.__exit(0);
+  const afterExitData = windowStub.sentOf(IPC.TERMINAL_DATA).map((m) => String(m.data ?? "")).join("");
+  check(
+    "★ 退出时把攒着还没推的输出 flush 掉(最后几行不随合并窗口丢)",
+    afterExitData.includes("LAST-LINE"),
+    { afterExitData },
+  );
+  await flushAsync();
+}
+
+/* ───────────────────────── 10. MC-042:删会话/项目回收其终端 ─────────────────────────
+ *
+ * 删会话 / 删项目后,它开过的 PTY 仍在后台跑 —— 成为孤立资源。修法:`TerminalManager`
+ * 在加载时把自己登记进 `sessionCleanupHooks` 的**会话/项目收尾钩子**,`rowDeletion` 跑
+ * 钩子时就把它名下的终端杀掉。
+ *
+ * 判据立在"删完之后还能不能 `list()` 到它"上 —— 那正是"孤立资源"的反面。
+ */
+section("10. MC-042:删会话/删项目回收其名下的终端");
+
+TerminalManager.disposeAll();
+await flushAsync();
+ptyStub.resetSpawns();
+windowStub.resetSent();
+{
+  const { runSessionCleanupHooks, runProjectCleanupHooks } = await import("@main/lib/sessionCleanupHooks.js");
+
+  // 会话 A 开两个终端(带 origin.sessionId),会话 B 开一个;各按项目归属。
+  const otherProject = join(SCRATCH, "另一个项目");
+  mkdirSync(otherProject, { recursive: true });
+  ProjectRepo.create({
+    id: "p_term_scope",
+    name: "scope",
+    path: otherProject,
+    archived: false,
+    sortOrder: 3,
+    pinnedAt: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+
+  const sA1 = await create({ projectPath: PROJECT, origin: { kind: "session", sessionId: "sess-A" } });
+  const sA2 = await create({ projectPath: PROJECT, origin: { kind: "session", sessionId: "sess-A" } });
+  const sB = await create({ projectPath: PROJECT, origin: { kind: "session", sessionId: "sess-B" } });
+  eq("夹具:本项目下开了 3 个终端", ((await list({ projectPath: PROJECT })).terminals as unknown[]).length, 3);
+
+  // 删会话 A → 只回收它名下的两个,会话 B 的还在。
+  runSessionCleanupHooks("sess-A");
+  await flushAsync();
+  const afterSess = (await list({ projectPath: PROJECT })).terminals as Array<{ terminalId: string }>;
+  check(
+    "★ 删会话 A 之后:它名下的两个终端被回收",
+    !afterSess.some((t) => t.terminalId === sA1.terminalId) && !afterSess.some((t) => t.terminalId === sA2.terminalId),
+    { afterSess, sA1: sA1.terminalId, sA2: sA2.terminalId },
+  );
+  check(
+    "★ 会话 B 的终端不受影响(按会话归属,不误杀)",
+    afterSess.some((t) => t.terminalId === sB.terminalId),
+    { afterSess, sB: sB.terminalId },
+  );
+
+  // 幂等:同一个会话钩子再跑一遍不炸。
+  let hookThrew: string | null = null;
+  try {
+    runSessionCleanupHooks("sess-A");
+  } catch (e) {
+    hookThrew = e instanceof Error ? e.message : String(e);
+  }
+  eq("会话钩子重复跑不炸(删项目会为每个会话各调一次)", hookThrew, null);
+
+  // 删项目(按路径回收):本项目根下所有终端都没了。
+  const sC = await create({ projectPath: PROJECT, origin: { kind: "session", sessionId: "sess-C" } });
+  eq("夹具:本项目下又有 2 个(会话 B + C)", ((await list({ projectPath: PROJECT })).terminals as unknown[]).length, 2);
+  runProjectCleanupHooks("p_term_scope", PROJECT);
+  await flushAsync();
+  eq(
+    "★ 删项目之后:本项目根下所有终端被回收(按路径归属)",
+    ((await list({ projectPath: PROJECT })).terminals as unknown[]).length,
+    0,
+  );
+  // 缺路径时(projectPath 为空)不误伤:钩子应直接跳过。
+  const sD = await create({ projectPath: PROJECT, origin: { kind: "session", sessionId: "sess-D" } });
+  runProjectCleanupHooks("p_term_scope", "");
+  check(
+    "★ 项目路径是空串时不动手(不去误杀恰好也归在这个项目之外的终端)",
+    ((await list({ projectPath: PROJECT })).terminals as Array<{ terminalId: string }>).some((t) => t.terminalId === sD.terminalId),
+    { sD: sD.terminalId },
+  );
+  await kill({ terminalId: sC.terminalId as string });
+  await kill({ terminalId: sD.terminalId as string });
+}
+
+TerminalManager.disposeAll();
+await flushAsync();
+
+/* ───────────────────────── 收尾 ───────────────────────── */
 
 console.log(`\nterminal-smoke:${total - failures}/${total} 通过`);
 process.exit(failures === 0 ? 0 : 1);

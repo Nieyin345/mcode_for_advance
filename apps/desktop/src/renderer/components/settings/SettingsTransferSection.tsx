@@ -36,13 +36,17 @@ export function SettingsTransferSection() {
     }
   };
 
-  const doImport = async () => {
+  const doImport = async (mode: "merge" | "restore" = "merge") => {
     setBusy("import");
     setStatus(null);
     try {
-      const res = await api.setting.importFromFile();
+      const res = await api.setting.importFromFile(mode === "restore" ? { mode: "restore" } : undefined);
       if (res.ok) {
-        const base = t("settings.transfer.imported", { n: res.count, m: res.skipped });
+        // 【MC-029】恢复模式额外说清删了几项,免得用户以为和合并没有区别。
+        const base =
+          mode === "restore"
+            ? t("settings.transfer.restored", { n: res.count, d: res.deleted ?? 0 })
+            : t("settings.transfer.imported", { n: res.count, m: res.skipped });
         setStatus({
           kind: "ok",
           text: res.backupPath ? `${base}\n${t("settings.transfer.backupAt", { path: res.backupPath })}` : base,
@@ -63,8 +67,14 @@ export function SettingsTransferSection() {
         </Button>
       </SettingRow>
       <SettingRow title={t("settings.transfer.importTitle")} desc={t("settings.transfer.importDesc")}>
-        <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void doImport()}>
+        <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void doImport("merge")}>
           {busy === "import" ? t("settings.transfer.working") : t("settings.transfer.importBtn")}
+        </Button>
+      </SettingRow>
+      {/* 【MC-029】完整恢复:与合并导入并列的第二个入口 */}
+      <SettingRow title={t("settings.transfer.restoreBtn")} desc={t("settings.transfer.restoreDesc")}>
+        <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void doImport("restore")}>
+          {busy === "import" ? t("settings.transfer.working") : t("settings.transfer.restoreBtn")}
         </Button>
       </SettingRow>
       {status && (

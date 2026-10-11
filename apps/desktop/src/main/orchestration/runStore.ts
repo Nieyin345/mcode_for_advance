@@ -61,7 +61,8 @@
  */
 import { log } from "@main/lib/logger.js";
 import { WorkflowRunRepo, type WorkflowRunStatus } from "@main/store/repositories.js";
-import { persistNowOrThrow } from "@main/store/db.js";
+import { commitNow } from "@main/store/db.js";
+import type { CommitResult } from "@contracts/commit";
 import type { RunState } from "./scheduler.js";
 import { WORKFLOW_RUN_SNAPSHOT_VERSION, type WorkflowRunIdentity } from "@contracts/runtime";
 import { NODE_OUTCOME_STATUSES, type NodeOutcome } from "@contracts/nodeType";
@@ -73,6 +74,41 @@ import { NODE_OUTCOME_STATUSES, type NodeOutcome } from "@contracts/nodeType";
  * 那一次**,不在攒着。留一点余量是为了"续一次、又断一次"这种情况。
  */
 const KEEP_RUNS_PER_SESSION = 10;
+
+/**
+ * 【ARC-005 步②】「**这次运行真的落盘了**」这一个**领域成功信号**的出口。
+ *
+ * 从前没有任何地方能区分「写进了内存」和「fsync 到了磁盘」—— 调用方只拿到一个布尔,
+ * 而"内存已变、磁盘没写"那种态既不算成功也不算没发生。ARC-005 的规矩是:**「运行已提交」
+ * 这类成功事件只许在 durable 之后发**,绝不在仅内存应用时发。
+ *
+ * 所以这一层把成功信号收成一个订阅口:只有 `saveRun` 在 `opts.durable` 且落盘结果
+ * **真的 durable**(见 `@contracts/commit` 的 `DURABLE`)时才 notify。非 durable 时
+ * **一个信号都不发** —— 这正是本切片要钉住的不变量。
+ *
+ * ⚠️ 订阅者抛错**不能**把已经落定的提交拖回去(提交是真的、信号只是通知),所以逐个
+ * try/catch、只记日志。
+ */
+export interface RunCommitted {
+  runId: string;
+  sessionId: string;
+  workflowId: string;
+  status: WorkflowRunStatus;
+}
+const runCommittedListeners = new Set<(run: RunCommitted) => void>();
+
+/** 订阅「这次运行 durable 提交了」。返回退订函数。 */
+export function onRunCommitted(listener: (run: RunCommitted) => void): () => void {
+  runCommittedListeners.add(listener);
+  return () => { runCommittedListeners.delete(listener); };
+}
+
+function emitRunCommitted(run: RunCommitted): void {
+  for (const listener of runCommittedListeners) {
+    try { listener(run); }
+    catch (err) { log.warn(`workflow run ${run.runId}: run-committed 订阅者抛错(提交已落定,不逆转) ${(err as Error).message}`); }
+  }
+}
 
 /**
  * 写进 `workflow_runs.payload` 的那一坨。
@@ -114,10 +150,25 @@ export interface RunSnapshot {
   /** Nodes dispatched but not yet settled at capture. A crash may leave
    * external writes/commands completed without an outcome; replay is unsafe. */
   inFlightNodeIds?: string[];
+  /**
+   * ARC-016: what config versions this run ACTUALLY used, for audit.
+   * Records references + content hashes only (no profile bodies, no secrets).
+   */
+  configSnapshot?: RunConfigSnapshot;
   prompt: string;
   cwd: string;
   state: RunState;
   attempts: [string, number][];
+}
+
+/** ARC-016: the effective config a run used (references + revisions, not bodies). */
+export interface RunConfigSnapshot {
+  takenAt: number;
+  /** per node: profile assetId -> content hash (null = no profile bound). */
+  profiles: Record<string, string | null>;
+  skills: string[];
+  providerId?: string;
+  model?: string;
 }
 
 /**
@@ -169,6 +220,7 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
       workflowRevision?: unknown;
       originSessionId?: unknown;
       inFlightNodeIds?: unknown;
+      configSnapshot?: unknown;
       prompt?: unknown;
       cwd?: unknown;
       attempts?: unknown;
@@ -230,6 +282,7 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
       capturedAt: typeof parsed.capturedAt === "number" && Number.isFinite(parsed.capturedAt) ? parsed.capturedAt : 0,
       ...(parsed.workflowRevision !== undefined ? { workflowRevision: parsed.workflowRevision as string } : {}),
       ...(parsed.inFlightNodeIds !== undefined ? { inFlightNodeIds: parsed.inFlightNodeIds as string[] } : {}),
+      ...(isRunConfigSnapshot(parsed.configSnapshot) ? { configSnapshot: parsed.configSnapshot } : {}),
       ...(parsed.originSessionId !== undefined ? { originSessionId: parsed.originSessionId as string | null } : {}),
       prompt: typeof parsed.prompt === "string" ? parsed.prompt : "",
       cwd: parsed.cwd,
@@ -252,6 +305,17 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
 }
 
 /** `[节点 id, 次数]` 形状的元组 —— `rounds` 与 `attempts` 共用同一种判据。 */
+/** 【ARC-016】配置快照的形状守卫(读档时用) —— 形状不对就丢掉,不硬塞给审计。 */
+function isRunConfigSnapshot(raw: unknown): raw is RunConfigSnapshot {
+  if (typeof raw !== "object" || raw === null) return false;
+  const r = raw as { takenAt?: unknown; profiles?: unknown; skills?: unknown };
+  if (typeof r.takenAt !== "number" || !Number.isFinite(r.takenAt)) return false;
+  if (typeof r.profiles !== "object" || r.profiles === null || Array.isArray(r.profiles)) return false;
+  if (!Object.values(r.profiles as Record<string, unknown>).every((v) => v === null || typeof v === "string")) return false;
+  if (!Array.isArray(r.skills) || !r.skills.every((s) => typeof s === "string")) return false;
+  return true;
+}
+
 function isCountTuple(raw: unknown): raw is [string, number] {
   return (
     Array.isArray(raw) &&
@@ -320,16 +384,54 @@ export function saveRun(args: {
   status: WorkflowRunStatus;
   snapshot: RunSnapshot;
 }, opts: { durable?: boolean } = {}): boolean {
+  // 【MC-053】编码**先于任何仓储写入**完成。从前这里是先 encode、失败就把 `payload`
+  // 置成空串**照样写库**("落一行空的也比不落强")—— 那是把"这一次保存失败"记成了
+  // "这份运行没有可恢复的存档",结果是**上一次好好的快照被空串覆盖掉**。`decodeSnapshot("")`
+  // 必然读不回来,于是"失败返回 false"已经晚了:旧的可恢复存档已经毁在这一句里。
+  //
+  // 现在:编码失败 → 记一行日志、**直接返回 false,一个字节都不落库**。原来的行
+  // (上一次成功的快照)原样留着,重启还能读回来续跑。调用方拿到 false 就知道这次
+  // 没写成,该停的停(见 runner 的 in-flight 闸)。
   let payload: string;
-  let encoded = true;
   try {
     payload = encode({ ...args.snapshot, version: WORKFLOW_RUN_SNAPSHOT_VERSION, capturedAt: Date.now() });
   } catch (err) {
-    // 循环引用 / 值不可序列化。**落一行空的也比不落强**:至少那一行存在,
-    // `decodeSnapshot` 会认出来它读不回来,而"这次运行存在过"仍然查得到。
-    log.warn(`workflow run ${args.runId}: 存档编码失败 ${(err as Error).message}`);
-    payload = "";
-    encoded = false;
+    log.warn(`workflow run ${args.runId}: 存档编码失败,保留上一次有效快照不动 ${(err as Error).message}`);
+    return false;
+  }
+  // 【MC-053 后半】「**能编码**」不等于「**写得进来**」。JSON.stringify 把 BigInt 之外
+  // 的任何东西都能吐出来 —— 一个 `state.record` 被写成字符串、`attempts` 里混进一个
+  // 坏元组的快照,编码不会抛(上面那一关放它过去),写库也成功返回 true,可
+  // {@link decodeSnapshot} 对刚落盘的这一行返回 **null**:调用方以为"这份运行可续",
+  // 重启后却找不到可续快照。第 13 轮独立复查的隔离反例正是这样一份 V3
+  // (`{"invalidAccepted":true,"invalidDecodes":false}`)。
+  //
+  // 判据不能是"再写一套 typeof 检查" —— 那正是台账禁止的补丁:两套 schema 迟早分叉。
+  // 这里把**刚落盘的同一段 payload** 交给 {@link decodeSnapshot}(读侧的那唯一一份
+  // 强校验)走一趟;它要收不回来,这一份就不是可恢复快照,一个字节都不落库,旧快照留着。
+  // 这会认下 decodeSnapshot 认下的**一切**(含老的、无图版本的宽松形状)—— 契约只有一份。
+  if (decodeSnapshot(payload) === null) {
+    log.warn(
+      `workflow run ${args.runId}: 存档结构通不过解码器校验,拒写以保住上一次有效快照`,
+    );
+    return false;
+  }
+  // 【MC-053 反例三】写库与落盘**不是原子的**:`WorkflowRunRepo.save` 改的是**内存**里的
+  // sql.js 表,`persistNowOrThrow` 才把它 fsync 到磁盘。第 16 轮复查抓住了这一段的窗口:
+  // 先 `save`(内存行已被换成新快照)→ `persistNowOrThrow` 抛(磁盘故障)→ 只 `return false`。
+  // 结果是**内存里那一行已经变了**(status 成了 success、payload 成了新快照),而磁盘上还是
+  // 上一次的 V1 —— 调用方以为"没写成、旧快照留着",可同一进程后续 `resumableRun` 读的是被
+  // 污染的内存行,重启后又变回 V1,两处对不上(台账实测 `oldCheckpointMutated=true`)。
+  //
+  // 修法:**durable 落盘失败要回滚内存那一行**,让"内存 == 磁盘"这条不变量在 saveRun 出口
+  // 成立。回滚 = 把先前读到的那一行写回去(没有旧行则删掉这次新建的行);回滚本身**不走
+  // durable**(内存回滚不需要再落盘 —— 磁盘没变),用 `WorkflowRunRepo.save` 的普通路径。
+  // 回滚也失败(极其罕见)则如实记日志:内存已污染,调用方不能再信本进程的续跑查询。
+  let prevRow: ReturnType<typeof WorkflowRunRepo.get> = null;
+  try {
+    prevRow = WorkflowRunRepo.get(args.runId);
+  } catch (err) {
+    log.warn(`workflow run ${args.runId}: 读取旧存档失败,落盘失败时将无法回滚 ${(err as Error).message}`);
   }
   try {
     WorkflowRunRepo.save({
@@ -340,8 +442,34 @@ export function saveRun(args: {
       payload,
       awaiting: args.snapshot.state.awaiting,
     });
-    if (opts.durable) persistNowOrThrow();
-    return encoded;
+    if (opts.durable) {
+      try {
+        persistNowOrThrow();
+      } catch (err) {
+        // 落盘失败 → 把内存那一行**回滚**到先前状态,保住"内存 == 磁盘"。
+        try {
+          if (prevRow) {
+            WorkflowRunRepo.save({
+              id: prevRow.id,
+              sessionId: prevRow.sessionId,
+              workflowId: prevRow.workflowId,
+              status: prevRow.status,
+              payload: prevRow.payload,
+              awaiting: prevRow.awaiting,
+            });
+          } else {
+            WorkflowRunRepo.remove(args.runId);
+          }
+        } catch (rollbackErr) {
+          log.error(
+            `workflow run ${args.runId}: 落盘失败且内存回滚也失败,本进程内存已污染 ` +
+              `${(rollbackErr as Error).message}`,
+          );
+        }
+        throw err; // 交给下面统一 log.warn + return false
+      }
+    }
+    return true;
   } catch (err) {
     log.warn(`workflow run ${args.runId}: 存档写不进去 ${(err as Error).message}`);
     return false;

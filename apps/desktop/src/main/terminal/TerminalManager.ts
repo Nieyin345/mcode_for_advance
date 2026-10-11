@@ -15,10 +15,17 @@ import type { TerminalInfo, TerminalOrigin } from "@contracts/ipc";
 import { TERMINAL_BUFFER_CHARS, USER_TERMINAL_ORIGIN } from "@contracts/ipc";
 import { sendToRenderer } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
+import { registerSessionCleanupHook, registerProjectCleanupHook } from "@main/lib/sessionCleanupHooks.js";
 import { resolveDefaultShell } from "./shellResolve.js";
 import { buildTerminalEnv } from "./envRefresh.js";
 
 const require = createRequire(import.meta.url);
+
+/** 输出向渲染端推送的**合并窗口**(ms)。PTY 每来一段就往 `pendingData` 里追加,
+ *  最多 `FLUSH_INTERVAL_MS` 合一次 —— `yes` / `cat 大文件` 那种刷屏输出每 chunk 一发
+ *  IPC 会把通道打爆、界面卡住(MC-046)。合并**不丢数据**:`pendingData` 是字符串拼接,
+ *  顺序天然保持,flush 时整段发出去。 */
+const FLUSH_INTERVAL_MS = 16;
 
 export interface CreateTerminalOpts {
   projectPath: string;
@@ -59,6 +66,11 @@ interface LiveTerminal {
    *  它存在的唯一目的是"列表里点开某一条终端时,那个新挂的 xterm 里得有东西",
    *  而不是给终端做归档。所以退出即丢,重启应用也丢。 */
   buffer: string;
+  /** 攒着还没推给渲染端的输出(合并窗口内)。见 {@link FLUSH_INTERVAL_MS} ——
+   *  顺序天然保持(字符串拼接),flush 时整段发出,不丢。 */
+  pendingData: string;
+  /** 合并窗口的定时器;`null` = 当前没有待发的 flush。 */
+  flushTimer: NodeJS.Timeout | null;
 }
 
 /** Lazy-load node-pty so a missing native binary doesn't crash app boot —
@@ -201,7 +213,7 @@ class TerminalManagerImpl {
       origin: opts.origin ?? USER_TERMINAL_ORIGIN,
     };
 
-    const live: LiveTerminal = { id, pty, info, buffer: "" };
+    const live: LiveTerminal = { id, pty, info, buffer: "", pendingData: "", flushTimer: null };
     this.terminals.set(id, live);
 
     pty.onData((data) => {
@@ -209,16 +221,20 @@ class TerminalManagerImpl {
       if (!this.terminals.has(id)) return;
       // 先记尾巴再推 —— 顺序反过来的话,刚创建就被接入的那一瞬会缺最后几行。
       live.buffer = appendToBuffer(live.buffer, data);
-      sendToRenderer(IPC.TERMINAL_DATA, {
-        channel: IPC.TERMINAL_DATA,
-        terminalId: id,
-        data,
-      });
+      // 合并窗口:把这一段的字节攒进 `pendingData`,最多每 `FLUSH_INTERVAL_MS` 推一次
+      // (MC-046)。字符串拼接天然保序,flush 时整段发出 —— 只是别逐 chunk 发,不丢数据。
+      live.pendingData += data;
+      if (live.flushTimer === null) {
+        live.flushTimer = setTimeout(() => this.flushData(id), FLUSH_INTERVAL_MS);
+        live.flushTimer.unref?.();
+      }
     });
 
     pty.onExit(({ exitCode }) => {
       // onExit may fire after kill() already deleted the entry — still notify
       // renderer so UI can flip to "exited" if it hasn't already.
+      // 先把还没推出去的输出 flush 掉 —— 否则退出的最后几行会随合并窗口一起丢掉。
+      this.flushData(id);
       this.terminals.delete(id);
       sendToRenderer(IPC.TERMINAL_EXIT, {
         channel: IPC.TERMINAL_EXIT,
@@ -250,6 +266,25 @@ class TerminalManagerImpl {
     }
   }
 
+  /** 把某条终端攒着的输出整段推给渲染端(合并窗口到期 / 退出 / kill 时调)。
+   *  幂等:没有待发内容、或那条终端已经不在了,就什么都不做。 */
+  private flushData(terminalId: string): void {
+    const live = this.terminals.get(terminalId);
+    if (!live) return;
+    if (live.flushTimer !== null) {
+      clearTimeout(live.flushTimer);
+      live.flushTimer = null;
+    }
+    if (!live.pendingData) return;
+    const data = live.pendingData;
+    live.pendingData = "";
+    sendToRenderer(IPC.TERMINAL_DATA, {
+      channel: IPC.TERMINAL_DATA,
+      terminalId,
+      data,
+    });
+  }
+
   resize(terminalId: string, cols: number, rows: number): boolean {
     const live = this.terminals.get(terminalId);
     if (!live) return false;
@@ -265,6 +300,8 @@ class TerminalManagerImpl {
   kill(terminalId: string): boolean {
     const live = this.terminals.get(terminalId);
     if (!live) return false;
+    // 先把攒着的输出推掉再删——否则关掉前最后几行会随合并窗口一起丢。
+    this.flushData(terminalId);
     this.terminals.delete(terminalId);
     try {
       live.pty.kill();
@@ -278,6 +315,28 @@ class TerminalManagerImpl {
       exitCode: null,
     });
     return true;
+  }
+
+  /** 回收**某个项目根**下所有终端(删项目时调,MC-042)。返回杀掉的条数。
+   *  按 `info.projectPath` 归属 —— 与 `list()` 的过滤口径一致。 */
+  killByProject(projectPath: string): number {
+    return this.killWhere((t) => t.info.projectPath === projectPath);
+  }
+
+  /** 回收**某条会话**开的所有终端(删会话时调,MC-042)。按 `origin.sessionId`
+   *  归属 —— 只有 `kind:"session"` 且 sessionId 相符的那些。返回条数。 */
+  killBySession(sessionId: string): number {
+    return this.killWhere(
+      (t) => t.info.origin.kind === "session" && t.info.origin.sessionId === sessionId,
+    );
+  }
+
+  /** 杀掉所有命中 `predicate` 的终端,返回条数。先取 id 快照再逐个 kill ——
+   *  `kill` 会改 `this.terminals`,直接遍历会漏。 */
+  private killWhere(predicate: (t: LiveTerminal) => boolean): number {
+    const ids = [...this.terminals.values()].filter(predicate).map((t) => t.id);
+    for (const id of ids) this.kill(id);
+    return ids.length;
   }
 
   /**
@@ -309,3 +368,19 @@ class TerminalManagerImpl {
 
 /** Process-wide singleton. */
 export const TerminalManager = new TerminalManagerImpl();
+
+/* ── 删会话 / 删项目时回收它名下的终端(MC-042) ──
+ *
+ * 走**收尾钩子注册表**而不是让 `rowDeletion.ts` 直接 import 本模块:本模块经
+ * `@main/window.js` 拉 electron 依赖,直接 import 会把 electron 拖进每一套 bundle 了
+ * `rowDeletion` 的 smoke(见 `lib/sessionCleanupHooks.ts` 文件头那条理由)。本模块在
+ * **加载时把自己登记进去**,`rowDeletion` 只依赖那个零依赖叶子。
+ *
+ * 两个钩子都**幂等**(同 id 调两次不报错)—— 删项目那条路会为项目下每个会话各调一次
+ * session 钩子,而 `killByProject` / `killBySession` 在没命中时就是空操作。 */
+registerSessionCleanupHook((sessionId) => {
+  TerminalManager.killBySession(sessionId);
+});
+registerProjectCleanupHook((_projectId, projectPath) => {
+  if (projectPath) TerminalManager.killByProject(projectPath);
+});

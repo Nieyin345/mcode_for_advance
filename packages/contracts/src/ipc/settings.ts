@@ -1049,7 +1049,15 @@ export type GetManySettingsResult = Record<string, string | null>;
 export type SettingExportFileResult =
   | { ok: true; path: string; count: number; skipped: number; scrubbed: number }
   | { ok: false; canceled?: boolean; error?: string };
-/** 从文件导入设置(主进程弹打开框;导入前自动备份当前设置)。 */
+/** 从文件导入设置(主进程弹打开框;导入前自动备份当前设置)。
+ *
+ *  `mode`【MC-029】:
+ *   - `merge`(默认)—— 只 **upsert** 档里有的键,不动表里其它键(合并导入);
+ *   - `restore` —— **完整恢复**:除 upsert 外,还**删掉**档里没有、但当前存在的**可迁移**
+ *     键,让表回到导出那一刻的样子。敏感/本机键(密钥、路径、授信)本来就不在导出档里,
+ *     因此**绝不**被"恢复"误删。
+ *  返回值多一个 `deleted`:恢复模式下删掉的键数。 */
+export type SettingImportFileInput = { mode?: "merge" | "restore" };
 export type SettingImportFileResult =
-  | { ok: true; count: number; skipped: number; backupPath?: string }
+  | { ok: true; count: number; skipped: number; deleted?: number; backupPath?: string }
   | { ok: false; canceled?: boolean; error?: string };

@@ -7,11 +7,13 @@
  * case-insensitive so a lowercased drive letter from Monaco/LSP (`d:\foo`)
  * still matches a project stored with an uppercase letter (`D:\foo`).
  */
-import { basename, dirname, join, resolve, sep } from "node:path";
-import { lstatSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { platform } from "node:os";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
+// 物理包含判据(`pathWithin` 及其 contained/physicalPath/norm 支撑)拆到了零依赖的
+// 叶子模块,让 fileSnapshot 这类不能拉进 electron/db 的模块复用同一份实现。
+import { pathWithin as realPathWithin } from "@main/lib/realPathWithin.js";
 
 /** True on case-insensitive filesystems (Windows, macOS). Linux is
  *  case-sensitive. Used to normalize path comparisons. */
@@ -30,48 +32,16 @@ export function samePath(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
-/** Separator-aware containment; inputs have already been normalized. */
-function contained(root: string, abs: string): boolean {
-  return abs === root || abs.startsWith(root.endsWith(sep) ? root : root + sep);
-}
-
-/** Resolve existing ancestors (including junctions and symlinks) while still
- *  allowing new files/directories below a root. A dangling symlink or any
- *  unexpected filesystem error fails closed, not as a nonexistent child. */
-function physicalPath(path: string): string | null {
-  let current = resolve(path);
-  const missing: string[] = [];
-  for (;;) {
-    try {
-      return norm(join(realpathSync.native(current), ...missing.reverse()));
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
-      try {
-        // lstat sees broken symlinks that realpath cannot follow.
-        lstatSync(current);
-        return null;
-      } catch (statErr) {
-        if ((statErr as NodeJS.ErrnoException).code !== "ENOENT") return null;
-      }
-      const parent = dirname(current);
-      if (parent === current) return null;
-      missing.push(basename(current));
-      current = parent;
-    }
-  }
-}
-
 /** True only if the lexical path AND its physical destination (including the
  *  nearest existing ancestor for a new file) are inside the registered root.
  *  Case-insensitive on Windows/macOS. This guards symlink/junction escapes in
- *  files, git, terminal and LSP callers sharing this function. */
+ *  files, git, terminal and LSP callers sharing this function.
+ *
+ *  Implementation lives in `@main/lib/realPathWithin.ts` (a zero-dependency
+ *  leaf) so non-Electron bundles can reuse it without pulling this module's
+ *  repositories → db → electron import chain. */
 export function pathWithin(root: string, abs: string): boolean {
-  const r = norm(root);
-  const a = norm(abs);
-  if (!contained(r, a)) return false;
-  const physicalRoot = physicalPath(root);
-  const physicalAbs = physicalPath(abs);
-  return physicalRoot !== null && physicalAbs !== null && contained(physicalRoot, physicalAbs);
+  return realPathWithin(root, abs);
 }
 
 /** Verify a path is inside SOME persisted project root. Returns the matching

@@ -7,7 +7,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import ssh2 from "ssh2";
 const { Server: SshServer } = ssh2;
-import { createAgentRemoteSshManager, __remoteSshTest } from "@main/mcp/agentRemoteSsh.js";
+import { createAgentRemoteSshManager, __remoteSshTest, scrubConnectionSecrets, HOST_KEY_MISMATCH_MESSAGE } from "@main/mcp/agentRemoteSsh.js";
+import { SettingRepo } from "./stubs/settingRepo.js";
 
 let checks = 0;
 let passed = 0;
@@ -230,7 +231,11 @@ check("manager reconnects automatically", recovered.state === "ready", recovered
 const exec2 = await mgr.exec(owner, conn.connectionId, "echo two");
 check("exec works after reconnect", exec2.stdout.includes("echo two"), exec2);
 await mgr.disconnect(owner, conn.connectionId);
-check("intentional disconnect stops connection", mgr.status(owner, conn.connectionId).state === "closed");
+// MC-018:主动断开**从记录里移除**该连接(不再只是标 closed 留着),所以 status 现在
+// 应当解不出这条 id。这也是反复断/连不再让 Map 无界增长的根因。
+let disconnectGone = false;
+try { mgr.status(owner, conn.connectionId); } catch { disconnectGone = true; }
+check("主动断开后连接记录被移除(status 不再解析)", disconnectGone);
 // Conversation deleted (disposeOwner, OBS-M14-01): close without auto-reconnect
 // and forget every entry of that owner.
 const conn2 = await mgr.connect({ ownerSessionId: owner, host: "127.0.0.1", port: addr.port, username: "u", password: "p", keepaliveIntervalMs: 5000 });
@@ -244,6 +249,99 @@ await waitFor(() => serverClients.size, (n) => n === 0, 2500);
 await new Promise((resolve) => setTimeout(resolve, 1500));
 check("disposed connection is closed and does not reconnect", serverClients.size === 0, serverClients.size);
 await new Promise<void>((resolve) => server.close(() => resolve()));
+
+console.log("\n[3c] MC-014 known-hosts TOFU: first-seen records, mismatch refused, reconnect re-verifies");
+{
+  SettingRepo.__clear();
+  const tofuClients = new Set<any>();
+  const tserver = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    tofuClients.add(client);
+    client.on("close", () => tofuClients.delete(client));
+    client.on("authentication", (ctx) => ctx.accept());
+    client.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => tserver.listen(0, "127.0.0.1", () => resolve()));
+  const tAddr = tserver.address();
+  if (!tAddr || typeof tAddr === "string") throw new Error("tofu server missing port");
+  const hostPort = `127.0.0.1:${tAddr.port}`;
+  const m = createAgentRemoteSshManager();
+
+  // 首见:空 known-hosts 表 → 连接成功,且指纹被记下、结果里 hostKeyRecorded=true。
+  const first = await m.connect({ ownerSessionId: "tofu", host: "127.0.0.1", port: tAddr.port, username: "u", password: "p" });
+  check("首连到未知主机成功", first.state === "ready", first);
+  check("首连在结果里报告已记录指纹", first.hostKeyRecorded === true, first);
+  const recorded = __remoteSshTest.readKnownHosts()[hostPort];
+  check("首连把 SHA256 指纹写入 known-hosts", __remoteSshTest.isWellFormedFingerprint(recorded), recorded);
+  // ssh2 的 hostVerifier 拿到的是**公钥 blob**(SSH 线格式),不是私钥 PEM —— 用
+  // parseKey 取 getPublicSSH() 才是同一份字节。
+  const pubParsed = ssh2.utils.parseKey(hostKey);
+  if (pubParsed instanceof Error || Array.isArray(pubParsed)) throw new Error("fixture host key did not parse");
+  const expectedFp = __remoteSshTest.fingerprintOfHostKey(pubParsed.getPublicSSH());
+  check("记录的指纹与服务器 host key 一致", __remoteSshTest.sameFingerprint(recorded, expectedFp), { recorded, expectedFp });
+
+  // 再见(同一 host:port,同一 key):放行,不再重复报告"记录"。
+  await m.disconnect("tofu", first.connectionId);
+  const again = await m.connect({ ownerSessionId: "tofu", host: "127.0.0.1", port: tAddr.port, username: "u", password: "p" });
+  check("已知主机再次连接成功", again.state === "ready", again);
+  check("已知主机再次连接不再报告记录", again.hostKeyRecorded === false, again);
+
+  // 错配:把记录的指纹换成另一个**合法形状**的错值 → 必须拒绝,且不重连。
+  const wrongFp = `SHA256:${"A".repeat(43)}`;
+  SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify({ [hostPort]: wrongFp }));
+  await m.disconnect("tofu", again.connectionId);
+  const mism = await m.connect({ ownerSessionId: "tofu", host: "127.0.0.1", port: tAddr.port, username: "u", password: "p" });
+  check("指纹不一致 → state=error(拒绝连接)", mism.state === "error", mism);
+  check("指纹不一致的文案点名「主机密钥变了」", (mism.lastError ?? "").includes("主机密钥变了"), mism.lastError);
+  check("指纹不一致不自动重连", mism.reconnectAttempt === 0, mism);
+  check("被拒后不会覆盖已记录的指纹", __remoteSshTest.readKnownHosts()[hostPort] === wrongFp, __remoteSshTest.readKnownHosts());
+
+  // 重连也必须校验:先恢复正确指纹、连上,再把记录换成错值、强制掉线 ——
+  // 自动重连走到 hostVerifier 时应当**再次拒绝**,而不是把变了的 key 当新指纹接受。
+  SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify({ [hostPort]: recorded }));
+  await m.disconnect("tofu", mism.connectionId);
+  const live = await m.connect({ ownerSessionId: "tofu", host: "127.0.0.1", port: tAddr.port, username: "u", password: "p" });
+  check("恢复正确指纹后又能连上", live.state === "ready", live);
+  SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify({ [hostPort]: wrongFp }));
+  for (const c of [...tofuClients]) c.end();
+  const revdrop = await waitFor(() => m.status("tofu", live.connectionId), (s) => s.state === "error", 4000);
+  check("重连也校验指纹:掉线后指纹已变 → 停到 error 不放行", revdrop.state === "error", revdrop);
+  m.disposeOwner("tofu");
+  await new Promise<void>((resolve) => tserver.close(() => resolve()));
+}
+
+console.log("\n[3d] MC-018 disconnect removes the record and scrubs secrets");
+{
+  const lserver = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    client.on("authentication", (ctx) => ctx.accept());
+    client.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => lserver.listen(0, "127.0.0.1", () => resolve()));
+  const lAddr = lserver.address();
+  if (!lAddr || typeof lAddr === "string") throw new Error("lifecycle server missing port");
+  const m = createAgentRemoteSshManager();
+  // 反复断/连 100 次:每次 connect 都新建一条,disconnect 必须把它从记录里移除,
+  // 否则 entries Map 会无界增长。
+  for (let i = 0; i < 100; i++) {
+    const c = await m.connect({ ownerSessionId: "o", host: "127.0.0.1", port: lAddr.port, username: "u", password: `secret-${i}` });
+    if (m.list("o").length > 1) break;
+    await m.disconnect("o", c.connectionId);
+  }
+  check("反复断/连 100 次后记录数不无界增长", m.list("o").length === 0, m.list("o").length);
+
+  // 口令不驻留:scrubConnectionSecrets 必须清掉 password / passphrase(以及私钥路径)。
+  const cfg = { host: "h", port: 22, username: "u", password: "p@ss", passphrase: "pp", privateKeyPath: "/k", agentPath: "/a" } as Record<string, unknown>;
+  scrubConnectionSecrets(cfg);
+  check("断开清理抹掉 password/passphrase/私钥/agent 路径", cfg.password === undefined && cfg.passphrase === undefined && cfg.privateKeyPath === undefined && cfg.agentPath === undefined, cfg);
+  check("清理保留可读元数据 host/port/username", cfg.host === "h" && cfg.port === 22 && cfg.username === "u", cfg);
+
+  // 断开后 reconnect 必须拿到**新的** connection id(证明旧记录已从 Map 移除)。
+  const c1 = await m.connect({ ownerSessionId: "o", host: "127.0.0.1", port: lAddr.port, username: "u", password: "p" });
+  await m.disconnect("o", c1.connectionId);
+  const c2 = await m.connect({ ownerSessionId: "o", host: "127.0.0.1", port: lAddr.port, username: "u", password: "p" });
+  check("断开后重连拿到新的 connection id(旧记录已移除)", c2.connectionId !== c1.connectionId, { c1: c1.connectionId, c2: c2.connectionId });
+  m.disposeOwner("o");
+  await new Promise<void>((resolve) => lserver.close(() => resolve()));
+}
 
 console.log("\n[4] auth failure must not auto-reconnect");
 {
@@ -391,6 +489,98 @@ console.log("\n[5] exec through a real shell: stdin EOF, pid marker hidden, time
     released => released, 3000,
   );
   check("模拟 SSH 通道关闭后释放全部本地子进程管道", pipesReleased, fixtureChildren.length);
+}
+
+console.log("\n[5b] MC-015 bounded exec output: tail window + byte totals + head-first truncation note");
+{
+  const big = 200_000;
+  const tailTag = "TAIL-MARKER-END";
+  const server = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    client.on("authentication", (ctx) => ctx.accept());
+    client.on("error", () => undefined);
+    client.on("ready", () => client.on("session", (accept) => {
+      const session = accept();
+      session.on("exec", (acceptExec, _reject, info) => {
+        const stream = acceptExec();
+        if (!info.command.includes("big")) {
+          // "small" 命令:少量输出,不该被截断。
+          stream.write("small-ok\n");
+          stream.exit(0);
+          stream.end();
+          return;
+        }
+        // stdout:big 字节 'A' + 尾部标记。
+        stream.write(Buffer.alloc(big, 0x41));
+        stream.write(Buffer.from(tailTag, "utf8"));
+        // stderr:超过独立(更小)的上限 + 尾部标记。
+        stream.stderr.write(Buffer.alloc(40_000, 0x42));
+        stream.stderr.write(Buffer.from("ERR-TAIL", "utf8"));
+        stream.exit(0);
+        stream.end();
+      });
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const sAddr = server.address();
+  if (!sAddr || typeof sAddr === "string") throw new Error("bounded server missing port");
+  const m = createAgentRemoteSshManager();
+  const c = await m.connect({ ownerSessionId: "o", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p" });
+  const r = await m.exec("o", c.connectionId, "big", 30_000);
+  check("超限 stdout 被标记截断", r.stdoutTruncated === true, { truncated: r.stdoutTruncated });
+  check("stdout 报告接收总量(全部字节,不只是留下的)", r.stdoutTotalBytes === big + tailTag.length, r.stdoutTotalBytes);
+  check("截断说明写在正文**前面**", r.stdout.startsWith("…(输出超过"), r.stdout.slice(0, 40));
+  check("截断仍保留尾部内容", r.stdout.includes(tailTag), r.stdout.slice(-24));
+  check("保留的 stdout 不超过尾部窗口", r.stdout.length <= __remoteSshTest.MAX_EXEC_STDOUT_BYTES + 80, r.stdout.length);
+  check("超限 stderr 单独标记截断", r.stderrTruncated === true, { truncated: r.stderrTruncated });
+  check("stderr 报告接收总量", r.stderrTotalBytes === 40_000 + "ERR-TAIL".length, r.stderrTotalBytes);
+  check("stderr 截断说明写在前面且保留尾部", r.stderr.startsWith("…(输出超过") && r.stderr.includes("ERR-TAIL"), r.stderr.slice(0, 40) + " … " + r.stderr.slice(-12));
+  check("少量输出不截断", (await m.exec("o", c.connectionId, "small", 10_000)).stdoutTruncated === false);
+  m.disposeOwner("o");
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+console.log("\n[5c] MC-017 exec streams: multi-byte chars split across chunks decode intact; stdout/stderr stay separate");
+{
+  // 逐字节写,强制把每个多字节字符切在两三块之间 —— 没有跨块解码器就会出 U+FFFD。
+  const zhStdout = "训练😀日志";
+  const zhStderr = "错误⚠️结束";
+  const server = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    client.on("authentication", (ctx) => ctx.accept());
+    client.on("error", () => undefined);
+    client.on("ready", () => client.on("session", (accept) => {
+      const session = accept();
+      session.on("exec", (acceptExec) => {
+        const stream = acceptExec();
+        void (async () => {
+          const out = Buffer.from(zhStdout, "utf8");
+          for (let i = 0; i < out.length; i++) {
+            stream.write(out.subarray(i, i + 1));
+            await sleep(6);
+          }
+          const err = Buffer.from(zhStderr, "utf8");
+          for (let i = 0; i < err.length; i++) {
+            stream.stderr.write(err.subarray(i, i + 1));
+            await sleep(6);
+          }
+          stream.exit(0);
+          stream.end();
+        })();
+      });
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const sAddr = server.address();
+  if (!sAddr || typeof sAddr === "string") throw new Error("chunk server missing port");
+  const m = createAgentRemoteSshManager();
+  const c = await m.connect({ ownerSessionId: "o", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p" });
+  const r = await m.exec("o", c.connectionId, "multibyte", 30_000);
+  check("跨块的中文/emoji 在 stdout 完整还原", r.stdout === zhStdout, r.stdout);
+  check("跨块的中文/emoji 在 stderr 完整还原", r.stderr === zhStderr, r.stderr);
+  check("stdout 没有替换字符 U+FFFD", !r.stdout.includes("�"), r.stdout);
+  check("stderr 没有替换字符 U+FFFD", !r.stderr.includes("�"), r.stderr);
+  check("stdout 与 stderr 不串流", r.stdout === zhStdout && r.stderr === zhStderr, { out: r.stdout, err: r.stderr });
+  m.disposeOwner("o");
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 console.log(`\nremote-ssh-smoke: ${passed}/${checks} passed`);

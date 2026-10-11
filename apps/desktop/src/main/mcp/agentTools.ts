@@ -40,6 +40,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { readTextPage, formatTextPage, withTextFileLock, replaceTextFile, textFileHash, grepMatchPreview, type TextPageOptions } from "./agentTextFiles.js";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
+import { pathWithin as realPathWithin } from "@main/lib/realPathWithin.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 import { z } from "zod";
 import {
@@ -2635,13 +2636,15 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
   ];
 }
 
-/** True if `abs` is inside `root`(或等于),解析归一化之后比。与 files.ts 的
- *  pathWithin 同款逻辑 —— 这里不 import 那份是为了不把它的依赖链拉进这张表。 */
+/** True if `abs` is inside `root`(或等于)。
+ *
+ * 【MC-001/MC-006】从前这里是**手抄的一份** pathWithin(纯字面),有两个问题:① 裸
+ * `startsWith("..")` 会把合法的 `..config` 当成越界;② 不跟 symlink/junction,工区里的
+ * 链接指向外面时字面看着仍在里面。现在统一复用零依赖叶子的 {@link realPathWithin}
+ * —— 与 files/git/LSP/快照 是**同一份**实现(仓规:共享实现只有一份)。它只 import
+ * node:* ,不会把 files.ts 的依赖链拉进这张表。 */
 function pathWithin(root: string, abs: string): boolean {
-  const r = path.resolve(root);
-  const a = path.resolve(abs);
-  const rel = path.relative(r, a);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return realPathWithin(root, abs);
 }
 
 // homedir 目前只被 defaultSkillsRoot 间接覆盖;这里显式引用避免"看起来没用"的 import

@@ -13,10 +13,13 @@
  *
  * ## Lifecycle
  * Started from index.ts on `app.whenReady` (after DB init), stopped on
- * `before-quit`. Bound to `0.0.0.0` so other devices on the LAN can reach it.
- * This is a deliberate widening of the threat boundary: only the pairing flow
- * guards access — every request past `/api/pair/*` requires a valid device
- * token.
+ * `before-quit`. **Only listens when explicitly enabled** — the master switch
+ * `mobile.enabled` must be `"1"` (see {@link readEnabled}); there is no
+ * serve-by-default, because this server puts passwords and bearer tokens on
+ * plaintext HTTP bound to `0.0.0.0`. Once enabled it binds `0.0.0.0:<port>` so
+ * other devices on the LAN can reach it — a deliberate widening of the threat
+ * boundary, guarded only by the pairing flow: every request past `/api/pair/*`
+ * requires a valid device token.
  *
  * The server builds on the same node:http pattern as the OpenAI bridge server
  * (`providers/bridge/bridgeServer.ts`) but is long-lived and multi-route.
@@ -47,9 +50,9 @@ import { dispatchMobileRpc, RpcError, type DeviceContext } from "./mobileRpc.js"
 import { registerMobileGitRpc } from "./mobileGitRpc.js";
 import { serveMobileAsset } from "./serveMobileStatic.js";
 import {
+  beginLoginAttempt,
   isMobileLoginEnabled,
   loginClientKey,
-  loginLockRemaining,
   recordLoginResult,
   verifyMobileLogin,
 } from "./mobileLogin.js";
@@ -70,15 +73,26 @@ async function resolvePort(): Promise<number> {
   return MOBILE_DEFAULT_PORT;
 }
 
-async function readEnabled(): Promise<boolean> {
+/** Is the LAN HTTP server explicitly enabled?
+ *
+ *  ⚠️ **安全默认值 = 关。** 这台服务把配对/登录/账号密码/RPC/SSE 全放在**明文 HTTP**上,
+ *  绑的是 `0.0.0.0`(LAN 上每台设备都能打)。从前这里是「没显式写 `0` 就当开」——
+ *  于是一次全新安装、用户从没做过任何选择,就已经把 `0.0.0.0:<port>` 敞在局域网上,
+ *  连同 Bearer 令牌与登录口令一起走明文。默认值改成一个**安全**的:只有显式存了
+ *  `"1"` 才开;`"0"`、空、缺键一律不开。这是一处**产品默认值变更**,刻意做成保守且可逆:
+ *  用户显式开启后,行为与今天完全一致(同一个端口、同一套配对/登录/撤销)。
+ *
+ *  (开机自动启动这条路由 `startMobileServer` 决定;真正的"启用"是用户在设置里写
+ *  `mobile.enabled=1`,或未来接一条"首次连接手机时询问"的流程。) */
+export async function readEnabled(): Promise<boolean> {
   await awaitDb();
   try {
     const raw = SettingRepo.get(MOBILE_ENABLED_SETTING_KEY);
-    if (raw === "0") return false;
+    if (raw === "1") return true;
   } catch {
-    // ignore
+    // ignore — treat as not enabled (fail-closed)
   }
-  return true;
+  return false;
 }
 
 export interface MobileServerHandle {
@@ -212,20 +226,46 @@ function sendRpcResult(res: ServerResponse, promise: Promise<unknown>): void {
     });
 }
 
+/** SSE 慢客户端的**缓冲上限**。`res.write()` 在客户端读得慢时会把未冲刷的字节堆在
+ *  socket 里(`res.writableLength` 随之增长);不设上限的话,一台卡住的手机(或一个
+ *  只连不读的流)能让主进程为它无限缓冲 `text.delta`,直到 OOM —— 而且拖慢别的设备。
+ *
+ *  两级:
+ *   - **软阈值** {@link SSE_SOFT_BUFFER_BYTES}:超了给一个宽限期,期间冲刷回阈值以下
+ *     就不断(正常突发不该误伤);
+ *   - **硬上限** {@link SSE_HARD_BUFFER_BYTES}:超了**立即**断 —— 即便在宽限期内,峰值
+ *     内存也被钉在这个量级,不会无限涨。
+ *  断开的是**这一台**,它重连后先拿一帧 `runningSnapshot` 恢复(见
+ *  {@link handleEvents});别的订阅者各自的连接照常收。 */
+const SSE_SOFT_BUFFER_BYTES = 256 * 1024;
+const SSE_HARD_BUFFER_BYTES = 2 * 1024 * 1024;
+/** 达到软阈值后,最多等这么久让队列冲刷 —— 期间回压落回阈值以下就不必断。 */
+const SSE_DRAIN_GRACE_MS = 30_000;
+
 /** SSE event-stream handler. Subscribes to the bus, writes each RuntimeEvent
- *  framed as `event: message\ndata: <json>\n\n`, and emits heartbeats. */
+ *  framed as `event: message\ndata: <json>\n\n`, and emits heartbeats.
+ *
+ *  ⚠️ **背压保护**:每条帧写出去之后检查 `res.writableLength`;超
+ *  {@link SSE_MAX_BUFFERED_BYTES} 就把这台设备标成"慢客户端",起一个宽限计时器,
+ *  到期仍未冲刷完就 `close()` 掉它(重连拿快照)。断掉的是**这一台**,别的订阅者
+ *  通过各自的连接照常收 —— 见 MobileEventBus 对每个 subscriber 的隔离。 */
 function handleEvents(req: IncomingMessage, res: ServerResponse, device: PairedDevice): void {
   if (req.destroyed || res.destroyed) return;
   let closed = false;
   let unsubscribe: (() => void) | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
   let releaseDevice: (() => void) | null = null;
+  const clearDrainTimer = (): void => {
+    if (drainTimer) { clearTimeout(drainTimer); drainTimer = undefined; }
+  };
   const close = (): void => {
     if (closed) return;
     closed = true;
     unsubscribe?.();
     releaseDevice?.();
     if (heartbeat) clearInterval(heartbeat);
+    clearDrainTimer();
     req.off("close", close);
     res.off("close", close);
     res.off("error", close);
@@ -240,6 +280,39 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, device: PairedD
   req.once("close", close);
   res.once("close", close);
   res.once("error", close);
+  /** 写一帧并施加背压。超软阈值给宽限期;超硬上限立即断(峰值内存有界)。 */
+  const writeFrame = (chunk: string): void => {
+    if (closed) return;
+    try {
+      res.write(chunk);
+    } catch {
+      close();
+      return;
+    }
+    if (res.writableLength > SSE_HARD_BUFFER_BYTES) {
+      log.warn(`mobile: dropping slow SSE client ${device.deviceId} (buffered ${res.writableLength}B over hard cap) — it will reconnect for a snapshot`);
+      close();
+      return;
+    }
+    if (res.writableLength > SSE_SOFT_BUFFER_BYTES) {
+      if (!drainTimer) {
+        log.warn(
+          `mobile: SSE client ${device.deviceId} is slow (buffered ${res.writableLength}B) — will disconnect if it does not drain`,
+        );
+        drainTimer = setTimeout(() => {
+          drainTimer = undefined;
+          if (!closed && res.writableLength > SSE_SOFT_BUFFER_BYTES) {
+            log.warn(`mobile: dropping slow SSE client ${device.deviceId} (buffered ${res.writableLength}B) — it will reconnect for a snapshot`);
+            close();
+          }
+        }, SSE_DRAIN_GRACE_MS);
+        drainTimer.unref?.();
+      }
+    } else {
+      // 落回阈值以下 —— 撤掉宽限计时器,别把已经跟上的客户端误断。
+      clearDrainTimer();
+    }
+  };
   try {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -249,7 +322,7 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, device: PairedD
     });
     res.write(": connected\n\n");
     // The bus is unbuffered: reconnecting clients first restore running state.
-    res.write(`data: ${JSON.stringify({
+    writeFrame(`data: ${JSON.stringify({
       sessionId: "",
       event: {
         type: "session.runningSnapshot",
@@ -263,10 +336,10 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, device: PairedD
       if (closed) return;
       // 这台自己写的设置不回推(连续输入时晚到的回声会把文本框拽回旧值)。
       if (event.type === "setting.changed" && event.originDeviceId === device.deviceId) return;
-      res.write(`data: ${JSON.stringify({ sessionId: event.sessionId, event })}\n\n`);
+      writeFrame(`data: ${JSON.stringify({ sessionId: event.sessionId, event })}\n\n`);
     });
     heartbeat = setInterval(() => {
-      if (!closed) res.write(": ping\n\n");
+      if (!closed) writeFrame(": ping\n\n");
     }, SSE_HEARTBEAT_INTERVAL_MS);
   } catch (error) {
     close();
@@ -298,21 +371,33 @@ async function handlePairVerify(req: IncomingMessage, res: ServerResponse, endpo
 }
 
 /** POST /api/auth/login — 账号密码登录(未开启时一律 401)。成功发一张和配对一样的
- *  设备令牌。失败按来源节流,见 `mobileLogin.ts`。 */
+ *  设备令牌。失败按来源节流,见 `mobileLogin.ts`。
+ *
+ *  ⚠️ **限流配额在进 scrypt 之前原子预留。** 从前先 `loginLockRemaining`、再 await
+ *  读体 + await scrypt、最后才 `recordLoginResult` —— 一批并发请求会在**任何一次
+ *  scrypt 出结果前**全部通过锁定检测,单来源锁形同虚设,还能迅速触达全局锁连累合法
+ *  用户。现在 {@link beginLoginAttempt} 把"在途尝试"也算进来源预算与全局在途上限,
+ *  超出的当场 429,不进 scrypt。 */
 async function handlePasswordLogin(req: IncomingMessage, res: ServerResponse, endpoint: string): Promise<void> {
   await awaitDb();
   const client = loginClientKey(req);
-  const locked = loginLockRemaining(client);
-  if (locked > 0) {
-    const sec = Math.ceil(locked / 1000);
+  // 原子预留:锁定 / 预算 / 并发额度任一不满足就当场拒,不读体、不算 scrypt。
+  const reservation = beginLoginAttempt(client);
+  if (!reservation.allowed) {
+    const sec = Math.max(1, Math.ceil(reservation.retryAfterMs / 1000));
     res.setHeader("Retry-After", String(sec));
-    sendJson(res, 429, { error: `尝试次数过多，请 ${sec} 秒后再试`, retryAfter: sec });
+    const error = reservation.reason === "busy"
+      ? "登录请求过多，请稍后再试"
+      : `尝试次数过多，请 ${sec} 秒后再试`;
+    sendJson(res, 429, { error, retryAfter: sec });
     return;
   }
   let body: { username: string; password: string; deviceName?: string };
   try {
     body = MobileLoginInputSchema.parse(await readJsonBody(req, PAIR_VERIFY_BODY_LIMIT));
   } catch {
+    // 预留的配额也要释放 —— 否则一次坏的请求体会永久占掉一个在途槽。
+    recordLoginResult(client, false);
     sendJson(res, 400, { error: "请输入账号和密码" });
     return;
   }
@@ -511,7 +596,8 @@ export async function startMobileServer(): Promise<MobileServerHandle> {
 
   const enabled = await readEnabled();
   if (!enabled) {
-    log.info("mobile: disabled by setting (mobile.enabled=0); server not started");
+    // 默认值 = 关(见 readEnabled):没有显式的 mobile.enabled=1 就不监听,不向 LAN 暴露。
+    log.info("mobile: LAN server not explicitly enabled (mobile.enabled!=1); server not started");
     return makeIdleHandle();
   }
 

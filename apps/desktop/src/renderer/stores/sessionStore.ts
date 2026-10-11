@@ -150,6 +150,15 @@ export type Block =
        *  state. Set by the `turn.rewound` handler when `targetFiles`
        *  matches this card's paths. */
       rewound?: boolean;
+      /** 【MC-002】撤销**部分**完成时带失败的/冲突的文件名 —— 有它就不算"整轮已撤销"。
+       *
+       *  从前只要收到 `turn.rewound` 且路径集匹配,就把卡片标成 `rewound: true`(画
+       *  「已撤销」)、并在是最近一轮时**清空本轮文件桶** —— 哪怕主进程报告有文件没还原
+       *  或有冲突没动。那是在对用户说"整轮回滚了",而磁盘上只有一部分回去(破坏性动作,
+       *  他不会再去核)。现在:只有 `failed`/`conflicts` 都为空才走 `rewound`;否则记下
+       *  这些文件名,卡片渲染成"部分撤销"、**保留撤销入口**(让用户能重试),且**不清**
+       *  本轮文件桶(那些文件还在磁盘上,不是"本轮已结束")。 */
+      rewindPartial?: { failed: string[]; conflicts: string[] };
     }
   | {
       kind: "compact-summary";
@@ -1825,7 +1834,7 @@ export interface SessionState {
    *  `turn.rewound` event carries it; the handler then marks the matching
    *  card `rewound: true` in place — for both latest-turn and historical
    *  rewinds. The card is never removed, so the stream keeps a trace. */
-  rewindTurn: (files: TurnFileEntry[], targetFiles: string[]) => Promise<{ restored: string[]; failed: string[] }>;
+  rewindTurn: (files: TurnFileEntry[], targetFiles: string[]) => Promise<{ restored: string[]; failed: string[]; conflicts: string[] }>;
 
   /** Reveal a file in the IDE right panel's file tree: switches the panel to
    *  the files tab, bumps ideFocusNonce (App's effect opens the panel if
@@ -2466,6 +2475,11 @@ let rewoundLatest = false;
       ctx.set((s) => {
         const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
         const targetSet = new Set(e.targetFiles);
+        // 【MC-002】只有**整轮都还原成功**(没有失败、没有冲突)才算"已撤销";否则是
+        // **部分撤销** —— 卡片要如实区分,并把没动的那些文件名记下来。
+        const failed = e.failedFiles ?? [];
+        const conflicts = e.conflicts ?? [];
+        const partial = failed.length > 0 || conflicts.length > 0;
         let changed = false;
         const next = list.map((m) => {
           let touched = false;
@@ -2477,8 +2491,13 @@ let rewoundLatest = false;
               b.files.every((f) => targetSet.has(f.filePath))
             ) {
               touched = true;
-              if (b.isLatestTurn) rewoundLatest = true;
-              return { ...b, rewound: true };
+              // 只有全部成功才清本轮桶;部分撤销时文件仍在盘上,桶要留着。
+              if (b.isLatestTurn && !partial) rewoundLatest = true;
+              if (partial) return { ...b, rewindPartial: { failed, conflicts } };
+              // 【MC-002】整轮成功 —— 除了置 `rewound`,还要**清掉上一次遗留的
+              // `rewindPartial`**:否则重试成功后卡片会同时画「部分撤销 N/M」与
+              // 「已撤销」两个徽标(那个 stale 的 partial 是上一轮失败留下的)。
+              return { ...b, rewound: true, rewindPartial: undefined };
             }
             return b;
           });
@@ -7964,10 +7983,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   rewindTurn: async (files, targetFiles) => {
     const sessionId = get().activeSessionId;
-    if (!sessionId) return { restored: [], failed: [] };
+    // 【MC-002】没有会话 = 没法撤销,**不是**"撤销了 0 个文件"。空结果会让卡片画
+    // 「已撤销 ✓」。把目标文件全列进 failed,让"什么都没做"如实可见。
+    if (!sessionId) return { restored: [], failed: files.map((f) => f.filePath), conflicts: [] };
     if (files.length === 0) {
       // Nothing to rewind — defensive (UI shouldn't allow the click).
-      return { restored: [], failed: [] };
+      return { restored: [], failed: [], conflicts: [] };
     }
     try {
       const res = await api.claude.rewindTurn({ sessionId, files, targetFiles });

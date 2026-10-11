@@ -49,3 +49,26 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 export MCODE_SMOKE_DATA_ROOT="$DATA"
 
 node "$OUT/smoke.mjs"
+
+# ── 第二段:BrowserManager 的 cookie 恢复时序(MC-045) ──
+#
+# 这一段**不换 BrowserManager 桩** —— 它要真跑 `create()` / `loadUrl()` /
+# `waitForLoad()`,所以 electron 换成**功能替身**(一张能用的假 WebContentsView),
+# `@main/window.js` 也换成配套的假窗口。数据根同样走临时目录。
+#
+# ⚠️ `__dirname` 那一行 banner 非有不可:`BrowserManager.spawnView` 拼 preload 路径时用了
+# `__dirname`,而定死的 ESM 输出没有它。
+NAVOUT=$(mktemp -d /tmp/mcode-browser-nav.XXXXXX)
+trap 'rm -rf "$OUT" "$DATA" "$NAVOUT"' EXIT
+
+"$ESBUILD" scripts/browser-smoke/navigate-main.ts \
+  --bundle --platform=node --format=esm \
+  --tsconfig=tsconfig.json \
+  --banner:js="import { createRequire as __cr } from 'node:module'; import { fileURLToPath as __f } from 'node:url'; import { dirname as __d } from 'node:path'; const require = __cr(import.meta.url); const __dirname = __d(__f(import.meta.url));" \
+  --alias:electron=./scripts/browser-smoke/navigate-stubs/electron.ts \
+  --alias:@main/window.js=./scripts/browser-smoke/navigate-stubs/window.ts \
+  --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
+  --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --outfile="$NAVOUT/nav.mjs" --log-level=error
+
+node "$NAVOUT/nav.mjs"

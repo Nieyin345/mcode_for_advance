@@ -37,9 +37,12 @@ import type { IpcMain } from "electron";
 
 import { IPC, THEME_STYLE_SETTING_KEY } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
+import type { ProviderContext } from "@contracts/provider";
 import { initDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, MessageRepo } from "@main/store/repositories.js";
 import { registerClaudeHandlers } from "@main/ipc/claude.js";
+import { invokeAppTool } from "@main/appControl/tools.js";
+import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 
 import {
   approvals,
@@ -57,6 +60,7 @@ import {
   setDefaultResolve,
   setFailNextSendTurn,
   setRewindResult,
+  setRewindResultFull,
   setStopTaskResult,
   stopTasks,
   userAnswers,
@@ -445,6 +449,42 @@ console.log("\n6. 图型工作流:什么时候推图、什么时候拦住用户"
   eq("更没有派普通回合", sendTurns.length, 0);
 }
 
+{
+  // ── MC-049 ── 图还在跑(会话状态是 running),另一台设备又发消息 → 被明确拒绝。
+  // 拒绝**不能**把库里那份 running 改成 idle:真实图还在跑,两边一分家,
+  // `findFreshByProject` 就会去复用一条其实正忙的会话(与 MC-013 的状态时序同源)。
+  // 从前 `updateStatus(running)` 在预检**之前**,拒绝又把状态回滚 idle,于是库说 idle。
+  // 判据立在"用户/别的端看到的会话状态"上:拒绝之后必须仍是 running。
+  fresh();
+  setGraphRunIntent("busy");
+  setParkedTeardown("never");
+  const s = mkSession(nid("s"));
+  // 摆出"图正在跑"的真实库状态:第一次 sendTurn 起了图,状态就停在 running。
+  SessionRepo.updateStatus(s, "running");
+  const threw = await catching(IPC.CLAUDE_SEND_TURN, { sessionId: s, prompt: "再发一句" });
+  check("(前提)这是那条忙拒绝", threw.includes("还在跑"), threw || "(没抛)");
+  eq(
+    "★ 被拒之后会话状态**仍是 running**(与真实图一致,不是 idle)",
+    SessionRepo.get(s)?.status,
+    "running",
+  );
+}
+
+{
+  // 反面:普通会话走到"运行时没启动"(handle === null)那条真失败时,running 仍须回滚成
+  // idle —— 上面把预检提前,不能顺手把这条回滚也去掉。
+  fresh();
+  const s = mkSession(nid("s"));
+  setFailNextSendTurn();
+  const threw = await catching(IPC.CLAUDE_SEND_TURN, { sessionId: s, prompt: "你好" });
+  check("(前提)引擎预检失败如实抛出", threw.includes("provider preflight failed"), threw);
+  eq(
+    "★ 真失败(不是被忙拒绝)时状态仍如实回滚 idle",
+    SessionRepo.get(s)?.status,
+    "idle",
+  );
+}
+
 /* ──────────────── 7. 打断 ──────────────── */
 
 console.log("\n7. 打断:图型走一条路,普通会话走另一条");
@@ -741,16 +781,24 @@ console.log("\n11. 计划审批 / 撤回");
 
 {
   fresh();
-  setRewindResult(["a.ts", "b.ts"]);
+  setRewindResultFull(["a.ts", "b.ts"], ["c.ts"], ["d.ts"]);
   const s = mkSession(nid("s"));
-  const res = await call<{ restored: string[] }>(IPC.CLAUDE_REWIND_TURN, {
-    sessionId: s,
-    files: [
-      { filePath: "a.ts", kind: "modified", adds: 3, dels: 1, before: "原来的内容" },
-    ],
-    targetFiles: ["a.ts", "b.ts"],
-  });
+  const res = await call<{ restored: string[]; failed: string[]; conflicts: string[] }>(
+    IPC.CLAUDE_REWIND_TURN,
+    {
+      sessionId: s,
+      files: [
+        { filePath: "a.ts", kind: "modified", adds: 3, dels: 1, before: "原来的内容" },
+      ],
+      targetFiles: ["a.ts", "b.ts"],
+    },
+  );
   same("恢复结果原样返回给界面(它要显示「N 个文件已恢复」)", res.restored, ["a.ts", "b.ts"]);
+  // ── MC-047 同源:三个数组必须**平铺**交回来,界面才能分别报"失败"与"冲突"。
+  // `TurnFilesCard` 直接解构 `failed` / `conflicts` 并读 `.length` —— 少一个就是
+  // `undefined.length` 的 TypeError(卡片静默画成"已撤销")。
+  same("失败清单也平铺返回(界面靠它报「部分文件没恢复」)", res.failed, ["c.ts"]);
+  same("冲突清单同样平铺返回(界面靠它报「文件之后又被改过、没动」)", res.conflicts, ["d.ts"]);
   eq(
     "撤回时把卡片自己那份冻结清单**整条**传下去了(界面靠它做回滚,少一个字段就滚错)",
     (rewinds[0]?.files as Array<{ filePath: string; before: string }>)[0]?.filePath,
@@ -1102,19 +1150,29 @@ console.log("\n14b. 换目录:只在「还没开始」的会话上放行");
 
 {
   fresh();
-  // ⚠️ `SESSION_UPDATE_SETTINGS` 只在**换目录**那一支查会话在不在;其余字段是直接
-  // `SessionRepo.updateSettings(id, ...)` —— 那是个 UPDATE,打不中任何行时**静默什么都不做**,
-  // 而且后面 `SessionRepo.get(id)` 拿不到行、广播也就跟着不发了。渲染端那边一句拒绝都
-  // 收不到(它本来会弹成一句话)。这里把这个现状记下来,判据是"用户有没有被告知"。
+  // ── MC-048 ── 从前 `SESSION_UPDATE_SETTINGS` 只在**换目录**那一支查会话在不在;其余
+  // 字段直接 `SessionRepo.updateSettings(id, ...)` —— 那是个 UPDATE,打不中任何行时
+  // **静默什么都不做**,渲染端一句拒绝都收不到(它本该弹成一句话)。现在
+  // `SessionRepo.updateSettings` 用 `getRowsModified()` 判存在性,不存在就抛。
   const threw = await catching(IPC.SESSION_UPDATE_SETTINGS, {
     sessionId: "根本没有这个会话",
     model: "x",
   });
   check(
-    "⚠️ 改一个不存在的会话**不报错**(UPDATE 打不中,静默什么都不做)",
-    threw === "",
+    "★ 改一个不存在的会话**如实报错**(不再假成功)",
+    threw.includes("unknown session"),
     threw || "(这是现状:没有被告知)",
   );
+  // 判据落在"用户有没有被告知"上:桌面端收到的是 Not-found 类的拒绝。
+  check("★ 拒绝理由点明了是哪个会话没了", threw.includes("根本没有这个会话"), threw);
+}
+
+{
+  // 反面:真实存在的会话照常更新,不会被上面那道存在性检查误伤。
+  fresh();
+  const s = mkSession(nid("s"));
+  await call(IPC.SESSION_UPDATE_SETTINGS, { sessionId: s, model: "照常改" });
+  eq("★ 存在会话的正常更新不受影响", SessionRepo.get(s)?.model, "照常改");
 }
 
 /* ──────────────── 15. 子代理保存 ──────────────── */
@@ -1243,6 +1301,141 @@ console.log("\n17. 引擎清单(没装引擎时说的是实话)");
 {
   const res = await call<{ providers: unknown[] }>(IPC.PROVIDER_LIST);
   eq("无头环境里没有引擎 → 空清单(不是编一个出来)", res.providers.length, 0);
+}
+
+/* ──────────────── 18. 【MC-059】无渲染窗口时业务动作照常 ────────────────
+ *
+ * ## 这条守的是什么
+ *
+ * `appControl/tools.ts` 的 `app_session_new` / `app_session_send` 从前**只**经 UI 桥
+ * (`webContents.executeJavaScript` → 渲染端 `window[APP_CONTROL_RENDERER_GLOBAL]`)下发。
+ * 于是**没有任何渲染窗口**时(无人值守 / 自动化 / 窗口还没起来 / 窗口崩了),agent 连
+ * 「开一个对话」「往对话发一句话」都做不了 —— 而这两件事的**状态(会话行、运行时)本来就
+ * 归主进程**,窗口只是"把用户的视线切过去"。这就是台账 MC-059:控制面必须能脱离渲染窗口。
+ *
+ * 修法(已在 `tools.ts` 里,这里**证**它):UI 桥报"窗口没开/界面没准备好"时,改走主进程的
+ * **同一套服务**(`createOrReuseSession` + `runtimeManager.sendTurn`,与桌面 IPC 走的是同一份
+ * 实现),而不是失败。
+ *
+ * ## 为什么放在这一套(而不是 app-control-smoke)
+ *
+ * `app-control-smoke` 没有 SQLite —— `createOrReuseSession` 一碰 `ProjectRepo` 就抛。
+ * 这一套有**真库**(真 sqlite、临时数据根)、真 `createOrReuseSession`、真会话表、
+ * RuntimeManager 桩(记 `sendTurn`),正好是验"会话行真的落库、turn 真的派出去了"的地方。
+ *
+ * ## 无窗口怎么造
+ *
+ * `setRendererPortForTest(null)` + 本套 `@main/window.js` 桩的 `getMainWindow() → null`
+ * ⇒ `runUiCommand` 的 `defaultPort()` 抛 "Mcode 主窗口没有打开,界面操作做不了" ——
+ * 那正是 `uiUnavailable` 认得的"窗口没开"那一类。**刻意不用** `executeJavaScript` 桩去
+ * 假装窗口在,这条要验的就是"没有窗口这条真实路径"。
+ *
+ * ## 反向控制(不许假绿)
+ *
+ * ① 纯 UI 动作(`app_ui` 切对话 / `screenshot_panel`)在同样的无窗口环境下**仍要如实报错**
+ *   —— 它们**确实**绑在界面上,不是所有东西都能无窗口。
+ * ② 窗口**在**时,必须走原来的 UI 路,且**没有二次发送**(不留"UI 也发一遍、headless 又发
+ *   一遍"的双发)。
+ */
+
+console.log("\n18. 【MC-059】无渲染窗口时 app_session_new / app_session_send 照常,纯 UI 动作仍报错");
+
+{
+  const textOf = (r: { content: Array<{ type: string; text?: string }> }): string =>
+    r.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n");
+
+  // 审批通道:写作档默认放行一次(与真实回合里的审批卡同形)。
+  const appCtx = {
+    getPermissionMode: () => undefined,
+    isToolAlwaysAllowed: () => false,
+    requestApproval: async () => ({ allow: true }),
+  } as unknown as ProviderContext;
+
+  // 一个**全新的项目**(零会话),这样 findFreshByProject 一定没有可复用的空壳 ——
+  // 断言"会话行真的多了一条"才不会被上一段的残留空壳复用掉而假红。
+  const MC059_DIR = mkdtempSync(join(tmpdir(), "mcode-mc059-proj-"));
+  ProjectRepo.create({
+    id: "p_mc059",
+    name: "无窗口回归项目",
+    path: MC059_DIR,
+    archived: false,
+    group: null,
+    sortOrder: 2,
+    pinnedAt: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  } as never);
+
+  fresh();
+  // —— 无窗口:端口置空;本套 window 桩的 getMainWindow() 本来就回 null。
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+
+  const beforeIds = new Set(SessionRepo.listByProject("p_mc059").map((s) => s.id));
+  const created = await invokeAppTool("app_session_new", { project_id: "p_mc059", prompt: "无窗口也要能开对话" }, "me", appCtx);
+  check("★ app_session_new 在无窗口时不失败", created.isError !== true, textOf(created));
+
+  const afterList = SessionRepo.listByProject("p_mc059");
+  const newIds = afterList.map((s) => s.id).filter((id) => !beforeIds.has(id));
+  check("★ 无窗口时 app_session_new 真的落了一条会话行(SessionRepo 查得到)", newIds.length === 1, [...beforeIds, ...afterList.map((s) => s.id)]);
+  const newId = newIds[0];
+  eq("★ 落库的会话属于指定项目", SessionRepo.get(newId)?.projectId, "p_mc059");
+  // 那一轮真的派出去了(走 headlessNewSession → runtimeManager.sendTurn 那份实现)。
+  eq("★ 无窗口时这一轮真的派出去了(sendTurn 被调到)", sendTurns.length, 1);
+  eq("★ 派出去的是那句话", sendTurns[0]?.prompt, "无窗口也要能开对话");
+  eq("★ 派给的是刚建的那条会话", sendTurns[0]?.sessionId, newId);
+  eq("★ 跑在项目目录里(cwd 解析正确)", sendTurns[0]?.cwd, MC059_DIR);
+
+  // —— app_session_send:往一条**已有**会话发,无窗口时应发送而不是失败。
+  // 目标会话**独立**建一条(不依赖上面 app_session_new 的产物)—— 否则 app_session_new 一失败,
+  // 这条就会因"缺 session_id"而红,红在了错的地方,证不了"发送本身能无窗口"。
+  fresh();
+  const sendTarget = mkSession(nid("s_mc059_send"), { title: "发送目标" });
+  const sendRes = await invokeAppTool("app_session_send", { session_id: sendTarget, prompt: "第二条" }, "me", appCtx);
+  check("★ app_session_send 在无窗口时不失败", sendRes.isError !== true, textOf(sendRes));
+  eq("★ 无窗口时消息真的发出去了(sendTurn 被调到)", sendTurns.length, 1);
+  eq("★ 发给了指定的那条会话", sendTurns[0]?.sessionId, sendTarget);
+  eq("★ 发的是那条消息", sendTurns[0]?.prompt, "第二条");
+
+  // —— 反向控制①:纯 UI 动作同样无窗口时**仍要如实报错**(它们真绑在界面上)。
+  // 用**字面** session_id(不依赖上面那条 newId)—— 否则会话建失败时它会因"缺参数"而红,
+  // 那就成了"被上面的失败连累",不是"纯 UI 动作本来就绑窗口"这个独立事实。
+  const uiRes = await invokeAppTool("app_ui", { action: "open_session", session_id: "s_literal_ui" }, "me", appCtx);
+  check("★ 纯 UI 动作(切对话)在无窗口时如实报错", uiRes.isError === true && /窗口没有打开|界面/.test(textOf(uiRes)), textOf(uiRes));
+  const shotRes = await invokeAppTool("app_ui", { action: "screenshot_panel" }, "me", appCtx);
+  check("★ screenshot_panel 在无窗口时如实报错(不返回空图冒充成功)", shotRes.isError === true, textOf(shotRes));
+
+  // —— 反向控制②:窗口**在**时走原 UI 路,且**没有二次发送**。
+  {
+    fresh();
+    const { APP_CONTROL_RENDERER_GLOBAL } = await import("@contracts/appControl");
+    const seen: Array<{ op: string }> = [];
+    const win: Record<string, unknown> = {
+      [APP_CONTROL_RENDERER_GLOBAL]: async (raw: string) => {
+        const cmd = JSON.parse(raw) as { op: string };
+        seen.push(cmd);
+        return JSON.stringify({ ok: true, data: { sessionId: "s_from_ui" } });
+      },
+    };
+    (globalThis as Record<string, unknown>).window = win;
+    setRendererPortForTest({ executeJavaScript: async (code) => (0, eval)(code) });
+
+    const sendsBefore = sendTurns.length;
+    const viaUi = await invokeAppTool("app_session_new", { project_id: "p_mc059", prompt: "窗口在时" }, "me", appCtx);
+    check("窗口在时 app_session_new 走 UI 路、不失败", viaUi.isError !== true, textOf(viaUi));
+    check("★ 窗口在时下发的是 UI 命令(op=new_session)", seen.some((c) => c.op === "new_session"), seen);
+    eq("★ 窗口在时**没有**走 headless 二次发送(无双发)", sendTurns.length, sendsBefore);
+
+    const sendViaUi = await invokeAppTool("app_session_send", { session_id: "s_literal_ui_send", prompt: "窗口在时也发" }, "me", appCtx);
+    check("窗口在时 app_session_send 走 UI 路、不失败", sendViaUi.isError !== true, textOf(sendViaUi));
+    check("★ 窗口在时下发的是 UI 命令(op=send)", seen.some((c) => c.op === "send"), seen);
+    eq("★ 窗口在时 app_session_send 也没有二次发送(无双发)", sendTurns.length, sendsBefore);
+
+    setRendererPortForTest(null);
+    delete (globalThis as Record<string, unknown>).window;
+  }
+
+  rmSync(MC059_DIR, { recursive: true, force: true });
 }
 
 /* ──────────────── 收尾 ──────────────── */

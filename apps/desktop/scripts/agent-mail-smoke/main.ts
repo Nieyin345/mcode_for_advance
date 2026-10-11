@@ -40,6 +40,7 @@ import type { ApiConfig } from "@contracts/customModel";
 import {
   MAX_MESSAGES_PER_SESSION,
   deliver,
+  MAX_AGENT_MESSAGE_CHARS,
   clearAgentMail,
   dropAgentMail,
   peekAgentMail,
@@ -466,10 +467,19 @@ console.log("\n⑦ 询问:记账、发出去、立刻返回(不阻塞)");
   const back = await callTool("agent_notify", { to: main.id, re: askId, text: "用 APA。" }, expert.id);
   check("回信没报错", !isErr(back), back);
   check("★ 说清是送回给提问方", back.includes("答复已送回"), back);
-  eq("★ 挂账销掉了", undeliveredCount(main.id), 0);
+  // 【MC-032】投递被"接受"**不等于**挂账该销:提问方此刻是排队态(被图管着),答复还在
+  // 收件箱里没被取走 —— 若此刻销账,进程重启后答复丢了、挂账也没了,无痕。挂账要留到
+  // "答复被提问方真正取走"那一刻(下面的 clearAgentMail)。
+  eq("★ 排队态下挂账**不**被投递销掉(要等真被取走)", undeliveredCount(main.id), 1);
   const got = peekAgentMail(main.id);
   check("★ 答复真送到了提问方的收件箱", got.includes("用 APA。"), got);
   check("★ 答复里标了是回信", got.includes(askId), got);
+  // 现在模拟提问方真的把这一批**取走**(引擎起来读了收件箱)→ 这才是销账时机。
+  {
+    const batch = peekAgentMailBatch(main.id);
+    clearAgentMail(main.id, batch.through);
+    eq("★ 答复被取走后挂账才销掉(MC-032)", undeliveredCount(main.id), 0);
+  }
 
   console.log("\n⑨ 编号对不上 → 如实报错,绝不猜");
   // ⚠️ **先摆两条并存的挂账再测"对不上"。** 只测一条是不行的:队列里只有一个候选时,
@@ -491,11 +501,18 @@ console.log("\n⑦ 询问:记账、发出去、立刻返回(不阻塞)");
   // 再用**真编号**回一条,确认它路由到的正是那一条(而不是另一条)。
   const real = await callTool("agent_notify", { to: main.id, re: askA, text: "甲的回答" }, expert.id);
   check("真编号回得进去", !isErr(real), real);
-  eq("★ 只销掉那一条", undeliveredCount(main.id), 1);
+  // 【MC-032】排队态下投递**不**销账 —— 两条都还在(答复进了收件箱等被取走)。
+  eq("★ 排队态下投递不销账(两条都还在)", undeliveredCount(main.id), 2);
   const rcv = peekAgentMail(main.id);
   check("★ 答复落在提问方", rcv.includes("甲的回答"), rcv);
   check("★ 答复里带着那个真编号", rcv.includes(askA), rcv.slice(0, 300));
   check("★ 另一条的编号没被误标", !rcv.includes(askB), rcv.slice(0, 300));
+  // 取走这一批 → 只销掉 **askA** 那条(askB 的答复还没回,挂账仍在)。
+  {
+    const batch = peekAgentMailBatch(main.id);
+    clearAgentMail(main.id, batch.through);
+    eq("★ 取走后只销掉被回的那一条(askB 仍在)", undeliveredCount(main.id), 1);
+  }
 
   console.log("\n⑩ 挂账落盘:重启之后还在");
   const out2 = await callTool("agent_ask", { to: "专家", text: "第二个问题" }, main.id);
@@ -571,8 +588,14 @@ console.log("\n⑩½ 回信身份:同一棵树里的旁观代理不能冒充收�
 
   const real = await callTool("agent_notify", { to: main.id, re: askId, text: "真正的答复" }, expert.id);
   check("★ 收信方仍能用原编号回信", !isErr(real), real);
-  eq("★ 真回信成功后才销账", undeliveredCount(main.id), 0);
+  // 【MC-032】投递成功**不**立即销账(提问方排队态);销账在被取走那一刻。
+  eq("★ 投递成功但挂账仍在(等被取走)", undeliveredCount(main.id), 1);
   check("★ 真回信被带进提问方收件箱", peekAgentMail(main.id).includes("真正的答复"));
+  {
+    const batch = peekAgentMailBatch(main.id);
+    clearAgentMail(main.id, batch.through);
+    eq("★ 取走后挂账销掉", undeliveredCount(main.id), 0);
+  }
   graphBlocked.delete(main.id);
   graphBlocked.delete(expert.id);
   dropAgentMail(main.id);
@@ -602,8 +625,14 @@ console.log("\n⑩¾ 回信被限流:拒绝投递后仍可用同一编号重试"
   setMessageWindowMs(0); // 只让下一次投递自然过窗，避免等待十分钟
   const retried = await callTool("agent_notify", { to: main.id, re: askId, text: "可重试的答复" }, expert.id);
   check("★ 过窗后同一个编号可以重新回信", !isErr(retried), retried);
-  eq("★ 成功投递之后再销账", undeliveredCount(main.id), 0);
+  // 【MC-032】投递成功不立即销账 —— 挂账留到被取走那一刻(提问方排队态)。
+  eq("★ 成功投递后挂账仍在(等取走)", undeliveredCount(main.id), 1);
   check("★ 重新投递的正文确实送达", peekAgentMail(main.id).includes("可重试的答复"));
+  {
+    const batch = peekAgentMailBatch(main.id);
+    clearAgentMail(main.id, batch.through);
+    eq("★ 取走后挂账销掉", undeliveredCount(main.id), 0);
+  }
   setMessageWindowMs(null);
   graphBlocked.delete(main.id);
   graphBlocked.delete(expert.id);
@@ -955,6 +984,78 @@ console.log("\n⑮ 自定义模型配置失效:不能改投默认端点,错误�
   }
 }
 
+/* 【MC-056】已有会话的引擎不可用时,**拒绝发送**,绝不静默改用默认引擎。
+ *
+ * 从前 `sendTurnBound` 调 `providerRegistry.resolve(session.providerId)`,而 resolve 在
+ * providerId 有值但没注册时**悄悄返回默认引擎**(claude-sdk)。一段标着别的引擎的历史
+ * 会话(引擎被卸 / 存值失效)再发一轮,就会由 Claude 执行 —— 审批模式、工具可见性、成本
+ * 全对不上用户选的那个场景,而且界面不报。这里注册一个"假引擎"证明:正常会话照跑,
+ * 记着一个**不存在**引擎的会话发回合必须结构化失败、状态收口、错误发往移动端,且**默认
+ * 引擎一次都没被启动**。 */
+console.log("\n⑯b 会话记的引擎不可用:拒绝发送,不得悄悄换默认引擎");
+{
+  const providerId = "engine-available-smoke";
+  const started: StartTurnRequest[] = [];
+  providerRegistry.register({
+    id: providerId, displayName: "Engine-available smoke",
+    capabilities: {
+      supportsApproval: false, supportsResume: false, supportsStreaming: false,
+      supportsMcp: false, supportsAskUserQuestion: false,
+    },
+    startTurn: async (req) => {
+      started.push(req);
+      return { done: new Promise<void>(() => {}), interrupt: () => {}, isRunning: () => true };
+    },
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+
+  // 正控:引擎在册 → 正常起回合。
+  const good = mkSession({ kind: "chat", title: "引擎在册", providerId });
+  SessionRepo.updateStatus(good.id, "running");
+  runtimeManager.bindSession(good);
+  try {
+    await runtimeManager.sendTurn(good, { prompt: "正常一轮", cwd: "C:/work/paper" });
+    eq("正控:在册引擎照常起回合", started.length, 1);
+  } finally {
+    runtimeManager.dispose(good.id);
+  }
+
+  // 反例:会话记着一个**没注册**的引擎。
+  const ghostId = "provider-that-was-uninstalled";
+  const ghost = mkSession({ kind: "chat", title: "换了引擎的旧会话", providerId: ghostId });
+  SessionRepo.updateStatus(ghost.id, "running");
+  runtimeManager.bindSession(ghost);
+  const errors: string[] = [];
+  const order: string[] = [];
+  const unlisten = mobileEventBus.subscribe((e) => {
+    if (e.sessionId !== ghost.id) return;
+    if (e.type === "user.message" || e.type === "error") order.push(e.type);
+    if (e.type === "error") errors.push(e.message);
+  });
+  try {
+    let error: unknown;
+    try {
+      await runtimeManager.sendTurn(ghost, {
+        prompt: "别再默默换引擎", cwd: "C:/work/paper",
+        userMessage: {
+          id: `u_${ghost.id}`, createdAt: Date.now(),
+          blocks: [{ kind: "text", text: "别再默默换引擎" }],
+        },
+      });
+    } catch (err) { error = err; }
+    check("★ 引擎不可用时明确失败(IPC/RPC 可反馈)", error instanceof Error && error.message.includes(ghostId), error);
+    eq("★ 没有用默认引擎偷跑这一轮(启动次数没变)", started.length, 1);
+    check("★ 错误说清是哪个引擎不可用", errors[0]?.includes(ghostId) === true, errors);
+    eq("★ 错误事件发往移动端/界面", errors.length, 1);
+    eq("★ 跨设备先看见原话,再看见错误", order.join(","), "user.message,error");
+    eq("★ 持久化状态不再留在 running", SessionRepo.get(ghost.id)?.status, "errored");
+    eq("★ 会话记的引擎 id 原样没被改", SessionRepo.get(ghost.id)?.providerId, ghostId);
+  } finally {
+    unlisten();
+    runtimeManager.dispose(ghost.id);
+  }
+}
+
 console.log("\n⑯ 直接叫醒:配置失效要退回收件箱,启动失败也不能丢信");
 {
   const providerId = "wake-mail-failure-smoke";
@@ -1244,6 +1345,104 @@ console.log("\nrunning 快照广播(手机↔桌面同步)");
     runtimeManager.dispose(r1.id);
     runtimeManager.dispose(r2.id);
     setRendererAlive(true);
+  }
+}
+
+/* ── MC-013:turn.done 之后的快照**不得**把刚结束的会话又标成 running ───────────
+ *
+ * 三家 provider 收尾顺序都是"先 emit turn.done、后 `finally` 里才把 finished 置真"
+ * (中间隔着文件快照/用量结算几步 await),而 `broadcastRunningState` 是**同步**挂在
+ * turn.done 上的 —— 那一刻 `isRunning()` 还是 true。若快照直接取 `runningSessionIds`,
+ * 就会把刚结束的会话再推成 running,而 done 之后没有第二次广播,桌面/手机长久误判
+ * "它还在跑"(发不出也插不了)。判据用 `turnDoneSeen`:只由**本轮自己**的 turn.done 置位。
+ *
+ * 这里用假 provider 复现那个**精确时序**:`sendTurn` 拿到 handle 后立刻 emit turn.done,
+ * 而 handle 的 `isRunning()` 一直为真(模拟"收尾还没跑完")。 */
+{
+  const providerId = "mc013-turn-done-timing";
+  let emitHook: ((e: { type: string; sessionId?: string; reason?: string }) => void) | null = null;
+  providerRegistry.register({
+    id: providerId,
+    displayName: "MC-013 timing provider",
+    capabilities: {
+      supportsApproval: false, supportsResume: false, supportsStreaming: true,
+      supportsMcp: false, supportsAskUserQuestion: false,
+    },
+    // isRunning 恒真(收尾未完成),done 永不 resolve —— 完全模拟"turn.done 已发、handle 未翻"。
+    // `ctx` 是 startTurn 的**第二个**参数(见 `AgentProvider.startTurn(req, ctx)`),emit 在它上面。
+    startTurn: async (_req: StartTurnRequest, ctx: ProviderContext) => {
+      emitHook = ctx.emit as typeof emitHook;
+      return { done: new Promise<void>(() => {}), interrupt: () => {}, isRunning: () => true };
+    },
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+  const s = mkSession({ kind: "chat", title: "刚结束的会话", providerId });
+  runtimeManager.bindSession(s);
+  try {
+    await runtimeManager.sendTurn(s, { prompt: "跑一轮", cwd: "C:/work" });
+    check("前置:这一轮起来了(handle isRunning 为真)", runtimeManager.runningSessionIds().includes(s.id), runtimeManager.runningSessionIds());
+
+    // 同步 emit turn.done —— 与真 provider 的收尾顺序一致:此刻 isRunning() 仍为真。
+    emitHook!({ type: "turn.done", sessionId: s.id, reason: "end_turn" });
+    // turn.done 里那句 broadcastRunningState 已经跑过;再显式推一次看当前权威集合。
+    const { sent, resetSent } = await import("./stubs/window.js");
+    resetSent();
+    runtimeManager.broadcastRunningState();
+    const ev = (sent.find((x) => (x.payload as { event?: { type?: string } })?.event?.type === "session.runningSnapshot")
+      ?.payload as { event?: { running?: string[] } })?.event;
+    check(
+      "★ turn.done 之后该会话不再出现在 running 快照里(不被重新置成 running)",
+      ev !== undefined && !ev.running!.includes(s.id),
+      ev?.running,
+    );
+    // 但**卸载护栏**那一份仍把它当忙(收尾还在读文件/结算用量)—— 两份不能混。
+    check(
+      "★ 卸载护栏(runningSessionIds)仍认为它在跑(收尾未完成,别被抽走脚下东西)",
+      runtimeManager.runningSessionIds().includes(s.id),
+    );
+  } finally {
+    runtimeManager.dispose(s.id);
+  }
+}
+
+/* ── MC-033:收件箱按**总字节**封顶,超了从头挤掉最早的 ─────────────────────
+ *
+ * `MAX_MESSAGES_PER_SESSION` 只限十分钟窗口内的条数,窗口过了自动重置;每条消息的 text
+ * 长度原本无界。一个长期唤不醒的目标(图没在跑、引擎起不来)会被反复投递,收件箱 Map 跨
+ * 多个窗口只涨不落。这里钉的是"总量有界"。 */
+console.log("\nMC-033:收件箱按字节封顶 + 消息长度上限");
+{
+  const main = mkSession({ kind: "chat", title: "收件箱封顶" });
+  const expert = mkSession({ kind: "node", title: "投递方", parentSessionId: main.id, nodeId: "flood" });
+  graphBlocked.add(main.id); // 让它排队,消息全进收件箱
+  graphBlocked.add(expert.id);
+  try {
+    // `peerOrThrow(sessionId, name)` —— 从 `expert` 的名册里解析 `main` 这一格,
+    // 投递目标就是 main。收件箱要读 **main**(`deliver(peer)` 把信塞进 `peer.id`)。
+    const target = peerOrThrow(expert.id, main.id);
+    const self = selfPeerOf(expert.id);
+    // 每条 ~40KB;每投一条就把窗口重置,绕开"每会话一窗 24 条"的条数闸门(那个另有断言),
+    // 专测**收件箱字节封顶**。20 条 × 40KB ≈ 800KB,远超 256 KiB 上限。
+    const big = "x".repeat(40_000);
+    let queued = 0;
+    for (let i = 0; i < 20; i += 1) {
+      setMessageWindowMs(0); // 让上一条立即过窗,不挡这一条
+      const r = deliver(target, { fromId: self.id, fromName: self.name, kind: "notify", text: `${i}:${big}` });
+      if (r.outcome === "queued") queued += 1;
+    }
+    setMessageWindowMs(null);
+    check("前置:多条大消息都进了收件箱(排队态)", queued >= 10, { queued });
+    const inboxText = peekAgentMail(main.id);
+    check("诊断:收件箱非空", inboxText.length > 0, { len: inboxText.length, mainId: main.id });
+    check("★ 收件箱正文有界(没把全部大消息都留着)", inboxText.length < 400_000, { len: inboxText.length });
+    // 最早的被挤出去了(总量远超上限)。
+    check("★ 最早那几条已被挤出(不在正文里了)", !inboxText.includes("0:xxxx"), { head: inboxText.slice(0, 40) });
+    check("★ 最近的还在", inboxText.includes(`${queued - 1}:`), { tail: inboxText.slice(-40) });
+    eq("★ 单条消息长度上限常量存在且为正", MAX_AGENT_MESSAGE_CHARS > 0, true);
+  } finally {
+    graphBlocked.delete(main.id);
+    graphBlocked.delete(expert.id);
+    dropAgentMail(main.id);
   }
 }
 

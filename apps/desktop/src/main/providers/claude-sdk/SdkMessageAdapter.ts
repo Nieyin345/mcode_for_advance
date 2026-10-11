@@ -533,6 +533,9 @@ export class SdkMessageAdapter {
      *  strips the `[1m]` suffix from `message.model`. `undefined` (official
      *  Anthropic endpoint) lets the heuristic decide from the model name. */
     private configured?: ClaudeContextWindowTag,
+    /** 【ARC-008】本轮是否**请求**了恢复(resumeProviderSessionId 有值)。init 时据此
+     *  如实报 RESUMED / FRESH_EXPLICIT —— "窗口里有历史"不能证明"SDK 模型真接上了"。 */
+    private resumeRequested = false,
     /** Whether to use the `getContextUsage()` control channel for turn-end
      *  window occupancy (path B). OFF for custom/gateway endpoints. The gate
      *  exists because kicking off `getContextUsage()` mid-turn leaves a
@@ -906,6 +909,12 @@ export class SdkMessageAdapter {
   private handleSystem(m: SDKSystemMessage): void {
     if (m.subtype === "init") {
       this.ctx.onProviderSessionId?.(m.session_id);
+      // 【ARC-008】如实报出本轮底层会话的来源:接了原会话 / 本就是全新会话。
+      this.ctx.onResumeOutcome?.(
+        this.resumeRequested
+          ? { kind: "RESUMED", providerSessionId: m.session_id }
+          : { kind: "FRESH_EXPLICIT" },
+      );
       this.ctx.log.info(
         `claude SDK init: session=${m.session_id}, model=${m.model}, permissionMode=${m.permissionMode}`,
       );

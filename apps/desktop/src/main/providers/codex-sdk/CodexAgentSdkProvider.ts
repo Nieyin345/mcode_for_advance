@@ -488,7 +488,12 @@ export class CodexAgentSdkProvider implements AgentProvider {
           dynamicTools: buildDynamicTools(browserToolsEnabled),
         };
         let threadId: string | null = null;
-        if (req.resumeProviderSessionId) {
+        // 【MC-057】这次是否**要求**恢复一个已有的 Codex 线程。要求了却恢复失败,必须明确
+        // 失败 —— 从前 catch 掉之后直接 thread/start,于是界面还显示原历史、模型却在一个
+        // 全新 thread 里从头开始,而且 onProviderSessionId 把这个隐式重建**持久化成新事实**,
+        // 用户再也不知道上下文已经丢了。空串/null 表示"还没有线程可恢复",照常新建。
+        const resumeRequested = Boolean(req.resumeProviderSessionId);
+        if (resumeRequested) {
           try {
             // ⚠️ turn/start SILENTLY DROPS unknown fields on 0.153.4 — its
             // params have no modelProvider (verified live: an override to a
@@ -508,13 +513,33 @@ export class CodexAgentSdkProvider implements AgentProvider {
               developerInstructions,
             })) as { thread?: { id?: string } } | undefined;
             threadId = resumed?.thread?.id ?? null;
+            // 【ARC-008】如实报出:这一轮真的接上了原线程。
+            if (threadId) ctx.onResumeOutcome?.({ kind: "RESUMED", providerSessionId: threadId });
           } catch (err) {
-            ctx.log.warn(`codex: thread/resume failed (${(err as Error).message}), starting a new thread`);
+            // 【MC-057】恢复失败 → 明确失败,不再静默 thread/start 开新线程(见上方注释)。
+            ctx.log.error(`codex: thread/resume failed for ${req.resumeProviderSessionId}: ${(err as Error).message}`);
+            // 【ARC-008】结构化事实。
+            ctx.onResumeOutcome?.({ kind: "FAILED", requestedId: req.resumeProviderSessionId!, error: (err as Error).message });
+            throw new Error(
+              `无法恢复这段对话的 Codex 底层线程(${req.resumeProviderSessionId}):${(err as Error).message}。` +
+                `已拒绝发送 —— 静默开一个新线程会让模型丢掉之前的执行结果与约束。请重试,或新建一个会话。`,
+            );
           }
         }
         if (!threadId) {
+          // 【MC-057】要求恢复却没拿到 threadId(resume 返回空)→ 同样不许静默新建。
+          if (resumeRequested) {
+            // 【ARC-008】结构化事实:resume 返回空。
+            ctx.onResumeOutcome?.({ kind: "FAILED", requestedId: req.resumeProviderSessionId!, error: "thread/resume 未返回可用的线程" });
+            throw new Error(
+              `无法恢复这段对话的 Codex 底层线程(${req.resumeProviderSessionId}):thread/resume 未返回可用的线程。` +
+                `已拒绝发送 —— 静默开一个新线程会让模型丢掉之前的执行结果与约束。请重试,或新建一个会话。`,
+            );
+          }
           const started = (await client.request("thread/start", threadParams)) as { thread?: { id?: string } } | undefined;
           threadId = started?.thread?.id ?? null;
+          // 【ARC-008】本就是全新线程,不是降级。
+          if (threadId) ctx.onResumeOutcome?.({ kind: "FRESH_EXPLICIT" });
         }
         if (!threadId) throw new Error("thread/start 未返回 threadId");
         activeTurn.threadId = threadId;
@@ -1501,7 +1526,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
         }
       }
       case "browser_list":
-        return toContent(browserList());
+        return toContent(browserList(req.cwd));
       case "browser_navigate":
         return toContent(
           await browserNavigate(
@@ -1515,7 +1540,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
           ),
         );
       case "browser_snapshot":
-        return toContent(await browserSnapshot({ browserId: optStr(args.browserId) }));
+        return toContent(await browserSnapshot({ browserId: optStr(args.browserId), projectPath: req.cwd }));
       case "browser_click":
         return toContent(
           await browserClick({
@@ -1524,6 +1549,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
             coordinateX: typeof args.coordinateX === "number" ? args.coordinateX : undefined,
             coordinateY: typeof args.coordinateY === "number" ? args.coordinateY : undefined,
             browserId: optStr(args.browserId),
+            projectPath: req.cwd,
           }),
         );
       case "browser_type":
@@ -1534,11 +1560,12 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
             text: typeof args.text === "string" ? args.text : "",
             clear: args.clear !== false,
             browserId: optStr(args.browserId),
+            projectPath: req.cwd,
           }),
         );
       case "browser_keys":
         return toContent(
-          await browserKeys({ keys: String(args.keys ?? ""), browserId: optStr(args.browserId) }),
+          await browserKeys({ keys: String(args.keys ?? ""), browserId: optStr(args.browserId), projectPath: req.cwd }),
         );
       case "browser_scroll":
         return toContent(
@@ -1547,6 +1574,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
             pages: typeof args.pages === "number" ? args.pages : undefined,
             selector: optStr(args.selector),
             browserId: optStr(args.browserId),
+            projectPath: req.cwd,
           }),
         );
       case "browser_wait":
@@ -1557,6 +1585,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
             seconds: typeof args.seconds === "number" ? args.seconds : undefined,
             timeoutSeconds: typeof args.timeoutSeconds === "number" ? args.timeoutSeconds : undefined,
             browserId: optStr(args.browserId),
+            projectPath: req.cwd,
           }),
         );
       case "browser_history":
@@ -1564,6 +1593,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
           await browserHistory({
             action: args.action as "back" | "forward" | "reload",
             browserId: optStr(args.browserId),
+            projectPath: req.cwd,
           }),
         );
       case "browser_select":
@@ -1573,6 +1603,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
             selector: optStr(args.selector),
             value: String(args.value ?? ""),
             browserId: optStr(args.browserId),
+            projectPath: req.cwd,
           }),
         );
       case "browser_find":
@@ -1589,12 +1620,13 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
               : undefined,
             cssScope: optStr(args.cssScope),
             browserId: optStr(args.browserId),
+            projectPath: req.cwd,
           }),
         );
       case "browser_switch_tab":
-        return toContent(await browserSwitchTab({ browserId: String(args.browserId ?? "") }));
+        return toContent(await browserSwitchTab({ browserId: String(args.browserId ?? ""), projectPath: req.cwd }));
       case "browser_close_tab":
-        return toContent(await browserCloseTab({ browserId: String(args.browserId ?? "") }));
+        return toContent(await browserCloseTab({ browserId: String(args.browserId ?? ""), projectPath: req.cwd }));
       case "browser_upload_file":
         return toContent(
           await browserUploadFile(
@@ -1618,6 +1650,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
               scale: typeof args.scale === "number" ? args.scale : undefined,
               headerFooter: args.headerFooter === true,
               browserId: optStr(args.browserId),
+              projectPath: req.cwd,
             },
             {
               toolCallId: typeof p.callId === "string" ? p.callId : randomUUID(),
@@ -1630,11 +1663,11 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
         return toContent(browserDownloads());
       case "browser_evaluate":
         return toContent(
-          await browserEvaluate({ script: String(args.script ?? ""), browserId: optStr(args.browserId) }),
+          await browserEvaluate({ script: String(args.script ?? ""), browserId: optStr(args.browserId), projectPath: req.cwd }),
         );
       case "browser_screenshot": {
         const r = await browserScreenshot(
-          { browserId: optStr(args.browserId), fullPage: args.fullPage === true },
+          { browserId: optStr(args.browserId), fullPage: args.fullPage === true, projectPath: req.cwd },
           {
           toolCallId: typeof p.callId === "string" ? p.callId : randomUUID(),
           sessionId: req.sessionId,

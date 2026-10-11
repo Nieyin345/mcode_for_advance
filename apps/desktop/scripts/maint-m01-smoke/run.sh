@@ -19,12 +19,18 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # banner 那一行是给 sql.js 的 asm 构建用的(它内部 require("node:fs"),而 ESM 输出
 # 没有 require)。electron 相关的两个模块换成 stubs/,被测代码一行未改。
+#
+# `node:fs` 换成 **db-persistence-smoke 那份同一份**故障注入 stub(§10 验 MC-019 的
+# 迁移落盘 durable:写/fsync/rename 失败时 db.ts 必须 reject,而不是"内存 ready、
+# 磁盘没写")。必须与被测的 db.ts 指向**同一个** stub 模块 —— 各指各的会变成两份
+# `armed` 状态,注入到不了 db.ts 的写盘调用上。
 "$ESBUILD" scripts/maint-m01-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@main/lib/dataRoot.js=./scripts/maint-m01-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/maint-m01-smoke/stubs/logger.ts \
+  --alias:node:fs=./scripts/db-persistence-smoke/stubs/fs.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

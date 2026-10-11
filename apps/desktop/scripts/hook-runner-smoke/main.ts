@@ -30,8 +30,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HookSpec } from "@contracts/hook";
-import { DEFAULT_HOOK_TIMEOUT_MS } from "@contracts/hook";
+import type { HookSpec, DeliveryPolicy } from "@contracts/hook";
+import { DEFAULT_DELIVERY_POLICY, DEFAULT_HOOK_TIMEOUT_MS, decideDelivery } from "@contracts/hook";
 import type { RuntimeEvent } from "@contracts/runtime";
 
 let failures = 0;
@@ -522,6 +522,120 @@ try {
 }
 
 check("hooks.json 确实落在(临时)数据根下", hooksFilePath().startsWith(DATA));
+
+/* ──────────────── 10. 交付策略矩阵(ARC-007) ──────────────── */
+
+console.log("\n交付策略矩阵(同一钩子一秒内 100 次)");
+
+// 先对着**纯函数**把四种策略的判据钉死 —— 快、确定、不依赖进程调度。集成矩阵(下面)
+// 再走真进程验端到端。两处一起,才既能看到"判据对不对",又能看到"判据真的驱动物理行为"。
+{
+  const p = (over: Partial<DeliveryPolicy>): DeliveryPolicy => ({ ...DEFAULT_DELIVERY_POLICY, ...over });
+  eq("空闲 → accept", decideDelivery(p({ kind: "BEST_EFFORT" }), { inFlight: 0, coalescePending: false }).action, "accept");
+  eq("到上限 → BEST_EFFORT 丢", decideDelivery(p({ kind: "BEST_EFFORT" }), { inFlight: 1, coalescePending: false }).action, "drop");
+  eq("到上限 → AT_MOST_ONCE 丢(不重复)", decideDelivery(p({ kind: "AT_MOST_ONCE" }), { inFlight: 1, coalescePending: false }).action, "drop");
+  eq("到上限 → COALESCE 合并", decideDelivery(p({ kind: "COALESCE" }), { inFlight: 1, coalescePending: false }).action, "coalesce");
+  eq("已有待合并 → COALESCE 并进去", decideDelivery(p({ kind: "COALESCE" }), { inFlight: 1, coalescePending: true }).action, "coalesce");
+  eq("上限 3、在跑 2 → accept(没到上限不丢)", decideDelivery(p({ kind: "BEST_EFFORT", maxConcurrency: 3 }), { inFlight: 2, coalescePending: false }).action, "accept");
+  const dur = decideDelivery(p({ kind: "DURABLE_AT_LEAST_ONCE" }), { inFlight: 0, coalescePending: false });
+  eq("DURABLE 本版不支持(明确报,不假装已持久化)", dur.action, "unsupported");
+  check("不支持的理由说清楚了", dur.reason.includes("尚未支持"), dur.reason);
+}
+
+/** 跑一行矩阵:同一个钩子、一条慢命令,一秒内触发 `n` 次,回读数与计数。 */
+async function matrixRun(
+  tag: string,
+  deliveryPolicy: DeliveryPolicy | undefined,
+  n: number,
+): Promise<{ hits: number; counts: { accepted: number; dropped: number; coalesced: number; unsupported: number }; hookId: string }> {
+  const cmd = makeCmd({ tag, sleepMs: 1200 });
+  const rowSpec = spec({ command: cmd.command, tag, ...(deliveryPolicy !== undefined ? { deliveryPolicy } : {}) });
+  // ⚠️ mtime 变了才会重读 hooks.json(section 5 用的是同一个判据)。这不是"随便等" ——
+  // 时间戳分辨率不够时,`writeHooks` 的新内容不会生效,这一行就会**用上一个钩子**去跑,
+  // 断言看起来绿其实是假的。所以照 section 5 的做法等足一秒。
+  await new Promise((r) => setTimeout(r, 1100));
+  writeHooks([rowSpec]);
+  for (let i = 0; i < n; i += 1) {
+    rt.emit({
+      type: "tool.use",
+      sessionId: SESSION,
+      toolName: "Write",
+      toolCallId: `${tag}_${i}`,
+      input: {},
+      requiresApproval: false,
+    } satisfies RuntimeEvent);
+  }
+  // 等这一行**落定**:要么第一条真的起来了(DURABLE 之外),要么已经记下了 unsupported
+  // (DURABLE)。**不能只等 hits ≥ 1** —— DURABLE 一个进程都不起,等它只会白等超时。
+  await until(
+    `${tag} 落定(起过进程 或 记下 unsupported)`,
+    () => cmd.hits() >= 1 || (hookRunner.deliveryCountsOf(rowSpec.id)?.unsupported ?? 0) > 0,
+    8000,
+  );
+  // 再等一会儿,让慢钩子收口(以及 COALESCE 的合并兑现)落地。
+  await new Promise((r) => setTimeout(r, 1800));
+  return {
+    hits: cmd.hits(),
+    hookId: rowSpec.id,
+    counts: hookRunner.deliveryCountsOf(rowSpec.id) ?? { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0 },
+  };
+}
+
+// ── BEST_EFFORT(也是**没声明策略时的默认**)—— 可丢,但丢要**数得出来**。
+{
+  const r = await matrixRun("mx-best", { kind: "BEST_EFFORT", maxConcurrency: 1 }, 100);
+  eq("BEST_EFFORT:只起 1 个进程", r.hits, 1);
+  eq("BEST_EFFORT:accepted 计数 1", r.counts.accepted, 1);
+  eq("BEST_EFFORT:dropped 计数 99(丢是明账,不是悄悄丢)", r.counts.dropped, 99);
+  eq("BEST_EFFORT:没有 coalesce / unsupported", r.counts.coalesced + r.counts.unsupported, 0);
+}
+// 省略 deliveryPolicy === 今天的默认行为:同一形状(1 跑 99 丢)。
+{
+  const r = await matrixRun("mx-default", undefined, 100);
+  eq("未声明策略 = 今天的行为(1 跑 99 丢)", `${r.hits}/${r.counts.dropped}`, "1/99");
+}
+
+// ── maxConcurrency > 1 —— **旧行为做不到的那条红线**。旧的"同一条钩子同时只跑一个进程"
+//    是一张 `Set`,它对"上限 2"根本没有表达位置:无论怎么配,它永远只放行 1 个。所以
+//    "上限 2 → 恰好 2 个并发"这条断言,**在旧的 Set 实现下必红** —— 它才是这次改动
+//    真正新增的能力,而不是"把已有的默认换个写法"。
+{
+  const r = await matrixRun("mx-conc2", { kind: "BEST_EFFORT", maxConcurrency: 2 }, 100);
+  eq("maxConcurrency=2 → 恰好 2 个并发(旧 Set 只给 1)", r.hits, 2);
+  eq("上限 2:accepted 2", r.counts.accepted, 2);
+  eq("上限 2:其余 98 丢", r.counts.dropped, 98);
+}
+
+// ── AT_MOST_ONCE —— 不可重复(只 1 个),允许明确丢。
+{
+  const r = await matrixRun("mx-atmost", { kind: "AT_MOST_ONCE", maxConcurrency: 1 }, 100);
+  eq("AT_MOST_ONCE:不重复,只 1 个进程", r.hits, 1);
+  eq("AT_MOST_ONCE:accepted 1", r.counts.accepted, 1);
+  eq("AT_MOST_ONCE:其余明确丢(99)", r.counts.dropped, 99);
+}
+
+// ── COALESCE —— 形成**有界**运行:1 个在跑 + 攒着的合并**兑现 1 次** = 2。这是与旧行为
+//    (Skip-while-running 只给 1)的**分界**:旧实现那 99 条只是被丢,合并批次永远跑不出来。
+{
+  const r = await matrixRun("mx-coalesce", { kind: "COALESCE", maxConcurrency: 1 }, 100);
+  eq("COALESCE:形成有界运行(1 在跑 + 1 合并兑现 = 2)", r.hits, 2);
+  eq("COALESCE:accepted 2", r.counts.accepted, 2);
+  eq("COALESCE:99 条并进了合并(coalesced,不是丢)", r.counts.coalesced, 99);
+  eq("COALESCE:没有丢(dropped 0)", r.counts.dropped, 0);
+}
+
+// ── DURABLE_AT_LEAST_ONCE —— 本版**尚未支持**:明确报出来,不起进程,不假装已持久化。
+{
+  const r = await matrixRun("mx-durable", { kind: "DURABLE_AT_LEAST_ONCE" }, 100);
+  eq("DURABLE:一个进程都不起(不假装跑过)", r.hits, 0);
+  eq("DURABLE:100 条全记 unsupported", r.counts.unsupported, 100);
+  eq("DURABLE:accepted 仍是 0", r.counts.accepted, 0);
+  const runs = hookRunner.listRuns().filter((x) => x.hookId === r.hookId);
+  check("DURABLE:环里那条说了「尚未支持」", runs.some((x) => (x.error ?? "").includes("尚未支持")), runs.map((x) => x.error).slice(0, 2));
+}
+
+// 矩阵跑完把钩子清掉,别让后面的收尾读到它。
+writeHooks([]);
 
 rmSync(DATA, { recursive: true, force: true });
 rmSync(WORK, { recursive: true, force: true });

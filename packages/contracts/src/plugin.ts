@@ -259,13 +259,26 @@ export interface PluginAgentSummary {
 }
 
 /** One hook command as declared by the plugin. v1 parses and SHOWS these but
+ *
  *  never executes them (see pluginManager docs) — the panel labels them
- *  explicitly so users don't assume the automation is live. */
+ *  explicitly so users don't assume the automation is live.
+ *
+ *  【MC-061】`execution` 把「到底跑不跑」变成**显式状态**,而不是让用户以为 hooks
+ *  装了就是活的:
+ *   - `unsupported` —— v1 明确不执行插件 hooks。带 command 的钩子先当作**声明性能力**
+ *     展示(command 来源可见),但要执行得先经用户授信产生独立的主机 hook 授权(尚未实现);
+ *   - `unmappable` —— 该事件名映射不到 Mcode 的统一 `RuntimeEvent`(见
+ *     `pluginHookEventSupport`),即使将来接上执行通道也该明确报不可用,不得静默不跑。 */
 export interface PluginHookSummary {
   event: string;
   matcher?: string;
   command: string;
+  /** 「这个钩子到底跑不跑」的显式状态;缺省由面板按 UNSUPPORTED 呈现。 */
+  execution?: PluginHookExecution;
 }
+
+/** 插件 hook 的执行状态(见 {@link PluginHookSummary})。 */
+export type PluginHookExecution = "unsupported" | "unmappable";
 
 /** Transport kind of a plugin MCP server, mirroring the MCP panel. */
 export type PluginMcpKind = "stdio" | "http" | "sse";
@@ -493,3 +506,39 @@ export const PluginsMarketplaceRefreshSchema = z.object({
   name: z.string().min(1),
 });
 export type PluginsMarketplaceRefreshInput = z.infer<typeof PluginsMarketplaceRefreshSchema>;
+
+/**
+ * 【ARC-014】一个声明组件**对某个 provider** 的交付状态。
+ *
+ * 为什么需要它:`compatibleProviderIdsForPlugin` 给的是 **ANY**(至少一个组件能投递),
+ * 而场景依赖通常是 **ALL**(所需组件全部就绪)。两个量词语义不同 —— 一个"同时含通用 Skill
+ * 与 Claude 专用 Command"的插件,兼容列表里有 Pi,但 Pi **收不到**那个 Command。用单一的
+ * `compatibleProviderIds` 判断整个场景是否 ready 就会误放行。这份逐组件表补上缺口。
+ */
+export type ComponentDeliveryStatus =
+  | "DELIVERED"
+  | "INCOMPATIBLE"      // 该组件类型不被这个 provider 支持
+  | "DISABLED"          // 插件被用户禁用
+  | "DENIED"            // 授信被撤销(MCP trust 等)
+  | "MISSING_DEPENDENCY";
+
+export interface ComponentDeliveryEntry {
+  componentId: string;
+  type: "skill" | "command" | "agent" | "hook" | "mcp" | "app" | "nodeType";
+  /** 来源摘要(文件/名字),敏感内容不外泄。 */
+  source: string;
+  status: ComponentDeliveryStatus;
+  reason?: string;
+}
+
+/** 【ARC-014】一个插件对某个 provider 的逐组件交付报告。 */
+export interface ComponentDeliveryReport {
+  pluginId: string;
+  version?: string;
+  providerId: string;
+  /** 插件是否被用户启用。false 时所有组件为 DISABLED。 */
+  pluginEnabled: boolean;
+  entries: ComponentDeliveryEntry[];
+  /** 逐组件 ALL 判定:是否**每一个**组件都 DELIVERED。场景"需要某组件"用它,不用 compatibleProviderIds。 */
+  allDelivered: boolean;
+}

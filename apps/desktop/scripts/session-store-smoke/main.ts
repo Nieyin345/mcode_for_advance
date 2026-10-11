@@ -14,6 +14,8 @@
  * Run: scripts/session-store-smoke/run.sh
  */
 import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub, setUpdateBookmarksStub, setProjectReorderStub, setSettingSetStub, setApiStub } from "./prelude.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -834,6 +836,7 @@ console.log("\n[14] ingestEvent:turn.rewound 标记那张卡片,但**不删**它
     sessionId: SID,
     files: files.map((f) => f.filePath),
     failedFiles: [],
+    conflicts: [],
     targetFiles: files.map((f) => f.filePath),
   });
   eq("最新的那张被标成 rewound", blocksOf("m1")[0]?.["rewound"], true);
@@ -852,6 +855,7 @@ console.log("\n[14] ingestEvent:turn.rewound 标记那张卡片,但**不删**它
     sessionId: SID,
     files: ["D:\\p\\other.ts"],
     failedFiles: [],
+    conflicts: [],
     targetFiles: ["D:\\p\\other.ts"],
   });
   eq("路径对不上 → 不标记", blocksOf("m1")[0]?.["rewound"], undefined);
@@ -866,6 +870,7 @@ console.log("\n[14] ingestEvent:turn.rewound 标记那张卡片,但**不删**它
     sessionId: SID,
     files: files.map((f) => f.filePath),
     failedFiles: [],
+    conflicts: [],
     targetFiles: files.map((f) => f.filePath),
   });
   eq("历史卡片被标记", blocksOf("m1")[0]?.["rewound"], true);
@@ -874,6 +879,50 @@ console.log("\n[14] ingestEvent:turn.rewound 标记那张卡片,但**不删**它
     useSessionStore.getState().turnFilesBySession[SID],
     files as unknown as TurnFileEntry[],
   );
+
+  /* 【MC-002】PARTIAL → SUCCESS:部分撤销后用户重试,第二个结果必须被**同一张卡片**接收。
+   *
+   * 第 13 轮复查的反例:reducer 认领卡片时要求 `rewindPartial === undefined`,于是第一次
+   * 部分撤销写了 `rewindPartial` 之后,第二次的成功事件再进来时那张卡片**不再被认领** ——
+   * 卡永远停在"部分撤销",用户重试也没用。这里正面撞这格:先部分、再成功,断言收敛。 */
+  markRewound();
+  useSessionStore.getState().ingestEvent({
+    type: "turn.rewound",
+    sessionId: SID,
+    files: ["D:\\p\\a.ts"],
+    failedFiles: ["D:\\p\\b.ts"],
+    conflicts: [],
+    targetFiles: files.map((f) => f.filePath),
+  });
+  eq("部分撤销:卡片没被标成 rewound", blocksOf("m1")[0]?.["rewound"], undefined);
+  deepEq(
+    "部分撤销:failed 如实记在 rewindPartial 里",
+    (blocksOf("m1")[0]?.["rewindPartial"] as { failed?: unknown } | undefined)?.failed,
+    ["D:\\p\\b.ts"],
+  );
+  // 重试成功 —— 不重新 markRewound(那会把上一轮的 partial 冲掉,就测不到"接收第二次结果"了)。
+  useSessionStore.getState().ingestEvent({
+    type: "turn.rewound",
+    sessionId: SID,
+    files: files.map((f) => f.filePath),
+    failedFiles: [],
+    conflicts: [],
+    targetFiles: files.map((f) => f.filePath),
+  });
+  eq("★ 重试成功 → 卡片收敛成 rewound(第二个结果被同一张卡片接收)", blocksOf("m1")[0]?.["rewound"], true);
+  eq("★ 成功后 stale 的 rewindPartial 被清掉(不画双徽标)", blocksOf("m1")[0]?.["rewindPartial"], undefined);
+  deepEq("★ 成功后本轮文件桶清空", useSessionStore.getState().turnFilesBySession[SID], []);
+  // 反向控制:已经撤销的卡片,再收到一个迟到的"部分失败"事件**不得倒退**。
+  useSessionStore.getState().ingestEvent({
+    type: "turn.rewound",
+    sessionId: SID,
+    files: ["D:\\p\\a.ts"],
+    failedFiles: ["D:\\p\\b.ts"],
+    conflicts: [],
+    targetFiles: files.map((f) => f.filePath),
+  });
+  eq("★ 迟到的失败事件不倒退已撤销的卡片(单调)", blocksOf("m1")[0]?.["rewound"], true);
+  eq("★ 也不给它重新挂上 rewindPartial", blocksOf("m1")[0]?.["rewindPartial"], undefined);
 }
 
 console.log("\n[15] ingestEvent:user.message 追加 / 去重 / 编辑截断");
@@ -1939,6 +1988,35 @@ await (async () => {
   check("★ 迟到的 A 清单没有盖掉 B(仍是 b-only)", names.includes("b-only") && !names.includes("a-only"), names);
   setSkillsListStub(null);
 })();
+
+/* 【MC-002】回滚的**三段契约**在源码里钉住 —— 这套无头环境下 `RuntimeManager` 与
+ * `restoreFiles` 都起不来(前者要 Electron 运行时、后者在 file-snapshot-smoke 里真跑),
+ * 而 sessionStore 的 reducer 行为在上面的 §[14] 已真跑。这里补的是两头:主进程那条
+ * "没有 cwd 必须**显式拒绝**"的返回形状,以及 store 那条"没有会话也要显式拒绝"。
+ * 判据盯**生效的形状**,不是"文本里出现过这个词"(旧断言被 `if (false && …)` 骗过)。 */
+console.log("\n[16] 回滚契约:缺 cwd / 缺会话都必须显式拒绝(不许静默画成「已撤销」)");
+{
+  const root = process.cwd().replace(/[\\/]scripts[\\/]session-store-smoke$/, "");
+  const rm = readFileSync(join(root, "src/main/claude/RuntimeManager.ts"), "utf8").replace(/\/\/[^\n]*/g, "");
+  // 没有 cwd 那一支:必须 return failed 且是**每个目标文件**都在 failed 里 —— 空结果会被
+  // 卡片当成功。这里要求那一支出现 `failed: all`(而不是三个空数组)。
+  const noCwd = rm.slice(rm.indexOf("if (!cwd) {"), rm.indexOf("if (!cwd) {") + 700);
+  check(
+    "★ RuntimeManager: 缺 cwd 那支 return failed: all（不是三个空数组冒充成功）",
+    /failed:\s*all/.test(noCwd) && /const all = files\.map/.test(noCwd),
+    noCwd.slice(0, 200),
+  );
+  check(
+    "★ 缺 cwd 也把 turn.rewound 事件发出去（两端卡片都要学得到「没做成」）",
+    /type:\s*"turn\.rewound"/.test(noCwd),
+  );
+  // store 侧:没有 sessionId → failed 是 files 的路径,不是空数组。
+  const ss = readFileSync(join(root, "src/renderer/stores/sessionStore.ts"), "utf8").replace(/\/\/[^\n]*/g, "");
+  check(
+    "★ sessionStore: 无 activeSessionId 时 return failed: files.map(...)（不是空数组）",
+    /if \(!sessionId\) return \{ restored: \[\], failed: files\.map\(\(f\) => f\.filePath\), conflicts: \[\] \};/.test(ss),
+  );
+}
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {

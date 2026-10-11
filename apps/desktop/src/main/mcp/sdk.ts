@@ -20,6 +20,31 @@ export type ToolContent =
   | { type: "text"; text: string; data?: never; mimeType?: never }
   | { type: "image"; data: string; mimeType: string; text?: never };
 
+/**
+ * 【ARC-017】从任意 {@link ToolResult} 里**只取文本块** —— 权威合同导出的唯一一份,
+ * 供所有 smoke 与消费方共用,不各自手写 `(r.content as Record<string,unknown>[])`。
+ *
+ * 用**判别联合 + 类型守卫**识别 text/image,而不是把数组宽泛断言成 `Record[]`:
+ * 后者在 SDK 加了一种新块(比如截图/资源)时会与真实结构漂移,编译期挡不住。
+ *
+ * - 纯文本 → 返回那些文本;
+ * - 纯图片 → 返回 `[]`(图片不是文本,给个 image 占位会把上层判断带偏);
+ * - 混合 → 只返回其中的 text 块;
+ * - 未知块 → 跳过(不抛、不 `as any`)。
+ */
+export function textBlocksOf(result: ToolResult): string[] {
+  const out: string[] = [];
+  for (const block of result.content) {
+    if (block.type === "text" && typeof block.text === "string") out.push(block.text);
+  }
+  return out;
+}
+
+/** 【ARC-017】把工具结果拼成一段文本(多文本块用换行连接);纯图片时返回空串。 */
+export function toolTextOf(result: ToolResult): string {
+  return textBlocksOf(result).join("\n");
+}
+
 export interface ToolResult {
   /** Tool execution failed; preserve this flag across every transport. */
   isError?: boolean;

@@ -11,3 +11,6 @@ export * from "./pdfHighlight.js";
 export * from "./claudeSubagent.js";
 export * from "./capability.js";
 export * from "./memory.js";
+export * from "./policyEngine.js";
+export * from "./sceneTask.js";
+export * from "./commit.js";

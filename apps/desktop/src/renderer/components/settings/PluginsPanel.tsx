@@ -274,6 +274,9 @@ function EngineDeliveryTable({
   const capable = capableProviders(plugin);
   const switches = engineSwitchesOf(plugin);
   const hasHooks = plugin.components.hooks.length > 0;
+  // 【MC-061】分清"v1 不执行"与"事件根本映射不到 Mcode 的统一事件" —— 后者即使将来接上
+  // 执行通道也该明确报不可用,不能和"暂时没接"混成一句话。
+  const hasUnmappableHook = plugin.components.hooks.some((h) => h.execution === "unmappable");
   return (
     <div className="mb-2.5 border-b border-edge pb-2.5">
       <div className="mb-1.5 flex items-center gap-1.5 text-[0.7143em] font-semibold text-content-muted">
@@ -315,7 +318,7 @@ function EngineDeliveryTable({
                     : t("settings.plugins.engineDeclared")}
                 {can && e.id === "claude" && hasHooks && (
                   <span className="ml-1.5 text-warning no-underline">
-                    {t("settings.plugins.engineHooksNote")}
+                    {hasUnmappableHook ? t("settings.plugins.engineHooksUnmappable") : t("settings.plugins.engineHooksNote")}
                   </span>
                 )}
               </span>

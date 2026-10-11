@@ -32,6 +32,7 @@ import {
   type PluginHookSummary,
   type PluginManifest,
 } from "@contracts/ipc";
+import { mapClaudeHookEvent } from "@contracts/hook";
 
 /* ── Manifest discovery ── */
 
@@ -386,7 +387,12 @@ function parseHooksObject(raw: Record<string, unknown>): PluginHookSummary[] {
         if (!h || typeof h !== "object") continue;
         const hook = h as Record<string, unknown>;
         const command = typeof hook.command === "string" ? hook.command : JSON.stringify(hook);
-        out.push(matcher ? { event, matcher, command } : { event, command });
+        // 【MC-061】把"到底跑不跑"标成显式状态:v1 不执行插件 hooks(unsupported);
+        // 事件名映射不到统一 HookEvent 的(即使将来接上执行通道)标 unmappable —— 明确
+        // 报不可用,而不是让面板看着像活的、实际静默不跑。
+        const execution: PluginHookSummary["execution"] =
+          mapClaudeHookEvent(event) === null ? "unmappable" : "unsupported";
+        out.push(matcher ? { event, matcher, command, execution } : { event, command, execution });
       }
     }
   }

@@ -5,10 +5,12 @@
  * ~/.mcode/jobs/<jobId>. A dropped MCP/chat/SSH connection therefore cannot
  * kill a training run, and reconnecting can re-attach to status/log files.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { ConsoleTextDecoder, OutBuf, markTruncatedTail } from "@main/lib/outBuf.js";
+import { SettingRepo } from "@main/store/repositories.js";
 // 具名导入 —— **必须**这样写。`import ssh2 from "ssh2"` + 解构 `const { Client } = ssh2`
 // 拿到的是**值**,而 `Client` 在这里也要当**类型**用(`client: Client | null`),那条路
 // 编译不过(`'Client' refers to a value, but is being used as a type`)。同仓库的
@@ -36,6 +38,23 @@ export const MAX_JOB_LOG_WAIT_MS = 55_000;
 const JOB_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** 包在每条 exec 前面、写到 stderr 的进程号标记 —— 超时后靠它去远端杀掉整个进程组。 */
 const EXEC_PID_MARK = "__MCODE_EXEC_PID=";
+/**
+ * agent SSH 会话里**保活的** host key 记录,形如 `{"host:port":"SHA256:..."}`。
+ *
+ * 与中继(`relay/hostKey.ts` + `RelayManager`)同一套 OpenSSH `SHA256:` 形状;区别是这个
+ * 会话连的是**用户自填的任意主机**,连之前无从得知指纹 —— 所以走 known_hosts 式的 TOFU
+ * (首次见面记录,之后指纹变化即拒绝),而不是中继那种"预先独立核对"的钉扎。
+ */
+export const SSH_KNOWN_HOSTS_SETTING_KEY = "agentSsh.knownHosts";
+/**
+ * `agent_ssh_exec` 单条输出的**尾部窗口上界**(字节)。远端命令可跑满 10 分钟,输出没上界;
+ * 只留尾部是因为报错栈与结果都在结尾(与 `lib/outBuf.ts` 的取舍一致)。stderr 单独一个更小
+ * 的上限 —— 它是诊断信息,通常比 stdout 短得多。
+ */
+export const MAX_EXEC_STDOUT_BYTES = 131_072; // 128 KiB
+export const MAX_EXEC_STDERR_BYTES = 32_768; // 32 KiB
+/** OpenSSH `SHA256:` 指纹形状(与 `RELAY_HOST_KEY_FP_RE` 逐字同形)。 */
+const SHA256_FP_RE = /^SHA256:[A-Za-z0-9+/]{43}$/;
 export type RemoteConnectionState = "connecting" | "ready" | "reconnecting" | "error" | "closed";
 
 export interface RemoteConnectInput {
@@ -66,6 +85,10 @@ interface RemoteEntry {
   lastError: string | null;
   connectedAt: number | null;
   lastActivityAt: number | null;
+  /** 本次连接握手时**首次**记录了该主机指纹(TOFU)。成功后告诉用户已记录。 */
+  hostKeyRecorded: boolean;
+  /** 握手因指纹与已记录值不一致被拒(不是认证失败,不可重试)。 */
+  hostKeyMismatch: boolean;
 }
 
 export interface RemoteConnectionInfo {
@@ -78,6 +101,8 @@ export interface RemoteConnectionInfo {
   lastError: string | null;
   connectedAt: number | null;
   lastActivityAt: number | null;
+  /** 本次连接握手时把该主机指纹**首次**记入 known-hosts(TOFU);提示用户已记录。 */
+  hostKeyRecorded: boolean;
 }
 
 export interface RemoteExecResult {
@@ -85,6 +110,12 @@ export interface RemoteExecResult {
   stderr: string;
   code: number | null;
   signal: string | null;
+  /** 远端 stdout/stderr 的**接收总字节数**(未截断前),喂给"报告总量"。 */
+  stdoutTotalBytes: number;
+  stderrTotalBytes: number;
+  /** 尾部窗口是否丢过内容(截断说明已写进 stdout/stderr 正文**前面**)。 */
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
 }
 
 export interface RemoteJobStatus {
@@ -131,6 +162,7 @@ export function createAgentRemoteSshManager() {
     lastError: entry.lastError,
     connectedAt: entry.connectedAt,
     lastActivityAt: entry.lastActivityAt,
+    hostKeyRecorded: entry.hostKeyRecorded,
   });
 
   const scheduleReconnect = (entry: RemoteEntry): void => {
@@ -158,6 +190,25 @@ export function createAgentRemoteSshManager() {
       keepaliveInterval: entry.cfg.keepaliveIntervalMs ?? DEFAULT_KEEPALIVE_MS,
       keepaliveCountMax: entry.cfg.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT,
       readyTimeout: entry.cfg.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+      // known_hosts 式 TOFU。ssh2 默认 auto-accept 是**不校验**的 —— 首次见面就把
+      // 指纹记进设置,之后连同一 host:port 时指纹不一致即**当场拒绝握手**(返回 false,
+      // ssh2 会以 handshake 错误断开),绝不静默接受、也绝不静默覆盖。三种认证方式
+      // (password / privateKey / agent)都走这同一个 cfg,规则天然一致。
+      hostVerifier: (key: Buffer): boolean => {
+        const hostPort = `${entry.cfg.host}:${entry.cfg.port}`;
+        const actual = fingerprintOfHostKey(key);
+        const pinned = readKnownHosts()[hostPort];
+        if (!pinned) {
+          // 首见:记录并放行。`hostKeyRecorded` 让调用方在结果里告诉用户已记录指纹。
+          writeKnownHost(hostPort, actual);
+          entry.hostKeyRecorded = true;
+          return true;
+        }
+        if (sameFingerprint(pinned, actual)) return true;
+        // 指纹变了 —— 记下标记,error 处理器据此给出明确文案且不重连。
+        entry.hostKeyMismatch = true;
+        return false;
+      },
     };
     if (entry.cfg.privateKeyPath) {
       cfg.privateKey = readFileSync(expandHome(entry.cfg.privateKeyPath), "utf8");
@@ -176,6 +227,9 @@ export function createAgentRemoteSshManager() {
     const client = new Client();
     entry.client = client;
     entry.state = entry.reconnectAttempt > 0 ? "reconnecting" : "connecting";
+    // 每次握手都重新判一次指纹:首见记录、再见比对。清掉上一次的标记,让状态只反映本次。
+    entry.hostKeyRecorded = false;
+    entry.hostKeyMismatch = false;
     let settled = false;
     let ready = false;
     const settleOk = () => { if (!settled) { settled = true; resolve(); } };
@@ -197,9 +251,14 @@ export function createAgentRemoteSshManager() {
     client.on("error", (err: Error & { level?: string }) => {
       if (entry.client !== client) return;
       // Explicit agent failure has no implicit fallback; report it instead of silently waiting.
-      entry.lastError = friendlySshError(err);
+      entry.lastError = entry.hostKeyMismatch ? HOST_KEY_MISMATCH_MESSAGE : friendlySshError(err);
       if (!ready) settleErr(err);
-      if (!entry.intentionalClose && isRetryableSshError(err)) {
+      // 主机密钥变更 = 明确的不可重试错误:重连只会一遍遍撞同一堵墙(而且每次都把
+      // "变了的密钥"当成可接受的),立刻停在 error。
+      if (entry.hostKeyMismatch) {
+        entry.state = "error";
+        if (!ready) { try { client.end(); } catch { /* best effort */ } }
+      } else if (!entry.intentionalClose && isRetryableSshError(err)) {
         entry.state = "reconnecting";
         scheduleReconnect(entry);
       } else if (!entry.intentionalClose) {
@@ -263,46 +322,99 @@ export function createAgentRemoteSshManager() {
         // 不给 stdin:立刻发 EOF。否则 `read`、`cat`、要确认的安装命令会一直等输入,
         // 直到超时。
         try { stream.end(); } catch { /* best effort */ }
-        let stdout = "";
-        let stderr = "";
+        // ── MC-017 跨块解码 ─────────────────────────────────────────────────
+        // `data` 给的是**字节块**,边界可能落在多字节字符中间。按块 `toString("utf8")`
+        // 会把中文/emoji 切成 U+FFFD。stdout/stderr 各一份 `ConsoleTextDecoder`,把不完整
+        // 的尾巴留到下一块(与 `agentProcessSessions` 同一份实现)。
+        const stdoutDec = new ConsoleTextDecoder();
+        const stderrDec = new ConsoleTextDecoder();
+        // ── MC-015 有界尾部缓冲 ─────────────────────────────────────────────
+        // 远端命令可跑满 10 分钟,输出无上界;只留尾部(报错栈与结果都在结尾)。stdout 与
+        // stderr **各自**限量,超限时在正文**前面**加一句截断说明(见 `markTruncatedTail`)。
+        // 先解码成**完整字符**再喂缓冲,所以截断只会在字符边界发生 —— 不会留下半个字符。
+        const stdoutTail = new OutBuf(MAX_EXEC_STDOUT_BYTES);
+        const stderrTail = new OutBuf(MAX_EXEC_STDERR_BYTES);
+        let stdoutTotalBytes = 0;
+        let stderrTotalBytes = 0;
         let remotePid: number | null = null;
         let pidParsed = false;
-        /** 剥掉 stderr 开头的进程号标记(只出现一次,在最前面)。 */
-        const takePid = (): void => {
-          if (pidParsed) return;
-          const parsed = splitExecPid(stderr);
-          if (!parsed) return;
+        // 进程号标记只出现在 stderr **最前面**,而尾部缓冲会把开头丢掉 —— 所以在解析出
+        // pid 之前单独攒一小段头部;解析完(或确认不是标记)就只往尾部缓冲里灌。
+        let stderrHead = "";
+        const PID_HEAD_CAP = 4096;
+        /** 把一段**已解码**的 stderr 文本喂进尾部缓冲(顺带剥掉进程号标记)。 */
+        const feedStderr = (text: string): void => {
+          if (pidParsed) { stderrTail.push(Buffer.from(text, "utf8")); return; }
+          stderrHead += text;
+          const parsed = splitExecPid(stderrHead);
+          if (!parsed) {
+            // 标记还没收全(分包)。若头部已超上限,说明这本来就不是标记 —— 放弃解析。
+            if (stderrHead.length > PID_HEAD_CAP) { pidParsed = true; stderrTail.push(Buffer.from(stderrHead, "utf8")); }
+            return;
+          }
           pidParsed = true;
           remotePid = parsed.pid;
-          stderr = parsed.rest;
+          if (parsed.rest) stderrTail.push(Buffer.from(parsed.rest, "utf8"));
         };
         let code: number | null = null;
         let signal: string | null = null;
         let done = false;
+        /** 把解码器里残留的半个字符吐出来(进程结束时调用)。 */
+        const flushDecoders = (): void => {
+          const out = stdoutDec.end();
+          if (out) stdoutTail.push(Buffer.from(out, "utf8"));
+          const errOut = stderrDec.end();
+          if (errOut) feedStderr(errOut);
+        };
+        /** 收齐最终文本 + 截断标记 + 总量。 */
+        const collect = (): { stdout: string; stderr: string; stdoutTruncated: boolean; stderrTruncated: boolean } => {
+          const stdoutTruncated = stdoutTail.truncated;
+          const stderrTruncated = stderrTail.truncated;
+          let stdout = stdoutTail.text();
+          let stderrText = stderrTail.text();
+          if (stdoutTruncated) stdout = markTruncatedTail(stdout, MAX_EXEC_STDOUT_BYTES);
+          if (stderrTruncated) stderrText = markTruncatedTail(stderrText, MAX_EXEC_STDERR_BYTES);
+          return { stdout, stderr: stderrText, stdoutTruncated, stderrTruncated };
+        };
         const finish = (fn: () => void) => {
           if (done) return;
           done = true;
           if (timer) clearTimeout(timer);
+          flushDecoders();
           entry.lastActivityAt = Date.now();
           fn();
         };
         timer = setTimeout(() => {
-          takePid();
           // 只关通道,远端进程**不会**死(sshd 不给非 pty 会话发信号)—— 超时的
           // `sleep 1000`、卡住的训练脚本会一直留在服务器上。按进程号把整个进程组杀掉。
-          if (remotePid !== null) killRemoteProcessGroup(client, remotePid);
+          const pid = remotePid;
+          if (pid !== null) killRemoteProcessGroup(client, pid);
           try { stream.close(); } catch { /* best effort */ }
-          const partial = tailText(stdout.trim() || stderr.trim(), 2_000);
-          finish(() => reject(new Error(
-            `远程命令超过 ${timeout}ms，已终止${remotePid !== null ? "远端进程" : ""}；长任务请用 agent_remote_job_start` +
-            (partial ? `\n--- 超时前的输出(末尾) ---\n${partial}` : ""),
-          )));
+          finish(() => {
+            const c = collect();
+            const partial = tailText(c.stdout.trim() || c.stderr.trim(), 2_000);
+            reject(new Error(
+              `远程命令超过 ${timeout}ms，已终止${pid !== null ? "远端进程" : ""}；长任务请用 agent_remote_job_start` +
+              (partial ? `\n--- 超时前的输出(末尾) ---\n${partial}` : ""),
+            ));
+          });
         }, timeout);
-        stream.on("data", (d: Buffer) => { stdout += d.toString("utf8"); });
-        stream.stderr.on("data", (d: Buffer) => { stderr += d.toString("utf8"); takePid(); });
+        stream.on("data", (d: Buffer) => {
+          stdoutTotalBytes += d.length;
+          const text = stdoutDec.write(d);
+          if (text) stdoutTail.push(Buffer.from(text, "utf8"));
+        });
+        stream.stderr.on("data", (d: Buffer) => {
+          stderrTotalBytes += d.length;
+          const text = stderrDec.write(d);
+          if (text) feedStderr(text);
+        });
         stream.on("exit", (c: number | null, s: string | null) => { code = c; signal = s; });
         stream.on("error", (e: Error) => finish(() => reject(e)));
-        stream.on("close", () => finish(() => { takePid(); resolve({ stdout, stderr, code, signal }); }));
+        stream.on("close", () => finish(() => {
+          const c = collect();
+          resolve({ stdout: c.stdout, stderr: c.stderr, code, signal, stdoutTotalBytes, stderrTotalBytes, stdoutTruncated: c.stdoutTruncated, stderrTruncated: c.stderrTruncated });
+        }));
       });
     });
   };
@@ -341,14 +453,17 @@ export function createAgentRemoteSshManager() {
       lastError: null,
       connectedAt: null,
       lastActivityAt: null,
+      hostKeyRecorded: false,
+      hostKeyMismatch: false,
     };
     entries.set(entry.id, entry);
     try {
       await ensureConnected(entry);
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
-      entry.lastError = friendlySshError(e);
-      if (isRetryableSshError(e)) scheduleReconnect(entry);
+      entry.lastError = entry.hostKeyMismatch ? HOST_KEY_MISMATCH_MESSAGE : friendlySshError(e);
+      if (entry.hostKeyMismatch) entry.state = "error";
+      else if (isRetryableSshError(e)) scheduleReconnect(entry);
       else entry.state = "error";
     }
     return infoOf(entry);
@@ -364,8 +479,20 @@ export function createAgentRemoteSshManager() {
     try { client?.end(); } catch { /* best effort */ }
   };
 
+  /**
+   * MC-018:主动断开后**不留对口令**。`cfg` 里存着 `password` / `passphrase`(可能还有
+   * 私钥口令),断开就该抹掉 —— 记录留在内存 Map 里越久,口令驻留越久。见
+   * {@link scrubConnectionSecrets}。
+   */
+  const scrubSecrets = (entry: RemoteEntry): void => scrubConnectionSecrets(entry.cfg);
+
   const disconnect = async (ownerSessionId: string, connectionId: string): Promise<void> => {
-    closeEntry(owned(ownerSessionId, connectionId));
+    const entry = owned(ownerSessionId, connectionId);
+    closeEntry(entry);
+    scrubSecrets(entry);
+    // 断开即**从记录里移除** —— 否则反复断/连会把 entries Map 撑大(每次 connect 都新建
+    // 一条),`list` 也永远带着一串已关闭、还握着口令的僵尸记录。
+    entries.delete(connectionId);
   };
 
   /** The owning conversation is gone: close (no auto-reconnect) and forget all
@@ -375,6 +502,7 @@ export function createAgentRemoteSshManager() {
     for (const [id, entry] of [...entries]) {
       if (entry.ownerSessionId !== ownerSessionId) continue;
       closeEntry(entry);
+      scrubSecrets(entry);
       entries.delete(id);
     }
   };
@@ -611,6 +739,18 @@ function tailText(text: string, max: number): string {
   return text.length > max ? `…${text.slice(-max)}` : text;
 }
 
+/**
+ * MC-018:抹掉一条连接配置里的**口令字段**,只保留可读元数据(host/port/username 由
+ * 调用方另行保留)。断开或销毁连接后就该调用它 —— 否则 `password` / `passphrase`
+ * 会随记录一直驻留在内存里。
+ */
+export function scrubConnectionSecrets(cfg: Partial<RemoteConnectInput>): void {
+  delete cfg.password;
+  delete cfg.passphrase;
+  delete cfg.agentPath;
+  delete cfg.privateKeyPath;
+}
+
 function expandHome(p: string, home = homedir()): string {
   if (p === "~") return home;
   if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(home, p.slice(2));
@@ -637,6 +777,55 @@ function friendlySshError(err: Error): string {
   return msg;
 }
 
+/**
+ * 主机密钥变更时给用户/模型看的**明确**文案。要点名"主机密钥变了" —— 这是中间人攻击
+ * 或服务器被重装/换钥的信号,不能跟普通认证失败混在一起说。
+ */
+export const HOST_KEY_MISMATCH_MESSAGE =
+  "SSH 主机密钥变了：本次连接收到的服务器指纹与之前记录的不一致，已拒绝连接（可能是中间人攻击，或服务器重装/换了密钥）。" +
+  "请先独立核对新指纹；确认无误后，清掉设置里的 agentSsh.knownHosts 记录再重新连接，本工具不会自动覆盖已记录的指纹。";
+
+/** ssh2 hostVerifier 拿到的原始公钥 Buffer → OpenSSH `SHA256:` 指纹(base64 无填充)。 */
+function fingerprintOfHostKey(key: Buffer | string): string {
+  const buf = typeof key === "string" ? Buffer.from(key, "binary") : key;
+  const digest = createHash("sha256").update(buf).digest("base64").replace(/=+$/, "");
+  return `SHA256:${digest}`;
+}
+
+/** 指纹形状对不对(比对前的守卫;与中继同一套 OpenSSH 形状)。 */
+function isWellFormedFingerprint(fp: string | undefined | null): boolean {
+  return typeof fp === "string" && SHA256_FP_RE.test(fp);
+}
+
+/** 两个已记录指纹是否相同(形状不对的按"不相同"处理,宁可可拒别放行)。 */
+function sameFingerprint(a: string, b: string): boolean {
+  return isWellFormedFingerprint(a) && isWellFormedFingerprint(b) && a === b;
+}
+
+/** 读出 known-hosts 记录(`{"host:port":"SHA256:..."}`)。设置缺失/损坏时当作空表。 */
+function readKnownHosts(): Record<string, string> {
+  try {
+    const raw = SettingRepo.get(SSH_KNOWN_HOSTS_SETTING_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** 记一条 `host:port → 指纹`(TOFU 首见写入)。 */
+function writeKnownHost(hostPort: string, fingerprint: string): void {
+  const table = readKnownHosts();
+  table[hostPort] = fingerprint;
+  SettingRepo.set(SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify(table));
+}
+
 export const __remoteSshTest = {
   parseJobLogOutput,
   splitExecPid,
@@ -646,4 +835,12 @@ export const __remoteSshTest = {
   buildJobLogCommand,
   buildJobCancelCommand,
   parseJobStatus,
+  fingerprintOfHostKey,
+  isWellFormedFingerprint,
+  sameFingerprint,
+  readKnownHosts,
+  writeKnownHost,
+  MAX_EXEC_STDOUT_BYTES,
+  MAX_EXEC_STDERR_BYTES,
+  SSH_KNOWN_HOSTS_SETTING_KEY,
 };

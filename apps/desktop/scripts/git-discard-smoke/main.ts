@@ -26,7 +26,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
 import { registerGitHandlers } from "@main/ipc/git.js";
@@ -244,6 +244,73 @@ section("§6 提交详情:改名文件带 +/- 行数(不是静默丢)");
   // ★ 判据立在"用户看到的那两个数"上:改名文件必须带出 +2/−2(不是 undefined)。
   eq("★ 改名文件带出新增行数(不是静默丢)", renamed?.additions, 2);
   eq("★ 改名文件带出删除行数(不是静默丢)", renamed?.deletions, 2);
+}
+
+/* ──────────────── §7 MC-041:repoPath 在项目内,但真实仓库在项目外 ──────────────── */
+
+// 修前:只要 `repoPath` 落在某个已注册项目内就放行。而 `git` 会**沿父目录向上发现**
+// 最近的那个 `.git` —— 于是"在项目里、项目本身不是仓库、但某个祖先目录是仓库"的路径,
+// 会让命令悄悄操作**项目之外**的仓库(用户从没授权过的那一棵)。
+//
+// 夹具:`outer` 是真仓库,`outer/project` 是它下面一个**普通目录**(没有自己的 .git),
+// 把 `outer/project` 注册成项目根、再拿它当 repoPath → git 解析出的仓库根是 `outer`,
+// 落在项目之外 → 必须拒绝。
+//
+// 判据用 `git:status`(而不是 `git:discard`):status 在修前的表现是**看得见的** ——
+// 它会读到外面那个仓库的当前分支(`main`);修后则被围栏拒成空 status。discard 那边
+// 修前会以一句 git 报错收场(路径是相对外面那个仓库根的),反而分不出"拒了"还是"碰了"。
+section("§7 ★ MC-041:repoPath 在项目内但真实仓库在项目外 → 拒");
+
+{
+  const outer = mkdtempSync(join(tmpdir(), "mcode-git-outer-"));
+  try {
+    git(outer, "init", "-q", "-b", "main");
+    writeFileSync(join(outer, "outer.txt"), "祖仓库的文件\n", "utf8");
+    git(outer, "add", "outer.txt");
+    git(outer, "commit", "-qm", "outer init");
+    const nestedProject = join(outer, "project");
+    mkdirSync(nestedProject, { recursive: true });
+    writeFileSync(join(nestedProject, "note.txt"), "项目内的文件\n", "utf8");
+
+    // 夹具前提:git 从这个"项目"目录向上找到的仓库根,是它外面的祖仓库(意味着
+    // 修前那条命令会落到 outer 上)。
+    const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: nestedProject, encoding: "utf-8" }).trim();
+    check(
+      "夹具:git 从项目目录上溯发现的仓库根**不是**这个项目目录本身(而是外面的祖仓库)",
+      resolve(top) !== resolve(nestedProject),
+      { top, nestedProject },
+    );
+
+    // 只认这一个"项目"目录当项目根(替身读环境变量)。
+    const savedRoot = process.env.MCODE_GIT_SMOKE_ROOT;
+    process.env.MCODE_GIT_SMOKE_ROOT = nestedProject;
+
+    const st = await call<{ status: { branch: string; files: unknown[] } }>(IPC.GIT_STATUS, {
+      repoPath: nestedProject,
+    });
+    eq(
+      "★ repoPath 在项目内、真实仓库在项目外 → 拒(不读到外面那棵仓库的分支)",
+      st.status.branch,
+      "",
+    );
+    eq("★ 也没读到外面那棵仓库的任何改动文件", st.status.files.length, 0);
+
+    // 正面控制:同一个"项目"里**确实是仓库根**的那条路照常работает —— 免得围栏把
+    // 正常的嵌套仓库(monorepo)也一起误杀。
+    const realRepo = join(outer, "realrepo");
+    mkdirSync(realRepo, { recursive: true });
+    git(realRepo, "init", "-q", "-b", "main");
+    writeFileSync(join(realRepo, "a.txt"), "a\n", "utf8");
+    git(realRepo, "add", "a.txt");
+    git(realRepo, "commit", "-qm", "init");
+    process.env.MCODE_GIT_SMOKE_ROOT = realRepo;
+    const stOk = await call<{ status: { branch: string } }>(IPC.GIT_STATUS, { repoPath: realRepo });
+    eq("★ 正面控制:项目根本身就是仓库时照常读得到(discard 围栏没误杀正常仓库)", stOk.status.branch, "main");
+
+    process.env.MCODE_GIT_SMOKE_ROOT = savedRoot;
+  } finally {
+    rmSync(outer, { recursive: true, force: true });
+  }
 }
 
 rmSync(ROOT, { recursive: true, force: true });

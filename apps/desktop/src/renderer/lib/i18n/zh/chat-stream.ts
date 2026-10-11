@@ -222,6 +222,9 @@ export const zh = {
   "chatStream.turnFiles.rewinding": "撤销中…",
   "chatStream.turnFiles.rewoundCheck": "已撤销 ✓",
   "chatStream.turnFiles.rewoundBadge": "已撤销",
+  "chatStream.turnFiles.rewindPartialBadge": "{n}/{total} 未还原",
+  "chatStream.turnFiles.partialFailed": "{n} 个文件没还原(写不进去或被拒),可重试",
+  "chatStream.turnFiles.partialConflicts": "{n} 个文件之后又改过,没动它们(避免覆盖新改动)",
   "chatStream.turnFiles.rewindLatestTitle": "把本轮所有文件恢复为轮开始前的状态",
   "chatStream.turnFiles.rewindHistoryTitle":
     "把该历史轮次的文件改动恢复为当时修改前的状态(可能影响后续轮次)",

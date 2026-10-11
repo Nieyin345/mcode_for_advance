@@ -91,7 +91,12 @@ function picker() {
   await test('picker rejects bad selector and normalizes non-text optional fields', () => {
     const p = picker(); p.object.browsers.get('tab').pickMode = true; for (const value of [null, {}, { selector: '' }, { selector: 3 }]) p.send(value); assert.equal(p.sent.length, 0); p.send({ selector: '#ok', outerHTML: {}, preview: false }); assert.equal(p.sent[0][1].payload.outerHTML, ''); assert.equal(p.sent[0][1].payload.preview, '');
   });
-  const snapshots = load('src/main/lib/fileSnapshot.ts', { '@main/lib/msysPath.js': load('src/main/lib/msysPath.ts') });
+  const snapshots = load('src/main/lib/fileSnapshot.ts', {
+    '@main/lib/msysPath.js': load('src/main/lib/msysPath.ts'),
+    // fileSnapshot 现在也 import 了零依赖叶子的 @main/lib/realPathWithin.js(MC-001 的
+    // 物理包含性判据)。它是真模块、只 import node:*,直接 load 进来即可。
+    '@main/lib/realPathWithin.js': load('src/main/lib/realPathWithin.ts'),
+  });
   await test('snapshot preserves UTF-8 BOM and restores exact original bytes', async () => {
     const file = path.join(temp, 'bom.txt'); const original = Buffer.from('\ufeff初始内容\r\n', 'utf8'); fs.writeFileSync(file, original); const snapshot = new snapshots.FileSnapshot(); await snapshot.recordPre(temp, file); fs.writeFileSync(file, 'changed'); const entries = await snapshot.freeze(); assert.equal(entries[0].before.charCodeAt(0), 0xfeff); await snapshots.restoreFiles(temp, entries); assert.deepEqual(fs.readFileSync(file), original);
   });

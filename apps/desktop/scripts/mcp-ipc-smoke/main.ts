@@ -254,6 +254,10 @@ const scanImport = handlerFor(IPC.MCP_SCAN_IMPORT);
 const importServers = handlerFor(IPC.MCP_IMPORT);
 const authorize = handlerFor(IPC.MCP_AUTHORIZE);
 const unauthorize = handlerFor(IPC.MCP_UNAUTHORIZE);
+// 项目级 MCP(<项目>/.mcp.json)—— 见 §12.5。
+const projectList = handlerFor(IPC.MCP_PROJECT_LIST);
+const projectSave = handlerFor(IPC.MCP_PROJECT_SAVE);
+const projectTrust = handlerFor(IPC.MCP_PROJECT_TRUST);
 
 same(
   "9 条通道全都注册上了",
@@ -1235,6 +1239,163 @@ eq(
   "带中文的名字" in ((await mcpConfig.getMcpTruth()).userServers ?? {}),
   false,
 );
+
+/* ──────────────── 12.5 项目级 MCP(<项目>/.mcp.json)────────────────
+ *
+ * MC-034 / MC-039 / MC-040 的回归网。都走**真的** `lib/projectMcp.ts`(经
+ * ipc/mcp.ts 的项目通道),真读真写临时项目目录里的 `.mcp.json`,不换桩。
+ */
+
+console.log("\n项目级 MCP:信任绑项目身份 / 超大文件拒读 / 写串行化");
+
+{
+  const {
+    getTrustedProjectMcpServers,
+    PROJECT_MCP_FILE,
+  } = await import("@main/lib/projectMcp.js");
+
+  /** 造一个"项目目录":真实建目录,写一份 `.mcp.json`。 */
+  const projRoot = mkdtempSync(join(tmpdir(), "mcode-mcp-ipc-proj-"));
+  function makeProject(name: string, servers: Record<string, unknown>): string {
+    const dir = join(projRoot, name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, PROJECT_MCP_FILE), `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`, "utf8");
+    return dir;
+  }
+  function baseName(p: string): string {
+    return resolve(p);
+  }
+  const SAME_CONFIG = { command: "node", args: ["mcp-server.js"] };
+
+  // ── MC-039:两个**不同来源**、命令文本相同 → 信任不串门 ──
+  const repoA = makeProject("repo-a", { shared: SAME_CONFIG });
+  const repoB = makeProject("repo-b", { shared: SAME_CONFIG });
+
+  // 在 A 里信任它(经真 handler)。
+  const tr = (await projectTrust({ projectPath: repoA, name: "shared", trusted: true })) as { ok: boolean };
+  check("★ 在项目 A 信任条目成功", tr.ok === true, tr);
+
+  const listA = (await projectList({ projectPath: repoA })) as {
+    servers: Array<{ name: string; trusted: boolean }>;
+  };
+  const listB = (await projectList({ projectPath: repoB })) as {
+    servers: Array<{ name: string; trusted: boolean }>;
+  };
+  eq(
+    "★ 项目 A 里那个条目显示为已信任",
+    listA.servers.find((s) => s.name === "shared")?.trusted,
+    true,
+  );
+  eq(
+    "★ MC-039:命令文本相同但**另一个项目**的条目不被信任(不继承)",
+    listB.servers.find((s) => s.name === "shared")?.trusted,
+    false,
+  );
+  // 投递口径:同一条命令文本,B 里不投递、A 里投递。
+  eq(
+    "★ MC-039:投递到引擎时 B 的相同条目被丢弃",
+    getTrustedProjectMcpServers(baseName(repoB)).length,
+    0,
+  );
+  eq(
+    "投递时 A 的条目在列",
+    getTrustedProjectMcpServers(baseName(repoA)).map(([n]) => n).join(","),
+    "shared",
+  );
+
+  // ── MC-039:同一来源的 worktree **复用**信任 ──
+  // 造一个真仓库形状:主检出 `.git/` 是目录;链接 worktree 的 `.git` 是文件,
+  // `gitdir:` 指向 `<主>/.git/worktrees/<名>`,那里有 `commondir`(指回 `<主>/.git`)
+  // **以及** `gitdir` 回指文件(指回本工作树的 `.git` —— MC-055 的回指校验要求它,
+  // 真实 `git worktree add` 也会写下)。
+  const repoMain = join(projRoot, "repo-main");
+  mkdirSync(join(repoMain, ".git", "worktrees", "wt1"), { recursive: true });
+  writeFileSync(join(repoMain, ".git", "worktrees", "wt1", "commondir"), "../..");
+  writeFileSync(join(repoMain, PROJECT_MCP_FILE), `${JSON.stringify({ mcpServers: { shared: SAME_CONFIG } }, null, 2)}\n`, "utf8");
+  const linked = join(projRoot, "repo-main-wt");
+  mkdirSync(linked, { recursive: true });
+  const linkedGitFile = join(linked, ".git");
+  const wtGitDir = join(repoMain, ".git", "worktrees", "wt1");
+  writeFileSync(linkedGitFile, `gitdir: ${wtGitDir}`);
+  writeFileSync(join(wtGitDir, "gitdir"), linkedGitFile);
+  writeFileSync(join(linked, PROJECT_MCP_FILE), `${JSON.stringify({ mcpServers: { shared: SAME_CONFIG } }, null, 2)}\n`, "utf8");
+
+  const trMain = (await projectTrust({ projectPath: repoMain, name: "shared", trusted: true })) as { ok: boolean };
+  check("在主检出信任成功", trMain.ok === true, trMain);
+  eq(
+    "★ MC-039:同一来源的链接 worktree 复用信任(共享 common git dir)",
+    getTrustedProjectMcpServers(baseName(linked)).map(([n]) => n).join(","),
+    "shared",
+  );
+  // 反向控制:一个**无关**目录(不同来源)不因主检出被信任而信任。
+  const unrelated = makeProject("unrelated", { shared: SAME_CONFIG });
+  eq(
+    "★ MC-039:无关目录仍是未信任(来源不同)",
+    getTrustedProjectMcpServers(baseName(unrelated)).length,
+    0,
+  );
+
+  // ── MC-040:同一项目两次并发读-改-写,两次都落盘(不互相覆盖);信任也在同一临界区 ──
+  //
+  // ⚠️ **必须直接调 lib 函数,不能经 IPC。** `ipc/mcp.ts` 上有一条**全局**的
+  // `serializeMcpMutation` 队列 —— 经它发起的两次项目保存本来就一前一后跑,于是
+  // "库本身没有 per-project 串行化"这个缺陷会被那条全局队列**盖住**,断言看不见。
+  // (这正是 SKILL 说的「断言测的可能是别人的职责」。)直接并发调 `saveProjectMcp`,
+  // 判据才落在 `projectMcp.ts` 自己那条 per-project 队列上 —— 撤掉它必红。
+  const { saveProjectMcp } = await import("@main/lib/projectMcp.js");
+  const raceDir = makeProject("race", {});
+  const [s1, s2] = await Promise.all([
+    saveProjectMcp(raceDir, "alpha", { command: "alpha-cmd" }),
+    saveProjectMcp(raceDir, "beta", { command: "beta-cmd" }),
+  ]);
+  check("两次并发保存都成功", s1.ok === true && s2.ok === true, { s1, s2 });
+  const raceFile = JSON.parse(readFileSync(join(raceDir, PROJECT_MCP_FILE), "utf8")) as {
+    mcpServers?: Record<string, unknown>;
+  };
+  const names = Object.keys(raceFile.mcpServers ?? {}).sort();
+  eq(
+    "★ MC-040:两次并发保存的条目**都在**文件里(后写不覆盖先写)",
+    names.join(","),
+    "alpha,beta",
+  );
+  const raceList = (await projectList({ projectPath: raceDir })) as {
+    servers: Array<{ name: string; trusted: boolean }>;
+  };
+  check(
+    "★ MC-040:两笔写入的信任都在临界区落定(都显示已信任)",
+    raceList.servers.every((s) => s.trusted) && raceList.servers.length === 2,
+    raceList.servers,
+  );
+
+  // ── MC-034:超过大小上限的 .mcp.json 被**命名拒绝**,不当成空 ──
+  const bigDir = join(projRoot, "big");
+  mkdirSync(bigDir, { recursive: true });
+  writeFileSync(join(bigDir, PROJECT_MCP_FILE), "x".repeat(8 * 1024 * 1024 + 64), "utf8");
+  const bigList = (await projectList({ projectPath: bigDir })) as {
+    servers: unknown[];
+    exists: boolean;
+    error?: string;
+  };
+  check(
+    "★ MC-034:超大 .mcp.json 读不了时给出**明确原因**(不是静默空表)",
+    typeof bigList.error === "string" && bigList.error.includes("太大"),
+    bigList,
+  );
+  eq("超大文件:没有投递任何条目", getTrustedProjectMcpServers(baseName(bigDir)).length, 0);
+  const bigSave = (await projectSave({ projectPath: bigDir, name: "x", config: { command: "x" } })) as {
+    ok: boolean;
+    error?: string;
+  };
+  eq("超大文件:保存被拒(不覆盖用户的原始文件)", bigSave.ok, false);
+  check(
+    "超大文件:保存拒绝里也带着「太大」的原因",
+    typeof bigSave.error === "string" && bigSave.error.includes("太大"),
+    bigSave,
+  );
+
+  // 收尾:清掉这一节攒下的临时目录。
+  rmSync(projRoot, { recursive: true, force: true });
+}
 
 /* ──────────────── 13. 被登记但一次都没命中的夹具 ──────────────── */
 

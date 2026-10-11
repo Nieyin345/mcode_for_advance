@@ -46,7 +46,7 @@ import { existsSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, shouldIgnoreWatchPath, type HookEvent } from "@contracts/hook";
 import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import {
   NODE_COMMAND_PARAM_KEY,
@@ -67,6 +67,8 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { createEventSubjects, fileSubjects } from "@main/hooks/eventSubjects.js";
 import { log } from "@main/lib/logger.js";
 import { ProjectRepo, SessionRepo, SettingRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
+// 【MC-051】定时触发派发前要把去重记录**同步**落盘,才允许外部副作用发生。
+import { persistNowOrThrow } from "@main/store/db.js";
 import { uid } from "@main/utils.js";
 import { describeTriggerPayload, mergeEventPayload, payloadFactsOf, type TriggerPayload } from "./automationPayload.js";
 import {
@@ -111,6 +113,17 @@ const TICK_MS = 30_000;
  * `debounceMs: 0`(用户明确要求"每次都跑")那条配置会对着半个文件跑一次。
  */
 const WATCH_SETTLE_MS = 300;
+
+/**
+ * 目录监听**挂失败之后多久再试一次**,以及退避的上限(见 `retryWatchers`,MC-020)。
+ *
+ * `fs.watch` 失败只有两种原因:目录暂时不在(项目被移走 / 还没建出来),或者平台不
+ * 允许。两种都不是永久的 —— 目录回来之后就该**自动复活**,而不是等用户显式重存一次
+ * 工作流。退避对齐那根 30 秒的 ticker 起跳、翻倍到 5 分钟封顶:既不会在一根坏目录上
+ * 每秒敲,也不会把"目录刚回来"拖到下一次 reload。
+ */
+const WATCH_RETRY_MIN_MS = 30_000;
+const WATCH_RETRY_MAX_MS = 5 * 60_000;
 
 /**
  * 「这一条定时触发器上一次是在哪一分钟跑的」存在这个 settings 键下。
@@ -308,9 +321,21 @@ export type AutomationRunResult = { ok: true } | { ok: false; error: string };
 /** 一个项目目录的监听 `fs.watch` 只开一个,多个触发器共享。
  *  `watcher === null` 就是"这个目录上现在没挂上"——`rebuildWatchers` 据此每次 reload
  *  重试(目录回来了就该复活)。(曾有个 `watchOk` 字段,注释写着"不可用时不再反复重试",
- *  但它只被写过、从没被读过,重试一直按 `watcher === null` 走 —— 是死状态,删。) */
+ *  但它只被写过、从没被读过,重试一直按 `watcher === null` 走 —— 是死状态,删。)
+ *
+ *  ## 挂失败后的自主重试(MC-020)
+ *
+ *  从前 `watcher === null` 只有 `rebuildWatchers` 会去补挂,而它只由 reload/reloadAll
+ *  调 —— 30 秒的 `onTick` 只看定时那一类。于是目录一坏(初始不存在 / 监听出错被关),
+ *  在没有显式 reload 的情况下**永远是 null**:用户把目录建回来,那条文件触发器也再不响。
+ *  现在 ticker 里会按 {@link retryWatchers} 有上限地退避重挂,`nextRetryAt` / `retryMs`
+ *  就记着下一次该在什么时候、隔多久再试。`watcher !== null` 时这两个字段必然缺席。 */
 interface WatcherEntry {
   watcher: FSWatcher | null;
+  /** 下一次该在什么毫秒(墙钟)重试挂这个目录。挂了/停用就清掉。 */
+  nextRetryAt?: number;
+  /** 当前退避间隔(毫秒)。从 {@link WATCH_RETRY_MIN_MS} 起翻倍、封顶。 */
+  retryMs?: number;
 }
 
 class AutomationRunner {
@@ -404,6 +429,18 @@ class AutomationRunner {
     // 上一次进程结算到哪一分钟(见 `missedSweptTo`)。**必须在 sweep 之前读回来**,
     // 否则重启一次就把同一段又数一遍,用户每开一次应用都看到同一条「错过了 N 次」。
     this.missedSweptTo = this.readMissedSwept();
+    // **启动即看本分钟**(MC-021)。ticker 的第一跳要等 30 秒,而"应用在本分钟里已经
+    // 起来了"这件事本身就该让这一分钟的计划跑掉:每天 `0 9 * * *` 那条,09:00:45 开
+    // 应用,若只等 ticker 就要到 09:01:15 才跑,而那一瞬间钟已经翻到 09:01 —— 这一次
+    // 触发**整个丢了**。这不是"应用 09:30 才打开、故意不补 09:00"那条既定规则(那一条
+    // 由 `sweepMissedSchedules` 只记账、不补跑);它是"本分钟还没过完,就该按本分钟算"。
+    //
+    // 位置在 **`sweepMissedSchedules` 之前**:本分钟先跑掉并记进 `lastMinute`,结算才
+    // 不会把这一分钟又数成"错过"(它本来就只数 `nowMinute` 之前那些分钟)。同一分钟里的
+    // 去重仍由 `lastMinute` 兜住(下面 ticker 的第一跳会看到"本分钟已经跑过")。
+    //
+    // 放在 reloadAll **之后**:触发器还没解出来时 `all()` 是空的,先看等于没看。
+    this.onTick();
     // **先把"睡过去的那几天"结算掉,再宣布起来了。** 只记录,不补跑。
     this.sweepMissedSchedules();
     // 没人认领的来源链记录清掉(见 `sweepEventChains`)。
@@ -730,10 +767,16 @@ class AutomationRunner {
           /* ignore */
         }
         entry.watcher = null;
+        // **出错被关也要排重挂**(MC-020):`error` 之后目录可能只是暂时读不到(网络盘、
+        // 权限抖动),不该等到重启才复活。与构造失败那条路走同一个退避。
+        this.scheduleWatchRetry(entry);
       });
       entry.watcher = watcher;
       // 挂上了:把上次「监听失效」记的那笔还回来(reload 重试成功的那条路走这里)。
-      // **经 `markArmed`**:用户关掉的那条不会被这笔说成"响着"。
+      // **经 `markArmed`**:用户关掉的那条不会被这笔说成"响着"。退避状态一并清掉 ——
+      // 挂上之后就不该再有任何待重试(MC-020)。
+      entry.nextRetryAt = undefined;
+      entry.retryMs = undefined;
       for (const t of this.all()) {
         if (t.spec.kind === "file" && t.cwd === dir) {
           this.markArmed(t);
@@ -752,6 +795,44 @@ class AutomationRunner {
           );
         }
       }
+      // **没挂上 → 排一次有上限的退避重挂**(MC-020)。从前只有 reload 会补挂,于是目录
+      // 修好之后若不显式重存工作流,这条文件触发器永远不再响。
+      this.scheduleWatchRetry(entry);
+    }
+  }
+
+  /**
+   * 给一个**没挂上**的目录排下一次重挂(MC-020)。退避从 {@link WATCH_RETRY_MIN_MS}
+   * 起翻倍、封顶 {@link WATCH_RETRY_MAX_MS} —— 不是无限高频轮询,也不是永不重试。
+   *
+   * 由 `armWatcher` 的失败分支(error 回调 / 构造抛错)与 `retryWatchers`(ticker 那一跳
+   * 到点时)调用。已挂上的(或重试途中被挂上 / 被停用的)不会被排 —— `watcher !== null`
+   * 或条目已从表里消失都直接返回。
+   */
+  private scheduleWatchRetry(entry: WatcherEntry): void {
+    if (entry.watcher !== null) return;
+    const next = Math.min(
+      entry.retryMs === undefined ? WATCH_RETRY_MIN_MS : entry.retryMs * 2,
+      WATCH_RETRY_MAX_MS,
+    );
+    entry.retryMs = next;
+    entry.nextRetryAt = Date.now() + next;
+  }
+
+  /**
+   * 每个 tick 看一眼:有没有**没挂上、且退避到点了**的目录该重挂(MC-020)。
+   *
+   * 只对 `watcher === null` 的条目动手,而且必须在 `nextRetryAt` 到点之后 —— 退避由
+   * `scheduleWatchRetry` 排,这里只消费。于是坏目录最多每 {@link WATCH_RETRY_MAX_MS}
+   * 敲一次,不会成为高频轮询。停用 / dispose 时监听表被清掉,这里自然也不再碰它。
+   */
+  private retryWatchers(): void {
+    const now = Date.now();
+    for (const [dir, entry] of this.watchers) {
+      if (entry.watcher !== null) continue;
+      if (entry.nextRetryAt === undefined || entry.nextRetryAt > now) continue;
+      // `armWatcher` 成功会清退避、失败会重排下一次 —— 两条都不会漏。
+      this.armWatcher(dir);
     }
   }
 
@@ -886,8 +967,11 @@ class AutomationRunner {
     }
   }
 
-  /** 定时:30 秒一次,把全部定时触发器的 cron 求一遍。 */
+  /** 定时:30 秒一次,把全部定时触发器的 cron 求一遍;顺带有上限地补挂失败的目录监听。 */
   private onTick(): void {
+    // 先补挂:目录在两次 tick 之间回来了的话,这一跳就把它接上(MC-020)。它只对
+    // `watcher === null` 且退避到点的目录动手,不会成为高频轮询。
+    this.retryWatchers();
     const now = new Date();
     const minute = Math.floor(now.getTime() / 60_000);
     for (const trigger of this.all()) {
@@ -898,9 +982,19 @@ class AutomationRunner {
       // 这条记忆**跨重启**(见 `lastMinute` 的说明):重启后那一跳看到的还是"本分钟
       // 已经跑过",所以不会因为开了一次应用而多跑一次。
       if (!shouldFireThisMinute(this.lastMinute.get(key), minute)) continue;
-      // Protect the tick's captured minute, even if a large batch crosses a
-      // wall-clock minute boundary while dispatching/persisting its entries.
-      this.rememberLastMinute(key, minute, minute);
+      // 【MC-051】去重记录必须先**真的落盘**,才能派发。从前 `rememberLastMinute` 走
+      // `SettingRepo.set` → **异步** persist(还吞错),于是"记下了"与"落盘了"之间有
+      // 一个窗口:应用若在这个窗口里被杀 / 断电,重启后表里没有这一分钟 → 这一跳再跑
+      // 一次。对**有外部副作用**的自动化(通知、写文件、调外部 API),那就是重复执行。
+      //
+      // 这里把它变成一道闸:**落不盘就不派发**。写不进去说明存储此刻是坏的,那一分钟
+      // 的这次触发**跳过并如实记账**(不是静默),等下一次 tick / 下一个分钟照常——
+      // 与 MC-028 同一条思路(声称 durable 的关口必须看返回值,而不是转圈重试)。
+      if (!this.rememberLastMinuteDurable(key, minute, minute)) {
+        log.warn(`[automation] 「${trigger.title}」这一分钟的去重记录没能落盘,跳过这次触发(避免存盘失败时的重复外部执行)`);
+        this.skip(trigger, "这一分钟的去重记录没能落盘,已跳过这次触发");
+        continue;
+      }
       this.fire(trigger, { kind: "schedule", at: now.getTime() });
     }
   }
@@ -932,6 +1026,52 @@ class AutomationRunner {
       this.lastMinute.set(key, minute);
     }
     this.writeLastMinutes(protectedMinute);
+  }
+
+  /**
+   * 【MC-051】与 {@link rememberLastMinute} 同一件事,但**同步落盘并返回是否成功** ——
+   * 定时触发**派发之前**必须先过这一关。
+   *
+   * ## 为什么它与 `rememberLastMinute` 分开
+   *
+   * `rememberLastMinute` 是"记账"(还负责历史修剪、给 `apply` 的一族清理调),它的落盘走
+   * `SettingRepo.set` 内部的**异步** persist、且吞错 —— 对"这一格记没记住"是够的,但定时
+   * 触发要的比"记住"更强:它要保证**在外部副作用发生之前,去重这件事已经不可撤销地写进
+   * 磁盘**。否则应用在"内存已改、文件未写"的窗口里被杀,重启后这一分钟又会跑一次 —— 对
+   * 有外部副作用的自动化就是重复执行。
+   *
+   * 所以这里改成:写内存 → `SettingRepo.set`(写 SQLite 内存库)→ `persistNowOrThrow()`
+   * (**同步** fsync 到文件)。任一步抛错即返回 `false`,调用方据此**跳过这次触发**,
+   * 而不是照常 fire。
+   *
+   * ⚠️ 不做无限重试:存储真坏了时重试只会转圈。跳过并记一行日志,下一个 tick / 分钟照常。
+   *
+   * ⚠️ 与 `writeLastMinutes` 的修剪口径保持一致(本分钟那些必留、历史封顶),这样同步
+   * 落盘与异步记账写出去的是同一张表,不会互相覆盖出"历史忽多忽少"。
+   */
+  private rememberLastMinuteDurable(key: string, minute: number, protectedMinute: number): boolean {
+    if (this.lastMinute.get(key) === minute) return true; // 本分钟已记过(同 tick 第二跳)→ 直接放行
+    const prev = this.lastMinute.get(key);
+    this.lastMinute.set(key, minute);
+    try {
+      const rows = [...this.lastMinute.entries()].sort((a, b) => b[1] - a[1]);
+      let historyCount = 0;
+      const kept = rows.filter(([, m]) => {
+        if (m === protectedMinute) return true;
+        historyCount += 1;
+        return historyCount <= LAST_MINUTE_HISTORY_KEEP;
+      });
+      if (kept.length < rows.length) this.lastMinute = new Map(kept);
+      SettingRepo.set(LAST_MINUTE_SETTING_KEY, JSON.stringify(Object.fromEntries(kept)));
+      persistNowOrThrow(); // 异步 persist 之外再**同步**落盘:派发之前必须是 durable 的
+      return true;
+    } catch (err) {
+      // 落盘失败 → 回滚内存那一格,免得内存说"记过了"而磁盘没有,下次 tick 被内存骗过去。
+      if (prev === undefined) this.lastMinute.delete(key);
+      else this.lastMinute.set(key, prev);
+      log.warn(`[automation] 定时去重表没能同步落盘:${(err as Error).message}`);
+      return false;
+    }
   }
 
   /**
@@ -1001,12 +1141,13 @@ class AutomationRunner {
     // `filename` 给不出时用目录本身去比:那能匹配 `**` 这类规则;匹配不上具体的
     // `*.md` 也不冤 —— 平台没说改的是哪个文件,而"整个目录里有东西动了"是它给的全部。
     const abs = filename === null ? dir : join(dir, filename);
-    // **生成目录里的动静一律不看**(见 `WATCH_IGNORED_DIRS`)。拦在最前面:一次 `npm i`
-    // 是几万条事件,让它们各自去跑一遍 glob 纯属白烧 CPU,而且真有用户在 `node_modules`
-    // 里等一条自动化的场景 —— 没有。
-    if (filename !== null && filename.split(/[\\/]/).some((seg) => WATCH_IGNORED_DIRS.has(seg))) return;
+    // 【ARC-015】默认忽略目录(node_modules/dist/…)的性能价值仍保留,但**不再无条件**盖住用户
+    // 显式选的触发源 —— 判定移到**每个触发器**里,由 shouldIgnoreWatchPath 结合该触发器的 include
+    // glob 与 defaultIgnorePolicy 决定「dist/*.js 构建完后处理」这类场景能否生效。
+    const rawIgnored = filename !== null && filename.split(/[\\/]/).some((seg) => WATCH_IGNORED_DIRS.has(seg));
     for (const trigger of this.all()) {
       if (trigger.disarmed || trigger.spec.kind !== "file" || trigger.cwd !== dir) continue;
+      if (rawIgnored && shouldIgnoreWatchPath(filename ?? "", trigger.spec.globs, trigger.spec.defaultIgnorePolicy)) continue;
       // 绝对路径与**相对这个触发器项目目录**的路径都试一遍(同 `fileSubjects` 的理由:
       // 用户写下的是 `src/*.ts` 还是 `*.ts`,两种都有)。
       const subjects = fileSubjects([abs], trigger.cwd);
@@ -1502,14 +1643,31 @@ class AutomationRunner {
       // 已删除、停用或停止服务的触发器不再派发旧批次。
       const trigger = this.findLoaded(pending.trigger);
       if (!this.started || trigger === undefined || trigger.disarmed) return;
-      const payload =
-        trigger.spec.kind === "file"
-          // **载荷按 flush 这一刻现拼,并丢掉此刻已经不在了的那些**(见 `existingFilesOf`)。
-          // 攒着的那几秒里文件可能又被删掉 —— 事件到达时判过一次,这里再判一次,管的是
-          // 那一段。`pending.files` 本身**不动**:留着它,下一次 flush 时那些路径要是又
-          // 回来了(重命名来回、编辑器"写临时文件再改名"那种)就还在。
-          ? ({ kind: "file", files: existingFilesOf(pending.files) } as const)
-          : (pending.event ?? { kind: "manual" });
+      let payload: TriggerPayload;
+      if (trigger.spec.kind === "file") {
+        // **载荷按 flush 这一刻现拼,并丢掉此刻已经不在了的那些**(见 `existingFilesOf`)。
+        // 攒着的那几秒里文件可能又被删掉 —— 事件到达时判过一次,这里再判一次,管的是
+        // 那一段。`pending.files` 本身**不动**:留着它,下一次 flush 时那些路径要是又
+        // 回来了(重命名来回、编辑器"写临时文件再改名"那种)就还在。
+        const files = existingFilesOf(pending.files);
+        // **整批都空 → 这一次不跑**(MC-022)。从前这里照样 `fire(trigger, {files: []})`,
+        // 于是"建了又删"的文件会叫起一轮**没有任何要办的事**的运行 —— 模型白跑一次、
+        // 白花钱。合并窗口里还有别的存活文件时 `files` 非空,那条路不受影响。
+        //
+        // 取舍(明说):删除事件本身**不**单独唤醒模型。用户在意的一般是"有东西要处理",
+        // 而不是"某处少了个文件";把删除也当成一次触发会让"编辑器写临时文件再改名"
+        // 那种日常操作多跑一轮。要判删除语义得另开一条有方向的信息通道,而现在没有
+        // (见 `existingFilesOf` 那段:`fs.watch` 的 `rename` 给不出方向)。
+        if (files.length === 0) {
+          // 这一格刚在计时器回调开头被删掉(见上一行 `pendingFires.delete`),不重建
+          // —— 下一次 `onFsChange` 会按需建新的一格。只记一行,别静默。
+          log.info(`[automation] 「${trigger.title}」攒着的文件在收口前都不在了,这一次不跑`);
+          return;
+        }
+        payload = { kind: "file", files };
+      } else {
+        payload = pending.event ?? { kind: "manual" };
+      }
       this.fire(trigger, payload, { selfOrigin: pending.selfOrigin === true, externalEvent: pending.externalEvent,
         eventChain: pending.eventChain, externalChain: pending.externalChain,
         // 这一格刚在这一句之前被删掉(见上一行 `pendingFires.delete`),忙时分支

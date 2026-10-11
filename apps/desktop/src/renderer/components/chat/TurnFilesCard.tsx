@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { basename } from "@renderer/lib/path.js";
@@ -47,6 +47,7 @@ export function TurnFilesCard({
   files,
   isLatestTurn,
   rewound,
+  rewindPartial,
 }: {
   files: TurnFileEntry[];
   /** True only on the latest turn's card - the "live" rewind (clears the
@@ -57,6 +58,10 @@ export function TurnFilesCard({
    *  stream but renders dimmed with a "已撤销" badge; the rewind button is
    *  hidden. */
   rewound?: boolean;
+  /** 【MC-002】撤销**部分**完成:有文件没还原(failed)或有冲突没动(conflicts)。
+   *  与 `rewound` 互斥 —— 有它就不是"整轮已撤销",卡片要保留撤销入口(可重试)并
+   *  如实说清哪些文件没回去。 */
+  rewindPartial?: { failed: string[]; conflicts: string[] };
 }) {
   // Default expand state by lifecycle: the latest turn expands so the user
   // sees the fresh changes + rewind affordance; historical cards collapse to
@@ -78,6 +83,8 @@ export function TurnFilesCard({
   // every rewind (latest or historical) now goes through this gate so the
   // action is never a single mis-click.
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // 【MC-012】折叠按钮 aria-controls 指向展开区。useId 给出稳定且唯一的 id(同一流里多张卡互不冲突)。
+  const panelId = useId();
 
   const handleRewind = async () => {
     if (rewinding || rewound) return;
@@ -88,12 +95,14 @@ export function TurnFilesCard({
       // in the stream as a trace that this turn was rolled back), whether
       // this is the latest turn or a historical one. Confirmation is now
       // handled by the ConfirmDialog before this runs.
-      const { failed } = await rewindTurn(files, files.map((f) => f.filePath));
-      setDone(true);
+      const { failed, conflicts } = await rewindTurn(files, files.map((f) => f.filePath));
+      const partial = failed.length > 0 || conflicts.length > 0;
+      // 【MC-002】**只有整轮都还原成功**才画「已撤销 ✓」并收起来。部分撤销时保留入口
+      // —— 用户还得知道哪些没回去、能不能重试。从前无条件 `setDone(true)`,于是画着
+      // 「已撤销 ✓」而磁盘上还有没还原的文件(破坏性动作,他不会再去看)。
+      if (!partial) setDone(true);
       // **部分失败要说出来。** 主进程可能还原了一半(某个文件写不进去、或路径越界
-      // 被拒),它现在如实把失败列表交回来 —— 不说的话这张卡画着「已撤销 ✓」,而用户
-      // 以为整轮都回滚了(破坏性动作,他不会再去看)。成功那几个已经落盘了,这张卡
-      // 照样收起来,只额外报一句"有几个没还原"。
+      // 被拒),它如实把失败列表交回来。
       if (failed.length > 0) {
         useToastStore.getState().push({
           kind: "warning",
@@ -101,11 +110,19 @@ export function TurnFilesCard({
           body: failed.join("\n"),
         });
       }
-      // Auto-collapse once rewound — the file list is now a stale snapshot
-      // of rolled-back changes, so fold the card to keep the scroll-back
-      // history calm. The card itself stays in the stream with the 已撤销
-      // badge (conversation record preserved).
-      setOpen(false);
+      // 【MC-002】"之后又被改过、故意没动"的文件单独报一句。它们不是"还原失败",
+      // 是"再写回去会把后来的改动一起毁掉,所以原样留着"。混进上面那句会让用户
+      // 以为是自己运气不好还原失败,实际是我们为了保护他的改动不动手。
+      if (conflicts.length > 0) {
+        useToastStore.getState().push({
+          kind: "warning",
+          title: t("store.toast.rewindConflicts", { n: conflicts.length }),
+          body: conflicts.join("\n"),
+        });
+      }
+      // 只有整轮成功才收起卡片(那之后文件列表就是过期的了);部分撤销要**留着展开**,
+      // 让用户看清哪些没回去。
+      if (!partial) setOpen(false);
     } catch (err) {
       // **撤销失败不能说成功。** store 的 `rewindTurn` 从前把错误吞了、照样 resolve,
       // 于是这张卡画出「已撤销 ✓」而文件一个字节没回滚 —— 这是个破坏性动作,用户
@@ -132,49 +149,53 @@ export function TurnFilesCard({
 
   return (
     <div className={cn("mb-[5px] rounded-lg border border-edge bg-surface-muted/60 shadow-sm text-xs text-content-muted", rewound && "opacity-60")}>
-      <div
-        role="button"
-        tabIndex={0}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            setOpen((v) => !v);
-          }
-        }}
-        className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-hover/50"
-      >
-        <IconFile size={14} className="shrink-0 text-content-subtle" />
-        <span className="whitespace-nowrap font-semibold text-content">
-          <span className="tfc-long">{t("chatStream.turnFiles.titleLong", { n: files.length })}</span>
-          <span className="tfc-short">{t("chatStream.turnFiles.titleShort", { n: files.length })}</span>
-        </span>
-        <span className="tfc-sub text-content-subtle">
-          ({created > 0 ? t("chatStream.turnFiles.created", { n: created }) : ""}
-          {created > 0 && modified > 0 ? " · " : ""}
-          {modified > 0 ? t("chatStream.turnFiles.modified", { n: modified }) : ""})
-        </span>
-        {/* Aggregate change tallies - the headline number reviewers care about. */}
-        <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-surface-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums">
-          <span className="text-success">+{totals.adds}</span>
-          <span className="text-danger">-{totals.dels}</span>
-        </span>
-        {/* Right-aligned affordances: the rewind button sits to the right of
-            the title, the expand chevron at the far edge. The rewind button
-            stops propagation so clicking it opens the confirm dialog instead
-            of toggling the card. An already-rewound card swaps the button for
-            a danger-tinted 已撤销 badge so the rolled-back state reads
-            clearly at a glance. */}
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+      {/* 【MC-012】表头从前是 `div[role="button"] tabIndex=0`,**里面又套了可聚焦的
+          <button>**(撤销本轮)—— 父 role=button 包含子 button,读屏器与键盘遍历都拿不准
+          "回车到底触发折叠还是撤销"。现在拆成**同级**两个真控件:折叠是个真 `<button>`
+          (aria-expanded/aria-controls),撤销按钮是它的**兄弟**、不再被任何 role=button 包住。 */}
+      <div className="flex w-full items-center gap-2.5 px-3 py-2">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={`tfc-panel-${panelId}`}
+          onClick={() => setOpen((v) => !v)}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left transition-colors hover:opacity-80"
+        >
+          <IconFile size={14} className="shrink-0 text-content-subtle" />
+          <span className="whitespace-nowrap font-semibold text-content">
+            <span className="tfc-long">{t("chatStream.turnFiles.titleLong", { n: files.length })}</span>
+            <span className="tfc-short">{t("chatStream.turnFiles.titleShort", { n: files.length })}</span>
+          </span>
+          <span className="tfc-sub text-content-subtle">
+            ({created > 0 ? t("chatStream.turnFiles.created", { n: created }) : ""}
+            {created > 0 && modified > 0 ? " · " : ""}
+            {modified > 0 ? t("chatStream.turnFiles.modified", { n: modified }) : ""})
+          </span>
+          {/* Aggregate change tallies - the headline number reviewers care about. */}
+          <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-surface-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums">
+            <span className="text-success">+{totals.adds}</span>
+            <span className="text-danger">-{totals.dels}</span>
+          </span>
+          <span className="ml-auto text-content-subtle">
+            {open ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
+          </span>
+        </button>
+        {/* 撤销本轮:与折叠按钮**同级**的兄弟控件。已经撤销的卡片换成一个 danger 徽标。 */}
+        <div className="ml-2 flex shrink-0 items-center gap-2">
+          {/* 【MC-002】部分撤销:显示一个"部分撤销"N/M 的徽标(与「已撤销」区分),
+              按钮**保留**(用户可重试)。整轮成功才走下面的「已撤销」徽标、隐藏按钮。 */}
+          {rewindPartial !== undefined && (
+            <span className="rounded-md bg-warning/15 px-2 py-0.5 text-[11px] font-semibold text-warning">
+              {t("chatStream.turnFiles.rewindPartialBadge", {
+                n: rewindPartial.failed.length + rewindPartial.conflicts.length,
+                total: files.length,
+              })}
+            </span>
+          )}
           {!rewound ? (
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmOpen(true);
-              }}
-              onKeyDown={(e) => e.stopPropagation()}
+              onClick={() => setConfirmOpen(true)}
               disabled={rewinding || done}
               className="rounded-md bg-surface-hover px-3 py-1 font-medium text-content transition-colors hover:bg-edge disabled:cursor-not-allowed disabled:text-content-subtle"
               title={isLatestTurn ? t("chatStream.turnFiles.rewindLatestTitle") : t("chatStream.turnFiles.rewindHistoryTitle")}
@@ -191,13 +212,20 @@ export function TurnFilesCard({
               {t("chatStream.turnFiles.rewoundBadge")}
             </span>
           )}
-          <span className="text-content-subtle">
-            {open ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
-          </span>
         </div>
       </div>
+      {rewindPartial !== undefined && (rewindPartial.failed.length > 0 || rewindPartial.conflicts.length > 0) && (
+        <div className="border-t border-edge px-3 py-1.5 text-[11px] text-warning">
+          {rewindPartial.failed.length > 0 && (
+            <div>{t("chatStream.turnFiles.partialFailed", { n: rewindPartial.failed.length })}</div>
+          )}
+          {rewindPartial.conflicts.length > 0 && (
+            <div>{t("chatStream.turnFiles.partialConflicts", { n: rewindPartial.conflicts.length })}</div>
+          )}
+        </div>
+      )}
       {open && (
-        <div className="space-y-1 border-t border-edge px-2 py-2">
+        <div id={`tfc-panel-${panelId}`} className="space-y-1 border-t border-edge px-2 py-2">
           {files.map((f) => (
             <FileRow key={f.filePath} entry={f} />
           ))}
@@ -311,49 +339,48 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
   };
 
   return (
+    // 【MC-012】从前这一行是 `div[role="button"] tabIndex=0`,**里面又套了一个可聚焦的
+    // <button>**(定位按钮)—— 嵌套的交互控件对读屏器与键盘遍历是坏的语义(两个可聚焦
+    // 目标叠在一起、焦点顺序与"谁响应 Enter"都不清)。现在改成:外层只是普通的行容器
+    // (鼠标点击照样打开差异,但**不可聚焦**),行内放两个**同级**的真实 button ——
+    // 「打开差异」与「在文件树中定位」各自独立可聚焦、各有 aria-label,读屏能区分。
     <div
-      role="button"
-      tabIndex={0}
-      onClick={handleOpen}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          void handleOpen();
-        }
-      }}
-      className="flex w-full cursor-pointer items-center gap-2 rounded-md bg-surface-muted/40 px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
-      title={t("chatStream.turnFiles.reviewDiff")}
+      className="flex w-full items-center gap-2 rounded-md bg-surface-muted/40 px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
     >
-      <span aria-hidden title={isCreated ? t("chatStream.turnFiles.createdThisTurn") : t("chatStream.turnFiles.modifiedThisTurn")} className="shrink-0 text-content-subtle">
-        {isCreated ? <IconPlus size={12} /> : <IconEdit size={12} />}
-      </span>
-      <span className="min-w-0 truncate font-mono text-[11px] text-content" title={entry.filePath}>
-        {entry.filePath}
-      </span>
-      {/* Per-file change tallies. */}
-      <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] tabular-nums">
-        {entry.adds > 0 && <span className="text-success">+{entry.adds}</span>}
-        {entry.dels > 0 && <span className="text-danger">-{entry.dels}</span>}
-        {entry.adds === 0 && entry.dels === 0 && (
-          <span className="text-content-subtle">{t("chatStream.turnFiles.noChanges")}</span>
-        )}
-      </span>
-      <IconExternalLink
-        size={11}
-        className={cn("ml-auto shrink-0 text-content-subtle")}
-      />
+      <button
+        type="button"
+        onClick={() => void handleOpen()}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        title={t("chatStream.turnFiles.reviewDiff")}
+        aria-label={`${t("chatStream.turnFiles.reviewDiff")}: ${entry.filePath}`}
+      >
+        <span aria-hidden title={isCreated ? t("chatStream.turnFiles.createdThisTurn") : t("chatStream.turnFiles.modifiedThisTurn")} className="shrink-0 text-content-subtle">
+          {isCreated ? <IconPlus size={12} /> : <IconEdit size={12} />}
+        </span>
+        <span className="min-w-0 truncate font-mono text-[11px] text-content" title={entry.filePath}>
+          {entry.filePath}
+        </span>
+        {/* Per-file change tallies. */}
+        <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] tabular-nums">
+          {entry.adds > 0 && <span className="text-success">+{entry.adds}</span>}
+          {entry.dels > 0 && <span className="text-danger">-{entry.dels}</span>}
+          {entry.adds === 0 && entry.dels === 0 && (
+            <span className="text-content-subtle">{t("chatStream.turnFiles.noChanges")}</span>
+          )}
+        </span>
+        <IconExternalLink
+          size={11}
+          className={cn("ml-auto shrink-0 text-content-subtle")}
+        />
+      </button>
       {/* Locate this file in the right panel's file tree (expand ancestors +
-          scroll to it). stopPropagation so the row's diff-open doesn't fire.
-          Desktop only — the mobile shell has no file tree. */}
+          scroll to it) — a **sibling** button (not nested). Desktop only.
+          【MC-012】热区:28×28 h-7 w-7,不是从前 p-0.5 包 12px 图标的 ≈16×16。 */}
       {isElectron && (
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            useSessionStore.getState().revealInFileTree(entry.filePath);
-          }}
-          onKeyDown={(e) => e.stopPropagation()}
-          className="shrink-0 rounded p-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+          onClick={() => useSessionStore.getState().revealInFileTree(entry.filePath)}
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           title={t("chatStream.turnFiles.locateTitle")}
           aria-label={t("chatStream.turnFiles.locateTitle")}
         >

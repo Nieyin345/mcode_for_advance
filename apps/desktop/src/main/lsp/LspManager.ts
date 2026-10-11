@@ -19,9 +19,10 @@
  * servers start lazily on demand.
  *
  * Security: every `workspacePath` / `filePath` coming from the renderer is
- * validated against known project roots (`isKnownProjectPath` /
- * `findContainingProject`) before being passed to a server, so a compromised
- * renderer can't point a server at arbitrary files.
+ * validated against known workspace roots: the workspace must BE a known root
+ * (`isKnownWorkspaceRoot`) and the file must live inside THAT SAME workspace
+ * (`pathWithin`), so a compromised renderer can neither point a server at
+ * arbitrary files nor hand one project's file to another project's server.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -44,7 +45,7 @@ import { log } from "@main/lib/logger.js";
 import { sendToRenderer } from "@main/window.js";
 import { SettingRepo, SessionRepo } from "@main/store/repositories.js";
 import { registerSessionCleanupHook, registerProjectCleanupHook } from "@main/lib/sessionCleanupHooks.js";
-import { isKnownWorkspaceRoot, findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
+import { isKnownWorkspaceRoot, findContainingWorkspaceRoot, pathWithin } from "@main/lib/pathGuard.js";
 import { which } from "@main/lib/binaryResolve.js";
 import {
   ALL_LANGUAGE_SPECS,
@@ -128,6 +129,18 @@ const PROBE_TIMEOUT_MS = 10_000;
 const MAX_SPAWN_FAILURES = 3;
 /** Cooldown (ms) after which a failed language may be retried. */
 const SPAWN_FAILURE_COOLDOWN_MS = 30_000;
+/** Hard cap on a single JSON-RPC frame body (and on the undecodable tail we are
+ *  willing to hold between frames). A malformed or hostile server can declare a
+ *  giant `Content-Length:` that never fills, or emit a header-less flood; without
+ *  a cap the stdout accumulator (`ServerHandle.buffer`) would grow without bound.
+ *  Past this many declared/held bytes we treat the stream as junk and drop it. */
+const MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
+/** Max bytes we hold while still waiting for a `\r\n\r\n` separator. A real LSP
+ *  header is a few dozen bytes; a separator-less tail larger than this can only
+ *  be junk (a partial header), so it is dropped instead of accumulated. This
+ *  makes the worst case bounded by ~MAX_MESSAGE_BYTES even against a garbage
+ *  flood (MC-036). */
+const MAX_HEADER_BYTES = 64 * 1024;
 
 /** `lsp:event` payload shapes (kept here so the manager stays self-contained).
  *  The stateChanged shape is the shared contract type LspStateChangedPayload. */
@@ -145,6 +158,14 @@ class LspManagerImpl {
    *  被覆盖 → `disposeAll` 遍历不到它、永远杀不掉(jdtls 一个孤儿约 1GB)。这里缓存
    *  在飞的 promise,后来者 await 它而不是再起一个。 */
   private spawning = new Map<string, Promise<ServerHandle>>();
+  /** Per-document serialization tails (keyed by workspace::file). openDocument
+   *  awaits a disk read between "claiming" a URI and sending its didOpen, so a
+   *  closeDocument/didChange dispatched during that window could reach the
+   *  server FIRST — didChange or didClose before didOpen, which is a protocol
+   *  violation (the server sees an edit for a document it never opened, or an
+   *  open after a close). Every document-sync op for one file chains onto the
+   *  previous one so didOpen always precedes that file's didChange/didClose. */
+  private docOps = new Map<string, Promise<void>>();
   /** Keyed by language id. */
   private installs = new Map<LspLanguageId, InstallHandle>();
   /** Cached install logs retained after a process exits (truncated). */
@@ -327,49 +348,48 @@ class LspManagerImpl {
   /** Extract a user-downloaded jdtls tar.gz into the install dir. */
   private async installJavaFromFile(tarPath: string): Promise<LspOpResult> {
     const destDir = this.javaInstallDir();
-    if (existsSync(destDir)) {
+    const lspDir = dirname(destDir);
+    mkdirSync(lspDir, { recursive: true });
+    const stageDir = join(lspDir, `.java.staging-${Date.now()}`);
+    let committed = false;
+    try {
+      // ── ① 先把新的一整包解压进暂存。**这一步失败时旧版本一个字节都没动。** ──
+      rmSync(stageDir, { recursive: true, force: true });
+      mkdirSync(stageDir, { recursive: true });
       try {
-        await removeWithRetry(destDir);
+        await this.extractJavaTarball(tarPath, stageDir);
       } catch (err) {
-        return { ok: false, error: `无法清除旧目录(可能被占用): ${(err as Error).message}` };
+        return { ok: false, error: `解压失败: ${(err as Error).message}` };
+      }
+
+      // Write the launcher shim (same as auto-download) INTO the staging tree, so
+      // the shim ships as part of the atomically-swapped install.
+      this.writeJavaLauncher(stageDir, destDir);
+
+      // ── ② 换上去(旧版本挪到退路 → 暂存换到落点 → 丢掉退路)。 ──
+      const swap = this.swapInJavaInstall(destDir, stageDir);
+      if (!swap.ok) return swap;
+      committed = true;
+
+      // Enable Java now that it's installed.
+      this.updateConfig("java", { enabled: true });
+      this.installLogs.set(
+        "java",
+        `从本地文件解压 jdtls 到 ${destDir}\n启动器: ${this.javaLauncherPath()}\n[exit] code 0`,
+      );
+      log.info(`lsp: jdtls installed from file at ${destDir}`);
+      return { ok: true };
+    } finally {
+      // 换上去之前失败 → 只删暂存,旧版本原封不动。换上去之后(stageDir 已被 rename
+      // 成 destDir)这次删除是空操作。
+      if (!committed) {
+        try {
+          rmSync(stageDir, { recursive: true, force: true });
+        } catch (err) {
+          log.warn(`lsp: 安装失败后暂存目录没清掉(${stageDir}):${(err as Error).message}`);
+        }
       }
     }
-    mkdirSync(destDir, { recursive: true });
-
-    try {
-      await new Promise<void>((resolveP, rejectP) => {
-        const p = spawn(
-          process.platform === "win32" ? "tar.exe" : "tar",
-          ["-xzf", tarPath, "-C", destDir],
-          { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
-        );
-        let err = "";
-        p.stderr?.on("data", (c: Buffer) => (err += c.toString("utf8")));
-        p.on("error", rejectP);
-        p.on("exit", (code) =>
-          code === 0 ? resolveP() : rejectP(new Error(`tar 退出码 ${code}: ${err}`)),
-        );
-      });
-    } catch (err) {
-      return { ok: false, error: `解压失败: ${(err as Error).message}` };
-    }
-
-    // Write the launcher shim (same as auto-download).
-    const launcherPath = this.javaLauncherPath();
-    const launcherContent =
-      process.platform === "win32"
-        ? `@echo off\r\n"${join(destDir, "bin", "jdtls.bat")}" %*\r\n`
-        : `#!/bin/sh\nexec "${join(destDir, "bin", "jdtls")}" "$@"\n`;
-    writeFileSync(launcherPath, launcherContent, { mode: 0o755 });
-
-    // Enable Java now that it's installed.
-    this.updateConfig("java", { enabled: true });
-    this.installLogs.set(
-      "java",
-      `从本地文件解压 jdtls 到 ${destDir}\n启动器: ${launcherPath}\n[exit] code 0`,
-    );
-    log.info(`lsp: jdtls installed from file at ${destDir}`);
-    return { ok: true };
   }
 
   /** Run a package-manager command, streaming stdout/stderr to the install log.
@@ -445,98 +465,174 @@ class LspManagerImpl {
    *    - < Java 17 -> error (jdtls requires at least Java 17) */
   private async installJava(): Promise<LspOpResult> {
     const destDir = this.javaInstallDir();
-    if (existsSync(destDir)) {
+    const lspDir = dirname(destDir);
+    mkdirSync(lspDir, { recursive: true });
+    const stageDir = join(lspDir, `.java.staging-${Date.now()}`);
+    let committed = false;
+    try {
+      rmSync(stageDir, { recursive: true, force: true });
+      mkdirSync(stageDir, { recursive: true });
+
+      // Detect the Java version to pick the right jdtls version. Use the
+      // configured javaHome if set, otherwise the system java.
+      const config = this.getConfig("java");
+      const javaBin = resolveJavaExecutable(config?.javaHome);
+      const versionCheck = await checkJavaVersionAtLeast(javaBin, 17);
+      if (!versionCheck.ok) {
+        const hint =
+          versionCheck.version > 0
+            ? `当前检测到 Java ${versionCheck.version}。`
+            : `未检测到 Java(当前路径: ${javaBin})。`;
+        return {
+          ok: false,
+          error: `${hint}jdtls 至少需要 Java 17。请在"高级"设置中指定 JDK 17+ 的路径(JAVA_HOME),jdtls 自身的运行环境不影响项目的 JDK 版本。`,
+        };
+      }
+      const javaVersion = versionCheck.version;
+      // jdtls 1.38.0+ requires Java 21; 1.37.0 is the last version for Java 17.
+      const jdtlsVersion = javaVersion >= 21 ? "1.40.0" : "1.37.0";
+      log.info(`lsp: detected Java ${javaVersion}, selecting jdtls ${jdtlsVersion}`);
+
+      const baseUrl = `https://download.eclipse.org/jdtls/milestones/${jdtlsVersion}`;
+
+      let tarName: string;
       try {
-        await removeWithRetry(destDir);
+        tarName = (await this.fetchText(`${baseUrl}/latest.txt`)).trim();
       } catch (err) {
-        return { ok: false, error: `无法清除旧目录(可能被占用): ${(err as Error).message}` };
+        return { ok: false, error: `无法解析 jdtls 文件名: ${(err as Error).message}` };
+      }
+      if (!tarName.endsWith(".tar.gz")) {
+        return { ok: false, error: `jdtls latest.txt 返回了意外的文件名: ${tarName}` };
+      }
+
+      // ── ① 先把新的一整包下载 + 解压进暂存。**这一步失败时旧版本一个字节都没动。** ──
+      const tarPath = join(stageDir, "jdtls.tar.gz");
+      log.info(`lsp: downloading jdtls ${tarName} to ${tarPath}`);
+      try {
+        await this.downloadFile(`${baseUrl}/${tarName}`, tarPath);
+      } catch (err) {
+        return { ok: false, error: `下载失败: ${(err as Error).message}` };
+      }
+
+      // Extract with the system tar (available on all platforms via git-bash on
+      // Windows; on win32 we fall back to tar.exe which ships in modern Windows).
+      try {
+        await this.extractJavaTarball(tarPath, stageDir);
+      } catch (err) {
+        return { ok: false, error: `解压失败: ${(err as Error).message}` };
+      }
+
+      // Write a small launcher script so `jdtls` is a single command regardless
+      // of platform (jdtls ships bin/jdtls on POSIX, bin/jdtls.bat on Windows,
+      // but the launcher name varies). We create a shim in destDir.
+      this.writeJavaLauncher(stageDir, destDir);
+
+      // Clean up the tarball from the staging tree.
+      try {
+        await unlinkWithRetry(tarPath);
+      } catch {
+        // non-fatal
+      }
+
+      // ── ② 换上去(旧版本挪到退路 → 暂存换到落点 → 丢掉退路)。 ──
+      const swap = this.swapInJavaInstall(destDir, stageDir);
+      if (!swap.ok) return swap;
+      committed = true;
+
+      this.installLogs.set(
+        "java",
+        `检测到 Java ${javaVersion},选择 jdtls ${jdtlsVersion}\n下载并解压 ${tarName} 到 ${destDir}\n启动器: ${this.javaLauncherPath()}\n[exit] code 0`,
+      );
+      log.info(`lsp: jdtls installed at ${destDir}`);
+      return { ok: true };
+    } finally {
+      // 先建后用:换上去之前失败 → 只删暂存,旧版本原封不动(哪怕失败原因是 Java 版本不够)。
+      if (!committed) {
+        try {
+          rmSync(stageDir, { recursive: true, force: true });
+        } catch (err) {
+          log.warn(`lsp: 安装失败后暂存目录没清掉(${stageDir}):${(err as Error).message}`);
+        }
       }
     }
-    mkdirSync(destDir, { recursive: true });
+  }
 
-    // Detect the Java version to pick the right jdtls version. Use the
-    // configured javaHome if set, otherwise the system java.
-    const config = this.getConfig("java");
-    const javaBin = resolveJavaExecutable(config?.javaHome);
-    const versionCheck = await checkJavaVersionAtLeast(javaBin, 17);
-    if (!versionCheck.ok) {
-      const hint =
-        versionCheck.version > 0
-          ? `当前检测到 Java ${versionCheck.version}。`
-          : `未检测到 Java(当前路径: ${javaBin})。`;
-      return {
-        ok: false,
-        error: `${hint}jdtls 至少需要 Java 17。请在"高级"设置中指定 JDK 17+ 的路径(JAVA_HOME),jdtls 自身的运行环境不影响项目的 JDK 版本。`,
-      };
-    }
-    const javaVersion = versionCheck.version;
-    // jdtls 1.38.0+ requires Java 21; 1.37.0 is the last version for Java 17.
-    const jdtlsVersion = javaVersion >= 21 ? "1.40.0" : "1.37.0";
-    log.info(`lsp: detected Java ${javaVersion}, selecting jdtls ${jdtlsVersion}`);
+  /** Extract a jdtls tar.gz into `destDir` using the system tar (git-bash on
+   *  Windows, or the tar.exe shipped with modern Windows). Rejects on a nonzero
+   *  exit or spawn error; the caller owns cleanup of `destDir`. */
+  private extractJavaTarball(tarPath: string, destDir: string): Promise<void> {
+    return new Promise<void>((resolveP, rejectP) => {
+      const p = spawn(
+        process.platform === "win32" ? "tar.exe" : "tar",
+        ["-xzf", tarPath, "-C", destDir],
+        { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+      );
+      let err = "";
+      p.stderr?.on("data", (c: Buffer) => (err += c.toString("utf8")));
+      p.on("error", rejectP);
+      p.on("exit", (code) =>
+        code === 0 ? resolveP() : rejectP(new Error(`tar 退出码 ${code}: ${err}`)),
+      );
+    });
+  }
 
-    const baseUrl = `https://download.eclipse.org/jdtls/milestones/${jdtlsVersion}`;
-
-    let tarName: string;
-    try {
-      tarName = (await this.fetchText(`${baseUrl}/latest.txt`)).trim();
-    } catch (err) {
-      return { ok: false, error: `无法解析 jdtls 文件名: ${(err as Error).message}` };
-    }
-    if (!tarName.endsWith(".tar.gz")) {
-      return { ok: false, error: `jdtls latest.txt 返回了意外的文件名: ${tarName}` };
-    }
-
-    const tarPath = join(destDir, "jdtls.tar.gz");
-    log.info(`lsp: downloading jdtls ${tarName} to ${tarPath}`);
-
-    try {
-      await this.downloadFile(`${baseUrl}/${tarName}`, tarPath);
-    } catch (err) {
-      return { ok: false, error: `下载失败: ${(err as Error).message}` };
-    }
-
-    // Extract with the system tar (available on all platforms via git-bash on
-    // Windows; on win32 we fall back to tar.exe which ships in modern Windows).
-    try {
-      await new Promise<void>((resolveP, rejectP) => {
-        const p = spawn(
-          process.platform === "win32" ? "tar.exe" : "tar",
-          ["-xzf", tarPath, "-C", destDir],
-          { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
-        );
-        let err = "";
-        p.stderr?.on("data", (c: Buffer) => (err += c.toString("utf8")));
-        p.on("error", rejectP);
-        p.on("exit", (code) =>
-          code === 0 ? resolveP() : rejectP(new Error(`tar 退出码 ${code}: ${err}`)),
-        );
-      });
-    } catch (err) {
-      return { ok: false, error: `解压失败: ${(err as Error).message}` };
-    }
-
-    // Write a small launcher script so `jdtls` is a single command regardless
-    // of platform (jdtls ships bin/jdtls on POSIX, bin/jdtls.bat on Windows,
-    // but the launcher name varies). We create a shim in destDir.
-    const launcherPath = this.javaLauncherPath();
+  /** Write the jdtls launcher shim INTO `targetDir` (the staging tree), with its
+   *  body pointing at the FINAL `destDir` — after the swap the shim sits at
+   *  destDir root and must exec destDir/bin/jdtls*. */
+  private writeJavaLauncher(targetDir: string, destDir: string): void {
+    const launcherPath = process.platform === "win32"
+      ? join(targetDir, "jdtls.cmd")
+      : join(targetDir, "jdtls");
     const launcherContent =
       process.platform === "win32"
         ? `@echo off\r\n"${join(destDir, "bin", "jdtls.bat")}" %*\r\n`
         : `#!/bin/sh\nexec "${join(destDir, "bin", "jdtls")}" "$@"\n`;
     writeFileSync(launcherPath, launcherContent, { mode: 0o755 });
+  }
 
-    // Clean up the tarball.
-    try {
-      await unlinkWithRetry(tarPath);
-    } catch {
-      // non-fatal
+  /** Atomically replace `<destDir>` with a fully-built `<stageDir>` on the same
+   *  volume. The old install is renamed aside first (整体操作:占用时直接失败、
+   *  原地不动), then the staged tree takes its place; on any failure the old
+   *  install is restored, so a bad extract can never leave the user with neither
+   *  version (MC-037). On success the displaced old tree is swept. */
+  private swapInJavaInstall(destDir: string, stageDir: string): LspOpResult {
+    const lspDir = dirname(destDir);
+    let displaced: string | null = null;
+    if (existsSync(destDir)) {
+      displaced = join(lspDir, `.java.old-${Date.now()}`);
+      try {
+        // 目标不能已存在 —— 清掉可能残留的同名退路(不会与 destDir 撞名)。
+        rmSync(displaced, { recursive: true, force: true });
+        renameSync(destDir, displaced);
+      } catch (err) {
+        return { ok: false, error: `无法替换旧版本(jdtls 目录可能被占用): ${(err as Error).message}` };
+      }
     }
-
-    this.installLogs.set(
-      "java",
-      `检测到 Java ${javaVersion},选择 jdtls ${jdtlsVersion}\n下载并解压 ${tarName} 到 ${destDir}\n启动器: ${launcherPath}\n[exit] code 0`,
-    );
-    log.info(`lsp: jdtls installed at ${destDir}`);
+    try {
+      renameSync(stageDir, destDir);
+    } catch (err) {
+      // 换不上去 —— 把旧版本挪回原位,否则用户两头空。
+      if (displaced) {
+        try {
+          renameSync(displaced, destDir);
+        } catch (restoreErr) {
+          const stranded = displaced;
+          return {
+            ok: false,
+            error: `替换失败,而且旧版本没能挪回原位(它还在 ${stranded}): ${(restoreErr as Error).message}`,
+          };
+        }
+      }
+      return { ok: false, error: `替换失败(新版本没能换上去): ${(err as Error).message}` };
+    }
+    // 成功:退路里那份旧版本已经没有任何引用,尽力扫掉(删不掉也不影响)。
+    if (displaced) {
+      try {
+        rmSync(displaced, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        log.warn(`lsp: 旧 jdtls 版本没能清掉(${displaced}):${(cleanupErr as Error).message}`);
+      }
+    }
     return { ok: true };
   }
 
@@ -797,17 +893,40 @@ class LspManagerImpl {
 
   /* ───────────────────────── document sync ───────────────────────── */
 
+  /** Serialize document-sync operations for one file. See {@link docOps}.
+   *  `key` is `serverKey(workspace, language)` + the file path, so ops on the
+   *  same file run strictly in call order, while ops on different files never
+   *  block each other. Errors propagate to the caller; the next op still runs
+   *  (the tail is reset to a settled promise). */
+  private withDocLock<T>(key: string, fn: () => T | Promise<T>): Promise<T> {
+    const prev = this.docOps.get(key) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    // Keep a settled tail so one failing op never poisons the next, and drop it
+    // once this op is the last queued one (otherwise the map is "只涨不落").
+    const tail = run.then(
+      () => {},
+      () => {},
+    );
+    this.docOps.set(key, tail);
+    void tail.then(() => {
+      if (this.docOps.get(key) === tail) this.docOps.delete(key);
+    });
+    return run;
+  }
+
   async openDocument(
     workspacePath: string,
     filePath: string,
     language: LspLanguageId,
   ): Promise<void> {
+    // Paths are validated synchronously on entry (before anything is queued) so
+    // a rejected workspace/file is reported now, not after a slow prior op.
     try {
       this.assertPaths(workspacePath, filePath);
     } catch (err) {
-      // 路径护栏拒了(工作区已改名 / 移除、文件不在任何项目里):以前只在 IPC 那层
-      // log.warn,编辑器看起来一切正常,跳转 / 查引用却静默失灵。走启动前拒绝那条
-      // 同样的通道告诉工具栏 —— 红药丸带上原因。
+      // 路径护栏拒了(工作区已改名 / 移除、文件不属于该工作区对应项目):以前只在
+      // IPC 那层 log.warn,编辑器看起来一切正常,跳转 / 查引用却静默失灵。走启动前
+      // 拒绝那条同样的通道告诉工具栏 —— 红药丸带上原因。
       this.pushStateEvent(workspacePath, language, {
         phase: "stopped",
         running: false,
@@ -815,6 +934,15 @@ class LspManagerImpl {
       });
       throw err;
     }
+    const key = `${serverKey(workspacePath, language)}::${resolve(filePath)}`;
+    return this.withDocLock(key, () => this.doOpenDocument(workspacePath, filePath, language));
+  }
+
+  private async doOpenDocument(
+    workspacePath: string,
+    filePath: string,
+    language: LspLanguageId,
+  ): Promise<void> {
     const spec = LANGUAGE_SPECS[language];
     const handle = await this.ensureServer(workspacePath, language);
 
@@ -850,6 +978,14 @@ class LspManagerImpl {
 
   async closeDocument(workspacePath: string, filePath: string): Promise<void> {
     this.assertPaths(workspacePath, filePath);
+    const language = this.languageForFile(filePath);
+    const key = `${serverKey(workspacePath, language)}::${resolve(filePath)}`;
+    return this.withDocLock(key, () => {
+      this.doCloseDocument(workspacePath, filePath);
+    });
+  }
+
+  private doCloseDocument(workspacePath: string, filePath: string): void {
     const key = serverKey(workspacePath, this.languageForFile(filePath));
     const handle = this.servers.get(key);
     if (!handle) return;
@@ -868,6 +1004,19 @@ class LspManagerImpl {
     this.assertPaths(workspacePath, filePath);
     const language = this.languageForFile(filePath);
     if (!language) return;
+    const key = `${serverKey(workspacePath, language)}::${resolve(filePath)}`;
+    return this.withDocLock(key, () => {
+      this.doDidChange(workspacePath, filePath, language, text, version);
+    });
+  }
+
+  private doDidChange(
+    workspacePath: string,
+    filePath: string,
+    language: LspLanguageId,
+    text: string,
+    version: number,
+  ): void {
     const handle = this.servers.get(serverKey(workspacePath, language));
     if (!handle) return;
     const uri = filePathToUri(filePath);
@@ -881,6 +1030,18 @@ class LspManagerImpl {
     this.assertPaths(workspacePath, filePath);
     const language = this.languageForFile(filePath);
     if (!language) return;
+    const key = `${serverKey(workspacePath, language)}::${resolve(filePath)}`;
+    return this.withDocLock(key, () => {
+      this.doDidSave(workspacePath, filePath, language, text);
+    });
+  }
+
+  private doDidSave(
+    workspacePath: string,
+    filePath: string,
+    language: LspLanguageId,
+    text: string,
+  ): void {
     const handle = this.servers.get(serverKey(workspacePath, language));
     if (!handle) return;
     const uri = filePathToUri(filePath);
@@ -1530,6 +1691,18 @@ class LspManagerImpl {
         continue;
       }
       const length = parseInt(lengthMatch[1], 10);
+      // ★ Frame size cap. A broken/hostile server can declare an astronomically
+      // large Content-Length and then never deliver the body; the "not enough
+      // bytes yet" branch below would wait forever while `handle.buffer` grows
+      // without bound. Anything over the cap is treated as junk: drop the header
+      // and keep scanning rather than buffer megabytes we'll never use.
+      if (!Number.isFinite(length) || length > MAX_MESSAGE_BYTES) {
+        log.warn(
+          `lsp[${handle.language}]: dropping frame with declared Content-Length ${lengthMatch[1]} (> ${MAX_MESSAGE_BYTES} bytes)`,
+        );
+        handle.buffer = handle.buffer.subarray(sepIdx + SEP.length);
+        continue;
+      }
       const bodyStart = sepIdx + SEP.length;
       if (handle.buffer.length - bodyStart < length) {
         // Not enough bytes yet; wait for more.
@@ -1538,6 +1711,20 @@ class LspManagerImpl {
       const body = handle.buffer.subarray(bodyStart, bodyStart + length).toString("utf8");
       handle.buffer = handle.buffer.subarray(bodyStart + length);
       this.onMessage(handle, body);
+    }
+    // ★ Second safety net. If the server never emits a usable header separator
+    // (a raw junk flood), the loop above never runs and the tail would still
+    // accumulate one chunk at a time. A real separator-less tail is at most a
+    // partial header (a few dozen bytes) — anything larger can only be junk, so
+    // drop it rather than grow forever. Note the guard is "no separator at all":
+    // once a separator is present the loop above already exited on a legit frame
+    // that is still arriving (its body is bounded by MAX_MESSAGE_BYTES), so that
+    // buffer must be left intact.
+    if (handle.buffer.indexOf(SEP) === -1 && handle.buffer.length > MAX_HEADER_BYTES) {
+      log.warn(
+        `lsp[${handle.language}]: discarding ${handle.buffer.length} unconsumed stdout bytes (no frame header separator seen)`,
+      );
+      handle.buffer = Buffer.alloc(0);
     }
   }
 
@@ -1700,12 +1887,20 @@ class LspManagerImpl {
   }
 
   /** Security: workspacePath must be a known project root AND filePath must
-   *  live inside SOME known project root. */
+   *  live inside **that same workspace's root** — not merely inside SOME known
+   *  project. Without the pairing check, workspace A could open a file owned by
+   *  an unrelated known project B and hand B's contents to A's language server
+   *  (MC-035). `pathWithin` is the shared physical-containment primitive (also
+   *  folds case on win/darwin and follows links), so a worktree session opening
+   *  a file under its own checkout still passes while a cross-root path does not. */
   private assertPaths(workspacePath: string, filePath: string): void {
     this.assertWorkspace(workspacePath);
-    const containing = findContainingWorkspaceRoot(filePath);
-    if (!containing) {
-      throw new Error(`文件路径不在任何已知项目内: ${filePath}`);
+    if (!pathWithin(workspacePath, filePath)) {
+      const containing = findContainingWorkspaceRoot(filePath);
+      const reason = containing
+        ? `文件不属于当前工作区(它属于 ${containing})`
+        : `文件路径不在任何已知项目内`;
+      throw new Error(`${reason}: ${filePath}`);
     }
   }
 }

@@ -1123,7 +1123,20 @@ export const SessionRepo = {
     if (sets.length === 0) return;
     sets.push("updated_at = ?");
     vals.push(v(Date.now()), v(id));
-    getDb().run(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, vals);
+    const db = getDb();
+    db.run(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`, vals);
+    // ── MC-048 ──
+    // 目标会话不存在时 `UPDATE … WHERE id = ?` **一行都打不中**,却既不报错也不
+    // 影响行数 —— 从前这条路径是**静默成功**:只提供普通字段(model / effort /
+    // permissionMode / workflowId…)时,handler 不查会话在不在,手机上删掉的会话再
+    // 改设置会回一个假 `ok:true`,桌面端也一句提示都没有(它本该弹成一句话)。
+    // sql.js 的 `getRowsModified()` 就是**上一条语句**实际改动的行数:0 = 会话没了。
+    // 这里明着失败,让上层 handler 如实报出去(手机 → `ok:false`,桌面 → IPC 拒绝)。
+    // 注意:改到相同的值(以及只运行起来没实际变化的 UPDATE)仍然返回 1,所以这条
+    // 判据只挑"行根本不存在",不会把合法的空转更新误判成失败。
+    if (db.getRowsModified() === 0) {
+      throw new Error(`updateSettings: unknown session ${id}`);
+    }
     persist();
   },
 };
@@ -1740,6 +1753,19 @@ export const WorkflowRunRepo = {
           )`,
       [v(sessionId), v(sessionId), v(keep)],
     );
+    persist();
+  },
+
+  /**
+   * 【MC-053】删掉一条运行行。**只为"落盘失败后回滚这次新建的行"这一个用途**而存在 ——
+   * `saveRun` 在 durable 落盘失败时要把内存回滚到先前状态:先前**没有**这一行(这次是
+   * 首次写)就得把它删掉,否则内存里会留着一条磁盘上没有的行。
+   *
+   * 与 `pruneSession` 一样走普通 `persist()`(合并落盘)—— 回滚的是**内存**那一格,
+   * 磁盘本就没写成,不需要再 fsync。
+   */
+  remove(id: string): void {
+    getDb().run("DELETE FROM workflow_runs WHERE id = ?", [v(id)]);
     persist();
   },
 };

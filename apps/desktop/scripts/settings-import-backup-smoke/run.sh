@@ -12,6 +12,9 @@
 #     的 Notification 与三个引擎的 SDK;导入只用到它的 `reloadPrefs`)。
 #   - `@main/lib/dataRoot.js` / `@main/lib/logger.js` —— 复用 run-store-smoke 的两份桩。
 #   - `@main/store/repositories.js` 用**真的** —— 设置要真写进库、真读回来。
+#   - `node:fs/promises` —— 记录式替身(本套的 `stubs/fsPromises.ts`):MC-030 要证明
+#     导入**先 `stat` 再 `read`**(超限根本不读),而不只是"拒绝了"。功能断言证明不了
+#     顺序,只有把 fs 换掉才捕得到真实调用序列。其余名字原样转发真实现。
 #
 # ⚠️ **数据根必须是 `mktemp -d`。** 这一套真建库、真写设置行(内部都是 `persist()`,
 # `sql.js` 的 `db.export()` **重写整个 mcode.db**)。指到用户真数据根等于毁数据。
@@ -40,6 +43,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/notifications/NotificationManager.js=./scripts/settings-import-backup-smoke/stubs/notificationManager.ts \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:node:fs/promises=./scripts/settings-import-backup-smoke/stubs/fsPromises.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/smoke.mjs"

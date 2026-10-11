@@ -502,6 +502,19 @@ export interface TurnFileEntry {
   adds: number;
   dels: number;
   before: string;
+  /**
+   * SHA-256 of the file's **post-turn** content (what the file looked like
+   * when the turn ended), lower-case hex.
+   *
+   * 历史回滚的冲突检测用:回滚前拿它跟当前磁盘比一次,不一致 = 这个文件在本轮之后
+   * 又被改过(后续回合或用户手改),那时**不能**把 `before` 写回去 —— 否则连后来的
+   * 改动一起抹掉。对不上就把该文件原样保留、报进 `TurnRewoundEvent.conflicts`。
+   *
+   * 可选:**本次修复之前**落盘的历史会话快照没有这个字段,读出来是 undefined,
+   * 那种条目按老行为(直接还原)处理,不做冲突检测 —— 总比对着一个不存在的指纹
+   * 判定冲突、让老会话一律回滚不了要好。
+   */
+  afterHash?: string;
 }
 
 /** Whether a turn-touched file existed before the turn. */
@@ -542,6 +555,10 @@ export interface TurnRewoundEvent {
    *  Surfaced so the card can say「N 个没还原」instead of silently showing
    *  a partial rewind as if it were whole. Empty on a clean rewind. */
   failedFiles: string[];
+  /** 【MC-002】本轮之后又被改过、因此**故意没有动**的路径。它们既不是"还原成功"
+   *  也不是"失败" —— 是"再写回去会把后来的改动毁掉,所以原样留着"。UI 要把它们
+   *  单独说清楚(「这几个文件之后改过,没动它们」),不能让用户以为整轮都回滚了。 */
+  conflicts: string[];
   /** The ORIGINAL set of paths the rewind targeted (before any were
    *  dropped due to failure). Always present — the renderer matches the
    *  `turn-files` block by this path set to mark it `rewound`. */

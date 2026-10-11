@@ -39,7 +39,17 @@ import { savePngArtifact } from "@main/lib/screenshotStore.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ProviderContext } from "@contracts/provider";
-import { APP_DANGER_APPROVAL_PREFIX, type AppUiCommand, type AppUiReply } from "@contracts/appControl";
+import {
+  APP_DANGER_APPROVAL_PREFIX,
+  formatOperationResult,
+  isOperationCommitted,
+  OP_CODE,
+  OP_WARNING_UI_REFRESH_FAILED,
+  type AppUiCommand,
+  type AppUiReply,
+  type OperationResult,
+  type OperationWarning,
+} from "@contracts/appControl";
 import { fail, image, text, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js";
 import { API_CATALOG, type ApiCatalogEntry } from "./apiCatalog.generated.js";
 import { computePanelCaptureRect } from "./panelCaptureRect.js";
@@ -551,6 +561,65 @@ async function ui(cmd: AppUiCommand): Promise<AppUiReply> {
   }
 }
 
+/**
+ * 【MC-059】纯业务动作的**无窗口**路径 —— 新建对话 / 往对话发消息**不该**因为渲染窗口
+ * 没开或没准备好就失败。它们的状态(会话行、消息、运行时)本来就归主进程;只有"切换用户
+ * 视线"那部分属于界面。所以当 UI 桥报告"窗口没开 / 界面没准备好"时,这里改走**主进程的
+ * 同一套服务**(`createOrReuseSession` + `runtimeManager.sendTurn`),与桌面 IPC 走的是同一份
+ * 实现(硬规矩 2)。真正 UI 专属的动作(开文件、切标签、截图)仍走 UI 桥。
+ *
+ * 返回 `null` 表示"不是 UI 不可用,该走原路"(例如 UI 报的是别的业务错误)。
+ */
+async function headlessNewSession(a: {
+  project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; title?: string;
+}): Promise<string | null> {
+  const { createOrReuseSession } = await import("@main/lib/sessionStart.js");
+  const { ProjectRepo } = await import("@main/store/repositories.js");
+  const { runtimeManager } = await import("@main/claude/RuntimeManager.js");
+  const project = a.project_id
+    ? ProjectRepo.get(a.project_id)
+    : ProjectRepo.list()[0];
+  if (!project) return "没有可用的项目,请给 project_id";
+  const { session } = createOrReuseSession({
+    projectId: project.id,
+    kind: "chat",
+    effort: "default",
+    permissionMode: "default",
+    ...(a.provider_id ? { providerId: a.provider_id } : {}),
+    ...(a.model ? { model: a.model } : {}),
+    ...(a.title ? { title: a.title } : {}),
+  }, "desktop");
+  const cwd = session.worktreePath ?? project.path;
+  const handle = await runtimeManager.sendTurn(session, {
+    prompt: a.prompt ?? "",
+    cwd,
+    ...(a.workflow_id ? { workflowId: a.workflow_id } : {}),
+  });
+  if (handle === null) return `对话已建好(${session.id}),但第一条消息没发出去(上一轮还在运行)`;
+  return null;
+}
+
+async function headlessSend(sessionId: string, prompt: string, workflowId?: string): Promise<string | null> {
+  const { SessionRepo, ProjectRepo } = await import("@main/store/repositories.js");
+  const { runtimeManager } = await import("@main/claude/RuntimeManager.js");
+  const session = SessionRepo.get(sessionId);
+  if (!session) return `找不到对话 ${sessionId}`;
+  const project = ProjectRepo.get(session.projectId);
+  const cwd = session.worktreePath ?? project?.path;
+  if (!cwd) return `对话 ${sessionId} 没有可用的工作目录`;
+  const handle = await runtimeManager.sendTurn(session, {
+    prompt,
+    cwd,
+    ...(workflowId ? { workflowId } : {}),
+  });
+  return handle === null ? "上一轮还在运行,消息没发出去" : null;
+}
+
+/** UI 桥报的"窗口没开 / 界面没准备好"这一类 —— 只有这些才该转无窗口路径。 */
+function uiUnavailable(reply: AppUiReply): boolean {
+  return !reply.ok && /窗口没有打开|界面还没准备好|界面.*没有回应/.test(reply.error ?? "");
+}
+
 function uiResult(reply: AppUiReply, okText: string): ToolResult {
   if (!reply.ok) return fail(reply.error ?? "界面操作失败");
   return text(reply.data === undefined ? okText : `${okText}\n${renderResult(reply.data)}`);
@@ -817,10 +886,18 @@ export function appMcpTools(): McpToolSpec[] {
       name: "app_api_call",
       description:
         "调用一个 Mcode 方法(与界面上点按钮执行的是同一段代码)。只读的直接执行;有副作用的会弹审批卡;" +
-        "高风险的每次都要用户本人批准;不开放的会直接拒绝。返回值里的密钥/令牌一律打码。",
+        "高风险的每次都要用户本人批准;不开放的会直接拒绝。返回值里的密钥/令牌一律打码。" +
+        "返回值带结构化的 OperationResult(resultKind = SUCCEEDED / SUCCEEDED_WITH_WARNINGS / REJECTED / FAILED / UNCERTAIN):" +
+        "SUCCEEDED_WITH_WARNINGS 表示**业务已提交**、只是界面刷新等后续步骤有警告 —— **不要因为它重复执行**;" +
+        "REJECTED 表示命令没执行(可安全重来);UNCERTAIN 表示副作用是否落定无法确认(**不要盲目重试**)。" +
+        "重试同一件事时**带上上次返回的 operationId**(operation_id 参数),宿主会去重,不会重复执行已提交的操作。",
       inputSchema: {
         method: z.string().describe("方法名(来自 app_api_list)"),
         input: z.unknown().optional().describe("参数对象,格式见 app_api_describe;无参方法省略"),
+        operation_id: z
+          .string()
+          .optional()
+          .describe("幂等键:重试同一操作时原样带回上次返回的 operationId,宿主据此去重、不重复执行已提交的操作。首次调用可省略。"),
       },
       handler: async () => fail("内部错误:app_api_call 必须经 invokeAppTool 调用"),
     },
@@ -1079,6 +1156,69 @@ async function runWorkflow(
   return uiResult(reply, "已按工作流发出。");
 }
 
+/* ─────────────────── ARC-009:结构化 OperationResult + 幂等重放 ─────────────────── */
+
+/**
+ * 同进程内记住"某个 operationId 已经提交过"的结果,供 Agent 用**同一个 id** 重试时
+ * **重放**而不重复执行。有界(只留最近 `OPERATION_LOG_MAX` 条,防无限增长)。
+ *
+ * ⚠️ **不跨进程** —— 重启后清零。真正的跨进程去重需要把 operationId 落到持久层,不在本
+ * 切片允许改动的文件面内(见 `@contracts/appControl` 的残余说明)。这里做的是**同进程幂等**:
+ * Agent 收到 `operationId` 后原样带回重试,就不会重复执行一次已提交的非幂等操作。
+ */
+const OPERATION_LOG_MAX = 256;
+const operationLog = new Map<string, { op: OperationResult; body?: string }>();
+
+function rememberOperation(operationId: string, op: OperationResult, body?: string): void {
+  if (operationLog.size >= OPERATION_LOG_MAX) {
+    const oldest = operationLog.keys().next().value;
+    if (oldest !== undefined) operationLog.delete(oldest);
+  }
+  operationLog.set(operationId, { op, ...(body !== undefined ? { body } : {}) });
+}
+
+/** 测试 / 重置用 —— 每个用例前清一次,免得跨用例串味。 */
+export function __clearOperationLog(): void {
+  operationLog.clear();
+}
+
+/** 造一条 OperationResult,补上按 kind 推导的 `retryable`(已提交 / 不确定 → 不可重试)。 */
+function makeOp(
+  kind: OperationResult["resultKind"],
+  method: string,
+  operationId: string,
+  extra: Partial<OperationResult> = {},
+): OperationResult {
+  return {
+    resultKind: kind,
+    operationId,
+    method,
+    retryable: kind === "REJECTED" || kind === "FAILED",
+    warnings: [],
+    resources: [],
+    ...extra,
+  };
+}
+
+/**
+ * 把结构化结果落成 ToolResult:
+ *   - **成功系列**(SUCCEEDED / SUCCEEDED_WITH_WARNINGS)带 `isError=false`(不设);
+ *   - 其余三态带 `isError=true`(与旧断言一致 —— 拒绝 / 失败仍是"错误返回")。
+ * `structuredContent.operation_result` 与正文是同一件事实的两种投影。
+ */
+function operationToolResult(r: OperationResult, body?: string, note?: string): ToolResult {
+  const committed = isOperationCommitted(r.resultKind);
+  const lines = [formatOperationResult(r), note, body].filter(
+    (s): s is string => typeof s === "string" && s.length > 0,
+  );
+  const out: ToolResult = {
+    content: [{ type: "text", text: lines.join("\n\n") || "完成(无返回值)" }],
+    structuredContent: { operation_result: r },
+  };
+  if (!committed) out.isError = true;
+  return out;
+}
+
 /**
  * 唯一入口。引擎侧(Claude 进程内 MCP / Codex 动态工具 / Pi 扩展)都调它。
  */
@@ -1090,8 +1230,45 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
     switch (name) {
       case "app_api_call": {
         const method = String(args.method ?? "");
+        // 幂等键:Agent 可带 `operation_id` 重试同一件事;不带就本次生成一个。
+        const providedId =
+          typeof args.operation_id === "string" && args.operation_id.trim() !== ""
+            ? args.operation_id.trim()
+            : undefined;
+        const operationId = providedId ?? randomUUID();
+
+        // ★ 幂等重放:同一个 operationId 之前**执行过**(已提交或结果不确定)→ 直接回放上次
+        //   结果,不再执行。这是"重试相同 operationId 不重复发送消息/创建资源"的那一半(同进程):
+        //   已提交 → 回 SUCCEEDED 系列;UNCERTAIN → 仍回 UNCERTAIN(不重跑、不升级成成功)。
+        if (providedId) {
+          const remembered = operationLog.get(providedId);
+          if (remembered) {
+            return operationToolResult(
+              remembered.op,
+              remembered.body,
+              "(重放:同一 operationId 之前已处理过,本次**未重复执行**)",
+            );
+          }
+        }
+
         const entry = findEntry(method);
-        if (!entry) return fail(unknownMethodHint(method));
+        if (!entry) {
+          // 没有这个方法 → 命令**根本没执行** → REJECTED(可安全重试/改名重来)。
+          return operationToolResult(
+            makeOp("REJECTED", method, operationId, {
+              code: OP_CODE.methodNotFound,
+              reason: unknownMethodHint(method),
+            }),
+          );
+        }
+        if (!entry.registered) {
+          return operationToolResult(
+            makeOp("REJECTED", entry.method, operationId, {
+              code: OP_CODE.notRegistered,
+              reason: `这个方法在当前版本里没有注册(${entry.channel})。`,
+            }),
+          );
+        }
         const denied = await gateAppAction(
           ctx,
           entry.policy.level,
@@ -1100,21 +1277,75 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           `${entry.method}${entry.policy.reason ? `:${entry.policy.reason}` : entry.doc ? `:${clipLine(entry.doc, 160)}` : ""}`,
           entry.policy.reason,
         );
-        if (denied) return fail(denied);
+        if (denied) {
+          // 审批被拒 / 只读模式 / 不开放 / 无审批通道 → 命令**没执行** → REJECTED。
+          return operationToolResult(
+            makeOp("REJECTED", entry.method, operationId, {
+              code: entry.policy.level === "blocked" ? OP_CODE.blocked : OP_CODE.approvalDenied,
+              reason: denied,
+            }),
+          );
+        }
         // 密钥设置键:在**调用之前**拦(见 isSecretSettingKey —— 结果打码拦不住它)。
         const secretRefusal = secretSettingRefusal(entry.method, args.input);
-        if (secretRefusal) return fail(secretRefusal);
-        try {
-          const result = await callRpc(entry, args.input);
-          try {
-            notifyAppSettingWrite(entry.method, args.input);
-          } catch (error) {
-            return fail(`操作已完成,但桌面刷新通知失败:${errText(error)}`);
-          }
-          return text(renderResult(slimSessions(result)));
-        } catch (err) {
-          return fail(errText(err));
+        if (secretRefusal) {
+          return operationToolResult(
+            makeOp("REJECTED", entry.method, operationId, {
+              code: OP_CODE.secretKeyRefused,
+              reason: secretRefusal,
+            }),
+          );
         }
+
+        // ── 真正执行 RPC(到这里一定被调一次)──────────────────────────────
+        let result: unknown;
+        try {
+          result = await callRpc(entry, args.input);
+        } catch (err) {
+          // ZodError = 参数在**执行之前**就被挡下 → 命令没跑 → REJECTED。
+          if (err instanceof z.ZodError) {
+            return operationToolResult(
+              makeOp("REJECTED", entry.method, operationId, {
+                code: OP_CODE.rpcFailed,
+                reason: errText(err),
+              }),
+            );
+          }
+          // 其余抛错:只读/界面档不可能有副作用 → FAILED(可安全重试);
+          // 写/高风险档**可能已部分提交** → UNCERTAIN(绝不标成功,也绝不默认重试)。
+          const risky = entry.policy.level === "write" || entry.policy.level === "danger";
+          return operationToolResult(
+            risky
+              ? makeOp("UNCERTAIN", entry.method, operationId, {
+                  code: OP_CODE.rpcUncertain,
+                  reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
+                })
+              : makeOp("FAILED", entry.method, operationId, {
+                  code: OP_CODE.rpcFailed,
+                  reason: errText(err),
+                }),
+          );
+        }
+
+        // ★★ **RPC 已经提交。此后任何一步失败都不能把结果降级成失败** ——
+        //    那正是 ARC-009 要修的洞:失败的返回值会把 Agent 推去重复执行一个已落定的
+        //    非幂等操作。通知失败 → SUCCEEDED_WITH_WARNINGS,并**保留可观测的 warning**。
+        const body = renderResult(slimSessions(result));
+        let op: OperationResult;
+        try {
+          notifyAppSettingWrite(entry.method, args.input);
+          op = makeOp("SUCCEEDED", entry.method, operationId);
+        } catch (error) {
+          const warning: OperationWarning = {
+            code: OP_WARNING_UI_REFRESH_FAILED,
+            // 不吞异常:把原因写进**可观测**的 warning(字段 + 文本两层都带上)。
+            message: `业务已提交,但桌面刷新通知失败:${errText(error)}`,
+            retryable: true,
+          };
+          op = makeOp("SUCCEEDED_WITH_WARNINGS", entry.method, operationId, { warnings: [warning] });
+        }
+        rememberOperation(operationId, op, body);
+        return operationToolResult(op, body);
       }
       case "app_ui":
         return await runUiAction(args as UiArgs, ctx, sessionId);
@@ -1123,17 +1354,25 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         const what = a.prompt ? `新开对话并发送:${clipLine(a.prompt, 200)}` : "新开一个对话";
         const denied = await gateAppAction(ctx, "write", "session_new", a, what);
         if (denied) return fail(denied);
-        return uiResult(
-          await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title }),
-          "已新建对话。",
-        );
+        const reply = await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title });
+        // 【MC-059】窗口没开 → 走主进程同一套服务,不因界面缺失而失败。
+        if (uiUnavailable(reply)) {
+          const err = await headlessNewSession(a);
+          return err ? fail(err) : text("已新建对话(无界面模式)。");
+        }
+        return uiResult(reply, "已新建对话。");
       }
       case "app_session_send": {
         const a = args as { session_id: string; prompt: string; workflow_id?: string; background?: boolean };
         if (a.session_id === sessionId) return fail("不能给你自己所在的对话发消息。");
         const denied = await gateAppAction(ctx, "write", "session_send", a, `给对话 ${a.session_id} 发送:${clipLine(a.prompt, 200)}`);
         if (denied) return fail(denied);
-        return uiResult(await ui({ op: "send", sessionId: a.session_id, prompt: a.prompt, workflowId: a.workflow_id, background: a.background }), "已发送。");
+        const reply = await ui({ op: "send", sessionId: a.session_id, prompt: a.prompt, workflowId: a.workflow_id, background: a.background });
+        if (uiUnavailable(reply)) {
+          const err = await headlessSend(a.session_id, a.prompt, a.workflow_id);
+          return err ? fail(err) : text("已发送(无界面模式)。");
+        }
+        return uiResult(reply, "已发送。");
       }
       case "app_workflow_run":
         return await runWorkflow(args as { workflow_id: string }, sessionId, ctx);

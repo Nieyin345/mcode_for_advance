@@ -62,6 +62,40 @@ for (const key of SECRET_KEYS) {
   check(`★ ${key} 不可导出`, !isTransferableSettingKey(key), { key });
 }
 
+// ── 【MC-031 / MC-052】安全授信键 —— 不是密钥,但同样**绝不可迁移** ──
+//
+// 这些存的是"用户在本机明确批准过的信任决定"(SSH 主机指纹、项目 MCP 信任)。键名不含
+// 任何密钥词,所以两道密钥筛子都拦不住 —— 但它们随设置备份**导入**的后果是:一份被
+// 诱导导入的"设置备份"能预先写好用户对某台服务器 / 某个仓库的信任。独立复核实测过
+// `mcp.projectTrust` 与 `agentSsh.knownHosts` 都曾 transferable=true。
+console.log("\n导出设置:安全授信键不导出(不只是密钥)");
+{
+  const TRUST_KEYS = [
+    "mcp.projectTrust",      // 项目 MCP 信任指纹(某仓库 .mcp.json 命令的批准)
+    "agentSsh.knownHosts",   // SSH agent 的 known-hosts 指纹表
+    // ⚠️ **将来新增的授信键**也必须被挡 —— 判据是**类别**(前缀/清单),不是逐个硬编码。
+    // 这里用一个"还没人加过"的键验证:`mcp.trust.future` 命中 `mcp.trust` 前缀、
+    // `agentSsh.futureGrant` 命中 `agentSsh.` 前缀 —— 都应被拒,无需再改这份清单。
+    "mcp.trust.future",
+    "agentSsh.futureGrant",
+    "securityGrant.projects",
+  ];
+  for (const key of TRUST_KEYS) {
+    check(`★ ${key} 不可导出(安全授信)`, !isTransferableSettingKey(key), { key });
+  }
+  // 反向控制:正常的可迁移偏好**照常**过 —— 别把判据写成一刀切。
+  check("正控:外观偏好仍可迁移", isTransferableSettingKey("ui.appearance.theme"), true);
+  check("正控:通用偏好仍可迁移", isTransferableSettingKey("ui.locale"), true);
+  // 端到端:夹带授信键的导出文档里不得出现它们。
+  const all: Record<string, string | null> = {};
+  for (const k of TRUST_KEYS) all[k] = "SHOULD-NOT-LEAK";
+  all["ui.locale"] = "zh";
+  const { doc } = buildSettingsExport(all, { appVersion: "0.0.0" });
+  const trustLeaked = TRUST_KEYS.filter((k) => k in doc.settings);
+  check("★ 导出文档里没有任何安全授信键", trustLeaked.length === 0, { trustLeaked });
+  check("正控:同一份文档里普通偏好照常导出", doc.settings["ui.locale"] === "zh");
+}
+
 // 端到端:整张表过一遍 buildSettingsExport,导出文档的 settings 里不得出现任何一个。
 {
   const all: Record<string, string | null> = {};
@@ -118,7 +152,7 @@ console.log("\n值清洗:常见鉴权头名一律打码");
       "X-Api-Key": "sk-REAL2",
       "x-tenant": "acme", // 正控:非密钥头必须留下
     },
-  }) as [Record<string, unknown>, number];
+  }) as [Record<string, unknown>, number, boolean];
   const headers = clean.customHeaders as Record<string, string> | undefined;
   check("★ x-api-key 被清洗", !("x-api-key" in (headers ?? {})), headers);
   check("★ x-auth-token 被清洗", !("x-auth-token" in (headers ?? {})), headers);
@@ -141,8 +175,55 @@ console.log("\n值清洗:常见鉴权头名一律打码");
     outputTokens: 20,
     tokenBudget: 200000,
     shortKeys: ["a"],
-  }) as [unknown, number];
+  }) as [unknown, number, boolean];
   check("★ 含 token 字样但非密钥的字段不被误删", keepN === 0, { keepN });
+}
+
+// ── MC-024:嵌套超过 20 层时**不得原样保留**,必须 fail-closed ──
+//
+// 从前的 `depth > 20 → return [value, 0]` 把没洗过的整棵子树原样留下 —— 只要把密钥塞进
+// 一个 21+ 层深的 `{a:{a:{…}}}` 里,`SECRET_FIELD_RE` 就永远够不到那个叶节点,导出文件
+// 里带着明文密钥走出去。判据立在"深层叶密钥绝不出现" + "整条设置被丢弃"上。
+console.log("\n深层嵌套:超过上限 fail-closed,绝不原样保留(MC-024)");
+{
+  // 把 apiKey 埋在 30 层深的叶子里。
+  let leaf: Record<string, unknown> = { apiKey: "sk-DEEP-REAL" };
+  for (let i = 0; i < 30; i++) leaf = { nested: leaf };
+  const [clean, , overflow] = scrubSecrets(leaf) as [unknown, number, boolean];
+  check("★ 超深嵌套被判 overflow(清洗不干净)", overflow === true, { overflow });
+  check("★ 超深嵌套的清洗结果里不含原样叶密钥", JSON.stringify(clean ?? null).indexOf("sk-DEEP-REAL") === -1, { clean });
+  // 导出文档里也绝不能出现这条带深层密钥的整块配置。
+  const { doc } = buildSettingsExport({ "customUi.blocks": JSON.stringify(leaf) }, { appVersion: "0.0.0" });
+  check("★ 超深嵌套的整条设置被丢弃(不写进导出文档)", !("customUi.blocks" in doc.settings), doc.settings);
+  check("★ 丢弃的整条不出现在导出文本里", JSON.stringify(doc).indexOf("sk-DEEP-REAL") === -1);
+
+  // 正控:20 层以内、结构正常的偏好照常导出(证明 fail-closed 没有把普通嵌套一起误杀)。
+  const shallow = { a: { b: { c: { theme: "dark" } } } };
+  const [cleanShallow, , overflowShallow] = scrubSecrets(shallow) as [unknown, number, boolean];
+  check("正控:普通浅嵌套不被判 overflow", overflowShallow === false, { overflowShallow });
+  check(
+    "正控:普通浅嵌套的内容照常保留",
+    (cleanShallow as { a: { b: { c: { theme: string } } } }).a.b.c.theme === "dark",
+    cleanShallow,
+  );
+  const { doc: docShallow } = buildSettingsExport({ "ui.layout": JSON.stringify(shallow) }, { appVersion: "0.0.0" });
+  check("正控:普通嵌套偏好照常导出", "ui.layout" in docShallow.settings, docShallow.settings);
+}
+
+// ── MC-024:导出侧超大配置不吃满内存 / 不卡死;节点预算耗尽也 fail-closed ──
+console.log("\n大配置:节点预算耗尽即 fail-closed,不逐节点爆炸(MC-024)");
+{
+  // 一个 > 20 万节点的数组 —— 清洗在预算处停下并判 overflow,而不是把整棵走完。
+  const big = { rows: Array.from({ length: 250_000 }, (_, i) => ({ i })) };
+  const t0 = Date.now();
+  const [, , overflow] = scrubSecrets(big) as [unknown, number, boolean];
+  const ms = Date.now() - t0;
+  check("★ 节点数超预算判 overflow", overflow === true, { overflow });
+  check("★ 清洗在预算内快速停下(没有把 25 万节点全走完)", ms < 3000, { ms });
+  // 未超预算的中等数组正常清洗、不判 overflow。
+  const medium = { rows: Array.from({ length: 1000 }, (_, i) => ({ i })) };
+  const [, , overflowMed] = scrubSecrets(medium) as [unknown, number, boolean];
+  check("正控:中等数组不判 overflow", overflowMed === false, { overflowMed });
 }
 
 console.log(`\nsettings-export-secrets-smoke:${checks - failures}/${checks} 通过`);

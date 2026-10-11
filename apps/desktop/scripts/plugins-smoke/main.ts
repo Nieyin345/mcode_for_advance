@@ -41,6 +41,7 @@ import {
   listMarketplaces,
   refreshMarketplace,
   removeMarketplace,
+  componentDeliveryReport,
 } from "../../src/main/plugins/pluginManager.js";
 
 let passed = 0;
@@ -346,6 +347,15 @@ eq(comps.commands[0].name, "deploy-check", "command name = file basename");
 eq(comps.agents.length, 1, "agents parsed (1)");
 eq(comps.hooks.length, 2, "hooks parsed (2)");
 ok(comps.hooks[0].matcher === "Bash" && comps.hooks[0].command === "echo pre", "hook matcher+command");
+// 【MC-061】每个 hook 都带**显式执行状态**:v1 不执行(unsupported);事件名映射不到 Mcode
+// 统一 HookEvent 的标 unmappable —— 明说不支持,而不是让面板看着像活的、实际静默不跑。
+ok(comps.hooks.every((h) => h.execution === "unsupported"), "PreToolUse/PostToolUse 可映射 → execution=unsupported");
+{
+  const { mapClaudeHookEvent } = await import("@contracts/hook");
+  ok(mapClaudeHookEvent("PreToolUse") === "tool.use", "PreToolUse → tool.use");
+  ok(mapClaudeHookEvent("SessionStart") === null, "SessionStart 明确不映射(null)");
+  ok(mapClaudeHookEvent("TotallyUnknown") === null, "未知事件名 → null(报不可用,不静默)");
+}
 eq(comps.mcpServers.length, 1, "mcp servers parsed (1)");
 eq(comps.mcpServers[0].name, "fetcher", "mcp server name");
 eq(comps.mcpServers[0].kind, "stdio", "mcp server kind stdio");
@@ -811,6 +821,39 @@ ok(mpRemove.ok, "marketplace removed");
 const afterRemove = listMarketplaces();
 eq(afterRemove.filter((m) => !m.builtin).length, 0, "no user marketplaces left");
 eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user marketplace");
+
+
+/* ── 【ARC-014】逐组件交付报告:ANY 兼容 ≠ ALL 就绪 ──
+ * 一个"含通用 Skill + Claude 专用 Command"的插件,compatibleProviderIds 里有 Pi,
+ * 但 Pi 收不到那个 Command —— 场景"需要 Command"时不能被全绿放行。 */
+{
+  const mk = (skills: string[], commands: string[], mcp: string[]) => ({
+    skills: skills.map((n) => ({ name: n, description: "" })),
+    commands: commands.map((n) => ({ name: n, description: "" })),
+    agents: [],
+    hooks: [],
+    mcpServers: mcp.map((n) => ({ name: n, kind: "stdio" as const, detail: "" })),
+  });
+  const mixed = mk(["generic-skill"], ["claude-cmd"], []);
+  // Pi:skill DELIVERED,command INCOMPATIBLE → allDelivered=false(场景需要 Command 就不能放行)。
+  const piRep = componentDeliveryReport("demo", "1.0.0", "pi-sdk", mixed, true);
+  ok(piRep.entries.find((e) => e.type === "skill")?.status === "DELIVERED", "ARC-014:Pi 收通用 skill(DELIVERED)");
+  ok(piRep.entries.find((e) => e.type === "command")?.status === "INCOMPATIBLE", "ARC-014:Pi 收不到 Claude 专用 command(INCOMPATIBLE)");
+  ok(piRep.allDelivered === false, "ARC-014:混合插件对 Pi allDelivered=false(ANY≠ALL)");
+  // Claude:两者都 DELIVERED → allDelivered=true。
+  const claudeRep = componentDeliveryReport("demo", "1.0.0", "claude-sdk", mixed, true);
+  ok(claudeRep.allDelivered === true, "ARC-014:同一插件对 Claude 全交付");
+  // Pi 不原生挂 MCP。
+  const mcpRep = componentDeliveryReport("demo", "1.0.0", "pi-sdk", mk([], [], ["srv"]), true);
+  ok(mcpRep.entries.find((e) => e.type === "mcp")?.status === "INCOMPATIBLE", "ARC-014:Pi 不原生挂 MCP(INCOMPATIBLE)");
+  // 纯 skill 插件:Pi 全交付(不误杀)。
+  const skillOnly = componentDeliveryReport("demo", "1.0.0", "pi-sdk", mk(["s"], [], []), true);
+  ok(skillOnly.allDelivered === true, "ARC-014:纯 skill 插件对 Pi 全交付(不误杀有效 skill)");
+  // 插件被禁用:全部 DISABLED。
+  const disabled = componentDeliveryReport("demo", "1.0.0", "claude-sdk", mixed, false);
+  ok(disabled.entries.every((e) => e.status === "DISABLED"), "ARC-014:插件禁用 → 全部 DISABLED");
+}
+
 
 /* ── summary ── */
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -6,14 +6,16 @@
 
 ## 项目是什么
 
-**Mcode**(*my* Code)- 基于 Claude Agent SDK 构建的**桌面端 GUI**(Electron 三栏 IDE)。
+**Mcode**(*my* Code)- 本地优先的**通用 Agent 桌面客户端**(Electron 三栏 IDE),同时接入**三家引擎**:Claude Code SDK / Pi / Codex,外加一条"网页模型"桥(`bridge`)。工作流编排、自动化触发器、资料库、插件系统都长在它上面。**学术能力全部通过扩展 / 工作流实现,core 不含学术域。**
 
-核心理念:**不重新实现 agent,只做 Claude 的交互界面**。通过 Agent SDK 驱动 claude agent loop;本应用负责会话管理、实时渲染、工具审批、IDE 能力(文件/git/终端)。
+核心理念:**不自己实现 agent,只做引擎的交互界面**。把各家 agent loop 接进来并归一成统一的 `RuntimeEvent`;本应用负责会话管理、实时渲染、工具审批、IDE 能力(文件/git/终端)、工作流与插件。
 
-- 使用 `@anthropic-ai/claude-agent-sdk`,内部管理 claude 二进制(项目不直接 spawn)
+- Claude 走 `@anthropic-ai/claude-agent-sdk`(内部管理 claude 二进制,项目不直接 spawn);Pi 走 `@earendil-works/pi-coding-agent`;Codex 走其 app-server
 - 项目 MIT,可独立开源
 - 架构受 [Synara](https://github.com/Emanuele-web04/synara) 启发,但用主流 TS 重写(无 effect-ts、无 bun)
-- 内置 `AgentProvider` 抽象层,后续可扩展其他 agent 平台(OpenAI Codex、Gemini CLI 等)
+- 内置 `AgentProvider` 抽象层 + `ProviderRegistry`;新增引擎只需实现接口并注册
+
+> ⚠️ 本文旧版把项目描述为"Claude Agent SDK 单引擎 GUI"——那是早期定位,已过时(报告 MC-011)。当前事实是**多引擎**。版本号见 [`docs/tech-stack.md`](docs/tech-stack.md)。
 
 ---
 
@@ -37,12 +39,18 @@ Renderer (React 19, contextIsolation:true, nodeIntegration:false)
         ↕  Electron IPC(preload contextBridge + zod 校验)
 Main (Node.js)
   ├── RuntimeManager      持 ProviderRegistry,构造 ProviderContext
-  │     └── AgentProvider  ClaudeAgentSdkProvider(→ query() → SDKMessage → RuntimeEvent)
+  │     └── AgentProvider   多引擎接入,**每家一个 Provider + 一个 MessageAdapter**
+  │           ├── ClaudeAgentSdkProvider  → @anthropic-ai/claude-agent-sdk query() → SDKMessage → RuntimeEvent
+  │           ├── PiAgentSdkProvider      → @earendil-works/pi-coding-agent createAgentSession() + 内联 mcodeExtension
+  │           ├── CodexAgentSdkProvider   → Codex app-server
+  │           └── 网页模型桥(bridge)      → 浏览器扩展桥驱动真实网页 LLM 页面(第四类 provider)
   ├── SessionManager      会话生命周期(SQLite via sql.js)
-  └── IDE Services        terminal / git / checkpoint(P4)
-        ↕  @anthropic-ai/claude-agent-sdk (query)
-     claude 二进制(SDK 内打包,项目不直接 spawn)
+  └── IDE Services        terminal / git / checkpoint / LSP / 浏览器
+        ↕  (各 Provider 各走各自 SDK;归一化后统一成 RuntimeEvent)
+     各引擎各自的可执行体(Claude 二进制由 SDK 内管理;Pi/Codex 各随其包)
 ```
+
+> ⚠️ 旧版这张图只画了 `ClaudeAgentSdkProvider` 一个,读起来像单引擎(报告 §18.4 指出)。当前事实是**四类 provider**(三家 SDK 引擎 + 网页模型桥),都经 `AgentProvider` 抽象归一成 `RuntimeEvent`;细节见第 9-13 行的定位说明与下方「引擎」各节。
 
 **安全边界**:renderer 不能 `require()` 任何 Node 模块。通往 Node 的唯一桥梁是 preload 暴露的 `window.api`,所有消息经 zod 校验后才放行。新增 IPC 通道时,必须在 `packages/contracts/src/ipc.ts` 定义 schema + 通道常量,并在 preload 白名单注册。
 

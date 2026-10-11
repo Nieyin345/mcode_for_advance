@@ -31,7 +31,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { mkdtempSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { IpcMain } from "electron";
 import type { Project } from "@contracts/session";
 import { IPC, LSP_SERVERS_SETTING_KEY } from "@contracts/ipc";
@@ -172,6 +172,23 @@ mkdirSync(PIDS, { recursive: true });
 process.env.LSP_SMOKE_PID_DIR = PIDS;
 const SPAWN_LOG = join(FIX, "spawns.jsonl");
 process.env.LSP_SMOKE_SPAWN_LOG = SPAWN_LOG;
+/** 假 server 收到的 **方法名**记档(每个 JSON-RPC 消息一行 `{m,u}`)。§6k 的
+ *  时序断言立在这上面:didOpen 必须先于同一文件的 didChange/didClose。 */
+const METHOD_LOG = join(FIX, "methods.jsonl");
+process.env.LSP_SMOKE_METHOD_LOG = METHOD_LOG;
+
+/** 读假 server 收到的方法记档(§6m 的时序断言用)。 */
+function readMethodLog(): Array<{ m: string; u: string | null }> {
+  if (!existsSync(METHOD_LOG)) return [];
+  return readFileSync(METHOD_LOG, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { m: string; u: string | null });
+}
+function clearMethodLog(): void {
+  rmSync(METHOD_LOG, { force: true });
+}
 
 /** 假 language server:把「谁起的我」记档,然后完成一次 initialize 握手并常驻。
  *
@@ -189,6 +206,7 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFile
 const DIR = process.env.LSP_SMOKE_PID_DIR;
 const TAG = process.argv[2] || "unknown";
 const LOG = process.env.LSP_SMOKE_SPAWN_LOG;
+const MLOG = process.env.LSP_SMOKE_METHOD_LOG;
 if (DIR) writeFileSync(DIR + "/" + TAG + "-" + process.pid + ".pid", String(process.pid));
 if (LOG) appendFileSync(LOG, TAG + "\\n");
 setInterval(() => {}, 60000); // 钉住事件循环 —— 见文件头那段
@@ -207,6 +225,7 @@ process.stdin.on("data", (c) => {
     buf = buf.subarray(sep + 4 + len);
     let msg;
     try { msg = JSON.parse(body); } catch { continue; }
+    if (MLOG) { try { appendFileSync(MLOG, JSON.stringify({ m: msg.method, u: msg.params && msg.params.textDocument ? msg.params.textDocument.uri : null }) + "\\n"); } catch {} }
     if (msg.method === "exit") process.exit(0);
     if (msg.id === undefined) continue;
     const res = JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: msg.method === "initialize" ? { capabilities: {} } : null });
@@ -249,6 +268,90 @@ const GOOD_PY = goodServerIn(BIN, "py");
 /** 同一个东西,放在带空格的目录里 —— 用来说明「手动指定路径」那条路。 */
 const SPACED_SERVER = goodServerIn(BIN_SPACED, "spaced");
 
+/* ── 畸形帧 server(§6l,MC-036)──
+ *
+ * 它完成 initialize 握手后,spew 一帧**畸形**的 Content-Length(声明 100GB,永不
+ * 到齐)+ 4MB 没有分隔符的字节,最后再跟一帧**合法**的 window/logMessage。判据:
+ *   - 修好之后:畸形帧被丢弃,合法的那帧照常被解析 → 界面收到 "after-junk" 日志;
+ *   - 不修:(旧的)一旦看到那个天文数字就 `break` 等 body,4MB 全堆在 buffer 里、
+ *     后面那帧**永远解析不到**,且 buffer 无界增长。
+ * 两件事都在 §6l 断言:事件的到达 + `handle.buffer` 的大小。 */
+const JUNK_SERVER_SRC = `
+import { writeFileSync } from "node:fs";
+const DIR = process.env.LSP_SMOKE_PID_DIR;
+if (DIR) writeFileSync(DIR + "/junk-" + process.pid + ".pid", String(process.pid));
+let buf = Buffer.alloc(0);
+let spewed = false;
+function writeFrame(obj) {
+  const s = JSON.stringify(obj);
+  process.stdout.write("Content-Length: " + Buffer.byteLength(s) + "\\r\\n\\r\\n" + s);
+}
+function spew() {
+  process.stdout.write("Content-Length: 100000000000\\r\\n\\r\\n");
+  process.stdout.write(Buffer.alloc(4 * 1024 * 1024, 0x78)); // 4MB 'x',无分隔符
+  writeFrame({ jsonrpc: "2.0", method: "window/logMessage", params: { type: 3, message: "after-junk" } });
+}
+process.stdin.on("data", (c) => {
+  buf = Buffer.concat([buf, c]);
+  for (;;) {
+    const sep = buf.indexOf("\\r\\n\\r\\n");
+    if (sep === -1) return;
+    const head = buf.subarray(0, sep).toString();
+    const m = /Content-Length:\\s*(\\d+)/i.exec(head);
+    if (!m) { buf = buf.subarray(sep + 4); continue; }
+    const len = parseInt(m[1], 10);
+    if (buf.length - (sep + 4) < len) return;
+    const body = buf.subarray(sep + 4, sep + 4 + len).toString();
+    buf = buf.subarray(sep + 4 + len);
+    let msg;
+    try { msg = JSON.parse(body); } catch { continue; }
+    if (msg.method === "initialize") { writeFrame({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {} } }); if (!spewed) { spewed = true; setTimeout(spew, 60); } }
+    else if (msg.method === "exit") { process.exit(0); }
+    else if (msg.id !== undefined) writeFrame({ jsonrpc: "2.0", id: msg.id, result: null });
+  }
+});
+setInterval(() => {}, 60000);
+`;
+const JUNK_SERVER_JS = join(SRV, "junk-lsp.mjs");
+writeFileSync(JUNK_SERVER_JS, JUNK_SERVER_SRC);
+const JUNK_SERVER = join(BIN, "junk-langserver.cmd");
+writeCmdShim(JUNK_SERVER, [`"${process.execPath}" "${JUNK_SERVER_JS}" junk %*`]);
+
+/* ── jdtls 压缩包夹具(§6c,MC-037)──
+ *
+ * 一个**合法**的 tar.gz(里面是 bin/jdtls[.bat],jdtls 安装的真实布局)与一个**坏**
+ * 的(纯文本,`tar -xzf` 会当场失败)。MC-037 要的判据是:坏包解压失败时**旧版本还在**、
+ * 好包才替换上去。两个都用系统 tar 现做,不下载任何东西。
+ *
+ * ⚠️ **先把 System32 提到 PATH 最前。** 本套在 git-bash 里跑,而 git-bash 的 PATH 里
+ * 排最前的是 Git 自带的 MSYS tar —— 它把 `C:\Users\...` 当成 `host:path` 去连
+ * (`tar (child): Cannot connect to C: resolve failed`),而运行期(真 Electron 环境)
+ * 与夹具给的正是 Windows 绝对路径。Windows 自带的 bsdtar(`C:\Windows\System32\tar.exe`)
+ * 处理 `C:\` 没问题。不做这一步,`installJavaFromFile` 的解压会在这台 git-bash 机器上
+ * **因为环境**失败,把"好包能装上"那条断言误报成红。 */
+if (process.platform === "win32") {
+  const sys32 = "C:\\Windows\\System32";
+  if (existsSync(join(sys32, "tar.exe")) && !(process.env.PATH ?? "").startsWith(sys32)) {
+    process.env.PATH = `${sys32};${process.env.PATH ?? ""}`;
+  }
+}
+const JAVA_ARCHIVE_SRC = join(SRV, "jdtls-archive-src");
+mkdirSync(join(JAVA_ARCHIVE_SRC, "bin"), { recursive: true });
+writeFileSync(join(JAVA_ARCHIVE_SRC, "bin", "jdtls"), "#!/bin/sh\necho jdtls\n");
+writeFileSync(join(JAVA_ARCHIVE_SRC, "bin", "jdtls.bat"), "@echo off\r\necho jdtls\r\n");
+const GOOD_JAVA_ARCHIVE = join(FIX, "jdtls-good.tar.gz");
+const BAD_JAVA_ARCHIVE = join(FIX, "jdtls-bad.tar.gz");
+writeFileSync(BAD_JAVA_ARCHIVE, "this is not a gzip archive\n");
+try {
+  execFileSync(process.platform === "win32" ? "tar.exe" : "tar", ["-czf", GOOD_JAVA_ARCHIVE, "-C", JAVA_ARCHIVE_SRC, "bin"], {
+    stdio: ["ignore", "ignore", "pipe"],
+    windowsHide: true,
+  });
+} catch (err) {
+  // tar 不可用 —— §6c 的「好包」那条会以红的形式说出来,而不是静默跳过。
+  void err;
+}
+
 /** 一起就退出的 server(模拟 jdtls 起不来)。每次 spawn 记一笔,好数尝试次数。 */
 const DEAD_LOG = join(FIX, "dead-spawns.log");
 const DEAD_SERVER = join(BIN, "dead-langserver.cmd");
@@ -288,7 +391,13 @@ try {
       "using System;",
       "public class FakeJava {",
       "  public static int Main(string[] args) {",
-      '    if (args.Length >= 1 && args[0] == "-version") { Console.Error.WriteLine(@"openjdk version ""21.0.1"" 2023-10-17"); return 0; }',
+      // 版本串由环境变量驱动(默认 21)—— §6c(MC-037)把它设成 8,好让 installJava 的
+      // Java 版本检查**确定性地失败**,从而在不联网、不下载的前提下走到"先建后用"那条路。
+      '    if (args.Length >= 1 && args[0] == "-version") {',
+      '      var major = Environment.GetEnvironmentVariable("MCODE_FAKE_JAVA_VER") ?? "21";',
+      '      Console.Error.WriteLine("openjdk version \\"" + major + ".0.1\\" 2023-10-17");',
+      "      return 0;",
+      "    }",
       '    var lg = Environment.GetEnvironmentVariable("MCODE_FAKE_JAVA_LOG_INNER");',
       '    if (lg != null) { try { System.IO.File.AppendAllText(lg, string.Join(" ", args) + "\\n"); } catch {} }',
       // 别秒退:停一下(jdtls 也不是一启动就退的),好让 initialize 请求真的写到 stdin、
@@ -1286,6 +1395,206 @@ console.log("\n§10 别的路径");
   const st2 = (await lspManager.list()).languages.find((c) => c.language === "go")!;
   eq("指定了存在的路径就认", st2.serverPath, GOOD_TS);
   eq("仍然按 binaryNames 探过一遍(用户路径优先,但不跳过检测)", probed.length > 0, true);
+}
+
+/* ─────────── 6n. 工作区隔离:文件必须属于**该工作区对应**的项目(MC-035) ─────────── */
+
+console.log("\n§6n 工作区隔离:别的项目的文件不能交给本工作区的语言服务器");
+
+{
+  // 回归的是:以前只校验「文件在**某个**已知项目里」,没校验「文件属于**该 workspace**
+  // 对应的那个项目」。于是 A 工作区可以打开 B 项目的文件,把 B 的内容喂给 A 的 server。
+  // 判据立在用户读到的结果上:越界的那次必须被拒(带原因),本工作区的文件照常。
+  clearBinaries();
+  resetPidLog();
+  resetSent();
+  configure([{ language: "typescript", enabled: true, serverPath: GOOD_TS }]);
+
+  // WS1(alpha)工作区打开 WS2(beta)里的文件 —— 跨项目。
+  const r = (await call(IPC.LSP_OPEN_DOC, {
+    workspacePath: WS1,
+    filePath: join(WS2, "b.ts"),
+    language: "typescript",
+  })) as { ok?: boolean; error?: string } | undefined;
+  // handler 把失败吞成 log.warn(像 §8 那样),所以从两个可观测面判:界面事件 + 进程。
+  const stopped = lastEvent("stateChanged", { language: "typescript", workspacePath: WS1 });
+  eq("★ 越界打开被拒(工具栏推到 stopped)", (stopped?.payload as { phase?: string })?.phase, "stopped");
+  says(
+    "★ 拒的理由点明文件属于另一个项目(不是笼统的「不在已知项目」)",
+    (stopped?.payload as { error?: string })?.error,
+    "不属于当前工作区",
+  );
+  eq("★ 而且**没有**为它起一个 server(没把 B 的内容交出去)", spawnedPids().filter(alive).length, 0);
+  void r;
+
+  // 反面对照:本工作区(WS1)内的文件照常打开、server 照常起。
+  await lspManager.openDocument(WS1, join(WS1, "a.ts"), "typescript");
+  await sleep(500);
+  eq("本工作区内的文件照常打开(起了 server)", pidsFor("ts").filter(alive).length, 1);
+  same("而且这个 server 干净地活着", pidsFor("ts").filter(alive).length, 1);
+
+  lspManager.disposeAll();
+  same("这一段收干净了", await waitUntilGone(spawnedPids()), []);
+}
+
+/* ─────────── 6o. 畸形帧不会无界累积(MC-036) ─────────── */
+
+console.log("\n§6o 畸形 JSON-RPC 帧:缓冲有上限、畸形帧被丢、后续合法帧照常");
+
+{
+  // 回归的是:Content-Length 声明很大但从不到齐时,`onStdout` 会一直 `break` 等
+  // body,缓冲无界增长。修好后超过上限的帧被丢弃,且紧跟在后面的合法帧仍被解析。
+  clearBinaries();
+  resetPidLog();
+  resetSent();
+  clearMethodLog();
+  configure([{ language: "typescript", enabled: true, serverPath: JUNK_SERVER }]);
+
+  await lspManager.openDocument(WS1, join(WS1, "a.ts"), "typescript");
+  // 等畸形帧 + 合法帧都处理完。
+  await sleep(1500);
+
+  // ① 紧跟在畸形帧后面的合法帧必须被解析并推给界面 —— 不修的话它还卡在
+  //    那个 100GB 的声明后面,buffer 关着门涨,这条永远等不到。
+  const logEvt = lastEvent("log", { language: "typescript", workspacePath: WS1 });
+  says(
+    "★ 畸形帧之后的合法帧仍被解析(说明畸形帧被丢弃、没有卡死缓冲解析)",
+    (logEvt?.payload as { message?: string })?.message,
+    "after-junk",
+  );
+
+  // ② 缓冲不无界增长 —— 4MB 的垃圾喂进去之后,缓冲必须回到很小的水平,而不是把
+  //    那个声明 100GB 的帧原样攒着(不修的话它会 hold 住整个 ~4MB 尾巴)。
+  const servers = (lspManager as unknown as { servers: Map<string, { buffer: Buffer }> }).servers;
+  const bufferLen = [...servers.values()].reduce((max, h) => Math.max(max, h.buffer.length), 0);
+  check(
+    "★ 缓冲有上限(4MB 垃圾没被原样攒着)",
+    bufferLen <= 64 * 1024,
+    { bufferLen },
+  );
+  // 进程还活着(畸形帧不该把 server 弄死 —— 我们选择丢弃帧,不是重启)。
+  eq("畸形帧没有把 server 弄死(丢帧而不是崩)", pidsFor("junk").filter(alive).length, 1);
+
+  lspManager.disposeAll();
+  same("这一段收干净了", await waitUntilGone(spawnedPids()), []);
+}
+
+/* ─────────── 6p. Java 安装失败回滚:先建后用(MC-037) ─────────── */
+
+console.log("\n§6p Java 安装:坏包解压失败 → 旧版本原封不动、不影响使用");
+
+{
+  // 回归的是:以前先 `removeWithRetry(destDir)` 删掉旧版本、再解压新的;解压失败就
+  // **两头空**(旧版本没了、新版本也没装上)。修好后:新版本先解压到暂存,失败了旧
+  // 版本一个字节没动。
+  clearBinaries();
+  resetSent();
+
+  const USER_DATA = __userData();
+  const JAVA_INSTALL = join(USER_DATA, "lsp", "java");
+  // 摆一个「已安装的旧版本」:plugins/ 里放 equinox jar(健康检查认它)。
+  rmSync(JAVA_INSTALL, { recursive: true, force: true });
+  mkdirSync(join(JAVA_INSTALL, "plugins"), { recursive: true });
+  writeFileSync(join(JAVA_INSTALL, "plugins", "org.eclipse.equinox.launcher_1.0.0.jar"), "OLD");
+  const OLD_LAUNCHER = join(JAVA_INSTALL, process.platform === "win32" ? "jdtls.cmd" : "jdtls");
+  writeFileSync(OLD_LAUNCHER, "OLD-LAUNCHER");
+  // 记下旧版本的指纹,稍后逐字节核对它没被动过。
+  const oldLauncherBytes = readFileSync(OLD_LAUNCHER, "utf8");
+
+  // —— 坏包:解压必然失败 ——
+  const bad = (await call(IPC.LSP_INSTALL_FROM_FILE, {
+    language: "java",
+    archivePath: BAD_JAVA_ARCHIVE,
+  })) as { ok: boolean; error?: string };
+  eq("坏压缩包 → 安装失败", bad.ok, false);
+  says("失败理由是「解压失败」", bad.error, "解压失败");
+
+  // ★ 核心判据:旧版本还在、逐字节没变。
+  check("★ 解压失败后旧版本仍在(两头空的旧故障)", existsSync(OLD_LAUNCHER), { launcher: OLD_LAUNCHER });
+  // ⚠️ readFileSync 对已消失的文件会抛 —— 那会把整个脚本带走,红在哪都看不清。
+  //    读不到就当成"被动过"(旧版本没了本身就是故障),用一条能读的红说出来。
+  const launcherNow = existsSync(OLD_LAUNCHER) ? readFileSync(OLD_LAUNCHER, "utf8") : "<旧版本已不存在>";
+  eq("★ 而且旧版本逐字节没有被动过", launcherNow, oldLauncherBytes);
+  check(
+    "★ equinox jar 也还在(旧安装完整)",
+    existsSync(join(JAVA_INSTALL, "plugins", "org.eclipse.equinox.launcher_1.0.0.jar")),
+  );
+  // 暂存目录没留下垃圾。
+  const strayStage = readdirSync(join(USER_DATA, "lsp")).filter((n) => n.startsWith(".java.staging-"));
+  same("失败后暂存目录被清掉了(不留半截垃圾)", strayStage, []);
+
+  // —— 好包:解压成功才替换 ——
+  if (!existsSync(GOOD_JAVA_ARCHIVE)) {
+    check("★ 需要一个合法的 jdtls tar.gz 夹具,但 tar 没能造出来", false, { tar: GOOD_JAVA_ARCHIVE });
+  } else {
+    const good = (await call(IPC.LSP_INSTALL_FROM_FILE, {
+      language: "java",
+      archivePath: GOOD_JAVA_ARCHIVE,
+    })) as { ok: boolean; error?: string };
+    eq("合法压缩包 → 安装成功", good.ok, true);
+    // 替换后是**新**版本的启动器(不再是 OLD-LAUNCHER),且就位。
+    check("★ 成功后才替换:启动器已就位", existsSync(OLD_LAUNCHER));
+    check("★ 替换后是新版本(不是旧的那份)", readFileSync(OLD_LAUNCHER, "utf8") !== oldLauncherBytes);
+    check("新版本带上了 bin/jdtls(解压出来的)", existsSync(join(JAVA_INSTALL, "bin", "jdtls")));
+    // 旧版本退路也扫掉了,不留 `.java.old-*`。
+    const strayOld = readdirSync(join(USER_DATA, "lsp")).filter((n) => n.startsWith(".java.old-"));
+    same("替换成功后旧版本退路被扫掉(不留垃圾)", strayOld, []);
+  }
+}
+
+/* ─────────── 6q. open/close/change 对同一文件串行(MC-038) ─────────── */
+
+console.log("\n§6q 同一文件的 open/close/change 串行:didOpen 一定先到");
+
+{
+  // 回归的是:openDocument 在读盘那一段是异步的,读期间来的 didChange/didClose 会
+  // 抢在 didOpen 前面发出去(协议顺序错乱:server 收到对未打开文档的编辑 / 先 close
+  // 后 open)。修好后按文件路径排队:didOpen 一定先于同一文件的 didChange/didClose。
+  clearBinaries();
+  resetPidLog();
+  resetSent();
+  clearMethodLog();
+  configure([{ language: "typescript", enabled: true, serverPath: GOOD_TS }]);
+
+  const FILE = join(WS1, "race.ts");
+  // 写一个够大的文件,让首次 readFile 慢一点(把竞态窗口撑开)—— 4MB 够明显。
+  writeFileSync(FILE, "x".repeat(4 * 1024 * 1024));
+
+  // 先起 server(这样 open 的竞态窗口就纯在"读盘"那一段,不掺冷启动)。
+  await lspManager.openDocument(WS1, join(WS1, "a.ts"), "typescript");
+  await sleep(400);
+  clearMethodLog();
+
+  // 不 await 第一个 open,立刻在它读盘期间发 didChange 与 closeDocument。
+  const opening = lspManager.openDocument(WS1, FILE, "typescript");
+  const changing = lspManager.didChange(WS1, FILE, "const y = 2;\n", 2);
+  const closing = lspManager.closeDocument(WS1, FILE);
+  await Promise.all([opening, changing, closing]);
+  await sleep(500);
+
+  // 该文件的 URI(与 filePathToUri 同构:反斜杠→斜杠 + 前导斜杠)。
+  const fileUri = `file:///${resolve(FILE).replace(/\\/g, "/")}`;
+  const forFile = readMethodLog().filter((e) => e.u && e.u === fileUri);
+  const seq = forFile.map((e) => e.m);
+  const didOpenIdx = seq.indexOf("textDocument/didOpen");
+  const didChangeIdx = seq.indexOf("textDocument/didChange");
+  const didCloseIdx = seq.indexOf("textDocument/didClose");
+
+  check("★ 该文件收到了 didOpen", didOpenIdx !== -1, { seq });
+  check(
+    "★ didOpen 先于 didChange(不是编辑先到、打开后到)",
+    didOpenIdx !== -1 && didChangeIdx !== -1 && didOpenIdx < didChangeIdx,
+    { seq },
+  );
+  check(
+    "★ didOpen 先于 didClose(不是先关后开)",
+    didOpenIdx !== -1 && didCloseIdx !== -1 && didOpenIdx < didCloseIdx,
+    { seq },
+  );
+
+  rmSync(FILE, { force: true });
+  lspManager.disposeAll();
+  same("这一段收干净了", await waitUntilGone(spawnedPids()), []);
 }
 
 /* ─────────────────────────── 11. 收尾守卫 ─────────────────────────── */
