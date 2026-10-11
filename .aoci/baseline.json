@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-11T02:16:20Z",
+  "updated_at": "2026-10-11T02:36:14Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "e7398777e80b37b445c3b3c4b7712c0a917782c61f26c782272b2962bdf31c62",
-      "size": 944160,
-      "normalized_sha256": "e7398777e80b37b445c3b3c4b7712c0a917782c61f26c782272b2962bdf31c62"
+      "sha256": "a759832c09a4b88cfb9d0fa1ef55a4dc704a300f2d7030d14d77efb781cc1f02",
+      "size": 944231,
+      "normalized_sha256": "a759832c09a4b88cfb9d0fa1ef55a4dc704a300f2d7030d14d77efb781cc1f02"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2057,9 +2057,9 @@
     },
     "apps/desktop/scripts/lsp-smoke/main.ts": {
       "role": "index",
-      "sha256": "fe48758e6fbad0a3870ca2e6db05a91d26a3fd15bc0e688fc04652aeae3ce98d",
-      "size": 69037,
-      "normalized_sha256": "fe48758e6fbad0a3870ca2e6db05a91d26a3fd15bc0e688fc04652aeae3ce98d"
+      "sha256": "967f5d2c54ac3b1780a410048ef1ca7d889443432cd884a02487b1522f892a73",
+      "size": 69742,
+      "normalized_sha256": "967f5d2c54ac3b1780a410048ef1ca7d889443432cd884a02487b1522f892a73"
     },
     "apps/desktop/scripts/lsp-smoke/run.sh": {
       "role": "index",
