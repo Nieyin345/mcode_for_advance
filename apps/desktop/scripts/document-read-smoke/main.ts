@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
 import { __registeredDisposerCount, __registeredShutdownHookCount } from "@main/mcp/agentSessionCleanup.js";
+import { ResponseReadGate, classifyContentType, readResponseWithinBudget, MAX_CONCURRENT_URL_READS, type ReadBudget } from "@main/lib/readBudget.js";
 import type { ToolResult } from "@main/mcp/sdk.js";
 const root=mkdtempSync(join(tmpdir(),"mcode-doc-read-"));
 const failures:string[]=[];let passed=0;
@@ -137,5 +138,195 @@ try {
    assert.ok(acceptedBytes<TOTAL,`客户端消费了完整 ${TOTAL} 字节——没有在输入端停止(${acceptedBytes})`);
   }finally{await new Promise<void>((r)=>server.close(()=>r()));}
  });
+ // 【MC-065 §34.3 原样复现】审查者的 E1:第一块发 BEGIN-PARTIAL-ONLY,第二次 pull 抛
+ // INJECTED_NETWORK_FAILURE。对**同一个 Response** 再调 res.text()(已由 getReader 锁定)
+ // 必然失败,旧代码于是 catch(()=>out) 返回片段、truncated=false 的假完整。
+ // 这里直接打协议函数,断言结局是 READ_ERROR_AFTER_PARTIAL(而不是 COMPLETE)。
+ await test("★ 协议层:中途读错是 READ_ERROR_AFTER_PARTIAL,不是 COMPLETE",async()=>{
+  let pulls=0;
+  const stream=new ReadableStream<Uint8Array>({
+   pull(c){
+    pulls++;
+    if(pulls===1){c.enqueue(new TextEncoder().encode("BEGIN-PARTIAL-ONLY"));return;}
+    throw new Error("INJECTED_NETWORK_FAILURE");
+   },
+  });
+  const budget:ReadBudget={maxRawBytes:1<<20,maxDecodedBytes:1<<20,maxOutputChars:10000,maxTimeMs:5000};
+  const res=new Response(stream,{status:200,headers:{"content-type":"text/plain"}});
+  const out=await readResponseWithinBudget(res,budget);
+  assert.equal(out.kind,"READ_ERROR_AFTER_PARTIAL",JSON.stringify(out));
+  assert.ok(out.text.includes("BEGIN-PARTIAL-ONLY"),out.text);
+  assert.equal(out.charsRead,"BEGIN-PARTIAL-ONLY".length);
+ });
+ // 【MC-065】正常 EOF 是 COMPLETE;触及输出上限是 TRUNCATED_BY_BUDGET(不是 COMPLETE)。
+ await test("协议层:正常 EOF=COMPLETE,超上限=TRUNCATED_BY_BUDGET",async()=>{
+  const budget:ReadBudget={maxRawBytes:1<<20,maxDecodedBytes:1<<20,maxOutputChars:10,maxTimeMs:5000};
+  const small=await readResponseWithinBudget(new Response("hello"),budget);
+  assert.equal(small.kind,"COMPLETE",JSON.stringify(small));
+  const big=await readResponseWithinBudget(new Response("A".repeat(1000)),budget);
+  assert.equal(big.kind,"TRUNCATED_BY_BUDGET",JSON.stringify(big));
+  assert.equal(big.text.length,10);
+ });
+ // 【MC-065】并发闸门:到上限立即拒绝(不是排队攒内存),释放后又能进。
+ await test("协议层:并发闸门到上限拒绝,释放后可再进",async()=>{
+  const gate=new ResponseReadGate(2);
+  assert.equal(gate.tryAcquire(),true);
+  assert.equal(gate.tryAcquire(),true);
+  assert.equal(gate.tryAcquire(),false,"到上限必须拒绝");
+  gate.release();
+  assert.equal(gate.tryAcquire(),true,"释放后应可再进");
+  assert.ok(MAX_CONCURRENT_URL_READS>=1);
+ });
+ // 【MC-065】Content-Type 分类:图片/PDF 是二进制,文本/无头是文本。
+ await test("协议层:Content-Type 分类文本与二进制",async()=>{
+  assert.equal(classifyContentType("image/png"),"binary");
+  assert.equal(classifyContentType("application/pdf"),"binary");
+  assert.equal(classifyContentType("text/html; charset=utf-8"),"text");
+  assert.equal(classifyContentType("application/json"),"text");
+  assert.equal(classifyContentType(""),"text");
+ });
+ // 【MC-065】204(无响应体)是正常 COMPLETE 空正文,不是失败。
+ await test("协议层:204 无响应体=COMPLETE 空正文",async()=>{
+  const budget:ReadBudget={maxRawBytes:1<<20,maxDecodedBytes:1<<20,maxOutputChars:1000,maxTimeMs:5000};
+  const out=await readResponseWithinBudget(new Response(null,{status:204}),budget);
+  assert.equal(out.kind,"COMPLETE",JSON.stringify(out));
+  assert.equal(out.text,"");
+ });
+ // 【MC-065】多字节字符跨 chunk 边界不得被切成半个(两个 U+FFFD)。
+ await test("协议层:UTF-8 字符跨 chunk 不被切坏",async()=>{
+  const enc=new TextEncoder();const bytes=enc.encode("中文😀结束"); // 多字节跨块
+  const stream=new ReadableStream<Uint8Array>({
+   start(c){ // 逐字节推,强制每个多字节字符都跨 chunk 边界
+    for(const b of bytes)c.enqueue(new Uint8Array([b]));
+    c.close();
+   },
+  });
+  const budget:ReadBudget={maxRawBytes:1<<20,maxDecodedBytes:1<<20,maxOutputChars:1000,maxTimeMs:5000};
+  const out=await readResponseWithinBudget(new Response(stream),budget);
+  assert.equal(out.kind,"COMPLETE",JSON.stringify(out));
+  assert.equal(out.text,"中文😀结束",out.text);
+  assert.ok(!out.text.includes("�"),out.text);
+ });
+ // 【MC-065】单块就超过字符上限:同一块内到界,结局是 TRUNCATED_BY_BUDGET。
+ await test("协议层:单块超上限=TRUNCATED_BY_BUDGET",async()=>{
+  const budget:ReadBudget={maxRawBytes:1<<20,maxDecodedBytes:1<<20,maxOutputChars:5,maxTimeMs:5000};
+  const out=await readResponseWithinBudget(new Response("A".repeat(5000)),budget);
+  assert.equal(out.kind,"TRUNCATED_BY_BUDGET",JSON.stringify(out));
+  assert.equal(out.text.length,5);
+ });
+ // 【MC-065 §34.3】URL **中途读错不得伪装成完整短文**。修前 readBodyWithinCharBudget 的
+ // catch 会对已锁定的 Response 再调 res.text()(必然失败),再 catch(()=>out) 返回此前片段
+ // —— 片段短于 max_chars 时 truncated=false,于是一次中途断网被当成"读完整了"。现在
+ // 必须判 isError,并明确告知"这是部分内容"。判据立在用户/模型看到的那行字上。
+ await test("★ URL 中途读错必须报错且明说部分内容,不得伪装成完整短文",async()=>{
+  const server=createServer((req,res)=>{
+   res.writeHead(200,{"Content-Type":"text/plain; charset=utf-8","Content-Length":"1048576"});
+   res.write("BEGIN-PARTIAL-ONLY");
+   setTimeout(()=>{res.socket?.destroy();},20); // 明写更小的 Content-Length 后中途掐断
+  });
+  await new Promise<void>((r)=>server.listen(0,"127.0.0.1",()=>r()));
+  const port=(server.address() as {port:number}).port;
+  try{
+   const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
+   const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:10000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
+   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   assert.equal(out.isError,true,`中途断网被当成成功:${t}`);
+   assert.match(t,/部分内容|中途失败|读取 URL 失败/,t);
+  }finally{await new Promise<void>((r)=>server.close(()=>r()));}
+ });
+ // 【MC-065】超时也是失败形态:服务端一直不发完,timeout_ms 到点必须报错(并说明已有部分内容),
+ // 不得当成完整短文返回。timeout_ms 下限 1000ms,这里用 1200ms。
+ await test("★ URL 超时被明确报错,不得伪装成完整短文",async()=>{
+  const server=createServer((req,res)=>{res.writeHead(200,{"Content-Type":"text/plain; charset=utf-8"});res.write("A");/* 永不结束 */});
+  await new Promise<void>((r)=>server.listen(0,"127.0.0.1",()=>r()));
+  const port=(server.address() as {port:number}).port;
+  try{
+   const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
+   const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:10000,timeout_ms:1200}),{sessionId:"url-fixture"}) as ToolResult;
+   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   assert.equal(out.isError,true,`超时被当成成功:${t}`);
+   assert.match(t,/超过|超时|部分内容/,t);
+  }finally{await new Promise<void>((r)=>server.close(()=>r()));}
+ });
+ // 【MC-065】Content-Length 前置**快速拒绝**:声明体量超 maxRawBytes 时,连正文都不读就拒绝。
+ // 用一个真实 32 MiB 声明长度的服务,断言客户端未消费正文(服务端只见极少量写出)。
+ await test("★ 声明 Content-Length 超上限时前置拒绝(不下载正文)",async()=>{
+  const DECLARED=64*1024*1024; // 64 MiB > 16 MiB maxRawBytes
+  let sent=0;
+  const server=createServer((req,res)=>{
+   res.writeHead(200,{"Content-Type":"text/plain; charset=utf-8","Content-Length":String(DECLARED)});
+   res.write("HEAD_ONLY");
+   sent=8;
+   // 不主动发更多,等客户端前置拒绝后断连。
+  });
+  await new Promise<void>((r)=>server.listen(0,"127.0.0.1",()=>r()));
+  const port=(server.address() as {port:number}).port;
+  try{
+   const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
+   const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
+   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   assert.equal(out.isError,true,t);
+   assert.match(t,/Content-Length|上限/,t);
+   assert.ok(sent<DECLARED,`客户端仍下载了正文(${sent})`);
+  }finally{await new Promise<void>((r)=>server.close(()=>r()));}
+ });
+ // 【MC-065】非文本策略:二进制 Content-Type 直接拒绝并指向正确工具。
+ await test("★ 二进制 Content-Type 被拒绝并指向文档/图片工具",async()=>{
+  const server=createServer((req,res)=>{
+   res.writeHead(200,{"Content-Type":"image/png"});
+   res.end(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]));
+  });
+  await new Promise<void>((r)=>server.listen(0,"127.0.0.1",()=>r()));
+  const port=(server.address() as {port:number}).port;
+  try{
+   const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
+   const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
+   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   assert.equal(out.isError,true,t);
+   assert.match(t,/二进制|agent_read_document|agent_read_image/,t);
+  }finally{await new Promise<void>((r)=>server.close(()=>r()));}
+ });
+ // 【MC-065】重定向次数设硬上限,不交给 undici 无界跟随。
+ await test("★ 重定向次数超上限被明确拒绝",async()=>{
+  const server=createServer((req,res)=>{
+   res.writeHead(302,{Location:"/again"});res.end(); // 永远重定向到自身
+  });
+  await new Promise<void>((r)=>server.listen(0,"127.0.0.1",()=>r()));
+  const port=(server.address() as {port:number}).port;
+  try{
+   const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
+   const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
+   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   assert.equal(out.isError,true,t);
+   assert.match(t,/重定向次数|超过上限/,t);
+  }finally{await new Promise<void>((r)=>server.close(()=>r()));}
+ });
+ // 【MC-065】正常跟随一次重定向仍必须成功(修复不能误伤合法重定向)。
+ await test("正常的一次重定向仍读到最终正文",async()=>{
+  const server=createServer((req,res)=>{
+   if(req.url==="/r"){res.writeHead(302,{Location:"/final"});res.end();return;}
+   res.writeHead(200,{"Content-Type":"text/plain; charset=utf-8"});res.end("FINAL_BODY_OK");
+  });
+  await new Promise<void>((r)=>server.listen(0,"127.0.0.1",()=>r()));
+  const port=(server.address() as {port:number}).port;
+  try{
+   const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
+   const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/r`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
+   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   assert.ok(!out.isError,t);
+   assert.match(t,/FINAL_BODY_OK/,t);
+  }finally{await new Promise<void>((r)=>server.close(()=>r()));}
+ });
+ // 【MC-065】子进程输出的**输入侧**上界:huge.docx 抽取约 20 MiB,超过 MAX_CHILD_OUTPUT_BYTES
+ // (16 MiB)时必须在**输出累积到界**就 killTree 并显式报错,而不是"跑完再悄悄截断成一份假完整正文"。
+ await test("★ 子进程输出超预算时提前终止并明确报错(不是跑完再截断)",async()=>{
+  const r=await read("huge.docx");
+  assert.equal(r.isError,true,text(r));
+  assert.match(text(r),/输出超过|字节上限|提前终止/,text(r));
+ });
  console.log(`Document reading: ${passed} passed, ${failures.length} failed`);if(failures.length)process.exitCode=1;
-}finally{rmSync(root,{recursive:true,force:true});}
+}finally{
+ // huge.docx 那条会把子进程提前 killTree;Windows 上被 kill 的进程可能瞬间仍占着文件,
+ // 所以清理要带重试,否则测试全绿却在收尾因 EBUSY 崩掉。
+ try{rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:200});}catch{/* best effort */}
+}

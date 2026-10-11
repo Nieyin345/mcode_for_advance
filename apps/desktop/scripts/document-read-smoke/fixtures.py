@@ -26,4 +26,9 @@ def _wide():
 _wide()
 xml='<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>'+('研究😀 文档正文 '*300)+'</w:t></w:r></w:p></w:body></w:document>'
 with zipfile.ZipFile(root/"text.docx","w") as z:z.writestr("word/document.xml",xml)
+# 【MC-065】一个抽取文本**远超子进程输出预算**的文档:读数前它会让子进程吐出约 20 MiB,
+# 用来验证「子进程输出到界即提前终止并显式报错」,而不是「跑完再悄悄截断成一份假完整正文」。
+big='A'*(20*1024*1024)
+xmlb='<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>'+big+'</w:t></w:r></w:p></w:body></w:document>'
+with zipfile.ZipFile(root/"huge.docx","w",zipfile.ZIP_DEFLATED) as z:z.writestr("word/document.xml",xmlb)
 print("Generated isolated PPTX/XLSX/DOCX fixtures")

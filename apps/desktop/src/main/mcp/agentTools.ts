@@ -42,6 +42,18 @@ import { readTextPage, formatTextPage, withTextFileLock, replaceTextFile, textFi
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 import { pathWithin as realPathWithin } from "@main/lib/realPathWithin.js";
 import { moveFileSafe, isMoveDurable } from "@main/lib/moveFileSafe.js";
+import {
+  classifyContentType,
+  isRedirectStatus,
+  readResponseWithinBudget,
+  urlReadGate,
+  URL_READ_BUDGET,
+  MAX_CONCURRENT_URL_READS,
+  MAX_URL_REDIRECTS,
+  MAX_CHILD_OUTPUT_BYTES,
+  type ReadBudget,
+  type ReadOutcome,
+} from "@main/lib/readBudget.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 import { z } from "zod";
 import {
@@ -517,7 +529,6 @@ async function runCaptured(exe: string, args: string[], timeoutMs = 10_000, env?
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const cap = 2 * 1024 * 1024;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -529,8 +540,30 @@ async function runCaptured(exe: string, args: string[], timeoutMs = 10_000, env?
     const errAcc = { text: stderr };
     const outDec = newDecoder();
     const errDec = newDecoder();
-    child.stdout.on("data", (d: Buffer) => { appendDecoded(outAcc, outDec, d, cap); stdout = outAcc.text; });
-    child.stderr.on("data", (d: Buffer) => { appendDecoded(errAcc, errDec, d, cap); stderr = errAcc.text; });
+    // 【MC-065】子进程输出的**输入侧**上界:从前是"让它把文档全跑完、再把结果截到 2M 字符"
+    // —— 大输出(超大工作簿/文档)照样被完整产生,峰值不受预算约束。现在按**原始字节**累计,
+    // 到界立即 killTree 并**显式报错**(不静默返回一份被砍掉的正文,那会让上层误当完整)。
+    let outBytes = 0;
+    let errBytes = 0;
+    const overflow = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      killTree(child);
+      reject(new Error(`${exe} 的输出超过 ${MAX_CHILD_OUTPUT_BYTES} 字节上限,已提前终止(这是子进程输出预算,不是文档损坏)`));
+    };
+    child.stdout.on("data", (d: Buffer) => {
+      outBytes += d.length;
+      if (outBytes > MAX_CHILD_OUTPUT_BYTES) return overflow();
+      appendDecoded(outAcc, outDec, d, MAX_CHILD_OUTPUT_BYTES);
+      stdout = outAcc.text;
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      errBytes += d.length;
+      if (errBytes > MAX_CHILD_OUTPUT_BYTES) return overflow();
+      appendDecoded(errAcc, errDec, d, MAX_CHILD_OUTPUT_BYTES);
+      stderr = errAcc.text;
+    });
     child.once("error", (err) => {
       if (settled) return;
       settled = true;
@@ -823,75 +856,99 @@ async function readRichDocument(input: {
   throw new Error(`agent_read_document 暂不支持扩展名 ${ext || "(无)"}；支持 PDF/DOCX/XLSX/PPTX`);
 }
 
-async function readUrlText(url: string, maxChars: number, timeoutMs: number): Promise<string> {
-  let parsed: URL;
-  try { parsed = new URL(url); } catch { throw new Error(`URL 不合法:${url}`); }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("只支持 http/https URL");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1_000, Math.min(timeoutMs, 60_000)));
-  const capChars = Math.max(1_000, Math.min(maxChars, 300_000));
-  try {
-    const res = await fetch(parsed, { signal: controller.signal, redirect: "follow" });
-    const contentType = res.headers.get("content-type") ?? "";
-    // 【MC-065】结果限额 ≠ 输入限额:从前 `await res.text()` 先把**整份**响应读进内存
-    // 再截断 —— `max_chars` 只是"给模型看多少",管不住下载与解码时的内存/GC 峰值。
-    // 现在**边读边累计**,到上限就 abort 响应,不再无界缓冲;回执如实标注是否截断。
-    const { text: textBody, truncated } = await readBodyWithinCharBudget(res, capChars);
-    const body = capDocumentOutput(textBody, "URL 响应", capChars);
-    const note = truncated
-      ? `\n(响应超过 ${capChars} 字符上限,已在输入端停止读取 —— 这是部分正文,不是完整响应)`
-      : "";
-    return `status: ${res.status} ${res.statusText}\nurl: ${res.url}\ncontent-type: ${contentType}\n\n${body}${note}`;
-  } catch (err) {
-    if ((err as Error).name === "AbortError") throw new Error(`读取 URL 超过 ${timeoutMs}ms`);
-    throw err;
-  } finally {
-    clearTimeout(timer);
+/**
+ * 把一次有界 URL 读取的**结局**翻成给模型看的正文。【MC-065 §34.3】
+ *
+ * 关键在于**失败形态绝不伪装成完整短文**:`READ_ERROR_AFTER_PARTIAL` / `READ_ERROR` /
+ * `TIMEOUT` 一律**抛出**(工具层判 isError),并说明"这是部分内容";只有正常 EOF
+ * (`COMPLETE`)与按预算主动停止(`TRUNCATED_BY_BUDGET`)算成功,后者的回执显式标注
+ * "这是部分正文"。从前读流中途失败会被折成一个 `truncated:false` 的"完整短文" —— 一次
+ * 中途断网被当成 read 成功,正是复审反例。
+ */
+function urlOutcomeToText(header: string, outcome: ReadOutcome, budget: ReadBudget): string {
+  switch (outcome.kind) {
+    case "COMPLETE":
+      return `${header}\n\n${outcome.text || "(空响应)"}`;
+    case "TRUNCATED_BY_BUDGET":
+      return (
+        `${header}\n\n${outcome.text}\n` +
+        `(响应超过 ${budget.maxOutputChars} 字符上限,已在输入端停止读取 —— 这是部分正文,不是完整响应)`
+      );
+    case "TIMEOUT":
+      throw new Error(
+        `读取 URL 超过 ${budget.maxTimeMs}ms` +
+          (outcome.charsRead ? `;已读到 ${outcome.charsRead} 字符(这是部分内容,不是完整响应)` : ""),
+      );
+    case "READ_ERROR_AFTER_PARTIAL":
+      throw new Error(
+        `读取 URL 中途失败:${outcome.error ?? "未知错误"};已读到 ${outcome.charsRead} 字符(这是部分内容,不是完整响应)`,
+      );
+    case "READ_ERROR":
+      throw new Error(`读取 URL 失败:${outcome.error ?? "未知错误"}`);
   }
 }
 
-/**
- * 【MC-065】在**输入阶段**就有界地读取一个文本响应 —— 达到 `maxChars` 就停止读取并
- * abort 连接,而不是先 `res.text()` 把整份收进来再切片。
- *
- * 判据是**字符**(与 `max_chars` 同一单位):流式 `TextDecoder` 逐块解码(不切坏多字节
- * 字符),累计超过上限即 `reader.cancel()`。返回 `truncated` 让调用方如实告知模型
- * "这是部分正文"。
- *
- * 响应体为 null(如 204)→ 空串。读流失败(部分平台)时退回 `res.text()` 的旧路 —— 但
- * 那条路会照旧截断输出;这是**降级**,不是首选。
- */
-async function readBodyWithinCharBudget(
-  res: Response,
-  maxChars: number,
-): Promise<{ text: string; truncated: boolean }> {
-  const body = res.body;
-  if (!body) {
-    const t = await res.text();
-    return t.length > maxChars ? { text: t.slice(0, maxChars), truncated: true } : { text: t, truncated: false };
+async function readUrlText(url: string, maxChars: number, timeoutMs: number): Promise<string> {
+  let current: URL;
+  try { current = new URL(url); } catch { throw new Error(`URL 不合法:${url}`); }
+  if (current.protocol !== "http:" && current.protocol !== "https:") throw new Error("只支持 http/https URL");
+  const budget: ReadBudget = {
+    ...URL_READ_BUDGET,
+    maxOutputChars: Math.max(1_000, Math.min(maxChars, 300_000)),
+    maxTimeMs: Math.max(1_000, Math.min(timeoutMs, 60_000)),
+  };
+  // 【MC-065】按端点做并发上界:很多个"小预算"并发也会累加出无界总内存,到上限即**立即拒绝**。
+  if (!urlReadGate.tryAcquire()) {
+    throw new Error(
+      `同时进行的 URL 正文读取已达上限 ${MAX_CONCURRENT_URL_READS};请稍后重试,避免多个大响应同时挤占内存`,
+    );
   }
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let out = "";
-  let truncated = false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), budget.maxTimeMs);
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      out += decoder.decode(value, { stream: true });
-      if (out.length >= maxChars) {
-        truncated = true;
-        await reader.cancel().catch(() => undefined);
-        break;
+    // 【MC-065】手动跟随重定向,而不是 `redirect:"follow"` 让 undici 无界跟随:
+    // 次数/协议在这里显式设上限,超限即报错,不静默跟到底。
+    let res: Response;
+    for (let redirects = 0; ; ) {
+      res = await fetch(current, { signal: controller.signal, redirect: "manual" });
+      if (!isRedirectStatus(res.status)) break;
+      const location = res.headers.get("location");
+      await res.body?.cancel().catch(() => undefined);
+      if (!location) throw new Error(`重定向 ${res.status} 未提供 Location`);
+      if (redirects >= MAX_URL_REDIRECTS) throw new Error(`重定向次数超过上限 ${MAX_URL_REDIRECTS}`);
+      redirects++;
+      let next: URL;
+      try { next = new URL(location, current); } catch { throw new Error(`重定向目标不合法:${location}`); }
+      if (next.protocol !== "http:" && next.protocol !== "https:") throw new Error(`重定向到非 http/https:${next.protocol}`);
+      current = next;
+    }
+    const contentType = res.headers.get("content-type") ?? "";
+    const header = `status: ${res.status} ${res.statusText}\nurl: ${res.url || current.toString()}\ncontent-type: ${contentType || "(未知)"}`;
+    // 【MC-065】Content-Length 前置**快速拒绝**(仅作快速拒绝,绝不当计量 —— 可能缺失/伪造)。
+    const declared = res.headers.get("content-length");
+    if (declared !== null) {
+      const n = Number(declared);
+      if (Number.isFinite(n) && n > budget.maxRawBytes) {
+        await res.body?.cancel().catch(() => undefined);
+        throw new Error(
+          `响应声明 Content-Length=${n} 字节,超过上限 ${budget.maxRawBytes};请改用更合适的工具,或用支持范围请求的来源`,
+        );
       }
     }
-    if (!truncated) out += decoder.decode(); // flush 尾部残留
-  } catch {
-    // 读流不可用:退回整份读(仍截断输出),不因此让工具失败。
-    const t = await res.text().catch(() => out);
-    return t.length > maxChars ? { text: t.slice(0, maxChars), truncated: true } : { text: t, truncated: false };
+    // 【MC-065】非文本策略:二进制响应直接拒绝并指向正确工具,不把二进制塞进正文预算。
+    if (classifyContentType(contentType) === "binary") {
+      await res.body?.cancel().catch(() => undefined);
+      throw new Error(`响应 Content-Type 是 ${contentType || "(未知)"}(二进制);本工具只读文本,请改用 agent_read_document / agent_read_image`);
+    }
+    const outcome = await readResponseWithinBudget(res, budget);
+    return urlOutcomeToText(header, outcome, budget);
+  } catch (err) {
+    if ((err as Error).name === "AbortError") throw new Error(`读取 URL 超过 ${budget.maxTimeMs}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    urlReadGate.release();
   }
-  return { text: out.length > maxChars ? out.slice(0, maxChars) : out, truncated };
 }
 
 /* ────────────────────────────── 目录遍历 ────────────────────────────── */
