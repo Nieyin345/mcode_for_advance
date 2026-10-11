@@ -354,8 +354,10 @@ export class CodexAgentSdkProvider implements AgentProvider {
     const selectedModel = providers.find((p) => p.id === providerId)?.models.find((m) => m.id === modelId);
     const contextWindow = selectedModel?.contextWindow;
 
-    /* ── 4. Spawn app-server (env carries CODEX_HOME + provider keys) ── */
-    const env = await buildCodexEnv(ctx);
+    /* ── 4. Spawn app-server (env carries CODEX_HOME + this turn's provider key) ── */
+    // 【MC-079】只把**本轮选中端点**的凭据注入子进程 env(白名单见 codexCredentialProviders),
+    // 而不是账号里所有端点的密钥;父环境里遗留的 MCODE_CODEX_KEY_* 也会被清掉。
+    const env = await buildCodexEnv(ctx, codexCredentialProviders(providerId));
     // File snapshot: sandboxed writes reconstruct from the turn diff at
     // freeze (there is no pre-write hook; approval params carry only
     // grantRoot, so no recordPre path exists on this provider).
@@ -822,22 +824,46 @@ function failTurn(
   return { done: Promise.resolve(), interrupt: () => {}, isRunning: () => false };
 }
 
-/** Child env: isolated CODEX_HOME + every configured provider key (the TOML
- *  env_key references pick these up) + inherited PATH/HOME for sandbox
- *  helpers. Keys are decrypted per turn and never persisted. */
-async function buildCodexEnv(ctx: ProviderContext): Promise<Record<string, string>> {
+/** 【MC-079】本轮 app-server 需要凭据的端点白名单 —— 只含本轮的 model_provider。
+ *
+ *  RuntimeManager 的模型回退是**另一个回合、另一个 providerId**(各起一个 app-server),
+ *  每个进程只带自己那一轮的密钥,所以单轮内不需要放多个端点凭据。若将来真要支持官方
+ *  SDK 的**进程内** fallback(同一 app-server 依次打多个端点),在这里显式列入必要的
+ *  供应商 id —— **不要**退化成「把 listPublic() 里全部端点都注进去」。 */
+function codexCredentialProviders(providerId: string): string[] {
+  return [providerId];
+}
+
+/** Child env: isolated CODEX_HOME + ONLY this turn's selected provider key (the
+ *  TOML env_key for the pinned `model_provider` picks it up) + inherited
+ *  PATH/HOME for sandbox helpers. Keys are decrypted per turn and never persisted.
+ *
+ *  【MC-079】凭据最小化:每轮 app-server 只携带**本轮选中端点**的密钥,而不是账号里
+ *  所有端点的密钥。从前这里遍历 listPublic() 把每个 provider 的 key 都注入,于是单个
+ *  子进程承载了全部端点凭据 —— 一旦 Codex 把子进程 env 透给原生 Bash/工具、扩展或调试
+ *  日志,损失面会跨模型供应商。另外显式删掉父 process.env 里遗留的所有
+ *  `MCODE_CODEX_KEY_*`,防止宿主自己的环境变量(测试、外层脚本、旧进程)被意外继承,
+ *  再按白名单重放本轮的密钥。 */
+async function buildCodexEnv(
+  ctx: ProviderContext,
+  providerIds: readonly string[],
+): Promise<Record<string, string>> {
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     CODEX_HOME: codexHomePath(),
   };
-  const providers = await CodexModelsStore.listPublic();
-  for (const p of providers) {
-    if (!p.hasApiKey) continue;
-    const key = CodexModelsStore.resolveApiKey(p.id);
+  // 先清空父环境可能带来的任何 MCODE_CODEX_KEY_*(只删我们注入的那一族,不误伤别的)。
+  for (const name of Object.keys(env)) {
+    if (/^MCODE_CODEX_KEY_/i.test(name)) delete env[name];
+  }
+  // 只解密并注入白名单端点的密钥。hasApiKey 却解不出来时报警(与旧行为一致)。
+  const publicById = new Map((await CodexModelsStore.listPublic()).map((p) => [p.id, p]));
+  for (const id of providerIds) {
+    const key = CodexModelsStore.resolveApiKey(id);
     if (key) {
-      env[codexKeyEnvVar(p.id)] = key;
-    } else {
-      ctx.log.warn(`codex: failed to decrypt key for provider "${p.id}"`);
+      env[codexKeyEnvVar(id)] = key;
+    } else if (publicById.get(id)?.hasApiKey) {
+      ctx.log.warn(`codex: failed to decrypt key for provider "${id}"`);
     }
   }
   return env;

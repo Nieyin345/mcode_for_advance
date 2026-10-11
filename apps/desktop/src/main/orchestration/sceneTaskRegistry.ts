@@ -60,6 +60,28 @@ function exceeds(current: number, incoming: number, limit: number | undefined): 
   return current + incoming > limit;
 }
 
+/** 运行期数值校验:非负的**有限**数(花费可带小数)。 */
+function isNonNegFinite(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n >= 0;
+}
+
+/** 运行期数值校验:非负的**有限整数**(token 数 / 并发槽)。 */
+function isNonNegInt(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n) && Number.isInteger(n) && n >= 0;
+}
+
+/**
+ * 取两个截止时刻里**更紧**的那个(单调收紧)。`null` = 不限。
+ *
+ * 关键是 `null` **不等于无限**:父有限、子请求 `null` 时取父的有限值,
+ * 这样孙任务无论怎么派都不可能越过根截止 —— 越往深只会越紧。
+ */
+function tighterDeadline(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.min(a, b);
+}
+
 /** isTerminal 的判定与契约里的 `SCENE_TASK_TERMINAL_STATES` 对齐(单一真源)。 */
 export function isTerminalState(state: SceneTaskState): boolean {
   return SCENE_TASK_TERMINAL_STATES.includes(state);
@@ -118,13 +140,19 @@ export class SceneTaskRegistry {
    * 校验顺序(任一不过即结构化拒绝,不落任何状态):
    * 1. 父存在 → `PARENT_NOT_FOUND`
    * 2. 父非终态 → `PARENT_TERMINAL`
-   * 3. 场景一致(inv.sceneId === 父.sceneId) → `SCENE_MISMATCH`
-   * 4. 未过父的截止时刻 → `DEADLINE_PASSED`
-   * 5. 深度未超:`parent.maxDepth >= 1` → `MAX_DEPTH_EXCEEDED`
-   * 6. 活跃子任务数 < `parent.maxFanout` → `MAX_FANOUT_EXCEEDED`
+   * 3. 父及**整条祖先链**都不是暂停态 → `ANCESTOR_INACTIVE`(暂停的父/祖先不得派生)
+   * 4. 场景一致(inv.sceneId === 父.sceneId) → `SCENE_MISMATCH`
+   * 5. 未过**整条祖先链里最紧的**截止时刻 → `DEADLINE_PASSED`
+   * 6. 深度未超:`parent.maxDepth >= 1` → `MAX_DEPTH_EXCEEDED`
+   * 7. 活跃子任务数 < `parent.maxFanout` → `MAX_FANOUT_EXCEEDED`
+   * 8. 任务 id 未重复 → `DUPLICATE_TASK`
+   * 9. 子任务 `allowedCapabilities` 是父有效白名单的**子集**(不能放宽)→
+   *    `CAPABILITY_ESCALATION`
    *
    * 落成的子任务:origin / budgetAccountId / sceneId **一律取父的真值**,
-   * `depth = parent.depth + 1`,`maxDepth = parent.maxDepth - 1`。
+   * `depth = parent.depth + 1`,`maxDepth = parent.maxDepth - 1`,
+   * `deadline = min(父有效截止, inv.deadline)`(父有限时子请求 `null`
+   * **不等于**无限,越往下只会越紧)。
    */
   spawn(parentTaskId: string, inv: TaskInvocation): RegistryResult<SceneTask> {
     const parent = this.tasks.get(parentTaskId);
@@ -132,11 +160,22 @@ export class SceneTaskRegistry {
     if (isTerminalState(parent.state)) {
       return refuse("PARENT_TERMINAL", `父任务已处于终态(${parent.state}),不能再派生`);
     }
+    if (parent.state === "paused") {
+      return refuse("ANCESTOR_INACTIVE", `父任务已暂停(${parentTaskId}),不能再派生`);
+    }
+    const inactiveAncestor = this.findInactiveAncestor(parent);
+    if (inactiveAncestor) {
+      return refuse(
+        "ANCESTOR_INACTIVE",
+        `祖先任务 ${inactiveAncestor.taskId} 处于 ${inactiveAncestor.state},不允许派生`,
+      );
+    }
     if (inv.sceneId !== parent.sceneId) {
       return refuse("SCENE_MISMATCH", `派生场景(${inv.sceneId})与父任务场景(${parent.sceneId})不一致`);
     }
-    if (parent.deadline !== null && this.now() > parent.deadline) {
-      return refuse("DEADLINE_PASSED", `父任务已过截止时刻(${parent.deadline})`);
+    const effectiveDeadline = this.effectiveDeadline(parent);
+    if (effectiveDeadline !== null && this.now() > effectiveDeadline) {
+      return refuse("DEADLINE_PASSED", `父任务已过截止时刻(${effectiveDeadline})`);
     }
     if (parent.maxDepth < 1) {
       return refuse("MAX_DEPTH_EXCEEDED", `已达最大深度(父 depth=${parent.depth},maxDepth 已耗尽)`);
@@ -149,6 +188,16 @@ export class SceneTaskRegistry {
     }
     if (this.tasks.has(inv.taskId)) {
       return refuse("DUPLICATE_TASK", `任务 id 已存在:${inv.taskId}`);
+    }
+    // 能力单调收紧:子任务只能收窄父的有效白名单,多出来的能力一律拒绝,
+    // 绝不静默补入(需要额外权限必须走宿主/用户的独立授权,不能靠派生放宽)。
+    const parentCaps = new Set(parent.allowedCapabilities);
+    const escalated = inv.allowedCapabilities.filter((c) => !parentCaps.has(c));
+    if (escalated.length > 0) {
+      return refuse(
+        "CAPABILITY_ESCALATION",
+        `子任务申请了父未授权的能力:${escalated.join("、")}`,
+      );
     }
 
     // 关键:origin / budget / scene 全部从**父值**推导,不采信 inv 里带来的。
@@ -165,7 +214,7 @@ export class SceneTaskRegistry {
       maxFanout: inv.maxFanout,
       maxDepth: parent.maxDepth - 1,
       depth: parent.depth + 1,
-      deadline: inv.deadline,
+      deadline: tighterDeadline(effectiveDeadline, inv.deadline),
       state: "pending",
       generation: 0,
     };
@@ -173,6 +222,38 @@ export class SceneTaskRegistry {
     this.childIndex.set(child.taskId, []);
     this.childIndex.get(parent.taskId)!.push(child.taskId);
     return { ok: true, value: child };
+  }
+
+  /** 从 `task` 的父链一路向上(父、祖父、…),用于祖先状态与截止时刻校验。 */
+  private ancestorsOf(task: SceneTask): SceneTask[] {
+    const chain: SceneTask[] = [];
+    let cur = task.parentTaskId;
+    while (cur !== null) {
+      const t = this.tasks.get(cur);
+      if (!t) break;
+      chain.push(t);
+      cur = t.parentTaskId;
+    }
+    return chain;
+  }
+
+  /** 祖先链里第一个**非活跃**(暂停或终态)的任务;全活跃则返回 undefined。 */
+  private findInactiveAncestor(task: SceneTask): SceneTask | undefined {
+    return this.ancestorsOf(task).find((a) => isTerminalState(a.state) || a.state === "paused");
+  }
+
+  /**
+   * 从 `task` 起(含自身)沿祖先链取**最紧**的有效截止时刻。`null` 表示整链不限。
+   *
+   * 因为每次派生成型时子 deadline 已取 `min(父, 请求)`,这里再走一遍链是纵深
+   * 防线:即便某代被塞了更松的值,也拦得住。
+   */
+  private effectiveDeadline(task: SceneTask): number | null {
+    let d = task.deadline;
+    for (const a of this.ancestorsOf(task)) {
+      d = tighterDeadline(d, a.deadline);
+    }
+    return d;
   }
 
   /** 直接读取一条任务(返回**副本**,外部改不到内部状态)。 */
@@ -278,17 +359,77 @@ function refuse(code: RegistryRefusal["code"], message: string): RegistryRefusal
 
 /* ══════════════════════════ SceneBudgetAccounts ══════════════════════════ */
 
+/** 校验一套上限:给到的每一维都必须是合法的非负数(并发 / token 为整数,费用可小数)。 */
+function invalidLimitsReason(limits: SceneBudgetLimits): string | null {
+  const { maxTokens, maxCostUsd, maxConcurrency } = limits;
+  if (maxTokens !== undefined && !isNonNegInt(maxTokens)) {
+    return `maxTokens 必须是有限非负整数,收到 ${String(maxTokens)}`;
+  }
+  if (maxCostUsd !== undefined && !isNonNegFinite(maxCostUsd)) {
+    return `maxCostUsd 必须是有限非负数,收到 ${String(maxCostUsd)}`;
+  }
+  if (maxConcurrency !== undefined && !isNonNegInt(maxConcurrency)) {
+    return `maxConcurrency 必须是有限非负整数,收到 ${String(maxConcurrency)}`;
+  }
+  return null;
+}
+
+/** 三维是否有一条已经**占用(committed + reserved)**超过给定上限。 */
+function belowUsage(account: SceneBudgetAccount, limits: SceneBudgetLimits): string | null {
+  if (limits.maxTokens !== undefined && account.committedTokens + account.reservedTokens > limits.maxTokens) {
+    return `新 maxTokens(${limits.maxTokens})低于当前占用(${account.committedTokens + account.reservedTokens})`;
+  }
+  if (limits.maxCostUsd !== undefined && account.committedCostUsd + account.reservedCostUsd > limits.maxCostUsd) {
+    return `新 maxCostUsd(${limits.maxCostUsd})低于当前占用(${(account.committedCostUsd + account.reservedCostUsd).toFixed(2)})`;
+  }
+  if (limits.maxConcurrency !== undefined && account.reservedConcurrency > limits.maxConcurrency) {
+    return `新 maxConcurrency(${limits.maxConcurrency})低于当前占用(${account.reservedConcurrency})`;
+  }
+  return null;
+}
+
 /**
- * 场景级预算账户集合 —— 纯内存。一个 accountId 对应一个账户,账户之间
+ * 场景级预算账户集合 —— 纯内存。一个 accountId 对应**一个长期账户**,账户之间
  * **完全独立**(A 场景超支不影响 B 场景)。
+ *
+ * ## 账户是长期身份,不是可覆写的 Map entry
+ *
+ * `createAccount` 对已存在的 id **不再无条件重置**:同 id 同场景 → `ACCOUNT_ALREADY_EXISTS`,
+ * 同 id 不同场景 → `SCENE_CONFLICT`。要"变更预算上限"走 `updateLimits`(受控、代际自增),
+ * 它既不静默清账,也不丢下 map 里属于旧账的未结算预留。
  */
 export class SceneBudgetAccounts {
   private readonly accounts = new Map<string, SceneBudgetAccount>();
   private readonly reservations = new Map<string, SceneBudgetReservation>();
   private seq = 0;
 
-  /** 建账户。重复 id → 上次的先卸掉(测试里方便重建),不静默叠加。 */
-  createAccount(accountId: string, sceneId: string, limits: SceneBudgetLimits): SceneBudgetAccount {
+  /**
+   * 建账户。**已存在的 id 一律结构化拒绝**(不重置、不叠加):
+   * 同 id 同场景 → `ACCOUNT_ALREADY_EXISTS`;同 id 异场景 → `SCENE_CONFLICT`。
+   * 这是把「可覆写的 Map entry」纠正回「长期身份」的关键 —— 旧实现会在这里
+   * 把 reserved/committed 归零,却把 reservations 里属于旧账的未结算凭据留在
+   * 原地,导致重复创建后旧预留跨场景结算、计数穿负。
+   */
+  createAccount(
+    accountId: string,
+    sceneId: string,
+    limits: SceneBudgetLimits,
+  ): RegistryResult<SceneBudgetAccount> {
+    const bad = invalidLimitsReason(limits);
+    if (bad) return refuse("INVALID_LIMITS", `预算上限非法:${bad}`);
+    const existing = this.accounts.get(accountId);
+    if (existing) {
+      if (existing.sceneId !== sceneId) {
+        return refuse(
+          "SCENE_CONFLICT",
+          `账户 ${accountId} 已属于场景 ${existing.sceneId},不能再绑到 ${sceneId}`,
+        );
+      }
+      return refuse(
+        "ACCOUNT_ALREADY_EXISTS",
+        `账户 ${accountId} 已存在(场景 ${existing.sceneId});变更上限请用 updateLimits,不要重建`,
+      );
+    }
     const account: SceneBudgetAccount = {
       accountId,
       sceneId,
@@ -299,9 +440,28 @@ export class SceneBudgetAccounts {
       committedTokens: 0,
       committedCostUsd: 0,
       settledCount: 0,
+      generation: 0,
     };
     this.accounts.set(accountId, account);
-    return { ...account, limits: { ...account.limits } };
+    return { ok: true, value: { ...account, limits: { ...account.limits } } };
+  }
+
+  /**
+   * **受控变更**一个已有账户的上限。新上限不得低于**当前占用**(committed + reserved),
+   * 否则 `LIMITS_BELOW_USAGE`。变更自增 `generation` —— 换代后,此前立下的未结算
+   * 凭据不能再 `settle`(见 `settle` 的代际校验),但可以 `release` 把预留退回。
+   * 未结算预留本身**留在原地**继续占账,不被静默丢弃。
+   */
+  updateLimits(accountId: string, limits: SceneBudgetLimits): RegistryResult<SceneBudgetAccount> {
+    const a = this.accounts.get(accountId);
+    if (!a) return refuse("ACCOUNT_NOT_FOUND", `预算账户不存在:${accountId}`);
+    const bad = invalidLimitsReason(limits);
+    if (bad) return refuse("INVALID_LIMITS", `预算上限非法:${bad}`);
+    const below = belowUsage(a, limits);
+    if (below) return refuse("LIMITS_BELOW_USAGE", `不能把上限压到占用之下:${below}`);
+    a.limits = { ...limits };
+    a.generation += 1;
+    return { ok: true, value: { ...a, limits: { ...a.limits } } };
   }
 
   getAccount(accountId: string): SceneBudgetAccount | undefined {
@@ -316,14 +476,36 @@ export class SceneBudgetAccounts {
    * `UNKNOWN_COST_USD_UPPER_BOUND`、并发至少 1。任一维 `committed + reserved
    * + 本次 > limit` 即 `BUDGET_EXCEEDED`,不落预留。通过则返回一张预留凭据,
    * 由 `settle` / `release` 收尾。
+   *
+   * **运行期校验**:`est` 三维给到的每一维都必须是有限、非负(tokens / concurrency
+   * 为整数),否则 `INVALID_ESTIMATE` —— 负数或 NaN 绝不进计数,否则"负额度"
+   * 会反向放大可用空间把上限击穿。可选 `sceneId` 用于核对**账户授权场景**;
+   * 与账户场景不一致即 `SCENE_MISMATCH`。
    */
   reserve(
     accountId: string,
     est: SceneBudgetEstimate,
     taskId: string,
+    sceneId?: string,
   ): RegistryResult<SceneBudgetReservation> {
     const a = this.accounts.get(accountId);
     if (!a) return refuse("ACCOUNT_NOT_FOUND", `预算账户不存在:${accountId}`);
+
+    if (typeof taskId !== "string" || taskId.length === 0) {
+      return refuse("INVALID_ESTIMATE", "预留必须关联一个非空 taskId");
+    }
+    if (sceneId !== undefined && sceneId !== a.sceneId) {
+      return refuse("SCENE_MISMATCH", `预留场景(${sceneId})与账户场景(${a.sceneId})不一致`);
+    }
+    if (est.tokens !== undefined && !isNonNegInt(est.tokens)) {
+      return refuse("INVALID_ESTIMATE", `token 估计必须是非负整数,收到 ${String(est.tokens)}`);
+    }
+    if (est.costUsd !== undefined && !isNonNegFinite(est.costUsd)) {
+      return refuse("INVALID_ESTIMATE", `花费估计必须是非负数,收到 ${String(est.costUsd)}`);
+    }
+    if (est.concurrency !== undefined && !isNonNegInt(est.concurrency)) {
+      return refuse("INVALID_ESTIMATE", `并发估计必须是非负整数,收到 ${String(est.concurrency)}`);
+    }
 
     const tokens = est.tokens ?? UNKNOWN_TOKENS_UPPER_BOUND;
     const costUsd = est.costUsd ?? UNKNOWN_COST_USD_UPPER_BOUND;
@@ -352,6 +534,7 @@ export class SceneBudgetAccounts {
       accountId,
       sceneId: a.sceneId,
       taskId,
+      accountGeneration: a.generation,
       tokens,
       costUsd,
       concurrency,
@@ -366,15 +549,33 @@ export class SceneBudgetAccounts {
    * `committed`。实际低于预留(通常如此)时差额自然释放。
    *
    * 结算**不做准入判定** —— 活儿已经干完了,这里只是记账;超支与否由下一次
-   * `reserve` 拦。
+   * `reserve` 拦。但结算**必须是对同一代际、同一场景的账**:凭据记录的
+   * `accountGeneration` 与账户当前 `generation` 不一致(账户已被 `updateLimits`
+   * 换代)→ `RESERVATION_STALE`,绝不让旧凭据借记换代后的账;场景不一致同样拒绝。
+   * `usage` 必须是有限非负数,否则 `INVALID_USAGE`。
    */
   settle(reservationId: string, usage: SceneBudgetUsage): RegistryResult<SceneBudgetAccount> {
     const r = this.reservations.get(reservationId);
     if (!r) return refuse("RESERVATION_NOT_FOUND", `预留不存在:${reservationId}`);
     const a = this.accounts.get(r.accountId);
     if (!a) return refuse("ACCOUNT_NOT_FOUND", `预算账户不存在:${r.accountId}`);
+    if (!isNonNegInt(usage.tokens) || !isNonNegFinite(usage.costUsd)) {
+      return refuse(
+        "INVALID_USAGE",
+        `实际用量必须是非负数(token 为整数),收到 tokens=${String(usage.tokens)} costUsd=${String(usage.costUsd)}`,
+      );
+    }
+    if (r.sceneId !== a.sceneId) {
+      return refuse("SCENE_MISMATCH", `预留场景(${r.sceneId})与账户场景(${a.sceneId})不一致`);
+    }
+    if (r.accountGeneration !== a.generation) {
+      return refuse(
+        "RESERVATION_STALE",
+        `预留属于账户代际 ${r.accountGeneration},当前已是 ${a.generation};请 release 后重新预留`,
+      );
+    }
 
-    // 退回预留(含并发槽)。
+    // 退回预留(含并发槽)。此处为一次记账动作,绝不穿负。
     a.reservedTokens -= r.tokens;
     a.reservedCostUsd -= r.costUsd;
     a.reservedConcurrency -= r.concurrency;
@@ -389,12 +590,19 @@ export class SceneBudgetAccounts {
   /**
    * **撤销**一笔预留(子任务被拒 / 取消,没跑,不计实际用量):三维全额退回,
    * 不增加 `committed`。
+   *
+   * 撤销只回收**本凭据自己占的那份 reserved**,天然安全,故**不校验代际** ——
+   * 即便账户经 `updateLimits` 换代,旧凭据也应能把预留退回(否则额度就被永久卡住)。
+   * 场景不一致仍拒绝(`SCENE_MISMATCH`)。
    */
   release(reservationId: string): RegistryResult<SceneBudgetAccount> {
     const r = this.reservations.get(reservationId);
     if (!r) return refuse("RESERVATION_NOT_FOUND", `预留不存在:${reservationId}`);
     const a = this.accounts.get(r.accountId);
     if (!a) return refuse("ACCOUNT_NOT_FOUND", `预算账户不存在:${r.accountId}`);
+    if (r.sceneId !== a.sceneId) {
+      return refuse("SCENE_MISMATCH", `预留场景(${r.sceneId})与账户场景(${a.sceneId})不一致`);
+    }
     a.reservedTokens -= r.tokens;
     a.reservedCostUsd -= r.costUsd;
     a.reservedConcurrency -= r.concurrency;

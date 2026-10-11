@@ -165,7 +165,7 @@ interface SessionRuntime {
 
 // 轮预算 / 回退链的解析与三判纯函数已拆到 `@main/lib/turnPolicy.js`
 // （无依赖、可被 budget-guard-smoke 直测），这里只留消费侧。
-import { budgetViolations, parseFallbackModels, parseTurnBudget } from "@main/lib/turnPolicy.js";
+import { budgetViolations, parseFallbackModels, parseTurnBudgetDetailed, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
 
 const approvalBridge = new ApprovalBridge();
 
@@ -1219,7 +1219,32 @@ class RuntimeManager {
     rt.turnStartedAt = Date.now();
     // 轮预算：每轮重新解析偏好（改设置立即生效，无需重启），计数器归零、
     // 防重入闸复位。
-    rt.budget = parseTurnBudget(SettingRepo.get(TURN_BUDGET_SETTING_KEY));
+    // 【MC-083】预算是费用/风险边界:坏 JSON **不能**悄悄退化成"不限制"。带状态解析 ——
+    // INVALID 时回退到最后确认有效的备份;仍拿不到有效预算则**拒绝本轮自动执行**(抛出),
+    // 而不是把用户确认过的限额失效。明确关闭(DISABLED)与从没设过(MISSING)仍是合法不限制。
+    const budgetRaw = SettingRepo.get(TURN_BUDGET_SETTING_KEY);
+    const lastGoodKey = lastGoodTurnBudgetKey(TURN_BUDGET_SETTING_KEY);
+    const lastGoodRaw = SettingRepo.get(lastGoodKey);
+    const budgetRead = parseTurnBudgetDetailed(budgetRaw, lastGoodRaw);
+    // 读到**合法**配置(含用户明确关闭/首次未设)时刷新 last-good 备份 —— 这样日后主键
+    // 损坏才有"最近一次成功配置"可恢复(与 MC-071 的 last-good 同一条取舍)。**只在真的有
+    // 变化时才写**,避免每轮都触发一次整库落盘。
+    if ((budgetRead.status === "VALID" || budgetRead.status === "DISABLED") && (budgetRaw ?? "") !== (lastGoodRaw ?? "")) {
+      try {
+        SettingRepo.set(lastGoodKey, budgetRaw ?? "");
+      } catch {
+        // 备份写失败不影响本轮(主键本身有效即可跑);下次 VALID 再补。
+      }
+    }
+    if (budgetRead.status === "INVALID" && !budgetRead.recovered) {
+      // 损坏且**无法**从 last-good 恢复 → 拒绝本轮自动执行(不把限额悄悄失效)。
+      // 有备份时(INVALID + recovered)则照常用恢复出来的有效预算继续。
+      throw new Error(
+        `轮预算配置损坏且无可用备份,已拒绝自动执行以免把上限失效:${budgetRead.error ?? "配置无效。"}` +
+          "(请在设置里重新确认预算,或明确关闭)",
+      );
+    }
+    rt.budget = budgetRead.budget;
     rt.budgetTurns = 0;
     rt.budgetUsd = 0;
     rt.budgetTokens = 0;

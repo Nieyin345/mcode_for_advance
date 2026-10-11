@@ -94,7 +94,10 @@ export interface SceneTask {
    * 本任务(及其子任务)被允许使用的能力 id 白名单。
    *
    * 语义同 ARC-003/ARC-014 的 `requiredCapabilities` 之一侧:子任务**只能
-   * 收窄、不能放宽**父任务的这份清单(收紧方向由上游校验,这里只记录)。
+   * 收窄、不能放宽**父任务的这份清单。**这条收紧不再是「交给上游校验」的
+   * 约定** —— `SceneTaskRegistry.spawn` 会拿它当纵深防线:子任务的
+   * `allowedCapabilities` 若含父有效白名单之外的能力,直接结构化拒绝
+   * `CAPABILITY_ESCALATION`,绝不静默补入。
    */
   allowedCapabilities: string[];
   /**
@@ -185,6 +188,14 @@ export interface SceneBudgetReservation {
   accountId: string;
   sceneId: string;
   taskId: string;
+  /**
+   * 立这张凭据时账户的 `generation`。
+   *
+   * 收尾(`settle` / `release`)会拿它和账户当前 `generation` 比对 —— 账户一旦
+   * 被受控改额(`updateLimits`)代际即变,旧凭据必须结构化拒绝(`RESERVATION_STALE`),
+   * 绝不允许拿一个已被换代账户的数字去借记。
+   */
+  accountGeneration: number;
   /** 本次预留占用的 token(未知成本时为保守上限)。 */
   tokens: number;
   costUsd: number;
@@ -209,6 +220,13 @@ export interface SceneBudgetAccount {
   committedCostUsd: number;
   /** 已结算的子任务笔数(只增)。 */
   settledCount: number;
+  /**
+   * 账户代际:每次**受控改额**(`updateLimits`)自增。
+   *
+   * 未结算的预留凭据绑的是立它时的代际;代际一变,旧凭据不能再结算到改额后的
+   * 账上(见 `SceneBudgetReservation.accountGeneration`)。
+   */
+  generation: number;
 }
 
 /* ───────────────────────── 结果类型 ───────────────────────── */
@@ -234,12 +252,21 @@ export type RegistryResult<T> = RegistryOk<T> | RegistryRefusal;
 export type RegistryRefusalCode =
   | "PARENT_NOT_FOUND"
   | "PARENT_TERMINAL"
+  | "ANCESTOR_INACTIVE"
+  | "CAPABILITY_ESCALATION"
   | "SCENE_MISMATCH"
   | "DUPLICATE_TASK"
   | "MAX_DEPTH_EXCEEDED"
   | "MAX_FANOUT_EXCEEDED"
   | "DEADLINE_PASSED"
   | "ACCOUNT_NOT_FOUND"
+  | "ACCOUNT_ALREADY_EXISTS"
+  | "SCENE_CONFLICT"
+  | "INVALID_LIMITS"
+  | "LIMITS_BELOW_USAGE"
+  | "INVALID_ESTIMATE"
+  | "INVALID_USAGE"
+  | "RESERVATION_STALE"
   | "BUDGET_EXCEEDED"
   | "RESERVATION_NOT_FOUND"
   | "TASK_NOT_FOUND";

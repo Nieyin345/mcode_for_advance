@@ -18,6 +18,10 @@ interface CodexFakeState {
   mode: Mode;
   calls: string[];
   toolsDispatched: number;
+  /** 【MC-079】最近一次构造收到的子进程 env(快照),供断言密钥白名单。 */
+  lastEnv: Record<string, string> | null;
+  /** 历次构造收到的 env 快照(并发/多次会话用)。 */
+  envs: Array<Record<string, string>>;
   reset(mode: Mode): void;
 }
 
@@ -34,10 +38,14 @@ function state(): CodexFakeState {
       mode: "ok",
       calls: [],
       toolsDispatched: 0,
+      lastEnv: null,
+      envs: [],
       reset(mode: Mode) {
         this.mode = mode;
         this.calls = [];
         this.toolsDispatched = 0;
+        this.lastEnv = null;
+        this.envs = [];
       },
     };
   }
@@ -48,8 +56,20 @@ export class CodexAppServerClient {
   private requestHandler: ((frame: ServerFrame) => Promise<unknown> | unknown) | null = null;
   private readonly notificationListeners = new Set<(frame: unknown) => void>();
   private disposed = false;
+  /** 本进程这一轮解析出的主线程 id（thread/start 或 thread/resume 得到的那个），
+   *  用于让 turn/completed 通知带上正确的 threadId —— adapter 按主线程 id 路由，
+   *  带错 id 会让 resume 轮的完成通知被当成子代理线程而永不收尾。 */
+  private mainThreadId: string | null = null;
 
-  constructor(_opts: unknown) {}
+  constructor(opts: unknown) {
+    /* 【MC-079】快照 provider 传进来的子进程 env —— 真 client 会 spawn 进程并把
+     * 这份 env 交给子进程;假 client 不发进程,故在这里把 env 记下来供断言。
+     *  这是本套件唯一能观察到"子进程实际拿到哪些环境变量"的位置。 */
+    const st = state();
+    const env = (opts as { env?: Record<string, string> } | null)?.env ?? {};
+    st.lastEnv = { ...env };
+    st.envs.push({ ...env });
+  }
 
   handleRequest(cb: (frame: ServerFrame) => Promise<unknown> | unknown): void {
     this.requestHandler = cb;
@@ -72,11 +92,14 @@ export class CodexAppServerClient {
     if (method === "thread/resume") {
       st.calls.push("thread/resume");
       if (st.mode === "reject") return Promise.reject(new Error("FAKE resume boom"));
-      // "empty":resolve 但不带 thread.id。
-      return Promise.resolve({});
+      if (st.mode === "empty") return Promise.resolve({});
+      // "ok":正常恢复 —— 给回一个线程 id(供【MC-079】resume 轮的成功路径)。
+      this.mainThreadId = "resumed-thread";
+      return Promise.resolve({ thread: { id: "resumed-thread" } });
     }
     if (method === "thread/start") {
       st.calls.push("thread/start");
+      this.mainThreadId = "new-thread";
       return Promise.resolve({ thread: { id: "new-thread" } });
     }
     if (method === "skills/extraRoots/set") return Promise.resolve({});
@@ -109,7 +132,7 @@ export class CodexAppServerClient {
     for (const cb of this.notificationListeners) {
       cb({
         method: "turn/completed",
-        params: { threadId: "new-thread", turn: { id: "turn-1", status: "completed" } },
+        params: { threadId: this.mainThreadId ?? "new-thread", turn: { id: "turn-1", status: "completed" } },
       });
     }
   }

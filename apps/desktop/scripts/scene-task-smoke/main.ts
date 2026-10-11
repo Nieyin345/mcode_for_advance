@@ -352,6 +352,203 @@ console.log("\nRED 例:模拟旧模型(无场景预算 / 每轮归零)vs 本核�
   eq("其余 47 个全被拒(不是静默放行)", refused, LEGACY_ATTEMPTS - 3);
 }
 
+/* ─────────────────── 10. MC-081:能力单调收紧(不能扩大父白名单) ─────────────────── */
+
+console.log("\nMC-081 能力继承:子任务只能是父白名单的子集");
+
+{
+  const reg = new SceneTaskRegistry(() => 0);
+  reg.createRootTask(
+    inv({ taskId: "root", sceneId: "s1", allowedCapabilities: ["read-only"], maxDepth: 9, deadline: null }),
+  );
+
+  // 子请求把 read-only **加上** shell-admin —— 放宽,必须拒。
+  const esc = reg.spawn(
+    "root",
+    inv({ taskId: "c_esc", parentTaskId: "root", sceneId: "s1", allowedCapabilities: ["read-only", "shell-admin"], maxDepth: 9 }),
+  );
+  check("子申请父未授权能力(shell-admin)→ REFUSED", !esc.ok, esc);
+  if (!esc.ok) eq("拒绝码 = CAPABILITY_ESCALATION", esc.code, "CAPABILITY_ESCALATION");
+  eq("被拒后未落任何子任务", reg.getTask("c_esc"), undefined);
+
+  // 子只收窄(read-only 的子集,甚至空集)→ 通过。
+  const subset = reg.spawn(
+    "root",
+    inv({ taskId: "c_sub", parentTaskId: "root", sceneId: "s1", allowedCapabilities: ["read-only"], maxDepth: 9 }),
+  );
+  check("子收窄为父白名单子集 → 通过", subset.ok, subset);
+
+  const empty = reg.spawn(
+    "root",
+    inv({ taskId: "c_empty", parentTaskId: "root", sceneId: "s1", allowedCapabilities: [], maxDepth: 9 }),
+  );
+  check("子收窄为空集 → 通过", empty.ok, empty);
+}
+
+/* ─────────────────── 11. MC-081:deadline 单调收紧 + 祖先链 ─────────────────── */
+
+console.log("\nMC-081 截止时刻:子不得晚于父;祖先过截止即拦");
+
+{
+  // 子请求更晚的 deadline → 落成时取 min(父有效, 请求)。
+  const reg = new SceneTaskRegistry(() => 0);
+  reg.createRootTask(inv({ taskId: "root", sceneId: "s1", deadline: 200, maxDepth: 9, maxFanout: 9 }));
+  const child = reg.spawn(
+    "root",
+    inv({ taskId: "c1", parentTaskId: "root", sceneId: "s1", deadline: 99999, maxDepth: 9 }),
+  );
+  check("子请求更晚 deadline → 仍可派生", child.ok, child);
+  if (child.ok) eq("子有效 deadline 被收紧为父的 200", child.value.deadline, 200);
+
+  // 父有限、子请求 null → **不等于无限**,取父的有限值。
+  const child2 = reg.spawn(
+    "root",
+    inv({ taskId: "c2", parentTaskId: "root", sceneId: "s1", deadline: null, maxDepth: 9 }),
+  );
+  if (child2.ok) eq("子请求 null ≠ 无限,取父的有限截止 200", child2.value.deadline, 200);
+
+  // 时钟推进过根截止 → 深处的孙任务也不能再派生。
+  let clock = 100;
+  const reg2 = new SceneTaskRegistry(() => clock);
+  reg2.createRootTask(inv({ taskId: "root", sceneId: "s1", deadline: 200, maxDepth: 9, maxFanout: 9 }));
+  const g1 = reg2.spawn("root", inv({ taskId: "c1", parentTaskId: "root", sceneId: "s1", deadline: 500, maxDepth: 9 }));
+  check("树上先建一层(父未过截止)", g1.ok, g1);
+  if (g1.ok) eq("该层 deadline 也收到 200", g1.value.deadline, 200);
+  clock = 300; // 越过根截止
+  const g2 = reg2.spawn("c1", inv({ taskId: "gc1", parentTaskId: "c1", sceneId: "s1", deadline: 99999, maxDepth: 9 }));
+  check("根已过截止 → 孙任务派生被拒(不能靠更晚的子 deadline 绕过)", !g2.ok, g2);
+  if (!g2.ok) eq("拒绝码 = DEADLINE_PASSED", g2.code, "DEADLINE_PASSED");
+}
+
+/* ─────────────────── 12. MC-081:暂停态父/祖先不得派生 ─────────────────── */
+
+console.log("\nMC-081 生命周期:暂停的父或祖先不得派生新任务");
+
+{
+  const reg = new SceneTaskRegistry();
+  reg.createRootTask(inv({ taskId: "root", sceneId: "s1", maxDepth: 9, maxFanout: 9 }));
+  reg.spawn("root", inv({ taskId: "p", parentTaskId: "root", sceneId: "s1", maxDepth: 9 }));
+  reg.pause("p");
+  eq("p 已被暂停", reg.getTask("p")?.state, "paused");
+  const afterPause = reg.spawn("p", inv({ taskId: "c", parentTaskId: "p", sceneId: "s1", maxDepth: 9 }));
+  check("暂停的父不得派生 → REFUSED", !afterPause.ok, afterPause);
+  if (!afterPause.ok) eq("拒绝码 = ANCESTOR_INACTIVE", afterPause.code, "ANCESTOR_INACTIVE");
+
+  // 暂停的是**祖先**(非直接父):孙也不得派生。
+  const reg2 = new SceneTaskRegistry();
+  reg2.createRootTask(inv({ taskId: "root", sceneId: "s1", maxDepth: 9, maxFanout: 9 }));
+  reg2.spawn("root", inv({ taskId: "mid", parentTaskId: "root", sceneId: "s1", maxDepth: 9 }));
+  reg2.spawn("mid", inv({ taskId: "leaf", parentTaskId: "mid", sceneId: "s1", maxDepth: 9 }));
+  reg2.pause("root");
+  const deep = reg2.spawn("leaf", inv({ taskId: "gg", parentTaskId: "leaf", sceneId: "s1", maxDepth: 9 }));
+  check("暂停的祖先 → 孙任务派生被拒", !deep.ok, deep);
+  if (!deep.ok) eq("拒绝码 = ANCESTOR_INACTIVE(祖先)", deep.code, "ANCESTOR_INACTIVE");
+}
+
+/* ─────────────────── 13. MC-080:账户身份 + 数值校验 ─────────────────── */
+
+console.log("\nMC-080 预算账户:重复创建拒绝、跨场景冲突、负数额度拒绝、代际结算");
+
+{
+  const accts = new SceneBudgetAccounts();
+  const created = accts.createAccount("reuse", "scene-A", { maxTokens: 100, maxConcurrency: 1 });
+  check("首次建账户成功", created.ok, created);
+
+  const r1 = accts.reserve("reuse", { tokens: 80, concurrency: 1 }, "t1", "scene-A");
+  check("首单 80 token 预留成功", r1.ok, r1);
+  const r2 = accts.reserve("reuse", { tokens: 80, concurrency: 1 }, "t2", "scene-A");
+  check("再要 80 超上限 → 拒(基线)", !r2.ok, r2);
+
+  // 同 id **同场景**再 create → 拒绝,不重置。
+  const d1 = accts.createAccount("reuse", "scene-A", { maxTokens: 100, maxConcurrency: 1 });
+  check("同 id 同场景重复 create → ACCOUNT_ALREADY_EXISTS(不重置)", !d1.ok, d1);
+  if (!d1.ok) eq("拒绝码 = ACCOUNT_ALREADY_EXISTS", d1.code, "ACCOUNT_ALREADY_EXISTS");
+
+  // 同 id **跨场景** create → SCENE_CONFLICT。
+  const d2 = accts.createAccount("reuse", "scene-B", { maxTokens: 100, maxConcurrency: 1 });
+  check("同 id 跨场景 create → SCENE_CONFLICT", !d2.ok, d2);
+  if (!d2.ok) eq("拒绝码 = SCENE_CONFLICT", d2.code, "SCENE_CONFLICT");
+
+  // 关键不变量:重复创建**没有**重置活跃预留。
+  eq("账户场景未被改写(仍 scene-A)", accts.getAccount("reuse")?.sceneId, "scene-A");
+  eq("活跃预留未被重置", accts.openReservationCount(), 1);
+  eq("reservedTokens 仍为 80", accts.getAccount("reuse")?.reservedTokens, 80);
+  eq("reservedConcurrency 仍为 1", accts.getAccount("reuse")?.reservedConcurrency, 1);
+  const stillRefused = accts.reserve("reuse", { tokens: 80, concurrency: 1 }, "t3", "scene-A");
+  check("重复创建后第二单 token80 仍被拒(额度没被击穿)", !stillRefused.ok, stillRefused);
+
+  // 旧凭据结算:归属仍在 scene-A,不跨账;计数不穿负。
+  const r1id = (r1 as { ok: true; value: { reservationId: string } }).value.reservationId;
+  const settled = accts.settle(r1id, { tokens: 50, costUsd: 0.2 });
+  check("旧预留结算到本场景成功", settled.ok, settled);
+  if (settled.ok) {
+    eq("结算后 reservedTokens=0(不穿负)", settled.value.reservedTokens, 0);
+    eq("结算后 reservedConcurrency=0(不穿负)", settled.value.reservedConcurrency, 0);
+    eq("committed 记到 scene-A 账户", settled.value.committedTokens, 50);
+  }
+}
+
+{
+  // 负数额度 / NaN / Infinity / 小数并发 —— 一律 INVALID_ESTIMATE,不进计数。
+  const accts = new SceneBudgetAccounts();
+  accts.createAccount("acct", "s1", { maxTokens: 100, maxCostUsd: 1, maxConcurrency: 2 });
+
+  const neg = accts.reserve("acct", { tokens: -200, costUsd: -1, concurrency: -3 }, "tneg");
+  check("负数额度 → REFUSED", !neg.ok, neg);
+  if (!neg.ok) eq("拒绝码 = INVALID_ESTIMATE(负)", neg.code, "INVALID_ESTIMATE");
+
+  const nan = accts.reserve("acct", { tokens: NaN, concurrency: 1 }, "tnan");
+  check("NaN token → REFUSED", !nan.ok, nan);
+  const inf = accts.reserve("acct", { costUsd: Infinity }, "tinf");
+  check("Infinity 花费 → REFUSED", !inf.ok, inf);
+  const frac = accts.reserve("acct", { concurrency: 1.5 }, "tfrac");
+  check("小数并发 → REFUSED", !frac.ok, frac);
+
+  // 以上全被拒 → 账户零占用,超限判定没被负值放大。
+  eq("被拒后无任何挂账", accts.openReservationCount(), 0);
+  eq("reservedTokens 仍为 0", accts.getAccount("acct")?.reservedTokens, 0);
+  eq("reservedConcurrency 仍为 0", accts.getAccount("acct")?.reservedConcurrency, 0);
+
+  // 账户授权场景核对:预留带错 sceneId → SCENE_MISMATCH。
+  const wrongScene = accts.reserve("acct", { tokens: 1 }, "tws", "s_OTHER");
+  check("预留场景与账户不符 → SCENE_MISMATCH", !wrongScene.ok, wrongScene);
+  if (!wrongScene.ok) eq("拒绝码 = SCENE_MISMATCH", wrongScene.code, "SCENE_MISMATCH");
+
+  // 非法上限 → INVALID_LIMITS。
+  const badLimits = accts.createAccount("bad", "s1", { maxTokens: -5 });
+  check("负数上限 → INVALID_LIMITS", !badLimits.ok, badLimits);
+}
+
+{
+  // 代际:updateLimits 换代后,旧凭据 settle 被拒(不跨代借记),release 仍可退。
+  const accts = new SceneBudgetAccounts();
+  accts.createAccount("gen", "s1", { maxTokens: 1000 });
+  const r = accts.reserve("gen", { tokens: 100 }, "t1");
+  check("预留成功", r.ok, r);
+  const rid = (r as { ok: true; value: { reservationId: string } }).value.reservationId;
+
+  const bumped = accts.updateLimits("gen", { maxTokens: 2000 });
+  check("受控改额成功", bumped.ok, bumped);
+  if (bumped.ok) eq("改额后 generation 自增到 1", bumped.value.generation, 1);
+
+  const stale = accts.settle(rid, { tokens: 90, costUsd: 0 });
+  check("旧代际凭据 settle → RESERVATION_STALE", !stale.ok, stale);
+  if (!stale.ok) eq("拒绝码 = RESERVATION_STALE", stale.code, "RESERVATION_STALE");
+  eq("被拒的结算未删除预留", accts.openReservationCount(), 1);
+
+  const rel = accts.release(rid);
+  check("旧代际凭据 release 仍可退预留", rel.ok, rel);
+  eq("release 后无挂账", accts.openReservationCount(), 0);
+
+  // 上限不得压到当前占用之下。
+  const accts2 = new SceneBudgetAccounts();
+  accts2.createAccount("cap", "s1", { maxTokens: 1000 });
+  accts2.reserve("cap", { tokens: 500 }, "t1");
+  const tooLow = accts2.updateLimits("cap", { maxTokens: 100 });
+  check("把上限压到占用之下 → LIMITS_BELOW_USAGE", !tooLow.ok, tooLow);
+  if (!tooLow.ok) eq("拒绝码 = LIMITS_BELOW_USAGE", tooLow.code, "LIMITS_BELOW_USAGE");
+}
+
 /* ─────────────────── 收尾 ─────────────────── */
 
 console.log(`\nscene-task-smoke:${checks - failures}/${checks} 通过`);

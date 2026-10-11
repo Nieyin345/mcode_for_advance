@@ -269,7 +269,127 @@ interface PiFake {
 interface CodexFake {
   calls: string[];
   toolsDispatched: number;
+  /** 【MC-079】最近一次构造收到的子进程 env 快照。 */
+  lastEnv: Record<string, string> | null;
+  /** 【MC-079】历次构造的 env 快照(并发场景)。 */
+  envs: Array<Record<string, string>>;
   reset(mode: "ok" | "reject" | "empty"): void;
+}
+
+/* ════════════════ Codex：【MC-079】每轮子进程只带本轮端点的密钥 ════════════════ */
+
+/** 端点注册表桩（stubs/codexModelsStore.ts 里的 globalThis.__codexModelsStub）。 */
+interface ModelsStub {
+  set(list: Array<{ id: string; hasApiKey: boolean; models: Array<{ id: string }>; apiKey?: string }>): void;
+  reset(): void;
+}
+
+/** 从一份 env 快照里取出所有 codex 密钥键（大小写不敏感，与 Windows 环境变量一致）。 */
+function codexKeyNames(env: Record<string, string>): string[] {
+  return Object.keys(env).filter((k) => /^MCODE_CODEX_KEY_/i.test(k));
+}
+
+/** 跑一轮并返回这一轮子进程收到的 env 快照（模型锚点决定选哪个端点）。 */
+async function runOneTurn(
+  provider: CodexAgentSdkProvider,
+  sessionId: string,
+  model: string,
+  resumeProviderSessionId?: string,
+): Promise<Record<string, string>> {
+  const cx = (globalThis as { __codexFake?: CodexFake }).__codexFake!;
+  cx.reset("ok");
+  const { ctx } = makeCtx();
+  const req: Record<string, unknown> = { sessionId, cwd: process.cwd(), prompt: "hi", model };
+  if (resumeProviderSessionId) req.resumeProviderSessionId = resumeProviderSessionId;
+  const handle = await provider.startTurn(req as never, ctx as never);
+  await handle.done;
+  return cx.lastEnv!;
+}
+
+async function codexCredentialIsolation(): Promise<void> {
+  const reg = (globalThis as { __codexModelsStub?: ModelsStub }).__codexModelsStub!;
+  const provider = new CodexAgentSdkProvider();
+  const KEY_A = "sk-alpha-secret";
+  const KEY_B = "sk-beta-secret";
+
+  // A/B 两个**虚构**端点，各自独立密钥。密钥只在本套件内比较布尔存在性，不外传。
+  reg.set([
+    { id: "alpha", hasApiKey: true, models: [{ id: "model-a" }], apiKey: KEY_A },
+    { id: "beta", hasApiKey: true, models: [{ id: "model-b" }], apiKey: KEY_B },
+  ]);
+  // 父环境里塞一个遗留的 Codex 密钥 —— 证明它不会被意外继承进子进程。
+  process.env.MCODE_CODEX_KEY_GHOST = "sk-ghost-leak";
+
+  // ── 选端点是 A ──
+  const envA = await runOneTurn(provider, "cx-mc079-a", "alpha/model-a");
+  check(`[mc079] 选 A 时子进程 env 含 A 的密钥`, envA.MCODE_CODEX_KEY_ALPHA === KEY_A, {
+    got: envA.MCODE_CODEX_KEY_ALPHA,
+  });
+  check(`[mc079] 选 A 时 env 里**不存在** B 的密钥键（而非空串）`, !("MCODE_CODEX_KEY_BETA" in envA), {
+    keys: codexKeyNames(envA),
+  });
+  eq(`[mc079] 选 A 时恰好只注入 1 个 codex 密钥`, codexKeyNames(envA).length, 1);
+  check(`[mc079] 父环境遗留的 MCODE_CODEX_KEY_* 不被继承`, !("MCODE_CODEX_KEY_GHOST" in envA), {
+    keys: codexKeyNames(envA),
+  });
+
+  // ── 切端点为 B（同一 provider 实例，换 model 锚点）──
+  const envB = await runOneTurn(provider, "cx-mc079-b", "beta/model-b");
+  check(`[mc079] 切 B 后 env 含 B 的密钥`, envB.MCODE_CODEX_KEY_BETA === KEY_B, {
+    got: envB.MCODE_CODEX_KEY_BETA,
+  });
+  check(`[mc079] 切 B 后 env 里**不存在** A 的密钥键`, !("MCODE_CODEX_KEY_ALPHA" in envB), {
+    keys: codexKeyNames(envB),
+  });
+  eq(`[mc079] 切 B 后恰好只注入 1 个 codex 密钥`, codexKeyNames(envB).length, 1);
+
+  // ── resume 一轮：恢复已有线程时也只带本轮端点的密钥 ──
+  const envResume = await runOneTurn(provider, "cx-mc079-resume", "alpha/model-a", "thread-persisted-123");
+  check(`[mc079] resume 轮 env 含且仅含本轮端点 A 的密钥`, envResume.MCODE_CODEX_KEY_ALPHA === KEY_A && !("MCODE_CODEX_KEY_BETA" in envResume), {
+    keys: codexKeyNames(envResume),
+  });
+
+  // ── 无密钥端点：仍能走无需凭据的合法路径 ──
+  reg.set([{ id: "nokey", hasApiKey: false, models: [{ id: "m" }] }]);
+  const cx = (globalThis as { __codexFake?: CodexFake }).__codexFake!;
+  const envNokey = await runOneTurn(provider, "cx-mc079-nokey", "nokey/m");
+  eq(`[mc079] 无密钥端点 env 里没有任何 codex 密钥`, codexKeyNames(envNokey).length, 0);
+  check(`[mc079] 无密钥端点仍走完合法路径（spawn + thread/start）`, cx.calls.includes("thread/start"), {
+    calls: cx.calls,
+  });
+
+  // ── 并发两会话：两个子进程各自只带自己那轮的密钥 ──
+  reg.set([
+    { id: "alpha", hasApiKey: true, models: [{ id: "model-a" }], apiKey: KEY_A },
+    { id: "beta", hasApiKey: true, models: [{ id: "model-b" }], apiKey: KEY_B },
+  ]);
+  cx.reset("ok");
+  {
+    const { ctx: ctx1 } = makeCtx();
+    const { ctx: ctx2 } = makeCtx();
+    const [handle1, handle2] = await Promise.all([
+      provider.startTurn(
+        { sessionId: "cx-mc079-c1", cwd: process.cwd(), prompt: "hi", model: "alpha/model-a" } as never,
+        ctx1 as never,
+      ),
+      provider.startTurn(
+        { sessionId: "cx-mc079-c2", cwd: process.cwd(), prompt: "hi", model: "beta/model-b" } as never,
+        ctx2 as never,
+      ),
+    ]);
+    await Promise.all([handle1.done, handle2.done]);
+  }
+  const snapshots = cx.envs;
+  eq(`[mc079] 并发两轮产生两个 app-server env 快照`, snapshots.length, 2);
+  const alphaOnly = snapshots.filter((e) => "MCODE_CODEX_KEY_ALPHA" in e && !("MCODE_CODEX_KEY_BETA" in e));
+  const betaOnly = snapshots.filter((e) => "MCODE_CODEX_KEY_BETA" in e && !("MCODE_CODEX_KEY_ALPHA" in e));
+  check(`[mc079] 并发下每个子进程只带自己那轮的密钥（A 那份无 B、B 那份无 A）`, alphaOnly.length === 1 && betaOnly.length === 1, {
+    perTurn: snapshots.map((e) => codexKeyNames(e)),
+  });
+
+  // 复原默认注册表，避免影响其它用例（本函数置于末尾，双保险）。
+  delete process.env.MCODE_CODEX_KEY_GHOST;
+  reg.reset();
 }
 
 async function main(): Promise<void> {
@@ -284,6 +404,8 @@ async function main(): Promise<void> {
   await codexResumeFailure("empty");
   console.log("— Codex 正常 fresh 会话 —");
   await codexFreshSession();
+  console.log("— Codex【MC-079】每轮子进程凭据最小化 —");
+  await codexCredentialIsolation();
 
   console.log(`resume-fault-smoke:${total - failures}/${total} 通过`);
   if (failures > 0) process.exitCode = 1;

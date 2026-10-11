@@ -12,7 +12,7 @@
  *
  * Run: scripts/budget-guard-smoke/run.sh
  */
-import { budgetViolations, parseFallbackModels, parseTurnBudget } from "@main/lib/turnPolicy.js";
+import { budgetViolations, parseFallbackModels, parseTurnBudget, parseTurnBudgetDetailed, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
 
 let failures = 0;
 let checks = 0;
@@ -123,6 +123,61 @@ check("理由带具体数字(卡片正文要能看懂是哪项爆了)", multi[0]
 // 没设的上限永远不触发 —— 这是"部分预算"(只限花费不限轮数)能成立的前提。
 eq("只设花费时轮数再大也不管", budgetViolations({ maxUsd: 1 }, 99, 0.1, 999999).length, 0);
 eq("空预算对象 → 永不触发", budgetViolations({}, 99, 99, 99).length, 0);
+
+/* ───────────── 【MC-083】坏配置**不得**悄悄退化成"不限制" ───────────── */
+
+console.log("\nparseTurnBudgetDetailed(三态 + last-good 恢复,坏配置不静默失效)");
+
+{
+  const KEY = "runtime.turnBudget";
+  const lg = lastGoodTurnBudgetKey(KEY);
+  eq("last-good 键是主键派生", lg, "runtime.turnBudget.last-good");
+
+  // 从没设过 → MISSING(合法不限制)。
+  const missing = parseTurnBudgetDetailed(null);
+  eq("没设过 → MISSING(合法不限制)", missing.status, "MISSING");
+  eq("MISSING 无预算", missing.budget, undefined);
+
+  // 坏 JSON → INVALID(**不是**"用户主动关"),无备份时 budget undefined 但状态是 INVALID。
+  const bad = parseTurnBudgetDetailed("{ 这不是 JSON", null);
+  eq("★ 坏 JSON → INVALID(不是静默无限制)", bad.status, "INVALID");
+  eq("★ INVALID 无备份时 recovered=false", bad.recovered, false);
+  check("★ INVALID 带可读原因", typeof bad.error === "string" && bad.error.length > 0, bad.error);
+
+  // 用户**明确关闭** → DISABLED(合法不限制,与损坏不同)。
+  eq("明确关闭 → DISABLED(合法不限制)", parseTurnBudgetDetailed(JSON.stringify({ enabled: false, maxTurns: 3 })).status, "DISABLED");
+
+  // 合法 → VALID。
+  eq("合法配置 → VALID", parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxUsd: 1 })).status, "VALID");
+
+  // 坏主键 + 有 last-good 备份 → INVALID 但**恢复**出最后确认有效的预算。
+  const lastGood = JSON.stringify({ enabled: true, maxUsd: 0.5, maxTurns: 4 });
+  const recovered = parseTurnBudgetDetailed("{ 坏了", lastGood);
+  eq("★ 坏主键 + 有 last-good → INVALID 且 recovered=true", recovered.recovered, true);
+  eq("★ 恢复出的是最后确认有效的预算(不静默变无限)", recovered.budget?.maxUsd, 0.5);
+  eq("★ 恢复的 maxTurns 也在", recovered.budget?.maxTurns, 4);
+
+  // last-good 备份本身是"明确关闭" → 恢复成合法的无预算(不复活旧限制)。
+  const recDisabled = parseTurnBudgetDetailed("{ 坏了", JSON.stringify({ enabled: false }));
+  eq("★ last-good 是明确关闭 → 恢复成合法无预算", recDisabled.budget, undefined);
+  eq("★ 且 recovered=true(备份是有效的关闭)", recDisabled.recovered, true);
+
+  // 小数非法输入:0.2 轮不能经 floor 变成 0(0 不是合法预算)。
+  const frac = parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxTurns: 0.2, maxTotalTokens: 0.9 }));
+  eq("★ 0.2 轮不产生 0 预算(非法输入被挡)", frac.budget, undefined);
+  eq("○ 但配置本身合法 → VALID(只是没有有效上限)", frac.status, "VALID");
+}
+
+// 消费端接线:RuntimeManager 必须据 status 决定"拒绝自动执行",而不是把 INVALID 当合法不限制。
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/main/claude/RuntimeManager.ts"), "utf8");
+  check("★ RuntimeManager 用带状态解析(parseTurnBudgetDetailed),不是无状态 parseTurnBudget", /parseTurnBudgetDetailed\(/.test(src) && !/rt\.budget = parseTurnBudget\(/.test(src), null);
+  // 断言 INVALID 分支**可达**(不是被 `false &&` 之类短路掉)—— 且体内真的 throw。
+  check("★ RuntimeManager 对 INVALID 拒绝本轮执行(不静默变无限制)", /(^|[^&\w])if \(budgetRead\.status === "INVALID" && !budgetRead\.recovered\)[\s\S]{0,260}throw new Error/.test(src), null);
+  check("★ RuntimeManager 读 last-good 备份键", /lastGoodTurnBudgetKey\(/.test(src), null);
+}
 
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);
