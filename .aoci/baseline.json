@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-11T07:33:11Z",
+  "updated_at": "2026-10-11T07:38:43Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "6df06a9a2688bc03b1ce1f324dc18f7fe8f30dfdc5dfe2c03ee682b8207dcc0c",
-      "size": 945298,
-      "normalized_sha256": "6df06a9a2688bc03b1ce1f324dc18f7fe8f30dfdc5dfe2c03ee682b8207dcc0c"
+      "sha256": "7964e1dd577dfb8ae9b5077818a82924015431425a028c671294232bfeb68dfa",
+      "size": 945375,
+      "normalized_sha256": "7964e1dd577dfb8ae9b5077818a82924015431425a028c671294232bfeb68dfa"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3275,9 +3275,9 @@
     },
     "apps/desktop/scripts/mcp-endpoint-smoke/main.ts": {
       "role": "index",
-      "sha256": "25b45644aea44985e6e09cdea4fa5b0fe4a817e756143905c6aa5a77a5625aa8",
-      "size": 124326,
-      "normalized_sha256": "25b45644aea44985e6e09cdea4fa5b0fe4a817e756143905c6aa5a77a5625aa8"
+      "sha256": "c173452eb34f06568912cc5b5a04a2518ad98c6bf1525372ec2a3bd0b7627881",
+      "size": 125133,
+      "normalized_sha256": "c173452eb34f06568912cc5b5a04a2518ad98c6bf1525372ec2a3bd0b7627881"
     },
     "apps/desktop/scripts/mcp-endpoint-smoke/mut-bash-sandbox.py": {
       "role": "index",
