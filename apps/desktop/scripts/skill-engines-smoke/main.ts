@@ -35,7 +35,9 @@ import {
   minimizeEntry,
   parseSkillFrontmatter,
   readEnginesMap,
+  readEnginesMapDetailed,
   readEnginesMapFile,
+  lastGoodEnginesMapPath,
   setEnginesEntry,
   skillNamesInRoot,
   writeEnginesMap,
@@ -185,5 +187,44 @@ check(
   defaultSkillsRoot().replace(/\\/g, "/").endsWith("/.mcode/skills"),
   defaultSkillsRoot(),
 );
+// 【MC-077】矩阵文件损坏 → 保守恢复到 last-good,不静默把禁用条目重新启用。
+{
+  const r2 = join(mkdtempSync(join(tmpdir(), "mcode-skill-engines-mc077-")), "skills");
+  mkdirSync(r2, { recursive: true });
+  try {
+    const f = enginesMapPath(r2);
+    // 缺文件 → MISSING。
+    eq("MC-077:缺文件 → MISSING(不是 INVALID)", readEnginesMapDetailed(f).status, "MISSING");
+    // 先存一份有禁用的矩阵 → 刷新 last-good。
+    writeEnginesMap(r2, { "audit-skill": { codex: false } });
+    eq("MC-077:合法矩阵 → VALID", readEnginesMapDetailed(f).status, "VALID");
+    eqDeep("MC-077:last-good 已落", readEnginesMapDetailed(lastGoodEnginesMapPath(f)).map, { "audit-skill": { codex: false } });
+    // 主文件损坏 → INVALID 且**保守恢复**(不接受"坏文件 = 全可见")。
+    writeFileSync(f, "{ not json", "utf-8");
+    const broken = readEnginesMapDetailed(f);
+    eq("MC-077:坏 JSON → INVALID(不是静默全可见)", broken.status, "INVALID");
+    eqDeep("MC-077:损坏后恢复到 last-good(禁用仍在)", broken.map, { "audit-skill": { codex: false } });
+    eq("MC-077:recovered=true", broken.recovered, true);
+    eq("MC-077:恢复后该技能仍对 codex 禁用", engineEnabled(readEnginesMap(r2), "audit-skill", "codex"), false);
+
+    // 用户**明确全允许**(空矩阵)→ last-good 也刷成空;再损坏不得复活旧禁用。
+    writeEnginesMap(r2, {});
+    eqDeep("MC-077:明确全允许后 last-good 也刷成空", readEnginesMapDetailed(lastGoodEnginesMapPath(f)).map, {});
+    writeFileSync(f, "{ broken again", "utf-8");
+    eqDeep("MC-077:明确全允许后损坏 → 恢复到空(不复活旧禁用)", readEnginesMapDetailed(f).map, {});
+
+    // 无 last-good 的损坏 → 报 INVALID 带原因,按不设限但绝不假装用户主动启用。
+    const r3 = join(mkdtempSync(join(tmpdir(), "mcode-skill-engines-mc077b-")), "skills");
+    mkdirSync(r3, { recursive: true });
+    writeFileSync(enginesMapPath(r3), "garbage", "utf-8");
+    const noBackup = readEnginesMapDetailed(enginesMapPath(r3));
+    eq("MC-077:无备份的损坏 → INVALID", noBackup.status, "INVALID");
+    eq("MC-077:无备份的损坏 recovered=false", noBackup.recovered, false);
+    check("MC-077:带可读原因", typeof noBackup.error === "string" && noBackup.error.length > 0, noBackup.error);
+  } finally {
+    rmSync(r2, { recursive: true, force: true });
+  }
+}
+
 console.log(`${checks} checks, ${failures} failures (final)`);
 if (failures > 0) process.exit(1);

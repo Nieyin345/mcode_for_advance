@@ -72,39 +72,107 @@ export function minimizeEntry(entry: SkillEngineEntry): SkillEngineEntry | null 
  * skill enabled) — a broken matrix file must never take all skills offline.
  * Entries that don't validate (non-object / non-boolean engine values) are
  * dropped individually.
+ *
+ * ⚠️ 【MC-077】这是**低层**读法,分不清「从没设过」与「损坏」—— 两者都返回 `{}`。需要区分
+ * 并对损坏配置做保守恢复时用 {@link readEnginesMapDetailed}(与 MC-071/083 同一条取舍):
+ * 一个坏了的矩阵文件**不应**被解释成「用户重新选择了全部允许」。
  */
 export function readEnginesMapFile(file: string): SkillEnginesMap {
-  let raw: string;
-  try {
-    raw = readFileSync(file, "utf-8");
-  } catch {
-    return {};
-  }
+  return readEnginesMapDetailed(file).map;
+}
+
+/** 【MC-077】矩阵读取的三种事实。 */
+export type EnginesMapStatus = "VALID" | "MISSING" | "INVALID";
+
+export interface EnginesMapRead {
+  status: EnginesMapStatus;
+  /** 实际应生效的映射。INVALID 时尽量回退到「最后一份确认过的映射」。 */
+  map: SkillEnginesMap;
+  /** INVALID 且成功从 last-good 恢复出非空映射时为 true。 */
+  recovered: boolean;
+  error?: string;
+}
+
+/** 与矩阵文件同目录的「最后一份确认过的映射」备份路径。 */
+export function lastGoodEnginesMapPath(file: string): string {
+  return `${file}.last-good`;
+}
+
+function parseEnginesMapText(raw: string): { ok: true; map: SkillEnginesMap } | { ok: false } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return {};
+    return { ok: false };
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ok: false };
   const out: SkillEnginesMap = {};
   for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
     const entry = minimizeEntry(value as SkillEngineEntry);
     if (entry) out[name] = entry;
   }
-  return out;
+  return { ok: true, map: out };
+}
+
+/** 从 last-good 备份读出一份**有效**(可为空)映射;读不出/损坏则 null。
+ *  空映射("用户明确全允许")也算有效的最近提交(与 MC-071 残余同一条)。 */
+function readLastGoodEnginesMap(file: string): { map: SkillEnginesMap } | null {
+  let raw: string;
+  try {
+    raw = readFileSync(lastGoodEnginesMapPath(file), "utf-8");
+  } catch {
+    return null;
+  }
+  const parsed = parseEnginesMapText(raw);
+  return parsed.ok ? { map: parsed.map } : null;
+}
+
+/**
+ * 【MC-077】读矩阵并**明确区分** VALID / MISSING / INVALID:
+ *   - **MISSING**(文件不存在):全新用户,不设限 —— 与旧行为一致;
+ *   - **VALID**:照常;
+ *   - **INVALID**(存在但损坏):**不静默 failure-open**。若 last-good 备份有效(含"用户明确
+ *     全允许"那份空映射)就据它恢复(`recovered=true`)—— 一个坏了的矩阵文件绝不能把用户
+ *     此前禁用过的条目静默重新启用;无备份时按「不设限」但带 status=INVALID + error 供上层告警。
+ */
+export function readEnginesMapDetailed(file: string): EnginesMapRead {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { status: "MISSING", map: {}, recovered: false };
+    const recovered = readLastGoodEnginesMap(file);
+    return {
+      status: "INVALID",
+      map: recovered ? recovered.map : {},
+      recovered: recovered !== null,
+      error: `引擎矩阵文件不可读:${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  const parsed = parseEnginesMapText(raw);
+  if (parsed.ok) return { status: "VALID", map: parsed.map, recovered: false };
+  const recovered = readLastGoodEnginesMap(file);
+  return {
+    status: "INVALID",
+    map: recovered ? recovered.map : {},
+    recovered: recovered !== null,
+    error: "引擎矩阵文件损坏(JSON 解析失败或不是对象)",
+  };
 }
 
 /** Read the mapping under a skills root. See {@link readEnginesMapFile}. */
 export function readEnginesMap(skillsRoot: string): SkillEnginesMap {
-  return readEnginesMapFile(enginesMapPath(skillsRoot));
+  return readEnginesMapDetailed(enginesMapPath(skillsRoot)).map;
 }
 
-/** Write the mapping to an explicit file path (pretty-printed). See
- *  {@link writeEnginesMap} for the skills-root wrapper. */
+/** 写映射到显式路径（pretty-printed）。**每次都刷新 last-good 备份**(含空映射 —— 用户明确
+ *  全允许那次也是合法提交)。见 {@link writeEnginesMap} 的 skills-root 包装。 */
 export function writeEnginesMapFile(file: string, map: SkillEnginesMap): void {
   atomicWrite(file, JSON.stringify(map, null, 2) + "\n");
+  // 【MC-077】与 MC-071 残余同一条:空映射("用户明确全允许")也必须成为新的 last-good,
+  // 否则「先有限制 → 用户明确全允许 → 文件损坏」会从更旧的限制错误恢复。
+  atomicWrite(lastGoodEnginesMapPath(file), JSON.stringify(map, null, 2) + "\n");
 }
 
 /** Write the mapping (pretty-printed). Creates the skills root if absent. */

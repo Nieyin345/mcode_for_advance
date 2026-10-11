@@ -17,9 +17,10 @@
 import path from "node:path";
 import {
   engineEnabled,
-  readEnginesMapFile,
+  readEnginesMapDetailed,
   setEnginesEntry,
   writeEnginesMapFile,
+  type EnginesMapRead,
   type SkillEnginesMap,
 } from "./skillEngines.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
@@ -37,9 +38,15 @@ export function mcpEnginesPath(): string {
   return path.join(MCODE_CONFIG_DIR, "mcp-engines.json");
 }
 
-/** Read the mapping. IO/parse problems → empty map (all servers visible). */
+/** Read the mapping. IO/parse problems → empty map (all servers visible).
+ *  【MC-077】损坏时按 last-good 保守恢复(不再静默全可见);要拿状态用 {@link readMcpEnginesMapDetailed}。 */
 export function readMcpEnginesMap(): McpEnginesMap {
-  return readEnginesMapFile(mcpEnginesPath());
+  return readEnginesMapDetailed(mcpEnginesPath()).map;
+}
+
+/** 【MC-077】带状态读 MCP 引擎矩阵(供需要展示"配置损坏"的调用方)。 */
+export function readMcpEnginesMapDetailed(): EnginesMapRead {
+  return readEnginesMapDetailed(mcpEnginesPath());
 }
 
 /** Write the mapping (pretty-printed, atomic). */
