@@ -1784,7 +1784,7 @@ export const zh = {
   "settings.libraryTypes.section.collection": "集合提示词",
   "settings.libraryTypes.section.suppress": "屏蔽",
   "settings.libraryTypes.suppressHint":
-    "被屏蔽的东西**不会自动进 AI 的上下文** —— 哪怕你手动挂它。勾一个大类/分类，它下面的全部内容(含子分类里的条目)都跟着被挡。⚠️ 这是「**不喂给它**」，不是「**锁住**」：AI 仍可主动检索 / 读取到它(和读项目文件一样)，只是你不再把它塞进对话。要真正不让 AI 碰，别放进这个资料库。",
+    "被屏蔽的东西**不会自动进 AI 的上下文** —— 哪怕你手动挂它。勾一个大类/分类，它下面的全部内容(含子分类里的条目)都跟着被挡。⚠️ 这是「**不喂给它**」，不是「**锁住**」：AI 仍可主动检索 / 读取到它(和读项目文件一样)，只是你不再把它塞进对话。要真正不让 AI 碰，别放进这个资料库。⚠️ **按文件类型屏蔽只在「这条的全部文件都是该类型」时才整条挡住**：比如屏蔽 pdf 时，一条既有 PDF 又有转录 Markdown 的条目**不会**被挡住(它还有 md)。要整条挡，用「按分类屏蔽」。",
   "settings.libraryTypes.suppressNodes": "按分类屏蔽",
   "settings.libraryTypes.suppressExts": "按文件类型屏蔽",
   "settings.libraryTypes.suppressExtPh": "如 pdf，回车添加",

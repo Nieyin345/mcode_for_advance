@@ -1816,7 +1816,7 @@ export const en = {
   "settings.libraryTypes.saved": "Saved",
   "settings.libraryTypes.section.suppress": "Suppression",
   "settings.libraryTypes.suppressHint":
-    "Suppressed items **never enter the AI's context on their own** — not even when you attach them by hand. Ticking a group/category blocks everything under it, including nested sub-categories. ⚠️ This means \"**don't feed it to the AI**\", not \"**lock it away**\": the AI can still search and read it on its own (same as it reads project files) — you just stop putting it into the conversation. If you truly don't want the AI to touch it, keep it out of this library.",
+    "Suppressed items **never enter the AI's context on their own** — not even when you attach them by hand. Ticking a group/category blocks everything under it, including nested sub-categories. ⚠️ This means \"**don't feed it to the AI**\", not \"**lock it away**\": the AI can still search and read it on its own (same as it reads project files) — you just stop putting it into the conversation. If you truly don't want the AI to touch it, keep it out of this library. ⚠️ **Blocking by file type only blocks an item when *every* file it has is that type**: suppressing pdf will not block an item that also has a transcription Markdown (it still has the md). To block a whole item, use \"By category\".",
   "settings.libraryTypes.suppressNodes": "By category",
   "settings.libraryTypes.suppressExts": "By file type",
   "settings.libraryTypes.suppressExtPh": "e.g. pdf, then Enter",
