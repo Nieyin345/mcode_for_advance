@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-11T06:53:04Z",
+  "updated_at": "2026-10-11T07:33:11Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "e377662719693312aed348348a14b2c73a4596ddb0e2a3a91b436599160cf585",
-      "size": 945228,
-      "normalized_sha256": "e377662719693312aed348348a14b2c73a4596ddb0e2a3a91b436599160cf585"
+      "sha256": "6df06a9a2688bc03b1ce1f324dc18f7fe8f30dfdc5dfe2c03ee682b8207dcc0c",
+      "size": 945298,
+      "normalized_sha256": "6df06a9a2688bc03b1ce1f324dc18f7fe8f30dfdc5dfe2c03ee682b8207dcc0c"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1463,9 +1463,9 @@
     },
     "apps/desktop/scripts/hooks-smoke/main.ts": {
       "role": "index",
-      "sha256": "4a6819a38491fce1dc34785b5ecf507854ef66443005ce28331897943e1898ba",
-      "size": 31443,
-      "normalized_sha256": "4a6819a38491fce1dc34785b5ecf507854ef66443005ce28331897943e1898ba"
+      "sha256": "50998797dd283944dc96888ac74cf2cd9b3c6a5f3f619e797035009e7ca5e2ac",
+      "size": 32522,
+      "normalized_sha256": "50998797dd283944dc96888ac74cf2cd9b3c6a5f3f619e797035009e7ca5e2ac"
     },
     "apps/desktop/scripts/hooks-smoke/run.sh": {
       "role": "index",
@@ -2057,9 +2057,9 @@
     },
     "apps/desktop/scripts/lsp-smoke/main.ts": {
       "role": "index",
-      "sha256": "a996a89a42266a96bf44d66f7c82bec1868145a73b38ee488e09ace05011f507",
-      "size": 70554,
-      "normalized_sha256": "a996a89a42266a96bf44d66f7c82bec1868145a73b38ee488e09ace05011f507"
+      "sha256": "3528522824eb17122a96877cf94ea22e044758485c7c4e0c1816ab1aa2c90e6a",
+      "size": 70943,
+      "normalized_sha256": "3528522824eb17122a96877cf94ea22e044758485c7c4e0c1816ab1aa2c90e6a"
     },
     "apps/desktop/scripts/lsp-smoke/run.sh": {
       "role": "index",
@@ -5855,9 +5855,9 @@
     },
     "apps/desktop/scripts/theme-ipc-smoke/main.ts": {
       "role": "index",
-      "sha256": "45e29c6c894285a592c25cbcbf8dbf23a174cb3ee8b03431b86505245686cf18",
-      "size": 32398,
-      "normalized_sha256": "45e29c6c894285a592c25cbcbf8dbf23a174cb3ee8b03431b86505245686cf18"
+      "sha256": "fd70f13e0cd5ae8f85d91792df53b44eb2f55e01d4d79a671573bbd71727b1e2",
+      "size": 33350,
+      "normalized_sha256": "fd70f13e0cd5ae8f85d91792df53b44eb2f55e01d4d79a671573bbd71727b1e2"
     },
     "apps/desktop/scripts/theme-ipc-smoke/run.sh": {
       "role": "index",
@@ -8267,9 +8267,9 @@
     },
     "apps/desktop/src/main/window.ts": {
       "role": "index",
-      "sha256": "235148d7745c7b578329f6ef4f0124c3be55eb0eb982af37f5fbfab694ba81db",
-      "size": 14765,
-      "normalized_sha256": "235148d7745c7b578329f6ef4f0124c3be55eb0eb982af37f5fbfab694ba81db"
+      "sha256": "6d2245b955a5548454f29c027f5606829af4e153acca3330639f96df9b30fe5f",
+      "size": 14584,
+      "normalized_sha256": "6d2245b955a5548454f29c027f5606829af4e153acca3330639f96df9b30fe5f"
     },
     "apps/desktop/src/main/workflows/assets.ts": {
       "role": "index",
@@ -9322,9 +9322,9 @@
     },
     "apps/desktop/src/renderer/components/settings/CustomModelsPanel.tsx": {
       "role": "index",
-      "sha256": "c4a18fe8030a2c23b196640f6e8b7c52f93f7f801ab867f85132ced52f1c06be",
-      "size": 100335,
-      "normalized_sha256": "c4a18fe8030a2c23b196640f6e8b7c52f93f7f801ab867f85132ced52f1c06be"
+      "sha256": "ee201afd16b7c5c66718c9315f4e3d0812dcc94a54976e99a57a193c965e8487",
+      "size": 100124,
+      "normalized_sha256": "ee201afd16b7c5c66718c9315f4e3d0812dcc94a54976e99a57a193c965e8487"
     },
     "apps/desktop/src/renderer/components/settings/CustomUiPanel.tsx": {
       "role": "index",
@@ -12009,9 +12009,9 @@
     },
     "docs/工作模式.md": {
       "role": "index",
-      "sha256": "e1b599de6cc7e964373bcffec75945b46d4a317fc23e6bdd98c2109b36a09dd1",
-      "size": 25822,
-      "normalized_sha256": "e1b599de6cc7e964373bcffec75945b46d4a317fc23e6bdd98c2109b36a09dd1"
+      "sha256": "7c2b95ca9d305b3453c51bac35f2522050d131082987ec0d949ae3818d1141f6",
+      "size": 26939,
+      "normalized_sha256": "7a3d3e34b3b3e8b062655b83cc7da129127a992fe3b847bbd357ed69b5793ea0"
     },
     "docs/底层修复记录-2026-10-07.md": {
       "role": "index",
