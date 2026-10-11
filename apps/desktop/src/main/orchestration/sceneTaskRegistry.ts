@@ -448,9 +448,16 @@ export class SceneBudgetAccounts {
 
   /**
    * **受控变更**一个已有账户的上限。新上限不得低于**当前占用**(committed + reserved),
-   * 否则 `LIMITS_BELOW_USAGE`。变更自增 `generation` —— 换代后,此前立下的未结算
-   * 凭据不能再 `settle`(见 `settle` 的代际校验),但可以 `release` 把预留退回。
-   * 未结算预留本身**留在原地**继续占账,不被静默丢弃。
+   * 否则 `LIMITS_BELOW_USAGE`。
+   *
+   * 【MC-080 / 第 40.3 节】这里**不再自增 `generation`**。`generation` 是账户的**身份代际**
+   * (账户被替换 / 归属变化才变),而"用户调整预算上限"是**额度配置版本**的变化 —— 两件事
+   * 必须分开。此前 `updateLimits` 会自增 `generation`,于是**只是一次合法的额度调整**就让
+   * 所有在途任务的旧预留凭据在 `settle` 时被拒(`RESERVATION_STALE`)—— 结果是**运行中任务
+   * 已经发生的真实用量被迫丢弃**(只有不记用量的 `release` 可行),把已经消费的当 0。
+   *
+   * 现在:调整上限只改 `limits`(后续 `reserve` 按**最新**上限准入),**不影响**已准入任务按
+   * 可信 reservation identity/scene/task 结算真实用量。未结算预留留在原地继续占账。
    */
   updateLimits(accountId: string, limits: SceneBudgetLimits): RegistryResult<SceneBudgetAccount> {
     const a = this.accounts.get(accountId);
@@ -460,7 +467,7 @@ export class SceneBudgetAccounts {
     const below = belowUsage(a, limits);
     if (below) return refuse("LIMITS_BELOW_USAGE", `不能把上限压到占用之下:${below}`);
     a.limits = { ...limits };
-    a.generation += 1;
+    // ⚠️ 刻意**不**自增 `a.generation`(它是身份代际,不是额度配置版本)。见方法头注释。
     return { ok: true, value: { ...a, limits: { ...a.limits } } };
   }
 

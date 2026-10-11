@@ -191,9 +191,9 @@ export interface SceneBudgetReservation {
   /**
    * 立这张凭据时账户的 `generation`。
    *
-   * 收尾(`settle` / `release`)会拿它和账户当前 `generation` 比对 —— 账户一旦
-   * 被受控改额(`updateLimits`)代际即变,旧凭据必须结构化拒绝(`RESERVATION_STALE`),
-   * 绝不允许拿一个已被换代账户的数字去借记。
+   * 收尾(`settle`)会拿它和账户当前 `generation` 比对 —— 但【MC-080】`generation` 是账户的
+   * **身份代际**(账户被替换 / 归属变化才变),**额度调整(`updateLimits`)不再自增它**。
+   * 于是一次合法的改额不会让在途任务的旧凭据作废,已发生的真实用量照常结算。
    */
   accountGeneration: number;
   /** 本次预留占用的 token(未知成本时为保守上限)。 */
@@ -221,10 +221,10 @@ export interface SceneBudgetAccount {
   /** 已结算的子任务笔数(只增)。 */
   settledCount: number;
   /**
-   * 账户代际:每次**受控改额**(`updateLimits`)自增。
+   * 账户**身份代际** —— 账户被替换 / 归属变化时自增。
    *
-   * 未结算的预留凭据绑的是立它时的代际;代际一变,旧凭据不能再结算到改额后的
-   * 账上(见 `SceneBudgetReservation.accountGeneration`)。
+   * 【MC-080】**不是**"用户调整预算上限"的版本号 —— 改额走 `SceneBudgetAccount.limits`,
+   * 不再动这里。两件事分开,合法的额度调整才不会让在途任务已发生的真实用量被迫丢弃。
    */
   generation: number;
 }

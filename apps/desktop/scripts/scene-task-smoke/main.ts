@@ -520,27 +520,38 @@ console.log("\nMC-080 预算账户:重复创建拒绝、跨场景冲突、负数
 }
 
 {
-  // 代际:updateLimits 换代后,旧凭据 settle 被拒(不跨代借记),release 仍可退。
+  // 【MC-080 / 第 40.3 节】**额度配置版本与账户身份代际必须分开**。一次合法的
+  // `updateLimits` 只是"用户调整预算上限",**不得**让在途任务已经发生的真实用量无法结算
+  // (旧实现 `updateLimits` 自增 `generation`,使旧预留凭据在 settle 时被判 `RESERVATION_STALE`
+  //  —— 结果只剩不记用量的 `release` 可行,把已经消费的当 0)。现在改额后旧预留**照常结算**、
+  //  新上限对**后续**准入生效。
   const accts = new SceneBudgetAccounts();
   accts.createAccount("gen", "s1", { maxTokens: 1000 });
-  const r = accts.reserve("gen", { tokens: 100 }, "t1");
+  const r = accts.reserve("gen", { tokens: 50, costUsd: 2 }, "t1");
   check("预留成功", r.ok, r);
   const rid = (r as { ok: true; value: { reservationId: string } }).value.reservationId;
 
   const bumped = accts.updateLimits("gen", { maxTokens: 2000 });
   check("受控改额成功", bumped.ok, bumped);
-  if (bumped.ok) eq("改额后 generation 自增到 1", bumped.value.generation, 1);
+  // 改额**不**自增身份代际(它是额度配置版本,不是账户替换)。
+  if (bumped.ok) eq("改额不自增身份代际(generation 保持 0)", bumped.value.generation, 0);
 
-  const stale = accts.settle(rid, { tokens: 90, costUsd: 0 });
-  check("旧代际凭据 settle → RESERVATION_STALE", !stale.ok, stale);
-  if (!stale.ok) eq("拒绝码 = RESERVATION_STALE", stale.code, "RESERVATION_STALE");
-  eq("被拒的结算未删除预留", accts.openReservationCount(), 1);
+  // ★ 核心判据:改额后旧预留**照样结算真实用量**(不再 RESERVATION_STALE、不丢用量)。
+  const settled = accts.settle(rid, { tokens: 20, costUsd: 3 });
+  check("★ 改额后旧预留仍可结算(不丢已发生的用量)", settled.ok, settled);
+  if (settled.ok) {
+    eq("★ 实际用量记进 committed(token)", settled.value.committedTokens, 20);
+    eq("★ 实际用量记进 committed(花费)", settled.value.committedCostUsd, 3);
+    eq("★ 结算后预留并发/额度已释放", settled.value.reservedTokens, 0);
+    eq("★ 结算后无挂账", accts.openReservationCount(), 0);
+  }
 
-  const rel = accts.release(rid);
-  check("旧代际凭据 release 仍可退预留", rel.ok, rel);
-  eq("release 后无挂账", accts.openReservationCount(), 0);
+  // 新上限对**后续**准入生效:改额到 30 后,再预留 40 应被拒(committed 已是 20)。
+  accts.updateLimits("gen", { maxTokens: 30 });
+  const overAfter = accts.reserve("gen", { tokens: 40 }, "t2");
+  check("★ 改额后的新上限对后续预留生效(20 已用 + 40 > 30 → 拒绝)", !overAfter.ok, overAfter);
 
-  // 上限不得压到当前占用之下。
+  // 上限不得压到当前占用之下(占用含 committed)。
   const accts2 = new SceneBudgetAccounts();
   accts2.createAccount("cap", "s1", { maxTokens: 1000 });
   accts2.reserve("cap", { tokens: 500 }, "t1");
