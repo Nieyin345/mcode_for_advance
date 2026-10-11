@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { ConsoleTextDecoder, OutBuf, markTruncatedTail } from "@main/lib/outBuf.js";
 import { SettingRepo } from "@main/store/repositories.js";
+import { log } from "@main/lib/logger.js";
 // 具名导入 —— **必须**这样写。`import ssh2 from "ssh2"` + 解构 `const { Client } = ssh2`
 // 拿到的是**值**,而 `Client` 在这里也要当**类型**用(`client: Client | null`),那条路
 // 编译不过(`'Client' refers to a value, but is being used as a type`)。同仓库的
@@ -89,6 +90,8 @@ interface RemoteEntry {
   hostKeyRecorded: boolean;
   /** 握手因指纹与已记录值不一致被拒(不是认证失败,不可重试)。 */
   hostKeyMismatch: boolean;
+  /** 【MC-014】known-hosts 存储损坏/读异常 → 本次握手 fail-closed 拒连(不可重试)。 */
+  hostKeyStoreInvalid: boolean;
 }
 
 export interface RemoteConnectionInfo {
@@ -197,11 +200,20 @@ export function createAgentRemoteSshManager() {
       hostVerifier: (key: Buffer): boolean => {
         const hostPort = `${entry.cfg.host}:${entry.cfg.port}`;
         const actual = fingerprintOfHostKey(key);
-        const pinned = readKnownHosts()[hostPort];
+        const read = readKnownHostsDetailed();
+        // 【MC-014 / 第 43.1 节】存储损坏/读异常 → **fail-closed 拒连**:不能把一次存储故障
+        // 洗成"从未见过这台主机"进而自动 TOFU 信任。此前已登记的主机在 JSON 被截断/设置库
+        // 读取抛错后会退回"未知"并被放行 —— 那正是"把数据库异常解释成首次见面"。
+        if (read.status === "INVALID") {
+          entry.hostKeyStoreInvalid = true;
+          return false;
+        }
+        const pinned = read.hosts[hostPort];
         if (!pinned) {
-          // 首见:记录并放行。`hostKeyRecorded` 让调用方在结果里告诉用户已记录指纹。
-          writeKnownHost(hostPort, actual);
-          entry.hostKeyRecorded = true;
+          // 首见(存储合法且确实没有这台主机的记录):记录并放行。写入成功才算数 ——
+          // 写不进(存储故障)就不谎报"已记录",但本次仍按 TOFU 放行(与旧行为一致)。
+          const wrote = writeKnownHost(hostPort, actual);
+          if (wrote) entry.hostKeyRecorded = true;
           return true;
         }
         if (sameFingerprint(pinned, actual)) return true;
@@ -230,6 +242,7 @@ export function createAgentRemoteSshManager() {
     // 每次握手都重新判一次指纹:首见记录、再见比对。清掉上一次的标记,让状态只反映本次。
     entry.hostKeyRecorded = false;
     entry.hostKeyMismatch = false;
+    entry.hostKeyStoreInvalid = false;
     let settled = false;
     let ready = false;
     const settleOk = () => { if (!settled) { settled = true; resolve(); } };
@@ -251,11 +264,15 @@ export function createAgentRemoteSshManager() {
     client.on("error", (err: Error & { level?: string }) => {
       if (entry.client !== client) return;
       // Explicit agent failure has no implicit fallback; report it instead of silently waiting.
-      entry.lastError = entry.hostKeyMismatch ? HOST_KEY_MISMATCH_MESSAGE : friendlySshError(err);
+      entry.lastError = entry.hostKeyStoreInvalid
+        ? HOST_KEY_STORE_INVALID_MESSAGE
+        : entry.hostKeyMismatch
+          ? HOST_KEY_MISMATCH_MESSAGE
+          : friendlySshError(err);
       if (!ready) settleErr(err);
-      // 主机密钥变更 = 明确的不可重试错误:重连只会一遍遍撞同一堵墙(而且每次都把
-      // "变了的密钥"当成可接受的),立刻停在 error。
-      if (entry.hostKeyMismatch) {
+      // 主机密钥变更 / known-hosts 存储损坏 = 明确的不可重试错误:重连只会一遍遍撞同一堵墙
+      //(而且每次都把"变了的密钥"或"被当空的表"当成可接受的),立刻停在 error。
+      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid) {
         entry.state = "error";
         if (!ready) { try { client.end(); } catch { /* best effort */ } }
       } else if (!entry.intentionalClose && isRetryableSshError(err)) {
@@ -455,14 +472,19 @@ export function createAgentRemoteSshManager() {
       lastActivityAt: null,
       hostKeyRecorded: false,
       hostKeyMismatch: false,
+      hostKeyStoreInvalid: false,
     };
     entries.set(entry.id, entry);
     try {
       await ensureConnected(entry);
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
-      entry.lastError = entry.hostKeyMismatch ? HOST_KEY_MISMATCH_MESSAGE : friendlySshError(e);
-      if (entry.hostKeyMismatch) entry.state = "error";
+      entry.lastError = entry.hostKeyStoreInvalid
+        ? HOST_KEY_STORE_INVALID_MESSAGE
+        : entry.hostKeyMismatch
+          ? HOST_KEY_MISMATCH_MESSAGE
+          : friendlySshError(e);
+      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid) entry.state = "error";
       else if (isRetryableSshError(e)) scheduleReconnect(entry);
       else entry.state = "error";
     }
@@ -785,6 +807,15 @@ export const HOST_KEY_MISMATCH_MESSAGE =
   "SSH 主机密钥变了：本次连接收到的服务器指纹与之前记录的不一致，已拒绝连接（可能是中间人攻击，或服务器重装/换了密钥）。" +
   "请先独立核对新指纹；确认无误后，清掉设置里的 agentSsh.knownHosts 记录再重新连接，本工具不会自动覆盖已记录的指纹。";
 
+/**
+ * 【MC-014 / 第 43.1 节】known-hosts 存储损坏/读异常时的**明确**文案。要点名是"信任表读不出来"
+ * 而不是"从没见过这台主机" —— 把一次存储故障当成首次见面会让已登记主机被自动 TOFU 信任。
+ */
+export const HOST_KEY_STORE_INVALID_MESSAGE =
+  "SSH 主机信任表(agentSsh.knownHosts)损坏或读不出来，已拒绝连接以保护你 —— 不能把一次存储故障当成" +
+  "「第一次见这台主机」而自动信任它。请在设置里检查/修复该键后重试。" +
+  "（已记录的主机指纹不会因此被覆盖或丢弃。）";
+
 /** ssh2 hostVerifier 拿到的原始公钥 Buffer → OpenSSH `SHA256:` 指纹(base64 无填充)。 */
 function fingerprintOfHostKey(key: Buffer | string): string {
   const buf = typeof key === "string" ? Buffer.from(key, "binary") : key;
@@ -802,28 +833,82 @@ function sameFingerprint(a: string, b: string): boolean {
   return isWellFormedFingerprint(a) && isWellFormedFingerprint(b) && a === b;
 }
 
-/** 读出 known-hosts 记录(`{"host:port":"SHA256:..."}`)。设置缺失/损坏时当作空表。 */
-function readKnownHosts(): Record<string, string> {
+/** 读出 known-hosts 记录(`{"host:port":"SHA256:..."}`)+ **可判别状态**。
+ *
+ *  【MC-014 / 第 43.1 节】从前设置缺失、损坏、读取异常**一律**返回空表 —— 而空表在
+ *  `hostVerifier` 里就等于"从没见过这台主机",于是**此前已登记的主机**在存储损坏后
+ *  又变成"未知"、被自动 TOFU 信任。把"数据库/设置异常"解释成"从未见过主机"是 fail-open。
+ *  现在区分三种事实:
+ *   - `MISSING`:从没设过(全新用户)→ 合法的首次 TOFU;
+ *   - `VALID`:照常比对;
+ *   - `INVALID`:有值但读不出/JSON 坏/形状不对/读取抛错 → **不是**"没有记录",调用方必须
+ *     **fail-closed 拒连**(不能把一次存储故障洗成"首次见面")。
+ */
+type KnownHostsRead =
+  | { status: "MISSING"; hosts: Record<string, string> }
+  | { status: "VALID"; hosts: Record<string, string> }
+  | { status: "INVALID"; hosts: Record<string, string>; error: string };
+
+function readKnownHostsDetailed(): KnownHostsRead {
+  let raw: string | null;
   try {
-    const raw = SettingRepo.get(SSH_KNOWN_HOSTS_SETTING_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v === "string") out[k] = v;
-    }
-    return out;
-  } catch {
-    return {};
+    raw = SettingRepo.get(SSH_KNOWN_HOSTS_SETTING_KEY);
+  } catch (err) {
+    // 读设置本身抛错(库没起来 / IO 故障)= 不可确认,不是"没有记录"。
+    return {
+      status: "INVALID",
+      hosts: {},
+      error: `known-hosts 读取失败:${err instanceof Error ? err.message : String(err)}`,
+    };
   }
+  if (!raw) return { status: "MISSING", hosts: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (err) {
+    return {
+      status: "INVALID",
+      hosts: {},
+      error: `known-hosts 内容损坏(JSON 解析失败):${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { status: "INVALID", hosts: {}, error: "known-hosts 内容损坏(不是对象)" };
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return { status: "VALID", hosts: out };
 }
 
-/** 记一条 `host:port → 指纹`(TOFU 首见写入)。 */
-function writeKnownHost(hostPort: string, fingerprint: string): void {
-  const table = readKnownHosts();
+/** 只取记录表(旧调用点用)。损坏/异常时返回空表 —— ⚠️ **不能**据此判"没有记录",
+ *  要判存亡请用 {@link readKnownHostsDetailed}。 */
+function readKnownHosts(): Record<string, string> {
+  return readKnownHostsDetailed().hosts;
+}
+
+/** 记一条 `host:port → 指纹`(TOFU 首见写入)。
+ *
+ *  ⚠️ **只在存储可写时才写**。若当前存储损坏(INVALID),`readKnownHosts()` 会返回空表,
+ *  直接写会把原有记录**整体覆盖**成只含这一条的新表 —— 一次"首见写入"顺手抹掉用户
+ *  所有已登记主机。这里改为:存储损坏时**拒绝写入**(调用方已因 INVALID 拒连,走不到这)。
+ */
+function writeKnownHost(hostPort: string, fingerprint: string): boolean {
+  const read = readKnownHostsDetailed();
+  if (read.status === "INVALID") {
+    log.warn(`agentRemoteSsh: known-hosts 存储损坏,拒绝写入以免抹掉已登记主机:${read.error}`);
+    return false;
+  }
+  const table = read.hosts;
   table[hostPort] = fingerprint;
-  SettingRepo.set(SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify(table));
+  try {
+    SettingRepo.set(SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify(table));
+    return true;
+  } catch (err) {
+    log.warn(`agentRemoteSsh: known-hosts 写入失败:${(err as Error).message}`);
+    return false;
+  }
 }
 
 export const __remoteSshTest = {
@@ -839,6 +924,7 @@ export const __remoteSshTest = {
   isWellFormedFingerprint,
   sameFingerprint,
   readKnownHosts,
+  readKnownHostsDetailed,
   writeKnownHost,
   MAX_EXEC_STDOUT_BYTES,
   MAX_EXEC_STDERR_BYTES,

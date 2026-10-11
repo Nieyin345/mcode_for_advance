@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import ssh2 from "ssh2";
 const { Server: SshServer } = ssh2;
 import { createAgentRemoteSshManager, __remoteSshTest, scrubConnectionSecrets, HOST_KEY_MISMATCH_MESSAGE } from "@main/mcp/agentRemoteSsh.js";
-import { SettingRepo } from "./stubs/settingRepo.js";
+import { SettingRepo, armGetThrow, getThrowCount } from "./stubs/settingRepo.js";
 
 let checks = 0;
 let passed = 0;
@@ -307,6 +307,76 @@ console.log("\n[3c] MC-014 known-hosts TOFU: first-seen records, mismatch refuse
   check("重连也校验指纹:掉线后指纹已变 → 停到 error 不放行", revdrop.state === "error", revdrop);
   m.disposeOwner("tofu");
   await new Promise<void>((resolve) => tserver.close(() => resolve()));
+}
+
+console.log("\n[3c-2] MC-014 第43.1节残余:known-hosts 损坏/读异常 → fail-closed 拒连,不自动 TOFU");
+{
+  SettingRepo.__clear();
+  const sClients = new Set<any>();
+  const sserver = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    sClients.add(client);
+    client.on("close", () => sClients.delete(client));
+    client.on("authentication", (ctx) => ctx.accept());
+    client.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => sserver.listen(0, "127.0.0.1", () => resolve()));
+  const sAddr = sserver.address();
+  if (!sAddr || typeof sAddr === "string") throw new Error("store-invalid server missing port");
+  const hostPort = `127.0.0.1:${sAddr.port}`;
+
+  // ① 先正常首见一次 —— 记下可信指纹(模拟"此前已登记过这台主机")。
+  let goodFp = "";
+  {
+    const m = createAgentRemoteSshManager();
+    const first = await m.connect({ ownerSessionId: "store", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p" });
+    goodFp = __remoteSshTest.readKnownHosts()[hostPort] ?? "";
+    check("前置:首见成功且记下指纹", first.state === "ready" && __remoteSshTest.isWellFormedFingerprint(goodFp), first);
+    m.disposeOwner("store");
+  }
+
+  // ② 把设置键写成**损坏的 JSON**(模拟存储被截断)→ 此前已登记的主机绝不能被当成"首次见面"
+  //    而自动信任。判据:state=error、文案点名"信任表损坏"、且**不**重连、**不**覆盖记录。
+  {
+    const m = createAgentRemoteSshManager();
+    SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, '{"127.0.0.1:1": {"trunca');
+    const corrupt = await m.connect({ ownerSessionId: "store", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p" });
+    check("★ 存储损坏 → state=error(拒连,不把故障当首次见面)", corrupt.state === "error", corrupt);
+    check("★ 文案点名信任表损坏/读不出来", (corrupt.lastError ?? "").includes("信任表") && (corrupt.lastError ?? "").includes("损坏"), corrupt.lastError);
+    check("★ 损坏时不自动重连", corrupt.reconnectAttempt === 0, corrupt);
+    check("★ 损坏的原值没有被覆盖", SettingRepo.get(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY) === '{"127.0.0.1:1": {"trunca', SettingRepo.get(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY));
+    m.disposeOwner("store");
+  }
+
+  // ③ 设置**读取本身抛错**(库故障)→ 同样 fail-closed,不当作"没有记录"。
+  {
+    const m = createAgentRemoteSshManager();
+    SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify({ [hostPort]: "SHA256:" + "B".repeat(43) }));
+    armGetThrow(true);
+    let threw = false;
+    let res: Awaited<ReturnType<typeof m.connect>> | null = null;
+    try {
+      res = await m.connect({ ownerSessionId: "store", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p" });
+    } catch {
+      threw = true;
+    } finally {
+      armGetThrow(false);
+    }
+    check("★ 设置读取抛错 → 拒连(不静默放行/不谎报成功)", threw || (res !== null && res.state === "error"), { threw, res });
+    check("★ 读故障确实被触发(不是空过)", getThrowCount() > 0, getThrowCount());
+    m.disposeOwner("store");
+  }
+
+  // ④ 正控:存储恢复正常(写回正确指纹)后同一主机仍能连上、指纹未丢。
+  {
+    const m = createAgentRemoteSshManager();
+    SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify({ [hostPort]: goodFp }));
+    const good = await m.connect({ ownerSessionId: "store", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p" });
+    check("★ 正控:存储恢复后能连上(故障不毁信任表)", good.state === "ready", good);
+    m.disposeOwner("store");
+  }
+
+  SettingRepo.__clear();
+  await new Promise<void>((resolve) => sserver.close(() => resolve()));
 }
 
 console.log("\n[3d] MC-018 disconnect removes the record and scrubs secrets");

@@ -10,8 +10,23 @@
  */
 const store = new Map<string, string>();
 
+/** 【MC-014】可注入的读取故障:让下一次(或持续)`get` 抛错,模拟"设置库读不出来"。 */
+let getThrowing = false;
+let getThrowHits = 0;
+export function armGetThrow(on: boolean): void {
+  getThrowing = on;
+  if (on) getThrowHits = 0;
+}
+export function getThrowCount(): number {
+  return getThrowHits;
+}
+
 export const SettingRepo = {
   get(key: string): string | null {
+    if (getThrowing) {
+      getThrowHits += 1;
+      throw new Error("injected settings read failure (isolated smoke)");
+    }
     return store.get(key) ?? null;
   },
   getMany(keys: string[]): Record<string, string | null> {
