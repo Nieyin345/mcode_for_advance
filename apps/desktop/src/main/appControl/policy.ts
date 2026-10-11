@@ -144,9 +144,6 @@ const DANGER: Record<string, string> = {
   "piModels.delete": "删除 Pi 模型提供方",
   "codexModels.save": "新增/修改 Codex 模型提供方(含密钥)",
   "codexModels.delete": "删除 Codex 模型提供方",
-  "institution.save": "保存机构登录配置",
-  "institution.delete": "删除机构登录配置",
-  "institution.clearCookies": "清除网站登录状态",
   "onlyoffice.setConfig": "改 OnlyOffice 服务地址与 JWT 密钥",
   // 远程访问:开了就是把这台机器交给别人
   "webBridge.regenerateToken": "重置浏览器扩展令牌(已连的扩展会断开)",
@@ -281,7 +278,6 @@ export const DOMAIN_LABELS: Record<string, string> = {
   codexModels: "Codex 模型提供方",
   theme: "主题",
   library: "资料库:条目、分类、笔记、导入、转 Markdown、关联、清单、挂到对话",
-  institution: "机构登录(知网/图书馆等)",
   memory: "长期记忆:列出、读、存、删、审阅、整理助手",
   workflow: "工作流:列出、读、保存、删除、导入导出、节点类型、代理档案、岔路选择、失败重试",
   automation: "自动化:立即运行、运行记录、守望",

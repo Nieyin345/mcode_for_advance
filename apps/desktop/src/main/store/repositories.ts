@@ -23,7 +23,6 @@ import type {
   LibraryNote,
   LibraryItemLink,
   LibraryLinkView,
-  InstitutionProfile,
 } from "@contracts/library";
 import { basename } from "node:path";
 import { normPathKey } from "@main/lib/pathNorm.js";
@@ -2492,102 +2491,6 @@ export const CollectionRepo = {
     }
     stmt.free();
     return out;
-  },
-};
-
-/* ────────────────────────────── 机构认证入口 ───────────────────────────── */
-
-interface InstitutionRow {
-  id: string;
-  name: string;
-  login_url: string | null;
-  domains: string | null;
-  proxy_prefix: string | null;
-  notes: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-function rowToInstitution(r: InstitutionRow): InstitutionProfile {
-  return {
-    id: r.id,
-    name: r.name,
-    loginUrl: r.login_url ?? undefined,
-    domains: (safeJson(r.domains) as string[] | undefined) ?? [],
-    proxyPrefix: r.proxy_prefix ?? undefined,
-    notes: r.notes ?? undefined,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  };
-}
-
-export const InstitutionRepo = {
-  list(): InstitutionProfile[] {
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM institution_profiles ORDER BY created_at ASC");
-    const out: InstitutionProfile[] = [];
-    while (stmt.step()) out.push(rowToInstitution(stmt.getAsObject() as unknown as InstitutionRow));
-    stmt.free();
-    return out;
-  },
-
-  /** 新增或更新一个入口档案。⚠️ 这里**不存任何凭据** —— 登录态在浏览器分区里。 */
-  save(input: {
-    id?: string;
-    name: string;
-    loginUrl?: string;
-    domains?: string[];
-    proxyPrefix?: string;
-    notes?: string;
-  }): InstitutionProfile {
-    const db = getDb();
-    const now = Date.now();
-    const domains = JSON.stringify(input.domains ?? []);
-
-    if (input.id) {
-      db.run(
-        `UPDATE institution_profiles SET name = ?, login_url = ?, domains = ?, proxy_prefix = ?, notes = ?, updated_at = ?
-         WHERE id = ?`,
-        [v(input.name), v(input.loginUrl), v(domains), v(input.proxyPrefix), v(input.notes), v(now), v(input.id)],
-      );
-      persist();
-      const stmt = db.prepare("SELECT * FROM institution_profiles WHERE id = ?");
-      stmt.bind([v(input.id)]);
-      // ⚠️ **`step()` 的结果不能丢。** 传了 id 却查不到那一行(过期/伪造 id,或那条记录
-      // 刚被删)时,`UPDATE` 打不中任何行、`SELECT` 也空手 —— 而 `getAsObject()` 在没
-      // `step()` 时返回 `{}`,于是 `rowToInstitution({})` 会造出一个 `id`/`name` 全是
-      // undefined 的"记录"返回给调用方。宁可明确抛错,也不要返回一条幽灵记录。
-      const found = stmt.step();
-      const row = found
-        ? rowToInstitution(stmt.getAsObject() as unknown as InstitutionRow)
-        : null;
-      stmt.free();
-      if (!row) throw new Error(`机构配置不存在:${input.id}`);
-      return row;
-    }
-
-    const id = makeId("inst");
-    db.run(
-      `INSERT INTO institution_profiles (id, name, login_url, domains, proxy_prefix, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [v(id), v(input.name), v(input.loginUrl), v(domains), v(input.proxyPrefix), v(input.notes), v(now), v(now)],
-    );
-    persist();
-    return {
-      id,
-      name: input.name,
-      loginUrl: input.loginUrl,
-      domains: input.domains ?? [],
-      proxyPrefix: input.proxyPrefix,
-      notes: input.notes,
-      createdAt: now,
-      updatedAt: now,
-    };
-  },
-
-  delete(id: string): void {
-    getDb().run("DELETE FROM institution_profiles WHERE id = ?", [v(id)]);
-    persist();
   },
 };
 

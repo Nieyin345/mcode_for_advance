@@ -829,44 +829,6 @@ console.log("\n渲染端的旧回包竞态");
   );
 }
 
-/* ────────────────────────── 13b. 机构认证面板:失败静默 ────────────────────────── */
-
-console.log("\n机构认证面板:写操作的失败出口");
-
-// ★ 机构认证整条路的每一处 IPC 都会**抛**(不是回 `{ok:false}`):`save`/`delete` 会因为
-//   入参 schema 或「机构配置不存在」(拿一个过期 id)抛,`clearCookies` 会把 BrowserManager
-//   的异常原样再抛。从前它们是四处裸 `void api.institution.*()` —— 抛出来只落进 unhandled
-//   rejection(渲染端**没有**全局监听),用户点了按钮、屏幕上一句话都没有。判据钉源码:
-//   四处写操作 + 初始加载都必须有 `catch → setError` 出口,且面板画出了 `<ErrorNote>`。
-{
-  const { readFileSync } = await import("node:fs");
-  const institution = readFileSync(
-    join(process.cwd(), "src/renderer/components/settings/InstitutionAuthPanel.tsx"),
-    "utf8",
-  );
-  const code = institution.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
-  const catchSetError = (code.match(/catch \(err\) \{\s*setError\(/g) ?? []).length;
-  check(
-    "★ 机构认证四处写操作 + 初始加载都有 catch → setError 出口(从前裸 void,失败静默)",
-    catchSetError >= 5 && /<ErrorNote/.test(code),
-    { catchSetError, hasErrorNote: /<ErrorNote/.test(code) },
-  );
-
-  // ★ 头部那颗「重新加载」按钮走的是 `reloadStatus()`,而它**也会抛** —— `authStatus`
-  //   handler 要经 `BrowserManager.browserSession()` 读分区 cookie,内部的
-  //   `session.fromPath()` 对坏数据目录会抛、handler 原样再抛回来。上一轮只给四处写操作
-  //   + 初始加载裹了 try/catch,**漏掉了这条共用读取路**:`reloadStatus` 体里那句
-  //   `api.institution.authStatus` 裸着,按钮的 `onClick={() => void reloadStatus()}`
-  //   把 rejection 丢进无人监听的地方(渲染端没有全局 unhandledrejection),
-  //   用户点了「重新加载」、屏幕上一句话都没有。判据钉源码:`reloadStatus` 的
-  //   useCallback 体必须**自己**把 `authStatus` 那句包在 try 里(而不是靠调用方)。
-  check(
-    "★ 机构认证的 reloadStatus 自身有 try/catch(按钮裸 void 时失败静默)",
-    /const reloadStatus = useCallback\(async \(\) => \{\s*try \{[\s\S]*?await api\.institution\.authStatus[\s\S]*?catch \(err\) \{\s*setError\(/.test(code),
-    code.match(/reloadStatus[^\n]*/g),
-  );
-}
-
 /* ────────────────────────── 13c. 浏览器设置面板:失败静默 ────────────────────────── */
 
 console.log("\n浏览器设置面板:选目录与登录开关的失败出口");

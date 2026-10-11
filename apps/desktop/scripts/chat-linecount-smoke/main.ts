@@ -81,5 +81,26 @@ console.log("\ntoolSummary 单一真源");
   check("Claude Edit 取 file_path", toolSummary("Edit", { file_path: "/a/b.ts" }), "/a/b.ts");
 }
 
+/* ── 可折叠集:思考与批量工具同折(2026-10-11) ── */
+
+console.log("\nisFoldableBlock:思考与批量工具同折(对齐 Claude Code 桌面端)");
+// 用户对着 Claude Code 桌面端比对后的要求:**连续的思考过程与工具调用要能整体折成
+// 一张卡**。思考曾在 2026-09-11 被移出可折叠集,这里钉住它回来了。
+// ★ 撤掉 `if (b.kind === "thinking") return true` 这一行 → 下面前两条真变红。
+{
+  const { isFoldableBlock } = await import("@renderer/components/chat/MessageBlocks.js");
+  // 思考:可折。
+  check("★ 思考块可折(否则永远单独成行)", isFoldableBlock({ kind: "thinking", text: "x" } as never), true);
+  // 批量工具:可折(一直是)。
+  check("批量工具 Bash 可折", isFoldableBlock({ kind: "tool_use", toolName: "Bash", status: "done" } as never), true);
+  check("MCP 工具可折(mcp__ 前缀)", isFoldableBlock({ kind: "tool_use", toolName: "mcp__x__y", status: "done" } as never), true);
+  // 高信号工具仍 standalone —— 它们的卡带路径与改动,一眼就知道。
+  check("Read 不折(卡片带路径)", isFoldableBlock({ kind: "tool_use", toolName: "Read", status: "done" } as never), false);
+  check("Write 不折", isFoldableBlock({ kind: "tool_use", toolName: "Write", status: "done" } as never), false);
+  check("Edit 不折", isFoldableBlock({ kind: "tool_use", toolName: "Edit", status: "done" } as never), false);
+  // 文本永不折。
+  check("narration text 不折", isFoldableBlock({ kind: "text", text: "hi" } as never), false);
+}
+
 console.log(`\nchat-linecount-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

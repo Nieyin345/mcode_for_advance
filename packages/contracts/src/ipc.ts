@@ -20,9 +20,7 @@ import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "./relay.j
 import type {
   LibraryItem,
   LibraryCollection,
-  InstitutionProfile,
   FullTextMatch,
-  AuthSiteStatus,
   LibraryConversionRow,
   LibraryNote,
 } from "./library.js";

@@ -84,7 +84,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       // 契约(`RpcMap["lsp.toggle"]`)也没有 error 字段,渲染端 `LspLanguagesPanel.doToggle`
       // 唯一能察觉失败的途径就是这条 invoke **抛**;handler 不抛,那句专门写的 catch
       // (注释:「失败要说出来」)就永远是死分支 —— 开关点了没反应、也不报错。
-      // 改成抛出(与 institutionAuth 同口径,错误经共享 errText 翻成人话)。
+      // 改成抛出(变更类 handler 的统一口径,错误经共享 errText 翻成人话)。
       const msg = errText(err);
       log.error(`lsp.toggle failed: ${msg}`);
       throw new Error(msg);

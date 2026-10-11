@@ -240,32 +240,6 @@ export interface LibraryCollection {
 }
 
 /**
- * 机构认证档案。
- *
- * ⚠️ **它不是凭据容器。** 真正的登录态存在于内嵌浏览器的共享分区里
- * (见 `main/browser/BrowserManager.ts` 的 cookie 保管库),与本表无关。
- * 本表只是让用户记下「我常用哪几个入口、它们的域名是什么」的组织性便利记录,
- * 删除它不会登出任何站点。
- *
- * 之所以这样设计:用户要求认证「偏通用、不限制具体机构」,而共用分区正好满足
- * ——在哪里登录都算数,无需先声明机构。若做成每机构独立凭据空间,反而要求用户
- * 先声明才能登录。
- */
-export interface InstitutionProfile {
-  id: string;
-  name: string;
-  /** 点击「登录」时在内嵌浏览器打开的地址。 */
-  loginUrl?: string;
-  /** 该入口覆盖的域名,用于在界面上提示凭据覆盖范围。 */
-  domains: string[];
-  /** 可选的 EZproxy 前缀,如 `https://ezproxy.example.edu/login?url=`。 */
-  proxyPrefix?: string;
-  notes?: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-/**
  * 一条**读文献时记的笔记**(挂在某个条目下)。
  *
  * 与「笔记库」(kind === "note")是两件不同的事,不要混:
@@ -294,21 +268,6 @@ export interface FullTextMatch {
   relativePath: string;
   lineNumber: number;
   lineText: string;
-}
-
-/**
- * 某个域名的登录态概览。
- *
- * 从浏览器分区的 cookie 反推 —— 这是「已登录哪些站点」唯一可靠的判据。
- * `expiresAt` 取该域名下 cookie 的最晚过期时间(会话 cookie 记 undefined)。
- */
-export interface AuthSiteStatus {
-  domain: string;
-  cookieCount: number;
-  /** 最晚过期时间(秒级 Unix 时间戳)。全部为会话 cookie 时为 undefined。 */
-  expiresAt?: number;
-  /** 是否命中用户配置的机构档案 —— 命中则界面上归到该机构名下展示。 */
-  matchedProfileIds: string[];
 }
 
 /**

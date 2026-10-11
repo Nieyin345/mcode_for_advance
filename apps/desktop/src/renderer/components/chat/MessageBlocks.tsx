@@ -250,15 +250,24 @@ const BATCH_TOOL_NAMES = new Set([
   "find", "grep", "bash", "ls",
 ]);
 /** A block that folds into a batch group: batch tool calls (see
- *  {@link BATCH_TOOL_NAMES}) and any MCP tool (`mcp__*` prefix). Thinking is
- *  NOT foldable any more (2026-09-11, user call) — a reasoning segment is
- *  content the user reads, so it gets its own card like Read/Write/Edit do.
+ *  {@link BATCH_TOOL_NAMES}), any MCP tool (`mcp__*` prefix), and **thinking**.
+ *
+ *  ⚠️ 思考曾在 2026-09-11 被移出可折叠集（"a reasoning segment is read, not
+ *  skimmed"），2026-10-11 又加回来 —— 用户对着 Claude Code 桌面端比对后的要求：
+ *  **连续的思考过程与工具调用要能整体折成一张卡**，而不是每段思考各占一行。理由与
+ *  当初移出它的人相反：一段长推理在**不关心它的那几轮**里就是噪声，能整体收起来比
+ *  逐段摊开更好读；要看时展开即可（`BatchToolGroup` 一直有渲染思考的分支，只是没人
+ *  往它里面塞思考了）。Read / Write / Edit 仍是 standalone（它们的卡片带路径与改动，
+ *  是"看一眼就知道"的高信号），不受此改。
+ *
  *  Exported for ChatPane's live-turn cross-message run partitioning (the
  *  streaming layout merges foldable blocks across assistant messages into one
  *  card). */
 export function isFoldableBlock(b: Block): b is ProceduralBlock {
-  // 代理之间的信(agent_notify / agent_ask)虽然也是 MCP 调用,但它的正文就是用户
-  // 想看的东西 —— 不折进「操作集合」,单独成一张信件卡(见 AgentMailCard)。
+  // 思考块没有 toolName，单独放行；代理之间的信（agent_notify / agent_ask）虽然也是
+  // MCP 调用，但它的正文就是用户想看的东西 —— 不折进「操作集合」，单独成一张信件卡
+  // （见 AgentMailCard）。
+  if (b.kind === "thinking") return true;
   return (
     b.kind === "tool_use" &&
     (BATCH_TOOL_NAMES.has(b.toolName) || b.toolName.startsWith("mcp__")) &&
@@ -387,7 +396,12 @@ export function BatchToolGroup({
   }
   const breakdown = [...counts.entries()].map(([n, c]) => `${n} ×${c}`).join(" · ");
 
-  const label = t("chatStream.opCount", { n: blocks.length });
+  // 抬头随组内成分变：**只有思考**时说「N 段思考」比说「N 个操作」准（那组里没有任何
+  // 工具调用）；含工具就仍旧说「N 个操作」（思考 2026-10-11 起也可折叠，所以纯思考的
+  // 组会出现 —— 见 isFoldableBlock）。
+  const label = toolBlocks.length === 0
+    ? t("chatStream.thinkingCount", { n: blocks.length })
+    : t("chatStream.opCount", { n: blocks.length });
 
   return (
     <div className="[font-size:var(--chat-fs-sm)]">

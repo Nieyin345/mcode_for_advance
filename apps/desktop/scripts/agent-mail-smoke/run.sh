@@ -56,6 +56,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/lib/dataRoot.js=./scripts/session-subchat-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/session-subchat-smoke/stubs/logger.ts \
   --alias:electron=./scripts/agent-mail-smoke/stubs/electron.ts \
+  --alias:@main/window.js=./scripts/agent-mail-smoke/stubs/window.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

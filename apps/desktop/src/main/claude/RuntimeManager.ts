@@ -10,7 +10,7 @@ import { automationOriginOf, inheritAutomationOrigin, snapshotAutomationOrigin, 
  * it resolves a provider from the registry and constructs a ProviderContext that bridges
  * events to the renderer and async approval/user-input requests via ApprovalBridge.
  */
-import { sendToRenderer } from "@main/window.js";
+import { sendToRenderer, hasLiveRendererWindow } from "@main/window.js";
 import { IPC, TURN_BUDGET_SETTING_KEY, RUNTIME_FALLBACK_MODELS_SETTING_KEY } from "@contracts/ipc";
 import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord, TurnFileEntry, UserMessageEvent, UpstreamIssueEvent, TranscriptBlock, SubagentSnapshot } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
@@ -941,6 +941,45 @@ class RuntimeManager {
     return [...ids];
   }
 
+  /**
+   * 把**权威的「哪些会话正在跑」**推给所有客户端(桌面渲染端 + 手机)。
+   *
+   * ## 为什么非有不可(2026-10-11,用户真机报的 bug)
+   *
+   * 从前这份快照**只**在手机 SSE 建连时发(`MobileHttpServer`),桌面渲染端一直收不到。
+   * 桌面渲染端的 `runningBySession` 只由**本端自己发起的回合**置真 —— 于是:
+   *
+   *   - 手机起了一轮 → 桌面收到 `user.message` 回声(追加了气泡)**但 running 仍为 false**,
+   *     界面显示成"空闲/可发送";
+   *   - 用户在桌面按发送 → 主进程看到手机那一轮的 handle 还在跑 → 抛
+   *     「这个对话上一轮还在运行」;按 Ctrl+Enter「插入」同理(桌面以为 idle,`handleEnter`
+   *     把它当普通发送,不走 inject) → **桌面发不了也插不了,而手机能插**(手机自己是发起端,
+   *     running 为真)。
+   *
+   * 修法就是把这份权威集合**在它变化的两个边沿**广播出去(`sendTurn` 起轮、`turn.done`
+   * 收轮),而不是只在手机建连时发一次。桌面渲染端的 `reduceSessionRunningSnapshot` 早就能
+   * 处理它(`sessionStore.ts` 的 `session.runningSnapshot` 那一支)—— 只是从前收不到。
+   *
+   * ⚠️ `running` 必须是**完整**集合(不是单条):桌面那个归约是**整表替换**,发单条会把别的
+   * 会话的 running 误清掉。
+   *
+   * 走 `fanOutToClients`(桌面 + 手机同一条路),所以**顺带**修掉了对称的反向 bug
+   * (桌面起轮、手机不知道)。
+   *
+   * **public**(不是 private):无头套件要能直接调它、观察它推出去的那一帧(见
+   * `agent-mail-smoke` 的 running-snapshot 一节)。与 `runningSessionIds` / `emitExternal`
+   * 同为"可观测面"。
+   */
+  broadcastRunningState(): void {
+    this.fanOutToClients({
+      type: "session.runningSnapshot",
+      // 全局快照,sessionId 只为信封兼容(见 `SessionRunningSnapshotEvent`)。
+      sessionId: "",
+      running: this.runningSessionIds(),
+      desktopAttached: hasLiveRendererWindow(),
+    });
+  }
+
   /** Append the deferred per-turn usage-history record (stashed by the
    *  turn.done handler in `pendingTurnEnd`) using the latest context
    *  snapshot. No-op when nothing is pending; skips silently when no
@@ -1121,6 +1160,10 @@ class RuntimeManager {
         catch (error) { log.error(`handoff acknowledgement failed: ${String(error)}`); }
       }
       baseEmit(event);
+      // 收轮边沿:把权威 running 集合广播给所有客户端(桌面靠它把「本端之外起的回合」
+      // 也标成在跑 —— 见 broadcastRunningState 的注释)。放在 baseEmit **之后**,
+      // 让 running 快照排在这一轮的收尾事件后面,客户端先把 turn.done 落了再对齐状态。
+      if (event.type === "turn.done") this.broadcastRunningState();
     };
 
     // A previous turn that ended without any turn-end snapshot (all-zero
@@ -1493,6 +1536,10 @@ class RuntimeManager {
     rt.handle = handle;
     // Remember the cwd for the rewind path (see rewindTurn below).
     rt.lastCwd = input.cwd;
+    // 起轮边沿:把权威 running 集合广播给所有客户端 —— 手机起的那一轮,桌面就是靠这一帧
+    // 才知道"这个会话在跑"(见 broadcastRunningState)。放在 handle 赋值之后、`done` 的
+    // catch 之前:此刻 `startingSessions` 仍含本 id,`runningSessionIds()` 已把它算进去。
+    this.broadcastRunningState();
 
     // Run in background; errors are caught inside the provider's done loop.
     handle.done.catch((err) => {

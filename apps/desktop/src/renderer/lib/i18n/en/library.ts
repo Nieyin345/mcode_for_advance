@@ -2,13 +2,8 @@
 export const en = {
   "library.title": "Library",
   "library.docs.title": "Documents",
-  "library.subtitle": "Manage local materials (papers, textbooks, notes…) for the AI to read and cite",
   "library.open": "Library",
 
-  "library.view.all": "All items",
-  "library.view.recent": "Recently added",
-  "library.view.missingPdf": "Missing PDF",
-  "library.view.needsLogin": "Needs sign-in",
   "library.collections": "Categories",
   "library.collection.new": "New level-3 category",
   "library.collection.namePlaceholder": "Category name",
@@ -36,12 +31,7 @@ export const en = {
   // ⚠️ Must spell out that the items disappear from the sidebar — since 2026-09-21 the
   // built-in tabs are deletable too, and then nothing surfaces their items any more.
   "library.kind.deleteConfirm": "Delete “{name}”? Its items will **disappear from the sidebar** (the data stays in the library — there is just no tab showing it any more).",
-  "library.kind.builtinLocked": "Built-in types cannot be deleted",
   "library.kind.namePlaceholder": "Level-2 category name",
-  "library.kind.showAll": "Show all",
-  "library.kind.showCollections": "Collections only",
-  "library.kind.purpose.material": "For reading",
-  "library.kind.purpose.format": "For writing",
   "library.collection.newSub": "New level-3 category",
   "library.collection.createFailed": "Could not create it",
   "library.collection.moveTo": "Move to",
@@ -72,10 +62,7 @@ export const en = {
   "library.list.showAll": "Show all",
   "library.list.filteredOut": "{n} items are hidden by the current filter",
   "library.list.clearFilters": "Clear filters",
-  "library.kind.paper": "Papers",
-  "library.kind.textbook": "Textbooks",
   "library.kind.note": "Notes",
-  "library.view.allInKind": "All {kind}",
 
   "library.import.pickNote": "Choose Markdown files…",
   "library.import.noteHint":
@@ -106,14 +93,6 @@ export const en = {
     "Permanently delete {n} selected items? The database rows and the PDF / Markdown files on disk are removed, and this cannot be undone. (To just take them out of this category, use “Remove from this category” in the right-click menu — that moves them to the recycle bin.)",
   "library.action.refresh": "Refresh",
 
-  "library.search.title": "Search external databases",
-  "library.search.scopeHint": "Online search requires a configured conversational workflow and external tools. Search local entries by title, description or source URL above the list, or search converted Markdown with full-text search.",
-  "library.search.placeholder": "Keywords, e.g. graph neural network scheduling",
-  "library.search.submit": "Search",
-  "library.search.searching": "Searching…",
-  "library.search.noResult": "No results found",
-  "library.search.addSelected": "Add to library",
-  "library.search.source": "Source",
 
   "library.import.title": "Import items",
   "library.import.result": "Imported {added}, skipped {skipped} duplicates",
@@ -135,10 +114,6 @@ export const en = {
   "library.pdf.revealFile": "Show in folder",
   "library.convert.ready": "Markdown ready",
   "library.convert.none": "No Markdown yet",
-  "library.convert.run": "Convert to Markdown",
-  "library.convert.repair": "Repair transcripts and clean stale Markdown in this category…",
-  "library.convert.redo": "Re-convert",
-  "library.convert.done": "Converted",
   "library.convert.failed": "Conversion failed",
   "library.convert.revealMd": "Show Markdown in folder",
   "library.convert.adopt": "Use local Markdown…",
@@ -299,10 +274,6 @@ export const en = {
   "library.fulltext.hint": "Only items already converted to Markdown; Chinese and English both supported",
   "library.fulltext.noMatch": "No match in full text",
   "library.fulltext.line": "line {n}",
-
-  "library.notice.needsLoginTitle": "Some downloads need you to sign in again",
-  "library.notice.needsLoginBody":
-    "These came back as web pages instead of PDFs, which usually means the sign-in expired. Please sign in again in the embedded browser, then retry.",
 
   // Mode labels/hints live under composer.mode.* in chat-composer — the
   // composer no longer shows a banner, the pill word is the whole indicator.

@@ -55,7 +55,7 @@ import type {
   SetMobileTunnelInput,
 } from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
-import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
+import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, FullTextMatch, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { EngineToolsGetInput, EngineToolsSetInput, EngineToolsSnapshot } from "./engineTools.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
@@ -82,7 +82,7 @@ import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefa
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_REVIEW_CHANNEL, MEMORY_REVIEW_DELETE_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemoryReviewDeleteInput, type MemoryReviewResult, type MemorySaveInput } from "../memory.js";
-import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput } from "./library.js";
 import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput, OnlyOfficeSessionState, OnlyOfficeStatusResult, OnlyOfficeConfig, OnlyOfficeSetConfigInput, OnlyOfficeLocalDetectResult } from "./onlyoffice.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
@@ -1394,18 +1394,6 @@ export interface RpcMap {
   /** 把文献加入/移出某集合(多对多,一篇可属多个集合)。 */
   "library.assignCollection": (input: CollectionAssignInput) => Promise<{ collections: LibraryCollection[] }>;
 
-  // 机构认证
-  /** 已保存的机构入口档案。注意:档案不含凭据,登录态在浏览器分区里。 */
-  "institution.list": () => Promise<{ profiles: InstitutionProfile[] }>;
-  /** 存一份机构入口档案(登录入口 URL / 域名 / 代理前缀;**不含凭据**)。变更类一律返回完整新列表,渲染端整体替换缓存。 */
-  "institution.save": (input: InstitutionSaveInput) => Promise<{ profiles: InstitutionProfile[] }>;
-  /** 删一份机构档案。**不会登出任何站点** —— 档案与登录态是两回事。返回删完的完整列表。 */
-  "institution.delete": (input: InstitutionDeleteInput) => Promise<{ profiles: InstitutionProfile[] }>;
-  /** 从浏览器分区的 cookie 反推「已登录哪些站点」。 */
-  "institution.authStatus": (input: InstitutionAuthStatusInput) => Promise<{ sites: AuthSiteStatus[] }>;
-  /** 清除指定域名(或全部)的登录态。 */
-  "institution.clearCookies": (input: InstitutionClearCookiesInput) => Promise<{ sites: AuthSiteStatus[] }>;
-
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -1549,12 +1537,6 @@ export const IPC = {
   LIBRARY_DELETE_COLLECTION: "library:deleteCollection",
   LIBRARY_MOVE_COLLECTION: "library:moveCollection",
   LIBRARY_ASSIGN_COLLECTION: "library:assignCollection",
-  // 机构认证
-  INSTITUTION_LIST: "institution:list",
-  INSTITUTION_SAVE: "institution:save",
-  INSTITUTION_DELETE: "institution:delete",
-  INSTITUTION_AUTH_STATUS: "institution:authStatus",
-  INSTITUTION_CLEAR_COOKIES: "institution:clearCookies",
   /** Main → renderer push:库的内容变了(含 AI 改的)。渲染端据此整体重载。 */
   LIBRARY_CHANGED: "library:changed",
   /** Main → renderer push:AI 往这次对话挂了一个附件,渲染端加进输入框的标签区。 */

@@ -666,33 +666,6 @@ export const CollectionAssignSchema = z.object({
 });
 export type CollectionAssignInput = z.infer<typeof CollectionAssignSchema>;
 
-/** 机构认证档案。⚠️ 不含任何凭据 —— 登录态在浏览器分区里,见 library.ts 的说明。 */
-export const InstitutionSaveSchema = z.object({
-  id: z.string().optional(),
-  name: z.string().min(1),
-  loginUrl: z.string().optional(),
-  domains: z.array(z.string()).optional(),
-  proxyPrefix: z.string().optional(),
-  notes: z.string().optional(),
-});
-export type InstitutionSaveInput = z.infer<typeof InstitutionSaveSchema>;
-
-export const InstitutionDeleteSchema = z.object({ id: z.string().min(1) });
-export type InstitutionDeleteInput = z.infer<typeof InstitutionDeleteSchema>;
-
-/** 查询已登录站点。按域名聚合当前浏览器分区里的 cookie。 */
-export const InstitutionAuthStatusSchema = z.object({
-  /** 只看这些域名;省略则返回全部有 cookie 的域名。 */
-  domains: z.array(z.string()).optional(),
-});
-export type InstitutionAuthStatusInput = z.infer<typeof InstitutionAuthStatusSchema>;
-
-export const InstitutionClearCookiesSchema = z.object({
-  /** 要清除的域名。省略则清空整个浏览器分区(危险,UI 需二次确认)。 */
-  domains: z.array(z.string()).optional(),
-});
-export type InstitutionClearCookiesInput = z.infer<typeof InstitutionClearCookiesSchema>;
-
 /**
  * 为一个文献库生成/刷新清单文件,返回其绝对路径。
  *

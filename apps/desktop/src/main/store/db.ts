@@ -290,21 +290,6 @@ function migrate(database: Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_library_item_links_uniq_path
       ON library_item_links(item_id, target_path) WHERE target_path IS NOT NULL;
 
-    /* 机构认证入口档案。
-       ⚠️ 本表**不含凭据** —— 真正的登录态在浏览器分区
-       (persist:mcode-browser)的 cookie 里,由 BrowserManager 的保管库负责持久化。
-       本表只是「常用入口 + 域名」的组织性记录,删了不会登出任何站点。 */
-    CREATE TABLE IF NOT EXISTS institution_profiles (
-      id           TEXT PRIMARY KEY,
-      name         TEXT NOT NULL,
-      login_url    TEXT,
-      domains      TEXT,
-      proxy_prefix TEXT,
-      notes        TEXT,
-      created_at   INTEGER NOT NULL,
-      updated_at   INTEGER NOT NULL
-    );
-
   `);
   // Backward-compatible column adds for dbs created before these columns
   // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
@@ -346,6 +331,18 @@ function migrate(database: Database): void {
   // `download_jobs` 表是纯派生数据(任务队列),直接删。
   if (tableExists(database, "download_jobs")) {
     database.run("DROP TABLE download_jobs");
+    schemaChanged = true;
+  }
+
+  // ── 机构登录退役(2026-10-11)──
+  // `institution.*`(机构认证入口档案:list/save/delete/authStatus/clearCookies)是知网/
+  // 图书馆登录场景,纯学术专属,按「学术功能全部通过扩展、工作流实现,core 不留学术」
+  // 的原则整体移出核心。`institution_profiles` 表只存「常用入口 + 域名」的组织性元数据
+  // (⚠️ **不含凭据** —— 真正的登录态在内嵌浏览器分区 `persist:mcode-browser` 的 cookie 里,
+  // 由 BrowserManager 保管,与本表无关),删掉不会登出任何站点。与 `download_jobs` 同做法:
+  // 纯可弃的表直接 DROP,不留老列。
+  if (tableExists(database, "institution_profiles")) {
+    database.run("DROP TABLE institution_profiles");
     schemaChanged = true;
   }
 

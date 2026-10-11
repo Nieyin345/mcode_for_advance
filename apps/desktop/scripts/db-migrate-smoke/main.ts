@@ -77,9 +77,11 @@ function valueOf(d: Database, sql: string): unknown {
 
 // ── 第一步:手工造一个"老版本"的库 ──────────────────────────────────────
 // 结构就是 `migrate()` 兼容段动手之前的样子:三张核心表,**没有**后来加的列;
-// workflows / workflow_runs / library_* / institution_profiles 这些后加的表整个
-// 不存在(老库里就没有),由 migrate() 的 CREATE TABLE IF NOT EXISTS 自己建出来。
-// 例外是 `download_jobs`:它是被**删掉**的那张(见下面的 fixture),要造出来才验得到 DROP。
+// workflows / workflow_runs / library_* 这些后加的表整个不存在(老库里就没有),
+// 由 migrate() 的 CREATE TABLE IF NOT EXISTS 自己建出来。
+// 例外是被**删掉**的那两张(见下面的 fixture),要造出来才验得到 DROP:
+//   - `download_jobs`(2026-09-27 学术字段退役一并删);
+//   - `institution_profiles`(2026-10-11 机构登录退役,学术域移出 core)。
 console.log("db-migrate-smoke: 造老结构的库 …");
 const SQL = await initSqlJs();
 const old = new SQL.Database();
@@ -146,6 +148,12 @@ old.run(`
     attempts INTEGER NOT NULL DEFAULT 0, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   );
   INSERT INTO download_jobs VALUES ('job_old', 'item_old', 'failed', 1, '老任务', 1000, 1000);
+  -- 老库里的机构认证入口表(2026-10-11 起由 migrate() DROP 掉):同上,造出来验 DROP 真被执行。
+  CREATE TABLE institution_profiles (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, login_url TEXT, domains TEXT,
+    proxy_prefix TEXT, notes TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  INSERT INTO institution_profiles VALUES ('inst_old', '老入口', 'https://example.edu', '["example.edu"]', NULL, NULL, 1000, 1000);
   -- 旧版会话插件名单和长任务已退役，但升级不得清除历史资料。
   ALTER TABLE sessions ADD COLUMN active_plugin_names TEXT;
   UPDATE sessions SET active_plugin_names = '["legacy-plugin"]' WHERE id = 'sess_old';
@@ -230,6 +238,8 @@ for (const c of ["entry_mode", "file_path"]) {
 }
 // download_jobs 是纯派生数据(下载队列),随学术功能退役一起 DROP。
 check("download_jobs 表已被迁移删掉", !valueOf(d, "SELECT name FROM sqlite_master WHERE type='table' AND name='download_jobs'"));
+// institution_profiles 只存「入口书签」元数据(不含凭据),随机构登录退役一起 DROP。
+check("institution_profiles 表已被迁移删掉", !valueOf(d, "SELECT name FROM sqlite_master WHERE type='table' AND name='institution_profiles'"));
 
 // ⑤ 迁移**立刻落盘**:重新打开磁盘上的文件验证,不信任内存句柄
 {

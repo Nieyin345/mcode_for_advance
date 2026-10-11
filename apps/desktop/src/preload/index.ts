@@ -375,19 +375,6 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_ASSIGN_COLLECTION, input)) as RpcMap["library.assignCollection"],
   },
 
-  /** 机构认证入口。⚠️ 这里**没有凭据管理** —— 登录态在内嵌浏览器的共享分区里,
-   *  这套 API 只维护「入口档案」并从 cookie 反推已登录站点。 */
-  institution: {
-    list: (() => ipcRenderer.invoke(IPC.INSTITUTION_LIST)) as RpcMap["institution.list"],
-    save: ((input) => ipcRenderer.invoke(IPC.INSTITUTION_SAVE, input)) as RpcMap["institution.save"],
-    delete: ((input) =>
-      ipcRenderer.invoke(IPC.INSTITUTION_DELETE, input)) as RpcMap["institution.delete"],
-    authStatus: ((input) =>
-      ipcRenderer.invoke(IPC.INSTITUTION_AUTH_STATUS, input)) as RpcMap["institution.authStatus"],
-    clearCookies: ((input) =>
-      ipcRenderer.invoke(IPC.INSTITUTION_CLEAR_COOKIES, input)) as RpcMap["institution.clearCookies"],
-  },
-
   /** App + runtime info (version, Electron/Node/Chromium, platform) for the
    *  About panel. Parameterless RPC. */
   app: {

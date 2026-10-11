@@ -10,6 +10,9 @@ export const zh = {
 
   // ── MessageBlocks: batch tool group ──
   "chatStream.opCount": "{n} 个操作",
+  /** 一组里**只有思考**时用这个抬头（思考 2026-10-11 起也可折叠）。说「N 个思考」
+   *  比说「N 个操作」准 —— 那一组里没有任何工具调用。 */
+  "chatStream.thinkingCount": "{n} 段思考",
 
   // ── Chat stream · 方案A「脉络」: turn summary / reply mark ──
   "chatStream.stepCount": "{n} 步",

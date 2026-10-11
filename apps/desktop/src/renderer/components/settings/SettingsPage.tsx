@@ -25,7 +25,6 @@ import {
   IconArrowsSplit,
   IconBolt,
   IconBook,
-  IconShieldCheck,
   McpIcon,
   IconNotebook,
   IconAdjustmentsHorizontal,
@@ -47,7 +46,6 @@ import { IconLoader2 } from "@renderer/lib/icons.js";
  */
 const PANEL_LOADERS = {
   CustomModelsPanel: () => import("./CustomModelsPanel.js"),
-  InstitutionAuthPanel: () => import("./InstitutionAuthPanel.js"),
   DataRootPanel: () => import("./DataRootPanel.js"),
   LibraryTypesPanel: () => import("./LibraryTypesPanel.js"),
   CustomUiPanel: () => import("./CustomUiPanel.js"),
@@ -98,7 +96,6 @@ function whenIdle(fn: () => void, timeout = 3000): () => void {
 }
 
 const CustomModelsPanel = lazy(() => PANEL_LOADERS.CustomModelsPanel().then((m) => ({ default: m.CustomModelsPanel })));
-const InstitutionAuthPanel = lazy(() => PANEL_LOADERS.InstitutionAuthPanel().then((m) => ({ default: m.InstitutionAuthPanel })));
 const DataRootPanel = lazy(() => PANEL_LOADERS.DataRootPanel().then((m) => ({ default: m.DataRootPanel })));
 const LibraryTypesPanel = lazy(() => PANEL_LOADERS.LibraryTypesPanel().then((m) => ({ default: m.LibraryTypesPanel })));
 const CustomUiPanel = lazy(() => PANEL_LOADERS.CustomUiPanel().then((m) => ({ default: m.CustomUiPanel })));
@@ -155,7 +152,7 @@ function PanelLoading() {
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "engine-tools" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "engine-tools" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -242,9 +239,6 @@ const NAV_GROUPS: NavGroup[] = [
       // 自定义 UI 紧跟文档管理:资料库右键菜单的功能项、Files 文件右键都在这里配置
       // (主界面只放入口,点了做什么、显示什么在这一页定义)。
       { id: "custom-ui", labelKey: "customUi.nav", icon: IconAdjustmentsHorizontal },
-      // 机构认证归在「工作台」组:它是使用场景(下载文献要先登录),
-      // 不是 AI 配置,放 ai 组会让人以为是模型相关设置。
-      { id: "institution", labelKey: "settings.nav.institution", icon: IconShieldCheck },
       { id: "git", labelKey: "settings.nav.git", icon: IconBrandGit },
       { id: "terminal", labelKey: "settings.nav.terminal", icon: IconTerminal2 },
       { id: "browser", labelKey: "settings.nav.browser", icon: IconWorld },
@@ -398,7 +392,6 @@ export function SettingsPage() {
               </>
             )}
             {active === "custom-ui" && <CustomUiPanel />}
-            {active === "institution" && <InstitutionAuthPanel />}
             {active === "shortcuts" && <ShortcutsPanel />}
             {active === "gestures" && <GesturesPanel />}
             {active === "voice" && <VoicePanel />}

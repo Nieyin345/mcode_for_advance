@@ -1175,5 +1175,77 @@ function peerOrThrow(sessionId: string, name: string) {
   return p;
 }
 
+/* ── running 快照要广播给所有客户端(2026-10-11,手机发过后桌面不能插) ──────────
+ *
+ * ## 这条钉的是什么
+ *
+ * 从前「哪些会话正在跑」这份权威集合**只**在手机 SSE 建连时发,桌面永远收不到。于是
+ * 手机起了一轮后,桌面渲染端的 `runningBySession` 仍为 false —— 界面显示"可发送",用户
+ * 一按就被主进程的并发闸拒(「这个对话上一轮还在运行」),Ctrl+Enter 也被当成普通发送而
+ * 不是插入。修法是**在 running 集合变化的两个边沿广播它**(见 `broadcastRunningState`)。
+ *
+ * ## 为什么在这里验
+ *
+ * 无头起不了真 SDK 回合,但 `broadcastRunningState` 是**公开**的(与 `runningSessionIds`
+ * 同属可观测面),而 `fanOutToClients` 走 `sendToRenderer`(本套已换成记录桩)。所以直接
+ * 调它、看推出去的那一帧**形状对不对** —— 这是"广播这条链没断"的最小证据。
+ *
+ * ⚠️ 必须是**完整**集合,不能只发一条:渲染端那个归约是**整表替换**,发单条会把别的会话
+ * 的 running 误清掉(见 `reduceSessionRunningSnapshot`)。
+ */
+console.log("\nrunning 快照广播(手机↔桌面同步)");
+{
+  const { sent, resetSent, setRendererAlive } = await import("./stubs/window.js");
+  // 造**两个**真在跑的会话 —— 这样"只发一条"的变异会被条数断言抓住(一个都没有时,
+  // slice(0,1) 也是空的,断言看不见差异)。
+  const providerId = "running-snapshot-smoke";
+  providerRegistry.register({
+    id: providerId,
+    displayName: "Running-snapshot smoke provider",
+    capabilities: {
+      supportsApproval: false, supportsResume: false, supportsStreaming: false,
+      supportsMcp: false, supportsAskUserQuestion: false,
+    },
+    // 永不 done、恒 isRunning:这一轮会一直"在跑",好让 runningSessionIds() 非空。
+    startTurn: async () => ({ done: new Promise<void>(() => {}), interrupt: () => {}, isRunning: () => true }),
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+  const r1 = mkSession({ kind: "chat", title: "在跑的甲", providerId });
+  const r2 = mkSession({ kind: "chat", title: "在跑的乙", providerId });
+  runtimeManager.bindSession(r1);
+  runtimeManager.bindSession(r2);
+  try {
+    await runtimeManager.sendTurn(r1, { prompt: "甲", cwd: "C:/work" });
+    await runtimeManager.sendTurn(r2, { prompt: "乙", cwd: "C:/work" });
+    const live = runtimeManager.runningSessionIds();
+    check("前置:确实有两个会话在跑", live.length >= 2, live);
+
+    resetSent();
+    setRendererAlive(true);
+    runtimeManager.broadcastRunningState();
+    const frame = sent.find(
+      (s) => (s.payload as { event?: { type?: string } })?.event?.type === "session.runningSnapshot",
+    );
+    check("★ 广播帧推到了渲染端(桌面这才学得到别的客户端起的回合)", frame !== undefined);
+    const ev = (frame?.payload as { event?: { running?: string[]; desktopAttached?: boolean } })?.event;
+    // ★ 完整集合,不是单条 —— 渲染端那个归约是**整表替换**,发单条会把别的会话说成"没在跑"。
+    //   变异(把 running 改成 slice(0,1))在这里必红:1 ≠ live.length。
+    check("★ 帧里是**完整**运行集合(整表替换,发少一条会误清)",
+      ev?.running?.length === live.length && live.every((id) => ev!.running!.includes(id)), ev?.running);
+    check("★ 帧带 desktopAttached(桌面开着 = true)", ev?.desktopAttached === true);
+
+    const seen: string[] = [];
+    const off = mobileEventBus.subscribe((e) => { if (e.type === "session.runningSnapshot") seen.push(e.type); });
+    try {
+      runtimeManager.broadcastRunningState();
+      check("★ 同一帧也广播给了手机 SSE(两端同源)", seen.length === 1);
+    } finally { off(); }
+  } finally {
+    runtimeManager.dispose(r1.id);
+    runtimeManager.dispose(r2.id);
+    setRendererAlive(true);
+  }
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);

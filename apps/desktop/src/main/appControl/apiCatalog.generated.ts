@@ -822,41 +822,6 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ run: HookRun }"
  },
  {
-  "method": "institution.authStatus",
-  "channel": "institution:authStatus",
-  "doc": "从浏览器分区的 cookie 反推「已登录哪些站点」。",
-  "input": "{ domains?: string[] | undefined // 只看这些域名;省略则返回全部有 cookie 的域名。 }",
-  "output": "{ sites: AuthSiteStatus[] }"
- },
- {
-  "method": "institution.clearCookies",
-  "channel": "institution:clearCookies",
-  "doc": "清除指定域名(或全部)的登录态。",
-  "input": "{ domains?: string[] | undefined // 要清除的域名。省略则清空整个浏览器分区(危险,UI 需二次确认)。 }",
-  "output": "{ sites: AuthSiteStatus[] }"
- },
- {
-  "method": "institution.delete",
-  "channel": "institution:delete",
-  "doc": "删一份机构档案。**不会登出任何站点** —— 档案与登录态是两回事。返回删完的完整列表。",
-  "input": "{ id: string }",
-  "output": "{ profiles: InstitutionProfile[] }"
- },
- {
-  "method": "institution.list",
-  "channel": "institution:list",
-  "doc": "已保存的机构入口档案。注意:档案不含凭据,登录态在浏览器分区里。",
-  "input": "(无参数)",
-  "output": "{ profiles: InstitutionProfile[] }"
- },
- {
-  "method": "institution.save",
-  "channel": "institution:save",
-  "doc": "存一份机构入口档案(登录入口 URL / 域名 / 代理前缀;**不含凭据**)。变更类一律返回完整新列表,渲染端整体替换缓存。",
-  "input": "{ name: string; id?: string | undefined; loginUrl?: string | undefined; domains?: string[] | undefined; proxyPrefix?: string | undefined; notes?: string | undefined }",
-  "output": "{ profiles: InstitutionProfile[] }"
- },
- {
   "method": "library.addItems",
   "channel": "library:addItems",
   "doc": "入库(只建记录,不带文件)。返回新增的条目。",

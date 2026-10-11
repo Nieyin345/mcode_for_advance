@@ -7,6 +7,7 @@ export const en = {
 
   // ── MessageBlocks: batch tool group ──
   "chatStream.opCount": "{n} operations",
+  "chatStream.thinkingCount": "{n} thinking",
 
   // ── Chat stream · Plan A (spine): turn summary / reply mark ──
   "chatStream.stepCount": "{n} steps",

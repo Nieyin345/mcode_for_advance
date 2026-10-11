@@ -6,14 +6,9 @@ export const zh = {
   // 入口与标题
   "library.title": "资料库",
   "library.docs.title": "文档",
-  "library.subtitle": "管理本地资料（论文、教材、笔记等），供 AI 阅读与引用",
   "library.open": "资料库",
 
   // 左栏:智能视图与集合
-  "library.view.all": "全部资料",
-  "library.view.recent": "最近添加",
-  "library.view.missingPdf": "未下载 PDF",
-  "library.view.needsLogin": "需要登录",
   "library.collections": "分类",
   "library.collection.new": "新建三级分类",
   "library.collection.namePlaceholder": "分类名称",
@@ -45,12 +40,7 @@ export const zh = {
    *  （论文/教材/笔记…）也能删了，而删掉之后**名下的条目没有入口能看见** ——
    *  数据还在库里，但左栏不再有它们的 tab。不说这句，用户删完会以为东西丢了。 */
   "library.kind.deleteConfirm": "删除二级分类「{name}」？它名下的条目**会从左栏消失**（数据还在库里，只是没有入口显示它们了）。",
-  "library.kind.builtinLocked": "内置类型不能删除",
   "library.kind.namePlaceholder": "二级分类名称",
-  "library.kind.showAll": "全部显示",
-  "library.kind.showCollections": "只看分类",
-  "library.kind.purpose.material": "查资料用",
-  "library.kind.purpose.format": "照着写用",
   "library.collection.newSub": "新建三级分类",
   "library.collection.createFailed": "创建失败",
   "library.collection.moveTo": "移动到",
@@ -84,10 +74,7 @@ export const zh = {
   "library.list.showAll": "看全部",
   "library.list.filteredOut": "{n} 条被筛选条件挡住了（不在这个视图里显示）",
   "library.list.clearFilters": "清除筛选",
-  "library.kind.paper": "文献",
-  "library.kind.textbook": "教材",
   "library.kind.note": "笔记",
-  "library.view.allInKind": "全部{kind}",
 
   /* ── 笔记库 ── */
   "library.import.pickNote": "选择 Markdown 文件…",
@@ -119,14 +106,6 @@ export const zh = {
   "library.action.refresh": "刷新",
 
   // 检索
-  "library.search.title": "检索外部数据库",
-  "library.search.scopeHint": "联网检索需要已配置的对话工作流与外部工具。要搜库内条目，用列表上方的搜索框（标题/简介/来源地址）；要搜已转录的 Markdown 正文，用全文检索。",
-  "library.search.placeholder": "关键词，如 graph neural network scheduling",
-  "library.search.submit": "检索",
-  "library.search.searching": "检索中…",
-  "library.search.noResult": "没有找到结果",
-  "library.search.addSelected": "加入资料库",
-  "library.search.source": "来源",
 
   // 导入
   "library.import.title": "导入资料",
@@ -151,10 +130,6 @@ export const zh = {
   "library.pdf.revealFile": "在文件夹中显示",
   "library.convert.ready": "已转 Markdown",
   "library.convert.none": "尚未转 Markdown",
-  "library.convert.run": "转 Markdown",
-  "library.convert.repair": "修复本小类转录并清理失联 Markdown…",
-  "library.convert.redo": "重新转换",
-  "library.convert.done": "已转换",
   "library.convert.failed": "转换失败",
   "library.convert.revealMd": "在文件夹中显示 Markdown",
   "library.convert.adopt": "用本地 Markdown…",
@@ -360,8 +335,6 @@ export const zh = {
   "library.fulltext.line": "第 {n} 行",
 
   // 下载提示
-  "library.notice.needsLoginTitle": "有下载需要重新登录",
-  "library.notice.needsLoginBody": "这些文献拿回来的是网页而不是 PDF，通常是登录态过期了。请在内嵌浏览器里重新登录后重试。",
 
   // 模式的标签与说明都在 chat-composer 的 composer.mode.* ——
   // 输入框里不再有提示条，药丸上那个词就是全部指示。
