@@ -122,6 +122,11 @@ export interface CustomModelEntry {
    *  ANTHROPIC_MODEL carries the `[1m]` suffix (the DeepSeek-style gateway
    *  convention). */
   supports1m?: boolean;
+  /** Declare that this model accepts **image input**. Purely a user-facing
+   *  declaration (not sent upstream): it records which models the user knows
+   *  can read pictures, so one can be picked as the 「视觉中继」model when the
+   *  session's own model has no vision. Absent = not declared. */
+  supportsVision?: boolean;
   /** 每模型「思考强度档位 → 该网关要的具体值」映射（2026-10-11 加）。
    *  与 Pi 的 `thinkingLevelMap` 同一形状、同一语义：不同网关对同一档位用的标识符
    *  不一样（A 家要 "high"、B 家要 "3"），这一格让用户把它接对。

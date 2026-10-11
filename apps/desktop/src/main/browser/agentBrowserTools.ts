@@ -1030,8 +1030,9 @@ export const BROWSER_TOOL_SPECS: Record<string, BrowserToolSpec> = {
     name: "browser_screenshot",
     description:
       "截取当前页面为 PNG,用于视觉确认布局/样式。默认截可视区域;fullPage=true 截整页(含滚动外内容,走 CDP 渲染)。" +
-      "只读,截图同时显示给用户和返回给你。",
-    promptSnippet: "browser_screenshot({browserId?, fullPage?}): 截图(只读)",
+      "只读,截图同时显示给用户和返回给你;" +
+      "**很多模型读不到图**(没有视觉输入)——读不到就用返回里那个**已保存的文件路径**,配合 `agent_read_image {describe: true}` 让「视觉中继模型」把页面内容转述成文字(报告 D10)。",
+    promptSnippet: "browser_screenshot({browserId?, fullPage?}): 截图(只读;读不到图就用返回的路径 + agent_read_image {describe:true})",
   },
 };
 

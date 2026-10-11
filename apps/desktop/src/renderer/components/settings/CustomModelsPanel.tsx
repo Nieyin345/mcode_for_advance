@@ -286,6 +286,9 @@ interface ClaudeModelFormState {
   /** Gateway-side model id, e.g. "deepseek-v4-pro". */
   id: string;
   supports1m: boolean;
+  /** 声明该模型接受**图片输入**（用户自述，不上行）。供「视觉中继」挑眼睛用 ——
+   *  与 Pi 侧的 `vision` 同一语义，只是这里只存一份声明。 */
+  supportsVision: boolean;
   /** 每模型「档位 → 该网关要的值」映射（与 Pi 同一形状）。空串 = 用默认；
    *  复选框勾上但值为空 = 该档位不支持（null）。这里用 `thinking`/`thinkingValue`
    *  两个平行表，落到配置时再折算成 `{ [档位]: 值 | null }`。 */
@@ -448,7 +451,7 @@ interface ClaudeFormState {
 }
 
 function emptyClaudeModel(): ClaudeModelFormState {
-  return { id: "", supports1m: false, thinking: defaultThinkingModes(), thinkingValue: emptyThinkingValues() };
+  return { id: "", supports1m: false, supportsVision: false, thinking: defaultThinkingModes(), thinkingValue: emptyThinkingValues() };
 }
 function emptyClaudeForm(): ClaudeFormState {
   return {
@@ -475,7 +478,7 @@ function claudeFormFromConfig(m: CustomModelPublic): ClaudeFormState {
     protocol: m.protocol,
     webSiteId: m.webSiteId ?? "",
     authToken: "",
-    models: m.models.map((e) => ({ id: e.id, supports1m: Boolean(e.supports1m), ...thinkingFromMap(e.thinkingLevelMap) })),
+    models: m.models.map((e) => ({ id: e.id, supports1m: Boolean(e.supports1m), supportsVision: Boolean(e.supportsVision), ...thinkingFromMap(e.thinkingLevelMap) })),
     subagentModel: m.subagentModel ?? "",
     disableNonEssentialTraffic: m.disableNonEssentialTraffic ?? true,
     timeoutMs: m.timeoutMs ? String(m.timeoutMs) : "",
@@ -855,6 +858,7 @@ export function CustomModelsPanel() {
       models.push({
         id,
         ...(m.supports1m ? { supports1m: true } : {}),
+        ...(m.supportsVision ? { supportsVision: true } : {}),
         ...(tmap ? { thinkingLevelMap: tmap } : {}),
       });
     }
@@ -1642,7 +1646,7 @@ function ClaudeProviderForm({
                 setForm({
                   ...form,
                   protocol: next,
-                  models: [{ id: defaultWebModelId(form.webSiteId), supports1m: false, thinking: defaultThinkingModes(), thinkingValue: emptyThinkingValues() }],
+                  models: [{ id: defaultWebModelId(form.webSiteId), supports1m: false, supportsVision: false, thinking: defaultThinkingModes(), thinkingValue: emptyThinkingValues() }],
                 });
                 return;
               }
@@ -1753,7 +1757,7 @@ function ClaudeProviderForm({
             const testingThis = test.status === "testing" && test.idx === idx;
             return (
               <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
-                <div className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-1.5">
+                <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] items-center gap-1.5">
                   <Input
                     value={m.id}
                     onChange={(e) => updateModel(idx, { id: e.target.value })}
@@ -1767,6 +1771,11 @@ function ClaudeProviderForm({
                   <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.supports1mLabel")}>
                     <Switch checked={m.supports1m} onCheckedChange={(v) => updateModel(idx, { supports1m: v })} label={t("settings.customModels.supports1mLabel")} />
                     <span className="text-[0.6428em] text-content-muted">1M</span>
+                  </label>
+                  {/* 声明这个模型能读图 —— 供「视觉中继」挑眼睛（与 Pi 表单同一开关、同一 i18n key）。 */}
+                  <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.visionLabel")}>
+                    <Switch checked={m.supportsVision} onCheckedChange={(v) => updateModel(idx, { supportsVision: v })} label={t("settings.customModels.visionLabel")} />
+                    <span className="text-[0.6428em] text-content-muted">{t("settings.customModels.visionSpan")}</span>
                   </label>
                   <Button
                     variant="ghost"

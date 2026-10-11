@@ -26,6 +26,7 @@ import type { ProviderContext } from "@contracts/provider";
 import { agentMcpTools, AGENT_MCP_SERVER, AGENT_READONLY_TOOLS, type AgentToolsDeps } from "@main/mcp/agentTools.js";
 import { makeEngineBridge, type EngineToolDescriptor } from "@main/mcp/engineBridge.js";
 import { agentEngineCwdFor } from "@main/mcp/agentEngineCwd.js";
+import { getVisionRelayImpl } from "@main/mcp/visionRelayRegistry.js";
 import type { McpToolSpec, ToolResult } from "@main/mcp/sdk.js";
 import { loadCreateMcpServer, toSdkTools } from "@main/mcp/sdk.js";
 import { log } from "@main/lib/logger.js";
@@ -58,10 +59,22 @@ export interface AgentEngineDeps {
  * 任何一个不在只读集里 → 跳过并**告警**（绝不静默放行写工具）。
  */
 export function agentEngineReadonlySpecs(deps: AgentEngineDeps): McpToolSpec[] {
+  const relay = getVisionRelayImpl();
   const all = agentMcpTools({
     cwdFor: deps.cwdFor,
     // 桌面本机会话不设沙箱（同 claude 引擎原有行为）。公网那条路自己有 sandboxRootFor。
     sandboxRootFor: () => null,
+    // 视觉中继（报告 D10 / Q1）：桌面三引擎都能用 —— 它们正是"模型可能没视觉"的那几条路。
+    // 走登记口拿实现（见 `visionRelayRegistry.ts`）：没装配时它是 null，两个字段都不给 =
+    // 能力不存在，工具照旧只回图片块。**公网那条通路不在这里**（它走 `webToolHost`），
+    // 所以拿到链接的人借不到用户的模型额度。
+    ...(relay
+      ? {
+          describeImage: (args: Parameters<NonNullable<AgentToolsDeps["describeImage"]>>[0]) =>
+            relay.describeImage(args),
+          visionRelayConfigured: () => relay.configured(),
+        }
+      : {}),
   });
   const byName = new Map(all.map((s) => [s.name, s]));
   const out: McpToolSpec[] = [];

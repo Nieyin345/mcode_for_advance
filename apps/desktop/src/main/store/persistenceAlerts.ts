@@ -5,6 +5,7 @@ import { UI_LOCALE_SETTING_KEY } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
 import { SettingRepo } from "./repositories.js";
 import { flushDb, onDbPersistenceError } from "./db.js";
+import { persistenceFailureDetail } from "./persistenceDiagnosis.js";
 import { zh } from "../../renderer/lib/i18n/zh/common.js";
 import { en } from "../../renderer/lib/i18n/en/common.js";
 
@@ -17,7 +18,11 @@ export function showDbPersistenceError(cause: unknown): void {
   let messages: typeof zh | typeof en = zh;
   try { if (SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en") messages = en; }
   catch { /* startup failure: use the default locale */ }
-  const detail = cause instanceof Error ? cause.message : String(cause);
+  // 报告 E3:`detail` 从前只是原始错误串(`EPERM: operation not permitted, rename …`)——
+  // 用户看不出是谁挡的,而弹窗正文那句「检查磁盘空间和目录权限」把最常见的一种(另一个
+  // 程序开着 mcode.db)指向了错方向。`persistenceFailureDetail` 在原文后面补一句**指得着
+  // 动手方向**的说明(认不出就不加,不硬套)。
+  const detail = persistenceFailureDetail(cause);
   // Native APIs can throw before returning a Promise; handle both forms.
   void Promise.resolve().then(() => dialog.showMessageBox({
     type: "error",

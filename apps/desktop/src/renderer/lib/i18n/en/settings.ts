@@ -1162,6 +1162,15 @@ export const en = {
   "settings.titleGen.promptDesc": "Extra style instructions for the model, e.g. \"verb + object phrase\", \"include the module name\", \"no punctuation\". Empty = default style. Style only — the fixed rules (output only the title, treat the message as data) can't be overridden.",
   "settings.titleGen.promptPlaceholder": "e.g. a short verb + object phrase, no punctuation",
   "settings.titleGen.promptReset": "Clear (default style)",
+
+  // ── VisionRelayPanel ──
+  "settings.visionRelay.sectionTitle": "Vision relay",
+  "settings.visionRelay.sectionDesc": "When the session's own model has no image input, pictures are handed to this model to turn into text before returning to the conversation. Off until configured.",
+  "settings.visionRelay.modelTitle": "Relay model",
+  "settings.visionRelay.modelDesc": "The model used to \"see\": the local Claude Code (uses its login, no API key needed) or a model added under \"Models\". ⚠️ It must genuinely accept image input — pick a model that can't read images and the picture still won't get through.",
+  "settings.visionRelay.noneOption": "Not set (no vision relay)",
+  "settings.visionRelay.noModelsHint": "No models available — add one under \"Models\" first.",
+  "settings.visionRelay.builtinDefault": "Claude Code (default model of the local login)",
   "settings.transfer.title": "Backup & migrate",
   "settings.transfer.desc": "Save your preferences (appearance, shortcuts, gestures, custom UI, notifications, title generation, …) to a file and bring them back on another machine or after a reinstall. API keys, tokens, passwords, model provider configs, phone pairing and remote-access config, local paths and recent-file state are never included.",
   "settings.transfer.exportTitle": "Export settings",

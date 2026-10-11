@@ -114,6 +114,22 @@ try {
     "桥对非只读名显式拒(不静默放行)",
     bridgeSrc.includes("AGENT_READONLY_TOOLS.has(name)"),
   );
+  // 视觉中继(报告 D10 / Q1):图片工具得**真的**接上中继,否则这个能力在三个桌面引擎
+  // 上一个都不生效 —— 而工具照旧"能拍能读",没人会看出它聋。
+  // ⚠️ 判据要**具体到赋值**,不能用 `includes("describeImage")` 这种模糊串:`relay`
+  // 那段是条件展开的,光看名字出现在文件里证明不了它被赋进了 deps(改个名照样命中)。
+  check(
+    "★ 桥把视觉中继接进 agent 工具 deps(否则三引擎都用不上)",
+    bridgeSrc.includes("getVisionRelayImpl()") &&
+      bridgeSrc.includes("describeImage: (args") &&
+      bridgeSrc.includes("visionRelayConfigured: () => relay.configured()"),
+  );
+  // 装配点也得真的登记 —— 登记口是模块级单例,"定义了但没人 set"是最典型的假绿。
+  const mainSrc = readFileSync(resolve(process.cwd(), "src/main/index.ts"), "utf8");
+  check(
+    "★ 应用装配时真的登记了中继实现(不是只定义了登记口)",
+    mainSrc.includes("setVisionRelayImpl(") && mainSrc.includes("visionRelayConfigured"),
+  );
   const claudeSrc2 = readFileSync(resolve(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
   const codexSrc = readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
   const piSrc2 = readFileSync(resolve(process.cwd(), "src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8");

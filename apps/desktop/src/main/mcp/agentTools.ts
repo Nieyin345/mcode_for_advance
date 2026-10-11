@@ -153,6 +153,26 @@ export interface AgentToolsDeps {
    * 走注入是因为那条链要拉库模块,无头 smoke 的 bundle 装不下。
    */
   libraryForAi?: LibraryForAi;
+  /**
+   * **视觉中继**(报告 D10 / Q1):把一张图交给用户配的"有视觉的模型"转述成文字。
+   * `agent_read_image` 传 `describe: true` 时走它。
+   *
+   * 走注入而不是直接 import `lib/visionRelay.js`,原因与 `libraryForAi` 相同:那条链
+   * 拉 `SettingRepo` → `db` → `electron`,会把无关的无头 smoke 一起拖下水。没给 =
+   * 这个能力不存在(工具照旧只回图片块),公网那条通路**刻意不给**。
+   */
+  describeImage?: (args: {
+    imageBase64: string;
+    mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+    source?: string;
+    question?: string;
+  }) => Promise<{ ok: true; text: string; model: string } | { ok: false; error: string }>;
+  /**
+   * 用户配没配视觉中继模型 —— `agent_read_image` 用它决定 caption 里要不要写那句
+   * "带 describe: true 再读一次"。**没配就不写**:否则等于指引模型去走一条走不通的路,
+   * 又骗它一次。没给 = 当作没配。
+   */
+  visionRelayConfigured?: () => boolean;
 }
 
 /* ────────────────────────────── 共用小件 ────────────────────────────── */
@@ -1171,11 +1191,21 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         "读取本地 PNG/JPEG/GIF/WebP，并按 MCP 标准 image content block 返回给支持视觉输入的客户端/模型。" +
         "最大 8MB；相对路径按会话工作目录解析。" +
         "⚠️ **只有能读图的模型才看得到内容** —— 无视觉的模型收到的是一个尺寸占位，" +
-        "这时不要凭文件名／大小编造画面，改用文件路径交给能看到它的步骤或用户。",
+        "这时不要凭文件名／大小编造画面。" +
+        "**读不到画面时带 `describe: true` 再读一次**:如果用户配了「视觉中继模型」," +
+        "这张图会交给那个有视觉的模型转述成**文字描述**返回给你(报告 D10:让无视觉的模型也能知道图里有什么)。" +
+        "没配中继模型时它会如实说「未配置」,那就改用文件路径交给能看到它的步骤或用户。",
       inputSchema: {
         path: z.string().min(1).describe("图片路径（PNG/JPEG/GIF/WebP）"),
+        describe: z
+          .boolean()
+          .optional()
+          .describe(
+            "读不到画面时传 true:把图交给用户配的「视觉中继模型」,返回它的文字描述(无视觉的模型靠这个知道图里有什么)。" +
+              "能读图的模型不必传(直接就看到 content block 里的图了)。",
+          ),
       },
-      handler: async (args: { path: string }, ctx) => {
+      handler: async (args: { path: string; describe?: boolean }, ctx) => {
         try {
           const abs = pOfRead(ctx, args.path, "read");
           const ext = path.extname(abs).toLowerCase();
@@ -1193,6 +1223,38 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             return fail(`图片 ${st.size} B 超过 ${MAX_IMAGE_BYTES} B 上限`);
           }
           const data = await fs.readFile(abs);
+          const name = path.basename(abs);
+
+          // **视觉中继**(报告 D10 / Q1):`describe: true` = 调用方明说"我读不到画面",
+          // 把图交给用户挑定的、有视觉的模型转述成文字。只读、不落盘、不改任何东西 ——
+          // 与这个工具其余部分同档。**公网那条通路不给这个 dep**(没有审批闸门,不该再
+          // 让拿到链接的人借用户的模型额度):`ctx.audience === "public"` 时直接跳过。
+          if (args.describe === true && deps.describeImage && ctx.audience !== "public") {
+            const relay = await deps.describeImage({
+              imageBase64: data.toString("base64"),
+              mimeType: mime as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+              source: name,
+            });
+            if (relay.ok) {
+              return text(
+                `[image ${name} ${st.size} B,${mime}] — 以下是「视觉中继模型」(${relay.model})对这张图的转述:\n\n${relay.text}`,
+              );
+            }
+            // 中继失败**不静默** —— 如实说,并说明退路(交给用户 / 有视觉的步骤)。
+            return text(
+              `[image ${name} ${st.size} B,${mime}] — 视觉中继没能给出描述:${relay.error}\n` +
+                "这张图我这里读不到内容(我所在的模型没有视觉输入)。" +
+                "可以改用文件路径交给能看到它的步骤或用户,不要凭文件名或大小编造画面。",
+            );
+          }
+
+          // 没要求中继(或那条路不可用):照旧返回**原样**的 MCP image block。caption 里
+          // 那句"请求中继"的话只在**真的配了中继**时才出现 —— 否则会指引模型去走一条
+          // 走不通的路,等于又骗它一次。
+          const relayHint =
+            deps.visionRelayConfigured?.() === true && ctx.audience !== "public"
+              ? "读不到画面的话,带 describe: true 再读一次,会返回这张图的文字描述。"
+              : "改用文件路径让能看到它的步骤或用户来处理。";
           return image(
             data.toString("base64"),
             mime,
@@ -1202,13 +1264,12 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             // "这图是空的"和"我没长眼睛"。从前 caption 只有 `[image x.png 247369 B]`
             // —— 看着像一句成功回执,于是模型照着自己编,用户拿到的是编出来的描述。
             // 这段话说清三件事:文件名/大小(给有视觉的模型当定位)、**这块图必须真的
-            // 被看见才算读到**、看不到就**明说看不到**,并从文件本身另找办法(路径
-            // 是给得出的 —— 可以交给有视觉的步骤,或让用户自己描述)。**不假装成功**,同
-            // `@contracts/outputConstraint` 那条"查不了就说查不了"。
-            `[image ${path.basename(abs)} ${st.size} B,${mime}]` +
+            // 被看见才算读到**、看不到就**明说看不到**,并从文件本身另找办法。**不假装
+            // 成功**,同 `@contracts/outputConstraint` 那条"查不了就说查不了"。
+            `[image ${name} ${st.size} B,${mime}]` +
               " — 这是一张图片;**只有能读图的模型才看得到内容**。" +
               "如果你读不到画面(收到的是尺寸而不是图像),不要凭文件名或大小编造它画了什么:" +
-              "改用文件路径让能看到它的步骤或用户来处理。",
+              relayHint,
           );
         } catch (err) {
           return fail(err instanceof Error ? err.message : String(err));

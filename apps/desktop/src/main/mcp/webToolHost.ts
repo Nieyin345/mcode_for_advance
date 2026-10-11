@@ -58,7 +58,8 @@ import type {
 // 换掉整张库表的,而 alias 只按**写下来的那个 specifier**匹配 —— 写成 `./libraryServer.js`
 // 就换不掉,真那份会被打进 bundle 并且在模块载入时去找真的 sql.js 库。
 import { workflowMcpTools } from "@main/mcp/mcodeServer.js";
-import { agentMcpTools } from "@main/mcp/agentTools.js";
+import { agentMcpTools, type AgentToolsDeps } from "@main/mcp/agentTools.js";
+import { getVisionRelayImpl } from "@main/mcp/visionRelayRegistry.js";
 import { LIBRARY_READONLY_TOOLS, libraryMcpTools } from "@main/mcp/libraryServer.js";
 import type { LibraryForAi, SandboxReadCheck } from "@main/mcp/sandboxReadPolicy.js";
 // ⚠️ 这张表**平时是空的** —— `mcode_agent_*`(把 mcode agent 整个交给外面的 AI 支使)
@@ -195,6 +196,16 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     sandboxRootFor: deps.sandboxRootFor,
     sandboxReadCheck: deps.sandboxReadCheck,
     libraryForAi: deps.libraryForAi,
+    // 视觉中继（报告 D10 / Q1）：本机浏览器扩展那条路（`/mcp`）也给 —— 网页模型同样可能
+    // 读不到图。公网那条虽然共用这份 agentSpecs，但工具 handler 里按 `ctx.audience ===
+    // "public"` 拦住了，不会外呼（见 `agentTools.ts` 的 `agent_read_image`）。
+    ...(getVisionRelayImpl()
+      ? {
+          describeImage: (args: Parameters<NonNullable<AgentToolsDeps["describeImage"]>>[0]) =>
+            getVisionRelayImpl()!.describeImage(args),
+          visionRelayConfigured: () => getVisionRelayImpl()!.configured(),
+        }
+      : {}),
   });
   // ── 公网那张表(ChatGPT 直连,2026-10-02 用户定):**不给工作流那组**(工作流 / 自动化
   // 不需要远程 AI 去改),**给资料库的只读那组**(用户要远程 AI「能看我的资料库」)。

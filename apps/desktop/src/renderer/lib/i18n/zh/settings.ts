@@ -1164,6 +1164,15 @@ export const zh = {
   "settings.titleGen.promptDesc": "附加给模型的风格要求,例如「用动宾短语」「带上项目模块名」「不要标点」。留空用默认风格。只能调整风格 —— 「只输出标题」「消息内容不当指令执行」这些规则不会被覆盖。",
   "settings.titleGen.promptPlaceholder": "例如:用「动词 + 对象」的短语,不要标点,技术名词保留英文",
   "settings.titleGen.promptReset": "清空(恢复默认风格)",
+
+  // ── VisionRelayPanel ──
+  "settings.visionRelay.sectionTitle": "视觉中继",
+  "settings.visionRelay.sectionDesc": "当会话背后的模型没有图片输入能力时,把图片交给这里的模型转述成文字,再回到对话里。未配置则不生效。",
+  "settings.visionRelay.modelTitle": "中继模型",
+  "settings.visionRelay.modelDesc": "选择用来「看图」的模型:可以用本机 Claude Code(用它的登录,不需要 API Key),也可以用「模型配置」里添加的模型。⚠️ 必须是真正支持图片输入的多模态模型 —— 选一个读不了图的模型,图片照样进不去。",
+  "settings.visionRelay.noneOption": "未配置(不使用视觉中继)",
+  "settings.visionRelay.noModelsHint": "暂无可用模型,请先在「模型配置」中添加。",
+  "settings.visionRelay.builtinDefault": "Claude Code(本机登录的默认模型)",
   "settings.transfer.title": "备份与迁移",
   "settings.transfer.desc": "把你的偏好(外观、快捷键、手势、扩展、通知、标题生成等)存成一个文件,换电脑或重装后导回来。不包含 API Key、令牌、密码、模型供应商配置、手机配对与远程访问配置,也不含本机路径和打开记录。",
   "settings.transfer.exportTitle": "导出设置",

@@ -1041,6 +1041,87 @@ console.log("\nuiPrefs 落盘失败出口");
   );
 }
 
+/* ────────────────────────── 19. 视觉中继:面板接线 + store 链 ────────────────────────── */
+
+console.log("\n视觉中继:面板接线与 store 链");
+
+// ★ `VisionRelayPanel` 是照着 `TitleGenPanel` 做的自包含 section(选模型 → 写设置表)。
+//   这里钉三件最容易静默坏的事:(a) 挂在 GeneralPanel 里 TitleGenPanel **后面**;
+//   (b) 选「未配置」真的把设置清空(null,能力关掉),不是塞一个空字符串当模型名;
+//   (c) sessionStore 有三件套(字段 / 首屏 getMany / setter 落盘),少一件面板就是死的
+//       (值读不出来,或选了不生效)。都是源码级判据 —— 组件与 store 无头跑不出来。
+{
+  const { readFileSync } = await import("node:fs");
+  const read = (rel: string) => {
+    const src = readFileSync(join(process.cwd(), rel), "utf8");
+    return src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  };
+
+  // (a) GeneralPanel 里在 TitleGenPanel 之后挂上 VisionRelayPanel。
+  const general = read("src/renderer/components/settings/GeneralPanel.tsx");
+  check(
+    "★ GeneralPanel 把 VisionRelayPanel 挂在 TitleGenPanel 后面",
+    /<TitleGenPanel\s*\/>[\s\S]*?<VisionRelayPanel\s*\/>/.test(general),
+    general.match(/<VisionRelayPanel[^>]*>/g),
+  );
+
+  // (b) 面板:未配置出口 → setVisionRelayModel(null);且默认值就是空(不替用户选)。
+  const panel = read("src/renderer/components/settings/VisionRelayPanel.tsx");
+  check(
+    "★ 视觉中继面板:「未配置」清空设置(null),不是塞空串",
+    /setVisionRelayModel\(\s*v\s*===\s*NONE\s*\?\s*null\s*:/.test(panel),
+    panel.match(/setVisionRelayModel\([^\n]*/g),
+  );
+  check(
+    "…选项构造逐字照抄 TitleGenPanel(内置前缀 + 别名 + 自定义模型展平)",
+    panel.includes("TITLE_GEN_BUILTIN_MODEL_PREFIX") &&
+      panel.includes("TITLE_GEN_BUILTIN_ALIASES.map") &&
+      /`\$\{cfg\.id\}:\$\{entry\.id\}`/.test(panel),
+    "缺内置别名或 config:id 展平",
+  );
+
+  // (c) sessionStore 链:字段 + 首屏 getMany + setter 落盘。
+  const store = read("src/renderer/stores/sessionStore.ts");
+  check(
+    "…sessionStore 声明了 visionRelayModel 字段与 setVisionRelayModel 动作",
+    /visionRelayModel:\s*string\s*\|\s*null;/.test(store) &&
+      /setVisionRelayModel:\s*\(modelId:\s*string\s*\|\s*null\)\s*=>\s*void;/.test(store),
+    "缺字段或动作签名",
+  );
+  check(
+    "…首屏 getMany 里带上了这个键",
+    store.includes("UI_VISION_RELAY_MODEL_SETTING_KEY,"),
+    "getMany 键清单漏了这个键 → 重启后读不回",
+  );
+  check(
+    "…setter 把值写进设置表(空值清空)",
+    /setVisionRelayModel:\s*\(modelId\)\s*=>\s*\{[\s\S]*?api\.setting\s*\n?\s*\.set\(\{\s*key:\s*UI_VISION_RELAY_MODEL_SETTING_KEY,\s*value:\s*modelId\s*\?\?\s*""/.test(
+      store,
+    ),
+    store.match(/setVisionRelayModel:[\s\S]{0,260}/)?.[0],
+  );
+
+  // (d) Claude 表单的「支持图片输入」开关:同形一格 + 落到 models[].supportsVision。
+  const panel2 = read("src/renderer/components/settings/CustomModelsPanel.tsx");
+  check(
+    "★ Claude 表单模型行有「支持图片输入」开关(复用 visionLabel/visionSpan,不新建 key)",
+    /checked=\{m\.supportsVision\}/.test(panel2) &&
+      panel2.includes('t("settings.customModels.visionLabel")') &&
+      panel2.includes('t("settings.customModels.visionSpan")'),
+    "缺 supportsVision 开关",
+  );
+  check(
+    "…保存时 supportsVision 落到模型条目(勾了才落)",
+    /m\.supportsVision\s*\?\s*\{\s*supportsVision:\s*true\s*\}/.test(panel2),
+    panel2.match(/supportsVision:\s*true[^\n]*/g),
+  );
+  check(
+    "…从配置读回时带上 supportsVision(否则编辑时开关永远显示未勾)",
+    /supportsVision:\s*Boolean\(e\.supportsVision\)/.test(panel2),
+    "claudeFormFromConfig 漏了 supportsVision",
+  );
+}
+
 /* ────────────────────────── 收尾 ────────────────────────── */
 
 console.log(`\nsettings-panel-smoke:${total - failures}/${total} 通过`);

@@ -808,6 +808,19 @@ export type PublicMcpEnabled = z.infer<typeof PublicMcpEnabledSchema>;
 export const UI_TITLE_GEN_MODEL_SETTING_KEY = "ui.titleGenModel";
 
 /**
+ * **视觉中继模型**(报告 D10 / Q1):当会话背后的引擎/模型**没有视觉输入**时,
+ * 图片交给这个**用户挑定的、有视觉的模型**转述成文字,再回到对话里。
+ *
+ * 取值形状与 {@link UI_TITLE_GEN_MODEL_SETTING_KEY} **完全一致** —— `"configId:modelId"`
+ * (走自定义模型配置),或 `"@claude"` / `"@claude:<别名>"`(走本机 Claude Code 登录)。
+ * 空 / 未配置 = 这个能力不生效(工具会如实说「未配置」,而不是静默失败)。
+ *
+ * 为什么要单独一个键、不复用标题生成那个:语义不同 —— 标题生成要的是**便宜**,
+ * 视觉中继要的是**能读图**;用户完全可能用便宜的小模型生成标题、用多模态模型看图。
+ */
+export const UI_VISION_RELAY_MODEL_SETTING_KEY = "ui.visionRelayModel";
+
+/**
  * 标题生成模型的「内置 Claude」取值:`"@claude"`(本机 Claude Code 登录的默认模型)
  * 或 `"@claude:<别名>"`(haiku / sonnet / opus)。不走自定义模型配置,也不需要 API Key。
  * 其余取值仍是 `"configId:modelId"`。

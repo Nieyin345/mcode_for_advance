@@ -14,6 +14,10 @@ import type { CustomModelInput } from "../customModel.js";
 const CustomModelEntrySchema = z.object({
   id: z.string().min(1),
   supports1m: z.boolean().optional(),
+  /** 声明该模型接受**图片输入**(用户自述,不上行)。与 `supports1m` 同形:这里
+   *  必须列出来,zod 会把未在 schema 里的键**静默剥掉** —— 少了这一格,设置页的
+   *  「支持图片输入」开关勾了也存不进库。 */
+  supportsVision: z.boolean().optional(),
   /** 每模型「思考强度档位 → 该网关要的具体值」映射（2026-10-11 加，与 Pi 的
    *  `thinkingLevelMap` 同一形状、同一语义）。不同网关对同一档位用的标识符不一样，
    *  这一格让用户在设置里把它接对。三态：缺席 = 用网关/引擎默认；字符串 = 具体值；

@@ -24,6 +24,8 @@ import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { startMobileServer, stopMobileServer, getMobileServer } from "@main/mobile/MobileHttpServer.js";
 import { autoStartMobileTunnel, disposeMobileTunnel } from "@main/mobile/mobileTunnel.js";
 import { initAgentDelegate } from "@main/mcp/delegateHost.js";
+import { setVisionRelayImpl } from "@main/mcp/visionRelayRegistry.js";
+import { describeImage, visionRelayConfigured } from "@main/lib/visionRelay.js";
 import { relayManager } from "@main/relay/RelayManager.js";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
@@ -177,6 +179,14 @@ app.whenReady().then(async () => {
     } catch (err) {
       log.warn(`seed shipped project initializers failed: ${String(err)}`);
     }
+    // **视觉中继**(报告 D10 / Q1)—— 装配期把真实实现登进登记口,`agent_read_image`
+    // 才拿得到它。必须在这里登记:`lib/visionRelay.ts` 要读设置(→ db → electron)与发
+    // SDK query,不能静态 import 进工具表(`mcp/agentTools.ts` 是纯模块,无头套件要引它)。
+    // 没配模型时 `describeImage` 会如实返回「未配置」,能力等于不存在。
+    setVisionRelayImpl({
+      describeImage: describeImage,
+      configured: visionRelayConfigured,
+    });
     // 扩展桥的配对令牌持久化到 settings 表 —— 必须跨重启稳定，否则 mcode 每次
     // 启动都换一个令牌，浏览器里的扩展会静默掉线（用户只会看到"未连接"而不知道
     // 为什么）。注入点必须在这儿：桥模块本身不能碰 db.ts，那会把 electron 拉进

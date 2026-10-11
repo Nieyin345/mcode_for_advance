@@ -15,7 +15,7 @@ import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 import { DEFAULT_GESTURE_SETTINGS } from "@renderer/lib/gestures.js";
 import { DEFAULT_EDITOR_THEME_CHOICE, parseEditorThemeChoice, type EditorThemeChoice, type EditorThemeId } from "@renderer/lib/editorThemes.js";
-import { DISPLAY_MODE_SETTING_KEY, TAB_BAR_MULTI_ROW_SETTING_KEY, LEFTBAR_MODE_SETTING_KEY, THEME_STYLE_SETTING_KEY, UI_LOCALE_SETTING_KEY, DEFAULT_PROVIDER_ID, UI_CHAT_FONT_SIZE_SETTING_KEY, UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY, UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY, WORKFLOW_MAX_PARALLEL_SETTING_KEY, UI_USER_MSG_COLOR_SETTING_KEY, UI_ACCENT_COLOR_SETTING_KEY, UI_RIGHT_PANEL_TAB_SETTING_KEY, UI_VOICE_LANG_SETTING_KEY, UI_VOICE_ENGINE_SETTING_KEY, UI_VOICE_MIC_PERMISSION_SETTING_KEY, UI_VOICE_MODEL_DIR_SETTING_KEY, UI_IDE_OPEN_FILES_SETTING_KEY, UI_IDE_ACTIVE_FILE_SETTING_KEY, UI_IDE_EXPANDED_DIRS_SETTING_KEY, UI_IDE_EDITOR_MODE_SETTING_KEY, UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, UI_COMMIT_GEN_MODEL_SETTING_KEY, UI_COMMIT_GEN_PROMPT_SETTING_KEY, UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, UI_COMPOSER_MODEL_SETTING_KEY, UI_TITLE_GEN_ENABLED_SETTING_KEY, UI_TITLE_GEN_MODEL_SETTING_KEY, AGENT_OUTPUT_STYLE_SETTING_KEY, UI_GIT_COLLAPSED_REPOS_SETTING_KEY, UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, UI_PANE_WIDTHS_SETTING_KEY, UI_PROJECT_VIEW_SETTING_KEY, UI_PROJECT_GROUPS_SETTING_KEY, UI_LAST_PROJECT_SETTING_KEY, UI_LAST_SESSION_SETTING_KEY, UI_STREAM_SCOPE_SETTING_KEY, UI_SHORTCUTS_SETTING_KEY, UI_GESTURES_SETTING_KEY, UI_CHAT_DENSITY_SETTING_KEY, UI_EDITOR_THEME_SETTING_KEY, AUTO_ARCHIVE_SETTING_KEY, DEFAULT_AUTO_ARCHIVE_CONFIG, parseAutoArchiveConfig, SESSION_WORKTREE_DEFAULT_SETTING_KEY, WORKTREE_NAMES_SETTING_KEY, PROJECT_COLORS_SETTING_KEY, ShortcutBindingsSchema, GestureSettingsSchema, RightPanelTabSchema, type AutoArchiveConfig, type DisplayMode, type LeftBarMode, type Locale, type VoiceEngine, type GestureSettings, type GestureSequence, type ChatDensity, type ProjectView, type GitWorktreeInfo, type ProjectGroupsMeta, type RightPanelTab, type IdeEditorMode, type GitDiffOpenMode, type FileViewMode, type CustomCommand, type SkillInfo, type ProviderInfo, type ProviderHealthCheckResult, type ProviderHealthStatusCode, type ShortcutBindings, type Accelerator, type LspLanguageState, type LspStateChangedPayload, type RuntimeAgentState, type RuntimeProgressPayload, type PickedElement, type BrowserDevicePreset, type BrowserOrientation } from "@contracts/ipc";
+import { DISPLAY_MODE_SETTING_KEY, TAB_BAR_MULTI_ROW_SETTING_KEY, LEFTBAR_MODE_SETTING_KEY, THEME_STYLE_SETTING_KEY, UI_LOCALE_SETTING_KEY, DEFAULT_PROVIDER_ID, UI_CHAT_FONT_SIZE_SETTING_KEY, UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY, UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY, WORKFLOW_MAX_PARALLEL_SETTING_KEY, UI_USER_MSG_COLOR_SETTING_KEY, UI_ACCENT_COLOR_SETTING_KEY, UI_RIGHT_PANEL_TAB_SETTING_KEY, UI_VOICE_LANG_SETTING_KEY, UI_VOICE_ENGINE_SETTING_KEY, UI_VOICE_MIC_PERMISSION_SETTING_KEY, UI_VOICE_MODEL_DIR_SETTING_KEY, UI_IDE_OPEN_FILES_SETTING_KEY, UI_IDE_ACTIVE_FILE_SETTING_KEY, UI_IDE_EXPANDED_DIRS_SETTING_KEY, UI_IDE_EDITOR_MODE_SETTING_KEY, UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, UI_COMMIT_GEN_MODEL_SETTING_KEY, UI_COMMIT_GEN_PROMPT_SETTING_KEY, UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, UI_COMPOSER_MODEL_SETTING_KEY, UI_TITLE_GEN_ENABLED_SETTING_KEY, UI_TITLE_GEN_MODEL_SETTING_KEY, UI_VISION_RELAY_MODEL_SETTING_KEY, AGENT_OUTPUT_STYLE_SETTING_KEY, UI_GIT_COLLAPSED_REPOS_SETTING_KEY, UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, UI_PANE_WIDTHS_SETTING_KEY, UI_PROJECT_VIEW_SETTING_KEY, UI_PROJECT_GROUPS_SETTING_KEY, UI_LAST_PROJECT_SETTING_KEY, UI_LAST_SESSION_SETTING_KEY, UI_STREAM_SCOPE_SETTING_KEY, UI_SHORTCUTS_SETTING_KEY, UI_GESTURES_SETTING_KEY, UI_CHAT_DENSITY_SETTING_KEY, UI_EDITOR_THEME_SETTING_KEY, AUTO_ARCHIVE_SETTING_KEY, DEFAULT_AUTO_ARCHIVE_CONFIG, parseAutoArchiveConfig, SESSION_WORKTREE_DEFAULT_SETTING_KEY, WORKTREE_NAMES_SETTING_KEY, PROJECT_COLORS_SETTING_KEY, ShortcutBindingsSchema, GestureSettingsSchema, RightPanelTabSchema, type AutoArchiveConfig, type DisplayMode, type LeftBarMode, type Locale, type VoiceEngine, type GestureSettings, type GestureSequence, type ChatDensity, type ProjectView, type GitWorktreeInfo, type ProjectGroupsMeta, type RightPanelTab, type IdeEditorMode, type GitDiffOpenMode, type FileViewMode, type CustomCommand, type SkillInfo, type ProviderInfo, type ProviderHealthCheckResult, type ProviderHealthStatusCode, type ShortcutBindings, type Accelerator, type LspLanguageState, type LspStateChangedPayload, type RuntimeAgentState, type RuntimeProgressPayload, type PickedElement, type BrowserDevicePreset, type BrowserOrientation } from "@contracts/ipc";
 import type { ThemeStyle } from "@contracts/theme";
 
 /** One browser tab, shared across the sidebar and overlay containers. `id` is
@@ -1249,6 +1249,11 @@ export interface SessionState {
    *  built-in model. Stored as `"configId:roleKey"`. Persisted in the settings
    *  table; independent of the other gen models. */
   titleGenModel: string | null;
+  /** 视觉中继模型（报告 D10 / Q1）：会话背后的模型没有视觉输入时，图片交给这个
+   *  用户挑定的、有视觉的模型转述成文字。取值形状与 {@link titleGenModel} 完全
+   *  一致（`"@claude"` / `"@claude:<别名>"` / `"configId:modelId"`）；null = 未配置
+   *  → 能力不生效。Persisted in the settings table. */
+  visionRelayModel: string | null;
   /** Selected Claude output style name (built-in id or custom style name), or
    *  null = never configured → the CLI default style. Persisted in the
    *  settings table; injected per-turn by the Claude provider. */
@@ -2118,6 +2123,8 @@ export interface SessionState {
   setTitleGenEnabled: (enabled: boolean) => void;
   /** Set the custom-model id used for auto thread-title generation. Persists. */
   setTitleGenModel: (modelId: string | null) => void;
+  /** Set the model used for vision relay (null = capability off). Persists. */
+  setVisionRelayModel: (modelId: string | null) => void;
   /** Set the Claude output style (null = CLI default). Persists. */
   setOutputStyle: (style: string | null) => void;
   /** Toggle a git repo card's collapsed state. Persists. */
@@ -2832,6 +2839,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   conflictResolveModel: null,
   titleGenEnabled: false,
   titleGenModel: null,
+  visionRelayModel: null,
   outputStyle: null,
   collapsedGitRepos: {} as Record<string, boolean>,
   ideFocusNonce: 0,
@@ -3273,6 +3281,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY,
           UI_TITLE_GEN_ENABLED_SETTING_KEY,
           UI_TITLE_GEN_MODEL_SETTING_KEY,
+          UI_VISION_RELAY_MODEL_SETTING_KEY,
           AGENT_OUTPUT_STYLE_SETTING_KEY,
           UI_GIT_COLLAPSED_REPOS_SETTING_KEY,
           UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY,
@@ -3407,6 +3416,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const conflictModelRaw = ds[UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY];
       const titleGenEnabledRaw = ds[UI_TITLE_GEN_ENABLED_SETTING_KEY];
       const titleGenModelRaw = ds[UI_TITLE_GEN_MODEL_SETTING_KEY];
+      const visionRelayModelRaw = ds[UI_VISION_RELAY_MODEL_SETTING_KEY];
 
       // ⚠️ 白名单**直接从 `RightPanelTabSchema` 派生**,不再手抄一份枚举 —— 手抄那份
       // 与 schema 漂过一次(`browser` 只加进 schema、忘了这一行,用户选了它重启后右栏
@@ -3427,6 +3437,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set({ conflictResolveModel: conflictModelRaw || null });
       set({ titleGenEnabled: titleGenEnabledRaw === "on" });
       set({ titleGenModel: titleGenModelRaw || null });
+      set({ visionRelayModel: visionRelayModelRaw || null });
       const outputStyleRaw = ds[AGENT_OUTPUT_STYLE_SETTING_KEY];
       set({ outputStyle: outputStyleRaw || null });
       const parseBucket = <T>(raw: string | null): Record<string, T> => {
@@ -9269,6 +9280,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     void api.setting
       .set({ key: UI_TITLE_GEN_MODEL_SETTING_KEY, value: modelId ?? "" })
       .catch((err) => console.error("setting.set(titleGenModel) failed:", err));
+  },
+
+  setVisionRelayModel: (modelId) => {
+    set({ visionRelayModel: modelId });
+    void api.setting
+      .set({ key: UI_VISION_RELAY_MODEL_SETTING_KEY, value: modelId ?? "" })
+      .catch((err) => console.error("setting.set(visionRelayModel) failed:", err));
   },
 
   setOutputStyle: (style) => {

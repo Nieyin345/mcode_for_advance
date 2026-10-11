@@ -196,7 +196,7 @@ const BASE_INPUT = {
   authMode: "auth_token" as const,
   protocol: "anthropic" as const,
   authToken: "sk-smoke-abcdefgh123456",
-  models: [{ id: "deepseek-v4-pro" }, { id: "deepseek-v4-flash", supports1m: true }],
+  models: [{ id: "deepseek-v4-pro", supportsVision: true }, { id: "deepseek-v4-flash", supports1m: true }],
   subagentModel: "deepseek-v4-flash",
   disableNonEssentialTraffic: true,
   timeoutMs: 60_000,
@@ -215,6 +215,15 @@ const row = listRes.models[0] ?? {};
 eq("存进去的 baseUrl 读出来一模一样", row.baseUrl, BASE_INPUT.baseUrl);
 eq("存进去的名字读出来一模一样", row.name, BASE_INPUT.name);
 same("models 原样存回（含 supports1m）", row.models, BASE_INPUT.models);
+// ★ **支持图片输入(supportsVision)必须透传,不被 zod 静默剥掉** —— 它是「视觉中继」
+//   挑眼睛的判据;setting 表单勾了却存不进库(IPC schema 少列一格 → 整键消失)是最隐蔽
+//   的一种坏法:界面看着配好了,实际库里没有,中继那侧永远说「未配置」。
+check(
+  "★ 模型条目的 supportsVision 原样存回（不被 IPC schema 剥掉）",
+  Array.isArray(row.models) &&
+    (row.models as Array<Record<string, unknown>>).some((m) => m.supportsVision === true),
+  row.models,
+);
 same("自定义请求头原样存回", row.customHeaders, BASE_INPUT.customHeaders);
 eq("timeoutMs 原样存回", row.timeoutMs, BASE_INPUT.timeoutMs);
 eq("子代理钉住的模型原样存回", row.subagentModel, BASE_INPUT.subagentModel);

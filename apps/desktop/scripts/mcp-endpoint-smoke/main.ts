@@ -56,6 +56,7 @@ import { SESSION_LOG_TOOLS, WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@m
 import type { PermissionMode } from "@contracts/runtime";
 import type { ApprovalRequest } from "@contracts/provider";
 import { __handlerCalls, libraryMcpTools } from "./stubs/libraryServer.js";
+import { setVisionRelayImpl } from "@main/mcp/visionRelayRegistry.js";
 import { configureDelegateDeps, delegateMcpTools, __resetDelegateJobs } from "@main/mcp/delegateServer.js";
 // 会话夹具的灌入口 —— 与 `run.sh` 里 `@main/store/repositories.js` 的 alias 指向
 // **同一个文件**（`mcode-admin-smoke/stubs/repositories.ts`）。不能写成
@@ -1246,6 +1247,148 @@ check(
   imageCaption.includes("pixel.png") && imageCaption.includes("image/png"),
   imageCaption,
 );
+
+/* ── 视觉中继(报告 D10 / Q1):`describe: true` 把图交给"有视觉的模型"转述 ──────
+   这一套的 host **没有**装中继(没登记实现),所以这里先验**"没装时的行为"** ——
+   那是最容易骗人的一格:如果没装还告诉模型"带 describe 再读一次",它就会去走一条
+   走不通的路,又是一次静默失败。判据:caption **不许**提 describe。 */
+{
+  const noRelay = await host.callTool("agent_read_image", { path: "pixel.png" }, { sessionId: "s1" });
+  const noRelayCaption = noRelay.content?.find((b) => b.type === "text")?.text ?? "";
+  check(
+    "★ 没配视觉中继时,caption 不提 describe(不指引模型走一条走不通的路)",
+    !noRelayCaption.includes("describe"),
+    noRelayCaption,
+  );
+  // 没装时带 describe 也只是照旧回图片块 —— 不报错、不假装转述过。
+  const noRelayDescribe = await host.callTool(
+    "agent_read_image",
+    { path: "pixel.png", describe: true },
+    { sessionId: "s1" },
+  );
+  check(
+    "没配中继时 describe:true 仍回图片块(不伪造描述文本)",
+    noRelayDescribe.content?.some((b) => b.type === "image") === true,
+    noRelayDescribe.content,
+  );
+  check(
+    "没配中继时 describe:true 的文本里没有「视觉中继」转述字样",
+    !(noRelayDescribe.text ?? "").includes("视觉中继模型"),
+    noRelayDescribe.text,
+  );
+}
+
+/* ── 装了中继的那一格:描述真的回来了吗 ──────────────────────────────────
+   登记口是模块级单例,所以这里**装一个替身实现**,再建**另一个 host** —— 那个 host
+   的 `agent_read_image` 才带 describe 支路。替身**真收到 base64 与 mime**是一半的
+   判据:如果代码把图片编码搞错(留了 `data:` 前缀、或传了空串),替身拿到的就不是
+   `tinyPngBase64`,而调用方**看不到任何错误** —— 又一例静默失败。 */
+{
+  const seen: Array<{ imageBase64: string; mimeType: string; source?: string }> = [];
+  let relayConfigured = true;
+  setVisionRelayImpl({
+    describeImage: async (a) => {
+      seen.push({ imageBase64: a.imageBase64, mimeType: a.mimeType, source: a.source });
+      return { ok: true, text: "这是一张 1×1 的白色测试图片。", model: "stub-vl" };
+    },
+    configured: () => relayConfigured,
+  });
+  try {
+    const relayHost = createWebToolHost({
+      gateFor: () => (gateKnown ? makeGate() : null),
+      cwdFor: () => cwdValue,
+      sandboxRootFor: () => sandboxValue,
+      sandboxReadCheck: (abs, kind) => readCheckImpl(abs, kind),
+      extraTools: libraryMcpTools(),
+    });
+
+    // 配了中继 → caption 指引模型带 describe(走得起那条路才提它)。
+    const withRelay = await relayHost.callTool("agent_read_image", { path: "pixel.png" }, { sessionId: "s1" });
+    const withRelayCaption = withRelay.content?.find((b) => b.type === "text")?.text ?? "";
+    check(
+      "★ 配了中继时,caption 指引「带 describe: true 再读一次」",
+      withRelayCaption.includes("describe"),
+      withRelayCaption,
+    );
+
+    // 带 describe → 走中继,拿回**文字描述**(而不是图片块)。
+    const described = await relayHost.callTool(
+      "agent_read_image",
+      { path: "pixel.png", describe: true },
+      { sessionId: "s1" },
+    );
+    check(
+      "★ describe:true 时返回的是**文字描述**而不是图片块",
+      described.content?.every((b) => b.type !== "image") === true &&
+        (described.text ?? "").includes("这是一张 1×1 的白色测试图片。"),
+      described.text,
+    );
+    check(
+      "★ 描述里署了是中继模型给的(用户知道是哪只眼睛在看)",
+      (described.text ?? "").includes("stub-vl"),
+      described.text,
+    );
+    check(
+      "★ 中继**真的收到了图片字节**(base64 完全一致)与 mime",
+      seen.length === 1 && seen[0]?.imageBase64 === tinyPngBase64 && seen[0]?.mimeType === "image/png",
+      seen,
+    );
+    check(
+      "中继知道了文件名(转述时能引用它)",
+      seen[0]?.source === "pixel.png",
+      seen[0]?.source,
+    );
+
+    // 中继**失败**时必须如实说,不能静默回一个空描述。
+    setVisionRelayImpl({
+      describeImage: async () => ({ ok: false, error: "未配置视觉中继模型(设置 → 通用 → 视觉中继)" }),
+      configured: () => false,
+    });
+    const failHost = createWebToolHost({
+      gateFor: () => (gateKnown ? makeGate() : null),
+      cwdFor: () => cwdValue,
+      sandboxRootFor: () => sandboxValue,
+      sandboxReadCheck: (abs, kind) => readCheckImpl(abs, kind),
+      extraTools: libraryMcpTools(),
+    });
+    const failed = await failHost.callTool(
+      "agent_read_image",
+      { path: "pixel.png", describe: true },
+      { sessionId: "s1" },
+    );
+    check(
+      "★ 中继失败时如实报错(不假装成功、不返回空描述)",
+      (failed.text ?? "").includes("视觉中继没能给出描述") && (failed.text ?? "").includes("未配置视觉中继模型"),
+      failed.text,
+    );
+
+    // 公网那条通路**借不到**用户的模型额度:`audience: "public"` 时不走中继。
+    // (公网表是同一份 handler,靠 ctx.audience 拦 —— 这一条验那个拦真的在。)
+    seen.length = 0;
+    setVisionRelayImpl({
+      describeImage: async (a) => {
+        seen.push({ imageBase64: a.imageBase64, mimeType: a.mimeType, source: a.source });
+        return { ok: true, text: "不该出现", model: "stub-vl" };
+      },
+      configured: () => true,
+    });
+    const pubHost = createWebToolHost({
+      gateFor: () => (gateKnown ? makeGate() : null),
+      cwdFor: () => cwdValue,
+      sandboxRootFor: () => sandboxValue,
+      sandboxReadCheck: (abs, kind) => readCheckImpl(abs, kind),
+      extraTools: libraryMcpTools(),
+    });
+    await pubHost.callTool("agent_read_image", { path: "pixel.png", describe: true }, {
+      sessionId: "s1",
+      audience: "public",
+    });
+    check("★ 公网通路不吃中继(拿到链接的人借不到用户的模型额度)", seen.length === 0, seen);
+  } finally {
+    // 摘掉替身 —— 后面的用例不该受它影响。
+    setVisionRelayImpl(null);
+  }
+}
 
 const richUnsupported = await host.callTool(
   "agent_read_document",

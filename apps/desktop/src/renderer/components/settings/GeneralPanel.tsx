@@ -15,6 +15,7 @@ import { SettingRow } from "./SettingRow.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { TitleGenPanel } from "./TitleGenPanel.js";
+import { VisionRelayPanel } from "./VisionRelayPanel.js";
 import { OutputStylePanel } from "./OutputStylePanel.js";
 import { SettingsTransferSection } from "./SettingsTransferSection.js";
 import { TurnBudgetPanel, FallbackModelsPanel } from "./RuntimePolicyPanel.js";
@@ -514,6 +515,9 @@ export function GeneralPanel() {
 
       {/* ── 会话标题生成 (self-contained section) ── */}
       <TitleGenPanel />
+
+      {/* ── 视觉中继 (self-contained section) ── */}
+      <VisionRelayPanel />
 
       {/* ── 输出风格 (self-contained section) ── */}
       <OutputStylePanel />
