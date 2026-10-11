@@ -113,5 +113,27 @@ try {
       /搜索起点不存在/.test(errText) && !/ENOENT/.test(errText),
     );
   }
+  // ★ "挑哪个 python 解释器"也只有一份(`lib/pythonResolve.ts`)。`agentEnv` 会把
+  //   LibreOffice 的 program 目录(里面的捆绑 python.exe)注入到子进程 PATH 最前,好让
+  //   技能敲的裸名 `soffice` 找得到 —— 于是"取 PATH 上第一个 python"会永远落到那份
+  //   捆绑解释器上。文档工具(`agentDocumentOps`)与文档转换工具(`agentTools`)从前各写
+  //   一份朴素取法,**同一个坑踩第三遍**(报告附录 M 的 LC1)。两处都必须 import 共享的
+  //   `resolvePythonExe`,不得自带"遍历候选取第一个"的逻辑。
+  {
+    const docOpsSrc = readFileSync("src/main/mcp/agentDocumentOps.ts", "utf8");
+    const toolsSrc = readFileSync("src/main/mcp/agentTools.ts", "utf8");
+    check(
+      "★ agentDocumentOps 走共享的 resolvePythonExe(不自带「取 PATH 第一个」)",
+      /import \{[^}]*resolvePythonExe[^}]*\} from "@main\/lib\/pythonResolve\.js"/.test(docOpsSrc) &&
+        /await resolvePythonExe\(\)/.test(docOpsSrc) &&
+        !/for \(const exe of (candidates|process\.platform)/.test(docOpsSrc),
+    );
+    check(
+      "★ agentTools 走共享的 resolvePythonExe(不自带「取 PATH 第一个」)",
+      /import \{[^}]*resolvePythonExe[^}]*\} from "@main\/lib\/pythonResolve\.js"/.test(toolsSrc) &&
+        /await resolvePythonExe\(\)/.test(toolsSrc) &&
+        !/for \(const exe of (candidates|process\.platform)/.test(toolsSrc),
+    );
+  }
   console.log(`MCP text contract: ${checks} checks passed`);
 } finally { rmSync(root, { recursive: true, force: true }); }
