@@ -109,6 +109,24 @@ await withAuditPage(here,async page=>{
   check('edge labels no longer overlap',overlap===0,overlap);
   await page.eval('document.querySelector("svg g[role=button]").dispatchEvent(new MouseEvent("click",{bubbles:true}))');await page.sleep(80);
   check('selecting an edge does not delete it',await page.eval('document.querySelectorAll("svg g[role=button]").length')===8);
+  // 【UI-031】选中边之后,把焦点移到画布**外面**(工作流列表里的按钮)再按 Delete —— 从前
+  // window 级监听会照样删掉那条隐藏的"旧选中边"。判据:焦点在画布外时,边数必须仍是 8。
+  {
+    const before=await page.eval('document.querySelectorAll("svg g[role=button]").length');
+    // 让画布外的一个真实可聚焦元素拿到焦点(工作流库里的行按钮)。
+    await page.eval(`(()=>{const b=[...document.querySelectorAll('#workflows-panel-library nav button')].find(e=>e.getClientRects().length>0);b.focus();return document.activeElement===b;})()`);
+    await page.eval('document.activeElement.dispatchEvent(new KeyboardEvent("keydown",{key:"Delete",bubbles:true,cancelable:true}))');
+    await page.sleep(80);
+    check('★ 【UI-031】焦点在画布外时 Delete 不删选中连线(保持 8 条)',await page.eval('document.querySelectorAll("svg g[role=button]").length')===8,{before});
+    // 焦点回到画布里(选中边的 SVG 组)再按 Delete → 才允许删除。
+    await page.eval(`(()=>{const g=document.querySelector('svg g[role=button]');g.focus();g.dispatchEvent(new KeyboardEvent("keydown",{key:"Delete",bubbles:true,cancelable:true}));})()`);
+    await page.sleep(80);
+    check('★ 焦点在画布内时 Delete 生效(8→7)',await page.eval('document.querySelectorAll("svg g[role=button]").length')===7);
+    await page.eval('__ui.button("撤销").click()');await page.sleep(80);
+    check('撤销回到 8 条',await page.eval('document.querySelectorAll("svg g[role=button]").length')===8);
+    // 重新选中以便后续断言沿用原路径。
+    await page.eval('document.querySelector("svg g[role=button]").dispatchEvent(new MouseEvent("click",{bubbles:true}))');await page.sleep(60);
+  }
   await page.eval('__ui.button("删除选中连线").click()');await page.sleep(80);check('explicit edge delete works',await page.eval('document.querySelectorAll("svg g[role=button]").length')===7);
   await page.eval('__ui.button("撤销").click()');await page.sleep(80);check('undo restores edge',await page.eval('document.querySelectorAll("svg g[role=button]").length')===8);
   await page.eval('__ui.button("重做").click()');await page.sleep(80);check('redo deletes edge again',await page.eval('document.querySelectorAll("svg g[role=button]").length')===7);

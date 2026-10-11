@@ -141,6 +141,18 @@ export function WorkflowCanvas({
     if (!selectedEdgeId) return;
     const listener = (e: KeyboardEvent) => {
       if (!viewportRef.current?.getClientRects().length || isEditableTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+      // 【UI-031】热键必须绑定到**画布自己的焦点作用域** —— 从前只看"选中了一条边"就在
+      // `window` 上装监听,于是焦点在画布**外面**(工作流列表按钮、Inspector、设置导航、
+      // 对话框外区域)时按 Delete,那条隐藏的"旧选中边"照样被删。判据:事件目标必须落在
+      // 画布视口内(`viewportRef` 包含它),或当前 `activeElement` 就在画布里(焦点在 SVG
+      // `g[role=button]` 上时 target 可能是它,但 activeElement 也在画布内)。两组都不满足
+      // → 这是别的键盘作用域,直接放行不处理。
+      const target = e.target as Node | null;
+      const active = document.activeElement;
+      const inCanvas =
+        (target !== null && viewportRef.current.contains(target)) ||
+        (active !== null && viewportRef.current.contains(active));
+      if (!inCanvas) return;
       if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); e.stopPropagation(); removeSelectedRef.current(); }
     };
     window.addEventListener("keydown", listener);
