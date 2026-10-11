@@ -86,6 +86,23 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/**
+ * 轮询等一个 pid **真的退出**(或窗口耗尽),返回**窗口耗尽时它是否还活着**。
+ *
+ * ⚠️ **「杀掉的进程死没死」不能用一次固定 `sleep` 就下判。** `killTree` 在 win32 上
+ * 是 `spawn("taskkill", …)` —— 那是**另一个进程**,它去回收目标进程与目标真正消失
+ * 不是同一个瞬间(类 Unix 上则是先 SIGTERM、2 秒后才升级 SIGKILL)。固定 `sleep(1500)`
+ * 在慢机(CI)上偶发还不够,断言就假红;本机跑三次都绿、CI 上偶发红,正是这条。
+ * 等条件:一死立刻过;窗口耗尽才报红(报的是真实残留的那条 pid)。 */
+async function waitUntilDead(pid: number, timeoutMs = 15_000, stepMs = 100): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) return false;
+    await sleep(stepMs);
+  }
+  return isAlive(pid);
+}
+
 /** 一条钩子的底稿。每个用例只改它关心的那一两个字段。 */
 function hook(patch: Partial<HookSpec> = {}): HookSpec {
   return {
@@ -435,9 +452,9 @@ try {
   if (slowPid === null) {
     check("超时的进程留下了 pid(才能验它真死了)", false);
   } else {
-    // taskkill /T 是异步起的,给它一点时间落地。
-    await sleep(1500);
-    check("超时的进程真的被杀了(不留后台僵尸)", !isAlive(slowPid), { pid: slowPid });
+    // ⚠️ **不是固定 sleep 一下再看。** taskkill 是**另一个进程**(见 waitUntilDead 的注释),
+    //    它与目标真正退出不是同一个瞬间 —— 等条件,窗口耗尽仍活着才判红(报的是真实残留)。
+    check("超时的进程真的被杀了(不留后台僵尸)", !(await waitUntilDead(slowPid)), { pid: slowPid });
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

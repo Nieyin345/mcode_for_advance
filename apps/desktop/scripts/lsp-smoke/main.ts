@@ -820,9 +820,13 @@ console.log("\n§6d 重启按钮:旧的收走、新的起来,不是一个变两�
   eq("新的那个活着", after.filter(alive).length, 1);
 
   // 再按一次:仍然是「一个旧的走、一个新的来」,进程总数不再涨。
+  const before2 = pidsFor("ts").filter(alive);
   const r2 = (await call(IPC.LSP_RESTART, { workspacePath: WS1, language: "typescript" })) as { ok: boolean };
   eq("再按一次也成功", r2.ok, true);
-  await sleep(1200); // 同上:taskkill 是另一个进程,要等它落地
+  // ⚠️ 与上面那次同一个理由:**不赌固定 sleep**。第二次 restart 的旧进程也是
+  //    `taskkill`(另一个进程)收的,它真正消失与这里读 pid 不是同一个瞬间 —— 等条件
+  //    (`waitUntilGone`),窗口耗尽还在就报红(报的是"越点越多"的真实残留)。
+  same("按两次重启旧的也走干净了(不是新旧并排)", await waitUntilGone(before2), []);
   eq("按两次重启也只有一个在跑(没有越点越多)", pidsFor("ts").filter(alive).length, 1);
 
   // 越界工作区:restart 不抛,而是折成 ok=false。

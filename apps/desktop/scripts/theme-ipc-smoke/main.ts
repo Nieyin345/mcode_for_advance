@@ -78,6 +78,23 @@ function same(name: string, actual: unknown, expected: unknown): void {
   check(name, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 轮询等一个条件成立,成立即返回 true;窗口耗尽才返回 false。
+ *
+ * ⚠️ **"推迟发生的某件事"不能用一次固定 `sleep` 就下判。** §9 的 relaunch 是
+ * `setTimeout(…, 600)` 里发生的 —— 固定等 900ms 只留 300ms 余量,慢机(CI)上事件循环
+ * 一被拖住那次定时器就可能还没落地,断言假红。等条件:落下立刻过,窗口耗尽才报红。 */
+async function waitUntil(cond: () => boolean, timeoutMs = 5_000, stepMs = 50): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await sleep(stepMs);
+  }
+  return cond();
+}
+
 /**
  * `ipcMain` 的**记名替身**。三个被测文件里,判据全住在 handler 的**函数体**里,
  * 而那些 handler 从来不是导出符号 —— 唯一拿得到的办法就是调 `register*Handlers`,
@@ -634,9 +651,10 @@ console.log("\n§9 搬数据根成功:整树复制、旧根留着、重启是推
   check("旧根没被删掉(注释说「留一份副本」)", existsSync(join(oldRoot, "library", "papers", "标记.txt")));
   eq("数据根切到新位置了", dataRoot(), resolve(target));
 
-  // 等过那道 600ms 的闸 —— 之后才真的重启。
-  await new Promise<void>((r) => setTimeout(r, 900));
+  // 等过那道 600ms 的闸 —— 之后才真的重启。**等条件,不赌固定时间**(见 waitUntil)。
+  const relaunched = await waitUntil(() => appCalls.relaunch >= 1);
   eq("推迟之后 relaunch 调了一次", appCalls.relaunch, 1);
+  check("★ relaunch 确实在返回之后才发生(推迟那道闸走完了)", relaunched, { relaunch: appCalls.relaunch });
   same("exit 调了一次,退出码 0", appCalls.exitCodes, [0]);
 
   rmSync(target, { recursive: true, force: true });
