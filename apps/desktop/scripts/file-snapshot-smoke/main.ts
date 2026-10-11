@@ -69,6 +69,12 @@ function write(rel: string, content: string): string {
 function read(rel: string): string {
   return readFileSync(join(WS, rel), "utf-8");
 }
+function writeBytes(rel: string, bytes: Uint8Array): string {
+  const p = join(WS, rel);
+  mkdirSync(join(p, ".."), { recursive: true });
+  writeFileSync(p, bytes);
+  return p;
+}
 
 function mkEntry(over: Partial<TurnFileEntry> & { filePath: string }): TurnFileEntry {
   return { kind: "modified", adds: 1, dels: 1, before: "", ...over };
@@ -183,9 +189,15 @@ try {
     const createdEntry2 = mkEntry({ filePath: join(WS, "reborn.txt"), kind: "created", before: "" });
     write("reborn.txt", "made-then-edited");
     const r4 = await restoreFiles(WS, [createdEntry2]);
-    // 这里 createdEntry2 没有 afterHash（模拟**本次修复前**落盘的旧条目）→ 走老行为：
-    // 直接删。下一条用带 afterHash 的条目验证新行为。
-    check("无 afterHash 的 created 旧条目 → 按老行为删除", r4.restored.length === 1);
+    // 【MC-002 第 23 轮残余】createdEntry2 没有 afterHash（模拟**本次修复前**落盘的旧条目）
+    // → 从前走老行为直接删；现在无指纹的旧条目**保守拒绝**：无处判断文件在本轮之后
+    // 有没有被改过，直接删就可能删掉用户后来创建/写入的内容。列进 conflicts，不动磁盘。
+    check(
+      "★ 无 afterHash 的 created 旧条目 → 保守拒绝(不直接删)",
+      r4.conflicts.includes(join(WS, "reborn.txt")) && r4.restored.length === 0,
+      { conflicts: r4.conflicts, restored: r4.restored },
+    );
+    eq("★ 用户后来写的内容仍在(没被静默删除)", read("reborn.txt"), "made-then-edited");
 
     const createdEntry3 = mkEntry({
       filePath: join(WS, "reborn2.txt"),
@@ -198,12 +210,44 @@ try {
     deepEq("★ 创建的条目又被改过 → 冲突，不删", r5.conflicts, [join(WS, "reborn2.txt")]);
     eq("★ 用户后来的内容原样保留", read("reborn2.txt"), "user-edited-afterwards");
 
-    // 情形 5：没有 afterHash 的旧条目（本次改动前落盘的历史快照）→ 按老行为直接还原
+    // 情形 5：【MC-002 第 23 轮残余】没有 afterHash 的旧条目（本次改动前落盘的历史快照）
+    // → **保守拒绝**：无从判断文件在本轮之后有没有被再改过，直接写回 before 就有
+    // 覆盖用户后来改动的风险。第 23 轮明确要求"对无 hash 的遗留快照保守拒绝或提供
+    // 确认及文件级重试"，所以这里列进 conflicts、不动磁盘。
     const legacy = mkEntry({ filePath: join(WS, "legacy.txt"), before: "OLD" });
     write("legacy.txt", "NEW");
     const r6 = await restoreFiles(WS, [legacy]);
-    deepEq("无 afterHash 的旧条目 → 照常还原（不因缺指纹一律回滚不了）", r6.restored, [join(WS, "legacy.txt")]);
-    eq("内容回到 before", read("legacy.txt"), "OLD");
+    deepEq("★ 无 afterHash 的旧条目 → 保守拒绝(列冲突,不自动还原)", r6.conflicts, [join(WS, "legacy.txt")]);
+    deepEq("★ 且没被算成已还原", r6.restored, []);
+    eq("★ 用户当前的 NEW 原样保留(没被 OLD 覆盖)", read("legacy.txt"), "NEW");
+
+    // 情形 7：【MC-002 第 23 轮残余】指纹按**原始字节**算，不是 UTF-8 解码后的字符串。
+    // `before` 是合法的（否则 recordPre 的严格解码就把它排除在快照之外），但收尾时
+    // 磁盘上可能已经变成**非法 UTF-8**（这一轮把文件写成了二进制）。此时 `after` 的
+    // 宽松解码会把每一段坏字节塌成同一个 U+FFFD —— 两个**内容不同**的非法 UTF-8
+    // 序列会算出**相同的字符串指纹**，冲突检测被绕过、直接覆盖用户后来的改动。
+    // 判据：收尾后写入**另一段**非法 UTF-8（与收尾时不同字节），回滚必须判冲突。
+    {
+      write("invalid-utf8.bin", "A"); // 收尾前合法
+      const snap7 = new FileSnapshot();
+      await snap7.recordPre(WS, "invalid-utf8.bin");
+      writeBytes("invalid-utf8.bin", Buffer.from([0xff])); // 收尾时：非法 UTF-8
+      const frozen7 = await snap7.freeze();
+      eq("收尾时记下了 afterHash（二进制收尾也记）", typeof frozen7[0]?.afterHash, "string");
+      // 后来又改成**另一段**非法 UTF-8：与 [0xff] 解码后同样是单个 U+FFFD（字符串指纹会撞）。
+      writeBytes("invalid-utf8.bin", Buffer.from([0xfe]));
+      const r7 = await restoreFiles(WS, frozen7);
+      deepEq(
+        "★ 不同的非法 UTF-8 内容算「被改过」→ 冲突（字节指纹不撞）",
+        r7.conflicts,
+        [join(WS, "invalid-utf8.bin")],
+      );
+      eq(
+        "★ 用户后来写的 0xfe 原样保留（没被误判成「没变」而覆盖）",
+        readFileSync(join(WS, "invalid-utf8.bin"))[0],
+        0xfe,
+      );
+    }
   }
 
   console.log("\n【MC-003】大文件不做 O(n×m) 的表");

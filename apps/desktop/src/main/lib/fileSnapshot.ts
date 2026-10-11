@@ -186,12 +186,17 @@ export class FileSnapshot {
     for (const [path, rec] of this.originals) {
       const before = rec.exists ? rec.content : "";
       // exists=false 时 `after` 读不到 → 用 null 与"读到了空文件"区分开(见下)。
+      // 【MC-002 残余】`after` 的**字符串**用于 diff 计数与"逐字节相等"判据(既有语义:
+      // 宽松解码),而**指纹**必须按原始字节算(见 `hashBytes` 注释)。
       let after: string | null = null;
+      let afterBytes: Uint8Array | null = null;
       try {
-        after = await readFile(rec.absPath, "utf-8");
+        afterBytes = await readFile(rec.absPath);
+        after = Buffer.from(afterBytes).toString("utf-8");
       } catch {
         // File is unreadable (gone, binary, EACCES, …). Keep null so the net-zero
         // check below doesn't mistake "read failed" for "empty file".
+        afterBytes = null;
         after = null;
       }
       // 【MC-005】"净零"必须按**原始字节**判,不能按 `adds === 0 && dels === 0`。
@@ -228,7 +233,7 @@ export class FileSnapshot {
         // 【MC-002】记下"本轮收尾时磁盘上的样子"。历史回滚前拿它跟当前磁盘比一比:
         // 不一致 = 这个文件在本轮之后又被改过(第二轮、或用户自己改的),直接写回
         // before 会把那些改动也一起抹掉 —— 那正是"撤销第 1 轮顺手毁了第 2 轮"。
-        afterHash: hashText(after ?? ""),
+        afterHash: hashBytes(afterBytes ?? new Uint8Array()),
       });
     }
     // Hand the contents to the GC: the entries above carry `before` to the
@@ -316,15 +321,19 @@ export async function restoreFiles(
     // 【MC-002】先看这个文件在本轮之后有没有被再改过。
     if (entry.afterHash !== undefined) {
       let current: string | null;
+      let currentBytes: Uint8Array | null;
       try {
-        current = await readFile(entry.filePath, "utf-8");
+        currentBytes = await readFile(entry.filePath);
+        // 宽松解码只为与 `before` 做字符串相等(幂等判断),指纹另走字节(见下)。
+        current = Buffer.from(currentBytes).toString("utf-8");
       } catch {
         // 读不到(被删了 / 二进制 / 无权限)。对 created 条目来说"文件不在了"
         // 等于目标状态已达成(创建的东西不再存在)——不算冲突;对 modified
         // 条目则是"没法确认",按冲突处理,绝不盲目覆盖。
         current = entry.kind === "created" ? null : "";
+        currentBytes = null;
       }
-      if (current !== null && hashText(current) !== entry.afterHash) {
+      if (current !== null && hashBytes(currentBytes ?? new Uint8Array()) !== entry.afterHash) {
         // 【MC-002】磁盘上现在的内容 ≠ 本轮收尾时的样子。**但先别急着判冲突** ——
         // 有一种"不一致"是**上一次撤销已经成功**:那之后文件停在 `before`,与
         // `afterHash` 当然对不上。第 13 轮复查点名的"额外幂等陷阱"正是这一格:用户
@@ -333,7 +342,12 @@ export async function restoreFiles(
         //
         // 所以"当前 == before"要认作**已达目标态**,幂等放行(不重写、不报错)。
         // 只有既不是 `afterHash`、也不是 `before` 的,才是真被后来的动作改过。
-        if (entry.kind === "modified" && hashText(current) === hashText(entry.before)) {
+        // 比对按**原始字节**:`before` 是严格解码出来的(→ 能无损编回同样的字节),
+        // `currentBytes` 是磁盘原文,两者字节相等才算"已回到目标态"。
+        if (
+          entry.kind === "modified" &&
+          hashBytes(currentBytes ?? new Uint8Array()) === hashBytes(Buffer.from(entry.before, "utf-8"))
+        ) {
           restored.push(entry.filePath);
           continue;
         }
@@ -348,6 +362,17 @@ export async function restoreFiles(
         restored.push(entry.filePath);
         continue;
       }
+    } else {
+      // 【MC-002 第 23 轮残余】**没有 `afterHash` 的旧快照**(本次改动前落盘的历史条目)。
+      // 从前这里"按老行为直接还原" —— 但那条老行为正是本条要堵的:无从判断文件在本轮
+      // 之后有没有被再改过,直接写回 `before` / 删除就可能把用户后来的改动一并抹掉。
+      // 第 23 轮明确要求:对无指纹的遗留快照**保守拒绝**(不自动覆盖),在文件级结果里
+      // 如实标成冲突,让用户自己决定。宁可少还原一个,也不静默毁掉用户的当前内容。
+      console.warn(
+        `restoreFiles: skip ${entry.filePath} (no afterHash — legacy snapshot; refusing to auto-restore)`,
+      );
+      conflicts.push(entry.filePath);
+      continue;
     }
     try {
       if (entry.kind === "modified") {
@@ -494,9 +519,15 @@ export function safeResolveOk(cwd: string, abs: string): boolean {
 /** 内容指纹(SHA-256 十六进制)。用于两处:
  *   - 【MC-002】把某轮 `after` 的指纹存进快照,历史回滚前比对当前磁盘;
  *   - 同轮运行时判断"文件现在还是不是我收尾时看到的样子"。
- *  纯函数,零额外依赖。 */
-function hashText(text: string): string {
-  return createHash("sha256").update(text, "utf-8").digest("hex");
+ *
+ *  【MC-002 第 23 轮残余】**必须按原始磁盘字节算,不能按 UTF-8 解码后的字符串**。
+ *  从前这里收的是 `string`,`createHash("sha256").update(text,"utf-8")` 先把字符串
+ *  按 UTF-8 编回字节 —— 而**非法 UTF-8 的文件**(GBK / Shift-JIS / 二进制)读成字符串时
+ *  每段坏字节都塌成同一个 U+FFFD,于是两个**内容不同**的非法 UTF-8 文件会算出**相同的
+ *  指纹**,冲突检测被绕过、直接覆盖掉用户后来的改动。改成直接吃字节(`Buffer`)就没了
+ *  这层有损转换。 */
+export function hashBytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 /* ──────────────────────────── line counting ──────────────────────────── */

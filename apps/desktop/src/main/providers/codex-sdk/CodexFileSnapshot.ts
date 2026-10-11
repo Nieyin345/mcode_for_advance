@@ -16,9 +16,8 @@
  * (writing the original content back).
  */
 import { readFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { FileSnapshot } from "@main/lib/fileSnapshot.js";
+import { FileSnapshot, hashBytes } from "@main/lib/fileSnapshot.js";
 import type { TurnFileEntry } from "@contracts/runtime";
 import { parseUnifiedDiff, reverseApplySection } from "./codexTurnDiff.js";
 
@@ -53,13 +52,17 @@ export class CodexFileSnapshot extends FileSnapshot {
       seen.add(abs);
 
       let after = "";
+      let afterBytes: Uint8Array = new Uint8Array();
       try {
-        after = await readFile(abs, "utf-8");
+        const bytes = await readFile(abs);
+        afterBytes = bytes;
+        after = Buffer.from(bytes).toString("utf-8");
       } catch {
         // Missing file + not marked deleted in the diff = deleted in-turn;
         // reverse-applying against "" still works for whole-file deletions
         // (the diff carries the original lines) and fails cleanly otherwise.
         after = "";
+        afterBytes = new Uint8Array();
       }
       const before = reverseApplySection(after, section);
       if (before === null) {
@@ -78,9 +81,11 @@ export class CodexFileSnapshot extends FileSnapshot {
         dels: section.dels,
         before,
         // 【MC-002】收尾时磁盘上的样子;历史回滚拿它做冲突检测(见 lib/fileSnapshot)。
-        // 这里 `after` 就是刚读到的当前内容(读失败时为空串,与 modified 的"读不到
+        // 指纹按**原始字节**算(`hashBytes`),不用 UTF-8 解码后的字符串 —— 非法 UTF-8
+        // 的不同内容解码会塌成相同替换字符,字符串指纹会误判「没变」。
+        // 这里 `afterBytes` 是刚读到的原始内容(读失败时为空,与 modified 的"读不到
         // 即冲突"约定一致)。
-        afterHash: createHash("sha256").update(after, "utf-8").digest("hex"),
+        afterHash: hashBytes(afterBytes),
       });
     }
     return base;
