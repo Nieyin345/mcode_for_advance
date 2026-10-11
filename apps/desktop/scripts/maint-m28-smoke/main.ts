@@ -140,8 +140,10 @@ console.log("maint-m28-smoke —— 续跑/重试启动竞态与启动失败可�
   const durableChecks = src.match(/if\s*\(\s*!\s*writeRun\(/g) ?? [];
   check(
     "★ MC-028:两处 durable 关口都检查了 writeRun 的返回值(岔路口 + 收口)",
-    durableChecks.length >= 2,
-    { found: durableChecks.length },
+    durableChecks.length >= 1 &&
+      /const settleSaved = writeRun\(/.test(src) &&
+      /if \(!settleSaved\)/.test(src),
+    { found: durableChecks.length, settle: /const settleSaved = writeRun\(/.test(src) },
   );
   check(
     "★ MC-028:岔路口存盘失败时不摆卡(发 error 而不是照常 choose)",
@@ -149,8 +151,83 @@ console.log("maint-m28-smoke —— 续跑/重试启动竞态与启动失败可�
   );
   check(
     "★ MC-028:收口存盘失败时发 error(不让「流程结束」盖过去)",
-    /if\s*\(\s*!\s*writeRun\(\s*settled,[\s\S]{0,220}?emitWorkflowEvent\(\{\s*type:\s*"error"/.test(src),
+    /if \(!settleSaved\)[\s\S]{0,260}?emitWorkflowEvent\(\{\s*type:\s*"error"/.test(src),
   );
+  check(
+    "★ MC-028:收口的 turn.done reason 认存盘失败(settleSaved)为 error,不只认 settled",
+    /reason:[\s\S]{0,200}?\|\| !settleSaved[\s\S]{0,80}?"error"/.test(src),
+  );
+}
+
+/* 4. MC-028:**真跑一遍** —— 收口那一次 durable 写失败时,用户**当场**看到 error,
+ * 而不是被骗着看到「流程结束」。
+ *
+ * §3 钉的是源码判据(那个 `if (...)` 在不在)。台账第 23 轮 / 21.2 明确要求比这更强:
+ * 「磁盘 fsync/rename 失败 → UI 是否真实展示失败」的**行为**测试,而不是只看源码形状。
+ *
+ * 做法:用一个**单节点对话图**(跑完即收口),让收口那次 `WorkflowRunRepo.save` 抛
+ * (等价于 durable 写没成 —— saveRun 的 try/catch 会把它收敛成 `return false`,与
+ * fsync/rename 故障**同一条失败路径**),然后读真实 runner 广播出去的事件。判据钉在
+ * **用户看得见的那两件事**上:一条 error 正文 + `turn.done(reason:"error")`,并且
+ * **绝不能**出现 `end_turn`(那就是"谎报成功")。 */
+{
+  const wfId = "wf_m28_settle_fail";
+  const sid = "s_m28_settle_fail";
+  const base = nodeSessionDoc();
+  WorkflowRepo.save({
+    ...base,
+    id: wfId,
+    nodes: [{ id: "entry", type: "mcode.conversation", title: "问一句", params: { instruction: "跑一下" }, position: { x: 0, y: 0 } }],
+    edges: [],
+  });
+  SessionRepo.create({ ...parentSession(sid), workflowId: wfId });
+
+  const repo = WorkflowRunRepo as unknown as { save: typeof WorkflowRunRepo.save };
+  const originalRunSave = repo.save;
+  let settleAttempts = 0;
+  // 只让**终态**那一次写失败(开跑那次 running 照常落,否则图根本起不来)。
+  repo.save = (row) => {
+    if (row.status === "success" || row.status === "failed" || row.status === "cancelled") {
+      settleAttempts += 1;
+      throw new Error("injected durable settle failure");
+    }
+    return originalRunSave(row);
+  };
+
+  rt.holdConversationTurns(true);
+  rt.resetPublished();
+  const offset = rt.sentPrompts.length;
+  const safety = setTimeout(() => runner.cancelWorkflowRun(sid), 6_000);
+  try {
+    const done = runner.startWorkflowRun({ session: SessionRepo.get(sid)!, prompt: "跑一下", cwd: process.cwd() });
+    await waitFor("对话节点被派发", () => rt.sentPrompts.length >= offset + 1);
+    rt.finishTurn(sid);
+    await done;
+  } finally {
+    clearTimeout(safety);
+    repo.save = originalRunSave;
+    rt.holdConversationTurns(false);
+    rt.finishTurn(sid);
+  }
+
+  eq("收口那次 durable 写确实被击中(不是空过)", settleAttempts, 1);
+  const after = rt.published as Array<{ type?: string; message?: string; reason?: string }>;
+  check(
+    "★ 收口存盘失败:用户当场看到一条 error(说清“没能保存到磁盘”)",
+    after.some((e) => e.type === "error" && (e.message ?? "").includes("没能保存")),
+    after.filter((e) => e.type === "error" || e.type === "turn.done"),
+  );
+  check(
+    "★ 且以 turn.done(error) 收口 —— 不是被蒙成「流程结束」",
+    after.some((e) => e.type === "turn.done" && e.reason === "error"),
+    after.filter((e) => e.type === "turn.done"),
+  );
+  check(
+    "★ 绝不出现 end_turn(存盘失败不得谎报成功收尾)",
+    !after.some((e) => e.type === "turn.done" && e.reason === "end_turn"),
+    after.filter((e) => e.type === "turn.done"),
+  );
+  eq("收口失败后没有僵死的 active run", runner.hasActiveRun(sid), false);
 }
 
 console.log(`\n${checks - failures}/${checks} passed; ${failures} failed`);

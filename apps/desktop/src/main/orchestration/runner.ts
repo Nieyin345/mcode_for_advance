@@ -2247,7 +2247,16 @@ export async function startWorkflowRun(args: {
     // 一张过期 / 错误的可续卡冒出来,点下去重跑一次已经结束的运行。**不在这里无限重试
     // 写盘** —— 磁盘真写不进去时转圈只会更糟。失败时给会话发一条 error,让用户**当场**
     // 知道"这次运行的结局没能保存",而不是被蒙过去。
-    if (!writeRun(settled, result?.state ?? latest.state, true)) {
+    //
+    // ⚠️ **收口的 reason 也要跟着翻成 error**(第 23 轮 / MC-028 行为复审)。只发一条
+    // error 事件、`turn.done` 照样报 `end_turn` 是不够的:渲染端**只认 `turn.done` 的
+    // reason** 判"这一轮怎么了"—— 理由是 `end_turn` 就弹「回合完成」、加未读;那条 error
+    // 事件反而是那条**误导性成功提示之外**的第二个信号(见 `sessionStore` 的 turn.done
+    // 分支:只有 reason !== "error" 才 `bumpUnread()` + 弹"回合完成")。于是用户**当场**
+    // 看到的仍是"流程跑完了",而真相是"结局没存住"。存盘这一下失败时,这次的**真实结局
+    // 就是"没能保存"**,收口的 reason 必须如实说这件事。
+    const settleSaved = writeRun(settled, result?.state ?? latest.state, true);
+    if (!settleSaved) {
       const message =
         `工作流「${doc.name}」的最终状态没能保存到磁盘;重启后这次运行的记录可能停留在较早的状态,请检查存储空间`;
       log.warn(`workflow run ${runId}: 终态存档写不进磁盘:${message}`);
@@ -2301,7 +2310,14 @@ export async function startWorkflowRun(args: {
       emitWorkflowEvent({
         type: "turn.done",
         sessionId: session.id,
-        reason: settled === "cancelled" ? "interrupted" : settled === "failed" ? "error" : "end_turn",
+        // 存盘失败(settleSaved=false)时这次的真实结局是"没能保存" —— 收口 reason 必须
+        // 说 error,否则渲染端会弹「回合完成」。见上面 MC-028 那段注释。
+        reason:
+          settled === "cancelled"
+            ? "interrupted"
+            : settled === "failed" || !settleSaved
+              ? "error"
+              : "end_turn",
         endedAt: Date.now(),
       });
     } catch (err) {
