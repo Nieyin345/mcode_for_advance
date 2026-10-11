@@ -72,5 +72,21 @@ check("en:说清那份『不会』生效", /not\b.*(fire|apply|take effect)|will
   check("HooksPanel 引用了这句话(t(…nativeNote))", panelSrc.includes(`t("${KEY}")`), KEY);
 }
 
+// ⑤ 钩子命令头上有哪些可用环境变量,必须在界面里**列出来**(报告真机实测 NEW-7):
+//    从前只说「有几个 MCODE_* 环境变量」,不说是哪几个 —— 用户写 `%MCCODE_HOOK_EVENT%`
+//    之类的**占位符**,钩子照跑但那个词原样输出(没被替换),还查不到错在哪。
+//    修法:命令提示里点名五个变量 + 说清它们是环境变量、按 shell 语法引用。
+{
+  const CK = "settings.hooks.commandHint" as const;
+  const czh = translate("zh", CK);
+  const cen = translate("en", CK);
+  for (const v of ["MCODE_EVENT", "MCODE_SESSION_ID", "MCODE_SESSION_KIND", "MCODE_CWD", "MCODE_TOOL_NAME"]) {
+    check(`zh 命令提示列出了 ${v}`, czh.includes(v), czh.slice(0, 60));
+    check(`en 命令提示列出了 ${v}`, cen.includes(v), cen.slice(0, 60));
+  }
+  check("zh 说清是【环境变量】不是占位符", /环境变量/.test(czh) && /占位符/.test(czh), czh.slice(0, 80));
+  check("en 说清 env var 不是 placeholder", /env(ironment)? var/i.test(cen) && /placeholder/i.test(cen), cen.slice(0, 80));
+}
+
 console.log(`\nhooks-native-note-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

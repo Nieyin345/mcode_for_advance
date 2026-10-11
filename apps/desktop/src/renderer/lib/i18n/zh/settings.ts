@@ -1447,7 +1447,7 @@ export const zh = {
   "settings.hooks.fieldCommand": "命令",
   "settings.hooks.commandPlaceholder": "例如 python ~/scripts/fmt.py",
   "settings.hooks.commandHint":
-    "在会话的工作目录里、用系统 shell 跑。事件内容走 stdin（JSON），同时有几个 MCODE_* 环境变量。",
+    "在会话的工作目录里、用系统 shell 跑。事件内容走 stdin（JSON），同时注入这几个环境变量：`MCODE_EVENT`（事件名）、`MCODE_SESSION_ID`、`MCODE_SESSION_KIND`、`MCODE_CWD`，以及（仅工具类事件有）`MCODE_TOOL_NAME`。⚠️ 它们是**环境变量**，不是占位符——在命令里要按各自的 shell 语法引用（Windows cmd 用 `%MCODE_EVENT%`、PowerShell 用 `$env:MCODE_EVENT`、bash 用 `$MCODE_EVENT`）；写成别的名字不会被替换。",
   "settings.hooks.fieldTimeout": "超时（毫秒）",
   "settings.hooks.fieldEnabled": "启用",
 

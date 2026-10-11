@@ -1450,7 +1450,7 @@ export const en = {
   "settings.hooks.fieldCommand": "Command",
   "settings.hooks.commandPlaceholder": "e.g. python ~/scripts/fmt.py",
   "settings.hooks.commandHint":
-    "Runs in the session's working directory, through your system shell. The event goes to stdin (JSON), plus a few MCODE_* env vars.",
+    "Runs in the session's working directory, through your system shell. The event goes to stdin (JSON), plus these env vars: `MCODE_EVENT` (event name), `MCODE_SESSION_ID`, `MCODE_SESSION_KIND`, `MCODE_CWD`, and — for tool events only — `MCODE_TOOL_NAME`. ⚠️ They are **environment variables, not placeholders**: reference them with your shell's syntax (cmd `%MCODE_EVENT%`, PowerShell `$env:MCODE_EVENT`, bash `$MCODE_EVENT`); a different name is not substituted.",
   "settings.hooks.fieldTimeout": "Timeout (ms)",
   "settings.hooks.fieldEnabled": "Enabled",
 
