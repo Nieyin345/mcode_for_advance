@@ -23,7 +23,7 @@
  * `import { BrowserManager }` 与本文件的导出解析到**同一个模块**(同一个 specifier
  * → esbuild 只打一份),所以 `recorded` 里记的就是真 handler 调的那一份。
  */
-import type { BrowserOpResult, BrowserCreateResult } from "@contracts/ipc";
+import type { BrowserOpResult, BrowserCreateResult, BrowserAuthRespondStatus } from "@contracts/ipc";
 
 export interface RecordedCall {
   fn: string;
@@ -202,8 +202,8 @@ export const BrowserManager = {
     return rec("clearBrowserCookies", [], { ok: true });
   },
 
-  respondAuth(requestId: string, username: string, password: string): void {
-    rec("respondAuth", [requestId, username, password], undefined);
+  respondAuth(requestId: string, username: string, password: string): BrowserAuthRespondStatus {
+    return rec("respondAuth", [requestId, username, password], "accepted");
   },
 
   downloadAction(downloadId: string, action: string): BrowserOpResult {

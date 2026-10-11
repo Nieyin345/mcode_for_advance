@@ -353,3 +353,19 @@ export const BrowserAuthRespondSchema = z.object({
 });
 export type BrowserAuthRespondInput = z.infer<typeof BrowserAuthRespondSchema>;
 
+/**
+ * 【UI-015】HTTP Basic Auth 回执。从前主进程 handler 在 try 内调 `respondAuth`,异常仅
+ * `log.error`,**不向 renderer 返回任何结果**,弹窗无条件 `onClose()` —— 用户无法区分
+ * 「凭证已被接受用于本次 challenge」与「响应传递失败(callback 已超时/不存在/IPC 出错)」。
+ * 现在返回可判别状态(不含用户名/密码):
+ *   - `accepted`:凭证已交给本次 challenge 的 callback;
+ *   - `cancelled`:空凭证 = 用户取消;
+ *   - `expired`:该 requestId 的 callback 已不存在(超时/已被响应);
+ *   - `failed`:IPC 解析或处理出错。
+ */
+export type BrowserAuthRespondStatus = "accepted" | "cancelled" | "expired" | "failed";
+export interface BrowserAuthRespondResult {
+  status: BrowserAuthRespondStatus;
+  requestId: string;
+}
+

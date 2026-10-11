@@ -83,12 +83,17 @@ try {
   eq("空条目 → null", minimizeEntry({}), null);
   eq("非 false 值不构成限制 → null(条目该删)", minimizeEntry({ claude: "yes" as unknown as boolean }), null);
 
-  /* ── 坏文件防御 ── */
+  /* ── 坏文件防御(【MC-077】损坏且无 last-good → fail-closed,不是全开) ── */
   mkdirSync(root, { recursive: true });
+  rmSync(lastGoodEnginesMapPath(enginesMapPath(root)), { force: true });
   writeFileSync(enginesMapPath(root), "{ this is not json", "utf-8");
-  eqDeep("坏 JSON → 空 map(全开兜底)", readEnginesMap(root), {});
+  eqDeep("坏 JSON → 形状仍是空 map(stringify 看不到哨兵)", readEnginesMap(root), {});
+  eq("坏 JSON 且无备份 → 任意名对 claude 拒绝(fail-closed)", engineEnabled(readEnginesMap(root), "anything", "claude"), false);
+  eq("坏 JSON 且无备份 → engineRestricted true", engineRestricted(readEnginesMap(root), "claude"), true);
+  rmSync(lastGoodEnginesMapPath(enginesMapPath(root)), { force: true });
   writeFileSync(enginesMapPath(root), JSON.stringify(["not", "an", "object"]), "utf-8");
-  eqDeep("数组根 → 空 map", readEnginesMap(root), {});
+  eqDeep("数组根 → 形状仍是空 map", readEnginesMap(root), {});
+  eq("数组根且无备份 → 任意名拒绝(fail-closed)", engineEnabled(readEnginesMap(root), "anything", "claude"), false);
   writeFileSync(
     enginesMapPath(root),
     JSON.stringify({
@@ -223,6 +228,115 @@ check(
     check("MC-077:带可读原因", typeof noBackup.error === "string" && noBackup.error.length > 0, noBackup.error);
   } finally {
     rmSync(r2, { recursive: true, force: true });
+  }
+}
+
+// 【MC-077 复审 E1】独立复审反例:老用户设置**从未创建 last-good**(直写主文件,不走
+// writeEnginesMap),主文件被截断后必须 fail-closed —— 被禁用项**绝不能重新出现**。
+// 这里断言的是 engineEnabled 的**实际效果**(不是只断言 status=INVALID)。
+{
+  const r4 = join(mkdtempSync(join(tmpdir(), "mcode-skill-engines-e1-")), "skills");
+  mkdirSync(join(r4, "private-skill"), { recursive: true });
+  writeFileSync(join(r4, "private-skill", "SKILL.md"), "---\nname: private-skill\n---\n", "utf-8");
+  try {
+    const f = enginesMapPath(r4);
+    // 直写主文件,并确保 last-good 不存在(模拟迁移前的老配置)。
+    writeFileSync(f, JSON.stringify({ "private-skill": { codex: false, pi: false } }), "utf-8");
+    rmSync(lastGoodEnginesMapPath(f), { force: true });
+    // 有效读取:被禁用项确实被挡。
+    const blockedBefore = !engineEnabled(readEnginesMap(r4), "private-skill", "codex");
+    eq("E1:有效读时被禁用项已挡(codex)", blockedBefore, true);
+    eq("E1:有效读时 enabledSkillNames(codex) 只留空", JSON.stringify(enabledSkillNames(r4, "codex")), "[]");
+    // 模拟截断为不完整 JSON。
+    writeFileSync(f, '{"private-skill": {"code', "utf-8");
+    const after = readEnginesMapDetailed(f);
+    eq("E1:截断后 status=INVALID", after.status, "INVALID");
+    eq("E1:截断后 recovered=false(确无备份)", after.recovered, false);
+    // ★ 核心判据:被禁用项**没有重新出现**。
+    eq("★ E1:截断后 private-skill 对 codex 仍禁用(未 fail-open)",
+      engineEnabled(readEnginesMap(r4), "private-skill", "codex"), false);
+    eq("★ E1:截断后 private-skill 对 pi 仍禁用",
+      engineEnabled(readEnginesMap(r4), "private-skill", "pi"), false);
+    // fail-closed 是**全拒绝**:连从没受限的 claude 列也不放行,而不是只挡已知的那条。
+    eq("E1:截断后任意未受限项对 claude 也拒绝(全拒绝语义)",
+      engineEnabled(readEnginesMap(r4), "anything-else", "claude"), false);
+    // 空 allowlist(不是 null「不设限」)—— Provider 据此切成显式空名单。
+    eq("★ E1:截断后 codex 是空 allowlist 而非 null(不设限)",
+      JSON.stringify(enabledSkillNames(r4, "codex")), "[]");
+    eq("E1:截断后 engineRestricted(codex) 为 true",
+      engineRestricted(readEnginesMap(r4), "codex"), true);
+    eq("E1:截断后 enabledSkillDirs(codex) 为空数组",
+      JSON.stringify(enabledSkillDirs(r4, "codex")), "[]");
+    // 目录读权限异常(ENOENT 之外)→ 也 fail-closed(这里用「路径是目录」造非 ENOENT 读错)。
+    const dirAsFile = join(r4, "iam-a-dir");
+    mkdirSync(dirAsFile, { recursive: true });
+    const readErr = readEnginesMapDetailed(dirAsFile);
+    eq("E1:读非 ENOENT 故障(把目录当文件)→ INVALID", readErr.status, "INVALID");
+    eq("★ E1:读故障且无备份 → 任意项拒绝", engineEnabled(readErr.map, "x", "claude"), false);
+  } finally {
+    rmSync(r4, { recursive: true, force: true });
+  }
+}
+
+// 【MC-077】三条合法决议的边界(MISSING / VALID 空 / VALID 受限)。
+{
+  const r5 = join(mkdtempSync(join(tmpdir(), "mcode-skill-engines-ok-")), "skills");
+  mkdirSync(r5, { recursive: true });
+  try {
+    // ① MISSING:全新用户 → 全可见。
+    rmSync(enginesMapPath(r5), { force: true });
+    rmSync(lastGoodEnginesMapPath(enginesMapPath(r5)), { force: true });
+    eq("边界①:MISSING 时任意项对 claude 可见", engineEnabled(readEnginesMap(r5), "fresh", "claude"), true);
+    eq("边界①:MISSING 时 enabledSkillNames 为 null(不设限)", enabledSkillNames(r5, "claude"), null);
+    // ② 用户**明确清空**(VALID 空映射)→ 全可见。
+    writeEnginesMap(r5, {});
+    eq("边界②:明确清空后任意项可见", engineEnabled(readEnginesMap(r5), "fresh", "claude"), true);
+    eq("边界②:明确清空后 enabledSkillNames 仍 null", enabledSkillNames(r5, "claude"), null);
+    // ③ VALID 受限 → 按限制交付。
+    writeEnginesMap(r5, { "kept-out": { claude: false } });
+    eq("边界③:受限项对 claude 拒绝", engineEnabled(readEnginesMap(r5), "kept-out", "claude"), false);
+    eq("边界③:未提及项仍可见", engineEnabled(readEnginesMap(r5), "other", "claude"), true);
+    eq("边界③:engineRestricted(claude) 为 true", engineRestricted(readEnginesMap(r5), "claude"), true);
+  } finally {
+    rmSync(r5, { recursive: true, force: true });
+  }
+}
+
+// 【MC-077】部分条目类型异常(VALID,坏条目逐个丢弃,不牵连好条目,也不误触 fail-closed)。
+{
+  const r6 = join(mkdtempSync(join(tmpdir(), "mcode-skill-engines-partial-")), "skills");
+  mkdirSync(r6, { recursive: true });
+  try {
+    writeEnginesMap(r6, {});
+    writeFileSync(enginesMapPath(r6), JSON.stringify({ ok: { codex: false }, bad: "x", alsobad: [1] }), "utf-8");
+    const partial = readEnginesMapDetailed(enginesMapPath(r6));
+    eq("部分坏条目:整体仍是 VALID", partial.status, "VALID");
+    eq("部分坏条目:好条目保留(codex 禁用)", engineEnabled(partial.map, "ok", "codex"), false);
+    eq("部分坏条目:未提及项仍可见(没有误触 fail-closed)", engineEnabled(partial.map, "unmentioned", "claude"), true);
+  } finally {
+    rmSync(r6, { recursive: true, force: true });
+  }
+}
+
+// 【MC-077】两个窗口并发:同一次持久化里先写 last-good 再写主文件,任一顺序都不丢安全语义。
+{
+  const r7 = join(mkdtempSync(join(tmpdir(), "mcode-skill-engines-conc-")), "skills");
+  mkdirSync(r7, { recursive: true });
+  try {
+    const w1 = writeEnginesMap;
+    // 两个"窗口"各写一份:窗口 A 限制 skill-x,窗口 B 限制 skill-y。
+    w1(r7, { "skill-x": { codex: false } });
+    w1(r7, { "skill-y": { pi: false } });
+    // 最后一次写入胜出,但它同时刷新了 last-good。
+    eq("并发:最后一次写入的内容正确", engineEnabled(readEnginesMap(r7), "skill-y", "pi"), false);
+    eq("并发:last-good 与主文件一致",
+      JSON.stringify(readEnginesMapDetailed(lastGoodEnginesMapPath(enginesMapPath(r7))).map),
+      JSON.stringify({ "skill-y": { pi: false } }));
+    // 主文件损坏 → 恢复到最近一次提交,不是更旧的。
+    writeFileSync(enginesMapPath(r7), "broken", "utf-8");
+    eq("并发:损坏后恢复到最近提交(B 的限制)", engineEnabled(readEnginesMap(r7), "skill-y", "pi"), false);
+  } finally {
+    rmSync(r7, { recursive: true, force: true });
   }
 }
 

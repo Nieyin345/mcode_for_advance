@@ -46,6 +46,34 @@ export type SkillEngineEntry = Partial<Record<SkillEngine, boolean>>;
 /** The whole mapping: skill name → entry. Absent name = enabled everywhere. */
 export type SkillEnginesMap = Record<string, SkillEngineEntry>;
 
+/**
+ * 【MC-077】fail-closed 哨兵。挂在映射对象上的一个 **symbol 键**:
+ * `JSON.stringify` / `Object.keys` / `for...in` / `getEntries` 都看不到它,所以
+ * 「映射形状」不变(stringify 仍是 `{}`),但 {@link engineEnabled} /
+ * {@link engineRestricted} 见到它就把该引擎判为**全拒绝**。只有当矩阵文件损坏且
+ * **没有可信 last-good 可恢复**时,{@link readEnginesMapDetailed} 才发这个哨兵 ——
+ * 一个坏文件绝不能解释成「用户重新选择了全部允许」(那正是 44.2 的 fail-open 反例)。
+ * 消费端(IPC 面板、Claude/Codex/Pi 投递、MCP 列表)无需逐个改,拿到带哨兵的 map
+ * 自动切到空 allowlist。用普通赋值(而非 defineProperty 隐藏),这样即便有人
+ * `{...map}` 克隆也**保留**哨兵 —— 克隆只会朝更安全的一侧走。
+ */
+export const ENGINES_DENY_ALL: unique symbol = Symbol("enginesDenyAll");
+
+/** 内部:带哨兵的映射。符号键不参与 JSON / Object.keys 枚举。 */
+type EnginesDenyAllMap = SkillEnginesMap & { [ENGINES_DENY_ALL]?: true };
+
+/** 【MC-077】造一份 fail-closed 映射(损坏且无备份时的唯一合法决议)。 */
+function denyAllEnginesMap(): SkillEnginesMap {
+  const map: EnginesDenyAllMap = {};
+  map[ENGINES_DENY_ALL] = true;
+  return map;
+}
+
+/** 【MC-077】该映射是不是 fail-closed 决议? */
+function isEnginesDenyAll(map: Record<string, SkillEngineEntry>): boolean {
+  return (map as Record<PropertyKey, unknown> | null | undefined)?.[ENGINES_DENY_ALL] === true;
+}
+
 /** The universal library root (Mcode's CLAUDE_CONFIG_DIR skills dir). */
 export function defaultSkillsRoot(): string {
   return path.join(homedir(), ".mcode", "skills");
@@ -68,14 +96,16 @@ export function minimizeEntry(entry: SkillEngineEntry): SkillEngineEntry | null 
 
 /**
  * Read the mapping from an explicit file path (the pure core; the skills-root
- * wrapper is {@link readEnginesMap}). Any IO/parse problem → empty map (every
- * skill enabled) — a broken matrix file must never take all skills offline.
- * Entries that don't validate (non-object / non-boolean engine values) are
- * dropped individually.
+ * wrapper is {@link readEnginesMap}).
  *
  * ⚠️ 【MC-077】这是**低层**读法,分不清「从没设过」与「损坏」—— 两者都返回 `{}`。需要区分
  * 并对损坏配置做保守恢复时用 {@link readEnginesMapDetailed}(与 MC-071/083 同一条取舍):
  * 一个坏了的矩阵文件**不应**被解释成「用户重新选择了全部允许」。
+ *
+ * 返回值**可能是带 {@link ENGINES_DENY_ALL} 哨兵的 fail-closed 映射**(主文件损坏且无
+ * last-good 时)—— 它长得像空 map,但 {@link engineEnabled} 对每一项都返回 false。所以
+ * 消费端**一律**经 {@link engineEnabled}/{@link engineRestricted} 判断,绝不自己 `Object.keys`
+ * 当「全允许」用。
  */
 export function readEnginesMapFile(file: string): SkillEnginesMap {
   return readEnginesMapDetailed(file).map;
@@ -133,8 +163,9 @@ function readLastGoodEnginesMap(file: string): { map: SkillEnginesMap } | null {
  *   - **MISSING**(文件不存在):全新用户,不设限 —— 与旧行为一致;
  *   - **VALID**:照常;
  *   - **INVALID**(存在但损坏):**不静默 failure-open**。若 last-good 备份有效(含"用户明确
- *     全允许"那份空映射)就据它恢复(`recovered=true`)—— 一个坏了的矩阵文件绝不能把用户
- *     此前禁用过的条目静默重新启用;无备份时按「不设限」但带 status=INVALID + error 供上层告警。
+ *     全允许"那份空映射)就据它恢复(`recovered=true`);**无备份时 fail-closed** —— map 带
+ *     {@link ENGINES_DENY_ALL} 哨兵,消费端据此把所有受管能力判为**拒绝**,绝不返回一个
+ *     看似合法的空 map(那会被 `engineEnabled` 默认当成"全允许",正是 44.2 的反例)。
  */
 export function readEnginesMapDetailed(file: string): EnginesMapRead {
   let raw: string;
@@ -143,21 +174,23 @@ export function readEnginesMapDetailed(file: string): EnginesMapRead {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { status: "MISSING", map: {}, recovered: false };
     const recovered = readLastGoodEnginesMap(file);
+    if (recovered) return { status: "INVALID", map: recovered.map, recovered: true, error: `引擎矩阵文件不可读:${err instanceof Error ? err.message : String(err)}` };
     return {
       status: "INVALID",
-      map: recovered ? recovered.map : {},
-      recovered: recovered !== null,
-      error: `引擎矩阵文件不可读:${err instanceof Error ? err.message : String(err)}`,
+      map: denyAllEnginesMap(),
+      recovered: false,
+      error: `引擎矩阵文件不可读且无可用备份,已拒绝加载受限制能力:${err instanceof Error ? err.message : String(err)}`,
     };
   }
   const parsed = parseEnginesMapText(raw);
   if (parsed.ok) return { status: "VALID", map: parsed.map, recovered: false };
   const recovered = readLastGoodEnginesMap(file);
+  if (recovered) return { status: "INVALID", map: recovered.map, recovered: true, error: "引擎矩阵文件损坏(JSON 解析失败或不是对象),已从 last-good 恢复" };
   return {
     status: "INVALID",
-    map: recovered ? recovered.map : {},
-    recovered: recovered !== null,
-    error: "引擎矩阵文件损坏(JSON 解析失败或不是对象)",
+    map: denyAllEnginesMap(),
+    recovered: false,
+    error: "引擎矩阵文件损坏(JSON 解析失败或不是对象)且无可用备份,已拒绝加载受限制能力",
   };
 }
 
@@ -182,18 +215,26 @@ export function writeEnginesMap(skillsRoot: string, map: SkillEnginesMap): void 
 
 /** Is `name` enabled for `engine`? Entry absent / key absent → true. Accepts
  *  a string so the same function serves skill (claude/codex/pi) and MCP
- *  (claude/codex) matrices without callers each casting a literal union. */
+ *  (claude/codex) matrices without callers each casting a literal union.
+ *
+ *  【MC-077】带 {@link ENGINES_DENY_ALL} 哨兵的映射(损坏且无备份)→ 一律 false:
+ *  配置状态不明时,受管能力必须 fail-closed,而不是被空 map 默认放行。 */
 export function engineEnabled(
   map: Record<string, SkillEngineEntry>,
   name: string,
   engine: string,
 ): boolean {
+  if (isEnginesDenyAll(map)) return false;
   return map[name]?.[engine as SkillEngine] !== false;
 }
 
 /** True when at least one skill disables `engine` — the signal for providers
- *  to switch from "discover everything" to an explicit allowlist. */
+ *  to switch from "discover everything" to an explicit allowlist.
+ *
+ *  【MC-077】fail-closed 映射恒为 true:Provider 于是切成显式 allowlist,而
+ *  {@link engineEnabled} 对每一项都返回 false,合成的 allowlist 就是空的。 */
 export function engineRestricted(map: SkillEnginesMap, engine: SkillEngine): boolean {
+  if (isEnginesDenyAll(map)) return true;
   return Object.values(map).some((entry) => entry[engine] === false);
 }
 

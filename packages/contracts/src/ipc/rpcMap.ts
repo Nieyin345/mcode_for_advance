@@ -67,7 +67,7 @@ import type { GetThemeResult, SetThemeInput, AppInfoResult, CheckForUpdatesResul
 import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, ClipboardSaveFileInput, ClipboardSaveFileResult, ClipboardWriteImageInput, ClipboardWriteImageResult, FileListDirInput, FileTreeEntry, FileSearchInput, FileSearchResult, FileWriteInput, FileMkdirInput, FileDeleteInput, FileRenameInput, FileCopyInput, FileGrepInput, FileGrepResult, RgStatusResult, RgInstallInput, RgInstallResult, DialogPickFilesInput } from "./files.js";
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
 import type { TerminalCreateInput, TerminalCreateResult, TerminalWriteInput, TerminalOpResult, TerminalResizeInput, TerminalKillInput, TerminalListInput, TerminalInfo } from "./terminal.js";
-import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserDownloadActionInput } from "./browser.js";
+import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserAuthRespondResult, BrowserDownloadActionInput } from "./browser.js";
 import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, SkillsCopyToProjectInput, SkillsCopyToProjectResult,
   SkillPreset, SkillsPresetSaveInput, SkillsPresetDeleteInput,
   SkillsProjectOverviewInput, SkillsProjectOverviewResult,
@@ -531,8 +531,11 @@ export interface RpcMap {
   "browser.historyRemove": (input: BrowserHistoryRemoveInput) => Promise<BrowserOpResult>;
   /** Clear the whole address-bar history. */
   "browser.historyClear": (input: BrowserHistoryClearInput) => Promise<BrowserOpResult>;
-  /** Answer a pending HTTP Basic Auth prompt (see "authRequest" push event). */
-  "browser.authRespond": (input: BrowserAuthRespondInput) => Promise<void>;
+  /** Answer a pending HTTP Basic Auth prompt (see "authRequest" push event).
+   *  Returns a discriminated receipt (accepted / cancelled / expired / failed)
+   *  so the dialog can distinguish a delivered answer from one the challenge
+   *  never received (timed out or already consumed) — see 【UI-015】. */
+  "browser.authRespond": (input: BrowserAuthRespondInput) => Promise<BrowserAuthRespondResult>;
   /** Open a tracked download's file with the OS default app ("open", only
    *  allowed once the download completed) or select it in the containing
    *  folder ("reveal"). The path is resolved main-side from the download

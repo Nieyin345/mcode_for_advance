@@ -508,8 +508,11 @@ for (const row of INVALID) {
     check(`${row.name}: 说的是人话(含字段名「${row.field}」)`, typeof res.error === "string" && res.error.includes(row.field), res.error);
     check(`★ ${row.name}: 交回来的不是 zod 的内部 JSON`, !hasZodShape(res.error), res.error);
   } else {
-    // authRespond 的契约是 Promise<void> —— 它没有地方报错,判据只能是"没打下去"。
+    // 【UI-015】authRespond 的契约现在是 Promise<BrowserAuthRespondResult> ——
+    // 入参不合法时也**回一个 failed 回执**(不再是 void、也不 throw)。判据有两条:
+    // ① 没把用户填的凭据交给 BrowserManager;② 明确回 failed(弹窗据此不关闭)。
     check(`${row.name}: 没有把用户填的凭据交出去`, calls.length === 0, { calls });
+    eq(`${row.name}: 回 failed 回执(可判别,不是 void)`, (out as { status?: string } | undefined)?.status, "failed");
   }
 }
 
@@ -546,7 +549,26 @@ console.log("\nIPC:authRespond 的合法入参");
   });
   eq("authRespond: 转交给了 BrowserManager.respondAuth", calls, ["respondAuth"]);
   eq("authRespond: 凭据原样带过去", stub.lastCall("respondAuth")?.args, ["r1", "u", "p"]);
-  eq("authRespond: 契约是 Promise<void>,所以没有返回值", out, undefined);
+  // 【UI-015】handler 把 BrowserManager 判定的状态原样包成回执交回渲染端 —— 从前
+  // 这里断言的是 "Promise<void> 所以没返回值",于是"已投递"和"challenge 早就没了"
+  // 在下游无法区分,弹窗一律关闭。
+  eq("authRespond: 把 BrowserManager 的状态原样转成回执", (out as { status?: string } | undefined)?.status, "accepted");
+  eq("authRespond: 回执带回同一个 requestId(便于渲染端确认是哪一次)", (out as { requestId?: string } | undefined)?.requestId, "r1");
+}
+
+// 【UI-015】三种"非已投递"状态必须如实回传,让弹窗能分辨"凭证送出去了"与
+// "这次 challenge 已经没了/投递失败"。覆盖 cancelled / expired / failed 三态。
+{
+  for (const status of ["cancelled", "expired", "failed"] as const) {
+    stub.override("respondAuth", status);
+    const { out } = await callAndRecord(IPC.BROWSER_AUTH_RESPOND, {
+      requestId: "r2",
+      username: "u",
+      password: "p",
+    });
+    eq(`authRespond(${status}): 状态原样回传`, (out as { status?: string } | undefined)?.status, status);
+  }
+  stub.clearOverrides();
 }
 
 /* ──────────────── 渲染端:清除缓存 / Cookie 的失败出口 ────────────────
@@ -664,6 +686,50 @@ console.log("\nIPC:authRespond 的合法入参");
       body.slice(0, 300),
     );
   }
+}
+
+/* ──────────────── 渲染端:UI-015 HTTP Basic Auth 提交回执 ────────────────
+ *
+ * `AuthPromptDialog` 从前 `void api.browser.authRespond(...)` 之后**无条件 `onClose()`** ——
+ * 而主进程可能因为 challenge 超时/已被消费而没有可投递的回调,应答被静默丢弃,弹窗照样消失,
+ * 用户以为登录已提交。现在必须消费 `BrowserAuthRespondResult` 回执:只有
+ * accepted/cancelled 才关闭,expired/failed 保持弹窗并显示原因。判据钉在源码上
+ * (组件需要渲染 host,本套无头跑不出来)。 */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const dlg = readFileSync(join(process.cwd(), "src/renderer/components/browser/AuthPromptDialog.tsx"), "utf8");
+  const code = dlg.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // submit 函数体:从 `const submit = async` 锚到下一个顶层 `};`。
+  const at = code.indexOf("const submit = async");
+  const body = at >= 0 ? code.slice(at, code.indexOf("\n  };", at)) : "";
+  check(
+    "★ UI-015:authRespond 回执被 await(不再是 void 丢回包)",
+    at >= 0 && /const\s+res\s*=\s*await\s+api\.browser\.authRespond/.test(body),
+    body.slice(0, 260),
+  );
+  check(
+    "★ UI-015:只在 accepted/cancelled 时关闭(expired/failed 不关闭)",
+    /res\.status === "accepted"\s*\|\|\s*res\.status === "cancelled"/.test(body) && /onClose\(\)/.test(body),
+    body.slice(0, 320),
+  );
+  check(
+    "★ UI-015:非已投递状态落成可见错误(setSubmitError)",
+    /setSubmitError\(/.test(body) && /"expired"/.test(body) && /"failed"/.test(body),
+    body.slice(0, 320),
+  );
+  // 错误态必须在 UI 上画出来(否则 setSubmitError 只是死字段)。
+  check(
+    "★ UI-015:错误态渲染出提示(browser.authExpired / browser.authFailed)",
+    /submitError/.test(dlg) && dlg.includes("browser.authExpired") && dlg.includes("browser.authFailed"),
+    null,
+  );
+  // 提交途中禁用按钮 + 进行中指示(防重复提交)。
+  check(
+    "★ UI-015:提交途中禁用登录按钮并显示进行中",
+    /disabled=\{[^}]*submitting[^}]*\}/.test(dlg) && /<Spinner/.test(dlg),
+    null,
+  );
 }
 
 /* ──────────────── 3. MC-043 跨项目目标隔离 ────────────────

@@ -61,6 +61,8 @@ export const en = {
   "browser.username": "Username",
   "browser.password": "Password",
   "browser.signIn": "Sign in",
+  "browser.authExpired": "This sign-in request is no longer valid (it timed out or was already handled). Reload the page and try again.",
+  "browser.authFailed": "The sign-in response could not reach the page. Please try again.",
 
   /* ── device toolbar ── */
   "browser.device": "Device",

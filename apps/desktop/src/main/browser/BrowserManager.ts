@@ -66,6 +66,7 @@ import type {
   BrowserDevicePreset,
   BrowserOrientation,
   BrowserViewport,
+  BrowserAuthRespondStatus,
   PickedElement,
 } from "@contracts/ipc";
 import { getMainWindow, sendToRenderer } from "@main/window.js";
@@ -1864,16 +1865,25 @@ class BrowserManagerImpl {
     });
   }
 
-  /** Renderer's answer to an "authRequest" push. Empty username = cancel. */
-  respondAuth(requestId: string, username: string, password: string): void {
+  /** Renderer's answer to an "authRequest" push. Empty username+password =
+   *  cancel. Returns a discriminating status so the renderer can tell
+   *  "credentials accepted for this challenge" from "the challenge is gone"
+   *  (timer expired it, or a duplicate answer already consumed it) — before,
+   *  the void return made a silently-dropped answer indistinguishable from a
+   *  delivered one, and the dialog closed unconditionally. */
+  respondAuth(requestId: string, username: string, password: string): BrowserAuthRespondStatus {
     const pending = this.pendingAuths.get(requestId);
-    if (!pending) return;
+    // No live callback: the 5-minute safety timer already fired, the previous
+    // navigation consumed it, or the id was never issued.
+    if (!pending) return "expired";
     this.pendingAuths.delete(requestId);
     try {
       pending.callback(username, password);
     } catch {
-      /* webContents gone */
+      /* webContents gone — the answer had nowhere to land */
+      return "failed";
     }
+    return username === "" && password === "" ? "cancelled" : "accepted";
   }
 
   // ── Agent-facing capabilities ───────────────────────────────────────

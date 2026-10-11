@@ -94,9 +94,50 @@ try {
   /* ── 坏文件防御 ── */
   const bad = join(root, "bad.json");
   rmSync(bad, { force: true });
-  for (const content of ['{ not json', '["array"]', '{"x": 5}', '{"x": {"vim": false}}']) {
+  // 真正无法解析的(坏 JSON / 数组根)→ 无 last-good → fail-closed 决议,不是"全可见"。
+  for (const content of ['{ not json', '["array"]']) {
     writeFileSync(bad, content, "utf-8");
-    eqDeep(`坏内容 ${content.slice(0, 12)} → 空 map(全可见)`, readEnginesMapFile(bad), {});
+    rmSync(`${bad}.last-good`, { force: true });
+    eq(`坏内容 ${content.slice(0, 12)} → 拒绝任意 server(无备份 fail-closed)`,
+      mcpEngineEnabled(readEnginesMapFile(bad), "any", "claude"), false);
+    eq(`坏内容 ${content.slice(0, 12)} → 拒绝任意 server(codex)`,
+      mcpEngineEnabled(readEnginesMapFile(bad), "any", "codex"), false);
+  }
+  // 能解析成对象、但条目全被丢弃的 → 仍是 VALID 空映射(全可见语义,不是损坏)。
+  for (const content of ['{"x": 5}', '{"x": {"vim": false}}']) {
+    writeFileSync(bad, content, "utf-8");
+    eqDeep(`${content.slice(0, 12)} 全坏条目 → VALID 空 map(全可见)`, readEnginesMapFile(bad), {});
+    eq(`${content.slice(0, 12)} → 任意 server 可见`,
+      mcpEngineEnabled(readEnginesMapFile(bad), "any", "claude"), true);
+  }
+
+  /* ── 【MC-077 复审 E1】无 last-good 的坏矩阵 → 派生视图 fail-closed(空) ── */
+  {
+    const stdio = { command: "npx", args: ["-y", "server"] };
+    const brokenNoBackup = join(root, "broken-no-backup.json");
+    rmSync(brokenNoBackup, { force: true });
+    rmSync(`${brokenNoBackup}.last-good`, { force: true });
+    writeFileSync(brokenNoBackup, '{"only": {"claude": false', "utf-8");
+    const denyAll = readEnginesMapFile(brokenNoBackup);
+    const e1Truth: McpManagementState = {
+      userServers: { "assigned-both": stdio, "assigned-claude": { command: "c" } },
+      userDisabled: {},
+    };
+    // ★ 核心判据:损坏且无备份时,引擎视图里**一个都不出现**(不是照旧全给)。
+    eqDeep("★ E1:坏矩阵无备份 → claude 派生视图为空", deriveMcpEngineView(e1Truth, denyAll, "claude"), {});
+    eqDeep("★ E1:坏矩阵无备份 → codex 派生视图为空", deriveMcpEngineView(e1Truth, denyAll, "codex"), {});
+    eq("E1:坏矩阵无备份 → mcpEngineEnabled 对已分配项也拒绝",
+      mcpEngineEnabled(denyAll, "assigned-both", "claude"), false);
+    // 对照:同一 truth + 一份合法空矩阵(VALID 全可见)→ 两项照常出现,证明上面的空来自 fail-closed 而非 truth 本身。
+    eqDeep("E1 对照:合法空矩阵 → 两项照常出现",
+      Object.keys(deriveMcpEngineView(e1Truth, {}, "claude")).sort(),
+      ["assigned-both", "assigned-claude"]);
+    // 对照:带 last-good 的损坏 → 按恢复的限制交付(这里 last-good 为空 → 全可见)。
+    writeEnginesMapFile(brokenNoBackup, {});
+    writeFileSync(brokenNoBackup, '{"only": {"claude": false', "utf-8");
+    eqDeep("E1 对照:有 last-good(空)的损坏 → 恢复成全可见",
+      Object.keys(deriveMcpEngineView(e1Truth, readEnginesMapFile(brokenNoBackup), "claude")).sort(),
+      ["assigned-both", "assigned-claude"]);
   }
 
   /* ── deriveMcpEngineView:enabled ∧ assigned ── */

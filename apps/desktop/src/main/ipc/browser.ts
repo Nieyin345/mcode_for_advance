@@ -33,6 +33,7 @@ import {
   BrowserHistoryClearSchema,
   BrowserAuthRespondSchema,
   BrowserDownloadActionSchema,
+  type BrowserAuthRespondResult,
 } from "@contracts/ipc";
 import { isKnownProjectPath } from "@main/lib/pathGuard.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
@@ -239,13 +240,18 @@ export function registerBrowserHandlers(ipcMain: IpcMain): void {
   });
 
   // Answer a pending HTTP Basic Auth prompt (see BrowserEventMessage "authRequest").
-  ipcMain.handle(IPC.BROWSER_AUTH_RESPOND, async (_evt, raw) => {
+  // 【UI-015】从前异常只写日志、成功也不回任何东西 —— 弹窗无条件关闭,用户无法区分
+  // 「凭证已交付本次 challenge」与「响应传递失败(回调已超时/不存在)」。现在返回可判别
+  // 回执(不含用户名/密码):accepted / cancelled / expired / failed。
+  ipcMain.handle(IPC.BROWSER_AUTH_RESPOND, async (_evt, raw): Promise<BrowserAuthRespondResult> => {
     try {
       const input = BrowserAuthRespondSchema.parse(raw);
-      BrowserManager.respondAuth(input.requestId, input.username, input.password);
+      const status = BrowserManager.respondAuth(input.requestId, input.username, input.password);
+      return { status, requestId: input.requestId };
     } catch (err) {
       const msg = errText(err);
       log.error(`browser.authRespond failed: ${msg}`);
+      return { status: "failed", requestId: (raw as { requestId?: string } | null)?.requestId ?? "" };
     }
   });
 

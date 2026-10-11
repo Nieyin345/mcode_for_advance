@@ -72,6 +72,8 @@ export const zh = {
   "browser.username": "用户名",
   "browser.password": "密码",
   "browser.signIn": "登录",
+  "browser.authExpired": "本次登录请求已失效（超时或已处理），请刷新页面后重试。",
+  "browser.authFailed": "登录请求未能送达页面，请重试。",
 
   /* ── device toolbar ── */
   "browser.device": "设备",
