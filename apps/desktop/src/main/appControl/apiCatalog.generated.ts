@@ -250,7 +250,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "claude.approve",
   "channel": "claude:approve",
-  "doc": "",
+  "doc": "回应一条待审批的工具调用（`requestId` 对上 `approval.request` 事件）。**认不出这个 id 只记一条 warn、不抛** —— 用户点了过期的审批卡是正常会发生的事。",
   "input": "{ requestId: string; sessionId: string; granted: boolean; always?: boolean | undefined }",
   "output": "void"
  },
@@ -264,7 +264,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "claude.interrupt",
   "channel": "claude:interrupt",
-  "doc": "",
+  "doc": "打断当前这一轮。**图型工作流没有\"会话自己的回合\"可断**——这一下停的是整张图(停派发 + 逐个 interrupt 在飞节点),随后会话标成 `interrupted`。",
   "input": "{ sessionId: string }",
   "output": "void"
  },
@@ -320,7 +320,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "claude.startSession",
   "channel": "claude:startSession",
-  "doc": "",
+  "doc": "建会话(或**复用同项目里那份还\"新鲜\"的\"新对话\"行**——同一处空行连着开两次不会留下两条空会话,见 `createOrReuseSession`)。",
   "input": "{ kind: 'chat' | 'side' // Session role: \"chat\" (default, normal left-bar session) or \"side\" (side-chat Q&A session …; projectId: string; effort: string; permissionMode: string; title?: string | undefined; providerId?: string | undefined // Provider id — which AI backend to use.; model?: string | undefined; customModelId?: string | null | undefined // Id of a custom-model config to bind to this session (omit/null = built-in).; parentSessionId?: string | undefined // For kind=\"side\": the main session this Q&A thread belongs to.; envMode?: 'local' | 'worktree' | undefined // Working-environment intent for the new session.; wtStyle?: 'detached' | 'branch' | undefined // Worktree FORM for envMode=\"worktree\": \"branch\" materializes on a generated `mcode/*` bran…; worktreePath?: string | undefined // BIND to an existing managed worktree directory instead of creating a fresh one: the new s…; ag…",
   "output": "{ session: Session }"
  },
@@ -348,7 +348,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "codexModels.delete",
   "channel": "codexModels:delete",
-  "doc": "",
+  "doc": "删一个 Codex provider —— 记录与加密 key 一起删,并重写 config.toml。返回删完后的脱敏清单。",
   "input": "{ id: string }",
   "output": "{ providers: CodexProviderPublic[] }"
  },
@@ -362,21 +362,21 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "codexModels.list",
   "channel": "codexModels:list",
-  "doc": "",
+  "doc": "列全部 Codex provider(**脱敏**;明文 key 另走 `codexModels.getApiKey`)。",
   "input": "(无参数)",
   "output": "{ providers: CodexProviderPublic[] }"
  },
  {
   "method": "codexModels.listEndpointModels",
   "channel": "codexModels:listEndpointModels",
-  "doc": "",
+  "doc": "问端点要模型列表(填进 Codex 表单的下拉框)。拉不到时抛错,由界面回退到手输。",
   "input": "{ baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined; apiKey?: string | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
   "output": "{ models: string[] }"
  },
  {
   "method": "codexModels.save",
   "channel": "codexModels:save",
-  "doc": "",
+  "doc": "新建或更新一个 Codex provider(**upsert**,apiKey 空 + 已存在=保留旧 key)。会拒绝与他人**算出同一个环境变量名**的 id(否则两个供应商的 Key 会静默互相覆盖)并重写 config.toml。",
   "input": "{ id: string; name: string; models: { id: string; label?: string | undefined; hint?: string | undefined; contextWindow?: number | undefined; }[]; baseUrl: string; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头，落到该 provider 的 config.toml `http_headers`。; imageGeneration?: boolean | undefined // Opt-in: unlock codex's image generation tool by injecting the `x-openai-actor-authorizati… }",
   "output": "{ providers: CodexProviderPublic[] }"
  },
@@ -404,7 +404,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "customModel.delete",
   "channel": "customModel:delete",
-  "doc": "",
+  "doc": "删一份自定义模型配置(连同加密 token 一起删)。id 不存在**不报错**、静默当成功(只按 id 过滤)。返回删完的脱敏清单。",
   "input": "{ id: string }",
   "output": "{ models: CustomModelPublic[] }"
  },
@@ -418,21 +418,21 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "customModel.list",
   "channel": "customModel:list",
-  "doc": "",
+  "doc": "列全部自定义模型配置(**脱敏**版,不含 token;取明文另走 `customModel.getToken`)。",
   "input": "(无参数)",
   "output": "{ models: CustomModelPublic[] }"
  },
  {
   "method": "customModel.save",
   "channel": "customModel:save",
-  "doc": "",
+  "doc": "新建或更新一份自定义模型配置(传 `id` 且存在即更新,**token 缺省时保留旧的**)。失败时抛的话是**给人看的中文**——设置页把它原样贴在红字里。",
   "input": "{ id?: string | undefined // Omit on create; present on update to target an existing record.; name: string; baseUrl: string; authMode?: AuthMode | undefined; protocol?: Protocol | undefined // Wire protocol.; webSiteId?: string | undefined // 仅 `protocol: \"web\"` 需要：驱动哪个网页版站点（站点适配器 id）。; authToken?: string | undefined // Cleartext.; models: CustomModelEntry[] // The flat model list (≥1 entry, enforced by the IPC schema).; subagentModel?: string | undefined // Task-subagent model to pin for this config.; disableNonEssentialTraffic?: boolean | undefined; timeoutMs?: number | undefined; customHeaders?: CustomHeaders | undefined // Extra request headers for the endpoint; an empty map clears them. }",
   "output": "{ models: CustomModelPublic[] }"
  },
  {
   "method": "customModel.test",
   "channel": "customModel:test",
-  "doc": "",
+  "doc": "连通性测试**单条**模型:走的是真实那一整条链路(binary + env builder),不是捷径 fetch —— \"测得过 = 保存后一定能用\"。",
   "input": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; timeoutMs?: number | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
   "output": "{ ok: boolean; detail?: string | undefined // claude's version string or model echo, when available.; error?: string | undefined // Error message on failure (auth / network / timeout / bad model). }"
  },
@@ -516,7 +516,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "file.copy",
   "channel": "file:copy",
-  "doc": "",
+  "doc": "复制一个**普通文件**到一个目录(两端都要在已知项目根内;目录不在此列)。**从不覆盖**:名字被占就派生\"名 副本.ext\"\"名 副本 2.ext\"…(suffix 由渲染端给,已剥目录分量防越界)。",
   "input": "{ srcPath: string // Absolute path of the file to copy.; destDir: string // Absolute path of the directory to copy into.; suffix?: string | undefined // Locale word used when deriving a clash-free name (\"副本\" / \"copy\"). }",
   "output": "{ ok: boolean }"
  },
@@ -565,7 +565,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "file.readFile",
   "channel": "file:readFile",
-  "doc": "",
+  "doc": "读一个文本文件(转文件 diff 卡片用)。**路径必须落在某个已知项目根内**,否则**静默返回空串**;读不出(GBK/UTF-16 走 `decodeTextBuffer` 尽力解码,失败也回空串),不抛。",
   "input": "{ filePath: string // Absolute or cwd-relative path. }",
   "output": "{ content: string }"
  },
@@ -593,7 +593,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "git.cancelGenerateCommitMessage",
   "channel": "git:cancelGenerateCommitMessage",
-  "doc": "",
+  "doc": "中断一次正在跑的提交信息生成(按 `requestId` 找到那条 SDK 查询并 abort)。幂等 —— 没在跑的 id 也回 `ok:true`。",
   "input": "{ requestId: string }",
   "output": "{ ok: boolean }"
  },
@@ -775,7 +775,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "hooks.remove",
   "channel": "hooks:remove",
-  "doc": "",
+  "doc": "删一条钩子(按 id)。",
   "input": "{ id: string }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
@@ -789,7 +789,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "hooks.save",
   "channel": "hooks:save",
-  "doc": "",
+  "doc": "存一条钩子(**整份给过来**,不是\"改哪个字段\")—— 用户从头写的东西局部更新没意义,整份过来让校验只在一处发生。返回 `{ ok, error? }`。",
   "input": "{ hook: { id: string; name: string; enabled: boolean; command: string; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res… }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
@@ -817,7 +817,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "institution.delete",
   "channel": "institution:delete",
-  "doc": "",
+  "doc": "删一份机构档案。**不会登出任何站点** —— 档案与登录态是两回事。返回删完的完整列表。",
   "input": "{ id: string }",
   "output": "{ profiles: InstitutionProfile[] }"
  },
@@ -831,7 +831,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "institution.save",
   "channel": "institution:save",
-  "doc": "",
+  "doc": "存一份机构入口档案(登录入口 URL / 域名 / 代理前缀;**不含凭据**)。变更类一律返回完整新列表,渲染端整体替换缓存。",
   "input": "{ name: string; id?: string | undefined; loginUrl?: string | undefined; domains?: string[] | undefined; proxyPrefix?: string | undefined; notes?: string | undefined }",
   "output": "{ profiles: InstitutionProfile[] }"
  },
@@ -880,7 +880,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "library.convert",
   "channel": "library:convert",
-  "doc": "",
+  "doc": "兼容入口,**固定失败**:核心不转录、不上传、也不清理产物,只返回一句\"请走已配置的自动化在线转录\"的指引(见 `library/convert.ts` 的 `AUTOMATION_REQUIRED`)。`repair` 分支同样 fail-closed。",
   "input": "{ force?: boolean | undefined // 已经有 md 也重转。; collectionId?: string | undefined; ids?: string[] | undefined // 要转的条目;省略则转整个库(或某个集合)。; repair?: boolean | undefined // 按小类清理失联/多余产物并修复该小类；必须显式提供 collectionId。 }",
   "output": "{ converted: number; cleaned: number; failed: { id: string; error: string; }[] }"
  },
@@ -901,7 +901,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "library.deleteCollection",
   "channel": "library:deleteCollection",
-  "doc": "",
+  "doc": "删一个集合。**连整棵子树一起收** —— 子分类会随 CASCADE 消失,挂在子分类上的条目也会一并进回收站(不然会变成左栏找不回的僵尸)。返回最新完整列表。",
   "input": "{ id: string }",
   "output": "{ collections: LibraryCollection[] }"
  },
@@ -915,7 +915,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "library.deleteNote",
   "channel": "library:deleteNote",
-  "doc": "",
+  "doc": "删一条\"条目下的小笔记\"(不是笔记库条目)。返回**它所属条目**的最新笔记列表;删的是孤条(查不到归属)则回空数组。",
   "input": "{ id: string }",
   "output": "{ notes: LibraryNote[] }"
  },
@@ -1027,7 +1027,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "library.listCollections",
   "channel": "library:listCollections",
-  "doc": "",
+  "doc": "列全部集合(树形;已摊成渲染端要的形状)。",
   "input": "(无参数)",
   "output": "{ collections: LibraryCollection[] }"
  },
@@ -1090,7 +1090,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "library.readPdf",
   "channel": "library:readPdf",
-  "doc": "",
+  "doc": "读一篇 PDF 的原始字节给应用内 pdf.js 阅读器。**走结构化克隆、不做 base64**(文件十几 MB,base64 要多涨三分之一)。",
   "input": "{ id: string }",
   "output": "{ ok: boolean; error?: string | undefined; bytes: Uint8Array<ArrayBufferLike> | null // PDF 原始字节。`ok` 为 false 时是 null。走结构化克隆,不做 base64。 }"
  },
@@ -1223,7 +1223,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "lsp.prewarm",
   "channel": "lsp:prewarm",
-  "doc": "",
+  "doc": "预启动某工作区的 Java 语言服务器(**不等用户打开 .java 文件**),把那次性的 Maven/Gradle 工程导入提前到用户浏览时跑。火忘式、幂等(活着的不重启)。",
   "input": "{ workspacePath: string // Project root to pre-warm (must be a known project). }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
@@ -1300,14 +1300,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "mcp.marketSourceAdd",
   "channel": "mcp:marketSourceAdd",
-  "doc": "",
+  "doc": "加一个 MCP 注册中心(市场源)。**先连通探一次**再落,连不上/已存在/非 http(s) 都回 `{ ok:false, error }`(不抛);成功回新分配的 `id`。",
   "input": "{ url: string; label?: string | undefined }",
   "output": "{ ok: boolean; error?: string | undefined; id?: string | undefined }"
  },
  {
   "method": "mcp.marketSourceRemove",
   "channel": "mcp:marketSourceRemove",
-  "doc": "",
+  "doc": "删一个用户加的 MCP 注册中心(**内置那个删不掉**)。",
   "input": "{ id: string }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
@@ -1391,7 +1391,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "memory.assistant",
   "channel": "memory:assistant",
-  "doc": "",
+  "doc": "记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。",
   "input": "{ sessionId: string; op: 'list' } | { kind: 'capture' | 'checkpoint' | 'health'; sessionId: string; op: 'start' } | { sessionId: string; op: 'cancel'; jobId: string } | { sessionId: string; op: 'discard'; jobId: string } | { sessionId: string; op: 'deliver'; …",
   "output": "{ jobs: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'queued' | 'consumed' | 'expired'; id: string; kind: 'capture' | 'checkpoint' | 'health'; result: stri…; incoming?: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'queued' | 'consumed'…"
  },
@@ -1419,7 +1419,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "memory.manage",
   "channel": "memory:manage",
-  "doc": "",
+  "doc": "记忆维护(桌面专用,模型拿不到):按 `action`(list/preview/import/history/restore)操作原生记忆来源。`import`/`restore` 要带 digest + `confirmed:true`。",
   "input": "{ action: 'list' } | { action: 'preview'; source: string } | { action: 'import'; source: string; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
   "output": "{ ok: boolean; error?: string | undefined; content?: string | undefined; digest?: string | undefined; path?: string | undefined; sources?: { id: string; label: string; }[] | undefined; projects?: { id: string; name: string; }[] | undefined; history?: { id: st…"
  },
@@ -1545,49 +1545,49 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "modules.cancel",
   "channel": "modules:cancel",
-  "doc": "",
+  "doc": "取消一个在跑的模块任务(abort 那个 job 并标成 `cancelled`)。返回取消后的快照。",
   "input": "{ moduleId: string; taskId: string }",
   "output": "{ id: string; moduleId: string; contributionId: string; resource: { path: string; projectPath: string; }; view: { title: { zh: string; en: string; }; fields: { title: { zh: string; en: string; }; key: string; }[]; }; status: 'running' | 'completed' | 'failed'…"
  },
  {
   "method": "modules.catalog",
   "channel": "modules:catalog",
-  "doc": "",
+  "doc": "全部模块(**内置 + 已装**)的清单:各自的贡献项、宿主能力表、以及内置只读模块能当工作流目标的那几项。",
   "input": "(无参数)",
   "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: 'resource.read'[]; contributions: { id: string; title: { zh: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.install",
   "channel": "modules:install",
-  "doc": "",
+  "doc": "安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单。",
   "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: 'resource.read'[]; contributions: { id: string; title: { zh: str…; confirmReadAccess: true }",
   "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: 'resource.read'[]; contributions: { id: string; title: { zh: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.invoke",
   "channel": "modules:invoke",
-  "doc": "",
+  "doc": "触发模块的一个贡献项。按能力 `kind` 分流:非 task 的直接跑出结果,是 task 的立刻返回 `{type:\"task\"}` 句柄(进度靠 `modules.task` 拉)。",
   "input": "{ moduleId: string; contributionId: string; resource: { path: string; projectPath: string; }; requestId: string }",
   "output": "{ type: 'result'; value: Record<string, string | number | boolean | null>; view: { title: { zh: string; en: string; }; fields: { title: { zh: string; en: string; }; key: string; }[]; } } | { type: 'task'; task: ModuleTask }"
  },
  {
   "method": "modules.remove",
   "channel": "modules:remove",
-  "doc": "",
+  "doc": "卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单。",
   "input": "{ moduleId: string }",
   "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: 'resource.read'[]; contributions: { id: string; title: { zh: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.task",
   "channel": "modules:task",
-  "doc": "",
+  "doc": "取一个模块任务的当前快照(状态 / 进度 / 结果)。",
   "input": "{ moduleId: string; taskId: string }",
   "output": "{ id: string; moduleId: string; contributionId: string; resource: { path: string; projectPath: string; }; view: { title: { zh: string; en: string; }; fields: { title: { zh: string; en: string; }; key: string; }[]; }; status: 'running' | 'completed' | 'failed'…"
  },
  {
   "method": "modules.tasks",
   "channel": "modules:tasks",
-  "doc": "",
+  "doc": "列某个项目下**仍在内存里**的模块任务(进程重启后为空,不落库)。",
   "input": "{ projectPath: string }",
   "output": "{ length: number // Gets or sets the length of the array.; toString: () => string // Returns a string representation of an array.; toLocaleString: { (): string; (locales: string | string[], options?: Intl.NumberFormatOptions & Intl.DateTimeFormatOptions): str…"
  },
@@ -1650,7 +1650,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "onlyoffice.getConfig",
   "channel": "onlyoffice:getConfig",
-  "doc": "",
+  "doc": "读当前的 OnlyOffice 配置(serverUrl / jwtSecret / callbackHost;带内存缓存)。",
   "input": "(无参数)",
   "output": "{ serverUrl: string // Document Server 地址，如 `http://127.0.0.1:8080`。空 = 未配置（Office 文件只能只读预览）。; jwtSecret: string // JWT 密钥。DS 7.2+ 默认开启 JWT，必须与它 `services.CoAuthoring.secret` 一致；留空表示 DS 关了 JWT。; callbackHost: string // DS 回连 Mcode 时用的主机名/IP。空 = 自动：serverUrl 是…"
  },
@@ -1671,7 +1671,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "onlyoffice.setConfig",
   "channel": "onlyoffice:setConfig",
-  "doc": "",
+  "doc": "存 OnlyOffice 配置到 settings 表并刷新内存缓存。`serverUrl` 会归一(去尾斜杠、补协议)。",
   "input": "{ serverUrl: string // Document Server 地址，如 `http://127.0.0.1:8080`。空 = 未配置（Office 文件只能只读预览）。; jwtSecret: string // JWT 密钥。DS 7.2+ 默认开启 JWT，必须与它 `services.CoAuthoring.secret` 一致；留空表示 DS 关了 JWT。; callbackHost: string // DS 回连 Mcode 时用的主机名/IP。空 = 自动：serverUrl 是本机地址就用 `127.0.0.1`， 否则取第一块非内部 IPv4 网卡地址。Docker De… }",
   "output": "{ serverUrl: string // Document Server 地址，如 `http://127.0.0.1:8080`。空 = 未配置（Office 文件只能只读预览）。; jwtSecret: string // JWT 密钥。DS 7.2+ 默认开启 JWT，必须与它 `services.CoAuthoring.secret` 一致；留空表示 DS 关了 JWT。; callbackHost: string // DS 回连 Mcode 时用的主机名/IP。空 = 自动：serverUrl 是…"
  },
@@ -1692,7 +1692,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "piModels.delete",
   "channel": "piModels:delete",
-  "doc": "",
+  "doc": "删一个 Pi provider —— **models.json 条目与加密 key 一起删**。返回删完后的脱敏清单。",
   "input": "{ name: string }",
   "output": "{ providers: Record<string, PiProviderPublic> }"
  },
@@ -1706,7 +1706,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "piModels.list",
   "channel": "piModels:list",
-  "doc": "",
+  "doc": "列全部 Pi provider(**脱敏**;明文 key 另走 `piModels.getApiKey`)。",
   "input": "(无参数)",
   "output": "{ providers: Record<string, PiProviderPublic> }"
  },
@@ -1727,7 +1727,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "piModels.save",
   "channel": "piModels:save",
-  "doc": "",
+  "doc": "新建或更新一个 Pi provider(upsert)。apiKey 非空则加密存;空 + 已存在=**保留旧 key**;空 + 新建=抛错。models.json 里按模型 id **合并保留**既有字段。",
   "input": "{ name: string; config: Record<string, unknown>; apiKey?: string | undefined }",
   "output": "{ providers: Record<string, PiProviderPublic> }"
  },
@@ -1839,7 +1839,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "project.create",
   "channel": "project:create",
-  "doc": "",
+  "doc": "新建项目(记一条记录,不建磁盘目录)。建完读回权威行(含真正的 sort_order)并广播 `projects.changed`。",
   "input": "{ path: string; name: string }",
   "output": "{ project: Project }"
  },
@@ -1853,7 +1853,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "project.list",
   "channel": "project:list",
-  "doc": "",
+  "doc": "列未归档的项目(左栏项目树用)。",
   "input": "(无参数)",
   "output": "{ projects: Project[] }"
  },
@@ -1881,7 +1881,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "project.sessions",
   "channel": "project:sessions",
-  "doc": "",
+  "doc": "某项目下的对话,分页。**默认页大小 5**(归档箱不传 limit = 全部);`worktree` 会同时收窄列表与计数 —— 两边必须同口径,否则 `hasMore` 会数进列表从不返回的行。",
   "input": "{ projectId: string; worktree?: 'exclude' | 'only' | undefined; limit?: number | undefined; offset?: number | undefined; archived?: boolean | undefined }",
   "output": "{ sessions: Session[]; hasMore: boolean; total: number }"
  },
@@ -1895,21 +1895,21 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "projectInit.apply",
   "channel": "projectInit:apply",
-  "doc": "",
+  "doc": "执行一次初始化(确定性落盘:**从不覆盖**已有文件/记忆、不执行代码、不发模型轮)。逐项报成败、**不回滚**已建成的;需要 AI 生成说明文件时把提示词交回渲染端,由它作普通一轮发出。",
   "input": "{ sessionId: string; command: string; digest: string }",
   "output": "{ projectId: string; root: string; actions: ProjectInitAction[]; agentPrompt?: string | undefined // 有 AI 生成步骤时:要发给引擎的提示词,由渲染端作为普通一轮对话发出。; agentFilename?: 'AGENTS.md' | 'CLAUDE.md' | undefined }"
  },
  {
   "method": "projectInit.delete",
   "channel": "projectInit:delete",
-  "doc": "",
+  "doc": "删一份模板。同样要带 `expectedRevision` 复核(防手滑删了别人刚改的)。",
   "input": "{ id: string; expectedRevision: string }",
   "output": "{ ok: true }"
  },
  {
   "method": "projectInit.get",
   "channel": "projectInit:get",
-  "doc": "",
+  "doc": "按 id 取一份项目初始化模板全文(带 `revision`)。",
   "input": "{ id: string }",
   "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; pinned: boolean; content: string; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
  },
@@ -1923,14 +1923,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "projectInit.preview",
   "channel": "projectInit:preview",
-  "doc": "",
+  "doc": "**只看不写**:对当前会话/项目算出模板会建/会跳哪些目录、文件、记忆(逐个查现有内容、拒符号链接),并给出 AI 生成说明文件的计划。返回里带 `digest` 供 apply 复核。",
   "input": "{ sessionId: string; command: string }",
   "output": "{ templateId: string; name: string; revision: string; sessionId: string; projectId: string; projectName: string; root: string; digest: string; actions: ProjectInitAction[]; agentFile?: ProjectInitAgentPlan | undefined // 模板启用了 AI 生成说明文件时才有。 }"
  },
  {
   "method": "projectInit.save",
   "channel": "projectInit:save",
-  "doc": "",
+  "doc": "新建或更新一份模板。带 `id` 时**必须**同时带上原 `expectedRevision`,对不上就抛\"已改动\"(避免并发覆盖);新建受 200 份上限约束。返回存完的模板。",
   "input": "{ draft: { description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; pinned: boolean; content: s…; id?: string | undefined; expectedRevision?: string | undefined }",
   "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; pinned: boolean; content: string; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
  },
@@ -1958,7 +1958,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "provider.list",
   "channel": "provider:list",
-  "doc": "",
+  "doc": "列已注册的引擎后端(id / 显示名 / 能力描述符)。能力描述符驱动界面渲染哪些 composer 芯片与下拉项(声明式能力协商)。",
   "input": "(无参数)",
   "output": "{ providers: ProviderInfo[] }"
  },
@@ -2140,7 +2140,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "session.hasNodes",
   "channel": "session:hasNodes",
-  "doc": "",
+  "doc": "这个对话里**有没有一格留下过会话** —— 看板据它决定摆不摆\"接着说\"那个入口(当一个是非题问,免了列整行节点会话)。",
   "input": "{ sessionId: string }",
   "output": "{ has: boolean }"
  },
@@ -2168,7 +2168,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "session.messages",
   "channel": "session:messages",
-  "doc": "",
+  "doc": "读一段对话的消息,`(createdAt,id)` 游标分页(翻页传最旧一条的 time+id)。**省略 limit 走旧的\"全量、升序\"路**(`hasMore` 恒 false)。",
   "input": "{ sessionId: string; limit?: number | undefined // Page size.; beforeCreatedAt?: number | undefined // Cursor: fetch the page strictly older than this (createdAt, id) pair.; beforeId?: string | undefined }",
   "output": "{ messages: MessageRecord[]; hasMore: boolean }"
  },
@@ -2189,7 +2189,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "session.saveMessages",
   "channel": "session:saveMessages",
-  "doc": "",
+  "doc": "**直接改写聊天记录的底层存储**:用这份全量快照**整体替换**该会话的消息(先 DELETE 再 INSERT,一个事务)。渲染端在一轮结束/出错时发的是\"当前完整视图\"。",
   "input": "{ sessionId: string; messages: MessageRecord[] }",
   "output": "void"
  },
@@ -2210,7 +2210,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "session.truncateAndInsertMessages",
   "channel": "session:truncateAndInsertMessages",
-  "doc": "",
+  "doc": "编辑重发:删掉游标 `(cursorCreatedAt,cursorId)` **及其之后**的全部消息,再插入替换行(一个事务)。分页安全 —— 渲染端内存里没加载的更老的行不会被抹掉。",
   "input": "{ sessionId: string; cursorCreatedAt: number; cursorId: string; messages: MessageRecord[] }",
   "output": "void"
  },
@@ -2231,7 +2231,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "session.upsertMessages",
   "channel": "session:upsertMessages",
-  "doc": "",
+  "doc": "按 id **upsert 增量**落库,会话的其他行不动。零星改动用它,别用 `saveMessages` 那种 O(N) 的全量替换。",
   "input": "{ sessionId: string; messages: MessageRecord[] }",
   "output": "void"
  },
@@ -2245,14 +2245,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "setting.get",
   "channel": "setting:get",
-  "doc": "",
+  "doc": "读一个设置键,**没有返回 `null`**(不是空串)。注意:`mcp.management` 等密钥设置键本体不许经这条直读,会被 appControl 的 `secretSettingRefusal` 拦。",
   "input": "{ key: string }",
   "output": "{ value: string | null }"
  },
  {
   "method": "setting.getMany",
   "channel": "setting:getMany",
-  "doc": "",
+  "doc": "一次读多个键,**一趟 IPC 顶 N 次 `setting.get`**;缺的键各自映成 `null`。",
   "input": "{ keys: string[] }",
   "output": "GetManySettingsResult"
  },
@@ -2266,7 +2266,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "setting.set",
   "channel": "setting:set",
-  "doc": "",
+  "doc": "**持久化**写一个设置键(upsert 进 settings 表并落盘)。写完对\"跟着人走\"的键(语言、强调色…)**广播给已配对的手机**当场生效;主题样式键还会顺手刷新原生标题栏。",
   "input": "{ value: string; key: string }",
   "output": "void"
  },
@@ -2469,14 +2469,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "theme.get",
   "channel": "theme:get",
-  "doc": "",
+  "doc": "返回**存下的偏好** `theme` 与**当前实际生效**的 `effective`(跟随系统时两者可能不同)。",
   "input": "(无参数)",
   "output": "{ theme: ThemeName; effective: EffectiveTheme }"
  },
  {
   "method": "theme.set",
   "channel": "theme:set",
-  "doc": "",
+  "doc": "持久化主题偏好并**立刻应用**(驱动 Electron nativeTheme → Chromium 的 prefers-color-scheme)。",
   "input": "{ theme: 'dark' | 'light' | 'system' }",
   "output": "{ theme: ThemeName; effective: EffectiveTheme }"
  },
@@ -2518,7 +2518,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "voice.cancel",
   "channel": "voice:cancel",
-  "doc": "",
+  "doc": "丢弃一次听写会话 —— **不出最终结果、丢掉所有 partial**(用户主动取消时说这条,不是 `stop`)。",
   "input": "{ sessionId: string }",
   "output": "void"
  },
@@ -2539,7 +2539,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "voice.feed",
   "channel": "voice:feed",
-  "doc": "",
+  "doc": "往活动会话喂一块 16kHz 单声道 PCM(听写热路径,约 4 次/秒)。实时结果走 `voice:result` 推送回来。",
   "input": "{ sessionId: string; pcm: Float32Array<ArrayBuffer> | number[] }",
   "output": "void"
  },
@@ -2581,14 +2581,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "voice.start",
   "channel": "voice:start",
-  "doc": "",
+  "doc": "起一次语音识别会话:`sessionId` 是**渲染端自个儿的一次听写令牌**(不是聊天会话 id),引擎会按 `lang` 建解码器、按需懒惰下模型。",
   "input": "{ sessionId: string // Opaque per-listen token chosen by the renderer (e.g.; lang: string // Speech language tag, e.g.; engine: 'zipformer' | 'parakeet' // Desired engine: \"zipformer\" (streaming, interim results) | \"parakeet\" (offline, higher ac… }",
   "output": "void"
  },
  {
   "method": "voice.stop",
   "channel": "voice:stop",
-  "doc": "",
+  "doc": "结束会话并返回**最终**(可信度最高的)转写文本(没识别到就是空串)。",
   "input": "{ sessionId: string }",
   "output": "{ text: string }"
  },
@@ -2700,7 +2700,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "workflow.removeAgentProfile",
   "channel": "workflow:removeAgentProfile",
-  "doc": "",
+  "doc": "删一份代理档案。**只按 id 拼路径** —— 格式坏、读不出来的档案(不进 `profiles`)照样删得掉,而那正是最该能删的一种。",
   "input": "{ id: string }",
   "output": "{ ok: boolean }"
  },

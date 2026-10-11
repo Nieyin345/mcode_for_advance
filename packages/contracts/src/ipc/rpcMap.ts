@@ -94,12 +94,19 @@ export const ClaudeSubagentsSaveSchema = z.object({ subagents: z.array(z.record(
 /** A typed map of all renderer→main RPC invocations. The preload exposes a
  * typed `window.api` matching this shape; the renderer imports it for safety. */
 export interface RpcMap {
+  /** 全部模块(**内置 + 已装**)的清单:各自的贡献项、宿主能力表、以及内置只读模块能当工作流目标的那几项。 */
   "modules.catalog": () => Promise<import("../modules.js").ModuleCatalog>;
+  /** 安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单。 */
   "modules.install": (input: import("./modules.js").ModuleInstallInput) => Promise<import("../modules.js").ModuleCatalog>;
+  /** 卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单。 */
   "modules.remove": (input: {moduleId:string}) => Promise<import("../modules.js").ModuleCatalog>;
+  /** 触发模块的一个贡献项。按能力 `kind` 分流:非 task 的直接跑出结果,是 task 的立刻返回 `{type:"task"}` 句柄(进度靠 `modules.task` 拉)。 */
   "modules.invoke": (input: import("../modules.js").ModuleInvoke) => Promise<import("../modules.js").ModuleReply>;
+  /** 取一个模块任务的当前快照(状态 / 进度 / 结果)。 */
   "modules.task": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
+  /** 取消一个在跑的模块任务(abort 那个 job 并标成 `cancelled`)。返回取消后的快照。 */
   "modules.cancel": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
+  /** 列某个项目下**仍在内存里**的模块任务(进程重启后为空,不落库)。 */
   "modules.tasks": (input: {projectPath:string}) => Promise<import("../modules.js").ModuleTask[]>;
   // ── 扩展专用数据区(见 `@contracts/extensionStore`,报告 E12)──
   /** 读一条扩展自己的键值。没有返回 `null`(同面板 `mcode.storage.get`)。 */
@@ -109,11 +116,13 @@ export interface RpcMap {
   /** 删一条。 */
   "extensionStore.remove": (input: ExtensionStoreRemoveInput) => Promise<ExtensionStoreRemoveResult>;
   // Claude
+  /** 建会话(或**复用同项目里那份还"新鲜"的"新对话"行**——同一处空行连着开两次不会留下两条空会话,见 `createOrReuseSession`)。 */
   "claude.startSession": (input: StartSessionInput) => Promise<{ session: Session }>;
   /** List a main session's side chats (kind="side"), newest first. */
   "claude.listSideChats": (input: ListSideChatsInput) => Promise<{ sessions: Session[] }>;
   /** Returns the (possibly retitled) session so the renderer can refresh. */
   "claude.sendTurn": (input: SendTurnInput) => Promise<{ session: Session }>;
+  /** 打断当前这一轮。**图型工作流没有"会话自己的回合"可断**——这一下停的是整张图(停派发 + 逐个 interrupt 在飞节点),随后会话标成 `interrupted`。 */
   "claude.interrupt": (input: InterruptInput) => Promise<void>;
   /**
    * 停掉某一个正在跑的子任务（子代理）。返回 `{ stopped }` —— 同 `claude.inject` 的
@@ -134,6 +143,7 @@ export interface RpcMap {
    * (见 `sessionStore.injectPrompt`)。用户打了字而什么都没发生,是最糟的一种结果。
    */
   "claude.inject": (input: InjectInput) => Promise<{ delivered: boolean }>;
+  /** 回应一条待审批的工具调用（`requestId` 对上 `approval.request` 事件）。**认不出这个 id 只记一条 warn、不抛** —— 用户点了过期的审批卡是正常会发生的事。 */
   "claude.approve": (input: ApproveInput) => Promise<void>;
   /** Submit the user's answers to a pending AskUserQuestion. */
   "claude.respondQuestion": (input: RespondQuestionInput) => Promise<void>;
@@ -153,8 +163,11 @@ export interface RpcMap {
   /** Update the active session's model / effort / permissionMode / customModelId in-place. */
   "session.updateSettings": (input: UpdateSessionSettingsInput) => Promise<void>;
   // Projects
+  /** 新建项目(记一条记录,不建磁盘目录)。建完读回权威行(含真正的 sort_order)并广播 `projects.changed`。 */
   "project.create": (input: CreateProjectInput) => Promise<{ project: Project }>;
+  /** 列未归档的项目(左栏项目树用)。 */
   "project.list": () => Promise<{ projects: Project[] }>;
+  /** 某项目下的对话,分页。**默认页大小 5**(归档箱不传 limit = 全部);`worktree` 会同时收窄列表与计数 —— 两边必须同口径,否则 `hasMore` 会数进列表从不返回的行。 */
   "project.sessions": (input: ProjectSessionsInput) => Promise<{ sessions: Session[]; hasMore: boolean; total: number }>;
   /** Cross-project non-archived sessions, newest-first (stream sidebar). */
   "session.listAll": (input: SessionListAllInput) => Promise<{ sessions: Session[]; hasMore: boolean; total: number }>;
@@ -166,6 +179,7 @@ export interface RpcMap {
    *  restart the live board is empty — this is what lets the UI offer "keep
    *  talking to that step" for a run that already ended. */
   "session.listNodes": (input: SessionListNodesInput) => Promise<{ sessions: Session[] }>;
+  /** 这个对话里**有没有一格留下过会话** —— 看板据它决定摆不摆"接着说"那个入口(当一个是非题问,免了列整行节点会话)。 */
   "session.hasNodes": (input: SessionHasNodesInput) => Promise<{ has: boolean }>;
   /** Hard-delete a project; its sessions + messages cascade-delete (DB FK). */
   "project.delete": (input: { id: string }) => Promise<void>;
@@ -188,11 +202,15 @@ export interface RpcMap {
    *  first) — powers the left bar's global pinned section above the project
    *  tree. */
   "session.listPinned": () => Promise<{ sessions: Session[] }>;
+  /** 读一段对话的消息,`(createdAt,id)` 游标分页(翻页传最旧一条的 time+id)。**省略 limit 走旧的"全量、升序"路**(`hasMore` 恒 false)。 */
   "session.messages": (
     input: SessionMessagesInput,
   ) => Promise<{ messages: MessageRecord[]; hasMore: boolean }>;
+  /** **直接改写聊天记录的底层存储**:用这份全量快照**整体替换**该会话的消息(先 DELETE 再 INSERT,一个事务)。渲染端在一轮结束/出错时发的是"当前完整视图"。 */
   "session.saveMessages": (input: SaveMessagesInput) => Promise<void>;
+  /** 按 id **upsert 增量**落库,会话的其他行不动。零星改动用它,别用 `saveMessages` 那种 O(N) 的全量替换。 */
   "session.upsertMessages": (input: UpsertMessagesInput) => Promise<void>;
+  /** 编辑重发:删掉游标 `(cursorCreatedAt,cursorId)` **及其之后**的全部消息,再插入替换行(一个事务)。分页安全 —— 渲染端内存里没加载的更老的行不会被抹掉。 */
   "session.truncateAndInsertMessages": (
     input: TruncateAndInsertMessagesInput,
   ) => Promise<void>;
@@ -209,6 +227,7 @@ export interface RpcMap {
   /** Replace a session's bookmark list (full-array write). Returns the updated row. */
   "session.updateBookmarks": (input: UpdateBookmarksInput) => Promise<{ session: Session }>;
   // Providers
+  /** 列已注册的引擎后端(id / 显示名 / 能力描述符)。能力描述符驱动界面渲染哪些 composer 芯片与下拉项(声明式能力协商)。 */
   "provider.list": () => Promise<{ providers: ProviderInfo[] }>;
   /** Probe the selected registered provider through its own health check. */
   "provider.healthCheck": (input: ProviderHealthCheckInput) => Promise<ProviderHealthCheckResult>;
@@ -228,17 +247,24 @@ export interface RpcMap {
    */
   "provider.commands": (input: ProviderCommandsInput) => Promise<ProviderCommandsResult>;
   // Settings
+  /** 读一个设置键,**没有返回 `null`**(不是空串)。注意:`mcp.management` 等密钥设置键本体不许经这条直读,会被 appControl 的 `secretSettingRefusal` 拦。 */
   "setting.get": (input: GetSettingInput) => Promise<{ value: string | null }>;
+  /** **持久化**写一个设置键(upsert 进 settings 表并落盘)。写完对"跟着人走"的键(语言、强调色…)**广播给已配对的手机**当场生效;主题样式键还会顺手刷新原生标题栏。 */
   "setting.set": (input: SetSettingInput) => Promise<void>;
+  /** 一次读多个键,**一趟 IPC 顶 N 次 `setting.get`**;缺的键各自映成 `null`。 */
   "setting.getMany": (input: GetManySettingsInput) => Promise<GetManySettingsResult>;
   /** 导出设置到 JSON 文件(主进程弹保存框;不含密钥与本机状态)。 */
   "setting.exportToFile": () => Promise<SettingExportFileResult>;
   /** 从 JSON 文件导入设置(主进程弹打开框;先备份当前设置)。 */
   "setting.importFromFile": () => Promise<SettingImportFileResult>;
   // Voice input
+  /** 起一次语音识别会话:`sessionId` 是**渲染端自个儿的一次听写令牌**(不是聊天会话 id),引擎会按 `lang` 建解码器、按需懒惰下模型。 */
   "voice.start": (input: VoiceStartInput) => Promise<void>;
+  /** 往活动会话喂一块 16kHz 单声道 PCM(听写热路径,约 4 次/秒)。实时结果走 `voice:result` 推送回来。 */
   "voice.feed": (input: VoiceFeedInput) => Promise<void>;
+  /** 结束会话并返回**最终**(可信度最高的)转写文本(没识别到就是空串)。 */
   "voice.stop": (input: VoiceStopInput) => Promise<VoiceStopResult>;
+  /** 丢弃一次听写会话 —— **不出最终结果、丢掉所有 partial**(用户主动取消时说这条,不是 `stop`)。 */
   "voice.cancel": (input: VoiceCancelInput) => Promise<void>;
   /** List the model catalog + downloaded models + active selection. */
   "voice.modelList": () => Promise<VoiceModelListResult>;
@@ -267,9 +293,13 @@ export interface RpcMap {
    *  window, then pushes `notification:focusSession` so the renderer navigates. */
   "notification.focusSession": (input: FocusSessionInput) => Promise<void>;
   // Custom models (user-defined Anthropic-compatible endpoints)
+  /** 列全部自定义模型配置(**脱敏**版,不含 token;取明文另走 `customModel.getToken`)。 */
   "customModel.list": () => Promise<{ models: CustomModelPublic[] }>;
+  /** 新建或更新一份自定义模型配置(传 `id` 且存在即更新,**token 缺省时保留旧的**)。失败时抛的话是**给人看的中文**——设置页把它原样贴在红字里。 */
   "customModel.save": (input: SaveCustomModelInput) => Promise<{ models: CustomModelPublic[] }>;
+  /** 删一份自定义模型配置(连同加密 token 一起删)。id 不存在**不报错**、静默当成功(只按 id 过滤)。返回删完的脱敏清单。 */
   "customModel.delete": (input: { id: string }) => Promise<{ models: CustomModelPublic[] }>;
+  /** 连通性测试**单条**模型:走的是真实那一整条链路(binary + env builder),不是捷径 fetch —— "测得过 = 保存后一定能用"。 */
   "customModel.test": (input: TestCustomModelInput) => Promise<TestCustomModelResult>;
   /** Settings UI eye-icon only — returns cleartext token for display. */
   "customModel.getToken": (input: GetCustomModelTokenInput) => Promise<{ token: string | null }>;
@@ -302,8 +332,11 @@ export interface RpcMap {
   /** 换某个项目链接的密钥(旧链接立刻失效)。 */
   "publicMcp.regenerateProjectLinkSecret": (input: { projectId: string }) => Promise<PublicMcpStatus>;
   // Pi models (visual editor for ~/.pi/agent/models.json)
+  /** 列全部 Pi provider(**脱敏**;明文 key 另走 `piModels.getApiKey`)。 */
   "piModels.list": () => Promise<{ providers: Record<string, PiProviderPublic> }>;
+  /** 新建或更新一个 Pi provider(upsert)。apiKey 非空则加密存;空 + 已存在=**保留旧 key**;空 + 新建=抛错。models.json 里按模型 id **合并保留**既有字段。 */
   "piModels.save": (input: SavePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
+  /** 删一个 Pi provider —— **models.json 条目与加密 key 一起删**。返回删完后的脱敏清单。 */
   "piModels.delete": (input: DeletePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
   /** Returns cleartext apiKey. Used two ways: (1) main-process turn-time
    *  injection into the pi authStorage; (2) the settings UI's eye-icon view
@@ -321,19 +354,26 @@ export interface RpcMap {
   "piModels.listEndpointModels": (input: ListEndpointModelsInput) => Promise<{ models: string[] }>;
   // Codex model providers (visual editor for <CODEX_HOME>/config.toml's
   // [model_providers]; keys live in the encrypted settings map)
+  /** 列全部 Codex provider(**脱敏**;明文 key 另走 `codexModels.getApiKey`)。 */
   "codexModels.list": () => Promise<{ providers: CodexProviderPublic[] }>;
+  /** 新建或更新一个 Codex provider(**upsert**,apiKey 空 + 已存在=保留旧 key)。会拒绝与他人**算出同一个环境变量名**的 id(否则两个供应商的 Key 会静默互相覆盖)并重写 config.toml。 */
   "codexModels.save": (input: SaveCodexProviderInput) => Promise<{ providers: CodexProviderPublic[] }>;
+  /** 删一个 Codex provider —— 记录与加密 key 一起删,并重写 config.toml。返回删完后的脱敏清单。 */
   "codexModels.delete": (input: DeleteCodexProviderInput) => Promise<{ providers: CodexProviderPublic[] }>;
   /** Settings UI eye-icon only — same security carve-out as
    *  customModel.getToken / piModels.getApiKey. */
   "codexModels.getApiKey": (input: GetCodexApiKeyInput) => Promise<{ apiKey: string | null }>;
   /** 同 `piModels.test`，给 Codex 表单用。 */
   "codexModels.test": (input: TestEndpointInput) => Promise<EndpointProbeOutcome>;
+  /** 问端点要模型列表(填进 Codex 表单的下拉框)。拉不到时抛错,由界面回退到手输。 */
   "codexModels.listEndpointModels": (input: ListEndpointModelsInput) => Promise<{ models: string[] }>;
   // Theme / color scheme
+  /** 返回**存下的偏好** `theme` 与**当前实际生效**的 `effective`(跟随系统时两者可能不同)。 */
   "theme.get": () => Promise<GetThemeResult>;
+  /** 持久化主题偏好并**立刻应用**(驱动 Electron nativeTheme → Chromium 的 prefers-color-scheme)。 */
   "theme.set": (input: SetThemeInput) => Promise<GetThemeResult>;
   // File read (on-demand diff rendering)
+  /** 读一个文本文件(转文件 diff 卡片用)。**路径必须落在某个已知项目根内**,否则**静默返回空串**;读不出(GBK/UTF-16 走 `decodeTextBuffer` 尽力解码,失败也回空串),不抛。 */
   "file.readFile": (input: FileReadInput) => Promise<{ content: string }>;
   /** Read a binary file as a base64 data URL (image preview). Same path guard. */
   "file.readBinary": (input: FileReadBinaryInput) => Promise<{ dataUrl: string }>;
@@ -355,6 +395,7 @@ export interface RpcMap {
   "file.delete": (input: FileDeleteInput) => Promise<{ ok: boolean }>;
   /** Rename a file or directory in place, scoped to a project root. */
   "file.rename": (input: FileRenameInput) => Promise<{ ok: boolean }>;
+  /** 复制一个**普通文件**到一个目录(两端都要在已知项目根内;目录不在此列)。**从不覆盖**:名字被占就派生"名 副本.ext""名 副本 2.ext"…(suffix 由渲染端给,已剥目录分量防越界)。 */
   "file.copy": (input: FileCopyInput) => Promise<{ ok: boolean }>;
   /** Grep file contents under a project root (line-level matches). */
   "file.grep": (input: FileGrepInput) => Promise<FileGrepResult>;
@@ -385,6 +426,7 @@ export interface RpcMap {
   "git.discard": (input: GitDiscardInput) => Promise<GitOpResult>;
   /** Generate a commit message from the staged diff via an LLM one-shot call. */
   "git.generateCommitMessage": (input: GitGenerateCommitInput) => Promise<{ ok: boolean; message?: string; error?: string }>;
+  /** 中断一次正在跑的提交信息生成(按 `requestId` 找到那条 SDK 查询并 abort)。幂等 —— 没在跑的 id 也回 `ok:true`。 */
   "git.cancelGenerateCommitMessage": (input: GitCancelGenerateCommitInput) => Promise<{ ok: boolean }>;
   /** Paginated commit log for a repo (newest first). */
   "git.log": (input: GitLogInput) => Promise<{ commits: GitCommitInfo[]; hasMore: boolean }>;
@@ -643,7 +685,9 @@ export interface RpcMap {
   "mcp.projectCopy": (input: McpProjectCopyInput) => Promise<McpProjectCopyResult>;
   /** MCP market: registry sources (built-in official registry + user added). */
   "mcp.marketSources": (input: McpMarketSourcesInput) => Promise<{ sources: McpMarketSource[] }>;
+  /** 加一个 MCP 注册中心(市场源)。**先连通探一次**再落,连不上/已存在/非 http(s) 都回 `{ ok:false, error }`(不抛);成功回新分配的 `id`。 */
   "mcp.marketSourceAdd": (input: McpMarketSourceAddInput) => Promise<{ ok: boolean; error?: string; id?: string }>;
+  /** 删一个用户加的 MCP 注册中心(**内置那个删不掉**)。 */
   "mcp.marketSourceRemove": (input: McpMarketSourceRemoveInput) => Promise<{ ok: boolean; error?: string }>;
   /** Search one registry (network); entries carry ready install options. */
   "mcp.marketSearch": (input: McpMarketSearchInput) => Promise<McpMarketSearchResult>;
@@ -685,6 +729,7 @@ export interface RpcMap {
   "lsp.setPath": (input: LspSetPathInput) => Promise<{ languages: LspLanguageState[] }>;
   /** Verify the server binary runs (--version or --help probe). */
   "lsp.healthCheck": (input: LspHealthCheckInput) => Promise<LspOpResult>;
+  /** 预启动某工作区的 Java 语言服务器(**不等用户打开 .java 文件**),把那次性的 Maven/Gradle 工程导入提前到用户浏览时跑。火忘式、幂等(活着的不重启)。 */
   "lsp.prewarm": (input: LspPrewarmInput) => Promise<LspOpResult>;
   /** Restart a language server for one workspace (stop + clear the crash-loop
    *  guard + immediately relaunch). Clicking a startup-failure notice calls
@@ -820,6 +865,7 @@ export interface RpcMap {
   "workflow.saveAgentProfile": (
     input: AgentProfileSaveInput,
   ) => Promise<{ ok: boolean; error?: string }>;
+  /** 删一份代理档案。**只按 id 拼路径** —— 格式坏、读不出来的档案(不进 `profiles`)照样删得掉,而那正是最该能删的一种。 */
   "workflow.removeAgentProfile": (input: AgentProfileRemoveInput) => Promise<{ ok: boolean }>;
   /** 在**岔路口**上选一条路(`mcode.branch` 那个节点正停在那儿等着)。
    *
@@ -897,14 +943,21 @@ export interface RpcMap {
    *  文件的说明 —— 一段 JSDoc 误抄,把调用方引到 `memory.*` 上去找"记忆文件",而它
    *  返回的其实是模板表(报告附录 E 的新-E1)。 */
   "projectInit.list": () => Promise<ProjectInitList>;
+  /** 按 id 取一份项目初始化模板全文(带 `revision`)。 */
   "projectInit.get": (input: {id: string}) => Promise<ProjectInitTemplate>;
+  /** 新建或更新一份模板。带 `id` 时**必须**同时带上原 `expectedRevision`,对不上就抛"已改动"(避免并发覆盖);新建受 200 份上限约束。返回存完的模板。 */
   "projectInit.save": (input: ProjectInitSaveInput) => Promise<ProjectInitTemplate>;
+  /** 删一份模板。同样要带 `expectedRevision` 复核(防手滑删了别人刚改的)。 */
   "projectInit.delete": (input: {id: string; expectedRevision: string}) => Promise<{ok: true}>;
+  /** **只看不写**:对当前会话/项目算出模板会建/会跳哪些目录、文件、记忆(逐个查现有内容、拒符号链接),并给出 AI 生成说明文件的计划。返回里带 `digest` 供 apply 复核。 */
   "projectInit.preview": (input: ProjectInitPreviewInput) => Promise<ProjectInitPreview>;
+  /** 执行一次初始化(确定性落盘:**从不覆盖**已有文件/记忆、不执行代码、不发模型轮)。逐项报成败、**不回滚**已建成的;需要 AI 生成说明文件时把提示词交回渲染端,由它作普通一轮发出。 */
   "projectInit.apply": (input: ProjectInitApplyInput) => Promise<ProjectInitResult>;
   /** 设定裸 `/init` 预选的场景;`null` 清除。 */
   "projectInit.setDefault": (input: {id: string | null}) => Promise<{ok: true}>;
+  /** 记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。 */
   "memory.assistant": (input: MemoryAssistantInput) => Promise<MemoryAssistantResult>;
+  /** 记忆维护(桌面专用,模型拿不到):按 `action`(list/preview/import/history/restore)操作原生记忆来源。`import`/`restore` 要带 digest + `confirmed:true`。 */
   "memory.manage": (input: MemoryManageInput) => Promise<MemoryManageResult>;
   /** 列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。 */
   "memory.list": (input: MemoryListInput) => Promise<{ files: MemoryFileMeta[] }>;
@@ -934,7 +987,9 @@ export interface RpcMap {
    *  会触发几十次,塞进消息流就是把对话刷屏;而节点会话是隐藏的,那些事件本来也不该
    *  出现在父对话里。 */
   "hooks.runs": () => Promise<{ runs: HookRun[] }>;
+  /** 存一条钩子(**整份给过来**,不是"改哪个字段")—— 用户从头写的东西局部更新没意义,整份过来让校验只在一处发生。返回 `{ ok, error? }`。 */
   "hooks.save": (input: HooksSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 删一条钩子(按 id)。 */
   "hooks.remove": (input: HooksRemoveInput) => Promise<{ ok: boolean; error?: string }>;
   /** 拿一条**还没存下来**的配置试跑一次,把那一次的结果返回。 */
   "hooks.test": (input: HooksTestInput) => Promise<{ run: HookRun }>;
@@ -1122,7 +1177,8 @@ export interface RpcMap {
     skipped: number;
     errors: Array<{ path: string; error: string }>;
   }>;
-  /** @deprecated 兼容入口，只返回自动化指引；不上传、转录或清理产物。 */
+  /** 兼容入口,**固定失败**:核心不转录、不上传、也不清理产物,只返回一句"请走已配置的自动化在线转录"的指引(见 `library/convert.ts` 的 `AUTOMATION_REQUIRED`)。`repair` 分支同样 fail-closed。
+   *  @deprecated */
   "library.convert": (input: LibraryConvertInput) => Promise<{
     converted: number;
     cleaned: number;
@@ -1201,6 +1257,7 @@ export interface RpcMap {
   "library.listNotes": (input: LibraryNotesListInput) => Promise<{ notes: LibraryNote[] }>;
   /** 新建或修改一条笔记,返回该条目下的完整列表(与其它变更类接口同一约定)。 */
   "library.saveNote": (input: LibraryNoteSaveInput) => Promise<{ notes: LibraryNote[] }>;
+  /** 删一条"条目下的小笔记"(不是笔记库条目)。返回**它所属条目**的最新笔记列表;删的是孤条(查不到归属)则回空数组。 */
   "library.deleteNote": (input: LibraryNoteDeleteInput) => Promise<{ notes: LibraryNote[] }>;
   /** 改条目的显示标题(三个库通用)。 */
   "library.renameItem": (input: LibraryRenameItemInput) => Promise<{ item: LibraryItem | null }>;
@@ -1220,6 +1277,7 @@ export interface RpcMap {
      *  与 MCP 那条 `library_adopt_markdown` 同一口径(它会把这句印给模型)。 */
     missing: string[];
   }>;
+  /** 读一篇 PDF 的原始字节给应用内 pdf.js 阅读器。**走结构化克隆、不做 base64**(文件十几 MB,base64 要多涨三分之一)。 */
   "library.readPdf": (input: LibraryReadPdfInput) => Promise<{
     ok: boolean;
     error?: string;
@@ -1248,7 +1306,9 @@ export interface RpcMap {
   "onlyoffice.close": (input: OnlyOfficeSessionInput) => Promise<{ ok: boolean }>;
   /** 是否配置了 DS、以及它现在能不能连上(`/healthcheck`)。 */
   "onlyoffice.status": () => Promise<OnlyOfficeStatusResult>;
+  /** 读当前的 OnlyOffice 配置(serverUrl / jwtSecret / callbackHost;带内存缓存)。 */
   "onlyoffice.getConfig": () => Promise<OnlyOfficeConfig>;
+  /** 存 OnlyOffice 配置到 settings 表并刷新内存缓存。`serverUrl` 会归一(去尾斜杠、补协议)。 */
   "onlyoffice.setConfig": (input: OnlyOfficeSetConfigInput) => Promise<OnlyOfficeConfig>;
   /**
    * 本机装没装 Document Server、跑没跑、密钥是什么。
@@ -1295,11 +1355,13 @@ export interface RpcMap {
   ) => Promise<{ ok: boolean; name?: string; count?: number; error?: string }>;
 
   // 文献库 —— 集合
+  /** 列全部集合(树形;已摊成渲染端要的形状)。 */
   "library.listCollections": () => Promise<{ collections: LibraryCollection[] }>;
   /** 新建/改名/删除集合 —— 均返回**完整的新列表**,渲染端整体替换缓存(既定模式)。 */
   "library.createCollection": (input: CollectionCreateInput) => Promise<{ collections: LibraryCollection[] }>;
   /** 改名。`ok: false` 表示重名被拒(此时 collections 不变) —— 由调用方提示用户。 */
   "library.renameCollection": (input: CollectionRenameInput) => Promise<{ collections: LibraryCollection[]; ok: boolean }>;
+  /** 删一个集合。**连整棵子树一起收** —— 子分类会随 CASCADE 消失,挂在子分类上的条目也会一并进回收站(不然会变成左栏找不回的僵尸)。返回最新完整列表。 */
   "library.deleteCollection": (input: CollectionDeleteInput) => Promise<{ collections: LibraryCollection[] }>;
   /**
    * 把集合移到别处(改父级 / 调同级次序)。
@@ -1320,7 +1382,9 @@ export interface RpcMap {
   // 机构认证
   /** 已保存的机构入口档案。注意:档案不含凭据,登录态在浏览器分区里。 */
   "institution.list": () => Promise<{ profiles: InstitutionProfile[] }>;
+  /** 存一份机构入口档案(登录入口 URL / 域名 / 代理前缀;**不含凭据**)。变更类一律返回完整新列表,渲染端整体替换缓存。 */
   "institution.save": (input: InstitutionSaveInput) => Promise<{ profiles: InstitutionProfile[] }>;
+  /** 删一份机构档案。**不会登出任何站点** —— 档案与登录态是两回事。返回删完的完整列表。 */
   "institution.delete": (input: InstitutionDeleteInput) => Promise<{ profiles: InstitutionProfile[] }>;
   /** 从浏览器分区的 cookie 反推「已登录哪些站点」。 */
   "institution.authStatus": (input: InstitutionAuthStatusInput) => Promise<{ sites: AuthSiteStatus[] }>;
