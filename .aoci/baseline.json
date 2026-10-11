@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-11T01:41:28Z",
+  "updated_at": "2026-10-11T01:45:02Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "15694656f36d5b568fd232b009fa6eb16dc91ea6e0e0daff733ab75e37bf13c2",
-      "size": 943274,
-      "normalized_sha256": "15694656f36d5b568fd232b009fa6eb16dc91ea6e0e0daff733ab75e37bf13c2"
+      "sha256": "21d4d86ff74a492bcac07342305dd3a3da3705242a17b2f75fa067d26ab96218",
+      "size": 943475,
+      "normalized_sha256": "21d4d86ff74a492bcac07342305dd3a3da3705242a17b2f75fa067d26ab96218"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3395,9 +3395,9 @@
     },
     "apps/desktop/scripts/mcp-text-smoke/main.ts": {
       "role": "index",
-      "sha256": "4a332c9f136c4fdc0b7f032c2dbbf53f34c3a65995e8bb7cd71d2e9a1b6f3393",
-      "size": 9676,
-      "normalized_sha256": "4a332c9f136c4fdc0b7f032c2dbbf53f34c3a65995e8bb7cd71d2e9a1b6f3393"
+      "sha256": "608c95643d3a06e108edaa7b2b913944c6f5d2d65f9ec7aecf077f130fd3812c",
+      "size": 10271,
+      "normalized_sha256": "608c95643d3a06e108edaa7b2b913944c6f5d2d65f9ec7aecf077f130fd3812c"
     },
     "apps/desktop/scripts/mcp-text-smoke/run.sh": {
       "role": "index",
@@ -7091,9 +7091,9 @@
     },
     "apps/desktop/src/main/lib/systemPrompt.ts": {
       "role": "index",
-      "sha256": "410c678f3c59ddc362c8f943f0c2b0fad46629e2fac00ba99e436ccee012974c",
-      "size": 14698,
-      "normalized_sha256": "410c678f3c59ddc362c8f943f0c2b0fad46629e2fac00ba99e436ccee012974c"
+      "sha256": "f1787e2ec5062747e34281f17eb3a09cd751fcbe0ef882aa74bc44bbdc29b3a4",
+      "size": 15279,
+      "normalized_sha256": "f1787e2ec5062747e34281f17eb3a09cd751fcbe0ef882aa74bc44bbdc29b3a4"
     },
     "apps/desktop/src/main/lib/tarHostWorkaround.ts": {
       "role": "index",
@@ -11925,9 +11925,9 @@
     },
     "docs/releases/v0.1.62.md": {
       "role": "index",
-      "sha256": "a8be6131e68fbfa1eac186f7b469ef7804e73a06237849dedb7ccc1a40a3c319",
-      "size": 7921,
-      "normalized_sha256": "a8be6131e68fbfa1eac186f7b469ef7804e73a06237849dedb7ccc1a40a3c319"
+      "sha256": "b943a3c40cfe0ea0bf0b9a95a6155edb33ee8fb6a48e69b417eb43ca2849b18d",
+      "size": 8229,
+      "normalized_sha256": "b943a3c40cfe0ea0bf0b9a95a6155edb33ee8fb6a48e69b417eb43ca2849b18d"
     },
     "docs/settings-redesign.md": {
       "role": "index",
