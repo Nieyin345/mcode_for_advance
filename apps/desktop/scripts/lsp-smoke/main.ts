@@ -85,6 +85,29 @@ function says(name: string, text: unknown, needle: string): void {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 轮询等一个条件成立,成立即返回 true;窗口耗尽才返回 false。
+ *
+ * ⚠️ **"进程是不是收干净了"这类断言不能用一次固定 `sleep` 就下判**。win32 上 server 是
+ * `shell:true` 起的,杀掉的是 cmd.exe,真正干活的**孙进程**退出与 `tasklist` 回收不是
+ * 同一个瞬间 —— 固定 2s 在慢机(CI)上偶发还不够,断言就假红。本机跑三次都绿、CI 上偶发
+ * 红,正是这条。等条件而不是赌时间。 */
+async function waitUntil(cond: () => boolean, timeoutMs = 15_000, stepMs = 250): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await sleep(stepMs);
+  }
+  return cond();
+}
+
+/** 等到这几个 pid **全都退出**(或窗口耗尽),返回**还活着的那些** —— 直接喂给 `same(…, [])`。
+ *  给"某段跑完不该留下进程"的断言用:等条件,不赌固定 sleep。 */
+async function waitUntilGone(pids: number[], timeoutMs = 15_000): Promise<number[]> {
+  await waitUntil(() => pids.filter(alive).length === 0, timeoutMs);
+  return pids.filter(alive);
+}
+
 /** 调一次 `lspManager.request`,无论抛什么都折成 `{error}`。
  *
  *  ⚠️ **这个 `.catch` 非有不可,而且它遮不住被测代码的毛病。**
@@ -694,22 +717,16 @@ console.log("\n§6 真起一个 server(假 server 走完整 initialize 握手)")
     (await lspManager.list()).languages.find((c) => c.language === "typescript")?.running,
     false,
   );
-  same("typescript 的两个进程真的没了(没有孤儿等在那儿占内存)", tsBefore.filter(alive), []);
+  same("typescript 的两个进程真的没了(没有孤儿等在那儿占内存)", await waitUntilGone(tsBefore), []);
   eq("关掉 typescript 不影响 python(另一个语言那个还在跑)", pidsFor("py").filter(alive).length, 1);
 
   lspManager.disposeAll();
   // ⚠️ **不要用一次固定 sleep 就断言**(从前是 `await sleep(2000)`)。CI 上实测:
   //   win32 的子孙进程(shell:true 起的 cmd.exe 再 spawn 的假 server)退出与
   //   `tasklist` 回收不是同一个瞬间,2s 后偶有一次还能查到那个 pid 仍"活着" ——
-  //   本机跑三次都绿、CI 上偶发红,就是这条。退出是**异步**的,断言就该**等条件**:
-  //   在有限窗口内轮询,条件一成立立刻过;窗口耗尽才报红(报的是真实残留)。
-  const goneBy = Date.now() + 15_000;
-  let leftover = spawnedPids().filter(alive);
-  while (leftover.length > 0 && Date.now() < goneBy) {
-    await sleep(250);
-    leftover = spawnedPids().filter(alive);
-  }
-  same("disposeAll 之后一个都不剩(有限窗口内退出)", leftover, []);
+  //   本机跑三次都绿、CI 上偶发红,就是这条。退出是**异步**的,断言就该**等条件**
+  //   (`waitUntilGone`):条件一成立立刻过;窗口耗尽才报红(报的是真实残留)。
+  same("disposeAll 之后一个都不剩(有限窗口内退出)", await waitUntilGone(spawnedPids()), []);
 }
 
 /* ─────────────────── 6b. 手动指定的路径里有空格 ─────────────────── */
@@ -767,9 +784,7 @@ console.log("\n§6b 手动指定一个路径里带空格的 server");
   }
 
   lspManager.disposeAll();
-  await sleep(1500);
-  const leftover = spawnedPids().filter(alive);
-  same("这一段没留下进程(报错也没把半截进程丢下)", leftover, []);
+  same("这一段没留下进程(报错也没把半截进程丢下)", await waitUntilGone(spawnedPids()), []);
 }
 
 /* ─────────────── 6d. 「重启」按钮:换一个、不留旧的 ─────────────── */
@@ -796,11 +811,9 @@ console.log("\n§6d 重启按钮:旧的收走、新的起来,不是一个变两�
     error?: string;
   };
   eq("restart 报成功", r.ok, true);
-  // ⚠️ taskkill 是**异步**的(它是另一个进程),所以「旧的死没死」要等一小会儿。
-  // 等下这一秒不是给被测代码留余地 —— 是给 Windows 收尸留时间;真漏了的话
-  // 一秒之后它还在,断言照样红。
-  await sleep(1200);
-  same("restart 之后旧的已经死了(不是新旧并排跑)", before.filter(alive), []);
+  // ⚠️ taskkill 是**异步**的(它是另一个进程),所以「旧的死没死」要**等条件** ——
+  //    固定等一秒在慢机(CI)上偶发不够,会假红。真漏了的话窗口耗尽后它还在,断言照样红。
+  same("restart 之后旧的已经死了(不是新旧并排跑)", await waitUntilGone(before), []);
 
   const after = pidsFor("ts");
   eq("而且只补了一个新的(不是一变二)", after.length, 2);
@@ -821,8 +834,7 @@ console.log("\n§6d 重启按钮:旧的收走、新的起来,不是一个变两�
   says("并说清原因", bad.error, "不是已知项目");
 
   lspManager.disposeAll();
-  await sleep(1500);
-  same("这一段收干净了", pidsFor("ts").filter(alive), []);
+  same("这一段收干净了", await waitUntilGone(pidsFor("ts")), []);
 }
 
 /* ─────────────── 6c. 退出时安装进程也要收走 ─────────────── */
@@ -862,10 +874,9 @@ console.log("\n§6c 退出时安装进程要一起收走");
 
   // 模拟退出 / 关掉应用。
   lspManager.disposeAll();
-  await sleep(2000);
   same(
     "退出时安装进程被收走了 —— 不会留在那儿占着包管理器的锁",
-    installPids().filter(alive),
+    await waitUntilGone(installPids()),
     [],
   );
 
@@ -1317,8 +1328,7 @@ console.log("\n§8 并发 ensureServer:同一个 key 只起一个进程");
 
   // disposeAll 必须能收走它(证明我们缓存的是同一个 handle,不是被覆盖的孤儿)。
   await lspManager.disposeAll();
-  await sleep(700);
-  same("disposeAll 把它收干净了(没有杀不到的孤儿)", pidsFor("ts").filter(alive), []);
+  same("disposeAll 把它收干净了(没有杀不到的孤儿)", await waitUntilGone(pidsFor("ts")), []);
 }
 
 /* ─────────── 6h. 项目被删 → 它的语言服务器必须跟着走 ─────────── */
@@ -1346,9 +1356,8 @@ console.log("\n§6h 删项目收掉它 workspace 下的 server");
   // 调了这个注册表这一环由 `projects-ipc-smoke` 经**真 handler** 断言。
   const { runProjectCleanupHooks } = await import("@main/lib/sessionCleanupHooks.js");
   runProjectCleanupHooks("p-gamma", WS3);
-  await sleep(1500);
 
-  same("★ 项目收尾后:它 workspace 下的 server 真的没了(不是拖到应用退出)", before.filter(alive), []);
+  same("★ 项目收尾后:它 workspace 下的 server 真的没了(不是拖到应用退出)", await waitUntilGone(before), []);
 }
 
 /* ─────────── 6i. 删一条物化了工作树的会话 → 收掉那条检出下的 server ─────────── */
@@ -1393,9 +1402,8 @@ console.log("\n§6h 删项目收掉它 workspace 下的 server");
 
   // 删的是**工作树那条**会话 —— 钩子该收掉 WT,而不是 sess_root 用的项目根。
   runSessionCleanupHooks("sess_wt");
-  await sleep(1500);
 
-  same("★ 删工作树会话后:那条检出的 server 没了", wtPid.filter(alive), []);
+  same("★ 删工作树会话后:那条检出的 server 没了", await waitUntilGone(wtPid), []);
 
   // 项目根那条不该被误伤:再起一个在 WS1(A 的项目根),只删**它**的会话,核对它还在。
   await lspManager.openDocument(WS1, join(WS1, "a.ts"), "typescript");
