@@ -153,6 +153,8 @@ const {
 const { registerMemoryHandlers } = await import("@main/ipc/memory.js");
 const { registerCodexModelsHandlers } = await import("@main/ipc/codexModels.js");
 const { codexHomePath, codexKeyEnvVar } = await import("@main/lib/codexModelsStore.js");
+// 直接写一条 legacy 存量记录用(handler 那条路现在会拒**新建** legacy,见 §1b)。
+const { saveMemoryFile } = await import("@main/memory/store.js");
 
 registerMemoryHandlers(fakeIpc);
 registerCodexModelsHandlers(fakeIpc);
@@ -200,39 +202,44 @@ console.log("\n记忆库:出参形状必须跟契约一致(这三个原来全错
  *     "`ok: false` 时 `error` 是给人看的句子,不是异常")。
  */
 {
-  const saved = (await call(MEMORY_SAVE_CHANNEL, { path: "rules/cite.md", content: BODY, title: "引用规范" })) as {
+  // ⚠️ **作用域前缀是必须的。** `memory:save` 传一条**漏前缀**的裸路径(如 `rules/cite.md`)
+  //    会被 handler 拒掉(见 `main/ipc/memory.ts` 的 `MEMORY_SAVE_CHANNEL` 那条闸)—— 那是
+  //    agent 经 `app_api_call` 时的静默作用域升级(想存项目记忆,却落到 legacy)。所以这套
+  //    里凡是要**新建**记忆的用例,路径都得写全 `projects/<id>/...` 或 `global/...`。
+  const SAVED_PATH = "projects/p1/rules/cite.md";
+  const saved = (await call(MEMORY_SAVE_CHANNEL, { path: SAVED_PATH, content: BODY, title: "引用规范" })) as {
     ok?: unknown;
     updatedAt?: unknown;
   };
   eq("memory:save 回形状跟契约一致(ok: true)", saved.ok, true);
   check("...(而不是把 store 的 updatedAt 直接转出去)", saved.updatedAt === undefined, saved);
 
-  const read1 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string; revision: string };
+  const read1 = (await call(MEMORY_READ_CHANNEL, { path: SAVED_PATH })) as { content: string; revision: string };
   eq("读回来的是存进去的那段正文(不含 frontmatter)", read1.content, BODY);
 
   // 契约原文:"读一条记忆的正文(含 frontmatter 原文)"—— store 吐的是分隔行之后
   // 那一整段,前面带着一个换行;写回去时 store 会 `trimEnd`。一读一存就长一个空行,
   // 用户在编辑器里点三次保存,正文前面就多出三个空行。
-  const r2 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string; revision: string };
-  await call(MEMORY_SAVE_CHANNEL, { path: "rules/cite.md", content: r2.content, expectedRevision: r2.revision });
-  const r3 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string; revision: string };
+  const r2 = (await call(MEMORY_READ_CHANNEL, { path: SAVED_PATH })) as { content: string; revision: string };
+  await call(MEMORY_SAVE_CHANNEL, { path: SAVED_PATH, content: r2.content, expectedRevision: r2.revision });
+  const r3 = (await call(MEMORY_READ_CHANNEL, { path: SAVED_PATH })) as { content: string; revision: string };
   eq("读出来再原样存回去,正文不长胖(不多空行)", r3.content, r2.content);
 
-  const savedFile = readFileSync(join(MEMORY_ROOT, "rules", "cite.md"), "utf8");
-  check("文件真的落在 <数据根>/memory/rules/ 下", insideDataRoot(join(MEMORY_ROOT, "rules", "cite.md")));
+  const savedFile = readFileSync(join(MEMORY_ROOT, "projects", "p1", "rules", "cite.md"), "utf8");
+  check("文件真的落在 <数据根>/memory/projects/p1/rules/ 下", insideDataRoot(join(MEMORY_ROOT, "projects", "p1", "rules", "cite.md")));
   check("frontmatter 里写进了标题", savedFile.includes(`title: "引用规范"`), savedFile.split("\n").slice(0, 4));
   check("frontmatter 里写进了 updatedAt", /updatedAt: \d+/.test(savedFile), savedFile.split("\n").slice(0, 4));
   check("正文里没有多出来的空行", savedFile.endsWith(`---\n\n${BODY}\n`), JSON.stringify(savedFile));
 
   // 第二次保存不传标题 → 沿用旧标题(文件即事实源,人手改的标题不能被一次正文保存抹掉)。
-  await call(MEMORY_SAVE_CHANNEL, { path: "rules/cite.md", content: "改过的正文", expectedRevision: r3.revision });
-  check("再存一次且不传标题时,旧标题被沿用", readFileSync(join(MEMORY_ROOT, "rules", "cite.md"), "utf8").includes(`title: "引用规范"`));
+  await call(MEMORY_SAVE_CHANNEL, { path: SAVED_PATH, content: "改过的正文", expectedRevision: r3.revision });
+  check("再存一次且不传标题时,旧标题被沿用", readFileSync(join(MEMORY_ROOT, "projects", "p1", "rules", "cite.md"), "utf8").includes(`title: "引用规范"`));
 
   const list = (await call(MEMORY_LIST_CHANNEL, { category: "rules" })) as {
     files?: MemoryFileMeta[];
   };
   check("memory:list 回形状跟契约一致(有 files 那一层)", Array.isArray(list.files), list);
-  same("list 里能看到这一条", list.files?.map((f) => f.path), ["rules/cite.md"]);
+  same("list 里能看到这一条", list.files?.map((f) => f.path), [SAVED_PATH]);
   eq("list 的标题来自 frontmatter", list.files?.[0]?.title, "引用规范");
   eq("list 的行带类目", list.files?.[0]?.category, "rules");
   check("list 的 updatedAt 是个数", typeof list.files?.[0]?.updatedAt === "number", list.files?.[0]);
@@ -242,21 +249,63 @@ console.log("\n记忆库:出参形状必须跟契约一致(这三个原来全错
   const noArg = (await call(MEMORY_LIST_CHANNEL)) as { files: unknown[] };
   eq("不给参数时列的是全部类目(parse(raw ?? {}))", noArg.files.length, 1);
 
-  const beforeDelete = await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" }) as { revision: string };
-  const del = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/cite.md", expectedRevision: beforeDelete.revision })) as { ok?: unknown };
+  const beforeDelete = await call(MEMORY_READ_CHANNEL, { path: SAVED_PATH }) as { revision: string };
+  const del = (await call(MEMORY_DELETE_CHANNEL, { path: SAVED_PATH, expectedRevision: beforeDelete.revision })) as { ok?: unknown };
   eq("memory:delete 回形状跟契约一致(ok: true)", del.ok, true);
-  check("删了之后文件真没了", !existsSync(join(MEMORY_ROOT, "rules", "cite.md")));
+  check("删了之后文件真没了", !existsSync(join(MEMORY_ROOT, "projects", "p1", "rules", "cite.md")));
   const afterDelete = (await call(MEMORY_LIST_CHANNEL, {})) as { files: unknown[] };
   eq("删了之后 list 里也没有了", afterDelete.files.length, 0);
 
   // 删除是幂等的:本来就不在也算成功(用户在两个窗口里各按一次不该报错)。
-  const idempotent = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/cite.md" })) as { ok?: unknown };
+  const idempotent = (await call(MEMORY_DELETE_CHANNEL, { path: SAVED_PATH })) as { ok?: unknown };
   eq("删一个本来就不存在的文件也算成功(幂等)", idempotent.ok, true);
+}
+
+/* ──────────────── 1b. 漏前缀的裸路径:不许静默落到 legacy ──────────────── */
+
+/**
+ * `memory.save`(以及 agent 经 `app_api_call` 的同一条路)从前对一条**漏了作用域前缀**
+ * 的路径(`preferences/x.md`)**不报错**,直接存到 `<数据根>/memory/preferences/`
+ * (旧布局,memory.list 里标 `scope:"legacy"`)—— 对一个"想存**项目**记忆"的调用方,
+ * 这是**静默的作用域升级**(项目内 → 全局可见),真机实测报的就是这条(NEW-6)。
+ *
+ * 判据立在用户/调用方**看得见的那句错误**上:新建必须写全前缀,拒绝时要说清两种正确写法。
+ * 存量 legacy 记录仍可原地编辑(带 revision),所以"新建"与"编辑"两条要分别钉住。
+ */
+{
+  const before = snapshotDataRoot();
+  // ① 新建一条漏前缀的裸路径 → 拒,且错误信息说清正确写法。
+  const bare = (await call(MEMORY_SAVE_CHANNEL, { path: "preferences/zz-probe.md", content: "想存项目记忆" })) as {
+    ok?: unknown;
+    error?: unknown;
+  };
+  check("★ 新建一条漏前缀的裸路径被拒(不静默落成 legacy)", bare.ok === false, bare);
+  check("★ 拒绝时说清了正确写法(projects/<id>/… 与 global/… 两种)",
+    typeof bare.error === "string" && bare.error.includes("projects/") && bare.error.includes("global/"), bare.error);
+  check("★ 被拒后磁盘上没留下那条 legacy 文件", !existsSync(join(MEMORY_ROOT, "preferences", "zz-probe.md")), snapshotDataRoot());
+  same("★ 这一轮被拒没在数据根里多出任何东西", snapshotDataRoot(), before);
+
+  // ② 写全前缀 → 成功(两种正确写法各来一条,证明拒绝不是"把两条路也堵了")。
+  const scoped = (await call(MEMORY_SAVE_CHANNEL, { path: "projects/p1/preferences/probe.md", content: "项目记忆" })) as { ok?: unknown };
+  eq("写全 projects/<id>/… 前缀的新建成功", scoped.ok, true);
+  const globalOk = (await call(MEMORY_SAVE_CHANNEL, { path: "global/preferences/probe.md", content: "全局记忆" })) as { ok?: unknown };
+  eq("写全 global/… 前缀的新建成功", globalOk.ok, true);
+
+  // ③ 存量 legacy 记录仍可**原地编辑**(带 revision)—— 别把记忆面板对老记录的编辑也堵死。
+  saveMemoryFile({ path: "preferences/legacy-existing.md", content: "旧记录", expectedRevision: null });
+  const legacyRev = (await call(MEMORY_READ_CHANNEL, { path: "preferences/legacy-existing.md" }) as { revision: string }).revision;
+  const edited = (await call(MEMORY_SAVE_CHANNEL, { path: "preferences/legacy-existing.md", content: "改过的旧记录", expectedRevision: legacyRev })) as { ok?: unknown };
+  eq("★ 存量 legacy 记录带 revision 原地编辑仍成功(面板编辑老记录的路不断)", edited.ok, true);
+
+  // 清理
+  await call(MEMORY_DELETE_CHANNEL, { path: "projects/p1/preferences/probe.md", expectedRevision: (await call(MEMORY_READ_CHANNEL, { path: "projects/p1/preferences/probe.md" }) as { revision: string }).revision });
+  await call(MEMORY_DELETE_CHANNEL, { path: "global/preferences/probe.md", expectedRevision: (await call(MEMORY_READ_CHANNEL, { path: "global/preferences/probe.md" }) as { revision: string }).revision });
+  await call(MEMORY_DELETE_CHANNEL, { path: "preferences/legacy-existing.md", expectedRevision: (await call(MEMORY_READ_CHANNEL, { path: "preferences/legacy-existing.md" }) as { revision: string }).revision });
 }
 
 /* Real IPC boundary: revisions must survive schema parsing and response projection. */
 {
-  const path = "decisions/ipc-cas.md";
+  const path = "projects/p1/decisions/ipc-cas.md";
   const create = await call(MEMORY_SAVE_CHANNEL, { path, content: "first", expectedRevision: null }) as { ok: boolean; revision?: string };
   check("IPC保存返回新版本", create.ok && !!create.revision);
   const read = await call(MEMORY_READ_CHANNEL, { path }) as { content: string; revision: string };
@@ -437,7 +486,11 @@ console.log("\n拒绝要说出口,而不是抛出去");
 {
   const outside = join(DATA_ABS, "outside-secret.md");
   writeFileSync(outside, "库外的东西,不该被记忆库读出来", "utf8");
-  const linkDir = join(MEMORY_ROOT, "rules");
+  // ⚠️ 用**带作用域前缀**的路径(`projects/p1/rules/…`),不用裸 `rules/…` —— 后者是 legacy,
+  //    save 会被 §1b 那条"漏前缀不许新建"的闸先拒掉,于是这里的 save 断言会**因为别的理由
+  //    变绿**,验不到存储层的符号链接闸(套件跑绿但没覆盖到的老形状)。
+  const REL = "projects/p1/rules/linked.md";
+  const linkDir = join(MEMORY_ROOT, "projects", "p1", "rules");
   mkdirSync(linkDir, { recursive: true });
   const link = join(linkDir, "linked.md");
   let linked = true;
@@ -454,7 +507,7 @@ console.log("\n拒绝要说出口,而不是抛出去");
     let readOut = "";
     let readThrew = "";
     try {
-      readOut = ((await call(MEMORY_READ_CHANNEL, { path: "rules/linked.md" })) as { content: string }).content;
+      readOut = ((await call(MEMORY_READ_CHANNEL, { path: REL })) as { content: string }).content;
     } catch (err) {
       readThrew = (err as Error).message;
     }
@@ -466,14 +519,14 @@ console.log("\n拒绝要说出口,而不是抛出去");
     const linkedList = (await call(MEMORY_LIST_CHANNEL, { category: "rules" })) as { files: MemoryFileMeta[] };
     check(
       "指向库外的符号链接不会混进记忆列表",
-      !linkedList.files.some((f) => f.path === "rules/linked.md"),
+      !linkedList.files.some((f) => f.path === REL),
       linkedList.files,
     );
 
     let writeThrew = "";
     let writeOut: unknown = null;
     try {
-      writeOut = await call(MEMORY_SAVE_CHANNEL, { path: "rules/linked.md", content: "写到库外去了" });
+      writeOut = await call(MEMORY_SAVE_CHANNEL, { path: REL, content: "写到库外去了" });
     } catch (err) {
       writeThrew = (err as Error).message;
     }
@@ -483,7 +536,7 @@ console.log("\n拒绝要说出口,而不是抛出去");
       !outsideAfter.includes("写到库外去了"),
       { writeThrew, writeOut, outsideAfter },
     );
-    const deleteOut = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/linked.md" })) as {
+    const deleteOut = (await call(MEMORY_DELETE_CHANNEL, { path: REL })) as {
       ok?: unknown;
       error?: unknown;
     };
@@ -495,7 +548,7 @@ console.log("\n拒绝要说出口,而不是抛出去");
     rmSync(link, { force: true });
   }
   rmSync(outside, { force: true });
-  rmSync(linkDir, { recursive: true, force: true });
+  rmSync(join(MEMORY_ROOT, "projects"), { recursive: true, force: true });
 }
 
 // Windows 上普通文件 symlink 往往需要开发者模式，但目录 junction 不需要。
@@ -503,11 +556,13 @@ console.log("\n拒绝要说出口,而不是抛出去");
 {
   const outsideDir = join(DATA_ABS, "outside-memory-dir");
   const outsideFile = join(outsideDir, "escaped.md");
-  const linkDir = join(MEMORY_ROOT, "rules");
+  // 同上一组:带作用域前缀,让 save/delete 真的走到存储层(裸路径会先被 §1b 那条闸拒掉)。
+  const REL = "projects/p1/rules/escaped.md";
+  const linkDir = join(MEMORY_ROOT, "projects", "p1", "rules");
   mkdirSync(outsideDir, { recursive: true });
   writeFileSync(outsideFile, "junction 外的内容", "utf8");
   rmSync(linkDir, { recursive: true, force: true });
-  mkdirSync(MEMORY_ROOT, { recursive: true });
+  mkdirSync(join(MEMORY_ROOT, "projects", "p1"), { recursive: true });
   let junction = true;
   try {
     symlinkSync(outsideDir, linkDir, "junction");
@@ -520,7 +575,7 @@ console.log("\n拒绝要说出口,而不是抛出去");
   } else {
     let readThrew = "";
     try {
-      await call(MEMORY_READ_CHANNEL, { path: "rules/escaped.md" });
+      await call(MEMORY_READ_CHANNEL, { path: REL });
     } catch (err) {
       readThrew = (err as Error).message;
     }
@@ -529,13 +584,14 @@ console.log("\n拒绝要说出口,而不是抛出去");
     const listed = (await call(MEMORY_LIST_CHANNEL, { category: "rules" })) as { files: MemoryFileMeta[] };
     check("junction 类目目录不会被 list 展开", listed.files.length === 0, listed.files);
 
-    const saved = (await call(MEMORY_SAVE_CHANNEL, { path: "rules/escaped.md", content: "不该写出去" })) as { ok?: unknown };
+    const saved = (await call(MEMORY_SAVE_CHANNEL, { path: REL, content: "不该写出去" })) as { ok?: unknown };
     check("junction 类目目录不能越权写入", saved.ok === false && readFileSync(outsideFile, "utf8") === "junction 外的内容", saved);
 
-    const deleted = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/escaped.md" })) as { ok?: unknown };
+    const deleted = (await call(MEMORY_DELETE_CHANNEL, { path: REL })) as { ok?: unknown };
     check("junction 类目目录不能越权删除", deleted.ok === false && existsSync(outsideFile), deleted);
   }
   rmSync(linkDir, { recursive: true, force: true });
+  rmSync(join(MEMORY_ROOT, "projects"), { recursive: true, force: true });
   rmSync(outsideDir, { recursive: true, force: true });
 }
 

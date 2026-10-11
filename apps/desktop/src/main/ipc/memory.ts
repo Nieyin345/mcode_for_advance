@@ -44,6 +44,7 @@ import {
   MemorySaveSchema,
 } from "@contracts/memory";
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
+import { memoryAddress } from "@main/memory/paths.js";
 import { deleteReviewedMemory, reviewMemoryFiles } from "@main/memory/review.js";
 import {
   MemoryConflictError,
@@ -77,6 +78,25 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(MEMORY_SAVE_CHANNEL, (_evt, raw) => {
     const input = MemorySaveSchema.parse(raw);
+    // ★ 一条**新建**的、却漏了作用域前缀的记忆路径(如 `preferences/x.md`)是调用方的
+    //   静默作用域升级:他以为在存**项目**记忆,文件却落到 `<数据根>/memory/<类目>/`
+    //   (旧布局,`memory.list` 里标 `scope:"legacy"`)—— 不属于任何项目、不会被注入、
+    //   只在「导入与恢复」里以旧记忆源露面。agent 经 `app_api_call` 调 `memory.save` 时
+    //   正是这种形状。对照:内置的 `memory_write` 工具自己会补 `global/` 或
+    //   `projects/<id>/` 前缀并走 `requireMemoryAccess`,所以只有这条裸 RPC 有这个洞。
+    //
+    //   判据取「是新建」(expectedRevision 缺省),而不是"凡是 legacy 一律拒":**存量**
+    //   legacy 记录(升级前的老布局)在记忆面板里仍可**原地编辑** —— 那种调用会带上打开
+    //   时读到的 revision,不该被拦。要新建就必须把作用域写全,错误信息直接告诉调用方
+    //   两种正确写法(判据与 `main/memory/paths.ts` 的 `memoryAddress` 同一份,不另写正则)。
+    const address = memoryAddress(input.path);
+    if (address?.scope === "legacy" && input.expectedRevision == null) {
+      return {
+        ok: false,
+        error: `记忆路径缺少作用域前缀:「${input.path}」。项目记忆要写 projects/<项目id>/${address.category}/${address.file};` +
+          `要存到所有项目共享的全局记忆就写 global/${address.category}/${address.file}。`,
+      };
+    }
     // 契约是 `{ ok, error? }`,store 回的是 `{ updatedAt }`;这里转形状,并且
     // **别把异常抛出去**:契约写了"`ok: false` 时 `error` 是给人看的句子,不是异常",
     // 面板也是按这个读的(`res.error ?? t("common.error")` 那一行)。
