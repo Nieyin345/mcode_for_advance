@@ -30,6 +30,7 @@ import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeOutcome } from "@contracts/nodeTy
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
 import { spawnRun } from "@main/lib/spawnRun.js";
 import { markTruncatedTail } from "@main/lib/outBuf.js";
+import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 
 export type CodeLanguage = "python" | "node" | "shell" | "powershell";
 export interface CodeProgress { percent?: number; message?: string; }
@@ -42,12 +43,22 @@ type ProtocolResult = {
 /** 输出只留尾部这么多**字节**(见 `spawnRun` 的窗口说明)。 */
 const MAX_CAPTURE_BYTES = 16_000;
 
-/** 语言 → 怎么起它。`file` 是已经写好的那个临时文件。 */
-function spec(language: CodeLanguage, file: string): [string, string[]] {
+/** 语言 → 怎么起它。`file` 是已经写好的那个临时文件。
+ *
+ *  `pythonExe` 是**解析好的解释器绝对路径**,或 null(= 没解析到,退回裸名字让 spawn
+ *  自己报 ENOENT,与从前一致)。见下面的 `resolvePython`。 */
+function spec(language: CodeLanguage, file: string, pythonExe: string | null): [string, string[]] {
   // `-u` = 不做缓冲。少了它进度上报会攒到进程结束才出来,实时看进度就成了空话。
   // macOS 12.3 起系统不再带 `python`,Homebrew / python.org / Xcode 命令行工具都只给
-  // `python3`(conda、pyenv 两个都给)。Windows 上官方安装包给的是 `python`,保持原样。
-  if (language === "python") return [process.platform === "win32" ? "python" : "python3", ["-u", file]];
+  // `python3`(conda、pyenv 两个都给)。Windows 上官方安装包给的是 `python`。
+  //
+  // ⚠️ 从前这里直接返回**裸名** `python`/`python3`,以主进程 env 为环境起进程 —— 而
+  // `agentEnv` 会把 LibreOffice 的 program 目录(里面的捆绑 `python.exe`)注入到 PATH
+  // 最前,于是代码节点跑的 python 成了 LibreOffice 自带的那个、与用户在终端里敲的不是
+  // 同一个。现在统一走 `resolvePython`(跳过捆绑解释器),解析不到才退回裸名。
+  if (language === "python") {
+    return [pythonExe ?? (process.platform === "win32" ? "python" : "python3"), ["-u", file]];
+  }
   // 用**当前这个** Node —— PATH 上那个未必存在(打包后的应用里更是如此)。
   if (language === "node") return [process.execPath, [file]];
   if (language === "powershell") {
@@ -110,7 +121,10 @@ export async function runCodeNode(a: {
   try {
     const file = path.join(dir, `main.${extensionOf(a.language)}`);
     await writeFile(file, scriptBytes(a.language, a.code));
-    const [cmd, argv] = spec(a.language, file);
+    // 只有 python 才需要解析解释器(其余语言用绝对路径 / 系统自带)。解析不到就
+    // 传 null,`spec` 退回裸名字 —— 解析层不自己造新的失败形状(见 pythonResolve.ts)。
+    const pythonExe = a.language === "python" ? await resolvePythonExe() : null;
+    const [cmd, argv] = spec(a.language, file, pythonExe);
 
     let result: ProtocolResult | undefined;
     /** 认一行协议。返回 `true` = 这一行是协议行,不进 stdout 产出。 */

@@ -602,6 +602,14 @@ export function McpPanel() {
         title={t("settings.mcp.userSection")}
         desc={t("settings.mcp.userSectionDesc")}
       >
+        {/* 手改告警:Mcode 把 .claude.json 的 mcpServers 当**派生视图**整格重写
+            (见 lib/mcpConfig.ts 的 materializeClaudeMcpView:视图 = 启用 ∧ 分配给
+            claude)。绕过本页直接往文件里加 server,会被下一轮物化覆盖,且不合并 ——
+            同名两份来源会分不清谁赢。所以如实告知「此文件由 Mcode 管理」,而不是留个
+            用户在 UI 里看不见的脚枪。 */}
+        <p className="border-l-2 border-warning/50 px-4 py-2 text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.mcp.managedFileNote")}
+        </p>
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-6 text-[0.7857em] text-content-subtle">
             <IconLoader2 size={14} className="animate-spin" />

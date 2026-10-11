@@ -23,14 +23,14 @@
  * 在面板上点几下就会反复起进程。5 秒足够短(用户点"重新检测"也等得起),又足够
  * 挡住密集重复调用。
  */
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ToolchainToolId, ToolchainToolState, ToolchainSource } from "@contracts/ipc";
 import { TOOLCHAIN_TOOL_IDS } from "@contracts/ipc";
 import { managedToolExecutable } from "./managedToolRoots.js";
 import { knownInstallPaths } from "./systemToolPaths.js";
-import { decodeOutput } from "@main/lib/outBuf.js";
+import { runProbe as run, findExecutable } from "@main/lib/binPath.js";
+import { bundledInterpreterOwner, collectPythonCandidates } from "@main/lib/pythonResolve.js";
 import { detectLocal } from "@main/onlyoffice/localInstall.js";
 import { getOnlyOfficeConfig } from "@main/onlyoffice/OnlyOfficeBridge.js";
 
@@ -51,42 +51,13 @@ const PY_PACKAGES = [
   "lxml",
 ] as const;
 
-/** 找 python 解释器的候选顺序 —— 与大多数人的 PATH 习惯一致。 */
-const PY_CANDIDATES = ["python", "python3", "py"] as const;
+/** 「找哪个 python 解释器、怎么认捆绑/嵌入型」收在 `lib/pythonResolve.ts` 那一份
+ *  —— 代码节点(`orchestration/codeRunner.ts`)与这里共用它,免得同一个坑踩两遍
+ *  (见那边的文件头:这些捆绑解释器的完整来龙去脉写在那儿)。 */
 
 /** 探测缓存时长。见文件头「为什么要缓存」。 */
 const CACHE_TTL_MS = 5_000;
 
-interface ProbeResult {
-  ok: boolean;
-  stdout: string;
-}
-
-/** 跑一个命令并收 stdout。**任何**失败(不存在 / 超时 / 非零退出)都只是
- *  `ok:false` —— 探测不该抛异常。 */
-function run(file: string, args: string[], timeoutMs = 10_000): Promise<ProbeResult> {
-  return new Promise((resolve) => {
-    // 中文 Windows 上 where.exe 按系统代码页(GBK)输出 —— 按 UTF-8 解码,用户目录带中文的
-    // 路径就成了乱码,existsSync 不过,工具被误报成"没装"。decodeOutput 会在 UTF-8/GBK 间择优。
-    execFile(file, args, { timeout: timeoutMs, windowsHide: true, encoding: "buffer" }, (err, stdout) => {
-      resolve({ ok: !err, stdout: stdout ? decodeOutput(stdout) : "" });
-    });
-  });
-}
-
-/** 在 PATH 上找一个可执行文件,返回第一个真实存在的绝对路径。 */
-async function findExecutable(name: string): Promise<string | null> {
-  // Windows 用 where.exe,别的地方用 which。都不走 shell —— 参数里可能有用户
-  // 路径,经 shell 解析就多了注入面。
-  const cmd = process.platform === "win32" ? "where.exe" : "which";
-  const res = await run(cmd, [name]);
-  if (!res.ok) return null;
-  for (const line of res.stdout.split(/\r?\n/)) {
-    const p = line.trim();
-    if (p && existsSync(p)) return p;
-  }
-  return null;
-}
 
 // `knownInstallPaths` / `systemToolBinDirs` 住在 ./systemToolPaths.ts(见那边文件头)。
 export { systemToolBinDirs } from "./systemToolPaths.js";
@@ -162,22 +133,59 @@ async function probePython(exe: string): Promise<Set<string> | null> {
   return found;
 }
 
-/** 所有能找到的 python 解释器里,包最全的那一个 + 它缺什么。 */
-async function pickPython(): Promise<{
+/** 选中的解释器 —— 路径、它装了哪些包、以及它是不是某个程序自带的。 */
+interface PythonPick {
   exe: string;
   found: Set<string>;
-} | null> {
-  let best: { exe: string; found: Set<string> } | null = null;
-  for (const name of PY_CANDIDATES) {
-    const exe = await findExecutable(name);
-    if (!exe) continue;
+  /** 非 null = 这个解释器是某个程序自带的(值是程序名)。见 `lib/pythonResolve.ts`。 */
+  bundledBy: string | null;
+}
+
+/** 已经探过包的解释器候选。 */
+export interface ProbedPython {
+  exe: string;
+  found: Set<string>;
+}
+
+/**
+ * 从**已探测**的候选里选一个解释器 —— **纯函数**(只按 `bundledBy` 与包数排序),
+ * 不 spawn 任何进程,所以无头用例能直接喂候选来钉判据(见 toolchain-smoke)。
+ *
+ * 规则:**有非捆绑的就不碰捆绑的**(其中挑包最全的)—— 哪怕非捆绑那个包不全,因为
+ * pip 装进用户自己的解释器才对(装进捆绑环境正是这一整条警告要防的事);只有候选里
+ * **全是**捆绑的,才退而选其中包最全的,并带上 `bundledBy` 让面板能提示。
+ */
+export function choosePython(probed: readonly ProbedPython[]): PythonPick | null {
+  const bestOf = (pool: readonly ProbedPython[]): PythonPick | null => {
+    let best: ProbedPython | null = null;
+    for (const c of pool) {
+      if (!best || c.found.size > best.found.size) best = c;
+      // 已经全有了就不必再看别的 —— 后面的只会一样或更差
+      if (c.found.size === PY_PACKAGES.length) break;
+    }
+    return best ? { exe: best.exe, found: best.found, bundledBy: bundledInterpreterOwner(best.exe) } : null;
+  };
+
+  const own = probed.filter((c) => bundledInterpreterOwner(c.exe) === null);
+  if (own.length > 0) return bestOf(own);
+  return bestOf(probed);
+}
+
+/**
+ * 所有能找到的 python 解释器:**先枚举每个候选名的全部命中**(不是只取第一个 ——
+ * 捆绑的那份可能被注入到 PATH 最前),探测各自的包,再交给 {@link choosePython}。
+ *
+ * 枚举那一步(`collectPythonCandidates`)与捆绑识别(`bundledInterpreterOwner`)收在
+ * `lib/pythonResolve.ts` —— 代码节点那道裸名 `python` 走的是同一份,免得同一个坑踩两遍。
+ * **不是一票否决**:机器上真的只有捆绑那一份时,照样用它并如实标出 `bundledBy`。
+ */
+async function pickPython(): Promise<PythonPick | null> {
+  const probed: ProbedPython[] = [];
+  for (const exe of await collectPythonCandidates()) {
     const found = await probePython(exe);
-    if (!found) continue;
-    if (!best || found.size > best.found.size) best = { exe, found };
-    // 已经全有了就不必再试别的解释器 —— 后面的只会一样或更差
-    if (found.size === PY_PACKAGES.length) break;
+    if (found) probed.push({ exe, found });
   }
-  return best;
+  return choosePython(probed);
 }
 
 /* ── 各工具的检测 ── */
@@ -232,6 +240,9 @@ async function detectPythonDeps(): Promise<ToolchainToolState> {
     installable: true,
     installing: false,
     lastError: "",
+    // 只有机器上唯一能用的解释器是某程序自带的时候才带上它 —— 面板据此提醒
+    // "这是 X 自带的,可能不是你想要的"(措辞在渲染端)。
+    ...(best.bundledBy ? { bundledBy: best.bundledBy } : {}),
     components,
   };
 }

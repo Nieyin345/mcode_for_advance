@@ -467,6 +467,65 @@ const claudeAfter = (listed?.runtimes ?? []).find((r) => r.agent === "claude");
 eq("★ 删过的那一项在表里回到 installed:false", claudeAfter?.installed, false);
 eq("★ 而且 lastError 是空串(是「没装」,不是「装坏了」)", claudeAfter?.lastError, "");
 
+/* ══════════════════════════════════════════════════════════════════════════
+ *  9. python 解释器的挑选:**别把 LibreOffice 自带的当成用户的 python**
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+console.log("\n9. 选 python:优先用户自己的,捆绑的只在唯一时用且要标出来");
+
+// `agentEnv` 把 LibreOffice 的 program 目录(里面的捆绑 python.exe)注入到子进程
+// PATH 最前面,好让技能敲的裸名 `soffice` 找得到。副作用:`where python` 的第一条
+// 成了那份捆绑解释器。选解释器若只看"第一个命中",`python-deps` 的 pip install 就会
+// 把包装进 LibreOffice 的私有环境,code 节点跑的 python 也成了它。
+//
+// 这里是**纯函数**(`choosePython`),不 spawn 进程 —— 直接喂候选来钉判据。
+const { choosePython } = await import("@main/env/toolchain.js");
+
+/** 造一个候选:路径 + "装了哪几个包"(决定 found.size)。 */
+const cand = (exe: string, packages: string[]): { exe: string; found: Set<string> } => ({
+  exe,
+  found: new Set(packages),
+});
+const LO_PY = "C:\\Program Files\\LibreOffice\\program\\python.exe";
+const USER_PY = "C:\\Python313\\python.exe";
+
+// ① LibreOffice 那份**包最全**(这正是这条 bug 的形状:PATH 上它在最前、又最全)。
+//    即便这样,也必须选用户自己那份 —— 宁可它包不全(pip 会补)。
+{
+  const picked = choosePython([
+    cand(LO_PY, ["openpyxl", "pptx", "markitdown", "pypdf", "defusedxml", "PIL", "pdf2image", "pdfplumber", "lxml"]),
+    cand(USER_PY, ["openpyxl"]),
+  ]);
+  eq("★ 捆绑那份包更全也不选它(选用户自己的)", picked?.exe, USER_PY);
+  eq("★ 用户自己这份没有 bundledBy 标记", picked?.bundledBy ?? null, null);
+}
+
+// ② 机器上**只有**捆绑的那一份 —— 照样用它(不能报"没找到"),但要如实标出归属。
+{
+  const picked = choosePython([cand(LO_PY, ["openpyxl", "markitdown"])]);
+  eq("★ 只有捆绑解释器时仍然选它(不报「没找到」)", picked?.exe, LO_PY);
+  eq("★ 而且标明了它是 LibreOffice 自带的", picked?.bundledBy, "LibreOffice");
+}
+
+// ③ 多个非捆绑的 → 挑包最全的(保序:不因捆绑检查而改了"包最全"的判据)。
+{
+  const picked = choosePython([
+    cand(USER_PY, ["openpyxl"]),
+    cand("D:\\anaconda1\\python.exe", ["openpyxl", "pptx", "markitdown"]),
+  ]);
+  eq("★ 都是用户自己的 → 包最全的胜出", picked?.exe, "D:\\anaconda1\\python.exe");
+  eq("★ 非捆绑的没有任何 bundledBy", picked?.bundledBy ?? null, null);
+}
+
+// ④ 大小写 / 分隔符不影响捆绑识别(走 normPathKey,与全仓库路径判等同一条)。
+{
+  const picked = choosePython([cand("c:/PROGRAM FILES/libreoffice/program/python.exe", ["openpyxl"])]);
+  eq("★ 大小写与 `/` 都不影响捆绑识别", picked?.bundledBy, "LibreOffice");
+}
+
+// ⑤ 一个候选都没有 → null(走"没找到 python"那条路)。
+eq("★ 没有候选 → null", choosePython([]), null);
+
 /* ── 尾声 ── */
 
 rmSync(DATA, { recursive: true, force: true });

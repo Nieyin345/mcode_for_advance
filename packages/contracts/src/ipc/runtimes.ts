@@ -146,6 +146,16 @@ export interface ToolchainToolState {
   installing: boolean;
   /** 最近一次装/卸失败的尾巴。空 = 正常。 */
   lastError: string;
+  /** 这个解释器是**某个程序自带**的私有环境 —— 值是程序名(`"LibreOffice"`),
+   *  常规安装的解释器没有这个字段。只有 `python-deps` 这一项可能带它。
+   *
+   *  为什么要有:`Mcode` 为了让技能敲得到 `soffice`,会把 LibreOffice 的 program
+   *  目录加进子进程 PATH,而那目录里同时躺着 LibreOffice 自带的 `python.exe`。当机器
+   *  上**只有**这一个解释器时,检测/装包会落到它上面 —— 那不是用户在心里说的"我的
+   *  python"。渲染端据这个标记提醒用户"这是 X 自带的,可能不是你想要的"。
+   *
+   *  机器名,不是文案(同 `components[].name` 的约定):主进程不回措辞。 */
+  bundledBy?: string;
   /** 组成这个工具的可执行文件 / 宏包 / python 包,以及各自找到没有。
    *
    *  **名字是机器名**(`pandoc` / `unzip` / `openpyxl` / `ctex`),不是文案 ——

@@ -269,7 +269,15 @@ export async function getMcpTruth(): Promise<McpManagementState> {
 
 /** Rewrite the claude engine's derived view: `.claude.json` mcpServers becomes
  *  exactly the enabled∧assigned subset. Read-modify-write over the whole file
- *  (the CLI keeps its own keys there — only `mcpServers` is ours to write). */
+ *  (the CLI keeps its own keys there — only `mcpServers` is ours to write).
+ *
+ *  This is a REPLACE of the `mcpServers` key, not a merge: the truth layer
+ *  (management state) is the single source of truth, and a hand-added entry
+ *  living only in the file is deliberately superseded on the next materialize.
+ *  Merging was rejected on purpose — a name present both in the truth layer and
+ *  hand-added in the file would have two sources and no rule for which wins
+ *  (and a server the user deleted via the panel would keep resurrecting from the
+ *  file). The settings panel discloses this in `settings.mcp.managedFileNote`. */
 export async function materializeClaudeMcpView(): Promise<void> {
   const state = await getMcpTruth();
   const view = deriveMcpEngineView(state, readMcpEnginesMap(), "claude");

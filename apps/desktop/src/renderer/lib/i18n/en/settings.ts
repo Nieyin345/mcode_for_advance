@@ -629,6 +629,7 @@ export const en = {
   "settings.mcp.bulkDelete": "Delete selected",
   "settings.mcp.bulkDeleteDesc": "Delete the {n} selected user-level MCP servers. Plugin-provided and built-in servers are not in this group and are unaffected.",
   "settings.mcp.userSectionDesc": "Stored in Mcode's own Claude config (~/.mcode/.claude.json) and available to all projects. Disabled servers are stashed and restored when re-enabled.",
+  "settings.mcp.managedFileNote": "Note: Mcode owns the mcpServers object in ~/.mcode/.claude.json (every change rewrites that key from the enable + per-engine state below). Add and remove servers here; a server hand-added to that object in the file will be overwritten on the next materialization.",
   "settings.mcp.userEmpty1": "No user-level servers.",
   "settings.mcp.userEmpty2": "Use \"Add\" or \"Import from Claude CLI\" below.",
   "settings.mcp.toggleOn": "Enable {name}",
@@ -805,7 +806,7 @@ export const en = {
     "MCP servers start in enabled sessions with the command/URL shown above.",
   "settings.plugins.reviewEnable": "Enable",
   "settings.plugins.reviewLater": "Not now",
-  "settings.plugins.hooksWarnTitle": "This plugin contains hooks",
+  "settings.plugins.hooksWarnTitle": "This plugin's hooks won't run",
   "settings.plugins.hooksWarnDesc":
     "{name} declares {n} hooks. Mcode does not execute any plugin hooks in this version, so that automation stays inactive; the remaining components (skills / MCP) work normally.",
   "settings.plugins.marketplaceSection": "Marketplaces",
@@ -1417,6 +1418,10 @@ export const en = {
   // automations all get them.
   "settings.hooks.intro":
     "A hook belongs to no graph: it hangs off an event, so it fires for every chat and every workflow node. The command runs as you on this machine, and the event arrives on stdin as JSON.",
+  // H1/H2 disclosure: this page's hooks are Mcode's own mechanism; native engine hooks
+  // are a separate one. See the zh file for the full rationale.
+  "settings.hooks.nativeNote":
+    "These hooks are run by Mcode itself (from hooks.json under the data root), independent of which engine you use. Note: native hooks you configured in Claude Code's ~/.claude/settings.json will NOT fire here — Mcode points the engine's config root at ~/.mcode, so that is the file it reads. Conversely, native hooks hand-written in ~/.mcode/settings.json run through the engine's own mechanism, not this page; the two are unrelated.",
   "settings.hooks.refreshRuns": "Refresh log",
   "settings.hooks.newHook": "New hook",
   "settings.hooks.loadFailed": "Could not read your hooks: {error}",

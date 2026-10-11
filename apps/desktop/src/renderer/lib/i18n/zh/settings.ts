@@ -634,6 +634,7 @@ export const zh = {
   "settings.mcp.bulkDelete": "删除选中的",
   "settings.mcp.bulkDeleteDesc": "从用户级删掉勾选的 {n} 个 MCP 服务器。插件带来的与内置的不在这一组里，不受影响。",
   "settings.mcp.userSectionDesc": "保存在 Mcode 自己的 Claude 配置(~/.mcode/.claude.json)中,所有项目可用。关闭的 server 配置会被暂存,重新开启即可恢复。",
+  "settings.mcp.managedFileNote": "注意:~/.mcode/.claude.json 里的 mcpServers 由 Mcode 整体管理(每次改动会按下表的启用与引擎分配重写这一格)。请在本页增删;直接手改文件里的 mcpServers 会被下次物化覆盖。",
   "settings.mcp.userEmpty1": "暂无用户级 server。",
   "settings.mcp.userEmpty2": "点击下方「新增」或「从 Claude CLI 导入」。",
   "settings.mcp.toggleOn": "开启 {name}",
@@ -808,7 +809,7 @@ export const zh = {
   "settings.plugins.reviewMcpNote": "MCP server 将在启用的会话中按上述命令/地址启动。",
   "settings.plugins.reviewEnable": "启用",
   "settings.plugins.reviewLater": "暂不启用",
-  "settings.plugins.hooksWarnTitle": "该插件包含 hooks",
+  "settings.plugins.hooksWarnTitle": "该插件的 hooks 不会执行",
   "settings.plugins.hooksWarnDesc":
     "{name} 声明了 {n} 条 hooks。当前版本 Mcode 不执行任何插件 hooks,这些自动化不会生效;其余组件(skills / MCP 等)正常工作。",
   "settings.plugins.marketplaceSection": "插件市场",
@@ -1410,6 +1411,12 @@ export const zh = {
   // **宿主侧执行**（见 `@contracts/hook`），所以对话、工作流节点、自动化一视同仁。
   "settings.hooks.intro":
     "钩子不属于任何一张图：它挂在事件上，对每一次对话、每一个工作流节点都生效。命令以你的身份在这台机器上执行，事件内容从 stdin 传进去（JSON）。",
+  // H1/H2 的告知：本页的钩子是 Mcode 自己那一套，和用户可能配过的引擎原生 hooks
+  // 是两套机制。隔离是刻意的，缺的是**说出来** —— 用户在 Claude Code 里配了 hook、
+  // 到这里发现不跑，没有这句会一头雾水。三处要点都要有：本页用 hooks.json、~/.claude
+  // 那份不生效、~/.mcode 那份是另一条路。
+  "settings.hooks.nativeNote":
+    "这些钩子由 Mcode 自己执行（存在数据根下的 hooks.json），与用哪个引擎无关。注意：你在 Claude Code 的 ~/.claude/settings.json 里配的原生 hooks 不会在这里生效 —— Mcode 把引擎的配置根指到了 ~/.mcode，它读的是那一份；反过来，~/.mcode/settings.json 里手写的原生 hooks 走的是引擎自己那套，不经过本页，两者互不相干。",
   "settings.hooks.refreshRuns": "刷新记录",
   "settings.hooks.newHook": "新建钩子",
   "settings.hooks.loadFailed": "钩子读不出来：{error}",

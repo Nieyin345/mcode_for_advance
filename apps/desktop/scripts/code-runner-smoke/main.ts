@@ -1,6 +1,8 @@
 import * as path from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { runCodeNode } from "@main/orchestration/codeRunner.js";
+import { resolvePythonExe, pickPreferredPython, bundledInterpreterOwner } from "@main/lib/pythonResolve.js";
 import { NODE_STDOUT_PROTOCOL_PREFIX } from "@contracts/nodeType";
 
 let total = 0;
@@ -159,6 +161,67 @@ console.log("\nLanguage · 用户可见的失败原因一律中文");
   const src = readFileSync(path.join(process.cwd(), "src/main/orchestration/codeRunner.ts"), "utf8");
   check("★ 拿不到退出码时说的是中文「未知」(不是英文 unknown)", src.includes("run.code ?? \"未知\""), "codeRunner.ts");
   check("★ 不再有 `run.code ?? \"unknown\"` 的英文哨兵", !src.includes('run.code ?? "unknown"'), "codeRunner.ts");
+}
+
+console.log("\nPython · 代码节点不落到捆绑解释器(LibreOffice 的 python)上");
+{
+  // `agentEnv` 把 LibreOffice 的 program 目录(里面的捆绑 python.exe)注入到子进程
+  // PATH 最前,好让技能敲的裸名 `soffice` 找得到。代码节点从前直接起裸名 `python`,
+  // 于是落到那份捆绑解释器上 —— 与用户在终端里敲的不是同一个。现在统一走
+  // `pythonResolve`:跳过捆绑家目录、挑用户自己的那份。判据是**纯函数**,直接喂候选
+  // (不依赖本机装了哪种 python —— 否则这台机器的答案换台机就变)。
+  const LO_PY = "C:\\Program Files\\LibreOffice\\program\\python.exe";
+  const USER_PY = "D:\\python\\python.exe";
+  eq("★ 有用户自己的 python 就不选 LibreOffice 自带的(哪怕它排在 PATH 最前)",
+    pickPreferredPython([LO_PY, USER_PY]), USER_PY);
+  eq("★ 捆绑识别走路径(大小写 / 斜杠无关)",
+    bundledInterpreterOwner("c:/program files/LIBREOFFICE/program/python.exe"), "LibreOffice");
+  eq("★ 普通解释器没有捆绑标记", bundledInterpreterOwner(USER_PY), null);
+  // **不是一票否决**:机器上只有捆绑的那一份时,照样用它 —— 否则会把用户唯一的
+  // 解释器也排掉,代码节点整条不可用。
+  eq("★ 机器上只有捆绑的那一份时仍然用它(不能报「没有 python」)",
+    pickPreferredPython([LO_PY]), LO_PY);
+  eq("★ 一个候选都没有 → null(退回裸名字那条路)", pickPreferredPython([]), null);
+}
+
+console.log("\nPython · 真起进程:代码节点用的就是解析器选中的那个解释器(端到端)");
+{
+  // 上面是纯函数;这一条**真起一个 python 子进程**,证明 `runCodeNode` 真的把解析到
+  // 的解释器接上了(而不是仍盯着裸名)。判据用 `sys.executable` 自报 —— 与解析器
+  // 独立算出的那个**逐字对上**,既证明接线、又不依赖本机装的是哪种 python。
+  //
+  // **决定性**:先把本机真实存在的 LibreOffice `program/` 目录(里面的捆绑 python)
+  // 摆到 PATH 最前 —— 这正是 `agentEnv` 在真实应用里干的事。若代码节点仍起裸名
+  // `python`,`sys.executable` 会是那份捆绑解释器(与解析器选的非捆绑那个不同),
+  // 断言就红;接线生效则是同一个。LO 不在这台机器上时跳过这条(纯函数那组仍覆盖判据)。
+  const LO_DIR = "C:\\Program Files\\LibreOffice\\program";
+  const loExists = existsSync(path.join(LO_DIR, "python.exe"));
+  const savedPath = process.env.PATH;
+  if (loExists) process.env.PATH = [LO_DIR, savedPath ?? ""].join(path.delimiter);
+  try {
+    const resolved = await resolvePythonExe();
+    check("本机至少有一个可用的 python(否则这条端到端没意义)", resolved !== null, resolved);
+    if (resolved) {
+      check("★ 解析器跳过了摆到 PATH 最前的 LibreOffice python",
+        bundledInterpreterOwner(resolved) === null, resolved);
+      const out = await runCodeNode({
+        code: "import sys; print(sys.executable)",
+        language: "python", timeoutMs: 15_000, signal: controller().signal,
+      });
+      const exe = String(out.outputs?.stdout ?? "").trim();
+      eq("★ 跑成功了(解析到的解释器真能起)", out.status, "success");
+      // 规范化比较:同一路径的不同拼法(大小写 / 斜杠)在 Windows 上等价。
+      const norm = (s: string): string => s.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+      eq("★ 脚本自报的解释器 == 解析器选中的那个(接线真的生效了)",
+        norm(exe), norm(resolved));
+      if (loExists) {
+        check("★ 而且**不是**那个摆在 PATH 最前的捆绑解释器(排除裸名那条路)",
+          norm(exe) !== norm(path.join(LO_DIR, "python.exe")), exe);
+      }
+    }
+  } finally {
+    if (loExists) process.env.PATH = savedPath;
+  }
 }
 
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${total} checks`);

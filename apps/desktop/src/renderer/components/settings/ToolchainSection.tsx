@@ -275,6 +275,14 @@ function ToolRow({
             </div>
           )}
 
+          {/* 唯一能找到的 Python 是某个程序自带的(LibreOffice 等)—— 如实提醒,
+              别让用户以为这是自己终端里那个 python。见契约 `bundledBy` 的说明。 */}
+          {state.bundledBy && (
+            <div className="mt-1 text-[0.7857em] leading-relaxed text-warning/90">
+              {t("settings.toolchain.bundledPython", { name: state.bundledBy })}
+            </div>
+          )}
+
           {/* ONLYOFFICE 不是一个 PATH 上的可执行文件而是一套服务,所以它比别的项
               多一块**连接配置**:地址 / 密钥 / 回连主机名。默认由它自己探本机安装
               填好,展开只为 Docker、局域网、非 Windows 这三种装法留一条手动入口。 */}

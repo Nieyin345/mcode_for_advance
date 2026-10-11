@@ -82,6 +82,36 @@ await withAuditPage(dir, async page => {
     assert.equal(await page.eval("labEvents.filter(e=>e.method==='setEnabled').length"), 0, 'ticking a checkbox must not mutate the plugin');
     assert.equal(await page.eval(`${expandedOf('alpha')}.getAttribute('aria-expanded')`), 'false', 'ticking a checkbox must not expand the row');
   });
+
+  // ── MSP4:带 hooks 的插件不能被当成「装了挂钩就生效」 ──
+  // 用户易以为「装了插件 = hooks 生效」,所以(a)启用带 hooks 的插件要给一个**明说
+  // 不会执行**的确认框(标题不再是含糊的「包含 hooks」),(b)安装审查卡顶部要固定
+  // 显示这条,不能只埋在可滚动的组件清单里。
+  await test('enabling-a-hook-plugin-warns-that-its-hooks-will-not-run', async () => {
+    await go();
+    // delta 默认禁用;点它的启用开关应触发确认框,而不是直接启用。
+    await clickExpr(`[...document.querySelectorAll('[role=switch]')].find(e=>(e.getAttribute('aria-label')||'').includes('delta'))`);
+    await page.waitFor("document.querySelector('[role=dialog]')", 3000);
+    const dialogText = await page.eval("document.querySelector('[role=dialog]').innerText");
+    assert.match(dialogText, /不会执行/, 'the confirm dialog must state the hooks will NOT run, not just that hooks exist');
+    // 确认前不该已经写下去。
+    assert.equal(await page.eval("labEvents.filter(e=>e.method==='setEnabled'&&e.input.name==='delta').length"), 0,
+      'the warn dialog gates the enable — nothing written before confirming');
+  });
+
+  await test('the-install-review-card-shows-a-fixed-hooks-not-executed-banner', async () => {
+    await go();
+    // 走「安装 ▾ → 本地目录」,夹具让这次安装带回一个带 hooks 的插件。
+    await clickExpr(button('安装'));
+    await page.waitFor("!!document.querySelector('[role=menuitem]')", 3000);
+    await clickExpr(`[...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.trim()==='本地目录')`);
+    await page.waitFor("document.querySelector('[data-testid=plugins-review-hooks-banner]')", 3000);
+    const banner = await page.eval("document.querySelector('[data-testid=plugins-review-hooks-banner]').innerText");
+    assert.match(banner, /不执行/, 'the review card must state the declared hooks will not execute');
+    // 这条在可滚动清单**之外**,所以它不会随滚动滑走(定位在滚动容器之前)。
+    const outside = await page.eval("!document.querySelector('[data-testid=plugins-review-hooks-banner]').closest('.overflow-y-auto')");
+    assert.equal(outside, true, 'the banner sits outside the scrollable body so it cannot be scrolled away');
+  });
 });
 const failed = results.filter(r => !r.ok).length;
 writeFileSync(join(dir, 'results.json'), JSON.stringify({ passed: results.length - failed, failed, results }, null, 2));

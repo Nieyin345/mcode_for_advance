@@ -1426,6 +1426,16 @@ function PluginReviewDialog({
           <Dialog.Description className="px-4 pt-1">
             {t("settings.plugins.reviewDesc")}
           </Dialog.Description>
+          {/* 带 hooks 的插件:审查卡顶部固定一条「这些 hooks 不会执行」——**不**放进
+              下面可滚动的组件清单里(那里会随滚动滑走,等于把一件事降级成提示)。
+              报告 MSP4:用户易以为「装了插件 = hooks 生效」,所以这条要显式、不可忽略。 */}
+          {plugin.components.hooks.length > 0 && (
+            <div data-testid="plugins-review-hooks-banner" className="mx-4 mt-2 shrink-0">
+              <ErrorNote tone="warning" icon={IconAlertTriangle}>
+                {t("settings.plugins.hooksNotExecuted", { n: plugin.components.hooks.length })}
+              </ErrorNote>
+            </div>
+          )}
           <Dialog.Close />
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
             {plugin.description && (

@@ -324,6 +324,15 @@ export function HooksPanel() {
         hint={t("settings.hooks.intro")}
       />
 
+      {/* H1/H2 的告知（**必须显式说出来**）：本页的钩子与引擎原生 hooks 是两套机制。
+          用户在 Claude Code 的 ~/.claude/settings.json 里配过 hook，到 Mcode 里发现不跑，
+          没有任何地方告诉他为什么（Mcode 把 CLAUDE_CONFIG_DIR 指到 ~/.mcode，原生 hook 读的
+          是那一份）——这属于"坏东西不报出来"。隔离本身是刻意的，不改；缺的只是这句说明。
+          同款左边框提示见 McpPanel 的 managedFileNote。 */}
+      <p className="mb-3 border-l-2 border-warning/40 px-4 py-2 text-[0.7143em] leading-relaxed text-content-subtle">
+        {t("settings.hooks.nativeNote")}
+      </p>
+
       {/* 文件里读得见、但用不了的条目。**必须说出来** —— 用户写的钩子不生效时,这一页
           是唯一能解释为什么的地方(同 `workflow.nodeTypes` 的 problems)。 */}
       {(problems.length > 0 || listError !== null) && (

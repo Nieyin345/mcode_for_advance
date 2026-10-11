@@ -73,6 +73,22 @@ await withAuditPage(dir, async page => {
     await page.sleep(120);
     assert.equal(await page.eval("labEvents.filter(e=>e.method==='toggle').length"), 0, 'ticking a checkbox must not toggle the server');
   });
+
+  // MSP1:用户级 server 存在 ~/.mcode/.claude.json 的 mcpServers 里,但这格由 Mcode
+  // **整体重写**(派生视图)。绕过本页直接手改文件会被静默覆盖 —— 面板必须如实告知,
+  // 而且要**露出来**(不是藏在 ⓘ 里),否则就是对用户不可见的脚枪。
+  await test('user-section-discloses-the-managed-claude-json-file', async () => {
+    await go();
+    const text = await page.eval("document.body.innerText");
+    assert.match(text, /由 Mcode 整体管理/, 'the panel must say Mcode owns the mcpServers object');
+    assert.match(text, /手改/, 'and warn that hand-editing the file is overwritten');
+    // 必须是**可见**的文字,不是收在 InfoHint 气泡里(气泡要悬停/点击才出现)。
+    assert.equal(
+      await page.eval("!!document.querySelector('[role=tooltip]')"),
+      false,
+      'the managed-file notice must be visible without opening a tooltip',
+    );
+  });
 });
 const failed = results.filter(r => !r.ok).length;
 writeFileSync(join(dir, 'results.json'), JSON.stringify({ passed: results.length - failed, failed, results }, null, 2));
