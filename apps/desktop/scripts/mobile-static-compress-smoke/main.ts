@@ -164,21 +164,32 @@ console.log("E. build no longer emits .gz/.br copies");
  *
  * `sendPlaceholder` 是用户真会看到的一页(手机/电脑打开网包没构建的地址时),
  * 而同文件 26 行外的 `servePairingPage` 兜底页一直是中文。钉住:整页不能是英文。
- * 强制走"没有 bundle"分支:`MCODE_WEB_DIST` 指向不存在的目录 + 清掉已解析的缓存
- * (本机 out/renderer 也不存在,所以三个候选都落空)。 */
+ * 强制走"没有 bundle"分支:`MCODE_WEB_DIST` 指向不存在的目录 + 清掉已解析的缓存。
+ *
+ * ⚠️ 光改 `MCODE_WEB_DIST` 不够:`candidateRoots()` 在它之后还会试
+ * `cwd/out/renderer` 与 `__dirname/../renderer`。本机**只要 `pnpm build` 过一次**,
+ * `apps/desktop/out/renderer/index.html` 就在,于是会解析到那个**真 bundle**、
+ * 返回 index.html 而不是占位页 —— 断言假红。所以这里**再 chdir 到一个空目录**,
+ * 把 `cwd/out/renderer` 一并废掉(否则这套件在"构建过"的机器上必红)。 */
 console.log("F. 未构建占位页:中文");
 {
   const missing = mkdtempSync(join(tmpdir(), "mcode-no-bundle-"));
+  const savedCwd = process.cwd();
   process.env.MCODE_WEB_DIST = join(missing, "does-not-exist");
+  process.chdir(missing); // 废掉 cwd/out/renderer 这个候选
   invalidateMobileDistCache();
-  const r = await get("/");
-  check("占位页 200 且是 HTML", r.status === 200 && String(r.headers["content-type"]).includes("text/html"));
-  check("占位页正文是中文(不硬编码英文)", /网页包尚未构建|尚未构建|未构建/.test(r.body.toString()), r.body.toString().slice(0, 120));
-  check("占位页不再出现英文原句", !/web bundle not built|Run .*pnpm dev/i.test(r.body.toString()));
-  // 还原:后续断言(若有)按原 bundle 走。
-  process.env.MCODE_WEB_DIST = WEB;
-  invalidateMobileDistCache();
-  rmSync(missing, { recursive: true, force: true });
+  try {
+    const r = await get("/");
+    check("占位页 200 且是 HTML", r.status === 200 && String(r.headers["content-type"]).includes("text/html"));
+    check("占位页正文是中文(不硬编码英文)", /网页包尚未构建|尚未构建|未构建/.test(r.body.toString()), r.body.toString().slice(0, 120));
+    check("占位页不再出现英文原句", !/web bundle not built|Run .*pnpm dev/i.test(r.body.toString()));
+  } finally {
+    // 还原:后续断言(若有)按原 bundle 走。
+    process.chdir(savedCwd);
+    process.env.MCODE_WEB_DIST = WEB;
+    invalidateMobileDistCache();
+    rmSync(missing, { recursive: true, force: true });
+  }
 }
 
 server.close();
