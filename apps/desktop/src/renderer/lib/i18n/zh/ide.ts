@@ -155,6 +155,7 @@ export const zh = {
   "ide.search.modeName": "文件名搜索",
   "ide.search.modeContent": "内容搜索",
   "ide.search.searching": "搜索中…",
+  "ide.search.failed": "搜索失败",
   "ide.search.noFileMatch": "无匹配文件",
   "ide.search.noContentMatch": "无匹配内容",
   "ide.search.truncatedHint": "匹配结果过多,仅显示前一部分,请缩小搜索范围",

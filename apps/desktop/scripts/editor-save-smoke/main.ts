@@ -172,5 +172,25 @@ console.log("\nUI-019:FileEditor 读失败显示错误态,不建空的可编辑 
   check("★ 且提供重试入口", /setReadRetryNonce/.test(src) && /common\.retry/.test(src), null);
 }
 
+/* ── 【UI-020】IDE 搜索失败不伪装成"没有匹配",且早退作废在途请求 ── */
+
+console.log("\nUI-020:SearchDialog 搜索失败显式报错 + 清空/早退作废在途请求");
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/ide/SearchDialog.tsx"), "utf8");
+  // catch 必须置 searchError(不再只置空结果 = 伪装"没有匹配")。
+  check("★ 搜索失败置 searchError 显式错误态", /setSearchError\(err instanceof Error/.test(src), null);
+  // 错误态要在 UI 里画出来(失败文案 + 重试)。
+  check("★ 失败态在 UI 里画出来(搜索失败文案)", /ide\.search\.failed/.test(src), null);
+  check("★ 且提供重试入口", /setSearchRetryNonce/.test(src) && /common\.retry/.test(src), null);
+  // 早退分支必须递增 reqIdRef(否则清空关键词时旧回包仍能写 state)。
+  check(
+    "★ 早退分支递增 reqIdRef(清空/关项目时作废在途请求)",
+    /!open \|\| !isSearching \|\| !projectPath\)\s*\{[\s\S]{0,220}reqIdRef\.current\+\+/.test(src),
+    null,
+  );
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exitCode = 1;

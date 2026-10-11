@@ -109,6 +109,11 @@ export function SearchDialog() {
   // render an amber hint so a partial result is never mistaken for exhaustive.
   const [truncated, setTruncated] = useState(false);
   const [incompleteScan, setIncompleteScan] = useState(false);
+  /** 【UI-020】搜索**失败**的原因。从前 catch 只把结果置空并取消 loading —— 与「成功返回空
+   *  数组」长得一模一样,用户看到的是「没有匹配」,把一次后端故障当成"真的没有结果"。 */
+  const [searchError, setSearchError] = useState<string | null>(null);
+  /** 【UI-020】失败后重试用:自增即重新触发搜索 effect。 */
+  const [searchRetryNonce, setSearchRetryNonce] = useState(0);
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -201,15 +206,21 @@ export function SearchDialog() {
   // name-search backend is always case-insensitive.)
   useEffect(() => {
     if (!open || !isSearching || !projectPath) {
+      // 【UI-020】早退也要**作废在途请求**:从前这条 return 不递增 reqIdRef,于是"清空关键词"
+      // 期间已发出的旧回包仍能通过序号校验,把上一轮关键词的结果写进 state —— 随即输入新词、
+      // 在 debounce/网络等待期(loading=true 且 results 非空)就会显示/可点上一轮的结果。
+      reqIdRef.current++;
       setNameResults([]);
       setGrepResults([]);
       setLoading(false);
       setTruncated(false);
       setIncompleteScan(false);
+      setSearchError(null);
       setActiveIdx(0);
       return;
     }
     setLoading(true);
+    setSearchError(null);
     const myId = ++reqIdRef.current;
     const t = window.setTimeout(() => {
       const promise =
@@ -250,17 +261,19 @@ export function SearchDialog() {
           setActiveIdx(0);
           setLoading(false);
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           if (reqIdRef.current !== myId) return;
           setNameResults([]);
           setGrepResults([]);
           setLoading(false);
           setTruncated(false);
           setIncompleteScan(false);
+          // 【UI-020】显式错误态 —— 与"成功返回空数组"区分开,并给重试。
+          setSearchError(err instanceof Error ? err.message : String(err));
         });
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(t);
-  }, [open, query, mode, caseSensitive, projectPath, isSearching, fileType]);
+  }, [open, query, mode, caseSensitive, projectPath, isSearching, fileType, searchRetryNonce]);
 
   // Keep the keyboard-active row scrolled into view while navigating.
   useEffect(() => {
@@ -470,7 +483,23 @@ export function SearchDialog() {
           <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
             {projectPath ? (
               isSearching ? (
-                mode === "name" ? (
+                searchError ? (
+                  // 【UI-020】搜索失败 → 显式错误 + 重试,不再伪装成"没有匹配"。
+                  <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+                    <div className="flex items-center gap-1.5 text-[12px] text-content">
+                      <IconAlertTriangle size={13} className="shrink-0 text-warning" />
+                      {t("ide.search.failed")}
+                    </div>
+                    <div className="max-w-sm break-all text-[11px] text-content-subtle">{searchError}</div>
+                    <button
+                      type="button"
+                      onClick={() => setSearchRetryNonce((n) => n + 1)}
+                      className="rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors hover:bg-surface-hover"
+                    >
+                      {t("common.retry")}
+                    </button>
+                  </div>
+                ) : mode === "name" ? (
                   <NameSearchResults
                     loading={loading}
                     truncated={truncated}

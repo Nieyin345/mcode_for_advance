@@ -147,6 +147,7 @@ export const en = {
   "ide.search.modeName": "File name search",
   "ide.search.modeContent": "Content search",
   "ide.search.searching": "Searching…",
+  "ide.search.failed": "Search failed",
   "ide.search.noFileMatch": "No matching files",
   "ide.search.noContentMatch": "No matching content",
   "ide.search.truncatedHint": "Too many matches — showing only part of them, try a narrower query",
