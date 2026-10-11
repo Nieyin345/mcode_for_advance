@@ -17,7 +17,8 @@
  * Run: scripts/extension-store-smoke/run.sh
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import type { IpcMain } from "electron";
 import {
@@ -279,20 +280,38 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
   check("★ 配额按 UTF-8 字节算(非 ASCII 不按 String.length)", !zhRes.ok && zhRes.reason === "tooLarge", zhRes);
 }
 
-// ⑦ 符号链接逃逸:在扩展目录下放一个指向目录外的 symlink,读写都要被 realpath 那道挡下。
+// ⑦ 逃逸:在扩展目录下放一个指向**目录外**的链接,读写都要被 realpath 那道挡下。
+//
+// ⚠️ 独立复核挑出的**空覆盖**:从前建不出 symlink(Windows 普通权限 EPERM)就 `skip` ——
+// 于是这道安全闸在多数 Windows 机器上**从未被断言过**(跑绿了但没验过)。改用**两级回退**:
+// 先试 symlink,不行就试 Windows **junction**(`mklink /J`,**不需要管理员**,普通用户
+// 就能建)。两者都不行才 skip —— 且如实说清"这道闸本次没验"。
 {
-  let linked = false;
+  const linkTarget = tmpdir();
+  const linkPath = join(extensionDir(ROOT, "ext-files"), "link-out");
+  let how: "symlink" | "junction" | null = null;
   try {
-    symlinkSync(tmpdir(), join(extensionDir(ROOT, "ext-files"), "link-out"), "dir");
-    linked = true;
+    symlinkSync(linkTarget, linkPath, "dir");
+    how = "symlink";
   } catch {
-    linked = false; // Windows 上没权限建 symlink —— 跳过(不能因此判红)
+    // Windows:回退到 junction(普通权限可建)。
+    try {
+      mkdirSync(extensionDir(ROOT, "ext-files"), { recursive: true });
+      const r = spawnSync("cmd", ["/c", "mklink", "/J", linkPath, linkTarget], { encoding: "utf8" });
+      how = r.status === 0 && existsSync(linkPath) ? "junction" : null;
+    } catch {
+      how = null;
+    }
   }
-  if (linked) {
-    deepEq("★ 经 symlink 逃逸的写被拒", writeFileInExtension(ROOT, "ext-files", "link-out/pwn.txt", "x"), { ok: false, reason: "invalidPath" });
-    deepEq("★ 经 symlink 逃逸的读被拒", readFileInExtension(ROOT, "ext-files", "link-out/anything"), { ok: false, reason: "invalidPath" });
+  if (how) {
+    // 正控:链接确实指向目录外(否则断言是空过)。
+    check("逃逸链接真指向扩展目录外", resolve(linkPath) !== resolve(extensionDir(ROOT, "ext-files")));
+    deepEq("★ 经 " + how + " 逃逸的写被拒", writeFileInExtension(ROOT, "ext-files", "link-out/pwn.txt", "x"), { ok: false, reason: "invalidPath" });
+    deepEq("★ 经 " + how + " 逃逸的读被拒", readFileInExtension(ROOT, "ext-files", "link-out/anything"), { ok: false, reason: "invalidPath" });
+    // 库外**确实没有**被写进去(证明是"拒绝"而不是"写了但返回值是 false")。
+    check("★ 库外没有真出现 pwn.txt", !existsSync(join(linkTarget, "pwn.txt")));
   } else {
-    console.log("  skip symlink 逃逸断言(本机无建 symlink 权限)");
+    console.log("  ⚠️ skip 逃逸断言(本机既建不了 symlink 也建不了 junction)—— 这道闸本次**没验**");
   }
 }
 
