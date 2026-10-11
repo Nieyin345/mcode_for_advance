@@ -1896,4 +1896,20 @@ export const zh = {
   "settings.engineTools.addCustomButton": "加入禁用",
   "settings.engineTools.appliesNextTurn": "改动在下一轮对话生效（引擎在开跑那一轮读取本策略）。",
   "settings.engineTools.saveFailed": "保存失败",
+
+  // ── 能力 × 引擎矩阵(设置 → 引擎工具 页顶部那张只读表)──
+  // 它把散在技能 / MCP / 插件各页的引擎能力面汇到一处。只读说明,不是控件 ——
+  // 开关仍在各自的面板里。数据见 engineCapabilityMatrix.ts。
+  "settings.engineMatrix.title": "能力 × 引擎",
+  "settings.engineMatrix.desc": "三个引擎各自支持哪些能力面。只读说明——各项开关在各自的面板里（技能、MCP、下方内置工具）。",
+  "settings.engineMatrix.cap.skills": "技能",
+  "settings.engineMatrix.cap.commands": "斜杠命令",
+  "settings.engineMatrix.cap.subagents": "子代理",
+  "settings.engineMatrix.cap.subagentsNote": "指 Mcode 定义的自定义子代理（角色档案）。Claude 接收；Codex / Pi 不接收这一份（它们各自的子代理不由 Mcode 配置）。",
+  "settings.engineMatrix.cap.mcp": "MCP 服务器",
+  "settings.engineMatrix.cap.hooks": "引擎原生 / 插件 hooks",
+  "settings.engineMatrix.cap.hooksNote": "v1 三个引擎都不执行——插件清单里的 hooks 只解析展示。",
+  "settings.engineMatrix.cap.toolExclusion": "按名禁用内置工具",
+  "settings.engineMatrix.supported": "支持",
+  "settings.engineMatrix.unsupported": "不支持",
 } as const;

@@ -1909,4 +1909,18 @@ export const en = {
   "settings.engineTools.addCustomButton": "Disable",
   "settings.engineTools.appliesNextTurn": "Changes take effect on the next turn (the engine reads this policy when a turn starts).",
   "settings.engineTools.saveFailed": "Save failed",
+
+  // ── Capability × engine matrix (read-only table atop settings → engine tools) ──
+  "settings.engineMatrix.title": "Capability × engine",
+  "settings.engineMatrix.desc": "What each of the three engines supports. A read-only reference — the switches live in their own panels (Skills, MCP, the built-in tools below).",
+  "settings.engineMatrix.cap.skills": "Skills",
+  "settings.engineMatrix.cap.commands": "Slash commands",
+  "settings.engineMatrix.cap.subagents": "Subagents",
+  "settings.engineMatrix.cap.subagentsNote": "Mcode-defined custom subagents (agent profiles). Claude receives them; Codex / Pi do not (their own subagents are not configured by Mcode).",
+  "settings.engineMatrix.cap.mcp": "MCP servers",
+  "settings.engineMatrix.cap.hooks": "Native / plugin hooks",
+  "settings.engineMatrix.cap.hooksNote": "None of the three engines run them in v1 — a plugin manifest's hooks are parsed for display only.",
+  "settings.engineMatrix.cap.toolExclusion": "Disable built-in tools by name",
+  "settings.engineMatrix.supported": "Supported",
+  "settings.engineMatrix.unsupported": "Not supported",
 } as const;

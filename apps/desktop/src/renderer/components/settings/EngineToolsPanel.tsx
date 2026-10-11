@@ -23,6 +23,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
+import { EngineCapabilityMatrix } from "./EngineCapabilityMatrix.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { Button, ErrorNote, Field, Input, Spinner } from "@renderer/components/ui/index.js";
 
@@ -172,6 +173,10 @@ export function EngineToolsPanel() {
       <PanelHeader title={t("settings.nav.engineTools")} hint={t("settings.engineTools.hint")} />
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <div className={cn("mx-auto space-y-4", PANEL_MAX_W.form)}>
+          {/* 「能力 × 引擎」矩阵 —— 只读说明，静态数据、不依赖 RPC，所以放在最上面
+              （加载引擎卡片时也一直看得见）。它把散在技能/MCP/插件各页的引擎能力面
+              汇到一处（见 engineCapabilityData.ts）。 */}
+          <EngineCapabilityMatrix />
           {rpc.error && <ErrorNote>{rpc.error.message}</ErrorNote>}
           {!snap ? (
             rpc.loading ? (
