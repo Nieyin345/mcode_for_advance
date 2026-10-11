@@ -27,6 +27,15 @@
  * 那四个先例走的都是 string;要带图就得自己造一条**一次性**的消息流 —— 见
  * `visionRelayCore.ts` 的 `oneShotPrompt`(纯的那一半在那边,好让无头套件验 block 形状)。
  *
+ * ## 三种协议都能用(这是"不另起 HTTP"换来的)
+ *
+ * 因为发的是 **Anthropic 形态的 base64 image block**,经 `resolveModelForGitOp` 那条路:
+ *   - `anthropic` 协议的端点:原样直发;
+ *   - `openai` 协议的端点:本地桥把 image block 翻成 OpenAI 的
+ *     `image_url` data-URL(`providers/bridge/requestTranslator.ts`),照样进得去;
+ *   - `web` 协议的端点:驱动网页版模型,能不能"看图"由那个站点与扩展决定。
+ * 若改成自己拼 HTTP,这三种就得分三份走 —— 那也是"复用既有那条"的理由之一。
+ *
  * ## 三条不能含糊的
  *
  * 1. **失败要如实说,不静默。** 没配模型 / 调用失败 / 模型返回空 → 返回 `{ok:false,error}`,

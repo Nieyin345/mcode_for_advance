@@ -88,13 +88,24 @@ export function PanelFrame({ item, target, reloadKey = 0, probeMode = "float" }:
   const network = action?.network === true;
   const title = customUiLabel(item.label, locale);
 
+  // 量这个面板 iframe **此刻在窗口里的屏幕矩形**(报告 Q1 截图诉求)—— 由宿主来量:面板
+  // 自己(沙箱 iframe 内)读不到它在窗口里的位置。`getBoundingClientRect` 已是相对视口的
+  // 坐标,与 `capturePage(rect)` 同一套(CSS px == DIP,全仓无 zoomFactor)。拿不到 iframe
+  // (还没挂上 / 已卸载)返回 null,调用方**如实报错**,不返回假矩形。
+  const rect = (): { x: number; y: number; width: number; height: number } | null => {
+    const el = frameRef.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.x, y: r.y, width: r.width, height: r.height };
+  };
+
   // 挂载即把「读回」能力登记进注册表(agent 经 app_ui read_panel 找到它);卸载注销。
   useEffect(() => {
     if (!enabled) return;
-    const off = registerPanelProbe({ itemId: item.id, label: title, mode: probeMode, probe });
+    const off = registerPanelProbe({ itemId: item.id, label: title, mode: probeMode, probe, rect });
     return off;
-    // `probe` 每次渲染都是新引用,但它只是薄薄一层、读的是 ref —— 不必进依赖;登记表要的
-    // 是"这一项在哪里"。item.id / probeMode 变了才需要重登记。
+    // `probe` / `rect` 每次渲染都是新引用,但它们只是薄薄一层、读的是 ref —— 不必进依赖;
+    // 登记表要的是"这一项在哪里"。item.id / probeMode 变了才需要重登记。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, item.id, probeMode, title]);
 

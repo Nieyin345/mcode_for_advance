@@ -1372,7 +1372,13 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
 
   if (isAppToolName(name)) {
     const result = await invokeAppEngineTool(name, args, req.sessionId, ctx);
-    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+    // 与 browser_* 同一份 `toContent`:app 工具里也可能带 **image 块**(如
+    // `app_ui screenshot_panel` 截的面板 PNG)。从前这里把每个块一律拍成 `inputText`,
+    // 于是 image 块被**静默丢掉** —— 截图工具在 Codex 上就白截了(报告 D10 的"静默失败")
+    // 且与 browser_screenshot 待遇不一致。`toContent` 会把 image 块转成 Codex 的
+    // `inputImage`(data URL)—— 两个工具因此走同一条出口。
+    const converted = toContent(result) as { contentItems: unknown[] };
+    return { success: !result.isError, contentItems: converted.contentItems };
   }
 
   if (name.startsWith("memory_")) {

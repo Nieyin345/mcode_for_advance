@@ -33,6 +33,7 @@ import { app } from "electron";
 import { BrowserManager, type BrowserDownloadEntry } from "./BrowserManager.js";
 import { SNAPSHOT_DISPLAY_CAP } from "./snapshotScript.js";
 import { log } from "@main/lib/logger.js";
+import { savePngArtifact } from "@main/lib/screenshotStore.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import {
   BROWSER_SCREENSHOT_DIR_SETTING_KEY,
@@ -124,29 +125,16 @@ export function saveScreenshotToDisk(
   data: string,
   opts: { sessionId?: string; turnNumber?: number; toolCallId: string },
 ): string | null {
-  if (!opts.sessionId || !data) return null;
   const baseDir =
     SettingRepo.get(BROWSER_SCREENSHOT_DIR_SETTING_KEY)?.trim() ||
     app.getPath("pictures");
-  // Sanitize the session id for use as a directory name (ids are UUIDs, but
-  // guard against anything odd anyway).
-  const safeSession = opts.sessionId.replace(/[^\w.-]/g, "_");
-  const turnDir = join(baseDir, safeSession, `turn-${opts.turnNumber ?? 0}`);
-  try {
-    mkdirSync(turnDir, { recursive: true });
-    const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "-").slice(0, 19);
-    // Sanitize the toolCallId for the filename (it may contain characters
-    // that are invalid on some filesystems).
-    const safeCallId = opts.toolCallId.replace(/[^\w.-]/g, "_");
-    const filePath = join(turnDir, `${ts}-${safeCallId}.png`);
-    writeFileSync(filePath, Buffer.from(data, "base64"));
-    log.info(`browser screenshot saved: ${filePath}`);
-    return filePath;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.warn(`browser screenshot save failed: ${msg}`);
-    return null;
-  }
+  // 落盘那一段(目录规则 / 消毒 / 写文件)与面板截图**共用一份** `savePngArtifact`,
+  // 免得两处各写一遍、目录规则各自漂移;这里只负责解析**截图目录**(读设置 + 系统 Pictures),
+  // 那一步要 electron,放在本模块(它本来就 import electron),不放进零依赖的共用核。
+  const saved = savePngArtifact(data, { baseDir, sessionId: opts.sessionId, turnNumber: opts.turnNumber, toolCallId: opts.toolCallId });
+  if (saved) log.info(`browser screenshot saved: ${saved}`);
+  else if (opts.sessionId) log.warn("browser screenshot save failed (no path)");
+  return saved;
 }
 
 /**

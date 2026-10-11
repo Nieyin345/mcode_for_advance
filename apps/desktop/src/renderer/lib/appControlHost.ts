@@ -197,6 +197,37 @@ async function execute(cmd: AppUiCommand): Promise<AppUiReply> {
         return { ok: false, error: `读面板失败:${err instanceof Error ? err.message : String(err)}(面板可能还没加载好,稍后再试)。` };
       }
     }
+    case "panel_rect": {
+      // 量一个正在渲染的面板的**屏幕矩形**(报告 Q1 截图诉求)—— 宿主 `PanelFrame` 登记
+      // 的 `rect()` 用 `getBoundingClientRect()` 量它那个 iframe。这里是截图那半:
+      // `main/appControl` 拿到 rect 后交给 `webContents.capturePage(rect)`。
+      // 挑面板的口径与 read_panel 一致(浮窗 > 预览 > 页签),同样先等一小会补"挂载晚一拍"。
+      const { waitForPanelProbe, listPanelProbes } = await import("@renderer/components/customUi/panelReadback.js");
+      const handle = await waitForPanelProbe(cmd.itemId);
+      if (!handle) {
+        const all = listPanelProbes();
+        const hint = cmd.itemId
+          ? `没有正在渲染 id 为「${cmd.itemId}」的面板。`
+          : "现在没有正在渲染的自定义面板。";
+        const open = all.length > 0 ? `当前挂着的面板:${all.map((p) => `${p.itemId}(${p.label}·${p.mode})`).join("、")}。` : "";
+        return { ok: false, error: `${hint}${open}先在设置页「预览」它,或用右键/工具栏打开那个面板,再截图。` };
+      }
+      const rect = handle.rect();
+      // 连同**量这个 rect 的那个视口**一起回:iframe 的 `getBoundingClientRect` 是相对
+      // `window` 视口的,求交也必须拿同一个视口尺寸,否则主进程另取一个数(如窗口外框)会
+      // 和 rect 的坐标系对不上。main 侧只在 `devicePixelRatio`/缩放不同源时才需要它,
+      // 但它零成本、又能把"同一套坐标"这件事钉死。
+      return {
+        ok: true,
+        data: {
+          itemId: handle.itemId,
+          label: handle.label,
+          mode: handle.mode,
+          rect,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+        },
+      };
+    }
     case "open_panel": {
       // 打开一个**已保存的**自定义面板(报告 E10 的自验闭环:开 → 读 → 看渲染成什么样)。
       // 面板得先在配置里;这里按它挂载位造一份样例目标喂进去(不碰真实资料库目标)。

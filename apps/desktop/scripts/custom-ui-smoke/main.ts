@@ -932,7 +932,7 @@ console.log("\n面板 SDK:版式摘要(layout)");
 console.log("\n面板读回:注册表选择");
 {
   const fake = (itemId: string, mode: "float" | "preview" | "tab") =>
-    ({ itemId, label: itemId, mode, probe: async () => ({ __mcode: 1 as const, probe: "x", text: "", html: "", textLength: 0, htmlLength: 0, url: "" }) });
+    ({ itemId, label: itemId, mode, probe: async () => ({ __mcode: 1 as const, probe: "x", text: "", html: "", textLength: 0, htmlLength: 0, url: "" }), rect: () => ({ x: 10, y: 20, width: 100, height: 50 }) });
   // 空表:挑不出来(调用方据此如实报「没有面板可读」)。
   check("★ 没有面板挂着时挑不出来", pickPanelProbe() === undefined && listPanelProbes().length === 0);
 
@@ -984,7 +984,7 @@ console.log("\n面板读回:注册表选择");
 console.log("\n面板读回:等挂载(R7)");
 {
   const fake = (itemId: string, mode: "float" | "preview" | "tab") =>
-    ({ itemId, label: itemId, mode, probe: async () => ({ __mcode: 1 as const, probe: "x", text: "", html: "", textLength: 0, htmlLength: 0, url: "" }) });
+    ({ itemId, label: itemId, mode, probe: async () => ({ __mcode: 1 as const, probe: "x", text: "", html: "", textLength: 0, htmlLength: 0, url: "" }), rect: () => ({ x: 10, y: 20, width: 100, height: 50 }) });
 
   // ① 空 → 稍后才登记 → 等到并成功。
   {

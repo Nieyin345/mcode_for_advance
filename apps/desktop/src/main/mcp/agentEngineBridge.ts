@@ -138,7 +138,13 @@ export async function buildAgentEngineMcpServer(opts: { sessionId: string }) {
     instructions:
       "统一的文档/图片读取与环境概况工具。读 PDF/DOCX/XLSX/PPTX 用 agent_read_document，" +
       "读图片用 agent_read_image，想一次问清当前项目与资料库有哪些条目用 agent_context。" +
-      "它们是只读的，任何权限模式都不需要审批。",
+      "它们是只读的，任何权限模式都不需要审批。" +
+      // 报告 D10:很多模型的推理后端没有视觉输入 —— 它拿到 image block 也读不出内容,
+      // 而它**分辨不了**「图是空的」和「我没长眼睛」,于是照文件名编。这句告诉它:
+      // 读不到画面时带 describe:true 再读一次,会拿到「视觉中继模型」给的文字描述。
+      "⚠️ 如果你所在的模型没有视觉输入（收到的是尺寸而不是画面）：读图片时带 `describe: true` 再读一次，" +
+      "会把图片交给用户配置的视觉模型转述成**文字**给你。没配中继就会如实说「未配置」——" +
+      "不要凭文件名或大小编造画面（browser_screenshot 出的图同理：用返回的文件路径配 agent_read_image）。",
     alwaysLoad: true,
     tools: toSdkTools(agentEngineReadonlySpecs(bridgeDeps), { sessionId: opts.sessionId }),
   });

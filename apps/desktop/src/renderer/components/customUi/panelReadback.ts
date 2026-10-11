@@ -20,6 +20,7 @@
  *
  * 纯模块(不 import electron / DOM / react),smoke 直接 bundle 测选择逻辑。
  */
+import type { PanelCaptureRect } from "@contracts/appControl";
 import type { PanelProbeReply } from "@contracts/customUiPanel";
 
 /** 一个正在渲染的面板 —— `PanelFrame` 挂载时登记。 */
@@ -37,6 +38,13 @@ export interface PanelProbeHandle {
   mode: "float" | "preview" | "tab";
   /** 问这个面板「你现在渲染成什么样」。超时 / 还没加载好 → 抛。 */
   probe: () => Promise<PanelProbeReply>;
+  /**
+   * 量这个面板 iframe **此刻在窗口里的屏幕矩形**(CSS 像素,相对视口左上角)—— 截图用。
+   * 拿不到(还没布局 / iframe 还没挂上)返回 `null`。**必须由宿主量**:面板自己(沙箱
+   * iframe 内)读不到它在窗口里的位置,`getBoundingClientRect` 在 iframe 内是相对它自己
+   * 的视口的。
+   */
+  rect: () => PanelCaptureRect | null;
 }
 
 /** 登记表:插入顺序 = 挂载顺序,注销即移除。 */

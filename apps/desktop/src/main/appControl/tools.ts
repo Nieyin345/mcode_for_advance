@@ -32,14 +32,17 @@ import {
   targetKindOfSlot,
 } from "@contracts/customUi";
 import { PANEL_METHODS, PANEL_THEME_VARS, type PanelLayoutSummary, type PanelMethod } from "@contracts/customUiPanel";
+import { BROWSER_SCREENSHOT_DIR_SETTING_KEY } from "@contracts/ipc";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { notifyAppSettingWrite } from "@main/customUi/settingSync.js";
+import { savePngArtifact } from "@main/lib/screenshotStore.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ProviderContext } from "@contracts/provider";
 import { APP_DANGER_APPROVAL_PREFIX, type AppUiCommand, type AppUiReply } from "@contracts/appControl";
-import { fail, text, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js";
+import { fail, image, text, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js";
 import { API_CATALOG, type ApiCatalogEntry } from "./apiCatalog.generated.js";
+import { computePanelCaptureRect } from "./panelCaptureRect.js";
 import { DOMAIN_LABELS, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
 import { registeredRpcChannels, rpcHandlerFor } from "./registry.js";
 import { redactValue, renderResult, slimSessions } from "./redact.js";
@@ -304,8 +307,116 @@ function renderPanelLayout(layout: PanelLayoutSummary | undefined): string {
   return `\n\n— 版式 —\n${lines.join("\n")}`;
 }
 
-/* ───────────────────────── 审批 ───────────────────────── */
+/* ─────────────────── 面板截图(报告 Q1,真出 PNG)─────────────────── */
 
+/**
+ * `app_ui action:screenshot_panel` —— 把一个正在渲染的自定义面板**截成真 PNG**。
+ *
+ * ## 为什么能做到(与 read_panel 的"看的降级"互补)
+ *
+ * 面板是**纯 React portal 到 `document.body`** 的(`CustomUiHost` 的 `Dialog.Portal`),
+ * 不是独立 `BrowserWindow` / `WebContentsView` —— 所以它在主窗口 `webContents` 的渲染范围
+ * 内,`mainWindow.webContents.capturePage(rect)` 能截到它。这是浏览器截图(`browser_screenshot`
+ * 走 `WebContentsView`)之外**主窗口**的第一处 `capturePage`。
+ *
+ * ## 矩形从哪来
+ *
+ * `read_panel` 那条探测链只回**面板内部**的坐标(`customUiPanel` 的 `layout.viewport`,
+ * 相对面板自己),**没有**面板在窗口里的位置。位置只能由**宿主**量:渲染端 `appControlHost`
+ * 的 `panel_rect` op → `PanelFrame.rect()` 用 `getBoundingClientRect()` 量它那个 iframe
+ * 元素。这里拿到的就是这个矩形,经 `computePanelCaptureRect` 裁到窗口可见区(滚动容器里的
+ * 面板可能露出一半),再交给 `capturePage`。
+ *
+ * ## 为什么要把图也存盘 + 回路径
+ *
+ * **很多模型读不到图**(没有视觉输入)。`browser_screenshot` 给的是 image 内容块 + 存盘路径,
+ * 让读不到图的模型能拿路径配 `agent_read_image {describe:true}` 走视觉中继。面板截图照同一条
+ * 待遇(报告 D10):给 image 块,**也**给存盘路径,并在文案里点名那条退路。
+ *
+ * ## 失败一律如实报(D10:静默失败是病)
+ *
+ * 窗口最小化 / 隐藏 / 拿不到矩形 / 面板为 0 尺寸 —— 都返回**带原因的错**,绝不返回空图冒充成功。
+ */
+async function screenshotPanel(
+  itemId: string | undefined,
+  sessionId: string,
+): Promise<ToolResult> {
+  // 1) 问渲染端要矩形(同 read_panel 的探测链,只是取几何不是取文本)。拿不到 → 如实报。
+  const reply = await ui({ op: "panel_rect", ...(itemId ? { itemId } : {}) });
+  if (!reply.ok) return fail(reply.error ?? "拿不到面板的位置");
+  const d = (reply.data ?? {}) as {
+    label?: string; mode?: string;
+    rect?: { x: number; y: number; width: number; height: number } | null;
+    viewport?: { width: number; height: number } | null;
+  };
+  const computed = computePanelCaptureRect(d.rect, d.viewport);
+  if (!computed.ok) return fail(`面板「${d.label ?? "?"}」${computed.reason}。`);
+
+  // 2) 主窗口那一个 webContents 上截这块矩形(主窗口本来就可见,不需要 WebContentsView 那套
+  //    "临时上屏";但最小化 / 隐藏时截不到,如实报)。
+  const { getMainWindow } = await import("@main/window.js");
+  const win = getMainWindow();
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) {
+    return fail("主窗口没有打开,截不了面板。");
+  }
+  if (win.isMinimized() || !win.isVisible()) {
+    return fail("主窗口已最小化 / 隐藏,截不到面板 —— 请先把窗口显示出来再截。");
+  }
+  const r = computed.rect;
+  let img = await win.webContents.capturePage(r);
+  // 空图 / 抛错重试一次(与 BrowserManager.screenshot 同一取向:合成器偶尔还没来得及画)。
+  if (img.isEmpty() || img.toPNG().length === 0) {
+    await new Promise((res) => setTimeout(res, 100));
+    img = await win.webContents.capturePage(r);
+  }
+  if (img.isEmpty()) {
+    return fail("截到的是空图(窗口可能被完全遮挡或正在最小化动画中),没有可用的面板截图。");
+  }
+  const data = img.toPNG().toString("base64");
+
+  // 3) 存盘 + 回路径(读不到图的模型的退路)。
+  const savedPath = await savePanelScreenshotToDisk(data, { sessionId, toolCallId: randomUUID() });
+  const caption =
+    `面板「${d.label ?? "?"}」(${d.mode ?? "?"})截图:${r.width}×${r.height}px @(${r.x},${r.y})。` +
+    `${savedPath ? `\n已保存到:${savedPath}` : ""}` +
+    "\n**很多模型读不到图** —— 读不到就用上面这个**路径**,配 `agent_read_image {describe: true}` 让视觉中继模型把面板长什么样转述成文字。";
+  return image(data, "image/png", caption);
+}
+
+/**
+ * 面板截图落盘 —— 复用浏览器截图那套"截图目录 + 每会话每轮"的规则(`savePngArtifact`),
+ * 只是这里没有"一轮"的上下文,`turnNumber` 缺省 0(与浏览器截图一致)。
+ *
+ * `baseDir` 走 `setting.get` 那个 RPC(与界面读 `browser.screenshotDir` 同一份设置)—— **不**
+ * 静态 import `repositories`(它 import electron,会顺着 esbuild 提到 bundle 顶部、坑掉无头
+ * smoke,见 `screenshotStore` 的文件头)。设置读不到 / 没注册该 RPC 时回落到系统 Pictures
+ * (同样经**动态** import `electron`,保持静态图干净)。全程 best-effort:存盘失败只丢文件,
+ * 不影响"图已交给模型"这件事(返回 null,工具栏文案里自然就不带那行路径)。
+ */
+async function savePanelScreenshotToDisk(data: string, opts: { sessionId: string; toolCallId: string }): Promise<string | null> {
+  if (!opts.sessionId || !data) return null;
+  let baseDir: string | null = null;
+  try {
+    const entry = findEntry("setting.get");
+    if (entry?.registered) {
+      const r = (await callRpc(entry, { key: BROWSER_SCREENSHOT_DIR_SETTING_KEY })) as { value?: string | null };
+      baseDir = r?.value?.trim() || null;
+    }
+  } catch {
+    /* 设置读不到 —— 走 Pictures 回落 */
+  }
+  if (!baseDir) {
+    try {
+      const { app } = await import("electron");
+      baseDir = app.getPath("pictures");
+    } catch {
+      return null; // 无头环境(没 electron)就不存盘,只损失那条退路
+    }
+  }
+  return savePngArtifact(data, { baseDir, sessionId: opts.sessionId, turnNumber: undefined, toolCallId: opts.toolCallId });
+}
+
+/* ───────────────────────── 审批 ───────────────────────── */
 const BYPASS_MODES = new Set(["bypassPermissions", "full-access"]);
 const READONLY_MODES = new Set(["plan", "read-only"]);
 
@@ -460,6 +571,7 @@ const UI_ACTIONS = [
   "interrupt_session",
   "read_panel",
   "open_panel",
+  "screenshot_panel",
 ] as const;
 
 /** 只读 / 界面类工具名(引擎侧若要按名字预放行可以用;真正的闸门在 handler 里)。 */
@@ -740,6 +852,10 @@ export function appMcpTools(): McpToolSpec[] {
         "  要读**草稿**(还没保存)的面板:先在设置页点「预览」再读。没有面板挂着时如实报错并列出可读的。\n" +
         "- open_panel {item_id}:打开一个**已保存的**自定义面板(像用户右键那样弹浮窗),喂的是一份按挂载位造的**样例目标**。\n" +
         "  典型用法:open_panel → read_panel,开一个立即看它渲染成什么样(agent 自验扩展 UI 的闭环)。\n" +
+        "- screenshot_panel {item_id?}:把一个**正在渲染的自定义面板**截成**真 PNG**(像浏览器截屏那样)。read_panel 给的是文本 + 版式摘要,\n" +
+        "  看不到真实渲染(断行 / 对齐 / 颜色 / 字体)—— 要**看**它长什么样就用这条。返回一张图 + 一个**存盘路径**。\n" +
+        "  **很多模型读不到图** —— 读不到就用返回的**路径**配 `agent_read_image {describe: true}` 让视觉中继模型把面板内容转述成文字。\n" +
+        "  item_id 省略 = 与 read_panel 同口径(浮窗 > 设置页预览 > 右栏页签)。面板没挂着 / 窗口最小化 / 拿不到位置时**如实报错**,不返回空图。\n" +
         "界面类操作自动执行;set_pref 需批准,改 permissionMode 每次都要批准。",
       inputSchema: {
         action: z.enum(UI_ACTIONS),
@@ -757,7 +873,7 @@ export function appMcpTools(): McpToolSpec[] {
         kind: z.enum(["info", "warning", "error"]).optional(),
         key: z.enum(["locale", "themeStyle", "displayMode", "chatFontSize", "chatDensity", "workflowId", "permissionMode"]).optional(),
         value: z.union([z.string(), z.number()]).optional(),
-        item_id: z.string().optional().describe("read_panel:要读的面板条目 id;省略 = 当前最该读的那个"),
+        item_id: z.string().optional().describe("read_panel / screenshot_panel:要读/要截的面板条目 id;省略 = 当前最该读的那个"),
         include_html: z.boolean().optional().describe("read_panel:默认只回可见文本;要连渲染后的 HTML 一起回(看结构/空壳)才传 true —— HTML 常有几万字符,不必要时别要(报告 R2)"),
       },
       handler: async () => fail("内部错误:app_ui 必须经 invokeAppTool 调用"),
@@ -836,7 +952,7 @@ function need<T>(v: T | undefined, name: string): T {
   return v;
 }
 
-async function runUiAction(a: UiArgs, ctx: ProviderContext): Promise<ToolResult> {
+async function runUiAction(a: UiArgs, ctx: ProviderContext, sessionId: string): Promise<ToolResult> {
   switch (a.action) {
     case "open_session":
       return uiResult(await ui({ op: "open_session", sessionId: need(a.session_id, "session_id") }), "已切到该对话。");
@@ -912,6 +1028,10 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext): Promise<ToolResult>
       const reply = await ui({ op: "open_panel", itemId: need(a.item_id, "item_id") });
       return uiResult(reply, "面板已打开;用 read_panel 读它的渲染结果。");
     }
+    case "screenshot_panel":
+      // 真截一张 PNG(报告 Q1)。只读(读的是渲染结果,不改任何东西)—— 不问批准,与
+      // read_panel / app_ui_state 同一档。item_id 省略 = 与 read_panel 同口径挑一个。
+      return await screenshotPanel(a.item_id, sessionId);
   }
 }
 
@@ -997,7 +1117,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         }
       }
       case "app_ui":
-        return await runUiAction(args as UiArgs, ctx);
+        return await runUiAction(args as UiArgs, ctx, sessionId);
       case "app_session_new": {
         const a = args as { project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; background?: boolean; title?: string };
         const what = a.prompt ? `新开对话并发送:${clipLine(a.prompt, 200)}` : "新开一个对话";

@@ -25,6 +25,20 @@ export const APP_CONTROL_RENDERER_GLOBAL = "__mcodeAppControl";
 
 export type AppUiPanel = "left" | "right" | "terminal" | "browser";
 
+/**
+ * 一个自定义面板在**屏幕上的矩形**(CSS 像素,相对主窗口视口左上角)—— 面板截图要用的那块。
+ *
+ * 它**不是**面板内部坐标(那是 `customUiPanel` 的 `layout.viewport/content`),而是面板那个
+ * iframe 元素此刻落在窗口上的位置,由 `PanelFrame` 用 `getBoundingClientRect()` 量。全仓无
+ * `zoomFactor`,所以 CSS px == DIP,可直接当 `webContents.capturePage(rect)` 的参数。
+ */
+export interface PanelCaptureRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /** 右栏页签(与 `RightPanelTabSchema` 一致,这里不 import 以免把 zod 拖进来)。 */
 export type AppUiRightTab = "files" | "git" | "browser" | "turns" | "preview" | "flow" | "tasks";
 
@@ -68,7 +82,21 @@ export type AppUiCommand =
    * 得在配置里(`customUi.config.v1`),这里只负责打开。配合 `read_panel` 就能
    * 「开 → 读 → 看渲染成什么样」。喂的是按挂载位造的样例目标(不碰真实资料库)。
    */
-  | { op: "open_panel"; itemId: string };
+  | { op: "open_panel"; itemId: string }
+  /**
+   * 量一个正在渲染的面板的**屏幕矩形**(报告 Q1 的截图诉求,第一半)。由宿主 `PanelFrame`
+   * 用 `getBoundingClientRect()` 量它那个 iframe 元素 —— 面板自己(沙箱 iframe 内)量不到自
+   * 己在**窗口**里的位置,而截图恰恰要的是这个。
+   *
+   * 为什么单开一条 op、而不是把矩形塞进 `read_panel` 的 `PanelProbeReply`:那个 reply 是
+   * **面板自己**发的消息(文本 / HTML / 版式都是面板脚本读自己 DOM 得来的),而矩形必须由
+   * **宿主**(可信侧)量 —— 把宿主量的几何混进面板自治的 reply 会糊掉信任边界(恶意面板能
+   * 伪造它)。截图也只需要矩形、不需要那几百 KB 的文本 / HTML,单开一条更省。
+   *
+   * `itemId` 省略 = 与 `read_panel` 同一口径(浮窗 > 预览 > 页签)。`data.rect` 为 null
+   * 表示量不到(面板还没布局好 / 没挂着)。
+   */
+  | { op: "panel_rect"; itemId?: string };
 
 export interface AppUiReply {
   ok: boolean;
