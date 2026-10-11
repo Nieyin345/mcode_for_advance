@@ -18,7 +18,7 @@ import type { ProviderContext, ApprovalRequest, ProviderApprovalDecision } from 
 import { APP_DANGER_APPROVAL_PREFIX, APP_CONTROL_RENDERER_GLOBAL } from "@contracts/appControl";
 import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
 import { DOMAIN_LABELS, policyFor } from "@main/appControl/policy.js";
-import { redactValue, redactString, renderResult, REDACTED } from "@main/appControl/redact.js";
+import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod } from "@main/appControl/tools.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
@@ -205,6 +205,25 @@ check(
 check("散在文字里的裸 hex 仍打码(不是路径)", redactString(`see ${hex40} here`).includes(REDACTED));
 check("整串就是一个 token 的 hex 仍打码", redactString(hex40) === REDACTED);
 check("超长截断并说明", renderResult("x".repeat(50), 10).includes("已截断"));
+// ★ 列表里的会话行要摘掉"整份内容"级的大字段(报告真机实测 NEW-2):`session.listAll`
+//   从前把每条会话的 `turnFiles`(本轮改动的**文件前后全文**)、`subagents` 等 JSON blob
+//   原样回给模型 —— 一次"列会话"就打爆上下文。判据:列表里摘、单条读不摘。
+{
+  const big = "x".repeat(50000);
+  const sess = { id: "s1", kind: "chat", providerId: "claude-sdk", title: "T", turnFiles: [{ before: big, after: big }], usageHistory: [1, 2, 3], todos: null };
+  const listed = slimSessions({ sessions: [sess], total: 1 }) as { sessions: Array<Record<string, unknown>> };
+  check("★列表里会话的大字段被摘成计数(turnFiles)", typeof listed.sessions[0].turnFiles === "string" && String(listed.sessions[0].turnFiles).includes("1 项"), listed.sessions[0].turnFiles);
+  check("★列表里 usageHistory 也被摘", typeof listed.sessions[0].usageHistory === "string", listed.sessions[0].usageHistory);
+  check("列表里该留的字段照留(id/title)", listed.sessions[0].id === "s1" && listed.sessions[0].title === "T");
+  check("列表里 null 的字段保持 null(不是编个计数)", listed.sessions[0].todos === null);
+  // 单条读:不摘 —— agent 确实可能想看"这一轮改了哪些文件"。
+  const single = slimSessions({ session: sess }) as { session: Record<string, unknown> };
+  check("★单条读出时不摘(顶层/命名对象里的会话保持完整)", Array.isArray(single.session.turnFiles), single.session.turnFiles);
+  check("列表里的非会话对象不动", JSON.stringify(slimSessions({ a: [{ turnFiles: [1] }] })) === JSON.stringify({ a: [{ turnFiles: [1] }] }));
+  // 关键:摘过之后,一页几十条不再爆。
+  const page = slimSessions({ sessions: Array.from({ length: 40 }, (_, i) => ({ id: `s${i}`, kind: "chat", turnFiles: [{ before: big, after: big }] })) });
+  check("★40 条会话一页不再超过结果上限(摘前必爆)", renderResult(page).length < 40000);
+}
 
 /* ── 3. 审批闸门 ── */
 const calls: Record<string, unknown[]> = {};

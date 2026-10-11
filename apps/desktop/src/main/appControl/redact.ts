@@ -103,3 +103,53 @@ export function renderResult(value: unknown, maxChars = MAX_RESULT_CHARS): strin
   }
   return text;
 }
+
+/**
+ * 给 agent 看的返回值里,**把"会话列表"里每一行的那几个"整份内容"级大字段摘掉**。
+ *
+ * ## 为什么
+ *
+ * `Session` 为了渲染端"重启后恢复界面"这类需求,带了几份 JSON blob:
+ * `turnFiles`(本轮每个文件**改动前后全文**,单条就能几万字符)、`usageHistory`(逐轮
+ * token/成本)、`subagents`(子代理 transcript 快照)、`todos`、`planDraft`。
+ * 渲染端要它们;但 **`session.listAll` 一次列几十条**,把这些原样塞给模型 → 报告真机
+ * 实测 NEW-2:一次"列会话"就把上下文打爆(>4 万字符,当次输出被截断)。而孪生的
+ * `mcode-* session_list` 工具是**轻量**的(只标题/id/时间),两条路差了一个数量级。
+ *
+ * ## 只动"列表",不动"单条"
+ *
+ * 判据收得很窄:**一个会话对象处在数组里**(`{sessions:[…]}` / `project.sessions` /
+ * 任何列表)才摘。单条读出(如 `session.get` 那个对象在顶层或 `{session:{…}}`)保持完整
+ * —— agent 确实可能想看"这一轮改了哪些文件"。列表里没有这个需要。
+ *
+ * 摘掉不是隐藏:改成 `3 项(已省略…)` 的计数,agent 知道"有东西",要细节走单条读法。
+ * 深度有界、环引用安全,非会话形状的数组元素一律不动。
+ */
+const HEAVY_SESSION_KEYS = ["turnFiles", "usageHistory", "subagents", "todos", "planDraft"] as const;
+
+function looksLikeSession(o: Record<string, unknown>): boolean {
+  return typeof o.id === "string" && (typeof o.kind === "string" || typeof o.providerId === "string");
+}
+
+export function slimSessions(value: unknown): unknown {
+  const seen = new WeakSet<object>();
+  const walk = (v: unknown, depth: number, inList: boolean): unknown => {
+    if (v === null || typeof v !== "object" || depth > 12) return v;
+    if (v instanceof Uint8Array || v instanceof ArrayBuffer || v instanceof Date) return v;
+    if (seen.has(v)) return v;
+    seen.add(v);
+    if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1, true));
+    const obj = v as Record<string, unknown>;
+    const slim = inList && looksLikeSession(obj);
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(obj)) {
+      if (slim && (HEAVY_SESSION_KEYS as readonly string[]).includes(k)) {
+        out[k] = Array.isArray(val) ? `${val.length} 项(列表里已省略;要看这一条的内容,单独读该会话)` : val === null ? null : "已省略";
+      } else {
+        out[k] = walk(val, depth + 1, false);
+      }
+    }
+    return out;
+  };
+  return walk(value, 0, false);
+}

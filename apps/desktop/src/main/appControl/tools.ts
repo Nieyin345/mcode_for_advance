@@ -42,7 +42,7 @@ import { fail, text, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js"
 import { API_CATALOG, type ApiCatalogEntry } from "./apiCatalog.generated.js";
 import { DOMAIN_LABELS, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
 import { registeredRpcChannels, rpcHandlerFor } from "./registry.js";
-import { redactValue, renderResult } from "./redact.js";
+import { redactValue, renderResult, slimSessions } from "./redact.js";
 import { runUiCommand } from "./uiBridge.js";
 
 export const APP_APPROVAL_PREFIX = "mcode-app:";
@@ -917,7 +917,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           } catch (error) {
             return fail(`操作已完成,但桌面刷新通知失败:${errText(error)}`);
           }
-          return text(renderResult(result));
+          return text(renderResult(slimSessions(result)));
         } catch (err) {
           return fail(errText(err));
         }
