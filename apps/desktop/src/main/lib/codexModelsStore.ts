@@ -109,6 +109,21 @@ function tomlStr(v: string): string {
   return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\x00-\x1f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}"`;
 }
 
+/** 【MC-078】TOML **键**的引号保护 —— 裸键只允许 `[A-Za-z0-9_-]`,其余(含**点号**)必须整体
+ *  加引号。插件名允许点号(`PLUGIN_NAME_RE`),MCP 服务器名是 `<plugin>__<server>`,于是
+ *  `[mcp_servers.audit.plugin__stdio]` 会被 TOML 解析成 **表 `audit` 下的子表 `plugin__stdio`**
+ *  —— 服务器的直接键名不再是 `audit.plugin__stdio`,Codex 加载不到。
+ *  ⚠️ 与 `providers/codex-sdk/codexProjectScope.ts` 的 `tomlKey` **同一套规则**(那里处理
+ *  `-c mcp_servers.<key>=…` 的键名);两处都收口到「非常规键名一律加引号」。 */
+function tomlKey(k: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(k) ? k : tomlStr(k);
+}
+
+/** 【MC-078】测试钩子:把单个 MCP server 序列化成 TOML(与写进 `config.toml` 的同一条路)。 */
+export function __mcpServerTomlForTest(name: string, raw: unknown): string | null {
+  return mcpServerToml(name, raw);
+}
+
 /** Serialize one MCP server config into TOML lines (codex field names:
  *  command/args/env for stdio; url for streamable HTTP). SSE is mapped to
  *  url best-effort (codex's native transport is streamable HTTP). Returns
@@ -116,7 +131,7 @@ function tomlStr(v: string): string {
 function mcpServerToml(name: string, raw: unknown): string | null {
   if (!raw || typeof raw !== "object") return null;
   const cfg = raw as Record<string, unknown>;
-  const lines: string[] = [`[mcp_servers.${name}]`];
+  const lines: string[] = [`[mcp_servers.${tomlKey(name)}]`];
   const type = cfg.type;
   if (type === "http" || type === "sse") {
     if (typeof cfg.url !== "string" || !cfg.url) return null;

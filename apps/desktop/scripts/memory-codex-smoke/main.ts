@@ -903,6 +903,31 @@ console.log("\n总注册表:registerIpcHandlers");
   eq("等待 DB 用的那个 promise 已经有主了", awaitDb().constructor.name, "Promise");
 }
 
+/* ────────────────────── 【MC-078】含点号插件名的 TOML 表头 ────────────────────── */
+
+console.log("\nMC-078:含点号的插件 MCP 服务器名在 config.toml 里被引号保护(不裂成子表)");
+
+{
+  const { __mcpServerTomlForTest } = await import("@main/lib/codexModelsStore.js");
+  const cfg = { type: "stdio", command: "node", args: ["x.js"] };
+
+  // 普通名:保持裸键(不无谓加引号)。
+  const plain = __mcpServerTomlForTest("plain-server", cfg) ?? "";
+  check("★ 普通名保持裸键 [mcp_servers.plain-server]", plain.startsWith("[mcp_servers.plain-server]"), plain.split("\n")[0]);
+
+  // 含点号(插件名允许点号,服务器名是 <plugin>__<server>):必须整体加引号。
+  const dotted = __mcpServerTomlForTest("audit.plugin__stdio", cfg) ?? "";
+  check(
+    "★ 含点号的名字被整体引号保护(不再裂成 [mcp_servers.audit.plugin__stdio])",
+    dotted.startsWith('[mcp_servers."audit.plugin__stdio"]'),
+    dotted.split("\n")[0],
+  );
+  check("★ 且**不是**未加引号的层级形式", !dotted.startsWith("[mcp_servers.audit."), dotted.split("\n")[0]);
+  // 名字里的点若不是被引号保护,TOML 会把它解析成 `mcp_servers.audit` 下的子表 —— 直接键名
+  // 会变成 `audit`,服务器加载不到。这里断言键的**整体**是引号字符串。
+  check("★ 表头键是引号字符串(点号是名字的一部分,不是层级)", /^\[mcp_servers\."[^"]*"\]$/.test(dotted.split("\n")[0]!), dotted.split("\n")[0]);
+}
+
 /* ────────────────────────── 汇总 ────────────────────────── */
 
 rmSync(DATA, { recursive: true, force: true });
