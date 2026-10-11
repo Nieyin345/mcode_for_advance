@@ -161,7 +161,55 @@ interface SessionRuntime {
     pluginNames?: string[];
     images?: { data: string; mimeType: string }[];
   };
+  /** 【MC-082】本轮**已产生的副作用**状态。自动模型回退(把整段用户输入重发)只有在
+   *  **明确没有副作用**时才安全;已确认的写/执行或无法断定的都不得盲目重发。
+   *  由三引擎统一的 `tool.use` / `tool.result` 事件更新,不凭模型文本猜。每轮 sendTurn 复位。 */
+  effectState?: TurnEffectState;
 }
+
+/**
+ * 【MC-082】一轮里"已经发生了什么副作用"。模型回退整段重发前必须据它决策:
+ *   - `NO_EFFECT`:还没见到任何工具调用 → 可以安全自动切换;
+ *   - `READ_ONLY`:只调过**已知只读**工具 → 可以安全自动切换;
+ *   - `EFFECT_UNCERTAIN`:调过**可能写/执行**的工具,但结果未知/未确认 → **不自动重发**,
+ *     转用户可见的恢复决策;
+ *   - `EFFECT_COMMITTED`:调过写/执行工具且**成功返回** → **不自动重发**;
+ *   - `UNKNOWN`:工具名不在已知表里(自定义 MCP 工具等)→ 保守当"可能有副作用"。
+ */
+export type TurnEffectState = "NO_EFFECT" | "READ_ONLY" | "EFFECT_UNCERTAIN" | "EFFECT_COMMITTED" | "UNKNOWN";
+
+/**
+ * 已知**只读**工具名(不改变外部状态)。不在表里的工具一律当"可能有副作用"(UNKNOWN),
+ * 宁可保守不自动重发,也不冒重复执行文件/Shell/MCP/外部事务的风险。
+ * 表只收跨引擎都存在的常见只读名;自定义 MCP 工具(`mcp__…`)不在表里 → UNKNOWN。
+ */
+const READ_ONLY_TOOL_NAMES = new Set([
+  "Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "NotebookRead", "Task", "LS",
+  // Pi / Codex 的等价只读名
+  "read", "grep", "find", "ls", "glob", "web_fetch", "web_search",
+  // Mcode 只读 agent 工具(见 agentEngineBridge 的只读白名单)
+  "agent_read_file", "agent_grep", "agent_glob", "agent_read_document", "agent_read_url",
+  "agent_file_info", "agent_list_dir", "library_search", "library_list", "app_api_call_read",
+]);
+
+/** 把一个工具名归类到它对"能否安全自动回退"的影响。 */
+function classifyToolEffect(toolName: string): "read" | "mutate" | "unknown" {
+  if (READ_ONLY_TOOL_NAMES.has(toolName)) return "read";
+  // 显式写/执行类工具名 → mutate(即便不在只读表)。
+  if (/^(Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput|KillShell|write|edit|bash|apply_patch|shell)$/i.test(toolName)) return "mutate";
+  // `mcp__service__tool`、`agent_write_file`、`agent_bash` 等 → 保守当未知(可能有副作用)。
+  return "unknown";
+}
+
+/** 【MC-082】把一次工具事件并进本轮的副作用状态。单调收敛,只往"更危险"走。 */
+function advanceEffectState(current: TurnEffectState, toolName: string): TurnEffectState {
+  const cls = classifyToolEffect(toolName);
+  if (cls === "unknown") return current === "EFFECT_COMMITTED" ? current : "UNKNOWN";
+  if (cls === "mutate") return current === "EFFECT_COMMITTED" ? current : "EFFECT_UNCERTAIN";
+  // read:只在还没别的副作用时保持 NO_EFFECT→READ_ONLY。
+  return current === "NO_EFFECT" ? "READ_ONLY" : current;
+}
+
 
 // 轮预算 / 回退链的解析与三判纯函数已拆到 `@main/lib/turnPolicy.js`
 // （无依赖、可被 budget-guard-smoke 直测），这里只留消费侧。
@@ -687,6 +735,16 @@ class RuntimeManager {
           rt.budgetUsd = e.snapshot.turnCostUsd ?? e.snapshot.costUsd ?? rt.budgetUsd;
           this.enforceBudget(session.id, rt);
         }
+      } else if (e.type === "tool.use") {
+        // 【MC-082】记录本轮是否已产生副作用 —— 自动模型回退据此决策(不盲目重发)。
+        const rt = this.sessions.get(session.id);
+        if (rt) rt.effectState = advanceEffectState(rt.effectState ?? "NO_EFFECT", e.toolName);
+      } else if (e.type === "tool.result") {
+        // 写/执行类工具**成功返回** = 副作用已提交 → EFFECT_COMMITTED(不自动回退)。
+        const rt = this.sessions.get(session.id);
+        if (rt && !e.isError && (rt.effectState === "EFFECT_UNCERTAIN" || rt.effectState === "UNKNOWN")) {
+          rt.effectState = "EFFECT_COMMITTED";
+        }
       } else if (e.type === "message.complete") {
         // 轮预算：assistant 轮计数，作 `maxTurns` 的**近似**。不落盘 —— 只是本轮的
         // 计数器，下一轮 sendTurn 归零。
@@ -748,6 +806,24 @@ class RuntimeManager {
         // 消耗，天然有界。回退只在 chat 会话解析出非空链（sendTurn 已过滤
         // 节点 / 工作流 / custom 网关）。
         if (rt && e.reason === "error" && !rt.budgetFired && rt.fallbackModels.length > 0 && rt.lastTurnInput) {
+          // 【MC-082】自动回退把**整段用户输入**重发给下一个模型 —— 只有在本轮**明确没有
+          // 副作用**时才安全。若已确认写入/执行(EFFECT_COMMITTED/UNCERTAIN)或工具名未知
+          // (UNKNOWN,可能是自定义 MCP 写工具),绝不盲目重发:那会重复执行文件/Shell/MCP/
+          // 外部事务动作。此时不换模型,而是给出用户可见的恢复提示,保留人工决策。
+          const effect = rt.effectState ?? "NO_EFFECT";
+          if (effect !== "NO_EFFECT" && effect !== "READ_ONLY") {
+            log.warn(`turn failed after side effects (${effect}); NOT auto-falling back to avoid repeating committed actions`);
+            rt.ctx.emit({
+              type: "turn.notice",
+              sessionId: session.id,
+              kind: "fallback",
+              message:
+                effect === "EFFECT_COMMITTED"
+                  ? "本回合在失败前已执行过写/外部操作,为避免重复执行,**未**自动改用备用模型重试。请检查已完成的动作后手动继续。"
+                  : "本回合在失败前调用过可能产生副作用的工具,无法确认是否已提交,**未**自动改用备用模型重试,以免重复执行。请确认后再手动继续。",
+            });
+            return;
+          }
           const nextModel = rt.fallbackModels.shift() as string;
           const from = session.model !== "default" ? session.model : "默认模型";
           log.warn(`turn failed on ${from}; falling back to ${nextModel} (${rt.fallbackModels.length} left in chain)`);
@@ -1249,6 +1325,8 @@ class RuntimeManager {
     rt.budgetUsd = 0;
     rt.budgetTokens = 0;
     rt.budgetFired = false;
+    // 【MC-082】本轮副作用状态复位 —— 每轮从"没有副作用"重新计,回退决策只看**本轮**。
+    rt.effectState = "NO_EFFECT";
     // S4 失败回退链：仅普通对话启用（节点/工作流禁用，避开 holdTurnEnd 与
     // 调度器纠缠；custom 网关会话也不做 —— 链里的全局模型 id 对第三方配置
     // 没有意义）。回退重试的那轮**不**重新解析 —— 否则 shift 掉的链会被

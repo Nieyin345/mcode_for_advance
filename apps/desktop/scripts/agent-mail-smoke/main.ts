@@ -1246,6 +1246,54 @@ console.log("\n⑯ 直接叫醒:配置失效要退回收件箱,启动失败也�
       SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, savedFallbackLate ?? "[]");
     }
 
+    // 【MC-082】失败前已提交副作用的回合,**不得**自动整段重发(否则重复执行外部动作)。
+    {
+      const eff = mkSession({ kind: "chat", title: "副作用回退闸测试", providerId, workflowId: "" });
+      runtimeManager.bindSession(eff);
+      const saved = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+      try {
+        await runtimeManager.sendTurn(eff, { prompt: "do a side effect", cwd: "C:/work/paper" });
+        const ctx1 = contexts.at(-1)!;
+        const before = contexts.length;
+        // 先调一个**写**工具并成功返回(副作用已提交),再让回合失败。
+        ctx1.emit({ type: "tool.use", sessionId: eff.id, toolCallId: "w1", toolName: "Write", input: {}, requiresApproval: false });
+        ctx1.emit({ type: "tool.result", sessionId: eff.id, toolCallId: "w1", isError: false, content: "ok" });
+        finishes.at(-1)!();
+        ctx1.emit({ type: "turn.done", sessionId: eff.id, reason: "error" });
+        for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 20));
+        eq("★ 有已提交副作用时**不**自动回退(不重复执行写操作)", contexts.length, before);
+        check("★ 且给出用户可见的恢复提示", events.some((e) => e.type === "turn.notice" && String((e as {message?:string}).message ?? "").includes("未") ), events.slice(-3));
+        contexts.at(-1)!.emit({ type: "turn.done", sessionId: eff.id, reason: "end_turn" });
+      } finally {
+        finishes.at(-1)?.(); runtimeManager.dispose(eff.id);
+        SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, saved ?? "[]");
+      }
+    }
+
+    // 【MC-082】只有**只读**工具 → 允许自动回退(不能因一个 Read 就拒绝切换)。
+    {
+      const ro = mkSession({ kind: "chat", title: "只读回退允许测试", providerId, workflowId: "" });
+      runtimeManager.bindSession(ro);
+      const saved = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+      try {
+        await runtimeManager.sendTurn(ro, { prompt: "just read", cwd: "C:/work/paper" });
+        const ctx1 = contexts.at(-1)!;
+        const before = contexts.length;
+        ctx1.emit({ type: "tool.use", sessionId: ro.id, toolCallId: "r1", toolName: "Read", input: {}, requiresApproval: false });
+        ctx1.emit({ type: "tool.result", sessionId: ro.id, toolCallId: "r1", isError: false, content: "file" });
+        finishes.at(-1)!();
+        ctx1.emit({ type: "turn.done", sessionId: ro.id, reason: "error" });
+        for (let i = 0; i < 50 && contexts.length === before; i++) await new Promise(r => setTimeout(r, 20));
+        eq("★ 只有只读工具时仍自动回退", contexts.length, before + 1);
+        contexts.at(-1)!.emit({ type: "turn.done", sessionId: ro.id, reason: "end_turn" });
+      } finally {
+        finishes.at(-1)?.(); runtimeManager.dispose(ro.id);
+        SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, saved ?? "[]");
+      }
+    }
+
     // 渲染端收到 turn.done 就回到空闲、排队消息立刻发来;此时引擎可能还在收尾。
     // sendTurn 要等收尾而不是返回 null(返回 null 时 IPC 会拒绝,消息不发)。
     const queued = mkSession({ kind: "chat", title: "收尾期间发送测试", providerId, workflowId: "" });
