@@ -106,56 +106,35 @@ function tempPath(ext: string): string {
   return path.join(tmpdir(), `mcode-agent-${randomUUID()}${ext}`);
 }
 
-async function assertNewOutput(abs: string, source?: string): Promise<void> {
-  if (source && path.resolve(abs) === path.resolve(source)) {
-    throw new Error("输出文件不能覆盖原文件；请换一个 output_path");
-  }
-  try {
-    await fs.access(abs);
-    throw new Error(`输出文件已存在:${abs}；为避免误覆盖，请使用新的文件名`);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw err;
-  }
-}
-
 /**
- * 【MC-069】**原子 no-clobber 预留**一个最终输出名。
+ * 【MC-069】**原子 no-clobber 提交**一个最终输出名。
  *
- * `fs.access` 预检「不存在」然后再跑渲染,是典型的 TOCTOU:两个并发调用**都**能过预检,
- * 最后只有一个文件、却两边都报成功。这里用 `open(..., "wx")`(`O_CREAT|O_EXCL`)在**真正的
- * 输出路径**上抢一个空占位:内核保证只有一个调用能创建成功,输的那个拿 `EEXIST` 明确报冲突。
+ * 这里**不再**"先用 `open('wx')` 抢一个空占位、渲染完再 `fs.rename` 覆盖"。两次独立复审
+ * 都证明那条路不安全:占位只证明"回到那一瞬没别人",异步渲染期间第三方(另一个 Mcode
+ * 进程、外部编辑器、另一个 Agent)完全可以把内容写进同名的 out;随后的裸 `fs.rename`
+ * (Windows 上对已存在普通文件是**覆盖**)会把它静默销毁,失败分支里的 `fs.rm(out)` 更是
+ * 无条件删掉不属于本次调用的文件。
  *
- * ⚠️ `O_EXCL` 对符号链接无效(Node 归一到 `O_CREAT|O_EXCL`,可穿过指向不存在目标的 link),
- * 故先 `lstat` 挡掉已存在的符号链接,与其它写守卫一条口径。
+ * 改用 **硬链接 `fs.link(staging, out)`** 作为提交原语,它天然满足我们需要的两点:
+ *   1. **原子**:内核保证 `out` 要么还不存在,要么是完整文件,绝不会出现半截;
+ *   2. **不覆盖**:`out` 已存在(哪怕是第三方刚写的新文件、悬空符号链接)一律 `EEXIST`,
+ *      绝不触碰它 —— 这正是"no-clobber"该有的语义,且**跨进程**有效(不依赖进程内锁)。
+ *
+ * `staging` 与 `out` 必须同卷(两者同目录即可),否则 `fs.link` 抛 `EXDEV`。
  */
-async function reserveOutputPath(abs: string, source?: string): Promise<void> {
-  if (source && path.resolve(abs) === path.resolve(source)) {
-    throw new Error("输出文件不能覆盖原文件；请换一个 output_path");
-  }
-  await fs.mkdir(path.dirname(abs), { recursive: true });
-  await fs.lstat(abs).then(
-    (st) => {
-      throw new Error(
-        st.isSymbolicLink()
-          ? `输出路径是符号链接,拒绝写入:${abs}`
-          : `输出文件已存在:${abs}；为避免误覆盖，请使用新的文件名`,
-      );
-    },
-    (err: NodeJS.ErrnoException) => {
-      if (err.code !== "ENOENT") throw err;
-    },
-  );
-  let fh;
+async function commitNewFile(staging: string, out: string): Promise<void> {
   try {
-    fh = await fs.open(abs, "wx");
+    await fs.link(staging, out);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(`输出文件已存在:${abs}；为避免误覆盖，请使用新的文件名`);
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      throw new Error(`输出文件已存在:${out}；为避免误覆盖，请使用新的文件名`);
+    }
+    if (code === "EXDEV") {
+      throw new Error(`输出路径与暂存文件不在同一卷,无法原子提交:${out}`);
     }
     throw err;
   }
-  await fh.close();
 }
 
 /**
@@ -237,16 +216,21 @@ export async function writePdf(input: {
   operations?: AgentPdfOperation[];
 }): Promise<{ outputPath: string; pageCount: number }> {
   const out = path.resolve(input.outputPath);
+  if (input.sourcePath && path.resolve(input.sourcePath) === out) {
+    throw new Error("输出文件不能覆盖原文件；请换一个 output_path");
+  }
   await fs.mkdir(path.dirname(out), { recursive: true });
 
-  // 【MC-069】整段「读-改-写-提交」按真实物理文件串行,并在提交前原子抢名 + 只在完整可读时
-  // 切换到最终路径。从前 `assertNewOutput` 先 `access` 预检再异步渲染,是 TOCTOU:两个并发
-  // 新建都能过预检,最后只剩一个文件却两边都报成功。
+  // 【MC-069】整段「渲染 → 提交」在同一条物理文件的串行锁内,但**提交致胜靠原子 `fs.link`
+  // 而非进程内锁**。从前 `assertNewOutput` 先 `access` 预检再异步渲染,是 TOCTOU;上一版改用
+  // `open('wx')` 空占位 + 事后 `rename`,又栽在"占位不等于提交时的所有权"——异步渲染期间
+  // 第三方能改写 out,随后的裸 `rename`(Windows 上对已存在普通文件是覆盖)把它静默销毁,
+  // 失败分支的 `fs.rm(out)` 更是无条件删除不属于本次调用的文件。现在 staging 与 out 同目录,
+  // 渲染完整可读后用 `commitNewFile`(硬链接,`EEXIST` 即冲突)原子发布,out 已存在一律不碰。
   return withDocFileLock(out, async () => {
-    // 原子 no-clobber:在**最终路径**上抢一个空占位(O_CREAT|O_EXCL)。两个并发只有一个能过,
-    // 输的拿 EEXIST 明确冲突。
-    await reserveOutputPath(out, input.sourcePath);
-    const staging = tempPath(".pdf");
+    // staging 放 out 的**同目录同卷**:`fs.link` 要求两者同卷,放 os tmpdir 在跨盘(如
+    // 系统盘与数据盘不同)时会 `EXDEV`,这个环境在本机真实存在。
+    const staging = `${out}.mcode-${randomUUID()}.tmp.pdf`;
     const tempPdfs: string[] = [];
     try {
       if (typeof input.markdown === "string") {
@@ -304,8 +288,8 @@ export async function writePdf(input: {
             " else: raise ValueError('unknown PDF operation: '+str(op.get('type')))",
             "w=PdfWriter()",
             "for p in pages: w.add_page(p)",
-            // 写进**独立 staging**(`'xb'` 保证全新建),而不是直接写最终名 —— 最终名由本函数
-            // 在完整写出后原子 `rename` 提交,避免半截文件对外可读。
+            // 写进**独立 staging**(`'xb'` 保证全新建、与 out 同目录),而不是直接写最终名 ——
+            // 最终名由本函数在完整写出后用 `commitNewFile`(硬链接)原子发布,避免半截文件对外可读。
             "with open(dst,'xb') as f: w.write(f)",
             "print(len(pages))",
           ].join("\n");
@@ -317,14 +301,13 @@ export async function writePdf(input: {
       }
 
       const pageCount = await pdfPageCount(staging);
-      // 原子提交:staging 完整可读后才替换占位,输出不会出现"半截 PDF"。
-      await fs.rename(staging, out);
+      // 原子 no-clobber 提交:staging 完整可读后,硬链接到最终名。out 已存在(含第三方刚
+      // 写入的新文件、悬空符号链接)一律 EEXIST 冲突并**原样保留**,绝不被覆盖销毁。
+      await commitNewFile(staging, out);
       return { outputPath: out, pageCount };
-    } catch (err) {
-      // 失败:释放本次抢下的占位名(内容由 staging/占位管理,绝不动别人已提交的文件)。
-      await fs.rm(out, { force: true }).catch(() => undefined);
-      throw err;
     } finally {
+      // 只清理**本次调用自己**建的 staging 与临时插入页 —— 绝不触碰 out:提交成功时 out 已是
+      // 指向同一 inode 的硬链接(unlink staging 不移除内容),失败时 out 从未被本函数创建。
       await fs.rm(staging, { force: true }).catch(() => undefined);
       await Promise.all(tempPdfs.map((p) => fs.rm(p, { force: true }).catch(() => undefined)));
     }

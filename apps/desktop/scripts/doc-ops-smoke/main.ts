@@ -13,6 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -119,6 +120,47 @@ try {
     const out = path.join(root, "exists.pdf");
     await writePdf({ outputPath: out, markdown: "# First" });
     await assert.rejects(() => writePdf({ outputPath: out, markdown: "# Second" }), /已存在/);
+  });
+
+  // ══════════ B2. 【MC-069 §34.4 复审红例】渲染期第三方占名:绝不静默销毁 ══════════
+  await test("★ PDF 渲染期间第三方写入同名目标:writePdf 应明确冲突且第三方内容原样保留,绝不静默销毁", async () => {
+    const out = path.join(root, "thirdparty-race.pdf");
+    rmSync(out, { force: true });
+    const THIRD_PARTY = "THIRD_PARTY_NEW_FILE_MUST_SURVIVE\n" + "x".repeat(2000);
+    let settled = false;
+    // 真实生产 writePdf:异步渲染一个完整 PDF(本机实测 4~9 秒),渲染期间 out **不存在**
+    // (旧版会在开头用 open('wx') 抢一个 0 字节占位,新版只在最后原子链接)。
+    const p = writePdf({ outputPath: out, markdown: "# LEGIT WRITER\nConcurrent body" })
+      .then(() => ({ ok: true as const }), (e) => ({ ok: false as const, e }));
+    p.finally(() => { settled = true; });
+    await new Promise((r) => setTimeout(r, 1500)); // 落在渲染窗口内
+    const stillPending = !settled;
+    // 第三方在渲染完成之前抢下同名目标(旧版占位在这里会被这个写入覆盖,随后 rename 再覆盖回来)。
+    writeFileSync(out, THIRD_PARTY, "utf8");
+    const outcome = await p;
+    const survived = readFileSync(out).toString("utf8") === THIRD_PARTY;
+    console.log(`    → pending=${stillPending} ok=${outcome.ok} survived=${survived}`);
+    assert.ok(stillPending, "夹具安排失败:writePdf 在第三方写入前就完成了,没构造出渲染期并发(渲染若变得极快,需调大这里或夹具)");
+    // 核心不变量:绝不允许「writePdf 报成功、却把渲染期间第三方写入的内容抹掉」。
+    assert.ok(!(outcome.ok && !survived), "writePdf 报成功却销毁了渲染期间第三方写入的内容(第三方内容静默丢失)");
+    // 正确结局:硬链接提交撞上已存在的第三方文件(EEXIST)→ 明确冲突,且第三方内容原样保留。
+    assert.ok(!outcome.ok, "第三方已在渲染期占名,writePdf 必须明确冲突,不得报成功");
+    assert.ok(survived, `第三方内容必须原样保留,实际文件已被改写`);
+  });
+
+  await test("PDF 提交成功/失败后不留 staging 残片(仅清理本次自己的临时文件)", async () => {
+    const dir = path.join(root, "cleanup");
+    await fs.mkdir(dir, { recursive: true });
+    const okOut = path.join(dir, "ok.pdf");
+    await writePdf({ outputPath: okOut, markdown: "# Cleanup OK" });
+    const okLeft = (await fs.readdir(dir)).filter((f) => f.includes(".mcode-") && f.endsWith(".tmp.pdf"));
+    assert.deepEqual(okLeft, [], `成功提交后留下 staging 残片:${okLeft.join(",")}`);
+    // 失败路径(目标已存在)同样不得留残片。
+    const dupOut = path.join(dir, "dup.pdf");
+    await writePdf({ outputPath: dupOut, markdown: "# One" });
+    await assert.rejects(() => writePdf({ outputPath: dupOut, markdown: "# Two" }), /已存在/);
+    const failLeft = (await fs.readdir(dir)).filter((f) => f.includes(".mcode-") && f.endsWith(".tmp.pdf"));
+    assert.deepEqual(failLeft, [], `失败后留下 staging 残片:${failLeft.join(",")}`);
   });
 
   // ══════════ C. DOCX:并发 XML 编辑 ══════════
