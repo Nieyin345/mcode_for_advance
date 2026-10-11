@@ -116,9 +116,15 @@ check(
 for (const e of ENGINE_CAPABILITY_ENGINES) {
   check(`hooks[${e}] = false`, cell("settings.engineMatrix.cap.hooks", e) === false);
 }
+// ⚠️ 锚点必须钉**hooks 那句**:`plugin.ts` 里有两处「没有引擎能跑它们」的措辞 ——
+//   一处讲 hooks(前导注释那段 `held OFF in v1 via disableAllHooks` / 组件字段那段
+//   `never executes them`,:262),另一处讲 Codex 的 `apps` 字段(:152)。从前这条断言
+//   用的正则是 `no Mcode engine can run them`,而那句**只在 apps 字段的注释里** ——
+//   结果是:改掉 hooks 的真注释,套件照样绿(假绿);改 apps 注释才变红。现在钉 hooks
+//   的真依据(disableAllHooks + never executes),与矩阵那一行的语义对齐。
 check(
-  "hooks 全 false 与源码一致(@contracts/plugin 说明没有引擎能跑它们)",
-  /no Mcode engine can run them/i.test(pluginSrc) || /no Mcode engine/i.test(pluginSrc),
+  "hooks 全 false 与源码一致(@contracts/plugin 说明 hooks 被 disableAllHooks 关掉、不执行)",
+  /held OFF in v1 via `disableAllHooks`/.test(pluginSrc) || /never executes them/.test(pluginSrc),
 );
 
 /* ── 6. 按名禁用内置工具:Claude / Pi 能,Codex 只有沙箱/审批档 ── */
