@@ -156,5 +156,21 @@ eq("文件被删 → 照常写回", disk.get("gone.md"), "recreated");
   check("★ lastWritten 有上限:最早那条被挤掉后不再当作\"本进程写过\"", evictedConflict instanceof FileConflictError);
 }
 
+/* ── 【UI-019】首次读取失败不得伪造成空文件 ── */
+
+console.log("\nUI-019:FileEditor 读失败显示错误态,不建空的可编辑 model");
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/ide/FileEditor.tsx"), "utf8");
+  // 失败分支不得再 `createAndShow(filePath, "", ...)`(那会把读失败伪造成空文件)。
+  check("★ 读失败分支不再 createAndShow 空内容(不伪造空文件)", !/createAndShow\(filePath, "", projectPath\)/.test(src), null);
+  // 必须置 readError 错误态。
+  check("★ 读失败置 readError 显式错误态", /setReadError\(\{\s*path:\s*filePath/.test(src), null);
+  // UI 里要画出来(错误文案 + 重试)。
+  check("★ 错误态在 UI 里画出来(读取失败文案)", /ide\.editor\.readFailed/.test(src), null);
+  check("★ 且提供重试入口", /setReadRetryNonce/.test(src) && /common\.retry/.test(src), null);
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exitCode = 1;

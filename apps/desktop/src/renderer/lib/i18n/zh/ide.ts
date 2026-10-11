@@ -89,6 +89,7 @@ export const zh = {
   "ide.editor.modeTabsHint": "当前:多标签页 — 点击切到替换模式(单文件)",
   "ide.editor.modeReplaceHint": "当前:替换模式 — 点击切到多标签页",
   "ide.editor.readingFile": "读取文件…",
+  "ide.editor.readFailed": "读取文件失败",
   "ide.editor.loadingEditor": "加载编辑器…",
   "ide.editor.savedToast": "已保存 ✓",
   "ide.editor.saveFailed": "保存失败",

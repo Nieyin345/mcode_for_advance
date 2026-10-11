@@ -81,6 +81,7 @@ export const en = {
   "ide.editor.modeTabsHint": "Current: tabs — click to switch to replace mode (single file)",
   "ide.editor.modeReplaceHint": "Current: replace — click to switch to tabs mode",
   "ide.editor.readingFile": "Reading file…",
+  "ide.editor.readFailed": "Could not read the file",
   "ide.editor.loadingEditor": "Loading editor…",
   "ide.editor.savedToast": "Saved ✓",
   "ide.editor.saveFailed": "Save failed",

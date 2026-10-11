@@ -730,6 +730,14 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
   // Set when the freshness check finds the DISPLAYED file changed on disk
   // while its model holds unsaved edits — the user decides (reload or keep).
   const [externalChange, setExternalChange] = useState(false);
+  /**
+   * 【UI-019】首次读取**失败**且无缓存时,记下失败的文件与原因 —— 从前这份失败被
+   * `createAndShow(path, "")` 伪造成一个"看起来真空的空文件",用户既分不清是"失败"
+   * 还是"本来为空",还会在不知情下编辑/保存一个根本没读到的文件。现在改为**显式错误态**,
+   * 不建空模型、不进入可编辑。重试走 `readRetryNonce`。
+   */
+  const [readError, setReadError] = useState<{ path: string; message: string } | null>(null);
+  const [readRetryNonce, setReadRetryNonce] = useState(0);
   // Context of the displayed file (see ReadyCtx).
   const readyCtxRef = useRef<ReadyCtx | null>(null);
   // Latest-ref mirror of the loader's monaco namespace — async callbacks
@@ -981,6 +989,8 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
       return;
     }
     const seq = ++readSeqRef.current;
+    // 【UI-019】换了文件 / 重试 → 清掉上一次的读取错误态(只留本次的失败)。
+    setReadError(null);
     if (getModelEntry(filePath) && !isMarkdown(filePath) && !textFileWrites.hasPending(filePath)) {
       setLoadingPath(null);
       flipTo(filePath, projectPath);
@@ -1012,17 +1022,19 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
         }
         createAndShow(filePath, content, projectPath);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (seq !== readSeqRef.current || disposedRef.current) return;
         const cached = getModelEntry(filePath);
         if (cached && !cached.model.isDisposed()) {
           flipTo(filePath, projectPath); // keep cached edits if disk is unreadable
           setLoadingPath(null);
         } else {
-          createAndShow(filePath, "", projectPath); // degrade to empty
+          // 【UI-019】不要 `createAndShow(path, "")` 伪造成空文件 —— 显式错误态,不进可编辑。
+          setLoadingPath(null);
+          setReadError({ path: filePath, message: err instanceof Error ? err.message : String(err) });
         }
       });
-  }, [filePath, projectPath]);
+  }, [filePath, projectPath, readRetryNonce]);
 
   // The loader resolved after a first-read completed — finish the parked
   // model creation + swap (only if the parked file is still the target; a
@@ -1433,6 +1445,26 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
           <div className="flex items-center gap-1.5 text-[11px] text-content-subtle">
             <IconLoader2 size={12} className="animate-spin" />
             {t("ide.editor.readingFile")}
+          </div>
+        </div>
+      )}
+      {/* 【UI-019】首次读取失败(无缓存)的**显式错误态** —— 不再伪造成一个空的可编辑文件。
+          给出原因与「重试」;不进可编辑、不注册空 model,用户不会误以为"文件本来就是空的"。 */}
+      {readError && readError.path === filePath && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface/85">
+          <div className="flex max-w-md flex-col items-center gap-2 px-4 text-center">
+            <div className="flex items-center gap-1.5 text-[12px] text-content">
+              <IconAlertTriangle size={13} className="shrink-0 text-warning" />
+              {t("ide.editor.readFailed")}
+            </div>
+            <div className="text-[11px] text-content-subtle break-all">{readError.message}</div>
+            <button
+              type="button"
+              onClick={() => setReadRetryNonce((n) => n + 1)}
+              className="rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors hover:bg-surface-hover"
+            >
+              {t("common.retry")}
+            </button>
           </div>
         </div>
       )}
