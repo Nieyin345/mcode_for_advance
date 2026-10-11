@@ -69,6 +69,12 @@ const SETTLE_MS = 300;
 
 const MAX_PROCESS_BUFFER_CHARS = 120_000;
 const MAX_RUNNING_PER_OWNER = 8;
+/**
+ * **端点全局运行进程上限**(MC-063)。per-owner 上限挡的是"一个对话开太多",而各对话
+ * 是不同的 owner —— 多建几个对话/客户端就能把物理机的进程总量堆起来。这道全局闸门
+ * 防的是那个"每对话新建 owner 绕开物理机总负载"的漏洞。给的是**可重试**的明确错误。
+ */
+const MAX_RUNNING_TOTAL = 24;
 const DEFAULT_READ_CHARS = 20_000;
 const MAX_READ_CHARS = 60_000;
 
@@ -159,8 +165,10 @@ export interface AgentProcessSessions {
   disposeAll(): void;
 }
 
-export function createAgentProcessSessions(): AgentProcessSessions {
+export function createAgentProcessSessions(options?: { maxRunningTotal?: number }): AgentProcessSessions {
   const sessions = new Map<string, ProcessSession>();
+  // 端点全局运行进程上限(见 MAX_RUNNING_TOTAL)。测试可注入一个小值,免得真起 24 个进程。
+  const maxRunningTotal = options?.maxRunningTotal ?? MAX_RUNNING_TOTAL;
 
   const requireOwned = (ownerSessionId: string, processId: string): ProcessSession => {
     const session = sessions.get(processId);
@@ -367,6 +375,12 @@ export function createAgentProcessSessions(): AgentProcessSessions {
       ).length;
       if (running >= MAX_RUNNING_PER_OWNER) {
         throw new Error(`当前对话已有 ${MAX_RUNNING_PER_OWNER} 个运行中的进程,请先停止不用的会话`);
+      }
+      // **端点全局容量**(MC-063):per-owner 上限挡不住"多开几个对话各占一点"把物理机
+      // 堆满。给可重试的明确错误,而不是让机器悄悄过载。
+      const totalRunning = [...sessions.values()].filter((s) => s.status === "running").length;
+      if (totalRunning >= maxRunningTotal) {
+        throw new Error(`RESOURCE_BUSY:本机 agent 运行中的进程总数已达上限 ${maxRunningTotal},请稍后重试或先停止不用的进程`);
       }
 
       const timeoutMs = Math.max(

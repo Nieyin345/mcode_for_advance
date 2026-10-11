@@ -46,6 +46,8 @@ export const zh = {
   "store.toast.questionDismissFailed": "跳过没能送达 —— 这一轮可能还在等你的答复",
   "store.toast.approvalFailed": "审批没能送达 —— 再点一次重试",
   "store.toast.planApprovalFailed": "计划审批没能送达 —— 再点一次重试",
+  // 【UI-035】审批已过期/已被其它端响应时,主进程其实没受理 —— 不能说成"已处理"。
+  "store.toast.approvalExpired": "这次审批已失效(可能已被其它设备处理或已超时),没有生效",
   // 关闭标签时被守卫拦下的未保存文件 —— 编辑器没有自动保存,静默关掉就是丢改动。
   "store.toast.ideCloseBlockedTitle": "有文件没关：内容还没保存",
   "store.toast.ideCloseBlockedBody": "{names} 有未保存的修改，已保留。保存或撤销后即可关闭。",

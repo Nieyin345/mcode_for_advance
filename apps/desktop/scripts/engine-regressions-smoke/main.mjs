@@ -384,6 +384,8 @@ test("shared status bar presents each provider's own checking/ready/error health
     "layout.status.checkingProvider": "Checking…",
     "layout.status.providerUnavailable": "Unavailable",
     "layout.status.healthTimeout": "Check timed out",
+    "layout.status.healthCancelling": "Cancelling (releasing resources)…",
+    "layout.status.healthUnknown": "Status unknown",
     "layout.status.providerNotRegistered": "Not registered",
     "layout.status.healthUnsupported": "Check unsupported",
     "layout.status.ready": "Ready",
@@ -423,6 +425,22 @@ test("shared status bar presents each provider's own checking/ready/error health
     model: "default", t,
   });
   assert.equal(timeout.statusText, "Codex · Check timed out");
+  // 【MC-076】超时后底层资源正在释放 → 中性态,不是红色"不可用"。
+  const cancelling = describeStatusBar({
+    providerId: "codex-sdk", providerName: "Codex",
+    health: { loading: false, ok: false, code: "cancelling", error: "releasing" },
+    model: "default", t,
+  });
+  assert.equal(cancelling.statusText, "Codex · Cancelling (releasing resources)…");
+  assert.equal(cancelling.statusMissing, false, "cancelling must not read as Unavailable");
+  assert.equal(cancelling.statusColor, "text-content-subtle", "cancelling is neutral, not danger");
+  assert.equal(cancelling.statusTitle, "releasing");
+  const unknown = describeStatusBar({
+    providerId: "codex-sdk", providerName: "Codex",
+    health: { loading: false, ok: false, code: "unknown", error: "?" },
+    model: "default", t,
+  });
+  assert.equal(unknown.statusText, "Codex · Status unknown");
   const component = readFileSync(resolve(here, "../../src/renderer/components/layout/StatusBar.tsx"), "utf8");
   assert.match(component, /describeStatusBar\(/, "the visible component must use the tested presenter");
   assert.match(component, /force: true/, "failed status must offer a forced retry");

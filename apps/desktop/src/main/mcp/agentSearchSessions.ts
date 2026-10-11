@@ -7,6 +7,11 @@ export type AgentSearchType = "files" | "content";
 export type AgentSearchStatus = "running" | "completed" | "stopped" | "error";
 
 const MAX_SEARCH_SESSIONS_PER_OWNER = 12;
+/**
+ * **端点全局搜索会话上限**(MC-063)。per-owner 上限挡不住"多开几个对话各占一点"把
+ * 物理机搜索总量堆满;这道全局闸门给可重试的明确错误。
+ */
+const MAX_SEARCH_SESSIONS_TOTAL = 48;
 const MAX_STORED_RESULTS = 5_000;
 const MAX_RESULT_LINE_CHARS = 500;
 const COMPLETED_TTL_MS = 10 * 60_000;
@@ -89,8 +94,10 @@ export interface AgentSearchSessions {
   disposeOwner(ownerSessionId: string): void;
 }
 
-export function createAgentSearchSessions(): AgentSearchSessions {
+export function createAgentSearchSessions(options?: { maxSessionsTotal?: number }): AgentSearchSessions {
   const sessions = new Map<string, SearchSession>();
+  // 端点全局搜索会话上限(见 MAX_SEARCH_SESSIONS_TOTAL)。测试可注入小值。
+  const maxSessionsTotal = options?.maxSessionsTotal ?? MAX_SEARCH_SESSIONS_TOTAL;
 
   // 【MC-064】只回收**确实过了 TTL 的已结束**条目 —— 无副作用,`list` 也能安全调。
   function expireFinished(): void {
@@ -156,6 +163,12 @@ export function createAgentSearchSessions(): AgentSearchSessions {
       const mineNow = [...sessions.values()].filter((s) => s.ownerSessionId === input.ownerSessionId);
       if (mineNow.length >= MAX_SEARCH_SESSIONS_PER_OWNER) {
         throw new Error(`SEARCH_CAPACITY_REACHED:当前对话已有 ${mineNow.length} 个搜索会话(上限 ${MAX_SEARCH_SESSIONS_PER_OWNER}),请先停止或等待部分结束`);
+      }
+      // **端点全局容量**(MC-063):per-owner 上限挡不住"多开几个对话各占一点"。给可重试
+      // 的明确错误,而不是让物理机的搜索总量悄悄爆掉。
+      const totalSearches = sessions.size;
+      if (totalSearches >= maxSessionsTotal) {
+        throw new Error(`RESOURCE_BUSY:本机搜索会话总数已达上限 ${maxSessionsTotal},请稍后重试或先停止不用的搜索`);
       }
       const matcher = buildMatcher(input.pattern, input.literalSearch ?? false, input.ignoreCase ?? true);
       const fileMatcher = input.filePattern ? globToRegExp(input.filePattern) : null;

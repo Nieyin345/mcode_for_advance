@@ -5,10 +5,12 @@ import {
 import {
   addPublicMcpProjectLink,
   initPublicMcp,
+  publicMcpCredentialFor,
   publicMcpProjectIdForSession,
   publicMcpSandboxRoot,
   regeneratePublicMcpProjectLinkSecret,
   removePublicMcpProjectLink,
+  revalidatePublicMcpCredential,
   setPublicMcpEnabled,
   startPublicMcpTunnel,
   setPublicMcpTunnelConfig,
@@ -92,6 +94,18 @@ equal("sandbox root of link A", publicMcpSandboxRoot(sa), "/tmp/alpha");
 equal("sandbox root of link B", publicMcpSandboxRoot(sb), "/tmp/beta");
 equal("unrelated session has no sandbox", publicMcpSandboxRoot("sess-other"), null);
 equal("delegate resolves link project", publicMcpProjectIdForSession(sb), "p-b");
+
+/* ── MC-062:授权快照与复验 ──
+ * 鉴权时固化的快照带规范根 + 授权修订号;删链接/轮换密钥后复验必须变红(fail closed),
+ * 而不是让在途请求带着失效根继续。 */
+const credA = publicMcpCredentialFor("p-a");
+equal("★ 有效链接的凭据快照带规范根", credA?.canonicalRoot, "/tmp/alpha");
+equal("★ 有效链接快照复验通过", revalidatePublicMcpCredential(credA!), null);
+const credDefault = publicMcpCredentialFor(null);
+equal("★ 默认链接快照带默认项目根", credDefault?.canonicalRoot, "/tmp/alpha");
+equal("★ 默认链接快照复验通过", revalidatePublicMcpCredential(credDefault!), null);
+equal("不存在的项目 → 无凭据快照(fail closed)", publicMcpCredentialFor("nope"), null);
+
 const view = extrasForTest().projectLinks() as { projectId: string; projectName: string; missing: boolean }[];
 equal("status view lists links", view.map((v) => v.projectName).join(","), "Alpha,Beta");
 const oldSecret = links[0]!.secret;
@@ -99,9 +113,12 @@ regeneratePublicMcpProjectLinkSecret("p-a");
 const regenerated = (store.listProjectLinks() as { projectId: string; secret: string }[]).find((l) => l.projectId === "p-a")!;
 equal("regenerate changes the secret", regenerated.secret !== oldSecret, true);
 equal("regenerate keeps the session", store.linkSessionId("p-a"), sa);
+equal("★ 轮换密钥后旧快照复验变红(授权已变更)", typeof revalidatePublicMcpCredential(credA!), "string");
 removePublicMcpProjectLink("p-b");
 equal("remove drops the link", (store.listProjectLinks() as unknown[]).length, 1);
 equal("removed link session no longer sandboxed as a link", publicMcpSandboxRoot(sb), null);
+// 撤销 mcode 那条链接的凭据也已失效(它的会话不再解析出根)→ 复验变红。
+equal("★ 撤销的链接不再有凭据快照", publicMcpCredentialFor("p-b"), null);
 SettingRepo.set("publicMcp.projectLinks", "{not json");
 equal("corrupt links setting = no links", (store.listProjectLinks() as unknown[]).length, 0);
 SettingRepo.set("publicMcp.projectLinks", JSON.stringify([{ projectId: "p-a", secret: "short", sessionId: null }]));

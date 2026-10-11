@@ -10,6 +10,8 @@ export const zh = {
   "layout.status.checkingProvider": "检查中…",
   "layout.status.providerUnavailable": "不可用",
   "layout.status.healthTimeout": "检查超时",
+  "layout.status.healthCancelling": "正在取消（释放底层资源）…",
+  "layout.status.healthUnknown": "状态未知",
   "layout.status.providerNotRegistered": "未注册",
   "layout.status.healthUnsupported": "不支持检查",
   "layout.status.retryHealth": "点击重试",

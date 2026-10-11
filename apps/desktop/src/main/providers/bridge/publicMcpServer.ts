@@ -56,6 +56,7 @@ import { listenOnDialablePort } from "@main/lib/loopbackPort.js";
 import { MCP_ENDPOINT_PATH, handleMcpRequest } from "./mcpEndpoint.js";
 // 会话头字面量同类:它是跨进程线协议常量,住契约层,不拉 electron。
 import { MCODE_SESSION_HEADER, type PublicMcpStatus as ContractPublicMcpStatus } from "@contracts/customModel";
+import { type PublicCredentialSnapshot } from "@contracts/publicMcpScope";
 
 /** 密钥在路径里的位置:`<MCP_ENDPOINT_PATH>/<密钥>`。 */
 export const PUBLIC_MCP_PATH_PREFIX = `${MCP_ENDPOINT_PATH}/`;
@@ -101,6 +102,19 @@ export interface PublicMcpStore {
   listProjectLinks?(): { projectId: string; secret: string }[];
   /** 某条项目链接的合成会话(没有就建;项目已删 → null)。 */
   linkSessionId?(projectId: string): string | null;
+  /**
+   * **公网凭据的不可变快照**(MC-062)。`projectId` 为 null 表示默认链接。
+   *
+   * 返回 `null` = 这条凭据此刻拿不到有效项目根(项目删了/没路径)——入口一律
+   * **fail closed**(404),绝不退回默认项目或"不限路径"。
+   */
+  credentialFor?(projectId: string | null): PublicCredentialSnapshot | null;
+  /**
+   * **复验凭据此刻是否仍有效**(收到 body 之后、真正执行之前再问一次)。
+   * 返回 `null` = 有效;字符串 = 拒绝理由。链接被删/密钥轮换/项目根变化 → 非 null,
+   * 入口据此把在途请求关在门外(见 `mcpEndpoint` 的 `revalidateCredential`)。
+   */
+  revalidateCredential?(snapshot: PublicCredentialSnapshot): string | null;
 }
 
 let store: PublicMcpStore | null = null;
@@ -310,16 +324,39 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
       }
     }
   }
+
+  // **鉴权成功那一刻固化不可变授权快照**(MC-062)。凭据身份 + 规范沙箱根一起钉死;
+  // 根取不到(项目删了/没路径)一律 fail closed,绝不退回默认项目或"不限路径"。
+  const defaultKeyMatches = Boolean(got && expected && secretMatches(got, expected));
+  const credential =
+    linkProject !== null
+      ? store!.credentialFor?.(linkProject) ?? null
+      : defaultKeyMatches
+        ? store!.credentialFor?.(null) ?? null
+        : null;
+
   if (linkProject !== null) {
+    if (!credential || !credential.canonicalRoot) {
+      // 项目被删了(或者拿不到根)。与"密钥不对"同样回 404 —— 这条链接已经不指向任何东西,
+      // 而且**绝不**退回默认项目或不受限调用。
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "not found" }));
+      return;
+    }
     const linkSession = store!.linkSessionId?.(linkProject) ?? null;
     if (!linkSession) {
-      // 项目被删了(或者建会话失败)。与"密钥不对"同样回 404 —— 这条链接已经不指向任何东西。
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "not found" }));
       return;
     }
     req.headers[MCODE_SESSION_HEADER] = linkSession;
-    await handleMcpRequest(req, res, { keepAliveLongCalls: true, audience: "public", isAvailable: () => store?.getEnabled() === true });
+    await handleMcpRequest(req, res, {
+      keepAliveLongCalls: true,
+      audience: "public",
+      isAvailable: () => store?.getEnabled() === true,
+      credential,
+      revalidateCredential: (snap) => store?.revalidateCredential?.(snap) ?? null,
+    });
     return;
   }
 
@@ -342,13 +379,25 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
     res.end(JSON.stringify({ error: "mcode is still starting up; retry shortly" }));
     return;
   }
+  // 默认链接也必须带有效根 —— 拿不到就 fail closed(与项目链接一致),不回退不受限。
+  if (!credential || !credential.canonicalRoot) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
   req.headers[MCODE_SESSION_HEADER] = sessionId;
 
   // `keepAliveLongCalls`:这条路前面是 Cloudflare,它对**一个请求 100 秒内没有任何
   // 字节**就回 524(免费/Pro/Business 都不能调)。慢工具(agent_bash 默认 120 秒、
   // 长构建)会撞上 —— 所以这条路允许把慢调用改成 SSE 回、中途发保活注释。扩展的
   // `/mcp` 是本机回环,没这个问题,保持原样。
-  await handleMcpRequest(req, res, { keepAliveLongCalls: true, audience: "public", isAvailable: () => store?.getEnabled() === true });
+  await handleMcpRequest(req, res, {
+    keepAliveLongCalls: true,
+    audience: "public",
+    isAvailable: () => store?.getEnabled() === true,
+    credential,
+    revalidateCredential: (snap) => store?.revalidateCredential?.(snap) ?? null,
+  });
 }
 
 /* ────────────────────────────── 状态快照 ────────────────────────────── */

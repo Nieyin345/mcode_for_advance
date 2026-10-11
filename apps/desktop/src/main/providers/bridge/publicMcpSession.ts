@@ -50,6 +50,11 @@ import {
   PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY,
 } from "@contracts/ipc/settings";
 import type { PublicMcpProjectLink, PublicMcpTunnelConfig } from "@contracts/customModel";
+import {
+  PUBLIC_MCP_DEFAULT_CREDENTIAL_ID,
+  type PublicCredentialSnapshot,
+} from "@contracts/publicMcpScope";
+import { createHash } from "node:crypto";
 import { encrypt, decrypt } from "@main/lib/secretStore.js";
 import { uid } from "@main/utils.js";
 import { log } from "@main/lib/logger.js";
@@ -347,6 +352,73 @@ function writeProjectLinks(links: StoredProjectLink[]): void {
   SettingRepo.set(PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY, JSON.stringify(links));
 }
 
+/* ──────────────────── 授权快照与撤销世代(MC-062) ──────────────────── */
+
+/**
+ * **撤销世代** —— 链接删除 / 密钥轮换 / 项目变更时递增。
+ *
+ * 它随每张授权快照落下(见 {@link credentialFor}),供审计与"这次请求依据的是哪一代
+ * 授权"的记录。真正逐请求把关的是 {@link revalidateCredential} 里的 grantRevision 与
+ * "凭据此刻是否还解析得出"(那两条是**按凭据**判的,不会被别的链接的轮换误伤)。
+ */
+let revocationEpoch = 0;
+
+/** 授权修订号 —— 凭据身份 + 密钥 + 规范根的一份短摘要,任一项变化它就变。 */
+function grantRevisionOf(credentialId: string, secret: string, root: string): string {
+  return createHash("sha256")
+    .update(`${credentialId}\u0000${secret}\u0000${root}`)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * **公网凭据的不可变快照**(MC-062)。`projectId` 为 `null` = 默认链接。
+ *
+ * 返回 `null` = 这条凭据此刻拿不到有效项目根(项目删了/没路径)→ 入口 fail closed,
+ * 绝不退回默认项目或"不限路径"。
+ */
+export function publicMcpCredentialFor(projectId: string | null): PublicCredentialSnapshot | null {
+  if (projectId === null) {
+    const secret = SettingRepo.get(PUBLIC_MCP_SECRET_SETTING_KEY)?.trim() ?? "";
+    const pid = publicMcpProjectId();
+    const root = pid ? (ProjectRepo.get(pid)?.path ?? null) : null;
+    if (!pid || !root) return null;
+    return {
+      credentialId: PUBLIC_MCP_DEFAULT_CREDENTIAL_ID,
+      projectId: pid,
+      canonicalRoot: root,
+      grantRevision: grantRevisionOf(PUBLIC_MCP_DEFAULT_CREDENTIAL_ID, secret, root),
+      revocationEpoch,
+    };
+  }
+  const link = readProjectLinks().find((l) => l.projectId === projectId);
+  if (!link) return null;
+  const root = ProjectRepo.get(projectId)?.path ?? null;
+  if (!root) return null;
+  return {
+    credentialId: projectId,
+    projectId,
+    canonicalRoot: root,
+    grantRevision: grantRevisionOf(projectId, link.secret, root),
+    revocationEpoch,
+  };
+}
+
+/**
+ * **复验**一张快照此刻是否仍有效(收到 body 之后、真正执行之前)。
+ *
+ * 返回 `null` = 有效;字符串 = 拒绝理由。撤销链接 / 轮换密钥 / 项目根变了 → 非 null,
+ * 入口据此把在途请求关在门外(见 `mcpEndpoint` 的 `revalidateCredential`)。
+ */
+export function revalidatePublicMcpCredential(snapshot: PublicCredentialSnapshot): string | null {
+  const current = publicMcpCredentialFor(
+    snapshot.credentialId === PUBLIC_MCP_DEFAULT_CREDENTIAL_ID ? null : snapshot.credentialId,
+  );
+  if (!current) return "授权链接已撤销或项目根已失效";
+  if (current.grantRevision !== snapshot.grantRevision) return "授权已变更(密钥轮换或项目根变化)";
+  return null;
+}
+
 /**
  * 某条项目链接的合成会话:有就用(并确认还属于这个项目),没有/被删了就现建一条
  * 「ChatGPT 直连 · 项目名」。项目已经不在 → null(请求回 404)。
@@ -354,8 +426,7 @@ function writeProjectLinks(links: StoredProjectLink[]): void {
  * 每次请求都会走到这里(密钥比对成功之后),所以只做两次按主键的读;建会话只在
  * 第一次或会话被用户删掉之后发生。
  */
-function ensureLinkSession(projectId: string): string | null {
-  const project = ProjectRepo.get(projectId);
+function ensureLinkSession(projectId: string): string | null {  const project = ProjectRepo.get(projectId);
   if (!project) return null;
   const links = readProjectLinks();
   const link = links.find((l) => l.projectId === projectId);
@@ -428,6 +499,8 @@ export function removePublicMcpProjectLink(projectId: string): PublicMcpStatus {
   const next = links.filter((l) => l.projectId !== id);
   if (next.length !== links.length) {
     writeProjectLinks(next);
+    // **撤销时递增世代**(MC-062):审计与复验据此看出"这代授权已被撤"。
+    revocationEpoch += 1;
     log.info(`public mcp: project link removed for ${id}`);
   }
   return publicMcpStatus();
@@ -441,6 +514,8 @@ export function regeneratePublicMcpProjectLinkSecret(projectId: string): PublicM
   if (!link) throw new Error(`项目 ${id} 还没有公网链接`);
   link.secret = newSecret();
   writeProjectLinks(links);
+  // 轮换密钥同样递增撤销世代 —— 旧快照的 grantRevision 会因此对不上而被复验拒绝。
+  revocationEpoch += 1;
   log.warn(`public mcp: project link secret regenerated for ${id} — the old URL no longer works`);
   return publicMcpStatus();
 }
@@ -638,6 +713,9 @@ export function initPublicMcp(deps?: { mobilePort?: () => number }): void {
         return null;
       }
     },
+    // **不可变授权快照 + 复验**(MC-062):入口鉴权时固化,收到 body 后复验。
+    credentialFor: (projectId) => publicMcpCredentialFor(projectId),
+    revalidateCredential: (snapshot) => revalidatePublicMcpCredential(snapshot),
   };
   configurePublicMcpStore(store);
 

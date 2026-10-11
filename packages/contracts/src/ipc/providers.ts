@@ -234,7 +234,15 @@ export type ProviderHealthStatusCode =
   | "not_registered"
   | "unsupported"
   | "timeout"
-  | "probe_failed";
+  | "probe_failed"
+  /* 【MC-076】探测超时后,底层 SDK 资源**正在释放**中(尚未归还)。这不等于
+   * 「引擎不可用」—— 只是这次探测还没走完清理。UI 与缓存分开对待:它既不该显示为
+   * 绿色的可用,也不该显示为红色的「不可用」,而是一个中性的「正在取消」。 */
+  | "cancelling"
+  /* 【MC-076】没有可复用的权威状态、又拿不到结果(例如某家引擎根本没实现
+   * healthCheck)。与 `unsupported` 的区别:`unsupported` 是「这家明确说不支持探测」,
+   * `unknown` 是「我们确实不知道」。 */
+  | "unknown";
 
 export interface ProviderHealthCheckResult {
   providerId: string;

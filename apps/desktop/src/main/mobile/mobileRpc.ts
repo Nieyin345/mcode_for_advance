@@ -709,8 +709,10 @@ const HANDLERS: Record<string, RpcHandler> = {
       input.granted ? undefined : "Denied by user",
       input.always,
     );
-    if (!resolved) throw new RpcError(`no pending approval for ${input.requestId}`, 409);
-    return { ok: true };
+    // 【UI-035】与桌面同形:可判别回执。手机这条从前抛 409(比桌面静默 void 好),现在两边
+    // 都回 `{status,requestId}`,共享的通知/审批组件读同一份事实。
+    if (!resolved) return { status: "not_found" as const, requestId: input.requestId };
+    return { status: "accepted" as const, requestId: input.requestId };
   },
 
   "claude:respondQuestion": async (raw) => {
@@ -767,8 +769,9 @@ const HANDLERS: Record<string, RpcHandler> = {
       reason: input.reason,
       feedback: input.feedback,
     });
-    if (!resolved) throw new RpcError(`no pending plan approval for ${input.requestId}`, 409);
-    return { ok: true };
+    // 【UI-035】同形可判别回执。
+    if (!resolved) return { status: "not_found" as const, requestId: input.requestId };
+    return { status: "accepted" as const, requestId: input.requestId };
   },
 };
 

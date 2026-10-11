@@ -337,6 +337,34 @@ async function main(): Promise<void> {
   eq("disposeOwner 不波及 B 运行中的进程", procs.list(B).filter((p) => p.status === "running").length, 1);
   await procs.stop({ ownerSessionId: B, processId: keptProc.processId });
 
+  // B8 【MC-063】**端点全局容量**:per-owner 上限挡不住"多开几个对话各占一点"把物理机
+  // 堆满。用注入的小全局上限验它真的按**总量**挡(而不是只按 owner 挡)。
+  {
+    const capped2 = createAgentProcessSessions({ maxRunningTotal: 2 });
+    const startedIds: Array<{ owner: string; id: string }> = [];
+    const startTot = async (owner: string) => {
+      const s = await capped2.start({ ownerSessionId: owner, command: cmd(IDLE), cwd: work, waitMs: 0 });
+      startedIds.push({ owner, id: s.processId });
+      return s;
+    };
+    try {
+      await startTot("tot-1");
+      await startTot("tot-2");
+      // 两个不同 owner(各 1 个,都未达 per-owner 上限)但总量到 2 → 第三个即被全局挡。
+      await rejectsWith(
+        "★ 全局进程上限挡在不相关的第三个对话(per-owner 都没满)",
+        () => capped2.start({ ownerSessionId: "tot-3", command: cmd(IDLE), cwd: work, waitMs: 0 }),
+        /RESOURCE_BUSY.*总数已达上限 2/,
+      );
+    } finally {
+      // 即便上层断言失败(变异验证时第三个会起成功),也要停干净 —— 否则残进程占着
+      // cwd,套件在清临时目录时 EBUSY 崩掉,反而看不见"断言红了"这个结论。
+      for (const { owner, id } of startedIds) {
+        try { if (id) await capped2.stop({ ownerSessionId: owner, processId: id }); } catch { /* ignore */ }
+      }
+    }
+  }
+
   /* ══════════════ C. agentSearchSessions:隔离 / 上限 ══════════════ */
   console.log("C. mcp/agentSearchSessions.ts —— 后台搜索会话");
   const searchRoot = join(work, "tree");
@@ -400,6 +428,18 @@ async function main(): Promise<void> {
   eq("disposeOwner 后 A 的搜索 list 为空", searches.list(A).length, 0);
   await rejectsWith("disposeOwner 后 A 的旧 search_id 读不到", () => searches.read({ ownerSessionId: A, searchId: s1.searchId }), /没有这个搜索会话/);
   eq("disposeOwner 不波及 B 的搜索", searches.list(B).length, 1);
+
+  // C3 【MC-063】**端点全局搜索容量**:用注入的小全局上限验它按**总量**挡。
+  {
+    const cappedSearches = createAgentSearchSessions({ maxSessionsTotal: 2 });
+    await cappedSearches.start({ ownerSessionId: "st-1", type: "files", pattern: "note", root: searchRoot, literalSearch: true, waitMs: 100 });
+    await cappedSearches.start({ ownerSessionId: "st-2", type: "files", pattern: "note", root: searchRoot, literalSearch: true, waitMs: 100 });
+    await rejectsWith(
+      "★ 全局搜索上限挡在不相关的第三个对话(per-owner 都没满)",
+      () => cappedSearches.start({ ownerSessionId: "st-3", type: "files", pattern: "note", root: searchRoot, literalSearch: true, waitMs: 0 }),
+      /RESOURCE_BUSY.*总数已达上限 2/,
+    );
+  }
 
   /* ══════════════ D. agentSessionCleanup:删会话时的统一释放点 ══════════════ */
   console.log("D. mcp/agentSessionCleanup.ts —— 删会话时释放 agent 工具资源");

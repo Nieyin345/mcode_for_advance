@@ -242,6 +242,21 @@ export const ApproveSchema = z.object({
 });
 export type ApproveInput = z.infer<typeof ApproveSchema>;
 
+/**
+ * 【UI-035】审批 / 计划审批回执。从前主进程对"找不到待审请求"(另一设备已响应、会话中止、
+ * 事件迟到)只 `log.warn` 后**正常返回 void**,前端把任何正常 resolve 都当成"已处理"并消去
+ * 卡片 —— 用户以为确认成功,实际主进程没有对应 requestId。现在回执可判别:
+ *   - `accepted`:主进程确实 resolved 了那个 Deferred,前端才可清卡;
+ *   - `already_resolved`:该 requestId 已被(可能另一设备)响应过;
+ *   - `not_found`:主进程没有这个待审请求(过期/迟到/会话已变)。
+ * 前端只按 `accepted` 清卡;stale/not_found 显示原因。
+ */
+export type ApprovalReceiptStatus = "accepted" | "already_resolved" | "not_found";
+export interface ApprovalReceipt {
+  status: ApprovalReceiptStatus;
+  requestId: string;
+}
+
 /* Answer to an AskUserQuestion. `requestId` matches the question.ask event.
  * Each value is one question's answer: option label (string), labels
  * (string[] for multi-select), or null (skipped). See UserInputAnswers.

@@ -55,6 +55,7 @@ import type {
   ProviderCapabilities,
   ApprovalRequest,
   EngineCommandEntry,
+  ProviderHealthCheckContext,
 } from "@contracts/provider";
 import type { ServerRequestFrame } from "./CodexAppServerClient.js";
 import { CodexAppServerClient } from "./CodexAppServerClient.js";
@@ -779,27 +780,44 @@ export class CodexAgentSdkProvider implements AgentProvider {
   }
 
   /** Version probe for the settings UI. */
-  async healthCheck(): Promise<{ ok: boolean; version?: string; error?: string }> {
+  async healthCheck(probeCtx?: ProviderHealthCheckContext): Promise<{ ok: boolean; version?: string; error?: string }> {
+    // 【MC-076】拿宿主的受信上下文:超时到点会 abort。这条探测已经有自己的 10s
+    // execFile 超时(相对好),但仍要接宿主的预算:abort 时**终止并回收**版本命令的
+    // 子进程,不让它继续挂着。
+    const signal = probeCtx?.signal;
     try {
       const codexPath = resolveCodexBinaryPath();
       if (!codexPath) return { ok: false, error: "未找到 Codex(设置 → Agent 可安装)" };
+      if (signal?.aborted) return { ok: false, error: "健康检查已取消（宿主超时）" };
       // Async on purpose: spawnSync froze the whole main process (every window)
       // for up to the 10s timeout, and also starved providerHealth's own
       // timeout race. Non-zero exit keeps spawnSync semantics: a status, not a
       // spawn error (some builds print the version and still exit non-zero).
       const r = await new Promise<{ error?: Error; status: number | null; stdout: string }>((resolve) => {
-        execFile(
+        // abort → 终止子进程(execFile 的 callback 会收到非零退出,自然 resolve)。
+        const onAbort = (): void => {
+          try {
+            child.kill();
+          } catch {
+            /* 已退出,忽略 */
+          }
+        };
+        const child = execFile(
           codexPath,
           ["--version"],
           { timeout: 10_000, encoding: "utf-8", windowsHide: true },
           (err, stdout) => {
+            signal?.removeEventListener("abort", onAbort);
             const out = typeof stdout === "string" ? stdout : "";
             if (!err) resolve({ status: 0, stdout: out });
             else if (typeof err.code === "number") resolve({ status: err.code, stdout: out });
             else resolve({ error: err, status: null, stdout: out });
           },
         );
+        signal?.addEventListener("abort", onAbort, { once: true });
       });
+      // abort 期间被终止:如实报取消,不把 kill 造成的非零退出说成"版本探测失败"。
+      if (signal?.aborted) return { ok: false, error: "健康检查已取消（宿主超时）" };
       if (r.error) return { ok: false, error: r.error.message };
       const version = (r.stdout ?? "").trim().split("\n")[0] || undefined;
       return { ok: r.status === 0 || Boolean(version), version };

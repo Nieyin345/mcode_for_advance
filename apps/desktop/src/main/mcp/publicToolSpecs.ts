@@ -20,6 +20,14 @@ const result = (data: Record<string, unknown>, text = JSON.stringify(data)): Too
 export function compactPublicTools(agents: McpToolSpec[], libraries: McpToolSpec[], projectFor: (sessionId: string) => string | null): McpToolSpec[] {
   const read = agents.find(s => s.name === "agent_read_file");
   if (!read) throw new Error("Missing agent_read_file");
+  /**
+   * 项目根:优先用**鉴权时固化的不可变快照**(MC-062),绝不按当前设置重推 ——
+   * 撤销链接后 `projectFor` 会返回 null,那会让这条"未绑定项目"的分支生效而不是 fail
+   * open。只有**完全没有** `publicScope`(测试直调的老路径)时才退回 `projectFor`;
+   * 快照在而根为空 → 返回 null(调用方据此拒绝,不回退)。
+   */
+  const rootFor = (ctx: Parameters<McpToolSpec["handler"]>[1]): string | null =>
+    ctx.publicScope ? (ctx.publicScope.canonicalRoot || null) : (projectFor(ctx.sessionId) || null);
   const pageShape = { ...read.inputSchema };
   delete pageShape.path;
   const pageInput = z.object({ path: z.string().min(1), ...pageShape });
@@ -56,7 +64,7 @@ export function compactPublicTools(agents: McpToolSpec[], libraries: McpToolSpec
     inputSchema: { action: z.enum(["list", "read"]).default("list"), query: z.string().max(200).optional(), name: z.string().min(1).max(200).optional(), offset: z.number().int().min(0).optional().describe("list 的记录偏移"), limit: z.number().int().min(1).max(100).optional().describe("list 的页长，默认 30"), page: z.object(pageShape).optional().describe("read 的无损文本分页/版本参数") },
     outputSchema: { ...read.outputSchema, project: z.string().optional(), scope: z.literal("project").optional(), skills: z.array(z.object({ name: z.string(), description: z.string(), path: z.string(), scope: z.literal("project") })).optional(), total: z.number().optional(), scan_truncated: z.boolean().optional() },
     handler: async (args, ctx) => {
-      const project = projectFor(ctx.sessionId);
+      const project = rootFor(ctx);
       if (!project) return fail("链接尚未绑定项目，不能回退到全局技能或缓存工作目录");
       const index = discoverPublicSkills(project);
       if (args.action === "read") {
@@ -97,7 +105,7 @@ export function compactPublicTools(agents: McpToolSpec[], libraries: McpToolSpec
     handler: async (args: any, ctx: Parameters<McpToolSpec["handler"]>[1]) => {
       const out = await context.handler(args, ctx);
       if (out.isError) return out;
-      const index = discoverPublicSkills(projectFor(ctx.sessionId));
+      const index = discoverPublicSkills(rootFor(ctx));
       const project_skills = { scope: "project", skills: index.skills.slice(0, 30), total: index.skills.length, has_more: index.skills.length > 30, scan_truncated: index.scan_truncated };
       return { ...out, content: [...out.content, { type: "text" as const, text: "项目技能索引（任务相关时用 agent_skill 的 query 搜索，再 action=read；不自动执行）：\n" + JSON.stringify(project_skills) }], structuredContent: { ...out.structuredContent, project_skills } };
     },

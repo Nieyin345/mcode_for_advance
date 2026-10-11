@@ -2018,6 +2018,52 @@ console.log("\n[16] 回滚契约:缺 cwd / 缺会话都必须显式拒绝(不许
   );
 }
 
+console.log("\n[UI-035] 审批回执非 accepted(过期/已被响应):不清卡、报出原因");
+
+{
+  const SID = "ui035-session";
+  useSessionStore.setState((s) => ({
+    activeSessionId: SID,
+    pendingApprovals: [
+      { sessionId: SID, requestId: "a-035", toolName: "Bash" },
+    ] as unknown as ReturnType<typeof useSessionStore.getState>["pendingApprovals"],
+    pendingPlanApprovalBySession: {
+      ...s.pendingPlanApprovalBySession,
+      [SID]: { sessionId: SID, requestId: "p-035", plan: "# 计划" } as never,
+    },
+    planApprovalDraftBySession: { ...s.planApprovalDraftBySession, [SID]: "我的编辑稿" },
+  }));
+
+  // 主进程回 not_found(已过期/另一设备已响应)→ 卡片**不能**被清掉,并报出原因。
+  setApiStub("claude.approve", async () => ({ status: "not_found", requestId: "a-035" }));
+  useToastStore.getState().clear();
+  await useSessionStore.getState().decideApproval("a-035", true).catch(() => {});
+  eq("★ 非 accepted 回执 → 审批卡**保留**(不谎称已处理)", useSessionStore.getState().pendingApprovals.filter((p) => p.requestId === "a-035").length, 1);
+  check(
+    "★ 且给用户可读的失效提示",
+    useToastStore.getState().toasts.some((tt) => tt.kind === "error" && (tt.body ?? "").length > 0),
+  );
+
+  // accepted → 正常清卡。
+  setApiStub("claude.approve", async () => ({ status: "accepted", requestId: "a-035" }));
+  await useSessionStore.getState().decideApproval("a-035", true).catch(() => {});
+  eq("★ accepted 回执 → 审批卡被清掉", useSessionStore.getState().pendingApprovals.filter((p) => p.requestId === "a-035").length, 0);
+
+  // 计划审批同样:not_found → 保留待审卡与**编辑草稿**(不因过期无声销毁用户的编辑稿)。
+  setApiStub("claude.respondPlanApproval", async () => ({ status: "not_found", requestId: "p-035" }));
+  useToastStore.getState().clear();
+  await useSessionStore.getState().submitPlanApproval("p-035", true).catch(() => {});
+  check("★ 计划审批非 accepted → 待审卡保留", useSessionStore.getState().pendingPlanApprovalBySession[SID]?.requestId === "p-035");
+  eq("★ 且编辑草稿未被销毁", useSessionStore.getState().planApprovalDraftBySession[SID], "我的编辑稿");
+
+  setApiStub("claude.respondPlanApproval", async () => ({ status: "accepted", requestId: "p-035" }));
+  await useSessionStore.getState().submitPlanApproval("p-035", true).catch(() => {});
+  check("★ accepted → 计划待审卡被清", useSessionStore.getState().pendingPlanApprovalBySession[SID] === undefined);
+
+  setApiStub("claude.approve", null);
+  setApiStub("claude.respondPlanApproval", null);
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {
   console.error(`${failures} check(s) failed`);

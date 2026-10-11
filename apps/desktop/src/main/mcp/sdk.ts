@@ -14,6 +14,7 @@
  */
 import type { z } from "zod";
 import type { createSdkMcpServer as CreateSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import type { PublicActionContext } from "@contracts/publicMcpScope";
 
 /** 一个工具的返回值。MCP 只认这种形状的文本结果。 */
 export type ToolContent =
@@ -62,6 +63,20 @@ export interface ToolResult {
 export interface McpToolContext {
   sessionId: string;
   audience?: "public" | "local";
+  /**
+   * **资源归属 id** —— 进程 / 搜索 / SSH 这些「谁建的谁管」的东西按它分。
+   *
+   * 本机那条路缺省等于 `sessionId`(行为不变)。公网那条路由宿主设为**被验证的客户端
+   * 会话标识**(`PublicActionContext.clientSessionId`),于是同一个项目链接被多个
+   * ChatGPT 对话复用时,各对话的进程/搜索/SSH **互不可见**(MC-063)。
+   */
+  ownerId?: string;
+  /**
+   * **公网调用的不可变授权快照**(MC-062)。公网那条路由入口在鉴权成功那一刻固化,
+   * 工具层只读它、绝不再从当前设置推导沙箱根 —— 于是撤销链接不会把在途请求的作用域
+   * 改宽。本机那条路没有(不需要沙箱)。
+   */
+  publicScope?: PublicActionContext;
 }
 
 /**

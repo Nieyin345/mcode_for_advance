@@ -7,6 +7,8 @@ export const en = {
   "layout.status.checkingProvider": "Checking…",
   "layout.status.providerUnavailable": "Unavailable",
   "layout.status.healthTimeout": "Check timed out",
+  "layout.status.healthCancelling": "Cancelling (releasing resources)…",
+  "layout.status.healthUnknown": "Status unknown",
   "layout.status.providerNotRegistered": "Not registered",
   "layout.status.healthUnsupported": "Check unsupported",
   "layout.status.retryHealth": "Click to retry",

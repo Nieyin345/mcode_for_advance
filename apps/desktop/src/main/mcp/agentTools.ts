@@ -60,6 +60,8 @@ import { extractBashWriteTargets, expandTilde } from "@main/providers/pi-sdk/bas
 // **共用同一份查询**(见 `readEnvSnapshot`),不在这里再查一遍库/项目。
 import { readEnvSnapshot } from "@main/providers/envPrompt.js";
 import type { LibraryForAi, SandboxReadCheck, SandboxReadKind } from "./sandboxReadPolicy.js";
+import { PUBLIC_SCOPE_UNAVAILABLE } from "@contracts/publicMcpScope";
+import { ownersForSession, forgetSyntheticSession } from "@main/providers/bridge/publicClientSessions.js";
 import { fail, image, text, type McpToolContext, type McpToolSpec } from "./sdk.js";
 import { structured as structuredResult } from "./sdk.js";
 import {
@@ -1058,9 +1060,14 @@ const agentRemoteSsh = createAgentRemoteSshManager();
 // Deleting a conversation releases what its agent tools still hold (see
 // agentSessionCleanup.ts — OBS-M14-01: SSH otherwise auto-reconnects forever).
 registerAgentSessionDisposer((sessionId) => {
-  agentProcesses.disposeOwner(sessionId);
-  agentSearches.disposeOwner(sessionId);
-  agentRemoteSsh.disposeOwner(sessionId);
+  // 资源按 owner 分桶:本机那条路 owner = 会话 id;公网那条路 owner = 被验证的客户端
+  // 会话(MC-063)。删会话时要把该会话名下**所有** owner 一并释放(见 ownersForSession)。
+  for (const owner of ownersForSession(sessionId)) {
+    agentProcesses.disposeOwner(owner);
+    agentSearches.disposeOwner(owner);
+    agentRemoteSsh.disposeOwner(owner);
+  }
+  forgetSyntheticSession(sessionId);
 });
 // 应用退出时杀掉还在跑的后台进程,否则它们比 Mcode 活得久(端口一直被占)。
 registerAgentShutdownHook(() => agentProcesses.disposeAll());
@@ -1068,8 +1075,43 @@ registerAgentShutdownHook(() => agentProcesses.disposeAll());
 export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
   /** 每个工具共用的前置:解析 cwd。失败统一转 fail 文本。 */
   const cwdOf = (ctx: McpToolContext): string | null => deps.cwdFor(ctx.sessionId);
-  /** 这个会话的沙箱根(null = 不限制,桌面本机那条路)。 */
-  const sandboxOf = (ctx: McpToolContext): string | null => deps.sandboxRootFor?.(ctx.sessionId) ?? null;
+  /**
+   * **资源归属 id** —— 进程 / 搜索 / SSH 这些"谁建的谁管"的东西按它分桶。
+   *
+   * 本机那条路没有 `ownerId`(退回 `sessionId`,行为不变)。公网那条路由宿主设为
+   * **被验证的客户端会话标识**(`PublicActionContext.clientSessionId`),于是同一个项目
+   * 链接被多个 ChatGPT 对话复用时,各对话互不可见、各用各的配额(MC-063)。
+   */
+  const ownerOf = (ctx: McpToolContext): string => ctx.ownerId ?? ctx.sessionId;
+  /**
+   * 这个会话的沙箱根(null = 不限制,桌面本机那条路)。
+   *
+   * ⚠️ **公网那条路必须用鉴权时固化的 `ctx.publicScope.canonicalRoot`,绝不再按当前
+   * 链接动态推导**(MC-062):撤销链接后 `deps.sandboxRootFor` 会返回 null,而 null 在这里
+   * 表示"不限制" —— 那等于撤销反而放宽在途请求的作用域。公网恒有 `publicScope`(由入口
+   * 固化),取它的根就钉死了。缺根时返回 null,由调用方(公网写/执行路径)**fail closed**。
+   */
+  const sandboxOf = (ctx: McpToolContext): string | null => {
+    if (ctx.audience === "public") {
+      // ⚠️ **只用鉴权时固化的根,绝不按当前链接动态重推** —— 没有就等于没有根,
+      // 由 `requirePublicRoot` fail closed;不回退 `deps.sandboxRootFor`(那正是 MC-062)。
+      return ctx.publicScope?.canonicalRoot || null;
+    }
+    return deps.sandboxRootFor?.(ctx.sessionId) ?? null;
+  };
+  /**
+   * **公网 fail closed 的唯一判据**(MC-062):公网 audience 拿不到有效沙箱根时,
+   * 一律拒绝,绝不把 `null` 当"不限路径"、也绝不回退 `cwdFor`/默认项目。
+   *
+   * 本机那条路(`audience !== "public"`)没有沙箱是**设计**(桌面 claude 引擎那种自由度),
+   * 不受这里影响。返回统一错误标记 `PUBLIC_SCOPE_UNAVAILABLE`,便于上游识别与断言。
+   */
+  const requirePublicRoot = (ctx: McpToolContext): void => {
+    if (ctx.audience !== "public") return;
+    if (!sandboxOf(ctx)) {
+      throw new Error(PUBLIC_SCOPE_UNAVAILABLE);
+    }
+  };
   /**
    * 搜索结果里给模型看的路径:在工作目录(有沙箱就是沙箱)里面就给相对它的正斜杠路径 ——
    * 和相对路径的解析基准是同一个,拿去 agent_read_file 直接能用;在外面就给绝对路径。
@@ -1101,6 +1143,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
    * 该有的含义。没有沙箱(桌面本机会话)时退回 `cwdFor`,那条路行为不变。
    */
   const pOf = (ctx: McpToolContext, p: string): string => {
+    requirePublicRoot(ctx);
     const sandbox = sandboxOf(ctx);
     const abs = resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, sandbox);
     if (ctx.audience === "public") {
@@ -1114,6 +1157,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
    * (资料库 / 技能库只读可达,守屏蔽规则)。写工具一律还走 {@link pOf}。
    */
   const pOfRead = (ctx: McpToolContext, p: string, kind: SandboxReadKind): string => {
+    requirePublicRoot(ctx);
     const sandbox = sandboxOf(ctx);
     const abs = resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, null);
     if (ctx.audience === "public") {
@@ -1957,7 +2001,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           const root = pOfRead(ctx, args.path ?? ".", "search");
           const out = await agentSearches.start({
             canRead: canRead(ctx),
-            ownerSessionId: ctx.sessionId,
+            ownerSessionId: ownerOf(ctx),
             type: args.search_type,
             pattern: args.pattern,
             root,
@@ -1986,7 +2030,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       },
       handler: (args: { search_id: string; offset?: number; length?: number; wait_ms?: number }, ctx) =>
         attempt(async () => formatSearchResult(await agentSearches.read({
-          ownerSessionId: ctx.sessionId,
+          ownerSessionId: ownerOf(ctx),
           searchId: args.search_id,
           offset: args.offset,
           length: args.length,
@@ -1999,7 +2043,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       description: "停止当前对话自己启动的后台搜索；已经找到的结果仍可读取。",
       inputSchema: { search_id: z.string().min(1).describe("要停止的 search_id") },
       handler: (args: { search_id: string }, ctx) =>
-        attempt(async () => formatSearchResult(agentSearches.stop(ctx.sessionId, args.search_id))),
+        attempt(async () => formatSearchResult(agentSearches.stop(ownerOf(ctx), args.search_id))),
     },
 
     {
@@ -2008,7 +2052,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       inputSchema: {},
       handler: (_args: Record<string, never>, ctx) =>
         attempt(async () => {
-          const list = agentSearches.list(ctx.sessionId);
+          const list = agentSearches.list(ownerOf(ctx));
           if (list.length === 0) return "当前对话没有搜索会话";
           return list.map((s) =>
             `${s.searchId}\t${s.status}\t${s.type}\tresults=${s.totalResults}\tscanned=${s.scannedFiles}\t${s.pattern}\t${s.root}`,
@@ -2076,6 +2120,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               // bash 的 cwd 是"命令在哪跑",不是"能碰哪个文件" —— 命令里的**重定向目标**
               // 可以指向别处(`> /other/x`)。所以这里额外做一道**写目标检查**:
               // 见下面那个 guard。
+              // ⚠️ **公网 fail closed**(MC-062):拿不到有效根就不执行,绝不回退不受限。
+              try { requirePublicRoot(ctx); } catch (err) { reject(err instanceof Error ? err : new Error(String(err))); return; }
               const sandbox = sandboxOf(ctx);
               // ⚠️ **第三参必须给 `sandbox`** —— `resolveAgainstCwd` 的 `root` 默认是
               // null(不检查),只传两个参数的话**命令自己的 cwd 就不受沙箱约束**:
@@ -2181,10 +2227,12 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       handler: (args: { command: string; cwd?: string; timeout_ms?: number; wait_ms?: number }, ctx) =>
         attemptStructured(async () => {
           // 同 agent_bash:cwd 也要落在沙箱里(第三参给上,否则 `cwd` 参数能绕出去)。
+          // ⚠️ 公网 fail closed(MC-062):没有有效根就不启动,绝不回退不受限。
+          requirePublicRoot(ctx);
           const sandbox = sandboxOf(ctx);
           const cwd = resolveAgainstCwd(sandbox ?? cwdOf(ctx), args.cwd ?? ".", sandbox);
           const out = await agentProcesses.start({
-            ownerSessionId: ctx.sessionId,
+            ownerSessionId: ownerOf(ctx),
             command: args.command,
             cwd,
             timeoutMs: args.timeout_ms,
@@ -2216,7 +2264,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       handler: (args: { process_id?: string; cursor?: number; max_chars?: number; wait_ms?: number }, ctx) =>
         attemptStructured(async () => {
           if (!args.process_id) {
-            const items = agentProcesses.list(ctx.sessionId);
+            const items = agentProcesses.list(ownerOf(ctx));
             if (items.length === 0) return { text: "当前对话还没有 agent 持久进程", structured: null };
             return {
               text: items
@@ -2228,7 +2276,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             };
           }
           const out = await agentProcesses.read({
-            ownerSessionId: ctx.sessionId,
+            ownerSessionId: ownerOf(ctx),
             processId: args.process_id,
             cursor: args.cursor,
             maxChars: args.max_chars,
@@ -2245,7 +2293,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       inputSchema: {},
       handler: (_args: Record<string, never>, ctx) =>
         attempt(async () => {
-          const list = agentProcesses.list(ctx.sessionId);
+          const list = agentProcesses.list(ownerOf(ctx));
           if (list.length === 0) return "当前对话没有持久进程会话";
           return list.map((p) =>
             `${p.processId}\t${p.status}\tcursor=${p.endCursor}\t${p.command}\t${p.cwd}`,
@@ -2285,7 +2333,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       ) =>
         attemptStructured(async () => {
           const out = await agentProcesses.write({
-            ownerSessionId: ctx.sessionId,
+            ownerSessionId: ownerOf(ctx),
             processId: args.process_id,
             input: args.input,
             appendNewline: args.append_newline,
@@ -2311,7 +2359,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       handler: (args: { process_id: string; cursor?: number; max_chars?: number }, ctx) =>
         attemptStructured(async () => {
           const out = await agentProcesses.stop({
-            ownerSessionId: ctx.sessionId,
+            ownerSessionId: ownerOf(ctx),
             processId: args.process_id,
             cursor: args.cursor,
             maxChars: args.max_chars,
@@ -2351,7 +2399,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         passphrase?: string; keepalive_interval_ms?: number; keepalive_count_max?: number; ready_timeout_ms?: number;
       }, ctx) => attemptStructured(async () => {
         const info = await agentRemoteSsh.connect({
-          ownerSessionId: ctx.sessionId,
+          ownerSessionId: ownerOf(ctx),
           host: args.host,
           port: args.port,
           username: args.username,
@@ -2379,8 +2427,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         connection_id: z.string().min(1).optional().describe("agent_ssh_connect 返回的 id；省略则列全部"),
       },
       handler: (args: { connection_id?: string }, ctx) => attempt(async () => {
-        if (args.connection_id) return formatRemoteConnection(agentRemoteSsh.status(ctx.sessionId, args.connection_id));
-        const items = agentRemoteSsh.list(ctx.sessionId);
+        if (args.connection_id) return formatRemoteConnection(agentRemoteSsh.status(ownerOf(ctx), args.connection_id));
+        const items = agentRemoteSsh.list(ownerOf(ctx));
         return items.length ? items.map(formatRemoteConnection).join("\n\n") : "当前对话没有 SSH 连接";
       }),
     },
@@ -2390,7 +2438,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       description: "主动关闭当前对话自己创建的 SSH 连接并停止自动重连。不会停止服务器上已启动的训练任务。",
       inputSchema: { connection_id: z.string().min(1).describe("要关闭的 connection_id") },
       handler: (args: { connection_id: string }, ctx) => attempt(async () => {
-        await agentRemoteSsh.disconnect(ctx.sessionId, args.connection_id);
+        await agentRemoteSsh.disconnect(ownerOf(ctx), args.connection_id);
         return `SSH 连接 ${args.connection_id} 已关闭；远程训练任务不受影响`;
       }),
     },
@@ -2413,7 +2461,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           .describe(`默认 ${DEFAULT_SSH_EXEC_TIMEOUT_MS}，最大 ${MAX_SSH_EXEC_TIMEOUT_MS}`),
       },
       handler: (args: { connection_id: string; command: string; timeout_ms?: number }, ctx) => attemptStructured(async () => {
-        const r = await agentRemoteSsh.exec(ctx.sessionId, args.connection_id, args.command, args.timeout_ms);
+        const r = await agentRemoteSsh.exec(ownerOf(ctx), args.connection_id, args.command, args.timeout_ms);
         const parts = [`exit: ${r.code ?? "null"}${r.signal ? ` signal=${r.signal}` : ""}`];
         const stdout = truncateHeadTail(r.stdout.trim(), "remote stdout");
         const stderr = truncateHeadTail(r.stderr.trim(), "remote stderr");
@@ -2447,7 +2495,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       handler: (args: { connection_id: string; command: string; cwd?: string; job_id?: string; mode?: "auto" | "tmux" | "nohup" }, ctx) =>
         attemptStructured(async () => {
           const r = await agentRemoteSsh.startJob({
-            ownerSessionId: ctx.sessionId,
+            ownerSessionId: ownerOf(ctx),
             connectionId: args.connection_id,
             command: args.command,
             cwd: args.cwd,
@@ -2470,7 +2518,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       inputSchema: { connection_id: z.string().min(1), job_id: z.string().min(1).max(64) },
       handler: (args: { connection_id: string; job_id: string }, ctx) =>
         attemptStructured(async () => {
-          const s = await agentRemoteSsh.jobStatus(ctx.sessionId, args.connection_id, args.job_id);
+          const s = await agentRemoteSsh.jobStatus(ownerOf(ctx), args.connection_id, args.job_id);
           return { text: formatRemoteJobStatus(s), structured: remoteJobStatusStructured(s) };
         }),
       outputSchema: REMOTE_JOB_STATUS_OUTPUT_SCHEMA,
@@ -2500,7 +2548,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       handler: (args: { connection_id: string; job_id: string; stream?: "stdout" | "stderr"; cursor?: number; max_bytes?: number; wait_ms?: number }, ctx) =>
         attemptStructured(async () => {
           const r = await agentRemoteSsh.jobLogs({
-            ownerSessionId: ctx.sessionId,
+            ownerSessionId: ownerOf(ctx),
             connectionId: args.connection_id,
             jobId: args.job_id,
             stream: args.stream ?? "stdout",
@@ -2540,7 +2588,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       description: "列出服务器 ~/.mcode/jobs 下最近的任务 id，便于 SSH/MCP 重启后重新发现训练任务。",
       inputSchema: { connection_id: z.string().min(1) },
       handler: (args: { connection_id: string }, ctx) => attempt(async () => {
-        const jobs = await agentRemoteSsh.listJobs(ctx.sessionId, args.connection_id);
+        const jobs = await agentRemoteSsh.listJobs(ownerOf(ctx), args.connection_id);
         return jobs.length ? jobs.map((id) => `- ${id}`).join("\n") : "服务器上还没有 mcode remote job";
       }),
     },
@@ -2550,7 +2598,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       description: "取消远程训练任务。优先杀 tmux session / runner 进程组；属于有副作用操作，需要审批。",
       inputSchema: { connection_id: z.string().min(1), job_id: z.string().min(1).max(64) },
       handler: (args: { connection_id: string; job_id: string }, ctx) => attempt(async () =>
-        formatRemoteJobStatus(await agentRemoteSsh.cancelJob(ctx.sessionId, args.connection_id, args.job_id)),
+        formatRemoteJobStatus(await agentRemoteSsh.cancelJob(ownerOf(ctx), args.connection_id, args.job_id)),
       ),
     },
     {

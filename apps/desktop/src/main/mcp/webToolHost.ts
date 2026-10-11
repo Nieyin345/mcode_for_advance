@@ -213,7 +213,7 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
   // 库里的文件本身用 `agent_read_*` 读；公网额外禁止全局技能，技能只属于绑定项目(见
   // `sandboxReadPolicy.ts`,守屏蔽规则)。
   // `extraTools`(测试替身)不进这张表 —— 公网表要验的就是生产给出去的那一份。
-  const publicSpecs = compactPublicTools(agentSpecs, libraryMcpTools().filter(spec => LIBRARY_READONLY_TOOLS.has(spec.name)), sessionId => deps.sandboxRootFor?.(sessionId) ?? null);
+  const publicSpecs = compactPublicTools(agentSpecs, libraryMcpTools().filter(spec => LIBRARY_READONLY_TOOLS.has(spec.name)), (sessionId) => deps.sandboxRootFor?.(sessionId) ?? null);
   // ── 本机浏览器扩展那张表(`/mcp`):照旧。
   const specs: McpToolSpec[] = [
     // ⚠️ **`includeSessionLogs: false`（2026-09-24）—— 读用户对话记录那组工具
@@ -325,6 +325,11 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
         };
       }
 
+      // 公网那条路:**资源归属 id**用被验证的客户端会话(不是共享的合成会话),
+      // 于是同一项目链接被多个 ChatGPT 对话复用时各管各的(MC-063);
+      // 并带上鉴权时固化的不可变授权快照,让文件/bash/进程工具按它 fail closed(MC-062)。
+      const ownerId = ctx.audience === "public" ? ctx.ownerId ?? sessionId : sessionId;
+
       const parsed = z.object(spec.inputSchema).safeParse(args ?? {});
       if (!parsed.success) {
         return { text: `参数不合法,${describeIssues(parsed.error)}`, isError: true };
@@ -359,7 +364,12 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
         }
       }
 
-      const out = await spec.handler(parsed.data, { sessionId, audience: ctx.audience === "public" ? "public" : "local" });
+      const out = await spec.handler(parsed.data, {
+        sessionId,
+        audience: ctx.audience === "public" ? "public" : "local",
+        ownerId,
+        ...(ctx.publicScope ? { publicScope: ctx.publicScope } : {}),
+      });
       const textProjection = out.content
         .filter((c): c is Extract<(typeof out.content)[number], { type: "text" }> => c.type === "text")
         .map((c) => c.text)

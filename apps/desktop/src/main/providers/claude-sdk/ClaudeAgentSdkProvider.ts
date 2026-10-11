@@ -19,6 +19,7 @@ import type {
   ProviderCapabilities,
   UserInputAnswers,
   EngineCommandEntry,
+  ProviderHealthCheckContext,
 } from "@contracts/provider";
 import type { AskUserQuestionItem, AskUserQuestionOption, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
@@ -2005,28 +2006,61 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     }
   }
 
-  async healthCheck(): Promise<{ ok: boolean; version?: string; error?: string }> {
+  async healthCheck(probeCtx?: ProviderHealthCheckContext): Promise<{ ok: boolean; version?: string; error?: string }> {
+    // 【MC-076】拿宿主的受信上下文:超时到点会 abort。我们必须**主动释放**这条
+    // 查询流(iterator `.return()` → CLI 子进程退出),而不是只让宿主那层停止等待。
+    const signal = probeCtx?.signal;
+    const binaryPath = resolveSdkBinaryPath();
+    const q = (await loadQuery())({
+      prompt: "",
+      options: {
+        maxTurns: 0,
+        includePartialMessages: false,
+        ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),
+      },
+    });
+    // 关闭只做一次(abort 回调与 finally 都可能触发)。
+    let released = false;
+    const release = async (): Promise<void> => {
+      if (released) return;
+      released = true;
+      try {
+        // 关闭查询流 —— 不关的话每探测一次就多留一个 CLI 进程。
+        await q.return(undefined);
+      } catch {
+        /* 关闭失败无所谓:进程退出时会带走 */
+      }
+    };
+    // abort 时立刻拆掉底层(不等 for-await 自己发现)。
+    const onAbort = (): void => { void release(); };
+    // 已经 abort 的(宿主在拿到 q 之前就超时了)—— 直接释放,不再开等。
+    if (signal?.aborted) {
+      await release();
+      return { ok: false, error: "健康检查已取消（宿主超时）" };
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    // **手工迭代**而不是 `for await`:`for await` 在提前 `return`/`break` 时会由语言自己
+    // 调一次 `iterator.return()`(AsyncIteratorClose),再加我们的 `finally` 释放就成了
+    // **两次**关闭。手工迭代把关闭**唯一**地交给 `release()`,恰好一次。
+    const it = q[Symbol.asyncIterator]();
     try {
       // A quick probe: spawn a minimal query and capture the system/init message
       // to verify the SDK binary is functional.
-      const binaryPath = resolveSdkBinaryPath();
-      const q = (await loadQuery())({
-        prompt: "",
-        options: {
-          maxTurns: 0,
-          includePartialMessages: false,
-          ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),
-        },
-      });
       // We just need the first system/init message to confirm the binary works.
-      for await (const m of q) {
+      while (true) {
+        const { value: m, done } = await it.next();
+        if (done) break;
+        if (signal?.aborted) break;
         if (m.type === "system" && m.subtype === "init") {
           return { ok: true, version: (m as { claude_code_version?: string }).claude_code_version };
         }
       }
-      return { ok: false, error: "No system/init message received" };
+      return { ok: false, error: signal?.aborted ? "健康检查已取消（宿主超时）" : "No system/init message received" };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      await release();
     }
   }
 }

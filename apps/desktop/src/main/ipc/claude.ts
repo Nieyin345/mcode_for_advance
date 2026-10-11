@@ -413,8 +413,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       input.always,
     );
     if (!resolved) {
+      // 【UI-035】找不到待审请求(已响应 / 会话中止 / 事件迟到)→ 回可判别回执,不再静默 void。
       log.warn(`approval: no pending request for id ${input.requestId}`);
+      return { status: "not_found" as const, requestId: input.requestId };
     }
+    return { status: "accepted" as const, requestId: input.requestId };
   });
 
   // ── AskUserQuestion answer: resolve the provider's pending user-input
@@ -500,8 +503,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       feedback: input.feedback,
     });
     if (!resolved) {
+      // 【UI-035】同 CLAUDE_APPROVE:找不到待审计划请求 → 回可判别回执,不静默 void。
       log.warn(`respondPlanApproval: no pending request for id ${input.requestId}`);
+      return { status: "not_found" as const, requestId: input.requestId };
     }
+    return { status: "accepted" as const, requestId: input.requestId };
   });
 
   // ── Rewind a turn: restore the given files to their pre-turn state.

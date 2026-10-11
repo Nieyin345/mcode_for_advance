@@ -7724,13 +7724,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // running concurrently the foreground activeSessionId may be a DIFFERENT
     // session than the one whose approval is being answered.
     const sessionId = head.sessionId;
+    let receipt: { status?: string; requestId?: string } | undefined;
     try {
-      await api.claude.approve({ sessionId, requestId, granted, always });
+      receipt = await api.claude.approve({ sessionId, requestId, granted, always });
     } catch (err) {
       // Don't shift on failure; the card stays so the user can retry. But say so
       // — a click that leaves the queue untouched and prints nothing reads as a
       // dead button (there is no global unhandledrejection handler here).
       reportInteractionFailed("store.toast.approvalFailed", err);
+      return;
+    }
+    // 【UI-035】只有主进程**确实 resolved** 了那个 Deferred(accepted)才清卡。从前任何正常
+    // resolve 都清卡 —— 审批已过期/已被另一设备响应时(`not_found`),主进程其实没受理,界面却
+    // 消去卡片,像本次确认成功了。stale 时保留卡片并提示原因,由用户重新决策或刷新。
+    // 兼容旧/桩返回 `undefined`(视作已受理,保持既有行为),只对**明确的**非 accepted 回执拦截。
+    if (receipt !== undefined && receipt.status !== "accepted") {
+      reportInteractionFailed("store.toast.approvalExpired", new Error(String(receipt.status)));
       return;
     }
     set((s) => ({
@@ -7762,7 +7771,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     if (!pending || !sessionId) return;
     try {
-      await api.claude.respondPlanApproval({ sessionId, requestId, approved, editedPlan, reason, feedback });
+      const receipt = await api.claude.respondPlanApproval({ sessionId, requestId, approved, editedPlan, reason, feedback });
+      // 【UI-035】计划审批也只有主进程**确实 resolved** 才清卡与草稿 —— 过期/已被响应时
+      // 保留待审卡与编辑草稿(不因过期无声销毁用户的编辑稿),并提示原因。
+      // 兼容旧/桩返回 `undefined`(视作已受理),只对**明确的**非 accepted 回执拦截。
+      if (receipt !== undefined && receipt.status !== "accepted") {
+        reportInteractionFailed("store.toast.approvalExpired", new Error(String(receipt.status)));
+        return;
+      }
       set((s) => {
         const { [sessionId]: _drop, ...rest } = s.pendingPlanApprovalBySession;
         // Drop the 待审阅 badge on the inline plan block now that the user

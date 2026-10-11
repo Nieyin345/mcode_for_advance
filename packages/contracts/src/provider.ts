@@ -427,6 +427,38 @@ export interface TurnHandle {
   stopTask?(taskId: string): boolean | Promise<boolean>;
 }
 
+/**
+ * 【MC-076】宿主签发的最小「可中止信号」形状。
+ *
+ * 为什么不用 DOM/Node 的 `AbortSignal` 类型:本包(`packages/contracts`)的 tsconfig
+ * `lib` 只有 `["ES2022"]`,没有 DOM,拿不到全局 `AbortSignal` 名字。而真实的
+ * `AbortSignal` **结构化兼容**这个形状(有 `aborted`、`addEventListener("abort", …)`,
+ * 见 `reason`),所以宿主(主进程,有 DOM lib)直接把真的 `AbortController.signal`
+ * 传进来即可 —— 生产代码里仍是同一个真信号,只是契约这边用结构类型描述它。
+ */
+export interface ProviderAbortSignal {
+  readonly aborted: boolean;
+  addEventListener(type: "abort", listener: () => void, options?: { once?: boolean }): void;
+  removeEventListener(type: "abort", listener: () => void): void;
+}
+
+/**
+ * 【MC-076】宿主签发的受信探测上下文,交给 `AgentProvider.healthCheck`。
+ *
+ * 存在的理由:健康探测的外层超时(`Promise.race`)过去**只停止等待**,不终止底层
+ * SDK 的工作。引擎拿到这个上下文后必须在 `signal` abort 时**主动释放**自己开的
+ * 资源(查询流 iterator / 子进程 / SDK 会话),这样 `ProviderProbeService` 才能在
+ * 「底层资源确实归还」之后再起下一份探测,而不是无限累积。
+ */
+export interface ProviderHealthCheckContext {
+  /** 外层超时到点(或宿主主动取消)时 abort。引擎必须据此释放底层资源。 */
+  readonly signal: ProviderAbortSignal;
+  /** 截止时刻(epoch ms)。引擎可据此另设兜底计时器,`signal` 之外多一层保险。 */
+  readonly deadline: number;
+  /** 本次探测的唯一 id,日志与「完成释放确认」用。 */
+  readonly probeId: string;
+}
+
 /** Every AI backend implements this interface. */
 export interface AgentProvider {
   /** Unique id, e.g. "claude-sdk". Persisted in SQLite, used as registry key. */
@@ -457,8 +489,20 @@ export interface AgentProvider {
    */
   forkSession?(providerSessionId: string, opts: { cwd: string; title: string }): Promise<string>;
 
-  /** Optional: quick health / version probe for settings UI. */
-  healthCheck?(): Promise<{ ok: boolean; version?: string; error?: string }>;
+  /**
+   * Optional: quick health / version probe for settings UI.
+   *
+   * 【MC-076】`probeCtx` 是**宿主签发的受信探测上下文**(可选,保持向后兼容 ——
+   * 老调用点不带它照常工作)。它承载三件事:
+   *   - `signal`:`ProviderProbeService` 的外层超时到点时 abort。引擎**必须**据此
+   *     **主动释放**底层资源(SDK 查询流的 iterator `.return()` / 子进程 close、
+   *     Pi 会话 `dispose`、Codex 版本命令子进程终止),而不是只让宿主的
+   *     `Promise.race` 停止等待。从前超时只停止外层等待,底层任务仍挂着,连续 force
+   *     会不断累积未归还的会话与进程。
+   *   - `deadline`:截止时刻(epoch ms),引擎内部可据此另设兜底计时器。
+   *   - `probeId`:本次探测的唯一 id,日志与「完成释放确认」用。
+   */
+  healthCheck?(probeCtx?: ProviderHealthCheckContext): Promise<{ ok: boolean; version?: string; error?: string }>;
 
   /**
    * 引擎自己提供的**斜杠命令清单**（2026-09-21）。

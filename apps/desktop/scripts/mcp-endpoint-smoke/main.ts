@@ -45,6 +45,8 @@ import {
   type McpToolCallResult,
   type McpToolInfo,
 } from "@main/providers/bridge/mcpEndpoint.js";
+import { PUBLIC_MCP_CLIENT_SESSION_HEADER, PUBLIC_SCOPE_UNAVAILABLE, type PublicCredentialSnapshot } from "@contracts/publicMcpScope";
+import { __resetPublicClientSessions } from "@main/providers/bridge/publicClientSessions.js";
 import {
   configurePublicMcpStore,
   publicMcpPort,
@@ -139,6 +141,16 @@ configureMcpToolHost({
 const TOKEN = randomUUID().replace(/-/g, "");
 /** 公网端点那把路径密钥（同样只关心"对不对"，不关心从哪来）。 */
 const PUBLIC_SECRET = randomUUID().replace(/-/g, "");
+/** 公网默认链接的规范根 —— 一个存在的临时目录(入口用 canonicalRoot 做 fail closed 判据)。 */
+const PUBLIC_SANDBOX_ROOT = mkdtempSync(path.join(tmpdir(), "mcode-public-root-"));
+/**
+ * **公网凭据快照的假实现**(MC-062)。真实那份在 `publicMcpSession.publicMcpCredentialFor`:
+ * 鉴权那一刻解析出规范根,root 取不到就返回 null → 入口 fail closed。
+ */
+function credentialSnapshot(credentialId: string, projectId: string, root: string | null): PublicCredentialSnapshot | null {
+  if (!root) return null;
+  return { credentialId, projectId, canonicalRoot: root, grantRevision: `rev:${credentialId}`, revocationEpoch: 0 };
+}
 configureExtensionBridgeTokenStore({ get: () => TOKEN, set: () => {} });
 await ensureStarted();
 const base = bridgeStatus().url;
@@ -353,6 +365,8 @@ configurePublicMcpStore({
   setSecret: () => {},
   getSessionId: () => PUBLIC_SESSION,
   setSessionId: () => {},
+  // 默认链接的凭据快照:canonicalRoot 指向一个存在的临时目录(入口据此 fail closed)。
+  credentialFor: (projectId) => credentialSnapshot(projectId ?? "default", projectId ?? "default", PUBLIC_SANDBOX_ROOT),
 });
 await startPublicMcp();
 const publicPort = publicMcpPort();
@@ -361,11 +375,12 @@ check("公网 MCP 服务起来了", publicPort > 0, publicPort);
 /** 打到公网端点。`path` 省略时用正确密钥。 */
 async function publicRpc(
   body: unknown,
-  opts: { path?: string; method?: string; sessionHeader?: string | null } = {},
+  opts: { path?: string; method?: string; sessionHeader?: string | null; extraHeaders?: Record<string, string> } = {},
 ): Promise<RpcReply> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   // 外部**不带**会话头 —— 会话必须由服务端注入。带一个假的来验"覆写"。
   if (opts.sessionHeader) headers[MCODE_SESSION_HEADER] = opts.sessionHeader;
+  if (opts.extraHeaders) Object.assign(headers, opts.extraHeaders);
   const method = opts.method ?? "POST";
   const path = opts.path ?? `${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}`;
   const res = await fetch(`http://127.0.0.1:${publicPort}${path}`, {
@@ -498,6 +513,8 @@ eq("…放行任意来源（ChatGPT 的 Connector 不是扩展来源）", prefli
   const LINK_A = "a".repeat(63) + "1";
   const LINK_B = "b".repeat(63) + "2";
   const linkSessions: Record<string, string | null> = { projA: "sess_link_a", projB: "sess_link_b", gone: null };
+  // `gone` 项目根取不到 → 凭据快照为 null → 入口 fail closed(404),绝不回退默认项目。
+  const linkRoots: Record<string, string | null> = { projA: "/tmp/proj-a", projB: "/tmp/proj-b", gone: null };
   configurePublicMcpStore({
     getEnabled: () => publicStoreEnabled,
     setEnabled: () => {},
@@ -505,6 +522,7 @@ eq("…放行任意来源（ChatGPT 的 Connector 不是扩展来源）", prefli
     setSecret: () => {},
     getSessionId: () => PUBLIC_SESSION,
     setSessionId: () => {},
+    credentialFor: (projectId) => credentialSnapshot(projectId ?? "default", projectId ?? "default", linkRoots[projectId ?? ""] ?? PUBLIC_SANDBOX_ROOT),
     listProjectLinks: () => [
       { projectId: "projA", secret: LINK_A },
       { projectId: "projB", secret: LINK_B },
@@ -535,6 +553,253 @@ eq("…放行任意来源（ChatGPT 的 Connector 不是扩展来源）", prefli
   ]);
   check("★ 两条链接并发都 200", both.every((r) => r.status === 200), both.map((r) => r.status));
 }
+
+/* ── MC-062:授权撤销后**不执行**,无 root **不 fail-open**,伪造 header **不旁路** ──
+ *
+ * 判据立在这三件事上:
+ *  ① 用有效密钥进入、body 尚未发完时撤销链接 → 完成 body **不执行危险工具**(拒绝);
+ *  ② 项目根取不到(credentialFor 返回 null)→ 入口 fail closed,绝不退回默认项目;
+ *  ③ 外部伪造的会话头 / 旧工具名不能旁路注销。
+ * 全部用**假项目 + 假 store + loopback**,不碰任何真实用户文件。 */
+__resetPublicClientSessions();
+{
+  const LIVE_SECRET = "e".repeat(64);
+  let revoked = false;
+  let rootAvailable = true;
+  const seen: string[] = [];
+  configureMcpToolHost({
+    listTools: () => FAKE_TOOLS,
+    async callTool(name, args, ctx): Promise<McpToolCallResult> {
+      seen.push(name);
+      return { text: `ran:${name}:session=${ctx.sessionId ?? "null"}:owner=${ctx.ownerId ?? "null"}` };
+    },
+  });
+  configurePublicMcpStore({
+    getEnabled: () => publicStoreEnabled,
+    setEnabled: () => {},
+    getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
+    setSecret: () => {},
+    getSessionId: () => PUBLIC_SESSION,
+    setSessionId: () => {},
+    // 撤销 / 根失效时 credentialFor 返回 null —— 入口必须 fail closed。
+    credentialFor: (projectId) => (rootAvailable ? credentialSnapshot(projectId ?? "default", projectId ?? "default", "/tmp/mc062-live") : null),
+    // 复验:收到 body 之后再看一眼凭据是否还有效(模拟异步窗口里链接被删)。
+    revalidateCredential: () => (revoked ? "链接已撤销" : null),
+  });
+
+  // ① 撤销发生在"收到 body"之后、真正执行之前。
+  revoked = false;
+  const beforeRevoke = seen.length;
+  const okRes = await publicRpc({ jsonrpc: "2.0", id: 60, method: "tools/call", params: { name: "t_echo", arguments: {} } });
+  eq("未撤销时正常执行", okRes.status, 200);
+  check("★ 未撤销时工具真的跑了", seen.length === beforeRevoke + 1, seen);
+  revoked = true;
+  const before = seen.length;
+  const afterRevoke = await publicRpc({ jsonrpc: "2.0", id: 61, method: "tools/call", params: { name: "t_echo", arguments: {} } });
+  eq("★ 撤销后请求被拒(404)", afterRevoke.status, 404);
+  check("★ 撤销后危险工具**没有**执行", seen.length === before, seen);
+  revoked = false;
+
+  // ② 项目根取不到 → fail closed,绝不退回默认项目 / 不受限。
+  rootAvailable = false;
+  const noRoot = await publicRpc({ jsonrpc: "2.0", id: 62, method: "tools/call", params: { name: "t_echo", arguments: {} } });
+  eq("★ 拿不到有效根 → 404(fail closed,不 fail-open)", noRoot.status, 404);
+  rootAvailable = true;
+
+  // ③ 外部伪造会话头:合成会话由服务端覆写,伪造不生效。
+  seen.length = 0;
+  await publicRpc(
+    { jsonrpc: "2.0", id: 63, method: "tools/call", params: { name: "t_echo", arguments: {} } },
+    { sessionHeader: "sess_attacker" },
+  );
+  check("★ 伪造会话头不能借道", seen.includes("t_echo"), seen);
+}
+
+/* ── MC-063:两个独立客户端共享原 credential —— B 读不到 A 的私有资源 ──
+ *
+ * 判据:同一个项目链接下,`initialize` 各自签发不同的 `Mcp-Session-Id`(客户端会话),
+ * 后续 `tools/call` 带各自 id → 宿主拿到**不同**的 `ownerId`;不带的落 legacy 共享桶;
+ * 乱带的(没签发过)也落 legacy,不因乱带 header 白得一个新 owner。 */
+__resetPublicClientSessions();
+{
+  const seen: Array<{ sessionId: string | null; ownerId?: string }> = [];
+  configureMcpToolHost({
+    listTools: () => FAKE_TOOLS,
+    async callTool(name, args, ctx): Promise<McpToolCallResult> {
+      seen.push({ sessionId: ctx.sessionId, ownerId: ctx.ownerId });
+      return { text: "ok" };
+    },
+  });
+  configurePublicMcpStore({
+    getEnabled: () => publicStoreEnabled,
+    setEnabled: () => {},
+    getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
+    setSecret: () => {},
+    getSessionId: () => PUBLIC_SESSION,
+    setSessionId: () => {},
+    credentialFor: (projectId) => credentialSnapshot(projectId ?? "default", projectId ?? "default", "/tmp/mc063-shared"),
+    revalidateCredential: () => null,
+  });
+  const init = async (id: number): Promise<string> => {
+    const res = await fetch(`http://127.0.0.1:${publicPort}${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "initialize", params: {} }),
+    });
+    await res.text();
+    return res.headers.get("mcp-session-id") ?? "";
+  };
+  const clientSessionOf = async (clientId: string | null): Promise<{ sessionId: string | null; ownerId?: string }> => {
+    seen.length = 0;
+    await publicRpc(
+      { jsonrpc: "2.0", id: 70, method: "tools/call", params: { name: "t_echo", arguments: {} } },
+      clientId ? { extraHeaders: { [PUBLIC_MCP_CLIENT_SESSION_HEADER]: clientId } } : {},
+    );
+    return seen[0] ?? { sessionId: null };
+  };
+  const sidA = await init(1);
+  const sidB = await init(2);
+  check("★ 两个客户端握手拿到**不同**的会话 id", Boolean(sidA && sidB && sidA !== sidB), [sidA, sidB]);
+  const callA = await clientSessionOf(sidA);
+  const callB = await clientSessionOf(sidB);
+  eq("★ A/B 仍落到同一条合成会话(共享 credential)", callA.sessionId, PUBLIC_SESSION);
+  check("★ A/B 的 owner(资源归属 id)**不同**", Boolean(callA.ownerId && callB.ownerId && callA.ownerId !== callB.ownerId), [callA.ownerId, callB.ownerId]);
+  eq("★ A 的 owner 就是它自己签发的会话 id", callA.ownerId, sidA);
+  // 不带会话头 / 乱带:落 legacy 共享桶,不因乱带 header 白得一个新 owner。
+  const legacy = await clientSessionOf(null);
+  const bogus = await clientSessionOf("not-a-real-session");
+  check("不带会话头 → legacy 共享桶", String(legacy.ownerId).startsWith("legacy:"), legacy.ownerId);
+  eq("乱带的会话 id 与不带**同属一个 legacy owner**", bogus.ownerId, legacy.ownerId);
+}
+
+/* ── MC-062:公网文件/命令工具的 fail-closed(冻结根 + 缺根拒绝) ──
+ *
+ * 直接调 `createWebToolHost`,验工具层的 fail closed 与"冻结根优先":公网 audience
+ * 带 `publicScope` 时,沙箱根取**快照里的 canonicalRoot**,而不是注入的 sandboxRootFor。 */
+{
+  const frozenRoot = mkdtempSync(path.join(tmpdir(), "mcode-frozen-root-"));
+  const sessionRoot = mkdtempSync(path.join(tmpdir(), "mcode-session-root-"));
+  const outsideTarget = path.join(sessionRoot, "should-not-exist.txt");
+  let injectedSandbox: string | null = sessionRoot;
+  const host = createWebToolHost({
+    // 自带闸门(这一段在全局 `makeGate` 声明之前跑,不能借它)。
+    gateFor: () => ({
+      permissionMode: () => "bypassPermissions" as PermissionMode,
+      isAlwaysAllowed: () => true,
+      async requestApproval() {
+        return { allow: true };
+      },
+    }),
+    cwdFor: () => sessionRoot,
+    sandboxRootFor: () => injectedSandbox,
+  });
+  const scope = (root: string) => ({
+    credentialId: "default",
+    projectId: "default",
+    sessionId: "s1",
+    canonicalRoot: root,
+    grantRevision: "rev:x",
+    revocationEpoch: 0,
+    clientSessionId: "pcs_test",
+    actorId: "pcs_test",
+    traceId: "trace_test",
+  });
+  // (a) 公网 + 冻结根:写目标在**会话根**内、却在**冻结根**外 → 必须被拒。
+  const writeOutside = await host.callTool(
+    "agent_write_file",
+    { path: outsideTarget, content: "x" },
+    { sessionId: "s1", audience: "public", ownerId: "pcs_test", publicScope: scope(frozenRoot) },
+  );
+  check("★ 公网写:冻结根外的路径被拒(不被注入的更宽根放行)", writeOutside.isError === true && !existsSync(outsideTarget), writeOutside.text);
+  // (b) 公网 + **无**根:即便注入的 sandboxRootFor 给了根,也必须 fail closed。
+  const noRootWrite = await host.callTool(
+    "agent_write_file",
+    { path: path.join(sessionRoot, "should-also-not-exist.txt"), content: "x" },
+    { sessionId: "s1", audience: "public", ownerId: "pcs_test2" },
+  );
+  check(
+    "★ 公网无冻结根:写被拒且报 PUBLIC_SCOPE_UNAVAILABLE(不退回不受限)",
+    noRootWrite.isError === true && (noRootWrite.text.includes(PUBLIC_SCOPE_UNAVAILABLE) || noRootWrite.text.includes("越界")),
+    noRootWrite.text,
+  );
+  // (c) 本机(local)没有沙箱是**设计** —— 冻结根/缺根都不影响它。
+  injectedSandbox = null;
+  const localOk = await host.callTool("agent_write_file", { path: path.join(sessionRoot, "local-ok.txt"), content: "y" }, { sessionId: "s1" });
+  check("★ 本机(local)无沙箱写照旧放行(不过度收紧)", localOk.isError !== true && existsSync(path.join(sessionRoot, "local-ok.txt")), localOk.text);
+  rmSync(frozenRoot, { recursive: true, force: true });
+  rmSync(sessionRoot, { recursive: true, force: true });
+}
+
+/* ── MC-063:owner 分桶要**真的**落到进程管理器上(host → agentTools → 管理器) ──
+ *
+ * 上面证了端点给不同客户端签发不同 ownerId;这里证**工具层按 ownerId 分桶**:同一项目
+ * 链接下,client A 起的持久进程,client B(不同 ownerId)读/写/停都做不到;A 自己能读;
+ * A 满 8 个时 B 的私有 1 个不受牵连(端点全局上限另算,见管理器测试)。 */
+{
+  const root = mkdtempSync(path.join(tmpdir(), "mcode-owner-"));
+  const ownerHost = createWebToolHost({
+    gateFor: () => ({
+      permissionMode: () => "bypassPermissions" as PermissionMode,
+      isAlwaysAllowed: () => true,
+      async requestApproval() {
+        return { allow: true };
+      },
+    }),
+    cwdFor: () => root,
+    sandboxRootFor: () => root,
+  });
+  const scopeFor = (owner: string) => ({
+    credentialId: "proj", projectId: "proj", sessionId: "sess_shared", canonicalRoot: root,
+    grantRevision: "rev:shared", revocationEpoch: 0, clientSessionId: owner, actorId: owner, traceId: `t:${owner}`,
+  });
+  const call = (owner: string, name: string, args: Record<string, unknown> = {}) =>
+    ownerHost.callTool(name, args, { sessionId: "sess_shared", audience: "public", ownerId: owner, publicScope: scopeFor(owner) });
+  const cmd = process.platform === "win32" ? "ping -n 30 127.0.0.1 > nul" : "sleep 30";
+  const started = await call("client-a", "agent_process_start", { command: cmd, wait_ms: 0 });
+  const procId = /proc_[0-9a-f]+/.exec(started.text)?.[0] ?? "";
+  check("★ A 起了持久进程", procId.startsWith("proc_"), started.text);
+  try {
+    const readB = await call("client-b", "agent_process_read", { process_id: procId, wait_ms: 0 });
+    check("★ B(不同 client owner)读不到 A 的进程", readB.isError === true, readB.text);
+    const writeB = await call("client-b", "agent_process_write", { process_id: procId, input: "x" });
+    check("★ B 写不进 A 的进程", writeB.isError === true, writeB.text);
+    const stopB = await call("client-b", "agent_process_stop", { process_id: procId });
+    check("★ B 停不掉 A 的进程", stopB.isError === true, stopB.text);
+    const listB = await call("client-b", "agent_process_read");
+    check("★ B 列进程看不到 A 的", !listB.text.includes(procId), listB.text);
+    const readA = await call("client-a", "agent_process_read", { process_id: procId, wait_ms: 0 });
+    check("★ A 自己读得到", readA.isError !== true && readA.text.includes(procId), readA.text);
+    // A 满 8 个(已有 1)→ 补 7;B 的私有 1 个不受牵连。
+    for (let i = 0; i < 7; i += 1) await call("client-a", "agent_process_start", { command: cmd, wait_ms: 0 });
+    const ninthA = await call("client-a", "agent_process_start", { command: cmd, wait_ms: 0 });
+    check("★ A 满 8 个后第 9 个被 per-owner 上限挡住", ninthA.isError === true && ninthA.text.includes("8 个运行中的进程"), ninthA.text);
+    const bPrivate = await call("client-b", "agent_process_start", { command: cmd, wait_ms: 0 });
+    check("★ A 满 8 个不误伤 B 的私人进程", bPrivate.isError !== true, bPrivate.text);
+  } finally {
+    await call("client-a", "agent_process_stop", { process_id: procId });
+    // 进程树在 Windows 上可能稍后才真正退出、还占着 cwd —— 清不掉就留给 OS 清理,
+    // 不让一个临时目录把整套 smoke 判红。
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+__resetPublicClientSessions();
+configureMcpToolHost({
+  listTools: () => FAKE_TOOLS,
+  async callTool(name, args, ctx): Promise<McpToolCallResult> {
+    fakeCalls.push({ name, args, sessionId: ctx.sessionId });
+    return { text: `echo:${JSON.stringify(args)}` };
+  },
+});
+configurePublicMcpStore({
+  getEnabled: () => publicStoreEnabled,
+  setEnabled: () => {},
+  getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
+  setSecret: () => {},
+  getSessionId: () => PUBLIC_SESSION,
+  setSessionId: () => {},
+  credentialFor: (projectId) => credentialSnapshot(projectId ?? "default", projectId ?? "default", PUBLIC_SANDBOX_ROOT),
+});
 
 /* ── 慢调用:Cloudflare 100 秒无字节就 524 —— 公网这条路把慢调用改成 SSE + 保活 ──
  * 快调用照旧一个 JSON;慢调用(超过切换阈值)先回 event-stream 头、发保活注释、
@@ -1807,7 +2072,13 @@ check("…而且真的写出来了", existsSync(path.join(CWD, "bash-inside.txt"
   writeFileSync(path.join(project, "large.txt"), "x".repeat(90000));
   const oldSandbox = sandboxValue, oldCwd = cwdValue;
   sandboxValue = project; cwdValue = outside; readCheckImpl = () => null;
-  const ctx = { sessionId: "s1", audience: "public" as const };
+  // 公网那条路现在从**鉴权时固化的快照**取根(MC-062),不再看注入的 sandboxValue;
+  // 这里把冻结根设成同一个 project,行为与从前逐条对齐(canonicalRoot === sandboxValue)。
+  const frozenScope = {
+    credentialId: "proj", projectId: "proj", sessionId: "s1", canonicalRoot: project,
+    grantRevision: "rev:proj", revocationEpoch: 0, clientSessionId: "pcs_compact", actorId: "pcs_compact", traceId: "trace_compact",
+  };
+  const ctx = { sessionId: "s1", audience: "public" as const, ownerId: "pcs_compact", publicScope: frozenScope };
   const invoke = (name: string, args: Record<string, unknown> = {}) => host.callTool(name, args, ctx);
   try {
     eq("compact public tool count", host.listTools("public").length, 39);
@@ -1885,8 +2156,10 @@ check("…而且真的写出来了", existsSync(path.join(CWD, "bash-inside.txt"
     }
     const backgroundFiles = await invoke("agent_search_start", { path: ".", pattern: "escape", search_type: "files", include_hidden: true, wait_ms: 1000 });
     check("background file walk skips external aliases", backgroundFiles.text.includes("total_results: 0"), backgroundFiles);
-    sandboxValue = null;
-    check("unbound public skill refuses cwd fallback", (await invoke("agent_skill")).isError === true);
+    // 无冻结根(空 canonicalRoot)→ 公网一律 fail closed,技能工具也拿不到项目、拒绝回退 cwd。
+    const unboundCtx = { sessionId: "s1", audience: "public" as const, ownerId: "pcs_unbound", publicScope: { ...frozenScope, canonicalRoot: "" } };
+    check("unbound public skill refuses cwd fallback", (await host.callTool("agent_skill", {}, unboundCtx)).isError === true);
+    check("★ 公网无冻结根:读文件也 fail closed", (await host.callTool("agent_read_file", { path: "large.txt" }, unboundCtx)).isError === true);
   } finally {
     sandboxValue = oldSandbox; cwdValue = oldCwd; readCheckImpl = () => undefined;
     // Remove junctions before temporary roots; never recursively follow a junction.

@@ -32,7 +32,7 @@
  * stay out of the main-process startup path — same pattern as
  * ClaudeAgentSdkProvider and TerminalManager.
  */
-import type { AgentProvider, StartTurnRequest, ProviderContext, TurnHandle, ProviderCapabilities, EngineCommandEntry } from "@contracts/provider";
+import type { AgentProvider, StartTurnRequest, ProviderContext, TurnHandle, ProviderCapabilities, EngineCommandEntry, ProviderHealthCheckContext } from "@contracts/provider";
 import type { TurnDoneReason } from "@contracts/runtime";
 import type { PiProviderPublic } from "@contracts/piModel";
 import {
@@ -562,19 +562,49 @@ export class PiAgentSdkProvider implements AgentProvider {
     return { supported: false, commands: [] };
   }
 
-  async healthCheck(): Promise<{ ok: boolean; version?: string; error?: string }> {
+  async healthCheck(probeCtx?: ProviderHealthCheckContext): Promise<{ ok: boolean; version?: string; error?: string }> {
+    // 【MC-076】拿宿主的受信上下文:超时到点会 abort。创建会话本身不接收信号,
+    // 因此我们**必须**在 abort 时主动释放已建好的会话(dispose),并停止继续等待
+    // 初始化 —— 否则每探测一次就多挂一个未归还的 in-memory 会话/初始化任务。
+    const signal = probeCtx?.signal;
+    let session: { dispose(): void } | undefined;
+    let released = false;
+    const disposeSession = (): void => {
+      try {
+        session?.dispose();
+      } catch {
+        /* 释放失败无所谓:进程退出时会带走 */
+      }
+    };
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      disposeSession();
+    };
+    const onAbort = (): void => { release(); };
     try {
+      if (signal?.aborted) return { ok: false, error: "健康检查已取消（宿主超时）" };
+      signal?.addEventListener("abort", onAbort, { once: true });
       const sdk = await loadPiSdk();
       // A minimal in-memory session creation probes whether the SDK can boot
       // with the current cwd and discover models. We don't send a prompt —
       // just verify the factory works.
-      const { session } = await sdk.createAgentSession({
+      const created = await sdk.createAgentSession({
         sessionManager: sdk.SessionManager.inMemory(),
       });
-      session.dispose();
+      session = created.session;
+      // 时机要紧:若 abort 在**创建等待期间**就发生了,`onAbort` 那时还没有 session
+      // 可释放 —— 这里补一次,免得迟到建成的会话无人归还。
+      if (released || signal?.aborted) {
+        disposeSession();
+        return { ok: false, error: "健康检查已取消（宿主超时）" };
+      }
       return { ok: true, version: (sdk as { VERSION?: string }).VERSION };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      release();
     }
   }
 }

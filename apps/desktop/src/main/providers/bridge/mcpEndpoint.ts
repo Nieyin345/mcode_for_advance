@@ -26,9 +26,17 @@ import desktopPackage from "../../../../package.json";
  * 套路)。这样无头 smoke 能把假宿主注进来,把这条协议逐条断言一遍。
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { log } from "@main/lib/logger.js";
 // 会话头字面量住在契约层（理由见下面那段注释）。既要转出去，也要在本文件里用来读请求。
 import { MCODE_SESSION_HEADER } from "@contracts/customModel";
+import {
+  PUBLIC_MCP_CLIENT_SESSION_HEADER,
+  PUBLIC_SCOPE_UNAVAILABLE,
+  type PublicActionContext,
+  type PublicCredentialSnapshot,
+} from "@contracts/publicMcpScope";
+import { resolveClientSession, issueClientSession, rememberSyntheticOwner } from "./publicClientSessions.js";
 
 /** 端点的路径。扩展里配的完整地址就是 `<扩展桥地址>/mcp`。 */
 export const MCP_ENDPOINT_PATH = "/mcp";
@@ -127,11 +135,14 @@ export interface McpToolHost {
    * `ctx.sessionId` 可能是 null(扩展没带会话头)—— 那时**由宿主决定怎么办**:
    * 真实宿主会回一句"这次调用没带会话标识"的失败结果,因为审批闸门(权限模式、
    * 「始终允许」)全是按会话记的,没有会话就没有闸门,不能就这么放行。
+   *
+   * 公网那条路(`audience: "public"`)还会带上 `ownerId`(被验证的客户端会话)与
+   * `publicScope`(鉴权那一刻固化的不可变授权快照,见 `@contracts/publicMcpScope`)。
    */
   callTool(
     name: string,
     args: unknown,
-    ctx: { sessionId: string | null; audience?: McpAudience },
+    ctx: { sessionId: string | null; audience?: McpAudience; ownerId?: string; publicScope?: PublicActionContext },
   ): Promise<McpToolCallResult>;
 }
 
@@ -145,6 +156,13 @@ export function configureMcpToolHost(next: McpToolHost | null): void {
 /** 这个请求该归到哪次对话。没有这个头就是 null(见 {@link MCODE_SESSION_HEADER})。 */
 export function sessionIdOf(req: IncomingMessage): string | null {
   const raw = req.headers[MCODE_SESSION_HEADER];
+  const value = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+  return value ? value : null;
+}
+
+/** 读一个请求头(大小写不敏感;Node 已把它归一成小写)。空/缺失 → null。 */
+function headerValue(req: IncomingMessage, name: string): string | null {
+  const raw = req.headers[name];
   const value = (Array.isArray(raw) ? raw[0] : raw)?.trim();
   return value ? value : null;
 }
@@ -200,6 +218,19 @@ export interface McpRequestOptions {
    * 524,这个上限免费/Pro/Business 都改不了。扩展的 `/mcp` 是本机回环,不需要。
    */
   keepAliveLongCalls?: boolean;
+  /**
+   * **公网**:入口在鉴权成功那一刻固化的不可变凭据快照(MC-062)。给了的话,处理时会
+   * ①按它复验凭据此刻仍有效(见 {@link revalidateCredential});②把它的 `canonicalRoot`
+   * 作为调用期的沙箱根钉死,不随链接撤改动。本机那条路不给。
+   */
+  credential?: PublicCredentialSnapshot;
+  /**
+   * **公网**:复验凭据此刻是否仍有效。返回 `null` = 有效;字符串 = 拒绝理由(撤销/根没了)。
+   *
+   * 这是"鉴权→收到 body→执行"这段异步窗口的关闸点(MC-062):链接在这段里被删/轮换,
+   * 这里必须变红,fail closed,绝不让在途请求带着 `null`(不限路径)继续派发。
+   */
+  revalidateCredential?: (snapshot: PublicCredentialSnapshot) => string | null;
 }
 
 /** agent_* 的通用用法 —— 两条通道共用。 */
@@ -286,6 +317,46 @@ export async function handleMcpRequest(
     return;
   }
 
+  // **公网**:把不可变授权快照展开成这次调用的 `PublicActionContext`(MC-062/063)。
+  //
+  // ① 复验凭据此刻仍有效 —— 这正是"鉴权→收到 body→执行"那段异步窗口的关闸点:
+  //    链接在这段里被删/轮换,这里必须失败,绝不让在途请求带着失效根继续。
+  // ② 短期调用者身份由服务端签发/校验(标准 Mcp-Session-Id 握手),不从外部乱带的值
+  //    取 owner。
+  let publicScope: PublicActionContext | undefined;
+  if (opts.audience === "public" && opts.credential) {
+    const credential = opts.credential;
+    if (opts.revalidateCredential) {
+      const reason = opts.revalidateCredential(credential);
+      if (reason) {
+        log.warn(`public mcp: refusing a request whose link is no longer valid: ${reason}`);
+        json(res, 404, { error: "not found" });
+        return;
+      }
+    }
+    const clientSessionId =
+      method === "initialize"
+        ? issueClientSession(credential.credentialId)
+        : resolveClientSession(credential.credentialId, headerValue(req, PUBLIC_MCP_CLIENT_SESSION_HEADER));
+    if (method === "initialize") {
+      // 标准 Streamable HTTP:服务端在握手时给一个会话 id,客户端后续原样带回来。
+      res.setHeader("Mcp-Session-Id", clientSessionId);
+    }
+    publicScope = {
+      credentialId: credential.credentialId,
+      projectId: credential.projectId,
+      sessionId: sessionIdOf(req) ?? credential.credentialId,
+      canonicalRoot: credential.canonicalRoot,
+      grantRevision: credential.grantRevision,
+      revocationEpoch: credential.revocationEpoch,
+      clientSessionId,
+      actorId: clientSessionId,
+      traceId: randomUUID(),
+    };
+    // 记下「这条合成会话 → 这个 owner」,删对话时才能把该对话名下所有 owner 一并释放。
+    rememberSyntheticOwner(publicScope.sessionId, clientSessionId);
+  }
+
   switch (method) {
     case "initialize":
       result(res, body.id, {
@@ -317,7 +388,7 @@ export async function handleMcpRequest(
     }
 
     case "tools/call":
-      await handleCall(req, res, body, opts);
+      await handleCall(req, res, body, opts, publicScope);
       return;
 
     default:
@@ -343,6 +414,7 @@ async function handleCall(
   res: ServerResponse,
   body: JsonRpcRequest,
   opts: McpRequestOptions = {},
+  publicScope?: PublicActionContext,
 ): Promise<void> {
   const params = (body.params ?? {}) as { name?: unknown; arguments?: unknown };
   const name = typeof params.name === "string" ? params.name : "";
@@ -365,7 +437,13 @@ async function handleCall(
 
   const sessionId = sessionIdOf(req);
   const toolHost = host;
-  const call: Promise<unknown> = toolHost.callTool(name, params.arguments ?? {}, { sessionId, audience: opts.audience }).then(
+  const call: Promise<unknown> = toolHost
+    .callTool(name, params.arguments ?? {}, {
+      sessionId,
+      audience: opts.audience,
+      ...(publicScope ? { ownerId: publicScope.clientSessionId, publicScope } : {}),
+    })
+    .then(
     (out) => ({
       content: out.content?.length ? out.content : [{ type: "text", text: out.text }],
       ...(out.structuredContent ? { structuredContent: out.structuredContent } : {}),

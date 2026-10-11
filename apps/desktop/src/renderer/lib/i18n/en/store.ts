@@ -26,6 +26,7 @@ export const en = {
   "store.toast.questionDismissFailed": "The skip wasn't delivered — this turn may still be waiting on you",
   "store.toast.approvalFailed": "The approval wasn't delivered — press again to retry",
   "store.toast.planApprovalFailed": "The plan decision wasn't delivered — press again to retry",
+  "store.toast.approvalExpired": "This approval is no longer valid (handled elsewhere or expired) and did not take effect",
   "store.toast.ideCloseBlockedTitle": "Some tabs weren't closed: unsaved changes",
   "store.toast.ideCloseBlockedBody": "{names} have unsaved changes and were kept open. Save or undo them to close.",
   "store.toast.ideCloseBlockedMany": "{count} files have unsaved changes and were kept open. Save or undo them to close.",
