@@ -31,7 +31,7 @@ import {
   TEMPLATE_VARS_BY_SLOT,
   targetKindOfSlot,
 } from "@contracts/customUi";
-import { PANEL_METHODS, PANEL_THEME_VARS, type PanelMethod } from "@contracts/customUiPanel";
+import { PANEL_METHODS, PANEL_THEME_VARS, type PanelLayoutSummary, type PanelMethod } from "@contracts/customUiPanel";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { notifyAppSettingWrite } from "@main/customUi/settingSync.js";
 import { randomUUID } from "node:crypto";
@@ -256,6 +256,53 @@ function clipLine(s: string, n: number): string {
 
 /** `read_panel` 一次给 agent 看的面板可见文本上限(与 renderResult 的尺度一致)。 */
 const PANEL_TEXT_SHOWN = 40_000;
+/** 版式摘要里最多给 agent 看几个元素 / 每行文字截多长(与契约的 SDK 侧上限对齐)。 */
+const PANEL_LAYOUT_SHOWN = 60;
+/** 版式「问题」清单最多摆几条 —— 溢出 / 超视口 / 重叠,太多就是一团噪声。 */
+const PANEL_LAYOUT_PROBLEMS_SHOWN = 20;
+
+/**
+ * 把面板的**版式摘要**(报告 Q1)渲染成 agent 能读的几行字。
+ *
+ * 面板跑在 opaque origin 的沙箱 iframe,外层读不到它的 DOM,也没有 canvas 截图依赖出真
+ * PNG —— 这一份是「看的降级」:矩形 / 字号 / 颜色 / 溢出 / 重叠,够 agent 判「元素重叠了
+ * 吗 / 超出容器了吗 / 颜色字体对不对」。`layout` 缺(老 SDK / 面板脚本报错)时如实说一句,
+ * 不假装看过。
+ */
+function renderPanelLayout(layout: PanelLayoutSummary | undefined): string {
+  if (!layout || !layout.viewport) {
+    return "\n\n— 版式 —\n(这个面板没有回版式摘要:面板脚本可能还没跑起来,或报错了;文本/HTML 仍按上面给出)";
+  }
+  const vp = layout.viewport;
+  const ct = layout.content ?? vp;
+  const roll = ct.width > vp.width + 1 || ct.height > vp.height + 1;
+  const lines: string[] = [
+    `视口 ${vp.width}×${vp.height}px;内容 ${ct.width}×${ct.height}px${roll ? "(有滚动)" : ""}`,
+  ];
+  const probs = layout.problems ?? [];
+  if (probs.length > 0) {
+    lines.push(`⚠️ 版式问题 ${probs.length} 条:`);
+    for (const p of probs.slice(0, PANEL_LAYOUT_PROBLEMS_SHOWN)) lines.push(`  · ${p}`);
+    if (probs.length > PANEL_LAYOUT_PROBLEMS_SHOWN) lines.push(`  …(还有 ${probs.length - PANEL_LAYOUT_PROBLEMS_SHOWN} 条未列)`);
+  } else {
+    lines.push("没发现溢出 / 超出视口 / 同层重叠。");
+  }
+  const els = layout.elements ?? [];
+  if (els.length > 0) {
+    lines.push(`关键元素(共扫描 ${layout.elementCount} 个,列前 ${Math.min(els.length, PANEL_LAYOUT_SHOWN)} 个):`);
+    for (const e of els.slice(0, PANEL_LAYOUT_SHOWN)) {
+      const sel = e.id ? `#${e.id}` : e.cls ? `.${e.cls.split(/\s+/)[0]}` : "";
+      const box = `@(${e.x},${e.y}) ${e.w}×${e.h}`;
+      const style = [e.fontSize, e.color].filter(Boolean).join("/");
+      const txt = e.text ? ` 「${clipLine(e.text, 40)}」` : "";
+      lines.push(`  <${e.tag}${sel}> ${box}${style ? ` ${style}` : ""}${e.overflow ? " [溢出]" : ""}${txt}`);
+    }
+    if (els.length > PANEL_LAYOUT_SHOWN) lines.push(`  …(还有 ${els.length - PANEL_LAYOUT_SHOWN} 个未列)`);
+  } else {
+    lines.push("(没有可视元素 —— 多半是空壳 / 还没渲染出来)");
+  }
+  return `\n\n— 版式 —\n${lines.join("\n")}`;
+}
 
 /* ───────────────────────── 审批 ───────────────────────── */
 
@@ -687,8 +734,9 @@ export function appMcpTools(): McpToolSpec[] {
         "- set_pref {key, value}:改界面偏好 —— locale(zh/en)、themeStyle(classic/sketch)、displayMode、chatFontSize、" +
         "chatDensity、workflowId(输入框的工作流)、permissionMode(输入框的权限模式,高风险)\n" +
         "- interrupt_session {session_id}:停止某个正在运行的对话(需批准)\n" +
-        "- read_panel {item_id?}:读回一个**正在渲染的自定义面板**的渲染结果(可见文本 + HTML)。面板在沙箱 iframe 里,\n" +
-        "  常规办法看不到它渲染成什么样;这条让 agent 能自验扩展 UI。item_id 省略 = 读当前在意的那个(浮窗 > 设置页预览 > 右栏页签)。\n" +
+        "- read_panel {item_id?}:读回一个**正在渲染的自定义面板**的渲染结果(可见文本 + 版式摘要 + 可选 HTML)。面板在沙箱 iframe 里,\n" +
+        "  常规办法看不到它渲染成什么样;这条让 agent 能自验扩展 UI。返回里含**版式摘要**:视口/内容尺寸、关键元素的矩形+字号+颜色、\n" +
+        "  以及「溢出 / 横向超出视口 / 同层元素重叠」的问题清单 —— 据此判「元素重叠了吗 / 超出容器了吗 / 颜色字体对不对」。item_id 省略 = 读当前在意的那个(浮窗 > 设置页预览 > 右栏页签)。\n" +
         "  要读**草稿**(还没保存)的面板:先在设置页点「预览」再读。没有面板挂着时如实报错并列出可读的。\n" +
         "- open_panel {item_id}:打开一个**已保存的**自定义面板(像用户右键那样弹浮窗),喂的是一份按挂载位造的**样例目标**。\n" +
         "  典型用法:open_panel → read_panel,开一个立即看它渲染成什么样(agent 自验扩展 UI 的闭环)。\n" +
@@ -829,6 +877,7 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext): Promise<ToolResult>
       if (!reply.ok) return fail(reply.error ?? "读面板失败");
       const d = (reply.data ?? {}) as {
         label?: string; mode?: string; text?: string; textLength?: number; htmlLength?: number; html?: string;
+        layout?: PanelLayoutSummary;
       };
       // 面板文本上限(契约 PANEL_PROBE_TEXT_MAX)比 agent 一次该看的量大得多 —— 这里再按
       // 与 renderResult 同一个尺度(40k)截一道,并说清完整长度,免得一个渲染出长列表的面板
@@ -840,6 +889,10 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext): Promise<ToolResult>
         `面板「${d.label ?? "?"}」(${d.mode ?? "?"})渲染结果:\n` +
         `— 可见文本${textTrunc ? `(已截断:完整 ${FULL.length} 字符,这里显示前 ${PANEL_TEXT_SHOWN})` : ""} —\n` +
         `${shown.trim() ? shown : "(没有可见文本)"}`;
+      // 版式摘要(报告 Q1):外层窗口读不到面板 iframe 的 DOM,也出不了真 PNG(没有 canvas
+      // 截图依赖)—— 但面板**自己**算得出元素的矩形 / 字号 / 颜色 / 溢出 / 重叠。让 agent
+      // 据此判断「元素重叠 / 超出容器 / 颜色字体不对」。有问题先摆出来;没问题就只报尺寸。
+      const layoutTail = renderPanelLayout(d.layout);
       // HTML 只在**确实想看结构**时才回一大坨:文本已经给了绝大多数答案,默认不塞 HTML。
       // 但"文本为空、多半是还没渲染出来"时,HTML 能告诉 agent 是空壳还是 DOM 在但没文字。
       // HTML 默认**不塞**(报告 R2:它常有几万字符,而文本已给了绝大多数答案)——
@@ -851,7 +904,7 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext): Promise<ToolResult>
         : d.html && d.html.trim()
           ? `\n\n(还有 HTML ${d.htmlLength} 字符未显示;需要看结构时用 include_html: true 再读一次)`
           : "";
-      return text(head + tail);
+      return text(head + layoutTail + tail);
     }
     case "open_panel": {
       // 打开一个已保存的面板(纯界面动作,与 `panel` 同一档,不问批准)。它跑起来后

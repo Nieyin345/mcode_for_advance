@@ -596,7 +596,21 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
         if (cmd.itemId === "missing") return JSON.stringify({ ok: false, error: "没有正在渲染 id 为「missing」的面板。" });
         return JSON.stringify({
           ok: true,
-          data: { itemId: "p1", label: "我的面板", mode: "float", url: "mcode-panel://panel/x", text: "Hello panel", html: "<h1>Hello panel</h1>", textLength: 11, htmlLength: 22 },
+          data: {
+            itemId: "p1", label: "我的面板", mode: "float", url: "mcode-panel://panel/x",
+            text: "Hello panel", html: "<h1>Hello panel</h1>", textLength: 11, htmlLength: 22,
+            // 版式摘要(报告 Q1):一个横向溢出 + 重叠的问题元素。
+            layout: {
+              viewport: { width: 300, height: 200 },
+              content: { width: 400, height: 200 },
+              elementCount: 2,
+              elements: [
+                { tag: "div", id: "a", x: 0, y: 0, w: 100, h: 40, text: "Hello panel", fontSize: "14px", color: "rgb(9, 9, 11)" },
+                { tag: "span", cls: "bad", x: 10, y: 10, w: 380, h: 30, text: "wide" },
+              ],
+              problems: ["内容宽 400 > 视口宽 300(横向滚动)", '元素 span.bad "wide" 横向超出视口'],
+            },
+          },
         });
       }
       if (cmd.op === "open_panel") {
@@ -635,6 +649,13 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   check("★ read_panel 下发给渲染端的指令是对的", (seen.at(-1) as { op: string }).op === "read_panel", seen.at(-1));
   const readById = await invokeAppTool("app_ui", { action: "read_panel", item_id: "p1" }, "me", ctx);
   check("★ read_panel 带 item_id 时原样传给渲染端", !readById.isError && (seen.at(-1) as { itemId?: string }).itemId === "p1", seen.at(-1));
+  // ★ 版式摘要(报告 Q1):agent 要能「看」出版式 —— 尺寸、元素矩形、以及问题清单。
+  // 撤掉 tools.ts 的 renderPanelLayout → 下面几条真红。
+  const rt = textOf(read);
+  check("★ read_panel 给出版式:视口/内容尺寸", rt.includes("视口 300×200px") && rt.includes("内容 400×200px") && rt.includes("有滚动"), rt.slice(0, 400));
+  check("★ read_panel 给出版式问题清单(横向超出视口)", rt.includes("版式问题") && rt.includes("横向超出视口"), rt.slice(0, 400));
+  check("★ read_panel 列出关键元素(矩形+定位)", rt.includes("<div#a>") && rt.includes("@(0,0) 100×40"), rt.slice(0, 400));
+  check("★ read_panel 元素带字号与颜色(判颜色字体对不对)", rt.includes("14px") && rt.includes("rgb(9, 9, 11)"), rt.slice(0, 400));
   const readMissing = await invokeAppTool("app_ui", { action: "read_panel", item_id: "missing" }, "me", ctx);
   check("★ 没有这个面板时如实报错(不静默)", readMissing.isError === true && textOf(readMissing).includes("missing"), textOf(readMissing));
 

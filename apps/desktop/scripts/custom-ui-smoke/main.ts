@@ -62,6 +62,7 @@ import {
   panelCsp,
   panelExampleHtml,
   PANEL_HTML_MAX,
+  PANEL_LAYOUT_MAX_ELEMENTS,
   PANEL_METHODS,
   PANEL_PROBE_HTML_MAX,
   PANEL_PROBE_TEXT_MAX,
@@ -856,6 +857,72 @@ console.log("\n面板 SDK:读回(probe)");
   fn3(alien.win, alien.parent, alien.doc, { href: "mcode-panel://x" });
   alien.listeners[0]!({ source: { not: "parent" }, data: { __mcode: 1, event: "probe", data: { probeId: "pb3" } } });
   check("★ 不是父窗口发来的 probe 不回包", alien.posted.every((m) => m["probe"] !== "pb3"), alien.posted);
+}
+
+/* ── 面板版式摘要(报告 Q1)—— 用户要「像截屏那样看」,面板自己算得出元素的矩形/字号/
+ * 颜色/溢出/重叠,外层读不到它的 DOM 也能让 agent 判「重叠了吗 / 超出容器了吗」。
+ *
+ * 这一条把 SDK 那段 layout 真的算出来、真的按 probe 回包钉住:撤掉 collectLayout,下面的
+ * 「回包带 layout」立刻真红。 */
+console.log("\n面板 SDK:版式摘要(layout)");
+{
+  interface BoxOpt { id?: string; cls?: string; text?: string; x: number; y: number; w: number; h: number; cw?: number; ch?: number; sw?: number; sh?: number }
+  const mkEl = (tag: string, o: BoxOpt) => ({
+    nodeType: 1, tagName: tag.toUpperCase(), id: o.id ?? "", className: o.cls ?? "", parentNode: null as unknown,
+    childNodes: o.text ? [{ nodeType: 3, nodeValue: o.text }] : [],
+    clientWidth: o.cw ?? o.w, clientHeight: o.ch ?? o.h,
+    scrollWidth: o.sw ?? o.w, scrollHeight: o.sh ?? o.h,
+    getBoundingClientRect: () => ({ left: o.x, top: o.y, right: o.x + o.w, bottom: o.y + o.h, width: o.w, height: o.h }),
+  });
+  const runProbe = (list: unknown[], vp: { w: number; h: number }, content: { w: number; h: number }) => {
+    const posted: Array<Record<string, unknown>> = [];
+    const listeners: Array<(e: unknown) => void> = [];
+    const win = {
+      addEventListener: (t: string, fn: (e: unknown) => void) => { if (t === "message") listeners.push(fn); },
+      getComputedStyle: () => ({ display: "block", visibility: "visible", fontSize: "14px", color: "rgb(9, 9, 11)" }),
+    };
+    const de = { clientWidth: vp.w, clientHeight: vp.h, style: { setProperty() {} }, setAttribute() {}, outerHTML: "<html>", getElementsByTagName: () => list };
+    const doc = {
+      documentElement: de,
+      body: { innerText: "x", scrollWidth: content.w, scrollHeight: content.h, childNodes: [] },
+      addEventListener() {},
+    };
+    const parent = { postMessage: (m: Record<string, unknown>) => posted.push(m) };
+    const fn = new Function("window", "parent", "document", "location", PANEL_SDK_SOURCE + "\nreturn window.mcode;");
+    fn(win, parent, doc, { href: "mcode-panel://x" });
+    listeners[0]!({ source: parent, data: { __mcode: 1, event: "probe", data: { probeId: "pbL" } } });
+    return posted.find((m) => m["probe"] === "pbL");
+  };
+
+  // 两个同层元素:重叠 + 其一横向超视口;内容比视口大。
+  const a = mkEl("div", { id: "a", x: 0, y: 0, w: 100, h: 40, text: "Hello panel" });
+  const b = mkEl("span", { cls: "bad", x: 10, y: 10, w: 380, h: 30, text: "wide" });
+  const holder = { nodeType: 1, tagName: "DIV", childNodes: [a, b] };
+  a.parentNode = holder; b.parentNode = holder;
+  const reply = runProbe([a, b], { w: 300, h: 200 }, { w: 400, h: 500 });
+  // ⚠️ 承重:这一条撤掉 SDK 里的 collectLayout → layout 为 null → 立刻真红。
+  // (不能用 `typeof === "object"` 判 —— `null` 也是 object,那样会漏。)
+  check("★ 回包带版式摘要 layout(报告 Q1)", !!reply?.["layout"] && typeof reply["layout"] === "object", reply?.["layout"]);
+  const L = reply?.["layout"] as { viewport?: { width: number; height: number }; content?: { width: number; height: number }; elements?: Array<Record<string, unknown>>; elementCount?: number; problems?: string[] } | undefined;
+  check("★ 版式带视口与内容尺寸", L?.viewport?.width === 300 && L?.viewport?.height === 200 && L?.content?.width === 400 && L?.content?.height === 500, L);
+  check("★ 版式列出关键元素(带矩形)", Array.isArray(L?.elements) && L!.elements!.length === 2 && L!.elements![0]!["w"] === 100 && L!.elements![1]!["x"] === 10, L?.elements);
+  check("★ 版式元素带字号与颜色(判「颜色字体对不对」)", L?.elements?.[0]?.["fontSize"] === "14px" && L?.elements?.[0]?.["color"] === "rgb(9, 9, 11)", L?.elements?.[0]);
+  check("★ 版式报出横向超出视口的元素", (L?.problems ?? []).some((p) => p.includes("横向超出视口")), L?.problems);
+  check("★ 版式报出同层元素重叠", (L?.problems ?? []).some((p) => p.includes("重叠")), L?.problems);
+  check("★ 版式报出内容比视口大(有滚动)", (L?.problems ?? []).some((p) => p.includes("滚动")), L?.problems);
+  check("★ 版式元素数与扫描总数分开(elementCount 是全量)", L?.elementCount === 2 && L?.elements?.length === 2, L?.elementCount);
+
+  // 干净面板:无问题。
+  const clean = runProbe([mkEl("p", { x: 0, y: 0, w: 50, h: 20, text: "hi" })], { w: 300, h: 200 }, { w: 300, h: 200 });
+  check("★ 没有问题时 problems 为空数组", Array.isArray((clean?.["layout"] as { problems?: unknown[] })?.problems) && ((clean!["layout"] as { problems: unknown[] }).problems.length === 0), (clean?.["layout"] as { problems?: unknown[] })?.problems);
+
+  // 元素数超上限时截断,但仍报完整扫描数。
+  const many = Array.from({ length: PANEL_LAYOUT_MAX_ELEMENTS + 30 }, (_, i) => mkEl("i", { x: i, y: i, w: 5, h: 5, text: `x${i}` }));
+  const big = runProbe(many, { w: 300, h: 200 }, { w: 300, h: 200 });
+  check("★ 元素数超过上限时截到 PANEL_LAYOUT_MAX_ELEMENTS",
+    (big?.["layout"] as { elements?: unknown[] })?.elements?.length === PANEL_LAYOUT_MAX_ELEMENTS, (big?.["layout"] as { elements?: unknown[] })?.elements?.length);
+  check("★ 截断后仍报完整扫描数 elementCount",
+    (big?.["layout"] as { elementCount?: number })?.elementCount === PANEL_LAYOUT_MAX_ELEMENTS + 30, (big?.["layout"] as { elementCount?: number })?.elementCount);
 }
 
 /* ── 「读回」注册表(报告 E10):挑一个当前该读的面板 ──

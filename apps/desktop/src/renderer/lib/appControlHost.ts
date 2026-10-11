@@ -186,6 +186,8 @@ async function execute(cmd: AppUiCommand): Promise<AppUiReply> {
             html: r.html,
             textLength: r.textLength,
             htmlLength: r.htmlLength,
+            // 版式摘要(报告 Q1):面板「看」成什么形状 —— 元素矩形 / 字号 / 颜色 / 溢出 / 重叠。
+            layout: r.layout,
           },
         };
       } catch (err) {

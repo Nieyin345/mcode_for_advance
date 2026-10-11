@@ -35,6 +35,12 @@ export const PANEL_PROBE_TEXT_MAX = 200_000;
 export const PANEL_PROBE_HTML_MAX = 400_000;
 /** 宿主发起读回后,等面板回话的上限。超时 = 面板没在听(没加载好 / 脚本报错卡住)。 */
 export const PANEL_PROBE_TIMEOUT_MS = 2_000;
+/**
+ * 「版式摘要」(报告 Q1)一次给多少元素、每个元素的文字截多长。一个渲染出大表格的面板
+ * 若不设上限,摘要本身就会把上下文撑爆 —— 与文本 / HTML 的上限同一个理由。
+ */
+export const PANEL_LAYOUT_MAX_ELEMENTS = 120;
+export const PANEL_LAYOUT_TEXT_MAX = 60;
 
 export const CustomUiStagePanelSchema = z.object({
   html: z.string().min(1).max(PANEL_DOC_MAX),
@@ -171,9 +177,55 @@ export function isPanelRequest(d: unknown): d is PanelRequest {
 }
 
 /**
+ * 「读回」时**单个元素**的版式摘要(报告 Q1)。
+ *
+ * 用户对 `read_panel` 的原始要求是「像给浏览器截屏一样看图」—— 真出一张 PNG。但面板跑在
+ * **opaque origin** 的沙箱 iframe 里(没有 `allow-same-origin`):外层窗口读不到它的 DOM,
+ * 而面板本身也没有 canvas 截图依赖;`capturePage` 只能截**整个 webContents**(主窗口),
+ * 截不到这块 iframe。在没有新依赖的前提下,能给 agent 的**降级之「看」**就是把面板的
+ * 版式结构化:**元素在哪儿、多大、什么颜色 / 字号、有没有溢出容器 / 横向超出视口** ——
+ * agent 据此能判断「元素重叠了吗 / 超出容器了吗 / 颜色是不是错的」。
+ */
+export interface PanelLayoutElement {
+  tag: string;
+  id?: string;
+  cls?: string;
+  /** 该元素(叶子)直接可见文字的前若干字符 —— 判断「这块是什么」。 */
+  text?: string;
+  /** 相对面板视口的矩形(px,取整)。 */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** 计算字号的 `font-size`(判断「太小 / 看不见」)。 */
+  fontSize?: string;
+  /** 计算前景色 `color`(判断「颜色是不是错的」)。 */
+  color?: string;
+  /** 内容比可视区大(scrollWidth/Height > clientWidth/Height)—— 被裁 / 需要滚动。 */
+  overflow?: boolean;
+}
+
+/** 面板版式的结构化摘要(报告 Q1,见 {@link PanelLayoutElement})。 */
+export interface PanelLayoutSummary {
+  /** 面板视口(iframe 内容区)的 CSS 像素尺寸。 */
+  viewport: { width: number; height: number };
+  /** 整页内容尺寸 —— 比视口大 = 有滚动。 */
+  content: { width: number; height: number };
+  /** 关键元素的版式盒子(有 id / 有可见文字 / 溢出 / 横向超出视口 的才算),已按上限截断。 */
+  elements: PanelLayoutElement[];
+  /** 扫描到的元素总数(宿主据此说明「列出了多少 / 一共多少」)。 */
+  elementCount: number;
+  /** 人能读的问题清单:内容溢出、横向超出视口、兄弟元素重叠。空数组 = 没发现问题。 */
+  problems: string[];
+}
+
+/**
  * 面板对「读回」probe 的回话(报告 E10)。SDK 收到 `probe` 事件后自己读 `document.body`
  * 的文本与整份 HTML,截到上限,再带 `probeId` 回给宿主。宿主侧 `PanelFrame` 按
  * `probeId` 配对,凑不齐(超时 / 面板没加载好)**如实说**,不静默。
+ *
+ * `layout`(报告 Q1)是同一段 SDK 顺手算出来的版式摘要 —— 让 agent「看」出版式而不只是
+ * 读文本。老面板 / 老宿主缺这一段也不该失配,故为可选。
  */
 export interface PanelProbeReply {
   __mcode: 1;
@@ -187,6 +239,8 @@ export interface PanelProbeReply {
   textLength: number;
   htmlLength: number;
   url: string;
+  /** 版式摘要(报告 Q1)。面板算得出来就给,算失败(或老 SDK)则为空。 */
+  layout?: PanelLayoutSummary;
 }
 
 export function isPanelProbeReply(d: unknown): d is PanelProbeReply {
@@ -269,7 +323,70 @@ function applyTheme(t){
 /* 「读回」(报告 E10):宿主发一个 probe 事件,面板把此刻**渲染出来的**文本与 HTML 回给它。
    iframe 是 opaque origin(没有 allow-same-origin),外面的窗口读不到它的 DOM —— 只能由
    面板**自己**读,所以这段必须活在 SDK 里。截到上限再回,免得一个大面板把整坨 DOM 传出去;
-   同时把**完整长度**一并回,宿主据此说明「截了多少」。 */
+   同时把**完整长度**一并回,宿主据此说明「截了多少」。
+   报告 Q1:再顺手算一份**版式摘要**(元素矩形 / 字号 / 颜色 / 溢出 / 重叠)—— 用户要的
+   「像截屏那样看」在没有 canvas 依赖、外层又读不到 DOM 的约束下降级成这个。 */
+function directText(el){
+  var s = "", kids = el.childNodes || [], k;
+  for (k = 0; k < kids.length; k++){ if (kids[k].nodeType === 3) s += kids[k].nodeValue || ""; }
+  return s.replace(/\\s+/g, " ").trim();
+}
+function describeBox(b){
+  var s = b.tag;
+  if (b.id) s += "#" + b.id; else if (b.cls) s += "." + String(b.cls).split(/\\s+/)[0];
+  if (b.text) s += ' "' + String(b.text).slice(0, 24) + '"';
+  return s;
+}
+function collectLayout(){
+  var out = { viewport: { width: 0, height: 0 }, content: { width: 0, height: 0 }, elements: [], elementCount: 0, problems: [] };
+  try {
+    var de = document.documentElement, body = document.body;
+    var vw = de.clientWidth, vh = de.clientHeight;
+    out.viewport = { width: vw, height: vh };
+    var cw = (body && body.scrollWidth) || vw, ch = (body && body.scrollHeight) || vh;
+    out.content = { width: cw, height: ch };
+    if (cw > vw + 1) out.problems.push("内容宽 " + cw + " > 视口宽 " + vw + "(横向滚动)");
+    if (ch > vh + 1) out.problems.push("内容高 " + ch + " > 视口高 " + vh + "(纵向滚动)");
+    var all = de.getElementsByTagName("*"), i, el, r, cs, txt, id, tag, overflow, offX;
+    out.elementCount = all.length;
+    var boxes = [];
+    for (i = 0; i < all.length; i++){
+      el = all[i];
+      tag = String(el.tagName || "").toLowerCase();
+      if (tag === "script" || tag === "style" || tag === "head" || tag === "meta" || tag === "link" || tag === "title") continue;
+      r = el.getBoundingClientRect();
+      if (r.width <= 0 && r.height <= 0) continue;
+      cs = (window.getComputedStyle ? window.getComputedStyle(el) : null);
+      if (cs && (cs.display === "none" || cs.visibility === "hidden")) continue;
+      id = el.id || "";
+      txt = directText(el);
+      overflow = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+      offX = r.left < -1 || r.right > vw + 1;
+      if (!id && !txt && !overflow && !offX) continue;
+      var box = { tag: tag, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+      if (id) box.id = String(id);
+      if (el.className && typeof el.className === "string") box.cls = el.className.slice(0, 120);
+      if (txt) box.text = txt.slice(0, ${PANEL_LAYOUT_TEXT_MAX});
+      if (cs){ if (cs.fontSize) box.fontSize = cs.fontSize; if (cs.color) box.color = cs.color; }
+      if (overflow) box.overflow = true;
+      if (offX) out.problems.push("元素 " + describeBox(box) + " 横向超出视口");
+      boxes.push({ box: box, el: el, r: r });
+      if (boxes.length >= ${PANEL_LAYOUT_MAX_ELEMENTS}) break;
+    }
+    var lim = Math.min(boxes.length, ${PANEL_LAYOUT_MAX_ELEMENTS}), a, b, ox, oy, j;
+    for (i = 0; i < lim; i++){
+      for (j = i + 1; j < lim; j++){
+        if (boxes[i].el.parentNode !== boxes[j].el.parentNode) continue;
+        a = boxes[i].r; b = boxes[j].r;
+        ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+        oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        if (ox > 2 && oy > 2) out.problems.push("同层元素重叠: " + describeBox(boxes[i].box) + " 与 " + describeBox(boxes[j].box));
+      }
+    }
+    for (i = 0; i < boxes.length; i++) out.elements.push(boxes[i].box);
+  } catch (e) { /* 拿不到版式就算了,文本 / HTML 照回 */ }
+  return out;
+}
 function probeReply(data){
   var id = data && data.probeId;
   var text = "", html = "", textLen = 0, htmlLen = 0;
@@ -278,8 +395,10 @@ function probeReply(data){
   textLen = text.length; htmlLen = html.length;
   if (textLen > ${PANEL_PROBE_TEXT_MAX}) text = text.slice(0, ${PANEL_PROBE_TEXT_MAX});
   if (htmlLen > ${PANEL_PROBE_HTML_MAX}) html = html.slice(0, ${PANEL_PROBE_HTML_MAX});
+  var layout = null;
+  try { layout = collectLayout(); } catch (e) { layout = null; }
   try {
-    parent.postMessage({ __mcode: 1, probe: id, text: text, html: html, textLength: textLen, htmlLength: htmlLen, url: String(location.href || "") }, "*");
+    parent.postMessage({ __mcode: 1, probe: id, text: text, html: html, textLength: textLen, htmlLength: htmlLen, url: String(location.href || ""), layout: layout }, "*");
   } catch (e) { /* 宿主已经没了 */ }
 }
 window.addEventListener("message", function(e){
