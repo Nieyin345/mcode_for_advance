@@ -117,6 +117,20 @@ export function createOrReuseSession(
   // design; the desktop ask tab consumes the IPC return value directly and
   // mobile doesn't manage side chats at all.
   if (input.kind === "side") {
+    // 引擎/模型**默认继承父会话**(报告附录 N 的 N4)。用户从界面建子对话时,渲染端会把
+    // 当前那套(自定义模型 / 引擎 / 模型)传进来;而 agent 经接口建(`app_api_call` 那类)
+    // 往往不传 providerId/model/customModelId —— 从前它们就落到内置默认(未登录的 Claude),
+    // 于是同一个子对话「用户建能跑、agent 建 Not logged in」。这里补一条继承:没显式给的
+    // 字段,从父会话那一行取。**显式给的一律优先**(调用方明确指定就该听它)。
+    //
+    // ⚠️ **只继承这三个真正可选的字段**(providerId / model / customModelId):它们的 schema
+    // 是 `.optional()`,`undefined` 能如实表达"调用方没给"。而 `effort` / `permissionMode`
+    // 的 schema 带 `.default("default")`,到了这里**永远有值** —— 分不清"没给"与"就要默认",
+    // 硬继承会把界面上显式选的「默认」也覆盖成父会话的非默认值(那是回归,不是修复)。
+    const parent = input.parentSessionId ? SessionRepo.get(input.parentSessionId) : undefined;
+    const effProviderId = input.providerId ?? parent?.providerId ?? DEFAULT_PROVIDER_ID;
+    const effModel = input.model ?? parent?.model ?? "default";
+    const effCustomModelId = input.customModelId !== undefined ? input.customModelId : (parent?.customModelId ?? null);
     // 「新建子对话 → 档案 / 档案+记忆」:建会话那一刻把档案抄成一份快照(见
     // `sessionAgentProfile.ts` 的文件头 —— 为什么是快照不是每轮回读)。
     const seed = input.agentProfileId ? resolveProfileSeed(input.agentProfileId) : null;
@@ -133,11 +147,11 @@ export function createOrReuseSession(
         // undefined fields and bumps updated_at; the ask tab sorts by
         // created_at, so the row stays in place in its list).
         SessionRepo.updateSettings(fresh.id, {
-          providerId: input.providerId,
-          model: input.model,
+          providerId: effProviderId,
+          model: effModel,
           effort: input.effort,
           permissionMode: input.permissionMode,
-          customModelId: input.customModelId ?? null,
+          customModelId: effCustomModelId,
         });
         const session = SessionRepo.get(fresh.id) ?? fresh;
         // 记忆**每一次都重新挂**:复用的那个壳还没有任何消息(它的占位标题就是"没发过
@@ -152,7 +166,7 @@ export function createOrReuseSession(
     const session: Session = {
       id: uid("sess_"),
       projectId: input.projectId,
-      providerId: input.providerId ?? DEFAULT_PROVIDER_ID,
+      providerId: effProviderId,
       claudeSessionId: null, // captured from system/init once the first turn runs
       kind: "side",
       parentSessionId: input.parentSessionId ?? null,
@@ -168,7 +182,7 @@ export function createOrReuseSession(
       // 挑的那件事抹掉。
       title: seed?.title ?? "Quick ask",
       status: "idle",
-      model: input.model ?? "default",
+      model: effModel,
       effort: input.effort,
       permissionMode: input.permissionMode,
       // A new thread always starts in 默认 — deliberately NOT inheriting the
@@ -176,7 +190,7 @@ export function createOrReuseSession(
       // (no model call), so silently carrying it into a fresh chat would eat
       // the user's first message. The mode is picked per thread.
       workflowId: "default",
-      customModelId: input.customModelId ?? null,
+      customModelId: effCustomModelId,
       archived: false,
       pinnedAt: null,
       contextSnapshot: null,

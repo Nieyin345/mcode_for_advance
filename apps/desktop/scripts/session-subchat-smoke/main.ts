@@ -264,6 +264,28 @@ console.log("\n第二档「档案」:有指令,**不**注记忆");
   eq("每轮都能取到角色提示词", resolveAgentPrompt(s.agentProfile), INSTR_A);
 }
 
+/* ── 2b. 引擎/模型默认继承父会话(报告附录 N 的 N4)──────────────────────────
+ * 用户从界面建子对话时渲染端会把当前那套传进来;agent 经接口建往往不传 ->
+ * 从前落到内置默认(未登录的 Claude),于是「用户建能跑、agent 建 Not logged in」。
+ * 判据:没显式给的字段从父会话继承;显式给的一律优先。 */
+console.log("\n第 2b 档:不传引擎/模型时,继承父会话");
+{
+  const parent = newParent();
+  // 给父会话配上"自定义模型那一套"。
+  SessionRepo.updateSettings(parent, { providerId: "pi-sdk", model: "deepseek-v4", customModelId: "cm_parent" });
+  const s = call(parent).session;
+  eq("★ providerId 继承了父会话", s.providerId, "pi-sdk");
+  eq("★ model 继承了父会话", s.model, "deepseek-v4");
+  eq("★ customModelId 继承了父会话", s.customModelId, "cm_parent");
+  // 显式给的优先 —— 别把调用方的明确指定覆盖掉。
+  const other = newParent();
+  SessionRepo.updateSettings(other, { providerId: "pi-sdk", model: "deepseek-v4", customModelId: "cm_parent" });
+  const s2 = call(other, { providerId: "claude-sdk", model: "opus", customModelId: "cm_explicit" }).session;
+  eq("显式 providerId 优先", s2.providerId, "claude-sdk");
+  eq("显式 model 优先", s2.model, "opus");
+  eq("显式 customModelId 优先", s2.customModelId, "cm_explicit");
+}
+
 /* ── 3. 「档案 + 记忆」那一档 ──────────────────────────────────────────── */
 
 console.log("\n第三档「档案+记忆」:有指令,而且第一轮带一份记忆快照");
