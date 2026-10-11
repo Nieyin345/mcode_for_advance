@@ -138,8 +138,16 @@ export function lastGoodEngineToolPolicyPath(file: string): string {
   return `${file}.last-good`;
 }
 
-/** 尝试从 last-good 备份读出一份**非空**策略;读不出/为空则 null。 */
-function readLastGood(file: string): EngineToolPolicy | null {
+/**
+ * 【MC-071 残余 E1】从 last-good 备份读出一份**有效**策略 —— 含**空策略**(用户明确把
+ * 某引擎全部启用也是「最近一次成功配置」的一种)。返回:
+ *   - `null`:备份不存在或读不出/解析失败(=真的没有可恢复的);
+ *   - `{ policy }`:备份合法,`policy` 可为 `{}`(上次提交就是全启用)。
+ *
+ * ⚠️ 从前这里只在**非空**时返回,于是「用户明确全开 → 主文件又损坏」会从更旧的**非空**
+ * 备份错误恢复出早已被用户放开的旧限制。现在空配置也算有效的 last-good。
+ */
+function readLastGood(file: string): { policy: EngineToolPolicy } | null {
   let raw: string;
   try {
     raw = readFileSync(lastGoodEngineToolPolicyPath(file), "utf-8");
@@ -148,16 +156,17 @@ function readLastGood(file: string): EngineToolPolicy | null {
   }
   const parsed = parsePolicyText(raw);
   if (!parsed.ok) return null;
-  return Object.keys(parsed.policy).length > 0 ? parsed.policy : null;
+  return { policy: parsed.policy };
 }
 
 /**
  * 【MC-071】读策略并**明确区分** VALID / MISSING / INVALID:
  *   - **MISSING**(文件不存在):全新用户,不设限 —— 保持原生全量,与旧行为一致;
  *   - **VALID**:照常返回;
- *   - **INVALID**(存在但损坏):**不静默 fail-open**。若 last-good 备份里有一份非空策略,
- *     就据它保守恢复(`recovered=true`)—— 一个坏了的文件绝不能把用户原本禁用的工具
- *     静默重新启用;没有备份时按「不设限」但**带 status=INVALID + error** 供 UI 显式告警。
+ *   - **INVALID**(存在但损坏):**不静默 fail-open**。若 last-good 备份里有一份**有效**
+ *     策略(含"用户明确全启用"那份空策略),就据它保守恢复(`recovered=true`)—— 一个坏了的
+ *     文件绝不能把用户原本禁用的工具静默重新启用,也不能恢复到**比最后一次提交更旧**的配置;
+ *     没有备份时按「不设限」但**带 status=INVALID + error** 供 UI 显式告警。
  *
  * 返回的 `policy` 即**实际应生效**的策略,调用方(各 Provider / IPC 快照)都用它。
  */
@@ -171,7 +180,7 @@ export function readEngineToolPolicyDetailed(file: string): EngineToolPolicyRead
     const recovered = readLastGood(file);
     return {
       status: "INVALID",
-      policy: recovered ?? {},
+      policy: recovered ? recovered.policy : {},
       recovered: recovered !== null,
       error: `策略文件不可读:${err instanceof Error ? err.message : String(err)}`,
     };
@@ -181,7 +190,7 @@ export function readEngineToolPolicyDetailed(file: string): EngineToolPolicyRead
   const recovered = readLastGood(file);
   return {
     status: "INVALID",
-    policy: recovered ?? {},
+    policy: recovered ? recovered.policy : {},
     recovered: recovered !== null,
     error: parsed.error,
   };
@@ -219,9 +228,11 @@ function atomicWriteJson(file: string, data: unknown): void {
 export function writeEngineToolPolicyFile(file: string, policy: EngineToolPolicy): void {
   const minimal = minimizePolicy(policy);
   atomicWriteJson(file, minimal ?? {});
-  // 【MC-071】每次成功写入后刷新「最后一份确认过的策略」备份 —— 主文件日后被截断/改坏时,
-  // 据它保守恢复,而不是 fail-open。只备份**非空**策略(全启用不需要备份)。
-  if (minimal) atomicWriteJson(lastGoodEngineToolPolicyPath(file), minimal);
+  // 【MC-071 / 残余 E1】每次成功写入后刷新「最后一份确认过的策略」备份 —— **包括用户明确
+  // 全启用(空策略)那一次**。从前只在 `minimal` 非空时刷新,于是「先有限制 → 用户明确全开
+  // → 主文件又损坏」会从更旧的**非空**备份错误恢复出用户早已放开的旧限制。空配置也是
+  // 一次合法提交,必须成为新的 last-good。
+  atomicWriteJson(lastGoodEngineToolPolicyPath(file), minimal ?? {});
 }
 
 /** 写策略到默认路径。 */

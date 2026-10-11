@@ -116,6 +116,23 @@ try {
     check("★ 存在但读不出 → INVALID(不当作 MISSING)", readErr.status === "INVALID", readErr);
   }
 
+  /* ── 4c.【MC-071 残余 E1】明确全开后损坏,**不得**恢复更旧的限制 ─────────── */
+  {
+    const f = join(dir, "mc071-empty.json");
+    rmSync(f, { force: true }); rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+    // ① 先设一份禁用 → last-good 记录下来。
+    writeEngineToolPolicyFile(f, { claude: { exclude: ["Bash"] } });
+    eq("① 初始禁用已落 last-good", readEngineToolPolicyDetailed(lastGoodEngineToolPolicyPath(f)).policy, { claude: { exclude: ["Bash"] } });
+    // ② 用户**明确全开**(空策略)→ 这必须成为新的 last-good。
+    writeEngineToolPolicyFile(f, { claude: { exclude: [] } });
+    eq("② 主文件是全启用", readEngineToolPolicyDetailed(f).policy, {});
+    eq("★ ② 明确全开后 last-good 也被刷成空(不残留旧限制)", readEngineToolPolicyDetailed(lastGoodEngineToolPolicyPath(f)).policy, {});
+    // ③ 主文件损坏 → 从 last-good 恢复,必须恢复到**最近一次提交**(全启用),不是更旧的禁用。
+    writeFileSync(f, "{ 坏了");
+    const after = readEngineToolPolicyDetailed(f);
+    check("★ ③ 明确全开后损坏 → 恢复到最近一次(全启用),不复活更旧的 Bash 禁用", after.recovered === true && JSON.stringify(after.policy) === JSON.stringify({}), after);
+  }
+
   /* ── 5. 接线：provider 真的读了策略并传给了 SDK ───────────────────────── */
   const claudeSrc = readFileSync(resolve(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
   check(
