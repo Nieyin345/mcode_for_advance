@@ -453,8 +453,8 @@ const PANEL_METHOD_DOCS: Record<PanelMethod, { doc: string; params?: string; ret
   "library.list": { doc: "列/搜资料库条目(按标题或关键词,可分页)", params: "query?, collectionId?, limit?(1-200,默认50), offset?", returns: "{ total, items:[{ id, title, abstract?, url?, hasMarkdown, addedAt, updatedAt }] }" },
   "library.search": { doc: "全文检索资料库条目", params: "query, limit?(1-100,默认30)", returns: "[匹配项]" },
   "library.read": { doc: "读一条资料库条目的 Markdown 正文", params: "id", returns: "{ markdown, fileName }" },
-  "storage.get": { doc: "读这个面板自己存的一个键(按面板隔离,存在浏览器 localStorage)", params: "key", returns: "值 或 null" },
-  "storage.set": { doc: "存一个键(值须能 JSON 序列化;整块面板数据有 1MB 上限)", params: "key, value", returns: "{ ok }" },
+  "storage.get": { doc: "读这个面板自己存的一个键(**按扩展隔离**,存在 `<数据根>/extensions/<扩展id>/store.json`,不是浏览器 localStorage)", params: "key", returns: "值 或 null" },
+  "storage.set": { doc: "存一个键(值须能 JSON 序列化;**每个扩展一份、各 4MB 上限**,超了回 `{ ok:false, reason:'tooLarge' }`)", params: "key, value", returns: "{ ok, reason? }" },
   "storage.remove": { doc: "删掉一个键", params: "key", returns: "{ ok }" },
   copy: { doc: "把文本复制到剪贴板", params: "text", returns: "{ ok }" },
   openUrl: { doc: "用系统浏览器打开一个链接(只放行 http(s)/mailto)", params: "url", returns: "{ ok }" },
@@ -462,6 +462,11 @@ const PANEL_METHOD_DOCS: Record<PanelMethod, { doc: string; params?: string; ret
   shell: { doc: "在底部终端里跑一条命令(默认每次弹确认;用户看得见、可 Ctrl+C,不后台静默执行)", params: "command", returns: "{ ok }" },
   toast: { doc: "在界面右下角弹一条提示(标题用面板名)", params: "message, kind?(info|warning|error)", returns: "{ ok }" },
 };
+
+/** 面板方法里**会弹确认框**的那些 —— 判据与 `panelBridge.ts` 的 `gate(...)` 调用点
+ *  同一份(写文件、跑自动化、跑终端命令;`api.call` 另按主进程回的 `needsApproval` 弹)。
+ *  `app_panel_api_list({method})` 据此告诉作者"这一步要不要人点头"。 */
+const PANEL_CONFIRM_METHODS: ReadonlySet<string> = new Set(["files.write", "runAutomation", "shell", "api.call"]);
 
 /** 各挂载位的一句话说明(`app_panel_api_list({slot})` 与总览用)。 */
 const SLOT_DOCS: Record<(typeof CUSTOM_UI_SLOTS)[number], string> = {
@@ -510,6 +515,9 @@ function panelApiList(args: { method?: string; slot?: string }): ToolResult {
         `说明:${d.doc}`,
         d.params ? `参数:${d.params}` : "参数:(无)",
         d.returns ? `返回:${d.returns}` : null,
+        // 作者最常问的一句:「这一步会不会弹确认?」判据与 `panelBridge.ts` 的 `gate(...)`
+        // 调用点同一份 —— 少了它作者得靠试(报告附录 Q2)。
+        `是否需要确认:${PANEL_CONFIRM_METHODS.has(methodName) ? "是(每次弹确认框,用户点头才执行;动作上 confirm:false 的例外)" : "否(直接执行)"}`,
         `调用方式:面板脚本里 await mcode.${methodName}(…)(库风格的方法在 SDK 里已按子对象包好,如 mcode.files.read / mcode.api.call)。`,
       ]
         .filter(Boolean)

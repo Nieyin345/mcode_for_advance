@@ -538,6 +538,16 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   // 不知道的方法如实报错。
   const bad = await invokeAppTool("app_panel_api_list", { method: "no.such.panel.method" }, "me", ctx);
   check("★ 未知面板方法:如实报错、不静默", bad.isError === true && textOf(bad).includes("没有这个方法"), textOf(bad));
+  // ★ 每个方法都要明说「这一步会不会弹确认」(报告附录 Q2:作者最常问的一句,从前只能靠试)。
+  const write = await invokeAppTool("app_panel_api_list", { method: "files.write" }, "me", ctx);
+  check("★ files.write 标了「需要确认」", !write.isError && textOf(write).includes("是否需要确认:是"), textOf(write));
+  const readOnly = await invokeAppTool("app_panel_api_list", { method: "files.read" }, "me", ctx);
+  check("★ files.read 标了「不需要确认」", !readOnly.isError && textOf(readOnly).includes("是否需要确认:否"), textOf(readOnly));
+  // ★ storage 的手册要与实现一致(报告附录 Q2:手册还写"浏览器 localStorage / 1MB",其实已改到扩展目录 / 4MB)。
+  const storageSet = await invokeAppTool("app_panel_api_list", { method: "storage.set" }, "me", ctx);
+  const ss = textOf(storageSet);
+  check("★ storage.set 手册说清存在扩展目录、不是 localStorage", !storageSet.isError && ss.includes("扩展") && !ss.includes("localStorage"), ss);
+  check("★ storage.set 手册给的配额是 4MB(与 EXTENSION_STORE_MAX 一致)", ss.includes("4MB"), ss);
 
   // 展开一个挂载位:动作类型 + 模板变量。
   const slot = await invokeAppTool("app_panel_api_list", { slot: "library.item" }, "me", ctx);
