@@ -317,4 +317,8 @@ export const DOMAIN_LABELS: Record<string, string> = {
   mobile: "手机配对",
   relay: "中继服务器",
   dialog: "系统对话框",
+  // 这两个域有方法却没标签 —— `app_api_list` 按域列目录时它们会显示成无名域
+  // (agent 看到「- engineTools(2):」后面空着)。补上,和别的域一条规矩。
+  engineTools: "引擎内置工具的禁用清单(按引擎勾选/手填要砍掉哪些 SDK 自带工具)",
+  extensionStore: "扩展专用数据区(某个扩展自己的键值存储,与项目/核心数据分开)",
 };

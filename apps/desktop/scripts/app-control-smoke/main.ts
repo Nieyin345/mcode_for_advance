@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { ProviderContext, ApprovalRequest, ProviderApprovalDecision } from "@contracts/provider";
 import { APP_DANGER_APPROVAL_PREFIX, APP_CONTROL_RENDERER_GLOBAL } from "@contracts/appControl";
 import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
-import { policyFor } from "@main/appControl/policy.js";
+import { DOMAIN_LABELS, policyFor } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod } from "@main/appControl/tools.js";
@@ -73,6 +73,14 @@ check("清单里没有构建机绝对路径", !API_CATALOG.some((e) => /[A-Z]:\/
 const levels = new Map<string, number>();
 for (const e of API_CATALOG) levels.set(policyFor(e.method).level, (levels.get(policyFor(e.method).level) ?? 0) + 1);
 check("五档都有人", ["read", "write", "danger", "blocked", "ui"].every((l) => (levels.get(l) ?? 0) > 0), [...levels]);
+// 每个在清单里出现的域都必须有 `DOMAIN_LABELS` 标签 —— 否则 `app_api_list` 按域列目录时
+// 那一行是「- <域>(N):」后面空着,agent 读不出这域是干什么的。`engineTools` / `extensionStore`
+// 两个域当初就是这样漏的(独立复核挑出)。
+{
+  const domains = new Set(API_CATALOG.map((e) => e.method.split(".")[0] ?? ""));
+  const unlabeled = [...domains].filter((d) => !(d in DOMAIN_LABELS));
+  check("清单里每个域都有 DOMAIN_LABELS 标签(没有无名域)", unlabeled.length === 0, unlabeled);
+}
 const pin: Array<[string, string]> = [
   ["claude.approve", "blocked"],
   ["claude.respondQuestion", "blocked"],
