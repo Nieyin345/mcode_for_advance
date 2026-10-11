@@ -3,7 +3,7 @@
  *
  * Run: scripts/mobile-sync-smoke/run.sh
  */
-import { server, callsOf, storage } from "./prelude.js";
+import { server, callsOf, storage, gateMessages, releaseMessages } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { ChatMessage } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
@@ -261,6 +261,29 @@ console.log("\n[5] resyncSessionMessages / resyncAfterReconnect");
   st().ingestEvent({ type: "turn.done", sessionId: RUN, reason: "end_turn", endedAt: Date.now() });
   await tick(1700);
   eq("它收尾之后从库里重拉", textsOf(RUN), ["完整的回复"]);
+}
+
+console.log("\n[UI-039] 逆序补拉:旧回包不得覆盖刚恢复的新消息");
+{
+  const SID = "s_race";
+  useSessionStore.setState((s) => ({
+    messagesBySession: { ...s.messagesBySession, [SID]: [msg("m0", SID, 5, "本地旧")] },
+    runningBySession: { ...s.runningBySession, [SID]: false },
+    historyLoadedBySession: { ...s.historyLoadedBySession, [SID]: true },
+  }));
+  // A 旧请求挂起;B 新请求(服务端内容更新)先提交;A 迟到。
+  gateMessages(); // 挂住 A
+  server.messages[SID] = [rec("m0", SID, 5, "本地旧"), rec("m1", SID, 10, "A 的旧版")];
+  const aOld = st().resyncSessionMessages(SID); // A:发出后被门挂住
+  await tick(20);
+  // B:更新服务端内容,再发一次补拉(不带门,立即回)。
+  server.messages[SID] = [rec("m0", SID, 5, "本地旧"), rec("m2", SID, 10, "B 的新版 NEW_RESPONSE")];
+  await st().resyncSessionMessages(SID); // B:立即完成并 commit
+  eq("B 的新版已提交", textsOf(SID).at(-1), "B 的新版 NEW_RESPONSE");
+  // 放行 A —— A 的迟到回包**不得**把 NEW_RESPONSE 覆盖回旧版。
+  releaseMessages(0);
+  await aOld;
+  eq("★ A 旧回包迟到后仍是 NEW_RESPONSE(未倒退)", textsOf(SID).at(-1), "B 的新版 NEW_RESPONSE");
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

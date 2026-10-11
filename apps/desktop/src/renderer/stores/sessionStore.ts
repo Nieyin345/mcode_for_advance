@@ -2185,6 +2185,13 @@ function persistIdeBuckets(get: () => SessionState): void {
  *  "切了项目列表又跳回去" race). */
 let streamFetchSeq = 0;
 
+/**
+ * 【UI-039】每会话的补拉代次。同会话**新**一次 `resyncSessionMessages` 发起时自增;旧回包回来
+ * 时代次不匹配 → **不得 commit**(否则断线重连时 A 旧请求迟到会把 B 新请求刚恢复的新消息
+ * 覆盖回旧正文)。只挡"更老的补拉被更晚的覆盖",与 live delta / turn.done 的既有判据并存。
+ */
+const resyncGeneration = new Map<string, number>();
+
 /** 挡 `reloadSkills` 的旧回包 —— 切项目时快速连切,先发的那次可能后回来把新清单盖掉。 */
 let reloadSkillsSeq = 0;
 
@@ -4491,6 +4498,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   resyncSessionMessages: async (sessionId) => {
     if (get().runningBySession[sessionId]) return;
+    // 【UI-039】登记本次补拉的代次。同会话若已有更晚的补拉发起,那次会再自增 —— 本回包
+    // commit 前要确认自己仍是**最新**代次,否则丢弃(不让旧历史覆盖刚恢复的新消息)。
+    const generation = (resyncGeneration.get(sessionId) ?? 0) + 1;
+    resyncGeneration.set(sessionId, generation);
     let fetched: ChatMessage[];
     let hasMore: boolean;
     try {
@@ -4504,6 +4515,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => {
       // 拉的这段时间里新一轮开始了 —— 它的正文正在流进来,别动。
       if (s.runningBySession[sessionId]) return s;
+      // 【UI-039】这段时间里同会话又发起了更晚的补拉 → 我这个回包已过时,丢弃。
+      if (resyncGeneration.get(sessionId) !== generation) return s;
       const live = s.messagesBySession[sessionId];
       if (!live) return s; // 会话已被关掉 / 删掉
       // 库里一条都没有:多半是这一端自己写的还没到(或根本没人写)—— 宁可留着
