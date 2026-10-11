@@ -1503,8 +1503,6 @@ function CodexProviderForm({
       }
       // Codex 特有：图片生成开关（往 config.toml 的 http_headers 补一条 actor 头，
       // 解锁 codex 的 imagegen 工具）。默认折叠 —— 它是可选的解锁项，不是必填。
-      // Codex 特有：图片生成开关（往 config.toml 的 http_headers 补一条 actor 头，
-      // 解锁 codex 的 imagegen 工具）。默认折叠 —— 它是可选的解锁项，不是必填。
       advanced={
         <div className="flex items-start justify-between gap-3 rounded border border-edge bg-surface/40 p-2.5">
           <HintLabel hint={t("settings.customModels.imageGenHint")} className="text-[0.7857em] font-medium text-content">
