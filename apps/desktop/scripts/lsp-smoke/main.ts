@@ -698,8 +698,18 @@ console.log("\n§6 真起一个 server(假 server 走完整 initialize 握手)")
   eq("关掉 typescript 不影响 python(另一个语言那个还在跑)", pidsFor("py").filter(alive).length, 1);
 
   lspManager.disposeAll();
-  await sleep(2000);
-  same("disposeAll 之后一个都不剩", spawnedPids().filter(alive), []);
+  // ⚠️ **不要用一次固定 sleep 就断言**(从前是 `await sleep(2000)`)。CI 上实测:
+  //   win32 的子孙进程(shell:true 起的 cmd.exe 再 spawn 的假 server)退出与
+  //   `tasklist` 回收不是同一个瞬间,2s 后偶有一次还能查到那个 pid 仍"活着" ——
+  //   本机跑三次都绿、CI 上偶发红,就是这条。退出是**异步**的,断言就该**等条件**:
+  //   在有限窗口内轮询,条件一成立立刻过;窗口耗尽才报红(报的是真实残留)。
+  const goneBy = Date.now() + 15_000;
+  let leftover = spawnedPids().filter(alive);
+  while (leftover.length > 0 && Date.now() < goneBy) {
+    await sleep(250);
+    leftover = spawnedPids().filter(alive);
+  }
+  same("disposeAll 之后一个都不剩(有限窗口内退出)", leftover, []);
 }
 
 /* ─────────────────── 6b. 手动指定的路径里有空格 ─────────────────── */
