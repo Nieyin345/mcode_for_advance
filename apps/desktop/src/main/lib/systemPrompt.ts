@@ -140,6 +140,7 @@ export function fileArchitecturePrompt(root: string, scripts: string): string {
     `  \`${py} "${scripts}/library.py" show <id 前缀或标题片段>\` —— 看一条的完整字段 + 用户在这条上的笔记`,
     `  \`${py} "${scripts}/library.py" list --group <大类 id>\` —— 列条目(不带 \`--group\` 就是全部;大类、分类的 id 用 \`collections\` 查)`,
     `  \`${py} "${scripts}/library.py" notes\` / \`collections\` —— 列笔记 / 分类树`,
+    `  ⚠️ **裸名 \`${py}\` 未必要你想要的解释器**:应用为了让技能敲得到 \`soffice\` 之类,会把某些程序自带的目录(SAP、LibreOffice 等都可能有自己的 \`python\`)放进子进程 \`PATH\` 的最前面。拿不准时先 \`${py} -c "import sys;print(sys.executable)"\` 看它是哪一个;要装包/跑依赖时尤其要先确认,别往某个程序的私有环境里装。`,
     ``,
     `### 二进制文档(Word / Excel / PPT / PDF)`,
     ``,
