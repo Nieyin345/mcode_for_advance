@@ -141,6 +141,36 @@ await withAuditPage(dir, async page => {
     assert.equal(await page.eval("'shared' in labContents.global"), true, 'unchecked skills are untouched');
     assert.equal(await page.eval("!!document.querySelector('[data-testid=skills-bulk-bar]')"), false, 'bar disappears once the checked rows are gone');
   });
+  // ── 整包勾选：点组标题上的勾选框 = 选中该包里全部可勾选的技能 ──
+  // 用户原话：「选择一个包里面的所有 skill 只能一个个点」。从前只有总库那一栏有
+  // 「全选」，没有一个包的「全选」。判据立在用户看到的行为上：勾一下组标题 → 该包
+  // 全部可勾选的技能进入选中集（批量栏出现、名字就是整包）。
+  await test('group-title-checkbox-selects-the-whole-package', async () => {
+    await go();
+    // 先清空任何残留勾选。
+    await page.eval(`document.querySelectorAll('input[type=checkbox][aria-label]:checked').forEach(e=>e.click())`);
+    await page.sleep(100);
+    // 组标题上的整包勾选框：aria-label 以「选中这一整包」起头。
+    const groupBox = `[...document.querySelectorAll('input[type=checkbox]')].find(e=>e.getAttribute('aria-label')&&e.getAttribute('aria-label').startsWith('选中这一整包'))`;
+    assert.equal(await page.eval(`!!(${groupBox})`), true, 'a package-level checkbox must exist on the group title');
+    await page.eval(`${groupBox}.click()`);
+    await page.sleep(150);
+    await page.waitFor("!!document.querySelector('[data-testid=skills-bulk-bar]')", 3000);
+    // 该包里**可勾选**的（通用库逐行勾选框）应当全进选中集。行勾选框的 aria-label 是
+    // 技能名（整包勾选框那种以「选中这一整包」起头，排除掉）。
+    const checkedSkills = await page.eval(
+      `[...document.querySelectorAll('input[type=checkbox][aria-label]:checked')].map(e=>e.getAttribute('aria-label')).filter(n=>!n.startsWith('选中这一整包')).sort()`,
+    );
+    const allRowSkills = await page.eval(
+      `[...document.querySelectorAll('input[type=checkbox][aria-label]')].map(e=>e.getAttribute('aria-label')).filter(n=>!n.startsWith('选中这一整包') && /^(claude|codex|pi)$/.test(n)===false).sort()`,
+    );
+    assert.ok(allRowSkills.length > 2, `fixture package must have >2 selectable rows, got ${allRowSkills.length}`);
+    assert.deepEqual(checkedSkills, allRowSkills, `whole-package selection ${JSON.stringify(checkedSkills)}`);
+    // 再点一次：整包清空。
+    await page.eval(`${groupBox}.click()`);
+    await page.sleep(150);
+    assert.equal(await page.eval("document.querySelectorAll('input[type=checkbox][aria-label]:checked').length"), 0, 'clicking again clears the package');
+  });
   await test('row-shows-engine-switches-without-opening-editor', async () => {
     // 用户报的原话：「不能单独控制一个 skill 的引擎权限」。它以前只在右侧编辑区
     // （要先选中一条才看得到），列表行上完全不可见。这条钉住"行上就有、且点了真

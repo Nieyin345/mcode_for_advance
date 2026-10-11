@@ -319,6 +319,33 @@ export function SkillsPanel() {
       return next;
     });
   }, []);
+  /** 一个包里**能勾选**的那些技能的 name（只有通用库那份能勾选复制 —— 与行的判据同一份：
+   *  项目里的已经在项目里、插件那份是别人管的）。整包勾选就是一次勾上这一组。 */
+  const groupSelectable = useCallback((skills: SkillInfo[]): string[] => {
+    return skills.filter((s) => s.source === "global").map((s) => s.name);
+  }, []);
+  const groupAllChecked = useCallback((skills: SkillInfo[]): boolean => {
+    const names = groupSelectable(skills);
+    return names.length > 0 && names.every((n) => checked.has(n));
+  }, [groupSelectable, checked]);
+  const groupSomeChecked = useCallback((skills: SkillInfo[]): boolean => {
+    const names = groupSelectable(skills);
+    return names.some((n) => checked.has(n)) && !names.every((n) => checked.has(n));
+  }, [groupSelectable, checked]);
+  /** 整包勾选开关：全选了就整包清空，否则整包勾上。 */
+  const toggleGroupChecked = useCallback((skills: SkillInfo[]): void => {
+    const names = groupSelectable(skills);
+    if (names.length === 0) return;
+    setChecked((prev) => {
+      const next = new Set(prev);
+      const all = names.every((n) => next.has(n));
+      for (const n of names) {
+        if (all) next.delete(n);
+        else next.add(n);
+      }
+      return next;
+    });
+  }, [groupSelectable]);
 
   // The global inventory must not use composer precedence: a project copy
   // with the same name must never hide the independently editable global one.
@@ -1204,6 +1231,26 @@ export function SkillsPanel() {
                     {g.label}
                   </span>
                   <span className="ml-1 shrink-0 tabular-nums normal-case">{g.skills.length}</span>
+                  {/* 整包勾选 —— 只对**可勾选**的（通用库）行有意义。用户原话：
+                      「选择一个包里面的所有 skill 只能一个个点」。勾这个框 = 选中该包里
+                      全部可勾选的技能（供批量复制 / 切引擎 / 删除用）；再点一次清空该包。
+                      `indeterminate` 表示包内选中了一部分。放在组标题上、且在折叠状态下
+                      也显示 —— 折着就能整包勾，不用先展开。 */}
+                  {groupMode === "bundle" && groupSelectable(g.skills).length > 0 && (
+                    <input
+                      type="checkbox"
+                      checked={groupAllChecked(g.skills)}
+                      ref={(el) => {
+                        if (el) el.indeterminate = groupSomeChecked(g.skills);
+                      }}
+                      onChange={() => toggleGroupChecked(g.skills)}
+                      // 点勾不能顺带折叠/展开这个组（父 div 是 role=button）。
+                      onClick={(e) => e.stopPropagation()}
+                      className="ml-1 h-3.5 w-3.5 shrink-0 accent-accent"
+                      title={t("settings.skills.groupSelectTitle")}
+                      aria-label={`${t("settings.skills.groupSelectTitle")} · ${g.label}`}
+                    />
+                  )}
                   {/* Group-level engine switches — shown on editable groups (not
                       built-in peers, which are always offered to every engine). */}
                   {groupMode === "bundle" && g.id !== "builtin" && (
