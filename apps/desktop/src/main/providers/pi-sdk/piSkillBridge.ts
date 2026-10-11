@@ -126,14 +126,20 @@ export async function buildPiSkillLoader(
   // The effective name filter: explicit picks narrow the global matrix; they
   // never revive a skill disabled for Pi. Otherwise the universal library's
   // per-engine matrix decides. null = unrestricted (no override needed).
+  //
+  // 【MC-074】`explicitPicks` 与「矩阵推导出的限制集合」**必须分开对待**:用户
+  // 在输入框里点名选中的 skill,交付范围就是**恰好这几个** —— 下面的插件名单合并
+  // (为「矩阵限制 pi 时别把插件 skill 一起过滤掉」而加)只对**矩阵推导**的 allowSet
+  // 成立,绝不能把插件里同被矩阵放行的 skill 塞进一份显式点选集(那会让"我只选了 A"
+  // 变成"选了 A 加一堆插件 skill",正是本条要修的单轮选择范围失效)。
+  const explicitPicks = !!(allowNames && allowNames.length > 0);
   const enginesMap = readEnginesMap(defaultSkillsRoot());
-  const allowSet: Set<string> | null =
-    allowNames && allowNames.length > 0
-      ? new Set(allowNames.filter((name) => engineEnabled(enginesMap, name, "pi")))
-      : (() => {
-          const enabled = enabledSkillNames(defaultSkillsRoot(), "pi");
-          return enabled === null ? null : new Set(enabled);
-        })();
+  const allowSet: Set<string> | null = explicitPicks
+    ? new Set((allowNames as string[]).filter((name) => engineEnabled(enginesMap, name, "pi")))
+    : (() => {
+        const enabled = enabledSkillNames(defaultSkillsRoot(), "pi");
+        return enabled === null ? null : new Set(enabled);
+      })();
 
   // The engines matrix applies to plugin contributions too: a plugin skill the
   // user took away from pi must NOT show up. When the matrix is unrestricted on
@@ -151,11 +157,12 @@ export async function buildPiSkillLoader(
   // copy of the same name yields (mirrors the listing's global-first rank).
   const universalNames = new Set(skillNamesInRoot(universalRoot).keys());
   // When the matrix is restricted on pi, also merge in plugin skill names the
-  // matrix still allows — without this, a composer selection or matrix state
-  // that names a plugin skill would filter it out (the old bug: the allowSet
-  // only carried universal-library names, so every plugin skill vanished as
-  // soon as any restriction landed).
-  if (matrixRestrictsPi && extraSkillPaths) {
+  // matrix still allows — without this, a matrix state that restricts pi would
+  // filter out every plugin skill (the old bug: the allowSet only carried
+  // universal-library names, so every plugin skill vanished as soon as any
+  // restriction landed). 【MC-074】**只在矩阵推导路径生效**:用户显式点选时
+  // allowSet 就是那几个名字,不得被插件名单扩容。
+  if (!explicitPicks && matrixRestrictsPi && extraSkillPaths) {
     for (const root of extraSkillPaths) {
       for (const name of skillNamesInRoot(root).keys()) {
         if (engineEnabled(enginesMap, name, "pi")) {
