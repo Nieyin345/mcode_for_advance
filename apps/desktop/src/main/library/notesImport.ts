@@ -66,11 +66,13 @@ export function deriveNoteTitle(text: string, filePath: string): string {
  * 导入一批 Markdown 笔记。源文件**复制**进库(与 PDF 一致:库是一个自洽的位置,
  * 用户原来的文件留在原处)。
  */
-export function importNoteFiles(paths: string[], collectionIds?: string[]): NoteImportSummary {
+export function importNoteFiles(paths: string[], collectionIds?: string[], signal?: AbortSignal): NoteImportSummary {
   ensureLibraryDirs();
   const out: NoteImportSummary = { items: [], added: 0, skipped: 0, errors: [] };
 
   for (const path of paths) {
+    // 【MC-072】每项提交前检查取消:同批里取消后**未开始**的项不再入库(已提交的保留)。
+    if (signal?.aborted) break;
     try {
       const ext = extname(path).toLowerCase();
       if (!NOTE_EXTS.has(ext)) {

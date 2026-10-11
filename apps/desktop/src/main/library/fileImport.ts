@@ -57,6 +57,8 @@ export function importGenericFiles(input: {
   /** 落法。默认 attached(复制进库)。 */
   mode?: "linked" | "attached";
   collectionIds?: string[];
+  /** 【MC-072】取消信号:逐项提交**之前**检查,取消后未开始的项不再导入(已提交的保留)。 */
+  signal?: AbortSignal;
 }): { items: LibraryItem[]; added: number; skipped: number; errors: Array<{ path: string; error: string }> } {
   ensureLibraryDirs();
   const mode = input.mode ?? "attached";
@@ -77,6 +79,9 @@ export function importGenericFiles(input: {
   const seen = new Map<string, LibraryItem | null>();
 
   for (const p of input.paths) {
+    // 【MC-072】每项提交前检查取消:同批里取消后**未开始**的项不再入库(已提交的保留)。
+    // 从前只在批次之间检查,一次几十个文件的批里取消要等整批跑完才发现。
+    if (input.signal?.aborted) break;
     const abs = path.resolve(p);
     try {
       if (!existsSync(abs)) {

@@ -98,26 +98,28 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
 
   // 笔记管线（md/txt）—— 【MC-072】取消后不再提交。
   if (notes.length > 0 && !opts.signal?.aborted) {
-    const res = importNoteFiles(notes, opts.collectionIds);
+    const res = importNoteFiles(notes, opts.collectionIds, opts.signal);
     out.items.push(...res.items);
     out.added += res.added;
     out.skipped += res.skipped;
     out.errors.push(...res.errors);
   }
 
-  // 通用管线（其余文件 + 目录条目）—— 【MC-072】取消后不再提交。
+  // 通用管线（其余文件 + 目录条目）—— 【MC-072】取消后不再提交,且 dirs 与 files
+  // **两组之间**也要重查:一批里第一组(目录 linked)提交完取消,第二组(文件 attached)
+  // 不得再执行 —— 从前只在进入本块之前查一次,组内取消要等两组都跑完。
   if (generic.length > 0 && !opts.signal?.aborted) {
     const dirs = generic.filter((g) => g.isDir).map((g) => g.path);
     const files = generic.filter((g) => !g.isDir).map((g) => g.path);
-    if (dirs.length > 0) {
-      const res = importGenericFiles({ paths: dirs, mode: "linked", collectionIds: opts.collectionIds });
+    if (dirs.length > 0 && !opts.signal?.aborted) {
+      const res = importGenericFiles({ paths: dirs, mode: "linked", collectionIds: opts.collectionIds, signal: opts.signal });
       out.items.push(...res.items);
       out.added += res.added;
       out.skipped += res.skipped;
       out.errors.push(...res.errors);
     }
-    if (files.length > 0) {
-      const res = importGenericFiles({ paths: files, mode: "attached", collectionIds: opts.collectionIds });
+    if (files.length > 0 && !opts.signal?.aborted) {
+      const res = importGenericFiles({ paths: files, mode: "attached", collectionIds: opts.collectionIds, signal: opts.signal });
       out.items.push(...res.items);
       out.added += res.added;
       out.skipped += res.skipped;

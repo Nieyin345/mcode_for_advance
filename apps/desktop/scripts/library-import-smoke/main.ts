@@ -363,6 +363,134 @@ console.log("\n通用导入 · 选定分类要生效(文件/文件夹/已存在�
   check("★ 而且没有 md_path(走的不是笔记管线)", dotMdRes.items[0]?.mdPath === undefined, dotMdRes.items[0]);
 }
 
+/* ──────────────── 5b. 【MC-072】取消贯穿批量导入的**组内**与**组间** ────────────────
+ *
+ * `importAnyFiles` 把一批路径拆成三条管线(PDF / 笔记 / 通用),通用管线又分
+ * `dirs`(linked)与 `files`(attached)两组。取消信号必须：
+ *   ① 在**同一条管线内**逐项生效(组内取消,后面未开始的项不再提交);
+ *   ② 在**两组之间**生效(第一组提交完取消,第二组不得再执行);
+ *   ③ 在**两条管线之间**生效(笔记池取消,通用池不得执行)。
+ * 从前只在进入每个池之前查一次,组内/组间的取消要等整批跑完才发现 —— 而一次导入
+ * 动辄几十个文件,取消后照样把剩下的全部写进库。
+ *
+ * 这里用真 `importAnyFiles` + 真文件。中途取消的**触发点**用装配层的入库事件回调
+ * (`configureLibraryEvents`)—— 每当有条目真的入库就 abort,于是"取消后是否还继续
+ * 提交"变成可确定观察的事实。 */
+
+console.log("\n【MC-072】取消贯穿批量导入");
+{
+  const { importAnyFiles } = await import("@main/library/importDispatch.js");
+
+  /** 装一个"第 N 次入库事件时 abort"的钩子,跑完还原原本的 emitExternal。 */
+  async function withAbortOnImport<T>(triggerEveryTime: boolean, body: (signal: AbortSignal) => Promise<T>): Promise<{ result: T; abortedAt: number }> {
+    const { configureLibraryEvents } = await import("@main/library/broadcast.js");
+    const ac = new AbortController();
+    let count = 0;
+    let abortedAt = -1;
+    const prev = { emitExternal: (event: unknown) => runtimeStub.runtimeManager.emitExternal(event as never) };
+    configureLibraryEvents({
+      emitExternal: (event) => {
+        count += 1;
+        if (triggerEveryTime || count === 1) {
+          abortedAt = count;
+          ac.abort();
+        }
+        prev.emitExternal(event);
+      },
+    });
+    try {
+      const result = await body(ac.signal);
+      return { result, abortedAt };
+    } finally {
+      configureLibraryEvents({ emitExternal: prev.emitExternal });
+    }
+  }
+
+  // ① 组内取消:一批 4 个通用文件(attached,同一条通用管线的 files 组)。第一个
+  //    入库时 abort → 后 3 个不得提交。这正是台账 40.2 的反例("同组 N 条在 k 条
+  //    之后取消,k+1..N 不写")。
+  {
+    const batchDir = join(SRC, "取消批内");
+    mkdirSync(batchDir, { recursive: true });
+    const files = ["a.bin", "b.bin", "c.bin", "d.bin"].map((n) => join(batchDir, n));
+    for (const f of files) writeFileSync(f, "x", "utf8");
+    const { result, abortedAt } = await withAbortOnImport(false, (signal) =>
+      importAnyFiles(files, { signal }),
+    );
+    check("① 第一个文件确实入库了(钩子真的被触发,不是空跑)", abortedAt === 1, { abortedAt });
+    eq("★ ① 组内取消:整批只提交了取消前的部分(不是 4)", result.added, 1);
+    // ⚠️ attached 的 `filePath` 是**相对**库根(`files/<id>-名`),不是源绝对路径 ——
+    // 按源路径过滤会永远匹配不到(断言空过)。按**标题**核。
+    const titles = result.items.map((i) => i.title);
+    check(
+      "★ ① 取消后未开始的项没进库(只见到第一个文件的标题)",
+      titles.length === 1 && titles[0] === "a",
+      titles,
+    );
+  }
+
+  // ② 组间取消:一批里既有目录(linked 组)又有文件(attached 组)。目录组提交时
+  //    abort → 文件组不得执行(从前只在进入通用池时查一次,文件组照样跑)。
+  {
+    const batchDir = join(SRC, "取消组间");
+    const sub = join(batchDir, "一个目录");
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, "里面.txt"), "y", "utf8");
+    const loneFile = join(batchDir, "尾随文件.bin");
+    writeFileSync(loneFile, "y", "utf8");
+    const { result, abortedAt } = await withAbortOnImport(false, (signal) =>
+      importAnyFiles([sub, loneFile], { signal }),
+    );
+    check("② 目录组确实提交了(事件已发)", abortedAt === 1, { abortedAt });
+    // 目录组是 linked → filePath 是绝对源路径;尾随文件是 attached → filePath 相对。
+    // 用**标题**核"尾随文件有没有进来"才不空过;`added` 也应停在 1(只有那个目录)。
+    eq("★ ② 目录组提交后取消:尾随文件组不再执行(added 停在 1)", result.added, 1);
+    check(
+      "★ ② 尾随文件的标题不在结果里(它没被导入)",
+      !result.items.some((i) => i.title === "尾随文件"),
+      result.items.map((i) => i.title),
+    );
+    check("★ ② 尾随文件的源确实存在(不是'文件不存在'那种空过)", existsSync(loneFile), null);
+  }
+
+  // ③ 管线间取消:一批里既有笔记(md)又有通用文件。笔记池提交时 abort → 通用池
+  //    不得执行。
+  {
+    const batchDir = join(SRC, "取消管线间");
+    mkdirSync(batchDir, { recursive: true });
+    const note = join(batchDir, "一篇笔记.md");
+    writeFileSync(note, "# 标题甲\n\n正文", "utf8");
+    const other = join(batchDir, "另一个文件.bin");
+    writeFileSync(other, "z", "utf8");
+    const { result, abortedAt } = await withAbortOnImport(false, (signal) =>
+      importAnyFiles([note, other], { signal }),
+    );
+    check("③ 笔记池确实提交了(事件已发)", abortedAt === 1, { abortedAt });
+    eq("★ ③ 笔记池提交后取消:通用池不再执行(只有笔记那一条)", result.added, 1);
+    check(
+      "★ ③ 通用文件的标题不在结果里(它没被导入)",
+      !result.items.some((i) => i.title === "另一个文件"),
+      result.items.map((i) => i.title),
+    );
+    check("★ ③ 另一个文件的源确实存在", existsSync(other), null);
+  }
+
+  // ④ 正控:不取消时,一组目录 + 一个文件 + 一篇笔记**全部**入库 —— 证明上面
+  //    "没进库"是取消造成的,不是恒真。
+  {
+    const batchDir = join(SRC, "不正控");
+    const sub = join(batchDir, "目录");
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, "内.txt"), "q", "utf8");
+    const note = join(batchDir, "笔记正控.md");
+    writeFileSync(note, "# 标题乙\n\n正文", "utf8");
+    const file = join(batchDir, "文件正控.bin");
+    writeFileSync(file, "q", "utf8");
+    const res = await importAnyFiles([sub, note, file]);
+    eq("★ ④ 不取消时三类全部入库(3 条)", res.added, 3);
+  }
+}
+
 /* ──────────────── 6. 一条都读不到的东西 ──────────────── */
 
 console.log("\n读不动的条目");
