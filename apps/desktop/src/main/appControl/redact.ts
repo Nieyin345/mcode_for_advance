@@ -19,13 +19,39 @@ const SECRET_KEY = /(token|secret|api[-_.]?key|apikey|password|passwd|cookie|cre
 const HASH_KEY = /(hash|sha\d*|md5|digest|etag|checksum|parent)/i;
 /** 值本身长得像密钥的:sk-…、ghp_…、xox…、公网 MCP 路径里的密钥、长串十六进制。 */
 const SECRET_VALUE_PREFIXED = /(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|\/mcp\/[A-Za-z0-9_-]{24,})/g;
-const SECRET_VALUE_HEX = /\b[A-Fa-f0-9]{40,}\b/g;
+const SECRET_VALUE_HEX = /(?<![A-Za-z0-9])[A-Fa-f0-9]{40,}(?![A-Za-z0-9])/g;
 export const REDACTED = "[已隐藏]";
+
+/**
+ * 打码长十六进制,但**放行"内容寻址的文件路径"**。
+ *
+ * ## 为什么
+ *
+ * 资料库的文件按**内容哈希**寻址(`papers/<2>/<2>/<sha256>.pdf`,见 `library/`),
+ * 于是 `pdfPath` / `mdPath` / `entryPath` 这类字段的值整串都是 64 位 hex。它们**不是
+ * 秘密** —— 恰恰相反,agent 要用这个路径去 `Read` 那份 PDF。可 `SECRET_VALUE_HEX`
+ * 一律把 40+ 位 hex 打成 `[已隐藏]`,结果路径变成 `papers/66/1b/[已隐藏].pdf` ——
+ * **指不到文件**(报告真机实测 NEW-1)。同一篇的 `pdfSha256` 字段却因字段名像哈希
+ * (`HASH_KEY` 豁免)而原样返回,于是"遮了无害的路径、露了哈希",里外不一致。
+ *
+ * 判据:**这一段 hex 是路径里的一节**就放行 —— 左边是 `/` 或 `\`,右边是 `.` / `/` / `\`。
+ * 只挡"整串就是一个 token / 散在文字里的裸 hex"(那些仍按密钥打)。路径分隔符是有力的
+ * 上下文:真凭据极少正好被两边的分隔符夹住、且后面紧跟扩展名。
+ */
+function redactHexRuns(s: string): string {
+  return s.replace(SECRET_VALUE_HEX, (run, off: number, whole: string) => {
+    const before = whole[off - 1];
+    const after = whole[off + run.length];
+    const leftSep = before === "/" || before === "\\";
+    const rightPath = after === "." || after === "/" || after === "\\";
+    return leftSep && rightPath ? run : REDACTED;
+  });
+}
 
 /** 打码。`allowHex=false` 时跳过"长十六进制"那一格(字段名是哈希,见 HASH_KEY)。 */
 export function redactString(s: string, allowHex = true): string {
   const out = s.replace(SECRET_VALUE_PREFIXED, REDACTED);
-  return allowHex ? out.replace(SECRET_VALUE_HEX, REDACTED) : out;
+  return allowHex ? redactHexRuns(out) : out;
 }
 
 /**

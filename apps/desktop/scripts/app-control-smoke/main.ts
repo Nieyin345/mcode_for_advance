@@ -191,6 +191,19 @@ check("同名但不像哈希的短 sha 也不动", hashRed.shortHash === hex40.s
 check("★字段名像凭据仍严格优先(actionToken 命中 token)", hashRed.actionToken === REDACTED, hashRed.actionToken);
 check("★字段名像凭据仍严格优先(privateKeyHash 命中 private…key)", hashRed.privateKeyHash === REDACTED, hashRed.privateKeyHash);
 check("裸字符串那句(redactString 默认仍认长十六进制)", redactString(hex40) === REDACTED, redactString(hex40));
+// ★ 内容寻址的**文件路径**要放行(报告真机实测 NEW-1)。资料库的文件名就是 sha256,
+//   于是 `pdfPath` / `entryPath` 整串是 hex;从前一律打成 `[已隐藏].pdf`,**指不到文件**,
+//   而同一篇的 `pdfSha256`(字段名像哈希)却原样返回 —— 遮了无害路径、露了哈希,里外不一致。
+//   判据:这一段 hex 是**路径里的一节**(左 `/`\、右 `.`/`\`)就放行;散在文字里/成串的仍打。
+const caPath = `papers/66/1b/${hex64}.pdf`;
+check("★内容寻址的文件路径不打码(agent 要拿它去读 PDF)", redactString(caPath) === caPath, redactString(caPath));
+check(
+  "★库相对路径字段整串保留(pdfPath / mdPath)",
+  (redactValue({ pdfPath: caPath, mdPath: `markdown/${hex64}.md` }) as { pdfPath: string; mdPath: string }).pdfPath === caPath &&
+    (redactValue({ mdPath: `markdown/${hex64}.md` }) as { mdPath: string }).mdPath === `markdown/${hex64}.md`,
+);
+check("散在文字里的裸 hex 仍打码(不是路径)", redactString(`see ${hex40} here`).includes(REDACTED));
+check("整串就是一个 token 的 hex 仍打码", redactString(hex40) === REDACTED);
 check("超长截断并说明", renderResult("x".repeat(50), 10).includes("已截断"));
 
 /* ── 3. 审批闸门 ── */
