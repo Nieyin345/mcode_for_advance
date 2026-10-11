@@ -89,6 +89,15 @@ import {
   WATCH_TRIGGER_NODE_ID,
   WATCH_WORKFLOW_ID,
 } from "./builtins.js";
+import {
+  claimRecoveryReason,
+  isTriggerClaims,
+  pendingClaims,
+  pruneClaims,
+  scheduleClaimId,
+  triggerKeyOfClaim,
+  type TriggerClaim,
+} from "./triggerClaim.js";
 import { getWorkflow, listWorkflows, saveWorkflow } from "./library.js";
 import { workflowSaveVersion } from "./workflowSaveVersion.js";
 import { workflowReviewError, workflowRevision } from "./workflowTrust.js";
@@ -214,6 +223,31 @@ const LAST_MINUTE_HISTORY_KEEP = 60;
 
 /** 「错过」结算到哪一分钟(见 `AutomationRunner.readMissedSwept`)。 */
 const MISSED_SWEPT_SETTING_KEY = "automation.missedSweptTo";
+
+/**
+ * 定时触发的 **durable 领取账本**存在这个 settings 键下(MC-051)。
+ *
+ * ## 它与 `LAST_MINUTE_SETTING_KEY` 的分工
+ *
+ * `lastMinute` 回答的是「**这一分钟碰过没有**」—— 一张快速去重表(它的落盘 2026-10-11
+ * 已改成派发前同步 durable)。本表回答的是「**这一分钟到底确认完成了没有**」—— 一条
+ * 可追踪的领取记录。两者**都要落盘、都在派发前 durable**,但语义不同,不能合一:
+ * 去重表按分钟覆盖(同一格翻到新的一分钟就抹掉了旧值),而领取账本要**跨分钟保留**
+ * (上一个进程崩在某一分钟的那条 `CLAIMED` 必须留到重启时被恢复看见)。
+ *
+ * ## 为什么不新开一张表
+ *
+ * 形状是一张**小映射**(`claimId → {status, minute, at}`),与 `lastMinute` 同一类,
+ * 都走 `SettingRepo`。开新表要动 `store/db.ts`(建表 + 迁移)再加一个 Repo,换来的
+ * 只是"能按列查" —— 这里没有按列查的需求(整张读、整张写)。
+ *
+ * ⚠️ 落盘仍走 `SettingRepo.set` + `persistNowOrThrow`(`commitNow`)那一份**唯一**的
+ * durable 通路,与 MC-084 的 `DurableOperationLedger` 共用 —— 不另立第二套写盘机制。
+ */
+const TRIGGER_CLAIMS_SETTING_KEY = "automation.triggerClaims";
+
+/** 已完成的领取最多留多少条(未完成的 `CLAIMED`/`UNCERTAIN` 不受此限,见 `pruneClaims`)。 */
+const TRIGGER_CLAIMS_HISTORY_KEEP = 64;
 
 /** 节点清单的短缓存窗口(见 `AutomationRunner.loadTypes`)。 */
 const TYPES_CACHE_TTL_MS = 5_000;
@@ -354,6 +388,14 @@ class AutomationRunner {
    * 之后这一份就是内存里的真相,写由 `rememberLastMinute` 负责(它按分钟落一次盘)。
    */
   private lastMinute = new Map<string, number>();
+  /**
+   * **定时触发的 durable 领取账本**(MC-051,见 {@link TRIGGER_CLAIMS_SETTING_KEY})。
+   *
+   * 与 `lastMinute` 并存、各答一个问题:`lastMinute` 是"这一分钟碰过没有"(去重),
+   * 本表是"这一分钟确认完成了没有"(可追踪的领取)。**跨重启**——`start()` 先读回来,
+   * 派发前 durable 写入,运行结束时 durable 结算成 `SUCCEEDED`。
+   */
+  private triggerClaims = new Map<string, TriggerClaim>();
   /** 每条自动化连续 reload 的序号,防止慢的那次覆盖快的那次。 */
   private reloadSeq = new Map<string, number>();
   private ticker: ReturnType<typeof setInterval> | null = null;
@@ -414,6 +456,10 @@ class AutomationRunner {
     // 而那次多跑正是要挡的东西。读失败不是致命的:`readLastMinutes` 内部兜成空表,
     // 退化成"重启后可能多跑一次"的老行为。
     this.lastMinute = this.readLastMinutes();
+    // 上一次进程留下的**领取账本**(MC-051)。同样在 ticker 起跳之前读回来 —— 恢复逻辑
+    // (`recoverIncompleteClaims`)要拿它认出"领取了但没确认完成"的那些,而它必须在
+    // 启动 tick 之前就把这些落成 `UNCERTAIN`(否则启动那一跳还会照常跑本分钟)。
+    this.triggerClaims = this.readTriggerClaims();
 
     this.ticker = setInterval(() => {
       try {
@@ -429,6 +475,11 @@ class AutomationRunner {
     // 上一次进程结算到哪一分钟(见 `missedSweptTo`)。**必须在 sweep 之前读回来**,
     // 否则重启一次就把同一段又数一遍,用户每开一次应用都看到同一条「错过了 N 次」。
     this.missedSweptTo = this.readMissedSwept();
+    // **把上一次进程没确认完成的领取认出来**(MC-051)。放在 reloadAll **之后** —— 恢复
+    // 要把「结果不确定」记进对应触发器的事实表,而那时 `all()` 才解得开;放在启动 tick
+    // **之前** —— 那些领取对应的分钟已经被 `lastMinute` 记过,启动那一跳本就不会重跑它们
+    // (`recoverIncompleteClaims` 不改变这一点,只是把"没确认完成"这件事显式化)。
+    this.recoverIncompleteClaims();
     // **启动即看本分钟**(MC-021)。ticker 的第一跳要等 30 秒,而"应用在本分钟里已经
     // 起来了"这件事本身就该让这一分钟的计划跑掉:每天 `0 9 * * *` 那条,09:00:45 开
     // 应用,若只等 ticker 就要到 09:01:15 才跑,而那一瞬间钟已经翻到 09:01 —— 这一次
@@ -475,6 +526,7 @@ class AutomationRunner {
     }
     this.pendingFires.clear();
     this.lastMinute.clear();
+    this.triggerClaims.clear();
     this.missedSweptTo.clear();
     this.facts.clear();
     this.entries.clear();
@@ -995,7 +1047,22 @@ class AutomationRunner {
         this.skip(trigger, "这一分钟的去重记录没能落盘,已跳过这次触发");
         continue;
       }
-      this.fire(trigger, { kind: "schedule", at: now.getTime() });
+      // 【MC-051】去重表(上一道闸)回答的是"这一分钟碰过没有" —— 它**当场就把这一格
+      // 记成"跑过"**,哪怕后面 `fire` 根本没派发出去(项目没了 / 上一次还在跑 / 起跑
+      // 抛错)。真正**可追踪的领取**是这一条:先 durable 写一条 `CLAIMED`,再派发;
+      // 运行收尾 durable 结算成 `SUCCEEDED`。崩溃重启后,盘上任何仍是 `CLAIMED` 的
+      // 领取都会被 `recoverIncompleteClaims` 认出来 —— **不重复执行**,也不静默丢弃,
+      // 而是报成一次"上一次的运行结果不确定"。
+      //
+      // 与去重表同一条红线:**落不盘就不派发**。领取与去重各是一次同库 fsync,而定时
+      // 触发本来就一分钟最多一次 —— 这点开销换"领取→执行"有一个真正 durable 的边界。
+      const claimId = scheduleClaimId(key, minute);
+      if (!this.writeTriggerClaimDurable(claimId, { status: "CLAIMED", minute, at: now.getTime() })) {
+        log.warn(`[automation] 「${trigger.title}」这一分钟的领取记录没能落盘,跳过这次触发(避免领取不 durable 时的重复外部执行)`);
+        this.skip(trigger, "这一分钟的领取记录没能落盘,已跳过这次触发");
+        continue;
+      }
+      this.fire(trigger, { kind: "schedule", at: now.getTime() }, { claimId });
     }
   }
 
@@ -1072,6 +1139,103 @@ class AutomationRunner {
       log.warn(`[automation] 定时去重表没能同步落盘:${(err as Error).message}`);
       return false;
     }
+  }
+
+  /**
+   * **定时触发的 durable 领取纪律**(MC-051)。
+   *
+   * 去重表(上面的 `rememberLastMinuteDurable`)回答的是"这一分钟碰过没有" —— 它当场
+   * 就把这一格记成"跑过",哪怕后面根本没派发出去。This is what makes the "领取任务→执行"
+   * 边界不完整:崩溃重启后,盘上没有"这一分钟碰过没有"以外的任何东西,分不清
+   * 「领取了、完成了」与「领取了、进程就没了」。本方法写一条**可追踪的领取** ——
+   * `CLAIMED`(派发前 durable)或 `SUCCEEDED`(运行收尾 durable),崩溃点上残留的
+   * `CLAIMED` 由 {@link recoverIncompleteClaims} 认出来。
+   *
+   * 落盘走**唯一**那条 durable 通路(`SettingRepo.set` + `persistNowOrThrow` =
+   * `commitNow`),与 `lastMinute` 和 MC-084 的 `DurableOperationLedger` 同一份 ——
+   * 绝不另立第二套写盘机制。写不进去即返回 `false`,调用方据此**拒绝派发**(不是转圈重试)。
+   */
+  private writeTriggerClaimDurable(claimId: string, claim: TriggerClaim): boolean {
+    const prev = this.triggerClaims.get(claimId);
+    // **单调性**:`SUCCEEDED` 是终态,不许被迟到的 `CLAIMED` 覆盖回去(见文件头那条
+    // "崩溃点不能被后来的内存值骗到")。这里只为防御 —— 正常路径不会这么调。
+    if (prev?.status === "SUCCEEDED" && claim.status !== "SUCCEEDED") return true;
+    this.triggerClaims.set(claimId, claim);
+    try {
+      const kept = pruneClaims(this.triggerClaims, TRIGGER_CLAIMS_HISTORY_KEEP);
+      if (kept.size < this.triggerClaims.size) this.triggerClaims = kept;
+      SettingRepo.set(TRIGGER_CLAIMS_SETTING_KEY, JSON.stringify(Object.fromEntries(kept)));
+      persistNowOrThrow(); // 同步 fsync:领取 / 结算在落盘之前不算数
+      return true;
+    } catch (err) {
+      // 落盘失败 → 回滚内存那一格,免得内存说"领过了"而磁盘没有(下次重启被内存骗过去)。
+      if (prev === undefined) this.triggerClaims.delete(claimId);
+      else this.triggerClaims.set(claimId, prev);
+      log.warn(`[automation] 定时领取账本没能同步落盘:${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** 读回上一次进程留下的领取账本。读不回来当空表,不抛(同 `readLastMinutes`)。 */
+  private readTriggerClaims(): Map<string, TriggerClaim> {
+    try {
+      const raw = SettingRepo.get(TRIGGER_CLAIMS_SETTING_KEY);
+      if (raw === null || raw.length === 0) return new Map();
+      const parsed: unknown = JSON.parse(raw);
+      if (!isTriggerClaims(parsed)) {
+        log.warn("[automation] 定时领取账本读不回来(形状不对),当空表");
+        return new Map();
+      }
+      return new Map(Object.entries(parsed));
+    } catch (err) {
+      log.warn(`[automation] 定时领取账本读不回来,当空表:${(err as Error).message}`);
+      return new Map();
+    }
+  }
+
+  /**
+   * **重启恢复:把盘上那些没确认完成的领取认出来**(MC-051)。
+   *
+   * 盘上任何仍是 `CLAIMED` 的领取,都是"上一个进程在执行途中消失了" —— 它**绝不重复
+   * 执行**(去重红线由 `lastMinute` 的跨重启记忆兜住:那一分钟已经记过,`shouldFireThisMinute`
+   * 不会再放它进 onTick),但也**不被静默丢弃**:转成 `UNCERTAIN`(终态,不再每次重启
+   * 反复报告同一件事),并把「上一次的运行结果不确定」记进事实表,让界面看得见。
+   *
+   * 于是崩溃的时间点各归各位:
+   *  - 崩在**领取写盘之前** → 盘上没这一行 → 重启后能正常执行(这一分钟还没被记过);
+   *  - 崩在**领取写盘之后、执行之前/之中** → 盘上是 `CLAIMED` → 不重复执行,报 UNCERTAIN;
+   *  - 崩在**执行之后、结算之前** → 同上(结果不确定 —— 外部副作用可能已经发生);
+   *  - 崩在**结算之后** → 盘上是 `SUCCEEDED` → 什么都不用做。
+   *
+   * 由 `start()` 在 `reloadAll()` 之后、启动 tick 之前调用。
+   */
+  private recoverIncompleteClaims(): void {
+    const pending = pendingClaims(this.triggerClaims);
+    if (pending.length === 0) return;
+    const now = Date.now();
+    for (const claimId of pending) {
+      const triggerKeyOf = triggerKeyOfClaim(claimId);
+      const claim = this.triggerClaims.get(claimId);
+      if (triggerKeyOf === null || claim === undefined) continue;
+      // 先转成终态 `UNCERTAIN` 并 durable 落盘 —— 这样下次重启不会再把它当"待恢复"
+      // 反复报。它仍是"没确认完成"这条历史事实,只是处置过了。
+      this.writeTriggerClaimDurable(claimId, { ...claim, status: "UNCERTAIN", at: now });
+      // 找到这条触发器,把它的事实记成一次"该跑而结果不确定"。找不到(工作流 / 触发器
+      // 已经删了)就不记 —— 没有界面位置挂这句话,而账本那一行仍在。
+      const trigger = this.all().find((t) => `${t.workflowId}:${t.nodeId}` === triggerKeyOf);
+      if (trigger !== undefined) {
+        this.facts.recordBlocked(triggerSeedOf(trigger), claimRecoveryReason(), now);
+      }
+      log.warn(`[automation] 领取「${claimId}」没有确认完成,不重复执行;如需重跑请手动运行一次`);
+    }
+  }
+
+  /** 一条定时领取结算为 `SUCCEEDED`(运行收尾 / 未派发的跳过都调)。没有对应领取就什么都不做。 */
+  private settleTriggerClaim(claimId: string | undefined): void {
+    if (claimId === undefined) return;
+    const prev = this.triggerClaims.get(claimId);
+    if (prev === undefined) return;
+    this.writeTriggerClaimDurable(claimId, { status: "SUCCEEDED", minute: prev.minute, at: Date.now() });
   }
 
   /**
@@ -1694,18 +1858,29 @@ class AutomationRunner {
       /** 上一格攒着的那次**忙时回看间隔**。见 {@link rearm} 里那段:计时器回调先删掉
        *  pending 再 fire,于是忙时分支重建的那一格会丢掉这个累乘值 —— 带着它走,
        *  退避才真的会退。 */
-      busyRetryMs?: number },
+      busyRetryMs?: number;
+      /** 【MC-051】定时那一路派发前 durable 领取的 id(见 `onTick`)。运行收尾 / 未派发的
+       *  跳过都把这条领取结算成 `SUCCEEDED` —— 崩在中间的则留给 `recoverIncompleteClaims`。
+       *  其余触发路(手动 / 文件 / 事件)不带 —— 只有定时走这条 claim 状态机。 */
+      claimId?: string },
   ): AutomationRunResult {
+    // 【MC-051】定时领取的**收尾结算**。任何一条**没真的把工作派发出去**的返回路径
+    // (项目没了 / 工作流改了 / 关掉了 / 上一次还在跑 / 起跑抛错)都要把它结算成
+    // `SUCCEEDED`:这一次的**决策已经落定**(不重跑),不是"崩在中间"那种不确定态。
+    // 只有真正进入 `startWorkflowRun` 的那条路把结算推到运行 promise 落地上。
+    const claimId = opts?.claimId;
+    const settleClaim = (): void => this.settleTriggerClaim(claimId);
     try {
       // An old debounced event may fire while a new workflow revision reloads.
       const current = getWorkflow(trigger.workflowId);
-      if (current === null) return this.skip(trigger, "这份自动化已被删除");
+      if (current === null) { settleClaim(); return this.skip(trigger, "这份自动化已被删除"); }
       const reviewError = workflowReviewError(current);
-      if (reviewError !== null) return this.skip(trigger, reviewError);
+      if (reviewError !== null) { settleClaim(); return this.skip(trigger, reviewError); }
       // A save reloads node manifests asynchronously. A debounce timer or cron
       // tick can fire before `entries` is replaced; never execute that stale
       // trigger against the newly saved graph.
       if (workflowRevision(current) !== trigger.workflowRevision) {
+        settleClaim();
         return this.skip(trigger, `工作流已修改（「${current.name}」），旧触发配置已作废，本次触发已跳过`);
       }
       // **关掉的只挡自动那三条路,不挡手动。** 用户正盯着「立刻运行一次」那个按钮,
@@ -1715,6 +1890,7 @@ class AutomationRunner {
       // 不写成"手动那条路绕开 fire"是因为其余每一条判定(项目在不在、上一次还在不在跑)
       // 手动这条路**都要**。所以挡的是这里,不是调用方。
       if (trigger.disarmed && opts?.manual !== true) {
+        settleClaim();
         return { ok: true };
       }
       let selfOrigin = opts?.manual !== true && opts?.selfOrigin === true;
@@ -1724,7 +1900,7 @@ class AutomationRunner {
         // after this batch was accepted into the debounce window.
         const reason = this.selfTriggerBlockReason(trigger.workflowId);
         if (reason !== null) {
-          if (opts?.externalEvent?.kind !== "event") return this.skip(trigger, reason);
+          if (opts?.externalEvent?.kind !== "event") { settleClaim(); return this.skip(trigger, reason); }
           log.info(`[automation] 循环事件部分已跳过：${reason}；保留外部事件`);
           // Another trigger exhausted the budget while this mixed batch waited.
           // Discard only its self-origin part, not the legitimate external data.
@@ -1742,6 +1918,7 @@ class AutomationRunner {
       // 这种后台会话挂一个隐藏的系统项目,绝不偷借用户的真实项目。
       const project = trigger.projectId.length > 0 ? ProjectRepo.get(trigger.projectId) : undefined;
       if (trigger.projectId.length > 0 && project === undefined) {
+        settleClaim();
         return this.skip(trigger, `项目不在了(${trigger.projectId})—— 这条自动化没有工作目录`);
       }
       const cwd = project?.path ?? homedir(); // 不用 process.cwd(),理由同上
@@ -1797,8 +1974,12 @@ class AutomationRunner {
             Date.now(),
           );
           this.rearm(pending, next);
+          // 【MC-051】定时那一路忙时是**跳过**(下面那条 return),不看这个分支;真来到
+          // 这里的是文件 / 事件(调度 / 手动都不带 claimId)—— 结算是个 no-op,带着无害。
+          settleClaim();
           return { ok: true };
         }
+        settleClaim();
         return this.skip(trigger, "上一次还在跑,这一次触发已跳过");
       }
 
@@ -1857,12 +2038,21 @@ class AutomationRunner {
         log.warn(`[automation] 运行失败:${(err as Error).message}`);
         // 起跑之后才失败的,`lastFire` 已经记了;这里补上「为什么没跑成」。
         this.facts.recordBlocked(triggerSeedOf(trigger), `运行失败:${(err as Error).message}`, Date.now());
+      }).finally(() => {
+        // 【MC-051】运行 promise 落地(成功或失败)之后,这条定时领取**才**算确认完成。
+        // 崩溃点若落在这之前,盘上仍是 `CLAIMED` → 重启时 `recoverIncompleteClaims`
+        // 会把它认出来,不重复执行、报成"结果不确定"。这就是"领取→执行"的收尾边界。
+        settleClaim();
       });
       return { ok: true };
     } catch (err) {
       // 见文件头不变量 ①:从这里冒出去炸的是**事件流**(这条路是从 `subscribe` / 计时器进来的)。
       log.warn(`[automation] 起运行失败:${(err as Error).message}`);
       this.facts.recordBlocked(triggerSeedOf(trigger), (err as Error).message, Date.now());
+      // 【MC-051】走到这里说明**没有成功派发**(建会话 / 绑引擎 / 组提示词这几步抛了)——
+      // 这一次的决策已经落定,结算掉这条领取;下次这一分钟本就被 `lastMinute` 去重,
+      // 不会再来一次。**不**留成 `CLAIMED`(那会被恢复误报成"结果不确定")。
+      settleClaim();
       return { ok: false, error: (err as Error).message };
     }
   }

@@ -99,6 +99,15 @@ const presetById = (id: string): WorkflowDoc | undefined => PRESET_WORKFLOWS.fin
 const AUTO_DOWNLOAD_WORKFLOW_ID = "wf_auto_download";
 const AUTO_CONVERT_WORKFLOW_ID = "wf_auto_convert";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
+
+import {
+  isTriggerClaims,
+  pendingClaims,
+  pruneClaims,
+  scheduleClaimId,
+  triggerKeyOfClaim,
+  type TriggerClaim,
+} from "@main/orchestration/triggerClaim.js";
 import { initDb, getDb } from "@main/store/db.js";
 import { CollectionRepo, LibraryRepo, ProjectRepo, SessionRepo, SettingRepo, WorkflowRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
 import { resetSuppressCacheForTest, saveSuppress } from "@main/library/suppress.js";
@@ -3231,6 +3240,17 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
         const before = entry.nextRetryAt!;
         withClock(before - 1000, () => (runner as unknown as { retryWatchers(): void }).retryWatchers());
         check("退避没到点 → 不重挂(不每秒敲)", internals.watchers.get(ghostPath)?.nextRetryAt === before, internals.watchers.get(ghostPath));
+
+        /* ★ 恢复半边(台账要的"目录恢复→自动重挂"):目录**真的出现**后再到点,
+         * ticker 必须把 watcher 挂回来 —— 而不是等到 reload/重启。从前只有 reload
+         * 会补挂,目录修好后文件触发器长期不响。这里先造出目录,把时钟推到到点之后,
+         * 跑 `retryWatchers`,断言 watcher 从 null 变成活对象、退避状态被清掉。 */
+        check("恢复前:watcher 是 null(确实没挂上)", internals.watchers.get(ghostPath)?.watcher === null, internals.watchers.get(ghostPath)?.watcher);
+        mkdirSync(ghostPath, { recursive: true });
+        withClock(before + 1000, () => (runner as unknown as { retryWatchers(): void }).retryWatchers());
+        const recovered = internals.watchers.get(ghostPath);
+        check("★ 目录恢复且退避到点 → ticker 把 watcher **挂回来了**(不靠 reload)", recovered?.watcher !== null && recovered?.watcher !== undefined, recovered?.watcher);
+        check("★ 挂回后清掉退避状态(不再有待重试)", recovered?.nextRetryAt === undefined && recovered?.retryMs === undefined, recovered);
       }
     } finally { runner.dispose(); }
   }
@@ -3255,6 +3275,156 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       "★ MC-051:该落盘失败即**跳过这次触发**(用返回值守着,不是照常 fire)",
       /if\s*\(\s*!\s*this\.rememberLastMinuteDurable\(/.test(src),
     );
+  }
+
+  /* ── MC-051 durable trigger-claim ledger(领取→执行→完成)──
+   *
+   * 去重表(`automation.lastMinute`)回答的是"这一分钟碰过没有";它**当场**就把这一格记成
+   * "跑过",哪怕后面 `fire` 根本没派发出去(项目没了 / 上一次还在跑 / 起跑抛错)。真正
+   * **可追踪的领取**是 `automation.triggerClaims`:派发前 durable 写一条 `CLAIMED`,运行
+   * 收尾 durable 结算成 `SUCCEEDED`。崩溃点上残留的 `CLAIMED` 由 `recoverIncompleteClaims`
+   * 认出来 —— **不重复执行**,也不静默丢弃,而是报成一次"上一次的运行结果不确定"。
+   *
+   * 这里钉的是**行为**(真起执行器 + 真 settings,复用同目录那份临时库):撤掉 onTick 里
+   * 的领取块或 `recoverIncompleteClaims`,下面几条会真红。 */
+  {
+    const CLAIMS_KEY = "automation.triggerClaims";
+    const diskClaims = (): Record<string, { status?: string; minute?: number }> => {
+      const raw = SettingRepo.get(CLAIMS_KEY);
+      return raw === null || raw.length === 0 ? {} : (JSON.parse(raw) as Record<string, { status?: string; minute?: number }>);
+    };
+
+    // -- 纯件:领取键 / 形状 / 待恢复挑选 / 修剪 --
+    eq("MC-051:领取键按触发器+分钟生成", scheduleClaimId("wf_x:t1", 5), "wf_x:t1@5");
+    eq("MC-051:领取键能还原回触发器", triggerKeyOfClaim("wf_x:t1@5"), "wf_x:t1");
+    check("MC-051:没有 @ 分钟后缀就不是领取键", triggerKeyOfClaim("wf_x:t1") === null);
+    check(
+      "MC-051:合法领取表认得出来",
+      isTriggerClaims({ "a@1": { status: "CLAIMED", minute: 1, at: 2 }, "b@1": { status: "SUCCEEDED", minute: 1, at: 2 } }),
+    );
+    check("MC-051:坏状态(拼错)整张表不认", !isTriggerClaims({ "a@1": { status: "NOPE", minute: 1, at: 2 } }));
+    check("MC-051:坏形状(值是字符串)整张表不认", !isTriggerClaims({ "a@1": "CLAIMED" }));
+    const sampleClaims: Map<string, TriggerClaim> = new Map([
+      ["a@1", { status: "CLAIMED", minute: 1, at: 1 }],
+      ["b@1", { status: "SUCCEEDED", minute: 1, at: 1 }],
+      ["c@1", { status: "UNCERTAIN", minute: 1, at: 1 }],
+    ]);
+    eq("MC-051:待恢复只挑 CLAIMED(SUCCEEDED/UNCERTAIN 都是终态)", pendingClaims(sampleClaims).join(","), "a@1");
+    check(
+      "MC-051:修剪保留未完成、只封顶已完成",
+      (() => {
+        const m: Map<string, TriggerClaim> = new Map();
+        m.set("pend@1", { status: "CLAIMED", minute: 1, at: 1 });
+        for (let i = 0; i < 100; i++) m.set(`done@${i}`, { status: "SUCCEEDED", minute: 1, at: i });
+        const kept = pruneClaims(m, 10);
+        return kept.has("pend@1") && [...kept.values()].filter((c) => c.status === "SUCCEEDED").length === 10;
+      })(),
+    );
+
+    // -- 行为①:派发 durable 写 CLAIMED,运行收尾 durable 结算 SUCCEEDED --
+    resetRuns();
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    SettingRepo.set(CLAIMS_KEY, "{}");
+    const wfS = nextId(), nodeIdS = "t_claim_settle";
+    makeAutomation({ workflowId: wfS, nodeId: nodeIdS, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "领取后收尾结算",
+    } });
+    const keyS = `${wfS}:${nodeIdS}`;
+    const minuteS = 20_000_000;
+    const settleRunner = await withClockAsync(minuteS * 60_000, () => startRunner());
+    await sleep(20); // 等运行 promise 的 .finally 结算落地
+    eq("MC-051:派发后盘上的领取结算是 SUCCEEDED(不是只有去重表)", diskClaims()[`${keyS}@${minuteS}`]?.status, "SUCCEEDED");
+    eq("MC-051:领取带着它对应的分钟", diskClaims()[`${keyS}@${minuteS}`]?.minute, minuteS);
+    eq("MC-051:本分钟只起一次运行", runsOfNode(nodeIdS).length, 1);
+    settleRunner.dispose();
+
+    // -- 行为②:同一分钟多条触发器,各自生成一条独立领取(台账验收矩阵②)--
+    // 这一批只 3 条,远在 64 条已完成封顶之下,所以领取能稳定读回。判据:*键互不相同*
+    // (不是"共用一条"),且派发那一刻都是 `CLAIMED`(未完成)。
+    // ⚠️ 三条**分属三个工作流**:`makeAutomation` 按 workflowId 覆盖存,同一 id 连存三次
+    // 只剩最后一个节点(见它的实现)—— 用一个工作流挂三个触发器要直接构造多节点图。
+    resetRuns();
+    SettingRepo.set(CLAIMS_KEY, "{}");
+    const minuteM = 23_000_000;
+    const multiRuns = [
+      { workflowId: nextId(), nodeId: "t_multi_a" },
+      { workflowId: nextId(), nodeId: "t_multi_b" },
+      { workflowId: nextId(), nodeId: "t_multi_c" },
+    ];
+    for (const r of multiRuns) {
+      makeAutomation({ workflowId: r.workflowId, nodeId: r.nodeId, params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+        [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+        task: "同一分钟各领一条",
+      } });
+    }
+    const multiRunner = await withClockAsync((minuteM - 1) * 60_000, () => startRunner());
+    resetRuns();
+    withClock(minuteM * 60_000, () => multiRunner.onTick());
+    const multiClaims = diskClaims();
+    const multiKeys = multiRuns.map((r) => scheduleClaimId(`${r.workflowId}:${r.nodeId}`, minuteM));
+    eq("MC-051:同一分钟三条触发器各有一条独立领取", multiKeys.filter((k) => multiClaims[k] !== undefined).length, 3);
+    check("MC-051:三条领取键互不相同(不是共用一条)", new Set(multiKeys).size === multiKeys.length);
+    check("MC-051:派发那一刻三条都是未完成(CLAIMED)", multiKeys.every((k) => multiClaims[k]?.status === "CLAIMED"), multiKeys.map((k) => multiClaims[k]));
+    eq("MC-051:三条触发器都各起了一次运行", multiRuns.reduce((n, r) => n + runsOfNode(r.nodeId).length, 0), 3);
+    multiRunner.dispose();
+
+    // -- 行为③:崩在"领取后、结算前" → 重启不重复执行,残留 CLAIMED 处置成 UNCERTAIN --
+    resetRuns();
+    const wfC = nextId(), nodeIdC = "t_claim_crash";
+    makeAutomation({ workflowId: wfC, nodeId: nodeIdC, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "崩在领取中",
+    } });
+    const keyC = `${wfC}:${nodeIdC}`;
+    const minuteC = 21_000_000;
+    // 精确复刻崩溃后磁盘上的样子:去重表记过这一分钟 + 领取账本一条仍是 CLAIMED(没有 SUCCEEDED)。
+    SettingRepo.set(LAST_MINUTE_KEY, JSON.stringify({ [keyC]: minuteC }));
+    SettingRepo.set(CLAIMS_KEY, JSON.stringify({ [`${keyC}@${minuteC}`]: { status: "CLAIMED", minute: minuteC, at: minuteC * 60_000 } }));
+    const revived = await withClockAsync(minuteC * 60_000, () => startRunner());
+    withClock(minuteC * 60_000, () => revived.onTick());
+    eq("MC-051:重启后崩在领取中的那一分钟不重复执行", runsOfNode(nodeIdC).length, 0);
+    eq("MC-051:盘上残留的 CLAIMED 被处置成 UNCERTAIN(不再每次重启反复报)", diskClaims()[`${keyC}@${minuteC}`]?.status, "UNCERTAIN");
+    check(
+      "MC-051:界面看得见「上一次结果不确定」",
+      (revived.statusOf(wfC)[0]?.lastError ?? "").includes("不重复执行") === true,
+      revived.statusOf(wfC),
+    );
+    withClock(minuteC * 60_000, () => revived.onTick());
+    eq("MC-051:处置之后同一分钟仍不执行", runsOfNode(nodeIdC).length, 0);
+    withClock((minuteC + 1) * 60_000, () => revived.onTick());
+    eq("MC-051:下一分钟照常派发(闸门没关过头)", runsOfNode(nodeIdC).length, 1);
+    revived.dispose();
+
+    // -- 行为③:领取落盘失败 → 拒绝派发(与去重同一条红线)--
+    resetRuns();
+    const wfF = nextId(), nodeIdF = "t_claim_fail";
+    makeAutomation({ workflowId: wfF, nodeId: nodeIdF, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "领取写不进去就别跑",
+    } });
+    const minuteF = 22_000_000;
+    const failing = await withClockAsync((minuteF - 1) * 60_000, () => startRunner());
+    resetRuns(); // 上一分钟那一跳不算这次要看的
+    const origSet = SettingRepo.set;
+    SettingRepo.set = (k, v) => {
+      if (k === CLAIMS_KEY) throw new Error("injected claim write failure");
+      return origSet.call(SettingRepo, k, v);
+    };
+    try {
+      withClock(minuteF * 60_000, () => failing.onTick());
+    } finally { SettingRepo.set = origSet; }
+    eq("MC-051:领取落盘失败时不派发", runsOfNode(nodeIdF).length, 0);
+    check(
+      "MC-051:拒绝原因可见",
+      (failing.statusOf(wfF)[0]?.lastError ?? "").includes("领取记录没能落盘") === true,
+      failing.statusOf(wfF),
+    );
+    failing.dispose();
   }
 
   /* ── 收尾:这一节的实例都 dispose 了,别让 timer / watcher 挂着 ── */
