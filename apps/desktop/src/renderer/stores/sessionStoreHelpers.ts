@@ -3473,7 +3473,7 @@ if (!isValidSnapshot(e.snapshot)) return;
 /** `e.type === "question.ask"` */
 export function reduceQuestionAsk(ctx: IngestCtx, e: AskUserQuestionEvent): void {
 ctx.bumpUnread();
-      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.agentQuestion"), e.questions[0]?.question);
+      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.agentQuestion"), e.questions[0]?.question, `question:${e.requestId}`);
       // 新提问会**顶掉**同会话的旧卡片。旧提问若还带着 requestId,主进程
       // ApprovalBridge 里那个 Deferred 仍在等答案 —— 卡片没了就再没人能回它,
       // provider 那头永远等下去(M22 报告点名的悬空,与 dismissQuestion 同一条
@@ -3500,7 +3500,7 @@ ctx.bumpUnread();
 /** `e.type === "approval.request"` */
 export function reduceApprovalRequest(ctx: IngestCtx, e: ApprovalRequestEvent): void {
 ctx.bumpUnread();
-      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.toolApprovalNeeded"), e.toolName);
+      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.toolApprovalNeeded"), e.toolName, `approval:${e.requestId}`);
       ctx.set((s) => ({
         pendingApprovals: [
           ...s.pendingApprovals.filter((p) => p.requestId !== e.requestId),
@@ -3514,7 +3514,7 @@ ctx.bumpUnread();
 /** `e.type === "plan.approval_request"` */
 export function reducePlanApprovalRequest(ctx: IngestCtx, e: PlanApprovalRequestEvent): void {
 ctx.bumpUnread();
-      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.planApprovalPending"), translate(ctx.get().locale, "store.toast.planApprovalPendingBody"));
+      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.planApprovalPending"), translate(ctx.get().locale, "store.toast.planApprovalPendingBody"), `plan:${e.requestId}`);
       ctx.set((s) => {
         const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
         // The plan text on the approval request is the model's ExitPlanMode

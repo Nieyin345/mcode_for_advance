@@ -2380,7 +2380,7 @@ export interface IngestCtx {
   /** 非当前会话 + 窗口没在看时，给左边栏红点加一。 */
   bumpUnread: () => void;
   /** 非当前会话 + 窗口聚焦时的应用内提示（窗口失焦时由主进程发系统通知）。 */
-  pushToast: (kind: "info" | "warning" | "error", title: string, body?: string) => void;
+  pushToast: (kind: "info" | "warning" | "error", title: string, body?: string, dedupeKey?: string) => void;
 }
 
 function reduceSessionRunningSnapshot(ctx: IngestCtx, e: SessionRunningSnapshotEvent): void {
@@ -5507,7 +5507,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // When the window is unfocused, the main-process NotificationManager
     // handles OS notifications instead. Toasts are always supplemented by the
     // badge (bumpUnread), so the user sees both the dot + the detail card.
-    const pushToast = (kind: "info" | "warning" | "error", title: string, body?: string) => {
+    const pushToast = (kind: "info" | "warning" | "error", title: string, body?: string, dedupeKey?: string) => {
       if (isSideChatSession(sid, get())) return;
       if (isSessionChatOnScreen(sid, get())) return;
       if (!get().isWindowFocused) return;
@@ -5517,7 +5517,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         st.sessionsByProject[pid]?.some((x) => x.id === sid),
       );
       if (!inAppToastAllowed(projectId)) return;
-      useToastStore.getState().push({ kind, title, body, sessionId: sid });
+      // 【UI-036】把稳定身份(dedupeKey=事件 id)透传下去,让**不同**审批各出一张,同事件重发才去重。
+      useToastStore.getState().push({ kind, title, body, sessionId: sid, ...(dedupeKey !== undefined ? { dedupeKey } : {}) });
     };
 
     /** 归约上下文 —— 一次性备好，交给下面每个 `reduceXxx`。 */

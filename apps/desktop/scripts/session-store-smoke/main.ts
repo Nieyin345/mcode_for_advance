@@ -2064,6 +2064,29 @@ console.log("\n[UI-035] 审批回执非 accepted(过期/已被响应):不清卡�
   setApiStub("claude.respondPlanApproval", null);
 }
 
+console.log("\n[UI-036] 通知去重按身份:不同审批各出一张,同事件重发才去重");
+
+{
+  useToastStore.getState().clear();
+  const T = useToastStore.getState();
+  // 两个**不同**的审批请求(同会话、同标题「需要审批」,正文不同 toolName)——从前只看
+  // title+sessionId 去重,第二个被误吞。现在带各自 dedupeKey(approval:<requestId>)→ 两张都在。
+  T.push({ kind: "warning", title: "需要审批", body: "Bash 1", sessionId: "s1", dedupeKey: "approval:req-1" });
+  T.push({ kind: "warning", title: "需要审批", body: "Bash 2", sessionId: "s1", dedupeKey: "approval:req-2" });
+  eq("★ 两个不同审批 → 两张通知(不误吞)", useToastStore.getState().toasts.length, 2);
+  // 同一条事件重发(同 dedupeKey)→ 去重。
+  T.push({ kind: "warning", title: "需要审批", body: "Bash 1", sessionId: "s1", dedupeKey: "approval:req-1" });
+  eq("★ 同事件重发 → 去重(仍 2 张)", useToastStore.getState().toasts.length, 2);
+  // 无 dedupeKey 时退回 title+body 身份:不同正文仍各出一张,相同正文去重。
+  useToastStore.getState().clear();
+  T.push({ kind: "info", title: "完成", body: "任务 A", sessionId: "s1" });
+  T.push({ kind: "info", title: "完成", body: "任务 B", sessionId: "s1" });
+  eq("★ 无 dedupeKey:不同正文也各出一张", useToastStore.getState().toasts.length, 2);
+  T.push({ kind: "info", title: "完成", body: "任务 A", sessionId: "s1" });
+  eq("★ 无 dedupeKey:相同正文去重", useToastStore.getState().toasts.length, 2);
+  useToastStore.getState().clear();
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {
   console.error(`${failures} check(s) failed`);
