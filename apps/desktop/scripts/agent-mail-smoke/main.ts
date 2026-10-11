@@ -1294,6 +1294,31 @@ console.log("\n⑯ 直接叫醒:配置失效要退回收件箱,启动失败也�
       }
     }
 
+    // 【MC-082 第 42/43 章】`Task` 派生**有独立 Agent Loop** 的子代理,子代理能写文件/跑 Bash ——
+    // 只看父级 `Task` 工具名不能证明无副作用,必须**拒绝**盲重发。
+    {
+      const tk = mkSession({ kind: "chat", title: "Task 子代理回退闸测试", providerId, workflowId: "" });
+      runtimeManager.bindSession(tk);
+      const saved = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+      try {
+        await runtimeManager.sendTurn(tk, { prompt: "spawn a subagent", cwd: "C:/work/paper" });
+        const ctx1 = contexts.at(-1)!;
+        const before = contexts.length;
+        ctx1.emit({ type: "tool.use", sessionId: tk.id, toolCallId: "t1", toolName: "Task", input: {}, requiresApproval: false });
+        ctx1.emit({ type: "tool.result", sessionId: tk.id, toolCallId: "t1", isError: false, content: "done" });
+        finishes.at(-1)!();
+        ctx1.emit({ type: "turn.done", sessionId: tk.id, reason: "error" });
+        for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 20));
+        eq("★ Task 子代理后可写,拒绝盲重发(不重复派生子代理)", contexts.length, before);
+        check("★ 且给出用户可见的恢复提示", events.some((e) => e.type === "turn.notice" && String((e as {message?:string}).message ?? "").includes("未")), events.slice(-3));
+        contexts.at(-1)!.emit({ type: "turn.done", sessionId: tk.id, reason: "end_turn" });
+      } finally {
+        finishes.at(-1)?.(); runtimeManager.dispose(tk.id);
+        SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, saved ?? "[]");
+      }
+    }
+
     // 渲染端收到 turn.done 就回到空闲、排队消息立刻发来;此时引擎可能还在收尾。
     // sendTurn 要等收尾而不是返回 null(返回 null 时 IPC 会拒绝,消息不发)。
     const queued = mkSession({ kind: "chat", title: "收尾期间发送测试", providerId, workflowId: "" });

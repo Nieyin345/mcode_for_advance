@@ -79,10 +79,11 @@ export function readLastGoodBudget(backupRaw: string | null | undefined): { budg
 /**
  * 【MC-083 / 第 38 章复审】预算对象的**唯一**严格校验。返回:
  *   - `{ kind: "disabled" }`:`enabled===false` → 合法的"不限制";
- *   - `{ kind: "not-enabled" }`:`enabled` 缺失或非 true → 未启用(合法,MISSING);
+ *   - `{ kind: "not-enabled" }`:`enabled` **键缺失** → 未启用(合法,MISSING);
  *   - `{ kind: "valid", budget }`:`enabled===true` 且**至少一项严格有效上限**;
  *   - `{ kind: "invalid", why }`:`enabled===true` 但**没有任何有效上限**,或有字段**格式不合法**
- *     (`maxUsd:"x"`、`maxTurns:0.2`、`maxTotalTokens:-8` 等)—— 这**不能**悄悄降级成"不限制"。
+ *     (`maxUsd:"x"`、`maxTurns:0.2`、`maxTotalTokens:-8` 等),或 `enabled` 是**非布尔显式值**
+ *     (字符串/null/数字,§43.3)—— 这**不能**悄悄降级成"不限制"。
  *
  * 关键不变量(第 38 章):`enabled:true` 却 `budget===undefined` **是不允许的状态** —— 用户
  * 启用了预算就期望有限额;一个启用状态却没有任何有效上限,只能是因为配置坏了,按 INVALID 处理,
@@ -93,8 +94,16 @@ function validateBudgetObject(v: TurnBudgetSetting):
   | { kind: "not-enabled" }
   | { kind: "valid"; budget: TurnBudget }
   | { kind: "invalid"; why: string } {
+  // 【MC-083 / 第 43 章 §43.3】四态严格 schema:
+  //   - `enabled` **键缺失** → not-enabled(合法 MISSING:老数据/从未配置);
+  //   - `enabled === false` → disabled(用户明确关闭,合法不限制);
+  //   - `enabled === true` → 继续校验上限;
+  //   - `enabled` 是**其它任何显式值**(字符串 "off"、null、数字 1…)→ **INVALID**。
+  //     从前只判 `!== true` 就归 not-enabled,于是"显式类型损坏"被当成"用户没配置",
+  //     消费端对 MISSING 不拒绝 → 原有限额被悄悄丢掉。
+  if (!("enabled" in v)) return { kind: "not-enabled" };
   if (v.enabled === false) return { kind: "disabled" };
-  if (v.enabled !== true) return { kind: "not-enabled" };
+  if (v.enabled !== true) return { kind: "invalid", why: "enabled 字段类型不合法(应为布尔)" };
   const out: TurnBudget = {};
   let anyInvalidField = false;
   const checkInt = (name: "maxTurns" | "maxTotalTokens"): void => {

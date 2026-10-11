@@ -171,6 +171,16 @@ console.log("\nparseTurnBudgetDetailed(三态 + last-good 恢复,坏配置不静
   eq("★ 且 budget 是 undefined、recovered=false(无备份)", noLimit.budget, undefined);
   eq("★ recovered 为 false", noLimit.recovered, false);
 
+  // 【第 43 章 §43.3】`enabled` 是**显式非布尔值**(字符串 "off" / null / 数字 1)→ INVALID,
+  // **不是** MISSING(不能把"显式类型损坏"当成"用户没配置",否则消费端对 MISSING 不拒绝 → 丢额度)。
+  for (const badEnabled of ["off", null, 1, 0, {}] as const) {
+    const r = parseTurnBudgetDetailed(JSON.stringify({ enabled: badEnabled, maxUsd: 1 }));
+    eq(`★ enabled=${JSON.stringify(badEnabled)} 显式非布尔 → INVALID(不当成未配置)`, r.status, "INVALID");
+  }
+  // 对照:真正**缺** enabled 键 → MISSING(合法);enabled:false → DISABLED(合法)。
+  eq("★ 缺 enabled 键 → MISSING(合法)", parseTurnBudgetDetailed(JSON.stringify({ maxUsd: 1 })).status, "MISSING");
+  eq("★ enabled:false → DISABLED(合法不限制)", parseTurnBudgetDetailed(JSON.stringify({ enabled: false, maxUsd: 1 })).status, "DISABLED");
+
   // 【第 38 章】字段格式不合法(非数/负数/小数)→ INVALID,不能悄悄丢掉最后一个限制。
   const badField = parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxUsd: "not-number", maxTurns: 0.2, maxTotalTokens: -8 }));
   eq("★ 上限字段全不合法(enabled:true)→ INVALID(不静默放宽)", badField.status, "INVALID");

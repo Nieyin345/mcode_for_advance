@@ -184,7 +184,10 @@ export type TurnEffectState = "NO_EFFECT" | "READ_ONLY" | "EFFECT_UNCERTAIN" | "
  * 表只收跨引擎都存在的常见只读名;自定义 MCP 工具(`mcp__…`)不在表里 → UNKNOWN。
  */
 const READ_ONLY_TOOL_NAMES = new Set([
-  "Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "NotebookRead", "Task", "LS",
+  // 【MC-082 第 42/43 章】`Task` **不在**只读表 —— 它派生一个**有独立 Agent Loop** 的子代理,
+  // 子代理能写文件/跑 Bash/调 MCP。只看父级工具名 `Task` 无法证明子任务无副作用,故归 UNKNOWN
+  // (保守不自动回退)。同理其它"委派/子代理"类工具也按名归 mutate/unknown。
+  "Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "NotebookRead", "LS",
   // Pi / Codex 的等价只读名
   "read", "grep", "find", "ls", "glob", "web_fetch", "web_search",
   // Mcode 只读 agent 工具(见 agentEngineBridge 的只读白名单)
