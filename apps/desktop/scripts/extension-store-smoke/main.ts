@@ -287,17 +287,19 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
 // 先试 symlink,不行就试 Windows **junction**(`mklink /J`,**不需要管理员**,普通用户
 // 就能建)。两者都不行才 skip —— 且如实说清"这道闸本次没验"。
 {
-  const linkTarget = tmpdir();
+  // ⚠️ **逃逸目标必须是本套自己的临时目录**,不能用 `tmpdir()` 本身 —— 那是**系统共享**
+  // 目录,别的套件/上次跑的残留会让"库外没出现 pwn.txt"这条假红(实测:全量跑时撞上)。
+  const outside = mkdtempSync(join(tmpdir(), "mcode-ext-outside-"));
   const linkPath = join(extensionDir(ROOT, "ext-files"), "link-out");
   let how: "symlink" | "junction" | null = null;
   try {
-    symlinkSync(linkTarget, linkPath, "dir");
+    symlinkSync(outside, linkPath, "dir");
     how = "symlink";
   } catch {
     // Windows:回退到 junction(普通权限可建)。
     try {
       mkdirSync(extensionDir(ROOT, "ext-files"), { recursive: true });
-      const r = spawnSync("cmd", ["/c", "mklink", "/J", linkPath, linkTarget], { encoding: "utf8" });
+      const r = spawnSync("cmd", ["/c", "mklink", "/J", linkPath, outside], { encoding: "utf8" });
       how = r.status === 0 && existsSync(linkPath) ? "junction" : null;
     } catch {
       how = null;
@@ -309,10 +311,11 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
     deepEq("★ 经 " + how + " 逃逸的写被拒", writeFileInExtension(ROOT, "ext-files", "link-out/pwn.txt", "x"), { ok: false, reason: "invalidPath" });
     deepEq("★ 经 " + how + " 逃逸的读被拒", readFileInExtension(ROOT, "ext-files", "link-out/anything"), { ok: false, reason: "invalidPath" });
     // 库外**确实没有**被写进去(证明是"拒绝"而不是"写了但返回值是 false")。
-    check("★ 库外没有真出现 pwn.txt", !existsSync(join(linkTarget, "pwn.txt")));
+    check("★ 库外没有真出现 pwn.txt", !existsSync(join(outside, "pwn.txt")));
   } else {
     console.log("  ⚠️ skip 逃逸断言(本机既建不了 symlink 也建不了 junction)—— 这道闸本次**没验**");
   }
+  rmSync(outside, { recursive: true, force: true });
 }
 
 /* ─────────────────── §4 IPC handler(全部三层接线的行为面)── */
