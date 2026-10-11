@@ -19,6 +19,8 @@ import { extOf, importGenericFiles } from "./fileImport.js";
 export interface ImportMode {
   mode?: "files" | "folder" | "explode";
   collectionIds?: string[];
+  /** 【MC-072】取消信号:贯穿到批量导入的**逐项循环**,取消后未开始的项不再提交。 */
+  signal?: AbortSignal;
   /** @deprecated Ignored. Only configured automations may upload/transcribe imports. */
   convert?: boolean;
 }
@@ -82,7 +84,7 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
 
   // 文献管线（PDF）
   if (pdfs.length > 0) {
-    const res = await importPdfFiles({ paths: pdfs, collectionIds: opts.collectionIds });
+    const res = await importPdfFiles({ paths: pdfs, collectionIds: opts.collectionIds, signal: opts.signal });
     for (const r of res) {
       if (r.error) out.errors.push({ path: r.path, error: r.error });
       else if (r.alreadyPresent) out.skipped += 1;
@@ -94,8 +96,8 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
     }
   }
 
-  // 笔记管线（md/txt）
-  if (notes.length > 0) {
+  // 笔记管线（md/txt）—— 【MC-072】取消后不再提交。
+  if (notes.length > 0 && !opts.signal?.aborted) {
     const res = importNoteFiles(notes, opts.collectionIds);
     out.items.push(...res.items);
     out.added += res.added;
@@ -103,8 +105,8 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
     out.errors.push(...res.errors);
   }
 
-  // 通用管线（其余文件 + 目录条目）
-  if (generic.length > 0) {
+  // 通用管线（其余文件 + 目录条目）—— 【MC-072】取消后不再提交。
+  if (generic.length > 0 && !opts.signal?.aborted) {
     const dirs = generic.filter((g) => g.isDir).map((g) => g.path);
     const files = generic.filter((g) => !g.isDir).map((g) => g.path);
     if (dirs.length > 0) {

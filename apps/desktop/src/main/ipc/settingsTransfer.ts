@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { IPC } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
-import { getDb, persist } from "@main/store/db.js";
+import { getDb, persistNowOrThrow } from "@main/store/db.js";
 import { getMainWindow } from "@main/window.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { log } from "@main/lib/logger.js";
@@ -102,6 +102,16 @@ function applySettingsImport(
   deleteKeys: ReadonlyArray<string> = [],
 ): string[] {
   const db = getDb();
+  // 【MC-025 第二轮】durable 落盘失败时,COMMIT 已经在**内存**里生效了 —— 只抛错、不广播
+  // 挡不住同一应用里的其它读者(以及后续别的持久化动作)看到这批"失败"的新值。所以先在
+  // 改动前把**受影响的键**的旧值读下来,落盘失败时用它把内存 DB 恢复原状(连同 deleteKeys
+  // 的旧行),再抛 —— 内存与磁盘都不留半套新值。
+  const touched = [...entries.map(([k]) => k), ...deleteKeys];
+  const before = new Map<string, string>();
+  for (const k of touched) {
+    const row = db.exec("SELECT value FROM settings WHERE key = ?", [k])[0];
+    if (row && row.values.length > 0) before.set(k, String(row.values[0]![0]));
+  }
   db.run("BEGIN");
   try {
     for (const [k, v] of entries) {
@@ -118,7 +128,33 @@ function applySettingsImport(
     db.run("ROLLBACK");
     throw err;
   }
-  persist();
+  // 【MC-025】提交之后必须**同步确认 durable** 才返回 —— 从前这里调 `persist()`(异步调度),
+  // "COMMIT 成功"就被当成"导入成功"并把新值广播出去,而磁盘可能还没落定(甚至终将失败):
+  // 用户看到部分/全部新值、多端广播了新值,重启后却没了。`persistNowOrThrow` 失败即抛。
+  try {
+    persistNowOrThrow();
+  } catch (err) {
+    // 【MC-025 第二轮】落盘失败 → **同步恢复内存 DB** 到导入前的值,让失败真的"整体回滚"
+    // (内存 + 磁盘一致),而不是"函数报失败、同一进程仍读到新值"。恢复本身不再 persist
+    // (磁盘此刻就是坏的;内存归位才是这里的目的)。
+    try {
+      db.run("BEGIN");
+      for (const k of touched) {
+        if (before.has(k)) {
+          db.run(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [k, before.get(k)!],
+          );
+        } else {
+          db.run("DELETE FROM settings WHERE key = ?", [k]);
+        }
+      }
+      db.run("COMMIT");
+    } catch {
+      // 恢复也失败:内存可能仍是新值 —— 让上层拿到原始 durable 错误(不掩盖根因)。
+    }
+    throw err;
+  }
   return entries.map(([k]) => k);
 }
 

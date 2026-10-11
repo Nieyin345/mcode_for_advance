@@ -962,6 +962,8 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
           ...(typeof p.title === "string" ? { title: p.title } : {}),
           ...(typeof p.canGoBack === "boolean" ? { canGoBack: p.canGoBack } : {}),
           ...(typeof p.canGoForward === "boolean" ? { canGoForward: p.canGoForward } : {}),
+          // 【UI-014】真的发生了导航 → 清掉上一次的 navError(成功的现实覆盖旧的失败提示)。
+          navError: undefined,
         });
       } else if (msg.type === "loading") {
         const p = msg.payload as { isLoading?: boolean };
@@ -1055,10 +1057,23 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
     (raw: string) => {
       if (!activeTab) return;
       const u = normalizeUrl(raw);
-      patchTabInStore(activeTab.browserId, { url: u });
-      void api.browser.loadUrl({ browserId: activeTab.browserId, url: u });
+      const browserId = activeTab.browserId;
+      const prevUrl = activeTab.url;
+      patchTabInStore(browserId, { url: u });
+      // 【UI-014】消费结果:业务层明确拒绝(浏览器视图崩了/已关闭)时**标错并回滚地址栏**,
+      // 不再"先改 URL、失败后什么都不说"。`{ok:true}` 只代表已发起导航,不代表页面加载完成
+      // (那件事由 load 事件驱动)。走共享失败出口 toast + 地址栏本地标错(双通道,不新造出口)。
+      void api.browser.loadUrl({ browserId, url: u }).then(
+        (res) => {
+          if (!res.ok) {
+            patchTabInStore(browserId, { url: prevUrl, navError: res.error ?? t("browser.loadFailed") });
+            reportBrowserOpFailure(res, t("browser.loadFailed"));
+          }
+        },
+        (err) => patchTabInStore(browserId, { url: prevUrl, navError: (err as Error).message }),
+      );
     },
-    [activeTab, patchTabInStore],
+    [activeTab, patchTabInStore, reportBrowserOpFailure, t],
   );
 
   /** Smart open for bookmark / history entries (the toolbar's More menu):
@@ -1089,14 +1104,30 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
   );
 
   const handleBack = useCallback(() => {
-    if (activeTab) void api.browser.goBack({ browserId: activeTab.browserId });
-  }, [activeTab]);
+    // 【UI-014】消费 `{ok:false}`:视图已失效时走共享失败出口 + 地址栏标错,不再静默无效点击。
+    if (!activeTab) return;
+    const browserId = activeTab.browserId;
+    void api.browser.goBack({ browserId }).then((res) => {
+      reportBrowserOpFailure(res, t("browser.backFailed"));
+      if (!res.ok) patchTabInStore(browserId, { navError: res.error ?? t("browser.backFailed") });
+    }, () => undefined);
+  }, [activeTab, patchTabInStore, reportBrowserOpFailure, t]);
   const handleForward = useCallback(() => {
-    if (activeTab) void api.browser.goForward({ browserId: activeTab.browserId });
-  }, [activeTab]);
+    if (!activeTab) return;
+    const browserId = activeTab.browserId;
+    void api.browser.goForward({ browserId }).then((res) => {
+      reportBrowserOpFailure(res, t("browser.forwardFailed"));
+      if (!res.ok) patchTabInStore(browserId, { navError: res.error ?? t("browser.forwardFailed") });
+    }, () => undefined);
+  }, [activeTab, patchTabInStore, reportBrowserOpFailure, t]);
   const handleReload = useCallback(() => {
-    if (activeTab) void api.browser.reload({ browserId: activeTab.browserId });
-  }, [activeTab]);
+    if (!activeTab) return;
+    const browserId = activeTab.browserId;
+    void api.browser.reload({ browserId }).then((res) => {
+      reportBrowserOpFailure(res, t("browser.reloadFailed"));
+      if (!res.ok) patchTabInStore(browserId, { navError: res.error ?? t("browser.reloadFailed") });
+    }, () => undefined);
+  }, [activeTab, patchTabInStore, reportBrowserOpFailure, t]);
 
   const handleTogglePickMode = useCallback(() => {
     if (!activeTab) return;
@@ -1281,14 +1312,9 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
     [patchTabInStore, setActiveTabId, showActiveView],
   );
 
-  /** Close a tab: destroy its view, remove it, and activate a neighbor. If it
-   *  was the last tab, close the whole panel (overlay) / exit the sidebar. */
-  const handleCloseTab = useCallback(
-    (id: string) => {
-      const idx = tabsRef.current.findIndex((t) => t.id === id);
-      if (idx === -1) return;
-      const closing = tabsRef.current[idx];
-      void api.browser.close({ browserId: closing.browserId });
+  /** 【UI-014】把某个 tab 从列表移除并激活邻居 / 退出面板 —— 只在 close 确认成功后调。 */
+  const removeTabAndNeighbor = useCallback(
+    (id: string, idx: number) => {
       const remaining = tabsRef.current.filter((t) => t.id !== id);
       setTabs(remaining);
       if (remaining.length === 0) {
@@ -1315,6 +1341,31 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
       }
     },
     [mode, setTabs, setActiveTabId, setOpen, setRightPanelTab, showActiveView],
+  );
+
+  /** Close a tab: destroy its view, remove it, and activate a neighbor. If it
+   *  was the last tab, close the whole panel (overlay) / exit the sidebar. */
+  const handleCloseTab = useCallback(
+    (id: string) => {
+      const idx = tabsRef.current.findIndex((t) => t.id === id);
+      if (idx === -1) return;
+      const closing = tabsRef.current[idx];
+      // 【UI-014】先确认业务层真的把底层视图关了,再移除本地 tab —— 从前 `void close(...)`
+      // 之后**立即**从列表移除,若关闭失败,UI 显示"没了"而底层可能仍有活动视图。
+      void api.browser.close({ browserId: closing.browserId }).then(
+        (res) => {
+          if (!res.ok) {
+            // 关不掉 → 保留这个 tab 并标错,让用户看得见、能重试,而不是假装它没了。
+            patchTabInStore(closing.browserId, { navError: res.error ?? t("browser.closeTabFailed") });
+            reportBrowserOpFailure(res, t("browser.closeTabFailed"));
+            return;
+          }
+          removeTabAndNeighbor(id, idx);
+        },
+        (err) => patchTabInStore(closing.browserId, { navError: (err as Error).message }),
+      );
+    },
+    [removeTabAndNeighbor, patchTabInStore, reportBrowserOpFailure, t],
   );
 
   /** New tab button: create a fresh tab and focus it. */
@@ -1379,6 +1430,7 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
         mode={mode}
         url={activeTab?.url ?? ""}
         loading={activeTab?.loading ?? false}
+        navError={activeTab?.navError}
         canGoBack={activeTab?.canGoBack ?? false}
         canGoForward={activeTab?.canGoForward ?? false}
         pickMode={activeTab?.pickMode ?? false}

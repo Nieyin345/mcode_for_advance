@@ -19,8 +19,10 @@ import {
   engineSupportsToolExclusion,
   excludedToolsForEngine,
   readEngineToolPolicy,
+  readEngineToolPolicyStatus,
   writeEngineToolPolicy,
   type EngineToolPolicy,
+  type EngineToolPolicyRead,
 } from "@main/lib/engineToolPolicy.js";
 import { log } from "@main/lib/logger.js";
 import { errText } from "@main/lib/ipcError.js";
@@ -45,7 +47,7 @@ const KNOWN_BUILTIN_TOOLS: Record<EngineToolEngineId, string[]> = {
 };
 
 /** 把当前策略 + 能力/已知清单拼成给 UI 的快照。 */
-function snapshotOf(policy: EngineToolPolicy): EngineToolsSnapshot {
+function snapshotOf(policy: EngineToolPolicy, read?: EngineToolPolicyRead): EngineToolsSnapshot {
   const engines = {} as EngineToolsSnapshot["engines"];
   for (const engine of ENGINE_TOOL_ENGINE_IDS) {
     engines[engine] = {
@@ -54,13 +56,21 @@ function snapshotOf(policy: EngineToolPolicy): EngineToolsSnapshot {
       known: KNOWN_BUILTIN_TOOLS[engine],
     };
   }
-  return { engines };
+  // 【MC-071】带出策略文件的状态 —— 损坏时 UI 显式告警,而不是把 fail-open 当成用户主动启用。
+  const snap: EngineToolsSnapshot = { engines };
+  if (read) {
+    snap.status = read.status;
+    if (read.recovered) snap.recovered = true;
+    if (read.status === "INVALID") snap.warning = `工具禁用配置损坏,${read.recovered ? "已回退到最后一份确认过的策略" : "当前按不设限处理"}:${read.error ?? "未知原因"}`;
+  }
+  return snap;
 }
 
 export function registerEngineToolHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.ENGINE_TOOLS_GET, async () => {
     try {
-      return snapshotOf(readEngineToolPolicy());
+      const read = readEngineToolPolicyStatus();
+      return snapshotOf(read.policy, read);
     } catch (err) {
       // 读策略失败不该让面板崩 —— 返回"都不设限"的空策略。
       log.warn(`engineTools.get failed: ${(err as Error).message}`);
@@ -82,8 +92,8 @@ export function registerEngineToolHandlers(ipcMain: IpcMain): void {
       // 全量替换该引擎的 exclude（空数组 = 不设限，条目会被 minimize 掉）。
       const next: EngineToolPolicy = { ...policy, [input.engine]: { exclude: input.exclude } };
       writeEngineToolPolicy(next);
-      const updated = readEngineToolPolicy();
-      return { ok: true, snapshot: snapshotOf(updated) };
+      const read = readEngineToolPolicyStatus();
+      return { ok: true, snapshot: snapshotOf(read.policy, read) };
     } catch (err) {
       log.warn(`engineTools.set failed: ${errText(err)}`);
       return { ok: false, error: errText(err) };

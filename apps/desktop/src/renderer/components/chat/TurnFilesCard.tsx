@@ -87,7 +87,7 @@ export function TurnFilesCard({
   const panelId = useId();
 
   const handleRewind = async () => {
-    if (rewinding || rewound) return;
+    if (rewinding || rewound) return { ok: true };
     setRewinding(true);
     try {
       // targetFiles is ALWAYS passed — the event handler matches the card
@@ -123,6 +123,9 @@ export function TurnFilesCard({
       // 只有整轮成功才收起卡片(那之后文件列表就是过期的了);部分撤销要**留着展开**,
       // 让用户看清哪些没回去。
       if (!partial) setOpen(false);
+      // 部分撤销已经把真实状态(徽标 + toast)明明白白报出来了,确认框可以关闭;
+      // 只有**整轮失败**(下面的 catch)才必须把确认框留着报错。
+      return { ok: true };
     } catch (err) {
       // **撤销失败不能说成功。** store 的 `rewindTurn` 从前把错误吞了、照样 resolve,
       // 于是这张卡画出「已撤销 ✓」而文件一个字节没回滚 —— 这是个破坏性动作,用户
@@ -132,6 +135,8 @@ export function TurnFilesCard({
         title: t("store.toast.rewindFailed"),
         body: err instanceof Error ? err.message : String(err),
       });
+      // 把失败抛回给 ConfirmDialog:让它**保留弹窗**并把原因显示出来,不假装撤销成功(UI-001)。
+      throw err;
     } finally {
       setRewinding(false);
     }
@@ -253,7 +258,7 @@ export function TurnFilesCard({
         }
         confirmText={t("chatStream.turnFiles.rewindShort")}
         onOpenChange={setConfirmOpen}
-        onConfirm={() => void handleRewind()}
+        onConfirm={handleRewind}
       />
     </div>
   );

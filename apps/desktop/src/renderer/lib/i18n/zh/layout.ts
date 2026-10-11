@@ -314,4 +314,6 @@ export const zh = {
   "layout.loginMismatch": "两次输入的密码不一致",
   "layout.loginSaved": "已保存。已登录的手机不受影响，需要的话在下方撤销。",
   "layout.loginDisabled": "已关闭账号密码登录。已登录的手机仍可使用，需要的话在下方撤销。",
+  /* ── toast stack ── */
+  "layout.toastOpenSource": "打开来源",
 } as const;

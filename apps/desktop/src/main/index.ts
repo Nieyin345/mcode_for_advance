@@ -29,6 +29,8 @@ import { describeImage, visionRelayConfigured } from "@main/lib/visionRelay.js";
 import { relayManager } from "@main/relay/RelayManager.js";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
+import { setOperationLedger } from "@main/appControl/operations.js";
+import { DurableOperationLedger } from "@main/store/operationLedger.js";
 import { initUpdater } from "@main/updater.js";
 import { ensureShippedInitializersSeeded } from "@main/projectInit/service.js";
 import { initAutoArchiver } from "@main/session/AutoArchiver.js";
@@ -187,6 +189,11 @@ app.whenReady().then(async () => {
       describeImage: describeImage,
       configured: visionRelayConfigured,
     });
+    // **操作账本(MC-067 / ARC-009 步②)** —— 启动时装上 sql.js durable 版,让"同一个
+    // operationId 不重复执行"跨进程成立(重启后同一 id 会回放,不再重发)。默认那份是
+    // 进程内内存版(见 appControl/operations.ts);这里换成表 + 唯一约束 + 原子领取的权威版。
+    // 装上之后不回退 —— 静默降级会让"已经持久记账"变成假象。DB 此刻已 ready(在 then 里)。
+    setOperationLedger(DurableOperationLedger);
     // 扩展桥的配对令牌持久化到 settings 表 —— 必须跨重启稳定，否则 mcode 每次
     // 启动都换一个令牌，浏览器里的扩展会静默掉线（用户只会看到"未连接"而不知道
     // 为什么）。注入点必须在这儿：桥模块本身不能碰 db.ts，那会把 electron 拉进

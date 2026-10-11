@@ -39,13 +39,16 @@ export function registerShellHandlers(ipcMain: IpcMain): void {
       .some((p) => samePath(p.path, input.path));
     if (!known) {
       log.warn(`shell.openPath refused (not a project root): ${input.path}`);
-      return;
+      // 【UI-011】显式返回失败,不再静默 void —— 调用者拿得到的 `undefined` 与成功无从区分。
+      return { ok: false, error: `只能打开项目根目录,这个路径不是:${input.path}` };
     }
     // openPath returns an error string on failure ("" on success).
     const err = await shell.openPath(input.path);
     if (err) {
       log.warn(`shell.openPath failed for "${input.path}": ${err}`);
+      return { ok: false, error: err };
     }
+    return { ok: true };
   });
 
   ipcMain.handle(IPC.SHELL_SHOW_ITEM_IN_FOLDER, async (_evt, raw) => {
@@ -58,11 +61,12 @@ export function registerShellHandlers(ipcMain: IpcMain): void {
       .some((p) => pathWithin(p.path, input.path));
     if (!within) {
       log.warn(`shell.showItemInFolder refused (outside project root): ${input.path}`);
-      return;
+      return { ok: false, error: `路径不在任何已知项目里,不能定位:${input.path}` };
     }
     // showItemInFolder opens the containing folder and selects the item. It
     // has no error return; on failure the OS simply does nothing.
     shell.showItemInFolder(input.path);
+    return { ok: true };
   });
 
   ipcMain.handle(IPC.SHELL_OPEN_FILE, async (_evt, raw) => {
@@ -76,13 +80,15 @@ export function registerShellHandlers(ipcMain: IpcMain): void {
       .some((p) => pathWithin(p.path, input.path));
     if (!within) {
       log.warn(`shell.openFile refused (outside project root): ${input.path}`);
-      return;
+      return { ok: false, error: `路径不在任何已知项目里,不能打开:${input.path}` };
     }
     // openPath opens a file with its default application (or the folder in
     // the file manager for a directory). Returns an error string on failure.
     const err = await shell.openPath(input.path);
     if (err) {
       log.warn(`shell.openFile failed for "${input.path}": ${err}`);
+      return { ok: false, error: err };
     }
+    return { ok: true };
   });
 }

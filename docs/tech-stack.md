@@ -13,7 +13,7 @@
 | 维度 | 选型 |
 |------|------|
 | 应用形态 | Electron 桌面应用(三栏 IDE 布局) |
-| 核心理念 | **不自己实现 agent,只做引擎的交互界面**。把 Claude Code SDK / Pi / Codex 三家引擎接进来,本项目提供会话管理、流式渲染、工具审批、IDE 能力、工作流编排、自动化触发器、资料库与插件系统 |
+| 核心理念 | **不自己实现 agent loop,而是复用三家引擎,在其上构建通用 Agent 的「场景构建平台」**。把 Claude Code SDK / Pi / Codex 三家引擎接进来并归一为统一的 `RuntimeEvent`;本项目在其上提供会话管理、流式渲染、工具审批、IDE 能力、**工作流编排与自主场景构建**、自动化触发器、资料库与插件系统 |
 | 与各引擎的关系 | Claude 走 `@anthropic-ai/claude-agent-sdk`(内部 spawn 打包的二进制);Pi 走 `@earendil-works/pi-coding-agent`;Codex 走其 app-server。三者之间靠 `AgentProvider` 抽象层 + 归一化的 `RuntimeEvent` 抹平差异;项目自身 MIT,可独立开源 |
 | 架构参考 | [Synara](https://github.com/Emanuele-web04/synara) 的分层设计(provider adapter、归一化 runtime 事件、IPC 边界),但用**主流 TS**重写(无 effect-ts、无 bun) |
 | 扩展性 | 内置 `AgentProvider` 抽象层 + `ProviderRegistry`;新增引擎只需实现接口并注册。此外有插件系统(技能/命令/agent/MCP/节点类型)与自建 HTML 面板(`mcode-panel` 协议 + 沙箱 iframe) |

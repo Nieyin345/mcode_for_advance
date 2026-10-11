@@ -8,7 +8,7 @@
 
 **Mcode**(*my* Code)- 本地优先的**通用 Agent 桌面客户端**(Electron 三栏 IDE),同时接入**三家引擎**:Claude Code SDK / Pi / Codex,外加一条"网页模型"桥(`bridge`)。工作流编排、自动化触发器、资料库、插件系统都长在它上面。**学术能力全部通过扩展 / 工作流实现,core 不含学术域。**
 
-核心理念:**不自己实现 agent,只做引擎的交互界面**。把各家 agent loop 接进来并归一成统一的 `RuntimeEvent`;本应用负责会话管理、实时渲染、工具审批、IDE 能力(文件/git/终端)、工作流与插件。
+核心理念:**不自己实现 agent loop,而是复用各家引擎,在其上构建通用 Agent 的「场景构建平台」**。把各家 agent loop 接进来并归一成统一的 `RuntimeEvent`;本应用负责会话管理、实时渲染、工具审批、IDE 能力(文件/git/终端)、**工作流编排与自主场景构建**、自动化触发器与插件。
 
 - Claude 走 `@anthropic-ai/claude-agent-sdk`(内部管理 claude 二进制,项目不直接 spawn);Pi 走 `@earendil-works/pi-coding-agent`;Codex 走其 app-server
 - 项目 MIT,可独立开源

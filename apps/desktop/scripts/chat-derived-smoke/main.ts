@@ -217,5 +217,49 @@ console.log("C. per-message caching");
   check("★ 每个 ModelDropdown 子菜单 Popup 都带 ref={subPopupRef}(浏览器视图抑制要量到它)", submenus > 0 && submenus === refs, { submenus, refs });
 }
 
+/**
+ * UI-001: the four async ConfirmDialog callers must HAND the promise back to the
+ * dialog, not `void` it.
+ *
+ * `ConfirmDialog` now awaits `onConfirm` and derives close/failure from the
+ * result (pending -> disabled button; reject / `{ok:false}` -> stays open with
+ * the error). But that only works if the caller actually returns the promise.
+ * The old `onConfirm={() => void asyncAction()}` throws the result away, so the
+ * dialog would close immediately and hide the failure — the exact bug this item
+ * fixes. These are source-level checks (the components run headless); the
+ * dialog's own async behaviour is driven live in `ui-interaction-smoke`.
+ */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const read = (rel: string) => readFileSync(join(process.cwd(), rel), "utf8");
+
+  // FileTree: both delete dialogs (DirNode + FileNodeRow) pass the async fn.
+  const tree = read("src/renderer/components/ide/FileTree.tsx");
+  const treeVoided = (tree.match(/onConfirm=\{\(\) => void handleDelete\(\)\}/g) ?? []).length;
+  const treeDirect = (tree.match(/onConfirm=\{handleDelete\}/g) ?? []).length;
+  check("★ FileTree 两处删除确认把 promise 交给弹窗(不再单边 void)", treeDirect === 2 && treeVoided === 0, { treeDirect, treeVoided });
+  check("★ FileTree 的 handleDelete 失败时把 {ok:false} 交回弹窗", (tree.match(/return \{ ok: false, error: t\("ide\.tree\.deleteFailed"\) \}/g) ?? []).length === 2, (tree.match(/return \{ ok: false[^}]*\}/g) ?? []));
+
+  // McpPanel: single + bulk delete.
+  const mcp = read("src/renderer/components/settings/McpPanel.tsx");
+  check("★ McpPanel 单条/批量删除确认把 promise 交给弹窗(不再单边 void)",
+    mcp.includes("onConfirm={() => confirmDelete()}") && mcp.includes("onConfirm={() => bulkDelete()}") &&
+    !mcp.includes("onConfirm={() => void confirmDelete()}") && !mcp.includes("onConfirm={() => void bulkDelete()}"),
+    { hasConfirm: mcp.includes("onConfirm={() => confirmDelete()}"), hasBulk: mcp.includes("onConfirm={() => bulkDelete()}") });
+
+  // PluginsPanel: remove.
+  const plugins = read("src/renderer/components/settings/PluginsPanel.tsx");
+  check("★ PluginsPanel 卸载确认把 promise 交给弹窗(不再单边 void)",
+    plugins.includes("onConfirm={() => confirmRemove()}") && !plugins.includes("onConfirm={() => void confirmRemove()}"),
+    plugins.match(/onConfirm=\{\(\) => [^}]*confirmRemove[^}]*\}/g));
+
+  // TurnFilesCard: rewind.
+  const card = read("src/renderer/components/chat/TurnFilesCard.tsx");
+  check("★ TurnFilesCard 撤销确认把 promise 交给弹窗(不再单边 void)",
+    card.includes("onConfirm={handleRewind}") && !card.includes("onConfirm={() => void handleRewind()}"),
+    card.match(/onConfirm=\{[^}]*handleRewind[^}]*\}/g));
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exit(1);

@@ -376,6 +376,11 @@ function isRunEntry(
  * 执行,否则重启后会在不知副作用是否发生的情况下重放该节点。
  * `opts.durable` 为真时额外同步替换磁盘数据库;仅完成内存表写入或预约微任务
  * 不能算成功。返回 false 时调用方不得执行新的节点。
+ *
+ * 【ARC-005 步②】`opts.durable` 时落盘走 {@link commitNow} 的**结构化结果**:只有
+ * `DURABLE` 才算成功 —— 才会 `return true` 并发布 {@link onRunCommitted} 成功信号。
+ * `APPLIED_NOT_DURABLE`(内存改了、磁盘没写)一律**回滚内存那一行 + 返回 false +
+ * 不发任何成功信号**,与旧行为一致地 fail-closed(见 {@link emitRunCommitted})。
  */
 export function saveRun(args: {
   runId: string;
@@ -443,10 +448,11 @@ export function saveRun(args: {
       awaiting: args.snapshot.state.awaiting,
     });
     if (opts.durable) {
-      try {
-        persistNowOrThrow();
-      } catch (err) {
-        // 落盘失败 → 把内存那一行**回滚**到先前状态,保住"内存 == 磁盘"。
+      // 【ARC-005 步②】用**结构化**结果而不是"抛不抛" —— 这样才能区分
+      // 「内存已应用但磁盘没写」(APPLIED_NOT_DURABLE)与「真的 durable」。
+      const commit: CommitResult = commitNow();
+      if (commit.outcome !== "DURABLE") {
+        // 落盘没成 → 把内存那一行**回滚**到先前状态,保住"内存 == 磁盘"。
         try {
           if (prevRow) {
             WorkflowRunRepo.save({
@@ -466,8 +472,14 @@ export function saveRun(args: {
               `${(rollbackErr as Error).message}`,
           );
         }
-        throw err; // 交给下面统一 log.warn + return false
+        // **「运行已提交」成功信号一个都不发。** 这正是 ARC-005 要钉住的那条:只有 durable
+        // 之后才发。走到这里时磁盘上并没有这一份(APPLIED_NOT_DURABLE 已回滚,或 FAILED 压根
+        // 没应用),对外报"提交成功"就是假成功。
+        log.warn(`workflow run ${args.runId}: durable 提交未落盘(${commit.outcome}),不发布成功信号 ${commit.reason ?? ""}`);
+        return false;
       }
+      // 真的 durable 了 —— 现在才发布「运行已提交」这个领域成功信号。
+      emitRunCommitted({ runId: args.runId, sessionId: args.sessionId, workflowId: args.workflowId, status: args.status });
     }
     return true;
   } catch (err) {

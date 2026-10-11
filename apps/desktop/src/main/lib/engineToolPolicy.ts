@@ -53,6 +53,24 @@ export interface EngineToolEntry {
 /** 整份策略：引擎 → 条目。引擎键缺席 = 该引擎不设限。 */
 export type EngineToolPolicy = Partial<Record<EngineToolEngine, EngineToolEntry>>;
 
+/**
+ * 【MC-071】读一份策略文件的**三种不同事实** —— 从前它们被压成一个 `{}`,于是
+ * 「用户从没设过」和「用户设过、但文件被截断/改坏」长得一模一样,后者会让原本
+ * 禁用的工具被**静默重新启用**(fail-open)。
+ */
+export type EngineToolPolicyStatus = "VALID" | "MISSING" | "INVALID";
+
+export interface EngineToolPolicyRead {
+  status: EngineToolPolicyStatus;
+  /** 实际应生效的策略。INVALID 时会尽量回退到「最后一份确认过的策略」。 */
+  policy: EngineToolPolicy;
+  /** INVALID 且成功从 last-good 恢复出非空排除时为 true。 */
+  recovered: boolean;
+  /** 供 UI 显示的损坏原因(INVALID 时)。 */
+  error?: string;
+}
+
+
 /** 工具名的可接受字符集：内置名是 `Bash`/`read` 这种，也可能带 `mcp__server__tool`
  *  或命名空间分隔符。只挡明显非法的输入（空串、控制字符、路径分隔符）。 */
 const TOOL_NAME_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -87,21 +105,24 @@ function minimizePolicy(policy: EngineToolPolicy): EngineToolPolicy | null {
 /**
  * 从**显式文件路径**读策略（纯核）。任何 IO/解析问题 → 空策略（即哪个引擎都不设限）。
  * 逐引擎丢弃非法条目：exclude 不是数组就当没有；数组里的非法名逐项剔除。
+ *
+ * ⚠️ 【MC-071】这是**低层**读法,分不清 MISSING / INVALID;要区分三者(并对损坏配置做
+ * 保守恢复)用 {@link readEngineToolPolicyDetailed}。需要"实际生效策略"的调用方也应走那条。
  */
 export function readEngineToolPolicyFile(file: string): EngineToolPolicy {
-  let raw: string;
-  try {
-    raw = readFileSync(file, "utf-8");
-  } catch {
-    return {};
-  }
+  return readEngineToolPolicyDetailed(file).policy;
+}
+
+function parsePolicyText(raw: string): { ok: true; policy: EngineToolPolicy } | { ok: false; error: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    return {};
+  } catch (err) {
+    return { ok: false, error: `JSON 解析失败:${err instanceof Error ? err.message : String(err)}` };
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: "配置不是对象" };
+  }
   const out: EngineToolPolicy = {};
   for (const engine of ENGINE_TOOL_ENGINES) {
     const entry = (parsed as Record<string, unknown>)[engine];
@@ -109,12 +130,71 @@ export function readEngineToolPolicyFile(file: string): EngineToolPolicy {
     const exclude = normalizeExclude((entry as { exclude?: unknown }).exclude);
     if (exclude.length > 0) out[engine] = { exclude };
   }
-  return out;
+  return { ok: true, policy: out };
 }
 
-/** 读默认路径下的策略。见 {@link readEngineToolPolicyFile}。 */
+/** 与策略文件同目录的「最后一份确认过的策略」备份路径。 */
+export function lastGoodEngineToolPolicyPath(file: string): string {
+  return `${file}.last-good`;
+}
+
+/** 尝试从 last-good 备份读出一份**非空**策略;读不出/为空则 null。 */
+function readLastGood(file: string): EngineToolPolicy | null {
+  let raw: string;
+  try {
+    raw = readFileSync(lastGoodEngineToolPolicyPath(file), "utf-8");
+  } catch {
+    return null;
+  }
+  const parsed = parsePolicyText(raw);
+  if (!parsed.ok) return null;
+  return Object.keys(parsed.policy).length > 0 ? parsed.policy : null;
+}
+
+/**
+ * 【MC-071】读策略并**明确区分** VALID / MISSING / INVALID:
+ *   - **MISSING**(文件不存在):全新用户,不设限 —— 保持原生全量,与旧行为一致;
+ *   - **VALID**:照常返回;
+ *   - **INVALID**(存在但损坏):**不静默 fail-open**。若 last-good 备份里有一份非空策略,
+ *     就据它保守恢复(`recovered=true`)—— 一个坏了的文件绝不能把用户原本禁用的工具
+ *     静默重新启用;没有备份时按「不设限」但**带 status=INVALID + error** 供 UI 显式告警。
+ *
+ * 返回的 `policy` 即**实际应生效**的策略,调用方(各 Provider / IPC 快照)都用它。
+ */
+export function readEngineToolPolicyDetailed(file: string): EngineToolPolicyRead {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { status: "MISSING", policy: {}, recovered: false };
+    // 存在但读不出来(权限等)= 与损坏等价:不能当成"用户没设过"。
+    const recovered = readLastGood(file);
+    return {
+      status: "INVALID",
+      policy: recovered ?? {},
+      recovered: recovered !== null,
+      error: `策略文件不可读:${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  const parsed = parsePolicyText(raw);
+  if (parsed.ok) return { status: "VALID", policy: parsed.policy, recovered: false };
+  const recovered = readLastGood(file);
+  return {
+    status: "INVALID",
+    policy: recovered ?? {},
+    recovered: recovered !== null,
+    error: parsed.error,
+  };
+}
+
+/** 读默认路径下的策略(实际生效值,含损坏恢复)。见 {@link readEngineToolPolicyDetailed}。 */
 export function readEngineToolPolicy(): EngineToolPolicy {
-  return readEngineToolPolicyFile(defaultEngineToolPolicyPath());
+  return readEngineToolPolicyDetailed(defaultEngineToolPolicyPath()).policy;
+}
+
+/** 读默认路径下的策略**并带状态** —— 供需要展示「配置损坏/实际生效状态」的调用方。 */
+export function readEngineToolPolicyStatus(): EngineToolPolicyRead {
+  return readEngineToolPolicyDetailed(defaultEngineToolPolicyPath());
 }
 
 /** 原子写（本模块自带的小实现，避免为它去 import `appContext` 拖进 electron）。 */
@@ -139,6 +219,9 @@ function atomicWriteJson(file: string, data: unknown): void {
 export function writeEngineToolPolicyFile(file: string, policy: EngineToolPolicy): void {
   const minimal = minimizePolicy(policy);
   atomicWriteJson(file, minimal ?? {});
+  // 【MC-071】每次成功写入后刷新「最后一份确认过的策略」备份 —— 主文件日后被截断/改坏时,
+  // 据它保守恢复,而不是 fail-open。只备份**非空**策略(全启用不需要备份)。
+  if (minimal) atomicWriteJson(lastGoodEngineToolPolicyPath(file), minimal);
 }
 
 /** 写策略到默认路径。 */

@@ -159,7 +159,11 @@ const projectWriteTails = new Map<string, Promise<void>>();
  *  promise settles with `op`'s own result — errors propagate to the caller
  *  and never poison the chain for the next queued write. */
 function serializeProjectWrite<T>(projectPath: string, op: () => Promise<T>): Promise<T> {
-  const key = path.resolve(projectPath);
+  // 【MC-040】锁键走**平台规范化**(win32/darwin 折叠大小写)。从前用裸 `path.resolve`,
+  // Windows 上 `C:\\Proj` 与 `c:\\proj` 会得到两个锁键、不串行 —— 同一项目经不同大小写
+  // 拼写并发写 `.mcp.json`,照样各写各的、后写覆盖先写。`normPathKey` 与本仓其它跨面
+  // 路径比较共用同一口径(见 `lib/pathNorm.ts`)。
+  const key = normPathKey(path.resolve(projectPath));
   const tail = projectWriteTails.get(key) ?? Promise.resolve();
   const run = tail.then(op, op);
   const settled = run.then(

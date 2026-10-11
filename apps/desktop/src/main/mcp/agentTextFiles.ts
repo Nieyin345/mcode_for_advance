@@ -16,6 +16,15 @@ export async function withTextFileLock<T>(file: string, action: (real: string) =
 }
 export const textFileHash = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
+/**
+ * 【MC-069】二进制文档写入(Excel/DOCX/PDF)**共用同一把**按真实物理路径的进程内串行锁。
+ *
+ * 复用文本编辑那一份,而不是另起一张 Map —— 否则同一条路径上,`agent_edit_file`(文本)
+ * 与 `agent_edit_excel_range`(二进制)会各排各的队、照样互相覆盖。见 `agentDocumentOps.ts`
+ * 里 `editExcelRange` / `editDocxXml` / `writePdf` 的用法。
+ */
+export const withDocFileLock = withTextFileLock;
+
 /** Optimistic external-edit check, not an OS-wide transaction with arbitrary editors. */
 export async function replaceTextFile(file: string, content: string, original: Buffer): Promise<void> {
   const stat = await fs.stat(file);

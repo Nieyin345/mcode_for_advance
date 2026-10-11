@@ -59,7 +59,7 @@ import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, 
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { EngineToolsGetInput, EngineToolsSetInput, EngineToolsSnapshot } from "./engineTools.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, SettingImportFileInput, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
-import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, StopTaskInput, ReadTaskOutputInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
+import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, StopTaskInput, ReadTaskOutputInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, ShellOpenResult, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
 import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput, ProviderHealthCheckInput, ProviderHealthCheckResult, ProviderCommandsInput, ProviderCommandsResult, TestEndpointInput, ListEndpointModelsInput, EndpointProbeOutcome } from "./providers.js";
@@ -553,13 +553,13 @@ export interface RpcMap {
   "app.quitAndInstall": () => Promise<void>;
   /** Open a path in the OS file manager. Main refuses any path that isn't a
    *  known project root, so this can't be used to open arbitrary locations. */
-  "shell.openPath": (input: OpenPathInput) => Promise<void>;
+  "shell.openPath": (input: OpenPathInput) => Promise<ShellOpenResult>;
   /** Reveal a file or directory in the OS file manager, selecting it. Accepts
    *  any path that resolves inside a known project root (not just the root). */
-  "shell.showItemInFolder": (input: ShowItemInFolderInput) => Promise<void>;
+  "shell.showItemInFolder": (input: ShowItemInFolderInput) => Promise<ShellOpenResult>;
   /** Open a file with the OS's default associated application. Accepts any
    *  path that resolves inside a known project root (not just the root). */
-  "shell.openFile": (input: OpenFileInput) => Promise<void>;
+  "shell.openFile": (input: OpenFileInput) => Promise<ShellOpenResult>;
   /** Native multi-file picker (project-external files allowed). Returns the
    *  selected absolute paths; empty array when the user cancels. */
   "dialog.pickFiles": (input: DialogPickFilesInput) => Promise<{ paths: string[] }>;

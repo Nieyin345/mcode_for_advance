@@ -39,6 +39,7 @@ import type { IpcMain } from "electron";
 import { setUserData, pushOpenResult, resetDialog } from "./stubs/electron.js";
 import { reset as resetNotif, reloadCount } from "./stubs/notificationManager.js";
 import { fsOps, resetFsOps, setStatSizeOverride } from "./stubs/fsPromises.js";
+import { failNextExclusiveCreate, disarmExclusiveCreate } from "./stubs/fsSync.js";
 
 let failures = 0;
 let total = 0;
@@ -430,6 +431,49 @@ console.log("\nMC-029:恢复**不得**误删敏感/本机键(它们本就不在�
   eq("恢复成功", res.ok, true);
   eq("★ 密钥键未被误删", typeof SettingRepo.get("customModelKeys"), "string");
   eq("★ 授信键未被误删", typeof SettingRepo.get("mcp.projectTrust"), "string");
+}
+
+/* ──────────────── MC-025:durable 落盘失败不得被当成导入成功 ──────────────── */
+
+console.log("\nMC-025:提交之后的 durable 落盘失败 → 报失败、不广播(不把异步 persist 当成功)");
+
+{
+  // 从前提交之后调**异步** `persist()`:COMMIT 成功就被当成导入成功并把新值广播出去,
+  // 而磁盘可能还没落定(甚至终将失败)。现在走**同步** `persistNowOrThrow()`:写盘失败
+  // 即抛 → 调用方 catch → 返回 ok:false 且**零广播**。这里让 staging 的排他创建
+  // (`openSync(x,"wx")`,即 `writeSnapshot` 的第一步)失败一次来模拟。
+  resetSent();
+  SettingRepo.set("ui.locale", "OLD");
+  let res: ImportResult;
+  failNextExclusiveCreate();
+  try {
+    res = await runImport(
+      makeImportFileMulti({ "ui.locale": "NEW", "ui.reloadProbe": "durable" }, "durable-fail.json"),
+    );
+  } finally {
+    disarmExclusiveCreate();
+  }
+  eq("★ durable 落盘失败时导入报**失败**", res.ok, false);
+  check("失败理由点明是写入失败", typeof res.error === "string" && /写入/.test(res.error), res);
+  eq("★ durable 失败时**零** setting.changed 广播(不把未落盘当成功)", eventsOfType("setting.changed").length, 0);
+  // 【MC-025 第二轮】durable 失败后,**内存 DB 也必须回到导入前** ——
+  // 只抛错挡住广播还不够:同一应用里的其它读者会从内存读到这批"失败"的新值,后续别的
+  // 持久化动作还可能把它写到磁盘。断言旧值仍在、新键没进来。
+  eq("★ durable 失败后内存里旧值未被提交(读到的仍是旧值)", SettingRepo.get("ui.locale"), "OLD");
+  eq("★ durable 失败后新键没有留在内存表里", SettingRepo.keysWithPrefix("ui.reloadProbe").length, 0);
+
+  // 正控:解除注入后同样两项一次成功、且广播。
+  resetSent();
+  const ok = await runImport(
+    makeImportFileMulti({ "ui.locale": "NEW2", "ui.reloadProbe": "durable-ok" }, "durable-ok.json"),
+  );
+  eq("正控:解除注入后导入成功", ok.ok, true);
+  eq("正控:值生效", SettingRepo.get("ui.locale"), "NEW2");
+  check(
+    "正控:成功导入广播了同步键",
+    eventsOfType("setting.changed").some((e: Record<string, unknown>) => e.key === "ui.locale"),
+    eventsOfType("setting.changed"),
+  );
 }
 
 /* ──────────────── 收尾 ──────────────── */

@@ -134,10 +134,49 @@ function requestsOf(outputs: unknown): AdoptRequest[] {
  *
  * 没有请求就**原样返回**那个 outcome(不碰资料库)。
  */
-export async function applyHostActions(outcome: NodeOutcome): Promise<NodeOutcome> {
+/**
+ * 【MC-072】宿主后处理的**取消 / 身份上下文**。
+ *
+ * 从前 `applyHostActions(outcome)` 只有产出、没有 signal:用户在导入**中途**取消工作流,
+ * 脚本进程停得住,但接下来的入库、Markdown 挂回、`notifyLibraryChanged` 照样做完 ——
+ * 界面显示"已停止",资料库却还在变。这里把执行上下文的取消信号与 step 身份一并以
+ * 可选参数传进来(兼容旧调用:不传 = 不检查取消,保持既有行为)。
+ */
+export interface HostActionContext {
+  /** 取消信号。在每个异步边界与逐项写入前检查。 */
+  signal?: AbortSignal;
+  /** 稳定 step 身份,写进「已提交 / 已取消」的回执与日志。 */
+  runId?: string;
+  nodeId?: string;
+  /** 收到取消时是否在回执里置 `cancelled`(缺省 true)。 */
+  cancelledStatus?: "cancelled";
+}
+
+/** 取消回执:已提交的部分**如实保留**,未开始的标记未执行,不谎称全成功也不谎称全回滚。 */
+function cancelReceipt(outcome: NodeOutcome, appliedSummary: string[]): NodeOutcome {
+  const lines = appliedSummary.filter((s) => s !== "");
+  lines.push("⏹️ 已取消:脚本之后的宿主后处理在取消点停下,已提交的部分保留、未开始的不再执行。");
+  const outputs = { ...(outcome.outputs ?? {}), hostCancelled: true };
+  return {
+    ...outcome,
+    status: "cancelled",
+    summary: [outcome.summary, ...lines].filter((s) => s !== "").join("\n"),
+    outputs,
+    error: "工作流已取消:宿主后处理未全部执行(已提交的部分不会回滚)",
+  };
+}
+
+export async function applyHostActions(outcome: NodeOutcome, ctx: HostActionContext = {}): Promise<NodeOutcome> {
   if (outcome.status !== "success") return outcome;
-  const withImports = await applyImports(outcome);
-  return applyMarkdownAdoptions(withImports);
+  // 脚本刚跑完就被取消 → 一项后处理都不做。
+  if (ctx.signal?.aborted) return cancelReceipt(outcome, []);
+  const withImports = await applyImports(outcome, ctx);
+  // 导入期间被取消 → 不再挂回。
+  if (ctx.signal?.aborted) return cancelReceipt(withImports, []);
+  const adopted = await applyMarkdownAdoptions(withImports, ctx);
+  // 挂回逐项循环因取消提前停 → 整体作废(已挂上的如实留在 outputs 与 summary 里)。
+  if (adopted.outputs?.hostStoppedEarly === true) return cancelReceipt(adopted, []);
+  return adopted;
 }
 
 /**
@@ -149,16 +188,25 @@ export async function applyHostActions(outcome: NodeOutcome): Promise<NodeOutcom
  * 收进来会发 `library.item.imported` 事件 —— **转录那条自动化就是听这个的**,所以
  * "选文件 → 入库 → 转 md → 挂回"这条链在这里自动接上,不需要谁去调度。
  */
-async function applyImports(outcome: NodeOutcome): Promise<NodeOutcome> {
+async function applyImports(outcome: NodeOutcome, ctx: HostActionContext = {}): Promise<NodeOutcome> {
   const req = importOf(outcome.outputs);
   if (req === null) return outcome;
 
   if (libraryHost === null) return hostUnavailable(outcome, "收进库");
   const { importAnyFiles, notifyLibraryChanged } = libraryHost;
+  // 【MC-072】导入是异步的:开始前再查一次取消(调用方已查过一次,这里防的是
+  // `applyHostActions` 与这里之间那个极短的窗口)。
+  if (ctx.signal?.aborted) return outcome;
   const res = await importAnyFiles(req.paths, {
     mode: "files",
     ...(req.collectionIds.length > 0 ? { collectionIds: req.collectionIds } : {}),
+    // 【MC-072】把取消信号传进批量导入的**逐项循环** —— 从前只在阶段边界检查,正在跑的
+    // 批次仍会把取消后剩的文件一个个提交完(实测 imported=2、adopted=0)。传进去后
+    // importPdfFiles / 笔记 / 通用管线都在每项提交前查取消。
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
   });
+  // 【MC-072】**导入已经提交**:即便此刻被取消,也不能谎称这项没发生 —— 如实保留
+  // `imported` 与 `notifyLibraryChanged`(资料库确实变了),取消由上层回执说明。
   if (res.added > 0) notifyLibraryChanged(`code_node_import:${res.added}`);
 
   const lines = [`已收进库 ${res.added} 个文件` + (res.skipped > 0 ? `（跳过 ${res.skipped} 个重复的）。` : "。")];
@@ -178,7 +226,7 @@ async function applyImports(outcome: NodeOutcome): Promise<NodeOutcome> {
   return { ...outcome, summary, outputs };
 }
 
-async function applyMarkdownAdoptions(outcome: NodeOutcome): Promise<NodeOutcome> {
+async function applyMarkdownAdoptions(outcome: NodeOutcome, ctx: HostActionContext = {}): Promise<NodeOutcome> {
   // 这里**故意不看 status**:进到这个函数说明 code 节点本身是成功的(`applyHostActions`
   // 已经挡过一道),此刻的 failed 只可能来自上一步的导入 —— 那跟挂回是两件事,不该连坐。
   const requests = requestsOf(outcome.outputs);
@@ -190,8 +238,11 @@ async function applyMarkdownAdoptions(outcome: NodeOutcome): Promise<NodeOutcome
 
   const adopted: Array<{ itemId: string; relPath: string; imageCount: number; missing: string[] }> = [];
   const failed: string[] = [];
+  let stoppedEarly = false;
 
   for (const req of requests) {
+    // 【MC-072】逐项写入前查取消:取消第 k 项之后**不再执行后续**,已挂上的如实保留。
+    if (ctx.signal?.aborted) { stoppedEarly = true; break; }
     let res;
     try {
       res = adoptMarkdownFile(req.itemId, req.path);
@@ -233,11 +284,17 @@ async function applyMarkdownAdoptions(outcome: NodeOutcome): Promise<NodeOutcome
     ...(outcome.outputs ?? {}),
     adopted,
     adoptFailed: failed,
+    // 【MC-072】标记"逐项循环因取消提前停" —— `applyHostActions` 据此把整体翻成 cancelled,
+    // 而不是报成功(部分挂上 ≠ 后处理完整做完)。
+    ...(stoppedEarly ? { hostStoppedEarly: true } : {}),
   };
   const summary = [outcome.summary, ...lines].filter((s) => s !== "").join("\n");
 
   // 全灭 = 这一步失败。转录成功而一条都没挂上,显示成绿的等于把问题藏起来。
   // 上一步(导入)若已经失败,错误原因**合起来报**,不覆盖掉先发生的那条。
+  // 【MC-072】但若是**取消**导致的提前停(一项没挂是因为还没轮到),不是"挂回全灭",
+  // 交回给上层按取消处理 —— 别把它误标成失败。
+  if (adopted.length === 0 && ctx.signal?.aborted) return { ...outcome, summary, outputs };
   if (adopted.length === 0) {
     const reasons = [outcome.error, `挂回资料库全部失败：${failed.join("；")}`].filter(
       (s): s is string => typeof s === "string" && s !== "",

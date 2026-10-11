@@ -935,6 +935,17 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   check("子目录CLAUDE回退", instructions.includes("child-fallback"));
   check("越界 cwd 不读取外部", !projectInstructions(root, dirname(root)).includes("child-fallback"));
   eq("缺失项目无指令", projectInstructions(join(root, "missing"), child), "");
+  // 【MC-070】Windows/macOS 上同一项目仅改路径字母大小写,子目录指令**不得**漏注入;
+  // Linux 大小写敏感:大小写不同 = 不同目录,也不得误合并。
+  const ciFS = process.platform === "win32" || process.platform === "darwin";
+  check("前缀相近的兄弟目录不误判为子目录", !projectInstructions(root, join(root + "x", "sub")).includes("child-fallback"));
+  if (ciFS) {
+    check("cwd 全大写仍注入子目录指令(MC-070)", projectInstructions(root, child.toUpperCase()).includes("child-fallback"));
+    check("cwd 全小写仍注入子目录指令(MC-070)", projectInstructions(root, child.toLowerCase()).includes("child-fallback"));
+    check("root 大小写变体仍注入子目录指令(MC-070)", projectInstructions(root.toUpperCase(), child).includes("child-fallback"));
+  } else {
+    check("Linux 大小写不同不算子目录(不误合并)", !projectInstructions(root, child.toUpperCase()).includes("child-fallback"));
+  }
 }
 
 console.log("\n分层工作流复用与记忆注入所有权");

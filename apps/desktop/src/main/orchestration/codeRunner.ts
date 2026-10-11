@@ -28,7 +28,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeOutcome } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
-import { spawnRun } from "@main/lib/spawnRun.js";
+import { spawnRun, MAX_LINE_BYTES } from "@main/lib/spawnRun.js";
 import { markTruncatedTail } from "@main/lib/outBuf.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 
@@ -127,6 +127,9 @@ export async function runCodeNode(a: {
     const [cmd, argv] = spec(a.language, file, pythonExe);
 
     let result: ProtocolResult | undefined;
+    /** 【MC-073】见过一条**带协议前缀但解析失败**的行。若这条失败源于行被夹断
+     *  (`stdoutLineTruncated`),就不能再当成功 —— 截断的协议 JSON 不是完整结果。 */
+    let protocolUnparsed = false;
     /** 认一行协议。返回 `true` = 这一行是协议行,不进 stdout 产出。 */
     const consumeLine = (line: string): boolean => {
       if (!line.startsWith(NODE_STDOUT_PROTOCOL_PREFIX)) return false;
@@ -158,7 +161,9 @@ export async function runCodeNode(a: {
           };
         }
       } catch {
-        // 用户代码可以往 stdout 打任意文本;坏掉的协议行忽略即可。
+        // 用户代码可以往 stdout 打任意文本;坏掉的协议行忽略即可 —— 但**记一笔**,
+        // 好在「这一行其实是被预算夹断的」时把它升级成明确失败(见下方 stdoutLineTruncated)。
+        protocolUnparsed = true;
       }
       return true;
     };
@@ -199,6 +204,20 @@ export async function runCodeNode(a: {
     };
     const artifacts = normalizeNodeArtifacts(result?.artifacts, a.cwd ?? process.cwd());
     const artifactPayload = artifacts.length > 0 ? { artifacts } : {};
+
+    // 【MC-073】**协议行被预算夹断**时绝不能继续当成功。超长无换行的协议行会被
+    // `spawnRun` 的行预算截断,`JSON.parse` 失败后又被静默忽略 —— 那条 `result` 就
+    // 丢了,节点却报成功。这里升级成明确失败(`PROTOCOL_TOO_LARGE` 语义),与台账
+    // 「不能把截断的 JSON 继续当完整结果」一致。
+    if (run.stdoutLineTruncated && protocolUnparsed) {
+      return {
+        status: "failed",
+        summary: stdout,
+        outputs,
+        ...artifactPayload,
+        error: `标准输出的协议行超过单行预算(${MAX_LINE_BYTES} 字节)被截断,无法解析 —— 不要把整份结果打成一行 JSON,改写入文件或用 artifact 传路径`,
+      };
+    }
 
     if (run.killedBy.abort) {
       return { status: "cancelled", summary: stdout, outputs, ...artifactPayload };

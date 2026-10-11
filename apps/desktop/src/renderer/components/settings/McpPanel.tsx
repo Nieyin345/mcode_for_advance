@@ -346,17 +346,18 @@ export function McpPanel() {
 
   const confirmDelete = async () => {
     const target = pendingDelete;
-    if (!target) return;
+    if (!target) return { ok: true };
     setError(null);
     try {
       const res = await api.mcp.remove({ name: target.name });
       // 同 `toggle`:先重拉(它成功会清旧横幅)再挂这次的错误,否则删失败的提示被 `load` 清掉。
       await load();
       if (!res.ok) setError(res.error ?? t("settings.deleteFailed"));
+      // 失败交给 ConfirmDialog 保留弹窗显示(UI-001);成功才让它关闭。
+      return res;
     } catch (err) {
       setError((err as Error).message);
-    } finally {
-      setPendingDelete(null);
+      throw err; // 让 ConfirmDialog 保留弹窗,不假装删除成功
     }
   };
 
@@ -383,11 +384,11 @@ export function McpPanel() {
     if (failures.length) setError(failures.join("; "));
   };
 
-  /** 勾选批量的删除。危险动作，走确认框；失败如实计数。 */
+  /** 勾选批量的删除。危险动作，走确认框；失败如实计数。返回结果交给
+   *  ConfirmDialog —— 只要有失败的就不让它静默关闭(UI-001)。 */
   const bulkDelete = async () => {
-    setPendingBulkDelete(false);
     const targets = servers.filter((s) => s.scope === "user" && checked.has(s.name));
-    if (!targets.length) return;
+    if (!targets.length) return { ok: true };
     setError(null);
     const failures: string[] = [];
     const removed = new Set<string>();
@@ -404,7 +405,12 @@ export function McpPanel() {
     setBusyKey(null);
     if (removed.size) setChecked((prev) => new Set([...prev].filter((n) => !removed.has(n))));
     await load();
-    if (failures.length) setError(failures.join("; "));
+    if (failures.length) {
+      setError(failures.join("; "));
+      // 有失败的:保留弹窗并显示原因,不假装批量删除都成功了。
+      return { ok: false, error: failures.join("; ") };
+    }
+    return { ok: true };
   };
 
   /** OAuth browser login for a remote server flagged needsAuth. Blocks until
@@ -817,7 +823,7 @@ export function McpPanel() {
         onOpenChange={(open) => {
           if (!open) setPendingDelete(null);
         }}
-        onConfirm={() => void confirmDelete()}
+        onConfirm={() => confirmDelete()}
       />
 
       <ConfirmDialog
@@ -829,7 +835,7 @@ export function McpPanel() {
         onOpenChange={(open) => {
           if (!open) setPendingBulkDelete(false);
         }}
-        onConfirm={() => void bulkDelete()}
+        onConfirm={() => bulkDelete()}
       />
 
       <AddServerDialog

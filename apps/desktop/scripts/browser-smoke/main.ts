@@ -586,6 +586,34 @@ console.log("\nIPC:authRespond 的合法入参");
       body.slice(0, 300),
     );
   }
+  // 【UI-014】导航 / 返回 / 前进 / 刷新 / 关标签页这五条从前是 `void api.browser.xxx(...)`,
+  // 主进程 `{ok:false}`(视图崩了 / 已关闭)被丢掉:地址栏先改成新 URL、业务拒绝后不报错,
+  // 看着就是点了没反应。现在必须消费结果(共享失败出口 + 地址栏 navError)。
+  for (const [fn, key] of [
+    ["handleNavigate", "browser.loadFailed"],
+    ["handleBack", "browser.backFailed"],
+    ["handleForward", "browser.forwardFailed"],
+    ["handleReload", "browser.reloadFailed"],
+    ["handleCloseTab", "browser.closeTabFailed"],
+  ] as const) {
+    // ⚠️ 用**原始**源码(不剥注释)锚:剥注释的 `/\*[\s\S]*?\*/` 会跨行吃掉 `const … =
+    // useCallback(` 那一行(本文件里前面的块注释与后面的 `*/` 相隔很远),导致锚找不到。
+    // 只看「声明处到该回调依赖数组结尾」这一段里有没有消费结果即可。
+    const at = src.indexOf(`const ${fn} = useCallback`);
+    const body = at >= 0 ? src.slice(at, src.indexOf("}, [", at)) : "";
+    check(
+      `★ ${fn} 消费 {ok:false}(不再 void 丢回包)`,
+      at >= 0 && /\.then\(/.test(body) && /navError/.test(body) && body.includes(key),
+      body.slice(0, 260),
+    );
+  }
+  // 地址栏组件要真的把 navError 画出来(红边 + title),否则上面的标错用户看不见。
+  {
+    const { readFileSync: rf } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const tb = rf(j(process.cwd(), "src/renderer/components/browser/BrowserToolbar.tsx"), "utf8");
+    check("★ 地址栏消费 navError(红边 + title,点失败看得见)", /navError/.test(tb) && /border-danger|title=\{navError/.test(tb), null);
+  }
   // 下载栏两处(打开文件 / 在文件夹中显示)与清除那两条同一契约 —— 主进程会带原因拒。
   for (const [fn, key] of [
     ["handleDownloadOpen", "browser.downloadOpenFailed"],

@@ -24,7 +24,7 @@ check("invalid office origin cannot inject directives", !desktopCsp(own, own, "j
 check("clone limit exceeds old hard stop but remains finite", MARKET_CLONE_TIMEOUT_MS === 900000);
 check("Git diagnostics redact credentials/query", safeGitMessage("fatal: https://alice:secret@host.invalid/repo?token=hidden").includes("https://host.invalid/repo") && !safeGitMessage("https://alice:secret@host.invalid/repo?token=hidden").includes("hidden"));
 const root = await fs.mkdtemp(path.join(tmpdir(), "mcode-editor-market-"));
-const ok = (extra: Partial<SpawnRunResult> = {}): SpawnRunResult => ({ code: 0, signal: null, stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false, killedBy: { timeout: false, abort: false }, ...extra });
+const ok = (extra: Partial<SpawnRunResult> = {}): SpawnRunResult => ({ code: 0, signal: null, stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false, stdoutLineTruncated: false, stderrLineTruncated: false, killedBy: { timeout: false, abort: false }, ...extra });
 try {
   const events: string[] = [];
   await cloneMarketRepository("https://example.invalid/repo", path.join(root,"clone"), "main", p => events.push(p.message), {

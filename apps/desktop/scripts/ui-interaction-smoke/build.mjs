@@ -22,7 +22,9 @@ const stubs={
  './MemoryMaintenanceReview.js':'export const MemoryMaintenanceReview=()=>null;',
  '@renderer/lib/api.js':'export const api=window.labApi;',
  '@renderer/stores/sessionStore.js':`import {useSyncExternalStore} from 'react';export const useSessionStore=(fn)=>fn(useSyncExternalStore(window.labSubscribe,()=>window.labState));useSessionStore.getState=()=>window.labState;`,
- '@renderer/stores/toastStore.js':'export const useToastStore={getState:()=>({push:()=>{}})};',
+ // UI-002/003: Toaster is exercised against the REAL toast queue, so the store
+ // module must be the production one (only its zustand dep is pulled in).
+ // Previously stubbed to a no-op, which made the Toaster untestable here.
  '@renderer/lib/i18n/core.js':'export const translate=(_locale,key)=>key;',
  '@renderer/stores/fileViewStore.js':'export const useFileViewStore={getState:()=>({open:()=>{}})};',
  '@renderer/lib/icons.js':"export { SiClaude, SiGoogle } from 'react-icons/si';export { PiRobot } from 'react-icons/pi';export function OpenAIBrandIcon(){return null;}export * from '@tabler/icons-react';",

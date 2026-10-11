@@ -1367,6 +1367,27 @@ console.log("\n项目级 MCP:信任绑项目身份 / 超大文件拒读 / 写串
     raceList.servers,
   );
 
+  // 【MC-040 复核补充】大小写变体的**同一**物理项目必须共用一把锁。Windows/darwin 上
+  // `raceDir` 与 `raceDir.toUpperCase()` 指向同一目录;从前锁键用裸 `path.resolve`,
+  // 两者算两个键、不串行 —— 并发写照样各读旧版、后写覆盖先写。用规范化键后条目都在。
+  const ciFS = process.platform === "win32" || process.platform === "darwin";
+  if (ciFS) {
+    const caseDir = makeProject("case-lock", {});
+    const [c1, c2] = await Promise.all([
+      saveProjectMcp(caseDir, "gamma", { command: "g-cmd" }),
+      saveProjectMcp(caseDir.toUpperCase(), "delta", { command: "d-cmd" }),
+    ]);
+    check("大小写变体两次保存都成功", c1.ok === true && c2.ok === true, { c1, c2 });
+    const caseFile = JSON.parse(readFileSync(join(caseDir, PROJECT_MCP_FILE), "utf8")) as {
+      mcpServers?: Record<string, unknown>;
+    };
+    eq(
+      "★ MC-040:大小写变体的两次并发保存也共用锁,条目都在(不因锁键大小写分裂而互相覆盖)",
+      Object.keys(caseFile.mcpServers ?? {}).sort().join(","),
+      "delta,gamma",
+    );
+  }
+
   // ── MC-034:超过大小上限的 .mcp.json 被**命名拒绝**,不当成空 ──
   const bigDir = join(projRoot, "big");
   mkdirSync(bigDir, { recursive: true });

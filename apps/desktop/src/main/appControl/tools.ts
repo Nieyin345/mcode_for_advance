@@ -44,14 +44,25 @@ import {
   formatOperationResult,
   isOperationCommitted,
   OP_CODE,
+  OPERATION_ID_MAX_BYTES,
   OP_WARNING_UI_REFRESH_FAILED,
   type AppUiCommand,
   type AppUiReply,
+  type OperationIntent,
+  type OperationRecord,
   type OperationResult,
   type OperationWarning,
 } from "@contracts/appControl";
 import { fail, image, text, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js";
 import { API_CATALOG, type ApiCatalogEntry } from "./apiCatalog.generated.js";
+import { decodeDomainOutcome, resultKindOfOutcome, sideEffectClassOf } from "./commandOutcome.js";
+import {
+  getOperationLedger,
+  intentFingerprint,
+  operationIdWithinLimit,
+  requestDigestOf,
+  setOperationLedger,
+} from "./operations.js";
 import { computePanelCaptureRect } from "./panelCaptureRect.js";
 import { DOMAIN_LABELS, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
 import { registeredRpcChannels, rpcHandlerFor } from "./registry.js";
@@ -1156,30 +1167,19 @@ async function runWorkflow(
   return uiResult(reply, "已按工作流发出。");
 }
 
-/* ─────────────────── ARC-009:结构化 OperationResult + 幂等重放 ─────────────────── */
+/* ─────────────────── ARC-009 / MC-067:结构化 OperationResult + 可信操作账本 ─────────────────── */
 
 /**
- * 同进程内记住"某个 operationId 已经提交过"的结果,供 Agent 用**同一个 id** 重试时
- * **重放**而不重复执行。有界(只留最近 `OPERATION_LOG_MAX` 条,防无限增长)。
+ * 幂等不再靠"结束后按字符串缓存":改走 {@link getOperationLedger} 的**可信操作账本**
+ * (意图绑定 + 原子领取 + 全态结算),见 `appControl/operations.ts` 的文件头。
  *
- * ⚠️ **不跨进程** —— 重启后清零。真正的跨进程去重需要把 operationId 落到持久层,不在本
- * 切片允许改动的文件面内(见 `@contracts/appControl` 的残余说明)。这里做的是**同进程幂等**:
- * Agent 收到 `operationId` 后原样带回重试,就不会重复执行一次已提交的非幂等操作。
+ * 为什么必须换掉旧 Map(源码可确认的旧行为):旧 `operationLog` 只按 `operationId` 字符串
+ * 缓存已完成结果 —— 换会话 / 换方法 / 换参数复用同一 id 会命中旧结果;两个并发请求都能穿过
+ * 缓存各执行一次;RPC 抛错(UNCERTAIN)没记入 Map,同 id 再试仍会真调一次。
  */
-const OPERATION_LOG_MAX = 256;
-const operationLog = new Map<string, { op: OperationResult; body?: string }>();
-
-function rememberOperation(operationId: string, op: OperationResult, body?: string): void {
-  if (operationLog.size >= OPERATION_LOG_MAX) {
-    const oldest = operationLog.keys().next().value;
-    if (oldest !== undefined) operationLog.delete(oldest);
-  }
-  operationLog.set(operationId, { op, ...(body !== undefined ? { body } : {}) });
-}
-
 /** 测试 / 重置用 —— 每个用例前清一次,免得跨用例串味。 */
 export function __clearOperationLog(): void {
-  operationLog.clear();
+  setOperationLedger(null);
 }
 
 /** 造一条 OperationResult,补上按 kind 推导的 `retryable`(已提交 / 不确定 → 不可重试)。 */
@@ -1220,6 +1220,28 @@ function operationToolResult(r: OperationResult, body?: string, note?: string): 
 }
 
 /**
+ * 历史结果回放的**授权复核**(MC-067 改造要点 4):同 id 的同一操作已结算、要回放旧结果
+ * 之前,先按**当前**授权状态再看一眼 —— 方法收成 blocked、密钥设置键被拦、或只读/计划
+ * 模式收紧了有副作用操作,就不复述原结果(返回一句拒绝原因)。
+ *
+ * 幂等**不是权限豁免**:授权撤销后,过去成功的那次不该再被复述给 Agent。
+ */
+function replayRevokedReason(
+  entry: ApiEntry,
+  ctx: ProviderContext,
+  effectKind: "readonly" | "mutating",
+): string | null {
+  if (entry.policy.level === "blocked") {
+    return `这个功能不开放给 agent:${entry.policy.reason ?? "安全原因"}(历史结果也不复述)。`;
+  }
+  const mode = ctx.getPermissionMode?.();
+  if (effectKind === "mutating" && mode && READONLY_MODES.has(mode)) {
+    return "当前是只读/计划模式,不再复述这个有副作用操作的历史结果。";
+  }
+  return null;
+}
+
+/**
  * 唯一入口。引擎侧(Claude 进程内 MCP / Codex 动态工具 / Pi 扩展)都调它。
  */
 export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {
@@ -1237,23 +1259,20 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
             : undefined;
         const operationId = providedId ?? randomUUID();
 
-        // ★ 幂等重放:同一个 operationId 之前**执行过**(已提交或结果不确定)→ 直接回放上次
-        //   结果,不再执行。这是"重试相同 operationId 不重复发送消息/创建资源"的那一半(同进程):
-        //   已提交 → 回 SUCCEEDED 系列;UNCERTAIN → 仍回 UNCERTAIN(不重跑、不升级成成功)。
-        if (providedId) {
-          const remembered = operationLog.get(providedId);
-          if (remembered) {
-            return operationToolResult(
-              remembered.op,
-              remembered.body,
-              "(重放:同一 operationId 之前已处理过,本次**未重复执行**)",
-            );
-          }
+        // 模型自选的幂等键要有长度上限(限制键字节长度,别让一次调用塞进一个巨型字符串)。
+        if (providedId && !operationIdWithinLimit(providedId)) {
+          return operationToolResult(
+            makeOp("REJECTED", method, operationId, {
+              code: OP_CODE.operationIdTooLong,
+              reason: `operation_id 太长(超过 ${OPERATION_ID_MAX_BYTES} 字节)。换一个短一点的幂等键。`,
+            }),
+          );
         }
 
         const entry = findEntry(method);
         if (!entry) {
-          // 没有这个方法 → 命令**根本没执行** → REJECTED(可安全重试/改名重来)。
+          // 没有这个方法 → 命令**根本没执行** → REJECTED(可安全重试/改名重来)。没有副作用,
+          // 不占账本(幂等键留给真正会执行的操作)。
           return operationToolResult(
             makeOp("REJECTED", method, operationId, {
               code: OP_CODE.methodNotFound,
@@ -1269,6 +1288,81 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
             }),
           );
         }
+
+        // ── 可信操作账本(MC-067):先原子领取,再执行副作用 ────────────────
+        // 幂等去重只对**模型自选的幂等键**有意义(不带 operation_id 时每次都是随机唯一 id,
+        // 不存在撞 id 去重的诉求)。所以只在带了 operation_id 时才动用账本 —— 既不漏掉
+        // "同 id 复用/并发/UNCERTAIN 重试"三种危险场景,也不让每次匿名调用都写一行账。
+        // 意图身份(owner/session/method/摘要)由**宿主**产生,模型只能自选 operationId。
+        // 同 id 换会话 / 换方法 / 换参数 = 变了意图 → CONFLICT,绝不回放旧成功;同意图并发
+        // → 只执行一次;上一进程领了没结算 → 在途,绝不双执行。
+        const ledger = providedId ? getOperationLedger() : null;
+        const intent: OperationIntent = {
+          operationId,
+          ownerId: sessionId,
+          sessionId,
+          sceneId: "app_api_call",
+          method: entry.method,
+          requestDigest: requestDigestOf(args.input ?? null),
+          effectKind: sideEffectClassOf(entry.method),
+          grantRevision: ctx.getPermissionMode?.() ?? "default",
+        };
+        const settle = (status: OperationResult["resultKind"], op: OperationResult, body?: string): void => {
+          ledger?.settle(operationId, { status, result: op, ...(body !== undefined ? { body } : {}) });
+        };
+        if (ledger) {
+          const begin = ledger.begin(intent);
+          if (begin.begin === "conflict") {
+            // 同 id 被复用在不同意图上(换会话/方法/参数)—— **绝不回放旧成功**。
+            return operationToolResult(
+              makeOp("REJECTED", entry.method, operationId, {
+                code: OP_CODE.operationIdConflict,
+                retryable: false,
+                reason:
+                  `operation_id「${operationId}」之前被用在另一个不同的操作(方法/参数/会话不同)。` +
+                  "复用同一个幂等键到别的操作上会被拒;换一个 operation_id。",
+              }),
+            );
+          }
+          if (begin.begin === "in-progress") {
+            // 同意图同 id 正在执行中 —— 绝不双执行。
+            return operationToolResult(
+              makeOp("UNCERTAIN", entry.method, operationId, {
+                code: OP_CODE.operationInProgress,
+                reason: "同一 operationId 的这次操作正在执行中,本次没有重复执行;等它结束后再回来看结果。",
+              }),
+            );
+          }
+          if (begin.begin === "replay" || begin.begin === "uncertain") {
+            // 同意图(同主体 + 同方法 + 同参数)已完成结算 → 回放,**不再执行**。
+            // 历史回放**也要校验授权**:方法若已 blocked / 只读模式收紧了 mutating 操作,
+            // 就不复述原结果。
+            const revoked = replayRevokedReason(entry, ctx, intent.effectKind);
+            if (revoked) {
+              return operationToolResult(
+                makeOp("REJECTED", entry.method, operationId, { code: OP_CODE.policyDenied, reason: revoked }),
+              );
+            }
+            const replayed = begin.record.result;
+            if (replayed) {
+              return operationToolResult(
+                replayed,
+                begin.record.body,
+                "(重放:同一 operationId 的同一操作之前已结算,本次**未重复执行**)",
+              );
+            }
+            // 账本里有行却没有结果(理论不该发生):保守当 UNCERTAIN,绝不重跑。
+            return operationToolResult(
+              makeOp("UNCERTAIN", entry.method, operationId, {
+                code: OP_CODE.rpcUncertain,
+                reason: "同幂等键的操作之前已登记但没有可回放的结果,无法确认;不要盲目重试。",
+              }),
+            );
+          }
+        }
+
+        // 领到了(或没带幂等键)→ 现在执行。此后**每一条 return 前都要 settle**(仅在带键时),
+        // 否则这条 id 会永远停在 CLAIMED,同 id 之后永远只能看到"在途"。
         const denied = await gateAppAction(
           ctx,
           entry.policy.level,
@@ -1279,22 +1373,22 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         );
         if (denied) {
           // 审批被拒 / 只读模式 / 不开放 / 无审批通道 → 命令**没执行** → REJECTED。
-          return operationToolResult(
-            makeOp("REJECTED", entry.method, operationId, {
-              code: entry.policy.level === "blocked" ? OP_CODE.blocked : OP_CODE.approvalDenied,
-              reason: denied,
-            }),
-          );
+          const op = makeOp("REJECTED", entry.method, operationId, {
+            code: entry.policy.level === "blocked" ? OP_CODE.blocked : OP_CODE.approvalDenied,
+            reason: denied,
+          });
+          settle(op.resultKind, op);
+          return operationToolResult(op);
         }
         // 密钥设置键:在**调用之前**拦(见 isSecretSettingKey —— 结果打码拦不住它)。
         const secretRefusal = secretSettingRefusal(entry.method, args.input);
         if (secretRefusal) {
-          return operationToolResult(
-            makeOp("REJECTED", entry.method, operationId, {
-              code: OP_CODE.secretKeyRefused,
-              reason: secretRefusal,
-            }),
-          );
+          const op = makeOp("REJECTED", entry.method, operationId, {
+            code: OP_CODE.secretKeyRefused,
+            reason: secretRefusal,
+          });
+          settle(op.resultKind, op);
+          return operationToolResult(op);
         }
 
         // ── 真正执行 RPC(到这里一定被调一次)──────────────────────────────
@@ -1304,33 +1398,48 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         } catch (err) {
           // ZodError = 参数在**执行之前**就被挡下 → 命令没跑 → REJECTED。
           if (err instanceof z.ZodError) {
-            return operationToolResult(
-              makeOp("REJECTED", entry.method, operationId, {
-                code: OP_CODE.rpcFailed,
-                reason: errText(err),
-              }),
-            );
+            const op = makeOp("REJECTED", entry.method, operationId, {
+              code: OP_CODE.rpcFailed,
+              reason: errText(err),
+            });
+            settle(op.resultKind, op);
+            return operationToolResult(op);
           }
           // 其余抛错:只读/界面档不可能有副作用 → FAILED(可安全重试);
           // 写/高风险档**可能已部分提交** → UNCERTAIN(绝不标成功,也绝不默认重试)。
           const risky = entry.policy.level === "write" || entry.policy.level === "danger";
-          return operationToolResult(
-            risky
-              ? makeOp("UNCERTAIN", entry.method, operationId, {
-                  code: OP_CODE.rpcUncertain,
-                  reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
-                })
-              : makeOp("FAILED", entry.method, operationId, {
-                  code: OP_CODE.rpcFailed,
-                  reason: errText(err),
-                }),
-          );
+          const op = risky
+            ? makeOp("UNCERTAIN", entry.method, operationId, {
+                code: OP_CODE.rpcUncertain,
+                reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
+              })
+            : makeOp("FAILED", entry.method, operationId, {
+                code: OP_CODE.rpcFailed,
+                reason: errText(err),
+              });
+          // ★ UNCERTAIN 也**落账** —— 同 id 再试会被回放成 UNCERTAIN,**不再盲发第二次 RPC**。
+          settle(op.resultKind, op);
+          return operationToolResult(op);
+        }
+
+        // ── 领域结果解码(MC-066):RPC resolve ≠ 业务成功 ───────────────────
+        // 不同 IPC 的合法返回有 void / 数据对象 / {ok:true|false} / 判别联合等多种语义。
+        // 显式登记过结果合同的方法(如 browser.* 的 {ok,error} 信封)在这里判:ok:false 是
+        // 业务**明确拒绝**(没执行)→ REJECTED,而不是 SUCCEEDED。
+        const body = renderResult(slimSessions(result));
+        const outcome = decodeDomainOutcome(entry.method, result);
+        if (outcome.kind !== "accepted") {
+          const op = makeOp(resultKindOfOutcome(outcome), entry.method, operationId, {
+            code: outcome.code,
+            reason: outcome.reason,
+          });
+          settle(op.resultKind, op, body);
+          return operationToolResult(op, body);
         }
 
         // ★★ **RPC 已经提交。此后任何一步失败都不能把结果降级成失败** ——
         //    那正是 ARC-009 要修的洞:失败的返回值会把 Agent 推去重复执行一个已落定的
         //    非幂等操作。通知失败 → SUCCEEDED_WITH_WARNINGS,并**保留可观测的 warning**。
-        const body = renderResult(slimSessions(result));
         let op: OperationResult;
         try {
           notifyAppSettingWrite(entry.method, args.input);
@@ -1344,7 +1453,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           };
           op = makeOp("SUCCEEDED_WITH_WARNINGS", entry.method, operationId, { warnings: [warning] });
         }
-        rememberOperation(operationId, op, body);
+        settle(op.resultKind, op, body);
         return operationToolResult(op, body);
       }
       case "app_ui":

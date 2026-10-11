@@ -42,6 +42,9 @@ export interface BrowserToolbarProps {
   url: string;
   /** Whether the page is currently loading (drives the reload -> spinner swap). */
   loading: boolean;
+  /** 【UI-014】上一次导航/返回/刷新被业务层明确拒绝的原因(`{ok:false}`)。有值时地址栏下方
+   *  显示可读错误,不再"先改 URL、失败后什么都不说"。 */
+  navError?: string;
   canGoBack: boolean;
   canGoForward: boolean;
   /** Whether the element picker is active (accent highlight on the toggle). */
@@ -324,6 +327,7 @@ export function BrowserToolbar({
   mode,
   url,
   loading,
+  navError,
   canGoBack,
   canGoForward,
   pickMode,
@@ -557,10 +561,15 @@ export function BrowserToolbar({
           }}
           placeholder={t("browser.addressPlaceholder")}
           spellCheck={false}
+          aria-invalid={navError ? true : undefined}
+          title={navError ?? undefined}
           className={cn(
-            "h-7 w-full rounded-md border border-edge bg-surface-muted px-2.5",
+            "h-7 w-full rounded-md border bg-surface-muted px-2.5",
             "text-[13px] text-content placeholder:text-content-subtle",
-            "focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/40",
+            "focus:outline-none focus:ring-1 focus:ring-accent/40",
+            // 【UI-014】业务层明确拒绝(视图失效等)时地址栏转红边,给用户一个看得见的事实,
+            // 不再"点了没反应"。原因挂在 title 上(悬停可读)。
+            navError ? "border-danger focus:border-danger" : "border-edge focus:border-accent",
           )}
         />
         {historyOpen && filteredHistory.length > 0 && (

@@ -5,6 +5,22 @@
  * controlled (`open` + `onOpenChange`) so callers manage the pending state.
  * Use `danger` to render the confirm button with the destructive variant.
  *
+ * ## Async completion / failure protocol (UI-001)
+ *
+ * `onConfirm` may return `void`, a plain value, a promise, or an
+ * `OperationResult`-shaped object (`{ ok: boolean; error?: string }`). The
+ * dialog awaits it and derives the outcome from the caller — it never invents
+ * a success:
+ *
+ *  - while the promise is pending the confirm button is disabled and shows a
+ *    busy state, so a second click cannot fire the command twice;
+ *  - if it resolves to `{ ok: false }` or **rejects**, the dialog stays open
+ *    and surfaces the error inline (the main-process result is the authority —
+ *    see ARC-009 OperationResult);
+ *  - on resolve (or `{ ok: true }`) the dialog closes.
+ *
+ * A plain synchronous `onConfirm: () => void` keeps working unchanged.
+ *
  * @example
  *   <ConfirmDialog
  *     open={pending != null}
@@ -13,14 +29,26 @@
  *     confirmText="删除"
  *     danger
  *     onOpenChange={(open) => { if (!open) setPending(null); }}
- *     onConfirm={() => { void remove(); }}
+ *     onConfirm={async () => {
+ *       const res = await remove();   // { ok, error? }
+ *       return res;                   // reject/`{ok:false}` keeps the dialog open
+ *     }}
  *   />
  */
+import { useEffect, useRef, useState } from "react";
 import { IconAlertTriangle } from "@renderer/lib/icons.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button } from "./button.js";
 import { Dialog } from "./dialog.js";
+import { ErrorNote } from "./error-note.js";
+import { Spinner } from "./spinner.js";
+
+/** What `onConfirm` may resolve to. A rejection is the other failure signal. */
+export type ConfirmResult =
+  | void
+  | { ok?: boolean; error?: string }
+  | unknown;
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -31,7 +59,49 @@ export interface ConfirmDialogProps {
   /** Render the confirm button with the destructive (danger) variant. */
   danger?: boolean;
   onOpenChange: (open: boolean) => void;
-  onConfirm: () => void;
+  /**
+   * Run the confirmed action. May be sync or async. Rejecting (or resolving to
+   * `{ ok: false }`) keeps the dialog open and shows the failure; resolving
+   * closes it. A busy state is shown and the confirm button is disabled while a
+   * returned promise is pending.
+   */
+  onConfirm: () => Promise<ConfirmResult> | ConfirmResult;
+}
+
+/** Pull a human-readable message out of any thrown / returned failure value. */
+function failureMessage(value: unknown, fallback: string): string {
+  if (value instanceof Error && value.message) return value.message;
+  if (typeof value === "string" && value) return value;
+  if (value && typeof value === "object" && "error" in value) {
+    const err = (value as { error?: unknown }).error;
+    if (typeof err === "string" && err) return err;
+  }
+  return fallback;
+}
+
+/**
+ * Whether a window-level Escape should close the surface that owns it.
+ *
+ * Shared "topmost overlay owns Escape" policy (UI-005). Surfaces that
+ * themselves open nested overlays (e.g. the settings page, which hosts the
+ * MCP/Plugins/Skills confirm dialogs) call this before closing on Escape, so
+ * the *same* Escape that dismisses a modal does not also tear down the surface
+ * underneath it. Base UI dialogs do not stop propagation of the Escape they
+ * handle, so this predicate — not propagation — is what layers them.
+ *
+ *  - `defaultPrevented`: a lower layer already handled it (base-ui calls
+ *    `preventDefault()`) -> do not also close.
+ *  - a mounted `[role=dialog|alertdialog]`: a modal is open above -> it owns
+ *    Escape, so the surface must not close.
+ *
+ * Exported so a regression test can drive it against a real DOM.
+ */
+export function escapeClosesSettings(e: { defaultPrevented: boolean }): boolean {
+  if (e.defaultPrevented) return false;
+  if (typeof document !== "undefined" && document.querySelector('[role="dialog"], [role="alertdialog"]')) {
+    return false;
+  }
+  return true;
 }
 
 export function ConfirmDialog({
@@ -50,6 +120,48 @@ export function ConfirmDialog({
   const { t } = useI18n();
   const confirmLabel = confirmText ?? t("common.confirm");
   const cancelLabel = cancelText ?? t("common.cancel");
+
+  // In-flight + failure state for the async contract. Reset each time the
+  // dialog opens so a previous failure/`pending` never leaks into a fresh use.
+  // The ref is the SYNCHRONOUS guard: the `pending` React state only lands on
+  // the next render, so two clicks in the same tick would both pass a state
+  // check — the ref flips before the first await, closing that window.
+  const inFlightRef = useRef(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (open) {
+      inFlightRef.current = false;
+      setPending(false);
+      setError(null);
+    }
+  }, [open]);
+
+  const handleConfirm = async () => {
+    if (inFlightRef.current) return; // no double-submit while the action is in flight
+    inFlightRef.current = true;
+    setError(null);
+    setPending(true);
+    try {
+      const result = await onConfirm();
+      // The backend truth (OperationResult / ARC-009) decides success. An
+      // explicit `{ ok: false }` keeps the dialog open rather than pretending
+      // the action succeeded.
+      if (result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false) {
+        setError(failureMessage(result, t("common.error")));
+        return;
+      }
+      onOpenChange(false);
+    } catch (err) {
+      // A rejected promise means the action failed - keep the dialog open and
+      // surface the error instead of closing and pretending success.
+      setError(failureMessage(err, t("common.error")));
+    } finally {
+      inFlightRef.current = false;
+      setPending(false);
+    }
+  };
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -69,6 +181,11 @@ export function ConfirmDialog({
               <Dialog.Description className="mt-1">{description}</Dialog.Description>
             </div>
           </div>
+          {error !== null && (
+            <ErrorNote className="mt-3" icon={IconAlertTriangle}>
+              {error}
+            </ErrorNote>
+          )}
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
               {cancelLabel}
@@ -76,11 +193,10 @@ export function ConfirmDialog({
             <Button
               variant={danger ? "danger" : "primary"}
               size="sm"
-              onClick={() => {
-                onConfirm();
-                onOpenChange(false);
-              }}
+              disabled={pending}
+              onClick={() => void handleConfirm()}
             >
+              {pending && <Spinner size="xs" aria-hidden className="mr-1" />}
               {confirmLabel}
             </Button>
           </div>

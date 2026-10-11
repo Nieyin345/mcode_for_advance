@@ -215,11 +215,15 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     // 项目文件那一条（2026-09-21）。从前这里只认 `template`，于是项目里的
     // PDF 在中间预览出来后，「用系统程序打开」那个按钮**点了没反应** —— 用户报的
     // 「主页面打不开 pdf」有一部分就是它（另一部分是 `readPdf` 只认条目 id）。
-    // 走 `shell.openPath`，它自带「只允许项目根」的围栏（见那个 RPC 的注释）。
+    // 【UI-011】这里必须走 `shell.openFile`(**接受项目根下的文件**),不能走 `shell.openPath`
+    // —— 后者只允许**项目根目录本身**,文件路径会被主进程静默拒掉(从前 return void,
+    // 调用方还无从知道),于是界面解除 busy 却什么也没打开。改走 openFile 并**消费结果**:
+    // 失败就把原因显示出来,不再只 catch rejected promise。
     if (target.source.kind !== "project") return;
     setBusy(true);
     try {
-      await api.shell.openPath({ path: target.source.ref });
+      const res = await api.shell.openFile({ path: target.source.ref });
+      if (!res.ok) setError(res.error ?? "打开失败");
     } catch (err) {
       setError((err as Error).message);
     } finally {

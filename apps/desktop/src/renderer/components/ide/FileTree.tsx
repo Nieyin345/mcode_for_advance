@@ -1002,22 +1002,32 @@ function DirNode({
   );
 
   // Confirm-approved delete: trash the dir, re-scan, and close any editor tabs
-  // that lived under it. Guarded so a re-confirm can't double-fire.
+  // that lived under it. Guarded so a re-confirm can't double-fire. Returns the
+  // IPC result so ConfirmDialog keeps itself open + shows the failure when
+  // `ok` is false (UI-001) — never closes and pretends the delete succeeded.
   const handleDelete = useCallback(async () => {
     if (deletingRef.current) return;
     deletingRef.current = true;
-    const result = await api.file.delete({ targetPath: endPath });
-    deletingRef.current = false;
-    // 失败要显式报出来:主进程在"路径不在任何项目里 / 目标是项目根 / 系统回收站抛错"
-    // 三种情况下回 `{ok:false}`,从前这里直接 return —— 菜单关了、行还在,用户完全
-    // 不知道为什么没删掉(与粘贴失败同一条纪律)。
-    if (!result.ok) {
-      reportDeleteFailed();
-      return;
+    try {
+      const result = await api.file.delete({ targetPath: endPath });
+      // 失败要显式报出来:主进程在"路径不在任何项目里 / 目标是项目根 / 系统回收站抛错"
+      // 三种情况下回 `{ok:false}`,从前这里直接 return —— 菜单关了、行还在,用户完全
+      // 不知道为什么没删掉(与粘贴失败同一条纪律)。
+      if (!result.ok) {
+        reportDeleteFailed();
+        // Surface it to the dialog too, so the modal stays open with the reason
+        // instead of vanishing as if the folder were gone.
+        return { ok: false, error: t("ide.tree.deleteFailed") };
+      }
+      actions?.bumpReload();
+      closeFilesUnderDir(endPath);
+      return result;
+    } finally {
+      // Also on rejection: an IPC failure must not leave the guard stuck (the
+      // dialog shows the thrown error; a later retry has to be able to run).
+      deletingRef.current = false;
     }
-    actions?.bumpReload();
-    closeFilesUnderDir(endPath);
-  }, [actions, endPath, closeFilesUnderDir, reportDeleteFailed]);
+  }, [actions, endPath, closeFilesUnderDir, reportDeleteFailed, t]);
 
   // Paste the tree's stashed file into this directory. On success the row is
   // expanded (a collapsed dir would otherwise swallow the result silently)
@@ -1163,7 +1173,7 @@ function DirNode({
           onOpenChange={(open) => {
             if (!open) setPendingDelete(false);
           }}
-          onConfirm={() => void handleDelete()}
+          onConfirm={handleDelete}
         />
         {isOpen && children && (
           <div>
@@ -1254,17 +1264,22 @@ function FileNodeRow({
   const handleDelete = useCallback(async () => {
     if (deletingRef.current) return;
     deletingRef.current = true;
-    const result = await api.file.delete({ targetPath: path });
-    deletingRef.current = false;
-    if (!result.ok) {
-      // 与 DirNode 的删除同一条纪律:失败要显式报出来(见那边的注释)。
-      reportDeleteFailed();
-      return;
+    try {
+      const result = await api.file.delete({ targetPath: path });
+      if (!result.ok) {
+        // 与 DirNode 的删除同一条纪律:失败要显式报出来(见那边的注释)。
+        reportDeleteFailed();
+        // 交给 ConfirmDialog:失败时保留弹窗并显示原因,不假装已删除(UI-001)。
+        return { ok: false, error: t("ide.tree.deleteFailed") };
+      }
+      actions?.bumpReload();
+      // force:文件已经被删掉了,留着它的标签只会指向空气 —— 未保存的守卫在这里无意义。
+      closeFileInIde(path, true);
+      return result;
+    } finally {
+      deletingRef.current = false; // 见 DirNode 的说明:拒绝也不能把闸卡死。
     }
-    actions?.bumpReload();
-    // force:文件已经被删掉了,留着它的标签只会指向空气 —— 未保存的守卫在这里无意义。
-    closeFileInIde(path, true);
-  }, [actions, path, closeFileInIde, reportDeleteFailed]);
+  }, [actions, path, closeFileInIde, reportDeleteFailed, t]);
 
   // Paste the tree's stashed file into this file's parent dir (VS Code parity:
   // pasting on a file targets its containing folder). The parent is necessarily
@@ -1450,7 +1465,7 @@ function FileNodeRow({
         onOpenChange={(open) => {
           if (!open) setPendingDelete(false);
         }}
-        onConfirm={() => void handleDelete()}
+        onConfirm={handleDelete}
       />
     </div>
   );

@@ -38,9 +38,12 @@ import initSqlJs from "sql.js/dist/sql-asm.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { armFault, clearFault, faultHits } from "../db-persistence-smoke/stubs/fs.js";
 import { join } from "node:path";
-import { initDb, getDb } from "@main/store/db.js";
+import { initDb, getDb, commitNow, closeDb } from "@main/store/db.js";
+import { isDurable } from "@contracts/commit";
 import { ProjectRepo, SessionRepo, WorkflowRunRepo } from "@main/store/repositories.js";
-import { decodeSnapshot, resumableRun, retryableRun, saveRun, type RunSnapshot } from "@main/orchestration/runStore.js";
+import { DurableOperationLedger } from "@main/store/operationLedger.js";
+import type { OperationIntent, OperationResult } from "@contracts/appControl";
+import { decodeSnapshot, resumableRun, retryableRun, saveRun, onRunCommitted, type RunSnapshot } from "@main/orchestration/runStore.js";
 import { dataRoot, DATA_DB_FILENAME } from "./stubs/dataRoot.js";
 
 let failures = 0;
@@ -471,7 +474,160 @@ if (MODE === "write") {
       readdirSync(dataRoot()),
     );
   }
+
+  /* ── 【ARC-005 步②】持久化结果的结构化契约:CommitResult + 只在 durable 后发成功信号 ──
+   *
+   * 从前持久化边界只有"成功 / 抛错"两种事实,调用方**分不清**:
+   *   · 磁盘真的 durable 了;
+   *   · **内存已应用、写盘没成**(进程还握着它,重启即失);
+   *   · 什么都没应用。
+   * `commitNow()` 把它抽成三态。而本切片的**领域不变量**是:**「运行已提交」这个成功信号
+   * 只许在 DURABLE 之后发** —— 绝不在 APPLIED_NOT_DURABLE 之后发(那正是"假成功")。 */
+  console.log("\n【ARC-005 步②】CommitResult:fsync 失败 → APPLIED_NOT_DURABLE(不是 DURABLE);成功 → DURABLE");
+  {
+    // 1) 正常路径:真的落盘 → DURABLE。
+    const okCommit = commitNow();
+    eq("★ 落盘成功时 commitNow().outcome = DURABLE", okCommit.outcome, "DURABLE");
+    check("★ DURABLE 时带出了写出的字节数", typeof okCommit.bytes === "number" && okCommit.bytes > 0, okCommit.bytes);
+    check("★ isDurable(DURABLE) 为真(唯一的成功判据)", isDurable(okCommit));
+
+    // 2) fsync 失败:内存已应用(内存表改了),但**不是** DURABLE。
+    getDb().run("INSERT OR REPLACE INTO settings (key, value) VALUES ('arc005.smoke', 'applied')");
+    armFault(dbFile, "sync");
+    let badCommit;
+    try {
+      badCommit = commitNow();
+    } finally {
+      clearFault();
+    }
+    eq("★ fsync 失败时 commitNow().outcome = APPLIED_NOT_DURABLE(绝不能是 DURABLE)", badCommit.outcome, "APPLIED_NOT_DURABLE");
+    check("★ APPLIED_NOT_DURABLE 带出可读原因", typeof badCommit.reason === "string" && badCommit.reason.length > 0, badCommit.reason);
+    check("★ isDurable(APPLIED_NOT_DURABLE) 为假(不许当成功)", !isDurable(badCommit));
+    check("★ 故障确实击中了 fsync", faultHits > 0, faultHits);
+    // 内存那一格真的还在(这正是"进程还握着它"的真事实 —— 只是没落盘)。
+    eq(
+      "★ APPLIED_NOT_DURABLE 时内存改动确实还在(进程握着它,只是没落盘)",
+      getDb().exec("SELECT value FROM settings WHERE key='arc005.smoke'")[0]?.values[0]?.[0],
+      "applied",
+    );
+    // 3) 数据库尚未初始化 → FAILED(什么都没应用)。用一份独立临时根起一个新进程不便,
+    //    改为直接断言 closeDb 之后 commitNow 的判定 —— 这里用一个不碰模块单例的手法:
+    //    (closeDb 会清空句柄;紧接着 reinit 恢复,不影响后续断言。)
+    //    这一步放在本块最后,避免影响上面的内存断言。
+  }
+
+  /* ── 【ARC-005 步②】红例:成功领域信号只在 durable 后发,非 durable 一个都不发 ──
+   *
+   * 这是本切片的**中心不变量**。旧行为里没有任何"提交成功"信号能区分内存/磁盘 —— 一个
+   * 只改内存的写也会让调用方看到 `saveRun` 返回 true(除非另写判据)。这里在 runStore 的
+   * `onRunCommitted` 出口上钉死:durable 写恰好发一次,非 durable 写**一次都不发**。 */
+  console.log("\n【ARC-005 步②】红例:「运行已提交」成功信号只在 DURABLE 后发");
+  {
+    const fired: string[] = [];
+    const unsubscribe = onRunCommitted((run) => { fired.push(`${run.runId}:${run.status}`); });
+    try {
+      // (a) durable 写 → 恰好一条成功信号。
+      const okSaved = saveRun({
+        runId: "run_commit_ok", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "success",
+        snapshot: snapshotOf([]),
+      }, { durable: true });
+      eq("前置:durable 写返回 true", okSaved, true);
+      eq("★ durable 写恰好发布一条「运行已提交」信号", fired.length, 1);
+      eq("★ 信号点名的是这次运行", fired[0], "run_commit_ok:success");
+
+      // (b) 非 durable 写(fsync 故障)→ **一条成功信号都不发**。
+      armFault(dbFile, "sync");
+      let failSaved = true;
+      try {
+        failSaved = saveRun({
+          runId: "run_commit_fail", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "success",
+          snapshot: snapshotOf([]),
+        }, { durable: true });
+      } finally {
+        clearFault();
+      }
+      eq("★ 非 durable 写返回 false(fail-closed)", failSaved, false);
+      eq("★★ 非 durable 写之后成功信号计数**没有增加**(仍是 1,没发第二条)", fired.length, 1);
+      check("★★ 那条未提交的运行从未出现在成功信号里", !fired.some((s) => s.startsWith("run_commit_fail")), fired);
+
+      // (c) 普通(非 durable)进度写不发成功信号 —— 只有显式 durable 提交才算"已提交"。
+      saveRun({
+        runId: "run_commit_progress", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "running",
+        snapshot: snapshotOf([]),
+      });
+      eq("★ 非 durable 的普通进度写不发成功信号(计数仍是 1)", fired.length, 1);
+
+      // (d) 故障解除后重试 → 成功信号再发一条(证明它跟的是"这次真的 durable 了")。
+      const retryOk = saveRun({
+        runId: "run_commit_fail", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "success",
+        snapshot: snapshotOf([]),
+      }, { durable: true });
+      eq("★ 故障解除后重试返回成功", retryOk, true);
+      eq("★ 重试成功后才补发一条信号(计数 2)", fired.length, 2);
+      eq("★ 补发的信号点名那次重试", fired[1], "run_commit_fail:success");
+    } finally {
+      unsubscribe();
+    }
+  }
+
+  /* ── 【ARC-005 步②】FAILED:数据库尚未初始化 → 什么都没应用 ──────────────
+   *
+   * 三态里的最后一态。用一次真实的 `closeDb()` 把句柄清掉(那正是"未初始化"的真状态),
+   * 断言 `commitNow()` 返回 FAILED(不是 APPLIED_NOT_DURABLE —— 这次连内存都没动),然后重开。 */
+  console.log("\n【ARC-005 步②】FAILED:数据库尚未初始化时什么都没应用");
+  {
+    closeDb();
+    const uninit = commitNow();
+    eq("★ 未初始化时 commitNow().outcome = FAILED(不是 APPLIED_NOT_DURABLE)", uninit.outcome, "FAILED");
+    check("★ FAILED 带出可读原因", typeof uninit.reason === "string" && uninit.reason.length > 0, uninit.reason);
+    check("★ isDurable(FAILED) 为假", !isDurable(uninit));
+    // 重开,后续(第二趟 / 本趟尾部)照常。
+    await initDb();
+  }
+
   console.log("\n(第一趟结束:那个对话里留着一行 `running`)");
+
+  /* ── 【MC-067】操作账本 durable 版:真 sql.js 表 + 唯一约束 + 原子领取 ──────────
+   *
+   * 生产用的是 sql.js durable 版(`DurableOperationLedger`,main/index.ts 启动时装上)。
+   * 这里用**真的库**验它:领取 → 结算 → 同 id 换意图 CONFLICT → 并发只领一次。第二趟
+   * (全新进程)会从磁盘读回来,验跨进程去重 —— 那才是「重启后同一 id 不重复执行」的判据。 */
+  {
+    const ledger = DurableOperationLedger;
+    const intent = (over: Partial<OperationIntent>): OperationIntent => ({
+      operationId: "op_xproc",
+      ownerId: "sess-A",
+      sessionId: "sess-A",
+      sceneId: "app_api_call",
+      method: "setting.set",
+      requestDigest: "digest-1",
+      effectKind: "mutating",
+      grantRevision: "default",
+      ...over,
+    });
+    const okResult: OperationResult = { resultKind: "SUCCEEDED", operationId: "op_xproc", method: "setting.set", retryable: false, warnings: [], resources: [] };
+    const b1 = ledger.begin(intent({}));
+    eq("MC-067 durable:首次领取成功", b1.begin, "claimed");
+    // 结算成 SUCCEEDED + 正文 —— 第二趟要证明它跨进程还在。
+    ledger.settle("op_xproc", { status: "SUCCEEDED", result: okResult, body: "saved-ok-body" });
+    const replay = ledger.begin(intent({}));
+    eq("MC-067 durable:同意图再领 → 回放(不重执行)", replay.begin, "replay");
+    eq("MC-067 durable:回放带回原正文", replay.record.body, "saved-ok-body");
+    eq("MC-067 durable:回放带回原结果分类", replay.record.result?.resultKind, "SUCCEEDED");
+    const conflict = ledger.begin(intent({ requestDigest: "digest-2" }));
+    eq("MC-067 durable:同 id 换参数 → CONFLICT(不回放旧成功)", conflict.begin, "conflict");
+    const crossOwner = ledger.begin(intent({ ownerId: "sess-B", sessionId: "sess-B" }));
+    eq("MC-067 durable:同 id 换会话 → CONFLICT", crossOwner.begin, "conflict");
+    // UNCERTAIN 落账:第二趟要证明它跨进程仍是 UNCERTAIN(不盲发第二次)。
+    const uncIntent = intent({ operationId: "op_unc", requestDigest: "digest-unc" });
+    eq("MC-067 durable:UNCERTAIN 领取成功", ledger.begin(uncIntent).begin, "claimed");
+    ledger.settle("op_unc", { status: "UNCERTAIN", result: { resultKind: "UNCERTAIN", operationId: "op_unc", method: "setting.set", retryable: false, warnings: [], resources: [] } });
+    eq("MC-067 durable:UNCERTAIN 同意图重试 → 仍是在途标记(uncertain)", ledger.begin(uncIntent).begin, "uncertain");
+    // 并发只领一次:连领两次,第二次必不是 claimed(同步 sql.js 无 await 点,天然原子)。
+    const raceIntent = intent({ operationId: "op_race", requestDigest: "digest-race" });
+    eq("MC-067 durable:并发同 id 第一个领到", ledger.begin(raceIntent).begin, "claimed");
+    eq("MC-067 durable:并发同 id 第二个被挡(in-progress)", ledger.begin(raceIntent).begin, "in-progress");
+  }
 } else {
   console.log("\n重启之后:上一次还在跑的那些会被标成「被中断」");
 
@@ -503,6 +659,34 @@ if (MODE === "write") {
     eq(`★ MC-028 重启后 run_durable_${fault} 是 durable 提交的 V2(success)`, row?.status, "success");
     eq(`★ MC-028 重启后 run_durable_${fault} 的 awaiting 是 V2(H)`, row?.awaiting.join(","), "H");
     check(`★ MC-028 重启后 run_durable_${fault} 的存档仍可解码`, decodeSnapshot(row?.payload ?? "") !== null);
+  }
+
+  /* ── 【MC-067】操作账本跨**真实进程重启**:重启后同一 id 绝不重复执行 ──────────
+   *
+   * 第一趟用 `DurableOperationLedger` 落了 op_xproc(SUCCEEDED + 正文)与 op_unc(UNCERTAIN)。
+   * 这一趟是全新的 node 进程,账本从磁盘重新读 —— 此刻「重启后同一 id 会怎样」才说了算。
+   * 判据:同意图再领 → replay(带原正文);UNCERTAIN 再领 → uncertain(**绝不**变 claimed)。
+   * 撤掉 durable 表(改回内存版)→ 这两条立刻红。 */
+  {
+    const ledger = DurableOperationLedger;
+    const intent = (over: Partial<OperationIntent>): OperationIntent => ({
+      operationId: "op_xproc",
+      ownerId: "sess-A",
+      sessionId: "sess-A",
+      sceneId: "app_api_call",
+      method: "setting.set",
+      requestDigest: "digest-1",
+      effectKind: "mutating",
+      grantRevision: "default",
+      ...over,
+    });
+    const replay = ledger.begin(intent({}));
+    eq("★ MC-067 重启后同意图同 id → replay(不重执行)", replay.begin, "replay");
+    eq("★ MC-067 重启后回放正文跨进程还在", replay.record.body, "saved-ok-body");
+    const conflict = ledger.begin(intent({ requestDigest: "digest-2" }));
+    eq("★ MC-067 重启后同 id 换参数 → CONFLICT", conflict.begin, "conflict");
+    const unc = ledger.begin(intent({ operationId: "op_unc", requestDigest: "digest-unc" }));
+    eq("★ MC-067 重启后 UNCERTAIN 仍是在途标记(绝不重发第二次)", unc.begin, "uncertain");
   }
 
   console.log("\n把存档读回来(这一趟是全新的进程)");

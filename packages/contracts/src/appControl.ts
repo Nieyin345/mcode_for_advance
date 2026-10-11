@@ -141,11 +141,13 @@ export interface AppUiReply {
  *   - 同一份结果格式化出的**文本**(所有 SDK 都读的那行字)。
  * 两者是同一件事实的两种投影,别只更新一边。
  *
- * ⚠️ **本切片的两处已知残余**(如实记录,不假称已经做全):
- *   1. `durableRevision` 目前一律**缺省** —— 真正把内存提交与 fsync 成功绑成一个版本号,
- *      要改 `store/db.ts` 的持久化协议,不在本次允许改动的文件面内。
- *   2. `operationId` 的**跨进程**去重(重启后同一 id 不重复)尚未建;本切片只做**同进程**
- *      幂等重放(见 `app_api_call` 的 `operation_id` 入参)。
+ * ⚠️ **本切片的已知残余**(如实记录,不假称已经做全):
+ *   1. `durableRevision` 目前一律**缺省** —— 把内存提交与 fsync 成功绑成一个版本号要改
+ *      `store/db.ts` 的持久化协议,不在本切片允许改动的文件面内(尚未做)。
+ *   2. `operationId` 的**跨进程**去重**已建**(MC-067):`main/store/operationLedger.ts` 的
+ *      sql.js durable 账本,`main/index.ts` 启动时装上;**同进程**由 `appControl/operations.ts`
+ *      的内存版兜底。本切片只对 `app_api_call` 这一条垂直切片生效 —— `app_session_new/send`、
+ *      `app_workflow_run`、桌面 IPC、手机 RPC 与三 SDK 工具**尚未**都接唯一账本(见 MC-067 验收矩阵)。
  */
 export const OperationResultKindSchema = z.enum([
   "SUCCEEDED",
@@ -203,12 +205,90 @@ export const OP_CODE = {
   secretKeyRefused: "secret_key_refused",
   rpcFailed: "rpc_failed",
   rpcUncertain: "rpc_uncertain",
+  /** 幂等键太长(模型自选 id 上限)。 */
+  operationIdTooLong: "operation_id_too_long",
+  /** 同一个 operationId 被复用在一个**不同意图**的请求上 —— 绝不回放旧成功。 */
+  operationIdConflict: "operation_id_conflict",
+  /** 同一个 operationId 的相同意图**正在执行中**(或上一进程领了没结算)。 */
+  operationInProgress: "operation_in_progress",
+  /** 业务层明确拒绝(如 `{ok:false,error}`,不是抛异常)—— 命令没执行。 */
+  domainRejected: "domain_rejected",
 } as const;
 
 /** 成功系列(业务已落定)—— 这两个 `resultKind` 都不该让 Agent 当成"失败去重试"。 */
 export function isOperationCommitted(kind: OperationResultKind): boolean {
   return kind === "SUCCEEDED" || kind === "SUCCEEDED_WITH_WARNINGS";
 }
+
+/* ───────────────────── OperationIntent / OperationRecord(MC-067)───────────────────── */
+
+/**
+ * **一次控制命令的「意图身份」** —— 由**宿主**产生,模型只能自选其中的 `operationId`。
+ *
+ * ## 它在补哪个洞(源码可确认的旧行为)
+ *
+ * 旧 `operationLog` 是一个 `Map<operationId, 已提交结果>`,**只按 operationId 字符串**
+ * 缓存:换会话 / 换方法 / 换参数复用同一个 id,B 不执行也能拿到 A 的成功回执;两个并发
+ * 请求都能穿过缓存各执行一次;RPC 抛错后同 id 再试仍会真调一次。根因是把「幂等」简化成了
+ * 「结束后按字符串缓存」,缺一个**可信的请求身份**。
+ *
+ * ## 每个字段是谁给的
+ *
+ * - `ownerId` / `sessionId` / `sceneId` —— **宿主**(调用方)给的,模型**不能自报**。
+ *   授权范围与资源边界按它判 —— 这正是「别的会话不能拿同一 id 领我这单」的依据。
+ * - `method` + `requestDigest` —— 方法名 + 请求参数的**规范化摘要**。同 id 换方法 / 换参数
+ *   = 变了一个意图 → 必须 `OPERATION_ID_CONFLICT`,绝不回放旧成功。
+ * - `grantRevision` —— 记录当时授权档(当前权限模式等),供审计;授权是否已撤销由**每次
+ *   重放都重走审批闸**保证,不靠它在摘要里把它「冻住」。
+ * - `effectKind` —— 只读 / 有副作用。有副作用的重试绝不能盲发。
+ * - `operationId` —— **模型唯一可自选**的字段(幂等键)。宿主限制它的字节长度。
+ */
+export const OPERATION_ID_MAX_BYTES = 200;
+
+export const OperationEffectKindSchema = z.enum(["readonly", "mutating"]);
+export type OperationEffectKind = z.infer<typeof OperationEffectKindSchema>;
+
+/** 一条操作的执行状态。`CLAIMED` / `RUNNING` 表示**已在执行中**(在途)。 */
+export const OperationStatusSchema = z.enum([
+  "CLAIMED",
+  "RUNNING",
+  "SUCCEEDED",
+  "SUCCEEDED_WITH_WARNINGS",
+  "REJECTED",
+  "FAILED",
+  "UNCERTAIN",
+]);
+export type OperationStatus = z.infer<typeof OperationStatusSchema>;
+
+export interface OperationIntent {
+  operationId: string;
+  /** 授权主体(宿主给的调用会话)。模型不能自报。 */
+  ownerId: string;
+  sessionId: string;
+  /** 场景标识(如 `app_api_call`),供跨端对账。 */
+  sceneId: string;
+  /** 被调用的方法名。 */
+  method: string;
+  /** 请求参数的**规范化摘要**(同方法同参数的稳定指纹)。 */
+  requestDigest: string;
+  effectKind: OperationEffectKind;
+  /** 当时授权档(当前权限模式等)。审计用;不参与意图指纹。 */
+  grantRevision: string;
+}
+
+/** 账本里的一条记录 = 意图 + 状态(+ 结算后的完整结果,供同主体重放)。 */
+export interface OperationRecord extends OperationIntent {
+  status: OperationStatus;
+  /**
+   * 结算后的**完整结果**。在途(CLAIMED / RUNNING)时缺席。它是同主体(owner+session+
+   * method+摘要)幂等重放的唯一依据 —— **绝不跨项目 / 跨会话向别的 Agent 复述**。
+   */
+  result?: OperationResult;
+  /** 已提交成功时的结果正文(仅供同主体幂等重放)。 */
+  body?: string;
+  updatedAt: number;
+}
+
 
 /**
  * 把结构化结果格式化成**人能读、Agent 能读**的一段文本。所有 SDK 共用这一份 ——

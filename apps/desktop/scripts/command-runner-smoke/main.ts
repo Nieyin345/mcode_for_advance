@@ -26,6 +26,7 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { COMMAND_OUTPUT_TAIL_CHARS } from "@contracts/nodeType";
 import { runCommandNode, type SpawnFn } from "@main/orchestration/commandRunner.js";
+import { spawnRun } from "@main/lib/spawnRun.js";
 
 let failures = 0;
 let total = 0;
@@ -299,6 +300,61 @@ console.log("\n假 spawn · 输出分多块到达时同样只留尾部");
   check("最后一块在", body.endsWith("LASTCHUNK"), body.slice(-40));
   check("最开头那块被整个挤掉了", !body.startsWith("A") && !body.includes("AAAA"), body.slice(0, 20));
   check("中间那块还在", body.startsWith("B"), body.slice(0, 5));
+}
+
+/* ────────────── §3【MC-073】无换行长流:行缓冲有界,不 O(n²) ────────────── */
+
+console.log("\n§3 无换行长流:在途残行受单行预算约束(不再 Buffer.concat 无界放大)");
+
+{
+  // 从前 splitLines 每块都 `Buffer.concat([pending, chunk])`,残行无上限 —— 一条没有 LF
+  // 的长流既吃内存又 O(n²) 拷贝(1MiB 无换行就能把残行撑到 1MiB、concat 256 次),而
+  // `OutBuf(limitBytes)` 只限制**解析后**进捕获窗口的数据、管不住它。现在单行/残行都夹在
+  // `maxLineBytes` 内,与总输出字节无关。
+  const child = fakeChild({ pid: 9 });
+  const spawn = ((command: string) => {
+    queueMicrotask(() => {
+      const c = child as unknown as { stdout: EventEmitter; emitExit: (c: number | null, s: NodeJS.Signals | null) => void };
+      // 256 块 × 4096B 的**无换行** ASCII = 1MiB(与台账 E1 同形)。
+      for (let i = 0; i < 256; i += 1) c.stdout.emit("data", Buffer.alloc(4096, 0x41)); // 'A'
+      c.emitExit(0, null);
+    });
+    return child;
+  }) as unknown as SpawnFn;
+
+  const MAX_LINE = 1024;
+  let maxRestSeen = 0;
+  const run = await spawnRun({
+    command: "x",
+    timeoutMs: 0,
+    signal: controller().signal,
+    limitBytes: 16_000,
+    maxLineBytes: MAX_LINE,
+    spawn,
+    // 每行(此处只有退出时那一段残行)到这里时,量一下它有多大 —— 断言残行被夹住。
+    onStdoutLine: (line) => { maxRestSeen = Math.max(maxRestSeen, Buffer.byteLength(line, "utf8")); return false; },
+  });
+  eq("进程退出码 0", run.code, 0);
+  check("★ 单行/残行被夹在 maxLineBytes 内(不再 1MiB 无界残行)", maxRestSeen <= MAX_LINE, { maxRestSeen, MAX_LINE });
+  check("★ 置了 stdoutLineTruncated(调用方据此知道这是被截断的行)", run.stdoutLineTruncated === true, run);
+  // 捕获窗口照旧有界(尾部语义不变)。
+  check("捕获输出仍压在上限内", Buffer.byteLength(run.stdout, "utf8") <= 16_000 + 64, Buffer.byteLength(run.stdout, "utf8"));
+}
+
+{
+  // 对照:正常多行(每行都远小于预算)不受影响 —— 夹紧不能把好数据也切了。
+  const child = fakeChild({ pid: 10 });
+  const spawn = ((command: string) => {
+    queueMicrotask(() => {
+      const c = child as unknown as { stdout: EventEmitter; emitExit: (c: number | null, s: NodeJS.Signals | null) => void };
+      c.stdout.emit("data", Buffer.from("line-1\nline-2\nline-3\n"));
+      c.emitExit(0, null);
+    });
+    return child;
+  }) as unknown as SpawnFn;
+  const run = await spawnRun({ command: "x", timeoutMs: 0, signal: controller().signal, limitBytes: 16_000, maxLineBytes: 1024, spawn });
+  eq("★ 正常短行不被误截", run.stdoutLineTruncated, false);
+  check("三行都在", run.stdout.includes("line-3"), run.stdout);
 }
 
 console.log(`\n${total - failures}/${total} checks passed${failures === 0 ? "" : ` — ${failures} FAILED`}`);

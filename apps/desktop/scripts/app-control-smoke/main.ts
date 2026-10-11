@@ -708,7 +708,136 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   __setSendToRendererThrows(false);
 }
 
-/* ── 4. ApprovalBridge ── */
+/* ── 3c. MC-067:operationId 必须绑定**调用者与意图** ──────────────────────────
+ *
+ * 旧行为(源码可确认):`operationLog` 只按 `operationId` **字符串**缓存已完成结果 ——
+ *   ① 换会话/换方法/换参数复用同一 id 会命中旧结果(B 没执行却拿到 A 的回执);
+ *   ② 两个并发请求都能穿过缓存各执行一次;
+ *   ③ RPC 抛错(UNCERTAIN)没记入缓存,同 id 再试仍会真调一次。
+ * 修法是**可信操作账本**(意图身份 + 原子领取 + 全态结算):同 id 换意图 → CONFLICT;
+ * 同意图并发 → 只执行一次;UNCERTAIN 同 id 重试 → 回旧 UNCERTAIN,不盲发第二次。
+ *
+ * 下面三组是台账列出的**长期回归红例**,撤掉账本改造立即真红。
+ */
+{
+  __clearOperationLog();
+  const execs: unknown[] = [];
+  // `setting.set` 是 danger 档(有副作用);这里真执行一次就记一次(代表副作用发生)。
+  recordRpcHandler("setting:set", async (_e, raw) => {
+    execs.push(raw);
+    return { ok: true, saved: true };
+  });
+  const setInput = (v: string) => ({ key: CUSTOM_UI_SETTING_KEY, value: JSON.stringify({ v }) });
+  const apiCall = (session: string, extra: Record<string, unknown>, ctx: ProviderContext) =>
+    invokeAppTool("app_api_call", { method: "setting.set", input: setInput("x"), ...extra }, session, ctx);
+  const { ctx: okCtx } = ctxWith({ allow: true });
+
+  // ① 跨会话同 id、**不同意图** → 绝不串单:B 要么执行、要么明确 CONFLICT,**绝不**拿 A 的回执。
+  {
+    const before = execs.length;
+    const a = await invokeAppTool("app_api_call", { method: "setting.set", input: setInput("first"), operation_id: "MC067-XS" }, "sess-A", okCtx);
+    const aExecs = execs.length - before;
+    const b = await invokeAppTool("app_api_call", { method: "setting.set", input: setInput("DIFFERENT"), operation_id: "MC067-XS" }, "sess-B", okCtx);
+    const opA = opResultOf(a);
+    const opB = opResultOf(b);
+    check("★ MC-067①:A 先执行成功", aExecs === 1 && opA?.resultKind === "SUCCEEDED", { aExecs, opA });
+    check("★ MC-067①:跨会话同 id 不同意图 → B **不**拿 A 的成功回执", opB?.resultKind !== "SUCCEEDED", opB);
+    check("★ MC-067①:B 得到明确 CONFLICT(operation_id_conflict)", opB?.code === "operation_id_conflict", opB);
+    check("★ MC-067①:B 没有重复执行", execs.length - before === 1, execs.length - before);
+  }
+
+  // ② 同会话**并发**同 id、同意图 → 只执行**一次**。
+  {
+    const before = execs.length;
+    const [r1, r2] = await Promise.all([
+      invokeAppTool("app_api_call", { method: "setting.set", input: setInput("race"), operation_id: "MC067-RACE" }, "sess-A", okCtx),
+      invokeAppTool("app_api_call", { method: "setting.set", input: setInput("race"), operation_id: "MC067-RACE" }, "sess-A", okCtx),
+    ]);
+    const kinds = [opResultOf(r1)?.resultKind, opResultOf(r2)?.resultKind];
+    check("★ MC-067②:并发同意图同 id 只执行一次", execs.length - before === 1, execs.length - before);
+    check("★ MC-067②:一次 SUCCEEDED、一次被挡在途(不双执行)", kinds.filter((k) => k === "SUCCEEDED").length === 1, kinds);
+  }
+
+  // ③ UNCERTAIN 后同 id 重试 → **不重复执行**,仍回 UNCERTAIN。
+  {
+    let first = true;
+    recordRpcHandler("setting:set", async (_e, raw) => {
+      if (first) { first = false; execs.push(raw); throw new Error("fsync 失败:磁盘不可写"); }
+      execs.push(raw);
+      return { ok: true, saved: true };
+    });
+    const before = execs.length;
+    const r1 = await invokeAppTool("app_api_call", { method: "setting.set", input: setInput("unc"), operation_id: "MC067-UNC" }, "sess-A", okCtx);
+    const r2 = await invokeAppTool("app_api_call", { method: "setting.set", input: setInput("unc"), operation_id: "MC067-UNC" }, "sess-A", okCtx);
+    check("★ MC-067③:UNCERTAIN 第一次", opResultOf(r1)?.resultKind === "UNCERTAIN", opResultOf(r1));
+    check("★ MC-067③:同 id 重试不重复执行(仍 UNCERTAIN)", execs.length - before === 1 && opResultOf(r2)?.resultKind === "UNCERTAIN", { execs: execs.length - before, r2: opResultOf(r2) });
+    check("★ MC-067③:重试文本点明未重复执行", textOf(r2).includes("重放") || textOf(r2).includes("不要再"), textOf(r2).slice(0, 160));
+  }
+
+  // ④ 授权复核:同 id 同意图的历史成功,若**授权已收紧**(只读/计划模式) → 不复述原结果。
+  {
+    // 正常 ctx 下提交一个 setting.set(有副作用),记下它的成功。
+    const r1 = await invokeAppTool("app_api_call", { method: "setting.set", input: setInput("rev"), operation_id: "MC067-REV" }, "sess-A", okCtx);
+    check("★ MC-067④:正常提交成功(打底)", opResultOf(r1)?.resultKind === "SUCCEEDED", opResultOf(r1));
+    // 同样的 id/意图,但这次在**只读/计划模式**下重试 → 授权已收紧,不复述原成功。
+    const { ctx: planCtx } = ctxWith({ mode: "plan" });
+    const r2 = await invokeAppTool("app_api_call", { method: "setting.set", input: setInput("rev"), operation_id: "MC067-REV" }, "sess-A", planCtx);
+    const op2 = opResultOf(r2);
+    check("★ MC-067④:授权收紧后重放 → 不复述原成功", op2?.resultKind !== "SUCCEEDED", op2);
+    check("★ MC-067④:授权收紧后重放 → REJECTED(明确不执行)", op2?.resultKind === "REJECTED", op2);
+  }
+
+  __clearOperationLog();
+}
+
+/* ── 3d. MC-066:业务层 ok:false 不能被回报成 SUCCEEDED ───────────────────────
+ *
+ * 旧行为:`callRpc` 只要 Promise resolve 就 `makeOp("SUCCEEDED")`。而 `ipc/browser.ts`
+ * 的 `browser:create` 对未知 projectPath **合法返回** `{ok:false,error:...}`(不抛异常)
+ * —— 业务明确拒绝,`app_api_call` 却报 SUCCEEDED。修法:显式登记结果合同,`decodeDomainOutcome`
+ * 把 ok:false 判成 REJECTED。**不在任意 JSON 上做字符串规则推断**。
+ */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+  // 与 `ipc/browser.ts:44-58` 一字不差的合法拒绝(不是我构造的异常)。
+  recordRpcHandler("browser:create", async (_e, raw) => {
+    const projectPath = String((raw as { projectPath?: string }).projectPath ?? "");
+    if (projectPath.includes("not-registered")) {
+      return { ok: false as const, error: "未知项目路径，拒绝创建浏览器" };
+    }
+    return { ok: true as const, browserId: "br_1" };
+  });
+
+  // 红例:browser.create 合法 ok:false → isError=true、resultKind 不再 SUCCEEDED。
+  {
+    const r = await invokeAppTool("app_api_call", { method: "browser.create", input: { projectPath: "C:/fake/not-registered" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:browser.create 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:browser.create 合法 ok:false → isError=true", r.isError === true, r.isError);
+    check("★ MC-066:browser.create 合法 ok:false → REJECTED(命令没执行)", op?.resultKind === "REJECTED", op);
+    check("★ MC-066:拒绝原因原样带出(未知项目路径)", textOf(r).includes("未知项目路径"), textOf(r).slice(0, 200));
+  }
+
+  // 正控:ok:true 的真成功仍是 SUCCEEDED(解码器不能把真成功也判成拒绝)。
+  {
+    const r = await invokeAppTool("app_api_call", { method: "browser.create", input: { projectPath: "C:/proj" } }, "me", ctx);
+    check("★ MC-066 正控:browser.create ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+
+  // ★ 判据是**按模块显式登记**,不是「任意 JSON 上 ok===false 就 retryable」:
+  //   一个**没登记** ok/error 合同的方法(project.list)返回 `{ok:false}` 仍算成功 ——
+  //   证明解码器只对显式登记的方法生效,不对任意返回做字符串规则推断。
+  {
+    recordRpcHandler("project:list", async () => ({ ok: false, error: "这不是拒绝，只是一份普通数据里的字段" }));
+    const r = await invokeAppTool("app_api_call", { method: "project.list", input: {} }, "me", ctx);
+    check("★ MC-066:未登记合同的方法不被 ok:false 误判(不靠字符串规则推断)", opResultOf(r)?.resultKind === "SUCCEEDED", opResultOf(r));
+  }
+
+  // 恢复 project:list 的正常形状,免得后面若有用到。
+  recordRpcHandler("project:list", async () => ({ projects: [{ id: "p1", name: "demo", path: "/x" }] }));
+}
+
 {
   const bridge = new ApprovalBridge();
   const emitted: unknown[] = [];

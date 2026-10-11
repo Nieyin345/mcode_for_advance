@@ -508,7 +508,7 @@ export function PluginsPanel() {
 
   const confirmRemove = async () => {
     const target = pendingRemove;
-    if (!target) return;
+    if (!target) return { ok: true };
     setBusyKey(`remove:${target.name}`);
     setError(null);
     try {
@@ -517,10 +517,12 @@ export function PluginsPanel() {
       await reload();
       // Keep the composer's `/` menu in sync (the plugin's skills are gone).
       void useSessionStore.getState().reloadSkills();
+      // 失败交给 ConfirmDialog 保留弹窗显示(UI-001);成功才让它关闭。
+      return res;
     } catch (err) {
       setError((err as Error).message);
+      throw err; // 让 ConfirmDialog 保留弹窗,不假装卸载成功
     } finally {
-      setPendingRemove(null);
       setBusyKey(null);
     }
   };
@@ -646,7 +648,7 @@ export function PluginsPanel() {
         onOpenChange={(open) => {
           if (!open) setPendingRemove(null);
         }}
-        onConfirm={() => void confirmRemove()}
+        onConfirm={() => confirmRemove()}
       />
     </section>
   );

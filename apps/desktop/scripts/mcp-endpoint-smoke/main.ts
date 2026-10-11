@@ -27,7 +27,8 @@ import { spawn } from "node:child_process";
 // 固定端口那两条断言要自己占一个端口当"别的程序"。
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -1965,6 +1966,212 @@ const movedRead = await host.callTool(
   { sessionId: "s1" },
 );
 check("移动后的路径可直接读取", movedRead.text.includes("批量读取命中"), movedRead.text);
+
+/* ══════════ agent_move_file：数据保全红例与回归（台账 MC-068）══════════════
+   判据立在「用户看到的那行字 + 文件 SHA256 不变」上，不立在机制上。每个用例都在
+   自己的临时目录里建真夹具，跑完即清。 */
+{
+  const sha256 = (p: string): string => createHash("sha256").update(readFileSync(p)).digest("hex");
+  const MV = mkdtempSync(path.join(tmpdir(), "mcode-move-"));
+  // 沙箱为 null(桌面本机那条路),绝对路径原样接受 —— 直接给绝对路径,免去相对解析。
+  const callMove = (source: string, destination: string, overwrite?: boolean) =>
+    host.callTool("agent_move_file", { source, destination, overwrite }, { sessionId: "s1" });
+  // 目标处是文件还是目录(不存在 = "missing")。
+  const kindOf = (p: string): "file" | "dir" | "missing" => (existsSync(p) ? (statSync(p).isDirectory() ? "dir" : "file") : "missing");
+  // 目录里有没有遗留的备份残留。
+  const hasBackupDir = (dir: string) => readdirSync(dir).some((n) => n.includes("mcode-move-bak"));
+
+  // 红例 1：源 == 目标（自覆盖）—— 原实现会 rm 掉再 rename 失败，文件消失。
+  const selfP = path.join(MV, "same.txt");
+  writeFileSync(selfP, "自覆盖必须逐字节不变\n");
+  const selfBefore = sha256(selfP);
+  const self = await callMove(selfP, selfP, true);
+  check(
+    "红例1 同源同目标不做任何删除、内容逐字节不变",
+    existsSync(selfP) && sha256(selfP) === selfBefore && self.structuredContent?.reason === "SAME_SOURCE_DESTINATION",
+    { exists: existsSync(selfP), text: self.text, sc: self.structuredContent },
+  );
+  check(
+    "红例1 结构化带生命周期字段(phase=COMMITTED / commitOutcome=DURABLE)",
+    self.structuredContent?.phase === "COMMITTED" && self.structuredContent?.commitOutcome === "DURABLE",
+    { sc: self.structuredContent },
+  );
+
+  // 红例 2：目录移动到自身子目录 —— 原实现先递归删 nested 再 EBUSY 失败，数据丢失。
+  const srcDir = path.join(MV, "src");
+  mkdirSync(path.join(srcDir, "nested"), { recursive: true });
+  writeFileSync(path.join(srcDir, "nested", "dummy.txt"), "dummy\n");
+  writeFileSync(path.join(srcDir, "safe-src.txt"), "safe\n");
+  const dummySha = sha256(path.join(srcDir, "nested", "dummy.txt"));
+  const intoSelf = await callMove(srcDir, path.join(srcDir, "nested"), true);
+  check(
+    "红例2 目录移入自身子树被拒且原有数据完好",
+    existsSync(path.join(srcDir, "nested", "dummy.txt")) &&
+      sha256(path.join(srcDir, "nested", "dummy.txt")) === dummySha &&
+      existsSync(path.join(srcDir, "safe-src.txt")) &&
+      intoSelf.isError === true,
+    { isError: intoSelf.isError, text: intoSelf.text, sc: intoSelf.structuredContent },
+  );
+  check(
+    "红例2 拒绝时 phase=PREPARED(无副作用)/ commitOutcome=FAILED",
+    intoSelf.structuredContent?.phase === "PREPARED" && intoSelf.structuredContent?.commitOutcome === "FAILED",
+    { sc: intoSelf.structuredContent },
+  );
+
+  // 正常 rename：文件移动到新目录。
+  const aP = path.join(MV, "a.txt");
+  writeFileSync(aP, "A\n");
+  const aSha = sha256(aP);
+  const movedA = await callMove(aP, path.join(MV, "sub", "a.txt"));
+  check(
+    "正常移动：源消失、目标出现且内容一致",
+    !existsSync(aP) && existsSync(path.join(MV, "sub", "a.txt")) && sha256(path.join(MV, "sub", "a.txt")) === aSha,
+    { text: movedA.text, sc: movedA.structuredContent },
+  );
+  check(
+    "正常移动 phase=COMMITTED / commitOutcome=DURABLE / 不报错",
+    !movedA.isError &&
+      movedA.structuredContent?.phase === "COMMITTED" &&
+      movedA.structuredContent?.commitOutcome === "DURABLE",
+    { isError: movedA.isError, sc: movedA.structuredContent },
+  );
+
+  // 覆盖旧文件：目标内容被替换、源消失、无残留备份。
+  const destF = path.join(MV, "dest.txt");
+  writeFileSync(destF, "旧\n");
+  const srcOv = path.join(MV, "ov.txt");
+  writeFileSync(srcOv, "新\n");
+  const ovFile = await callMove(srcOv, destF, true);
+  check(
+    "覆盖旧文件：目标换成新内容、源消失、无 .mcode-move-bak 残留",
+    readFileSync(destF, "utf8") === "新\n" &&
+      !existsSync(srcOv) &&
+      !hasBackupDir(MV),
+    { text: ovFile.text, entries: readdirSync(MV) },
+  );
+
+  // 覆盖旧目录：旧目录整棵被替换、源消失、无备份残留。
+  const destD = path.join(MV, "destD");
+  mkdirSync(destD, { recursive: true });
+  writeFileSync(path.join(destD, "old.txt"), "old\n");
+  const srcD = path.join(MV, "srcD");
+  mkdirSync(srcD, { recursive: true });
+  writeFileSync(path.join(srcD, "new.txt"), "new\n");
+  const ovDir = await callMove(srcD, destD, true);
+  check(
+    "覆盖旧目录：目标只含新内容、旧 old.txt 不在、源消失、无备份残留",
+    existsSync(path.join(destD, "new.txt")) &&
+      !existsSync(path.join(destD, "old.txt")) &&
+      !existsSync(srcD) &&
+      !hasBackupDir(MV),
+    { text: ovDir.text, entries: readdirSync(MV) },
+  );
+
+  // overwrite=false 目标已存在：拒绝且目标原封不动、源仍在。
+  const keep = path.join(MV, "keep.txt");
+  writeFileSync(keep, "保留\n");
+  const keepSha = sha256(keep);
+  const srcNoOv = path.join(MV, "noOv.txt");
+  writeFileSync(srcNoOv, "搬运\n");
+  const noOv = await callMove(srcNoOv, keep, false);
+  check(
+    "overwrite=false 目标已存在：拒(那行字报目标已存在)、目标与源都不动",
+    noOv.isError === true && noOv.text.includes("目标已存在") && sha256(keep) === keepSha && existsSync(srcNoOv),
+    { isError: noOv.isError, text: noOv.text, sc: noOv.structuredContent },
+  );
+
+  // 文件 → 目录类型不匹配：目标是已存在的目录，overwrite=true 覆盖它。
+  const dirTarget = path.join(MV, "dirTarget");
+  mkdirSync(dirTarget, { recursive: true });
+  const fileToDirSrc = path.join(MV, "fileToDir.txt");
+  writeFileSync(fileToDirSrc, "文件覆盖目录\n");
+  const f2d = await callMove(fileToDirSrc, dirTarget, true);
+  check(
+    "文件覆盖同名目录(overwrite=true)：目录被文件替换、源消失、无备份残留",
+    kindOf(dirTarget) === "file" &&
+      !existsSync(fileToDirSrc) &&
+      !hasBackupDir(MV),
+    { text: f2d.text, kind: kindOf(dirTarget) },
+  );
+
+  // 非空目录覆盖：目标是非空目录，overwrite=true 整棵替换，旧内容不残留。
+  const srcTree = path.join(MV, "srcTree");
+  mkdirSync(path.join(srcTree, "deep"), { recursive: true });
+  writeFileSync(path.join(srcTree, "deep", "x.txt"), "x\n");
+  const destTree = path.join(MV, "destTree");
+  mkdirSync(path.join(destTree, "deep"), { recursive: true });
+  writeFileSync(path.join(destTree, "deep", "old.txt"), "old\n");
+  const treeOv = await callMove(srcTree, destTree, true);
+  check(
+    "非空目录覆盖：目标只含新树、旧文件不在、源消失",
+    existsSync(path.join(destTree, "deep", "x.txt")) &&
+      !existsSync(path.join(destTree, "deep", "old.txt")) &&
+      !existsSync(srcTree),
+    { text: treeOv.text, entries: readdirSync(destTree) },
+  );
+
+  // 大小写变体（仅 Windows/macOS 有意义）：只改大小写应原子改名、内容不变。
+  if (process.platform === "win32") {
+    const upperP = path.join(MV, "CaseName.txt");
+    writeFileSync(upperP, "大小写\n");
+    const upperSha = sha256(upperP);
+    const lowerDest = path.join(MV, "casename.txt");
+    const cased = await callMove(upperP, lowerDest, true);
+    const survived = existsSync(lowerDest) || existsSync(upperP);
+    const survivor = existsSync(lowerDest) ? lowerDest : upperP;
+    check(
+      "大小写变体改名：内容逐字节不变、文件仍在",
+      cased.structuredContent?.committed === true && survived && sha256(survivor) === upperSha,
+      { text: cased.text, sc: cased.structuredContent },
+    );
+  }
+
+  // 源不存在：明确报缺源，不误伤。
+  const missing = await callMove(path.join(MV, "nope.txt"), path.join(MV, "nope2.txt"), false);
+  check(
+    "源不存在：明确拒绝(那行字报原路径不存在)",
+    missing.isError === true && missing.text.includes("原路径不存在"),
+    { isError: missing.isError, text: missing.text },
+  );
+
+  // ★ no-clobber 并发（台账 §28.2 残余问题）：两个 overwrite=false 同时搬向同一目标。
+  //   win32 上 `rename` 会**静默覆盖**,两个都会报成功;原子 no-clobber(`link`/COPYFILE_EXCL)
+  //   则**只有一个成功**,另一个 DESTINATION_EXISTS 且源保留。判据:committed 恰好 1 条、
+  //   输者的源还在、目标内容等于赢家的内容。这是确定性可判的(与调度顺序无关)。
+  const raceSrcA = path.join(MV, "raceA.txt");
+  const raceSrcB = path.join(MV, "raceB.txt");
+  const raceDst = path.join(MV, "raceDst.txt");
+  writeFileSync(raceSrcA, "RACE_A\n");
+  writeFileSync(raceSrcB, "RACE_B\n");
+  const [raceA, raceB] = await Promise.all([
+    callMove(raceSrcA, raceDst, false),
+    callMove(raceSrcB, raceDst, false),
+  ]);
+  const committedCount = [raceA, raceB].filter((r) => r.structuredContent?.committed === true).length;
+  const dstContent = existsSync(raceDst) ? readFileSync(raceDst, "utf8") : "";
+  const loserPreserved = [raceA, raceB].some((r) => r.structuredContent?.committed === false);
+  // 恰好一个源文件留下(输家),内容原样;消失的那个是赢家,其内容 == 目标内容。
+  const aLeft = existsSync(raceSrcA);
+  const bLeft = existsSync(raceSrcB);
+  const raceSourcesOk =
+    aLeft !== bLeft &&
+    (aLeft ? readFileSync(raceSrcA, "utf8") : readFileSync(raceSrcB, "utf8")) === (aLeft ? "RACE_A\n" : "RACE_B\n") &&
+    (aLeft ? "RACE_B\n" : "RACE_A\n") === dstContent;
+  // 结构化阶段:赢家 COMMITTED/DURABLE,输家 PREPARED/FAILED。
+  const phases = [raceA, raceB].map((r) => r.structuredContent?.phase).sort();
+  check(
+    "★ overwrite=false 并发同目标：恰好一个提交(不静默覆盖)、输者源保留、目标=赢家内容",
+    committedCount === 1 && loserPreserved && raceSourcesOk && (dstContent === "RACE_A\n" || dstContent === "RACE_B\n"),
+    { committedCount, loserPreserved, raceSourcesOk, dstContent, a: raceA.structuredContent, b: raceB.structuredContent },
+  );
+  check(
+    "★ 并发同目标阶段判据：一个 COMMITTED、一个 PREPARED(输者未动)",
+    phases[0] === "COMMITTED" && phases[1] === "PREPARED",
+    { phases, a: raceA.structuredContent?.phase, b: raceB.structuredContent?.phase },
+  );
+
+  rmSync(MV, { recursive: true, force: true });
+}
 
 const edited = await host.callTool(
   "agent_edit_file",

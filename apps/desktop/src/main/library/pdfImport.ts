@@ -49,9 +49,12 @@ export interface ImportedFile {
 export async function importPdfFiles(input: {
   paths: string[];
   collectionIds?: string[];
+  /** 【MC-072】取消信号:逐项提交**之前**检查,取消后未开始的项不再导入(已提交的保留)。 */
+  signal?: AbortSignal;
 }): Promise<ImportedFile[]> {
   const out: ImportedFile[] = [];
   for (const rawPath of input.paths) {
+    if (input.signal?.aborted) break;
     out.push(await importOne(rawPath, input.collectionIds));
   }
   return out;

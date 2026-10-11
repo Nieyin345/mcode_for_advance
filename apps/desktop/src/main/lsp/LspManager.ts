@@ -25,7 +25,8 @@
  * arbitrary files nor hand one project's file to another project's server.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile, rm, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { request as httpRequest } from "node:https";
@@ -102,6 +103,11 @@ interface ServerHandle {
   failureRecorded: boolean;
   /** True if we intentionally killed the process (suppress crash recovery). */
   intentionalStop: boolean;
+  /** 【MC-038】handle 已被 removeServer/disposeAll 摘掉(进程被 kill、`servers` 里已无)。
+   *  `doOpenDocument` 在 `await readFile` 之后要重查它 —— 读取期间用户关掉文件、或整个
+   *  server 被重启/项目被删时,这个 flag 会翻起来,于是那次**迟到的异步 didOpen 不会再被
+   *  发出去**(否则会把一个已经被 didClose 关掉的文件反向重新打开 / 打到已死的 server)。 */
+  stale: boolean;
 }
 
 /** In-flight install/uninstall per language (so the UI can show progress). */
@@ -166,6 +172,8 @@ class LspManagerImpl {
    *  open after a close). Every document-sync op for one file chains onto the
    *  previous one so didOpen always precedes that file's didChange/didClose. */
   private docOps = new Map<string, Promise<void>>();
+  /** 【MC-037】语言级安装互斥的队尾(用完即删,不随项目数增长)。 */
+  private installChains = new Map<string, Promise<void>>();
   /** Keyed by language id. */
   private installs = new Map<LspLanguageId, InstallHandle>();
   /** Cached install logs retained after a process exits (truncated). */
@@ -347,10 +355,17 @@ class LspManagerImpl {
 
   /** Extract a user-downloaded jdtls tar.gz into the install dir. */
   private async installJavaFromFile(tarPath: string): Promise<LspOpResult> {
+    // 【MC-037】整个 java 安装按**语言级互斥**串行 —— 两个并发安装从前的暂存名
+    // 用 `Date.now()`(同毫秒即同名)会互相 rm/mkdir/rename 互删。见 `installJavaSerialized`。
+    return this.installJavaSerialized(() => this.installJavaFromFileInner(tarPath));
+  }
+
+  private async installJavaFromFileInner(tarPath: string): Promise<LspOpResult> {
     const destDir = this.javaInstallDir();
     const lspDir = dirname(destDir);
     mkdirSync(lspDir, { recursive: true });
-    const stageDir = join(lspDir, `.java.staging-${Date.now()}`);
+    // 【MC-037】暂存名用 UUID,不再用 `Date.now()`(同毫秒两次即同名)。
+    const stageDir = join(lspDir, `.java.staging-${randomUUID()}`);
     let committed = false;
     try {
       // ── ① 先把新的一整包解压进暂存。**这一步失败时旧版本一个字节都没动。** ──
@@ -365,6 +380,13 @@ class LspManagerImpl {
       // Write the launcher shim (same as auto-download) INTO the staging tree, so
       // the shim ships as part of the atomically-swapped install.
       this.writeJavaLauncher(stageDir, destDir);
+
+      // 【MC-037】换上去之前校验这份安装**完整可用** —— 残缺的 tar.gz 绝不换掉旧版本。
+      try {
+        assertJavaInstallComplete(stageDir);
+      } catch (err) {
+        return { ok: false, error: `解压结果不完整,未替换旧安装:${(err as Error).message}` };
+      }
 
       // ── ② 换上去(旧版本挪到退路 → 暂存换到落点 → 丢掉退路)。 ──
       const swap = this.swapInJavaInstall(destDir, stageDir);
@@ -464,10 +486,16 @@ class LspManagerImpl {
    *    - Java 17  -> jdtls 1.37.0 (last version supporting Java 17)
    *    - < Java 17 -> error (jdtls requires at least Java 17) */
   private async installJava(): Promise<LspOpResult> {
+    // 【MC-037】与文件安装共用同一把语言级互斥(见 installJavaSerialized)。
+    return this.installJavaSerialized(() => this.installJavaInner());
+  }
+
+  private async installJavaInner(): Promise<LspOpResult> {
     const destDir = this.javaInstallDir();
     const lspDir = dirname(destDir);
     mkdirSync(lspDir, { recursive: true });
-    const stageDir = join(lspDir, `.java.staging-${Date.now()}`);
+    // 【MC-037】暂存名用 UUID(不再 `Date.now()`)。
+    const stageDir = join(lspDir, `.java.staging-${randomUUID()}`);
     let committed = false;
     try {
       rmSync(stageDir, { recursive: true, force: true });
@@ -534,6 +562,13 @@ class LspManagerImpl {
         // non-fatal
       }
 
+      // 【MC-037】换上去之前校验这份安装完整可用。
+      try {
+        assertJavaInstallComplete(stageDir);
+      } catch (err) {
+        return { ok: false, error: `下载的 jdtls 不完整,未替换旧安装:${(err as Error).message}` };
+      }
+
       // ── ② 换上去(旧版本挪到退路 → 暂存换到落点 → 丢掉退路)。 ──
       const swap = this.swapInJavaInstall(destDir, stageDir);
       if (!swap.ok) return swap;
@@ -590,13 +625,27 @@ class LspManagerImpl {
     writeFileSync(launcherPath, launcherContent, { mode: 0o755 });
   }
 
+  /** 【MC-037】把 java 的**整个安装**(下载或从文件解压)按**语言级互斥**串行。
+   *  两个安装并发时,从前的暂存名用 `Date.now()`(同毫秒即同名)会互相 rm/mkdir/rename,
+   *  把对方的暂存删掉;即便名字不同,两个 swap 也会互相把 `destDir` 挪来挪去。串行之后
+   *  后到的安装在前一个落定后才读 `destDir`,不再互删。与 MC-038 的 `withDocLock` 分开:
+   *  锁的是**安装这一整段**,不是单个文件读写。 */
+  private installJavaSerialized<T extends LspOpResult>(op: () => Promise<T>): Promise<T> {
+    const key = "__java-install__";
+    const tail = this.installChains.get(key) ?? Promise.resolve();
+    const run = tail.then(op, op);
+    const settled = run.then(() => undefined, () => undefined);
+    this.installChains.set(key, settled);
+    void settled.then(() => { if (this.installChains.get(key) === settled) this.installChains.delete(key); });
+    return run;
+  }
+
   /** Atomically replace `<destDir>` with a fully-built `<stageDir>` on the same
    *  volume. The old install is renamed aside first (整体操作:占用时直接失败、
    *  原地不动), then the staged tree takes its place; on any failure the old
    *  install is restored, so a bad extract can never leave the user with neither
    *  version (MC-037). On success the displaced old tree is swept. */
-  private swapInJavaInstall(destDir: string, stageDir: string): LspOpResult {
-    const lspDir = dirname(destDir);
+  private swapInJavaInstall(destDir: string, stageDir: string): LspOpResult {    const lspDir = dirname(destDir);
     let displaced: string | null = null;
     if (existsSync(destDir)) {
       displaced = join(lspDir, `.java.old-${Date.now()}`);
@@ -959,6 +1008,14 @@ class LspManagerImpl {
     } catch {
       // file may be unsaved/new - send empty content
     }
+    // 【MC-038】`await readFile` 是这段里**唯一**的让出点。回到同步段后重查 handle:
+    //   - `handle.stale`:server 在这段窗口里被 removeServer/disposeAll 摘掉(重启 / 项目被删 /
+    //     应用退出) —— 别再往一个已死的 stdin 写、也别再把 URI 记进一个已废弃的 handle;
+    //   - `handle.openUris` 里已没有 uri:同一个文件在这段窗口里被 closeDocument didClose 了
+    //     (withDocLock 的排队只在**进入**时判过 `openUris`,挡不住读取期间到来的 close)——
+    //     再发 didOpen 就把一个刚关掉的文件**反向重开**。
+    // 两种都直接放弃这次 didOpen:内部集合与发送出去的通知保持一致,不留"幽灵打开"。
+    if (handle.stale || !handle.openUris.has(uri)) return;
     const languageId = spec.languageId;
     this.sendNotify(handle, "textDocument/didOpen", {
       textDocument: { uri, languageId, version: 1, text },
@@ -1339,6 +1396,7 @@ class LspManagerImpl {
       initResolve,
       failureRecorded: false,
       intentionalStop: false,
+      stale: false,
     };
     this.servers.set(key, handle);
     // The initialize handshake can take minutes (Java imports the whole
@@ -1541,6 +1599,10 @@ class LspManagerImpl {
   /** Kill + forget a server. Idempotent. */
   private removeServer(key: string, handle: ServerHandle): void {
     handle.intentionalStop = true;
+    // 【MC-038】标记 handle 作废:任何仍在 `await`(如 doOpenDocument 的 readFile)里的
+    // 文档同步操作,回到同步段后会看到它、放弃发送 —— 迟到的 didOpen/didChange 不再打到
+    // 这个已死的 server 上,也不会把已 didClose 的文件反向重开。
+    handle.stale = true;
     // Reject any pending requests.
     for (const [id, entry] of handle.pending) {
       clearTimeout(entry.timer);
@@ -2083,6 +2145,19 @@ function findJavaLauncherJar(resolved: string, installDir: string): string {
     }
   }
   throw new Error(`未找到 org.eclipse.equinox.launcher_*.jar(检查过 ${candidates.join("、")})`);
+}
+
+/**
+ * 【MC-037】换上去**之前**校验暂存树里确实有一份可用的 jdtls:equinox launcher jar 存在
+ * 且非空,`configs/` 目录也在。`tar.gz` 截断/缺文件/解压不完整时,这一步会抛 —— 于是绝
+ * 不会把一个残缺的安装 rename 成正式目录、把旧版本挤掉。抛错即**旧安装一字未动**。
+ */
+function assertJavaInstallComplete(stageDir: string): void {
+  const pluginsDir = join(stageDir, "plugins");
+  const jar = findLauncherJar(pluginsDir); // 找不到即抛
+  const st = statSync(jar);
+  if (!st.isFile() || st.size === 0) throw new Error(`equinox launcher jar 为空或不是文件:${jar}`);
+  if (!existsSync(join(stageDir, "configs"))) throw new Error(`jdtls 安装不完整:缺少 configs/ 目录`);
 }
 
 /** Kill a health-check probe process. On win32 the spawn used shell:true, so

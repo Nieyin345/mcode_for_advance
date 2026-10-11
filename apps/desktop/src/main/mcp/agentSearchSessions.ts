@@ -92,20 +92,30 @@ export interface AgentSearchSessions {
 export function createAgentSearchSessions(): AgentSearchSessions {
   const sessions = new Map<string, SearchSession>();
 
-  function prune(ownerSessionId: string): void {
+  // 【MC-064】只回收**确实过了 TTL 的已结束**条目 —— 无副作用,`list` 也能安全调。
+  function expireFinished(): void {
     const now = Date.now();
     for (const [id, s] of sessions) {
       if (s.status !== "running" && s.finishedAt && now - s.finishedAt > COMPLETED_TTL_MS) sessions.delete(id);
     }
+  }
+
+  // 【MC-064】只为**新建**腾槽位 —— 满时优先逐出**已结束**的最老条目;仍不足才停 running。
+  // 从前 `prune` 把"TTL 回收"和"腾槽位"合并,还被只读的 `list` 调用 —— 用户只看一眼
+  // 搜索列表,最老的那条(哪怕正在跑)就被删了,分页 `search_read` 当场失效。
+  function reserveSearchSlot(ownerSessionId: string): void {
+    expireFinished();
     const mine = [...sessions.values()]
       .filter((s) => s.ownerSessionId === ownerSessionId)
       .sort((a, b) => a.startedAt - b.startedAt);
+    // 先逐出已结束的最老条目。
     while (mine.length >= MAX_SEARCH_SESSIONS_PER_OWNER) {
-      const old = mine.shift();
-      if (!old) break;
-      if (old.status === "running") old.stopped = true;
-      sessions.delete(old.id);
+      const idx = mine.findIndex((s) => s.status !== "running");
+      if (idx < 0) break;
+      sessions.delete(mine[idx]!.id);
+      mine.splice(idx, 1);
     }
+    // 全是 running 也不够 → 不动别的,(start 会据返回值报容量)。这里只保证"已结束的先让位"。
   }
 
   function owned(ownerSessionId: string, searchId: string): SearchSession {
@@ -140,7 +150,13 @@ export function createAgentSearchSessions(): AgentSearchSessions {
 
   return {
     async start(input) {
-      prune(input.ownerSessionId);
+      // 【MC-064】只为新建腾槽位(优先逐出已结束的;不因 create 而停 running/删有效 entry)。
+      reserveSearchSlot(input.ownerSessionId);
+      // 腾完仍满(全是 running)→ 明确拒绝,不再静默停掉正在跑的那条。
+      const mineNow = [...sessions.values()].filter((s) => s.ownerSessionId === input.ownerSessionId);
+      if (mineNow.length >= MAX_SEARCH_SESSIONS_PER_OWNER) {
+        throw new Error(`SEARCH_CAPACITY_REACHED:当前对话已有 ${mineNow.length} 个搜索会话(上限 ${MAX_SEARCH_SESSIONS_PER_OWNER}),请先停止或等待部分结束`);
+      }
       const matcher = buildMatcher(input.pattern, input.literalSearch ?? false, input.ignoreCase ?? true);
       const fileMatcher = input.filePattern ? globToRegExp(input.filePattern) : null;
       const state: SearchSession = {
@@ -188,7 +204,9 @@ export function createAgentSearchSessions(): AgentSearchSessions {
     },
 
     list(ownerSessionId) {
-      prune(ownerSessionId);
+      // 【MC-064】只读列表**不得**有破坏性副作用:只回收过期的已结束条目,绝不因为
+      // "看一眼列表"就把最老的(可能正在跑的)删掉或停掉。
+      expireFinished();
       return [...sessions.values()]
         .filter((s) => s.ownerSessionId === ownerSessionId)
         .sort((a, b) => b.startedAt - a.startedAt)

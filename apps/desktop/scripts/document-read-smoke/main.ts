@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,7 +10,7 @@ import { __registeredDisposerCount, __registeredShutdownHookCount } from "@main/
 import type { ToolResult } from "@main/mcp/sdk.js";
 const root=mkdtempSync(join(tmpdir(),"mcode-doc-read-"));
 const failures:string[]=[];let passed=0;
-async function test(name:string,fn:()=>unknown){try{await fn();passed++;console.log("PASS "+name);}catch(e){failures.push(name+": "+String(e));console.error("FAIL "+failures.at(-1));}}
+async function test(name:string,fn:()=>unknown){try{await fn();passed++;console.log("PASS "+name);}catch(e){failures.push(name+":"+String(e));console.error("FAIL "+failures.at(-1));}}
 const specs=agentMcpTools({cwdFor:()=>root});const spec=specs.find(x=>x.name==="agent_read_document")!;
 const read=async(path:string,args:Record<string,unknown>={})=>spec.handler(z.object(spec.inputSchema).parse({path,...args}),{sessionId:"document-fixture"});
 const text=(r:ToolResult)=>r.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
@@ -29,6 +30,26 @@ try {
  for(const file of ["paper.pdf","text.docx","slides.pptx"])await test(file+" respects max_chars=100 including truncation notice",async()=>{const r=await read(file,{max_chars:100});assert.ok(!r.isError,text(r));const t=text(r);assert.ok(t.length<=100,`returned ${t.length}`);assert.match(t,/截断/);assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(t),"no split surrogate");});
  await test("DOCX Unicode survives Python pipe decoding",async()=>{const r=await read("text.docx");assert.ok(!r.isError,text(r));assert.ok(text(r).includes("研究😀"),text(r).slice(0,120));});
  await test("Excel selection returns actual Unicode cells and values",async()=>{const r=await read("table.xlsx",{sheet:"Research",range:"A2:B2"});assert.ok(!r.isError,text(r));assert.match(text(r),/研究论文/);assert.match(text(r),/2026/);});
+ // 【MC-065】显式 range 必须**在迭代之前**夹紧,并显式回报 range 被截断。
+ // 修前 `ws[rg]` 会先按声明的 dimension 构造整个矩形(与 max_rows/max_cols 无关),
+ // 且**没有任何**"range 被截断"回执 —— 模型看到的只是前几格,却以为拿到了整个 range。
+ // 这里宽工作簿声明 A1:ZZ1000000 而真实数据只有三行:请求 max_rows=1/max_cols=1 时
+ // 必须只返回第一格、并明确说 range 被夹紧(不是默默假装读全了)。
+ await test("★ 超大声明 range 在迭代前被夹紧且显式回报(不是 ws[rg] 全量物化)",async()=>{
+  const r=await read("wide.xlsx",{sheet:"Wide",range:"A1:ZZ1000000",max_rows:1,max_cols:1});
+  assert.ok(!r.isError,text(r));
+  const t=text(r);
+  assert.match(t,/WIDE_1/,t.slice(0,200));
+  assert.ok(!t.includes("WIDE_2"),"max_rows=1 却返回了第二行:夹紧没生效");
+  assert.match(t,/已.*夹紧|range.*截断|截断/,t.slice(0,300));
+ });
+ await test("★ 正常 range 不被误报为截断(Sheet!A1:C3 实际内容一致)",async()=>{
+  const r=await read("table.xlsx",{sheet:"Research",range:"A1:B2",max_rows:10,max_cols:10});
+  assert.ok(!r.isError,text(r));
+  const t=text(r);
+  assert.match(t,/Title/);assert.match(t,/研究论文/);
+  assert.ok(!/夹紧|range.*截断/.test(t),"在预算内的正常 range 不该被标成截断");
+ });
  await test("invalid sheet fails rather than claiming an empty document",async()=>{const r=await read("table.xlsx",{sheet:"absent"});assert.equal(r.isError,true);});
  // agent 工具表是**按会话**持有进程 / 后台搜索 / SSH 的"进程级单例"(见 agentTools.ts
  // 文件头与 agentSessionCleanup.ts)。但桥(agentEngineBridge)的 specs() 每次取都要现调
@@ -79,5 +100,42 @@ try {
    });
   }
  }finally{for(const [key,value] of originalEnv){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
+ // 【MC-065】URL 正文预算必须**在输入端**生效:达到 max_chars 就停止读取并 abort,
+ // 而不是先 `res.text()` 把整份收进来再截断。用一个只监听 127.0.0.1 的临时服务回送
+ // 一大坨(远大于 max_chars)文本,并记录**它实际被要求发送了多少字节** —— 客户端若
+ // 在预算处 cancel,服务端只能看到部分字节写出(连接被对端关闭)。
+ await test("★ URL 读取在输入端有界:max_chars 处停止读取而非先下载完整响应",async()=>{
+  const TOTAL=4*1024*1024; // 4 MiB,远大于任何 max_chars
+  let acceptedBytes=0; let gotClientAbort=false;
+  const server=createServer((req,res)=>{
+   res.writeHead(200,{"Content-Type":"text/plain; charset=utf-8","Content-Length":String(TOTAL)});
+   // 分块慢发,让客户端有时间在预算处 cancel。
+   const chunk=Buffer.alloc(64*1024,0x41); // 'A'
+   let sent=0;
+   const tick=()=>{
+    if(sent>=TOTAL){res.end();return;}
+    const ok=res.write(chunk);
+    sent+=chunk.length; acceptedBytes=sent;
+    if(!ok){res.once("drain",tick);return;}
+    setTimeout(tick,1);
+   };
+   req.on("close",()=>{gotClientAbort=true;});
+   tick();
+  });
+  await new Promise<void>((r)=>server.listen(0,"127.0.0.1",()=>r()));
+  const port=(server.address() as {port:number}).port;
+  try{
+   const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
+   const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"});
+   const t=(out as ToolResult).content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   assert.ok(!(out as ToolResult).isError,t);
+   assert.match(t,/status: 200/);
+   // 给服务端一点时间感知对端关闭。
+   await new Promise((r)=>setTimeout(r,200));
+   assert.ok(t.length<=1000+400,`返回正文应被压在 max_chars 附近,实际 ${t.length}`);
+   assert.match(t,/部分正文|截断/,t.slice(-200));
+   assert.ok(acceptedBytes<TOTAL,`客户端消费了完整 ${TOTAL} 字节——没有在输入端停止(${acceptedBytes})`);
+  }finally{await new Promise<void>((r)=>server.close(()=>r()));}
+ });
  console.log(`Document reading: ${passed} passed, ${failures.length} failed`);if(failures.length)process.exitCode=1;
 }finally{rmSync(root,{recursive:true,force:true});}

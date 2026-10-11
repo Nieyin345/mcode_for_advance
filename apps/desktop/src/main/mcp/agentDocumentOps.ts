@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
+import { textFileHash, withDocFileLock } from "./agentTextFiles.js";
 
 export type AgentPdfOperation =
   | { type: "delete"; pageIndexes: number[] }
@@ -118,6 +119,63 @@ async function assertNewOutput(abs: string, source?: string): Promise<void> {
   }
 }
 
+/**
+ * 【MC-069】**原子 no-clobber 预留**一个最终输出名。
+ *
+ * `fs.access` 预检「不存在」然后再跑渲染,是典型的 TOCTOU:两个并发调用**都**能过预检,
+ * 最后只有一个文件、却两边都报成功。这里用 `open(..., "wx")`(`O_CREAT|O_EXCL`)在**真正的
+ * 输出路径**上抢一个空占位:内核保证只有一个调用能创建成功,输的那个拿 `EEXIST` 明确报冲突。
+ *
+ * ⚠️ `O_EXCL` 对符号链接无效(Node 归一到 `O_CREAT|O_EXCL`,可穿过指向不存在目标的 link),
+ * 故先 `lstat` 挡掉已存在的符号链接,与其它写守卫一条口径。
+ */
+async function reserveOutputPath(abs: string, source?: string): Promise<void> {
+  if (source && path.resolve(abs) === path.resolve(source)) {
+    throw new Error("输出文件不能覆盖原文件；请换一个 output_path");
+  }
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.lstat(abs).then(
+    (st) => {
+      throw new Error(
+        st.isSymbolicLink()
+          ? `输出路径是符号链接,拒绝写入:${abs}`
+          : `输出文件已存在:${abs}；为避免误覆盖，请使用新的文件名`,
+      );
+    },
+    (err: NodeJS.ErrnoException) => {
+      if (err.code !== "ENOENT") throw err;
+    },
+  );
+  let fh;
+  try {
+    fh = await fs.open(abs, "wx");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`输出文件已存在:${abs}；为避免误覆盖，请使用新的文件名`);
+    }
+    throw err;
+  }
+  await fh.close();
+}
+
+/**
+ * 【MC-069】乐观版本校验 —— 写之前重读磁盘,比对「本轮开局读到的字节」。
+ *
+ * 若不匹配,说明在本次读-改-写之间文件被别的调用/实例/外部编辑器改过,提交会**静默吞掉**
+ * 那次修改。此时**拒绝**并给 `FILE_VERSION_CONFLICT`,让调用方重新读取,而不是覆盖。
+ */
+async function assertUnchangedOrThrow(abs: string, original: Buffer, label: string): Promise<void> {
+  const current = await fs.readFile(abs).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") throw new Error(`${label}在本次编辑期间被删除:${abs}；未写回`);
+    throw err;
+  });
+  if (textFileHash(current) !== textFileHash(original)) {
+    throw new Error(
+      `FILE_VERSION_CONFLICT:${label}在本次编辑期间被其他操作修改,拒绝覆盖:${abs}；请重新读取后再试`,
+    );
+  }
+}
+
 async function renderMarkdownPdf(markdown: string, outputPath: string): Promise<void> {
   const mdPath = tempPath(".md");
   try {
@@ -180,84 +238,97 @@ export async function writePdf(input: {
 }): Promise<{ outputPath: string; pageCount: number }> {
   const out = path.resolve(input.outputPath);
   await fs.mkdir(path.dirname(out), { recursive: true });
-  await assertNewOutput(out, input.sourcePath);
 
-  if (typeof input.markdown === "string") {
-    if (input.sourcePath || input.operations) throw new Error("创建 PDF 时只传 markdown + output_path");
-    await renderMarkdownPdf(input.markdown, out);
-    return { outputPath: out, pageCount: await pdfPageCount(out) };
-  }
-
-  if (!input.sourcePath || !input.operations) {
-    throw new Error("修改 PDF 需要 source_path + operations + output_path");
-  }
-  const source = path.resolve(input.sourcePath);
-  const sourceStat = await fs.stat(source).catch(() => null);
-  if (!sourceStat?.isFile()) throw new Error(`源 PDF 不存在:${source}`);
-
-  const tempPdfs: string[] = [];
-  try {
-    const normalized: Array<{ type: string; pageIndexes?: number[]; pageIndex?: number; sourcePdfPath?: string }> = [];
-    for (const op of input.operations) {
-      if (op.type === "delete") {
-        normalized.push({ type: "delete", pageIndexes: op.pageIndexes });
-        continue;
-      }
-      const hasMarkdown = typeof op.markdown === "string";
-      const hasSource = typeof op.sourcePdfPath === "string" && op.sourcePdfPath.trim().length > 0;
-      if (hasMarkdown === hasSource) throw new Error("PDF insert 必须且只能提供 markdown 或 sourcePdfPath 之一");
-      if (hasMarkdown) {
-        const temp = tempPath(".pdf");
-        tempPdfs.push(temp);
-        await renderMarkdownPdf(op.markdown ?? "", temp);
-        normalized.push({ type: "insert", pageIndex: op.pageIndex, sourcePdfPath: temp });
-      } else {
-        normalized.push({ type: "insert", pageIndex: op.pageIndex, sourcePdfPath: path.resolve(op.sourcePdfPath!) });
-      }
-    }
-
-    const py = await requirePython();
-    const opsPath = tempPath(".json");
+  // 【MC-069】整段「读-改-写-提交」按真实物理文件串行,并在提交前原子抢名 + 只在完整可读时
+  // 切换到最终路径。从前 `assertNewOutput` 先 `access` 预检再异步渲染,是 TOCTOU:两个并发
+  // 新建都能过预检,最后只剩一个文件却两边都报成功。
+  return withDocFileLock(out, async () => {
+    // 原子 no-clobber:在**最终路径**上抢一个空占位(O_CREAT|O_EXCL)。两个并发只有一个能过,
+    // 输的拿 EEXIST 明确冲突。
+    await reserveOutputPath(out, input.sourcePath);
+    const staging = tempPath(".pdf");
+    const tempPdfs: string[] = [];
     try {
-      await fs.writeFile(opsPath, JSON.stringify(normalized), "utf8");
-      const script = [
-        "import sys,json",
-        "try:",
-        " from pypdf import PdfReader,PdfWriter",
-        "except Exception as e:",
-        " print('缺少 pypdf:'+str(e),file=sys.stderr);sys.exit(2)",
-        "src,dst,opsf=sys.argv[1:4]",
-        "ops=json.load(open(opsf,encoding='utf-8'))",
-        "keepers=[]",
-        "main=PdfReader(src); keepers.append(main); pages=list(main.pages)",
-        "for op in ops:",
-        " if op['type']=='delete':",
-        "  idx=sorted(set(int(i) for i in op.get('pageIndexes',[])),reverse=True)",
-        "  for i in idx:",
-        "   if i<0 or i>=len(pages): raise ValueError(f'delete page index {i} out of range 0..{len(pages)-1}')",
-        "   del pages[i]",
-        " elif op['type']=='insert':",
-        "  at=int(op['pageIndex'])",
-        "  if at<0 or at>len(pages): raise ValueError(f'insert page index {at} out of range 0..{len(pages)}')",
-        "  r=PdfReader(op['sourcePdfPath']); keepers.append(r); pages[at:at]=list(r.pages)",
-        " else: raise ValueError('unknown PDF operation: '+str(op.get('type')))",
-        "w=PdfWriter()",
-        "for p in pages: w.add_page(p)",
-        "with open(dst,'xb') as f: w.write(f)",
-        "print(len(pages))",
-      ].join("\n");
-      const res = await runCaptured(py, ["-c", script, source, out, opsPath], 120_000, PYTHON_DOCUMENT_ENV);
-      if (res.code !== 0) {
-        await fs.rm(out, { force: true }).catch(() => undefined);
-        throw new Error(`修改 PDF 失败:${res.stderr.trim() || res.stdout.trim()}`);
+      if (typeof input.markdown === "string") {
+        if (input.sourcePath || input.operations) throw new Error("创建 PDF 时只传 markdown + output_path");
+        await renderMarkdownPdf(input.markdown, staging);
+      } else {
+        if (!input.sourcePath || !input.operations) throw new Error("修改 PDF 需要 source_path + operations + output_path");
+        const source = path.resolve(input.sourcePath);
+        const sourceStat = await fs.stat(source).catch(() => null);
+        if (!sourceStat?.isFile()) throw new Error(`源 PDF 不存在:${source}`);
+
+        const normalized: Array<{ type: string; pageIndexes?: number[]; pageIndex?: number; sourcePdfPath?: string }> = [];
+        for (const op of input.operations) {
+          if (op.type === "delete") {
+            normalized.push({ type: "delete", pageIndexes: op.pageIndexes });
+            continue;
+          }
+          const hasMarkdown = typeof op.markdown === "string";
+          const hasSource = typeof op.sourcePdfPath === "string" && op.sourcePdfPath.trim().length > 0;
+          if (hasMarkdown === hasSource) throw new Error("PDF insert 必须且只能提供 markdown 或 sourcePdfPath 之一");
+          if (hasMarkdown) {
+            const temp = tempPath(".pdf");
+            tempPdfs.push(temp);
+            await renderMarkdownPdf(op.markdown ?? "", temp);
+            normalized.push({ type: "insert", pageIndex: op.pageIndex, sourcePdfPath: temp });
+          } else {
+            normalized.push({ type: "insert", pageIndex: op.pageIndex, sourcePdfPath: path.resolve(op.sourcePdfPath!) });
+          }
+        }
+
+        const py = await requirePython();
+        const opsPath = tempPath(".json");
+        try {
+          await fs.writeFile(opsPath, JSON.stringify(normalized), "utf8");
+          const script = [
+            "import sys,json",
+            "try:",
+            " from pypdf import PdfReader,PdfWriter",
+            "except Exception as e:",
+            " print('缺少 pypdf:'+str(e),file=sys.stderr);sys.exit(2)",
+            "src,dst,opsf=sys.argv[1:4]",
+            "ops=json.load(open(opsf,encoding='utf-8'))",
+            "keepers=[]",
+            "main=PdfReader(src); keepers.append(main); pages=list(main.pages)",
+            "for op in ops:",
+            " if op['type']=='delete':",
+            "  idx=sorted(set(int(i) for i in op.get('pageIndexes',[])),reverse=True)",
+            "  for i in idx:",
+            "   if i<0 or i>=len(pages): raise ValueError(f'delete page index {i} out of range 0..{len(pages)-1}')",
+            "   del pages[i]",
+            " elif op['type']=='insert':",
+            "  at=int(op['pageIndex'])",
+            "  if at<0 or at>len(pages): raise ValueError(f'insert page index {at} out of range 0..{len(pages)}')",
+            "  r=PdfReader(op['sourcePdfPath']); keepers.append(r); pages[at:at]=list(r.pages)",
+            " else: raise ValueError('unknown PDF operation: '+str(op.get('type')))",
+            "w=PdfWriter()",
+            "for p in pages: w.add_page(p)",
+            // 写进**独立 staging**(`'xb'` 保证全新建),而不是直接写最终名 —— 最终名由本函数
+            // 在完整写出后原子 `rename` 提交,避免半截文件对外可读。
+            "with open(dst,'xb') as f: w.write(f)",
+            "print(len(pages))",
+          ].join("\n");
+          const res = await runCaptured(py, ["-c", script, source, staging, opsPath], 120_000, PYTHON_DOCUMENT_ENV);
+          if (res.code !== 0) throw new Error(`修改 PDF 失败:${res.stderr.trim() || res.stdout.trim()}`);
+        } finally {
+          await fs.rm(opsPath, { force: true }).catch(() => undefined);
+        }
       }
-      return { outputPath: out, pageCount: Number.parseInt(res.stdout.trim(), 10) || await pdfPageCount(out) };
+
+      const pageCount = await pdfPageCount(staging);
+      // 原子提交:staging 完整可读后才替换占位,输出不会出现"半截 PDF"。
+      await fs.rename(staging, out);
+      return { outputPath: out, pageCount };
+    } catch (err) {
+      // 失败:释放本次抢下的占位名(内容由 staging/占位管理,绝不动别人已提交的文件)。
+      await fs.rm(out, { force: true }).catch(() => undefined);
+      throw err;
     } finally {
-      await fs.rm(opsPath, { force: true }).catch(() => undefined);
+      await fs.rm(staging, { force: true }).catch(() => undefined);
+      await Promise.all(tempPdfs.map((p) => fs.rm(p, { force: true }).catch(() => undefined)));
     }
-  } finally {
-    await Promise.all(tempPdfs.map((p) => fs.rm(p, { force: true }).catch(() => undefined)));
-  }
+  });
 }
 
 async function pdfPageCount(abs: string): Promise<number> {
@@ -271,6 +342,8 @@ export async function editExcelRange(input: {
   path: string;
   range: string;
   content: unknown[][];
+  /** 【MC-069】可选:调用方上次读到的文件 sha256。不匹配即拒绝(FILE_VERSION_CONFLICT)。 */
+  expectedSha256?: string;
 }): Promise<{ path: string; sheet: string; range: string; cells: number }> {
   if (!Array.isArray(input.content) || input.content.length === 0 || !input.content.every(Array.isArray)) {
     throw new Error("content 必须是非空二维数组");
@@ -283,35 +356,47 @@ export async function editExcelRange(input: {
   const abs = path.resolve(input.path);
   const tmp = `${abs}.mcode-${randomUUID()}.tmp${path.extname(abs)}`;
   try {
-    await fs.writeFile(payload, JSON.stringify(input.content), "utf8");
-    const script = [
-      "import sys,json,os",
-      "try:",
-      " from openpyxl import load_workbook",
-      " from openpyxl.utils.cell import range_boundaries",
-      "except Exception as e:",
-      " print('缺少 openpyxl:'+str(e),file=sys.stderr);sys.exit(2)",
-      "p,rg,payload,tmp=sys.argv[1:5]",
-      "if '!' not in rg: raise ValueError('range 必须是 Sheet!A1:C10')",
-      "sheet,coords=rg.rsplit('!',1); sheet=sheet.strip()",
-      "if len(sheet)>=2 and sheet[0]==\"'\" and sheet[-1]==\"'\": sheet=sheet[1:-1].replace(\"''\",\"'\")",
-      "rows=json.load(open(payload,encoding='utf-8'))",
-      "keep=os.path.splitext(p)[1].lower()=='.xlsm'",
-      "wb=load_workbook(p,keep_vba=keep)",
-      "if sheet not in wb.sheetnames: raise ValueError('没有工作表:'+sheet)",
-      "ws=wb[sheet]; minc,minr,maxc,maxr=range_boundaries(coords)",
-      "height=maxr-minr+1; width=maxc-minc+1",
-      "if len(rows)!=height or any(len(r)!=width for r in rows): raise ValueError(f'content 尺寸 {len(rows)}x{len(rows[0]) if rows else 0} 与 range {height}x{width} 不一致')",
-      "for ri,row in enumerate(rows):",
-      " for ci,val in enumerate(row): ws.cell(minr+ri,minc+ci).value=val",
-      "wb.save(tmp)",
-      "print(json.dumps({'sheet':sheet,'range':coords,'cells':height*width},ensure_ascii=False))",
-    ].join("\n");
-    const res = await runCaptured(py, ["-c", script, abs, input.range, payload, tmp], 120_000, PYTHON_DOCUMENT_ENV);
-    if (res.code !== 0) throw new Error(`Excel range 写入失败:${res.stderr.trim() || res.stdout.trim()}`);
-    await fs.rename(tmp, abs);
-    const meta = JSON.parse(res.stdout.trim()) as { sheet: string; range: string; cells: number };
-    return { path: abs, ...meta };
+    // 【MC-069】同一条物理文件的读-改-写按真实路径**串行**(与文本编辑共用一份锁),
+    // 并在提交前做乐观版本校验:两个「读旧版→各自写全新文件」的并发里,后者必被挡下,
+    // 而不是两边都报成功、其中一个的修改被静默吞掉。
+    return await withDocFileLock(abs, async (real) => {
+      const original = await fs.readFile(real); // 锁内读取的版本 = 提交时要校验的版本
+      // 【MC-069】显式版本契约:调用方带上来就按它校验(比"锁内读的那版"更强 —— 覆盖
+      // 「读文件→隔了一会儿→再编辑」之间的外部变更)。
+      if (typeof input.expectedSha256 === "string" && input.expectedSha256 && textFileHash(original) !== input.expectedSha256) {
+        throw new Error(`FILE_VERSION_CONFLICT:Excel 文件自上次读取后已被修改,拒绝覆盖:${real}；请重新读取后再试`);
+      }
+      await fs.writeFile(payload, JSON.stringify(input.content), "utf8");
+      const script = [
+        "import sys,json,os",
+        "try:",
+        " from openpyxl import load_workbook",
+        " from openpyxl.utils.cell import range_boundaries",
+        "except Exception as e:",
+        " print('缺少 openpyxl:'+str(e),file=sys.stderr);sys.exit(2)",
+        "p,rg,payload,tmp=sys.argv[1:5]",
+        "if '!' not in rg: raise ValueError('range 必须是 Sheet!A1:C10')",
+        "sheet,coords=rg.rsplit('!',1); sheet=sheet.strip()",
+        "if len(sheet)>=2 and sheet[0]==\"'\" and sheet[-1]==\"'\": sheet=sheet[1:-1].replace(\"''\",\"'\")",
+        "rows=json.load(open(payload,encoding='utf-8'))",
+        "keep=os.path.splitext(p)[1].lower()=='.xlsm'",
+        "wb=load_workbook(p,keep_vba=keep)",
+        "if sheet not in wb.sheetnames: raise ValueError('没有工作表:'+sheet)",
+        "ws=wb[sheet]; minc,minr,maxc,maxr=range_boundaries(coords)",
+        "height=maxr-minr+1; width=maxc-minc+1",
+        "if len(rows)!=height or any(len(r)!=width for r in rows): raise ValueError(f'content 尺寸 {len(rows)}x{len(rows[0]) if rows else 0} 与 range {height}x{width} 不一致')",
+        "for ri,row in enumerate(rows):",
+        " for ci,val in enumerate(row): ws.cell(minr+ri,minc+ci).value=val",
+        "wb.save(tmp)",
+        "print(json.dumps({'sheet':sheet,'range':coords,'cells':height*width},ensure_ascii=False))",
+      ].join("\n");
+      const res = await runCaptured(py, ["-c", script, real, input.range, payload, tmp], 120_000, PYTHON_DOCUMENT_ENV);
+      if (res.code !== 0) throw new Error(`Excel range 写入失败:${res.stderr.trim() || res.stdout.trim()}`);
+      await assertUnchangedOrThrow(real, original, "Excel 文件");
+      await fs.rename(tmp, real);
+      const meta = JSON.parse(res.stdout.trim()) as { sheet: string; range: string; cells: number };
+      return { path: real, ...meta };
+    });
   } finally {
     await fs.rm(payload, { force: true }).catch(() => undefined);
     await fs.rm(tmp, { force: true }).catch(() => undefined);
@@ -375,35 +460,41 @@ export async function editDocxXml(input: {
   const payload = tempPath(".json");
   const tmp = `${abs}.mcode-${randomUUID()}.tmp.docx`;
   try {
-    await fs.writeFile(payload, JSON.stringify({ old: input.oldString, new: input.newString }), "utf8");
-    const script = [
-      "import sys,json,zipfile,xml.dom.minidom as MD,re",
-      "p,payload,tmp,part,expected=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4],int(sys.argv[5])",
-      "data=json.load(open(payload,encoding='utf-8')); old,new=data['old'],data['new']",
-      "with zipfile.ZipFile(p,'r') as zin:",
-      " names=zin.namelist()",
-      " candidates=[part] if part else [n for n in names if re.match(r'word/(document|header\\d+|footer\\d+)\\.xml$',n,re.I)]",
-      " pretty={}",
-      " total=0; touched=[]",
-      " for n in candidates:",
-      "  if n not in names: continue",
-      "  s=MD.parseString(zin.read(n)).toprettyxml(indent='  ')",
-      "  c=s.count(old); total+=c; pretty[n]=s",
-      "  if c: touched.append(n)",
-      " if total!=expected: raise ValueError(f'old_string 实际匹配 {total} 次，期望 {expected} 次；未写回')",
-      " with zipfile.ZipFile(tmp,'w') as zout:",
-      "  for info in zin.infolist():",
-      "   body=zin.read(info.filename)",
-      "   if info.filename in pretty and old in pretty[info.filename]: body=pretty[info.filename].replace(old,new).encode('utf-8')",
-      "   zout.writestr(info,body)",
-      " print(json.dumps({'replacements':total,'parts':touched},ensure_ascii=False))",
-    ].join("\n");
-    const part = input.part ? normalizeDocxPart(input.part) : "";
-    const res = await runCaptured(py, ["-c", script, abs, payload, tmp, part, String(expected)], 120_000, PYTHON_DOCUMENT_ENV);
-    if (res.code !== 0) throw new Error(`DOCX XML 修改失败:${res.stderr.trim() || res.stdout.trim()}`);
-    await fs.rename(tmp, abs);
-    const meta = JSON.parse(res.stdout.trim()) as { replacements: number; parts: string[] };
-    return { path: abs, ...meta };
+    // 【MC-069】与 Excel 同款:同一物理文件串行 + 提交前乐观版本校验,避免「两份完整快照
+    // 互相覆盖、后到者静默吞掉先到者的修改」。
+    return await withDocFileLock(abs, async (real) => {
+      const original = await fs.readFile(real);
+      await fs.writeFile(payload, JSON.stringify({ old: input.oldString, new: input.newString }), "utf8");
+      const script = [
+        "import sys,json,zipfile,xml.dom.minidom as MD,re",
+        "p,payload,tmp,part,expected=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4],int(sys.argv[5])",
+        "data=json.load(open(payload,encoding='utf-8')); old,new=data['old'],data['new']",
+        "with zipfile.ZipFile(p,'r') as zin:",
+        " names=zin.namelist()",
+        " candidates=[part] if part else [n for n in names if re.match(r'word/(document|header\\d+|footer\\d+)\\.xml$',n,re.I)]",
+        " pretty={}",
+        " total=0; touched=[]",
+        " for n in candidates:",
+        "  if n not in names: continue",
+        "  s=MD.parseString(zin.read(n)).toprettyxml(indent='  ')",
+        "  c=s.count(old); total+=c; pretty[n]=s",
+        "  if c: touched.append(n)",
+        " if total!=expected: raise ValueError(f'old_string 实际匹配 {total} 次，期望 {expected} 次；未写回')",
+        " with zipfile.ZipFile(tmp,'w') as zout:",
+        "  for info in zin.infolist():",
+        "   body=zin.read(info.filename)",
+        "   if info.filename in pretty and old in pretty[info.filename]: body=pretty[info.filename].replace(old,new).encode('utf-8')",
+        "   zout.writestr(info,body)",
+        " print(json.dumps({'replacements':total,'parts':touched},ensure_ascii=False))",
+      ].join("\n");
+      const part = input.part ? normalizeDocxPart(input.part) : "";
+      const res = await runCaptured(py, ["-c", script, real, payload, tmp, part, String(expected)], 120_000, PYTHON_DOCUMENT_ENV);
+      if (res.code !== 0) throw new Error(`DOCX XML 修改失败:${res.stderr.trim() || res.stdout.trim()}`);
+      await assertUnchangedOrThrow(real, original, "DOCX 文件");
+      await fs.rename(tmp, real);
+      const meta = JSON.parse(res.stdout.trim()) as { replacements: number; parts: string[] };
+      return { path: real, ...meta };
+    });
   } finally {
     await fs.rm(payload, { force: true }).catch(() => undefined);
     await fs.rm(tmp, { force: true }).catch(() => undefined);

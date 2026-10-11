@@ -339,11 +339,18 @@ const JAVA_ARCHIVE_SRC = join(SRV, "jdtls-archive-src");
 mkdirSync(join(JAVA_ARCHIVE_SRC, "bin"), { recursive: true });
 writeFileSync(join(JAVA_ARCHIVE_SRC, "bin", "jdtls"), "#!/bin/sh\necho jdtls\n");
 writeFileSync(join(JAVA_ARCHIVE_SRC, "bin", "jdtls.bat"), "@echo off\r\necho jdtls\r\n");
+// 【MC-037】一份**真实**的 jdtls tar.gz 必带 plugins/(equinox launcher)与 configs/。
+// 完整性预检(assertJavaInstallComplete)正是据此拒绝残缺包,所以"好包"夹具必须带上
+// 这两样,否则它会被正确地判为不完整、"好包能装上"那条会红。
+mkdirSync(join(JAVA_ARCHIVE_SRC, "plugins"), { recursive: true });
+writeFileSync(join(JAVA_ARCHIVE_SRC, "plugins", "org.eclipse.equinox.launcher_1.5.0.jar"), "NEW-JAR");
+mkdirSync(join(JAVA_ARCHIVE_SRC, "configs"), { recursive: true });
+writeFileSync(join(JAVA_ARCHIVE_SRC, "configs", "config.ini"), "osgi.bundles=...\n");
 const GOOD_JAVA_ARCHIVE = join(FIX, "jdtls-good.tar.gz");
 const BAD_JAVA_ARCHIVE = join(FIX, "jdtls-bad.tar.gz");
 writeFileSync(BAD_JAVA_ARCHIVE, "this is not a gzip archive\n");
 try {
-  execFileSync(process.platform === "win32" ? "tar.exe" : "tar", ["-czf", GOOD_JAVA_ARCHIVE, "-C", JAVA_ARCHIVE_SRC, "bin"], {
+  execFileSync(process.platform === "win32" ? "tar.exe" : "tar", ["-czf", GOOD_JAVA_ARCHIVE, "-C", JAVA_ARCHIVE_SRC, "bin", "plugins", "configs"], {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   });
@@ -1523,6 +1530,30 @@ console.log("\n§6p Java 安装:坏包解压失败 → 旧版本原封不动、�
   const strayStage = readdirSync(join(USER_DATA, "lsp")).filter((n) => n.startsWith(".java.staging-"));
   same("失败后暂存目录被清掉了(不留半截垃圾)", strayStage, []);
 
+  // —— 【MC-037】残缺包:能解压,但缺 plugins/configs ——
+  // 从前的实现解压成功即替换,于是一个"能解开但没有 jdtls 主体"的包会把可用旧版挤掉。
+  // 现在换上去**之前**校验完整性,残缺包被拒、旧版一字未动。
+  {
+    const PARTIAL_SRC = join(SRV, "jdtls-partial-src");
+    mkdirSync(join(PARTIAL_SRC, "bin"), { recursive: true });
+    writeFileSync(join(PARTIAL_SRC, "bin", "jdtls"), "#!/bin/sh\necho jdtls\n");
+    const PARTIAL_ARCHIVE = join(FIX, "jdtls-partial.tar.gz");
+    let made = false;
+    try {
+      execFileSync(process.platform === "win32" ? "tar.exe" : "tar", ["-czf", PARTIAL_ARCHIVE, "-C", PARTIAL_SRC, "bin"], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+      made = true;
+    } catch { /* tar 不可用 */ }
+    if (made && existsSync(OLD_LAUNCHER)) {
+      const before = readFileSync(OLD_LAUNCHER, "utf8");
+      const partial = (await call(IPC.LSP_INSTALL_FROM_FILE, { language: "java", archivePath: PARTIAL_ARCHIVE })) as { ok: boolean; error?: string };
+      eq("★ 残缺包(缺 plugins/configs)→ 安装失败", partial.ok, false);
+      says("★ 失败理由点明「不完整」", partial.error, "不完整");
+      eq("★ 残缺包被拒后旧版本逐字节未动", existsSync(OLD_LAUNCHER) ? readFileSync(OLD_LAUNCHER, "utf8") : "<没了>", before);
+      const stray2 = readdirSync(join(USER_DATA, "lsp")).filter((n) => n.startsWith(".java.staging-"));
+      same("★ 残缺包被拒后不留暂存垃圾", stray2, []);
+    }
+  }
+
   // —— 好包:解压成功才替换 ——
   if (!existsSync(GOOD_JAVA_ARCHIVE)) {
     check("★ 需要一个合法的 jdtls tar.gz 夹具,但 tar 没能造出来", false, { tar: GOOD_JAVA_ARCHIVE });
@@ -1593,6 +1624,48 @@ console.log("\n§6q 同一文件的 open/close/change 串行:didOpen 一定先�
   );
 
   rmSync(FILE, { force: true });
+  lspManager.disposeAll();
+  same("这一段收干净了", await waitUntilGone(spawnedPids()), []);
+}
+
+/* ─────────── 6r. 读盘途中 restart/dispose:迟到的 didOpen 不再打到已死 server(MC-038) ─────────── */
+
+console.log("\n§6r openDocument 读盘途中 server 被 restart:过时的 didOpen 必须被丢弃");
+
+{
+  // §23.1 对 MC-038 的残余质疑:「重启/dispose 时 in-flight generation 的取消及旧异步
+  // didOpen 隔离未证明」。这里把它钉住:一个 openDocument 在 `await readFile` 里让出后,
+  // server 被 `restart`(→ removeServer → handle 作废)或在途 handle 被 dispose,回到同步
+  // 段时那次 **迟到的 didOpen 绝不能发给已死的 server**(否则文件被反向重开、内部集合撒谎)。
+  clearBinaries();
+  resetPidLog();
+  resetSent();
+  clearMethodLog();
+  configure([{ language: "typescript", enabled: true, serverPath: GOOD_TS }]);
+
+  const BIG = join(WS1, "slow-open.ts");
+  // 32MB:把 `await readFile` 那一段可靠地撑到远超下面的 sleep(几毫秒),否则(小文件在
+  // 热缓存下读得太快)open 会在 restart 之前就正常完成 —— 那是**另一种**情形,断言会假红。
+  writeFileSync(BIG, "x".repeat(32 * 1024 * 1024));
+  const bigUri = `file:///${resolve(BIG).replace(/\\/g, "/")}`;
+
+  // 先起 server,再清空日志,让竞态窗口纯在"读盘"那一段。
+  await lspManager.openDocument(WS1, join(WS1, "a.ts"), "typescript");
+  await sleep(400);
+  clearMethodLog();
+
+  // 不 await 第一个 open,只让出一个事件循环回合(够 doOpenDocument 走到 readFile),
+  // 在它读盘期间重启 server(removeServer 会把旧 handle 标作 stale)。
+  const opening = lspManager.openDocument(WS1, BIG, "typescript");
+  await sleep(3); // 远小于 32MB 的读取耗时,故此刻 open 仍停在 readFile 里
+  await lspManager.restart(WS1, "typescript");
+  await opening;
+  await sleep(200);
+
+  const lateOpens = readMethodLog().filter((e) => e.u === bigUri && e.m === "textDocument/didOpen");
+  eq("★ 读盘途中被 restart 后,过时的 didOpen 一次都没发出去(不重开已死 server 上的文件)", lateOpens.length, 0);
+
+  rmSync(BIG, { force: true });
   lspManager.disposeAll();
   same("这一段收干净了", await waitUntilGone(spawnedPids()), []);
 }

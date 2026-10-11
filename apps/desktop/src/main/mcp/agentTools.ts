@@ -41,6 +41,7 @@ import { spawn } from "node:child_process";
 import { readTextPage, formatTextPage, withTextFileLock, replaceTextFile, textFileHash, grepMatchPreview, type TextPageOptions } from "./agentTextFiles.js";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 import { pathWithin as realPathWithin } from "@main/lib/realPathWithin.js";
+import { moveFileSafe, isMoveDurable } from "@main/lib/moveFileSafe.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 import { z } from "zod";
 import {
@@ -743,25 +744,46 @@ async function readRichDocument(input: {
       " from openpyxl import load_workbook",
       "except Exception as e:",
       " print(json.dumps({'error':'缺少 openpyxl: '+str(e)},ensure_ascii=False));sys.exit(2)",
+      "try:",
+      " from openpyxl.utils.cell import range_boundaries",
+      "except Exception:",
+      " range_boundaries=None",
       "p,sheet,rg,maxr,maxc=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4]),int(sys.argv[5])",
       "wb=load_workbook(p,read_only=True,data_only=False)",
       "ws=wb[sheet] if sheet else wb[wb.sheetnames[0]]",
+      "truncated=False",
+      "if rg:",
+      " # 【MC-065】显式 range 也在**迭代之前**夹紧:先解析边界再交给 iter_rows 惰性遍历,",
+      " # 绝不 `ws[rg]` —— 那会先把整个矩形(可能是百万格)materialize 出来,与 max_rows/max_cols 无关。",
+      " if range_boundaries is None:",
+      "  print(json.dumps({'error':'openpyxl 版本过旧,缺少 range_boundaries,无法安全解析显式 range'},ensure_ascii=False));sys.exit(2)",
+      " try:",
+      "  c0,r0,c1,r1=range_boundaries(rg)",
+      " except Exception as e:",
+      "  print(json.dumps({'error':'range 不合法: '+str(rg)+' ('+str(e)+')'},ensure_ascii=False));sys.exit(2)",
+      " if c0 is None or c1 is None: c0,c1=1,(ws.max_column or 1)",
+      " if r0 is None or r1 is None: r0,r1=1,(ws.max_row or 1)",
+      " minc,minr,maxc_req,maxr_req=int(c0),int(r0),int(c1),int(r1)",
+      " maxr_eff=min(minr+maxr-1,maxr_req)",
+      " maxc_eff=min(minc+maxc-1,maxc_req)",
+      " if (maxr_req-minr+1)>maxr or (maxc_req-minc+1)>maxc: truncated=True",
+      " cells=ws.iter_rows(min_row=minr,max_row=maxr_eff,min_col=minc,max_col=maxc_eff)",
+      "else:",
+      " maxr_eff=min(ws.max_row,maxr);maxc_eff=min(ws.max_column,maxc)",
+      " cells=ws.iter_rows(min_row=1,max_row=maxr_eff,min_col=1,max_col=maxc_eff)",
       "rows=[]",
-      "cells=ws[rg] if rg else ws.iter_rows(min_row=1,max_row=min(ws.max_row,maxr),min_col=1,max_col=min(ws.max_column,maxc))",
-      "if rg and not isinstance(cells,tuple): cells=((cells,),)",
-      "elif rg and cells and not isinstance(cells[0],tuple): cells=(cells,)",
       "for row in cells:",
-      " vals=[]",
-      " for c in row[:maxc]: vals.append(c.value)",
-      " rows.append(vals)",
-      " if len(rows)>=maxr: break",
-      "print(json.dumps({'sheets':wb.sheetnames,'sheet':ws.title,'rows':rows},ensure_ascii=False,default=str))",
+      " rows.append([c.value for c in row])",
+      "print(json.dumps({'sheets':wb.sheetnames,'sheet':ws.title,'rows':rows,'rangeTruncated':truncated},ensure_ascii=False,default=str))",
     ].join("\n");
     const out = await runCaptured(py, ["-c", script, input.abs, input.sheet ?? "", input.range ?? "", String(Math.max(1, Math.min(input.maxRows ?? 200, 1000))), String(Math.max(1, Math.min(input.maxCols ?? 50, 200)))], 60_000, PYTHON_DOCUMENT_ENV);
     if (out.code !== 0) throw new Error(`Excel 抽取失败:${out.stderr.trim() || out.stdout.trim() || `exit ${out.code}`}`);
-    const parsed = JSON.parse(out.stdout) as { error?: string; sheets?: string[]; sheet?: string; rows?: unknown[][] };
+    const parsed = JSON.parse(out.stdout) as { error?: string; sheets?: string[]; sheet?: string; rows?: unknown[][]; rangeTruncated?: boolean };
     if (parsed.error) throw new Error(parsed.error);
     const lines = [`sheets: ${(parsed.sheets ?? []).join(", ")}`, `sheet: ${parsed.sheet ?? ""}`];
+    if (parsed.rangeTruncated) {
+      lines.push("[range 超过 max_rows/max_cols 上限,已在**迭代之前**夹紧 —— 这是部分区域,不是整个 range]");
+    }
     for (const [i, row] of (parsed.rows ?? []).entries()) {
       lines.push(`${i + 1}\t${row.map((v) => v == null ? "" : String(v).replace(/\r?\n/g, " ↵ ")).join("\t")}`);
     }
@@ -805,18 +827,69 @@ async function readUrlText(url: string, maxChars: number, timeoutMs: number): Pr
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("只支持 http/https URL");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1_000, Math.min(timeoutMs, 60_000)));
+  const capChars = Math.max(1_000, Math.min(maxChars, 300_000));
   try {
     const res = await fetch(parsed, { signal: controller.signal, redirect: "follow" });
     const contentType = res.headers.get("content-type") ?? "";
-    const textBody = await res.text();
-    const body = capDocumentOutput(textBody, "URL 响应", Math.max(1_000, Math.min(maxChars, 300_000)));
-    return `status: ${res.status} ${res.statusText}\nurl: ${res.url}\ncontent-type: ${contentType}\n\n${body}`;
+    // 【MC-065】结果限额 ≠ 输入限额:从前 `await res.text()` 先把**整份**响应读进内存
+    // 再截断 —— `max_chars` 只是"给模型看多少",管不住下载与解码时的内存/GC 峰值。
+    // 现在**边读边累计**,到上限就 abort 响应,不再无界缓冲;回执如实标注是否截断。
+    const { text: textBody, truncated } = await readBodyWithinCharBudget(res, capChars);
+    const body = capDocumentOutput(textBody, "URL 响应", capChars);
+    const note = truncated
+      ? `\n(响应超过 ${capChars} 字符上限,已在输入端停止读取 —— 这是部分正文,不是完整响应)`
+      : "";
+    return `status: ${res.status} ${res.statusText}\nurl: ${res.url}\ncontent-type: ${contentType}\n\n${body}${note}`;
   } catch (err) {
     if ((err as Error).name === "AbortError") throw new Error(`读取 URL 超过 ${timeoutMs}ms`);
     throw err;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 【MC-065】在**输入阶段**就有界地读取一个文本响应 —— 达到 `maxChars` 就停止读取并
+ * abort 连接,而不是先 `res.text()` 把整份收进来再切片。
+ *
+ * 判据是**字符**(与 `max_chars` 同一单位):流式 `TextDecoder` 逐块解码(不切坏多字节
+ * 字符),累计超过上限即 `reader.cancel()`。返回 `truncated` 让调用方如实告知模型
+ * "这是部分正文"。
+ *
+ * 响应体为 null(如 204)→ 空串。读流失败(部分平台)时退回 `res.text()` 的旧路 —— 但
+ * 那条路会照旧截断输出;这是**降级**,不是首选。
+ */
+async function readBodyWithinCharBudget(
+  res: Response,
+  maxChars: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const body = res.body;
+  if (!body) {
+    const t = await res.text();
+    return t.length > maxChars ? { text: t.slice(0, maxChars), truncated: true } : { text: t, truncated: false };
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let out = "";
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += decoder.decode(value, { stream: true });
+      if (out.length >= maxChars) {
+        truncated = true;
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+    }
+    if (!truncated) out += decoder.decode(); // flush 尾部残留
+  } catch {
+    // 读流不可用:退回整份读(仍截断输出),不因此让工具失败。
+    const t = await res.text().catch(() => out);
+    return t.length > maxChars ? { text: t.slice(0, maxChars), truncated: true } : { text: t, truncated: false };
+  }
+  return { text: out.length > maxChars ? out.slice(0, maxChars) : out, truncated };
 }
 
 /* ────────────────────────────── 目录遍历 ────────────────────────────── */
@@ -1574,30 +1647,50 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_move_file",
       description:
-        "移动或重命名文件/目录。默认不覆盖已有目标；overwrite=true 才会先移除目标。属于文件修改操作。",
+        "移动或重命名文件/目录。默认不覆盖已有目标；overwrite=true 时才允许替换目标(替换前会先把旧目标存到同目录备份,只有新内容确认就位才清理)。" +
+        "源与目标相同为 no-op；把目录移动到它自己的子目录会被拒绝。所有分支都返回结构化结果,失败不会静默丢数据。属于文件修改操作。",
       inputSchema: {
         source: z.string().min(1).describe("原路径"),
         destination: z.string().min(1).describe("目标路径"),
         overwrite: z.boolean().optional().describe("目标已存在时是否覆盖，默认 false"),
       },
+      outputSchema: {
+        committed: z.boolean().describe("内容是否已稳定提交到目标(部分完成也算 true —— 目标确实有内容)"),
+        sourcePreserved: z.boolean().describe("结束后原路径是否仍在"),
+        destinationPreserved: z.boolean().describe("目标处是否仍有有效内容"),
+        recoverable: z.boolean().describe("是否留下需人工处理的备份/残留"),
+        phase: z
+          .enum(["PREPARED", "DEST_CREATED", "SOURCE_REMOVED", "COMMITTED", "PARTIALLY_APPLIED", "UNCERTAIN"])
+          .describe("生命周期阶段；COMMITTED 才算完全成功,PARTIALLY_APPLIED/UNCERTAIN 有可见副作用、需人工确认"),
+        commitOutcome: z
+          .enum(["DURABLE", "APPLIED_NOT_DURABLE", "FAILED"])
+          .describe("与 ARC-005 对齐的三态；只有 DURABLE 可对外宣布移动成功"),
+        backupRef: z.string().optional().describe("需人工恢复时的备份路径"),
+        reason: z.string().optional().describe("稳定原因码（SAME_SOURCE_DESTINATION / DESTINATION_INSIDE_SOURCE / UNCERTAIN 等）"),
+        operationId: z.string().describe("本次操作的唯一 id"),
+      },
       handler: (args: { source: string; destination: string; overwrite?: boolean }, ctx) =>
-        attempt(async () => {
+        attemptStructured(async () => {
           const source = pOf(ctx, args.source);
           const destination = pOf(ctx, args.destination);
-          const src = await fs.lstat(source).catch(() => null);
-          if (!src) throw new Error(`原路径不存在:${source}`);
-          const dest = await fs.lstat(destination).catch(() => null);
-          if (dest && !args.overwrite) throw new Error(`目标已存在:${destination}；确认覆盖时传 overwrite=true`);
-          await fs.mkdir(path.dirname(destination), { recursive: true });
-          if (dest) await fs.rm(destination, { recursive: true, force: true });
-          try {
-            await fs.rename(source, destination);
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
-            await fs.cp(source, destination, { recursive: true, force: true });
-            await fs.rm(source, { recursive: true, force: true });
-          }
-          return `已移动 ${source} -> ${destination}`;
+          // 安全移动协议(预检 → 暂存旧目标 → 提交 → 失败恢复)只有一份,见 moveFileSafe。
+          const r = await moveFileSafe(source, destination, { overwrite: args.overwrite === true });
+          const fields: Record<string, unknown> = {
+            committed: r.committed,
+            sourcePreserved: r.sourcePreserved,
+            destinationPreserved: r.destinationPreserved,
+            recoverable: r.recoverable,
+            phase: r.phase,
+            commitOutcome: r.commitOutcome,
+            operationId: r.operationId,
+          };
+          if (r.backupRef) fields.backupRef = r.backupRef;
+          if (r.reason) fields.reason = r.reason;
+          // 成功 = 内容已稳定 durable 且没有需要人工收拾的残留(源/目标相同这类 no-op 也算成功)。
+          // 部分完成(PARTIALLY_APPLIED)、不确定(UNCERTAIN)走 isError,但结构化字段照带 —— 调用者
+          // 能据此看出「目标其实已经出现了」,不会误当完全没发生而重跑。
+          const ok = isMoveDurable(r);
+          return { text: r.message, structured: fields, isError: !ok };
         }),
     },
 

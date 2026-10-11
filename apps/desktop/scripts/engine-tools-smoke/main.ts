@@ -12,13 +12,15 @@
  *
  * 用临时文件测读写，不碰 `~/.mcode`。
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   defaultEngineToolPolicyPath,
   engineSupportsToolExclusion,
   excludedToolsForEngine,
+  lastGoodEngineToolPolicyPath,
+  readEngineToolPolicyDetailed,
   readEngineToolPolicyFile,
   writeEngineToolPolicyFile,
 } from "@main/lib/engineToolPolicy.js";
@@ -76,6 +78,43 @@ try {
   check("Claude 支持按名禁用", engineSupportsToolExclusion("claude"));
   check("Pi 支持按名禁用", engineSupportsToolExclusion("pi"));
   check("Codex 不支持（只有沙箱/审批档）", !engineSupportsToolExclusion("codex"));
+
+  /* ── 4b.【MC-071】MISSING / VALID / INVALID 三态 + 损坏恢复 ────────────── */
+  {
+    const f = join(dir, "mc071.json");
+    rmSync(f, { force: true }); rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+    const missing = readEngineToolPolicyDetailed(f);
+    check("★ 缺文件 → MISSING(不是 INVALID)", missing.status === "MISSING", missing);
+    eq("MISSING 实际策略为不设限", missing.policy, {});
+
+    // 合法写入 → VALID,并刷新 last-good 备份
+    writeEngineToolPolicyFile(f, { claude: { exclude: ["Bash"] } });
+    const valid = readEngineToolPolicyDetailed(f);
+    check("合法配置 → VALID", valid.status === "VALID", valid);
+    eq("VALID 读回禁用列表", valid.policy, { claude: { exclude: ["Bash"] } });
+    check("写入后 last-good 备份存在", readEngineToolPolicyDetailed(lastGoodEngineToolPolicyPath(f)).status !== "MISSING");
+
+    // 主文件被截断 → INVALID,且**不 fail-open**:从 last-good 恢复出原本的 Bash 禁用
+    writeFileSync(f, '{ "claude": { "exclude": ["Bas');
+    const broken = readEngineToolPolicyDetailed(f);
+    check("★ 坏 JSON → INVALID(不是静默空策略)", broken.status === "INVALID", broken);
+    check("★ 损坏后**保守恢复**到最后一份确认过的策略(不静默启用 Bash)", broken.recovered === true && JSON.stringify(broken.policy) === JSON.stringify({ claude: { exclude: ["Bash"] } }), broken);
+
+    // 破坏性变异点:旧行为是「坏 JSON → {}」 —— 若恢复失效,上面两条会红(工具被静默重新启用)。
+    // 没有备份时:仍报 INVALID(不假称用户主动启用),策略按不设限但带 error。
+    rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+    writeFileSync(f, "not json at all");
+    const noBackup = readEngineToolPolicyDetailed(f);
+    check("★ 无备份的损坏仍报 INVALID 且带原因(不静默假装启用)", noBackup.status === "INVALID" && typeof noBackup.error === "string" && noBackup.recovered === false, noBackup);
+
+    // 权限类读取失败(EISDIR:路径是个目录)同样算 INVALID,不得当成 MISSING。
+    const dirAsFile = join(dir, "adir");
+    writeFileSync(join(dir, "placeholder"), "x");
+    // 造一个目录占住路径
+    mkdirSync(dirAsFile, { recursive: true });
+    const readErr = readEngineToolPolicyDetailed(dirAsFile);
+    check("★ 存在但读不出 → INVALID(不当作 MISSING)", readErr.status === "INVALID", readErr);
+  }
 
   /* ── 5. 接线：provider 真的读了策略并传给了 SDK ───────────────────────── */
   const claudeSrc = readFileSync(resolve(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");

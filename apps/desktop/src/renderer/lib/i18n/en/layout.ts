@@ -300,4 +300,6 @@ export const en = {
   "layout.loginMismatch": "Passwords don't match",
   "layout.loginSaved": "Saved. Phones already signed in stay signed in — revoke them below if needed.",
   "layout.loginDisabled": "Account login turned off. Phones already signed in still work — revoke them below if needed.",
+  /* ── toast stack ── */
+  "layout.toastOpenSource": "Open source",
 } as const;

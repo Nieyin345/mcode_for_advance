@@ -40,6 +40,9 @@ export interface BrowserTab {
   /** Screen orientation (portrait/landscape). "landscape" swaps width/height
    *  when emulating. Defaults to "portrait" when absent. */
   orientation?: BrowserOrientation;
+  /** 【UI-014】上一次导航/返回/刷新被业务层**明确拒绝**的原因。`{ok:false}` 时置上,
+   *  成功导航时清空 —— 地址栏据此显示可读错误,不再"先改 URL、失败后什么都不说"。 */
+  navError?: string;
 }
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";

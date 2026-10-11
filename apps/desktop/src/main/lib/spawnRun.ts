@@ -103,6 +103,10 @@ export interface SpawnRunOptions {
    * 语义,不是这一层的 —— 所以做成开关而不是替它们选一个。
    */
   mergeStreams?: boolean;
+  /** 【MC-073】逐行解析时单行 / 在途残行的字节上限(默认 {@link MAX_LINE_BYTES})。
+   *  超限的行按有界尾部处理并置 `stdoutLineTruncated` / `stderrLineTruncated`。
+   *  传 0 = 完全停止缓冲残行(无界流的兜底)。 */
+  maxLineBytes?: number;
   /** 只给冒烟测试用:塞一个假的 spawn,不真起进程。 */
   spawn?: SpawnFn;
 }
@@ -116,6 +120,10 @@ export interface SpawnRunResult {
   /** 哪条流被截过(尾部之外的东西丢了)。调用方可以据此在文案里说明。 */
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
+  /** 【MC-073】逐行解析时,某条流出现过**超长行被夹断**。与 `*Truncated`(尾部之外丢了)
+   *  不同:这表示**某一行本身**不完整,协议解析不得把它当成完整结果。 */
+  stdoutLineTruncated: boolean;
+  stderrLineTruncated: boolean;
   /** `spawn` 抛了、或者 `error` 事件报了(ENOENT 那一类)。 */
   spawnError?: Error;
   killedBy: KillCause;
@@ -204,6 +212,21 @@ export function killTree(child: ChildProcess): void {
 }
 
 /**
+ * 单条行 / 在途残行的**字节上限**(【MC-073】)。
+ *
+ * 从前 `splitLines` 用 `Buffer.concat([pending, chunk])` 攒残行,残行**没有上限** ——
+ * 一条没有 LF 的长流(NB: `outRest` 每块都整体复制一次,是 O(n²) 拷贝)既吃内存又吃 CPU,
+ * 而 `OutBuf(limitBytes)` 只限制**解析后**进捕获窗口的数据,管不住它。1MiB 无换行流就能
+ * 让残行缓存涨到 1MiB、Buffer.concat 被调 256 次。
+ *
+ * 1MiB:远超任何正常单行(日志行、NDJSON 协议行),又足够小到不给放大留空间。超限的行
+ * 按「保留有界尾部 + 丢弃更早的字节」处理(与 OutBuf 的尾部截断同一条语义),并置
+ * `*LineTruncated`;调用方据此知道这是**被截断的**行,不能当成完整协议结果(见
+ * `codeRunner` 对 `stdoutLineTruncated` 的处置)。
+ */
+export const MAX_LINE_BYTES = 1 * 1024 * 1024;
+
+/**
  * 按字节切行 —— 攒着的残行 + 新来的一块字节 → (完整行列表, 新的残行)。
  *
  * **判据是 `0x0A` 这个字节**,不是"解码后再找换行"。UTF-8 与 GBK 对 ASCII 都兼容,
@@ -211,19 +234,49 @@ export function killTree(child: ChildProcess): void {
  * 单独拿去解码不会切坏字符。这就是"既能逐行即时处理、又不会把中文解成两半"的解法。
  *
  * 返回值里的行**不含换行符** —— 补不补由调用方决定。
+ *
+ * **有界(MC-073)**:`pending` 与每条输出行长都被夹在 `maxLineBytes` 内,`Buffer.concat`
+ * 的输入因此始终有界、总量与总输出字节无关,不再 O(n²)。超限时:
+ *   - 输出的行取**头部** `maxLineBytes`(行的开头更可能带协议前缀/关键字,故留头);
+ *   - 攒着的残行取**尾部** `maxLineBytes`(残行是"还没成行的尾巴",尾部更接近下一行的起点)。
+ * 任一被夹过即 `truncated=true`,调用方可用它给出 `LINE_TRUNCATED` 语义。当 `maxLineBytes<=0`
+ * 时返回 `{lines:[], rest:空, truncated:true}` 且**立刻丢弃** —— 调用方据此停止缓冲,让
+ * 无界流无法把内存耗光(`rest` 保持有界是此模块的核心不变量)。
  */
-function splitLines(pending: Buffer, chunk: Buffer): { lines: Buffer[]; rest: Buffer } {
-  const buf = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+function splitLines(
+  pending: Buffer,
+  chunk: Buffer,
+  maxLineBytes: number,
+): { lines: Buffer[]; rest: Buffer; truncated: boolean } {
+  if (maxLineBytes <= 0) return { lines: [], rest: Buffer.alloc(0), truncated: true };
+  // 先把残行夹一次(它本身可能从上一次就超了)。
+  let trunc = false;
+  let pend = pending;
+  if (pend.length > maxLineBytes) {
+    pend = pend.subarray(pend.length - maxLineBytes);
+    trunc = true;
+  }
+  const buf = pend.length === 0 ? chunk : Buffer.concat([pend, chunk]);
   const lines: Buffer[] = [];
   let start = 0;
   for (let i = 0; i < buf.length; i += 1) {
     if (buf[i] !== 0x0a) continue;
     // 行尾可能是 `\r\n`(Windows)—— 去掉那个 `\r`,它是行终止符的一部分。
     const end = i > start && buf[i - 1] === 0x0d ? i - 1 : i;
-    lines.push(buf.subarray(start, end));
+    let line = buf.subarray(start, end);
+    if (line.length > maxLineBytes) {
+      line = line.subarray(0, maxLineBytes);
+      trunc = true;
+    }
+    lines.push(line);
     start = i + 1;
   }
-  return { lines, rest: start === 0 ? buf : buf.subarray(start) };
+  let rest = start === 0 ? buf : buf.subarray(start);
+  if (rest.length > maxLineBytes) {
+    rest = rest.subarray(rest.length - maxLineBytes);
+    trunc = true;
+  }
+  return { lines, rest, truncated: trunc };
 }
 
 /**
@@ -243,7 +296,8 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   const killedBy: KillCause = { timeout: false, abort: false };
   const empty = (extra: Partial<SpawnRunResult>): SpawnRunResult => ({
     code: null, signal: null, stdout: "", stderr: "",
-    stdoutTruncated: false, stderrTruncated: false, killedBy, ...extra,
+    stdoutTruncated: false, stderrTruncated: false,
+    stdoutLineTruncated: false, stderrLineTruncated: false, killedBy, ...extra,
   });
 
   let child: ChildProcess;
@@ -274,6 +328,10 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   const err = new OutBuf(limitBytes);
   let outRest: Buffer = Buffer.alloc(0);
   let errRest: Buffer = Buffer.alloc(0);
+  // 【MC-073】逐行解析的单行/残行预算(0 = 停止缓冲,见 splitLines)。
+  const maxLineBytes = options.maxLineBytes ?? MAX_LINE_BYTES;
+  let outLineTruncated = false;
+  let errLineTruncated = false;
 
   /** 一行解码好的内容交给 hook;hook 说"没消费"才并进缓冲。
    *
@@ -296,15 +354,17 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   child.stdout?.on("data", (chunk: Buffer) => {
     options.onStdoutChunk?.(chunk);
     if (options.rawOutput) { out.push(chunk); return; }
-    const { lines, rest } = splitLines(outRest, chunk);
+    const { lines, rest, truncated } = splitLines(outRest, chunk, maxLineBytes);
     outRest = rest;
+    if (truncated) outLineTruncated = true;
     for (const line of lines) feed(line, options.onStdoutLine, out, true);
   });
   child.stderr?.on("data", (chunk: Buffer) => {
     options.onStderrChunk?.(chunk);
     if (options.rawOutput) { (mergeStreams ? out : err).push(chunk); return; }
-    const { lines, rest } = splitLines(errRest, chunk);
+    const { lines, rest, truncated } = splitLines(errRest, chunk, maxLineBytes);
     errRest = rest;
+    if (truncated) errLineTruncated = true;
     if (mergeStreams) {
       // 合并模式:stderr 也并进**同一个**缓冲 —— 命令节点只有一段"输出尾部",
       // 它不分来源。行仍然逐行过 hook,所以协议行在任一线上都能被认出来。
@@ -394,6 +454,8 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
     stderr: mergeStreams ? "" : err.text(),
     stdoutTruncated: out.truncated,
     stderrTruncated: err.truncated,
+    stdoutLineTruncated: outLineTruncated,
+    stderrLineTruncated: errLineTruncated,
     ...(spawnError !== undefined ? { spawnError } : {}),
     killedBy,
   };

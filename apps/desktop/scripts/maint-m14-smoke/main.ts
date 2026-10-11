@@ -360,9 +360,32 @@ async function main(): Promise<void> {
 
   const bSearch = await searches.start({ ownerSessionId: B, type: "files", pattern: "note", root: searchRoot, literalSearch: true, waitMs: 500 });
   for (let i = 0; i < 14; i += 1) {
-    await searches.start({ ownerSessionId: A, type: "files", pattern: "note", root: searchRoot, literalSearch: true, waitMs: 0 });
+    // 【MC-064】全是 running 时超限改为**明确拒绝**(SEARCH_CAPACITY_REACHED),
+    // 不再静默停掉/删掉别的搜索会话。这里吞掉超限错误,继续验证上限与隔离。
+    try {
+      await searches.start({ ownerSessionId: A, type: "files", pattern: "note", root: searchRoot, literalSearch: true, waitMs: 0 });
+    } catch (err) {
+      if (!/SEARCH_CAPACITY_REACHED/.test((err as Error).message)) throw err;
+    }
   }
   check("A 的搜索会话被压在每对话上限内", searches.list(A).length <= 12, searches.list(A).length);
+
+  // 【MC-064】——**只读 list 不得破坏性**:建满后连调 list/read 不减少数目、不使旧 id 失效。
+  {
+    const C = "owner-c064";
+    for (let i = 0; i < 12; i += 1) {
+      await searches.start({ ownerSessionId: C, type: "files", pattern: "note", root: searchRoot, literalSearch: true, waitMs: 0 });
+    }
+    const full = searches.list(C);
+    eq("建满 12 条", full.length, 12);
+    // 只读 list 若干次,数目与内容不得变(从前 list 里的 prune 会删最老一条 → 变 11)。
+    searches.list(C); searches.list(C); searches.list(C);
+    eq("★ 只读 list 后仍是 12 条(不被 list 删掉)", searches.list(C).length, 12);
+    // 最老那一条 list 之后仍可读(不被无声失效)。
+    const oldest = full[full.length - 1]!.searchId;
+    await resolvesWith("★ 最老搜索会话 list 后仍可读", () => searches.read({ ownerSessionId: C, searchId: oldest }), (v) => v.searchId === oldest);
+    searches.disposeOwner(C);
+  }
   eq("A 触顶不波及 B 的会话", searches.list(B).length, 1);
   await resolvesWith(
     "B 的会话仍可读",

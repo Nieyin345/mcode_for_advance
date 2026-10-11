@@ -248,6 +248,36 @@ function migrate(database: Database): void {
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_session
       ON workflow_runs(session_id, created_at DESC);
 
+    /* ── 操作账本(MC-067 / ARC-009 步②)────────────────────────────────────
+       本地 agent 经 app_api_call 调 Mcode 功能时的**可信幂等账本**。
+
+       为什么是表而不是进程内 Map:旧 Map 只按 operationId 字符串缓存已完成结果 ——
+       换会话/方法/参数复用同一 id 会命中旧结果;两个并发请求都能穿过缓存各执行一次;
+       RPC 抛错后同 id 再试仍会真调一次。根因是把"幂等"简化成"结束后按字符串缓存"。
+
+       operation_id 是**主键(唯一约束)** —— begin() 靠
+       INSERT ... ON CONFLICT(operation_id) DO NOTHING + 改动行数做**原子领取**:两个
+       并发调用不可能同时领到同一个 id,重启后同一 id 也不重复执行(真正的跨进程去重)。
+
+       意图身份(owner/session/method/request_digest)由**宿主**产生,模型只能自选
+       operationId —— 同 id 换会话/方法/参数 = 变了意图,读出这一行判 OPERATION_ID_CONFLICT。
+       见 main/store/operationLedger.ts 与 @contracts/appControl 的 OperationIntent。 */
+    CREATE TABLE IF NOT EXISTS operations (
+      operation_id   TEXT PRIMARY KEY,
+      owner_id       TEXT NOT NULL,
+      session_id     TEXT NOT NULL,
+      scene_id       TEXT NOT NULL,
+      method         TEXT NOT NULL,
+      request_digest TEXT NOT NULL,
+      effect_kind    TEXT NOT NULL,
+      grant_revision TEXT NOT NULL,
+      status         TEXT NOT NULL,
+      result_json    TEXT,
+      body           TEXT,
+      updated_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_operations_owner ON operations(owner_id, updated_at DESC);
+
     /* ── 文献库 ──────────────────────────────────────────────────────────
        与会话数据完全解耦:库是全局的(所有项目共用),不挂在 project 下。
        pdf_path / md_path 一律存**相对库根目录**的路径 —— 库位置可被用户改,

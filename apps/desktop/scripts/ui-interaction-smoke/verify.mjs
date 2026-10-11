@@ -183,6 +183,160 @@ await withAuditPage(here,async page=>{
   await page.sleep(120);
   check('plain Enter blurs (commits) the font field',await page.eval(`document.activeElement!==document.querySelector(${JSON.stringify(sel)})`));
  });
+
+ // ── UI-001: ConfirmDialog async completion / failure protocol ──
+ // Real Chromium + real React events. The dialog must AWAIT onConfirm: while a
+ // promise is pending the confirm button is disabled; a rejection or `{ok:false}`
+ // keeps the dialog OPEN and shows the error (never close-and-pretend-success);
+ // a sync confirm still closes.
+ const confirmBtn=`[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent.trim().startsWith('删除'))`;
+ const clickConfirm=async()=>{await page.eval(`(()=>{const b=${confirmBtn};if(!b)throw Error('no confirm button');const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);const rect=await page.eval(`(()=>{const b=${confirmBtn};const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);await page.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...rect});await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...rect});await page.sleep(40);};
+ await test('confirmdialog-await-resolve',async()=>{
+  await go('confirmdialog');
+  await page.waitFor(`${confirmBtn}`);
+  await clickConfirm();
+  await page.sleep(60);
+  // mid-flight: dialog still open, confirm button disabled, not yet resolved
+  check('★ 异步确认进行中弹窗不关闭',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  check('★ 异步确认进行中确定键被禁用(挡双击)',await page.eval(`(()=>{const b=${confirmBtn};return b&&b.disabled;})()`));
+  await page.waitFor(`document.getElementById('confirm-open-flag').textContent==='closed'`);
+  check('resolve 之后弹窗关闭',await page.eval(`document.getElementById('confirm-open-flag').textContent==='closed'`));
+  check('resolve 之后实际只发了一次命令',await page.eval(`document.getElementById('confirm-counts').textContent==='1:1'`));
+ });
+ await test('confirmdialog-reject-keeps-open',async()=>{
+  await go('confirmdialog');
+  await page.waitFor(`${confirmBtn}`);
+  await page.eval(`labConfirmReset('reject')`);
+  await page.waitFor(`${confirmBtn}`);
+  await clickConfirm();
+  await page.sleep(320);
+  check('★ onConfirm 拒绝时弹窗保持打开(不假装成功)',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  check('★ onConfirm 拒绝时把错误显示出来',await page.eval(`document.body.innerText.includes('主进程删不掉')`));
+ });
+ await test('confirmdialog-okfalse-keeps-open',async()=>{
+  await go('confirmdialog');
+  await page.waitFor(`${confirmBtn}`);
+  await page.eval(`labConfirmReset('okFalse')`);
+  await page.waitFor(`${confirmBtn}`);
+  await clickConfirm();
+  await page.sleep(120);
+  check('★ {ok:false} 时弹窗保持打开(主进程真相优先)',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  check('★ {ok:false} 时显示主进程给的原因',await page.eval(`document.body.innerText.includes('主进程拒绝了')`));
+ });
+ await test('confirmdialog-sync-still-closes',async()=>{
+  await go('confirmdialog');
+  await page.waitFor(`${confirmBtn}`);
+  await page.eval(`labConfirmReset('sync')`);
+  await page.waitFor(`${confirmBtn}`);
+  await clickConfirm();
+  await page.sleep(80);
+  check('纯同步 onConfirm 仍然正常关闭(无退化)',await page.eval(`document.getElementById('confirm-open-flag').textContent==='closed'`));
+  check('  同步确认只触发一次',await page.eval(`document.getElementById('confirm-counts').textContent==='1:1'`));
+ });
+ await test('confirmdialog-double-click-single-fire',async()=>{
+  await go('confirmdialog');
+  await page.waitFor(`${confirmBtn}`);
+  await page.eval(`labConfirmReset('slow')`);
+  await page.waitFor(`${confirmBtn}`);
+  // two clicks in quick succession while the action is deliberately held open
+  await page.eval(`(()=>{const b=${confirmBtn};b.click();b.click();})()`);
+  await page.sleep(60);
+  check('★ pending 时连点两次只发一次命令(同步闸)',await page.eval(`labConfirmCalls()===1`));
+  await page.eval(`labReleaseConfirm()`);
+  await page.sleep(80);
+  check('  释放后弹窗关闭',await page.eval(`document.getElementById('confirm-open-flag').textContent==='closed'`));
+ });
+
+ // ── UI-002: Toast primary action is a real focusable control ──
+ await test('toaster-keyboard-action',async()=>{
+  await go('toaster');
+  await page.waitFor(`document.getElementById('toast-ready')&&document.getElementById('toast-ready').textContent==='yes'`);
+  await page.waitFor(`document.querySelectorAll('[data-toast-id]').length===2`);
+  // The primary action is the element carrying the "open source" label.
+  const actionSel=`[...document.querySelectorAll('[data-toast-id] *')].find(x=>x.textContent.trim()==='打开来源')`;
+  check('★ 「打开来源」是可聚焦的 button(不是可点的 div)',await page.eval(`(()=>{const el=${actionSel};if(!el)return false;const btn=el.closest('button');return !!btn&&btn.tagName==='BUTTON';})()`));
+  await page.eval(`(()=>{const el=${actionSel};const btn=el&&el.closest('button');if(btn)btn.focus();})()`);
+  check('★ 焦点确实落在「打开来源」按钮上',await page.eval(`document.activeElement&&document.activeElement.tagName==='BUTTON'&&document.activeElement.textContent.includes('打开来源')`));
+  // Native button activation via Enter: Chrome needs the key text (\r) for the
+  // default action to synthesize the click on a focused <button>.
+  await page.eval(`labEvents.length=0`);
+  await page.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13,text:'\r'});
+  await page.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
+  await page.sleep(120);
+  check('★ 键盘 Enter 能打开来源会话',await page.eval(`labEvents.includes('openTab:sess-bg')`));
+  check('  打开来源后该通知被关闭',await page.eval(`labToastIds().length===1`));
+ });
+ await test('toaster-no-nav-button-without-session',async()=>{
+  await go('toaster');
+  await page.waitFor(`document.querySelectorAll('[data-toast-id]').length===2`);
+  // The sessionless (sticky error) toast must NOT render any nav button.
+  const sessionlessButtons=await page.eval(`(()=>{const cards=[...document.querySelectorAll('[data-toast-id]')];const c=cards.find(x=>!x.querySelector('button')||[...x.querySelectorAll('button')].every(b=>b.getAttribute('aria-label')==='关闭'));return c?[...c.querySelectorAll('button')].filter(b=>b.getAttribute('aria-label')!=='关闭').length:-1;})()`);
+  check('★ 无 sessionId 的通知不渲染导航按钮',sessionlessButtons===0,sessionlessButtons);
+  check('  「打开来源」只在带 sessionId 的通知上出现一次',await page.eval(`[...document.querySelectorAll('[data-toast-id]')].filter(c=>c.textContent.includes('打开来源')).length===1`));
+ });
+ await test('toaster-close-visible-on-focus',async()=>{
+  await go('toaster');
+  await page.waitFor(`document.querySelectorAll('[data-toast-id]').length===2`);
+  // Focus the close button of the session toast: its opacity must become 1
+  // (group-focus-within / focus-visible), not stay opacity:0.
+  await page.eval(`(()=>{const c=[...document.querySelectorAll('[data-toast-id]')].find(x=>x.textContent.includes('打开来源'));const b=c.querySelector('button[aria-label="关闭"]');b.focus();})()`);
+  await page.sleep(260); // let the opacity transition settle (transition-opacity ~150ms)
+  check('★ 焦点在通知内时关闭按钮可见(opacity=1)',await page.eval(`(()=>{const c=[...document.querySelectorAll('[data-toast-id]')].find(x=>x.textContent.includes('打开来源'));const b=c.querySelector('button[aria-label="关闭"]');return Number(getComputedStyle(b).opacity)===1;})()`));
+ });
+
+ // ── UI-003: Escape is scoped — no global clear-all ──
+ await test('toaster-escape-does-not-clear-all',async()=>{
+  await go('toaster');
+  await page.waitFor(`document.querySelectorAll('[data-toast-id]').length===2`);
+  // Escape with focus OUTSIDE any toast (e.g. body / an unrelated input) must
+  // NOT clear the stack — sticky duration=0 errors survive.
+  await page.eval(`document.body.focus()`);
+  await key('Escape');
+  await page.sleep(80);
+  check('★ 焦点不在通知上时 Esc 不清空全部(粘性错误留下)',await page.eval(`labToastIds().length===2`));
+  // Escape WITH focus inside a toast dismisses only that focused toast.
+  await page.eval(`(()=>{const c=[...document.querySelectorAll('[data-toast-id]')].find(x=>x.textContent.includes('打开来源'));c.querySelector('button[aria-label="关闭"]').focus();})()`);
+  await key('Escape');
+  await page.sleep(80);
+  check('★ 焦点在通知里时 Esc 只关掉那一条',await page.eval(`labToastIds().length===1`));
+  const remaining=await page.eval(`document.querySelector('[data-toast-id]').textContent.includes('需要审批')`);
+  check('  剩下的是粘性的那条(不是被误清)',remaining);
+ });
+
+ // ── UI-005: settings Escape must not close while a nested dialog is open ──
+ // Calls the REAL production guard (window.escapeClosesSettings) with a real
+ // [role=dialog] mounted / absent / a preventDefault-ed event.
+ await test('settings-escape-respects-nested-dialog',async()=>{
+  await go('primitives');
+  const behavior=await page.eval(`(()=>{
+    const guard=window.escapeClosesSettings;
+    if(typeof guard!=='function') return {missing:true};
+    const withDialog=(()=>{
+      const d=document.createElement('div');d.setAttribute('role','dialog');document.body.appendChild(d);
+      const r=guard({defaultPrevented:false});
+      d.remove();
+      return r;
+    })();
+    const noDialog=guard({defaultPrevented:false});
+    const prevented=guard({defaultPrevented:true});
+    return {withDialog,noDialog,prevented};
+  })()`);
+  check('★ 生产守卫可被取到',behavior.missing!==true);
+  check('★ 有嵌套弹窗时 Esc 不关闭设置页',behavior.withDialog===false);
+  check('★ 无弹窗时 Esc 仍能关闭设置页',behavior.noDialog===true);
+  check('★ Esc 已被下层 preventDefault 时设置页不再重复关闭',behavior.prevented===false);
+ });
+
+ // ── UI-005 (source-level, secondary): the guard is wired into SettingsPage ──
+ {
+  const { readFileSync }=await import('node:fs');
+  const { join }=await import('node:path');
+  const settings=readFileSync(join(process.cwd(),'src/renderer/components/settings/SettingsPage.tsx'),'utf8');
+  const confirmDialog=readFileSync(join(process.cwd(),'src/renderer/components/ui/confirm-dialog.tsx'),'utf8');
+  check('★ SettingsPage 的 Esc 走 escapeClosesSettings 守卫(不再无条件关闭)',/e\.key === "Escape" && escapeClosesSettings\(e\)/.test(settings));
+  check('★ SettingsPage 从共享的 confirm-dialog 引入该守卫(不是自己的平行副本)',/import \{[^}]*escapeClosesSettings[^}]*\} from "@renderer\/components\/ui\/confirm-dialog\.js"/.test(settings));
+  check('★ escapeClosesSettings 尊重 defaultPrevented 与已挂载弹窗',/export function escapeClosesSettings/.test(confirmDialog)&&/defaultPrevented/.test(confirmDialog)&&/role="dialog"/.test(confirmDialog));
+ }
 });
 writeFileSync(join(here,'results.json'),JSON.stringify(results,null,2));
 if(results.some(x=>!x.ok))throw Error(`${results.filter(x=>!x.ok).length} UI interaction assertions failed; artifacts: ${here}`);

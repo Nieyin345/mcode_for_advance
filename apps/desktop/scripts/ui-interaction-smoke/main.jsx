@@ -15,6 +15,10 @@ import {MarketView} from '@renderer/components/settings/MarketView.js';
 import {EngineToolsPanel} from '@renderer/components/settings/EngineToolsPanel.js';
 import {PluginsPanel} from '@renderer/components/settings/PluginsPanel.js';
 import {TypographySection} from '@renderer/components/settings/AppearanceExtras.js';
+import {ConfirmDialog,escapeClosesSettings} from '@renderer/components/ui/confirm-dialog.js';
+window.escapeClosesSettings=escapeClosesSettings;
+import {Toaster} from '@renderer/components/layout/Toaster.js';
+import {useToastStore} from '@renderer/stores/toastStore.js';
 const mode=new URLSearchParams(location.search).get('case')||'approval';
 const theme=new URLSearchParams(location.search).get('theme')||'light';
 document.documentElement.className=theme==='light'?'':theme;
@@ -43,6 +47,67 @@ function MarketCase(){
   <pre id="market-searches">{String(searches)}</pre>
  </main>;
 }
+
+// ── UI-001: ConfirmDialog async completion / failure protocol ──
+// `w.labConfirm` lets the verify script swap the action between cases:
+//   mode "resolve"  -> resolves {ok:true} after 200ms
+//   mode "reject"   -> rejects after 200ms
+//   mode "okFalse"  -> resolves {ok:false,error:"主进程拒绝了"}
+//   mode "slow"     -> holds until w.labReleaseConfirm() (for the double-click test)
+function ConfirmDialogCase(){
+ const [open,setOpen]=useState(true);
+ const [calls,setCalls]=useState(0);
+ const [resolves,setResolves]=useState(0);
+ w.labConfirmCalls=()=>calls;
+ w.labConfirmResolves=()=>resolves;
+ // Only seed the default ONCE - this body re-runs on every render, and blindly
+ // reassigning would clobber the mode the verify script set between cases.
+ if(w.labConfirmMode===undefined) w.labConfirmMode='resolve';
+ if(!w.labReleaseConfirm) w.labReleaseConfirm=()=>{};
+ w.labConfirmReset=(mode)=>{w.labConfirmMode=mode;setCalls(0);setResolves(0);setOpen(true);};
+ // stable action reading w.labConfirmMode at click time
+ const action=()=>{
+   setCalls(n=>n+1);
+   const mode=w.labConfirmMode;
+   if(mode==='sync'){setResolves(n=>n+1);return undefined;} // plain sync onConfirm -> closes
+   if(mode==='okFalse') return Promise.resolve({ok:false,error:'主进程拒绝了'});
+   if(mode==='reject') return new Promise((_,rej)=>setTimeout(()=>rej(new Error('主进程删不掉:回收站不可用')),200));
+   if(mode==='slow') return new Promise(res=>{w.labReleaseConfirm=()=>{setResolves(n=>n+1);res({ok:true});};});
+   return new Promise(res=>setTimeout(()=>{setResolves(n=>n+1);res({ok:true});},200));
+ };
+ return <main className="p-6">
+   <ConfirmDialog
+     open={open}
+     title="删除文件夹"
+     description="此操作不可恢复。"
+     confirmText="删除"
+     danger
+     onOpenChange={setOpen}
+     onConfirm={action}
+   />
+   <div id="confirm-open-flag">{open?'open':'closed'}</div>
+   <div id="confirm-counts">{calls}:{resolves}</div>
+ </main>;
+}
+
+// ── UI-002 / UI-003: Toaster keyboard + Escape scoping ──
+// Pushes two toasts on mount: one WITH a sessionId (must render a focusable
+// "open source" button) and one WITHOUT (must render no nav affordance).
+function ToasterCase(){
+ const [ready,setReady]=useState(false);
+ React.useEffect(()=>{
+   useToastStore.getState().clear();
+   useToastStore.getState().push({kind:'info',title:'后台任务完成',body:'子代理任务已结束',sessionId:'sess-bg'});
+   useToastStore.getState().push({kind:'error',title:'需要审批工具调用',body:'Agent 在等你的批准',duration:0});
+   setReady(true);
+ },[]);
+ w.labToastIds=()=>useToastStore.getState().toasts.map(t=>t.id);
+ w.labClearToasts=()=>useToastStore.getState().clear();
+ return <main className="p-6">
+   {ready&&<Toaster/>}
+   <div id="toast-ready">{ready?'yes':'no'}</div>
+ </main>;
+}
 function App(){
  const [shown,setShown]=useState(true);
  const [ev,setEv]=useState([]);
@@ -68,6 +133,8 @@ function App(){
   {mode==='market'&&<MarketCase/>}
   {mode==='enginetools'&&<div className="h-screen overflow-auto bg-surface text-content"><EngineToolsPanel/></div>}
   {mode==='plugins'&&<div className="h-screen overflow-auto bg-surface text-content"><PluginsPanel/></div>}
+  {mode==='confirmdialog'&&<ConfirmDialogCase/>}
+  {mode==='toaster'&&<ToasterCase/>}
   {mode==='font'&&<main className="p-6"><TypographySection/></main>}
  </div>
 }

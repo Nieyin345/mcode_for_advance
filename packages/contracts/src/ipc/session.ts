@@ -443,6 +443,18 @@ export type ShowItemInFolderInput = z.infer<typeof ShowItemInFolderSchema>;
 export const OpenFileSchema = z.object({ path: z.string() });
 export type OpenFileInput = z.infer<typeof OpenFileSchema>;
 
+/**
+ * 【UI-011】shell 打开类 RPC 的**显式结果**。从前它们返回 `void`:主进程对越界/不属于
+ * 任何项目根的路径只 `log.warn` 后静默 `return`,调用者拿到的 `undefined` 与"成功"无从区分 ——
+ * 界面于是解除 busy 却什么也没打开(用户报的「点了没反应」)。现在返回结构化结果,让 UI 能
+ * 显示失败原因并给重试入口,不再靠 `catch` 猜。
+ */
+export interface ShellOpenResult {
+  ok: boolean;
+  /** 失败原因(用户可读中文);成功时不带。 */
+  error?: string;
+}
+
 /** List a project's sessions with optional pagination + archived filter.
  *  The left-bar tree loads the first `limit` (default 5) non-archived LOCAL
  *  threads and appends the next page on "load more"; the archived bin requests

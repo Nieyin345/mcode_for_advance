@@ -31,6 +31,7 @@ import {
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { IconLoader2 } from "@renderer/lib/icons.js";
+import { escapeClosesSettings } from "@renderer/components/ui/confirm-dialog.js";
 
 /**
  * Every panel is its own lazy chunk (perf, 2026-09-28).
@@ -294,10 +295,11 @@ export function SettingsPage() {
         : NAV_ITEMS[0].id) as SectionId,
   );
 
-  // Esc returns to the workspace (preserves the modal's keyboard shortcut).
+  // Esc returns to the workspace (preserves the modal's keyboard shortcut) —
+  // but only when no nested overlay owns Escape (UI-005, see escapeClosesSettings).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSettingsOpen(false);
+      if (e.key === "Escape" && escapeClosesSettings(e)) setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

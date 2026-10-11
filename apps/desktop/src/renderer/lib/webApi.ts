@@ -799,9 +799,11 @@ const theme: Api["theme"] = {
 const shell: Api["shell"] = {
   // No OS shell surface in a phone browser — resolve as no-ops so any
   // "open folder"-style call from shared UI degrades silently.
-  openPath: () => Promise.resolve(),
-  showItemInFolder: () => Promise.resolve(),
-  openFile: () => Promise.resolve(),
+  // 【UI-011】现在返回 `ShellOpenResult`;手机端没有 OS shell,如实报"不支持"而不是
+  // 假装成功(共享 UI 消费结果后会显示`error`,不会解除 busy 却什么都没发生)。
+  openPath: () => Promise.resolve({ ok: false, error: "手机上不支持用系统程序打开" }),
+  showItemInFolder: () => Promise.resolve({ ok: false, error: "手机上不支持在文件管理器中定位" }),
+  openFile: () => Promise.resolve({ ok: false, error: "手机上不支持用系统程序打开" }),
 };
 
 /** 集成终端。手机端**不再整块缺失**,但只开了一条:

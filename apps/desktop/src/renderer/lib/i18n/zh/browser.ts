@@ -43,6 +43,14 @@ export const zh = {
      网站"),静默失败会让他以为已经退出,而登录令牌还活着。 */
   "browser.clearCacheFailed": "清除浏览缓存失败",
   "browser.clearCookiesFailed": "清除登录状态失败",
+  /* 【UI-014】导航/返回/前进/刷新/关闭被业务层明确拒绝({ok:false})时要说出来。从前
+     这几处 `void api.browser.xxx(...)` 一丢了事 —— 地址栏先改成新 URL,业务拒绝后不报错,
+     看着就是点了没反应。 */
+  "browser.loadFailed": "打开网页失败",
+  "browser.backFailed": "后退失败",
+  "browser.forwardFailed": "前进失败",
+  "browser.reloadFailed": "刷新失败",
+  "browser.closeTabFailed": "关闭标签页失败",
   /* 收藏 / 历史那四条增删失败同样要说出来。主进程的 handler 一律回 `{ok:false,
      error}`,从前这四处把回包一丢了事 —— 点"取消收藏"那一行还在、点"清空历史"
      列表纹丝不动,看着就是点了没反应。 */

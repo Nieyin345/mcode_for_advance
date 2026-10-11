@@ -357,6 +357,17 @@ console.log("\n1. 文件 / 目录选择:取消、空、多选");
         /UI_LOCALE_SETTING_KEY\)\s*===\s*"en"\s*\?\s*"en"\s*:\s*"zh"/.test(readFileSync(join(root, "src/main/lib/dialogText.ts"), "utf8")),
       );
     }
+    // 【UI-011】预览器「用系统程序打开」必须走 `shell.openFile`(接受项目根下的**文件**),
+    // 不能走 `shell.openPath`(只认项目根**目录**本身,文件会被静默拒)。判据钉在源码上:
+    // 退回去的表现是——点按钮、busy 解除、什么都没打开。
+    {
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const src = readFileSync(join(process.cwd(), "src/renderer/components/library/FileViewer.tsx"), "utf8");
+      check("★ 预览器用 system 程序打开走的是 shell.openFile(不是只认项目根的 openPath)", /api\.shell\.openFile\(/.test(src), null);
+      check("★ 预览器不再误用 shell.openPath 打开具体文件", !/api\.shell\.openPath\(/.test(src), null);
+      check("★ 预览器消费打开结果(失败会显示原因)", /res\.ok|\{\s*ok/.test(src), null);
+    }
   } finally {
     if (saved === null) SettingRepo.set(UI_LOCALE_SETTING_KEY, "");
     else SettingRepo.set(UI_LOCALE_SETTING_KEY, saved);
@@ -650,6 +661,14 @@ async function withSentinel(fn: () => Promise<unknown>): Promise<string[]> {
   // 归档的项目根:**归档了就不该再能从渲染端打开它下面的东西**。
   const archived = await shellEffect(() => call(IPC.SHELL_OPEN_PATH, { path: ROOT_ARCHIVED }));
   eqArr("归档的项目根被拒", archived, []);
+
+  // 【UI-011】拒绝时**显式返回失败结果**,不再静默 void —— 界面据此能给出原因,
+  // 不再"解除 busy 却什么都没打开"(用户报的「点了没反应」)。
+  const refused = (await call(IPC.SHELL_OPEN_PATH, { path: join(TMP, "not-a-project") })) as { ok?: boolean; error?: string };
+  eq("★ 越界 openPath 返回 ok:false(不是静默成功)", refused.ok, false);
+  check("★ 越界 openPath 带回可读原因", typeof refused.error === "string" && refused.error.length > 0, refused);
+  const okRes = (await call(IPC.SHELL_OPEN_PATH, { path: ROOT_A })) as { ok?: boolean };
+  eq("★ 合法 openPath 返回 ok:true", okRes.ok, true);
 }
 
 {

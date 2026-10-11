@@ -25,9 +25,23 @@ export interface EngineToolEngineState {
   known: string[];
 }
 
+/**
+ * 【MC-071】整份策略文件的读取状态。
+ *  - `VALID`:文件存在且可解析;
+ *  - `MISSING`:文件不存在(全新用户)—— 默认不设限;
+ *  - `INVALID`:文件存在但损坏 —— **不得静默 fail-open**,须显式告警。
+ */
+export type EngineToolsPolicyStatus = "VALID" | "MISSING" | "INVALID";
+
 /** `engineTools.get` 的完整快照（三个引擎各一份状态）。 */
 export interface EngineToolsSnapshot {
   engines: Record<EngineToolEngineId, EngineToolEngineState>;
+  /** 【MC-071】策略文件读取状态;UI 据此显示「配置损坏」而非静默假装用户主动启用。 */
+  status?: EngineToolsPolicyStatus;
+  /** 损坏时是否已从「最后一份确认过的策略」保守恢复。 */
+  recovered?: boolean;
+  /** 损坏原因(供 UI 显示)。 */
+  warning?: string;
 }
 
 /** 无参 get（保持 schema 一致，避免"空 object schema"那类坑）。 */
