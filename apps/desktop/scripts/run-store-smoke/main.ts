@@ -43,6 +43,7 @@ import { isDurable } from "@contracts/commit";
 import { ProjectRepo, SessionRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 import { DurableOperationLedger } from "@main/store/operationLedger.js";
 import type { OperationIntent, OperationResult } from "@contracts/appControl";
+import type { BeginOutcome } from "@main/appControl/operations.js";
 import { decodeSnapshot, resumableRun, retryableRun, saveRun, onRunCommitted, type RunSnapshot } from "@main/orchestration/runStore.js";
 import { dataRoot, DATA_DB_FILENAME } from "./stubs/dataRoot.js";
 
@@ -628,6 +629,114 @@ if (MODE === "write") {
     eq("MC-067 durable:并发同 id 第一个领到", ledger.begin(raceIntent).begin, "claimed");
     eq("MC-067 durable:并发同 id 第二个被挡(in-progress)", ledger.begin(raceIntent).begin, "in-progress");
   }
+
+  /* ── 【MC-084】领取 CLAIMED 之后、允许外部副作用之前,必须**真正 durable** ─────────
+   *
+   * 洞:旧 `begin` 领到 CLAIMED 后**只调 `persist()`(250ms 合并/退避)就返回 claimed**。
+   * 而 `persist()` 是异步的 —— 领取只在**内存** sql.js 表里,磁盘上还没有。于是"领取成功但
+   * 未落盘"时崩溃,重启后同一个 `operationId` 会**再次被领取并重复执行外部副作用**(E1
+   * effects=2)。修法:领到 CLAIMED 后走 `commitNow()` 同步 fsync 整库,只有 DURABLE 才允许
+   * 执行;非 DURABLE 回滚这次领取、返回 `claim-not-durable`,让上层拒绝执行。
+   *
+   * 下面三条判据各自承重(撤掉"领取即 fsync/回滚"任一,至少一条真红):
+   *   ① 单次 begin 时,**另一个独立 SQL 句柄**从磁盘字节里已能读到这一行 CLAIMED ——
+   *      `persist()` 是异步的,没有 await 点它绝不会在这一刻落盘;只有同步 fsync 才成立。
+   *   ② 落盘失败时 begin 返回 `claim-not-durable`、内存里的领取被**回滚**(get 读不到),
+   *      虚拟副作用计数保持 0 —— 绝不"领取成功就往下执行"。
+   *   ③ 故障解除后重试 → claimed,磁盘上这时才有这一行(证明失败时它是**真的不在**)。
+   */
+  console.log("\n【MC-084】领取必须在允许外部副作用之前真正 durable");
+  {
+    const ledger = DurableOperationLedger;
+    const mk = (operationId: string): OperationIntent => ({
+      operationId,
+      ownerId: "sess-A",
+      sessionId: "sess-A",
+      sceneId: "app_api_call",
+      method: "fs.createFile",
+      requestDigest: "digest-mc084",
+      effectKind: "mutating",
+      grantRevision: "default",
+    });
+    // 从**独立**句柄读磁盘字节里的 operations 行 —— "落没落盘"的判据不能靠内存。
+    const diskOpStatus = (operationId: string): string | null => {
+      let copy: InstanceType<typeof SQL.Database>;
+      try { copy = new SQL.Database(readFileSync(dbFile)); }
+      catch { return null; }
+      try {
+        const stmt = copy.prepare("SELECT status FROM operations WHERE operation_id = ?");
+        stmt.bind([operationId]);
+        const s = stmt.step() ? String(stmt.getAsObject().status) : null;
+        stmt.free();
+        return s;
+      } catch { return null; } finally { copy.close(); }
+    };
+
+    // ① 领取即 durable:begin 返回 claimed 的那一刻,另一个句柄已能从磁盘读到 CLAIMED。
+    //    (旧 persist() 异步路径:此处读到 null —— 真红。)
+    const claimIntent = mk("op_mc084_claim");
+    const b = ledger.begin(claimIntent);
+    eq("MC-084:首次领取成功", b.begin, "claimed");
+    eq("★ MC-084:begin 返回 claimed 之前这次领取已 fsync 到盘(独立句柄即读到 CLAIMED)", diskOpStatus("op_mc084_claim"), "CLAIMED");
+
+    // ② 落盘失败 → claim-not-durable + 内存回滚 + 副作用一次不执行。
+    let effects = 0; // 虚拟外部副作用计数
+    armFault(dbFile, "write");
+    let failed: BeginOutcome | undefined;
+    try {
+      failed = ledger.begin(mk("op_mc084_fail"));
+    } finally {
+      clearFault();
+    }
+    eq("★ MC-084:落盘失败时 begin 返回 claim-not-durable(不是 claimed)", failed?.begin, "claim-not-durable");
+    check("★ MC-084:落盘失败时故障确实击中了写盘", faultHits > 0, faultHits);
+    check("★ MC-084:落盘失败时内存里的领取被回滚(get 读不到)", ledger.get("op_mc084_fail") === undefined, ledger.get("op_mc084_fail"));
+    // 上层只有在 begin === "claimed" 时才执行副作用;这里 claim-not-durable ⇒ effects 保持 0。
+    if (failed?.begin === "claimed") effects += 1;
+    eq("★ MC-084:落盘失败时外部副作用一次都不执行(effects=0)", effects, 0);
+    eq("★ MC-084:落盘失败时磁盘上没有这一行", diskOpStatus("op_mc084_fail"), null);
+
+    // ③ 故障解除后重试 → claimed;此时磁盘上才出现这一行(证明②那次是真没落上,不是被读到旧值)。
+    const retry = ledger.begin(mk("op_mc084_fail"));
+    eq("★ MC-084:故障解除后重试领取成功", retry.begin, "claimed");
+    eq("★ MC-084:重试成功后磁盘上确有 CLAIMED", diskOpStatus("op_mc084_fail"), "CLAIMED");
+
+    // ③-bis 只读操作**不**设耐久栅栏:重跑一次读是幂等的,不该为它 fsync 整库(台账「只读
+    //   操作的性能不被多余落盘劣化」)。判据:即便注入写盘故障,只读 begin 仍返回 claimed 且
+    //   **不触发落盘**(faultHits 不增)—— 说明它走的是合并 persist()、没走同步 fsync。
+    {
+      const roIntent: OperationIntent = { ...mk("op_mc084_readonly"), effectKind: "readonly" };
+      armFault(dbFile, "write");
+      let ro: BeginOutcome | undefined;
+      try {
+        ro = ledger.begin(roIntent);
+      } finally {
+        clearFault();
+      }
+      eq("★ MC-084:只读操作领取不因写盘故障被误拒(claimed)", ro?.begin, "claimed");
+      eq("★ MC-084:只读操作没有走同步 fsync(写盘故障 0 次命中)", faultHits, 0);
+    }
+
+    // ④ 崩溃恢复:领取了、执行了一次外部副作用、但**还没 settle** 就崩溃。
+    //    下一趟(全新进程)必须判成**在途**,绝不重新领取再执行一次。
+    const crashIntent = mk("op_mc084_crash");
+    eq("MC-084:崩溃前领取成功", ledger.begin(crashIntent).begin, "claimed");
+    effects += 1; // 模拟执行了一次外部副作用(还没有任何 settle)
+    eq("MC-084:崩溃前外部副作用执行了一次(effects=1)", effects, 1);
+    // 不 settle —— 模拟"执行后、结算前"进程崩溃。
+
+    // ⑤ 已结算 DONE 的操作:下一趟新进程重启后必须仍是**终态 replay**,绝不被降成可重开
+    //    的 FAILED(那样同 id 会再执行一次)。
+    const doneIntent = mk("op_mc084_done");
+    eq("MC-084:领取(待结算)", ledger.begin(doneIntent).begin, "claimed");
+    ledger.settle("op_mc084_done", {
+      status: "SUCCEEDED",
+      result: { resultKind: "SUCCEEDED", operationId: "op_mc084_done", method: "fs.createFile", retryable: false, warnings: [], resources: [] },
+      body: "mc084-done-body",
+    });
+    // 结算后重启前再领一次,确认真 durable(独立句柄即读到 SUCCEEDED)。
+    eq("MC-084:结算后磁盘上已是 SUCCEEDED(settle 亦 durable)", diskOpStatus("op_mc084_done"), "SUCCEEDED");
+  }
 } else {
   console.log("\n重启之后:上一次还在跑的那些会被标成「被中断」");
 
@@ -687,6 +796,37 @@ if (MODE === "write") {
     eq("★ MC-067 重启后同 id 换参数 → CONFLICT", conflict.begin, "conflict");
     const unc = ledger.begin(intent({ operationId: "op_unc", requestDigest: "digest-unc" }));
     eq("★ MC-067 重启后 UNCERTAIN 仍是在途标记(绝不重发第二次)", unc.begin, "uncertain");
+  }
+
+  /* ── 【MC-084】跨进程恢复:领取了、执行了、未结算就崩溃 → 重启后在途,绝不重跑 ────────
+   *
+   * 第一趟领了 `op_mc084_crash`(CLAIMED 已 fsync 到盘)、执行了一次外部副作用,但**没
+   * settle** 就"崩溃"。这一趟是全新进程,账本从磁盘读 —— 此刻"重启后会怎样"才说了算。
+   * 判据:同意图再领必须是 `in-progress`(在途),**绝不** `claimed`(那就会再执行一次)。
+   *
+   * 这条同时钉住 E1 的目标:旧行为下 begin 只 persist() 异步,第一趟的 CLAIMED 根本没落盘,
+   * 重启后磁盘上是空的 → 这里会读到 `claimed`、「effects」再加一次 = 重复执行。 */
+  {
+    const ledger = DurableOperationLedger;
+    const crashIntent: OperationIntent = {
+      operationId: "op_mc084_crash",
+      ownerId: "sess-A",
+      sessionId: "sess-A",
+      sceneId: "app_api_call",
+      method: "fs.createFile",
+      requestDigest: "digest-mc084",
+      effectKind: "mutating",
+      grantRevision: "default",
+    };
+    const again = ledger.begin(crashIntent);
+    // 非幂等操作:旧 CLAIMED(上一进程领了没结算)不能判"没执行"而自动再跑 → 必须是在途。
+    eq("★ MC-084 重启后未结算的 CLAIMED → in-progress(绝不重新领取再执行一次)", again.begin, "in-progress");
+
+    // 结算了 DONE 的操作,重启后**不能**被降成可重开的 FAILED(那样同 id 会再执行)。
+    const doneIntent: OperationIntent = { ...crashIntent, operationId: "op_mc084_done" };
+    const doneReplay = ledger.begin(doneIntent);
+    eq("★ MC-084 重启后已结算的操作 → replay(不重执行)", doneReplay.begin, "replay");
+    eq("★ MC-084 重启后回放仍是原终态(没被降级)", doneReplay.record.status, "SUCCEEDED");
   }
 
   console.log("\n把存档读回来(这一趟是全新的进程)");

@@ -1324,6 +1324,19 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
               }),
             );
           }
+          if (begin.begin === "claim-not-durable") {
+            // 领取成功但**没能同步落盘**(磁盘只读 / fsync 失败)。**绝不执行副作用** ——
+            // 否则崩溃重启后同一 id 会再次领取并重复执行外部动作(MC-084)。这里返回
+            // REJECTED(命令**一次都没执行**:副作用严格在 `claimed` 之后才发生,而这次
+            // 领取已被回滚),可安全重试;给一个**区别于普通拒绝**的稳定短码 claim_not_durable,
+            // 让 Agent 知道是磁盘可写性问题、稍后重试即可。
+            return operationToolResult(
+              makeOp("REJECTED", entry.method, operationId, {
+                code: OP_CODE.claimNotDurable,
+                reason: "这次操作的幂等领取无法同步落盘(磁盘写入失败),为避免重启后重复执行,本次**没有执行**。请确认磁盘可写后再重试。",
+              }),
+            );
+          }
           if (begin.begin === "in-progress") {
             // 同意图同 id 正在执行中 —— 绝不双执行。
             return operationToolResult(

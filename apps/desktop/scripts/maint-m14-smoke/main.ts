@@ -362,6 +362,8 @@ async function main(): Promise<void> {
       for (const { owner, id } of startedIds) {
         try { if (id) await capped2.stop({ ownerSessionId: owner, processId: id }); } catch { /* ignore */ }
       }
+      // 兜底:变异场景里"第 3 个"可能真的起来了、没进 startedIds;整表杀一遍。
+      try { capped2.disposeAll(); } catch { /* ignore */ }
     }
   }
 

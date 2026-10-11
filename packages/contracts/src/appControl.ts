@@ -211,6 +211,10 @@ export const OP_CODE = {
   operationIdConflict: "operation_id_conflict",
   /** 同一个 operationId 的相同意图**正在执行中**(或上一进程领了没结算)。 */
   operationInProgress: "operation_in_progress",
+  /** 幂等领取**无法同步落盘**(磁盘只读 / fsync 失败)—— 拒绝执行,绝不谎报已 durable。
+   *  见 `store/operationLedger.ts` 的 begin:领取 CLAIMED 之后、允许外部副作用之前必须先
+   *  真正 durable,失败即回滚内存里的这次领取并回这个码。 */
+  claimNotDurable: "claim_not_durable",
   /** 业务层明确拒绝(如 `{ok:false,error}`,不是抛异常)—— 命令没执行。 */
   domainRejected: "domain_rejected",
 } as const;

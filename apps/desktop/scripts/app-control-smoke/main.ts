@@ -21,6 +21,7 @@ import { DOMAIN_LABELS, policyFor } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog } from "@main/appControl/tools.js";
+import { setOperationLedger, type OperationLedger } from "@main/appControl/operations.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import { ApprovalBridge } from "@main/claude/ApprovalBridge.js";
@@ -787,6 +788,42 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     check("★ MC-067④:授权收紧后重放 → REJECTED(明确不执行)", op2?.resultKind === "REJECTED", op2);
   }
 
+  __clearOperationLog();
+}
+
+/* ── 3c-bis. MC-084:账本领取**未落盘**时,app_api_call 绝不执行副作用 ────────────
+ *
+ * 洞(源码可确认的旧行为):`DurableOperationLedger.begin` 领到 CLAIMED 后只 `persist()`
+ * (250ms 异步合并)就回 `claimed`,于是"领取成功但没落盘"时崩溃,重启后同 id 会**再次领取
+ * 并重复执行外部副作用**。修法:领取后同步 durable,失败回 `claim-not-durable`;`tools.ts`
+ * 收到这个结果值**绝不执行**,直接返回拒绝。
+ *
+ * 这里用**可注入的桩账本**精确复现该结果值(真实 fsync 路径的跨进程红例在 run-store-smoke):
+ * 桩 begin 返回 claim-not-durable,断言 RPC handler **一次都没被调用**,且结果是明确拒绝、
+ * 带 claim_not_durable 短码、可重试。撤掉 tools.ts 里那个分支 → 桩的 claimed 会落到执行,
+ * 断言立刻红。 */
+{
+  __clearOperationLog();
+  let rpcCalls = 0;
+  recordRpcHandler("setting:set", async () => { rpcCalls += 1; return { ok: true }; });
+  const notDurableLedger: OperationLedger = {
+    begin: (intent) => ({ begin: "claim-not-durable", record: { ...intent, status: "CLAIMED", updatedAt: Date.now() } }),
+    settle: () => { /* 不会执行到 */ },
+    get: () => undefined,
+  };
+  setOperationLedger(notDurableLedger);
+  const { ctx } = ctxWith({ allow: true });
+  const r = await invokeAppTool(
+    "app_api_call",
+    { method: "setting.set", input: { key: CUSTOM_UI_SETTING_KEY, value: "{}" }, operation_id: "MC084-ND" },
+    "sess-A",
+    ctx,
+  );
+  const op = opResultOf(r);
+  check("★ MC-084:领取未落盘时 RPC **一次都没执行**(副作用 0)", rpcCalls === 0, rpcCalls);
+  check("★ MC-084:领取未落盘 → REJECTED(明确不执行)", op?.resultKind === "REJECTED", op);
+  check("★ MC-084:带 claim_not_durable 稳定短码(区别于普通拒绝)", op?.code === "claim_not_durable", op);
+  check("★ MC-084:可安全重试(retryable=true)", op?.retryable === true, op?.retryable);
   __clearOperationLog();
 }
 

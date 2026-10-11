@@ -16,15 +16,25 @@
  * 是原子的 —— 两个并发调用不可能同时领到同一个 id。这与「内存锁」不同:它落在**唯一约束**
  * 上,跨进程也成立。
  *
- * ## ⚠️ 写盘走 `persist()`
+ * ## ⚠️ 领取必须在**允许外部副作用之前**真正 durable(MC-084)
  *
- * 账本状态要落盘,但**不能每次记账都同步 fsync 整库**(那是「每来一个工具调用就重写整个
- * 数据库文件」)。领取 / 结算改内存表 + `persist()`(合并落盘,250ms 兜底),与其它仓储
- * 一致。真正的「操作已 durable」由权威业务那侧的 `commitNow` 负责(见 `@contracts/commit`),
- * 账本的责任是**去重与状态**,不是替代业务落盘。
+ * 光「内存里 INSERT 了一行 CLAIMED」不够 —— sql.js 的内存表重启即失。假如领到 CLAIMED、
+ * 就返回 `claimed` 让业务去执行外部副作用,而这次领取**只在内存里**(`persist()` 是 250ms
+ * 合并落盘),此刻崩溃重启,磁盘上根本没有这一行 → 同一个 `operationId` **会被再次领取并
+ * 重复执行外部动作**。这正是 MC-084 的 E1。
+ *
+ * 所以领到 CLAIMED 之后、返回 `claimed` 之前,走 `commitNow()`(与 `@contracts/commit`
+ * 同一份判据)**同步 fsync 整库**;只有 `DURABLE` 才允许执行。非 DURABLE 时**回滚掉这次
+ * 内存领取**(若它是本 begin 新插入/重开的行),返回 `claim-not-durable` —— 让上层拒绝执行,
+ * 绝不把「领取成功但没落盘」这种态抛给业务去跑。代价是每次**带 operationId 的**有副作用调用
+ * 多一次整库 fsync;一次性 `app_api_call` 的延迟里这可以接受,而正确性不能省。
+ *
+ * 反过来说:只读档的凭据在 `app_api_call` 层就不进账本(见 `tools.ts`),所以「每个普通只读
+ * 请求都 fsync 整库」不会发生 —— 账本只对**带了幂等键的**调用生效。
  */
 import type { OperationIntent, OperationRecord, OperationStatus, OperationResult, OperationResultKind } from "@contracts/appControl";
-import { getDb, persist } from "@main/store/db.js";
+import { getDb, persist, commitNow } from "@main/store/db.js";
+import { log } from "@main/lib/logger.js";
 import {
   intentFingerprint,
   type BeginOutcome,
@@ -80,6 +90,32 @@ function readRow(operationId: string): OperationRecord | undefined {
   return row ? rowToRecord(row) : undefined;
 }
 
+/**
+ * 把一条记录**整行写回**(回滚用)。领取在落盘前失败时,把这一行还原成重开之前的
+ * 终态 —— 内存必须与磁盘一致,不能留下「重开了但没落盘」这种只有内存知道的态。
+ */
+function writeRow(record: OperationRecord): void {
+  getDb().run(
+    `UPDATE operations SET owner_id = ?, session_id = ?, scene_id = ?, method = ?, request_digest = ?,
+       effect_kind = ?, grant_revision = ?, status = ?, result_json = ?, body = ?, updated_at = ?
+     WHERE operation_id = ?`,
+    [
+      record.ownerId,
+      record.sessionId,
+      record.sceneId,
+      record.method,
+      record.requestDigest,
+      record.effectKind,
+      record.grantRevision,
+      record.status,
+      record.result !== undefined ? JSON.stringify(record.result) : null,
+      record.body !== undefined ? record.body : null,
+      record.updatedAt,
+      record.operationId,
+    ],
+  );
+}
+
 /** 与内存版同形的裁决逻辑,只是行住在表里(复用 {@link intentFingerprint} 一处判据)。 */
 function decide(existing: OperationRecord, intent: OperationIntent): BeginOutcome {
   if (intentFingerprint(existing) !== intentFingerprint(intent)) {
@@ -122,9 +158,22 @@ export const DurableOperationLedger: OperationLedger = {
       ],
     );
     if (db.getRowsModified() > 0) {
-      // 插入生效 = 我领到了。
-      persist();
+      // 插入生效 = 我领到了。**有副作用的操作在允许外部副作用之前,这次领取必须真正 durable。**
+      // 领取只在内存里(还没 fsync)时,此刻崩溃重启 → 磁盘上没有这一行 → 同一 id 会被
+      // 再次领取、重复执行外部动作(MC-084 的 E1)。所以对 mutating 操作同步落盘;落盘不成即
+      // 回滚这次领取(删掉刚插入的行),返回 claim-not-durable,让上层拒绝执行。
+      //
+      // 只读操作不设耐久栅栏:重跑一次读没有外部副作用(幂等),为它每次 fsync 整库纯属浪费
+      // (台账系统性方案第 4 条:「只读操作的性能不被多余落盘劣化」)。只读仍走合并的 persist()。
       const record: OperationRecord = { ...intent, status: "CLAIMED", updatedAt: Date.now() };
+      if (intent.effectKind === "mutating") {
+        if (commitNow().outcome !== "DURABLE") {
+          db.run("DELETE FROM operations WHERE operation_id = ?", [intent.operationId]);
+          return { begin: "claim-not-durable", record };
+        }
+      } else {
+        persist();
+      }
       return { begin: "claimed", record };
     }
     // 已存在 —— 读出来裁决。
@@ -136,18 +185,30 @@ export const DurableOperationLedger: OperationLedger = {
     const outcome = decide(existing, intent);
     if (outcome.begin === "claimed") {
       // REJECTED / FAILED 可重开:把这一行重置成这次意图的 CLAIMED(意图已核对相同)。
+      // 同样,对 mutating 操作重开这个动作也必须在执行前 durable;落盘不成就把这一行还原成
+      // 重开前的终态,返回 claim-not-durable(内存与磁盘都停在原来那个终态)。
+      const reopened: OperationRecord = { ...existing, status: "CLAIMED", result: undefined, body: undefined, grantRevision: intent.grantRevision, effectKind: intent.effectKind, updatedAt: Date.now() };
       db.run(
         `UPDATE operations SET status = 'CLAIMED', result_json = NULL, body = NULL,
            grant_revision = ?, effect_kind = ?, updated_at = ? WHERE operation_id = ?`,
-        [intent.grantRevision, intent.effectKind, Date.now(), intent.operationId],
+        [intent.grantRevision, intent.effectKind, reopened.updatedAt, intent.operationId],
       );
-      persist();
-      return { begin: "claimed", record: { ...existing, status: "CLAIMED", grantRevision: intent.grantRevision, updatedAt: Date.now() } };
+      if (intent.effectKind === "mutating") {
+        if (commitNow().outcome !== "DURABLE") {
+          writeRow(existing);
+          return { begin: "claim-not-durable", record: existing };
+        }
+      } else {
+        persist();
+      }
+      return { begin: "claimed", record: reopened };
     }
     return outcome;
   },
 
   settle(operationId: string, s: OperationSettlement): void {
+    // 先读出这条操作的副作用类别(结算本身不带)——决定要不要 fsync。**在 UPDATE 之前读**。
+    const effectKind = readRow(operationId)?.effectKind;
     getDb().run(
       `UPDATE operations SET status = ?, result_json = ?, body = ?, updated_at = ? WHERE operation_id = ?`,
       [
@@ -158,7 +219,17 @@ export const DurableOperationLedger: OperationLedger = {
         operationId,
       ],
     );
-    persist();
+    // mutating 的结算也必须是**可持久**的:重启后不能误把已 DONE 的操作降成可重开的 FAILED
+    // (那样同 id 会再次执行)。这里同步 durable;失败只记日志、**绝不把已经发生的业务事实
+    // 改标**(进程仍握着内存里的终态,退避重试会补上)。只读结算走合并 persist() 即可。
+    if (effectKind === "mutating") {
+      const result = commitNow();
+      if (result.outcome !== "DURABLE") {
+        log.warn(`operation settle not durable (${operationId} → ${s.status}): ${result.reason ?? "unknown"}`);
+      }
+    } else {
+      persist();
+    }
   },
 
   get: readRow,

@@ -42,6 +42,9 @@ export interface OperationSettlement {
 /**
  * 原子领取的判定结果。**这是唯一一处**「同一个 operationId 到底该怎么办」的裁决:
  *   - `claimed` —— 首次(或重开)领取成功,调用方**现在可以执行副作用**;
+ *   - `claim-not-durable` —— 领取了,但把这次领取**真正落盘**没成功(磁盘只读 / fsync 失败)。
+ *     **绝不允许执行副作用**(否则崩溃重启后同一 id 会再领一次 → 重复执行外部动作)。
+ *     调用方据此拒绝执行,让 Agent 稍后重试;
  *   - `conflict` —— 同 id 被复用在一个**不同意图**上 → OPERATION_ID_CONFLICT;
  *   - `in-progress` —— 同意图的同 id **正在执行中** → 绝不双执行;
  *   - `replay` —— 同意图已**提交成功** → 回放旧结果,绝不重跑;
@@ -49,6 +52,7 @@ export interface OperationSettlement {
  */
 export type BeginOutcome =
   | { begin: "claimed"; record: OperationRecord }
+  | { begin: "claim-not-durable"; record: OperationRecord }
   | { begin: "conflict"; record: OperationRecord }
   | { begin: "in-progress"; record: OperationRecord }
   | { begin: "replay"; record: OperationRecord }
