@@ -40,6 +40,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { readTextPage, formatTextPage, withTextFileLock, replaceTextFile, textFileHash, grepMatchPreview, type TextPageOptions } from "./agentTextFiles.js";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
+import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 import { z } from "zod";
 import {
   defaultSkillsRoot,
@@ -626,18 +627,22 @@ async function fileInfoText(abs: string, countLines: boolean): Promise<string> {
 
 let pythonExecutablePromise: Promise<string | null> | null = null;
 
+/** 挑一个 python 解释器 —— 与工具链检测 / 代码节点 / 文档操作**共用一份**。
+ *
+ *  从前这里是"取 PATH 上第一个能跑的 python",会被 `env/agentEnv.ts` 注入到 PATH 最前
+ *  的 LibreOffice 捆绑 `python.exe` 抢走(报告附录 M 的"Python 解释器陷阱")。
+ *  `resolvePythonExe()` 会跳过捆绑型,与别处一致。 */
 function findPythonExecutable(): Promise<string | null> {
   if (!pythonExecutablePromise) {
     pythonExecutablePromise = (async () => {
-      for (const exe of process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"]) {
-        try {
-          const out = await runCaptured(exe, ["-c", "import sys;print(sys.executable)"], 4_000);
-          if (out.code === 0 && out.stdout.trim()) return exe;
-        } catch {
-          // try next candidate
-        }
+      const exe = await resolvePythonExe();
+      if (!exe) return null;
+      try {
+        const out = await runCaptured(exe, ["-c", "import sys;print(sys.executable)"], 4_000);
+        return out.code === 0 && out.stdout.trim() ? exe : null;
+      } catch {
+        return null;
       }
-      return null;
     })();
   }
   return pythonExecutablePromise;

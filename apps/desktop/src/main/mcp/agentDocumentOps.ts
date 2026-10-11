@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
+import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 
 export type AgentPdfOperation =
   | { type: "delete"; pageIndexes: number[] }
@@ -56,19 +57,24 @@ function runCaptured(exe: string, args: string[], timeoutMs = 120_000, env?: Nod
   });
 }
 
+/** 挑一个 python 解释器 —— **与工具链检测、代码节点共用一份**。
+ *
+ *  从前这里是"取 PATH 上第一个能跑的 python"。而 `env/agentEnv.ts` 为了技能里敲得到
+ *  `soffice`,把 LibreOffice 的 `program/` 目录注入了子进程 PATH 最前面 —— 那里同时
+ *  躺着 LibreOffice 自带的 `python.exe`,于是"第一个"永远选到它,文档转换会落到用户
+ *  终端里那个 `python` **之外**的解释器上(报告附录 M 的"Python 解释器陷阱"三处重复)。
+ *  `resolvePythonExe()` 会跳过捆绑型解释器,与工具链 / 代码节点一致。 */
 async function findPythonExecutable(): Promise<string | null> {
   if (!pythonExecutablePromise) {
     pythonExecutablePromise = (async () => {
-      const candidates = process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
-      for (const exe of candidates) {
-        try {
-          const out = await runCaptured(exe, ["-c", "import sys;print(sys.executable)"], 5_000);
-          if (out.code === 0 && out.stdout.trim()) return exe;
-        } catch {
-          // try next candidate
-        }
+      const exe = await resolvePythonExe();
+      if (!exe) return null;
+      try {
+        const out = await runCaptured(exe, ["-c", "import sys;print(sys.executable)"], 5_000);
+        return out.code === 0 && out.stdout.trim() ? exe : null;
+      } catch {
+        return null;
       }
-      return null;
     })();
   }
   return pythonExecutablePromise;
