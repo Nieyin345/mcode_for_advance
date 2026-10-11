@@ -125,7 +125,16 @@ export function renderResult(value: unknown, maxChars = MAX_RESULT_CHARS): strin
  * 摘掉不是隐藏:改成 `3 项(已省略…)` 的计数,agent 知道"有东西",要细节走单条读法。
  * 深度有界、环引用安全,非会话形状的数组元素一律不动。
  */
-const HEAVY_SESSION_KEYS = ["turnFiles", "usageHistory", "subagents", "todos", "planDraft"] as const;
+const HEAVY_SESSION_KEYS = [
+  "turnFiles", // 本轮每个文件改动前后全文
+  "usageHistory", // 逐轮 token/成本
+  "subagents", // 子代理**状态**快照(轻)
+  "subagentTranscripts", // 子代理**整轮 transcript**(重 —— 与 subagents 是两个字段,别漏)
+  "contextSnapshot", // 会话上下文快照
+  "bookmarks",
+  "todos",
+  "planDraft",
+] as const;
 
 function looksLikeSession(o: Record<string, unknown>): boolean {
   return typeof o.id === "string" && (typeof o.kind === "string" || typeof o.providerId === "string");

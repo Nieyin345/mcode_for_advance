@@ -256,7 +256,28 @@ recordRpcHandler("session:archive", zodHandler);
     const input = SessionListAllSchema.parse(raw); // 与 src/main/ipc/projects.ts:237 一字不差
     // `parsedOk` 是显式标记 —— `limit` 全缺省时 `JSON.stringify` 会把它整条丢掉,
     // 拿 `gotLimit` 当"解析成功"的证据会假红。
-    return { sessions: [], hasMore: false, total: 0, parsedOk: true, limit: input.limit ?? null };
+    // ★ 顺带让这一条 stub 带**一条真实形状的会话**(含"整份内容"级大字段),这样
+    // 下面 `app_api_call session.listAll` 那条能**端到端**断言瘦身真的生效 ——
+    // 独立复核发现:只测 `slimSessions` 纯函数的话,把接线 `renderResult(slimSessions(...))`
+    // 改回 `renderResult(...)` 套件**照样全绿**(见 `__slimProbe`)。`parsedOk` 仍要带
+    // (另一条断言靠它证明"省略 input 也解析成功")。
+    const big = "x".repeat(4000);
+    return {
+      parsedOk: true,
+      limit: input.limit ?? null,
+      hasMore: false,
+      total: 1,
+      sessions: [
+        {
+          id: "s1", kind: "chat", providerId: "claude-sdk", title: "T", projectId: "p1",
+          turnFiles: [{ before: big, after: big }],
+          usageHistory: Array.from({ length: 30 }, () => ({ t: 1 })),
+          subagentTranscripts: { a: [{ text: big }] },
+          bookmarks: [{ id: "b1" }],
+          todos: [{ id: "t1", text: "x" }],
+        },
+      ],
+    };
   });
 }
 
@@ -435,6 +456,15 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   const { ctx } = ctxWith();
   const omitted = await invokeAppTool("app_api_call", { method: "session.listAll" }, "me", ctx);
   check("★ 全可选方法省略 input 也能调通(不再 (根) Required)", omitted.isError !== true && textOf(omitted).includes("parsedOk"), textOf(omitted));
+  // ★ **端到端**:这一条走的是 `invokeAppTool → app_api_call → 真 handler` 的完整链路,
+  // 断言 agent **实际拿到**的返回里大字段已被摘成计数、关键字段仍在、没有那坨内容。
+  // (纯函数断言在上面 §2;这条钉的是"接线真的接上了",独立复核挑出的无覆盖面。)
+  {
+    const out = textOf(omitted);
+    check("★ 端到端:session.listAll 回给 agent 的 turnFiles 已摘成计数", out.includes("1 项") && !out.includes("x".repeat(200)), out.slice(0, 200));
+    check("★ 端到端:subagentTranscripts(真正的 transcript blob)也被摘", !out.includes("x".repeat(200)), out.slice(0, 120));
+    check("★ 端到端:关键字段(id/title/kind)仍在", out.includes('"s1"') && out.includes('"T"') && out.includes("chat"));
+  }
   const explicitNull = await call("session.listAll", null, ctx);
   check("★ input: null 也当无参处理", explicitNull.isError !== true, textOf(explicitNull));
   // 反向控制:真缺**必填**参数的方法仍然照常报错(补 `{}` 不能把必填校验一起放行)。
