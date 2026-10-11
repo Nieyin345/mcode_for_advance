@@ -500,6 +500,20 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ value: unknown }"
  },
  {
+  "method": "extensionStore.listFiles",
+  "channel": "extensionStore:listFiles",
+  "doc": "列该扩展自己目录下某个子目录的内容(不递归)。只读档。",
+  "input": "{ extensionId: string; relPath?: string | undefined // 要列的相对目录;省略 / 空串 = 该扩展目录根。 }",
+  "output": "{ ok: true; entries: ExtensionStoreListEntry[] } | { ok: false; reason: ExtensionFileErrorReason }"
+ },
+ {
+  "method": "extensionStore.readFile",
+  "channel": "extensionStore:readFile",
+  "doc": "读该扩展自己目录下的一份文件(报告附录 P)。空文件与\"不存在\"分得开(`ok:true,\"\"` vs `ok:false,\"notFound\"`)。只读档。",
+  "input": "{ extensionId: string; relPath: string }",
+  "output": "{ ok: true; content: string } | { ok: false; reason: ExtensionFileErrorReason }"
+ },
+ {
   "method": "extensionStore.remove",
   "channel": "extensionStore:remove",
   "doc": "删一条。",
@@ -512,6 +526,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "写一条。超配额回 `{ ok: false, reason: \"tooLarge\" }`。**写档**(经 `policyFor` 兜底)。",
   "input": "{ key: string; extensionId: string; value?: unknown }",
   "output": "{ ok: true } | { ok: false; reason: 'tooLarge'; limit: number }"
+ },
+ {
+  "method": "extensionStore.writeFile",
+  "channel": "extensionStore:writeFile",
+  "doc": "写该扩展自己目录下的一份文件(建父目录)。超 4MB 整次拒绝。**写档**(经 `policyFor` 兜底)。",
+  "input": "{ extensionId: string; relPath: string; content: string }",
+  "output": "{ ok: true; bytes: number } | { ok: false; reason: ExtensionFileErrorReason; limit?: number | undefined }"
  },
  {
   "method": "file.copy",
@@ -587,7 +608,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "file.writeFile",
   "channel": "file:writeFile",
   "doc": "Write content to a file (creates parents), scoped to a project root.",
-  "input": "{ filePath: string // Absolute or cwd-relative path.; content: string }",
+  "input": "{ content: string; filePath: string // Absolute or cwd-relative path. }",
   "output": "{ ok: boolean }"
  },
  {
@@ -1911,7 +1932,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "projectInit:get",
   "doc": "按 id 取一份项目初始化模板全文(带 `revision`)。",
   "input": "{ id: string }",
-  "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; pinned: boolean; content: string; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
+  "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; content: string; pinned: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
  },
  {
   "method": "projectInit.list",
@@ -1931,8 +1952,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "projectInit.save",
   "channel": "projectInit:save",
   "doc": "新建或更新一份模板。带 `id` 时**必须**同时带上原 `expectedRevision`,对不上就抛\"已改动\"(避免并发覆盖);新建受 200 份上限约束。返回存完的模板。",
-  "input": "{ draft: { description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; pinned: boolean; content: s…; id?: string | undefined; expectedRevision?: string | undefined }",
-  "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; pinned: boolean; content: string; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
+  "input": "{ draft: { description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; content: string; pinned: bo…; id?: string | undefined; expectedRevision?: string | undefined }",
+  "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; content: string; pinned: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
  },
  {
   "method": "projectInit.setDefault",
@@ -2421,7 +2442,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "skills.save",
   "channel": "skills:save",
   "doc": "Create or overwrite a skill's SKILL.md (full content write; creates the skill directory if absent). Returns ok:false + error on any IO failure.",
-  "input": "{ name: string; content: string // Full SKILL.md text (frontmatter + body).; source: 'global' | 'project'; projectPath?: string | undefined; newName?: string | undefined }",
+  "input": "{ content: string // Full SKILL.md text (frontmatter + body).; name: string; source: 'global' | 'project'; projectPath?: string | undefined; newName?: string | undefined }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {

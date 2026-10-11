@@ -16,7 +16,7 @@
  *
  * Run: scripts/extension-store-smoke/run.sh
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { IpcMain } from "electron";
@@ -27,11 +27,18 @@ import {
   ExtensionStoreGetSchema,
   ExtensionStoreSetSchema,
   ExtensionStoreRemoveSchema,
+  ExtensionStoreReadFileSchema,
+  ExtensionStoreWriteFileSchema,
+  ExtensionStoreListFilesSchema,
   EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET_CHANNEL,
   EXTENSION_STORE_REMOVE_CHANNEL,
+  EXTENSION_STORE_READ_FILE_CHANNEL,
+  EXTENSION_STORE_WRITE_FILE_CHANNEL,
+  EXTENSION_STORE_LIST_FILES_CHANNEL,
   EXTENSION_STORE_MAX,
   isValidExtensionId,
+  isSafeExtensionRelPath,
   getStoreValue,
   parseStoreFile,
   serializeStore,
@@ -48,6 +55,9 @@ import {
   writeValue,
   removeValue,
   usedBytes,
+  readFileInExtension,
+  writeFileInExtension,
+  listFilesInExtension,
 } from "../../src/main/lib/extensionStore.js";
 import { registerExtensionStoreHandlers } from "../../src/main/ipc/extensions.js";
 
@@ -176,6 +186,116 @@ check("超配额写没落盘(文件字节不变)", before === after);
 eq("超配额写没挤掉已有的值", readValue(ROOT, "ext-quota", "keep"), "small");
 check("usedBytes 反映实际用量", usedBytes(ROOT, "ext-quota") > 0);
 
+/* ─────────────────── §3.5 文件通道:读写对称 + 路径闸(报告附录 P)───────────────────
+ *
+ * 这是修「能写不能读」的那一条:面板把数据写进**自己目录**后要能读回来。判据:
+ *   1. 写进去 → 读回来(空文件与"不存在"分得开);
+ *   2. 绝对路径 / `..` / 盘符 被**契约层** `isSafeExtensionRelPath` 拒;
+ *   3. lib 层 `resolveInExtension` 对 `..` 逃逸再拒一道(第二道);
+ *   4. `listFiles` 只列**自己**目录,且**不含**别的扩展的文件;
+ *   5. 超配额写整次拒、不落盘;
+ *   6. 符号链接逃逸被 realpath 那道挡下(Windows 上需权限,拿不到就跳)。 */
+console.log("\n§3.5 文件通道:读写对称 + 路径闸(报告附录 P)");
+
+// ① 纯词法判据(契约层,renderer 与 main 共用)。
+eq("路径闸:普通相对路径过", isSafeExtensionRelPath("notes/a.md"), true);
+eq("路径闸:多级过", isSafeExtensionRelPath("a/b/c.txt"), true);
+eq("路径闸:./ 段过", isSafeExtensionRelPath("./a.txt"), true);
+eq("路径闸:绝对(unix)拒", isSafeExtensionRelPath("/etc/passwd"), false);
+eq("路径闸:绝对(win 反斜杠)拒", isSafeExtensionRelPath("\\Windows\\x"), false);
+eq("路径闸:盘符拒", isSafeExtensionRelPath("C:/Windows/x"), false);
+eq("路径闸:盘符(小写)拒", isSafeExtensionRelPath("c:\\x"), false);
+eq("路径闸:UNC 拒", isSafeExtensionRelPath("\\\\server\\share"), false);
+eq("路径闸:.. 段拒", isSafeExtensionRelPath("../evil"), false);
+eq("路径闸:中间 .. 段拒", isSafeExtensionRelPath("a/../../evil"), false);
+eq("路径闸:反斜杠 .. 也拒", isSafeExtensionRelPath("a\\..\\evil"), false);
+eq("路径闸:空串拒", isSafeExtensionRelPath(""), false);
+eq("路径闸:NUL 拒", isSafeExtensionRelPath("a\0b"), false);
+
+// ② zod schema:非法路径在 IPC 边界就拒(handler 抛)。
+eq("ReadFileSchema 过合法", ExtensionStoreReadFileSchema.safeParse({ extensionId: "a", relPath: "n/a.md" }).success, true);
+eq("ReadFileSchema 拒 ..", ExtensionStoreReadFileSchema.safeParse({ extensionId: "a", relPath: "../x" }).success, false);
+eq("ReadFileSchema 拒绝对路径", ExtensionStoreReadFileSchema.safeParse({ extensionId: "a", relPath: "/x" }).success, false);
+eq("WriteFileSchema 拒 ..", ExtensionStoreWriteFileSchema.safeParse({ extensionId: "a", relPath: "..", content: "x" }).success, false);
+eq("ListFilesSchema 空 relPath 过(省略 = 根)", ExtensionStoreListFilesSchema.safeParse({ extensionId: "a" }).success, true);
+eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extensionId: "a", relPath: "../x" }).success, false);
+
+// ③ lib 层:写进去能读回来 + 目录/文件区分。
+{
+  const w = writeFileInExtension(ROOT, "ext-files", "notes/draft.md", "# 草稿");
+  // UTF-8 字节:'#'(1)+' '(1)+草(3)+稿(3)= 8。
+  deepEq("写文件成功(bytes 按 UTF-8 算)", w, { ok: true, bytes: 8 });
+  const r = readFileInExtension(ROOT, "ext-files", "notes/draft.md");
+  deepEq("★ 写进去能读回来", r, { ok: true, content: "# 草稿" });
+  check("文件真的落在 <root>/extensions/<id>/ 下", existsSync(join(extensionsDir(ROOT), "ext-files", "notes", "draft.md")));
+
+  // 空文件 vs 不存在:两种要分得开(项目根闸门那条老路就是都回空串)。
+  writeFileInExtension(ROOT, "ext-files", "empty.txt", "");
+  deepEq("空文件读回 ok:true content:''", readFileInExtension(ROOT, "ext-files", "empty.txt"), { ok: true, content: "" });
+  deepEq("不存在的文件 ok:false notFound(不静默回空)", readFileInExtension(ROOT, "ext-files", "nope.txt"), { ok: false, reason: "notFound" });
+
+  // 读一个目录当文件 —— notAFile。
+  deepEq("读目录当文件 = notAFile", readFileInExtension(ROOT, "ext-files", "notes"), { ok: false, reason: "notAFile" });
+
+  // ④ listFiles 只列自己目录。
+  const ls = listFilesInExtension(ROOT, "ext-files", "notes");
+  check("listFiles 列出自己 notes/ 下的 draft.md", ls.ok && ls.entries.some((e) => e.name === "draft.md" && !e.isDir), ls);
+  // 另一个扩展写同名文件,不能串进 ext-files 的列表。
+  writeFileInExtension(ROOT, "ext-other", "notes/draft.md", "别人的");
+  const ls2 = listFilesInExtension(ROOT, "ext-files", "notes");
+  check("listFiles 不含别的扩展的文件", ls2.ok && ls2.entries.length === 1, ls2);
+  const rootLs = listFilesInExtension(ROOT, "ext-files");
+  check("listFiles 根列到 notes/(目录)", rootLs.ok && rootLs.entries.some((e) => e.name === "notes" && e.isDir), rootLs);
+  check("listFiles 目录在前、普通文件在后", rootLs.ok && rootLs.entries[0]?.isDir === true, rootLs.ok ? rootLs.entries.map((e) => e.name) : rootLs);
+  deepEq("listFiles 列不存在目录 = notFound", listFilesInExtension(ROOT, "ext-files", "no-such-dir"), { ok: false, reason: "notFound" });
+  deepEq("listFiles 列一个文件当目录 = notADir", listFilesInExtension(ROOT, "ext-files", "empty.txt"), { ok: false, reason: "notADir" });
+}
+
+// ⑤ lib 层路径闸(第二道):`..` / 绝对路径在 lib 也拒(不只是 zod)。写不允许逃逸。
+{
+  const esc = writeFileInExtension(ROOT, "ext-files", "../evil.txt", "x");
+  deepEq("lib 层写 ../evil 被拒", esc, { ok: false, reason: "invalidPath" });
+  check("没有在 extensions/ 外层建 evil.txt", !existsSync(join(ROOT, "extensions", "evil.txt")));
+  deepEq("lib 层读绝对路径被拒", readFileInExtension(ROOT, "ext-files", "/etc/passwd"), { ok: false, reason: "invalidPath" });
+  deepEq("lib 层写盘符路径被拒", writeFileInExtension(ROOT, "ext-files", "D:/evil.txt", "x"), { ok: false, reason: "invalidPath" });
+  deepEq("lib 层 listFiles ../ 被拒", listFilesInExtension(ROOT, "ext-files", "../"), { ok: false, reason: "invalidPath" });
+  // 非法扩展 id:整个通道拒。
+  deepEq("非法扩展 id 写被拒", writeFileInExtension(ROOT, "..", "a.txt", "x"), { ok: false, reason: "invalidPath" });
+  check("非法扩展 id 没在数据根外层建文件", !existsSync(join(ROOT, "extensions", "..", "a.txt")));
+}
+
+// ⑥ 超配额写整次拒、不落盘。
+{
+  writeFileInExtension(ROOT, "ext-fquota", "keep.txt", "small");
+  const beforeBytes = readFileSync(join(extensionsDir(ROOT), "ext-fquota", "keep.txt"), "utf8");
+  const big = writeFileInExtension(ROOT, "ext-fquota", "big.txt", "x".repeat(EXTENSION_STORE_MAX + 1));
+  deepEq("★ 超配额写被拒(整次,不落盘)", big, { ok: false, reason: "tooLarge", limit: EXTENSION_STORE_MAX });
+  check("超配额写没落盘 big.txt", !existsSync(join(extensionsDir(ROOT), "ext-fquota", "big.txt")));
+  check("超配额写没碰已有的 keep.txt", readFileSync(join(extensionsDir(ROOT), "ext-fquota", "keep.txt"), "utf8") === beforeBytes);
+  // 非 ASCII 按字节算配额:一份 `ceil(MAX/3)+1` 个中文字符(每字 3 字节)会**超过** MAX。
+  // 若按 `String.length` 数,这么点字符远不到 MAX,就会误判成"能写"。
+  const zhBig = "中".repeat(Math.ceil(EXTENSION_STORE_MAX / 3));
+  const zhRes = writeFileInExtension(ROOT, "ext-fquota", "zh.txt", zhBig);
+  check("★ 配额按 UTF-8 字节算(非 ASCII 不按 String.length)", !zhRes.ok && zhRes.reason === "tooLarge", zhRes);
+}
+
+// ⑦ 符号链接逃逸:在扩展目录下放一个指向目录外的 symlink,读写都要被 realpath 那道挡下。
+{
+  let linked = false;
+  try {
+    symlinkSync(tmpdir(), join(extensionDir(ROOT, "ext-files"), "link-out"), "dir");
+    linked = true;
+  } catch {
+    linked = false; // Windows 上没权限建 symlink —— 跳过(不能因此判红)
+  }
+  if (linked) {
+    deepEq("★ 经 symlink 逃逸的写被拒", writeFileInExtension(ROOT, "ext-files", "link-out/pwn.txt", "x"), { ok: false, reason: "invalidPath" });
+    deepEq("★ 经 symlink 逃逸的读被拒", readFileInExtension(ROOT, "ext-files", "link-out/anything"), { ok: false, reason: "invalidPath" });
+  } else {
+    console.log("  skip symlink 逃逸断言(本机无建 symlink 权限)");
+  }
+}
+
 /* ─────────────────── §4 IPC handler(全部三层接线的行为面)── */
 console.log("\n§4 IPC handler:三层接线 + 行为");
 
@@ -230,6 +350,44 @@ check("三条通道都注册了", handlers.has(EXTENSION_STORE_GET_CHANNEL) && h
   eq("RemoveSchema 接受合法输入", ExtensionStoreRemoveSchema.safeParse({ extensionId: "a", key: "k" }).success, true);
   eq("IdSchema 拒非法 id", ExtensionIdSchema.safeParse("a/b").success, false);
 
+  /* ── 文件通道 IPC handler(报告附录 P):读写对称 + 越界在 IPC 边界就被拒 ── */
+  check(
+    "六条通道都注册了(含文件通道三条)",
+    handlers.has(EXTENSION_STORE_READ_FILE_CHANNEL) && handlers.has(EXTENSION_STORE_WRITE_FILE_CHANNEL) && handlers.has(EXTENSION_STORE_LIST_FILES_CHANNEL),
+  );
+  deepEq("★ IPC writeFile → readFile 读写对称", await (async () => {
+    const w = await call(EXTENSION_STORE_WRITE_FILE_CHANNEL, { extensionId: "ipc-files", relPath: "a/b.txt", content: "hello" });
+    if (!(w as { ok: boolean }).ok) return w;
+    return call(EXTENSION_STORE_READ_FILE_CHANNEL, { extensionId: "ipc-files", relPath: "a/b.txt" });
+  })(), { ok: true, content: "hello" });
+  deepEq("IPC readFile 不存在 = ok:false notFound", await call(EXTENSION_STORE_READ_FILE_CHANNEL, { extensionId: "ipc-files", relPath: "nope.txt" }), { ok: false, reason: "notFound" });
+  {
+    const ls = listFilesInExtension(ROOT, "ipc-files", "a");
+    check("IPC listFiles 列出自己目录", ls.ok && ls.entries.some((e) => e.name === "b.txt"), ls);
+  }
+  deepEq("IPC writeFile 超配额回 tooLarge", await call(EXTENSION_STORE_WRITE_FILE_CHANNEL, { extensionId: "ipc-files", relPath: "big.txt", content: "x".repeat(EXTENSION_STORE_MAX + 1) }), {
+    ok: false,
+    reason: "tooLarge",
+    limit: EXTENSION_STORE_MAX,
+  });
+
+  // 越界路径:zod 在 IPC 边界就拒(handler 抛),不落到 lib。
+  for (const [label, api, bad] of [
+    ["readFile", EXTENSION_STORE_READ_FILE_CHANNEL, { extensionId: "ipc-files", relPath: "../evil" }],
+    ["writeFile", EXTENSION_STORE_WRITE_FILE_CHANNEL, { extensionId: "ipc-files", relPath: "/etc/x", content: "x" }],
+    ["listFiles", EXTENSION_STORE_LIST_FILES_CHANNEL, { extensionId: "ipc-files", relPath: "../" }],
+    ["readFile 盘符", EXTENSION_STORE_READ_FILE_CHANNEL, { extensionId: "ipc-files", relPath: "C:/x" }],
+  ] as const) {
+    let escRejected = false;
+    try {
+      await call(api, bad);
+    } catch {
+      escRejected = true;
+    }
+    check(`★ IPC ${label} 越界路径被 zod 拦下`, escRejected);
+  }
+  check("IPC 越界写没在 extensions/ 外层建文件", !existsSync(join(ROOT, "extensions", "evil")) && !existsSync(join(ROOT, "evil")));
+
   rmSync(CWD_TMP, { recursive: true, force: true });
 
   /* ─────────────────── §5 面板存储已接到这条 IPC(源级) ─────────────────── */
@@ -246,6 +404,26 @@ check("三条通道都注册了", handlers.has(EXTENSION_STORE_GET_CHANNEL) && h
     check("panelBridge 走 api.extensionStore.remove", bridgeCode.includes("api.extensionStore.remove("));
     check("panelBridge 不再用 localStorage(已接到数据区)", !bridgeCode.includes("localStorage"));
     check("panelBridge 按扩展 id 隔离(不再按面板项 storageKey)", !bridgeCode.includes("mcode.panel.v1."));
+    // 文件通道(报告附录 P):面板走 extension.* → api.extensionStore.* —— **扩展 id 由桥
+    // 用 `host.item.id` 注入**,面板脚本指定不了别的 id。这是那条"只能访问自己"的安全边界。
+    check("panelBridge 文件通道走 api.extensionStore.readFile", bridgeCode.includes("api.extensionStore.readFile("));
+    check("panelBridge 文件通道走 api.extensionStore.writeFile", bridgeCode.includes("api.extensionStore.writeFile("));
+    check("panelBridge 文件通道走 api.extensionStore.listFiles", bridgeCode.includes("api.extensionStore.listFiles("));
+    check("★ 文件通道用面板项自己的 id 当 extensionId(不是脚本传的)",
+      bridgeCode.includes('api.extensionStore.readFile({ extensionId: host.item.id') &&
+      bridgeCode.includes('api.extensionStore.writeFile({ extensionId: host.item.id') &&
+      bridgeCode.includes('api.extensionStore.listFiles({ extensionId: host.item.id'),
+    );
+    // 面板 SDK 里 extension.* 的名字(契约层 PANEL_METHODS + SDK 源)。
+    const panelSrc = readFileSync(join(SRC_DIR, "../../../packages/contracts/src/customUiPanel.ts"), "utf8");
+    check("契约 PANEL_METHODS 含 extension.readFile", panelSrc.includes('"extension.readFile"'));
+    check("契约 PANEL_METHODS 含 extension.writeFile", panelSrc.includes('"extension.writeFile"'));
+    check("契约 PANEL_METHODS 含 extension.listFiles", panelSrc.includes('"extension.listFiles"'));
+    check("★ SDK 暴露 mcode.extension.{readFile,writeFile,listFiles}",
+      /extension:\s*\{\s*\n\s*readFile:/.test(panelSrc) &&
+      panelSrc.includes('call("extension.readFile"') &&
+      panelSrc.includes('call("extension.writeFile"') &&
+      panelSrc.includes('call("extension.listFiles"'));
   }
 
   console.log(`\nextension-store-smoke:${checks - failed}/${checks} 通过`);

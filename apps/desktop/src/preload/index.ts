@@ -23,6 +23,9 @@ const api = {
     get: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_GET, input)) as RpcMap["extensionStore.get"],
     set: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_SET, input)) as RpcMap["extensionStore.set"],
     remove: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_REMOVE, input)) as RpcMap["extensionStore.remove"],
+    readFile: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_READ_FILE, input)) as RpcMap["extensionStore.readFile"],
+    writeFile: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_WRITE_FILE, input)) as RpcMap["extensionStore.writeFile"],
+    listFiles: ((input) => ipcRenderer.invoke(IPC.EXTENSION_STORE_LIST_FILES, input)) as RpcMap["extensionStore.listFiles"],
   },
   // ── RPC (renderer → main) ──
   claude: {

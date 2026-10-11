@@ -102,6 +102,115 @@ export const ExtensionStoreRemoveSchema = z.object({
 export type ExtensionStoreRemoveInput = z.infer<typeof ExtensionStoreRemoveSchema>;
 export type ExtensionStoreRemoveResult = { ok: true };
 
+/* ──────────────── 文件通道:该扩展自己目录下的任意文件(报告附录 P)────────────────
+ *
+ * ## 为什么要开这条
+ *
+ * 上面那三条只给「键值」。而面板(扩展 UI,跑在沙箱 iframe 里)想存一个稍微像样的东西
+ * —— 一段 Markdown 草稿、一份导出的 JSON、一张截图 —— 键值就不够用,该落成**文件**。
+ * 可面板唯一的文件读接口 `mcode.files.read` **受项目根闸门约束**:只能读当前项目目录
+ * 内的文件,**库外一律静默返回空串**(不报错)。于是扩展把数据写进自己的目录
+ * (`<数据根>/extensions/<id>/…`)后,**面板自己读不回来** —— 真机实测:项目内文件读到
+ * 2417 字符,数据根里那份读回 0 字符。
+ *
+ * 这三条补上「读写对称」:在**该扩展自己的目录**下读 / 写 / 列任意文件。
+ *
+ * ## 安全边界(关键)
+ *
+ * 路径**必须**落在 `<数据根>/extensions/<该扩展 id>/` 之内 —— {@link isSafeExtensionRelPath}
+ * 在这一层做**词法**校验(拒绝对路径、盘符、UNC、任何 `..` 段);主进程
+ * `main/lib/extensionStore.ts` 再做一道 **realpath** 包含检查(挡住符号链接逃逸)。
+ * 扩展 id 由**桥注入**(面板脚本不能自己指定别的 id —— 见 `panelBridge.ts`)。
+ *
+ * 配额与键值共用 {@link EXTENSION_STORE_MAX}(单次写超限整次拒绝)。
+ * 落档:与 `extensionStore.set` 同档 —— 写方法经 `policyFor` 兜底落**写档**,读落只读档。 */
+
+/** 相对路径长度上限(与键名同量级;够深,又不至于把 IPC 载荷撑爆)。 */
+const EXTENSION_REL_PATH_MAX = 1024;
+
+/**
+ * 该扩展目录内的**相对路径**判据(纯词法)。
+ *
+ * 拒:空 / 超长 / 含 NUL / 绝对路径(`/`、`\` 开头)/ Windows 盘符(`C:`)/ 任何 `..` 段。
+ * 允许:普通相对路径(`a/b.txt`)、`.` 段(`./a` —— 无意义但无害)。
+ *
+ * 注意这是**第一道**闸(纯字符串、renderer 与 main 共用)。**它挡不住符号链接** ——
+ * 一个真的指向目录外的 symlink 词法上是合法的相对路径。所以在主进程那层还有一道
+ * **realpath 包含**检查(`physicalPath`),两道都过才落盘。
+ */
+export function isSafeExtensionRelPath(p: string): boolean {
+  if (typeof p !== "string") return false;
+  if (p.length === 0 || p.length > EXTENSION_REL_PATH_MAX) return false;
+  if (p.includes("\0")) return false;
+  // 绝对路径:unix(`/`)、UNC(`\\` 或 `//`)、Windows 盘符(`C:` / `c:/` / `c:\`)。
+  if (/^[\\/]/.test(p)) return false;
+  if (/^[A-Za-z]:/.test(p)) return false;
+  // 按两种分隔符切段,任何一段是 `..` 就拒(路径穿越)。`.` 段放行。
+  if (p.split(/[\\/]+/).some((s) => s === "..")) return false;
+  return true;
+}
+
+export const ExtensionRelPathSchema = z
+  .string()
+  .min(1)
+  .max(EXTENSION_REL_PATH_MAX)
+  .refine(isSafeExtensionRelPath, "路径不合法(必须是该扩展目录内的相对路径,不能是绝对路径或含 ..)");
+
+/** 文件通道失败的原因。`tooLarge` 只在写时出现;`notAFile` / `notADir` 分读写。 */
+export type ExtensionFileErrorReason =
+  | "invalidPath"
+  | "escapes"
+  | "notFound"
+  | "notAFile"
+  | "notADir"
+  | "tooLarge";
+
+export const ExtensionStoreReadFileSchema = z.object({
+  extensionId: ExtensionIdSchema,
+  relPath: ExtensionRelPathSchema,
+});
+export type ExtensionStoreReadFileInput = z.infer<typeof ExtensionStoreReadFileSchema>;
+/** 读回一份文件:`{ ok: true, content }` 或一条结构化失败(**不再静默返回空串** —— 那正是
+ *  项目根闸门那条老路的问题)。空文件 = `ok: true, content: ""`,与 `notFound` 分得开。 */
+export type ExtensionStoreReadFileResult =
+  | { ok: true; content: string }
+  | { ok: false; reason: ExtensionFileErrorReason };
+
+/** 单次写入的字符数上限。**字节**上限由主进程按 UTF-8 实测(`EXTENSION_STORE_MAX`);
+ *  这一层只做个粗闸(4×上限),免得把荒唐大的载荷送过 IPC。 */
+export const ExtensionStoreWriteFileSchema = z.object({
+  extensionId: ExtensionIdSchema,
+  relPath: ExtensionRelPathSchema,
+  content: z.string().max(EXTENSION_STORE_MAX * 4),
+});
+export type ExtensionStoreWriteFileInput = z.infer<typeof ExtensionStoreWriteFileSchema>;
+/** `ok: false, reason: "tooLarge"` 时带 `limit`(字节);其余失败不带。 */
+export type ExtensionStoreWriteFileResult =
+  | { ok: true; bytes: number }
+  | { ok: false; reason: ExtensionFileErrorReason; limit?: number };
+
+export const ExtensionStoreListFilesSchema = z.object({
+  extensionId: ExtensionIdSchema,
+  /** 要列的相对目录;省略 / 空串 = 该扩展目录根。 */
+  relPath: z
+    .string()
+    .max(EXTENSION_REL_PATH_MAX)
+    .optional()
+    .refine((v) => v === undefined || v === "" || isSafeExtensionRelPath(v), "路径不合法"),
+});
+export type ExtensionStoreListFilesInput = z.infer<typeof ExtensionStoreListFilesSchema>;
+export interface ExtensionStoreListEntry {
+  name: string;
+  /** 相对该扩展目录的路径(以 `/` 分隔)。 */
+  relPath: string;
+  isDir: boolean;
+  /** 普通文件的字节数;目录不带。 */
+  size?: number;
+}
+export type ExtensionStoreListFilesResult =
+  | { ok: true; entries: ExtensionStoreListEntry[] }
+  | { ok: false; reason: ExtensionFileErrorReason };
+
 /* ─────────────────────────── 文件形状(纯函数) ─────────────────────────── */
 
 /** 一个扩展的存储:**版本号 + 键值表**。版本号写进文件,将来格式大改换一个版本。 */
@@ -189,3 +298,6 @@ export function withoutStoreValue(file: ExtensionStoreFile, key: string): Extens
 export const EXTENSION_STORE_GET_CHANNEL = "extensionStore:get";
 export const EXTENSION_STORE_SET_CHANNEL = "extensionStore:set";
 export const EXTENSION_STORE_REMOVE_CHANNEL = "extensionStore:remove";
+export const EXTENSION_STORE_READ_FILE_CHANNEL = "extensionStore:readFile";
+export const EXTENSION_STORE_WRITE_FILE_CHANNEL = "extensionStore:writeFile";
+export const EXTENSION_STORE_LIST_FILES_CHANNEL = "extensionStore:listFiles";

@@ -141,6 +141,9 @@ export const PANEL_METHODS = [
   "storage.get",
   "storage.set",
   "storage.remove",
+  "extension.readFile",
+  "extension.writeFile",
+  "extension.listFiles",
   "copy",
   "openUrl",
   "openFile",
@@ -343,6 +346,15 @@ var mcode = {
     get: function(key){ return call("storage.get", { key: str(key) }); },
     set: function(key, value){ return call("storage.set", { key: str(key), value: value === undefined ? null : value }); },
     remove: function(key){ return call("storage.remove", { key: str(key) }); }
+  },
+  /* 该扩展**自己目录**下的文件(报告附录 P):读写对称的另一半。
+     storage 只装键值,大一点的东西(草稿 Markdown、导出 JSON、截图)得落成文件。
+     路径是**该扩展目录下的相对路径**(如 "notes/a.md");绝对路径与双点段会被宿主拒。
+     扩展 id 由桥注入 —— 面板脚本**指定不了**别的 id。 */
+  extension: {
+    readFile: function(relPath){ return call("extension.readFile", { relPath: str(relPath) }); },
+    writeFile: function(relPath, content){ return call("extension.writeFile", { relPath: str(relPath), content: str(content) }); },
+    listFiles: function(relPath){ return call("extension.listFiles", { relPath: relPath === undefined ? "" : str(relPath) }); }
   },
   copy: function(text){ return call("copy", { text: str(text) }); },
   openUrl: function(url){ return call("openUrl", { url: str(url) }); },

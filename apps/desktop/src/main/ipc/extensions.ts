@@ -17,10 +17,20 @@ import {
   ExtensionStoreGetSchema,
   ExtensionStoreSetSchema,
   ExtensionStoreRemoveSchema,
+  ExtensionStoreReadFileSchema,
+  ExtensionStoreWriteFileSchema,
+  ExtensionStoreListFilesSchema,
   EXTENSION_STORE_MAX,
 } from "@contracts/ipc";
 import { dataRoot } from "@main/lib/dataRoot.js";
-import { readValue, removeValue, writeValue } from "@main/lib/extensionStore.js";
+import {
+  listFilesInExtension,
+  readFileInExtension,
+  readValue,
+  removeValue,
+  writeFileInExtension,
+  writeValue,
+} from "@main/lib/extensionStore.js";
 
 export function registerExtensionStoreHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.EXTENSION_STORE_GET, (_evt, raw: unknown) => {
@@ -36,5 +46,21 @@ export function registerExtensionStoreHandlers(ipcMain: IpcMain): void {
     const input = ExtensionStoreRemoveSchema.parse(raw);
     removeValue(dataRoot(), input.extensionId, input.key);
     return { ok: true };
+  });
+
+  // ── 文件通道(报告附录 P):该扩展自己目录下读 / 写 / 列任意文件 ──
+  // 读 id 与相对路径都由 zod 挡过一遍(绝对路径 / `..` / 盘符在这一层就拒);lib 那层再做
+  // 词法 + realpath 两道,挡符号链接逃逸。
+  ipcMain.handle(IPC.EXTENSION_STORE_READ_FILE, (_evt, raw: unknown) => {
+    const input = ExtensionStoreReadFileSchema.parse(raw);
+    return readFileInExtension(dataRoot(), input.extensionId, input.relPath);
+  });
+  ipcMain.handle(IPC.EXTENSION_STORE_WRITE_FILE, (_evt, raw: unknown) => {
+    const input = ExtensionStoreWriteFileSchema.parse(raw);
+    return writeFileInExtension(dataRoot(), input.extensionId, input.relPath, input.content);
+  });
+  ipcMain.handle(IPC.EXTENSION_STORE_LIST_FILES, (_evt, raw: unknown) => {
+    const input = ExtensionStoreListFilesSchema.parse(raw);
+    return listFilesInExtension(dataRoot(), input.extensionId, input.relPath);
   });
 }

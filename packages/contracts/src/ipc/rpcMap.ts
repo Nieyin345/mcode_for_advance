@@ -3,12 +3,21 @@ import {
   EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET_CHANNEL,
   EXTENSION_STORE_REMOVE_CHANNEL,
+  EXTENSION_STORE_READ_FILE_CHANNEL,
+  EXTENSION_STORE_WRITE_FILE_CHANNEL,
+  EXTENSION_STORE_LIST_FILES_CHANNEL,
   type ExtensionStoreGetInput,
   type ExtensionStoreGetResult,
   type ExtensionStoreSetInput,
   type ExtensionStoreSetResult,
   type ExtensionStoreRemoveInput,
   type ExtensionStoreRemoveResult,
+  type ExtensionStoreReadFileInput,
+  type ExtensionStoreReadFileResult,
+  type ExtensionStoreWriteFileInput,
+  type ExtensionStoreWriteFileResult,
+  type ExtensionStoreListFilesInput,
+  type ExtensionStoreListFilesResult,
 } from "../extensionStore.js";
 import { MEMORY_ASSISTANT_CHANNEL, type MemoryAssistantInput, type MemoryAssistantResult } from "../memoryAssistant.js";
 import { MEMORY_MANAGE_CHANNEL, type MemoryManageInput, type MemoryManageResult } from "../memory.js";
@@ -115,6 +124,12 @@ export interface RpcMap {
   "extensionStore.set": (input: ExtensionStoreSetInput) => Promise<ExtensionStoreSetResult>;
   /** 删一条。 */
   "extensionStore.remove": (input: ExtensionStoreRemoveInput) => Promise<ExtensionStoreRemoveResult>;
+  /** 读该扩展自己目录下的一份文件(报告附录 P)。空文件与"不存在"分得开(`ok:true,""` vs `ok:false,"notFound"`)。只读档。 */
+  "extensionStore.readFile": (input: ExtensionStoreReadFileInput) => Promise<ExtensionStoreReadFileResult>;
+  /** 写该扩展自己目录下的一份文件(建父目录)。超 4MB 整次拒绝。**写档**(经 `policyFor` 兜底)。 */
+  "extensionStore.writeFile": (input: ExtensionStoreWriteFileInput) => Promise<ExtensionStoreWriteFileResult>;
+  /** 列该扩展自己目录下某个子目录的内容(不递归)。只读档。 */
+  "extensionStore.listFiles": (input: ExtensionStoreListFilesInput) => Promise<ExtensionStoreListFilesResult>;
   // Claude
   /** 建会话(或**复用同项目里那份还"新鲜"的"新对话"行**——同一处空行连着开两次不会留下两条空会话,见 `createOrReuseSession`)。 */
   "claude.startSession": (input: StartSessionInput) => Promise<{ session: Session }>;
@@ -1407,6 +1422,9 @@ export const IPC = {
   EXTENSION_STORE_GET: EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET: EXTENSION_STORE_SET_CHANNEL,
   EXTENSION_STORE_REMOVE: EXTENSION_STORE_REMOVE_CHANNEL,
+  EXTENSION_STORE_READ_FILE: EXTENSION_STORE_READ_FILE_CHANNEL,
+  EXTENSION_STORE_WRITE_FILE: EXTENSION_STORE_WRITE_FILE_CHANNEL,
+  EXTENSION_STORE_LIST_FILES: EXTENSION_STORE_LIST_FILES_CHANNEL,
   // invoke/handle (RPC)
   CLAUDE_START_SESSION: "claude:startSession",
   CLAUDE_LIST_SIDE_CHATS: "claude:listSideChats",

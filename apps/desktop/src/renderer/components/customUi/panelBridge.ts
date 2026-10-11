@@ -354,6 +354,36 @@ export async function handlePanelCall(host: PanelHost, method: PanelMethod, para
       return { ok: true };
     }
 
+    case "extension.readFile": {
+      // 扩展 id 就是**这个面板项自己的 id** —— 面板脚本指定不了别的 id(它只能经这条桥,
+      // 而这条桥用的是 `host.item.id`)。路径是相对该扩展目录的相对路径。
+      const relPath = str(p, "relPath", 1024);
+      return api.extensionStore.readFile({ extensionId: host.item.id, relPath });
+    }
+
+    case "extension.writeFile": {
+      const relPath = str(p, "relPath", 1024);
+      const content = str(p, "content", 5_000_000);
+      // 与 `files.write` 同类(有副作用),过确认闸门 —— 但落点是**该扩展自己的目录**,
+      // 不碰用户项目。文案点明"扩展自己的目录"。
+      await gate(
+        host,
+        tr("customUi.panel.confirmWriteExtension", { path: relPath, chars: content.length }),
+        "customUi.panel.write",
+      );
+      const res = await api.extensionStore.writeFile({ extensionId: host.item.id, relPath, content });
+      if (!res.ok) {
+        if (res.reason === "tooLarge") throw new PanelCallError(tr("customUi.panel.storageFull"));
+        throw new PanelCallError(tr("customUi.panel.writeExtensionFailed", { reason: res.reason }));
+      }
+      return res;
+    }
+
+    case "extension.listFiles": {
+      const relPath = optStr(p, "relPath", 1024) ?? "";
+      return api.extensionStore.listFiles({ extensionId: host.item.id, relPath });
+    }
+
     case "copy": {
       const res = await copyText(str(p, "text", 5_000_000));
       if (!res.ok) throw new PanelCallError(res.error);
