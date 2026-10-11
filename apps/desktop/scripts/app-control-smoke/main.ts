@@ -78,6 +78,10 @@ const pin: Array<[string, string]> = [
   ["claude.respondQuestion", "blocked"],
   ["workflow.approve", "blocked"],
   ["customModel.getToken", "blocked"],
+  // 中继配置含明文 SSH 密码 —— 与 customModel.getToken / *Models.getApiKey 同类,
+  // 必须同档(报告附录 C:「relay.getConfig 靠按**键名**打码兜底,换个字段名就漏」)。
+  // 判据钉在这一档上,别让后来者把它降回 read。
+  ["relay.getConfig", "blocked"],
   ["session.saveMessages", "blocked"],
   ["plugins.installGit", "danger"],
   ["mcp.save", "danger"],

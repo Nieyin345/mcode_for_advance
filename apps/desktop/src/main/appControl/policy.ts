@@ -31,6 +31,13 @@ const BLOCKED: Record<string, string> = {
   "customModel.getToken": "API Key / 令牌不给模型",
   "piModels.getApiKey": "API Key 不给模型",
   "codexModels.getApiKey": "API Key 不给模型",
+  // 中继配置里含**明文 SSH 密码**(`RelayVpsConfig.password`)。它不叫 *Token / *ApiKey,
+  // 所以漏在下面那条按名兜底之外(见 app-control-smoke 的 `/getToken|getApiKey/` 断言),
+  // 而同类的 `customModel.getToken` / `*Models.getApiKey` 都在 BLOCKED —— 判据不一致
+  // (报告附录 C 的「一处值得产品再想」)。值本身已被 `redactValue` 按键名(`password`)
+  // 打码,但**打码靠键名**、换个字段名就漏;直接不给模型最省事。要看状态用 `relay.status`
+  // (不含凭据)。此条只挡 **agent 的 `app_api_call`**,设置页走自己的 `window.api`,不受影响。 */
+  "relay.getConfig": "中继配置含明文 SSH 密码,不给模型;要看状态用 relay.status",
   "voice.start": "需要麦克风音频流,只能在界面上用",
   "voice.feed": "需要麦克风音频流,只能在界面上用",
   "voice.stop": "需要麦克风音频流,只能在界面上用",
