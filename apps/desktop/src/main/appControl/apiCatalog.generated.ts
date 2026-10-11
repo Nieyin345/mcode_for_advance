@@ -1027,7 +1027,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "library.listCollections",
   "channel": "library:listCollections",
-  "doc": "列全部集合(树形;已摊成渲染端要的形状)。",
+  "doc": "列全部集合(树形;已摊成渲染端要的形状)。**返回值里含回收站**(`{ name:\"回收站\", isTrash:true }`)—— 调用方要自己按 `isTrash` 滤掉,别把它当成一个真分类(报告真机实测 NEW-4)。",
   "input": "(无参数)",
   "output": "{ collections: LibraryCollection[] }"
  },
@@ -2147,7 +2147,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "session.listAll",
   "channel": "session:listAll",
-  "doc": "Cross-project non-archived sessions, newest-first (stream sidebar).",
+  "doc": "Cross-project non-archived sessions, newest-first (stream sidebar) — 跨项目、排除已归档、排除置顶。**给 agent 时**:每行是完整 `Session`(含 `turnFiles` / `usageHistory` / `subagents` 等\"整份内容\"级字段),`app_api_call` 会把它们摘成计数,别拿这条去逐条读内容;要挑对话用 `mcode-* session_list`(只标题/id/时间,按项目分组)。",
   "input": "{ limit?: number | undefined; offset?: number | undefined; projectIds?: string[] | undefined // Project scope: only rows whose project_id is in this list.; worktreeKey?: string | undefined // Worktree-checkout scope: only sessions bound to that isolated checkout, as a normalized p… }",
   "output": "{ sessions: Session[]; hasMore: boolean; total: number }"
  },

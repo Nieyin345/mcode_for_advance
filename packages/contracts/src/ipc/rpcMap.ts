@@ -169,7 +169,7 @@ export interface RpcMap {
   "project.list": () => Promise<{ projects: Project[] }>;
   /** 某项目下的对话,分页。**默认页大小 5**(归档箱不传 limit = 全部);`worktree` 会同时收窄列表与计数 —— 两边必须同口径,否则 `hasMore` 会数进列表从不返回的行。 */
   "project.sessions": (input: ProjectSessionsInput) => Promise<{ sessions: Session[]; hasMore: boolean; total: number }>;
-  /** Cross-project non-archived sessions, newest-first (stream sidebar). */
+  /** Cross-project non-archived sessions, newest-first (stream sidebar) — 跨项目、排除已归档、排除置顶。**给 agent 时**:每行是完整 `Session`(含 `turnFiles` / `usageHistory` / `subagents` 等"整份内容"级字段),`app_api_call` 会把它们摘成计数,别拿这条去逐条读内容;要挑对话用 `mcode-* session_list`(只标题/id/时间,按项目分组)。 */
   "session.listAll": (input: SessionListAllInput) => Promise<{ sessions: Session[]; hasMore: boolean; total: number }>;
   /** The workflow-node sessions of ONE conversation — "which step has a session,
    *  and what is it called". Read-only, and the only way a node session is ever
@@ -1355,7 +1355,7 @@ export interface RpcMap {
   ) => Promise<{ ok: boolean; name?: string; count?: number; error?: string }>;
 
   // 文献库 —— 集合
-  /** 列全部集合(树形;已摊成渲染端要的形状)。 */
+  /** 列全部集合(树形;已摊成渲染端要的形状)。**返回值里含回收站**(`{ name:"回收站", isTrash:true }`)—— 调用方要自己按 `isTrash` 滤掉,别把它当成一个真分类(报告真机实测 NEW-4)。 */
   "library.listCollections": () => Promise<{ collections: LibraryCollection[] }>;
   /** 新建/改名/删除集合 —— 均返回**完整的新列表**,渲染端整体替换缓存(既定模式)。 */
   "library.createCollection": (input: CollectionCreateInput) => Promise<{ collections: LibraryCollection[] }>;
