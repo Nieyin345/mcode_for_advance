@@ -71,7 +71,7 @@ import {
 import { forceShellConfirm, parseSettingsImport, SETTINGS_EXPORT_FORMAT } from "../../src/main/settings/settingsTransfer.js";
 import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem } from "../../src/main/customUi/targets.js";
 import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestration/automationPayload.js";
-import { listPanelProbes, pickPanelProbe, registerPanelProbe } from "../../src/renderer/components/customUi/panelReadback.js";
+import { listPanelProbes, pickPanelProbe, registerPanelProbe, waitForPanelProbe } from "../../src/renderer/components/customUi/panelReadback.js";
 import { LIT_IMPORT_PY } from "../../src/main/workflows/assets.js";
 import { spawnSync } from "node:child_process";
 
@@ -968,6 +968,56 @@ console.log("\n面板读回:注册表选择");
   offTab();
   offTab2();
   check("全部注销后回到空", listPanelProbes().length === 0 && pickPanelProbe() === undefined);
+}
+
+/* ── 「读回」注册表:等挂载(报告 R7)──
+ *
+ * `open_panel` 改了 store 到 `PanelFrame` 挂上(probe 登记)之间隔着一拍 React 提交。
+ * `open_panel` 自己 await 了这道缝,但那份保护只在它自己的 promise 里 —— agent 若把
+ * `open_panel` 与 `read_panel` 并发发下、或读的这拍正逢重挂的空窗,`read_panel` 会在
+ * 这一刻扑空。`waitForPanelProbe` 就是补这个:当下空 → 在窗口内轮询 → 出现即返回。
+ *
+ * 判据:① 一开始注册表为空,**稍后**才登记 → 等到并成功(而不是立刻 undefined);
+ *       ② 窗口内始终没有 → 返回 undefined(如实报错,不假装等到);
+ *       ③ 一开始就有 → 立即返回,不等(只读、连发,不能白拖)。
+ */
+console.log("\n面板读回:等挂载(R7)");
+{
+  const fake = (itemId: string, mode: "float" | "preview" | "tab") =>
+    ({ itemId, label: itemId, mode, probe: async () => ({ __mcode: 1 as const, probe: "x", text: "", html: "", textLength: 0, htmlLength: 0, url: "" }) });
+
+  // ① 空 → 稍后才登记 → 等到并成功。
+  {
+    const t0 = Date.now();
+    const pending = waitForPanelProbe("late", 1200);
+    let offLate = () => {};
+    const timer = setTimeout(() => { offLate = registerPanelProbe(fake("late", "float")); }, 120);
+    const got = await pending;
+    clearTimeout(timer);
+    const waited = Date.now() - t0;
+    offLate();
+    check("★ 注册表一开始为空、稍后才出现 → 等到并成功(R7)", got?.itemId === "late" && waited >= 100, { itemId: got?.itemId, waited });
+  }
+
+  // ② 窗口内始终没有 → undefined(不假装等到)。
+  {
+    const t0 = Date.now();
+    const got = await waitForPanelProbe("never", 200);
+    const waited = Date.now() - t0;
+    check("★ 窗口内一直没有 → 返回 undefined(如实报错)", got === undefined && waited >= 180, { got: got?.itemId, waited });
+  }
+
+  // ③ 当下就有 → 不等,立即返回。
+  {
+    const off = registerPanelProbe(fake("here", "preview"));
+    const t0 = Date.now();
+    const got = await waitForPanelProbe("here", 1200);
+    const waited = Date.now() - t0;
+    check("★ 当下就有 → 立即返回,不白等", got?.itemId === "here" && waited < 100, { itemId: got?.itemId, waited });
+    off();
+  }
+
+  check("等挂载用例跑完后注册表回到空(不串场)", listPanelProbes().length === 0);
 }
 
 /* ── 汇总 ── */

@@ -81,3 +81,38 @@ export function pickPanelProbe(itemId?: string): PanelProbeHandle | undefined {
   }
   return best;
 }
+
+/**
+ * `read_panel` 取不到面板时,在等它出现之前允许的**上限窗口**(报告 R7)。
+ *
+ * 短:read_panel 是只读、agent 会连发,不能把它拖住。1.2s 只够补"挂载晚一拍"那道缝
+ * —— 面板真要开起来远超这个数时照旧如实报错,不假装等到了。
+ */
+export const READ_PANEL_WAIT_MS = 1200;
+
+/**
+ * 挑一个该读的面板;**当下挑不到就在 `ms` 窗口内轮询**(报告 R7)。
+ *
+ * 与纯函数 `pickPanelProbe` 分开,是因为"等"这件事要有个确定口径:
+ *   - `PanelFrame` 的 probe 是**挂载时**才登记的,而 `openPanel` 只改 store —— 从那次
+ *     setState 到 React 提交、`PanelFrame` 挂上,中间隔一(或几)拍;
+ *   - `open_panel` 自己 `await waitFor(...)` 把这道缝补上了,但那份保护**只在它自己的
+ *     promise 里**。若 agent 把 `open_panel` 与 `read_panel` **并发**发下,或读的这拍
+ *     正逢组件重挂的空窗,`read_panel` 这一刻 pick 就会扑空,报"没有正在渲染的面板"
+ *     —— 正是报告里"开完立刻读没读到"的窗口。
+ *
+ * 窗口耗尽仍挑不到 → 返回 `undefined`,调用方**照旧如实报错**(列出当前挂着的面板)。
+ * 带时间,所以与 `pickPanelProbe` 分家:`pickPanelProbe` 只看当下,这一支会等。
+ */
+export async function waitForPanelProbe(itemId?: string, ms = READ_PANEL_WAIT_MS): Promise<PanelProbeHandle | undefined> {
+  const first = pickPanelProbe(itemId);
+  if (first) return first;
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    await new Promise((r) => setTimeout(r, 50));
+    const hit = pickPanelProbe(itemId);
+    if (hit) return hit;
+  }
+  // 最后再挑一次:窗口边界上刚好挂上的也算数(与 `waitFor` 的收尾 pred() 同一规矩)。
+  return pickPanelProbe(itemId);
+}

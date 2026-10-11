@@ -163,8 +163,11 @@ async function execute(cmd: AppUiCommand): Promise<AppUiReply> {
     case "read_panel": {
       // 「读回」一个正在渲染的自定义面板(报告 E10)。面板在沙箱 iframe 里,外面读不到它
       // 的 DOM —— 只能问 `PanelFrame`。它挂载时把自己的 probe 登记在 `panelReadback`。
-      const { pickPanelProbe, listPanelProbes } = await import("@renderer/components/customUi/panelReadback.js");
-      const handle = pickPanelProbe(cmd.itemId);
+      // `waitForPanelProbe`:当下取不到就**先等一小会**(报告 R7)—— 若面板刚被 open_panel
+      // 打开、或正逢一次重挂,probe 登记晚这一拍才到;直接报错就是报告里那个"开完立刻读
+      // 没读到"的窗口。等不到照旧如实报错。窗口短(read_panel 只读、会连发)。
+      const { waitForPanelProbe, listPanelProbes } = await import("@renderer/components/customUi/panelReadback.js");
+      const handle = await waitForPanelProbe(cmd.itemId);
       if (!handle) {
         const all = listPanelProbes();
         const hint = cmd.itemId
