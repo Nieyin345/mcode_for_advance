@@ -2130,10 +2130,23 @@ check(
   blockedRead.text,
 );
 check("…确实等了(不是立刻返回)", waited >= 1500, waited);
+// ⚠️ **不要用"读回来那一刻的 status"直接断言"已退出"** —— 进程在 2000ms 打印后退出,
+//    但"读到 late-output"与"OS 把退出码交回来"不是同一个瞬间:慢机(CI)上这次读可能恰好
+//    赶在退出被回收之前返回,status 仍是 running(实测 CI 就这样偶发红)。改成**轮询到退出
+//    为止**(有界窗口),窗口耗尽仍 running 才判红 —— 报的是真实"没退出"。
+let finalStatus = blockedRead.structuredContent?.status;
+{
+  const deadline = Date.now() + 15_000;
+  while (finalStatus === "running" && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100));
+    const probe = await host.callTool("agent_process_read", { process_id: sleepyId, cursor: 0, wait_ms: 0 }, { sessionId: "s1" });
+    finalStatus = probe.structuredContent?.status;
+  }
+}
 check(
   "…而且进程结束时 status 不再是 running",
-  blockedRead.structuredContent?.status === "exited",
-  blockedRead.structuredContent,
+  finalStatus === "exited",
+  finalStatus,
 );
 
 /* ── ⚠️ **有输出就快点回,别等满 55 秒** ─────────────────────────────
