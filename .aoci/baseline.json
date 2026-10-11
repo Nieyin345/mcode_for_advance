@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-11T00:58:51Z",
+  "updated_at": "2026-10-11T01:17:47Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "0728b94a56a3a4143237a9044869ba7a5f04c76b6c81bbea0efb79105c904875",
-      "size": 940476,
-      "normalized_sha256": "0728b94a56a3a4143237a9044869ba7a5f04c76b6c81bbea0efb79105c904875"
+      "sha256": "93c3b971244b4d2f54bcc72f3eea777374a52acc3a8f06624d29808b26810857",
+      "size": 940946,
+      "normalized_sha256": "93c3b971244b4d2f54bcc72f3eea777374a52acc3a8f06624d29808b26810857"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3383,9 +3383,9 @@
     },
     "apps/desktop/scripts/mcp-text-smoke/main.ts": {
       "role": "index",
-      "sha256": "17d95f45b4bdd9b96c2211e0aaeecdeb0d11082a9159c552f43aa90245ff421e",
-      "size": 8216,
-      "normalized_sha256": "17d95f45b4bdd9b96c2211e0aaeecdeb0d11082a9159c552f43aa90245ff421e"
+      "sha256": "4a332c9f136c4fdc0b7f032c2dbbf53f34c3a65995e8bb7cd71d2e9a1b6f3393",
+      "size": 9676,
+      "normalized_sha256": "4a332c9f136c4fdc0b7f032c2dbbf53f34c3a65995e8bb7cd71d2e9a1b6f3393"
     },
     "apps/desktop/scripts/mcp-text-smoke/run.sh": {
       "role": "index",
@@ -7271,9 +7271,9 @@
     },
     "apps/desktop/src/main/mcp/agentDocumentOps.ts": {
       "role": "index",
-      "sha256": "cd77c06563d73210b61cb9828b8c3a5cebd2cfc456b3712e9e6985ca8d6df525",
-      "size": 18911,
-      "normalized_sha256": "cd77c06563d73210b61cb9828b8c3a5cebd2cfc456b3712e9e6985ca8d6df525"
+      "sha256": "2eddcb1bc22fcab849ce69e0b9b90cde026330e5f6a92dbb4fd27a3da87f531c",
+      "size": 19477,
+      "normalized_sha256": "2eddcb1bc22fcab849ce69e0b9b90cde026330e5f6a92dbb4fd27a3da87f531c"
     },
     "apps/desktop/src/main/mcp/agentEngineBridge.ts": {
       "role": "index",
@@ -7319,9 +7319,9 @@
     },
     "apps/desktop/src/main/mcp/agentTools.ts": {
       "role": "index",
-      "sha256": "13f763dc26383e32dd82ab958b31644b059f943ffce10915e7aa566b598c8f2b",
-      "size": 129807,
-      "normalized_sha256": "13f763dc26383e32dd82ab958b31644b059f943ffce10915e7aa566b598c8f2b"
+      "sha256": "c73c7b5b6d993483b8251cbe5fa7aa2e91d51c93a36bec5702d2538fcd633e68",
+      "size": 130164,
+      "normalized_sha256": "c73c7b5b6d993483b8251cbe5fa7aa2e91d51c93a36bec5702d2538fcd633e68"
     },
     "apps/desktop/src/main/mcp/appServer.ts": {
       "role": "index",
