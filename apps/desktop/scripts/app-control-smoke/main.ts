@@ -626,6 +626,12 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   check("★ read_panel 是只读(不问审批)", asked.length === askedBefore && !read.isError, { asked: asked.length, err: textOf(read) });
   check("★ read_panel 把面板渲染出来的可见文本给 agent",
     textOf(read).includes("Hello panel") && textOf(read).includes("我的面板"), textOf(read));
+  // ★ 默认**不回 HTML**(报告 R2:HTML 常几万字符、是噪声)。只提一句"还有多少没显示"。
+  check("★ read_panel 默认不把 HTML 塞进上下文(只报长度)", !textOf(read).includes("<h1>Hello panel</h1>") && textOf(read).includes("22"), textOf(read).slice(0, 200));
+  check("★ read_panel 提示可用 include_html 取结构", textOf(read).includes("include_html"), textOf(read).slice(0, 200));
+  // 显式索取才给。
+  const readHtml = await invokeAppTool("app_ui", { action: "read_panel", include_html: true }, "me", ctx);
+  check("★ read_panel include_html:true 才回 HTML", !readHtml.isError && textOf(readHtml).includes("<h1>Hello panel</h1>"), textOf(readHtml).slice(0, 200));
   check("★ read_panel 下发给渲染端的指令是对的", (seen.at(-1) as { op: string }).op === "read_panel", seen.at(-1));
   const readById = await invokeAppTool("app_ui", { action: "read_panel", item_id: "p1" }, "me", ctx);
   check("★ read_panel 带 item_id 时原样传给渲染端", !readById.isError && (seen.at(-1) as { itemId?: string }).itemId === "p1", seen.at(-1));

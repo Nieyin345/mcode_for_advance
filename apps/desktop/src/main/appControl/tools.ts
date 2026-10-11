@@ -710,6 +710,7 @@ export function appMcpTools(): McpToolSpec[] {
         key: z.enum(["locale", "themeStyle", "displayMode", "chatFontSize", "chatDensity", "workflowId", "permissionMode"]).optional(),
         value: z.union([z.string(), z.number()]).optional(),
         item_id: z.string().optional().describe("read_panel:要读的面板条目 id;省略 = 当前最该读的那个"),
+        include_html: z.boolean().optional().describe("read_panel:默认只回可见文本;要连渲染后的 HTML 一起回(看结构/空壳)才传 true —— HTML 常有几万字符,不必要时别要(报告 R2)"),
       },
       handler: async () => fail("内部错误:app_ui 必须经 invokeAppTool 调用"),
     },
@@ -779,6 +780,7 @@ type UiArgs = {
   key?: "locale" | "themeStyle" | "displayMode" | "chatFontSize" | "chatDensity" | "workflowId" | "permissionMode";
   value?: string | number;
   item_id?: string;
+  include_html?: boolean;
 };
 
 function need<T>(v: T | undefined, name: string): T {
@@ -840,7 +842,15 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext): Promise<ToolResult>
         `${shown.trim() ? shown : "(没有可见文本)"}`;
       // HTML 只在**确实想看结构**时才回一大坨:文本已经给了绝大多数答案,默认不塞 HTML。
       // 但"文本为空、多半是还没渲染出来"时,HTML 能告诉 agent 是空壳还是 DOM 在但没文字。
-      const tail = d.html && d.html.trim() ? `\n\n— HTML(共 ${d.htmlLength} 字符) —\n${d.html.slice(0, 20_000)}${(d.htmlLength ?? 0) > 20_000 ? "…(已截断)" : ""}` : "";
+      // HTML 默认**不塞**(报告 R2:它常有几万字符,而文本已给了绝大多数答案)——
+      // 除非:① agent 显式 `include_html: true`(想看结构);或 ② 可见文本为空
+      // (多半还没渲染出来,HTML 能告诉它是空壳还是 DOM 在但没文字)。
+      const wantHtml = a.include_html === true || shown.trim().length === 0;
+      const tail = wantHtml && d.html && d.html.trim()
+        ? `\n\n— HTML(共 ${d.htmlLength} 字符) —\n${d.html.slice(0, 20_000)}${(d.htmlLength ?? 0) > 20_000 ? "…(已截断)" : ""}`
+        : d.html && d.html.trim()
+          ? `\n\n(还有 HTML ${d.htmlLength} 字符未显示;需要看结构时用 include_html: true 再读一次)`
+          : "";
       return text(head + tail);
     }
     case "open_panel": {
