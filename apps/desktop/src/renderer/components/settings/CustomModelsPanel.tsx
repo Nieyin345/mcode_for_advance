@@ -1425,8 +1425,14 @@ function CodexProviderForm({
   const removeModel = (idx: number) => setForm({ ...form, models: form.models.filter((_, i) => i !== idx) });
 
   return (
-    <div className="space-y-2.5">
-      <div className="grid grid-cols-2 gap-2">
+    <ProviderFormShell
+      engine="codex"
+      name={
+        <Field label={t("settings.customModels.providerNameLabel")}>
+          <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="DeepSeek" />
+        </Field>
+      }
+      identity={
         <Field label={t("settings.customModels.codexIdLabel")} hint={t("settings.customModels.codexIdHint")}>
           <Input
             value={form.id}
@@ -1435,88 +1441,94 @@ function CodexProviderForm({
             placeholder="deepseek"
           />
         </Field>
-        <Field label={t("settings.customModels.providerNameLabel")}>
-          <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="DeepSeek" />
+      }
+      baseUrl={
+        <Field label={t("settings.customModels.baseUrlLabel")} hint={t("settings.customModels.codexResponsesNote")}>
+          <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder="https://api.deepseek.com/v1" />
         </Field>
-      </div>
-
-      <Field label={t("settings.customModels.baseUrlLabel")} hint={t("settings.customModels.codexResponsesNote")}>
-        <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder="https://api.deepseek.com/v1" />
-      </Field>
-
-      <Field label={t("settings.customModels.apiKeyLabel")} hint={t("settings.customModels.apiKeyHint")}>
-        <SecretInput
-          value={form.apiKey}
-          onChange={(v) => update("apiKey", v)}
-          placeholder={isEdit ? t("settings.customModels.apiKeyKeepPlaceholder") : "sk-..."}
-          onReveal={revealToken}
+      }
+      credential={
+        <Field label={t("settings.customModels.apiKeyLabel")} hint={t("settings.customModels.apiKeyHint")}>
+          <SecretInput
+            value={form.apiKey}
+            onChange={(v) => update("apiKey", v)}
+            placeholder={isEdit ? t("settings.customModels.apiKeyKeepPlaceholder") : "sk-..."}
+            onReveal={revealToken}
+          />
+        </Field>
+      }
+      headers={
+        <HeadersEditor rows={form.customHeaders} onChange={(rows) => update("customHeaders", rows)} />
+      }
+      pull={
+        <EndpointActionRow
+          icon={<IconDownload size={12} />}
+          label={t("settings.customModels.pullModels")}
+          hint={form.baseUrl.trim() ? t("settings.customModels.pullModelsHint") : t("settings.customModels.pullModelsNeedUrl")}
+          disabled={pulling || !form.baseUrl.trim()}
+          busy={pulling}
+          onClick={() => void pull()}
         />
-      </Field>
-
-      <div className="flex items-start justify-between gap-3 rounded border border-edge bg-surface/40 p-2.5">
-        <HintLabel hint={t("settings.customModels.imageGenHint")} className="text-[0.7857em] font-medium text-content">
-          {t("settings.customModels.imageGen")}
-        </HintLabel>
-        <Switch
-          checked={form.imageGeneration}
-          onCheckedChange={(v) => update("imageGeneration", v)}
-          label={t("settings.customModels.imageGen")}
+      }
+      models={
+        <ModelListSection
+          count={form.models.filter((m) => m.id.trim()).length}
+          onAdd={addModel}
+          isEmpty={form.models.length === 0}
+        >
+          {form.models.map((m, idx) => (
+            <div key={idx} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 p-2">
+              <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
+              <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
+                <Switch checked={m.context1m} onCheckedChange={(v) => updateModel(idx, { context1m: v })} label={t("settings.customModels.enable1m")} />
+                <span className="text-[0.6428em] text-content-muted">1M</span>
+              </label>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => onTest(idx)}
+                disabled={test.status === "testing"}
+                title={t("settings.customModels.testWithModel")}
+              >
+                {test.status === "testing" && test.idx === idx
+                  ? <IconLoader2 size={12} className="animate-spin" />
+                  : <IconPlugConnected size={12} />}
+              </Button>
+              <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
+                <IconTrash size={12} />
+              </Button>
+            </div>
+          ))}
+        </ModelListSection>
+      }
+      // Codex 特有：图片生成开关（往 config.toml 的 http_headers 补一条 actor 头，
+      // 解锁 codex 的 imagegen 工具）。默认折叠 —— 它是可选的解锁项，不是必填。
+      // Codex 特有：图片生成开关（往 config.toml 的 http_headers 补一条 actor 头，
+      // 解锁 codex 的 imagegen 工具）。默认折叠 —— 它是可选的解锁项，不是必填。
+      advanced={
+        <div className="flex items-start justify-between gap-3 rounded border border-edge bg-surface/40 p-2.5">
+          <HintLabel hint={t("settings.customModels.imageGenHint")} className="text-[0.7857em] font-medium text-content">
+            {t("settings.customModels.imageGen")}
+          </HintLabel>
+          <Switch
+            checked={form.imageGeneration}
+            onCheckedChange={(v) => update("imageGeneration", v)}
+            label={t("settings.customModels.imageGen")}
+          />
+        </div>
+      }
+      error={error}
+      actions={
+        <FormActions
+          testStatus={test}
+          onDelete={onDelete}
+          onCancel={onCancel}
+          onSave={onSave}
+          saving={saving}
+          isEdit={isEdit}
         />
-      </div>
-
-      {/* 额外请求头 —— 与 Claude / Pi 同一份编辑器（2026-10-11 统一），落进 config.toml 的
-          http_headers。开了图片生成时会和那条 actor 头合并进同一行。 */}
-      <HeadersEditor rows={form.customHeaders} onChange={(rows) => update("customHeaders", rows)} />
-
-      {/* 从端点拉模型列表（2026-10-11 加，与 Pi 一致）。 */}
-      <PullModelsRow baseUrl={form.baseUrl} pulling={pulling} onPull={() => void pull()} />
-
-      {/* Models sub-table */}
-      <ModelListSection
-        count={form.models.filter((m) => m.id.trim()).length}
-        onAdd={addModel}
-        isEmpty={form.models.length === 0}
-      >
-        {form.models.map((m, idx) => (
-          <div key={idx} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-1.5 rounded border border-edge bg-surface/40 p-2">
-            <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
-            <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
-              <Switch checked={m.context1m} onCheckedChange={(v) => updateModel(idx, { context1m: v })} label={t("settings.customModels.enable1m")} />
-              <span className="text-[0.6428em] text-content-muted">1M</span>
-            </label>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => onTest(idx)}
-              disabled={test.status === "testing"}
-              title={t("settings.customModels.testWithModel")}
-            >
-              {test.status === "testing" && test.idx === idx
-                ? <IconLoader2 size={12} className="animate-spin" />
-                : <IconPlugConnected size={12} />}
-            </Button>
-            <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
-              <IconTrash size={12} />
-            </Button>
-          </div>
-        ))}
-      </ModelListSection>
-
-      {error && (
-        <p className="rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-[0.7857em] text-danger">{error}</p>
-      )}
-
-      {/* 三个引擎共用同一条操作栏（2026-10-11 统一）—— 从前 Codex 这里是自己写的
-          一排，按钮顺序与样式和 Claude / Pi 不一样。 */}
-      <FormActions
-        testStatus={test}
-        onDelete={onDelete}
-        onCancel={onCancel}
-        onSave={onSave}
-        saving={saving}
-        isEdit={isEdit}
-      />
-    </div>
+      }
+    />
   );
 }
 
@@ -1553,13 +1565,10 @@ function ClaudeProviderForm({
   const isOpenAi = form.protocol === "openai";
   const isWeb = form.protocol === "web";
   const { t } = useI18n();
-  // Open by default when anything inside it is already configured, so an
-  // existing value is never hidden behind a collapsed section.
-  const [advancedOpen, setAdvancedOpen] = useState(
-    Boolean(form.timeoutMs) || form.customHeaders.length > 0,
-  );
   /** 展开哪个模型行看它的思考强度映射（与 Pi 表单同一个交互）。 */
   const [thinkingOpen, setThinkingOpen] = useState<number | null>(null);
+  /** 「测试连接」用列表里第一个填了 id 的模型去探；没有就落在第 0 行（由 runClaudeTest 报错）。 */
+  const firstModelIdx = form.models.findIndex((m) => m.id.trim());
   // 扩展桥配对信息：只在网页端需要。5s 轮询一次 —— "配上了"这件事发生在另一个
   // 程序里（用户在浏览器里装扩展），主进程没有事件可推，只能问。
   const [bridge, setBridge] = useState<ExtensionBridgeStatus | null>(null);
@@ -1612,288 +1621,321 @@ function ClaudeProviderForm({
     setForm({ ...form, models: form.models.filter((_, i) => i !== idx) });
 
   return (
-    <div className="space-y-2.5">
-      <Field
-        label={t("settings.customModels.protocolLabel")}
-        hint={isOpenAi ? t("settings.customModels.openaiNote") : undefined}
-      >
-        <Select.Root
-          value={form.protocol}
-          onValueChange={(v) => {
-            const next = v as Protocol;
-            // 切到网页端时顺手补一条模型 id：站点才是模型，这个 id 只是个显示名，
-            // 让用户对着空列表琢磨"DeepSeek 该填哪个模型"没有意义（保存时也会补）。
-            if (next === "web" && form.models.every((m) => !m.id.trim())) {
-              setForm({
-                ...form,
-                protocol: next,
-                models: [{ id: defaultWebModelId(form.webSiteId), supports1m: false, thinking: defaultThinkingModes(), thinkingValue: emptyThinkingValues() }],
-              });
-              return;
-            }
-            update("protocol", next);
-          }}
+    <ProviderFormShell
+      engine="claude"
+      // 顶部一行：名称 + 协议（引擎标识）。名称在前，三页一致。
+      name={
+        <Field label={t("settings.customModels.nameLabel")}>
+          <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder={t("settings.customModels.namePlaceholder")} />
+        </Field>
+      }
+      identity={
+        <Field
+          label={t("settings.customModels.protocolLabel")}
+          hint={isOpenAi ? t("settings.customModels.openaiNote") : undefined}
         >
-          <Select.Trigger className="w-full">
-            <Select.Value>
-              {(val: Protocol) => {
-                const o = PROTOCOL_OPTIONS.find((x) => x.value === val) ?? PROTOCOL_OPTIONS[0];
-                return <span className="flex items-center gap-1.5">{o.icon}{t(o.labelKey)}</span>;
-              }}
-            </Select.Value>
-          </Select.Trigger>
-          <Select.Portal><Select.Positioner><Select.Popup><Select.List>
-            {PROTOCOL_OPTIONS.map((o) => (
-              <Select.Item key={o.value} value={o.value}>
-                {o.icon}
-                <Select.ItemText>{t(o.labelKey)}</Select.ItemText>
-              </Select.Item>
-            ))}
-          </Select.List></Select.Popup></Select.Positioner></Select.Portal>
-        </Select.Root>
-      </Field>
-
-      <Field label={t("settings.customModels.nameLabel")}>
-        <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder={t("settings.customModels.namePlaceholder")} />
-      </Field>
-
-      {/* 网页端没有 Base URL / Token —— 上游是浏览器扩展在用户自己浏览器里驱动
-          的那个页面，不是 API。这两栏在这个协议下整块不渲染：留着只会让人以为
-          还要填点什么；换成扩展桥的配对信息。 */}
-      {isWeb ? (
-        <>
-          <Field label={t("settings.customModels.webSiteLabel")}>
-            <Select.Root value={form.webSiteId} onValueChange={(v) => update("webSiteId", v as string)}>
+          <Select.Root
+            value={form.protocol}
+            onValueChange={(v) => {
+              const next = v as Protocol;
+              // 切到网页端时顺手补一条模型 id：站点才是模型，这个 id 只是个显示名，
+              // 让用户对着空列表琢磨"DeepSeek 该填哪个模型"没有意义（保存时也会补）。
+              if (next === "web" && form.models.every((m) => !m.id.trim())) {
+                setForm({
+                  ...form,
+                  protocol: next,
+                  models: [{ id: defaultWebModelId(form.webSiteId), supports1m: false, thinking: defaultThinkingModes(), thinkingValue: emptyThinkingValues() }],
+                });
+                return;
+              }
+              update("protocol", next);
+            }}
+          >
+            <Select.Trigger className="w-full">
+              <Select.Value>
+                {(val: Protocol) => {
+                  const o = PROTOCOL_OPTIONS.find((x) => x.value === val) ?? PROTOCOL_OPTIONS[0];
+                  return <span className="flex items-center gap-1.5">{o.icon}{t(o.labelKey)}</span>;
+                }}
+              </Select.Value>
+            </Select.Trigger>
+            <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+              {PROTOCOL_OPTIONS.map((o) => (
+                <Select.Item key={o.value} value={o.value}>
+                  {o.icon}
+                  <Select.ItemText>{t(o.labelKey)}</Select.ItemText>
+                </Select.Item>
+              ))}
+            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+          </Select.Root>
+        </Field>
+      }
+      // 网页端没有 Base URL / Token / 认证方式 —— 上游是浏览器扩展在用户自己浏览器里
+      // 驱动的那个页面，不是 API。这几格在这个协议下整块不渲染（站点选择与扩展桥信息
+      // 收进高级区）。
+      baseUrl={
+        !isWeb ? (
+          <Field label={t("settings.customModels.baseUrlLabel")}>
+            <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder={isOpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com/anthropic"} />
+          </Field>
+        ) : undefined
+      }
+      credential={
+        !isWeb ? (
+          <Field label={t("settings.customModels.authTokenLabel")}>
+            <SecretInput
+              value={form.authToken}
+              onChange={(v) => update("authToken", v)}
+              placeholder={isEdit ? t("settings.customModels.tokenKeepPlaceholder") : "sk-..."}
+              onReveal={revealToken}
+            />
+          </Field>
+        ) : undefined
+      }
+      auth={
+        !isWeb ? (
+          <Field label={t("settings.customModels.authLabel")}>
+            <Select.Root value={form.authMode} onValueChange={(v) => update("authMode", v as AuthMode)}>
               <Select.Trigger className="w-full">
                 <Select.Value>
-                  {(val: string) => {
-                    const o = WEB_SITE_OPTIONS.find((x) => x.value === val);
-                    return (
-                      <span>
-                        {o ? t(o.labelKey) : t("settings.customModels.webSitePlaceholder")}
-                      </span>
-                    );
+                  {(val: AuthMode) => {
+                    const o = AUTH_MODE_OPTIONS.find((x) => x.value === val) ?? AUTH_MODE_OPTIONS[0];
+                    return <span className="flex items-center gap-1.5">{o.icon}{o.label}</span>;
                   }}
                 </Select.Value>
               </Select.Trigger>
               <Select.Portal><Select.Positioner><Select.Popup><Select.List>
-                {WEB_SITE_OPTIONS.map((o) => (
+                {AUTH_MODE_OPTIONS.map((o) => (
                   <Select.Item key={o.value} value={o.value}>
-                    <Select.ItemText>
-                      {o.driver
-                        ? t(o.labelKey)
-                        : `${t(o.labelKey)} ${t("settings.customModels.webSiteDriverPending")}`}
-                    </Select.ItemText>
+                    {o.icon}
+                    <Select.ItemText>{o.label}</Select.ItemText>
                   </Select.Item>
                 ))}
               </Select.List></Select.Popup></Select.Positioner></Select.Portal>
             </Select.Root>
-            {/* 驱动没实现的站点：说清"能配但不能跑"，并把原因指到扩展那边 ——
-                否则用户会以为是 mcode 这里配坏了。 */}
-            {!WEB_SITE_OPTIONS.find((o) => o.value === form.webSiteId)?.driver && (
-              <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
-                {t("settings.customModels.webSiteDriverPendingHint")}
-              </p>
-            )}
           </Field>
-
-          <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
-            <div className="flex items-center gap-1.5">
-              <HintLabel hint={t("settings.customModels.bridgeHint")} className="text-[0.7857em] font-medium text-content-muted">
-                {t("settings.customModels.bridgeTitle")}
-              </HintLabel>
-              <span
-                className={cn(
-                  "rounded px-1.5 py-0.5 text-[0.7143em]",
-                  bridge?.paired ? "bg-accent/15 text-accent" : "bg-surface-muted text-content-subtle",
-                )}
-              >
-                {bridge?.paired
-                  ? t("settings.customModels.bridgePaired")
-                  : t("settings.customModels.bridgeUnpaired")}
-              </span>
-            </div>
-
-            <BridgeRow
-              label={t("settings.customModels.bridgeUrlLabel")}
-              value={bridge?.url ?? ""}
-              copied={copied === "url"}
-              onCopy={() => bridge && void copy("url", bridge.url)}
-            />
-            <BridgeRow
-              label={t("settings.customModels.bridgeTokenLabel")}
-              value={bridge?.token ?? ""}
-              copied={copied === "token"}
-              onCopy={() => bridge && void copy("token", bridge.token)}
-            />
-
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-0.5"
-              disabled={regenerating}
-              onClick={() => void regenerate()}
-            >
-              {regenerating ? (
-                <IconLoader2 size={13} className="mr-1 animate-spin" />
-              ) : (
-                <IconPlugConnected size={13} className="mr-1" />
-              )}
-              {t("settings.customModels.bridgeRegenerate")}
-            </Button>
-
-          </div>
-
-          <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-            {t("settings.customModels.webNote")}
-          </p>
-        </>
-      ) : (
-        <>
-          <Field label={t("settings.customModels.baseUrlLabel")}>
-            <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder={isOpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com/anthropic"} />
-          </Field>
-
-          <div className="grid grid-cols-[1fr_120px] gap-2">
-            <Field label={t("settings.customModels.authTokenLabel")}>
-              <SecretInput
-                value={form.authToken}
-                onChange={(v) => update("authToken", v)}
-                placeholder={isEdit ? t("settings.customModels.tokenKeepPlaceholder") : "sk-..."}
-                onReveal={revealToken}
-              />
-            </Field>
-            <Field label={t("settings.customModels.authLabel")}>
-              <Select.Root value={form.authMode} onValueChange={(v) => update("authMode", v as AuthMode)}>
-                <Select.Trigger className="w-full">
-                  <Select.Value>
-                    {(val: AuthMode) => {
-                      const o = AUTH_MODE_OPTIONS.find((x) => x.value === val) ?? AUTH_MODE_OPTIONS[0];
-                      return <span className="flex items-center gap-1.5">{o.icon}{o.label}</span>;
-                    }}
-                  </Select.Value>
-                </Select.Trigger>
-                <Select.Portal><Select.Positioner><Select.Popup><Select.List>
-                  {AUTH_MODE_OPTIONS.map((o) => (
-                    <Select.Item key={o.value} value={o.value}>
-                      {o.icon}
-                      <Select.ItemText>{o.label}</Select.ItemText>
-                    </Select.Item>
-                  ))}
-                </Select.List></Select.Popup></Select.Positioner></Select.Portal>
-              </Select.Root>
-            </Field>
-          </div>
-        </>
-      )}
-
-      {/* Models sub-list — model id + 1M toggle, with a per-row plug icon
-          (next to delete) that fires the connection test for that model. */}
-      <ModelListSection
-        count={form.models.filter((m) => m.id.trim()).length}
-        onAdd={addModel}
-        isEmpty={form.models.length === 0}
-      >
-        {form.models.map((m, idx) => {
-          const testingThis = test.status === "testing" && test.idx === idx;
-          return (
-            <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
-              <div className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-1.5">
-                <Input
-                  value={m.id}
-                  onChange={(e) => updateModel(idx, { id: e.target.value })}
-                  placeholder={t(
-                    isWeb
-                      ? "settings.customModels.modelIdPlaceholderWeb"
-                      : "settings.customModels.modelIdPlaceholder",
-                  )}
-                  spellCheck={false}
-                />
-                <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.supports1mLabel")}>
-                  <Switch checked={m.supports1m} onCheckedChange={(v) => updateModel(idx, { supports1m: v })} label={t("settings.customModels.supports1mLabel")} />
-                  <span className="text-[0.6428em] text-content-muted">1M</span>
-                </label>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => onTest(idx)}
-                  disabled={test.status === "testing"}
-                  title={t("settings.customModels.testWithModel")}
-                >
-                  {testingThis ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlugConnected size={12} />}
-                </Button>
-                {/* 展开看这个模型的思考强度档位映射（与 Pi 同一交互）。 */}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setThinkingOpen(thinkingOpen === idx ? null : idx)}
-                  title={t("settings.customModels.thinkingMapEdit")}
-                >
-                  {thinkingOpen === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
-                </Button>
-                <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
-                  <IconTrash size={12} />
-                </Button>
-              </div>
-              {thinkingOpen === idx && (
-                <ThinkingMapEditor
-                  thinking={m.thinking}
-                  thinkingValue={m.thinkingValue}
-                  onChange={(patch) => updateModel(idx, patch)}
-                />
-              )}
-            </div>
-          );
-        })}
-      </ModelListSection>
-
-      {/* Subagent-model pin — a per-config setting: Claude sessions running
-          on THIS provider route Task-tool subagents through the picked model
-          (CLAUDE_CODE_SUBAGENT_MODEL). "" = follow the main session's model.
-          Options come from the model rows above, so a pin whose row was
-          deleted in this edit simply disappears from the list and is dropped
-          on save. */}
-      <Field label={t("settings.subagentModel.select")} hint={t("settings.subagentModel.hint")}>
-        <Select.Root
-          value={form.subagentModel || SUBAGENT_FOLLOW_MAIN}
-          onValueChange={(v) => update("subagentModel", v === SUBAGENT_FOLLOW_MAIN ? "" : (v as string))}
+        ) : undefined
+      }
+      // 请求头与「测连接」现在落在**通用位置**（2026-10-11 统一）。从前 Claude 把请求头
+      // 塞在高级区里，位置和 Pi / Codex 不一样。
+      //
+      // Claude 的自定义端点没有可列举的 /models 路由，所以这一格用「测试连接」代替
+      // 「从端点拉模型」——同一个 `EndpointActionRow` 外壳、同一个位置，只是按钮语义不同。
+      headers={
+        !isWeb ? (
+          <HeadersEditor
+            rows={form.customHeaders}
+            onChange={(rows) => update("customHeaders", rows)}
+          />
+        ) : undefined
+      }
+      pull={
+        !isWeb ? (
+          <EndpointActionRow
+            icon={<IconPlugConnected size={12} />}
+            label={t("settings.customModels.testConnection")}
+            hint={
+              form.models.some((m) => m.id.trim())
+                ? t("settings.customModels.testConnectionHint")
+                : t("settings.customModels.testConnectionNeedModel")
+            }
+            disabled={test.status === "testing"}
+            busy={test.status === "testing"}
+            onClick={() => onTest(firstModelIdx >= 0 ? firstModelIdx : 0)}
+          />
+        ) : undefined
+      }
+      models={
+        <ModelListSection
+          count={form.models.filter((m) => m.id.trim()).length}
+          onAdd={addModel}
+          isEmpty={form.models.length === 0}
         >
-          <Select.Trigger className="w-full">
-            <Select.Value>
-              {(val: string | null) => (
-                <span
-                  className={cn(
-                    "flex items-center",
-                    (!val || val === SUBAGENT_FOLLOW_MAIN) && "text-content-subtle",
-                  )}
-                >
-                  {val && val !== SUBAGENT_FOLLOW_MAIN
-                    ? val
-                    : t("settings.subagentModel.follow")}
-                </span>
-              )}
-            </Select.Value>
-          </Select.Trigger>
-          <Select.Portal><Select.Positioner><Select.Popup><Select.List>
-            <Select.Item value={SUBAGENT_FOLLOW_MAIN}>
-              <Select.ItemText>{t("settings.subagentModel.follow")}</Select.ItemText>
-            </Select.Item>
-            {form.models.filter((m) => m.id.trim()).map((m) => (
-              <Select.Item key={m.id.trim()} value={m.id.trim()}>
-                <Select.ItemText>{m.id.trim()}</Select.ItemText>
-              </Select.Item>
-            ))}
-          </Select.List></Select.Popup></Select.Positioner></Select.Portal>
-        </Select.Root>
-      </Field>
+          {form.models.map((m, idx) => {
+            const testingThis = test.status === "testing" && test.idx === idx;
+            return (
+              <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
+                <div className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-1.5">
+                  <Input
+                    value={m.id}
+                    onChange={(e) => updateModel(idx, { id: e.target.value })}
+                    placeholder={t(
+                      isWeb
+                        ? "settings.customModels.modelIdPlaceholderWeb"
+                        : "settings.customModels.modelIdPlaceholder",
+                    )}
+                    spellCheck={false}
+                  />
+                  <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.supports1mLabel")}>
+                    <Switch checked={m.supports1m} onCheckedChange={(v) => updateModel(idx, { supports1m: v })} label={t("settings.customModels.supports1mLabel")} />
+                    <span className="text-[0.6428em] text-content-muted">1M</span>
+                  </label>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onTest(idx)}
+                    disabled={test.status === "testing"}
+                    title={t("settings.customModels.testWithModel")}
+                  >
+                    {testingThis ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlugConnected size={12} />}
+                  </Button>
+                  {/* 展开看这个模型的思考强度档位映射（与 Pi 同一交互）。 */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setThinkingOpen(thinkingOpen === idx ? null : idx)}
+                    title={t("settings.customModels.thinkingMapEdit")}
+                  >
+                    {thinkingOpen === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
+                    <IconTrash size={12} />
+                  </Button>
+                </div>
+                {thinkingOpen === idx && (
+                  <ThinkingMapEditor
+                    thinking={m.thinking}
+                    thinkingValue={m.thinkingValue}
+                    onChange={(patch) => updateModel(idx, patch)}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </ModelListSection>
+      }
+      // 高级区：网页端站点/扩展桥 + 子代理模型固定 + 超时 + 禁用遥测。全是 Claude 特有。
+      advanced={
+        <>
+          {isWeb && (
+            <>
+              <Field label={t("settings.customModels.webSiteLabel")}>
+                <Select.Root value={form.webSiteId} onValueChange={(v) => update("webSiteId", v as string)}>
+                  <Select.Trigger className="w-full">
+                    <Select.Value>
+                      {(val: string) => {
+                        const o = WEB_SITE_OPTIONS.find((x) => x.value === val);
+                        return (
+                          <span>
+                            {o ? t(o.labelKey) : t("settings.customModels.webSitePlaceholder")}
+                          </span>
+                        );
+                      }}
+                    </Select.Value>
+                  </Select.Trigger>
+                  <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+                    {WEB_SITE_OPTIONS.map((o) => (
+                      <Select.Item key={o.value} value={o.value}>
+                        <Select.ItemText>
+                          {o.driver
+                            ? t(o.labelKey)
+                            : `${t(o.labelKey)} ${t("settings.customModels.webSiteDriverPending")}`}
+                        </Select.ItemText>
+                      </Select.Item>
+                    ))}
+                  </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+                </Select.Root>
+                {/* 驱动没实现的站点：说清"能配但不能跑"，并把原因指到扩展那边 ——
+                    否则用户会以为是 mcode 这里配坏了。 */}
+                {!WEB_SITE_OPTIONS.find((o) => o.value === form.webSiteId)?.driver && (
+                  <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
+                    {t("settings.customModels.webSiteDriverPendingHint")}
+                  </p>
+                )}
+              </Field>
 
-      {/* Advanced */}
-      <button type="button" onClick={() => setAdvancedOpen((v) => !v)} className="flex items-center gap-1 pt-1 text-[0.7857em] text-content-subtle hover:text-content-muted">
-        <IconChevronRight size={12} className={cn("transition-transform", advancedOpen && "rotate-90")} />
-        {t("settings.customModels.advancedToggle")}
-      </button>
-      {advancedOpen && (
-        <div className="space-y-2 rounded border border-edge bg-surface/50 p-2">
+              <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
+                <div className="flex items-center gap-1.5">
+                  <HintLabel hint={t("settings.customModels.bridgeHint")} className="text-[0.7857em] font-medium text-content-muted">
+                    {t("settings.customModels.bridgeTitle")}
+                  </HintLabel>
+                  <span
+                    className={cn(
+                      "rounded px-1.5 py-0.5 text-[0.7143em]",
+                      bridge?.paired ? "bg-accent/15 text-accent" : "bg-surface-muted text-content-subtle",
+                    )}
+                  >
+                    {bridge?.paired
+                      ? t("settings.customModels.bridgePaired")
+                      : t("settings.customModels.bridgeUnpaired")}
+                  </span>
+                </div>
+
+                <BridgeRow
+                  label={t("settings.customModels.bridgeUrlLabel")}
+                  value={bridge?.url ?? ""}
+                  copied={copied === "url"}
+                  onCopy={() => bridge && void copy("url", bridge.url)}
+                />
+                <BridgeRow
+                  label={t("settings.customModels.bridgeTokenLabel")}
+                  value={bridge?.token ?? ""}
+                  copied={copied === "token"}
+                  onCopy={() => bridge && void copy("token", bridge.token)}
+                />
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-0.5"
+                  disabled={regenerating}
+                  onClick={() => void regenerate()}
+                >
+                  {regenerating ? (
+                    <IconLoader2 size={13} className="mr-1 animate-spin" />
+                  ) : (
+                    <IconPlugConnected size={13} className="mr-1" />
+                  )}
+                  {t("settings.customModels.bridgeRegenerate")}
+                </Button>
+
+                <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+                  {t("settings.customModels.webNote")}
+                </p>
+              </div>
+            </>
+          )}
+
+          {/* Subagent-model pin — a per-config setting: Claude sessions running
+              on THIS provider route Task-tool subagents through the picked model
+              (CLAUDE_CODE_SUBAGENT_MODEL). "" = follow the main session's model.
+              Options come from the model rows above, so a pin whose row was
+              deleted in this edit simply disappears from the list and is dropped
+              on save. */}
+          <Field label={t("settings.subagentModel.select")} hint={t("settings.subagentModel.hint")}>
+            <Select.Root
+              value={form.subagentModel || SUBAGENT_FOLLOW_MAIN}
+              onValueChange={(v) => update("subagentModel", v === SUBAGENT_FOLLOW_MAIN ? "" : (v as string))}
+            >
+              <Select.Trigger className="w-full">
+                <Select.Value>
+                  {(val: string | null) => (
+                    <span
+                      className={cn(
+                        "flex items-center",
+                        (!val || val === SUBAGENT_FOLLOW_MAIN) && "text-content-subtle",
+                      )}
+                    >
+                      {val && val !== SUBAGENT_FOLLOW_MAIN
+                        ? val
+                        : t("settings.subagentModel.follow")}
+                    </span>
+                  )}
+                </Select.Value>
+              </Select.Trigger>
+              <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+                <Select.Item value={SUBAGENT_FOLLOW_MAIN}>
+                  <Select.ItemText>{t("settings.subagentModel.follow")}</Select.ItemText>
+                </Select.Item>
+                {form.models.filter((m) => m.id.trim()).map((m) => (
+                  <Select.Item key={m.id.trim()} value={m.id.trim()}>
+                    <Select.ItemText>{m.id.trim()}</Select.ItemText>
+                  </Select.Item>
+                ))}
+              </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+            </Select.Root>
+          </Field>
+
           <div className="grid grid-cols-[1fr_140px] gap-2">
             <Field label={t("settings.customModels.timeoutLabel")}>
               <Input value={form.timeoutMs} onChange={(e) => update("timeoutMs", e.target.value)} placeholder="3000000" />
@@ -1903,28 +1945,25 @@ function ClaudeProviderForm({
               {t("settings.customModels.disableTelemetry")}
             </label>
           </div>
-
-          {/* Extra request headers. Sent by BOTH delivery paths — the direct
-              Anthropic one and the local protocol bridge — so a gateway that
-              needs a routing/tenant hint works either way. */}
-          <HeadersEditor
-            rows={form.customHeaders}
-            onChange={(rows) => update("customHeaders", rows)}
-          />
-        </div>
-      )}
-
-      {error && <div className="text-[0.7857em] text-danger">{error}</div>}
-
-      <FormActions
-        testStatus={test}
-        onDelete={onDelete}
-        onCancel={onCancel}
-        onSave={onSave}
-        saving={saving}
-        isEdit={isEdit}
-      />
-    </div>
+        </>
+      }
+      // Open by default when anything inside it is already configured, so an
+      // existing value is never hidden behind a collapsed section (子代理模型 / 超时
+      // 已有值,或网页端 —— 站点选择是必填、扩展桥是这块唯一能连上的凭据)。请求头
+      // 现在住在通用区、不在这里,所以不再据它判断。
+      advancedDefaultOpen={isWeb || Boolean(form.timeoutMs) || Boolean(form.subagentModel)}
+      error={error}
+      actions={
+        <FormActions
+          testStatus={test}
+          onDelete={onDelete}
+          onCancel={onCancel}
+          onSave={onSave}
+          saving={saving}
+          isEdit={isEdit}
+        />
+      }
+    />
   );
 }
 
@@ -1976,11 +2015,14 @@ function PiProviderForm({
   const removeModel = (idx: number) => setForm({ ...form, models: form.models.filter((_, i) => i !== idx) });
 
   return (
-    <div className="space-y-2.5">
-      <div className="grid grid-cols-2 gap-2">
+    <ProviderFormShell
+      engine="pi"
+      name={
         <Field label={t("settings.customModels.providerNameLabel")}>
           <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="deepseek" />
         </Field>
+      }
+      identity={
         <Field label={t("settings.customModels.apiTypeLabel")}>
           <Select.Root value={form.api} onValueChange={(v) => update("api", String(v))}>
             <Select.Trigger className="w-full">
@@ -2003,130 +2045,120 @@ function PiProviderForm({
             </Select.List></Select.Popup></Select.Positioner></Select.Portal>
           </Select.Root>
         </Field>
-      </div>
-
-      <Field label={t("settings.customModels.baseUrlLabel")}>
-        <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder="https://api.deepseek.com" />
-      </Field>
-
-      <Field label={t("settings.customModels.apiKeyLabel")} hint={t("settings.customModels.apiKeyHint")}>
-        <SecretInput
-          value={form.apiKey}
-          onChange={(v) => update("apiKey", v)}
-          placeholder={isEdit ? t("settings.customModels.apiKeyKeepPlaceholder") : "sk-..."}
-          onReveal={revealToken}
+      }
+      baseUrl={
+        <Field label={t("settings.customModels.baseUrlLabel")}>
+          <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder="https://api.deepseek.com" />
+        </Field>
+      }
+      credential={
+        <Field label={t("settings.customModels.apiKeyLabel")} hint={t("settings.customModels.apiKeyHint")}>
+          <SecretInput
+            value={form.apiKey}
+            onChange={(v) => update("apiKey", v)}
+            placeholder={isEdit ? t("settings.customModels.apiKeyKeepPlaceholder") : "sk-..."}
+            onReveal={revealToken}
+          />
+        </Field>
+      }
+      auth={
+        <div className="flex items-center gap-2">
+          <Switch checked={form.authHeader} onCheckedChange={(v) => update("authHeader", v)} label={t("settings.customModels.authHeaderLabel")} />
+          <span className="text-[0.7857em] text-content-muted">{t("settings.customModels.authHeaderSpan")}</span>
+        </div>
+      }
+      headers={<HeadersEditor rows={form.customHeaders} onChange={(rows) => update("customHeaders", rows)} />}
+      pull={
+        <EndpointActionRow
+          icon={<IconDownload size={12} />}
+          label={t("settings.customModels.pullModels")}
+          hint={form.baseUrl.trim() ? t("settings.customModels.pullModelsHint") : t("settings.customModels.pullModelsNeedUrl")}
+          disabled={pulling || !form.baseUrl.trim()}
+          busy={pulling}
+          onClick={() => void pull()}
         />
-      </Field>
-
-      <div className="flex items-center gap-2">
-        <Switch checked={form.authHeader} onCheckedChange={(v) => update("authHeader", v)} label={t("settings.customModels.authHeaderLabel")} />
-        <span className="text-[0.7857em] text-content-muted">{t("settings.customModels.authHeaderSpan")}</span>
-      </div>
-
-      {/* 额外请求头 —— 与 Claude / Codex 同一份编辑器（2026-10-11 统一）。 */}
-      <HeadersEditor rows={form.customHeaders} onChange={(rows) => update("customHeaders", rows)} />
-
-      {/* 从端点拉模型列表（Claude 那套也有；拉不到时错误条会说明原因，用户可以继续手输）。 */}
-      <PullModelsRow baseUrl={form.baseUrl} pulling={pulling} onPull={() => void pull()} />
-
-      {/* Models sub-table */}
-      <ModelListSection
-        count={form.models.filter((m) => m.id.trim()).length}
-        onAdd={addModel}
-        isEmpty={form.models.length === 0}
-      >
-        {form.models.map((m, idx) => (
-          <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
-            <div className="grid grid-cols-[1fr_90px_70px_auto] items-center gap-1.5">
-              <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
-              <Input value={m.maxTokens} onChange={(e) => updateModel(idx, { maxTokens: e.target.value })} placeholder={t("settings.customModels.maxTokensPlaceholder")} title={t("settings.customModels.maxTokensTitle")} />
-              <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
-                <Switch checked={m.enable1m} onCheckedChange={(v) => updateModel(idx, { enable1m: v })} label={t("settings.customModels.enable1m")} />
-                <span className="text-[0.6428em] text-content-muted">1M</span>
-              </label>
-              <span className="flex items-center gap-0.5">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => onTest(idx)}
-                    disabled={test.status === "testing"}
-                    title={t("settings.customModels.testWithModel")}
-                  >
-                    {test.status === "testing" && test.idx === idx
-                      ? <IconLoader2 size={12} className="animate-spin" />
-                      : <IconPlugConnected size={12} />}
-                  </Button>
-                  <button type="button" onClick={() => setExpandedModel(expandedModel === idx ? null : idx)} className="rounded p-0.5 text-content-muted hover:bg-surface-hover" title={expandedModel === idx ? t("settings.customModels.collapse") : t("settings.customModels.expandModel")}>
-                    {expandedModel === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
-                  </button>
-                  <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
-                    <IconTrash size={12} />
-                  </Button>
-                </span>
-              </div>
-              {expandedModel === idx && (
-                <div className="mt-2 space-y-2 border-t border-edge/60 pt-1.5">
-                  <div className="flex items-center gap-3">
-                    <label className="flex items-center gap-1.5">
-                      <Switch checked={m.reasoning} onCheckedChange={(v) => updateModel(idx, { reasoning: v })} label={t("settings.customModels.reasoningLabel")} />
-                      <span className="text-[0.7143em] text-content-muted">{t("settings.customModels.reasoningSpan")}</span>
-                    </label>
-                    <label className="flex items-center gap-1.5" title={t("settings.customModels.visionLabel")}>
-                      <Switch checked={m.vision} onCheckedChange={(v) => updateModel(idx, { vision: v })} label={t("settings.customModels.visionLabel")} />
-                      <span className="text-[0.7143em] text-content-muted">{t("settings.customModels.visionSpan")}</span>
-                    </label>
-                    <Field label={t("settings.customModels.displayNameLabel")}>
-                      <Input value={m.name} onChange={(e) => updateModel(idx, { name: e.target.value })} placeholder={t("settings.customModels.displayNamePlaceholder")} />
-                    </Field>
-                  </div>
-                  <div>
-                    <span className="mb-1 block text-[0.7143em] text-content-muted">{t("settings.customModels.thinkingMapHint")}</span>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {PI_THINKING_KEYS.map((k) => (
-                        <label key={k} className="flex items-center gap-1.5">
-                          <span className="w-14 shrink-0 text-[0.7143em] text-content-muted">{k}</span>
-                          <Select.Root value={m.thinking[k]} onValueChange={(v) => updateModel(idx, { thinking: { ...m.thinking, [k]: v as PiModelFormState["thinking"][PiThinkingKey] } })}>
-                            <Select.Trigger className="flex-1">
-                              <Select.Value>
-                                {(val: string) => {
-                                  const o = THINKING_MODE_OPTIONS.find((x) => x.value === val) ?? THINKING_MODE_OPTIONS[0];
-                                  return <span className="flex items-center gap-1.5">{o.icon}{t(o.labelKey)}</span>;
-                                }}
-                              </Select.Value>
-                            </Select.Trigger>
-                            <Select.Portal><Select.Positioner><Select.Popup><Select.List>
-                              {THINKING_MODE_OPTIONS.map((o) => (
-                                <Select.Item key={o.value} value={o.value}>
-                                  {o.icon}
-                                  <Select.ItemText>{t(o.labelKey)}</Select.ItemText>
-                                </Select.Item>
-                              ))}
-                            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
-                          </Select.Root>
-                          {m.thinking[k] === "value" && (
-                            <Input value={m.thinkingValue[k]} onChange={(e) => updateModel(idx, { thinkingValue: { ...m.thinkingValue, [k]: e.target.value } })} placeholder={t("settings.customModels.thinkingValuePlaceholder")} className="flex-1" />
-                          )}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+      }
+      models={
+        <ModelListSection
+          count={form.models.filter((m) => m.id.trim()).length}
+          onAdd={addModel}
+          isEmpty={form.models.length === 0}
+        >
+          {form.models.map((m, idx) => (
+            <div key={idx} className="rounded border border-edge bg-surface/40 p-2">
+              <div className="grid grid-cols-[1fr_90px_70px_auto] items-center gap-1.5">
+                <Input value={m.id} onChange={(e) => updateModel(idx, { id: e.target.value })} placeholder={t("settings.customModels.modelIdPlaceholder")} />
+                <Input value={m.maxTokens} onChange={(e) => updateModel(idx, { maxTokens: e.target.value })} placeholder={t("settings.customModels.maxTokensPlaceholder")} title={t("settings.customModels.maxTokensTitle")} />
+                <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.enable1m")}>
+                  <Switch checked={m.enable1m} onCheckedChange={(v) => updateModel(idx, { enable1m: v })} label={t("settings.customModels.enable1m")} />
+                  <span className="text-[0.6428em] text-content-muted">1M</span>
+                </label>
+                <span className="flex items-center gap-0.5">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => onTest(idx)}
+                      disabled={test.status === "testing"}
+                      title={t("settings.customModels.testWithModel")}
+                    >
+                      {test.status === "testing" && test.idx === idx
+                        ? <IconLoader2 size={12} className="animate-spin" />
+                        : <IconPlugConnected size={12} />}
+                    </Button>
+                    <button type="button" onClick={() => setExpandedModel(expandedModel === idx ? null : idx)} className="rounded p-0.5 text-content-muted hover:bg-surface-hover" title={expandedModel === idx ? t("settings.customModels.collapse") : t("settings.customModels.expandModel")}>
+                      {expandedModel === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
+                    </button>
+                    <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>
+                      <IconTrash size={12} />
+                    </Button>
+                  </span>
                 </div>
-              )}
-          </div>
-        ))}
-      </ModelListSection>
-
-      {error && <div className="rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7857em] text-danger">{error}</div>}
-
-      <FormActions
-        testStatus={test}
-        onDelete={onDelete}
-        onCancel={onCancel}
-        onSave={onSave}
-        saving={saving}
-        isEdit={isEdit}
-      />
-    </div>
+                {expandedModel === idx && (
+                  <div className="mt-2 space-y-2 border-t border-edge/60 pt-1.5">
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5">
+                        <Switch checked={m.reasoning} onCheckedChange={(v) => updateModel(idx, { reasoning: v })} label={t("settings.customModels.reasoningLabel")} />
+                        <span className="text-[0.7143em] text-content-muted">{t("settings.customModels.reasoningSpan")}</span>
+                      </label>
+                      <label className="flex items-center gap-1.5" title={t("settings.customModels.visionLabel")}>
+                        <Switch checked={m.vision} onCheckedChange={(v) => updateModel(idx, { vision: v })} label={t("settings.customModels.visionLabel")} />
+                        <span className="text-[0.7143em] text-content-muted">{t("settings.customModels.visionSpan")}</span>
+                      </label>
+                      <Field label={t("settings.customModels.displayNameLabel")}>
+                        <Input value={m.name} onChange={(e) => updateModel(idx, { name: e.target.value })} placeholder={t("settings.customModels.displayNamePlaceholder")} />
+                      </Field>
+                    </div>
+                    <ThinkingMapEditor
+                      thinking={m.thinking}
+                      thinkingValue={m.thinkingValue}
+                      onChange={(patch) => updateModel(idx, patch)}
+                    />
+                  </div>
+                )}
+            </div>
+          ))}
+        </ModelListSection>
+      }
+      // Pi 没有任何 provider 级的引擎特有字段 —— 它的引擎特有项（推理 / 图片输入 /
+      // 显示名 / 思考级别映射）都是**逐模型**的，住在每个模型行的「展开」按钮里。
+      // 这一区照旧渲染（三页观感一致），内容只说清这件事，不硬塞一个假字段。
+      advanced={
+        <p className="text-[0.715em] leading-relaxed text-content-subtle">
+          {t("settings.customModels.piAdvancedHint")}
+        </p>
+      }
+      error={error}
+      actions={
+        <FormActions
+          testStatus={test}
+          onDelete={onDelete}
+          onCancel={onCancel}
+          onSave={onSave}
+          saving={saving}
+          isEdit={isEdit}
+        />
+      }
+    />
   );
 }
 
@@ -2169,28 +2201,122 @@ function ModelListSection({
   );
 }
 
-/** 「从端点拉取模型列表」那一行 —— Pi / Codex 共用（2026-10-11 加；Claude 侧无端点可拉
- *  时用户手输，这两个引擎给了「问端点要」这条路）。地址为空时禁用并说明。 */
-function PullModelsRow({
-  baseUrl,
-  pulling,
-  onPull,
+/** 「从端点拉取模型 / 测试连接」那一行 —— 三个引擎在**同一个外壳槽位**里各放一个（2026-10-11 统一）。
+ *
+ *  Pi / Codex 的自定义端点支持列模型（`listEndpointModels`），这一格是「问端点要模型列表」；
+ *  Claude 的自定义端点只有逐模型探测（`customModel.test`）、没有可列举的 `/models` 路由，
+ *  所以同一格换成「测试连接」——**位置相同、外壳相同**，只是按钮语义不同。按钮文字/图标/禁用
+ *  条件由调用方给，外壳只保证这一行在三页里落在同一处。 */
+function EndpointActionRow({
+  icon,
+  label,
+  hint,
+  disabled,
+  busy,
+  onClick,
 }: {
-  baseUrl: string;
-  pulling: boolean;
-  onPull: () => void;
+  icon: ReactNode;
+  label: string;
+  hint: string;
+  disabled: boolean;
+  busy: boolean;
+  onClick: () => void;
 }) {
-  const { t } = useI18n();
-  const disabled = pulling || !baseUrl.trim();
   return (
     <div className="flex items-center gap-2">
-      <Button variant="outline" size="sm" onClick={onPull} disabled={disabled}>
-        {pulling ? <IconLoader2 size={12} className="mr-1 animate-spin" /> : <IconDownload size={12} className="mr-1" />}
-        {t("settings.customModels.pullModels")}
+      <Button variant="outline" size="sm" onClick={onClick} disabled={disabled}>
+        {busy ? <IconLoader2 size={12} className="mr-1 animate-spin" /> : <span className="mr-1">{icon}</span>}
+        {label}
       </Button>
-      <span className="text-[0.7143em] text-content-subtle">
-        {baseUrl.trim() ? t("settings.customModels.pullModelsHint") : t("settings.customModels.pullModelsNeedUrl")}
-      </span>
+      <span className="text-[0.7143em] text-content-subtle">{hint}</span>
+    </div>
+  );
+}
+
+/** 三个引擎表单的**共享外壳** —— 骨架与顺序归它，各引擎只声明「这一格放什么」（2026-10-11 真正统一）。
+ *
+ *  期望的固定顺序（三处逐格相同，`data-slot` 就是给回归断言的锚点）：
+ *    顶部一行(名称 + 引擎标识) → Base URL → 密钥/Token → 认证方式 → 请求头 →
+ *    从端点拉模型/测试连接 → 模型列表 → 高级折叠(引擎特有) → 错误条 → 操作栏
+ *
+ *  从前这三个 tab「看起来没变」的根因是：上一轮只抽了子控件（ModelListSection / FormActions /
+ *  HeadersEditor），**每个 tab 仍自己排字段顺序**，而且只有 Claude 有高级折叠区。现在顺序由
+ *  这一个组件保证 —— 谁想把某一格挪回旧样，`custom-models-ui-smoke` 的顺序断言就会变红。
+ *
+ *  高级折叠区：必填或已有值的字段不能藏进去让人看不见（Claude 原有的规矩），所以默认展开与否
+ *  由 `advancedDefaultOpen` 决定，各引擎按「里面有没有已配置的值」自己算。 */
+function ProviderFormShell({
+  engine,
+  name,
+  identity,
+  baseUrl,
+  credential,
+  auth,
+  headers,
+  pull,
+  models,
+  advanced,
+  advancedDefaultOpen,
+  error,
+  actions,
+}: {
+  /** 引擎标识，写成 `data-provider-form` 供 UI 回归定位该表单。 */
+  engine: "claude" | "pi" | "codex";
+  name: ReactNode;
+  identity: ReactNode;
+  baseUrl?: ReactNode;
+  credential?: ReactNode;
+  auth?: ReactNode;
+  headers?: ReactNode;
+  pull?: ReactNode;
+  models: ReactNode;
+  advanced?: ReactNode;
+  advancedDefaultOpen?: boolean;
+  error?: string | null;
+  actions: ReactNode;
+}) {
+  const { t } = useI18n();
+  const [advancedOpen, setAdvancedOpen] = useState(Boolean(advancedDefaultOpen));
+  return (
+    <div className="space-y-2.5" data-provider-form={engine}>
+      {/* 顶部一行：名称 + 该引擎的「标识/类型」字段。名称在前、标识在后，三页一致。 */}
+      <div className="grid grid-cols-2 gap-2" data-slot="top">
+        <div data-slot="name">{name}</div>
+        <div data-slot="identity">{identity}</div>
+      </div>
+
+      {baseUrl ? <div data-slot="baseUrl">{baseUrl}</div> : null}
+      {credential ? <div data-slot="credential">{credential}</div> : null}
+      {auth ? <div data-slot="auth">{auth}</div> : null}
+      {/* 请求头与「拉模型/测连接」现在是**通用位置**（从前只有 Claude 把请求头塞在高级区里）。 */}
+      {headers ? <div data-slot="headers">{headers}</div> : null}
+      {pull ? <div data-slot="pull">{pull}</div> : null}
+
+      <div data-slot="models">{models}</div>
+
+      {advanced ? (
+        <div data-slot="advanced">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="flex items-center gap-1 pt-1 text-[0.7857em] text-content-subtle hover:text-content-muted"
+          >
+            <IconChevronRight size={12} className={cn("transition-transform", advancedOpen && "rotate-90")} />
+            {t("settings.customModels.advancedSection")}
+          </button>
+          {advancedOpen && (
+            <div className="mt-1 space-y-2 rounded border border-edge bg-surface/50 p-2">{advanced}</div>
+          )}
+        </div>
+      ) : null}
+
+      {error ? (
+        <div data-slot="error" className="rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-[0.7857em] text-danger">
+          {error}
+        </div>
+      ) : null}
+
+      <div data-slot="actions">{actions}</div>
     </div>
   );
 }

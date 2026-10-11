@@ -68,6 +68,54 @@ await withAuditPage(dir, async page => {
     assert.equal(s.cancel, true, 'codex form needs a cancel button');
   });
 
+  // ── 三页的**通用字段顺序**必须一致（2026-10-11 真正统一）──
+  // ProviderFormShell 给每一格打了 `data-slot`，这里按 DOM 顺序取出来比对。
+  // 上一轮「统一」只抽了子控件、各 tab 自己排顺序，所以这三者的通用字段顺序**不一样** ——
+  // 这条断言就是那次的盲区：撤掉外壳、把某个 tab 的顺序改回旧样，它必红。
+  const CANON = ['top', 'baseUrl', 'credential', 'auth', 'headers', 'pull', 'models', 'advanced', 'actions'];
+  const COMMON = ['top', 'baseUrl', 'credential', 'headers', 'pull', 'models', 'advanced', 'actions'];
+  const slots = async () => (await page.eval(
+    `[...document.querySelectorAll('[data-provider-form] [data-slot]')].map(e=>e.getAttribute('data-slot'))`,
+  )).filter((s) => CANON.includes(s));
+  await test('three-engine-form-tabs-share-one-field-order', async () => {
+    await go(); await pickProvider('Gateway A');
+    const claude = await slots();
+    await go(); await openTab('Pi'); await pickProvider('pi-a');
+    const pi = await slots();
+    await go(); await openTab('Codex'); await pickProvider('codex-a');
+    const codex = await slots();
+    const common = (arr) => arr.filter((s) => COMMON.includes(s));
+    console.log(`   Claude order: ${JSON.stringify(common(claude))}`);
+    console.log(`   Pi order:     ${JSON.stringify(common(pi))}`);
+    console.log(`   Codex order:  ${JSON.stringify(common(codex))}`);
+    // 通用格在每一页都必须出现、且顺序与规范顺序一致。
+    assert.deepEqual(common(claude), COMMON, `Claude common-field order ${JSON.stringify(claude)}`);
+    assert.deepEqual(common(pi), COMMON, `Pi common-field order ${JSON.stringify(pi)}`);
+    assert.deepEqual(common(codex), COMMON, `Codex common-field order ${JSON.stringify(codex)}`);
+    // 三页的相对顺序逐格相同（auth 是 Claude/Pi 有、Codex 无的可选格）。
+    assert.deepEqual(common(claude), common(pi), 'Claude and Pi must order the common fields identically');
+    assert.deepEqual(common(pi), common(codex), 'Pi and Codex must order the common fields identically');
+  });
+
+  // ── 三页都必须有「高级」折叠区（2026-10-11 真正统一）──
+  // 从前只有 Claude 有折叠区；Pi / Codex 的引擎特有字段裸露在外，看起来就跟 Claude 不一样。
+  await test('three-engine-form-tabs-share-one-advanced-section', async () => {
+    const hasAdvanced = async () =>
+      page.eval(`!!document.querySelector('[data-provider-form] [data-slot="advanced"]')`);
+    const hasAdvancedBody = async () =>
+      page.eval(`!!document.querySelector('[data-provider-form] [data-slot="advanced"] > div')`);
+    await go(); await pickProvider('Gateway A');
+    assert.equal(await hasAdvanced(), true, 'Claude form must have an advanced section');
+    await go(); await openTab('Pi'); await pickProvider('pi-a');
+    assert.equal(await hasAdvanced(), true, 'Pi form must have an advanced section (was missing)');
+    await go(); await openTab('Codex'); await pickProvider('codex-a');
+    assert.equal(await hasAdvanced(), true, 'Codex form must have an advanced section (was missing)');
+    // 折叠态点标题能展开出内容。
+    assert.equal(await hasAdvancedBody(), false, 'advanced body starts collapsed');
+    await clickExpr(`[...document.querySelectorAll('[data-provider-form] button')].find(e=>e.textContent.includes('高级选项'))`);
+    assert.equal(await hasAdvancedBody(), true, 'clicking the advanced header must reveal its body');
+  });
+
   // ── 保存按钮在三个表单里处于同一条操作栏（同一组按钮文字）──
   await test('save-and-cancel-sit-in-one-shared-action-bar', async () => {
     await go(); await pickProvider('Gateway A');
