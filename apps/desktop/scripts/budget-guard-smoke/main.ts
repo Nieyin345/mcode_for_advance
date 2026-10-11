@@ -78,10 +78,13 @@ eq(
   parseTurnBudget(JSON.stringify({ enabled: true, maxTurns: "3", maxUsd: null })),
   undefined,
 );
-// 一个合法一个非法:合法的那个要活下来 —— 不能因为一个坏字段把整份预算扔掉。
-const mixed = parseTurnBudget(JSON.stringify({ enabled: true, maxTurns: 4, maxUsd: "很多" }));
-eq("混合输入里合法字段存活", (mixed as { maxTurns?: number } | undefined)?.maxTurns, 4);
-eq("混合输入里非法字段被丢", (mixed as { maxUsd?: number } | undefined)?.maxUsd, undefined);
+// 【第 38 章】一个合法一个非法**不再**"合法的那个活下来" —— 用户启用预算却有一项格式不合法,
+// 说明配置坏了,整体判 INVALID(有合法 maxTurns 也**不挑着用**、不悄悄放宽),由上层拒绝/提示重设。
+const mixedDetailed = parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxTurns: 4, maxUsd: "很多" }));
+eq("★ 一个合法一个非法 → 整体 INVALID(不挑好的用)", mixedDetailed.status, "INVALID");
+eq("★ 且不产出任何预算(不悄悄放宽)", mixedDetailed.budget, undefined);
+// 兼容视图:旧 parseTurnBudget 也不返回"只剩合法项"的预算。
+eq("★ 旧视图同样不返回半套预算", parseTurnBudget(JSON.stringify({ enabled: true, maxTurns: 4, maxUsd: "很多" })), undefined);
 
 /* ────────────────────── 2. 回退链解析 ────────────────────── */
 
@@ -162,10 +165,29 @@ console.log("\nparseTurnBudgetDetailed(三态 + last-good 恢复,坏配置不静
   eq("★ last-good 是明确关闭 → 恢复成合法无预算", recDisabled.budget, undefined);
   eq("★ 且 recovered=true(备份是有效的关闭)", recDisabled.recovered, true);
 
+  // 【第 38 章】`enabled:true` 却没有任何有效上限 → **INVALID**(不是 VALID),不得静默变无限额。
+  const noLimit = parseTurnBudgetDetailed(JSON.stringify({ enabled: true }));
+  eq("★ enabled:true 但无任何上限 → INVALID(不静默变无限)", noLimit.status, "INVALID");
+  eq("★ 且 budget 是 undefined、recovered=false(无备份)", noLimit.budget, undefined);
+  eq("★ recovered 为 false", noLimit.recovered, false);
+
+  // 【第 38 章】字段格式不合法(非数/负数/小数)→ INVALID,不能悄悄丢掉最后一个限制。
+  const badField = parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxUsd: "not-number", maxTurns: 0.2, maxTotalTokens: -8 }));
+  eq("★ 上限字段全不合法(enabled:true)→ INVALID(不静默放宽)", badField.status, "INVALID");
+
+  // 【第 38 章】last-good 备份本身 `enabled:true` 无有效上限 → **不算可恢复**(否则拒绝闸失效)。
+  const badRecovery = parseTurnBudgetDetailed("{ 坏了", JSON.stringify({ enabled: true, maxUsd: "not-number" }));
+  eq("★ 坏主键 + 无效的 last-good(enabled:true 无有效上限)→ recovered=false", badRecovery.recovered, false);
+  eq("★ 且 budget 仍是 undefined(不假装恢复出限额)", badRecovery.budget, undefined);
+
   // 小数非法输入:0.2 轮不能经 floor 变成 0(0 不是合法预算)。
   const frac = parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxTurns: 0.2, maxTotalTokens: 0.9 }));
   eq("★ 0.2 轮不产生 0 预算(非法输入被挡)", frac.budget, undefined);
-  eq("○ 但配置本身合法 → VALID(只是没有有效上限)", frac.status, "VALID");
+  eq("○ 且 0.2 这类非法字段使配置判为 INVALID(不静默丢字段)", frac.status, "INVALID");
+
+  // 正控:只要有一项有效上限,其余非法字段仍使整体 INVALID(不挑好的用、悄悄放宽)。
+  const mixed = parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxUsd: 1, maxTurns: 0.2 }));
+  eq("★ 有合法 maxUsd 但 maxTurns 非法 → 整体 INVALID(不挑好的用)", mixed.status, "INVALID");
 }
 
 // 消费端接线:RuntimeManager 必须据 status 决定"拒绝自动执行",而不是把 INVALID 当合法不限制。

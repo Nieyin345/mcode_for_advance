@@ -53,31 +53,72 @@ export function lastGoodTurnBudgetKey(key: string): string {
   return `${key}.last-good`;
 }
 
-/** 尝试从 last-good 备份读出一份**有效或明确关闭**的预算。返回 null = 没有可用备份
- *  (缺失/损坏);返回 `{ budget }` = 备份有效(`budget` 可能是 undefined,表示备份记录的是
- *  "用户明确关闭" —— 那也是合法的不限制,与"没有备份"必须区分开)。 */
+/**
+ * 尝试从 last-good 备份读出一份**有效**预算。返回 null = 没有可用备份(缺失/损坏/**不合格**);
+ * 返回 `{ budget }` = 备份有效(`budget` 可能是 undefined,**仅当**备份记录的是"用户明确关闭")。
+ *
+ * ⚠️ 【第 38 章】必须走**同一**严格校验 `validateBudgetObject`:`enabled:true` 但无有效上限的
+ * 备份**不算可恢复**(否则 `RuntimeManager` 的 `INVALID && !recovered` 拒绝闸失效,仍会无限额)。
+ */
 export function readLastGoodBudget(backupRaw: string | null | undefined): { budget: TurnBudget | undefined } | null {
   if (!backupRaw) return null;
+  let v: TurnBudgetSetting;
   try {
-    const v = JSON.parse(backupRaw) as TurnBudgetSetting;
-    if (!v || typeof v !== "object") return null;
-    if (v.enabled === false) return { budget: undefined }; // 明确关闭 = 合法的不限制
-    if (v.enabled !== true) return null;
-    const out: TurnBudget = {};
-    if (typeof v.maxTurns === "number" && Number.isFinite(v.maxTurns) && v.maxTurns >= 1) out.maxTurns = Math.floor(v.maxTurns);
-    if (typeof v.maxUsd === "number" && Number.isFinite(v.maxUsd) && v.maxUsd > 0) out.maxUsd = v.maxUsd;
-    if (typeof v.maxTotalTokens === "number" && Number.isFinite(v.maxTotalTokens) && v.maxTotalTokens >= 1) out.maxTotalTokens = Math.floor(v.maxTotalTokens);
-    return { budget: Object.keys(out).length > 0 ? out : undefined };
+    v = JSON.parse(backupRaw) as TurnBudgetSetting;
   } catch {
     return null;
   }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const r = validateBudgetObject(v);
+  if (r.kind === "disabled") return { budget: undefined }; // 明确关闭 = 合法的"不限制"
+  if (r.kind === "valid") return { budget: r.budget };
+  // not-enabled / invalid 的备份都**不算**可信恢复源。
+  return null;
+}
+
+/**
+ * 【MC-083 / 第 38 章复审】预算对象的**唯一**严格校验。返回:
+ *   - `{ kind: "disabled" }`:`enabled===false` → 合法的"不限制";
+ *   - `{ kind: "not-enabled" }`:`enabled` 缺失或非 true → 未启用(合法,MISSING);
+ *   - `{ kind: "valid", budget }`:`enabled===true` 且**至少一项严格有效上限**;
+ *   - `{ kind: "invalid", why }`:`enabled===true` 但**没有任何有效上限**,或有字段**格式不合法**
+ *     (`maxUsd:"x"`、`maxTurns:0.2`、`maxTotalTokens:-8` 等)—— 这**不能**悄悄降级成"不限制"。
+ *
+ * 关键不变量(第 38 章):`enabled:true` 却 `budget===undefined` **是不允许的状态** —— 用户
+ * 启用了预算就期望有限额;一个启用状态却没有任何有效上限,只能是因为配置坏了,按 INVALID 处理,
+ * 绝不静默放行成无限额。last-good 恢复也必须走这条同一函数,否则恢复出的"可恢复"仍是无限额。
+ */
+function validateBudgetObject(v: TurnBudgetSetting):
+  | { kind: "disabled" }
+  | { kind: "not-enabled" }
+  | { kind: "valid"; budget: TurnBudget }
+  | { kind: "invalid"; why: string } {
+  if (v.enabled === false) return { kind: "disabled" };
+  if (v.enabled !== true) return { kind: "not-enabled" };
+  const out: TurnBudget = {};
+  let anyInvalidField = false;
+  const checkInt = (name: "maxTurns" | "maxTotalTokens"): void => {
+    const raw = v[name];
+    if (raw === undefined) return;
+    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) out[name] = Math.floor(raw);
+    else anyInvalidField = true; // 有值但格式不合法(0.2 / 0 / 负 / 非数)→ 记 INVALID,不静默丢
+  };
+  checkInt("maxTurns");
+  checkInt("maxTotalTokens");
+  if (v.maxUsd !== undefined) {
+    if (typeof v.maxUsd === "number" && Number.isFinite(v.maxUsd) && v.maxUsd > 0) out.maxUsd = v.maxUsd;
+    else anyInvalidField = true;
+  }
+  if (anyInvalidField) return { kind: "invalid", why: "有上限字段格式不合法(非正/非有限/非整数)" };
+  if (Object.keys(out).length === 0) return { kind: "invalid", why: "启用预算却没有任何有效上限" };
+  return { kind: "valid", budget: out };
 }
 
 /**
  * 【MC-083】带状态地解析轮预算。`backupRaw` 是 last-good 备份的原始值(调用方从
- * `lastGoodTurnBudgetKey` 读出)。INVALID 时有备份就用备份、无备份则 `budget: undefined`
- * 但 `status: "INVALID"` —— **调用方据 status 决定"拒绝自动执行/要求重新确认",而不是
- * 把 INVALID 当成合法的不限制**。
+ * `lastGoodTurnBudgetKey` 读出)。INVALID 时有**通过同一严格校验**的备份就用备份、无备份则
+ * `budget: undefined` 但 `status: "INVALID"` —— **调用方据 status 决定"拒绝自动执行/要求
+ * 重新确认",而不是把 INVALID 当成合法的不限制**。
  */
 export function parseTurnBudgetDetailed(raw: string | null | undefined, backupRaw?: string | null): TurnBudgetRead {
   // 从没设过 = 合法不限制。
@@ -103,18 +144,18 @@ export function parseTurnBudgetDetailed(raw: string | null | undefined, backupRa
       error: "预算配置损坏(不是对象)",
     };
   }
-  // 用户**明确关闭** = 合法不限制(与"损坏"不同)。
-  if (v.enabled === false) return { status: "DISABLED", budget: undefined, recovered: false };
-  // enabled 缺失或非 true:旧约定上等于没开 —— 但若是"有值却没开",按 MISSING 处理(合法)。
-  if (v.enabled !== true) return { status: "MISSING", budget: undefined, recovered: false };
-  const out: TurnBudget = {};
-  // maxTurns / maxTotalTokens 必须是 **>=1 的整数** —— 0.2 轮经 Math.floor 会变 0,
-  // 而 0 不是合法预算(会立刻触顶)。只收 `>=1` 的有限整数。
-  if (typeof v.maxTurns === "number" && Number.isFinite(v.maxTurns) && v.maxTurns >= 1) out.maxTurns = Math.floor(v.maxTurns);
-  if (typeof v.maxUsd === "number" && Number.isFinite(v.maxUsd) && v.maxUsd > 0) out.maxUsd = v.maxUsd;
-  if (typeof v.maxTotalTokens === "number" && Number.isFinite(v.maxTotalTokens) && v.maxTotalTokens >= 1) out.maxTotalTokens = Math.floor(v.maxTotalTokens);
-  // 开了但三个上限一个都没有 → 没有限什么;与旧约定一致视为"无预算"(但状态仍是 VALID:配置本身合法)。
-  return { status: "VALID", budget: Object.keys(out).length > 0 ? out : undefined, recovered: false };
+  const r = validateBudgetObject(v);
+  if (r.kind === "disabled") return { status: "DISABLED", budget: undefined, recovered: false };
+  if (r.kind === "not-enabled") return { status: "MISSING", budget: undefined, recovered: false };
+  if (r.kind === "valid") return { status: "VALID", budget: r.budget, recovered: false };
+  // enabled===true 却无有效上限/字段不合法 → INVALID(有 last-good 则按同一校验恢复)。
+  const recovered = readLastGoodBudget(backupRaw);
+  return {
+    status: "INVALID",
+    budget: recovered ? recovered.budget : undefined,
+    recovered: recovered != null,
+    error: `预算配置无效:${r.why}`,
+  };
 }
 
 /**
