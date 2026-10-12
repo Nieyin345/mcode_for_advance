@@ -88,6 +88,26 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["git.merge", { falseMeans: "maybePartial" }],
   ["git.worktreeMergeBack", { falseMeans: "maybePartial" }],
   ["git.worktreeRemove", { falseMeans: "maybePartial" }],
+  /* ── 【MC-066 残余① / §5.6】terminal / relay 域 ─────────────────────────
+   *
+   * `ipc/terminal.ts` 的 `terminal:create` 对未知项目路径 / cwd 越界、`terminal:write` /
+   * `terminal:resize` 对不存在或已退出的终端,都**合法返回** `{ok:false,error}`(不抛异常)
+   * —— 从前**没登记**,`decodeDomainOutcome` 落到「无 descriptor = accepted」,把业务拒绝
+   * 报成 SUCCEEDED,Agent 以为终端已建 / 命令已写入。全是本地进程操作、失败即"没执行"
+   * → `refusal`。**按方法逐个登记**(不用 `terminal.` 前缀族:`terminal.list` 返回的是
+   * `{terminals}` 数据对象、不是 ok/error 信封,前缀族会把它误判成 UNCERTAIN)。
+   *
+   * `ipc/relay.ts`:`relay.saveConfig` 的 ok:false 是 zod 解析失败、没写任何设置 → `refusal`;
+   * `relay.connect` 的 ok:false 可能是**握手前的拒绝**(没配置 / 缺指纹 / 移动端没起),
+   * 也可能是**已建 SSH、forwarder 已部署、forwardIn 失败**之后才返回——后者可能已经在
+   * VPS 上落了部分内容,重试不保证安全 → `maybePartial`(UNCERTAIN,绝不默认可安全重试)。
+   * (`setting.exportToFile`/`importFromFile` 同形,但被 `policy.ts` 钉在 blocked、
+   * agent 经 `app_api_call` 到不了,不登记。) */
+  ["terminal.create", { falseMeans: "refusal" }],
+  ["terminal.write", { falseMeans: "refusal" }],
+  ["terminal.resize", { falseMeans: "refusal" }],
+  ["relay.saveConfig", { falseMeans: "refusal" }],
+  ["relay.connect", { falseMeans: "maybePartial" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

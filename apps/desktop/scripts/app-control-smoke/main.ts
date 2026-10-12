@@ -901,6 +901,59 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   }
 }
 
+/* ── 3d-3. 【MC-066 残余①】terminal.* 的合法拒绝也必须判 REJECTED ────────────
+ *
+ * `ipc/terminal.ts` 的 `terminal:create` 对未知项目路径 / cwd 越界**合法返回**
+ * `{ok:false,error}`(不抛异常);`terminal:write`/`resize` 对不存在或已退出的终端同样
+ * 合法返回 ok:false。它们从前**没登记**,`decodeDomainOutcome` 落到「无 descriptor =
+ * accepted」,把业务拒绝报成 SUCCEEDED(isError=false),Agent 以为终端已建/命令已写入。
+ * 全是本地进程操作、失败即"没执行" → `refusal`。这里与 `ipc/terminal.ts` 一字不差地
+ * 录同一份 ok:false 信封。 */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+  // 与 `ipc/terminal.ts:35` 一字不差的合法拒绝。
+  recordRpcHandler("terminal:create", async (_e, raw) => {
+    const projectPath = String((raw as { projectPath?: string }).projectPath ?? "");
+    if (projectPath.includes("not-registered")) {
+      return { ok: false as const, error: "未知项目路径，拒绝创建终端" };
+    }
+    return { ok: true as const, terminalId: "term_1" };
+  });
+  recordRpcHandler("terminal:write", async () => ({ ok: false as const, error: "终端不存在或已退出" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "terminal.create", input: { projectPath: "C:/fake/not-registered" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:terminal.create 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:terminal.create 合法 ok:false → isError=true", r.isError === true, r.isError);
+    check("★ MC-066:terminal.create 合法 ok:false → REJECTED(命令没执行)", op?.resultKind === "REJECTED", op);
+    check("★ MC-066:terminal.create 拒绝原因原样带出(未知项目路径)", textOf(r).includes("未知项目路径"), textOf(r).slice(0, 200));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "terminal.write", input: { terminalId: "term_dead", data: "x" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:terminal.write 合法 ok:false → REJECTED(终端不在)", op?.resultKind === "REJECTED", op);
+  }
+  // 正控:ok:true 的真成功仍是 SUCCEEDED(解码器不能把真成功也判成拒绝)。
+  {
+    const r = await invokeAppTool("app_api_call", { method: "terminal.create", input: { projectPath: "C:/proj" } }, "me", ctx);
+    check("★ MC-066 正控:terminal.create ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+  // relay:与 `ipc/relay.ts` / `RelayManager.ts` 一字不差地录同一份 ok:false 信封。
+  // saveConfig 的 ok:false 是 zod 校验失败(没写任何设置)→ refusal;connect 的 ok:false
+  // 可能在 SSH 已连、forwarder 已部署后才出现 → maybePartial(UNCERTAIN,不盲目重试)。
+  recordRpcHandler("relay:saveConfig", async () => ({ ok: false as const, error: "入参不合法(host: 必填)" }));
+  recordRpcHandler("relay:connect", async () => ({ ok: false, error: "未配置 VPS，请先填写服务器信息" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "relay.saveConfig", input: { host: "" } }, "me", ctx);
+    check("★ MC-066:relay.saveConfig 合法 ok:false → REJECTED(没写设置)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "relay.connect", input: {} }, "me", ctx);
+    check("★ MC-066:relay.connect 合法 ok:false → UNCERTAIN(可能已部分部署,不盲目重试)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+  }
+}
+
 {
   const bridge = new ApprovalBridge();
   const emitted: unknown[] = [];
