@@ -402,7 +402,16 @@ export const DeliveryPolicySchema = z.object({
   debounceMs: z.number().int().min(0).max(600_000).optional(),
   /** 覆盖 `HookSpec.timeoutMs`。省略就沿用钩子自己那个(或 {@link DEFAULT_HOOK_TIMEOUT_MS})。 */
   timeoutMs: z.number().int().min(100).max(600_000).optional(),
-  /** 失败后允许的重试次数预算(本版只被记录与校验,重试调度是后续切片)。 */
+  /**
+   * 失败后的**总尝试次数**上限(含第一次)。省略 = 1 → **一次就死,不重试**(= 今天的行为)。
+   *
+   * ⚠️ 语义与 `@contracts/durableEvent` 的 `settleEventEnvelope` 里那个 `retryBudget`
+   * **同义**(那边也是「练到 budget 次才落终态」),不是"额外重试几次" —— 两处各解释一遍
+   * 迟早分家,而分家的表现是"配了 3 却只跑 1 次/4 次"这种只在计数里才看得出的错。
+   *
+   * 接线范围(HookRunner):**只有 `failed`(命令退非零)在预算内重试**;`timeout` 是
+   * 「我们把它叫停的」,**不**自动重试 —— 重放一个卡住的脚本只会把同一份副作用再放一遍。
+   */
   retryBudget: z.number().int().min(0).max(100).optional(),
   /** 输出字节预算。省略 = {@link HOOK_OUTPUT_LIMIT}。 */
   outputLimit: z.number().int().min(256).max(10_000_000).optional(),
@@ -503,6 +512,60 @@ export function decideDelivery(
     return { action: "drop", reason: `上一条还在跑(并发上限 ${cap})${rate}` };
   }
   return { action: "accept", reason: "空闲,立即跑" };
+}
+
+/* ── 失败重试(retryBudget) ── */
+
+export interface RetryDecision {
+  /** 要不要**再试一次**。`false` 时这一条落终态(记下它的真实结果)。 */
+  retry: boolean;
+  /** 为什么 —— 会进环里那条重试记录(可观测),不静默。 */
+  reason: string;
+}
+
+/**
+ * 【ARC-007】**失败重试决定** —— 纯函数,可直测。
+ *
+ * ## 语义:总尝试上限(含第一次)
+ *
+ * `attempts` 是**已经跑过的次数**(第一次失败时 = 1)。`retryBudget` 是**总尝试次数**上限,
+ * 与 `@contracts/durableEvent` 的 `settleEventEnvelope` 里那个 `retryBudget` 同义
+ * (那边也是「练到 budget 次才落终态」)—— 不是"额外重试几次"。省略 = 1 → 一次就死。
+ *
+ * ## 只有 `failed` 重试,`timeout` / 起不来不重试
+ *
+ * 重试的判据是「这条命令**自己**败了(退非零)」—— 那多半是暂时性的(锁、网络、竞态),
+ * 再试一次有机会成。而 `timeout`(被我们叫停)与起不来(命令写错)**不是**这个形状:
+ *   - 重放一个卡住的脚本,只是把同一份副作用再放一遍、再挂一次 —— 与 ARC-005 对
+ *     不可幂等外部动作的纪律同一条(不确定就别盲发第二次);
+ *   - 命令不存在,重试到天荒地老也起不来,只是把失败重复 N 次。
+ * 所以「这一次是不是 `failed`」由调用方**按状态**判好再传进来(`failed: true`),超时 /
+ * 起不来一律传 `false` —— 本函数只认「失败且还在预算内」。
+ */
+export function decideRetry(input: {
+  /** 已经跑过的次数(含刚刚失败的那一次,≥ 1)。 */
+  attempts: number;
+  /** 声明的总尝试次数上限(含第一次)。省略 = 1。 */
+  retryBudget: number | undefined;
+  /** 刚刚那一次的终态是不是 `failed`(退非零)。只有它为真才可能重试。 */
+  failed: boolean;
+}): RetryDecision {
+  const budget = input.retryBudget ?? 1;
+  // 非 `failed`(超时 / 起不来)、或额度用尽 → 不重试,落终态。
+  if (!input.failed) {
+    return { retry: false, reason: "非失败终态(超时 / 起不来),不自动重试" };
+  }
+  if (input.attempts <= 0) {
+    // 没跑过却来问重试,是调用方的账错了 —— 不猜,落终态。
+    return { retry: false, reason: "没有已跑过的次数记录,不重试" };
+  }
+  if (input.attempts < budget) {
+    return {
+      retry: true,
+      reason: `失败,还在预算内(第 ${input.attempts} 次 / 上限 ${budget} 次),再试一次`,
+    };
+  }
+  return { retry: false, reason: `失败且已用尽预算(${input.attempts} / ${budget}),落终态` };
 }
 
 /* ── 一条钩子 ── */

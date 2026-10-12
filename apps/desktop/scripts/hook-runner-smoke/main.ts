@@ -31,7 +31,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookSpec, DeliveryPolicy } from "@contracts/hook";
-import { DEFAULT_DELIVERY_POLICY, DEFAULT_HOOK_TIMEOUT_MS, decideDelivery } from "@contracts/hook";
+import { DEFAULT_DELIVERY_POLICY, DEFAULT_HOOK_TIMEOUT_MS, decideDelivery, decideRetry } from "@contracts/hook";
 import type { RuntimeEvent } from "@contracts/runtime";
 
 let failures = 0;
@@ -635,6 +635,141 @@ async function matrixRun(
 }
 
 // 矩阵跑完把钩子清掉,别让后面的收尾读到它。
+writeHooks([]);
+
+/* ──────────────── 11. 失败重试(retryBudget,ARC-007) ──────────────── */
+
+console.log("\n失败重试(retryBudget):失败的 hook 在预算内重试,超预算才落终态");
+
+// 先对着纯函数把判据钉死 —— 快、确定、不依赖进程调度与计时。
+{
+  // 语义:总尝试上限(含第一次)。budget=3 → 第 1、2 次失败可重试,第 3 次失败落终态。
+  eq("budget 省略=1:第一次失败就不再试", decideRetry({ attempts: 1, retryBudget: undefined, failed: true }).retry, false);
+  eq("budget=3:第 1 次失败 → 重试", decideRetry({ attempts: 1, retryBudget: 3, failed: true }).retry, true);
+  eq("budget=3:第 2 次失败 → 重试", decideRetry({ attempts: 2, retryBudget: 3, failed: true }).retry, true);
+  eq("budget=3:第 3 次失败 → 落终态(超预算)", decideRetry({ attempts: 3, retryBudget: 3, failed: true }).retry, false);
+  eq("budget=0:一次都不跑(等价于不重试,但立即终态)", decideRetry({ attempts: 1, retryBudget: 0, failed: true }).retry, false);
+  // **超时 / 起不来不重试** —— 它们不是 `failed`(判据只认退非零那种暂时性失败)。
+  eq("timeout(非 failed)→ 不重试", decideRetry({ attempts: 1, retryBudget: 5, failed: false }).retry, false);
+  check("非失败终态的理由说清楚了", decideRetry({ attempts: 1, retryBudget: 5, failed: false }).reason.includes("不自动重试"));
+  check("落终态的理由带上了预算数字", decideRetry({ attempts: 3, retryBudget: 3, failed: true }).reason.includes("3 / 3"));
+}
+
+/** 造一条「先失败 N 次、之后成功」的钩子:每次跑把计数加一,计数 ≤ failTimes 时退非零。 */
+function makeFlakyCmd(opts: { tag: string; failTimes: number }): { command: string; hits: () => number; attempts: () => number } {
+  cmdSeq += 1;
+  const marker = join(WORK, `hits-${opts.tag}.txt`);
+  const counter = join(WORK, `count-${opts.tag}.txt`);
+  const script = join(WORK, `hook-${opts.tag}.js`);
+  writeFileSync(
+    script,
+    [
+      `const fs = require("node:fs");`,
+      `const [file, countFile, failTimes] = process.argv.slice(2);`,
+      `let n = 0;`,
+      `try { n = Number(fs.readFileSync(countFile, "utf8")) || 0; } catch {}`,
+      `n += 1;`,
+      `fs.writeFileSync(countFile, String(n));`,
+      `fs.appendFileSync(file, "x");`,
+      `process.exit(n <= Number(failTimes) ? 1 : 0);`,
+    ].join("\n"),
+    "utf8",
+  );
+  return {
+    command: `node "${script}" "${marker}" "${counter}" ${opts.failTimes}`,
+    hits: () => (existsSync(marker) ? readFileSync(marker, "utf8").length : 0),
+    attempts: () => (existsSync(counter) ? Number(readFileSync(counter, "utf8")) || 0 : 0),
+  };
+}
+
+/** 造一条**真的会挂住**的钩子:跑起来就一直不退出(用来验"超时不重试")。 */
+function makeHangCmd(tag: string): { command: string; hits: () => number } {
+  cmdSeq += 1;
+  const marker = join(WORK, `hits-${tag}.txt`);
+  const script = join(WORK, `hook-${tag}.js`);
+  writeFileSync(
+    script,
+    [
+      `const fs = require("node:fs");`,
+      `const [file] = process.argv.slice(2);`,
+      `fs.appendFileSync(file, "x");`,
+      `setInterval(() => {}, 1000);`, // 永不退出,只能被超时杀掉
+    ].join("\n"),
+    "utf8",
+  );
+  return {
+    command: `node "${script}" "${marker}"`,
+    hits: () => (existsSync(marker) ? readFileSync(marker, "utf8").length : 0),
+  };
+}
+
+// 起进程都是异步的(onEvent 不 await),拿一个钩子 id 轮询它的 retried / accepted 计数。
+async function untilCounts(what: string, hookId: string, cond: (c: { accepted: number; dropped: number; coalesced: number; unsupported: number; retried: number }) => boolean, ms = 8000): Promise<void> {
+  await until(what, () => cond(hookRunner.deliveryCountsOf(hookId) ?? { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0, retried: 0 }), ms);
+}
+
+// ── retryBudget=3 —— 先失败 2 次、第 3 次成功:进程真的起了 3 回(重试接线了)。
+{
+  await new Promise((r) => setTimeout(r, 1100));
+  const cmd = makeFlakyCmd({ tag: "mx-retry3", failTimes: 2 });
+  const hook = spec({ command: cmd.command, tag: "mx-retry3", deliveryPolicy: { kind: "BEST_EFFORT", maxConcurrency: 1, retryBudget: 3 } });
+  writeHooks([hook]);
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_retry3", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("retry3:最终一次落成 ok(2 失败 + 1 成功)", () => hookRunner.listRuns().some((r) => r.hookId === hook.id && r.status === "ok"), 10000);
+  await untilCounts("retry3:accepted 记到 3", hook.id, (c) => c.accepted >= 3, 4000);
+  eq("retryBudget=3:命令真的跑了 3 次(重试接线了)", cmd.attempts(), 3);
+  eq("retryBudget=3:accepted 计数 3(每次重试都算一次真起进程)", hookRunner.deliveryCountsOf(hook.id)?.accepted, 3);
+  eq("retryBudget=3:retried 计数 2(重试这件事本身可数)", hookRunner.deliveryCountsOf(hook.id)?.retried, 2);
+  const finalRun = hookRunner.listRuns().find((r) => r.hookId === hook.id && r.status === "ok");
+  check("retryBudget=3:最终那一次落成 ok(重试后成功)", finalRun !== undefined, hookRunner.listRuns().filter((r) => r.hookId === hook.id).map((r) => r.status));
+}
+
+// ── retryBudget=1(= 省略,今天的行为)—— 失败一次就落终态,不再试。
+{
+  await new Promise((r) => setTimeout(r, 1100));
+  const cmd = makeFlakyCmd({ tag: "mx-retry1", failTimes: 9 });
+  const hook = spec({ command: cmd.command, tag: "mx-retry1" }); // 不声明策略 = 默认
+  writeHooks([hook]);
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_retry1", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("retry1:第一次失败就落终态", () => hookRunner.listRuns().some((r) => r.hookId === hook.id && r.status === "failed"), 8000);
+  await new Promise((r) => setTimeout(r, 800));
+  eq("省略策略:失败只跑 1 次(不重试 = 今天的行为)", cmd.attempts(), 1);
+  eq("省略策略:retried 计数 0", hookRunner.deliveryCountsOf(hook.id)?.retried, 0);
+}
+
+// ── retryBudget=2 —— 一直失败:跑满 2 次(不是无限),预算用尽落 failed。
+{
+  await new Promise((r) => setTimeout(r, 1100));
+  const cmd = makeFlakyCmd({ tag: "mx-retry2", failTimes: 99 });
+  const hook = spec({ command: cmd.command, tag: "mx-retry2", deliveryPolicy: { kind: "BEST_EFFORT", maxConcurrency: 1, retryBudget: 2 } });
+  writeHooks([hook]);
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_retry2", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("retry2:预算用尽(跑满 2 次)", () => hookRunner.deliveryCountsOf(hook.id)?.retried === 1 && cmd.attempts() >= 2, 10000);
+  await new Promise((r) => setTimeout(r, 800));
+  eq("retryBudget=2 且一直失败:只跑 2 次(有界,不无限重试)", cmd.attempts(), 2);
+  eq("retryBudget=2:retried 计数 1", hookRunner.deliveryCountsOf(hook.id)?.retried, 1);
+  const runs = hookRunner.listRuns().filter((r) => r.hookId === hook.id);
+  check("retryBudget=2:最终落 failed(超预算才终态)", runs.some((r) => r.status === "failed"), runs.map((r) => r.status));
+}
+
+// ── 超时**不**重试:一个永远卡住的脚本,声明 retryBudget=5 也只跑 1 次。
+{
+  await new Promise((r) => setTimeout(r, 1100));
+  const cmd = makeHangCmd("mx-retry-timeout");
+  const hook = spec({
+    command: cmd.command,
+    tag: "mx-retry-timeout",
+    timeoutMs: 300,
+    deliveryPolicy: { kind: "BEST_EFFORT", maxConcurrency: 1, retryBudget: 5 },
+  });
+  writeHooks([hook]);
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_retry_timeout", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("retry-timeout:记到 timeout", () => hookRunner.listRuns().some((r) => r.hookId === hook.id && r.status === "timeout"), 8000);
+  await new Promise((r) => setTimeout(r, 1500));
+  eq("超时不重试:即便 retryBudget=5,也只跑 1 次", cmd.hits(), 1);
+  eq("超时不重试:retried 计数 0", hookRunner.deliveryCountsOf(hook.id)?.retried, 0);
+}
+
 writeHooks([]);
 
 rmSync(DATA, { recursive: true, force: true });

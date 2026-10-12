@@ -36,6 +36,7 @@ import type { RuntimeEvent } from "@contracts/runtime";
 import {
   HOOK_EVENT_OF,
   decideDelivery,
+  decideRetry,
   matchesHook,
   resolveDeliveryPolicy,
   type HookPayload,
@@ -66,10 +67,12 @@ export interface DeliveryCounts {
   coalesced: number;
   /** 声明的策略本版实现不了(DURABLE_AT_LEAST_ONCE),明确报出来而不是假装跑过。 */
   unsupported: number;
+  /** 【retryBudget】失败的 hook 在预算内被**再试一次**的次数。可数 = 可断言"重试真的发生了"。 */
+  retried: number;
 }
 
 function emptyCounts(): DeliveryCounts {
-  return { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0 };
+  return { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0, retried: 0 };
 }
 
 class HookRunner {
@@ -251,22 +254,37 @@ class HookRunner {
       return;
     }
 
-    // accept —— 真的起进程。
-    this.bumpCount(spec.id, "accepted");
-    const record = this.pushRun(spec, payload, "running");
+    // accept —— 真的起进程。策略声明了 `retryBudget` 时,**失败**(退非零)就在**同一个
+    // `inFlight` 槽位内**再试一次,直到预算用尽才落终态。⚠️ 重试**不是**"再来一条事件"
+    // —— 它是"同一条没跑成,再跑一遍",所以**绝不**并发 spawn(那正是"对每条事件直接并发
+    // spawn"那条禁止项的形状)。超时 / 起不来**不**重试(见 `@contracts/hook` 的 `decideRetry`)。
     this.inFlight.set(spec.id, (this.inFlight.get(spec.id) ?? 0) + 1);
     // 生效的超时:策略的 `timeoutMs` 盖过钩子自己的 `timeoutMs`(那是更细的一层声明)。
     const effective: HookSpec =
       policy.timeoutMs !== undefined ? { ...spec, timeoutMs: policy.timeoutMs } : spec;
+    const budget = policy.retryBudget ?? 1;
     try {
-      Object.assign(record, await runHookCommand(effective, payload));
+      let attempts = 0;
+      for (;;) {
+        attempts += 1;
+        // 每一次真起进程都算一次 accepted(重试也是真起了一个进程)。
+        this.bumpCount(spec.id, "accepted");
+        const record = this.pushRun(spec, payload, "running");
+        const result = await runHookCommand(effective, payload);
+        Object.assign(record, result, { durationMs: Date.now() - record.startedAt });
+        const decision = decideRetry({ attempts, retryBudget: budget, failed: result.status === "failed" });
+        if (!decision.retry) break;
+        // 重试这件事本身**要可观测**:计数 + 一行日志。不静默地又跑一遍 —— 否则"它跑了几次"
+        // 只能在环里数 `failed` 的条数猜,而环会被顶掉。
+        this.bumpCount(spec.id, "retried");
+        log.info(`[hooks] 「${spec.name}」${decision.reason}`);
+      }
     } finally {
-      record.durationMs = Date.now() - record.startedAt;
       const left = (this.inFlight.get(spec.id) ?? 1) - 1;
       if (left <= 0) this.inFlight.delete(spec.id);
       else this.inFlight.set(spec.id, left);
-      // 这一条跑完了 —— 若 `COALESCE` 攒着一批,此刻把它兑现成一次运行(把有界的合并
-      // 真正跑出来)。**不 await**:兑现是另起一次,别让 current 的收口等它。
+      // 这一条跑完了(含重试)—— 若 `COALESCE` 攒着一批,此刻把它兑现成一次运行(把有界的
+      // 合并真正跑出来)。**不 await**:兑现是另起一次,别让 current 的收口等它。
       const pending = this.coalescePending.get(spec.id);
       if (pending !== undefined) {
         this.coalescePending.delete(spec.id);
