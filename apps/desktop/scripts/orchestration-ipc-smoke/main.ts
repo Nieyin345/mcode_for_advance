@@ -59,6 +59,7 @@ import { dirname, join } from "node:path";
 import type { IpcMain } from "electron";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import type { WorkflowDoc } from "@contracts/workflow";
+import { agentProfileContentHash } from "@main/orchestration/agentProfiles.js";
 
 let failures = 0;
 let checks = 0;
@@ -1044,6 +1045,44 @@ console.log("\n自动化那一栏 · 历史从哪来");
     awaiting: [],
   });
 
+  // 【ARC-016】这一条**记了运行时锁下的档案版本** —— 用来验「这一轮用了哪一版指令,
+  // 现在还一样吗」的 readback。**用独立的会话与工作流**,不动上面那组"三条都在"的
+  // 精确清单断言。两个档案:一个源没变(不该报落后)、一个源已变(该报)。
+  // 档案文件写在**本次运行的临时数据根**下(agentProfileContentHash 走 dataRoot()),
+  // 用**合法**的档案形状(version/id 都对),免得污染别处读目录的断言。
+  {
+    const agentsDir = join(DATA, "workflows", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    const profileFile = (id: string, name: string): string =>
+      JSON.stringify({ version: 1, id, name, type: "mcode.agent", params: {}, createdAt: 1, updatedAt: 1 });
+    writeFileSync(join(agentsDir, "p_stable.json"), profileFile("p_stable", "稳定"), "utf-8");
+    writeFileSync(join(agentsDir, "p_edited.json"), profileFile("p_edited", "改过"), "utf-8");
+    SessionRepo.create({
+      ...SessionRepo.get("s_smoke_auto")!,
+      id: "s_cfg_drift", kind: "automation", workflowId: "wf_cfg_drift", title: "配置漂移 · 烟测",
+    });
+    // 运行当时锁下的是 p_edited 的**旧**哈希(与磁盘上刚写的不同)+ p_stable 的当前哈希。
+    const stableNow = agentProfileContentHash("p_stable");
+    WorkflowRunRepo.save({
+      id: "r_cfg",
+      sessionId: "s_cfg_drift",
+      workflowId: "wf_cfg_drift",
+      status: "success",
+      payload: JSON.stringify({
+        cwd: "/tmp",
+        capturedAt: 1,
+        prompt: "",
+        state: { record: [], rounds: [], picks: [], awaiting: [], outcomes: [] },
+        configSnapshot: {
+          takenAt: 5,
+          profiles: { p_stable: stableNow, p_edited: "sha256:当时那一版" },
+          skills: [],
+        },
+      }),
+      awaiting: [],
+    });
+  }
+
   const runs = obj(await callAsync(IPC.AUTOMATION_RUNS, { workflowId: "wf_hist" })).runs as Array<{
     runId: string;
     status: string;
@@ -1090,6 +1129,7 @@ console.log("\n对话里那张「跑过什么」");
     runId: string;
     nodeCount: number;
     status: string;
+    configDrift?: Array<{ assetId: string; kind: string; lockedHash: string | null; currentHash: string | null }>;
   }>;
   same(
     "同一个会话的三条都在",
@@ -1109,6 +1149,36 @@ console.log("\n对话里那张「跑过什么」");
     typeof rows,
   );
   same("不认识的那个会话 → 空数组,不抛", await callAsync(IPC.RUNS_HISTORY, { sessionId: "s_没有这个" }), []);
+}
+
+/* 【ARC-016】readback:一次运行**当时**记下的档案版本,与**现在**源档案比,挑出落后项。 */
+{
+  const rows = (await callAsync(IPC.RUNS_HISTORY, { sessionId: "s_cfg_drift" })) as Array<{
+    runId: string;
+    configDrift?: Array<{ assetId: string; kind: string; lockedHash: string | null; currentHash: string | null }>;
+  }>;
+  const drift = rows.find((r) => r.runId === "r_cfg")?.configDrift;
+  check("记了配置快照的那条带上落后项", Array.isArray(drift), drift);
+  eq("只报改过的那一个档案(源没变的不报)", drift?.map((d) => d.assetId).join(","), "p_edited");
+  eq("落后项性质是 changed", drift?.[0]?.kind, "changed");
+  eq("不带档案正文,只带哈希差异 —— locked 是当时那一版", drift?.[0]?.lockedHash, "sha256:当时那一版");
+  check(
+    "没记配置快照的运行**不带** configDrift(不是空数组硬塞)",
+    rows.length > 0 && rows.every((r) => r.configDrift === undefined || r.runId === "r_cfg"),
+    rows.map((r) => r.runId),
+  );
+}
+
+/* 存档读不回来的运行不该带 configDrift —— 没有快照就没有落后项。 */
+{
+  const rows = (await callAsync(IPC.RUNS_HISTORY, { sessionId: "s_smoke_auto" })) as Array<{
+    runId: string;
+    configDrift?: unknown;
+  }>;
+  check(
+    "存档读不回来的那条不带 configDrift",
+    rows.find((r) => r.runId === "r_broken")?.configDrift === undefined,
+  );
 }
 
 

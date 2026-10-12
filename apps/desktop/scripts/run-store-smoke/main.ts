@@ -45,6 +45,7 @@ import { DurableOperationLedger } from "@main/store/operationLedger.js";
 import type { OperationIntent, OperationResult } from "@contracts/appControl";
 import type { BeginOutcome } from "@main/appControl/operations.js";
 import { decodeSnapshot, resumableRun, retryableRun, saveRun, onRunCommitted, type RunSnapshot } from "@main/orchestration/runStore.js";
+import { configDrift } from "@contracts/configBinding";
 import { dataRoot, DATA_DB_FILENAME } from "./stubs/dataRoot.js";
 
 let failures = 0;
@@ -208,6 +209,26 @@ if (MODE === "write") {
     eq("配置快照里的技能往返不丢", rt?.configSnapshot?.skills?.[0], "lit");
     check("配置快照形状坏(profiles 是数组)→ 丢弃,不塞给审计",
       decodeSnapshot(JSON.stringify({ ...withCfg, configSnapshot: { takenAt: 1, profiles: [], skills: [] } }))?.configSnapshot === undefined);
+  }
+  // 【ARC-016】审计:拿运行当时的档案哈希与「现在」比,挑出落后项 —— 回答「这轮用的是哪一版、
+  // 现在还一样吗」。判据只对**运行用过的**资源做,「没变」「当时没绑到」都不算落后。
+  {
+    const locked = { p_research_v1: "aaa", p_missing_now: "bbb", p_unbound_then: null };
+    const current = { p_research_v1: "aaa", p_missing_now: null, p_unbound_then: "ccc", p_unused_now: "zzz" };
+    const drift = configDrift(locked, current);
+    eq("只挑落后项(没变的、运行没用过的都不报)", drift.map((d) => d.assetId).join(","), "p_missing_now,p_unbound_then");
+    eq("源改了 → changed", drift.find((d) => d.assetId === "p_missing_now")?.kind, "removed");
+    eq("当时没绑、现在有 → added", drift.find((d) => d.assetId === "p_unbound_then")?.kind, "added");
+    eq("新增条带当时的锁值", drift.find((d) => d.assetId === "p_unbound_then")?.lockedHash, null);
+    eq("移除条带现在的空值", drift.find((d) => d.assetId === "p_missing_now")?.currentHash, null);
+    check("运行没用过的资源不产生条目(不编「这轮用了它」)",
+      drift.every((d) => d.assetId !== "p_unused_now"));
+    eq("调用方没给现值 → 跳过该资源(分不清删了还是没变)",
+      configDrift({ p_a: "x" }, {}).length, 0);
+    eq("现值改了 → changed",
+      configDrift({ p_a: "old" }, { p_a: "new" })[0]?.kind, "changed");
+    eq("输出按 assetId 升序(变更计划可 diff)",
+      configDrift({ p_z: "1", p_a: "1" }, { p_z: "2", p_a: "2" }).map((d) => d.assetId).join(","), "p_a,p_z");
   }
   check("存档中伪造的坏图版本拒绝读取", decodeSnapshot(JSON.stringify({ ...pinned, workflowRevision: "bad" })) === null);
   check("存档中坏执行列表拒绝读取", decodeSnapshot(JSON.stringify({ ...pinned, inFlightNodeIds: [1] })) === null);

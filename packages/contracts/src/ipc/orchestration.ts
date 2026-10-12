@@ -13,6 +13,7 @@
 import { z } from "zod";
 import type { TriggerKind } from "../nodeType.js";
 import type { AutomationRunStatus } from "./workflow.js";
+import type { ConfigDriftEntry } from "../configBinding.js";
 
 /* ── 运行史(runs.history)── */
 
@@ -40,6 +41,12 @@ export interface PersistedWorkflowRunLite {
   updatedAt: number;
   /** 图里**定过案**的节点数(存档读不回来的老运行 = 0 —— 那一行照样列出)。 */
   nodeCount: number;
+  /**
+   * ARC-016: 这次运行**当时锁定**的档案版本,与**现在**源档案相比的落后项。
+   * 空 = 没变 / 这次运行没绑档案 / 存档读不回来。用来回答「这轮实际用了哪一版指令,
+   * 现在还一样吗」—— 只记哈希差异,不含档案正文。
+   */
+  configDrift?: ConfigDriftEntry[];
 }
 
 /* ── 触发器事实(automation.statusAll)── */

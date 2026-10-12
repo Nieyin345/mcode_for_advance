@@ -40,7 +40,7 @@ import {
   WorkflowSaveSchema,
   WorkflowShippedUpdateSchema,
 } from "@contracts/ipc";
-import { readAgentProfiles, removeAgentProfile, saveAgentProfile } from "@main/orchestration/agentProfiles.js";
+import { readAgentProfiles, removeAgentProfile, saveAgentProfile, agentProfileContentHash } from "@main/orchestration/agentProfiles.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { CustomUiRunAutomationSchema } from "@contracts/customUi";
 import { runCustomUiAutomation } from "@main/customUi/runAutomation.js";
@@ -59,6 +59,7 @@ import {
 } from "@main/orchestration/library.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
+import { configDrift } from "@contracts/configBinding";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { approveWorkflowRevision, workflowReviewOf } from "@main/orchestration/workflowTrust.js";
 import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
@@ -362,15 +363,27 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     const runs: PersistedWorkflowRunLite[] = runHistory(
       input.sessionId,
       input.limit ?? AUTOMATION_RUNS_LIMIT,
-    ).map((run) => ({
-      runId: run.runId,
-      sessionId: run.sessionId,
-      workflowId: run.workflowId,
-      status: run.status,
-      createdAt: run.createdAt,
-      updatedAt: run.updatedAt,
-      nodeCount: run.snapshot?.state.outcomes.length ?? 0,
-    }));
+    ).map((run) => {
+      // ARC-016 readback:「这一轮实际用了哪一版档案指令、现在还一样吗」。拿运行**当时**
+      // 记下的档案哈希,与**现在**源档案的哈希比 —— 只把落后项带过 IPC(哈希差异,不含正文)。
+      // 存档读不回来 / 该轮没绑档案 → 没有 configSnapshot.profiles → 不带这个字段。
+      const lockedProfiles = run.snapshot?.configSnapshot?.profiles;
+      const current: Record<string, string | null> = {};
+      if (lockedProfiles) {
+        for (const id of Object.keys(lockedProfiles)) current[id] = agentProfileContentHash(id);
+      }
+      const drift = lockedProfiles ? configDrift(lockedProfiles, current) : [];
+      return {
+        runId: run.runId,
+        sessionId: run.sessionId,
+        workflowId: run.workflowId,
+        status: run.status,
+        createdAt: run.createdAt,
+        updatedAt: run.updatedAt,
+        nodeCount: run.snapshot?.state.outcomes.length ?? 0,
+        ...(drift.length > 0 ? { configDrift: drift } : {}),
+      };
+    });
     // **直接返回数组**(不包 `{ runs }`)—— 同 statusAll,渲染端按裸数组消费。
     return runs;
   });

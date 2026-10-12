@@ -103,3 +103,58 @@ export function staleBindings(
 ): ResolvedConfigBinding[] {
   return resolved.filter((r) => r.stale);
 }
+
+/** 一条资源在「当时锁下」与「现在」之间的差异性质。 */
+export type ConfigDriftKind =
+  /** 当时绑到了某个版本，现在源变了另一个版本。 */
+  | "changed"
+  /** 当时绑到了某个版本，现在源没了（档案被删）。 */
+  | "removed"
+  /** 当时没绑到（`null`），现在源有了 —— 这轮跑的时候它其实没生效。 */
+  | "added";
+
+/** 一条资源版本差异 —— 供预检生成「源比运行当时新了」的变更计划。 */
+export interface ConfigDriftEntry {
+  assetId: string;
+  /** 运行当时锁下的哈希（`null` = 当时没绑到）。 */
+  lockedHash: string | null;
+  /** 现在源档案的哈希（`null` = 现在没了）。 */
+  currentHash: string | null;
+  kind: ConfigDriftKind;
+}
+
+/**
+ * 比较「一次运行**当时**记下的档案哈希表」与「现在的档案哈希表」，挑出**落后项** ——
+ * ARC-016 预检要的「源档案比声明的 scene lock 新」的变更计划。
+ *
+ * 与 {@link staleBindings} 互补，不是重复：那个走的是**显式声明**的 `ConfigBinding`
+ * 列表（用户在 SceneSpec 里写了 PINNED/LIVE），这里走的是**运行存档里已记下的**那张
+ * 哈希表（`RunConfigSnapshot.profiles`）—— 用来回答「这一轮实际用了哪一版、现在还一样吗」。
+ *
+ * 判据（只对**运行当时的**资源集合做判定，**绝不为运行没用过的资源**造条目）：
+ *  - 遍历 `locked` 的每个键（= 这一轮声明要用的资源；值可为 `null` = 当时没绑到）；
+ *  - `current` **没有**这个键 → **跳过**，不判（调用方没告诉我们就别猜「删了」还是「没变」）；
+ *  - 锁了值、现值相同 → 无差异；值不同 → `changed`；现值 `null` → `removed`；
+ *  - 当时是 `null`、现在有值 → `added`（这轮跑时它其实没生效，现在补上了）。
+ *
+ * `current` 里**多出来**、`locked` 里没有的资源**不产生条目** —— 运行没用过它，
+ * 说「这轮用了它」就是编。返回按 `assetId` 升序，好让变更计划稳定可 diff。
+ */
+export function configDrift(
+  locked: Readonly<Record<string, string | null>>,
+  current: Readonly<Record<string, string | null>>,
+): ConfigDriftEntry[] {
+  const out: ConfigDriftEntry[] = [];
+  for (const assetId of Object.keys(locked)) {
+    // 调用方没给的资源不判 —— 分不清「删了」与「没变」，猜任何一个都是编。
+    if (!Object.prototype.hasOwnProperty.call(current, assetId)) continue;
+    const lockedHash = locked[assetId] ?? null;
+    const currentHash = current[assetId] ?? null;
+    if (lockedHash === currentHash) continue;
+    const kind: ConfigDriftKind =
+      lockedHash === null ? "added" : currentHash === null ? "removed" : "changed";
+    out.push({ assetId, lockedHash, currentHash, kind });
+  }
+  out.sort((a, b) => (a.assetId < b.assetId ? -1 : a.assetId > b.assetId ? 1 : 0));
+  return out;
+}
