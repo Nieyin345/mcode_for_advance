@@ -268,8 +268,19 @@ function gitSourceKey(dir: string): string | null {
           try {
             const commonRel = readFileSync(path.join(gitdir, "commondir"), "utf8").trim();
             const common = path.isAbsolute(commonRel) ? commonRel : path.resolve(gitdir, commonRel);
-            return canonicalPath(common);
+            const commonCanon = canonicalPath(common);
+            // 【MC-039 / 第 45.2 节】**`commondir` 不能凭空指向别处。** 被验证过的
+            // 工作树 git dir 必须**落在它声明的 common dir 之内** —— git 的真实布局是
+            // `<common>/worktrees/<name>`(per-worktree git dir 是 common 的子目录)。
+            // 攻击者控制 B 里的 fakegit 时,`gitdir` 回指可以自洽(指回 B/.git),但
+            // 只要再写一个 `commondir` 指向**已信任仓库 A 的 `.git`**,就能让 B 的
+            // 身份碰撞成 A(第 45.2 的 E1:`MC039_FORGED_COMMON_DIR {identityCollision:true}`)。
+            // 判据:gitdir 必须在 common 之内 —— 伪造的 foreign commondir 里根本不含
+            // B 的 gitdir,这一条即判否;真实的 worktree 天然满足。**两种都不放行伪造**。
+            if (!isInsideDir(gitdir, commonCanon)) return null;
+            return commonCanon;
           } catch {
+            // 没有 `commondir` 文件:gitdir 就是它自己的来源(子模块的常见形态)。
             return canonicalPath(gitdir);
           }
         } catch {
@@ -291,6 +302,15 @@ function readBacklink(gitdir: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** `child` 是否在 `dir` 之内(或就是它)。大小写折叠(Windows),分隔符感知
+ *  (兄弟前缀 `/foo/bar` vs `/foo/baz` 不算包含)。【MC-039 / 第 45.2 节】 */
+function isInsideDir(child: string, dir: string): boolean {
+  if (!child || !dir) return false;
+  const c = path.resolve(child).toLowerCase();
+  const d = path.resolve(dir).toLowerCase();
+  return c === d || c.startsWith(d + path.sep);
 }
 
 /** MC-039: the project's SOURCE identity — folded into every trust

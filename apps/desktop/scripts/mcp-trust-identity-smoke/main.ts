@@ -34,7 +34,7 @@
  * Run: scripts/mcp-trust-identity-smoke/run.sh
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, lstatSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, lstatSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -135,6 +135,43 @@ console.log("\nMC-055:`.git` 是指向 A/.git 目录的 junction —— 仍不�
     check("★ B 退回 dir: 身份(不再冒充 A 的仓库)", projectIdentity(B).startsWith("dir:"));
   } else {
     check("平台不允许创建链接 —— 跳过 junction 反例(不判红)", true);
+  }
+}
+
+/* ── 2c. ★ MC-039 第 45.2 节反例:合法回指 + **foreign commondir** 冒充 A ──
+ *
+ * 第 45 轮独立 E1:B/.git(文件) → B/fakegit,B/fakegit/gitdir 回指 B/.git（自洽!），
+ * 但 B/fakegit/commondir 指向**已信任仓库 A 的 .git** —— 于是 B 的身份碰撞成 A。
+ * 只校验回指自洽挡不住这个:commondir 从未被验证过。
+ *
+ * 真判据:被验证过的工作树 git dir **必须落在它声明的 common dir 之内**（git 的真实布局
+ * 是 `<common>/worktrees/<name>`）。伪造的 foreign commondir 里不含 B 的 gitdir → 判否。 */
+console.log("\nMC-039/45.2:合法回指 + foreign commondir 指向 A → 不得冒充 A");
+{
+  const A = makeMainCheckout(join(TMP, "A2c"));
+  const B = join(TMP, "B2c");
+  const fakegit = join(B, "fakegit");
+  mkdirSync(fakegit, { recursive: true });
+  // 回指**自洽**:fakegit/gitdir 指回 B 自己的 .git 文件。
+  writeFileSync(join(B, ".git"), `gitdir: ${fakegit}\n`);
+  writeFileSync(join(fakegit, "gitdir"), join(B, ".git") + "\n");
+  // commondir **指向已信任仓库 A 的 .git** —— 伪造。
+  writeFileSync(join(fakegit, "commondir"), join(A, ".git") + "\n");
+  check("★ fakegit 的回指是自洽的(指回 B,不是漏判)", readAllText(join(fakegit, "gitdir")).trim() === join(B, ".git"));
+  check("★ B 的 foreign commondir 冒充 → 身份**不等于** A", projectIdentity(B) !== projectIdentity(A));
+  check("★ B 退回 dir: 身份(不冒充任何仓库)", projectIdentity(B).startsWith("dir:"));
+  check(
+    "★ 且 B 用同配置同名字也拿不到 A 的指纹",
+    projectServerFingerprint(B, "s", { command: "node" }) !== projectServerFingerprint(A, "s", { command: "node" }),
+  );
+}
+
+/** 读一段文本(测试里核对回指内容用)。 */
+function readAllText(p: string): string {
+  try {
+    return readFileSync(p, "utf8");
+  } catch {
+    return "";
   }
 }
 
