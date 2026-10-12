@@ -110,9 +110,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "browser.authRespond",
   "channel": "browser:authRespond",
-  "doc": "Answer a pending HTTP Basic Auth prompt (see \"authRequest\" push event).",
+  "doc": "Answer a pending HTTP Basic Auth prompt (see \"authRequest\" push event). Returns a discriminated receipt (accepted / cancelled / expired / failed) so the dialog can distinguish a delivered answer from one the challenge never received (timed out or already cons…",
   "input": "{ requestId: string; username: string // Empty username+password cancels the auth prompt.; password: string }",
-  "output": "void"
+  "output": "{ status: BrowserAuthRespondStatus; requestId: string }"
  },
  {
   "method": "browser.bookmarkAdd",
@@ -252,7 +252,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "claude:approve",
   "doc": "回应一条待审批的工具调用（`requestId` 对上 `approval.request` 事件）。**认不出这个 id 只记一条 warn、不抛** —— 用户点了过期的审批卡是正常会发生的事。",
   "input": "{ requestId: string; sessionId: string; granted: boolean; always?: boolean | undefined }",
-  "output": "void"
+  "output": "{ status: ApprovalReceiptStatus; requestId: string }"
  },
  {
   "method": "claude.inject",
@@ -287,7 +287,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "claude:respondPlanApproval",
   "doc": "Submit the user's approve/reject decision on a pending ExitPlanMode plan.",
   "input": "{ requestId: string; sessionId: string; approved: boolean; editedPlan?: string | undefined; reason?: string | undefined; feedback?: string | undefined }",
-  "output": "void"
+  "output": "{ status: ApprovalReceiptStatus; requestId: string }"
  },
  {
   "method": "claude.respondQuestion",
@@ -301,7 +301,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "claude:rewindTurn",
   "doc": "Rewind a turn: restore the given files to their pre-turn state. Works for the latest turn, any historical turn, or a session reopened after restart (the renderer passes the explicit entries). Returns the paths that were actually restored AND the ones that wer…",
   "input": "{ sessionId: string; files: { kind: 'modified' | 'created'; filePath: string; adds: number; dels: number; before: string; }[]; targetFiles: string[] }",
-  "output": "{ restored: string[]; failed: string[] }"
+  "output": "{ restored: string[]; failed: string[]; conflicts: string[] }"
  },
  {
   "method": "claude.saveSubagents",
@@ -483,7 +483,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "engineTools:get",
   "doc": "Per-engine **built-in tool** exclusion policy (设置 → 引擎工具). Returns the stored policy plus, per engine, whether that engine can actually drop a named built-in tool (Codex cannot — only sandbox/approval levels).",
   "input": "{}",
-  "output": "{ engines: Record<'claude' | 'codex' | 'pi', EngineToolEngineState> }"
+  "output": "{ engines: Record<'claude' | 'codex' | 'pi', EngineToolEngineState>; status?: EngineToolsPolicyStatus | undefined // 【MC-071】策略文件读取状态;UI 据此显示「配置损坏」而非静默假装用户主动启用。; recovered?: boolean | undefined // 损坏时是否已从「最后一份确认过的策略」保守恢复。; warning?: string | undefined // 损坏原因…"
  },
  {
   "method": "engineTools.set",
@@ -1046,6 +1046,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
+  "method": "library.readAsset",
+  "channel": "library:readAsset",
+  "doc": "【MC-087】**按条目身份读一个子资源（图片）** —— 给 Markdown 预览里的本地图片用。 渲染端只请求\"某条目内的某相对路径\";主进程从可信 id 取 linked/attached 根、把子资源 限制在条目根内（`..`/symlink 都拒），读字节后包成 data URL 返回。**不放宽**通用 `file.readBinary` 的项目边界，也不把 linked 外部目录加进全局 workspace root。",
+  "input": "{ id: string; relPath: string // 子资源相对**条目根**的路径（图片等）。`..`/绝对路径/库外链接一律拒。; which?: 'pdf' | 'md' | undefined // 同 readFile：看哪一份（省略 = 本体）。 }",
+  "output": "{ dataUrl: string; error?: string | undefined }"
+ },
+ {
   "method": "library.readFile",
   "channel": "library:readFile",
   "doc": "读通用文件条目的内容(文本 / 图片与二进制 base64 / 目录列表)。",
@@ -1379,7 +1386,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "memory:assistant",
   "doc": "记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。",
   "input": "{ sessionId: string; op: 'list' } | { kind: 'capture' | 'checkpoint' | 'health'; sessionId: string; op: 'start' } | { sessionId: string; op: 'cancel'; jobId: string } | { sessionId: string; op: 'discard'; jobId: string } | { sessionId: string; op: 'deliver'; …",
-  "output": "{ jobs: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'queued' | 'consumed' | 'expired'; id: string; kind: 'capture' | 'checkpoint' | 'health'; result: stri…; incoming?: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'queued' | 'consumed'…"
+  "output": "{ jobs: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'expired' | 'queued' | 'consumed'; id: string; kind: 'capture' | 'checkpoint' | 'health'; result: stri…; incoming?: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'expired' | 'queued' …"
  },
  {
   "method": "memory.categories",
@@ -2246,8 +2253,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "setting.importFromFile",
   "channel": "setting:importFromFile",
   "doc": "从 JSON 文件导入设置(主进程弹打开框;先备份当前设置)。",
-  "input": "(无参数)",
-  "output": "{ ok: true; count: number; skipped: number; backupPath?: string | undefined } | { ok: false; canceled?: boolean | undefined; error?: string | undefined }"
+  "input": "undefined | { mode?: 'merge' | 'restore' | undefined }",
+  "output": "{ ok: true; count: number; skipped: number; deleted?: number | undefined; backupPath?: string | undefined } | { ok: false; canceled?: boolean | undefined; error?: string | undefined }"
  },
  {
   "method": "setting.set",
@@ -2261,21 +2268,21 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "shell:openFile",
   "doc": "Open a file with the OS's default associated application. Accepts any path that resolves inside a known project root (not just the root).",
   "input": "{ path: string }",
-  "output": "void"
+  "output": "{ ok: boolean; error?: string | undefined // 失败原因(用户可读中文);成功时不带。 }"
  },
  {
   "method": "shell.openPath",
   "channel": "shell:openPath",
   "doc": "Open a path in the OS file manager. Main refuses any path that isn't a known project root, so this can't be used to open arbitrary locations.",
   "input": "{ path: string }",
-  "output": "void"
+  "output": "{ ok: boolean; error?: string | undefined // 失败原因(用户可读中文);成功时不带。 }"
  },
  {
   "method": "shell.showItemInFolder",
   "channel": "shell:showItemInFolder",
   "doc": "Reveal a file or directory in the OS file manager, selecting it. Accepts any path that resolves inside a known project root (not just the root).",
   "input": "{ path: string }",
-  "output": "void"
+  "output": "{ ok: boolean; error?: string | undefined // 失败原因(用户可读中文);成功时不带。 }"
  },
  {
   "method": "skills.bundles",
