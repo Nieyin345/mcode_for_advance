@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import ssh2 from "ssh2";
 const { Server: SshServer } = ssh2;
 import { createAgentRemoteSshManager, __remoteSshTest, scrubConnectionSecrets, HOST_KEY_MISMATCH_MESSAGE } from "@main/mcp/agentRemoteSsh.js";
+import { agentMcpTools } from "@main/mcp/agentTools.js";
 import { SettingRepo, armGetThrow, getThrowCount, armSetThrow, setThrowCount } from "./stubs/settingRepo.js";
 
 let checks = 0;
@@ -198,6 +199,12 @@ const owner = "sess-a";
 const fixturePub = ssh2.utils.parseKey(hostKey);
 if (fixturePub instanceof Error || Array.isArray(fixturePub)) throw new Error("fixture host key did not parse");
 const fixtureFp = __remoteSshTest.fingerprintOfHostKey(fixturePub.getPublicSSH());
+// 【MC-014 / 第 48.4 节】授信首连现在**必须**有宿主签发的授权(grant):expected_fingerprint
+// 只是"请展示给用户"的请求,不能单独批准。夹具里模拟"用户在受信入口批准了这台 host:port"。
+function trustFixture(hostPort: string): void {
+  __remoteSshTest.grantHostTrust({ hostPort, fingerprint: fixtureFp, approvalSource: "user" });
+}
+trustFixture(`127.0.0.1:${addr.port}`);
 const conn = await mgr.connect({ ownerSessionId: owner, host: "127.0.0.1", port: addr.port, username: "u", password: "p", expectedFingerprint: fixtureFp, keepaliveIntervalMs: 5000 });
 let rejectedImplicitAuth = false;
 try { await mgr.connect({ ownerSessionId: owner, host: "127.0.0.1", port: addr.port, username: "u" }); }
@@ -290,9 +297,23 @@ console.log("\n[3c] MC-052 首次信任:无 pin 且未授信 → 暂停认证(�
   check("★ 未授权首见 → 不写入任何指纹(不自动 TOFU)", __remoteSshTest.readKnownHosts()[hostPort] === undefined, __remoteSshTest.readKnownHosts());
   check("★ 未授权首见 → 不自动重连", pending.reconnectAttempt === 0, pending);
 
-  // 用户带外核对一致后,以 expected_fingerprint(= 服务器实际指纹)重连 → 记录 pin 并放行认证。
+  // ★【MC-014 / MC-052 第 48.4 节核心·红例】**同一个 Agent 把候选指纹原样填回**
+  //   expected_fingerprint(没有任何用户/宿主批准)—— 必须**仍然拒绝**。从前这正是漏洞:
+  //   第一次拿到候选、第二次把候选自复制成 expected_fingerprint 就完成了永久授信。判据立在
+  //   "服务器仍未收到任何凭据"这一可观测事实上,且信任表里仍没有 pin。
+  const selfApproved = await m.connect({ ownerSessionId: "tofu", host: "127.0.0.1", port: tAddr.port, username: "u", password: "p", expectedFingerprint: expectedFp });
+  check("★ 自填候选指纹但无宿主授权 → state=error(拒绝)", selfApproved.state === "error", selfApproved);
+  check("★ 自填候选指纹但无宿主授权 → 标记 host_key_expected_ungranted", selfApproved.hostKeyExpectedUngranted === true, selfApproved);
+  check("★ 自填候选指纹但无宿主授权 → 文案说明仅凭连接参数不算批准", (selfApproved.lastError ?? "").includes("缺少宿主") && (selfApproved.lastError ?? "").includes(expectedFp), selfApproved.lastError);
+  check("★ 自填候选指纹但无宿主授权 → 一个凭据都没发送", tofuPasswordAttempts === 0, tofuPasswordAttempts);
+  check("★ 自填候选指纹但无宿主授权 → 仍不写入任何 pin", __remoteSshTest.readKnownHosts()[hostPort] === undefined, __remoteSshTest.readKnownHosts());
+  await m.disconnect("tofu", selfApproved.connectionId);
+
+  // 用户经**宿主受信入口**批准该指纹(grantHostTrust 绑定 host:port + SHA256)后,再以
+  // expected_fingerprint(= 服务器实际指纹)重连 → 记录 pin 并放行认证。
+  __remoteSshTest.grantHostTrust({ hostPort, fingerprint: expectedFp, approvalSource: "user" });
   const first = await m.connect({ ownerSessionId: "tofu", host: "127.0.0.1", port: tAddr.port, username: "u", password: "p", expectedFingerprint: expectedFp });
-  check("★ 事先授信指纹匹配 → 首连成功", first.state === "ready", first);
+  check("★ 宿主授权指纹匹配 → 首连成功", first.state === "ready", first);
   check("★ 授信首连在结果里报告已记录指纹", first.hostKeyRecorded === true, first);
   const recorded = __remoteSshTest.readKnownHosts()[hostPort];
   check("★ 授信首连把 SHA256 指纹写入 known-hosts", __remoteSshTest.isWellFormedFingerprint(recorded), recorded);
@@ -307,8 +328,10 @@ console.log("\n[3c] MC-052 首次信任:无 pin 且未授信 → 暂停认证(�
   check("已知主机再次连接不再报告记录", again.hostKeyRecorded === false, again);
 
   // 无 pin 的陌生主机 + 事先给的指纹与实际**不符** → 拒绝,绝不写入(不能把"我以为的指纹"落盘)。
+  // 回到"无 pin 且无授权"的陌生状态(撤销上面签发的那份 grant)。
   await m.disconnect("tofu", again.connectionId);
-  SettingRepo.delete(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY); // 回到"无 pin"
+  SettingRepo.delete(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY);
+  __remoteSshTest.revokeHostTrustGrant(hostPort);
   const wrongExpected = `SHA256:${"A".repeat(43)}`;
   const expMism = await m.connect({ ownerSessionId: "tofu", host: "127.0.0.1", port: tAddr.port, username: "u", password: "p", expectedFingerprint: wrongExpected });
   check("★ 期望指纹与实际不符 → state=error", expMism.state === "error", expMism);
@@ -361,6 +384,9 @@ console.log("\n[3c-3] MC-014 第47.2节:授信首连的 pin 没落盘成功 → 
   if (pub instanceof Error || Array.isArray(pub)) throw new Error("fixture host key did not parse");
   const expectedFp = __remoteSshTest.fingerprintOfHostKey(pub.getPublicSSH());
   const m = createAgentRemoteSshManager();
+  // 先授予宿主信任(在故障注入之前)—— 所以要验的是"授权齐备但 pin 落盘失败"这条路径,
+  // 与"无授权被拒"是两回事。
+  __remoteSshTest.grantHostTrust({ hostPort, fingerprint: expectedFp, approvalSource: "user" });
 
   armSetThrow(true);
   let fail: Awaited<ReturnType<typeof m.connect>> | null = null;
@@ -403,6 +429,7 @@ console.log("\n[3c-2] MC-014 第43.1节残余:known-hosts 损坏/读异常 → f
     if (pubParsed instanceof Error || Array.isArray(pubParsed)) throw new Error("fixture host key did not parse");
     const expectedFp = __remoteSshTest.fingerprintOfHostKey(pubParsed.getPublicSSH());
     const m = createAgentRemoteSshManager();
+    __remoteSshTest.grantHostTrust({ hostPort, fingerprint: expectedFp, approvalSource: "user" });
     const first = await m.connect({ ownerSessionId: "store", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p", expectedFingerprint: expectedFp });
     goodFp = __remoteSshTest.readKnownHosts()[hostPort] ?? "";
     check("前置:授信首连成功且记下指纹", first.state === "ready" && __remoteSshTest.isWellFormedFingerprint(goodFp), first);
@@ -454,27 +481,36 @@ console.log("\n[3c-2] MC-014 第43.1节残余:known-hosts 损坏/读异常 → f
   await new Promise<void>((resolve) => sserver.close(() => resolve()));
 }
 
-console.log("\n[3f] MC-052 纯判定 decideHostTrust:五种终态 + 入参校验");
+console.log("\n[3f] MC-052 纯判定 decideHostTrust:宿主授权门 + 各终态 + 入参校验");
 {
-  // 判定与授信副作用已分离:decideHostTrust 是纯函数,六个分支可在这里直接覆盖,
-  // 不依赖任何真实握手。这也是"唯一会写信任的路径是事先授信首连"的可审计证据。
+  // 判定与授信副作用已分离:decideHostTrust 是纯函数,各分支可在这里直接覆盖,
+  // 不依赖任何真实握手。这也是"唯一会写信任的路径是**携带宿主授权**的首连"的可审计证据。
   const fpA = `SHA256:${"A".repeat(43)}`;
   const fpB = `SHA256:${"B".repeat(43)}`;
   const valid = (hosts: Record<string, string>) => ({ status: "VALID" as const, hosts });
   const missing = { status: "MISSING" as const, hosts: {} };
+  const grantA = { grantId: "g1", hostPort: "h:22", fingerprint: fpA, approvalSource: "user" as const, approvedAt: 0, version: 1 };
 
   check("无 pin + 未授信 → PENDING_CONFIRMATION(携候选指纹)",
     (() => { const d = __remoteSshTest.decideHostTrust({ read: missing, hostPort: "h:22", actual: fpA }); return d.verdict === "PENDING_CONFIRMATION" && d.candidate === fpA; })());
-  check("无 pin + 授信指纹一致 → PINNED_NEW(可写 pin)",
-    __remoteSshTest.decideHostTrust({ read: missing, hostPort: "h:22", actual: fpA, expectedFingerprint: fpA }).verdict === "PINNED_NEW");
-  check("无 pin + 授信指纹不一致 → EXPECTED_MISMATCH(不写 pin)",
+  // ★【第 48.4 节核心】自填 expected_fingerprint 与服务器实际**一致**、但**没有宿主授权** →
+  //   仍拒(EXPECTED_UNGRANTED)。这正是"模型把自己第一次拿到的候选原样填回来"的自复制攻击。
+  check("★ 无 pin + 自填指纹一致但无宿主授权 → EXPECTED_UNGRANTED(不放行)",
+    (() => { const d = __remoteSshTest.decideHostTrust({ read: missing, hostPort: "h:22", actual: fpA, expectedFingerprint: fpA }); return d.verdict === "EXPECTED_UNGRANTED" && d.candidate === fpA; })());
+  check("无 pin + 宿主授权指纹一致 → PINNED_NEW(可写 pin)",
+    __remoteSshTest.decideHostTrust({ read: missing, hostPort: "h:22", actual: fpA, grant: grantA }).verdict === "PINNED_NEW");
+  check("无 pin + 宿主授权 fingerprint 与实际不符 → GRANT_MISMATCH(不写 pin)",
+    __remoteSshTest.decideHostTrust({ read: missing, hostPort: "h:22", actual: fpB, grant: grantA }).verdict === "GRANT_MISMATCH");
+  check("无 pin + 宿主授权作用域是别的 host → GRANT_MISMATCH(不写 pin)",
+    __remoteSshTest.decideHostTrust({ read: missing, hostPort: "other:22", actual: fpA, grant: grantA }).verdict === "GRANT_MISMATCH");
+  check("无 pin + 自填指纹与实际不符 → EXPECTED_MISMATCH(不写 pin)",
     __remoteSshTest.decideHostTrust({ read: missing, hostPort: "h:22", actual: fpA, expectedFingerprint: fpB }).verdict === "EXPECTED_MISMATCH");
   check("已 pin 且一致 → TRUSTED",
     __remoteSshTest.decideHostTrust({ read: valid({ "h:22": fpA }), hostPort: "h:22", actual: fpA }).verdict === "TRUSTED");
-  check("已 pin 且变了 → MISMATCH(即使给了正确的新期望也不放行)",
-    __remoteSshTest.decideHostTrust({ read: valid({ "h:22": fpA }), hostPort: "h:22", actual: fpB, expectedFingerprint: fpB }).verdict === "MISMATCH");
+  check("已 pin 且变了 → MISMATCH(即使给了正确的新期望/授权也不放行)",
+    __remoteSshTest.decideHostTrust({ read: valid({ "h:22": fpA }), hostPort: "h:22", actual: fpB, expectedFingerprint: fpB, grant: { ...grantA, fingerprint: fpB } }).verdict === "MISMATCH");
   check("存储损坏 → STORE_INVALID(fail-closed)",
-    __remoteSshTest.decideHostTrust({ read: { status: "INVALID", hosts: {}, error: "boom" }, hostPort: "h:22", actual: fpA }).verdict === "STORE_INVALID");
+    __remoteSshTest.decideHostTrust({ read: { status: "INVALID", hosts: {}, error: "boom" }, hostPort: "h:22", actual: fpA, grant: grantA }).verdict === "STORE_INVALID");
   // 存储里有**其他**主机的 pin、但没有本机的 → 仍算无 pin,须待批准(不能因表非空就放行)。
   check("表中只有别的 host → 本机仍按无 pin 待批准",
     __remoteSshTest.decideHostTrust({ read: valid({ "other:22": fpA }), hostPort: "h:22", actual: fpA }).verdict === "PENDING_CONFIRMATION");
@@ -483,6 +519,9 @@ console.log("\n[3f] MC-052 纯判定 decideHostTrust:五种终态 + 入参校验
   // 待批准文案必须同时点名"暂停认证"与候选指纹 —— 这是用户唯一能去带外核对的线索。
   const msg = __remoteSshTest.pendingConfirmationMessage(fpA);
   check("待批准文案点名暂停认证且给出候选指纹", msg.includes("暂停认证") && msg.includes(fpA), msg);
+  // 无授权文案必须说明"仅凭连接参数不算批准"。
+  const ungrMsg = __remoteSshTest.hostKeyExpectedUngrantedMessage(fpA);
+  check("无授权文案说明自填指纹不算批准且给出候选指纹", ungrMsg.includes("缺少宿主") && ungrMsg.includes(fpA), ungrMsg);
 }
 
 console.log("\n[3d] MC-018 disconnect removes the record and scrubs secrets");
@@ -494,6 +533,7 @@ console.log("\n[3d] MC-018 disconnect removes the record and scrubs secrets");
   await new Promise<void>((resolve) => lserver.listen(0, "127.0.0.1", () => resolve()));
   const lAddr = lserver.address();
   if (!lAddr || typeof lAddr === "string") throw new Error("lifecycle server missing port");
+  trustFixture(`127.0.0.1:${lAddr.port}`);
   const m = createAgentRemoteSshManager();
   // 反复断/连 100 次:每次 connect 都新建一条,disconnect 必须把它从记录里移除,
   // 否则 entries Map 会无界增长。
@@ -532,6 +572,7 @@ console.log("\n[4] auth failure must not auto-reconnect");
   await new Promise<void>((resolve) => denyServer.listen(0, "127.0.0.1", () => resolve()));
   const dAddr = denyServer.address();
   if (!dAddr || typeof dAddr === "string") throw new Error("deny server missing port");
+  trustFixture(`127.0.0.1:${dAddr.port}`); // 授信首连,让握手真正走到认证阶段(否则会因无授权在 KEX 被拒)
   const mgr2 = createAgentRemoteSshManager();
   const bad = await mgr2.connect({ ownerSessionId: "o", host: "127.0.0.1", port: dAddr.port, username: "u", password: "wrong", expectedFingerprint: fixtureFp });
   check("认证失败 → state=error", bad.state === "error", bad);
@@ -588,6 +629,7 @@ console.log("\n[4b] explicitly configured SSH agent (named pipe on Windows)");
   await new Promise<void>(resolve => target.listen(0, "127.0.0.1", resolve));
   const targetAddress = target.address();
   if (!targetAddress || typeof targetAddress === "string") throw new Error("fixture target missing port");
+  trustFixture(`127.0.0.1:${targetAddress.port}`);
   const explicit = createAgentRemoteSshManager();
   const nativeExistsSync = fs.existsSync;
   try {
@@ -646,6 +688,7 @@ console.log("\n[5] exec through a real shell: stdin EOF, pid marker hidden, time
   await new Promise<void>((resolve) => shellServer.listen(0, "127.0.0.1", () => resolve()));
   const sAddr = shellServer.address();
   if (!sAddr || typeof sAddr === "string") throw new Error("shell server missing port");
+  trustFixture(`127.0.0.1:${sAddr.port}`);
   const mgr3 = createAgentRemoteSshManager();
   const sc = await mgr3.connect({ ownerSessionId: "o", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p", expectedFingerprint: fixtureFp });
   check("shell server ready", sc.state === "ready", sc);
@@ -699,6 +742,7 @@ console.log("\n[5b] MC-015 bounded exec output: tail window + byte totals + head
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const sAddr = server.address();
   if (!sAddr || typeof sAddr === "string") throw new Error("bounded server missing port");
+  trustFixture(`127.0.0.1:${sAddr.port}`);
   const m = createAgentRemoteSshManager();
   const c = await m.connect({ ownerSessionId: "o", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p", expectedFingerprint: fixtureFp });
   const r = await m.exec("o", c.connectionId, "big", 30_000);
@@ -747,6 +791,7 @@ console.log("\n[5c] MC-017 exec streams: multi-byte chars split across chunks de
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const sAddr = server.address();
   if (!sAddr || typeof sAddr === "string") throw new Error("chunk server missing port");
+  trustFixture(`127.0.0.1:${sAddr.port}`);
   const m = createAgentRemoteSshManager();
   const c = await m.connect({ ownerSessionId: "o", host: "127.0.0.1", port: sAddr.port, username: "u", password: "p", expectedFingerprint: fixtureFp });
   const r = await m.exec("o", c.connectionId, "multibyte", 30_000);
@@ -757,6 +802,66 @@ console.log("\n[5c] MC-017 exec streams: multi-byte chars split across chunks de
   check("stdout 与 stderr 不串流", r.stdout === zhStdout && r.stderr === zhStderr, { out: r.stdout, err: r.stderr });
   m.disposeOwner("o");
   await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+console.log("\n[6] MC-014 / MC-052:真正工具 handler(agent_ssh_connect)上也承重宿主授权门");
+{
+  // 台账第 48.4 节:红例必须"在真正工具 handler 与可信授权服务两侧承重"。前面各节走的是
+  // 传输层 manager.connect;这里驱动**真正注册给 MCP 的工具 handler**,证明授权门不是只活在
+  // 一层封装的后面。
+  SettingRepo.__clear();
+  let toolPwAttempts = 0;
+  const toolClients = new Set<any>();
+  const toolServer = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    toolClients.add(client);
+    client.on("close", () => toolClients.delete(client));
+    client.on("authentication", (ctx) => { if (ctx.method === "password") { toolPwAttempts++; ctx.accept(); } else ctx.reject(["password"]); });
+    client.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => toolServer.listen(0, "127.0.0.1", () => resolve()));
+  const tAddr = toolServer.address();
+  if (!tAddr || typeof tAddr === "string") throw new Error("tool server missing port");
+  const hostPort = `127.0.0.1:${tAddr.port}`;
+  const pubParsed = ssh2.utils.parseKey(hostKey);
+  if (pubParsed instanceof Error || Array.isArray(pubParsed)) throw new Error("fixture host key did not parse");
+  const expectedFp = __remoteSshTest.fingerprintOfHostKey(pubParsed.getPublicSSH());
+
+  const specs = agentMcpTools({ cwdFor: () => null });
+  const spec = specs.find((s) => s.name === "agent_ssh_connect");
+  if (!spec) throw new Error("agent_ssh_connect not found in tool table");
+  const ctx = { sessionId: "ssh-tool-fixture" };
+  const call = async (args: Record<string, unknown>) => spec.handler({ ...args }, ctx as any);
+  const textOf = (r: { content: unknown }): string => (r.content as { type: string; text: string }[]).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+
+  // ① 首连无 pin、无授权、不给 expected_fingerprint → handler 报 error + 待批准 + 候选指纹,
+  //    服务器一个凭据都没收到。
+  const first = await call({ host: "127.0.0.1", port: tAddr.port, username: "u", password: "p" });
+  check("★ 工具 handler:首见未授权 → isError", (first as any).isError === true, textOf(first));
+  check("★ 工具 handler:首见未授权 → state=error 且待批准", (first as any).structuredContent?.state === "error" && (first as any).structuredContent?.host_key_pending_confirmation === true, (first as any).structuredContent);
+  check("★ 工具 handler:首见未授权 → 回显候选指纹供核对", (first as any).structuredContent?.host_key_candidate_fingerprint === expectedFp, (first as any).structuredContent?.host_key_candidate_fingerprint);
+  check("★ 工具 handler:首见未授权 → 服务器未收到任何凭据", toolPwAttempts === 0, toolPwAttempts);
+
+  // ② **同一个 Agent** 把候选指纹原样填进 expected_fingerprint、但**没有**任何宿主批准 →
+  //    仍必须拒绝(这正是第 48.4 节点的自复制漏洞;判据立在"服务器仍未收到凭据"上)。
+  const selfFill = await call({ host: "127.0.0.1", port: tAddr.port, username: "u", password: "p", expected_fingerprint: expectedFp });
+  check("★ 工具 handler:自填候选指纹但无宿主授权 → isError", (selfFill as any).isError === true, textOf(selfFill));
+  check("★ 工具 handler:自填候选指纹但无宿主授权 → host_key_expected_ungranted=true", (selfFill as any).structuredContent?.host_key_expected_ungranted === true, (selfFill as any).structuredContent);
+  check("★ 工具 handler:自填候选指纹但无宿主授权 → 服务器仍未收到凭据", toolPwAttempts === 0, toolPwAttempts);
+  check("★ 工具 handler:自填候选指纹但无宿主授权 → 未写入任何 pin", __remoteSshTest.readKnownHosts()[hostPort] === undefined, __remoteSshTest.readKnownHosts());
+
+  // ③ 用户在受信入口批准(宿主签发授权)后,再以同一 expected_fingerprint 调用 → 成功握手。
+  __remoteSshTest.grantHostTrust({ hostPort, fingerprint: expectedFp, approvalSource: "user" });
+  const granted = await call({ host: "127.0.0.1", port: tAddr.port, username: "u", password: "p", expected_fingerprint: expectedFp });
+  check("★ 工具 handler:宿主批准同指纹 → state=ready", (granted as any).structuredContent?.state === "ready", (granted as any).structuredContent);
+  check("★ 工具 handler:宿主批准后确实进入认证(服务器收到密码)", toolPwAttempts > 0, toolPwAttempts);
+
+  const disconnectSpec = specs.find((s) => s.name === "agent_ssh_disconnect");
+  if ((granted as any).structuredContent?.connection_id && disconnectSpec) {
+    await disconnectSpec.handler({ connection_id: (granted as any).structuredContent.connection_id }, ctx as any);
+  }
+  SettingRepo.__clear();
+  for (const c of [...toolClients]) c.end();
+  await new Promise<void>((resolve) => toolServer.close(() => resolve()));
 }
 
 console.log(`\nremote-ssh-smoke: ${passed}/${checks} passed`);

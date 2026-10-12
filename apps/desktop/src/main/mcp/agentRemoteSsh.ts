@@ -48,6 +48,39 @@ const EXEC_PID_MARK = "__MCODE_EXEC_PID=";
  */
 export const SSH_KNOWN_HOSTS_SETTING_KEY = "agentSsh.knownHosts";
 /**
+ * 【MC-014 / MC-052】宿主签发的**主机信任授权**(HostTrustGrant)的存储键。
+ *
+ * known-hosts 里的一条 pin 让一台主机**之后**长期可信;而"第一次信任一台陌生主机"是一个
+ * **授权决定**,必须由宿主受信 UI 或事前用户批准产生 —— 不能由模型把候选指纹复制进连接
+ * 参数就当成批准。授权绑定 `host:port` + `SHA256:` 指纹 + 审批来源/时间/版本。
+ *
+ * 该键落在 `agentSsh.` 前缀下,普通设置导入导出一律禁止(见 `settingsTransfer.ts` 的
+ * `SECURITY_GRANT_PREFIXES`)—— 授信不能随一份偏好文件被夹带进来。
+ */
+export const SSH_HOST_TRUST_GRANTS_SETTING_KEY = "agentSsh.hostTrustGrants";
+
+/**
+ * 【MC-014 / MC-052】宿主签发的**主机信任授权**。
+ *
+ * 授权是"用户已独立核对并批准这台主机的指纹"的**可审计凭据**;只有携带这样一份授权时,
+ * 首连才允许走 {@link decideHostTrust} 的 `PINNED_NEW` 分支写 pin 并放行认证。
+ * `agent_ssh_connect` 的 `expected_fingerprint` 只是"请把候选指纹展示给用户核对"的**请求**,
+ * **不单独决定永久授信** —— 模型无法把它自复制成批准。
+ */
+export interface HostTrustGrant {
+  grantId: string;
+  /** 授权作用域:`host:port`(与 known-hosts 键同形)。 */
+  hostPort: string;
+  /** 被批准的服务器主机公钥指纹(OpenSSH `SHA256:` 形状)。 */
+  fingerprint: string;
+  /** 审批来源 —— **只有 `user` 算数**:agent / system 自批无效(与 PolicyEngine 同一条规则)。 */
+  approvalSource: "user";
+  /** 批准时刻(ms epoch)。 */
+  approvedAt: number;
+  /** 授权结构版本,便于将来迁移。 */
+  version: number;
+}
+/**
  * `agent_ssh_exec` 单条输出的**尾部窗口上界**(字节)。远端命令可跑满 10 分钟,输出没上界;
  * 只留尾部是因为报错栈与结果都在结尾(与 `lib/outBuf.ts` 的取舍一致)。stderr 单独一个更小
  * 的上限 —— 它是诊断信息,通常比 stdout 短得多。
@@ -72,13 +105,12 @@ export interface RemoteConnectInput {
   keepaliveCountMax?: number;
   readyTimeoutMs?: number;
   /**
-   * 【MC-052】**事先显式授信**通道:调用方(用户在服务器控制台独立核对过指纹后,
-   * 或自动化连接预置的批准清单)给出这台 host:port 期望的 `SHA256:` 指纹。
+   * 【MC-014 / MC-052】调用方"请把候选指纹展示给用户核对"的**请求** —— **不是批准凭据**。
    *
-   * 语义:仅在**该 host:port 尚无已记录 pin** 时生效 —— 若服务器实际指纹与之**一致**,
-   * 才写入 pin 并放行认证;若**不一致**,拒绝且**不覆盖**任何已有 pin。有 pin 时一律以 pin
-   * 为准(存储的信任优先于连接参数)。无法与用户互动的自动化连接**必须**走这条通道,
-   * 绝不允许静默 TOFU(见 {@link decideHostTrust})。
+   * ⚠️【第 48.4 节】它**不单独决定永久授信**。仅当该 host:port 尚无 pin、且存在一份
+   * **宿主签发**的 {@link HostTrustGrant}(绑定同 host:port + 同 SHA256)时,首连才写 pin 并放行;
+   * 否则即便本参数与服务器实际指纹**一致**也拒绝(`EXPECTED_UNGRANTED`)—— 后端无法分辨
+   * 它是用户真正带外核对过、还是模型把自己的候选输出复制了回来。
    */
   expectedFingerprint?: string;
 }
@@ -103,14 +135,24 @@ interface RemoteEntry {
   /** 【MC-014】known-hosts 存储损坏/读异常 → 本次握手 fail-closed 拒连(不可重试)。 */
   hostKeyStoreInvalid: boolean;
   /**
-   * 【MC-052】**首次遇到未知 host:port、且未提供 expectedFingerprint** → 本次握手
+   * 【MC-052】**首次遇到未知 host:port、且无宿主授权** → 本次握手
    * 停在「待用户批准」状态并**拒绝认证**(hostVerifier 返回 false,ssh2 在密钥交换阶段
    * 即断开,**不发送任何凭据**)。候选指纹见 {@link hostKeyCandidateFingerprint},
-   * 由用户独立核对后以 `expectedFingerprint` 重新连接才放行。不可重试。
+   * 由用户独立核对后经宿主受信入口授权才放行。不可重试。
    */
   hostKeyPendingConfirmation: boolean;
   /** 待批准时呈现给用户的**候选**指纹(仅 {@link hostKeyPendingConfirmation} 时有值)。 */
   hostKeyCandidateFingerprint: string | null;
+  /**
+   * 【MC-014 / 第 48.4 节】调用方自填了 `expectedFingerprint`(即便与服务器实际一致),
+   * 但**没有宿主签发的授权** → 拒绝。模型自复制的候选不能成为批准。
+   */
+  hostKeyExpectedUngranted: boolean;
+  /**
+   * 【MC-014 / MC-052】宿主授权存在,但它的作用域(host:port)或指纹与本次实际不符 →
+   * 拒绝(可能是中间人,或服务器换钥,或授权串了主机)。不可重试。
+   */
+  hostKeyGrantMismatch: boolean;
   /**
    * 【MC-052】调用方提供了 `expectedFingerprint`,但与服务器实际指纹**不一致** →
    * 拒绝且**不覆盖**任何已有记录。与 {@link hostKeyMismatch}(已 pin 的指纹变了)区分开,
@@ -135,6 +177,11 @@ export interface RemoteConnectionInfo {
   hostKeyPendingConfirmation: boolean;
   /** 【MC-052】待批准时要呈现给用户独立核对的候选指纹(`SHA256:` 形状)。 */
   hostKeyCandidateFingerprint: string | null;
+  /**
+   * 【MC-014 / 第 48.4 节】调用方自填了 expected_fingerprint 但没有宿主授权 →
+   * 已拒绝。提示用户经受信入口批准。
+   */
+  hostKeyExpectedUngranted: boolean;
 }
 
 export interface RemoteExecResult {
@@ -197,6 +244,7 @@ export function createAgentRemoteSshManager() {
     hostKeyRecorded: entry.hostKeyRecorded,
     hostKeyPendingConfirmation: entry.hostKeyPendingConfirmation,
     hostKeyCandidateFingerprint: entry.hostKeyCandidateFingerprint,
+    hostKeyExpectedUngranted: entry.hostKeyExpectedUngranted,
   });
 
   const scheduleReconnect = (entry: RemoteEntry): void => {
@@ -225,20 +273,25 @@ export function createAgentRemoteSshManager() {
       keepaliveCountMax: entry.cfg.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT,
       readyTimeout: entry.cfg.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
       // 【MC-052】主机信任不再"首次见面即自动放行"。hostVerifier 在**身份决定**时
-      // 只做判定,不产生授信副作用:已 pin 且匹配 → 放行;指纹变了 / 存储损坏 / 未事先
-      // 授信的首次连接 → **拒绝握手**(返回 false);只有调用方用 `expectedFingerprint`
-      // **事先独立核对过指纹**的首次连接,才写 pin 并放行。ssh2 在 hostVerifier 返回 false
+      // 只做判定,不产生授信副作用:已 pin 且匹配 → 放行;指纹变了 / 存储损坏 / 未获宿主
+      // 授权的首次连接 → **拒绝握手**(返回 false);只有**携带宿主签发授权**的首次连接,
+      // 才写 pin 并放行。ssh2 在 hostVerifier 返回 false
       // 时于**密钥交换阶段**即以 handshake 错误断开 —— 此时密码/私钥/agent 签名**一个都还
       // 没发出去**,所以"未确认前不发送任何凭据"是结构性成立的,不是靠提示文字。
       hostVerifier: (key: Buffer): boolean => {
         const hostPort = `${entry.cfg.host}:${entry.cfg.port}`;
         const actual = fingerprintOfHostKey(key);
         const read = readKnownHostsDetailed();
+        // 【第 48.4 节】宿主授权是**唯一**能放行首连写 pin 的依据。它由受信 UI/事前用户
+        // 授权签发,不经模型参数 —— 所以模型把候选指纹原样填回 expected_fingerprint
+        // 也无法构成批准。expectedFingerprint 只作"请把候选展示给用户"的请求。
+        const grant = findHostTrustGrant(hostPort);
         const decision = decideHostTrust({
           read,
           hostPort,
           actual,
           expectedFingerprint: entry.cfg.expectedFingerprint,
+          grant,
         });
         switch (decision.verdict) {
           case "STORE_INVALID":
@@ -255,14 +308,24 @@ export function createAgentRemoteSshManager() {
             // 调用方给的期望指纹与服务器实际对不上,且此前无 pin → 拒绝,绝不写入。
             entry.hostKeyExpectedMismatch = true;
             return false;
+          case "EXPECTED_UNGRANTED":
+            // 【第 48.4 节核心】调用方自填的指纹即使与服务器实际**一致**,没有宿主授权也拒 ——
+            // 后端无法分辨"用户真的带外核对过"与"模型复制了自己的候选输出"。
+            entry.hostKeyExpectedUngranted = true;
+            entry.hostKeyCandidateFingerprint = decision.candidate;
+            return false;
+          case "GRANT_MISMATCH":
+            // 宿主授权存在,但作用域/指纹与本次不符 → 拒绝(绝不用一次授权信任另一台/换了钥的主机)。
+            entry.hostKeyGrantMismatch = true;
+            return false;
           case "PENDING_CONFIRMATION":
-            // 【MC-052 核心】无 pin 且未事先授信 → 停在"待用户批准",**拒绝认证**。
-            // 候选指纹留给用户独立核对;用户以 expectedFingerprint 重连才放行。
+            // 无 pin 且无宿主授权 → 停在"待用户批准",**拒绝认证**。
+            // 候选指纹留给用户独立核对;用户经宿主受信入口授权后才放行。
             entry.hostKeyPendingConfirmation = true;
             entry.hostKeyCandidateFingerprint = decision.candidate;
             return false;
           case "PINNED_NEW": {
-            // 事先授信的首次连接:实际指纹与调用方核对过的期望一致 → 记 pin 并放行。
+            // **携带宿主授权**的首次连接:授权绑定的指纹与服务器实际一致 → 记 pin 并放行。
             //
             // 【MC-014 / 第 47.2 节】pin **没落盘成功就不能放行**。从前这里 `writeKnownHost`
             // 的返回值只用来决定要不要报 hostKeyRecorded,然后**无条件** `return true` ——
@@ -305,6 +368,8 @@ export function createAgentRemoteSshManager() {
     entry.hostKeyStoreInvalid = false;
     entry.hostKeyPendingConfirmation = false;
     entry.hostKeyCandidateFingerprint = null;
+    entry.hostKeyExpectedUngranted = false;
+    entry.hostKeyGrantMismatch = false;
     entry.hostKeyExpectedMismatch = false;
     let settled = false;
     let ready = false;
@@ -333,14 +398,18 @@ export function createAgentRemoteSshManager() {
           ? HOST_KEY_MISMATCH_MESSAGE
           : entry.hostKeyExpectedMismatch
             ? HOST_KEY_EXPECTED_MISMATCH_MESSAGE
-            : entry.hostKeyPendingConfirmation
-              ? pendingConfirmationMessage(entry.hostKeyCandidateFingerprint)
-              : friendlySshError(err);
+            : entry.hostKeyGrantMismatch
+              ? HOST_KEY_GRANT_MISMATCH_MESSAGE
+              : entry.hostKeyExpectedUngranted
+                ? hostKeyExpectedUngrantedMessage(entry.hostKeyCandidateFingerprint)
+                : entry.hostKeyPendingConfirmation
+                  ? pendingConfirmationMessage(entry.hostKeyCandidateFingerprint)
+                  : friendlySshError(err);
       if (!ready) settleErr(err);
       // 主机密钥变更 / 期望指纹不符 / 存储损坏 / 首次信任待批准 = 明确的不可重试错误:
       // 重连只会一遍遍撞同一堵墙(而且每次都把"变了的密钥""被当空的表""未经批准的陌生主机"
       // 当成可接受的),立刻停在 error。
-      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid || entry.hostKeyExpectedMismatch || entry.hostKeyPendingConfirmation) {
+      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid || entry.hostKeyExpectedMismatch || entry.hostKeyGrantMismatch || entry.hostKeyExpectedUngranted || entry.hostKeyPendingConfirmation) {
         entry.state = "error";
         if (!ready) { try { client.end(); } catch { /* best effort */ } }
       } else if (!entry.intentionalClose && isRetryableSshError(err)) {
@@ -549,6 +618,8 @@ export function createAgentRemoteSshManager() {
       hostKeyStoreInvalid: false,
       hostKeyPendingConfirmation: false,
       hostKeyCandidateFingerprint: null,
+      hostKeyExpectedUngranted: false,
+      hostKeyGrantMismatch: false,
       hostKeyExpectedMismatch: false,
     };
     entries.set(entry.id, entry);
@@ -562,10 +633,14 @@ export function createAgentRemoteSshManager() {
           ? HOST_KEY_MISMATCH_MESSAGE
           : entry.hostKeyExpectedMismatch
             ? HOST_KEY_EXPECTED_MISMATCH_MESSAGE
-            : entry.hostKeyPendingConfirmation
-              ? pendingConfirmationMessage(entry.hostKeyCandidateFingerprint)
-              : friendlySshError(e);
-      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid || entry.hostKeyExpectedMismatch || entry.hostKeyPendingConfirmation) {
+            : entry.hostKeyGrantMismatch
+              ? HOST_KEY_GRANT_MISMATCH_MESSAGE
+              : entry.hostKeyExpectedUngranted
+                ? hostKeyExpectedUngrantedMessage(entry.hostKeyCandidateFingerprint)
+                : entry.hostKeyPendingConfirmation
+                  ? pendingConfirmationMessage(entry.hostKeyCandidateFingerprint)
+                  : friendlySshError(e);
+      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid || entry.hostKeyExpectedMismatch || entry.hostKeyGrantMismatch || entry.hostKeyExpectedUngranted || entry.hostKeyPendingConfirmation) {
         entry.state = "error";
       }
       else if (isRetryableSshError(e)) scheduleReconnect(entry);
@@ -908,6 +983,27 @@ export const HOST_KEY_EXPECTED_MISMATCH_MESSAGE =
   "请独立核对服务器控制台显示的主机公钥指纹后，用正确的指纹重试；本工具不会因为一次不符就写入或覆盖信任。";
 
 /**
+ * 【MC-014 / MC-052】宿主授权存在、但作用域或指纹与本次实际不符时的文案。既可能是"授权串了
+ * 主机",也可能是主机换钥/中间人 —— 都拒连且不写 pin。
+ */
+export const HOST_KEY_GRANT_MISMATCH_MESSAGE =
+  "SSH 首次连接被拒：宿主批准的主机信任授权与本次连接的实际指纹(或目标主机)不一致，已拒绝连接且未记录任何信任。" +
+  "可能是目标主机换钥或遭遇中间人攻击;请重新独立核对服务器指纹后再由用户在受信入口批准。";
+
+/**
+ * 【MC-014 / 第 48.4 节】调用方自填 `expected_fingerprint` 但**没有宿主授权**时的文案。
+ * 这是本条目的核心闸门:即便指纹看起来"对得上",后端也无法分辨它是用户真的带外核对过、
+ * 还是模型把自己的候选输出复制了回来 —— 所以一律拒,并指引用户走受信批准入口。
+ */
+export function hostKeyExpectedUngrantedMessage(candidate: string | null): string {
+  const fp = candidate ?? "(未能读取服务器指纹)";
+  return "SSH 首次连接被拒：提供了 expected_fingerprint，但缺少宿主签发的主机信任授权。" +
+    `服务器给出的主机公钥指纹是：${fp}。` +
+    "仅凭连接参数里自填的指纹不能作为批准 —— 无法确认它来自用户的独立核对。请由用户在受信入口" +
+    "(事前授权 / 弹窗核对)确认该指纹后重连;未获宿主批准前不会记录信任，也不发送任何凭据。";
+}
+
+/**
  * 【MC-052】**首次信任待用户批准**的文案。这是本条目核心行为:未知主机在用户独立核对并
  * 批准前**不进入认证**,因此"凭据一个字都没发出去"。文案必须把候选指纹给出来(供用户去
  * 服务器控制台/管理员处核对),并说明批准方式(重连时带 expected_fingerprint)。
@@ -916,9 +1012,9 @@ export function pendingConfirmationMessage(candidate: string | null): string {
   const fp = candidate ?? "(未能读取服务器指纹)";
   return "SSH 首次连接到未知主机，已暂停认证（未发送任何密码/密钥/agent 签名）等待你确认。" +
     `服务器给出的主机公钥指纹是：${fp}。` +
-    "请与服务器的带外渠道（控制台 `ssh-keygen -lf`、管理员）独立核对；确认一致后再以" +
-    " expected_fingerprint 重连，届时才会记录该指纹并允许认证。" +
-    "未核对前本工具不会自动信任这台主机（TOFU 首见自动放行已移除）。";
+    "请与服务器的带外渠道（控制台 `ssh-keygen -lf`、管理员）独立核对；确认一致后需由用户在受信入口" +
+    "（事前授权或弹窗核对）批准该指纹，之后才会记录该指纹并允许认证。" +
+    "仅把本指纹填进 expected_fingerprint 重连不算批准；未获宿主批准前本工具不会信任这台主机。";
 }
 
 /** ssh2 hostVerifier 拿到的原始公钥 Buffer → OpenSSH `SHA256:` 指纹(base64 无填充)。 */
@@ -956,43 +1052,68 @@ export type HostTrustVerdict =
   | "TRUSTED"
   | "PINNED_NEW"
   | "PENDING_CONFIRMATION"
+  | "EXPECTED_UNGRANTED"
   | "MISMATCH"
   | "EXPECTED_MISMATCH"
+  | "GRANT_MISMATCH"
   | "STORE_INVALID";
 
 export type HostTrustDecision =
   | { verdict: "TRUSTED" }
   | { verdict: "PINNED_NEW" }
   | { verdict: "PENDING_CONFIRMATION"; candidate: string }
+  | { verdict: "EXPECTED_UNGRANTED"; candidate: string }
   | { verdict: "MISMATCH"; pinned: string }
   | { verdict: "EXPECTED_MISMATCH"; expected: string }
+  | { verdict: "GRANT_MISMATCH"; granted: string }
   | { verdict: "STORE_INVALID"; error: string };
 
 /**
- * 【MC-052】主机信任的唯一判定入口。**不产生任何副作用**(不读设置以外的 IO、不写 pin)——
+ * 【MC-014 / MC-052】主机信任的唯一判定入口。**不产生任何副作用**(不读设置以外的 IO、不写 pin)——
  * 写入由调用方在 `PINNED_NEW` 分支显式执行。这样"决定"与"授信落盘"分离,审计时能一眼看出
- * 唯一会写信任的路径是 `expectedFingerprint` 事先核对过的首连。
+ * 唯一会写信任的路径是**携带宿主签发授权(grant)**的首连。
+ *
+ * ⚠️【第 48.4 节核心】`expectedFingerprint` **不是**批准凭据 —— 它只是调用方"请把这个候选指纹
+ * 展示给用户核对"的请求。从前它被直接当成批准,于是同一个 Agent 第一次拿到候选、第二次把候选
+ * 原样填回来就完成了永久授信(自复制批准)。现在首连写 pin **必须**有宿主受信 UI / 事前用户
+ * 授权签发的 {@link HostTrustGrant}(见 `grant` 入参);模型自填的 `expectedFingerprint` 与服务器
+ * 实际一致时**仍然拒**(`EXPECTED_UNGRANTED`),因为后端无法分辨"用户真的带外核对过"与"模型复制了
+ * 自己的输出"。
  */
 export function decideHostTrust(input: {
   read: KnownHostsRead;
   hostPort: string;
   actual: string;
+  /** 调用方自填的期望指纹 —— 仅作"请展示给用户核对"的请求,**不单独决定永久授信**。 */
   expectedFingerprint?: string;
+  /** 宿主签发的授权(存在则为本 host:port 的用户批准凭据)。**唯一**能放行首连写 pin 的依据。 */
+  grant?: HostTrustGrant | null;
 }): HostTrustDecision {
-  const { read, hostPort, actual, expectedFingerprint } = input;
+  const { read, hostPort, actual, expectedFingerprint, grant } = input;
   if (read.status === "INVALID") return { verdict: "STORE_INVALID", error: read.error };
   const pinned = read.hosts[hostPort];
   if (pinned !== undefined) {
     // 已有 pin —— 存储的信任优先于连接参数,`expectedFingerprint` 在此不参与(不能凭一次
-    // 连接参数覆盖已记录的历史授信)。
+    // 连接参数覆盖已记录的历史授信)。宿主授权对已 pin 的主机也不改变判定(增量授权只在首连)。
     return sameFingerprint(pinned, actual) ? { verdict: "TRUSTED" } : { verdict: "MISMATCH", pinned };
   }
-  // 无 pin:只有事先核对过指纹的调用方才可放行。
+  // 无 pin:唯一放行路径是**携带宿主签发授权**。授权绑定了 hostPort + 被批准的指纹。
+  if (grant) {
+    if (grant.hostPort !== hostPort) {
+      // 授权的作用域是别的 host:port —— 不能借它信任本机。
+      return { verdict: "GRANT_MISMATCH", granted: grant.fingerprint };
+    }
+    if (sameFingerprint(grant.fingerprint, actual)) return { verdict: "PINNED_NEW" };
+    // 用户批准的指纹与服务器实际不符 —— 拒绝。可能是中间人,或服务器换钥。
+    return { verdict: "GRANT_MISMATCH", granted: grant.fingerprint };
+  }
+  // 无 pin 且无宿主授权:
   if (expectedFingerprint !== undefined) {
-    if (sameFingerprint(expectedFingerprint, actual)) return { verdict: "PINNED_NEW" };
+    // 调用方自填的指纹与实际一致也**不放行** —— 没有宿主授权,它无法证明用户真的核对过。
+    if (sameFingerprint(expectedFingerprint, actual)) return { verdict: "EXPECTED_UNGRANTED", candidate: actual };
     return { verdict: "EXPECTED_MISMATCH", expected: expectedFingerprint };
   }
-  // 无 pin 且未事先授信 → 待用户独立核对批准,暂停认证。
+  // 什么都没给 → 待用户独立核对批准,暂停认证。
   return { verdict: "PENDING_CONFIRMATION", candidate: actual };
 }
 
@@ -1074,6 +1195,139 @@ function writeKnownHost(hostPort: string, fingerprint: string): boolean {
   }
 }
 
+/**
+ * 【MC-014 / MC-052】读出宿主签发的主机信任授权表(`{host:port: HostTrustGrant}`)+ **可判别状态**。
+ *
+ * 与 known-hosts 同一条 fail-closed 原则:损坏/读不出 → `INVALID`(**不是**"没有授权"),
+ * 调用方必须据此拒连,不能把一次存储故障当成"从未授权过(=可重新按首连放行)"。
+ */
+function readHostTrustGrantsDetailed(): KnownHostsRead {
+  let raw: string | null;
+  try {
+    raw = SettingRepo.get(SSH_HOST_TRUST_GRANTS_SETTING_KEY);
+  } catch (err) {
+    return {
+      status: "INVALID",
+      hosts: {},
+      error: `host trust grants 读取失败:${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!raw) return { status: "MISSING", hosts: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (err) {
+    return {
+      status: "INVALID",
+      hosts: {},
+      error: `host trust grants 内容损坏(JSON 解析失败):${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { status: "INVALID", hosts: {}, error: "host trust grants 内容损坏(不是对象)" };
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return { status: "VALID", hosts: out };
+}
+
+const HOST_TRUST_GRANT_VERSION = 1;
+
+/**
+ * 【MC-014 / MC-052】查出某 `host:port` 的宿主签发授权(没有则 null)。
+ *
+ * 存储损坏时返回 null(不抛错)—— 因为 grant 缺失只会走"无授权"分支(仍拒首连),
+ * 不会 fail-open。known-hosts 那边的损坏由 `readKnownHostsDetailed` 单独 fail-closed。
+ */
+export function findHostTrustGrant(hostPort: string): HostTrustGrant | null {
+  const read = readHostTrustGrantsDetailed();
+  if (read.status !== "VALID") return null;
+  const raw = read.hosts[hostPort];
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<HostTrustGrant>;
+    if (
+      parsed && typeof parsed === "object" &&
+      typeof parsed.hostPort === "string" && parsed.hostPort === hostPort &&
+      typeof parsed.fingerprint === "string" && isWellFormedFingerprint(parsed.fingerprint) &&
+      parsed.approvalSource === "user"
+    ) {
+      return {
+        grantId: typeof parsed.grantId === "string" ? parsed.grantId : "",
+        hostPort: parsed.hostPort,
+        fingerprint: parsed.fingerprint,
+        approvalSource: "user",
+        approvedAt: typeof parsed.approvedAt === "number" ? parsed.approvedAt : 0,
+        version: typeof parsed.version === "number" ? parsed.version : HOST_TRUST_GRANT_VERSION,
+      };
+    }
+  } catch { /* 单条损坏 → 视为无授权(不会 fail-open) */ }
+  return null;
+}
+
+/**
+ * 【MC-014 / MC-052】宿主签发一份主机信任授权 —— **这是唯一产出批准的入口**。
+ *
+ * 只有**宿主受信 UI / 事前用户授权**可以调用它:`approvalSource` 只接受 `"user"`
+ * (与 PolicyEngine 同一条规则 —— agent / system 不能自批)。它**刻意不是**一个 agent 工具:
+ * 不在 `agent_ssh_connect` 的入参里,模型无法通过连接参数把候选指纹自复制成批准。
+ *
+ * 写入失败(存储损坏)时返回 null,调用方应把它呈现为"授权未生效"。
+ */
+export function grantHostTrust(input: {
+  hostPort: string;
+  fingerprint: string;
+  approvalSource: "user";
+  approvedAt?: number;
+}): HostTrustGrant | null {
+  if (input.approvalSource !== "user") {
+    log.warn("agentRemoteSsh: 拒绝非用户来源的主机信任授权(agent/system 不能自批)");
+    return null;
+  }
+  if (!isWellFormedFingerprint(input.fingerprint)) {
+    log.warn("agentRemoteSsh: 拒绝畸形指纹的主机信任授权");
+    return null;
+  }
+  const read = readHostTrustGrantsDetailed();
+  if (read.status === "INVALID") {
+    log.warn(`agentRemoteSsh: host trust grants 存储损坏,拒绝写入以免抹掉其他授权:${read.error}`);
+    return null;
+  }
+  const grant: HostTrustGrant = {
+    grantId: `grant_${randomBytes(8).toString("hex")}`,
+    hostPort: input.hostPort,
+    fingerprint: input.fingerprint,
+    approvalSource: "user",
+    approvedAt: input.approvedAt ?? Date.now(),
+    version: HOST_TRUST_GRANT_VERSION,
+  };
+  const table = read.hosts;
+  table[input.hostPort] = JSON.stringify(grant);
+  try {
+    SettingRepo.set(SSH_HOST_TRUST_GRANTS_SETTING_KEY, JSON.stringify(table));
+    return grant;
+  } catch (err) {
+    log.warn(`agentRemoteSsh: host trust grants 写入失败:${(err as Error).message}`);
+    return null;
+  }
+}
+
+/** 【MC-014 / MC-052】撤销某 `host:port` 的授权(用户撤回批准)。撤销后首连回到"待批准"。 */
+export function revokeHostTrustGrant(hostPort: string): boolean {
+  const read = readHostTrustGrantsDetailed();
+  if (read.status === "INVALID") return false;
+  if (!(hostPort in read.hosts)) return true;
+  delete read.hosts[hostPort];
+  try {
+    SettingRepo.set(SSH_HOST_TRUST_GRANTS_SETTING_KEY, JSON.stringify(read.hosts));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const __remoteSshTest = {
   parseJobLogOutput,
   splitExecPid,
@@ -1088,13 +1342,20 @@ export const __remoteSshTest = {
   sameFingerprint,
   decideHostTrust,
   pendingConfirmationMessage,
+  hostKeyExpectedUngrantedMessage,
   HOST_KEY_MISMATCH_MESSAGE,
   HOST_KEY_STORE_INVALID_MESSAGE,
   HOST_KEY_EXPECTED_MISMATCH_MESSAGE,
+  HOST_KEY_GRANT_MISMATCH_MESSAGE,
   readKnownHosts,
   readKnownHostsDetailed,
   writeKnownHost,
+  readHostTrustGrantsDetailed,
+  findHostTrustGrant,
+  grantHostTrust,
+  revokeHostTrustGrant,
   MAX_EXEC_STDOUT_BYTES,
   MAX_EXEC_STDERR_BYTES,
   SSH_KNOWN_HOSTS_SETTING_KEY,
+  SSH_HOST_TRUST_GRANTS_SETTING_KEY,
 };

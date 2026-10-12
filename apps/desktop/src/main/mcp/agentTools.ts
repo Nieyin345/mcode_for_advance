@@ -480,6 +480,11 @@ function formatRemoteConnection(info: RemoteConnectionInfo): string {
     lines.push(`host_key_pending_confirmation: true`);
     lines.push(`host_key_candidate_fingerprint: ${info.hostKeyCandidateFingerprint ?? "(未读到)"}`);
   }
+  // 【MC-014 / 第 48.4 节】自填 expected_fingerprint 但无宿主授权 → 被拒。
+  if (info.hostKeyExpectedUngranted) {
+    lines.push(`host_key_expected_ungranted: true`);
+    lines.push(`host_key_candidate_fingerprint: ${info.hostKeyCandidateFingerprint ?? "(未读到)"}`);
+  }
   return lines.join("\n");
 }
 
@@ -2509,12 +2514,14 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         reconnect_attempt: z.number().int().optional(), retryable: z.boolean().optional(), last_error: z.string().nullable().optional(),
         host_key_pending_confirmation: z.boolean().optional(),
         host_key_candidate_fingerprint: z.string().nullable().optional(),
+        host_key_expected_ungranted: z.boolean().optional(),
       },
       description:
         "连接已由 AI 与用户明确配置的 SSH 目标。必须给出实际 host、username，并且只选 private_key_path / agent_path / password 一种认证。" +
         "工具不扫描密钥、不读取或修改 ~/.ssh/config、不生成密钥、不启动 agent，也不代办 MFA/解锁等交互；需用户操作时先请求用户完成。" +
-        "**首次连接到未知主机**时不会自动信任：本次连接停在待确认状态并返回待独立核对的主机指纹(host_key_candidate_fingerprint)，" +
-        "调用方须让用户在服务器带外核对一致后，用该指纹作为 expected_fingerprint 重连才会记录信任并完成认证；未核对前不发送任何凭据。" +
+        "**首次连接到未知主机**时不会自动信任：本次连接停在待确认状态并返回待独立核对的主机指纹(host_key_candidate_fingerprint)。" +
+        "把该指纹填进 expected_fingerprint 重连**不算批准** —— 缺少宿主(受信 UI/事前用户授权)签发的主机信任授权时一律被拒(host_key_expected_ungranted)，" +
+        "因为仅凭连接参数无法证明用户真的带外核对过。请让用户在受信入口确认该指纹；未获宿主批准前不记录信任、不发送任何凭据。" +
         "网络断开后可以重连同一配置；认证失败不重试。敏感凭据仅用于本机连接，不写入工具返回。",
       inputSchema: {
         host: z.string().min(1).describe("已确认的 SSH 主机/IP，不自动展开 SSH Host 别名"),
@@ -2525,7 +2532,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         agent_path: z.string().min(1).optional().describe("已配置 SSH agent 的 socket 或 Windows 命名管道；由调用者明确指定，不自动探测"),
         passphrase: z.string().optional().describe("指定私钥的口令；需要交互解锁时先由用户完成"),
         expected_fingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/).optional().describe(
-          "首次连接未知主机时**事先独立核对过**的主机公钥指纹(OpenSSH SHA256: 形状)；与服务器实际一致才记录信任并放行认证，不一致则拒绝。自动化连接必须用它，禁止静默信任首次见到的指纹",
+          "调用方希望**展示给用户核对**的候选主机公钥指纹(OpenSSH SHA256: 形状)。它**不是**批准凭据：缺少宿主签发的主机信任授权时一律拒绝，不会因为填了它就记录信任",
         ),
         keepalive_interval_ms: z.number().int().min(5000).max(60000).optional().describe("SSH keepalive 间隔，默认 15000"),
         keepalive_count_max: z.number().int().min(1).max(12).optional().describe("连续多少次 keepalive 无响应才判定断线，默认 4"),
@@ -2550,15 +2557,18 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           readyTimeoutMs: args.ready_timeout_ms,
         });
         const note = info.state === "error"
-          ? (info.hostKeyPendingConfirmation
-            ? "\n首次连接到未知主机：请先让用户独立核对上面的主机指纹，再用 expected_fingerprint 重连；未确认前不会发送任何凭据"
-            : "\n请修正明确的连接配置后重试；认证错误不会自动重连")
+          ? (info.hostKeyExpectedUngranted
+            ? "\n首次连接到未知主机：expected_fingerprint 只是请求，不能代替宿主批准；请让用户在受信入口确认该主机指纹"
+            : info.hostKeyPendingConfirmation
+              ? "\n首次连接到未知主机：请先让用户在受信入口核对并批准上面的主机指纹；未获批准前不会发送任何凭据"
+              : "\n请修正明确的连接配置后重试；认证错误不会自动重连")
           : "";
         return { text: formatRemoteConnection(info) + note, isError: info.state !== "ready", structured: {
           connection_id: info.connectionId, state: info.state, host: info.host, port: info.port,
           username: info.username, reconnect_attempt: info.reconnectAttempt, retryable: info.state === "reconnecting", last_error: info.lastError,
           host_key_pending_confirmation: info.hostKeyPendingConfirmation,
           host_key_candidate_fingerprint: info.hostKeyCandidateFingerprint,
+          host_key_expected_ungranted: info.hostKeyExpectedUngranted,
         } };
 
       }),

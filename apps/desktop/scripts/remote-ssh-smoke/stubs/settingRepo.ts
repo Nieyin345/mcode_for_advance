@@ -64,3 +64,40 @@ export const SettingRepo = {
     store.clear();
   },
 };
+
+/**
+ * `agent_ssh_connect` 的**真正工具 handler** 也要能被本套驱动(台账第 48.4 节要求"在真正
+ * 工具 handler 与可信授权服务两侧承重")。`agentMcpTools` 的 import 图会经
+ * `providers/envPrompt`、`library/*` 拉到这几个 repo —— 无头给不出真库,这里补空实现,
+ * 与 `mcode-admin-smoke/stubs/repositories.ts` 同形(但**不共用**那个文件:规则第 1 条)。
+ *
+ * 关键:**SettingRepo 仍是上面这一个 store** —— handler 与 manager 走同一份设置,
+ * 所以夹具里 `grantHostTrust` 写进去的授权,handler 那条路读得到。
+ */
+export const ProjectRepo = {
+  list(): { id: string; name: string; path: string; archived: boolean }[] {
+    return [];
+  },
+};
+
+export const LibraryRepo = {
+  list(_filter?: unknown): { items: unknown[]; total: number } {
+    return { items: [], total: 0 };
+  },
+};
+
+export const CollectionRepo = {
+  list(): { id: string; name: string; parentId: string | null }[] {
+    return [];
+  },
+};
+
+export const SessionRepo = {
+  get(_id: string): undefined { return undefined; },
+  listByProject(_projectId: string, _opts?: unknown): unknown[] { return []; },
+  listPinned(): unknown[] { return []; },
+};
+
+export const MessageRepo = {
+  listBySession(_sessionId: string): { messages: unknown[] } { return { messages: [] }; },
+};
