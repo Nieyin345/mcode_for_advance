@@ -2,6 +2,8 @@
  * doc-ops-smoke —— 【MC-069】文档编辑的并发一致性:
  *   - Excel `editExcelRange`:两个对**不重叠**单元格的并发编辑,必须**两个都保留**,
  *     或者其中一个明确 `FILE_VERSION_CONFLICT` —— 绝不能「两边都报成功、其中一个被静默吞掉」。
+ *     其中 ★A2 用**两个独立 OS 进程**(node 子进程)并发改同一 Excel,证明互斥已跨进程
+ *     (宿主级文件租约),而不是只在进程内的 Map。
  *   - PDF `writePdf`:同一输出路径的两次并发创建,**只能一个成功**,另一个明确 no-clobber
  *     冲突,且最终 PDF 完整可读(唯一创建者的正文)。
  *   - `expectedSha256`:显式的乐观版本契约,不匹配即 `FILE_VERSION_CONFLICT`。
@@ -12,11 +14,11 @@
  * 夹具都是本机 tmp 下的**无意义文件**,不碰任何用户文档。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { editExcelRange, editDocxXml, writePdf } from "@main/mcp/agentDocumentOps.js";
 
 const root = mkdtempSync(path.join(tmpdir(), "mcode-doc-ops-"));
@@ -52,6 +54,28 @@ const docx = path.join(root, "doc.docx");
 const readCells = (file: string): string =>
   py("from openpyxl import load_workbook;import sys;ws=load_workbook(sys.argv[1]).active;print(str(ws['A1'].value)+'|'+str(ws['B1'].value))", file);
 
+/** 读 A1..D1 四格(跨进程用例的宽读回)。 */
+const readCells4 = (file: string): string =>
+  py("from openpyxl import load_workbook;import sys;ws=load_workbook(sys.argv[1]).active;print('|'.join(str(ws[f'{c}1'].value) for c in 'ABCD'))", file);
+
+/** 起一个**独立 OS 进程**去改同一个 Excel 的某个 range(range.sh 已把 child-writer 打成 mjs)。 */
+const childEntry = process.env.MCODE_DOC_OPS_CHILD_ENTRY ?? "";
+function spawnExcelWriter(file: string, range: string, value: string): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    assert.ok(childEntry && existsSync(childEntry), `缺少 child-writer 入口(应经 run.sh 设置):${childEntry}`);
+    const child = spawn(process.execPath, [childEntry, file, range, value], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", errOut = "";
+    child.stdout.on("data", (d: Buffer) => { out += d.toString("utf8"); });
+    child.stderr.on("data", (d: Buffer) => { errOut += d.toString("utf8"); });
+    child.once("error", reject);
+    child.once("close", () => {
+      const line = out.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "";
+      try { resolve(JSON.parse(line) as { ok: boolean; error?: string }); }
+      catch { resolve({ ok: false, error: `子进程无可解析输出:stdout=${out.trim()} stderr=${errOut.trim()}` }); }
+    });
+  });
+}
+
 try {
   // ══════════ A. Excel:并发编辑不重叠单元格 ══════════
   await test("★ Excel 两个不重叠并发编辑:两份修改都在(或之一明确 FILE_VERSION_CONFLICT),绝不静默丢更新", async () => {
@@ -71,6 +95,40 @@ try {
     const oneConflicted = ok === 1 && conflict === 1;
     assert.ok(bothKept || oneConflicted, `并发丢更新:ok=${ok} conflict=${conflict} cells=${cells}`);
     assert.ok(!(ok === 2 && cells !== "WRITER_A|WRITER_B"), `两边都报成功却丢了修改:${cells}`);
+  });
+
+  // ══════════ A2. ★ 跨进程 E1:多个独立 OS 进程改同一 Excel 的不同单元格 ══════════
+  await test("★ 四个独立 OS 进程改同一 Excel 的不重叠单元格:四份修改必须全部保留(跨进程租约,非仅进程内 Map)", async () => {
+    const cross = path.join(root, "cross-process.xlsx");
+    // 独立的新夹具(别复用已被 A 段改过的 audit.xlsx),与 fixtures.py 同形状:够大以拉宽读-改-写窗口。
+    py([
+      "from openpyxl import Workbook;import sys",
+      "w=Workbook();ws=w.active;ws.title='Audit'",
+      "ws['A1']='ORIGINAL_A';ws['B1']='ORIGINAL_B';ws['C1']='ORIGINAL_C';ws['D1']='ORIGINAL_D'",
+      "for r in range(2,2001):",
+      " for c in range(1,9): ws.cell(r,c).value=r*c",
+      "w.save(sys.argv[1])",
+    ].join("\n"), cross);
+    assert.equal(readCells4(cross), "ORIGINAL_A|ORIGINAL_B|ORIGINAL_C|ORIGINAL_D");
+    // **四个真正独立的 OS 进程**并发:各起一个 node,各自 load_workbook → 改一格 → 写回。
+    // 四路比两路把"各进程在提交前都读到同一旧版"的窗口显著放大 —— 进程内锁挡不住跨进程时,
+    // 多进程各自的读-改-写会互相覆盖,几乎必然丢更新(变异下实测可靠转红)。
+    const results = await Promise.all([
+      spawnExcelWriter(cross, "Audit!A1:A1", "PROC_A"),
+      spawnExcelWriter(cross, "Audit!B1:B1", "PROC_B"),
+      spawnExcelWriter(cross, "Audit!C1:C1", "PROC_C"),
+      spawnExcelWriter(cross, "Audit!D1:D1", "PROC_D"),
+    ]);
+    const okCount = results.filter((r) => r.ok).length;
+    const cells = readCells4(cross);
+    console.log(`    → ok=${okCount}/4 cells=${cells}${results.some((r) => r.error) ? " errs=" + results.map((r) => r.error ?? "-").join(" ; ") : ""}`);
+    // 核心不变量(严格):**四个进程都必须成功,且四格都必须落上**。
+    // 这正是跨进程文件租约的效果 —— 它把四路读-改-写**串行化**,谁都读得到最新版,于是四份全保留。
+    // 撤掉租约(只剩进程内 Map)时,别的进程读-改-写不再被串行:要么各自在提交前读到同一旧版、
+    // 覆盖掉彼此(静默丢更新),要么被提交前版本校验挡下而**丢了本该成功的编辑**(ok<4)——
+    // 无论哪种,这条严格断言都必然转红(变异实测)。
+    assert.equal(okCount, 4, `跨进程未串行化:只有 ${okCount}/4 个进程成功(应四个都成功)。cells=${cells}`);
+    assert.equal(cells, "PROC_A|PROC_B|PROC_C|PROC_D", `跨进程并发丢更新,四格未全部保留:${cells}`);
   });
 
   // 串行基线:两个编辑按顺序提交,必须在

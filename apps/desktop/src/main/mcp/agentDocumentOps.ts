@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
@@ -152,6 +152,103 @@ async function assertUnchangedOrThrow(abs: string, original: Buffer, label: stri
     throw new Error(
       `FILE_VERSION_CONFLICT:${label}在本次编辑期间被其他操作修改,拒绝覆盖:${abs}；请重新读取后再试`,
     );
+  }
+}
+
+/**
+ * 【MC-069 残余】**跨进程文件租约** —— 进程内 `withDocFileLock` 的那张 `Map` 只对本进程
+ * 排队:两个独立 Mcode 进程(或一个 Mcode + 一个外部编辑器)各自从同一版本读取、各自通过
+ * 自己进程内的锁,再分别替换整个文件,照样丢更新(复审 §45.5 的 E2 时序)。这里用磁盘上一个
+ * 独占创建的锁文件把互斥**抬到宿主级**,让两个 OS 进程也串行。
+ *
+ * 原语:`fs.open(lockPath, 'wx')` = `O_CREAT|O_EXCL`,内核保证同路径只有一个能创建成功;
+ * 抢到的把 `{host,pid,token,createdAt}` 写进去并**持有**到本次读-改-写结束。抢不到的读取
+ * 现有锁:若持有者是**本机已死进程**(`process.kill(pid,0)` 抛 `ESRCH`)或锁**过期**
+ * (超过 `STALE_MS` —— 防 pid 复用/跨机),判定为陈旧并回收重抢;否则短抖动重试到超时。
+ *
+ * 这不是"进程内 Map 的复印件":它跨进程、跨编辑器同样有效,落盘事实可被第三方进程观测。
+ */
+const LEASE_STALE_MS = 120_000;
+const LEASE_WAIT_MS = 60_000;
+/** 锁文件已存在但读不出合法 JSON 时,按 mtime 判"正被另一进程创建中(新鲜)→ 退让"还是"写崩了(陈旧)→ 回收"。 */
+const LEASE_FRESH_GRACE_MS = 5_000;
+
+interface LeaseRecord { host: string; pid: number; token: string; createdAt: number; }
+
+function leaseOwnerAlive(rec: LeaseRecord): boolean {
+  if (rec.host !== hostname()) return Date.now() - rec.createdAt < LEASE_STALE_MS;
+  try {
+    process.kill(rec.pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function tryAcquireOsLease(lockPath: string, token: string): Promise<boolean> {
+  const rec: LeaseRecord = { host: hostname(), pid: process.pid, token, createdAt: Date.now() };
+  try {
+    // `wx` = O_CREAT|O_EXCL:同路径只有一个进程能创建成功。**不持有 fd** —— 租约由"文件存在"表示。
+    await fs.writeFile(lockPath, JSON.stringify(rec), { flag: "wx", encoding: "utf8" });
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST") throw err;
+  }
+  // 已存在:读现有锁判断持有者死活。**注意** `wx` 建文件与写入内容之间有一瞬空窗,
+  // 另一进程此刻读到的可能是**空/半截**内容 —— 绝不能就此判"陈旧"去删活锁(那等于没有锁),
+  // 见 doc-ops-smoke 里两独立进程用例暴露的抢锁竞态。
+  const raw = await fs.readFile(lockPath, "utf8").catch(() => "");
+  let existing: LeaseRecord | null = null;
+  try { existing = JSON.parse(raw) as LeaseRecord; } catch { existing = null; }
+  if (existing && Number.isFinite(existing.pid)) {
+    if (!leaseOwnerAlive(existing)) await fs.rm(lockPath, { force: true }).catch(() => undefined);
+    return false;
+  }
+  // 内容还不完整:按 mtime 新鲜度判 —— 新鲜(另一进程正写)→ 退让;陈旧(写到一半崩了)→ 回收。
+  const st = await fs.stat(lockPath).catch(() => null);
+  if (st && Date.now() - st.mtimeMs > LEASE_FRESH_GRACE_MS) {
+    await fs.rm(lockPath, { force: true }).catch(() => undefined);
+  }
+  return false;
+}
+
+async function acquireOsFileLease(lockPath: string, waitMs = LEASE_WAIT_MS): Promise<() => Promise<void>> {
+  const token = randomUUID();
+  const deadline = Date.now() + waitMs;
+  while (true) {
+    if (await tryAcquireOsLease(lockPath, token)) {
+      return async () => {
+        // 只删**本 token 持有**的那份锁 —— 别把回收后又抢到锁的第三方误删。
+        const raw = await fs.readFile(lockPath, "utf8").catch(() => "");
+        try {
+          if ((JSON.parse(raw) as LeaseRecord).token === token) await fs.rm(lockPath, { force: true });
+        } catch { /* 已被回收/替换:不动 */ }
+      };
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `FILE_VERSION_CONFLICT:文件正被另一个进程编辑(跨进程文件租约未在 ${waitMs}ms 内取得),拒绝并发覆盖:${lockPath}；请稍后重试`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 30 + Math.floor(Math.random() * 70)));
+  }
+}
+
+/**
+ * 文档读-改-写的**统一跨进程事务入口**:先把互斥抬到宿主级(磁盘锁文件),再叠加本进程的
+ * 串行 `withDocFileLock`,锁内才是调用方的读-改-写。两级都要:磁盘租约挡**别的进程**,
+ * 进程内 Map 挡**同进程内的并发 async**(避免同一进程自己和自己抢磁盘锁、白等)。
+ */
+export async function withDocumentFileLease<T>(file: string, action: (real: string) => Promise<T>): Promise<T> {
+  const resolved = path.resolve(file);
+  const real = await fs.realpath(resolved).catch(() => resolved);
+  const lockPath = `${real}.mcode-lock`;
+  const release = await acquireOsFileLease(lockPath);
+  try {
+    return await withDocFileLock(real, action);
+  } finally {
+    await release().catch(() => undefined);
   }
 }
 
@@ -339,10 +436,10 @@ export async function editExcelRange(input: {
   const abs = path.resolve(input.path);
   const tmp = `${abs}.mcode-${randomUUID()}.tmp${path.extname(abs)}`;
   try {
-    // 【MC-069】同一条物理文件的读-改-写按真实路径**串行**(与文本编辑共用一份锁),
-    // 并在提交前做乐观版本校验:两个「读旧版→各自写全新文件」的并发里,后者必被挡下,
-    // 而不是两边都报成功、其中一个的修改被静默吞掉。
-    return await withDocFileLock(abs, async (real) => {
+    // 【MC-069】同一条物理文件的读-改-写既走**跨进程文件租约**(withDocumentFileLease —— 两个
+    // 独立 Mcode 进程也串行),又在提交前做乐观版本校验:两个「读旧版→各自写全新文件」的并发里,
+    // 后者必被挡下,而不是两边都报成功、其中一个的修改被静默吞掉。
+    return await withDocumentFileLease(abs, async (real) => {
       const original = await fs.readFile(real); // 锁内读取的版本 = 提交时要校验的版本
       // 【MC-069】显式版本契约:调用方带上来就按它校验(比"锁内读的那版"更强 —— 覆盖
       // 「读文件→隔了一会儿→再编辑」之间的外部变更)。
@@ -443,9 +540,9 @@ export async function editDocxXml(input: {
   const payload = tempPath(".json");
   const tmp = `${abs}.mcode-${randomUUID()}.tmp.docx`;
   try {
-    // 【MC-069】与 Excel 同款:同一物理文件串行 + 提交前乐观版本校验,避免「两份完整快照
+    // 【MC-069】与 Excel 同款:跨进程文件租约 + 提交前乐观版本校验,避免「两份完整快照
     // 互相覆盖、后到者静默吞掉先到者的修改」。
-    return await withDocFileLock(abs, async (real) => {
+    return await withDocumentFileLease(abs, async (real) => {
       const original = await fs.readFile(real);
       await fs.writeFile(payload, JSON.stringify({ old: input.oldString, new: input.newString }), "utf8");
       const script = [

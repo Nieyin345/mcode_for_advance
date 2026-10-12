@@ -16,4 +16,11 @@ if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; dependencies must b
   --tsconfig=tsconfig.json \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
-node "$OUT/smoke.mjs"
+# 【MC-069 残余】跨进程 E1 夹具:另打一份**独立的子进程入口**,由 smoke 用
+# `spawn(node, [$OUT/child-writer.mjs, ...])` 各起一个真 OS 进程并发改同一 Excel。
+"$ESBUILD" scripts/doc-ops-smoke/child-writer.ts \
+  --bundle --platform=node --format=esm \
+  --tsconfig=tsconfig.json \
+  --outfile="$OUT/child-writer.mjs" --log-level=error
+
+MCODE_DOC_OPS_CHILD_ENTRY="$OUT/child-writer.mjs" node "$OUT/smoke.mjs"
