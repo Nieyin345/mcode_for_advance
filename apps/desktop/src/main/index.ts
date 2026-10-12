@@ -31,6 +31,7 @@ import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
 import { setOperationLedger } from "@main/appControl/operations.js";
 import { assembleGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { assembleSceneRuntime } from "@main/orchestration/sceneTaskRuntime.js";
 import { DurableOperationLedger } from "@main/store/operationLedger.js";
 import { initUpdater } from "@main/updater.js";
 import { ensureShippedInitializersSeeded } from "@main/projectInit/service.js";
@@ -202,6 +203,11 @@ app.whenReady().then(async () => {
     // 装配点是可注入 dataRoot 的纯函数,这里只传真实的 `dataRoot()`。撤销 / 过期随文件
     // 跨重启生效。装上之后不回退 —— 静默降级会让「授权已持久」变成假象。
     assembleGrantStore(dataRoot());
+    // **场景任务注册表(ARC-013 步②)** —— 启动时装上,统一走 `getSceneRegistry()` 这个
+    // 单例读取口(各模块不再各 new 一份)。取消走 `cancelSceneTask()` / `sceneCancelReport()`,
+    // 握着不可中断外部动作(git push / SSH)的任务取消时如实报 `uncertain`,绝不谎称已取消。
+    // 此刻是**进程内内存版**(纯逻辑,无持久化);SceneTask 落 DB 与重启恢复是后续切片。
+    assembleSceneRuntime();
     // 扩展桥的配对令牌持久化到 settings 表 —— 必须跨重启稳定，否则 mcode 每次
     // 启动都换一个令牌，浏览器里的扩展会静默掉线（用户只会看到"未连接"而不知道
     // 为什么）。注入点必须在这儿：桥模块本身不能碰 db.ts，那会把 electron 拉进

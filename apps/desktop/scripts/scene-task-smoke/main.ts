@@ -38,6 +38,16 @@ import {
   UNKNOWN_TOKENS_UPPER_BOUND,
   isTerminalState,
 } from "@main/orchestration/sceneTaskRegistry.js";
+import {
+  assembleSceneRuntime,
+  cancelSceneTask,
+  getSceneRegistry,
+  markSceneExternalAction,
+  sceneCancelReport,
+  setSceneRuntime,
+} from "@main/orchestration/sceneTaskRuntime.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { TaskInvocation } from "@contracts/sceneTask.js";
 import { resolveConfigBinding, staleBindings } from "@contracts/configBinding.js";
 
@@ -634,6 +644,88 @@ console.log("\nMC-080 预算账户:重复创建拒绝、跨场景冲突、负数
   check("★ PINNED 缺 pinnedHash → 抛错(不许静默退化成 LIVE)", threw);
   // staleBindings 只挑出落后项。
   eq("staleBindings 只挑落后项", staleBindings([r1, r2, r3]).map((x) => x.assetId).join(","), "p1");
+}
+
+/* ─────────────────── 14. ARC-013 步②:取消的 uncertain 接到真实调用端 ───────────────────
+ *
+ * 上面 §6 钉的是**纯核心**的取消诚实性(registry 自己会落 uncertain)。本段钉的是
+ * **调用端**(`sceneTaskRuntime`)—— 那才是「真实取消入口」:它拿 registry 的 CancelOutcome
+ * 如实报出来,**绝不把 uncertain 静默吞成「已取消」**。装配点接进启动路径(与 GrantStore
+ * 的装配切片同形),全仓此前**没有一处**生产代码消费这个 registry。
+ */
+console.log("\nARC-013 步②:场景任务运行期入口 —— 装配 + 诚实的取消报告");
+
+{
+  // 装配前:读取口已给到一个可用的内存单例(不会 undefined 崩)。
+  setSceneRuntime(null);
+  const before = getSceneRegistry();
+  check("装配前:getSceneRegistry() 已给到一个可用单例(内存版)", before instanceof SceneTaskRegistry, typeof before);
+
+  // 真装配:单例换成装配出来的那一个,装配点可注入时钟(无头可复现)。
+  const assembled = assembleSceneRuntime();
+  eq("★ 装配后:getSceneRegistry() 拿到的是同一个实例(接线真的接上了)", getSceneRegistry() === assembled, true);
+
+  // 建一条任务并标记它**握着不可中断外部动作**(模拟 git push / SSH 在途)—— 宿主标记口。
+  const inv1: TaskInvocation = {
+    sceneId: "s_wire", taskId: "t_push", parentTaskId: null, sessionId: "sess_1",
+    originAgentId: "host", providerId: "claude-sdk", triggerOrigin: "scene",
+    allowedCapabilities: ["fs"], budgetAccountId: "acct_1", maxFanout: 3, maxDepth: 3, deadline: null,
+  };
+  const created = getSceneRegistry().createRootTask(inv1);
+  check("装配后的单例能建根任务", created.ok, created);
+  const markedRes = markSceneExternalAction("t_push", true);
+  check("宿主经运行期入口标记外部动作在途", markedRes.ok, markedRes);
+
+  // ★ 核心判据:外部动作在途时取消 → 报告**如实**把它记为 uncertain,且**不是**干净的全停。
+  const res = cancelSceneTask("t_push");
+  check("取消经运行期入口成功返回", res.ok, res);
+  if (res.ok) {
+    const report = sceneCancelReport(res.value);
+    eq("★ 握着外部动作的任务进 uncertain(不谎报 cancelled)", report.uncertain.join(","), "t_push");
+    eq("★ 确定停住集合为空(它没被干净停住)", report.cancelled.join(","), "");
+    eq("★ 报告不声称干净全停(cleanStop=false)", report.cleanStop, false);
+    check("★ 报告把 uncertain 讲出来(不静默吞掉)", /t_push/.test(report.message) && /核对|不确定/.test(report.message), report.message);
+  }
+  eq("任务终态 = uncertain", getSceneRegistry().getTask("t_push")?.state, "uncertain");
+
+  // 对照:纯本地任务取消 → 干净全停(修复不能把正常路径也报成 uncertain)。
+  setSceneRuntime(null);
+  const reg2 = assembleSceneRuntime();
+  reg2.createRootTask({ ...inv1, taskId: "t_local" });
+  const res2 = cancelSceneTask("t_local");
+  check("纯本地任务取消成功", res2.ok, res2);
+  if (res2.ok) {
+    const report2 = sceneCancelReport(res2.value);
+    eq("纯本地任务 → cancelled", report2.cancelled.join(","), "t_local");
+    eq("纯本地任务 → uncertain 为空", report2.uncertain.join(","), "");
+    eq("纯本地任务 → cleanStop=true", report2.cleanStop, true);
+  }
+
+  // 取消一个不存在的任务:tid 如实拒绝结构化返回(不静默当成功)。
+  const missing = cancelSceneTask("t_nope");
+  check("取消不存在的任务 → 结构化拒绝(不静默当成功)", !missing.ok, missing);
+
+  // 复位口:回到全新内存版(用例间隔离)。
+  setSceneRuntime(null);
+  eq("复位:setSceneRuntime(null) 后是新单例", getSceneRegistry() === assembled, false);
+}
+
+/* ─────────────────── 15. 运行期入口不 import electron / 单例唯一 ─────────────────── */
+{
+  const raw = readFileSync(join(process.cwd(), "src/main/orchestration/sceneTaskRuntime.ts"), "utf8");
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check("★ 运行期入口不 import electron(无头可 bundle)", !/from\s+"electron/.test(code));
+  check(
+    "★ 运行期入口不 import 存储层 / RuntimeManager(纯运行期,无副作用)",
+    !/from\s+"[^"]*(@main\/store|RuntimeManager|sql\.js)/.test(code),
+  );
+  const ctorSites = [...code.matchAll(/new SceneTaskRegistry\(/g)].length;
+  check("★ new SceneTaskRegistry 只出现在装配/复位默认上", ctorSites === 2, ctorSites);
+  // 真实调用端的落点:启动路径装配(index.ts)引用 assembleSceneRuntime。**先剥注释**,
+  // 否则一句被注释掉的调用也能骗过正则 —— 那正是「没接线却显示已接线」的假绿。
+  const idx = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8");
+  const idxCode = idx.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check("★ 启动路径**真的**装配了场景任务运行期入口(真实调用端,不是注释)", /^\s*assembleSceneRuntime\(\);/m.test(idxCode));
 }
 
 /* ─────────────────── 收尾 ─────────────────── */
