@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { IPC } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
-import { getDb, persistNowOrThrow } from "@main/store/db.js";
+import { getDb, commitNow } from "@main/store/db.js";
+import { isDurable, type CommitResult } from "@contracts/commit";
 import { getMainWindow } from "@main/window.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { log } from "@main/lib/logger.js";
@@ -86,26 +87,41 @@ async function writeImportBackup(dir: string, content: string): Promise<string> 
   throw new Error("无法生成唯一的备份文件名");
 }
 
-/** 把一批设置**整体**写进库并返回被改动的键(在同一事务里完成,见下)。
+/** 导入整批写入的结构化结果(ARC-005)。
+ *
+ *  成功与失败不再是「返回键 / 抛错」两态 —— durable 提交的结果、以及**内存补偿有没有成**
+ *  是两件不同事实:`commit` 非 DURABLE 时,若内存恢复成功,库与磁盘都没留半套新值;若恢复
+ *  自身也抛了,内存里可能仍握着导入的新值(进程还读得到,重启才回到旧值)。后者绝不是
+ *  「当前设置未改动」,调用方必须把这句话说清楚,不能拿它骗用户。 */
+type ApplyImportOutcome =
+  | { ok: true; changedKeys: string[] }
+  | { ok: false; commit: CommitResult; compensation: "rolled-back" | "rollback-failed" };
+
+/** 把一批设置**整体**写进库,并结构化地交出这次提交的结果(见下)。
  *
  *  MC-025:从前是 `for { SettingRepo.set(k,v); broadcast…(k,v) }` —— 每项各自
  *  `persist()`,第 N 项抛错时前 N-1 项已落库、已广播,导入留下"半套新值 + 失效状态"。
  *  这里把**全部写入收进一个事务**:任一项抛错就 ROLLBACK,库回到导入前(零部分写入);
- *  提交成功才落盘、才返回。广播交给调用方在提交之后统一发(见 handler)。
+ *  提交成功才落盘。广播交给调用方在提交之后统一发(见 handler)。
  *
  *  复用 `SettingRepo.set` 同一句 upsert —— 不另造一套写库逻辑(硬规矩 2)。
  *
  *  【MC-029】`deleteKeys`(恢复模式)在同一事务里一并删 —— 只删**可迁移**键(由调用方用
- *  `restoreKeysToDelete` 算好),让"完整恢复"真的回到导出那一刻,而敏感/本机键绝不误删。 */
+ *  `restoreKeysToDelete` 算好),让"完整恢复"真的回到导出那一刻,而敏感/本机键绝不误删。
+ *
+ *  【ARC-005】落盘走 {@link commitNow} 的**结构化结果**(与 `@contracts/commit` 同一份判据),
+ *  而不是 `persistNowOrThrow` 的「失败即抛」:这样本函数能区分「写盘没成、内存已恢复」
+ *  与「写盘没成、内存补偿也失败」。返回 `rollback-failed` 时上层**不许**说「已整体回滚」——
+ *  内存里可能还留着新值(MC-053 同款:改了内存、没落盘、还对外报成功/全回滚)。 */
 function applySettingsImport(
   entries: ReadonlyArray<readonly [string, string]>,
   deleteKeys: ReadonlyArray<string> = [],
-): string[] {
+): ApplyImportOutcome {
   const db = getDb();
   // 【MC-025 第二轮】durable 落盘失败时,COMMIT 已经在**内存**里生效了 —— 只抛错、不广播
   // 挡不住同一应用里的其它读者(以及后续别的持久化动作)看到这批"失败"的新值。所以先在
   // 改动前把**受影响的键**的旧值读下来,落盘失败时用它把内存 DB 恢复原状(连同 deleteKeys
-  // 的旧行),再抛 —— 内存与磁盘都不留半套新值。
+  // 的旧行),再返回 —— 内存与磁盘都不留半套新值。
   const touched = [...entries.map(([k]) => k), ...deleteKeys];
   const before = new Map<string, string>();
   for (const k of touched) {
@@ -126,36 +142,41 @@ function applySettingsImport(
     db.run("COMMIT");
   } catch (err) {
     db.run("ROLLBACK");
-    throw err;
+    throw err; // 写入事务本身失败 → 内存已被 ROLLBACK 复位,「已整体回滚」此刻是真话。
   }
   // 【MC-025】提交之后必须**同步确认 durable** 才返回 —— 从前这里调 `persist()`(异步调度),
   // "COMMIT 成功"就被当成"导入成功"并把新值广播出去,而磁盘可能还没落定(甚至终将失败):
-  // 用户看到部分/全部新值、多端广播了新值,重启后却没了。`persistNowOrThrow` 失败即抛。
+  // 用户看到部分/全部新值、多端广播了新值,重启后却没了。
+  const commit = commitNow();
+  if (isDurable(commit)) return { ok: true, changedKeys: entries.map(([k]) => k) };
+  // 【MC-025 第二轮 / ARC-005】落盘失败 → **同步恢复内存 DB** 到导入前的值。恢复本身也可能
+  // 失败(内存此刻可能是坏的 / 触发器等) —— 那一次失败不能被静默吞掉:它决定上层能否说
+  // 「当前设置未改动」。恢复成功才报 rolled-back;抛了就报 rollback-failed,把真事实交给调用方。
+  let compensation: "rolled-back" | "rollback-failed" = "rolled-back";
   try {
-    persistNowOrThrow();
-  } catch (err) {
-    // 【MC-025 第二轮】落盘失败 → **同步恢复内存 DB** 到导入前的值,让失败真的"整体回滚"
-    // (内存 + 磁盘一致),而不是"函数报失败、同一进程仍读到新值"。恢复本身不再 persist
-    // (磁盘此刻就是坏的;内存归位才是这里的目的)。
-    try {
-      db.run("BEGIN");
-      for (const k of touched) {
-        if (before.has(k)) {
-          db.run(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [k, before.get(k)!],
-          );
-        } else {
-          db.run("DELETE FROM settings WHERE key = ?", [k]);
-        }
+    db.run("BEGIN");
+    for (const k of touched) {
+      if (before.has(k)) {
+        db.run(
+          "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          [k, before.get(k)!],
+        );
+      } else {
+        db.run("DELETE FROM settings WHERE key = ?", [k]);
       }
-      db.run("COMMIT");
-    } catch {
-      // 恢复也失败:内存可能仍是新值 —— 让上层拿到原始 durable 错误(不掩盖根因)。
     }
-    throw err;
+    db.run("COMMIT");
+  } catch {
+    // 恢复失败:内存可能仍是新值 —— 如实标记,别让上层拿"已整体回滚"骗用户。
+    // 尽力撤掉可能残留的打开事务,避免污染后续写入。
+    try {
+      db.run("ROLLBACK");
+    } catch {
+      /* 没有打开的事务:忽略 */
+    }
+    compensation = "rollback-failed";
   }
-  return entries.map(([k]) => k);
+  return { ok: false, commit, compensation };
 }
 
 export function registerSettingsTransferHandlers(ipc: IpcMain): void {
@@ -238,8 +259,25 @@ export function registerSettingsTransferHandlers(ipc: IpcMain): void {
           : [];
       let changedKeys: string[];
       try {
-        changedKeys = applySettingsImport(parsed.entries, deleteKeys);
+        const applied = applySettingsImport(parsed.entries, deleteKeys);
+        if (!applied.ok) {
+          // 【ARC-005】durable 落盘失败:能不能说「已整体回滚」**取决于内存补偿成没成** ——
+          // 补偿成功才敢说"当前设置未改动";补偿自己也失败时,内存里可能还留着这批新值
+          // (同一进程仍读得到,重启才回到旧值),那就绝不能谎称"未改动"。
+          const why = applied.commit.reason ?? "sqlite commit failed";
+          if (applied.compensation === "rolled-back") {
+            log.warn(`settings.import: write not durable, memory rolled back: ${why}`);
+            return { ok: false as const, error: `写入设置失败,已整体回滚(当前设置未改动):${why}` };
+          }
+          log.warn(`settings.import: write not durable AND memory rollback failed: ${why}`);
+          return {
+            ok: false as const,
+            error: `写入设置失败,且内存回滚也失败 —— 当前设置可能仍停在导入的新值上(重启动后会回到旧值),请重启应用确认后再试:${why}`,
+          };
+        }
+        changedKeys = applied.changedKeys;
       } catch (err) {
+        // 写入事务本身失败 → 已 ROLLBACK,此刻"已整体回滚"是真话。
         log.warn(`settings.import: write failed, rolled back: ${(err as Error).message}`);
         return { ok: false as const, error: `写入设置失败,已整体回滚(当前设置未改动):${(err as Error).message}` };
       }

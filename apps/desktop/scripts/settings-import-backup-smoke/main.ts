@@ -476,6 +476,72 @@ console.log("\nMC-025:提交之后的 durable 落盘失败 → 报失败、不�
   );
 }
 
+/* ──────────────── ARC-005:durable 失败且**内存补偿也失败**时不得谎称「已整体回滚」 ────────────────
+ *
+ * 上面那条 §MC-025 断的是「durable 失败 → 内存补偿**成功** → 旧值仍在」。可补偿本身也可能失败:
+ * `applySettingsImport` 里恢复内存 DB 的那段是个 `try/catch {}`,恢复一抛就**静默吞掉**、
+ * 照旧把**原始 durable 错误**抛给上层。于是上层那句「写入设置失败,已整体回滚(当前设置未改动)」
+ * 就成了**假话** —— 内存里其实还留着一整批导入的新值(同一进程的其它读者立刻读到,后续别的
+ * 持久化动作还可能把它写回磁盘),而用户被明确告知「当前设置未改动」。
+ *
+ * 这正是 ARC-005 的根因:「SQL 内存提交成功 / 磁盘稳定保存 / 外部命令已执行是三种不同事实 ——
+ * 把第二种归进成功就是假成功,归进失败又抹掉『进程还握着它』的真事实」,以及它写死的纪律
+ * **「不以 false = 完全回滚欺骗调用者」**。判据立在**用户看到的那行字**上(错误里有没有那句
+ * 「已整体回滚/未改动」),再拿内存的真实值作证:那句话若为真,内存就该是旧值;而它是新值。
+ *
+ * 注入方式与 §MC-025 同源:`.persist-` 排他创建失败让 durable 那步必抛;再用一条只在
+ * **恢复旧值**时才命中的 BEFORE INSERT 触发器(`WHEN NEW.value = 'PRE'`)让**补偿这一次写**
+ * 必抛 —— 导入那一次写的是 'POST',不命中,所以断的确实是「补偿失败」而不是「导入整体坏了」。 */
+
+console.log("\nARC-005:durable 失败 + 内存补偿也失败 → 错误不得谎称『已整体回滚/当前设置未改动』");
+
+{
+  resetSent();
+  clearBackups();
+  SettingRepo.set("ui.locale", "PRE"); // 补偿要恢复的那个旧值
+  const db = getDb();
+  db.run("DROP TRIGGER IF EXISTS arc005_comp_fail");
+  // 只在把 ui.locale 恢复成 PRE(**补偿那一步**)时 ABORT;导入写的是 POST,不命中。
+  db.run(
+    "CREATE TRIGGER arc005_comp_fail BEFORE INSERT ON settings " +
+      "WHEN NEW.key = 'ui.locale' AND NEW.value = 'PRE' " +
+      "BEGIN SELECT RAISE(ABORT, 'ARC005 compensation injected failure'); END;",
+  );
+
+  let res: ImportResult;
+  failNextExclusiveCreate(); // durable 落盘那步必抛 → 进补偿分支
+  try {
+    res = await runImport(makeImportFileMulti({ "ui.locale": "POST" }, "comp-fail.json"));
+  } finally {
+    disarmExclusiveCreate();
+    db.run("DROP TRIGGER IF EXISTS arc005_comp_fail");
+    // 补偿事务可能被 ABORT 留在打开态;收尾把它清掉,别污染后续(本段已是最后一节)。
+    try {
+      db.run("ROLLBACK");
+    } catch {
+      /* 没有打开的事务:忽略 */
+    }
+  }
+
+  eq("durable 失败时导入报**失败**", res.ok, false);
+  // ── 承重断言(判据立在用户看到的那行字)──
+  check(
+    "★ 补偿失败时错误**不得**谎称『已整体回滚 / 当前设置未改动』",
+    typeof res.error === "string" && !/整体回滚|未改动/.test(res.error),
+    res,
+  );
+  check(
+    "★ 补偿失败时错误明说内存可能已变 / 无法回滚(重启才回到旧值)",
+    typeof res.error === "string" && /内存|无法回滚|可能已变|重启/.test(res.error),
+    res,
+  );
+  // ── 那句「未改动」若为真,内存就该是 PRE;可它是 POST —— 证明旧写法在撒谎 ──
+  eq("★ 内存里确实仍是导入的新值 POST(补偿没成,memory 未回滚)", SettingRepo.get("ui.locale"), "POST");
+  // 修正后的正控地基:清掉残留状态,确认库还能正常读写(没被这段搞坏)。
+  SettingRepo.set("ui.locale", "AFTER");
+  eq("本段收尾后库仍可正常读写", SettingRepo.get("ui.locale"), "AFTER");
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });
