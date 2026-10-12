@@ -12,7 +12,7 @@
  *
  * Run: scripts/budget-guard-smoke/run.sh
  */
-import { budgetViolations, parseFallbackModels, parseTurnBudget, parseTurnBudgetDetailed, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
+import { budgetCommitWorthBackingUp, budgetStatusWorthBackingUp, budgetViolations, parseFallbackModels, parseTurnBudget, parseTurnBudgetDetailed, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
 
 let failures = 0;
 let checks = 0;
@@ -198,6 +198,27 @@ console.log("\nparseTurnBudgetDetailed(三态 + last-good 恢复,坏配置不静
   // 正控:只要有一项有效上限,其余非法字段仍使整体 INVALID(不挑好的用、悄悄放宽)。
   const mixed = parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxUsd: 1, maxTurns: 0.2 }));
   eq("★ 有合法 maxUsd 但 maxTurns 非法 → 整体 INVALID(不挑好的用)", mixed.status, "INVALID");
+}
+
+/* ───────── 【MC-083 残余】保存成功那一刻就该刷新 last-good,不是等下一轮 ───────── */
+
+console.log("\nbudgetCommitWorthBackingUp(保存事务要不要顺带刷 last-good)");
+
+{
+  // 够格:启用且有有效上限(VALID)、用户明确关闭(DISABLED)。
+  eq("启用+有效上限 → 够格刷备份", budgetCommitWorthBackingUp(JSON.stringify({ enabled: true, maxUsd: 1 })), true);
+  eq("明确关闭 → 够格刷备份(空预算也是一次合法提交)", budgetCommitWorthBackingUp(JSON.stringify({ enabled: false })), true);
+  // 不够格:空值(MISSING)、坏值(INVALID)都不许覆盖上一份好的备份。
+  eq("空值 → 不刷(别把备份清成没设过)", budgetCommitWorthBackingUp(null), false);
+  eq("空串 → 不刷", budgetCommitWorthBackingUp(""), false);
+  eq("坏 JSON → 不刷(坏提交不许盖好的备份)", budgetCommitWorthBackingUp("{ 坏了"), false);
+  eq("启用却无有效上限 → 不刷(这份提交本身就不合资格)", budgetCommitWorthBackingUp(JSON.stringify({ enabled: true })), false);
+  eq("enabled 显式非布尔 → 不刷", budgetCommitWorthBackingUp(JSON.stringify({ enabled: "off", maxUsd: 1 })), false);
+  // status 版判据与原文版一致。
+  eq("status 版:VALID 够格", budgetStatusWorthBackingUp("VALID"), true);
+  eq("status 版:DISABLED 够格", budgetStatusWorthBackingUp("DISABLED"), true);
+  eq("status 版:MISSING 不够格", budgetStatusWorthBackingUp("MISSING"), false);
+  eq("status 版:INVALID 不够格", budgetStatusWorthBackingUp("INVALID"), false);
 }
 
 // 消费端接线:RuntimeManager 必须据 status 决定"拒绝自动执行",而不是把 INVALID 当合法不限制。

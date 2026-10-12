@@ -1411,6 +1411,33 @@ export const SettingRepo = {
     persist();
   },
 
+  /** 一次 upsert 多个键 —— **同一事务 + 只 `persist()` 一次**(它重写整个库文件)。
+   *
+   *  【MC-083 残余】给"主键 + 它的 `.last-good` 备份必须同时落盘"这类成对写用:
+   *  分两个 `set` 会各 `persist()` 一次,中间断电/中断就可能只写进主键、备份还留在旧值
+   *  (`SettingRepo.set` 一次点击即整库重写,这里要的是"要么都写、要么都不写")。
+   *  写入收进一个事务:任一项抛错就 ROLLBACK,不留半套;提交成功才落盘、才返回。
+   *  与 `applySettingsImport`(settingsTransfer)同一取舍——那边管导入的整批回滚,这里
+   *  只管少而确定的成对写(不另造一套写库逻辑:同款 upsert 语句)。 */
+  setMany(entries: ReadonlyArray<readonly [string, string]>): void {
+    if (entries.length === 0) return;
+    const db = getDb();
+    db.run("BEGIN");
+    try {
+      for (const [key, value] of entries) {
+        db.run(
+          "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          [v(key), v(value)],
+        );
+      }
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw err;
+    }
+    persist();
+  },
+
   /** 按前缀列 key。给"一族按 id 分开存的小状态"清理用(见 `automationEventOrigin.ts`
    *  的 `automation.eventChain.<sessionId>`:每次运行写一行,从前没有任何一处删得掉)。 */
   keysWithPrefix(prefix: string): string[] {

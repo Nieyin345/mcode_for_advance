@@ -168,6 +168,25 @@ export function parseTurnBudgetDetailed(raw: string | null | undefined, backupRa
 }
 
 /**
+ * 【MC-083 残余】一份轮预算读结果的 status 够不够格充当下一次的 last-good 备份。
+ *
+ * 只有 **VALID**(启用且至少一项有效上限)与 **DISABLED**(用户明确关闭)才算一次合法提交;
+ * MISSING(空值)**不**刷(免得把备份清成"没设过")、INVALID(有值但坏)**更不**刷 —— 否则
+ * 一份坏提交会覆盖掉上一份好的备份。
+ *
+ * 保存事务(见 `ipc/claude.ts` 的 `runtime.turnBudget` 分支)与 `RuntimeManager.sendTurnBound`
+ * 里那段"读到合法值就补刷 last-good"的兜底刷新**共用这一条判据**(硬规矩 2:同一判据只有一份)。
+ */
+export function budgetStatusWorthBackingUp(status: TurnBudgetStatus): boolean {
+  return status === "VALID" || status === "DISABLED";
+}
+
+/** 给定一份原始预算原文,判断它是否是一次"够格"的提交(见 {@link budgetStatusWorthBackingUp})。 */
+export function budgetCommitWorthBackingUp(raw: string | null | undefined): boolean {
+  return budgetStatusWorthBackingUp(parseTurnBudgetDetailed(raw, null).status);
+}
+
+/**
  * 解析失败回退链偏好（JSON 字符串数组，元素形态同 `session.model`）。坏
  * JSON / 非数组 / 没有合法字符串 → 空链（= 不回退）。元素去首尾空白。
  */

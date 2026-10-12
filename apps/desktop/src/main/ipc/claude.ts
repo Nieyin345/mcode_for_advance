@@ -24,6 +24,7 @@ import {
   SetSettingSchema,
   GetManySettingsSchema,
   THEME_STYLE_SETTING_KEY,
+  TURN_BUDGET_SETTING_KEY,
   workflowIdFromInput,
   ClaudeSubagentsSaveSchema,
   ProviderHealthCheckSchema,
@@ -44,6 +45,7 @@ import { log } from "@main/lib/logger.js";
 import { forkSession as forkSessionIntoNew } from "@main/lib/sessionFork.js";
 import { broadcastSessionChanged, broadcastSettingChanged } from "@main/lib/sessionSync.js";
 import { isSyncedSettingKey } from "@contracts/ipc/settingsSync";
+import { budgetCommitWorthBackingUp, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
 import { createOrReuseSession } from "@main/lib/sessionStart.js";
 import {
   cancelWorkflowRun,
@@ -618,7 +620,21 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SETTING_SET, (_evt, raw) => {
     const input = SetSettingSchema.parse(raw);
     if (input.key === CUSTOM_UI_SETTING_KEY) validateCustomUiWrite(input.value);
-    SettingRepo.set(input.key, input.value);
+    // 【MC-083 残余】轮预算这条键:主值 + `.last-good` 备份必须**同一次事务**里一起落盘。
+    // 从前 last-good 只在**下一次** sendTurn 读到合法主值时补刷 —— 用户把额度从 A 改成 B
+    // 并保存成功,却在下一轮开始前主键就坏了(写入中断/外部改),恢复出来的会是**旧额度 A**
+    // 而非刚确认的 B。这里把"保存成功"本身当成权威提交点:一次 `setMany` 同时写主键与备份,
+    // 要么都写、要么都不写。仅当这次提交**够格**(VALID 启用限额 / DISABLED 明确关闭)才刷备份;
+    // 空值(MISSING)与坏值(INVALID)不刷,免得一份坏提交盖掉上一份好的。
+    // `RuntimeManager.sendTurnBound` 里那段"读到合法值就补刷"的兜底保留(幂等),权威点在此。
+    if (input.key === TURN_BUDGET_SETTING_KEY) {
+      const lastGoodKey = lastGoodTurnBudgetKey(TURN_BUDGET_SETTING_KEY);
+      const entries: Array<readonly [string, string]> = [[input.key, input.value]];
+      if (budgetCommitWorthBackingUp(input.value)) entries.push([lastGoodKey, input.value]);
+      SettingRepo.setMany(entries);
+    } else {
+      SettingRepo.set(input.key, input.value);
+    }
     // 「跟着人走」的键(语言、强调色、自定义命令、快捷键……)写完推给已配对的
     // 手机,当场生效;桌面自己也会收到回声,套用是幂等的。键表见
     // `@contracts/ipc/settingsSync`。

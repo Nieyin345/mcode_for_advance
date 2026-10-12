@@ -35,11 +35,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
 
-import { IPC, THEME_STYLE_SETTING_KEY } from "@contracts/ipc";
+import { IPC, THEME_STYLE_SETTING_KEY, TURN_BUDGET_SETTING_KEY } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import type { ProviderContext } from "@contracts/provider";
 import { initDb } from "@main/store/db.js";
-import { ProjectRepo, SessionRepo, MessageRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, MessageRepo, SettingRepo } from "@main/store/repositories.js";
 import { registerClaudeHandlers } from "@main/ipc/claude.js";
 import { invokeAppTool } from "@main/appControl/tools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
@@ -1035,6 +1035,53 @@ console.log("\n13. 设置读写 + 主题那条特殊分支");
   resetTitleBarPaints();
   await call(IPC.SETTING_SET, { key: "随便一个别的键", value: "1" });
   eq("别的键不碰标题栏", titleBarOverlayPaints, 0);
+}
+
+/* ─────── 13b. 【MC-083 残余】轮预算保存时主键+last-good 同事务落盘 ─────── */
+
+// 从前 last-good 只在**下一次** sendTurn 读到合法主值时补刷。用户把额度从 A 改成 B
+// 保存成功后、下一轮开始前主键就坏了,恢复出来的会是旧额度 A。现在保存那一刻
+// (SETTING_SET)就同事务写主键与备份,last-good 始终等于"最近一次确认保存的值"。
+console.log("\n13b. 轮预算保存:主键与 last-good 同一次提交落盘");
+
+{
+  const LG = `${TURN_BUDGET_SETTING_KEY}.last-good`;
+  const budgetA = JSON.stringify({ enabled: true, maxUsd: 0.5 });
+  const budgetB = JSON.stringify({ enabled: true, maxUsd: 2 });
+
+  // 保存 A:主键与备份都应是 A。
+  await call(IPC.SETTING_SET, { key: TURN_BUDGET_SETTING_KEY, value: budgetA });
+  eq("保存 A 后主键是 A", SettingRepo.get(TURN_BUDGET_SETTING_KEY), budgetA);
+  eq("★ 保存 A 同一次提交就把 last-good 刷成 A(不再等下一轮)", SettingRepo.get(LG), budgetA);
+
+  // 保存 B(用户从 A 改到 B):last-good 必须**当场**变成 B —— 这才是要修的残余。
+  await call(IPC.SETTING_SET, { key: TURN_BUDGET_SETTING_KEY, value: budgetB });
+  eq("保存 B 后主键是 B", SettingRepo.get(TURN_BUDGET_SETTING_KEY), budgetB);
+  eq("★ 保存 B 后 last-good 立刻是 B(不是旧额度 A)", SettingRepo.get(LG), budgetB);
+
+  // 端到端:现在把主键弄坏,模拟"保存成功后、下一轮前写入中断",恢复出的必须是 B。
+  SettingRepo.set(TURN_BUDGET_SETTING_KEY, "{ 写入中断,坏 JSON");
+  const { parseTurnBudgetDetailed } = await import("@main/lib/turnPolicy.js");
+  const recovered = parseTurnBudgetDetailed(
+    SettingRepo.get(TURN_BUDGET_SETTING_KEY),
+    SettingRepo.get(LG),
+  );
+  eq("★ 主键损坏后从 last-good 恢复 → INVALID", recovered.status, "INVALID");
+  eq("★ 恢复出的额度是刚保存的 B(maxUsd=2),不是旧额度 A", recovered.budget?.maxUsd, 2);
+  eq("★ 且 recovered=true", recovered.recovered, true);
+
+  // 明确关闭也是一次合法提交:主键与备份同刷(空预算也该成为新 last-good)。
+  const disabled = JSON.stringify({ enabled: false });
+  await call(IPC.SETTING_SET, { key: TURN_BUDGET_SETTING_KEY, value: disabled });
+  eq("明确关闭后 last-good 也刷成关闭态(不复活旧限制)", SettingRepo.get(LG), disabled);
+
+  // 坏提交(INVALID)不许覆盖上一份好的 last-good。
+  await call(IPC.SETTING_SET, { key: TURN_BUDGET_SETTING_KEY, value: JSON.stringify({ enabled: true }) });
+  eq(
+    "★ 提交一份 INVALID(启用却无上限)不刷新 last-good(坏的盖不掉好的)",
+    SettingRepo.get(LG),
+    disabled,
+  );
 }
 
 /* ──────────────── 14. 会话设置 ──────────────── */

@@ -216,7 +216,7 @@ function advanceEffectState(current: TurnEffectState, toolName: string): TurnEff
 
 // 轮预算 / 回退链的解析与三判纯函数已拆到 `@main/lib/turnPolicy.js`
 // （无依赖、可被 budget-guard-smoke 直测），这里只留消费侧。
-import { budgetViolations, parseFallbackModels, parseTurnBudgetDetailed, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
+import { budgetStatusWorthBackingUp, budgetViolations, parseFallbackModels, parseTurnBudgetDetailed, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
 
 const approvalBridge = new ApprovalBridge();
 
@@ -1308,7 +1308,11 @@ class RuntimeManager {
     // 读到**合法**配置(含用户明确关闭/首次未设)时刷新 last-good 备份 —— 这样日后主键
     // 损坏才有"最近一次成功配置"可恢复(与 MC-071 的 last-good 同一条取舍)。**只在真的有
     // 变化时才写**,避免每轮都触发一次整库落盘。
-    if ((budgetRead.status === "VALID" || budgetRead.status === "DISABLED") && (budgetRaw ?? "") !== (lastGoodRaw ?? "")) {
+    // 【MC-083 残余】这里退居**兜底**:权威写入点已挪到"保存事务"(settings.set 的
+    // `runtime.turnBudget` 分支,一次 setMany 同写主键与备份)。此处保留只为幂等补齐
+    // (老数据/导入/直接改库那类没走保存 IPC 的路径)。判据 `budgetStatusWorthBackingUp`
+    // 与保存侧**共用同一份**(硬规矩 2)。
+    if (budgetStatusWorthBackingUp(budgetRead.status) && (budgetRaw ?? "") !== (lastGoodRaw ?? "")) {
       try {
         SettingRepo.set(lastGoodKey, budgetRaw ?? "");
       } catch {
