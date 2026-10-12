@@ -514,6 +514,32 @@ export function decideDelivery(
   return { action: "accept", reason: "空闲,立即跑" };
 }
 
+/* ── 去抖窗口(debounceMs) ── */
+
+/**
+ * 【ARC-007】**COALESCE 的去抖窗口**(毫秒)—— 纯函数,可直测。
+ *
+ * 「忙时攒一次」(零窗口)只在钩子**已经在跑**的时候合并;而一条高频钩子大半时间空闲,
+ * 于是连续来的事件会**每条各起一个进程**。`debounceMs` 要解决的正是这一段:窗口内来的
+ * 事件算一批,窗口末尾**只兑现一次**(尾去抖 —— 每条新事件把窗口重置,见 HookRunner)。
+ *
+ * ## 只有 `COALESCE` 有窗口
+ *
+ * 只有合并语义才谈得上"攒一批"。所以:
+ *  - `COALESCE` + 声明 `debounceMs` → 那个数;
+ *  - `COALESCE` + 省略 → `0`(**零窗口 = 今天的行为**,只做"忙时攒一次");
+ *  - 其余 kind(`BEST_EFFORT` / `AT_MOST_ONCE` / `DURABLE_AT_LEAST_ONCE`)→ 一律 `0`
+ *    —— 它们要么"明确丢"、要么本版不支持,没有"攒一批再跑"的位置。**声明了 `debounceMs`
+ *    也不该悄悄把它们变成合并**;那会是一条只在计数里才看得出的错。
+ *
+ * ⚠️ 返回 `0` 与"窗口 0 毫秒"在 HookRunner 里是**同一条路**(即时交付),所以调用方只需判
+ * `> 0` 决定要不要起计时器 —— 一个判据,不让 `?? 0` 在两处各写一遍(两份默认迟早分家)。
+ */
+export function coalesceWindowMs(policy: DeliveryPolicy): number {
+  if (policy.kind !== "COALESCE") return 0;
+  return policy.debounceMs ?? 0;
+}
+
 /* ── 失败重试(retryBudget) ── */
 
 export interface RetryDecision {

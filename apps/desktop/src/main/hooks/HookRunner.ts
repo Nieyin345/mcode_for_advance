@@ -35,6 +35,7 @@ import { homedir } from "node:os";
 import type { RuntimeEvent } from "@contracts/runtime";
 import {
   HOOK_EVENT_OF,
+  coalesceWindowMs,
   decideDelivery,
   decideRetry,
   matchesHook,
@@ -100,6 +101,12 @@ class HookRunner {
   private inFlight = new Map<string, number>();
   /** 【ARC-007】`COALESCE` 策略下**攒着待跑**的那一批(每条钩子至多一格)。 */
   private coalescePending = new Map<string, HookPayload>();
+  /**
+   * 【debounceMs】`COALESCE` 的**去抖窗口计时器**(每条钩子至多一个)。窗口内每来一条
+   * 就把计时器推到 `windowMs` 之后(尾去抖),到期兑现 {@link coalescePending} 那一格。
+   * 省略 `debounceMs`(零窗口)时**不开**计时器 —— 那条路即时交付,与今天一致。
+   */
+  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** 【ARC-007】交付决定的计数(按 hookId)。见 {@link DeliveryCounts}。 */
   private deliveryCounts = new Map<string, DeliveryCounts>();
   private runs: HookRun[] = [];
@@ -239,8 +246,52 @@ class HookRunner {
 
   private async runOne(spec: HookSpec, payload: HookPayload): Promise<void> {
     const policy = resolveDeliveryPolicy(spec);
-    // 在跑的进程数 + 是否已有待合并项 —— 都是 `decideDelivery` 的判据。策略的**决定**
-    // 是纯函数(见 `@contracts/hook`),这里只负责把决定落到进程与记录上。
+    const windowMs = coalesceWindowMs(policy);
+    // 【debounceMs】**去抖窗口**:`COALESCE` 声明了 `debounceMs > 0` 时,不到窗口末尾**不**
+    // 立即起进程 —— 这一条先攒着,窗口(尾去抖,新事件重置)到期才兑现一次合并运行。
+    // 这正是把「忙时攒一次」的**零窗口**补成**真窗口**:空闲时连续来的事件不再每条各起一个
+    // 进程。⚠️ 只是**一个计时器决定何时兑现**,不是轮询、不新增并发(见 ARC-007「不要做」)。
+    // `windowMs === 0`(省略 / 非 COALESCE)走下面即时交付 = **今天的行为**。
+    if (windowMs > 0) {
+      this.armCoalesceWindow(spec, windowMs, payload);
+      return;
+    }
+    await this.deliver(spec, payload);
+  }
+
+  /**
+   * 【debounceMs】攒下这一条并(重)起窗口计时器 —— 尾去抖:窗口内每来一条就**把计时器
+   * 推到 `windowMs` 之后**,所以窗口是从**最后一次触发**起算的。到期时把攒着的那一批
+   * **兑现成一次运行**(走 {@link deliver},而不是再回窗口 —— 否则会自锁)。
+   *
+   * 每钩子至多一个计时器 + 一格待办(与「忙时攒一次」共用同一格 `coalescePending`)。
+   */
+  private armCoalesceWindow(spec: HookSpec, windowMs: number, payload: HookPayload): void {
+    this.coalescePending.set(spec.id, payload);
+    this.bumpCount(spec.id, "coalesced");
+    this.pushRun(spec, payload, "skipped", `进入 ${windowMs}ms 去抖窗口,窗口末尾合并兑现`);
+    const existing = this.debounceTimers.get(spec.id);
+    if (existing !== undefined) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.debounceTimers.delete(spec.id);
+      const pending = this.coalescePending.get(spec.id);
+      if (pending === undefined) return;
+      this.coalescePending.delete(spec.id);
+      // **不 await**:兑现是另起一次,别让计时器回调卡在那儿。
+      void this.deliver(spec, pending).catch((err: unknown) => {
+        log.warn(`[hooks] ${spec.name} 去抖批次执行失败:${(err as Error).message}`);
+      });
+    }, windowMs);
+    this.debounceTimers.set(spec.id, timer);
+  }
+
+  /**
+   * **真正交付一次**(去抖窗口与「忙时攒一次」都收口到这里)。策略的**决定**是纯函数
+   * (见 `@contracts/hook` 的 `decideDelivery`),这里只负责把决定落到进程与记录上。
+   */
+  private async deliver(spec: HookSpec, payload: HookPayload): Promise<void> {
+    const policy = resolveDeliveryPolicy(spec);
+    // 在跑的进程数 + 是否已有待合并项 —— 都是 `decideDelivery` 的判据。
     const decision = decideDelivery(policy, {
       inFlight: this.inFlight.get(spec.id) ?? 0,
       coalescePending: this.coalescePending.has(spec.id),
@@ -300,11 +351,13 @@ class HookRunner {
       if (left <= 0) this.inFlight.delete(spec.id);
       else this.inFlight.set(spec.id, left);
       // 这一条跑完了(含重试)—— 若 `COALESCE` 攒着一批,此刻把它兑现成一次运行(把有界的
-      // 合并真正跑出来)。**不 await**:兑现是另起一次,别让 current 的收口等它。
+      // 合并真正跑出来)。**不 await**:兑现是另起一次,别让 current 的收口等它。走 `deliver`
+      // 而不是 `runOne`:这一批**已经过了窗口判据**(零窗口的"忙时攒一次",或去抖窗口到期后
+      // 因并发满而再次攒下),再回窗口只会平白多等一个窗口。
       const pending = this.coalescePending.get(spec.id);
       if (pending !== undefined) {
         this.coalescePending.delete(spec.id);
-        void this.runOne(spec, pending).catch((err: unknown) => {
+        void this.deliver(spec, pending).catch((err: unknown) => {
           log.warn(`[hooks] ${spec.name} 合并批次执行失败:${(err as Error).message}`);
         });
       }

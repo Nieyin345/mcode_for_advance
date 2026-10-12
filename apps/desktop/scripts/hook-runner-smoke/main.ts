@@ -31,7 +31,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookSpec, DeliveryPolicy } from "@contracts/hook";
-import { DEFAULT_DELIVERY_POLICY, DEFAULT_HOOK_TIMEOUT_MS, decideDelivery, decideRetry } from "@contracts/hook";
+import { DEFAULT_DELIVERY_POLICY, DEFAULT_HOOK_TIMEOUT_MS, coalesceWindowMs, decideDelivery, decideRetry } from "@contracts/hook";
 import type { RuntimeEvent } from "@contracts/runtime";
 
 let failures = 0;
@@ -817,6 +817,106 @@ function makeBigCmd(tag: string, bytes: number): { command: string } {
   check("outlimit-default:拿到了执行记录", run !== undefined, hookRunner.listRuns().filter((r) => r.hookId === hook.id).map((r) => r.status));
   eq("省略策略:3000 字节 < 8192,不截断", run?.truncated, undefined);
   eq("省略策略:stdout 全长 3000(策略字段没动它)", run?.stdout?.length, 3000);
+}
+
+/* ──────────────── 13. 去抖窗口(debounceMs,ARC-007) ──────────────── */
+
+console.log("\n去抖窗口(debounceMs):COALESCE 在窗口内把连续触发合并成一次运行,窗口末尾兑现");
+
+// 纯函数先钉住「去抖只对 COALESCE 生效」这条判据 —— 快、确定、不依赖计时器调度。
+{
+  const p = (over: Partial<DeliveryPolicy>): DeliveryPolicy => ({ ...DEFAULT_DELIVERY_POLICY, ...over });
+  eq("COALESCE 省略 debounceMs → 0(零窗口 = 今天的行为)", coalesceWindowMs(p({ kind: "COALESCE" })), 0);
+  eq("COALESCE + debounceMs=300 → 300(真去抖窗口)", coalesceWindowMs(p({ kind: "COALESCE", debounceMs: 300 })), 300);
+  eq("COALESCE + debounceMs=0 → 0(显式零窗口)", coalesceWindowMs(p({ kind: "COALESCE", debounceMs: 0 })), 0);
+  eq("BEST_EFFORT 声明 debounceMs 也无效(只有 COALESCE 有合并概念)", coalesceWindowMs(p({ kind: "BEST_EFFORT", debounceMs: 300 })), 0);
+  eq("AT_MOST_ONCE 声明 debounceMs 无效", coalesceWindowMs(p({ kind: "AT_MOST_ONCE", debounceMs: 300 })), 0);
+  eq("DURABLE 声明 debounceMs 无效", coalesceWindowMs(p({ kind: "DURABLE_AT_LEAST_ONCE", debounceMs: 300 })), 0);
+}
+
+// ── 承重红例:COALESCE + debounceMs=400,窗口内连发 5 次 —— **一条都没立即跑**,窗口
+//    末尾只跑 1 次。旧行为(零窗口:空闲就立即 accept 起进程 + 忙时攒一次)下这一组必红:
+//    第一条事件一到达就 accept(hits 立刻 ≥ 1),而 coalesced 也到不了 5。
+{
+  await new Promise((r) => setTimeout(r, 1100)); // mtime 变了才重读 hooks.json
+  const cmd = makeCmd({ tag: "dbnc-merge" });
+  const hook = spec({
+    command: cmd.command,
+    tag: "dbnc-merge",
+    deliveryPolicy: { kind: "COALESCE", maxConcurrency: 1, debounceMs: 400 },
+  });
+  writeHooks([hook]);
+  for (let i = 0; i < 5; i += 1) {
+    rt.emit({
+      type: "tool.use",
+      sessionId: SESSION,
+      toolName: "Write",
+      toolCallId: `dbnc_merge_${i}`,
+      input: {},
+      requiresApproval: false,
+    } satisfies RuntimeEvent);
+  }
+  // 窗口没到(才 150ms < 400ms):**一个进程都不该起** —— 这正是"去抖"与"立即跑"的分界。
+  await new Promise((r) => setTimeout(r, 150));
+  eq("窗口内:一条都没跑(攒着,不是每条都立即跑)", cmd.hits(), 0);
+  await until("窗口末尾兑现一次", () => cmd.hits() >= 1, 4000);
+  await new Promise((r) => setTimeout(r, 800)); // 若会多跑,这里该看见
+  eq("5 次连续触发合并成 1 次运行", cmd.hits(), 1);
+  eq("全部 5 条并入合并(coalesced=5)", hookRunner.deliveryCountsOf(hook.id)?.coalesced, 5);
+  eq("实际只起 1 个进程(accepted=1)", hookRunner.deliveryCountsOf(hook.id)?.accepted, 1);
+}
+
+// ── 尾去抖:窗口**从最后一次触发起算** —— 窗口中途来的新事件把计时器重置,窗口末尾顺延。
+//    这条把"固定窗口"和"尾去抖"分开:新事件到达时,原本的窗口(400ms)该到而未到,不能兑现。
+{
+  await new Promise((r) => setTimeout(r, 1100));
+  const cmd = makeCmd({ tag: "dbnc-reset" });
+  const hook = spec({
+    command: cmd.command,
+    tag: "dbnc-reset",
+    deliveryPolicy: { kind: "COALESCE", maxConcurrency: 1, debounceMs: 400 },
+  });
+  writeHooks([hook]);
+  const emitOne = (i: number) =>
+    rt.emit({
+      type: "tool.use",
+      sessionId: SESSION,
+      toolName: "Write",
+      toolCallId: `dbnc_reset_${i}`,
+      input: {},
+      requiresApproval: false,
+    } satisfies RuntimeEvent);
+  emitOne(0); // t≈0:开窗
+  await new Promise((r) => setTimeout(r, 300));
+  eq("窗口中途:还没跑", cmd.hits(), 0);
+  emitOne(1); // t≈300:重置窗口 → 该到 t≈700 才兑现
+  await new Promise((r) => setTimeout(r, 200)); // t≈500:旧窗口(400)已过,重置窗口还没到
+  eq("新事件把窗口重置(尾去抖:从最后一次触发起算)", cmd.hits(), 0);
+  await until("重置后的窗口末尾兑现", () => cmd.hits() >= 1, 4000);
+  await new Promise((r) => setTimeout(r, 800));
+  eq("窗口顺延后仍只跑 1 次", cmd.hits(), 1);
+}
+
+// ── 正控:省略 debounceMs = 零窗口 = **今天的行为**(空闲立即跑,不额外等)。
+{
+  await new Promise((r) => setTimeout(r, 1100));
+  const cmd = makeCmd({ tag: "dbnc-none" });
+  const hook = spec({
+    command: cmd.command,
+    tag: "dbnc-none",
+    deliveryPolicy: { kind: "COALESCE", maxConcurrency: 1 },
+  });
+  writeHooks([hook]);
+  rt.emit({
+    type: "tool.use",
+    sessionId: SESSION,
+    toolName: "Write",
+    toolCallId: "dbnc_none_0",
+    input: {},
+    requiresApproval: false,
+  } satisfies RuntimeEvent);
+  await until("省略 debounceMs:事件到达就立刻跑", () => cmd.hits() === 1, 3000);
+  eq("省略 debounceMs = 零窗口:空闲立即跑(今天的行为不变)", cmd.hits(), 1);
 }
 
 writeHooks([]);
