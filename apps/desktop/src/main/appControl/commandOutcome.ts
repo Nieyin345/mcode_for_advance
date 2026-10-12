@@ -186,6 +186,28 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    * 可能部分提交 —— 如 `skills.save` 会先 `fs.rename` 目录再写 SKILL.md,留待各自切片。) */
   ["skills.presetsSave", { falseMeans: "maybePartial" }],
   ["skills.presetsDelete", { falseMeans: "maybePartial" }],
+  /* ── 【MC-066 残余① 续】extensionStore 域 ─────────────────────────────────
+   *
+   * `ipc/extensions.ts` 的四条,结果信封是 `{ok:true,…} | {ok:false;reason;limit?}`
+   * (键值 `set` + 文件通道 `readFile`/`writeFile`/`listFiles`)。逐条读
+   * `main/lib/extensionStore.ts` 的判据:
+   *
+   *  `extensionStore.set` → `writeValue`:ok:false 只有两种 —— id 非法、或整份存储超过
+   *   `EXTENSION_STORE_MAX`(`withStoreValue` 返回 null)。两条都在 `persist`(唯一落盘点)
+   *   **之前**,目标 `store.json` 一个字节没动 → `refusal`。
+   *  `extensionStore.readFile` / `listFiles` 是**纯读**(`resolveInExtension` 传
+   *   `createDir:false`,绝不建目录):ok:false(invalidPath / notFound / notAFile /
+   *   notADir)不改任何东西 → `refusal`。
+   *  `extensionStore.writeFile` → `writeFileInExtension`:ok:false 是 `tooLarge`(在
+   *   `resolveInExtension` **之前**返回,没建任何目录)或 `notAFile`/`invalidPath`。
+   *   `notAFile` 只可能在目标子目录**已存在**时出现 —— 那时扩展目录必然早已存在,
+   *   `resolveInExtension` 的建目录分支不会触发;真正的落盘走 `atomicWrite`(临时名 +
+   *   rename),写不成时是**抛异常**而非回 ok:false,所以 ok:false 从不等同于"写了半截"
+   *   或"建了目录又失败"。三者都落在文件写入之前 → `refusal`。 */
+  ["extensionStore.set", { falseMeans: "refusal" }],
+  ["extensionStore.readFile", { falseMeans: "refusal" }],
+  ["extensionStore.writeFile", { falseMeans: "refusal" }],
+  ["extensionStore.listFiles", { falseMeans: "refusal" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

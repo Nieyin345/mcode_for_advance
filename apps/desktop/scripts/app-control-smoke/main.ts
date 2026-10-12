@@ -1148,6 +1148,58 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   }
 }
 
+/* ── 3d-6. 【MC-066 残余① 续】extensionStore.* 的合法拒绝 ──────────────────────
+ *
+ * `ipc/extensions.ts` 的四条 keyed off `main/lib/extensionStore.ts`,都返回
+ * `{ok:true,…} | {ok:false;reason;limit?}` 信封 —— 从前**没登记**,`decodeDomainOutcome`
+ * 落到「无 descriptor = accepted」,把"存储超限 / 路径不合法 / 目标不是文件"这类**合法
+ * 拒绝**报成 SUCCEEDED,Agent 以为扩展数据已写。逐条读 lib 后:
+ *   - `set` → `writeValue`:ok:false(id 非法 / `tooLarge`)都在 `persist` **之前**;
+ *   - `readFile` / `listFiles` 是**纯读**(`createDir:false`,绝不建目录);
+ *   - `writeFile` → `writeFileInExtension`:ok:false(`tooLarge` 在 resolve 之前、
+ *     `notAFile` 只可能目标子目录已存在时出现、真正的落盘走 `atomicWrite` 抛异常),
+ *     无一在文件写入之前留下半个副作用。
+ * 三者都落在写盘**之前** → refusal。这里与真 handler 一字不差地录同一份 ok:false 信封。 */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+
+  recordRpcHandler("extensionStore:set", async () => ({ ok: false as const, reason: "tooLarge" as const, limit: 4 * 1024 * 1024 }));
+  recordRpcHandler("extensionStore:readFile", async () => ({ ok: false as const, reason: "notFound" as const }));
+  recordRpcHandler("extensionStore:writeFile", async () => ({ ok: false as const, reason: "tooLarge" as const, limit: 4 * 1024 * 1024 }));
+  recordRpcHandler("extensionStore:listFiles", async () => ({ ok: false as const, reason: "notADir" as const }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "extensionStore.set", input: { extensionId: "ext_1", key: "k", value: { x: 1 } } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:extensionStore.set 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:extensionStore.set 合法 ok:false → REJECTED(没写盘)", op?.resultKind === "REJECTED", op);
+    check("★ MC-066:extensionStore.set 合法 ok:false → isError=true", r.isError === true, r.isError);
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "extensionStore.readFile", input: { extensionId: "ext_1", relPath: "a.txt" } }, "me", ctx);
+    check("★ MC-066:extensionStore.readFile 合法 ok:false → REJECTED(纯读)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "extensionStore.writeFile", input: { extensionId: "ext_1", relPath: "a.txt", content: "x" } }, "me", ctx);
+    check("★ MC-066:extensionStore.writeFile 合法 ok:false → REJECTED(没写盘)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "extensionStore.listFiles", input: { extensionId: "ext_1", relPath: "sub" } }, "me", ctx);
+    check("★ MC-066:extensionStore.listFiles 合法 ok:false → REJECTED(纯列)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  // 正控:ok:true 的真成功仍是 SUCCEEDED(解码器不能把真成功判成拒绝)。
+  recordRpcHandler("extensionStore:set", async () => ({ ok: true as const }));
+  recordRpcHandler("extensionStore:writeFile", async () => ({ ok: true as const, bytes: 3 }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "extensionStore.set", input: { extensionId: "ext_1", key: "k", value: { x: 1 } } }, "me", ctx);
+    check("★ MC-066 正控:extensionStore.set ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "extensionStore.writeFile", input: { extensionId: "ext_1", relPath: "a.txt", content: "abc" } }, "me", ctx);
+    check("★ MC-066 正控:extensionStore.writeFile ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+}
+
 {
   const bridge = new ApprovalBridge();
   const emitted: unknown[] = [];
