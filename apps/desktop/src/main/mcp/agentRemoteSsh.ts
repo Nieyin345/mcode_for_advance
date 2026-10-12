@@ -313,6 +313,8 @@ export function createAgentRemoteSshManager() {
             // 后端无法分辨"用户真的带外核对过"与"模型复制了自己的候选输出"。
             entry.hostKeyExpectedUngranted = true;
             entry.hostKeyCandidateFingerprint = decision.candidate;
+            // 同样登记候选 —— 用户看到"待批准"那一行才能去带外核对并批准。
+            recordPendingHostTrust(entry, decision.candidate);
             return false;
           case "GRANT_MISMATCH":
             // 宿主授权存在,但作用域/指纹与本次不符 → 拒绝(绝不用一次授权信任另一台/换了钥的主机)。
@@ -323,6 +325,8 @@ export function createAgentRemoteSshManager() {
             // 候选指纹留给用户独立核对;用户经宿主受信入口授权后才放行。
             entry.hostKeyPendingConfirmation = true;
             entry.hostKeyCandidateFingerprint = decision.candidate;
+            // 登记到宿主审批面板能看到的候选表(设置 → 远程主机信任)。
+            recordPendingHostTrust(entry, decision.candidate);
             return false;
           case "PINNED_NEW": {
             // **携带宿主授权**的首次连接:授权绑定的指纹与服务器实际一致 → 记 pin 并放行。
@@ -338,6 +342,8 @@ export function createAgentRemoteSshManager() {
               return false;
             }
             entry.hostKeyRecorded = true;
+            // 首连成功 = 这台主机不再是"待批准",从候选表里清掉。
+            forgetPendingHostTrust(hostPort);
             return true;
           }
           case "TRUSTED":
@@ -1328,6 +1334,96 @@ export function revokeHostTrustGrant(hostPort: string): boolean {
   }
 }
 
+/* ── MC-014 / MC-052:宿主受信入口的读取面 ─────────────────────────────────
+ *
+ * 审批面板(设置 → 远程主机信任)是**宿主的界面**,它要看到"这台机器上此刻有哪些陌生
+ * 主机等着用户带外核对"。候选指纹本来只活在 `hostVerifier` 的 PENDING 分支里(每个
+ * `RemoteEntry` 各一份),面板拿不到 —— 所以这里放一张**模块级**的候选表:每次握手
+ * 判定为 PENDING 时登记一条,用户批准 / 撤销 / 该主机再次通过时清掉。
+ *
+ * ⚠️ **这张表只影响"展示什么",不参与任何放行判定** —— 真正的门是 `decideHostTrust` +
+ * `grantHostTrust`,候选指纹在这里怎么变都改不了认证结果。所以跨 manager 实例共享它是
+ * 安全的(生产只有一个 manager;无头 smoke 里各套 `__clear` 之后互不干扰)。
+ */
+export interface PendingHostTrust {
+  hostPort: string;
+  fingerprint: string;
+  host: string;
+  port: number;
+  username: string;
+  lastError: string | null;
+}
+const pendingHostTrust = new Map<string, PendingHostTrust>();
+
+/** 登记/更新一条待批准候选(仅 PENDING 分支调用)。 */
+function recordPendingHostTrust(entry: RemoteEntry, candidate: string): void {
+  pendingHostTrust.set(`${entry.cfg.host}:${entry.cfg.port}`, {
+    hostPort: `${entry.cfg.host}:${entry.cfg.port}`,
+    fingerprint: candidate,
+    host: entry.cfg.host,
+    port: entry.cfg.port,
+    username: entry.cfg.username,
+    lastError: entry.lastError,
+  });
+}
+
+/**
+ * 【MC-014 / MC-052】列出当前**等待用户批准**的候选主机(宿主审批面板用)。
+ *
+ * 只返回仍无 pin、仍无授权、且候选指纹形状合法的那些 —— 一个已经批准 / 已经 pin 的
+ * 主机不该再出现在"待批准"里(那会让用户以为还要再批一次)。
+ */
+export function listPendingHostTrust(): PendingHostTrust[] {
+  const pinned = readKnownHostsDetailed();
+  const out: PendingHostTrust[] = [];
+  for (const [hostPort, item] of pendingHostTrust) {
+    // 已 pin 或已授权 → 不再是"待批准",从候选表里剔掉(顺带自清)。
+    if ((pinned.status === "VALID" && pinned.hosts[hostPort] !== undefined) || findHostTrustGrant(hostPort)) {
+      pendingHostTrust.delete(hostPort);
+      continue;
+    }
+    if (!isWellFormedFingerprint(item.fingerprint)) continue;
+    out.push(item);
+  }
+  return out.sort((a, b) => a.hostPort.localeCompare(b.hostPort));
+}
+
+/**
+ * 【MC-014 / MC-052】列出**当前生效**的宿主信任授权(界面"已信任主机"那一列)。
+ *
+ * 读出授权表里每一条形状完整的 `HostTrustGrant`。存储损坏时返回**空表** —— 界面另有
+ * `knownHostsStoreInvalid()` 那条状态可以显示"信任表损坏",不靠这个函数表达。
+ */
+export function listHostTrustGrants(): HostTrustGrant[] {
+  const read = readHostTrustGrantsDetailed();
+  if (read.status !== "VALID") return [];
+  const out: HostTrustGrant[] = [];
+  for (const hostPort of Object.keys(read.hosts)) {
+    const grant = findHostTrustGrant(hostPort);
+    if (grant) out.push(grant);
+  }
+  return out.sort((a, b) => a.hostPort.localeCompare(b.hostPort));
+}
+
+/**
+ * 【MC-014 / MC-052】清掉某 `host:port` 的**待批准候选**(批准成功后调用)。
+ *
+ * 不影响授权表 / known-hosts —— 那两样分别由 {@link grantHostTrust} 与握手写入。
+ */
+export function forgetPendingHostTrust(hostPort: string): void {
+  pendingHostTrust.delete(hostPort);
+}
+
+/** 测试用:清空待批准候选表。 */
+export function __clearPendingHostTrust(): void {
+  pendingHostTrust.clear();
+}
+
+/** 【MC-014 / 第 43.1 节】known-hosts / 授权表是否损坏(界面据此显示"信任表损坏")。 */
+export function knownHostsStoreInvalid(): boolean {
+  return readKnownHostsDetailed().status === "INVALID" || readHostTrustGrantsDetailed().status === "INVALID";
+}
+
 export const __remoteSshTest = {
   parseJobLogOutput,
   splitExecPid,
@@ -1354,6 +1450,11 @@ export const __remoteSshTest = {
   findHostTrustGrant,
   grantHostTrust,
   revokeHostTrustGrant,
+  listPendingHostTrust,
+  listHostTrustGrants,
+  forgetPendingHostTrust,
+  __clearPendingHostTrust,
+  knownHostsStoreInvalid,
   MAX_EXEC_STDOUT_BYTES,
   MAX_EXEC_STDERR_BYTES,
   SSH_KNOWN_HOSTS_SETTING_KEY,

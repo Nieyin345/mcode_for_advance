@@ -74,6 +74,7 @@ import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, Skil
   ProviderInfo, OutputStyleListInput, OutputStyleEntry,
   SkillMarketState, SkillsMarketListInput, SkillsMarketAddInput, SkillsMarketNameInput, SkillsMarketInstallInput, SkillsMarketInstallResult } from "./skills.js";
 import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult, McpMarketSource, McpMarketSourcesInput, McpMarketSourceAddInput, McpMarketSourceRemoveInput, McpMarketSearchInput, McpMarketSearchResult } from "./mcp.js";
+import type { AgentSshListInput, AgentSshPendingHost, AgentSshTrustedHost, AgentSshApproveInput, AgentSshHostPortInput } from "./agentSsh.js";
 import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
@@ -702,6 +703,24 @@ export interface RpcMap {
   "mcp.projectTrust": (input: McpProjectTrustInput) => Promise<{ ok: boolean; error?: string }>;
   /** Copy user-scope servers into the project file (existing names skipped). */
   "mcp.projectCopy": (input: McpProjectCopyInput) => Promise<McpProjectCopyResult>;
+  // 远程主机信任审批(设置 → 远程主机信任):首次 SSH 连接的受信入口。
+  // 列表列出待批准候选指纹(WAITING_APPROVAL);批准/撤销由**宿主受信 IPC** 在用户
+  // 真实操作后签发限 host:port/fingerprint/user/版本的授权(见 contracts/ipc/agentSsh.ts)。
+  /** 列出待用户批准(候选指纹)与已信任的 SSH 主机。 */
+  "agentSsh.list": (input: AgentSshListInput) => Promise<{
+    pending: AgentSshPendingHost[];
+    trusted: AgentSshTrustedHost[];
+    /** known-hosts / 授权表存储损坏 —— 界面据此显示"信任表损坏",而不是静默假装空。 */
+    storeInvalid: boolean;
+  }>;
+  /** 批准某 `host:port` 的某指纹(宿主签发 `approvalSource:"user"` 授权,写盘 + 回读确认)。 */
+  "agentSsh.approveHost": (input: AgentSshApproveInput) => Promise<{
+    ok: boolean;
+    error?: string;
+    grant?: { hostPort: string; fingerprint: string; approvedAt: number; grantId: string };
+  }>;
+  /** 撤销某 `host:port` 的授权(用户撤回批准)。 */
+  "agentSsh.revokeHost": (input: AgentSshHostPortInput) => Promise<{ ok: boolean; error?: string }>;
   /** MCP market: registry sources (built-in official registry + user added). */
   "mcp.marketSources": (input: McpMarketSourcesInput) => Promise<{ sources: McpMarketSource[] }>;
   /** 加一个 MCP 注册中心(市场源)。**先连通探一次**再落,连不上/已存在/非 http(s) 都回 `{ ok:false, error }`(不抛);成功回新分配的 `id`。 */
@@ -1768,6 +1787,10 @@ export const IPC = {
   MCP_MARKET_SOURCE_ADD: "mcp:marketSourceAdd",
   MCP_MARKET_SOURCE_REMOVE: "mcp:marketSourceRemove",
   MCP_MARKET_SEARCH: "mcp:marketSearch",
+  // 远程主机信任审批(设置 → 远程主机信任):首次 SSH 连接的宿主受信入口。
+  AGENT_SSH_LIST: "agentSsh:list",
+  AGENT_SSH_APPROVE_HOST: "agentSsh:approveHost",
+  AGENT_SSH_REVOKE_HOST: "agentSsh:revokeHost",
   // Context hosting (settings panel): global instructions / tool usage
   CONTEXT_GET: "context:get",
   CONTEXT_SAVE: "context:save",

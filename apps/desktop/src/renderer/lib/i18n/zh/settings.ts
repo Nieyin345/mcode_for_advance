@@ -15,6 +15,7 @@ export const zh = {
   "settings.nav.automation": "自动化",
   "settings.nav.hooks": "钩子",
   "settings.nav.mcp": "MCP",
+  "settings.nav.agentSsh": "远程主机信任",
   "settings.nav.engineTools": "引擎工具",
   "settings.nav.memory": "记忆与上下文",
   "settings.nav.plugins": "插件",
@@ -371,6 +372,29 @@ export const zh = {
   "settings.remoteControl.projectLinkUrlPending": "隧道就绪后显示完整地址",
   "settings.remoteControl.projectLinkRegenerate": "换密钥",
   "settings.remoteControl.projectLinkRemove": "删除",
+
+  // ── AgentSshTrustPanel(设置 → 远程主机信任,MC-014 / MC-052)──
+  "settings.agentSsh.title": "远程主机信任",
+  "settings.agentSsh.desc":
+    "AI 连接一台从没连过的 SSH 主机时,会停下等你核对它的主机指纹。核对无误后在这里批准,之后这台主机才会被信任、才允许把凭据发过去。",
+  "settings.agentSsh.warning":
+    "批准一台主机 = 之后连它时会把你的密码/私钥发过去。批准前请务必与服务器**带外**核对该指纹(见说明),别只凭这里显示的值就点。批准只对「这个地址 + 这个指纹」生效。",
+  "settings.agentSsh.verifyHint":
+    "核对方法:在服务器上运行 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub(或 -l 那个 .pub 文件)拿到指纹,与上面逐字比对;或直接问该服务器的管理员。只有完全一致才批准。",
+  "settings.agentSsh.pendingTitle": "待批准的主机",
+  "settings.agentSsh.pendingEmpty": "没有等待批准的主机",
+  "settings.agentSsh.pendingEmptyDesc": "当 AI 首次连接一台陌生 SSH 主机时,它的候选指纹会出现在这里。",
+  "settings.agentSsh.trustedTitle": "已信任的主机",
+  "settings.agentSsh.trustedEmpty": "还没有已信任的主机。",
+  "settings.agentSsh.fingerprintLabel": "指纹",
+  "settings.agentSsh.usernameLabel": "用户名",
+  "settings.agentSsh.approve": "核对无误,批准",
+  "settings.agentSsh.reject": "不批准",
+  "settings.agentSsh.revoke": "撤销信任",
+  "settings.agentSsh.approvedAt": "批准于 {when}",
+  "settings.agentSsh.approveFailed": "批准未生效,请重试",
+  "settings.agentSsh.revokeFailed": "撤销失败,请重试",
+  "settings.agentSsh.storeInvalid": "信任表读取失败/已损坏:为安全起见,所有未登记主机的连接都会被拒绝。请检查数据目录,修复后再试。",
   "settings.customModels.publicMcpOn": "已开放",
   "settings.customModels.publicMcpOff": "已关闭",
   "settings.customModels.publicMcpToggleLabel": "开放公网 MCP 端点",

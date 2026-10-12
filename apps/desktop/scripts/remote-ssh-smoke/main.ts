@@ -9,6 +9,7 @@ import ssh2 from "ssh2";
 const { Server: SshServer } = ssh2;
 import { createAgentRemoteSshManager, __remoteSshTest, scrubConnectionSecrets, HOST_KEY_MISMATCH_MESSAGE } from "@main/mcp/agentRemoteSsh.js";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
+import { registerAgentSshHandlers } from "@main/ipc/agentSsh.js";
 import { SettingRepo, armGetThrow, getThrowCount, armSetThrow, setThrowCount } from "./stubs/settingRepo.js";
 
 let checks = 0;
@@ -862,6 +863,112 @@ console.log("\n[6] MC-014 / MC-052:真正工具 handler(agent_ssh_connect)上也
   SettingRepo.__clear();
   for (const c of [...toolClients]) c.end();
   await new Promise<void>((resolve) => toolServer.close(() => resolve()));
+}
+
+console.log("\n[7] MC-014 / MC-052 第50.4节残余:宿主受信 IPC 审批闭环(agentSsh:* handlers)");
+{
+  // 这一节驱动**真正注册的宿主 IPC handler**(registerAgentSshHandlers),证明"用户点批准
+  // → handler → grantHostTrust → 写盘 + 回读"这条闭环真的承重,而不是只活在传输层。
+  SettingRepo.__clear();
+  __remoteSshTest.__clearPendingHostTrust();
+  // 一个只收 password 的服务器:"服务器收到凭据"是可观测事实。
+  let hostIpcPwAttempts = 0;
+  const hostIpcClients = new Set<any>();
+  const hServer = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    hostIpcClients.add(client);
+    client.on("close", () => hostIpcClients.delete(client));
+    client.on("authentication", (ctx) => { if (ctx.method === "password") { hostIpcPwAttempts++; ctx.accept(); } else ctx.reject(["password"]); });
+    client.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => hServer.listen(0, "127.0.0.1", () => resolve()));
+  const hAddr = hServer.address();
+  if (!hAddr || typeof hAddr === "string") throw new Error("host-ipc server missing port");
+  const hostPort = `127.0.0.1:${hAddr.port}`;
+  const pubParsed = ssh2.utils.parseKey(hostKey);
+  if (pubParsed instanceof Error || Array.isArray(pubParsed)) throw new Error("fixture host key did not parse");
+  const expectedFp = __remoteSshTest.fingerprintOfHostKey(pubParsed.getPublicSSH());
+
+  // 收集 handler 的假 ipcMain(与 memory-codex-smoke 同形的记名替身)。
+  const handlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+  const fakeIpc = {
+    handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void {
+      handlers.set(channel, listener as (event: unknown, raw: unknown) => unknown);
+    },
+  };
+  registerAgentSshHandlers(fakeIpc as never);
+  const invoke = (channel: string, raw?: unknown) => {
+    const h = handlers.get(channel);
+    if (!h) throw new Error(`handler not registered: ${channel}`);
+    return h({}, raw);
+  };
+
+  const mgr = createAgentRemoteSshManager();
+
+  // ① 无审批入口时首连仍是 PENDING,且**列表里有候选**(interface: 用户可以去看去批)。
+  const first = await mgr.connect({ ownerSessionId: "host-ipc", host: "127.0.0.1", port: hAddr.port, username: "u", password: "p" });
+  check("★ 首连未授权 → state=error(不自动授信)", first.state === "error", first);
+  check("★ 首连未授权 → 一个凭据都没发送", hostIpcPwAttempts === 0, hostIpcPwAttempts);
+  const list1 = await invoke("agentSsh:list", {}) as { pending: Array<{ hostPort: string; fingerprint: string }>; trusted: unknown[]; storeInvalid: boolean };
+  check("★ 宿主 IPC list:首连后候选出现在待批准列表", list1.pending.some((p) => p.hostPort === hostPort && p.fingerprint === expectedFp), list1);
+  check("★ 宿主 IPC list:授权表此刻为空", list1.trusted.length === 0, list1.trusted);
+
+  // ② 经宿主 IPC 批准(simulate 用户点击)→ grant 落盘 + 回读确认。
+  const approved = await invoke("agentSsh:approveHost", { hostPort, fingerprint: expectedFp }) as { ok: boolean; grant?: { hostPort: string; fingerprint: string } };
+  check("★ 宿主 IPC approveHost → ok", approved.ok === true, approved);
+  check("★ approveHost 回的 grant 绑定 host:port + 指纹", approved.grant?.hostPort === hostPort && approved.grant?.fingerprint === expectedFp, approved.grant);
+  check("★ approveHost 后授权真的落盘(readback)", __remoteSshTest.findHostTrustGrant(hostPort)?.fingerprint === expectedFp, __remoteSshTest.findHostTrustGrant(hostPort));
+  const list2 = await invoke("agentSsh:list", {}) as { pending: unknown[]; trusted: Array<{ hostPort: string }> };
+  check("★ approveHost 后该主机离开待批准列表", list2.pending.every((p: any) => p.hostPort !== hostPort), list2.pending);
+  check("★ approveHost 后该主机出现在已信任列表", list2.trusted.some((t) => t.hostPort === hostPort), list2.trusted);
+
+  // ③ 批准后次连成功(记录 pin 并放行认证)。
+  const second = await mgr.connect({ ownerSessionId: "host-ipc", host: "127.0.0.1", port: hAddr.port, username: "u", password: "p", expectedFingerprint: expectedFp });
+  check("★ 经宿主 IPC 批准后次连成功(state=ready)", second.state === "ready", second);
+  check("★ 批准后次连确实进入认证(服务器收到密码)", hostIpcPwAttempts > 0, hostIpcPwAttempts);
+  await mgr.disconnect("host-ipc", second.connectionId);
+
+  // ④ 撤销后回到"待批准"(授权表里没了)。
+  const revoked = await invoke("agentSsh:revokeHost", { hostPort }) as { ok: boolean };
+  check("★ 宿主 IPC revokeHost → ok", revoked.ok === true, revoked);
+  check("★ 撤销后授权表里没有这条", __remoteSshTest.findHostTrustGrant(hostPort) === null, __remoteSshTest.findHostTrustGrant(hostPort));
+
+  // ⑤ 模型自填 approvalSource 想自批 → schema `.strict()` 直接拒(契约层断死,不是靠 if)。
+  let selfApproveThrew = false;
+  try {
+    await invoke("agentSsh:approveHost", { hostPort, fingerprint: expectedFp, approvalSource: "agent" });
+  } catch { selfApproveThrew = true; }
+  check("★ 调用方多给 approvalSource=agent → schema 直接拒(契约层断死自批)", selfApproveThrew);
+
+  // ⑥ 畸形指纹 → 拒。
+  let badFpThrew = false;
+  try { await invoke("agentSsh:approveHost", { hostPort, fingerprint: "SHA256:short" }); } catch { badFpThrew = true; }
+  check("★ 畸形指纹 → schema 拒", badFpThrew);
+
+  // ⑦ 写盘失败 → 零认证:先批准落盘成功、再靠 armSetThrow 让"批准"这一步写不进。
+  __remoteSshTest.forgetPendingHostTrust(hostPort);
+  SettingRepo.__clear();
+  __remoteSshTest.__clearPendingHostTrust();
+  // 重新走一遍 PENDING → 让候选表里有这条。
+  const pendAgain = await mgr.connect({ ownerSessionId: "host-ipc2", host: "127.0.0.1", port: hAddr.port, username: "u", password: "p" });
+  check("★ 重置后首连仍是待批准(前提)", pendAgain.hostKeyPendingConfirmation === true, pendAgain);
+  const pwBefore = hostIpcPwAttempts;
+  armSetThrow(true);
+  let failApprove: { ok: boolean } | null = null;
+  try { failApprove = await invoke("agentSsh:approveHost", { hostPort, fingerprint: expectedFp }) as { ok: boolean }; }
+  finally { armSetThrow(false); }
+  check("★ 授权写盘失败 → approveHost 回 ok:false(不是假成功)", failApprove?.ok === false, failApprove);
+  check("★ 授权写盘失败 → 授权表里没有这条", __remoteSshTest.findHostTrustGrant(hostPort) === null, __remoteSshTest.findHostTrustGrant(hostPort));
+  // 未授权的情况下重连 → 仍拒,零认证。
+  const stillDenied = await mgr.connect({ ownerSessionId: "host-ipc2", host: "127.0.0.1", port: hAddr.port, username: "u", password: "p", expectedFingerprint: expectedFp });
+  check("★ 授权写盘失败后重连 → 仍拒(state=error)", stillDenied.state === "error", stillDenied);
+  check("★ 授权写盘失败后重连 → 服务器未收到任何新凭据", hostIpcPwAttempts === pwBefore, { hostIpcPwAttempts, pwBefore });
+
+  SettingRepo.__clear();
+  __remoteSshTest.__clearPendingHostTrust();
+  mgr.disposeOwner("host-ipc");
+  mgr.disposeOwner("host-ipc2");
+  for (const c of [...hostIpcClients]) c.end();
+  await new Promise<void>((resolve) => hServer.close(() => resolve()));
 }
 
 console.log(`\nremote-ssh-smoke: ${passed}/${checks} passed`);

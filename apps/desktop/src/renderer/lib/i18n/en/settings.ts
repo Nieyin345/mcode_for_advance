@@ -12,6 +12,7 @@ export const en = {
   "settings.nav.automation": "Automations",
   "settings.nav.hooks": "Hooks",
   "settings.nav.mcp": "MCP",
+  "settings.nav.agentSsh": "Remote host trust",
   "settings.nav.engineTools": "Engine tools",
   "settings.nav.memory": "Memory & Context",
   "settings.nav.plugins": "Plugins",
@@ -366,6 +367,29 @@ export const en = {
   "settings.remoteControl.projectLinkUrlPending": "Full URL appears once the tunnel is ready",
   "settings.remoteControl.projectLinkRegenerate": "New secret",
   "settings.remoteControl.projectLinkRemove": "Remove",
+
+  // ── AgentSshTrustPanel (Settings → Remote host trust, MC-014 / MC-052) ──
+  "settings.agentSsh.title": "Remote host trust",
+  "settings.agentSsh.desc":
+    "When the AI connects to an SSH host it has never seen, it stops and waits for you to check the host fingerprint. Approve it here once verified; only then is the host trusted and credentials allowed to be sent.",
+  "settings.agentSsh.warning":
+    "Approving a host means your password/private key will be sent to it on later connections. Before approving, verify the fingerprint **out of band** (see the note); don't trust only the value shown here. Approval applies to this address + this fingerprint only.",
+  "settings.agentSsh.verifyHint":
+    "How to verify: on the server run `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (or `-l` on that .pub file) to get the fingerprint and compare it character by character above; or ask the server's administrator. Approve only if they match exactly.",
+  "settings.agentSsh.pendingTitle": "Hosts awaiting approval",
+  "settings.agentSsh.pendingEmpty": "No hosts awaiting approval",
+  "settings.agentSsh.pendingEmptyDesc": "When the AI first connects to an unknown SSH host, its candidate fingerprint shows up here.",
+  "settings.agentSsh.trustedTitle": "Trusted hosts",
+  "settings.agentSsh.trustedEmpty": "No trusted hosts yet.",
+  "settings.agentSsh.fingerprintLabel": "Fingerprint",
+  "settings.agentSsh.usernameLabel": "User",
+  "settings.agentSsh.approve": "Verified, approve",
+  "settings.agentSsh.reject": "Don't approve",
+  "settings.agentSsh.revoke": "Revoke trust",
+  "settings.agentSsh.approvedAt": "Approved at {when}",
+  "settings.agentSsh.approveFailed": "Approval didn't take effect — please retry",
+  "settings.agentSsh.revokeFailed": "Revoke failed — please retry",
+  "settings.agentSsh.storeInvalid": "The trust store could not be read (corrupted): for safety every unregistered-host connection is refused. Check the data directory and repair it, then retry.",
   "settings.customModels.publicMcpOn": "Open",
   "settings.customModels.publicMcpOff": "Closed",
   "settings.customModels.publicMcpToggleLabel": "Expose the public MCP endpoint",

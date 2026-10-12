@@ -21,6 +21,7 @@ import { registerShellHandlers } from "./shell.js";
 import { registerUpdaterHandlers } from "./updater.js";
 import { registerSkillsHandlers } from "./skills.js";
 import { registerMcpHandlers } from "./mcp.js";
+import { registerAgentSshHandlers } from "./agentSsh.js";
 import { registerEngineToolHandlers } from "./engineTools.js";
 import { registerContextHandlers } from "./context.js";
 import { registerOutputStyleHandlers } from "./outputStyle.js";
@@ -90,6 +91,7 @@ export function registerIpcHandlers(): void {
   registerUpdaterHandlers(ipc);
   registerSkillsHandlers(ipc);
   registerMcpHandlers(ipc);
+  registerAgentSshHandlers(ipc);
   registerEngineToolHandlers(ipc);
   registerContextHandlers(ipc);
   registerOutputStyleHandlers(ipc);

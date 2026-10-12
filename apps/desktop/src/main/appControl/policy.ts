@@ -156,6 +156,12 @@ const DANGER: Record<string, string> = {
   "publicMcp.addProjectLink": "给项目新开一条公网 MCP 链接(持有链接的人可免审批操作该项目)",
   "publicMcp.removeProjectLink": "删除项目的公网 MCP 链接",
   "publicMcp.regenerateProjectLinkSecret": "重置项目公网 MCP 链接的密钥",
+  // SSH 主机信任审批:批准一台陌生主机的指纹 = 把凭据发给它。这条**本身就是"用户点头"的
+  // 唯一落点**,绝不能由 agent 自批。虽然 `app_api_call` 只面向本机三个引擎(公网/浏览器桥
+  // 不挂它),仍把所有 agent 可达路径钉在 danger(每次弹卡、不给始终允许、"完全访问"也照问),
+  // 让"模型想自己批准一台主机"这件事在**每一道闸**上都被挡住。
+  "agentSsh.approveHost": "批准 SSH 主机信任(把凭据发给这台主机);只能由用户在设置里本人操作",
+  "agentSsh.revokeHost": "撤销 SSH 主机信任",
   "mobile.startPairing": "开始手机配对",
   "mobile.revokeDevice": "撤销已配对手机",
   "mobile.setLogin": "设置手机远程登录的账号密码",
@@ -248,6 +254,8 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "skills.marketList": "read",
   "mcp.marketSources": "read",
   "mcp.marketSearch": "read",
+  // SSH 主机信任审批的列表是只读(候选指纹 + 已信任主机);批准/撤销在上面 DANGER 档。
+  "agentSsh.list": "read",
   // memory.manage 的 list/preview 是只读,但 import 会写 —— 整体按写处理
   "memory.manage": "write",
   "memory.assistant": "write",
@@ -288,6 +296,7 @@ export const DOMAIN_LABELS: Record<string, string> = {
   skills: "技能:列出、读、存、删、导入、复制到项目、预设、引擎可见性",
   plugins: "插件:列出、安装、卸载、启停、市场",
   mcp: "外部 MCP 服务器:列出、新增、删除、启停、授权、导入",
+  agentSsh: "Agent SSH 主机信任:列出待批准候选指纹与已信任主机;批准/撤销由用户在设置里操作",
   hooks: "钩子:列出、运行记录、保存、删除、试跑",
   modules: "扩展模块",
   context: "全局指令(CLAUDE.md / AGENTS.md)",

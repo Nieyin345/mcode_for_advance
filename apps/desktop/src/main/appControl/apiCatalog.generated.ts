@@ -10,6 +10,27 @@ export interface ApiCatalogEntry {
 
 export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
+  "method": "agentSsh.approveHost",
+  "channel": "agentSsh:approveHost",
+  "doc": "批准某 `host:port` 的某指纹(宿主签发 `approvalSource:\"user\"` 授权,写盘 + 回读确认)。",
+  "input": "{ hostPort: string; fingerprint: string }",
+  "output": "{ ok: boolean; error?: string | undefined; grant?: { hostPort: string; fingerprint: string; approvedAt: number; grantId: string; } | undefined }"
+ },
+ {
+  "method": "agentSsh.list",
+  "channel": "agentSsh:list",
+  "doc": "列出待用户批准(候选指纹)与已信任的 SSH 主机。",
+  "input": "{}",
+  "output": "{ pending: AgentSshPendingHost[]; trusted: AgentSshTrustedHost[]; storeInvalid: boolean // known-hosts / 授权表存储损坏 —— 界面据此显示\"信任表损坏\",而不是静默假装空。 }"
+ },
+ {
+  "method": "agentSsh.revokeHost",
+  "channel": "agentSsh:revokeHost",
+  "doc": "撤销某 `host:port` 的授权(用户撤回批准)。",
+  "input": "{ hostPort: string }",
+  "output": "{ ok: boolean; error?: string | undefined }"
+ },
+ {
   "method": "app.checkForUpdates",
   "channel": "app:checkForUpdates",
   "doc": "Check for updates on the GitHub Releases channel. Returns the current version when up-to-date, the new version when available, or an error. In dev this short-circuits to \"up-to-date\" (updater only runs in prod).",

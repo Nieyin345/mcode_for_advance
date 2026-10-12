@@ -726,6 +726,17 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_MARKET_SEARCH, input)) as RpcMap["mcp.marketSearch"],
   },
 
+  /** Agent SSH 主机信任审批(设置 → 远程主机信任):首次连接的**宿主受信入口**。
+   *  列表给出待批准候选指纹;批准只在**用户真实操作**后签发 user 授权并写盘 + 回读确认。 */
+  agentSsh: {
+    list: ((input) =>
+      ipcRenderer.invoke(IPC.AGENT_SSH_LIST, input)) as RpcMap["agentSsh.list"],
+    approveHost: ((input) =>
+      ipcRenderer.invoke(IPC.AGENT_SSH_APPROVE_HOST, input)) as RpcMap["agentSsh.approveHost"],
+    revokeHost: ((input) =>
+      ipcRenderer.invoke(IPC.AGENT_SSH_REVOKE_HOST, input)) as RpcMap["agentSsh.revokeHost"],
+  },
+
   /** Per-engine built-in tool exclusion (设置 → 引擎工具). File-backed policy;
    *  Claude/Pi can drop named built-ins, Codex cannot (sandbox/approval only). */
   engineTools: {

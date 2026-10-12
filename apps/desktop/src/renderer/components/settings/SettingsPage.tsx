@@ -28,6 +28,7 @@ import {
   McpIcon,
   IconNotebook,
   IconAdjustmentsHorizontal,
+  IconShieldLock,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { IconLoader2 } from "@renderer/lib/icons.js";
@@ -55,6 +56,7 @@ const PANEL_LOADERS = {
   WorkflowsPanel: () => import("./workflows/WorkflowsPanel.js"),
   HooksPanel: () => import("./HooksPanel.js"),
   McpPanel: () => import("./McpPanel.js"),
+  AgentSshTrustPanel: () => import("./AgentSshTrustPanel.js"),
   EngineToolsPanel: () => import("./EngineToolsPanel.js"),
   PluginsPanel: () => import("./PluginsPanel.js"),
   AppearancePanel: () => import("./AppearancePanel.js"),
@@ -105,6 +107,7 @@ const SkillsPanel = lazy(() => PANEL_LOADERS.SkillsPanel().then((m) => ({ defaul
 const WorkflowsPanel = lazy(() => PANEL_LOADERS.WorkflowsPanel().then((m) => ({ default: m.WorkflowsPanel })));
 const HooksPanel = lazy(() => PANEL_LOADERS.HooksPanel().then((m) => ({ default: m.HooksPanel })));
 const McpPanel = lazy(() => PANEL_LOADERS.McpPanel().then((m) => ({ default: m.McpPanel })));
+const AgentSshTrustPanel = lazy(() => PANEL_LOADERS.AgentSshTrustPanel().then((m) => ({ default: m.AgentSshTrustPanel })));
 const EngineToolsPanel = lazy(() => PANEL_LOADERS.EngineToolsPanel().then((m) => ({ default: m.EngineToolsPanel })));
 const PluginsPanel = lazy(() => PANEL_LOADERS.PluginsPanel().then((m) => ({ default: m.PluginsPanel })));
 const AppearancePanel = lazy(() => PANEL_LOADERS.AppearancePanel().then((m) => ({ default: m.AppearancePanel })));
@@ -153,7 +156,7 @@ function PanelLoading() {
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "engine-tools" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "agent-ssh" | "engine-tools" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -216,6 +219,9 @@ const NAV_GROUPS: NavGroup[] = [
       // 节点都生效(见 `@contracts/hook`)。
       { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
       { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
+      // 远程主机信任紧跟 MCP:两者都在回答"这台机器愿意把凭据交给谁"。SSH 首连的
+      // 主机指纹审批从前没有界面入口(MC-014/MC-052 的洞),这一页就是那扇门。
+      { id: "agent-ssh", labelKey: "settings.nav.agentSsh", icon: IconShieldLock },
       // 引擎工具紧挨着 MCP：两者都在回答"**模型能用哪些工具**"——MCP 管外部接入的，
       // 这一页管引擎自带的（内置工具增减）。放一起，工具面才是一整块。
       { id: "engine-tools", labelKey: "settings.nav.engineTools", icon: IconAdjustmentsHorizontal },
@@ -403,6 +409,7 @@ export function SettingsPage() {
             {active === "hooks" && <HooksPanel />}
             {active === "runtimes" && <RuntimesPanel />}
             {active === "mcp" && <McpPanel />}
+            {active === "agent-ssh" && <AgentSshTrustPanel />}
             {active === "engine-tools" && <EngineToolsPanel />}
             {active === "memory" && <MemoryExplorerPanel />}
             {active === "plugins" && <PluginsPanel />}

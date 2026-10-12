@@ -588,6 +588,14 @@ const publicMcp: Api["publicMcp"] = {
   regenerateProjectLinkSecret: () => webUnsupported("publicMcp.regenerateProjectLinkSecret"),
 };
 
+/** Agent SSH 主机信任审批:宿主受信入口,只在桌面端设置页里(手机端不挂 SettingsPage,
+ *  也没有"批准一台 SSH 主机"的界面)。只显式列出、不实现 —— 同 publicMcp 上面那段规矩。 */
+const agentSsh: Api["agentSsh"] = {
+  list: () => webUnsupported("agentSsh.list"),
+  approveHost: () => webUnsupported("agentSsh.approveHost"),
+  revokeHost: () => webUnsupported("agentSsh.revokeHost"),
+};
+
 const piModels: Api["piModels"] = {
   list: () => webUnsupported("piModels.list"),
   save: () => webUnsupported("piModels.save"),
@@ -910,6 +918,7 @@ export function createWebApi(): Api {
     customModel,
     webBridge,
     publicMcp,
+    agentSsh,
     piModels,
     workflow,
     skills,

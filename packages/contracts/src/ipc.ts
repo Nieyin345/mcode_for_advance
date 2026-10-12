@@ -140,6 +140,7 @@ export * from "./ipc/files.js";
 export * from "./ipc/git.js";
 export * from "./ipc/skills.js";
 export * from "./ipc/mcp.js";
+export * from "./ipc/agentSsh.js";
 export * from "./ipc/engineTools.js";
 export * from "./ipc/context.js";
 export * from "./ipc/usage.js";
