@@ -21,6 +21,17 @@ export function getThrowCount(): number {
   return getThrowHits;
 }
 
+/** 【MC-014 / 第 47.2 节】可注入的**写入**故障:让 `set` 抛错,模拟"pin 落盘失败"。 */
+let setThrowing = false;
+let setThrowHits = 0;
+export function armSetThrow(on: boolean): void {
+  setThrowing = on;
+  if (on) setThrowHits = 0;
+}
+export function setThrowCount(): number {
+  return setThrowHits;
+}
+
 export const SettingRepo = {
   get(key: string): string | null {
     if (getThrowing) {
@@ -35,6 +46,10 @@ export const SettingRepo = {
     return out;
   },
   set(key: string, value: string): void {
+    if (setThrowing) {
+      setThrowHits += 1;
+      throw new Error("injected settings write failure (isolated smoke)");
+    }
     store.set(key, value);
   },
   delete(key: string): void {

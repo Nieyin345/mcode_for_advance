@@ -263,8 +263,18 @@ export function createAgentRemoteSshManager() {
             return false;
           case "PINNED_NEW": {
             // 事先授信的首次连接:实际指纹与调用方核对过的期望一致 → 记 pin 并放行。
+            //
+            // 【MC-014 / 第 47.2 节】pin **没落盘成功就不能放行**。从前这里 `writeKnownHost`
+            // 的返回值只用来决定要不要报 hostKeyRecorded,然后**无条件** `return true` ——
+            // 于是"被批准的主机"这一次能连(凭据也发了),但宿主信任表里**没有**这条 pin,
+            // 下一轮它又变成"待批准",而且这一轮根本不是可追溯的已批准连接。经批准的首次
+            // 授信必须有**耐久回执**:写不进就不发凭据,报 hostKeyStoreInvalid 让用户处理。
             const wrote = writeKnownHost(hostPort, actual);
-            if (wrote) entry.hostKeyRecorded = true;
+            if (!wrote) {
+              entry.hostKeyStoreInvalid = true;
+              return false;
+            }
+            entry.hostKeyRecorded = true;
             return true;
           }
           case "TRUSTED":

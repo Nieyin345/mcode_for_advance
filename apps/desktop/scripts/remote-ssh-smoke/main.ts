@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import ssh2 from "ssh2";
 const { Server: SshServer } = ssh2;
 import { createAgentRemoteSshManager, __remoteSshTest, scrubConnectionSecrets, HOST_KEY_MISMATCH_MESSAGE } from "@main/mcp/agentRemoteSsh.js";
-import { SettingRepo, armGetThrow, getThrowCount } from "./stubs/settingRepo.js";
+import { SettingRepo, armGetThrow, getThrowCount, armSetThrow, setThrowCount } from "./stubs/settingRepo.js";
 
 let checks = 0;
 let passed = 0;
@@ -299,6 +299,7 @@ console.log("\n[3c] MC-052 首次信任:无 pin 且未授信 → 暂停认证(�
   check("★ 记录的指纹与服务器 host key 一致", __remoteSshTest.sameFingerprint(recorded, expectedFp), { recorded, expectedFp });
   check("★ 授信首连确实进入了认证(服务器收到密码)", tofuPasswordAttempts > 0, tofuPasswordAttempts);
 
+
   // 再见(同一 host:port,同一 key):放行,不再重复报告"记录"。
   await m.disconnect("tofu", first.connectionId);
   const again = await m.connect({ ownerSessionId: "tofu", host: "127.0.0.1", port: tAddr.port, username: "u", password: "p" });
@@ -336,6 +337,47 @@ console.log("\n[3c] MC-052 首次信任:无 pin 且未授信 → 暂停认证(�
   check("重连也校验指纹:掉线后指纹已变 → 停到 error 不放行", revdrop.state === "error", revdrop);
   m.disposeOwner("tofu");
   await new Promise<void>((resolve) => tserver.close(() => resolve()));
+}
+
+console.log("\n[3c-3] MC-014 第47.2节:授信首连的 pin 没落盘成功 → 拒绝认证(耐久回执)");
+{
+  // 从前 writeKnownHost 的返回值只用来决定要不要报 hostKeyRecorded,然后**无条件
+  // return true** —— pin 写不进时照样发凭据,而"被批准的主机"在信任表里并不存在。
+  // 经批准的首次授信必须有**耐久回执**:写不进就拒绝认证。
+  SettingRepo.__clear();
+  let pwAttempts = 0;
+  const clients = new Set<any>();
+  const server = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    clients.add(client);
+    client.on("close", () => clients.delete(client));
+    client.on("authentication", (ctx) => { if (ctx.method === "password") { pwAttempts += 1; ctx.accept(); } else ctx.reject(["password"]); });
+    client.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (!addr || typeof addr === "string") throw new Error("3c-3 server missing port");
+  const hostPort = "127.0.0.1:" + addr.port;
+  const pub = ssh2.utils.parseKey(hostKey);
+  if (pub instanceof Error || Array.isArray(pub)) throw new Error("fixture host key did not parse");
+  const expectedFp = __remoteSshTest.fingerprintOfHostKey(pub.getPublicSSH());
+  const m = createAgentRemoteSshManager();
+
+  armSetThrow(true);
+  let fail: Awaited<ReturnType<typeof m.connect>> | null = null;
+  try {
+    fail = await m.connect({ ownerSessionId: "durable", host: "127.0.0.1", port: addr.port, username: "u", password: "p", expectedFingerprint: expectedFp });
+  } finally {
+    armSetThrow(false);
+  }
+  check("★ pin 落盘失败 → state=error(不放行)", fail?.state === "error", fail);
+  check("★ pin 落盘失败确实被触发(不是空过)", setThrowCount() > 0, setThrowCount());
+  check("★ pin 落盘失败 → 未进入认证(凭据未发送)", pwAttempts === 0, pwAttempts);
+  check("★ pin 落盘失败 → 信任表里没有这条 pin", __remoteSshTest.readKnownHosts()[hostPort] === undefined, __remoteSshTest.readKnownHosts());
+  const retryOk = await m.connect({ ownerSessionId: "durable", host: "127.0.0.1", port: addr.port, username: "u", password: "p", expectedFingerprint: expectedFp });
+  check("★ 故障解除后重新授信 → 连上并记下 pin", retryOk.state === "ready" && __remoteSshTest.readKnownHosts()[hostPort] !== undefined, { state: retryOk.state });
+  check("★ 落盘失败期间服务器没收到过任何密码", pwAttempts === 1, pwAttempts);
+  m.disposeOwner("durable");
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 console.log("\n[3c-2] MC-014 第43.1节残余:known-hosts 损坏/读异常 → fail-closed 拒连,不自动 TOFU");
