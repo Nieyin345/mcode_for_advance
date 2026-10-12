@@ -138,6 +138,54 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    * 这条是**纯计算**(让模型从 staged diff 生成一句提交信息),ok:false(模型没返回
    * 有效内容 / 认证失败 / 网关无渠道)不改仓库、不提交任何东西 → `refusal`。 */
   ["git.generateCommitMessage", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】workflow 域 ───────────────────────────────────────
+   *
+   * `ipc/orchestration.ts` 的工作流 handler 逐方法读(handler 很薄,判据落到
+   * `main/orchestration/library.ts` / `runner.ts` 的被调函数):
+   *
+   *  `workflow.save` → `saveWorkflow`:三条 ok:false(结构化校验不过 / `deriveTrigger`
+   *   失败 / expectedRevision 不是当前版)全都发生在 `WorkflowRepo.save` **之前**
+   *   —— 库里一个字节没动 → `refusal`。
+   *  `workflow.import` / `workflow.importFromFile` → `finishImport(importWorkflowInto)`:
+   *   ok:false(文本解析失败 / 要覆盖的 id 不在库里 / `saveWorkflow` 拒绝 / 选文件被
+   *   取消 / 读文件失败)同样都在任何落库**之前** → `refusal`。import 能进来的东西必须
+   *   是当初存得下去的(同一道 `saveWorkflow` 闸),那道闸的失败也是写前拒绝。
+   *  `workflow.pinDefault` → `pinWorkflowDefault`:ok:false("找不到" / "还在等审阅")
+   *   在 `SettingRepo.set` 之前 → `refusal`。
+   *  `workflow.restoreDefault` → `restoreWorkflowDefault`:ok:false 只有"没钉过默认"
+   *   一种,在 `WorkflowRepo.save` 之前 → `refusal`。
+   *  `workflow.retry` → `resolveWorkflowRetry`:全部 `{ok:false}`(会话不在 / 正有运行在跑 /
+   *   存档读不回 / 换过工作流 / 续跑被拦)都 return 在 `launchContinuation` **之前**
+   *   —— 没有运行被起 → `refusal`。
+   *  `workflow.applyShippedUpdate` / `workflow.dismissShippedUpdate`:ok:false("不是自带
+   *   的" / "已经删了")在 `WorkflowRepo.save` / `markShippedRevision` 之前 → `refusal`。
+   *
+   *  **不登记 `workflow.remove`**:`removeWorkflow` 恒返回 `{ok:true,wasBuiltin:false}`,
+   *  根本没有 ok:false 分支可被误报(没有"合法拒绝被报成成功"的洞)。**不登记
+   *  `workflow.export` 为 refusal**:它有三条 ok:false —— 找不到 id / 用户取消(**这两条是
+   *  写前拒绝**)、以及 `writeFile` 落盘失败。最后那条走的是**非原子** `fs.writeFile`
+   *  (先截断再写),失败时目标文件可能已被截断成半截 → 不能当"没执行",故整体
+   *  `maybePartial`(UNCERTAIN,不默认可安全重试)。 */
+  ["workflow.save", { falseMeans: "refusal" }],
+  ["workflow.import", { falseMeans: "refusal" }],
+  ["workflow.importFromFile", { falseMeans: "refusal" }],
+  ["workflow.pinDefault", { falseMeans: "refusal" }],
+  ["workflow.restoreDefault", { falseMeans: "refusal" }],
+  ["workflow.retry", { falseMeans: "refusal" }],
+  ["workflow.applyShippedUpdate", { falseMeans: "refusal" }],
+  ["workflow.dismissShippedUpdate", { falseMeans: "refusal" }],
+  ["workflow.export", { falseMeans: "maybePartial" }],
+  /* ── 【MC-066 残余① 续】skills 预设域 ─────────────────────────────────────
+   *
+   * `ipc/skills.ts` 的 `skills.presetsSave` / `skills.presetsDelete` 共用
+   * `writePresets`,而它走的是**非原子** `await fs.mkdir(...); await fs.writeFile(...)`
+   * —— 中途失败(磁盘满 / 权限)会把 `.skill-presets.json` **截断成半截 JSON**,
+   * 而不是保持原样。所以 ok:false 不能当"没写",整体 `maybePartial`(UNCERTAIN);
+   * 与 `engineTools.set` 的 `atomicWriteJson`(临时名 + rename,失败时目标原样)不同。
+   * (**只登记这两个**:`skills.save`/`delete`/`import` 等写类同形,但语义要逐条核实是否
+   * 可能部分提交 —— 如 `skills.save` 会先 `fs.rename` 目录再写 SKILL.md,留待各自切片。) */
+  ["skills.presetsSave", { falseMeans: "maybePartial" }],
+  ["skills.presetsDelete", { falseMeans: "maybePartial" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

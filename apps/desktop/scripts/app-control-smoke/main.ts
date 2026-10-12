@@ -1001,6 +1001,99 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   }
 }
 
+/* ── 3d-4. 【MC-066 残余① 续】workflow.* 与 skills.* 的合法拒绝 ────────────────
+ *
+ * 同根因继续纵向迁移:`ipc/orchestration.ts` 的 workflow handler 与 `ipc/skills.ts` 的
+ * 预设 handler,都对**合法**情形返回 `{ok:false,...}`(不抛异常),从前没登记 →
+ * `decodeDomainOutcome` 落到「无 descriptor = accepted」→ `app_api_call` 报 SUCCEEDED。
+ * 判据**按源码**:ok:false 在所有落库动作**之前**的 = refusal(REJECTED);走非原子写、
+ * 中途失败可能截断文件的 = maybePartial(UNCERTAIN)。每条都与真 handler 一字不差地录
+ * 同一份 ok:false 信封。 */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+
+  // workflow.save → saveWorkflow:`{ok:false;error}` 三条(校验不过 / deriveTrigger 失败 /
+  // expectedRevision 不是当前版)全在 WorkflowRepo.save 之前 → refusal。
+  recordRpcHandler("workflow:save", async () => ({ ok: false as const, error: "工作流已被其他写者修改或删除；请保留草稿并重新打开最新版本后再合并" }));
+  // workflow.import / importFromFile → importWorkflowInto/finishImport:`{ok:false;errors;warnings}`
+  // —— 注意这条**没有 `error` 字段**,只有 `errors` 数组(整体拒绝,库里一个字节没变)。
+  recordRpcHandler("workflow:import", async () => ({ ok: false as const, errors: ["图里有个环,而且环上没有岔路口"], warnings: [] }));
+  recordRpcHandler("workflow:importFromFile", async () => ({ ok: false as const, errors: ["库里没有 id 为「wf_x」的工作流,覆盖不了不存在的一份"], warnings: [] }));
+  // workflow.pinDefault → pinWorkflowDefault:「找不到」/「还在等审阅」在 SettingRepo.set 之前。
+  recordRpcHandler("workflow:pinDefault", async () => ({ ok: false as const, error: "这一版还在等待审阅 —— 先在审阅里启用,再把它设为默认" }));
+  // workflow.restoreDefault → restoreWorkflowDefault:唯一 ok:false 是「没钉过默认」,在 save 之前。
+  recordRpcHandler("workflow:restoreDefault", async () => ({ ok: false as const, error: "这份工作流没有钉过默认 —— 先「设为默认」,才谈得上恢复" }));
+  // workflow.retry → resolveWorkflowRetry:全部 {ok:false} 在 launchContinuation 之前(没运行被起)。
+  recordRpcHandler("workflow:retry", async () => ({ ok: false as const, error: "原工作流已不可用，请重新选择工作流" }));
+  // applyShippedUpdate / dismissShippedUpdate → 库函数:「不是自带的」/「已经删了」在落库之前。
+  recordRpcHandler("workflow:applyShippedUpdate", async () => ({ ok: false as const, error: "这份工作流不是软件自带的,没有出厂版可以更新" }));
+  recordRpcHandler("workflow:dismissShippedUpdate", async () => ({ ok: false as const, error: "这份工作流不是软件自带的,没有出厂版可以更新" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.save", input: { workflow: { id: "wf_1", nodes: [], edges: [], name: "x" } } }, "me", ctx);
+    check("★ MC-066:workflow.save 合法 ok:false → 不再 SUCCEEDED", opResultOf(r)?.resultKind !== "SUCCEEDED", opResultOf(r));
+    check("★ MC-066:workflow.save 合法 ok:false → REJECTED(没写库)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+    check("★ MC-066:workflow.save 拒绝原因原样带出", textOf(r).includes("其他写者修改"), textOf(r).slice(0, 200));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.import", input: { text: "{}" } }, "me", ctx);
+    check("★ MC-066:workflow.import 合法 ok:false(errors[]) → REJECTED(没写库)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.importFromFile", input: {} }, "me", ctx);
+    check("★ MC-066:workflow.importFromFile 合法 ok:false → REJECTED(没写库)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.pinDefault", input: { id: "wf_1" } }, "me", ctx);
+    check("★ MC-066:workflow.pinDefault 合法 ok:false → REJECTED(没写设置)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.restoreDefault", input: { id: "wf_1" } }, "me", ctx);
+    check("★ MC-066:workflow.restoreDefault 合法 ok:false → REJECTED(没写库)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.retry", input: { sessionId: "s1", runId: "run_1", nodeId: "n1" } }, "me", ctx);
+    check("★ MC-066:workflow.retry 合法 ok:false → REJECTED(没起运行)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.applyShippedUpdate", input: { id: "wf_1" } }, "me", ctx);
+    check("★ MC-066:workflow.applyShippedUpdate 合法 ok:false → REJECTED(没写库)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.dismissShippedUpdate", input: { id: "wf_1" } }, "me", ctx);
+    check("★ MC-066:workflow.dismissShippedUpdate 合法 ok:false → REJECTED(没写设置)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+
+  // workflow.export:三条 ok:false 里有**一条是 `fs.writeFile` 落盘失败** —— 走的是**非原子**
+  // 写(先截断再写),失败时目标文件可能已被截断成半截 → 不能当"没执行" → maybePartial。
+  recordRpcHandler("workflow:export", async () => ({ ok: false as const, error: "EACCES: permission denied, open 'D:/out/wf.json'" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.export", input: { id: "wf_1" } }, "me", ctx);
+    check("★ MC-066:workflow.export 合法 ok:false → UNCERTAIN(非原子写,可能已截断)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+  }
+
+  // skills.presetsSave / presetsDelete:writePresets 走**非原子** `fs.mkdir + fs.writeFile`
+  // —— 中途失败会把 .skill-presets.json 截断成半截 JSON,不是保持原样 → maybePartial。
+  recordRpcHandler("skills:presetsSave", async () => ({ ok: false as const, error: "ENOSPC: no space left on device, write" }));
+  recordRpcHandler("skills:presetsDelete", async () => ({ ok: false as const, error: "ENOSPC: no space left on device, write" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.presetsSave", input: { preset: { id: "p1", name: "一套", skills: [] } } }, "me", ctx);
+    check("★ MC-066:skills.presetsSave 合法 ok:false → 不再 SUCCEEDED", opResultOf(r)?.resultKind !== "SUCCEEDED", opResultOf(r));
+    check("★ MC-066:skills.presetsSave 合法 ok:false → UNCERTAIN(非原子写,可能半截)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.presetsDelete", input: { id: "p1" } }, "me", ctx);
+    check("★ MC-066:skills.presetsDelete 合法 ok:false → UNCERTAIN(非原子写,可能半截)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+  }
+
+  // 正控:ok:true 的真成功仍是 SUCCEEDED(解码器不能把真成功判成拒绝)。
+  recordRpcHandler("workflow:save", async () => ({ ok: true as const }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.save", input: { workflow: { id: "wf_1", nodes: [], edges: [], name: "x" } } }, "me", ctx);
+    check("★ MC-066 正控:workflow.save ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+}
+
 {
   const bridge = new ApprovalBridge();
   const emitted: unknown[] = [];
