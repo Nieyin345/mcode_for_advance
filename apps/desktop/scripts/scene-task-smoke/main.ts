@@ -39,6 +39,7 @@ import {
   isTerminalState,
 } from "@main/orchestration/sceneTaskRegistry.js";
 import type { TaskInvocation } from "@contracts/sceneTask.js";
+import { resolveConfigBinding, staleBindings } from "@contracts/configBinding.js";
 
 let failures = 0;
 let checks = 0;
@@ -607,6 +608,32 @@ console.log("\nMC-080 预算账户:重复创建拒绝、跨场景冲突、负数
   const tooLow = accts2.updateLimits("cap", { maxTokens: 100 });
   check("把上限压到占用之下 → LIMITS_BELOW_USAGE", !tooLow.ok, tooLow);
   if (!tooLow.ok) eq("拒绝码 = LIMITS_BELOW_USAGE", tooLow.code, "LIMITS_BELOW_USAGE");
+}
+
+/* ── 【ARC-016】ConfigBinding：锁版 / 实时 的生效版本解析 ──────────────────────
+ *
+ * 同一档案 id 在普通 chat（PINNED 快照）与工作流 node（LIVE 每轮现读）生效时点不同 ——
+ * `resolveConfigBinding` 把「这一轮到底用哪个版本」讲清楚。关键不变量：PINNED 必须给
+ * pinnedHash（不许静默退化成 LIVE），源被改过只报 stale、**不改写生效值**。 */
+{
+  // PINNED:生效值 = 锁定值,且源变了只报 stale。
+  const pinned = { assetId: "p1", pinnedHash: "sha256:AAAA", bindingPolicy: "PINNED" as const, effectiveAt: "DEPLOY" as const };
+  const r1 = resolveConfigBinding(pinned, "sha256:AAAA");
+  eq("PINNED + 源未变 → 生效=锁定值,不 stale", `${r1.effectiveHash}|${r1.stale}`, "sha256:AAAA|false");
+  const r2 = resolveConfigBinding(pinned, "sha256:BBBB");
+  eq("★ PINNED + 源已变 → 生效仍是锁定值(不改写),stale=true", `${r2.effectiveHash}|${r2.stale}`, "sha256:AAAA|true");
+  // LIVE:随源,永远用当前哈希、永不 stale。
+  const live = { assetId: "p1", bindingPolicy: "LIVE" as const, effectiveAt: "NEXT_TURN" as const };
+  const r3 = resolveConfigBinding(live, "sha256:CCCC");
+  eq("LIVE → 生效=当前哈希,不 stale", `${r3.effectiveHash}|${r3.stale}`, "sha256:CCCC|false");
+  eq("LIVE + 源消失(null) → 生效 null,不 stale", `${resolveConfigBinding(live, null).effectiveHash}|${resolveConfigBinding(live, null).stale}`, "null|false");
+  // 契约错误:PINNED 没给 pinnedHash → 抛(不许静默退化成 LIVE)。
+  let threw = false;
+  try { resolveConfigBinding({ assetId: "p1", bindingPolicy: "PINNED", effectiveAt: "DEPLOY" }, "sha256:AAAA"); }
+  catch { threw = true; }
+  check("★ PINNED 缺 pinnedHash → 抛错(不许静默退化成 LIVE)", threw);
+  // staleBindings 只挑出落后项。
+  eq("staleBindings 只挑落后项", staleBindings([r1, r2, r3]).map((x) => x.assetId).join(","), "p1");
 }
 
 /* ─────────────────── 收尾 ─────────────────── */
