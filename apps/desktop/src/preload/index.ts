@@ -318,6 +318,8 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_OPEN_FILE, input)) as RpcMap["library.openFile"],
     entryPath: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_ENTRY_PATH, input)) as RpcMap["library.entryPath"],
+    readAsset: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_READ_ASSET, input)) as RpcMap["library.readAsset"],
     readHighlights: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_READ_HIGHLIGHTS, input)) as RpcMap["library.readHighlights"],
     saveHighlights: ((input) =>

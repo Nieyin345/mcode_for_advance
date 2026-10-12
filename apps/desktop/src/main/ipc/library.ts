@@ -24,6 +24,7 @@ import {
   LibraryRevealFileSchema,
   LibraryOpenFileSchema,
   LibraryEntryPathSchema,
+  LibraryReadAssetSchema,
   PdfHighlightsReadSchema,
   PdfHighlightsSaveSchema,
   PdfHighlightsWriteBackSchema,
@@ -87,7 +88,7 @@ import {
 import { notifyLibraryChanged, emitItemImported } from "@main/library/broadcast.js";
 import { loadLibraryGroups, saveLibraryGroups } from "@main/library/groupRegistry.js";
 import { loadSuppress, saveSuppress, suppressionReasonOfItem } from "@main/library/suppress.js";
-import { entryRootAbsPath, importGenericFiles, readEntryFile } from "@main/library/fileImport.js";
+import { entryRootAbsPath, importGenericFiles, readEntryAsset, readEntryFile } from "@main/library/fileImport.js";
 import { importAnyFiles } from "@main/library/importDispatch.js";
 import {
   ensureOriginal,
@@ -930,6 +931,19 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     // —— 比丢给 Monaco 让它去"编辑"一个目录好。
     const isDir = statSync(abs).isDirectory();
     return { path: abs, ...(isDir ? { isDir: true } : {}) };
+  });
+
+  /**
+   * 【MC-087】按条目身份读一个子资源（Markdown 里的本地图片）→ data URL。
+   *
+   * 库外 `linked` 目录的配图走不通通用 `file.readBinary`（它只认已知项目/worktree 或
+   * dataRoot 下的库根）。这里从**可信条目 id** 取根、把子资源限制在条目根内（`..`/symlink
+   * 都拒），只出**图片** MIME —— 既补上该能力，又**不放宽**项目通用读取边界，也不把
+   * linked 外部目录加进全局 workspace root。见 `readEntryAsset`。
+   */
+  ipcMain.handle(IPC.LIBRARY_READ_ASSET, (_evt, raw) => {
+    const input = LibraryReadAssetSchema.parse(raw);
+    return readEntryAsset(input.id, input.relPath, input.which);
   });
 
   /**

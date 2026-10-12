@@ -26,7 +26,7 @@ import { IconCheck, IconChevronDown, IconChevronUp, IconCopy, IconLoader2 } from
 import type { Components } from "react-markdown";
 import { codeCacheKey, getCodeHtml, setCodeHtml } from "@renderer/lib/markdownCache.js";
 import { fileHrefToPath, isAbsolutePath, isLocalFileHref } from "@renderer/lib/fileLink.js";
-import { resolveRelativePath } from "@renderer/lib/path.js";
+import { resolveRelativePath, relativePath } from "@renderer/lib/path.js";
 import { convertHtmlTables } from "@renderer/lib/htmlTable.js";
 import { api } from "@renderer/lib/api.js";
 import { FileLink } from "./FileLink.js";
@@ -369,6 +369,15 @@ const MarkdownProjectContext = createContext<string | null>(null);
  */
 const MarkdownBaseDirContext = createContext<string | null>(null);
 
+/**
+ * 【MC-087】资料库预览的**条目身份**。当 Markdown 来自资料库条目(尤其 `linked`
+ * 库外目录)时,本地图片**不能**走通用 `file.readBinary`(它只认已知项目/worktree 或
+ * dataRoot 下的库根)→ 改走 `library.readAsset({id, relPath})`,由主进程按条目根校验后
+ * 读图。`rootAbs` 是条目根绝对路径,用来把图片绝对路径换算成**相对条目根**的 relPath。
+ * 非资料库上下文 null(项目 md 仍走 `file.readBinary`)。
+ */
+const MarkdownLibraryContext = createContext<{ id: string; rootAbs: string } | null>(null);
+
 /** data-URL cache for local images referenced by markdown. Promise-valued so
  *  concurrent renders of the same path share one IPC read; failures are
  *  cached too (as "") so a re-render doesn't spam the backend. FIFO-capped so
@@ -395,6 +404,25 @@ function loadMarkdownImageDataUrl(filePath: string): Promise<string> {
 }
 
 /**
+ * 【MC-087】库内图片的缓存 key:条目 id + 相对路径(不是绝对路径 —— 同一条目换绑/移动后
+ * 绝对路径变、id+rel 不变,缓存语义更稳;且两端都参与 key,不会跨条目不撞)。 */
+function loadLibraryImageDataUrl(itemId: string, relPath: string): Promise<string> {
+  const key = `lib:${itemId}:${relPath}`;
+  const cached = mdImageDataUrls.get(key);
+  if (cached) return cached;
+  const promise = api.library
+    .readAsset({ id: itemId, relPath })
+    .then((r) => r.dataUrl ?? "")
+    .catch(() => "");
+  mdImageDataUrls.set(key, promise);
+  if (mdImageDataUrls.size > MD_IMAGE_CACHE_CAP) {
+    const oldest = mdImageDataUrls.keys().next().value;
+    if (oldest !== undefined) mdImageDataUrls.delete(oldest);
+  }
+  return promise;
+}
+
+/**
  * Inline local image for markdown contexts that HAVE a base directory (the
  * IDE's .md preview). Loads bytes via `file.readBinary` (main-side path guard
  * applies) and renders a real `<img>` from a data: URL — the webview cannot
@@ -406,10 +434,14 @@ function MarkdownLocalImage({
   filePath,
   projectPath,
   alt,
+  library,
 }: {
   filePath: string;
   projectPath: string | null;
   alt: string;
+  /** 【MC-087】资料库条目上下文:id + 条目根绝对路径。给了就走 `library.readAsset`
+   *  (能读库外 linked 目录的配图);不给就走通用 `file.readBinary`(项目 md)。 */
+  library?: { id: string; rootAbs: string } | null;
 }) {
   // null = loading, "" = failed, otherwise a data: URL.
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -419,7 +451,22 @@ function MarkdownLocalImage({
     // ⚠️ **失败也必须落地成 ""。** `null` 是"还在读",界面画的是转圈 —— 早先这里没有
     // 拒绝分支,读失败(文件被删、越权、IPC 断)时状态永远停在 null:**图片位置一直转圈**,
     // 而错误只落进 unhandledrejection,谁也看不见。"" 是本组件既有的"读失败"约定。
-    loadMarkdownImageDataUrl(filePath).then(
+    //
+    // 【MC-087】资料库上下文时,把绝对路径换算成**相对条目根**的 relPath,走
+    // `library.readAsset`(主进程按条目根校验后读图)—— 库外 linked 目录的配图走不通
+    // 通用 `file.readBinary`。换算不出来(图片在条目根之外)则**明确失败**,不退化成
+    // 通用读取(那会绕过条目身份、且本来也会被拒)。
+    //
+    // ⚠️ `relativePath` 在"不在 root 之下"时**原样返回绝对路径**(防御性),所以判据不能只看
+    // `!startsWith("..")` —— 那样绝对路径(含盘符/前导 `/`)会被误当 relPath。要求结果
+    // **既非空、也不含盘符/前导分隔、也不以 `..` 开头**,才认作合法子路径。
+    const rel = library ? relativePath(filePath, library.rootAbs) : null;
+    const relIsSub = rel !== null && rel !== "" && !rel.startsWith("..") && !/^[a-zA-Z]:/.test(rel) && !rel.startsWith("/");
+    const useLibrary = library != null && relIsSub;
+    const load = useLibrary
+      ? loadLibraryImageDataUrl(library!.id, rel!)
+      : loadMarkdownImageDataUrl(filePath);
+    load.then(
       (url) => {
         if (!cancelled) setDataUrl(url);
       },
@@ -430,7 +477,8 @@ function MarkdownLocalImage({
     return () => {
       cancelled = true;
     };
-  }, [filePath]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePath, library?.id, library?.rootAbs]);
 
   if (dataUrl === null) {
     return (
@@ -691,6 +739,7 @@ function buildComponents(): Components {
   img({ src, alt }) {
     const projectPath = useContext(MarkdownProjectContext);
     const baseDir = useContext(MarkdownBaseDirContext);
+    const library = useContext(MarkdownLibraryContext);
     const raw = (src ?? "").trim();
     if (isLocalFileHref(raw)) {
       const path = fileHrefToPath(raw);
@@ -698,7 +747,7 @@ function buildComponents(): Components {
         baseDir && !isAbsolutePath(path) ? resolveRelativePath(baseDir, path) : path;
       if (baseDir) {
         return (
-          <MarkdownLocalImage filePath={absolute} projectPath={projectPath ?? null} alt={alt ?? ""} />
+          <MarkdownLocalImage filePath={absolute} projectPath={projectPath ?? null} alt={alt ?? ""} library={library} />
         );
       }
       return (
@@ -773,6 +822,7 @@ export const Markdown = memo(function Markdown({
   projectPath,
   skillNames,
   baseDir,
+  library,
 }: {
   children: string;
   /** Project root — reserved for future inline file-path linkification.
@@ -788,6 +838,9 @@ export const Markdown = memo(function Markdown({
    *  render INLINE (loaded via file.readBinary) and relative links open the
    *  exact sibling file; leave unset for chat output. */
   baseDir?: string | null;
+  /** 【MC-087】资料库条目上下文:id + 条目根绝对路径。给了之后本地配图走
+   *  `library.readAsset`(能读**库外** linked 目录的图,通用 `file.readBinary` 读不到)。 */
+  library?: { id: string; rootAbs: string } | null;
 }) {
   // Build a single regex matching any known `/skillName` at its boundary.
   // Sorted longest-first so a skill named `pdf` doesn't shadow `pdf-generator`.
@@ -851,14 +904,16 @@ export const Markdown = memo(function Markdown({
     >
       <MarkdownProjectContext.Provider value={projectPath ?? null}>
         <MarkdownBaseDirContext.Provider value={baseDir ?? null}>
-          <ReactMarkdown
-            remarkPlugins={remarkPlugins}
-            rehypePlugins={rehypePlugins}
-            urlTransform={urlTransform}
-            components={components}
-          >
-            {source}
-          </ReactMarkdown>
+          <MarkdownLibraryContext.Provider value={library ?? null}>
+            <ReactMarkdown
+              remarkPlugins={remarkPlugins}
+              rehypePlugins={rehypePlugins}
+              urlTransform={urlTransform}
+              components={components}
+            >
+              {source}
+            </ReactMarkdown>
+          </MarkdownLibraryContext.Provider>
         </MarkdownBaseDirContext.Provider>
       </MarkdownProjectContext.Provider>
     </div>

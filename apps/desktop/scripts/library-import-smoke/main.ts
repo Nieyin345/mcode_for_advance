@@ -50,7 +50,7 @@ const SRC = mkdtempSync(join(tmpdir(), "mcode-lib-import-src-"));
 
 const { initDb } = await import("@main/store/db.js");
 const { LibraryRepo } = await import("@main/store/repositories.js");
-const { importGenericFiles, readEntryFile, entryFileAbsPath } = await import(
+const { importGenericFiles, readEntryFile, readEntryAsset, entryFileAbsPath } = await import(
   "@main/library/fileImport.js"
 );
 const { libraryRoot } = await import("@main/library/paths.js");
@@ -718,6 +718,52 @@ console.log("\n笔记入库 · 发 library.item.imported(与 PDF / 通用导入�
   const againNote = importNoteFiles([noteSrc]);
   eq("同标题再次导入被判成重复", againNote.skipped, 1);
   eq("★ 跳过的那次不发事件", importedIds().length, 0);
+}
+
+
+/* ──────────────── 【MC-087】readEntryAsset:库外 linked 目录配图按条目身份读 ──────────────── */
+console.log("\n【MC-087】readEntryAsset 按条目身份读子资源(图片)");
+
+{
+  // 库**外**的一个目录(模拟 linked 外部知识库),里面一张图片。
+  const outside = mkdtempSync(join(tmpdir(), "mcode-linked-outside-"));
+  try {
+    mkdirSync(join(outside, "images"), { recursive: true });
+    // 1x1 PNG 的字节(真实可渲染的最小图)。
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQAY3Y2wAAAAAElFTkSuQmCC",
+      "base64",
+    );
+    writeFileSync(join(outside, "images", "1.png"), png);
+    writeFileSync(join(outside, "secret.txt"), "不该被当图片读出来", "utf8");
+
+    // linked 条目:filePath 指向**库外**目录(importGenericFiles 的原生能力)。
+    const linked = importGenericFiles({ paths: [outside], mode: "linked" });
+    const item = linked.items[0]!;
+    eq("linked 库外目录条目建出来", linked.added, 1);
+
+    // ① 正常子资源图片 → data URL(image/png)。
+    const good = readEntryAsset(item.id, "images/1.png");
+    check("★ 库外 linked 目录的配图能读到(不再被通用 file.readBinary 的围栏拒)", good.dataUrl.startsWith("data:image/png;base64,"), good.dataUrl.slice(0, 30));
+    check("★ 没有 error", good.error === undefined, good.error);
+
+    // ② 越界:`../` 逃到条目根**之外**的一个**真实存在的图片** → 仍拒(绝不因为"要显示图片"
+    //    就放宽路径守卫)。用一个真文件,否则"拒绝"会被"文件不存在"掩盖、判据没有牙。
+    const parentPng = join(outside, "..", "escape-目标.png");
+    writeFileSync(parentPng, png);
+    const esc = readEntryAsset(item.id, "../escape-目标.png");
+    check("★ ../ 逃到条目根外的真图片仍被拒(不放宽路径守卫)", esc.dataUrl === "" && /越出/.test(esc.error ?? ""), esc);
+
+    // ③ 非图片资源(.txt)→ 拒(这条入口是"配图"专用,不该成任意文件读取)。
+    const txt = readEntryAsset(item.id, "secret.txt");
+    check("★ 非图片类型被拒(不是任意文件读取入口)", txt.dataUrl === "" && /图片/.test(txt.error ?? ""), txt);
+
+    // ④ 不存在的资源 → 如实报错,不静默空串。
+    const missing = readEntryAsset(item.id, "images/nope.png");
+    check("★ 缺失资源如实报错", missing.dataUrl === "" && typeof missing.error === "string", missing);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
 }
 
 /* ──────────────── 收尾 ──────────────── */

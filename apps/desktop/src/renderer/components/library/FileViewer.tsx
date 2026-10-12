@@ -55,7 +55,7 @@ type ViewData =
   | { type: "dir"; files: Array<{ name: string; isDir: boolean }> }
   /** `baseDir`：这份文本所在的**绝对目录** —— 只给 md 用（见下面 `img` 那段）。
    *  没有它的话，md 里 `![](images/1.jpg)` 这种相对引用解析不出来，图片是裂的。 */
-  | { type: "text"; text: string; baseDir?: string }
+  | { type: "text"; text: string; baseDir?: string; libraryEntryId?: string; libraryRoot?: string }
   | {
       type: "binary";
       mime: string;
@@ -366,7 +366,13 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
             {/* ★ `baseDir` 是**必须**的 —— 没有它，md 里的 `![](images/1.jpg)`
                 不会去读那个图，而是渲染成一个文件名 chip（用户看到的"图全裂了"）。
                 见 `Markdown` 组件 `img` 分支里那句 `if (baseDir)`。 */}
-            <ChunkedMarkdown text={data.text} baseDir={data.baseDir} className="h-full px-6 py-4" />
+            <ChunkedMarkdown
+              text={data.text}
+              baseDir={data.baseDir}
+              // 【MC-087】资料库条目身份 —— 让本地配图走 library.readAsset(能读库外 linked 目录的图)。
+              library={data.libraryEntryId && data.libraryRoot ? { id: data.libraryEntryId, rootAbs: data.libraryRoot } : null}
+              className="h-full px-6 py-4"
+            />
           </div>
         );
       }
@@ -567,12 +573,14 @@ export async function loadViewData(
        */
       let baseDir: string | undefined;
       let mdPath: string | undefined;
+      let entryRoot: string | undefined;
       try {
         const p = await api.library.entryPath({
           id: target.source.ref,
           ...(target.source.which ? { which: target.source.which } : {}),
         });
         if (p.path) {
+          entryRoot = p.path;
           // 条目根 + relPath = 用户**正在看的那份子文件**的绝对路径。
           // 从前只给条目根 —— 目录条目里翻进子文件后引用，「来源」指向的是根，
           // 模型按它去读会读错文件。
@@ -588,7 +596,14 @@ export async function loadViewData(
       }
       // `absPath` 给引用用（提示词里要说清"这个文件在哪"）—— 拿不到就不给。
       return {
-        data: { type: "text", text: c.text, ...(baseDir ? { baseDir } : {}) },
+        data: {
+          type: "text",
+          text: c.text,
+          ...(baseDir ? { baseDir } : {}),
+          // 【MC-087】资料库上下文:条目 id + 条目根绝对路径 → 让 Markdown 的本地配图走
+          // `library.readAsset`(能读**库外** linked 目录的图;通用 `file.readBinary` 读不到)。
+          ...(entryRoot ? { libraryEntryId: target.source.ref, libraryRoot: entryRoot } : {}),
+        },
         ...(mdPath ? { absPath: mdPath } : {}),
       };
     }

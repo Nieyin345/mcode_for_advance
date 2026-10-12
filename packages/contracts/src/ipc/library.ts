@@ -204,6 +204,39 @@ export interface LibraryEntryPathResult {
   isDir?: boolean;
 }
 
+/**
+ * 【MC-087】**按条目身份读一个子资源（图片等）** —— 给 Markdown 预览里的本地图片用。
+ *
+ * ## 它解决什么
+ *
+ * `linked` 条目可以指向**库外**目录（Obsidian 笔记树、工程文档目录）。正文能通过
+ * `library.readFile({id,relPath})` 读到，但正文里的 `![](images/1.png)` 在渲染端被拼成
+ * **绝对路径**后走的是通用 `file.readBinary` —— 那条只认"已知项目/worktree 或 dataRoot
+ * 下的库根"，**库外 linked 目录不在其列**，于是图片被拒（正文可读、图片全裂）。
+ *
+ * ## 为什么不让渲染端直接拿绝对路径去读
+ *
+ * 渲染端只该请求**某个条目**的**某段相对路径**；主进程从可信条目 id 取当前 linked/attached
+ * 根、规范化物理路径、把子资源限制在**条目根之内**（`..` 逃逸与 symlink/junction 都拒），
+ * 读出字节后按 MIME 包成 data URL 返回。这样"给 Markdown 配图"这条能力**不**把项目通用
+ * `file.readBinary` 的项目边界放宽，也**不**把已导入的 linked 外部目录永久加进全局
+ * workspace root（那会连带放宽项目执行/编辑授权）。
+ */
+export const LibraryReadAssetSchema = z.object({
+  id: z.string().min(1),
+  /** 子资源相对**条目根**的路径（图片等）。`..`/绝对路径/库外链接一律拒。 */
+  relPath: z.string().min(1),
+  /** 同 readFile：看哪一份（省略 = 本体）。 */
+  which: z.enum(["pdf", "md"]).optional(),
+});
+export type LibraryReadAssetInput = z.infer<typeof LibraryReadAssetSchema>;
+
+/** 读子资源的结果：成功给 data URL；失败给一条说人话的原因（不静默空串）。 */
+export interface LibraryReadAssetResult {
+  dataUrl: string;
+  error?: string;
+}
+
 /* ── PDF 高亮 ── */
 
 /**

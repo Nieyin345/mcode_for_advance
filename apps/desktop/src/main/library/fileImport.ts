@@ -410,3 +410,47 @@ export function readEntryFile(
   const buf = readFileSync(target);
   return { type: "binary", mime, base64: buf.toString("base64") };
 }
+
+/**
+ * 【MC-087】按**条目身份**读一个**子资源**（Markdown 里的本地图片）→ data URL。
+ *
+ * 与 {@link readEntryFile} 同一套包含性判据（`entryRootAbsPath` 取可信条目根、
+ * `pathWithin` 挡 `..` 逃逸与 symlink/junction），但**只出图片/OOXML 之外的资源字节**，
+ * 且只用于 `linked` 条目里那些**库外**目录的配图 —— 那条路走不通通用 `file.readBinary`
+ * （它只认已知项目/worktree 或 dataRoot 下的库根）。
+ *
+ * 不复用 `readEntryFile` 直接返回 base64，是因为这里要的是 **data URL**（Markdown 的
+ * `<img>` 直接吃），而且**只允许图片 MIME**（正文里的一张 `![](../../secret.txt)` 不该
+ * 通过"配图"这条入口把任意文本当图片塞进渲染端）。
+ */
+export function readEntryAsset(
+  itemId: string,
+  relPath: string,
+  which?: "pdf" | "md",
+): import("@contracts/ipc/library.js").LibraryReadAssetResult {
+  const item = LibraryRepo.get(itemId);
+  if (!item) return { dataUrl: "", error: "找不到这条资料" };
+  const root = entryRootAbsPath(item, which);
+  if (!root) return { dataUrl: "", error: "这条资料没有关联文件" };
+  const target = path.resolve(root, relPath);
+  if (!pathWithin(root, target)) {
+    return { dataUrl: "", error: "资源路径越出了这条资料的目录" };
+  }
+  if (!existsSync(target)) return { dataUrl: "", error: "资源文件不存在(被移走了?)" };
+  const st = statSync(target);
+  if (st.isDirectory()) return { dataUrl: "", error: "这是一个目录,不是资源文件" };
+  if (st.size > MAX_BINARY_BYTES) return { dataUrl: "", error: "资源太大(超过 20MB)" };
+  const ext = extOf(target);
+  // **只允许图片** —— 这条入口是"给 Markdown 配图"专用的,不该成为任意文件读取。
+  const mime = IMAGE_MIME[ext];
+  if (!mime) return { dataUrl: "", error: `不是可内联的图片类型:${ext || "(无扩展名)"}` };
+  try {
+    const buf = readFileSync(target);
+    if (mime === "image/svg+xml") {
+      return { dataUrl: `data:${mime};utf8,${encodeURIComponent(buf.toString("utf-8"))}` };
+    }
+    return { dataUrl: `data:${mime};base64,${buf.toString("base64")}` };
+  } catch (err) {
+    return { dataUrl: "", error: `读资源失败:${(err as Error).message}` };
+  }
+}

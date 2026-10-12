@@ -151,6 +151,7 @@ export function ChunkedMarkdown({
   projectPath,
   baseDir,
   skillNames,
+  library,
   scroll = "self",
   className,
   /** 换文档时回到首屏 —— 同一个文件重转之后也靠它（内容换了但组件不重建）。 */
@@ -160,6 +161,8 @@ export function ChunkedMarkdown({
   projectPath?: string | null;
   baseDir?: string | null;
   skillNames?: string[];
+  /** 【MC-087】资料库条目身份 —— 给了之后本地配图走 library.readAsset(能读库外 linked 图)。 */
+  library?: { id: string; rootAbs: string } | null;
   scroll?: "self" | "parent";
   className?: string;
   resetKey?: unknown;
@@ -203,7 +206,7 @@ export function ChunkedMarkdown({
   const body = (
     <>
       {chunks.slice(0, shown).map((chunk, i) => (
-        <Markdown key={i} projectPath={projectPath} baseDir={baseDir} skillNames={skillNames}>
+        <Markdown key={i} projectPath={projectPath} baseDir={baseDir} skillNames={skillNames} library={library}>
           {chunk}
         </Markdown>
       ))}
