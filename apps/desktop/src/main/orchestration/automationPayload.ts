@@ -24,6 +24,15 @@ export type TriggerPayload =
   | {
       kind: "file";
       files: readonly string[];
+      /**
+       * 【ARC-015】这次载荷里**因为积压超限被丢掉**了多少条路径(未丢时为 undefined)。
+       *
+       * 一条长期抖动的目录会把攒着的队列顶到上限,实现只保留最近的若干条 —— 但**丢了
+       * 几条必须说出来**,否则模型以为它办的是全部,少办的那些永远没人办、也不报错。
+       * 与 `itemCount` 同一个立场(载荷里可选、不进「插入变量」菜单):它只在**真丢了**
+       * 的时候才出现,列进菜单等于让用户插一个多半取不到的名字。
+       */
+      overflowDropped?: number;
       /** 自定义 UI「运行前输入」带来的值(见 `@contracts/customUi` 的 inputs)。 */
       input?: TriggerInputValues;
     }
@@ -92,6 +101,14 @@ export interface TriggerPayloadFacts {
   at?: number;
   /** 触发时攒下的文件(绝对路径)。只有 file 有。 */
   files?: readonly string[];
+  /**
+   * 【ARC-015】这次载荷里因积压超限**被丢掉**的条数(未丢时不出现)。只有 file 有。
+   *
+   * 与 `itemCount` 同一口径:只在**真丢了**的时候才给键 —— 消费方据此知道"这次输入
+   * 不完整",而不是把一份被截断的列表当成全部。**故意不进「插入变量」菜单**(见
+   * `TRIGGER_PAYLOAD_FACTS_OF`):它多半取不到,列出来只会诱使用户写一个一定解不出的名字。
+   */
+  overflowDropped?: number;
   /** 事件名(`@contracts/hook` 的 `HookEvent`)。只有 event 有。 */
   event?: HookEvent;
   toolName?: string;
@@ -174,7 +191,16 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
     case "schedule":
       return { kind: "schedule", at: payload.at };
     case "file":
-      return { kind: "file", files: [...payload.files], ...inputFactsOf(payload.input) };
+      return {
+        kind: "file",
+        files: [...payload.files],
+        // **真丢了才给键**(同 `itemCount` 的口径)—— 一份没截断的列表不该多一个恒为 0 的
+        // `overflowDropped`,那会让"这次输入完整吗"这个问题多一个永远为假的答案。
+        ...(payload.overflowDropped !== undefined && payload.overflowDropped > 0
+          ? { overflowDropped: payload.overflowDropped }
+          : {}),
+        ...inputFactsOf(payload.input),
+      };
     case "event": {
       // 条目那几项**拍平进来**(见 `TriggerPayloadFacts.itemId` 上的说明)。合并窗口里
       // 攒了好几条时,take 第一条 —— 单数名字与 `describeTriggerPayload` 那段人话里的
@@ -264,11 +290,21 @@ export function describeTriggerPayload(payload: TriggerPayload): string {
     case "file": {
       const listed = capList(payload.files);
       const inputSaid = describeInput(payload.input);
-      if (listed.shown.length === 0) return inputSaid === "" ? "监听的文件有变化。" : `手动带着输入运行。\n${inputSaid}`;
+      // 【ARC-015】被截断了就**明说**,别让模型把这份不完整的列表当成全部 —— 它得
+      // 知道"可能还有文件没列出来",而不是以为办完这些就没事了。
+      const overflow = payload.overflowDropped ?? 0;
+      const overflowSaid = overflow > 0
+        ? [`(输入被截断:因为有更多文件持续变化,更早的 ${overflow} 个没能带上 —— 这次看到的不是全部)`]
+        : [];
+      if (listed.shown.length === 0) {
+        const head = inputSaid === "" ? "监听的文件有变化。" : "手动带着输入运行。";
+        return [head, ...overflowSaid].join("\n");
+      }
       return [
         "有文件变了:",
         ...listed.shown.map((f) => `- ${f}`),
         ...(listed.rest > 0 ? [`(还有 ${listed.rest} 个没列出来)`] : []),
+        ...overflowSaid,
         ...(inputSaid === "" ? [] : [inputSaid]),
       ].join("\n");
     }

@@ -35,7 +35,7 @@ import { withAutomationOrigin } from "@main/orchestration/automationEventOrigin.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, shouldIgnoreWatchPath, isSpecificGlob, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, shouldIgnoreWatchPath, isSpecificGlob, type HookEvent } from "@contracts/hook";
 import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
@@ -2028,7 +2028,7 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     activeWatchOf(originSessionId: string): boolean;
     statusOf(workflowId: string): Array<{ lastError?: string }>;
     lastMinute: Map<string, number>;
-    pendingFires: Map<string, { files: string[]; busyRetryMs?: number }>;
+    pendingFires: Map<string, { files: string[]; busyRetryMs?: number; overflowDropped?: number }>;
     runNow(workflowId: string, triggerNodeId: string): Promise<{ ok: boolean; error?: string }>;
     onTick(): void;
     onFsChange(dir: string, filename: string | null): void;
@@ -2449,6 +2449,66 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       "而且没有哪次运行的载荷里带着那个已删文件",
       !runs.some((r) => JSON.stringify(r.entry?.payload ?? {}).includes("vanishes-later")),
       fired.map((r) => r.entry?.payload),
+    );
+
+    /* ── ②c 攒着的文件超过上限 → 显式报出丢了多少(不是静默截断) ── */
+
+    // 一条抖动的目录把积压队列顶到 `PENDING_FILES_LIMIT`(500)之上。**上限保护本身要
+    // 保留**(队列不能无限长),但**丢了必须说出来** —— 从前只是 `log.warn`,载荷里是
+    // 一份不完整列表却没有任何消费方收得到"这次输入被截断了"的事实(ARC-015 剩余项②)。
+    // 这里灌 502 个真存在的 `.md`,断言:队列恰好停在 500、超出的 2 条记进
+    // `overflowDropped`,并**兑现到载荷事实**里。
+    const wf3 = nextId();
+    const nodeId3 = "t_overflow";
+    makeAutomation({
+      workflowId: wf3,
+      nodeId: nodeId3,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+        [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+        task: "这批文件太多时也要如实说",
+      },
+    });
+    await runner.reloadAll();
+
+    const overflowKey = `${wf3}:${nodeId3}`;
+    const LIMIT = 500;
+    const EXTRA = 2;
+    for (let i = 0; i < LIMIT + EXTRA; i += 1) {
+      const name = `churn-${String(i).padStart(4, "0")}.md`;
+      writeFileSync(join(PROJ_DIR, name), `# ${i}`);
+      runner.onFsChange(PROJ_DIR, name);
+    }
+    const pending3 = runner.pendingFires.get(overflowKey);
+    eq("超限后队列恰好停在上限", pending3?.files.length ?? -1, LIMIT);
+    eq("超出的条数记进 overflowDropped", pending3?.overflowDropped ?? -1, EXTRA);
+    check("留下的是最近的那批(丢的是最早的)", pending3?.files.includes(join(PROJ_DIR, `churn-${String(LIMIT + EXTRA - 1).padStart(4, "0")}.md`)) === true, pending3?.files.slice(0, 2));
+
+    await sleep(FLUSH_SLACK_MS);
+    const overflowRun = runsOfNode(nodeId3);
+    // 真实 `fs.watch` 可能让收口再往后推一点(见下),所以只断言**至少起了一次** ——
+    // 本片要证的是"超限也照跑 + 载荷如实报截断",不是精确的运行次数。
+    check("超限的这一批照常起一次运行(不因超限丢掉整批)", overflowRun.length >= 1, overflowRun.length);
+    // ⚠️ 载荷里那个数**只断言下界**。这个项目目录挂的是**真的 `fs.watch`**,而我刚写的
+    // 502 个文件会产生**真实 `rename` 事件**,在收口那 300ms 里把已被挤掉的早期文件
+    // 又送一遍 `onFsChange` —— 于是"丢的条数"会**再多几条**,而具体多几取决于平台事件
+    // 时序(不稳定)。下界 `>= EXTRA` 已经能区分修复:没接线时这个键**根本不出现**
+    // (`undefined >= 2` 为假,真红)。队列层那个精确数在上面已经断言过了(纯函数层
+    // 的 number 也是精确的)。
+    check(
+      "载荷事实里带上了丢的条数(下界)",
+      (overflowRun[0]?.entry?.payload?.overflowDropped as number | undefined) !== undefined
+        && (overflowRun[0]?.entry?.payload?.overflowDropped as number) >= EXTRA,
+      overflowRun[0]?.entry?.payload,
+    );
+    eq("载荷里交给模型的文件数恰好是队列上限", (overflowRun[0]?.entry?.payload?.files as string[] | undefined)?.length, LIMIT);
+    check(
+      "载荷里交给模型的仍是最近那批(不含被丢的最早文件)",
+      (overflowRun[0]?.entry?.payload?.files as string[] | undefined)?.includes(
+        join(PROJ_DIR, `churn-${String(LIMIT + EXTRA - 1).padStart(4, "0")}.md`),
+      ) === true,
+      overflowRun[0]?.entry?.payload?.files,
     );
 
     runner.dispose();
@@ -3441,6 +3501,57 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
   eq("可选路径传到触发器载荷", facts.filePath, "files/report.docx");
 }
 
+
+/* ── 【ARC-015】积压超限:丢是允许的,假装没丢不允许(剩余项②) ── */
+console.log("\n【ARC-015】文件积压超限 → 显式 OVERFLOW(不是静默丢弃)");
+{
+  // 不超限:原样收进,不丢。
+  const under = addToFileBacklog(["a"], "b", 5);
+  check("未超限:收进队列 + 不丢", under.backlog.join() === "a,b" && under.dropped === 0, under);
+
+  // 已存在:不重复收,也不丢。
+  const dup = addToFileBacklog(["a", "b"], "a", 5);
+  check("已在队列里:不重复收、不丢", dup.backlog.join() === "a,b" && dup.dropped === 0, dup);
+
+  // **恰好到上限不丢**(边界:limit=3,已有 2,再来 1 → 长度 3,不丢)。
+  const exact = addToFileBacklog(["a", "b"], "c", 3);
+  check("恰好到上限不丢(dropped=0)", exact.backlog.length === 3 && exact.dropped === 0, exact);
+
+  // 越一格:丢最早的那一条,dropped 报出条数。
+  const over = addToFileBacklog(["a", "b", "c"], "d", 3);
+  check("越一格:丢最早的一条 + 报出 1", over.backlog.join() === "b,c,d" && over.dropped === 1, over);
+
+  // 丢**最早**的,不是最近的 —— 留下的是最近发生的(与从前 `shift()` 取舍一致)。
+  const over2 = addToFileBacklog(["a", "b", "c", "d"], "e", 3);
+  check("超限丢最早:留下最近三条", over2.backlog.join() === "c,d,e" && over2.dropped === 2, over2);
+
+  // 纯:不改原数组(调用方按返回值替换)。
+  const src = ["a", "b", "c"];
+  addToFileBacklog(src, "d", 3);
+  check("纯函数:不改原队列", src.join() === "a,b,c", src);
+
+  // 极端上限:limit<=0 时队列恒空,整条都算丢(不静默扩成无限)。
+  const zero = addToFileBacklog([], "x", 0);
+  check("上限 0:整条被丢且报出", zero.backlog.length === 0 && zero.dropped === 1, zero);
+}
+
+{
+  // 载荷事实:没丢时**不给** overflowDropped 键(同 itemCount 的口径)。
+  const clean = payloadFactsOf({ kind: "file", files: ["a.md"] });
+  check("facts:未截断不带 overflowDropped", !Object.prototype.hasOwnProperty.call(clean, "overflowDropped"), Object.keys(clean));
+  // 真丢了才带,且是丢的条数。
+  const dropped = payloadFactsOf({ kind: "file", files: ["a.md"], overflowDropped: 7 });
+  eq("facts:截断时带 overflowDropped=丢的条数", dropped.overflowDropped, 7);
+  // 0 视同没丢(防御:调用方不该传 0,但 0 不该冒出一个恒假的键)。
+  const zeroFact = payloadFactsOf({ kind: "file", files: ["a.md"], overflowDropped: 0 });
+  check("facts:overflowDropped=0 不给键", !Object.prototype.hasOwnProperty.call(zeroFact, "overflowDropped"), Object.keys(zeroFact));
+
+  // 人话描述:**明说输入不完整**,别让模型把被截断的列表当成全部。
+  const cappedText = describeTriggerPayload({ kind: "file", files: ["a.md", "b.md"], overflowDropped: 3 });
+  check("描述:截断时明说输入不完整", cappedText.includes("3") && cappedText.includes("不是全部"), cappedText);
+  const noDropText = describeTriggerPayload({ kind: "file", files: ["a.md"] });
+  check("描述:没截断时不提截断", !noDropText.includes("截断"), noDropText);
+}
 
 /* ── 【ARC-015】文件监听的默认忽略目录:纯函数矩阵 ── */
 console.log("\n【ARC-015】文件监听默认忽略目录的 policy");

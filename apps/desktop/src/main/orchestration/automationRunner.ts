@@ -46,7 +46,7 @@ import { existsSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, shouldIgnoreWatchPath, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, addToFileBacklog, shouldIgnoreWatchPath, type HookEvent } from "@contracts/hook";
 import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import {
   NODE_COMMAND_PARAM_KEY,
@@ -209,9 +209,11 @@ const WATCH_IGNORED_DIRS = new Set([
 /**
  * 一格攒着的文件路径上限。
  *
- * `pending.files` 是**只增不减**的(见 `rearm` 里那段:删掉的只在拼载荷时滤掉,数组本身
- * 留着,好让"改名来回"那种情形下路径还在)。一个长期抖动的目录会让它无限长下去,最后
- * 整批塞进提示词。资料库那一侧早就有 `CUSTOM_UI_MAX_BATCH = 200` 的对称上限。
+ * 删掉的路径**不在收口时立刻剔除**(只在拼载荷时滤掉),好让"改名来回"那种情形下路径还在
+ * —— 所以数组会随事件累积。一个长期抖动的目录会让它无限长下去,最后整批塞进提示词。
+ * 这个上限把它截到最近若干条:**丢掉多少累加进 `overflowDropped` 并兑现到载荷事实**
+ * (ARC-015)—— 截断本身是性能保护,但不得静默假装输入完整。资料库那一侧早就有
+ * `CUSTOM_UI_MAX_BATCH = 200` 的对称上限。
  */
 const PENDING_FILES_LIMIT = 500;
 
@@ -336,6 +338,14 @@ interface PendingFire {
   timer: ReturnType<typeof setTimeout> | null;
   /** 已经按 glob 筛过的文件(绝对路径)。只有文件那一路会往里放。 */
   files: string[];
+  /**
+   * 【ARC-015】这一格攒着期间**因积压超限被丢掉**的路径条数(累加,见 `addToFileBacklog`)。
+   *
+   * 上限保护本身要保留(一条抖动的目录不能无限占内存/塞爆提示词),但**丢了几条必须
+   * 兑现到载荷事实**里 —— 否则模型把这份被截断的列表当成全部,少办的那些永远没人办、
+   * 也不报错。未丢时是 0,载荷里就不出现这个键。
+   */
+  overflowDropped: number;
   /** 最后一条事件载荷(事件那一路用;文件那一路的载荷在 flush 时现拼)。 */
   event?: TriggerPayload;
   /** Internal provenance, never inferred from model-supplied payload fields. */
@@ -1336,14 +1346,11 @@ class AutomationRunner {
       if (!existsSync(abs)) continue;
       const pending = this.pendingOf(trigger);
       if (!pending.files.includes(abs)) {
-        // 上限(见 `PENDING_FILES_LIMIT`):挤掉最早的那一个。丢掉一条**要说出来** ——
-        // 静默少办一件事是这一路最坏的坏法。
-        if (pending.files.length >= PENDING_FILES_LIMIT) {
-          const dropped = pending.files.shift();
-          log.warn(
-            `[automation] 「${trigger.title}」攒着的文件超过 ${PENDING_FILES_LIMIT} 个,丢掉最早的一个:${dropped ?? ""}`,
-          );
-        }
+        // 上限(见 `PENDING_FILES_LIMIT`):收进队列,超限时丢**最早**的几条。丢掉多少
+        // **要说出来** —— 静默少办一件事是这一路最坏的坏法。【ARC-015】现在这层不只是
+        // 一句 `log.warn`,丢的条数**累加进 `pending.overflowDropped`**,收口时并入载荷
+        // 事实(`payload.overflowDropped`),让人话描述与 `data.trigger` 都明说"输入不完整"。
+        if (pending.files.length >= PENDING_FILES_LIMIT) pending.files.shift();
         pending.files.push(abs);
       }
       // **来了新东西 → 回看间隔从头数。** 退避(见 `BUSY_RETRY_MIN_MS`)管的是
@@ -1788,7 +1795,7 @@ class AutomationRunner {
     const key = triggerKey(trigger);
     const existing = this.pendingFires.get(key);
     if (existing !== undefined) return existing;
-    const fresh: PendingFire = { trigger, timer: null, files: [] };
+    const fresh: PendingFire = { trigger, timer: null, files: [], overflowDropped: 0 };
     this.pendingFires.set(key, fresh);
     return fresh;
   }
@@ -1828,7 +1835,14 @@ class AutomationRunner {
           log.info(`[automation] 「${trigger.title}」攒着的文件在收口前都不在了,这一次不跑`);
           return;
         }
-        payload = { kind: "file", files };
+        payload = {
+          kind: "file",
+          files,
+          // 【ARC-015】这一格攒着期间若因超限丢过路径,把条数**带进载荷事实** —— 让
+          // `describeTriggerPayload` 与 `data.trigger.overflowDropped` 都明说"这次输入
+          // 不完整"。没丢过(`0`)时不带这个键(同 `itemCount` 的口径)。
+          ...(pending.overflowDropped > 0 ? { overflowDropped: pending.overflowDropped } : {}),
+        };
       } else {
         payload = pending.event ?? { kind: "manual" };
       }
@@ -1948,6 +1962,9 @@ class AutomationRunner {
           }
           if (payload.kind === "file") {
             pending.files = [...new Set([...pending.files, ...payload.files])];
+            // 【ARC-015】上一批若已因超限丢过,把它累加进来 —— 否则忙时重建的那一格会把
+            // "输入不完整"这件事实丢掉,下次收口时又当成"这就是全部"。
+            if (payload.overflowDropped !== undefined) pending.overflowDropped += payload.overflowDropped;
           } else {
             for (const item of payload.items ?? []) {
               pending.event = mergeEventPayload(pending.event, payload.event,

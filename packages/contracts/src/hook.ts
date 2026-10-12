@@ -877,6 +877,43 @@ export function shouldIgnoreWatchPath(
 }
 
 /**
+ * 【ARC-015】把一条路径收进文件触发的**积压队列**,并在超限时**如实报出丢了几条**。
+ *
+ * ## 为什么是一个显式结果,而不是就地 `shift()` 一下
+ *
+ * 一条长期抖动的目录会把积压队列顶到上限。从前超限只是 `shift()` 掉最早的一条 +
+ * 一句 `log.warn` —— 运行照跑,载荷里却是**不完整**的文件列表,而**没有任何消费方
+ * 收得到一个"这次输入被截断了"的事实**(台账 ARC-015 剩余项②)。模型以为它办的是全部,
+ * 少办的那些**永远没人办**,也不报错。
+ *
+ * 这个纯函数把「截断」变成一个可测量的数(`dropped`):调用方据此把 `overflowDropped`
+ * 记进载荷事实、并在人话描述里明说"输入不完整"。**丢是允许的(性能保护要保留),
+ * 假装没丢不允许。** 判据要窄,不做任何"智能"取舍 —— 只丢**最早**的,不重排。
+ *
+ * 去重:`path` 已在队列里时原样返回(`dropped` = 0),与"文件反复变只算一次"一致。
+ *
+ * @param backlog 现有队列(不就地改;返回新数组)
+ * @param path 要收进来的路径(调用方已归一)
+ * @param limit 队列上限(见 automationRunner 的 `PENDING_FILES_LIMIT`)
+ * @returns 新队列 + 这次因超限丢掉的条数
+ */
+export function addToFileBacklog(
+  backlog: readonly string[],
+  path: string,
+  limit: number,
+): { backlog: string[]; dropped: number } {
+  // 已在里面:不重复收,也不丢任何东西(同"文件反复变只算一次")。
+  if (backlog.includes(path)) return { backlog: [...backlog], dropped: 0 };
+  const next = [...backlog, path];
+  // limit <= 0 时队列恒空,整条都算丢掉(边界:调用方不该传 0,但不静默扩成无限)。
+  const cap = limit > 0 ? limit : 0;
+  const overflow = next.length - cap;
+  if (overflow <= 0) return { backlog: next, dropped: 0 };
+  // 只丢**最早**的几条(从队首),留下的是最近发生的 —— 与原来 `shift()` 的取舍一致。
+  return { backlog: next.slice(overflow), dropped: 0 };
+}
+
+/**
  * 【ARC-015】这条 glob 够不够"具体",足以解除默认忽略保护?
  *
  * 不够具体的:空串、`**`、纯 `*`、只写一个默认忽略目录名(如 `dist`,那等于说"整个 dist
