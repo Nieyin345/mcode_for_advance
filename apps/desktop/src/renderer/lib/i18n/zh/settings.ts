@@ -1913,6 +1913,8 @@ export const zh = {
   "settings.engineTools.addCustomPlaceholder": "例如 Bash / read / mcp__server__tool",
   "settings.engineTools.addCustomButton": "加入禁用",
   "settings.engineTools.appliesNextTurn": "改动在下一轮对话生效（引擎在开跑那一轮读取本策略）。",
+  "settings.engineTools.policyCorruptRecovered": "工具禁用配置损坏，已回退到最后一份确认过的策略。你的禁用列表仍按上一份生效；建议重新保存一次。",
+  "settings.engineTools.policyCorruptNoBackup": "工具禁用配置损坏，且没有可用备份，当前按「不设限」处理。请重新确认你的禁用列表。",
   "settings.engineTools.saveFailed": "保存失败",
 
   // ── 能力 × 引擎矩阵(设置 → 引擎工具 页顶部那张只读表)──

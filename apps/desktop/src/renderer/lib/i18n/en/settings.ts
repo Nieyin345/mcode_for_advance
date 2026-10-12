@@ -1927,6 +1927,8 @@ export const en = {
   "settings.engineTools.addCustomButton": "Disable",
   "settings.engineTools.appliesNextTurn": "Changes take effect on the next turn (the engine reads this policy when a turn starts).",
   "settings.engineTools.saveFailed": "Save failed",
+  "settings.engineTools.policyCorruptRecovered": "The tool-disable policy file is corrupt; fell back to the last confirmed policy. Your disabled list still applies as before — re-save it to refresh the file.",
+  "settings.engineTools.policyCorruptNoBackup": "The tool-disable policy file is corrupt and no backup is available, so tools are currently unrestricted. Please re-confirm your disabled list.",
 
   // ── Capability × engine matrix (read-only table atop settings → engine tools) ──
   "settings.engineMatrix.title": "Capability × engine",

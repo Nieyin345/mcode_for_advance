@@ -178,6 +178,15 @@ export function EngineToolsPanel() {
               汇到一处（见 engineCapabilityData.ts）。 */}
           <EngineCapabilityMatrix />
           {rpc.error && <ErrorNote>{rpc.error.message}</ErrorNote>}
+          {/* 【MC-071】策略文件损坏时**显式告警**,不把 fail-open 当用户主动启用。
+              主进程已据 last-good 保守恢复(或无备份时按不设限),这里把那一事实讲出来。 */}
+          {snap?.status === "INVALID" && (
+            <ErrorNote tone="warning">
+              {snap.recovered
+                ? t("settings.engineTools.policyCorruptRecovered")
+                : t("settings.engineTools.policyCorruptNoBackup")}
+            </ErrorNote>
+          )}
           {!snap ? (
             rpc.loading ? (
               <div className="flex justify-center py-12">

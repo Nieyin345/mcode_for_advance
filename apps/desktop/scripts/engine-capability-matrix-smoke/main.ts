@@ -155,6 +155,21 @@ for (const row of ENGINE_CAPABILITY_MATRIX) {
   const matrixSrc = read("src/renderer/components/settings/EngineCapabilityMatrix.tsx");
   check("组件引用了矩阵数据模块", matrixSrc.includes("engineCapabilityData.js"));
   check("组件对每行逐格读 supportsCapability", matrixSrc.includes("supportsCapability("));
+
+  /* 【MC-071】策略文件损坏必须**显式出现在界面上** —— 契约把 status/recovered 带出来了
+     (`EngineToolsSnapshot`),但若面板不消费它,用户看到的就是"没限制",而引擎那边其实
+     按不设限或旧策略在跑。判据立在**面板真的读了 status 且两种分支各有文案**。 */
+  check("★ 面板消费策略 status 并显示损坏告警", panelSrc.includes('snap?.status === "INVALID"'));
+  check(
+    "★ 面板对 recovered / 无备份两种事实各给一条文案(不笼统一句)",
+    panelSrc.includes("policyCorruptRecovered") && panelSrc.includes("policyCorruptNoBackup"),
+  );
+  for (const key of ["settings.engineTools.policyCorruptRecovered", "settings.engineTools.policyCorruptNoBackup"] as const) {
+    for (const lang of ["zh", "en"] as const) {
+      const v = translate(lang, key as never);
+      check(`${lang} 词条存在:${key}`, v !== key && v.trim().length > 0, v);
+    }
+  }
 }
 
 console.log(`\nengine-capability-matrix-smoke: ${checks - failures}/${checks} passed`);
