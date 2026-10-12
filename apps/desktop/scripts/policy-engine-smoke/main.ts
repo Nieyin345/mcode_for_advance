@@ -42,6 +42,11 @@ import {
   serializeGrants,
   type BlobIO,
 } from "@main/appControl/grantStoreFile.js";
+import {
+  assembleGrantStore,
+  getGrantStore,
+  setGrantStore,
+} from "@main/appControl/grantStoreRuntime.js";
 
 const failures: string[] = [];
 let total = 0;
@@ -504,6 +509,51 @@ const memBlob = (): BlobIO & { peek: () => string | null } => {
   check("★ 落盘层不 import sql.js / 存储层", !/from\s+"[^"]*sql|require\("sql\.js|@main\/store|settingsStore|SettingRepo/.test(code));
   // 授权**不**放进可导入的普通 setting —— 复用共享的 atomicWrite(落盘实现只有一份)。
   check("★ 授权不落 SettingRepo(用 atomicWrite 写独立文件)", /atomicWrite\(/.test(code));
+}
+
+/* ══ 18. ★ 装配点:GrantStore 装到启动路径上(单例口 + 真读数据根下的 grants.json) ══ */
+// 题面要求:装配后 `getGrantStore()` 拿到的是**同一个实例**(wiring 真的接上了);
+// 且它读的是**数据根下的 grants.json**(不是别处)。装配点是**可注入 dataRoot 的纯函数**
+// (像 grantStoreFile.ts 那样窄),无头 smoke 传临时目录即可,绝不碰用户数据根。
+{
+  // 复位:未装配时读取口给到的是一个内存版单例(能签发,只是不落盘)。
+  setGrantStore(null);
+  const before = getGrantStore();
+  check("装配前:getGrantStore() 已给到一个可用单例(内存版)", before instanceof GrantStore, typeof before);
+
+  // 真装配到一个临时数据根。
+  const dir = mkdtempSync(join(tmpdir(), "mcode-grants-wire-"));
+  const store = assembleGrantStore(dir);
+  eq("★ 装配后:getGrantStore() 拿到的是同一个实例(接线真的接上了)", getGrantStore() === store, true);
+
+  // 通过单例口签发 → 必须**真落到数据根下的 appControl/grants.json**。
+  const g = getGrantStore().issueGrant(decision({ allowedActions: ["file.write"], scopedCore: { projectPath: "/repo/a" } }), USER, 1_000);
+  const file = grantStorePath(dir);
+  check("★ 装配后:授权真落到 <数据根>/appControl/grants.json", existsSync(file), file);
+  check("★ 装配后:落点就是数据根下那一份(不是别处)", file === join(dir, "appControl", "grants.json"), file);
+
+  // 再从**同一数据根**装配一次(模拟重启)→ 单例换成新实例,但读得到先前落盘的那份。
+  const store2 = assembleGrantStore(dir);
+  check("★ 重启装配:单例换成新实例", getGrantStore() === store2 && store2 !== store, true);
+  eq("★ 重启装配:从数据根读回先前落盘的授权", store2.get(g.grantId, 1_500)?.grantId, g.grantId);
+
+  // 复位口:传 null 回到全新的内存版(用例间隔离,不留前一份的状态)。
+  setGrantStore(null);
+  const fresh = getGrantStore();
+  eq("复位:setGrantStore(null) 后是新内存版(读不回旧的)", fresh.get(g.grantId, 1_500), null);
+}
+
+/* ══ 19. 源码断言:装配点不 import electron;单例只有一个读取口 ══ */
+{
+  const raw = readFileSync(join(process.cwd(), "src/main/appControl/grantStoreRuntime.ts"), "utf8");
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check("★ 装配点不 import electron", !/from\s+"electron/.test(code));
+  check("★ 装配点不 import sql.js / 存储层", !/from\s+"[^"]*sql|require\("sql\.js|@main\/store|settingsStore|SettingRepo/.test(code));
+  // 落点由 grantStoreFile 的 grantStorePath 决定(数据根下 appControl/grants.json)。
+  check("★ 装配点复用 grantStorePath(落点单一事实源)", /grantStorePath\(/.test(code));
+  // 唯一 `new GrantStore(` 出现在装配 / 复位路径上(读取口 getGrantStore 不另造实例)。
+  const ctorSites = [...code.matchAll(/new GrantStore\(/g)].length;
+  check("★ 装配点里 new GrantStore 只出现在装配/复位默认上", ctorSites === 3, ctorSites);
 }
 
 console.log(`\n${total - failures.length}/${total} 通过`);
