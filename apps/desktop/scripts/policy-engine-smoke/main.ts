@@ -15,7 +15,8 @@
  *
  * Run: scripts/policy-engine-smoke/run.sh
  */
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   ActionIntent,
@@ -33,6 +34,14 @@ import {
   type GrantDecision,
   type GrantStorePersist,
 } from "@main/appControl/grantStore.js";
+import {
+  atomicFileBlob,
+  fileGrantPersist,
+  grantStorePath,
+  parseGrants,
+  serializeGrants,
+  type BlobIO,
+} from "@main/appControl/grantStoreFile.js";
 
 const failures: string[] = [];
 let total = 0;
@@ -424,6 +433,77 @@ const decision = (over: Partial<GrantDecision> = {}): GrantDecision => ({
   // `approvalSource:`(参数 `grantId: string` 之类不会命中)当探针,别处不许手搓。
   const buildSites = [...code.matchAll(/approvalSource:\s*\{/g)].length;
   check("★ Grant 对象只在签发口构造(唯一 approvalSource 字面量点在 issueGrant)", buildSites === 1);
+}
+
+/* ══ 16. ★ 持久化落盘:重启后撤销 / 过期仍生效 ══ */
+// 真落盘边界:`grantStoreFile.ts` 把 `GrantStorePersist` 落在**独立 JSON 文件**上
+// (不是 SettingRepo —— 那张表整体进出「导入设置」,ARC-004 明令授权状态不得放可导入 setting)。
+// 这里用**可注入的 get/set 桩**(`BlobIO`,内存对象)测不变量,绝不去碰用户数据根。
+const memBlob = (): BlobIO & { peek: () => string | null } => {
+  let text: string | null = null;
+  return { read: () => text, write: (t) => { text = t; }, peek: () => text };
+};
+{
+  // 签发 → 落盘 → 用同一份 blob 重开(模拟重启)→ 仍取得到。
+  const blob = memBlob();
+  const store = new GrantStore({ persist: fileGrantPersist(blob), newId: () => "g-persist" });
+  const g = store.issueGrant(decision(), USER, 1_000); // expiresAt=2000
+  check("落盘:签发即写真文件(blob 非空)", blob.peek() !== null && blob.peek()!.length > 0, blob.peek()?.slice(0, 5));
+  const reopened = new GrantStore({ persist: fileGrantPersist(blob) });
+  eq("落盘:重启后仍取得到(过期前)", reopened.get(g.grantId, 1_500)?.grantId, "g-persist");
+  eq("★ 落盘:重启后过期时刻仍带回来(get@2500 → null)", reopened.get(g.grantId, 2_500), null);
+}
+{
+  // ★ 承重:revoke 后 save → 重启 load 回来**仍不活跃**。
+  const blob = memBlob();
+  const store = new GrantStore({ persist: fileGrantPersist(blob), newId: () => "g-rev" });
+  const g = store.issueGrant(decision(), USER, 1_000);
+  eq("撤销前:有效", store.get(g.grantId, 1_500)?.grantId, "g-rev");
+  store.revoke(g.grantId); // 触发 flush → 写盘
+  const reopened = new GrantStore({ persist: fileGrantPersist(blob) });
+  eq("★ 落盘:revoke 后重启查不出(null)", reopened.get(g.grantId, 1_500), null);
+  eq("★ 落盘:revoke 后重启按资源身份也查不出", reopened.findFor(intent("file.write", { projectPath: "/repo/a" }), 1_500), null);
+}
+{
+  // 坏 JSON / 形状不对 → 当空 store,**不崩**(fail-safe:查不出 → 回到重新批准)。
+  eq("坏数据:非 JSON → 空", parseGrants("{ not json").length, 0);
+  eq("坏数据:null(文件不存在)→ 空", parseGrants(null).length, 0);
+  eq("坏数据:版本不符 → 空", parseGrants(JSON.stringify({ version: 999, grants: [grant()] })).length, 0);
+  eq("坏数据:grants 不是数组 → 空", parseGrants(JSON.stringify({ version: 1, grants: "nope" })).length, 0);
+  // 逐条:形状对的那条留下,形状不对的丢掉(丢一条授权只会收紧)。
+  const mixed = JSON.stringify({ version: 1, grants: [grant({ grantId: "ok" }), { grantId: 42 }, null] });
+  const kept = parseGrants(mixed);
+  eq("坏数据:混入坏条目 → 只留合法那条", kept.length, 1);
+  eq("坏数据:留下的是合法 id", kept[0]?.grantId, "ok");
+  // 一个坏文件重开出来的 store 是空的、且不抛。
+  const badBlob: BlobIO = { read: () => "{ broken", write: () => {} };
+  const s = new GrantStore({ persist: fileGrantPersist(badBlob) });
+  eq("坏数据:重开后 store 为空(不崩)", s.get("anything", 1_500), null);
+}
+{
+  // **真落盘**:走 `atomicFileBlob` + 临时目录(不是用户数据根),证明它真的写到了磁盘。
+  const dir = mkdtempSync(join(tmpdir(), "mcode-grants-"));
+  const file = grantStorePath(dir);
+  const store = new GrantStore({ persist: fileGrantPersist(atomicFileBlob(file)), newId: () => "g-disk" });
+  const g = store.issueGrant(decision(), USER, 1_000);
+  check("真落盘:文件真的在磁盘上", existsSync(file), file);
+  check("真落盘:路径在 <数据根>/appControl/grants.json 下", file.endsWith(join("appControl", "grants.json")), file);
+  const reopened = new GrantStore({ persist: fileGrantPersist(atomicFileBlob(file)) });
+  eq("真落盘:真重启后仍取得到", reopened.get(g.grantId, 1_500)?.grantId, "g-disk");
+  // 序列化是纯函数:不含注释、只留数据,且原样带出 expiresAt / revoked。
+  const env = JSON.parse(serializeGrants([g]));
+  eq("序列化:带 version 信封", env.version, 1);
+  eq("序列化:原样带出 expiresAt", env.grants[0].expiresAt, g.expiresAt);
+}
+
+/* ══ 17. 源码断言:落盘层不 import electron / sql;授权不落可导入 setting ══ */
+{
+  const raw = readFileSync(join(process.cwd(), "src/main/appControl/grantStoreFile.ts"), "utf8");
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check("★ 落盘层不 import electron", !/from\s+"electron/.test(code));
+  check("★ 落盘层不 import sql.js / 存储层", !/from\s+"[^"]*sql|require\("sql\.js|@main\/store|settingsStore|SettingRepo/.test(code));
+  // 授权**不**放进可导入的普通 setting —— 复用共享的 atomicWrite(落盘实现只有一份)。
+  check("★ 授权不落 SettingRepo(用 atomicWrite 写独立文件)", /atomicWrite\(/.test(code));
 }
 
 console.log(`\n${total - failures.length}/${total} 通过`);
