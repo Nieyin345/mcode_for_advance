@@ -3,6 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."          # → apps/desktop
 
 # 这套只测纯策略模块 + 读 provider 源码断言接线,不建库、不起 Electron、不碰 ~/.mcode。
+#
+# `--alias:node:os=…` 把 `homedir()` 指到本套的隔离临时目录,好真测
+# `resolveEngineExcludedToolsForProvider`(它读 `defaultEngineToolPolicyPath()`),
+# 同时**绝不碰真实 `~/.mcode`**。
 OUT=$(mktemp -d /tmp/mcode-engine-tools.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"

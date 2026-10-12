@@ -185,6 +185,21 @@ export function readEngineToolPolicyDetailed(file: string): EngineToolPolicyRead
       error: `策略文件不可读:${err instanceof Error ? err.message : String(err)}`,
     };
   }
+  // 【MC-071 残余 E1】空文件(0 字节 / 纯空白) = 「从没写过配置的首次启动」,按 MISSING
+  // 处理(不设限),而不是当成损坏 —— 一个刚开始用的用户其空文件被 `JSON.parse` 判坏、又
+  // 在 Provider 侧被当成 INVALID 拒绝执行,会把正常首次启动也一并挡死。但若**存在**可信
+  // last-good,则空文件更可能是主配置被**截断**(用户曾在应用里设过限制),按损坏走恢复,
+  // 绝不把原本禁用的工具重新启用。区分「从没设过」与「曾设过又被截空」。
+  if (raw.trim() === "") {
+    const recoveredEmpty = readLastGood(file);
+    if (!recoveredEmpty) return { status: "MISSING", policy: {}, recovered: false };
+    return {
+      status: "INVALID",
+      policy: recoveredEmpty.policy,
+      recovered: true,
+      error: "策略文件为空(疑被截断),已从 last-good 恢复",
+    };
+  }
   const parsed = parsePolicyText(raw);
   if (parsed.ok) return { status: "VALID", policy: parsed.policy, recovered: false };
   const recovered = readLastGood(file);
@@ -204,6 +219,39 @@ export function readEngineToolPolicy(): EngineToolPolicy {
 /** 读默认路径下的策略**并带状态** —— 供需要展示「配置损坏/实际生效状态」的调用方。 */
 export function readEngineToolPolicyStatus(): EngineToolPolicyRead {
   return readEngineToolPolicyDetailed(defaultEngineToolPolicyPath());
+}
+
+/**
+ * 【MC-071 残余 E1】「读策略状态」与「执行授权」**同源**的入口 —— Provider 在**实际绑定
+ * 工具之前**走这条,而不是各自 `excludedToolsForEngine(readEngineToolPolicy(), engine)`。
+ *
+ * 为什么不能只用 {@link readEngineToolPolicy}:那条把 INVALID(存在但损坏)**压成**策略值,
+ * 「用户从没设过(不设限)」与「读不出来(拿不到原禁用)」长得一模一样。于是一个**没有
+ * last-good 备份**的旧版/迁移用户,主文件一损坏就退化成**空排除表** —— 原本被用户禁用的
+ * Bash/Edit 被**静默重新启用**(fail-open,与 MC-083 预算是同一类费用/风险边界)。
+ *
+ * 取舍(与 MC-083 同一取舍):INVALID 且**无可信备份**时,不返回空排除表,而是**抛错拒绝
+ * 本轮自动执行**并给出可操作的人话;有 last-good 时按恢复值继续(不回归)。MISSING(从没
+ * 设过)与 VALID 照常不设限 / 照常生效。抛出的错误带 `POLICY_RECOVERY_REQUIRED` 标记,
+ * 供上层识别为「需要用户明确恢复/确认」。
+ */
+export function resolveEngineExcludedToolsForProvider(engine: EngineToolEngine): string[] {
+  return resolveEngineExcludedToolsForProviderFile(defaultEngineToolPolicyPath(), engine);
+}
+
+/**
+ * {@link resolveEngineExcludedToolsForProvider} 的显式路径版 —— 供回归套件用隔离临时文件
+ * 直接驱动**同一套判定**(不碰真实 `~/.mcode`)。生产调用走上面那条(默认路径)。
+ */
+export function resolveEngineExcludedToolsForProviderFile(file: string, engine: EngineToolEngine): string[] {
+  const read = readEngineToolPolicyDetailed(file);
+  if (read.status === "INVALID" && !read.recovered) {
+    throw new Error(
+      `POLICY_RECOVERY_REQUIRED:工具禁用配置损坏且无备份,已拒绝执行以免把原本禁用的工具重新启用` +
+        `(${engine},${read.error ?? "配置无效"})。请在 设置 → 引擎工具 里重新确认禁用列表。`,
+    );
+  }
+  return excludedToolsForEngine(read.policy, engine);
 }
 
 /** 原子写（本模块自带的小实现，避免为它去 import `appContext` 拖进 electron）。 */

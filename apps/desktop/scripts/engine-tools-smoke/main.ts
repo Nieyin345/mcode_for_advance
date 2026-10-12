@@ -22,6 +22,7 @@ import {
   lastGoodEngineToolPolicyPath,
   readEngineToolPolicyDetailed,
   readEngineToolPolicyFile,
+  resolveEngineExcludedToolsForProviderFile,
   writeEngineToolPolicyFile,
 } from "@main/lib/engineToolPolicy.js";
 import { agentEngineCwdFor, registerAgentEngineSession } from "@main/mcp/agentEngineCwd.js";
@@ -133,17 +134,61 @@ try {
     check("★ ③ 明确全开后损坏 → 恢复到最近一次(全启用),不复活更旧的 Bash 禁用", after.recovered === true && JSON.stringify(after.policy) === JSON.stringify({}), after);
   }
 
+  /* ── 4d.【MC-071 残余 E1】**行为**测 `resolveEngineExcludedToolsForProviderFile` ───
+   *
+   * §34.5 的核心残余:旧版/迁移用户**没有 last-good**,主文件一损坏,Provider 经
+   * `excludedToolsForEngine(readEngineToolPolicy(), engine)` 拿到**空排除表** → 原本禁用的
+   * Bash 被静默重新启用(fail-open)。本段用隔离临时文件直驱**生产同一条判定**
+   * (`resolveEngineExcludedToolsForProviderFile`,生产那条只是把路径换成默认值),断言:
+   * **无备份的损坏 → 抛错拒绝**(不是返回 `[]`);**有备份 → 按恢复值继续**;
+   * **从没设过 → 照常不设限**。 */
+  {
+    const f = join(dir, "mc071-resolver.json");
+    rmSync(f, { force: true }); rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+
+    // ① 从没设过 → 不设限(MISSING),不抛错。
+    const freshDeny = (() => { try { return { ok: true as const, v: resolveEngineExcludedToolsForProviderFile(f, "claude") }; } catch (e) { return { ok: false as const, e: String(e) }; } })();
+    check("① 从没设过策略 → 不设限(空排除表,不抛错)", freshDeny.ok === true && freshDeny.v.length === 0, freshDeny);
+
+    // ② 有效配置 → 照常生效。
+    writeEngineToolPolicyFile(f, { claude: { exclude: ["Bash"] } });
+    const validDeny = resolveEngineExcludedToolsForProviderFile(f, "claude");
+    check("② 有效配置 → 照常返回禁用列表", JSON.stringify(validDeny) === JSON.stringify(["Bash"]), validDeny);
+
+    // ③ 主文件损坏 + last-good **存在** → 按恢复值继续(不抛错、不空表)。
+    writeFileSync(f, "{ 截断");
+    const recDeny = resolveEngineExcludedToolsForProviderFile(f, "claude");
+    check("③ 损坏但有备份 → 按恢复值继续(仍禁用 Bash,不抛错)", JSON.stringify(recDeny) === JSON.stringify(["Bash"]), recDeny);
+
+    // ④ ★ 主文件损坏 + **无 last-good**(旧版/迁移用户)→ **抛错拒绝**,绝不返回空排除表。
+    rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+    writeFileSync(f, "not json at all");
+    const refused = (() => { try { return { threw: false as const, v: resolveEngineExcludedToolsForProviderFile(f, "claude") }; } catch (e) { return { threw: true as const, msg: e instanceof Error ? e.message : String(e) }; } })();
+    check("★ ④ 损坏且无备份 → 抛错拒绝(不静默返回空排除表把工具重新启用)", refused.threw === true, refused);
+    check("★ ④ 错误带 POLICY_RECOVERY_REQUIRED 标记(供上层识别为需用户确认)", refused.threw === true && String(refused.msg).includes("POLICY_RECOVERY_REQUIRED"), refused);
+
+    // ⑤ 空文件(0 字节)且无 last-good = 首次启动 → MISSING(不设限),不抛错(第 4b 段已测读,这里测 resolver 不误伤)。
+    rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+    writeFileSync(f, "");
+    const emptyFirst = (() => { try { return { ok: true as const, v: resolveEngineExcludedToolsForProviderFile(f, "pi") }; } catch (e) { return { ok: false as const, e: String(e) }; } })();
+    check("⑤ 空文件首次启动(无备份)→ 不设限,不误伤正常首启", emptyFirst.ok === true && emptyFirst.v.length === 0, emptyFirst);
+  }
+
   /* ── 5. 接线：provider 真的读了策略并传给了 SDK ───────────────────────── */
+  // 【MC-071 残余 E1】Provider 侧改走 `resolveEngineExcludedToolsForProvider` —— 「读策略
+  // 状态」与「执行授权」**同源**的那条:INVALID 且无 last-good 时**抛错拒绝本轮**,而不是
+  // 各自 `excludedToolsForEngine(readEngineToolPolicy(), …)` 拿到空排除表把原本禁用的工具
+  // 静默重新启用。断言钉的是**那条 resolver 被真的调用**,不是旧的直读形态。
   const claudeSrc = readFileSync(resolve(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
   check(
-    "Claude provider 把策略接到 SDK 的 disallowedTools",
-    claudeSrc.includes("excludedToolsForEngine(readEngineToolPolicy(), \"claude\")") &&
+    "Claude provider 把策略接到 SDK 的 disallowedTools(走同源 resolver)",
+    claudeSrc.includes("resolveEngineExcludedToolsForProvider(\"claude\")") &&
       /disallowedTools:\s*\(\(\)/.test(claudeSrc),
   );
   const piSrc = readFileSync(resolve(process.cwd(), "src/main/providers/pi-sdk/PiAgentSdkProvider.ts"), "utf8");
   check(
-    "Pi provider 把策略接到 createAgentSession 的 excludeTools",
-    piSrc.includes("excludedToolsForEngine(readEngineToolPolicy(), \"pi\")") &&
+    "Pi provider 把策略接到 createAgentSession 的 excludeTools(走同源 resolver)",
+    piSrc.includes("resolveEngineExcludedToolsForProvider(\"pi\")") &&
       piSrc.includes("excludeTools: piExcludedTools"),
   );
 

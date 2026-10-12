@@ -51,7 +51,7 @@ import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { resolveGitBash } from "@main/lib/binaryResolve.js";
 import { getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
-import { excludedToolsForEngine, readEngineToolPolicy } from "@main/lib/engineToolPolicy.js";
+import { resolveEngineExcludedToolsForProvider } from "@main/lib/engineToolPolicy.js";
 import { registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
 
@@ -141,7 +141,10 @@ export class PiAgentSdkProvider implements AgentProvider {
     const tools = undefined; // all built-in + extension tools
     // 用户在设置里关掉的 Pi 内置工具（见 `lib/engineToolPolicy.ts`）。轮开始读一次，
     // 下面 `createAgentSession` 用它当 `excludeTools`（黑名单）。空数组 = 不设限。
-    const piExcludedTools = excludedToolsForEngine(readEngineToolPolicy(), "pi");
+    // 【MC-071 残余 E1】走「状态与执行授权同源」的 resolver：策略文件损坏且**无
+    // last-good** 时**抛错拒绝本轮**(在绑定 excludeTools 之前),而不是拿到空排除表
+    // 把原本禁用的工具静默重新启用;有备份则按恢复值继续。
+    const piExcludedTools = resolveEngineExcludedToolsForProvider("pi");
     // guard): deny writes outside the project working directory, except in
     // bypassPermissions where the user opted out of all checks. WSL paths are
     // normalized in every mode. Enforced by the extension's tool_call handler

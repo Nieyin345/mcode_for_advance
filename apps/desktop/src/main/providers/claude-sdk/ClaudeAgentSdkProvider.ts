@@ -51,7 +51,7 @@ import {
 import { getOutputStyleSetting } from "@main/lib/outputStyleConfig.js";
 import { getEnabledPlugins, getPluginMcpServers, getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { defaultSkillsRoot, enabledSkillNames, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
-import { excludedToolsForEngine, readEngineToolPolicy } from "@main/lib/engineToolPolicy.js";
+import { resolveEngineExcludedToolsForProvider } from "@main/lib/engineToolPolicy.js";
 import { readMcpEnginesMap, mcpEngineEnabled } from "@main/lib/mcpEngines.js";
 import { getTrustedProjectMcpServers } from "@main/lib/projectMcp.js";
 import { resolveSubagentModelValue } from "@main/lib/subagentModel.js";
@@ -918,8 +918,11 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // 按引擎的内置工具禁用（见 `lib/engineToolPolicy.ts`）：用户在设置里关掉的
       // Claude 内置工具从模型上下文里移除。空列表不传 —— 保持原生全量。这是"统一
       // 基础工具"的正解之一：关掉原生 Read，才能把读取收敛到统一的工具实现上。
+      // 【MC-071 残余 E1】走「状态与执行授权同源」的 resolver：策略文件损坏且**无
+      // last-good** 时**抛错拒绝本轮**(在绑定 disallowedTools 之前),而不是拿到空排除表
+      // 把原本禁用的 Bash 静默重新启用;有备份则按恢复值继续。
       disallowedTools: (() => {
-        const excluded = excludedToolsForEngine(readEngineToolPolicy(), "claude");
+        const excluded = resolveEngineExcludedToolsForProvider("claude");
         return excluded.length > 0 ? excluded : undefined;
       })(),
       // SDK #359: On Windows there is a timing/buffering race in the stdio
