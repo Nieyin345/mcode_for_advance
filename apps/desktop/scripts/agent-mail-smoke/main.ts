@@ -546,6 +546,33 @@ console.log("\n⑦ 询问:记账、发出去、立刻返回(不阻塞)");
   check("★ 留下的是最近那些(最早的被挤出去了)", asks.some((a) => a.question === "灌第 119 条"), asks.slice(-2));
   check("★ 最早那条确实被挤出去了", !asks.some((a) => a.question === "灌第 0 条"), asks.slice(0, 2));
 
+  /* ── ★ 挂账还有**总字节**上限:只按条数封顶对多字节提问形同虚设 ──
+   *
+   * 【MC-033 残余③】挂账是**整份 JSON 重写进 `mcode.db`** 的。条数上限(50)挡不住"每条
+   * 都很大":一条 `question` 可长到约 16000 字(工具侧 `MAX_AGENT_MESSAGE_CHARS`),多字节
+   * 正文下那是约 48KB。50 条短问 = 十几 KB,但 30 条各 12000 **汉字**的提问 = 约 1MB ——
+   * 只按条数封顶时这 30 条(还不满 50)全留,设置表每次重写就要多落 1MB。
+   *
+   * 判据立在**落盘那串的真实 UTF-8 字节**上(不是条数、不是 `String.length`)。 */
+  for (let i = 0; i < 30; i += 1) {
+    recordAsk({
+      fromSessionId: main.id,
+      fromName: "主对话",
+      toSessionId: expert.id,
+      question: `大字${i}:${"汉".repeat(12_000)}`,
+    });
+  }
+  const bigBlob = SettingRepo.get("agentMail.pendingAsks") ?? "";
+  const bigBlobBytes = Buffer.byteLength(bigBlob, "utf8");
+  // 旧实现(只按条数 50)这里留下全部 30 条大字提问 → 真实字节 ~100 万;按字节封顶则 ≤ 256KiB。
+  check(
+    "★ 挂账**字节**有界(30 条大字提问不能只按条数全留)",
+    bigBlobBytes < 300_000,
+    { bytes: bigBlobBytes, count: (JSON.parse(bigBlob) as unknown[]).length },
+  );
+  check("★ 最早的大字提问已被挤出(按字节挤)", !bigBlob.includes("大字0:"), bigBlob.slice(0, 60));
+  check("★ 最近的大字提问仍在(留的是最近那些)", bigBlob.includes("大字29:"), bigBlob.slice(-80));
+
   /* ── ★ 删会话要把落盘的挂账也收掉 ──
    *
    * 收件箱是内存态的,`dropAgentMail` 一直清它;但挂账写在设置键里,从前只清内存 ——

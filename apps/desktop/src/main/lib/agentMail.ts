@@ -221,6 +221,15 @@ export function unknownPeerMessage(sessionId: string, asked: string): string {
 /** 最多同时挂这么多条未答的提问。见 {@link recordAsk}。 */
 const MAX_PENDING_ASKS = 50;
 
+/** 【MC-033 残余③】挂账(落盘)的**总字节上限**。
+ *
+ *  `MAX_PENDING_ASKS` 只限**条数**;一条提问的 `question` 可长到约 16000 字(工具侧
+ *  `MAX_AGENT_MESSAGE_CHARS` 的上限)—— 多字节正文下那是约 48KB。于是 50 条能堆到约
+ *  2.4MB,而挂账是**整份 JSON 重写进 `mcode.db`** 的,每写一次就把这一大坨重新落盘。
+ *  只按条数封顶对多字节正文形同虚设 —— 与收件箱那条字节红线(`MAX_INBOX_BYTES_PER_SESSION`)
+ *  同一取舍:量的是 **UTF-8 字节**,不是 `String.length`(见 {@link saveAsks})。 */
+const MAX_PENDING_ASKS_BYTES = 256 * 1024;
+
 /** 这棵树的主对话。自己是主对话 → 自己;否则顺着 `parentSessionId` 上溯。
  *
  *  ⚠️ **带上深度上限。** `(parentSessionId, nodeId)` 的树关系是应用维护的,正常情况下
@@ -575,8 +584,23 @@ function isPendingAsk(x: unknown): x is PendingAsk {
   );
 }
 
+/** 挂账落盘前的**双重封顶**:条数({@link MAX_PENDING_ASKS})与**总字节**
+ *  ({@link MAX_PENDING_ASKS_BYTES})任一超限,就从**最早**的开始挤,直到两者都在限内。
+ *  至少留最近一条 —— 哪怕它一份就超了字节红线(与收件箱那条同一取舍:丢老的,别撑爆)。
+ *
+ *  ⚠️ 字节按 **UTF-8**(`Buffer.byteLength`)量,不是 `String.length`:一个汉字 `length`
+ *  是 1 却占 3 字节,按码元数封顶对中文/emoji 提问形同虚设(仓规 MC-033/MC-030 同款)。 */
+function capAsks(asks: PendingAsk[]): PendingAsk[] {
+  let kept = asks;
+  const byteLen = (): number => Buffer.byteLength(JSON.stringify(kept), "utf8");
+  while (kept.length > 1 && (kept.length > MAX_PENDING_ASKS || byteLen() > MAX_PENDING_ASKS_BYTES)) {
+    kept = kept.slice(1);
+  }
+  return kept.length > MAX_PENDING_ASKS ? kept.slice(-MAX_PENDING_ASKS) : kept;
+}
+
 function saveAsks(asks: PendingAsk[]): void {
-  SettingRepo.set(ASK_SETTING_KEY, JSON.stringify(asks));
+  SettingRepo.set(ASK_SETTING_KEY, JSON.stringify(capAsks(asks)));
 }
 
 /**
@@ -584,7 +608,8 @@ function saveAsks(asks: PendingAsk[]): void {
  *
  * ⚠️ **有上限。** 挂账是**落盘**的(整份 JSON 重写),而每条未答的提问都占一行。A 问 B、
  * B 问 A 这种来回会**无界增长** —— 每次投递都写一遍越来越大的 JSON,而且没有谁会自动清掉
- * 那些永远等不到答复的。所以封顶 {@link MAX_PENDING_ASKS}:满了就把**最早**那条挤出去。
+ * 那些永远等不到答复的。所以**双重封顶** {@link MAX_PENDING_ASKS}(条数)与
+ * {@link MAX_PENDING_ASKS_BYTES}(总字节):任一超限就把**最早**那条挤出去(见 {@link capAsks})。
  *
  * 挤出去的代价是那一条永远等不到答复(和现在一样 —— 它本来也可能永远等不到),而提问方
  * 那边有 `agent_peers` 里那句"有 N 条问了还没被回复"兜着,看得见。
@@ -593,8 +618,8 @@ export function recordAsk(ask: Omit<PendingAsk, "askId" | "at">): PendingAsk {
   const askId = `ask_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const full: PendingAsk = { ...ask, askId, at: Date.now() };
   const kept = [...loadAsks(), full];
-  // 按时间留最近的那些(`loadAsks` 保持插入序,新的一定在末尾)。
-  saveAsks(kept.length > MAX_PENDING_ASKS ? kept.slice(-MAX_PENDING_ASKS) : kept);
+  // 按时间留最近的那些(`loadAsks` 保持插入序,新的一定在末尾);条数与字节双限在 `saveAsks` 收口。
+  saveAsks(kept);
   return full;
 }
 
