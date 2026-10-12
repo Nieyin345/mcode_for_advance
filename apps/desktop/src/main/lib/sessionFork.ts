@@ -22,8 +22,14 @@
  * 的全部消息要么一起落库,要么一起回滚。跨模块的 {@link providerRegistry} / {@link uid}
  * 照旧,只是写库那一步自己开了事务 —— **不改 repositories.ts**(它属于另一个 lane;
  * `MessageRepo` 的 ID 必须重编、书签要按 idMap 重映射,这些只有本模块知道)。
- * 注:与外部引擎会话绑定的失败回收(补偿清理 / 记 orphan)仍是后续工作 —— 这里先保证
- * **本地库**这条不变量。
+ *
+ * ## 第 1 步是**外部副作用**,补偿收尾走 Saga(MC-027)
+ *
+ * 上面那个本地事务管得到"本地一行不留",管不到**引擎侧**那份复制:`provider.forkSession`
+ * 先产生一个外部会话文件,若本地事务随后失败整体回滚,引擎那份就**再没有任何本地行指向它**。
+ * 外部 SDK 操作塞不进本地 SQL 事务,所以用补偿:本地事务抛错后,回头调
+ * {@link compensateProviderFork} —— 引擎有删除入口就删掉那份复制,没有 / 删不掉就登记
+ * 一行**孤儿**(`store/forkOrphans.ts`)供人工清理,**绝不悄悄遗忘**。
  *
  * ## 为什么单独一个模块
  *
@@ -35,6 +41,7 @@ import { SessionRepo, ProjectRepo, MessageRepo } from "@main/store/repositories.
 import { getDb, persist } from "@main/store/db.js";
 import { v, SESSION_COLUMNS } from "@main/store/sessionSchema.js";
 import { providerRegistry } from "@main/providers/registry.js";
+import { compensateProviderFork } from "@main/store/forkOrphans.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { log } from "@main/lib/logger.js";
 import { uid } from "@main/utils.js";
@@ -95,6 +102,9 @@ export async function forkSession(sourceId: string, title: string): Promise<Sess
   const cwd = source.worktreePath ?? project.path;
 
   let providerSessionId: string | null = null;
+  // 【MC-027】引擎侧的删除入口 —— 引擎那份复制成功、本地写入失败时用它补偿(删掉泄漏
+  // 的引擎会话)。没这个入口就登记孤儿。在 fork 那一刻取下来(provider 是块级作用域)。
+  let providerDeleteSession: ((providerSessionId: string, opts: { cwd: string }) => Promise<void>) | undefined;
   if (source.claudeSessionId) {
     // 【MC-056】复制对话必须用**源会话记的那个引擎**；取不到就明确拒绝，不静默回退默认。
     // 从前 `resolve(source.providerId)` 在引擎被卸/存值失效时悄悄返回默认(claude-sdk)，
@@ -104,6 +114,8 @@ export async function forkSession(sourceId: string, title: string): Promise<Sess
     if (!provider.forkSession) {
       throw new Error(`引擎 ${source.providerId} 不支持复制对话(它没法把上下文交出去)`);
     }
+    // 只有真的实现了 deleteSession 的引擎才给补偿入口;否则补偿路会登记孤儿。
+    providerDeleteSession = provider.deleteSession?.bind(provider);
     // 引擎那边的失败**在这里落一行日志再往上抛**。渲染端只拿得到一句
     // "Error invoking remote method 'session:for…"(Electron 把真实原因截掉了),
     // 而这一句背后可能是"会话文件不在这台机器上""这段对话一条消息都没有""引擎
@@ -120,66 +132,90 @@ export async function forkSession(sourceId: string, title: string): Promise<Sess
   }
 
   const now = Date.now();
-  // 源的消息先读出来,好把书签按 **旧 id → 新 id** 重映射(见下)。
-  const { messages } = MessageRepo.listBySession(source.id);
-  const idMap = new Map<string, string>();
-  const copiedMessages = messages.map((m) => {
-    const id = uid("msg_");
-    idMap.set(m.id, id);
-    return { ...m, id, sessionId: "" }; // sessionId 下面 replaceAll 时按 fork.id 归一
-  });
+  let fork: Session;
+  let copiedMessageCount = 0;
+  // ★ 引擎侧复制成功之后、本地这一行真正落库之前的**任何一步失败**（读消息、重编 id、重映射书签、写库），
+  // 都让引擎侧那份复制失去指向 —— 所以整段包在同一个 try 里，失败统一走补偿（见下）。
+  // 不能只在 `createForkedSession` 那一句外面包。
+  try {
+    // 源的消息先读出来，好把书签按 **旧 id → 新 id** 重映射（见下）。
+    const { messages } = MessageRepo.listBySession(source.id);
+    const idMap = new Map<string, string>();
+    const copiedMessages = messages.map((m) => {
+      const id = uid("msg_");
+      idMap.set(m.id, id);
+      return { ...m, id, sessionId: "" }; // sessionId 下面 replaceAll 时按 fork.id 归一
+    });
+    copiedMessageCount = copiedMessages.length;
 
-  const fork: Session = {
-    ...source,
-    id: uid("sess_"),
-    // **必须指向第 1 步新复制出来的那一段**,不是源那一段 —— 指向源的话,两个会话会
-    // 抢着写同一个会话文件。
-    claudeSessionId: providerSessionId,
-    title,
-    // A fork has no in-flight turn or pending approval of its own, even when
-    // the source snapshot was captured while active.
-    status: "idle",
-    // 新开的一段不该一出生就钉在最上面,也不该落在归档里。
-    archived: false,
-    pinnedAt: null,
-    // 用量是"这一段对话花了多少",属于会话自己的账 —— 带过来的话,新对话一打开就
-    // 顶着一笔它没花过的钱。
-    usageHistory: null,
-    // ⚠️ **本轮的临时态不带过去。** `...source` 会把上一轮的 `turnFiles`(那个"本轮修改"
-    // 卡片)与 `planDraft` 原样抄给分叉 —— 而它们描述的是**源对话上一步的动作**,不是分叉
-    // 这一段的。尤其 `turnFiles` 的 rewind 会写进共享的 worktree,点一下就把源对话上一轮
-    // 的改动撤了(而分叉自己什么也没做)。`status`/`usageHistory` 那几项已在这里重置,
-    // 这几项同理。
-    turnFiles: null,
-    planDraft: null,
-    // ★ **书签跟着消息 id 重映射。** 书签锚在**消息 id** 上,而上面每个 id 都重生成 ——
-    // 不重映射的话,分叉出去的每一个书签都指向源对话里那条(在分叉里根本不存在)的消息,
-    // 渲染端一律判成 stale、跳不过去。锚不到任何一条的丢弃。
-    bookmarks: source.bookmarks && source.bookmarks.length > 0
-      ? (() => {
-          const remapped = source.bookmarks
-            .map((b) => {
-              const mapped = idMap.get(b.messageId);
-              return mapped ? { ...b, messageId: mapped } : null;
-            })
-            .filter((b): b is NonNullable<typeof b> => b !== null);
-          return remapped.length > 0 ? remapped : null;
-        })()
-      : source.bookmarks,
-    createdAt: now,
-    updatedAt: now,
-  };
-  // ★ 会话行与它的全部消息**同一个事务**(MC-027)。消息 id 必须重新生成 —— 它是主键,
-  // 照抄会撞上源那一行;那两行本来就该是两条独立的记录:删掉源对话不该动到分叉这一段。
-  // create + replaceAll 两段各自带事务的写法会留下"有行没消息"的空壳,这里合成一段。
-  createForkedSession(
-    fork,
-    copiedMessages.map((m) => ({ ...m, sessionId: fork.id })),
-  );
+    fork = {
+      ...source,
+      id: uid("sess_"),
+      // **必须指向第 1 步新复制出来的那一段**，不是源那一段 —— 指向源的话，两个会话会
+      // 抢着写同一个会话文件。
+      claudeSessionId: providerSessionId,
+      title,
+      // A fork has no in-flight turn or pending approval of its own, even when
+      // the source snapshot was captured while active.
+      status: "idle",
+      // 新开的一段不该一出生就钉在最上面，也不该落在归档里。
+      archived: false,
+      pinnedAt: null,
+      // 用量是"这一段对话花了多少"，属于会话自己的账 —— 带过来的话，新对话一打开就
+      // 顶着一笔它没花过的钱。
+      usageHistory: null,
+      // ⚠️ **本轮的临时态不带过去。** `...source` 会把上一轮的 `turnFiles`（那个"本轮修改"
+      // 卡片）与 `planDraft` 原样抄给分叉 —— 而它们描述的是**源对话上一步的动作**，不是分叉
+      // 这一段的。尤其 `turnFiles` 的 rewind 会写进共享的 worktree，点一下就把源对话上一轮
+      // 的改动撤了（而分叉自己什么也没做）。`status`/`usageHistory` 那几项已在这里重置，
+      // 这几项同理。
+      turnFiles: null,
+      planDraft: null,
+      // ★ **书签跟着消息 id 重映射。** 书签锚在**消息 id** 上，而上面每个 id 都重生成 ——
+      // 不重映射的话，分叉出去的每一个书签都指向源对话里那条（在分叉里根本不存在）的消息，
+      // 渲染端一律判成 stale、跳不过去。锚不到任何一条的丢弃。
+      bookmarks: source.bookmarks && source.bookmarks.length > 0
+        ? (() => {
+            const remapped = source.bookmarks
+              .map((b) => {
+                const mapped = idMap.get(b.messageId);
+                return mapped ? { ...b, messageId: mapped } : null;
+              })
+              .filter((b): b is NonNullable<typeof b> => b !== null);
+            return remapped.length > 0 ? remapped : null;
+          })()
+        : source.bookmarks,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    // ★ 会话行与它的全部消息**同一个事务**（MC-027）。消息 id 必须重新生成 —— 它是主键，
+    // 照抄会撞上源那一行；那两行本来就该是两条独立的记录：删掉源对话不该动到分叉这一段。
+    // create + replaceAll 两段各自带事务的写法会留下"有行没消息"的空壳，这里合成一段。
+    createForkedSession(
+      fork,
+      copiedMessages.map((m) => ({ ...m, sessionId: fork.id })),
+    );
+  } catch (err) {
+    // ★★ 引擎侧那份已经复制好的会话此刻没有任何本地行指向它 —— 补偿：有删除入口就删掉，
+    // **删不掉 / 引擎没入口就登记孤儿**，绝不悄悄遗忘。补偿**先于** rethrow，保证"要么本地
+    // 有这一行、要么引擎侧不留残留"。没有引擎侧复制（源没说过话）时无需补偿。
+    if (providerSessionId !== null) {
+      await compensateProviderFork({
+        sourceSessionId: source.id,
+        providerSessionId,
+        providerId: source.providerId,
+        cwd,
+        deleteSession: providerDeleteSession,
+        cause: `本地写入新会话行/消息失败:${(err as Error).message}`,
+      });
+    }
+    throw err;
+  }
 
   broadcastSessionChanged(fork);
   log.info(
-    `session forked: ${source.id} -> ${fork.id} (${copiedMessages.length} messages${
+    `session forked: ${source.id} -> ${fork.id} (${copiedMessageCount} messages${
       providerSessionId ? `, provider session ${providerSessionId}` : ", no provider session yet"
     })`,
   );

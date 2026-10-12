@@ -30,6 +30,7 @@
 import { initDb, getDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, MessageRepo } from "@main/store/repositories.js";
 import { forkSession } from "@main/lib/sessionFork.js";
+import { ForkOrphanRepo } from "@main/store/forkOrphans.js";
 import { setFakeProvider, type FakeProvider } from "./stubs/providerRegistry.js";
 import { broadcastIds } from "./stubs/sessionSync.js";
 import type { MessageRecord, Session } from "@contracts/session";
@@ -104,6 +105,13 @@ function fakeClaude(over: Partial<FakeProvider> = {}): FakeProvider {
     forkSession: async (providerSessionId, opts) => {
       provider.calls.push({ providerSessionId, ...opts });
       return "cli-fork";
+    },
+    // 【MC-027】默认给一个"真的把引擎侧会话删掉"的实现 —— 记下调用即算删成功。测
+    // "引擎侧没有残留"时,断言 deleteCalls 收到了那一份;测"引擎不支持删"时把它设成
+    // undefined(此时补偿只能登记孤儿)。
+    deleteCalls: [],
+    deleteSession: async (providerSessionId, opts) => {
+      provider.deleteCalls.push({ providerSessionId, ...opts });
     },
     ...over,
   };
@@ -301,6 +309,106 @@ console.log("\nMC-027:消息复制中途失败时,会话行与消息**同一个�
   const ok = await forkSession("s_src", "正常的一份");
   eq("正控:拆掉触发器后分叉成功", ok.id.startsWith("sess_"), true);
   eq("正控:消息复制过来了", MessageRepo.listBySession(ok.id).messages.length, 2);
+}
+
+console.log("\nMC-027 Saga:本地写失败后,引擎侧那份复制**被补偿删掉**(不留孤儿)");
+{
+  // 引擎侧复制成功(cli-fork),但本地建行/抄消息失败 → 本地整体回滚,引擎侧那份
+  // 必须被补偿清理:这里有 deleteSession 入口,应当真删。
+  const providerDelete = fakeClaude(); // 默认带 deleteSession
+  const db = getDb();
+  const sessionsBefore = countSessions();
+  db.run("DROP TRIGGER IF EXISTS mc027_boom2");
+  db.run(
+    "CREATE TRIGGER mc027_boom2 BEFORE INSERT ON messages WHEN NEW.session_id LIKE 'sess_%' " +
+      "BEGIN SELECT RAISE(ABORT, 'MC027 saga failure'); END;",
+  );
+  let threw = "";
+  try {
+    await forkSession("s_src", "本地会失败的一份");
+  } catch (err) {
+    threw = (err as Error).message;
+  } finally {
+    db.run("DROP TRIGGER IF EXISTS mc027_boom2");
+  }
+  check("错误冒到调用方", threw.includes("MC027 saga failure"), threw);
+  eq("★ 本地没留新会话行(本地事务回滚)", countSessions(), sessionsBefore);
+  eq("★ 引擎侧那份复制被补偿删掉(收到 deleteSession 调用一次)", providerDelete.deleteCalls.length, 1);
+  eq("★ 补偿删的是引擎侧复制出来的那份 id", providerDelete.deleteCalls[0]?.providerSessionId, "cli-fork");
+  eq("★ 补偿用的目录和 fork 时一致", providerDelete.deleteCalls[0]?.cwd, PROJECT_PATH);
+  eq("★ 补偿成功时不登记孤儿", ForkOrphanRepo.countForSource("s_src"), 0);
+}
+
+console.log("\nMC-027 Saga:引擎没有删除入口时,登记**孤儿**不静默遗忘");
+{
+  // 引擎侧复制成功,但没有 deleteSession(引擎不提供删除 API)→ 本地写失败后无法自动
+  // 回收,必须登记一行孤儿供人工清理。
+  const providerNoDelete = fakeClaude({ deleteSession: undefined });
+  const db = getDb();
+  const sessionsBefore = countSessions();
+  const orphansBefore = ForkOrphanRepo.countForSource("s_src");
+  db.run("DROP TRIGGER IF EXISTS mc027_boom3");
+  db.run(
+    "CREATE TRIGGER mc027_boom3 BEFORE INSERT ON messages WHEN NEW.session_id LIKE 'sess_%' " +
+      "BEGIN SELECT RAISE(ABORT, 'MC027 saga no-delete'); END;",
+  );
+  let threw = "";
+  try {
+    await forkSession("s_src", "引擎不支持删的一份");
+  } catch (err) {
+    threw = (err as Error).message;
+  } finally {
+    db.run("DROP TRIGGER IF EXISTS mc027_boom3");
+  }
+  check("错误冒到调用方", threw.includes("MC027 saga no-delete"), threw);
+  eq("本地没留新会话行", countSessions(), sessionsBefore);
+  eq("★ 引擎没删除入口,登记了一行孤儿", ForkOrphanRepo.countForSource("s_src"), orphansBefore + 1);
+  const orphan = ForkOrphanRepo.list("ORPHANED").find((o) => o.providerSessionId === "cli-fork" && o.sourceSessionId === "s_src");
+  check("★ 孤儿记下了引擎侧那份会话 id 与目录", !!orphan && orphan.cwd === PROJECT_PATH, orphan);
+  check("★ 孤儿默认是待清理态", orphan?.status === "ORPHANED", orphan?.status);
+  check("★ 孤儿不指向不存在的本地会话(它是引擎侧的残留,不是本地空壳)", !SessionRepo.get(orphan?.providerSessionId ?? ""), orphan?.providerSessionId);
+}
+
+console.log("\nMC-027 Saga:补偿删除本身失败时,同样登记孤儿(不假装删干净了)");
+{
+  // 引擎有 deleteSession 入口,但删除抛错 → 不能假装清干净,要登记孤儿。
+  const providerDeleteFails = fakeClaude({
+    deleteSession: async () => {
+      throw new Error("引擎侧删除失败");
+    },
+  });
+  const db = getDb();
+  const orphansBefore = ForkOrphanRepo.countForSource("s_src");
+  db.run("DROP TRIGGER IF EXISTS mc027_boom4");
+  db.run(
+    "CREATE TRIGGER mc027_boom4 BEFORE INSERT ON messages WHEN NEW.session_id LIKE 'sess_%' " +
+      "BEGIN SELECT RAISE(ABORT, 'MC027 saga delete-fail'); END;",
+  );
+  let threw = "";
+  try {
+    await forkSession("s_src", "删除会失败的一份");
+  } catch (err) {
+    threw = (err as Error).message;
+  } finally {
+    db.run("DROP TRIGGER IF EXISTS mc027_boom4");
+  }
+  check("错误冒到调用方(补偿的次生错误没盖过本地失败)", threw.includes("MC027 saga delete-fail"), threw);
+  eq("★ 删除失败时登记了孤儿", ForkOrphanRepo.countForSource("s_src"), orphansBefore + 1);
+  // 补偿失败不该把引擎多次调用 —— deleteCalls 只在成功时记,这里失败,应当 0 条成功记录。
+  eq("补偿删除失败不算「删掉了」", providerDeleteFails.deleteCalls.length, 0);
+}
+
+console.log("\nMC-027 Saga:正常分叉**不**触发补偿(引擎侧那份留着,新会话指向它)");
+{
+  const providerOk = fakeClaude();
+  // 前面两个 Saga 块(引擎无入口 / 删除失败)已经给 s_src 记过孤儿了,所以这里比**增量**。
+  const orphansBefore = ForkOrphanRepo.countForSource("s_src");
+  const fork = await forkSession("s_src", "正常不该补偿的一份");
+  eq("正常分叉成功", fork.id.startsWith("sess_"), true);
+  eq("★ 正常分叉没有调用补偿删除", providerOk.deleteCalls.length, 0);
+  eq("★ 正常分叉不新增孤儿", ForkOrphanRepo.countForSource("s_src"), orphansBefore);
+  eq("新会话仍指向引擎侧那份复制", fork.claudeSessionId, "cli-fork");
+  SessionRepo.delete(fork.id); // 收尾,别影响后面的用例
 }
 
 console.log("\n还没发过言的会话:没上下文可分,但照样复制得出来");

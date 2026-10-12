@@ -490,6 +490,28 @@ export interface AgentProvider {
   forkSession?(providerSessionId: string, opts: { cwd: string; title: string }): Promise<string>;
 
   /**
+   * 把**提供方那边的一个会话**删掉 —— {@link forkSession} 失败后的**补偿清理**入口。
+   *
+   * ## 它存在的理由(MC-027 的 Saga 收尾)
+   *
+   * 复制一段对话分两步:**先在引擎那边复制**(产生一份引擎侧会话文件)→ **再在本地
+   * 建会话行、抄消息**。若引擎那一步成了、本地那一步失败(磁盘满 / 序列化错 / SQL 错),
+   * 本地会**整体回滚** —— 可引擎侧那份复制**没有任何东西指向它**,成了孤儿:S占磁盘、
+   * 在引擎的会话列表里也可能冒出来。
+   *
+   * 补偿清理就是:本地回滚时,回头把引擎侧那份复制删掉。有这条入口的提供方直接删;
+   * 没有的(引擎不提供删除 API)由调用方**登记孤儿**(见 `store/forkOrphans.ts`)供
+   * 人工清理 —— 绝不悄悄遗忘。
+   *
+   * `providerSessionId` 是**提供方自己的**会话 id(即 {@link forkSession} 的返回值),
+   * `cwd` 是那段会话跑在哪个目录(和 fork 时给的是同一个 —— 会话文件按目录分开放)。
+   *
+   * 失败要**抛**:调用方据此判断"删不掉",转去登记孤儿,而不是误以为已经清干净了。
+   * 只删**引擎侧**那一段;本地行由调用方自己的事务负责,不在这里碰。
+   */
+  deleteSession?(providerSessionId: string, opts: { cwd: string }): Promise<void>;
+
+  /**
    * Optional: quick health / version probe for settings UI.
    *
    * 【MC-076】`probeCtx` 是**宿主签发的受信探测上下文**(可选,保持向后兼容 ——

@@ -11,6 +11,9 @@ export interface FakeProvider {
   /** 记下每一次调用 —— 断言"传对了没有"靠它。 */
   calls: Array<{ providerSessionId: string; cwd: string; title: string }>;
   forkSession?: (providerSessionId: string, opts: { cwd: string; title: string }) => Promise<string>;
+  /** 【MC-027】记下每一次补偿删除的调用 —— 断言"本地写失败后引擎侧那份被删掉/登记了"靠它。 */
+  deleteCalls: Array<{ providerSessionId: string; cwd: string }>;
+  deleteSession?: (providerSessionId: string, opts: { cwd: string }) => Promise<void>;
 }
 
 const providers = new Map<string, FakeProvider>();
@@ -29,7 +32,7 @@ export const providerRegistry = {
     const found = providers.get(id);
     if (found) return found;
     const dflt = [...providers.values()][0];
-    return dflt ?? { id, calls: [] };
+    return dflt ?? { id, calls: [], deleteCalls: [] };
   },
   /** 【MC-056】真注册表语义:取不到就**抛** —— 调用方(forkSession)靠它拒绝在引擎
    *  不可用时静默换默认引擎。与上面 `resolve` 的"回退默认"刻意相反,这正是要区分的两问。 */

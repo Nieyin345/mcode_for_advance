@@ -130,6 +130,20 @@ async function loadForkSession(): Promise<
   return forkFn;
 }
 
+// 【MC-027】`deleteSession` 与 `forkSession` 同一族(会话文件操作),同样**不在启动
+// 路径上** —— 只在"分叉后本地写失败、要把引擎侧那份复制删掉"这条补偿路上用到,所以
+// 单独懒加载。
+let deleteFn: typeof import("@anthropic-ai/claude-agent-sdk").deleteSession | null = null;
+async function loadDeleteSession(): Promise<
+  typeof import("@anthropic-ai/claude-agent-sdk").deleteSession
+> {
+  if (!deleteFn) {
+    const sdk = await import("@anthropic-ai/claude-agent-sdk");
+    deleteFn = sdk.deleteSession;
+  }
+  return deleteFn;
+}
+
 /** Anthropic image content-block media-type allowlist — mirrors
  *  SendTurnImageSchema.mimeType (the zod enum already restricts to this set). */
 type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
@@ -814,6 +828,20 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     const forkSession = await loadForkSession();
     const res = await forkSession(providerSessionId, { dir: opts.cwd, title: opts.title });
     return res.sessionId;
+  }
+
+  /**
+   * 【MC-027】把引擎侧的一份会话删掉 —— {@link forkSession} 后**本地写失败**的补偿清理。
+   *
+   * 走 SDK 的 `deleteSession(id, { dir })`:它删 `{id}.jsonl` 与 `{id}/` 子代理转录
+   * 子目录(见 sdk.d.ts)。`dir` 必须是那份会话所在的目录 —— 与 fork 时给的是同一个
+   * (会话文件按目录分开放),给错就找不到、删不到。
+   *
+   * 失败**抛**:调用方(sessionFork 的补偿路)据此转去登记孤儿,不误以为已清干净。
+   */
+  async deleteSession(providerSessionId: string, opts: { cwd: string }): Promise<void> {
+    const deleteSession = await loadDeleteSession();
+    await deleteSession(providerSessionId, { dir: opts.cwd });
   }
 
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {

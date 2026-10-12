@@ -278,6 +278,34 @@ function migrate(database: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_operations_owner ON operations(owner_id, updated_at DESC);
 
+    /* ── 分叉孤儿登记(MC-027)────────────────────────────────────────────
+       复制一段对话时,引擎侧那一步(provider.forkSession)先产生**外部**会话文件,
+       本地再建会话行 + 抄消息。若引擎那步成了、本地那步失败,本地事务**整体回滚**
+       —— 可引擎侧那份复制再没任何东西指向它。有删除入口的引擎当场补删(见
+       provider.deleteSession);删不掉 / 引擎没这条入口的,就在这里**登一行孤儿**,
+       供人工清理,绝不悄悄遗忘。
+
+       为什么是表而不是只打日志:这是一份**待办**(需要有人去引擎那边清),日志会被
+       轮转掉,而这一行要一直留到清理者把它删掉或标记已处理。 */
+
+    CREATE TABLE IF NOT EXISTS fork_orphans (
+      id                  TEXT PRIMARY KEY,
+      -- 源会话(Mcode 侧)。清理者据此知道"这是哪一段的残留"。
+      source_session_id   TEXT NOT NULL,
+      -- 引擎侧那份**没有本地行指向**的会话 id。
+      provider_session_id TEXT NOT NULL,
+      provider_id         TEXT NOT NULL,
+      -- 那份会话文件所在的目录(删的时候还要它)。
+      cwd                 TEXT NOT NULL,
+      -- 为啥走到登记这条路的(补偿删除抛错时的原文,或"引擎不提供删除")。
+      reason              TEXT NOT NULL,
+      -- 'ORPHANED' = 待人工清理;'RESOLVED' = 已处理(留着做审计)。
+      status              TEXT NOT NULL DEFAULT 'ORPHANED',
+      created_at          INTEGER NOT NULL,
+      updated_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fork_orphans_status ON fork_orphans(status, created_at DESC);
+
     /* ── 文献库 ──────────────────────────────────────────────────────────
        与会话数据完全解耦:库是全局的(所有项目共用),不挂在 project 下。
        pdf_path / md_path 一律存**相对库根目录**的路径 —— 库位置可被用户改,
