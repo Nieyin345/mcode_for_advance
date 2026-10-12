@@ -3,6 +3,7 @@ import { appToolDescriptors, invokeAppEngineTool } from "@main/appControl/engine
 import { libraryToolDescriptors, invokeLibraryTool, isLibraryReadonlyTool } from "@main/library/engineTools.js";
 import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 import { agentToolDescriptors, invokeAgentTool, isAgentReadonlyTool } from "@main/mcp/agentEngineBridge.js";
+import { toolTextOf } from "@main/mcp/sdk.js";
 /**
  * Inline Pi extension — bridges Mcode's host-side approval, AskUserQuestion,
  * and system-prompt capabilities into the Pi agent via the SDK's extension API.
@@ -219,7 +220,7 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
           parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
           async execute(_id, args) {
             const result = await invokeAppEngineTool(tool.name, args, sessionId, ctx);
-            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            if (result.isError) throw new Error(toolTextOf(result));
             return { content: result.content, details: {} };
           },
         });
@@ -229,7 +230,7 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
           parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
           async execute(_id, args) {
             const result = await invokeMemoryTool(tool.name, args, sessionId, ctx);
-            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            if (result.isError) throw new Error(toolTextOf(result));
             return { content: result.content, details: {} };
           },
         });
@@ -244,7 +245,7 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
           parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
           async execute(_id, args) {
             const result = await invokeLibraryTool(tool.name, args, sessionId);
-            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            if (result.isError) throw new Error(toolTextOf(result));
             return { content: result.content, details: {} };
           },
         });
@@ -257,7 +258,7 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
           parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
           async execute(_id, args) {
             const result = await workflowEngineBridge.invoke(tool.name, args, sessionId);
-            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            if (result.isError) throw new Error(toolTextOf(result));
             return { content: result.content, details: {} };
           },
         });
@@ -270,7 +271,7 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
           parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
           async execute(_id, args) {
             const result = await invokeAgentTool(tool.name, args, sessionId);
-            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            if (result.isError) throw new Error(toolTextOf(result));
             return { content: result.content, details: {} };
           },
         });

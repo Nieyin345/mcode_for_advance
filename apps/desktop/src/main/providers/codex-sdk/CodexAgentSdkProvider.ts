@@ -3,6 +3,7 @@ import { appToolDescriptors, invokeAppEngineTool, isAppToolName } from "@main/ap
 import { libraryToolDescriptors, invokeLibraryToolGated, isLibraryToolName } from "@main/library/engineTools.js";
 import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 import { agentToolDescriptors, invokeAgentToolGated, isAgentToolName, registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
+import { textBlocksOf } from "@main/mcp/sdk.js";
 /**
  * Codex agent provider — drives the OpenAI Codex harness via the
  * `codex app-server` JSON-RPC protocol (stdio JSONL) and implements the
@@ -1452,7 +1453,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
 
   if (name.startsWith("memory_")) {
     const result = await invokeMemoryTool(name, args, req.sessionId, ctx);
-    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+    return { success: !result.isError, contentItems: textBlocksOf(result).map((text) => ({ type: "inputText", text })) };
   }
 
   // 资料库工具:只读的直接跑,写操作先过审批(动态工具没有 codex 自己的审批钩子)。
@@ -1463,7 +1464,7 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
     const result = await invokeLibraryToolGated(name, args, req.sessionId, ctx, {
       autoApprove: mode === "full-access" && !planMode.active,
     });
-    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+    return { success: !result.isError, contentItems: textBlocksOf(result).map((text) => ({ type: "inputText", text })) };
   }
 
   // 工作流工具:与库工具同一套审批取向(只读直接跑,写操作按权限档问)。名字前缀混杂
@@ -1473,14 +1474,14 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
     const result = await workflowEngineBridge.invokeGated(name, args, req.sessionId, ctx, {
       autoApprove: mode === "full-access" && !planMode.active,
     });
-    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+    return { success: !result.isError, contentItems: textBlocksOf(result).map((text) => ({ type: "inputText", text })) };
   }
 
   // Agent 只读工具(agent_read_document / agent_read_image / agent_context)。只读,
   // invokeGated 直接过;走 gated 是为了统一"没有审批通道就拒绝"的语义(它不会走到那步)。
   if (isAgentToolName(name)) {
     const result = await invokeAgentToolGated(name, args, req.sessionId, ctx, { autoApprove: true });
-    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+    return { success: !result.isError, contentItems: textBlocksOf(result).map((text) => ({ type: "inputText", text })) };
   }
 
   // MCP panel's built-in browser switch. Registration-time filtering can't

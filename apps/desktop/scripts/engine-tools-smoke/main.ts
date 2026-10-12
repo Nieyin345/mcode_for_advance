@@ -245,6 +245,21 @@ try {
       readFileSync(resolve(process.cwd(), "src/main/providers/pi-sdk/PiAgentSdkProvider.ts"), "utf8").includes("registerAgentEngineSession(req.sessionId, req.cwd)"),
   );
 
+  /* ── ARC-017:工具结果的文本提取只有一份 ────────────────────────────────
+   *
+   * 权威实现是 `@main/mcp/sdk` 的 `textBlocksOf` / `toolTextOf`(用判别联合按块类型
+   * 取文本,不把 `content` 断言成 `Record[]`)。Pi 与 Codex 从前各自手写一句
+   * `result.content.map(c => c.type === "text" ? c.text : "")` —— 那正是 ARC-017 要收口
+   * 的"同一份形状抄两遍":SDK 加一种新块(截图/资源)时各抄一份的地方会与真结构漂移。
+   * 这里断言它们都改走权威实现、且**不再留**手写的那一句。 */
+  check("ARC-017:Codex 结果文本走权威 textBlocksOf(不再手写 map)", codexSrc.includes("textBlocksOf(result)"));
+  check("ARC-017:Pi 结果文本走权威 toolTextOf(不再手写 map)", piSrc2.includes("toolTextOf(result)"));
+  check(
+    "ARC-017:三个引擎源码里都不再手写块提取(同一形状不抄第二遍)",
+    !codexSrc.includes('content.map(c => ({ type: "inputText"') &&
+      !piSrc2.includes('.content.map(c => c.type === "text"'),
+  );
+
   /* ── 8. cwd 登记表：删会话真的摘掉（不是"源码里有没有那一行"）────────────────
    *
    * 从前桥里只有一个从没人调的 `unregisterAgentEngineSession`：三个 provider 每轮
