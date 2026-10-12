@@ -1001,3 +1001,52 @@ export function isSpecificGlob(glob: string): boolean {
     .filter((seg) => seg.length > 0 && seg !== "*" && seg !== "**" && /[A-Za-z0-9_.\-]/.test(seg));
   return literalSegs.length > 0;
 }
+
+/**
+ * 【ARC-015③】一条文件事件的**解析后路径**是否仍在被监听的**根目录之内**。
+ *
+ * ## 为什么需要这道边界
+ *
+ * `fs.watch` 回调里给的是**相对被监听目录**的 `filename`。执行器把它 `join(dir, filename)`
+ * 拼成绝对路径后直接拿去做 glob 匹配 —— 但 `join` 会**归约 `..`**:一个 `../x.md` 事件会
+ * 被解析成**根目录之外**的路径,再配上一条泛化 glob(如 `*` `.md` 或 `**`)就可能命中,
+ * 于是"已授权 workspace"被一条相对路径悄悄越出(台账 ARC-015 验收:「目录 symlink/junction
+ * 及相对/绝对匹配不逃出已授权 workspace」)。
+ *
+ * 这道判定把边界**钉在代码里**,而不是依赖"平台恰好不会给越界文件名"这件未写进契约的事实。
+ *
+ * ## 判据要窄
+ *
+ * 纯字符串判定,不碰磁盘(不 realpath):先把两条路径的分隔符统一成 `/`,再**按段**把
+ * `.`/`..` 归约掉(与 `path.join` 一样是字面归约),最后判前缀 —— `norm(abs) === norm(root)`
+ * 或 `norm(abs).startsWith(norm(root) + "/")`。**不在本函数里做大小写折叠** —— 调用方传
+ * 进来的 `abs` 是 `join(root, filename)` 的结果,越界的那些前缀本就不同,而"根目录自身的大小写"
+ * 由调用方保证一致(见 automationRunner)。函数**自己**归约 `..`(不依赖调用方已归约),
+ * 这样它单独拿出来用也正确。
+ *
+ * @param absPath 事件解析后的路径(`join(dir, filename)`)
+ * @param root 被监听的根目录(触发器的 cwd)
+ * @returns 仍在根之内(含等于根)为 `true`;`..` 上跳、绝对路径替换等越界为 `false`
+ */
+export function isWithinWatchRoot(absPath: string, root: string): boolean {
+  // 统一分隔符 + 字面归约 `.` / `..`(与 path.join 的段处理一致:上跳弹掉上一段,
+  // 已在顶时把 `..` 留成一段以示"仍在外")。
+  const norm = (p: string): string => {
+    const stack: string[] = [];
+    for (const seg of p.replace(/[\\/]+/g, "/").split("/")) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") {
+        if (stack.length > 0 && stack[stack.length - 1] !== "..") stack.pop();
+        else stack.push("..");
+      } else {
+        stack.push(seg);
+      }
+    }
+    return stack.join("/");
+  };
+  const r = norm(root);
+  // 根目录为空(调用方没给 cwd)时不做限制 —— "没有根可比"和"越界"是两件事。
+  if (r.length === 0) return true;
+  const a = norm(absPath);
+  return a === r || a.startsWith(`${r}/`);
+}

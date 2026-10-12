@@ -46,7 +46,7 @@ import { existsSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, addToFileBacklog, classifyFileChange, reconcileFileChangeKind, shouldIgnoreWatchPath, type FileChange, type FileChangeKind, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, addToFileBacklog, classifyFileChange, reconcileFileChangeKind, shouldIgnoreWatchPath, isWithinWatchRoot, type FileChange, type FileChangeKind, type HookEvent } from "@contracts/hook";
 import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import {
   NODE_COMMAND_PARAM_KEY,
@@ -1327,6 +1327,20 @@ class AutomationRunner {
     // `filename` 给不出时用目录本身去比:那能匹配 `**` 这类规则;匹配不上具体的
     // `*.md` 也不冤 —— 平台没说改的是哪个文件,而"整个目录里有东西动了"是它给的全部。
     const abs = filename === null ? dir : join(dir, filename);
+    // 【ARC-015③】**越界防线。** `join(dir, filename)` 会把 `..` 归约掉,一个越界的
+    // `filename`(如 `../secret.md`)于是解析到**被监听根之外**的路径,再配一条泛化
+    // glob 就可能命中 —— 已授权 workspace 被一条相对路径悄悄走出(验收:「不逃出已授权
+    // workspace」)。这里用**字面前缀**判定(不 realpath,不碰磁盘),越界就**记一行并丢弃**,
+    // 不静默。`filename === null` 那条用 `dir` 本身,必在根内,不受影响。
+    //
+    // 关于**目录 symlink/junction 逃逸**:实测(win32 / Node 22)`fs.watch(dir,{recursive:true})`
+    // **不会跟**一个指向根外的 in-tree junction 走 —— 从那个 junction 写进去的文件不产生任何
+    // 事件(只有根内直写才有事件);所以运行期并不存在"靠 junction 把监听引到根外"这条路径。
+    // 真正的缺口是**字面路径解析**,由上面这道前缀判定堵上。
+    if (filename !== null && !isWithinWatchRoot(abs, dir)) {
+      log.warn(`[automation] 丢弃越出监听根的路径事件:${String(filename)}(根 ${dir})`);
+      return;
+    }
     // 【ARC-015】默认忽略目录(node_modules/dist/…)的性能价值仍保留,但**不再无条件**盖住用户
     // 显式选的触发源 —— 判定移到**每个触发器**里,由 shouldIgnoreWatchPath 结合该触发器的 include
     // glob 与 defaultIgnorePolicy 决定「dist/*.js 构建完后处理」这类场景能否生效。

@@ -32,10 +32,10 @@ import { withAutomationOrigin } from "@main/orchestration/automationEventOrigin.
  *
  * Run: scripts/automation-smoke/run.sh
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, shouldIgnoreWatchPath, isSpecificGlob, classifyFileChange, reconcileFileChangeKind, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, shouldIgnoreWatchPath, isSpecificGlob, classifyFileChange, reconcileFileChangeKind, isWithinWatchRoot, type HookEvent } from "@contracts/hook";
 import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
@@ -2607,6 +2607,43 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     eq("二次 stat:收口前删掉的被降级成 deleted", recChanges?.find((c) => c.path === vanish)?.kind, "deleted");
     check("二次 stat:存活的不是 deleted", recChanges?.find((c) => c.path === survivor)?.kind !== "deleted", recChanges?.find((c) => c.path === survivor));
 
+    /* ── ②f 越界路径:上跳的 filename 不得进入任何触发器的 pending(ARC-015③) ── */
+
+    // 一条泛化 glob(`**/*.md`)本会命中任何 `.md` —— 包括一条 `../escaped.md` 事件经
+    // `join(dir, …)` 归约后落在**根之外**的路径。越界防线要把它挡在触发器循环之前:
+    // pending 里**一格都不该**为它建立。同时在根内塞一个真的,证明这道闸门**只**挡越界的
+    // 那些(不是把整条事件流误杀)。
+    const wf6 = nextId();
+    const nodeId6 = "t_escape";
+    makeAutomation({
+      workflowId: wf6,
+      nodeId: nodeId6,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+        [NODE_TRIGGER_PATHS_PARAM_KEY]: "**/*.md",
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 10_000, // 长窗口:断言期间不会被 flush 掉
+        task: "越界事件不该被看到",
+      },
+    });
+    await runner.reloadAll();
+
+    const escapeKey = `${wf6}:${nodeId6}`;
+    // ⚠️ 越界目标必须**真实存在** —— 否则那道 `!present && !seenBefore → continue` 会
+    // 顺手把它滤掉,断言就**不承重**了(撤掉防线也照绿)。这里在 PROJ_DIR 的**上一级**
+    // 真写一个 `.md`(在监听根之外,`fs.watch` 不会为它产生事件),再报一条上跳的
+    // `filename` —— `join` 归约后正是这个文件。只有越界防线能挡住它。
+    const escaped = join(PROJ_DIR, "..", "escaped-real.md");
+    writeFileSync(escaped, "# 根外");
+    check("越界目标是真文件(否则断言不承重)", existsSync(escaped), escaped);
+    runner.onFsChange(PROJ_DIR, "..\\escaped-real.md", "rename");
+    const afterEscape = runner.pendingFires.get(escapeKey);
+    check("越界 filename 不进 pending(一格都不建)", afterEscape === undefined, afterEscape?.files);
+    // 根内的一个真文件必须照常进 —— 证明挡的是越界,不是整条流。
+    writeFileSync(join(PROJ_DIR, "in-root.md"), "# 根内");
+    runner.onFsChange(PROJ_DIR, "in-root.md", "rename");
+    const afterInside = runner.pendingFires.get(escapeKey);
+    check("根内文件照常进 pending", afterInside?.files.includes(join(PROJ_DIR, "in-root.md")) === true, afterInside?.files);
+
     runner.dispose();
   }
 
@@ -3709,6 +3746,28 @@ console.log("\n【ARC-015①】收口二次 stat 校正(reconcileFileChangeKind)
   // deleted / unknown 本就不保证存在,不必再问方向。
   eq("deleted 不受 existsNow 影响", r("deleted", true), "deleted");
   eq("unknown 不受 existsNow 影响", r("unknown", false), "unknown");
+}
+
+/* ── 【ARC-015③】越界防线:一条文件事件解析后必须仍在被监听根之内 ── */
+console.log("\n【ARC-015③】越界防线:事件路径不得逃出监听根(isWithinWatchRoot)");
+{
+  const w = isWithinWatchRoot;
+  const ROOT = "D:\\proj";
+  // 根内(含等于根)都放行。
+  check("根内文件放行", w("D:\\proj\\a.md", ROOT) === true);
+  check("根内子目录放行", w("D:\\proj\\sub\\a.md", ROOT) === true);
+  check("等于根本身放行(filename 缺失那条用 dir)", w(ROOT, ROOT) === true);
+  check("根内子目录前缀(非路径分隔)不算越界误判", w("D:\\proj2\\a.md", ROOT) === false);
+  // 分隔符混用也要归一后再判。
+  check("正斜杠写法等价放行", w("D:/proj/sub/a.md", ROOT) === true);
+  // 越界:上跳、被绝对路径替换、上跳多级。
+  check(".. 上跳一级越界", w("D:\\secret.md", ROOT) === false);
+  check("../ 相对写法越界", w("D:\\proj\\..\\secret.md", ROOT) === false);
+  check("上跳多级越界", w("D:\\..\\secret.md", ROOT) === false);
+  // 根目录为空 = 不限制(没有根可比,不误判成越界)。
+  check("空根不限制", w("D:\\anything\\x.md", "") === true);
+  // 尾斜杠的根也认。
+  check("根带尾斜杠仍放行根内", w("D:\\proj\\a.md", "D:\\proj\\") === true);
 }
 
 {
