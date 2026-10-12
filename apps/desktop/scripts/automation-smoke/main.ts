@@ -35,7 +35,7 @@ import { withAutomationOrigin } from "@main/orchestration/automationEventOrigin.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, shouldIgnoreWatchPath, isSpecificGlob, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, shouldIgnoreWatchPath, isSpecificGlob, classifyFileChange, reconcileFileChangeKind, type HookEvent } from "@contracts/hook";
 import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
@@ -2028,10 +2028,10 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     activeWatchOf(originSessionId: string): boolean;
     statusOf(workflowId: string): Array<{ lastError?: string }>;
     lastMinute: Map<string, number>;
-    pendingFires: Map<string, { files: string[]; busyRetryMs?: number; overflowDropped?: number }>;
+    pendingFires: Map<string, { files: string[]; changes?: Map<string, string>; busyRetryMs?: number; overflowDropped?: number }>;
     runNow(workflowId: string, triggerNodeId: string): Promise<{ ok: boolean; error?: string }>;
     onTick(): void;
-    onFsChange(dir: string, filename: string | null): void;
+    onFsChange(dir: string, filename: string | null, eventType?: string | null): void;
     start(): Promise<void>;
     reloadAll(): Promise<void>;
     dispose(): void;
@@ -2510,6 +2510,102 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       ) === true,
       overflowRun[0]?.entry?.payload?.files,
     );
+
+    /* ── ②d 结构化变更:改动 / 新建 / 删除各得诚实方向(ARC-015①) ── */
+
+    // 从前 `onFsChange` 只拿文件名、判"此刻在不在",删除/改名方向**根本没有地方说** ——
+    // 模型看到 `files` 时看不出"这个文件被删了"。这里造一次**改动 + 新建 + 删除**同批,
+    // 断言 `payload.changes` 里方向如实(modified/created/deleted),且事件类型为 "change"
+    // 的那条被认成 modified、`fs.watch` 的 rename 合事件靠"见没见过"分辨 created/deleted。
+    const wf4 = nextId();
+    const nodeId4 = "t_changes";
+    makeAutomation({
+      workflowId: wf4,
+      nodeId: nodeId4,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+        [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+        task: "看变更方向",
+      },
+    });
+    await runner.reloadAll();
+
+    const kept = join(PROJ_DIR, "change-kept.md");
+    writeFileSync(kept, "# 已存在");
+    // 先攒下"见过"它(用 rename,第一次见 → created),这一步只为了让 `seenBefore` 为真。
+    runner.onFsChange(PROJ_DIR, "change-kept.md", "rename");
+    // 再报一次 "change"(内容改了)→ 此刻在 → modified。
+    runner.onFsChange(PROJ_DIR, "change-kept.md", "change");
+    // 新建一个(rename + 在 + 没见过 → created)。
+    const freshFile = join(PROJ_DIR, "change-fresh.md");
+    writeFileSync(freshFile, "# 新来");
+    runner.onFsChange(PROJ_DIR, "change-fresh.md", "rename");
+    // 删除一个已见过的(先攒下,再删,再报 rename → deleted)。
+    const doomed2 = join(PROJ_DIR, "change-doomed.md");
+    writeFileSync(doomed2, "# 待删");
+    runner.onFsChange(PROJ_DIR, "change-doomed.md", "rename");
+    rmSync(doomed2, { force: true });
+    runner.onFsChange(PROJ_DIR, "change-doomed.md", "rename");
+
+    // ⚠️ 这一段**没 await**(同步跑完),所以此刻盘上真的 `fs.watch` 还没来得及插话 ——
+    // pending 里的方向是纯由上面几次显式事件合成出来的,**精确可断言**。
+    const pend4 = runner.pendingFires.get(`${wf4}:${nodeId4}`);
+    eq("方向:改动记成 modified", pend4?.changes?.get(kept), "modified");
+    eq("方向:新建记成 created", pend4?.changes?.get(freshFile), "created");
+    eq("方向:删除记成 deleted", pend4?.changes?.get(doomed2), "deleted");
+
+    await sleep(FLUSH_SLACK_MS);
+    const changeRun = runsOfNode(nodeId4);
+    check("带方向的这一批照常起一次运行", changeRun.length >= 1, changeRun.length);
+    const changes = changeRun[0]?.entry?.payload?.changes as { path: string; kind: string }[] | undefined;
+    check("载荷里带上了 changes", Array.isArray(changes) && changes.length >= 3, changes);
+    // 删除方向**稳**(一旦 deleted,后续真实事件只会继续报 deleted:不在 + 见过)。改动/新建
+    // 那两个在收口那 300ms 里可能被真实 `fs.watch` 事件重写成 `unknown`(rename + 在 + 见过),
+    // 那本身也是**诚实**的 —— 所以这两个在载荷层只断言"方向在合法集合里",精确判据由上面的
+    // pending 层与纯函数层承担。
+    eq("载荷:deleted 方向如实(删除的路径不在 files 里,但方向在)", changes?.find((c) => c.path === doomed2)?.kind, "deleted");
+    const HONEST = new Set(["created", "modified", "deleted", "renamed", "unknown"]);
+    check("载荷:每个方向都在诚实集合里", (changes ?? []).every((c) => HONEST.has(c.kind)), changes);
+    check("载荷:kept 与 fresh 都有方向", changes?.some((c) => c.path === kept) === true && changes?.some((c) => c.path === freshFile) === true, changes);
+    // ⚠️ 删除的路径**不**进 `files`(那份只装"存在、要办"的)—— 但它必须在 `changes` 里。
+    check("删除的路径不在 files 里", (changeRun[0]?.entry?.payload?.files as string[] | undefined)?.includes(doomed2) !== true, changeRun[0]?.entry?.payload?.files);
+    // `changes` 不进「插入变量」菜单(它是数组套对象,`{{trigger.changes}}` 解不出来)。
+    check("changes 不进插入变量菜单", !triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: "file" }).includes("changes"));
+
+    /* ── ②e 收口前又没了 → 方向降级成 deleted(二次 stat 校正) ── */
+
+    const wf5 = nextId();
+    const nodeId5 = "t_reconcile";
+    makeAutomation({
+      workflowId: wf5,
+      nodeId: nodeId5,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+        [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 500,
+        task: "收口前删了要改口",
+      },
+    });
+    await runner.reloadAll();
+
+    // 有存活文件保证"这一次真会跑"(纯删除批不唤醒,见 MC-022);被删的那个只是方向要改口。
+    const survivor = join(PROJ_DIR, "reconcile-survivor.md");
+    writeFileSync(survivor, "# 留着");
+    runner.onFsChange(PROJ_DIR, "reconcile-survivor.md", "change");
+    const vanish = join(PROJ_DIR, "reconcile-vanish.md");
+    writeFileSync(vanish, "# 待会儿没了");
+    runner.onFsChange(PROJ_DIR, "reconcile-vanish.md", "change"); // 此刻在 → modified
+    eq("收口前:方向还是 modified", runner.pendingFires.get(`${wf5}:${nodeId5}`)?.changes?.get(vanish), "modified");
+    // 攒着的那几秒里删掉它 —— 收口二次 stat 应把它从 modified 降级成 deleted。
+    rmSync(vanish, { force: true });
+    await sleep(FLUSH_SLACK_MS);
+
+    const recRun = runsOfNode(nodeId5);
+    check("二次 stat:存活文件仍起一次运行", recRun.length >= 1, recRun.length);
+    const recChanges = recRun[0]?.entry?.payload?.changes as { path: string; kind: string }[] | undefined;
+    eq("二次 stat:收口前删掉的被降级成 deleted", recChanges?.find((c) => c.path === vanish)?.kind, "deleted");
+    check("二次 stat:存活的不是 deleted", recChanges?.find((c) => c.path === survivor)?.kind !== "deleted", recChanges?.find((c) => c.path === survivor));
 
     runner.dispose();
   }
@@ -3566,6 +3662,89 @@ console.log("\n【ARC-015】文件监听默认忽略目录的 policy");
   check("EXPLICIT_OVERRIDE:只写目录名 dist 不解保护", d("dist/bundle.js", ["dist"], "EXPLICIT_OVERRIDE") === true);
   check("isSpecificGlob:** 不具体", isSpecificGlob("**") === false);
   check("isSpecificGlob:dist/*.js 具体", isSpecificGlob("dist/*.js") === true);
+  check("isSpecificGlob:build/report.json 具体", isSpecificGlob("build/report.json") === true);
+}
+
+/* ── 【ARC-015①】结构化 FileChange:方向由「事件类型 + 此刻在不在 + 之前见没见过」合成 ── */
+console.log("\n【ARC-015①】结构化 FileChange 方向(classifyFileChange)");
+{
+  const c = classifyFileChange;
+  // 内容变了 + 此刻在 → 改动。
+  eq("change + 在 → modified", c("change", true, false), "modified");
+  eq("change + 在(之前见过) → modified", c("change", true, true), "modified");
+  // change + 不在:矛盾(边写边被删)→ 不假装,unknown。
+  eq("change + 不在 → unknown(矛盾不猜)", c("change", false, true), "unknown");
+
+  // rename 是新建/删除/改名的合事件 —— 方向靠"在不在 + 之前见没见过"。
+  eq("rename + 在 + 没见过 → created", c("rename", true, false), "created");
+  // ⚠️ rename + 在 + 之前见过 → **不**谎报 created(它会诱使模型以为这是全新文件),标 unknown。
+  eq("rename + 在 + 见过 → unknown(改名源未知,不谎报 created)", c("rename", true, true), "unknown");
+  eq("rename + 不在 + 见过 → deleted", c("rename", false, true), "deleted");
+  // rename + 不在 + 没见过:转瞬即逝的临时文件 → unknown(不硬塞成 deleted)。
+  eq("rename + 不在 + 没见过 → unknown", c("rename", false, false), "unknown");
+
+  // 平台不给类型(null)时同 rename 处理。
+  eq("null 类型 + 在 + 没见过 → created", c(null, true, false), "created");
+  eq("null 类型 + 不在 + 见过 → deleted", c(null, false, true), "deleted");
+
+  // **从不返回 renamed** —— fs.watch 给不出另一端,这一档是声明保留(见台账 ARC-015④)。
+  for (const et of ["change", "rename", null]) {
+    for (const ex of [true, false]) {
+      for (const sb of [true, false]) {
+        check(`classify 结果不是 renamed(${et}/${ex}/${sb})`, c(et, ex, sb) !== "renamed", c(et, ex, sb));
+      }
+    }
+  }
+}
+
+console.log("\n【ARC-015①】收口二次 stat 校正(reconcileFileChangeKind)");
+{
+  const r = reconcileFileChangeKind;
+  // 说"还在"的路径,收口时又没了 → 降级成 deleted(否则模型去读一个不存在的文件)。
+  eq("created 但收口时没了 → deleted", r("created", false), "deleted");
+  eq("modified 但收口时没了 → deleted", r("modified", false), "deleted");
+  // 还在 → 原样。
+  eq("created 且还在 → created", r("created", true), "created");
+  eq("modified 且还在 → modified", r("modified", true), "modified");
+  // deleted / unknown 本就不保证存在,不必再问方向。
+  eq("deleted 不受 existsNow 影响", r("deleted", true), "deleted");
+  eq("unknown 不受 existsNow 影响", r("unknown", false), "unknown");
+}
+
+{
+  // 载荷事实:有方向才给 changes 键(同 overflowDropped/itemCount 口径)。
+  const none = payloadFactsOf({ kind: "file", files: ["a.md"] });
+  check("facts:没方向不带 changes", !Object.prototype.hasOwnProperty.call(none, "changes"), Object.keys(none));
+  const empty = payloadFactsOf({ kind: "file", files: ["a.md"], changes: [] });
+  check("facts:changes 空数组不给键", !Object.prototype.hasOwnProperty.call(empty, "changes"), Object.keys(empty));
+  const withDir = payloadFactsOf({
+    kind: "file",
+    files: ["a.md"],
+    changes: [{ path: "a.md", kind: "created" }, { path: "b.md", kind: "deleted" }],
+  });
+  check("facts:有方向时带 changes(全都在)", withDir.changes?.length === 2, withDir.changes);
+  eq("facts:changes 里保留了 deleted 方向", withDir.changes?.find((x) => x.path === "b.md")?.kind, "deleted");
+  // 深拷:改事实里的对象不动原载荷。
+  const origChanges = [{ path: "a.md", kind: "created" } as const];
+  const factCopy = payloadFactsOf({ kind: "file", files: ["a.md"], changes: origChanges });
+  (factCopy.changes as { path: string; kind: string }[])[0].kind = "deleted";
+  eq("facts:changes 是深拷(原载荷不受影响)", origChanges[0].kind, "created");
+
+  // 人话描述:把**方向**说清楚,`unknown` 老实说看不出方向。
+  const dirText = describeTriggerPayload({
+    kind: "file",
+    files: ["a.md"],
+    changes: [{ path: "b.md", kind: "deleted" }, { path: "c.md", kind: "unknown" }],
+  });
+  check("描述:列出删除方向", dirText.includes("删除:b.md"), dirText);
+  check("描述:unknown 老实说看不出方向", dirText.includes("看不出方向") && dirText.includes("c.md"), dirText);
+  // created/modified 不重复列(files 那段已经说了"文件变了")。
+  const onlyMod = describeTriggerPayload({
+    kind: "file",
+    files: ["a.md"],
+    changes: [{ path: "a.md", kind: "modified" }],
+  });
+  check("描述:只有 modified 时不另起方向段", !onlyMod.includes("另有变更"), onlyMod);
 }
 
 console.log(`\nautomation-smoke:${total - failures}/${total} 通过`);

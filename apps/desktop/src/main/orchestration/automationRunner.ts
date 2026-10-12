@@ -46,7 +46,7 @@ import { existsSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, addToFileBacklog, shouldIgnoreWatchPath, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, addToFileBacklog, classifyFileChange, reconcileFileChangeKind, shouldIgnoreWatchPath, type FileChange, type FileChangeKind, type HookEvent } from "@contracts/hook";
 import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import {
   NODE_COMMAND_PARAM_KEY,
@@ -338,6 +338,14 @@ interface PendingFire {
   timer: ReturnType<typeof setTimeout> | null;
   /** 已经按 glob 筛过的文件(绝对路径)。只有文件那一路会往里放。 */
   files: string[];
+  /**
+   * 【ARC-015①】这一格攒着期间每个路径的**结构化变更方向**(`path → kind`,last-write-wins)。
+   *
+   * 与 `files` 是两份不同的东西:`files` 只装得下"存在、要办"的文件,一次 `deleted`
+   * 在那份列表里**没有位置** —— 所以方向单独攒在这里,收口时经二次 stat 再对一遍
+   * (见 {@link reconcileFileChangeKind}),作为 `payload.changes` 交给模型。
+   */
+  changes: Map<string, FileChangeKind>;
   /**
    * 【ARC-015】这一格攒着期间**因积压超限被丢掉**的路径条数(累加,见 `addToFileBacklog`)。
    *
@@ -806,10 +814,12 @@ class AutomationRunner {
       return;
     }
     try {
-      const watcher = watch(dir, { recursive: true }, (_type, filename) => {
+      const watcher = watch(dir, { recursive: true }, (eventType, filename) => {
         // 回调里**只攒不跑**(见文件头不变量 ①):真正起运行的是下面那个计时器。
+        // 【ARC-015①】把 `eventType`(`"rename"` / `"change"` / …)也带上 —— 它是合成
+        // 结构化 `FileChange` 的三个输入之一(见 `classifyFileChange`)。
         try {
-          this.onFsChange(dir, typeof filename === "string" ? filename : null);
+          this.onFsChange(dir, typeof filename === "string" ? filename : null, typeof eventType === "string" ? eventType : null);
         } catch (err) {
           log.warn(`[automation] ${dir} 的文件事件处理失败:${(err as Error).message}`);
         }
@@ -1310,8 +1320,10 @@ class AutomationRunner {
     }
   }
 
-  /** 文件变化:`fs.watch` 那一路。`filename` 可能是 null(平台差异)。 */
-  private onFsChange(dir: string, filename: string | null): void {
+  /** 文件变化:`fs.watch` 那一路。`filename` 可能是 null(平台差异)。`eventType` 是
+   *  `fs.watch` 给的事件类型(`"rename"` / `"change"` / 平台相关的其它值 / null)—— 合成
+   *  结构化 `FileChange` 的输入之一(见 `classifyFileChange`)。 */
+  private onFsChange(dir: string, filename: string | null, eventType: string | null = null): void {
     // `filename` 给不出时用目录本身去比:那能匹配 `**` 这类规则;匹配不上具体的
     // `*.md` 也不冤 —— 平台没说改的是哪个文件,而"整个目录里有东西动了"是它给的全部。
     const abs = filename === null ? dir : join(dir, filename);
@@ -1319,6 +1331,11 @@ class AutomationRunner {
     // 显式选的触发源 —— 判定移到**每个触发器**里,由 shouldIgnoreWatchPath 结合该触发器的 include
     // glob 与 defaultIgnorePolicy 决定「dist/*.js 构建完后处理」这类场景能否生效。
     const rawIgnored = filename !== null && filename.split(/[\\/]/).some((seg) => WATCH_IGNORED_DIRS.has(seg));
+    // **先 glob 后问盘**(顺序的理由见原注释:glob 是纯字符串比、`existsSync` 是一次系统调用;
+    // 项目里多数事件匹配不上任何 glob)。但 `classifyFileChange` 要一次 "此刻在不在" —— 用个
+    // 记忆化的惰性求值,让这一趟最多只 stat 一次,且**只在真有触发器命中该 glob 之后**才发生。
+    let statCache: boolean | undefined;
+    const existsNow = (): boolean => (statCache ??= existsSync(abs));
     for (const trigger of this.all()) {
       if (trigger.disarmed || trigger.spec.kind !== "file" || trigger.cwd !== dir) continue;
       if (rawIgnored && shouldIgnoreWatchPath(filename ?? "", trigger.spec.globs, trigger.spec.defaultIgnorePolicy)) continue;
@@ -1329,29 +1346,35 @@ class AutomationRunner {
       // 可选排除规则也用同一组绝对/相对主语与 glob 语义。只排除明确命中的路径
       // (平台不给文件名时,按上面的约定只拿目录本身来匹配);不按"自动化正在运行"一概吞事件。
       if (trigger.spec.excludeGlobs.some((glob) => subjects.some((s) => matchesGlobList(glob, s)))) continue;
-      // **删掉的文件不进载荷**(问题 2,取舍见 `existingFilesOf`)。`fs.watch` 的 `rename`
-      // 事件同时覆盖新建与删除,而这里**从前不区分** —— 于是删掉的路径也会进去,模型去读
-      // 一个不存在的文件。
-      //
-      // 判**存在性**而不是"这个事件是新建还是删除":`fs.watch` 给的那个 `eventType` 对
-      // 新建 / 删除 / 改名一律是 `"rename"`,拿它判方向必然漏掉改名;而"文件此刻在不在"
-      // 是这件事里唯一确定的事实。
-      //
-      // 顺序是**先 glob 后问盘**:glob 是纯字符串比,`existsSync` 是一次系统调用 ——
-      // 项目里绝大多数事件都匹配不上任何一条 glob(编译产物、临时文件),那些走不到 stat。
-      //
-      // 拦在这一层的收益是**这一次运行压根不起**:只在载荷那一侧过滤的话,一个"文件被删"
-      // 的事件照样会攒起一次运行,载荷却是空的 —— 模型被叫起来却没有任何要办的事。
-      // flush 时还会再问一遍(见 `rearm`),管的是攒着这几秒里被删掉的那些。
-      if (!existsSync(abs)) continue;
+      // glob 全部通过后才问盘(见上 `statCache` 的注释)。
+      const present = existsNow();
+      // 【ARC-015①】**不再**"不存在就 continue" —— 那正是删除/改名方向无处表达的根因。
+      // 改成:先看这一格**之前见过这个路径没有**(`seenBefore`),再据此合成结构化方向。
+      // 从没见过的、且此刻不在的 → 转瞬即逝的临时文件,没什么好说,跳过(不建空的一格)。
+      const existing = this.pendingFires.get(triggerKey(trigger));
+      const seenBefore =
+        (existing?.files.includes(abs) ?? false) || (existing?.changes.has(abs) ?? false);
+      const kind = classifyFileChange(eventType, present, seenBefore);
+      if (!present && !seenBefore) continue;
       const pending = this.pendingOf(trigger);
-      if (!pending.files.includes(abs)) {
+      // **方向记在 changes 里**(last-write-wins):删除/改名的路径进不了 `files`(那份只装
+      // "存在、要办"的),但它的方向必须留下来 —— 否则模型看不出"这个文件是被删了"。
+      // changes 与 files 是**同一批路径**(见 PendingFire.changes 的说明),一并按上限收口,
+      // 免得一条抖动的目录把方向表也顶到无限长。丢的条数只由 `files` 那一侧统计一次。
+      if (pending.changes.size >= PENDING_FILES_LIMIT && !pending.changes.has(abs)) {
+        const oldest = pending.changes.keys().next().value;
+        if (oldest !== undefined) pending.changes.delete(oldest);
+      }
+      pending.changes.set(abs, kind);
+      if (present && !pending.files.includes(abs)) {
         // 上限(见 `PENDING_FILES_LIMIT`):收进队列,超限时丢**最早**的几条。丢掉多少
         // **要说出来** —— 静默少办一件事是这一路最坏的坏法。【ARC-015】现在这层不只是
-        // 一句 `log.warn`,丢的条数**累加进 `pending.overflowDropped`**,收口时并入载荷
-        // 事实(`payload.overflowDropped`),让人话描述与 `data.trigger` 都明说"输入不完整"。
-        if (pending.files.length >= PENDING_FILES_LIMIT) pending.files.shift();
-        pending.files.push(abs);
+        // 一句 `log.warn`,通过 `addToFileBacklog` 把丢的条数**累加进 `pending.overflowDropped`**
+        // (②),收口时并入载荷事实(`payload.overflowDropped`),让人话描述与 `data.trigger`
+        // 都明说"输入不完整"。
+        const { backlog, dropped } = addToFileBacklog(pending.files, abs, PENDING_FILES_LIMIT);
+        pending.files = backlog;
+        if (dropped > 0) pending.overflowDropped += dropped;
       }
       // **来了新东西 → 回看间隔从头数。** 退避(见 `BUSY_RETRY_MIN_MS`)管的是
       // "一直没新输入、只是在上一次运行没结束时反复回看"这一种;新文件到达说明
@@ -1795,7 +1818,7 @@ class AutomationRunner {
     const key = triggerKey(trigger);
     const existing = this.pendingFires.get(key);
     if (existing !== undefined) return existing;
-    const fresh: PendingFire = { trigger, timer: null, files: [], overflowDropped: 0 };
+    const fresh: PendingFire = { trigger, timer: null, files: [], changes: new Map(), overflowDropped: 0 };
     this.pendingFires.set(key, fresh);
     return fresh;
   }
@@ -1832,12 +1855,25 @@ class AutomationRunner {
         if (files.length === 0) {
           // 这一格刚在计时器回调开头被删掉(见上一行 `pendingFires.delete`),不重建
           // —— 下一次 `onFsChange` 会按需建新的一格。只记一行,别静默。
+          // ⚠️ 【ARC-015①】**纯删除批(只有 deleted/unknown 方向、没有一个存活文件)仍然
+          // 不唤醒模型** —— 这是 MC-022 的产品取舍,本切片不改它。方向信息只在**这一次
+          // 真的为存活文件跑起来时**随 `changes` 捎上(见下);「某处少了个文件」不单独起一轮。
           log.info(`[automation] 「${trigger.title}」攒着的文件在收口前都不在了,这一次不跑`);
           return;
+        }
+        // 【ARC-015①】收口这一刻**再问一次盘**(二次 stat):一个方向说"还在"的路径若此刻
+        // 又没了,降级成 `deleted`(见 `reconcileFileChangeKind`)—— 免得模型去读一个不存在
+        // 的文件。这与 `existingFilesOf` 对 `files` 做的过滤是同一次判定,只是这里保留方向。
+        const changes: FileChange[] = [];
+        for (const [path, seenKind] of pending.changes) {
+          changes.push({ path, kind: reconcileFileChangeKind(seenKind, existsSync(path)) });
         }
         payload = {
           kind: "file",
           files,
+          // 【ARC-015①】把**方向**带进载荷(created/modified/deleted/unknown)。只在有可说的
+          // 变更时才给键(空不给,同 overflowDropped 口径)。`unknown` 是刻意保留的诚实档。
+          ...(changes.length > 0 ? { changes } : {}),
           // 【ARC-015】这一格攒着期间若因超限丢过路径,把条数**带进载荷事实** —— 让
           // `describeTriggerPayload` 与 `data.trigger.overflowDropped` 都明说"这次输入
           // 不完整"。没丢过(`0`)时不带这个键(同 `itemCount` 的口径)。
@@ -1962,6 +1998,10 @@ class AutomationRunner {
           }
           if (payload.kind === "file") {
             pending.files = [...new Set([...pending.files, ...payload.files])];
+            // 【ARC-015①】方向也要接回来 —— 忙时重建的那一格若丢了 `changes`,下一次收口
+            // 就只剩 `files`(没有删除/改名方向),模型又看不出"这个文件是被删了"。
+            // last-write-wins:同一路径以这一批刚合成的方向为准(它是二次 stat 校正过的)。
+            for (const change of payload.changes ?? []) pending.changes.set(change.path, change.kind);
             // 【ARC-015】上一批若已因超限丢过,把它累加进来 —— 否则忙时重建的那一格会把
             // "输入不完整"这件事实丢掉,下次收口时又当成"这就是全部"。
             if (payload.overflowDropped !== undefined) pending.overflowDropped += payload.overflowDropped;

@@ -910,7 +910,78 @@ export function addToFileBacklog(
   const overflow = next.length - cap;
   if (overflow <= 0) return { backlog: next, dropped: 0 };
   // 只丢**最早**的几条(从队首),留下的是最近发生的 —— 与原来 `shift()` 的取舍一致。
-  return { backlog: next.slice(overflow), dropped: 0 };
+  // ⚠️ 丢了几条要**如实报出**:`dropped` 就是被挤掉的条数(`overflow`)。恒返回 0 会让
+  // 调用方以为"没丢",而载荷里恰恰是不完整的列表 —— 那正是本函数要终结的"静默截断"。
+  return { backlog: next.slice(overflow), dropped: overflow };
+}
+
+/**
+ * 【ARC-015①】一条文件事件的**结构化变更类型**。
+ *
+ * `fs.watch` 只给「事件类型 + 文件名」,给不出「从哪儿来」—— 所以这里刻意保留
+ * `unknown`:**定不了方向就标它,不假装**。别把「暂时不存在的路径」一律丢掉(那会连
+ * 「删除」这条事实都表达不出来),也别把一次 `rename` 硬说成确定的新建或删除。
+ */
+export type FileChangeKind = "created" | "modified" | "deleted" | "renamed" | "unknown";
+
+/** 【ARC-015①】一条结构化文件变更:`路径 + 类型`。 */
+export interface FileChange {
+  /** 绝对路径(调用方已归一)。 */
+  path: string;
+  kind: FileChangeKind;
+}
+
+/**
+ * 【ARC-015①】把 `fs.watch` 给的零碎线索合成为一条**诚实**的 {@link FileChange} 类型。
+ *
+ * ## 输入与它们各自能证明什么
+ *
+ * - `eventType`:`fs.watch` 的回调类型。`"change"` = 内容变了;`"rename"` 同时覆盖
+ *   **新建 / 删除 / 改名**(这是 `fs.watch` 的硬事实,不是我们的取舍);别的值或 `null`
+ *   = 平台没给。
+ * - `exists`:**此刻**问一次盘(`stat`)的结果 —— 这是唯一确定的事实。
+ * - `seenBefore`:这一批里**之前**见过这个路径没有(上一轮的观察)。
+ *
+ * ## 判据(宁可 unknown,不猜方向)
+ *
+ * - `"change"` + 在 → `modified`;`"change"` + 不在(矛盾,极少:边写边被删)→ `unknown`。
+ * - 其余(`"rename"` / 无类型)+ 在 → 见过就是 `unknown`(rename 覆盖到这个已见路径上,
+ *   但**给不出源名**),没见过就是 `created`。
+ * - 其余 + 不在 → 见过就是 `deleted`,没见过就是 `unknown`(转瞬即逝的临时文件)。
+ *
+ * ## 为什么**从不**返回 `renamed`
+ *
+ * `renamed` 是**声明保留**的一档:真要说"X 被改成了 Y",得把 rename 的**两端配对**
+ * 起来,而 `fs.watch` 单独给不出另一端(见上)。所以在本函数现在的输入下,rename 一律
+ * 落成 `created` / `deleted` / `unknown` —— 这是诚实,不是没做。等有了能配对的事件源
+ * (见台账 ARC-015④ 的 `DurableEventEnvelope`)再让这一档有值。
+ */
+export function classifyFileChange(
+  eventType: string | null,
+  exists: boolean,
+  seenBefore: boolean,
+): FileChangeKind {
+  if (eventType === "change") {
+    // "change" = 内容变过。文件此刻在 → 改动;不在(边写边被删那种矛盾)→ 不假装。
+    return exists ? "modified" : "unknown";
+  }
+  // "rename" 或平台没给类型:靠"此刻在不在 + 之前见没见过"合成。
+  if (exists) return seenBefore ? "unknown" : "created";
+  return seenBefore ? "deleted" : "unknown";
+}
+
+/**
+ * 【ARC-015①】收口时的**二次 stat 校正**:一个方向说"还在"的路径,到收口这一刻再问一次盘。
+ *
+ * 攒着的那几秒里文件可能又没了 —— 若还对外说 `created` / `modified`,模型会去读一个不存在的
+ * 文件(正是这一路最坏的坏法:悄悄少办一件事)。这时**降级成 `deleted`** 才是诚实的。
+ *
+ * 只处理"说在、其实没了"这一个方向:`deleted` / `unknown` 本就不保证文件存在,不必再问;
+ * 而"说没了、又回来了"属于重命名来回那种,交给下一次事件自然覆盖(别在这里猜方向)。
+ */
+export function reconcileFileChangeKind(kind: FileChangeKind, existsNow: boolean): FileChangeKind {
+  if (!existsNow && (kind === "created" || kind === "modified")) return "deleted";
+  return kind;
 }
 
 /**

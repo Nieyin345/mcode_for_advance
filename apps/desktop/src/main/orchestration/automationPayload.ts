@@ -9,7 +9,7 @@
  * 用词要像人说话(「到点了:2026-09-16 09:00」),而不是把事件对象 JSON 塞进去 ——
  * 后者会让模型去猜字段含义,而它手里没有 schema。
  */
-import type { EventItemFactKey, HookEvent } from "@contracts/hook";
+import type { EventItemFactKey, FileChange, HookEvent } from "@contracts/hook";
 
 /** 列表最多列这么多项,剩下的折成一句"还有几个"。文件连着变(churn)时一串路径能上千,
  *  全塞进提示词纯属浪费 token —— 而模型要的是"变了些文件"这个事实,不是清单本身。 */
@@ -24,6 +24,20 @@ export type TriggerPayload =
   | {
       kind: "file";
       files: readonly string[];
+      /**
+       * 【ARC-015①】结构化变更:`{ path, kind }` 列表,`kind` ∈ created/modified/deleted/
+       * renamed/unknown。**与 `files` 并列而不是取代它** —— `files` 是"还在的、要办的
+       * 文件"(排除删除、临时文件之后那一份),`changes` 是"这一批到底发生了什么变更"。
+       *
+       * 为什么要有它:`files` 只装得下"存在"的文件,**删除/改名方向根本没有地方说** ——
+       * 模型拿到 `files` 时看不出"这个文件是被删了"还是"从没出现过"。`unknown` 是**刻意
+       * 保留**的一档;`fs.watch` 只给事件类型 + 文件名,删除/改名方向不可靠,老实标
+       * unknown(见 `@contracts/hook` 的 `classifyFileChange`)。
+       *
+       * ⚠️ 只在**真的分得出来**的时候给(攒着期间每个路径都有过观察)。空/缺省时不带这个键
+       * (同 `overflowDropped`/`itemCount` 的口径:别多一个恒空的数组)。
+       */
+      changes?: readonly FileChange[];
       /**
        * 【ARC-015】这次载荷里**因为积压超限被丢掉**了多少条路径(未丢时为 undefined)。
        *
@@ -101,6 +115,25 @@ export interface TriggerPayloadFacts {
   at?: number;
   /** 触发时攒下的文件(绝对路径)。只有 file 有。 */
   files?: readonly string[];
+  /**
+   * 【ARC-015①】结构化变更(`{ path, kind }`,kind ∈ created/modified/deleted/renamed/
+   * unknown)。只有 file 有,**且只在真的分得出方向时才给键**(同 `overflowDropped` 口径)。
+   *
+   * ## 为什么它和 `files` 是两份而不是一份
+   *
+   * `files` 只装得下"存在、要办"的那些文件 —— 一次 `deleted` 在这份列表里**没有位置**,
+   * 模型看到 `files` 时根本分不出"这个文件被删了"和"从没出现过"。`changes` 补的就是这条
+   * 方向信息。`unknown` 是**刻意保留**的档(`fs.watch` 的 `rename` 对新建/删除/改名一律
+   * 报同一个类型,方向不可靠),不是没做完。
+   *
+   * ## 为什么**故意不进「插入变量」菜单**
+   *
+   * 它是**数组套对象**,不是标量 —— `expandTriggerVars` 只按字面查一个键、把数组摊成
+   * `a、b`,对一串对象毫无意义(同 `TriggerPayloadFacts.items` 的理由)。代码节点直接读
+   * `data.trigger.changes[i].kind`;`{{trigger.changes}}` 这种写法解不出来,列进菜单等于
+   * 诱人踩坑。
+   */
+  changes?: readonly FileChange[];
   /**
    * 【ARC-015】这次载荷里因积压超限**被丢掉**的条数(未丢时不出现)。只有 file 有。
    *
@@ -194,6 +227,12 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
       return {
         kind: "file",
         files: [...payload.files],
+        // 【ARC-015①】**有变更方向才给键**(同 overflowDropped/itemCount 的口径:别多一个
+        // 恒空的数组,那会让"这次带没有带方向"多一个永远为假的答案)。深拷一层,
+        // 调用方改不动原载荷里的对象。
+        ...(payload.changes !== undefined && payload.changes.length > 0
+          ? { changes: payload.changes.map((c) => ({ ...c })) }
+          : {}),
         // **真丢了才给键**(同 `itemCount` 的口径)—— 一份没截断的列表不该多一个恒为 0 的
         // `overflowDropped`,那会让"这次输入完整吗"这个问题多一个永远为假的答案。
         ...(payload.overflowDropped !== undefined && payload.overflowDropped > 0
@@ -296,14 +335,19 @@ export function describeTriggerPayload(payload: TriggerPayload): string {
       const overflowSaid = overflow > 0
         ? [`(输入被截断:因为有更多文件持续变化,更早的 ${overflow} 个没能带上 —— 这次看到的不是全部)`]
         : [];
+      // 【ARC-015①】把**方向**也说出来:`files` 只列了"还在的",模型看不出"这个文件其实
+      // 是被删了"。只列非 created/modified 的那些(那两类默认的"文件变了"已经覆盖),
+      // 并且 `unknown` 老实说"看不出方向" —— 不编一个方向出来。
+      const directionSaid = describeFileChanges(payload.changes);
       if (listed.shown.length === 0) {
         const head = inputSaid === "" ? "监听的文件有变化。" : "手动带着输入运行。";
-        return [head, ...overflowSaid].join("\n");
+        return [head, ...directionSaid, ...overflowSaid].join("\n");
       }
       return [
         "有文件变了:",
         ...listed.shown.map((f) => `- ${f}`),
         ...(listed.rest > 0 ? [`(还有 ${listed.rest} 个没列出来)`] : []),
+        ...directionSaid,
         ...overflowSaid,
         ...(inputSaid === "" ? [] : [inputSaid]),
       ].join("\n");
@@ -372,6 +416,28 @@ function oneItem(item: Partial<Record<EventItemFactKey, string>>, ordinal?: numb
 /** 前 `MAX_LISTED` 项 + 剩下几项。 */
 function capList(items: readonly string[]): { shown: string[]; rest: number } {
   return { shown: items.slice(0, MAX_LISTED), rest: Math.max(0, items.length - MAX_LISTED) };
+}
+
+/** 【ARC-015①】变更方向上的人话。只列**非 created/modified** 的那些(那两类"文件变了"
+ *  已经覆盖),把 `deleted` / `renamed` / `unknown` 说清楚 —— 尤其 `unknown` 要**明说
+ * 看不出方向**,绝不编一个方向出来。没有这类变更时返回空数组(不硬塞一行)。 */
+function describeFileChanges(changes: readonly FileChange[] | undefined): string[] {
+  if (changes === undefined || changes.length === 0) return [];
+  const label: Record<FileChange["kind"], string> = {
+    created: "新增",
+    modified: "修改",
+    deleted: "删除",
+    renamed: "改名",
+    unknown: "看不出方向(可能是新增/删除/改名)",
+  };
+  const worthListing = changes.filter((c) => c.kind !== "created" && c.kind !== "modified");
+  if (worthListing.length === 0) return [];
+  const listed = capList(worthListing.map((c) => `${label[c.kind]}:${c.path}`));
+  return [
+    "另有变更(不只是内容修改):",
+    ...listed.shown.map((s) => `- ${s}`),
+    ...(listed.rest > 0 ? [`(还有 ${listed.rest} 项没列出来)`] : []),
+  ];
 }
 
 /** `YYYY-MM-DD HH:mm`,**本地时间**。
