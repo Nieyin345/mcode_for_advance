@@ -16,15 +16,21 @@
  * `before-quit`. **Only listens when explicitly enabled** — the master switch
  * `mobile.enabled` must be `"1"` (see {@link readEnabled}); there is no
  * serve-by-default, because this server puts passwords and bearer tokens on
- * plaintext HTTP bound to `0.0.0.0`. Once enabled it binds `0.0.0.0:<port>` so
+ * plaintext HTTP. Once enabled it binds the configured **listen address**
+ * (`mobile.bindAddress`, see {@link resolveBindAddress}): default `0.0.0.0` so
  * other devices on the LAN can reach it — a deliberate widening of the threat
  * boundary, guarded only by the pairing flow: every request past `/api/pair/*`
- * requires a valid device token.
+ * requires a valid device token. A user who does not need off-machine access
+ * can narrow it to `127.0.0.1` (this machine only) or to a single LAN interface
+ * IP. That narrows **who can connect**, but the transport is still plaintext
+ * HTTP either way — this server does **not** terminate TLS (see the MC-004 note
+ * below), so the bind address is an exposure reducer, not encryption.
  *
  * The server builds on the same node:http pattern as the OpenAI bridge server
  * (`providers/bridge/bridgeServer.ts`) but is long-lived and multi-route.
  */
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { app } from "electron";
 import { awaitDb, getDb } from "@main/store/db.js";
 import { SettingRepo } from "@main/store/repositories.js";
@@ -32,6 +38,7 @@ import {
   MOBILE_DEFAULT_PORT,
   MOBILE_PORT_SETTING_KEY,
   MOBILE_ENABLED_SETTING_KEY,
+  MOBILE_BIND_ADDRESS_SETTING_KEY,
   MOBILE_PAIRED_DEVICES_SETTING_KEY,
   MOBILE_LOGIN_SETTING_KEY,
   SSE_HEARTBEAT_INTERVAL_MS,
@@ -95,12 +102,66 @@ export async function readEnabled(): Promise<boolean> {
   return false;
 }
 
+/** **监听地址**的解析 —— 纯函数,可无头测试。
+ *
+ *  手机服务把明文口令 / Bearer 放在 HTTP 上,所以「听哪块网卡」是暴露面的一半。
+ *  取值来自 `mobile.bindAddress`:
+ *
+ *   - **缺省 / 空**(未配置)→ `0.0.0.0`。这是 LAN 场景想要的行为(手机要跨网段
+ *     连过来),与改造前一致 —— 安全默认值那条只负责「没显式开启就不听」,不代表
+ *     开启后一定要收敛到本机。
+ *   - `127.0.0.1` / `::1` / `localhost`(显式回环)→ 收敛到本机,LAN 上别的机器
+ *     打不到。`localhost` 归一成 `127.0.0.1`(数值化,好断言也好落 `server.listen`)。
+ *   - **单个网卡 IP**(显式,如 `192.168.1.5`)→ 就用那个地址,只听那一块网卡。
+ *   - **畸形值**(拼错的 IP、带空格/端口/协议)→ `127.0.0.1`,**fail-closed**:
+ *     一次手滑必须把监听面收窄,绝不能静默回落到「听全部网卡」。这是本函数与
+ *     「缺省 = 0.0.0.0」唯一的分界 —— 缺省是**没有意见**,畸形是**有意见但写错了**。
+ *
+ *  ⚠️ 无论落到哪个地址,传输都是**明文 HTTP**(本服务不终结 TLS)。收敛绑定地址
+ *  只是**缩小谁能连**,不是加密;见文件头 MC-004 注。 */
+export function resolveBindAddressValue(raw: string | null | undefined): string {
+  const value = (raw ?? "").trim();
+  if (value === "") return "0.0.0.0";
+  if (value.toLowerCase() === "localhost") return "127.0.0.1";
+  // `isIP` 返回 0(不是 IP)/ 4(IPv4)/ 6(IPv6);非 0 即为合法字面量,原样采用。
+  if (isIP(value) !== 0) return value;
+  // 有值但不是合法 IP —— fail-closed,收窄到本机而不是回落 0.0.0.0。
+  return "127.0.0.1";
+}
+
+/** 从设置里读并解析监听地址(见 {@link resolveBindAddressValue})。 */
+async function resolveBindAddress(): Promise<string> {
+  await awaitDb();
+  try {
+    return resolveBindAddressValue(SettingRepo.get(MOBILE_BIND_ADDRESS_SETTING_KEY));
+  } catch {
+    // 读失败 —— 与 readEnabled 同一姿态:收窄到本机,别把全部网卡再敞出来。
+    return "127.0.0.1";
+  }
+}
+
+/** 由**监听地址**推出对外回显 / 二维码里用的 host。
+ *
+ *  `0.0.0.0` / `::`(通配)时保持旧行为:用自动探测到的 LAN IP(探不到就
+ *  `localhost`)。一旦绑定收敛到某个具体地址,回显就该是**那个地址本身** ——
+ *  否则二维码指向一个根本没在听的 IP,手机连上去只会超时。IPv6 字面量(含回环
+ *  `::1`)要包方括号,而且是它**原样**的地址 —— 不折成 IPv4,否则「听 `::1`」却
+ *  广播 `127.0.0.1` 就又对不上了。 */
+export function endpointHostForBind(bindAddress: string, detectedLanIp: string | null): string {
+  const isWildcard = bindAddress === "0.0.0.0" || bindAddress === "::";
+  if (isWildcard) return detectedLanIp ?? "localhost";
+  return bindAddress.includes(":") ? `[${bindAddress}]` : bindAddress;
+}
+
 export interface MobileServerHandle {
   /** Whether the server is currently listening. */
   readonly running: boolean;
   /** The bound port (0 if not running). */
   readonly port: number;
-  /** The LAN endpoint base URL, e.g. `http://192.168.1.5:7331`. */
+  /** The address actually passed to `server.listen` — `0.0.0.0`, `127.0.0.1`, or
+   *  a single interface IP (see {@link resolveBindAddress}). Empty when idle. */
+  readonly bindAddress: string;
+  /** The endpoint base URL, e.g. `http://192.168.1.5:7331` or `http://127.0.0.1:7331`. */
   readonly endpoint: string;
   /** Stop listening. Idempotent. */
   stop(): void;
@@ -610,26 +671,31 @@ export async function startMobileServer(): Promise<MobileServerHandle> {
   }
 
   const port = await resolvePort();
+  const bindAddress = await resolveBindAddress();
   const lanIp = detectLanIp();
-  const endpoint = lanIp ? `http://${lanIp}:${port}` : `http://localhost:${port}`;
+  // 回显 host 跟着**实际绑定地址**走:绑通配(0.0.0.0)时才用探测到的 LAN IP;
+  // 一旦收敛到回环或某块网卡,二维码/端点就得是那个地址本身,否则指向没在听的 IP。
+  const host = endpointHostForBind(bindAddress, lanIp);
+  const endpoint = `http://${host}:${port}`;
 
   const server: Server = createServer(createMobileRequestHandler(endpoint));
 
   try {
     await new Promise<void>((resolve, reject) => {
       server.on("error", reject);
-      server.listen(port, "0.0.0.0", () => resolve());
+      server.listen(port, bindAddress, () => resolve());
     });
   } catch (err) {
-    log.error(`mobile: failed to listen on 0.0.0.0:${port}: ${(err as Error).message}`);
+    log.error(`mobile: failed to listen on ${bindAddress}:${port}: ${(err as Error).message}`);
     return makeIdleHandle();
   }
 
-  log.info(`mobile: server listening on 0.0.0.0:${port} (${endpoint})${lanIp ? "" : " [no LAN IP detected]"}`);
+  log.info(`mobile: server listening on ${bindAddress}:${port} (${endpoint})${lanIp || bindAddress !== "0.0.0.0" ? "" : " [no LAN IP detected]"}`);
 
   currentHandle = {
     running: true,
     port,
+    bindAddress,
     endpoint,
     stop: () => {
       server.close(() => log.info(`mobile: server stopped (${port})`));
@@ -653,6 +719,7 @@ function makeIdleHandle(): MobileServerHandle {
   return {
     running: false,
     port: 0,
+    bindAddress: "",
     endpoint: "",
     stop: () => {
       /* nothing */

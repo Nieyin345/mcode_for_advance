@@ -21,9 +21,20 @@ export const MOBILE_PAIRED_DEVICES_SETTING_KEY = "mobile.pairedDevices";
  *  Value is a decimal string. Empty/missing → use the default port. */
 export const MOBILE_PORT_SETTING_KEY = "mobile.port";
 
-/** Setting key for the master kill-switch. Value is "1" / "0". When "0" the
- *  mobile HTTP server is not started at all (no LAN listener). Default "1". */
+/** Setting key for the master kill-switch. Value is "1" / "0". Only an explicit
+ *  "1" starts the mobile HTTP server; "0" / unset / read-failure → no LAN
+ *  listener at all (fail-closed — see MC-004). */
 export const MOBILE_ENABLED_SETTING_KEY = "mobile.enabled";
+
+/** Setting key for the **listen address** of the mobile HTTP server. Value is an
+ *  IP literal (IPv4 or IPv6) or `localhost`. Unset/empty → `0.0.0.0` (the LAN
+ *  default: a phone must be able to reach it across the local network).
+ *  `127.0.0.1` / `::1` / `localhost` confines the listener to this machine only;
+ *  a single LAN interface IP confines it to that one NIC. A malformed value
+ *  falls back to `127.0.0.1` (fail-closed — a typo must narrow the listener, not
+ *  silently widen it back to every interface). Resolved by
+ *  `resolveBindAddress()` in the main process. */
+export const MOBILE_BIND_ADDRESS_SETTING_KEY = "mobile.bindAddress";
 
 /** Default port the mobile HTTP server binds to. Overridable via settings. */
 export const MOBILE_DEFAULT_PORT = 7331;

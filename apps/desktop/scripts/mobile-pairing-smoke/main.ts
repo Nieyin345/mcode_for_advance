@@ -1656,6 +1656,104 @@ console.log("\nSSE 背压(MC-007)");
   }
 }
 
+/* ────────────── 12. 监听地址可收敛(bind 地址解析)—— MC-004 残余第二半 ──────────────
+ *
+ * §10 的安全默认值只堵住「全新安装默认敞在 LAN」。第二半:显式开启后 `MobileHttpServer`
+ * 仍以**明文 HTTP** 绑 `0.0.0.0`,长期令牌 / 口令在可信 LAN 之外的网络可被观察。本切片
+ * 提供**可收敛的监听地址**:默认仍 `0.0.0.0`(LAN 场景需要手机跨网段连),但可显式收到
+ * `127.0.0.1`(仅本机)或某块网卡 IP。⚠️ 传输仍是明文 HTTP(本服务不终结 TLS)——
+ * 收敛绑定地址只**缩小谁能连**,不是加密;TLS/可信隧道未做(见台账 remaining)。
+ *
+ * 判据立在两处**真实行为**上:
+ *   1. 纯函数 `resolveBindAddressValue` 的三态(缺省 → `0.0.0.0`;显式回环 → `127.0.0.1`;
+ *      显式 IP → 那个 IP),外加畸形值 fail-closed(收窄到本机,不回落全部网卡);
+ *   2. `server.listen(port, addr)` 真的听在所选地址上 —— 解析出的地址就是
+ *      `server.address().address`;绑 `127.0.0.1` 时本机 LAN 地址**连不进来**。
+ */
+console.log("\n监听地址可收敛(MC-004)");
+
+{
+  const { resolveBindAddressValue, endpointHostForBind } = await import("@main/mobile/MobileHttpServer.js");
+  const net = await import("node:net");
+
+  // ── 纯函数:三态 + 畸形 fail-closed ──
+  eq("缺省(未配置)→ 0.0.0.0(LAN 默认)", resolveBindAddressValue(null), "0.0.0.0");
+  eq("空串 → 0.0.0.0", resolveBindAddressValue(""), "0.0.0.0");
+  eq("纯空白 → 0.0.0.0", resolveBindAddressValue("   "), "0.0.0.0");
+  eq("显式回环 127.0.0.1 → 127.0.0.1", resolveBindAddressValue("127.0.0.1"), "127.0.0.1");
+  eq("localhost → 归一成 127.0.0.1", resolveBindAddressValue("localhost"), "127.0.0.1");
+  eq("IPv6 回环 ::1 → ::1(原样)", resolveBindAddressValue("::1"), "::1");
+  eq("显式网卡 IP 192.168.1.5 → 那个 IP", resolveBindAddressValue("192.168.1.5"), "192.168.1.5");
+  eq("显式 IP 带空白 → trim 后采用", resolveBindAddressValue("  10.0.0.7 "), "10.0.0.7");
+  eq("★ 畸形值(IP 少一段)→ fail-closed 127.0.0.1(不回落 0.0.0.0)", resolveBindAddressValue("192.168.1"), "127.0.0.1");
+  eq("★ 畸形值(带端口)→ fail-closed 127.0.0.1", resolveBindAddressValue("0.0.0.0:7331"), "127.0.0.1");
+  eq("★ 畸形值(带协议)→ fail-closed 127.0.0.1", resolveBindAddressValue("http://0.0.0.0"), "127.0.0.1");
+
+  // ── 回显 host 跟着绑定地址走(收敛后二维码不再指向没在听的 LAN IP)──
+  eq("绑通配 → 回显探测到的 LAN IP", endpointHostForBind("0.0.0.0", "192.168.1.9"), "192.168.1.9");
+  eq("绑通配 + 探不到 IP → localhost", endpointHostForBind("0.0.0.0", null), "localhost");
+  eq("绑回环 → 回显 127.0.0.1(不看探测 IP)", endpointHostForBind("127.0.0.1", "192.168.1.9"), "127.0.0.1");
+  eq("绑某网卡 IP → 回显那个 IP", endpointHostForBind("192.168.1.5", "10.0.0.1"), "192.168.1.5");
+  eq("绑 IPv6 字面量 → URL 里加方括号", endpointHostForBind("fe80::1", null), "[fe80::1]");
+
+  // ── 真起一个监听器:listen(port, addr) 真的听在所选地址上 ──
+  // ⚠️ **只绑回环。** 本套的底线是「不把跑的这台机器挂到局域网上」(见 run.sh 头)。
+  //    `0.0.0.0` 那一发解析由上面的纯函数 + 下面的源码不变量覆盖,这里不真绑它 ——
+  //    绑它就是把自己敞给 LAN,哪怕只是一个回 "ok" 的短路监听器。
+  const listenBoundAddress = async (addr: string): Promise<string> => {
+    const s = createServer((_req, res) => { res.end("ok"); });
+    await new Promise<void>((resolve, reject) => {
+      s.on("error", reject);
+      s.listen(0, addr, () => resolve());
+    });
+    const bound = s.address();
+    const external = bound && typeof bound === "object" ? bound.address : "";
+    await new Promise<void>((resolve) => s.close(() => resolve()));
+    return external;
+  };
+  eq("listen(0, \"127.0.0.1\") 真的绑在 127.0.0.1", await listenBoundAddress("127.0.0.1"), "127.0.0.1");
+
+  // ★ 最强判据:绑 127.0.0.1 时,同一台机器的 LAN 网卡 IP **连不进来**(只有绑 0.0.0.0
+  //   才连得进)。`detectLanIp()` 在完全离线的机器上返回 null —— 那时这条前提不成立,
+  //   如实报红(与 §"库真的建起来了"同款:前提本身也是一条要守的断言)。
+  const lanIp = (await import("@main/mobile/PairingManager.js")).detectLanIp();
+  check("前提:本机有可探测的 LAN IP(否则 LAN 拒连那条无从谈起)", lanIp !== null, { lanIp });
+  if (lanIp) {
+    const probeConnect = (addr: string, port: number): Promise<boolean> =>
+      new Promise<boolean>((resolve) => {
+        const sock = net.connect({ host: addr, port }, () => { sock.destroy(); resolve(true); });
+        sock.setTimeout(800);
+        sock.on("timeout", () => { sock.destroy(); resolve(false); });
+        sock.on("error", () => resolve(false));
+      });
+    const bound = createServer((_req, res) => { res.end("ok"); });
+    await new Promise<void>((resolve, reject) => {
+      bound.on("error", reject);
+      bound.listen(0, "127.0.0.1", () => resolve());
+    });
+    const p = (bound.address() as { port: number }).port;
+    eq("★ 绑 127.0.0.1 时本机 LAN IP 连不进来(收敛真的生效)", await probeConnect(lanIp, p), false);
+    eq("同一监听器从回环仍连得进(前提成立,不是它没在听)", await probeConnect("127.0.0.1", p), true);
+    await new Promise<void>((resolve) => bound.close(() => resolve()));
+  }
+
+  // ── 源码不变量:startMobileServer 真的把**解析出的**地址交给 listen ──
+  // 本套不直接调 `startMobileServer`(它会把跑的这台机器绑到 LAN 上,正是本套刻意
+  // 不做的);所以钉源码:`server.listen(port, bindAddress, …)` 必须传解析值,不能把
+  // 字面量 "0.0.0.0" 写死回去 —— 否则 resolveBindAddress 再对也没接进监听。
+  {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const src = readFileSync(join(process.cwd(), "src/main/mobile/MobileHttpServer.ts"), "utf8");
+    const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    check(
+      "★ startMobileServer 把解析出的 bindAddress 交给 server.listen(不是写死 0.0.0.0)",
+      /server\.listen\(port,\s*bindAddress\b/.test(code) && !/server\.listen\(port,\s*"0\.0\.0\.0"/.test(code),
+      { listenLines: code.match(/server\.listen\([^)]*/g) },
+    );
+  }
+}
+
 await new Promise<void>((resolve) => server.close(() => resolve()));
 console.log("\n服务已关");
 
