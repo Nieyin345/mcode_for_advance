@@ -514,6 +514,19 @@ export async function callRpc(entry: { channel: string }, input: unknown): Promi
  *
  * 返回形状刻意**不抛**(除参数解析):面板脚本 `await mcode.api.call(...)` 拿到的是一个
  * 普通对象,失败读 `error`;`needsApproval` 由桥吃掉、对脚本透明(桥点头后重调)。
+ *
+ * ## 结果形状与 agent 那条路同源(ARC-009)
+ *
+ * 从前这里把**三种事实**糊成同一个 `{ok:false,error}`:参数 ZodError(命令**没执行**)、
+ * 只读方法执行抛错(**没副作用**)、写 / 高风险档执行途中抛错(**可能已部分提交**)——
+ * 面板作者读到同样一句 error,会对一个**可能已落定**的非幂等写操作再调一次(与 agent
+ * `app_api_call` 当年那个洞同款)。这里补上 `operation` 字段(与 agent 同源的
+ * `OperationResult`,复用 `decodeDomainOutcome` / `makeOp`):ZodError → **REJECTED**;
+ * 只读档抛错 → **FAILED**(可安全重试);写 / 高风险档抛错 → **UNCERTAIN**
+ * (`retryable=false`,文本提醒先查真实状态)。同时对 RPC 的合法返回跑
+ * `decodeDomainOutcome` —— 登记过 `{ok:false}` 合同的方法(如 `git.push` / `browser.create`)
+ * 的业务拒绝不再被报成 `ok:true`(MC-066 那个洞,面板这条路从前没堵)。
+ * ⚠️ 只加结构,不改既有 `ok`/`error`/`needsApproval` 字段的形状 —— 桥与面板脚本照旧。
  */
 export async function panelApiCall(
   method: string,
@@ -527,18 +540,36 @@ export async function panelApiCall(
   needsApproval?: boolean;
   level?: "write" | "danger";
   description?: string;
+  /**
+   * ARC-009:结构化结果(与 agent `app_api_call` **同源** —— 复用 `makeOp` /
+   * `decodeDomainOutcome` / `resultKindOfOutcome` / `formatOperationResult`)。成功系列带
+   * `ok:true`,REJECTED / FAILED / UNCERTAIN 带 `ok:false`。只**新增**这一个字段,既有
+   * `ok` / `error` / `needsApproval` 的形状不变(桥与面板脚本照旧读旧字段)。
+   */
+  operation?: OperationResult;
 }> {
   const entry = findEntry(method);
-  if (!entry) return { ok: false, error: unknownMethodHint(method) };
-  if (!entry.registered) return { ok: false, error: `这个方法在当前版本里没有注册(${entry.channel})。` };
+  if (!entry) {
+    const reason = unknownMethodHint(method);
+    return { ok: false, error: reason, operation: makeOp("REJECTED", method, randomUUID(), { code: OP_CODE.methodNotFound, reason }) };
+  }
+  if (!entry.registered) {
+    const reason = `这个方法在当前版本里没有注册(${entry.channel})。`;
+    return { ok: false, error: reason, operation: makeOp("REJECTED", entry.method, randomUUID(), { code: OP_CODE.notRegistered, reason }) };
+  }
   const level = entry.policy.level;
   if (level === "blocked") {
-    return { ok: false, error: `这个功能不开放:${entry.policy.reason ?? "安全原因"}` };
+    const reason = `这个功能不开放:${entry.policy.reason ?? "安全原因"}`;
+    return { ok: false, error: reason, operation: makeOp("REJECTED", entry.method, randomUUID(), { code: OP_CODE.blocked, reason }) };
   }
   // 密钥设置键:在**调用之前**拦(见 `isSecretSettingKey` —— 结果打码拦不住它)。
   const secretRefusal = secretSettingRefusal(entry.method, input);
-  if (secretRefusal) return { ok: false, error: secretRefusal };
+  if (secretRefusal) {
+    return { ok: false, error: secretRefusal, operation: makeOp("REJECTED", entry.method, randomUUID(), { code: OP_CODE.secretKeyRefused, reason: secretRefusal }) };
+  }
   if ((level === "write" || level === "danger") && approved !== true) {
+    // 等用户点头 —— 这是个**暂停**(交回界面去问),不是"命令没执行"的终结性判定,故不挂
+    // `operation`(挂了会把一次待批准的调用说成 REJECTED,误导面板作者以为已经失败了)。
     const what = entry.policy.reason ?? entry.doc ?? entry.method;
     return {
       ok: false,
@@ -547,14 +578,42 @@ export async function panelApiCall(
       description: `面板「${panelLabel}」要调用 ${entry.method} —— ${clipLine(what, 200)}`,
     };
   }
+  // ── 真正执行 RPC(到这里一定被调一次)──────────────────────────────
+  let result: unknown;
   try {
-    const result = await callRpc(entry, input);
-    // 结果打码 —— 与 agent 的 `renderResult` 同一份 `redactValue`。密钥类设置键上面已前置
-    // 拦掉,这里是兜底(如返回值里嵌着别的凭据字段)。
-    return { ok: true, result: redactValue(result) };
+    result = await callRpc(entry, input);
   } catch (err) {
-    return { ok: false, error: errText(err) };
+    // ZodError = 参数在**执行之前**就被挡下 → 命令没跑 → REJECTED(可安全改参数重来)。
+    if (err instanceof z.ZodError) {
+      const op = makeOp("REJECTED", entry.method, randomUUID(), { code: OP_CODE.rpcFailed, reason: errText(err) });
+      return { ok: false, error: formatOperationResult(op), operation: op };
+    }
+    // 其余抛错:只读 / 界面档不可能有副作用 → FAILED(可安全重试);写 / 高风险档**可能已
+    // 部分提交** → UNCERTAIN(`retryable=false`,文本提醒先查真实状态)—— 与 agent 那条路
+    // 同判据。这一条正是 ARC-009 对 `panelApiCall` 点名的"失败分支":旧代码把它和"没执行"
+    // 糊成同一个 `{ok:false,error}`,面板作者会对一个可能已落定的非幂等写操作再调一次。
+    const risky = level === "write" || level === "danger";
+    const op = risky
+      ? makeOp("UNCERTAIN", entry.method, randomUUID(), {
+          code: OP_CODE.rpcUncertain,
+          reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
+        })
+      : makeOp("FAILED", entry.method, randomUUID(), { code: OP_CODE.rpcFailed, reason: errText(err) });
+    return { ok: false, error: formatOperationResult(op), operation: op };
   }
+  // ── 领域结果解码(MC-066):RPC resolve ≠ 业务成功 ───────────────────
+  // 登记过 `{ok,error}` 合同的方法(如 `browser.*` / `git.push`),ok:false 是业务**明确
+  // 拒绝**或**可能已部分提交** —— 从前这条路**没跑解码**,把业务拒绝也当 `ok:true` 交回
+  // 面板(与 agent 那条路 MC-066 修的是同一个洞)。这里补齐,按登记语义落 REJECTED /
+  // UNCERTAIN。
+  const outcome = decodeDomainOutcome(entry.method, result);
+  if (outcome.kind !== "accepted") {
+    const op = makeOp(resultKindOfOutcome(outcome), entry.method, randomUUID(), { code: outcome.code, reason: outcome.reason });
+    return { ok: false, error: formatOperationResult(op), operation: op };
+  }
+  // 结果打码 —— 与 agent 的 `renderResult` 同一份 `redactValue`。密钥类设置键上面已前置
+  // 拦掉,这里是兜底(如返回值里嵌着别的凭据字段)。
+  return { ok: true, result: redactValue(result), operation: makeOp("SUCCEEDED", entry.method, randomUUID()) };
 }
 
 function errText(err: unknown): string {

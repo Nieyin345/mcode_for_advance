@@ -1930,6 +1930,92 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
     leaked.ok === true && !JSON.stringify(leaked.result).includes("SENTINEL_PANEL_KEY"), leaked);
 }
 
+/* ── 5d. 【ARC-009】panelApiCall 结果契约(与 agent `app_api_call` 同源形状)──
+ *
+ * ARC-009 的 remaining 点名的最后一个入口(`panelApiCall`)。从前它把**三种事实**糊成
+ * 同一个 `{ok:false,error}`:参数 ZodError(命令**没执行**)、只读方法执行抛错(**没副作用**)、
+ * 写 / 高风险档执行途中抛错(**可能已部分提交**)—— 面板作者读到同样一句 error,会对一个
+ * **可能已落定**的非幂等写操作再调一次。另外它**从不解码领域结果**:登记过 `{ok:false}`
+ * 合同的方法(如 `git.push` / `browser.*`)的业务拒绝从前被报成 `ok:true`(MC-066 的洞,
+ * 这条面板路没堵)。接上 `decodeDomainOutcome` / `makeOp` / `formatOperationResult` 后:
+ *
+ *   a) ★承重红例:写档 RPC **执行途中抛错** → 新增 `operation.resultKind=UNCERTAIN`
+ *      (`retryable=false`)—— 旧代码只回一个普通 `{ok:false,error}`,分不出"没执行"与
+ *      "可能已落一半";
+ *   b) ★承重红例:`git.push` 合法回 `{ok:false}`(`maybePartial`)→ `ok:false` +
+ *      `operation.resultKind=UNCERTAIN` —— 旧代码**根本不跑解码**,回 `ok:true`(假成功);
+ *   c) 只读档抛错 → **FAILED**(`retryable=true`);ZodError → **REJECTED**;
+ *   d) `git.stage` 合法 `{ok:false}`(`refusal`)→ **REJECTED**;
+ *   e) 正控:真成功 → `ok:true` + `SUCCEEDED`,返回值照旧打码;
+ *   f) 等审批那一档(没带 `approved`)**不挂** `operation`(是暂停,不是终结性拒绝)。
+ */
+{
+  const panelOp = (o: { operation?: { resultKind?: string; retryable?: boolean } }): { resultKind?: string; retryable?: boolean } | undefined => o.operation;
+
+  // (a) ★承重红例:写档(session.rename)执行途中抛错 → UNCERTAIN。
+  recordRpcHandler("session:rename", async () => { throw new Error("IPC 断了,写到一半"); });
+  {
+    const r = await panelApiCall("session.rename", { id: "s9", title: "new" }, true, "我的面板");
+    check("★ ARC-009:面板·写档执行途中抛错 → ok:false(旧行为也是 false)", r.ok === false, r);
+    check("★ ARC-009:面板·写档执行途中抛错 → operation.resultKind=UNCERTAIN(可能已落一半)",
+      panelOp(r)?.resultKind === "UNCERTAIN", r);
+    check("★ ARC-009:面板·写档执行途中抛错 → 绝不标成可安全重试(retryable=false)",
+      panelOp(r)?.retryable === false, r);
+    check("★ ARC-009:面板·写档执行途中抛错 → 文本提醒先查真实状态",
+      typeof r.error === "string" && r.error.includes("不确定"), r.error);
+  }
+
+  // (c) 只读档(project.list)抛错 → FAILED(可安全重试)。
+  recordRpcHandler("project:list", async () => { throw new Error("读的时候炸了"); });
+  {
+    const r = await panelApiCall("project.list", undefined, false, "我的面板");
+    check("★ ARC-009:面板·只读档抛错 → operation.resultKind=FAILED(可安全重试)",
+      panelOp(r)?.resultKind === "FAILED" && panelOp(r)?.retryable === true, r);
+  }
+
+  // (b) ★承重红例:git.push 合法 ok:false(maybePartial 合同)→ UNCERTAIN + ok:false。
+  recordRpcHandler("git:push", async () => ({ ok: false, error: "认证失败,请检查凭据" }));
+  {
+    const r = await panelApiCall("git.push", { projectId: "p1" }, true, "我的面板");
+    check("★ ARC-009:面板·git.push 合法 ok:false → 不再被报成 ok:true(MC-066 那个洞)",
+      r.ok === false, r);
+    check("★ ARC-009:面板·git.push 合法 ok:false(maybePartial)→ operation.resultKind=UNCERTAIN",
+      panelOp(r)?.resultKind === "UNCERTAIN", r);
+  }
+
+  // (d) git.stage 合法 ok:false(refusal 合同)→ REJECTED(没执行)。
+  recordRpcHandler("git:stage", async () => ({ ok: false, error: "仓库路径不在任何已添加的项目内" }));
+  {
+    const r = await panelApiCall("git.stage", { projectId: "p1", paths: ["a"] }, true, "我的面板");
+    check("★ ARC-009:面板·git.stage 合法 ok:false(refusal)→ operation.resultKind=REJECTED(retryable=true)",
+      panelOp(r)?.resultKind === "REJECTED" && panelOp(r)?.retryable === true, r);
+  }
+
+  // ZodError → REJECTED(命令没跑)。
+  {
+    const { z } = await import("zod");
+    recordRpcHandler("project:list", async (_e, raw) => z.object({ id: z.string() }).parse(raw));
+    const r = await panelApiCall("project.list", {}, false, "我的面板");
+    check("★ ARC-009:面板·参数 ZodError → operation.resultKind=REJECTED(命令没执行)",
+      panelOp(r)?.resultKind === "REJECTED" && r.ok === false, r);
+  }
+
+  // (e) 正控:真成功 → ok:true + SUCCEEDED,返回值照旧打码。
+  recordRpcHandler("project:list", async () => ({ projects: [{ id: "p1", name: "demo", path: "/x" }] }));
+  {
+    const r = await panelApiCall("project.list", undefined, false, "我的面板");
+    check("★ ARC-009 正控:面板·只读真成功 → ok:true 且 operation.resultKind=SUCCEEDED",
+      r.ok === true && panelOp(r)?.resultKind === "SUCCEEDED", r);
+  }
+
+  // (f) 等审批那一档(没带 approved)是**暂停**,不是终结性拒绝 → 不挂 operation。
+  {
+    const r = await panelApiCall("session.rename", { id: "s9", title: "new" }, false, "我的面板");
+    check("★ ARC-009:面板·没带 approved → needsApproval 且不挂 operation(是暂停,不是拒绝)",
+      r.ok === false && r.needsApproval === true && r.operation === undefined, r);
+  }
+}
+
 console.log(`\n${passed}/${passed + failures.length} 通过`);
 if (failures.length) {
   console.log(`\n失败 ${failures.length} 条:`);
