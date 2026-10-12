@@ -733,6 +733,19 @@ section("17. 送图上限与主进程契约同锚");
   eq("库上下文 + 完全不相关外部路径 → denied", resolveMarkdownImageRoute("D:/elsewhere/x.png", lib).kind, "denied");
   // ④ 正控:同一 root 本身(rel 为空)不算子路径 → denied(不是条目内的文件)。
   eq("根目录自身 → denied(不是条目内文件)", resolveMarkdownImageRoute(root, lib).kind, "denied");
+
+  // 【MC-087 / 第 50.3 章】库图缓存 key 必须含**条目根**,否则换绑/撤权重挂后同 id+relPath
+  // 命中旧 data URL,继续显示早该消失的旧图。判据钉在组件真的把 rootAbs 拼进 key。
+  {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const mdSrc = readFileSync(join(process.cwd(), "src/renderer/components/chat/Markdown.tsx"), "utf8");
+    check(
+      "★ 库图缓存 key 含条目根(换绑后不命中旧图)",
+      /lib:\$\{itemId\}:\$\{rootAbs\}:\$\{relPath\}/.test(mdSrc),
+      mdSrc.match(/const key = `lib:[^`]*`/)?.[0],
+    );
+  }
 }
 
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);

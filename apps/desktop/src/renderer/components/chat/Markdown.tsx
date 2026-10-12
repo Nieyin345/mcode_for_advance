@@ -405,10 +405,15 @@ function loadMarkdownImageDataUrl(filePath: string): Promise<string> {
 }
 
 /**
- * 【MC-087】库内图片的缓存 key:条目 id + 相对路径(不是绝对路径 —— 同一条目换绑/移动后
- * 绝对路径变、id+rel 不变,缓存语义更稳;且两端都参与 key,不会跨条目不撞)。 */
-function loadLibraryImageDataUrl(itemId: string, relPath: string): Promise<string> {
-  const key = `lib:${itemId}:${relPath}`;
+ * 【MC-087 / 第 50.3 章】库内图片的缓存 key:**条目 id + 条目根 + 相对路径**。
+ *
+ * 为什么带 `rootAbs`(第 50.3 章点名):只带 id+relPath 时,用户把这条 linked 条目**换绑**
+ * 到另一个目录(或原目录被撤权重挂)后,同一条目同 relPath 会命中**旧**的 data URL,继续
+ * 显示早已不该显示的旧图。`rootAbs` 是当前绑定根的绝对路径 —— 换绑即换 key,旧缓存自然
+ * 不再命中。撤权/条目删除时组件会随条目卸载,缓存按 FIFO 上限被逐出(不主动跨条目清:
+ * 条目 id 也参与 key,不会串)。 */
+function loadLibraryImageDataUrl(itemId: string, rootAbs: string, relPath: string): Promise<string> {
+  const key = `lib:${itemId}:${rootAbs}:${relPath}`;
   const cached = mdImageDataUrls.get(key);
   if (cached) return cached;
   const promise = api.library
@@ -468,7 +473,7 @@ function MarkdownLocalImage({
     }
     const load =
       route.kind === "library"
-        ? loadLibraryImageDataUrl(library!.id, route.relPath)
+        ? loadLibraryImageDataUrl(library!.id, library!.rootAbs, route.relPath)
         : loadMarkdownImageDataUrl(filePath);
     load.then(
       (url) => {
