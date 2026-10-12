@@ -971,6 +971,19 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const r = await invokeAppTool("app_api_call", { method: "memory.reviewDelete", input: { path: "global/facts/a.md", digest: "d1" } }, "me", ctx);
     check("★ MC-066:memory.reviewDelete 合法 ok:false → REJECTED(没删)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
   }
+
+  // library 只读域:readMarkdown / readPdf 是纯读,ok:false(条目不存在 / 没产物 /
+  // 文件不在了)不改任何东西 → REJECTED。
+  recordRpcHandler("library:readMarkdown", async () => ({ ok: false as const, error: "还没有转换产物", markdown: "", images: {}, skipped: [], dir: "", fileName: "" }));
+  recordRpcHandler("library:readPdf", async () => ({ ok: false as const, error: "文件不在了", bytes: null }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.readMarkdown", input: { id: "item_1" } }, "me", ctx);
+    check("★ MC-066:library.readMarkdown 合法 ok:false → REJECTED(纯读)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.readPdf", input: { id: "item_1" } }, "me", ctx);
+    check("★ MC-066:library.readPdf 合法 ok:false → REJECTED(纯读)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
 }
 
 {

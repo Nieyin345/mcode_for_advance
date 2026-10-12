@@ -119,6 +119,14 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["memory.save", { falseMeans: "refusal" }],
   ["memory.delete", { falseMeans: "refusal" }],
   ["memory.reviewDelete", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】library 只读域 ────────────────────────────────────
+   *
+   * `library.readMarkdown` / `library.readPdf` 是**纯读**:ok:false(条目不存在 /
+   * 没有转换产物 / 文件不在了)不改任何东西 → `refusal`。**只登记这两条只读**:
+   * `library.writeNote`/`adoptMarkdown`/`saveHighlights` 等**写**类同形但语义要逐条
+   * 核实是否可能部分提交,留待各自纵向切片。 */
+  ["library.readMarkdown", { falseMeans: "refusal" }],
+  ["library.readPdf", { falseMeans: "refusal" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */
