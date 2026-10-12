@@ -126,11 +126,19 @@ export function ConfirmDialog({
   // The ref is the SYNCHRONOUS guard: the `pending` React state only lands on
   // the next render, so two clicks in the same tick would both pass a state
   // check — the ref flips before the first await, closing that window.
+  //
+  // 【UI-001】`openGenRef` is the **generation** of the current open episode.
+  // A confirm action may still be in flight when the user cancels and reopens
+  // the dialog; when that stale promise settles it must **not** close (or
+  // surface an error on) the *new* dialog. `handleConfirm` captures the
+  // generation at click time and only acts on the UI if it is still current.
   const inFlightRef = useRef(false);
+  const openGenRef = useRef(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (open) {
+      openGenRef.current += 1; // a fresh open = a fresh generation
       inFlightRef.current = false;
       setPending(false);
       setError(null);
@@ -140,10 +148,15 @@ export function ConfirmDialog({
   const handleConfirm = async () => {
     if (inFlightRef.current) return; // no double-submit while the action is in flight
     inFlightRef.current = true;
+    const gen = openGenRef.current; // the episode this click belongs to
+    // True while THIS click's episode is still the live one. A stale promise
+    // (user cancelled + reopened) makes this false, so it stops touching the UI.
+    const stillCurrent = () => openGenRef.current === gen;
     setError(null);
     setPending(true);
     try {
       const result = await onConfirm();
+      if (!stillCurrent()) return; // stale: a newer dialog owns the UI now
       // The backend truth (OperationResult / ARC-009) decides success. An
       // explicit `{ ok: false }` keeps the dialog open rather than pretending
       // the action succeeded.
@@ -155,10 +168,15 @@ export function ConfirmDialog({
     } catch (err) {
       // A rejected promise means the action failed - keep the dialog open and
       // surface the error instead of closing and pretending success.
+      if (!stillCurrent()) return; // stale: don't push this error onto the new dialog
       setError(failureMessage(err, t("common.error")));
     } finally {
-      inFlightRef.current = false;
-      setPending(false);
+      // Only the live episode may clear its own in-flight/pending state — a
+      // stale finally must not un-gate a *new* click that is already running.
+      if (stillCurrent()) {
+        inFlightRef.current = false;
+        setPending(false);
+      }
     }
   };
 

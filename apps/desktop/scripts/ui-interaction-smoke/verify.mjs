@@ -246,6 +246,30 @@ await withAuditPage(here,async page=>{
   await page.sleep(80);
   check('  释放后弹窗关闭',await page.eval(`document.getElementById('confirm-open-flag').textContent==='closed'`));
  });
+ // 【UI-001】第 23.3 节 Chromium 红例：旧确认的 Promise 迟到时不得关掉**新**弹窗，
+ // 也不得把旧错误写进新弹窗。步骤：slow 模式点删除 → 取消关闭 → 重新打开 → 释放旧 Promise。
+ await test('confirmdialog-stale-reopen-keeps-new-open',async()=>{
+  await go('confirmdialog');
+  await page.waitFor(`${confirmBtn}`);
+  await page.eval(`labConfirmReset('slow')`);
+  await page.waitFor(`${confirmBtn}`);
+  await clickConfirm();
+  await page.sleep(60);
+  check('  旧确认进行中弹窗打开',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  // 用户在 pending 时取消 → 关闭
+  await page.eval(`labConfirmSetOpen(false)`);
+  await page.sleep(40);
+  check('  取消后弹窗关闭',await page.eval(`document.getElementById('confirm-open-flag').textContent==='closed'`));
+  // 重新打开（新一轮）
+  await page.eval(`labConfirmSetOpen(true)`);
+  await page.sleep(40);
+  check('  重新打开后弹窗打开',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  // 释放**旧**那一轮的 Promise —— 它绝不能关掉现在这个新弹窗
+  await page.eval(`labReleaseConfirm()`);
+  await page.sleep(80);
+  check('★ 旧确认迟到不得关掉重新打开的新弹窗',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  check('★ 旧确认迟到不得把新弹窗误标为完成',await page.eval(`document.getElementById('confirm-open-flag').textContent!=='closed'`));
+ });
 
  // ── UI-002: Toast primary action is a real focusable control ──
  await test('toaster-keyboard-action',async()=>{

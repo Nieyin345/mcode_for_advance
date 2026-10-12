@@ -65,6 +65,9 @@ function ConfirmDialogCase(){
  if(w.labConfirmMode===undefined) w.labConfirmMode='resolve';
  if(!w.labReleaseConfirm) w.labReleaseConfirm=()=>{};
  w.labConfirmReset=(mode)=>{w.labConfirmMode=mode;setCalls(0);setResolves(0);setOpen(true);};
+ // 【UI-001】让 verify 能模拟「取消（关闭）→ 重新打开」这一步，以复现旧 Promise
+ // 迟到关掉新弹窗的竞态。`labConfirmSetOpen` 直接驱动受控 open。
+ w.labConfirmSetOpen=(v)=>setOpen(v);
  // stable action reading w.labConfirmMode at click time
  const action=()=>{
    setCalls(n=>n+1);
