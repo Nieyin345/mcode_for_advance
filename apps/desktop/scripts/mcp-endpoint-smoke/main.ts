@@ -2023,6 +2023,32 @@ const bashInsideWrite = await host.callTool(
 check("agent_bash 重定向到沙箱内正常", !bashInsideWrite.text.includes("之外"), bashInsideWrite.text);
 check("…而且真的写出来了", existsSync(path.join(CWD, "bash-inside.txt")));
 
+/* ── 【公网专项台账 §7.3】`agent_process_start` 也该有**同一道**防误操作检查 ─────
+   这两条是**同等可执行**的启动命令工具,却只有 bash 那条查重定向目标,process_start
+   会直接 `args.command` 交给 `agentProcesses.start`。本段钉住:同一条命令、同一个沙箱,
+   process_start 与 bash **判据一致**(都拒越界重定向 / 都放行沙箱内)。
+
+   ⚠️ 仍是**防误操作**、不是沙箱:stdin(`agent_process_write`)、变量展开、解释器任意 IO
+   不在这里的词法保证内 —— 那要靠能力 scope + OS 隔离。 */
+const procOutsideWrite = await host.callTool(
+  "agent_process_start",
+  { command: `echo hi > "${path.join(OUTSIDE, "via-proc.txt")}"`, wait_ms: 0 },
+  { sessionId: "s1" },
+);
+check(
+  "★ agent_process_start 重定向到沙箱外被拒(与 bash 同一道闸)",
+  procOutsideWrite.text.includes("在允许的目录") || procOutsideWrite.text.includes("之外"),
+  procOutsideWrite.text,
+);
+check("…那个文件确实没被创建", !existsSync(path.join(OUTSIDE, "via-proc.txt")));
+
+const procInsideWrite = await host.callTool(
+  "agent_process_start",
+  { command: `echo hi > proc-inside.txt`, wait_ms: 0 },
+  { sessionId: "s1" },
+);
+check("★ agent_process_start 重定向到沙箱内正常(不误伤)", !procInsideWrite.text.includes("之外"), procInsideWrite.text);
+
 /* ── 沙箱外只读门(资料库 / 技能库,2026-10-02)────────────────────────────
    用户要远程 AI「能看我的资料库、能用本地技能」,可两者都不在项目目录里。只读工具
    沙箱外再问一次 `sandboxReadCheck`;写工具一个字没放宽。 */

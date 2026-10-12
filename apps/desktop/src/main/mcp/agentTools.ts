@@ -2366,6 +2366,19 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           requirePublicRoot(ctx);
           const sandbox = sandboxOf(ctx);
           const cwd = resolveAgainstCwd(sandbox ?? cwdOf(ctx), args.cwd ?? ".", sandbox);
+          // 【公网专项台账 §7.3】与 `agent_bash` 同一道**防误操作**写目标检查 —— 这两条
+          // 是**同等可执行**的启动命令工具,却只有 bash 那条查重定向目标,process_start
+          // 会直接 `args.command` 交给 `agentProcesses.start`。补上同一道(同样复用
+          // `extractBashWriteTargets`,不写第二份解析器)。
+          //
+          // ⚠️ **这不是沙箱** —— 见 `sandboxBashWriteDenial` 的文件头与 bash 那条一样的
+          // 声明:静态扫描 `>`/`>>`/`tee`/`dd of=`/`sed -i`,挡的是"顺手往沙箱外写个文件"
+          // 这类**无意的**越界;stdin(`agent_process_write` 发任意字节)、变量展开、解释器
+          // 任意 IO 都无法靠词法保证 —— 那要靠能力 scope + OS 隔离,不在这里假装做到。
+          if (sandbox) {
+            const denial = sandboxBashWriteDenial(args.command, sandbox);
+            if (denial) throw new Error(denial);
+          }
           const out = await agentProcesses.start({
             ownerSessionId: ownerOf(ctx),
             command: args.command,
