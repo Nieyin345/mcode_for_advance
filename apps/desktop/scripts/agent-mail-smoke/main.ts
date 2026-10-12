@@ -1629,5 +1629,48 @@ console.log("\nMC-033:收件箱按字节封顶 + 消息长度上限");
   }
 }
 
+/* ── MC-033b:收件箱的**字节**上限对多字节内容同样成立 ─────────────────────
+ *
+ * 常量叫 `MAX_INBOX_BYTES_PER_SESSION`,注释也写"总字节上限",但 `pushInbox` 原先量的是
+ * `body.length`(UTF-16 码元)—— 一个汉字 `length` 是 1 却占 3 个 UTF-8 字节。于是同样的
+ * "长度"下,中文/emoji 正文的真实内存可达字面的两三倍:这条"字节"红线根本没生效(仓规
+ * MC-030 已点明:字符长度不等同文件字节大小)。上面那组用纯 ASCII `x` 复现不了 —— 那里
+ * length 恰好等于字节;这里用**中文**正文,长度没过线、字节早已超线。 */
+console.log("\nMC-033b:收件箱字节上限对多字节内容同样成立");
+{
+  const main = mkSession({ kind: "chat", title: "多字节封顶" });
+  const expert = mkSession({ kind: "node", title: "投递方", parentSessionId: main.id, nodeId: "flood2" });
+  graphBlocked.add(main.id);
+  graphBlocked.add(expert.id);
+  try {
+    const target = peerOrThrow(expert.id, main.id);
+    const self = selfPeerOf(expert.id);
+    // 每条 6 万汉字:UTF-16 `length` ≈ 6 万(< 256KiB 这条线),UTF-8 字节 ≈ 18 万。
+    // 4 条连推:按**长度**算总量 ~24 万 < 262144 → 旧实现全留着(真实字节 ~72 万);
+    // 按**字节**算每条 ~18 万,两条就超线 → 挤到只剩最近那条。
+    const cjk = "汉".repeat(60_000);
+    for (let i = 0; i < 4; i += 1) {
+      setMessageWindowMs(0); // 让上一条立即过窗,专测收件箱**字节**封顶
+      deliver(target, { fromId: self.id, fromName: self.name, kind: "notify", text: `${i}:${cjk}` });
+    }
+    setMessageWindowMs(null);
+    const inboxText = peekAgentMail(main.id);
+    const inboxBytes = Buffer.byteLength(inboxText, "utf8");
+    check("前置:多字节正文确实进了收件箱", inboxText.length > 0, { utf16: inboxText.length, bytes: inboxBytes });
+    check("★ 收件箱**字节**有界(多字节字符不能绕过字节上限)", inboxBytes < 400_000, {
+      utf16: inboxText.length,
+      bytes: inboxBytes,
+    });
+    // 旧实现(按 length)留下全部 4 条 → 真实字节 ~72 万;按字节挤时最早的必被挤掉。
+    check("★ 最早的多字节消息已被挤出(按字节挤,不是按 length)", !inboxText.includes("0:汉汉汉"), {
+      head: inboxText.slice(0, 40),
+    });
+  } finally {
+    graphBlocked.delete(main.id);
+    graphBlocked.delete(expert.id);
+    dropAgentMail(main.id);
+  }
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);

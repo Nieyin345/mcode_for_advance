@@ -713,11 +713,18 @@ function pushInbox(sessionId: string, body: string, askId?: string): void {
   const list = inbox.get(sessionId) ?? [];
   list.push({ serial: ++nextInboxSerial, body, askId });
   // 【MC-033】按**总字节**封顶:超了从头挤掉最早的。见 MAX_INBOX_BYTES_PER_SESSION。
-  let bytes = list.reduce((n, item) => n + item.body.length, 0);
+  //
+  // ⚠️ **量的是 UTF-8 字节,不是 `String.length`。** `length` 是 UTF-16 码元数:一个汉字
+  // 的 `length` 是 1,却占 3 个 UTF-8 字节;emoji 更多。常量与注释都写的是**字节**上限,
+  // 用 `length` 量会让中文/emoji 正文的真实内存/拼进提示词的体积达到字面的两三倍 —— 这条
+  // 红线根本没生效(仓规 MC-030 同款:字符长度不等同字节大小)。`Buffer.byteLength` 按
+  // UTF-8 计,与"内存里这串占多少字节"一致。
+  const byteLen = (s: string): number => Buffer.byteLength(s, "utf8");
+  let bytes = list.reduce((n, item) => n + byteLen(item.body), 0);
   while (list.length > 1 && bytes > MAX_INBOX_BYTES_PER_SESSION) {
     const dropped = list.shift();
-    bytes -= dropped?.body.length ?? 0;
-    log.warn(`agentMail: 会话 ${sessionId} 收件箱超 ${MAX_INBOX_BYTES_PER_SESSION} 字,挤掉最早一条(代理消息积压)`);
+    bytes -= dropped ? byteLen(dropped.body) : 0;
+    log.warn(`agentMail: 会话 ${sessionId} 收件箱超 ${MAX_INBOX_BYTES_PER_SESSION} 字节,挤掉最早一条(代理消息积压)`);
   }
   inbox.set(sessionId, list);
 }
