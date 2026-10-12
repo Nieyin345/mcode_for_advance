@@ -209,7 +209,12 @@ export function scrubSecrets(
   if (depth > SCRUB_MAX_DEPTH || budget.nodes <= 0 || budget.bytes <= 0) return [undefined, 0, true];
   if (value === null || typeof value !== "object") {
     budget.nodes -= 1;
-    if (typeof value === "string") budget.bytes -= value.length;
+    // 【MC-024 字节预算】`budget.bytes` 的额度是 `SCRUB_MAX_BYTES`(**字节**),它作 DoS
+    // 防线("防御极端大对象拖死 / 卡死主进程")靠的就是字节数。从前这里减 `value.length`
+    // —— UTF-16 **码元**数:一个汉字 `length` 是 1 却占 3 个 UTF-8 字节,一段中文/emoji
+    // 配置真实体积轻松到"字面长度"的两三倍都不触发溢出,字节红线对多字节内容形同虚设
+    // (与 MC-033「字符长度不等同字节大小」同一类)。改按 **UTF-8 字节**记账。
+    if (typeof value === "string") budget.bytes -= Buffer.byteLength(value, "utf8");
     return [value, 0, false];
   }
   budget.nodes -= 1;

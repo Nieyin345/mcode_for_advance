@@ -226,5 +226,26 @@ console.log("\n大配置:节点预算耗尽即 fail-closed,不逐节点爆炸(MC
   check("正控:中等数组不判 overflow", overflowMed === false, { overflowMed });
 }
 
+// ── 【MC-024 字节预算】字节预算必须按 **UTF-8 字节**计量,不是 UTF-16 码元 ──
+//
+// `scrubSecrets` 的默认预算是 `nodes/bytes` 两个数,`bytes` 由 `SCRUB_MAX_BYTES` 兜底 ——
+// 名字、注释与选它做 DoS 防线("防御极端大对象拖死 / 卡死主进程")都按**字节**说。从前
+// 它减的是 `value.length`(UTF-16 码元):一个汉字 `length` 是 1 却占 3 个 UTF-8 字节,
+// 一段中文/emoji 配置的真实体积可达"字面长度"的两三倍都不触发溢出 —— 字节红线对多字节
+// 内容形同虚设(与 MC-033 的收件箱字节封顶同一类缺陷)。
+console.log("\n字节预算:按 UTF-8 字节计量,多字节内容不虚报为未超");
+{
+  // 「日本語日本語」= 6 个 UTF-16 码元,却是 18 个 UTF-8 字节。预算给 10 字节:按真实
+  // 字节数(18 > 10)处理完它后预算应已耗尽,令下一个节点判 overflow;按 `String.length`
+  // (6)则会虚留 4 字节、放行 —— 判据立在"多字节内容真的按字节记账"上。
+  const cfg = { a: "日本語日本語", b: { c: 1 } };
+  const [, , overflowMb] = scrubSecrets(cfg, 0, { nodes: 100, bytes: 10 }) as [unknown, number, boolean];
+  check("★ 多字节字符串按 UTF-8 字节计预算(超预算判 overflow)", overflowMb === true, { overflowMb });
+  // 正控:结构相同、纯 ASCII(a~z 与 UTF-8 字节数一致)在 10 字节预算内不判 overflow。
+  const ascii = { a: "abcdef", b: { c: 1 } };
+  const [, , overflowAscii] = scrubSecrets(ascii, 0, { nodes: 100, bytes: 10 }) as [unknown, number, boolean];
+  check("正控:同字面长度的 ASCII 内容在预算内不判 overflow", overflowAscii === false, { overflowAscii });
+}
+
 console.log(`\nsettings-export-secrets-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;
