@@ -166,6 +166,38 @@ export class GrantStore {
     return null;
   }
 
+  /**
+   * **记一次使用** —— 一次动作在授权下真的执行了,把 `usedCount`(+1)与 `budgetUsed`(加上这次的
+   * 估算费用)回写。**必须在动作执行**成功**之后**调,不是审批通过时 —— 记账记的是"真的用掉了",
+   * 不是"打算用"。
+   *
+   * ## 为什么非要这个口
+   *
+   * `evaluate` 会读 `grant.usedCount` / `grant.budgetUsed` 来判「超次数 / 超预算」,但它们**只有
+   * 签发时置的 0** —— 全仓没有一处回写。于是 `maxCount: 3` 的授权可以**无限次**执行(每次读到
+   * 的都是 0),`maxBudget` 同理。这正是 ARC-004 要的「计划级授权」最核心的一条约束:批了三次
+   * 就只能是三次。没有这个口,`maxCount` / `maxBudget` 是**只声明不兑现**的死字段。
+   *
+   * ## 判据
+   *
+   *  - 撤销 / 过期 / 不存在 → 抛 `GrantStoreError`(执行点不该在无效授权下记一笔;这会让调用方
+   *    把 bug 静默带过去)。
+   *  - `cost` 省略 = 0(次数仍 +1);只对**有上限**的 `budgetUsed` 累加(没有 `maxBudget` 的授权
+   *    不必记费用,免得一个恒增的死字段)。
+   *  - 到期后(`now >= expiresAt`)拒绝记账 —— 与 `get` / `findFor` 同一道有效判据。
+   */
+  recordUse(grantId: string, cost = 0, now: number): Grant {
+    const g = this.grants.get(grantId);
+    if (!g) throw new GrantStoreError(`记账失败:授权 ${grantId} 不存在。`);
+    if (!isGrantActive(g, now)) {
+      throw new GrantStoreError(`记账失败:授权 ${grantId} 已撤销或已过期,不该在它下面执行动作。`);
+    }
+    g.usedCount = (g.usedCount ?? 0) + 1;
+    if (g.maxBudget !== undefined) g.budgetUsed = (g.budgetUsed ?? 0) + cost;
+    this.flush();
+    return g;
+  }
+
   private flush(): void {
     this.persist?.save([...this.grants.values()]);
   }

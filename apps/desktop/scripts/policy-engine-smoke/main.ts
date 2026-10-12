@@ -409,6 +409,58 @@ const decision = (over: Partial<GrantDecision> = {}): GrantDecision => ({
   eq("★ 串起来:即便绕过 store 把撤销的 grant 塞进 evaluate → deny", direct.verdict, "deny");
 }
 
+/* ══ 13b. ★ recordUse:次数 / 预算真的被记账(否则 maxCount/maxBudget 是死字段) ══ */
+{
+  // 承重红例:批了 3 次,记够 3 次后 evaluate 就不再放行;没有记账口时 usedCount 恒 0,
+  // 授权可无限次执行 —— 这正是「计划级授权」最核心的那条约束。
+  const store = new GrantStore({ newId: () => "g-used" });
+  const g = store.issueGrant(decision({ allowedActions: ["project.create"], scopedCore: { projectPath: "/repo/a" }, maxCount: 3 }), USER, 1_000);
+  const probe = (now: number) => evaluate(intent("project.create", { projectPath: "/repo/a" }), store.get(g.grantId, now), ctx({ now }));
+  eq("记账前:第 1 次仍放行", probe(1_100).verdict, "allow");
+  store.recordUse(g.grantId, 0, 1_100);
+  eq("记账口:usedCount +1", store.get(g.grantId, 1_100)?.usedCount, 1);
+  store.recordUse(g.grantId, 0, 1_200);
+  store.recordUse(g.grantId, 0, 1_300);
+  eq("记满 3 次:usedCount = 3", store.get(g.grantId, 1_300)?.usedCount, 3);
+  // ★ 承重:evaluate 现在读到 3 → 达上限,不再放行(旧行为恒 0 → 永远放行)。
+  check("★ 记满次数后 evaluate 不再放行(旧行为恒 0 → 无限次)", probe(1_400).verdict !== "allow", probe(1_400));
+  // 预算:cost 累加进 budgetUsed,超上限后不放行。
+  const s2 = new GrantStore({ newId: () => "g-bud" });
+  const g2 = s2.issueGrant(decision({ allowedActions: ["project.create"], scopedCore: { projectPath: "/repo/a" }, maxBudget: 10 }), USER, 1_000);
+  s2.recordUse(g2.grantId, 8, 1_100);
+  eq("记账口:cost 累加进 budgetUsed", s2.get(g2.grantId, 1_100)?.budgetUsed, 8);
+  check("预算内仍放行(8 + 1 ≤ 10)", evaluate({ ...intent("project.create", { projectPath: "/repo/a" }), estimatedCost: 1 }, s2.get(g2.grantId, 1_100), ctx({ now: 1_100 })).verdict === "allow");
+  check("★ 记满预算后 evaluate 不再放行", evaluate({ ...intent("project.create", { projectPath: "/repo/a" }), estimatedCost: 5 }, s2.get(g2.grantId, 1_100), ctx({ now: 1_100 })).verdict !== "allow");
+  // 没有 maxBudget 的授权不记费用(不养恒增的死字段),但次数照记。
+  const s3 = new GrantStore({ newId: () => "g-nobud" });
+  const g3 = s3.issueGrant(decision(), USER, 1_000);
+  s3.recordUse(g3.grantId, 99, 1_100);
+  eq("无 maxBudget:不记费用(cost 不累加进 budgetUsed)", s3.get(g3.grantId, 1_100)?.budgetUsed, 0);
+  eq("无 maxBudget:次数照记", s3.get(g3.grantId, 1_100)?.usedCount, 1);
+  // 撤销 / 过期 / 不存在 → 拒绝记账(执行点不该在无效授权下记一笔)。
+  const s4 = new GrantStore({ newId: () => "g-bad" });
+  const g4 = s4.issueGrant(decision(), USER, 1_000);
+  s4.revoke(g4.grantId);
+  let revokeThrew = false;
+  try { s4.recordUse(g4.grantId, 0, 1_100); } catch (e) { revokeThrew = e instanceof GrantStoreError; }
+  eq("★ 撤销后记账被拒(抛 GrantStoreError)", revokeThrew, true);
+  let missingThrew = false;
+  try { s4.recordUse("g-nope", 0, 1_100); } catch (e) { missingThrew = e instanceof GrantStoreError; }
+  eq("不存在的授权记账被拒", missingThrew, true);
+  const s5 = new GrantStore({ newId: () => "g-exp" });
+  const g5 = s5.issueGrant(decision(), USER, 1_000); // expiresAt 2000
+  let expThrew = false;
+  try { s5.recordUse(g5.grantId, 0, 2_500); } catch (e) { expThrew = e instanceof GrantStoreError; }
+  eq("★ 过期后记账被拒", expThrew, true);
+  // 记账要落盘(经持久化接口)—— 重启后 usedCount 不归零。
+  const box2: { grants: Grant[] | null } = { grants: null };
+  const s6 = new GrantStore({ newId: () => "g-persist", persist: { load: () => box2.grants, save: (gs) => { box2.grants = gs; } } });
+  const g6 = s6.issueGrant(decision({ maxCount: 3 }), USER, 1_000);
+  s6.recordUse(g6.grantId, 0, 1_100);
+  const re = new GrantStore({ persist: { load: () => box2.grants, save: () => {} } });
+  eq("★ 记账随持久化落盘(重启后 usedCount 不归零)", re.get(g6.grantId, 1_200)?.usedCount, 1);
+}
+
 /* ══ 14. 可注入持久化:只认窄接口,不拉 sql.js ══ */
 {
   const box: { grants: Grant[] | null } = { grants: null };
