@@ -2,12 +2,15 @@
 
 覆盖(每项只改一处,精确 str.replace 且锚点必须恰好 1 次):
   1. readBudget.ts  fold-error         —— 把 READ_ERROR_AFTER_PARTIAL 折叠回 COMPLETE(§34.3 原形)
-  2. agentTools.ts url-outcome        —— 中途失败当成成功正文返回
-  3. agentTools.ts url-input          —— 流层有界读退回 res.text() 整份读
-  4. agentTools.ts content-length     —— 撤掉 Content-Length 前置快速拒绝
-  5. agentTools.ts content-type       —— 撤掉二进制 Content-Type 拒绝
-  6. agentTools.ts redirect           —— 退回 redirect:"follow" 无界跟随
-  7. agentTools.ts child-budget       —— 撤掉子进程输出提前终止
+  2. agentTools.ts  url-outcome        —— 中途失败当成成功正文返回
+  3. agentTools.ts  url-input          —— 流层有界读退回 res.text() 整份读
+  4. agentTools.ts  content-length     —— 撤掉 Content-Length 前置快速拒绝
+  5. agentTools.ts  content-type       —— 撤掉二进制 Content-Type 拒绝
+  6. agentTools.ts  redirect           —— 退回 redirect:"follow" 无界跟随
+  7. agentTools.ts  child-budget       —— 撤掉子进程输出提前终止
+  8. readBudget.ts  clamp-cell         —— 单元格预算夹紧失效(超大稀疏坐标不再夹到 maxCells)
+  9. readBudget.ts  zip-inflate        —— checkZipInflation 永远不报超预算
+ 10. agentTools.ts  zip-guard          —— 撤掉文档读取前的 zip 解压膨胀前置拒绝
 
 用法: python apps/desktop/scripts/document-read-smoke/mut-readbudget.py
 退出码 0 = 所有变异都验证出「真红且逐字节还原」。
@@ -56,7 +59,30 @@ MUTATIONS = [
 
     (TOOLS, "agentTools.ts redirect", '''      res = await fetch(current, { signal: controller.signal, redirect: "manual" });''', '''      res = await fetch(current, { signal: controller.signal, redirect: "follow" });'''),
 
-    (TOOLS, "agentTools.ts child-budget", '''      if (outBytes > MAX_CHILD_OUTPUT_BYTES) return overflow();''', '''      if (false) return overflow();'''),
+    (TOOLS, "agentTools.ts child-budget", '''      if (outBytes > maxOutputBytes) return overflow();''', '''      if (false) return overflow();'''),
+
+    # clampCellBudget 失效:永远按请求返回,不做 maxCells 夹紧。
+    (RBUD, "readBudget.ts clamp-cell", '''  const rows = Math.max(1, Math.floor(reqRows));
+  const cols = Math.max(1, Math.floor(reqCols));
+  if (rows * cols <= maxCells) return { maxRows: rows, maxCols: cols, cellBudgetTruncated: false };
+  // 先保列(较窄的维),按剩余预算折行;再据折后的行数反推列数,保证 行×列 ≤ maxCells。
+  // 列本身超出预算的单列极端情形由最后一步继续折列兜住;两者都 ≥1。
+  const effRows = Math.min(rows, Math.max(1, Math.floor(maxCells / cols)));
+  const effCols = Math.min(cols, Math.max(1, Math.floor(maxCells / effRows)));
+  return { maxRows: effRows, maxCols: effCols, cellBudgetTruncated: true };''', '''  const rows = Math.max(1, Math.floor(reqRows));
+  const cols = Math.max(1, Math.floor(reqCols));
+  return { maxRows: rows, maxCols: cols, cellBudgetTruncated: false };'''),
+
+    # checkZipInflation 失效:永远不报超预算(等价于撤掉解压膨胀前拒)。
+    (RBUD, "readBudget.ts zip-inflate", '''export function checkZipInflation(fileBytes: Buffer, budgetBytes: number): ZipInflationCheck {
+  const none: ZipInflationCheck = { declaredBytes: 0, exceededBudget: false };''', '''export function checkZipInflation(fileBytes: Buffer, budgetBytes: number): ZipInflationCheck {
+  return { declaredBytes: 0, exceededBudget: false };
+  const none: ZipInflationCheck = { declaredBytes: 0, exceededBudget: false };'''),
+
+    # 撤掉 readRichDocument 里的文档前拒接线(证明集成层那条断言真的靠它)。
+    (TOOLS, "agentTools.ts zip-guard", '''        const infl = checkZipInflation(bytes, DOCUMENT_READ_BUDGET.maxDecompressedBytes!);
+        if (infl.exceededBudget) {''', '''        const infl = checkZipInflation(bytes, DOCUMENT_READ_BUDGET.maxDecompressedBytes!);
+        if (false && infl.exceededBudget) {'''),
 ]
 
 

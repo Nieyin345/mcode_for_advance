@@ -46,9 +46,14 @@ import {
   classifyContentType,
   isRedirectStatus,
   readResponseWithinBudget,
+  checkZipInflation,
   urlReadGate,
+  documentReadGate,
+  clampCellBudget,
   URL_READ_BUDGET,
+  DOCUMENT_READ_BUDGET,
   MAX_CONCURRENT_URL_READS,
+  MAX_CONCURRENT_DOCUMENT_READS,
   MAX_URL_REDIRECTS,
   MAX_CHILD_OUTPUT_BYTES,
   type ReadBudget,
@@ -528,7 +533,7 @@ function formatSearchResult(out: AgentSearchReadResult): string {
   return `${meta.join("\n")}\n--- results ---\n${body}`;
 }
 
-async function runCaptured(exe: string, args: string[], timeoutMs = 10_000, env?: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number | null }> {
+async function runCaptured(exe: string, args: string[], timeoutMs = 10_000, env?: NodeJS.ProcessEnv, maxOutputBytes = MAX_CHILD_OUTPUT_BYTES): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const child = spawn(exe, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...(env ? { env: { ...process.env, ...env } } : {}) });
     let stdout = "";
@@ -548,6 +553,7 @@ async function runCaptured(exe: string, args: string[], timeoutMs = 10_000, env?
     // 【MC-065】子进程输出的**输入侧**上界:从前是"让它把文档全跑完、再把结果截到 2M 字符"
     // —— 大输出(超大工作簿/文档)照样被完整产生,峰值不受预算约束。现在按**原始字节**累计,
     // 到界立即 killTree 并**显式报错**(不静默返回一份被砍掉的正文,那会让上层误当完整)。
+    // 上界由调用方从 {@link DOCUMENT_READ_BUDGET}.maxChildOutputBytes 传进来(同一份预算)。
     let outBytes = 0;
     let errBytes = 0;
     const overflow = (): void => {
@@ -555,18 +561,18 @@ async function runCaptured(exe: string, args: string[], timeoutMs = 10_000, env?
       settled = true;
       clearTimeout(timer);
       killTree(child);
-      reject(new Error(`${exe} 的输出超过 ${MAX_CHILD_OUTPUT_BYTES} 字节上限,已提前终止(这是子进程输出预算,不是文档损坏)`));
+      reject(new Error(`${exe} 的输出超过 ${maxOutputBytes} 字节上限,已提前终止(这是子进程输出预算,不是文档损坏)`));
     };
     child.stdout.on("data", (d: Buffer) => {
       outBytes += d.length;
-      if (outBytes > MAX_CHILD_OUTPUT_BYTES) return overflow();
-      appendDecoded(outAcc, outDec, d, MAX_CHILD_OUTPUT_BYTES);
+      if (outBytes > maxOutputBytes) return overflow();
+      appendDecoded(outAcc, outDec, d, maxOutputBytes);
       stdout = outAcc.text;
     });
     child.stderr.on("data", (d: Buffer) => {
       errBytes += d.length;
-      if (errBytes > MAX_CHILD_OUTPUT_BYTES) return overflow();
-      appendDecoded(errAcc, errDec, d, MAX_CHILD_OUTPUT_BYTES);
+      if (errBytes > maxOutputBytes) return overflow();
+      appendDecoded(errAcc, errDec, d, maxOutputBytes);
       stderr = errAcc.text;
     });
     child.once("error", (err) => {
@@ -728,7 +734,7 @@ function capDocumentOutput(textValue: string, label: string, maxChars = MAX_DOCU
 // or change the encoding of arbitrary shell commands.
 const PYTHON_DOCUMENT_ENV = { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" };
 
-async function readRichDocument(input: {
+async function readRichDocumentRaw(input: {
   abs: string;
   sheet?: string;
   range?: string;
@@ -752,7 +758,7 @@ async function readRichDocument(input: {
 
   if (ext === ".docx" || ext === ".dotx") {
     try {
-      const out = await runCaptured("pandoc", [input.abs, "-t", "gfm"], 60_000);
+      const out = await runCaptured("pandoc", [input.abs, "-t", "gfm"], DOCUMENT_READ_BUDGET.maxTimeMs, undefined, DOCUMENT_READ_BUDGET.maxChildOutputBytes);
       if (out.code === 0) return capDocumentOutput(out.stdout.trim() || "(文档没有可抽取文本)", "DOCX 文本", maxChars);
     } catch {
       // fall through to the standard-library OOXML extractor below
@@ -770,7 +776,7 @@ async function readRichDocument(input: {
       "  txt=''.join((t.text or '') for t in para.findall('.//w:t',ns))",
       "  if txt: print(txt)",
     ].join("\n");
-    const out = await runCaptured(py, ["-c", script, input.abs], 60_000, PYTHON_DOCUMENT_ENV);
+    const out = await runCaptured(py, ["-c", script, input.abs], DOCUMENT_READ_BUDGET.maxTimeMs, PYTHON_DOCUMENT_ENV, DOCUMENT_READ_BUDGET.maxChildOutputBytes);
     if (out.code !== 0) throw new Error(`DOCX 抽取失败:${out.stderr.trim() || `exit ${out.code}`}`);
     return capDocumentOutput(out.stdout.trim() || "(文档没有可抽取文本)", "DOCX 文本", maxChars);
   }
@@ -778,6 +784,13 @@ async function readRichDocument(input: {
   if ([".xlsx", ".xlsm", ".xltx"].includes(ext)) {
     const py = await findPythonExecutable();
     if (!py) throw new Error("读取 Excel 需要 Python + openpyxl；当前没有可用 Python");
+    // 【MC-065】把 max_rows/max_cols 收进同一份 ReadBudget 的 maxCells(行×列 ≤ maxCells),
+    // 而不是两个各自独立的散装上限叠加成 20 万格。夹紧结果显式回报,不静默假装读全。
+    const cellBudget = clampCellBudget(
+      Math.max(1, Math.min(input.maxRows ?? 200, 1000)),
+      Math.max(1, Math.min(input.maxCols ?? 50, 200)),
+      DOCUMENT_READ_BUDGET.maxCells!,
+    );
     const script = [
       "import sys,json",
       "try:",
@@ -816,13 +829,16 @@ async function readRichDocument(input: {
       " rows.append([c.value for c in row])",
       "print(json.dumps({'sheets':wb.sheetnames,'sheet':ws.title,'rows':rows,'rangeTruncated':truncated},ensure_ascii=False,default=str))",
     ].join("\n");
-    const out = await runCaptured(py, ["-c", script, input.abs, input.sheet ?? "", input.range ?? "", String(Math.max(1, Math.min(input.maxRows ?? 200, 1000))), String(Math.max(1, Math.min(input.maxCols ?? 50, 200)))], 60_000, PYTHON_DOCUMENT_ENV);
+    const out = await runCaptured(py, ["-c", script, input.abs, input.sheet ?? "", input.range ?? "", String(cellBudget.maxRows), String(cellBudget.maxCols)], DOCUMENT_READ_BUDGET.maxTimeMs, PYTHON_DOCUMENT_ENV, DOCUMENT_READ_BUDGET.maxChildOutputBytes);
     if (out.code !== 0) throw new Error(`Excel 抽取失败:${out.stderr.trim() || out.stdout.trim() || `exit ${out.code}`}`);
     const parsed = JSON.parse(out.stdout) as { error?: string; sheets?: string[]; sheet?: string; rows?: unknown[][]; rangeTruncated?: boolean };
     if (parsed.error) throw new Error(parsed.error);
     const lines = [`sheets: ${(parsed.sheets ?? []).join(", ")}`, `sheet: ${parsed.sheet ?? ""}`];
     if (parsed.rangeTruncated) {
       lines.push("[range 超过 max_rows/max_cols 上限,已在**迭代之前**夹紧 —— 这是部分区域,不是整个 range]");
+    }
+    if (cellBudget.cellBudgetTruncated) {
+      lines.push(`[max_rows×max_cols 超过单元格预算 ${DOCUMENT_READ_BUDGET.maxCells} 格,已把返回行列夹到 ${cellBudget.maxRows}×${cellBudget.maxCols} —— 这是部分区域]`);
     }
     for (const [i, row] of (parsed.rows ?? []).entries()) {
       lines.push(`${i + 1}\t${row.map((v) => v == null ? "" : String(v).replace(/\r?\n/g, " ↵ ")).join("\t")}`);
@@ -848,7 +864,7 @@ async function readRichDocument(input: {
       " slides.append({'n':i,'text':'\\n'.join(parts)})",
       "print(json.dumps({'count':len(prs.slides),'slides':slides},ensure_ascii=False))",
     ].join("\n");
-    const out = await runCaptured(py, ["-c", script, input.abs, String(Math.max(1, Math.min(input.maxSlides ?? 200, 1000)))], 60_000, PYTHON_DOCUMENT_ENV);
+    const out = await runCaptured(py, ["-c", script, input.abs, String(Math.max(1, Math.min(input.maxSlides ?? 200, 1000)))], DOCUMENT_READ_BUDGET.maxTimeMs, PYTHON_DOCUMENT_ENV, DOCUMENT_READ_BUDGET.maxChildOutputBytes);
     if (out.code !== 0) throw new Error(`PPTX 抽取失败:${out.stderr.trim() || out.stdout.trim() || `exit ${out.code}`}`);
     const parsed = JSON.parse(out.stdout) as { error?: string; count?: number; slides?: Array<{ n: number; text: string }> };
     if (parsed.error) throw new Error(parsed.error);
@@ -859,6 +875,58 @@ async function readRichDocument(input: {
   }
 
   throw new Error(`agent_read_document 暂不支持扩展名 ${ext || "(无)"}；支持 PDF/DOCX/XLSX/PPTX`);
+}
+
+/**
+ * 【MC-065】文档读取的**并发上界**:`readRichDocumentRaw` 会在一个子进程里解压/解析整份
+ * 文档(Excel 的 zip 膨胀、PDF 的整页光栅化)。很多个并发读取即便各自"小预算",也会把
+ * 峰值内存/子进程数累加成无界。到上限即**立即拒绝**(不是排队攒内存)—— 与 URL 那条
+ * `urlReadGate` 同一个约定,共用同一份 {@link DOCUMENT_READ_BUDGET} 里的并发常量。
+ */
+async function readRichDocument(input: {
+  abs: string;
+  sheet?: string;
+  range?: string;
+  maxPages?: number;
+  maxSlides?: number;
+  maxRows?: number;
+  maxCols?: number;
+  maxChars?: number;
+}): Promise<string> {
+  if (!documentReadGate.tryAcquire()) {
+    throw new Error(
+      `同时进行的文档读取已达上限 ${MAX_CONCURRENT_DOCUMENT_READS};请稍后重试,避免多个大文档同时解析挤占内存`,
+    );
+  }
+  try {
+    // 【MC-065】压缩膨胀(zip 炸弹)在**同一份 ReadBudget** 上的前置信:读 OOXML 容器的中央目录,
+    // 累加各成员声明的解压后大小,超 `maxDecompressedBytes` 就在**交给任何解析器/pandoc 之前**拒绝
+    // —— 一条 Excel / DOCX(pandoc 或 Python) / PPTX 路径共用这一个点,不各写各的 Python 判据。
+    // 放在闸门**之内**:中央目录扫描会把整个容器读进内存,故它本身也受并发上界约束。
+    const OOXML_EXTS = new Set([".xlsx", ".xlsm", ".xltx", ".docx", ".dotx", ".pptx", ".potx"]);
+    if (OOXML_EXTS.has(path.extname(input.abs).toLowerCase())) {
+      // 先按**磁盘原始大小**快速拒绝(声明式,与 URL 的 Content-Length 快拒同一思想):超 maxRawBytes
+      // 的容器连读进内存做中央目录扫描都不做。
+      const st = await fs.stat(input.abs).catch(() => null);
+      if (st && st.size > DOCUMENT_READ_BUDGET.maxRawBytes) {
+        throw new Error(
+          `OOXML 容器文件 ${st.size} 字节,超过上限 ${DOCUMENT_READ_BUDGET.maxRawBytes}(这是输入预算,不是文档损坏)`,
+        );
+      }
+      const bytes = await fs.readFile(input.abs).catch(() => null);
+      if (bytes) {
+        const infl = checkZipInflation(bytes, DOCUMENT_READ_BUDGET.maxDecompressedBytes!);
+        if (infl.exceededBudget) {
+          throw new Error(
+            `OOXML 容器声明解压后体积至少 ${infl.declaredBytes} 字节,超过上限 ${DOCUMENT_READ_BUDGET.maxDecompressedBytes}(这是压缩膨胀预算,不是文档损坏)`,
+          );
+        }
+      }
+    }
+    return await readRichDocumentRaw(input);
+  } finally {
+    documentReadGate.release();
+  }
 }
 
 /**

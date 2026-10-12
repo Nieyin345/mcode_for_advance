@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
 import { __registeredDisposerCount, __registeredShutdownHookCount } from "@main/mcp/agentSessionCleanup.js";
-import { ResponseReadGate, classifyContentType, readResponseWithinBudget, MAX_CONCURRENT_URL_READS, type ReadBudget } from "@main/lib/readBudget.js";
+import { ResponseReadGate, classifyContentType, readResponseWithinBudget, checkZipInflation, clampCellBudget, MAX_CONCURRENT_URL_READS, DOCUMENT_READ_BUDGET, type ReadBudget } from "@main/lib/readBudget.js";
 import type { ToolResult } from "@main/mcp/sdk.js";
 const root=mkdtempSync(join(tmpdir(),"mcode-doc-read-"));
 const failures:string[]=[];let passed=0;
@@ -50,6 +50,63 @@ try {
   const t=text(r);
   assert.match(t,/Title/);assert.match(t,/研究论文/);
   assert.ok(!/夹紧|range.*截断/.test(t),"在预算内的正常 range 不该被标成截断");
+ });
+ // 【MC-065·第三轮】恶意大稀疏坐标:dimension 声明 A1:ZZ1000000,真实数据只有相隔极远的
+ // 两格(第 1 行与第 1000000 行)。max_rows=1000×max_cols=200=200000 格 > maxCells(100000),
+ // 新模型必须**显式回报**行×列被夹到预算内(不是默默假装读全),且不得去枚举十万亿格的矩形。
+ await test("★ 超大稀疏坐标 xlsx:行×列超 maxCells 时夹到预算内并显式回报",async()=>{
+  const r=await read("sparse.xlsx",{sheet:"Sparse",max_rows:1000,max_cols:200});
+  assert.ok(!r.isError,text(r));
+  const t=text(r);
+  // 第一格必须读到;夹紧必须显式说明(判据立在用户/模型看到的那行字上)。
+  assert.match(t,/SPARSE_TOP/,t.slice(0,300));
+  assert.match(t,/单元格预算|夹到|部分区域/,t.slice(0,300));
+  // 夹紧后的行列数应为 maxCells/cols=100000/200=500 行 × 200 列。
+  const {maxRows,maxCols,cellBudgetTruncated}=clampCellBudget(1000,200,DOCUMENT_READ_BUDGET.maxCells!);
+  assert.equal(cellBudgetTruncated,true,"1000×200 应判为超预算");
+  assert.ok(maxRows*maxCols<=DOCUMENT_READ_BUDGET.maxCells!,"夹紧后 行×列 必须 ≤ maxCells");
+ });
+ // 【MC-065·第三轮】单元格文本膨胀:一个小工作簿,但读出文本量**超过子进程输出字节预算**
+ // (16 MiB)。危险不是格数(在 max_rows/max_cols 内)而是单元格体积。到界即提前终止并报错,
+ // 不得跑完再悄悄截断成一份假完整正文。
+ await test("★ 单元格文本膨胀 xlsx:文本量超子进程输出预算时提前终止报错",async()=>{
+  const r=await read("fat.xlsx",{sheet:"Fat"});
+  assert.equal(r.isError,true,text(r));
+  assert.match(text(r),/输出超过|字节上限|提前终止/,text(r));
+ });
+ // 【MC-065·第三轮】高压缩(deflate 炸弹):~200 KB 的 .docx,其 word/document.xml **声明**
+ // 解压后 ≥200 MiB(比例 1000:1)。DOCX 抽取会整份 `z.read(...)`,故必须在**交给解析器之前**
+ // 按同一份 ReadBudget 的 maxDecompressedBytes 前拒 —— 不能把 200 MiB 真解压进内存再处理。
+ await test("★ 高压缩 xlsx/docx 容器声明解压体积超预算时前置拒绝(不 OOM)",async()=>{
+  const r=await read("bomb.docx");
+  assert.equal(r.isError,true,text(r));
+  // 只认**前拒**那两句的措辞(「解压后体积」/「压缩膨胀」),它们不出现在子进程输出兜底的
+  // 报错里 —— 这样这条断言测的确实是「交给解析器之前」那一层,而不是被兜底预算误判为绿。
+  assert.match(text(r),/解压后体积|压缩膨胀/,text(r));
+ });
+ // 【MC-065·第三轮】**最干净的判别式**:bloated.xlsx 里要读的表极小(openpyxl 本可正常读出
+ // SMALL_OK),但另挂一个声明解压 200 MiB 的无用成员,抽取器根本不会读它。撤掉前置预算时
+ // 这个工作簿会**顺利返回 SMALL_OK**(而不是被别的预算兜底报错)—— 所以这条能精确区分
+ // 「压缩膨胀前拒真的生效」与「碰巧被子进程字节上限拦住」。
+ await test("★ 压缩膨胀前拒:无用大成员也拦下(撤掉前拒会误报 SMALL_OK 读成功)",async()=>{
+  const r=await read("bloated.xlsx");
+  assert.equal(r.isError,true,`带超大无用成员的工作簿不该被当成功读:${text(r)}`);
+  assert.match(text(r),/解压后体积|压缩膨胀/,text(r));
+  assert.ok(!text(r).includes("SMALL_OK"),"前拒未生效:竟然把表读出来了");
+ });
+ // 【MC-065·第三轮】协议层:checkZipInflation 直接读中央目录,声明解压超预算即报 exceeded,
+ // 正常小文件不误报,非 zip 输入不当成超预算。
+ await test("协议层:checkZipInflation 声明解压超预算判 exceeded,正常文件不误报",async()=>{
+  const {readFileSync}=await import("node:fs");
+  const bomb=readFileSync(join(root,"bomb.docx"));
+  const over=checkZipInflation(bomb,DOCUMENT_READ_BUDGET.maxDecompressedBytes!);
+  assert.equal(over.exceededBudget,true,JSON.stringify(over));
+  assert.ok(over.declaredBytes>DOCUMENT_READ_BUDGET.maxDecompressedBytes!,JSON.stringify(over));
+  const small=readFileSync(join(root,"table.xlsx"));
+  const ok=checkZipInflation(small,DOCUMENT_READ_BUDGET.maxDecompressedBytes!);
+  assert.equal(ok.exceededBudget,false,JSON.stringify(ok));
+  const notZip=checkZipInflation(Buffer.from("这不是一个 zip 容器"),DOCUMENT_READ_BUDGET.maxDecompressedBytes!);
+  assert.equal(notZip.exceededBudget,false,"非 zip 不能冒充超预算");
  });
  await test("invalid sheet fails rather than claiming an empty document",async()=>{const r=await read("table.xlsx",{sheet:"absent"});assert.equal(r.isError,true);});
  // agent 工具表是**按会话**持有进程 / 后台搜索 / SSH 的"进程级单例"(见 agentTools.ts
@@ -176,6 +233,23 @@ try {
   gate.release();
   assert.equal(gate.tryAcquire(),true,"释放后应可再进");
   assert.ok(MAX_CONCURRENT_URL_READS>=1);
+ });
+ // 【MC-065·第三轮】文档读取预算同一份模型:单元格数、解压后字节、子进程输出都在
+ // DOCUMENT_READ_BUDGET 上,且文档读取共用一条并发闸门。
+ await test("协议层:文档读取的 cell/解压/子进程预算同在一份 ReadBudget 上",async()=>{
+  const {documentReadGate,MAX_CONCURRENT_DOCUMENT_READS}=await import("@main/lib/readBudget.js");
+  assert.ok(DOCUMENT_READ_BUDGET.maxCells!>=1);
+  assert.ok(DOCUMENT_READ_BUDGET.maxDecompressedBytes!>=1);
+  assert.equal(DOCUMENT_READ_BUDGET.maxChildOutputBytes!>0,true);
+  const held:boolean[]=[];
+  for(let i=0;i<MAX_CONCURRENT_DOCUMENT_READS;i++)held.push(documentReadGate.tryAcquire());
+  assert.ok(held.every(Boolean),"未到上限前都应进得去");
+  assert.equal(documentReadGate.tryAcquire(),false,"到文档读取上限必须拒绝");
+  documentReadGate.release();
+  assert.equal(documentReadGate.tryAcquire(),true,"释放后应可再进");
+  documentReadGate.release();
+  for(let i=0;i<held.length-1;i++)documentReadGate.release();
+  assert.equal(documentReadGate.active,0,"闸门计数必须回到 0");
  });
  // 【MC-065】Content-Type 分类:图片/PDF 是二进制,文本/无头是文本。
  await test("协议层:Content-Type 分类文本与二进制",async()=>{
