@@ -32,6 +32,18 @@ export interface CommitResult {
   outcome: CommitOutcome;
   /** `DURABLE` 时写出的整库字节数;其余情况缺席。 */
   bytes?: number;
+  /**
+   * `DURABLE` 时这份落盘在**本进程内的序号**(从 1 起,每次成功 fsync 递增)。
+   *
+   * 它回答「这两次落盘哪个更新」以及「我手上这个版本是不是最后一次成功的落盘」——
+   * 单靠 `bytes` 不行(两次写入可能恰好等长),单靠时间戳也不行(同一毫秒内两次落盘
+   * 分不出先后)。**进程内单调**、不跨进程比较;`APPLIED_NOT_DURABLE` / `FAILED` 时缺席
+   * (没落盘就没有版本)。
+   *
+   * ⚠️ 它与「内存修订号」是**两件事**:内存改十次才 fsync 一次,那十次内存修订共用一个
+   * durableRevision —— 这正是要区分的「提交 vs 落盘」。
+   */
+  durableRevision?: number;
   /** 非 `DURABLE` 时的人类可读原因;`DURABLE` 时为 undefined。 */
   reason?: string;
 }

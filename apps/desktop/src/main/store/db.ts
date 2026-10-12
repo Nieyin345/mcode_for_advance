@@ -46,6 +46,9 @@ let persistRetry: ReturnType<typeof setTimeout> | null = null;
 let retryDelayMs = 1000;
 let persistenceFailure: Error | null = null;
 const persistenceErrorListeners = new Set<(error: Error) => void>();
+/** 【ARC-009】进程内**成功落盘**的序号(每次 fsync+rename 成功 +1)。给 `OperationResult`
+ *  `durableRevision` 一个真值,回答「这份是不是最后一次落盘」。**只增不减、不因失败回退**。 */
+let durableRevision = 0;
 
 /**
  * Resolves once `initDb()` has finished loading sql.js + opening the file +
@@ -737,12 +740,15 @@ export function commitNow(): CommitResult {
     persistDirty = false;
     persistenceFailure = null;
     retryDelayMs = 1000;
+    // ARC-009:这次成功落盘的**进程内版本号**。只在 fsync + rename 都成了之后才递增 ——
+    // 失败路径不动它(没落盘就没有新版本)。
+    durableRevision += 1;
     if (recovered) log.info(`sqlite persistence recovered (${size}B)`);
     else if (!loggedFirstFlush) {
       loggedFirstFlush = true;
       log.info(`sqlite persisted ${size}B via atomic replacement`);
     }
-    return { outcome: "DURABLE", bytes: size };
+    return { outcome: "DURABLE", bytes: size, durableRevision };
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     recordPersistenceFailure(err);

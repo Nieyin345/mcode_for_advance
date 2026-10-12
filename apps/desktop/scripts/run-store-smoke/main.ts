@@ -512,6 +512,12 @@ if (MODE === "write") {
     eq("★ 落盘成功时 commitNow().outcome = DURABLE", okCommit.outcome, "DURABLE");
     check("★ DURABLE 时带出了写出的字节数", typeof okCommit.bytes === "number" && okCommit.bytes > 0, okCommit.bytes);
     check("★ isDurable(DURABLE) 为真(唯一的成功判据)", isDurable(okCommit));
+    // 【ARC-009】durableRevision:成功落盘带进程内单调版本号(回答「这份是不是最后一次落盘」)。
+    check("★ DURABLE 时带出了 durableRevision(进程内落盘序号)", typeof okCommit.durableRevision === "number" && okCommit.durableRevision > 0, okCommit.durableRevision);
+    const rev1 = okCommit.durableRevision!;
+    // 再落一次盘 → 版本号必须**严格变大**(回答「哪个更新」;bytes 等长时分不出,时间戳同毫秒也分不出)。
+    const okCommit2 = commitNow();
+    check("★ 再落一次盘 → durableRevision 严格递增(单调)", okCommit2.durableRevision === rev1 + 1, { prev: rev1, next: okCommit2.durableRevision });
 
     // 2) fsync 失败:内存已应用(内存表改了),但**不是** DURABLE。
     getDb().run("INSERT OR REPLACE INTO settings (key, value) VALUES ('arc005.smoke', 'applied')");
@@ -525,6 +531,11 @@ if (MODE === "write") {
     eq("★ fsync 失败时 commitNow().outcome = APPLIED_NOT_DURABLE(绝不能是 DURABLE)", badCommit.outcome, "APPLIED_NOT_DURABLE");
     check("★ APPLIED_NOT_DURABLE 带出可读原因", typeof badCommit.reason === "string" && badCommit.reason.length > 0, badCommit.reason);
     check("★ isDurable(APPLIED_NOT_DURABLE) 为假(不许当成功)", !isDurable(badCommit));
+    // 没落盘就**没有**新版本号(编一个就是假成功)—— 失败路径不得带 durableRevision。
+    check("★ 失败路径不带 durableRevision(没落盘就没有版本)", badCommit.durableRevision === undefined, badCommit.durableRevision);
+    // 失败也**不倒退**版本号:紧接着一次成功落盘,版本号仍在 rev1 之上。
+    const afterFail = commitNow();
+    check("★ 失败不使版本号倒退(下一次成功仍在 rev1 之上)", (afterFail.durableRevision ?? 0) > rev1, { rev1, after: afterFail.durableRevision });
     check("★ 故障确实击中了 fsync", faultHits > 0, faultHits);
     // 内存那一格真的还在(这正是"进程还握着它"的真事实 —— 只是没落盘)。
     eq(
