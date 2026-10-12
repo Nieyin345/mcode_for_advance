@@ -543,6 +543,38 @@ export interface ComponentDeliveryReport {
   allDelivered: boolean;
 }
 
+/**
+ * 【ARC-003 / ARC-014】**唯一一份** 组件类型 → 能原生投递它的 provider 集合。
+ *
+ * 「哪些引擎收得到哪类组件」是一个事实,只应有**一处**权威表达:
+ *   - `compatibleProviderIdsForPlugin`(ANY 语义的兼容列表,喂市场预览与 ARC-003 能力目录)
+ *   - `componentDeliveryReport`(逐组件 ALL 语义的交付报告)
+ * 二者都从这里取。此前各写一遍,已实测漂移:兼容列表漏了 `apps`(Codex 专用),于是
+ * 一个 app-only 插件被谎报成 Claude/Pi 也能用 —— 两处规则分家的典型后果。
+ *
+ * 值即 schema 里的 providerId(`claude-sdk` / `codex-sdk` / `pi-sdk`)。`nodeType` 是
+ * **宿主侧**(工作流引擎)的概念,不由某个引擎投递,故对所有引擎列示(它从不经
+ * componentDeliveryReport / 兼容列表产生条目,这里只是保持 Record 完备)。
+ */
+export const COMPONENT_PROVIDER_DELIVERY: Readonly<
+  Record<ComponentDeliveryEntry["type"], readonly string[]>
+> = {
+  skill: ["claude-sdk", "codex-sdk", "pi-sdk"],
+  command: ["claude-sdk"],
+  agent: ["claude-sdk"],
+  hook: ["claude-sdk"],
+  mcp: ["claude-sdk", "codex-sdk"],
+  app: ["codex-sdk"],
+  nodeType: ["claude-sdk", "codex-sdk", "pi-sdk"],
+};
+
+/** 能原生投递某一类组件的 provider 集合 —— 见 {@link COMPONENT_PROVIDER_DELIVERY}。 */
+export function providersDeliveringComponent(
+  type: ComponentDeliveryEntry["type"],
+): readonly string[] {
+  return COMPONENT_PROVIDER_DELIVERY[type];
+}
+
 /** 【ARC-014】场景必需组件的一个缺口:某个 requiredComponentId 没被任何报告交付。 */
 export interface SceneComponentGap {
   componentId: string;

@@ -68,6 +68,8 @@ export {
   PluginsMarketplaceRemoveSchema,
   PluginsMarketplaceRefreshSchema,
   sceneComponentReadiness,
+  COMPONENT_PROVIDER_DELIVERY,
+  providersDeliveringComponent,
 } from "./plugin.js";
 export type {
   PluginManifest,

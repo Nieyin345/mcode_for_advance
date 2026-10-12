@@ -42,8 +42,9 @@ import {
   refreshMarketplace,
   removeMarketplace,
   componentDeliveryReport,
+  compatibleProviderIdsForPlugin,
 } from "../../src/main/plugins/pluginManager.js";
-import { sceneComponentReadiness, type ComponentDeliveryReport } from "@contracts/ipc";
+import { sceneComponentReadiness, COMPONENT_PROVIDER_DELIVERY, PluginManifestSchema, type PluginManifest, type ComponentDeliveryReport, type PluginComponents } from "@contracts/ipc";
 
 let passed = 0;
 let failed = 0;
@@ -941,6 +942,62 @@ eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user ma
   const deliveredAnyway = sceneComponentReadiness(["command:0"], [piRep, claudeRep]);
   ok(deliveredAnyway.ready === true, "ARC-014:任一份报告 DELIVERED 即就绪");
 }
+
+
+/* ── 【ARC-003/ARC-014】兼容列表与逐组件报告取**同一份**投递矩阵(去平行事实) ──
+ * 两个判据(ANY 兼容 / ALL 交付)本来是各写一遍的,已实测漂移:兼容列表漏了 `apps`
+ * (Codex 专用),一个 app-only 插件被谎报成 Claude/Pi 也能用。这里既钉死共享矩阵的
+ * 权威值,又钉死两个消费方与矩阵一致。 */
+{
+  const mkComponents = (over: Partial<PluginComponents>): PluginComponents => ({
+    skills: [], commands: [], agents: [], hooks: [], mcpServers: [], ...over,
+  });
+  const asManifest = (name: string): PluginManifest =>
+    PluginManifestSchema.parse({ name, version: "1.0.0" });
+
+  // ① 共享矩阵就是权威 —— app 只有 Codex,mcp 无 Pi,command/agent/hook 只有 Claude。
+  eq(COMPONENT_PROVIDER_DELIVERY.app, ["codex-sdk"], "ARC-003:投递矩阵 app 仅 Codex");
+  eq(COMPONENT_PROVIDER_DELIVERY.command, ["claude-sdk"], "ARC-003:投递矩阵 command 仅 Claude");
+  eq(COMPONENT_PROVIDER_DELIVERY.mcp, ["claude-sdk", "codex-sdk"], "ARC-003:投递矩阵 mcp 无 Pi");
+  eq(COMPONENT_PROVIDER_DELIVERY.skill, ["claude-sdk", "codex-sdk", "pi-sdk"], "ARC-003:投递矩阵 skill 三家");
+
+  // ② 真缺陷红例:app-only 插件(clone cx-apps 的形状)不得被谎报成 Claude/Pi 兼容。
+  const appOnly = mkComponents({ apps: ["gmail"] });
+  eq(
+    compatibleProviderIdsForPlugin(asManifest("app-only"), appOnly),
+    ["codex-sdk"],
+    "ARC-003:app-only 插件的兼容列表只有 Codex(旧规则漏 apps → 谎报三家)",
+  );
+  // 逐组件报告对同一个 app-only 插件也必须只对 Codex DELIVERED、其余 INCOMPATIBLE。
+  ok(
+    componentDeliveryReport("app-only", "1.0.0", "claude-sdk", appOnly, true).allDelivered === false,
+    "ARC-014:app-only 对 Claude 不交付",
+  );
+  ok(
+    componentDeliveryReport("app-only", "1.0.0", "codex-sdk", appOnly, true).allDelivered === true,
+    "ARC-014:app-only 对 Codex 交付",
+  );
+
+  // ③ 两个消费方对每个 provider 的 ANY/ALL 必须与共享矩阵一致(混合组件)。
+  const mixedAll = mkComponents({
+    skills: [{ name: "s", description: "" }],
+    commands: [{ name: "c", description: "" }],
+    mcpServers: [{ name: "m", kind: "stdio", detail: "" }],
+    apps: ["gmail"],
+  });
+  const compat = compatibleProviderIdsForPlugin(asManifest("mixed"), mixedAll);
+  eq(compat, ["claude-sdk", "codex-sdk", "pi-sdk"], "ARC-003:混合插件兼容列表含三家(skill 支撑 Pi)");
+  for (const providerId of ["claude-sdk", "codex-sdk", "pi-sdk"]) {
+    // ANY 列表里有它 ⟺ 该 provider 至少交付一个组件(逐组件报告里存在一条 DELIVERED)。
+    const anyDelivered = componentDeliveryReport("mixed", "1.0.0", providerId, mixedAll, true).entries
+      .some((e) => e.status === "DELIVERED");
+    ok(
+      compat.includes(providerId) === anyDelivered,
+      `ARC-003:兼容列表与逐组件报告在 ${providerId} 上一致(ANY 语义同源)`,
+    );
+  }
+}
+
 
 
 /* ── summary ── */
