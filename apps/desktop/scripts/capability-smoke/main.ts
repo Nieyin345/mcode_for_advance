@@ -136,6 +136,51 @@ const fullInventory = collectCapabilityInventory({
 });
 ok(fullInventory.length >= 4, "inventory combines providers + plugins + executors");
 
+/* 【ARC-006 步①】宿主自带的内置能力也要进目录 —— 让「按 capabilityId 查得到」
+ * 不只对插件成立。两个只读文件能力由 ModuleHost 注册(见 modules/fileCapabilities.ts),
+ * 这里把它俩当**数据**喂进来(本文件不 import 那个会碰 dataRoot 的 service)。 */
+{
+  const withHost = collectCapabilityInventory({
+    hostCapabilities: [
+      { id: "core.file.inspect", moduleKind: "task" },
+      { id: "core.file.info", moduleKind: "query", source: "host:modules" },
+    ],
+  });
+  ok(
+    withHost.some((d) => d.id === "core.file.inspect" && d.kind === "builtin" && d.source === "host"),
+    "host capability:内置能力进目录(kind=builtin),来源标 host",
+  );
+  ok(
+    withHost.some((d) => d.id === "core.file.inspect" && (d.capabilities ?? []).includes("module:task")),
+    "host capability:模块种类 task 进 capabilities(契约没有 task/query 这两种 kind)",
+  );
+  ok(
+    withHost.some((d) => d.id === "core.file.info" && (d.capabilities ?? []).includes("module:query") && d.source === "host:modules"),
+    "host capability:query 种类进 capabilities,来源可覆盖",
+  );
+  // 不喂 hostCapabilities → 目录里就不该有它(不凭空造)。
+  ok(
+    !collectCapabilityInventory({ providers: [claudeProvider] }).some((d) => d.id === "core.file.inspect"),
+    "host capability:没喂就不出现(不凭空造宿主能力)",
+  );
+  // 一个「需要宿主能力」的需求,喂了对应能力后应解析通过 —— 证明目录里那条真能被查到。
+  const hostManifestCheck = validateNodeTypeManifest({
+    id: "myorg.host",
+    manifestVersion: 1,
+    name: "Host",
+    description: "Needs a host built-in capability.",
+    runner: { kind: "code", language: "python" },
+    capability: "exec",
+    params: [],
+  });
+  ok(hostManifestCheck.ok, "host capability:测试清单本身合法");
+  if (!hostManifestCheck.ok) throw new Error("unreachable");
+  const needsHost = checkNodeCapabilities(hostManifestCheck.manifest, [{ kind: "builtin", id: "core.file.inspect" }], withHost);
+  ok(needsHost.ok, "host capability:需要宿主能力的节点在喂进目录后解析通过");
+  const withoutHost = checkNodeCapabilities(hostManifestCheck.manifest, [{ kind: "builtin", id: "core.file.inspect" }], collectCapabilityInventory({ providers: [claudeProvider] }));
+  ok(!withoutHost.ok, "host capability:没喂时同一需求被判缺能力(证明上一条不是空过)");
+}
+
 const researchNodeCheck = validateNodeTypeManifest({
   id: "myorg.research",
   manifestVersion: 1,

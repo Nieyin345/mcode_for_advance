@@ -209,7 +209,7 @@ import {
 } from "./scheduler.js";
 // 能力预检的清单装配(G4/CAP):纯函数翻译层在 `capabilityResolver.ts`,已启用插件的
 // 清单来自 pluginManager(异步读盘,所以端口做成 Promise,并按次运行缓存)。
-import { collectCapabilityInventory, providerIdsForWorkflowPreflight } from "./capabilityResolver.js";
+import { HOST_CAPABILITY_DECLARATIONS, collectCapabilityInventory, providerIdsForWorkflowPreflight } from "./capabilityResolver.js";
 import { getEnabledPlugins } from "@main/plugins/pluginManager.js";
 
 /**
@@ -2094,6 +2094,12 @@ export async function startWorkflowRun(args: {
                 providers: providerRegistry.list(),
                 plugins,
                 executorKinds: [...executorKinds],
+                // 【ARC-006 步①】宿主自带的内置能力也进目录 —— 否则「按 capabilityId
+                // 查」只对插件成立,宿主自己的两个只读文件能力查不到。**不 import
+                // modules/service**(那会碰 dataRoot,把 DB/electron 拖进这条预检路径);
+                // 这里喂的是 ModuleHost 注册的那两个能力 id 的**声明**(见
+                // fileCapabilities.ts),与 plugins 那条同形 —— 只做发现,不做第二套执行。
+                hostCapabilities: HOST_CAPABILITY_DECLARATIONS,
               }),
               executorKinds,
             };

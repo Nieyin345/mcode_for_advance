@@ -81,6 +81,57 @@ export function executorCapabilityDescriptors(
   });
 }
 
+/**
+ * **宿主内置能力**(ARC-006 步①)的声明 —— 「这台机器自带、不来自任何插件」的能力。
+ *
+ * 与 provider / plugin / executor 三类不同,这一类是**宿主自己实现**的(目前是模块系统的
+ * 两个只读文件能力 `core.file.inspect` / `core.file.info`,见 `modules/fileCapabilities.ts`)。
+ * 它们的实现住在 `ModuleHost`,所以本文件**不 import 它们**(保持可被 smoke 无 DB 打包),
+ * 由装配方把「宿主注册了哪几个能力 id」当**数据**喂进来 —— 与 plugins 那条完全同形。
+ *
+ * **种类映射**:契约 `CapabilityKind` 只有 `builtin` / `executor` / `provider` / `skill` /
+ * `mcp` / `plugin` —— 没有模块系统自己的 `task` / `query`。宿主实现的能力,契约里唯一对得上
+ * 的是 **`builtin`**。模块那一层的 `task` / `query` 因此作为**细粒度能力**放进
+ * `capabilities`(`module:task` / `module:query`),既不丢信息,也不在契约里另造一个 kind。
+ * 执行代码仍旧只在 `ModuleHost` 里跑,这里**只做发现** —— 这正是 ARC-006「统一元数据,
+ * 不合并执行引擎」的那条线。
+ */
+export interface HostCapabilitySource {
+  id: string;
+  /** 模块系统里这个能力的种类(`task` / `query`),映射成 `capabilities` 里的细粒度标签。 */
+  moduleKind: "task" | "query";
+  /** 给用户看的来源标签(诊断文案里能看出这是宿主自带的)。 */
+  source?: string;
+  /** 额外的细粒度能力标签(会与 `module:<moduleKind>` 合并)。 */
+  capabilities?: string[];
+}
+
+/** 宿主内置能力 → descriptors(契约 kind 一律 `builtin`,模块种类进 capabilities)。 */
+export function hostCapabilityDescriptors(
+  capabilities: readonly HostCapabilitySource[],
+): CapabilityDescriptor[] {
+  return capabilities.map((c) => ({
+    kind: "builtin" as const,
+    id: c.id,
+    source: c.source ?? "host",
+    capabilities: [`module:${c.moduleKind}`, ...(c.capabilities ?? [])],
+  }));
+}
+
+/**
+ * **宿主注册的内置能力声明**(ARC-006 步①)—— 唯一权威的一份 id / 模块种类清单。
+ *
+ * 与 `modules/service.ts` 里 `host.register(capability)` 的实际注册**同源**(那里的
+ * `fileCapabilities(...)` 产出同两个 id 与 kind)。刻意在这里**只放声明、不放实现**:预检
+ * 装配路径不能 import `modules/service`(它会碰 `dataRoot()`,把 DB/electron 拖进来)。
+ * 若将来 `fileCapabilities` 增删能力,这里要跟着改 —— 两份名单靠
+ * `capability-smoke` 的「喂进目录后查得到」断言钉着,漂了会红。
+ */
+export const HOST_CAPABILITY_DECLARATIONS: readonly HostCapabilitySource[] = [
+  { id: "core.file.inspect", moduleKind: "task", source: "host" },
+  { id: "core.file.info", moduleKind: "query", source: "host" },
+];
+
 /** 装配一台机器上的能力清单。**所有来源都是参数**:providers 来自 provider 注册表、
  *  executors 来自 NodeExecutorRegistry(`kinds()` + `capabilities()`)、plugins 来自
  *  pluginManager 的已启用清单 —— 这些模块分属其它并行任务的领地,这里只消费它们的
@@ -90,6 +141,8 @@ export function collectCapabilityInventory(sources: {
   plugins?: ReadonlyArray<{ name: string; manifest: PluginManifest; compatibleProviderIds?: string[] }>;
   executorKinds?: readonly string[];
   executorCapabilitiesOf?: (kind: string) => ExecutorCapabilityFlags | undefined;
+  /** 【ARC-006 步①】宿主自带的内置能力(见 {@link HostCapabilitySource})。 */
+  hostCapabilities?: readonly HostCapabilitySource[];
 }): CapabilityDescriptor[] {
   const out: CapabilityDescriptor[] = [];
   for (const provider of sources.providers ?? []) out.push(providerCapabilityDescriptor(provider));
@@ -112,6 +165,7 @@ export function collectCapabilityInventory(sources: {
     }
     out.push(...pluginCapabilityDescriptors(name, manifest.capabilities ?? []));
   }
+  out.push(...hostCapabilityDescriptors(sources.hostCapabilities ?? []));
   out.push(...executorCapabilityDescriptors(sources.executorKinds ?? [], sources.executorCapabilitiesOf));
   return out;
 }
