@@ -43,9 +43,11 @@ printf 'export * from "./stubs/runner.js";\n' > "$OUT/runner.js"
 
 # `--banner` 给 sql.js 的 asm 构建一个真的 require(见 run-store-smoke/run.sh 同一段)。
 #
-# 换桩的四个:`dataRoot` / `logger` 是每套都有的;`RuntimeManager` 那条链拉着
+# 换桩的五个:`dataRoot` / `logger` 是每套都有的;`RuntimeManager` 那条链拉着
 # `window.js`(要 electron 的 `BrowserWindow`)与三个引擎实现;`pluginManager` 同上
-# (真那个会读插件目录)。`--external:./runner.js` 配上面那份外置桩用。
+# (真那个会读插件目录)。`node:fs` 换成记录式替身 —— 只为 ARC-005 的「durable 落盘失败」
+# 红例能在无头里让 `commitNow()` 真失败一次(其余名字原样转发真实现)。`--external:./runner.js`
+# 配上面那份外置桩用。
 "$ESBUILD" scripts/automation-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
@@ -56,6 +58,7 @@ printf 'export * from "./stubs/runner.js";\n' > "$OUT/runner.js"
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/automation-smoke/stubs/runtimeManager.ts \
   --alias:@main/plugins/pluginManager.js=./scripts/mcode-admin-smoke/stubs/pluginManager.ts \
+  --alias:node:fs=./scripts/automation-smoke/stubs/fsSync.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

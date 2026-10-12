@@ -68,7 +68,11 @@ import { createEventSubjects, fileSubjects } from "@main/hooks/eventSubjects.js"
 import { log } from "@main/lib/logger.js";
 import { ProjectRepo, SessionRepo, SettingRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
 // 【MC-051】定时触发派发前要把去重记录**同步**落盘,才允许外部副作用发生。
-import { persistNowOrThrow } from "@main/store/db.js";
+// 【ARC-005】落盘走**结构化**的 `commitNow()` —— 只有 `DURABLE` 才算成功(判据 `isDurable`,
+// 与 `runStore.saveRun` / `settingsTransfer` 同一份),不是旧的"失败即抛";非 durable 时连
+// **内存表那一行**一起回滚(见 `rollbackSettingRow`),不留"调用方以为没写成、磁盘却多一行"的幻影。
+import { commitNow } from "@main/store/db.js";
+import { isDurable } from "@contracts/commit";
 import { uid } from "@main/utils.js";
 import { describeTriggerPayload, mergeEventPayload, payloadFactsOf, type TriggerPayload } from "./automationPayload.js";
 import {
@@ -243,8 +247,8 @@ const MISSED_SWEPT_SETTING_KEY = "automation.missedSweptTo";
  * 都走 `SettingRepo`。开新表要动 `store/db.ts`(建表 + 迁移)再加一个 Repo,换来的
  * 只是"能按列查" —— 这里没有按列查的需求(整张读、整张写)。
  *
- * ⚠️ 落盘仍走 `SettingRepo.set` + `persistNowOrThrow`(`commitNow`)那一份**唯一**的
- * durable 通路,与 MC-084 的 `DurableOperationLedger` 共用 —— 不另立第二套写盘机制。
+ * ⚠️ 落盘仍走 `SettingRepo.set` + `commitNow` 那一份**唯一**的 durable 通路(判据 `isDurable`),
+ * 与 MC-084 的 `DurableOperationLedger` 共用 —— 不另立第二套写盘机制。
  */
 const TRIGGER_CLAIMS_SETTING_KEY = "automation.triggerClaims";
 
@@ -1127,9 +1131,9 @@ class AutomationRunner {
    * 磁盘**。否则应用在"内存已改、文件未写"的窗口里被杀,重启后这一分钟又会跑一次 —— 对
    * 有外部副作用的自动化就是重复执行。
    *
-   * 所以这里改成:写内存 → `SettingRepo.set`(写 SQLite 内存库)→ `persistNowOrThrow()`
-   * (**同步** fsync 到文件)。任一步抛错即返回 `false`,调用方据此**跳过这次触发**,
-   * 而不是照常 fire。
+   * 所以这里改成:写内存 → `SettingRepo.set`(写 SQLite 内存库)→ `commitNow()`
+   * (**同步** fsync 到文件,**结构化**结果)。非 `DURABLE` / 任一步抛错即**回滚内存行与
+   * 那一格并**返回 `false`,调用方据此**跳过这次触发**,而不是照常 fire。
    *
    * ⚠️ 不做无限重试:存储真坏了时重试只会转圈。跳过并记一行日志,下一个 tick / 分钟照常。
    *
@@ -1140,6 +1144,9 @@ class AutomationRunner {
     if (this.lastMinute.get(key) === minute) return true; // 本分钟已记过(同 tick 第二跳)→ 直接放行
     const prev = this.lastMinute.get(key);
     this.lastMinute.set(key, minute);
+    // 【ARC-005】落盘前先记下这一格在**内存表**里的旧值 —— 非 durable 时要连它一起还原
+    // (见 `rollbackSettingRow`:只回滚 JS Map 不够,`SettingRepo.set` 已经改过 sql.js 的内存行)。
+    const priorRaw = SettingRepo.get(LAST_MINUTE_SETTING_KEY);
     try {
       const rows = [...this.lastMinute.entries()].sort((a, b) => b[1] - a[1]);
       let historyCount = 0;
@@ -1150,15 +1157,26 @@ class AutomationRunner {
       });
       if (kept.length < rows.length) this.lastMinute = new Map(kept);
       SettingRepo.set(LAST_MINUTE_SETTING_KEY, JSON.stringify(Object.fromEntries(kept)));
-      persistNowOrThrow(); // 异步 persist 之外再**同步**落盘:派发之前必须是 durable 的
-      return true;
+      // 【ARC-005】同步 fsync 走**结构化**结果:非 `DURABLE` 一律当失败(派发前必须是 durable 的)。
+      const commit = commitNow();
+      if (isDurable(commit)) return true;
+      this.rollbackSettingRow(LAST_MINUTE_SETTING_KEY, priorRaw);
+      this.rollbackLastMinute(key, prev);
+      log.warn(`[automation] 定时去重表没能同步落盘:${commit.reason ?? commit.outcome}`);
+      return false;
     } catch (err) {
-      // 落盘失败 → 回滚内存那一格,免得内存说"记过了"而磁盘没有,下次 tick 被内存骗过去。
-      if (prev === undefined) this.lastMinute.delete(key);
-      else this.lastMinute.set(key, prev);
+      // 写内存库(SettingRepo.set)、读旧值等任一环抛错 → 回滚内存那一格 + 那一行。
+      this.rollbackSettingRow(LAST_MINUTE_SETTING_KEY, priorRaw);
+      this.rollbackLastMinute(key, prev);
       log.warn(`[automation] 定时去重表没能同步落盘:${(err as Error).message}`);
       return false;
     }
+  }
+
+  /** 把 `lastMinute` 里那一格还原到先前(没有则删)—— 与"内存表"的回滚配套。 */
+  private rollbackLastMinute(key: string, prev: number | undefined): void {
+    if (prev === undefined) this.lastMinute.delete(key);
+    else this.lastMinute.set(key, prev);
   }
 
   /**
@@ -1171,9 +1189,10 @@ class AutomationRunner {
    * `CLAIMED`(派发前 durable)或 `SUCCEEDED`(运行收尾 durable),崩溃点上残留的
    * `CLAIMED` 由 {@link recoverIncompleteClaims} 认出来。
    *
-   * 落盘走**唯一**那条 durable 通路(`SettingRepo.set` + `persistNowOrThrow` =
-   * `commitNow`),与 `lastMinute` 和 MC-084 的 `DurableOperationLedger` 同一份 ——
-   * 绝不另立第二套写盘机制。写不进去即返回 `false`,调用方据此**拒绝派发**(不是转圈重试)。
+   * 落盘走**唯一**那条 durable 通路(`SettingRepo.set` + `commitNow` 的结构化结果,判据
+   * `isDurable`),与 `lastMinute` 和 MC-084 的 `DurableOperationLedger` 同一份 ——
+   * 绝不另立第二套写盘机制。非 durable 即回滚内存行 + JS Map 并返回 `false`,调用方据此
+   * **拒绝派发**(不是转圈重试)。
    */
   private writeTriggerClaimDurable(claimId: string, claim: TriggerClaim): boolean {
     const prev = this.triggerClaims.get(claimId);
@@ -1181,18 +1200,52 @@ class AutomationRunner {
     // "崩溃点不能被后来的内存值骗到")。这里只为防御 —— 正常路径不会这么调。
     if (prev?.status === "SUCCEEDED" && claim.status !== "SUCCEEDED") return true;
     this.triggerClaims.set(claimId, claim);
+    // 【ARC-005】落盘前先记下这一行在**内存表**里的旧值 —— 非 durable 时要连它一起还原。
+    const priorRaw = SettingRepo.get(TRIGGER_CLAIMS_SETTING_KEY);
     try {
       const kept = pruneClaims(this.triggerClaims, TRIGGER_CLAIMS_HISTORY_KEEP);
       if (kept.size < this.triggerClaims.size) this.triggerClaims = kept;
       SettingRepo.set(TRIGGER_CLAIMS_SETTING_KEY, JSON.stringify(Object.fromEntries(kept)));
-      persistNowOrThrow(); // 同步 fsync:领取 / 结算在落盘之前不算数
-      return true;
+      // 【ARC-005】同步 fsync 走**结构化**结果:非 `DURABLE` 一律当失败(领取 / 结算在落盘之前不算数)。
+      const commit = commitNow();
+      if (isDurable(commit)) return true;
+      this.rollbackSettingRow(TRIGGER_CLAIMS_SETTING_KEY, priorRaw);
+      this.rollbackTriggerClaim(claimId, prev);
+      log.warn(`[automation] 定时领取账本没能同步落盘:${commit.reason ?? commit.outcome}`);
+      return false;
     } catch (err) {
-      // 落盘失败 → 回滚内存那一格,免得内存说"领过了"而磁盘没有(下次重启被内存骗过去)。
-      if (prev === undefined) this.triggerClaims.delete(claimId);
-      else this.triggerClaims.set(claimId, prev);
+      // 落盘失败 → 回滚内存那一格(JS Map **和** sql.js 内存行),免得内存说"领过了"而磁盘
+      // 没有、下一次 `persist()` 又把这一行冲上去(下次重启被内存骗过去)。
+      this.rollbackSettingRow(TRIGGER_CLAIMS_SETTING_KEY, priorRaw);
+      this.rollbackTriggerClaim(claimId, prev);
       log.warn(`[automation] 定时领取账本没能同步落盘:${(err as Error).message}`);
       return false;
+    }
+  }
+
+  /** 把 `triggerClaims` 里那一格还原到先前(没有则删)—— 与"内存表"的回滚配套。 */
+  private rollbackTriggerClaim(claimId: string, prev: TriggerClaim | undefined): void {
+    if (prev === undefined) this.triggerClaims.delete(claimId);
+    else this.triggerClaims.set(claimId, prev);
+  }
+
+  /**
+   * 【ARC-005】把 settings 里某一 key 还原到先前那一次读到的裸值。
+   *
+   * `SettingRepo.set` 改的是 **sql.js 的内存表**,`commitNow()` 才把它 fsync 到磁盘 —— 两者
+   * **不是原子**的。非 durable 时只回滚 JS 侧的 `Map` 会留下一个幻影:内存行已经是新值,
+   * 而 `commitNow` 失败又给后台 `persist()` 排了退避重试,于是**下一次成功落盘会把这一份
+   * 调用方以为没写成的值冲上磁盘**。还原这一行(没有旧值就 `delete`)让"内存 == 磁盘"在出口成立。
+   *
+   * 还原本身**不走 durable**(内存回滚不需要再落盘 —— 磁盘没变),用普通 `set` / `delete` 的路径;
+   * 它自己抛错就如实记日志(内存已污染),不再向上抛(调用方要的是"这次没能 durable"这个事实)。
+   */
+  private rollbackSettingRow(key: string, priorRaw: string | null): void {
+    try {
+      if (priorRaw === null) SettingRepo.delete(key);
+      else SettingRepo.set(key, priorRaw);
+    } catch (err) {
+      log.error(`[automation] 回滚 settings 行「${key}」失败,本进程内存可能已污染:${(err as Error).message}`);
     }
   }
 

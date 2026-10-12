@@ -118,6 +118,7 @@ import { suppressNodeKey } from "@contracts/libraryTypes";
 // 再触发」与「删掉的文件不进载荷」——那两条的实现全在实例状态里,不真跑一遍验不到。
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { resetRuns, runs, runsOfNode, setRunBusy } from "./stubs/runner.js";
+import { failNextExclusiveCreate, disarmExclusiveCreate } from "./stubs/fsSync.js";
 import { boundSessionIds, runtimeManager } from "./stubs/runtimeManager.js";
 
 let failures = 0;
@@ -3454,16 +3455,18 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
    * 从前 onTick 先 `rememberLastMinute`(走 SettingRepo.set 的**异步** persist、还吞错)再立刻
    * `fire` —— "记下了"与"落盘了"之间有个窗口:应用若在这窗口里被杀/断电,重启后表里没有
    * 这一分钟,启动即 tick(MC-021)会对本分钟**再跑一次**,而对有外部副作用的自动化那是重复执行。
-   * 现在派发前先过 `rememberLastMinuteDurable`(同步 `persistNowOrThrow`),写不进去就跳过这次
-   * 触发。(完整版 durable claim/dispatch ledger 是台账 MC-051 建议的后续架构改造。)
+   * 现在派发前先过 `rememberLastMinuteDurable`(同步 `commitNow()` 的结构化结果,判据
+   * `isDurable`),非 durable 就跳过这次触发。(完整版 durable claim/dispatch ledger 是台账
+   * MC-051 建议的后续架构改造;ARC-005 切片把这两处的落盘语义从旧的「失败即抛」收敛到统一判据。)
    *
    * 这里钉的是**接线**(无头里让 SettingRepo/persist 真失败很牵强):派发那一条必须被
-   * `rememberLastMinuteDurable` 的返回值守着。撤掉那个 `if (!...)` 即红。 */
+   * `rememberLastMinuteDurable` 的返回值守着。撤掉那个 `if (!...)` 即红。
+   * (`ARC-005` 另有行为级红例:注入 `commitNow()` 失败 → 断言内存行被一起还原,见下面那节。)*/
   {
     const src = readFileSync(join(process.cwd(), "src/main/orchestration/automationRunner.ts"), "utf8");
     check(
       "★ MC-051:定时派发前的去重记录是**同步落盘**的(rememberLastMinuteDurable)",
-      /rememberLastMinuteDurable\s*\(/.test(src) && /persistNowOrThrow\s*\(/.test(src),
+      /rememberLastMinuteDurable\s*\(/.test(src) && /commitNow\s*\(/.test(src) && /isDurable\s*\(/.test(src),
     );
     check(
       "★ MC-051:该落盘失败即**跳过这次触发**(用返回值守着,不是照常 fire)",
@@ -3619,6 +3622,61 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       failing.statusOf(wfF),
     );
     failing.dispose();
+  }
+
+  /* ── 【ARC-005】非 durable 的落盘**不许留幻影行**(边界迁移)—─
+   *
+   * `rememberLastMinuteDurable` / `writeTriggerClaimDurable` 落盘走的是「`SettingRepo.set`
+   * (改 **sql.js 内存表**)→ fsync」两步,**不是原子**。修复前:fsync 失败那一步用
+   * `persistNowOrThrow()`(失败即抛),catch 里**只回滚 JS 的 Map**,内存表里那一行**仍是
+   * 新值** —— 而 `commitNow` 的失败又给后台 `persist()` 排了退避重试,于是**下一次成功落盘
+   * 会把调用方以为没写成的值冲上磁盘**(下次重启读回一个幻影领取 / 幻影去重分钟)。
+   * 这正是 ARC-005 判据「内存提交成功 / 磁盘稳定保存是两种事实」+ 台账禁止的"以 false 冒充
+   * 完全回滚欺骗调用者"。
+   *
+   * 这里用与 `settings-import-backup-smoke` 同源的注入(`.persist-` 排他创建失败让那一次
+   * `commitNow()` 返回 `APPLIED_NOT_DURABLE`)在无头里真失败一次,断言**内存行被一起还原**。
+   * 撤掉 `rollbackSettingRow` 这两条即红。 */
+  {
+    const TRIGGER_CLAIMS_KEY = "automation.triggerClaims";
+    const wfH = nextId(), nodeIdH = "t_durable_rollback";
+    // 不 start():这两个方法是纯"实例 Map + SettingRepo",直接调即可(避免启动即 tick)。
+    // 它们是私有方法 —— 用与上文 §MC-051 同一条"拿真类的实例、按内部表面调"的手法。
+    type DurableSurface = RunnerInternals & {
+      triggerClaims: Map<string, TriggerClaim>;
+      writeTriggerClaimDurable(claimId: string, claim: TriggerClaim): boolean;
+      rememberLastMinuteDurable(key: string, minute: number, protectedMinute: number): boolean;
+    };
+    const r = newRunner() as DurableSurface;
+
+    // ---- 领取账本 ----
+    SettingRepo.set(TRIGGER_CLAIMS_KEY, "{}");
+    const claimIdH = scheduleClaimId(`${wfH}:${nodeIdH}`, 999_001);
+    failNextExclusiveCreate();
+    let claimOk: boolean;
+    try {
+      claimOk = r.writeTriggerClaimDurable(claimIdH, { status: "CLAIMED", minute: 999_001, at: Date.now() });
+    } finally { disarmExclusiveCreate(); }
+    eq("ARC-005:领取落盘失败 → 返回 false(拒绝派发)", claimOk, false);
+    eq("ARC-005:领取落盘失败 → **内存表那一行也还原**(不留幻影领取)", SettingRepo.get(TRIGGER_CLAIMS_KEY), "{}");
+    check("ARC-005:领取落盘失败 → JS Map 里的那一格也还原", !r.triggerClaims.has(claimIdH), [...r.triggerClaims.keys()]);
+    // 故障解除 → 重试成功,这一次才真的落定。
+    eq("ARC-005:领取故障解除后重试成功", r.writeTriggerClaimDurable(claimIdH, { status: "CLAIMED", minute: 999_001, at: Date.now() }), true);
+    check("ARC-005:重试成功后内存表才有这一条", (SettingRepo.get(TRIGGER_CLAIMS_KEY) ?? "").includes(claimIdH), SettingRepo.get(TRIGGER_CLAIMS_KEY));
+
+    // ---- 定时去重表 ----
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    const keyH = `${wfH}:${nodeIdH}`;
+    failNextExclusiveCreate();
+    let minuteOk: boolean;
+    try {
+      minuteOk = r.rememberLastMinuteDurable(keyH, 999_002, 999_002);
+    } finally { disarmExclusiveCreate(); }
+    eq("ARC-005:去重记录落盘失败 → 返回 false(跳过这次触发)", minuteOk, false);
+    eq("ARC-005:去重记录落盘失败 → **内存表那一行也还原**(不留幻影分钟)", SettingRepo.get(LAST_MINUTE_KEY), "{}");
+    check("ARC-005:去重记录落盘失败 → JS Map 里的那一格也还原", !r.lastMinute.has(keyH), [...r.lastMinute.keys()]);
+    eq("ARC-005:去重记录故障解除后重试成功", r.rememberLastMinuteDurable(keyH, 999_002, 999_002), true);
+    check("ARC-005:重试成功后内存表才有这一格", (SettingRepo.get(LAST_MINUTE_KEY) ?? "").includes(keyH), SettingRepo.get(LAST_MINUTE_KEY));
   }
 
   /* ── 收尾:这一节的实例都 dispose 了,别让 timer / watcher 挂着 ── */
