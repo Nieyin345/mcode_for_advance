@@ -63,6 +63,8 @@ export const en = {
   "browser.signIn": "Sign in",
   "browser.authExpired": "This sign-in request is no longer valid (it timed out or was already handled). Reload the page and try again.",
   "browser.authFailed": "The sign-in response could not reach the page. Please try again.",
+  "browser.tabsAria": "Browser tabs",
+  "browser.tabAria": "Tab {n} of {total}: {title}",
 
   /* ── device toolbar ── */
   "browser.device": "Device",

@@ -74,6 +74,8 @@ export const zh = {
   "browser.signIn": "登录",
   "browser.authExpired": "本次登录请求已失效（超时或已处理），请刷新页面后重试。",
   "browser.authFailed": "登录请求未能送达页面，请重试。",
+  "browser.tabsAria": "浏览器标签页",
+  "browser.tabAria": "第 {n}/{total} 个标签：{title}",
 
   /* ── device toolbar ── */
   "browser.device": "设备",
