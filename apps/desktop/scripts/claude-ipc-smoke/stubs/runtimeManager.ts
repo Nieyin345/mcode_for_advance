@@ -29,6 +29,8 @@ export interface SendTurnCall {
   skills?: unknown;
   images?: unknown;
   userMessage?: unknown;
+  /** 【MC-059/ARC-001 步⑤】这一轮按哪个工作流跑(headless 路径也要带上)。 */
+  workflowId?: string;
 }
 
 /** 按顺序记下每一次 `sendTurn` 的实参。 */
@@ -153,7 +155,7 @@ export const runtimeManager = {
   },
   async sendTurn(
     session: { id: string },
-    opts: { prompt: string; cwd: string; skills?: unknown; images?: unknown; userMessage?: unknown },
+    opts: { prompt: string; cwd: string; skills?: unknown; images?: unknown; userMessage?: unknown; workflowId?: string },
   ): Promise<void> {
     sendTurns.push({
       sessionId: session.id,
@@ -162,6 +164,7 @@ export const runtimeManager = {
       skills: opts.skills,
       images: opts.images,
       userMessage: opts.userMessage,
+      workflowId: opts.workflowId,
     });
     if (failNextSendTurn) {
       failNextSendTurn = false;

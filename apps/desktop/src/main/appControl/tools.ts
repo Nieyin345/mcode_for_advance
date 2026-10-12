@@ -1164,6 +1164,17 @@ async function runWorkflow(
   const reply = args.session_id
     ? await ui({ op: "send", sessionId: args.session_id, prompt, workflowId: args.workflow_id, background: true })
     : await ui({ op: "new_session", projectId: args.project_id, prompt, workflowId: args.workflow_id, background: true });
+  // 【MC-059 / ARC-001 步⑤】跑工作流也是**纯业务**动作(会话行 + 起一轮工作流运行本就在主进程),
+  // 不该因为渲染窗口没开就失败。UI 桥报"窗口没开/界面没准备好/超时"时,改走主进程**同一份**
+  // headless 路径(createOrReuseSession + sendTurn,带 workflowId),与 app_session_new/send 同源。
+  // 其它业务错误(校验失败等)照原样回,不吞。
+  if (uiUnavailable(reply)) {
+    const msg = args.session_id
+      ? await headlessSend(args.session_id, prompt, args.workflow_id)
+      : await headlessNewSession({ project_id: args.project_id, prompt, workflow_id: args.workflow_id });
+    if (msg !== null) return fail(msg);
+    return text("已按工作流发出(无渲染窗口,走主进程)。");
+  }
   return uiResult(reply, "已按工作流发出。");
 }
 

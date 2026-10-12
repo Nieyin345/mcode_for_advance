@@ -1397,6 +1397,21 @@ console.log("\n18. 【MC-059】无渲染窗口时 app_session_new / app_session_
   eq("★ 发给了指定的那条会话", sendTurns[0]?.sessionId, sendTarget);
   eq("★ 发的是那条消息", sendTurns[0]?.prompt, "第二条");
 
+  // —— app_workflow_run 的"无触发器 → 在对话里跑"这条路(ARC-001 步⑤):它从前也经 UI 桥。
+  // 跑工作流是**纯业务**动作(会话行 + 起一轮工作流运行本就在主进程),无窗口时同样该走 headless。
+  fresh();
+  const wfTarget = mkSession(nid("s_mc059_wf"), { title: "工作流目标" });
+  const wfRes = await invokeAppTool(
+    "app_workflow_run",
+    { workflow_id: "wf_mc059", prompt: "按这个工作流跑", session_id: wfTarget },
+    "me",
+    appCtx,
+  );
+  check("★ app_workflow_run 在无窗口时不失败", wfRes.isError !== true, textOf(wfRes));
+  eq("★ 无窗口时工作流那一轮真的派出去了", sendTurns.length, 1);
+  eq("★ 发给了指定的对话", sendTurns[0]?.sessionId, wfTarget);
+  eq("★ 带着工作流 id 发出去(workflowId 随轮下发)", sendTurns[0]?.workflowId, "wf_mc059");
+
   // —— 反向控制①:纯 UI 动作同样无窗口时**仍要如实报错**(它们真绑在界面上)。
   // 用**字面** session_id(不依赖上面那条 newId)—— 否则会话建失败时它会因"缺参数"而红,
   // 那就成了"被上面的失败连累",不是"纯 UI 动作本来就绑窗口"这个独立事实。
