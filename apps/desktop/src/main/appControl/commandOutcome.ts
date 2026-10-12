@@ -127,6 +127,12 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    * 核实是否可能部分提交,留待各自纵向切片。 */
   ["library.readMarkdown", { falseMeans: "refusal" }],
   ["library.readPdf", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】engineTools 域 ──────────────────────────────────
+   *
+   * `engineTools.set` 的 ok:false 是 zod 校验失败(没写)或 `writeEngineToolPolicy`
+   * 抛错 —— 那条走 `atomicWriteJson`(`writeFileSync` 临时名 + `renameSync`),写不成时
+   * 目标文件保持原样、**没有半套** → `refusal`。 */
+  ["engineTools.set", { falseMeans: "refusal" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

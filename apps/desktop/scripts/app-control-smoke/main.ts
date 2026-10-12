@@ -984,6 +984,14 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const r = await invokeAppTool("app_api_call", { method: "library.readPdf", input: { id: "item_1" } }, "me", ctx);
     check("★ MC-066:library.readPdf 合法 ok:false → REJECTED(纯读)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
   }
+
+  // engineTools 域:set 的 ok:false 是 zod 失败(没写)或 atomicWriteJson 抛错(目标保持
+  // 原样,没有半套)→ REJECTED。
+  recordRpcHandler("engineTools:set", async () => ({ ok: false as const, error: "工具名不合法" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "engineTools.set", input: { engine: "claude", exclude: ["Bash"] } }, "me", ctx);
+    check("★ MC-066:engineTools.set 合法 ok:false → REJECTED(没写)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
 }
 
 {
