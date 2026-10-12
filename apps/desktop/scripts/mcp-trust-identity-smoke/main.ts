@@ -194,6 +194,18 @@ console.log("\nMC-055:伪造来源不得继承 A 对同配置的授信");
   check("前置:A 拿到已授信的服务器(正向控制)", trustedA.some(([n]) => n === "sample"));
   const trustedB = getTrustedProjectMcpServers(B);
   check("★ B 用伪造 .git 冒充 A **拿不到**那份授信", trustedB.length === 0, trustedB.map(([n]) => n));
+
+  // 【MC-055 / 第 45.2 节】更强的伪造形态也要走**交付**层复验:合法回指 + foreign commondir
+  // 指向 A 的 .git。§2c 已证明身份不碰撞;这里证明**交付层**同样拿不到 A 的授信。
+  const B2 = join(TMP, "B3c");
+  const fakegit = join(B2, "fakegit");
+  mkdirSync(fakegit, { recursive: true });
+  writeFileSync(join(B2, ".git"), `gitdir: ${fakegit}\n`);
+  writeFileSync(join(fakegit, "gitdir"), join(B2, ".git") + "\n");
+  writeFileSync(join(fakegit, "commondir"), join(A, ".git") + "\n"); // 指向已授信的 A
+  writeFileSync(join(B2, ".mcp.json"), cfg);
+  const trustedB2 = getTrustedProjectMcpServers(B2);
+  check("★ 合法回指 + foreign commondir 冒充 A → 交付层也拿不到授信", trustedB2.length === 0, trustedB2.map(([n]) => n));
 }
 
 /* ────────────────── 6. ★ 合法 linked worktree 仍复用同源授信 ────────────────── */
