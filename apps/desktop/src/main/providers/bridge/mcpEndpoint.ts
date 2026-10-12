@@ -338,6 +338,15 @@ export async function handleMcpRequest(
       method === "initialize"
         ? issueClientSession(credential.credentialId)
         : resolveClientSession(credential.credentialId, headerValue(req, PUBLIC_MCP_CLIENT_SESSION_HEADER));
+    // 【MC-063 / 第 43.4 节】带了 `Mcp-Session-Id` 但**不可验证**(没签发过 / 已淘汰 /
+    // 进程重启丢失 / 凭据不匹配)→ `null`。**不降级到 legacy 共享桶** —— 一个主动声明过
+    // 身份、但身份已不可验证的请求,不该因此拿到共享 owner 的能力(读写停别人的进程/SSH)。
+    // 明确要求重新握手(标准 Streamable HTTP 的 404 + 重新 initialize)。
+    if (clientSessionId === null) {
+      res.setHeader("Mcp-Session-Id", ""); // 清掉客户端的旧 id,提示它重新 initialize
+      json(res, 404, { error: "session expired; re-initialize to get a new Mcp-Session-Id" });
+      return;
+    }
     if (method === "initialize") {
       // 标准 Streamable HTTP:服务端在握手时给一个会话 id,客户端后续原样带回来。
       res.setHeader("Mcp-Session-Id", clientSessionId);

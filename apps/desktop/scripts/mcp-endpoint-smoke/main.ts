@@ -665,11 +665,24 @@ __resetPublicClientSessions();
   eq("★ A/B 仍落到同一条合成会话(共享 credential)", callA.sessionId, PUBLIC_SESSION);
   check("★ A/B 的 owner(资源归属 id)**不同**", Boolean(callA.ownerId && callB.ownerId && callA.ownerId !== callB.ownerId), [callA.ownerId, callB.ownerId]);
   eq("★ A 的 owner 就是它自己签发的会话 id", callA.ownerId, sidA);
-  // 不带会话头 / 乱带:落 legacy 共享桶,不因乱带 header 白得一个新 owner。
+  // 【MC-063 / 第 43.4 节】**带了不可验证的会话 id ≠ 没带**。没带 → legacy 共享桶(老客户端);
+  // 带了但没签发过 / 已失效 → **拒**,绝不降级到 legacy 拿到共享 owner 的能力。
+  // 旧实现把两者都映射到 `legacy:<credentialId>`,于是"主动声明过身份但身份不可验证"
+  // 反而白得了共享桶里别人的进程/SSH。
   const legacy = await clientSessionOf(null);
+  check("不带会话头 → legacy 共享桶(老客户端合法)", String(legacy.ownerId).startsWith("legacy:"), legacy.ownerId);
   const bogus = await clientSessionOf("not-a-real-session");
-  check("不带会话头 → legacy 共享桶", String(legacy.ownerId).startsWith("legacy:"), legacy.ownerId);
-  eq("乱带的会话 id 与不带**同属一个 legacy owner**", bogus.ownerId, legacy.ownerId);
+  check(
+    "★ 带了没签发过的会话 id → **不**落到 legacy(拒绝,不白拿共享桶)",
+    bogus.ownerId === undefined || bogus.ownerId !== legacy.ownerId,
+    { bogus: bogus.ownerId, legacy: legacy.ownerId },
+  );
+  const shaped = await clientSessionOf("pcs_deadbeef-dead-dead-dead-deadbeefdead");
+  check(
+    "★ 形状像签发过但实际失效的会话 id 也拒(不降级到 legacy)",
+    shaped.ownerId === undefined || shaped.ownerId !== legacy.ownerId,
+    { shaped: shaped.ownerId, legacy: legacy.ownerId },
+  );
 }
 
 /* ── MC-062:公网文件/命令工具的 fail-closed(冻结根 + 缺根拒绝) ──

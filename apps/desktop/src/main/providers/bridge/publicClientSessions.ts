@@ -60,14 +60,40 @@ export function issueClientSession(credentialId: string): string {
  * 解析这次调用该用哪个 owner id。
  *
  * - 客户端带回了**本服务为同一条凭据签发过**的 id → 用它的 id(该对话自己的桶);
- * - 其它一切情况(没带 / 带的是没签发过的 / 带的是别的凭据签发的)→ `legacy:<credentialId>`,
- *   与其它不做握手的老客户端共享 —— 不因为乱带 header 就白得一个新 owner。
+ * - **完全没带** header(不会做握手的老客户端)→ `legacy:<credentialId>`,与其它老客户端
+ *   共享 —— 这正是文档写明的 legacy shared-workspace 模式;
+ * - 其它一切情况(带的是没签发过的 / 别的凭据签发的 / **签发过但已失效**)→
+ *   【MC-063 / 第 43.4 节】**不**降级到 legacy,而是返回 `null`(由调用方拒掉)。
+ *
+ * ⚠️ 从前"带了已失效的 id"与"没带"都落到 `legacy:<credentialId>`。那不是安全降级:
+ * 一个**主动声明过身份、但身份已不可验证**的请求,不该因此获得任何共享 owner 的能力
+ * (它能读/写/停 legacy 桶里别人的进程与 SSH)。已失效 → 要求重新握手,绝不分到 legacy。
  */
-export function resolveClientSession(credentialId: string, headerValue: string | null | undefined): string {
+export type ClientSessionResolution =
+  | { kind: "valid"; sessionId: string }
+  | { kind: "legacy"; sessionId: string }
+  | { kind: "expired" };
+
+export function resolveClientSessionDetailed(
+  credentialId: string,
+  headerValue: string | null | undefined,
+): ClientSessionResolution {
   const value = (headerValue ?? "").trim();
-  const rec = value ? issued.get(value) : undefined;
-  if (rec && rec.credentialId === credentialId) return value;
-  return legacyClientSessionId(credentialId);
+  // 完全没带 header → 老客户端走 legacy 共享桶(合法)。
+  if (!value) return { kind: "legacy", sessionId: legacyClientSessionId(credentialId) };
+  const rec = issued.get(value);
+  if (rec && rec.credentialId === credentialId) return { kind: "valid", sessionId: value };
+  // 带了 header 但不可验证(没签发过 / 别的凭据 / 已淘汰 / 进程重启丢失)→ 拒。
+  return { kind: "expired" };
+}
+
+/**
+ * 兼容薄壳(旧调用点):返回 owner id,或 `null` 表示"带了 header 但已失效、必须拒"。
+ * 新代码请用 {@link resolveClientSessionDetailed} 拿可判别状态。
+ */
+export function resolveClientSession(credentialId: string, headerValue: string | null | undefined): string | null {
+  const r = resolveClientSessionDetailed(credentialId, headerValue);
+  return r.kind === "expired" ? null : r.sessionId;
 }
 
 /** 测试用:清空已签发集合(每套用例从干净状态开始)。 */
