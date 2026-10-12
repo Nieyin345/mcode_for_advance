@@ -27,6 +27,7 @@ import type { Components } from "react-markdown";
 import { codeCacheKey, getCodeHtml, setCodeHtml } from "@renderer/lib/markdownCache.js";
 import { fileHrefToPath, isAbsolutePath, isLocalFileHref } from "@renderer/lib/fileLink.js";
 import { resolveRelativePath, relativePath } from "@renderer/lib/path.js";
+import { resolveMarkdownImageRoute } from "@renderer/lib/markdownImageRoute.js";
 import { convertHtmlTables } from "@renderer/lib/htmlTable.js";
 import { api } from "@renderer/lib/api.js";
 import { FileLink } from "./FileLink.js";
@@ -430,6 +431,12 @@ function loadLibraryImageDataUrl(itemId: string, relPath: string): Promise<strin
  * a spinner; a failed read (missing file / outside known roots) degrades to
  * the clickable file chip.
  */
+/**
+ * 【MC-087 / 第 50.3 章】本地图片的**读取路由**决策已抽到纯函数模块
+ * `@renderer/lib/markdownImageRoute.js`(三态:project / library / denied),此处只消费它。
+ * 抽出的理由见那个模块的文件头 —— 让"越界图片不得回退通用读取"这条是**一处**判定、可被
+ * 行为断言钉住,而不是埋在组件 `useEffect` 里容易被绕过。
+ */
 function MarkdownLocalImage({
   filePath,
   projectPath,
@@ -451,21 +458,18 @@ function MarkdownLocalImage({
     // ⚠️ **失败也必须落地成 ""。** `null` 是"还在读",界面画的是转圈 —— 早先这里没有
     // 拒绝分支,读失败(文件被删、越权、IPC 断)时状态永远停在 null:**图片位置一直转圈**,
     // 而错误只落进 unhandledrejection,谁也看不见。"" 是本组件既有的"读失败"约定。
-    //
-    // 【MC-087】资料库上下文时,把绝对路径换算成**相对条目根**的 relPath,走
-    // `library.readAsset`(主进程按条目根校验后读图)—— 库外 linked 目录的配图走不通
-    // 通用 `file.readBinary`。换算不出来(图片在条目根之外)则**明确失败**,不退化成
-    // 通用读取(那会绕过条目身份、且本来也会被拒)。
-    //
-    // ⚠️ `relativePath` 在"不在 root 之下"时**原样返回绝对路径**(防御性),所以判据不能只看
-    // `!startsWith("..")` —— 那样绝对路径(含盘符/前导 `/`)会被误当 relPath。要求结果
-    // **既非空、也不含盘符/前导分隔、也不以 `..` 开头**,才认作合法子路径。
-    const rel = library ? relativePath(filePath, library.rootAbs) : null;
-    const relIsSub = rel !== null && rel !== "" && !rel.startsWith("..") && !/^[a-zA-Z]:/.test(rel) && !rel.startsWith("/");
-    const useLibrary = library != null && relIsSub;
-    const load = useLibrary
-      ? loadLibraryImageDataUrl(library!.id, rel!)
-      : loadMarkdownImageDataUrl(filePath);
+    const route = resolveMarkdownImageRoute(filePath, library);
+    if (route.kind === "denied") {
+      // 库上下文但越界:拒绝,不退化通用读取(给用户一个明确的失败占位)。
+      setDataUrl("");
+      return () => {
+        cancelled = true;
+      };
+    }
+    const load =
+      route.kind === "library"
+        ? loadLibraryImageDataUrl(library!.id, route.relPath)
+        : loadMarkdownImageDataUrl(filePath);
     load.then(
       (url) => {
         if (!cancelled) setDataUrl(url);

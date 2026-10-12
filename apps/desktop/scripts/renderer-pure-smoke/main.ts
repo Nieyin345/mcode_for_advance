@@ -28,6 +28,7 @@ import {
   codeCacheKey,
 } from "../../src/renderer/lib/markdownCache.js";
 import { convertHtmlTables } from "../../src/renderer/lib/htmlTable.js";
+import { resolveMarkdownImageRoute } from "../../src/renderer/lib/markdownImageRoute.js";
 import { isPathWithin } from "../../src/renderer/lib/path.js";
 import { collectCommands } from "../../src/renderer/lib/commands.js";
 import type { SessionState } from "../../src/renderer/stores/sessionStore.js";
@@ -709,6 +710,29 @@ section("17. 送图上限与主进程契约同锚");
     /data:\s*z\.string\(\)\.min\(1\)\.max\(SEND_TURN_IMAGE_MAX_B64_CHARS\)/.test(contract),
     contract.match(/data:\s*z\.string\(\)[^\n]*/)?.[0],
   );
+}
+
+/* ── 【MC-087 / 第 50.3 章】Markdown 本地图片读取路由的三态准入 ────────────────
+ *
+ * 判据立在**路由结果**上:第 50.3 章的 E1 是「库条目上下文里越界的图片回退到通用
+ * `file.readBinary`」。所以最关键的一条是 —— 库上下文 + 路径越界必须 `denied`,**绝不**
+ * `project`(那才是走通用读取)。其余是正控(库内走 library、纯项目 md 走 project)。 */
+{
+  const root = "D:/external/linked-article";
+  const lib = { id: "item-1", rootAbs: root };
+  // ① 纯项目 md(无库上下文)→ project(走通用 file.readBinary)。
+  eq("无库上下文 → project(通用读取)", resolveMarkdownImageRoute("D:/proj/img/a.png", null).kind, "project");
+  // ② 库上下文 + 库内图片 → library,且 relPath 正确。
+  eq("库内图片 → library(走 readAsset)", resolveMarkdownImageRoute(`${root}/docs/fig.png`, lib).kind, "library");
+  eq("  relPath 是相对条目根的路径", (resolveMarkdownImageRoute(`${root}/docs/fig.png`, lib) as { relPath: string }).relPath, "docs/fig.png");
+  eq("库内三层嵌套 → library", resolveMarkdownImageRoute(`${root}/a/b/c/x.png`, lib).kind, "library");
+  // ③ ★ 关键:库上下文 + 越界 → **denied**(绝不回退通用读取)。
+  eq("★ 库上下文 + 另一个项目绝对路径 → denied(不回退通用读取)", resolveMarkdownImageRoute("D:/trusted-project/private.png", lib).kind, "denied");
+  eq("★ 库上下文 + 另一 linked 条目 → denied", resolveMarkdownImageRoute("D:/external/other-article/private.png", lib).kind, "denied");
+  eq("★ 库上下文 + ../ 逃逸 → denied", resolveMarkdownImageRoute(`${root}/../secret.png`, lib).kind, "denied");
+  eq("库上下文 + 完全不相关外部路径 → denied", resolveMarkdownImageRoute("D:/elsewhere/x.png", lib).kind, "denied");
+  // ④ 正控:同一 root 本身(rel 为空)不算子路径 → denied(不是条目内的文件)。
+  eq("根目录自身 → denied(不是条目内文件)", resolveMarkdownImageRoute(root, lib).kind, "denied");
 }
 
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
