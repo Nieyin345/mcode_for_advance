@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
 import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, shouldIgnoreWatchPath, isSpecificGlob, classifyFileChange, reconcileFileChangeKind, isWithinWatchRoot, type HookEvent } from "@contracts/hook";
+import { enqueueEventEnvelope, settleEventEnvelope, isPendingEnvelope, envelopeTerminal, digestOfPayload } from "@contracts/durableEvent";
 import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
@@ -3804,6 +3805,91 @@ console.log("\n【ARC-015③】越界防线:事件路径不得逃出监听根(is
     changes: [{ path: "a.md", kind: "modified" }],
   });
   check("描述:只有 modified 时不另起方向段", !onlyMod.includes("另有变更"), onlyMod);
+}
+
+/* ── 【ARC-015④】DurableEventEnvelope:事件先落一份可查的封装,再投递 ── */
+console.log("\n【ARC-015④】DurableEventEnvelope 抽象(接 ARC-007/005 的形状)");
+{
+  // **只记指纹,不拷 payload。** 两份键序不同、内容相同的载荷得到**同一个**摘要;
+  // 内容不同则不同 —— 这是"封装记的是引用不是正文"的可测落点。
+  eq("digest:键序不同、内容相同 → 同一摘要",
+    digestOfPayload({ a: 1, b: [2, 3] }), digestOfPayload({ b: [2, 3], a: 1 }));
+  check("digest:内容不同 → 摘要不同",
+    digestOfPayload({ a: 1 }) !== digestOfPayload({ a: 2 }));
+  check("digest:带 fnv1a: 前缀(自足,不引 crypto)",
+    digestOfPayload({ a: 1 }).startsWith("fnv1a:"), digestOfPayload({ a: 1 }));
+
+  // **接收**:登记一条 ENQUEUED 的封装。attempt 从 0 起,正文不落进封装。
+  const rec = enqueueEventEnvelope({
+    eventId: "evt_1", triggerKey: "wf:n1", kind: "file",
+    payload: { kind: "file", files: ["a.md", "b.md"] }, sceneId: "scene_x", at: 1000,
+  });
+  eq("接收:状态是 ENQUEUED", rec.status, "ENQUEUED");
+  eq("接收:attempt 从 0 起", rec.envelope.attempt, 0);
+  eq("接收:记下载荷指纹(不是正文)",
+    rec.envelope.payloadDigest, digestOfPayload({ kind: "file", files: ["a.md", "b.md"] }));
+  check("接收:封装里**没有**载荷正文字段",
+    !Object.prototype.hasOwnProperty.call(rec.envelope, "files")
+      && !Object.prototype.hasOwnProperty.call(rec.envelope, "payload"),
+    Object.keys(rec.envelope));
+  eq("接收:sceneId 如实带上", rec.envelope.sceneId, "scene_x");
+  check("接收:是待投递(非终态)", isPendingEnvelope(rec) && !envelopeTerminal(rec));
+
+  // **sceneId 缺省 → 不给键**(同 overflowDropped/changes 的口径:别多一个恒空可选字段)。
+  const noScene = enqueueEventEnvelope({ eventId: "evt_2", triggerKey: "wf:n1", kind: "schedule", payload: { kind: "schedule", at: 0 }, at: 0 });
+  check("接收:缺省 sceneId 时不给键", !Object.prototype.hasOwnProperty.call(noScene.envelope, "sceneId"), Object.keys(noScene.envelope));
+
+  // **结算:投递成功 → 终态 DELIVERED**,attempt 记一次,并清掉上次的失败原因。
+  const failedOnce = settleEventEnvelope(
+    enqueueEventEnvelope({ eventId: "evt_3", triggerKey: "wf:n2", kind: "event", payload: { kind: "event", event: "turn.done" }, at: 0 }),
+    { outcome: "failed", error: "暂时挂了", retryBudget: 3 }, 10,
+  );
+  eq("结算:未到预算的失败 → 留在 ENQUEUED(待重投)", failedOnce.status, "ENQUEUED");
+  eq("结算:失败记一次 attempt", failedOnce.envelope.attempt, 1);
+  eq("结算:失败留下 lastError(可查)", failedOnce.envelope.lastError, "暂时挂了");
+  const done = settleEventEnvelope(failedOnce, { outcome: "delivered" }, 20);
+  eq("结算:投成 → 终态 DELIVERED", done.status, "DELIVERED");
+  eq("结算:投成再记一次 attempt", done.envelope.attempt, 2);
+  check("结算:投成清掉上次的 lastError(不拿旧账说这次也没成)",
+    !Object.prototype.hasOwnProperty.call(done.envelope, "lastError"), done.envelope);
+  check("结算:DELIVERED 是终态", envelopeTerminal(done));
+
+  // **纪律 1:终态不可复活。** 已 DELIVERED 的再结算,原样返回(不改状态、不改 attempt)。
+  const resurrect = settleEventEnvelope(done, { outcome: "failed", error: "迟到的失败", retryBudget: 9 }, 30);
+  eq("终态不可复活:DELIVERED 再结算仍是 DELIVERED", resurrect.status, "DELIVERED");
+  eq("终态不可复活:attempt 不再变", resurrect.envelope.attempt, 2);
+  eq("终态不可复活:updatedAt 不动", resurrect.updatedAt, done.updatedAt);
+
+  // **纪律 2:失败到预算才落终态。** budget=2 时第 2 次失败才 FAILED。
+  let r = enqueueEventEnvelope({ eventId: "evt_4", triggerKey: "wf:n3", kind: "file", payload: { kind: "file", files: [] }, at: 0 });
+  r = settleEventEnvelope(r, { outcome: "failed", error: "e1", retryBudget: 2 }, 1);
+  eq("预算 2:第 1 次失败仍 ENQUEUED", r.status, "ENQUEUED");
+  r = settleEventEnvelope(r, { outcome: "failed", error: "e2", retryBudget: 2 }, 2);
+  eq("预算 2:第 2 次失败 → 终态 FAILED", r.status, "FAILED");
+  eq("预算 2:最后一次失败原因如实", r.envelope.lastError, "e2");
+  // retryBudget 省略 = 1:一次就死(不无限重试)。
+  const oneShot = settleEventEnvelope(enqueueEventEnvelope({ eventId: "evt_5", triggerKey: "wf:n4", kind: "file", payload: { kind: "file", files: [] }, at: 0 }), { outcome: "failed", error: "only" }, 5);
+  eq("预算缺省=1:一次失败即终态 FAILED", oneShot.status, "FAILED");
+
+  // **纪律 3:UNCERTAIN 绝不自动重投。** 落终态,attempt 记一次,原因可查。
+  const unc = settleEventEnvelope(
+    enqueueEventEnvelope({ eventId: "evt_6", triggerKey: "wf:n5", kind: "event", payload: { kind: "event", event: "turn.done" }, at: 0 }),
+    { outcome: "uncertain", error: "外部动作可能已发生" }, 7,
+  );
+  eq("UNCERTAIN 是终态(不自动重投)", unc.status, "UNCERTAIN");
+  check("UNCERTAIN 是终态", envelopeTerminal(unc) && !isPendingEnvelope(unc));
+  eq("UNCERTAIN 记一次 attempt", unc.envelope.attempt, 1);
+  eq("UNCERTAIN 留下原因", unc.envelope.lastError, "外部动作可能已发生");
+  // 已 UNCERTAIN 的再结算(哪怕报 delivered)也**不复活** —— 不盲发第二次。
+  const uncAgain = settleEventEnvelope(unc, { outcome: "delivered" }, 8);
+  eq("UNCERTAIN 不可被后续结算翻盘", uncAgain.status, "UNCERTAIN");
+  eq("UNCERTAIN 翻盘不改 attempt", uncAgain.envelope.attempt, 1);
+
+  // 纯:结算返回**新的** record,不改入参那一份(调用方持有旧的仍能读原样)。
+  const before = enqueueEventEnvelope({ eventId: "evt_7", triggerKey: "wf:n6", kind: "file", payload: { kind: "file", files: [] }, at: 0 });
+  const after = settleEventEnvelope(before, { outcome: "delivered" }, 1);
+  eq("结算:不改入参那一份(原仍是 ENQUEUED)", before.status, "ENQUEUED");
+  eq("结算:返回的是新状态", after.status, "DELIVERED");
 }
 
 console.log(`\nautomation-smoke:${total - failures}/${total} 通过`);

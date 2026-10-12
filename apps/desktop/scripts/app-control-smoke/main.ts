@@ -1617,6 +1617,118 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   delete (globalThis as Record<string, unknown>).window;
 }
 
+/* ── 5b. 【ARC-009】app_workflow_run 走统一 OperationResult(不再旧的「失败/成功」两态)──
+ *
+ * ARC-009 的 remaining 点名 `app_session_new` / `app_session_send` / `app_workflow_run` /
+ * `panelApiCall` 仍走旧的"失败/成功"形状。本切片迁 `app_workflow_run` 一条,复用已有
+ * `decodeDomainOutcome` / `makeOp` / `operationToolResult`,不另造结果形状。
+ *
+ * 三条真红例(旧代码都会把它们糊成一句 `fail(...)`):
+ *   a) `automation.run` 合法回 `{ok:false}`(触发器没存过)—— 命令**没执行**,不能报"失败可重试";
+ *   b) `automation.run` **执行途中抛错** —— 可能已经起了运行,普通失败会诱导**重复启动**;
+ *   c) 普通工作流经渲染端 `new_session` 时 "对话已建好…但第一条消息没发出去" —— **已落一半**,
+ *      普通失败会让 Agent 重开一个新对话。
+ */
+{
+  const wfCalls: Record<string, unknown[]> = {};
+  const wfFake = (channel: string, ret: unknown): void => {
+    wfCalls[channel] = [];
+    recordRpcHandler(channel, async (_e, raw) => {
+      wfCalls[channel]!.push(raw);
+      return typeof ret === "function" ? (ret as (r: unknown) => unknown)(raw) : ret;
+    });
+  };
+
+  // 触发器存在(一条),automation.run 可被换成不同返回。
+  const singleTrigger = [{ nodeId: "n1", title: "每天跑", workflowId: "wf_1" }];
+  wfFake("automation:statusAll", async () => singleTrigger);
+
+  // (a) 合法 ok:false —— 命令没执行 → REJECTED。
+  wfFake("automation:run", async () => ({ ok: false as const, error: "触发器还没存过,无法运行" }));
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_workflow_run", { workflow_id: "wf_1" }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ ARC-009:app_workflow_run 自动化合法 ok:false → resultKind=REJECTED(命令没执行)",
+      op?.resultKind === "REJECTED", op);
+    check("★ ARC-009:app_workflow_run 自动化 ok:false → 不报成一次普通失败(retryable=true)",
+      op?.retryable === true, op);
+    check("★ ARC-009:app_workflow_run 自动化 ok:false → 拒绝原因原样带出",
+      textOf(r).includes("触发器还没存过"), textOf(r).slice(0, 200));
+  }
+
+  // (b) ★ 承重红例:automation.run 抛错 —— 可能已起了运行 → UNCERTAIN,not retryable。
+  wfFake("automation:run", async () => { throw new Error("IPC 断了"); });
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_workflow_run", { workflow_id: "wf_1" }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ ARC-009:app_workflow_run 自动化执行抛错 → UNCERTAIN(可能已起了运行)",
+      op?.resultKind === "UNCERTAIN", op);
+    check("★ ARC-009:app_workflow_run 自动化执行抛错 → 绝不标成安全可重试",
+      op?.retryable === false, op);
+    check("★ ARC-009:app_workflow_run 自动化执行抛错 → 文本提醒先查真实状态",
+      textOf(r).includes("无法确认"), textOf(r).slice(0, 200));
+  }
+
+  // 正控:真成功仍是 SUCCEEDED,且带结构化结果。
+  wfFake("automation:run", async () => ({ ok: true as const }));
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_workflow_run", { workflow_id: "wf_1" }, "me", ctx);
+    check("★ ARC-009 正控:app_workflow_run 自动化 ok:true → SUCCEEDED 且 isError 不设",
+      opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+
+  // 参数不足(多个触发器、没给 trigger_node_id)—— 没有运行被起 → REJECTED。
+  wfFake("automation:statusAll", async () => [
+    { nodeId: "n1", title: "A", workflowId: "wf_1" },
+    { nodeId: "n2", title: "B", workflowId: "wf_1" },
+  ]);
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_workflow_run", { workflow_id: "wf_1" }, "me", ctx);
+    check("★ ARC-009:app_workflow_run 多触发器未指定 → REJECTED(没起运行)",
+      opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+
+  // (c) ★ 承重红例:普通工作流经渲染端 new_session,回"对话已建好…但消息没发出去" → UNCERTAIN。
+  // 普通工作流 = 没有触发器(automation.statusAll 里没有它)→ 走"在对话里按它跑"那条路。
+  wfFake("automation:statusAll", async () => []);
+  const wfWin: Record<string, unknown> = {
+    [APP_CONTROL_RENDERER_GLOBAL]: async (raw: string) => {
+      const cmd = JSON.parse(raw);
+      if (cmd.op === "new_session") {
+        return JSON.stringify({ ok: false, error: "对话已建好(s9),但第一条消息没有发出去(上一轮还在运行)" });
+      }
+      return JSON.stringify({ ok: true, data: { sessionId: "s9" } });
+    },
+  };
+  (globalThis as Record<string, unknown>).window = wfWin;
+  setRendererPortForTest({ executeJavaScript: async (code) => (0, eval)(code) });
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_workflow_run", { workflow_id: "wf_1", prompt: "跑一下" }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ ARC-009:app_workflow_run 普通工作流\"对话已建好但消息没发出\" → UNCERTAIN(已落一半)",
+      op?.resultKind === "UNCERTAIN", op);
+    check("★ ARC-009:app_workflow_run 已落一半 → 不诱导 Agent 重开一个新对话(retryable=false)",
+      op?.retryable === false, op);
+    check("★ ARC-009:app_workflow_run 已落一半 → 文本点明\"可能已落了一部分\"",
+      textOf(r).includes("可能已在对话里落了一部分"), textOf(r).slice(0, 220));
+  }
+  // 正控:普通工作流真发出去 → SUCCEEDED。
+  wfWin[APP_CONTROL_RENDERER_GLOBAL] = async () => JSON.stringify({ ok: true, data: { sessionId: "s9", mode: "sent" } });
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_workflow_run", { workflow_id: "wf_1", prompt: "跑一下" }, "me", ctx);
+    check("★ ARC-009 正控:app_workflow_run 普通工作流发出成功 → SUCCEEDED",
+      opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+}
+
 /* ── 6. 接线(源码) ── */
 const src = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
 const claude = src("src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts");

@@ -1123,11 +1123,28 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext, sessionId: string): 
   }
 }
 
+/**
+ * 【ARC-009】`app_workflow_run` 的结果按**业务是否真的落定**分派,而不是旧的「成功 / 失败」
+ * 两态。这是 ARC-009 remaining 点名的入口之一(`app_session_new` / `app_session_send` /
+ * `app_workflow_run` / `panelApiCall` 仍走旧形状)——复用已有 `decodeDomainOutcome` /
+ * `resultKindOfOutcome` / `makeOp` / `operationToolResult`,不另造结果形状。
+ *
+ * 从前这里一律 `fail(...)`,把所有情形糊成"失败":
+ *   - `automation.run` 合法回 `{ok:false}`(触发器找不到 / 没存过)= 命令**没执行** ——
+ *     从前报失败,Agent 会照着"失败可重试"再调一遍;现按 `decodeDomainOutcome` 判 **REJECTED**;
+ *   - `automation.run` **执行途中抛错** = 可能已经起了运行 —— 从前的普通失败会诱导重复启动,
+ *     现判 **UNCERTAIN**(`retryable=false`,文本点明"先查真实状态再决定");
+ *   - 普通工作流经渲染端 `new_session` 时 "对话已建好,但第一条消息没发出去" = **已落一半** ——
+ *     从前的失败会让 Agent 重开一个新对话;现判 **UNCERTAIN**。
+ * 旧成功文案(不带状态行)保持原样,只多挂一个 `structuredContent.operation_result`。
+ */
 async function runWorkflow(
   args: { workflow_id: string; trigger_node_id?: string; prompt?: string; session_id?: string; project_id?: string },
   sessionId: string,
   ctx: ProviderContext,
 ): Promise<ToolResult> {
+  const method = "app_workflow_run";
+  const operationId = randomUUID();
   const statusEntry = findEntry("automation.statusAll");
   let triggers: Array<{ nodeId: string; title: string; workflowId: string }> = [];
   if (statusEntry?.registered) {
@@ -1138,21 +1155,70 @@ async function runWorkflow(
     let nodeId = args.trigger_node_id;
     if (!nodeId) {
       if (triggers.length > 1) {
-        return fail(`这条自动化有 ${triggers.length} 个触发器,请用 trigger_node_id 指定:\n${triggers.map((t) => `- ${t.nodeId}(${t.title})`).join("\n")}`);
+        // 参数不足:**没有运行被起** → REJECTED(可改条件重来)。
+        return operationToolResult(
+          makeOp("REJECTED", method, operationId, {
+            code: OP_CODE.rpcFailed,
+            reason: `这条自动化有 ${triggers.length} 个触发器,请用 trigger_node_id 指定:\n${triggers.map((t) => `- ${t.nodeId}(${t.title})`).join("\n")}`,
+          }),
+        );
       }
       nodeId = triggers[0]!.nodeId;
     }
     const denied = await gateAppAction(ctx, "write", "workflow_run", args, `立即运行自动化 ${args.workflow_id}(触发器 ${nodeId})`);
-    if (denied) return fail(denied);
+    if (denied) {
+      return operationToolResult(
+        makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
+      );
+    }
     const runEntry = findEntry("automation.run");
-    if (!runEntry) return fail("当前版本没有 automation.run");
-    const r = (await callRpc(runEntry, { workflowId: args.workflow_id, triggerNodeId: nodeId })) as { ok: boolean; error?: string };
-    return r.ok ? text(`已开始运行自动化 ${args.workflow_id}。运行记录用 app_api_call automation.runs 查。`) : fail(r.error ?? "启动失败");
+    if (!runEntry) {
+      return operationToolResult(
+        makeOp("REJECTED", method, operationId, { code: OP_CODE.methodNotFound, reason: "当前版本没有 automation.run" }),
+      );
+    }
+    let r: unknown;
+    try {
+      r = await callRpc(runEntry, { workflowId: args.workflow_id, triggerNodeId: nodeId });
+    } catch (err) {
+      // 起自动化是**有副作用**的动作(可能已经起了运行)→ 抛错不能当"失败可重试"。
+      return operationToolResult(
+        makeOp("UNCERTAIN", method, operationId, {
+          code: OP_CODE.rpcUncertain,
+          reason: `启动自动化途中出错,无法确认运行是否已经起:${errText(err)}`,
+        }),
+      );
+    }
+    const outcome = decodeDomainOutcome("automation.run", r);
+    if (outcome.kind !== "accepted") {
+      return operationToolResult(
+        makeOp(resultKindOfOutcome(outcome), method, operationId, { code: outcome.code, reason: outcome.reason }),
+      );
+    }
+    return operationToolResult(
+      makeOp("SUCCEEDED", method, operationId),
+      undefined,
+      `已开始运行自动化 ${args.workflow_id}。运行记录用 app_api_call automation.runs 查。`,
+    );
   }
   // 普通工作流:在对话里按它跑。
   const prompt = args.prompt?.trim();
-  if (!prompt) return fail("这个工作流没有触发器,要在对话里跑:请给 prompt(以及可选的 session_id / project_id)。");
-  if (args.session_id === sessionId) return fail("不能让你自己所在的对话去跑,换一个对话或不传 session_id 新开一个。");
+  if (!prompt) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, {
+        code: OP_CODE.rpcFailed,
+        reason: "这个工作流没有触发器,要在对话里跑:请给 prompt(以及可选的 session_id / project_id)。",
+      }),
+    );
+  }
+  if (args.session_id === sessionId) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, {
+        code: OP_CODE.rpcFailed,
+        reason: "不能让你自己所在的对话去跑,换一个对话或不传 session_id 新开一个。",
+      }),
+    );
+  }
   const denied = await gateAppAction(
     ctx,
     "write",
@@ -1160,7 +1226,11 @@ async function runWorkflow(
     args,
     args.session_id ? `在对话 ${args.session_id} 里按工作流 ${args.workflow_id} 发送:${clipLine(prompt, 200)}` : `新开对话,按工作流 ${args.workflow_id} 发送:${clipLine(prompt, 200)}`,
   );
-  if (denied) return fail(denied);
+  if (denied) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
+    );
+  }
   const reply = args.session_id
     ? await ui({ op: "send", sessionId: args.session_id, prompt, workflowId: args.workflow_id, background: true })
     : await ui({ op: "new_session", projectId: args.project_id, prompt, workflowId: args.workflow_id, background: true });
@@ -1169,13 +1239,40 @@ async function runWorkflow(
   // headless 路径(createOrReuseSession + sendTurn,带 workflowId),与 app_session_new/send 同源。
   // 其它业务错误(校验失败等)照原样回,不吞。
   if (uiUnavailable(reply)) {
-    const msg = args.session_id
-      ? await headlessSend(args.session_id, prompt, args.workflow_id)
-      : await headlessNewSession({ project_id: args.project_id, prompt, workflow_id: args.workflow_id });
-    if (msg !== null) return fail(msg);
-    return text("已按工作流发出(无渲染窗口,走主进程)。");
+    if (args.session_id) {
+      // 发送路径:消息没发出去 = 没落任何东西 → REJECTED。
+      const msg = await headlessSend(args.session_id, prompt, args.workflow_id);
+      if (msg !== null) {
+        return operationToolResult(
+          makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: msg }),
+        );
+      }
+      return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已按工作流发出(无渲染窗口,走主进程)。");
+    }
+    // 新会话路径:headless 报错时**会话行可能已经落库**,只是第一条消息没起 → 无法确认 → UNCERTAIN。
+    const msg = await headlessNewSession({ project_id: args.project_id, prompt, workflow_id: args.workflow_id });
+    if (msg !== null) {
+      return operationToolResult(
+        makeOp("UNCERTAIN", method, operationId, { code: OP_CODE.rpcUncertain, reason: msg }),
+      );
+    }
+    return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已按工作流发出(无渲染窗口,走主进程)。");
   }
-  return uiResult(reply, "已按工作流发出。");
+  if (!reply.ok) {
+    // UI 桥回了一个**业务失败**:可能是"对话已建好…但第一条消息没发出去"这种**已落一半**,
+    // 不能当"没执行"诱使 Agent 重开一个新对话 → UNCERTAIN。
+    return operationToolResult(
+      makeOp("UNCERTAIN", method, operationId, {
+        code: OP_CODE.rpcUncertain,
+        reason: `按工作流发出未成功,可能已在对话里落了一部分:${reply.error ?? "界面操作失败"}`,
+      }),
+    );
+  }
+  return operationToolResult(
+    makeOp("SUCCEEDED", method, operationId),
+    reply.data === undefined ? undefined : renderResult(reply.data),
+    "已按工作流发出。",
+  );
 }
 
 /* ─────────────────── ARC-009 / MC-067:结构化 OperationResult + 可信操作账本 ─────────────────── */
