@@ -675,7 +675,10 @@ test("workflow provider overrides survive node-session reuse and drive provider-
   assert.match(claudeProvider, /allowNames\.filter\(\(name\) => engineEnabled\(enginesMap, name, "claude"\)\)/);
   assert.match(claudeProvider, /if \(!claudeMaySee\(name\)\) return/);
   const piSkills = readFileSync(resolve(here, "../../src/main/providers/pi-sdk/piSkillBridge.ts"), "utf8");
-  assert.match(piSkills, /allowNames\.filter\(\(name\) => engineEnabled\(enginesMap, name, "pi"\)\)/);
+  // 【MC-074】显式点选集现在只在 `explicitPicks` 为真时构造(插件名单合并不得扩容它)——
+  // 判据仍是"每个点选名按 pi 的引擎矩阵过滤",但形态带上了 `as string[]` 收窄。
+  assert.match(piSkills, /\(allowNames as string\[\]\)\.filter\(\(name\) => engineEnabled\(enginesMap, name, "pi"\)\)/);
+  assert.match(piSkills, /const explicitPicks = !!/, "MC-074: explicitPicks 守卫存在");
   const pluginPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/PluginsPanel.tsx"), "utf8");
   assert.match(pluginPanel, /plugin\.compatibleProviderIds/);
   assert.match(pluginPanel, /settings\.plugins\.providerIncompatible/);
