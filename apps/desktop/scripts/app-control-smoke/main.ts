@@ -1000,6 +1000,25 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const r = await invokeAppTool("app_api_call", { method: "git.generateCommitMessage", input: { repoPath: "C:/proj", requestId: "r1" } }, "me", ctx);
     check("★ MC-066:git.generateCommitMessage 合法 ok:false → REJECTED(纯计算)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
   }
+
+  // file 域:写操作返回裸 {ok:boolean}。**按最坏情况分类** —— 非原子写(writeFile/copy)、
+  // mkdir recursive 半成 → UNCERTAIN;fs.rename 原子(同卷二选一/跨卷 EXDEV 抛)→ REJECTED。
+  recordRpcHandler("file:writeFile", async () => ({ ok: false as const }));
+  recordRpcHandler("file:mkdir", async () => ({ ok: false as const }));
+  recordRpcHandler("file:copy", async () => ({ ok: false as const }));
+  recordRpcHandler("file:rename", async () => ({ ok: false as const }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "file.writeFile", input: { filePath: "C:/proj/a.ts", content: "x" } }, "me", ctx);
+    check("★ MC-066:file.writeFile 合法 ok:false → UNCERTAIN(非原子写可能半截)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "file.copy", input: { srcPath: "C:/proj/a.ts", destDir: "C:/proj" } }, "me", ctx);
+    check("★ MC-066:file.copy 合法 ok:false → UNCERTAIN(非原子复制可能半截)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "file.rename", input: { oldPath: "C:/proj/a.ts", newPath: "C:/proj/b.ts" } }, "me", ctx);
+    check("★ MC-066:file.rename 合法 ok:false → REJECTED(rename 原子)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
 }
 
 /* ── 3d-4. 【MC-066 残余① 续】workflow.* 与 skills.* 的合法拒绝 ────────────────

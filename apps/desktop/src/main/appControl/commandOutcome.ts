@@ -133,6 +133,21 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    * 抛错 —— 那条走 `atomicWriteJson`(`writeFileSync` 临时名 + `renameSync`),写不成时
    * 目标文件保持原样、**没有半套** → `refusal`。 */
   ["engineTools.set", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】file 域 ──────────────────────────────────────────
+   *
+   * `ipc/files.ts` 的 file 写操作都返回裸 `{ok:boolean}`(没有 error 字段),ok:false
+   * 既可能是「root 守卫拒绝」(在任何动作之前),也可能是 catch 到写入抛错。**逐条按
+   * 最坏情况分类**:
+   *   - `file.writeFile`:落盘走单次 `fs.writeFile`(**非原子**)—— 写到一半失败可能把目标
+   *     截断 → `maybePartial`;
+   *   - `file.mkdir`:`mkdir recursive` 建到一半失败可能留下部分父目录 → `maybePartial`;
+   *   - `file.copy`:`copyFile`(**非原子**)中途失败可能留下半截目标 → `maybePartial`;
+   *   - `file.rename`:`fs.rename` **原子**(同卷成功/失败二选一,跨卷 EXDEV 直接抛、不动),
+   *     守卫拒绝也在动作之前 → `refusal`。 */
+  ["file.writeFile", { falseMeans: "maybePartial" }],
+  ["file.mkdir", { falseMeans: "maybePartial" }],
+  ["file.copy", { falseMeans: "maybePartial" }],
+  ["file.rename", { falseMeans: "refusal" }],
   /* ── 【MC-066 残余① 续】git.generateCommitMessage ────────────────────────
    *
    * 这条是**纯计算**(让模型从 staged diff 生成一句提交信息),ok:false(模型没返回
