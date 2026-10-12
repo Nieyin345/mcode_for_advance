@@ -328,6 +328,47 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["library.moveCollection", { falseMeans: "refusal" }],
   ["library.adoptMarkdown", { falseMeans: "maybePartial" }],
   ["library.attachToChat", { falseMeans: "maybePartial" }],
+  /* ── 【MC-066 残余① 续】skills 市场域 ────────────────────────────────────
+   *
+   * `ipc/skills.ts` 的 `skills:marketAdd/Remove/Refresh/Install` 落到
+   * `main/lib/skillMarket.ts`,返回 `{ok:false,error}` 信封(Install 另带
+   * `imported/skipped/errors` 聚合字段,但**有 `ok`**,仍是信封)。先 grep `policy.ts`
+   * 确认可达:Add/Remove/Refresh/Install 都在 DANGER 档、**无一条 BLOCKED**(danger
+   * 只是每次弹卡,不是 blocked)—— `app_api_call` 到得了。逐条读源码判:
+   *
+   *  `skills.marketAdd` → `addSkillMarket`:ok:false 前一半是**写前拒绝**(仓库地址
+   *   不可识别 / 仓库或目录已在市场里 / 名称非法 / 同名已存在),但**后一半在副作用之后**:
+   *   `fetchGitCatalog` 已把 catalog **落到 `skillMarketsRoot()/<name>`**(promote 是
+   *   换目录,非原子语义),之后 `scanCatalog`/`writeRecords` 抛错也会回 ok:false ——
+   *   那时 catalog 目录已留在盘上。按最坏情况 `maybePartial`(UNCERTAIN)。
+   *  `skills.marketRemove` → `removeSkillMarket`:ok:false **只有**「市场不存在」/「内置
+   *   市场不能移除」两条(都在 `writeRecords` 之前),而唯一的落盘点 `writeRecords` 走
+   *   **temp + rename 原子**替换(写不成时 `markets.json` 一个字节不动),其后的
+   *   `fs.rm` 也只 `.catch(()=>{})` 吞错 —— ok:false 时**没删任何东西** → `refusal`。
+   *  `skills.marketRefresh` → `refreshSkillMarket`:git 分支先 `fetchGitCatalog`(把新
+   *   catalog **换到盘上**、替换旧目录),**再** `writeRecords` 记 fetchedAt —— 后者抛错
+   *   时 catalog 已经换过 → `maybePartial`(与 add 同款)。
+   *  `skills.marketInstall` → `installSkillsFromMarket`:本地市场走 `fs.cp(dir,dest,
+   *   {recursive})`(**非原子**),某次 cp 半成会留下**半截 dest 目录**,而 `imported`
+   *   仍为空——此时 `ok = imported.length>0||skipped.length>0` 仍可回 false → `maybePartial`。
+   *
+   *  **本切片不登记** `skills.marketList`:它返回 `{markets:[...]}` 数据对象、**没有 `ok`
+   *  字段**,不是 ok/error 信封;登进来会把每次成功也判成 UNCERTAIN(合同被违反)。
+   *  判据在 `app-control-smoke` §3d-10 里固化成断言(漏登 > 错登)。 */
+  ["skills.marketAdd", { falseMeans: "maybePartial" }],
+  ["skills.marketRemove", { falseMeans: "refusal" }],
+  ["skills.marketRefresh", { falseMeans: "maybePartial" }],
+  ["skills.marketInstall", { falseMeans: "maybePartial" }],
+  /* ── 【MC-066 残余① 续】library.writeHighlights ──────────────────────────
+   *
+   * `library:writeHighlights` handler(`ipc/library.ts`)返回 `{ok,error}` / `{ok:true,
+   * written,skipped}` 信封。前三条 ok:false(路径不在已知工作区/库内 / 文件不在了 /
+   * bytes 空)都在**任何落盘之前**;但**写回 PDF 的多步流程**里,`ensureOriginal` 会先把
+   * **干净底稿**(`.X.mcode-original.pdf`)**存到盘上**,再做**原子替换** PDF。原子替换失败
+   * 时回 `{ok:false}`,而此刻**底稿已经落盘**(后续重烤会以它为源)—— 已有一个持久产物
+   * → `maybePartial`(UNCERTAIN,绝不默认可安全重试)。(索引那一步失败只 `log.warn`、
+   * 不改 `ok`,不构成 ok:false 分支。) */
+  ["library.writeHighlights", { falseMeans: "maybePartial" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

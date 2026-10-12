@@ -43,6 +43,7 @@ import {
   removeMarketplace,
   componentDeliveryReport,
 } from "../../src/main/plugins/pluginManager.js";
+import { sceneComponentReadiness, type ComponentDeliveryReport } from "@contracts/ipc";
 
 let passed = 0;
 let failed = 0;
@@ -865,6 +866,80 @@ eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user ma
   // 插件被禁用:全部 DISABLED。
   const disabled = componentDeliveryReport("demo", "1.0.0", "claude-sdk", mixed, false);
   ok(disabled.entries.every((e) => e.status === "DISABLED"), "ARC-014:插件禁用 → 全部 DISABLED");
+}
+
+
+/* ── 【ARC-014】场景组件就绪:按 requiredComponentIds 做 ALL 判定 ──
+ * 台账原话:「ScenePlanner 按 requiredComponentId 校验」;「需要 Command 的 Pi 场景
+ * 不能被全绿误放行」。这里用 componentDeliveryReport 现造报告,再喂给 sceneComponentReadiness。 */
+{
+  const mk2 = (skills: string[], commands: string[]) => ({
+    skills: skills.map((n) => ({ name: n, description: "" })),
+    commands: commands.map((n) => ({ name: n, description: "" })),
+    agents: [],
+    hooks: [],
+    mcpServers: [],
+  });
+  const mixed = mk2(["generic-skill"], ["claude-cmd"]);
+  const piRep = componentDeliveryReport("demo", "1.0.0", "pi-sdk", mixed, true);
+  const claudeRep = componentDeliveryReport("demo", "1.0.0", "claude-sdk", mixed, true);
+
+  // 空需求:真空满足,不该凭空报缺。
+  const empty = sceneComponentReadiness([], [piRep]);
+  ok(empty.ready === true && empty.gaps.length === 0, "ARC-014:无必需组件 → ready(真空满足)");
+
+  // 只需 skill 的 Pi 场景:通过(不误杀有效 skill)。
+  const skillOnly = sceneComponentReadiness(["skill:0"], [piRep]);
+  ok(skillOnly.ready === true, "ARC-014:只需 skill 的 Pi 场景 → ready");
+  eq(skillOnly.satisfied, ["skill:0"], "ARC-014:就绪项列出 skill:0");
+
+  // 「需要 Command」的 Pi 场景**不能**被放行 —— 这是 ANY≠ALL 的承重反例。
+  const needCmd = sceneComponentReadiness(["skill:0", "command:0"], [piRep]);
+  ok(needCmd.ready === false, "ARC-014:需要 Command 的 Pi 场景不被全绿放行(ALL 判定)");
+  eq(needCmd.satisfied, ["skill:0"], "ARC-014:Pi 场景里 skill 就绪、command 是缺口");
+  ok(needCmd.gaps.length === 1 && needCmd.gaps[0].componentId === "command:0", "ARC-014:缺口精确指向 command:0");
+  ok(needCmd.gaps[0].status === "INCOMPATIBLE", "ARC-014:缺口状态 = 报告里的 INCOMPATIBLE");
+  ok(needCmd.providerId === "pi-sdk", "ARC-014:结果带出被检查的 providerId");
+
+  // 同一需求对 Claude:两个组件都 DELIVERED → ready。
+  const claudeReady = sceneComponentReadiness(["skill:0", "command:0"], [claudeRep]);
+  ok(claudeReady.ready === true && claudeReady.gaps.length === 0, "ARC-014:同需求对 Claude 全就绪 → ready");
+
+  // 被禁用的插件:需求命中 → 缺口 DISABLED,不放行。
+  const disabledRep = componentDeliveryReport("demo", "1.0.0", "claude-sdk", mixed, false);
+  const disabledScene = sceneComponentReadiness(["command:0"], [disabledRep]);
+  ok(disabledScene.ready === false && disabledScene.gaps[0].status === "DISABLED", "ARC-014:插件禁用 → 场景缺口 DISABLED");
+
+  // 没有任何报告提到的组件 id → 缺口 MISSING(不静默通过)。
+  const missing = sceneComponentReadiness(["command:9"], [piRep]);
+  ok(missing.ready === false && missing.gaps[0].status === "MISSING", "ARC-014:无人交付的组件 → 缺口 MISSING");
+  eq(missing.gaps[0].reportedBy, [], "ARC-014:MISSING 缺口没有报告来源");
+
+  // 完全没有报告:每个必需项都是 MISSING。
+  const noRep = sceneComponentReadiness(["skill:0", "command:0"], []);
+  ok(noRep.ready === false && noRep.gaps.length === 2, "ARC-014:无任何报告 → 两项皆缺口");
+  ok(noRep.providerId === undefined, "ARC-014:无报告时不带 providerId");
+
+  // required 去重(保首见顺序);重复的 id 不该算成两个缺口/两次就绪。
+  const dup = sceneComponentReadiness(["skill:0", "skill:0", "command:0"], [piRep]);
+  eq(dup.satisfied, ["skill:0"], "ARC-014:required 去重后就绪项不重复");
+  eq(dup.gaps.map((g) => g.componentId), ["command:0"], "ARC-014:required 去重后缺口不重复");
+
+  // 多报告对同一 id 给不同未交付状态 → 按优先级取「用户要动手改」的(授信撤销优先于引擎不支持)。
+  const deniedRep: ComponentDeliveryReport = {
+    pluginId: "other",
+    providerId: "pi-sdk",
+    pluginEnabled: true,
+    entries: [{ componentId: "command:0", type: "command", source: "c", status: "DENIED", reason: "MCP 授信被撤销" }],
+    allDelivered: false,
+  };
+  const prio = sceneComponentReadiness(["command:0"], [piRep, deniedRep]);
+  ok(prio.gaps[0].status === "DENIED", "ARC-014:多报告冲突 → 取优先级更高的 DENIED");
+  eq(prio.gaps[0].reportedBy, ["demo", "other"], "ARC-014:缺口列出所有提到该 id 的插件");
+
+  // 只要有一份报告 DELIVERED,就不算缺口(某个插件交付到即可)。
+  const deliveredAnyway = sceneComponentReadiness(["command:0"], [piRep, claudeRep]);
+  ok(deliveredAnyway.ready === true, "ARC-014:任一份报告 DELIVERED 即就绪");
 }
 
 

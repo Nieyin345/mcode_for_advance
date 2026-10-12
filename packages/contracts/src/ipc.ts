@@ -67,6 +67,7 @@ export {
   PluginsMarketplaceAddSchema,
   PluginsMarketplaceRemoveSchema,
   PluginsMarketplaceRefreshSchema,
+  sceneComponentReadiness,
 } from "./plugin.js";
 export type {
   PluginManifest,
@@ -82,6 +83,8 @@ export type {
   ComponentDeliveryStatus,
   ComponentDeliveryEntry,
   ComponentDeliveryReport,
+  SceneComponentGap,
+  SceneComponentReadiness,
   PluginEcosystem,
   PluginEngineId,
   PluginEngineSwitches,

@@ -1422,6 +1422,92 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   }
 }
 
+/* ── 3d-10. 【MC-066 残余① 续】skills 市场域 与 library.writeHighlights ──────
+ *
+ * `ipc/skills.ts` 的市场 handler 落到 `main/lib/skillMarket.ts`,合法返回
+ * `{ok:false,error}`(不抛),从前没登记 → `decodeDomainOutcome` 落 accepted,把
+ * 「仓库地址不可识别 / 已在市场里 / 内置市场不能移除」这类**合法拒绝**报成 SUCCEEDED。
+ * 先 grep `policy.ts` 确认可达:Add/Remove/Refresh/Install 都在 DANGER 档、无一条
+ * BLOCKED —— **danger 只是每次弹卡,不是 blocked**,`app_api_call` 到得了。逐条读源码判:
+ *   - `skills.marketAdd`:ok:false 既有写前拒绝,也有 `fetchGitCatalog` **已把 catalog
+ *     落到 `<root>/<name>` 之后** `scanCatalog`/`writeRecords` 才抛错的路径 → `maybePartial`;
+ *   - `skills.marketRemove`:ok:false 只有「市场不存在 / 内置不能移除」两条(都在
+ *     `writeRecords` 之前),写盘走 temp+rename **原子**、封口的 `fs.rm` 还吞错
+ *     → 没删任何东西 → `refusal`;
+ *   - `skills.marketRefresh`:先 `fetchGitCatalog` **换掉盘上的 catalog**,再 `writeRecords`
+ *     记 fetchedAt(抛错时 catalog 已换过)→ `maybePartial`;
+ *   - `skills.marketInstall`:本地市场走 `fs.cp(recursive)`(**非原子**),cp 半成留半截
+ *     dest、`imported` 仍空 → ok 仍可 false → `maybePartial`。
+ * `library.writeHighlights` 的前三条 ok:false(路径越界 / 文件不在 / bytes 空)都在落盘前,
+ * 但写回 PDF 的流程里 **`ensureOriginal` 先把干净底稿存到盘上**、再做原子替换 —— 替换失败
+ * 时底稿已在 → `maybePartial`。
+ * **本切片跳过(不登记)**:`skills.marketList`(返回 `{markets:[…]}`,**没有 `ok` 字段**,
+ * 不是信封合同 —— 登记会把每次成功也判成 UNCERTAIN)。判据固化成断言。
+ * 这里与真 handler 一字不差地录同一份 ok:false 信封。 */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+
+  recordRpcHandler("skills:marketAdd", async () => ({ ok: false as const, error: "里面没有找到任何 SKILL.md —— 它不是技能仓库" }));
+  recordRpcHandler("skills:marketRemove", async () => ({ ok: false as const, error: "内置市场不能移除" }));
+  recordRpcHandler("skills:marketRefresh", async () => ({ ok: false as const, error: "GitHub HTTP 404: 仓库/分支/文件不存在或非公开" }));
+  recordRpcHandler("skills:marketInstall", async () => ({ ok: false as const, error: "ENOSPC: no space left on device", imported: [], skipped: [], errors: [] }));
+  recordRpcHandler("library:writeHighlights", async () => ({ ok: false as const, error: "EXDEV: cross-device link not permitted, rename" }));
+
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.marketAdd", input: { kind: "git", ref: "owner/repo" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:skills.marketAdd 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:skills.marketAdd 合法 ok:false → UNCERTAIN(catalog 可能已落到盘上)", op?.resultKind === "UNCERTAIN", op);
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.marketRemove", input: { name: "anthropic-skills" } }, "me", ctx);
+    check("★ MC-066:skills.marketRemove 合法 ok:false → REJECTED(没删任何东西)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.marketRefresh", input: { name: "anthropic-skills" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:skills.marketRefresh 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:skills.marketRefresh 合法 ok:false → UNCERTAIN(catalog 可能已换过)", op?.resultKind === "UNCERTAIN", op);
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.marketInstall", input: { market: "anthropic-skills", names: ["s1"] } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:skills.marketInstall 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:skills.marketInstall 合法 ok:false → UNCERTAIN(fs.cp 可能半成)", op?.resultKind === "UNCERTAIN", op);
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.writeHighlights", input: { pdfPath: "C:/x/a.pdf", bytesBase64: "AAAA", highlights: [] } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:library.writeHighlights 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:library.writeHighlights 合法 ok:false → UNCERTAIN(干净底稿可能已落盘)", op?.resultKind === "UNCERTAIN", op);
+  }
+  // 正控:ok:true 的真成功仍是 SUCCEEDED(解码器不能把真成功也判成拒绝)。
+  recordRpcHandler("skills:marketAdd", async () => ({ ok: true as const, name: "anthropic-skills" }));
+  recordRpcHandler("skills:marketRemove", async () => ({ ok: true as const }));
+  recordRpcHandler("library:writeHighlights", async () => ({ ok: true as const, written: 0, skipped: [] }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.marketAdd", input: { kind: "git", ref: "owner/repo" } }, "me", ctx);
+    check("★ MC-066 正控:skills.marketAdd ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.marketRemove", input: { name: "anthropic-skills" } }, "me", ctx);
+    check("★ MC-066 正控:skills.marketRemove ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.writeHighlights", input: { pdfPath: "C:/x/a.pdf", bytesBase64: "AAAA", highlights: [] } }, "me", ctx);
+    check("★ MC-066 正控:library.writeHighlights ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+
+  // 判据锚:`skills.marketList` **不是** ok/error 信封合同(返回 `{markets:[…]}`、**没有
+  // `ok` 字段**)—— 将来谁把它误加进 `commandOutcome.ts` 的 EXACT → 这里真红(登记它会把
+  // 每次成功也判成 UNCERTAIN)。
+  check("★ MC-066:skills.marketList 未登记为 ok/error 信封合同(返回 {markets},无 ok)", isEnvelopeMethod("skills.marketList") === false);
+  // 正控:真正登记过的市场/高亮方法仍为 true(证明上面的 false 不是"判据整体失灵")。
+  check("★ MC-066 正控:skills.marketAdd 已是登记的信封合同", isEnvelopeMethod("skills.marketAdd") === true);
+  check("★ MC-066 正控:library.writeHighlights 已是登记的信封合同", isEnvelopeMethod("library.writeHighlights") === true);
+}
+
 {
   const bridge = new ApprovalBridge();
   const emitted: unknown[] = [];

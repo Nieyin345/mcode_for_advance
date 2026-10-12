@@ -542,3 +542,128 @@ export interface ComponentDeliveryReport {
   /** 逐组件 ALL 判定:是否**每一个**组件都 DELIVERED。场景"需要某组件"用它,不用 compatibleProviderIds。 */
   allDelivered: boolean;
 }
+
+/** 【ARC-014】场景必需组件的一个缺口:某个 requiredComponentId 没被任何报告交付。 */
+export interface SceneComponentGap {
+  componentId: string;
+  /** 缺口类别:MISSING = 没有任何交付报告提到它;其余取报告里命中的那条状态。 */
+  status: "MISSING" | ComponentDeliveryStatus;
+  /** 报告给出的原因(命中多条时按 SCENE_GAP_STATUS_PRIORITY 取)。 */
+  reason?: string;
+  /** 哪些插件的报告提到了这个 id(便于定位是哪个插件的问题)。 */
+  reportedBy: string[];
+}
+
+/** 【ARC-014】场景组件就绪判定结果 —— **ALL**(全部必需组件)语义,不是 ANY。 */
+export interface SceneComponentReadiness {
+  /** 整体:所有 requiredComponentIds 都被某个报告以 DELIVERED 交付。 */
+  ready: boolean;
+  /** 已就绪的 required id(去重后,按输入顺序)。 */
+  satisfied: string[];
+  /** 逐项缺口(只列没就绪的,按输入顺序去重)。ready 为 false 时至少一条。 */
+  gaps: SceneComponentGap[];
+  /** 被检查的 providerId(取首份报告;混用 provider 属调用方错误)。 */
+  providerId?: string;
+}
+
+/** 多条报告对同一 id 给出不同「未交付」状态时的取值优先级:先看用户要动手改的插件级
+ *  状态(授信被撤 / 插件被禁用),再看组件级原因(缺依赖 / 引擎不支持)。这个顺序是
+ *  **契约的一部分**,测试把它钉死。 */
+const SCENE_GAP_STATUS_PRIORITY: readonly ComponentDeliveryStatus[] = [
+  "DENIED",
+  "DISABLED",
+  "MISSING_DEPENDENCY",
+  "INCOMPATIBLE",
+];
+
+/**
+ * 【ARC-014】场景组件就绪 —— 把「一个场景声明需要的组件 id 集合」与「各插件的逐组件
+ * 交付报告」合起来做 **ALL** 判定:每一个必需组件都必须在某份报告里 DELIVERED。
+ *
+ * 这是给将来 ScenePlanner 的**可测落点**:Planner 不再靠 `compatibleProviderIds`
+ * (那是 ANY 语义)判断场景能否部署,而是拿这份逐项结果决定「部署 / 换引擎 / 显式降级 /
+ * 要求装替代插件」。本函数**只判定** —— 不做副作用、不读盘、不撮合安装、不重写 Provider。
+ *
+ * 语义(判据窄,别扩容):
+ *   - required 去重(保首见顺序);空列表 → ready=true(真空满足),gaps=[]。
+ *   - 某个 required id:任一份报告里有一条同 `componentId` 且 `DELIVERED` → 就绪。
+ *   - 没有任何报告提到该 id → 缺口 status=MISSING。
+ *   - 有报告提到但没一条 DELIVERED → 缺口 status 按 SCENE_GAP_STATUS_PRIORITY 取。
+ *   - 只按 `componentId` **字面**匹配;跨插件的 id 唯一化由调用方负责,本函数不猜插件身份。
+ */
+export function sceneComponentReadiness(
+  requiredComponentIds: readonly string[],
+  reports: readonly ComponentDeliveryReport[],
+): SceneComponentReadiness {
+  const orderedIds: string[] = [];
+  const seen = new Set<string>();
+  for (const id of requiredComponentIds) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      orderedIds.push(id);
+    }
+  }
+
+  const satisfied: string[] = [];
+  const gaps: SceneComponentGap[] = [];
+
+  for (const id of orderedIds) {
+    const hits: ComponentDeliveryEntry[] = [];
+    const reportedBy: string[] = [];
+    for (const rep of reports) {
+      let matched = false;
+      for (const entry of rep.entries) {
+        if (entry.componentId === id) {
+          hits.push(entry);
+          matched = true;
+        }
+      }
+      if (matched) reportedBy.push(rep.pluginId);
+    }
+
+    if (hits.some((e) => e.status === "DELIVERED")) {
+      satisfied.push(id);
+      continue;
+    }
+
+    if (hits.length === 0) {
+      gaps.push({
+        componentId: id,
+        status: "MISSING",
+        reason: "没有任何插件交付报告提到这个组件 id",
+        reportedBy: [],
+      });
+      continue;
+    }
+
+    let chosen = hits[0];
+    let bestRank = rankGapStatus(chosen.status);
+    for (const candidate of hits) {
+      const rank = rankGapStatus(candidate.status);
+      if (rank < bestRank) {
+        chosen = candidate;
+        bestRank = rank;
+      }
+    }
+
+    gaps.push({
+      componentId: id,
+      status: chosen.status,
+      ...(chosen.reason ? { reason: chosen.reason } : {}),
+      reportedBy,
+    });
+  }
+
+  return {
+    ready: gaps.length === 0,
+    satisfied,
+    gaps,
+    ...(reports.length > 0 ? { providerId: reports[0].providerId } : {}),
+  };
+}
+
+/** 未交付状态的优先级名次(越小越先被选中);不在表里的排最后。 */
+function rankGapStatus(status: ComponentDeliveryStatus): number {
+  const i = SCENE_GAP_STATUS_PRIORITY.indexOf(status);
+  return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+}
