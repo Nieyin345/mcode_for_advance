@@ -65,15 +65,15 @@ console.log("\n【UI-012】有未保存改动 → 先确认，不静默切走");
   useFileViewStore.getState().setDirty(true);
   check("脏位已登记", hasUnsavedChanges() === true);
   let guardCalls = 0;
-  let proceedRef: (() => void) | null = null;
+  const cap: { proceed?: () => void } = {};
   setFileOpenGuard((_next, proceed) => {
     guardCalls += 1;
-    proceedRef = proceed;
+    cap.proceed = proceed;
   });
   useFileViewStore.getState().open(libTarget("b.pdf"));
   check("★ open() 先调确认、**没有**立刻切换", guardCalls === 1 && refOf() === "a.pdf", { guardCalls, target: refOf() });
   // 用户确认 → proceed 才真正切。
-  proceedRef?.();
+  cap.proceed?.();
   check("★ 确认后 proceed() 才切到 b.pdf", refOf() === "b.pdf", refOf());
   check("切换后脏位清掉(新文件从干净开始)", hasUnsavedChanges() === false);
 }
@@ -97,14 +97,14 @@ console.log("\n【UI-012】关预览(close)也受保护");
   useFileViewStore.getState().open(libTarget("a.pdf"));
   useFileViewStore.getState().setDirty(true);
   let guardCalls = 0;
-  let proceedRef: (() => void) | null = null;
+  const cap: { proceed?: () => void } = {};
   setFileOpenGuard((_next, proceed) => {
     guardCalls += 1;
-    proceedRef = proceed;
+    cap.proceed = proceed;
   });
   useFileViewStore.getState().close();
   check("★ close() 有脏位 → 先确认、预览仍在", guardCalls === 1 && refOf() === "a.pdf", { guardCalls, target: refOf() });
-  proceedRef?.();
+  cap.proceed?.();
   check("★ 确认后 close 才生效(target=null)", useFileViewStore.getState().target === null, useFileViewStore.getState().target);
 }
 
