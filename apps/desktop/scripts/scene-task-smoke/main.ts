@@ -253,14 +253,63 @@ console.log("\n取消与暂停:传播到全部后代");
   const cancelled = reg.cancel("r");
   check("取消根成功", cancelled.ok, cancelled);
   if (cancelled.ok) {
-    eq("被取消集合 = 全部 5 个任务", [...cancelled.value].sort().join(","), "b1,b2,c1,d1,r");
+    eq("确定取消集合 = 全部 5 个任务", [...cancelled.value.cancelled].sort().join(","), "b1,b2,c1,d1,r");
+    eq("没有 uncertain(纯本地任务)", cancelled.value.uncertain.join(","), "");
   }
   eq("深处后代也被取消", reg.getTask("d1")?.state, "cancelled");
   eq("isTerminalState(cancelled) 为真", isTerminalState(reg.getTask("b2")!.state), true);
 
   // 幂等:再取消一次不报错、不重复。
   const again = reg.cancel("r");
-  check("重复取消幂等(自身已终态不再计入)", again.ok && again.value.length === 0, again);
+  check(
+    "重复取消幂等(自身已终态不再计入)",
+    again.ok && again.value.cancelled.length === 0 && again.value.uncertain.length === 0,
+    again,
+  );
+}
+
+console.log("\n取消诚实性:握着不可中断外部动作 → uncertain,不谎报 cancelled");
+{
+  // 【ARC-013 剩余项】一条任务取消了、但它正握着 git push/SSH 这类停不掉的外部动作。
+  // 记 cancelled 是假成功(不知道副作用做没做);必须记 uncertain 交人核对。
+  const reg = new SceneTaskRegistry();
+  reg.createRootTask(inv({ taskId: "r", sceneId: "s1", maxFanout: 9, maxDepth: 9 }));
+  reg.spawn("r", inv({ taskId: "b_push", parentTaskId: "r", sceneId: "s1", maxDepth: 9 }));
+  reg.spawn("r", inv({ taskId: "b_local", parentTaskId: "r", sceneId: "s1", maxDepth: 9 }));
+  reg.setState("b_push", "running");
+  reg.setState("b_local", "running");
+
+  // 宿主标记:b_push 正起着一个不可中断的外部动作。默认标记是 false。
+  eq("新任务默认 externalActionInFlight = false", reg.getTask("b_push")!.externalActionInFlight, false);
+  const marked = reg.markExternalAction("b_push", true);
+  check("宿主标记外部动作在途", marked.ok, marked);
+  eq("标记后 externalActionInFlight = true", reg.getTask("b_push")!.externalActionInFlight, true);
+
+  const out = reg.cancel("r");
+  check("取消根成功", out.ok, out);
+  if (out.ok) {
+    // 有在途外部动作的那条 → uncertain;其余纯本地的那条 → cancelled。
+    eq("握着外部动作的任务落 uncertain", out.value.uncertain.join(","), "b_push");
+    eq("其余纯本地任务落 cancelled(含自身 r)", [...out.value.cancelled].sort().join(","), "b_local,r");
+  }
+  eq("b_push 终态 = uncertain", reg.getTask("b_push")?.state, "uncertain");
+  eq("uncertain 也是终态(不再派生/推进)", isTerminalState(reg.getTask("b_push")!.state), true);
+  eq("b_local 终态 = cancelled", reg.getTask("b_local")?.state, "cancelled");
+
+  // 终态任务不可再改外部动作标记(结构化拒绝,不静默)。
+  const late = reg.markExternalAction("b_local", true);
+  check("对终态任务标记外部动作 → REFUSED", !late.ok, late);
+
+  // 重来一次,证明标记能撤回:清掉标记后取消,应落回 cancelled(不是永远 uncertain)。
+  const reg2 = new SceneTaskRegistry();
+  reg2.createRootTask(inv({ taskId: "r", sceneId: "s1", maxFanout: 9, maxDepth: 9 }));
+  reg2.spawn("r", inv({ taskId: "b1", parentTaskId: "r", sceneId: "s1", maxDepth: 9 }));
+  reg2.setState("b1", "running");
+  reg2.markExternalAction("b1", true);
+  reg2.markExternalAction("b1", false); // 外部动作已收尾
+  const out2 = reg2.cancel("r");
+  if (out2.ok) eq("外部动作收尾后再取消 → cancelled(不残留 uncertain)", out2.value.uncertain.join(","), "");
+  eq("b1 落 cancelled", reg2.getTask("b1")?.state, "cancelled");
 }
 
 {

@@ -40,6 +40,10 @@
  *   父任务的 fan-out 名额,但不继续烧预算。
  * - `completed` / `failed` —— 终态(成功 / 失败);释放父任务的 fan-out 名额。
  * - `cancelled` —— 终态,被动取消;子任务整体传播取消。
+ * - `uncertain` —— 终态,**取消已发出但无法确认是否真停住**:这个任务在取消那一刻正握着
+ *   一个**不可中断的外部动作**(git push / SSH / 建远程资源),停 JS 的 Promise 停不了它。
+ *   把它记成 `cancelled` 是**假成功**(不知道那个副作用到底做没做);记成 `uncertain` 才诚实 ——
+ *   等人工 / 外部系统核对(语义同 ARC-005 的 UNCERTAIN 相位)。
  */
 export type SceneTaskState =
   | "pending"
@@ -47,13 +51,20 @@ export type SceneTaskState =
   | "paused"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "uncertain";
 
-/** 终态 —— 进这些状态后 fan-out 名额释放、不再可能派生新的子任务。 */
+/**
+ * 终态 —— 进这些状态后 fan-out 名额释放、不再可能派生新的子任务。
+ *
+ * `uncertain` 与 `cancelled` 一样是终态:用户喊停后这个任务**不再推进、不再派生**,
+ * 唯一悬而未决的是那个在途外部动作到底生效没有 —— 那由人去核对,不靠继续跑解开。
+ */
 export const SCENE_TASK_TERMINAL_STATES: readonly SceneTaskState[] = [
   "completed",
   "failed",
   "cancelled",
+  "uncertain",
 ];
 
 /**
@@ -113,6 +124,15 @@ export interface SceneTask {
   depth: number;
   /** 截止时刻(ms epoch);过了就不再允许派生 / 启动。`null` = 不限。 */
   deadline: number | null;
+  /**
+   * 这个任务此刻**是否握着一个不可中断的外部动作**(git push / SSH 命令 / 建远程资源)。
+   *
+   * **由宿主填**(RuntimeManager / executor 在起外部动作前 setState 时给),不是模型参数。
+   * 决定取消的诚实性:取消一个 `externalActionInFlight === true` 的任务时,`cancel` 把它记成
+   * `uncertain` 而不是 `cancelled` —— 因为停 JS 的 Promise 停不了那个已经发出去的外部动作,
+   * 有没有生效无法从这里确认。默认 `false`(纯本地、可干净取消)。
+   */
+  externalActionInFlight: boolean;
   /** 当前状态。 */
   state: SceneTaskState;
   /**
@@ -248,6 +268,34 @@ export interface RegistryOk<T> {
 
 /** 成功或结构化拒绝。 */
 export type RegistryResult<T> = RegistryOk<T> | RegistryRefusal;
+
+/**
+ * 取消某条任务时,它**这一条**最终落到哪个终态。
+ *
+ * 为什么要分成两类而不是一句"取消成功":一个任务在取消那一刻可能正握着一个
+ * **不可中断的外部动作**(git push / SSH / 建远程资源)。停 JS 的 Promise 停不了它 ——
+ * 记成 `cancelled` 是**假成功**(不知道那个副作用到底做没做),记成 `uncertain` 才诚实:
+ * 用户/外部系统得核对那个动作的真实结果,不能假设它没发生(语义同 ARC-005 的 UNCERTAIN)。
+ */
+export interface CancelledTask {
+  taskId: string;
+  /** 这一条最终落的终态:`cancelled`(确定停住)或 `uncertain`(有不可中断动作在途)。 */
+  outcome: "cancelled" | "uncertain";
+}
+
+/**
+ * 一次取消的**完整结果** —— 逐条列出被取消的任务及其终点,不是一句 ok。
+ *
+ * `cancelled` = 确定停住的那些;`uncertain` = 取消时握着不可中断外部动作、状态待核对的那些。
+ * 两者并集就是这次取消波及的全部任务(含自身)。消费方据此知道"整套系统停了吗":
+ * `uncertain` 非空时**不是**干净的全停,得把这几条挂起来等核对,而不是当成已停。
+ */
+export interface CancelOutcome {
+  /** 确定停住的任务 id(含自身)。 */
+  cancelled: string[];
+  /** 取消时握着不可中断外部动作、终态为 `uncertain` 的任务 id。 */
+  uncertain: string[];
+}
 
 export type RegistryRefusalCode =
   | "PARENT_NOT_FOUND"

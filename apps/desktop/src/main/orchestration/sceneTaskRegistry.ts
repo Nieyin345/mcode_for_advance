@@ -39,6 +39,7 @@ import type {
   SceneBudgetEstimate,
   SceneBudgetUsage,
   SceneBudgetReservation,
+  CancelOutcome,
   RegistryResult,
   RegistryRefusal,
 } from "@contracts/sceneTask.js";
@@ -126,6 +127,7 @@ export class SceneTaskRegistry {
       maxDepth: inv.maxDepth,
       depth: 0,
       deadline: inv.deadline,
+      externalActionInFlight: false,
       state: "pending",
       generation: 0,
     };
@@ -215,6 +217,7 @@ export class SceneTaskRegistry {
       maxDepth: parent.maxDepth - 1,
       depth: parent.depth + 1,
       deadline: tighterDeadline(effectiveDeadline, inv.deadline),
+      externalActionInFlight: false,
       state: "pending",
       generation: 0,
     };
@@ -291,30 +294,63 @@ export class SceneTaskRegistry {
   }
 
   /**
-   * 取消一条任务及其**所有后代**(深度优先),返回被取消的 id(含自身)。
+   * 取消一条任务及其**所有后代**(深度优先)。
    *
    * 已是终态的任务跳过(不重复取消);取消是幂等的。这是"用户点停整套系统"
    * 的落点 —— 传播到子任务后才不会留下继续烧预算的孤儿。
+   *
+   * ## 取消 ≠ 全部 `cancelled`(ARC-013 剩余项)
+   *
+   * 一条任务此刻若正握着一个**不可中断的外部动作**(`externalActionInFlight`,如 git push /
+   * SSH / 建远程资源),`cancel` 把它记成 `uncertain` 而不是 `cancelled` —— 停 JS 的 Promise
+   * 停不了那个已经发出去的外部动作,有没有生效**从这里无法确认**。从前一律记 `cancelled` 是
+   * **假成功**:调用方以为干净停住了,那个副作用可能照样落了地,且再没人核对。
+   *
+   * 返回值逐条分清:`.cancelled` 是确定停住的,`.uncertain` 是状态待人工/外部系统核对的。
+   * **`.uncertain` 非空就不是干净的全停** —— 消费方必须把这几条挂起等核对,而不是当成已停。
    */
-  cancel(taskId: string): RegistryResult<string[]> {
+  cancel(taskId: string): RegistryResult<CancelOutcome> {
     const t = this.tasks.get(taskId);
     if (!t) return refuse("TASK_NOT_FOUND", `任务不存在:${taskId}`);
-    const cancelled: string[] = [];
-    this.cancelInto(taskId, cancelled);
-    return { ok: true, value: cancelled };
+    const outcome: CancelOutcome = { cancelled: [], uncertain: [] };
+    this.cancelInto(taskId, outcome);
+    return { ok: true, value: outcome };
   }
 
-  private cancelInto(taskId: string, acc: string[]): void {
+  private cancelInto(taskId: string, acc: CancelOutcome): void {
     const t = this.tasks.get(taskId);
     if (!t) return;
     for (const childId of this.childIndex.get(taskId) ?? []) {
       this.cancelInto(childId, acc);
     }
-    if (!isTerminalState(t.state)) {
+    if (isTerminalState(t.state)) return;
+    if (t.externalActionInFlight) {
+      // 停不了那个在途外部动作 → 不谎报 cancelled,如实记 uncertain,交人核对。
+      t.state = "uncertain";
+      t.generation += 1;
+      acc.uncertain.push(t.taskId);
+    } else {
       t.state = "cancelled";
       t.generation += 1;
-      acc.push(t.taskId);
+      acc.cancelled.push(t.taskId);
     }
+  }
+
+  /**
+   * 宿主在**起 / 收一个不可中断的外部动作**前后调它,标记这条任务此刻是否握着
+   * 一个停不掉的外部副作用(git push / SSH / 建远程资源)。**由宿主填,不是模型参数。**
+   *
+   * 只对**非终态**任务有意义(终态任务不会被 `cancel` 再动),终态调用结构化拒绝
+   * `TASK_NOT_FOUND` 以示"现在标它没用"。这是 `cancel` 判 `uncertain` 的唯一输入。
+   */
+  markExternalAction(taskId: string, inFlight: boolean): RegistryResult<SceneTask> {
+    const t = this.tasks.get(taskId);
+    if (!t) return refuse("TASK_NOT_FOUND", `任务不存在:${taskId}`);
+    if (isTerminalState(t.state)) {
+      return refuse("TASK_NOT_FOUND", `任务已处于终态(${t.state}),不能再改外部动作在途标记`);
+    }
+    t.externalActionInFlight = inFlight;
+    return { ok: true, value: cloneTask(t) };
   }
 
   /**
