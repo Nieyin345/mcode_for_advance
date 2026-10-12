@@ -770,6 +770,55 @@ async function untilCounts(what: string, hookId: string, cond: (c: { accepted: n
   eq("超时不重试:retried 计数 0", hookRunner.deliveryCountsOf(hook.id)?.retried, 0);
 }
 
+/* ──────────────── 12. 输出上限(outputLimit,ARC-007) ──────────────── */
+
+console.log("\n输出上限(outputLimit):策略声明的字节上限盖过全局常量");
+
+// 一条**吐 `bytes` 个字节、不带换行**的命令。不带换行 = 走残行那一路,长度就是 bytes。
+function makeBigCmd(tag: string, bytes: number): { command: string } {
+  cmdSeq += 1;
+  const script = join(WORK, `hook-${tag}.js`);
+  writeFileSync(script, [`process.stdout.write("A".repeat(${bytes}));`].join("\n"), "utf8");
+  return { command: `node "${script}"` };
+}
+
+// ── 策略 outputLimit=256 —— 命令吐 3000 字节:截断并**如实报生效上限与截断事实**。
+//    这条断言在"恒用全局 HOOK_OUTPUT_LIMIT(8192)"的旧行为下**必红** —— 3000 < 8192,
+//    旧行为一个字节都不丢、报不出 truncated。
+{
+  await new Promise((r) => setTimeout(r, 1100));
+  const cmd = makeBigCmd("mx-outlimit-small", 3000);
+  const hook = spec({
+    command: cmd.command,
+    tag: "mx-outlimit-small",
+    deliveryPolicy: { kind: "BEST_EFFORT", maxConcurrency: 1, outputLimit: 256 },
+  });
+  writeHooks([hook]);
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_outlimit_small", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("outlimit-small:落成 ok", () => hookRunner.listRuns().some((r) => r.hookId === hook.id && r.status === "ok"), 8000);
+  const run = hookRunner.listRuns().find((r) => r.hookId === hook.id && r.status === "ok");
+  check("outlimit-small:拿到了执行记录", run !== undefined, hookRunner.listRuns().filter((r) => r.hookId === hook.id).map((r) => r.status));
+  eq("outputLimit=256:标记 truncated(有东西被丢)", run?.truncated, true);
+  eq("outputLimit=256:如实报生效上限 256(不是全局 8192)", run?.outputLimitBytes, 256);
+  check("outputLimit=256:截断说明写的是 256", (run?.stdout ?? "").includes("输出超过 256 字节"), (run?.stdout ?? "").slice(0, 60));
+  check("outputLimit=256:stdout 有界(≈256 + 说明行)", (run?.stdout?.length ?? 0) > 0 && (run?.stdout?.length ?? 0) < 256 * 2, run?.stdout?.length);
+}
+
+// ── 省略策略 —— 仍用全局 HOOK_OUTPUT_LIMIT(8192):3000 字节**不**截断。这是"旧行为
+//    不变"的正控:策略字段只在声明时才盖过全局常量。
+{
+  await new Promise((r) => setTimeout(r, 1100));
+  const cmd = makeBigCmd("mx-outlimit-default", 3000);
+  const hook = spec({ command: cmd.command, tag: "mx-outlimit-default" });
+  writeHooks([hook]);
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_outlimit_default", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("outlimit-default:落成 ok", () => hookRunner.listRuns().some((r) => r.hookId === hook.id && r.status === "ok"), 8000);
+  const run = hookRunner.listRuns().find((r) => r.hookId === hook.id && r.status === "ok");
+  check("outlimit-default:拿到了执行记录", run !== undefined, hookRunner.listRuns().filter((r) => r.hookId === hook.id).map((r) => r.status));
+  eq("省略策略:3000 字节 < 8192,不截断", run?.truncated, undefined);
+  eq("省略策略:stdout 全长 3000(策略字段没动它)", run?.stdout?.length, 3000);
+}
+
 writeHooks([]);
 
 rmSync(DATA, { recursive: true, force: true });

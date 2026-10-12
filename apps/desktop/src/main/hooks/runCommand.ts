@@ -47,6 +47,11 @@ export { decodeOutput, killTree };
  */
 export async function runHookCommand(spec: HookSpec, payload: HookPayload): Promise<Partial<HookRun>> {
   const timeout = spec.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
+  // 【ARC-007】输出上限:钩子自己声明的 `outputLimit` 盖过全局常量(与 `timeoutMs` 同一层)。
+  // `deliveryPolicy.outputLimit` 由 HookRunner 解析后**写回** `spec.outputLimit` 再喂进来
+  // (见 `HookRunner.runOne`),所以这里只认 `spec` 这一个来源,不再重复查策略 —— 两份默认值
+  // 迟早分家(见 `resolveDeliveryPolicy` 的注释)。
+  const outputLimit = spec.outputLimit ?? HOOK_OUTPUT_LIMIT;
 
   const run = await spawnRun({
     command: spec.command,
@@ -69,15 +74,19 @@ export async function runHookCommand(spec: HookSpec, payload: HookPayload): Prom
     timeoutMs: timeout,
     // 钩子没有取消通道 —— 没有 signal 可听,所以给一个**永不会响**的。
     signal: new AbortController().signal,
-    limitBytes: HOOK_OUTPUT_LIMIT,
+    limitBytes: outputLimit,
   });
 
   const stdout = run.stdout;
   const stderr = run.stderr;
+  const truncated = run.stdoutTruncated || run.stderrTruncated;
   // 输出一起走:三条路都带上,超时那条也要(见下面那段注释)。
   const output: Partial<HookRun> = {
-    ...(stdout.length > 0 ? { stdout: markTail(stdout, run.stdoutTruncated) } : {}),
-    ...(stderr.length > 0 ? { stderr: markTail(stderr, run.stderrTruncated) } : {}),
+    // 【ARC-007】截断说明里的字节数用**生效**的上限(不是全局常量)—— 否则策略把它收紧到
+    // 256 时,说明行仍写着 8192,是一句**错数**。
+    ...(stdout.length > 0 ? { stdout: markTail(stdout, run.stdoutTruncated, outputLimit) } : {}),
+    ...(stderr.length > 0 ? { stderr: markTail(stderr, run.stderrTruncated, outputLimit) } : {}),
+    ...(truncated ? { outputLimitBytes: outputLimit, truncated: true } : {}),
   };
 
   if (run.spawnError !== undefined) {
@@ -129,7 +138,10 @@ export function envOf(payload: HookPayload): Record<string, string> {
  * ⚠️ **实现只有一份**:真正的拼装在 `lib/outBuf.ts` 的 `markTruncatedTail`(钩子、
  * 命令节点、入口脚本、代码节点四处共用)。这里保留这个名字只是因为它是钩子这一层的
  * 既有出口,不动调用方。
+ *
+ * 【ARC-007】`limitBytes` 是**生效**的上限(可能来自 `deliveryPolicy.outputLimit` /
+ * `HookSpec.outputLimit`,不一定是全局常量)—— 说明行里写的是这个数,不是死常量。
  */
-export function markTail(text: string, truncated: boolean): string {
-  return truncated ? markTruncatedTail(text, HOOK_OUTPUT_LIMIT) : text;
+export function markTail(text: string, truncated: boolean, limitBytes: number): string {
+  return truncated ? markTruncatedTail(text, limitBytes) : text;
 }

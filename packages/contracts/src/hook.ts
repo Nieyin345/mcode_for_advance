@@ -592,6 +592,15 @@ export const HookSpecSchema = z.object({
   /** 超时(毫秒)。默认 {@link DEFAULT_HOOK_TIMEOUT_MS}。超时的进程会被杀掉。 */
   timeoutMs: z.number().int().min(100).max(600_000).optional(),
   /**
+   * 【ARC-007】输出字节上限。默认 {@link HOOK_OUTPUT_LIMIT}。超出的部分从**头**丢掉、
+   * 并在正文前写明(见 `lib/outBuf.ts` 的 `markTruncatedTail`)。
+   *
+   * 与 `timeoutMs` 同一个形状:`deliveryPolicy.outputLimit` 会**盖过**这里的值(那是更外/
+   * 更粗的那一层声明)。单放在 `HookSpec` 上是为了让一条钩子**自己**也能收紧窗口 —— 与
+   * `timeoutMs` 两层并存的理由一样。
+   */
+  outputLimit: z.number().int().min(256).max(10_000_000).optional(),
+  /**
    * 【ARC-007】**声明的交付策略**。**省略 = 今天的行为**(见 {@link resolveDeliveryPolicy}:
    * `BEST_EFFORT` + 并发上限 1,即"同一条钩子同时只跑一个进程,忙时明确丢")。
    *
@@ -869,6 +878,19 @@ export interface HookRun {
   /** 标准输出(**有上限**,见 {@link HOOK_OUTPUT_LIMIT})。 */
   stdout?: string;
   stderr?: string;
+  /**
+   * 【ARC-007】这一条**实际生效**的输出字节上限。省略 = 用了全局 {@link HOOK_OUTPUT_LIMIT}。
+   *
+   * 它让"截了没有、按哪个上限截的"变成执行记录里**可断言的数** —— 光有 `stdout` 里那句
+   * 截断说明不够:那句话写死了常量,策略覆盖了上限时它会报错数(见 `runCommand` 的
+   * `markTail`)。
+   */
+  outputLimitBytes?: number;
+  /**
+   * 【ARC-007】输出被截过(尾部之外的东西丢了)。`stdout` / `stderr` 里那句说明之外,
+   * 再给一个**结构化**的布尔 —— 消费方(设置页 / 断言)不必去匹配中文。
+   */
+  truncated?: boolean;
   /** 没能跑起来(命令不存在、spawn 就失败)或者被跳过(上一条还在跑)的原因。 */
   error?: string;
 }

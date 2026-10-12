@@ -39,6 +39,7 @@ import {
   decideRetry,
   matchesHook,
   resolveDeliveryPolicy,
+  type DeliveryPolicy,
   type HookPayload,
   type HookRun,
   type HookSpec,
@@ -73,6 +74,22 @@ export interface DeliveryCounts {
 
 function emptyCounts(): DeliveryCounts {
   return { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0, retried: 0 };
+}
+
+/**
+ * 【ARC-007】把**声明的交付策略**里那两个"盖过钩子自身"的字段拍平成一份**跑起来用**的 spec。
+ *
+ * `timeoutMs` 与 `outputLimit` 是**同一层**的覆盖(策略更粗、`HookSpec` 更细),从前只有
+ * `timeoutMs` 接了线。一次把两个都摊平,喂给 `runHookCommand` 的就是**同一个来源** ——
+ * 否则策略字段会只在某一条路上生效、另一条(重试 / 试跑)退回钩子自己那个值。
+ */
+function effectiveSpec(spec: HookSpec, policy: DeliveryPolicy): HookSpec {
+  if (policy.timeoutMs === undefined && policy.outputLimit === undefined) return spec;
+  return {
+    ...spec,
+    ...(policy.timeoutMs !== undefined ? { timeoutMs: policy.timeoutMs } : {}),
+    ...(policy.outputLimit !== undefined ? { outputLimit: policy.outputLimit } : {}),
+  };
 }
 
 class HookRunner {
@@ -166,7 +183,7 @@ class HookRunner {
       startedAt,
       status: "running",
     };
-    Object.assign(record, await runHookCommand(spec, payload), {
+    Object.assign(record, await runHookCommand(effectiveSpec(spec, resolveDeliveryPolicy(spec)), payload), {
       durationMs: Date.now() - startedAt,
     });
     return record;
@@ -259,9 +276,8 @@ class HookRunner {
     // —— 它是"同一条没跑成,再跑一遍",所以**绝不**并发 spawn(那正是"对每条事件直接并发
     // spawn"那条禁止项的形状)。超时 / 起不来**不**重试(见 `@contracts/hook` 的 `decideRetry`)。
     this.inFlight.set(spec.id, (this.inFlight.get(spec.id) ?? 0) + 1);
-    // 生效的超时:策略的 `timeoutMs` 盖过钩子自己的 `timeoutMs`(那是更细的一层声明)。
-    const effective: HookSpec =
-      policy.timeoutMs !== undefined ? { ...spec, timeoutMs: policy.timeoutMs } : spec;
+    // 生效的覆盖:策略的 `timeoutMs` / `outputLimit` 盖过钩子自己声明的(那是更细的一层)。
+    const effective = effectiveSpec(spec, policy);
     const budget = policy.retryBudget ?? 1;
     try {
       let attempts = 0;
