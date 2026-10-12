@@ -71,6 +71,16 @@ export interface RemoteConnectInput {
   keepaliveIntervalMs?: number;
   keepaliveCountMax?: number;
   readyTimeoutMs?: number;
+  /**
+   * 【MC-052】**事先显式授信**通道:调用方(用户在服务器控制台独立核对过指纹后,
+   * 或自动化连接预置的批准清单)给出这台 host:port 期望的 `SHA256:` 指纹。
+   *
+   * 语义:仅在**该 host:port 尚无已记录 pin** 时生效 —— 若服务器实际指纹与之**一致**,
+   * 才写入 pin 并放行认证;若**不一致**,拒绝且**不覆盖**任何已有 pin。有 pin 时一律以 pin
+   * 为准(存储的信任优先于连接参数)。无法与用户互动的自动化连接**必须**走这条通道,
+   * 绝不允许静默 TOFU(见 {@link decideHostTrust})。
+   */
+  expectedFingerprint?: string;
 }
 
 interface RemoteEntry {
@@ -92,6 +102,21 @@ interface RemoteEntry {
   hostKeyMismatch: boolean;
   /** 【MC-014】known-hosts 存储损坏/读异常 → 本次握手 fail-closed 拒连(不可重试)。 */
   hostKeyStoreInvalid: boolean;
+  /**
+   * 【MC-052】**首次遇到未知 host:port、且未提供 expectedFingerprint** → 本次握手
+   * 停在「待用户批准」状态并**拒绝认证**(hostVerifier 返回 false,ssh2 在密钥交换阶段
+   * 即断开,**不发送任何凭据**)。候选指纹见 {@link hostKeyCandidateFingerprint},
+   * 由用户独立核对后以 `expectedFingerprint` 重新连接才放行。不可重试。
+   */
+  hostKeyPendingConfirmation: boolean;
+  /** 待批准时呈现给用户的**候选**指纹(仅 {@link hostKeyPendingConfirmation} 时有值)。 */
+  hostKeyCandidateFingerprint: string | null;
+  /**
+   * 【MC-052】调用方提供了 `expectedFingerprint`,但与服务器实际指纹**不一致** →
+   * 拒绝且**不覆盖**任何已有记录。与 {@link hostKeyMismatch}(已 pin 的指纹变了)区分开,
+   * 文案要分别说清是「你给的期望指纹对不上」还是「这台主机的密钥变了」。不可重试。
+   */
+  hostKeyExpectedMismatch: boolean;
 }
 
 export interface RemoteConnectionInfo {
@@ -106,6 +131,10 @@ export interface RemoteConnectionInfo {
   lastActivityAt: number | null;
   /** 本次连接握手时把该主机指纹**首次**记入 known-hosts(TOFU);提示用户已记录。 */
   hostKeyRecorded: boolean;
+  /** 【MC-052】本次握手停在「首次信任待用户批准」(未发送任何凭据)。 */
+  hostKeyPendingConfirmation: boolean;
+  /** 【MC-052】待批准时要呈现给用户独立核对的候选指纹(`SHA256:` 形状)。 */
+  hostKeyCandidateFingerprint: string | null;
 }
 
 export interface RemoteExecResult {
@@ -166,6 +195,8 @@ export function createAgentRemoteSshManager() {
     connectedAt: entry.connectedAt,
     lastActivityAt: entry.lastActivityAt,
     hostKeyRecorded: entry.hostKeyRecorded,
+    hostKeyPendingConfirmation: entry.hostKeyPendingConfirmation,
+    hostKeyCandidateFingerprint: entry.hostKeyCandidateFingerprint,
   });
 
   const scheduleReconnect = (entry: RemoteEntry): void => {
@@ -193,33 +224,52 @@ export function createAgentRemoteSshManager() {
       keepaliveInterval: entry.cfg.keepaliveIntervalMs ?? DEFAULT_KEEPALIVE_MS,
       keepaliveCountMax: entry.cfg.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT,
       readyTimeout: entry.cfg.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
-      // known_hosts 式 TOFU。ssh2 默认 auto-accept 是**不校验**的 —— 首次见面就把
-      // 指纹记进设置,之后连同一 host:port 时指纹不一致即**当场拒绝握手**(返回 false,
-      // ssh2 会以 handshake 错误断开),绝不静默接受、也绝不静默覆盖。三种认证方式
-      // (password / privateKey / agent)都走这同一个 cfg,规则天然一致。
+      // 【MC-052】主机信任不再"首次见面即自动放行"。hostVerifier 在**身份决定**时
+      // 只做判定,不产生授信副作用:已 pin 且匹配 → 放行;指纹变了 / 存储损坏 / 未事先
+      // 授信的首次连接 → **拒绝握手**(返回 false);只有调用方用 `expectedFingerprint`
+      // **事先独立核对过指纹**的首次连接,才写 pin 并放行。ssh2 在 hostVerifier 返回 false
+      // 时于**密钥交换阶段**即以 handshake 错误断开 —— 此时密码/私钥/agent 签名**一个都还
+      // 没发出去**,所以"未确认前不发送任何凭据"是结构性成立的,不是靠提示文字。
       hostVerifier: (key: Buffer): boolean => {
         const hostPort = `${entry.cfg.host}:${entry.cfg.port}`;
         const actual = fingerprintOfHostKey(key);
         const read = readKnownHostsDetailed();
-        // 【MC-014 / 第 43.1 节】存储损坏/读异常 → **fail-closed 拒连**:不能把一次存储故障
-        // 洗成"从未见过这台主机"进而自动 TOFU 信任。此前已登记的主机在 JSON 被截断/设置库
-        // 读取抛错后会退回"未知"并被放行 —— 那正是"把数据库异常解释成首次见面"。
-        if (read.status === "INVALID") {
-          entry.hostKeyStoreInvalid = true;
-          return false;
+        const decision = decideHostTrust({
+          read,
+          hostPort,
+          actual,
+          expectedFingerprint: entry.cfg.expectedFingerprint,
+        });
+        switch (decision.verdict) {
+          case "STORE_INVALID":
+            // 【MC-014 / 第 43.1 节】存储损坏/读异常 → fail-closed 拒连:不能把一次存储故障
+            // 洗成"从未见过这台主机"进而自动 TOFU 信任。此前已登记的主机在 JSON 被截断/设置库
+            // 读取抛错后会退回"未知"并被放行 —— 那正是"把数据库异常解释成首次见面"。
+            entry.hostKeyStoreInvalid = true;
+            return false;
+          case "MISMATCH":
+            // 已 pin 主机的指纹变了 —— 记标记,error 处理器据此给明确文案且不重连。
+            entry.hostKeyMismatch = true;
+            return false;
+          case "EXPECTED_MISMATCH":
+            // 调用方给的期望指纹与服务器实际对不上,且此前无 pin → 拒绝,绝不写入。
+            entry.hostKeyExpectedMismatch = true;
+            return false;
+          case "PENDING_CONFIRMATION":
+            // 【MC-052 核心】无 pin 且未事先授信 → 停在"待用户批准",**拒绝认证**。
+            // 候选指纹留给用户独立核对;用户以 expectedFingerprint 重连才放行。
+            entry.hostKeyPendingConfirmation = true;
+            entry.hostKeyCandidateFingerprint = decision.candidate;
+            return false;
+          case "PINNED_NEW": {
+            // 事先授信的首次连接:实际指纹与调用方核对过的期望一致 → 记 pin 并放行。
+            const wrote = writeKnownHost(hostPort, actual);
+            if (wrote) entry.hostKeyRecorded = true;
+            return true;
+          }
+          case "TRUSTED":
+            return true;
         }
-        const pinned = read.hosts[hostPort];
-        if (!pinned) {
-          // 首见(存储合法且确实没有这台主机的记录):记录并放行。写入成功才算数 ——
-          // 写不进(存储故障)就不谎报"已记录",但本次仍按 TOFU 放行(与旧行为一致)。
-          const wrote = writeKnownHost(hostPort, actual);
-          if (wrote) entry.hostKeyRecorded = true;
-          return true;
-        }
-        if (sameFingerprint(pinned, actual)) return true;
-        // 指纹变了 —— 记下标记,error 处理器据此给出明确文案且不重连。
-        entry.hostKeyMismatch = true;
-        return false;
       },
     };
     if (entry.cfg.privateKeyPath) {
@@ -243,6 +293,9 @@ export function createAgentRemoteSshManager() {
     entry.hostKeyRecorded = false;
     entry.hostKeyMismatch = false;
     entry.hostKeyStoreInvalid = false;
+    entry.hostKeyPendingConfirmation = false;
+    entry.hostKeyCandidateFingerprint = null;
+    entry.hostKeyExpectedMismatch = false;
     let settled = false;
     let ready = false;
     const settleOk = () => { if (!settled) { settled = true; resolve(); } };
@@ -268,11 +321,16 @@ export function createAgentRemoteSshManager() {
         ? HOST_KEY_STORE_INVALID_MESSAGE
         : entry.hostKeyMismatch
           ? HOST_KEY_MISMATCH_MESSAGE
-          : friendlySshError(err);
+          : entry.hostKeyExpectedMismatch
+            ? HOST_KEY_EXPECTED_MISMATCH_MESSAGE
+            : entry.hostKeyPendingConfirmation
+              ? pendingConfirmationMessage(entry.hostKeyCandidateFingerprint)
+              : friendlySshError(err);
       if (!ready) settleErr(err);
-      // 主机密钥变更 / known-hosts 存储损坏 = 明确的不可重试错误:重连只会一遍遍撞同一堵墙
-      //(而且每次都把"变了的密钥"或"被当空的表"当成可接受的),立刻停在 error。
-      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid) {
+      // 主机密钥变更 / 期望指纹不符 / 存储损坏 / 首次信任待批准 = 明确的不可重试错误:
+      // 重连只会一遍遍撞同一堵墙(而且每次都把"变了的密钥""被当空的表""未经批准的陌生主机"
+      // 当成可接受的),立刻停在 error。
+      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid || entry.hostKeyExpectedMismatch || entry.hostKeyPendingConfirmation) {
         entry.state = "error";
         if (!ready) { try { client.end(); } catch { /* best effort */ } }
       } else if (!entry.intentionalClose && isRetryableSshError(err)) {
@@ -445,13 +503,19 @@ export function createAgentRemoteSshManager() {
     const credentials = [input.privateKeyPath, input.password, input.agentPath].filter(v => typeof v === "string" && v.length > 0);
     if (credentials.length !== 1) throw new Error("SSH 认证未明确配置：请先与用户确认，并且只提供 private_key_path、agent_path 或 password 中的一种；工具不会扫描密钥、修改配置或替用户处理交互认证");
     if (input.passphrase && !input.privateKeyPath) throw new Error("passphrase 只能与 private_key_path 一起使用");
+    // 【MC-052】事先授信通道的入参校验:给了就必须是合法 `SHA256:` 指纹形状 —— 形状不对的
+    // 期望值不能拿去比对(否则可能因为"两边都畸形"而假匹配,或把垃圾当命令执行结果落盘)。
+    if (input.expectedFingerprint !== undefined && !isWellFormedFingerprint(input.expectedFingerprint)) {
+      throw new Error("expected_fingerprint 必须是 OpenSSH 的 SHA256: 指纹形状(例如 SHA256:AbC...);请先在服务器上用 ssh-keygen -lf 取得正确指纹");
+    }
     for (const existing of entries.values()) {
       if (
         existing.ownerSessionId === input.ownerSessionId && !existing.intentionalClose &&
         existing.state !== "error" && existing.state !== "closed" &&
         existing.cfg.host === host && existing.cfg.port === port && existing.cfg.username === username &&
         existing.cfg.privateKeyPath === input.privateKeyPath && existing.cfg.password === input.password &&
-        existing.cfg.agentPath === input.agentPath && existing.cfg.passphrase === input.passphrase
+        existing.cfg.agentPath === input.agentPath && existing.cfg.passphrase === input.passphrase &&
+        existing.cfg.expectedFingerprint === input.expectedFingerprint
       ) {
         try { await ensureConnected(existing); } catch { /* background reconnect owns recovery */ }
         return infoOf(existing);
@@ -473,6 +537,9 @@ export function createAgentRemoteSshManager() {
       hostKeyRecorded: false,
       hostKeyMismatch: false,
       hostKeyStoreInvalid: false,
+      hostKeyPendingConfirmation: false,
+      hostKeyCandidateFingerprint: null,
+      hostKeyExpectedMismatch: false,
     };
     entries.set(entry.id, entry);
     try {
@@ -483,8 +550,14 @@ export function createAgentRemoteSshManager() {
         ? HOST_KEY_STORE_INVALID_MESSAGE
         : entry.hostKeyMismatch
           ? HOST_KEY_MISMATCH_MESSAGE
-          : friendlySshError(e);
-      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid) entry.state = "error";
+          : entry.hostKeyExpectedMismatch
+            ? HOST_KEY_EXPECTED_MISMATCH_MESSAGE
+            : entry.hostKeyPendingConfirmation
+              ? pendingConfirmationMessage(entry.hostKeyCandidateFingerprint)
+              : friendlySshError(e);
+      if (entry.hostKeyMismatch || entry.hostKeyStoreInvalid || entry.hostKeyExpectedMismatch || entry.hostKeyPendingConfirmation) {
+        entry.state = "error";
+      }
       else if (isRetryableSshError(e)) scheduleReconnect(entry);
       else entry.state = "error";
     }
@@ -816,6 +889,28 @@ export const HOST_KEY_STORE_INVALID_MESSAGE =
   "「第一次见这台主机」而自动信任它。请在设置里检查/修复该键后重试。" +
   "（已记录的主机指纹不会因此被覆盖或丢弃。）";
 
+/**
+ * 【MC-052】调用方提供 `expectedFingerprint`、但与服务器实际指纹不符时的文案。要点名
+ * "你给的期望指纹对不上",与"这台主机的密钥变了"区分开 —— 两者都是拒连信号,但处置不同。
+ */
+export const HOST_KEY_EXPECTED_MISMATCH_MESSAGE =
+  "SSH 首次连接被拒：调用方提供的期望指纹(expected_fingerprint)与服务器实际指纹不一致，已拒绝连接且未记录任何信任。" +
+  "请独立核对服务器控制台显示的主机公钥指纹后，用正确的指纹重试；本工具不会因为一次不符就写入或覆盖信任。";
+
+/**
+ * 【MC-052】**首次信任待用户批准**的文案。这是本条目核心行为:未知主机在用户独立核对并
+ * 批准前**不进入认证**,因此"凭据一个字都没发出去"。文案必须把候选指纹给出来(供用户去
+ * 服务器控制台/管理员处核对),并说明批准方式(重连时带 expected_fingerprint)。
+ */
+export function pendingConfirmationMessage(candidate: string | null): string {
+  const fp = candidate ?? "(未能读取服务器指纹)";
+  return "SSH 首次连接到未知主机，已暂停认证（未发送任何密码/密钥/agent 签名）等待你确认。" +
+    `服务器给出的主机公钥指纹是：${fp}。` +
+    "请与服务器的带外渠道（控制台 `ssh-keygen -lf`、管理员）独立核对；确认一致后再以" +
+    " expected_fingerprint 重连，届时才会记录该指纹并允许认证。" +
+    "未核对前本工具不会自动信任这台主机（TOFU 首见自动放行已移除）。";
+}
+
 /** ssh2 hostVerifier 拿到的原始公钥 Buffer → OpenSSH `SHA256:` 指纹(base64 无填充)。 */
 function fingerprintOfHostKey(key: Buffer | string): string {
   const buf = typeof key === "string" ? Buffer.from(key, "binary") : key;
@@ -831,6 +926,64 @@ function isWellFormedFingerprint(fp: string | undefined | null): boolean {
 /** 两个已记录指纹是否相同(形状不对的按"不相同"处理,宁可可拒别放行)。 */
 function sameFingerprint(a: string, b: string): boolean {
   return isWellFormedFingerprint(a) && isWellFormedFingerprint(b) && a === b;
+}
+
+/**
+ * 【MC-052】首次信任判定的**纯函数**结果 —— 把"身份决定"从 hostVerifier 的副作用里抽出来,
+ * 让所有分支(含拒绝)都能被单测/烟测直接断言,不必靠真实握手。
+ *
+ * verdict 语义:
+ *  - `TRUSTED`:已 pin 且与本次实际指纹一致 → 放行(无副作用)。
+ *  - `PINNED_NEW`:此前无 pin,但调用方**事先**给了 `expectedFingerprint` 且与本次实际
+ *    指纹一致 → 记 pin 并放行。这是唯一允许"首次写入信任"的路径。
+ *  - `PENDING_CONFIRMATION`:此前无 pin 且未事先授信 → 停在待用户批准,携候选指纹,拒认证。
+ *  - `MISMATCH`:已 pin,但本次实际指纹与 pin 不符(主机换钥/中间人)→ 拒,不覆盖旧 pin。
+ *  - `EXPECTED_MISMATCH`:此前无 pin,调用方给了 `expectedFingerprint` 但与实际不符 → 拒,
+ *    绝不写入(防止把"我以为的指纹"当命令执行结果落盘)。
+ *  - `STORE_INVALID`:信任表损坏/读不出 → fail-closed 拒连,不当作"首次见面"。
+ */
+export type HostTrustVerdict =
+  | "TRUSTED"
+  | "PINNED_NEW"
+  | "PENDING_CONFIRMATION"
+  | "MISMATCH"
+  | "EXPECTED_MISMATCH"
+  | "STORE_INVALID";
+
+export type HostTrustDecision =
+  | { verdict: "TRUSTED" }
+  | { verdict: "PINNED_NEW" }
+  | { verdict: "PENDING_CONFIRMATION"; candidate: string }
+  | { verdict: "MISMATCH"; pinned: string }
+  | { verdict: "EXPECTED_MISMATCH"; expected: string }
+  | { verdict: "STORE_INVALID"; error: string };
+
+/**
+ * 【MC-052】主机信任的唯一判定入口。**不产生任何副作用**(不读设置以外的 IO、不写 pin)——
+ * 写入由调用方在 `PINNED_NEW` 分支显式执行。这样"决定"与"授信落盘"分离,审计时能一眼看出
+ * 唯一会写信任的路径是 `expectedFingerprint` 事先核对过的首连。
+ */
+export function decideHostTrust(input: {
+  read: KnownHostsRead;
+  hostPort: string;
+  actual: string;
+  expectedFingerprint?: string;
+}): HostTrustDecision {
+  const { read, hostPort, actual, expectedFingerprint } = input;
+  if (read.status === "INVALID") return { verdict: "STORE_INVALID", error: read.error };
+  const pinned = read.hosts[hostPort];
+  if (pinned !== undefined) {
+    // 已有 pin —— 存储的信任优先于连接参数,`expectedFingerprint` 在此不参与(不能凭一次
+    // 连接参数覆盖已记录的历史授信)。
+    return sameFingerprint(pinned, actual) ? { verdict: "TRUSTED" } : { verdict: "MISMATCH", pinned };
+  }
+  // 无 pin:只有事先核对过指纹的调用方才可放行。
+  if (expectedFingerprint !== undefined) {
+    if (sameFingerprint(expectedFingerprint, actual)) return { verdict: "PINNED_NEW" };
+    return { verdict: "EXPECTED_MISMATCH", expected: expectedFingerprint };
+  }
+  // 无 pin 且未事先授信 → 待用户独立核对批准,暂停认证。
+  return { verdict: "PENDING_CONFIRMATION", candidate: actual };
 }
 
 /** 读出 known-hosts 记录(`{"host:port":"SHA256:..."}`)+ **可判别状态**。
@@ -923,6 +1076,11 @@ export const __remoteSshTest = {
   fingerprintOfHostKey,
   isWellFormedFingerprint,
   sameFingerprint,
+  decideHostTrust,
+  pendingConfirmationMessage,
+  HOST_KEY_MISMATCH_MESSAGE,
+  HOST_KEY_STORE_INVALID_MESSAGE,
+  HOST_KEY_EXPECTED_MISMATCH_MESSAGE,
   readKnownHosts,
   readKnownHostsDetailed,
   writeKnownHost,

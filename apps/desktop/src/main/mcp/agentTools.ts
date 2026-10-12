@@ -470,6 +470,11 @@ function formatRemoteConnection(info: RemoteConnectionInfo): string {
   ];
   if (info.lastError) lines.push(`last_error: ${info.lastError}`);
   if (info.connectedAt) lines.push(`connected_at: ${new Date(info.connectedAt).toISOString()}`);
+  // 【MC-052】首次信任待批准时,把候选指纹显式列出,供用户去服务器带外核对。
+  if (info.hostKeyPendingConfirmation) {
+    lines.push(`host_key_pending_confirmation: true`);
+    lines.push(`host_key_candidate_fingerprint: ${info.hostKeyCandidateFingerprint ?? "(未读到)"}`);
+  }
   return lines.join("\n");
 }
 
@@ -2434,10 +2439,14 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         state: z.enum(["connecting", "ready", "reconnecting", "error", "closed"]).optional(),
         host: z.string().optional(), port: z.number().int().optional(), username: z.string().optional(),
         reconnect_attempt: z.number().int().optional(), retryable: z.boolean().optional(), last_error: z.string().nullable().optional(),
+        host_key_pending_confirmation: z.boolean().optional(),
+        host_key_candidate_fingerprint: z.string().nullable().optional(),
       },
       description:
         "连接已由 AI 与用户明确配置的 SSH 目标。必须给出实际 host、username，并且只选 private_key_path / agent_path / password 一种认证。" +
         "工具不扫描密钥、不读取或修改 ~/.ssh/config、不生成密钥、不启动 agent，也不代办 MFA/解锁等交互；需用户操作时先请求用户完成。" +
+        "**首次连接到未知主机**时不会自动信任：本次连接停在待确认状态并返回待独立核对的主机指纹(host_key_candidate_fingerprint)，" +
+        "调用方须让用户在服务器带外核对一致后，用该指纹作为 expected_fingerprint 重连才会记录信任并完成认证；未核对前不发送任何凭据。" +
         "网络断开后可以重连同一配置；认证失败不重试。敏感凭据仅用于本机连接，不写入工具返回。",
       inputSchema: {
         host: z.string().min(1).describe("已确认的 SSH 主机/IP，不自动展开 SSH Host 别名"),
@@ -2447,13 +2456,16 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         private_key_path: z.string().min(1).optional().describe("已确认的本机私钥路径；不搜索其他私钥"),
         agent_path: z.string().min(1).optional().describe("已配置 SSH agent 的 socket 或 Windows 命名管道；由调用者明确指定，不自动探测"),
         passphrase: z.string().optional().describe("指定私钥的口令；需要交互解锁时先由用户完成"),
+        expected_fingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/).optional().describe(
+          "首次连接未知主机时**事先独立核对过**的主机公钥指纹(OpenSSH SHA256: 形状)；与服务器实际一致才记录信任并放行认证，不一致则拒绝。自动化连接必须用它，禁止静默信任首次见到的指纹",
+        ),
         keepalive_interval_ms: z.number().int().min(5000).max(60000).optional().describe("SSH keepalive 间隔，默认 15000"),
         keepalive_count_max: z.number().int().min(1).max(12).optional().describe("连续多少次 keepalive 无响应才判定断线，默认 4"),
         ready_timeout_ms: z.number().int().min(5000).max(60000).optional().describe("单次握手超时，默认 20000"),
       },
       handler: (args: {
         host: string; port?: number; username: string; password?: string; private_key_path?: string; agent_path?: string;
-        passphrase?: string; keepalive_interval_ms?: number; keepalive_count_max?: number; ready_timeout_ms?: number;
+        passphrase?: string; expected_fingerprint?: string; keepalive_interval_ms?: number; keepalive_count_max?: number; ready_timeout_ms?: number;
       }, ctx) => attemptStructured(async () => {
         const info = await agentRemoteSsh.connect({
           ownerSessionId: ownerOf(ctx),
@@ -2464,14 +2476,21 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           privateKeyPath: args.private_key_path,
           agentPath: args.agent_path,
           passphrase: args.passphrase,
+          expectedFingerprint: args.expected_fingerprint,
           keepaliveIntervalMs: args.keepalive_interval_ms,
           keepaliveCountMax: args.keepalive_count_max,
           readyTimeoutMs: args.ready_timeout_ms,
         });
-        const note = info.state === "error" ? "\n请修正明确的连接配置后重试；认证错误不会自动重连" : "";
+        const note = info.state === "error"
+          ? (info.hostKeyPendingConfirmation
+            ? "\n首次连接到未知主机：请先让用户独立核对上面的主机指纹，再用 expected_fingerprint 重连；未确认前不会发送任何凭据"
+            : "\n请修正明确的连接配置后重试；认证错误不会自动重连")
+          : "";
         return { text: formatRemoteConnection(info) + note, isError: info.state !== "ready", structured: {
           connection_id: info.connectionId, state: info.state, host: info.host, port: info.port,
           username: info.username, reconnect_attempt: info.reconnectAttempt, retryable: info.state === "reconnecting", last_error: info.lastError,
+          host_key_pending_confirmation: info.hostKeyPendingConfirmation,
+          host_key_candidate_fingerprint: info.hostKeyCandidateFingerprint,
         } };
 
       }),
