@@ -108,6 +108,17 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["terminal.resize", { falseMeans: "refusal" }],
   ["relay.saveConfig", { falseMeans: "refusal" }],
   ["relay.connect", { falseMeans: "maybePartial" }],
+  /* ── 【MC-066 残余① 续】memory 域 ────────────────────────────────────────
+   *
+   * `ipc/memory.ts` 的 `memory:save` / `memory:delete` / `memory:reviewDelete` 的
+   * `{ok:false,error}` 都是**写盘前的拒绝**:save 的 `{}` 是路径非法 / 含疑似密钥 /
+   * revision 冲突(冲突时**还没写**,文件保持原样)、`mkdir(wx)` 撞 EEXIST(别人先建了);
+   * delete 是 revision 缺失/不匹配(删前先 `assertRevision`,不匹配就抛,**没删**);
+   * reviewDelete 是"记忆不存在"或"内容指纹已变"(同样在 delete 之前返回)。
+   * 三者都**没提交任何副作用** → `refusal`(失败即"没执行",可安全重试)。 */
+  ["memory.save", { falseMeans: "refusal" }],
+  ["memory.delete", { falseMeans: "refusal" }],
+  ["memory.reviewDelete", { falseMeans: "refusal" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

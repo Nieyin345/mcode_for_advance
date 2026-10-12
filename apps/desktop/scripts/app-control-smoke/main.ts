@@ -952,6 +952,25 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const r = await invokeAppTool("app_api_call", { method: "relay.connect", input: {} }, "me", ctx);
     check("★ MC-066:relay.connect 合法 ok:false → UNCERTAIN(可能已部分部署,不盲目重试)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
   }
+
+  // memory 域:save/delete/reviewDelete 的 ok:false 都是**写盘前的拒绝**(路径非法 /
+  // 含疑似密钥 / revision 冲突——冲突时还没写;delete 不匹配就抛、没删;reviewDelete
+  // 记忆不存在或指纹已变,同样在 delete 之前返回)。三者都没提交副作用 → REJECTED。
+  recordRpcHandler("memory:save", async () => ({ ok: false as const, error: "记忆包含疑似私钥或访问密钥，未保存" }));
+  recordRpcHandler("memory:delete", async () => ({ ok: false as const, error: "记忆已发生改动，未删除" }));
+  recordRpcHandler("memory:reviewDelete", async () => ({ ok: false as const, error: "记忆不存在或不可读，请重新整理后再选择。" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "memory.save", input: { path: "global/facts/a.md", content: "x" } }, "me", ctx);
+    check("★ MC-066:memory.save 合法 ok:false → REJECTED(没写盘)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "memory.delete", input: { path: "global/facts/a.md", expectedRevision: "r1" } }, "me", ctx);
+    check("★ MC-066:memory.delete 合法 ok:false → REJECTED(没删)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "memory.reviewDelete", input: { path: "global/facts/a.md", digest: "d1" } }, "me", ctx);
+    check("★ MC-066:memory.reviewDelete 合法 ok:false → REJECTED(没删)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
 }
 
 {
