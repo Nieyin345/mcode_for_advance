@@ -210,9 +210,24 @@ export function writeNote(id: string, text: string): { ok: boolean; error?: stri
    */
   const abs = fromLibraryRelative(item.mdPath);
   if (!isInsideLibrary(abs)) return { ok: false, error: "路径越界,拒绝写入" };
-  // 编辑权按**扩展名**判（kind 退役）：条目的 md 文件才能在应用内编辑。
-  if (!item.mdPath.endsWith(".md")) {
-    return { ok: false, error: "只有 Markdown 文件能在应用内编辑" };
+  /**
+   * 【MC-085】**可编辑对象按资源身份判定,不按"路径以 .md 结尾"**。
+   *
+   * 从前这里只判 `item.mdPath.endsWith(".md")` —— 于是两条真实可复现的误写都返回 ok:
+   *   ① 论文/教材条目的 `mdPath` 指向 `markdown/imported/<id>/full.md`(转录产物),
+   *      写笔记接口直接把**论文转录**覆盖掉;
+   *   ② 一条资料的 `mdPath` 错指向**库内另一条**的 `notes/<victim.id>.md`,
+   *      `writeNote(other.id,...)` 能改掉受害条目的笔记。
+   *
+   * 正确判据:本入口只允许写**属于该条目自己的笔记文件** —— 库内相对路径必须恰好是
+   * `notes/<id>.md`(复用 `paths.ts` 的身份判据,不在别处另写一套正则)。转录产物的更新
+   * 走它自己的受控转换/采纳通道,不从这个"只要是 md 就能写"的入口进来。
+   */
+  if (item.mdPath !== noteRelPathForId(id)) {
+    return {
+      ok: false,
+      error: "这不是这条资料自己的笔记文件(笔记只能是 notes/<id>.md);转录产物的更新不走这个入口",
+    };
   }
   try {
     // 原子写:这是用户自己写的正文,写到一半崩溃不能留下半截文件。

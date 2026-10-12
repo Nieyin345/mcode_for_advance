@@ -309,6 +309,43 @@ eq("越界路径被拒", refused.ok, false);
 check("而且说了原因", refused.error?.includes("越界") === true, refused.error);
 eq("库外那个文件一个字节都没动", readFileSync(OUTSIDE_FILE, "utf-8"), "原始内容");
 
+/* ── 【MC-085】writeNote 按**资源身份**授权，不按「.md 扩展名」 ──────────────
+ *
+ * 从前只判 `item.mdPath.endsWith(".md")`，于是两条真实误写都返回 ok:true:
+ *   ① 论文条目的 mdPath 指向 `markdown/imported/<id>/full.md` → 直接覆盖**论文转录**;
+ *   ② 一条资料的 mdPath 错指向库内**另一条**的 `notes/<victim>.md` → 改掉受害条目的笔记。
+ * 现在只允许写 `notes/<id>.md`(该条目**自己**的笔记文件)。 */
+{
+  console.log("\n【MC-085】writeNote 只改自己那条笔记");
+
+  // ① 转录产物（markdown/...）不能被"保存笔记"覆盖。
+  const transcriptRel = `markdown/imported/${item.id}/full.md`;
+  const transcriptAbs = fromLibraryRelative(transcriptRel);
+  mkdirSync(dirname(transcriptAbs), { recursive: true });
+  writeFileSync(transcriptAbs, "# ORIGINAL_TRANSCRIPT\n", "utf8");
+  const paper = LibraryRepo.upsert({ title: "论文条目" });
+  LibraryRepo.setMarkdown(paper.id, transcriptRel);
+  const tRes = writeNote(paper.id, "# OVERWRITTEN_TRANSCRIPT\n");
+  eq("★ 转录产物不能被写笔记覆盖(拒绝)", tRes.ok, false);
+  eq("★ 转录原文一个字节没动", readFileSync(transcriptAbs, "utf-8"), "# ORIGINAL_TRANSCRIPT\n");
+
+  // ② 跨条目：一条资料的 mdPath 错指向别人的笔记 → 不得改写受害条目。
+  const victim = LibraryRepo.upsert({ title: "受害条目" });
+  LibraryRepo.setMarkdown(victim.id, noteRelPathForId(victim.id));
+  writeFileSync(notePathForId(victim.id), "# VICTIM_ORIGINAL\n", "utf8");
+  const hijacker = LibraryRepo.upsert({ title: "劫持条目" });
+  // 模拟脏数据：劫持条目的 mdPath 指向**受害条目**的笔记文件。
+  LibraryRepo.setMarkdown(hijacker.id, noteRelPathForId(victim.id));
+  const hRes = writeNote(hijacker.id, "# HIJACKED\n");
+  eq("★ 别的条目不能借自己的 id 改受害条目的笔记(拒绝)", hRes.ok, false);
+  eq("★ 受害条目的笔记一个字节没动", readFileSync(notePathForId(victim.id), "utf-8"), "# VICTIM_ORIGINAL\n");
+
+  // 正控：自己的笔记仍照常可写（守卫没把正常路也拒了）。
+  const own = writeNote(victim.id, "# VICTIM_EDITED\n");
+  eq("★ 正控:自己的笔记仍写得进去", own.ok, true);
+  eq("★ 正控:内容真的落了盘", readFileSync(notePathForId(victim.id), "utf-8"), "# VICTIM_EDITED\n");
+}
+
 /* ──────────────── 5. 一份 md 产物占的是文件还是一个目录 ──────────────── */
 
 console.log("\nmarkdownArtifact:删条目时该删什么");
