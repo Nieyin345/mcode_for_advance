@@ -1729,6 +1729,96 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   delete (globalThis as Record<string, unknown>).window;
 }
 
+/* ── 5c. 【ARC-009】app_session_new / app_session_send 走统一 OperationResult ──
+ *
+ * ARC-009 的 remaining 点名的另两个入口(与 app_workflow_run 同一套形状)。从前两者一律
+ * `uiResult(...)` / `fail(...)` —— 成功与各类失败糊在一起,Agent 分不清「命令没执行」
+ * 与「可能已落一半」。接上 `makeOp` / `operationToolResult` 后按业务是否落定分派:
+ *
+ *   a) `app_session_new` 审批被拒 → **REJECTED**(命令没执行,可安全重来);
+ *   b) ★承重红例:`app_session_new` 经渲染端 `new_session` 回「对话已建好…但第一条消息没
+ *      发出去」—— **已落一半** → **UNCERTAIN**(绝不报成"没执行"诱导 Agent 重开一个新对话);
+ *   c) `app_session_send` 给自己发 → **REJECTED**(明确拒绝,没执行);
+ *   d) ★承重红例:`app_session_send` 经渲染端 `send` 回业务失败 —— 界面可能**在消息已发出
+ *      之后**才出错(如发完切回原对话抛错)→ 无法确认 → **UNCERTAIN**(不诱导重发)。
+ * 三条正控证明真成功仍是 SUCCEEDED。
+ *
+ * ⚠️ 无窗口 headless 回退路径本套**不验**(`RuntimeManager` 桩显式抛,见 run.sh / stubs)——
+ * 那条回归在 claude-ipc-smoke。这里只钉渲染端可用那几条路径。
+ */
+{
+  const sWin: Record<string, unknown> = {
+    [APP_CONTROL_RENDERER_GLOBAL]: async (raw: string) => {
+      const cmd = JSON.parse(raw);
+      if (cmd.op === "new_session") {
+        if (cmd.title === "half") return JSON.stringify({ ok: false, error: "对话已建好(s9),但第一条消息没有发出去(上一轮还在运行)" });
+        return JSON.stringify({ ok: true, data: { sessionId: "s9", sent: false } });
+      }
+      if (cmd.op === "send") {
+        if (cmd.prompt === "fail") return JSON.stringify({ ok: false, error: "没有发出去(对话正在运行、内容为空,或还没配置模型)" });
+        return JSON.stringify({ ok: true, data: { sessionId: cmd.sessionId, mode: "sent" } });
+      }
+      return JSON.stringify({ ok: true, data: {} });
+    },
+  };
+  (globalThis as Record<string, unknown>).window = sWin;
+  setRendererPortForTest({ executeJavaScript: async (code) => (0, eval)(code) });
+
+  // (a) app_session_new:审批被拒 → REJECTED(命令没执行)。
+  {
+    const { ctx } = ctxWith({ allow: false });
+    const r = await invokeAppTool("app_session_new", { project_id: "p1", prompt: "hi" }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ ARC-009:app_session_new 审批被拒 → REJECTED(命令没执行)", op?.resultKind === "REJECTED", op);
+    check("★ ARC-009:app_session_new REJECTED 可安全重试(retryable=true)", op?.retryable === true, op);
+  }
+
+  // (b) ★ 承重红例:new_session 回「对话已建好…但消息没发出」 → UNCERTAIN(已落一半)。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_session_new", { project_id: "p1", prompt: "hi", title: "half" }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ ARC-009:app_session_new \"对话已建好但消息没发出\" → UNCERTAIN(已落一半)", op?.resultKind === "UNCERTAIN", op);
+    check("★ ARC-009:app_session_new 已落一半 → 不诱导重开新对话(retryable=false)", op?.retryable === false, op);
+    check("★ ARC-009:app_session_new 已落一半 → 文本点明\"无法确认是否已经建好\"", textOf(r).includes("无法确认"), textOf(r).slice(0, 240));
+  }
+
+  // 正控:new_session 真成功 → SUCCEEDED 且不设 isError。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_session_new", { project_id: "p1", prompt: "hi" }, "me", ctx);
+    check("★ ARC-009 正控:app_session_new 成功 → SUCCEEDED 且 isError 不设", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+
+  // (c) app_session_send:给自己发 → REJECTED(明确拒绝,没执行)。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_session_send", { session_id: "me", prompt: "hi" }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ ARC-009:app_session_send 给自己发 → REJECTED(命令没执行)", op?.resultKind === "REJECTED", op);
+    check("★ ARC-009:app_session_send REJECTED 可安全重试(retryable=true)", op?.retryable === true, op);
+  }
+
+  // (d) ★ 承重红例:send 业务失败 —— 界面可能在消息已发出之后才出错 → UNCERTAIN。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_session_send", { session_id: "other", prompt: "fail" }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ ARC-009:app_session_send 业务失败 → UNCERTAIN(可能已发出,界面出错在后)", op?.resultKind === "UNCERTAIN", op);
+    check("★ ARC-009:app_session_send 业务失败 → 不诱导重复发送(retryable=false)", op?.retryable === false, op);
+  }
+
+  // 正控:send 真成功 → SUCCEEDED 且不设 isError。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_session_send", { session_id: "other", prompt: "ok" }, "me", ctx);
+    check("★ ARC-009 正控:app_session_send 成功 → SUCCEEDED 且 isError 不设", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+}
+
 /* ── 6. 接线(源码) ── */
 const src = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
 const claude = src("src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts");

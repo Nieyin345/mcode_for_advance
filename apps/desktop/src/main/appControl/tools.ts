@@ -1275,6 +1275,122 @@ async function runWorkflow(
   );
 }
 
+/* ─────────────── ARC-009:app_session_new / app_session_send 统一结果 ─────────────── */
+
+type SessionNewArgs = {
+  project_id?: string;
+  prompt?: string;
+  provider_id?: string;
+  model?: string;
+  workflow_id?: string;
+  background?: boolean;
+  title?: string;
+};
+type SessionSendArgs = { session_id: string; prompt: string; workflow_id?: string; background?: boolean };
+
+/**
+ * 【ARC-009】`app_session_new` 按**业务是否落定**分派(与 `runWorkflow` 同源形状),不再
+ * 用旧的两态 `uiResult` / `fail` —— 那会把「没执行」和「已落一半」糊成同一句失败:
+ *   - 审批被拒 = **没执行** → REJECTED(可安全重来);
+ *   - 渲染端 `new_session` 回业务失败 —— 渲染端那条 `new_session` 是**先建会话、再发首条**,
+ *     任一步失败都可能**会话行已落库、只是首条没发出**(与 `appControlHost` 的
+ *     `"对话已建好…但第一条消息没发出去"` 同一事实)→ **UNCERTAIN**。旧的两态会把它当
+ *     "没建起来",诱导 Agent 重开一个新对话、留下一个**没人管的空会话**;
+ *   - 无窗口 headless 回退:建会话(可能已落库)+ 发首条,`headlessNewSession` 报错时同样
+ *     **会话可能已建好** → UNCERTAIN。
+ */
+async function runSessionNew(a: SessionNewArgs, ctx: ProviderContext): Promise<ToolResult> {
+  const method = "app_session_new";
+  const operationId = randomUUID();
+  const what = a.prompt ? `新开对话并发送:${clipLine(a.prompt, 200)}` : "新开一个对话";
+  const denied = await gateAppAction(ctx, "write", "session_new", a, what);
+  if (denied) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
+    );
+  }
+  const reply = await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title });
+  // 【MC-059】窗口没开 → 走主进程同一套服务,不因界面缺失而失败。
+  if (uiUnavailable(reply)) {
+    const err = await headlessNewSession(a);
+    // headless 报错时**会话行可能已经落库**(createOrReuseSession 已跑)、只是首条没起 →
+    // 无法确认 → UNCERTAIN(绝不报成"没执行"让 Agent 重开一个新对话)。
+    if (err !== null) {
+      return operationToolResult(
+        makeOp("UNCERTAIN", method, operationId, { code: OP_CODE.rpcUncertain, reason: err }),
+      );
+    }
+    return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已新建对话(无界面模式)。");
+  }
+  if (!reply.ok) {
+    // UI 桥回了**业务失败**:会话可能**已经建好**,只是首条没发出(见函数头)→ UNCERTAIN。
+    return operationToolResult(
+      makeOp("UNCERTAIN", method, operationId, {
+        code: OP_CODE.rpcUncertain,
+        reason: `新开对话未成功,无法确认是否已经建好(可能留下一个空会话):${reply.error ?? "界面操作失败"}`,
+      }),
+    );
+  }
+  return operationToolResult(
+    makeOp("SUCCEEDED", method, operationId),
+    reply.data === undefined ? undefined : renderResult(reply.data),
+    "已新建对话。",
+  );
+}
+
+/**
+ * 【ARC-009】`app_session_send` 按**业务是否落定**分派(与 `runSessionNew` / `runWorkflow` 同源):
+ *   - 给自己发 = **明确拒绝,没执行** → REJECTED;
+ *   - 审批被拒 = **没执行** → REJECTED;
+ *   - 渲染端 `send` 回业务失败 —— 渲染端那条 `send` **先切会话、发消息、再切回**,
+ *     任一后续步骤抛错都可能在**消息已经发出之后** → 无法确认是否已发出 → **UNCERTAIN**
+ *     (旧的两态会让 Agent 当成"没发出去"而**重发一条**,也就是把同一句话发两遍);
+ *   - 无窗口 headless 回退:消息没发出去 = 没落任何东西 → REJECTED。
+ */
+async function runSessionSend(a: SessionSendArgs, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {
+  const method = "app_session_send";
+  const operationId = randomUUID();
+  if (a.session_id === sessionId) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, {
+        code: OP_CODE.rpcFailed,
+        reason: "不能给你自己所在的对话发消息。",
+      }),
+    );
+  }
+  const denied = await gateAppAction(ctx, "write", "session_send", a, `给对话 ${a.session_id} 发送:${clipLine(a.prompt, 200)}`);
+  if (denied) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
+    );
+  }
+  const reply = await ui({ op: "send", sessionId: a.session_id, prompt: a.prompt, workflowId: a.workflow_id, background: a.background });
+  if (uiUnavailable(reply)) {
+    // 无窗口路径:消息没发出去 = 没落任何东西 → REJECTED。
+    const err = await headlessSend(a.session_id, a.prompt, a.workflow_id);
+    if (err !== null) {
+      return operationToolResult(
+        makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: err }),
+      );
+    }
+    return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已发送(无界面模式)。");
+  }
+  if (!reply.ok) {
+    // UI 桥回了**业务失败**:渲染端可能在**消息已发出之后**才出错(见函数头)→ UNCERTAIN。
+    return operationToolResult(
+      makeOp("UNCERTAIN", method, operationId, {
+        code: OP_CODE.rpcUncertain,
+        reason: `发送未确认成功,消息可能已经发出(界面在之后出错):${reply.error ?? "界面操作失败"}`,
+      }),
+    );
+  }
+  return operationToolResult(
+    makeOp("SUCCEEDED", method, operationId),
+    reply.data === undefined ? undefined : renderResult(reply.data),
+    "已发送。",
+  );
+}
+
 /* ─────────────────── ARC-009 / MC-067:结构化 OperationResult + 可信操作账本 ─────────────────── */
 
 /**
@@ -1579,31 +1695,10 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
       }
       case "app_ui":
         return await runUiAction(args as UiArgs, ctx, sessionId);
-      case "app_session_new": {
-        const a = args as { project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; background?: boolean; title?: string };
-        const what = a.prompt ? `新开对话并发送:${clipLine(a.prompt, 200)}` : "新开一个对话";
-        const denied = await gateAppAction(ctx, "write", "session_new", a, what);
-        if (denied) return fail(denied);
-        const reply = await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title });
-        // 【MC-059】窗口没开 → 走主进程同一套服务,不因界面缺失而失败。
-        if (uiUnavailable(reply)) {
-          const err = await headlessNewSession(a);
-          return err ? fail(err) : text("已新建对话(无界面模式)。");
-        }
-        return uiResult(reply, "已新建对话。");
-      }
-      case "app_session_send": {
-        const a = args as { session_id: string; prompt: string; workflow_id?: string; background?: boolean };
-        if (a.session_id === sessionId) return fail("不能给你自己所在的对话发消息。");
-        const denied = await gateAppAction(ctx, "write", "session_send", a, `给对话 ${a.session_id} 发送:${clipLine(a.prompt, 200)}`);
-        if (denied) return fail(denied);
-        const reply = await ui({ op: "send", sessionId: a.session_id, prompt: a.prompt, workflowId: a.workflow_id, background: a.background });
-        if (uiUnavailable(reply)) {
-          const err = await headlessSend(a.session_id, a.prompt, a.workflow_id);
-          return err ? fail(err) : text("已发送(无界面模式)。");
-        }
-        return uiResult(reply, "已发送。");
-      }
+      case "app_session_new":
+        return await runSessionNew(args as SessionNewArgs, ctx);
+      case "app_session_send":
+        return await runSessionSend(args as SessionSendArgs, sessionId, ctx);
       case "app_workflow_run":
         return await runWorkflow(args as { workflow_id: string }, sessionId, ctx);
       default:
