@@ -65,6 +65,29 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   // 自定义模型试连:`{ok:boolean;error?;detail?}` —— ok:false 是握手/鉴权失败的探测结果,
   // 只读探测、不落任何持久副作用。
   ["customModel.test", { falseMeans: "refusal" }],
+  /* ── 【MC-066 / 第 46.1 节】Git 域 ───────────────────────────────────────
+   *
+   * `git.*` 的写操作都返回 `GitOpResult`/`GitMergeResult` 形如 `{ok:false;error}`
+   * —— 从前**没登记**,于是 `decodeDomainOutcome` 落到「无 descriptor = accepted」,
+   * 把「仓库不属于任何已添加项目」这种**合法拒绝**报成 SUCCEEDED(第 45 轮 §46.1 的 E1)。
+   *
+   * 分类:纯本地、失败即"没执行"的写 → `refusal`;而 push / pull / merge /
+   * worktreeMergeBack 的 ok:false 可能**已经在远端或工作树里落了一部分**(推送一半、
+   * 合并冲突未清、worktree 已污染),重试前必须先查真实状态 → `maybePartial`(UNCERTAIN)。
+   * 这样"没执行"的拒绝被如实报 REJECTED,"可能部分落定"的不被当安全可重试。 */
+  ["git.stage", { falseMeans: "refusal" }],
+  ["git.unstage", { falseMeans: "refusal" }],
+  ["git.commit", { falseMeans: "refusal" }],
+  ["git.discard", { falseMeans: "refusal" }],
+  ["git.checkout", { falseMeans: "refusal" }],
+  ["git.deleteBranch", { falseMeans: "refusal" }],
+  ["git.mergeAbort", { falseMeans: "maybePartial" }],
+  ["git.mergePreview", { falseMeans: "refusal" }],
+  ["git.push", { falseMeans: "maybePartial" }],
+  ["git.pull", { falseMeans: "maybePartial" }],
+  ["git.merge", { falseMeans: "maybePartial" }],
+  ["git.worktreeMergeBack", { falseMeans: "maybePartial" }],
+  ["git.worktreeRemove", { falseMeans: "maybePartial" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

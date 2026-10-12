@@ -875,6 +875,32 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   recordRpcHandler("project:list", async () => ({ projects: [{ id: "p1", name: "demo", path: "/x" }] }));
 }
 
+/* ── 3d-2. 【MC-066 / 第 46.1 节】Git 域的合法拒绝也必须判 REJECTED/UNCERTAIN ──
+ *
+ * 第 45 轮独立 E1:`ipc/git.ts` 的 git.commit/stage/pull 对「仓库不属于任何已添加项目」
+ * **合法返回** `{ok:false,error}`(不抛),但 `commandOutcome.ts` 只登记了 browser.* /
+ * automation.run / customModel.test —— git.* 落到「无 descriptor = accepted」,把明确拒绝
+ * 报成 SUCCEEDED。这里与 `ipc/git.ts` 一字不差地录同一份 ok:false 信封。
+ * 分类:纯本地写(stage)拒绝 → REJECTED;可能部分落定的(push/pull)→ UNCERTAIN。 */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+  recordRpcHandler("git:stage", async () => ({ ok: false as const, error: "仓库路径不在任何已添加的项目内" }));
+  recordRpcHandler("git:push", async () => ({ ok: false as const, error: "认证失败,请检查凭据" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "git.stage", input: { repoPath: "C:/not-registered", filePaths: ["a.txt"] } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:git.stage 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:git.stage 合法 ok:false → REJECTED(没执行)", op?.resultKind === "REJECTED", op);
+    check("★ MC-066:git.stage 拒绝原因原样带出", textOf(r).includes("不在任何已添加的项目内"), textOf(r).slice(0, 200));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "git.push", input: { repoPath: "C:/proj" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:git.push 合法 ok:false → UNCERTAIN(可能已部分落定,不盲目重试)", op?.resultKind === "UNCERTAIN", op);
+  }
+}
+
 {
   const bridge = new ApprovalBridge();
   const emitted: unknown[] = [];
