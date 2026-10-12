@@ -66,14 +66,66 @@ export interface FileViewTarget {
 
 interface FileViewState {
   target: FileViewTarget | null;
-  /** 在中间打开一个文件。 */
+  /**
+   * 【UI-012】当前预览里的文件**有未保存的改动**(目前只有 PDF 批注会置位)。
+   *
+   * 从前这是一份**私有 ref**,只在 `PdfPreviewImpl` 内部记「用户改过批注」,
+   * 而**离开预览的每条路**(切文件 / 关预览 / 关窗)都不看它 —— 于是用户加/改/删了
+   * 批注没点「保存批注」就切走,内存里那份改动**无声消失**,没有任何恢复路径。
+   *
+   * 现在把它抬到 store:谁要"离开当前文件",先问一句 {@link hasUnsavedChanges},
+   * 有就弹确认(保存 / 放弃 / 取消),不再静默丢弃。
+   */
+  dirty: boolean;
+  /** 谁在预览里改了什么 → 由预览组件(如 PDF 批注)登记/清除。 */
+  setDirty: (dirty: boolean) => void;
+  /**
+   * **在中间打开一个文件。** 有未保存改动的确认由调用方(UI 层)先做 —— store 层
+   * 不该自己弹窗(它拿不到渲染上下文)。见 {@link openGuarded}。
+   */
   open: (target: FileViewTarget) => void;
   /** 关掉。中间回到原来的会话标签。 */
   close: () => void;
 }
 
+/** 有未保存改动吗(供 UI 离开前询问)。 */
+export function hasUnsavedChanges(): boolean {
+  return useFileViewStore.getState().dirty;
+}
+
+/**
+ * 【UI-012】"离开当前文件前询问"的**登记点**。`FileViewer`(只要中间在看文件就一直挂着)
+ * 在挂载时把它的确认实现登记进来;`open()` 检测到有未保存改动就先交给它,由它弹
+ * 「保存 / 放弃 / 取消」,而不是静默切走。
+ *
+ * `next` 是用户想切去的目标,`proceed` 是"确认可以走后"真正执行切换的回调。
+ *
+ * `saveCurrent` 由**当前预览组件**(如 PDF 的 `save`)登记 —— 用户选「保存」时调用它，
+ * 返回是否成功；失败则**不**切换(让用户回到编辑器处理错误，而不是把改动丢掉)。
+ */
+let openGuard: ((next: FileViewTarget | null, proceed: () => void) => void) | null = null;
+let saveCurrent: (() => Promise<boolean>) | null = null;
+
+/** 登记/注销离开确认(FileViewer 挂载时登记、卸载时传 null)。 */
+export function setFileOpenGuard(guard: ((next: FileViewTarget | null, proceed: () => void) => void) | null): void {
+  openGuard = guard;
+}
+
+/** 当前预览登记"保存我"的回调(PDF 预览挂载时登记,卸载时传 null)。 */
+export function setFileSaveHandler(save: (() => Promise<boolean>) | null): void {
+  saveCurrent = save;
+}
+
+/** 用户选了「保存」时调用 —— 返回是否成功(失败则不切换)。 */
+export async function saveCurrentPreview(): Promise<boolean> {
+  if (saveCurrent === null) return false;
+  return saveCurrent();
+}
+
 export const useFileViewStore = create<FileViewState>((set) => ({
   target: null,
+  dirty: false,
+  setDirty: (dirty) => set({ dirty }),
   /**
    * **打开一个文件 = 中间显示它 + 右栏切到流程图页 + 把主对话展开。**
    *
@@ -99,20 +151,46 @@ export const useFileViewStore = create<FileViewState>((set) => ({
   open: (target) => {
     // 在写入之前先看一眼中间是不是已经在显示文档 —— set 之后这个判据永远为真。
     const prevTarget = useFileViewStore.getState().target;
-    set({ target });
-    void import("./sessionStore.js").then(({ useSessionStore, isCenterShowingDocument }) => {
-      const st = useSessionStore.getState();
-      // **例外（2026-09-27）**：主页面本来就是文档页（上一份预览还在，或正开着可编辑
-      // 文件）→ 右栏保持现状，不再展开主对话。判据与 `openFileInIde` 共用一份。
-      if (prevTarget != null || isCenterShowingDocument(st)) return;
-      st.setRightOpen(true);
-      st.setRightPanelTab("flow");
-      // 展开主对话（它和子对话共用 `activeSideChatId`，见 `MainSessionRow`）。
-      const main = st.activeSessionId;
-      if (main) void st.selectSideChat(main);
-    });
+    // 【UI-012】真正执行切换这一下。有未保存改动时，先由登记进来的离开确认
+    //(`setFileOpenGuard`，FileViewer 挂载时登记)**问过用户**再走到这里 ——
+    // 从前无论如何都静默 `set({ target })`，于是没点「保存批注」就切文件时，
+    // 内存里的批注无声消失。确认通过(或本就没有未保存改动)才真正切。
+    const proceed = (): void => {
+      set({ target, dirty: false });
+      void import("./sessionStore.js").then(({ useSessionStore, isCenterShowingDocument }) => {
+        const st = useSessionStore.getState();
+        // **例外（2026-09-27）**：主页面本来就是文档页（上一份预览还在，或正开着可编辑
+        // 文件）→ 右栏保持现状，不再展开主对话。判据与 `openFileInIde` 共用一份。
+        if (prevTarget != null || isCenterShowingDocument(st)) return;
+        st.setRightOpen(true);
+        st.setRightPanelTab("flow");
+        // 展开主对话（它和子对话共用 `activeSideChatId`，见 `MainSessionRow`）。
+        const main = st.activeSessionId;
+        if (main) void st.selectSideChat(main);
+      });
+    };
+    // 有未保存改动 + 有人在看当前预览 → 交给它弹确认(保存/放弃/取消);
+    // 切到**同一个**目标不必问(没有任何东西会丢)。
+    if (
+      useFileViewStore.getState().dirty &&
+      openGuard !== null &&
+      prevTarget !== null &&
+      !sameTarget(prevTarget, target)
+    ) {
+      openGuard(target, proceed);
+      return;
+    }
+    proceed();
   },
-  close: () => set({ target: null }),
+  close: () => {
+    // 【UI-012】关预览也是"离开当前文件" —— 有未保存改动时同样先问，别静默丢掉。
+    const proceed = (): void => set({ target: null, dirty: false });
+    if (useFileViewStore.getState().dirty && openGuard !== null && useFileViewStore.getState().target !== null) {
+      openGuard(null, proceed);
+      return;
+    }
+    proceed();
+  },
 }));
 
 /** 路径的最后一段 —— 顶栏显示名。两条来源都有路径,统一在这里取。 */
@@ -126,4 +204,16 @@ export function extOf(p: string): string {
   const base = basenameOf(p);
   const dot = base.lastIndexOf(".");
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+}
+
+/** 两个预览目标是不是同一个文件(同来源、同 ref、同 relPath/which)。 */
+function sameTarget(a: FileViewTarget, b: FileViewTarget): boolean {
+  if (a.source.kind !== b.source.kind) return false;
+  if (a.source.kind === "library" && b.source.kind === "library") {
+    return a.source.ref === b.source.ref && a.source.relPath === b.source.relPath && a.source.which === b.source.which;
+  }
+  if (a.source.kind === "project" && b.source.kind === "project") {
+    return a.source.ref === b.source.ref;
+  }
+  return false;
 }

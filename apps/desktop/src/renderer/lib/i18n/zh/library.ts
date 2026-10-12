@@ -270,6 +270,10 @@ export const zh = {
   "library.pdfViewer.saveFailed": "保存失败",
   /** 关窗提醒里逐条列出的那句话。`name` 是文件名。 */
   "library.pdfViewer.unsavedLabel": "「{name}」上有没保存的批注",
+  /** 【UI-012】离开预览(切文件 / 关预览)时的确认弹窗。 */
+  "library.pdfViewer.leaveUnsavedTitle": "有没保存的批注",
+  "library.pdfViewer.leaveUnsavedBody": "这篇 PDF 上的批注改动还没保存。要保存后再离开，还是放弃这些改动？",
+  "library.pdfViewer.discardChanges": "放弃改动",
 
   /* ── PDF 标注（2026-09-22 重做：六种工具 + 撤销 + 烤进文件）── */
   "library.pdfAnnot.toolText": "高亮",

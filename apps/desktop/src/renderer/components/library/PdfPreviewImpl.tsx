@@ -40,6 +40,7 @@ import { PDFViewer, ZoomMode, type PDFViewerRef } from "@embedpdf/react-pdf-view
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
+import { useFileViewStore, setFileSaveHandler } from "@renderer/stores/fileViewStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconExternalLink,
@@ -104,6 +105,16 @@ export function PdfPreview({
    */
   const dirtyRef = useRef(false);
   /**
+   * 【UI-012】把「有未保存批注」同时写进**局部 ref**(组件内部判断用)与
+   * `fileViewStore`(离开预览时由 FileViewer 读取并确认)。两处必须一起变 ——
+   * 从前只有 ref,离开的路全看不见它,批注静默丢失。
+   */
+  const markDirty = useCallback((dirty: boolean) => {
+    dirtyRef.current = dirty;
+    useFileViewStore.getState().setDirty(dirty);
+  }, []);
+  // 卸载时清掉全局脏位(这份预览没了,它记的脏状态不该留给下一个文件)。
+  useEffect(() => () => useFileViewStore.getState().setDirty(false), []);  /**
    * `t` 走 ref，**不进**下面加载 effect 的依赖：那个 effect 一跑就 `setDocBytes(null)`，
    * 阅读器整个卸掉重载 —— 切一次界面语言，没保存的批注就没了。
    */
@@ -231,7 +242,7 @@ export function PdfPreview({
       } as never);
       if (!r.ok) throw new Error(r.error ?? t("library.pdfViewer.saveFailed"));
       setSaveState("saved");
-      dirtyRef.current = false;
+      markDirty(false);
       return true;
     } catch (err) {
       setSaveState("error");
@@ -239,6 +250,15 @@ export function PdfPreview({
       return false;
     }
   }, [filePath, t]);
+
+  /**
+   * 【UI-012】把"保存我"登记给 store —— 用户切文件/关预览时若这份 PDF 有未保存批注,
+   * FileViewer 会弹「保存 / 放弃 / 取消」,选「保存」时调到这里。卸载时注销。
+   */
+  useEffect(() => {
+    setFileSaveHandler(save);
+    return () => setFileSaveHandler(null);
+  }, [save]);
 
   /**
    * 给 EmbedPDF 的初始文档 —— 只在换文件时变，别每次重渲染都造新数组
@@ -288,7 +308,7 @@ export function PdfPreview({
     if (typeof annotation?.onAnnotationEvent !== "function") return;
     const sub = annotation.onAnnotationEvent((e) => {
       if (e.type === "create" || e.type === "update" || e.type === "delete") {
-        dirtyRef.current = true;
+        markDirty(true);
       }
     });
     unsubRef.current = typeof sub === "function" ? (sub as () => void) : null;

@@ -38,9 +38,11 @@ import {
   IconFolder,
   IconLoader2,
 } from "@renderer/lib/icons.js";
-import { extOf, type FileViewTarget } from "@renderer/stores/fileViewStore.js";
+import { extOf, type FileViewTarget, setFileOpenGuard, saveCurrentPreview } from "@renderer/stores/fileViewStore.js";
 import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
 import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
+import { Dialog } from "@renderer/components/ui/dialog.js";
+import { Button } from "@renderer/components/ui/button.js";
 
 /**
  * 归一之后的预览数据。**两条来源都落到这里**,下面的渲染分支只认这个类型。
@@ -111,6 +113,20 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   const [sel, setSel] = useState<SelectionToolbarState | null>(null);
   const [quote, setQuote] = useState<SelectionToolbarState | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 【UI-012】**离开当前文件前的确认**。中间栏一旦在看文件，本组件就挂着；
+   * 预览组件(如 PDF)把「有未保存改动」登记进 `fileViewStore`。用户在左栏点另一个
+   * 文件 / 关预览 / 点别的目标时，store 的 `open()` 会先调这里登记的回调 —— 弹
+   * 「保存 / 放弃 / 取消」而不是静默切走（从前批注会无声消失）。
+   *
+   * `pending`（非 null）就是"有一个待确认的切换"，`proceed` 是用户确认后真正执行的切换。
+   */
+  const [pendingLeave, setPendingLeave] = useState<{ proceed: () => void } | null>(null);
+  useEffect(() => {
+    setFileOpenGuard((_next, proceed) => setPendingLeave({ proceed }));
+    return () => setFileOpenGuard(null);
+  }, []);
 
   useEffect(() => {
     const onUp = () => {
@@ -442,6 +458,63 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
           }}
         />
       )}
+
+      {/* 【UI-012】离开当前文件前的确认（保存 / 放弃 / 取消）。从前用户加了批注没点
+          「保存批注」就切文件 / 关预览，内存里的改动**无声消失** —— 那个确认弹窗不等
+          于冲突检测，也不等于"离开保护"。这里才是。 */}
+      <Dialog.Root
+        open={pendingLeave !== null}
+        onOpenChange={(o) => {
+          // 取消（Esc / 点外部 / 取消按钮）→ 什么都不做，留在原文件。
+          if (!o) setPendingLeave(null);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup className="w-[380px] max-w-[90vw] p-4">
+            <Dialog.Title className="text-sm font-semibold text-content">
+              {t("library.pdfViewer.leaveUnsavedTitle")}
+            </Dialog.Title>
+            <Dialog.Description className="mt-2 text-xs text-content-muted">
+              {t("library.pdfViewer.leaveUnsavedBody")}
+            </Dialog.Description>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setPendingLeave(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // 放弃改动 → 直接走。
+                  const p = pendingLeave?.proceed;
+                  setPendingLeave(null);
+                  p?.();
+                }}
+              >
+                {t("library.pdfViewer.discardChanges")}
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={async () => {
+                  // 保存成功才离开；失败留在原地（错误由 PDF 的保存条显示）。
+                  const ok = await saveCurrentPreview();
+                  if (!ok) {
+                    setPendingLeave(null);
+                    return;
+                  }
+                  const p = pendingLeave?.proceed;
+                  setPendingLeave(null);
+                  p?.();
+                }}
+              >
+                {t("library.pdfViewer.saveAnnotations")}
+              </Button>
+            </div>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }

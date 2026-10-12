@@ -224,6 +224,9 @@ export const en = {
   "library.pdfViewer.savedToast": "Saved",
   "library.pdfViewer.saveFailed": "Save failed",
   "library.pdfViewer.unsavedLabel": "'{name}' has unsaved annotations",
+  "library.pdfViewer.leaveUnsavedTitle": "Unsaved annotations",
+  "library.pdfViewer.leaveUnsavedBody": "This PDF has annotation changes you haven't saved. Save them before leaving, or discard them?",
+  "library.pdfViewer.discardChanges": "Discard changes",
 
   "library.pdfAnnot.toolText": "Highlight",
   "library.pdfAnnot.toolArea": "Select area",
