@@ -138,6 +138,9 @@ writeFileSync(
         { matcher: "Bash", hooks: [{ type: "command", command: "echo pre" }] },
       ],
       PostToolUse: [{ hooks: [{ type: "command", command: "npm run lint" }] }],
+      // 【MC-061】语义在统一 HookEvent 里**没有对应**的事件(映射表显式给 null)——
+      // 必须标 `unmappable`,与"能映射但 v1 不执行(unsupported)"区分开。
+      SessionStart: [{ hooks: [{ type: "command", command: "echo started" }] }],
     },
     null,
     2,
@@ -345,11 +348,21 @@ ok(
 eq(comps.commands.length, 1, "commands parsed (1)");
 eq(comps.commands[0].name, "deploy-check", "command name = file basename");
 eq(comps.agents.length, 1, "agents parsed (1)");
-eq(comps.hooks.length, 2, "hooks parsed (2)");
+eq(comps.hooks.length, 3, "hooks parsed (3)");
 ok(comps.hooks[0].matcher === "Bash" && comps.hooks[0].command === "echo pre", "hook matcher+command");
 // 【MC-061】每个 hook 都带**显式执行状态**:v1 不执行(unsupported);事件名映射不到 Mcode
 // 统一 HookEvent 的标 unmappable —— 明说不支持,而不是让面板看着像活的、实际静默不跑。
-ok(comps.hooks.every((h) => h.execution === "unsupported"), "PreToolUse/PostToolUse 可映射 → execution=unsupported");
+ok(
+  comps.hooks.filter((h) => h.event === "PreToolUse" || h.event === "PostToolUse").every((h) => h.execution === "unsupported"),
+  "PreToolUse/PostToolUse 可映射 → execution=unsupported",
+);
+// ★ 映射不到的事件(SessionStart)必须**单独标 unmappable** —— 撤掉这个标注,面板就会把它
+// 与"能映射但不执行"混成一句,用户看不出这条 hook 的事件名根本不受支持。
+eq(
+  comps.hooks.find((h) => h.event === "SessionStart")?.execution,
+  "unmappable",
+  "★ SessionStart(映射不到)→ execution=unmappable(与 unsupported 区分)",
+);
 {
   const { mapClaudeHookEvent } = await import("@contracts/hook");
   ok(mapClaudeHookEvent("PreToolUse") === "tool.use", "PreToolUse → tool.use");
@@ -465,7 +478,7 @@ console.log("\n[4] listPlugins");
 const listed = listPlugins();
 eq(listed.length, 1, "one installed plugin listed");
 eq(listed[0].enabled, true, "enabled flag persisted");
-eq(listed[0].components.hooks.length, 2, "components in list");
+eq(listed[0].components.hooks.length, 3, "components in list");
 
 /* ── 4b. per-engine switches (plugins.engines, the skill-matrix twin) ── */
 console.log("\n[4b] per-engine switches");
