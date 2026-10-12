@@ -199,6 +199,11 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["workflow.retry", { falseMeans: "refusal" }],
   ["workflow.applyShippedUpdate", { falseMeans: "refusal" }],
   ["workflow.dismissShippedUpdate", { falseMeans: "refusal" }],
+  // agent profile 的存/删:save 走 temp + renameSync(**原子**)、validate 失败在写前;
+  // remove 是 `rmSync`(删不掉就报错,没删成)。都不留半套 → refusal。
+  // (`workflow.remove` 恒返回 `{ok:true,wasBuiltin:false}`,没有 ok:false 分支,不登记。)
+  ["workflow.saveAgentProfile", { falseMeans: "refusal" }],
+  ["workflow.removeAgentProfile", { falseMeans: "refusal" }],
   ["workflow.export", { falseMeans: "maybePartial" }],
   /* ── 【MC-066 残余① 续】skills 预设域 ─────────────────────────────────────
    *
@@ -211,6 +216,9 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    * 可能部分提交 —— 如 `skills.save` 会先 `fs.rename` 目录再写 SKILL.md,留待各自切片。) */
   ["skills.presetsSave", { falseMeans: "maybePartial" }],
   ["skills.presetsDelete", { falseMeans: "maybePartial" }],
+  // `skills.enginesSetBulk` 走 `writeEnginesMap` → `atomicWrite`(temp + rename,失败时
+  // 目标原样),抛错即"没写" → refusal。与上面的 presets 非原子写相反。
+  ["skills.enginesSetBulk", { falseMeans: "refusal" }],
   /* ── 【MC-066 残余① 续】extensionStore 域 ─────────────────────────────────
    *
    * `ipc/extensions.ts` 的四条,结果信封是 `{ok:true,…} | {ok:false;reason;limit?}`
@@ -233,6 +241,54 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["extensionStore.readFile", { falseMeans: "refusal" }],
   ["extensionStore.writeFile", { falseMeans: "refusal" }],
   ["extensionStore.listFiles", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】library 写类域 ────────────────────────────────────
+   *
+   * `ipc/library.ts` 的写类 handler 返回 `{ok:false,…}` 信封(不抛异常),从前**没登记**
+   * —— `decodeDomainOutcome` 落到「无 descriptor = accepted」,把「找不到这篇笔记 /
+   * 路径越界 / 分类已经不在了 / 这个位置不允许写入」这类**合法拒绝**报成 SUCCEEDED,
+   * Agent 以为文件已写 / 关联已删 / 分类已移。逐条读 `main/library/*.ts` 的判据:
+   *
+   *  `library.writeNote` → `notesImport.writeNote`:四条 ok:false(找不到笔记 / 没有
+   *   mdPath / **路径越界**(`isInsideLibrary` 守卫,刻意排在编辑权那道之前)/ 不是本条
+   *   目自己的笔记文件)全在 `atomicWrite` **之前**;写入那一步是 `atomicWrite`(临时名 +
+   *   rename,与 `engineTools.set` 的 `atomicWriteJson` 同款),写不成时目标保持原样 →
+   *   `refusal`。
+   *  `library.saveHighlights` → handler 先过两道守卫(路径不在已知工作区/库内 → 拒绝;
+   *   文件不存在 → 拒绝),再 `writeHighlights`(纯临时名 + rename 的**原子**替换);
+   *   两条拒绝都在写之前,失败时目标一个字节不动 → `refusal`。
+   *  `library.linkRemove` → `LibraryLinkRepo.remove`:ok:false 只有一种 —— 关联 id 不存在
+   *   (在 `DELETE` 之前 `SELECT` 判不存在就返回 false),没删任何行 → `refusal`。
+   *   (它回的信封**只有 `{ok:false}`,没有 `error` 字段** —— 判定仍成立:见 `asEnvelope`
+   *   只要求 `ok` 是布尔。)
+   *  `library.groupsSave` → `groupRegistry.saveLibraryGroups`:ok:false 是
+   *   `parseLibraryGroupsJson` 校验失败,发生在 `SettingRepo.set` **之前** → `refusal`。
+   *  `library.suppressSave` → `suppress.saveSuppress`:同形,`parseSuppressJson` 失败在
+   *   `SettingRepo.set` 之前 → `refusal`。
+   *  `library.moveCollection` → `CollectionRepo.move`:全部 ok:false(分类已经不在了 /
+   *   目标分类不在了 / 移到它自己下 / 移到自己的子分类下 / 目标位置重名)都发生在
+   *   `BEGIN`/`UPDATE library_collections` **之前** —— 库里一个字节没动 → `refusal`。
+   *  `library.adoptMarkdown` → `adoptMarkdownFile`:整包替换是**多步 rename**(拷暂存 →
+   *   老包挪退路 → 暂存换上去)。ok:false 里有一条发生在**老包已被挪走、新包又没换上去、
+   *   退路也挪不回原位**之后 —— 那时条目落点里的内容已被移走/错位,可能**已落了一部分**
+   *   → `maybePartial`(UNCERTAIN,绝不默认可安全重试)。
+   *  `library.attachToChat` → `manifest.attachToChat`:可达的拒绝里,抑制 / 回收站 /
+   *   无法识别的键 / 找不到对象都在**写清单之前**;但**清单文件(`writeItemManifest` 的
+   *   `writeFileSync`)先落盘**,之后 `pushAttach` 推 `composer:attach` 失败也会回
+   *   `{ok:false, error:「窗口没开着,挂不上去」}` —— ok:false 时清单文件可能已经写了
+   *   → `maybePartial`(不默认可安全重试)。
+   *
+   *  **本切片不登记(留待各自纵向切片 / 不适用)**:`library.writeHighlights`(写回 PDF
+   *   本身,带干净底稿备份 + 原子替换的**多步**流程,ok:false 可能在底稿已存/文件已换之后,
+   *   语义要单独核实);`library.deleteItems`(恒返回 `{items,failed}`,靠 `failed` 数组而
+   *   非 ok:false 表达"哪几份没删成",**没有 ok:false 信封**);`library.convert` 等同形家族。 */
+  ["library.writeNote", { falseMeans: "refusal" }],
+  ["library.saveHighlights", { falseMeans: "refusal" }],
+  ["library.linkRemove", { falseMeans: "refusal" }],
+  ["library.groupsSave", { falseMeans: "refusal" }],
+  ["library.suppressSave", { falseMeans: "refusal" }],
+  ["library.moveCollection", { falseMeans: "refusal" }],
+  ["library.adoptMarkdown", { falseMeans: "maybePartial" }],
+  ["library.attachToChat", { falseMeans: "maybePartial" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

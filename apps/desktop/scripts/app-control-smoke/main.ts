@@ -1119,6 +1119,23 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const r = await invokeAppTool("app_api_call", { method: "workflow.save", input: { workflow: { id: "wf_1", nodes: [], edges: [], name: "x" } } }, "me", ctx);
     check("★ MC-066 正控:workflow.save ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
   }
+
+  // agent profile 存/删 + skills.enginesSetBulk:都走 atomicWrite/temp+rename,失败即"没写" → REJECTED。
+  recordRpcHandler("workflow:saveAgentProfile", async () => ({ ok: false as const, error: "写不进去" }));
+  recordRpcHandler("workflow:removeAgentProfile", async () => ({ ok: false as const, error: "删不掉" }));
+  recordRpcHandler("skills:enginesSetBulk", async () => ({ ok: false as const, error: "ENOSPC" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.saveAgentProfile", input: { profile: { id: "p1", name: "x", instructions: "" } } }, "me", ctx);
+    check("★ MC-066:workflow.saveAgentProfile 合法 ok:false → REJECTED(temp+rename 原子)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "workflow.removeAgentProfile", input: { id: "p1" } }, "me", ctx);
+    check("★ MC-066:workflow.removeAgentProfile 合法 ok:false → REJECTED(没删成)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.enginesSetBulk", input: { names: ["s1"], claude: true, codex: true, pi: true } }, "me", ctx);
+    check("★ MC-066:skills.enginesSetBulk 合法 ok:false → REJECTED(atomicWrite 失败即没写)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
 }
 
 /* ── 3d-5. 【MC-066 残余① 续】settingsTransfer 与 projectInit 域:**无明确可登记项** ──
@@ -1223,6 +1240,94 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   {
     const r = await invokeAppTool("app_api_call", { method: "extensionStore.writeFile", input: { extensionId: "ext_1", relPath: "a.txt", content: "abc" } }, "me", ctx);
     check("★ MC-066 正控:extensionStore.writeFile ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+}
+
+/* ── 3d-7. 【MC-066 残余① 续】library 写类域的合法拒绝 ────────────────────────
+ *
+ * `ipc/library.ts` 的写类 handler 合法返回 `{ok:false,…}`(不抛),从前没登记 →
+ * `decodeDomainOutcome` 落 accepted,把「找不到笔记 / 路径越界 / 分类已经不在了 / 这个
+ * 位置不允许写入」报成 SUCCEEDED。按源码逐条判(先 grep policy.ts 确认可达:八条都不在
+ * BLOCKED,落兜底 write 档,均可经 app_api_call 到达):
+ *   - refusal(REJECTED):writeNote / saveHighlights / linkRemove / groupsSave /
+ *     suppressSave / moveCollection —— ok:false 都在**任何落盘点之前**;
+ *   - maybePartial(UNCERTAIN):adoptMarkdown(多步 rename,失败可能已挪走老包)、
+ *     attachToChat(清单文件先落盘,推 attach 失败也回 ok:false)。
+ * 这里与真 handler 一字不差地录同一份 ok:false 信封。 */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+
+  // writeNote → notesImport.writeNote:四条拒绝(找不到 / 没 mdPath / 越界 / 非本条目
+  // 笔记)都在 atomicWrite 之前。
+  recordRpcHandler("library:writeNote", async () => ({ ok: false as const, error: "路径越界,拒绝写入" }));
+  // saveHighlights → 两道守卫(位置不允许 / 文件不在了)在 writeHighlights 之前。
+  recordRpcHandler("library:saveHighlights", async () => ({ ok: false as const, error: "这个位置不允许写入" }));
+  // linkRemove → LibraryLinkRepo.remove:id 不存在就没删(信封只有 ok,没有 error)。
+  recordRpcHandler("library:linkRemove", async () => ({ ok: false as const }));
+  // groupsSave → saveLibraryGroups:parseLibraryGroupsJson 失败在 SettingRepo.set 之前。
+  recordRpcHandler("library:groupsSave", async () => ({ ok: false as const, error: "大类表应该是一组条目" }));
+  // suppressSave → saveSuppress:parseSuppressJson 失败在 SettingRepo.set 之前。
+  recordRpcHandler("library:suppressSave", async () => ({ ok: false as const, error: "屏蔽规则应该是一个对象" }));
+  // moveCollection → CollectionRepo.move:五种拒绝都在 UPDATE 之前;handler 包成
+  // {collections, ok, error}。
+  recordRpcHandler("library:moveCollection", async () => ({ collections: [], ok: false as const, error: "这个分类已经不在了" }));
+  // adoptMarkdown → adoptMarkdownFile:多步 rename,失败可能已挪走老包 → 可能已部分落定。
+  recordRpcHandler("library:adoptMarkdown", async () => ({ ok: false as const, error: "替换失败,而且老的那一份没能挪回原位", imageCount: 0, missing: [] }));
+  // attachToChat → manifest.attachToChat:清单文件先落盘,推 attach 失败也回 ok:false。
+  recordRpcHandler("library:attachToChat", async () => ({ ok: false as const, error: "窗口没开着,挂不上去" }));
+
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.writeNote", input: { id: "item_1", text: "x" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:library.writeNote 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:library.writeNote 合法 ok:false → isError=true", r.isError === true, r.isError);
+    check("★ MC-066:library.writeNote 合法 ok:false → REJECTED(没写盘)", op?.resultKind === "REJECTED", op);
+    check("★ MC-066:library.writeNote 拒绝原因原样带出(路径越界)", textOf(r).includes("路径越界"), textOf(r).slice(0, 200));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.saveHighlights", input: { pdfPath: "C:/x/a.pdf", highlights: [] } }, "me", ctx);
+    check("★ MC-066:library.saveHighlights 合法 ok:false → REJECTED(没写)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.linkRemove", input: { linkId: "link_1" } }, "me", ctx);
+    check("★ MC-066:library.linkRemove 合法 ok:false(无 error 字段) → REJECTED(没删)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.groupsSave", input: { groups: [] } }, "me", ctx);
+    check("★ MC-066:library.groupsSave 合法 ok:false → REJECTED(没写设置)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.suppressSave", input: { rule: {} } }, "me", ctx);
+    check("★ MC-066:library.suppressSave 合法 ok:false → REJECTED(没写设置)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.moveCollection", input: { id: "c1", parentId: null } }, "me", ctx);
+    check("★ MC-066:library.moveCollection 合法 ok:false → REJECTED(没动库)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.adoptMarkdown", input: { id: "item_1", path: "D:/x/full.md" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:library.adoptMarkdown 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:library.adoptMarkdown 合法 ok:false → UNCERTAIN(多步 rename,可能已挪走老包)", op?.resultKind === "UNCERTAIN", op);
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.attachToChat", input: { sessionId: "s1", key: "i:item_1" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:library.attachToChat 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:library.attachToChat 合法 ok:false → UNCERTAIN(清单文件可能已落盘)", op?.resultKind === "UNCERTAIN", op);
+  }
+
+  // 正控:ok:true 的真成功仍是 SUCCEEDED(解码器不能把真成功判成拒绝)。
+  recordRpcHandler("library:writeNote", async () => ({ ok: true as const }));
+  recordRpcHandler("library:adoptMarkdown", async () => ({ ok: true as const, imageCount: 2, missing: [] }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.writeNote", input: { id: "item_1", text: "x" } }, "me", ctx);
+    check("★ MC-066 正控:library.writeNote ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.adoptMarkdown", input: { id: "item_1", path: "D:/x/full.md" } }, "me", ctx);
+    check("★ MC-066 正控:library.adoptMarkdown ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
   }
 }
 
