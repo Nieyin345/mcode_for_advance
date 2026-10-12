@@ -1319,6 +1319,116 @@ console.log("\n⑯ 直接叫醒:配置失效要退回收件箱,启动失败也�
       }
     }
 
+    // 【MC-082 第 42/43 章 §43.2 验收】**按 Claude/Codex/Pi 的真实委派工具名分别测**。
+    //   - Codex:委派走 `collabAgentToolCall`(tool = spawnAgent/sendInput/wait/closeAgent,
+    //     adapter 兜底名 `collab_agent`)—— 见 CodexMessageAdapter.handleCollabToolCall;
+    //   - Pi:**无原生子代理**(见 PiAgentSdkProvider 能力表 + docs/pi-sdk-integration.md),
+    //     委派一律经 Mcode 的 app_* 工具(app_workflow_run 跑工作流节点 / app_session_new
+    //     派生新会话)。
+    // 这些名字都**不在**只读表里 → classifyToolEffect 归 unknown → 拒绝盲重发。
+    const delegationTools = ["spawnAgent", "collab_agent", "app_workflow_run", "app_session_new"];
+    for (const dn of delegationTools) {
+      const dl = mkSession({ kind: "chat", title: `委派工具回退闸测试 ${dn}`, providerId, workflowId: "" });
+      runtimeManager.bindSession(dl);
+      const savedDl = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+      try {
+        await runtimeManager.sendTurn(dl, { prompt: `delegate via ${dn}`, cwd: "C:/work/paper" });
+        const c = contexts.at(-1)!;
+        const beforeDl = contexts.length;
+        const e0 = events.length;
+        c.emit({ type: "tool.use", sessionId: dl.id, toolCallId: `${dn}-1`, toolName: dn, input: {}, requiresApproval: false });
+        c.emit({ type: "tool.result", sessionId: dl.id, toolCallId: `${dn}-1`, isError: false, content: "ok" });
+        finishes.at(-1)!();
+        c.emit({ type: "turn.done", sessionId: dl.id, reason: "error" });
+        for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 20));
+        eq(`★ 委派工具 ${dn} 后可写,拒绝盲重发(不重复派生子代理/工作流)`, contexts.length, beforeDl);
+        check("★ 且给出用户可见的恢复提示", events.slice(e0).some((e) => e.type === "turn.notice" && String((e as {message?:string}).message ?? "").includes("未")), events.slice(e0));
+        contexts.at(-1)!.emit({ type: "turn.done", sessionId: dl.id, reason: "end_turn" });
+      } finally {
+        finishes.at(-1)?.(); runtimeManager.dispose(dl.id);
+        SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, savedDl ?? "[]");
+      }
+    }
+
+    // 【MC-082 §43.2 验收】**子任务晚到事件不得把已提交副作用降级回只读**。已
+    // EFFECT_COMMITTED 之后再来一批 read 事件(子代理 / 后台任务的迟到流)必须仍是
+    // committed → 失败时仍拒绝盲重发。若 advanceEffectState 的 read 分支写成无条件
+    // READ_ONLY(丢掉单调收敛),这里会被拉回 READ_ONLY 从而错误放行回退 → 红。
+    {
+      const lg = mkSession({ kind: "chat", title: "晚到只读事件不降级测试", providerId, workflowId: "" });
+      runtimeManager.bindSession(lg);
+      const savedLg = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+      try {
+        await runtimeManager.sendTurn(lg, { prompt: "write then late reads", cwd: "C:/work/paper" });
+        const c = contexts.at(-1)!;
+        const beforeLg = contexts.length;
+        c.emit({ type: "tool.use", sessionId: lg.id, toolCallId: "lg-w", toolName: "Write", input: {}, requiresApproval: false });
+        c.emit({ type: "tool.result", sessionId: lg.id, toolCallId: "lg-w", isError: false, content: "ok" });
+        // 已提交后的晚到只读流(子代理 / 后台任务):不得降级。
+        c.emit({ type: "tool.use", sessionId: lg.id, toolCallId: "lg-r", toolName: "Read", input: {}, requiresApproval: false });
+        c.emit({ type: "tool.result", sessionId: lg.id, toolCallId: "lg-r", isError: false, content: "file" });
+        c.emit({ type: "tool.use", sessionId: lg.id, toolCallId: "lg-g", toolName: "Glob", input: {}, requiresApproval: false });
+        c.emit({ type: "tool.result", sessionId: lg.id, toolCallId: "lg-g", isError: false, content: "[]" });
+        finishes.at(-1)!();
+        c.emit({ type: "turn.done", sessionId: lg.id, reason: "error" });
+        for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 20));
+        eq("★ 已提交副作用后晚到只读事件不降级(仍拒绝盲重发)", contexts.length, beforeLg);
+        contexts.at(-1)!.emit({ type: "turn.done", sessionId: lg.id, reason: "end_turn" });
+      } finally {
+        finishes.at(-1)?.(); runtimeManager.dispose(lg.id);
+        SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, savedLg ?? "[]");
+      }
+    }
+
+    // 【MC-082 §43.2 验收】**取消与回退路径的交互:取消后不得盲重发**。用户点停 →
+    // turn.done reason "interrupted"(见 ClaudeAgentSdkProvider abort 分支:aborted 时
+    // flushFinal 不带 finalReason,回落 "interrupted")。回退闸只认 reason==="error"
+    // (模型失败),取消**不是**模型失败,一律不换模型重发 —— 无论本轮有没有副作用。
+    {
+      // (a) 有已提交副作用 + 取消 → 不重发
+      const cn = mkSession({ kind: "chat", title: "取消不盲重发测试(有副作用)", providerId, workflowId: "" });
+      runtimeManager.bindSession(cn);
+      const savedCn = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+      try {
+        await runtimeManager.sendTurn(cn, { prompt: "write then cancel", cwd: "C:/work/paper" });
+        const c = contexts.at(-1)!;
+        const beforeCn = contexts.length;
+        c.emit({ type: "tool.use", sessionId: cn.id, toolCallId: "cn-w", toolName: "Write", input: {}, requiresApproval: false });
+        c.emit({ type: "tool.result", sessionId: cn.id, toolCallId: "cn-w", isError: false, content: "ok" });
+        runtimeManager.interrupt(cn.id);
+        finishes.at(-1)!();
+        c.emit({ type: "turn.done", sessionId: cn.id, reason: "interrupted" });
+        for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 20));
+        eq("★ 有副作用时取消不触发盲重发", contexts.length, beforeCn);
+      } finally {
+        finishes.at(-1)?.(); runtimeManager.dispose(cn.id);
+        SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, savedCn ?? "[]");
+      }
+    }
+    {
+      // (b) 无副作用 + 取消 → 仍不重发(取消不是模型失败,不能换模型重试)
+      const c2 = mkSession({ kind: "chat", title: "取消不盲重发测试(无副作用)", providerId, workflowId: "" });
+      runtimeManager.bindSession(c2);
+      const savedC2 = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+      try {
+        await runtimeManager.sendTurn(c2, { prompt: "just cancel", cwd: "C:/work/paper" });
+        const c = contexts.at(-1)!;
+        const beforeC2 = contexts.length;
+        runtimeManager.interrupt(c2.id);
+        finishes.at(-1)!();
+        c.emit({ type: "turn.done", sessionId: c2.id, reason: "interrupted" });
+        for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 20));
+        eq("★ 无副作用时取消也不换模型重发", contexts.length, beforeC2);
+      } finally {
+        finishes.at(-1)?.(); runtimeManager.dispose(c2.id);
+        SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, savedC2 ?? "[]");
+      }
+    }
+
     // 渲染端收到 turn.done 就回到空闲、排队消息立刻发来;此时引擎可能还在收尾。
     // sendTurn 要等收尾而不是返回 null(返回 null 时 IPC 会拒绝,消息不发)。
     const queued = mkSession({ kind: "chat", title: "收尾期间发送测试", providerId, workflowId: "" });
