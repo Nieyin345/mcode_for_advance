@@ -1673,7 +1673,7 @@ console.log("\nSSE 背压(MC-007)");
 console.log("\n监听地址可收敛(MC-004)");
 
 {
-  const { resolveBindAddressValue, endpointHostForBind } = await import("@main/mobile/MobileHttpServer.js");
+  const { resolveBindAddressValue, endpointHostForBind, decidePlaintextCredential, isLoopbackPeer } = await import("@main/mobile/MobileHttpServer.js");
   const net = await import("node:net");
 
   // ── 纯函数:三态 + 畸形 fail-closed ──
@@ -1688,6 +1688,21 @@ console.log("\n监听地址可收敛(MC-004)");
   eq("★ 畸形值(IP 少一段)→ fail-closed 127.0.0.1(不回落 0.0.0.0)", resolveBindAddressValue("192.168.1"), "127.0.0.1");
   eq("★ 畸形值(带端口)→ fail-closed 127.0.0.1", resolveBindAddressValue("0.0.0.0:7331"), "127.0.0.1");
   eq("★ 畸形值(带协议)→ fail-closed 127.0.0.1", resolveBindAddressValue("http://0.0.0.0"), "127.0.0.1");
+
+  // ── 【MC-004 / §50.6】非回环明文凭据闸 ──
+  // 本服务明文 HTTP;非回环对端的账号口令 / Bearer 令牌默认拒绝,除非用户显式 opt-in。
+  eq("回环对端 → 放行(loopback)", decidePlaintextCredential(true, false), "loopback");
+  eq("回环对端即使没 opt-in 也放行", decidePlaintextCredential(true, true), "loopback");
+  eq("★ 非回环 + 未 opt-in → 拒绝(refused,fail-closed)", decidePlaintextCredential(false, false), "refused");
+  eq("非回环 + 显式 opt-in → 放行(opted-in)", decidePlaintextCredential(false, true), "opted-in");
+  // 对端地址判定:回环的各种写法。
+  check("127.0.0.1 判回环", isLoopbackPeer("127.0.0.1"));
+  check("::1 判回环", isLoopbackPeer("::1"));
+  check("IPv4-mapped ::ffff:127.0.0.1 判回环", isLoopbackPeer("::ffff:127.0.0.1"));
+  check("127.0.0.5(整个 /8)判回环", isLoopbackPeer("127.0.0.5"));
+  check("★ 192.168.1.9(LAN)不判回环", !isLoopbackPeer("192.168.1.9"));
+  check("★ 公网 8.8.8.8 不判回环", !isLoopbackPeer("8.8.8.8"));
+  check("空 / null 不判回环(保守)", !isLoopbackPeer(null) && !isLoopbackPeer(undefined));
 
   // ── 回显 host 跟着绑定地址走(收敛后二维码不再指向没在听的 LAN IP)──
   eq("绑通配 → 回显探测到的 LAN IP", endpointHostForBind("0.0.0.0", "192.168.1.9"), "192.168.1.9");
@@ -1751,6 +1766,53 @@ console.log("\n监听地址可收敛(MC-004)");
       /server\.listen\(port,\s*bindAddress\b/.test(code) && !/server\.listen\(port,\s*"0\.0\.0\.0"/.test(code),
       { listenLines: code.match(/server\.listen\([^)]*/g) },
     );
+  }
+
+  /* ── §50.6 端到端:非回环对端的账号密码登录被**真的**拒绝 ───────────────────
+   *
+   * 上面那批是纯函数断言;这里直接拿生产 request handler,把 `req.socket.remoteAddress`
+   * 伪造成 LAN 地址(192.168.1.9),真实走一遍 `/api/auth/login` —— 断言**真的** 403、
+   * 且没有落到口令校验。回环对端(真实 fetch 那批)仍正常,证明没误伤。 */
+  {
+    const handler = createMobileRequestHandler(ENDPOINT);
+    const driveLogin = (remoteAddress: string): Promise<{ status: number; error?: string }> =>
+      new Promise<{ status: number; error?: string }>((resolve) => {
+        const chunks: Buffer[] = [];
+        const body = Buffer.from(JSON.stringify({ username: "u", password: "p" }));
+        const req = {
+          url: "/api/auth/login",
+          method: "POST",
+          headers: { "content-type": "application/json", "content-length": String(body.length) },
+          socket: { remoteAddress },
+          on: (ev: string, cb: (arg?: unknown) => void) => {
+            if (ev === "data") cb(body);
+            if (ev === "end") cb();
+          },
+        } as unknown as import("node:http").IncomingMessage;
+        const res = {
+          statusCode: 0,
+          headersSent: false,
+          setHeader() {},
+          writeHead(code: number) {
+            this.statusCode = code;
+            this.headersSent = true;
+          },
+          end(payload?: string) {
+            if (payload) chunks.push(Buffer.from(payload));
+            let parsed: { error?: string } = {};
+            try { parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { /* */ }
+            resolve({ status: res.statusCode, error: parsed.error });
+          },
+        };
+        handler(req, res as unknown as import("node:http").ServerResponse);
+      });
+    // 非回环 + 未 opt-in(本套没设 opt-in 键)→ 403 明确拒绝。
+    const lan = await driveLogin("192.168.1.9");
+    eq("★ 非回环明文登录被拒(403)", lan.status, 403);
+    check("★ 拒因写明是明文凭据(不是账号密码错)", typeof lan.error === "string" && lan.error.includes("明文"), lan.error);
+    // 回环对端放行(到口令校验那一步 —— 账号不存在会 401/400,但**不是** 403)。
+    const loop = await driveLogin("127.0.0.1");
+    check("回环对端不被明文闸拦(不是 403)", loop.status !== 403, loop.status);
   }
 }
 

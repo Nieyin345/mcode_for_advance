@@ -39,6 +39,7 @@ import {
   MOBILE_PORT_SETTING_KEY,
   MOBILE_ENABLED_SETTING_KEY,
   MOBILE_BIND_ADDRESS_SETTING_KEY,
+  MOBILE_ALLOW_PLAINTEXT_CREDENTIALS_SETTING_KEY,
   MOBILE_PAIRED_DEVICES_SETTING_KEY,
   MOBILE_LOGIN_SETTING_KEY,
   SSE_HEARTBEAT_INTERVAL_MS,
@@ -151,6 +152,41 @@ export function endpointHostForBind(bindAddress: string, detectedLanIp: string |
   const isWildcard = bindAddress === "0.0.0.0" || bindAddress === "::";
   if (isWildcard) return detectedLanIp ?? "localhost";
   return bindAddress.includes(":") ? `[${bindAddress}]` : bindAddress;
+}
+
+/** 【MC-004 / §50.6】**明文凭据闸**的判定 —— 纯函数,可无头测试。
+ *
+ *  本服务说**明文 HTTP**(不终结 TLS)。回环对端(`127.0.0.1` / `::1`)时传输不出本机,
+ *  其上口令/令牌无碍;一旦能被**别的机器**连到,把账号口令或 `Bearer` 令牌发上去,就等于
+ *  把机密放到了同网段被动观察者能读的网络里。
+ *
+ *  判据:
+ *   - `peerIsLoopback === true` → 放行(`loopback`,安全);
+ *   - 非回环对端:`allowPlaintext === true`(用户显式 opt-in)→ 放行(`opted-in`);
+ *   - 非回环对端且未 opt-in(默认 / `"0"` / 读失败 / 畸形值)→ **拒绝** `refused`(fail-closed)。
+ *
+ *  ⚠️ 这不是加密 —— opt-in 只是把"用户知情并接受明文"讲清楚;真正的修法是 TLS/可信隧道
+ *  (§50.6 明列,未做,见 remaining)。 */
+export type PlaintextCredentialDecision = "loopback" | "opted-in" | "refused";
+
+export function decidePlaintextCredential(
+  peerIsLoopback: boolean,
+  allowPlaintext: boolean,
+): PlaintextCredentialDecision {
+  if (peerIsLoopback) return "loopback";
+  return allowPlaintext ? "opted-in" : "refused";
+}
+
+/** 从 socket 对端地址判是否回环。`::ffff:127.0.0.1`(IPv4-mapped IPv6 回环)也算。 */
+export function isLoopbackPeer(address: string | undefined | null): boolean {
+  if (!address) return false;
+  const a = address.trim().toLowerCase();
+  if (a === "::1" || a === "127.0.0.1") return true;
+  // IPv4-mapped IPv6 回环:`::ffff:127.0.0.1`。
+  if (a.startsWith("::ffff:") && a.slice("::ffff:".length) === "127.0.0.1") return true;
+  // 整个 127.0.0.0/8 都是回环。
+  if (/^127\./.test(a)) return true;
+  return false;
 }
 
 export interface MobileServerHandle {
@@ -439,6 +475,41 @@ async function handlePairVerify(req: IncomingMessage, res: ServerResponse, endpo
  *  scrypt 出结果前**全部通过锁定检测,单来源锁形同虚设,还能迅速触达全局锁连累合法
  *  用户。现在 {@link beginLoginAttempt} 把"在途尝试"也算进来源预算与全局在途上限,
  *  超出的当场 429,不进 scrypt。 */
+/** 【MC-004 / §50.6】读「是否允许非回环明文凭据」的 opt-in。只有显式 `"1"` 才算允许;
+ *  未配置 / `"0"` / 读失败 / 畸形值一律**不允许**(fail-closed,与 `readEnabled` 同姿态)。 */
+function allowPlaintextCredentials(): boolean {
+  try {
+    return SettingRepo.get(MOBILE_ALLOW_PLAINTEXT_CREDENTIALS_SETTING_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** 从 `req.socket.remoteAddress` 判对端是否回环。 */
+function peerIsLoopback(req: IncomingMessage): boolean {
+  return isLoopbackPeer(req.socket?.remoteAddress);
+}
+
+/** 【MC-004 / §50.6】凭据请求的明文闸。返回 null = 放行;否则返回要发给客户端的错误。
+ *
+ *  本服务**明文 HTTP**(不终结 TLS)。回环对端没问题;非回环对端要发口令 / `Bearer` 令牌时,
+ *  除非用户显式 opt-in,否则**当场拒绝** —— 不要把机密放进同网段可被动观察的网络。
+ *  这是"启用后传输不泄漏"这条的一半(另一半是 TLS/可信隧道,未做)。 */
+function plaintextCredentialRefusal(
+  req: IncomingMessage,
+  res: ServerResponse,
+): { error: string } | null {
+  const decision = decidePlaintextCredential(peerIsLoopback(req), allowPlaintextCredentials());
+  if (decision !== "refused") return null;
+  log.warn(`mobile: refused plaintext credentials from non-loopback peer (MC-004)`);
+  sendJson(res, 403, {
+    error:
+      "出于安全考虑，非本机连接不能在明文 HTTP 上提交账号密码或令牌。" +
+      "请改用 TLS/可信隧道，或在「设置 → 手机」里显式允许明文凭据（仅建议在可信私网、且你了解其未加密风险时）。",
+  });
+  return { error: "plaintext-credentials-refused" };
+}
+
 async function handlePasswordLogin(req: IncomingMessage, res: ServerResponse, endpoint: string): Promise<void> {
   await awaitDb();
   const client = loginClientKey(req);
@@ -581,6 +652,8 @@ export function createMobileRequestHandler(
       return;
     }
     if (path === "/api/auth/login" && req.method === "POST") {
+      // 【MC-004 / §50.6】账号密码**绝不能**在非回环的明文 HTTP 上裸传(除非用户显式 opt-in)。
+      if (plaintextCredentialRefusal(req, res)) return;
       handlePasswordLogin(req, res, endpoint).catch((err) => {
         log.error(`mobile: auth/login failed: ${(err as Error).message}`);
         if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
