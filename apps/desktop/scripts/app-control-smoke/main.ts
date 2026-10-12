@@ -21,6 +21,7 @@ import { DOMAIN_LABELS, policyFor } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog } from "@main/appControl/tools.js";
+import { isEnvelopeMethod } from "@main/appControl/commandOutcome.js";
 import { setOperationLedger, type OperationLedger } from "@main/appControl/operations.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
@@ -1091,6 +1092,59 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   {
     const r = await invokeAppTool("app_api_call", { method: "workflow.save", input: { workflow: { id: "wf_1", nodes: [], edges: [], name: "x" } } }, "me", ctx);
     check("★ MC-066 正控:workflow.save ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+}
+
+/* ── 3d-5. 【MC-066 残余① 续】settingsTransfer 与 projectInit 域:**无明确可登记项** ──
+ *
+ * 按源码逐个判后,这两个域**都不该登记结果合同**,断言把这两条判据钉住(将来谁误登记 /
+ * 误放开,这里先红):
+ *
+ *   ① `setting.exportToFile` / `setting.importFromFile` —— 它们的**合法返回确实是**
+ *      `{ok:true,…} | {ok:false,canceled?|error?}` 信封(settingTransfer.ts 里一字不差),
+ *      但两者都被 `policy.ts` 钉在 **blocked** 档(会弹系统保存/打开框、整批改写设置,
+ *      只能用户本人在设置页操作)。`app_api_call` 的可达性在 `gateAppAction` 的
+ *      `level === "blocked"` 分支就**返回**,**根本到不了** `callRpc`/`decodeDomainOutcome`
+ *      —— 所以 `ok:false` 永远不可能被 agent 这条路误报成 SUCCEEDED,**没有要补的洞**。
+ *   ② `projectInit.*` —— **逐方法读过 handler**(`ipc/projectInit.ts` → `projectInit/service.ts`):
+ *      合法路径一律**抛异常**(`stored()` 找不到 / schema 校验 / revision 不符 / 上限……),
+ *      只有 `delete`/`setDefault` 返回 `{ok:true}` —— **没有任何 `ok:false` 分支**。抛异常
+ *      已由 tools.ts 的 catch 支路判成 REJECTED/UNCERTAIN,不归 `decodeDomainOutcome`。
+ *      catalog 的 output 形状也印证:`projectInit.*` 无一条声明 ok:false。
+ */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+
+  // ② 判据锚:这两个域的方法**都不**是 ok/error 信封合同(没登记到 EXACT/FAMILIES)。
+  //    将来谁把它们误加进 `commandOutcome.ts` 的 EXACT → 这里真红。
+  check("★ MC-066:setting.exportToFile 未登记为 ok/error 信封合同(blocked 不可达)", isEnvelopeMethod("setting.exportToFile") === false);
+  check("★ MC-066:setting.importFromFile 未登记为 ok/error 信封合同(blocked 不可达)", isEnvelopeMethod("setting.importFromFile") === false);
+  for (const m of ["projectInit.list", "projectInit.get", "projectInit.save", "projectInit.delete", "projectInit.preview", "projectInit.apply", "projectInit.setDefault"]) {
+    check(`★ MC-066:${m} 未登记为 ok/error 信封合同(handler 只抛异常/返回 ok:true)`, isEnvelopeMethod(m) === false);
+  }
+  // 正控:真正登记过的信封方法仍为 true(证明上面的 false 不是"判据整体失灵")。
+  check("★ MC-066 正控:browser.create 仍是已登记的信封合同", isEnvelopeMethod("browser.create") === true);
+
+  // ① 端到端:blocked 的 setting.* 经 app_api_call 调,**在 gateAppAction 就被拒**,
+  //    并且**真 handler 一个字节没跑**(记一笔调用、断言为 0)。撤掉 policy.ts 里那两条
+  //    BLOCKED → 闸门放行 → 未登记 → decodeDomainOutcome 落 accepted → SUCCEEDED,这里真红。
+  let exportRan = 0;
+  recordRpcHandler("setting:exportToFile", async () => { exportRan += 1; return { ok: false as const, canceled: true }; });
+  recordRpcHandler("setting:importFromFile", async () => { exportRan += 1; return { ok: false as const, error: "坏的设置文件" }; });
+  {
+    const r = await invokeAppTool("app_api_call", { method: "setting.exportToFile", input: {} }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:setting.exportToFile 被 policy 钉死 → REJECTED(不是 SUCCEEDED)", op?.resultKind === "REJECTED", op);
+    check("★ MC-066:setting.exportToFile 的稳定短码 = blocked", op?.code === "blocked", op?.code);
+    check("★ MC-066:setting.exportToFile 真 handler 从未被调用(agent 到不了)", exportRan === 0, exportRan);
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "setting.importFromFile", input: {} }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:setting.importFromFile 被 policy 钉死 → REJECTED(不是 SUCCEEDED)", op?.resultKind === "REJECTED", op);
+    check("★ MC-066:setting.importFromFile 的稳定短码 = blocked", op?.code === "blocked", op?.code);
+    check("★ MC-066:setting.importFromFile 真 handler 从未被调用(agent 到不了)", exportRan === 0, exportRan);
   }
 }
 
