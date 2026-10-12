@@ -535,8 +535,11 @@ function itemOf(target: FileViewTarget): { id: string } {
  * 按**来源**取数,归一到 `ViewData`。
  *
  * 这是两条路唯一的交汇点 —— 上面所有渲染分支都只认归一后的形状。
+ *
+ * 【MC-086】导出供回归套件直接驱动(它只依赖 `api.library.*`,无头换桩即可跑)——
+ * 目录 linked 条目里翻进子文件时 `baseDir` 的算法正是这里,值得单独钉住。
  */
-async function loadViewData(
+export async function loadViewData(
   target: FileViewTarget,
   relPath: string | null,
 ): Promise<{ data: ViewData; name?: string; absPath?: string }> {
@@ -570,11 +573,15 @@ async function loadViewData(
           ...(target.source.which ? { which: target.source.which } : {}),
         });
         if (p.path) {
-          baseDir = dirname(p.path);
           // 条目根 + relPath = 用户**正在看的那份子文件**的绝对路径。
           // 从前只给条目根 —— 目录条目里翻进子文件后引用，「来源」指向的是根，
           // 模型按它去读会读错文件。
           mdPath = relPath ? joinPath(p.path, relPath) : p.path;
+          // 【MC-086】**`baseDir` 必须是 md 文件**自己**所在目录,不是条目根的父目录。**
+          // 从前是 `dirname(p.path)` —— 目录 linked 条目里翻进 `folder/docs/demo.md` 时，
+          // 它算成 `folder` 的**父目录**,于是 `![](images/1.png)` 解析到错误的层级(目录越深越明显)。
+          // 图片相对路径的基准只能是正在渲染的那份 Markdown 所在目录 —— 与实际 `mdPath` 同一来源。
+          baseDir = dirname(mdPath);
         }
       } catch {
         /* 手机端 `api.library` 是抛错的代理 —— 拿不到就没有 baseDir */
