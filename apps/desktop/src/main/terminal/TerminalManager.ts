@@ -15,6 +15,7 @@ import type { TerminalInfo, TerminalOrigin } from "@contracts/ipc";
 import { TERMINAL_BUFFER_CHARS, USER_TERMINAL_ORIGIN } from "@contracts/ipc";
 import { sendToRenderer } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
+import { normPathKey } from "@main/lib/pathNorm.js";
 import { registerSessionCleanupHook, registerProjectCleanupHook } from "@main/lib/sessionCleanupHooks.js";
 import { resolveDefaultShell } from "./shellResolve.js";
 import { buildTerminalEnv } from "./envRefresh.js";
@@ -318,9 +319,15 @@ class TerminalManagerImpl {
   }
 
   /** 回收**某个项目根**下所有终端(删项目时调,MC-042)。返回杀掉的条数。
-   *  按 `info.projectPath` 归属 —— 与 `list()` 的过滤口径一致。 */
+   *  按 `info.projectPath` 归属 —— 与 `list()` 的过滤口径一致。
+   *
+   *  ⚠️ **比的是规范化路径键,不是裸字符串。** `ProjectRepo` 记的是用户登记时那个拼写,
+   *  而终端创建时经 `resolve()` 落成另一种拼写 —— 同一个目录可以给出不同形态(Windows
+   *  上大小写任意、`\` 与 `/` 混用)。拿裸 `===` 比会让删项目**漏掉**本项目下的终端。
+   *  收口到 `normPathKey`(与本仓 MC-040 写锁键、MC-070 项目指令注入同一口径)。 */
   killByProject(projectPath: string): number {
-    return this.killWhere((t) => t.info.projectPath === projectPath);
+    const key = normPathKey(projectPath);
+    return this.killWhere((t) => normPathKey(t.info.projectPath) === key);
   }
 
   /** 回收**某条会话**开的所有终端(删会话时调,MC-042)。按 `origin.sessionId`
@@ -348,7 +355,11 @@ class TerminalManagerImpl {
    */
   list(projectPath?: string, bufferFor?: string): TerminalInfo[] {
     const all = [...this.terminals.values()].map((t) => t.info);
-    const scoped = !projectPath ? all : all.filter((t) => t.projectPath === projectPath);
+    // 同 `killByProject`:按**规范化路径键**过滤,而不是裸字符串 —— 否则同一项目的
+    // 不同拼写会让列表要么漏掉、要么串进别项目的终端(与 MC-042 归属判定同一口径)。
+    const scoped = !projectPath
+      ? all
+      : all.filter((t) => normPathKey(t.projectPath) === normPathKey(projectPath));
     if (!bufferFor) return scoped;
     return scoped.map((info) =>
       info.terminalId === bufferFor

@@ -1217,6 +1217,46 @@ windowStub.resetSent();
   );
   await kill({ terminalId: sC.terminalId as string });
   await kill({ terminalId: sD.terminalId as string });
+
+  /* ── ★ 同一目录的**不同拼写**必须被认作同一个项目(路径身份规范化) ──
+   *
+   * `ProjectRepo` 记的是用户登记时那个**原样字符串**,而终端创建时经 `resolve()` 落成
+   * 规范形态 —— 两者可以对同一个目录给出不同拼写(Windows 上开/关目录都能命中同一目录,
+   * 大小写任意;分隔符 `\` 与 `/` 也会混)。`killByProject` 若拿裸 `===` 比,这种拼写漂移
+   * 会让删项目**漏掉**本项目下的终端 —— 正是 MC-040(项目 MCP 写锁键)、MC-070(项目指令
+   * 注入)已经用 `normPathKey` 收口过的同一类错。判据立在"换个拼写也该被认出来"上。 */
+  const sE = await create({ projectPath: PROJECT, origin: { kind: "session", sessionId: "sess-E" } });
+  // 变体一:分隔符漂移(所有平台都有意义 —— win32 上 `PROJECT` 是反斜杠形态)。
+  const slashVariant = PROJECT.replace(/\\/g, "/");
+  if (slashVariant !== PROJECT) {
+    runProjectCleanupHooks("p_term_scope", slashVariant);
+    await flushAsync();
+    eq(
+      "★ 删项目:分隔符漂移(\\ 与 /)也算同一个项目根,终端照样被回收",
+      ((await list({ projectPath: PROJECT })).terminals as Array<{ terminalId: string }>).some((t) => t.terminalId === sE.terminalId),
+      false,
+    );
+  }
+  // 变体二:大小写漂移(win32/darwin 文件系统大小写不敏感,同一个目录)。
+  if (process.platform === "win32" || process.platform === "darwin") {
+    const sF = await create({ projectPath: PROJECT, origin: { kind: "session", sessionId: "sess-F" } });
+    const caseVariant = PROJECT.replace(/[a-z]/gi, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
+    runProjectCleanupHooks("p_term_scope", caseVariant);
+    await flushAsync();
+    eq(
+      "★ 删项目:大小写漂移也算同一个项目根,终端照样被回收",
+      ((await list({ projectPath: PROJECT })).terminals as Array<{ terminalId: string }>).some((t) => t.terminalId === sF.terminalId),
+      false,
+    );
+    if (existsSync(caseVariant)) {
+      // 只有变体确实指向同一目录时,上面那条才算真的验到了漂移(而不是验到"目录不存在")。
+      check("诊断:大小写变体在本机确实解析到同一目录", true, { caseVariant });
+    }
+    await kill({ terminalId: sF.terminalId as string });
+  }
+  if (existsSync(slashVariant)) {
+    await kill({ terminalId: sE.terminalId as string });
+  }
 }
 
 TerminalManager.disposeAll();
