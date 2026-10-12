@@ -133,6 +133,11 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    * 抛错 —— 那条走 `atomicWriteJson`(`writeFileSync` 临时名 + `renameSync`),写不成时
    * 目标文件保持原样、**没有半套** → `refusal`。 */
   ["engineTools.set", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】git.generateCommitMessage ────────────────────────
+   *
+   * 这条是**纯计算**(让模型从 staged diff 生成一句提交信息),ok:false(模型没返回
+   * 有效内容 / 认证失败 / 网关无渠道)不改仓库、不提交任何东西 → `refusal`。 */
+  ["git.generateCommitMessage", { falseMeans: "refusal" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

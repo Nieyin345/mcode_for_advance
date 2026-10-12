@@ -992,6 +992,13 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const r = await invokeAppTool("app_api_call", { method: "engineTools.set", input: { engine: "claude", exclude: ["Bash"] } }, "me", ctx);
     check("★ MC-066:engineTools.set 合法 ok:false → REJECTED(没写)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
   }
+
+  // git.generateCommitMessage 是纯计算(生成提交信息),ok:false 不改仓库 → REJECTED。
+  recordRpcHandler("git:generateCommitMessage", async () => ({ ok: false as const, error: "模型未返回有效内容" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "git.generateCommitMessage", input: { repoPath: "C:/proj", requestId: "r1" } }, "me", ctx);
+    check("★ MC-066:git.generateCommitMessage 合法 ok:false → REJECTED(纯计算)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
 }
 
 {
