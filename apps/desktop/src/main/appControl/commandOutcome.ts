@@ -148,6 +148,16 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["file.mkdir", { falseMeans: "maybePartial" }],
   ["file.copy", { falseMeans: "maybePartial" }],
   ["file.rename", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】automation.watch ─────────────────────────────────
+   *
+   * `automationRunner.startWatch` 的 `{ok:false,error}` 全是**起跑前的拒绝**:发起会话/
+   * 项目不在了、上一次守望还在跑、内置模板没了、模板缺节点;唯一在 saveWorkflow 之后的
+   * `!saved.ok` 也是**写前拒绝**(saveWorkflow 原子,其 ok:false 在落库之前)→ `refusal`。
+   *
+   * 同批**确认无需登记**的:`git.cancelGenerateCommitMessage` **恒返回 `{ok:true}`**(没有任何
+   * ok:false 分支);`mcp.*` 除 `mcp.list`(返回 `{servers}` 数据对象、不是 ok/error 信封)
+   * 外**全部被 policy 钉 BLOCKED**,agent 到不了。 */
+  ["automation.watch", { falseMeans: "refusal" }],
   /* ── 【MC-066 残余① 续】git.generateCommitMessage ────────────────────────
    *
    * 这条是**纯计算**(让模型从 staged diff 生成一句提交信息),ok:false(模型没返回

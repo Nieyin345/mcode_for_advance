@@ -1019,6 +1019,13 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const r = await invokeAppTool("app_api_call", { method: "file.rename", input: { oldPath: "C:/proj/a.ts", newPath: "C:/proj/b.ts" } }, "me", ctx);
     check("★ MC-066:file.rename 合法 ok:false → REJECTED(rename 原子)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
   }
+
+  // automation.watch:startWatch 的 ok:false 全是起跑前拒绝 → REJECTED。
+  recordRpcHandler("automation:watch", async () => ({ ok: false as const, error: "发起会话不在了" }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "automation.watch", input: { sessionId: "s_gone" } }, "me", ctx);
+    check("★ MC-066:automation.watch 合法 ok:false → REJECTED(起跑前拒绝)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
 }
 
 /* ── 3d-4. 【MC-066 残余① 续】workflow.* 与 skills.* 的合法拒绝 ────────────────
