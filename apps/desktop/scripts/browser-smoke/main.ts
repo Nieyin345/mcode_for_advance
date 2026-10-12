@@ -949,6 +949,109 @@ console.log("\nMC-043:agent 浏览器工具的跨项目隔离(真工具函数 + 
   }
 }
 
+/* ──────────────── 5b. 项目根的不同拼写必须认作同一个项目(路径身份规范化) ────────────────
+ *
+ * MC-043 让每个 browser 工具按 `projectPath` 隔离,但比较用的是**裸 `===`**。
+ * `ProjectRepo` 存的是用户登记时的**原样拼写**,而浏览器视图创建时经 `ipc/browser.ts` 的
+ * `resolve()`、会话调用时经 provider 的 `req.cwd` / 闭包 `projectPath` 各落成一种拼写
+ * —— 同一个目录可以给出不同形态(Windows 上大小写任意、`\` 与 `/` 混用、尾部斜杠有无)。
+ * 裸 `===` 会把「本项目自己的视图」当成「别的项目」:browser_list 误报「本项目没有打开的
+ * 浏览器视图」,无 browserId 的 snapshot/click 落到 no-live-browser。这正是 **MC-042** 已在
+ * 终端层用 `normPathKey` 收口过的**同一类**错(MC-040 写锁键、MC-070 项目指令注入同口径)。
+ *
+ * 判据立在「换个等价拼写,仍应认作本项目」上 —— 走**真工具函数** + 假视图清单(同一套
+ * `--alias:@main/browser/BrowserManager.js` 桩 §5 已在用),而不是复述。
+ */
+
+console.log("\n路径身份:browser 工具的项目根比较按规范化键,不按裸字符串");
+
+{
+  const tools = await import("@main/browser/agentBrowserTools.js");
+  const { resolveBrowserTarget } = await import("@main/browser/agentTargeting.js");
+  const toolText = (r: ToolResult): string => toolTextOf(r);
+  const SENT = "SENTINEL-本项目正文";
+  // 视图存的是 ProjectRepo 里那份原样拼写(PROJECT 是本仓库根,反斜杠形态、真实存在)。
+  const STORED = PROJECT;
+  const sepVariant = STORED.replace(/\\/g, "/");
+  const trailVariant = STORED + (STORED.includes("\\") ? "\\" : "/");
+  const caseVariant = STORED.replace(/[a-z]/gi, (c) =>
+    c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase(),
+  );
+
+  // ── 纯判定层:等价拼写必须解析到同一视图 ──
+  {
+    const views = [{ browserId: "p1", projectPath: STORED }];
+    if (sepVariant !== STORED) {
+      eq(
+        "★ resolveBrowserTarget:分隔符漂移(\\ vs /)仍解析到本项目视图",
+        resolveBrowserTarget(views, { projectPath: sepVariant }),
+        { ok: true, browserId: "p1" },
+      );
+    }
+    eq(
+      "★ resolveBrowserTarget:尾部分隔符漂移仍解析到本项目视图",
+      resolveBrowserTarget(views, { projectPath: trailVariant }),
+      { ok: true, browserId: "p1" },
+    );
+    if (process.platform === "win32" || process.platform === "darwin") {
+      eq(
+        "★ resolveBrowserTarget:大小写漂移仍解析到本项目视图",
+        resolveBrowserTarget(views, { projectPath: caseVariant }),
+        { ok: true, browserId: "p1" },
+      );
+    }
+    // 反向:真正不同的项目仍不得被认作同一个(规范化不能把一切合并)。
+    eq(
+      "对照:完全不同的项目根仍解析不到本项目视图(no-live-browser)",
+      resolveBrowserTarget(views, { projectPath: "D:\\某个完全不同的仓库\\xyz" }),
+      { ok: false, reason: "no-live-browser" },
+    );
+  }
+
+  // ── 真工具层:换个拼写,list 仍列出本项目视图、无 browserId 的 snapshot 仍落本项目 ──
+  stub.setViews([{ browserId: "p1", projectPath: STORED, url: "https://p.example/x", title: "P 页", body: SENT }]);
+
+  {
+    stub.resetRecorded();
+    const t = toolText(tools.browserList(sepVariant));
+    check(
+      "★ browser_list:分隔符漂移仍列出本项目视图(不误报『没有打开的浏览器视图』)",
+      t.includes("p1"), t.slice(0, 200),
+    );
+  }
+  {
+    stub.resetRecorded();
+    const r = await tools.browserSnapshot({ projectPath: sepVariant });
+    check(
+      "★ browser_snapshot:分隔符漂移(无 browserId)仍落到本项目视图,不报 no-live-browser",
+      stub.lastCall("snapshot")?.args[0] === "p1",
+      stub.lastCall("snapshot")?.args,
+    );
+    check(
+      "★ 漂移拼写的 snapshot 读到的正是本项目正文",
+      toolText(r).includes(SENT), toolText(r).slice(0, 200),
+    );
+  }
+  {
+    stub.resetRecorded();
+    const r = await tools.browserSnapshot({ projectPath: trailVariant });
+    check(
+      "★ browser_snapshot:尾部分隔符漂移仍落到本项目视图",
+      stub.lastCall("snapshot")?.args[0] === "p1",
+      stub.lastCall("snapshot")?.args,
+    );
+  }
+  if (process.platform === "win32" || process.platform === "darwin") {
+    stub.resetRecorded();
+    const r = await tools.browserSnapshot({ projectPath: caseVariant });
+    check(
+      "★ browser_snapshot:大小写漂移仍落到本项目视图",
+      stub.lastCall("snapshot")?.args[0] === "p1",
+      stub.lastCall("snapshot")?.args,
+    );
+  }
+}
+
 /* ──────────────── 6. 每个 provider 都把调用者项目身份接进每个浏览器工具 ────────────────
  *
  * §5 验的是**工具函数本身**真的按 projectPath 隔离。但把那条隔离接上,靠的是三个

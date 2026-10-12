@@ -36,7 +36,8 @@ import { app } from "electron";
 // 也是用这个包名 import 的。
 import { BrowserManager, type BrowserDownloadEntry } from "@main/browser/BrowserManager.js";
 import { SNAPSHOT_DISPLAY_CAP } from "./snapshotScript.js";
-import { resolveBrowserTarget, fileUrlWorkspaceError } from "./agentTargeting.js";
+import { resolveBrowserTarget, fileUrlWorkspaceError, sameProjectRoot } from "./agentTargeting.js";
+import { normPathKey } from "@main/lib/pathNorm.js";
 import { log } from "@main/lib/logger.js";
 import { savePngArtifact } from "@main/lib/screenshotStore.js";
 import { SettingRepo } from "@main/store/repositories.js";
@@ -230,10 +231,14 @@ function pruneDeadBrowserState(liveIds: Set<string>): void {
   }
 }
 
-/** Record the agent's active view — per project (when known) and globally. */
+/** Record the agent's active view — per project (when known) and globally.
+ *
+ *  ⚠️ **按规范化路径键记**,不是原样字符串 —— 与 `resolveBrowserTarget` / `browserList`
+ *  的比较口径一致(MC-042 终端归属、MC-070 项目指令注入同款),否则同一项目换一种拼写
+ *  就会落到不同的 map 槽位,`activeByProject.get` 取不到、指针失效。 */
 function setActiveBrowser(projectPath: string | undefined, browserId: string): void {
   activeBrowserId = browserId;
-  if (projectPath) activeByProject.set(projectPath, browserId);
+  if (projectPath) activeByProject.set(normPathKey(projectPath), browserId);
 }
 
 /** Find a browserId to operate on. Thin wrapper over the pure
@@ -251,7 +256,7 @@ function resolveBrowserId(browserId?: string, projectPath?: string):
       browserId,
       projectPath,
       activeGlobal: activeBrowserId,
-      activeForProject: projectPath ? activeByProject.get(projectPath) ?? null : null,
+      activeForProject: projectPath ? activeByProject.get(normPathKey(projectPath)) ?? null : null,
     },
   );
 }
@@ -306,7 +311,9 @@ function noBrowserError(): ToolResult {
 export function browserList(projectPath?: string): ToolResult {
   const all = BrowserManager.list();
   pruneDeadBrowserState(new Set(all.map((i) => i.browserId)));
-  const infos = projectPath ? all.filter((i) => i.projectPath === projectPath) : all;
+  // 按**规范化路径键**过滤,不是裸 `===` —— 同一项目换一种拼写(大小写/分隔符/尾斜杠)
+  // 也该被认出来,否则会误报「本项目没有打开的浏览器视图」(与 MC-042 终端列表同口径)。
+  const infos = projectPath ? all.filter((i) => sameProjectRoot(i.projectPath, projectPath)) : all;
   if (infos.length === 0) {
     return text(
       projectPath
@@ -315,7 +322,7 @@ export function browserList(projectPath?: string): ToolResult {
     );
   }
   // 当前目标指针:本项目会话看本项目的指针,老调用方看全局指针。
-  const active = projectPath ? activeByProject.get(projectPath) ?? null : activeBrowserId;
+  const active = projectPath ? activeByProject.get(normPathKey(projectPath)) ?? null : activeBrowserId;
   const lines = infos.map((i, idx) => {
     const activeMark = i.browserId === active ? "(agent 当前目标)" : "";
     return `[${idx}] browserId=${i.browserId}${activeMark}\n    url=${i.url || "(about:blank)"}\n    title=${i.title || "(无标题)"}`;

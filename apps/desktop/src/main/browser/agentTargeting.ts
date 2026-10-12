@@ -19,6 +19,7 @@
  */
 import { fileURLToPath } from "node:url";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
+import { normPathKey } from "@main/lib/pathNorm.js";
 
 /** 目标解析要用到的视图清单(只取两项 —— 其余字段解析用不到)。 */
 export interface BrowserTargetInfo {
@@ -29,6 +30,19 @@ export interface BrowserTargetInfo {
 export type TargetResolution =
   | { ok: true; browserId: string }
   | { ok: false; reason: string };
+
+/** 两个 projectPath 是否指**同一个项目根**。
+ *
+ *  ⚠️ **比的是规范化路径键,不是裸字符串。** `ProjectRepo` 记的是用户登记时那个拼写,
+ *  而浏览器视图创建时经 `ipc/browser.ts` 的 `resolve()`、会话调用时经 provider 的
+ *  `req.cwd` / 闭包 `projectPath` 各落成一种拼写 —— 同一目录可以给出不同形态(Windows
+ *  上大小写任意、`\` 与 `/` 混用、尾部斜杠有无)。拿裸 `===` 比会把「本项目自己的视图」
+ *  当成「别的项目」:list 误报「没有打开的浏览器视图」、无 browserId 调用落到
+ *  no-live-browser。收口到 `normPathKey`(与 MC-042 终端归属、MC-040 写锁键、MC-070
+ *  项目指令注入同一口径)。 */
+export function sameProjectRoot(a: string, b: string): boolean {
+  return normPathKey(a) === normPathKey(b);
+}
 
 /**
  * Decide which browser view a (possibly browserId-less) agent call targets.
@@ -52,12 +66,12 @@ export function resolveBrowserTarget(
   },
 ): TargetResolution {
   const { browserId, projectPath, activeGlobal, activeForProject } = opts;
-  const inProject = projectPath ? infos.filter((i) => i.projectPath === projectPath) : infos;
+  const inProject = projectPath ? infos.filter((i) => sameProjectRoot(i.projectPath, projectPath)) : infos;
 
   if (browserId) {
     const info = infos.find((i) => i.browserId === browserId);
     if (!info) return { ok: false, reason: `browserId "${browserId}" 不存在或已关闭` };
-    if (projectPath && info.projectPath !== projectPath) {
+    if (projectPath && !sameProjectRoot(info.projectPath, projectPath)) {
       return {
         ok: false,
         reason: `browserId "${browserId}" 属于另一个项目,不能跨项目操作;请只操作本项目(${projectPath})内的浏览器视图。`,
