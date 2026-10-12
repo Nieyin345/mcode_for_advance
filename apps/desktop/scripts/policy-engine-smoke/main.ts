@@ -26,6 +26,13 @@ import type {
 } from "@contracts/policyEngine";
 import { policyFor } from "@main/appControl/policy.js";
 import { evaluate, isDeleteScopeWidened, invalidationsFor } from "@main/appControl/policyEngine.js";
+import {
+  GrantStore,
+  GrantStoreError,
+  isGrantActive,
+  type GrantDecision,
+  type GrantStorePersist,
+} from "@main/appControl/grantStore.js";
 
 const failures: string[] = [];
 let total = 0;
@@ -243,6 +250,180 @@ const grant = (over: Partial<Grant> = {}): Grant => ({
   check("★ policyEngine 里没有 allowAll 逃生口", !/allowAll|allow_all|bypassAll/.test(code));
   check("★ policyEngine 不 import 存储/setting(保持纯函数)", !/from\s+"@main\/store|settingsStore|SettingRepo/.test(code));
   check("★ 判定核里没有直接读系统时钟(Date.now / new Date)", !/Date\.now|new Date\(/.test(code));
+}
+
+/* ══ 10. GrantStore:签发口是唯一的 grant 产地 ══ */
+const decision = (over: Partial<GrantDecision> = {}): GrantDecision => ({
+  verdict: "allow",
+  reason: "用户批准了这个计划。",
+  compatibilityLevel: "write",
+  sceneId: "scene-1",
+  allowedActions: ["file.write", "project.create"],
+  scopedCore: { projectPath: "/repo/a" },
+  configHash: "cfg-1",
+  ttlMs: 1_000,
+  ...over,
+});
+{
+  const store = new GrantStore({ newId: () => "g-issued" });
+  const g = store.issueGrant(decision(), USER, 1_000);
+  eq("签发口:产出的 grant 带 id", g.grantId, "g-issued");
+  eq("签发口:过期时刻 = now + ttl", g.expiresAt, 2_000);
+  eq("签发口:approvalSource = 签发主体(用户)", g.approvalSource.kind, "user");
+  eq("签发口:usedCount 归零", g.usedCount, 0);
+}
+{
+  // **只有用户能签发** —— agent / system 自铸 = 拒。
+  const store = new GrantStore();
+  let threw = false;
+  try {
+    store.issueGrant(decision(), AGENT, 1_000);
+  } catch (e) {
+    threw = e instanceof GrantStoreError;
+  }
+  eq("★ 签发口:agent 不能给自己发授权(抛 GrantStoreError)", threw, true);
+  let threw2 = false;
+  try {
+    store.issueGrant(decision(), { kind: "system", id: "s" }, 1_000);
+  } catch {
+    threw2 = true;
+  }
+  eq("★ 签发口:system 不能签发", threw2, true);
+}
+{
+  // deny 的判定签不出;空动作表 / 非正有效期一律拒 —— 显式报错,不静默产半成品。
+  const store = new GrantStore();
+  const denies: Array<[string, () => void]> = [
+    ["verdict=deny 的动作签不出", () => store.issueGrant(decision({ verdict: "deny" }), USER, 1_000)],
+    ["空 allowedActions 签不出", () => store.issueGrant(decision({ allowedActions: [] }), USER, 1_000)],
+    ["非正有效期签不出", () => store.issueGrant(decision({ ttlMs: 0 }), USER, 1_000)],
+  ];
+  for (const [name, fn] of denies) {
+    let threw = false;
+    try {
+      fn();
+    } catch (e) {
+      threw = e instanceof GrantStoreError;
+    }
+    eq(`签发口:${name}`, threw, true);
+  }
+}
+
+/* ══ 11. GrantStore:存取 / 撤销 / 过期 —— 无效一律查不出 ══ */
+{
+  const store = new GrantStore({ newId: (n) => `g${n}` });
+  const g = store.issueGrant(decision(), USER, 1_000); // expiresAt=2000
+  eq("取:有效期内拿得到", store.get(g.grantId, 1_500)?.grantId, "g1");
+  eq("取:不存在的 id → null", store.get("nope", 1_500), null);
+  eq("取:过期后查不出(null)", store.get(g.grantId, 2_000), null);
+  eq("取:过期边界(now==expiresAt)即查不出", store.get(g.grantId, 2_000), null);
+  eq("取:过期前一刻还在", store.get(g.grantId, 1_999)?.grantId, "g1");
+}
+{
+  const store = new GrantStore({ newId: () => "gr" });
+  const g = store.issueGrant(decision(), USER, 1_000);
+  eq("撤销:第一次真翻状态", store.revoke(g.grantId), true);
+  eq("撤销:幂等 —— 第二次 no-op", store.revoke(g.grantId), false);
+  eq("撤销:不存在的 id 也是安全 no-op", store.revoke("ghost"), false);
+  eq("撤销后:查不出(null)", store.get(g.grantId, 1_500), null);
+}
+{
+  // isGrantActive 是 evaluate 的过期判据同源(now < expiresAt 且未撤销)。
+  const base: Grant = {
+    grantId: "x",
+    sceneId: "s",
+    allowedActions: ["file.write"],
+    scopedCore: {},
+    configHash: "c",
+    expiresAt: 2_000,
+    approvalSource: USER,
+  };
+  eq("isGrantActive:有效", isGrantActive(base, 1_500), true);
+  eq("isGrantActive:过期", isGrantActive(base, 2_000), false);
+  eq("isGrantActive:已撤销", isGrantActive({ ...base, revoked: true }, 1_500), false);
+}
+
+/* ══ 12. GrantStore:按资源身份查 ══ */
+{
+  const store = new GrantStore();
+  store.issueGrant(decision({ allowedActions: ["file.write"], scopedCore: { sshHostKey: "SHA256:good" } }), USER, 1_000);
+  eq(
+    "按身份查:动作 + 主机键都匹配 → 命中",
+    store.findFor(intent("file.write", { sshHostKey: "SHA256:good" }), 1_500)?.grantId != null,
+    true,
+  );
+  eq(
+    "按身份查:主机键被换 → 查不出",
+    store.findFor(intent("file.write", { sshHostKey: "SHA256:evil" }), 1_500),
+    null,
+  );
+  eq(
+    "按身份查:动作不在表内 → 查不出",
+    store.findFor(intent("session.delete", { sshHostKey: "SHA256:good" }), 1_500),
+    null,
+  );
+  eq(
+    "按身份查:过期后 → 查不出",
+    store.findFor(intent("file.write", { sshHostKey: "SHA256:good" }), 9_999),
+    null,
+  );
+}
+
+/* ══ 13. ★ 串起来:GrantStore × evaluate —— 拿到 grant 放行;revoke 后不放行 ══ */
+{
+  const store = new GrantStore({ newId: () => "g-chain" });
+  const g = store.issueGrant(
+    decision({ allowedActions: ["file.write"], scopedCore: { projectPath: "/repo/a" } }),
+    USER,
+    1_000,
+  );
+  // ① 从 store 取回有效 grant → evaluate 放行。
+  const live = evaluate(intent("file.write", { projectPath: "/repo/a" }), store.get(g.grantId, 1_200), ctx({ now: 1_200 }));
+  eq("★ 串起来:拿到有效 grant → evaluate 放行", live.verdict, "allow");
+  eq("★ 串起来:放行时点名命中的授权 id", live.grantId, "g-chain");
+  // ② revoke → store 查不出 → evaluate 收到 null → 不再放行。
+  store.revoke(g.grantId);
+  const after = evaluate(intent("file.write", { projectPath: "/repo/a" }), store.get(g.grantId, 1_200), ctx({ now: 1_200 }));
+  eq("★ 串起来:revoke 后 store 查不出 → evaluate 不再放行", after.verdict === "allow", false);
+  // ③ 过期 → store 查不出 → evaluate 不再放行。
+  const store2 = new GrantStore({ newId: () => "g-exp" });
+  const g2 = store2.issueGrant(decision({ allowedActions: ["file.write"], scopedCore: {} }), USER, 1_000); // expiresAt 2000
+  const expired = evaluate(intent("file.write", {}), store2.get(g2.grantId, 2_500), ctx({ now: 2_500 }));
+  eq("★ 串起来:过期后 store 查不出 → evaluate 不再放行", expired.verdict === "allow", false);
+  // ④ 反向对照:直接把**已撤销**的 grant 塞给 evaluate(绕过 store)→ 同样 deny(双保险)。
+  const direct = evaluate(intent("file.write", { projectPath: "/repo/a" }), { ...g, revoked: true }, ctx({ now: 1_200 }));
+  eq("★ 串起来:即便绕过 store 把撤销的 grant 塞进 evaluate → deny", direct.verdict, "deny");
+}
+
+/* ══ 14. 可注入持久化:只认窄接口,不拉 sql.js ══ */
+{
+  const box: { grants: Grant[] | null } = { grants: null };
+  const persist: GrantStorePersist = {
+    load: () => box.grants,
+    save: (grants) => {
+      box.grants = grants;
+    },
+  };
+  const store = new GrantStore({ persist, newId: () => "persisted" });
+  const g = store.issueGrant(decision(), USER, 1_000);
+  check("持久化:签发即落盘(经窄接口)", box.grants?.length === 1, box.grants?.length);
+  // 新 store 从同一持久层载入 → 拿得到同一份 grant。
+  const reopened = new GrantStore({ persist });
+  eq("持久化:重开后仍取得到", reopened.get(g.grantId, 1_500)?.grantId, "persisted");
+}
+
+/* ══ 15. 源码断言:GrantStore 不 import electron/sql;没有把假授权当 Grant ══ */
+{
+  const raw = readFileSync(join(process.cwd(), "src/main/appControl/grantStore.ts"), "utf8");
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check("★ GrantStore 不 import electron", !/from\s+"electron/.test(code));
+  check("★ GrantStore 不 import sql.js / 存储层", !/from\s+"[^"]*sql|require\("sql\.js|@main\/store|settingsStore/.test(code));
+  // 判据落在**代码标识符**上:不许出现 allowAll / 也不许把 ApprovalBridge 的按名 Set 冒充 grant。
+  check("★ GrantStore 里没有 allowAll 逃生口", !/allowAll|allow_all|bypassAll/.test(code));
+  // 唯一签发口:`Grant` 对象字面量只在 issueGrant 内构造 —— 用只在构造点出现的
+  // `approvalSource:`(参数 `grantId: string` 之类不会命中)当探针,别处不许手搓。
+  const buildSites = [...code.matchAll(/approvalSource:\s*\{/g)].length;
+  check("★ Grant 对象只在签发口构造(唯一 approvalSource 字面量点在 issueGrant)", buildSites === 1);
 }
 
 console.log(`\n${total - failures.length}/${total} 通过`);
