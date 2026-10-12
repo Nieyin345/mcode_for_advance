@@ -1331,6 +1331,97 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   }
 }
 
+/* ── 3d-8. 【MC-066 残余① 续】skills 写类域的合法拒绝 ─────────────────────────
+ *
+ * `ipc/skills.ts` 的写类 handler 合法返回 `{ok:false,…}`(不抛),从前没登记 →
+ * `decodeDomainOutcome` 落 accepted,把「同名目录已占用 / 技能不存在 / 仓库里一个技能
+ * 都没导入 / 矩阵写不进去」这类**合法拒绝**报成 SUCCEEDED。按源码逐条判(先 grep
+ * `policy.ts` 确认可达:都在 DANGER/write 档、无一条 BLOCKED —— **danger 只是每次弹卡,
+ * 不是 blocked**,`app_api_call` 照到得了):
+ *   - `skills.save`:ok:false 既有「写前拒绝」(路径无效 / 同名目录已占用 / 新名占用),
+ *     也有**已落一半** —— 无 `newName` 时 `fs.mkdir(recursive)` 建了目录而后续
+ *     `fs.writeFile(SKILL.md)` 失败会留一个空技能目录;有 `newName` 时**先 `fs.rename`
+ *     目录再写文件**,rename 成而 write 败则目录已挪走、内容却是旧的 → 按最坏情况
+ *     `maybePartial`(UNCERTAIN,绝不默认可安全重试);
+ *   - `skills.delete`:真删走 `fs.rm(dir,{recursive})`(**递归、非原子**)—— 中途失败
+ *     可能已删掉一部分子项,不是"没删" → `maybePartial`;
+ *   - `skills.importGithub`:ok:false 的「一个技能都没导入」分支可在**某次 `fs.cp` 半成**
+ *     (目标目录留了半截、`imported` 数组却仍为空)之后到达 → `maybePartial`;
+ *   - `skills.engines.set`:写矩阵走 `writeEnginesMap` → `atomicWrite`(temp + rename,
+ *     失败时目标保持原样),抛错即「没写」→ `refusal`。
+ * **本切片跳过(不登记)的**:`skills.import`(返回 `{imported,skipped,errors}`,**没有
+ * `ok` 字段** —— 不是 ok/error 信封,登记反而会把每次成功也判成 UNCERTAIN)、
+ * `skills.copyToProject`(返回 `{copied,skipped,failed}`,同样没有 `ok`)。判据固化成断言。
+ * 这里与真 handler 一字不差地录同一份 ok:false 信封。 */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+
+  recordRpcHandler("skills:save", async () => ({ ok: false as const, error: "同名目录已存在，但不是这个技能；未覆盖任何文件" }));
+  recordRpcHandler("skills:delete", async () => ({ ok: false as const, error: "技能不存在或无法读取 SKILL.md；未删除任何文件" }));
+  recordRpcHandler("skills:importGithub", async () => ({ ok: false as const, error: "仓库里没有找到任何 SKILL.md —— 它不是一个技能包", imported: [], skipped: [], errors: [] }));
+  recordRpcHandler("skills:enginesSet", async () => ({ ok: false as const, error: "ENOSPC: no space left on device, write" }));
+
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.save", input: { source: "global", name: "my-skill", content: "# x" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:skills.save 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:skills.save 合法 ok:false → UNCERTAIN(可能已建目录/挪目录)", op?.resultKind === "UNCERTAIN", op);
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.delete", input: { source: "global", name: "my-skill" } }, "me", ctx);
+    check("★ MC-066:skills.delete 合法 ok:false → UNCERTAIN(递归 rm 非原子,可能删了一半)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.importGithub", input: { url: "owner/repo" } }, "me", ctx);
+    const op = opResultOf(r);
+    check("★ MC-066:skills.importGithub 合法 ok:false → 不再 SUCCEEDED", op?.resultKind !== "SUCCEEDED", op);
+    check("★ MC-066:skills.importGithub 合法 ok:false → UNCERTAIN(fs.cp 可能半成)", op?.resultKind === "UNCERTAIN", op);
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.engines.set", input: { name: "my-skill", claude: true, codex: true, pi: true } }, "me", ctx);
+    check("★ MC-066:skills.engines.set 合法 ok:false → REJECTED(atomicWrite 失败即没写)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+  // 正控:ok:true 的真成功仍是 SUCCEEDED(解码器不能把真成功也判成拒绝)。
+  recordRpcHandler("skills:save", async () => ({ ok: true as const }));
+  recordRpcHandler("skills:enginesSet", async () => ({ ok: true as const, perEngine: { claude: true, codex: true, pi: true } }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.save", input: { source: "global", name: "my-skill", content: "# x" } }, "me", ctx);
+    check("★ MC-066 正控:skills.save ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.engines.set", input: { name: "my-skill", claude: true, codex: true, pi: true } }, "me", ctx);
+    check("★ MC-066 正控:skills.engines.set ok:true → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED" && r.isError !== true, opResultOf(r));
+  }
+
+  // 判据锚:`import` / `copyToProject` **不是** ok/error 信封合同(返回的是
+  // `{imported,…}` / `{copied,…}` 聚合结果、**没有 `ok` 字段**)—— 将来谁把它们误加进
+  // `commandOutcome.ts` 的 EXACT → 这里真红(登记它们会把每次成功也判成 UNCERTAIN)。
+  check("★ MC-066:skills.import 未登记为 ok/error 信封合同(返回 {imported,skipped,errors},无 ok)", isEnvelopeMethod("skills.import") === false);
+  check("★ MC-066:skills.copyToProject 未登记为 ok/error 信封合同(返回 {copied,skipped,failed},无 ok)", isEnvelopeMethod("skills.copyToProject") === false);
+  // 正控:真正登记过的信封方法仍为 true(证明上面的 false 不是"判据整体失灵")。
+  check("★ MC-066 正控:skills.save 仍是已登记的信封合同", isEnvelopeMethod("skills.save") === true);
+}
+
+/* ── 3d-9. 【MC-066 残余① 续】onlyoffice 域 ──────────────────────────────────
+ *
+ * `onlyoffice.forceSave` 的 ok:false 可能在**已向 DS 发出 forcesave 命令之后**才出现
+ * (HTTP 非 2xx / 命令被拒 / 等本地回写超时)—— 远端文档可能已落一部分 → UNCERTAIN。
+ * `onlyoffice.close` 的 closeSession 返回 false 只表示 session 不存在(没碰任何东西)→ REJECTED。 */
+{
+  const { ctx } = ctxWith({ allow: true });
+  recordRpcHandler("onlyoffice:forceSave", async () => ({ ok: false as const, error: "Command Service error 4" }));
+  recordRpcHandler("onlyoffice:close", async () => ({ ok: false as const }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "onlyoffice.forceSave", input: { sessionKey: "k1" } }, "me", ctx);
+    check("★ MC-066:onlyoffice.forceSave 合法 ok:false → UNCERTAIN(命令已发出,可能半成)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+  }
+  {
+    const r = await invokeAppTool("app_api_call", { method: "onlyoffice.close", input: { sessionKey: "k_gone" } }, "me", ctx);
+    check("★ MC-066:onlyoffice.close 合法 ok:false → REJECTED(session 不存在)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+}
+
 {
   const bridge = new ApprovalBridge();
   const emitted: unknown[] = [];

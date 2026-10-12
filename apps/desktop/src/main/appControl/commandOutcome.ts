@@ -219,6 +219,45 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   // `skills.enginesSetBulk` 走 `writeEnginesMap` → `atomicWrite`(temp + rename,失败时
   // 目标原样),抛错即"没写" → refusal。与上面的 presets 非原子写相反。
   ["skills.enginesSetBulk", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】onlyoffice 域 ─────────────────────────────────────
+   *
+   * `onlyoffice.forceSave`:`forceSave(sessionKey)` 的 `{ok:false,error}` 里有一条是
+   * **已经向 DS 发出 forcesave 命令之后**才失败(HTTP 非 2xx / 命令被拒 / 等本地回写超时)——
+   * 远端文档可能已经落了一部分,重试前要先查真实状态 → `maybePartial`(UNCERTAIN)。
+   * `onlyoffice.close`:`closeSession` 返回 false 只表示「session 不存在」(没碰到任何东西)
+   * → `refusal`。 */
+  ["onlyoffice.forceSave", { falseMeans: "maybePartial" }],
+  ["onlyoffice.close", { falseMeans: "refusal" }],
+  /* ── 【MC-066 残余① 续】skills 写类域 ────────────────────────────────────
+   *
+   * `ipc/skills.ts` 的写类 handler 合法返回 `{ok:false,…}`(不抛异常),从前**没登记**
+   * —— `decodeDomainOutcome` 落到「无 descriptor = accepted」,把「同名目录已占用 /
+   * 技能不存在 / 仓库里一个技能都没导入 / 矩阵写不进去」这类**合法拒绝**报成 SUCCEEDED。
+   * (先 grep `policy.ts` 确认可达:这些方法落在 DANGER/write 档、**无一条 BLOCKED** ——
+   * danger 只是"每次弹卡",不是 blocked,`app_api_call` 到得了。)
+   *
+   * 逐条读 handler 源码判 `falseMeans`:
+   *   - `skills.save`:`ok:false` 既有**写前拒绝**(项目路径无效 / 路径非法 / 同名目录已
+   *     占用 / 新名占用),也有**已落一半**的情形 —— 无 `newName` 时先
+   *     `fs.mkdir(targetDir,{recursive})` 建目录、再 `fs.writeFile(SKILL.md)`,建了目录而
+   *     写文件失败会留一个**空技能目录**;有 `newName` 时**先 `fs.rename` 目录再写文件**,
+   *     rename 成而 write 败则目录已挪走、内容是旧的 → 按最坏情况 `maybePartial`。
+   *   - `skills.delete`:真删走 `fs.rm(skillDir,{recursive:true})`(递归、**非原子**)——
+   *     中途失败可能已删掉一部分子项,不是"一个都没删" → `maybePartial`。
+   *   - `skills.importGithub`:ok:false 的「一个技能都没导入(重名与非法名除外)」分支可在
+   *     **某次 `fs.cp` 半成**(目标目录留了半截、`imported` 数组却仍为空)之后到达,且
+   *     `.git` 过滤 + 逐目录 cp 本身非原子 → `maybePartial`。
+   *   - `skills.engines.set`:写矩阵走 `writeEnginesMap` → `atomicWrite`(temp + rename,
+   *     失败时目标保持原样),抛错即"没写" → `refusal`(与 `enginesSetBulk` 同款)。
+   *
+   * **本切片不登记**:`skills.import` / `skills.copyToProject` —— 它们返回的是聚合结果
+   * (`{imported,skipped,errors}` / `{copied,skipped,failed}`),**没有 `ok` 字段**、
+   * **不是 ok/error 信封**;登进来反而会把每次成功也判成 UNCERTAIN(合同被违反)。
+   * 这两条判据在 `app-control-smoke` §3d-8 里被固化成断言(漏登 > 错登)。 */
+  ["skills.save", { falseMeans: "maybePartial" }],
+  ["skills.delete", { falseMeans: "maybePartial" }],
+  ["skills.importGithub", { falseMeans: "maybePartial" }],
+  ["skills.engines.set", { falseMeans: "refusal" }],
   /* ── 【MC-066 残余① 续】extensionStore 域 ─────────────────────────────────
    *
    * `ipc/extensions.ts` 的四条,结果信封是 `{ok:true,…} | {ok:false;reason;limit?}`
