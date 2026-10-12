@@ -187,6 +187,7 @@ const NODE_STALL_CHECK_MS = 30_000;
 const USAGE_BACKFILL_DELAY_MS = 6_000;
 import { getWorkflow } from "./library.js";
 import { agentProfileContentHash } from "./agentProfiles.js";
+import { configDrift, type ConfigDriftEntry } from "@contracts/configBinding";
 import { workflowReplayError, workflowResumeError, workflowReviewError, workflowRevision } from "./workflowTrust.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import {
@@ -263,6 +264,24 @@ function buildRunConfigSnapshot(
     ...(session.providerId ? { providerId: session.providerId } : {}),
     ...(session.model ? { model: session.model } : {}),
   };
+}
+
+/**
+ * ARC-016: 一次运行的配置快照里那些**锁过版的档案**,现在还是不是同一版?
+ *
+ * 拿运行**当时**记下的 `configSnapshot.profiles`(档案 id → 当时的哈希)与**现在**源档案的
+ * 哈希比,挑出落后项(`changed`/`removed`/`added`)。用来回答「这一轮用的那一版,现在还一样吗」
+ * —— `changed` 意味着用户改了档案、`removed` 意味着档案被删。
+ *
+ * 没有 `configSnapshot`(老存档 / 没绑档案)时返回空数组 —— **不猜**:没有当时的事实就没法说
+ * 落后了没有(编一个「没落后」比报空更危险)。
+ */
+function configDriftOfSnapshot(snapshot: { configSnapshot?: { profiles?: Record<string, string | null> } }): ConfigDriftEntry[] {
+  const locked = snapshot.configSnapshot?.profiles;
+  if (!locked) return [];
+  const current: Record<string, string | null> = {};
+  for (const id of Object.keys(locked)) current[id] = agentProfileContentHash(id);
+  return configDrift(locked, current);
 }
 
 /** 这个工作流是一张**图**吗(有节点)。提示词型工作流不走调度器。 */
@@ -470,6 +489,18 @@ async function resumeRun(args: {
     log.warn(`workflow run ${found.runId}: resume blocked: ${error}`);
     return { ok: false, error };
   }
+  // 【ARC-016】**锁版档案被改过 → 不无声污染这次续跑。** 工作流节点每轮现读当前档案,
+  // 于是 R1 起跑后用户改了档案,R1 的待恢复节点再次派发时用的会是**新**指令 —— 而卡片上
+  // 写着的是那次运行的上下文。这与「存档里的图版本变了就拒绝续跑」(上面那条)是**同一条
+  // 道理**:运行时的配置事实变了,不该拿着新事实续旧运行。**如实报出来**,让用户显式重新
+  // 发起(那时按新配置起一次新 run),而不是静默用新档案接着跑旧的那一轮。
+  const drift = configDriftOfSnapshot(found.snapshot);
+  if (drift.length > 0) {
+    const names = drift.map((d) => `${d.assetId}(${d.kind})`).join("、");
+    const message = `运行开始后角色档案被改动(${names}),续跑会用新配置 —— 请重新发起运行以使用当前配置,不要拿旧运行的上下文接着跑。`;
+    log.warn(`workflow run ${found.runId}: resume blocked by config drift: ${names}`);
+    return { ok: false, error: message };
+  }
   const prepared = await prepareContinuationCatalog(session.id);
   prepared.release();
   if (prepared.cancelled()) return { ok: false };
@@ -594,6 +625,17 @@ export async function resolveWorkflowRetry(args: {
   if (error !== null) {
     log.warn(`workflow run ${found.runId}: retry blocked: ${error}`);
     return { ok: false, error };
+  }
+  // 【ARC-016】同 `resumeRun`:锁版档案被改过就不无声污染这次重试 —— 重试的节点再派发时
+  // 会现读**新**档案,而存档记录的是旧那一版。如实报出来,让用户显式重新发起。
+  const drift = configDriftOfSnapshot(found.snapshot);
+  if (drift.length > 0) {
+    const names = drift.map((d) => `${d.assetId}(${d.kind})`).join("、");
+    log.warn(`workflow run ${found.runId}: retry blocked by config drift: ${names}`);
+    return {
+      ok: false,
+      error: `运行开始后角色档案被改动(${names}),重试会用新配置 —— 请重新发起运行以使用当前配置。`,
+    };
   }
   const prepared = await prepareContinuationCatalog(session.id);
   prepared.release();

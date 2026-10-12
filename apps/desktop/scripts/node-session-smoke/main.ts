@@ -412,6 +412,48 @@ await runGraph(PARENT);
     resume: { runId, snapshot: pinned, nodeId: "agentA", rewind: ["agentA"] },
   }), null);
   eq("图不兼容时存档仍完整", WorkflowRunRepo.get(runId)?.status, "interrupted");
+
+  /* ── 【ARC-016】锁版档案被改过 → 不无声污染续跑 ──────────────────────────────
+   *
+   * 工作流节点每轮现读当前档案。R1 起跑后用户改了档案,待恢复节点再派发时用的会是**新**
+   * 指令 —— 而卡片上写着的是那次运行的上下文。这与「存档里的图版本变了就拒绝续跑」是
+   * 同一条道理。这里造一个**真档案文件**、把它当时的哈希锁进快照,再改档案,断言:
+   * ① 快照锁了档案且档案没变 → 续跑照常放行(正控,证明上一条不是恒拒);② 档案被改 →
+   * 续跑被拒且**如实点名**。 */
+  {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const agentsDir = join(DATA, "workflows", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    const profileBody = (note: string) => JSON.stringify({ version: 1, id: "p_arc016", name: "研究助理", type: "mcode.agent", params: { note }, createdAt: 1, updatedAt: 1 });
+    writeFileSync(join(agentsDir, "p_arc016.json"), profileBody("v1"), "utf-8");
+    const { agentProfileContentHash } = await import("@main/orchestration/agentProfiles.js");
+    const lockedHash = agentProfileContentHash("p_arc016");
+    check("夹具:档案内容哈希读得到(不是 null)", typeof lockedHash === "string" && lockedHash.length > 0, lockedHash);
+
+    // 图恢复成可信夹具(上面那一节刚把 description 改了,版本会不匹配)。
+    WorkflowRepo.save(original);
+    const revision2 = workflowRevision(original);
+    const driftId = "run_config_drift";
+    const cfgSnap: import("@main/orchestration/runStore.js").RunSnapshot = { ...snapshot, workflowRevision: revision2, inFlightNodeIds: [], state: { ...snapshot.state, outcomes: [["agentA", { status: "failed", summary: "可重试的旧步骤" }]], awaiting: [] }, configSnapshot: { takenAt: 1, profiles: { p_arc016: lockedHash }, skills: [] } };
+    // ① 正控:档案没变 → 续跑放行。
+    saveRun({ runId: driftId, sessionId: PARENT, workflowId: WORKFLOW_ID, status: "failed", snapshot: cfgSnap });
+    const okDrift = await runner.resolveWorkflowRetry({ sessionId: PARENT, runId: driftId, nodeId: "agentA" });
+    eq("档案没变:锁了版的运行仍可续(正控,证明下一条不是恒拒)", okDrift.ok, true);
+    await waitFor("正控运行真的起跑", () => runner.hasActiveRun(PARENT));
+    cancelWorkflowRun(PARENT);
+    await waitFor("正控运行收尾", () => !runner.hasActiveRun(PARENT));
+
+    // ② 改档案 → 续跑被拒且点名「档案被改动」。
+    saveRun({ runId: driftId, sessionId: PARENT, workflowId: WORKFLOW_ID, status: "failed", snapshot: cfgSnap });
+    writeFileSync(join(agentsDir, "p_arc016.json"), profileBody("v2-改过了"), "utf-8");
+    const blocked = await runner.resolveWorkflowRetry({ sessionId: PARENT, runId: driftId, nodeId: "agentA" });
+    eq("★ 锁版档案被改 → 续跑被拒", blocked.ok, false);
+    check("★ 拒绝原因点名档案被改动(不是一句笼统失败)", blocked.error?.includes("档案被改动") === true, blocked.error);
+    check("★ 拒绝原因带上哪个档案(assetId)", blocked.error?.includes("p_arc016") === true, blocked.error);
+    eq("拒绝后旧存档仍保留", WorkflowRunRepo.get(driftId)?.status, "failed");
+    // 恢复档案,免得影响后续小节。
+    writeFileSync(join(agentsDir, "p_arc016.json"), profileBody("v1"), "utf-8");
+  }
 }
 
 /* ──────────────── 收尾 ──────────────── */
