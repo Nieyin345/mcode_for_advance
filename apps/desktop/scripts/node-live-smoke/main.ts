@@ -41,9 +41,12 @@
  * Run: scripts/node-live-smoke/run.sh
  */
 import "./prelude.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// 纯契约,无副作用、不碰 `@main/*` —— 可以在数据根钉好之前静态导入(node-live-smoke
+// 的静态导入一律要满足这条,否则会在 `MCODE_SMOKE_DATA_ROOT` 生效前跑起来)。
+import { configDrift, resolveConfigBinding, runStartBindings, staleBindings } from "@contracts/configBinding";
 
 /* ── 数据根必须在**任何** `@main/*` 被 import 之前钉好 ── */
 const DATA = mkdtempSync(join(tmpdir(), "mcode-node-live-data-"));
@@ -70,7 +73,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /* ── 被测的真模块 + 夹具(动态 import:数据根要先生效) ── */
 
-const { initDb } = await import("@main/store/db.js");
+const { initDb, closeDb } = await import("@main/store/db.js");
 const { ProjectRepo, SessionRepo, WorkflowRepo } = await import("@main/store/repositories.js");
 /**
  * ⚠️ **命名空间导入,不是具名导入。** 具名的写法(`import { NODE_PROGRESS_TICK_MS }`)
@@ -86,7 +89,7 @@ const NODE_PROGRESS_HEARTBEAT_MS =
   (runner as { NODE_PROGRESS_HEARTBEAT_MS?: number }).NODE_PROGRESS_HEARTBEAT_MS ?? 5_000;
 const rt = await import("./stubs/runtimeManager.js");
 const win = await import("./stubs/window.js");
-const { nodeLiveDoc, parentSession, project, PARENT, AGENT_TITLE } = await import("./fixtures.js");
+const { nodeLiveDoc, parentSession, project, PARENT, AGENT_TITLE, WORKFLOW_ID } = await import("./fixtures.js");
 
 await initDb();
 
@@ -434,6 +437,156 @@ eq("收场之后不再有任何进度事件(定时器 / 订阅都清干净了)",
     first !== undefined && typeof first.snapshot?.configSnapshot?.takenAt === "number" && Array.isArray(first.snapshot?.configSnapshot?.skills),
     { snap: first?.snapshot?.configSnapshot },
   );
+}
+
+/* ──────────────── 7. 【MC-090 续】跨重启续跑 + 更新源档案后版本不漂移 E1 ──────────────── */
+
+/**
+ * §6 证明的是「真实起跑落盘的每一行都带着配置快照」。台账复审增量点名的**还缺的那半**是:
+ *
+ *   ① **跨重启续跑时,续跑那一份仍带着起跑那一刻锁下的哈希**(不是从当前源文件重读);
+ *   ② **改了绑定的源档案之后,运行史读回能查出这次运行「落后了」**(drift)。
+ *
+ * 这里走完整链路:真实 `startWorkflowRun` → 真库 → 模拟重启(`closeDb()` 落盘后
+ * `initDb()` 从磁盘重开,正是 `run-store-smoke` 用的那一手)→ 真实续跑
+ * (`startWorkflowRun({resume})`,`launchContinuation` 调的就是它)→ 再读回。
+ *
+ * ⚠️ 承重的那一条是 §7c:源档案改成 v2 之后,续跑写回去的快照**必须还是 v1 的哈希**
+ * —— 续跑要是重读了源文件,快照就会漂成 v2,而「这次运行当时用了哪一版」就再也答不出。
+ */
+{
+  const { agentProfileContentHash } = await import("@main/orchestration/agentProfiles.js");
+  const { runHistory } = await import("@main/orchestration/runStore.js");
+  const { getWorkflow } = await import("@main/orchestration/library.js");
+  const { workflowRevision } = await import("@main/orchestration/workflowTrust.js");
+
+  const RESTART = "s_restart";
+  const PROFILE_ID = "p_restart";
+  const agentsDir = join(DATA, "workflows", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  const profileBody = (note: string): string =>
+    JSON.stringify({ version: 1, id: PROFILE_ID, name: "跨重启档案", type: "mcode.agent", params: { note }, createdAt: 1, updatedAt: 1 });
+
+  // 源档案 v1 先落盘 —— 起跑那一刻锁的就是它。
+  writeFileSync(join(agentsDir, `${PROFILE_ID}.json`), profileBody("v1"), "utf-8");
+  const hashV1 = agentProfileContentHash(PROFILE_ID);
+  check("夹具:源档案 v1 的内容哈希读得到(不是 null)", typeof hashV1 === "string" && hashV1.length > 0, hashV1);
+
+  SessionRepo.create({ ...parentSession(RESTART), agentProfile: { id: PROFILE_ID, name: "跨重启档案", instruction: "把引用整理出来。" } });
+  rt.resetPublished();
+  win.resetSent();
+
+  // ── 7a. 真实起跑 → 落一份带 v1 哈希的 durable 行 ──
+  const firstDone = startWorkflowRun({
+    session: SessionRepo.get(RESTART)!,
+    prompt: "查一下这三篇的引用",
+    cwd: process.cwd(),
+  });
+  await waitFor("7a 起跑的运行行落进真库", () => runHistory(RESTART, 10).length >= 1);
+  await waitFor("7a 起跑的节点会话起来", () => rt.nodeSessionOf(RESTART).length > 0);
+
+  const beforeRestart = runHistory(RESTART, 10)[0];
+  const runId = beforeRestart?.runId ?? "";
+  eq(
+    "★ 7a 起跑落盘的那一刻,快照就锁住了源档案 v1 的哈希",
+    beforeRestart?.snapshot?.configSnapshot?.profiles?.[PROFILE_ID],
+    hashV1,
+  );
+  check(
+    "★ 7a 快照里记的是**当时**的源档案哈希(不是空对象)",
+    beforeRestart?.snapshot?.configSnapshot?.profiles?.[PROFILE_ID] === hashV1,
+    beforeRestart?.snapshot?.configSnapshot,
+  );
+
+  // 收干净这次运行,让 `runs` 内存条目放掉(重启后也好干净地续)。
+  cancelWorkflowRun(RESTART);
+  await firstDone;
+  await waitFor("7a 起跑的那次收尾干净", () => !runner.hasActiveRun(RESTART));
+
+  // ── 7b. 模拟重启:落盘后从磁盘重开(与 run-store-smoke 同一手) ──
+  //
+  // `closeDb()` 会把内存里的库 flush 到 mcode.db 再关句柄;紧接着的 `initDb()`
+  // 从磁盘**重新读**了一份 —— 于是下面读到的快照字节来自**文件**,而不是上面那个
+  // 还在内存里的对象。这正是"跨重启"要证明的那一步。
+  closeDb();
+  await initDb();
+
+  const afterRestart = runHistory(RESTART, 10).find((r) => r.runId === runId);
+  eq(
+    "★ 7b 重启后从磁盘读回的那一行,快照里仍是起跑时锁下的 v1 哈希(不是重读源)",
+    afterRestart?.snapshot?.configSnapshot?.profiles?.[PROFILE_ID],
+    hashV1,
+  );
+  check("★ 7b 重启后那一行还在(节点进度没把起跑事实冲掉)", afterRestart !== undefined, { runId });
+
+  // ── 7c. 更新源档案(v1 → v2)后真实续跑:快照**不得漂移** ──
+  writeFileSync(join(agentsDir, `${PROFILE_ID}.json`), profileBody("v2-改过了"), "utf-8");
+  const hashV2 = agentProfileContentHash(PROFILE_ID);
+  check("夹具:源档案改版后哈希变了(证明下面比的确实是两版不同的内容)", typeof hashV2 === "string" && hashV2 !== hashV1, { hashV1, hashV2 });
+
+  const revision = workflowRevision(getWorkflow(WORKFLOW_ID)!);
+  // 续跑用的快照取自**重启后从磁盘读回**的那一份 —— 这正是"跨重启续跑"。
+  const resumeSnapshot = {
+    ...(afterRestart!.snapshot!),
+    workflowRevision: revision,
+    // 起跑那次被取消时节点可能还挂在在飞集合里;续跑要重跑它,先清空在飞标记
+    // (否则 replay 闸门会以"可能重复副作用"挡住 —— 与 node-session-smoke 同一取舍)。
+    inFlightNodeIds: [] as string[],
+  };
+  const resumedDone = startWorkflowRun({
+    session: SessionRepo.get(RESTART)!,
+    resume: { runId, snapshot: resumeSnapshot, nodeId: "agent", rewind: ["agent"] },
+  });
+  await waitFor("7c 续跑再次写出一份 durable 行", () => {
+    const row = runHistory(RESTART, 10).find((r) => r.runId === runId);
+    return row?.status === "running";
+  });
+
+  const resumed = runHistory(RESTART, 10).find((r) => r.runId === runId);
+  eq(
+    "★★ 7c 续跑(源档案已改 v2)写回的快照仍是起跑时的 v1 哈希 —— 续跑不重读源",
+    resumed?.snapshot?.configSnapshot?.profiles?.[PROFILE_ID],
+    hashV1,
+  );
+  check(
+    "★★ 7c 续跑后锁版哈希**不等于**当前源哈希(证明上一条不是「两边恰好相等」的巧合)",
+    resumed?.snapshot?.configSnapshot?.profiles?.[PROFILE_ID] === hashV1 &&
+      resumed?.snapshot?.configSnapshot?.profiles?.[PROFILE_ID] !== hashV2,
+    { locked: resumed?.snapshot?.configSnapshot?.profiles?.[PROFILE_ID], hashV1, hashV2 },
+  );
+
+  cancelWorkflowRun(RESTART);
+  await resumedDone;
+  await waitFor("7c 续跑收尾干净", () => !runner.hasActiveRun(RESTART));
+
+  // ── 7d. 读回差异:源改版后,运行史读回能查出这次运行「落后了」 ──
+  //
+  // 走的就是 `ipc/orchestration.ts` 的 `RUNS_HISTORY` 那三行所调用的**同一份**
+  // `@contracts/configBinding` 纯函数:拿快照里**当时**锁下的哈希当一批 PINNED/RUN_START
+  // 绑定,与**现在**源哈希比,挑出落后项。这里不重搭 IPC(那层由 orchestration-ipc-smoke
+  // 的 r_cfg 手造行覆盖),只钉住"冻结快照 + 源改版 ⇒ 读回能判落后"这条链。
+  const finalRow = runHistory(RESTART, 10).find((r) => r.runId === runId);
+  const lockedProfiles = finalRow?.snapshot?.configSnapshot?.profiles;
+  check("7d 读回的快照带着锁下的档案表(drift 的前提)", lockedProfiles !== undefined, finalRow?.snapshot?.configSnapshot);
+
+  const current: Record<string, string | null> = {};
+  if (lockedProfiles) for (const id of Object.keys(lockedProfiles)) current[id] = agentProfileContentHash(id);
+  const drift = lockedProfiles ? configDrift(lockedProfiles, current) : [];
+  eq("★ 7d 源档案改版后,drift 挑出恰好这一条(性质 changed)", drift.map((d) => `${d.assetId}:${d.kind}`).join(","), `${PROFILE_ID}:changed`);
+  eq("★ 7d drift 里 lockedHash 是**起跑当时**的 v1,不是现在的 v2", drift[0]?.lockedHash, hashV1);
+  eq("★ 7d drift 里 currentHash 是现在的 v2(如实报出源已变)", drift[0]?.currentHash, hashV2);
+
+  const bindings = lockedProfiles ? runStartBindings(lockedProfiles) : [];
+  const changePlan = staleBindings(
+    bindings.map((b) => resolveConfigBinding(b, current[b.assetId] ?? null)),
+  );
+  eq("★ 7d 变更计划挑出落后的那一个档案", changePlan.map((p) => p.assetId).join(","), PROFILE_ID);
+  eq("★ 7d 变更计划里生效的仍是**起跑当时**锁下的 v1(锁版意义就是不随源变)", changePlan[0]?.effectiveHash, hashV1);
+  eq("★ 7d 那一条按 PINNED 判定(运行起跑锁下的)", changePlan[0]?.policy, "PINNED");
+  eq("★ 7d 落后的那一条 stale 为真(读回差异成立)", changePlan[0]?.stale, true);
+
+  // 还原源档案,免得影响后续(本套 §1–§6 已跑完,这里只是收尾整洁)。
+  writeFileSync(join(agentsDir, `${PROFILE_ID}.json`), profileBody("v1"), "utf-8");
 }
 
 /* ──────────────── 收尾 ──────────────── */
