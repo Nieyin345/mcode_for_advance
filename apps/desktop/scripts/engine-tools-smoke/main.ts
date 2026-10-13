@@ -259,6 +259,17 @@ try {
     !codexSrc.includes('content.map(c => ({ type: "inputText"') &&
       !piSrc2.includes('.content.map(c => c.type === "text"'),
   );
+  // 收口也要覆盖 smoke 侧——一条 `document-read-smoke` 曾把同一句
+  // `.content.filter(x=>x.type==="text").map(x=>x.text).join("\n")` 抄了 8 遍。
+  // 断言它改走权威 toolTextOf,且**不再留**那句手写拼接(与上面 Pi/Codex 同一判据)。
+  {
+    const docReadSrc = readFileSync(resolve(process.cwd(), "scripts/document-read-smoke/main.ts"), "utf8");
+    check("ARC-017:document-read-smoke 走权威 toolTextOf", docReadSrc.includes("toolTextOf"));
+    check(
+      "ARC-017:document-read-smoke 不再手写块提取(同一形状不抄第二遍)",
+      !docReadSrc.includes('.content.filter(x=>x.type==="text")'),
+    );
+  }
 
   /* ── 8. cwd 登记表：删会话真的摘掉（不是"源码里有没有那一行"）────────────────
    *

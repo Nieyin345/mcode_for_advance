@@ -8,13 +8,13 @@ import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
 import { __registeredDisposerCount, __registeredShutdownHookCount } from "@main/mcp/agentSessionCleanup.js";
 import { ResponseReadGate, classifyContentType, readResponseWithinBudget, checkZipInflation, clampCellBudget, MAX_CONCURRENT_URL_READS, DOCUMENT_READ_BUDGET, type ReadBudget } from "@main/lib/readBudget.js";
-import type { ToolResult } from "@main/mcp/sdk.js";
+import { toolTextOf, type ToolResult } from "@main/mcp/sdk.js";
 const root=mkdtempSync(join(tmpdir(),"mcode-doc-read-"));
 const failures:string[]=[];let passed=0;
 async function test(name:string,fn:()=>unknown){try{await fn();passed++;console.log("PASS "+name);}catch(e){failures.push(name+":"+String(e));console.error("FAIL "+failures.at(-1));}}
 const specs=agentMcpTools({cwdFor:()=>root});const spec=specs.find(x=>x.name==="agent_read_document")!;
 const read=async(path:string,args:Record<string,unknown>={})=>spec.handler(z.object(spec.inputSchema).parse({path,...args}),{sessionId:"document-fixture"});
-const text=(r:ToolResult)=>r.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+const text=toolTextOf;
 function pdf(){
  const objects:string[]=["<< /Type /Catalog /Pages 2 0 R >>","<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>"];
  for(let n=1;n<=3;n++){const s=`BT /F1 12 Tf 50 750 Td (PAGE_${n} ${"Paper metadata ".repeat(200)}) Tj ET`;objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 9 0 R >> >> /Contents ${2+n*2} 0 R >>`,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);}
@@ -185,7 +185,7 @@ try {
   try{
    const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
    const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"});
-   const t=(out as ToolResult).content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   const t=toolTextOf(out as ToolResult);
    assert.ok(!(out as ToolResult).isError,t);
    assert.match(t,/status: 200/);
    // 给服务端一点时间感知对端关闭。
@@ -303,7 +303,7 @@ try {
   try{
    const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
    const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:10000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
-   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   const t=toolTextOf(out);
    assert.equal(out.isError,true,`中途断网被当成成功:${t}`);
    assert.match(t,/部分内容|中途失败|读取 URL 失败/,t);
   }finally{await new Promise<void>((r)=>server.close(()=>r()));}
@@ -317,7 +317,7 @@ try {
   try{
    const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
    const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:10000,timeout_ms:1200}),{sessionId:"url-fixture"}) as ToolResult;
-   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   const t=toolTextOf(out);
    assert.equal(out.isError,true,`超时被当成成功:${t}`);
    assert.match(t,/超过|超时|部分内容/,t);
   }finally{await new Promise<void>((r)=>server.close(()=>r()));}
@@ -338,7 +338,7 @@ try {
   try{
    const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
    const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
-   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   const t=toolTextOf(out);
    assert.equal(out.isError,true,t);
    assert.match(t,/Content-Length|上限/,t);
    assert.ok(sent<DECLARED,`客户端仍下载了正文(${sent})`);
@@ -355,7 +355,7 @@ try {
   try{
    const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
    const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
-   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   const t=toolTextOf(out);
    assert.equal(out.isError,true,t);
    assert.match(t,/二进制|agent_read_document|agent_read_image/,t);
   }finally{await new Promise<void>((r)=>server.close(()=>r()));}
@@ -370,7 +370,7 @@ try {
   try{
    const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
    const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
-   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   const t=toolTextOf(out);
    assert.equal(out.isError,true,t);
    assert.match(t,/重定向次数|超过上限/,t);
   }finally{await new Promise<void>((r)=>server.close(()=>r()));}
@@ -386,7 +386,7 @@ try {
   try{
    const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
    const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/r`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
-   const t=out.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
+   const t=toolTextOf(out);
    assert.ok(!out.isError,t);
    assert.match(t,/FINAL_BODY_OK/,t);
   }finally{await new Promise<void>((r)=>server.close(()=>r()));}
