@@ -89,17 +89,27 @@ export function buildMemoryReview(
   };
 }
 
-/** 真实库入口：先列六类文件，再读取需要比较的条目；不调任何写操作。 */
-export function reviewMemoryFiles(): MemoryReviewResult {
+/** 真实库入口：先列六类文件，再读取需要比较的条目；不调任何写操作。
+ *
+ * 【MC-092】`visible` 是宿主(带 agent 作用域时)传进来的「当前可见集合」判据:给了谓词就在
+ * **进入扫描之前**把不可见的条目滤掉 —— 这样 `staleTotal` / `totalFiles` / duplicates 的配对
+ * 与最终列出的条目**同出一份可见集合**,不会出现"计数里带着别项目、列表里却没有"的错位。
+ * `undefined` = 桌面用户(扫全部)。 */
+export function reviewMemoryFiles(visible?: (path: string) => boolean): MemoryReviewResult {
   const omitted: string[] = [];
-  const metas = listMemoryFiles({ onUnreadable: (path) => omitted.push(path) });
+  const all = listMemoryFiles({ onUnreadable: (path) => omitted.push(path) });
+  const metas = visible === undefined ? all : all.filter((meta) => visible(meta.path));
   const report = buildMemoryReview(metas, readMemoryFileWithRaw);
   return { ...report, unreadable: [...new Set([...omitted, ...report.unreadable])] };
 }
 
-/** 单条显式删除；主进程同步重读并核对完整指纹，变动/消失即拒绝。 */
-export function deleteReviewedMemory(input: MemoryReviewDeleteInput): { ok: boolean; error?: string } {
+/** 单条显式删除；主进程同步重读并核对完整指纹，变动/消失即拒绝。
+ *
+ * 【MC-092】`visible` 同 {@link reviewMemoryFiles}:agent 作用域下,不属于本项目/全局的路径
+ * 一律拒(走 `{ok:false,error}` 契约形状,与 `memory:delete` 同一道闸);桌面用户不设限。 */
+export function deleteReviewedMemory(input: MemoryReviewDeleteInput, visible?: (path: string) => boolean): { ok: boolean; error?: string } {
   try {
+    if (visible && !visible(input.path)) return { ok: false, error: "记忆不属于本项目或显式全局范围;agent 只能整理当前项目的记忆。" };
     const meta = listMemoryFiles().find((item) => item.path === input.path);
     if (!meta) return { ok: false, error: "记忆不存在或不可读，请重新整理后再选择。" };
     const { content, raw, revision } = readMemoryFileWithRaw(input.path);

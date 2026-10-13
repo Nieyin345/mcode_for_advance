@@ -57,29 +57,50 @@ function sourceText(id: string): string {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 524288) throw new Error("来源已改变");
   return readFileSync(path, "utf8");
 }
-export function manageMemory(input: MemoryManageInput): MemoryManageResult {
+export function manageMemory(input: MemoryManageInput, visible?: (path: string) => boolean): MemoryManageResult {
+  // 【MC-092】`visible` 是宿主(带 agent 作用域时)传进来的「当前可见集合」判据:`undefined` =
+  // 桌面用户(全局管理权限,不设限);给了谓词 = agent,只许碰**本项目 + 全局**的路径。
+  // 作用域判据**只有一份**(在 `ipc/memory.ts` 的 `agentVisible`);这里只把它套到每个要读/写的
+  // 路径上,不自己再写一份规则。列表型输出(sources/history/projects)按同一谓词**先滤后返回**,
+  // 出参计数才与列出来的条目同源(否则会出现"计数里带着别项目、列表里却没有"的错位)。
+  const canSee = (path: string): boolean => visible === undefined || visible(path);
   try {
     if (input.action === "list") {
       const native = nativeSources();
       const history = memoryHistory();
       return { ok: true,
-        projects: ProjectRepo.list().map(p => ({ id: p.id, name: p.name })),
-        sources: [...listMemoryFiles().filter(m => m.scope === "legacy").map(m => ({ id: `legacy:${m.path}`, label: `MCode legacy · ${m.path}` })),
-          ...Array.from(native.map.keys(), id => {
+        // 项目清单:agent 只看得见自己那个项目(拿一条本项目记忆路径当探针问同一谓词)。
+        projects: ProjectRepo.list().filter(p => canSee(`projects/${p.id}/project/x.md`)).map(p => ({ id: p.id, name: p.name })),
+        sources: [...listMemoryFiles().filter(m => m.scope === "legacy" && canSee(m.path)).map(m => ({ id: `legacy:${m.path}`, label: `MCode legacy · ${m.path}` })),
+          // 原生来源 id 不是记忆路径,经同一谓词时对 agent 一律不可见(旧记忆 / 别的 owner 的项目
+          // 记忆不归 agent);桌面用户照旧看到全部。
+          ...Array.from(native.map.keys()).filter(id => canSee(id)).map(id => {
             const [owner, project, file] = id.split("/");
             return { id, label: `${owner === ".claude" ? "Claude CLI" : "MCode CLI"} · ${project} · ${file}` };
           })],
         // 被上限挡掉的数如实报出(0 也带上,界面据此决定显不显示那句话)。
         truncatedSources: native.truncatedProjects + native.truncatedFiles,
-        history: history.entries,
+        history: history.entries.filter(e => canSee(e.path)),
         historyTruncated: history.truncated };
     }
-    if (input.action === "history") { const raw = readHistory(input.id).raw; return { ok: true, content: raw, digest: digest(raw) }; }
+    if (input.action === "history") {
+      const h = readHistory(input.id);
+      if (!canSee(h.path)) throw new Error("记忆历史不属于本项目或显式全局范围;agent 只能整理当前项目的记忆。");
+      return { ok: true, content: h.raw, digest: digest(h.raw) };
+    }
     if (input.action === "restore") {
-      if (digest(readHistory(input.id).raw) !== input.digest) throw new Error("历史来源已改变，请重新预览");
+      const h = readHistory(input.id);
+      if (!canSee(h.path)) throw new Error("记忆历史不属于本项目或显式全局范围;agent 只能整理当前项目的记忆。");
+      if (digest(h.raw) !== input.digest) throw new Error("历史来源已改变，请重新预览");
       const result = restoreMemory(input.id); notifyMemoryChanged("restore:" + result.path);
       return { ok: true, path: result.path };
     }
+    // preview / import:来源(`legacy:` 旧记忆 / `owner/slug/file` 原生引擎目录)必须落在可见集合里
+    // —— 这两类来源都不是「本项目 + 全局」的记忆路径,故 agent 作用域下会被拒(与 `memory.read`
+    // 拒 legacy 同口径)。**这一道同时管住 import 的写**:import 只会把来源正文写进
+    // `projects/<目标>` 或 `global`,来源读不到就没有可写的正文;桌面用户(无谓词)照旧可导入。
+    const sourcePath = input.source.startsWith("legacy:") ? input.source.slice(7) : null;
+    if (!canSee(sourcePath ?? input.source)) throw new Error("记忆来源不属于本项目或显式全局范围;agent 只能整理当前项目的记忆。");
     const raw = sourceText(input.source), hash = digest(raw);
     if (input.action === "preview") return { ok: true, content: raw, digest: hash };
     if (hash !== input.digest) throw new Error("来源已改变，请重新预览后确认");

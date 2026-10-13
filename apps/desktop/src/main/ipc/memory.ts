@@ -61,21 +61,33 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
   // 作用域(见 `memory/agentScope.ts`);桌面用户走真实 IPC 时没有作用域 → 保留全局管理权限。
   // 这道闸把「通用接口」与「专用记忆工具」的授权拉齐:带作用域时,读写只许**本项目 + 全局**,
   // list 只列可见项 —— 模型不能借 `app_api_call` 绕过专用工具的隔离。
-  const enforceAgentScope = (path: string): void => {
+  //
+  // `agentVisible` 是**唯一一份**「当前可见集合」判据:无作用域 → `undefined`(桌面用户,不设限);
+  // 有作用域 → 只认本项目 + 全局。读写删按**路径**判;`manage`/`review` 这类**列表型**出口把
+  // 它当谓词**传进领域函数**,在构建列表**之前**就滤掉不可见项(计数才不撒谎 —— 出参的
+  // totalFiles / history 才和列出来的条目对得上)。
+  const agentVisible = (): ((path: string) => boolean) | undefined => {
     const scope = currentAgentMemoryProjectId();
-    if (scope === undefined) return; // 桌面用户:全局管理权限。
-    if (!visibleMemory(path, scope)) {
+    return scope === undefined ? undefined : (path) => visibleMemory(path, scope);
+  };
+  const enforceAgentScope = (path: string): void => {
+    const visible = agentVisible();
+    if (visible === undefined) return; // 桌面用户:全局管理权限。
+    if (!visible(path)) {
       throw new Error("记忆不属于本项目或显式全局范围;agent 只能访问当前项目的记忆。");
     }
   };
-  ipcMain.handle(MEMORY_MANAGE_CHANNEL, (_evt, raw) => manageMemory(MemoryManageSchema.parse(raw)));
+  // 【MC-092】manage 的 import/preview/history/restore 与 list 的 sources/history 也要按同一份
+  // 判据收口 —— 从前这几个出口没纳入闸门(仍走 manage 自己的授权),agent 能借它读写别项目记忆。
+  ipcMain.handle(MEMORY_MANAGE_CHANNEL, (_evt, raw) => manageMemory(MemoryManageSchema.parse(raw), agentVisible()));
   ipcMain.handle(MEMORY_LIST_CHANNEL, (_evt, raw) => {
     const input = MemoryListSchema.parse(raw ?? {});
     // 契约是 `{ files: [...] }`(见 `RpcMap["memory.list"]`),不是裸数组 —— 见文件头。
     const all = listMemoryFiles(input.category ? { category: input.category } : undefined);
-    // 【MC-092】agent 作用域下只列**本项目 + 全局**的项(桌面用户看到全部)。
-    const scope = currentAgentMemoryProjectId();
-    const files = scope === undefined ? all : all.filter((f) => visibleMemory(f.path, scope));
+    // 【MC-092】agent 作用域下只列**本项目 + 全局**的项(桌面用户看到全部)—— 与 read/save/
+    // delete/manage/review 共用同一份 `agentVisible` 谓词,不在这里另写一遍同值判据。
+    const visible = agentVisible();
+    const files = visible === undefined ? all : all.filter((f) => visible(f.path));
     return { files };
   });
 
@@ -145,12 +157,17 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(MEMORY_CATEGORIES_CHANNEL, () => memoryCategories());
 
   // 建议生成只读。比普通 list 更慢（要比较正文），仅在用户主动点「整理」时调用。
-  ipcMain.handle(MEMORY_REVIEW_CHANNEL, () => reviewMemoryFiles());
+  // 【MC-092】agent 作用域下只扫描**本项目 + 全局**的记忆(桌面用户扫全部)——把「可见」谓词
+  // 传进领域函数,在**构建扫描结果之前**滤掉不可见项:这样 staleTotal / totalFiles 这些
+  // 计数与列出来的条目同出一份可见集合,不会出现"计数里带着别项目、列表里却没有"的错位。
+  ipcMain.handle(MEMORY_REVIEW_CHANNEL, () => reviewMemoryFiles(agentVisible()));
 
   // 永不按建议自动删：UI 必须勾选 + 二次确认，并交回扫描时的完整内容指纹。
   ipcMain.handle(MEMORY_REVIEW_DELETE_CHANNEL, (_evt, raw) => {
     const input = MemoryReviewDeleteSchema.parse(raw);
-    const result = deleteReviewedMemory(input);
+    // 【MC-092】与 memory:delete 同一道闸:agent 不能借 reviewDelete 删别的项目/旧布局的记忆。
+    // 可见谓词传进领域函数,由它按 `{ok:false,error}` 契约形状拒绝(不抛出去改坏形状)。
+    const result = deleteReviewedMemory(input, agentVisible());
     if (result.ok) notifyMemoryChanged(`reviewDelete:${input.path}`);
     return result;
   });

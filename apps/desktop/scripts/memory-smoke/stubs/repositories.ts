@@ -35,4 +35,10 @@ export const SettingRepo = {
 };
 
 export const SessionRepo = { get(id: string) { return id === "isolated-memory-test" ? { id, projectId: "p_memory", kind: "chat", parentSessionId: null, nodeId: null } : undefined; } };
-export const ProjectRepo = { list() { return [{ id: "p_memory", name: "Memory test", path: "/isolated" }]; } };
+// ⚠️ **两个项目**是有意的:MC-092 的 `memory.manage` list 会把项目清单按可见集合滤过
+// (`projects/p_other` 对 p_memory 的会话不可见)—— 只给一个项目,那条过滤断言就恒真、
+// 测不出东西。这里给第二个项目当**不可见**的反例。
+export const ProjectRepo = { list() { return [
+  { id: "p_memory", name: "Memory test", path: "/isolated" },
+  { id: "p_other", name: "Other project", path: "/isolated-other" },
+]; } };

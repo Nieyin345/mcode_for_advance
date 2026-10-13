@@ -71,10 +71,10 @@ registerFileHandlers({
     handlers.set(channel, fn);
   },
 } as never);
-async function call(channel: string, payload: unknown): Promise<{ ok?: boolean }> {
+async function call(channel: string, payload: unknown): Promise<{ ok?: boolean; conflict?: boolean }> {
   const fn = handlers.get(channel);
   if (!fn) throw new Error(`handler not registered: ${channel}`);
-  return (await fn(null, payload)) as { ok?: boolean };
+  return (await fn(null, payload)) as { ok?: boolean; conflict?: boolean };
 }
 
 try {

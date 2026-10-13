@@ -1082,6 +1082,75 @@ console.log("\n分层工作流复用与记忆注入所有权");
     check("★ MC-092:app_api_call 对 memory.* 真的装了宿主会话作用域(调用点)",
       /entry\.method\.startsWith\("memory\."\)[\s\S]*?runWithAgentMemoryScopeForSession\(sessionId/.test(src));
   }
+
+  // ⑤ 【MC-092 续】manage / review / reviewDelete 也纳入同一道闸。
+  //
+  //    manage 的 import/preview/history/restore 能读写任意路径的记忆;**review** 会扫全库;
+  //    **reviewDelete** 能按指纹删任意一条 —— 这三条从前**没纳入闸门**,agent 借 `app_api_call`
+  //    就能跨项目读/写/删。这里逐入口钉住。
+  //
+  //    ⚠️ 断言必须用**正确指纹 / 真实历史 id** —— 否则失败的是「指纹不符」「历史不存在」这些
+  //    **别的理由**,撤掉闸门也不会变红(仓库踩过两次假绿)。所以先用**桌面(无作用域)**这一路
+  //    拿到基线:能扫到、能预览出摘要;那正是 agent 该被拦下的同一个目标。
+  {
+    // 造一条**别的项目**、旧到进 `review` stale 的记忆;整块内不再改它 → 一直是 stale。
+    // ⚠️ 用**当前活动数据根**(`memoryRoot()` 的父目录),不是固定某个 DATA —— 本块执行时
+    //    活动根已切到别处,写错根会让 review 根本扫不到这条(试剂静默失效)。
+    const liveRoot = dirname(memoryRoot());
+    const crossPath = "projects/p_other/rules/stale-cross.md";
+    handWrite(liveRoot, crossPath, "别的项目旧条", 1000, "别的项目正文");
+    const fullReview = call("memory:review", {}) as { stale: Array<{ path: string; digest: string }>; totalFiles: number };
+    const crossEntry = fullReview.stale.find((e) => e.path === crossPath);
+    check("★ MC-092:桌面用户 review 能扫到别的项目(基线,另有 agent 侧反例)", crossEntry !== undefined, fullReview.stale.map((e) => e.path));
+    const crossDigest = crossEntry?.digest ?? "";
+    // 造两条历史:一条可见(全局),一条不可见(别的项目)—— 各带真实 revision 更新一版即归档。
+    saveMemoryFile({ path: globalPath, content: "v1", expectedRevision: readMemoryFile(globalPath).revision });
+    saveMemoryFile({ path: otherPath, content: "v2", expectedRevision: readMemoryFile(otherPath).revision });
+    const globalHist = memoryHistory().entries.find((e) => e.path === globalPath);
+    const otherHist = memoryHistory().entries.find((e) => e.path === otherPath);
+    check("★ MC-092:两条历史都归档成功(基线)", globalHist !== undefined && otherHist !== undefined);
+    // import 的 legacy 源:桌面这一路先预览拿到**正确 digest** —— 否则 agent 侧撤掉闸门后仍会因
+    // 「来源已改变」而拒,断言假绿。判据:带正确 digest 时,唯一能拒它的就是作用域。
+    const legacyPreview = manageMemory({ action: "preview", source: "legacy:rules/旧布局.md" });
+    check("★ MC-092:legacy 导入源可预览并带摘要(基线)", legacyPreview.ok && !!legacyPreview.digest, legacyPreview);
+
+    const isVisiblePath = (p: string): boolean => p.startsWith("global/") || p.startsWith("projects/p_memory/");
+    runWithAgentMemoryScopeForSession("isolated-memory-test", () => {
+      // manage:list —— 来源与历史都按同一份可见集合滤过。
+      const ml = call("memory:manage", { action: "list" }) as {
+        ok: boolean; sources?: Array<{ id: string }>; history?: Array<{ id: string; path: string }>;
+        projects?: Array<{ id: string; name: string }>;
+      };
+      check("★ MC-092:agent manage list 不列 legacy 来源", ml.ok && !(ml.sources ?? []).some((s) => s.id.startsWith("legacy:")), ml.sources);
+      check("★ MC-092:agent manage list 的项目只含自己那个", (ml.projects ?? []).every((p) => p.id === "p_memory"), ml.projects);
+      check("★ MC-092:agent manage list 的 history 不含别的项目", !(ml.history ?? []).some((h) => h.path === otherPath), ml.history?.map((h) => h.path));
+      check("★ MC-092:agent manage list 的 history 含全局", (ml.history ?? []).some((h) => h.path === globalPath), ml.history?.map((h) => h.path));
+      // manage:history —— 读不可见路径的历史被拒;可见的照常。
+      const histOther = call("memory:manage", { action: "history", id: otherHist!.id }) as { ok: boolean };
+      check("★ MC-092:agent 读**别的项目**历史被拒", histOther.ok === false, histOther);
+      const histGlobal = call("memory:manage", { action: "history", id: globalHist!.id }) as { ok: boolean };
+      check("★ MC-092:agent 读**全局**历史可以", histGlobal.ok === true, histGlobal);
+      // manage:import —— 来源不可见(legacy/别的 owner)即拒(带**正确 digest** 也拒)。
+      const imp = call("memory:manage", {
+        action: "import", source: "legacy:rules/旧布局.md", digest: legacyPreview.digest!,
+        category: "rules", global: true, confirmed: true,
+      }) as { ok: boolean };
+      check("★ MC-092:agent 导入 legacy 来源被拒(digest 正确也拒)", imp.ok === false, imp);
+      // review —— 只扫可见集合:别的项目的条目既不进 stale,也不进计数。
+      const rev = call("memory:review", {}) as { stale: Array<{ path: string }>; totalFiles: number };
+      check("★ MC-092:agent review 不含别的项目", !rev.stale.some((e) => e.path === crossPath), rev.stale.map((e) => e.path));
+      check("★ MC-092:agent review 里每一条都可见", rev.stale.every((e) => isVisiblePath(e.path)), rev.stale.map((e) => e.path));
+      check("★ MC-092:agent review 计数不含不可见项(少于桌面)", rev.totalFiles < fullReview.totalFiles, { agent: rev.totalFiles, desktop: fullReview.totalFiles });
+      // reviewDelete —— 带**正确指纹**删别的项目也被拒(与 memory:delete 同一道闸)。
+      const rd = call("memory:reviewDelete", { path: crossPath, digest: crossDigest }) as { ok: boolean };
+      check("★ MC-092:agent reviewDelete 别的项目被拒(指纹正确也拒)", rd.ok === false, rd);
+    });
+
+    // ⑥ 反证:桌面(无作用域)用**同一路径 + 同一指纹**删得掉 —— 证明上面拒的是**作用域**,
+    //    不是指纹。删掉也顺手清理这条试剂。
+    const rdDesk = call("memory:reviewDelete", { path: crossPath, digest: crossDigest }) as { ok: boolean };
+    check("★ MC-092:桌面用户 reviewDelete 同一路径+指纹可以(反证拒的是作用域不是指纹)", rdDesk.ok === true, rdDesk);
+  }
 }
 
 /* ────────────────────────── 汇总 ────────────────────────── */
