@@ -221,6 +221,30 @@ const WATCH_IGNORED_DIRS = new Set([
  */
 const PENDING_FILES_LIMIT = 500;
 
+/**
+ * 【MC-091 续·全局背压】**所有**触发器**同时**攒着的条目总数上限。
+ *
+ * ## 为什么单条的上限不够
+ *
+ * `PENDING_FILES_LIMIT`(每格文件 500)与 `MAX_EVENT_ITEMS`(每批事件 100)**各自只管**
+ * 一条触发器**。几十条自动化被同一条抖动目录 / 事件流一起灌满时,整台机器攒着的条目
+ * 总量 = 触发器数 × 单条上限,而这个乘积**没有任何上界** —— 那正是复核点名的「全局
+ * 背压」缺口:单条有界不等于整体有界。
+ *
+ * ## 判据与口径
+ *
+ * 这一条给整个执行器一张预算:任一条要收**新**条目之前,先问 `admitGlobal`「现在还放得
+ * 下吗」。放不下就**不收这一条**,并把丢弃如实记进**恢复游标**(`recordDropped` →
+ * `automation.droppedUndelivered`)—— 与单条那一路同一个「丢要报出来」的立场,只是判据
+ * 从"这一格满了"升级到"整台机器满了"。取 5000:够容纳十条触发器各自攒满(单条上限
+ * 500),又不至于让一台挂着几十条自动化的机器把内存顶穿。
+ *
+ * ⚠️ 全局这一层**不覆盖**已收进队列的旧条目(那会牵动所有 pending 的重排):它的语义是
+ * **背压** —— 触顶之后**新条目不再进来**,而不是"把别处攒着的挤出去"。单条那一路仍是
+ * 「丢最早」(`addToFileBacklog` / `mergeEventPayload`),两层各管各的、互不矛盾。
+ */
+const GLOBAL_PENDING_LIMIT = 5000;
+
 
 /** 非本轮分钟的历史最多保留60条；本轮分钟记录不受条数限制。
  *  同分钟已触发的 key 是正确性状态，不能按容量淘汰，否则第61条之后的
@@ -528,6 +552,17 @@ class AutomationRunner {
     if (this.started) return;
     this.started = true;
 
+    // 【MC-091 续·启动竞态】**先把跨重启的持久状态读回来,再订阅事件。**
+    //
+    // 三张表(`lastMinute` / `triggerClaims` / `droppedUndelivered`)都必须在**任何事件
+    // 可被受理之前**装进内存。反过来的话,启动窗口里若记下一笔丢弃(写进内存表),紧接着
+    // 的读盘会**整份覆盖**它 —— 那笔丢弃就永久消失。读在前、订阅在后,这个窗口从
+    // "靠顺序碰巧安全"变成"按构造安全";`readDroppedUndelivered` 本身也**并入**已有内存
+    // 表(见那里),两层保险。
+    this.lastMinute = this.readLastMinutes();
+    this.triggerClaims = this.readTriggerClaims();
+    this.droppedUndelivered = this.readDroppedUndelivered();
+
     // 见文件头不变量 ①:这里是同步回调,真正的活全在下面的计时器里,不 await。
     this.unsubscribe = runtimeManager.subscribe((e) => {
       try {
@@ -546,19 +581,10 @@ class AutomationRunner {
       });
     });
 
-    // **把上一次进程留下的"哪一分钟跑过"读回来。** 这一步必须在 ticker 起来**之前**
-    // 做 —— 反过来的话,第一跳就会把重启前那一分钟当成"没见过",于是同分钟跑第二次,
-    // 而那次多跑正是要挡的东西。读失败不是致命的:`readLastMinutes` 内部兜成空表,
-    // 退化成"重启后可能多跑一次"的老行为。
-    this.lastMinute = this.readLastMinutes();
-    // 上一次进程留下的**领取账本**(MC-051)。同样在 ticker 起跳之前读回来 —— 恢复逻辑
-    // (`recoverIncompleteClaims`)要拿它认出"领取了但没确认完成"的那些,而它必须在
-    // 启动 tick 之前就把这些落成 `UNCERTAIN`(否则启动那一跳还会照常跑本分钟)。
-    this.triggerClaims = this.readTriggerClaims();
-    // 【MC-091 续】上一次进程留下的**「被丢弃、未交付」欠账**。重启若发生在合并窗口里,
-    // 那一格 pending(连同它的 `overflowDropped`)整个没了 —— 丢的条数不能跟着消失。
-    // 读回来之后,下一次真正派发的运行把这份欠账并进载荷、随后清账。
-    this.droppedUndelivered = this.readDroppedUndelivered();
+    // 三张跨重启的表(`lastMinute` / `triggerClaims` / `droppedUndelivered`)已在
+    // `start()` 开头读回(见那里的「启动竞态」注释)—— 那里**先于**订阅事件,所以启动
+    // 窗口里发生的任何丢弃都不会被这里的读盘覆盖。它们仍必须在 ticker 起跳**之前**就绪:
+    // 第一跳要靠 `lastMinute` 去重、靠 `triggerClaims` 认出"领取了但没确认完成"的那些。
 
     this.ticker = setInterval(() => {
       try {
@@ -1364,7 +1390,15 @@ class AutomationRunner {
         log.warn("[automation] 未交付丢弃账读不回来(形状不对),当空表");
         return new Map();
       }
-      return new Map(Object.entries(parsed));
+      // 【MC-091 续·启动竞态】**并入**已有内存表,不是覆盖 —— 万一启动窗口里已经记下
+      // 一笔丢弃(先于这次读盘写进了 `this.droppedUndelivered`),覆盖会让它永久消失。
+      // 同键时把盘上的历史欠账与内存里那一笔**相加**(两笔都还没交付),取较晚的时刻。
+      const merged = new Map<string, UndeliveredDrop>(Object.entries(parsed));
+      for (const [key, drop] of this.droppedUndelivered) {
+        const prev = merged.get(key);
+        merged.set(key, prev === undefined ? drop : { count: prev.count + drop.count, at: Math.max(prev.at, drop.at) });
+      }
+      return merged;
     } catch (err) {
       log.warn(`[automation] 未交付丢弃账读不回来,当空表:${(err as Error).message}`);
       return new Map();
@@ -1393,6 +1427,42 @@ class AutomationRunner {
   private droppedCountOf(key: string): number {
     const entry = this.droppedUndelivered.get(key);
     return entry === undefined ? 0 : entry.count;
+  }
+
+  /**
+   * 【MC-091 续·全局背压】此刻**所有触发器**攒着的条目总数。见 {@link GLOBAL_PENDING_LIMIT}。
+   *
+   * 只数两样:**每个 pending 的 `files`** 与 **`event.items`**。混合批次里那份
+   * `externalEvent`(自我额度耗尽时的外部备用副本)**故意不数** —— 它恒是 `event` 里外部
+   * 那部分的子集(同一 `itemId`、同一批),数它会把这批条目的内存占用**凭空翻倍**,
+   * 而它自身又被 `MAX_EVENT_ITEMS` 逐条压着、不可能单独越界。所以数 `files + event.items`
+   * 就是对"执行器此刻握着多少条元素"的诚实计量。
+   *
+   * 现算而不是维护一个增量计数器:攒着的那几格(`pendingFires`)本来就被触发器数量压着
+   * (个位到几十),而所有删除点(`rearm` 的 `pendingFires.delete`、`apply` / 取消 / `dispose`
+   * 的整表清、忙时重建)都要同步减计数 —— 漏一个就是一次"内存里对、计数错"的静默漂移,
+   * 那比每到点扫一遍贵得多。判据宁可每次算准,也不要维护一份会漂的影子数。
+   */
+  private pendingItemsHeld(): number {
+    let total = 0;
+    for (const [, pending] of this.pendingFires) {
+      total += pending.files.length;
+      if (pending.event?.kind === "event") total += pending.event.items?.length ?? 0;
+    }
+    return total;
+  }
+
+  /**
+   * 【MC-091 续·全局背压】全局预算里还放得下 `add` 条吗?
+   *
+   * 放得下 → `true`(调用方照常收进本格)。放不下 → **不放行**,并把 `add` 条如实记进
+   * 恢复游标(`recordDropped`,于是界面与下一次派发的载荷都读得到"这台机器满过"),返回
+   * `false`。**绝不静默丢** —— 与 `addToFileBacklog` / `mergeEventPayload` 同一条红线。
+   */
+  private admitGlobal(key: string, add: number): boolean {
+    if (this.pendingItemsHeld() + add <= GLOBAL_PENDING_LIMIT) return true;
+    this.recordDropped(key, add);
+    return false;
   }
 
   /**
@@ -1444,10 +1514,22 @@ class AutomationRunner {
     key: string,
   ): TriggerPayload {
     const before = prior?.kind === "event" ? (prior.itemsOverflowDropped ?? 0) : 0;
-    const merged = mergeEventPayload(prior, event, facts, item);
+    // 【MC-091 续·全局背压】一条**新的**事件条目要进全局预算(`GLOBAL_PENDING_LIMIT`)。
+    // 整台机器触顶时不收这一条(`admitGlobal` 已把丢弃记进恢复游标);事件名 / 工具名 /
+    // 主语照旧覆盖 —— 它们说的是"这是个什么事件",与条目容量无关(同 `mergeEventPayload`
+    // 的"谁覆盖、谁累加")。已见过的重条目不重复占预算(`payloadHoldsItem`),与本地去重一致。
+    const isNewItem = item !== undefined && !this.payloadHoldsItem(prior, item.itemId);
+    const admitted = !isNewItem || this.admitGlobal(key, 1);
+    const merged = mergeEventPayload(prior, event, facts, admitted ? item : undefined);
     const after = merged.kind === "event" ? (merged.itemsOverflowDropped ?? 0) : 0;
     if (after > before) this.recordDropped(key, after - before);
     return merged;
+  }
+
+  /** `prior` 事件载荷里是否已经有这条 `itemId` 的条目(去重判据,与 `mergeEventPayload` 同口径)。 */
+  private payloadHoldsItem(prior: TriggerPayload | undefined, itemId: string | undefined): boolean {
+    if (prior?.kind !== "event" || itemId === undefined) return false;
+    return (prior.items ?? []).some((existing) => existing.itemId === itemId);
   }
 
   /**
@@ -1618,6 +1700,15 @@ class AutomationRunner {
       }
       pending.changes.set(abs, kind);
       if (present && !pending.files.includes(abs)) {
+        // 【MC-091 续·全局背压】这一条要进全局预算(`GLOBAL_PENDING_LIMIT`)。整台机器攒着
+        // 的条目触顶时**不收这一条**,并如实记进恢复游标(`admitGlobal` 内部做)—— 与单条
+        // 那一路同一个「丢要报出来」的立场。方向仍留在 `changes` 里(那一份按单条上限收口,
+        // 不占全局的**文件**预算),计时器照旧往后推,不丢"这一格还在动"的事实。
+        if (!this.admitGlobal(triggerKey(trigger), 1)) {
+          pending.busyRetryMs = undefined;
+          this.rearm(pending, WATCH_SETTLE_MS + trigger.spec.debounceMs);
+          continue;
+        }
         // 上限(见 `PENDING_FILES_LIMIT`):收进队列,超限时丢**最早**的几条。丢掉多少
         // **要说出来** —— 静默少办一件事是这一路最坏的坏法。【ARC-015】现在这层不只是
         // 一句 `log.warn`,通过 `addToFileBacklog` 把丢的条数**累加进 `pending.overflowDropped`**
@@ -2274,6 +2365,10 @@ class AutomationRunner {
             }
           }
           if (payload.kind === "file") {
+            // 【MC-091 续·全局背压】**这里不必再判全局额度** —— 重排队的 `payload.files`
+            // 是**收口那一刻**已过 `admitGlobal` 的那一份(`onFsChange` 逐条判过),这里只是
+            // 把同一批搬进重建的空格(相等地守恒),不会凭空多出未计费的条目。全局那一层
+            // 的入口只有 `onFsChange` / `mergeEventInto` 两处,已经覆盖全部增长路径。
             pending.files = [...new Set([...pending.files, ...payload.files])];
             // 【ARC-015①】方向也要接回来 —— 忙时重建的那一格若丢了 `changes`,下一次收口
             // 就只剩 `files`(没有删除/改名方向),模型又看不出"这个文件是被删了"。
@@ -2283,6 +2378,9 @@ class AutomationRunner {
             // "输入不完整"这件事实丢掉,下次收口时又当成"这就是全部"。
             if (payload.overflowDropped !== undefined) pending.overflowDropped += payload.overflowDropped;
           } else {
+            // 【MC-091 续·全局背压】同文件那一路:重排队的 `payload.items` 是收口那一刻已
+            // 过闸门的那一份,搬进重建的空格守恒 —— 全局入口只有 `onEvent`(`mergeEventInto`)
+            // 与文件那一路的 `onFsChange`,这里不重复判。
             for (const item of payload.items ?? []) {
               pending.event = mergeEventPayload(pending.event, payload.event,
                 { toolName: payload.toolName, subjects: payload.subjects }, item);

@@ -102,6 +102,11 @@ export function AutomationRunSection({ doc, catalog, dirty = false }: {
           {fact && (fact.queuedCount ?? 0) > 0 && <p className="break-words text-content-muted">
             {t("settings.automation.facts.queued", { n: fact.queuedCount ?? 0 })}
           </p>}
+          {/* 「丢弃、未交付」摆在失败那一行之前:它说的是"有东西真丢了、还没交出去",比排队更该看见。
+              用 warning 而不是 danger:没有东西坏掉,下一次真正派发会自动把欠账并进去、随后清零。 */}
+          {fact && (fact.droppedUndelivered ?? 0) > 0 && <p className="break-words text-warning">
+            {t("settings.automation.facts.droppedUndelivered", { n: fact.droppedUndelivered ?? 0 })}
+          </p>}
           {fact && latestFailureOf(fact) && <p className="break-words text-danger">{latestFailureOf(fact)}</p>}
         </div>;
       })}

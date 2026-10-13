@@ -209,6 +209,11 @@ function StartPoints() {
             // 以为一切正常。契约里 `missedNoticeOf` 那段注释警告的正是这个分家:
             // 设置页说"漏了 3 次"、首屏说"一切正常"。这里读**同一条事实**。
             const missed = missedNoticeOf(f);
+            // **丢弃、未交付也要看得见**（`droppedUndelivered`）。它比"错过"更重:错过是"那几天
+            // 机器没开",而丢弃是"有东西真丢了、还没交给任何一次运行"。同样只换文字、不动圆点
+            // —— 下一次真正派发会自动把欠账并进载荷、随后清零,没有东西坏掉。读的是与设置页
+            // 同一条事实,两处不会分家。
+            const dropped = f.droppedUndelivered ?? 0;
             // 错过**不是**失败(圆点不该变红),所以它只换那句文字,不动圆点颜色。
             return (
               <Row
@@ -225,6 +230,10 @@ function StartPoints() {
                   failure ? (
                     <span className="text-danger" title={failure}>
                       {t("chatStream.welcome.automationFailed")}
+                    </span>
+                  ) : dropped > 0 ? (
+                    <span className="text-warning" title={t("settings.automation.facts.droppedUndelivered", { n: dropped })}>
+                      {t("chatStream.welcome.automationDropped", { n: dropped })}
                     </span>
                   ) : missed > 0 ? (
                     <span className="text-warning" title={t("settings.automation.facts.missed", { n: missed })}>

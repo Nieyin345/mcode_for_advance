@@ -2069,6 +2069,10 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     pendingFires: Map<string, { files: string[]; changes?: Map<string, string>; busyRetryMs?: number; overflowDropped?: number }>;
     /** 【MC-091 续】落盘的「被丢弃、未交付」欠账表(恢复游标)。 */
     droppedUndelivered: Map<string, { count: number; at: number }>;
+    /** 【MC-091 续·全局背压】此刻所有触发器攒着的条目总数(私有方法,冒烟按接口取)。 */
+    pendingItemsHeld(): number;
+    /** 【MC-091 续·启动竞态】读盘那份欠账表(私有方法,验证「并入而非覆盖」)。 */
+    readDroppedUndelivered(): Map<string, { count: number; at: number }>;
     runNow(workflowId: string, triggerNodeId: string): Promise<{ ok: boolean; error?: string }>;
     onTick(): void;
     onFsChange(dir: string, filename: string | null, eventType?: string | null): void;
@@ -3141,6 +3145,130 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     } finally {
       SettingRepo.set = originalSet;
       runner.dispose();
+    }
+  }
+
+  /* ── 【MC-091 续·全局背压】整台机器攒着的条目**总量**也有上界(不是只有单条那一路有界) ──
+   *
+   * `PENDING_FILES_LIMIT`(每格文件 500)与 `MAX_EVENT_ITEMS`(每批事件 100)**各自只管**
+   * 一条触发器:几十条自动化被同一条抖动目录一起灌满时,总量 = 触发器数 × 单条上限,而这个
+   * 乘积**没有任何上界**。修复给整个执行器一张预算(`GLOBAL_PENDING_LIMIT = 5000`):任一条
+   * 要收**新**条目之前先问「现在还放得下吗」,放不下就**不收这一条**,并把丢弃如实记进
+   * **恢复游标**(不是静默丢)。
+   *
+   * 造法:(a) **独立项目目录** —— 前面的用例都在共享的 `PROJ_DIR` 里,残留的 `*.md` / `**`
+   * 触发器会和本用例的触发器一起攒(整场实测峰值 ~3500),把全局预算搅浑;这里单开一个目录,
+   * 残留触发器(`cwd` 不匹配)一条都不会被喂到,于是攒着的总量**只**来自本用例。
+   * (b) 12 条触发器 × 460 个文件 = 5520 > 5000,而**每条只 460 < 500**(单条一路一次都不丢)
+   * —— 唯一被触发的就是全局那一层。
+   * 判据:①攒着的总量停在上限(不再等于 5520);②触顶后的丢弃**如实记了账**(> 0)。
+   * 撤掉全局闸门,①②各会红(量变 5520、账变 0),精确复现「单条有界、整体无界」。
+   */
+  {
+    resetRuns();
+    SettingRepo.set(DROPPED_KEY, "{}");
+    const GLOBAL_LIMIT = 5000; // 实现里那个私有常量(故意不 import,理由见 FLUSH_SLACK_MS)
+    const TRIGGERS = 12;
+    const FILES = 460; // 12 × 460 = 5520 > 5000;每条 460 < 500(不触发单条上限)
+    const gpProjectId = "p_global_bp";
+    const gpDir = join(process.env.MCODE_SMOKE_DATA_ROOT!, "global-bp-project");
+    mkdirSync(gpDir, { recursive: true });
+    ProjectRepo.create({ ...ProjectRepo.get(PROJ_ID)!, id: gpProjectId, path: gpDir });
+    const nodeId = "t_global_backpressure";
+    for (let t = 0; t < TRIGGERS; t += 1) {
+      makeAutomation({ workflowId: nextId(), nodeId, params: {
+        [NODE_TRIGGER_PROJECT_PARAM_KEY]: gpProjectId,
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "file", [NODE_TRIGGER_PATHS_PARAM_KEY]: "gg-*.md",
+        // 合并窗口开得极大 —— 攒着的那几格整场都不收口,好让总量**只涨不落**,量得出上界。
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 3_600_000, task: "全局背压要有上界",
+      } });
+    }
+    const runner = await startRunner();
+    try {
+      for (let i = 0; i < FILES; i += 1) {
+        const name = `gg-${String(i).padStart(4, "0")}.md`;
+        writeFileSync(join(gpDir, name), `# ${i}`);
+        // 一次 onFsChange 会把这一条喂给**本用例的每一条**文件触发器(同目录同 glob);
+        // 残留触发器 `cwd` 不匹配,一条都不会被喂到。
+        runner.onFsChange(gpDir, name);
+      }
+      const held = runner.pendingItemsHeld();
+      check("★ 全局背压:所有触发器攒着的条目总数不超过全局上限", held <= GLOBAL_LIMIT, held);
+      // 没有全局闸门时 held 会是 12×460=5520(每条都够不着单条上限,单条一路一次都不丢),
+      // 所以这一条正是全局那一层独有的可观察量。
+      const owed = [...runner.droppedUndelivered.values()].reduce((n, d) => n + d.count, 0);
+      check("★ 全局背压:触顶后新条目不再进来,丢弃如实记账(不静默)", owed > 0, owed);
+    } finally {
+      runner.dispose();
+      SettingRepo.set(DROPPED_KEY, "{}"); // 别把这一场的欠账留给后续场景
+    }
+  }
+
+  /* ── 【MC-091 续·全局背压·事件那一路】一条吐不同 itemId 的事件流 × 多条触发器,总量同样有界 ──
+   *
+   * 台账原话点名的是「事件批 `mergeEventPayload` 将所有不同 itemId 的条目无界放大」。单条
+   * 那一路已经有 `MAX_EVENT_ITEMS = 100` 的每批上限,但**几十条事件触发器**同时被同一股事件流
+   * 喂饱时,总量仍是 触发器数 × 100 —— 那正是全局这一层要兜的。这里 60 条事件触发器(每条
+   * 各自攒满 100)总量 6000 > 5000;`mergeEventInto` 向 `admitGlobal` 要额度,额度用尽后
+   * **新条目不再进任何一格**,并把丢弃如实记进恢复游标。
+   *
+   * 注意事件**不按项目目录过滤**(触发器订的是事件名),所以这里不假装隔离:残留的事件触发器
+   * 会一起攒(推高了 held),但那只会让"总量触顶"这件事更早发生,两条判据(≤上限、账 > 0)
+   * 依旧成立且仍能判别修复 —— 没有全局闸门时 held 会是**所有**匹配触发器 × 100 的乘积。
+   */
+  {
+    resetRuns();
+    SettingRepo.set(DROPPED_KEY, "{}");
+    const GLOBAL_LIMIT = 5000; // 同实现里那个私有常量
+    const TRIGGERS = 60;
+    const ITEMS = 150; // 每条各自能攒到 100 的上限;60×100=6000 > 5000
+    const nodeId = "t_global_bp_event";
+    for (let t = 0; t < TRIGGERS; t += 1) {
+      makeAutomation({ workflowId: nextId(), nodeId, params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "event",
+        [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded",
+        // 合并窗口极大 —— 攒着的那几格整场都不收口,好让总量**只涨不落**。
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 3_600_000, task: "事件那一路的全局背压",
+      } });
+    }
+    const runner = await startRunner();
+    const emit = (itemId: string): void => runtimeManager.emit({
+      type: "library.item.downloaded", sessionId: "(system)", itemId, title: itemId, pdfPath: `g/${itemId}.pdf`,
+    } as unknown as RuntimeEvent);
+    try {
+      for (let i = 0; i < ITEMS; i += 1) emit(`bpg_${i}`);
+      const held = runner.pendingItemsHeld();
+      check("★ 全局背压(事件):所有触发器攒着的事件条目总数不超过全局上限", held <= GLOBAL_LIMIT, held);
+      const owed = [...runner.droppedUndelivered.values()].reduce((n, d) => n + d.count, 0);
+      check("★ 全局背压(事件):触顶后新条目不再进来,丢弃如实记账(不静默)", owed > 0, owed);
+    } finally {
+      runner.dispose();
+      SettingRepo.set(DROPPED_KEY, "{}");
+    }
+  }
+
+  /* ── 【MC-091 续·启动竞态】读盘那份欠账表必须**并入**内存,不能覆盖 ──
+   *
+   * 现在 `start()` 把三张跨重启的表读回来**放在订阅事件之前**(见那里的「启动竞态」注释),
+   * 但更硬的一层保险在 `readDroppedUndelivered` 自己:它把盘上的历史欠账与**内存里已经有
+   * 的**(启动窗口里记下的)那一笔**相加**,而不是整份覆盖。这里直接钉住这条语义:内存有 5、
+   * 盘上有 3、同键 → 读回来是 8(两笔都还没交付);覆盖式的写法会得到 3(内存那笔被吃掉)。
+   */
+  {
+    resetRuns();
+    SettingRepo.set(DROPPED_KEY, "{}");
+    const runner = await startRunner();
+    try {
+      const key = `${nextId()}:t_e3_merge`;
+      // 盘上:历史欠账 3 条。
+      SettingRepo.set(DROPPED_KEY, JSON.stringify({ [key]: { count: 3, at: 1000 } }));
+      // 内存:模拟"启动窗口里已经记下的一笔"5 条(先于这次读盘)。
+      runner.droppedUndelivered.set(key, { count: 5, at: 2000 });
+      const merged = runner.readDroppedUndelivered();
+      eq("★ 读盘并入内存(不覆盖):两笔未交付欠账相加", merged.get(key)?.count, 8);
+    } finally {
+      runner.dispose();
+      SettingRepo.set(DROPPED_KEY, "{}");
     }
   }
 

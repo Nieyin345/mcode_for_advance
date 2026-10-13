@@ -387,4 +387,7 @@ export const zh = {
   "chatStream.welcome.automationNeverFired": "还没触发过",
   "chatStream.welcome.automationMissed": "错过 {n} 次",
   "chatStream.welcome.automationFailed": "上次失败",
+  // 丢弃比"错过"更该说出来:错过是"那几天机器没开"（不是坏了），丢弃是"有东西真丢了、
+  // 还没交出去"。与设置页读同一条事实（`droppedUndelivered`），措辞保持一致。
+  "chatStream.welcome.automationDropped": "丢弃 {n} 条未收",
 } as const;

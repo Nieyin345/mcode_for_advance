@@ -398,4 +398,8 @@ export const en = {
   "chatStream.welcome.automationNeverFired": "Not fired yet",
   "chatStream.welcome.automationMissed": "Missed {n} run(s)",
   "chatStream.welcome.automationFailed": "Last run failed",
+  // "Dropped" is stronger than "missed": missed means the machine was off (not broken);
+  // dropped means items were actually lost and not yet delivered. Same fact source as the
+  // settings panel (`droppedUndelivered`), same wording.
+  "chatStream.welcome.automationDropped": "{n} dropped, undelivered",
 } as const;
