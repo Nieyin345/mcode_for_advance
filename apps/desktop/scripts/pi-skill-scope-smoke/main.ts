@@ -200,6 +200,52 @@ try {
     check("★ MC-094:矩阵禁掉的项目技能 proj-skill 不交付 pi", !names.includes("proj-skill"), names);
     check("○ MC-094:同矩阵下其它放行技能仍在", names.includes("universal-a"), names);
   }
+
+  // ── ⑨【MC-094】禁用**即时生效**:矩阵改一次 → 重建 loader → 交付集合立刻跟着变 ──
+  // 承重点:provider 每轮重建 loader,所以"改完矩阵下一轮就生效"必须成立;这里用同一
+  // 份目录、只翻矩阵,证明交付集合跟着矩阵重算,而不是被上一次结果缓存住。
+  {
+    const matrixFile = join(home, ".mcode", "skills", ".mcode-engines.json");
+    // 先全放行 → universal-a 在。
+    writeFileSync(matrixFile, JSON.stringify({}), "utf-8");
+    const before = await resolvedNames(await buildPiSkillLoader({ sdk: sdk as never, cwd: root, extraSkillPaths: [pluginRoot] }));
+    check("★ MC-094:禁用前 universal-a 交付 pi", before.includes("universal-a"), before);
+    // 只改矩阵禁掉 universal-a(pi)→ 重建 loader → 立刻不交付。
+    writeFileSync(matrixFile, JSON.stringify({ "universal-a": { pi: false } }), "utf-8");
+    const disabled = await resolvedNames(await buildPiSkillLoader({ sdk: sdk as never, cwd: root, extraSkillPaths: [pluginRoot] }));
+    check("★ MC-094:改矩阵禁 universal-a 后重建 → 立即不交付", !disabled.includes("universal-a"), disabled);
+    check("○ MC-094:禁用只影响被改名,universal-b 仍在", disabled.includes("universal-b"), disabled);
+    // 再翻回来(放行)→ 重建 → 立刻恢复交付。证明不是"禁用一次就永久消失"。
+    writeFileSync(matrixFile, JSON.stringify({}), "utf-8");
+    const reenabled = await resolvedNames(await buildPiSkillLoader({ sdk: sdk as never, cwd: root, extraSkillPaths: [pluginRoot] }));
+    check("★ MC-094:矩阵放行后重建 → universal-a 立即恢复交付(重算,不缓存)", reenabled.includes("universal-a"), reenabled);
+  }
+
+  // ── ⑩【MC-094】同名覆盖**承重反例**:项目那份不是"碰巧赢了",而是**压住了**一份
+  //     真实存在的全局同名件。撤掉项目那份,被压住的全局件必须**重新出现** —— 否则上一条
+  //     可能只是因为全局那份根本不在。 ──
+  {
+    writeFileSync(join(home, ".mcode", "skills", ".mcode-engines.json"), JSON.stringify({}), "utf-8");
+    const globalDir = join(home, ".mcode", "skills", "shadow");
+    const projectDir = join(root, ".claude", "skills", "shadow");
+    mkdirSync(globalDir, { recursive: true });
+    writeFileSync(join(globalDir, "SKILL.md"), "---\nname: shadow\n---\n", "utf-8");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "SKILL.md"), "---\nname: shadow\n---\n", "utf-8");
+
+    const both = (await buildPiSkillLoader({ sdk: sdk as never, cwd: root, extraSkillPaths: [pluginRoot] })).getSkills().skills.filter((s) => s.name === "shadow");
+    check("★ MC-094:同名(全局+项目)只交付一次", both.length === 1, both.map((s) => s.baseDir));
+    check("★ MC-094:同名交付项目那份(baseDir 在 .claude/skills)",
+      !!both[0]?.baseDir && both[0].baseDir.replace(/\\/g, "/").includes("/.claude/skills/"), both[0]?.baseDir);
+
+    // 撤掉项目那份 → 被压住的全局那份**必须重现**(证明它一直在,只是被优先级压住了)。
+    rmSync(projectDir, { recursive: true, force: true });
+    const afterRemoval = (await buildPiSkillLoader({ sdk: sdk as never, cwd: root, extraSkillPaths: [pluginRoot] })).getSkills().skills.filter((s) => s.name === "shadow");
+    check("★ MC-094:撤掉项目同名件后,被压住的全局件重现(优先级真在承重)",
+      afterRemoval.length === 1 && !!afterRemoval[0]?.baseDir && afterRemoval[0].baseDir.replace(/\\/g, "/").includes("/.mcode/skills/"),
+      afterRemoval.map((s) => s.baseDir));
+    rmSync(globalDir, { recursive: true, force: true });
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

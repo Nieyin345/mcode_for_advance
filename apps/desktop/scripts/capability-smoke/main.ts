@@ -17,6 +17,7 @@ import type { AgentProvider } from "../../../../packages/contracts/src/provider.
 import { validateNodeTypeManifest, type NodeTypeManifest } from "../../../../packages/contracts/src/nodeType.js";
 import type { WorkflowNode } from "../../../../packages/contracts/src/workflow.js";
 import {
+  HOST_CAPABILITY_DECLARATIONS,
   checkNodeCapabilities,
   collectCapabilityInventory,
   executorCapabilityDescriptors,
@@ -25,6 +26,9 @@ import {
   providerIdsForWorkflowPreflight,
   requirementsForNode,
 } from "../../src/main/orchestration/capabilityResolver.js";
+import { sceneCapabilityPreflight } from "../../../../packages/contracts/src/scenePreflight.js";
+import type { SceneSpec } from "../../../../packages/contracts/src/sceneSpec.js";
+import { fileCapabilities } from "../../src/main/modules/fileCapabilities.js";
 
 const checks: string[] = [];
 const ok = (condition: boolean, message: string): void => {
@@ -534,6 +538,133 @@ ok(
       spoofInv,
     );
     ok(!needPhantom.ok, "★ MC-099:仅靠插件的自报声明,对不存在能力的需求仍判缺(fail-closed 不通过)");
+  }
+}
+
+/* ── 【MC-099 E1】真实宿主注册 / 场景必需项 / 权威声明表 ──
+ *
+ * 上一条证明了"插件的 builtin/executor 声明不进 descriptor";独立复审要的是更强的一条:
+ * **真实的 ModuleHost 注册(hostCapabilities 输入)与 Executor Registry 注册才让必需能力
+ * 变为可用**,而只声明、没有执行器的场景必需项必须被判缺。这里把判据立在**场景预检**
+ * (`sceneCapabilityPreflight`,生产从 `HOST_CAPABILITY_DECLARATIONS` 装配清单,见
+ * appServices/scenePreflight.ts)与**声明表与真实注册同源**这两点上。
+ */
+{
+  /** 最小合法 SceneSpec(能力清单由参数给,资源/验收留空)。 */
+  const sceneSpec = (capabilities: SceneSpec["capabilities"]): SceneSpec => ({
+    schemaVersion: 1,
+    sceneId: "mc099-scene",
+    goal: "MC-099 E1:验证没有真实执行器的声明能力必须判缺",
+    capabilities,
+    resources: [],
+    acceptance: { description: "占位验收(本用例只看能力预检)", expectResourceIds: [] },
+  });
+
+  // 这份插件清单声明了宿主领地能力 — 它是"只声明、无执行器"的形态。
+  const spoof = PluginManifestSchema.safeParse({
+    name: "fictional-ext",
+    version: "1.0.0",
+    capabilities: [
+      { kind: "builtin", id: "nonexistent.host.action" },
+      { kind: "executor", id: "myorg.heavy" },
+    ],
+  });
+  ok(spoof.success, "MC-099 E1:测试用声明 builtin/executor 的清单合法");
+  if (!spoof.success) throw new Error("unreachable");
+
+  // ① 只有插件声明(无宿主注册、无 executor)→ 场景里对它的**必需**需求判缺,ok=false。
+  {
+    const inventory = collectCapabilityInventory({
+      providers: [claudeProvider],
+      plugins: [{ name: "fictional-ext", manifest: spoof.data }],
+    });
+    const builtinGap = sceneCapabilityPreflight(
+      sceneSpec([{ kind: "module", id: "nonexistent.host.action", required: true }]),
+      inventory,
+    );
+    ok(!builtinGap.ok, "★ MC-099 E1:只声明无执行器的 builtin(场景 module 必需项)预检不通过");
+    ok(
+      builtinGap.requiredGaps.some((g) => g.id === "nonexistent.host.action" && g.reason === "missing"),
+      "★ MC-099 E1:该必需缺口按 missing 报出(不是被插件自报充成可用)",
+    );
+    const executorGap = sceneCapabilityPreflight(
+      // 场景只认 plugin/skill/mcp/module;执行器需求走节点路径(checkNodeCapabilities)。
+      sceneSpec([]),
+      inventory,
+    );
+    ok(executorGap.ok && executorGap.checkedCapabilities === 0, "MC-099 E1:空场景预检通过(对照组)");
+    const needExec = checkNodeCapabilities(
+      { id: "myorg.heavy-node", runner: { kind: "code", language: "python" } } as never,
+      [{ kind: "executor", id: "myorg.heavy" }],
+      inventory,
+    );
+    ok(!needExec.ok && needExec.missing.some((m) => m.id === "myorg.heavy"), "★ MC-099 E1:插件声明的 executor 无真实注册时节点需求判缺");
+  }
+
+  // ② 真实宿主注册(hostCapabilities)让同一能力变为可用;executor 同理(executorKinds)。
+  {
+    const realHost = collectCapabilityInventory({
+      providers: [claudeProvider],
+      hostCapabilities: HOST_CAPABILITY_DECLARATIONS,
+    });
+    const withHost = sceneCapabilityPreflight(
+      sceneSpec([{ kind: "module", id: "core.file.inspect", required: true }]),
+      realHost,
+    );
+    ok(withHost.ok && withHost.requiredGaps.length === 0, "★ MC-099 E1:真实宿主注册(core.file.inspect)后场景必需项预检通过");
+    const needExec = checkNodeCapabilities(
+      { id: "myorg.heavy-node", runner: { kind: "code", language: "python" } } as never,
+      [{ kind: "executor", id: "myorg.heavy" }],
+      collectCapabilityInventory({ providers: [claudeProvider], executorKinds: ["myorg.heavy"] }),
+    );
+    ok(needExec.ok, "★ MC-099 E1:真实 executor 注册(executorKinds)后节点需求判可用");
+  }
+
+  // ③ 权威是宿主声明表(与 ModuleHost 真实注册同源),不是插件自报:不存在的 id 即使被插件
+  //    再声明,喂进真实注册表后仍判缺。
+  {
+    const realHost = collectCapabilityInventory({
+      providers: [claudeProvider],
+      plugins: [{ name: "fictional-ext", manifest: spoof.data }],
+      hostCapabilities: HOST_CAPABILITY_DECLARATIONS,
+    });
+    const stillMissing = sceneCapabilityPreflight(
+      sceneSpec([
+        { kind: "module", id: "core.file.inspect", required: true }, // 真注册的 → 有
+        { kind: "module", id: "nonexistent.host.action", required: true }, // 插件自报的 → 无
+      ]),
+      realHost,
+    );
+    ok(!stillMissing.ok, "★ MC-099 E1:真注册表在,但插件自报的 builtin 仍判缺(声明不覆盖权威)");
+    ok(
+      stillMissing.requiredGaps.length === 1 && stillMissing.requiredGaps[0]?.id === "nonexistent.host.action",
+      "★ MC-099 E1:缺口恰好是插件自报那一条(真注册的 core.file.inspect 不误报)",
+    );
+  }
+
+  // ④ 【承重】权威声明表必须与 ModuleHost 的真实注册**同源** —— 否则"可用的 builtin"
+  //    与实际能执行的模块能力漂移(声明说在、执行器没有,或反之)。fileCapabilities 是
+  //    ModuleHost.register 的唯一一份内置能力实现(不碰 dataRoot,可无头打包)。
+  {
+    const realIds = fileCapabilities(() => false).map((c) => c.id).sort();
+    const declaredIds = HOST_CAPABILITY_DECLARATIONS.map((d) => d.id).sort();
+    ok(
+      JSON.stringify(realIds) === JSON.stringify(declaredIds),
+      `★ MC-099 E1:权威声明表与 ModuleHost 真实注册同源(detail: real=${JSON.stringify(realIds)} declared=${JSON.stringify(declaredIds)})`,
+    );
+    ok(
+      HOST_CAPABILITY_DECLARATIONS.every((d) => d.moduleKind === "task" || d.moduleKind === "query"),
+      "MC-099 E1:声明表的模块种类只取契约映射得到的 task/query",
+    );
+  }
+
+  // ⑤ 反向对照:声明表里**没有**的宿主能力,即使喂了真实声明表也不出现(不凭空造)。
+  {
+    const realHost = collectCapabilityInventory({ hostCapabilities: HOST_CAPABILITY_DECLARATIONS });
+    ok(
+      !realHost.some((d) => d.kind === "builtin" && d.id === "nonexistent.host.action"),
+      "MC-099 E1:真实声明表里没有的 builtin 不进目录(不凭空造宿主能力)",
+    );
   }
 }
   // 能力 id → 适配器里那个布尔旗标在 capability 块里的字面名。
