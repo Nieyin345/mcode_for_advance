@@ -16,5 +16,6 @@ export * from "./policyEngine.js";
 export * from "./publicMcpScope.js";
 export * from "./sceneTask.js";
 export * from "./configBinding.js";
+export * from "./sceneSpec.js";
 export * from "./hostHookGrant.js";
 export * from "./commit.js";
