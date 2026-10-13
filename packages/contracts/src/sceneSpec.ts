@@ -30,8 +30,10 @@
 /** 场景声明只认这一版;将来加字段要么向后兼容,要么升这个号并给迁移。 */
 export const SCENE_SPEC_SCHEMA_VERSION = 1 as const;
 
-/** id 形状:小写字母/数字/下划线/连字符,与项目里其它 id 同取向(排除路径分隔符)。 */
-const SCENE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** id 形状:小写字母/数字/下划线/连字符,与项目里其它 id 同取向(排除路径分隔符)。
+ *  **导出**给 `@contracts/sceneProjectInit` 复用(ARC-010 从模板名推导 sceneId 要用同一判据,
+ *  不另抄一份)。 */
+export const SCENE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /**
  * 场景要声明自己需要的一类**能力引用**。
@@ -59,7 +61,10 @@ export type SceneResourceKind =
   | "mcp"
   | "hook"
   | "module"
-  | "panel";
+  | "panel"
+  /** 项目脚手架条目(ARC-010):目录 / 文件 / 记忆 / AI 生成说明文件。用 `spec.entry` 细分,
+   *  具体投影见 `@contracts/sceneProjectInit`。 */
+  | "scaffold";
 
 /**
  * 一条资源引用。**声明的是「要什么」,不是「怎么建」** —— 建的动作由编译器翻成对**现有
@@ -185,7 +190,7 @@ export function validateSceneSpec(raw: unknown): SceneSpecValidation {
   // ── resources ──
   const resources: SceneResourceRef[] = [];
   const resourceIds = new Set<string>();
-  const RESOURCE_KINDS: readonly SceneResourceKind[] = ["workflow", "automation", "skill", "plugin", "mcp", "hook", "module", "panel"];
+  const RESOURCE_KINDS: readonly SceneResourceKind[] = ["workflow", "automation", "skill", "plugin", "mcp", "hook", "module", "panel", "scaffold"];
   if (!Array.isArray(raw.resources)) {
     problems.push({ path: "resources", message: "resources 必须是数组" });
   } else {

@@ -17,6 +17,12 @@ export function safeInitPath(value: string): boolean {
     && p.toLowerCase() !== ".git" && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 }
 const Path = z.string().refine(safeInitPath, "Use a portable project-relative path without .. or .git");
+/** 记忆文件名规则:**一份** —— 目录即类目,文件名只允许 `xxx.md`(不含子路径、不以点开头)。
+ *  从前这段判据写死在下面的 refine 里;`@contracts/sceneProjectInit`(ARC-010 场景投影)
+ *  要按同一判据验投影出来的记忆条目,于是提出来给它复用,不再抄第二份。 */
+export function safeMemoryFilename(value: string): boolean {
+  return safeInitPath(value) && !value.includes("/") && !value.startsWith(".") && value.endsWith(".md");
+}
 const Content = z.string().max(131072);
 /** AI 生成的项目说明文件。三个引擎都经宿主统一注入(`main/memory/instructions.ts`:每个目录
  *  AGENTS.md 优先,CLAUDE.md 只作回退),所以默认写 AGENTS.md;选 CLAUDE.md 只为兼容在
@@ -37,7 +43,7 @@ export const ProjectInitDraftSchema = z.object({
   files: z.array(z.object({ path: Path, content: Content }).strict()).max(100).default([]),
   memories: z.array(z.object({
     category: z.enum(MEMORY_CATEGORIES),
-    filename: z.string().max(100).refine(p => safeInitPath(p) && !p.includes("/") && !p.startsWith(".") && p.endsWith(".md"), "Memory filename must end in .md"),
+    filename: z.string().max(100).refine(safeMemoryFilename, "Memory filename must end in .md"),
     title: z.string().trim().min(1).max(200), content: Content,
     pinned: z.boolean().default(true),
   }).strict()).max(30).default([]),

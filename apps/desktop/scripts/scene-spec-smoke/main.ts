@@ -21,6 +21,12 @@ import {
 } from "@contracts/sceneSpec";
 import { compileScenePlan, sceneSpecDigest } from "@contracts/scenePlan";
 import { sceneCapabilityPreflight } from "@contracts/scenePreflight";
+import {
+  projectInitToSceneSpec,
+  sceneSpecToProjectInitDraft,
+  sceneIdFromName,
+} from "@contracts/sceneProjectInit";
+import type { ProjectInitDraft } from "@contracts/ipc/projectInit";
 import type { CapabilityDescriptor } from "@contracts/capability";
 import { planScene } from "../../src/main/appServices/scenePlanning.js";
 
@@ -298,6 +304,145 @@ function goodSpec(): unknown {
   } else {
     check("预检前置:spec 合法", false);
   }
+}
+
+/* ── 9. ARC-010:项目初始化模板 → SceneSpec(可编译的脚手架资源)+ 逆投影(纯脚手架才成功) ── */
+{
+  /** 一份纯脚手架模板:目录有嵌套(父目录要排在文件前)、文件、记忆、AI 生成说明文件。 */
+  const draft: ProjectInitDraft = {
+    name: "survey-project",
+    description: "调查项目骨架",
+    directories: ["data/raw", "notes"],
+    files: [
+      { path: "notes/README.md", content: "# notes" },
+      { path: "data/raw/.gitkeep", content: "" },
+    ],
+    memories: [
+      { category: "project", filename: "overview.md", title: "概览", content: "内容", pinned: true },
+    ],
+    agentFile: { enabled: true, filename: "AGENTS.md", focus: "研究项目" },
+  };
+
+  // ★ 承重:模板 → SceneSpec,每条条目成一条 scaffold 资源,且能过校验。
+  const r = projectInitToSceneSpec(draft);
+  check("★ 模板 → SceneSpec 成功", r.ok, r.ok ? undefined : r.problems);
+  if (r.ok) {
+    const spec = r.spec;
+    eq("资源数 = 目录2 + 文件2 + 记忆1 + 说明文件1", spec.resources.length, 6);
+    check("全部资源都是 scaffold 类", spec.resources.every((x) => x.kind === "scaffold"), spec.resources.map((x) => x.kind));
+    eq("sceneId 由名字 slug", spec.sceneId, "survey-project");
+    check("id 形如 dir:/file:/memory:/agentFile", spec.resources.map((x) => x.id).join(",")
+      === "dir:data/raw,dir:notes,file:notes/README.md,file:data/raw/.gitkeep,memory:project/overview.md,agentFile",
+      spec.resources.map((x) => x.id));
+    // 文件对**显式声明过的**祖先目录记依赖(notes/README.md → notes)。
+    eq("文件依赖显式祖先目录", spec.resources[2].dependsOn?.join(","), "dir:notes");
+    eq("未声明父目录不凭空造依赖(data 未声明 → dir:data/raw 无依赖)", (spec.resources[0].dependsOn ?? []).length, 0);
+    eq("嵌套文件依赖它显式声明的祖先(data/raw/.gitkeep → dir:data/raw)", spec.resources[3].dependsOn?.join(","), "dir:data/raw");
+    eq("记忆 spec.entry = memory", spec.resources[4].spec.entry, "memory");
+    eq("说明文件 spec.entry = agentFile", spec.resources[5].spec.entry, "agentFile");
+
+    // 校验一次报全地通过,且能编译成计划。
+    const v = validateSceneSpec(spec);
+    check("★ 投影出的 SceneSpec 通过 validateSceneSpec", v.ok, v.ok ? undefined : v.problems);
+    if (v.ok) {
+      const plan = compileScenePlan(v.spec);
+      eq("计划步骤数 = 资源数", plan.steps.length, 6);
+      check("★ 父目录排在用它做路径的文件之前", plan.steps.findIndex((s) => s.resourceId === "dir:notes") < plan.steps.findIndex((s) => s.resourceId === "file:notes/README.md"), plan.steps.map((s) => s.resourceId));
+      eq("验收期望回读全部资源", v.spec.acceptance.expectResourceIds.length, 6);
+    }
+
+    // ★ 确定性:同一模板投影两次 → 逐字节相同的 specDigest(重复部署幂等)。
+    const again = projectInitToSceneSpec(draft);
+    check("★ 同一模板两次投影 → 同一 sceneSpecDigest", again.ok && sceneSpecDigest(again.spec) === sceneSpecDigest(spec));
+
+    // 启用=false 的说明文件不产出任何资源(没有语义可丢)。
+    const noAgent = projectInitToSceneSpec({ ...draft, agentFile: { enabled: false, filename: "AGENTS.md", focus: "" } });
+    check("关闭的说明文件不翻成资源", noAgent.ok && noAgent.spec.resources.every((x) => x.spec.entry !== "agentFile"), noAgent.ok ? noAgent.spec.resources.map((x) => x.spec.entry) : noAgent.problems);
+  } else {
+    check("模板 → SceneSpec 前置成功", false);
+  }
+
+  // sceneId 推不出的名字(全非 ASCII)不硬造 —— 报问题。
+  const noId = projectInitToSceneSpec({ name: "研究", description: "", directories: ["notes"], files: [], memories: [] });
+  check("★ 名字推不出 sceneId → 报问题(不硬造)", !noId.ok, noId.ok);
+  if (!noId.ok) check("报的是 sceneId 问题", noId.problems.some((p) => p.path === "sceneId"), noId.problems);
+  // 显式给合法 sceneId 则通过。
+  const withId = projectInitToSceneSpec({ name: "研究", description: "", directories: ["notes"], files: [], memories: [] }, { sceneId: "research" });
+  check("显式 sceneId 覆盖 → 通过", withId.ok && withId.spec.sceneId === "research", withId.ok ? undefined : withId.problems);
+  // 模板本身不合法(空模板)→ 报问题,不产出假 spec。
+  const empty = projectInitToSceneSpec({ name: "x", description: "", directories: [], files: [], memories: [] });
+  check("★ 空模板(无可建条目)被拒", !empty.ok, empty.ok);
+
+  /* ── 逆投影:纯脚手架才成功,且逐类不可还原的东西都报出来 ── */
+
+  // ★ 承重:往返 —— ASCII 名的模板 → spec → draft,关键字段保真。
+  const rt = projectInitToSceneSpec({ ...draft, description: "调查项目骨架" });
+  if (rt.ok) {
+    const back = sceneSpecToProjectInitDraft(rt.spec);
+    check("★ 纯脚手架 spec → draft 成功", back.ok, back.ok ? undefined : back.problems);
+    if (back.ok) {
+      eq("目录保真", back.draft.directories.join(","), "data/raw,notes");
+      eq("文件路径保真", back.draft.files.map((f) => f.path).join(","), "notes/README.md,data/raw/.gitkeep");
+      eq("记忆保真", back.draft.memories[0].category + "/" + back.draft.memories[0].filename, "project/overview.md");
+      eq("说明文件保真", back.draft.agentFile?.filename, "AGENTS.md");
+      eq("description 取 goal", back.draft.description, "调查项目骨架");
+      eq("name 往返经 sceneId(ASCII 名保真)", back.draft.name, "survey-project");
+    }
+  } else check("往返前置成功", false);
+
+  // 非脚手架资源 → 报出来(不静默丢)。
+  const withWorkflow = projectInitToSceneSpec({ name: "p", description: "", directories: ["a"], files: [], memories: [] });
+  if (withWorkflow.ok) {
+    const mixed = { ...withWorkflow.spec, resources: [...withWorkflow.spec.resources, { kind: "workflow" as const, id: "wf", spec: {} }], acceptance: { description: "x", expectResourceIds: [...withWorkflow.spec.acceptance.expectResourceIds, "wf"] } };
+    const back = sceneSpecToProjectInitDraft(mixed);
+    check("★ 含 workflow 资源 → 逆投影被拒", !back.ok, back.ok);
+    if (!back.ok) check("报出非 scaffold 资源", back.problems.some((p) => p.message.includes("workflow")), back.problems);
+  }
+  // 能力声明 / projectId / 引擎偏好 / lock 杂项 → 各自被点名。
+  if (withWorkflow.ok) {
+    const withCaps = { ...withWorkflow.spec, capabilities: [{ kind: "plugin" as const, id: "x" }] };
+    const b1 = sceneSpecToProjectInitDraft(withCaps);
+    check("★ capabilities 非空 → 逆投影被拒并点名", !b1.ok && b1.problems.some((p) => p.path === "capabilities"), b1.ok ? b1 : b1.problems);
+    const b2 = sceneSpecToProjectInitDraft({ ...withWorkflow.spec, projectId: "p1" });
+    check("★ projectId 非空 → 逆投影被拒并点名", !b2.ok && b2.problems.some((p) => p.path === "projectId"), b2.ok ? b2 : b2.problems);
+    const b3 = sceneSpecToProjectInitDraft({ ...withWorkflow.spec, lock: { a: "1" } });
+    check("★ lock 非空 → 逆投影被拒并点名", !b3.ok && b3.problems.some((p) => p.path === "lock"), b3.ok ? b3 : b3.problems);
+  }
+  // 脚手架条目多出无法还原的字段 → 报出来。
+  const smuggled = validateSceneSpec({
+    schemaVersion: SCENE_SPEC_SCHEMA_VERSION, sceneId: "p", goal: "g",
+    capabilities: [], resources: [{ kind: "scaffold", id: "dir:a", spec: { entry: "directory", path: "a", chmod: "755" } }],
+    acceptance: { description: "x", expectResourceIds: ["dir:a"] },
+  });
+  check("scaffold 夹带额外字段的前置合法", smuggled.ok);
+  if (smuggled.ok) {
+    const back = sceneSpecToProjectInitDraft(smuggled.spec);
+    check("★ 脚手架夹带额外字段 → 逆投影被拒", !back.ok, back.ok);
+    if (!back.ok) check("报出额外字段 chmod", back.problems.some((p) => p.message.includes("chmod")), back.problems);
+  }
+  // 未知 entry 类型 → 报出来。
+  const badEntry = validateSceneSpec({
+    schemaVersion: SCENE_SPEC_SCHEMA_VERSION, sceneId: "p", goal: "g",
+    capabilities: [], resources: [{ kind: "scaffold", id: "x", spec: { entry: "symlink", path: "a" } }],
+    acceptance: { description: "x", expectResourceIds: ["x"] },
+  });
+  if (badEntry.ok) {
+    const back = sceneSpecToProjectInitDraft(badEntry.spec);
+    check("★ 未知 entry 类型 → 逆投影被拒", !back.ok, back.ok);
+  }
+  // 逆投影出的 draft 若含非法路径(.git)会被 ProjectInitDraftSchema 挡回(路径守卫仍然生效)。
+  const dotGit = validateSceneSpec({
+    schemaVersion: SCENE_SPEC_SCHEMA_VERSION, sceneId: "p", goal: "g",
+    capabilities: [], resources: [{ kind: "scaffold", id: "dir:.git", spec: { entry: "directory", path: ".git" } }],
+    acceptance: { description: "x", expectResourceIds: ["dir:.git"] },
+  });
+  if (dotGit.ok) {
+    const back = sceneSpecToProjectInitDraft(dotGit.spec);
+    check("★ 逆投影仍受 safeInitPath 守卫(.git 路径被拒)", !back.ok, back.ok);
+  }
+  // sceneIdFromName 直接判据。
+  eq("sceneIdFromName 折叠非法字符", sceneIdFromName("My Project!!"), "my-project");
+  eq("sceneIdFromName 全非 ASCII 得空", sceneIdFromName("研究"), "");
 }
 
 console.log(`\nscene-spec-smoke: ${total - failures}/${total} 通过`);
