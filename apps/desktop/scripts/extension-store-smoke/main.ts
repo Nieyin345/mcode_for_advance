@@ -16,7 +16,7 @@
  *
  * Run: scripts/extension-store-smoke/run.sh
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -316,6 +316,96 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
     console.log("  ⚠️ skip 逃逸断言(本机既建不了 symlink 也建不了 junction)—— 这道闸本次**没验**");
   }
   rmSync(outside, { recursive: true, force: true });
+}
+
+/* ─────────────────── §7.5 根级 Junction 逃逸(MC-095)───────────────────
+ *
+ * E1 复现的缺陷:`<root>/extensions/jump` 是**指向外部目录的 Junction**(不是子目录里
+ * 的链接,而是**扩展 ID 根目录自己**),调用 `writeFileInExtension(root,"jump","pwn.txt")`
+ * 曾返回 `{ok:true}` 且外部目录真收到文件 —— 因为 `physicalExtensionDir` 盲信了根目录的
+ * realpath,而 `resolveInExtension` 之后只相对这个**已越界的 dir** 做检查。
+ *
+ * 修复:根目录的 realpath 必须仍在 `extensions/` 的物理目录内(复用 realPathWithin)。
+ * 与 §7(子路径链接)的区别:§7 建的是扩展目录**内部**的链接;这里建的是**扩展根目录
+ * 本身**——它是"扩展 id 就是一条链接"这一档,§7 覆盖不到。
+ *
+ * 两侧都验:文件通道(`writeFileInExtension`/`readFileInExtension`/`listFilesInExtension`)
+ * 与键值通道(`writeValue`/`readValue`)必须都拒,且**外部目录一个字节都没多**。 */
+console.log("\n§7.5 根级 Junction/symlink 逃逸(MC-095)");
+
+/** 在 `linkPath` 建一条指向 `target` 的目录链接:symlink 优先,Windows 回退 junction。 */
+function makeDirLink(target: string, linkPath: string): "symlink" | "junction" | null {
+  try {
+    symlinkSync(target, linkPath, "dir");
+    return "symlink";
+  } catch {
+    try {
+      const r = spawnSync("cmd", ["/c", "mklink", "/J", linkPath, target], { encoding: "utf8" });
+      return r.status === 0 && existsSync(linkPath) ? "junction" : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+{
+  // 外部目标 = 本套自己的临时目录(不能用共享 tmpdir() —— 残留会造出假红)。
+  const outside = mkdtempSync(join(tmpdir(), "mcode-ext-root-outside-"));
+  // 关键:把**扩展 ID 根目录本身**建成链接 —— 这正是 §7 覆盖不到的那一档。
+  const rootLink = extensionDir(ROOT, "jump-root");
+  mkdirSync(extensionsDir(ROOT), { recursive: true });
+  const how = makeDirLink(outside, rootLink);
+
+  if (how) {
+    // 正控:扩展根目录**确实是**一条指向库外的目录链接(E2 不是空过 —— 否则下面的断言
+    // 可能只是"路径恰好不存在"而非"闸挡下了")。
+    check("★ 扩展根目录确实是目录链接(lstat 认作符号链接/junction)", lstatSync(rootLink).isSymbolicLink(), { how });
+    const realRootTarget = realpathSync.native(rootLink);
+    check(
+      "★ 根链接的真实目的地在扩展区之外",
+      !realRootTarget.toLowerCase().startsWith(realpathSync.native(extensionsDir(ROOT)).toLowerCase()),
+      { realRootTarget },
+    );
+
+    // ① 文件通道:写/读/列都必须拒,且外部目录不能多出文件。
+    //    先把**外部目录**布置成"里面确实有内容"——否则读/列的断言可能只是"文件恰好
+    //    不存在"而非真被闸挡下(撤掉修复也照样绿 = 空过)。sentinel 内容被读到就证明逃逸。
+    writeFileSync(join(outside, "leak.md"), "EXTERNAL_SECRET", "utf8");
+    deepEq(
+      "★ 经根 " + how + " 的文件写被拒",
+      writeFileInExtension(ROOT, "jump-root", "pwn.txt", "TEST_ONLY"),
+      { ok: false, reason: "invalidPath" },
+    );
+    deepEq(
+      "★ 经根 " + how + " 的读挡在库外文件之前(不泄漏外部内容)",
+      readFileInExtension(ROOT, "jump-root", "leak.md"),
+      { ok: false, reason: "notFound" },
+    );
+    deepEq(
+      "★ 经根 " + how + " 的 listFiles 被拒(不列库外目录)",
+      listFilesInExtension(ROOT, "jump-root"),
+      { ok: false, reason: "notFound" },
+    );
+    check("★ 外部目录没有被写进 pwn.txt", !existsSync(join(outside, "pwn.txt")));
+
+    // ② 键值通道:同一道根闸也要挡住(store.json 不能落到库外)。
+    const kvOk = writeValue(ROOT, "jump-root", "important", "KEEP_ME");
+    eq("★ 经根 " + how + " 的键值写被拒", kvOk, false);
+    check("★ 外部目录没有被写进 store.json", !existsSync(join(outside, "store.json")));
+    // 读侧独立判据:外部目录**先**放一份真 store.json,读必须回 null(不泄漏库外键值)。
+    // 这条把「读闸」和「写闸」分开验 —— 只撤写闸、读闸还在时,上面两条仍绿,靠这条抓。
+    writeFileSync(join(outside, "store.json"), '{"version":1,"values":{"leaked":"EXTERNAL_KV"}}', "utf8");
+    eq("★ 经根 " + how + " 的键值读回 null(不泄漏库外 store.json)", readValue(ROOT, "jump-root", "leaked"), null);
+
+    // ③ 同 ID 若换回**真实子目录**,一切照常(闸只挡逃逸,不误伤正常路径)。
+    //    (jump-root 仍是链接 —— 这里换一个干净的 id 验正常路径没被这道闸连坐。)
+    check("根闸不误伤正常扩展的写", writeFileInExtension(ROOT, "normal-sib", "ok.txt", "v").ok);
+    check("根闸不误伤正常扩展的读", readFileInExtension(ROOT, "normal-sib", "ok.txt").ok);
+  } else {
+    console.log("  ⚠️ skip 根逃逸断言(本机既建不了 symlink 也建不了 junction)—— 这道闸本次**没验**");
+  }
+  rmSync(outside, { recursive: true, force: true });
+  rmSync(rootLink, { recursive: true, force: true });
 }
 
 /* ─────────────────── §4 IPC handler(全部三层接线的行为面)── */

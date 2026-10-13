@@ -33,6 +33,7 @@ import {
   type ExtensionStoreWriteFileResult,
 } from "@contracts/extensionStore";
 import { atomicWrite } from "@main/lib/appContext.js";
+import { physicalTargetInRoot } from "@main/lib/realPathWithin.js";
 
 /** `<数据根>/extensions`。 */
 export function extensionsDir(root: string): string {
@@ -50,12 +51,27 @@ export function extensionStorePath(root: string, extensionId: string): string {
 }
 
 /**
+ * 扩展 ID 根目录的真实目的地是否仍在 `extensions/` 的物理目录内 —— **MC-095 的物理包含闸**。
+ *
+ * 文件通道(`physicalExtensionDir`)与键值通道(`readStore` / `persist`)共用**这一道**:
+ * 根级 Junction / symlink 逃逸两处都会露馅。判据本身复用 `realPathWithin` 的**唯一一份**
+ * 实现(`physicalTargetInRoot`,与 pathGuard / files / library 同源),不另写第二套
+ * (仓库硬规矩:共享实现只有一份)。目录尚未创建时,物理目的地就是 `<真实的 extensions>/<id>`,
+ * 仍在其内 → 放行(创建路径不受影响)。
+ */
+function extensionRootWithinExtensions(root: string, extensionId: string): boolean {
+  return physicalTargetInRoot(extensionsDir(root), extensionDir(root, extensionId));
+}
+
+/**
  * 读一份存储。文件不存在 / 坏了 → 空存储(不是抛)。
  *
  * id 非法直接当空 —— 上层 handler 已经用 zod 挡过,这里再兜一道,免得拼出越界路径。
+ * **根目录不是物理上真正的子目录**(Junction 逃逸)→ 也当空,不跟随到库外去读。
  */
 export function readStore(root: string, extensionId: string): ExtensionStoreFile {
   if (!isValidExtensionId(extensionId)) return emptyStore();
+  if (!extensionRootWithinExtensions(root, extensionId)) return emptyStore();
   const path = extensionStorePath(root, extensionId);
   try {
     if (!existsSync(path)) return emptyStore();
@@ -70,9 +86,11 @@ export function readValue(root: string, extensionId: string, key: string): unkno
   return getStoreValue(readStore(root, extensionId), key);
 }
 
-/** 写一份(整份落盘)。 */
-function persist(root: string, extensionId: string, file: ExtensionStoreFile): void {
+/** 写一份(整份落盘)。**根目录逃逸时不落盘** —— 返回 `false`(MC-095 物理包含闸)。 */
+function persist(root: string, extensionId: string, file: ExtensionStoreFile): boolean {
+  if (!extensionRootWithinExtensions(root, extensionId)) return false;
   atomicWrite(extensionStorePath(root, extensionId), serializeStore(file));
+  return true;
 }
 
 /**
@@ -87,8 +105,7 @@ export function writeValue(root: string, extensionId: string, key: string, value
   const file = readStore(root, extensionId);
   const next = withStoreValue(file, key, value);
   if (next === null) return false;
-  persist(root, extensionId, next);
-  return true;
+  return persist(root, extensionId, next);
 }
 
 /** 删一条。没有这个键就不写(不无谓地重排文件)。id 非法直接不动。 */
@@ -118,14 +135,24 @@ export function usedBytes(root: string, extensionId: string): number {
  * 再对**物理路径**做包含检查(`isWithinExtensionDir` 用 `realpathSync`,挡 symlink/UNC
  * 逃逸)。三道都过才落盘。 */
 
-/** `<数据根>/extensions/<扩展 id>` 的**物理**路径(解析符号链接);目录不存在时返回 null。 */
+/**
+ * `<数据根>/extensions/<扩展 id>` 的**物理**路径(解析符号链接);目录不存在时返回 null。
+ *
+ * ★ **物理包含闸(MC-095)**:扩展 ID 根目录的 realpath **不能盲信**。若
+ * `<extensions>/<id>` 本身是一个指向 `extensions/` **之外**的 Junction / symlink
+ * (Windows 上普通用户即可建 Junction),它的 realpath 就落在库外 —— 从前只把这个
+ * realpath 当可信 `dir`,之后的所有相对检查都相对一个**已越界的 dir**,于是真实外部
+ * 文件被读写。这里在解析 realpath **之前**先过 {@link extensionRootWithinExtensions}
+ * 的**唯一一道**物理包含判据(与键值通道共用,复用 `realPathWithin` 不另写)。根过不了
+ * 这道闸 → 整个扩展目录视为不存在。
+ */
 function physicalExtensionDir(root: string, extensionId: string): string | null {
   try {
-    const realRoot = realpathSync.native(extensionsDir(root));
-    const candidate = join(realRoot, extensionId);
+    const candidate = extensionDir(root, extensionId);
     if (!existsSync(candidate)) return null;
-    const real = realpathSync.native(candidate);
-    return real;
+    // 真实目的地必须仍在 `extensions/` 的物理目录内(挡根级 Junction/symlink 逃逸)。
+    if (!extensionRootWithinExtensions(root, extensionId)) return null;
+    return realpathSync.native(candidate);
   } catch {
     return null;
   }
