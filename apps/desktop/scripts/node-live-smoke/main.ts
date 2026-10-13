@@ -585,6 +585,65 @@ eq("收场之后不再有任何进度事件(定时器 / 订阅都清干净了)",
   eq("★ 7d 那一条按 PINNED 判定(运行起跑锁下的)", changePlan[0]?.policy, "PINNED");
   eq("★ 7d 落后的那一条 stale 为真(读回差异成立)", changePlan[0]?.stale, true);
 
+  // ── 7e. 生产 IPC 端到端:重搭**真的** `RUNS_HISTORY` handler,像渲染端一样 invoke 它 ──
+  //
+  // ⚠️ §7d 走的是 `ipc/orchestration.ts` 里那三行所调用的**同一份纯函数**
+  // (`@contracts/configBinding`)—— 它证明了"冻结快照 + 源改版 ⇒ 读回能判落后"这条**语义**,
+  // 但**没有**证明那条**生产 handler** 真的把这件事算出来并过 IPC 带出来。复审点名要补的
+  // 正是这一刀:把 `registerWorkflowHandlers` 搭起来(抄 `library-trash-smoke` §4 的 `fakeIpc`
+  // 模式),按 channel 取出 `RUNS_HISTORY`,像渲染端那样 `invoke`,断言**经它返回**的那条运行
+  // 仍报**起跑当时**锁下的 v1 —— 而不是现在源改成的 v2。
+  //
+  // 这是"运行史版本审计"的整条生产链最后一段:真实起跑(§7a)→ 真库 → 跨重启读回(§7b)
+  // → 源改版后仍不漂移(§7c)→ **生产 IPC 端点读回**(§7e)。撤掉 handler 里那段 drift/changePlan
+  // 接线,只有这一节会红,§7d 依旧绿 —— 那正是它区别于纯函数断言的地方。
+  {
+    const handlers = new Map<string, (evt: unknown, raw: unknown) => unknown>();
+    const fakeIpc = {
+      handle(channel: string, listener: (evt: unknown, raw: unknown) => unknown): void {
+        handlers.set(channel, listener);
+      },
+    };
+    const { registerWorkflowHandlers } = await import("@main/ipc/orchestration.js");
+    const { IPC } = await import("@contracts/ipc");
+    registerWorkflowHandlers(fakeIpc as never);
+
+    const runsHistory = handlers.get(IPC.RUNS_HISTORY);
+    check("7e RUNS_HISTORY 生产 handler 注册上了(不是没搭起来)", typeof runsHistory === "function");
+
+    // 此时源档案已是 v2(§7c 写下的),而运行行里冻结的是 v1 —— 正是"源改版后"那一刻。
+    type LiteRow = {
+      runId: string;
+      configDrift?: Array<{ assetId: string; kind: string; lockedHash: string | null; currentHash: string | null }>;
+      configChangePlan?: Array<{ assetId: string; effectiveHash: string | null; policy: string; stale: boolean }>;
+    };
+    const ipcRows = (await runsHistory!(null, { sessionId: RESTART })) as LiteRow[];
+    check("7e handler 是**裸数组**返回(渲染端按数组消费)", Array.isArray(ipcRows), typeof ipcRows);
+
+    const ipcRow = ipcRows.find((r) => r.runId === runId);
+    check("7e 经生产 IPC 读回的运行行在(前提)", ipcRow !== undefined, { runId, ids: ipcRows.map((r) => r.runId) });
+
+    // ★ 承重:端到端读回的那条,落后项里的 locked 必须是**起跑当时**的 v1,
+    //    current 是**现在**的 v2 —— 即"源改版后,这条运行仍报 OLD 版本"。
+    const ipcDrift = ipcRow?.configDrift;
+    check("★ 7e 端到端:handler 返回的运行带 configDrift(生产 handler 真的算了)", Array.isArray(ipcDrift), ipcDrift);
+    eq("★ 7e 端到端:drift 里 lockedHash 是**起跑当时**的 v1(源改版后仍报 OLD)", ipcDrift?.[0]?.lockedHash, hashV1);
+    eq("★ 7e 端到端:drift 里 currentHash 是现在的 v2(如实报出源已变)", ipcDrift?.[0]?.currentHash, hashV2);
+    eq("★ 7e 端到端:drift 性质是 changed", ipcDrift?.[0]?.kind, "changed");
+
+    // ★ 承重:变更计划里**生效的仍是 v1**(锁版不回漂到 v2),且是 PINNED/落后。
+    const ipcPlan = ipcRow?.configChangePlan;
+    check("★ 7e 端到端:handler 返回的运行带变更计划", Array.isArray(ipcPlan), ipcPlan);
+    eq("★★ 7e 端到端:生效的仍是起跑当时锁下的 v1(不是源改成的 v2)", ipcPlan?.[0]?.effectiveHash, hashV1);
+    check(
+      "★★ 7e 端到端:生效值**明确不等于**当前源 v2(排除「两边恰好相等」的假绿)",
+      ipcPlan?.[0]?.effectiveHash === hashV1 && ipcPlan?.[0]?.effectiveHash !== hashV2,
+      { effective: ipcPlan?.[0]?.effectiveHash, hashV1, hashV2 },
+    );
+    eq("★ 7e 端到端:那一条按 PINNED 判定(运行起跑锁下)", ipcPlan?.[0]?.policy, "PINNED");
+    eq("★ 7e 端到端:落后的那一条 stale 为真", ipcPlan?.[0]?.stale, true);
+  }
+
   // 还原源档案,免得影响后续(本套 §1–§6 已跑完,这里只是收尾整洁)。
   writeFileSync(join(agentsDir, `${PROFILE_ID}.json`), profileBody("v1"), "utf-8");
 }

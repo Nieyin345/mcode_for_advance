@@ -47,3 +47,16 @@ export const nativeTheme = { shouldUseDarkColors: false };
 export const ipcMain = { handle: notHere("electron.ipcMain.handle") };
 
 export const BrowserWindow = { getAllWindows: notHere("BrowserWindow.getAllWindows") };
+
+/**
+ * 文件框 —— §7e 注册**真的** `registerWorkflowHandlers` 后,`ipc/orchestration.ts`
+ * 顶层就 `import { dialog } from "electron"`,缺了它 esbuild 在打包这一步直接报
+ * `No matching export ... for import "dialog"`(看起来像"被测代码坏了",其实是桩少了一个名字)。
+ *
+ * 本套**不验**导入/导出那两个文件框,所以这里照 `orchestration-ipc-smoke` 的默认做法
+ * 返回"用户取消了" —— 那是真代码本来就要处理的那条路。其余成员仍是显式抛。
+ */
+export const dialog = {
+  showSaveDialog: async (): Promise<{ canceled: boolean; filePath?: string }> => ({ canceled: true }),
+  showOpenDialog: async (): Promise<{ canceled: boolean; filePaths: string[] }> => ({ canceled: true, filePaths: [] }),
+};

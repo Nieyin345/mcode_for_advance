@@ -42,6 +42,13 @@ if [ -z "$ESBUILD" ]; then ESBUILD="npx esbuild"; fi
 #     它),切掉等于把被测的东西换成了桩;
 #   - `pluginManager` —— 真的那个读插件目录、spawn git。节点类型清单只要内置那一份。
 #
+# §7e 注册**真的** `registerWorkflowHandlers`(`@main/ipc/orchestration.js`),于是它的
+# import 图整条被拉进来:`-> library.ts -> builtins.ts`,以及 `nodeTypesSeed.ts` 里对
+# `./node-types-README.md?raw` 的那一句。`?raw` 是**构建期**的东西,纯 node 解析不了 ——
+# `--loader:.md=text` 就是它的等价物(esbuild 把 `x.md?raw` 解析回 `x.md` 再套 text loader),
+# 与 `orchestration-ipc-smoke` 同一手。少了它,打包这一步会以
+# `No loader is configured for ".md" files` 挂掉。
+#
 # `main.ts` 里还有两处 `@renderer/*` 的动态 import(渲染端 store),它们属于**同一个
 # 包**、且走 `prelude.ts` 铺好的浏览器全局量,所以不需要额外 alias。
 #
@@ -53,6 +60,7 @@ if [ -z "$ESBUILD" ]; then ESBUILD="npx esbuild"; fi
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --external:@renderer/lib/monacoSetup.js \
+  --loader:.md=text \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@main/lib/dataRoot.js=./scripts/node-live-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/node-live-smoke/stubs/logger.ts \
