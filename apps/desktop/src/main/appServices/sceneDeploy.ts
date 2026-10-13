@@ -32,31 +32,50 @@
  * 「审批对象是计划,不是 spec」)。因此本执行端可以放心地对每一步直接 `callRpc`(不经逐次审批卡):
  * 计划级授权**就是**覆盖整个计划的授权。
  *
+ * ## 真实资源回读 + 补偿(MC-058 已补上的两块)
+ *
+ *  - **独立回读**({@link readbackScene}):收尾验收的 `observed` **不再**取自「本次部署记录里走到
+ *    `done` 的步」,而是按 kind 调**既有回读入口**重新查询宿主真实资源,只把查得到的收进 observed。
+ *    资源被带外删掉 / 入口报成功却没真建成时,记录仍说 done,但回读查不到 → 验收不通过。
+ *  - **失败补偿**({@link compensateDoneSteps}):中途某步失败时,**逆序**对之前已建成、声明
+ *    `compensable` 的步调**逆操作**撤销其资源(该步迁到 `compensated`),不让失败的部署留下孤儿。
+ *    不可补偿 / 无稳妥逆操作 / 逆操作失败 → **保持 `done` 但如实记一条 `compensation`**(`applied:false`
+ *    + 人读原因),**绝不静默**(硬规矩 3),也绝不猜一个入口去删(免得删错东西)。
+ *
  * ## 这一层**不做**什么(MC-058 仍未关闭的部分,如实列出)
  *
  *  - **授权签发端未接**:本层只**消费**一枚计划级授权(校验它是否绑定本计划并放行)。**谁**在
  *    用户点头后为场景签出这枚 `scene.apply` 授权(ARC-004 的签发口目前只签 `app_api_call` 的单方法
  *    指纹授权),是**下一片** —— 在那之前,本层的真实调用方必须先持有一枚绑定本计划的用户授权,
  *    否则一律拒绝。**这是有意的缺口,不是静默放行。**
- *  - **真实资源回读未做**:`evaluateAcceptance` 的 `observed` 取自**本次部署记录里走到 `done` 的
- *    步骤**,不是独立回读宿主真实资源(工作流是否真存在)。独立回读是后续切片。
+ *  - **回读入口未逐个按真实契约钉死身份**:byList 的匹配字段取各列表返回的形状(skills 按 `name`、
+ *    mcp 按 `name`、hooks/modules 按 `id`);各服务返回形状不统一时未逐个核对到真实资源身份。
  *  - **resourceUid 未落**:各服务返回形状不统一,本层**不猜**一个 uid(免得把 A 服务的返回当 B
  *    服务的 id),留待后续切片按服务逐个接。
+ *  - **补偿未覆盖 plugin/panel/scaffold**:plugin 仍 needsResolution(不执行,无建成可撤);panel /
+ *    scaffold 无撤销入口,如实记未补偿。skill 亦无稳妥逆操作(需 `source`)。
  *  - **needsResolution(plugin/panel/scaffold)未决议**:这些 kind 无单条确定入口,本层**明确**
  *    记为「未执行」并写清原因,**绝不**猜一个入口去跑。
  */
 import {
   validateSceneSpec,
+  type SceneSpec,
   type SceneSpecProblem,
+  type SceneResourceKind,
 } from "@contracts/sceneSpec";
 import { compileScenePlan, type ScenePlan } from "@contracts/scenePlan";
-import { compileSceneCommands } from "@contracts/sceneCommands";
+import {
+  compileSceneCommands,
+  serviceForKind,
+  type SceneCommandPlan,
+} from "@contracts/sceneCommands";
 import {
   advanceDeployment,
   createDeployment,
   evaluateAcceptance,
   type SceneDeployment,
   type SceneDeploymentActor,
+  type SceneStepCompensation,
   type SceneStepStatus,
 } from "@contracts/sceneDeployment";
 import type { Grant } from "@contracts/policyEngine";
@@ -181,6 +200,13 @@ export interface SceneApplyInput {
   grant: Grant;
   /** 可注入时钟(便于确定性测;缺省 `Date.now`)。纯函数不读系统时钟的取向。 */
   now?: () => number;
+  /**
+   * 某步失败时**是否补偿**(撤销之前已建成、且声明 `compensable` 的步)。缺省 **`true`** ——
+   * MC-058 的既定行为:一次失败的部署**不留下孤儿**。设 `false` 则失败后就地停下(不退已建的),
+   * 交人工处置。补偿走**同一枚计划级授权**(计划是授权单位,撤销本计划刚建成的资源属于同一计划的
+   * 执行,不是第二套判定)。
+   */
+  compensateOnFailure?: boolean;
 }
 
 /** 拒绝执行的理由(带简短码,便于断言与展示)。 */
@@ -195,7 +221,7 @@ export interface SceneApplyRefusal {
 export type SceneApplyResult =
   | { ok: false; kind: "invalid"; problems: SceneSpecProblem[] }
   | { ok: false; kind: "refused"; refusal: SceneApplyRefusal }
-  | { ok: true; kind: "applied"; deployment: SceneDeployment };
+  | { ok: true; kind: "applied"; deployment: SceneDeployment; readback: SceneReadbackResult };
 
 /**
  * **授权判定** —— 走**唯一**那份判定核 `policyEngine.evaluate`(绝不在这里手写第二套)。
@@ -243,6 +269,163 @@ function stepStatusOf(d: SceneDeployment, actionId: string): SceneStepStatus | n
   return step ? step.status : null;
 }
 
+/* ───────────────────────── 独立回读(M-C058 的真实资源回读) ───────────────────────── */
+
+/** 一条资源的**独立回读**结果。 */
+export interface SceneStepReadback {
+  actionId: string;
+  kind: SceneResourceKind;
+  /** 是否**独立回读**到了宿主真实资源(查得到才算 present)。 */
+  observed: boolean;
+  /** 回读所用入口标签(如 `workflow.get`);无回读入口时为 `null`。 */
+  readLabel: string | null;
+  /** 不能独立回读的原因(无回读入口 / 查询出错);能回读时为 `null`。 */
+  unverifiableReason: string | null;
+}
+
+/** 一次部署的**独立回读**汇总 —— `observed` 直接喂给 `evaluateAcceptance`。 */
+export interface SceneReadbackResult {
+  steps: SceneStepReadback[];
+  /** 独立回读到的资源 actionId 集合(= 喂给 `evaluateAcceptance` 的 observed)。 */
+  observed: string[];
+  /** 无法独立回读的资源 actionId(无回读入口 / 查询出错)—— 明确列出,不当成 present。 */
+  unverifiable: string[];
+}
+
+/**
+ * 对**一条**资源做独立回读 —— 调 `service.readback` 描述的既有入口,按 id/名单**重新查询**
+ * 宿主真实资源。判据只有「查得到才 present」:绝不从部署记录里推。
+ *
+ * @param actionId 资源 id(= 计划步骤的 actionId)。
+ * @param kind 资源种类(决定回读入口与匹配字段)。
+ */
+async function probeResource(actionId: string, kind: SceneResourceKind): Promise<SceneStepReadback> {
+  const rb = serviceForKind(kind).readback;
+  if (rb === null) {
+    return {
+      actionId,
+      kind,
+      observed: false,
+      readLabel: null,
+      unverifiableReason: `kind「${kind}」无单条确定回读入口,无法独立回读(如实记为「未验证」,不当成 present)`,
+    };
+  }
+  try {
+    const entry = findEntry(rb.label);
+    if (!entry) {
+      return { actionId, kind, observed: false, readLabel: rb.label, unverifiableReason: `回读入口「${rb.label}」在当前版本里没有注册` };
+    }
+    if (rb.mode === "byArg") {
+      const res = (await callRpc(entry, { [rb.arg as string]: actionId })) as Record<string, unknown> | null;
+      const node = res?.[rb.field];
+      const observed = typeof node === "object" && node !== null && !Array.isArray(node);
+      return { actionId, kind, observed, readLabel: rb.label, unverifiableReason: null };
+    }
+    const res = (await callRpc(entry, {})) as Record<string, unknown> | null;
+    const list = res?.[rb.field];
+    const observed =
+      Array.isArray(list) && list.some((x) => typeof x === "object" && x !== null && (x as Record<string, unknown>)[rb.matchField] === actionId);
+    return { actionId, kind, observed, readLabel: rb.label, unverifiableReason: null };
+  } catch (err) {
+    return { actionId, kind, observed: false, readLabel: rb.label, unverifiableReason: `回读查询出错:${(err as Error).message}` };
+  }
+}
+
+/**
+ * **独立回读一次部署的真实资源** —— 对部署里每一步的资源按 kind 调**既有回读入口**重新查询
+ * 宿主是否真的存在它,收成 `observed`(可直接喂 `evaluateAcceptance`)。
+ *
+ * 与「本次走到 done 的步」的关键区别(MC-058 点名的缺口):**资源被带外删掉**时,部署记录里那步
+ * 仍是 `done`,但这里**查不到** → 不进 `observed` → 验收不通过。只信记录会把这谎报成成功。
+ *
+ * @param deployment 要回读的部署记录(以它的 steps 为要回读的资源清单)。
+ * @param spec 该部署基于的场景声明(提供每条资源的 kind)。
+ */
+export async function readbackScene(deployment: SceneDeployment, spec: SceneSpec): Promise<SceneReadbackResult> {
+  const kindById = new Map<string, SceneResourceKind>(spec.resources.map((r) => [r.id, r.kind] as const));
+  const steps: SceneStepReadback[] = [];
+  for (const step of deployment.steps) {
+    const kind = kindById.get(step.actionId);
+    if (kind === undefined) {
+      steps.push({
+        actionId: step.actionId,
+        kind: "workflow",
+        observed: false,
+        readLabel: null,
+        unverifiableReason: `部署步骤「${step.actionId}」在声明里找不到对应资源,无法回读`,
+      });
+      continue;
+    }
+    steps.push(await probeResource(step.actionId, kind));
+  }
+  const observed = steps.filter((s) => s.observed).map((s) => s.actionId);
+  const unverifiable = steps.filter((s) => s.unverifiableReason !== null).map((s) => s.actionId);
+  return { steps, observed, unverifiable };
+}
+
+/* ───────────────────────── 补偿(失败时撤销已建成资源) ───────────────────────── */
+
+/**
+ * **补偿** —— 某步失败时,把之前**已建成**(`done`)的步骤按**逆序**逐个尝试撤销
+ * (MC-058 的补偿路径,「失败不留下孤儿」)。
+ *
+ * 逐条判据(**不静默**):
+ *  - 该步声明 `compensable === false` → **不撤销**,记为 `applied:false` + 「声明不可补偿」;
+ *  - 该 kind 无稳妥逆操作(`compensation.label === null`,如 skill/panel/scaffold)→ **不撤销**,
+ *    记为 `applied:false` + 「无稳妥逆操作」的原因(本层**不猜**一个入口去删,免得删错);
+ *  - 有逆操作 → 调 `callRpc(逆操作入口, { [arg]: actionId })`:
+ *    - 成功 → 该步迁到 **`compensated`**(资源已撤,不再算 `done`),记 `applied:true`;
+ *    - 抛错 → 该步**保持 `done`**(资源大概率还在,保守),记 `applied:false` + 逆操作的真实错误。
+ *
+ * 逆序执行:先撤最后建成的,后撤最早建成的(与建的顺序相反)。
+ *
+ * @returns 补偿后的新部署记录(纯推进,不改入参)。
+ */
+async function compensateDoneSteps(d: SceneDeployment, commands: SceneCommandPlan, clock: () => number): Promise<SceneDeployment> {
+  const doneByAction = new Map(d.steps.filter((s) => s.status === "done").map((s) => [s.actionId, s] as const));
+  // 逆序:先撤最后建成的。
+  for (const command of [...commands.commands].reverse()) {
+    if (!doneByAction.has(command.actionId)) continue;
+    const kind = command.kind;
+    const entry = serviceForKind(kind).compensation;
+
+    if (!command.compensable) {
+      d = advanceDeployment(d, {
+        actionId: command.actionId,
+        status: "done",
+        compensation: { applied: false, inverseLabel: null, reason: "该步声明为不可补偿(compensable=false),失败时按设计不撤销,请人工核对" },
+      }, clock());
+      continue;
+    }
+    if (entry.label === null || entry.arg === null) {
+      d = advanceDeployment(d, {
+        actionId: command.actionId,
+        status: "done",
+        compensation: { applied: false, inverseLabel: null, reason: `该 kind 无稳妥逆操作,未撤销:${entry.note}` },
+      }, clock());
+      continue;
+    }
+
+    try {
+      const inv = findEntry(entry.label);
+      if (!inv) throw new Error(`逆操作入口「${entry.label}」在当前版本里没有注册`);
+      await callRpc(inv, { [entry.arg]: command.actionId });
+      d = advanceDeployment(d, {
+        actionId: command.actionId,
+        status: "compensated",
+        compensation: { applied: true, inverseLabel: entry.label, reason: `已用 ${entry.label} 撤销「${command.actionId}」` },
+      }, clock());
+    } catch (err) {
+      d = advanceDeployment(d, {
+        actionId: command.actionId,
+        status: "done",
+        compensation: { applied: false, inverseLabel: entry.label, reason: `逆操作 ${entry.label} 执行失败,资源可能仍存在:${(err as Error).message}` },
+      }, clock());
+    }
+  }
+  return d;
+}
+
 /**
  * **执行一次场景部署** —— 建部署记录 → 逐步(按计划拓扑序)分派到既有服务 → 逐步落盘 → 收尾验收。
  *
@@ -256,8 +439,10 @@ function stepStatusOf(d: SceneDeployment, actionId: string): SceneStepStatus | n
  *     - `service.needsResolution` → 记为 **failed**(明确「需要决议、未执行」),落盘,下一条;
  *     - 否则 `running` → 落盘 → `findEntry(serviceLabel)` 解析通道 → `callRpc(entry, payload)`
  *       → 成功记 `done` / 抛错记 `failed`(带上服务的真实错误)→ 落盘;
- *  6. `evaluateAcceptance`:`observed` = 本次走到 `done` 的步骤 id(**不是**独立回读,见文件头),
- *     写入验收结果 → 落盘。
+ *  5b. **补偿**(`compensateOnFailure` 缺省 true,且有步失败):逆序对之前已建成、`compensable` 的步
+ *     调逆操作撤销(见 {@link compensateDoneSteps}),逐条不静默,落盘;
+ *  6. `readbackScene` **独立回读**宿主真实资源 → `evaluateAcceptance`(observed 取自实际回读,
+ *     **不是**记录里 done 的步),写入验收结果 → 落盘。
  *
  * **整体状态由各步推导**(`deriveDeploymentStatus`):有失败也有成功 → **`partial`**;全失败 → `failed`;
  * 全成 → `active`。**绝不**把部分成功报成 `active`(MC-058 明确拒绝的假方案)。
@@ -288,6 +473,9 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
   let d = createDeployment({ deploymentId: input.deploymentId, plan, actor: input.actor, now: clock() });
   persistStep(d);
 
+  const doCompensate = input.compensateOnFailure ?? true;
+  let anyFailed = false;
+
   // ⑤ 逐条命令,按计划拓扑序(依赖必先于被依赖者,故到某步时它的依赖都已处理完)。
   for (const command of commands.commands) {
     // 依赖闸:任一依赖没走到 done → 本步不执行(failed + 明说原因)。
@@ -303,6 +491,7 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
         clock(),
       );
       persistStep(d);
+      anyFailed = true;
       continue;
     }
 
@@ -318,6 +507,7 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
         clock(),
       );
       persistStep(d);
+      anyFailed = true;
       continue;
     }
 
@@ -341,16 +531,25 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
         { actionId: command.actionId, status: "failed", error: (err as Error).message },
         clock(),
       );
+      anyFailed = true;
     }
     persistStep(d);
   }
 
-  // ⑥ 收尾验收:expected 来自声明,observed 取自本次走到 done 的步骤(非独立回读,见文件头)。
-  const observed = d.steps.filter((s) => s.status === "done").map((s) => s.actionId);
-  d = evaluateAcceptance(d, spec.acceptance.expectResourceIds, observed, clock());
+  // ⑤b 补偿(MC-058):有步失败且开启补偿 → 逆序撤销之前已建成、可补偿的步,不让失败留下孤儿。
+  //     补偿结果写进各步的 `compensation`(成功撤销的步迁到 `compensated`),逐条不静默。
+  if (anyFailed && doCompensate) {
+    d = await compensateDoneSteps(d, commands, clock);
+    persistStep(d);
+  }
+
+  // ⑥ 收尾验收:**独立回读**宿主真实资源(MC-058 点名的缺口)—— observed 取自 `readbackScene`
+  //     的实际查询结果,**不是**「记录里走到 done 的步」。资源被带外删掉 / 补偿撤销后 → 查不到。
+  const readback = await readbackScene(d, spec);
+  d = evaluateAcceptance(d, spec.acceptance.expectResourceIds, readback.observed, clock());
   persistStep(d);
 
-  return { ok: true, kind: "applied", deployment: d };
+  return { ok: true, kind: "applied", deployment: d, readback };
 }
 
 /** 逐步落盘 —— durable 写。失败如实记警告,不假报成功(记录以调用方拿到的内存 `d` 为准)。 */

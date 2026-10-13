@@ -54,11 +54,51 @@ export interface SceneKindServiceEntry {
    * （此时 `needsResolution` 必为真）。
    */
   serviceLabel: string | null;
+  /**
+   * **独立回读**入口描述（如 `workflow.get` / `skills.list`）—— 部署器/验收据此**独立查询宿主
+   * 真实资源**是否可见，而不是只信部署记录里「这一步跑到了 done」。`null` = 本 kind 没有单条
+   * 确定回读入口（如 `panel` 落在整块 UI 配置里、`scaffold` 交整份模板）。
+   */
+  readback: SceneKindReadback | null;
+  /** **补偿（逆操作）**描述 —— 某步失败后撤销本 kind 已建成资源用。见 {@link SceneKindCompensation}。 */
+  compensation: SceneKindCompensation;
   /** 需要部署器按资源声明 / 上下文进一步决议才能选定入口点。 */
   needsResolution: boolean;
   /** 决议所需依据（如 `spec.source` / `spec.entry`）；不需要决议时为 `null`。 */
   resolutionHint: string | null;
   /** 人读说明：为什么这么映射，或为什么需要决议。 */
+  note: string;
+}
+
+/**
+ * 一种 kind 的**独立回读**描述（MC-058 的真实资源回读）。部署器据此对宿主**重新查询**每条资源
+ * 是否真的存在 —— 判据只有「查得到的算 present」，绝不从部署记录里推。
+ */
+export interface SceneKindReadback {
+  /** 回读入口标签（如 `workflow.get`）。 */
+  label: string;
+  /** `byArg`：按资源 id 调 `{ [arg]: id }`；`byList`：列出全部再按 `matchField` 匹配。 */
+  mode: "byArg" | "byList";
+  /** `byArg` 的入参字段名（如 `id`）；`byList` 时为 `null`。 */
+  arg: string | null;
+  /** `byArg`：结果里承载该资源的字段（如 `workflow`）；`byList`：承载数组的字段（如 `skills`）。 */
+  field: string;
+  /** 判定资源存在时匹配的字段（如 `id` / `name`）。 */
+  matchField: string;
+}
+
+/**
+ * 一种 kind 的**补偿（逆操作）**描述（MC-058 的失败补偿）。某步失败后，部署器对之前已建成、
+ * 且声明 `compensable` 的步**调这个逆操作入口**撤销其资源。`label`/`arg` 为 `null` = 本 kind
+ * **无稳妥逆操作**（无删除入口，或删除入口还需资源 id 之外的参数）—— 此时补偿**如实记为未执行**，
+ * 绝不猜一个入口去删（可能删错东西）。
+ */
+export interface SceneKindCompensation {
+  /** 逆操作入口标签（如 `workflow.remove`）；`null` = 无稳妥逆操作。 */
+  label: string | null;
+  /** 逆操作入参里承载**资源身份**的字段名（如 `id` / `name` / `moduleId`）；`label` 非 null 时必有。 */
+  arg: string | null;
+  /** 人读说明：撤什么，或为什么撤不了。 */
   note: string;
 }
 
@@ -88,6 +128,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   workflow: {
     kind: "workflow",
     serviceLabel: "workflow.save",
+    readback: { label: "workflow.get", mode: "byArg", arg: "id", field: "workflow", matchField: "id" },
+    compensation: { label: "workflow.remove", arg: "id", note: "workflow.remove 按 id 删掉刚建成的工作流。" },
     needsResolution: false,
     resolutionHint: null,
     note: "工作流图交既有 workflow.save 建立（WorkflowSaveInput）。",
@@ -95,6 +137,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   automation: {
     kind: "automation",
     serviceLabel: "workflow.save",
+    readback: { label: "workflow.get", mode: "byArg", arg: "id", field: "workflow", matchField: "id" },
+    compensation: { label: "workflow.remove", arg: "id", note: "自动化就是工作流，workflow.remove 按 id 删除。" },
     needsResolution: false,
     resolutionHint: null,
     note: "自动化就是带 trigger 的工作流（见 @contracts/workflow 文件头），无独立 automation.save，走同一个 workflow.save。",
@@ -102,6 +146,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   skill: {
     kind: "skill",
     serviceLabel: "skills.save",
+    readback: { label: "skills.list", mode: "byList", arg: null, field: "skills", matchField: "name" },
+    compensation: { label: null, arg: null, note: "skills.delete 还要 source（global/project）才能定位删哪条目录，单靠资源 id 不足以稳妥撤销——本层不猜，如实记为未补偿。" },
     needsResolution: false,
     resolutionHint: null,
     note: "技能声明交既有 skills.save 落成 SKILL.md（SkillsSaveInput）。",
@@ -109,6 +155,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   plugin: {
     kind: "plugin",
     serviceLabel: null,
+    readback: { label: "plugins.list", mode: "byList", arg: null, field: "plugins", matchField: "name" },
+    compensation: { label: "plugins.remove", arg: "name", note: "plugins.remove 按插件名卸载（若这一步已建成）。" },
     needsResolution: true,
     resolutionHint: "spec.source(本地 / git / 市场)",
     note: "插件安装入口取决于来源：plugins.installLocal / plugins.installGit / plugins.installMarketplace——仓里无单一 plugins.install，交部署器按 spec.source 决议。",
@@ -116,6 +164,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   mcp: {
     kind: "mcp",
     serviceLabel: "mcp.save",
+    readback: { label: "mcp.list", mode: "byList", arg: null, field: "servers", matchField: "name" },
+    compensation: { label: "mcp.remove", arg: "name", note: "mcp.remove 按服务器名删掉刚写入的 MCP 声明。" },
     needsResolution: false,
     resolutionHint: null,
     note: "MCP 声明交既有 mcp.save（McpSaveInput）。",
@@ -123,6 +173,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   hook: {
     kind: "hook",
     serviceLabel: "hooks.save",
+    readback: { label: "hooks.list", mode: "byList", arg: null, field: "hooks", matchField: "id" },
+    compensation: { label: "hooks.remove", arg: "id", note: "hooks.remove 按钩子 id 删掉刚装上的钩子。" },
     needsResolution: false,
     resolutionHint: null,
     note: "钩子声明交既有 hooks.save（HooksSaveInput），与 HookRunner 同一份定义。",
@@ -130,6 +182,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   module: {
     kind: "module",
     serviceLabel: "modules.install",
+    readback: { label: "modules.catalog", mode: "byList", arg: null, field: "modules", matchField: "id" },
+    compensation: { label: "modules.remove", arg: "moduleId", note: "modules.remove 按模块 id 卸载刚装上的模块。" },
     needsResolution: false,
     resolutionHint: null,
     note: "模块声明交既有 modules.install（ModuleInstallInput）。",
@@ -137,6 +191,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   panel: {
     kind: "panel",
     serviceLabel: "setting.set",
+    readback: null,
+    compensation: { label: null, arg: null, note: "面板落在整块 customUi.config.v1 里，无单条删除入口（删一条要重写整块配置）；本层不猜，如实记为未补偿。" },
     needsResolution: true,
     resolutionHint: "customUi.config.v1",
     note: "面板落在自定义 UI 配置这一个整块 setting（CUSTOM_UI_SETTING_KEY）里——需决议：单条面板要并进整份配置，不是逐面板一个入口。",
@@ -144,6 +200,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
   scaffold: {
     kind: "scaffold",
     serviceLabel: "projectInit.apply",
+    readback: null,
+    compensation: { label: null, arg: null, note: "脚手架条目由整份模板 projectInit.apply 落盘，无单条撤销入口；本层不猜，如实记为未补偿。" },
     needsResolution: true,
     resolutionHint: "spec.entry(目录 / 文件 / 记忆 / 说明文件)",
     note: "脚手架交既有 projectInit.apply，但该入口吃整份模板且需先 preview 取 digest——需决议：单条条目要先按 spec.entry 归到模板里再一起提交。",
@@ -227,6 +285,8 @@ function unknownKindEntry(kind: string): SceneKindServiceEntry {
   return {
     kind: kind as SceneResourceKind,
     serviceLabel: null,
+    readback: null,
+    compensation: { label: null, arg: null, note: `未知 kind「${kind}」无逆操作。` },
     needsResolution: true,
     resolutionHint: null,
     note: `未知的资源 kind「${kind}」——不在 SceneResourceKind 枚举里，无既有服务可映射（应先经 validateSceneSpec）。`,

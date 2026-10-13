@@ -27,8 +27,14 @@
  */
 import type { ScenePlan } from "./scenePlan.js";
 
-/** 单个步骤在部署里的状态。 */
-export type SceneStepStatus = "pending" | "running" | "done" | "failed";
+/**
+ * 单个步骤在部署里的状态。
+ *
+ * `compensated` = 该步**本已成功建成**,但后续某步失败触发了补偿,它的资源已被**逆操作撤销**
+ * —— 它既不是 `done`(资源已不在),也不是 `failed`(创建本身没失败)。单列一档,免得把
+ * 「建成又回滚」谎报成两者之一(MC-058 的补偿路径)。
+ */
+export type SceneStepStatus = "pending" | "running" | "done" | "failed" | "compensated";
 
 /** 部署整体状态 —— 由各步状态推导,不由调用方决定。 */
 export type SceneDeploymentStatus = "deploying" | "active" | "partial" | "failed";
@@ -39,6 +45,22 @@ export interface SceneDeploymentActor {
   actorKind: "user" | "agent" | "system";
   /** 具体身份 id(桌面 `desktop` / 会话 id / 系统组件名)。 */
   actorId: string;
+}
+
+/**
+ * 一步的**补偿结果** —— 本步本已建成,但后续某步失败触发了补偿,这一步的资源被怎么处置了
+ * (MC-058 的补偿路径)。
+ *
+ * **不静默**:无论逆操作执行成功、还是压根没有逆操作 / 声明为不可补偿 / 逆操作本身失败,
+ * 都留一条带人读原因的记录。
+ */
+export interface SceneStepCompensation {
+  /** 逆操作是否**真的执行了**(false = 无逆操作 / 不可补偿 / 逆操作失败)。 */
+  applied: boolean;
+  /** 执行逆操作所用的服务入口标签(如 `workflow.remove`);未执行时为 `null`。 */
+  inverseLabel: string | null;
+  /** 人读说明:撤了什么 / 为什么撤不了(不可补偿 / 无逆操作 / 逆操作失败)。 */
+  reason: string;
 }
 
 /** 部署里的一步 —— 对应计划里的一条 {@link import("./scenePlan.js").ScenePlanStep}。 */
@@ -53,6 +75,8 @@ export interface SceneDeploymentStep {
   /** 本步开始/结束时刻(ms epoch)。 */
   startedAt?: number;
   finishedAt?: number;
+  /** 本步的补偿结果(只在后续某步失败触发补偿后才有)。见 {@link SceneStepCompensation}。 */
+  compensation?: SceneStepCompensation;
 }
 
 /** 验收结果 —— 描述「凭什么说这次部署成了」。 */
@@ -98,13 +122,20 @@ export interface SceneStepAdvance {
   resourceUid?: string;
   /** 失败原因。 */
   error?: string;
+  /** 本步被补偿的结果(迁到 `compensated` 时带)。 */
+  compensation?: SceneStepCompensation;
 }
 
 /**
  * **整体状态推导** —— 纯函数,只由各步状态决定。
  *
- * 优先级从「最不确定」到「最确定」:`deploying`(还在跑)→ `failed`(全败)→ `partial`(成败并存)
- * → `active`(全成)。**`partial` 必须在 `active` 之前判** —— 只要有一处失败就不能说成功。
+ * 优先级从「最不确定」到「最确定」:`deploying`(还在跑)→ `failed`(全败 / 全被补偿掉)
+ * → `partial`(成败并存)→ `active`(全成)。**`partial` 必须在 `active` 之前判** —— 只要有一处
+ * 失败就不能说成功。
+ *
+ * `compensated`(建成又被补偿撤销)归入**非成功**那一桶:`done` 计数只数真正留下资源的步。
+ * 故「全被补偿」= 什么都没留下 → `failed`,而**不是** `active` —— 否则一个失败后整体回滚的
+ * 部署会被报成部署成功(MC-058 明确拒绝的假方案)。
  */
 export function deriveDeploymentStatus(
   steps: ReadonlyArray<{ status: SceneStepStatus }>,
@@ -115,7 +146,8 @@ export function deriveDeploymentStatus(
   for (const s of steps) {
     if (s.status === "running" || s.status === "pending") return "deploying";
     if (s.status === "done") done += 1;
-    else if (s.status === "failed") failed += 1;
+    // `compensated` 与 `failed` 同桶:都是「这一步没留下资源」。
+    else if (s.status === "failed" || s.status === "compensated") failed += 1;
   }
   if (failed === 0) return "active";
   if (done === 0) return "failed";
@@ -178,12 +210,24 @@ export function advanceDeployment(
   } else if (advance.status === "done") {
     next.startedAt = prev.startedAt ?? now;
     next.finishedAt = now;
-    if (advance.resourceUid !== undefined) next.resourceUid = advance.resourceUid;
+    // 保留先前回读到的 uid(重试/补偿路径里再次迁到 done 时不该把它抹掉);给了新的就用新的。
+    const uid = advance.resourceUid ?? prev.resourceUid;
+    if (uid !== undefined) next.resourceUid = uid;
+    // done 也可以带一条补偿记录:某步**不可补偿 / 无逆操作 / 逆操作失败**时,它保持 done,但
+    // 要如实记一条「为什么没撤掉」(否则失败留下孤儿又没人说,违反硬规矩 3)。
+    if (advance.compensation !== undefined) next.compensation = advance.compensation;
   } else if (advance.status === "failed") {
     next.startedAt = prev.startedAt ?? now;
     next.finishedAt = now;
     if (advance.error !== undefined) next.error = advance.error;
+    if (advance.compensation !== undefined) next.compensation = advance.compensation;
     // 失败时若之前成功回读过 uid,保留(资源仍可能存在)→ 不复制 prev.resourceUid 以免误导。
+  } else if (advance.status === "compensated") {
+    // 建成后被补偿撤销:保留原 created 的 startedAt/finishedAt 轨迹,记录补偿结果。
+    // **清掉 resourceUid** —— 资源已被逆操作撤销,留着那个 uid 会误导成「它还在」。
+    next.startedAt = prev.startedAt ?? now;
+    next.finishedAt = prev.finishedAt ?? now;
+    if (advance.compensation !== undefined) next.compensation = advance.compensation;
   }
   const steps = record.steps.map((s, i) => (i === idx ? next : s));
   return { ...record, status: deriveDeploymentStatus(steps), steps };

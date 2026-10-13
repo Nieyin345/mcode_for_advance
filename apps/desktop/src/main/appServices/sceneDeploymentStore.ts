@@ -39,7 +39,7 @@ import {
   type SceneStepStatus,
 } from "@contracts/sceneDeployment";
 
-const STEP_STATUSES: readonly SceneStepStatus[] = ["pending", "running", "done", "failed"];
+const STEP_STATUSES: readonly SceneStepStatus[] = ["pending", "running", "done", "failed", "compensated"];
 const ACTOR_KINDS: readonly SceneDeploymentActor["actorKind"][] = ["user", "agent", "system"];
 
 /** 编码:整条 `SceneDeployment` → 落 `payload` 的 JSON 串。 */
@@ -103,6 +103,18 @@ export function decodeDeployment(raw: string): SceneDeployment | null {
     if (step.finishedAt !== undefined) {
       if (typeof step.finishedAt !== "number" || !Number.isFinite(step.finishedAt)) return null;
       out.finishedAt = step.finishedAt;
+    }
+    if (step.compensation !== undefined) {
+      const c = step.compensation as Record<string, unknown>;
+      if (typeof c !== "object" || c === null) return null;
+      if (typeof c.applied !== "boolean") return null;
+      if (c.inverseLabel !== null && typeof c.inverseLabel !== "string") return null;
+      if (typeof c.reason !== "string") return null;
+      out.compensation = {
+        applied: c.applied,
+        inverseLabel: (c.inverseLabel as string | null) ?? null,
+        reason: c.reason,
+      };
     }
     steps.push(out);
   }
