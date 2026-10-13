@@ -26,6 +26,14 @@ import {
   piEffectiveToolInventory,
   toolNamesOfSource,
 } from "@main/orchestration/effectiveToolInventory.js";
+import {
+  ESSENTIAL_TOOL_NAMES,
+  bareToolName,
+  bucketsForProfile,
+  classifyToolBucket,
+  selectToolsForProfile,
+  type ToolProfileName,
+} from "@contracts/toolProfile";
 
 let failures = 0;
 let total = 0;
@@ -196,6 +204,98 @@ function eq(name: string, actual: unknown, expected: unknown): void {
   check("★ buildDynamicTools 已导出(供诊断复用)", /export function buildDynamicTools/.test(codexSrc));
   const ipcSrc = readFileSync(resolve(process.cwd(), "src/main/ipc/engineTools.ts"), "utf8");
   check("★ KNOWN_BUILTIN_TOOLS 已导出(内置清单唯一来源)", /export const KNOWN_BUILTIN_TOOLS/.test(ipcSrc));
+}
+
+/* ── 8. ★ ToolProfile 选择层(MC-100 第二步):按任务派生最小工具子集 ─────────
+ *
+ * 这些是**纯选择**断言:给定清单 + 画像 → 应暴露的工具名子集。判据:
+ *  - 每个画像回它该有的桶(floor + 自己的桶),集间有真实差异;
+ *  - `minimal` 只留必需集,绝不带 research/browser 工具;
+ *  - 未知名字**永不**被自动选中;
+ *  - `userOverride` 只能加、加不进清单里没有的名字,且**动不了 floor**;
+ *  - 桶判定对三形态(内置裸名 / Claude 的 `mcp__<server>__` 前缀 / Codex+Pi 的裸 dynamic)一致。
+ */
+{
+  // 用 Claude 的真实装配(带 browser)做「大清单」:它同时含 builtin、mcode-app、library、
+  // memory、workflow、browser 六个来源,正好覆盖六个桶。
+  const inv = claudeEffectiveToolInventory({ browserEnabled: true });
+  const names = new Set(inv.tools.map((t) => t.name));
+
+  // 前提:这张真实清单里确实有各桶的代表(否则下面的断言没意义)。
+  check("清单含必需工具 mcp__mcode-app__app_api_call", names.has("mcp__mcode-app__app_api_call"), [...names].filter((n) => n.includes("app_api")));
+  check("清单含资料库工具(library_)", [...names].some((n) => n.includes("library_")), [...names].filter((n) => n.includes("library_")).slice(0, 3));
+  check("清单含浏览器工具(browser_)", [...names].some((n) => n.includes("browser_")), [...names].filter((n) => n.includes("browser_")).slice(0, 3));
+
+  const sel = (p: ToolProfileName) => selectToolsForProfile(inv, { name: p });
+  const minimal = sel("minimal");
+  const chat = sel("chat");
+  const code = sel("code");
+  const research = sel("research");
+  const browser = sel("browser");
+  const workflow = sel("workflow");
+
+  // 8.1 minimal:只含必需集(此处为 Claude 带前缀形态)。
+  eq("★ minimal = 必需集(仅 app_api 三件套,带前缀)", minimal, [
+    "mcp__mcode-app__app_api_call", "mcp__mcode-app__app_api_describe", "mcp__mcode-app__app_api_list",
+  ]);
+  check("★ minimal 不含 research 工具(library_)", !minimal.some((n) => n.includes("library_")), minimal);
+  check("★ minimal 不含 browser 工具(browser_)", !minimal.some((n) => n.includes("browser_")), minimal);
+  check("★ minimal 不含 code 内置(Bash)", !minimal.includes("Bash"), minimal);
+
+  // 8.2 各画像确为「minimal + 自己那桶」的超集,且彼此不同。
+  check("★ code ⊋ minimal(多了内置 Bash)", code.includes("Bash") && minimal.every((n) => code.includes(n)));
+  check("research ⊋ minimal(多了 library_)", research.some((n) => n.includes("library_")) && minimal.every((n) => research.includes(n)));
+  check("browser ⊋ minimal(多了 browser_)", browser.some((n) => n.includes("browser_")) && minimal.every((n) => browser.includes(n)));
+  check("workflow ⊋ minimal(多了 workflow_/session_)", workflow.some((n) => n.includes("workflow_") || n.includes("session_")) && minimal.every((n) => workflow.includes(n)));
+  check("chat ⊋ minimal", minimal.every((n) => chat.includes(n)) && chat.length >= minimal.length);
+
+  check("★ research 不带 browser 工具", !research.some((n) => n.includes("browser_")), research.filter((n) => n.includes("browser_")));
+  check("★ browser 不带 library 工具", !browser.some((n) => n.includes("library_")), browser.filter((n) => n.includes("library_")));
+  check("★ code 不含 research/browser", !code.some((n) => n.includes("library_") || n.includes("browser_")));
+
+  // 必需集在**每个**画像里都在(floor 恒含)。
+  for (const [label, list] of [["minimal", minimal], ["chat", chat], ["code", code], ["research", research], ["browser", browser], ["workflow", workflow]] as const) {
+    check(`floor 在每个画像恒含(${label})`, ESSENTIAL_TOOL_NAMES.map((n) => `mcp__mcode-app__${n}`).every((n) => list.includes(n)), list.filter((n) => n.includes("app_api")));
+  }
+
+  // 8.3 桶判定对三形态一致:内置裸名 / Claude 前缀形态 / 裸 dynamic。
+  check("内置裸名 Bash → code 桶", classifyToolBucket("Bash", "builtin") === "code");
+  check("Claude 前缀形态 mcp__mcode-app__app_api_call → essential", classifyToolBucket("mcp__mcode-app__app_api_call", "mcp:mcode-app") === "essential");
+  check("来源 mcp:mcode-browser → browser 桶(不按名猜)", classifyToolBucket("browser_navigate", "mcp:mcode-browser") === "browser");
+  check("裸 dynamic browser_navigate → browser 桶(名字族)", classifyToolBucket("browser_navigate", "dynamic") === "browser");
+  check("裸 dynamic library_search → research 桶(名字族)", classifyToolBucket("library_search", "dynamic") === "research");
+  check("裸名 app_api_list → essential 桶", classifyToolBucket("app_api_list", "dynamic") === "essential");
+  eq("bareToolName 剥掉 mcp__server__ 前缀", bareToolName("mcp__mcode-app__app_api_call"), "app_api_call");
+  eq("bareToolName 对裸名原样返回", bareToolName("app_api_call"), "app_api_call");
+
+  // 8.4 ★ 未知名字绝不静默加入:一个清单里存在、但桶认不出的名字,任何画像都不选它。
+  const unknownInv = buildEffectiveToolInventory({
+    providerId: "t",
+    tools: [
+      { name: "app_api_list", source: "dynamic" },
+      { name: "totally_unknown_tool_xyz", source: "dynamic" },
+    ],
+  });
+  check("未知名字 → 桶判定为 null", classifyToolBucket("totally_unknown_tool_xyz", "dynamic") === null);
+  for (const p of ["minimal", "chat", "code", "research", "browser", "workflow"] as const) {
+    check(`★ 未知名字不被画像 ${p} 选中`, !selectToolsForProfile(unknownInv, { name: p }).includes("totally_unknown_tool_xyz"));
+  }
+
+  // 8.5 ★ userOverride:只加不删;加不进清单里没有的名字;动不了 floor。
+  //   在 minimal 上追加一个真实存在的 code 工具(Bash 不在 Claude 清单?——用清单里真实的)。
+  const pickReal = [...names].find((n) => n.includes("library_"))!;
+  const withOverride = selectToolsForProfile(inv, { name: "minimal", userOverride: { add: [pickReal, "nonexistent_tool_zzz"] } });
+  check("★ userOverride.add 能把清单里真实的工具加进 minimal", withOverride.includes(pickReal), { pickReal, got: withOverride.includes(pickReal) });
+  check("★ userOverride.add 里不存在的名字被忽略(不虚增)", !withOverride.includes("nonexistent_tool_zzz"), withOverride);
+  check("★ userOverride 动不了 floor(必需集仍在)", ESSENTIAL_TOOL_NAMES.map((n) => `mcp__mcode-app__${n}`).every((n) => withOverride.includes(n)), minimal);
+
+  // userOverride 没有 remove 形态 —— 类型层保证,这里断言「即使加了东西,minimal 的其余工具没因此变多」。
+  eq("★ userOverride 只加必需集 + 追加项,不多不少", withOverride, [...minimal, pickReal].sort());
+
+  // 8.6 bucketsForProfile:floor 恒含。
+  for (const p of ["minimal", "chat", "code", "research", "browser", "workflow"] as const) {
+    check(`bucketsForProfile(${p}) 含 essential`, bucketsForProfile(p).includes("essential"), bucketsForProfile(p));
+  }
 }
 
 console.log(`\neffective-tools-smoke: ${total - failures}/${total} checks passed`);
