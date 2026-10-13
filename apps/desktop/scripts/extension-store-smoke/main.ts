@@ -17,7 +17,7 @@
  * Run: scripts/extension-store-smoke/run.sh
  */
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import type { IpcMain } from "electron";
@@ -152,6 +152,25 @@ check("同一个键名不同扩展不串号", readValue(ROOT, "ext-a", "notes") 
 eq("A 扩展读不存在的键 = null", readValue(ROOT, "ext-a", "nope"), null);
 eq("C 扩展(从没写过)读同键 = null", readValue(ROOT, "ext-c", "notes"), null);
 
+// ★ 【MC-096】坏 store.json 时**拒写**(不能把「坏」当「空」再整份覆盖 —— 那会丢掉用户原有那份)。
+{
+  const badId = "ext-corrupt";
+  const badPath = extensionStorePath(ROOT, badId);
+  mkdirSync(dirname(badPath), { recursive: true });
+  writeFileSync(badPath, "{ this is not json", "utf-8");
+  const before = readFileSync(badPath, "utf-8");
+  // 读侧仍宽容(当空,不抛)—— 扩展不崩。
+  eq("★ MC-096:坏 store.json 读侧仍宽容(当空 = null)", readValue(ROOT, badId, "x"), null);
+  // 写侧 fail-closed:坏数据拒写。
+  check("★ MC-096:坏 store.json → writeValue 拒写(不覆盖)", writeValue(ROOT, badId, "newKey", "newVal") === false);
+  eq("★ MC-096:拒写后磁盘内容逐字节未变(坏数据还在,没被盖成新的一份)", readFileSync(badPath, "utf-8"), before);
+  // 正控:正常文件照写(证明拒的只可能是"坏"这个理由,不是"什么都拒")。
+  writeFileSync(badPath, JSON.stringify({ version: 1, values: { keep: "KEEP" } }), "utf-8");
+  check("★ MC-096:合法 store.json 照常写(正控)", writeValue(ROOT, badId, "added", 1) === true);
+  eq("★ MC-096:写入后原有键仍在(没被清掉)", readValue(ROOT, badId, "keep"), "KEEP");
+  eq("★ MC-096:写入后新键也在", readValue(ROOT, badId, "added"), 1);
+}
+
 // 文件真的落在按扩展分的路径下。
 check("A 的存储文件已落盘", existsSync(extensionStorePath(ROOT, "ext-a")));
 check(
@@ -171,7 +190,10 @@ console.log("\n§3 磁盘侧:坏文件 / 非法 id / 配额");
 mkdirSync(extensionDir(ROOT, "ext-broken"), { recursive: true });
 writeFileSync(extensionStorePath(ROOT, "ext-broken"), "{ not json", "utf8");
 eq("坏文件当空存储(不抛)", Object.keys(readStore(ROOT, "ext-broken").values).length, 0);
-check("坏文件之后仍能正常写", writeValue(ROOT, "ext-broken", "k", "v") && readValue(ROOT, "ext-broken", "k") === "v");
+// 【MC-096】坏文件**之后不能"正常写"** —— 那会把「坏」当「空」再整份覆盖,静默丢掉用户原有数据。
+// 从前这条断言正是那个 fail-open 的凭证;现在写侧 fail-closed:坏数据拒写,原文件不动。
+check("★ MC-096:坏文件之后**拒写**(不再把坏当空覆盖)", writeValue(ROOT, "ext-broken", "k", "v") === false);
+eq("★ MC-096:拒写后原文件内容未变", readFileSync(extensionStorePath(ROOT, "ext-broken"), "utf-8"), "{ not json");
 
 // 非法 id:读写都拒。
 eq("非法 id(.. )读 = 空", Object.keys(readStore(ROOT, "..").values).length, 0);

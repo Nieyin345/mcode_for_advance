@@ -22,6 +22,8 @@ import {
   isSafeExtensionRelPath,
   isValidExtensionId,
   parseStoreFile,
+  readStoreFileDetailed,
+  type ExtensionStoreRead,
   serializeStore,
   storeBytes,
   withStoreValue,
@@ -88,6 +90,22 @@ export function readValue(root: string, extensionId: string, key: string): unkno
   return getStoreValue(readStore(root, extensionId), key);
 }
 
+/**
+ * 【MC-096】读一份存储并**区分三态** —— 写侧据此对「坏数据」fail-closed(不覆盖)。
+ * 根目录逃逸 / id 非法一律当 `MISSING`(读不到那份文件,写也被包含闸挡住)。
+ */
+function readStoreRaw(root: string, extensionId: string): ExtensionStoreRead {
+  if (!isValidExtensionId(extensionId)) return { status: "MISSING", file: emptyStore() };
+  if (!extensionRootWithinExtensions(root, extensionId)) return { status: "MISSING", file: emptyStore() };
+  const path = extensionStorePath(root, extensionId);
+  try {
+    if (!existsSync(path)) return { status: "MISSING", file: emptyStore() };
+    return readStoreFileDetailed(readFileSync(path, "utf8"));
+  } catch {
+    return { status: "CORRUPT", file: emptyStore() };
+  }
+}
+
 /** 写一份(整份落盘)。**根目录逃逸时不落盘** —— 返回 `false`(MC-095 物理包含闸)。 */
 function persist(root: string, extensionId: string, file: ExtensionStoreFile): boolean {
   if (!extensionRootWithinExtensions(root, extensionId)) return false;
@@ -104,8 +122,10 @@ function persist(root: string, extensionId: string, file: ExtensionStoreFile): b
  */
 export function writeValue(root: string, extensionId: string, key: string, value: unknown): boolean {
   if (!isValidExtensionId(extensionId)) return false;
-  const file = readStore(root, extensionId);
-  const next = withStoreValue(file, key, value);
+  const read = readStoreRaw(root, extensionId);
+  // 【MC-096】坏数据**拒写** —— 不能把 readStore 的"坏当空"再整份覆盖,那会丢掉用户原有那份键值。
+  if (read.status === "CORRUPT") return false;
+  const next = withStoreValue(read.file, key, value);
   if (next === null) return false;
   return persist(root, extensionId, next);
 }
@@ -113,9 +133,11 @@ export function writeValue(root: string, extensionId: string, key: string, value
 /** 删一条。没有这个键就不写(不无谓地重排文件)。id 非法直接不动。 */
 export function removeValue(root: string, extensionId: string, key: string): void {
   if (!isValidExtensionId(extensionId)) return;
-  const file = readStore(root, extensionId);
-  const next = withoutStoreValue(file, key);
-  if (next === file) return;
+  const read = readStoreRaw(root, extensionId);
+  // 【MC-096】坏数据不动(同 writeValue 的理由)。
+  if (read.status === "CORRUPT") return;
+  const next = withoutStoreValue(read.file, key);
+  if (next === read.file) return;
   persist(root, extensionId, next);
 }
 

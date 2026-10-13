@@ -285,6 +285,45 @@ export function parseStoreFile(raw: string | null | undefined): ExtensionStoreFi
   return { version: 1, values: values as Record<string, unknown> };
 }
 
+/**
+ * 【MC-096】`store.json` 读取的**三态事实** —— 与 `parseStoreFile` 的"坏就当空"不同:
+ * 读**用于展示/取值**时可以宽容(别让扩展崩),但写**绝不能**把「坏」当「空」再覆盖 ——
+ * 那会把用户原有的一整份键值**静默丢掉**(读回空 → 加一个键 → 整份重写成只剩一个键)。
+ *
+ *   - `MISSING`:文件不存在(全新扩展)→ 写没问题,从空起;
+ *   - `VALID`:正常解析 → 照常;
+ *   - `CORRUPT`:有文件但读不出/JSON 坏/形状不对 → **写侧 fail-closed 拒写**,让调用方
+ *     知道"这里有一份坏了的数据,别覆盖",而不是把它当空盖掉。
+ */
+export type ExtensionStoreStatus = "MISSING" | "VALID" | "CORRUPT";
+
+export interface ExtensionStoreRead {
+  status: ExtensionStoreStatus;
+  /** `VALID` 时是解析结果;`MISSING`/`CORRUPT` 时是空存储(调用方按 status 决定怎么用)。 */
+  file: ExtensionStoreFile;
+}
+
+/** 读一份存储文件并**区分三态**(见 {@link ExtensionStoreStatus})。 */
+export function readStoreFileDetailed(raw: string | null | undefined): ExtensionStoreRead {
+  if (raw === null || raw === undefined || raw.trim().length === 0) {
+    return { status: "MISSING", file: emptyStore() };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { status: "CORRUPT", file: emptyStore() };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { status: "CORRUPT", file: emptyStore() };
+  }
+  const values = (parsed as { values?: unknown }).values;
+  if (typeof values !== "object" || values === null || Array.isArray(values)) {
+    return { status: "CORRUPT", file: emptyStore() };
+  }
+  return { status: "VALID", file: { version: 1, values: values as Record<string, unknown> } };
+}
+
 export function serializeStore(file: ExtensionStoreFile): string {
   return JSON.stringify({ version: 1, values: file.values });
 }
