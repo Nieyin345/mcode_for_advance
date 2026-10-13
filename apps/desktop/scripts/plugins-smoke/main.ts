@@ -1101,6 +1101,55 @@ eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user ma
   resetHostHookGrants();
 }
 
+/* ── 【MC-061】面板的执行态走**真命令摘要**的来源身份(与宿主执行时同一份) ──
+ * `toPluginState` 此前给来源传的是 `commandDigest: ""`(不绑命令) —— 与执行通道按真摘要
+ * 绑定的那份来源**分家**。分家的表现:面板显示「已授信」而执行时 denied(或反之)。这里
+ * 用一份**绑真摘要**的授权做正控:面板认得出 → granted。若来源退回 `""`,真摘要授权匹配
+ * 不上,面板会显示 unsupported —— 这条就红。 */
+{
+  const { hostHookSourceOf } = await import("../../src/main/hooks/hostHookGrants.js");
+  const { issueHostHookGrant: issue2, resetHostHookGrants: reset2 } = await import(
+    "../../src/main/hooks/hostHookGrants.js"
+  );
+  // demo-plugin 在 [9] remove cleanup 里被卸载了 —— 这里从**源夹具**重新装一份(夹具目录还在)。
+  const reinstall = await installFromLocal(demoRoot);
+  ok(reinstall.ok, "MC-061:重新装 demo-plugin(夹具还在)", reinstall.error ?? "");
+  reset2();
+  // demo-plugin 的 PreToolUse / 「echo pre」 —— 真摘要来自**唯一构造点**。
+  const realSource = hostHookSourceOf({
+    pluginId: "demo-plugin",
+    version: "1.2.3",
+    nativeEvent: "PreToolUse",
+    command: "echo pre",
+  });
+  issue2({
+    pluginId: "demo-plugin",
+    version: "1.2.3",
+    commandDigest: realSource.commandDigest,
+    ttlMs: 600_000,
+    now: Date.now(),
+  });
+  const row = listPlugins().find((p) => p.name === "demo-plugin");
+  const preHook = row?.components.hooks.find((h) => h.event === "PreToolUse");
+  eq(preHook?.execution, "granted", "MC-061:面板用真命令摘要判定 → 绑真摘要的授权显示 granted");
+  // 换一条别的命令的授权不覆盖(命令摘要绑定的负控)。
+  reset2();
+  const otherDigest = hostHookSourceOf({
+    pluginId: "demo-plugin",
+    version: "1.2.3",
+    nativeEvent: "PreToolUse",
+    command: "echo DIFFERENT",
+  }).commandDigest;
+  issue2({ pluginId: "demo-plugin", version: "1.2.3", commandDigest: otherDigest, ttlMs: 600_000, now: Date.now() });
+  const row2 = listPlugins().find((p) => p.name === "demo-plugin");
+  eq(
+    row2?.components.hooks.find((h) => h.event === "PreToolUse")?.execution,
+    "unsupported",
+    "MC-061:命令改过(摘要不符)的授权不覆盖 → unsupported(授权按来源绑定)",
+  );
+  reset2();
+}
+
 /* ── summary ── */
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

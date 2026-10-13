@@ -38,6 +38,7 @@ import { ensureShippedInitializersSeeded } from "@main/projectInit/service.js";
 import { initAutoArchiver } from "@main/session/AutoArchiver.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { hookRunner } from "@main/hooks/HookRunner.js";
+import { enabledPluginHookDeclarations } from "@main/plugins/pluginManager.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { hasActiveRun } from "@main/orchestration/runner.js";
 import { is } from "@main/utils.js";
@@ -350,6 +351,14 @@ app.whenReady().then(async () => {
   void (async () => {
     try {
       await awaitDb();
+      // 【MC-061】把插件 hook 的来源接上:宿主 HookRunner 在每条事件上读当前启用插件
+      // 声明的 hook,逐条走授权判定(默认拒绝)。**判定真的驱动执行** —— 未被授权的
+      // 插件 hook 不跑,并记一条带原因的 skipped(见 `HookRunner.onEvent`)。
+      //
+      // 传一个**函数**而不是快照:插件启停、项目级开关都是"下一回合生效",让宿主按 cwd
+      // 现读当前状态才对得上(与 `getEnabledPlugins` 每次调用重扫同一取舍;宿主侧有一个
+      // 1 秒 TTL 只挡一轮里的重复扫描,判定仍每条事件现算,撤权即时生效)。
+      hookRunner.setPluginHookSource((cwd) => enabledPluginHookDeclarations(cwd));
       hookRunner.start();
     } catch (err) {
       log.error(`HookRunner failed to start: ${(err as Error).message}`);

@@ -921,6 +921,84 @@ console.log("\n去抖窗口(debounceMs):COALESCE 在窗口内把连续触发合�
 
 writeHooks([]);
 
+/* ──────────────── 14. 插件 hook 的授权消费(MC-061) ──────────────── */
+
+console.log("\n插件 hook:授权判定**真的驱动执行**(默认拒绝)");
+
+// 这一节是 MC-061 执行通道的**承重红例**:此前 `HookRunner` 只认 `hooks.json`(用户手写),
+// 插件携带的 hook 永远不执行。现在宿主在每条事件上读启用插件声明的 hook,逐条走**唯一**判定
+// 落点 `decidePluginHookExecution` —— 不 `granted` 的一律不跑,并记一条带原因的 skipped。
+//
+// 接缝是 `setPluginHookSource`:脚本喂一份固定声明(不真装插件),于是能验「判定真的驱动
+// 物理行为」—— 授权为假时**一个进程都不起**,授权为真时才起。
+const { issueHostHookGrant, revokeHostHookGrants, resetHostHookGrants } = await import(
+  "@main/hooks/hostHookGrants.js"
+);
+const { pluginHookSpecsFrom } = await import("@main/hooks/pluginHooks.js");
+
+resetHostHookGrants();
+const phCmd = makeCmd({ tag: "plugin-hook" });
+const pluginDecls = [
+  { pluginId: "demo-plugin", version: "1.0.0", nativeEvent: "PreToolUse", command: phCmd.command },
+];
+// 候选的身份来自同一份构造(命令摘要 / 插件 / 版本),断言按它取 id。
+const pluginEntry = pluginHookSpecsFrom(pluginDecls)[0];
+const pluginHookId = pluginEntry.spec.id;
+hookRunner.setPluginHookSource(() => pluginDecls);
+
+// ── 默认拒绝:没授权 → **不跑**,而且**记一条 skipped + denied 计数**(不是静默丢掉)。
+rt.emit({
+  type: "tool.use",
+  sessionId: SESSION,
+  toolName: "Write",
+  toolCallId: "ph_deny",
+  input: {},
+  requiresApproval: false,
+} satisfies RuntimeEvent);
+// 固定等待(不用 `until` —— 它等不到会抛、把运行整个中止;这里要的是**断言**变红,
+// 而不是"测试跑不下去"):若会误跑,这里该看见进程;记账也该落定。
+await new Promise((r) => setTimeout(r, 800));
+eq("默认拒绝:未授权的插件 hook 一个进程都不起", phCmd.hits(), 0);
+eq("默认拒绝:denied 计数 1", hookRunner.deliveryCountsOf(pluginHookId)?.denied, 1);
+{
+  const skipped = hookRunner.listRuns().find((r) => r.hookId === pluginHookId && r.status === "skipped");
+  check("默认拒绝:环里那条记成了 skipped(不是悄悄丢掉)", skipped !== undefined, hookRunner.listRuns().filter((r) => r.hookId === pluginHookId).map((r) => r.status));
+  check("默认拒绝:skipped 那条说了原因(引到授权上)", (skipped?.error ?? "").includes("授权"), skipped?.error);
+}
+
+// ── 签发覆盖这份来源的授权 → **真跑一次**(正控:判定放行时物理行为随之发生)。
+issueHostHookGrant({ pluginId: "demo-plugin", version: "1.0.0", ttlMs: 600_000, now: Date.now() });
+rt.emit({
+  type: "tool.use",
+  sessionId: SESSION,
+  toolName: "Write",
+  toolCallId: "ph_allow",
+  input: {},
+  requiresApproval: false,
+} satisfies RuntimeEvent);
+await until("授权后插件 hook 真跑了一次", () => phCmd.hits() === 1, 4000);
+eq("有有效授权 → 真跑(判定放行驱动了进程)", phCmd.hits(), 1);
+eq("授权后:accepted 计数 1", hookRunner.deliveryCountsOf(pluginHookId)?.accepted, 1);
+eq("授权后:denied 计数仍是 1(这一条没再被挡)", hookRunner.deliveryCountsOf(pluginHookId)?.denied, 1);
+
+// ── 卸载同步撤权 → 又不跑(撤权是**即时**生效的,不是"下次重启")。
+eq("按插件撤掉它的有效授权", revokeHostHookGrants("demo-plugin"), 1);
+rt.emit({
+  type: "tool.use",
+  sessionId: SESSION,
+  toolName: "Write",
+  toolCallId: "ph_revoked",
+  input: {},
+  requiresApproval: false,
+} satisfies RuntimeEvent);
+await new Promise((r) => setTimeout(r, 800));
+eq("撤权后:插件 hook 不再跑(仍是 1 次)", phCmd.hits(), 1);
+eq("撤权后:denied 计数 2", hookRunner.deliveryCountsOf(pluginHookId)?.denied, 2);
+
+// ── 断开来源 = v1 行为(插件 hooks 永不执行):同一条事件不再碰任何候选。
+hookRunner.setPluginHookSource(() => []);
+resetHostHookGrants();
+
 rmSync(DATA, { recursive: true, force: true });
 rmSync(WORK, { recursive: true, force: true });
 

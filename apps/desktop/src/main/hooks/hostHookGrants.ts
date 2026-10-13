@@ -15,6 +15,7 @@
  * {@link revokeHostHookGrants} 可按插件名撤掉它全部授权 —— 插件卸载 / 重载时调它,
  * 「卸载后 hook 同步撤销」这条台账要求因此是**一句真的调用**,不是口号。
  */
+import { createHash } from "node:crypto";
 import {
   decideHostHookExecution,
   isHostHookGrantActive,
@@ -22,6 +23,49 @@ import {
   type HostHookGrant,
   type HostHookSource,
 } from "@contracts/hostHookGrant";
+
+/**
+ * 命令内容的**稳定摘要** —— 授权按它绑定(见 `HostHookSource.commandDigest`):命令被改过,
+ * 旧授权就不该再覆盖这条 hook。放主进程而不是契约里,是因为契约要能进渲染端,而
+ * `node:crypto` 不是渲染端能引的东西。
+ */
+export function hostHookCommandDigest(command: string): string {
+  return `sha256:${createHash("sha256").update(command, "utf8").digest("hex")}`;
+}
+
+/**
+ * 从一条插件声明的 hook 造出它的**来源身份** —— **唯一构造点**。面板(`toPluginState`)、
+ * 宿主执行通道(`HookRunner`)、授权签发,三处必须是**同一份**来源:`commandDigest` 若有
+ * 一处漏算,面板标的「已授信」与执行时判的「准不准跑」就会对不上 —— 那正是「看着授了信、
+ * 实际不跑」这种最难查的坏。
+ */
+export function hostHookSourceOf(input: {
+  pluginId: string;
+  version: string | undefined;
+  nativeEvent: string;
+  command: string;
+}): HostHookSource {
+  return {
+    pluginId: input.pluginId,
+    version: input.version,
+    commandDigest: hostHookCommandDigest(input.command),
+    nativeEvent: input.nativeEvent,
+  };
+}
+
+/**
+ * 一条插件 hook 的**稳定身份** —— 由来源身份(`插件 + 版本 + 原生事件 + 命令摘要`)派生的
+ * 短哈希。宿主把它当 `HookSpec.id` 用:同一条 hook 的每一次投递拿的是**同一个 id**,于是
+ * 并发闸、交付计数、去重都按「这一条」收口。命令或版本改了,id 就变 —— 与"来源变了、旧
+ * 授权作废"是同一条纪律(见 `HostHookSource`)。
+ */
+export function hostHookIdOf(source: HostHookSource): string {
+  const digest = createHash("sha256")
+    .update(`${source.pluginId}\u0000${source.version ?? ""}\u0000${source.nativeEvent}\u0000${source.commandDigest}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `ph_${digest}`;
+}
 
 /** 主机 hook 授权表。模块级单例(生产在装配点用它;测试可 `resetHostHookGrants` 清空)。 */
 let grants = new Map<string, HostHookGrant>();

@@ -38,7 +38,8 @@ import type { z } from "zod";
 import { matchProjectKey, sameProjectKey } from "@main/lib/projectScope.js";
 import { isTarRemoteHostFailure } from "@main/lib/tarHostWorkaround.js";
 import { mapClaudeHookEvent } from "@contracts/hook";
-import { decidePluginHookExecution } from "@main/hooks/hostHookGrants.js";
+import { decidePluginHookExecution, hostHookSourceOf } from "@main/hooks/hostHookGrants.js";
+import type { EnabledPluginHookDeclaration } from "@main/hooks/pluginHooks.js";
 import {
   BUILTIN_MARKETPLACES,
   PLUGINS_ENABLED_SETTING_KEY,
@@ -759,9 +760,18 @@ function toPluginState(
   // 只有用户经宿主授信签发了覆盖这份来源的授权,该条才标 `granted`(面板据此说「已授信、会执行」);
   // 映射不到统一事件的照旧 `unmappable`(即便有授权也不投)。**默认空表 = 默认全 unsupported**,
   // 与旧行为逐字一致(v1 本就不执行)。
+  //
+  // 来源身份走**唯一构造点** `hostHookSourceOf` —— 与宿主 HookRunner 执行时判的**同一份**
+  // (含 `commandDigest` 的命令摘要)。此前这里传的是 `commandDigest: ""`(不绑命令),
+  // 而执行通道一律按真摘要绑定 —— 两份来源一旦分家,面板会显示「已授信」而执行时却 denied。
   const hooksWithExecution = components.hooks.map((h) => {
     const mapped = mapClaudeHookEvent(h.event);
-    const source = { pluginId: resolved.manifest.name, version, commandDigest: "", nativeEvent: h.event };
+    const source = hostHookSourceOf({
+      pluginId: resolved.manifest.name,
+      version,
+      nativeEvent: h.event,
+      command: h.command,
+    });
     const decision = decidePluginHookExecution(source, mapped, Date.now());
     const execution: PluginHookSummary["execution"] =
       decision.decide === "allowed" ? "granted" : decision.decide === "unmappable" ? "unmappable" : "unsupported";
@@ -1596,6 +1606,16 @@ export interface EnabledPlugin {
  * `...getEnabledPlugins()` 展开，不用改。
  */
 export async function getEnabledPlugins(projectPath?: string): Promise<EnabledPlugin[]> {
+  return enabledPluginsNow(projectPath);
+}
+
+/**
+ * {@link getEnabledPlugins} 的**同步核心** —— 整段本来就全同步(读设置表、扫插件根、
+ * 解析清单都是同步的),`async` 只是既有签名。抽出来是因为宿主 `HookRunner` 的事件分发
+ * 路径上要给一条**同步**的"现在有哪些启用插件"读法(见 `enabledPluginHookDeclarations`),
+ * 而多写第二份扫描逻辑 = 迟早与这一份分家。**只有这一份扫描。**
+ */
+export function enabledPluginsNow(projectPath?: string): EnabledPlugin[] {
   const enabledNames = new Set(readEnabledPlugins());
   // 项目级覆盖(会话 cwd 落在某个项目里时):项目里开的补进来、关的拿掉。
   const overrides = projectOverridesFor(projectPath);
@@ -1643,6 +1663,37 @@ export async function getEnabledPlugins(projectPath?: string): Promise<EnabledPl
       });
     } catch {
       /* invalid manifest on disk — skip this plugin for this turn */
+    }
+  }
+  return out;
+}
+
+/**
+ * 【MC-061】**读**当前启用插件声明的 hook(宿主执行通道的输入)。
+ *
+ * 与面板({@link listPlugins})、provider 投递({@link getEnabledPlugins})走**同一个**
+ * 插件扫描 —— 名字、版本、hooks 摘要都来自 {@link summarizeComponents},没有第二份解析。
+ * 宿主 `HookRunner` 拿它去构造候选、逐条判定授权(见 `main/hooks/pluginHooks.ts`)。
+ *
+ * **同步**:它挂在宿主每个事件的分发路径上(见 `HookRunner.onEvent`)。只读、不进数据库写、
+ * 不起进程、不算交付报告 —— 判定「准不准跑」由调用方用 `decidePluginHookExecution`(纯的)
+ * 做,这里只负责「有哪些声明」。
+ */
+export function enabledPluginHookDeclarations(
+  projectPath?: string,
+): EnabledPluginHookDeclaration[] {
+  const out: EnabledPluginHookDeclaration[] = [];
+  for (const plugin of enabledPluginsNow(projectPath)) {
+    // 与面板同源:`summarizeComponents` 是 hooks 解析的唯一一份。
+    const components = summarizeComponents(plugin.rootDir, plugin.manifest);
+    for (const h of components.hooks) {
+      out.push({
+        pluginId: plugin.name,
+        version: pluginVersionOf(plugin.manifest),
+        nativeEvent: h.event,
+        command: h.command,
+        ...(h.matcher !== undefined ? { matcher: h.matcher } : {}),
+      });
     }
   }
   return out;

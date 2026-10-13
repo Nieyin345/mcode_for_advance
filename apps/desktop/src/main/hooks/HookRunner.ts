@@ -50,11 +50,17 @@ import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 import { uid } from "@main/utils.js";
 import { createEventSubjects } from "./eventSubjects.js";
+import { decidePluginHookExecution } from "./hostHookGrants.js";
+import { pluginHookSpecsFrom, type EnabledPluginHookDeclaration, type PluginHookSpecEntry } from "./pluginHooks.js";
 import { runHookCommand } from "./runCommand.js";
 import { hooksFilePath, readHooks } from "./store.js";
 
 /** 执行记录最多留这么多条(新的在前)。超了丢最旧的 —— 这是**排错用的窗口**,不是账本。 */
 const RUN_RING = 50;
+
+/** 【MC-061】插件候选的缓存时长(ms)。见 {@link HookRunner.pluginCache} —— 只缓存
+ *  「有哪些候选」,判定每条事件现算,所以撤权/过期即时生效,不被它拖后。 */
+const PLUGIN_CACHE_TTL_MS = 1000;
 
 /**
  * 【ARC-007】一次交付决定的计数。跳过/丢/合并/不支持各多少次 —— 它们是**可观测事实**:
@@ -71,10 +77,14 @@ export interface DeliveryCounts {
   unsupported: number;
   /** 【retryBudget】失败的 hook 在预算内被**再试一次**的次数。可数 = 可断言"重试真的发生了"。 */
   retried: number;
+  /** 【MC-061】插件 hook 被**宿主授权**挡下、没有执行的次数(默认拒绝的账)。插件 hook
+   *  在拿到有效 HostHookGrant 之前**一律不跑**,而那件事必须**数得出来** —— 否则"我的插件
+   *  钩子为什么不响"只能从会被顶掉的 50 条环里猜(见 {@link DeliveryCounts} 的整体理由)。 */
+  denied: number;
 }
 
 function emptyCounts(): DeliveryCounts {
-  return { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0, retried: 0 };
+  return { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0, retried: 0, denied: 0 };
 }
 
 /**
@@ -113,6 +123,30 @@ class HookRunner {
   /** 事件→匹配主语(`tool.result` 要回查工具名,所以它**有状态**)。与自动化触发器
    *  共用一份逻辑,各持一个实例 —— 见 `eventSubjects.ts`。 */
   private subjects = createEventSubjects();
+  /**
+   * 【MC-061】插件携带的 hook 声明从哪来 —— 宿主在装配点(见 `main/index.ts`)把它接成
+   * 当前启用插件的真读法(见 `pluginManager.enabledPluginHookDeclarations`)。
+   *
+   * **不接 = 没有插件候选 = v1 行为**(插件 hooks 永不执行)。这既是行为兼容的默认,
+   * 也是本模块能无头直测的接缝:脚本给它喂一份固定声明,就能验「判定真的驱动物理行为」,
+   * 而不必真去装一个插件。入参是会话的工作目录(插件有项目级开关,得按项目算)。
+   */
+  private pluginHookSource: ((projectPath: string) => readonly EnabledPluginHookDeclaration[]) | null = null;
+  /**
+   * 【MC-061】插件候选的**短 TTL 缓存**(按 cwd)。插件声明只在**装 / 卸 / 启 / 停**时
+   * 才变 —— 而 `tool.use` 一轮能来几十次,每条事件都重扫插件根(读设置表 + `readdir` +
+   * 逐清单 JSON 解析)是白烧。窗口取 1 秒:既挡掉一轮里的重复扫描,又让面板上的启停
+   * 在用户点完的下一条事件上生效(与 v1「改动下一回合生效」同一条纪律,只会更早)。
+   */
+  private pluginCache = new Map<string, { at: number; entries: PluginHookSpecEntry[] }>();
+
+  /** 【MC-061】接上插件 hook 声明的来源(宿主装配点调一次)。见 {@link pluginHookSource}。 */
+  setPluginHookSource(
+    source: (projectPath: string) => readonly EnabledPluginHookDeclaration[],
+  ): void {
+    this.pluginHookSource = source;
+    this.pluginCache.clear();
+  }
 
   start(): void {
     if (this.started) return;
@@ -209,10 +243,12 @@ class HookRunner {
     // 钩子会被一张十步的图触发十次。
     if (e.type === "turn.done" && runtimeManager.isTurnEndHeld(e.sessionId)) return;
 
-    // **先看有没有钩子**:一条都没有的话,后面那些数据库查询全免了。绝大多数事件走的
-    // 就是这条路(用户通常只有一两条钩子,而 `tool.use` 一轮能来几十次)。
-    const all = this.hooksNow();
-    if (all.length === 0) return;
+    // 用户手写的钩子(见 `hooks.json`)。**先看有没有**:一条都没有、也接不上插件候选的话,
+    // 后面那些查询全免了。绝大多数事件走的就是这条路(用户通常只有一两条钩子,而
+    // `tool.use` 一轮能来几十次)。没接插件来源时这一句是常量空表(见 `pluginHookSource`)。
+    const authored = this.hooksNow();
+    const hasPluginSource = this.pluginHookSource !== null;
+    if (authored.length === 0 && !hasPluginSource) return;
 
     // 合成哨兵 "(system)" 放行(统一资料库的 `library.item.imported`):它**不属于
     // 任何会话**(见 `@contracts/runtime` 的 `LibraryItemImportedEvent`),查不到会话
@@ -224,8 +260,21 @@ class HookRunner {
     if (session === null) return; // 会话已经没了(删了 / 是别的进程留下的)——
     const cwd = this.cwdOf(session.projectId, e.sessionId);
     const { toolName, subjects } = this.subjects.of(e, cwd);
-    const hooks = all.filter((spec) => matchesHook(spec, event, subjects));
-    if (hooks.length === 0) return;
+
+    const authoredHits = authored.filter((spec) => matchesHook(spec, event, subjects));
+    // 【MC-061】插件候选:先按事件/主语匹配,**再逐条走授权判定** —— 判定的唯一落点。
+    // 不 `granted` 的**明确记一条 skipped(带原因)+ denied 计数**,不静默丢掉(仓库硬规矩 3)。
+    const pluginHits: Array<{ spec: HookSpec; allowed: boolean; reason: string }> = [];
+    for (const entry of this.pluginEntriesNow(cwd)) {
+      if (!matchesHook(entry.spec, event, subjects)) continue;
+      const decision = decidePluginHookExecution(entry.source, event, Date.now());
+      pluginHits.push(
+        decision.decide === "allowed"
+          ? { spec: entry.spec, allowed: true, reason: "" }
+          : { spec: entry.spec, allowed: false, reason: decision.reason },
+      );
+    }
+    if (authoredHits.length === 0 && pluginHits.length === 0) return;
 
     const payload: HookPayload = {
       event,
@@ -236,12 +285,48 @@ class HookRunner {
       data: e,
     };
 
-    for (const spec of hooks) {
+    // 【MC-061】被授权挡下的插件 hook:**记 skipped + denied 计数**。这是"我的插件钩子
+    // 为什么不响"的**唯一**可数出口(环只留 50 条、会被顶掉)。
+    for (const hit of pluginHits) {
+      if (hit.allowed) continue;
+      this.pushRun(hit.spec, payload, "skipped", hit.reason);
+      this.bumpCount(hit.spec.id, "denied");
+    }
+
+    const toRun = [...authoredHits, ...pluginHits.filter((h) => h.allowed).map((h) => h.spec)];
+    for (const spec of toRun) {
       await this.runOne(spec, payload).catch((err) => {
         // 走到这儿说明 `runOne` 自己炸了。**不能让它冒出去**(不变量 1)。
         log.warn(`[hooks] ${spec.name} 执行失败:${(err as Error).message}`);
       });
     }
+  }
+
+  /**
+   * 【MC-061】当前的插件 hook 候选(声明 → 候选)。**没接来源 = 空表 = v1 行为**。
+   *
+   * 插件有项目级开关,按会话工作目录 `cwd` 算(与 provider 投递同一把尺子)。读盘失败
+   * **不抛进事件流**(见文件头不变量 1):插件子系统坏了,用户手写的钩子照跑。结果按
+   * {@link pluginCache} 的 TTL 挡掉一轮里的重复扫描 —— **注意缓存的是候选本身,不是判定**:
+   * 授权是否有效每条事件都现算(`decidePluginHookExecution`),所以撤权/过期**即时**生效,
+   * 不会被这个 1 秒窗口拖后。
+   */
+  private pluginEntriesNow(cwd: string): PluginHookSpecEntry[] {
+    if (this.pluginHookSource === null) return [];
+    const now = Date.now();
+    const cached = this.pluginCache.get(cwd);
+    if (cached !== undefined && now - cached.at < PLUGIN_CACHE_TTL_MS) return cached.entries;
+    let entries: PluginHookSpecEntry[];
+    try {
+      entries = pluginHookSpecsFrom(this.pluginHookSource(cwd));
+    } catch (err) {
+      log.warn(`[hooks] 读插件 hook 声明失败:${(err as Error).message}`);
+      entries = [];
+    }
+    // 有界:cwd 通常就几个(项目数),但仍给个上界防止异常情况下无限增长。
+    if (this.pluginCache.size > 64 && !this.pluginCache.has(cwd)) this.pluginCache.clear();
+    this.pluginCache.set(cwd, { at: now, entries });
+    return entries;
   }
 
   private async runOne(spec: HookSpec, payload: HookPayload): Promise<void> {
