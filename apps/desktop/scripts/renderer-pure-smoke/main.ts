@@ -769,5 +769,31 @@ section("17. 送图上限与主进程契约同锚");
   eq("空端点 → 不提示(还没起服务)", isPlaintextNonLoopbackEndpoint(""), false);
 }
 
+/* ── 【MC-014 / MC-052】远程主机受信审批入口的接线不变量 ──
+ * 台账这两条的 remaining 曾写「真实渲染端『批准主机指纹』UI 按钮/IPC 尚未接入」——
+ * 该入口现已落地(AgentSshTrustPanel + agentSsh IPC + SettingsPage 导航 + ipc/index 注册)。
+ * 这里钉住这条链**不许被摘掉**:少了任何一环,非技术用户就没法完成首次授信,SSH 首连等于用不了。 */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const read = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
+  const settingsPage = read("src/renderer/components/settings/SettingsPage.tsx");
+  const ipcIndex = read("src/main/ipc/index.ts");
+  const panel = read("src/renderer/components/settings/AgentSshTrustPanel.tsx");
+  check(
+    "★ 受信审批面板真的被渲染(agent-ssh 一节挂上组件,不只是声明了 id)",
+    /active === "agent-ssh"\s*&&\s*<AgentSshTrustPanel\s*\/>/.test(settingsPage),
+    settingsPage.match(/.*AgentSshTrustPanel.*/g)?.slice(0, 2),
+  );
+  check(
+    "★ 受信 IPC 在主进程注册(agentSsh 一组 handler)",
+    ipcIndex.includes("registerAgentSshHandlers"),
+  );
+  check(
+    "★ 面板真的调批准入口(不是只显示指纹、没有按钮)",
+    panel.includes("api.agentSsh") && panel.includes("grant"),
+  );
+}
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
