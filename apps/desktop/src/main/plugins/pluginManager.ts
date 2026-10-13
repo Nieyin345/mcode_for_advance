@@ -37,6 +37,8 @@ import path from "node:path";
 import type { z } from "zod";
 import { matchProjectKey, sameProjectKey } from "@main/lib/projectScope.js";
 import { isTarRemoteHostFailure } from "@main/lib/tarHostWorkaround.js";
+import { mapClaudeHookEvent } from "@contracts/hook";
+import { decidePluginHookExecution } from "@main/hooks/hostHookGrants.js";
 import {
   BUILTIN_MARKETPLACES,
   PLUGINS_ENABLED_SETTING_KEY,
@@ -58,6 +60,7 @@ import {
   type PluginProjectOverride,
   type ComponentDeliveryEntry,
   type ComponentDeliveryReport,
+  type PluginHookSummary,
   COMPONENT_PROVIDER_DELIVERY,
   sceneComponentReadiness,
   type SceneComponentReadiness,
@@ -751,6 +754,19 @@ function toPluginState(
   const compatibleProviderIds = compatibleProviderIdsForPlugin(resolved.manifest, components);
   const engines = pluginEngineSwitches(resolved.manifest.name, enginesMap);
   const version = pluginVersionOf(resolved.manifest);
+  // 【MC-061】把每条 hook 的「到底跑不跑」从写死的 `unsupported` 换成**真判定** ——
+  // 走唯一判定落点 `decidePluginHookExecution`(默认拒绝:没有有效 HostHookGrant 就不跑)。
+  // 只有用户经宿主授信签发了覆盖这份来源的授权,该条才标 `granted`(面板据此说「已授信、会执行」);
+  // 映射不到统一事件的照旧 `unmappable`(即便有授权也不投)。**默认空表 = 默认全 unsupported**,
+  // 与旧行为逐字一致(v1 本就不执行)。
+  const hooksWithExecution = components.hooks.map((h) => {
+    const mapped = mapClaudeHookEvent(h.event);
+    const source = { pluginId: resolved.manifest.name, version, commandDigest: "", nativeEvent: h.event };
+    const decision = decidePluginHookExecution(source, mapped, Date.now());
+    const execution: PluginHookSummary["execution"] =
+      decision.decide === "allowed" ? "granted" : decision.decide === "unmappable" ? "unmappable" : "unsupported";
+    return { ...h, execution };
+  });
   return {
     name: resolved.manifest.name,
     version,
@@ -759,7 +775,7 @@ function toPluginState(
     enabled: enabled.has(resolved.manifest.name),
     installedAt: record?.installedAt ?? "",
     source: record?.source ?? { kind: "unknown", ref: "" },
-    components,
+    components: { ...components, hooks: hooksWithExecution },
     compatibleProviderIds,
     engines,
     deliveredProviderIds: narrowToEngines(compatibleProviderIds, engines),

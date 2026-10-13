@@ -1050,6 +1050,57 @@ eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user ma
 
 
 
+/* ── 【MC-061】HostHookGrant:插件 hook 的「准不准跑」有唯一判定落点 ──
+ * 默认**拒绝**(没有有效授权);签发覆盖来源的授权后 allowed;事件映射不到则 unmappable
+ * (即便有授权)。撤销 / 卸载按插件全撤。 */
+{
+  const { decideHostHookExecution, isHostHookGrantActive } = await import("@contracts/hostHookGrant");
+  const { issueHostHookGrant, revokeHostHookGrant, revokeHostHookGrants, resetHostHookGrants, decidePluginHookExecution: decision0 } =
+    await import("../../src/main/hooks/hostHookGrants.js");
+  const src = { pluginId: "demo-plugin", version: "1.0.0", commandDigest: "sha:abc", nativeEvent: "PreToolUse" };
+  const NOW = 1_000_000;
+
+  // 默认拒绝:没有任何授权。
+  eq(decideHostHookExecution(src, "tool.use", [], NOW).decide, "denied", "MC-061:无授权 → 默认拒绝");
+  // 签发一份覆盖该来源的授权 → allowed(且带 grantId)。
+  resetHostHookGrants();
+  const g = issueHostHookGrant({ pluginId: "demo-plugin", version: "1.0.0", ttlMs: 60_000, now: NOW });
+  const allowed = decision0(src, "tool.use", NOW);
+  eq(allowed.decide, "allowed", "MC-061:有有效授权 → allowed");
+  ok(allowed.decide === "allowed" && allowed.grantId === g.grantId, "MC-061:allowed 带回命中的 grantId");
+  // 事件映射不到 → unmappable(即便有授权也不投)。
+  eq(decision0(src, null, NOW).decide, "unmappable", "MC-061:有授权但事件映射不到 → unmappable");
+  // 来源不符(别的插件 / 别的版本)→ denied。
+  eq(decision0({ ...src, pluginId: "other" }, "tool.use", NOW).decide, "denied", "MC-061:别的插件 → denied");
+  eq(decision0({ ...src, version: "2.0.0" }, "tool.use", NOW).decide, "denied", "MC-061:别的版本 → denied");
+  // 授权绑事件:只覆盖 PreToolUse 时,PostToolUse 不放行。
+  resetHostHookGrants();
+  issueHostHookGrant({ pluginId: "demo-plugin", version: "1.0.0", events: ["PreToolUse"], ttlMs: 60_000, now: NOW });
+  eq(decision0({ ...src, nativeEvent: "PostToolUse" }, "tool.result", NOW).decide, "denied", "MC-061:事件不在授权覆盖集 → denied");
+  eq(decision0({ ...src, nativeEvent: "PreToolUse" }, "tool.use", NOW).decide, "allowed", "MC-061:事件在授权覆盖集 → allowed(正控)");
+  // 过期 → 无效。
+  resetHostHookGrants();
+  const g3 = issueHostHookGrant({ pluginId: "demo-plugin", version: "1.0.0", ttlMs: 60_000, now: NOW });
+  ok(!isHostHookGrantActive(g3, NOW + 60_000), "MC-061:过期授权不再有效");
+  eq(decideHostHookExecution(src, "tool.use", [g3], NOW + 60_000).decide, "denied", "MC-061:过期 → denied");
+  // 撤销 → 无效。
+  resetHostHookGrants();
+  const g2 = issueHostHookGrant({ pluginId: "demo-plugin", version: "1.0.0", ttlMs: 60_000, now: NOW });
+  eq(revokeHostHookGrant(g2.grantId), true, "MC-061:撤销一份有效授权返回 true");
+  eq(decision0(src, "tool.use", NOW).decide, "denied", "MC-061:撤销后 → denied");
+  eq(revokeHostHookGrant(g2.grantId), false, "MC-061:重复撤销幂等(返回 false)");
+  // 按插件全撤(卸载同步撤销):撤掉 2 份该插件的有效授权。
+  resetHostHookGrants();
+  issueHostHookGrant({ pluginId: "demo-plugin", version: "1.0.0", ttlMs: 60_000, now: NOW });
+  issueHostHookGrant({ pluginId: "demo-plugin", version: "1.0.0", events: ["PreToolUse"], ttlMs: 60_000, now: NOW });
+  issueHostHookGrant({ pluginId: "keep-me", version: "1.0.0", ttlMs: 60_000, now: NOW });
+  eq(revokeHostHookGrants("demo-plugin"), 2, "MC-061:按插件撤掉它全部有效授权");
+  eq(decision0(src, "tool.use", NOW).decide, "denied", "MC-061:卸载撤权后该插件 hook → denied");
+  const keepSrc = { pluginId: "keep-me", version: "1.0.0", commandDigest: "", nativeEvent: "PreToolUse" };
+  eq(decision0(keepSrc, "tool.use", NOW).decide, "allowed", "MC-061:撤 one 插件不波及其它插件(keep-me 仍有授权)");
+  resetHostHookGrants();
+}
+
 /* ── summary ── */
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

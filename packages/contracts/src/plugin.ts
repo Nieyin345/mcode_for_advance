@@ -273,12 +273,14 @@ export interface PluginHookSummary {
   event: string;
   matcher?: string;
   command: string;
-  /** 「这个钩子到底跑不跑」的显式状态;缺省由面板按 UNSUPPORTED 呈现。 */
+  /** 「这个钩子到底跑不跑」的显式状态;缺省由面板按 UNSUPPORTED 呈现。
+   *  【MC-061】`granted` = 已由宿主经用户授信签发有效授权(见 `@contracts/hostHookGrant`),
+   *  面板据此把那几条标成「已授信、会执行」,与「未授信(默认不执行)」区分开。 */
   execution?: PluginHookExecution;
 }
 
 /** 插件 hook 的执行状态(见 {@link PluginHookSummary})。 */
-export type PluginHookExecution = "unsupported" | "unmappable";
+export type PluginHookExecution = "unsupported" | "unmappable" | "granted";
 
 /** Transport kind of a plugin MCP server, mirroring the MCP panel. */
 export type PluginMcpKind = "stdio" | "http" | "sse";
