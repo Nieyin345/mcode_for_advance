@@ -1,5 +1,8 @@
 export const excludedToolsForEngine = () => [];
 export const readEngineToolPolicy = () => ({});
+// 【MC-100/101 诊断】`ipc/engineTools.ts` 的只读诊断入口 import 了它 —— 本套验的是故障恢复,
+// 策略不设限即可,故按同义给 `MISSING`(从没设过 → 不设限),与上面那条 `readEngineToolPolicy` 一致。
+export const readEngineToolPolicyStatus = () => ({ status: "MISSING" as const, policy: {}, file: "/tmp/mcode-fake/engine-tools.json" });
 export const writeEngineToolPolicy = () => {};
 export const engineSupportsToolExclusion = () => true;
 export const defaultEngineToolPolicyPath = () => "/tmp/mcode-fake/engine-tools.json";
