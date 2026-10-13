@@ -52,6 +52,13 @@ import {
 } from "@main/appServices/sessionCommands.js";
 import { GrantStore } from "@main/appControl/grantStore.js";
 import { getGrantStore, setGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import {
+  UnattendedPlanRefusedError,
+  executeUnattendedPlan,
+  issueUnattendedTaskPlan,
+  unattendedPlanDigest,
+  type UnattendedTaskPlan,
+} from "@main/appServices/unattendedTaskPlan.js";
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import type { ActorRef, CoreIntent } from "@contracts/policyEngine";
 
@@ -2057,6 +2064,220 @@ console.log("\n19c. 【ARC-001 步④】permissionGrant —— 计划级授权�
   setRendererPortForTest(null);
   delete (globalThis as Record<string, unknown>).window;
   rmSync(GRANT_DIR, { recursive: true, force: true });
+}
+
+/* ──────────── 19d. 【MC-059】无人值守任务计划 —— 计划级授权的生产端 + 有界执行 ──────────── */
+
+/**
+ * ## 这条守的是什么(MC-059 的**生产端** —— §19c 只落了消费者)
+ *
+ * §19c 证的是 `createSessionAndSend` **消费**一枚覆盖 `session.create` 的授权(核不到即拒)。
+ * 但全仓**没有生产签发口铸得出**这类授权 —— 那条「无人值守建会话」的路有消费者、没有生产者。
+ * 本切片补上 `appServices/unattendedTaskPlan.ts`:用户在一次计划上点头后,把一个**有界的
+ * 操作序列**铸成**一枚** `Grant`(绑 `planId` / 目标项目权威路径 / 用户主体 / 有效期 /
+ * 次数上限),`executeUnattendedPlan` 逐条把它交给**唯一业务命令** `createSessionAndSend`
+ * (带 `permissionGrant`),任一步被拒即**就地停住**。
+ *
+ * ## 承重红例(必须**成对**,缺一即假绿)
+ *
+ *   - **正面**:一份合法计划(2 条操作,各自显式标题 → 不复用空壳)→ 签出 grant →
+ *     `executeUnattendedPlan` 真的建出**2 条**会话、`stoppedAt === null`、且授权 `usedCount`
+ *     = 2(`recordUse` 真承重)。且 grant 的 `scopedCore.projectPath` 等于目标项目权威路径。
+ *   - **反面**(各自真红、各自稳定码):
+ *     ① 签发:agent 主体 → `not_user_actor`;空计划 → `empty_plan`;非正 / 超上限有效期 →
+ *        `invalid_ttl`;操作条数 > maxCount → `count_exceeds_bound`;解析不出项目路径 →
+ *        `unresolvable_scope`;
+ *     ② 执行:某条带对不上的修订号 → **停在那条**、`stopCode === "revision_conflict"`、**该条没建**;
+ *        计划已过期(`now >= expiresAt`)→ 停在第 1 条前、`stopCode === "plan_expired"`、**一条没建**;
+ *        授权在签出后被撤销 → 第 1 条即 `grant_refused`、**一条没建**;
+ *        同一份计划**重放**(maxCount 已用尽)→ 第 1 条即 `grant_refused`(`maxCount` 真承重,不是死字段)。
+ *
+ * ## 为什么每条操作给**显式标题**
+ *
+ * `createOrReuseSession` 对默认标题(`New session`)的项目空壳会**复用** —— 那样两条操作只
+ * 建**一条**会话,计数断言失去判别力。显式标题 = 每次都各自建新行(与 `lib/sessionStart.ts`
+ * 的复用判据同源),于是"2 条操作真的建出 2 条会话"是可判别的。
+ */
+console.log("\n19d. 【MC-059】无人值守任务计划 —— 计划级授权的生产端 + 有界执行");
+
+{
+  const USER19d: ActorRef = { kind: "user", id: "u19d" };
+  const freshStore19d = (): GrantStore => { const s = new GrantStore({ newId: (n) => `up${n}` }); setGrantStore(s); return s; };
+
+  const UTP_DIR = mkdtempSync(join(tmpdir(), "mcode-utp-proj-"));
+  const mkProject = (id: string, dir: string): void => {
+    ProjectRepo.create({
+      id, name: `无人值守项目 ${id}`, path: dir, archived: false, group: null,
+      sortOrder: 9, pinnedAt: null, createdAt: Date.now(), updatedAt: Date.now(),
+    } as never);
+  };
+  const headless = (): void => { setRendererPortForTest(null); delete (globalThis as Record<string, unknown>).window; };
+
+  /** 一份合法计划(2 条会话创建,各自显式标题 → 不复用空壳)。 */
+  const mkPlan = (projectId: string, over: Partial<UnattendedTaskPlan> = {}): UnattendedTaskPlan => ({
+    planId: `plan-${projectId}`,
+    projectId,
+    actor: USER19d,
+    ttlMs: 600_000,
+    maxCount: 2,
+    operations: [
+      { operationId: "op1", method: "session.create", title: "计划第一步", prompt: "第一步" },
+      { operationId: "op2", method: "session.create", title: "计划第二步", prompt: "第二步" },
+    ],
+    ...over,
+  });
+
+  const refusalCode = (fn: () => unknown): unknown => {
+    try { fn(); return null; } catch (e) { return (e as { reason_code?: unknown }).reason_code; }
+  };
+
+  // ── 正面:合法计划 → 签出 grant → 有界执行建出 2 条会话 + 授权记账。 ──
+  fresh();
+  freshStore19d();
+  mkProject("p_utp_ok", UTP_DIR);
+  headless();
+  {
+    const plan = mkPlan("p_utp_ok");
+    const issued = issueUnattendedTaskPlan(plan, Date.now());
+    check("★ MC-059:合法计划签出了 grant", typeof issued.grantId === "string" && issued.grantId.length > 0, issued.grantId);
+    eq("★ MC-059:授权允许的动作含 session.create", issued.allowedActions.includes("session.create"), true);
+    eq("★ MC-059:授权次数上限 = 计划声明的 maxCount", issued.maxCount, 2);
+    eq("★ MC-059:授权钉住的资源身份 = 目标项目权威路径", issued.scopedCore.projectPath, physicalPath(UTP_DIR));
+
+    const before = SessionRepo.listByProject("p_utp_ok").length;
+    const report = await executeUnattendedPlan(plan, issued, "me");
+    eq("★ MC-059:有界执行建出 2 条会话(计划里 2 条操作各自建行)", SessionRepo.listByProject("p_utp_ok").length, before + 2);
+    eq("★ MC-059:全部操作按序跑完(stoppedAt 为 null)", report.stoppedAt, null);
+    eq("★ MC-059:每条操作都 ok", report.results.every((r) => r.ok), true);
+    eq("★ MC-059:授权被记账 usedCount = 2(recordUse 真承重)", getGrantStore().get(issued.grantId, Date.now())?.usedCount, 2);
+  }
+
+  // ── 反面①:签发口 —— agent 主体不能给自己发计划授权。 ──
+  fresh(); freshStore19d(); mkProject("p_utp_agent", UTP_DIR); headless();
+  eq(
+    "★ MC-059:agent 主体签计划 → 拒绝(not_user_actor)",
+    refusalCode(() => issueUnattendedTaskPlan(mkPlan("p_utp_agent", { actor: { kind: "agent", id: "a1" } }), Date.now())),
+    "not_user_actor",
+  );
+
+  // ── 反面②:空计划签不出。 ──
+  fresh(); freshStore19d(); mkProject("p_utp_empty", UTP_DIR); headless();
+  eq(
+    "★ MC-059:空计划 → 拒绝(empty_plan)",
+    refusalCode(() => issueUnattendedTaskPlan(mkPlan("p_utp_empty", { operations: [] }), Date.now())),
+    "empty_plan",
+  );
+
+  // ── 反面③:有效期必须为正且不超上限。 ──
+  fresh(); freshStore19d(); mkProject("p_utp_ttl", UTP_DIR); headless();
+  eq(
+    "★ MC-059:非正有效期 → 拒绝(invalid_ttl)",
+    refusalCode(() => issueUnattendedTaskPlan(mkPlan("p_utp_ttl", { ttlMs: 0 }), Date.now())),
+    "invalid_ttl",
+  );
+  eq(
+    "★ MC-059:超上限有效期 → 拒绝(invalid_ttl)",
+    refusalCode(() => issueUnattendedTaskPlan(mkPlan("p_utp_ttl", { ttlMs: 99_999_999_999 }), Date.now())),
+    "invalid_ttl",
+  );
+
+  // ── 反面④:次数上限不得小于声明的操作条数(声明不得超过自己声明的边界)。 ──
+  fresh(); freshStore19d(); mkProject("p_utp_bound", UTP_DIR); headless();
+  eq(
+    "★ MC-059:操作条数 > maxCount → 拒绝(count_exceeds_bound)",
+    refusalCode(() => issueUnattendedTaskPlan(mkPlan("p_utp_bound", { maxCount: 1 }), Date.now())),
+    "count_exceeds_bound",
+  );
+
+  // ── 反面⑤:项目解析不出权威路径 → 拒绝签一枚空核心授权。 ──
+  fresh(); freshStore19d(); headless();
+  eq(
+    "★ MC-059:未知项目 → 拒绝(unresolvable_scope,绝不签空核心授权)",
+    refusalCode(() => issueUnattendedTaskPlan(mkPlan("p_utp_nosuch"), Date.now())),
+    "unresolvable_scope",
+  );
+
+  // ── 反面⑥:执行时某条修订号对不上 → 停在那条,该条没建(不静默新建)。 ──
+  fresh(); freshStore19d(); mkProject("p_utp_rev", UTP_DIR); headless();
+  {
+    const plan = mkPlan("p_utp_rev", {
+      maxCount: 2,
+      operations: [
+        { operationId: "op1", method: "session.create", title: "第一步", prompt: "a" },
+        // 显式标题 → 不复用空壳;再带一个修订号 → 无可复用空壳 + 断言了某版 = 冲突。
+        { operationId: "op2", method: "session.create", title: "第二步", prompt: "b", expectedRevision: "999" },
+      ],
+    });
+    const issued = issueUnattendedTaskPlan(plan, Date.now());
+    const before = SessionRepo.listByProject("p_utp_rev").length;
+    const report = await executeUnattendedPlan(plan, issued, "me");
+    eq("★ MC-059:修订号对不上 → 停在那条(stoppedAt = op2)", report.stoppedAt, "op2");
+    eq("★ MC-059:停住的稳定码是 revision_conflict", report.stopCode, "revision_conflict");
+    eq("★ MC-059:只有第一条落库被拒的那条没建(建了 1 条,不是 2 条)", SessionRepo.listByProject("p_utp_rev").length, before + 1);
+  }
+
+  // ── 反面⑦:计划已过期 → 第 1 条前就停,一条都不建(不拿过期授权继续)。 ──
+  fresh(); freshStore19d(); mkProject("p_utp_exp", UTP_DIR); headless();
+  {
+    const plan = mkPlan("p_utp_exp");
+    const issued = issueUnattendedTaskPlan(plan, 1_000);
+    // 执行时刻远晚于到期时刻(1_000 + 3_600_000)→ 计划已过期。
+    const report = await executeUnattendedPlan(plan, issued, "me", 99_999_999);
+    eq("★ MC-059:计划已过期 → 停在第 1 条(stoppedAt = op1)", report.stoppedAt, "op1");
+    eq("★ MC-059:过期停住的稳定码是 plan_expired", report.stopCode, "plan_expired");
+    eq("★ MC-059:过期时一条会话都没建", SessionRepo.listByProject("p_utp_exp").length, 0);
+  }
+
+  // ── 反面⑧:授权在签出后被撤销 → 第 1 条即 grant_refused,一条都不建。 ──
+  fresh(); freshStore19d(); mkProject("p_utp_revoked", UTP_DIR); headless();
+  {
+    const plan = mkPlan("p_utp_revoked");
+    const issued = issueUnattendedTaskPlan(plan, Date.now());
+    getGrantStore().revoke(issued.grantId);
+    const report = await executeUnattendedPlan(plan, issued, "me");
+    eq("★ MC-059:授权已撤销 → 停在第 1 条", report.stoppedAt, "op1");
+    eq("★ MC-059:撤销停住的稳定码是 grant_refused", report.stopCode, "grant_refused");
+    eq("★ MC-059:撤销时一条会话都没建", SessionRepo.listByProject("p_utp_revoked").length, 0);
+  }
+
+  // ── 反面⑨:同一份计划重放(maxCount 已用尽)→ 第 1 条即 grant_refused(maxCount 真承重)。 ──
+  fresh(); freshStore19d(); mkProject("p_utp_replay", UTP_DIR); headless();
+  {
+    const plan = mkPlan("p_utp_replay");
+    const issued = issueUnattendedTaskPlan(plan, Date.now());
+    const first = await executeUnattendedPlan(plan, issued, "me");
+    eq("★ MC-059:首次执行建了 2 条(前提)", first.results.filter((r) => r.ok).length, 2);
+    const midCount = SessionRepo.listByProject("p_utp_replay").length;
+    const replay = await executeUnattendedPlan(plan, issued, "me");
+    eq("★ MC-059:重放(maxCount 已用尽)→ 第 1 条即停", replay.stoppedAt, "op1");
+    eq("★ MC-059:重放停住的稳定码是 grant_refused(maxCount 不是死字段)", replay.stopCode, "grant_refused");
+    eq("★ MC-059:重放一条会话都没多建", SessionRepo.listByProject("p_utp_replay").length, midCount);
+  }
+
+  // ── 摘要:改计划内容 → 摘要变(「批准的是这一份计划吗」可核对)。 ──
+  {
+    const a = mkPlan("p_utp_digest");
+    const b = mkPlan("p_utp_digest", { maxCount: 3 });
+    check("★ MC-059:计划内容不同 → 摘要不同", unattendedPlanDigest(a) !== unattendedPlanDigest(b), { a: unattendedPlanDigest(a), b: unattendedPlanDigest(b) });
+    check("★ MC-059:同一份计划 → 摘要稳定", unattendedPlanDigest(a) === unattendedPlanDigest(mkPlan("p_utp_digest")), true);
+  }
+
+  // ── 源码级接线:生产端真调唯一业务命令 + 唯一签发口(不内联、不另造签发行)。 ──
+  {
+    const srcOf = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
+    const utpSrc = srcOf("src/main/appServices/unattendedTaskPlan.ts");
+    check("★ MC-059:计划的执行端**真调**唯一业务命令 createSessionAndSend(不内联建会话)",
+      /createSessionAndSend\s*\(/.test(utpSrc) && !/createOrReuseSession\s*\(/.test(utpSrc), utpSrc.match(/createOrReuseSession\s*\(/g));
+    check("★ MC-059:计划的签发走**唯一**签发口 getGrantStore().issueGrant(不另造签发行)",
+      /getGrantStore\(\)\s*\.\s*issueGrant\s*\(/.test(utpSrc));
+    check("★ MC-059:签发口真的强制用户主体(subject.kind 判据在生产端)",
+      /actor\.kind\s*!==\s*"user"/.test(utpSrc), utpSrc.match(/actor\.kind[^\n]*/g));
+  }
+
+  setGrantStore(null);
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  rmSync(UTP_DIR, { recursive: true, force: true });
 }
 
 
