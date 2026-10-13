@@ -72,6 +72,7 @@ import { getPluginSkillSources } from "@main/plugins/pluginManager.js";
 import {
   defaultSkillsRoot,
   parseSkillFrontmatter,
+  projectSkillsRoot,
   readEnginesMap,
   readEnginesMapDetailed,
   enginesMapPath,
@@ -110,9 +111,6 @@ function resolveSkillRoot(): string {
   return defaultSkillsRoot();
 }
 
-/** 项目技能目录在项目下的相对位置（Claude Code 的既定约定）。 */
-const PROJECT_SKILLS_REL = path.join(".claude", "skills");
-
 /** 列表排序用的来源档次。项目最前（局部覆盖全局），内置垫底。 */
 const SORT_SOURCE_RANK: Record<SkillSource, number> = {
   project: 0,
@@ -124,25 +122,12 @@ const SORT_SOURCE_RANK: Record<SkillSource, number> = {
 /**
  * 某个项目的技能根：`<项目>/.claude/skills/`。**没有项目就返回 null。**
  *
- * ## 为什么是 `.claude/skills` 而不是 `.mcode/skills`
- *
- * 这是 Claude Code 的既定约定，三家引擎的加载路径本来就认它。放在自己起的目录名
- * 下，同事拿别的工具打开这个项目就读不到 —— 而"跟着项目走、能分享"正是用户要
- * 项目级技能的**全部理由**。
- *
- * ## 为什么只做词法校验，不做"这条路存在吗"
- *
- * 目录**不存在是正常的**（项目里还没放过技能）。返回路径、让 `scanSkillsRoot` 自己
- * 吃掉 ENOENT，比在这里先 stat 一次少一次读盘，而且调用方不用区分"没有目录"和
- * "目录是空"。
- *
- * ⚠️ **这里不接受相对路径。** 项目路径来自会话/项目记录，正常都是绝对的；给一个
- * 相对路径意味着"相对进程的工作目录"，那是随启动方式变的 —— 与其猜，不如拒绝。
+ * 【MC-094】**实现已迁到 `@main/lib/skillEngines.ts`(唯一一份)**,这里只重导出,
+ * 好让面板与 Pi/Codex provider 的交付链(它们不能 import IPC 层)算的是**同一个根**。
+ * 从前这个计算只在本文件里,provider 各算各的、或干脆不算 —— 项目技能于是"面板看得见、
+ * 模型收不到"。下面的 `PROJECT_SKILLS_REL` 也随之移入 skillEngines。
  */
-export function projectSkillsRoot(projectPath: string | undefined): string | null {
-  if (!projectPath || !path.isAbsolute(projectPath)) return null;
-  return path.join(projectPath, PROJECT_SKILLS_REL);
-}
+export { projectSkillsRoot } from "@main/lib/skillEngines.js";
 
 /**
  * 把 Node 的文件系统错误翻成一句给人看的短语 —— **别让 `ENOTDIR: …, mkdir 'C:\…'`

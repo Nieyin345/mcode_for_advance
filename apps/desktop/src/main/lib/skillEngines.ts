@@ -394,3 +394,94 @@ export function enabledSkillDirs(skillsRoot: string, engine: SkillEngine): strin
     .map(([, dir]) => dir)
     .sort();
 }
+
+/* ──────────────────── 【MC-094】项目级技能根 ────────────────────
+ *
+ * 项目技能落在 `<项目>/.claude/skills/`(Claude Code 的既定约定;面板的
+ * `projectSkillsRoot` / `listSkillsForProject` / `copyToProject` 都认它)。但从前的
+ * **交付链是断的**:这个路径只有管理 UI 算过,三家 provider 的 SDK 谁都没拿到项目
+ * 技能根 —— Pi 的 `mcodeSkillRoots` 只给全局库,Codex 的 `extraRoots` 只给全局库加
+ * 插件根。于是"面板里看得见、模型收不到"。这里放**唯一一份**按引擎/显式点选过滤技能
+ * 根的实现,面板(ipc/skills.ts)与 Pi/Codex provider 共用,避免各算一份、各错各的。 */
+
+/** 项目技能目录在项目下的相对位置(Claude Code 既定约定,与面板同一条)。 */
+const PROJECT_SKILLS_REL = path.join(".claude", "skills");
+
+/**
+ * 某个项目的技能根:`<项目>/.claude/skills/`。**没有有效绝对项目路径就返回 null。**
+ *
+ * 只做词法校验,不 stat —— 目录不存在是常态(项目里还没放过技能),让调用方自己吃掉
+ * ENOENT。**拒绝相对路径**:"相对进程工作目录"随启动方式变,与其猜不如拒绝。这几条与
+ * 面板 `ipc/skills.ts` 当初的取舍一致(那份计算现在改为从这里导入,面板与实际交付
+ * 算的是同一个根)。
+ */
+export function projectSkillsRoot(projectPath: string | undefined): string | null {
+  if (!projectPath || !path.isAbsolute(projectPath)) return null;
+  return path.join(projectPath, PROJECT_SKILLS_REL);
+}
+
+/**
+ * 【MC-094】**唯一一份**"按引擎矩阵 + 显式点选把某个技能根拆成应交付目录"的实现。
+ * Codex 的 `skills/extraRoots/set` 只吃目录列表(没有名字过滤),全局库与项目技能都
+ * 经这里算,不各写一份匹配器。
+ *
+ * 矩阵**永远**从**通用库根**读(`enginesMapPath(defaultSkillsRoot())`)—— 那是三家
+ * 共用的那一份 `.mcode-engines.json`;`rootDir` 只决定**扫哪个根**的技能。这与
+ * `enabledSkillDirs(rootDir,…)`(从 `rootDir` 自己读矩阵)不同:项目技能根里没有自己的
+ * 矩阵文件,它的引擎归属仍由通用库那份矩阵(按名字)决定。
+ *
+ *   - `allowNames` 非空(用户在输入框点名)→ 只留 `allowNames` 里 **且** 该引擎放行的
+ *     技能目录(显式点选 = 恰好这几个,与 `skillRootsFor(req.skills)` 同一条);
+ *   - 否则矩阵对该引擎**不设限** → `[rootDir]`(整根交出去,引擎自己的扫描器来走);
+ *   - 否则矩阵**设限** → 该引擎放行的技能目录,排序稳定。
+ *
+ * 目录不存在/不可读一律返回 `[]`,绝不抛。
+ */
+export function skillRootsIn(
+  rootDir: string,
+  engine: SkillEngine,
+  allowNames?: readonly string[],
+): string[] {
+  const map = readEnginesMap(defaultSkillsRoot());
+  const matches = (name: string): boolean =>
+    engineEnabled(map, name, engine) && (!allowNames?.length || allowNames.includes(name));
+  if (allowNames?.length) {
+    return [...skillNamesInRoot(rootDir).entries()]
+      .filter(([name]) => matches(name))
+      .map(([, dir]) => dir)
+      .sort();
+  }
+  if (!engineRestricted(map, engine)) {
+    try {
+      return statSync(rootDir).isDirectory() ? [rootDir] : [];
+    } catch {
+      return [];
+    }
+  }
+  return [...skillNamesInRoot(rootDir).entries()]
+    .filter(([name]) => matches(name))
+    .map(([, dir]) => dir)
+    .sort();
+}
+
+/**
+ * 【MC-094】该引擎应交付的**项目技能根**列表 —— Codex 的 `skills/extraRoots/set`
+ * 直接吃它(Pi 另走"整根 + skillsOverride 过滤"的路,见 piSkillBridge.ts)。
+ *
+ * 没有有效项目路径 → `[]`(没有项目就没有项目技能,不凭空报错);否则按
+ * {@link skillRootsIn} 的同一套判据把项目技能根拆成应交付目录。
+ *
+ * 项目技能**不参与全局矩阵**(见 ipc/skills.ts:项目技能跟着项目走,面板不挂 perEngine),
+ * 所以 `engineEnabled` 对它们默认 true —— 这里的过滤只为**同名一致性**:一个名字在全局
+ * 库对某引擎禁用时,项目里的同名技能同样不得交付给那个引擎(名字是引擎匹配的身份,不能
+ * 因来源不同而分叉)。
+ */
+export function projectSkillRootsFor(
+  projectPath: string | undefined,
+  engine: SkillEngine,
+  allowNames?: readonly string[],
+): string[] {
+  const root = projectSkillsRoot(projectPath);
+  if (!root) return [];
+  return skillRootsIn(root, engine, allowNames);
+}

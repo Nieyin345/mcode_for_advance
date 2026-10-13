@@ -152,6 +152,54 @@ try {
     });
     eqSet("★ 显式点选插件 skill {plugin-x}:只交付它", await resolvedNames(loader), ["plugin-x"]);
   }
+
+  // ── ⑥【MC-094】项目技能根 `<cwd>/.claude/skills` 必须真到 loader ──
+  // 从前 Pi 的 mcodeSkillRoots 只给全局库,项目技能在面板看得见、Pi 收不到。
+  mkdirSync(join(root, ".claude", "skills", "proj-skill"), { recursive: true });
+  writeFileSync(join(root, ".claude", "skills", "proj-skill", "SKILL.md"), "---\nname: proj-skill\n---\n", "utf-8");
+  {
+    writeFileSync(join(home, ".mcode", "skills", ".mcode-engines.json"), JSON.stringify({}), "utf-8");
+    const loader = await buildPiSkillLoader({
+      sdk: sdk as never,
+      cwd: root,
+      extraSkillPaths: [pluginRoot],
+    });
+    const names = await resolvedNames(loader);
+    check("★ MC-094:项目技能 proj-skill 被交付 Pi(矩阵不限制时)", names.includes("proj-skill"), names);
+    check("○ MC-094:全局与插件技能不因接入项目根而消失",
+      names.includes("universal-a") && names.includes("plugin-x"), names);
+  }
+
+  // ── ⑦【MC-094】同名优先级:项目 > 全局(面板同一档次),且只交付一次 ──
+  {
+    // 全局库里也叫 dup- 的一份;项目里放同名 dup-skill。项目那份必须赢。
+    mkdirSync(join(home, ".mcode", "skills", "dup-skill"), { recursive: true });
+    writeFileSync(join(home, ".mcode", "skills", "dup-skill", "SKILL.md"), "---\nname: dup-skill\n---\n", "utf-8");
+    mkdirSync(join(root, ".claude", "skills", "dup-skill"), { recursive: true });
+    writeFileSync(join(root, ".claude", "skills", "dup-skill", "SKILL.md"), "---\nname: dup-skill\n---\n", "utf-8");
+    const loader = await buildPiSkillLoader({ sdk: sdk as never, cwd: root, extraSkillPaths: [pluginRoot] });
+    const resolved = loader.getSkills().skills;
+    const dups = resolved.filter((s) => s.name === "dup-skill");
+    check("★ MC-094:同名只交付一次(不重复注入)", dups.length === 1, resolved.map((s) => s.name));
+    check("★ MC-094:同名交付的是**项目**那一份(项目优先)",
+      !!dups[0]?.baseDir && dups[0].baseDir.replace(/\\/g, "/").includes("/.claude/skills/"),
+      dups[0]?.baseDir);
+    rmSync(join(root, ".claude", "skills", "dup-skill"), { recursive: true, force: true });
+    rmSync(join(home, ".mcode", "skills", "dup-skill"), { recursive: true, force: true });
+  }
+
+  // ── ⑧【MC-094】矩阵按名字把某项目技能从 pi 拿掉 → 它不得交付 ──
+  {
+    writeFileSync(
+      join(home, ".mcode", "skills", ".mcode-engines.json"),
+      JSON.stringify({ "proj-skill": { pi: false } }),
+      "utf-8",
+    );
+    const loader = await buildPiSkillLoader({ sdk: sdk as never, cwd: root, extraSkillPaths: [pluginRoot] });
+    const names = await resolvedNames(loader);
+    check("★ MC-094:矩阵禁掉的项目技能 proj-skill 不交付 pi", !names.includes("proj-skill"), names);
+    check("○ MC-094:同矩阵下其它放行技能仍在", names.includes("universal-a"), names);
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

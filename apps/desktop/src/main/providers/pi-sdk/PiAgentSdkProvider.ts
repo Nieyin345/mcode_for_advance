@@ -276,7 +276,10 @@ export class PiAgentSdkProvider implements AgentProvider {
       cwd: req.cwd,
       allowNames: req.skills && req.skills.length > 0 ? req.skills : undefined,
       // Skills of ENABLED plugins (settings → Plugins) ride the same
-      // additionalSkillPaths channel; Pi has no plugin concept of its own.
+      // additionalSkillPaths channel; Pi has no plugin concept of its own. The
+      // CURRENT PROJECT's skills (<cwd>/.claude/skills) are added inside
+      // buildPiSkillLoader itself (see mcodeSkillRoots) so the loader's
+      // allowSet can admit their names too — 【MC-094】.
       extraSkillPaths: await getEnabledPluginSkillRoots(req.pluginNames, "pi-sdk", req.cwd),
       // Pi 没有每轮 systemPrompt 参数；DefaultResourceLoader 的 appendSystemPrompt
       // 就是它的原生入口。与 Claude/Codex 共用同一组 host-resolved sections。

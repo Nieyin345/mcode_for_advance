@@ -47,6 +47,7 @@ import {
   enabledSkillNames,
   engineEnabled,
   engineRestricted,
+  projectSkillsRoot,
   readEnginesMap,
   skillNamesInRoot,
 } from "@main/lib/skillEngines.js";
@@ -59,13 +60,22 @@ type PiSdk = typeof import("@earendil-works/pi-coding-agent");
  *  prompt rewrite. */
 export type PiResourceLoader = import("@earendil-works/pi-coding-agent").DefaultResourceLoader;
 
-/** Mcode's global skill root, mirroring `ipc/skills.ts:resolveSkillRoot`. Kept
- *  here (rather than importing from the IPC module) so the provider layer stays
- *  decoupled from IPC handler internals — and because these are plain path
- *  computations with no IPC dependency. 项目级 `<cwd>/.claude/skills` 不再进
- *  这份列表:上下文统一托管(设置面板)后,外部工作区目录一律不继承。 */
-function mcodeSkillRoots(): string[] {
-  return [path.join(homedir(), ".mcode", "skills")];
+/**
+ * Mcode's skill **roots** (the directories whose children are skill dirs — Pi's
+ * `additionalSkillPaths` scans each for `<root>/<name>/SKILL.md`):
+ *   - the global library `~/.mcode/skills` (mirrors `ipc/skills.ts`);
+ *   - the CURRENT PROJECT's skills `<cwd>/.claude/skills`.
+ *
+ * 【MC-094】项目根**曾**被删掉(2026-09-17 "上下文统一托管"),但用户紧接着
+ * (2026-09-20/21)又把项目级技能要了回来 —— `ipc/skills.ts` 现在有 `projectSkillsRoot`,
+ * 面板能列/复制项目技能。删根的那句注释已成**过时的旧决定**,与现状打架:项目技能在
+ * 面板看得见、Pi 却收不到。这里把项目根接回来,与面板共用**同一份**
+ * `projectSkillsRoot`(单一实现,不各算一份)。无有效项目路径时该项目根为 null,不进列表。
+ */
+function mcodeSkillRoots(cwd: string): string[] {
+  const global = path.join(homedir(), ".mcode", "skills");
+  const project = projectSkillsRoot(cwd);
+  return project ? [global, project] : [global];
 }
 
 export interface BuildPiSkillLoaderOptions {
@@ -151,19 +161,21 @@ export async function buildPiSkillLoader(
   // engine regardless.)
   const universalRoot = defaultSkillsRoot();
   const matrixRestrictsPi = engineRestricted(enginesMap, "pi");
-  // Names the universal library actually carries, for the same-name dedupe:
-  // Pi also scans its own defaults (~/.pi/agent/skills), and a skill present
-  // in BOTH stores would load twice. The universal layer wins — the pi-local
-  // copy of the same name yields (mirrors the listing's global-first rank).
-  const universalNames = new Set(skillNamesInRoot(universalRoot).keys());
+  // 【MC-094】项目技能根(会话 cwd 下的 `<cwd>/.claude/skills`,与面板同一个
+  // `projectSkillsRoot`)。它的技能也进 `additionalSkillPaths`,会被下面的 skillsOverride
+  // 过滤 —— 所以当矩阵限制 pi 时,必须像插件名一样把项目技能名并进 allowSet,否则
+  // **只存在于项目里的**技能会被这份"全局库名册"过滤掉(又一个静默失效)。
+  const projectRoot = projectSkillsRoot(cwd);
   // When the matrix is restricted on pi, also merge in plugin skill names the
   // matrix still allows — without this, a matrix state that restricts pi would
   // filter out every plugin skill (the old bug: the allowSet only carried
   // universal-library names, so every plugin skill vanished as soon as any
   // restriction landed). 【MC-074】**只在矩阵推导路径生效**:用户显式点选时
-  // allowSet 就是那几个名字,不得被插件名单扩容。
-  if (!explicitPicks && matrixRestrictsPi && extraSkillPaths) {
-    for (const root of extraSkillPaths) {
+  // allowSet 就是那几个名字,不得被插件名单扩容。【MC-094】项目技能名同理由此并入
+  // (同一个 allowSet,同一份矩阵判据;项目技能默认对 pi 放行,除非全局矩阵按名字禁了它)。
+  if (!explicitPicks && matrixRestrictsPi) {
+    const mergedRoots = [...(extraSkillPaths ?? []), ...(projectRoot ? [projectRoot] : [])];
+    for (const root of mergedRoots) {
       for (const name of skillNamesInRoot(root).keys()) {
         if (engineEnabled(enginesMap, name, "pi")) {
           if (allowSet) allowSet.add(name);
@@ -183,12 +195,12 @@ export async function buildPiSkillLoader(
     // / `pi.on` are live before the first agent turn. Mcode's extension
     // bridges host approval, AskUserQuestion, and system-prompt injection.
     extensionFactories: extensionFactories ?? [],
-    // Pull in Mcode's global root (plus ENABLED plugin skill roots) alongside
-    // Pi's defaults. We deliberately leave `noSkills` unset so Pi's own
-    // `~/.pi/agent/skills` + `<cwd>/.pi/skills` keep working — existing Pi
-    // users aren't disrupted (modulo the same-name dedupe in the override
-    // below, where the universal layer takes precedence).
-    additionalSkillPaths: [...mcodeSkillRoots(), ...(extraSkillPaths ?? [])],
+    // Pull in Mcode's global root + the CURRENT PROJECT's root (【MC-094】) —
+    // plus ENABLED plugin skill roots — alongside Pi's defaults. We deliberately
+    // leave `noSkills` unset so Pi's own `~/.pi/agent/skills` + `<cwd>/.pi/skills`
+    // keep working — existing Pi users aren't disrupted (modulo the same-name
+    // precedence in the override below).
+    additionalSkillPaths: [...mcodeSkillRoots(cwd), ...(extraSkillPaths ?? [])],
     // On Windows, append a path-style hint that matches the bash the SDK will
     // actually spawn — native (Git Bash: `/mnt/...` doesn't exist) or WSL
     // (`/mnt/...` is the only absolute form that resolves; `detectBashEnv`
@@ -204,24 +216,39 @@ export async function buildPiSkillLoader(
     ].map((text) => text.trim()).filter((text) => text.length > 0),
     // ALWAYS supply the override (not just when a selection exists): it now
     // does two jobs.
-    //   1. Same-name dedupe across stores — a skill discovered outside the
-    //      universal library (e.g. ~/.pi/agent/skills) yields to a same-named
-    //      universal skill.
+    //   1. Same-name precedence across stores, matching the panel's rank
+    //      (project > global > plugin/pi-local). A skill discovered OUTSIDE a
+    //      higher-rank store with the same name yields to it — so a project
+    //      skill overrides a same-named global one, a global skill overrides a
+    //      same-named ~/.pi/agent/skills copy, and no name is delivered twice.
     //   2. The name filter — allowSet null (no picks, matrix unrestricted)
     //      passes everything through, which reproduces the old no-override
     //      behavior exactly.
     skillsOverride: (base: {
       skills: import("@earendil-works/pi-coding-agent").Skill[];
       diagnostics: import("@earendil-works/pi-coding-agent").ResourceDiagnostic[];
-    }) => ({
-      skills: base.skills.filter((s) => {
-        if (!isInsideDir(s.baseDir ?? "", universalRoot) && universalNames.has(s.name)) {
-          return false;
-        }
-        return !allowSet || allowSet.has(s.name);
-      }),
-      diagnostics: base.diagnostics,
-    }),
+    }) => {
+      // Which store does this skill come from? 0 = project, 1 = global library,
+      // 2 = everything else (plugins, Pi's own ~/.pi defaults). Lower = wins.
+      const rankOf = (s: import("@earendil-works/pi-coding-agent").Skill): number => {
+        const dir = s.baseDir ?? "";
+        if (projectRoot && isInsideDir(dir, projectRoot)) return 0;
+        if (isInsideDir(dir, universalRoot)) return 1;
+        return 2;
+      };
+      // Stable sort by rank, then keep the first occurrence of each name — so
+      // the higher-precedence store's copy survives and later same-named ones
+      // are dropped (a name is delivered exactly once).
+      const seen = new Set<string>();
+      const skills: import("@earendil-works/pi-coding-agent").Skill[] = [];
+      for (const s of [...base.skills].sort((a, b) => rankOf(a) - rankOf(b))) {
+        if (seen.has(s.name)) continue;
+        if (allowSet && !allowSet.has(s.name)) continue;
+        seen.add(s.name);
+        skills.push(s);
+      }
+      return { skills, diagnostics: base.diagnostics };
+    },
   });
   await loader.reload();
   return loader;

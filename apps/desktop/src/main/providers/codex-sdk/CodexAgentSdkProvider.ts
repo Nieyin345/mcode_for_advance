@@ -46,7 +46,7 @@ import { textBlocksOf } from "@main/mcp/sdk.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promises as fs, statSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import type {
   AgentProvider,
@@ -83,7 +83,7 @@ import { BROWSER_MCP_SERVER, BROWSER_READONLY_SUFFIXES } from "@main/mcp/toolRul
 import { CODEX_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { readInstructionsSource, instructionsSourcePath } from "@main/lib/appContext.js";
-import { defaultSkillsRoot, enabledSkillDirs, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
+import { defaultSkillsRoot, engineEnabled, projectSkillRootsFor, readEnginesMap, skillNamesInRoot, skillRootsIn } from "@main/lib/skillEngines.js";
 import { scriptsDir } from "@main/workflows/seed.js";
 import { ASK_NATIVE_TOOL_PROMPT } from "@main/lib/askQuestion.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
@@ -554,14 +554,17 @@ export class CodexAgentSdkProvider implements AgentProvider {
 
         // Register Mcode's skill roots so the model can invoke user skills
         // ($name) — the universal library filtered by the per-engine matrix
-        // (see skillRootsFor) — plus the skills directories of ENABLED
-        // plugins, filtered by the same matrix (see pluginSkillRootsFor).
+        // (see skillRootsFor), the CURRENT PROJECT's skills (<cwd>/.claude/
+        // skills — the same root the settings UI lists/copies, 【MC-094】), plus
+        // the skills directories of ENABLED plugins, all filtered by the same
+        // matrix (see pluginSkillRootsFor).
         // Best-effort: failure only means no skills.
         try {
           const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
           await client.request("skills/extraRoots/set", {
             extraRoots: [
               ...skillRootsFor(req.skills),
+              ...projectSkillRootsFor(req.cwd, "codex", req.skills),
               ...(await pluginSkillRootsFor(req.pluginNames, req.skills, req.cwd)),
             ],
           });
@@ -888,10 +891,11 @@ async function buildCodexEnv(
   return env;
 }
 
-/** Mcode skill roots made visible to codex: the universal library
- *  (~/.mcode/skills) filtered through the per-engine matrix. The project's
- *  .claude/skills is gone — external workspaces are no longer inherited
- *  (context-hosting rework).
+/** Mcode universal-library skill roots made visible to codex: the universal
+ *  library (~/.mcode/skills) filtered through the per-engine matrix. The
+ *  project's .claude/skills used to live here too; it now rides
+ *  {@link projectSkillRootsFor} (the project root is a separate channel — see
+ *  the skills/extraRoots/set call).
  *
  *  Unrestricted → the whole root, codex's own scanner walks it (the
  *  historical behavior, zero risk). Restricted → the enabled skills' own
@@ -899,27 +903,12 @@ async function buildCodexEnv(
  *  root is delivered wholesale. ⚠️ Whether codex treats a root that directly
  *  contains SKILL.md as one skill is UNVERIFIED (the 0.153.4 binary is
  *  closed-source; the npm package ships no scanner source) — confirm on a
- *  live session during acceptance. */
+ *  live session during acceptance.
+ *
+ *  Delegates to the shared {@link skillRootsIn} matcher so the global and
+ *  project channels can't drift into two different per-engine filters. */
 function skillRootsFor(allowNames?: readonly string[]): string[] {
-  const universal = defaultSkillsRoot();
-  if (allowNames?.length) {
-    const allow = new Set(allowNames);
-    const enginesMap = readEnginesMap(universal);
-    return [...skillNamesInRoot(universal).entries()]
-      .filter(([name]) => allow.has(name) && engineEnabled(enginesMap, name, "codex"))
-      .map(([, dir]) => dir)
-      .sort();
-  }
-  const restricted = enabledSkillDirs(universal, "codex");
-  if (restricted === null) {
-    try {
-      return statSync(universal).isDirectory() ? [universal] : [];
-    } catch {
-      return [];
-    }
-  }
-  // skillNamesInRoot already verified each dir exists and carries SKILL.md.
-  return restricted;
+  return skillRootsIn(defaultSkillsRoot(), "codex", allowNames);
 }
 
 /**

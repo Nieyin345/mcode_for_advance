@@ -38,8 +38,11 @@ import {
   readEnginesMapDetailed,
   readEnginesMapFile,
   lastGoodEnginesMapPath,
+  projectSkillsRoot,
+  projectSkillRootsFor,
   setEnginesEntry,
   skillNamesInRoot,
+  skillRootsIn,
   writeEnginesMap,
 } from "@main/lib/skillEngines.js";
 
@@ -362,6 +365,70 @@ check(
     eq("并发:损坏后恢复到最近提交(B 的限制)", engineEnabled(readEnginesMap(r7), "skill-y", "pi"), false);
   } finally {
     rmSync(r7, { recursive: true, force: true });
+  }
+}
+
+/* ── 【MC-094】项目技能根 helper(Codex 交付链与面板共用) ──
+ *
+ * 判据立在**返回的目录列表**上:项目根路径形状、按引擎/显式点选过滤、同名一致性、
+ * 无项目不报错。这些是纯函数(路径全靠参数,默认根靠 HOME),所以设 HOME 到临时目录
+ * 让它确定。Pi 侧的对应交付由 pi-skill-scope-smoke 驱动真 buildPiSkillLoader。
+ */
+{
+  const home = join(mkdtempSync(join(tmpdir(), "mcode-mc094-home-")), "home");
+  mkdirSync(join(home, ".mcode", "skills"), { recursive: true });
+  const savedHome = process.env["HOME"];
+  const savedProfile = process.env["USERPROFILE"];
+  process.env["HOME"] = home;
+  process.env["USERPROFILE"] = home;
+  try {
+    // projectSkillsRoot:形状与 null 语义。
+    const proj = join(root, "proj-a");
+    eq("MC-094:projectSkillsRoot 拼 <项目>/.claude/skills",
+      (projectSkillsRoot(proj) ?? "").replace(/\\/g, "/").endsWith("/proj-a/.claude/skills"), true);
+    eq("MC-094:无项目路径 → null", projectSkillsRoot(undefined), null);
+    eq("MC-094:相对路径被拒 → null", projectSkillsRoot("rel/path"), null);
+    eqDeep("MC-094:无项目 → projectSkillRootsFor 空数组", projectSkillRootsFor(undefined, "codex"), []);
+
+    // 项目里放两个技能:proj-keep / proj-block。
+    mkdirSync(join(proj, ".claude", "skills", "proj-keep"), { recursive: true });
+    writeFileSync(join(proj, ".claude", "skills", "proj-keep", "SKILL.md"), "---\nname: proj-keep\n---\n", "utf-8");
+    mkdirSync(join(proj, ".claude", "skills", "proj-block"), { recursive: true });
+    writeFileSync(join(proj, ".claude", "skills", "proj-block", "SKILL.md"), "---\nname: proj-block\n---\n", "utf-8");
+
+    // 矩阵不限制 codex → 交整个项目根(引擎自己的扫描器来走)。
+    eqDeep("MC-094:矩阵不限制 → 交整个项目根",
+      projectSkillRootsFor(proj, "codex").map((p) => p.replace(/\\/g, "/")),
+      [join(proj, ".claude", "skills").replace(/\\/g, "/")]);
+
+    // 矩阵按名字禁掉 proj-block(codex)→ 只交 proj-keep 自己的目录。
+    writeEnginesMap(join(home, ".mcode", "skills"), { "proj-block": { codex: false } });
+    const restricted = projectSkillRootsFor(proj, "codex").map((p) => p.replace(/\\/g, "/"));
+    check("MC-094:矩阵限制 codex → 项目里放行的那一个目录", restricted.length === 1 && restricted[0].endsWith("/proj-keep"), restricted);
+    check("MC-094:…被禁的项目技能不进交付", !restricted.some((p) => p.endsWith("/proj-block")), restricted);
+    // 同一份矩阵对 pi 不限制 pi(proj-block 只禁了 codex)→ pi 仍拿整根。
+    check("MC-094:同一矩阵对 pi 未受限 → pi 仍拿整根",
+      projectSkillRootsFor(proj, "pi").length === 1, projectSkillRootsFor(proj, "pi"));
+
+    // 显式点选只交点到的那个(且它对该引擎放行)。
+    const picked = projectSkillRootsFor(proj, "codex", ["proj-keep"]).map((p) => p.replace(/\\/g, "/"));
+    check("MC-094:显式点选 proj-keep → 恰好它", picked.length === 1 && picked[0].endsWith("/proj-keep"), picked);
+    eqDeep("MC-094:显式点选 proj-block(对 codex 被禁)→ 空",
+      projectSkillRootsFor(proj, "codex", ["proj-block"]), []);
+
+    // 项目目录不存在 → 空数组,不抛。
+    eqDeep("MC-094:项目技能目录不存在 → 空数组",
+      projectSkillRootsFor(join(root, "no-such-project"), "codex"), []);
+
+    // skillRootsIn 与 projectSkillRootsFor 同源:同一根、同引擎、同判据。
+    // (此时矩阵对 codex 受限,两者都应返回 proj-keep 的目录。)
+    eqDeep("MC-094:skillRootsIn 与 projectSkillRootsFor 对同一项目根一致",
+      skillRootsIn(join(proj, ".claude", "skills"), "codex").map((p) => p.replace(/\\/g, "/")),
+      projectSkillRootsFor(proj, "codex").map((p) => p.replace(/\\/g, "/")));
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome;
+    if (savedProfile === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = savedProfile;
+    rmSync(home, { recursive: true, force: true });
   }
 }
 
