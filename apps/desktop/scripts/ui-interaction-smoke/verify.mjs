@@ -288,6 +288,52 @@ await withAuditPage(here,async page=>{
   check('★ 旧确认迟到不得把新弹窗误标为完成',await page.eval(`document.getElementById('confirm-open-flag').textContent!=='closed'`));
  });
 
+ // 【UI-001 remaining】旧 **reject** 迟到:取消→重开→旧承诺被**拒绝**(不是成功)。
+ // 与「旧 resolve 迟到」是两条不同路径 —— reject 分支从前写错误、清 pending;代次守卫必须
+ // 让旧代的 reject 既不关新弹窗、也不把错误写进新一轮(否则新弹窗会显示一个属于旧操作的红字)。
+ await test('confirmdialog-stale-reject-keeps-new-open',async()=>{
+  await go('confirmdialog');
+  await page.waitFor(`${confirmBtn}`);
+  await page.eval(`labConfirmReset('reject')`);
+  await page.waitFor(`${confirmBtn}`);
+  await clickConfirm();
+  await page.sleep(40);
+  // 用户在 pending 时取消 → 关闭,再重开(新一轮)。
+  await page.eval(`labConfirmSetOpen(false)`);
+  await page.sleep(30);
+  await page.eval(`labConfirmSetOpen(true)`);
+  await page.sleep(30);
+  check('  重开后弹窗打开',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  // 等旧的 reject 落地(夹具 200ms 后 reject)。
+  await page.sleep(260);
+  check('★ 旧 reject 迟到不得关掉重新打开的新弹窗',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  check('★ 旧 reject 迟到不得把新弹窗误标为完成',await page.eval(`document.getElementById('confirm-open-flag').textContent!=='closed'`));
+  // 承重:旧 reject 的**错误文案**不得泄漏到新一轮弹窗里(否则用户在新弹窗看到一条
+  // 属于旧操作的红字)。撤掉代次守卫时,`setError(旧错误)` 会打到新弹窗上 → 这条红。
+  check('★ 旧 reject 的错误文案不得泄漏进新弹窗',await page.eval(`!document.body.innerText.includes('回收站不可用')`));
+ });
+
+ // 【UI-001 remaining】两次快速重开:第二次重开后,释放**第一次**的旧 Promise 不得关掉它。
+ // 比单次重开更狠 —— 代次必须真的递增到第二次,而不是只区分"开/关"。
+ await test('confirmdialog-two-rapid-reopens',async()=>{
+  await go('confirmdialog');
+  await page.waitFor(`${confirmBtn}`);
+  await page.eval(`labConfirmReset('slow')`);
+  await page.waitFor(`${confirmBtn}`);
+  await clickConfirm();
+  await page.sleep(40);
+  // 第一次关闭 + 重开
+  await page.eval(`labConfirmSetOpen(false)`); await page.sleep(25);
+  await page.eval(`labConfirmSetOpen(true)`); await page.sleep(25);
+  // 第二次关闭 + 重开(两个快速周期)
+  await page.eval(`labConfirmSetOpen(false)`); await page.sleep(25);
+  await page.eval(`labConfirmSetOpen(true)`); await page.sleep(25);
+  check('  两次重开后弹窗打开',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+  await page.eval(`labReleaseConfirm()`);
+  await page.sleep(80);
+  check('★ 两次快速重开后旧 Promise 迟到不得关掉新弹窗',await page.eval(`document.getElementById('confirm-open-flag').textContent==='open'`));
+ });
+
  // ── UI-002: Toast primary action is a real focusable control ──
  await test('toaster-keyboard-action',async()=>{
   await go('toaster');
