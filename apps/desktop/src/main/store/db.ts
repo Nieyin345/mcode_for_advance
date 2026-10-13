@@ -251,6 +251,36 @@ function migrate(database: Database): void {
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_session
       ON workflow_runs(session_id, created_at DESC);
 
+    /* ── 场景部署(MC-058 · ARC-002)──────────────────────────────────────────
+       一次场景部署的**持久事实** —— SceneSpec(声明)→ ScenePlan(计划)→ SceneDeployment
+       (真的建成了什么、哪一步失败、验收过没过)。它是**可持久、可回读、可审计**的记录:
+       渲染端 / 部署报告 / 重试都读它。从前 SceneDeployment 只是纯契约里的一个内存形状,
+       进程一关就没了,「这次部署到底成了什么」无从追溯。
+
+       payload 是 JSON 的整条 SceneDeployment。**这一层不认识它的形状**(同
+       workflows.payload 对 WorkflowDoc、workflow_runs.payload 对 RunSnapshot)——
+       编码 / 解码 + 形状校验收在 appServices/sceneDeploymentStore.ts 一处。
+
+       另外几列是**可查询投影**(从 payload 抄出来,便于「按场景列 / 按状态筛」而不必每次
+       解 JSON),不是第二份真相;整体 status 按定义由各步推导,解码时会重算。
+
+       (⚠️ SQL 注释里不要写反引号 —— 这整段在一个 JS 模板字符串里。) */
+    CREATE TABLE IF NOT EXISTS scene_deployments (
+      deployment_id TEXT PRIMARY KEY,
+      scene_id      TEXT NOT NULL,
+      -- deploying | active | partial | failed(推导所得,可查询投影)
+      status        TEXT NOT NULL,
+      spec_digest   TEXT NOT NULL,
+      plan_digest   TEXT NOT NULL,
+      -- JSON:整条 SceneDeployment(deploymentId/sceneId/digests/actor/status/steps/acceptance)
+      payload       TEXT NOT NULL,
+      -- 这次部署什么时候开始的(save 第一次写时定下,后续覆盖不改写)
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scene_deployments_scene
+      ON scene_deployments(scene_id, updated_at DESC);
+
     /* ── 操作账本(MC-067 / ARC-009 步②)────────────────────────────────────
        本地 agent 经 app_api_call 调 Mcode 功能时的**可信幂等账本**。
 
