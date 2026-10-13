@@ -26,7 +26,7 @@ import type {
   PolicyContext,
 } from "@contracts/policyEngine";
 import { policyFor } from "@main/appControl/policy.js";
-import { evaluate, isDeleteScopeWidened, invalidationsFor } from "@main/appControl/policyEngine.js";
+import { evaluate, isDeleteScopeWidened, invalidationsFor, scenePlanCoreIntent } from "@main/appControl/policyEngine.js";
 import {
   GrantStore,
   GrantStoreError,
@@ -135,6 +135,49 @@ const grant = (over: Partial<Grant> = {}): Grant => ({
   );
   eq("★ 换了 Git 远端 → 重新批准", d.verdict, "require-approval");
   check("★ 引擎确实点名 gitRemote(不是写死 projectPath)", d.invalidatedBy?.includes("gitRemote") === true, d.invalidatedBy);
+}
+
+/* ── 2c. ★ 计划级授权绑定(ARC-004 × ARC-002 / MC-058):批准的是**计划**,不是 spec ── */
+{
+  // 「用户点头」之后 spec 被偷改 —— 批准覆盖的是批准那一刻编译出的 plan.digest。
+  // 重编译得到的 digest 不同 → 核心意图 scenePlan 与之不符 → 批准立即失效。
+  const planA = "sceneplan:fnv1a:aaaa1111";
+  const planB = "sceneplan:fnv1a:bbbb2222";
+  const boundCore = scenePlanCoreIntent({ digest: planA });
+  eq("scenePlanCoreIntent 钉住的正是计划 digest", boundCore.scenePlan, planA);
+
+  // 同一个计划 → 放行(不误伤)。
+  const same = evaluate(
+    intent("workflow.save", { scenePlan: planA }),
+    grant({ allowedActions: ["workflow.save"], scopedCore: { scenePlan: planA } }),
+    ctx(),
+  );
+  eq("★ 计划未变(同一 digest)→ 放行", same.verdict, "allow");
+
+  // ★ 承重红例:spec 偷改 → 重编译得到 planB → 用旧批准跑新计划必须被拦。
+  const tampered = evaluate(
+    intent("workflow.save", { scenePlan: planB }),
+    grant({ allowedActions: ["workflow.save"], scopedCore: { scenePlan: planA } }),
+    ctx(),
+  );
+  eq("★ 计划被偷改(digest 变)→ 重新批准(旧批准不能跑新计划)", tampered.verdict, "require-approval");
+  check("★ 点名被改动的核心字段 scenePlan", tampered.invalidatedBy?.includes("scenePlan") === true, tampered.invalidatedBy);
+
+  // 无场景绑定(普通单动作授权)不受这条约束 —— 别把没声明 scenePlan 的也误判。
+  const plain = evaluate(
+    intent("file.write", { projectPath: "/repo/a" }),
+    grant({ allowedActions: ["file.write"] }),
+    ctx(),
+  );
+  eq("普通单动作授权(未绑计划)→ 不受 scenePlan 判据约束", plain.verdict, "allow");
+
+  // invalidationsFor 层:两处都缺 = 相等(不误报);一处有 = 变更。
+  eq("invalidationsFor:两边都没 scenePlan → 不算变更", invalidationsFor({}, {}).includes("scenePlan"), false);
+  eq("invalidationsFor:批准有绑定、请求没带 → 算变更", invalidationsFor({}, { scenePlan: planA }).includes("scenePlan"), true);
+  eq("invalidationsFor:digest 不同 → 算变更", invalidationsFor({ scenePlan: planB }, { scenePlan: planA }).includes("scenePlan"), true);
+  // 顺序稳定:scenePlan 排在既有字段之后(不动既有断言的顺序判据)。
+  const inv = invalidationsFor({ projectPath: "/b", scenePlan: planB }, { projectPath: "/a", scenePlan: planA });
+  check("invalidationsFor:scenePlan 排在 projectPath 之后(顺序稳定)", inv[0] === "projectPath" && inv[1] === "scenePlan", inv);
 }
 
 /* ── 3. 删除范围:只允许不扩大 ── */

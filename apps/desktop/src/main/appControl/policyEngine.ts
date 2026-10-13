@@ -70,10 +70,26 @@ export function invalidationsFor(wanted: CoreIntent, granted: CoreIntent): CoreR
   if (wanted.gitRemote !== granted.gitRemote) out.push("gitRemote");
   if (wanted.sshHostKey !== granted.sshHostKey) out.push("sshHostKey");
   if (isDeleteScopeWidened(granted.deleteScope, wanted.deleteScope)) out.push("deleteScope");
+  // 计划级授权绑定的是计划 digest:批准之后 spec 被偷改 → 重编译得到不同的 digest → 失效。
+  if (wanted.scenePlan !== granted.scenePlan) out.push("scenePlan");
   return out;
 }
 
-/** 沿用的兼容档位:优先用上下文给的(便于执行点传入已解析的 policy),否则现算。 */
+/**
+ * 从一份编译好的场景计划,算出**计划级授权要钉住的核心意图** —— ARC-004 与 ARC-002 的接缝。
+ *
+ * 用法:部署前先 `compileScenePlan(spec)` 拿到 `plan`,用本函数产出的 `core` 去申请一份
+ * `Grant`(`scopedCore` = 这个值)。部署的每个 write 动作带上同一个 `core`;
+ * 若 spec 在批准后被改动,重编译得到的 `plan.digest` 不同 → `invalidationsFor` 点名
+ * `scenePlan` → 授权失效 → 回到重新批准。**这条把「审批对象是计划」变成可判定的数据。**
+ *
+ * 纯函数、无副作用;只读计划里的 digest,**不**碰 spec 正文(免得又把「计划」退化成「spec」)。
+ */
+export function scenePlanCoreIntent(plan: { digest: string }): CoreIntent {
+  return { scenePlan: plan.digest };
+}
+
+
 function levelOf(intent: ActionIntent, context: PolicyContext): PolicyCompatibilityLevel {
   return context.compatibilityLevel ?? policyFor(intent.method).level;
 }

@@ -25,7 +25,7 @@ export type PolicyCompatibilityLevel = "read" | "ui" | "write" | "danger" | "blo
  * **核心意图**里的资源类别。这些字段任一变动 —— 或者删除范围被**扩大** —— 已发出的批准
  * 立即失效,必须重新预览并批准(ARC-004 的验收判据)。
  */
-export const CORE_RESOURCE_KINDS = ["projectPath", "mcp", "gitRemote", "sshHostKey", "deleteScope"] as const;
+export const CORE_RESOURCE_KINDS = ["projectPath", "mcp", "gitRemote", "sshHostKey", "deleteScope", "scenePlan"] as const;
 export type CoreResourceKind = (typeof CORE_RESOURCE_KINDS)[number];
 
 /**
@@ -65,6 +65,16 @@ export interface CoreIntent {
   gitRemote?: string;
   sshHostKey?: string;
   deleteScope?: DeleteScopeIdentity;
+  /**
+   * 场景计划的**稳定摘要**(`@contracts/scenePlan` 的 `scenePlanDigest` 值)。
+   *
+   * ARC-004 的验收判据说「审批的对象是计划,不是 spec」:一份覆盖整个场景的授权,绑定的是
+   * 批准那一刻编译出来的 `plan.digest`。批准之后 spec 被偷改 → 重编译得到**不同**的
+   * `planDigest` → 这次部署的核心意图与之不符 → 批准立即失效,必须重新预览批准。
+   * 这条把「模型提出计划」和「计划被执行」之间那道闸钉在了**计划内容**上,而不是
+   * 一句「用户点过头了」。缺省(不参与计划级判定)= 普通单动作授权,不受此字段约束。
+   */
+  scenePlan?: string;
 }
 
 /**
