@@ -70,6 +70,7 @@ import { getGrantStore } from "./grantStoreRuntime.js";
 import type { GrantDecision } from "./grantStore.js";
 import type { ActionIntent, ActorRef, CoreIntent, PolicyCompatibilityLevel } from "@contracts/policyEngine";
 import { physicalPath } from "@main/lib/realPathWithin.js";
+import { runWithAgentMemoryScopeForSession } from "@main/memory/agentScope.js";
 import { registeredRpcChannels, rpcHandlerFor } from "./registry.js";
 import { redactValue, renderResult, slimSessions } from "./redact.js";
 import { runUiCommand } from "./uiBridge.js";
@@ -2019,7 +2020,14 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         // ── 真正执行 RPC(到这里一定被调一次)──────────────────────────────
         let result: unknown;
         try {
-          result = await callRpc(entry, args.input);
+          // 【MC-092】记忆这类**按项目隔离**的方法,agent 走通用 `app_api_call` 时也要绑上
+          // 宿主铸的会话项目身份 —— 否则模型能带 `projects/<别的项目>/…` 读写任意项目记忆,
+          // 或 `list` 出全部(专用记忆工具本来就有这道隔离,通用路从前没有)。作用域只包
+          // 这一次 `callRpc`,桌面渲染端走真实 IPC(不经这里)不受影响,保留全局管理权限。
+          const scoped = entry.method.startsWith("memory.");
+          result = scoped
+            ? await runWithAgentMemoryScopeForSession(sessionId, () => callRpc(entry, args.input))
+            : await callRpc(entry, args.input);
         } catch (err) {
           // ZodError = 参数在**执行之前**就被挡下 → 命令没跑 → REJECTED。
           if (err instanceof z.ZodError) {

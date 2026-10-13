@@ -44,7 +44,8 @@ import {
   MemorySaveSchema,
 } from "@contracts/memory";
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
-import { memoryAddress } from "@main/memory/paths.js";
+import { memoryAddress, visibleMemory } from "@main/memory/paths.js";
+import { currentAgentMemoryProjectId } from "@main/memory/agentScope.js";
 import { deleteReviewedMemory, reviewMemoryFiles } from "@main/memory/review.js";
 import {
   MemoryConflictError,
@@ -56,16 +57,31 @@ import {
 } from "@main/memory/store.js";
 
 export function registerMemoryHandlers(ipcMain: IpcMain): void {
+  // 【MC-092】agent 经通用 `app_api_call` 调 `memory.*` 时,宿主已把**会话所属项目**装进
+  // 作用域(见 `memory/agentScope.ts`);桌面用户走真实 IPC 时没有作用域 → 保留全局管理权限。
+  // 这道闸把「通用接口」与「专用记忆工具」的授权拉齐:带作用域时,读写只许**本项目 + 全局**,
+  // list 只列可见项 —— 模型不能借 `app_api_call` 绕过专用工具的隔离。
+  const enforceAgentScope = (path: string): void => {
+    const scope = currentAgentMemoryProjectId();
+    if (scope === undefined) return; // 桌面用户:全局管理权限。
+    if (!visibleMemory(path, scope)) {
+      throw new Error("记忆不属于本项目或显式全局范围;agent 只能访问当前项目的记忆。");
+    }
+  };
   ipcMain.handle(MEMORY_MANAGE_CHANNEL, (_evt, raw) => manageMemory(MemoryManageSchema.parse(raw)));
   ipcMain.handle(MEMORY_LIST_CHANNEL, (_evt, raw) => {
     const input = MemoryListSchema.parse(raw ?? {});
     // 契约是 `{ files: [...] }`(见 `RpcMap["memory.list"]`),不是裸数组 —— 见文件头。
-    const files = listMemoryFiles(input.category ? { category: input.category } : undefined);
+    const all = listMemoryFiles(input.category ? { category: input.category } : undefined);
+    // 【MC-092】agent 作用域下只列**本项目 + 全局**的项(桌面用户看到全部)。
+    const scope = currentAgentMemoryProjectId();
+    const files = scope === undefined ? all : all.filter((f) => visibleMemory(f.path, scope));
     return { files };
   });
 
   ipcMain.handle(MEMORY_READ_CHANNEL, (_evt, raw) => {
     const input = MemoryPathSchema.parse(raw);
+    enforceAgentScope(input.path);
     // 正文**去掉首尾空行**:store 吐回来的是 frontmatter 之后那一整段,前面带着
     // 分隔行留下的换行;而 store 写回去时会把尾部空白 `trimEnd` 掉。一读一存就长胖。
     //
@@ -78,6 +94,7 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(MEMORY_SAVE_CHANNEL, (_evt, raw) => {
     const input = MemorySaveSchema.parse(raw);
+    enforceAgentScope(input.path);
     // ★ 一条**新建**的、却漏了作用域前缀的记忆路径(如 `preferences/x.md`)是调用方的
     //   静默作用域升级:他以为在存**项目**记忆,文件却落到 `<数据根>/memory/<类目>/`
     //   (旧布局,`memory.list` 里标 `scope:"legacy"`)—— 不属于任何项目、不会被注入、
@@ -114,6 +131,9 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
     const input = MemoryDeleteSchema.parse(raw);
     // 同 save:契约是 `{ ok, error? }` 而不是"抛",拒绝也要走 `ok: false` 这条路。
     try {
+      // 【MC-092】agent 作用域下不许删别的项目/旧布局的记忆 —— 与读写同一道闸。抛出的
+      // 拒绝被下面的 catch 转成 `{ ok:false, error }`,契约形状不变。
+      enforceAgentScope(input.path);
       deleteMemoryFile(input.path, input.expectedRevision);
       notifyMemoryChanged(`delete:${input.path}`);
       return { ok: true };

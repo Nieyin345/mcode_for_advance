@@ -1009,6 +1009,82 @@ console.log("\n分层工作流复用与记忆注入所有权");
   check("人工编辑保留来源记录", readMemoryFileWithRaw(path).raw.includes("mcodeLastWriter:"));
 }
 
+/* ── 【MC-092】agent 经通用 app_api_call 调 memory.* 时必须绑会话项目身份 ── */
+{
+  // 用一个录下来的 ipcMain 起真 handler;作用域用 `runWithAgentMemoryScope` 注入(与
+  // tools.ts 的接线同源)。断言:agent 作用域下**本项目 + 全局**可读写,跨项目/旧布局被拒;
+  // 无作用域(桌面用户)保留全局管理权限。
+  const { registerMemoryHandlers } = await import("@main/ipc/memory.js");
+  const { runWithAgentMemoryScope } = await import("@main/memory/agentScope.js");
+  const handlers = new Map<string, (evt: unknown, raw: unknown) => unknown>();
+  const fakeIpc = { handle: (ch: string, fn: never) => handlers.set(ch, fn) } as never;
+  registerMemoryHandlers(fakeIpc);
+  const call = (ch: string, raw: unknown): unknown => handlers.get(ch)!(null, raw);
+
+  const projPath = "projects/p_memory/rules/项目内.md";
+  const otherPath = "projects/p_other/rules/别的项目.md";
+  const globalPath = "global/rules/全局.md";
+
+  // 预置三份记忆文件(不走 handler,直接 store,保证内容在)。
+  saveMemoryFile({ path: projPath, content: "本项目内容" });
+  saveMemoryFile({ path: otherPath, content: "别的项目内容" });
+  saveMemoryFile({ path: globalPath, content: "全局内容" });
+
+  // ① agent 作用域(p_memory):本项目 + 全局可读,别的项目**拒**。
+  runWithAgentMemoryScope("p_memory", () => {
+    let selfOk = true;
+    try { call("memory:read", { path: projPath }); } catch { selfOk = false; }
+    check("★ MC-092:agent 读**本项目**记忆可以", selfOk);
+    let globalOk = true;
+    try { call("memory:read", { path: globalPath }); } catch { globalOk = false; }
+    check("★ MC-092:agent 读**全局**记忆可以", globalOk);
+    let crossOk = true;
+    try { call("memory:read", { path: otherPath }); } catch { crossOk = false; }
+    check("★ MC-092:agent 读**别的项目**记忆被拒", crossOk === false);
+    // list 只列本项目 + 全局,别的不出现。
+    const listed = (call("memory:list", {}) as { files: Array<{ path: string }> }).files.map((f) => f.path);
+    check("★ MC-092:agent list 不含别的项目", !listed.includes(otherPath), listed);
+    check("★ MC-092:agent list 含本项目与全局", listed.includes(projPath) && listed.includes(globalPath), listed);
+    // 写别的项目被拒。
+    let writeCross = true;
+    try { call("memory:save", { path: "projects/p_other/rules/新.md", content: "x" }); } catch { writeCross = false; }
+    check("★ MC-092:agent 写**别的项目**记忆被拒", writeCross === false);
+    // 删别的项目被拒(契约是 {ok:false,error},不抛)。⚠️ 必须带**正确 revision**,
+    // 否则抛/失败的是「缺版本」这个**别的理由**,撤掉作用域闸它也不会变红(假绿)。
+    const otherRev = readMemoryFile(otherPath).revision;
+    const delRes = call("memory:delete", { path: otherPath, expectedRevision: otherRev }) as { ok: boolean };
+    check("★ MC-092:agent 删**别的项目**记忆被拒(版本正确也拒)", delRes.ok === false, delRes);
+    // 旧布局(legacy)也被拒 —— 不属于任何项目。⚠️ 文件必须**真存在**,否则 read 抛的是
+    // 「读不到」而不是「不属于本项目」(又一个假绿理由)。
+    saveMemoryFile({ path: "rules/旧布局.md", content: "旧布局内容" });
+    let legacyOk = true;
+    try { call("memory:read", { path: "rules/旧布局.md" }); } catch { legacyOk = false; }
+    check("★ MC-092:agent 读旧布局记忆被拒(文件存在也拒)", legacyOk === false);
+  });
+
+  // ② 无作用域(桌面用户):全局管理权限,别的项目也能读。
+  let desktopCrossOk = true;
+  try { call("memory:read", { path: otherPath }); } catch { desktopCrossOk = false; }
+  check("★ MC-092:桌面用户(无作用域)仍能读任意项目记忆(保留全局管理权限)", desktopCrossOk);
+
+  // ③ 缺失身份保守拒绝:`runWithAgentMemoryScopeForSession` 对无效会话抛错。
+  const { runWithAgentMemoryScopeForSession } = await import("@main/memory/agentScope.js");
+  let noSessionThrew = false;
+  try { runWithAgentMemoryScopeForSession("不存在的会话", () => call("memory:read", { path: projPath })); } catch { noSessionThrew = true; }
+  check("★ MC-092:agent 会话身份缺失/无效时**保守拒绝**(不是降级成全权限)", noSessionThrew);
+
+  // ④ **接线不变量(源码断言)**:光有作用域闸还不够 —— `app_api_call` 那一条路必须**真的**
+  //    在 `memory.*` 调用外层装上作用域,否则上面的闸永远拿不到身份(等于没修)。这里读
+  //    `tools.ts` 源码,断言那段 `scoped` 分派与 `runWithAgentMemoryScopeForSession` 都在。
+  //    (剥注释后看,免得被注释里的同名字符串骗过。)
+  {
+    const src = readFileSync(join(process.cwd(), "src/main/appControl/tools.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    check("★ MC-092:app_api_call 对 memory.* 真的装了宿主会话作用域(调用点)",
+      /entry\.method\.startsWith\("memory\."\)[\s\S]*?runWithAgentMemoryScopeForSession\(sessionId/.test(src));
+  }
+}
+
 /* ────────────────────────── 汇总 ────────────────────────── */
 
 console.log(`\n${total - failures}/${total} passed`);
