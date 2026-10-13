@@ -1571,6 +1571,11 @@ export interface EnabledPlugin {
   /** True when the plugin declares hooks (parsed for display; v1 never
    *  executes them — the Claude provider's disableAllHooks is the backstop). */
   hasHooks: boolean;
+  /** 【ARC-003】逐引擎的**逐组件交付报告**(见 {@link componentDeliveryReport})。
+   *  一个已启用插件对三个内置引擎各一份,喂能力目录时翻成 `component:<providerId>:<componentId>`
+   *  标签 —— 目录因此有**组件级**可用性,而不只是 `compatibleProviderIds` 的 ANY。
+   *  与 `pluginComponentReadiness` 取同一份事实(都走 `componentDeliveryReport`)。 */
+  componentReports: ComponentDeliveryReport[];
   /** True for plugins shipped inside the app (see builtinPlugins.ts). They are
    *  always delivered, appear in no marketplace, and cannot be uninstalled —
    *  the Plugins panel renders them as a read-only row. */
@@ -1624,6 +1629,17 @@ export async function getEnabledPlugins(projectPath?: string): Promise<EnabledPl
           engines,
         ),
         engines,
+        // 【ARC-003】逐引擎的逐组件交付报告,供能力目录做组件级可用性判定。
+        // 与面板的 pluginComponentReadiness 同源(都读 componentDeliveryReport)。
+        componentReports: PLUGIN_ENGINE_IDS.map((engine) =>
+          componentDeliveryReport(
+            resolved.manifest.name,
+            resolved.manifest.version,
+            PLUGIN_ENGINE_PROVIDER_IDS[engine],
+            components,
+            true,
+          ),
+        ),
       });
     } catch {
       /* invalid manifest on disk — skip this plugin for this turn */

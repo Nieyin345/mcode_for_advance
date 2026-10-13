@@ -16,7 +16,7 @@ import { semanticsCapabilityIds } from "@contracts/providerSemantics";
 import { injectTargetOf, isModelDecider, mcpServerNamesOf, pluginNamesOf, providerIdOf, skillNamesOf, type NodeTypeManifest, type NodeRunnerKind } from "@contracts/nodeType";
 import type { WorkflowNode } from "@contracts/workflow";
 import type { AgentProvider } from "@contracts/provider";
-import type { PluginCapabilityDeclaration, PluginManifest } from "@contracts/plugin";
+import type { ComponentDeliveryReport, PluginCapabilityDeclaration, PluginManifest } from "@contracts/plugin";
 
 export interface NodeCapabilityCheckContext {
   nodeType: string;
@@ -61,6 +61,25 @@ export function pluginCapabilityDescriptors(
     runnerKinds: declaration.runnerKinds as NodeRunnerKind[] | undefined,
     providers: declaration.providers,
   }));
+}
+
+/** 【ARC-003】逐组件交付报告 → **组件级可用性标签**。
+
+ *  格式 `component:<providerId>:<componentId>` —— **必须带 providerId**:同一插件对
+ *  Claude 收得到 command、对 Pi 收不到,不带引擎的标签会把「某引擎有」谎报成「都有」。
+ *  只有 `DELIVERED` 的条目产出标签:`INCOMPATIBLE` / `DISABLED` / `DENIED` /
+ *  `MISSING_DEPENDENCY` 都不是「这个引擎可用」。
+ *
+ *  数据面来自 `componentDeliveryReport`(@contracts/plugin 的逐组件 ALL 事实),
+ *  这里只做「报告 → 标签」的翻译,不做第二套判定。 */
+export function componentAvailabilityLabels(reports: readonly ComponentDeliveryReport[]): string[] {
+  const labels: string[] = [];
+  for (const report of reports) {
+    for (const entry of report.entries) {
+      if (entry.status === "DELIVERED") labels.push(`component:${report.providerId}:${entry.componentId}`);
+    }
+  }
+  return labels;
 }
 
 /** ExecutorCapabilityFlags —— 结构化地照抄 NodeExecutorRegistry 的
@@ -149,7 +168,16 @@ export const HOST_CAPABILITY_DECLARATIONS: readonly HostCapabilitySource[] = [
  *  返回值,不 import 它们(保持本文件可被 smoke 无 DB 打包)。 */
 export function collectCapabilityInventory(sources: {
   providers?: readonly AgentProvider[];
-  plugins?: ReadonlyArray<{ name: string; manifest: PluginManifest; compatibleProviderIds?: string[] }>;
+  plugins?: ReadonlyArray<{
+    name: string;
+    manifest: PluginManifest;
+    compatibleProviderIds?: string[];
+    /** 【ARC-003】逐引擎的**逐组件交付报告**(`componentDeliveryReport` 产出)。有它时
+     *  插件的 descriptor 会带上**组件级**可用性标签(`component:<providerId>:<componentId>`,
+     *  仅 DELIVERED)—— 目录因此能回答「这个组件对这个引擎收不收得到」,而不只是
+     *  plugin 级的 ANY 兼容列表。缺省 = 老宿主,退回只有 plugin 级事实。 */
+    componentReports?: readonly ComponentDeliveryReport[];
+  }>;
   executorKinds?: readonly string[];
   executorCapabilitiesOf?: (kind: string) => ExecutorCapabilityFlags | undefined;
   /** 【ARC-006 步①】宿主自带的内置能力(见 {@link HostCapabilitySource})。 */
@@ -157,7 +185,7 @@ export function collectCapabilityInventory(sources: {
 }): CapabilityDescriptor[] {
   const out: CapabilityDescriptor[] = [];
   for (const provider of sources.providers ?? []) out.push(providerCapabilityDescriptor(provider));
-  for (const { name, manifest, compatibleProviderIds } of sources.plugins ?? []) {
+  for (const { name, manifest, compatibleProviderIds, componentReports } of sources.plugins ?? []) {
     // Selecting a plugin is itself a capability requirement. Most ecosystem
     // manifests do not declare a synthetic `kind: plugin` capability, so add
     // one host descriptor for every enabled plugin instead of falsely marking
@@ -167,11 +195,16 @@ export function collectCapabilityInventory(sources: {
       (declaration) => declaration.kind === "plugin" && declaration.id === name,
     );
     if (!declaresSelf) {
+      // 【ARC-003】组件级可用性:把逐引擎交付报告翻成 `component:<providerId>:<componentId>`
+      // 标签,挂在插件 descriptor 的 `capabilities` 上。**必须带 providerId** —— 同一插件
+      // 对不同引擎的组件级标签不同,不带引擎会把「某引擎有」谎报成「都有」。
+      const componentCaps = componentAvailabilityLabels(componentReports ?? []);
       out.push({
         kind: "plugin",
         id: name,
         source: `plugin:${name}`,
         ...(compatibleProviderIds ? { providers: compatibleProviderIds } : {}),
+        ...(componentCaps.length > 0 ? { capabilities: componentCaps } : {}),
       });
     }
     out.push(...pluginCapabilityDescriptors(name, manifest.capabilities ?? []));

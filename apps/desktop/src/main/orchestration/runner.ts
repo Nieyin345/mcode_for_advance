@@ -2209,6 +2209,9 @@ export async function startWorkflowRun(args: {
               name: p.name,
               manifest: p.manifest,
               compatibleProviderIds: p.compatibleProviderIds,
+              // 【ARC-003】逐引擎的逐组件交付报告(pluginManager 已算好,单一份事实)——
+              // 目录据此产出 `component:<providerId>:<componentId>` 组件级可用性标签。
+              componentReports: p.componentReports,
             }));
             const executorKinds = runEngine.kinds();
             return {

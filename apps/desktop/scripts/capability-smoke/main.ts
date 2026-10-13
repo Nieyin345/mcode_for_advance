@@ -12,7 +12,7 @@ import {
 } from "../../../../packages/contracts/src/providerSemantics.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { PluginManifestSchema } from "../../../../packages/contracts/src/plugin.js";
+import { PluginManifestSchema, type ComponentDeliveryReport } from "../../../../packages/contracts/src/plugin.js";
 import type { AgentProvider } from "../../../../packages/contracts/src/provider.js";
 import { validateNodeTypeManifest, type NodeTypeManifest } from "../../../../packages/contracts/src/nodeType.js";
 import type { WorkflowNode } from "../../../../packages/contracts/src/workflow.js";
@@ -147,6 +147,73 @@ const fullInventory = collectCapabilityInventory({
   executorCapabilitiesOf: (kind) => (kind === "code" ? { supportsProgress: true, supportsArtifacts: true } : undefined),
 });
 ok(fullInventory.length >= 4, "inventory combines providers + plugins + executors");
+
+/* ── 4b. 【ARC-003】组件级可用性进目录:同一插件对不同引擎的标签不同 ──
+ *
+ * 目录过去只有 plugin 级的 **ANY** 兼容列表(`providers`),没有**组件级**事实。
+ * 承重反例:同一插件对 Claude 收得到 command、对 Pi 收不到 —— 若标签不带 providerId,
+ * 就会把「某引擎有」谎报成「都有」(正是台账点名的缺口)。 */
+{
+  const mixedManifest = PluginManifestSchema.safeParse({ name: "mixed-pack", version: "1.0.0" });
+  ok(mixedManifest.success, "ARC-003:测试用 mixed-pack manifest 合法");
+  if (!mixedManifest.success) throw new Error("unreachable");
+  // 同一插件逐一引擎的交付报告:Claude 收得到 skill+command,Pi 只收得到 skill。
+  const mixedReports: ComponentDeliveryReport[] = [
+    {
+      pluginId: "mixed-pack", version: "1.0.0", providerId: "claude-sdk", pluginEnabled: true,
+      entries: [
+        { componentId: "skill:0", type: "skill", source: "s", status: "DELIVERED" },
+        { componentId: "command:0", type: "command", source: "c", status: "DELIVERED" },
+      ],
+      allDelivered: true,
+    },
+    {
+      pluginId: "mixed-pack", version: "1.0.0", providerId: "pi-sdk", pluginEnabled: true,
+      entries: [
+        { componentId: "skill:0", type: "skill", source: "s", status: "DELIVERED" },
+        { componentId: "command:0", type: "command", source: "c", status: "INCOMPATIBLE", reason: "命令只有 Claude 引擎投递" },
+      ],
+      allDelivered: false,
+    },
+  ];
+  const componentInventory = collectCapabilityInventory({
+    plugins: [{
+      name: "mixed-pack",
+      manifest: mixedManifest.data,
+      compatibleProviderIds: ["claude-sdk", "pi-sdk"],
+      componentReports: mixedReports,
+    }],
+  });
+  const mixedDesc = componentInventory.find((d) => d.kind === "plugin" && d.id === "mixed-pack");
+  const mixedCaps = mixedDesc?.capabilities ?? [];
+  ok(
+    mixedCaps.includes("component:claude-sdk:command:0") && !mixedCaps.includes("component:pi-sdk:command:0"),
+    `ARC-003:组件级标签带引擎 —— Claude 有 command:0、Pi 没有(不能只带插件名)(detail: ${JSON.stringify(mixedCaps)})`,
+  );
+  ok(
+    mixedCaps.includes("component:claude-sdk:skill:0") && mixedCaps.includes("component:pi-sdk:skill:0"),
+    `ARC-003:两家都收得到 skill:0,标签两家都在(detail: ${JSON.stringify(mixedCaps)})`,
+  );
+  // 反向:非 DELIVERED 的组件不该产出标签(INCOMPATIBLE 不是"可用")。
+  ok(
+    !mixedCaps.some((c) => c.startsWith("component:pi-sdk:command:")),
+    `ARC-003:Pi 的 command 是 INCOMPATIBLE,不产出可用标签(detail: ${JSON.stringify(mixedCaps)})`,
+  );
+  // 承重:标签真参与解析 —— 一个「需要 Pi 收 command:0」的需求必须被判不满足。
+  const needPiCommand = resolveCapabilities(
+    [{ kind: "plugin", id: "mixed-pack", capabilities: ["component:pi-sdk:command:0"] }],
+    componentInventory,
+    { providerId: "pi-sdk" },
+  );
+  ok(!needPiCommand.ok, "ARC-003:需要 Pi 收 command 的需求被判不满足(证明标签参与判定,不是摆设)");
+  // 同一需求换成 Claude 就满足 —— 证明上一条不是因为"资源根本不在"而空过。
+  const needClaudeCommand = resolveCapabilities(
+    [{ kind: "plugin", id: "mixed-pack", capabilities: ["component:claude-sdk:command:0"] }],
+    componentInventory,
+    { providerId: "claude-sdk" },
+  );
+  ok(needClaudeCommand.ok, "ARC-003:同一 command 需求换 Claude 就满足(对照,证明标签分引擎)");
+}
 
 /* 【ARC-006 步①】宿主自带的内置能力也要进目录 —— 让「按 capabilityId 查得到」
  * 不只对插件成立。两个只读文件能力由 ModuleHost 注册(见 modules/fileCapabilities.ts),
