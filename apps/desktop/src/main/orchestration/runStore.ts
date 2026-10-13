@@ -66,6 +66,7 @@ import type { CommitResult } from "@contracts/commit";
 import type { RunState } from "./scheduler.js";
 import { WORKFLOW_RUN_SNAPSHOT_VERSION, type WorkflowRunIdentity } from "@contracts/runtime";
 import { NODE_OUTCOME_STATUSES, type NodeOutcome } from "@contracts/nodeType";
+import { RetryableOutbox, type OutboxStats, type OutboxFailure } from "@main/store/outbox.js";
 
 /**
  * 一个对话里保留最近几次运行。
@@ -95,19 +96,68 @@ export interface RunCommitted {
   workflowId: string;
   status: WorkflowRunStatus;
 }
-const runCommittedListeners = new Set<(run: RunCommitted) => void>();
+
+/**
+ * 【ARC-005 切片⑤】订阅者按**稳定 id** 登记 —— 投递账本(见 {@link runCommittedOutbox})
+ * 靠这个 id 记住"这条事件已经投给谁了",从而在重投时**跳过已投成的**,绝不把已成功的
+ * 再发一遍(与 `@contracts/durableEvent` 的终态纪律同一条)。
+ */
+const runCommittedListeners = new Map<string, (run: RunCommitted) => void>();
+let runCommittedSubscriberSeq = 0;
+
+/**
+ * 【ARC-005 切片⑤】「运行已提交」成功信号的**有界、可重试、失败如实登记**投递账本。
+ *
+ * 从前这里是逐个 `try { listener(run) } catch { log.warn }` —— 一个抛错的订阅者,它那条
+ * 领域事件就被那句 warn **吞掉**了:调用方以为"发了",事件其实没到,而没有任何地方记得
+ * 「它没到」。现在改走 {@link RetryableOutbox}:有界重试、队列有上限、重试用尽仍投不成的
+ * **逐条登记**为失败(不静默丢、不假装成功)。**不落盘** —— 跨重启的持久 outbox 是更大的
+ * 重构(台账划在范围外),本切片只保证同进程内的可重试投递。
+ *
+ * 取目标时**现读** `runCommittedListeners`(订阅者会动态增删,不能构造时定死)。
+ */
+const runCommittedOutbox = new RetryableOutbox<RunCommitted>({
+  capacity: 64,
+  retryBudget: 3,
+  targets: () =>
+    [...runCommittedListeners].map(([id, listener]) => ({ id, deliver: (run: RunCommitted) => listener(run) })),
+  identify: (run) => ({
+    // 事件身份:同一次运行(同一 runId + 终态 status)是**同一条**领域事件。
+    eventId: `run-committed:${run.runId}:${run.status}`,
+    triggerKey: `workflow:${run.workflowId}`,
+    kind: "run.committed",
+  }),
+});
 
 /** 订阅「这次运行 durable 提交了」。返回退订函数。 */
 export function onRunCommitted(listener: (run: RunCommitted) => void): () => void {
-  runCommittedListeners.add(listener);
-  return () => { runCommittedListeners.delete(listener); };
+  const id = `sub_${++runCommittedSubscriberSeq}`;
+  runCommittedListeners.set(id, listener);
+  return () => { runCommittedListeners.delete(id); };
 }
 
+/** 投递账本的可查投影(诊断 / 测试):待投、已投成、如实登记的失败、有界丢弃。 */
+export function runCommittedOutboxStats(): OutboxStats {
+  return runCommittedOutbox.stats();
+}
+
+/** 重试用尽仍没投成的那些(诊断 / 测试)。 */
+export function runCommittedDeadLetters(): readonly OutboxFailure[] {
+  return runCommittedOutbox.deadLetters();
+}
+
+/**
+ * 发布一条「运行已提交」成功信号 —— 经 {@link runCommittedOutbox} 投递。
+ *
+ * ⚠️ 门在**调用方**(`saveRun`):只有 `commit.outcome === "DURABLE"` 时才调这里
+ * (ARC-009 的判据「数据库 durable 未确认绝不可标记 SUCCEEDED」)。本函数只管投递,
+ * 不判断"该不该发"。
+ *
+ * 订阅者抛错**不能**把已经落定的提交拖回去(提交是真的、信号只是通知),所以投递失败
+ * 由账本**有界重试、用尽后如实登记** —— 绝不静默吞掉。
+ */
 function emitRunCommitted(run: RunCommitted): void {
-  for (const listener of runCommittedListeners) {
-    try { listener(run); }
-    catch (err) { log.warn(`workflow run ${run.runId}: run-committed 订阅者抛错(提交已落定,不逆转) ${(err as Error).message}`); }
-  }
+  runCommittedOutbox.enqueue(run);
 }
 
 /**

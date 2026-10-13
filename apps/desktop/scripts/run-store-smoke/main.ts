@@ -44,7 +44,8 @@ import { ProjectRepo, SessionRepo, WorkflowRunRepo } from "@main/store/repositor
 import { DurableOperationLedger } from "@main/store/operationLedger.js";
 import type { OperationIntent, OperationResult } from "@contracts/appControl";
 import type { BeginOutcome } from "@main/appControl/operations.js";
-import { decodeSnapshot, resumableRun, retryableRun, saveRun, onRunCommitted, type RunSnapshot } from "@main/orchestration/runStore.js";
+import { decodeSnapshot, resumableRun, retryableRun, saveRun, onRunCommitted, runCommittedOutboxStats, runCommittedDeadLetters, type RunSnapshot } from "@main/orchestration/runStore.js";
+import { RetryableOutbox } from "@main/store/outbox.js";
 import { configDrift } from "@contracts/configBinding";
 import { dataRoot, DATA_DB_FILENAME } from "./stubs/dataRoot.js";
 
@@ -616,6 +617,128 @@ if (MODE === "write") {
     check("★ isDurable(FAILED) 为假", !isDurable(uninit));
     // 重开,后续(第二趟 / 本趟尾部)照常。
     await initDb();
+  }
+
+  /* ── 【ARC-005 切片⑤】提交后事件的**同进程可重试投递** ───────────────────────
+   *
+   * 从前 `emitRunCommitted` 是逐个 `try { listener(run) } catch { log.warn }`:一个抛错的
+   * 订阅者,它那条领域事件就被那句 warn **吞掉**了 —— 调用方以为"发了",事件其实没到,而
+   * **没有任何地方记得"它没到"**。这正是 ARC-005 要消掉的态:「投递成功 / 投递失败」在旧
+   * 写法里是同一个可观察结果(一条 warn 日志)。
+   *
+   * 本切片给它一条**有界、可重试、失败如实登记**的投递路径(判据见 `store/outbox.ts`):
+   *   ① 有界重试:每个订阅者最多投 `retryBudget` 轮;投成的**不再重投**;
+   *   ② 有界队列:超上限丢最旧一条并**如实计数**;
+   *   ③ 失败如实登记:重试用尽仍投不成的**逐条**落 dead-letter,既不算成也不消失。
+   */
+  console.log("\n【ARC-005 切片⑤】投递账本:有界重试 + 投成的不再重投 + 失败如实登记");
+  {
+    const mk = (deliver: (v: string) => void, id: string) => ({ id, deliver });
+    let calls = 0;
+
+    // (a) 抛一次的订阅者:第二轮补投成功 —— 有界重试真的会再投一次。
+    {
+      let n = 0;
+      const outbox = new RetryableOutbox<string>({
+        capacity: 8, retryBudget: 3, now: () => 1,
+        identify: (v) => ({ eventId: `e_${v}`, triggerKey: "k", kind: "t" }),
+        targets: () => [mk(() => { n += 1; if (n < 2) throw new Error("第一次不可达"); }, "flaky")],
+      });
+      outbox.enqueue("vv");
+      eq("★ 抛一次的订阅者被补投成功(第二轮才投成)", n, 2);
+      eq("★ 补投成功后计为已投成 1 条", outbox.stats().delivered, 1);
+      eq("★ 补投成功后没有登记失败", outbox.stats().failed, 0);
+      check("★ 补投成功的没有死信", outbox.deadLetters().length === 0);
+    }
+
+    // (b) 一直抛的订阅者:重试用尽(3 轮)→ 如实登记为失败(不静默丢、不假装成功)。
+    {
+      let n = 0;
+      const outbox = new RetryableOutbox<string>({
+        capacity: 8, retryBudget: 3, now: () => 1,
+        identify: (v) => ({ eventId: `e_${v}`, triggerKey: "k", kind: "t" }),
+        targets: () => [mk(() => { n += 1; throw new Error("始终不可达"); }, "always")],
+      });
+      outbox.enqueue("ww");
+      eq("★ 一直抛的订阅者被投了刚好 3 轮(retryBudget)", n, 3);
+      eq("★ 重试用尽仍投不成 → 如实登记失败 1 条", outbox.stats().failed, 1);
+      eq("★ 投不成的**不算**成投成(delivered 仍为 0)", outbox.stats().delivered, 0);
+      const dl = outbox.deadLetters();
+      eq("★ 死信点名事件", dl[0]?.eventId, "e_ww");
+      eq("★ 死信点名订阅者", dl[0]?.targetId, "always");
+      eq("★ 死信记下试了几轮", dl[0]?.attempts, 3);
+      eq("★ 死信带上最后那句错", dl[0]?.lastError, "始终不可达");
+    }
+
+    // (c) 投成的不再重投:一个订阅者投成、另一个始终抛 → 投成那个**只被调一次**。
+    {
+      calls = 0;
+      let bad = 0;
+      const outbox = new RetryableOutbox<string>({
+        capacity: 8, retryBudget: 3, now: () => 1,
+        identify: (v) => ({ eventId: `e_${v}`, triggerKey: "k", kind: "t" }),
+        targets: () => [
+          mk(() => { calls += 1; }, "good"),
+          mk(() => { bad += 1; throw new Error("坏"); }, "bad"),
+        ],
+      });
+      outbox.enqueue("xx");
+      eq("★ 投成的订阅者只被投一次(绝不把已成功的又发一遍)", calls, 1);
+      eq("★ 抛错的订阅者被投满 3 轮", bad, 3);
+      eq("★ 混合事件:投成的 1 条", outbox.stats().delivered, 1);
+      eq("★ 混合事件:登记失败 1 条", outbox.stats().failed, 1);
+    }
+
+    // (d) 有界队列:投递过程中再 enqueue 把队列压满 → 丢**最旧**一条并如实计数
+    //     (有界本身要可查,不是静默截断)。
+    {
+      const seen: string[] = [];
+      const press = new RetryableOutbox<string>({
+        capacity: 2, retryBudget: 1, now: () => 1,
+        identify: (v) => ({ eventId: `e_${v}`, triggerKey: "k", kind: "t" }),
+        targets: () => [
+          { id: "rec", deliver: (v) => {
+            seen.push(v);
+            // 投第一条(a)时把队列塞到超限:容量 2 → 压 d 时丢最旧(b),队列变 [c,d]。
+            if (v === "a") { press.enqueue("b"); press.enqueue("c"); press.enqueue("d"); }
+          } },
+        ],
+      });
+      press.enqueue("a");
+      eq("★ 队列满时丢最旧的一条(被丢的不是刚压入的 d)", press.stats().overflowDropped, 1);
+      check("★ 被丢的那条(b)从未被投出", !seen.includes("b"), seen);
+      check("★ 后来压入的 c、d 都被投出", seen.includes("c") && seen.includes("d"), seen);
+    }
+  }
+
+  /* ── 【ARC-005 切片⑤】经 runStore 的成功信号投递口:抛错的订阅者被有界重试后如实登记 ──
+   *
+   * 这一块验**接线**:`saveRun` durable 之后发的「运行已提交」信号,经投递账本扇给真实
+   * 订阅者。一个恒抛的订阅者:① 提交本身照样 durable(信号投递失败**不逆转**已落定提交,
+   *   与 ARC-009 判据一致);② 该订阅者被有界重试 3 轮后**如实登记**为失败(不静默丢)。 */
+  console.log("\n【ARC-005 切片⑤】恒抛订阅者经 runStore:提交仍 durable,投递用尽后如实登记");
+  {
+    let throws = 0;
+    const before = runCommittedOutboxStats();
+    const unsubscribe = onRunCommitted(() => { throws += 1; throw new Error("订阅者永久不可达"); });
+    try {
+      const ok = saveRun({
+        runId: "run_outbox_dead", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "success",
+        snapshot: snapshotOf([]),
+      }, { durable: true });
+      eq("★ 订阅者恒抛下,durable 提交仍返回 true(投递失败不逆转已落定提交)", ok, true);
+      eq("★ 恒抛订阅者被有界重试(retryBudget=3 → 调 3 次)", throws, 3);
+      const after = runCommittedOutboxStats();
+      eq("★ 投递账本如实登记失败 +1(不静默丢)", after.failed - before.failed, 1);
+      const dead = runCommittedDeadLetters();
+      const mine = dead.filter((d) => d.eventId === "run-committed:run_outbox_dead:success");
+      check("★ 死信点名那次运行的事件 id", mine.length === 1, dead.map((d) => d.eventId));
+      eq("★ 死信带上最后那句错", mine[0]?.lastError, "订阅者永久不可达");
+      // 运行本身确实落盘(signal 失败不影响存档)—— 独立句柄读得回来。
+      check("★ 那次运行仍落在磁盘上(投递失败没拖累存档)", decodeSnapshot(diskPayload("run_outbox_dead") ?? "") !== null);
+    } finally {
+      unsubscribe();
+    }
   }
 
   console.log("\n(第一趟结束:那个对话里留着一行 `running`)");
