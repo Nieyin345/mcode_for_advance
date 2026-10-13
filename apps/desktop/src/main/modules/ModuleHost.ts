@@ -72,8 +72,16 @@ export class ModuleHost {
     for (const c of manifest.contributions) {
       const capability = this.capabilities.get(c.capability);
       if (!capability) throw Error("Unknown capability: " + c.capability);
-      // v1 does not grant write/command execution through an imported menu.
-      if (capability.kind === "action") throw Error("Actions require a future write-permission contract");
+      // 【MC-060】v1 的安全默认仍在:**纯 JSON 清单不直接成为执行权限**。但一个**显式
+      // 声明了 `resource.write`** 的模块,其 action 能力可以接进来 —— 这是台账要求的
+      // 「先定义 action contract(资源作用域、sideEffect、审批),再实现受控 host」的第一步:
+      // 「写权限」由 manifest **显式请求**,不再是无条件拒绝。真正的执行仍在 capability.run
+      // (实现由宿主注册,不是清单里的一段脚本),且运行前 authorize(resource) 照走。
+      // 没声明 resource.write 却想挂 action 能力的模块,照旧拒(不许靠一个 action 能力
+      // 偷偷越过只读边界)。
+      if (capability.kind === "action" && !manifest.permissions.includes("resource.write")) {
+        throw Error("Action capability requires the module to declare the resource.write permission");
+      }
     }
     return manifest;
   }

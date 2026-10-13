@@ -466,6 +466,7 @@ export const zh = {
   "ide.modules.version": "版本 {version}",
   "ide.modules.permissions": "权限：",
   "ide.modules.permissionResourceRead": "只读，读取调用时指定的工作区文件",
+  "ide.modules.permissionResourceWrite": "可写，会修改工作区文件（模块须显式声明，执行仍经宿主授权）",
   "ide.modules.permissionsNone": "不需要资源权限",
   "ide.modules.cancellable": "支持取消",
   "ide.modules.notCancellable": "不支持取消",

@@ -15,7 +15,13 @@ export const ModuleManifestSchema = z.object({
   id: Id,
   version: z.string().regex(/^\d+\.\d+\.\d+$/).max(40),
   title: LocalizedTextSchema,
-  permissions: z.array(z.literal("resource.read")).max(1),
+  /** 【MC-060】模块声明它要的权限。`resource.read` 是默认档;**`resource.write`** 是
+   *  「这个模块贡献的 action 能力要真改东西」的显式声明 —— 没有它,ModuleHost 拒绝把
+   *  该模块的 action 能力接进来(v1 的安全默认:纯 JSON 清单**不直接**成为执行权限)。
+   *  写上它只是「请求」;真正的执行仍要经宿主授权(见 ModuleHost 的 register/validate
+   *  与 hostHookGrants 同款默认拒绝取向)。 */
+  permissions: z.array(z.enum(["resource.read", "resource.write"])).min(1).max(2)
+    .refine((p) => new Set(p).size === p.length, "Duplicate permission"),
   contributions: z.array(z.object({
     id: LocalId,
     slot: z.literal("files.context"),

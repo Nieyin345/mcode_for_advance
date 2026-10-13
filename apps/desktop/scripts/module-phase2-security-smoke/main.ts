@@ -57,10 +57,17 @@ await test('AUTH forged core ID and unavailable contribution are rejected',async
   await denies(host.invokeForWorkflow(call('core.forged')),denyWorkflow);
   await denies(host.invokeForWorkflow(call('core.file-report','missing')),denyWorkflow);
 });
-await test('AUTH actions cannot become builtin workflow contributions',()=>{
+await test('AUTH actions cannot become builtin workflow contributions without the resource.write permission',()=>{
   const h=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
   h.register({id:'core.test.action',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:1})});
-  assert.throws(()=>h.addBuiltin({...EXAMPLE_MODULE,id:'core.action',contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.action'}]}),/Actions/);
+  // 【MC-060】没声明 resource.write 的清单,挂 action 能力照旧拒(不靠一个 action 越过只读边界)。
+  assert.throws(()=>h.addBuiltin({...EXAMPLE_MODULE,id:'core.action',contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.action'}]}),/resource\.write/);
+  // 【MC-060】显式声明 resource.write 的清单,其 action 能力**可以**接进来(写权限由清单显式请求)。
+  const withWrite=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+  withWrite.register({id:'core.test.action2',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:1})});
+  withWrite.addBuiltin({...EXAMPLE_MODULE,id:'core.action-ok',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.action2'}]});
+  const catalog=withWrite.catalog();
+  assert.ok(catalog.modules.some(m=>m.id==='core.action-ok'),'declared resource.write => action module admitted');
 });
 await test('AUTH extra trusted source projectPath capabilityId and requestId cannot enter user parameters',async()=>{
   const params={moduleId:'core.file-report',contributionId:'inspect',path:file};

@@ -449,6 +449,7 @@ export const en = {
   "ide.modules.version": "Version {version}",
   "ide.modules.permissions": "Permissions: ",
   "ide.modules.permissionResourceRead": "read-only; reads the workspace file given at call time",
+  "ide.modules.permissionResourceWrite": "write; modifies workspace files (module must declare it explicitly; execution still goes through host authorization)",
   "ide.modules.permissionsNone": "no resource permission required",
   "ide.modules.cancellable": "Cancellable",
   "ide.modules.notCancellable": "Not cancellable",

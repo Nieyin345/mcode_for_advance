@@ -26,6 +26,7 @@ const KIND_BADGE: Record<CapabilityKind, "neutral" | "accent" | "warning"> = {
 };
 const PERMISSION_LABEL: Record<Permission, MessageId> = {
   "resource.read": "ide.modules.permissionResourceRead",
+  "resource.write": "ide.modules.permissionResourceWrite",
 };
 
 export function formatBytes(bytes: number): string {

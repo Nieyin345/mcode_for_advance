@@ -164,7 +164,8 @@ export const ModuleCapabilityMetadataSchema = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+$/).max(40),
   title: LocalizedTextSchema,
   description: DescriptionSchema,
-  permissions: z.array(z.literal("resource.read")).max(1),
+  permissions: z.array(z.enum(["resource.read", "resource.write"])).min(1).max(2)
+    .refine((p) => new Set(p).size === p.length, "Duplicate permission"),
   inputSchema: JsonSchemaDocumentSchema,
   outputSchema: JsonSchemaDocumentSchema,
   supportsCancellation: z.boolean(),
