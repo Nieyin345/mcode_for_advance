@@ -1042,6 +1042,146 @@ eq("撤权后:denied 计数 2", hookRunner.deliveryCountsOf(pluginHookId)?.denie
   resetHostHookGrants();
 }
 
+/* ──────────────── 15. 主机 hook 授权:跨重启持久化(MC-061) ──────────────── */
+
+console.log("\n主机 hook 授权:签发 / 撤销落盘,重启后仍生效");
+
+// 台账 MC-061 的「HostHookGrant 未持久化」:此前授权表**纯内存**,进程一重启就空 ——
+// 用户对某条插件 hook 的授信每次开机都得重签(把「默认拒绝」错当「永远拒绝」)。这一节
+// 钉住「接上落盘后,签发 / 撤销都跨重启活着」;坏数据仍 fail-safe 退回空表(**仍默认拒绝**)。
+//
+// 接缝是 `configureHostHookGrantPersist`(可注入 load/save,与 ARC-004 的 GrantStore 同姿势)。
+// 这里先用**内存 blob 桩**(绝不去碰用户数据根)测不变量,再用**真临时目录**证它真写到了磁盘。
+{
+  const {
+    configureHostHookGrantPersist,
+    issueHostHookGrant: issueP,
+    revokeHostHookGrant: revokeP,
+    resetHostHookGrants: resetP,
+    listHostHookGrants: listP,
+    decidePluginHookExecution: decideP,
+  } = await import("@main/hooks/hostHookGrants.js");
+  const {
+    assembleHostHookGrantPersist,
+    fileHostHookGrantPersist,
+    hostHookGrantStorePath,
+    parseHostHookGrants,
+    serializeHostHookGrants,
+  } = await import("@main/hooks/hostHookGrantFile.js");
+
+  // 内存 blob 桩:`read` 回上次写的、`write` 覆盖 —— 充当可注入的 get/set,不碰磁盘。
+  const memBlob = (): { read: () => string | null; write: (t: string) => void; peek: () => string | null } => {
+    let text: string | null = null;
+    return { read: () => text, write: (t: string) => { text = t; }, peek: () => text };
+  };
+
+  // ── 签发 → 落盘 → 用同一份 blob 重开(模拟重启)→ 仍取得到、仍 allowed。
+  const blob = memBlob();
+  configureHostHookGrantPersist(fileHostHookGrantPersist(blob));
+  resetP(); // 清内存(确认干净起点;装配时已 load 过一次 —— 此刻 blob 尚空)
+  const gP = issueP({ pluginId: "persist-plugin", version: "1.0.0", ttlMs: 600_000, now: Date.now() });
+  check("持久化:签发即写真文件(blob 非空)", blob.peek() !== null && (blob.peek() ?? "").length > 0, (blob.peek() ?? "").slice(0, 5));
+
+  const srcP = { pluginId: "persist-plugin", version: "1.0.0", commandDigest: "", nativeEvent: "PreToolUse" };
+  // 模拟重启:同一份 blob 重新装配 → load() 载回。
+  configureHostHookGrantPersist(fileHostHookGrantPersist(blob));
+  eq("★ 持久化:重启后该授权仍在表里(不是空表)", listP().some((x) => x.grantId === gP.grantId), true);
+  eq(
+    "★ 持久化:重启后该来源仍 allowed(判据据载回的表放行,不是默认拒绝)",
+    decideP(srcP, "tool.use", Date.now()).decide,
+    "allowed",
+  );
+  eq("序列化:带 version 信封 + 原样带出 expiresAt", JSON.parse(serializeHostHookGrants([gP])).grants[0].expiresAt, gP.expiresAt);
+
+  // ── 撤销 → 落盘 → 重启后仍 revoked(撤销跨重启生效)。
+  eq("持久化:撤销返回 true", revokeP(gP.grantId), true);
+  configureHostHookGrantPersist(fileHostHookGrantPersist(blob)); // 重启
+  eq(
+    "★ 持久化:撤销后重启该授权仍 revoked(带回来)",
+    listP().find((x) => x.grantId === gP.grantId)?.revoked,
+    true,
+  );
+  eq("★ 持久化:撤销后重启该来源仍 denied", decideP(srcP, "tool.use", Date.now()).decide, "denied");
+
+  // ── 坏数据 → 空表(fail-safe),**不崩**,且仍默认拒绝(绝不把读不懂的当成「全部允许」)。
+  eq("坏数据:非 JSON → 空", parseHostHookGrants("{ not json").length, 0);
+  eq("坏数据:null(文件不存在)→ 空", parseHostHookGrants(null).length, 0);
+  eq("坏数据:版本不符 → 空", parseHostHookGrants(JSON.stringify({ version: 999, grants: [gP] })).length, 0);
+  eq("坏数据:grants 不是数组 → 空", parseHostHookGrants(JSON.stringify({ version: 1, grants: "nope" })).length, 0);
+  // 逐条:形状对的那条留下,形状不对的丢掉(丢一条授权只会收紧)。
+  const mixed = JSON.stringify({ version: 1, grants: [gP, { grantId: 42 }, null] });
+  eq("坏数据:混入坏条目 → 只留合法那条", parseHostHookGrants(mixed).length, 1);
+  const badBlob = { read: () => "{ broken", write: () => {} };
+  configureHostHookGrantPersist(fileHostHookGrantPersist(badBlob));
+  eq("★ 坏数据:坏文件重开后 → 空表(仍默认拒绝)", decideP(srcP, "tool.use", Date.now()).decide, "denied");
+
+  // ── **真落盘**:走 `atomicFileBlob` + 临时目录(不是用户数据根),证它真写到磁盘。
+  const dirP = mkdtempSync(join(tmpdir(), "mcode-hosthook-grants-"));
+  assembleHostHookGrantPersist(dirP);
+  resetP();
+  const gDisk = issueP({ pluginId: "disk-plugin", version: "2.0.0", ttlMs: 600_000, now: Date.now() });
+  const fileP = hostHookGrantStorePath(dirP);
+  check("真落盘:文件真的在磁盘上", existsSync(fileP), fileP);
+  check("真落盘:路径在 <数据根>/hooks/host-hook-grants.json 下", fileP.endsWith(join("hooks", "host-hook-grants.json")), fileP);
+  // 重启:从同一数据根再装配 → 读回先前落盘的那份。
+  assembleHostHookGrantPersist(dirP);
+  eq("★ 真落盘:重启后仍取得到", listP().some((x) => x.grantId === gDisk.grantId), true);
+  rmSync(dirP, { recursive: true, force: true });
+
+  // ── 源码纪律:落盘层不 import electron / sql;落点只有一份事实源;复用 atomicWrite。 ──
+  {
+    const raw = readFileSync(join(process.cwd(), "src/main/hooks/hostHookGrantFile.ts"), "utf8");
+    const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    check("★ 落盘层不 import electron", !/from\s+"electron/.test(code));
+    check(
+      "★ 落盘层不 import sql.js / 存储层(授权不落 SettingRepo)",
+      !/from\s+"[^"]*sql|require\("sql\.js|@main\/store|settingsStore|SettingRepo/.test(code),
+    );
+    // 落盘复用已有一份 `AtomicFileBlob`(tmp + rename),不另写文件 IO。
+    check("★ 落盘层复用 grantStoreFile 的 atomicFileBlob(不另写一份文件 IO)", /atomicFileBlob/.test(code) && /grantStoreFile\.js/.test(code));
+    // 落点由 hostHookGrantStorePath 决定(单一事实源)。
+    check("★ 装配复用 hostHookGrantStorePath(落点单一事实源)", /hostHookGrantStorePath\(/.test(code));
+  }
+
+  // 收尾:把持久化复位回内存版(不泄漏到套件之外)。
+  configureHostHookGrantPersist(undefined);
+  resetP();
+}
+
+/* ──────────────── 16. 插件 hook 执行**落盘审计**(MC-061) ──────────────── */
+
+// MC-061 点名的缺口:执行记录只进内存里 50 条的环 + 计数,**进程一关就没了**。
+// 现在插件 hook 的每次执行(含被授权挡下的)落一行持久审计(见 `HookRunRepo` /
+// `hook_runs` 表)。用户手写的钩子**不落**(那是用户自己的命令,不是不受信来源,
+// 逐条落库是写放大换不到审计价值 —— 判据落在 `HookRunner.auditRun`)。
+console.log("\n插件 hook:执行记录**落进 DB**(不只 50 条会被顶掉的环)");
+
+const { HookRunRepo } = await import("@main/store/repositories.js");
+{
+  // 上面的 section 14 里 demo-plugin 那条 hook 既被授权放行(runOne → 真起进程)、
+  // 也被默认拒绝过。
+  const rows = HookRunRepo.listForHook(pluginHookId, 50);
+  check("审计表里有这条插件 hook 的行(环会被顶掉,DB 不会)", rows.length >= 1, rows.length);
+
+  const okRow = rows.find((r) => r.status === "ok");
+  check("落了一条终态 ok(命令真的跑成了,不是停在 running)", okRow !== undefined, rows.map((r) => r.status));
+  eq("审计行的插件来源身份 = demo-plugin", okRow?.pluginId, "demo-plugin");
+  eq("审计行记了原生事件名 PreToolUse", okRow?.nativeEvent, "PreToolUse");
+  eq("审计行的统一事件是 tool.use", okRow?.event, "tool.use");
+  check("审计行的命令摘要是 sha256 指纹(改命令 = 新来源)", (okRow?.commandDigest ?? "").startsWith("sha256:"), okRow?.commandDigest);
+
+  const deniedRow = rows.find((r) => r.status === "skipped" && (r.error ?? "").includes("授权"));
+  check("被授权挡下的那次也落了盘(带原因)", deniedRow !== undefined, rows.map((r) => ({ s: r.status, e: r.error })));
+  // 落定是**覆盖同一行**(同 runId upsert),不是多插一行 —— 不留悬空的 running 行。
+  check("终态覆盖 running(同一 runId,不留悬空 running 行)", rows.every((r) => r.status !== "running"), rows.map((r) => r.status));
+
+  // 用户手写的钩子不进审计表:hookA(`hooks.json` 里那条)的 id 在 DB 里查不到。
+  eq("用户手写的钩子不进审计表(它是用户自己的命令)", HookRunRepo.listForHook(hookA.id, 50).length, 0);
+
+  // 来源身份里**可查询的**投影列:命令摘要那一条被保存下来(不是只存 id)。
+  check("审计行保存了来源身份的可查询投影(plugin_id / native_event)", okRow?.pluginId === "demo-plugin" && okRow?.nativeEvent === "PreToolUse", okRow);
+}
+
 rmSync(DATA, { recursive: true, force: true });
 rmSync(WORK, { recursive: true, force: true });
 

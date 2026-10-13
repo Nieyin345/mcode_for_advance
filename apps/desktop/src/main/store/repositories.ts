@@ -1934,6 +1934,178 @@ export const SceneDeploymentRepo = {
   },
 };
 
+/* ───────────────────── 插件 hook 执行审计(MC-061)───────────────────── */
+
+/**
+ * `hook_runs` 表里的一行 —— 一条**插件 hook 的执行事实**(审计)。
+ *
+ * ## 为什么只落插件 hook,不落用户手写的钩子
+ *
+ * MC-061 要的审计,是**不受信的插件命令**被宿主授权驱动执行时留下的账:「这份来源的
+ * 这条钩子跑没跑、哪份授权放行的、被撤权挡下几次」。用户手写的钩子(`hooks.json`)是
+ * 用户**自己的**命令,它每次触发的记录只是排错窗口(50 条环),不是合规账本;而且它就
+ * 在用户自己项目的常见路径上(`tool.use` 一轮几十次),逐条落库是**写放大换不到审计价值**。
+ * 判据落在 `HookRunner.pushRun`(见那里):只有带插件来源身份的执行才进这张表。
+ *
+ * ## 没有 payload 列
+ *
+ * 与 `workflow_runs` / `scene_deployments` 不同 —— 那边要原样保留一个嵌套形状(整条
+ * `RunSnapshot` / `SceneDeployment`),所以给一列 `payload`。审计行没有要保留的嵌套形状:
+ * 来源身份(插件 / 版本 / 命令摘要 / 原生事件 / matcher 摘要,见 `@contracts/hostHookGrant`
+ * 的 `HostHookSource`)与结局都摊成一排**可查询的列**,stdout/stderr **不进这一层**(输出
+ * 可达上限那么大,审计要的是「跑没跑、为什么」,不是完整输出)。
+ *
+ * `run_id` 是主键:先落 `running`、落定再覆盖终态,是靠一次 upsert 完成的(不是两次 INSERT)。
+ */
+export interface HookRunRow {
+  runId: string;
+  hookId: string;
+  /** 贡献这条 hook 的插件名(`HostHookSource.pluginId`)。 */
+  pluginId: string;
+  /** 插件版本;未声明为 null(授权不限版本的语义与之一致)。 */
+  pluginVersion: string | null;
+  /** 原生事件名(如 `PreToolUse`)。 */
+  nativeEvent: string;
+  /** 命令内容摘要(改命令 = 新来源,旧授权作废)。 */
+  commandDigest: string;
+  /** matcher 摘要;未声明 matcher 为 null(不绑定)。 */
+  matcherDigest: string | null;
+  /** 统一 HookEvent(映射后的)。 */
+  event: string;
+  sessionId: string;
+  sessionKind: string;
+  /** running | ok | failed | timeout | skipped。 */
+  status: string;
+  exitCode: number | null;
+  durationMs: number | null;
+  /** 跳过 / 失败的**原因**(含授权拒绝的理由)。 */
+  error: string | null;
+  startedAt: number;
+}
+
+interface HookRunDbRow {
+  run_id: string;
+  hook_id: string;
+  plugin_id: string;
+  plugin_version: string | null;
+  native_event: string;
+  command_digest: string;
+  matcher_digest: string | null;
+  event: string;
+  session_id: string;
+  session_kind: string;
+  status: string;
+  exit_code: number | null;
+  duration_ms: number | null;
+  error: string | null;
+  started_at: number;
+}
+
+function rowToHookRun(r: HookRunDbRow): HookRunRow {
+  return {
+    runId: r.run_id,
+    hookId: r.hook_id,
+    pluginId: r.plugin_id,
+    pluginVersion: r.plugin_version,
+    nativeEvent: r.native_event,
+    commandDigest: r.command_digest,
+    matcherDigest: r.matcher_digest,
+    event: r.event,
+    sessionId: r.session_id,
+    sessionKind: r.session_kind,
+    status: r.status,
+    exitCode: r.exit_code,
+    durationMs: r.duration_ms,
+    error: r.error,
+    startedAt: r.started_at,
+  };
+}
+
+export const HookRunRepo = {
+  /**
+   * 落 / 覆盖一条执行审计行(`run_id` 主键 upsert)。
+   *
+   * 先落 `running`,命令收口后**用同一个 `runId` 再写一次**把终态(`ok` / `failed` /
+   * `timeout`)+ 退出码 / 耗时 / 原因覆盖上去 —— 于是"这一条到底跑成没有"只有**一行**、
+   * 一个答案(与 `WorkflowRunRepo.save` 的 upsert 同形状)。来源身份列不参与覆盖:同一次
+   * 执行的来源不会中途变(命令摘要绑定,变了就是另一个 `hookId`,另一个 `runId`)。
+   */
+  record(row: HookRunRow): void {
+    getDb().run(
+      `INSERT INTO hook_runs
+         (run_id, hook_id, plugin_id, plugin_version, native_event, command_digest,
+          matcher_digest, event, session_id, session_kind, status, exit_code,
+          duration_ms, error, started_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(run_id) DO UPDATE SET
+         status       = excluded.status,
+         exit_code    = excluded.exit_code,
+         duration_ms  = excluded.duration_ms,
+         error        = excluded.error`,
+      [
+        v(row.runId),
+        v(row.hookId),
+        v(row.pluginId),
+        v(row.pluginVersion),
+        v(row.nativeEvent),
+        v(row.commandDigest),
+        v(row.matcherDigest),
+        v(row.event),
+        v(row.sessionId),
+        v(row.sessionKind),
+        v(row.status),
+        v(row.exitCode),
+        v(row.durationMs),
+        v(row.error),
+        v(row.startedAt),
+      ],
+    );
+    persist();
+  },
+
+  /** 一条执行审计行。没有返回 null。 */
+  get(runId: string): HookRunRow | null {
+    const stmt = getDb().prepare("SELECT * FROM hook_runs WHERE run_id = ?");
+    stmt.bind([v(runId)]);
+    const found = stmt.step();
+    const row = found ? (stmt.getAsObject() as unknown as HookRunDbRow) : null;
+    stmt.free();
+    return row ? rowToHookRun(row) : null;
+  },
+
+  /** 某条**插件 hook** 的执行历史,新的在前(跨重启可回读 —— 环只有 50 条、会被顶掉)。 */
+  listForHook(hookId: string, limit: number): HookRunRow[] {
+    const stmt = getDb().prepare(
+      `SELECT * FROM hook_runs
+        WHERE hook_id = ?
+        ORDER BY started_at DESC, run_id DESC LIMIT ?`,
+    );
+    stmt.bind([v(hookId), v(limit)]);
+    const out: HookRunRow[] = [];
+    while (stmt.step()) out.push(rowToHookRun(stmt.getAsObject() as unknown as HookRunDbRow));
+    stmt.free();
+    return out;
+  },
+
+  /** 全部执行审计行,新的在前。 */
+  list(limit: number): HookRunRow[] {
+    const stmt = getDb().prepare(
+      "SELECT * FROM hook_runs ORDER BY started_at DESC, run_id DESC LIMIT ?",
+    );
+    stmt.bind([v(limit)]);
+    const out: HookRunRow[] = [];
+    while (stmt.step()) out.push(rowToHookRun(stmt.getAsObject() as unknown as HookRunDbRow));
+    stmt.free();
+    return out;
+  },
+
+  /** 删一条(没有也不算错)—— 回滚 / 人工清理用。 */
+  remove(runId: string): void {
+    getDb().run("DELETE FROM hook_runs WHERE run_id = ?", [v(runId)]);
+    persist();
+  },
+};
+
 /* ──────────────────────────────── 文献库 ───────────────────────────────── */
 
 /** 生成带前缀的本地 id。与 customModel 的 `cm_...` 同构,前缀区分实体类型,

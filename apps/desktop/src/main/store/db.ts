@@ -433,6 +433,41 @@ function migrate(database: Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_library_item_links_uniq_path
       ON library_item_links(item_id, target_path) WHERE target_path IS NOT NULL;
 
+    /* ── 插件 hook 执行审计(MC-061)────────────────────────────────────────
+       MC-061 的执行通道是「插件携带的、不受信的命令」。HookRunner 从前只把每次执行记进
+       内存里 50 条的环 + 按 hook 计数 —— 进程一关就没了,「这个插件昨天跑过没有、哪份
+       授权放行的、被撤权挡下几次」无从追溯。这一张表把**每条插件 hook 的执行**落成一行
+       持久审计(用户手写的钩子不落:那是用户自己的命令,判据见 HookRunner 里那条)。
+
+       列里记的是**执行事实**:插件/版本/命令摘要/原生事件/matcher 摘要(来源身份,见
+       @contracts/hostHookGrant 的 HostHookSource)+ 结局(status)+ 原因(error,含授权
+       拒绝的理由)。stdout/stderr 不进这一层(它可能有输出上限那么大,审计要的是「跑没跑、
+       为什么」)。
+
+       与其它表不同,这里**没有 payload 列** —— 审计行就是一排可查询的列,没有要原样保留的
+       嵌套形状。run_id 主键让「先落 running、落定再覆盖终态」是一次 upsert,而不是两次
+       INSERT(同 workflow_runs 的 upsert 形状)。 */
+    CREATE TABLE IF NOT EXISTS hook_runs (
+      run_id         TEXT PRIMARY KEY,
+      hook_id        TEXT NOT NULL,
+      plugin_id      TEXT NOT NULL,
+      plugin_version TEXT,
+      native_event   TEXT NOT NULL,
+      command_digest TEXT NOT NULL,
+      matcher_digest TEXT,
+      event          TEXT NOT NULL,
+      session_id     TEXT NOT NULL,
+      session_kind   TEXT NOT NULL,
+      -- running | ok | failed | timeout | skipped
+      status         TEXT NOT NULL,
+      exit_code      INTEGER,
+      duration_ms    INTEGER,
+      error          TEXT,
+      started_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_hook_runs_hook
+      ON hook_runs(hook_id, started_at DESC);
+
   `);
   // Backward-compatible column adds for dbs created before these columns
   // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).

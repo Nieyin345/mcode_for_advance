@@ -46,7 +46,7 @@ import {
   type HookSpec,
 } from "@contracts/hook";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
-import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
+import { HookRunRepo, ProjectRepo, SessionRepo, type HookRunRow } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 import { uid } from "@main/utils.js";
 import { createEventSubjects } from "./eventSubjects.js";
@@ -149,6 +149,20 @@ class HookRunner {
    * 撤权/过期即时生效,不给排队留窗口。用户手写的钩子不在表里 → 不受此闸。
    */
   private pluginSources = new Map<string, HostHookSource>();
+
+  /**
+   * 【MC-061】审计落盘的**出口** —— 一条插件 hook 执行记录的持久去处。默认是 `HookRunRepo`
+   * (写 `hook_runs` 表,见 store/repositories.ts);可注入替身做无头断言,置 `null` 则不落盘。
+   *
+   * 与 {@link pluginHookSource} 同一姿势:本模块不直接 import electron/sql 那一侧的写入口做
+   * 会抛的事 —— 落库失败也**绝不**冒到事件流(见文件头不变量 1)。
+   */
+  private hookRunSink: ((row: HookRunRow) => void) | null = (row) => HookRunRepo.record(row);
+
+  /** 【MC-061】接上审计落盘出口(装配点 / 无头脚本用)。见 {@link hookRunSink}。 */
+  setHookRunSink(sink: ((row: HookRunRow) => void) | null): void {
+    this.hookRunSink = sink;
+  }
 
   /** 【MC-061】接上插件 hook 声明的来源(宿主装配点调一次)。见 {@link pluginHookSource}。 */
   setPluginHookSource(
@@ -455,6 +469,9 @@ class HookRunner {
         const record = this.pushRun(spec, payload, "running");
         const result = await runHookCommand(effective, payload);
         Object.assign(record, result, { durationMs: Date.now() - record.startedAt });
+        // 【MC-061】收口了 —— 用**同一个 runId** 把终态(ok/failed/timeout)+ 退出码 / 耗时 /
+        // 原因覆盖进审计行(同一行 upsert,不是新建一行)。这样"这一条跑成没有"只有一个答案。
+        this.auditRun(spec, payload, record);
         const decision = decideRetry({ attempts, retryBudget: budget, failed: result.status === "failed" });
         if (!decision.retry) break;
         // 重试这件事本身**要可观测**:计数 + 一行日志。不静默地又跑一遍 —— 否则"它跑了几次"
@@ -504,7 +521,46 @@ class HookRunner {
     };
     this.runs.unshift(record);
     if (this.runs.length > RUN_RING) this.runs.length = RUN_RING;
+    // 【MC-061】插件 hook 的执行**落成持久审计行** —— 建的这一条记录(不论 running /
+    // skipped)第一次落库;`deliver` 收口时会**用同一个 runId 再落一次**把终态覆盖上去。
+    // 用户手写的钩子不在 `pluginSources` 里 → 不落(理由见 HookRunRow 的文件头)。
+    this.auditRun(spec, payload, record);
     return record;
+  }
+
+  /**
+   * 【MC-061】把一条记录写进 `hook_runs` 审计表 —— **只对插件 hook**(带来源身份的)。
+   *
+   * 用户手写的钩子直接返回:它没有"哪份授权放行"这回事,逐条落库是写放大换不到审计价值
+   * (见 `HookRunRow` 的文件头)。落库**绝不**冒到事件流(不变量 1):sink 抛错只留一行
+   * 日志 —— 审计是**旁路**,它坏了,钩子照跑、对话照走。
+   */
+  private auditRun(spec: HookSpec, payload: HookPayload, record: HookRun): void {
+    const source = this.pluginSources.get(spec.id);
+    if (source === undefined) return; // 用户手写的钩子不落库
+    if (this.hookRunSink === null) return; // 显式关掉(无头脚本)
+    const row: HookRunRow = {
+      runId: record.runId,
+      hookId: spec.id,
+      pluginId: source.pluginId,
+      pluginVersion: source.version ?? null,
+      nativeEvent: source.nativeEvent,
+      commandDigest: source.commandDigest,
+      matcherDigest: source.matcherDigest ?? null,
+      event: payload.event,
+      sessionId: payload.session.id,
+      sessionKind: payload.session.kind,
+      status: record.status,
+      exitCode: record.exitCode ?? null,
+      durationMs: record.durationMs ?? null,
+      error: record.error ?? null,
+      startedAt: record.startedAt,
+    };
+    try {
+      this.hookRunSink(row);
+    } catch (err) {
+      log.warn(`[hooks] 审计落盘失败(${spec.name}):${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** 最近的钩子定义。见文件头"每次事件都重新看一遍文件"。 */

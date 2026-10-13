@@ -31,6 +31,7 @@ import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
 import { setOperationLedger } from "@main/appControl/operations.js";
 import { assembleGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { assembleHostHookGrantPersist } from "@main/hooks/hostHookGrantFile.js";
 import { assembleSceneRuntime } from "@main/orchestration/sceneTaskRuntime.js";
 import { DurableOperationLedger } from "@main/store/operationLedger.js";
 import { initUpdater } from "@main/updater.js";
@@ -204,6 +205,12 @@ app.whenReady().then(async () => {
     // 装配点是可注入 dataRoot 的纯函数,这里只传真实的 `dataRoot()`。撤销 / 过期随文件
     // 跨重启生效。装上之后不回退 —— 静默降级会让「授权已持久」变成假象。
     assembleGrantStore(dataRoot());
+    // **主机 hook 授权(HostHookGrant,MC-061)** —— 启动时把落盘真装上:落点是**独立文件**
+    // `<数据根>/hooks/host-hook-grants.json`(不参与设置导入导出,理由见 hostHookGrantFile.ts)。
+    // 装配点只传真实的 `dataRoot()`。此前授权表纯内存,重启即空 —— 用户对某条插件 hook 的授信
+    // 每次开机都得重签(把「默认拒绝」错当「永远拒绝」)。接上后签发 / 撤销都落盘,重启经 load()
+    // 载回,撤销 / 过期随文件跨重启生效。装上之后不回退 —— 静默降级会让「授权已持久」变成假象。
+    assembleHostHookGrantPersist(dataRoot());
     // **场景任务注册表(ARC-013 步②)** —— 启动时装上,统一走 `getSceneRegistry()` 这个
     // 单例读取口(各模块不再各 new 一份)。取消走 `cancelSceneTask()` / `sceneCancelReport()`,
     // 握着不可中断外部动作(git push / SSH)的任务取消时如实报 `uncertain`,绝不谎称已取消。

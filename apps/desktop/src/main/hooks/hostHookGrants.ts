@@ -10,6 +10,14 @@
  * 一次且仅一次 / 带取消预算下真跑)是后续切片;本片让「到底准不准跑」有**唯一判定落点**,
  * 不再是面板里写死的一句 `unsupported`。
  *
+ * ## 持久化(跨重启活着)
+ *
+ * 授权表默认**纯内存**(未装配 = 重启即空,与从前一致)。生产在启动装配点调
+ * {@link configureHostHookGrantPersist} 接上落盘版(`hostHookGrantFile.ts`,独立文件,
+ * 不参与设置导入导出)。接上后**签发 / 撤销都落盘**,重启经 `load()` 载回 —— 「用户授过信
+ * 的这条 hook 每次开机都得重签」这类静默回退因此被堵住。载入是 **fail-safe** 的:坏数据 →
+ * 空表(**仍默认拒绝**),绝不把读不懂的当成「全部允许」。
+ *
  * ## 撤销 / 卸载同步
  *
  * {@link revokeHostHookGrants} 可按插件名撤掉它全部授权 —— 插件卸载 / 重载时调它,
@@ -74,7 +82,57 @@ export function hostHookIdOf(source: HostHookSource): string {
 let grants = new Map<string, HostHookGrant>();
 let seq = 0;
 
-/** 测试 / 装配用:清空全部授权,回到「默认拒绝」。 */
+/**
+ * 可注入的持久化接口 —— 本模块不实现落盘,只认这个窄接口(与 ARC-004 的 `GrantStorePersist`
+ * 同姿势,不 import electron / sql)。生产在装配点接 `hostHookGrantFile.ts` 的落盘版;未接时
+ * 为 `undefined`(纯内存,重启即空,与从前一致)。
+ */
+export interface HostHookGrantPersist {
+  /** 载入已存的授权(无则 null)。 */
+  load(): HostHookGrant[] | null;
+  /** 落盘全量授权。 */
+  save(grants: HostHookGrant[]): void;
+}
+
+let persist: HostHookGrantPersist | undefined;
+
+/**
+ * 从已载入的授权里**续上 id 序号** —— id 形如 `hhg-<n>`,取最大 n 作为 `seq` 起点,于是重启后
+ * 新签发的 id 不会与已有授权撞号(撞号 = 新授权静默覆盖旧的同 id 记录,是一类难查的坏)。
+ */
+function seqOfLoaded(loaded: readonly HostHookGrant[]): number {
+  let max = 0;
+  for (const g of loaded) {
+    const m = /^hhg-(\d+)$/.exec(g.grantId);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return max;
+}
+
+/** 把当前表落盘(未接持久化时是 no-op)。 */
+function flush(): void {
+  persist?.save([...grants.values()]);
+}
+
+/**
+ * **装配持久化**(唯一入口)—— 接上可注入的 load/save,并**立即载入**已存授权。
+ * 传 `undefined` 复位回内存版。载入是 fail-safe 的:文件不存在 / 坏数据 → `load()` 给
+ * `null` / 空 → 空表(**仍默认拒绝**,绝不把读不懂的当成「全部允许」)。
+ *
+ * ⚠️ 与 `resetHostHookGrants` 的区别:本函数**载入**磁盘上那份;reset 只清内存。
+ */
+export function configureHostHookGrantPersist(next: HostHookGrantPersist | undefined): void {
+  persist = next;
+  const loaded = next?.load() ?? null;
+  grants = new Map();
+  seq = 0;
+  if (loaded) {
+    for (const g of loaded) grants.set(g.grantId, g);
+    seq = seqOfLoaded(loaded);
+  }
+}
+
+/** 测试 / 装配用:清空全部授权,回到「默认拒绝」。**不动**已接的持久化配置(reset 只清内存)。 */
 export function resetHostHookGrants(): void {
   grants = new Map();
   seq = 0;
@@ -114,6 +172,7 @@ export function issueHostHookGrant(input: {
     revoked: false,
   };
   grants.set(grant.grantId, grant);
+  flush();
   return grant;
 }
 
@@ -122,6 +181,7 @@ export function revokeHostHookGrant(grantId: string): boolean {
   const g = grants.get(grantId);
   if (!g || g.revoked) return false;
   g.revoked = true;
+  flush();
   return true;
 }
 
@@ -137,6 +197,7 @@ export function revokeHostHookGrants(pluginId: string): number {
       n += 1;
     }
   }
+  if (n > 0) flush();
   return n;
 }
 
