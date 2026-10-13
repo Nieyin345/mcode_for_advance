@@ -595,7 +595,7 @@ function adoptModel(
   registerModel(path, model, content);
 }
 
-function EditPane({ filePath, projectPath }: { filePath: string; projectPath: string }) {
+export function EditPane({ filePath, projectPath }: { filePath: string; projectPath: string }) {
   const { t } = useI18n();
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);

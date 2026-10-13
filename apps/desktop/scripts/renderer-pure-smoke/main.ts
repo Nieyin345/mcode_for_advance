@@ -801,6 +801,10 @@ section("17. 送图上限与主进程契约同锚");
  * 选定引用目标那一刻**现读** `editorRef.current.getSelection()` 取行号 —— 用户在"选中 →
  * 打开引用菜单 → 选定目标"之间改了选区,正文(旧)与行号(新)就对不上。这条断言钉住修复:
  * ① 选中时把 `lines` 与 `text` 一起冻结;② 落草稿时用**冻结的那份**,不再现读 `getSelection`。
+ *
+ * ⚠️ 这只是**静态**backstop(源码正则)。运行时的**真入口 E1**(驱动真 `EditPane`:
+ * 选中 A → 切目标前选区变 B → 落草稿正文与行号必须都对应 A)在
+ * `scripts/ide-quote-snapshot-smoke/`。两条都要留着:正则快、抓源码形态;E1 慢、抓真行为。
  */
 {
   const { readFileSync } = await import("node:fs");
