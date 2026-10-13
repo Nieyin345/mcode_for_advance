@@ -261,6 +261,7 @@ export const zh = {
   "layout.lanAddress": "局域网地址：",
   "layout.regenerateWithIp": "用这个 IP 重新生成二维码: {ip}",
   "layout.lanHint": "手机需与电脑在同一局域网。若扫码后空白，点上面的备用 IP 切换。",
+  "layout.plaintextWarning": "⚠️ 此连接为明文 HTTP。非本机设备(手机)在局域网内提交的账号密码与令牌不会被加密,同一网段的其他人可能看到;仅在可信网络使用,或改用仅本机绑定。",
   "layout.connectedDevices": "已连接设备（{n}）",
   "layout.noDevices": "还没有设备配对",
   "layout.pairedAt": "配对于 {time}",

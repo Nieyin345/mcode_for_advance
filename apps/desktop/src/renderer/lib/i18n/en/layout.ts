@@ -249,6 +249,7 @@ export const en = {
   "layout.lanAddress": "LAN address: ",
   "layout.regenerateWithIp": "Regenerate the QR code with this IP: {ip}",
   "layout.lanHint": "The phone must be on the same LAN as this computer. If the page is blank after scanning, switch to one of the alternate IPs above.",
+  "layout.plaintextWarning": "⚠️ This connection is plain HTTP. Credentials and tokens a non-local device (phone) submits over the LAN are not encrypted — others on the same network segment may see them. Use only on a trusted network, or switch to a local-only binding.",
   "layout.connectedDevices": "Connected devices ({n})",
   "layout.noDevices": "No devices paired yet",
   "layout.pairedAt": "Paired {time}",

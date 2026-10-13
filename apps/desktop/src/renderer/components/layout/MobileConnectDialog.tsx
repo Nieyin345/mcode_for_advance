@@ -27,6 +27,7 @@ import { MobileLoginCard } from "@renderer/components/mobile/MobileLoginCard.js"
 import type { PairingStartResult, PairedDevice } from "@contracts/mobile";
 import type { RelayStatus } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { isPlaintextNonLoopbackEndpoint } from "@renderer/lib/mobileEndpointRisk.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /** Self-contained trigger button + dialog, rendered in the left sidebar's quick
@@ -394,6 +395,15 @@ function MobileConnectPanel({ open }: { open: boolean }) {
             <div className="mt-3 text-[11px] text-content-subtle">
               {t("layout.lanAddress")}
               <span className="font-mono">{status.endpoint}</span>
+            </div>
+          )}
+          {/* 【MC-004】明文 HTTP 风险提示:只有**非回环**的明文端点才显示 —— 手机经
+              `http://<局域网 IP>` 提交的账号密码与令牌不加密,同网段可观察。回环绑定
+              (`http://127.0.0.1`)只本机可达,不显示(避免无谓惊吓)。`isLoopbackEndpoint` 是
+              纯函数,判据与主进程 `isLoopbackPeer` 同一取向(只认回环主机名/IP)。 */}
+          {status?.endpoint && isPlaintextNonLoopbackEndpoint(status.endpoint) && (
+            <div className="mt-2 rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] leading-snug text-warning">
+              {t("layout.plaintextWarning")}
             </div>
           )}
           {/* When auto-detection has alternatives, surface them so the user can

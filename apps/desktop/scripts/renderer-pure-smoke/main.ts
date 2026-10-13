@@ -29,6 +29,7 @@ import {
 } from "../../src/renderer/lib/markdownCache.js";
 import { convertHtmlTables } from "../../src/renderer/lib/htmlTable.js";
 import { resolveMarkdownImageRoute } from "../../src/renderer/lib/markdownImageRoute.js";
+import { isPlaintextNonLoopbackEndpoint } from "../../src/renderer/lib/mobileEndpointRisk.js";
 import { isPathWithin } from "../../src/renderer/lib/path.js";
 import { collectCommands } from "../../src/renderer/lib/commands.js";
 import type { SessionState } from "../../src/renderer/stores/sessionStore.js";
@@ -746,6 +747,26 @@ section("17. 送图上限与主进程契约同锚");
       mdSrc.match(/const key = `lib:[^`]*`/)?.[0],
     );
   }
+}
+
+/* ── 【MC-004】手机端点明文风险提示判据 ──
+ * 台账 §50.6 三次点名「部署页风险提示文案未加」。判据:非回环的明文 http 端点才提示。 */
+{
+  // 非回环明文 → 提示(手机经局域网 IP 提交口令/令牌不加密)。
+  eq("LAN 明文 http 端点 → 需提示", isPlaintextNonLoopbackEndpoint("http://192.168.1.5:8787"), true);
+  eq("主机名明文 http → 需提示", isPlaintextNonLoopbackEndpoint("http://my-mac.local:8787"), true);
+  eq("裸地址(无 scheme)→ 需提示(保守)", isPlaintextNonLoopbackEndpoint("192.168.1.5:8787"), true);
+  // 回环 → 不提示(只本机可达)。
+  eq("回环 127.0.0.1 → 不提示", isPlaintextNonLoopbackEndpoint("http://127.0.0.1:8787"), false);
+  eq("回环 127.x 整段 → 不提示", isPlaintextNonLoopbackEndpoint("http://127.10.20.30:8787"), false);
+  eq("回环 localhost → 不提示", isPlaintextNonLoopbackEndpoint("http://localhost:8787"), false);
+  eq("回环 ::1 → 不提示", isPlaintextNonLoopbackEndpoint("http://[::1]:8787"), false);
+  // 已加密 → 不提示(将来接 TLS 后自动静默)。
+  eq("https → 不提示", isPlaintextNonLoopbackEndpoint("https://192.168.1.5:8787"), false);
+  eq("wss → 不提示", isPlaintextNonLoopbackEndpoint("wss://192.168.1.5:8787"), false);
+  // 带路径/端口/大小写。
+  eq("带路径的 LAN 明文 → 提示", isPlaintextNonLoopbackEndpoint("HTTP://10.0.0.2:8787/api"), true);
+  eq("空端点 → 不提示(还没起服务)", isPlaintextNonLoopbackEndpoint(""), false);
 }
 
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
