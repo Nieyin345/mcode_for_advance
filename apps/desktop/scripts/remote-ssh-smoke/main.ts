@@ -525,6 +525,66 @@ console.log("\n[3f] MC-052 纯判定 decideHostTrust:宿主授权门 + 各终态
   check("无授权文案说明自填指纹不算批准且给出候选指纹", ungrMsg.includes("缺少宿主") && ungrMsg.includes(fpA), ungrMsg);
 }
 
+console.log("\n[3f-2] MC-052 授权服务侧:模型参数不能伪造批准(grantHostTrust / findHostTrustGrant 运行时门)");
+{
+  // [3f] 证明的是**纯判定**不吃自填参数;[3f-2] 证明**真正的授权服务**(唯一铸造批准的入口 +
+  // 它的读取面)也拒绝模型能碰到的每一种伪造 —— 否则"不能伪造"只活在纯函数里,一旦经服务
+  // 层落盘/读出就漏。这一节全部直接驱动导出到 `__remoteSshTest` 的真实现。
+  SettingRepo.__clear();
+  const fpA = `SHA256:${"A".repeat(43)}`;
+  const fpB = `SHA256:${"B".repeat(43)}`;
+  const GRANTS_KEY = __remoteSshTest.SSH_HOST_TRUST_GRANTS_SETTING_KEY;
+
+  // ① 来源闸:模型/agent 想给自己发批准 → 运行时直接拒(不是只靠 IPC schema 的 `.strict()`)。
+  //    TS 类型把 approvalSource 限定成 "user",这里 cast 成 any 模拟"绕过类型层直接调服务"。
+  const forgedSource = __remoteSshTest.grantHostTrust({ hostPort: "h:22", fingerprint: fpA, approvalSource: "agent" as unknown as "user" });
+  check("★ 非 user 来源调 grantHostTrust → 返回 null(不铸造批准)", forgedSource === null, forgedSource);
+  check("★ 非 user 来源 → 授权表里没有任何条目(没落盘)", __remoteSshTest.listHostTrustGrants().length === 0, __remoteSshTest.listHostTrustGrants());
+
+  // ② 载荷闸:一条**手写进存储**的授权(模型能写设置就写得出)若声明来源不是 "user",读取面
+  //    必须把它当作"无授权",绝不能因为字段长得像就授信。
+  SettingRepo.set(GRANTS_KEY, JSON.stringify({
+    "h:22": JSON.stringify({ grantId: "forged", hostPort: "h:22", fingerprint: fpA, approvalSource: "agent", approvedAt: 0, version: 1 }),
+  }));
+  check("★ 存储里 approvalSource=agent 的授权 → findHostTrustGrant 视为无授权(null)",
+    __remoteSshTest.findHostTrustGrant("h:22") === null, __remoteSshTest.findHostTrustGrant("h:22"));
+
+  // ③ 身份绑定(读侧):宿主为 host:port A 签发的授权,**读不到** B 的授权 —— 授权按 host:port
+  //    存储/查询,不能借一台已批准的主机去信任另一台。
+  SettingRepo.set(GRANTS_KEY, JSON.stringify({
+    "a:22": JSON.stringify({ grantId: "ga", hostPort: "a:22", fingerprint: fpA, approvalSource: "user", approvedAt: 0, version: 1 }),
+  }));
+  check("★ 为 a:22 签发的授权不能读成 b:22 的授权", __remoteSshTest.findHostTrustGrant("b:22") === null, __remoteSshTest.findHostTrustGrant("b:22"));
+  check("★ 为 a:22 签发的授权自己能读回(正控)", __remoteSshTest.findHostTrustGrant("a:22")?.fingerprint === fpA, __remoteSshTest.findHostTrustGrant("a:22"));
+
+  // ④ 存储条目的 hostPort 字段与实际键**不一致**(被手改过)→ 拒(不能"键对了但内容指向别处"就放行)。
+  SettingRepo.set(GRANTS_KEY, JSON.stringify({
+    "a:22": JSON.stringify({ grantId: "gm", hostPort: "c:22", fingerprint: fpA, approvalSource: "user", approvedAt: 0, version: 1 }),
+  }));
+  check("★ 授权条目的 hostPort 键值不一致 → findHostTrustGrant 拒(null)", __remoteSshTest.findHostTrustGrant("a:22") === null, __remoteSshTest.findHostTrustGrant("a:22"));
+
+  // ⑤ 畸形指纹(手写非法形状)→ 拒:不能靠一个形状不对的"指纹"建立信任。
+  SettingRepo.set(GRANTS_KEY, JSON.stringify({
+    "h:22": JSON.stringify({ grantId: "gb", hostPort: "h:22", fingerprint: "not-a-fingerprint", approvalSource: "user", approvedAt: 0, version: 1 }),
+  }));
+  check("★ 畸形指纹的授权 → findHostTrustGrant 拒(null)", __remoteSshTest.findHostTrustGrant("h:22") === null, __remoteSshTest.findHostTrustGrant("h:22"));
+
+  // ⑥ 授权表**损坏**(整体不是 JSON)→ 读取面返回 null(fail-closed:当作无授权,而不是当"空白
+  //    可重新授信");复用一个正常记录写入也不能把它洗白。
+  SettingRepo.set(GRANTS_KEY, '{"h:22": {"trunca');
+  check("★ 授权表损坏 → findHostTrustGrant 返回 null(fail-closed,不 fail-open)",
+    __remoteSshTest.findHostTrustGrant("h:22") === null, __remoteSshTest.findHostTrustGrant("h:22"));
+
+  // ⑦ 撤销闸:先铸造一条合法授权、再撤销 → 读取面查不到(用户撤权立刻生效)。
+  SettingRepo.__clear();
+  __remoteSshTest.grantHostTrust({ hostPort: "h:22", fingerprint: fpA, approvalSource: "user" });
+  check("前提:合法 user 授权可读回", __remoteSshTest.findHostTrustGrant("h:22")?.fingerprint === fpA, __remoteSshTest.findHostTrustGrant("h:22"));
+  __remoteSshTest.revokeHostTrustGrant("h:22");
+  check("★ 撤销后 findHostTrustGrant 返回 null(带外授信可撤回)", __remoteSshTest.findHostTrustGrant("h:22") === null, __remoteSshTest.findHostTrustGrant("h:22"));
+
+  SettingRepo.__clear();
+}
+
 console.log("\n[3d] MC-018 disconnect removes the record and scrubs secrets");
 {
   const lserver = new SshServer({ hostKeys: [hostKey] }, (client) => {

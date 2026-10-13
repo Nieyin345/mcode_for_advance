@@ -70,6 +70,8 @@ const { IPC } = await import("@contracts/ipc");
 const { registerSettingsTransferHandlers } = await import("@main/ipc/settingsTransfer.js");
 const { initDb, getDb } = await import("@main/store/db.js");
 const { SettingRepo } = await import("@main/store/repositories.js");
+// 【MC-014 / MC-052】导入路径的授信排除判据 —— 与真实导入 handler 同源的 `isTransferableSettingKey`。
+const { isTransferableSettingKey } = await import("@main/settings/settingsTransfer.js");
 // `@main/window.js` 被 run.sh 换成了 projects-ipc-smoke 的桩 —— 它把每一帧广播记在 `sent`
 // 里(桌面端这一路)。运行时用的是**那个同一个桩实例**(alias 指向同一文件),这里只是把
 // 它 cast 成桩的类型好让 typecheck 看得见 `resetSent` / `eventsOfType`(真 `@main/window`
@@ -540,6 +542,53 @@ console.log("\nARC-005:durable 失败 + 内存补偿也失败 → 错误不得�
   // 修正后的正控地基:清掉残留状态,确认库还能正常读写(没被这段搞坏)。
   SettingRepo.set("ui.locale", "AFTER");
   eq("本段收尾后库仍可正常读写", SettingRepo.get("ui.locale"), "AFTER");
+}
+
+/* ──────────────── 【MC-014 / MC-052】设置导入不得夹带 SSH 授信 ──────────────── */
+
+console.log("\nMC-052:导入设置不能夹带 SSH 主机授信(knownHosts / hostTrustGrants)");
+{
+  // 盯的是什么:SSH 主机信任(用户核对过的指纹)与**宿主签发的授权**若能被一份"设置备份"
+  // 写进库,导入就成了一条自签授权通道 —— 用户导入一份被诱导的备份,等于预先批准了某台
+  // 服务器。判据立在两处:(a) 纯判据 `isTransferableSettingKey` 对这两个真键返回 false;
+  // (b) **真实导入 handler** 喂进一份夹带它们的文件,键**绝不落进库**、且计入 skipped。
+  const GRANT_KEY = "agentSsh.hostTrustGrants"; // 宿主签发的授权表(唯一铸造批准的入口的存储)
+  const KNOWN_KEY = "agentSsh.knownHosts";      // 用户核对过的主机指纹表
+
+  eq("★ 纯判据:agentSsh.hostTrustGrants 不可迁移", isTransferableSettingKey(GRANT_KEY), false);
+  eq("★ 纯判据:agentSsh.knownHosts 不可迁移", isTransferableSettingKey(KNOWN_KEY), false);
+  // 正控:同一前缀之外的普通偏好仍可迁移(别把判据写成一刀切)。
+  eq("正控:ui.locale 仍可迁移", isTransferableSettingKey("ui.locale"), true);
+
+  // 端到端:一份"手改过的设置文件"夹带一条伪造授权 + 一条 known_hosts + 一条普通偏好。
+  const forgedGrant = JSON.stringify({
+    "evil.example:22": JSON.stringify({
+      grantId: "forged", hostPort: "evil.example:22",
+      fingerprint: `SHA256:${"C".repeat(43)}`, approvalSource: "user", approvedAt: 0, version: 1,
+    }),
+  });
+  const forgedKnown = JSON.stringify({ "evil.example:22": `SHA256:${"D".repeat(43)}` });
+  const file = join(WORK, "import-with-trust.json");
+  writeFileSync(file, `${JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: new Date().toISOString(),
+    settings: {
+      "ui.locale": "en",
+      [GRANT_KEY]: forgedGrant,
+      [KNOWN_KEY]: forgedKnown,
+    },
+  }, null, 2)}\n`, "utf8");
+
+  clearBackups();
+  // 先确保库里有本地已有的、不该被导入覆盖的授信(模拟用户本机已授信的主机)。
+  SettingRepo.set(KNOWN_KEY, JSON.stringify({ "trusted.local:22": `SHA256:${"E".repeat(43)}` }));
+  const res = await runImport(file);
+  eq("导入成功(被挡下的键不影响整体导入)", res.ok, true);
+  eq("★ 只有普通偏好被写入(entry count = 1)", res.count, 1);
+  eq("★ 两条授信键都进了 skipped", res.skipped, 2);
+  eq("★ 夹带的授权表**没有**落进库(仍是导入前状态,无这条键)", SettingRepo.get(GRANT_KEY), null);
+  eq("★ 夹带的 known_hosts **没有**覆盖本机已有的授信",
+    SettingRepo.get(KNOWN_KEY), JSON.stringify({ "trusted.local:22": `SHA256:${"E".repeat(43)}` }));
+  eq("普通偏好照常导入", SettingRepo.get("ui.locale"), "en");
 }
 
 /* ──────────────── 收尾 ──────────────── */
