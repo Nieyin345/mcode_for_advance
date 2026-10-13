@@ -30,7 +30,8 @@ export function uiLocale(): "zh" | "en" {
   }
 }
 
-/** 取一条系统对话框文案。**每次现读设置**,所以界面切语言后下一次弹框就跟着换。 */
-export function dialogText(key: MessageId): string {
-  return translate(uiLocale(), key);
+/** 取一条系统对话框文案。**每次现读设置**,所以界面切语言后下一次弹框就跟着换。
+ *  `params` 透传给 `translate` 做 `{name}` 插值(与渲染端同一套占位符)。 */
+export function dialogText(key: MessageId, params?: Record<string, string | number>): string {
+  return translate(uiLocale(), key, params);
 }

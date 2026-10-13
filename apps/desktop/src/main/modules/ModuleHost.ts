@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import {
-  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, missingCapabilityPermission, actionInvocationDenied,
+  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, missingCapabilityPermission, actionInvocationRefusal, moduleRefusal, moduleRefusalError,
   type ModuleManifest, type ModuleInvoke, type ModuleResource, type ModuleResult, type ModuleTask,
   type ModuleReply, type ModuleCatalog, type ModuleTaskRef,
 } from "@contracts/modules";
@@ -207,16 +207,24 @@ export class ModuleHost {
     // 【MC-060】`action` 能力的**受控执行宿主**:准入(能否挂这个能力)在 register/validate 已判;
     // 这里有**第二层** —— 每一次 `action` 执行前,必须①模块清单显式持有 `resource.write`(作用域),
     // ②存在审批通道,再③经该通道拿到批准。三条任一不满足即拒,且绝不落到执行。判定复用
-    // `@contracts/modules` 的 `actionInvocationDenied`(只有这一份),host 只负责问审批端口、
-    // 拒绝时抛原因。资源作用域已由上面的 `authorize(resource)` 建立,审批请求把同一资源一并交上去,
+    // `@contracts/modules` 的 `actionInvocationRefusal`(只有这一份),host 只负责问审批端口、
+    // 拒绝时抛**带 code 的拒绝**(命令没执行 → 上层按 REJECTED 归类,绝不误报成 UNCERTAIN)。
+    // 资源作用域已由上面的 `authorize(resource)` 建立,审批请求把同一资源一并交上去,
     // 让批准方看到"批的是哪个模块贡献、动哪个文件"。action 之外(query/task)不受影响。
-    const actionDenied = actionInvocationDenied(definition.kind, module.permissions, this.options.requestApproval !== undefined);
-    if (actionDenied) throw Error(actionDenied);
+    const refusal = actionInvocationRefusal(definition.kind, module.permissions, this.options.requestApproval !== undefined);
+    if (refusal) throw moduleRefusalError(refusal.code, refusal.reason);
     if (definition.kind === "action") {
       // 无审批通道已在上一步被拒,故这里 `requestApproval` 必存在;resolve 放行,reject 原样抛。
-      await this.options.requestApproval!({
-        moduleId: module.id, contributionId: contribution.id, capabilityId: definition.id, resource: structuredClone(resource),
-      });
+      try {
+        await this.options.requestApproval!({
+          moduleId: module.id, contributionId: contribution.id, capabilityId: definition.id, resource: structuredClone(resource),
+        });
+      } catch (error) {
+        // 审批端口拒绝(resolve=批准,reject=拒绝)。已经带拒绝标记的原样抛(不重复包);
+        // 否则包成 `approval_denied` —— 用户/批准方拒绝 = 命令没执行,上层应按 REJECTED 归类。
+        const already = moduleRefusal(error);
+        throw already ? error : moduleRefusalError("approval_denied", error instanceof Error ? error.message : String(error));
+      }
       // 审批可能挂起等待用户;期间模块若被换/撤,按变化重来(与 authorize 后的同一取向)。
       if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
     }

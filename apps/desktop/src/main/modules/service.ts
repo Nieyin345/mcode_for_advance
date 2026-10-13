@@ -4,9 +4,32 @@ import { join } from "node:path";
 import { z } from "zod";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
-import { EXAMPLE_MODULE, ModuleManifestSchema, type ModuleManifest } from "@contracts/modules";
-import { ModuleHost } from "./ModuleHost.js";
+import { EXAMPLE_MODULE, ModuleManifestSchema, moduleRefusalError, type ModuleManifest } from "@contracts/modules";
+import { ModuleHost, type ActionApprovalRequest } from "./ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "./fileCapabilities.js";
+
+/**
+ * 【MC-060】**生产审批端口** —— 一个 `action` 能力**每次执行**前,宿主经它拿到用户批准。
+ *
+ * 端口本身留在**本模块**(纯 Node,不 import Electron):宿主与它同款注入,`service.ts`
+ * 被多个无头 smoke bundle,不能把 electron 拉进来。真实现(原生确认框)在
+ * `moduleApproval.ts`,由 `index.ts` 在启动装配期经 `configureModuleApprovalPort` 装上。
+ *
+ * **fail-closed** 与 `gateAppAction` 一致:没装上端口(= 这个环境没有可用的审批通道)→
+ * 一律拒(`approval_unavailable`),写档动作绝不被"没界面问"默认放行。装上之后不回退。
+ */
+export type ModuleApprovalPort = (request: ActionApprovalRequest) => Promise<void>;
+let approvalPort: ModuleApprovalPort | null = null;
+/** 装配期唯一入口(由 `index.ts` 调 `assembleModuleApprovalPort()`)。传 `null` 可卸载,仅测试用。 */
+export function configureModuleApprovalPort(next: ModuleApprovalPort | null): void { approvalPort = next; }
+/** 宿主注入的审批端口实现:有真端口就交它,没有就 **fail-closed 抛 `approval_unavailable`**
+ *  (命令没执行 → 上层按 REJECTED 归类)。判定只有这一处,宿主不 import 本函数之外的东西。 */
+export async function requestModuleActionApproval(request: ActionApprovalRequest): Promise<void> {
+  if (!approvalPort) {
+    throw moduleRefusalError("approval_unavailable", "action 能力执行需要审批通道,当前环境没有可用的审批通道,为安全起见未执行。");
+  }
+  return approvalPort(request);
+}
 
 let hostPromise: Promise<ModuleHost> | null = null;
 /** Lazy: importing IPC must not touch the user's data root during smoke tests. */
@@ -18,6 +41,11 @@ async function createHost(): Promise<ModuleHost> {
   const dir=join(dataRoot(),"ui-modules"),path=join(dir,"manifests.json");
   const host=new ModuleHost({
     authorize:async resource=>{await resolveModuleResource(resource,isKnownWorkspaceRoot);},
+    // 【MC-060】生产审批通道:把 `requestModuleActionApproval` 交给宿主,`action` 能力每次执行
+    // 前经它拿用户批准。装配期由 `index.ts` 装上真端口(`assembleModuleApprovalPort`);未装配时
+    // 该函数 fail-closed 抛 `approval_unavailable` —— 于是"有通道"(这个选项存在)与"通道真能
+    // 问用户"统一由那一个端口决定,宿主不再需要一个"有没有通道"的布尔。
+    requestApproval: requestModuleActionApproval,
     persist:async manifests=>{
       const body=JSON.stringify(manifests,null,2);
       if(Buffer.byteLength(body)>512*1024)throw Error("Module store exceeds 512 KiB");

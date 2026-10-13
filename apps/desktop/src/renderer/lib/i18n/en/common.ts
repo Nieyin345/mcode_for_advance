@@ -53,4 +53,11 @@ export const en = {
   "common.dialog.exportSettings": "Export Mcode settings",
   "common.dialog.importSettings": "Import Mcode settings",
   "common.dialog.settingsFilter": "Mcode settings",
+  // 【MC-060】Native approval for an extension module action capability (main/modules/moduleApproval.ts).
+  "common.moduleApprovalTitle": "Extension module wants to write",
+  "common.moduleApprovalMessage": "Module \"{module}\" contribution \"{contribution}\" asks to run a write action on:\n{path}",
+  "common.moduleApprovalDetail": "The action runs only if you approve. If you deny it, nothing happens and you can safely retry.",
+  "common.moduleApprovalAllow": "Allow this action",
+  "common.moduleApprovalDeny": "Deny",
+  "common.moduleApprovalDenied": "You denied this module write action; nothing was executed.",
 } as const;

@@ -77,9 +77,55 @@ export function actionInvocationDenied(
   permissions: readonly string[],
   approvalChannelAvailable: boolean,
 ): string | undefined {
+  return actionInvocationRefusal(kind, permissions, approvalChannelAvailable)?.reason;
+}
+
+/**
+ * 【MC-060】**一次能力调用的拒绝** —— 命令**根本没执行**(无副作用),与 `OperationResult`
+ * 的 `REJECTED` 同义。调用端据 `code` 把「没执行」和「执行途中出错、可能已部分落定」
+ * (→ UNCERTAIN,绝不默认可安全重试)分开;从前宿主只抛裸 `Error`,审批被拒会被上层按
+ * 权限档一律报成 UNCERTAIN,把一次**安全可重来**的拒绝说成「先查真实状态、别重试」。
+ *
+ *  - `scope_denied`          模块清单没显式声明 `resource.write`(越权),无条件拒;
+ *  - `approval_unavailable`  这个环境没有审批通道(fail-closed:没界面问就不放行写动作);
+ *  - `approval_denied`       审批通道存在,但用户/批准方**拒绝**了这一次。
+ */
+export const MODULE_REFUSAL_CODES = ["scope_denied", "approval_unavailable", "approval_denied"] as const;
+export type ModuleRefusalCode = (typeof MODULE_REFUSAL_CODES)[number];
+export interface ModuleRefusal { code: ModuleRefusalCode; reason: string }
+
+/** 【MC-060】用**结构标记**而不是 `instanceof`:调用方(如 `appControl` 的结果分类器)读这个
+ *  标记时不必 import 宿主,也就不会把整个 host + zod schema 图拉进它自己的打包。 */
+export const MODULE_REFUSAL_MARKER = "mcodeModuleRefusal" as const;
+
+/** 构造一个带拒绝标记的 `Error` —— 原因原样进 `message`(卡片与日志都读它)。 */
+export function moduleRefusalError(code: ModuleRefusalCode, reason: string): Error {
+  const error = new Error(reason);
+  (error as unknown as Record<string, unknown>)[MODULE_REFUSAL_MARKER] = { code, reason } satisfies ModuleRefusal;
+  return error;
+}
+
+/** 【MC-060】读回一个 `Error` 上的拒绝标记(没有 / 形状不对 → `null`,绝不猜)。 */
+export function moduleRefusal(error: unknown): ModuleRefusal | null {
+  if (!error || typeof error !== "object") return null;
+  const value = (error as Record<string, unknown>)[MODULE_REFUSAL_MARKER];
+  if (!value || typeof value !== "object") return null;
+  const { code, reason } = value as { code?: unknown; reason?: unknown };
+  if (typeof code !== "string" || typeof reason !== "string") return null;
+  if (!(MODULE_REFUSAL_CODES as readonly string[]).includes(code)) return null;
+  return { code: code as ModuleRefusalCode, reason };
+}
+
+/** 【MC-060】执行点拒绝的**唯一判定**(带 code) —— `actionInvocationDenied` 只取它的 `reason`,
+ *  保持既有调用端/断言不变;需要区分拒绝种类的调用端读 `code`。一份判定,两个投影。 */
+export function actionInvocationRefusal(
+  kind: ModuleCapabilityDescriptor["kind"],
+  permissions: readonly string[],
+  approvalChannelAvailable: boolean,
+): ModuleRefusal | undefined {
   if (kind !== "action") return undefined;
-  if (!permissions.includes("resource.write")) return "action 能力执行需要模块声明 resource.write 权限";
-  if (!approvalChannelAvailable) return "action 能力执行需要审批通道,当前环境没有可用的审批通道,为安全起见未执行。";
+  if (!permissions.includes("resource.write")) return { code: "scope_denied", reason: "action 能力执行需要模块声明 resource.write 权限" };
+  if (!approvalChannelAvailable) return { code: "approval_unavailable", reason: "action 能力执行需要审批通道,当前环境没有可用的审批通道,为安全起见未执行。" };
   return undefined;
 }
 export const ModuleInvokeSchema = z.object({ moduleId: Id, contributionId: LocalId, resource: ResourceSchema, requestId: z.string().min(1).max(100) }).strict();

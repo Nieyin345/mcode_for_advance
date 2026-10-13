@@ -32,6 +32,7 @@ import { SettingRepo } from "@main/store/repositories.js";
 import { setOperationLedger } from "@main/appControl/operations.js";
 import { assembleGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import { assembleHostHookGrantPersist } from "@main/hooks/hostHookGrantFile.js";
+import { assembleModuleApprovalPort } from "@main/modules/moduleApproval.js";
 import { assembleSceneRuntime } from "@main/orchestration/sceneTaskRuntime.js";
 import { DurableOperationLedger } from "@main/store/operationLedger.js";
 import { initUpdater } from "@main/updater.js";
@@ -211,6 +212,12 @@ app.whenReady().then(async () => {
     // 每次开机都得重签(把「默认拒绝」错当「永远拒绝」)。接上后签发 / 撤销都落盘,重启经 load()
     // 载回,撤销 / 过期随文件跨重启生效。装上之后不回退 —— 静默降级会让「授权已持久」变成假象。
     assembleHostHookGrantPersist(dataRoot());
+    // **扩展模块 action 能力的审批端口(MC-060)** —— 启动时装上真端口:一个 `action` 能力
+    // **每次执行**前弹一个原生确认框,由用户本人点头/拒绝(见 modules/moduleApproval.ts)。
+    // 端口类型与 fail-closed 空实现留在 modules/service.ts(纯 Node,无头套件会 bundle 它),
+    // 这一层只负责把 Electron 的原生对话框接到那个注入口上。此前生产 host **没注入**审批端口,
+    // action 能力一旦接入会被 fail-closed 拒 —— 装配缺席正是本片要补的那个洞。装上之后不回退。
+    assembleModuleApprovalPort();
     // **场景任务注册表(ARC-013 步②)** —— 启动时装上,统一走 `getSceneRegistry()` 这个
     // 单例读取口(各模块不再各 new 一份)。取消走 `cancelSceneTask()` / `sceneCancelReport()`,
     // 握着不可中断外部动作(git push / SSH)的任务取消时如实报 `uncertain`,绝不谎称已取消。

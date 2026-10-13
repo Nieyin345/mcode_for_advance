@@ -55,7 +55,7 @@ import {
 } from "@contracts/appControl";
 import { fail, image, text, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js";
 import { API_CATALOG, type ApiCatalogEntry } from "./apiCatalog.generated.js";
-import { decodeDomainOutcome, resultKindOfOutcome, sideEffectClassOf } from "./commandOutcome.js";
+import { decodeDomainOutcome, resultKindOfOutcome, sideEffectClassOf, thrownResultKind } from "./commandOutcome.js";
 import {
   getOperationLedger,
   intentFingerprint,
@@ -691,13 +691,17 @@ export async function panelApiCall(
     // 部分提交** → UNCERTAIN(`retryable=false`,文本提醒先查真实状态)—— 与 agent 那条路
     // 同判据。这一条正是 ARC-009 对 `panelApiCall` 点名的"失败分支":旧代码把它和"没执行"
     // 糊成同一个 `{ok:false,error}`,面板作者会对一个可能已落定的非幂等写操作再调一次。
-    const risky = level === "write" || level === "danger";
-    const op = risky
-      ? makeOp("UNCERTAIN", entry.method, randomUUID(), {
-          code: OP_CODE.rpcUncertain,
-          reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
-        })
-      : makeOp("FAILED", entry.method, randomUUID(), { code: OP_CODE.rpcFailed, reason: errText(err) });
+    // 【MC-060】但 `ModuleHost` 执行点拒绝一个**没执行**的 action 调用时抛的带 `moduleRefusal`
+    // 标记 Error 必须落 REJECTED(命令没执行,可安全重来),与 agent 那条路共用 `thrownResultKind`。
+    const kind = thrownResultKind(err, level);
+    const op = kind === "REJECTED"
+      ? makeOp("REJECTED", entry.method, randomUUID(), { code: OP_CODE.approvalDenied, reason: errText(err) })
+      : kind === "UNCERTAIN"
+        ? makeOp("UNCERTAIN", entry.method, randomUUID(), {
+            code: OP_CODE.rpcUncertain,
+            reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
+          })
+        : makeOp("FAILED", entry.method, randomUUID(), { code: OP_CODE.rpcFailed, reason: errText(err) });
     return { ok: false, error: formatOperationResult(op), operation: op };
   }
   // ── 领域结果解码(MC-066):RPC resolve ≠ 业务成功 ───────────────────
@@ -2134,16 +2138,21 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           }
           // 其余抛错:只读/界面档不可能有副作用 → FAILED(可安全重试);
           // 写/高风险档**可能已部分提交** → UNCERTAIN(绝不标成功,也绝不默认重试)。
-          const risky = entry.policy.level === "write" || entry.policy.level === "danger";
-          const op = risky
-            ? makeOp("UNCERTAIN", entry.method, operationId, {
-                code: OP_CODE.rpcUncertain,
-                reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
-              })
-            : makeOp("FAILED", entry.method, operationId, {
-                code: OP_CODE.rpcFailed,
-                reason: errText(err),
-              });
+          // 【MC-060】ModuleHost 在执行点拒绝一个**没执行**的 action 调用时抛带 `moduleRefusal`
+          // 标记的 Error(审批被拒 / 无审批通道 / 越权)—— 那是"命令没执行",按 REJECTED 归类,
+          // 绝不能因为权限档是 write 就误报成 UNCERTAIN。共用 `thrownResultKind`,不在这里重写判据。
+          const kind = thrownResultKind(err, entry.policy.level);
+          const op = kind === "REJECTED"
+            ? makeOp("REJECTED", entry.method, operationId, { code: OP_CODE.approvalDenied, reason: errText(err) })
+            : kind === "UNCERTAIN"
+              ? makeOp("UNCERTAIN", entry.method, operationId, {
+                  code: OP_CODE.rpcUncertain,
+                  reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
+                })
+              : makeOp("FAILED", entry.method, operationId, {
+                  code: OP_CODE.rpcFailed,
+                  reason: errText(err),
+                });
           // ★ UNCERTAIN 也**落账** —— 同 id 再试会被回放成 UNCERTAIN,**不再盲发第二次 RPC**。
           settle(op.resultKind, op);
           return operationToolResult(op);

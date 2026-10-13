@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile, symlink, truncate, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { EXAMPLE_MODULE, ModuleManifestSchema, ResourceSchema, ResultSchema, type ModuleInvoke, type ModuleReply, type ModuleTask } from '@contracts/modules';
+import { EXAMPLE_MODULE, ModuleManifestSchema, ResourceSchema, ResultSchema, actionInvocationDenied, actionInvocationRefusal, moduleRefusal, moduleRefusalError, type ModuleInvoke, type ModuleReply, type ModuleTask } from '@contracts/modules';
 import { JsonSchemaDocumentSchema, ModuleCatalogSchema, ModuleWorkflowCallSchema } from '@contracts/moduleCapability';
 import { ModuleHost } from '../../src/main/modules/ModuleHost.js';
 import type { ActionApprovalRequest } from '../../src/main/modules/ModuleHost.js';
 import { fileCapabilities, resolveModuleResource } from '../../src/main/modules/fileCapabilities.js';
-import { getModuleHost } from '../../src/main/modules/service.js';
+import { getModuleHost, configureModuleApprovalPort, requestModuleActionApproval } from '../../src/main/modules/service.js';
+import { thrownResultKind } from '../../src/main/appControl/commandOutcome.js';
 
 const base = process.env.P2_TEST_DIR;
 assert.ok(base, 'builder must provide isolated test directory');
@@ -146,6 +147,90 @@ await test('AUTH action invocation needs an injected approval channel, scoped, o
   // 非 action(query/task)不弹审批:普通只读能力照常直接返回,不受这道闸影响。
   const plain=await host.invoke(call('core.file-report','info','no-approval-needed'));
   assert.equal(plain.type,'result');
+});
+// 【MC-060 承重】执行点拒绝必须**可区分** —— 命令没执行(REJECTED)vs 执行途中出错(UNCERTAIN)。
+// 宿主拒绝一个 action 时抛的 Error 带 `moduleRefusal` 标记(scope_denied / approval_unavailable /
+// approval_denied),上层结果分类器 `thrownResultKind` 据此落 REJECTED(可安全重来),**不**按
+// 权限档一律报 UNCERTAIN。撤掉 ModuleHost 里 `moduleRefusalError(...)` 的抛 → 标记消失 →
+// `moduleRefusal(err)` 回 null → 这条真红。
+await test('AUTH action refusals carry a typed code so "nothing executed" is not misreported as UNCERTAIN',async()=>{
+  // (a) 纯判据带 code;`actionInvocationDenied` 仍只取理由(既有调用端不变)。
+  assert.equal(actionInvocationRefusal('query',['resource.read'],false),undefined);
+  assert.deepEqual(actionInvocationRefusal('action',['resource.read'],true),{code:'scope_denied',reason:'action 能力执行需要模块声明 resource.write 权限'});
+  assert.equal(actionInvocationRefusal('action',['resource.read','resource.write'],false)?.code,'approval_unavailable');
+  assert.equal(actionInvocationDenied('action',['resource.read','resource.write'],false),actionInvocationRefusal('action',['resource.read','resource.write'],false)?.reason);
+
+  // (b) 宿主无审批通道拒绝 → 抛出的 Error 带 approval_unavailable 标记。
+  const noChannel=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+  noChannel.register({id:'core.test.mutate-code1',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:7})});
+  noChannel.addBuiltin({...EXAMPLE_MODULE,id:'core.mutate-code1',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.mutate-code1'}]});
+  let noChannelErr:unknown;
+  try{await noChannel.invoke(call('core.mutate-code1'));assert.fail('expected refusal');}catch(e){noChannelErr=e;}
+  assert.equal(moduleRefusal(noChannelErr)?.code,'approval_unavailable','host refusal must be a typed module refusal');
+
+  // (c) 审批端口拒绝 → approval_denied(不是裸 Error,也不是 UNCERTAIN)。
+  const refusing=new ModuleHost({authorize:async()=>{},persist:async()=>{},requestApproval:async()=>{throw Error('用户拒绝了这次操作,未执行。');}});
+  refusing.register({id:'core.test.mutate-code2',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:7})});
+  refusing.addBuiltin({...EXAMPLE_MODULE,id:'core.mutate-code2',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.mutate-code2'}]});
+  let refusedErr:unknown;
+  try{await refusing.invoke(call('core.mutate-code2'));assert.fail('expected refusal');}catch(e){refusedErr=e;}
+  assert.equal(moduleRefusal(refusedErr)?.code,'approval_denied');
+
+  // (d) 结果分类器:带标记的拒绝 → REJECTED(即便方法档位是 write);裸错误仍按档位(写档 → UNCERTAIN)。
+  //     撤掉 `thrownResultKind` 的 `moduleRefusal` 分支 → 写档标记拒绝会落 UNCERTAIN → 真红。
+  assert.equal(thrownResultKind(noChannelErr,'write'),'REJECTED','a typed refusal is "nothing executed" => REJECTED even for a write-level method');
+  assert.equal(thrownResultKind(refusedErr,'danger'),'REJECTED');
+  assert.equal(thrownResultKind(Error('fsync 失败'),'write'),'UNCERTAIN','an untagged write-level error stays UNCERTAIN');
+  assert.equal(thrownResultKind(Error('read failed'),'read'),'FAILED');
+});
+
+// 【MC-060 承重】**生产审批装配** —— 此前 `modules/service.ts` 的生产 host **没注入**审批端口,
+// `action` 能力一旦接入会被 fail-closed 拒(装配缺席)。这条钉住:`service.ts` 交出的 host 带
+// **生产审批端口**(`requestModuleActionApproval`),端口未装上时**抛 approval_unavailable 标记**
+// 而不是静默放行;装上真端口后由它接管。撤掉 service.ts 里 `requestApproval: requestModuleActionApproval`
+// 这一行 → 生产 host 又变回"无通道",action 调用无法区分"没通道"与"没装端口" → 真红。
+await test('AUTH production host wires a real approval port, fail-closed until assembled',async()=>{
+  // 端口默认(未装配)必须 fail-closed:抛带标记的 approval_unavailable,绝不静默放行。
+  configureModuleApprovalPort(null);
+  let before:unknown;
+  try{await requestModuleActionApproval({moduleId:'m',contributionId:'c',capabilityId:'k',resource:{projectPath:root,path:file}});assert.fail('expected fail-closed');}catch(e){before=e;}
+  assert.equal(moduleRefusal(before)?.code,'approval_unavailable','no assembled port must refuse, not allow');
+
+  // 装上真端口 → 由它决定放行 / 拒绝(这里放行),且请求原样透传(作用域不丢)。
+  let seen:ActionApprovalRequest|undefined;
+  configureModuleApprovalPort(async req=>{seen=req;});
+  try {
+    await requestModuleActionApproval({moduleId:'m2',contributionId:'c2',capabilityId:'k2',resource:{projectPath:root,path:file}});
+    assert.equal(seen?.moduleId,'m2');
+    assert.equal(seen?.resource.path,file);
+
+    // 真端口拒绝 → 原样抛(上层会包成 approval_denied)。
+    configureModuleApprovalPort(async()=>{throw moduleRefusalError('approval_denied','用户拒绝了这次操作,未执行。');});
+    let denied:unknown;
+    try{await requestModuleActionApproval({moduleId:'m3',contributionId:'c3',capabilityId:'k3',resource:{projectPath:root,path:file}});assert.fail('expected denial');}catch(e){denied=e;}
+    assert.equal(moduleRefusal(denied)?.code,'approval_denied');
+  } finally {
+    // 还原到未装配态:本套其它用例(以及真实 service host)不受这条的影响。
+    configureModuleApprovalPort(null);
+  }
+
+  // 真实懒加载 service host:**装配端口后**,一个声明 resource.write 的内置 action 模块
+  // 应当能**真执行**(approval 端口被调到并放行)。这是**判别性**证据:若 `service.ts` 的
+  // createHost **没**把 `requestApproval: requestModuleActionApproval` 交下去,宿主就没有
+  // 审批通道,`actionInvocationRefusal` 会在执行点先用 approval_unavailable 拒掉 —— 端口永远
+  // 轮不到被调,这条会红(而不是"两种缺席看不出来")。
+  const realHost=await getModuleHost();
+  realHost.register({id:'core.test.prod-action',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:99})});
+  realHost.addBuiltin({...EXAMPLE_MODULE,id:'core.prod-action',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.prod-action'}]});
+  let prodAsked=0;
+  configureModuleApprovalPort(async()=>{prodAsked++;});
+  try {
+    const reply=await realHost.invoke({moduleId:'core.prod-action',contributionId:'inspect',requestId:'prod-wired',resource:{projectPath:root,path:file}});
+    assert.equal(prodAsked,1,'production host must route the action through the assembled approval port');
+    assert.equal(reply.type,'result');if(reply.type==='result')assert.equal(reply.value.bytes,99);
+  } finally {
+    configureModuleApprovalPort(null);
+  }
 });
 await test('AUTH extra trusted source projectPath capabilityId and requestId cannot enter user parameters',async()=>{
   const params={moduleId:'core.file-report',contributionId:'inspect',path:file};

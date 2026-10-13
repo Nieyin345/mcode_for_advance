@@ -59,4 +59,11 @@ export const zh = {
   "common.dialog.exportSettings": "导出 Mcode 设置",
   "common.dialog.importSettings": "导入 Mcode 设置",
   "common.dialog.settingsFilter": "Mcode 设置",
+  // 【MC-060】扩展模块 `action` 能力**每次执行前**的原生审批框(main/modules/moduleApproval.ts)。
+  "common.moduleApprovalTitle": "扩展模块请求执行写操作",
+  "common.moduleApprovalMessage": "模块「{module}」的贡献「{contribution}」请求对文件执行一次写操作:\n{path}",
+  "common.moduleApprovalDetail": "批准后这次操作才会执行。拒绝则该操作不会发生,可以安全重来。",
+  "common.moduleApprovalAllow": "允许这次操作",
+  "common.moduleApprovalDeny": "拒绝",
+  "common.moduleApprovalDenied": "用户拒绝了这次模块写操作,未执行。",
 } as const;

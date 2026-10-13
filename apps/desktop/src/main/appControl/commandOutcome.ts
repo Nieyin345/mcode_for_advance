@@ -17,7 +17,8 @@
  */
 import type { OperationResultKind } from "@contracts/appControl";
 import { OP_CODE } from "@contracts/appControl";
-import { policyFor } from "./policy.js";
+import { moduleRefusal } from "@contracts/modules";
+import { policyFor, type AppPolicyLevel } from "./policy.js";
 
 /** 领域结果的三种判定。 */
 export type DomainOutcome =
@@ -472,4 +473,19 @@ export function resultKindOfOutcome(outcome: DomainOutcome): OperationResultKind
 export function sideEffectClassOf(method: string): "readonly" | "mutating" {
   const level = policyFor(method).level;
   return level === "write" || level === "danger" ? "mutating" : "readonly";
+}
+
+/**
+ * 【MC-060】一次**抛错**该归成哪一态 —— 两条结果分类路(agent 的 `app_api_call` 与面板的
+ * `panelApiCall`)**共用这一份**,不各写一遍 `level === "write" || "danger"` 的前缀判断。
+ *
+ * 关键分叉:ModuleHost 在 `action` 执行点拒绝一个**没执行**的调用时,抛的是带 `moduleRefusal`
+ * 标记的 Error(审批被拒 / 无审批通道 / 越权,见 `@contracts/modules`)。这类"命令根本没执行"
+ * 必须落 **REJECTED**(可安全重来),**不能**被按权限档一律当 UNCERTAIN —— 那会把一次**安全
+ * 可重来**的拒绝说成「先查真实状态、别重试」,正是 ARC-009 要消灭的那种误分类。其余抛错维持
+ * 既有判据:只读/界面档 → FAILED(可安全重试);写/高风险档**可能已部分提交** → UNCERTAIN。
+ */
+export function thrownResultKind(error: unknown, level: AppPolicyLevel): OperationResultKind {
+  if (moduleRefusal(error)) return "REJECTED";
+  return level === "write" || level === "danger" ? "UNCERTAIN" : "FAILED";
 }
