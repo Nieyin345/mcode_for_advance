@@ -71,6 +71,15 @@ export interface AutomationTriggerFacts {
   queuedCount?: number;
   /** 这一批是什么时候攒起来的(ms)。 */
   queuedAt?: number;
+  /**
+   * 【MC-091 续】**自上一次成功地交付以来**,这条触发器因积压超限**丢掉了多少条**、还没
+   * 交给任何一次运行(见主进程 `automationRunner` 的 `automation.droppedUndelivered` 恢复游标)。
+   *
+   * 与 `queuedCount` 的差别:那个说"此刻攒着几条、在等上一次跑完";这个说"有东西已经丢了、
+   * 且没能随任何一次运行交出去"(批次被作废 / 应用在合并窗口里重启)。下次真的派发会把这笔
+   * 欠账并进载荷、随后清零 —— 在这个字段之前,那段时间的丢弃是**完全静默**的。
+   */
+  droppedUndelivered?: number;
 }
 
 /** 登记/更新一条事实所需的最低信息 —— `LoadedTrigger` 天然满足。 */

@@ -255,6 +255,47 @@ const TRIGGER_CLAIMS_SETTING_KEY = "automation.triggerClaims";
 /** 已完成的领取最多留多少条(未完成的 `CLAIMED`/`UNCERTAIN` 不受此限,见 `pruneClaims`)。 */
 const TRIGGER_CLAIMS_HISTORY_KEEP = 64;
 
+/**
+ * 【MC-091 续】**被积压丢弃、但还没交付给任何一次运行**的条目数,存在这个 settings 键下。
+ *
+ * ## 为什么必须落盘
+ *
+ * `pending.overflowDropped` / 载荷的 `itemsOverflowDropped` 已经把"这一批丢了几条"兑现到
+ * **本次运行**的载荷里 —— 但那份账只在**内存**的 pending 上。几种情形会把它整份弄丢:
+ * ① 应用在合并窗口里重启(那一格 pending 没了);② 攒着的那一批因配置改动 / 用户取消 /
+ * `dispose` 被作废(见 `apply` / `onEvent` 的取消分支 / `dispose`)—— 这些路都**不派发
+ * 运行**,于是"丢了 N 条"这件事**静默消失**,下次运行读到的载荷里既没有条目、也没有截断
+ * 事实,模型以为它办的是全部。这正是复核点名的「持久积压 / 恢复游标」缺口。
+ *
+ * 本表就是那个恢复游标:凡有丢弃就累加并落盘,下一次真正派发的运行把这份欠账**并进它的
+ * 载荷事实**(`overflowDropped` / `itemsOverflowDropped`)、随后**清账**(drained);重启后
+ * 从盘上读回来接着算。
+ *
+ * ## 为什么不新开一张表
+ *
+ * 形状是一张**小映射**(`触发器的 key → {count, at}`),与 `lastMinute` / `triggerClaims`
+ * 同一类,都走 `SettingRepo`。开新表要动 `store/db.ts`(建表 + 迁移)再加一个 Repo,换来的
+ * 只是"能按列查" —— 这里没有按列查的需求(整张读、整张写)。落盘走 `SettingRepo.set`
+ * (**异步** `persist()`,重写整个库文件),故按"值变了才写""每键一条不新增"的规矩落
+ * (同 `rememberLastMinute`)——一条抖动的目录只会不停刷新**同一个**键,键数 = 有丢弃的
+ * 触发器数,通常个位数。
+ *
+ * ⚠️ 与「定时去重必须先 durable 才派发」那条红线**不同**:这里不挡任何派发,丢掉一两笔
+ * 记账只退化成"重启后可能少报一次丢弃",不会造成重复的外部副作用 —— 所以用 `SettingRepo.set`
+ * 的异步落盘即可,不必为了每次 churn 都 fsync 一次。
+ */
+const DROPPED_SETTING_KEY = "automation.droppedUndelivered";
+/** 上面那张表最多留多少条(按最近丢弃时刻修剪)。已交付(drained)的键直接删。 */
+const DROPPED_HISTORY_KEEP = 64;
+
+/** 一条「被丢弃、未交付」的欠账。 */
+interface UndeliveredDrop {
+  /** 累计丢掉了几条(自上一次交付以来)。 */
+  count: number;
+  /** 最近一次丢弃的时刻(ms),修剪用。 */
+  at: number;
+}
+
 /** 节点清单的短缓存窗口(见 `AutomationRunner.loadTypes`)。 */
 const TYPES_CACHE_TTL_MS = 5_000;
 
@@ -266,6 +307,20 @@ function isLastMinutes(raw: unknown): raw is Record<string, number> {
   return Object.entries(raw).every(
     ([key, value]) => key.length > 0 && typeof value === "number" && Number.isFinite(value),
   );
+}
+
+/**
+ * 【MC-091 续】落盘那份「被丢弃、未交付」欠账能读的判据。读不回来**不抛**,当空表 ——
+ * 见 `readDroppedUndelivered`。每条是 `{count, at}`(`count` 是正整数,`at` 是有限数)。
+ */
+function isUndeliveredDrops(raw: unknown): raw is Record<string, UndeliveredDrop> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  return Object.entries(raw).every(([key, value]) => {
+    if (key.length === 0 || typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const rec = value as { count?: unknown; at?: unknown };
+    return typeof rec.count === "number" && Number.isFinite(rec.count) && rec.count > 0 &&
+      typeof rec.at === "number" && Number.isFinite(rec.at);
+  });
 }
 
 /**
@@ -356,6 +411,11 @@ interface PendingFire {
    * 上限保护本身要保留(一条抖动的目录不能无限占内存/塞爆提示词),但**丢了几条必须
    * 兑现到载荷事实**里 —— 否则模型把这份被截断的列表当成全部,少办的那些永远没人办、
    * 也不报错。未丢时是 0,载荷里就不出现这个键。
+   *
+   * 【MC-091 续】**与落盘欠账表(`automation.droppedUndelivered`)并存**:这一份是**当前
+   * 这一批**的计数(载荷按它现拼,冒烟也直接看它);落盘那份是**跨批 / 跨重启**的恢复游标
+   * (派发时以它为准并入载荷、随后清账 —— 见 {@link drainDroppedUndelivered})。两者在同
+   * 一批里数值相同(同一次丢弃各记一笔),所以派发时用落盘的绝对值覆盖不会重复计。
    */
   overflowDropped: number;
   /** 最后一条事件载荷(事件那一路用;文件那一路的载荷在 flush 时现拼)。 */
@@ -439,6 +499,19 @@ class AutomationRunner {
    * 要挡的 bug。
    */
   private missedSweptTo = new Map<string, number>();
+  /**
+   * 【MC-091 续】**被积压丢弃、但还没交付给任何一次运行**的条目数**(见
+   * {@link DROPPED_SETTING_KEY})。`start()` 从盘上读回来;任何一次丢弃累加并落盘;
+   * 下一次真正派发的运行把欠账并进载荷、随后清账。
+   */
+  /**
+   * 【MC-091 续】**被积压丢弃、但还没交付给任何一次运行**的条目数(见
+   * {@link DROPPED_SETTING_KEY})。`start()` 从盘上读回来;任何一次丢弃累加并落盘;
+   * 下一次真正**派发**的运行把它并进载荷、随后清账(见 {@link drainDroppedUndelivered})。
+   */
+  private droppedUndelivered = new Map<string, UndeliveredDrop>();
+  /** 欠账表自上次落盘后变过没有(见 {@link recordDropped} / {@link flushDroppedUndelivered})。 */
+  private droppedDirty = false;
   private unsubscribe: (() => void) | null = null;
   /** 与钩子共用一份逻辑、各持一个实例 —— `tool.result` 要回查工具名,所以它**有状态**。 */
   private subjects = createEventSubjects();
@@ -482,6 +555,10 @@ class AutomationRunner {
     // (`recoverIncompleteClaims`)要拿它认出"领取了但没确认完成"的那些,而它必须在
     // 启动 tick 之前就把这些落成 `UNCERTAIN`(否则启动那一跳还会照常跑本分钟)。
     this.triggerClaims = this.readTriggerClaims();
+    // 【MC-091 续】上一次进程留下的**「被丢弃、未交付」欠账**。重启若发生在合并窗口里,
+    // 那一格 pending(连同它的 `overflowDropped`)整个没了 —— 丢的条数不能跟着消失。
+    // 读回来之后,下一次真正派发的运行把这份欠账并进载荷、随后清账。
+    this.droppedUndelivered = this.readDroppedUndelivered();
 
     this.ticker = setInterval(() => {
       try {
@@ -550,6 +627,11 @@ class AutomationRunner {
     this.lastMinute.clear();
     this.triggerClaims.clear();
     this.missedSweptTo.clear();
+    // 【MC-091 续】退出前把内存里的欠账冲刷落盘 —— 否则"攒着没冲刷的丢弃"会随进程消失,
+    // 与整个切片"不静默丢"的立场相悖(节流窗口最坏一个 tick)。清表在冲刷之后。
+    this.flushDroppedUndelivered(true);
+    this.droppedUndelivered.clear();
+    this.droppedDirty = false;
     this.facts.clear();
     this.entries.clear();
     log.info("AutomationRunner disposed");
@@ -1045,6 +1127,9 @@ class AutomationRunner {
 
   /** 定时:30 秒一次,把全部定时触发器的 cron 求一遍;顺带有上限地补挂失败的目录监听。 */
   private onTick(): void {
+    // 【MC-091 续】把攒着的未交付丢弃账冲刷落盘(节流窗口最坏一个 tick)。放在 tick 开头,
+    // 与下面别的周期性动作并列 —— 它不做别的,只在标脏时写一次盘。
+    this.flushDroppedUndelivered();
     // 先补挂:目录在两次 tick 之间回来了的话,这一跳就把它接上(MC-020)。它只对
     // `watcher === null` 且退避到点的目录动手,不会成为高频轮询。
     this.retryWatchers();
@@ -1267,6 +1352,105 @@ class AutomationRunner {
   }
 
   /**
+   * 【MC-091 续】读回上一次进程留下的「被丢弃、未交付」欠账(见
+   * {@link DROPPED_SETTING_KEY})。读不回来当空表,不抛(同 `readLastMinutes`)。
+   */
+  private readDroppedUndelivered(): Map<string, UndeliveredDrop> {
+    try {
+      const raw = SettingRepo.get(DROPPED_SETTING_KEY);
+      if (raw === null || raw.length === 0) return new Map();
+      const parsed: unknown = JSON.parse(raw);
+      if (!isUndeliveredDrops(parsed)) {
+        log.warn("[automation] 未交付丢弃账读不回来(形状不对),当空表");
+        return new Map();
+      }
+      return new Map(Object.entries(parsed));
+    } catch (err) {
+      log.warn(`[automation] 未交付丢弃账读不回来,当空表:${(err as Error).message}`);
+      return new Map();
+    }
+  }
+
+  /**
+   * 【MC-091 续】把「被积压丢弃」累加进某个触发器的**未交付欠账**。**只改内存 + 标脏**;
+   * 真正落盘由 {@link flushDroppedUndelivered} 按 `onTick`(30 秒)节流 —— 一条抖动 / 大批量的
+   * 目录会在一次 `onFsChange` 风暴里连续丢上千条,每条都 `SettingRepo.set`(重写整个库文件)
+   * 是不可接受的(同 `rememberLastMinute` 那条注释)。同一触发器反复丢弃只刷新**同一个键**,
+   * 键数 = 有丢弃的触发器数,不会随丢弃次数增长。
+   *
+   * ⚠️ 与 MC-051「落不盘就不派发」那条红线**不同**:欠账不挡任何派发,落盘失败 / 崩溃前
+   * 未及冲刷最多退化成"重启后**少报**一次积压",不造成重复的外部副作用 —— 所以节流的异步
+   * 落盘足够。派发清账(`drainDroppedUndelivered`)与退出会**强制**冲刷,精度最坏一个 tick。
+   */
+  private recordDropped(key: string, dropped: number): void {
+    if (dropped <= 0) return;
+    const prev = this.droppedUndelivered.get(key);
+    this.droppedUndelivered.set(key, { count: (prev?.count ?? 0) + dropped, at: Date.now() });
+    this.droppedDirty = true;
+  }
+
+  /** 某条触发器**当前欠着多少条未交付的积压丢弃**(只读,不清)。见 {@link drainDroppedUndelivered}。 */
+  private droppedCountOf(key: string): number {
+    const entry = this.droppedUndelivered.get(key);
+    return entry === undefined ? 0 : entry.count;
+  }
+
+  /**
+   * 【MC-091 续】清掉某条触发器的未交付欠账 —— 一次**真的派发了载荷**的运行把这份积压
+   * **交付**了(欠账已并进它的载荷事实),不该在更晚的运行里重复报同一笔。清账**立即落盘**,
+   * 否则重启后会把已经报过的那一笔又报一遍。
+   */
+  private drainDroppedUndelivered(key: string): void {
+    if (!this.droppedUndelivered.has(key)) return;
+    this.droppedUndelivered.delete(key);
+    this.droppedDirty = true;
+    this.flushDroppedUndelivered(true);
+  }
+
+  /**
+   * 把内存里的欠账写回 settings(按"最近丢弃"修剪,同 `writeLastMinutes` 的立场)。
+   * `force=false` 时**只在标脏后**写、写完清脏(节流);`force=true`(派发清账 / 退出)无视脏
+   * 标记直接写。值没变就不写(`SettingRepo.set` 会整库重写)。写不进去只记日志,不影响运行。
+   */
+  private flushDroppedUndelivered(force = false): void {
+    if (!force && !this.droppedDirty) return;
+    try {
+      const rows = [...this.droppedUndelivered.entries()]
+        .sort((a, b) => b[1].at - a[1].at)
+        .slice(0, DROPPED_HISTORY_KEEP);
+      const next = JSON.stringify(Object.fromEntries(rows));
+      if (SettingRepo.get(DROPPED_SETTING_KEY) === next) { this.droppedDirty = false; return; }
+      this.droppedUndelivered = new Map(rows);
+      SettingRepo.set(DROPPED_SETTING_KEY, next);
+      this.droppedDirty = false;
+    } catch (err) {
+      log.warn(`[automation] 未交付丢弃账写不进去(重启后可能少报一次积压):${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * 【MC-091 续】把 `mergeEventPayload` 的结果记进 pending,并把它**内部新丢的**事件条目数
+   * 落进未交付欠账(见 {@link recordDropped})。
+   *
+   * 事件条目的容量上限与去重**只有一份逻辑**(在 `mergeEventPayload` 里);这里只负责
+   * "这一次比上一次多丢了几条"的**差分**,不重抄那份截断。差分是完备的:同一批的欠账
+   * 落到盘上后,重启 / 批次作废都不会把它弄丢。
+   */
+  private mergeEventInto(
+    prior: TriggerPayload | undefined,
+    event: HookEvent,
+    facts: { toolName?: string; subjects?: readonly string[] },
+    item: Parameters<typeof mergeEventPayload>[3],
+    key: string,
+  ): TriggerPayload {
+    const before = prior?.kind === "event" ? (prior.itemsOverflowDropped ?? 0) : 0;
+    const merged = mergeEventPayload(prior, event, facts, item);
+    const after = merged.kind === "event" ? (merged.itemsOverflowDropped ?? 0) : 0;
+    if (after > before) this.recordDropped(key, after - before);
+    return merged;
+  }
+
+  /**
    * **重启恢复:把盘上那些没确认完成的领取认出来**(MC-051)。
    *
    * 盘上任何仍是 `CLAIMED` 的领取,都是"上一个进程在执行途中消失了" —— 它**绝不重复
@@ -1441,7 +1625,14 @@ class AutomationRunner {
         // 都明说"输入不完整"。
         const { backlog, dropped } = addToFileBacklog(pending.files, abs, PENDING_FILES_LIMIT);
         pending.files = backlog;
-        if (dropped > 0) pending.overflowDropped += dropped;
+        // 【MC-091 续】丢的条数**同步记进落盘欠账**(`automation.droppedUndelivered`)——
+        // `pending.overflowDropped` 只在**内存**里,应用在合并窗口里重启 / 这一批被
+        // 配置改动或用户取消作废时,它整份消失,"丢了几条"就静默没了。落盘那份是恢复游标:
+        // 下一次真正派发的运行把欠账并进载荷事实、随后清账(见 {@link recordDropped})。
+        if (dropped > 0) {
+          pending.overflowDropped += dropped;
+          this.recordDropped(triggerKey(trigger), dropped);
+        }
       }
       // **来了新东西 → 回看间隔从头数。** 退避(见 `BUSY_RETRY_MIN_MS`)管的是
       // "一直没新输入、只是在上一次运行没结束时反复回看"这一种;新文件到达说明
@@ -1598,6 +1789,9 @@ class AutomationRunner {
       pending.eventChain = chain;
       pending.selfOrigin = pending.selfOrigin === true || selfOrigin;
       if (!selfOrigin) {
+        // `externalEvent` 只是**混合批次**里"自我部分被扣光后"的备用副本(见 `fire`),
+        // 与下面的 `pending.event` 累加同一批外部条目。丢弃计数**只从下面那份规范载荷记
+        // 一次** —— 两份都记会把这批的丢弃翻倍。
         pending.externalEvent = mergeEventPayload(pending.externalEvent, event, { toolName, subjects }, item);
         pending.externalChain = this.mergeEventChains(pending.externalChain, sourceChain);
       }
@@ -1608,11 +1802,13 @@ class AutomationRunner {
       // 这次运行要办的**全部**,而下载是并发跑的,两篇同时下完就落在同一个窗口里。直接
       // 赋值的话后一条会**静默顶掉**前一条,另一篇再也没人管。这段逻辑在
       // `mergeEventPayload` 里(纯函数,冒烟钉得住)—— 别再在这儿手写一遍。
-      pending.event = mergeEventPayload(
+      // 【MC-091 续】经 `mergeEventInto`:它把这一次**新丢的**条目数落进未交付欠账。
+      pending.event = this.mergeEventInto(
         pending.event,
         event,
         { toolName, subjects },
         item,
+        triggerKey(trigger),
       );
       // **来了新东西 → 回看间隔从头数。** 同 `onFsChange` 那条:退避只管"没有新输入、
       // 只是在上一次运行没结束时反复回看"这一种,新事件说明这一批变了,该尽快收口。
@@ -1855,12 +2051,26 @@ class AutomationRunner {
    * 与 `@contracts/ipc` 的 `AutomationTriggerFacts` 镜像)—— 运行史只回答"跑过什么",
    * 这里回答"它现在挂没挂上"。 */
   statusOf(workflowId: string): AutomationTriggerFacts[] {
-    return this.withSelfTriggerStatus(this.facts.ofWorkflow(workflowId));
+    return this.withDropped(this.withSelfTriggerStatus(this.facts.ofWorkflow(workflowId)));
   }
 
   /** 全部触发器事实 —— 「所有自动化」那个列表视角用的。 */
   statusAll(): AutomationTriggerFacts[] {
-    return this.withSelfTriggerStatus(this.facts.all());
+    return this.withDropped(this.withSelfTriggerStatus(this.facts.all()));
+  }
+
+  /**
+   * 【MC-091 续】把**未交付的积压丢弃**欠账(见 `automation.droppedUndelivered`)合进事实。
+   *
+   * 这份欠账**不活在 `AutomationFacts` 里**(它是落盘的恢复游标,跨重启),所以读的时候
+   * 现并进来 —— 界面那一栏于是能说出「自上次交付以来积压丢了 N 条、还没交给任何运行」。
+   * 有欠账的行才带这个键(同 `queuedCount`/`missedCount` 的口径:没有就不给键)。
+   */
+  private withDropped(rows: AutomationTriggerFacts[]): AutomationTriggerFacts[] {
+    return rows.map((row) => {
+      const count = this.droppedCountOf(row.key);
+      return count > 0 ? { ...row, droppedUndelivered: count } : row;
+    });
   }
 
   /** A persisted pause must be visible after reload/restart, before another event arrives. */
@@ -2108,6 +2318,22 @@ class AutomationRunner {
       }
 
       const session = this.sessionOf(trigger, project?.id ?? "", opts?.originSessionId);
+      // 【MC-091 续】**派发这一刻把未交付的积压丢弃并进载荷事实。** 之前批次里被超限丢掉的
+      // 条目,有些**没能随它的载荷交出去** —— 那一批被配置改动 / 用户取消作废了,或应用在
+      // 合并窗口里重启了(见 `recordDropped`)。落盘那份欠账就是恢复游标:它记着"还有多少条
+      // 丢了却没交给任何运行",在这里补报,并**立即清账** —— 更晚的运行不再重复报同一笔。
+      //
+      // ⚠️ **只对承载数据的那两路(file / event)交付**:手动(`manual`)/ 定时(`schedule`)的
+      // 载荷里没有条目列表可并,拿它们清账等于把这份欠账**静默吞掉**(下一个数据批再也读不到)。
+      // 所以那两路走过这里时不动账 —— 欠账留着,等下一次真正的数据批交付。
+      const undelivered = this.droppedCountOf(triggerKey(trigger));
+      if (undelivered > 0 && payload.kind === "file") {
+        payload = { ...payload, overflowDropped: undelivered };
+        this.drainDroppedUndelivered(triggerKey(trigger));
+      } else if (undelivered > 0 && payload.kind === "event") {
+        payload = { ...payload, itemsOverflowDropped: undelivered };
+        this.drainDroppedUndelivered(triggerKey(trigger));
+      }
       const payloadText = describeTriggerPayload(payload);
       const prompt = `${trigger.task}\n\n${payloadText}`;
       // 运行时可能还没绑(应用刚起来,或者这条自动化是新建的)—— `bindSession` 幂等。

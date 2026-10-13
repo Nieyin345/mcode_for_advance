@@ -2064,9 +2064,11 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
   interface RunnerInternals {
     startWatch(args: { originSessionId: string; command?: string }): Promise<{ ok: boolean; error?: string }>;
     activeWatchOf(originSessionId: string): boolean;
-    statusOf(workflowId: string): Array<{ lastError?: string }>;
+    statusOf(workflowId: string): Array<{ lastError?: string; droppedUndelivered?: number }>;
     lastMinute: Map<string, number>;
     pendingFires: Map<string, { files: string[]; changes?: Map<string, string>; busyRetryMs?: number; overflowDropped?: number }>;
+    /** 【MC-091 续】落盘的「被丢弃、未交付」欠账表(恢复游标)。 */
+    droppedUndelivered: Map<string, { count: number; at: number }>;
     runNow(workflowId: string, triggerNodeId: string): Promise<{ ok: boolean; error?: string }>;
     onTick(): void;
     onFsChange(dir: string, filename: string | null, eventType?: string | null): void;
@@ -2138,6 +2140,13 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
   const onDisk = (): Record<string, unknown> => {
     const raw = SettingRepo.get(LAST_MINUTE_KEY);
     return raw === null || raw.length === 0 ? {} : (JSON.parse(raw) as Record<string, unknown>);
+  };
+
+  /** 【MC-091 续】落盘的「被丢弃、未交付」欠账表 —— 恢复游标。 */
+  const DROPPED_KEY = "automation.droppedUndelivered";
+  const droppedOnDisk = (): Record<string, { count: number; at: number }> => {
+    const raw = SettingRepo.get(DROPPED_KEY);
+    return raw === null || raw.length === 0 ? {} : (JSON.parse(raw) as Record<string, { count: number; at: number }>);
   };
 
   /** 每个场景一个工作流 id + 项目 id,互不干扰(表是按 `workflowId:nodeId` 索引的)。 */
@@ -2986,6 +2995,97 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       check("载荷事实带上了忙时累计丢的条数", ((runsOfNode(nodeId)[1]?.entry?.payload?.overflowDropped as number | undefined) ?? 0) >= 52, runsOfNode(nodeId)[1]?.entry?.payload?.overflowDropped);
     } finally { setRunBusy(sessionId, false); runner.dispose(); }
   }
+
+  /* ── 【MC-091 续】积压丢弃的**持久恢复游标**(`automation.droppedUndelivered`) ──
+   *
+   * `pending.overflowDropped` 只活在**内存**的 pending 上:应用在合并窗口里重启、或攒着
+   * 的那一批被配置改动 / 用户取消作废时,它整份消失 —— "丢了几条"静默没了。修复把这些
+   * 丢弃**落盘**成一张欠账表(`触发器 key → {count, at}`),下一次真正**派发**的运行把它
+   * 并进载荷事实、随后清账;事实表那一栏(界面)也读得到。这里分三段验:
+   *
+   *  1. **落盘**:一批文件 churn 丢了几条 → 盘上出现欠账、数量对得上、没有丢时不落键。
+   *  2. **不在派发前被清**:忙时重排队(没真的派发)不清账;真的派发那一次把欠账并进载荷。
+   *  3. **跨重启交付**:攒了欠账 → `dispose` → 新 runner `start()` 读回 → 下一次派发把
+   *     "上次丢的"并进载荷、账清零。
+   */
+  {
+    resetRuns();
+    SettingRepo.set(DROPPED_KEY, "{}"); // 场景干净起步(表跨场景活着)
+    const wf = nextId(), nodeId = "t_dropped_cursor";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file", [NODE_TRIGGER_PATHS_PARAM_KEY]: "cur-*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "丢弃要有可恢复的账",
+    } });
+    const key = `${wf}:${nodeId}`;
+    const LIMIT = 500;
+    let runner = await startRunner();
+    await runner.runNow(wf, nodeId); // 起一次,让后台会话存在(下一条 runNow 会被判忙)
+    const busySession = runsOfNode(nodeId)[0]!.sessionId;
+    const flushTick = (): void => (runner as unknown as { onTick(): void }).onTick();
+
+    // ---- ① 忙时攒爆:丢弃落盘,**忙时重排队不清账** ----
+    // 先把会话置忙,合并窗口收口时 `fire` 走忙时分支(只重排队、不派发)—— 这一路**不能**
+    // 清掉欠账;等解忙后真的派发那一次才把钱并进载荷、清账。
+    setRunBusy(busySession, true);
+    try {
+      // 真实 fs.watch 会额外送一些 rename 事件,所以计数只断言**下界**。
+      for (let i = 0; i < LIMIT + 2; i += 1) {
+        const name = `cur-${String(i).padStart(4, "0")}.md`;
+        writeFileSync(join(PROJ_DIR, name), `# ${i}`);
+        runner.onFsChange(PROJ_DIR, name);
+      }
+      await sleep(1000); // 越过合并窗口,忙时分支重排一次
+      check("丢弃记进了内存欠账表", (runner.droppedUndelivered.get(key)?.count ?? 0) >= 2, runner.droppedUndelivered.get(key));
+      check("★ 忙时重排队不清掉欠账(那一批还没交付)", (runner.droppedUndelivered.get(key)?.count ?? 0) >= 2, runner.droppedUndelivered.get(key));
+      flushTick(); // 等价于 30 秒节流到点,强制冲刷
+      check("★ 丢弃落进了 settings(恢复游标)", (droppedOnDisk()[key]?.count ?? 0) >= 2, droppedOnDisk());
+      check("事实栏读出未交付丢弃", (runner.statusOf(wf)[0]?.droppedUndelivered ?? 0) >= 2, runner.statusOf(wf));
+    } finally { setRunBusy(busySession, false); }
+    // 解忙后等到真的派发 —— 那次运行把欠账并进载荷、随后清账(忙时退避最多到 2000ms)。
+    await sleep(3500);
+    const delivered = runsOfNode(nodeId).at(-1);
+    check(
+      "★ 真的派发那一次:欠账并进了载荷事实",
+      ((delivered?.entry?.payload?.overflowDropped as number | undefined) ?? 0) >= 2,
+      delivered?.entry?.payload,
+    );
+    eq("派发后欠账清零(内存)", runner.droppedUndelivered.get(key)?.count ?? 0, 0);
+    flushTick();
+    check("派发后欠账从盘上清掉", (droppedOnDisk()[key]?.count ?? 0) === 0, droppedOnDisk()[key]);
+    runner.dispose();
+
+    // ---- ② 跨重启交付:攒欠账 → dispose(合并窗口里重启)→ 新 runner 读回 → 派发并进载荷 ----
+    resetRuns();
+    runner = await startRunner();
+    await runner.runNow(wf, nodeId); // 建后台会话(它的 session id 也就此固定)
+    const session2 = runsOfNode(nodeId).at(-1)!.sessionId;
+    setRunBusy(session2, true);
+    for (let i = 0; i < LIMIT + 2; i += 1) {
+      const name = `cur-r2-${String(i).padStart(4, "0")}.md`;
+      writeFileSync(join(PROJ_DIR, name), `# ${i}`);
+      runner.onFsChange(PROJ_DIR, name);
+    }
+    runner.dispose(); // 强制冲刷欠账到盘(模拟"应用在合并窗口里被杀")
+    setRunBusy(session2, false); // 桩的忙集是模块级、跨 runner 活着,复位后再起新 runner
+    const persisted = droppedOnDisk()[key]?.count ?? 0;
+    check("★ 重启前欠账已落盘(dispose 强制冲刷)", persisted >= 2, droppedOnDisk()[key]);
+
+    // 新进程读回 —— 起点处 `start()` 会把这张表读进来。
+    runner = await startRunner();
+    check("★ 新 runner 从盘上读回了欠账(恢复游标)", (runner.droppedUndelivered.get(key)?.count ?? 0) >= 2, runner.droppedUndelivered.get(key));
+    // 让这条**文件**触发器再来一次收口(欠账只由数据承载的文件 / 事件载荷交付,不塞给手动)——
+    // 那次 `fire` 把上次欠的账并进载荷、随后清账。
+    const beforeDispatch = runsOfNode(nodeId).length;
+    writeFileSync(join(PROJ_DIR, "cur-restart.md"), "# 重启后的新变化");
+    runner.onFsChange(PROJ_DIR, "cur-restart.md");
+    await sleep(FLUSH_SLACK_MS);
+    const lastRun = runsOfNode(nodeId).at(-1);
+    check("重启后确实又派发了一次", runsOfNode(nodeId).length > beforeDispatch, runsOfNode(nodeId).length);
+    check("★ 重启后的派发把上次欠的账并进载荷", ((lastRun?.entry?.payload?.overflowDropped as number | undefined) ?? 0) >= 2, lastRun?.entry?.payload);
+    eq("重启后派发完毕欠账清零", runner.droppedUndelivered.get(key)?.count ?? 0, 0);
+    runner.dispose();
+  }
+
   /* ── 忙时回看间隔按指数退避增长(不是每秒重扫一遍) ──
    *
    * `BUSY_RETRY_MIN_MS` 那段注释白纸黑字写着"指数退避到半分钟封顶",而它的实现靠
