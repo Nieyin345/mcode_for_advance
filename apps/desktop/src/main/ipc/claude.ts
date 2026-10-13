@@ -47,6 +47,7 @@ import { broadcastSessionChanged, broadcastSettingChanged } from "@main/lib/sess
 import { isSyncedSettingKey } from "@contracts/ipc/settingsSync";
 import { budgetCommitWorthBackingUp, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
 import { createSessionAndSend } from "@main/appServices/sessionCommands.js";
+import { randomUUID } from "node:crypto";
 import {
   cancelWorkflowRun,
   graphRunIntent,
@@ -156,7 +157,16 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     // (`appControl/tools.ts` 的 `headlessNewSession`)调的是**同一个** `createSessionAndSend`。
     // 桌面这条只要会话行(首条消息由用户随后经 `claude:sendTurn` 发),所以不传 prompt ——
     // 结果形状照旧 `{ session }`(复用 `createOrReuseSession` 的既有语义)。
-    const { session } = await createSessionAndSend({ input }, "desktop");
+    //
+    // 【ARC-001 步②】传入结构化的 ActionContext:桌面路 = **用户**(actorKind: "user")。
+    // 从前这里传的是裸字符串 `"desktop"` —— 那只是一个渠道名,表达不了「谁在调」。现在
+    // 「谁」是结构化事实:agent 那条路填 `agent`、手机端填 `mobile`,本函数与服务函数都只读它。
+    const { session } = await createSessionAndSend({ input }, {
+      actorKind: "user",
+      actorId: "desktop",
+      operationId: randomUUID(),
+      scope: input.projectId,
+    });
     return { session };
   });
 

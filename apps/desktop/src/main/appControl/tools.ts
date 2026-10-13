@@ -67,7 +67,8 @@ import { computePanelCaptureRect } from "./panelCaptureRect.js";
 import { DOMAIN_LABELS, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
 import { evaluate } from "./policyEngine.js";
 import { getGrantStore } from "./grantStoreRuntime.js";
-import type { ActionIntent, CoreIntent, PolicyCompatibilityLevel } from "@contracts/policyEngine";
+import type { GrantDecision } from "./grantStore.js";
+import type { ActionIntent, ActorRef, CoreIntent, PolicyCompatibilityLevel } from "@contracts/policyEngine";
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import { registeredRpcChannels, rpcHandlerFor } from "./registry.js";
 import { redactValue, renderResult, slimSessions } from "./redact.js";
@@ -445,9 +446,26 @@ async function savePanelScreenshotToDisk(data: string, opts: { sessionId: string
 const BYPASS_MODES = new Set(["bypassPermissions", "full-access"]);
 const READONLY_MODES = new Set(["plan", "read-only"]);
 
+/** 计划级授权的有效期(从用户本人点头那一刻起算)。够覆盖一整套计划,又不至于永久生效。 */
+const PLAN_GRANT_TTL_MS = 30 * 60 * 1000;
+
 /**
  * 按档位决定放不放行。返回 `null` = 放行;字符串 = 拒绝原因(原样给模型)。
  * 没有审批通道(无界面的环境)一律拒绝 —— fail-closed。
+ *
+ * ## `onUserApproved` —— **只有「用户本人新鲜点头」那一刻**才触发(ARC-004 签发端的接入点)
+ *
+ * 这个可选回调是计划级授权**唯一的签发触发点**:它只在这条真正**弹了审批卡、用户本人
+ * 点了允许**的路径上被调一次。下面这些**都没有**用户本人的新鲜批准,故**一律不触发**
+ * (于是什么都签不出):
+ *   - `read` / `ui`:直接放行,从不弹卡;
+ *   - `blocked`:直接拒;
+ *   - 只读 / 计划模式:直接拒;
+ *   - **完全访问(bypass)模式的系统默认放行** —— 没人点头,是系统替用户放的行;
+ *   - **已记的「始终允许」**(`isToolAlwaysAllowed`)—— 是**之前**某次批准的复用,不是这次
+ *     本人点头(它的授权在**当初那次**点头时早已签出)。
+ * 这正是 ARC-004 的硬判据:**agent / system 不能给自己发授权** —— 只有真人在卡上点的
+ * 「允许」才铸得出 grant。
  */
 export async function gateAppAction(
   ctx: ProviderContext,
@@ -456,6 +474,7 @@ export async function gateAppAction(
   input: unknown,
   description: string,
   blockedReason?: string,
+  onUserApproved?: () => void,
 ): Promise<string | null> {
   if (level === "read" || level === "ui") return null;
   if (level === "blocked") return `这个功能不开放给 agent:${blockedReason ?? "安全原因"}`;
@@ -477,7 +496,59 @@ export async function gateAppAction(
     description: level === "danger" ? `⚠️ 高风险操作(每次都需要你本人批准):${description}` : description,
   });
   if (!decision.allow) return decision.reason ? `用户拒绝了:${decision.reason}` : "用户拒绝了这次操作,未执行。";
+  // ★ 用户本人**新鲜**点头 —— 唯一的签发触发点(上面每一条"系统替用户放行"的路径都已 return)。
+  onUserApproved?.();
   return null;
+}
+
+/**
+ * 【ARC-004 步④ · **签发端**】用户在审批卡上**本人点头**后,把这次批准的**来源与作用域**
+ * 铸成一份 `Grant` 存进 `getGrantStore()` —— 之后同一资源上的同一动作**不再逐次弹卡**。
+ *
+ * ## 为什么签发口是**这里**
+ *
+ * 全仓此前 `issueGrant(` **零生产调用方** —— 授权表永远是空的,`planGrantPrecheck` 只会走
+ * 「无绑定授权 → 默认审批链」。本函数补上那条**真实的签发口**:被 `gateAppAction` 的
+ * `onUserApproved` 回调调起,只在**用户本人新鲜批准**的那一刻执行。
+ *
+ * ## 安全判据(ARC-004 明令)
+ *
+ *   - **只有用户本人能签发**:本函数只由「新鲜审批通过」触发,agent / system 的放行
+ *     (完全访问模式的系统默认、已记的「始终允许」)到不了这里 —— 它们**不产生授权**;
+ *   - 另有一道由 `GrantStore.issueGrant` 强制的 `subject.kind === "user"` 兜底(双保险);
+ *   - **danger 不签**:高风险动作每次都要本人批,受限授权不能替代;
+ *   - **read / ui 不签**:它们从不弹卡。
+ *
+ * ## 作用域
+ *
+ * 作用域 = 这次动作**解析出的权威资源身份**(与 `planGrantPrecheck` 共用同一份
+ * `resolveActionCore`)—— 签出的授权只覆盖**同一个资源**上的**同一个方法**。换了资源,
+ * `evaluate` 的 `invalidationsFor` 会判 `require-approval`(重新批准),不会误覆盖。
+ */
+function signPlanGrantForUserApproval(entry: ApiEntry, args: unknown, sessionId: string): void {
+  // 只给 write 档签(danger 每次要本人批;read/ui 从不走到审批)。
+  if (entry.policy.level !== "write") return;
+  const store = getGrantStore();
+  const input = (args as { input?: unknown }).input ?? null;
+  const { core } = resolveActionCore(entry.method, input, sessionId);
+  const decision: GrantDecision = {
+    verdict: "allow",
+    reason: "用户在审批卡上本人批准了这次操作。",
+    compatibilityLevel: "write",
+    sceneId: "app_api_call",
+    allowedActions: [entry.method],
+    scopedCore: core,
+    // `planGrantPrecheck` 侧构造的 intent 不携带 configHash,故这里的占位值不参与判定。
+    configHash: "",
+    ttlMs: PLAN_GRANT_TTL_MS,
+  };
+  const subject: ActorRef = { kind: "user", id: "app_api_call.approval" };
+  try {
+    store.issueGrant(decision, subject, Date.now());
+  } catch {
+    // 签发失败不该反过来把一次**已经批准**的调用判成失败 —— 静默跳过,退化成「逐次弹卡」的
+    // 旧行为(只是不省这一步),不改变这次调用的结果。
+  }
 }
 
 /* ───────────────────────── 调用 RPC ───────────────────────── */
@@ -646,7 +717,7 @@ async function ui(cmd: AppUiCommand): Promise<AppUiReply> {
  */
 async function headlessNewSession(a: {
   project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; title?: string;
-}): Promise<string | null> {
+}, actorId: string): Promise<string | null> {
   // 【ARC-001】建会话 + 发首条是**唯一一份业务命令** —— 桌面 `claude:startSession` IPC 与这条
   // headless 路都调 `appServices/sessionCommands.ts` 的 `createSessionAndSend`(硬规矩 2)。
   // 这里只剩它那条路独有的两件事:① 挑项目(不传就取第一个);② 把 `sendError` 翻成 agent
@@ -669,7 +740,14 @@ async function headlessNewSession(a: {
     },
     prompt: a.prompt ?? "",
     ...(a.workflow_id ? { workflowId: a.workflow_id } : {}),
-  }, "agent");
+  }, {
+    // 【ARC-001 步②】agent 路 = 结构化的「谁在调」:actorKind 是 agent,actorId 是**发起
+    // 这次调用的会话 id**(传进来那一个)—— 不再是裸字符串 "agent"。
+    actorKind: "agent",
+    actorId,
+    operationId: randomUUID(),
+    scope: project.id,
+  });
   if (sendError !== null) return `对话已建好(${session.id}),但第一条消息没发出去(上一轮还在运行)`;
   return null;
 }
@@ -1314,7 +1392,7 @@ async function runWorkflow(
       return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已按工作流发出(无渲染窗口,走主进程)。");
     }
     // 新会话路径:headless 报错时**会话行可能已经落库**,只是第一条消息没起 → 无法确认 → UNCERTAIN。
-    const msg = await headlessNewSession({ project_id: args.project_id, prompt, workflow_id: args.workflow_id });
+    const msg = await headlessNewSession({ project_id: args.project_id, prompt, workflow_id: args.workflow_id }, sessionId);
     if (msg !== null) {
       return operationToolResult(
         makeOp("UNCERTAIN", method, operationId, { code: OP_CODE.rpcUncertain, reason: msg }),
@@ -1363,7 +1441,7 @@ type SessionSendArgs = { session_id: string; prompt: string; workflow_id?: strin
  *   - 无窗口 headless 回退:建会话(可能已落库)+ 发首条,`headlessNewSession` 报错时同样
  *     **会话可能已建好** → UNCERTAIN。
  */
-async function runSessionNew(a: SessionNewArgs, ctx: ProviderContext): Promise<ToolResult> {
+async function runSessionNew(a: SessionNewArgs, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {
   const method = "app_session_new";
   const operationId = randomUUID();
   const what = a.prompt ? `新开对话并发送:${clipLine(a.prompt, 200)}` : "新开一个对话";
@@ -1376,7 +1454,7 @@ async function runSessionNew(a: SessionNewArgs, ctx: ProviderContext): Promise<T
   const reply = await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title });
   // 【MC-059】窗口没开 → 走主进程同一套服务,不因界面缺失而失败。
   if (uiUnavailable(reply)) {
-    const err = await headlessNewSession(a);
+    const err = await headlessNewSession(a, sessionId);
     // headless 报错时**会话行可能已经落库**(createOrReuseSession 已跑)、只是首条没起 →
     // 无法确认 → UNCERTAIN(绝不报成"没执行"让 Agent 重开一个新对话)。
     if (err !== null) {
@@ -1643,22 +1721,27 @@ export function resolveActionCore(
  *
  * ## 三种结果怎么落(与 evaluate 的 verdict 一一对应)
  *
- *   - `bound === null`(没有授权管这个动作)→ 放行,走 `gateAppAction` 既有审批链;
- *   - `bound !== null` 且 `allow`(在有效授权内)→ 放行,执行后按命中的 grant 记一次账;
+ *   - `bound === null`(没有授权管这个动作)→ `null`,放行给 `gateAppAction` 既有审批链;
+ *   - `bound !== null` 且 `allow`(在有效授权内)→ `{ kind: "authorized" }` —— 这枚用户签发的
+ *     有效授权**就是**这次的授权,执行点据此**不再弹审批卡**(ARC-004 的「计划级授权覆盖整个
+ *     计划、不再逐次弹卡」),执行后按命中的 grant 记一次账;
  *   - `bound !== null` 且 `deny` / `require-approval`(撤销 / 过期 / 非用户 / 超次数 / 超预算 / 核心
- *     意图被换)→ **不执行**,返回拒绝原因。这样 `evaluate` 的每一条非 allow 分支(含最容易成死代码
- *     的三条 deny)都真的承重、可被变异测红。
+ *     意图被换)→ `{ kind: "deny" }`,**不执行**。这样 `evaluate` 的每一条非 allow 分支(含最容易
+ *     成死代码的三条 deny)都真的承重、可被变异测红。
  *
- * ⚠️ 这是**第一个执行点**的谨慎接线(ARC-004 明说后续切片才逐个迁)。真正的「计划级授权覆盖整个
- * 计划、根本不再单次弹卡」需要签发端 + 请求身份带 grantId 的端到端,仍属后续切片。
+ * ## 只有 write 档会拿到 `{ kind: "authorized" }`
  *
- * @returns 放行 `null`;被硬拒绝时返回拒绝原因(原样给模型),执行点据此**不执行**。
+ * 调用点对 `danger` 档**根本不跑**本预判(见 `invokeAppTool`:`entry.policy.level !== "danger"`
+ * 才预判),`read` / `ui` 档在 `gateAppAction` 里从不弹卡 —— 故「凭授权跳卡」实际只作用于 write。
+ *
+ * @returns `null` = 无绑定授权(走默认审批链);`{ kind: "authorized" }` = 有效用户授权覆盖,
+ *   可**跳过审批卡**直接执行;`{ kind: "deny", reason }` = 在这个计划下**不准**,不执行。
  */
-function planGrantPrecheck(
+export function planGrantPrecheck(
   entry: ApiEntry,
   args: unknown,
   sessionId: string,
-): string | null {
+): { kind: "deny"; reason: string } | { kind: "authorized" } | null {
   const store = getGrantStore();
   const input = (args as { input?: unknown }).input ?? null;
   const { core, real } = resolveActionCore(entry.method, input, sessionId);
@@ -1980,7 +2063,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
       case "app_ui":
         return await runUiAction(args as UiArgs, ctx, sessionId);
       case "app_session_new":
-        return await runSessionNew(args as SessionNewArgs, ctx);
+        return await runSessionNew(args as SessionNewArgs, sessionId, ctx);
       case "app_session_send":
         return await runSessionSend(args as SessionSendArgs, sessionId, ctx);
       case "app_workflow_run":

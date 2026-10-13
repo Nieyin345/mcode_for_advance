@@ -45,6 +45,7 @@ import { invokeAppTool } from "@main/appControl/tools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import {
   __createSessionAndSendCount,
+  __lastActionContext,
   __resetCreateSessionAndSendCount,
   createSessionAndSend,
 } from "@main/appServices/sessionCommands.js";
@@ -1523,6 +1524,16 @@ console.log("\n18. 【MC-059】无渲染窗口时 app_session_new / app_session_
  *
  * 另加一条**源码级**反向控制:两条调用方文件里都**不再**直接 `createOrReuseSession`
  * 建会话(建会话这半必须经服务函数);出现直接调用就是有人又分了一份实现。
+ *
+ * ## 【ARC-001 步②】ActionContext —— 「谁在调」变成结构化事实
+ *
+ * 台账 remaining 第②条:`createSessionAndSend` 只收一个裸的 `source` 字符串,调用方
+ * 「是谁」没有结构化。本切片把它换成入参 `ActionContext`(actorKind / actorId /
+ * operationId / 可选 scope),两条调用方各填自己的身份:桌面 = `user`、agent = `agent`
+ * (mobile 由服务函数按 actorKind 直接支持)。判据(承重红例):桌面路传出的
+ * `actorKind` **必须** `"user"`、agent 路 **必须** `"agent"` —— 把任一分支改反/撤掉,
+ * 断言必须真红。用 `__lastActionContext()`(与 `__createSessionAndSendCount` 同一取向的
+ * 测试观测)读回服务函数最近一次收到的 context。
  */
 console.log("\n19. 【ARC-001】建会话+发首条只有一处实现(桌面 IPC 与 agent headless 共调 createSessionAndSend)");
 
@@ -1558,6 +1569,13 @@ console.log("\n19. 【ARC-001】建会话+发首条只有一处实现(桌面 IPC
   eq("ARC-001:桌面 IPC 建会话落在指定项目里(行为不变)", ipcRes.session.projectId, "p_arc001");
   eq("ARC-001:桌面 IPC 建会话经唯一服务函数(计数 +1)", __createSessionAndSendCount(), 1);
 
+  // 【ARC-001 步②】桌面路传出的身份 = 用户(结构化「谁在调」)。
+  const ipcActx = __lastActionContext();
+  eq("★ ARC-001②:桌面 IPC 传出的 actorKind 是 user(结构化「谁在调」)", ipcActx?.actorKind, "user");
+  eq("★ ARC-001②:桌面 IPC 的 actorId 非空", typeof ipcActx?.actorId === "string" && ipcActx.actorId.length > 0, true);
+  eq("★ ARC-001②:桌面 IPC 的 operationId 非空", typeof ipcActx?.operationId === "string" && ipcActx.operationId.length > 0, true);
+  eq("★ ARC-001②:桌面 IPC 带出作用域(项目 id)", ipcActx?.scope, "p_arc001");
+
   // —— 路②:agent 那条无窗口 headless 路 → 同一个服务函数应再记一次。
   fresh();
   __resetCreateSessionAndSendCount();
@@ -1573,6 +1591,23 @@ console.log("\n19. 【ARC-001】建会话+发首条只有一处实现(桌面 IPC
   eq("★ ARC-001:agent headless 也走**同一个**服务函数(计数 +1,承重)", __createSessionAndSendCount(), 1);
   eq("★ ARC-001:headless 这一轮真的派出去了(sendTurn 被调到)", sendTurns.length, 1);
   eq("★ ARC-001:headless 派的是那句话", sendTurns[0]?.prompt, "无窗口发首条");
+
+  // 【ARC-001 步②】agent 路传出的身份 = agent,actorId = 发起调用的会话 id。
+  const agentActx = __lastActionContext();
+  eq("★ ARC-001②:agent headless 传出的 actorKind 是 agent(结构化「谁在调」)", agentActx?.actorKind, "agent");
+  eq("★ ARC-001②:agent headless 的 actorId 是发起调用的会话 id", agentActx?.actorId, "me");
+  eq("★ ARC-001②:agent headless 的 operationId 非空", typeof agentActx?.operationId === "string" && agentActx.operationId.length > 0, true);
+
+  // 【ARC-001 步②】mobile 这一档由服务函数直接支持(当前无生产调用方,直接调服务函数验映射)。
+  __resetCreateSessionAndSendCount();
+  const mobileRes = await createSessionAndSend(
+    { input: { projectId: "p_arc001", kind: "chat", effort: "default", permissionMode: "default" } },
+    { actorKind: "mobile", actorId: "phone-1", operationId: "op-mobile-1", scope: "p_arc001" },
+  );
+  eq("★ ARC-001②:mobile 路传出的 actorKind 是 mobile", __lastActionContext()?.actorKind, "mobile");
+  eq("★ ARC-001②:mobile 路走同一份命令(计数 +1)", __createSessionAndSendCount(), 1);
+  eq("★ ARC-001②:mobile 路仍落到指定项目(行为不变)", mobileRes.session.projectId, "p_arc001");
+
   // 两条路都经服务函数 ⇒ 服务函数是唯一实现。给一个总数复核(清零后连走两条)。
   __resetCreateSessionAndSendCount();
   await call(IPC.CLAUDE_START_SESSION, { projectId: "p_arc001" });
