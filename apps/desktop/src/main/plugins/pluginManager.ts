@@ -59,6 +59,8 @@ import {
   type ComponentDeliveryEntry,
   type ComponentDeliveryReport,
   COMPONENT_PROVIDER_DELIVERY,
+  sceneComponentReadiness,
+  type SceneComponentReadiness,
   type PluginProjectRow,
   type PluginManifest,
   type PluginMarketEntry,
@@ -700,6 +702,36 @@ export function componentDeliveryReport(
   };
 }
 
+/**
+ * 【ARC-014】一个插件对**每个引擎**的逐组件就绪判定(**ALL** 语义),喂 `PluginState.componentReadiness`。
+ *
+ * 判据是「这个引擎收不收得到该插件的**全部**声明组件」,而不是兼容列表的 ANY(至少一个)。
+ * 每个引擎的 required 组件集**直接读自 {@link componentDeliveryReport} 自己的条目**
+ * (={`${type}:${index}`})—— 不另写一套 id 方案,两个量词因此不可能漂移(共享实现只有一份)。
+ * 判定本身走契约的 {@link sceneComponentReadiness},不是这里再手写一遍 ALL 逻辑。
+ *
+ * 引擎取自 `PLUGIN_ENGINE_PROVIDER_IDS`(与面板、投递链同一份引擎序)。
+ *
+ * ⚠️ 与 `deliveredProviderIds` 不同,这里**不折叠用户的逐引擎开关** —— 它是「能力上收不收
+ * 得到」的事实,开关是用户在该事实之上的收窄。面板两者一起读,别混成一个数。
+ */
+export function pluginComponentReadiness(
+  pluginId: string,
+  version: string | undefined,
+  components: PluginComponents,
+  pluginEnabled: boolean,
+): Record<string, SceneComponentReadiness> {
+  const out: Record<string, SceneComponentReadiness> = {};
+  for (const engine of PLUGIN_ENGINE_IDS) {
+    const providerId = PLUGIN_ENGINE_PROVIDER_IDS[engine];
+    const report = componentDeliveryReport(pluginId, version, providerId, components, pluginEnabled);
+    // required = 该插件声明的**每一个**组件 id,读自报告自身 → 与投递判据同源。
+    const requiredIds = report.entries.map((entry) => entry.componentId);
+    out[providerId] = sceneComponentReadiness(requiredIds, [report]);
+  }
+  return out;
+}
+
 /** Build one PluginState row; null when the directory holds no valid
  *  manifest (orphans from interrupted installs are invisible by design). */
 function toPluginState(
@@ -718,9 +750,10 @@ function toPluginState(
   const components = summarizeComponents(rootDir, resolved.manifest);
   const compatibleProviderIds = compatibleProviderIdsForPlugin(resolved.manifest, components);
   const engines = pluginEngineSwitches(resolved.manifest.name, enginesMap);
+  const version = pluginVersionOf(resolved.manifest);
   return {
     name: resolved.manifest.name,
-    version: pluginVersionOf(resolved.manifest),
+    version,
     description: resolved.manifest.description ?? "",
     rootDir,
     enabled: enabled.has(resolved.manifest.name),
@@ -730,6 +763,12 @@ function toPluginState(
     compatibleProviderIds,
     engines,
     deliveredProviderIds: narrowToEngines(compatibleProviderIds, engines),
+    componentReadiness: pluginComponentReadiness(
+      resolved.manifest.name,
+      version,
+      components,
+      enabled.has(resolved.manifest.name),
+    ),
   };
 }
 

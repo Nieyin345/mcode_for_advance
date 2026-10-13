@@ -482,6 +482,56 @@ eq(listed.length, 1, "one installed plugin listed");
 eq(listed[0].enabled, true, "enabled flag persisted");
 eq(listed[0].components.hooks.length, 3, "components in list");
 
+/* ── 4a. 【ARC-014】列表回读带**逐引擎组件就绪(ALL 语义)** ──
+ * 现存面板只拿得到 compatibleProviderIds(ANY:至少一个组件能投递)。这一片让 plugins.list
+ * 的每一行真的能回答「这个引擎收不收得到该插件的**全部**声明组件」—— 把场景就绪判据接进
+ * 一条真实回读路径,而不是只活在纯函数里。demo-plugin 声明 skills(2)+command(1)+
+ * agent(1)+hooks(3)+mcp(1):只有 Claude 全收;Pi 只收 skill(收不到 command/agent/hook/mcp);
+ * Codex 收得到 skill/mcp,但收不到 command/agent/hook。 */
+{
+  const row = listed[0];
+  const readiness = row.componentReadiness!;
+  ok(readiness !== undefined, "插件行带 componentReadiness(老宿主可缺,本宿主必须给)");
+  // Claude:全部组件都交付 → ready(ALL 满足)。
+  ok(readiness["claude-sdk"].ready === true, "ARC-014:demo-plugin 对 Claude 全部组件就绪(ready)");
+  eq(readiness["claude-sdk"].gaps, [], "ARC-014:Claude 无缺口");
+  // Pi:只有 2 个 skill 交付;command/agent/hook/mcp 是缺口,所以 ALL 不成立。
+  ok(readiness["pi-sdk"].ready === false, "ARC-014:demo-plugin 对 Pi 不是全就绪(ANY≠ALL 的承重反例)");
+  eq(
+    readiness["pi-sdk"].satisfied,
+    ["skill:0", "skill:1"],
+    "ARC-014:Pi 只就绪两个 skill",
+  );
+  eq(
+    readiness["pi-sdk"].gaps.map((g) => g.componentId).sort(),
+    ["agent:0", "command:0", "hook:0", "hook:1", "hook:2", "mcp:0"],
+    "ARC-014:Pi 的缺口精确列出收不到的每一类组件",
+  );
+  ok(
+    readiness["pi-sdk"].gaps.every((g) => g.status === "INCOMPATIBLE"),
+    "ARC-014:Pi 缺口状态都是 INCOMPATIBLE(引擎不支持,不是缺装)",
+  );
+  ok(readiness["pi-sdk"].providerId === "pi-sdk", "ARC-014:就绪结果带出被检查的引擎");
+  // Codex:收得到 skill + mcp,收不到 command/agent/hook。
+  ok(readiness["codex-sdk"].ready === false, "ARC-014:demo-plugin 对 Codex 不是全就绪");
+  eq(
+    readiness["codex-sdk"].satisfied,
+    ["skill:0", "skill:1", "mcp:0"],
+    "ARC-014:Codex 就绪 skill+mcp",
+  );
+  eq(
+    readiness["codex-sdk"].gaps.map((g) => g.componentId).sort(),
+    ["agent:0", "command:0", "hook:0", "hook:1", "hook:2"],
+    "ARC-014:Codex 缺口是 Claude 专用的 command/agent/hook",
+  );
+  // 与兼容列表(ANY)形成对照:三家都在 compatibleProviderIds 里,但只有 Claude「全就绪」。
+  eq(
+    row.compatibleProviderIds,
+    ["claude-sdk", "codex-sdk", "pi-sdk"],
+    "ARC-014:兼容列表仍是 ANY(三家都在),与逐引擎 ALL 就绪是两件事",
+  );
+}
+
 /* ── 4b. per-engine switches (plugins.engines, the skill-matrix twin) ── */
 console.log("\n[4b] per-engine switches");
 eq(listed[0].engines, { claude: true, codex: true, pi: true }, "engines default to all on");

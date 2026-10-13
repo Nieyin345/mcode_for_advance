@@ -337,6 +337,15 @@ export interface PluginState {
   /** What is actually delivered when the plugin is enabled:
    *  `compatibleProviderIds` ∩ the engines switched on. */
   deliveredProviderIds?: string[];
+  /** 【ARC-014】逐引擎的**组件就绪(ALL 语义)** —— 键是 providerId(`claude-sdk`
+   *  等),值是「这个引擎是否收到该插件的**全部**声明组件」的判定结果。
+   *
+   *  为什么要它:`compatibleProviderIds` 是 **ANY**(至少一个组件能投递),而一个场景
+   *  真正要的是 **ALL**(所需组件全部就绪)—— 二者语义不同,单一兼容列表会误放行。这份
+   *  逐引擎结果由契约函数 {@link sceneComponentReadiness} 对「该插件声明的每一个组件 id」
+   *  与「该引擎的逐组件交付报告」做 ALL 判定得出,面板据此把「部分兼容」与「全部就绪」
+   *  分成两件事。缺省 = 老宿主,客户端按旧逻辑(仅看兼容列表)显示。 */
+  componentReadiness?: Record<string, SceneComponentReadiness>;
 }
 
 /** A marketplace added by the user (or materialized from BUILTIN_MARKETPLACES).
