@@ -1102,6 +1102,19 @@ console.log("\n分层工作流复用与记忆注入所有权");
     const crossEntry = fullReview.stale.find((e) => e.path === crossPath);
     check("★ MC-092:桌面用户 review 能扫到别的项目(基线,另有 agent 侧反例)", crossEntry !== undefined, fullReview.stale.map((e) => e.path));
     const crossDigest = crossEntry?.digest ?? "";
+    // 【MC-092 诊断】review 的 `unreadable` 诊断清单也在**整棵树**上收集(listMemoryFiles 的
+    //    onUnreadable 会走过每个 `projects/<id>/…`)—— 从前**不过可见谓词**,于是 agent 能借它读到
+    //   **不可见项目的路径名**(它能读到的清单里没有该项目,诊断里却点名了它的路径 = 泄露存在与名字)。
+    //   造两条"不可读"试剂(**目录占着 `*.md` 的名字**,listMemoryFiles 把它当不可读项,不递归进去):
+    //   一条在**别的项目**下(agent 该看不见),一条在**本项目**下(agent 该看见 —— 正控,否则
+    //   "unreadable 恒为空"也会让断言假绿)。
+    const blockedOther = "projects/p_other/rules/blocked-dir.md";
+    const blockedSelf = "projects/p_memory/rules/blocked-dir.md";
+    mkdirSync(join(memoryRoot(), ...blockedOther.split("/")), { recursive: true });
+    mkdirSync(join(memoryRoot(), ...blockedSelf.split("/")), { recursive: true });
+    const desktopUnreadable = (call("memory:review", {}) as { unreadable: string[] }).unreadable;
+    check("★ MC-092:桌面 review 诊断含不可读的**别的项目**路径(基线)", desktopUnreadable.includes(blockedOther), desktopUnreadable);
+    check("★ MC-092:桌面 review 诊断含不可读的**本项目**路径(基线)", desktopUnreadable.includes(blockedSelf), desktopUnreadable);
     // 造两条历史:一条可见(全局),一条不可见(别的项目)—— 各带真实 revision 更新一版即归档。
     saveMemoryFile({ path: globalPath, content: "v1", expectedRevision: readMemoryFile(globalPath).revision });
     saveMemoryFile({ path: otherPath, content: "v2", expectedRevision: readMemoryFile(otherPath).revision });
@@ -1112,6 +1125,27 @@ console.log("\n分层工作流复用与记忆注入所有权");
     // 「来源已改变」而拒,断言假绿。判据:带正确 digest 时,唯一能拒它的就是作用域。
     const legacyPreview = manageMemory({ action: "preview", source: "legacy:rules/旧布局.md" });
     check("★ MC-092:legacy 导入源可预览并带摘要(基线)", legacyPreview.ok && !!legacyPreview.digest, legacyPreview);
+
+    // 【MC-092 诊断】manage list 的 `truncatedSources` 也是**扫描**产物:native 来源(旧记忆 /
+    //   别 owner 的项目记忆)经可见谓词对 agent 一律不可见 —— 若还把整棵树的截断数摆出来,agent 会
+    //   看到「sources 空、却报 N 个来源被截断」= 知道本机存在它看不见的记忆源。造一个超上限的原生
+    //   项目(>100 个 .md)当试剂:桌面看到真实截断数,agent 必须看到 0。
+    const bulkMemDir = join(homedir(), ".claude", "projects", "reagent-truncated", "memory");
+    mkdirSync(bulkMemDir, { recursive: true });
+    for (let i = 0; i < 130; i += 1) writeFileSync(join(bulkMemDir, `bulk-${String(i).padStart(3, "0")}.md`), `x${i}`);
+    const deskTrunc = (call("memory:manage", { action: "list" }) as { truncatedSources?: number }).truncatedSources;
+    check("★ MC-092:桌面 manage list 报出原生来源的真实截断数(基线)", (deskTrunc ?? 0) > 0, deskTrunc);
+    // `historyTruncated` 同理:归档超过 200 上限的数是**全局**的(含不可见项目的历史),不该透给 agent。
+    // 造 >200 条合法归档当试剂(桌面侧的真实值 >0,agent 侧必须 0)。
+    const archiveDir2 = join(memoryRoot(), ".history");
+    mkdirSync(archiveDir2, { recursive: true });
+    for (let i = 0; i < 205; i += 1) {
+      const at = 1600000000000 + i;
+      const id = `${at}-${String(i).padStart(8, "0")}-0000-0000-000000000000`;
+      writeFileSync(join(archiveDir2, `${id}.json`), JSON.stringify({ version: 1, id, path: "global/rules/x.md", at, reason: "before-update", raw: "x" }), "utf8");
+    }
+    const deskHistTrunc = (call("memory:manage", { action: "list" }) as { historyTruncated?: number }).historyTruncated;
+    check("★ MC-092:桌面 manage list 报出真实的历史截断数(基线)", (deskHistTrunc ?? 0) > 0, deskHistTrunc);
 
     const isVisiblePath = (p: string): boolean => p.startsWith("global/") || p.startsWith("projects/p_memory/");
     runWithAgentMemoryScopeForSession("isolated-memory-test", () => {
@@ -1124,6 +1158,12 @@ console.log("\n分层工作流复用与记忆注入所有权");
       check("★ MC-092:agent manage list 的项目只含自己那个", (ml.projects ?? []).every((p) => p.id === "p_memory"), ml.projects);
       check("★ MC-092:agent manage list 的 history 不含别的项目", !(ml.history ?? []).some((h) => h.path === otherPath), ml.history?.map((h) => h.path));
       check("★ MC-092:agent manage list 的 history 含全局", (ml.history ?? []).some((h) => h.path === globalPath), ml.history?.map((h) => h.path));
+      // manage list 的 `truncatedSources` 也过可见谓词:agent 看到 0(不泄露"存在看不见的来源")。
+      check("★ MC-092:agent manage list 的截断数为 0(不泄露不可见来源的存在)",
+        (ml as { truncatedSources?: number }).truncatedSources === 0, (ml as { truncatedSources?: number }).truncatedSources);
+      // `historyTruncated` 同理:agent 看不到全局归档的截断数。
+      check("★ MC-092:agent manage list 的历史截断数为 0(不泄露不可见历史的存在)",
+        (ml as { historyTruncated?: number }).historyTruncated === 0, (ml as { historyTruncated?: number }).historyTruncated);
       // manage:history —— 读不可见路径的历史被拒;可见的照常。
       const histOther = call("memory:manage", { action: "history", id: otherHist!.id }) as { ok: boolean };
       check("★ MC-092:agent 读**别的项目**历史被拒", histOther.ok === false, histOther);
@@ -1140,6 +1180,11 @@ console.log("\n分层工作流复用与记忆注入所有权");
       check("★ MC-092:agent review 不含别的项目", !rev.stale.some((e) => e.path === crossPath), rev.stale.map((e) => e.path));
       check("★ MC-092:agent review 里每一条都可见", rev.stale.every((e) => isVisiblePath(e.path)), rev.stale.map((e) => e.path));
       check("★ MC-092:agent review 计数不含不可见项(少于桌面)", rev.totalFiles < fullReview.totalFiles, { agent: rev.totalFiles, desktop: fullReview.totalFiles });
+      // review 的**诊断清单**也不能泄露不可见项目:不可读项经同一份可见谓词,别的项目那条被滤掉,
+      // 本项目那条保留(正控 —— 否则"unreadable 恒空"也会让负例假绿)。
+      const revDiag = (call("memory:review", {}) as { unreadable: string[] }).unreadable;
+      check("★ MC-092:agent review 诊断不含**别的项目**的不可读路径", !revDiag.includes(blockedOther), revDiag);
+      check("★ MC-092:agent review 诊断仍含**本项目**的不可读路径(正控)", revDiag.includes(blockedSelf), revDiag);
       // reviewDelete —— 带**正确指纹**删别的项目也被拒(与 memory:delete 同一道闸)。
       const rd = call("memory:reviewDelete", { path: crossPath, digest: crossDigest }) as { ok: boolean };
       check("★ MC-092:agent reviewDelete 别的项目被拒(指纹正确也拒)", rd.ok === false, rd);
@@ -1149,6 +1194,15 @@ console.log("\n分层工作流复用与记忆注入所有权");
     //    不是指纹。删掉也顺手清理这条试剂。
     const rdDesk = call("memory:reviewDelete", { path: crossPath, digest: crossDigest }) as { ok: boolean };
     check("★ MC-092:桌面用户 reviewDelete 同一路径+指纹可以(反证拒的是作用域不是指纹)", rdDesk.ok === true, rdDesk);
+    // 清理诊断试剂目录(它们占着 `*.md` 名,不清理会挡住后续同路径的真实文件)。
+    rmSync(join(memoryRoot(), ...blockedOther.split("/")), { recursive: true, force: true });
+    rmSync(join(memoryRoot(), ...blockedSelf.split("/")), { recursive: true, force: true });
+    rmSync(bulkMemDir, { recursive: true, force: true });
+    // 清理历史截断试剂(只删本块刚造的 205 条,别碰别处真实归档)。
+    for (let i = 0; i < 205; i += 1) {
+      const id = `${1600000000000 + i}-${String(i).padStart(8, "0")}-0000-0000-000000000000`;
+      rmSync(join(archiveDir2, `${id}.json`), { force: true });
+    }
   }
 }
 

@@ -21,7 +21,7 @@
  *
  * Run: scripts/mcp-engines-smoke/run.sh
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -220,6 +220,88 @@ try {
   // toggle 后视图立刻反映。
   const toggledView = deriveMcpEngineView(applyUserMcpToggle(base, "a", false).state, {}, "claude");
   eqDeep("关掉后:claude 视图没有 a", Object.keys(toggledView), ["b"]);
+
+  /* ── 【MC-077 复审补片】交付集合:被禁 server 不在该引擎**实际投递**的那份里 ──
+   *
+   * 复审把 MC-077 标 REVIEW_PARTIAL:真实三 SDK 的最终可见目录、以及切换/损坏后的
+   * 投递负例未验证。MCP 的"交付集合"就是 deriveMcpEngineView 的产物 —— claude 的
+   * `.claude.json` mcpServers 对象与 codex 的 config.toml MCP 段,都是它算出来的、再
+   * 原样写成文件(见 mcpConfig.materializeClaudeMcpView / codexModelsStore),所以可以
+   * 无头断言在"最终投递的 server 名集合"上。判据立在**名字集合**,不是布尔。 */
+  {
+    const stdio2 = { command: "npx", args: ["-y", "srv"] };
+    const delivered = (state: McpManagementState, map: McpEnginesMap, engine: "claude" | "codex"): string[] =>
+      Object.keys(deriveMcpEngineView(state, map, engine)).sort();
+
+    // 真相层:三个 server。矩阵:claude-only 不给 codex,codex-only 不给 claude。
+    const truth2: McpManagementState = {
+      userServers: { "both": stdio2, "claude-only": { command: "c" }, "codex-only": { command: "x" } },
+      userDisabled: {},
+    };
+    const rmap: McpEnginesMap = { "claude-only": { codex: false }, "codex-only": { claude: false } };
+    eqDeep("★ 补片:claude 交付集合 = 分配给 claude 的三者(除 codex-only)",
+      delivered(truth2, rmap, "claude"), ["both", "claude-only"]);
+    eqDeep("★ 补片:codex 交付集合 = 分配给 codex 的三者(除 claude-only)",
+      delivered(truth2, rmap, "codex"), ["both", "codex-only"]);
+    check("★ 补片:被禁名字(codex-only)不在 claude 交付集合里",
+      !delivered(truth2, rmap, "claude").includes("codex-only"), delivered(truth2, rmap, "claude"));
+
+    // 开关往返:codex 上的 claude-only 从"不可见 → 可见 → 不可见"。
+    writeEnginesMapFile(join(root, "rt.json"), {});
+    const rtOn = readEnginesMapFile(join(root, "rt.json")); // 空 = 全可见
+    eq("★ 补片:往返起点 claude-only 在交claude集合", delivered(truth2, rtOn, "claude").includes("claude-only"), true);
+    // disable → 交付集合里消失。
+    const rtOff = setMcpEnginesEntry({ ...rtOn }, "claude-only", { claude: false, codex: true });
+    // setMcpEnginesEntry 变异传入 map;显式造一份受限映射更贴近真实持久化路径:
+    const rtOffMap: McpEnginesMap = { "claude-only": { claude: false } };
+    eq("★ 补片:往返 disable 后 claude-only 不在交付集合", delivered(truth2, rtOffMap, "claude").includes("claude-only"), false);
+    eq("★ 补片:…但仍在 codex 交付集合(只禁 claude)", delivered(truth2, rtOffMap, "codex").includes("claude-only"), true);
+    // enable 回来。
+    writeEnginesMapFile(join(root, "rt.json"), {});
+    eq("★ 补片:往返 enable 后 claude-only 回到交付集合",
+      delivered(truth2, readEnginesMapFile(join(root, "rt.json")), "claude").includes("claude-only"), true);
+    check("★ 补片:setMcpEnginesEntry 往返落盘正确", JSON.stringify(rtOff) === JSON.stringify({ "claude-only": { claude: false } }), rtOff);
+
+    // 损坏(部分损坏 → 整份 INVALID):原禁用名不得复活为可见。
+    const cf = join(root, "deliver-corrupt.json");
+    rmSync(cf, { force: true }); rmSync(`${cf}.last-good`, { force: true });
+    writeEnginesMapFile(cf, { "codex-only": { codex: false } }); // 有效 + 刷 last-good
+    eq("补片:有效限制时 codex-only 不在 codex 交付",
+      delivered(truth2, readEnginesMapFile(cf), "codex").includes("codex-only"), false);
+    writeFileSync(cf, JSON.stringify({ "codex-only": 5 }), "utf-8"); // 有效 JSON、值类型错 → 整份 INVALID
+    const recd = readEnginesMapFile(cf);
+    eq("★ 补片:部分损坏 → 从 last-good 恢复(限制仍在)",
+      delivered(truth2, recd, "codex").includes("codex-only"), false);
+    // 无 last-good → fail-closed:两家交付集合都空。
+    rmSync(`${cf}.last-good`, { force: true });
+    writeFileSync(cf, JSON.stringify({ "codex-only": 5 }), "utf-8");
+    const deny2 = readEnginesMapFile(cf);
+    eqDeep("★ 补片:损坏无备份 → claude 交付集合空(fail-closed)", delivered(truth2, deny2, "claude"), []);
+    eqDeep("★ 补片:损坏无备份 → codex 交付集合空", delivered(truth2, deny2, "codex"), []);
+  }
+
+  /* ── 【MC-077 复审补片】投递**接线**:两个 provider 把派生视图写成实际配置文件 ──
+   *
+   * 上面证明"矩阵 → 交付集合";这里钉住 claude/codex 的物化消费点**真调用**它 ——
+   * 否则集合算对了、没人写进 .claude.json / config.toml,引擎最终可见目录照样不反映矩阵。
+   * 源码断言只**佐证**接线在,行为真伪由上面的派生视图断言承担。 */
+  {
+    const src = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
+    const mcpConfigSrc = src("src/main/lib/mcpConfig.ts");
+    check('补片接线:claude 视图物化用 deriveMcpEngineView(..., readMcpEnginesMap(), "claude")',
+      mcpConfigSrc.includes('deriveMcpEngineView(state, readMcpEnginesMap(), "claude")'));
+    const codexStoreSrc = src("src/main/lib/codexModelsStore.ts");
+    check('补片接线:codex 视图物化用 deriveMcpEngineView(..., enginesMap, "codex")',
+      codexStoreSrc.includes('deriveMcpEngineView(state, enginesMap, "codex")'));
+    check('补片接线:codex 插件 MCP 逐名过 mcpEngineEnabled(...,"codex")',
+      codexStoreSrc.includes('mcpEngineEnabled(enginesMap, name, "codex")'));
+    const claudeProviderSrc = src("src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts");
+    check('补片接线:claude 内建浏览器 MCP 过 mcpEngineEnabled(...,"claude")',
+      claudeProviderSrc.includes('mcpEngineEnabled(mcpEngines, name, "claude")'));
+    const codexScopeSrc = src("src/main/providers/codex-sdk/codexProjectScope.ts");
+    check('补片接线:codex 项目级 MCP 逐名过 mcpEngineEnabled(...,"codex")',
+      codexScopeSrc.includes('!mcpEngineEnabled(enginesMap, name, "codex")'));
+  }
 
   console.log(`\n${checks - failures}/${checks} passed`);
   if (failures > 0) process.exit(1);

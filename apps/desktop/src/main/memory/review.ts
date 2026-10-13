@@ -100,7 +100,14 @@ export function reviewMemoryFiles(visible?: (path: string) => boolean): MemoryRe
   const all = listMemoryFiles({ onUnreadable: (path) => omitted.push(path) });
   const metas = visible === undefined ? all : all.filter((meta) => visible(meta.path));
   const report = buildMemoryReview(metas, readMemoryFileWithRaw);
-  return { ...report, unreadable: [...new Set([...omitted, ...report.unreadable])] };
+  // 【MC-092】诊断清单也必须过**同一份**可见谓词。⚠️ `omitted` 是在**整棵树**上收集的
+  // (listMemoryFiles 的 onUnreadable 遍历到每个类目、每个 `projects/<id>/…`),里面可能有
+  // `projects/<别项目>/…` 的不可读路径 —— 直接并进 `unreadable` 就等于把**不可见项目的存在与
+  // 名字**漏给 agent(它能读到的清单里没有该项目,诊断里却点名了它的路径)。`report.unreadable`
+  // 已出自过滤后的 metas,但整条清单统一走谓词才是「一份判据」;桌面用户(无谓词)照旧看全部。
+  const diagnostics = [...new Set([...omitted, ...report.unreadable])];
+  const unreadable = visible === undefined ? diagnostics : diagnostics.filter((path) => visible(path));
+  return { ...report, unreadable };
 }
 
 /** 单条显式删除；主进程同步重读并核对完整指纹，变动/消失即拒绝。

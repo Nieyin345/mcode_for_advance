@@ -79,9 +79,16 @@ export function manageMemory(input: MemoryManageInput, visible?: (path: string) 
             return { id, label: `${owner === ".claude" ? "Claude CLI" : "MCode CLI"} · ${project} · ${file}` };
           })],
         // 被上限挡掉的数如实报出(0 也带上,界面据此决定显不显示那句话)。
-        truncatedSources: native.truncatedProjects + native.truncatedFiles,
+        // 【MC-092】诊断计数也要与可见集合一致:`native` 全是**原生引擎目录**(旧记忆 / 别 owner
+        // 的项目记忆),经上面 `canSee(id)` 对 agent **一律不可见** —— 若还把整棵树的截断数摆出来,
+        // agent 就会看到「sources 空、却报了 N 个来源被截断」,等于知道本机存在它看不见的记忆源。
+        // 桌面用户(无谓词)照旧看到真实截断数。
+        truncatedSources: visible === undefined ? native.truncatedProjects + native.truncatedFiles : 0,
         history: history.entries.filter(e => canSee(e.path)),
-        historyTruncated: history.truncated };
+        // 【MC-092】同理:`history.entries` 已按可见集合滤过,但 `history.truncated` 是**全局**归档
+        // 超过 200 上限的数(含不可见项目的历史)—— 直接透出等于告诉 agent「另有 N 条你看不到的历史」。
+        // 桌面用户照旧看到真实值;agent 侧归 0(它看得见的那些条目本身仍列在 history 里)。
+        historyTruncated: visible === undefined ? history.truncated : 0 };
     }
     if (input.action === "history") {
       const h = readHistory(input.id);

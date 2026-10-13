@@ -432,5 +432,129 @@ check(
   }
 }
 
+/* ── 【MC-077 复审补片】三引擎 provider **实际交给 SDK 的最终交付集合** ──
+ *
+ * 复审把 MC-077 标了 REVIEW_PARTIAL:真实三 SDK 的最终可见目录、以及切换/损坏后的
+ * 投递负例未验证。三家 provider 的交付集合都是**这几个纯函数**算出来的、再原样交给
+ * SDK(claude→claudeSkillsOption 里的 enabledSkillNames;codex→skillRootsFor 委托的
+ * skillRootsIn;pi→buildPiSkillLoader 里的 enabledSkillNames),所以可以无头断言在
+ * 「最终交付的名字/目录」上:
+ *   - 被禁的名字**不在**该引擎的交付集合里;
+ *   - 开关往返(enable→disable→enable)逐一往返;
+ *   - 损坏(部分损坏→整份 INVALID)后,原禁用名**不复活为可见** —— 有备份按 last-good
+ *     恢复(禁用仍在),无备份 fail-closed(三家交付集合都空)。
+ * provider 是否真调用这些函数的接线,由本文件末尾的源码断言 + mcp-engines-smoke 钉住。
+ */
+{
+  const home = join(mkdtempSync(join(tmpdir(), "mcode-mc077-deliver-home-")), "home");
+  const skillsRoot = join(home, ".mcode", "skills");
+  const savedHome = process.env["HOME"];
+  const savedProfile = process.env["USERPROFILE"];
+  process.env["HOME"] = home;
+  process.env["USERPROFILE"] = home;
+  try {
+    const NAMES = ["alpha", "beta", "gamma"];
+    for (const n of NAMES) {
+      mkdirSync(join(skillsRoot, n), { recursive: true });
+      writeFileSync(join(skillsRoot, n, "SKILL.md"), `---\nname: ${n}\n---\n`, "utf-8");
+    }
+    const file = enginesMapPath(skillsRoot);
+    const sorted = (names: string[] | null): string[] => (names === null ? [...NAMES].sort() : [...names].sort());
+    // claude / pi 交付集合:enabledSkillNames 为 null = 不设限(全发现)。
+    const claudeDelivered = (): string[] => sorted(enabledSkillNames(skillsRoot, "claude"));
+    const piDelivered = (): string[] => sorted(enabledSkillNames(skillsRoot, "pi"));
+    // codex 交付集合:skillRootsIn 受限时交"启用目录",不设限时交整根。
+    const codexDelivered = (): string[] => {
+      const dirs = skillRootsIn(skillsRoot, "codex");
+      if (dirs.length === 1 && dirs[0] === skillsRoot) return [...NAMES].sort();
+      return dirs.map((d) => d.split(/[\\/]/).pop() as string).sort();
+    };
+
+    // 基准:无矩阵 → 三家都"发现一切"(claude/pi null;codex 交整根)。
+    rmSync(file, { force: true });
+    rmSync(lastGoodEnginesMapPath(file), { force: true });
+    eq("补片:无矩阵 → claude 交付 null(不设限)", enabledSkillNames(skillsRoot, "claude"), null);
+    eqDeep("补片:无矩阵 → claude 交付集合 = 全部", claudeDelivered(), [...NAMES].sort());
+    eqDeep("补片:无矩阵 → codex 交整根(全部可达)", codexDelivered(), [...NAMES].sort());
+
+    // 只禁 claude 上的 beta → beta 从 claude 交付集合消失,codex/pi 不受影响。
+    writeEnginesMap(skillsRoot, { beta: { claude: false } });
+    eqDeep("★ 补片:claude 禁 beta → claude 交付集合不含 beta", claudeDelivered(), ["alpha", "gamma"]);
+    eqDeep("补片:…codex 视图不受影响(仍全可见)", codexDelivered(), [...NAMES].sort());
+    eq("补片:…pi 仍不受限", enabledSkillNames(skillsRoot, "pi"), null);
+
+    // 三家都禁 beta:beta 从三家交付集合都消失(codex 改交"启用目录")。
+    writeEnginesMap(skillsRoot, { beta: { claude: false, codex: false, pi: false } });
+    eqDeep("★ 补片:beta 对 pi 禁 → pi 交付集合无 beta", piDelivered(), ["alpha", "gamma"]);
+    eqDeep("★ 补片:beta 对 codex 禁 → codex 只交启用目录(无 beta)", codexDelivered(), ["alpha", "gamma"]);
+    check("★ 补片:beta 自己的目录不在 codex 交付根里",
+      !skillRootsIn(skillsRoot, "codex").some((d) => d.split(/[\\/]/).pop() === "beta"),
+      skillRootsIn(skillsRoot, "codex"));
+
+    // 开关往返:enable → disable → enable,beta 交付状态随之往返。
+    writeEnginesMap(skillsRoot, {});
+    eq("★ 补片:往返起点 beta 可见", claudeDelivered().includes("beta"), true);
+    writeEnginesMap(skillsRoot, { beta: { claude: false } });
+    eq("★ 补片:往返 disable 后 beta 不可见", claudeDelivered().includes("beta"), false);
+    writeEnginesMap(skillsRoot, {});
+    eq("★ 补片:往返 enable 后 beta 恢复可见(真到达交付集合)", claudeDelivered().includes("beta"), true);
+
+    // 损坏(部分损坏 → 整份 INVALID):原禁用名不得复活为可见(交付集合视角)。
+    writeEnginesMap(skillsRoot, { beta: { codex: false } }); // 有效限制 + 刷新 last-good
+    eq("补片:有效限制时 beta 本不在 codex 交付", codexDelivered().includes("beta"), false);
+    // 主文件写坏成"有效 JSON、但条目类型错误"—— 正是复核点名的 fail-open 形态。
+    writeFileSync(file, JSON.stringify({ beta: 5 }), "utf-8");
+    const rec = readEnginesMapDetailed(file);
+    eq("★ 补片:部分损坏 → 整份 INVALID", rec.status, "INVALID");
+    eq("★ 补片:部分损坏 → 从 last-good 恢复", rec.recovered, true);
+    eq("★ 补片:部分损坏(有备份)→ beta 仍不在 codex 交付(不复活为可见)",
+      codexDelivered().includes("beta"), false);
+
+    // 部分损坏 + 无 last-good → fail-closed:三家交付集合都空(不是"全可见")。
+    rmSync(lastGoodEnginesMapPath(file), { force: true });
+    writeFileSync(file, JSON.stringify({ beta: 5 }), "utf-8");
+    const noBak = readEnginesMapDetailed(file);
+    eq("★ 补片:部分损坏且无备份 → INVALID", noBak.status, "INVALID");
+    eq("★ 补片:…recovered=false", noBak.recovered, false);
+    eqDeep("★ 补片:损坏无备份 → claude 交付空(fail-closed,不是全可见)", claudeDelivered(), []);
+    eqDeep("★ 补片:损坏无备份 → pi 交付空", piDelivered(), []);
+    eqDeep("★ 补片:损坏无备份 → codex 交付空", codexDelivered(), []);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome;
+    if (savedProfile === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = savedProfile;
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+/* ── 【MC-077 复审补片】投递**接线**:provider 把矩阵交给 SDK 的那一句 ──
+ *
+ * 上面证明"矩阵 → 交付集合"这条纯逻辑;这里钉住**三家 provider 实际调用它** ——
+ * 否则集合算对了、provider 没用,模型最终可见目录照样不反映矩阵。源码断言只**佐证**
+ * 接线在,行为真伪由上面的纯函数断言 + mcp-engines-smoke 的派生视图断言承担。 */
+{
+  const src = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
+  const claudeSrc = src("src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts");
+  check("补片接线:claude 的 skills 走 claudeSkillsOption(矩阵派生的 Options.skills)",
+    claudeSrc.includes("skills: await claudeSkillsOption("));
+  check('补片接线:claudeSkillsOption 用 enabledSkillNames(defaultSkillsRoot(), "claude")',
+    claudeSrc.includes('enabledSkillNames(defaultSkillsRoot(), "claude")'));
+  check('补片接线:claude allowlist 逐名过 engineEnabled(...,"claude")',
+    claudeSrc.includes('engineEnabled(enginesMap, name, "claude")'));
+
+  const codexSrc = src("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts");
+  check("补片接线:codex 的 extraRoots 并入 skillRootsFor(req.skills)",
+    codexSrc.includes("...skillRootsFor(req.skills)"));
+  check('补片接线:codex skillRootsFor 委托 skillRootsIn(defaultSkillsRoot(), "codex", …)',
+    codexSrc.includes('skillRootsIn(defaultSkillsRoot(), "codex", allowNames)'));
+
+  const piSrc = src("src/main/providers/pi-sdk/piSkillBridge.ts");
+  check("补片接线:pi 的 additionalSkillPaths 含 mcodeSkillRoots(cwd)",
+    piSrc.includes("additionalSkillPaths: [...mcodeSkillRoots(cwd), ...(extraSkillPaths ?? [])]"));
+  check('补片接线:pi allowSet 用 enabledSkillNames(defaultSkillsRoot(), "pi")',
+    piSrc.includes('enabledSkillNames(defaultSkillsRoot(), "pi")'));
+  check('补片接线:pi allowSet 逐名过 engineEnabled(...,"pi")',
+    piSrc.includes('engineEnabled(enginesMap, name, "pi")'));
+}
+
 console.log(`${checks} checks, ${failures} failures (final)`);
 if (failures > 0) process.exit(1);
