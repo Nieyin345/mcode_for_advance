@@ -975,6 +975,7 @@ const api = {
   },
   scene: {
     plan: ((input) => ipcRenderer.invoke(IPC.SCENE_PLAN, input)) as RpcMap["scene.plan"],
+    preflight: ((input) => ipcRenderer.invoke(IPC.SCENE_PREFLIGHT, input)) as RpcMap["scene.preflight"],
   },
   memory: {
     assistant: ((input) => ipcRenderer.invoke(IPC.MEMORY_ASSISTANT, input)) as RpcMap["memory.assistant"],

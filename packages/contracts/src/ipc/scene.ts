@@ -36,6 +36,47 @@ export type ScenePlanResult =
   | { ok: false; problems: Array<{ path: string; message: string }> }
   | { ok: true; plan: ScenePlanWire };
 
+/**
+ * 预检入参:一份**候选** SceneSpec(通常就是刚 `scene.plan` 过的那份)。与规划一样先宽松收下,
+ * 由 `validateSceneSpec` 做业务校验并把全部问题报回来。
+ */
+export const ScenePreflightInputSchema = z.object({
+  spec: z.unknown(),
+});
+export type ScenePreflightInput = z.infer<typeof ScenePreflightInputSchema>;
+
+/**
+ * 预检结果。三态全在 `ok` 之外显式给出,便于调用方区分「声明不合法」「能力缺」:
+ *  - 声明不合法 → `{ ok:false, problems }`(与规划同一形状,不重复第二套);
+ *  - 声明合法 → `{ ok:true, plan, preflight }`,`preflight.ok` 才是能力是否就位。
+ */
+export type ScenePreflightIpcResult =
+  | { ok: false; problems: Array<{ path: string; message: string }> }
+  | { ok: true; plan: ScenePlanWire; preflight: ScenePreflightWire };
+
+/** 过 IPC 的能力预检形状(与 `@contracts/scenePreflight` 同形,这里显式给出契约面)。 */
+export interface ScenePreflightWire {
+  ok: boolean;
+  gaps: Array<{
+    kind: string;
+    id: string;
+    reason: "missing" | "incompatible";
+    missingCapabilities: string[];
+    required: boolean;
+    detail: string;
+  }>;
+  requiredGaps: Array<{
+    kind: string;
+    id: string;
+    reason: "missing" | "incompatible";
+    missingCapabilities: string[];
+    required: boolean;
+    detail: string;
+  }>;
+  checkedCapabilities: number;
+}
+
+
 /** 过 IPC 的计划形状(与 `@contracts/scenePlan` 的 `ScenePlan` 同形,这里显式给出契约面)。 */
 export interface ScenePlanWire {
   sceneId: string;

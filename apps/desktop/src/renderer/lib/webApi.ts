@@ -901,6 +901,12 @@ export function createWebApi(): Api {
       apply: async () => webUnsupported("projectInit.apply"),
       setDefault: async () => webUnsupported("projectInit.setDefault"),
     } satisfies Api["projectInit"],
+    // Scene planning/preflight is desktop-only in v1 (SceneSpec compilation and the
+    // host capability inventory live in the main process). Reject explicitly.
+    scene: {
+      plan: async () => webUnsupported("scene.plan"),
+      preflight: async () => webUnsupported("scene.preflight"),
+    } satisfies Api["scene"],
     // Module installation/execution is desktop-only in v1. Reject explicitly;
     // no new mobile whitelist or paired-device capability is implied.
     modules: {
