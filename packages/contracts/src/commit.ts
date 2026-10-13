@@ -52,3 +52,16 @@ export interface CommitResult {
 export function isDurable(result: CommitResult): boolean {
   return result.outcome === "DURABLE";
 }
+
+/**
+ * 把一份 `CommitResult` 的版本号渲染成 `OperationResult.durableRevision` 要的字符串
+ * (ARC-009)。**只有 `DURABLE` 且有版本号时**才给值 —— `APPLIED_NOT_DURABLE` 没有落盘,
+ * 编一个版本号就是假成功。前缀 `sqlite:` 标明这是**整库落盘序列**,不是内存修订号。
+ *
+ * 判据收口在**这一处**:调用点(如操作账本 settle)别各写一遍 `durableRevision !== undefined`。
+ */
+export function durableRevisionOf(result: CommitResult): string | undefined {
+  return isDurable(result) && result.durableRevision !== undefined
+    ? `sqlite:${result.durableRevision}`
+    : undefined;
+}

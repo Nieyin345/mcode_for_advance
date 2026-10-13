@@ -34,6 +34,7 @@
  */
 import type { OperationIntent, OperationRecord, OperationStatus, OperationResult, OperationResultKind } from "@contracts/appControl";
 import { getDb, persist, commitNow } from "@main/store/db.js";
+import { durableRevisionOf } from "@contracts/commit";
 import { log } from "@main/lib/logger.js";
 import {
   intentFingerprint,
@@ -226,6 +227,18 @@ export const DurableOperationLedger: OperationLedger = {
       const result = commitNow();
       if (result.outcome !== "DURABLE") {
         log.warn(`operation settle not durable (${operationId} → ${s.status}): ${result.reason ?? "unknown"}`);
+      } else if (s.result !== undefined && s.result.durableRevision === undefined) {
+        // 【ARC-009】结算这次**落盘成功** → 把落盘版本号盖进结果。于是同 id 回放时,
+        // 调用方能读到「这一份是哪次落盘」—— 与 `OperationResult.durableRevision` 的
+        // 语义对齐(不是内存修订号,是整库 durable 序列)。失败路径**不盖**(没落盘没有版本)。
+        const rev = durableRevisionOf(result);
+        if (rev !== undefined) {
+          s.result.durableRevision = rev;
+          getDb().run("UPDATE operations SET result_json = ? WHERE operation_id = ?", [
+            JSON.stringify(s.result),
+            operationId,
+          ]);
+        }
       }
     } else {
       persist();
