@@ -1247,6 +1247,42 @@ console.log("\nmergeEventPayload · 合并窗口里的两条都留着");
   );
 }
 
+console.log("\n【MC-091】合并窗口的事件条目有容量上限(不再只涨不落)");
+{
+  /* 从前 `mergeEventPayload` 只 push 不设上限 —— 一条持续吐**不同** itemId 的事件流会让
+   * `items` 只涨不落(台账实测 1500 个唯一 itemId → 保留 1500),而这份载荷要整个进
+   * `data.trigger` 与运行历史。这里灌 250 个唯一 itemId,断言:条目停在 100 的上限、
+   * 丢的 150 条**如实记进 `itemsOverflowDropped`**、并**兑现到人话与载荷事实**里。 */
+  const MAX = 100;
+  const TOTAL = 250;
+  let payload = mergeEventPayload(undefined, "library.item.downloaded", {}, { itemId: "seed" });
+  for (let i = 0; i < TOTAL; i += 1) {
+    payload = mergeEventPayload(payload, "library.item.downloaded", {}, { itemId: `lib_${i}`, itemTitle: `第 ${i} 篇` });
+  }
+  // seed + TOTAL 条 = TOTAL+1;上限 100 → 丢 TOTAL+1-100 = 151。
+  const dropped = TOTAL + 1 - MAX;
+  eq("★ 条目数停在上限(不再只涨不落)", payload.kind === "event" ? payload.items?.length : -1, MAX);
+  eq("★ 丢的条数如实记在 itemsOverflowDropped", payload.kind === "event" ? payload.itemsOverflowDropped : -1, dropped);
+  check(
+    "★ 留下的是**最近**那批(丢的是最早的)",
+    payload.kind === "event" && payload.items?.[payload.items.length - 1]?.itemId === `lib_${TOTAL - 1}`,
+    payload.kind === "event" ? payload.items?.slice(-2) : payload,
+  );
+  // 去重仍在:重复最后那条唯一 itemId 不增加条目、也不增加丢弃计数。
+  const dupLast = mergeEventPayload(payload, "library.item.downloaded", {}, { itemId: `lib_${TOTAL - 1}` });
+  eq("重复的那条不增加条目(去重仍生效)", dupLast.kind === "event" ? dupLast.items?.length : -1, MAX);
+  eq("重复不虚增丢弃计数", dupLast.kind === "event" ? dupLast.itemsOverflowDropped : -1, dropped);
+  // 人话里明说"不是全部"。
+  const said = describeTriggerPayload(payload);
+  check("人话里明说还有多少条没带上", said.includes(`${dropped} 条`) && said.includes("不是全部"), said.slice(-120));
+  // 载荷事实带给代码节点。
+  const facts = payloadFactsOf(payload);
+  eq("★ 载荷事实里带上 itemsOverflowDropped", facts.itemsOverflowDropped, dropped);
+  // 没丢时不带这个键(同 overflowDropped/itemCount 口径)。
+  const small = mergeEventPayload(undefined, "library.item.downloaded", {}, { itemId: "only" });
+  check("没截断时不带 itemsOverflowDropped 键", small.kind === "event" && small.itemsOverflowDropped === undefined, small);
+}
+
 /* ────────────────────────── 9. 定时:同一分钟只跑一次(AUTO-05) ────────────────────────── */
 
 console.log("\nshouldFireThisMinute · 30 秒 ticker 的同分钟去重");
@@ -2893,6 +2929,61 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       eq("文件批次在空闲后只执行一次", runsOfNode(nodeId).length, 2);
       const files = runsOfNode(nodeId)[1]?.entry?.payload?.files as string[] | undefined;
       check("跨窗口积压的两个文件都在", files?.includes(join(PROJ_DIR,"busy-a.md")) === true && files?.includes(join(PROJ_DIR,"busy-b.md")) === true, files);
+    } finally { setRunBusy(sessionId, false); runner.dispose(); }
+  }
+  /* ── 【MC-091】忙时跨窗口重排队**也要走上限**(不是只有正常收集那一侧有界) ──
+   *
+   * 从前忙时分支是一句裸的 `pending.files = [...new Set([...pending.files, ...payload.files])]`
+   * —— **绕过了 `PENDING_FILES_LIMIT`**。工作流跑很久(几十分钟)期间多个忙窗口串联聚合,
+   * 每次把上一批整批并回来,队列可无界增长(而正常收集那一侧明明有 500 的上限)。
+   * 这里让第一个忙窗口就攒爆 500,后续窗口再灌 —— 断言忙时重排队后的队列**仍停在上限**,
+   * 且**这次挤掉的条数累加进 `overflowDropped`**(不是静默丢)。
+   */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_busy_files_cap";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file", [NODE_TRIGGER_PATHS_PARAM_KEY]: "cap-*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "忙时攒太多也要有界",
+    } });
+    const runner = await startRunner();
+    await runner.runNow(wf, nodeId);
+    const sessionId = runsOfNode(nodeId)[0]!.sessionId;
+    const key = `${wf}:${nodeId}`;
+    const LIMIT = 500;
+    setRunBusy(sessionId, true);
+    try {
+      // 第一个忙窗口:灌 502 个 → 队列停在 500、`overflowDropped`=2。
+      for (let i = 0; i < LIMIT + 2; i += 1) {
+        const name = `cap-${String(i).padStart(4, "0")}.md`;
+        writeFileSync(join(PROJ_DIR, name), `# ${i}`);
+        runner.onFsChange(PROJ_DIR, name);
+      }
+      await sleep(600);
+      const p1 = runner.pendingFires.get(key);
+      eq("第一个忙窗口就按上限收口", p1?.files.length ?? -1, LIMIT);
+      // ⚠️ 只断言**下界** —— 项目目录挂真 `fs.watch`,刚写的 502 个文件会产生真实
+      // `rename` 事件,把已被挤掉的早期文件又送一遍,丢的条数会再多几条(平台时序不稳)。
+      // 下界已能区分修复:旧代码根本不应用上限,`files.length` 会 > LIMIT(上一条就红)。
+      check("第一个忙窗口记下丢的条数(下界)", (p1?.overflowDropped ?? 0) >= 2, p1?.overflowDropped);
+
+      // 后续忙窗口:再灌 50 个**新**路径 —— 旧代码会把它们整批并上去 → 队列变 550;
+      // 修复后 `mergeFileBacklog` 应用同一上限 → 队列仍 500,且这 50 条算挤掉、累加进计数。
+      for (let i = 0; i < 50; i += 1) {
+        const name = `cap-late-${String(i).padStart(4, "0")}.md`;
+        writeFileSync(join(PROJ_DIR, name), `# late ${i}`);
+        runner.onFsChange(PROJ_DIR, name);
+      }
+      await sleep(600);
+      const p2 = runner.pendingFires.get(key);
+      eq("★ 忙时跨窗口重排队后队列仍停在上限(不再无界增长)", p2?.files.length ?? -1, LIMIT);
+      check("★ 后续窗口挤掉的 50 条也累加进 overflowDropped(不静默丢)", (p2?.overflowDropped ?? 0) >= 52, p2?.overflowDropped);
+
+      setRunBusy(sessionId, false); await sleep(1300);
+      // 收口的这一批:交给模型的文件数仍恰好是上限,且载荷如实报截断。
+      const files2 = runsOfNode(nodeId)[1]?.entry?.payload?.files as string[] | undefined;
+      eq("交出去的文件数仍是上限", files2?.length ?? -1, LIMIT);
+      check("载荷事实带上了忙时累计丢的条数", ((runsOfNode(nodeId)[1]?.entry?.payload?.overflowDropped as number | undefined) ?? 0) >= 52, runsOfNode(nodeId)[1]?.entry?.payload?.overflowDropped);
     } finally { setRunBusy(sessionId, false); runner.dispose(); }
   }
   /* ── 忙时回看间隔按指数退避增长(不是每秒重扫一遍) ──

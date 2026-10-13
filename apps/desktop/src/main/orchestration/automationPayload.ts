@@ -15,6 +15,14 @@ import type { EventItemFactKey, FileChange, HookEvent } from "@contracts/hook";
  *  全塞进提示词纯属浪费 token —— 而模型要的是"变了些文件"这个事实,不是清单本身。 */
 const MAX_LISTED = 20;
 
+/**
+ * 【MC-091】合并窗口里**事件条目**的容量上限。一件事最多带这么多条 `items` 进载荷 ——
+ * 超出的丢最早的,丢了几条如实报进 `itemsOverflowDropped`。选 100 的理由:一次合并窗口
+ * 里"要办的事"通常个位数;上百条已经远超"这一批"的语义,再往上只是让载荷无界膨胀、
+ * 拖慢 `items.some` 的去重(那是随条目数线性上升的)。
+ */
+const MAX_EVENT_ITEMS = 100;
+
 /** 一次触发的载荷。判别联合,与 `@contracts/nodeType` 的 `TriggerSpec` 一一对应。 */
 export type TriggerInputValues = Readonly<Record<string, string | readonly string[]>>;
 
@@ -81,6 +89,15 @@ export type TriggerPayload =
        * 配置)。塞进去等于告诉模型"可以拿它筛",而用户照着配会被当场拦下。
        */
       items?: readonly Partial<Record<EventItemFactKey, string>>[];
+      /**
+       * 【MC-091】这次载荷里**因为合并窗口积压超限被丢掉**了多少条 `items`(未丢时 undefined)。
+       *
+       * 与 file 那一路的 `overflowDropped` 同一个立场:一条持续吐不同 `itemId` 的事件流
+       * (例如一批并发下载被不断触发)会让合并窗口里的 `items` **只涨不落** —— 必须有个
+       * 容量上限,且**丢了几条必须说出来**,否则模型以为它看到的是全部,少办的那些永远
+       * 没人办、也不报错。同 `overflowDropped`/`itemCount` 的口径:只在**真丢了**的时候才出现。
+       */
+      itemsOverflowDropped?: number;
       /**
        * **这次运行的落点分类**(2026-09-28)。只有自定义 UI 的 `targetMode: "context"`
        * 那条路带得出:用户在某个分类上右键「文献导入」,意思是"收进**这个**分类"。
@@ -190,6 +207,15 @@ export interface TriggerPayloadFacts {
    */
   items?: ReadonlyArray<Partial<Record<EventItemFactKey, string>>>;
   /**
+   * 【MC-091】合并窗口积压超限时**被丢掉**的事件条目数(未丢时不给键)。
+   *
+   * 与 file 那一路的 `overflowDropped` 同一立场:`items` 现在有容量上限(见
+   * `MAX_EVENT_ITEMS`),达到上限丢最早的。**丢了几条必须说出来** —— 模型读到一份
+   * 不完整列表却以为它是全部,少办的那些永远没人办、也不报错。代码节点读
+   * `data.trigger.itemsOverflowDropped` 就知道"这次看到的不是全部"。
+   */
+  itemsOverflowDropped?: number;
+  /**
    * **用户手动起的这一次**(右键自定义 UI / 「立刻运行一次」)。`payloadFactsOf` 不产出它 ——
    * 载荷本身分不出手动与自动,是 `automationRunner.fire` 按 `manual` 选项补上的。
    */
@@ -261,6 +287,11 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
           ? { items: payload.items.map((it) => ({ ...it })) }
           : {}),
         ...(payload.items !== undefined && payload.items.length > 1 ? { itemCount: payload.items.length } : {}),
+        // 【MC-091】合并窗口积压截断时,把"这次不完整"这件事实带进载荷 —— 与 file 那一路
+        // 的 `overflowDropped` 同口径(只在真丢了时给键)。
+        ...(payload.itemsOverflowDropped !== undefined && payload.itemsOverflowDropped > 0
+          ? { itemsOverflowDropped: payload.itemsOverflowDropped }
+          : {}),
         ...(payload.collectionId !== undefined ? { collectionId: payload.collectionId } : {}),
         ...inputFactsOf(payload.input),
       };
@@ -297,10 +328,20 @@ export function mergeEventPayload(
   item: Partial<Record<EventItemFactKey, string>> | undefined,
 ): TriggerPayload {
   const items = prior?.kind === "event" ? [...(prior.items ?? [])] : [];
+  let dropped = prior?.kind === "event" ? (prior.itemsOverflowDropped ?? 0) : 0;
   if (item !== undefined) {
     const id = item.itemId;
     const seen = id !== undefined && items.some((existing) => existing.itemId === id);
     if (!seen) items.push(item);
+  }
+  // 【MC-091】合并窗口里的事件条目**必须有界**。从前 `items` 只 push 不设上限,一条持续
+  // 吐不同 `itemId` 的事件流会让它只涨不落(实测 1500 个唯一 itemId → 保留 1500),而
+  // 载荷要整个进 `data.trigger` 与运行历史。达到上限时丢**最早**的(与文件那一路同一取舍),
+  // 并把丢的条数**如实累加**进 `itemsOverflowDropped` —— 静默截断是这一路最坏的坏法。
+  const overflow = items.length - MAX_EVENT_ITEMS;
+  if (overflow > 0) {
+    items.splice(0, overflow);
+    dropped += overflow;
   }
   return {
     kind: "event",
@@ -308,6 +349,7 @@ export function mergeEventPayload(
     ...(facts.toolName !== undefined ? { toolName: facts.toolName } : {}),
     ...(facts.subjects !== undefined ? { subjects: facts.subjects } : {}),
     ...(items.length > 0 ? { items } : {}),
+    ...(dropped > 0 ? { itemsOverflowDropped: dropped } : {}),
   };
 }
 
@@ -363,7 +405,14 @@ export function describeTriggerPayload(payload: TriggerPayload): string {
       }
       const items = itemBlock(payload.items);
       const inputSaid = describeInput(payload.input);
-      const tail = [items, inputSaid].filter((s) => s !== "").join("\n");
+      // 【MC-091】条目被截断就**明说** —— 与 file 那一路的 overflowSaid 同一立场:
+      // 让模型知道"这次看到的不是全部",而不是以为办完这些就没事了。
+      const itemOverflow = payload.itemsOverflowDropped ?? 0;
+      const itemOverflowSaid =
+        itemOverflow > 0
+          ? `(还有 ${itemOverflow} 条因为合并窗口积压没能带上 —— 这次看到的不是全部)`
+          : "";
+      const tail = [items, itemOverflowSaid, inputSaid].filter((s) => s !== "").join("\n");
       return tail === "" ? `${parts.join(",")}。` : `${parts.join(",")}。\n${tail}`;
     }
   }
