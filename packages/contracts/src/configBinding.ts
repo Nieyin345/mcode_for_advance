@@ -104,6 +104,34 @@ export function staleBindings(
   return resolved.filter((r) => r.stale);
 }
 
+/**
+ * 把「一次运行**当时**记下的哈希表」（`RunConfigSnapshot.profiles`）翻译成**声明的
+ * 配置绑定** —— 每个当时锁下了哈希的资源都是一条 `PINNED` + `RUN_START` 绑定。
+ *
+ * 供运行史 readback 走一遍 {@link resolveConfigBinding} 解析：于是「这一轮实际用了
+ * 哪一版」与「源是否已经越过它」由**同一份锁版判定**回答（`effectiveHash` = 当时锁下的
+ * 旧值、`stale` = 源此后被改过），而不是在调用方各写一遍 —— 这正是 ARC-016 要把
+ * 「运行存档里那张哈希表」与「显式声明的 `ConfigBinding`」统一到一处的那一步。
+ *
+ * `null` 锁定值（当时没绑到这个资源）**不产出绑定**：`PINNED` 必须有 `pinnedHash`，
+ * 缺了就是契约错误（见 {@link resolveConfigBinding}）。那种「当时没有、现在有了」的
+ * 情形由 {@link configDrift} 的 `added` 覆盖，两者互补不重复。返回按 `assetId` 升序，
+ * 变更计划才好稳定 diff（与 {@link configDrift} 同一条规矩）。
+ */
+export function runStartBindings(
+  locked: Readonly<Record<string, string | null>>,
+): ConfigBinding[] {
+  const out: ConfigBinding[] = [];
+  for (const assetId of Object.keys(locked)) {
+    const hash = locked[assetId];
+    if (typeof hash === "string" && hash.length > 0) {
+      out.push({ assetId, pinnedHash: hash, bindingPolicy: "PINNED", effectiveAt: "RUN_START" });
+    }
+  }
+  out.sort((a, b) => (a.assetId < b.assetId ? -1 : a.assetId > b.assetId ? 1 : 0));
+  return out;
+}
+
 /** 一条资源在「当时锁下」与「现在」之间的差异性质。 */
 export type ConfigDriftKind =
   /** 当时绑到了某个版本，现在源变了另一个版本。 */

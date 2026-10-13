@@ -13,7 +13,7 @@
 import { z } from "zod";
 import type { TriggerKind } from "../nodeType.js";
 import type { AutomationRunStatus } from "./workflow.js";
-import type { ConfigDriftEntry } from "../configBinding.js";
+import type { ConfigDriftEntry, ResolvedConfigBinding } from "../configBinding.js";
 
 /* ── 运行史(runs.history)── */
 
@@ -47,6 +47,19 @@ export interface PersistedWorkflowRunLite {
    * 现在还一样吗」—— 只记哈希差异,不含档案正文。
    */
   configDrift?: ConfigDriftEntry[];
+  /**
+   * ARC-016: 同一条运行,但走**声明式锁版**判定的口径 —— 把当时锁下的哈希当成一批
+   * `PINNED`/`RUN_START` 的 {@link ConfigBinding} 解析后,**仅挑出落后的那几条**
+   * (`ConfigBindingPolicy`/`effectiveAt` 的语义见 `configBinding.ts`)。每条带当时
+   * **生效**的那一版哈希与它是否已落后 —— 这就是台账要的「源档案比声明的 lock 新」的
+   * **变更计划**。
+   *
+   * 与 {@link PersistedWorkflowRunLite.configDrift} **互补**:那个是「运行事实的差异表」
+   * (`changed`/`removed`/`added`),这个只回答「哪些**当时锁过版**的源已经越过它」以及
+   * **当时生效的那一版**。两者都由同一份 `configSnapshot.profiles` 推出,没有落后项时
+   * 都不给字段(同 `TriggerPayload` 的口径)。只带哈希,不含档案正文。
+   */
+  configChangePlan?: ResolvedConfigBinding[];
 }
 
 /* ── 触发器事实(automation.statusAll)── */

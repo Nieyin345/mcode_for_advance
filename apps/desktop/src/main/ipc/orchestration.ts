@@ -59,7 +59,7 @@ import {
 } from "@main/orchestration/library.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
-import { configDrift } from "@contracts/configBinding";
+import { configDrift, resolveConfigBinding, runStartBindings, staleBindings } from "@contracts/configBinding";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { approveWorkflowRevision, workflowReviewOf } from "@main/orchestration/workflowTrust.js";
 import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
@@ -373,6 +373,16 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
         for (const id of Object.keys(lockedProfiles)) current[id] = agentProfileContentHash(id);
       }
       const drift = lockedProfiles ? configDrift(lockedProfiles, current) : [];
+      // ARC-016 变更计划:同一条运行,走**声明式锁版**判定的口径 —— 把当时锁下的哈希
+      // 当成一批 `PINNED`/`RUN_START` 的绑定,逐条 `resolveConfigBinding` 解析出**当时生效
+      // 的那一版**(effectiveHash = 锁定值)与它是否已落后,再 `staleBindings` 挑出落后项。
+      // 这是台账点名的「源档案比声明的 lock 新」的变更计划,也是 `resolveConfigBinding` /
+      // `staleBindings` / `ConfigEffectiveAt=RUN_START` 唯一一处真实生产调用端。只挑落后项,
+      // 没落后不给字段(同 configDrift 的口径)。
+      const bindings = lockedProfiles ? runStartBindings(lockedProfiles) : [];
+      const changePlan = staleBindings(
+        bindings.map((b) => resolveConfigBinding(b, current[b.assetId] ?? null)),
+      );
       return {
         runId: run.runId,
         sessionId: run.sessionId,
@@ -382,6 +392,7 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
         updatedAt: run.updatedAt,
         nodeCount: run.snapshot?.state.outcomes.length ?? 0,
         ...(drift.length > 0 ? { configDrift: drift } : {}),
+        ...(changePlan.length > 0 ? { configChangePlan: changePlan } : {}),
       };
     });
     // **直接返回数组**(不包 `{ runs }`)—— 同 statusAll,渲染端按裸数组消费。

@@ -46,7 +46,7 @@ import type { OperationIntent, OperationResult } from "@contracts/appControl";
 import type { BeginOutcome } from "@main/appControl/operations.js";
 import { decodeSnapshot, resumableRun, retryableRun, saveRun, onRunCommitted, runCommittedOutboxStats, runCommittedDeadLetters, type RunSnapshot } from "@main/orchestration/runStore.js";
 import { RetryableOutbox } from "@main/store/outbox.js";
-import { configDrift } from "@contracts/configBinding";
+import { configDrift, resolveConfigBinding, runStartBindings, staleBindings } from "@contracts/configBinding";
 import { dataRoot, DATA_DB_FILENAME } from "./stubs/dataRoot.js";
 
 let failures = 0;
@@ -230,6 +230,36 @@ if (MODE === "write") {
       configDrift({ p_a: "old" }, { p_a: "new" })[0]?.kind, "changed");
     eq("输出按 assetId 升序(变更计划可 diff)",
       configDrift({ p_z: "1", p_a: "1" }, { p_z: "2", p_a: "2" }).map((d) => d.assetId).join(","), "p_a,p_z");
+  }
+  // 【ARC-016】「运行当时锁下的哈希表 → 声明式绑定 → 变更计划」这一段:把 RunConfigSnapshot.profiles
+  // 当成一批 PINNED/RUN_START 的 ConfigBinding 解析,挑出**落后**的那几条。这是
+  // resolveConfigBinding / staleBindings / ConfigEffectiveAt=RUN_START 的统一落点。
+  {
+    // 当时锁下的哈希表:两个真锁了的 + 一个当时没绑到(null)。
+    const bindings = runStartBindings({ p_b: "b-old", p_a: "a-old", p_none: null });
+    eq("每个当时锁下哈希的资源产出一条绑定", bindings.length, 2);
+    eq("按 assetId 升序(变更计划可 diff)", bindings.map((b) => b.assetId).join(","), "p_a,p_b");
+    eq("每条的策略是 PINNED", bindings.every((b) => b.bindingPolicy === "PINNED"), true);
+    eq("每条的生效时点是 RUN_START", bindings.every((b) => b.effectiveAt === "RUN_START"), true);
+    eq("当时没绑到(null)的不产出绑定(缺 pinnedHash 是契约错误,不能静默退化成 LIVE)",
+      bindings.some((b) => b.assetId === "p_none"), false);
+    // 解析:p_a 源没变(不落后)、p_b 源改了(落后)。
+    const current: Record<string, string> = { p_a: "a-old", p_b: "b-new" };
+    const resolved = bindings.map((b) => resolveConfigBinding(b, current[b.assetId] ?? null));
+    eq("PINNED 生效值 = 当时锁下的旧值(锁版不随源变)",
+      resolved.find((r) => r.assetId === "p_b")?.effectiveHash, "b-old");
+    eq("源改了 → 那一条 stale 为真", resolved.find((r) => r.assetId === "p_b")?.stale, true);
+    eq("源没变 → 那一条不 stale", resolved.find((r) => r.assetId === "p_a")?.stale, false);
+    const plan = staleBindings(resolved);
+    eq("变更计划只挑落后项", plan.map((p) => p.assetId).join(","), "p_b");
+    eq("变更计划里那条带着当时生效的旧哈希", plan[0]?.effectiveHash, "b-old");
+    // 边界:`resolveConfigBinding` 对**源被删**(现值 null)判**不** stale —— 「源没了」与
+    // 「源越过了锁定值」是两件事,前者归 configDrift 的 `removed`,这里只答「锁版是否被越过」。
+    eq("源档案被删(现值 null)不算 stale(源没了 ≠ 源越过了锁)",
+      resolveConfigBinding({ assetId: "p_b", pinnedHash: "b-old", bindingPolicy: "PINNED", effectiveAt: "RUN_START" }, null).stale, false);
+    // 现值与锁定值相同 → 谁也进不了计划。
+    eq("没有落后项时变更计划为空",
+      staleBindings(bindings.map((b) => resolveConfigBinding(b, b.pinnedHash ?? null))).length, 0);
   }
   check("存档中伪造的坏图版本拒绝读取", decodeSnapshot(JSON.stringify({ ...pinned, workflowRevision: "bad" })) === null);
   check("存档中坏执行列表拒绝读取", decodeSnapshot(JSON.stringify({ ...pinned, inFlightNodeIds: [1] })) === null);

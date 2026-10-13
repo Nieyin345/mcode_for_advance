@@ -1181,6 +1181,42 @@ console.log("\n对话里那张「跑过什么」");
   );
 }
 
+/* 【ARC-016】变更计划:同一条运行走**声明式锁版**判定的口径 —— 把当时锁下的哈希当成一批
+ * `PINNED`/`RUN_START` 的 ConfigBinding,经 `resolveConfigBinding` 解析出当时**生效**的那一版
+ * 与它是否已落后,再由 `staleBindings` 挑出落后项。这是台账点名的「源档案比声明的 lock 新」的
+ * 变更计划,也是这三个纯函数唯一一处真实生产调用端。 */
+{
+  const rows = (await callAsync(IPC.RUNS_HISTORY, { sessionId: "s_cfg_drift" })) as Array<{
+    runId: string;
+    configChangePlan?: Array<{
+      assetId: string;
+      effectiveHash: string | null;
+      policy: string;
+      stale: boolean;
+    }>;
+  }>;
+  const plan = rows.find((r) => r.runId === "r_cfg")?.configChangePlan;
+  check("记了配置快照的那条带上变更计划", Array.isArray(plan), plan);
+  eq("变更计划只挑**落后**的那一个档案(源没变的不进计划)", plan?.map((p) => p.assetId).join(","), "p_edited");
+  eq("LOCKED 的是当时生效的那一版哈希(锁版意义就是不随源变)", plan?.[0]?.effectiveHash, "sha256:当时那一版");
+  eq("每条都是 PINNED 策略(运行起跑时锁下的)", plan?.[0]?.policy, "PINNED");
+  eq("落后的那一条 stale 为真", plan?.[0]?.stale, true);
+  // 没记配置快照 / 存档读不回来的运行**不带**这个字段(不是空数组硬塞)。
+  check(
+    "没记配置快照的运行不带 configChangePlan",
+    rows.every((r) => r.configChangePlan === undefined || r.runId === "r_cfg"),
+    rows.map((r) => r.runId),
+  );
+  const autoRows = (await callAsync(IPC.RUNS_HISTORY, { sessionId: "s_smoke_auto" })) as Array<{
+    runId: string;
+    configChangePlan?: unknown;
+  }>;
+  check(
+    "存档读不回来的那条不带 configChangePlan",
+    autoRows.find((r) => r.runId === "r_broken")?.configChangePlan === undefined,
+  );
+}
+
 
 /* A workflow's history spans project-specific automation sessions, not chat runs. */
 {
