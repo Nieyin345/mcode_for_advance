@@ -36,23 +36,6 @@ export const MOBILE_ENABLED_SETTING_KEY = "mobile.enabled";
  *  `resolveBindAddress()` in the main process. */
 export const MOBILE_BIND_ADDRESS_SETTING_KEY = "mobile.bindAddress";
 
-/** Setting key for **accepting credentials over plaintext HTTP from a non-loopback
- *  peer** (MC-004 / §50.6). Value is `"1"` / `"0"`.
- *
- *  The mobile server speaks **plaintext HTTP** (it does not terminate TLS). When the
- *  listener is bound to a loopback address (`127.0.0.1` / `::1`) the transport never
- *  leaves the machine, so credentials on it are fine. Once it is reachable from
- *  another host on the LAN, posting the account password or sending a `Bearer`
- *  token over that connection puts secrets on the wire where a passive observer on
- *  the same network can read them.
- *
- *  So a password login or a `Bearer`-bearing request arriving from a **non-loopback**
- *  peer is refused **unless** the user has explicitly opted in with `"1"` — the
- *  honest escape hatch for someone who really does run the server on a trusted
- *  private network and accepts that it is unencrypted. Default (unset / `"0"` /
- *  read-failure) = refuse. A malformed value is also refuse (fail-closed). */
-export const MOBILE_ALLOW_PLAINTEXT_CREDENTIALS_SETTING_KEY = "mobile.allowPlaintextCredentials";
-
 /** Default port the mobile HTTP server binds to. Overridable via settings. */
 export const MOBILE_DEFAULT_PORT = 7331;
 

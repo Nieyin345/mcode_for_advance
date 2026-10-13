@@ -1661,8 +1661,11 @@ console.log("\nSSE 背压(MC-007)");
  * §10 的安全默认值只堵住「全新安装默认敞在 LAN」。第二半:显式开启后 `MobileHttpServer`
  * 仍以**明文 HTTP** 绑 `0.0.0.0`,长期令牌 / 口令在可信 LAN 之外的网络可被观察。本切片
  * 提供**可收敛的监听地址**:默认仍 `0.0.0.0`(LAN 场景需要手机跨网段连),但可显式收到
- * `127.0.0.1`(仅本机)或某块网卡 IP。⚠️ 传输仍是明文 HTTP(本服务不终结 TLS)——
- * 收敛绑定地址只**缩小谁能连**,不是加密;TLS/可信隧道未做(见台账 remaining)。
+ * `127.0.0.1`(仅本机)或某块网卡 IP。
+ *
+ * ⚠️ **传输闸已从「默认拒绝 + 用户 opt-in 明文」收紧成「仅传输安全才放行」**:非回环对端
+ * **永远**被 403(没有 opt-in 后门)—— 本服务不终结 TLS,opt-in 就等于把口令/Bearer 放进明文
+ * LAN。真 TLS / 可信隧道仍未做(见台账 remaining)。
  *
  * 判据立在两处**真实行为**上:
  *   1. 纯函数 `resolveBindAddressValue` 的三态(缺省 → `0.0.0.0`;显式回环 → `127.0.0.1`;
@@ -1673,7 +1676,7 @@ console.log("\nSSE 背压(MC-007)");
 console.log("\n监听地址可收敛(MC-004)");
 
 {
-  const { resolveBindAddressValue, endpointHostForBind, decidePlaintextCredential, isLoopbackPeer } = await import("@main/mobile/MobileHttpServer.js");
+  const { resolveBindAddressValue, endpointHostForBind, decideCredentialTransport, isLoopbackPeer } = await import("@main/mobile/MobileHttpServer.js");
   const net = await import("node:net");
 
   // ── 纯函数:三态 + 畸形 fail-closed ──
@@ -1689,12 +1692,12 @@ console.log("\n监听地址可收敛(MC-004)");
   eq("★ 畸形值(带端口)→ fail-closed 127.0.0.1", resolveBindAddressValue("0.0.0.0:7331"), "127.0.0.1");
   eq("★ 畸形值(带协议)→ fail-closed 127.0.0.1", resolveBindAddressValue("http://0.0.0.0"), "127.0.0.1");
 
-  // ── 【MC-004 / §50.6】非回环明文凭据闸 ──
-  // 本服务明文 HTTP;非回环对端的账号口令 / Bearer 令牌默认拒绝,除非用户显式 opt-in。
-  eq("回环对端 → 放行(loopback)", decidePlaintextCredential(true, false), "loopback");
-  eq("回环对端即使没 opt-in 也放行", decidePlaintextCredential(true, true), "loopback");
-  eq("★ 非回环 + 未 opt-in → 拒绝(refused,fail-closed)", decidePlaintextCredential(false, false), "refused");
-  eq("非回环 + 显式 opt-in → 放行(opted-in)", decidePlaintextCredential(false, true), "opted-in");
+  // ── 【MC-004】凭据传输闸:只有传输安全才放行(没有明文 opt-in 后门)──
+  // 本服务明文 HTTP、无 TLS 路径;非回环对端一律拒绝,唯一放行是"加密传输"或"回环对端"。
+  eq("★ 非回环 + 明文 → 拒绝(refused,无 opt-in 后门)", decideCredentialTransport(false, false), "refused");
+  eq("回环对端 + 明文 → 放行(loopback,传输不出本机)", decideCredentialTransport(false, true), "loopback");
+  eq("加密传输 + 非回环 → 放行(tls,真上了 TLS)", decideCredentialTransport(true, false), "tls");
+  eq("加密传输 + 回环 → 放行(tls 优先)", decideCredentialTransport(true, true), "tls");
   // 对端地址判定:回环的各种写法。
   check("127.0.0.1 判回环", isLoopbackPeer("127.0.0.1"));
   check("::1 判回环", isLoopbackPeer("::1"));
@@ -1768,21 +1771,28 @@ console.log("\n监听地址可收敛(MC-004)");
     );
   }
 
-  /* ── §50.6 端到端:非回环对端的账号密码登录被**真的**拒绝 ───────────────────
+  /* ── 【MC-004】端到端:所有承载机密的路由,非回环对端被**真的**拒绝 ─────────────
    *
    * 上面那批是纯函数断言;这里直接拿生产 request handler,把 `req.socket.remoteAddress`
-   * 伪造成 LAN 地址(192.168.1.9),真实走一遍 `/api/auth/login` —— 断言**真的** 403、
-   * 且没有落到口令校验。回环对端(真实 fetch 那批)仍正常,证明没误伤。 */
+   * 伪造成 LAN 地址(192.168.1.9),真实走一遍**每一条**承载机密的路径 —— 断言**真的** 403、
+   * 且没有落到业务/鉴权(账号密码不落口令校验、Bearer 不被当 "没带令牌" 处理)。
+   * 回环对端(真实 fetch 那批)仍正常,证明没误伤。health / auth/methods 无机密,不受闸。 */
   {
     const handler = createMobileRequestHandler(ENDPOINT);
-    const driveLogin = (remoteAddress: string): Promise<{ status: number; error?: string }> =>
+    /** 拿生产 handler,按指定对端地址 + 路径/方法/头走一遍,回收 { status, error }。 */
+    const drive = (
+      remoteAddress: string,
+      path: string,
+      method: string,
+      headers: Record<string, string> = {},
+    ): Promise<{ status: number; error?: string }> =>
       new Promise<{ status: number; error?: string }>((resolve) => {
         const chunks: Buffer[] = [];
         const body = Buffer.from(JSON.stringify({ username: "u", password: "p" }));
         const req = {
-          url: "/api/auth/login",
-          method: "POST",
-          headers: { "content-type": "application/json", "content-length": String(body.length) },
+          url: path,
+          method,
+          headers: { "content-type": "application/json", "content-length": String(body.length), ...headers },
           socket: { remoteAddress },
           on: (ev: string, cb: (arg?: unknown) => void) => {
             if (ev === "data") cb(body);
@@ -1806,13 +1816,34 @@ console.log("\n监听地址可收敛(MC-004)");
         };
         handler(req, res as unknown as import("node:http").ServerResponse);
       });
-    // 非回环 + 未 opt-in(本套没设 opt-in 键)→ 403 明确拒绝。
-    const lan = await driveLogin("192.168.1.9");
-    eq("★ 非回环明文登录被拒(403)", lan.status, 403);
-    check("★ 拒因写明是明文凭据(不是账号密码错)", typeof lan.error === "string" && lan.error.includes("明文"), lan.error);
-    // 回环对端放行(到口令校验那一步 —— 账号不存在会 401/400,但**不是** 403)。
-    const loop = await driveLogin("127.0.0.1");
-    check("回环对端不被明文闸拦(不是 403)", loop.status !== 403, loop.status);
+
+    // 1) 账号密码登录:非回环 + 明文 → 403 明确拒绝,拒因写明是**传输**问题(不是账号密码错)。
+    const lanLogin = await drive("192.168.1.9", "/api/auth/login", "POST");
+    eq("★ 非回环明文登录被拒(403)", lanLogin.status, 403);
+    check("★ 拒因写明是明文传输(不是账号密码错)", typeof lanLogin.error === "string" && lanLogin.error.includes("明文"), lanLogin.error);
+    // 2) Bearer RPC:非回环 → 403(传输关),**不是** 401(把令牌当没带)。携带真令牌也一样拒。
+    const lanRpc = await drive("192.168.1.9", "/api/rpc", "POST", { authorization: "Bearer whatever" });
+    eq("★ 非回环 Bearer RPC 被拒(403,不是 401)", lanRpc.status, 403);
+    // 3) SSE:非回环 → 403。
+    const lanEvents = await drive("192.168.1.9", "/api/events", "GET", { authorization: "Bearer whatever" });
+    eq("★ 非回环 SSE 被拒(403)", lanEvents.status, 403);
+    // 4) 配对端点:非回环 → 403(配对码也是机密)。
+    const lanPair = await drive("192.168.1.9", "/api/pair/verify", "POST");
+    eq("★ 非回环配对被拒(403)", lanPair.status, 403);
+    // 5) **无机密的路由不受闸**:health 从非回环照常 200(判据只挡凭证,不误伤连通性探测)。
+    const lanHealth = await drive("192.168.1.9", "/api/health", "GET");
+    eq("非回环 /api/health 照常 200(无机密,不受闸)", lanHealth.status, 200);
+
+    // 6) ★ **没有 opt-in 后门**:即便把旧的 `mobile.allowPlaintextCredentials=1` 写进设置,
+    //    非回环明文也**不**放行 —— 这条正是 MC-004 的缺口本身(旧行为会变 200/401 放行)。
+    SettingRepo.set("mobile.allowPlaintextCredentials", "1");
+    const lanLoginOptIn = await drive("192.168.1.9", "/api/auth/login", "POST");
+    eq("★ 旧 opt-in 键=1 也**不**放行明文 LAN(无后门)", lanLoginOptIn.status, 403);
+    SettingRepo.delete("mobile.allowPlaintextCredentials");
+
+    // 7) 回环对端放行(到口令校验那一步 —— 账号不存在会 401/400,但**不是** 403)。
+    const loop = await drive("127.0.0.1", "/api/auth/login", "POST");
+    check("回环对端不被传输闸拦(不是 403)", loop.status !== 403, loop.status);
   }
 }
 

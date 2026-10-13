@@ -15,16 +15,27 @@
  * Started from index.ts on `app.whenReady` (after DB init), stopped on
  * `before-quit`. **Only listens when explicitly enabled** — the master switch
  * `mobile.enabled` must be `"1"` (see {@link readEnabled}); there is no
- * serve-by-default, because this server puts passwords and bearer tokens on
- * plaintext HTTP. Once enabled it binds the configured **listen address**
+ * serve-by-default. Once enabled it binds the configured **listen address**
  * (`mobile.bindAddress`, see {@link resolveBindAddress}): default `0.0.0.0` so
  * other devices on the LAN can reach it — a deliberate widening of the threat
- * boundary, guarded only by the pairing flow: every request past `/api/pair/*`
- * requires a valid device token. A user who does not need off-machine access
- * can narrow it to `127.0.0.1` (this machine only) or to a single LAN interface
- * IP. That narrows **who can connect**, but the transport is still plaintext
- * HTTP either way — this server does **not** terminate TLS (see the MC-004 note
- * below), so the bind address is an exposure reducer, not encryption.
+ * boundary. A user who does not need off-machine access can narrow it to
+ * `127.0.0.1` (this machine only) or to a single LAN interface IP; that narrows
+ * **who can connect**, but the transport is still plaintext HTTP either way.
+ *
+ * ⚠️ **MC-004: no TLS is implemented, so credentials are refused over plaintext
+ * whenever the peer is not loopback.** This server speaks `node:http` only — it
+ * does not terminate TLS (there is no certificate/key path in the codebase). So
+ * a request that would put a secret on the wire (the account password at
+ * `/api/auth/login`, a device `Bearer` token at `/api/rpc` and `/api/events`, the
+ * pairing code at `/api/pair/verify`) is **allowed only from a loopback peer or
+ * over an encrypted transport** — and since no encrypted transport exists, a
+ * non-loopback peer is always refused with an observable 403. The refusal is
+ * enforced in {@link credentialTransportRefusal} and deliberate; there is **no
+ * user opt-in escape hatch** (that hatch was the MC-004 gap: it let the password
+ * and bearer tokens cross a public LAN in the clear). A user who needs a phone
+ * outside this machine must route it over a tunnel that terminates TLS and
+ * connects to `127.0.0.1` locally (see {@link ../mobileTunnel.ts}) — the phone's
+ * end is HTTPS and the desktop's peer is loopback, so the gate passes honestly.
  *
  * The server builds on the same node:http pattern as the OpenAI bridge server
  * (`providers/bridge/bridgeServer.ts`) but is long-lived and multi-route.
@@ -39,7 +50,6 @@ import {
   MOBILE_PORT_SETTING_KEY,
   MOBILE_ENABLED_SETTING_KEY,
   MOBILE_BIND_ADDRESS_SETTING_KEY,
-  MOBILE_ALLOW_PLAINTEXT_CREDENTIALS_SETTING_KEY,
   MOBILE_PAIRED_DEVICES_SETTING_KEY,
   MOBILE_LOGIN_SETTING_KEY,
   SSE_HEARTBEAT_INTERVAL_MS,
@@ -154,27 +164,31 @@ export function endpointHostForBind(bindAddress: string, detectedLanIp: string |
   return bindAddress.includes(":") ? `[${bindAddress}]` : bindAddress;
 }
 
-/** 【MC-004 / §50.6】**明文凭据闸**的判定 —— 纯函数,可无头测试。
+/** 【MC-004】**凭据传输闸**的判定 —— 纯函数,可无头测试。
  *
- *  本服务说**明文 HTTP**(不终结 TLS)。回环对端(`127.0.0.1` / `::1`)时传输不出本机,
- *  其上口令/令牌无碍;一旦能被**别的机器**连到,把账号口令或 `Bearer` 令牌发上去,就等于
- *  把机密放到了同网段被动观察者能读的网络里。
+ *  本服务是**明文 HTTP**(`node:http`,不终结 TLS)。凭据(账号口令、`Bearer` 设备令牌、
+ *  配对码)一旦经**非回环**对端送上明文连接,就等于把机密放到同网段被动观察者能读的网络里。
  *
- *  判据:
- *   - `peerIsLoopback === true` → 放行(`loopback`,安全);
- *   - 非回环对端:`allowPlaintext === true`(用户显式 opt-in)→ 放行(`opted-in`);
- *   - 非回环对端且未 opt-in(默认 / `"0"` / 读失败 / 畸形值)→ **拒绝** `refused`(fail-closed)。
+ *  判据 —— **只有在传输本身安全时才放行**,没有"用户 opt-in 明文"这条后门(那正是 MC-004 的
+ *  缺口:`mobile.allowPlaintextCredentials` 曾经让口令与 Bearer 在局域网里裸跑):
  *
- *  ⚠️ 这不是加密 —— opt-in 只是把"用户知情并接受明文"讲清楚;真正的修法是 TLS/可信隧道
- *  (§50.6 明列,未做,见 remaining)。 */
-export type PlaintextCredentialDecision = "loopback" | "opted-in" | "refused";
+ *   - `encrypted === true`(TLS 已终结,如未来接上 https)→ `tls`,安全;
+ *   - `peerIsLoopback === true`(`127.0.0.1` / `::1`)→ `loopback`,传输不出本机,安全;
+ *   - 其余(非回环 + 明文)→ **拒绝** `refused`(fail-closed)。
+ *
+ *  ⚠️ 当前本服务**没有** TLS 这条路径(仓库里没有证书/密钥工具),所以非回环对端**永远**被拒;
+ *  要在别的机器上用手机,必须走**在两端终结 TLS**的隧道(见 `mobileTunnel.ts`:cloudflared
+ *  在外网收 HTTPS、本机以 `127.0.0.1` 回连桌面),那时对端是回环,这一闸自然放行 ——
+ *  明文 LAN 直连则不再被接受。 */
+export type CredentialTransportDecision = "loopback" | "tls" | "refused";
 
-export function decidePlaintextCredential(
+export function decideCredentialTransport(
+  encrypted: boolean,
   peerIsLoopback: boolean,
-  allowPlaintext: boolean,
-): PlaintextCredentialDecision {
+): CredentialTransportDecision {
+  if (encrypted) return "tls";
   if (peerIsLoopback) return "loopback";
-  return allowPlaintext ? "opted-in" : "refused";
+  return "refused";
 }
 
 /** 从 socket 对端地址判是否回环。`::ffff:127.0.0.1`(IPv4-mapped IPv6 回环)也算。 */
@@ -475,14 +489,14 @@ async function handlePairVerify(req: IncomingMessage, res: ServerResponse, endpo
  *  scrypt 出结果前**全部通过锁定检测,单来源锁形同虚设,还能迅速触达全局锁连累合法
  *  用户。现在 {@link beginLoginAttempt} 把"在途尝试"也算进来源预算与全局在途上限,
  *  超出的当场 429,不进 scrypt。 */
-/** 【MC-004 / §50.6】读「是否允许非回环明文凭据」的 opt-in。只有显式 `"1"` 才算允许;
- *  未配置 / `"0"` / 读失败 / 畸形值一律**不允许**(fail-closed,与 `readEnabled` 同姿态)。 */
-function allowPlaintextCredentials(): boolean {
-  try {
-    return SettingRepo.get(MOBILE_ALLOW_PLAINTEXT_CREDENTIALS_SETTING_KEY) === "1";
-  } catch {
-    return false;
-  }
+/** 【MC-004】本进程是否在**加密传输**上讲话。当前**恒为 false** —— 本服务只 `node:http`,
+ *  没有 TLS 终结路径(仓库里没有证书/密钥工具,也不该在运行时凭空生成自签证书再让手机去
+ *  信任)。这里把它抽成一个具名函数,是为了让"拒绝"这件事**可被端到端测试注入**:
+ *  冒烟可以把它假成 `true` 证明"真上了 TLS 就放行",而生产恒 false → 非回环对端一律拒绝。
+ *  将来若接上 https,把这个函数接到真正的 `req.socket.encrypted`(或 `server instanceof https.Server`)
+ *  即可,闸门本身不用动。 */
+function transportIsEncrypted(_req: IncomingMessage): boolean {
+  return false;
 }
 
 /** 从 `req.socket.remoteAddress` 判对端是否回环。 */
@@ -490,22 +504,23 @@ function peerIsLoopback(req: IncomingMessage): boolean {
   return isLoopbackPeer(req.socket?.remoteAddress);
 }
 
-/** 【MC-004 / §50.6】凭据请求的明文闸。返回 null = 放行;否则返回要发给客户端的错误。
+/** 【MC-004】凭据请求的**传输闸**。返回 null = 放行;否则把 403 发给客户端并返回拒因。
  *
- *  本服务**明文 HTTP**(不终结 TLS)。回环对端没问题;非回环对端要发口令 / `Bearer` 令牌时,
- *  除非用户显式 opt-in,否则**当场拒绝** —— 不要把机密放进同网段可被动观察的网络。
- *  这是"启用后传输不泄漏"这条的一半(另一半是 TLS/可信隧道,未做)。 */
-function plaintextCredentialRefusal(
+ *  本服务明文 HTTP(不终结 TLS)。回环对端没问题(传输不出本机);**非回环对端**要发口令 /
+ *  `Bearer` 令牌 / 配对码时**一律拒绝** —— 没有 opt-in 后门。这是"启用后传输不泄漏"这条的
+ *  硬保证:宁可让用户在明文 LAN 上连不上,也不把机密放到同网段可被动观察的网络里。
+ *  (要在别的机器上用手机 → 走两端终结 TLS 的隧道,见文件头。) */
+function credentialTransportRefusal(
   req: IncomingMessage,
   res: ServerResponse,
 ): { error: string } | null {
-  const decision = decidePlaintextCredential(peerIsLoopback(req), allowPlaintextCredentials());
+  const decision = decideCredentialTransport(transportIsEncrypted(req), peerIsLoopback(req));
   if (decision !== "refused") return null;
-  log.warn(`mobile: refused plaintext credentials from non-loopback peer (MC-004)`);
+  log.warn(`mobile: refused credentials from non-loopback peer over plaintext HTTP (MC-004)`);
   sendJson(res, 403, {
     error:
-      "出于安全考虑，非本机连接不能在明文 HTTP 上提交账号密码或令牌。" +
-      "请改用 TLS/可信隧道，或在「设置 → 手机」里显式允许明文凭据（仅建议在可信私网、且你了解其未加密风险时）。",
+      "出于安全考虑，非本机连接不能在明文 HTTP 上提交账号密码、令牌或配对码。" +
+      "本服务未启用 TLS；请通过两端终结 TLS 的隧道（如 Cloudflare Tunnel）访问，或把监听地址收敛到 127.0.0.1 后在本机使用。",
   });
   return { error: "plaintext-credentials-refused" };
 }
@@ -595,6 +610,22 @@ async function handleRpc(req: IncomingMessage, res: ServerResponse, device: Pair
   sendRpcResult(res, traced);
 }
 
+/** 【MC-004】会承载**机密**的路由 —— 账号口令、`Bearer` 设备令牌、配对码。它们都要先过
+ *  传输关({@link credentialTransportRefusal}):非回环 + 明文 HTTP → 403。
+ *
+ *  - `/api/auth/login` 收**账号密码**(最重的机密);
+ *  - `/api/rpc` 每发必带 `Authorization: Bearer <设备令牌>`;
+ *  - `/api/events`(SSE)同样带 `Bearer`(或 `?token=`,那是令牌明文同样上网络);
+ *  - `/api/pair/verify` 收 pairing nonce + 6 位码(配对码泄漏 = 别人能把手机绑到你桌面)。
+ *
+ *  **不在**表里的:`/api/health`、`/api/auth/methods`(只回"开没开",无机密)、静态 bundle。 */
+const CREDENTIAL_ROUTES = new Set<string>([
+  "/api/auth/login",
+  "/api/rpc",
+  "/api/events",
+  "/api/pair/verify",
+]);
+
 /** The request router: routing table + the per-route auth gate.
  *
  *  Extracted from {@link startMobileServer} verbatim so the routing and — above
@@ -625,6 +656,13 @@ export function createMobileRequestHandler(
       return;
     }
 
+    // ── 【MC-004】凭据传输闸(所有会带机密的路径,统一一道)──────────────
+    // 这些路由会承载账号口令 / Bearer 设备令牌 / 配对码。本服务明文 HTTP、且没有 TLS
+    // 终结路径,所以**非回环对端**一律 403(见 credentialTransportRefusal)。放在最前:
+    // 任何人(含未鉴权的配对/登录)都得先过传输关,再谈鉴权与业务。health / auth/methods
+    // 不带机密,不进这道闸;静态 bundle 也不进。
+    if (CREDENTIAL_ROUTES.has(path) && credentialTransportRefusal(req, res)) return;
+
     // ── Unauthenticated routes ──────────────────────────────────────────
     if (path === "/api/health") {
       // ⚠️ `getDb()` 在库还没初始化(或已拆掉)时会**抛**,而这段跑在 Node 的
@@ -652,8 +690,7 @@ export function createMobileRequestHandler(
       return;
     }
     if (path === "/api/auth/login" && req.method === "POST") {
-      // 【MC-004 / §50.6】账号密码**绝不能**在非回环的明文 HTTP 上裸传(除非用户显式 opt-in)。
-      if (plaintextCredentialRefusal(req, res)) return;
+      // (传输关已在上面统一处理:非回环明文一律 403,不落到口令校验。)
       handlePasswordLogin(req, res, endpoint).catch((err) => {
         log.error(`mobile: auth/login failed: ${(err as Error).message}`);
         if (!res.headersSent) sendJson(res, 500, { error: "internal error" });

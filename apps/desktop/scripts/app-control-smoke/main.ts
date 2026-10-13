@@ -103,6 +103,11 @@ const pin: Array<[string, string]> = [
   // 判据钉在这一档上,别让后来者把它降回 read。
   ["relay.getConfig", "blocked"],
   ["session.saveMessages", "blocked"],
+  // 【MC-058】场景部署的两条**写**通道(= 「用户点头批准这份计划」这件事的落点)。它们不在
+  // `API_CATALOG` 里(渲染端专用通道),若不在 BLOCKED 表就会被动词兜底猜成 `write` —— agent
+  // 能弹审批卡去**批准一个会在本机建资源的计划**,那是死角。钉在 blocked。
+  ["scene.approve", "blocked"],
+  ["scene.apply", "blocked"],
   ["plugins.installGit", "danger"],
   ["mcp.save", "danger"],
   ["hooks.save", "danger"],
