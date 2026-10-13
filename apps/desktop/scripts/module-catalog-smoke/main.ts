@@ -179,9 +179,12 @@ await test('metadata cannot understate host read permission or invent query canc
   const original = definitions[1], metadata = original.metadata;
   assert.ok(metadata);
   const isolated = new ModuleHost({ authorize: async () => {}, persist: async () => {} });
+  // 【MC-060】元数据只声明 resource.write(不含 read)仍被宿主拒 —— `permissions` 的
+  // min(1) 只保证非空,`["resource.write"]` 单条也合法,所以 read 闸要在宿主这一侧判。
+  // 与 action→write 用的是同一条 `missingCapabilityPermission`。
   assert.throws(() => isolated.register({ ...original, id: 'core.no-read',
-    metadata: { ...metadata, permissions: [] },
-  }), /resource.read/);
+    metadata: { ...metadata, permissions: ['resource.write'] },
+  }), /resource\.read/);
   assert.throws(() => isolated.register({ ...original, id: 'core.query-cancel',
     metadata: { ...metadata, supportsCancellation: true },
   }), /query|cancel/i);
@@ -193,11 +196,16 @@ await test('metadata cannot understate host read permission or invent query canc
 await test('only actual built-ins may use core namespace; action contributions cannot become targets', async () => {
   await denied(host.install({ ...EXAMPLE_MODULE, id: 'core.forged' }), /External IDs must start with user\./);
   assert.throws(() => host.restore({ ...EXAMPLE_MODULE, id: 'core.forged' }), /Invalid persisted module ID/);
-  const action = { ...definitions[0], id: 'core.file.mutate', kind: 'action' as const };
+  // 【MC-060】action 能力**自身元数据**必须如实声明 resource.write,否则 register 直接拒
+  // (不能挂一个自称只读的 action 到目录里)。这里给诚实的写元数据,才能走到 addBuiltin 那一步。
+  const original = definitions[0], metadata = original.metadata;
+  assert.ok(metadata);
+  const action = { ...original, id: 'core.file.mutate', kind: 'action' as const,
+    metadata: { ...metadata, permissions: ['resource.read', 'resource.write'] as ('resource.read'|'resource.write')[] } };
   host.register(action);
   assert.throws(() => host.addBuiltin({ ...builtin, id: 'core.action', contributions: [
     { ...EXAMPLE_MODULE.contributions[0], capability: action.id },
-  ] }), /Actions require/);
+  ] }), /resource\.write/);
   const targets = 'workflowTargets' in host.catalog() ? host.catalog().workflowTargets : undefined;
   assert.ok(Array.isArray(targets));
   assert.ok(targets.every(target => target.capabilityId !== action.id));

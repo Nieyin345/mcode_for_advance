@@ -69,6 +69,46 @@ await test('AUTH actions cannot become builtin workflow contributions without th
   const catalog=withWrite.catalog();
   assert.ok(catalog.modules.some(m=>m.id==='core.action-ok'),'declared resource.write => action module admitted');
 });
+// 【MC-060 承重】写权限判定只有**一份**:能力自身元数据(register)与模块清单(validate)
+// 共用同一条 `missingCapabilityPermission`,而 validate 又被 addBuiltin(内置)、install(用户,
+// 也就是菜单/面板/agent 经 `modules.invoke` 能装到的那条路)、restore(重启恢复)三个入口共用。
+// 这条断言把「能力元数据这一侧也走同一判定」钉住:撤掉共享判定里 action→resource.write 那半句,
+// register 不再抛,这条**真红**。
+await test('AUTH an action capability must declare resource.write in its own metadata, not only in the manifest',()=>{
+  const h=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+  const actionMeta={
+    schemaVersion:1 as const,version:'1.0.0',title:{zh:'写',en:'Write'},description:{zh:'改',en:'Mutate'},
+    permissions:['resource.read'] as ('resource.read'|'resource.write')[],
+    inputSchema:{type:'object',properties:{projectPath:{type:'string',minLength:1},path:{type:'string',minLength:1}},required:['projectPath','path'],additionalProperties:false},
+    outputSchema:{type:'object'},supportsCancellation:false,
+  };
+  // 能力自称只读 → 注册就被拒(不能靠 manifest 那一道闸给一个撒谎的 action 元数据兜底)。
+  assert.throws(
+    ()=>h.register({id:'core.test.liar',kind:'action',metadata:actionMeta,input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:1})}),
+    /resource\.write/,
+  );
+  // 对照(证明不是空过):同一份元数据把权限如实写成两条,注册**通过**。
+  const honest=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+  honest.register({id:'core.test.honest',kind:'action',metadata:{...actionMeta,permissions:['resource.read','resource.write']},input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:1})});
+  const descriptor=honest.catalog().capabilities.find(c=>c.id==='core.test.honest');
+  assert.deepEqual(descriptor?.metadata?.permissions,['resource.read','resource.write']);
+});
+// 【MC-060 承重】同一个 validate 判定被**用户安装**(install,agent/面板经 `modules.invoke`
+// 能触达的那条路)与 addBuiltin 共用 —— 不是内置一套、用户另一套。撤掉 validate 里的判定,
+// 这里两条 assert.rejects 都会静默装进去 → **真红**。
+await test('AUTH user install shares the same resource.write gate as builtin admission',async()=>{
+  const h=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+  h.register({id:'core.test.task3',kind:'task',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:1})});
+  h.register({id:'core.test.action3',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:1})});
+  // 用户清单挂一个 action 能力、但只声明 resource.read → install 拒(不留只读谎报)。
+  await assert.rejects(
+    h.install({...EXAMPLE_MODULE,id:'user.action-no-write',contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.action3'}]}),
+    /resource\.write/,
+  );
+  // 对照:同一份用户清单显式声明 resource.write → install 通过(判定不是无条件拒)。
+  const catalog=await h.install({...EXAMPLE_MODULE,id:'user.action-ok',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.action3'}]});
+  assert.ok(catalog.modules.some(m=>m.id==='user.action-ok'),'user action module admitted with resource.write');
+});
 await test('AUTH extra trusted source projectPath capabilityId and requestId cannot enter user parameters',async()=>{
   const params={moduleId:'core.file-report',contributionId:'inspect',path:file};
   for(const key of ['trusted','source','projectPath','capabilityId','requestId','script'])assert.equal(ModuleWorkflowCallSchema.safeParse({...params,[key]:'attacker'}).success,false,key);

@@ -36,6 +36,27 @@ export const ModuleManifestSchema = z.object({
 }).strict().refine(v => new Set(v.contributions.map(c => c.id)).size === v.contributions.length, "Duplicate contribution ID");
 export type ModuleManifest = z.infer<typeof ModuleManifestSchema>;
 export type ModuleContribution = ModuleManifest["contributions"][number];
+
+/**
+ * 【MC-060】模块能力权限的**单一判定** —— 一份权限声明要为「这个种类的能力」放行,还缺哪条。
+ *
+ *  - 任何能力都先要 `resource.read`(能力的**自身元数据**声明与模块的**清单**声明都是);
+ *  - `action` 是唯一会**真改东西**的种类,必须由显式声明的 `resource.write` 背书 ——
+ *    没有它,一份纯 JSON 清单就能靠挂一个 action 能力越过只读边界。
+ *
+ *  `ModuleHost.register`(能力自身元数据)与 `ModuleHost.validate`(模块清单)共用这**一份**
+ *  判定:从前两边各写一遍 `kind === "action"` 的前缀判断,迟早漂移成「能力元数据说只读、
+ *  清单却已放行」那种两个真相。返回缺的权限名;`undefined` = 这份声明足以接纳该能力。
+ *  各调用点据返回值给**各自的**文案(注册失败与安装失败的话术本就不同),判定却只有一个。
+ */
+export function missingCapabilityPermission(
+  kind: ModuleCapabilityDescriptor["kind"],
+  permissions: readonly string[],
+): "resource.read" | "resource.write" | undefined {
+  if (!permissions.includes("resource.read")) return "resource.read";
+  if (kind === "action" && !permissions.includes("resource.write")) return "resource.write";
+  return undefined;
+}
 export const ModuleInvokeSchema = z.object({ moduleId: Id, contributionId: LocalId, resource: ResourceSchema, requestId: z.string().min(1).max(100) }).strict();
 export type ModuleInvoke = z.infer<typeof ModuleInvokeSchema>;
 export const ModuleTaskRefSchema = z.object({ moduleId: Id, taskId: z.string().min(1).max(100) }).strict();

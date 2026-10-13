@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import {
-  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema,
+  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, missingCapabilityPermission,
   type ModuleManifest, type ModuleInvoke, type ModuleResource, type ModuleResult, type ModuleTask,
   type ModuleReply, type ModuleCatalog, type ModuleTaskRef,
 } from "@contracts/modules";
@@ -45,10 +45,16 @@ export class ModuleHost {
       ...(definition.metadata === undefined ? {} : {metadata: definition.metadata}),
     }));
     // Every invocation requires the manifest's resource.read permission and
-    // runs authorize(resource). Optional discovery data must not claim less.
+    // runs authorize(resource). Optional discovery data must not claim less:
+    // an action capability's own metadata must declare resource.write too, or
+    // the catalog would advertise a write capability as read-only. This is the
+    // SAME single decision the manifest gate in validate() uses — never a
+    // second truth for "is this kind permitted by these permissions".
     const metadata = descriptor.metadata;
-    if (metadata && !metadata.permissions.includes("resource.read")) {
-      throw Error("Capability metadata must declare resource.read permission");
+    if (metadata) {
+      const missing = missingCapabilityPermission(descriptor.kind, metadata.permissions);
+      if (missing === "resource.read") throw Error("Capability metadata must declare resource.read permission");
+      if (missing === "resource.write") throw Error("Action capability metadata must declare the resource.write permission");
     }
     // Queries have no job handle, timeout or exposed cancellation in this host.
     if (descriptor.kind === "query" && metadata?.supportsCancellation) {
@@ -79,7 +85,12 @@ export class ModuleHost {
       // (实现由宿主注册,不是清单里的一段脚本),且运行前 authorize(resource) 照走。
       // 没声明 resource.write 却想挂 action 能力的模块,照旧拒(不许靠一个 action 能力
       // 偷偷越过只读边界)。
-      if (capability.kind === "action" && !manifest.permissions.includes("resource.write")) {
+      //
+      // **判定只有一份**:`missingCapabilityPermission` 就是 register() 里那条对能力自身
+      // 元数据用的**同一个**函数。两边各写一遍 `kind === "action"` 迟早漂移成两个真相
+      // (「能力元数据自称只读、清单却已放行」),所以这里只消费那一份结果、只负责文案。
+      const missing = missingCapabilityPermission(capability.kind, manifest.permissions);
+      if (missing === "resource.write") {
         throw Error("Action capability requires the module to declare the resource.write permission");
       }
     }
