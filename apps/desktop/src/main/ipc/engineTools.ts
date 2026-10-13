@@ -32,7 +32,7 @@ import { errText } from "@main/lib/ipcError.js";
  *  ⚠️ 这些是**只读提示**，不是权威清单 —— 各引擎的内置工具随 SDK 版本变化。这里只列
  *  能静态确定的常见那几个；用户仍可手填任意名字（策略层只校验字符集，不校验"是否真是
  *  某引擎的工具"）。删减**不依赖**这份清单，它只影响 UI 勾选体验。 */
-const KNOWN_BUILTIN_TOOLS: Record<EngineToolEngineId, string[]> = {
+export const KNOWN_BUILTIN_TOOLS: Record<EngineToolEngineId, string[]> = {
   // Claude Code 的常见内置工具（见 SDK 的 `Options.tools` 说明与 canUseTool）。
   claude: [
     "Bash", "BashOutput", "KillShell",

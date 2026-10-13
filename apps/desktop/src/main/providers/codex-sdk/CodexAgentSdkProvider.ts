@@ -1141,8 +1141,12 @@ async function answerNativeUserInput(p: Record<string, unknown>, deps: RequestDe
 /* ── dynamic tools ── */
 
 /** JSON-schema function descriptors handed to thread/start. Names use
- *  snake_case (codex tool conventions). */
-function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, unknown>> {
+ *  snake_case (codex tool conventions).
+ *
+ *  【MC-100/101】导出给 `orchestration/effectiveToolInventory.ts` 的**只读诊断**复用 ——
+ *  诊断要报「模型会看到哪些 dynamicTools」,必须拿**同一份**构造,不能另抄一张名字表
+ *  (硬规矩 2:共享实现只有一份)。导出只是把它变可见,不改变任何派发行为。 */
+export function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, unknown>> {
   const tools: Array<Record<string, unknown>> = [
     ...memoryToolDescriptors(),
     // mcode-app —— 控制 Mcode 本身(全部功能 + 界面操作)。审批在 invokeAppEngineTool 里按功能分档做。
