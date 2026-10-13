@@ -369,6 +369,31 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    * → `maybePartial`(UNCERTAIN,绝不默认可安全重试)。(索引那一步失败只 `log.warn`、
    * 不改 `ok`,不构成 ok:false 分支。) */
   ["library.writeHighlights", { falseMeans: "maybePartial" }],
+  /* ── 【MC-058】场景部署执行端派发到的两个 ok/error 信封方法 ─────────────────
+   *
+   * `appServices/sceneDeploy.ts` 的 `applyScene` 逐步 `callRpc` 到既有服务,并**复用本解码器**
+   * (`decodeDomainOutcome`)判「这一步的业务到底成没成」—— `workflow.save` / `skills.save`
+   * 上面已登记,但场景映射表里还有两个 kind 落到**没登记**的方法:`mcp` → `mcp.save`、
+   * `hook` → `hooks.save`。没登记时本解码器回 `accepted`,于是「合法返回 ok:false」会被场景
+   * 执行端记成 `done`(正是 MC-058 点名的那个洞)。逐条读源码登记,判据与已登记项同一取向:
+   *
+   *  `hooks.save` → `ipc/hooks.ts` 的 `saveHook`(`main/hooks/store.ts`)合法回
+   *   `{ok:true} | {ok:false,error}`(不抛)。两条 ok:false:① `validateHook` 校验不过(在
+   *   **任何写入之前**);② `commitHooks` → `writeRaw`,走**临时文件 + 同目录改名**(原子),
+   *   写不动 / 改名失败时目标 `hooks.json` **一个字节没动**(整份重写,要么旧完整、要么新完整)。
+   *   故 ok:false 恒等于"没写" → `refusal`。
+   *
+   *  `mcp.save` → `ipc/mcp.ts` 的 `MCP_SAVE` handler(不抛,`catch` 里回 `{ok:false,error}`)。
+   *   两条显式 ok:false(保留名 `mcode-` 前缀 / 同名 server 已存在)都在**写真相层之前**;
+   *   但 `catch` 支路可能出现在 `saveMcpManagement`(真相层已写)之后 —— `materializeMcpViewsOrRollback`
+   *   失败会回滚,回滚本身再失败就只 `log.error`,此刻真相层可能已落了一半(引擎视图与真相层
+   *   不一致)→ 不能当"没执行",按最坏情况 `maybePartial`(UNCERTAIN,绝不默认可安全重试)。
+   *
+   *  **不登记 `modules.install`**:`ModuleHost.install` 返回的是 `{modules,capabilities,workflowTargets}`
+   *  目录对象(**没有 `ok` 字段**),失败靠**抛异常**表达(见 `main/modules/ModuleHost.ts`)——
+   *  登进来会把每次成功也判成 UNCERTAIN(合同被违反)。抛异常已由调用端的 catch 支路处置。 */
+  ["hooks.save", { falseMeans: "refusal" }],
+  ["mcp.save", { falseMeans: "maybePartial" }],
 ]);
 
 /** 按**方法族前缀**登记的结果合同(整个域共用同一形状时用)。 */

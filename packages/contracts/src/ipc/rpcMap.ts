@@ -1,5 +1,5 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
-import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult } from "./scene.js";
+import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult } from "./scene.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET_CHANNEL,
@@ -1002,6 +1002,10 @@ export interface RpcMap {
   "scene.plan": (input: ScenePlanInput) => Promise<ScenePlanResult>;
   /** 【ARC-002 / MC-058】**只读**的场景预检:校验(一次报全)+ 编译 + **能力预检**(声明的能力在本机在不在、对这个引擎适不适用)。必需能力缺了 `preflight.ok=false`(部署该被挡住);可选能力缺了进 `gaps` 但不挡。不建资源、不装插件、不申请授权。 */
   "scene.preflight": (input: ScenePreflightInput) => Promise<ScenePreflightIpcResult>;
+  /** 【ARC-002 / MC-058】**用户签发计划级授权** —— 用户在渲染端看过 dry-run 之后点「批准」的落点。宿主重编译拿到真实计划 digest,与调用方递进来的 `planDigest` **对账**(不一致 = 批准的那份与要跑的那份不是同一份 → 拒签),再用 `GrantStore.issueGrant` 签一枚绑定该计划 digest 的授权。**只有桌面渲染端够得到它** —— agent 侧 null 掉(批准主体必须是用户本人)。 */
+  "scene.approve": (input: SceneApprovalInput) => Promise<SceneApprovalResult>;
+  /** 【ARC-002 / MC-058】**执行一次场景部署** —— 建部署记录 → 按计划拓扑序逐步派发到既有服务 → 逐步落盘 → 独立回读真实资源 → 验收。授权**不给内容、只给 id**,由宿主从 `GrantStore` 取回原始授权(含失效态)交 `policyEngine.evaluate` 判:非用户签发 / 已撤销 / 已过期 / 绑的是另一份计划 / 不在允许动作表 → 拒绝执行,连记录都不建。 */
+  "scene.apply": (input: SceneApplyInput) => Promise<SceneApplyIpcResult>;
   /** 记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。 */
   "memory.assistant": (input: MemoryAssistantInput) => Promise<MemoryAssistantResult>;
   /** 记忆维护(桌面专用,模型拿不到):按 `action`(list/preview/import/history/restore)操作原生记忆来源。`import`/`restore` 要带 digest + `confirmed:true`。 */
@@ -1909,6 +1913,8 @@ export const IPC = {
   PROJECT_INIT_SET_DEFAULT: "projectInit:setDefault",
   SCENE_PLAN: "scene:plan",
   SCENE_PREFLIGHT: "scene:preflight",
+  SCENE_APPROVE: "scene:approve",
+  SCENE_APPLY: "scene:apply",
   MEMORY_LIST: MEMORY_LIST_CHANNEL,
   MEMORY_READ: MEMORY_READ_CHANNEL,
   MEMORY_SAVE: MEMORY_SAVE_CHANNEL,

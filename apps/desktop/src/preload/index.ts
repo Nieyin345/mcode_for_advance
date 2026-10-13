@@ -976,6 +976,10 @@ const api = {
   scene: {
     plan: ((input) => ipcRenderer.invoke(IPC.SCENE_PLAN, input)) as RpcMap["scene.plan"],
     preflight: ((input) => ipcRenderer.invoke(IPC.SCENE_PREFLIGHT, input)) as RpcMap["scene.preflight"],
+    // 用户签发计划级授权 + 正式部署。**只有桌面渲染端**够得到(agent 侧 policy.ts 判 blocked,
+    // mobile 的 webApi 里显式 unsupported)—— 这两条就是「用户点头」这件事的落点。
+    approve: ((input) => ipcRenderer.invoke(IPC.SCENE_APPROVE, input)) as RpcMap["scene.approve"],
+    apply: ((input) => ipcRenderer.invoke(IPC.SCENE_APPLY, input)) as RpcMap["scene.apply"],
   },
   memory: {
     assistant: ((input) => ipcRenderer.invoke(IPC.MEMORY_ASSISTANT, input)) as RpcMap["memory.assistant"],

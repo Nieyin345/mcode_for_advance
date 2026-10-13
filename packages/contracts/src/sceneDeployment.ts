@@ -284,8 +284,18 @@ export function advanceDeployment(
  * **验收判定** —— 纯函数。给定部署、期望回读的资源 id 列表、实际回读到 id 集合,判通过与否,
  * 并把结果写成新的 `acceptance`(返回新记录,不改入参)。
  *
- * 判据:**期望的每个 id 都在 observed 里**才算通过(`missing` 为空)。额外的 observed id 不算错
- * (回读到别的资源不影响本场景验收)。
+ * 判据(**两条都要满足**):① 期望的每个 id 都在 observed 里(`missing` 为空);② **没有任何步骤
+ * 失败** —— 只有 **全 `done`**(资源真的建成、且没被判失败)才算这一步是干净的。任一步是
+ * `failed` / `compensated`,或还在 `pending` / `running`,验收一律**不通过**。额外的 observed id
+ * 不算错(回读到别的资源不影响本场景验收)。
+ *
+ * ## 为什么「没有步骤失败」也承重(MC-058)
+ *
+ * 从前这条判据**只**看 `missing`,于是「一步被服务**合法拒绝**(`{ok:false}`,没建成任何东西)
+ * 但那一步的 actionId 恰好被独立回读查到(例如同 id 的另一条资源本就在、或某个入口对不存在的
+ * 资源也回一个空壳)」时,验收会被报成通过 —— 而这与记录里那一步是 `failed` 的事实**直接矛盾**。
+ * 部署执行端(`sceneDeploy.ts`)据此把验收当作「这一步建成了」,等于用观察值抹掉失败事实。故这里
+ * 让**步骤失败本身就否决验收**:记录都说这一步没成,验收就不能说它成了。
  *
  * @param record 当前部署记录。
  * @param expectedResourceIds 期望回读的资源 id(= spec.acceptance.expectResourceIds)。
@@ -302,7 +312,9 @@ export function evaluateAcceptance(
   const expected = [...expectedResourceIds];
   const observed = [...observedResourceIds];
   const missing = expected.filter((id) => !observedSet.has(id));
-  const passed = missing.length === 0;
+  // ② 任一步没走到 done(failed / compensated / pending / running)→ 验收不通过。
+  const allStepsDone = record.steps.every((s) => s.status === "done");
+  const passed = missing.length === 0 && allStepsDone;
   const acceptance: SceneAcceptanceResult = { expected, observed, missing, passed, checkedAt: now };
   return { ...record, acceptance };
 }

@@ -2152,6 +2152,20 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
+  "method": "scene.apply",
+  "channel": "scene:apply",
+  "doc": "【ARC-002 / MC-058】**执行一次场景部署** —— 建部署记录 → 按计划拓扑序逐步派发到既有服务 → 逐步落盘 → 独立回读真实资源 → 验收。授权**不给内容、只给 id**,由宿主从 `GrantStore` 取回原始授权(含失效态)交 `policyEngine.evaluate` 判:非用户签发 / 已撤销 / 已过期 / 绑的是另一份计划 / 不在允许动作表 → 拒绝执行,连记录都不建。",
+  "input": "{ deploymentId: string; grantId: string // 上一次 `scene.approve` 签出的授权 id。; actorKind: 'user' | 'system' | 'agent' // 谁发起的(结构化身份;渲染端只能声明「这是桌面用户点的」,宿主不复核它,判定看的是 grant)。; actorId: string; spec?: unknown; compensateOnFailure?: boolean | undefined // 某步失败时是否补偿(缺省由主进程定 = true)。 }",
+  "output": "{ ok: false; kind: 'invalid'; problems: { path: string; message: string; }[] } | { ok: false; kind: 'refused'; code: string; reason: string } | { ok: true; kind: 'applied'; deployment: SceneDeploymentWire; readback: SceneReadbackWire }"
+ },
+ {
+  "method": "scene.approve",
+  "channel": "scene:approve",
+  "doc": "【ARC-002 / MC-058】**用户签发计划级授权** —— 用户在渲染端看过 dry-run 之后点「批准」的落点。宿主重编译拿到真实计划 digest,与调用方递进来的 `planDigest` **对账**(不一致 = 批准的那份与要跑的那份不是同一份 → 拒签),再用 `GrantStore.issueGrant` 签一枚绑定该计划 digest 的授权。**只有桌面渲染端够得到它** —— agent 侧 null 掉(批准主体必须是用户本人)。",
+  "input": "{ deploymentId: string // 一次部署的稳定 id(重试是同一 id 的覆盖,不是新部署)。; planDigest: string // 用户在预览里看到的**计划摘要**。宿主会拿它与重编译结果对账 —— 不一致 = 「批准的那份」 与「要跑的那份」不是同一份,拒绝签发(不静默按新计划发一份授权,那是偷换审批对象…; ttlMs: number // 授权有效期的毫秒数(调用方给;`issueGrant` 只拒非正数,具体上限由宿主策略定)。; spec?: unknown // 一份**候选** SceneSpec(与 `scene.plan` 收到的是同一份;执行前会重新校验重编译)。 }",
+  "output": "{ ok: true; kind: 'granted'; grantId: string; expiresAt: number } | { ok: false; kind: 'refused'; reason: string } | { ok: false; kind: 'invalid'; problems: { path: string; message: string; }[] }"
+ },
+ {
   "method": "scene.plan",
   "channel": "scene:plan",
   "doc": "【ARC-002 / MC-058】**只读**的场景规划:给一份候选 SceneSpec,校验(一次报全)通过则编译出有序变更计划(拓扑排序 + 稳定 digest)。**不建任何资源、不申请授权** —— 模型提出计划 ≠ 获得执行权限;真正的部署是另一条命令且需独立计划级授权。",

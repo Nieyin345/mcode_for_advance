@@ -906,6 +906,10 @@ export function createWebApi(): Api {
     scene: {
       plan: async () => webUnsupported("scene.plan"),
       preflight: async () => webUnsupported("scene.preflight"),
+      // 部署(用户签发 + 执行)在手机上**故意不做**:批准一台机器上会真的建资源的计划,是
+      // 坐在那台机器前的动作。明确 unsupported,不是忘了接(与 modules 同一取舍)。
+      approve: async () => webUnsupported("scene.approve"),
+      apply: async () => webUnsupported("scene.apply"),
     } satisfies Api["scene"],
     // Module installation/execution is desktop-only in v1. Reject explicitly;
     // no new mobile whitelist or paired-device capability is implied.

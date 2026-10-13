@@ -44,8 +44,12 @@ import {
   dryRunScene,
   applyScene,
   readbackScene,
+  approveSceneDeployment,
+  applySceneWithGrant,
   SCENE_APPLY_METHOD,
 } from "@main/appServices/sceneDeploy.js";
+import { setGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { GrantStore } from "@main/appControl/grantStore.js";
 import { loadDeployment } from "@main/appServices/sceneDeploymentStore.js";
 
 let failures = 0;
@@ -898,6 +902,265 @@ console.log("\n⑭ 补偿安全闸:覆盖既有资源失败后**不删除**既�
       check("★ 记下「建成后已被改动故不删」的原因(不静默)", (wfStep?.compensation?.reason ?? "").includes("改动"), wfStep?.compensation);
     }
   }
+}
+
+/* ── 15. ★★ MC-058:handler **合法返回** `{ok:false,error}`(不抛异常)→ 该步记 failed、不报 active、
+ *       验收不通过(从前「只要没抛就记 done + acceptancePassed:true」) ── */
+console.log("\n⑮ 业务层拒绝({ok:false} 而非抛异常)→ 该步 failed、不 active、验收不通过");
+{
+  // 15a. ★★ 承重:服务**不抛**、而是合法回 `{ok:false,error}`(仓里 `workflow.save` 结构化校验不过 /
+  //      `mcp.save` 同名已存在 就是这么回的)。旧行为:callRpc resolve 即记 done,一步被拒也被报成
+  //      「建成」,整体还落 active、验收 passed:true。修法:派发后过**共享**解码器 `decodeDomainOutcome`,
+  //      `{ok:false}` 判 rejected → 该步记 failed、带服务的真实错误。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    let calls = 0;
+    // 这个 handler 复刻生产形状:收下 {workflow},**合法返回** {ok:false,error}(不抛),根本不登记资源。
+    recordRpcHandler("workflow:save", (_e, raw) => {
+      calls += 1;
+      const wf = (raw as Record<string, unknown> | undefined)?.workflow as Record<string, unknown> | undefined;
+      void wf;
+      return { ok: false as const, error: "工作流结构化校验不过:图里有环(测试注入,合法拒绝非抛错)" };
+    });
+    // 回读入口:资源从没被登记 → 查不到(回读 observed 为空)。
+    recordRpcHandler("workflow:get", (_e, raw) => ({
+      workflow: null,
+      revision: null,
+      review: null,
+      id: (raw as Record<string, unknown> | undefined)?.id,
+    }));
+    const spec = checked(specWith("reject_scene", [wfRes("wf", { name: "巡检" })], ["wf"]));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_reject", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied(执行过,只是被业务拒绝)", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      eq("★★ 合法 ok:false 的步记为 FAILED(不是 done)", r.deployment.steps[0]?.status, "failed");
+      check("★ 失败原因原样带出服务返回的真实错误", (r.deployment.steps[0]?.error ?? "").includes("图里有环"), r.deployment.steps[0]?.error);
+      check("★ 失败原因点明是「业务层明确拒绝」", (r.deployment.steps[0]?.error ?? "").includes("明确拒绝"), r.deployment.steps[0]?.error);
+      eq("★★ 整体不是 ACTIVE(没有资源被建成)", r.deployment.status, "failed");
+      eq("★★ 验收不通过(这一步没建成,绝不据此报 passed)", r.deployment.acceptance?.passed, false);
+    }
+    eq("★ 服务确实被派发一次(证明是「跑过了但被拒」,不是「没跑」)", calls, 1);
+    check("★ 宿主里没有任何资源(被拒绝 = 没建成)", host.workflows.size === 0);
+
+    // 落盘那份也要是 failed,不能回落成 done / active。
+    eq("★ 落盘的整体状态也是 FAILED", loadDeployment("dep_reject")?.status, "failed");
+  }
+
+  // 15b. ★ 承重(混合):一步真建成(done)、另一步被业务**合法拒绝**({ok:false})→ 整体 PARTIAL
+  //      (绝不是 active),验收不通过。证明拒绝与抛错在整体推导里得到同样处置。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    // 工作流成功登记;触发器的 save 合法回 {ok:false}(不抛)。
+    recordRpcHandler("workflow:save", (_e, raw) => {
+      const p = (raw ?? {}) as Record<string, unknown>;
+      const wf = p.workflow as Record<string, unknown> | undefined;
+      if (wf !== undefined && wf.trigger !== undefined) {
+        return { ok: false as const, error: "自动化名非法(测试注入,合法拒绝非抛错)" };
+      }
+      if (wf !== undefined && typeof wf.id === "string") host.workflows.set(wf.id, wf);
+      return { ok: true as const };
+    });
+    recordRpcHandler("workflow:get", (_e, raw) => {
+      const id = (raw as Record<string, unknown> | undefined)?.id;
+      const present = typeof id === "string" && host.workflows.has(id);
+      return { workflow: present ? { id } : null, revision: null, review: null };
+    });
+    const spec = checked(specWith(
+      "reject_mix_scene",
+      [wfRes("wf", { name: "巡检" }), autoRes("auto", { cron: "0 9 * * *" }, ["wf"])],
+      ["wf", "auto"],
+    ));
+    const plan = compileScenePlan(spec);
+    // 关补偿,免得工作流被撤掉而掩盖「部分成功」。
+    const r = await applyScene({ deploymentId: "dep_reject_mix", spec, actor: ACTOR, grant: grantFor(plan.digest), compensateOnFailure: false });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      eq("工作流步 done(真建成)", r.deployment.steps[0]?.status, "done");
+      eq("★ 被业务拒绝的触发器步 failed", r.deployment.steps[1]?.status, "failed");
+      check("★ 触发器步带出服务返回的真实拒绝原因", (r.deployment.steps[1]?.error ?? "").includes("自动化名非法"), r.deployment.steps[1]?.error);
+      eq("★★ 一成一拒 → 整体 PARTIAL(不是 ACTIVE)", r.deployment.status, "partial");
+      eq("★★ 验收不通过", r.deployment.acceptance?.passed, false);
+      eq("★ 缺的触发器列进 missing", (r.deployment.acceptance?.missing ?? []).join(","), "auto");
+    }
+  }
+
+  // 15c. ★ 负控(证明 15a 的判据不是「一律失败」):服务合法回 `{ok:true}` → 照常 done、active、验收通过。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    mountHost(host);
+    const spec = checked(specWith("ok_scene", [wfRes("wf", { name: "巡检" })], ["wf"]));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_ok_ctl", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    if (r.ok && r.kind === "applied") {
+      eq("★ 负控:{ok:true} 的步照常 done", r.deployment.steps[0]?.status, "done");
+      eq("★ 负控:整体 ACTIVE", r.deployment.status, "active");
+      eq("★ 负控:验收通过", r.deployment.acceptance?.passed, true);
+    } else {
+      check("apply 应返回 applied", false, r);
+    }
+  }
+
+  // 15d. ★ mcp kind → `mcp.save`:该服务**合法返回** `{ok:false}`(同名已存在),不抛。
+  //      这一 kind 的 ok/error 信封合同是本次切片**新登记**到共享解码器里的(`commandOutcome.ts`
+  //      的 `mcp.save` → maybePartial);不登记的话它会落 `accepted`,被误记 done。这里证明它承重。
+  {
+    clearRpcHandlers();
+    // mcp.save 合法回 {ok:false}(不抛);mcp.list 回读空名单(资源没建成)。
+    recordRpcHandler("mcp:save", () => ({ ok: false as const, error: "同名 server 已存在(测试注入,合法拒绝非抛错)" }));
+    recordRpcHandler("mcp:list", () => ({ servers: [] }));
+    const spec = checked(specWith(
+      "mcp_reject_scene",
+      [{ kind: "mcp", id: "srv", spec: { name: "srv", config: { type: "stdio", command: "npx" } } }],
+      ["srv"],
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_mcp_reject", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied(执行过,只是被业务拒绝)", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      eq("★★ mcp.save 合法 ok:false 的步记为 FAILED(不是 done)", r.deployment.steps[0]?.status, "failed");
+      check("★ 带出服务返回的真实拒绝原因", (r.deployment.steps[0]?.error ?? "").includes("同名 server 已存在"), r.deployment.steps[0]?.error);
+      eq("★ 整体 FAILED", r.deployment.status, "failed");
+      eq("★ 验收不通过", r.deployment.acceptance?.passed, false);
+    }
+  }
+
+  // 15e. ★★ 承重(reviewer 打的探针):服务合法回 `{ok:false}`,**但那一步的 actionId 恰好回读得到**
+  //      (例:同名资源本就在、或入口对不存在的资源也回一个空壳)。此时 `missing` 为空 —— 若验收**只**
+  //      看 missing,就会把「记录里明明 failed 的一步」报成 passed:true(与失败事实直接矛盾)。
+  //      这道判据逼 `evaluateAcceptance` 把「有步骤失败」也算进否决,不能只信回读到的集合。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    // save 合法回 {ok:false}(不抛)—— 这一步在记录里是 failed;但宿主里**预置**了同名资源,
+    // 于是 workflow.get 回读得到它 → observed 含 "wf" → missing 为空。
+    recordRpcHandler("workflow:save", () => ({ ok: false as const, error: "保存被业务拒绝(测试注入)" }));
+    recordRpcHandler("workflow:get", (_e, raw) => {
+      const id = (raw as Record<string, unknown> | undefined)?.id;
+      // 故意让回读**查得到**(模拟同 id 资源本就在 / 空壳)—— 这正是「只信回读会假绿」的入口。
+      return { workflow: typeof id === "string" ? { id } : null, revision: null, review: null };
+    });
+    host.workflows.set("wf", { id: "wf" });
+    const spec = checked(specWith("reject_readback_scene", [wfRes("wf", { name: "巡检" })], ["wf"]));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_reject_readback", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      eq("★ 该步是 failed(服务业务拒绝)", r.deployment.steps[0]?.status, "failed");
+      eq("★ 前置:回读 observed 里其实有这条(故 missing 为空)", (r.deployment.acceptance?.missing ?? []).join(","), "");
+      eq("★★ 验收**仍不通过** —— 记录说这一步失败了,回读到了也不能算它成", r.deployment.acceptance?.passed, false);
+    }
+  }
+}
+
+/* ── ⑯ MC-058:正式生产入口 —— 用户签发计划级授权 → 部署 ──
+ *
+ * 上面每一节都是直接造一枚 `Grant` 喂 `applyScene`(单元口径)。这一节验**生产入口那一对**:
+ * `approveSceneDeployment`(宿主重编译 + 与调用方递来的 planDigest **对账** + 走唯一签发口)
+ * 与 `applySceneWithGrant`(只收 `grantId`,自己去 `GrantStore` 取回授权交判定核)。
+ * 复核点名的那条「尚无正式生产入口消费 applyScene」指的就是这里。
+ */
+console.log("\n⑯ MC-058:生产入口(签发 → 部署)");
+{
+  const spec = checked(specWith("entry_scene", [wfRes("wf", { name: "巡检" })], ["wf"]));
+  const plan = compileScenePlan(spec);
+
+  // ---- 16a 对账:调用方声称的 planDigest 与重编译结果不一致 → 拒签 ----
+  setGrantStore(null); // 每节干净起步(模块级单例,别串味)
+  const mismatched = approveSceneDeployment({ spec, planDigest: "deadbeef".repeat(8), ttlMs: 60_000 });
+  check("★ 计划摘要对不上 → 拒签(不按新计划偷发一份授权)", mismatched.ok === false && mismatched.kind === "refused", mismatched);
+  if (!mismatched.ok && mismatched.kind === "refused") {
+    check("拒签理由点名了「计划不一致」", mismatched.reason.includes("不一致"), mismatched.reason);
+  }
+  eq("★ 拒签没有在授权库里留下任何东西", new GrantStore().get("grant-1", Date.now()), null);
+
+  // ---- 16b spec 不合法 → 三态的 invalid(与 scene.plan 同形) ----
+  const bad = approveSceneDeployment({ spec: { schemaVersion: 99 }, planDigest: "x", ttlMs: 60_000 });
+  check("★ spec 不合法 → kind=invalid 且报出问题", bad.ok === false && bad.kind === "invalid" && bad.problems.length > 0, bad);
+
+  // ---- 16c 摘要对得上 → 签出授权,且它绑的是这一份计划 ----
+  const approved = approveSceneDeployment({ spec, planDigest: plan.digest, ttlMs: 60_000 });
+  check("★ 摘要一致 → 签出授权", approved.ok === true && approved.kind === "granted", approved);
+  let grantId = "";
+  if (approved.ok && approved.kind === "granted") grantId = approved.grantId;
+
+  // ---- 16d grantId 取不到 → 拒绝执行,一步都不建(不留后门) ----
+  clearRpcHandlers();
+  const host = newHost();
+  let calls = 0;
+  mountHost(host, { onSave: () => { calls += 1; } });
+  const before = countRows();
+  const ghost = await applySceneWithGrant({
+    deploymentId: "dep_ghost", grantId: "grant-does-not-exist", spec, actor: ACTOR,
+  });
+  check("★ 授权取不到 → refused(不是静默放行)", ghost.ok === false && ghost.kind === "refused", ghost);
+  if (ghost.ok === false && ghost.kind === "refused") {
+    eq("取不到授权的拒绝码是 no_grant", ghost.refusal.code, "no_grant");
+  }
+  eq("★ 取不到授权时一个 handler 都没被调", calls, 0);
+  eq("★ 取不到授权时没建部署行", countRows(), before);
+
+  // ---- 16e 合法授权 → 真的部署,且资源建成了 ----
+  const r = await applySceneWithGrant({
+    deploymentId: "dep_entry", grantId, spec, actor: ACTOR,
+  });
+  check("★ 持有效授权 → 真的执行", r.ok === true && r.kind === "applied", r);
+  if (r.ok && r.kind === "applied") {
+    eq("★ 整体 ACTIVE", r.deployment.status, "active");
+    eq("★ 验收通过", r.deployment.acceptance?.passed, true);
+  }
+  check("★ 宿主里真的建成了工作流", host.workflows.has("wf"));
+  eq("★ 生产入口真落盘(回读得到)", loadDeployment("dep_entry")?.status, "active");
+
+  // ---- 16f 授权的对象是**计划**:spec 在批准后被改一个字节 → 重编译 digest 变 → 部署被拒 ----
+  const tampered = checked(specWith("entry_scene", [wfRes("wf", { name: "巡检(被改过)" })], ["wf"]));
+  const r2 = await applySceneWithGrant({
+    deploymentId: "dep_tamper", grantId, spec: tampered, actor: ACTOR,
+  });
+  check("★ 批准后被偷改 spec → 授权绑的是旧计划摘要,部署被拒", r2.ok === false && r2.kind === "refused", r2);
+
+  setGrantStore(null);
+}
+
+/* ── ⑰ MC-058:存档 durable 落不下去就不开工 ──
+ *
+ * 复核点名的另一条:`saveDeployment` 的 durable 写失败时,从前只 `log.warn` 然后**照常执行**
+ * —— 建出来的资源没有任何可回读的凭据(崩溃后无从补偿、无从验收)。现在**初始那一笔**落不下去
+ * 就整个不执行,并且是**显式拒绝**(带稳定码),不是静默继续。
+ */
+console.log("\n⑰ MC-058:初始存档 durable 失败 → 拒绝开工");
+{
+  clearRpcHandlers();
+  const host = newHost();
+  let calls = 0;
+  mountHost(host, { onSave: () => { calls += 1; } });
+  const spec = checked(specWith("durable_scene", [wfRes("wf", { name: "巡检" })], ["wf"]));
+  const plan = compileScenePlan(spec);
+
+  // 让 durable 提交**不落盘**:commitNow 由 `saveDeployment` 内部调用,这里从**磁盘侧**制造失败
+  // (数据目录只读是最贴近真实的做法,但跨平台不稳),故改从**持久层**注入:重命名 repo 落盘
+  // 必定抛 —— 用一份会抛的 `SceneDeploymentRepo.save`。
+  const before = countRows();
+  const { SceneDeploymentRepo } = await import("@main/store/repositories.js");
+  const originalSave = SceneDeploymentRepo.save;
+  SceneDeploymentRepo.save = () => { throw new Error("injected archive write failure"); };
+  let r;
+  try {
+    r = await applyScene({ deploymentId: "dep_durable", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+  } finally {
+    SceneDeploymentRepo.save = originalSave;
+  }
+  check("★ 存档写不进去 → 拒绝执行(不是照常建资源)", r.ok === false && r.kind === "refused", r);
+  if (r.ok === false && r.kind === "refused") {
+    eq("拒绝码是 archive_not_durable", r.refusal.code, "archive_not_durable");
+    check("拒因说清了「建了也记不住」", r.refusal.reason.includes("记录"), r.refusal.reason);
+  }
+  eq("★ 一步都没派发", calls, 0);
+  check("★ 宿主里没建出任何资源", !host.workflows.has("wf"));
+  eq("★ 也没留下部署行", countRows(), before);
 }
 
 closeDb();

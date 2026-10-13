@@ -74,7 +74,16 @@ const BLOCKED: Record<string, string> = {
   // 脚本自己发不出它(要经渲染端的桥,由用户点头后补),但 agent 经 `app_api_call`
   // 就能传 `{approved:true}` 把面板那层确认**整个绕过**、直接执行写/高风险操作。
   // 面板要用它走的是渲染端 IPC(不经 `app_api_call`),所以这里拦掉不影响面板。
-  "customUi.panelApiCall": "自定义面板内部接口;要调功能请直接用 app_api_call(它自己会走审批)"
+  "customUi.panelApiCall": "自定义面板内部接口;要调功能请直接用 app_api_call(它自己会走审批)",
+  // 【MC-058】场景部署的两条**写**通道 —— 与 `workflow.approve` / `hooks.issueHostHookGrant`
+  // 同一条纪律:批准一份会在本机建工作流 / 装钩子 / 写 MCP 配置的**计划**,是「用户点头」
+  // 这件事本身。agent 任何理由都不该自己批自己的计划(批了就等于自己给自己授权去建资源),
+  // 故直接 **blocked**,让 `app_api_call` 够不到;真正够得到的只有桌面渲染端。
+  // ⚠️ 这两条**没进 `API_CATALOG`**(是渲染端专用通道),若不在 BLOCKED 表里,`policyFor`
+  // 的动词兜底会按 `approve` / `apply` 猜 —— `apply` 会落到兜底 `write`(弹卡),`approve`
+  // 同样落到 `write`。那意味着 agent 能弹出审批卡去批准一个计划 —— 这正是要堵的死角。
+  "scene.approve": "场景部署的计划级授权只能由用户在预览页本人批准",
+  "scene.apply": "场景部署只能由用户在预览页批准后执行"
 };
 
 const DANGER: Record<string, string> = {

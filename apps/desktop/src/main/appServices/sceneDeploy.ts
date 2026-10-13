@@ -85,7 +85,12 @@ import {
 } from "@contracts/sceneDeployment";
 import type { Grant } from "@contracts/policyEngine";
 import { evaluate, scenePlanCoreIntent } from "@main/appControl/policyEngine.js";
+import { getGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import { callRpc, findEntry } from "@main/appControl/tools.js";
+// ★ 业务结果判定(MC-058)—— 与 `app_api_call` 的 `invokeAppTool` 复用**同一份**结果解码器
+//   (硬规矩 2:判定只有一份)。RPC resolve ≠ 业务成功:若干 IPC 合法返回 `{ok:false,error}`
+//   表达业务拒绝,不抛异常 —— 不检查它,一步被拒也会被记成 done(洞)。
+import { decodeDomainOutcome, type DomainOutcome } from "@main/appControl/commandOutcome.js";
 import { log } from "@main/lib/logger.js";
 import { saveDeployment } from "./sceneDeploymentStore.js";
 
@@ -229,7 +234,15 @@ export interface SceneApplyInput {
 /** 拒绝执行的理由(带简短码,便于断言与展示)。 */
 export interface SceneApplyRefusal {
   /** 稳定的短码,便于调用方按 code 分派(不解析人读 reason)。 */
-  code: "not_user" | "revoked" | "expired" | "method_not_allowed" | "plan_mismatch" | "no_grant";
+  code:
+    | "not_user"
+    | "revoked"
+    | "expired"
+    | "method_not_allowed"
+    | "plan_mismatch"
+    | "no_grant"
+    /** 部署存档的**初始那一笔** durable 落盘失败 —— 建了也记不住,故不建(MC-058)。 */
+    | "archive_not_durable";
   /** 给用户 / 模型看的一句人话。 */
   reason: string;
 }
@@ -284,6 +297,29 @@ function classifyRefusal(grant: Grant, plan: ScenePlan, now: number): SceneApply
 function stepStatusOf(d: SceneDeployment, actionId: string): SceneStepStatus | null {
   const step = d.steps.find((s) => s.actionId === actionId);
   return step ? step.status : null;
+}
+
+/**
+ * 把 {@link decodeDomainOutcome} 的领域判定翻成这一步的**失败文案**(REJECTED / UNCERTAIN 分得开,
+ * 硬规矩 3:坏东西显式报出来)。
+ *
+ * 判据只有「业务是否接受」一条,由**共享解码器**给(与 `app_api_call` 的 `invokeAppTool` 同源,
+ * 硬规矩 2:判定只有一份)。**只有 `accepted` 才算这一步没失败** —— 凡是业务层拒绝 / 无法确认的,
+ * 都算这一步**没建成资源**:
+ *
+ *  - `rejected`(服务合法返回 `{ok:false,error}` 且语义是「没执行」,如 `workflow.save` 结构化校验不过)
+ *    —— 命令未执行、无资源建成 → 如实记「明确拒绝」;
+ *  - `partial`(ok:false 可能已部分提交,如 `mcp.save` 写了一半回滚也失败)—— 无法确认是否落定 →
+ *    如实记「可能已部分提交,重试前先查真实状态」。
+ *
+ * 两种都让调用方把该步记 **`failed`**(不是 `done`),部署随之落 `partial` / `failed`(不是
+ * `active`),验收也不会被当成「这一步建成了」。
+ */
+function failureTextFromOutcome(method: string, outcome: Exclude<DomainOutcome, { kind: "accepted" }>): string {
+  if (outcome.kind === "rejected") {
+    return `服务「${method}」业务层**明确拒绝**了这一步(命令未执行,无资源建成):${outcome.reason}`;
+  }
+  return `服务「${method}」的结果**无法确认是否已落定**(可能已部分提交,重试前先查真实状态):${outcome.reason}`;
 }
 
 /* ───────────────────────── 独立回读(M-C058 的真实资源回读) ───────────────────────── */
@@ -583,9 +619,15 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
     return { ok: false, kind: "refused", refusal };
   }
 
-  // ④ 建记录 + 初始落盘。
+  // ④ 建记录 + 初始落盘。**初始那一笔落不下去就不开工** —— 见下面 `persistStep` 的第一个参数。
   let d = createDeployment({ deploymentId: input.deploymentId, plan, actor: input.actor, now: clock() });
-  persistStep(d);
+  if (!persistStepOrRefuse(d)) {
+    // 「存档都写不进去还照样建资源」= 建完就没人记得建过什么,崩溃后无法回读、无法补偿。
+    // 这与「没有授权绝不执行」是同一条纪律:治理事实落不了地,就不执行。
+    const reason = `部署存档无法 durable 落盘(${input.deploymentId}),为避免建完资源却无记录可回读 / 无补偿依据,本次不执行任何一步。请检查磁盘空间与数据目录可写性后重试。`;
+    log.warn(`scene deploy ${input.deploymentId}: ${reason}`);
+    return { ok: false, kind: "refused", refusal: { code: "archive_not_durable", reason } };
+  }
 
   const doCompensate = input.compensateOnFailure ?? true;
   let anyFailed = false;
@@ -666,7 +708,20 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
       // (不经逐次审批卡)—— 计划级授权**就是**覆盖整个计划的授权(见文件头)。
       // ★ 派发的是**投影后的真实 RPC 入参**(`rpcInput`,已过该服务的真实 schema),不是声明正文
       //   `payload` —— 后者是记账/digest 的真相,形状与下游入参不是一回事(MC-058)。
-      await callRpc(entry, command.rpcInput);
+      const result = await callRpc(entry, command.rpcInput);
+      // ★★ MC-058 点名的缺陷:**RPC resolve ≠ 业务成功**。若干既有服务(如 `workflow.save`
+      //    结构化校验不过 / `mcp.save` 同名已存在)合法返回 `{ok:false,error}` 而非抛异常 ——
+      //    从前只要没抛就记 `done`(还据此报 `acceptancePassed:true`)。这里用**共享**解码器
+      //    `decodeDomainOutcome` 判业务到底成没成(与 `app_api_call` 的 `invokeAppTool` 同源,
+      //    硬规矩 2):`accepted` = 这一步真被服务接受;`rejected` / `partial` = 没建成资源,
+      //    如实把该步记 `failed`(带服务的真实错误),部署随之落 `partial` / `failed`,验收也不
+      //    会被当成「这一步建成了」。
+      if (label !== null) {
+        const outcome = decodeDomainOutcome(label, result);
+        if (outcome.kind !== "accepted") {
+          throw new Error(failureTextFromOutcome(label, outcome));
+        }
+      }
       // 建成后**再回读一次**修订号,作为补偿时的 CAS 判据(建成后又被别的写者改过 → 不删)。
       const after = await probeExistingResource(command.actionId, command.kind);
       d = advanceDeployment(d, { actionId: command.actionId, status: "done", createdRevision: after.revision }, clock());
@@ -697,9 +752,157 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
   return { ok: true, kind: "applied", deployment: d, readback };
 }
 
-/** 逐步落盘 —— durable 写。失败如实记警告,不假报成功(记录以调用方拿到的内存 `d` 为准)。 */
+/**
+ * 逐步落盘 —— durable 写。失败如实记警告,**不假报成功**(记录以调用方拿到的内存 `d` 为准)。
+ *
+ * ⚠️ **开跑前那一笔(初始 `deploying`)走的是 {@link persistStepOrRefuse}** —— 那一笔落不下去
+ * 就整个不执行(见调用点)。中途某一笔落不下去不中止:那一步的**真实结果**已经在内存 `d` 里,
+ * 中止反而会让「已建成的资源」没有任何记录。返回 `false` 只表示「这一笔没落盘」,由调用方决定。
+ */
 function persistStep(d: SceneDeployment): void {
   if (!saveDeployment(d, { durable: true })) {
     log.warn(`scene deploy ${d.deploymentId}: 步骤「${d.steps.map((s) => s.status).join(",")}」的 durable 落盘失败,本次以内存记录为准`);
   }
+}
+
+/**
+ * 开跑前的**第一笔** durable 落盘 —— 返回值直接决定「要不要开工」。
+ * 这是 MC-058 点名的那条缺口:从前初始那一笔落不下去也只是 `log.warn` 然后照常执行,
+ * 于是「存档 durable 失败仍可能执行」,建出来的资源没有任何可回读的凭据。
+ */
+function persistStepOrRefuse(d: SceneDeployment): boolean {
+  if (saveDeployment(d, { durable: true })) return true;
+  log.warn(`scene deploy ${d.deploymentId}: 初始存档 durable 落盘失败,拒绝开工(不建任何资源)`);
+  return false;
+}
+
+
+/* ───────────────────────── MC-058:用户签发 + 正式部署入口 ───────────────────────── */
+
+/**
+ * 一次 `scene.apply` 授权的**默认有效期**。10 分钟:用户在预览页点「批准」到真正点「部署」之间,
+ * 通常就是几分钟 —— 够用,又不至于一枚授权在盘上躺一整天(那是「批准的对象还是这一份计划吗」
+ * 这个问题随时间失去意义的坏味道)。到期即回到「没有可用授权」,重新预览批准。
+ */
+const SCENE_APPLY_GRANT_TTL_MS = 10 * 60 * 1000;
+
+/** 审批结果 —— 三态,调用方不必解析人读文案(与 `@contracts/ipc/scene.js` 同形)。 */
+export type SceneApprovalOutcome =
+  | { ok: true; kind: "granted"; grantId: string; expiresAt: number }
+  | { ok: false; kind: "refused"; reason: string }
+  | { ok: false; kind: "invalid"; problems: SceneSpecProblem[] };
+
+/**
+ * **用户签发一枚计划级授权**(MC-058 的执行端入口的前一半)。
+ *
+ * ## 为什么必须由宿主重编译、并且与调用方递进来的 digest 对账
+ *
+ * 渲染端只该说「我批准的是这份 spec,我看到它的计划摘要是 X」。宿主**不信**这个 X —— 它自己
+ * `validateSceneSpec` + `compileScenePlan` 重算一遍,拿**真实** digest 与 X 比:
+ *  - 不同 → 拒签(「批准的那份」与「要跑的那份」不是同一份,可能是 TOCTOU 或前端 bug);
+ *  - 相同 → 才用 `GrantStore.issueGrant` 签一枚 `scopedCore = scenePlanCoreIntent(plan)` 的授权。
+ *
+ * 于是「批准的对象是**这一份计划**」这件事在数据上是可判定的(ARC-004),而签发口仍然只有一个
+ * (`GrantStore.issueGrant`),它自己还会拒掉:非用户签发、deny 判定、空动作表、非正有效期。
+ *
+ * @param input.spec        候选声明(与 `scene.plan` 收到的是同一份)。
+ * @param input.planDigest  调用方声称的、它批准的那份计划的摘要 —— 用来对账。
+ * @param input.ttlMs       授权有效期。
+ * @param now               可注入时钟(缺省 `Date.now`)。
+ */
+export function approveSceneDeployment(
+  input: { spec: unknown; planDigest: string; ttlMs: number },
+  now: number = Date.now(),
+): SceneApprovalOutcome {
+  const validation = validateSceneSpec(input.spec);
+  if (!validation.ok) return { ok: false, kind: "invalid", problems: validation.problems };
+  const plan = compileScenePlan(validation.spec);
+  // 对账:调用方批准的摘要必须**等于**宿主重编译得到的摘要。不等 = 偷换审批对象 → 拒签。
+  if (plan.digest !== input.planDigest) {
+    return {
+      ok: false,
+      kind: "refused",
+      reason: `批准的计划摘要与当前声明编译出的计划不一致(批准 ${input.planDigest.slice(0, 12)}…,实际 ${plan.digest.slice(0, 12)}…)—— 声明在批准后可能被改过,请重新预览后再批准。`,
+    };
+  }
+  const decision = {
+    verdict: "allow" as const,
+    reason: "用户在场景预览页本人批准了这一份计划。",
+    compatibilityLevel: "write" as const,
+    sceneId: plan.sceneId,
+    allowedActions: [SCENE_APPLY_METHOD],
+    // ★ 绑的是**计划 digest** —— spec 在批准后被改一个字节,重编译 digest 就变,这枚授权立即失效。
+    scopedCore: scenePlanCoreIntent(plan),
+    configHash: "",
+    ttlMs: input.ttlMs,
+  };
+  // 签发主体**由宿主写死为「用户本人」** —— 调用方(渲染端)给不了、也改不了这个身份。
+  // agent 侧这条通道在契约层就 null 掉了(见 ipc/scene.ts 与 policy.ts),够不到这里。
+  try {
+    const grant = getGrantStore().issueGrant(decision, { kind: "user", id: "scene.approval" }, now);
+    return { ok: true, kind: "granted", grantId: grant.grantId, expiresAt: grant.expiresAt };
+  } catch (err) {
+    return { ok: false, kind: "refused", reason: (err as Error).message };
+  }
+}
+
+/**
+ * **正式部署入口** —— 把「按 `grantId` 取回授权」和「执行」接起来(MC-058 的另一半)。
+ *
+ * ## 为什么入参只给 `grantId`,不给授权内容
+ *
+ * 授权是**治理事实**,只能由宿主产生(ARC-004:ActionContext 不可让 Agent 模型参数填写)。
+ * 如果这个入口收一份「grant 对象」,调用方就能自己拼一份 `{approvalSource:{kind:'user'}, revoked:false,
+ * expiresAt: 很大, scopedCore:{scenePlan: 任意}}` —— 授权判定整个被绕过。所以这里只收一个 id:
+ * 宿主用 `GrantStore` **取回**那枚授权(**含失效态**,`findBoundFor`/`get` 会把已撤销/已过期的也交出来),
+ * 再原样交给 `applyScene` 的 `authorizeApply` → `policyEngine.evaluate` 去判。已撤销 → `deny`;
+ * 绑的是另一份计划 → `require-approval`(被 `authorizeApply` 翻成 `refused`)。
+ *
+ * ## 找不到 id 时
+ *
+ * **不留后门**:取不到 → 返回 `refused` 且**不建部署记录、不执行任何一步**。这与「没有授权绝不执行」
+ * 是同一条纪律,不是「退化到默认放行」。
+ *
+ * @param input.deploymentId 一次部署的稳定 id(重试是同一 id 的覆盖)。
+ * @param input.grantId      上一次 {@link approveSceneDeployment} 签出的授权 id。
+ * @param input.spec         候选声明(执行前会重新校验重编译)。
+ * @param input.actor        发起者身份(进部署记录;不参与授权判定 —— 判定看的是 grant)。
+ */
+export async function applySceneWithGrant(input: {
+  deploymentId: string;
+  grantId: string;
+  spec: unknown;
+  actor: SceneDeploymentActor;
+  compensateOnFailure?: boolean;
+  now?: () => number;
+}): Promise<SceneApplyResult> {
+  const clock = input.now ?? Date.now;
+  // 校验先做一次 —— 不合法的 spec 连授权都不必查(报「哪里不合法」比「没授权」有用得多)。
+  const validation = validateSceneSpec(input.spec);
+  if (!validation.ok) return { ok: false, kind: "invalid", problems: validation.problems };
+
+  // 取回授权(**含失效态**)。取不到 = 没有可供判定的治理事实 → 明确拒绝,不静默放行。
+  const plan = compileScenePlan(validation.spec);
+  const intent = { method: SCENE_APPLY_METHOD, core: scenePlanCoreIntent(plan) };
+  const grant = getGrantStore().findBoundFor(intent, clock());
+  if (grant === null || grant.grantId !== input.grantId) {
+    log.warn(`scene deploy ${input.deploymentId}: 授权 ${input.grantId} 取不到(不存在 / 与本次计划不匹配),拒绝执行`);
+    return {
+      ok: false,
+      kind: "refused",
+      refusal: {
+        code: "no_grant",
+        reason: `授权「${input.grantId}」不存在,或它绑的不是这一次要跑的计划 —— 需要重新预览并批准。`,
+      },
+    };
+  }
+
+  return applyScene({
+    deploymentId: input.deploymentId,
+    spec: input.spec,
+    actor: input.actor,
+    grant,
+    ...(input.now !== undefined ? { now: input.now } : {}),
+    ...(input.compensateOnFailure !== undefined ? { compensateOnFailure: input.compensateOnFailure } : {}),
+  });
 }
