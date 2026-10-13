@@ -93,6 +93,15 @@ import { probeProviderHealth, providerRegistry } from "@main/providers/registry.
 import { CollectionRepo, LibraryRepo, MessageRepo, SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 import { uid } from "@main/utils.js";
 import {
+  ensureSceneBudgetAccount,
+  parseSceneBudgetLimits,
+  releaseSceneReservation,
+  reserveSceneBudget,
+  SCENE_BUDGET_SETTING_KEY,
+  settleSceneReservation,
+} from "./sceneTaskRuntime.js";
+import type { SceneBudgetReservation } from "@contracts/sceneTask.js";
+import {
   inheritContextLines,
   kindLabel,
   type ContextLookup,
@@ -738,7 +747,33 @@ export function cancelWorkflowRun(sessionId: string): boolean {
 }
 
 /**
- * 按图跑一轮。**调用方不要 await 整个跑完** —— 一次运行可能几分钟(用户在中间回答
+ * **取这个场景的预算账户**(没有就按设置建)。场景 = 一条父会话,账户 id 稳定地由
+ * 它派生 —— 于是同一个场景**跨多次运行**共用一本账(约束累积,不是每次跑都归零重来)。
+ *
+ * **没配 / 配坏了 → 返回 `null`**(不建账户、不约束):这是「接线是加约束,不是改行为」
+ * 的落点 —— 没配 `workflow.sceneBudget` 的场景,派发路径一个字节都不变。
+ *
+ * ⚠️ 上限**每轮现读**(用户可能跑到一半就改了),但对**已在用**的账户调
+ * `ensureSceneBudgetAccount` 时,`createAccount` 会回 `ACCOUNT_ALREADY_EXISTS`,此时
+ * 走 `getAccount` 读回同一本账 —— **不会把已花/已预留的账清零**。改额(而非重建)由
+ * `updateLimits` 负责,本片只保证"读回同一本账、不清账"。
+ */
+function sceneAccountFor(parentSessionId: string): { accountId: string } | null {
+  const limits = parseSceneBudgetLimits(SettingRepo.get(SCENE_BUDGET_SETTING_KEY));
+  if (!limits) return null;
+  const accountId = `scene:${parentSessionId}`;
+  const res = ensureSceneBudgetAccount(accountId, parentSessionId, limits);
+  if (!res.ok) {
+    // 账户存在却绑了别的场景 = 不该发生(accountId 由 sessionId 派生);真撞上就
+    // 如实记一行、按"没配"处理(不静默建第二本账,也不让派发崩掉)。
+    log.warn(`scene budget: 账户 ${accountId} 取用失败(${res.code}): ${res.message};本次不启用场景总账`);
+    return null;
+  }
+  return { accountId };
+}
+
+/**
+ * **按图跑一轮。** 调用方不要 await 整个跑完 —— 一次运行可能几分钟(用户在中间回答
  * 节点的问题),IPC handler 该立刻返回。返回的 promise 是"整张图跑完",只给测试和
  * 日志用。
  */
@@ -1695,7 +1730,34 @@ export async function startWorkflowRun(args: {
     // 函数开头:上面那几行还没真正开始干活,而 `createNodeSession` 万一抛了,加在
     // 开头的那一次就减不回来 —— 那个对话会永远显示"有节点在跑"。
     active.executing += 1;
+    /** 场景总账给这一步开的预留凭据(没配场景预算时保持 null,走老路)。 */
+    let heldReservation: SceneBudgetReservation | null = null;
     try {
+      // **起子任务之前,先从场景总账预留预算(ARC-013 接线)。**
+      //
+      // 这一段就是台账 remaining 点名的「起子任务前 reserve、收轮后 settle」:此前
+      // `SceneBudgetAccounts` 只在纯核心里活着,没有一处真实派发受它约束 —— 于是
+      // 「场景级总预算」是一句空话,turnBudget 每轮归零照样能无限派。接上之后,一个
+      // 配了 `workflow.sceneBudget` 的场景,它的**每一次子任务派发**都得先从同一本账
+      // 里占额度,超了就在**这里**被拦下,而不是等跑完才发现花超了。
+      //
+      // **没配 / 配坏了 → `sceneAccountFor` 返回 null → 一个字节都不变**:老路径原样
+      // 跑,不看这本账。这是「接线是加约束,不是改行为」的落点。
+      const sceneAccount = sceneAccountFor(session.id);
+      if (sceneAccount) {
+        // 估算未知 → 用**保守上限**占账(不是 0)。0 会让"这一维没报"看起来免费,
+        // 预留就不拦任何东西,多步一起派发时把场景预算击穿。
+        const res = reserveSceneBudget(sceneAccount.accountId, {}, nodeSession.id, session.id);
+        if (!res.ok) {
+          // 超预算 = 结构化拒绝,这一步**不派发**,如实失败(绝不静默放行超支)。
+          return {
+            status: "failed",
+            summary: "",
+            error: `场景总预算已耗尽,拒绝派发这一步:${res.message}`,
+          };
+        }
+        heldReservation = res.value;
+      }
       const handle = await runtimeManager.sendTurn(nodeSession, {
         prompt: input.prompt,
         memoryManagedByWorkflow: true,
@@ -1733,6 +1795,24 @@ export async function startWorkflowRun(args: {
       watchdog.stop();
       input.signal.removeEventListener("abort", onAbort);
       active.executing -= 1;
+      // **收轮之后:把这一步的预留结掉(ARC-013 接线)。**
+      //
+      // 拿到**实际用量**就 `settle`(预留三维退回、实际用量记进 `committed`);拿不到
+      // (`usageOf` 是异步落库的,这一步刚收场时常还没到 —— 见 `RuntimeManager.usageOf`)
+      // 就 `release`:**把预留原样退回,绝不 `settle(…, {tokens:0, costUsd:0})`** ——
+      // 那会把"这一轮花了钱但还没读到"记成 0,把已经消费的当免费(正是台账反复点名的
+      // 「未知不当 0」反例)。宁可这一轮不记用量,也不谎报它免费。
+      if (heldReservation) {
+        const usage = usageOfSession(nodeSession.id);
+        if (usage) {
+          settleSceneReservation(heldReservation.reservationId, {
+            tokens: usage.totalTokens,
+            costUsd: usage.costUsd ?? 0,
+          });
+        } else {
+          releaseSceneReservation(heldReservation.reservationId);
+        }
+      }
     }
     return outcomeOf(nodeSession.id);
   };

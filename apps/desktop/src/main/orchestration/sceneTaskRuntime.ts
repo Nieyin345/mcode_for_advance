@@ -29,8 +29,18 @@
  * reserve、收轮后 settle)仍是后续切片;本片只把「取消的 uncertain 语义接到真实调用端」
  * 这一件事做完。
  */
-import { SceneTaskRegistry } from "./sceneTaskRegistry.js";
-import type { CancelOutcome, CancelledTask, RegistryResult, SceneTask } from "@contracts/sceneTask.js";
+import { SceneBudgetAccounts, SceneTaskRegistry } from "./sceneTaskRegistry.js";
+import type {
+  CancelOutcome,
+  CancelledTask,
+  RegistryResult,
+  SceneBudgetAccount,
+  SceneBudgetEstimate,
+  SceneBudgetLimits,
+  SceneBudgetReservation,
+  SceneTask,
+  SceneBudgetUsage,
+} from "@contracts/sceneTask.js";
 
 /**
  * 装配一个场景任务注册表,**并令其成为进程单例**(与 `assembleGrantStore` 同姿势 ——
@@ -39,6 +49,9 @@ import type { CancelOutcome, CancelledTask, RegistryResult, SceneTask } from "@c
  */
 export function assembleSceneRuntime(now: () => number = () => Date.now()): SceneTaskRegistry {
   activeRegistry = new SceneTaskRegistry(now);
+  // 预算账户也一起重置:装配 = 「一套全新的场景运行期」,注册表与总账是同一件事的两半,
+  // 只换一半会让「取消停住了任务、但它的预留还挂在旧账上」这种半死不活的状态出现。
+  activeBudgetAccounts = new SceneBudgetAccounts();
   return activeRegistry;
 }
 
@@ -48,14 +61,125 @@ export function assembleSceneRuntime(now: () => number = () => Date.now()): Scen
  * 那条理由。
  */
 let activeRegistry: SceneTaskRegistry = new SceneTaskRegistry();
+/** 场景级总账的单例(与 `activeRegistry` 同生命周期,见 `assembleSceneRuntime`)。 */
+let activeBudgetAccounts: SceneBudgetAccounts = new SceneBudgetAccounts();
 
 export function getSceneRegistry(): SceneTaskRegistry {
   return activeRegistry;
 }
 
+/** 当前生效的场景级总账。**统一从这里取**,各模块不各 new 一份(理由同注册表)。 */
+export function getSceneBudgetAccounts(): SceneBudgetAccounts {
+  return activeBudgetAccounts;
+}
+
+/**
+ * **场景级总预算设置键。** 一段 JSON `{ maxTokens?, maxCostUsd?, maxConcurrency? }`,
+ * 挂在一个场景(这里 = 一条工作流运行的父会话)上。**不配 = 不启用场景总账** ——
+ * 派发点于是完全走旧路径,一个字节都不变(这是「接线是加约束,不是改行为」的落点)。
+ *
+ * ⚠️ 值坏掉(非 JSON / 形状不对)**不能当成"设了 0 上限"** —— 那会把整套派发全拒。
+ * 见 {@link parseSceneBudgetLimits}:坏值一律当作"没配",显式返回 null 让调用方走旧路。
+ */
+export const SCENE_BUDGET_SETTING_KEY = "workflow.sceneBudget";
+
+/**
+ * 解析一段场景预算 JSON。**坏值 / 缺省一律返回 `null`(视作没配)**,绝不返回一个
+ * 会把派发全拒的空上限 —— "配置读不出来"与"预算就是 0"是两件事,不能混。
+ */
+export function parseSceneBudgetLimits(raw: string | null | undefined): SceneBudgetLimits | null {
+  if (raw === null || raw === undefined || raw.trim().length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const limits: SceneBudgetLimits = {};
+  const ints: Array<"maxTokens" | "maxConcurrency"> = ["maxTokens", "maxConcurrency"];
+  for (const k of ints) {
+    const v = obj[k];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isFinite(v) || !Number.isInteger(v) || v < 0) return null;
+    limits[k] = v;
+  }
+  const cost = obj.maxCostUsd;
+  if (cost !== undefined) {
+    if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return null;
+    limits.maxCostUsd = cost;
+  }
+  // 三维全空 = 没配(空 `{}` 不该建一个"不限"的账户,那只是白白多一层)。
+  if (limits.maxTokens === undefined && limits.maxCostUsd === undefined && limits.maxConcurrency === undefined) {
+    return null;
+  }
+  return limits;
+}
+
 /** 装配 / 测试用。传 null 重置回一个**全新**的内存版(每个用例前清一次,免得串味)。 */
 export function setSceneRuntime(registry: SceneTaskRegistry | null): void {
   activeRegistry = registry ?? assembleSceneRuntime();
+  // 注册表被显式换掉时总账也跟着换:**只换一半**会让 `getSceneBudgetAccounts()` 还指着
+  // 上一套账 —— 用例之间串味,而"预留挂在别人的账上"是查不出来的错。
+  activeBudgetAccounts = new SceneBudgetAccounts();
+}
+
+/**
+ * **预建 / 取回一个场景预算账户。** 同 id 同场景已存在 → 原样返回(不重置);已存在但
+ * 绑的是别的场景 → 结构化拒绝(见 `SceneBudgetAccounts.createAccount`)。
+ *
+ * 派发点是**每轮都调**它拿账户的:第一轮建成,后面每轮 `createAccount` 得到
+ * `ACCOUNT_ALREADY_EXISTS` 时改走 `getAccount` 读回同一本账 —— 于是约束跨轮累积,
+ * 而不是每轮新开一本(那样总账永远归零,等于没接)。
+ */
+export function ensureSceneBudgetAccount(
+  accountId: string,
+  sceneId: string,
+  limits: SceneBudgetLimits,
+): RegistryResult<SceneBudgetAccount> {
+  const created = activeBudgetAccounts.createAccount(accountId, sceneId, limits);
+  if (created.ok) return created;
+  if (created.code === "ACCOUNT_ALREADY_EXISTS") {
+    const existing = activeBudgetAccounts.getAccount(accountId);
+    if (existing) return { ok: true, value: existing };
+  }
+  return created;
+}
+
+/**
+ * **起一个子任务前预留额度**(在真实 `RuntimeManager.sendTurn` 之前调)。透传到
+ * {@link SceneBudgetAccounts.reserve} —— 未知成本退化为**保守上限**(不当 0),超预算
+ * 结构化拒绝 `BUDGET_EXCEEDED`。返回的凭据由 {@link settleSceneReservation} /
+ * {@link releaseSceneReservation} 收尾。
+ */
+export function reserveSceneBudget(
+  accountId: string,
+  est: SceneBudgetEstimate,
+  taskId: string,
+  sceneId?: string,
+): RegistryResult<SceneBudgetReservation> {
+  return activeBudgetAccounts.reserve(accountId, est, taskId, sceneId);
+}
+
+/**
+ * **一轮收场后按实际用量结算**(在 `handle.done` 之后调)。透传到
+ * {@link SceneBudgetAccounts.settle}:预留三维全额退回、实际用量记进 `committed`。
+ *
+ * 用量未知时**调用方不该调它** —— 该调 {@link releaseSceneReservation}(把预留原样退回)
+ * 而不是 `settle(…, {tokens:0, costUsd:0})`:后者会把"这一轮其实花了钱但我们没读到"
+ * **记成 0**,把已经消费的当免费(正是台账点名的"未知不当 0"反例)。
+ */
+export function settleSceneReservation(
+  reservationId: string,
+  usage: SceneBudgetUsage,
+): RegistryResult<SceneBudgetAccount> {
+  return activeBudgetAccounts.settle(reservationId, usage);
+}
+
+/** 撤销一笔预留(子任务没跑 / 被拒 / 取消,不计实际用量)。透传。 */
+export function releaseSceneReservation(reservationId: string): RegistryResult<SceneBudgetAccount> {
+  return activeBudgetAccounts.release(reservationId);
 }
 
 /**

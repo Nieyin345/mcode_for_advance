@@ -41,10 +41,16 @@ import {
 import {
   assembleSceneRuntime,
   cancelSceneTask,
+  ensureSceneBudgetAccount,
   getSceneRegistry,
+  getSceneBudgetAccounts,
   markSceneExternalAction,
+  parseSceneBudgetLimits,
+  releaseSceneReservation,
+  reserveSceneBudget,
   sceneCancelReport,
   setSceneRuntime,
+  settleSceneReservation,
 } from "@main/orchestration/sceneTaskRuntime.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -726,6 +732,112 @@ console.log("\nARC-013 步②:场景任务运行期入口 —— 装配 + 诚实
   const idx = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8");
   const idxCode = idx.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   check("★ 启动路径**真的**装配了场景任务运行期入口(真实调用端,不是注释)", /^\s*assembleSceneRuntime\(\);/m.test(idxCode));
+}
+
+/* ─────────────────── 16. ARC-013 步③:场景总预算接到真实派发(起前 reserve、收轮 settle) ───────────────────
+ *
+ * 台账 remaining 点名:「真实 `RuntimeManager.sendTurn` 接线(起子任务前 reserve、收轮后
+ * settle)未做」—— 于是 `SceneBudgetAccounts` 只在纯核心里活着,没有一处真实派发受它约束。
+ * 本段钉的是**运行期入口**(sceneTaskRuntime)那几个新口,以及**真实调用端**是工作流子任务
+ * 派发点(runner.ts 的 runInNodeSession)。派发点本身由 node-live-smoke 驱动真跑;这里钉
+ * 它调用的那几个运行期函数,以及 runner.ts 里**真的**接上了 reserve/settle。
+ */
+console.log("\nARC-013 步③:场景总预算接进真实派发(运行期入口 + 调用端源码断言)");
+
+{
+  // 每个用例前清一次:装配 = 一套全新的运行期(注册表与总账一起换)。
+  setSceneRuntime(null);
+
+  // ① 设置解析:坏值 / 缺省一律视作「没配」(不是「预算=0」)。
+  eq("★ 缺省(空串)→ 没配(null,不是把上限设成 0)", parseSceneBudgetLimits(""), null);
+  eq("★ 非 JSON → 没配(null)", parseSceneBudgetLimits("{坏"), null);
+  eq("★ 数组形状 → 没配(null)", parseSceneBudgetLimits("[1,2]"), null);
+  eq("★ 负数上限 → 没配(null,拒绝坏值)", parseSceneBudgetLimits('{"maxTokens":-1}'), null);
+  eq("★ 小数 token → 没配(null)", parseSceneBudgetLimits('{"maxTokens":1.5}'), null);
+  eq("★ 空对象 {} → 没配(null,不建一本「不限」的账)", parseSceneBudgetLimits("{}"), null);
+  {
+    const lim = parseSceneBudgetLimits('{"maxTokens":1000,"maxCostUsd":2.5,"maxConcurrency":3}');
+    eq("★ 合法配置 → 三维都解出来", `${lim?.maxTokens}|${lim?.maxCostUsd}|${lim?.maxConcurrency}`, "1000|2.5|3");
+  }
+
+  // ② ensureSceneBudgetAccount:首建成,复取**读回同一本账、不清账**。
+  const e1 = ensureSceneBudgetAccount("acct_scene", "scene_1", { maxTokens: 1000 });
+  check("首建账户成功", e1.ok, e1);
+  // 先占一笔,证明复取不重置。
+  const r0 = reserveSceneBudget("acct_scene", { tokens: 400 }, "t_keep", "scene_1");
+  check("先占一笔 400 token", r0.ok, r0);
+  const e2 = ensureSceneBudgetAccount("acct_scene", "scene_1", { maxTokens: 1000 });
+  check("★ 同 id 同场景再 ensure → 成功(不报 ACCOUNT_ALREADY_EXISTS)", e2.ok, e2);
+  eq("★ 复取读回同一本账(已占 400 没被清零)", getSceneBudgetAccounts().getAccount("acct_scene")?.reservedTokens, 400);
+  // 复取后**同一本账**继续约束:committed+reserved 已达 400,再来 700 会超 1000。
+  const over = reserveSceneBudget("acct_scene", { tokens: 700 }, "t_over", "scene_1");
+  check("★ 复取后超预算仍被拒(约束累积,不是每轮归零)", !over.ok, over);
+  if (!over.ok) eq("拒绝码 = BUDGET_EXCEEDED", over.code, "BUDGET_EXCEEDED");
+
+  // ③ 未知成本 → 保守上限占账(不当 0):上限恰等于保守上限时可过,预留值就是保守上限。
+  setSceneRuntime(null);
+  ensureSceneBudgetAccount("acct_unk", "scene_u", { maxTokens: 1000 });
+  const unk = reserveSceneBudget("acct_unk", {}, "t_unk", "scene_u");
+  check("★ 成本未知 → 按保守上限占账并被拒(不是当 0 放行)", !unk.ok, unk);
+
+  // ④ settle:按实际用量结算,预留退回、committed 记实。
+  setSceneRuntime(null);
+  ensureSceneBudgetAccount("acct_s", "scene_s", { maxTokens: 5000, maxCostUsd: 10 });
+  const rsv = reserveSceneBudget("acct_s", { tokens: 800, costUsd: 1 }, "t_s", "scene_s");
+  check("预留成功", rsv.ok, rsv);
+  if (rsv.ok) {
+    const st = settleSceneReservation(rsv.value.reservationId, { tokens: 300, costUsd: 0.4 });
+    check("结算成功", st.ok, st);
+    if (st.ok) {
+      eq("★ committed token = 实际 300", st.value.committedTokens, 300);
+      eq("★ 预留全退(0)", st.value.reservedTokens, 0);
+      eq("结算笔数 = 1", st.value.settledCount, 1);
+    }
+  }
+
+  // ⑤ release:撤销预留,**不计 committed**(子任务没跑)。
+  setSceneRuntime(null);
+  ensureSceneBudgetAccount("acct_r", "scene_r", { maxTokens: 5000 });
+  const rsv2 = reserveSceneBudget("acct_r", { tokens: 800 }, "t_r", "scene_r");
+  if (rsv2.ok) {
+    const rel = releaseSceneReservation(rsv2.value.reservationId);
+    check("撤销成功", rel.ok, rel);
+    if (rel.ok) {
+      eq("★ release 后 committed 仍为 0(没跑就不记用量)", rel.value.committedTokens, 0);
+      eq("★ release 后预留全退", rel.value.reservedTokens, 0);
+      eq("★ release 不增结算笔数", rel.value.settledCount, 0);
+    }
+  }
+
+  // ⑥ 装配 / 复位都换总账:两个单例同生命周期。
+  setSceneRuntime(null);
+  const acctA = getSceneBudgetAccounts();
+  assembleSceneRuntime();
+  eq("★ 装配后总账单例被换新(与注册表同生命周期)", getSceneBudgetAccounts() === acctA, false);
+  setSceneRuntime(null);
+  eq("★ 复位(null)也换新总账", getSceneBudgetAccounts() === acctA, false);
+}
+
+/* ─────────────────── 17. 真实调用端:runner.ts 的子任务派发点真的接上了 reserve/settle ───────────────────
+ *
+ * 这一段是「不能又是一个没有调用方的纯函数」的判据:派发点(runner.ts 的
+ * `runInNodeSession`)必须**真的**挑了 reserve / settle / release / parse。先剥注释 ——
+ * 一句被注释掉的调用不许骗过正则(同 §15 那条纪律)。行为本身由 node-live-smoke 驱动
+ * 真跑(它真起一次工作流、真走 runInNodeSession);这里钉**接线存在**。
+ */
+{
+  const raw = readFileSync(join(process.cwd(), "src/main/orchestration/runner.ts"), "utf8");
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check("★ 派发点真的从设置读场景预算(parseSceneBudgetLimits)", /parseSceneBudgetLimits\(/.test(code));
+  check("★ 派发点真的起前预留(reserveSceneBudget)", /reserveSceneBudget\(/.test(code));
+  check("★ 派发点真的收轮结算(settleSceneReservation)", /settleSceneReservation\(/.test(code));
+  check("★ 派发点真的在用未读到用量时释放预留(releaseSceneReservation,不是当 0 记)", /releaseSceneReservation\(/.test(code));
+  check("★ 派发点真的用了设置键(workflow.sceneBudget)", /SCENE_BUDGET_SETTING_KEY/.test(code));
+  // 关键:预留必须在 sendTurn **之前**,结算在 finally。用「reserve 出现在 sendTurn 之前」
+  // 这一条钉住顺序 —— 若有人把 reserve 挪到回合之后,它就拦不住派发了。
+  const reserveAt = code.indexOf("reserveSceneBudget(");
+  const sendTurnAt = code.indexOf("runtimeManager.sendTurn(nodeSession");
+  check("★ 预留发生在 sendTurn **之前**(起子任务前 reserve)", reserveAt >= 0 && sendTurnAt >= 0 && reserveAt < sendTurnAt, { reserveAt, sendTurnAt });
 }
 
 /* ─────────────────── 收尾 ─────────────────── */
