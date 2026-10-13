@@ -19,6 +19,7 @@ import {
   SCENE_SPEC_SCHEMA_VERSION,
   type SceneSpec,
 } from "@contracts/sceneSpec";
+import { compileScenePlan, sceneSpecDigest } from "@contracts/scenePlan";
 
 let failures = 0;
 let total = 0;
@@ -141,6 +142,75 @@ function goodSpec(): unknown {
   for (const v of [null, undefined, 42, "hello", []]) {
     const r = validateSceneSpec(v);
     check(`非对象输入被拒(不炸):${JSON.stringify(v)}`, !r.ok);
+  }
+}
+
+/* ── 6. ScenePlan 编译器:拓扑排序 + 稳定 digest ── */
+{
+  const r = validateSceneSpec(goodSpec());
+  check("编译前提前置:spec 合法", r.ok);
+  if (r.ok) {
+    const plan = compileScenePlan(r.spec);
+    eq("计划步骤数 = 资源数", plan.steps.length, 2);
+    // ★ 承重:automation 依赖 workflow,故 workflow 必须排在**前**(order 0)。
+    eq("★ 依赖的 workflow 排在依赖它的 automation 之前", plan.steps[0].resourceId, "wf_inspect");
+    eq("automation 是第二步", plan.steps[1].resourceId, "auto_daily");
+    eq("order 从 0 起严格递增", plan.steps.map((s) => s.order).join(","), "0,1");
+    eq("第二步记下它依赖第一步", plan.steps[1].dependsOn.join(","), "wf_inspect");
+    // ★★ 承重(真能区分):把**依赖者写在前面**(automation 在前、它依赖的 workflow 在后),
+    // 拓扑排序必须把顺序掉过来 —— 只按书写顺序排会漏判(实测:夹具若把 workflow 写在前面,
+    // 「按书写顺序排」的变异不变红,属假绿)。
+    const reversed = validateSceneSpec({
+      ...(goodSpec() as Record<string, unknown>),
+      resources: [
+        { kind: "automation", id: "auto_daily", spec: {}, dependsOn: ["wf_inspect"] },
+        { kind: "workflow", id: "wf_inspect", spec: {} },
+      ],
+      acceptance: { description: "x", expectResourceIds: ["auto_daily", "wf_inspect"] },
+    });
+    if (reversed.ok) {
+      const rp = compileScenePlan(reversed.spec);
+      eq("★ 依赖者写在前面时,拓扑排序把它移到被依赖者之后", rp.steps[0].resourceId, "wf_inspect");
+      eq("automation 仍排最后", rp.steps[1].resourceId, "auto_daily");
+    } else check("reversed 前置合法", false);
+    check("每步都有回读判据(verifier)", plan.steps.every((s) => s.verifier.kind === "exists" && s.verifier.resourceId === s.resourceId), plan.steps);
+    check("本地资源默认可补偿", plan.steps.every((s) => s.compensable === true), plan.steps);
+    eq("计划带 specDigest", plan.specDigest, sceneSpecDigest(r.spec));
+
+    // ★ 稳定 digest:同一 spec 重复编译 -> 同一个 plan.digest;改一处 -> 变。
+    const again = compileScenePlan(validateSceneSpec(goodSpec()).ok ? (validateSceneSpec(goodSpec()) as { ok: true; spec: SceneSpec }).spec : r.spec);
+    eq("★ 同一 spec 重复编译 -> 相同的 plan.digest", again.digest, plan.digest);
+    const changed = validateSceneSpec({ ...(goodSpec() as Record<string, unknown>), goal: "改了目标" });
+    check("改 spec 内容 -> specDigest 变", changed.ok && sceneSpecDigest(changed.spec) !== plan.specDigest);
+
+    // ★ 键序不影响:把同一份 spec 的键顺序打乱(JSON 往返)仍是同一个 digest。
+    const reordered = JSON.parse(JSON.stringify(goodSpec())) as Record<string, unknown>;
+    const r2 = validateSceneSpec(reordered);
+    check("★ spec 键序打乱 -> 同一个 specDigest(稳定)", r2.ok && sceneSpecDigest(r2.spec) === plan.specDigest);
+
+    // compensable 显式 false:声明后该步不可补偿。
+    const nonComp = validateSceneSpec({
+      ...(goodSpec() as Record<string, unknown>),
+      resources: [{ kind: "workflow", id: "wf", spec: { compensable: false } }],
+      acceptance: { description: "x", expectResourceIds: ["wf"] },
+    });
+    if (nonComp.ok) {
+      eq("spec.compensable===false -> 该步不可补偿", compileScenePlan(nonComp.spec).steps[0].compensable, false);
+    } else check("nonComp 前置合法", false);
+
+    // 同层(互不依赖)保持书写顺序。
+    const sameLevel = validateSceneSpec({
+      ...(goodSpec() as Record<string, unknown>),
+      resources: [
+        { kind: "workflow", id: "b", spec: {} },
+        { kind: "workflow", id: "a", spec: {} },
+        { kind: "workflow", id: "c", spec: {} },
+      ],
+      acceptance: { description: "x", expectResourceIds: ["a"] },
+    });
+    if (sameLevel.ok) {
+      eq("同层资源保持书写顺序(不被重排)", compileScenePlan(sameLevel.spec).steps.map((s) => s.resourceId).join(","), "b,a,c");
+    } else check("sameLevel 前置合法", false);
   }
 }
 
