@@ -3002,6 +3002,45 @@ eq("切权限不影响别的会话", approvalLifecycle.getPermissionMode("anothe
 
 configureMcpToolHost(null);
 
+/* ── 【MC-089】淘汰客户端会话的孤儿归属回收 ──
+ * 洞:issueClientSession 超上限淘汰最老的 id(不可再认证),但 rememberSyntheticOwner 记下的
+ * 归属不跟着删 → syntheticOwners 只涨不落(独立复核实测 4400 次签发 → 归属 4401)。修法:
+ * initialize 触发淘汰后调 pruneOrphanedOwners,只清「本服务签发过(pcs_)、且已被淘汰」的 owner;
+ * 仍在用 / legacy / 本机会话 id 保留。 */
+{
+  const { issueClientSession, rememberSyntheticOwner, pruneOrphanedOwners, __trackedOwnerCount, __resetPublicClientSessions } =
+    await import("@main/providers/bridge/publicClientSessions.js");
+  __resetPublicClientSessions();
+  const synthetic = "sess_public_synthetic";
+  // 有效会话的 owner:保留。
+  const live = issueClientSession("cred-a");
+  rememberSyntheticOwner(synthetic, live);
+  // legacy owner:保留(老客户端没生命周期)。
+  rememberSyntheticOwner(synthetic, "legacy:cred-a");
+  // 本机会话 id:保留(不归本模块管)。
+  rememberSyntheticOwner(synthetic, "sess_local_chat");
+  // 伪造一个「已被淘汰的 pcs_ owner」:签发很多条把最早那条挤掉。
+  const first = issueClientSession("cred-a");
+  rememberSyntheticOwner(synthetic, first);
+  // 灌到超过 4096 上限,把 first 挤出去(每次 initialize 都触发 prune,这是真实路径)。
+  for (let i = 0; i < 4100; i++) {
+    const s = issueClientSession("cred-a");
+    if (i === 0) rememberSyntheticOwner(synthetic, s); // 记一条会一直有效的? 不 —— 会被挤掉,只测数量
+  }
+  // 到这儿 first 已被淘汰。prune 应把它回收,而 live/legacy/本机保留(若 live 也被挤掉则另说,
+  // 故这里只断「first 被收回」与「legacy/本机从不被收」)。
+  const report = pruneOrphanedOwners();
+  check("★ 已被淘汰的 pcs_ owner 被回收", report.pruned.includes(first), report);
+  check("★ legacy owner 永不回收", !report.pruned.includes("legacy:cred-a"), report);
+  check("★ 本机会话 id 永不回收", !report.pruned.includes("sess_local_chat"), report);
+  // 回收后归属数不再只涨:再 prune 一次应为空(已清干净)。
+  const again = pruneOrphanedOwners();
+  eq("★ 反复 prune 幂等(第二次没有可回收的)", again.pruned.length, 0);
+  // 归属总数回落到「仍在用的」量级,不再随签发次数线性涨。
+  check("★ 归属数不再随签发次数线性涨(回收后远小于 4100)", __trackedOwnerCount() < 100, __trackedOwnerCount());
+  __resetPublicClientSessions();
+}
+
 console.log(`\n${passed}/${checks} 通过`);
 if (failures.length > 0) {
   console.log(`\n失败 ${failures.length} 条:`);

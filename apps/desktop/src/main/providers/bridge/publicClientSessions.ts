@@ -40,6 +40,15 @@ const issued = new Map<string, IssuedSession>();
 /** 上限,防被反复 initialize 灌爆内存。超了先淘汰最老的。 */
 const MAX_ISSUED = 4096;
 
+/**
+ * 【MC-089】被淘汰的客户端会话 id —— 淘汰只是把 id 从 {@link issued} 删掉,让它不可再认证;
+ * 但它名下**记录过的 owner**(见 {@link syntheticOwners})不会因此消失。若不联动回收,
+ * 反复 initialize 会让 `syntheticOwners` 只涨不落(独立复核实测:4400 次签发 → 归属 4401 条,
+ * 而最早的身份早已失效)。这里把**刚被淘汰**的 id 记下来,供 {@link pruneOrphanedOwners} 判断
+ * 「这个 owner 的会话已失效」。
+ */
+const evicted = new Set<string>();
+
 /** 不会做握手的老客户端共用的 owner —— 每个凭据一个,对应 legacy shared-workspace。 */
 export function legacyClientSessionId(credentialId: string): string {
   return `legacy:${credentialId}`;
@@ -51,7 +60,17 @@ export function issueClientSession(credentialId: string): string {
   issued.set(id, { credentialId, at: Date.now() });
   if (issued.size > MAX_ISSUED) {
     const oldest = [...issued.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, issued.size - MAX_ISSUED);
-    for (const [key] of oldest) issued.delete(key);
+    for (const [key] of oldest) {
+      issued.delete(key);
+      // 记下淘汰 —— 归属回收据此判定「这个 owner 的会话已失效」(见 pruneOrphanedOwners)。
+      evicted.add(key);
+    }
+    // 淘汰集本身也要有界:被回收后出队的 id 从 evicted 里清掉(见 pruneOrphanedOwners 的 finally);
+    // 这里再兜一个上限,防止「淘汰了但用户一直不回收」把它撑大。
+    if (evicted.size > MAX_ISSUED) {
+      const drop = [...evicted].slice(0, evicted.size - MAX_ISSUED);
+      for (const k of drop) evicted.delete(k);
+    }
   }
   return id;
 }
@@ -100,6 +119,7 @@ export function resolveClientSession(credentialId: string, headerValue: string |
 export function __resetPublicClientSessions(): void {
   issued.clear();
   syntheticOwners.clear();
+  evicted.clear();
 }
 
 /* ─────────────── 合成会话 → 它名下出现过的 owner(删除清理用) ─────────────── */
@@ -138,4 +158,61 @@ export function ownersForSession(sessionId: string): string[] {
 /** 会话被删:清掉它的归属记录(资源由调用方按 {@link ownersForSession} 释放)。 */
 export function forgetSyntheticSession(sessionId: string): void {
   syntheticOwners.delete(sessionId);
+}
+
+/* ─────────────── 【MC-089】淘汰会话的归属回收 ─────────────── */
+
+/** 一次归属回收的结果 —— 如实报出收回了哪些、还剩哪些(不静默)。 */
+export interface OwnerPruneReport {
+  /** 被回收的 owner:其客户端会话**已被淘汰**,不再有活跃身份,归属记录可以清。 */
+  pruned: string[];
+  /** 仍在用的 owner 数(会话有效)—— 保留,不动。 */
+  retained: number;
+}
+
+/**
+ * **回收「客户端会话已被淘汰」的孤儿归属**。返回被清掉的 owner(及保留数)。
+ *
+ * ## 它补的洞(MC-089)
+ *
+ * {@link issueClientSession} 超上限时会把最老的 id 从 `issued` 删掉 —— 那个 id **不再能认证**。
+ * 但 {@link rememberSyntheticOwner} 早先记下的「合成会话 → 这个 owner」**不会跟着删**,
+ * 于是 `syntheticOwners` 只涨不落(独立复核实测 4400 次签发 → 归属 4401 条,而最早的身份早失效)。
+ *
+ * ## 判据(刻意保守:只清**确定失效**的)
+ *
+ *  - 一个 owner 若**仍是** `issued` 里有效的会话 id → **保留**(它还在用);
+ *  - legacy owner(`legacy:<credentialId>`)→ **保留**(老客户端没生命周期,不该被清);
+ *  - 本机那条路直接用会话 id 做 owner(id 里不带 `pcs_` 前缀)→ **保留**(不归本模块管);
+ *  - 只有**形如本服务签发过(`pcs_` 前缀)且已被淘汰**的 owner 才回收 —— 它已不可认证,
+ *    其名下资源本就该由后续请求重新握手后重建,清归属记录不会误伤仍在用的身份。
+ *
+ * ⚠️ 本函数只清**归属记录**,不直接释放进程/SSH(那是资源管理器的事,且一个已被淘汰的
+ * 客户端已经拿不到那些资源)。真要在途资源被安全终止,是资源管理器的生命周期策略 ——
+ * 本切片只把「归属不再只涨不落」这条修掉(台账建议「空闲/无资源 owner 同步移除」的可测核心)。
+ */
+export function pruneOrphanedOwners(): OwnerPruneReport {
+  const pruned: string[] = [];
+  let retained = 0;
+  for (const [syntheticId, owners] of syntheticOwners) {
+    for (const owner of owners) {
+      // 仍是有效会话 → 保留。
+      if (issued.has(owner)) { retained += 1; continue; }
+      // legacy / 本机会话 id / 其它非本模块签发的 → 保留(不归本模块的生命周期管)。
+      if (!owner.startsWith("pcs_")) { retained += 1; continue; }
+      // 本服务签发过(pcs_ 前缀)、但已不在 issued 里 = 已被淘汰 → 回收。
+      owners.delete(owner);
+      pruned.push(owner);
+      evicted.delete(owner);
+    }
+    if (owners.size === 0) syntheticOwners.delete(syntheticId);
+  }
+  return { pruned, retained };
+}
+
+/** 诊断 / 断言用:当前归属集合里 owner 的总数(去重前)。 */
+export function __trackedOwnerCount(): number {
+  let n = 0;
+  for (const owners of syntheticOwners.values()) n += owners.size;
+  return n;
 }

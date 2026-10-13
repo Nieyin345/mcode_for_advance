@@ -36,7 +36,7 @@ import {
   type PublicActionContext,
   type PublicCredentialSnapshot,
 } from "@contracts/publicMcpScope";
-import { resolveClientSession, issueClientSession, rememberSyntheticOwner } from "./publicClientSessions.js";
+import { resolveClientSession, issueClientSession, rememberSyntheticOwner, pruneOrphanedOwners } from "./publicClientSessions.js";
 
 /** 端点的路径。扩展里配的完整地址就是 `<扩展桥地址>/mcp`。 */
 export const MCP_ENDPOINT_PATH = "/mcp";
@@ -350,6 +350,10 @@ export async function handleMcpRequest(
     if (method === "initialize") {
       // 标准 Streamable HTTP:服务端在握手时给一个会话 id,客户端后续原样带回来。
       res.setHeader("Mcp-Session-Id", clientSessionId);
+      // 【MC-089】刚签发可能触发了淘汰(超上限)→ 顺手回收「已被淘汰的会话」留下的孤儿归属,
+      // 免得 `syntheticOwners` 只涨不落(独立复核实测 4400 次签发 → 归属 4401 条)。
+      // 只清**确定失效**的 pcs_ owner;仍在用 / legacy / 本机 id 保留(见 pruneOrphanedOwners)。
+      pruneOrphanedOwners();
     }
     publicScope = {
       credentialId: credential.credentialId,
