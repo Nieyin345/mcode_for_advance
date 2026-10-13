@@ -19,5 +19,6 @@ export * from "./configBinding.js";
 export * from "./sceneSpec.js";
 export * from "./scenePlan.js";
 export * from "./sceneDeployment.js";
+export * from "./scenePreflight.js";
 export * from "./hostHookGrant.js";
 export * from "./commit.js";

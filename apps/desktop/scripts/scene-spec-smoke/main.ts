@@ -20,6 +20,8 @@ import {
   type SceneSpec,
 } from "@contracts/sceneSpec";
 import { compileScenePlan, sceneSpecDigest } from "@contracts/scenePlan";
+import { sceneCapabilityPreflight } from "@contracts/scenePreflight";
+import type { CapabilityDescriptor } from "@contracts/capability";
 import { planScene } from "../../src/main/appServices/scenePlanning.js";
 
 let failures = 0;
@@ -231,6 +233,71 @@ function goodSpec(): unknown {
   if (!bad.ok) check("scene.plan 一次报全(>=3 条)", bad.problems.length >= 3, bad.problems);
   // 非对象输入不炸。
   check("scene.plan 非对象输入 → problems 不炸", !planScene({ spec: 42 }).ok);
+}
+
+/* ── 8. 部署前的能力预检:声明的能力在本机在不在(ARC-002 / MC-058 点名缺口) ── */
+{
+  // 一份清单:有 research-pack 插件(带一个细粒度能力),没有别的。
+  const inventory: CapabilityDescriptor[] = [
+    { kind: "plugin", id: "research-pack", source: "plugin:research-pack", capabilities: ["hooks"] },
+    { kind: "mcp", id: "coverage", source: "mcp:coverage" },
+  ];
+
+  // goodSpec 要 research-pack(必需,存在)+ coverage(可选,存在)→ 全就位。
+  const good = validateSceneSpec(goodSpec());
+  check("预检前提前置:spec 合法", good.ok);
+  if (good.ok) {
+    const r = sceneCapabilityPreflight(good.spec, inventory);
+    eq("★ 能力全就位 → 预检通过", r.ok, true);
+    eq("全就位 → 无缺口", r.gaps.length, 0);
+    eq("预检条数 = 声明的能力数", r.checkedCapabilities, 2);
+
+    // 缺一个**必需**能力 → 预检不通过(挡部署)。
+    const missingRequired = sceneCapabilityPreflight(
+      { ...good.spec, capabilities: [{ kind: "plugin", id: "ghost-pack" }, { kind: "mcp", id: "coverage", required: false }] },
+      inventory,
+    );
+    eq("★ 缺必需能力 → 预检不通过", missingRequired.ok, false);
+    eq("缺必需能力 → 进 requiredGaps", missingRequired.requiredGaps.length, 1);
+    eq("缺的是 ghost-pack", missingRequired.requiredGaps[0].id, "ghost-pack");
+    eq("缺口 reason = missing", missingRequired.requiredGaps[0].reason, "missing");
+
+    // 缺一个**可选**能力 → 预检仍通过(gaps 有、requiredGaps 没有)。
+    const missingOptional = sceneCapabilityPreflight(
+      { ...good.spec, capabilities: [{ kind: "plugin", id: "research-pack" }, { kind: "mcp", id: "ghost", required: false }] },
+      inventory,
+    );
+    eq("★ 缺可选能力 → 预检仍通过(不挡部署)", missingOptional.ok, true);
+    eq("缺可选能力 → gaps 里有它", missingOptional.gaps.length, 1);
+    eq("缺可选能力 → requiredGaps 为空", missingOptional.requiredGaps.length, 0);
+    eq("gap.required = false", missingOptional.gaps[0].required, false);
+
+    // incompatible:清单里有该插件,但要的细粒度能力它没有 → 不算 missing,算不适用。
+    const incompat = sceneCapabilityPreflight(
+      { ...good.spec, capabilities: [{ kind: "plugin", id: "research-pack", version: "1.2.0" }] },
+      // 清单里换成没有 hooks 能力的同名插件 → 若声明要 hooks 才算 incompatible;
+      // 这里声明没带 capabilities,故仍 available —— 用另一份声明验证细粒度。
+      [{ kind: "plugin", id: "research-pack", source: "p", capabilities: [] }],
+    );
+    eq("清单有该插件(无细粒度要求)→ 就位", incompat.ok, true);
+
+    // provider 适用性:带 providers 约束的能力,引擎不匹配 → 不适用(进缺口)。
+    const scoped = sceneCapabilityPreflight(
+      { ...good.spec, preferredProviderId: "codex", capabilities: [{ kind: "skill", id: "cov-skill" }] },
+      [{ kind: "skill", id: "cov-skill", source: "skill", providers: ["claude-sdk"] }],
+    );
+    eq("★ 能力限定别的引擎 → 不适用(缺)", scoped.ok, false);
+    eq("不适用 reason = incompatible", scoped.gaps[0].reason, "incompatible");
+
+    // module 类声明映射到清单的 builtin 类。
+    const moduleCheck = sceneCapabilityPreflight(
+      { ...good.spec, capabilities: [{ kind: "module", id: "core.file.inspect" }] },
+      [{ kind: "builtin", id: "core.file.inspect", source: "host" }],
+    );
+    eq("★ module 声明映射到清单 builtin 类(就位)", moduleCheck.ok, true);
+  } else {
+    check("预检前置:spec 合法", false);
+  }
 }
 
 console.log(`\nscene-spec-smoke: ${total - failures}/${total} 通过`);
