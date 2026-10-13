@@ -41,6 +41,18 @@ const issued = new Map<string, IssuedSession>();
 const MAX_ISSUED = 4096;
 
 /**
+ * 生效中的签发上限 —— 生产恒为 {@link MAX_ISSUED}(4096)。**测试**可调小,好让
+ * 「小上限端到端链」真的能在 HTTP 面上被触发(而不是只断一个函数级的 `size > 4096`):
+ * 起真 HTTP `initialize` 握手几次就把上限顶穿、看到真淘汰。
+ */
+let maxIssued = MAX_ISSUED;
+
+/** 测试用:把签发上限调小(传 `null` 恢复 {@link MAX_ISSUED})。生产永不调用。 */
+export function __setMaxIssuedForTest(next: number | null): void {
+  maxIssued = next === null ? MAX_ISSUED : Math.max(1, Math.floor(next));
+}
+
+/**
  * 【MC-089】被淘汰的客户端会话 id → **它当初绑定到哪条凭据** —— 淘汰只是把 id 从
  * {@link issued} 删掉,让它不可再认证;但它名下**记录过的 owner**(见 {@link syntheticOwners})
  * 不会因此消失。若不联动回收,反复 initialize 会让 `syntheticOwners` 只涨不落(独立复核实测:
@@ -59,8 +71,8 @@ export function legacyClientSessionId(credentialId: string): string {
 export function issueClientSession(credentialId: string): string {
   const id = `pcs_${randomUUID()}`;
   issued.set(id, { credentialId, at: Date.now() });
-  if (issued.size > MAX_ISSUED) {
-    const oldest = [...issued.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, issued.size - MAX_ISSUED);
+  if (issued.size > maxIssued) {
+    const oldest = [...issued.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, issued.size - maxIssued);
     for (const [key, rec] of oldest) {
       issued.delete(key);
       // 记下淘汰(连同它当初的凭据)—— 归属回收据此判定「这个 owner 的会话已失效」,
@@ -69,8 +81,8 @@ export function issueClientSession(credentialId: string): string {
     }
     // 淘汰集本身也要有界:被回收后出队的 id 从 evicted 里清掉(见 pruneOrphanedOwners);
     // 这里再兜一个上限,防止「淘汰了但用户一直不回收」把它撑大。
-    if (evicted.size > MAX_ISSUED) {
-      const drop = [...evicted.keys()].slice(0, evicted.size - MAX_ISSUED);
+    if (evicted.size > maxIssued) {
+      const drop = [...evicted.keys()].slice(0, evicted.size - maxIssued);
       for (const k of drop) evicted.delete(k);
     }
   }
@@ -318,9 +330,13 @@ export function releaseOwnerResources(ownerId: string): OwnerReleaseResult {
     }
   }
   // 资源已终止 → 回收归属记录(该 owner 名下所有合成会话里的条目)。
+  const credentialId = evicted.get(ownerId) ?? null;
   for (const owners of syntheticOwners.values()) owners.delete(ownerId);
   for (const [syntheticId, owners] of [...syntheticOwners]) if (owners.size === 0) syntheticOwners.delete(syntheticId);
   evicted.delete(ownerId);
+  // 【MC-089 持久审计】明确终止这条也留账:跨重启可回读「哪个 owner 的资源被释放了、
+  // 它当初是哪条凭据、释放时挂着几个资源」。
+  emitRetentionAudit({ kind: "released", at: Date.now(), ownerId, credentialId, resources });
   return { ownerId, released: true, reason: "released", resources };
 }
 
@@ -355,6 +371,72 @@ const retentionAudit: RetentionAuditEvent[] = [];
 /** 诊断 / 运维读:最近的淘汰留存审计(最早的在前,最多 {@link MAX_AUDIT_EVENTS} 条)。 */
 export function retentionAuditLog(): readonly RetentionAuditEvent[] {
   return retentionAudit;
+}
+
+/**
+ * **一条淘汰 / 释放事件的统一审计形状** —— 供**持久审计出口**落盘(见
+ * {@link registerRetentionAuditSink})。
+ *
+ * 进程内的 {@link retentionAuditLog} 是**有界环**,重启即失(台账 remaining 点名的
+ * 「留存审计未落盘」)。这里把同一件事折成一条可落盘的记录:宿主接上一个持久出口,
+ * 就把「旧凭据死了、名下还挂着活资源」这件事写进**跨重启可回读**的地方。
+ *
+ * 两种 kind:
+ *  - `retained-busy` —— 淘汰时**受控保留**了仍有活资源的孤儿(还挂着资源,等处置);
+ *  - `released` —— 宿主显式 {@link releaseOwnerResources} **明确终止**了某 owner 的资源。
+ *
+ * 两者都带**当初的凭据**与**活资源计数**:单看随机 uuid 没有信息量,配上凭据才是能给
+ * 运维读、也能被断言核对的记录(与 {@link KeptBusyOwner} 同一理据)。
+ */
+export type PublicSessionAuditEvent =
+  | {
+      kind: "retained-busy";
+      at: number;
+      /** 受控保留、名下仍有活资源的孤儿 owner(带凭据 + 资源计数)。 */
+      keptBusy: KeptBusyOwner[];
+      /** 这次因确定失效且空闲被回收的 owner 数。 */
+      prunedCount: number;
+    }
+  | {
+      kind: "released";
+      at: number;
+      /** 被明确终止资源的 owner。 */
+      ownerId: string;
+      /** 当初绑定的凭据(吊销/到期时凭此知道"哪条链接死了");未知为 `null`。 */
+      credentialId: string | null;
+      /** 终止前名下的活资源计数。 */
+      resources: OwnerResourceCounts;
+    };
+
+/**
+ * **持久审计出口** —— 一条淘汰/释放事件写进**跨重启可回读**的持久处。与
+ * {@link registerOwnerWorkProbe} 同一个注册套路:本模块是纯的(不 import db),谁持有
+ * 持久 store(db / 设置表),谁在模块加载或装配时把出口**注册**进来。
+ *
+ * 为什么复用注册而不是直接 import:`main/providers/bridge/publicMcpSession.ts` 已经在
+ * 用 `SettingRepo`(既有持久设置表)保存「公网链接 / 会话」,它顺带把留存审计也落进
+ * **同一张设置表**的有界环(不另造一张表 —— 与 `publicMcp.projectLinks` 同一存取姿势)。
+ */
+type RetentionAuditSink = (event: PublicSessionAuditEvent) => void;
+const retentionAuditSinks = new Set<RetentionAuditSink>();
+
+/** 登记一个持久审计出口;返回注销函数。出口抛错**绝不**冒到调用方(审计是旁路)。 */
+export function registerRetentionAuditSink(fn: RetentionAuditSink): () => void {
+  retentionAuditSinks.add(fn);
+  return () => {
+    retentionAuditSinks.delete(fn);
+  };
+}
+
+/** 把一条事件扇出给所有已注册的持久出口;**出口抛错只吞掉,绝不打断淘汰/释放路径**。 */
+function emitRetentionAudit(event: PublicSessionAuditEvent): void {
+  for (const sink of retentionAuditSinks) {
+    try {
+      sink(event);
+    } catch {
+      // 审计是旁路:出口坏了,淘汰/释放照走(不因审计失败半途而废)。
+    }
+  }
 }
 
 /** 一次归属回收的结果 —— 如实报出收回了哪些、保留了哪些(不静默)。 */
@@ -436,8 +518,14 @@ export function pruneOrphanedOwners(): OwnerPruneReport {
     resources: ownerResourceCounts(ownerId),
   }));
   if (keptBusy.length > 0 || pruned.length > 0) {
-    retentionAudit.push({ at: Date.now(), keptBusy: keptBusyDetails, prunedCount: pruned.length });
+    const event: RetentionAuditEvent = { at: Date.now(), keptBusy: keptBusyDetails, prunedCount: pruned.length };
+    retentionAudit.push(event);
     if (retentionAudit.length > MAX_AUDIT_EVENTS) retentionAudit.splice(0, retentionAudit.length - MAX_AUDIT_EVENTS);
+    // 【MC-089 持久审计】同一件事也扇给持久出口(若宿主接了)—— 进程内环重启即失,
+    // 有活的孤儿(旧凭据已失效、资源还在跑)必须留下**跨重启可回读**的账。
+    if (keptBusyDetails.length > 0) {
+      emitRetentionAudit({ kind: "retained-busy", at: event.at, keptBusy: keptBusyDetails, prunedCount: pruned.length });
+    }
   }
   return { pruned, keptBusy, keptBusyDetails, keptLegacy, retained };
 }

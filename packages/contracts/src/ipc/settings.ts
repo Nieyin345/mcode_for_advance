@@ -794,6 +794,17 @@ export const PUBLIC_MCP_DEFAULT_FIXED_PORT = 17331;
  */
 export const PUBLIC_MCP_PROJECT_ID_SETTING_KEY = "publicMcp.projectId";
 
+/**
+ * **公网会话淘汰 / 释放的留存审计**(MC-089)—— JSON `PublicSessionAuditEvent[]`,有界环。
+ *
+ * 进程内有界环(`publicClientSessions.retentionAuditLog`)重启即失,而台账明确要求
+ * 「旧凭据失效后,名下仍在跑的资源要能留下**跨重启可回读**的审计」。这里把它落进
+ * **既有的设置表**(与 `publicMcp.projectLinks` 同一存取姿势),不另造一张表 —— 复用
+ * `SettingRepo` 那条已经 durable 的写路径。写入口见
+ * `publicMcpSession.ts` 的 `publicMcpDecodeRetentionAudit`,装配见 `initPublicMcp`。
+ */
+export const PUBLIC_MCP_RETENTION_AUDIT_SETTING_KEY = "publicMcp.retentionAudit";
+
 /** zod schema + TS union for the public-MCP toggle. */
 export const PublicMcpEnabledSchema = z.enum(["on", "off"]);
 export type PublicMcpEnabled = z.infer<typeof PublicMcpEnabledSchema>;

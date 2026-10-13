@@ -48,6 +48,7 @@ import {
   PUBLIC_MCP_FIXED_PORT_SETTING_KEY,
   PUBLIC_MCP_DEFAULT_FIXED_PORT,
   PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY,
+  PUBLIC_MCP_RETENTION_AUDIT_SETTING_KEY,
 } from "@contracts/ipc/settings";
 import type { PublicMcpProjectLink, PublicMcpTunnelConfig } from "@contracts/customModel";
 import {
@@ -59,6 +60,10 @@ import { encrypt, decrypt } from "@main/lib/secretStore.js";
 import { uid } from "@main/utils.js";
 import { log } from "@main/lib/logger.js";
 import { ProjectRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
+import {
+  registerRetentionAuditSink,
+  type PublicSessionAuditEvent,
+} from "@main/providers/bridge/publicClientSessions.js";
 import {
   configurePublicMcpExtras,
   configurePublicMcpStore,
@@ -350,6 +355,108 @@ function readProjectLinks(): StoredProjectLink[] {
 
 function writeProjectLinks(links: StoredProjectLink[]): void {
   SettingRepo.set(PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY, JSON.stringify(links));
+}
+
+/* ──────────────────── 公网会话淘汰留存审计(MC-089,durable) ──────────────────── */
+
+/**
+ * 留存审计的**有界环上限** —— 与进程内 `publicClientSessions.retentionAuditLog` 的
+ * `MAX_AUDIT_EVENTS` 同量级。这是**跨重启可回读**的那份(进程内环重启即失),所以它
+ * 需要自己封顶:设置表每写一次就重写整个库文件,审计环不能无限长。
+ */
+const MAX_RETENTION_AUDIT = 64;
+
+/**
+ * 读回落的留存审计环(`PublicSessionAuditEvent[]`)。坏 JSON / 坏条目一律当空,不硬塞
+ * (同 `readProjectLinks`:手改坏的设置不能变出一条假审计)。只做浅形状校验 —— 消费层
+ * 只读 `kind` / `ownerId` / `credentialId` 这几列。
+ */
+export function publicMcpRetentionAudit(): PublicSessionAuditEvent[] {
+  const raw = SettingRepo.get(PUBLIC_MCP_RETENTION_AUDIT_SETTING_KEY);
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: PublicSessionAuditEvent[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const kind = rec.kind;
+    const at = typeof rec.at === "number" ? rec.at : 0;
+    if (kind === "released") {
+      const ownerId = typeof rec.ownerId === "string" ? rec.ownerId : "";
+      if (!ownerId) continue;
+      out.push({
+        kind: "released",
+        at,
+        ownerId,
+        credentialId: typeof rec.credentialId === "string" ? rec.credentialId : null,
+        resources: normalizeCounts(rec.resources),
+      });
+    } else if (kind === "retained-busy") {
+      const keptBusyRaw = Array.isArray(rec.keptBusy) ? rec.keptBusy : [];
+      const keptBusy = keptBusyRaw.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") return [];
+        const k = entry as Record<string, unknown>;
+        const ownerId = typeof k.ownerId === "string" ? k.ownerId : "";
+        if (!ownerId) return [];
+        return [{
+          ownerId,
+          credentialId: typeof k.credentialId === "string" ? k.credentialId : null,
+          resources: normalizeCounts(k.resources),
+        }];
+      });
+      out.push({
+        kind: "retained-busy",
+        at,
+        keptBusy,
+        prunedCount: typeof rec.prunedCount === "number" ? rec.prunedCount : 0,
+      });
+    }
+  }
+  return out;
+}
+
+/** 资源计数形状守卫:读回坏值一律当 0(只用于报告,不对它做判定)。 */
+function normalizeCounts(value: unknown): { processes: number; searches: number; ssh: number } {
+  const rec = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const num = (x: unknown): number => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : 0);
+  return { processes: num(rec.processes), searches: num(rec.searches), ssh: num(rec.ssh) };
+}
+
+/** 把一条事件追加进持久审计环(有界),**durable**(`SettingRepo.set` 走 `persist()`)。 */
+function appendRetentionAudit(event: PublicSessionAuditEvent): void {
+  const ring = publicMcpRetentionAudit();
+  ring.push(event);
+  if (ring.length > MAX_RETENTION_AUDIT) ring.splice(0, ring.length - MAX_RETENTION_AUDIT);
+  SettingRepo.set(PUBLIC_MCP_RETENTION_AUDIT_SETTING_KEY, JSON.stringify(ring));
+}
+
+/**
+ * 把留存审计出口接到**持久设置表**上(`initPublicMcp` 装配时调一次)。
+ *
+ * 出口本身**绝不抛**(`publicClientSessions` 的扇出已吞掉出口异常),所以这里也能
+ * 放心直接落库。留一条 warn 便于无头环境排错(`SettingRepo` 未就绪等)。
+ */
+let retentionAuditSinkInstalled = false;
+function installRetentionAuditSink(): () => void {
+  if (retentionAuditSinkInstalled) return () => {};
+  const dispose = registerRetentionAuditSink((event) => {
+    try {
+      appendRetentionAudit(event);
+    } catch (err) {
+      log.warn(`public mcp: 留存审计落盘失败:${(err as Error).message}`);
+    }
+  });
+  retentionAuditSinkInstalled = true;
+  return () => {
+    dispose();
+    retentionAuditSinkInstalled = false;
+  };
 }
 
 /* ──────────────────── 授权快照与撤销世代(MC-062) ──────────────────── */
@@ -749,6 +856,11 @@ export function initPublicMcp(deps?: { mobilePort?: () => number }): void {
         .filter((p) => !p.archived)
         .map((p) => ({ id: p.id, name: p.name, path: p.path })),
   });
+
+  // 【MC-089 持久审计】把公网会话淘汰 / 资源释放的留存审计接到**持久设置表**上 ——
+  // 进程内环重启即失,而台账要求「旧凭据失效后仍在跑的资源要留下跨重启可回读的账」。
+  // 装一次即可(重复装配不叠加);出口抛错只记一行,绝不打断淘汰 / 释放路径。
+  installRetentionAuditSink();
 
   // 开关开着就顺手起好(与扩展桥"别等用户点开设置页"同一个理由:用户重启应用后
   // 期望它还在听)。失败不拦启动 —— 记日志即可。

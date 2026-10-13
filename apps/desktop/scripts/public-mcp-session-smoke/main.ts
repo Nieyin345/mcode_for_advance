@@ -159,4 +159,89 @@ equal("clear token really removes the stored token", extrasForTest().tunnelConfi
 const disabledStatus = await setPublicMcpEnabled(false);
 equal("disable returns backend off", disabledStatus.enabled, false);
 equal("disable returns no listening port", disabledStatus.port, 0);
+
+/* ── MC-089:淘汰 / 释放的留存审计要**跨重启可回读**(不只是进程内有界环)──
+ *
+ * 台账 remaining 点名「留存审计是进程内有界环,未落盘持久化(重启即失)」。本段证:
+ * 淘汰(受控保留忙 owner)与明确释放两种事件都经**持久出口**落进设置表,清掉进程内
+ * 环(模拟重启)后仍读得回来。走真实生产路径:真 `initPublicMcp` 装配的持久出口
+ * (上面第 136 行已 initPublicMcp)→ 真 issueClientSession 真淘汰 + 真探针/计数/释放器
+ * → 断言落盘。 */
+{
+  const settingsStore = SettingRepo;
+  const {
+    issueClientSession,
+    rememberSyntheticOwner,
+    pruneOrphanedOwners,
+    releaseOwnerResources,
+    retentionAuditLog,
+    registerOwnerWorkProbe,
+    registerOwnerResourceCounter,
+    registerOwnerResourceReleaser,
+    __setMaxIssuedForTest,
+    __resetPublicClientSessions,
+  } = await import("../../src/main/providers/bridge/publicClientSessions.js");
+  const { publicMcpRetentionAudit } = await import("../../src/main/providers/bridge/publicMcpSession.js");
+
+  // 清一张白纸(上面前几段可能已写过审计)。
+  settingsStore.set("publicMcp.retentionAudit", "");
+  __resetPublicClientSessions();
+  equal("起步:持久审计为空", publicMcpRetentionAudit().length, 0);
+
+  __setMaxIssuedForTest(3);
+  const orphan = issueClientSession("cred-doomed");
+  rememberSyntheticOwner("sess_audit_persist", orphan);
+  // 只多签发 3 条(刚好把 issued 顶到 4 > 上限 3)→ orphan 被真淘汰,且它仍在**有界**
+  // 的 `evicted`(上限 3)里 —— 否则再多签发会让 `evicted` 先把最早的 orphan 顶掉,
+  // 留存报告就查不到它当初的凭据了(那是在测「淘汰集有界」而不是「凭据随淘汰留存」)。
+  for (let i = 0; i < 3; i += 1) issueClientSession("cred-churn"); // 真淘汰 orphan
+  // 该 owner 名下"还有活资源"—— 注册真探针 / 计数(与 agentTools 同一注册姿势)。
+  const offProbe = registerOwnerWorkProbe((id) => id === orphan);
+  const offCounter = registerOwnerResourceCounter((id) =>
+    id === orphan ? { processes: 2, searches: 0, ssh: 0 } : { processes: 0, searches: 0, ssh: 0 },
+  );
+  const releaseCalls: string[] = [];
+  const offReleaser = registerOwnerResourceReleaser((id) => void releaseCalls.push(id));
+
+  pruneOrphanedOwners();
+  const afterPrune = publicMcpRetentionAudit();
+  const retained = afterPrune.at(-1);
+  equal("★ 淘汰留存事件已**落盘**(durable 审计读到 retained-busy)", retained?.kind, "retained-busy");
+  equal(
+    "★ …且带当初的凭据(运维看得见哪条链接死了)",
+    retained?.kind === "retained-busy" ? retained.keptBusy.find((k) => k.ownerId === orphan)?.credentialId : undefined,
+    "cred-doomed",
+  );
+  equal(
+    "★ …且带活资源计数",
+    retained?.kind === "retained-busy" ? retained.keptBusy.find((k) => k.ownerId === orphan)?.resources.processes : undefined,
+    2,
+  );
+
+  // 模拟重启:清掉进程内有界环 —— 持久那份必须还在。
+  __resetPublicClientSessions();
+  equal("重启后进程内环已清空", retentionAuditLog().length, 0);
+  const survived = publicMcpRetentionAudit();
+  equal(
+    "★ 重启后持久审计仍在(不随进程内环消失)",
+    survived.some((e) => e.kind === "retained-busy" && e.keptBusy.some((k) => k.ownerId === orphan)),
+    true,
+  );
+
+  // 明确释放也留账(released 事件同样落盘)。
+  const rel = releaseOwnerResources(orphan);
+  equal("释放成功", rel.reason, "released");
+  equal("释放器真的被调了(资源被终止一次)", releaseCalls.includes(orphan), true);
+  const releasedEvt = publicMcpRetentionAudit().at(-1);
+  equal("★ 明确释放事件也已落盘(durable 审计读到 released)", releasedEvt?.kind, "released");
+  equal("★ …带被释放的 owner", releasedEvt?.kind === "released" ? releasedEvt.ownerId : undefined, orphan);
+
+  offProbe();
+  offCounter();
+  offReleaser();
+  __setMaxIssuedForTest(null);
+  __resetPublicClientSessions();
+  settingsStore.set("publicMcp.retentionAudit", "");
+}
+
 console.log("public MCP session lifecycle smoke passed");

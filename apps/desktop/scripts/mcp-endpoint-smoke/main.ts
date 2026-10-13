@@ -937,6 +937,62 @@ eq("★ 固定端口可用时就听在那个端口上", publicMcpPort(), takenPo
 stopPublicMcp();
 smokeFixedPort = 0;
 
+/* ── 【MC-089 完整 HTTP 小上限链】签发上限真的在 **HTTP 面上**被顶穿 ──
+ * 台账 remaining 点名:此前的断言走的是函数级真实路径(直接 `issueClientSession`),
+ * 而非「真 HTTP `initialize` 握手 → 顶穿上限 → 真淘汰」。这一段补上:把生效上限调小,
+ * 起真监听器,用真 `POST /mcp/<密钥>` 反复 `initialize`,让服务端为每次握手签发一个
+ * `Mcp-Session-Id`(客户端会话 owner);握手次数一过小上限,最早那条就被**真淘汰**
+ * —— 再拿它当 header 发请求必须被拒,且归属集合不再随握手次数线性涨(prune 在
+ * initialize 分支里真跑)。全程走真 HTTP、真监听、真密钥比对。 */
+await (async () => {
+  const { __setMaxIssuedForTest, resolveClientSessionDetailed, __trackedOwnerCount, __resetPublicClientSessions: resetPcs } =
+    await import("@main/providers/bridge/publicClientSessions.js");
+  resetPcs();
+  const SMALL_CAP = 3;
+  __setMaxIssuedForTest(SMALL_CAP);
+  // 起真服务:合成会话 + 密钥 + 凭据都由这个 store 提供。
+  configurePublicMcpStore({
+    getEnabled: () => publicStoreEnabled,
+    setEnabled: () => {},
+    getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
+    setSecret: () => {},
+    getSessionId: () => PUBLIC_SESSION,
+    setSessionId: () => {},
+    credentialFor: (projectId) => credentialSnapshot(projectId ?? "default", projectId ?? "default", PUBLIC_SANDBOX_ROOT),
+  });
+  await startPublicMcp();
+  const port = publicMcpPort();
+  const initOverHttp = async (id: number): Promise<string> => {
+    const res = await fetch(`http://127.0.0.1:${port}${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "initialize", params: {} }),
+    });
+    await res.text();
+    return res.headers.get("mcp-session-id") ?? "";
+  };
+  try {
+    // 握手 3 次 = 正好填满小上限(每次 initialize 都真签发一个 owner)。
+    const first = await initOverHttp(1);
+    await initOverHttp(2);
+    await initOverHttp(3);
+    check("★ (前置)HTTP 握手拿回了服务端签发的会话 id", first.startsWith("pcs_"), first);
+    // 满上限时第一条仍有效。
+    eq("★ (前置)小上限未超时最早那条仍有效", resolveClientSessionDetailed("default", first).kind, "valid");
+    // 第 4 次握手 → 顶穿上限 → 最早那条被真淘汰。
+    await initOverHttp(4);
+    eq("★ 真 HTTP 握手顶穿小上限后,最早那条被真淘汰(再带它 = expired)", resolveClientSessionDetailed("default", first).kind, "expired");
+    // 归属集合不随握手次数线性涨(initialize 分支里的 prune 真跑了):即便再握手若干次,
+    // 集合大小也被小上限 + prune 收束在一个小量级。
+    for (let i = 0; i < 20; i++) await initOverHttp(100 + i);
+    check("★ 真 HTTP 面反复握手后归属数不再线性涨", __trackedOwnerCount() <= SMALL_CAP + 1, __trackedOwnerCount());
+  } finally {
+    stopPublicMcp();
+    __setMaxIssuedForTest(null);
+    resetPcs();
+  }
+})();
+
 /* ══════════════════════ 下半:真宿主 + 闸门 ═════════════════════ */
 
 const approvalCalls: ApprovalRequest[] = [];
