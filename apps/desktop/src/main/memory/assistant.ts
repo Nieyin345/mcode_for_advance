@@ -10,6 +10,7 @@ import { decodeSnapshot } from "@main/orchestration/runStore.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { createAssistantJob, listAssistantJobs, pendingAssistantHandoff, queueAssistantHandoff, readAssistantJob, saveAssistantJob } from "./assistantStore.js";
 import { clampRunEvidence, clampSourceContext, textOf, SOURCE_BUDGET } from "./sourceText.js";
+import { currentAgentMemoryProjectId } from "./agentScope.js";
 const active = new Map<string, AbortController>();
 function freshSession(source: Session, kind: "automation" | "chat", workflowId: string): Session {
   return { ...source, id: `sess_${randomUUID()}`, kind, workflowId, parentSessionId: kind === "automation" ? source.id : null,
@@ -48,6 +49,14 @@ export async function memoryAssistant(input: MemoryAssistantInput): Promise<Memo
   if (!source || (source.kind !== "chat" && source.kind !== "side")) throw new Error("请选择一个普通对话");
   const project = ProjectRepo.get(source.projectId);
   if (!project) throw new Error("项目已不存在");
+  // 【MC-092】agent 经通用 `app_api_call` 调本命令时,宿主装了「会话所属项目」作用域(见
+  // `memory/agentScope.ts`)—— 本命令的入参是**会话 id**(不是记忆路径),所以路径型可见谓词
+  // 对不上;这里改成校验**来源会话归属本项目**:agent 不能借别人的会话 id 触发对其项目记忆的
+  // 整理。无作用域 = 桌面用户 → 不设限。
+  const scope = currentAgentMemoryProjectId();
+  if (scope !== undefined && source.projectId !== scope) {
+    throw new Error("这个记忆整理任务不属于当前项目,拒绝执行。");
+  }
   // No silent replay after a restart (the previous run may already have side effects).
   for (const job of listAssistantJobs(source.id)) {
     if (job.status === "running" && !active.has(job.id)) settle(job, "failed", "", "应用重启或任务中断；请查看原运行记录，不会自动重放");

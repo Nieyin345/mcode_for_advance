@@ -605,6 +605,29 @@ const originalRunSave = repo.save;
   ProjectRepo.create(foreignProject);
   SessionRepo.create({ ...parentSession("memory_foreign"), projectId: foreignProject.id });
   await reject("不能跨项目交接", () => store.queueAssistantHandoff(a.id, source.id, "memory_foreign"));
+
+  // 【MC-092】agent 经通用接口调 memory.assistant 时,宿主装了「会话所属项目」作用域 ——
+  // 来源会话属于**别的项目**时必须拒(不能借别人的会话 id 触发对其项目记忆的整理)。桌面
+  // 用户(无作用域)不受约束。这条撤掉修复后必须真红:那个 throw 不再发生。
+  {
+    const { runWithAgentMemoryScopeForSession } = await import("@main/memory/agentScope.js");
+    // 来源会话 source 属于本机项目;foreign 会话属于 memory_other_project。
+    let sameProjectOk = true;
+    try {
+      await runWithAgentMemoryScopeForSession(source.id, () => memoryAssistant({ op: "list", sessionId: source.id }));
+    } catch { sameProjectOk = false; }
+    check("★ MC-092:agent 作用域下整理**本项目**记忆可以(list)", sameProjectOk);
+    let crossBlocked = false;
+    try {
+      await runWithAgentMemoryScopeForSession(source.id, () => memoryAssistant({ op: "list", sessionId: "memory_foreign" }));
+    } catch { crossBlocked = true; }
+    check("★ MC-092:agent 作用域下借**别的项目**的会话 id 被拒", crossBlocked);
+    // 无作用域(桌面用户):不设限,foreign 会话也能整理。
+    let desktopOk = true;
+    try { await memoryAssistant({ op: "list", sessionId: "memory_foreign" }); } catch { desktopOk = false; }
+    check("★ MC-092:桌面用户(无作用域)仍可整理任意会话(保留全局权限)", desktopOk);
+  }
+
   store.queueAssistantHandoff(a.id, source.id, targetId);
   eq("待交接正文可在重新读取时恢复", store.pendingAssistantHandoff(targetId)?.result, "目标、已验证进度、下一步");
   eq("重复投递同包幂等", store.queueAssistantHandoff(a.id, source.id, targetId).id, a.id);
