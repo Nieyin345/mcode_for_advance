@@ -1,4 +1,5 @@
 import { visibleMemory } from "./paths.js";
+import { redactSecrets } from "./sourceText.js";
 /**
  * 记忆的检索注入(MEM-02)—— 把记忆库聚合成**一段可以直接拼进提示词的文本**。
  *
@@ -53,7 +54,10 @@ export function memorySnapshotFor(categories?: readonly string[], limit: number 
   for (const meta of picked) {
     let body = "";
     try {
-      body = readMemoryFile(meta.path).content.trim();
+      // 【MC-093 读侧】注入模型前**遮蔽**疑似凭据 —— 保存闸门只挡新写入;历史/人工编辑的旧
+      // 记录可能本就含密钥,读侧不遮就等于把它拼进模型上下文。判据与保存闸门**同一份**
+      // (`redactSecrets` → `secretShape.ts`),此处是**读侧唯一**的遮蔽点。
+      body = redactSecrets(readMemoryFile(meta.path).content.trim());
     } catch {
       continue; // 列表和磁盘之间隔了一个窗口;读不到的那条跳过
     }
@@ -215,7 +219,8 @@ interface MemorySearchCandidate {
 
 function readCandidate(meta: MemoryFileMeta, terms: readonly string[] = []): MemorySearchCandidate | null {
   try {
-    const searchBody = readMemoryFile(meta.path).content.trim();
+    // 【MC-093 读侧】检索正文也先遮蔽再评分/预览 —— 历史/人工编辑的旧记录可能含密钥。
+    const searchBody = redactSecrets(readMemoryFile(meta.path).content.trim());
     if (searchBody.length === 0) return null;
     return { hit: { meta, body: bodyPreview(searchBody, terms), score: 0 }, searchBody };
   } catch {
@@ -282,7 +287,8 @@ export function scopedMemorySnapshot(projectId: string, query = ""): string {
     seen.add(meta.path);
     let record: ReturnType<typeof readMemoryFile>;
     try { record = readMemoryFile(meta.path); } catch { continue; }
-    const text = `- 【${meta.title}】 (${meta.path}; revision=${record.revision})\n${bodyPreview(record.content.trim(), terms)}`;
+    // 【MC-093 读侧】注入模型前遮蔽历史/人工记录里的疑似凭据(与保存闸门同一份判据)。
+    const text = `- 【${meta.title}】 (${meta.path}; revision=${record.revision})\n${bodyPreview(redactSecrets(record.content.trim()), terms)}`;
     if (chars + text.length > SNAPSHOT_CAP - 300) continue;
     chars += text.length; blocks.push(text);
   }

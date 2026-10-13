@@ -928,8 +928,7 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
     check("被拒后文件内容未被改动", readMemoryFile(metaPath).content.trim() === "旧正文");
   }
   const preview = manageMemory({ action: "preview", source: `legacy:${legacy}` });
-  check("旧记录可预览并带摘要", preview.ok && !!preview.digest && !!preview.content?.includes("legacy-private-needle"));
-  const imported = manageMemory({ action: "import", source: `legacy:${legacy}`, digest: preview.digest!, category: "rules", projectId: "p_memory", global: false, confirmed: true });
+  check("旧记录可预览并带摘要", preview.ok && !!preview.digest && !!preview.content?.includes("legacy-private-needle"));  const imported = manageMemory({ action: "import", source: `legacy:${legacy}`, digest: preview.digest!, category: "rules", projectId: "p_memory", global: false, confirmed: true });
   check("明确归属和类别后导入成功", imported.ok && !!imported.path?.startsWith("projects/p_memory/rules/"));
   eq("导入正文不混入迁移元数据", readMemoryFile(imported.path!).content.trim(), "legacy-private-needle");
   eq("导入不删除原记录", readMemoryFile(legacy).content.trim(), "legacy-private-needle");
@@ -1151,6 +1150,31 @@ console.log("\n分层工作流复用与记忆注入所有权");
     const rdDesk = call("memory:reviewDelete", { path: crossPath, digest: crossDigest }) as { ok: boolean };
     check("★ MC-092:桌面用户 reviewDelete 同一路径+指纹可以(反证拒的是作用域不是指纹)", rdDesk.ok === true, rdDesk);
   }
+}
+
+/* ── 【MC-093 读侧】注入/检索前遮蔽历史记录里的密钥 ──
+ *
+ * 保存闸门只挡**新写入**;历史/人工编辑的旧记录可能本就含密钥。此前 `retrieval.ts` 直接
+ * `readMemoryFile(...).content` 拼进注入快照/检索预览 —— 读侧不遮 = 把旧密钥送进模型上下文。
+ * 判据与保存闸门同一份(`redactSecrets` → `secretShape.ts`)。 */
+{
+  // 手写一份**含密钥**的记忆文件(绕过 saveMemoryFile 的闸门,模拟历史/人工文件)。
+  const secretPath = "global/rules/legacy-secret.md";
+  const abs = join(memoryRoot(), secretPath);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, ["---", "title: 旧规则", "updatedAt: 1", "---", "", "原来的密钥是 sk-" + "a".repeat(40) + ",别外传。"].join("\n"), "utf8");
+
+  // 注入快照(拼进模型上下文的那份)里不能出现明文密钥。
+  const snap = scopedMemorySnapshot("p_memory", "密钥");
+  check("★ MC-093:注入快照里历史密钥被遮蔽(不是明文)", !snap.includes("sk-" + "a".repeat(40)), snap.slice(0, 120));
+  // 检索预览里也不能出现。
+  const hit = searchMemory("密钥").find((h) => h.meta.path === secretPath);
+  check("★ MC-093:检索预览里历史密钥也被遮蔽", hit !== undefined && !hit.body.includes("sk-" + "a".repeat(40)), hit?.body?.slice(0, 120));
+  // 反证:普通内容不被误遮(判据没放成"什么都遮")。
+  saveMemoryFile({ path: "global/rules/plain-read.md", content: "普通内容,没有密钥。" });
+  const snap2 = scopedMemorySnapshot("p_memory", "普通");
+  check("普通内容照常出现在快照里(未被误遮)", snap2.includes("普通内容"), snap2.slice(0, 120));
+  rmSync(abs, { force: true });
 }
 
 /* ────────────────────────── 汇总 ────────────────────────── */
