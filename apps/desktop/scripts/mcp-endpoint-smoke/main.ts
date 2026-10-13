@@ -3041,6 +3041,80 @@ configureMcpToolHost(null);
   __resetPublicClientSessions();
 }
 
+/* ── 【MC-089 在途资源】仍有任务的 owner 受控保留,不被当孤儿清掉 ──
+ * 台账要求「仍有任务的 owner 受控保留」。这里走**真实生产路径**:先 `issueClientSession`
+ * 真签发一个 owner,灌满签发上限把它**真淘汰**(它从此不可再认证 = 真孤儿);再用
+ * `agent_process_start`(经 webToolHost → agentTools → 进程管理器单例)在它名下起一个真进程;
+ * 再 prune —— 必须**保留**其归属(keptBusy),而不是当孤儿清掉。空闲的孤儿才回收。
+ * 探针由 agentTools 模块加载时注册(import 了 createWebToolHost 就已经注册)。 */
+{
+  const {
+    issueClientSession,
+    rememberSyntheticOwner,
+    resolveClientSessionDetailed,
+    pruneOrphanedOwners,
+    __trackedOwnerCount,
+    __resetPublicClientSessions,
+  } = await import("@main/providers/bridge/publicClientSessions.js");
+  __resetPublicClientSessions();
+  const synthetic = "sess_public_busy";
+  // 真签发两条 → 真淘汰:busyOwner 名下会起进程,idleOwner 名下什么都不起。
+  const busyOwner = issueClientSession("cred-a");
+  const idleOwner = issueClientSession("cred-a");
+  rememberSyntheticOwner(synthetic, busyOwner);
+  rememberSyntheticOwner(synthetic, idleOwner);
+  for (let i = 0; i < 4100; i++) issueClientSession("cred-a"); // 把两条都挤出 issued
+  // 证明它们**确实已失效**(不是靠字符串前缀假装的孤儿)。
+  eq("★ (前置)目标 owner 已被真淘汰(不可再认证)", resolveClientSessionDetailed("cred-a", busyOwner).kind, "expired");
+  eq("★ (前置)空闲 owner 也已被真淘汰", resolveClientSessionDetailed("cred-a", idleOwner).kind, "expired");
+  rememberSyntheticOwner(synthetic, "legacy:cred-a");
+  rememberSyntheticOwner(synthetic, "sess_local_chat");
+
+  const root = mkdtempSync(path.join(tmpdir(), "mcode-mc089-busy-"));
+  const probeHost = createWebToolHost({
+    gateFor: () => ({
+      permissionMode: () => "bypassPermissions" as PermissionMode,
+      isAlwaysAllowed: () => true,
+      async requestApproval() {
+        return { allow: true };
+      },
+    }),
+    cwdFor: () => root,
+    sandboxRootFor: () => root,
+  });
+  const scopeFor = (owner: string) => ({
+    credentialId: "proj", projectId: "proj", sessionId: "sess_shared", canonicalRoot: root,
+    grantRevision: "rev:shared", revocationEpoch: 0, clientSessionId: owner, actorId: owner, traceId: `t:${owner}`,
+  });
+  const call = (owner: string, name: string, args: Record<string, unknown> = {}) =>
+    probeHost.callTool(name, args, { sessionId: "sess_shared", audience: "public", ownerId: owner, publicScope: scopeFor(owner) });
+  const cmd = process.platform === "win32" ? "ping -n 30 127.0.0.1 > nul" : "sleep 30";
+  const started = await call(busyOwner, "agent_process_start", { command: cmd, wait_ms: 0 });
+  const procId = /proc_[0-9a-f]+/.exec(started.text)?.[0] ?? "";
+  check("★ (前置)已在真淘汰 owner 名下起了真进程", procId.startsWith("proc_"), started.text);
+  try {
+    // 第一次 prune:busyOwner 名下有在跑的进程 → 受控保留;idleOwner 空闲 → 回收。
+    const report = pruneOrphanedOwners();
+    check("★ 仍有在途进程的真淘汰 owner 被受控保留(不回收归属)", report.keptBusy.includes(busyOwner), report.keptBusy);
+    check("★ …且它不在被回收之列", !report.pruned.includes(busyOwner), report.pruned);
+    check("★ 空闲的 pcs_ owner 照常回收", report.pruned.includes(idleOwner), report.pruned);
+    check("★ legacy owner 仍在 keptLegacy(不回收)", report.keptLegacy.includes("legacy:cred-a"), report.keptLegacy);
+    check("★ 本机会话 id 仍在 keptLegacy(不回收)", report.keptLegacy.includes("sess_local_chat"), report.keptLegacy);
+
+    // 进程结束(停掉)→ 该 owner 不再有在途资源 → 下一次 prune 应把它回收。
+    await call(busyOwner, "agent_process_stop", { process_id: procId });
+    const after = pruneOrphanedOwners();
+    check("★ 进程结束后该 owner 变为可回收(不再受控保留)", after.pruned.includes(busyOwner), after);
+    check("★ …且已不在 keptBusy 里", !after.keptBusy.includes(busyOwner), after.keptBusy);
+    // 归属数已回落到只剩「不归本模块管」的 legacy + 本机 id。
+    eq("★ 回收后归属数只剩 legacy + 本机 id", __trackedOwnerCount(), 2);
+  } finally {
+    try { await call(busyOwner, "agent_process_stop", { process_id: procId }); } catch { /* 已停 */ }
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+    __resetPublicClientSessions();
+  }
+}
+
 console.log(`\n${passed}/${checks} 通过`);
 if (failures.length > 0) {
   console.log(`\n失败 ${failures.length} 条:`);

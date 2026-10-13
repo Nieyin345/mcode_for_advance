@@ -162,16 +162,71 @@ export function forgetSyntheticSession(sessionId: string): void {
 
 /* ─────────────── 【MC-089】淘汰会话的归属回收 ─────────────── */
 
-/** 一次归属回收的结果 —— 如实报出收回了哪些、还剩哪些(不静默)。 */
+/**
+ * **在途资源探针** —— 某个(可能已被淘汰的)owner 名下**是否还有活资源**(运行中的进程 /
+ * 后台搜索 / 未关闭的 SSH 连接)。
+ *
+ * ## 为什么用「注册」而不是直接 import
+ *
+ * 本模块是**纯**的(只 import `node:crypto`),而那三个资源管理器是进程级单例、住在
+ * `main/mcp/agentTools.ts` —— 直接 import 会把 electron/db/ssh2 整条图拉进来,无头
+ * smoke 就断言不了本模块。于是反过来:谁持有那三个管理器,谁在模块加载时把自己的探针
+ * **注册**进来(与 `main/mcp/agentSessionCleanup.ts` 的 disposer 注册同一个套路)。
+ *
+ * ## 它补的洞(MC-089 的「在途资源」那一半)
+ *
+ * 只有归属记录回收还不够 —— 台账写的是「**仍有任务的 owner 受控保留**」。一个 owner 的
+ * 客户端会话即便已被淘汰(旧 id 不可再认证),它**名下还在跑的进程/搜索/SSH 不该被静默
+ * 丢掉归属**:丢了就再没人知道「这条老对话名下有活资源」,删合成会话时也释放不到它。
+ * 所以 {@link pruneOrphanedOwners} 回收前先问探针 —— 有活资源的孤儿 owner **保留**。
+ */
+type OwnerWorkProbe = (ownerId: string) => boolean;
+const workProbes = new Set<OwnerWorkProbe>();
+
+/** 登记一个「这个 owner 还有在途资源吗」的探针;返回注销函数。 */
+export function registerOwnerWorkProbe(fn: OwnerWorkProbe): () => void {
+  workProbes.add(fn);
+  return () => {
+    workProbes.delete(fn);
+  };
+}
+
+/**
+ * 任一探针报「有」即视为有在途资源(**保守:宁可多留,不误删活资源**)。
+ *
+ * 探针抛错也按「有任务」处理 —— 探针的职责恰是"别让活资源被回收",它失灵时**不能反过来
+ * 把 owner 当空闲而误删**(坏东西显式保留,不静默丢失)。
+ */
+function ownerHasInFlightWork(ownerId: string): boolean {
+  for (const probe of workProbes) {
+    try {
+      if (probe(ownerId)) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** 一次归属回收的结果 —— 如实报出收回了哪些、保留了哪些(不静默)。 */
 export interface OwnerPruneReport {
-  /** 被回收的 owner:其客户端会话**已被淘汰**,不再有活跃身份,归属记录可以清。 */
+  /** 被回收的 owner:会话**已被淘汰**且**名下无在途资源**,归属记录可以清。 */
   pruned: string[];
-  /** 仍在用的 owner 数(会话有效)—— 保留,不动。 */
+  /**
+   * **受控保留**的孤儿 owner:会话已被淘汰,但**名下还有在途资源**(运行的进程 / 搜索 /
+   * SSH)—— 台账要求「仍有任务的 owner 受控保留」,这里不动它。等资源自己结束(下次
+   * prune 再收)、或用户删合成会话时由 `ownersForSession` 统一释放。
+   */
+  keptBusy: string[];
+  /** **因不归本模块管而保留**的 owner:legacy(`legacy:<credentialId>`)或本机会话 id。 */
+  keptLegacy: string[];
+  /** 仍在用的 owner 数(会话仍有效)—— 保留,不动。 */
   retained: number;
 }
 
 /**
- * **回收「客户端会话已被淘汰」的孤儿归属**。返回被清掉的 owner(及保留数)。
+ * **回收「客户端会话已被淘汰」的孤儿归属**。返回被清掉的 owner、受控保留的忙于 owner、
+ * 及保留数。
  *
  * ## 它补的洞(MC-089)
  *
@@ -179,35 +234,44 @@ export interface OwnerPruneReport {
  * 但 {@link rememberSyntheticOwner} 早先记下的「合成会话 → 这个 owner」**不会跟着删**,
  * 于是 `syntheticOwners` 只涨不落(独立复核实测 4400 次签发 → 归属 4401 条,而最早的身份早失效)。
  *
- * ## 判据(刻意保守:只清**确定失效**的)
+ * ## 判据(刻意保守:只清**确定失效且空闲**的)
  *
  *  - 一个 owner 若**仍是** `issued` 里有效的会话 id → **保留**(它还在用);
  *  - legacy owner(`legacy:<credentialId>`)→ **保留**(老客户端没生命周期,不该被清);
  *  - 本机那条路直接用会话 id 做 owner(id 里不带 `pcs_` 前缀)→ **保留**(不归本模块管);
- *  - 只有**形如本服务签发过(`pcs_` 前缀)且已被淘汰**的 owner 才回收 —— 它已不可认证,
- *    其名下资源本就该由后续请求重新握手后重建,清归属记录不会误伤仍在用的身份。
+ *  - 形如本服务签发过(`pcs_` 前缀)、**已被淘汰**、**但探针报名下还有在途资源**
+ *    (运行中的进程/搜索/SSH)→ **受控保留**({@link OwnerPruneReport.keptBusy};
+ *    台账「仍有任务的 owner 受控保留」—— 丢了归属就再没人能释放这些活资源);
+ *  - 只有**签发过(`pcs_` 前缀)、已被淘汰、且名下无在途资源**的 owner 才回收 ——
+ *    它已不可认证、名下也没活资源,清归属记录不会误伤仍在用的身份或跑着的进程。
  *
  * ⚠️ 本函数只清**归属记录**,不直接释放进程/SSH(那是资源管理器的事,且一个已被淘汰的
- * 客户端已经拿不到那些资源)。真要在途资源被安全终止,是资源管理器的生命周期策略 ——
- * 本切片只把「归属不再只涨不落」这条修掉(台账建议「空闲/无资源 owner 同步移除」的可测核心)。
+ * 客户端已经拿不到那些资源)。有活资源的孤儿只**保留归属**、不迁移/终止资源 —— 安全终止/
+ * 迁移/审计是资源管理器的生命周期策略,属更大改造。本切片只把「归属不再只涨不落」这条
+ * 修掉,并加上「仍有在途资源的 owner 不与其它孤儿一道被清」这条更保守的护栏。
  */
 export function pruneOrphanedOwners(): OwnerPruneReport {
   const pruned: string[] = [];
+  const keptBusy: string[] = [];
+  const keptLegacy: string[] = [];
   let retained = 0;
   for (const [syntheticId, owners] of syntheticOwners) {
     for (const owner of owners) {
       // 仍是有效会话 → 保留。
       if (issued.has(owner)) { retained += 1; continue; }
       // legacy / 本机会话 id / 其它非本模块签发的 → 保留(不归本模块的生命周期管)。
-      if (!owner.startsWith("pcs_")) { retained += 1; continue; }
-      // 本服务签发过(pcs_ 前缀)、但已不在 issued 里 = 已被淘汰 → 回收。
+      if (!owner.startsWith("pcs_")) { keptLegacy.push(owner); continue; }
+      // 本服务签发过(pcs_ 前缀)、但已不在 issued 里 = 已被淘汰。
+      // 【MC-089 在途资源】名下还有活资源(进程/搜索/SSH)→ 受控保留,不回收归属。
+      if (ownerHasInFlightWork(owner)) { keptBusy.push(owner); continue; }
+      // 已被淘汰且空闲 → 回收。
       owners.delete(owner);
       pruned.push(owner);
       evicted.delete(owner);
     }
     if (owners.size === 0) syntheticOwners.delete(syntheticId);
   }
-  return { pruned, retained };
+  return { pruned, keptBusy, keptLegacy, retained };
 }
 
 /** 诊断 / 断言用:当前归属集合里 owner 的总数(去重前)。 */

@@ -79,6 +79,7 @@ import { readEnvSnapshot } from "@main/providers/envPrompt.js";
 import type { LibraryForAi, SandboxReadCheck, SandboxReadKind } from "./sandboxReadPolicy.js";
 import { PUBLIC_SCOPE_UNAVAILABLE } from "@contracts/publicMcpScope";
 import { ownersForSession, forgetSyntheticSession } from "@main/providers/bridge/publicClientSessions.js";
+import { registerOwnerWorkProbe } from "@main/providers/bridge/publicClientSessions.js";
 import { fail, image, text, type McpToolContext, type McpToolSpec } from "./sdk.js";
 import { structured as structuredResult } from "./sdk.js";
 import {
@@ -1206,6 +1207,18 @@ registerAgentSessionDisposer((sessionId) => {
 });
 // 应用退出时杀掉还在跑的后台进程,否则它们比 Mcode 活得久(端口一直被占)。
 registerAgentShutdownHook(() => agentProcesses.disposeAll());
+// 【MC-089 在途资源】归属回收前问一句「这个 owner 名下还有活资源吗」——
+// 客户端会话被淘汰后,它的 owner 若还在跑进程/搜索/连着 SSH,**不能**当孤儿清掉归属
+// (台账「仍有任务的 owner 受控保留」)。只读探针(只 list,不 dispose)。
+registerOwnerWorkProbe((owner) => {
+  const hasLiveProcess = agentProcesses.list(owner).some((p) => p.status === "running");
+  if (hasLiveProcess) return true;
+  const hasLiveSearch = agentSearches.list(owner).some((s) => s.status === "running");
+  if (hasLiveSearch) return true;
+  // SSH:存在任一尚未主动关闭的连接即视为在途(连接带 keepalive + 自动重连,不能靠收归属
+  // 让它消失;远端 tmux/nohup 任务也按设计继续跑)。
+  return agentRemoteSsh.list(owner).some((c) => c.state !== "closed");
+});
 
 export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
   /** 每个工具共用的前置:解析 cwd。失败统一转 fail 文本。 */
