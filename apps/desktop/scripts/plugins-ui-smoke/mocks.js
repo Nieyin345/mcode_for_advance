@@ -7,6 +7,8 @@ window.labSubscribe = fn => { labListeners.add(fn); return () => labListeners.de
 
 const plugin = (name, extra = {}) => ({
   name, version: '1.0.0', enabled: true, description: 'fixture ' + name,
+  // `source` / `rootDir` 是展开行(PluginDetail)要读的字段 —— 少了它们一展开就崩。
+  source: { kind: 'local-dir', ref: '/tmp/' + name }, rootDir: '/tmp/' + name, installedAt: '',
   components: { skills: [], commands: [], agents: [], mcpServers: [], hooks: [], apps: [] },
   ...extra,
 });
@@ -43,10 +45,41 @@ window.labState = {
 window.labPatchState = patch => { labState = { ...labState, ...patch }; for (const fn of labListeners) fn(); };
 
 const record = (method, input) => labEvents.push({ method, input: structuredClone(input) });
+/** 【MC-061】主机 hook 授权的内存桩 —— 让 `HookGrantsSection` 的读 / 签发 / 撤销三件
+ *  事有真实往返(否则列表永远空、签发永远看不出生效)。签发按宿主纪律给 grantId / 有效期。 */
+let labGrants = [];
+let labGrantSeq = 0;
 window.labApi = {
   workflow: { agentProfiles: async () => ({ profiles: [] }), list: async () => ({ workflows: [] }) },
   // 「安装 ▾ → 本地目录」走它取路径。夹具给个固定路径即可。
   pickFolder: async () => ({ path: '/tmp/hooked-src' }),
+  hooks: {
+    listHostHookGrants: async input => { record('listHostHookGrants', input ?? {}); return { grants: labGrants }; },
+    issueHostHookGrant: async input => {
+      record('issueHostHookGrant', input);
+      labGrantSeq += 1;
+      const grant = {
+        grantId: 'hhg-' + labGrantSeq,
+        pluginId: input.pluginId,
+        version: input.version,
+        events: input.events ?? [],
+        // 桩与真宿主同形状:摘要由主进程算,这里只要非空(面板不读它的值判定)。
+        commandDigest: 'sha256:stub-' + (input.command ?? ''),
+        matcherDigest: input.matcher ? 'sha256:stub-mat' : '',
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 86400000,
+        revoked: false,
+      };
+      labGrants.push(grant);
+      return { ok: true, grant };
+    },
+    revokeHostHookGrant: async input => {
+      record('revokeHostHookGrant', input);
+      const g = labGrants.find(x => x.grantId === input.grantId);
+      if (g) g.revoked = true;
+      return { ok: true };
+    },
+  },
   plugins: {
     list: async () => ({ plugins: Object.values(labPlugins) }),
     marketplaceList: async () => ({ marketplaces: [] }),

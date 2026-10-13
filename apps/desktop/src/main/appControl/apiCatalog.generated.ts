@@ -811,7 +811,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "hooks.issueHostHookGrant",
   "channel": "hooks:issueHostHookGrant",
   "doc": "【MC-061】**用户真实操作**后签发一份主机 hook 授权(落盘)。`grantId` / 时间 / `revoked` 由主进程签发(schema `.strict()`;agent 经 `app_api_call` 够不到这条 —— blocked)。",
-  "input": "{ pluginId: string // 贡献这条 hook 的插件名(manifest name)。; version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
+  "input": "{ pluginId: string // 贡献这条 hook 的插件名(manifest name)。; version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
   "output": "{ ok: boolean; error?: string | undefined; grant?: HostHookGrant | undefined }"
  },
  {

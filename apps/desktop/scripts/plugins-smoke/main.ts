@@ -1237,6 +1237,51 @@ eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user ma
   reset3();
 }
 
+/* ── 【MC-061】持久幂等:同来源签两次 → 一条有效授权,不是两条 ──
+ * 「授权这条 hook」是个**可以点两次**的动作(双击 / 面板重挂后再点)。若每点一次多一份
+ * 有效授权,撤销时只撤到你点的那一份、其余仍在 —— "我明明撤了它怎么还跑"。这里断言
+ * 同来源(插件 + 版本 + 命令摘要 + matcher 摘要 + 事件集)第二次签发**复用**第一份(同
+ * grantId);而改命令 / 改 matcher / 换事件集 = 新来源 → 各是独立的新授权。 */
+{
+  const { issueHostHookGrant: issueI, resetHostHookGrants: resetI, listHostHookGrants: listI } =
+    await import("../../src/main/hooks/hostHookGrants.js");
+  const NOW = 5_000_000;
+  const base = {
+    pluginId: "idem-plugin",
+    version: "1.0.0",
+    events: ["PreToolUse"],
+    commandDigest: "sha:cmd",
+    matcherDigest: "sha:mat",
+  };
+  resetI();
+  const a1 = issueI({ ...base, ttlMs: 600_000, now: NOW });
+  const a2 = issueI({ ...base, ttlMs: 600_000, now: NOW + 1000 });
+  eq(a2.grantId, a1.grantId, "★ MC-061 持久幂等:同来源签两次 → 复用同一份授权(同 grantId)");
+  eq(listI().filter((g) => g.pluginId === "idem-plugin").length, 1, "★ MC-061 持久幂等:表里只有一条(没有重复条目)");
+  // 事件集**顺序不同但集合相同**仍是同一来源(键里排序去重)。
+  const a3 = issueI({ ...base, events: ["PreToolUse"], ttlMs: 600_000, now: NOW + 2000 });
+  eq(a3.grantId, a1.grantId, "★ MC-061 持久幂等:事件集相同的再次签发仍复用");
+  // 改命令摘要 = 新来源 → 独立新授权。
+  const b1 = issueI({ ...base, commandDigest: "sha:other", ttlMs: 600_000, now: NOW });
+  ok(b1.grantId !== a1.grantId, "★ MC-061 持久幂等:命令摘要不同 → 新来源(独立授权)");
+  // 改 matcher 摘要 = 新来源。
+  const c1 = issueI({ ...base, matcherDigest: "sha:mat2", ttlMs: 600_000, now: NOW });
+  ok(c1.grantId !== a1.grantId, "★ MC-061 持久幂等:matcher 摘要不同 → 新来源");
+  // 撤销后再签同来源:那是**一份新的有效授权**(不是把旧的复活 —— 旧的已 revoked)。
+  resetI();
+  const d1 = issueI({ ...base, ttlMs: 600_000, now: NOW });
+  const { revokeHostHookGrant: revokeI } = await import("../../src/main/hooks/hostHookGrants.js");
+  revokeI(d1.grantId);
+  const d2 = issueI({ ...base, ttlMs: 600_000, now: NOW + 1000 });
+  ok(d2.grantId !== d1.grantId, "★ MC-061 持久幂等:撤销后再签 → 新授权(不复用已撤销那份)");
+  eq(
+    listI().filter((g) => g.pluginId === "idem-plugin" && !g.revoked).length,
+    1,
+    "★ MC-061 持久幂等:撤销 + 重签后仍只有一条**有效**授权",
+  );
+  resetI();
+}
+
 /* ── summary ── */
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

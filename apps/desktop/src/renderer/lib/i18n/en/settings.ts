@@ -840,6 +840,33 @@ export const en = {
   "settings.plugins.hooksWarnTitle": "This plugin's hooks won't run",
   "settings.plugins.hooksWarnDesc":
     "{name} declares {n} hooks. Mcode does not execute any plugin hooks in this version, so that automation stays inactive; the remaining components (skills / MCP) work normally.",
+
+  // ── plugin hook grants (MC-061: settings → plugins, expand a plugin with hooks) ──
+  // Plugin-provided hooks are NOT run by default (default deny); to actually run one the
+  // user authorizes it here, hook by hook. This block is that door. Granting is the user's
+  // own action — the agent cannot reach it (appControl/policy.ts pins issue/revoke blocked).
+  "settings.plugins.hookGrants.title": "Hook grants",
+  "settings.plugins.hookGrants.desc":
+    "Hooks shipped by a plugin are not run by default. Authorize one here and it will run as you on its event — a grant covers only that one hook (changing the command, the matcher or the plugin version invalidates it; authorize again).",
+  "settings.plugins.hookGrants.eventLabel": "Event",
+  "settings.plugins.hookGrants.commandLabel": "Command",
+  "settings.plugins.hookGrants.authorize": "Authorize",
+  "settings.plugins.hookGrants.authorizing": "Issuing…",
+  "settings.plugins.hookGrants.grantedBadge": "Granted",
+  "settings.plugins.hookGrants.unmappableBadge": "Event unsupported",
+  "settings.plugins.hookGrants.unmappableHint": "This event maps to no Mcode event, so it will not run even if authorized.",
+  "settings.plugins.hookGrants.pendingBadge": "Not authorized",
+  "settings.plugins.hookGrants.issueFailed": "Grant did not take effect: {error}",
+  "settings.plugins.hookGrants.revoke": "Revoke",
+  "settings.plugins.hookGrants.revoking": "Revoking…",
+  "settings.plugins.hookGrants.revokeFailed": "Revoke failed: {error}",
+  "settings.plugins.hookGrants.revokedBadge": "Revoked",
+  "settings.plugins.hookGrants.expiredBadge": "Expired",
+  "settings.plugins.hookGrants.expiresAt": "expires {time}",
+  "settings.plugins.hookGrants.activeListTitle": "Active grants",
+  "settings.plugins.hookGrants.activeListEmpty": "No active grants for this plugin yet.",
+  "settings.plugins.hookGrants.listFailed": "Could not read grants: {error}",
+  "settings.plugins.hookGrants.loading": "Reading grants…",
   "settings.plugins.marketplaceSection": "Marketplaces",
   "settings.plugins.marketplaceSectionDesc":
     "Add marketplace repositories (git URL or local directory) in the Claude (.claude-plugin/marketplace.json) or Codex (.agents/plugins/marketplace.json) format.",
@@ -1434,6 +1461,11 @@ export const en = {
   // run that is never coming.
   "settings.automation.facts.missed": "Missed {n} scheduled run(s) while the app was not running (not backfilled by design)",
   "settings.automation.facts.queued": "The previous run is still going — {n} item(s) are queued and will start when it finishes",
+  // "Dropped" is not "queued": the queued ones are waiting for the current run; these
+  // were dropped and never delivered to any run (batch invalidated, or the app restarted
+  // mid-window). This just states the fact — the next real dispatch folds it into that
+  // run's payload and clears it, so the user need not act.
+  "settings.automation.facts.droppedUndelivered": "{n} item(s) dropped by backlog and not yet handed to any run",
 
   // ── Run history panel (settings/workflows/RunHistorySection) ──
   // A different source from `settings.automation.runHistory` (the inspector's

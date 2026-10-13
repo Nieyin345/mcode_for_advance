@@ -112,6 +112,47 @@ await withAuditPage(dir, async page => {
     const outside = await page.eval("!document.querySelector('[data-testid=plugins-review-hooks-banner]').closest('.overflow-y-auto')");
     assert.equal(outside, true, 'the banner sits outside the scrollable body so it cannot be scrolled away');
   });
+
+  // ── MC-061:插件携带的 hook 的**用户授权入口** ──
+  // 台账点名的缺口:`src/renderer` 里没有任何一处调用 `issueHostHookGrant` —— 设置页的
+  // 授权动作没接通。展开一个带 hooks 的插件(delta)应出现授权区;点「授权这条」要走
+  // 真 `issueHostHookGrant`(入参加命令/matcher **原文**,不是渲染端算不出的摘要),
+  // 签完出现在「有效授权」列表里,能撤销。收起时不该有任何按插件的自动授权。
+  await test('expanding-a-hook-plugin-exposes-the-grant-surface-and-authorize-issues-a-grant', async () => {
+    await go();
+    // 展开 delta 行。
+    const expander = `[...document.querySelectorAll('button[aria-expanded]')].find(e=>e.textContent.includes('delta'))`;
+    await clickExpr(expander);
+    await page.waitFor("!!document.querySelector('[data-testid=plugins-hook-grants-delta]')", 3000);
+    // 授权区内印出了这条 hook 的事件 / 命令,且有一颗「授权这条」按钮。
+    const sectionText = await page.eval("document.querySelector('[data-testid=plugins-hook-grants-delta]').innerText");
+    assert.match(sectionText, /PreToolUse/, 'the grant surface must show the hook event');
+    // 点授权 → 真调 issueHostHookGrant。
+    await clickExpr(`document.querySelector('[data-testid=hook-authorize-delta-PreToolUse]')`);
+    await page.waitFor("labEvents.filter(e=>e.method==='issueHostHookGrant').length>=1", 3000);
+    const issue = await page.eval("labEvents.find(e=>e.method==='issueHostHookGrant')");
+    assert.equal(issue.input.pluginId, 'delta', 'the grant targets the plugin by name');
+    // ★ 入参是命令/matcher **原文**(渲染端算不了 sha256);不带任何宿主字段。
+    assert.equal(issue.input.command, 'echo hi', 'the renderer passes the command text, not a digest');
+    assert.equal(issue.input.matcher, 'Bash', 'the matcher text is passed too');
+    assert.deepEqual(issue.input.events, ['PreToolUse'], 'the grant is scoped to this hook event');
+    assert.equal('grantId' in issue.input, false, 'no host-issued fields may be forged by the caller');
+    // 签完出现在「有效授权」列表里(可撤)。
+    await page.waitFor("labEvents.filter(e=>e.method==='listHostHookGrants').length>=2 && !!document.querySelector('[data-testid=hook-revoke-hhg-1]')", 3000);
+    // 撤销。
+    await clickExpr(`document.querySelector('[data-testid=hook-revoke-hhg-1]')`);
+    await page.waitFor("labEvents.filter(e=>e.method==='revokeHostHookGrant').length>=1", 3000);
+    const revoke = await page.eval("labEvents.find(e=>e.method==='revokeHostHookGrant')");
+    assert.equal(revoke.input.grantId, 'hhg-1', 'revoke targets the grant by id');
+  });
+
+  await test('a-collapsed-hook-plugin-does-not-auto-issue-any-grant', async () => {
+    // 负控:不展开、不点授权 → 一个 grant 都不该被签出去(hook 默认拒绝)。
+    await go();
+    await page.sleep(150);
+    assert.equal(await page.eval("labEvents.filter(e=>e.method==='issueHostHookGrant').length"), 0,
+      'nothing may be granted without an explicit user click');
+  });
 });
 const failed = results.filter(r => !r.ok).length;
 writeFileSync(join(dir, 'results.json'), JSON.stringify({ passed: results.length - failed, failed, results }, null, 2));

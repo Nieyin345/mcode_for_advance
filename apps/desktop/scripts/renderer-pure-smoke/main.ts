@@ -827,5 +827,82 @@ section("17. 送图上限与主进程契约同锚");
   );
 }
 
+/* ── 【MC-061】插件 hook 授权面板的**入参构造**纯逻辑 ──────────────────────────
+ *
+ * 台账点名的缺口:`issueHostHookGrant` 在渲染端**一处都没被调用** —— 设置页没有让用户
+ * 授权某条插件 hook 的入口。修复落在 `PluginsPanel` 的 HookGrantsSection;它的判据能
+ * 拎成纯函数的部分住在这里(`pluginHookGrantsView.ts`),因为这一类错**只有对着构造出
+ * 来的入参才看得出**:
+ *   - 少绑 `command` → 签的是"按插件 + 事件放行"的**宽授权**,该插件**任意命令**的钩子
+ *     全被放行,而界面上看不出来;
+ *   - 少绑 `matcher` → 同命令同事件、不同 matcher 的钩子共享授权;
+ *   - 带进 `grantId` / `expiresAt` 这类宿主字段 → schema `.strict()` 拒(或退化成自签)。
+ * 同时钉住 Panel 真的**用了**这个构造 + 真的调了签发 / 撤销入口(只声明不接线 = 台账
+ * 判过的"形式上的 IPC 入口 ≠ 用户能点")。 */
+section("18. 插件 hook 授权:面板入参构造 + 面板真的接上了签发入口(MC-061)");
+{
+  const {
+    hookGrantIssueInput,
+    canAuthorizeHook,
+    activePluginGrants,
+    pluginGrants,
+  } = await import("../../src/renderer/components/settings/pluginHookGrantsView.js");
+
+  const plugin = { name: "demo-plugin", version: "1.2.3" };
+
+  // ① 逐条授权:绑定到**这一条** hook(事件收窄 + 命令原文 + matcher 原文 + 版本)。
+  const withMatcher = hookGrantIssueInput(plugin, {
+    event: "PreToolUse",
+    matcher: "Bash",
+    command: "echo hi",
+  });
+  eq("授权入参:pluginId 取自插件名", withMatcher.pluginId, "demo-plugin");
+  eq("授权入参:version 带上(升级 = 新来源)", withMatcher.version, "1.2.3");
+  eq("授权入参:events 收窄到这一条的事件", JSON.stringify(withMatcher.events), JSON.stringify(["PreToolUse"]));
+  eq("★ 授权入参:带命令**原文**(宿主算摘要,不是宽授权)", withMatcher.command, "echo hi");
+  eq("授权入参:matcher 原文(声明了才带)", withMatcher.matcher, "Bash");
+  // ★ schema `.strict()`:入参**不得**含宿主签发的字段(多一个就被 zod 拒)。
+  const keys = Object.keys(withMatcher).sort();
+  check(
+    "★ 授权入参不含任何宿主字段(grantId/issuedAt/expiresAt/revoked/ttlMs)",
+    ["expiresAt", "grantId", "issuedAt", "revoked", "ttlMs"].every((k) => !keys.includes(k)),
+    keys,
+  );
+
+  // ② 没声明 matcher → 不带 matcher 字段(空 = 不绑定,不是绑空串)。
+  const noMatcher = hookGrantIssueInput(plugin, { event: "PostToolUse", command: "echo x" });
+  check("★ 授权入参:未声明 matcher 时不带 matcher(不绑定)", !("matcher" in noMatcher), Object.keys(noMatcher));
+  eq("…命令原文照带(即便没 matcher)", noMatcher.command, "echo x");
+
+  // ③ 能不能授权:只有"映射得到、且还没授权"的能签。
+  check("canAuthorizeHook:execution=unsupported → 可签", canAuthorizeHook({ execution: "unsupported" }));
+  check("★ canAuthorizeHook:已授权(granted)→ 不可再签", !canAuthorizeHook({ execution: "granted" }));
+  check("★ canAuthorizeHook:事件不可映射(unmappable)→ 不可签(签了也不跑)", !canAuthorizeHook({ execution: "unmappable" }));
+
+  // ④ 当前有效授权 / 全部授权的筛选 + 排序。
+  const now = 10_000;
+  const grants = [
+    { grantId: "hhg-1", pluginId: "demo-plugin", version: "1.0.0", events: [], commandDigest: "", issuedAt: 100, expiresAt: now + 1000, revoked: false },
+    { grantId: "hhg-2", pluginId: "demo-plugin", version: "1.0.0", events: [], commandDigest: "", issuedAt: 300, expiresAt: now + 1000, revoked: true },
+    { grantId: "hhg-3", pluginId: "demo-plugin", version: "1.0.0", events: [], commandDigest: "", issuedAt: 200, expiresAt: now - 1, revoked: false },
+    { grantId: "hhg-4", pluginId: "other", version: "1.0.0", events: [], commandDigest: "", issuedAt: 400, expiresAt: now + 1000, revoked: false },
+  ];
+  eq("activePluginGrants:只算本插件 + 有效(未撤销且未过期)= 1 条", activePluginGrants(grants, "demo-plugin", now).length, 1);
+  eq("…无效的那两条不算(撤销的、过期的各一)", activePluginGrants(grants, "demo-plugin", now)[0].grantId, "hhg-1");
+  const listed = pluginGrants(grants, "demo-plugin");
+  eq("pluginGrants:含撤销/过期(撤了不凭空消失)", listed.length, 3);
+  eq("…按签发时刻倒序(最近的在最上)", listed[0].grantId, "hhg-2");
+  eq("…别的插件的授权不混进来", listed.every((g) => g.pluginId === "demo-plugin"), true);
+
+  // ⑤ 接线不变量:面板源码真的调了签发 / 撤销入口 + 用了那个构造(只声明不接线 = 没接通)。
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const panel = readFileSync(join(process.cwd(), "src/renderer/components/settings/PluginsPanel.tsx"), "utf8");
+  check("★ 面板真的调 issueHostHookGrant(不是只声明了 RPC)", panel.includes("api.hooks.issueHostHookGrant("), panel.match(/issueHostHookGrant\([^\n]*/g)?.slice(0, 2));
+  check("★ 面板真的调 revokeHostHookGrant(能撤)", panel.includes("api.hooks.revokeHostHookGrant("), panel.match(/revokeHostHookGrant\([^\n]*/g)?.slice(0, 2));
+  check("★ 面板的签发入参走 hookGrantIssueInput(不是手拼一份)", panel.includes("hookGrantIssueInput("));
+  check("★ 面板读授权列表走 useRpc(渲染端读数据走统一读钩子)", panel.includes("useRpc(") && panel.includes("listHostHookGrants"));
+}
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

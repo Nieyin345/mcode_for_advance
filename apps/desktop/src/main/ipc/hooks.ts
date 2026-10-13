@@ -40,6 +40,7 @@ import {
 import { hookRunner } from "@main/hooks/HookRunner.js";
 import { readHooks, removeHook, saveHook } from "@main/hooks/store.js";
 import {
+  hostHookCommandDigest,
   issueHostHookGrant,
   listHostHookGrants,
   revokeHostHookGrant,
@@ -83,14 +84,24 @@ export function registerHookHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, async (_evt, raw) => {
     const input = HostHookGrantIssueSchema.parse(raw);
     // `ttlMs` / `now` 由**宿主**给 —— 不是从 input 读(schema 里根本没有这两个字段)。
+    // 摘要也由**宿主**算:调用方给的是命令/matcher **原文**(渲染端算不了 sha256),
+    // 走**唯一一份** `hostHookCommandDigest` —— 与面板、执行通道同一份来源身份。
+    const commandDigest =
+      input.command !== undefined
+        ? hostHookCommandDigest(input.command)
+        : input.commandDigest;
+    const matcherDigest =
+      input.matcher !== undefined
+        ? (input.matcher === "" ? "" : hostHookCommandDigest(input.matcher))
+        : input.matcherDigest;
     // 签发失败(fail-safe 落盘异常等)不吞:返回 `{ok:false}` 让界面显示"授权未生效"。
     try {
       const grant = issueHostHookGrant({
         pluginId: input.pluginId,
         ...(input.version !== undefined ? { version: input.version } : {}),
         ...(input.events !== undefined ? { events: input.events } : {}),
-        ...(input.commandDigest !== undefined ? { commandDigest: input.commandDigest } : {}),
-        ...(input.matcherDigest !== undefined ? { matcherDigest: input.matcherDigest } : {}),
+        ...(commandDigest !== undefined ? { commandDigest } : {}),
+        ...(matcherDigest !== undefined ? { matcherDigest } : {}),
         ttlMs: HOST_HOOK_GRANT_TTL_MS,
         now: Date.now(),
       });

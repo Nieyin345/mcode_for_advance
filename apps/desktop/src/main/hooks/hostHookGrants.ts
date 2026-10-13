@@ -144,8 +144,35 @@ export function listHostHookGrants(): HostHookGrant[] {
 }
 
 /**
+ * 一条授权的**幂等键** —— 由来源身份(`插件 + 版本 + 命令摘要 + matcher 摘要`)与它覆盖的
+ * 事件集合派生。**同一来源签两次 → 同一个键**(见 {@link issueHostHookGrant})。
+ *
+ * 为什么要它:「用户授权这条 hook」是一个**可以点两次**的动作(双击、先签后重签、
+ * 面板重挂后再点一下)。若每点一次就多一份有效授权,表里会攒下一串覆盖同一来源的
+ * 重复条目 —— 撤销时只撤到你点的那一份、其余仍在,于是"我明明撤了它怎么还跑"。
+ * 幂等键把这个来源的**当前有效授权**收成一条。
+ *
+ * 事件集合**排序去重**后入键:声明顺序不同、但覆盖同一组事件的两份授权,语义上是同一份。
+ */
+function grantIdempotencyKey(input: {
+  pluginId: string;
+  version: string | undefined;
+  events: readonly string[];
+  commandDigest: string;
+  matcherDigest: string;
+}): string {
+  const events = [...new Set(input.events)].sort().join(",");
+  return [input.pluginId, input.version ?? "", events, input.commandDigest, input.matcherDigest].join("\u0000");
+}
+
+/**
  * **签发**一份授权。**只有宿主经用户授信时调它** —— 插件自己不能给自己发(本函数不暴露给
  * 插件 manifest 的任何入口)。`ttlMs` 必须为正(与 ARC-004 的 `issueGrant` 同一条纪律)。
+ *
+ * **持久幂等**:来源身份与事件集合相同、且**当前仍有效**的授权已存在时,**复用那一份**
+ * (返回它、不新建、不续期)。于是"点两次授权"不会在表里留下两条覆盖同一来源的有效授权 ——
+ * 撤一次就真的撤干净(见 {@link grantIdempotencyKey})。已撤销 / 已过期的那份**不算数**:
+ * 重新授权是**一份新的有效授权**,不是把旧的复活。
  */
 export function issueHostHookGrant(input: {
   pluginId: string;
@@ -159,14 +186,35 @@ export function issueHostHookGrant(input: {
   if (!(input.ttlMs > 0)) {
     throw new Error("主机 hook 授权必须有正的有效期(ttlMs > 0)。");
   }
+  const commandDigest = input.commandDigest ?? "";
+  const matcherDigest = input.matcherDigest ?? "";
+  const key = grantIdempotencyKey({
+    pluginId: input.pluginId,
+    version: input.version,
+    events: input.events ?? [],
+    commandDigest,
+    matcherDigest,
+  });
+  // 已有**有效**的同来源授权 → 复用它(幂等):不新建第二条覆盖同一来源的活授权。
+  for (const g of grants.values()) {
+    if (!isHostHookGrantActive(g, input.now)) continue;
+    const same = grantIdempotencyKey({
+      pluginId: g.pluginId,
+      version: g.version,
+      events: g.events,
+      commandDigest: g.commandDigest,
+      matcherDigest: g.matcherDigest ?? "",
+    });
+    if (same === key) return g;
+  }
   seq += 1;
   const grant: HostHookGrant = {
     grantId: `hhg-${seq}`,
     pluginId: input.pluginId,
     version: input.version,
     events: [...(input.events ?? [])],
-    commandDigest: input.commandDigest ?? "",
-    matcherDigest: input.matcherDigest ?? "",
+    commandDigest,
+    matcherDigest,
     issuedAt: input.now,
     expiresAt: input.now + input.ttlMs,
     revoked: false,

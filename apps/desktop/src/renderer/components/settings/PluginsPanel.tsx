@@ -61,9 +61,11 @@ import { Menu } from "@base-ui/react/menu";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
+import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
+  Badge,
   Button,
   Card,
   ConfirmDialog,
@@ -73,6 +75,7 @@ import {
   InfoHint,
   Input,
   LoadingNote,
+  Spinner,
   Switch,
 } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
@@ -83,9 +86,17 @@ import { SkillNodesView } from "./SkillNodesView.js";
 import type {
   PluginEcosystem,
   PluginEngineId,
+  PluginHookSummary,
   PluginMarketplaceState,
   PluginState,
 } from "@contracts/ipc";
+import type { HostHookGrant } from "@contracts/hostHookGrant";
+import {
+  activePluginGrants,
+  canAuthorizeHook,
+  hookGrantIssueInput,
+  pluginGrants,
+} from "./pluginHookGrantsView.js";
 import {
   IconPuzzle,
   IconLoader2,
@@ -99,6 +110,8 @@ import {
   IconRefresh,
   IconGitBranch,
   IconSearch,
+  IconShieldCheck,
+  IconLock,
   IconX,
 } from "@renderer/lib/icons.js";
 
@@ -1270,10 +1283,234 @@ function PluginDetail({
           )}
         </div>
         <EngineDeliveryTable plugin={plugin} busy={busy} onToggle={onEngine} />
+        {/* 【MC-061】用户给插件携带的 hook **逐条授权**的入口 —— 这块此前在渲染端
+            一处都没有(签发 IPC 早就有,面板没接通,于是"默认拒绝"成了"永远拒绝")。 */}
+        {plugin.components.hooks.length > 0 && <HookGrantsSection plugin={plugin} />}
         <ComponentDetails plugin={plugin} showProviders={false} />
         <div className="mt-2.5 break-all text-[0.7143em] text-content-subtle">
           {t("settings.plugins.pathLabel")}: <span className="font-mono">{plugin.rootDir}</span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────── plugin hook grants (MC-061) ─────────────────── */
+
+/** The user-facing grant issuance / list / revoke surface for the plugin's own
+ *  hooks. Reads grants over `useRpc` (house rule 7); the issue / revoke calls
+ *  are mutations and stay explicit `await api.*` in the handlers.
+ *
+ *  A plugin row is rendered once per expanded plugin, so this section owns its
+ *  own fetch — it is only mounted when the row is open. Because the read is a
+ *  live list RPC (grants change outside this panel too), it refetches on
+ *  mount and after every mutation, and re-computes the active set from the
+ *  same `now` the host judges with is not possible here — `now` is read at
+ *  render time, and the badge for a grant is derived from the *host-issued*
+ *  `expiresAt` / `revoked` it carries. */
+function HookGrantsSection({ plugin }: { plugin: PluginState }) {
+  const { t } = useI18n();
+  const { data, loading, error, refetch } = useRpc(
+    () => api.hooks.listHostHookGrants({}),
+    [],
+    { toastOnError: false },
+  );
+  const grants: HostHookGrant[] = data?.grants ?? [];
+  // Per-hook in-flight marker ("issue:<event>" / "revoke:<grantId>"), so the
+  // busy state disables just the control that fired.
+  const [pending, setPending] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const now = Date.now();
+  const pluginGrantList = pluginGrants(grants, plugin.name);
+  const activeCount = activePluginGrants(grants, plugin.name, now).length;
+
+  const authorize = async (hook: PluginHookSummary) => {
+    setPending(`issue:${hook.event}`);
+    setActionError(null);
+    try {
+      // 递的是命令/matcher **原文**;宿主用唯一一份摘要函数算 commandDigest ——
+      // 与面板(execution=granted)同一份来源身份,不会分家。
+      const res = await api.hooks.issueHostHookGrant(hookGrantIssueInput(plugin, hook));
+      if (!res.ok) {
+        setActionError(t("settings.plugins.hookGrants.issueFailed", { error: res.error ?? "" }));
+        return;
+      }
+      await refetch();
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const revoke = async (grantId: string) => {
+    setPending(`revoke:${grantId}`);
+    setActionError(null);
+    try {
+      const res = await api.hooks.revokeHostHookGrant({ grantId });
+      if (!res.ok) {
+        setActionError(t("settings.plugins.hookGrants.revokeFailed", { error: res.error ?? "" }));
+        return;
+      }
+      await refetch();
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <div
+      data-testid={`plugins-hook-grants-${plugin.name}`}
+      className="mb-2.5 border-b border-edge pb-2.5"
+    >
+      <div className="mb-1.5 flex items-center gap-1.5 text-[0.7143em] font-semibold text-content-muted">
+        <IconShieldCheck size={13} className="shrink-0 text-content-subtle" />
+        {t("settings.plugins.hookGrants.title")}
+        <InfoHint>{t("settings.plugins.hookGrants.desc")}</InfoHint>
+      </div>
+
+      {actionError !== null && (
+        <ErrorNote tone="danger" className="mb-2">
+          {actionError}
+        </ErrorNote>
+      )}
+      {error !== null && (
+        <ErrorNote tone="warning" className="mb-2">
+          {t("settings.plugins.hookGrants.listFailed", { error: error.message })}
+        </ErrorNote>
+      )}
+
+      {/* One row per declared hook: what it is, its current grant state and the
+          authorize / revoke control. */}
+      <div className="space-y-1.5">
+        {plugin.components.hooks.map((hook, i) => {
+          const granted = hook.execution === "granted";
+          const unmappable = hook.execution === "unmappable";
+          const issuing = pending === `issue:${hook.event}`;
+          return (
+            <div
+              key={`${hook.event}:${hook.command}:${i}`}
+              className="rounded border border-edge bg-surface/50 px-2 py-1.5"
+            >
+              <div className="flex items-center gap-2.5 text-[0.75em]">
+                <span className="min-w-0 flex-1 break-all">
+                  <span className="font-mono text-content">{hook.event}</span>
+                  {hook.matcher && <span className="font-mono text-content-subtle"> ({hook.matcher})</span>}
+                  :{" "}
+                  <span className="font-mono text-content-muted">{hook.command}</span>
+                </span>
+                {granted ? (
+                  <Badge variant="success" className="shrink-0">
+                    {t("settings.plugins.hookGrants.grantedBadge")}
+                  </Badge>
+                ) : unmappable ? (
+                  <Badge variant="warning" className="shrink-0">
+                    {t("settings.plugins.hookGrants.unmappableBadge")}
+                  </Badge>
+                ) : (
+                  <Badge variant="neutral" className="shrink-0">
+                    {t("settings.plugins.hookGrants.pendingBadge")}
+                  </Badge>
+                )}
+                {/* 已授权 / 不可映射的 hook 不再给"授权"按钮:前者已授过(要撤去下面的
+                    授权列表撤,那里按 grantId 精确到某一份),后者签了也不生效。给一个
+                    签了没用 / 点不通的按钮比不给更坏。 */}
+                {canAuthorizeHook(hook) && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="h-6 shrink-0"
+                    disabled={pending !== null}
+                    data-testid={`hook-authorize-${plugin.name}-${hook.event}`}
+                    onClick={() => void authorize(hook)}
+                  >
+                    {issuing && <IconLoader2 size={12} className="animate-spin" />}
+                    {t("settings.plugins.hookGrants.authorize")}
+                  </Button>
+                )}
+              </div>
+              {unmappable && (
+                <div className="mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
+                  {t("settings.plugins.hookGrants.unmappableHint")}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* The live grants themselves — the user must be able to SEE what is
+          currently authorized (not only infer it from the badge), and revoke
+          one. Inactive (revoked / expired) grants are listed too so a revoke
+          does not make a row vanish. */}
+      <div className="mt-2.5">
+        <div className="mb-1 flex items-center gap-1.5 text-[0.7143em] font-semibold text-content-muted">
+          {t("settings.plugins.hookGrants.activeListTitle")}
+          <span className="tabular-nums text-content-subtle">{activeCount}</span>
+          {loading && <Spinner size="xs" className="text-content-subtle" />}
+        </div>
+        {pluginGrantList.length === 0 ? (
+          <div className="text-[0.7143em] text-content-subtle">
+            {t("settings.plugins.hookGrants.activeListEmpty")}
+          </div>
+        ) : (
+          <ul className="space-y-1">
+            {pluginGrantList.map((g) => {
+              const live = !g.revoked && now < g.expiresAt;
+              const revoking = pending === `revoke:${g.grantId}`;
+              return (
+                <li
+                  key={g.grantId}
+                  className="flex items-center gap-2 text-[0.7143em] text-content-muted"
+                >
+                  <span className="shrink-0 font-mono text-content-subtle">{g.grantId}</span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {g.version ? `v${g.version} · ` : ""}
+                    {g.events.length > 0 ? g.events.join(", ") : t("settings.plugins.engineDeclared")}
+                  </span>
+                  {g.revoked ? (
+                    <Badge variant="neutral" className="shrink-0">
+                      {t("settings.plugins.hookGrants.revokedBadge")}
+                    </Badge>
+                  ) : now >= g.expiresAt ? (
+                    <Badge variant="warning" className="shrink-0">
+                      {t("settings.plugins.hookGrants.expiredBadge")}
+                    </Badge>
+                  ) : (
+                    <Badge variant="success" className="shrink-0">
+                      {t("settings.plugins.hookGrants.grantedBadge")}
+                    </Badge>
+                  )}
+                  {live && (
+                    <span className="shrink-0 text-content-subtle">
+                      {t("settings.plugins.hookGrants.expiresAt", {
+                        time: new Date(g.expiresAt).toLocaleString(),
+                      })}
+                    </span>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 shrink-0 gap-1 text-danger"
+                    disabled={pending !== null || g.revoked}
+                    data-testid={`hook-revoke-${g.grantId}`}
+                    onClick={() => void revoke(g.grantId)}
+                  >
+                    {revoking ? (
+                      <IconLoader2 size={12} className="animate-spin" />
+                    ) : (
+                      <IconLock size={12} />
+                    )}
+                    {t("settings.plugins.hookGrants.revoke")}
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </div>
   );

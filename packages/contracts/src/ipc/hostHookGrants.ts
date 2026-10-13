@@ -29,6 +29,19 @@
  * 多给一个字段(比如 `revoked:true`)直接被 schema 拒,于是「自签一份已生效/永不过期的
  * 授权」从**契约层**就断了。有效期(`ttlMs`)也由宿主定(见 `main/ipc/hooks.ts` 的常量),
  * 调用方同样给不了。
+ *
+ * ## 为什么调用方给的是命令**原文**(`command` / `matcher`),不是摘要
+ *
+ * 授权按 `commandDigest` 绑定(命令改了旧授权就失效)。摘要算的是 sha256 —— 那是
+ * `node:crypto` 的事,渲染端算不了;而**设置页那颗"授权这条"按钮**只知道这条 hook 的
+ * 命令原文(它正是界面上显示的那一行)。所以调用方递**原文**,宿主 `main/ipc/hooks.ts`
+ * 用**唯一一份** `hostHookCommandDigest` 算摘要 —— 与面板(`toPluginState`)、执行通道
+ * (`HookRunner`)是同一份摘要。若让渲染端自己算,两处一旦漂移就是最坏的那种坏:
+ * 面板标「已授信」而执行时判 denied(或反之)。`commandDigest` / `matcherDigest` 两个
+ * 摘要字段仍保留(旧调用方 / 测试直接给摘要),与 `command` / `matcher` 二选一。
+ *
+ * `.strict()` 的取舍不变:`command` / `matcher` 是调用方**本来就看得见**的坐标
+ * (命令就在插件的 hooks 文件里,界面上也印着),不是宿主事实 —— 多给它们不构成"自签"。
  */
 import { z } from "zod";
 
@@ -58,6 +71,12 @@ export const HostHookGrantIssueSchema = z
     commandDigest: z.string().max(200).optional(),
     /** matcher 摘要;省略/空 = 不绑定 matcher。 */
     matcherDigest: z.string().max(200).optional(),
+    /** 命令**原文** —— 设置页那颗"授权这条"按钮把界面上印的那行命令递上来,
+     *  宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不该另写一份)。
+     *  与 `commandDigest` 二选一:`command` 优先。 */
+    command: z.string().min(1).max(2000).optional(),
+    /** matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。 */
+    matcher: z.string().max(200).optional(),
   })
   .strict();
 export type HostHookGrantIssueInput = z.infer<typeof HostHookGrantIssueSchema>;

@@ -728,7 +728,7 @@ console.log("\n§6 用户签发主机 hook 授权:签发 → 插件 hook 变 gra
  *      也**伪造不了**宿主字段(`grantId` / `revoked` 等 → schema `.strict()` 直接拒)。
  */
 
-const { decidePluginHookExecution, hostHookSourceOf, hostHookCommandDigest, resetHostHookGrants } =
+const { decidePluginHookExecution, hostHookSourceOf, hostHookCommandDigest, resetHostHookGrants, listHostHookGrants } =
   await import("@main/hooks/hostHookGrants.js");
 const { mapClaudeHookEvent } = await import("@contracts/hook");
 const { policyFor } = await import("@main/appControl/policy.js");
@@ -875,6 +875,113 @@ try {
   revokeEmpty = (err as Error).message;
 }
 check("空 grantId 撤销:显式拒", revokeEmpty !== "没抛", revokeEmpty);
+
+/* ────────────────────── 7. 设置页那颗按钮实际发的入参(MC-061)────────────────────── */
+
+console.log("\n§7 用户签发的**入参形状**:命令/matcher 原文(宿主算摘要)+ 持久幂等");
+
+/*
+ * §6 验的是那扇门本身。这一节验的是**设置页实际会递进去的那份 input** —— 面板
+ * (`PluginsPanel` 的 HookGrantsSection)不可能算 sha256(那是 node:crypto),它递的是
+ * 界面上印的**命令原文**;宿主 `ipc/hooks.ts` 用**唯一一份** `hostHookCommandDigest`
+ * 算摘要。若这条链断了(handler 不看 `command`),面板会递上一份命令原文、宿主却按
+ * "不绑命令"签出**宽授权** —— 该插件**任意命令**的钩子都被放行,而界面上看不出来。
+ *
+ * 判据立在"面板递原文 → 真执行的判定认得出"这条端到端链上:
+ *   ① 用**原文**签发 → 同一条真来源变 allowed(宿主确实按原文算了摘要);
+ *   ② 命令**改过**的授权不覆盖(摘要绑定的负控 —— 原文没被当成"不绑命令");
+ *   ③ matcher 原文同理;
+ *   ④ 同来源经 IPC 签两次 → 复用同一份(幂等,不堆重复条目)。
+ *
+ * ⚠️ 这里**不复用** §6 的 PLUGIN 授权(它已被 §6 撤销),用一条全新的来源,避免互相污染。
+ */
+{
+  const PLUGIN2 = "ipc-demo-plugin-2";
+  const CMD2 = `node "${TRIGGER}" "${PMARK}" --two`;
+  const MATCHER2 = "Write";
+  hookRunner.setPluginHookSource(() => [
+    {
+      pluginId: PLUGIN2,
+      version: PLUGIN_VERSION,
+      nativeEvent: "PreToolUse",
+      command: CMD2,
+      matcher: MATCHER2,
+    },
+  ]);
+  const src2 = hostHookSourceOf({
+    pluginId: PLUGIN2,
+    version: PLUGIN_VERSION,
+    nativeEvent: "PreToolUse",
+    command: CMD2,
+    matcher: MATCHER2,
+  });
+  eq(
+    "前置:新来源尚无授权 → 默认拒绝",
+    decidePluginHookExecution(src2, mapped, Date.now()).decide,
+    "denied",
+  );
+
+  // ① 用**命令原文 + matcher 原文**签发(正是设置页递的形状;不含任何摘要字段)。
+  const issuedByText = (await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, {
+    pluginId: PLUGIN2,
+    version: PLUGIN_VERSION,
+    events: ["PreToolUse"],
+    command: CMD2,
+    matcher: MATCHER2,
+  })) as { ok: boolean; grant?: { grantId: string; commandDigest: string; matcherDigest?: string } };
+  eq("面板形状(命令原文)也能签发成功", issuedByText.ok, true);
+  eq(
+    "★ 宿主按**命令原文**算的摘要 = 唯一构造点的摘要(两处不分家)",
+    issuedByText.grant?.commandDigest,
+    hostHookCommandDigest(CMD2),
+  );
+  eq(
+    "★ 宿主按**matcher 原文**算的摘要 = 唯一构造点的摘要",
+    issuedByText.grant?.matcherDigest,
+    hostHookCommandDigest(MATCHER2),
+  );
+  eq(
+    "★ 用命令原文签发后,真来源变 allowed(面板递原文 → 执行认得出)",
+    decidePluginHookExecution(src2, mapped, Date.now()).decide,
+    "allowed",
+  );
+
+  // ② 命令摘要绑定:改过命令的同事件来源**不被**这条授权覆盖(原文没被当成"不绑命令")。
+  const src2Changed = hostHookSourceOf({
+    pluginId: PLUGIN2,
+    version: PLUGIN_VERSION,
+    nativeEvent: "PreToolUse",
+    command: `${CMD2} --changed`,
+    matcher: MATCHER2,
+  });
+  eq(
+    "★ 命令改过的来源 → denied(授权绑了命令摘要,不是宽授权)",
+    decidePluginHookExecution(src2Changed, mapped, Date.now()).decide,
+    "denied",
+  );
+
+  // ④ 幂等:同来源(同原文)再签一次 → 复用同一份 grantId(表里不堆重复)。
+  const issuedByText2 = (await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, {
+    pluginId: PLUGIN2,
+    version: PLUGIN_VERSION,
+    events: ["PreToolUse"],
+    command: CMD2,
+    matcher: MATCHER2,
+  })) as { ok: boolean; grant?: { grantId: string } };
+  eq(
+    "★ 同来源经 IPC 再签一次 → 复用同一份(持久幂等)",
+    issuedByText2.grant?.grantId,
+    issuedByText.grant?.grantId,
+  );
+  eq(
+    "★ 表里该插件只有一条有效授权(没有重复条目)",
+    listHostHookGrants().filter((g) => g.pluginId === PLUGIN2 && !g.revoked).length,
+    1,
+  );
+
+  hookRunner.setPluginHookSource(() => []);
+  resetHostHookGrants();
+}
 
 // 收尾:断开注入缝,免得影响后续(本套到此结束)。
 hookRunner.setPluginHookSource(() => []);

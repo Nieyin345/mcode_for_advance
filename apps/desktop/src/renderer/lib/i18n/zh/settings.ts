@@ -843,6 +843,33 @@ export const zh = {
   "settings.plugins.hooksWarnTitle": "该插件的 hooks 不会执行",
   "settings.plugins.hooksWarnDesc":
     "{name} 声明了 {n} 条 hooks。当前版本 Mcode 不执行任何插件 hooks,这些自动化不会生效;其余组件(skills / MCP 等)正常工作。",
+
+  // ── 插件 hook 授权（MC-061：设置 → 插件，展开一个带 hooks 的插件）──
+  // 插件携带的 hook 默认**不执行**（默认拒绝），要真跑得由用户在这里**逐条授权**。
+  // 这一块就是把那扇门接上：列表 + 授权 / 撤销。授权是用户本人的动作 —— agent 够不到
+  // （`appControl/policy.ts` 把 issue / revoke 钉在 blocked）。
+  "settings.plugins.hookGrants.title": "钩子授权",
+  "settings.plugins.hookGrants.desc":
+    "插件携带的钩子默认不执行。逐条授权后,它才会在对应事件上以你的身份运行 —— 授权只覆盖这一条(命令改了、matcher 改了、插件升级了都会失效,需重新授权)。",
+  "settings.plugins.hookGrants.eventLabel": "事件",
+  "settings.plugins.hookGrants.commandLabel": "命令",
+  "settings.plugins.hookGrants.authorize": "授权这条",
+  "settings.plugins.hookGrants.authorizing": "签发中…",
+  "settings.plugins.hookGrants.grantedBadge": "已授权",
+  "settings.plugins.hookGrants.unmappableBadge": "事件不受支持",
+  "settings.plugins.hookGrants.unmappableHint": "这个事件映射不到 Mcode 的统一事件,授权了也不会执行。",
+  "settings.plugins.hookGrants.pendingBadge": "未授权",
+  "settings.plugins.hookGrants.issueFailed": "授权没生效:{error}",
+  "settings.plugins.hookGrants.revoke": "撤销",
+  "settings.plugins.hookGrants.revoking": "撤销中…",
+  "settings.plugins.hookGrants.revokeFailed": "撤销失败:{error}",
+  "settings.plugins.hookGrants.revokedBadge": "已撤销",
+  "settings.plugins.hookGrants.expiredBadge": "已过期",
+  "settings.plugins.hookGrants.expiresAt": "到期 {time}",
+  "settings.plugins.hookGrants.activeListTitle": "有效的授权",
+  "settings.plugins.hookGrants.activeListEmpty": "这个插件还没有任何有效授权。",
+  "settings.plugins.hookGrants.listFailed": "授权列表读不出来:{error}",
+  "settings.plugins.hookGrants.loading": "正在读取授权…",
   "settings.plugins.marketplaceSection": "插件市场",
   "settings.plugins.marketplaceSectionDesc":
     "添加 marketplace 仓库(git 地址或本地目录),支持 Claude 格式(.claude-plugin/marketplace.json)和 Codex 格式(.agents/plugins/marketplace.json)。",
@@ -1430,6 +1457,10 @@ export const zh = {
   // 「不补跑」—— 否则用户会等一次根本不会来的补偿运行。
   "settings.automation.facts.missed": "应用没运行时错过 {n} 次(按设计不补跑)",
   "settings.automation.facts.queued": "上一次运行还没结束——{n} 条已攒着排队，等它跑完自动开始",
+  // 「丢弃、未交付」与「排队」是两回事：排队是"还在等它跑完"，丢弃是"已经丢了、且没能随任何
+  // 一次运行交出去"（批次被配置改动 / 用户取消作废，或应用在合并窗口里重启）。这句只报事实，
+  // 不喊救命 —— 下一次真正派发会把欠账并进那次运行的载荷、随后清零，用户不必做什么。
+  "settings.automation.facts.droppedUndelivered": "有 {n} 条因积压被丢弃、还没交给任何一次运行",
 
   // ── 运行历史面板（settings/workflows/RunHistorySection）──
   // 与 `settings.automation.runHistory`（检查器里那段摘要）不同源：这里读的是
