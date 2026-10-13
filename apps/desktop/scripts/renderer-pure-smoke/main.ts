@@ -795,5 +795,37 @@ section("17. 送图上限与主进程契约同锚");
   );
 }
 
+/* ── 【MC-098】引用正文与行号必须同出一份**冻结快照** ──
+ *
+ * 从前 `readMonacoSelection` 把选中文字冻结进 `mdSel.text`,而 `quoteFromEditor` 却在用户
+ * 选定引用目标那一刻**现读** `editorRef.current.getSelection()` 取行号 —— 用户在"选中 →
+ * 打开引用菜单 → 选定目标"之间改了选区,正文(旧)与行号(新)就对不上。这条断言钉住修复:
+ * ① 选中时把 `lines` 与 `text` 一起冻结;② 落草稿时用**冻结的那份**,不再现读 `getSelection`。
+ */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const edSrc = readFileSync(join(process.cwd(), "src/renderer/components/ide/FileEditor.tsx"), "utf8");
+  // ① readMonacoSelection 的返回里带 lines(与 text 同一份快照)。
+  check(
+    "★ MC-098:选中时把行号范围与正文一起冻结(readMonacoSelection 返回 lines)",
+    /role:\s*"assistant"[\s\S]{0,200}lines:\s*\{/.test(edSrc),
+    edSrc.match(/lines:\s*\{[^}]*\}/g)?.slice(0, 2),
+  );
+  // ② quoteFromEditor 用冻结的 mdQuote.lines,且**不再**现读 editorRef.getSelection() 取行号。
+  check(
+    "★ MC-098:落草稿时用冻结的 mdQuote.lines(不再现读 getSelection)",
+    edSrc.includes("mdQuote") && /frozenLines/.test(edSrc),
+  );
+  // ★ 承重负控:quoteFromEditor 里**不得**再出现 `editorRef.current?.getSelection()` 取行号
+  //   —— 那正是被修复的漂移来源。缩到 quoteFromEditor 函数体内检查。
+  const quoteFn = /\bquoteFromEditor = useCallback\(([\s\S]*?)\n  \);/.exec(edSrc)?.[1] ?? "";
+  check(
+    "★ MC-098:quoteFromEditor 内不再现读 getSelection(否则行号会漂)",
+    quoteFn.length > 0 && !quoteFn.includes("getSelection()"),
+    quoteFn.slice(0, 120),
+  );
+}
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

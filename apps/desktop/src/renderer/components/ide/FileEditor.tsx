@@ -664,6 +664,13 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
       // （它靠 messageId 定位，见 `SelectionToolbar` 的 props 说明）。
       messageId: "",
       role: "assistant",
+      // 【MC-098】把行号范围**和 text 一起冻结**在这一份快照里 —— 引用落草稿时必须读这份,
+      // 而不是在用户选定目标那一刻现读 `getSelection()`(那时选区可能已经变了,行号会与
+      // text 对不上)。选到下一行行首(整行选中的常见形态)不算那一行。
+      lines: {
+        start: sel.startLineNumber,
+        end: sel.endColumn === 1 && sel.endLineNumber > sel.startLineNumber ? sel.endLineNumber - 1 : sel.endLineNumber,
+      },
     };
   }, []);
 
@@ -675,6 +682,10 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
   const quoteFromEditor = useCallback(
     (target: QuoteTarget, text: string) => {
       const quoted = text.trim();
+      // 【MC-098】行号取**选中那一刻冻结**的那份（`mdQuote`），不再现读编辑器当前选区 ——
+      // 用户在"选中 → 打开引用菜单 → 选定目标"之间改了/撤了选区时，现读的行号会与
+      // 冻结的正文（`text`）对不上。`mdQuote` 就是弹浮层时那份快照（含 text + lines）。
+      const frozenLines = mdQuote && mdQuote.text.trim() === quoted ? mdQuote.lines : undefined;
       setMdQuote(null);
       setMdSel(null);
       if (!quoted) return;
@@ -683,15 +694,7 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
       //
       // `makeQuoteTag` 在正文外面套一层「user's quote（…）+ source」。编辑器这条
       // 手边就有绝对路径（`filePath`），直接给。
-      // 选区还在编辑器里(引用菜单不抢 Monaco 的选区):带上行号。
-      const sel = editorRef.current?.getSelection();
-      const lines = sel && !sel.isEmpty()
-        ? {
-            start: sel.startLineNumber,
-            // 选到下一行行首(整行选中的常见形态)不算那一行
-            end: sel.endColumn === 1 && sel.endLineNumber > sel.startLineNumber ? sel.endLineNumber - 1 : sel.endLineNumber,
-          }
-        : undefined;
+      const lines = frozenLines;
       const tag = makeQuoteTag({
         text: quoted,
         origin: { kind: "file", filePath, name: basename(filePath), ...(lines ? { lines } : {}) },
@@ -703,7 +706,7 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
         sessionId: target.id,
       });
     },
-    [t, filePath],
+    [t, filePath, mdQuote],
   );
   // Monaco namespace from the loader (local instance — see monacoSetup.ts).
   // Null until the loader resolves; the first model creation waits for it.

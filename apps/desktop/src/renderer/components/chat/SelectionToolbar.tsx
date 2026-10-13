@@ -29,6 +29,13 @@ export interface SelectionToolbarState {
   text: string;
   messageId: string;
   role: "user" | "assistant";
+  /**
+   * 【MC-098】选中那一刻**冻结**的行号范围 —— 与 `text` 同一份快照。引用落到草稿时**必须**
+   * 用这份,不能再去现读 `editor.getSelection()`:用户在"选中 → 打开引用菜单 → 选定目标"
+   * 之间若改了/撤了选区,现读的行号会与 `text`(旧内容)对不上 —— 引用的正文是 A、行号却是
+   * B。只有消息流的选中没有行号概念(缺省不带)。
+   */
+  lines?: { start: number; end: number };
 }
 
 export function SelectionToolbar({
