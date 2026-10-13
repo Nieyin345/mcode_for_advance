@@ -80,6 +80,14 @@ async function call(channel: string, payload: unknown): Promise<{ ok?: boolean; 
   return (await fn(null, payload)) as { ok?: boolean; conflict?: boolean };
 }
 
+/** 锁文件是 `${real}.mcode-lock`(见 lib/osFileLease.ts)—— realpath 解析,文件不存在时
+ *  回落到 `resolve`(与实际实现同一套兜底,便于对刚删掉的文件清锁)。**唯一一份**。 */
+function lockPathFor(f: string): string {
+  let real: string;
+  try { real = realpathSync(f); } catch { real = resolve(f); }
+  return `${real}.mcode-lock`;
+}
+
 /** 起一个**独立 OS 进程**去调真实的 FILE_WRITE(入口由 run.cjs 打成 mjs 并经环境变量给出)。 */
 const childEntry = process.env.MCODE_M07_CHILD_ENTRY ?? "";
 function spawnWrite(filePath: string, fill: string, count: number, expectedVersion: string): Promise<{ ok: boolean; conflict?: boolean; error?: string }> {
@@ -105,6 +113,63 @@ function spawnWrite(filePath: string, fill: string, count: number, expectedVersi
   });
 }
 
+/** 【MC-097 跨进程租约】独立子进程入口(由 run.cjs 打成 mjs 并经环境变量给出)——
+ *  真 OS 进程直接去抢/持有同一把 `lib/osFileLease.ts` 的磁盘租约。 */
+const leaseEntry = process.env.MCODE_M07_LEASE_ENTRY ?? "";
+function requireLeaseEntry(): void {
+  if (!leaseEntry || !existsSync(leaseEntry)) throw new Error(`缺少 child-lease 入口(应经 run.cjs 设置):${leaseEntry}`);
+}
+/** 起一个真 OS 进程试抢锁一次:抢到立即释放退出 / 抢不到打印冲突。等它退出后返回结果。 */
+function spawnLeaseOnce(lockPath: string, waitMs: number): Promise<{ acquired: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    try { requireLeaseEntry(); } catch (e) { reject(e); return; }
+    const child = spawn(process.execPath, [leaseEntry, lockPath, "acquire-once", String(waitMs)], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", errOut = "";
+    child.stdout.on("data", (d: Buffer) => { out += d.toString("utf8"); });
+    child.stderr.on("data", (d: Buffer) => { errOut += d.toString("utf8"); });
+    child.once("error", reject);
+    child.once("close", () => {
+      const line = out.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "";
+      try { resolve(JSON.parse(line) as { acquired: boolean; error?: string }); }
+      catch { resolve({ acquired: false, error: `子进程无可解析输出:stdout=${out.trim()} stderr=${errOut.trim()}` }); }
+    });
+  });
+}
+/** 起一个真 OS 进程抢锁并**持有不释放**,等父进程真 SIGKILL。返回它的 pid 与进程句柄
+ *  (句柄供测试发 SIGKILL)。 */
+function spawnLeaseHolder(lockPath: string): Promise<{ child: import("node:child_process").ChildProcess; pid: number; acquired: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    try { requireLeaseEntry(); } catch (e) { reject(e); return; }
+    const child = spawn(process.execPath, [leaseEntry, lockPath, "hold", "8000"], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", errOut = "", done = false;
+    const finish = (): void => {
+      if (done) return; done = true;
+      const line = out.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "";
+      try { resolve({ child, ...(JSON.parse(line) as { pid: number; acquired: boolean; error?: string }) }); }
+      catch { resolve({ child, acquired: false, pid: -1, error: `子进程无可解析输出:stdout=${out.trim()} stderr=${errOut.trim()}` }); }
+    };
+    // hold 模式子进程不会退出:拿到第一行 JSON 就够(pid 是它自己报的,进程随后保持存活)。
+    child.stdout.on("data", (d: Buffer) => { out += d.toString("utf8"); if (out.includes("\n")) finish(); });
+    child.stderr.on("data", (d: Buffer) => { errOut += d.toString("utf8"); });
+    child.once("error", reject);
+    child.once("close", finish);
+    setTimeout(finish, 8000);
+  });
+}
+/** 轮询某 pid 直到它在**本机探活**下判死(`process.kill(pid,0)` 抛 ESRCH)——与 osFileLease.ts
+ *  的 `leaseOwnerAlive` 同一判据。返回是否已死。 */
+async function waitChildDead(pid: number, ms = 5_000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    let err: NodeJS.ErrnoException | null = null;
+    try { process.kill(pid, 0); } catch (e) { err = e as NodeJS.ErrnoException; }
+    if (err && err.code === "ESRCH") return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
+
 try {
   /* ── 1. 基线:写法与登记的项目根完全一致时,一切正常(所有平台) ───────── */
   console.log("\n基线:路径写法与登记的项目根一致");
@@ -125,13 +190,8 @@ try {
    * 磁盘上没留下半截临时文件、卡死的租约能被下一个写者回收、失败者释放锁后别人写得进。 */
   console.log("\n【MC-097 E1】故障注入:崩溃/租约失效下的原子性与可恢复性");
   {
-    // 锁文件是 `${real}.mcode-lock`(见 lib/osFileLease.ts)—— realpath 解析,文件不存在时
-    // 回落到 `resolve`(与实际实现同一套兜底,便于对刚删掉的文件清锁)。
-    const mkLockPath = (f: string): string => {
-      let real: string;
-      try { real = realpathSync(f); } catch { real = resolve(f); }
-      return `${real}.mcode-lock`;
-    };
+    // 锁文件是 `${real}.mcode-lock`(见 lib/osFileLease.ts)—— 用模块级唯一一份 `lockPathFor`。
+    const mkLockPath = lockPathFor;
     const tmpResidue = (dir: string): string[] =>
       readdirSync(dir).filter((n) => n.includes(".mcode-tmp"));
 
@@ -398,6 +458,84 @@ try {
       true,
     );
     rmSync(crossPath, { force: true });
+  }
+
+  /* ── 1e. 【MC-097】真·另一个 OS 进程对**同一把租约**的互斥 —— 以及**真进程被杀**后的恢复 ────
+   * 这一段是复核缺口的核心:租约是**宿主级 OS 文件租约**,它的全部意义就是**跨进程**生效,
+   * 而此前没有任何断言真的起过第二个进程去抢同一把锁。这里:
+   *  ① 父进程先持锁;起一个**真独立 node 进程**去抢**同一** lock 路径 → 必须**被拒**
+   *     (不是「它成功了」,也不是父进程进程内 Map 的复印件在自说自话);
+   *  ② 父进程释放后再让该真进程抢 → 必须**抢得到**(证明上面那次被拒是锁本身,不是它坏了);
+   *  ③ 让真进程抢到锁后**被真 SIGKILL**(child.kill("SIGKILL"),父进程收到 SIGKILL 退出、
+   *     `process.kill(pid,0)` 判死)——锁文件因进程猝死**留在盘上**;断言下一个写者能靠
+   *     陈旧租约回收照常写入,并**回读**正确内容(证明崩溃没毁数据、也没永久卡死)。 */
+  console.log("\n【MC-097】真独立进程对同一租约的互斥 + 真 SIGKILL 后的恢复");
+  {
+    const leaseFile = join(projectRoot, "src", "lease-cross-proc.ts");
+    writeFileSync(leaseFile, "lease-base-v1\n", "utf-8");
+    const lockPath = lockPathFor(leaseFile);
+
+    // ① 父进程(本进程)持锁;真独立进程抢同一 lock → 被拒。
+    {
+      const releaseParent = await acquireOsFileLease(lockPath, 2_000);
+      check("前提:父进程已持有租约(锁文件在盘上)", existsSync(lockPath), true);
+      const refused = await spawnLeaseOnce(lockPath, 1_500);
+      check("★ MC-097:真独立进程在父进程持锁时抢同一租约 → 被拒(acquired=false)", refused.acquired, false);
+      check(
+        "★ MC-097:拒绝理由是租约冲突(不是别的手滑)",
+        typeof refused.error === "string" && refused.error.includes("FILE_VERSION_CONFLICT"),
+        true,
+      );
+      await releaseParent();
+      check("★ MC-097:父进程释放后锁文件已清", existsSync(lockPath), false);
+
+      // ② 释放后,同一个真独立进程再抢 → 必须抢得到(证明上面不是「锁坏了/进程起不来」)。
+      const allowed = await spawnLeaseOnce(lockPath, 2_000);
+      check("★ MC-097:父进程释放后真独立进程能抢到租约(acquired=true)", allowed.acquired, true);
+      check("对照:该真进程用完立刻释放,锁文件已清", existsSync(lockPath), false);
+    }
+
+    // ③ 真进程抢到锁后被**真 SIGKILL** → 锁残留在盘上 → 下一个写者靠陈旧回收照常写入并回读。
+    {
+      const holder = await spawnLeaseHolder(lockPath);
+      try {
+        check("前提:真独立进程抢到租约并持有(pid 有效)", holder.acquired && holder.pid > 0, true);
+        check("前提:租约锁文件此刻在盘上(由该进程持有)", existsSync(lockPath), true);
+
+        // 真·SIGKILL(不是让它优雅退出)。Windows 上 child.kill("SIGKILL") 走 TerminateProcess,
+        // 实测父进程退出后 `process.kill(pid,0)` 立即 ESRCH —— 与生产判活同一判据。
+        holder.child.kill("SIGKILL");
+        const dead = await waitChildDead(holder.pid, 8_000);
+        check("★ MC-097:被 SIGKILL 的真进程确已死亡(process.kill(pid,0) → ESRCH)", dead, true);
+        check("★ MC-097:SIGKILL 后锁文件仍残留在盘上(进程没来得及释放)", existsSync(lockPath), true);
+
+        // 死 pid 的陈旧租约必须被**快速**回收(用 2000ms 短超时精确断言;回收失效时这里是
+        // 快而准的红,不必等 FILE_WRITE 那 60s 默认等待 —— 变异跑才跑得完)。
+        let reclaimed = false;
+        try { const rel = await acquireOsFileLease(lockPath, 2_000); reclaimed = true; await rel(); }
+        catch { reclaimed = false; }
+        check("★ MC-097:SIGKILL 留下的死 pid 陈旧租约被回收(2000ms 内取得,未卡到超时)", reclaimed, true);
+        const cleaned = !existsSync(lockPath);
+        check("★ MC-097:回收成功后 SIGKILL 残留锁已清", cleaned, true);
+
+        // 端到端:下一个写者(FILE_WRITE)照常写入 + 回读证明崩溃没毁数据、也没永久卡死。
+        // **只在回收成功且锁确实被清时跑**,否则(回收失效)会白等 60s 默认超时把变异跑拖垮;上面已红。
+        if (reclaimed && cleaned) {
+          const t0 = Date.now();
+          const res = await call(IPC.FILE_WRITE, { filePath: leaseFile, content: "after-sigkill-v2\n" });
+          const elapsed = Date.now() - t0;
+          check("★ MC-097:持有者被 SIGKILL 后,下一个写者(FILE_WRITE)照常写入(陈旧租约被回收)", res.ok, true);
+          check("★ MC-097:回收+写入耗时远小于 60s 租约等待上限(没被死进程永久卡住)", elapsed < 10_000, true);
+          check("★ MC-097:回读证明崩溃后被写者内容正确落盘", readFileSync(leaseFile, "utf-8"), "after-sigkill-v2\n");
+          check("★ MC-097:写入完成锁文件已释放", existsSync(lockPath), false);
+        }
+      } finally {
+        // 任何意外路径都别再留一个活着的子进程(那正是本条目担心的一类抖动)。
+        holder.child.kill("SIGKILL");
+        rmSync(leaseFile, { force: true });
+        rmSync(lockPath, { force: true });
+      }
+    }
   }
 
   /* ── 2. 越界仍然要挡住(所有平台) ──────────────────────────────────────── */

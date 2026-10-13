@@ -38,9 +38,20 @@ try {
     tsconfig: "tsconfig.json", logLevel: "error",
     alias,
   });
+  // 【MC-097 跨进程租约 / 真 SIGKILL】再打一份**独立子进程入口**,由 main.ts 起真 OS 进程
+  // 直接去抢/持有同一把 `lib/osFileLease.ts` 的磁盘租约:① 父进程持锁时另一个真进程必须**被拒**;
+  // ② 子进程抢到后**被真 SIGKILL**,断言锁文件仍在盘上、且陈旧回收让下一个写者照常写入。
+  const leaseBundle = join(out, "child-lease.mjs");
+  esbuild.buildSync({
+    absWorkingDir: app,
+    entryPoints: ["scripts/maint-m07-smoke/child-lease.ts"],
+    outfile: leaseBundle, bundle: true, platform: "node", format: "esm",
+    tsconfig: "tsconfig.json", logLevel: "error",
+    alias,
+  });
   const result = spawnSync(process.execPath, [bundle], {
     stdio: "inherit", timeout: 90000,
-    env: { ...process.env, MCODE_M07_CHILD_ENTRY: childBundle },
+    env: { ...process.env, MCODE_M07_CHILD_ENTRY: childBundle, MCODE_M07_LEASE_ENTRY: leaseBundle },
   });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
