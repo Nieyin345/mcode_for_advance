@@ -39,6 +39,7 @@ import {
 } from "@contracts/extensionStore";
 import { atomicWrite } from "@main/lib/appContext.js";
 import { physicalTargetInRoot } from "@main/lib/realPathWithin.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 
 /** `<数据根>/extensions`。 */
 export function extensionsDir(root: string): string {
@@ -302,13 +303,22 @@ export function readFileInExtension(root: string, extensionId: string, relPath: 
 /**
  * 写该扩展目录下的一份文件(建父目录)。**超过 {@link EXTENSION_STORE_MAX} 字节整次拒绝、
  * 不落盘** —— 返回 `{ ok: false, reason: "tooLarge", limit }`。写成功返回 `{ ok: true, bytes }`。
+ *
+ * ★ **【MC-096】总量检查与写入之间的并发竞态**:单文件上限那道闸在解析路径**之前**做(便宜),
+ * 但{@link EXTENSION_TOTAL_MAX} 那道**必须**在{@link withOsFileLease 宿主级按目录租约}
+ * **之内**复查 —— 否则两个并发写各自读到"还差一点"就都放行,合起来超总量。检查与落盘之间
+ * 只有这一把锁能消掉竞态(进程内 Map 挡不住两个 OS 进程,见 `lib/osFileLease.ts`)。
+ * 锁的对象是**扩展目录**(总量按目录算 —— 两个写不同文件的调用也必须串行),不是单个文件;
+ * 锁文件落在 `<真实扩展目录>.mcode-lock`(扩展目录的**兄弟**,不在目录内,既不进 listFiles
+ * 也不计入 directoryBytes)。本函数因此是**异步**的(租约原语本身异步);`ipcMain.handle`
+ * 返回值天然可 await,调用端无需改形状。
  */
-export function writeFileInExtension(
+export async function writeFileInExtension(
   root: string,
   extensionId: string,
   relPath: string,
   content: string,
-): ExtensionStoreWriteFileResult {
+): Promise<ExtensionStoreWriteFileResult> {
   const bytes = utf8Length(content);
   if (bytes > EXTENSION_STORE_MAX) return { ok: false, reason: "tooLarge", limit: EXTENSION_STORE_MAX };
   const res = resolveInExtension(root, extensionId, relPath, true);
@@ -321,17 +331,17 @@ export function writeFileInExtension(
       return { ok: false, reason: "invalidPath" };
     }
   }
-  // 【MC-096】**累计配额**:单文件 4MB 不封总量 —— 没有这条,一个扩展能写无数个 4MB 文件
-  // 把磁盘塞满。算该扩展目录当前总量 + 本次增量,超 `EXTENSION_TOTAL_MAX` 即拒(与单文件
-  // 超限同一个 `tooLarge` 口径)。覆盖写时先扣掉旧文件的大小。
-  const existing = existsSync(res.abs) ? safeFileSize(res.abs) : 0;
-  const used = directoryBytes(extensionDir(root, extensionId)) - existing;
-  if (used + bytes > EXTENSION_TOTAL_MAX) {
-    return { ok: false, reason: "tooLarge", limit: EXTENSION_TOTAL_MAX };
-  }
-  mkdirSync(dirname(res.abs), { recursive: true });
-  atomicWrite(res.abs, content);
-  return { ok: true, bytes };
+  // ★ 累计配额在**租约内**复查(单文件那道已在上面做过)。覆盖写时先扣掉旧文件的大小。
+  return withOsFileLease<ExtensionStoreWriteFileResult>(res.dir, async () => {
+    const existing = existsSync(res.abs) ? safeFileSize(res.abs) : 0;
+    const used = directoryBytes(extensionDir(root, extensionId)) - existing;
+    if (used + bytes > EXTENSION_TOTAL_MAX) {
+      return { ok: false, reason: "tooLarge", limit: EXTENSION_TOTAL_MAX };
+    }
+    mkdirSync(dirname(res.abs), { recursive: true });
+    atomicWrite(res.abs, content);
+    return { ok: true, bytes };
+  });
 }
 
 /** 一个文件的字节数;读不到 / 是目录 → 0(只用于配额估算,不参与安全判定)。 */

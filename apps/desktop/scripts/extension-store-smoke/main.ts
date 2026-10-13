@@ -16,7 +16,7 @@
  *
  * Run: scripts/extension-store-smoke/run.sh
  */
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -69,6 +69,8 @@ import {
   runWithUnboundAgentExtensionScope,
   currentAgentExtensionScope,
 } from "../../src/main/memory/agentScope.js";
+import { armAtomicWriteHook } from "./stubs/appContextFault.js";
+import type { ExtensionStoreWriteFileResult } from "@contracts/extensionStore";
 
 let checks = 0;
 let failed = 0;
@@ -262,9 +264,10 @@ eq("WriteFileSchema 拒 ..", ExtensionStoreWriteFileSchema.safeParse({ extension
 eq("ListFilesSchema 空 relPath 过(省略 = 根)", ExtensionStoreListFilesSchema.safeParse({ extensionId: "a" }).success, true);
 eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extensionId: "a", relPath: "../x" }).success, false);
 
-// ③ lib 层:写进去能读回来 + 目录/文件区分。
-{
-  const w = writeFileInExtension(ROOT, "ext-files", "notes/draft.md", "# 草稿");
+// ③ lib 层:写进去能读回来 + 目录/文件区分。(writeFileInExtension 现为 async —— 总量检查在
+//   宿主级目录租约内复查,见 lib/extension-store.ts;这一段的各块包进 async IIFE 以便 await。)
+await (async () => {
+  const w = await writeFileInExtension(ROOT, "ext-files", "notes/draft.md", "# 草稿");
   // UTF-8 字节:'#'(1)+' '(1)+草(3)+稿(3)= 8。
   deepEq("写文件成功(bytes 按 UTF-8 算)", w, { ok: true, bytes: 8 });
   const r = readFileInExtension(ROOT, "ext-files", "notes/draft.md");
@@ -272,7 +275,7 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
   check("文件真的落在 <root>/extensions/<id>/ 下", existsSync(join(extensionsDir(ROOT), "ext-files", "notes", "draft.md")));
 
   // 空文件 vs 不存在:两种要分得开(项目根闸门那条老路就是都回空串)。
-  writeFileInExtension(ROOT, "ext-files", "empty.txt", "");
+  await writeFileInExtension(ROOT, "ext-files", "empty.txt", "");
   deepEq("空文件读回 ok:true content:''", readFileInExtension(ROOT, "ext-files", "empty.txt"), { ok: true, content: "" });
   deepEq("不存在的文件 ok:false notFound(不静默回空)", readFileInExtension(ROOT, "ext-files", "nope.txt"), { ok: false, reason: "notFound" });
 
@@ -283,7 +286,7 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
   const ls = listFilesInExtension(ROOT, "ext-files", "notes");
   check("listFiles 列出自己 notes/ 下的 draft.md", ls.ok && ls.entries.some((e) => e.name === "draft.md" && !e.isDir), ls);
   // 另一个扩展写同名文件,不能串进 ext-files 的列表。
-  writeFileInExtension(ROOT, "ext-other", "notes/draft.md", "别人的");
+  await writeFileInExtension(ROOT, "ext-other", "notes/draft.md", "别人的");
   const ls2 = listFilesInExtension(ROOT, "ext-files", "notes");
   check("listFiles 不含别的扩展的文件", ls2.ok && ls2.entries.length === 1, ls2);
   const rootLs = listFilesInExtension(ROOT, "ext-files");
@@ -299,51 +302,51 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
     const fullChunks = Math.floor(EXTENSION_TOTAL_MAX / EXTENSION_STORE_MAX); // 8 块
     let wroteAll = true;
     for (let i = 0; i < fullChunks; i += 1) {
-      const w2 = writeFileInExtension(ROOT, "ext-total", `chunk-${i}.txt`, chunk);
+      const w2 = await writeFileInExtension(ROOT, "ext-total", `chunk-${i}.txt`, chunk);
       if (!w2.ok) { wroteAll = false; break; }
     }
     check("★ MC-096:累计上限内写满 8 块 4MB 都成功", wroteAll);
     // 第 9 块(再 4MB)→ 超累计上限,拒。
-    const overflow = writeFileInExtension(ROOT, "ext-total", "chunk-overflow.txt", chunk);
+    const overflow = await writeFileInExtension(ROOT, "ext-total", "chunk-overflow.txt", chunk);
     deepEq("★ MC-096:超累计上限 → 拒写 tooLarge", overflow, { ok: false, reason: "tooLarge", limit: EXTENSION_TOTAL_MAX });
     check("★ MC-096:被拒的第 9 块没落盘", !existsSync(join(extensionsDir(ROOT), "ext-total", "chunk-overflow.txt")));
     // 覆盖一个**已存在**的块(不增加总量)→ 仍可写(扣掉旧大小后不超限)。
-    const overwrite = writeFileInExtension(ROOT, "ext-total", "chunk-0.txt", "small");
+    const overwrite = await writeFileInExtension(ROOT, "ext-total", "chunk-0.txt", "small");
     check("★ MC-096:覆盖写不增加总量 → 仍可写(只算增量)", overwrite.ok === true, overwrite);
     // 别的扩展不受 ext-total 配额牵连(配额按扩展目录各算)。
-    const other = writeFileInExtension(ROOT, "ext-total-other", "big.txt", chunk);
+    const other = await writeFileInExtension(ROOT, "ext-total-other", "big.txt", chunk);
     check("★ MC-096:配额按扩展各算(别的扩展不受牵连)", other.ok === true, other);
   }
   deepEq("listFiles 列一个文件当目录 = notADir", listFilesInExtension(ROOT, "ext-files", "empty.txt"), { ok: false, reason: "notADir" });
-}
+})();
 
 // ⑤ lib 层路径闸(第二道):`..` / 绝对路径在 lib 也拒(不只是 zod)。写不允许逃逸。
-{
-  const esc = writeFileInExtension(ROOT, "ext-files", "../evil.txt", "x");
+await (async () => {
+  const esc = await writeFileInExtension(ROOT, "ext-files", "../evil.txt", "x");
   deepEq("lib 层写 ../evil 被拒", esc, { ok: false, reason: "invalidPath" });
   check("没有在 extensions/ 外层建 evil.txt", !existsSync(join(ROOT, "extensions", "evil.txt")));
   deepEq("lib 层读绝对路径被拒", readFileInExtension(ROOT, "ext-files", "/etc/passwd"), { ok: false, reason: "invalidPath" });
-  deepEq("lib 层写盘符路径被拒", writeFileInExtension(ROOT, "ext-files", "D:/evil.txt", "x"), { ok: false, reason: "invalidPath" });
+  deepEq("lib 层写盘符路径被拒", await writeFileInExtension(ROOT, "ext-files", "D:/evil.txt", "x"), { ok: false, reason: "invalidPath" });
   deepEq("lib 层 listFiles ../ 被拒", listFilesInExtension(ROOT, "ext-files", "../"), { ok: false, reason: "invalidPath" });
   // 非法扩展 id:整个通道拒。
-  deepEq("非法扩展 id 写被拒", writeFileInExtension(ROOT, "..", "a.txt", "x"), { ok: false, reason: "invalidPath" });
+  deepEq("非法扩展 id 写被拒", await writeFileInExtension(ROOT, "..", "a.txt", "x"), { ok: false, reason: "invalidPath" });
   check("非法扩展 id 没在数据根外层建文件", !existsSync(join(ROOT, "extensions", "..", "a.txt")));
-}
+})();
 
 // ⑥ 超配额写整次拒、不落盘。
-{
-  writeFileInExtension(ROOT, "ext-fquota", "keep.txt", "small");
+await (async () => {
+  await writeFileInExtension(ROOT, "ext-fquota", "keep.txt", "small");
   const beforeBytes = readFileSync(join(extensionsDir(ROOT), "ext-fquota", "keep.txt"), "utf8");
-  const big = writeFileInExtension(ROOT, "ext-fquota", "big.txt", "x".repeat(EXTENSION_STORE_MAX + 1));
+  const big = await writeFileInExtension(ROOT, "ext-fquota", "big.txt", "x".repeat(EXTENSION_STORE_MAX + 1));
   deepEq("★ 超配额写被拒(整次,不落盘)", big, { ok: false, reason: "tooLarge", limit: EXTENSION_STORE_MAX });
   check("超配额写没落盘 big.txt", !existsSync(join(extensionsDir(ROOT), "ext-fquota", "big.txt")));
   check("超配额写没碰已有的 keep.txt", readFileSync(join(extensionsDir(ROOT), "ext-fquota", "keep.txt"), "utf8") === beforeBytes);
   // 非 ASCII 按字节算配额:一份 `ceil(MAX/3)+1` 个中文字符(每字 3 字节)会**超过** MAX。
   // 若按 `String.length` 数,这么点字符远不到 MAX,就会误判成"能写"。
   const zhBig = "中".repeat(Math.ceil(EXTENSION_STORE_MAX / 3));
-  const zhRes = writeFileInExtension(ROOT, "ext-fquota", "zh.txt", zhBig);
+  const zhRes = await writeFileInExtension(ROOT, "ext-fquota", "zh.txt", zhBig);
   check("★ 配额按 UTF-8 字节算(非 ASCII 不按 String.length)", !zhRes.ok && zhRes.reason === "tooLarge", zhRes);
-}
+})();
 
 // ⑦ 逃逸:在扩展目录下放一个指向**目录外**的链接,读写都要被 realpath 那道挡下。
 //
@@ -351,7 +354,7 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
 // 于是这道安全闸在多数 Windows 机器上**从未被断言过**(跑绿了但没验过)。改用**两级回退**:
 // 先试 symlink,不行就试 Windows **junction**(`mklink /J`,**不需要管理员**,普通用户
 // 就能建)。两者都不行才 skip —— 且如实说清"这道闸本次没验"。
-{
+await (async () => {
   // ⚠️ **逃逸目标必须是本套自己的临时目录**,不能用 `tmpdir()` 本身 —— 那是**系统共享**
   // 目录,别的套件/上次跑的残留会让"库外没出现 pwn.txt"这条假红(实测:全量跑时撞上)。
   const outside = mkdtempSync(join(tmpdir(), "mcode-ext-outside-"));
@@ -373,7 +376,7 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
   if (how) {
     // 正控:链接确实指向目录外(否则断言是空过)。
     check("逃逸链接真指向扩展目录外", resolve(linkPath) !== resolve(extensionDir(ROOT, "ext-files")));
-    deepEq("★ 经 " + how + " 逃逸的写被拒", writeFileInExtension(ROOT, "ext-files", "link-out/pwn.txt", "x"), { ok: false, reason: "invalidPath" });
+    deepEq("★ 经 " + how + " 逃逸的写被拒", await writeFileInExtension(ROOT, "ext-files", "link-out/pwn.txt", "x"), { ok: false, reason: "invalidPath" });
     deepEq("★ 经 " + how + " 逃逸的读被拒", readFileInExtension(ROOT, "ext-files", "link-out/anything"), { ok: false, reason: "invalidPath" });
     // 库外**确实没有**被写进去(证明是"拒绝"而不是"写了但返回值是 false")。
     check("★ 库外没有真出现 pwn.txt", !existsSync(join(outside, "pwn.txt")));
@@ -381,7 +384,7 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
     console.log("  ⚠️ skip 逃逸断言(本机既建不了 symlink 也建不了 junction)—— 这道闸本次**没验**");
   }
   rmSync(outside, { recursive: true, force: true });
-}
+})();
 
 /* ─────────────────── §7.5 根级 Junction 逃逸(MC-095)───────────────────
  *
@@ -413,7 +416,7 @@ function makeDirLink(target: string, linkPath: string): "symlink" | "junction" |
   }
 }
 
-{
+await (async () => {
   // 外部目标 = 本套自己的临时目录(不能用共享 tmpdir() —— 残留会造出假红)。
   const outside = mkdtempSync(join(tmpdir(), "mcode-ext-root-outside-"));
   // 关键:把**扩展 ID 根目录本身**建成链接 —— 这正是 §7 覆盖不到的那一档。
@@ -438,7 +441,7 @@ function makeDirLink(target: string, linkPath: string): "symlink" | "junction" |
     writeFileSync(join(outside, "leak.md"), "EXTERNAL_SECRET", "utf8");
     deepEq(
       "★ 经根 " + how + " 的文件写被拒",
-      writeFileInExtension(ROOT, "jump-root", "pwn.txt", "TEST_ONLY"),
+      await writeFileInExtension(ROOT, "jump-root", "pwn.txt", "TEST_ONLY"),
       { ok: false, reason: "invalidPath" },
     );
     deepEq(
@@ -464,14 +467,14 @@ function makeDirLink(target: string, linkPath: string): "symlink" | "junction" |
 
     // ③ 同 ID 若换回**真实子目录**,一切照常(闸只挡逃逸,不误伤正常路径)。
     //    (jump-root 仍是链接 —— 这里换一个干净的 id 验正常路径没被这道闸连坐。)
-    check("根闸不误伤正常扩展的写", writeFileInExtension(ROOT, "normal-sib", "ok.txt", "v").ok);
+    check("根闸不误伤正常扩展的写", (await writeFileInExtension(ROOT, "normal-sib", "ok.txt", "v")).ok);
     check("根闸不误伤正常扩展的读", readFileInExtension(ROOT, "normal-sib", "ok.txt").ok);
   } else {
     console.log("  ⚠️ skip 根逃逸断言(本机既建不了 symlink 也建不了 junction)—— 这道闸本次**没验**");
   }
   rmSync(outside, { recursive: true, force: true });
   rmSync(rootLink, { recursive: true, force: true });
-}
+})();
 
 /* ─────────────────── §6.5 内部保留文件闸(MC-096)───────────────────
  *
@@ -496,16 +499,16 @@ eq("保留判据:普通文件 notes.md 不保留", isReservedExtensionRelPath("n
 eq("保留判据:store.txt 不保留", isReservedExtensionRelPath("store.txt"), false);
 eq("保留判据:./store.json 仍保留", isReservedExtensionRelPath("./store.json"), true);
 
-{
+await (async () => {
   const id = "ext-reserved";
   // 键值先写一条,值就是"要被毁掉的证据"。
   eq("保留闸:键值写成功", writeValue(ROOT, id, "important", "KEEP_ME"), true);
   eq("保留闸:键值读得到", readValue(ROOT, id, "important"), "KEEP_ME");
 
   // ② 文件通道写 store.json 必须被拒,且**一个字节都不落盘**。
-  deepEq("★ 文件通道写 store.json 被拒(不是 ok:true)", writeFileInExtension(ROOT, id, "store.json", "NOT_JSON"), { ok: false, reason: "reserved" });
-  deepEq("★ 文件通道写 store.json.mcode-tmp 被拒", writeFileInExtension(ROOT, id, "store.json.mcode-tmp", "X"), { ok: false, reason: "reserved" });
-  deepEq("★ 文件通道写大小写变体 Store.json 被拒", writeFileInExtension(ROOT, id, "Store.json", "X"), { ok: false, reason: "reserved" });
+  deepEq("★ 文件通道写 store.json 被拒(不是 ok:true)", await writeFileInExtension(ROOT, id, "store.json", "NOT_JSON"), { ok: false, reason: "reserved" });
+  deepEq("★ 文件通道写 store.json.mcode-tmp 被拒", await writeFileInExtension(ROOT, id, "store.json.mcode-tmp", "X"), { ok: false, reason: "reserved" });
+  deepEq("★ 文件通道写大小写变体 Store.json 被拒", await writeFileInExtension(ROOT, id, "Store.json", "X"), { ok: false, reason: "reserved" });
   // (撤掉修复时,上面这条会返回 ok:true 并真覆盖 —— 下面这条才是"数据还在"的独立判据。)
   eq("★ 键值未被覆盖(重要数据还在)", readValue(ROOT, id, "important"), "KEEP_ME");
   check("★ 存储文件内容仍是合法键值(不是 NOT_JSON)", readFileSync(extensionStorePath(ROOT, id), "utf8").includes("KEEP_ME"));
@@ -518,9 +521,9 @@ eq("保留判据:./store.json 仍保留", isReservedExtensionRelPath("./store.js
   deepEq("★ listFiles 列 store.json 这个文件被拒", listFilesInExtension(ROOT, id, "store.json"), { ok: false, reason: "reserved" });
 
   // ④ 子目录里的同名文件**不是**保留文件 —— 扩展自己的数据照常可读写(不误伤)。
-  deepEq("保留闸不误伤子目录同名文件(写)", writeFileInExtension(ROOT, id, "sub/store.json", "LEGIT"), { ok: true, bytes: 5 });
+  deepEq("保留闸不误伤子目录同名文件(写)", await writeFileInExtension(ROOT, id, "sub/store.json", "LEGIT"), { ok: true, bytes: 5 });
   deepEq("保留闸不误伤子目录同名文件(读)", readFileInExtension(ROOT, id, "sub/store.json"), { ok: true, content: "LEGIT" });
-}
+})();
 
 
 
@@ -773,6 +776,99 @@ check("三条通道都注册了", handlers.has(EXTENSION_STORE_GET_CHANNEL) && h
     check("★ MC-095:assertExtensionAccess 复用 agentScope 的唯一判据", extIpcSrc.includes("extensionAccessRefusal"));
     check("★ MC-095:作用域机制与记忆共用同一模块(未另起第二套)", scopeSrc.includes("runWithUnboundAgentExtensionScope") && scopeSrc.includes("runWithAgentMemoryScopeForSession"));
   }
+
+  /* ─────────────────── §9 总量检查→写入之间的并发竞态(MC-096)───────────────────
+   *
+   * 复核点名的缺口:`writeFileInExtension` 先算 `directoryBytes(...)` 再 `atomicWrite(...)`,
+   * **两步之间没有互斥**。两个并发写各自读到"目录还差一点"就都放行,合起来超
+   * `EXTENSION_TOTAL_MAX`。修复:总量那道检查移进 `withOsFileLease`(宿主级**按目录**租约,
+   * 与 MC-097 的文件写共用同一份 `lib/osFileLease.ts` 原语),检查与落盘之间被串行化。
+   *
+   * ## 怎么**确定性地**复现(不靠时序运气)
+   *
+   * 用 `stubs/appContextFault.ts` 的 `atomicWrite` 钩子:第一个写者即将落盘时,同步**启动**
+   * 第二个写者(不同文件名、同目录、同进程),两个都要写 `floor(0.6×cap)` 的块 —— 各自 < cap,
+   * 合起来 1.2×cap > cap,**必须只落一个**。
+   *   - 修好前(裸检查,无租约):第二个写者在同一同步栈里跑完检查(此刻目录还空)→ 放行 → 两个都落。
+   *   - 修好后(租约内复查):第二个写者等第一个释放租约,读到**已落盘**的用量 → 拒。
+   * 这不是"两个真 OS 进程"(那属 MC-097 的跨进程套件),但**竞态本身**——"检查与写入之间被插队"
+   * ——被确定性地复现了:钩子把第二个写者精确塞进第一个的检查与写入之间。 */
+  console.log("\n§9 总量检查→写入并发竞态(MC-096)");
+  {
+    const cap = EXTENSION_TOTAL_MAX;
+    // 先把目录填到接近总量上限(单块 ≤ EXTENSION_STORE_MAX,7×4MB=28MB;离 32MB 只剩 4MB),
+    // 再让两个各 3MB 的写**并发**,它们合起来 6MB > 剩下 4MB 的头寸 → 只落一个。
+    // 单块 3MB < 单文件上限 4MB,所以单文件那道闸放行,只有总量那道闸该拦。
+    const fillChunk = "f".repeat(EXTENSION_STORE_MAX); // 4MB
+    for (let i = 0; i < Math.floor(cap / EXTENSION_STORE_MAX) - 1; i += 1) {
+      await writeFileInExtension(ROOT, "ext-race", `fill-${i}.txt`, fillChunk);
+    }
+    const third = "r".repeat(3 * 1024 * 1024); // 3MB;两块 6MB > 头寸 4MB
+    let bPromise: Promise<ExtensionStoreWriteFileResult> | null = null;
+    // 第一个写者即将落盘那一刻,启动第二个写者(不同文件)。
+    armAtomicWriteHook(() => {
+      bPromise = writeFileInExtension(ROOT, "ext-race", "b.txt", third);
+    });
+    let aRes: ExtensionStoreWriteFileResult = { ok: false, reason: "invalidPath" };
+    try {
+      aRes = await writeFileInExtension(ROOT, "ext-race", "a.txt", third);
+    } finally {
+      armAtomicWriteHook(null);
+    }
+    const bRes = bPromise ? await bPromise : ({ ok: false, reason: "invalidPath" } as ExtensionStoreWriteFileResult);
+
+    check("前提:第一个写者成功(3MB 块仍在剩余头寸内)", aRes.ok === true, aRes);
+    // ★ 承重:两个各 3MB 的写**不能都落** —— 否则累计超 EXTENSION_TOTAL_MAX。
+    check("★ MC-096:并发两块 3MB 不会都落(总量不被击穿)", !(aRes.ok && bRes.ok), { aRes, bRes });
+    check("★ MC-096:被击穿的那一块如实被拒(tooLarge)", bRes.ok === false && bRes.reason === "tooLarge", bRes);
+    // 独立判据:磁盘上该扩展目录的真实总量**不超** EXTENSION_TOTAL_MAX(撤掉修复时这里会红)。
+    const raceDir = extensionDir(ROOT, "ext-race");
+    const landed = readdirSync(raceDir).filter((n) => n.endsWith(".txt"));
+    const totalBytes = landed.reduce((sum, n) => sum + (statSync(join(raceDir, n)).isFile() ? statSync(join(raceDir, n)).size : 0), 0);
+    check("★ MC-096:该扩展目录累计字节不超 EXTENSION_TOTAL_MAX", totalBytes <= cap, { totalBytes, cap });
+    check("★ MC-096:并发只多落了一块(不是两块)", landed.length === Math.floor(cap / EXTENSION_STORE_MAX), { landed });
+    // 覆盖写仍是"只算增量":再覆盖一个**已存在**的文件(不增总量)可写。
+    const overwrite = await writeFileInExtension(ROOT, "ext-race", "a.txt", "small");
+    check("★ MC-096:覆盖已存在文件不增总量 → 仍可写", overwrite.ok === true, overwrite);
+    // 正控:两个**小**块(合起来远 < 头寸)照常都能落 —— 证明拒的只可能是"超总量",不是"并发=拒"。
+    const small1 = await writeFileInExtension(ROOT, "ext-race-ok", "s1.txt", "x".repeat(1000));
+    const small2 = await writeFileInExtension(ROOT, "ext-race-ok", "s2.txt", "y".repeat(1000));
+    check("正控:两个小块(合起来 < cap)都能落(并发不等于拒)", small1.ok && small2.ok, { small1, small2 });
+  }
+
+  /* ─────────────────── §10 复制/改名语义:保留闸对**任何路径写法**都生效(MC-096)───────────────────
+   *
+   * 复核点名的另一半是「跨扩展复制语义/优先级须在复制路径上也套保留文件规则」。事实核验:
+   * **本仓库不存在**在扩展之间复制/改名扩展目录数据的任何路径(逐处 grep 过)——
+   *   - 面板 SDK(`PANEL_METHODS`)只有 `extension.readFile/writeFile/listFiles`,且 `panelBridge`
+   *     一律用 `host.item.id` 自绑;通用 Agent 六条 RPC 全过 `assertExtensionAccess`;
+   *   - `writeValue`/`removeValue`/`writeFileInExtension`/`readFileInExtension`/`listFilesInExtension`
+   *     是全仓仅有的读写扩展目录的出口,都过**唯一一份** `resolveInExtension`。
+   * 因此"复制"无处落地 —— 但**必须有一道断言把语义钉死**:任何时候经文件通道寻址保留文件
+   * (无论写成 `store.json` / `./store.json` / `Store.JSON` / 备份变体),都必须被**同一道**保留闸
+   * 拦住、且一个字节都不落盘 —— 一条未来新增的 rename/copy 入口若把路径改写一遍再寻址,
+   * 也逃不出这条闸。这一段是**承重**的:撤掉保留判据即红(精确复现"复制/改名绕过保留闸")。 */
+  console.log("\n§10 复制/改名语义:保留闸对任何路径写法都生效(MC-096)");
+  await (async () => {
+    const id = "ext-copy-sem";
+    // 预置一份"要被保护"的键值;任何一条保留路径写法若漏网,就会把它毁掉。
+    eq("复制语义:预置键值写成功", writeValue(ROOT, id, "important", "KEEP_ME"), true);
+    // 一个"复制/改名目标"的各种路径写法 —— 都应被同一道保留闸拒(reserved),且不落盘。
+    for (const spelling of ["store.json", "./store.json", ".\\store.json", "Store.JSON", "store.json.last-good", "store.json.mcode-tmp"]) {
+      deepEq(`★ 复制语义:寻址保留文件写法 ${JSON.stringify(spelling)} 被拒(reserved)`, await writeFileInExtension(ROOT, id, spelling, "NOT_JSON"), { ok: false, reason: "reserved" });
+      deepEq(`★ 复制语义:读保留文件写法 ${JSON.stringify(spelling)} 被拒(reserved)`, readFileInExtension(ROOT, id, spelling), { ok: false, reason: "reserved" });
+    }
+    // 独立判据:键值一字未损(任一写法漏网都会命中这里)。
+    eq("★ 复制语义:所有写法被拒后键值仍在(KEEP_ME)", readValue(ROOT, id, "important"), "KEEP_ME");
+    check("★ 复制语义:保留文件内容仍是合法键值(没被 NOT_JSON 盖过)", readFileSync(extensionStorePath(ROOT, id), "utf8").includes("KEEP_ME"));
+    // 正控:闸只挡**根级保留名** —— 根级一个普通文件名 + 子目录里的同名文件照常可读写(不误伤)。
+    deepEq("正控:根级普通文件 notes.md 可写(闸只挡保留名)", await writeFileInExtension(ROOT, id, "notes.md", "OK"), { ok: true, bytes: 2 });
+    deepEq("正控:子目录同名 a/store.json 可写(非根级保留名)", await writeFileInExtension(ROOT, id, "a/store.json", "LEGIT"), { ok: true, bytes: 5 });
+    deepEq("正控:子目录同名 a/store.json 可读", readFileInExtension(ROOT, id, "a/store.json"), { ok: true, content: "LEGIT" });
+    // 结构不变式:保留判据在 lib **只引用契约的唯一一份**(不另写第二套字符串字面量)。
+    const storeSrc = readFileSync(join(SRC_DIR, "main", "lib", "extensionStore.ts"), "utf8");
+    check("★ 复制语义:保留判据在 lib 只引用契约的唯一一份", storeSrc.includes("isReservedExtensionRelPath(relPath)"));
+  })();
 
   console.log(`\nextension-store-smoke:${checks - failed}/${checks} 通过`);
   if (failed > 0) process.exit(1);
