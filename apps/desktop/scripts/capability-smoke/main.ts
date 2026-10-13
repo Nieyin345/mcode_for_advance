@@ -25,10 +25,13 @@ import {
   rejectedPluginHostCapabilities,
   providerIdsForWorkflowPreflight,
   requirementsForNode,
+  type HostCapabilitySource,
 } from "../../src/main/orchestration/capabilityResolver.js";
+import { NodeExecutorRegistry } from "../../src/main/orchestration/executorRegistry.js";
 import { sceneCapabilityPreflight } from "../../../../packages/contracts/src/scenePreflight.js";
 import type { SceneSpec } from "../../../../packages/contracts/src/sceneSpec.js";
 import { fileCapabilities } from "../../src/main/modules/fileCapabilities.js";
+import { ModuleHost } from "../../src/main/modules/ModuleHost.js";
 
 const checks: string[] = [];
 const ok = (condition: boolean, message: string): void => {
@@ -768,6 +771,145 @@ ok(
     thirdDesc !== undefined && (thirdDesc.capabilities ?? []).includes("streaming"),
     "ARC-008:矩阵里没有的引擎回退 capabilityIds(不静默当成空能力)",
   );
+}
+
+/* ── 【MC-099 E1 · 变动序】真实宿主 / 引擎 / 执行器**变动后**,required 能力必须被拒绝 ──
+ *
+ * 独立复审要的是一条**生产函数级、跨状态变化**的 E1(不复用旧 `★ MC-099` 那批静态数组):
+ * 同一份 `required` 需求,在宿主能力**变动之前**判可用,**变动之后**(执行器被撤 / 引擎不再
+ * 注册 / 真实 ModuleHost 不再注册那项能力)必须被判**缺**并**点名缺什么**;而**可选**能力
+ * 缺失**不得**挡部署、但要如实报。判据一律落在**可观察的决策**(ok / requiredGaps / gaps /
+ * missing)上,不落在内部字段。
+ *
+ * 所有输入都经**真实生产函数**装配:`collectCapabilityInventory`(目录装配)+
+ * `sceneCapabilityPreflight`(场景能力预检判定)+ `checkNodeCapabilities`(节点需求判定);
+ * 宿主能力读自**真实 `ModuleHost`**、执行器读自**真实 `NodeExecutorRegistry`** —— 不是手写数组。
+ *
+ * ⚠️ 反向自证:每个子块先让**变动前**判可用(ok=true),再让**变动后**判缺 —— 于是"变动后判缺"
+ * 这条**不可能**是一次字段缺失错误伪装成的拒绝:同一形状的输入在变动前是**通过**的。 */
+{
+  const sceneOf = (capabilities: SceneSpec["capabilities"]): SceneSpec => ({
+    schemaVersion: 1, sceneId: "mc099-seq", goal: "MC-099 变动序 E1:变动后 required 必须拒绝",
+    capabilities, resources: [], acceptance: { description: "占位验收(本用例只看能力预检)", expectResourceIds: [] },
+  });
+
+  // ── 变体 1:执行器 —— 真实 NodeExecutorRegistry 注册 / 撤回 ──
+  {
+    // 一个**真实**的执行器(执行入口是真的函数,不是字符串)。
+    const realExecutor = {
+      kind: "myorg.heavy",
+      execute: async () => ({ status: "failed" as const, summary: "stub executor" }),
+    };
+    const nodeManifest = { id: "myorg.heavy-node", runner: { kind: "code", language: "python" } } as never;
+    const needHeavy: CapabilityRequirement[] = [{ kind: "executor", id: "myorg.heavy" }];
+
+    // (a) 变动前:真实注册表里有它 → 目录里就有它 → 需求判可用。
+    const registryBefore = new NodeExecutorRegistry();
+    registryBefore.register(realExecutor);
+    ok(registryBefore.has("myorg.heavy"), "MC-099 E1·变动:真实执行器已注册进真实 NodeExecutorRegistry");
+    const decisionBefore = checkNodeCapabilities(
+      nodeManifest, needHeavy,
+      collectCapabilityInventory({ executorKinds: registryBefore.kinds() }),
+    );
+    ok(decisionBefore.ok, "★ MC-099 E1·变动:执行器在场时 required 执行器需求判可用(变动前)");
+
+    // (b) 变动后:换一台**没有它**的真实注册表(执行器被撤)→ 同一需求必须判缺,并点名。
+    const registryAfter = new NodeExecutorRegistry();
+    registryAfter.register({ kind: "command", execute: realExecutor.execute });
+    ok(!registryAfter.has("myorg.heavy"), "MC-099 E1·变动:变动后的真实注册表里没有该执行器");
+    const decisionAfter = checkNodeCapabilities(
+      nodeManifest, needHeavy,
+      collectCapabilityInventory({ executorKinds: registryAfter.kinds() }),
+    );
+    ok(
+      !decisionAfter.ok && decisionAfter.missing.some((m) => m.id === "myorg.heavy"),
+      "★ MC-099 E1·变动:执行器被撤后,同一 required 需求被判缺并点名 myorg.heavy(不沿用旧的已就绪)",
+    );
+  }
+
+  // ── 变体 2:引擎 —— 不再注册 ──
+  {
+    const needClaude: CapabilityRequirement[] = [{ kind: "provider", id: "claude-sdk" }];
+    const nodeManifest = { id: "mcode.main", runner: { kind: "prompt" } } as never;
+
+    const before = checkNodeCapabilities(
+      nodeManifest, needClaude, collectCapabilityInventory({ providers: [claudeProvider] }),
+    );
+    ok(before.ok, "★ MC-099 E1·变动:引擎注册在场时 required 引擎需求判可用(变动前)");
+
+    const after = checkNodeCapabilities(
+      nodeManifest, needClaude, collectCapabilityInventory({ providers: [] }),
+    );
+    ok(
+      !after.ok && after.missing.some((m) => m.id === "claude-sdk"),
+      "★ MC-099 E1·变动:引擎不再注册后,同一 required 需求被判缺并点名 claude-sdk",
+    );
+  }
+
+  // ── 变体 3:真实 ModuleHost —— 宿主注册的能力被撤 ──
+  {
+    // 真实宿主:注册真实 fileCapabilities(fileCapabilities/ModuleHost 都不碰 DB,可无头打包)。
+    const makeHost = (register: boolean): ModuleHost => {
+      const host = new ModuleHost({ authorize: async () => {}, persist: async () => {} });
+      if (register) for (const capability of fileCapabilities(() => true)) host.register(capability as never);
+      return host;
+    };
+    // 从**真实宿主目录**读出"这台机器真有哪些模块能力" —— 这是权威,不是手写声明。
+    const hostSources = (host: ModuleHost): HostCapabilitySource[] =>
+      host.catalog().capabilities
+        .filter((c) => c.kind === "task" || c.kind === "query")
+        .map((c) => ({ id: c.id, moduleKind: c.kind as "task" | "query" }));
+
+    // (a) 变动前:宿主注册了 inspect → required 场景通过。
+    const readyHost = makeHost(true);
+    const preReady = sceneCapabilityPreflight(
+      sceneOf([{ kind: "module", id: "core.file.inspect", required: true }]),
+      collectCapabilityInventory({ hostCapabilities: hostSources(readyHost) }),
+    );
+    ok(
+      preReady.ok && preReady.requiredGaps.length === 0,
+      "★ MC-099 E1·变动:真实 ModuleHost 注册 fileCapabilities 后,required module 场景预检通过(变动前)",
+    );
+
+    // 真实宿主目录 = 权威声明表 = fileCapabilities 三处同源(逐一相等)——声明漂了必红。
+    const realHostIds = hostSources(readyHost).map((s) => s.id).sort();
+    const declaredIds = HOST_CAPABILITY_DECLARATIONS.map((d) => d.id).sort();
+    const fileIds = fileCapabilities(() => true).map((c) => c.id).sort();
+    ok(
+      JSON.stringify(realHostIds) === JSON.stringify(declaredIds) &&
+        JSON.stringify(realHostIds) === JSON.stringify(fileIds),
+      `★ MC-099 E1·变动:真实宿主目录 = 权威声明表 = fileCapabilities 三处同源(detail: host=${JSON.stringify(realHostIds)} declared=${JSON.stringify(declaredIds)} file=${JSON.stringify(fileIds)})`,
+    );
+
+    // (b) 变动后:那台机器的真实宿主**没注册** inspect → 同一 required 必须被拒并点名。
+    const bareHost = makeHost(false);
+    const inventoryAfter = collectCapabilityInventory({ hostCapabilities: hostSources(bareHost) });
+    const preAfter = sceneCapabilityPreflight(
+      sceneOf([{ kind: "module", id: "core.file.inspect", required: true }]),
+      inventoryAfter,
+    );
+    ok(!preAfter.ok, "★ MC-099 E1·变动:宿主变动后(不再注册 inspect),同一 required 场景被拒(不沿用旧的已就绪)");
+    ok(
+      preAfter.requiredGaps.length === 1 &&
+        preAfter.requiredGaps[0]?.id === "core.file.inspect" &&
+        preAfter.requiredGaps[0]?.reason === "missing",
+      "★ MC-099 E1·变动:拒绝的缺口恰好点名 core.file.inspect 且 reason=missing",
+    );
+
+    // (c) 换成**可选**:同一缺失不挡部署,但要如实报(不假装可用)。
+    const preOptional = sceneCapabilityPreflight(
+      sceneOf([{ kind: "module", id: "core.file.inspect", required: false }]),
+      inventoryAfter,
+    );
+    ok(
+      preOptional.ok && preOptional.requiredGaps.length === 0,
+      "★ MC-099 E1·变动:可选能力缺失不挡部署(ok 仍 true、requiredGaps 为空)",
+    );
+    ok(
+      preOptional.gaps.some((g) => g.id === "core.file.inspect" && g.required === false),
+      "★ MC-099 E1·变动:可选缺口如实进 gaps(required=false,不假装它可用)",
+    );
+  }
 }
 
 console.log(`PASS: ${checks.length} checks`);
