@@ -19,6 +19,7 @@
 import type { RuntimeEvent, PermissionMode, EffortLevel, AskUserQuestionItem } from "./runtime.js";
 import type { ApiConfig } from "./customModel.js";
 import type { SessionTodoItem } from "./session.js";
+import type { ToolBudget, ToolProfile } from "./toolProfile.js";
 
 /** What a provider can do — used by the UI to enable/disable features. */
 export interface ProviderCapabilities {
@@ -242,6 +243,17 @@ export interface StartTurnRequest {
     string,
     { description: string; prompt: string; tools?: string[]; model?: string }
   >;
+  /** **任务画像**(MC-100 选择层)。决定本轮模型可见的工具**子集**:`minimal`/`chat`/`code`/
+   *  `research`/`browser`/`workflow` 各只放行必需集 + 该桶;`full` 是**显式**的全量(现有行为)。
+   *
+   *  缺席 = 装配层取 `full`(全量)—— 那是一条**显式**画像分支,不是「忘了传参」。三个 provider
+   *  都经**同一份** `orchestration/toolSelection.ts`(`resolveEngineToolSelection` +
+   *  `piToolsAllowlist` / `codexDynamicToolsForProfile` / `claudeBuiltinToolsForProfile`)消费它,
+   *  各自只做「名字集合 → 本 SDK 形状」的薄映射。 */
+  toolProfile?: ToolProfile;
+  /** **工具预算**(MC-100):画像选择之后按数量 / 粗估 token 再收一刀。floor(发现通道)恒不裁。
+   *  缺席 = 不限。 */
+  toolBudget?: ToolBudget;
 }
 
 /** Approval request passed from provider → host (for canUseTool-style callbacks). */

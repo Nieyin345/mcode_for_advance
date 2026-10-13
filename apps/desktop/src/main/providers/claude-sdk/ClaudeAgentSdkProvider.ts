@@ -52,6 +52,8 @@ import { getOutputStyleSetting } from "@main/lib/outputStyleConfig.js";
 import { getEnabledPlugins, getPluginMcpServers, getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { defaultSkillsRoot, enabledSkillNames, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
 import { resolveEngineExcludedToolsForProvider } from "@main/lib/engineToolPolicy.js";
+import { KNOWN_BUILTIN_TOOLS } from "@main/ipc/engineTools.js";
+import { claudeToolSelectionOptions, resolveEngineToolSelection } from "@main/orchestration/toolSelection.js";
 import { readMcpEnginesMap, mcpEngineEnabled } from "@main/lib/mcpEngines.js";
 import { getTrustedProjectMcpServers } from "@main/lib/projectMcp.js";
 import { resolveSubagentModelValue } from "@main/lib/subagentModel.js";
@@ -1628,6 +1630,37 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // mcode-app —— agent 控制 Mcode 本身(全部功能 + 界面操作,见 main/appControl/tools.ts)。
     // 节点收窄(strictMcpConfig)时不进候选表,与记忆工具一样只在普通对话里挂。
     options.mcpServers[APP_MCP_SERVER] = await buildAppMcpServer({ sessionId: req.sessionId, context: ctx });
+
+    // 【MC-100/101】按任务画像 + 预算收窄本轮模型可见的工具集。共享选择层唯一一份
+    // (`orchestration/toolSelection.ts`):这里只把它的结果**赋进 options** ——
+    //   · `Options.tools`:内置工具白名单。`full`(默认)→ `undefined`(保留 SDK 的
+    //     `claude_code` 预设,含静态清单之外的 Skill / 计划模式内置);更小的画像 → 收窄后的
+    //     内置名列表。这是**显式**画像分支,不是「忘了设」。
+    //   · `options.mcpServers`:只留「至少有一个工具被选中」的 server。进程内 MCP server 不能
+    //     只挂一半工具;`mcode-app` 的 `app_api_*` 是 floor,任何画像都选中,故 app server 恒留。
+    // 候选 server 就是此刻已装配好的这几路(浏览器/库/工作流/记忆/agent/app + 插件)。
+    {
+      const claudeToolSelection = resolveEngineToolSelection("claude", {
+        profile: req.toolProfile,
+        budget: req.toolBudget,
+        browserEnabled: !mcpState.browserDisabled && claudeMaySee(BROWSER_MCP_SERVER),
+        excluded: resolveEngineExcludedToolsForProvider("claude"),
+      });
+      const allServers = Object.keys(options.mcpServers ?? {});
+      const sel = claudeToolSelectionOptions(claudeToolSelection, {
+        allBuiltin: KNOWN_BUILTIN_TOOLS.claude,
+        allServers,
+      });
+      if (sel.tools !== undefined) options.tools = sel.tools;
+      if (sel.mcpServers.length !== allServers.length) {
+        const keep = new Set(sel.mcpServers);
+        const narrowed: NonNullable<Options["mcpServers"]> = {};
+        for (const [name, cfg] of Object.entries(options.mcpServers ?? {})) {
+          if (keep.has(name)) narrowed[name] = cfg;
+        }
+        options.mcpServers = narrowed;
+      }
+    }
 
     // Output style (settings panel): same Settings-not-Options trap as the
     // MCP lists above. The CLI reads the style once at session start and has

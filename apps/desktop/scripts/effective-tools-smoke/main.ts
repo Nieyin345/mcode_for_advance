@@ -34,6 +34,15 @@ import {
   selectToolsForProfile,
   type ToolProfileName,
 } from "@contracts/toolProfile";
+import {
+  DEFAULT_TOOL_PROFILE_NAME,
+  CLAUDE_HARNESS_BUILTINS,
+  applyToolBudget,
+  claudeToolSelectionOptions,
+  codexDynamicToolsForProfile,
+  piToolsAllowlist,
+  resolveEngineToolSelection,
+} from "@main/orchestration/toolSelection.js";
 
 let failures = 0;
 let total = 0;
@@ -292,10 +301,134 @@ function eq(name: string, actual: unknown, expected: unknown): void {
   // userOverride 没有 remove 形态 —— 类型层保证,这里断言「即使加了东西,minimal 的其余工具没因此变多」。
   eq("★ userOverride 只加必需集 + 追加项,不多不少", withOverride, [...minimal, pickReal].sort());
 
-  // 8.6 bucketsForProfile:floor 恒含。
+  // 8.6 bucketsForProfile:floor 恒含;`full` 回 null(它放行全部,不对应桶集合)。
   for (const p of ["minimal", "chat", "code", "research", "browser", "workflow"] as const) {
-    check(`bucketsForProfile(${p}) 含 essential`, bucketsForProfile(p).includes("essential"), bucketsForProfile(p));
+    const buckets = bucketsForProfile(p);
+    check(`bucketsForProfile(${p}) 含 essential`, buckets !== null && buckets.includes("essential"), buckets);
   }
+  check("★ bucketsForProfile(full) 回 null(全量不对应桶集合)", bucketsForProfile("full") === null, bucketsForProfile("full"));
+
+  // 8.7 ★ `full` 画像:放行清单里**全部**工具(含桶判不出的),这是显式的「不裁剪」。
+  const allNames = inv.tools.map((t) => t.name).sort();
+  eq("★ full 画像 = 清单全部工具名(升序)", selectToolsForProfile(inv, { name: "full" }), allNames);
+  {
+    const unknownInv = buildEffectiveToolInventory({
+      providerId: "t",
+      tools: [
+        { name: "app_api_list", source: "dynamic" },
+        { name: "totally_unknown_tool_xyz", source: "dynamic" },
+      ],
+    });
+    check("★ full 连桶判不出的名字也放行(与最小化画像相反)", selectToolsForProfile(unknownInv, { name: "full" }).includes("totally_unknown_tool_xyz"));
+  }
+}
+
+/* ── 9. ★【MC-100/101 执行层】共享选择层 + 三引擎薄适配器 ────────────────────
+ *
+ * 台账点名的缺口是:「实际 Claude / Pi / Codex provider `src` 里没有 `selectToolsForProfile`
+ * 调用 —— 仍未真实缩减模型可见的工具集」。这一段钉的就是**装配层真的把画像结果喂进了各 SDK 形态**:
+ *  - `resolveEngineToolSelection` 是唯一入口(provider 调它),给的是**原始形态**工具名子集;
+ *  - 三个薄适配器把名字子集翻成 Pi `tools` 白名单 / Codex `dynamicTools` 过滤 / Claude `options` 片段;
+ *  - `full`(默认画像)**显式**回全量(不是省略);更小的画像**真的少**工具。
+ * 这些断言测的是「provider 请求会收到的那个集合」,不是纯选择函数返回小集合。
+ */
+{
+  // 9.1 默认画像 = full(全量),这才是改动前行为,且它是**显式**画像分支。
+  eq("默认画像名 = full", DEFAULT_TOOL_PROFILE_NAME, "full");
+
+  // 9.2 Pi:full → tools=undefined(Pi 的"启用全部");minimal → 只有 floor 白名单。
+  const piFull = resolveEngineToolSelection("pi", { browserEnabled: true, profile: { name: "full" } });
+  check("★ Pi full → piToolsAllowlist = undefined(启用全部,显式画像)", piToolsAllowlist(piFull) === undefined, piToolsAllowlist(piFull));
+  const piMin = resolveEngineToolSelection("pi", { browserEnabled: true, profile: { name: "minimal" } });
+  const piMinTools = piToolsAllowlist(piMin);
+  check("★ Pi minimal → tools 是数组且只含 floor 三件套", Array.isArray(piMinTools) && piMinTools.length === 3 && ESSENTIAL_TOOL_NAMES.every((n) => piMinTools!.includes(n)), piMinTools);
+  check("★ Pi minimal 白名单真的更小(少于 full 的清单)", piMinTools!.length < piFull.inventory.tools.length, { minimal: piMinTools!.length, all: piFull.inventory.tools.length });
+
+  // 9.3 Codex:full → dynamicTools 原样;minimal → 只剩名字在选中集合里的项。
+  const codexFull = resolveEngineToolSelection("codex", { browserEnabled: true, profile: { name: "full" } });
+  const allDynamic = codexFull.inventory.tools.map((t) => ({ name: t.name }));
+  eq("★ Codex full → dynamicTools 原样(全量)", codexDynamicToolsForProfile(allDynamic, codexFull).length, allDynamic.length);
+  const codexMin = resolveEngineToolSelection("codex", { browserEnabled: true, profile: { name: "minimal" } });
+  const trimmedDynamic = codexDynamicToolsForProfile(allDynamic, codexMin);
+  // minimal 的选中集合(裸名)里,落在 dynamicTools 名字上的只有 floor 三件套。
+  check("★ Codex minimal → dynamicTools 被真实过滤(少于 full)", trimmedDynamic.length < allDynamic.length, { trimmed: trimmedDynamic.length, all: allDynamic.length });
+  check("★ Codex minimal 过滤后每一项都在选中集合里", trimmedDynamic.every((t) => codexMin.selected.includes(t.name)), trimmedDynamic.map((t) => t.name));
+
+  // 9.4 Claude:full → tools=undefined 且保留全部 server;research → 收窄内置 + 只留选中 server。
+  const claudeFull = resolveEngineToolSelection("claude", { browserEnabled: true, profile: { name: "full" } });
+  const servers = ["mcode-browser", "mcode-library", "mcode-workflow", "mcode-memory", "mcode-app", "mcode-agent-tools"];
+  // 内置名从**同一份清单**的 builtin 来源取(不另引 IpcMain 那条重依赖链)。
+  const claudeBuiltin = toolNamesOfSource(claudeFull.inventory, "builtin");
+  const claudeFullOpts = claudeToolSelectionOptions(claudeFull, { allBuiltin: claudeBuiltin, allServers: servers });
+  check("★ Claude full → Options.tools = undefined(保留 SDK 预设,显式画像)", claudeFullOpts.tools === undefined, claudeFullOpts.tools);
+  eq("★ Claude full → mcpServers 全保留", claudeFullOpts.mcpServers, servers);
+
+  const claudeResearch = resolveEngineToolSelection("claude", { browserEnabled: true, profile: { name: "research" } });
+  const claudeResearchOpts = claudeToolSelectionOptions(claudeResearch, { allBuiltin: claudeBuiltin, allServers: servers });
+  check("★ Claude research → Options.tools 收窄为内置数组(不是 undefined)", Array.isArray(claudeResearchOpts.tools), claudeResearchOpts.tools);
+  check("★ Claude research → 保留 mcode-library(资料库桶)", claudeResearchOpts.mcpServers.includes("mcode-library"), claudeResearchOpts.mcpServers);
+  check("★ Claude research → 裁掉 mcode-browser(浏览器桶与 research 无关)", !claudeResearchOpts.mcpServers.includes("mcode-browser"), claudeResearchOpts.mcpServers);
+  check("★ Claude research → mcode-app 恒留(floor 的 app_api_* 在 app server 上)", claudeResearchOpts.mcpServers.includes("mcode-app"), claudeResearchOpts.mcpServers);
+  check("★ Claude research → server 数少于 full", claudeResearchOpts.mcpServers.length < servers.length, claudeResearchOpts.mcpServers);
+
+  // 9.4b ★ 内置收窄要**真的**按桶裁:code 画像选中内置文件/终端工具,而 chat 桶内置(WebSearch/Task)
+  // 与 research/browser 桶内置都不该出现。判据是**精确集合**,不只「不含 Bash」——否则当选中集合里
+  // 一个内置都没有时(如 research),「不含 Bash」会假绿(这正是 review 点名的"断言测了个空")。
+  const claudeCode = resolveEngineToolSelection("claude", { browserEnabled: true, profile: { name: "code" } });
+  const claudeCodeOpts = claudeToolSelectionOptions(claudeCode, { allBuiltin: claudeBuiltin, allServers: servers });
+  const expectedCodeBuiltin = [...new Set([...claudeCode.selected.filter((n) => claudeBuiltin.includes(n)), ...CLAUDE_HARNESS_BUILTINS])].sort();
+  eq("★ Claude code → Options.tools 精确等于 code 桶内置 ∪ harness 并集(真按桶裁)", claudeCodeOpts.tools, expectedCodeBuiltin);
+  check("★ Claude code 内置集**非空**(证明了它真的放行了内置,不是侥幸为空)", (claudeCodeOpts.tools ?? []).length > 0, claudeCodeOpts.tools);
+  check("★ Claude code → 含 Bash(内置文件/终端桶)", (claudeCodeOpts.tools ?? []).includes("Bash"), claudeCodeOpts.tools);
+  check("★ Claude code → 不含 chat 桶内置 WebSearch(chat 不在 code 画像)", !(claudeCodeOpts.tools ?? []).includes("WebSearch"), claudeCodeOpts.tools);
+  check("★ Claude code → 不含 chat 桶内置 Task", !(claudeCodeOpts.tools ?? []).includes("Task"), claudeCodeOpts.tools);
+  // harness 平面(计划模式 / 提问 / 技能)在任何收窄画像下都保留 —— 安全并集,只增不减。
+  for (const h of CLAUDE_HARNESS_BUILTINS) {
+    check(`★ harness 内置 ${h} 在 code 画像收窄后仍保留`, (claudeCodeOpts.tools ?? []).includes(h), claudeCodeOpts.tools);
+    check(`★ harness 内置 ${h} 在 research 画像收窄后仍保留`, (claudeResearchOpts.tools ?? []).includes(h), claudeResearchOpts.tools);
+  }
+  check("★ Claude research 内置里不含 Bash(code 桶被裁掉)", !(claudeResearchOpts.tools ?? []).includes("Bash"), claudeResearchOpts.tools);
+
+  // 9.5 userOverride 贯通到适配器(只加不删):minimal + add 一个真实 browser 工具 → 该 server 被保留。
+  const inv9 = claudeFull.inventory;
+  const aBrowserTool = inv9.tools.map((t) => t.name).find((n) => n.includes("browser_"))!;
+  const claudeMinOverride = resolveEngineToolSelection("claude", { browserEnabled: true, profile: { name: "minimal", userOverride: { add: [aBrowserTool] } } });
+  const claudeMinOverrideOpts = claudeToolSelectionOptions(claudeMinOverride, { allBuiltin: claudeBuiltin, allServers: servers });
+  check("★ userOverride.add 的工具贯通到 Claude mcpServers(该 server 被保留)", claudeMinOverrideOpts.mcpServers.includes("mcode-browser"), { added: aBrowserTool, servers: claudeMinOverrideOpts.mcpServers });
+
+  // 9.6 工具预算:maxTools 收紧,floor 恒不裁。
+  const piBudgeted = resolveEngineToolSelection("pi", { browserEnabled: false, profile: { name: "code" }, budget: { maxTools: 5 } });
+  check("★ 预算 maxTools=5 → 选中数 ≤ 5", piBudgeted.selected.length <= 5, piBudgeted.selected);
+  check("★ 预算触顶后 floor 仍在(发现通道不被预算砍)", ESSENTIAL_TOOL_NAMES.every((n) => piBudgeted.selected.includes(n)), piBudgeted.selected);
+  const piCodeNoBudget = resolveEngineToolSelection("pi", { browserEnabled: false, profile: { name: "code" } });
+  check("★ 预算确实收紧了(code 画像无预算时更多)", piBudgeted.selected.length < piCodeNoBudget.selected.length, { budgeted: piBudgeted.selected.length, unbudgeted: piCodeNoBudget.selected.length });
+  // floor-first:maxTools 小于 floor 数时仍保留 floor(可略超预算)。
+  const tiny = resolveEngineToolSelection("pi", { browserEnabled: false, profile: { name: "code" }, budget: { maxTools: 1 } });
+  check("★ maxTools < floor 数 → floor 仍全保留(预算不砍发现通道)", ESSENTIAL_TOOL_NAMES.every((n) => tiny.selected.includes(n)), tiny.selected);
+  // 直接测 applyToolBudget 的 token 分支。
+  const tokenBudgeted = applyToolBudget(piCodeNoBudget, { maxTokens: 1 });
+  check("★ 预算 maxTokens=1 → 只剩 floor(其余被 token 上限挡住)", tokenBudgeted.every((n) => ESSENTIAL_TOOL_NAMES.includes(bareToolName(n))) && tokenBudgeted.length >= 3, tokenBudgeted);
+}
+
+/* ── 10. ★ 接线:三个 provider 真的调了共享选择层(不是只定义不调) ─────────────
+ *
+ * MC-100/101 点名的正是「provider src 里没有 selectToolsForProfile 调用」。判据是**调用形态**
+ * (函数名 + 引擎实参),不是裸词 —— 注释里合法地会提到这些名字。
+ */
+{
+  const claudeSrc = readFileSync(resolve(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
+  const piSrc = readFileSync(resolve(process.cwd(), "src/main/providers/pi-sdk/PiAgentSdkProvider.ts"), "utf8");
+  const codexSrc = readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
+
+  check("★ Claude provider 调 resolveEngineToolSelection(\"claude\", …)", /resolveEngineToolSelection\(\s*"claude"/.test(claudeSrc));
+  check("★ Claude provider 把选择结果赋进 options(调 claudeToolSelectionOptions)", claudeSrc.includes("claudeToolSelectionOptions(") && claudeSrc.includes("options.tools = "));
+  check("★ Pi provider 调 resolveEngineToolSelection(\"pi\", …)", /resolveEngineToolSelection\(\s*"pi"/.test(piSrc));
+  check("★ Pi provider 用 piToolsAllowlist 求 tools(不再写死 undefined)", piSrc.includes("piToolsAllowlist("));
+  check("★ Pi provider 不再写死 `const tools = undefined`", !/const tools = undefined/.test(piSrc));
+  check("★ Codex provider 调 resolveEngineToolSelection(\"codex\", …)", /resolveEngineToolSelection\(\s*"codex"/.test(codexSrc));
+  check("★ Codex provider 两处 dynamicTools 都经 codexDynamicToolsForProfile", (codexSrc.match(/codexDynamicToolsForProfile\(/g) ?? []).length >= 2);
+  // 唯一入口复用:provider 不自己调纯选择函数(否则就是三份平行实现)。
+  check("★ 三个 provider 都不直接调 selectToolsForProfile(选择只有一份)", !claudeSrc.includes("selectToolsForProfile(") && !piSrc.includes("selectToolsForProfile(") && !codexSrc.includes("selectToolsForProfile("));
 }
 
 console.log(`\neffective-tools-smoke: ${total - failures}/${total} checks passed`);

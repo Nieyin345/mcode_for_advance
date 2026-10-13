@@ -46,8 +46,16 @@
 
 import type { EffectiveToolInventory } from "./effectiveToolInventory.js";
 
-/** 任务画像名。决定「除必需集外还允许哪些桶」(见 {@link ToolProfile} 与 `PROFILE_BUCKETS`)。 */
-export type ToolProfileName = "minimal" | "chat" | "code" | "research" | "browser" | "workflow";
+/** 任务画像名。决定「除必需集外还允许哪些桶」(见 {@link ToolProfile} 与 `PROFILE_BUCKETS`)。
+ *
+ *  - 六个**最小化**画像:{@link ToolProfileName} 里除 `full` 外的六个 —— 每个 = 必需集(floor)
+ *    + 自己那一桶。
+ *  - `full` —— **显式的全量画像**:清单里**所有**工具(含桶判定认不出的名字)都暴露。
+ *    这不是「默认省略」,而是**刻意的、写死的**「不裁剪」决定 —— 它对应引擎原有行为
+ *    (Pi `tools=undefined`、Codex 全量 dynamicTools、Claude 全量 MCP server)。装配层若拿不到
+ *    更小的画像,就**显式**选它,让「全量」是一条被记录的路,而不是某个分支漏传参数。
+ */
+export type ToolProfileName = "full" | "minimal" | "chat" | "code" | "research" | "browser" | "workflow";
 
 /** 工具归属的**桶**。画像按桶放行;判定见 {@link classifyToolBucket}。 */
 export type ToolBucket = "essential" | "chat" | "code" | "research" | "browser" | "workflow";
@@ -70,6 +78,18 @@ export interface ToolProfile {
 }
 
 /**
+ * **工具预算**(MC-100 点名的「工具预算」那一格):在画像选择**之后**再按数量 / 粗估 token 收一刀,
+ * 复现「按任务最小化」的最后一环。纯数据,判定在装配层(`orchestration/toolSelection.ts` 的
+ * `applyToolBudget`)。{@link ESSENTIAL_TOOL_NAMES}(发现通道)是 floor,预算**永远**不会砍掉它们。
+ */
+export interface ToolBudget {
+  /** 最多暴露多少个工具(含 floor)。缺席 = 不限。 */
+  maxTools?: number;
+  /** 暴露工具的粗估 token 上限(见 `@contracts/effectiveToolInventory` 的 CHARS_PER_TOKEN)。缺席 = 不限。 */
+  maxTokens?: number;
+}
+
+/**
  * **always-on 必需集**(floor)。统一发现通道的三件套 —— 让任何画像都能**按需**把更多能力
  * 找回来(`app_api_list` 查有哪些方法 → `app_api_describe` 看参数 → `app_api_call` 调)。
  * 这正是 MC-100 要的 Discovery 层:最小上下文 + 按需发现,而不是把所有 schema 常驻。
@@ -78,13 +98,14 @@ export interface ToolProfile {
  */
 export const ESSENTIAL_TOOL_NAMES: readonly string[] = ["app_api_call", "app_api_describe", "app_api_list"];
 
-/**
- * 每个画像**特有**的允许桶。刻意**不含** `essential` —— 必需集(floor)由
+/** 六个最小化画像**特有**的允许桶。刻意**不含** `essential` —— 必需集(floor)由
  * {@link selectToolsForProfile} 里那个「与画像无关、恒加 {@link ESSENTIAL_TOOL_NAMES}」的
  * 循环单独保证。若在这里再列一遍 `essential`,就是同一条不变量的**两份实现**:画像表改错一项
  * (比如漏掉)会静默藏掉发现通道,而兜底循环本可挡住 —— 留一份、且让它可被冒烟钉住。
- */
-const PROFILE_BUCKETS: Record<ToolProfileName, readonly ToolBucket[]> = {
+ *
+ * `full` 不在**这张表**里(见 {@link FULL_PROFILE_NAME}):它不走桶判定,直接放行清单里**全部**
+ * 名字(含认不出桶的),所以由 {@link selectToolsForProfile} 单独一条分支实现,不塞进桶模型。 */
+const PROFILE_BUCKETS: Record<Exclude<ToolProfileName, "full">, readonly ToolBucket[]> = {
   minimal: [],
   chat: ["chat"],
   code: ["code"],
@@ -92,6 +113,9 @@ const PROFILE_BUCKETS: Record<ToolProfileName, readonly ToolBucket[]> = {
   browser: ["browser"],
   workflow: ["workflow"],
 };
+
+/** `full` 画像名单独一提,供 {@link PROFILE_BUCKETS} 的键类型排除与 {@link selectToolsForProfile} 判用。 */
+export const FULL_PROFILE_NAME = "full" as const;
 
 /** 来源标签 → 桶。Claude 侧 MCP server 的工具直接按来源落桶(不按名字猜)。 */
 const SOURCE_BUCKET: Record<string, ToolBucket> = {
@@ -173,30 +197,40 @@ export function classifyToolBucket(name: string, source: string): ToolBucket | n
  * **按画像选工具名**。给定有效工具清单与画像,回该任务**应该**暴露的工具名(升序、去重)。
  *
  * 规则:
- *  1. 清单里每条工具按其桶是否属于该画像的允许桶而定(见 `PROFILE_BUCKETS`)。
- *  2. `essential`(floor)**与画像无关,恒含** —— 单独一条规则,不写进画像表。这条保证任何
+ *  1. `full` 画像**直接放行清单里全部工具名**(含认不出桶的)—— 这是**显式**的「不裁剪」,
+ *     对应引擎原有全量行为;不是某个分支漏传参数的默认。
+ *  2. 其余画像里,清单里每条工具按其桶是否属于该画像的允许桶而定(见 `PROFILE_BUCKETS`)。
+ *  3. `essential`(floor)**与画像无关,恒含** —— 单独一条规则,不写进画像表。这条保证任何
  *     画像切换都不会藏掉发现通道(计划模式/审批中的安全约束)。
- *  3. 认不出桶的工具**永不自动加入**(未知名字不静默暴露)。
- *  4. `profile.userOverride.add` 里的名字**追加**暴露 —— 只在它确实存在于清单时生效;不会
+ *  4. 认不出桶的工具**永不自动加入**(未知名字不静默暴露);`full` 是唯一例外,而且那是刻意
+ *     的 —— `full` 语义就是「不裁」,否则用户显式要全量却少拿工具才是 bug。
+ *  5. `profile.userOverride.add` 里的名字**追加**暴露 —— 只在它确实存在于清单里时生效;不会
  *     移除任何东西,故 floor 不受影响(安全约束)。
  */
 export function selectToolsForProfile(
   inventory: EffectiveToolInventory,
   profile: ToolProfile,
 ): string[] {
-  const allowed = new Set<ToolBucket>(PROFILE_BUCKETS[profile.name]);
   const present = new Set(inventory.tools.map((t) => t.name));
   const selected = new Set<string>();
 
-  for (const tool of inventory.tools) {
-    const bucket = classifyToolBucket(tool.name, tool.source);
-    // floor:必需集与画像无关,恒含(与 PROFILE_BUCKETS 那张表分开,确保改画像表也藏不掉
-    // 发现通道)。这条只此一处,不在画像表里再列一遍同一事实。
-    if (bucket === "essential") {
-      selected.add(tool.name);
-      continue;
+  if (profile.name === FULL_PROFILE_NAME) {
+    // 显式全量:放行清单里每一个名字(含桶判不出的)。这就是 Pi `tools=undefined` /
+    // Codex 全量 dynamicTools / Claude 全量 MCP server 想要的那份集合 —— 但它现在是一条
+    // **被记录**的路,而不是「省略选择」的副作用。
+    for (const tool of inventory.tools) selected.add(tool.name);
+  } else {
+    const allowed = new Set<ToolBucket>(PROFILE_BUCKETS[profile.name]);
+    for (const tool of inventory.tools) {
+      const bucket = classifyToolBucket(tool.name, tool.source);
+      // floor:必需集与画像无关,恒含(与 PROFILE_BUCKETS 那张表分开,确保改画像表也藏不掉
+      // 发现通道)。这条只此一处,不在画像表里再列一遍同一事实。
+      if (bucket === "essential") {
+        selected.add(tool.name);
+        continue;
+      }
+      if (bucket !== null && allowed.has(bucket)) selected.add(tool.name);
     }
-    if (bucket !== null && allowed.has(bucket)) selected.add(tool.name);
   }
   // 用户追加:只加不删;只认清单里存在的名字(不凭空暴露不存在的工具)。
   for (const name of profile.userOverride?.add ?? []) {
@@ -209,8 +243,10 @@ export function selectToolsForProfile(
 /**
  * 便捷:某画像**有效**的桶 = `essential`(floor)+ 该画像特有的桶。供诊断 / 冒烟断言。
  * 注意 floor 单独加,与 {@link selectToolsForProfile} 里那条恒定规则同源(PROFILE_BUCKETS
- * 本身不含 `essential`)。
+ * 本身不含 `essential`)。`full` 不对应任何桶集合(它放行全部),回 `null`,以免让人以为它是
+ * 「floor + 若干桶」。
  */
-export function bucketsForProfile(name: ToolProfileName): readonly ToolBucket[] {
+export function bucketsForProfile(name: ToolProfileName): readonly ToolBucket[] | null {
+  if (name === FULL_PROFILE_NAME) return null;
   return ["essential", ...PROFILE_BUCKETS[name]];
 }

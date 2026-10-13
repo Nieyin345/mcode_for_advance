@@ -54,6 +54,7 @@ import { getMcpManagement } from "@main/lib/mcpConfig.js";
 import { resolveEngineExcludedToolsForProvider } from "@main/lib/engineToolPolicy.js";
 import { registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
+import { piToolsAllowlist, resolveEngineToolSelection } from "@main/orchestration/toolSelection.js";
 
 export class PiAgentSdkProvider implements AgentProvider {
   readonly id = "pi-sdk";
@@ -132,13 +133,18 @@ export class PiAgentSdkProvider implements AgentProvider {
     // approves the plan (the model would see "no edit/write tools available"
     // even though planMode.active is now false).
     //
-    // Instead, ALL tools are always available. The extension's `tool_call`
-    // handler enforces the plan-mode read-only gate dynamically via the
-    // in-process `planMode.active` flag: while in plan mode, write/edit/bash
-    // are blocked with a clear reason; after ExitPlanMode approval, the flag
-    // flips and they pass through immediately. This is the only correct way
-    // to handle the "plan mode → approve → execute" lifecycle on Pi.
-    const tools = undefined; // all built-in + extension tools
+    // Instead, ALL tools are always available **when the task profile is `full`** (the
+    // default — see below). The extension's `tool_call` handler enforces the plan-mode
+    // read-only gate dynamically via the in-process `planMode.active` flag: while in plan
+    // mode, write/edit/bash are blocked with a clear reason; after ExitPlanMode approval,
+    // the flag flips and they pass through immediately. This is the only correct way to
+    // handle the "plan mode → approve → execute" lifecycle on Pi.
+    //
+    // 【MC-100/101】`tools` 不再在这里写死成 `undefined`。它现在由**共享选择层**
+    // (`orchestration/toolSelection.ts` 的 `piToolsAllowlist`)算出来,在下面
+    // `createAgentSession` 处就地求值:画像 `full`(默认)→ `undefined`(Pi 的"启用全部"语义,
+    // **显式**画像分支);更小的画像 → 选中名字的白名单。空 `undefined` 仍是合法结果,
+    // 但那是「画像 = full」推出来的,不是省略参数。
     // 用户在设置里关掉的 Pi 内置工具（见 `lib/engineToolPolicy.ts`）。轮开始读一次，
     // 下面 `createAgentSession` 用它当 `excludeTools`（黑名单）。空数组 = 不设限。
     // 【MC-071 残余 E1】走「状态与执行授权同源」的 resolver：策略文件损坏且**无
@@ -261,7 +267,18 @@ export class PiAgentSdkProvider implements AgentProvider {
     // as the Claude provider's options.mcpServers injection) — read per-turn,
     // so flipping it lands on the next message.
     const mcpManagement = await getMcpManagement();
-    const mcodeExtension = createMcodeExtension({ ctx, cwd: req.cwd, strict, sessionId: req.sessionId, projectPath: req.cwd, turnNumber: req.turnNumber, browserToolsEnabled: !mcpManagement.browserDisabled });
+    const browserToolsEnabled = !mcpManagement.browserDisabled;
+    const mcodeExtension = createMcodeExtension({ ctx, cwd: req.cwd, strict, sessionId: req.sessionId, projectPath: req.cwd, turnNumber: req.turnNumber, browserToolsEnabled });
+
+    // 【MC-100/101】按任务画像 + 预算算本轮的**模型可见工具白名单**(共享选择层,唯一一份)。
+    // `full`(默认)→ `undefined` = Pi 的"启用全部";更小的画像 → 选中名字白名单。
+    const toolSelection = resolveEngineToolSelection("pi", {
+      profile: req.toolProfile,
+      budget: req.toolBudget,
+      browserEnabled: browserToolsEnabled,
+      excluded: piExcludedTools,
+    });
+    const tools = piToolsAllowlist(toolSelection);
 
     // Bridge Mcode's skill roots + `/name` trigger into Pi's skill model, and
     // inject the inline extension via the loader's `extensionFactories`. Pi's

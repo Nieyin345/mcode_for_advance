@@ -79,6 +79,7 @@ import {
 import { getOrSetFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
 import { mcpEngineEnabled, readMcpEnginesMap } from "@main/lib/mcpEngines.js";
+import { codexDynamicToolsForProfile, resolveEngineToolSelection } from "@main/orchestration/toolSelection.js";
 import { BROWSER_MCP_SERVER, BROWSER_READONLY_SUFFIXES } from "@main/mcp/toolRules.js";
 import { CODEX_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -298,6 +299,14 @@ export class CodexAgentSdkProvider implements AgentProvider {
       mcpEngineEnabled(readMcpEnginesMap(), BROWSER_MCP_SERVER, "codex") &&
       codexTurnAllowsMcpServer(BROWSER_MCP_SERVER, req.mcpServerNames);
     const hostIdentity = await ensureCodexHomeIdentity(browserToolsEnabled);
+    // 【MC-100/101】按任务画像 + 预算算本轮的 dynamicTools 子集(共享选择层,唯一一份)。
+    // `full`(默认)→ 全量(与改动前一致,但**显式**走画像分支);更小的画像 → 过滤 dynamicTools。
+    // 放在这里(与 browserToolsEnabled 同源)保证「广告里的工具」与「注册的工具」按同一画像裁。
+    const codexToolSelection = resolveEngineToolSelection("codex", {
+      profile: req.toolProfile,
+      budget: req.toolBudget,
+      browserEnabled: browserToolsEnabled,
+    });
     const mcpScopeArgs =
       req.mcpServerNames?.length || req.pluginNames?.length
         ? codexMcpDisableArgs(
@@ -489,7 +498,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
           developerInstructions,
           // Experimental (requires initialize capabilities.experimentalApi):
           // register Mcode's host-side tools (ask/plan/browser).
-          dynamicTools: buildDynamicTools(browserToolsEnabled),
+          dynamicTools: codexDynamicToolsForProfile(buildDynamicTools(browserToolsEnabled), codexToolSelection),
         };
         let threadId: string | null = null;
         // 【MC-057】这次是否**要求**恢复一个已有的 Codex 线程。要求了却恢复失败,必须明确
@@ -508,7 +517,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
             const resumed = (await client.request("thread/resume", {
               threadId: req.resumeProviderSessionId,
               excludeTurns: true,
-              dynamicTools: buildDynamicTools(browserToolsEnabled),
+              dynamicTools: codexDynamicToolsForProfile(buildDynamicTools(browserToolsEnabled), codexToolSelection),
               cwd: req.cwd,
               sandbox,
               approvalPolicy,
