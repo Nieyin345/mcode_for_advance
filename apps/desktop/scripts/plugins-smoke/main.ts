@@ -1148,6 +1148,59 @@ eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user ma
     "MC-061:命令改过(摘要不符)的授权不覆盖 → unsupported(授权按来源绑定)",
   );
   reset2();
+
+  // 【MC-061 复审】matcher 摘要也参与来源身份:同命令同事件、**不同 matcher** 的授权
+  // 不覆盖 —— 放宽 matcher(管得着的工具/路径变多)同样该让旧授权失效(与命令摘要同一纪律)。
+  {
+    const { decideHostHookExecution: decideM } = await import("@contracts/hostHookGrant");
+    const { listHostHookGrants: listG } = await import("../../src/main/hooks/hostHookGrants.js");
+    const srcNoMatcher = hostHookSourceOf({
+      pluginId: "demo-plugin",
+      version: "1.2.3",
+      nativeEvent: "PreToolUse",
+      command: "echo pre",
+    });
+    const srcWithBash = hostHookSourceOf({
+      pluginId: "demo-plugin",
+      version: "1.2.3",
+      nativeEvent: "PreToolUse",
+      command: "echo pre",
+      matcher: "Bash",
+    });
+    ok(
+      srcNoMatcher.matcherDigest !== srcWithBash.matcherDigest,
+      "MC-061:matcher 不同 → 来源身份不同(命令摘要相同也区分)",
+      `none=${srcNoMatcher.matcherDigest} bash=${srcWithBash.matcherDigest}`,
+    );
+    // 授权绑 matcher=Bash:来源声明 matcher=Write(不同)→ denied;来源 matcher=Bash → allowed。
+    reset2();
+    issue2({
+      pluginId: "demo-plugin",
+      version: "1.2.3",
+      commandDigest: srcWithBash.commandDigest,
+      matcherDigest: srcWithBash.matcherDigest,
+      ttlMs: 600_000,
+      now: Date.now(),
+    });
+    const srcWrite = hostHookSourceOf({
+      pluginId: "demo-plugin",
+      version: "1.2.3",
+      nativeEvent: "PreToolUse",
+      command: "echo pre",
+      matcher: "Write",
+    });
+    eq(
+      decideM(srcWithBash, "tool.use", listG(), Date.now()).decide,
+      "allowed",
+      "★ MC-061 复审:来源 matcher 与授权一致 → allowed",
+    );
+    eq(
+      decideM(srcWrite, "tool.use", listG(), Date.now()).decide,
+      "denied",
+      "★ MC-061 复审:来源 matcher 与授权不符 → denied(未绑 matcher 的授权不再宽覆盖)",
+    );
+    reset2();
+  }
 }
 
 /* ── 【MC-061 复审修复】停用 / 卸载**真的**撤销该插件的全部 hook 授权 ──

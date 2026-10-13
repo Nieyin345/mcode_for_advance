@@ -66,6 +66,9 @@ export function pluginHookSpecsFrom(
       version: decl.version,
       nativeEvent: decl.nativeEvent,
       command: decl.command,
+      // 【MC-061 复审】matcher 纳入来源身份 —— 同命令同事件、不同 matcher 的两条 hook
+      // 不再共享授权粒度。
+      ...(decl.matcher !== undefined ? { matcher: decl.matcher } : {}),
     });
     // `name` 只给执行记录看(`HookSpec.name` 上限 60),id 才是身份。
     const name = `${decl.pluginId}:${decl.nativeEvent}`.slice(0, 60);

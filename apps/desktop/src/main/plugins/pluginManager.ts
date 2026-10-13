@@ -771,6 +771,8 @@ function toPluginState(
       version,
       nativeEvent: h.event,
       command: h.command,
+      // 【MC-061 复审】matcher 纳入来源身份(与执行通道同一份)—— 面板与执行不再分家。
+      ...(h.matcher !== undefined ? { matcher: h.matcher } : {}),
     });
     const decision = decidePluginHookExecution(source, mapped, Date.now());
     const execution: PluginHookSummary["execution"] =

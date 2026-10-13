@@ -44,12 +44,15 @@ export function hostHookSourceOf(input: {
   version: string | undefined;
   nativeEvent: string;
   command: string;
+  matcher?: string;
 }): HostHookSource {
   return {
     pluginId: input.pluginId,
     version: input.version,
     commandDigest: hostHookCommandDigest(input.command),
     nativeEvent: input.nativeEvent,
+    // 【MC-061 复审】matcher 摘要:空/未声明 → 空串(不绑定,向后兼容);有值 → 摘要。
+    matcherDigest: input.matcher === undefined || input.matcher === "" ? "" : hostHookCommandDigest(input.matcher),
   };
 }
 
@@ -61,7 +64,7 @@ export function hostHookSourceOf(input: {
  */
 export function hostHookIdOf(source: HostHookSource): string {
   const digest = createHash("sha256")
-    .update(`${source.pluginId}\u0000${source.version ?? ""}\u0000${source.nativeEvent}\u0000${source.commandDigest}`)
+    .update(`${source.pluginId}\u0000${source.version ?? ""}\u0000${source.nativeEvent}\u0000${source.commandDigest}\u0000${source.matcherDigest ?? ""}`)
     .digest("hex")
     .slice(0, 16);
   return `ph_${digest}`;
@@ -91,6 +94,7 @@ export function issueHostHookGrant(input: {
   version?: string;
   events?: string[];
   commandDigest?: string;
+  matcherDigest?: string;
   ttlMs: number;
   now: number;
 }): HostHookGrant {
@@ -104,6 +108,7 @@ export function issueHostHookGrant(input: {
     version: input.version,
     events: [...(input.events ?? [])],
     commandDigest: input.commandDigest ?? "",
+    matcherDigest: input.matcherDigest ?? "",
     issuedAt: input.now,
     expiresAt: input.now + input.ttlMs,
     revoked: false,
