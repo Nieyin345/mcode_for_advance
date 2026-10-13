@@ -34,7 +34,15 @@ export const SettingRepo = {
   },
 };
 
-export const SessionRepo = { get(id: string) { return id === "isolated-memory-test" ? { id, projectId: "p_memory", kind: "chat", parentSessionId: null, nodeId: null } : undefined; } };
+// ⚠️ **两个会话、两个项目**是有意的(MC-092 真实入口):`isolated-memory-test` → `p_memory`
+// (项目 A),`memory-session-b` → `p_other`(项目 B)。只给一个会话,「A 见 A、B 见 B、互不可见」
+// 这三条就退化成「A 见 A」一条 —— 跨项目那条断言恒真、测不出隔离。**别的 id 一律 `undefined`**
+// (会话身份缺失)—— 真实入口用例靠它验「无可信身份 → 拒,而非降级看全部」。
+export const SessionRepo = { get(id: string) {
+  if (id === "isolated-memory-test") return { id, projectId: "p_memory", kind: "chat", parentSessionId: null, nodeId: null };
+  if (id === "memory-session-b") return { id, projectId: "p_other", kind: "chat", parentSessionId: null, nodeId: null };
+  return undefined;
+} };
 // ⚠️ **两个项目**是有意的:MC-092 的 `memory.manage` list 会把项目清单按可见集合滤过
 // (`projects/p_other` 对 p_memory 的会话不可见)—— 只给一个项目,那条过滤断言就恒真、
 // 测不出东西。这里给第二个项目当**不可见**的反例。

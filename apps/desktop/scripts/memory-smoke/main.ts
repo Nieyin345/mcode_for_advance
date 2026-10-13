@@ -5,6 +5,8 @@ import { memoryHistory, readHistory, restoreMemory, readMemoryFileWithRaw } from
 import { manageMemory } from "@main/memory/manage.js";
 import { projectInstructions } from "@main/memory/instructions.js";
 import { invokeMemoryTool, memoryToolDescriptors } from "@main/memory/engineTools.js";
+import { invokeAppTool } from "@main/appControl/tools.js";
+import { recordRpcHandler, clearRpcHandlers } from "@main/appControl/registry.js";
 import type { ProviderContext } from "@contracts/provider";
 import { homedir } from "node:os";
 import { memoryMcpTools } from "@main/mcp/memoryServer.js";
@@ -102,6 +104,16 @@ function throws(name: string, fn: () => unknown, needle?: string): void {
   }
 }
 
+/** 取 `app_api_call` 返回里的结构化 OperationResult(与 app-control-smoke 同源)。 */
+function opResultOf(r: { structuredContent?: Record<string, unknown> }): Record<string, unknown> | undefined {
+  return r.structuredContent?.operation_result as Record<string, unknown> | undefined;
+}
+
+/** `app_api_call` 返回正文拼成一段文本(断言密钥/标记是否出现在**返回给模型的文本**里)。 */
+function textOf(r: { content: Array<{ type: string; text?: string }> }): string {
+  return r.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n");
+}
+
 /** 手写一个"人工直接编辑"形态的记忆文件:markdown + 两行 frontmatter。 */
 function handWrite(root: string, relPath: string, title: string, updatedAt: number, body: string): void {
   const abs = join(root, "memory", ...relPath.split("/"));
@@ -150,6 +162,10 @@ if (!DATA1) throw new Error("MCODE_SMOKE_DATA_ROOT 没设 —— 必须经 run.s
 const DATA2 = mkdtempSync(join(tmpdir(), "mcode-memory-snap-"));
 const DATA3 = mkdtempSync(join(tmpdir(), "mcode-memory-empty-"));
 const DATA4 = mkdtempSync(join(tmpdir(), "mcode-memory-inject-"));
+// 【MC-092/093 真实入口】两块各自一份**干净**数据根:A/B 两条项目记忆只在 DATA5 里;历史的
+// 敏感旧文件只在 DATA6 里 —— 不与前面场景的残留互相干扰。
+const DATA5 = mkdtempSync(join(tmpdir(), "mcode-memory-real-"));
+const DATA6 = mkdtempSync(join(tmpdir(), "mcode-memory-real-inject-"));
 
 /* ────────────────────────── 1. CRUD + frontmatter ────────────────────────── */
 
@@ -1229,6 +1245,149 @@ console.log("\n分层工作流复用与记忆注入所有权");
   const snap2 = scopedMemorySnapshot("p_memory", "普通");
   check("普通内容照常出现在快照里(未被误遮)", snap2.includes("普通内容"), snap2.slice(0, 120));
   rmSync(abs, { force: true });
+}
+
+/* ── 【MC-092 真实入口】两个项目 A/B,走**真** `app_api_call`(invokeAppTool)经记忆 RPC ──
+ *
+ * 上面那条(§MC-092)是**手装作用域**直调 handler。这一条不同:它调 `invokeAppTool`
+ * (`app_api_call` 的真实执行体),由 `tools.ts` 自己按 `entry.method.startsWith("memory.")`
+ * 给 `callRpc` 外层装宿主会话作用域 —— 也就是**接线本身**被测,不是替身。两个入口都验:
+ *   ① 主读写 = `memory.read` / `memory.list` / `memory.save`;
+ *   ② 诊断/整理 = `memory.review`(只读扫描)与 `memory.manage`(列表型,写档);
+ * 项目 A 的会话见 A、项目 B 的会话见 B,**互相看不见**;无可信会话身份**拒**,而不是降级看全部。 */
+{
+  process.env.MCODE_SMOKE_DATA_ROOT = DATA5;
+  for (const m of listMemoryFiles()) { try { deleteMemoryFile(m.path, readMemoryFile(m.path).revision); } catch { /* 残留 */ } }
+
+  // 真 handler 进 appControl 的登记处 —— 与生产 `createDbGuardedIpc` 同一步(`recordRpcHandler`)。
+  // app_api_call 的 `entry.registered` 就取自这张表,所以必须真登记,不能只喂直调 map。
+  const { registerMemoryHandlers } = await import("@main/ipc/memory.js");
+  clearRpcHandlers();
+  const fakeIpc = { handle: (ch: string, fn: unknown) => recordRpcHandler(ch, fn as (e: unknown, r: unknown) => unknown) } as never;
+  registerMemoryHandlers(fakeIpc);
+
+  const PATH_A = "projects/p_memory/rules/a.md";
+  const PATH_B = "projects/p_other/rules/b.md";
+  const PATH_G = "global/rules/g.md";
+  saveMemoryFile({ path: PATH_A, title: "A 条", content: "A_ONLY_MARKER 只属于项目 A。" });
+  saveMemoryFile({ path: PATH_B, title: "B 条", content: "B_ONLY_MARKER 只属于项目 B。" });
+  saveMemoryFile({ path: PATH_G, title: "G 条", content: "GLOBAL_MARKER 全局共享。" });
+
+  // 真实 ProviderContext(与 app-control-smoke 的 ctxWith 同形):读档自动放行,写档要审批 → 一律点头。
+  const ctx = {
+    getPermissionMode: () => undefined,
+    requestApproval: async () => ({ allow: true }),
+  } as unknown as ProviderContext;
+  const SESSION_A = "isolated-memory-test"; // → p_memory
+  const SESSION_B = "memory-session-b"; // → p_other
+  const realCall = (method: string, input: unknown, session: string): ReturnType<typeof invokeAppTool> =>
+    invokeAppTool("app_api_call", { method, input }, session, ctx);
+  const succeeded = (r: { structuredContent?: Record<string, unknown> }): boolean =>
+    opResultOf(r)?.resultKind === "SUCCEEDED";
+
+  // ① 主读写入口 —— 本项目可读、跨项目拒。
+  {
+    const readA = await realCall("memory.read", { path: PATH_A }, SESSION_A);
+    check("★ MC-092 真实入口:会话 A 经 app_api_call 读**本项目 A** 记忆成功",
+      succeeded(readA) && textOf(readA).includes("A_ONLY_MARKER"), textOf(readA).slice(0, 160));
+    const readCrossA = await realCall("memory.read", { path: PATH_B }, SESSION_A);
+    check("★ MC-092 真实入口:会话 A 读**项目 B** 记忆被拒(返回里没有 B 正文)",
+      !succeeded(readCrossA) && !textOf(readCrossA).includes("B_ONLY_MARKER"), textOf(readCrossA).slice(0, 160));
+
+    const readB = await realCall("memory.read", { path: PATH_B }, SESSION_B);
+    check("★ MC-092 真实入口:会话 B 读**本项目 B** 记忆成功",
+      succeeded(readB) && textOf(readB).includes("B_ONLY_MARKER"), textOf(readB).slice(0, 160));
+    const readCrossB = await realCall("memory.read", { path: PATH_A }, SESSION_B);
+    check("★ MC-092 真实入口:会话 B 读**项目 A** 记忆被拒(返回里没有 A 正文)",
+      !succeeded(readCrossB) && !textOf(readCrossB).includes("A_ONLY_MARKER"), textOf(readCrossB).slice(0, 160));
+
+    // 全局对两个项目都可见(显式共享)。
+    const readGlobalA = await realCall("memory.read", { path: PATH_G }, SESSION_A);
+    check("★ MC-092 真实入口:会话 A 读**全局**记忆成功", succeeded(readGlobalA) && textOf(readGlobalA).includes("GLOBAL_MARKER"));
+
+    // list 只列本项目 + 全局。
+    const listA = await realCall("memory.list", {}, SESSION_A);
+    check("★ MC-092 真实入口:会话 A 的 memory.list 含本项目与全局、不含项目 B",
+      succeeded(listA) && textOf(listA).includes(PATH_A) && textOf(listA).includes(PATH_G) && !textOf(listA).includes(PATH_B),
+      textOf(listA).slice(0, 200));
+
+    // 写别的项目 → 拒(带正确 revision 也拒)。
+    const revCross = readMemoryFile(PATH_B).revision;
+    const saveCross = await realCall("memory.save",
+      { path: PATH_B, content: "试图篡改 B", expectedRevision: revCross }, SESSION_A);
+    check("★ MC-092 真实入口:会话 A 经 app_api_call 写**项目 B** 记忆被拒",
+      !succeeded(saveCross) && !textOf(saveCross).includes("试图篡改"), textOf(saveCross).slice(0, 160));
+    check("★ MC-092 真实入口:被拒后项目 B 文件内容原样不变",
+      readMemoryFile(PATH_B).content.includes("B_ONLY_MARKER"));
+  }
+
+  // ② 诊断/整理入口 —— review(扫描)与 manage(列表型)。
+  {
+    const reviewA = await realCall("memory.review", {}, SESSION_A);
+    check("★ MC-092 真实入口:会话 A 的 memory.review 不含项目 B 的条目",
+      succeeded(reviewA) && !textOf(reviewA).includes("projects/p_other/"), textOf(reviewA).slice(0, 200));
+
+    const manageA = await realCall("memory.manage", { action: "list" }, SESSION_A);
+    check("★ MC-092 真实入口:会话 A 的 memory.manage list 项目只含自己那个",
+      succeeded(manageA) && textOf(manageA).includes("p_memory") && !textOf(manageA).includes("p_other"),
+      textOf(manageA).slice(0, 200));
+  }
+
+  // ③ 无可信身份 —— 拒(绝不降级成"看全部")。`tools.ts` 照样装作用域,但那个会话 id
+  //    在宿主里解析不出项目身份 → 记忆 handler 解析身份时抛 → FAILED。
+  {
+    const noScope = await realCall("memory.read", { path: PATH_A }, "no-such-session");
+    check("★ MC-092 真实入口:无可信会话身份时经 app_api_call 读记忆被拒(不降级看全部)",
+      !succeeded(noScope) && !textOf(noScope).includes("A_ONLY_MARKER"), textOf(noScope).slice(0, 160));
+    const noScopeList = await realCall("memory.list", {}, "no-such-session");
+    check("★ MC-092 真实入口:无可信身份时 memory.list 也被拒(不是列全部)",
+      !succeeded(noScopeList) && !textOf(noScopeList).includes(PATH_B), textOf(noScopeList).slice(0, 160));
+  }
+
+  // 清掉本块登记,免得多套之间串味。
+  clearRpcHandlers();
+}
+
+/* ── 【MC-093 真实入口 · E1】人工/历史旧文件的敏感原文不得进入**模型上下文** ──
+ *
+ * 上面的 §MC-093 是直接调 `scopedMemorySnapshot` / `searchMemory`。这一条走**生产接线**:
+ * `runner.ts` 把 `memorySnapshot` 绑成 `(query) => scopedMemorySnapshot(session.projectId, …)`,
+ * `buildNodeInput` 拿它的输出拼进提示词 —— 那就是真正送进模型的那段文本。先把含密钥的文件
+ * **直接写到磁盘**(绕过 saveMemoryFile 的写侧闸门,模拟人工编辑 / 恢复的旧文件),再走这条
+ * 真实注入链 + 真实 MCP `memory_search` 工具,断言密钥**不出现在任何一处返回/注入文本里**;
+ * 同一条记录里的非密钥标记仍照常出现(反证:不是"什么都遮")。 */
+{
+  process.env.MCODE_SMOKE_DATA_ROOT = DATA6;
+  for (const m of listMemoryFiles()) { try { deleteMemoryFile(m.path, readMemoryFile(m.path).revision); } catch { /* 残留 */ } }
+
+  const SECRET = "sk-" + "b".repeat(40); // 命中 ACCESS_KEY_RE(≥24 位),redactSecrets 会遮
+  const secretPath = "projects/p_memory/rules/legacy-s.md";
+  const absSecret = join(memoryRoot(), ...secretPath.split("/"));
+  mkdirSync(dirname(absSecret), { recursive: true });
+  writeFileSync(absSecret,
+    ["---", 'title: "旧规则"', "updatedAt: 9999999999999", "---", "",
+      `这是人工编辑留下的记录:密钥是 ${SECRET},但工艺标记 CRAFT_MARKER 仍要看得到。`].join("\n"), "utf8");
+  // 纯普通记录(负控):内容里没有密钥,必须原样出现。
+  saveMemoryFile({ path: "projects/p_memory/rules/plain.md", title: "普通", content: "PLAIN_MARKER 普通内容,不含密钥。" });
+
+  // 真实注入链:与 runner.ts 的 `memorySnapshot` 绑定逐字同形。
+  const injected = build(
+    { instruction: "沿用旧规则", memory: "on" },
+    { memorySnapshot: (query?: string) => scopedMemorySnapshot("p_memory", query ?? "旧规则 密钥 工艺") },
+  ).prompt;
+  check("★ MC-093 真实入口:注入提示词里历史密钥被遮蔽(不是明文)", !injected.includes(SECRET), injected.slice(0, 160));
+  check("★ MC-093 真实入口:注入提示词里密钥占位符已就位", injected.includes("[已隐藏疑似密钥]"));
+  check("★ MC-093 真实入口:同一记录的**非密钥**标记仍照常注入(反证未误遮)", injected.includes("CRAFT_MARKER"));
+  check("★ MC-093 真实入口:普通记录照常注入(负控)", injected.includes("PLAIN_MARKER"));
+
+  // 真实 MCP 检索工具:模型调 memory_search 拿回的那段文本同样不得含密钥。
+  const searchCtx: ProviderContext = { emit() {}, log: { info() {}, warn() {}, error() {} } } as unknown as ProviderContext;
+  const searchRes = await invokeMemoryTool("memory_search", { query: "规则 密钥 工艺" }, "isolated-memory-test", searchCtx);
+  const searchText = textOf(searchRes as unknown as { content: Array<{ type: string; text?: string }> });
+  check("★ MC-093 真实入口:memory_search 工具返回里历史密钥被遮蔽", !searchText.includes(SECRET), searchText.slice(0, 160));
+  check("★ MC-093 真实入口:memory_search 命中里非密钥标记仍可见(反证)", searchText.includes("CRAFT_MARKER"));
+
+  rmSync(absSecret, { force: true });
 }
 
 /* ────────────────────────── 汇总 ────────────────────────── */
