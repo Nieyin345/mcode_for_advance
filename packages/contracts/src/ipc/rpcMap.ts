@@ -392,7 +392,8 @@ export interface RpcMap {
   "theme.set": (input: SetThemeInput) => Promise<GetThemeResult>;
   // File read (on-demand diff rendering)
   /** 读一个文本文件(转文件 diff 卡片用)。**路径必须落在某个已知项目根内**,否则**静默返回空串**;读不出(GBK/UTF-16 走 `decodeTextBuffer` 尽力解码,失败也回空串),不抛。 */
-  "file.readFile": (input: FileReadInput) => Promise<{ content: string }>;
+  /** 【MC-097】回传 `version`(内容 sha256)—— 渲染端保存时带 `writeFile.expectedVersion` 做 CAS。 */
+  "file.readFile": (input: FileReadInput) => Promise<{ content: string; version?: string | null }>;
   /** Read a binary file as a base64 data URL (image preview). Same path guard. */
   "file.readBinary": (input: FileReadBinaryInput) => Promise<{ dataUrl: string }>;
   /** OS dialog image picker → base64 images (composer 图片 button). */
@@ -406,7 +407,8 @@ export interface RpcMap {
   /** Recursive file search under a project root (composer @ / add-context). */
   "file.search": (input: FileSearchInput) => Promise<FileSearchResult>;
   /** Write content to a file (creates parents), scoped to a project root. */
-  "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean }>;
+  /** 【MC-097】`conflict:true` = 带 `expectedVersion` 的 CAS 冲突(磁盘已被改动,未写)。 */
+  "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean; conflict?: boolean }>;
   /** Create a directory (recursive), scoped to a project root. */
   "file.mkdir": (input: FileMkdirInput) => Promise<{ ok: boolean }>;
   /** Delete a file or directory (moves to system trash), scoped to a project root. */

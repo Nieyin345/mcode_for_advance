@@ -37,19 +37,36 @@ function rememberWritten(filePath: string, content: string): void {
 /** Shared by Markdown panes and the Monaco source save path, including across
  * file switches / unmounts. Both modes must use the SAME queue for each path. */
 export const textFileWrites = new SerializedFileWrites(async (filePath, content, expected) => {
+  let expectedVersion: string | undefined;
   if (expected !== undefined) {
     let disk: string | null = null;
     try {
-      disk = (await api.file.readFile({ filePath })).content;
+      const read = await api.file.readFile({ filePath });
+      disk = read.content;
+      // 【MC-097】记下**读到的那一版**的内容版本哈希 —— 写的时候带上它,让主进程在**提交点**
+      // 再比一次 CAS。渲染端这次读之后、主进程写之前的那段窗口里若被别的 Agent/进程改过,
+      // 主进程会拒绝写入(而不是静默覆盖别人的改动)。
+      expectedVersion = read.version ?? undefined;
     } catch {
       disk = null; // 读不到(被删/被移走):没有可被冲掉的东西,照常写
-    }
-    if (disk !== null && disk !== expected && disk !== content && disk !== lastWritten.get(filePath)) {
+    }    if (disk !== null && disk !== expected && disk !== content && disk !== lastWritten.get(filePath)) {
       throw new FileConflictError(disk);
     }
   }
-  const result = await api.file.writeFile({ filePath, content });
-  if (!result.ok) throw new Error("文件写入失败");
+  const result = await api.file.writeFile({
+    filePath,
+    content,
+    ...(expectedVersion !== undefined ? { expectedVersion } : {}),
+  });
+  if (!result.ok) {
+    // 【MC-097】主进程 CAS 冲突:磁盘在这次读之后又被改过。抛同一种冲突错,界面照旧问用户。
+    if ((result as { conflict?: boolean }).conflict) {
+      let disk = "";
+      try { disk = (await api.file.readFile({ filePath })).content; } catch { /* 读不到就给空 */ }
+      throw new FileConflictError(disk);
+    }
+    throw new Error("文件写入失败");
+  }
   rememberWritten(filePath, content);
 });
 

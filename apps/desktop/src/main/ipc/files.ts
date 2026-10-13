@@ -23,7 +23,8 @@
  */
 import type { IpcMain } from "electron";
 import { app, clipboard, ClipboardItem, nativeImage, shell } from "electron";
-import { readFile, writeFile, readdir, mkdir, rename, copyFile, access, stat } from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, rename, copyFile, access, stat, open as openFile, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
@@ -293,16 +294,52 @@ const BINARY_MIME: Record<string, string> = {
   avif: "image/avif",
 };
 
+/** 【MC-097】一个文件**当前内容**的稳定版本哈希(缓存无关,直接读当前字节)。文件不存在
+ *  时返回 `null`(与"内容为空串"区分:新建 vs 空文件是两种不同的事实)。渲染端 `readFile`
+ *  回传同一算法的版本,`writeFile` 的 `expectedVersion` 就是它 —— 两端必须同一份(`createHash`)。
+ */
+export async function fileContentVersion(filePath: string): Promise<string | null> {
+  try {
+    const buf = await readFile(filePath);
+    return createHash("sha256").update(buf).digest("hex");
+  } catch {
+    return null; // 不存在 / 读不了 —— 当作"没有可匹配的版本"。
+  }
+}
+
+/** 【MC-097】**原子替换**:写同目录随机后缀的临时文件 → `fsync` 落盘 → `rename` 覆盖目标。
+ *  中断/崩溃只会留下一个可丢的临时文件,**不会**毁掉原文件(从前直接 `writeFile` 目标,
+ *  写一半断电就毁原文件)。Windows 上目标被占用时 `rename` 会失败 —— 此时**不**退回"直接写"
+ *  (那就退回非原子了),而是清理临时文件并如实抛错,由调用方的 catch 报 `ok:false`。
+ */
+async function atomicReplaceFile(filePath: string, content: string): Promise<void> {
+  const tmp = `${filePath}.${randomUUID()}.mcode-tmp`;
+  const handle = await openFile(tmp, "w");
+  try {
+    await handle.writeFile(content, "utf-8");
+    // 把数据真正刷到介质再 rename —— 否则崩溃后可能 rename 成功而内容还在页缓存里丢。
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await rename(tmp, filePath);
+  } catch (err) {
+    try { await rm(tmp, { force: true }); } catch { /* best-effort 清理 */ }
+    throw err;
+  }
+}
+
 /** Shared guarded single-file utf-8 read — used by both the desktop IPC
  *  handler and the mobile RPC whitelist. Scans every persisted project AND
  *  every session worktree root for one containing the path; clipboard-paste
  *  temp files (app-owned) are allowed outside both. Degrades to empty
  *  content instead of throwing. */
-export async function readFileGuarded(filePath: string): Promise<{ content: string }> {
+export async function readFileGuarded(filePath: string): Promise<{ content: string; version: string | null }> {
   const root = findContainingWorkspaceRoot(filePath);
   if (!root && !isPasteTempPath(filePath)) {
     log.warn(`file.readFile refused — path outside any project root: ${filePath}`);
-    return { content: "" };
+    return { content: "", version: null };
   }
   try {
     // 不能再按 UTF-8 硬读:GBK / UTF-16 的文件会显示成乱码,而编辑器一保存,替换字符
@@ -311,11 +348,13 @@ export async function readFileGuarded(filePath: string): Promise<{ content: stri
     const buf = await readFile(filePath);
     const hasUtf8Bom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
     const content = hasUtf8Bom ? buf.toString("utf-8") : (decodeTextBuffer(buf) ?? buf.toString("utf-8"));
-    return { content };
+    // 【MC-097】回传**内容的版本哈希**,让渲染端保存时能带上 `expectedVersion` 做 CAS。
+    // 哈希对**原始字节**算(与写时 CAS 比对的是同一份),不受解码/换行规范化影响。
+    return { content, version: createHash("sha256").update(buf).digest("hex") };
   } catch (err) {
     // ENOENT (file gone), EACCES, or binary content that isn't valid utf-8.
     log.warn(`file.readFile failed for ${filePath}: ${(err as Error).message}`);
-    return { content: "" };
+    return { content: "", version: null };
   }
 }
 
@@ -730,7 +769,23 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
         return { ok: false };
       }
       await mkdir(parent, { recursive: true });
-      await writeFile(input.filePath, input.content, "utf-8");
+      // 【MC-097】**最终提交点**的乐观并发检查(CAS)。渲染端在 `readFile` 之后、`writeFile`
+      // 之前会隔一次 IPC —— 另一个 Agent/进程完全可能在这个窗口里改了这个文件(独立复审的
+      // E2)。从前 `FILE_WRITE` 直接 `writeFile`,旧编辑器保存会**静默覆盖**别人的改动。
+      // 现在:调用方给了 `expectedVersion`(读到的那一版内容哈希)时,在**真正写之前**重读
+      // 当前内容比对该哈希,不一致就冲突拒绝 —— 与 `memory/store.ts` 的 `assertRevision`
+      // 同一条纪律,CAS 落在**写那一刻**,不是在渲染端。
+      if (input.expectedVersion !== undefined) {
+        const current = await fileContentVersion(input.filePath);
+        if (current !== input.expectedVersion) {
+          log.warn(`file.writeFile conflict — ${input.filePath} 已被改动(期望 ${input.expectedVersion},现为 ${current ?? "不存在"})`);
+          return { ok: false, conflict: true };
+        }
+      }
+      // 【MC-097】**原子替换**:先写同目录临时文件并 fsync,再 rename 覆盖 —— 中断/崩溃不会
+      // 留下半写内容(从前直接 `writeFile` 目标文件,写一半断电就毁原文件)。临时名带随机后缀,
+      // 避免两个并发写撞同一个 tmp。
+      await atomicReplaceFile(input.filePath, input.content);
       log.info(`file.writeFile saved: ${relative(root, input.filePath) || input.filePath}`);
       return { ok: true };
     } catch (err) {

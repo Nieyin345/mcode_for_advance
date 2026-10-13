@@ -30,7 +30,7 @@
  *
  * Run: scripts/maint-m07-smoke/run.sh
  */
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { IPC } from "@contracts/ipc";
@@ -88,6 +88,41 @@ try {
   const renamedExact = join(projectRoot, "src", "renamed.ts");
   check("rename 改得动", (await call(IPC.FILE_RENAME, { oldPath: exact, newPath: renamedExact })).ok, true);
   check("改完文件真在新名字上", existsSync(renamedExact), true);
+
+  /* ── 1b. 【MC-097】写入的乐观并发(CAS)+ 原子替换 ──────────────────────────
+   * 从前 FILE_WRITE 只收 `{filePath,content}` 直接 `writeFile`:渲染端读到写之间隔一次 IPC,
+   * 另一个 Agent 改了文件也会被静默覆盖;写一半崩溃还会毁原文件。现在带 `expectedVersion`
+   * (读到的那版内容哈希)时,主进程在**提交点**比对,不一致就 `{ok:false,conflict:true}`。 */
+  console.log("\n【MC-097】写前 CAS + 原子替换");
+  {
+    const casPath = join(projectRoot, "src", "cas.ts");
+    writeFileSync(casPath, "v1\n", "utf-8");
+    // 读回版本哈希(readFileGuarded 现在回传)。
+    const read1 = await readFileGuarded(casPath);
+    check("readFile 回传内容版本哈希", typeof read1.version === "string" && read1.version.length > 0, true);
+    // ① 版本正确 → 写得进。
+    const okWrite = await call(IPC.FILE_WRITE, { filePath: casPath, content: "v2\n", expectedVersion: read1.version });
+    check("★ MC-097:版本匹配 → 写入成功", okWrite.ok, true);
+    check("写入内容真的落盘", readFileSync(casPath, "utf-8").trim(), "v2");
+    // ② 用**过期**的版本(还是 v1 的哈希)再写 → 冲突拒绝,磁盘不被覆盖。
+    const staleWrite = await call(IPC.FILE_WRITE, { filePath: casPath, content: "v3-should-not-land\n", expectedVersion: read1.version });
+    check("★ MC-097:版本过期(磁盘已被改)→ 拒绝写入", staleWrite.ok === false && staleWrite.conflict === true, true);
+    check("★ MC-097:冲突时磁盘内容保持 v2(没被覆盖)", readFileSync(casPath, "utf-8").trim(), "v2");
+    // ③ 不带 expectedVersion → 向后兼容,照写(旧调用方不破)。
+    const legacyWrite = await call(IPC.FILE_WRITE, { filePath: casPath, content: "v4\n" });
+    check("不带 expectedVersion → 向后兼容照写", legacyWrite.ok && readFileSync(casPath, "utf-8").trim() === "v4", true);
+    // ④ 原子替换:目标目录里**不留** `.mcode-tmp` 残留(临时文件写了必被 rename 或清理掉)。
+    check("★ MC-097:写入后不留临时文件残留", readdirSync(join(projectRoot, "src")).some((n) => n.includes(".mcode-tmp")), false);
+    // ⑤ 读不存在的文件 → version 为 null;新建直接成功。
+    const newPath = join(projectRoot, "src", "brand-new.ts");
+    const readMissing = await readFileGuarded(newPath);
+    check("读不存在的文件 → version 为 null", readMissing.version, null);
+    const newWrite = await call(IPC.FILE_WRITE, { filePath: newPath, content: "new\n" });
+    check("新建文件成功", newWrite.ok && readFileSync(newPath, "utf-8") === "new\n", true);
+    // 清理:这两份文件不能影响后面「listDir 列得出 src 只有 1 条」那类断言。
+    rmSync(casPath, { force: true });
+    rmSync(newPath, { force: true });
+  }
 
   /* ── 2. 越界仍然要挡住(所有平台) ──────────────────────────────────────── */
   console.log("\n越界仍然要挡住");
