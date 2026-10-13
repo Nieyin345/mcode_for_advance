@@ -38,7 +38,7 @@ import type { z } from "zod";
 import { matchProjectKey, sameProjectKey } from "@main/lib/projectScope.js";
 import { isTarRemoteHostFailure } from "@main/lib/tarHostWorkaround.js";
 import { mapClaudeHookEvent } from "@contracts/hook";
-import { decidePluginHookExecution, hostHookSourceOf } from "@main/hooks/hostHookGrants.js";
+import { decidePluginHookExecution, hostHookSourceOf, revokeHostHookGrants } from "@main/hooks/hostHookGrants.js";
 import type { EnabledPluginHookDeclaration } from "@main/hooks/pluginHooks.js";
 import {
   BUILTIN_MARKETPLACES,
@@ -1057,6 +1057,9 @@ export function setPluginEnabled(name: string, enabledValue: boolean): { ok: boo
   const names = readEnabledPlugins().filter((n) => n !== name);
   if (enabledValue) names.push(name);
   writeEnabledPlugins(names);
+  // 【MC-061 复审修复】停用即**同步撤销该插件的全部 hook 授权** —— 与卸载同一纪律。
+  // 否则「停用插件后,它的 hook 仍凭旧授权在跑」是一条静默的信任残留(独立复审点名)。
+  if (!enabledValue) revokeHostHookGrants(name);
   return { ok: true };
 }
 
@@ -1100,6 +1103,9 @@ export function removePlugin(name: string): { ok: boolean; error?: string } {
   // Drop this plugin's per-server MCP toggles (namespaced `<name>__`).
   const mcpDisabled = [...readMcpDisabled()].filter((n) => !n.startsWith(`${name}__`));
   writeJsonSetting(PLUGINS_MCP_DISABLED_SETTING_KEY, mcpDisabled);
+  // 【MC-061 复审修复】卸载即**同步撤销该插件的全部 hook 授权** —— 台账「卸载后 hook
+  // 同步撤销」就落在这一句真实调用上,不是需要各入口自己记得。
+  revokeHostHookGrants(name);
   return { ok: true };
 }
 

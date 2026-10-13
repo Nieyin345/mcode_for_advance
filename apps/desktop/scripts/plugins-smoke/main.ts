@@ -1150,6 +1150,40 @@ eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user ma
   reset2();
 }
 
+/* ── 【MC-061 复审修复】停用 / 卸载**真的**撤销该插件的全部 hook 授权 ──
+ * 独立复审点名:`setPluginEnabled` / `removePlugin` 里**没有** `revokeHostHookGrants` 调用 ——
+ * 「停用插件后它的 hook 仍凭旧授权在跑」是静默的信任残留。这里装一份插件、签发授权,再停用 / 卸载,
+ * 断言该插件的授权**真的没了**(而别的插件的授权不受牵连 —— 撤一个不波及另一个)。 */
+{
+  const { issueHostHookGrant: issue3, resetHostHookGrants: reset3, listHostHookGrants } = await import(
+    "../../src/main/hooks/hostHookGrants.js"
+  );
+  const { decidePluginHookExecution: decide3 } = await import("../../src/main/hooks/hostHookGrants.js");
+
+  // —— 停用即撤权 ——
+  await installFromLocal(demoRoot); // 重新装回(前面 [9] 卸过)
+  setPluginEnabled("demo-plugin", true);
+  reset3();
+  const srcD = { pluginId: "demo-plugin", version: "1.2.3", commandDigest: "sha:x", nativeEvent: "PreToolUse" };
+  const srcK = { pluginId: "other-plugin", version: "1.0.0", commandDigest: "sha:y", nativeEvent: "PreToolUse" };
+  issue3({ pluginId: "demo-plugin", version: "1.2.3", ttlMs: 600_000, now: Date.now() });
+  issue3({ pluginId: "other-plugin", ttlMs: 600_000, now: Date.now() });
+  eq(decide3(srcD, "tool.use", Date.now()).decide, "allowed", "前置:停用前 demo-plugin 有授权 → allowed");
+  setPluginEnabled("demo-plugin", false);
+  eq(decide3(srcD, "tool.use", Date.now()).decide, "denied", "★ MC-061:停用插件 → 授权同步撤销 → denied");
+  eq(decide3(srcK, "tool.use", Date.now()).decide, "allowed", "★ MC-061:撤一个不波及其它插件(other-plugin 仍 allowed)");
+
+  // —— 卸载即撤权 ——
+  reset3();
+  setPluginEnabled("demo-plugin", true);
+  issue3({ pluginId: "demo-plugin", version: "1.2.3", ttlMs: 600_000, now: Date.now() });
+  eq(decide3(srcD, "tool.use", Date.now()).decide, "allowed", "前置:卸载前 demo-plugin 有授权 → allowed");
+  eq(removePlugin("demo-plugin").ok, true, "卸载成功");
+  eq(decide3(srcD, "tool.use", Date.now()).decide, "denied", "★ MC-061:卸载插件 → 授权同步撤销 → denied");
+  eq(listHostHookGrants().filter((g) => g.pluginId === "demo-plugin" && !g.revoked).length, 0, "★ MC-061:卸载后该插件无任何有效授权");
+  reset3();
+}
+
 /* ── summary ── */
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

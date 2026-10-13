@@ -995,9 +995,52 @@ await new Promise((r) => setTimeout(r, 800));
 eq("撤权后:插件 hook 不再跑(仍是 1 次)", phCmd.hits(), 1);
 eq("撤权后:denied 计数 2", hookRunner.deliveryCountsOf(pluginHookId)?.denied, 2);
 
-// ── 断开来源 = v1 行为(插件 hooks 永不执行):同一条事件不再碰任何候选。
-hookRunner.setPluginHookSource(() => []);
-resetHostHookGrants();
+// ── 【MC-061 复审修复】**并发拖尾**的 E2 时间窗口必须被堵住 ──
+//
+// 独立复审点名:授权在**事件到达**时判一次 `runOne`,而 `onEvent` 是**逐条 `await`** 的
+// —— 第 1 条插件 hook 真正起进程(`await runHookCommand`)期间,用户完全可能**撤权**;等
+// 轮到第 2 条时,它拿的是**旧判定**。`deliver` 真正 spawn 前若不**复验**,第 2 条就会在撤权
+// 之后照跑。这里用**两条**匹配同一事件的插件 hook 复现:授权有效 → 第 1 条开跑 → 在它跑
+// 的过程中撤权 → 断言第 2 条**一个进程都不起**,并记一条 denied。
+{
+  const { issueHostHookGrant, revokeHostHookGrants, resetHostHookGrants } = await import(
+    "@main/hooks/hostHookGrants.js"
+  );
+  const { pluginHookSpecsFrom } = await import("@main/hooks/pluginHooks.js");
+  resetHostHookGrants();
+
+  // 第 1 条:慢命令(`sleepMs` 让 `runOne` 的 await 持续一会儿,给撤权留出真实时间窗)。
+  const slowCmd = makeCmd({ tag: "race-slow", sleepMs: 1000 });
+  // 第 2 条:快命令。它排在 slow 之后,轮到时授权已被撤。
+  const fastCmd = makeCmd({ tag: "race-fast" });
+  const decls2 = [
+    { pluginId: "race-plugin", version: "2.0.0", nativeEvent: "PreToolUse", command: slowCmd.command },
+    { pluginId: "race-plugin", version: "2.0.0", nativeEvent: "PreToolUse", command: fastCmd.command },
+  ];
+  const ids2 = pluginHookSpecsFrom(decls2).map((e) => e.spec.id);
+  const fastId = pluginHookSpecsFrom(decls2)[1].spec.id;
+  hookRunner.setPluginHookSource(() => decls2);
+  issueHostHookGrant({ pluginId: "race-plugin", version: "2.0.0", ttlMs: 600_000, now: Date.now() });
+
+  // 发事件 → onEvent 先 await 第 1 条(慢命令,sleep 1s);在它跑起来之后、第 2 条之前撤权。
+  rt.emit({
+    type: "tool.use",
+    sessionId: SESSION,
+    toolName: "Write",
+    toolCallId: "ph_race",
+    input: {},
+    requiresApproval: false,
+  } satisfies RuntimeEvent);
+  await until("第 1 条(慢)先跑起来", () => slowCmd.hits() === 1, 4000);
+  revokeHostHookGrants("race-plugin"); // 撤权发生在第 2 条真正 spawn **之前**
+  await new Promise((r) => setTimeout(r, 1500)); // 等第 1 条 sleep 完、第 2 条轮到
+  eq("★ 复审修复:第 1 条跑完后撤权 → 第 2 条进程一个都不起", fastCmd.hits(), 0);
+  check("★ 复审修复:第 2 条记一条 denied(起进程前复验未通过)", (hookRunner.deliveryCountsOf(fastId)?.denied ?? 0) >= 1, hookRunner.deliveryCountsOf(fastId));
+  check("正控:第 1 条(撤权前已在跑)确实跑了", slowCmd.hits() === 1, slowCmd.hits());
+
+  hookRunner.setPluginHookSource(() => []);
+  resetHostHookGrants();
+}
 
 rmSync(DATA, { recursive: true, force: true });
 rmSync(WORK, { recursive: true, force: true });

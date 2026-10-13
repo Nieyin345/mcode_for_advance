@@ -51,6 +51,7 @@ import { log } from "@main/lib/logger.js";
 import { uid } from "@main/utils.js";
 import { createEventSubjects } from "./eventSubjects.js";
 import { decidePluginHookExecution } from "./hostHookGrants.js";
+import type { HostHookSource } from "@contracts/hostHookGrant";
 import { pluginHookSpecsFrom, type EnabledPluginHookDeclaration, type PluginHookSpecEntry } from "./pluginHooks.js";
 import { runHookCommand } from "./runCommand.js";
 import { hooksFilePath, readHooks } from "./store.js";
@@ -139,6 +140,15 @@ class HookRunner {
    * 在用户点完的下一条事件上生效(与 v1「改动下一回合生效」同一条纪律,只会更早)。
    */
   private pluginCache = new Map<string, { at: number; entries: PluginHookSpecEntry[] }>();
+
+  /**
+   * 【MC-061 复审修复】从 hook id → 它绑定的**插件来源身份**。`onEvent` 匹配到插件候选时记下,
+   * {@link deliver} **真正 spawn 前**据此**复验**授权 —— 补上独立复审点名的 E2 时间窗口:
+   * 从前 `runOne` 会把工作延后到去抖窗口 / `coalescePending`,`deliver` 在 spawn 前**不再复验**,
+   * 于是「事件排队 → 用户撤权/停用 → 旧候选仍执行」。现在授权是**每次真正起进程前现算**的,
+   * 撤权/过期即时生效,不给排队留窗口。用户手写的钩子不在表里 → 不受此闸。
+   */
+  private pluginSources = new Map<string, HostHookSource>();
 
   /** 【MC-061】接上插件 hook 声明的来源(宿主装配点调一次)。见 {@link pluginHookSource}。 */
   setPluginHookSource(
@@ -264,14 +274,17 @@ class HookRunner {
     const authoredHits = authored.filter((spec) => matchesHook(spec, event, subjects));
     // 【MC-061】插件候选:先按事件/主语匹配,**再逐条走授权判定** —— 判定的唯一落点。
     // 不 `granted` 的**明确记一条 skipped(带原因)+ denied 计数**,不静默丢掉(仓库硬规矩 3)。
-    const pluginHits: Array<{ spec: HookSpec; allowed: boolean; reason: string }> = [];
+    const pluginHits: Array<{ spec: HookSpec; source: HostHookSource; allowed: boolean; reason: string }> = [];
     for (const entry of this.pluginEntriesNow(cwd)) {
       if (!matchesHook(entry.spec, event, subjects)) continue;
       const decision = decidePluginHookExecution(entry.source, event, Date.now());
+      // 【MC-061 复审修复】记下这条候选的来源身份 —— `deliver` 真正起进程前要**复验**授权。
+      // 覆盖 `pluginSources` 里的旧值(命令/版本变了 → 新来源,旧授权本就作废)。
+      this.pluginSources.set(entry.spec.id, entry.source);
       pluginHits.push(
         decision.decide === "allowed"
-          ? { spec: entry.spec, allowed: true, reason: "" }
-          : { spec: entry.spec, allowed: false, reason: decision.reason },
+          ? { spec: entry.spec, source: entry.source, allowed: true, reason: "" }
+          : { spec: entry.spec, source: entry.source, allowed: false, reason: decision.reason },
       );
     }
     if (authoredHits.length === 0 && pluginHits.length === 0) return;
@@ -376,6 +389,24 @@ class HookRunner {
    */
   private async deliver(spec: HookSpec, payload: HookPayload): Promise<void> {
     const policy = resolveDeliveryPolicy(spec);
+
+    // 【MC-061 复审修复】**真正 spawn 前复验插件 hook 的授权** —— 补 E2 时间窗口:
+    // `runOne` 可能把工作延后到去抖窗口 / `coalescePending`,从匹配到真正起进程之间用户
+    // 可能**撤权 / 过期 / 禁用插件**。事件到达时判过一次不够;起进程这一刻必须**再判一次**,
+    // 否则「排队 → 撤权 → 旧候选仍执行」。判据仍是唯一那一个 `decidePluginHookExecution`。
+    // 用户手写的钩子不在 `pluginSources` 里 → 不受此闸(它们本来就没有插件授权一说)。
+    const pluginSource = this.pluginSources.get(spec.id);
+    if (pluginSource !== undefined) {
+      const now = Date.now();
+      const decision = decidePluginHookExecution(pluginSource, spec.event, now);
+      if (decision.decide !== "allowed") {
+        this.pushRun(spec, payload, "skipped", decision.reason);
+        this.bumpCount(spec.id, "denied");
+        log.info(`[hooks] 「${spec.name}」起进程前复验未通过,不执行:${decision.reason}`);
+        return;
+      }
+    }
+
     // 在跑的进程数 + 是否已有待合并项 —— 都是 `decideDelivery` 的判据。
     const decision = decideDelivery(policy, {
       inFlight: this.inFlight.get(spec.id) ?? 0,
