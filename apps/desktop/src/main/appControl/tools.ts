@@ -519,18 +519,32 @@ export async function gateAppAction(
  *   - **danger 不签**:高风险动作每次都要本人批,受限授权不能替代;
  *   - **read / ui 不签**:它们从不弹卡。
  *
- * ## 作用域
+ * ## 作用域 —— **只签「请求指纹兜底」的方法**(`real === false`)
  *
- * 作用域 = 这次动作**解析出的权威资源身份**(与 `planGrantPrecheck` 共用同一份
- * `resolveActionCore`)—— 签出的授权只覆盖**同一个资源**上的**同一个方法**。换了资源,
- * `evaluate` 的 `invalidationsFor` 会判 `require-approval`(重新批准),不会误覆盖。
+ * 作用域 = 这次动作**解析出的身份**(与 `planGrantPrecheck` 共用同一份 `resolveActionCore`)。
+ * 但这里**只签 `real === false` 的方法**(核心意图是**请求指纹** = 会话 + 方法 + 参数摘要)。
+ * 理由(源码可确认):`planGrantPrecheck` 对 `real === true` 的方法(`file.*` / `git.*` /
+ * `terminal.create`)会退到 `findGoverningFor` —— **不看资源**、按动作取回那枚授权,交给
+ * `evaluate` 判「核心意图被换」。若这里给这类方法签一枚**资源作用域**的授权,那么**同一方法**
+ * 的**另一个资源**(如先批 `terminal.create(C:/a)`、再调 `terminal.create(C:/b)`)会被
+ * `findGoverningFor` 取到这枚授权 → `evaluate` 判 `projectPath` 变了 → **硬拒绝**(连审批都
+ * 不弹)—— 这把默认路径从「逐次弹卡」**改成**「换资源直接拒」,是**回归**。
+ *
+ * 签**指纹作用域**的授权没有这个副作用:`findBoundFor` 按会话+方法+参数摘要精确匹配 ——
+ * 同一件事(同会话/同方法/同参数)→ 命中 → 跳过弹卡;换其一 → 匹配不到 → 回到默认审批链
+ * (弹卡),不会被误判成「越权」硬拒。故本切片只签指纹方法(`session.*` / `library.*` /
+ * `project.*` 这类尚无宿主解析出真实资源身份的),对资源作用域方法的自动签发**留待后续**
+ * (需先让 `planGrantPrecheck` 对「换了资源」回落到弹卡而非硬拒,那是判定口径的另一切片)。
  */
 function signPlanGrantForUserApproval(entry: ApiEntry, args: unknown, sessionId: string): void {
   // 只给 write 档签(danger 每次要本人批;read/ui 从不走到审批)。
   if (entry.policy.level !== "write") return;
   const store = getGrantStore();
   const input = (args as { input?: unknown }).input ?? null;
-  const { core } = resolveActionCore(entry.method, input, sessionId);
+  const { core, real } = resolveActionCore(entry.method, input, sessionId);
+  // 只签**指纹作用域**的方法(见文件头):资源作用域方法若签成资源作用域授权,同方法的另一
+  // 资源会被 `findGoverningFor` 取到并硬拒 —— 那是回归,故这里不签。
+  if (real) return;
   const decision: GrantDecision = {
     verdict: "allow",
     reason: "用户在审批卡上本人批准了这次操作。",
@@ -1761,7 +1775,7 @@ export function planGrantPrecheck(
   const bound = real
     ? (store.findBoundFor(intent, now) ?? store.findGoverningFor(intent, now))
     : store.findBoundFor(intent, now);
-  // 没有绑定授权 → 不是授权下的动作,放行给 gateAppAction 的既有审批链(默认路径)。
+  // 没有绑定授权 → 不是授权下的动作,`null` = 放行给 gateAppAction 的既有审批链(默认路径)。
   if (!bound) return null;
   const decision = evaluate(intent, bound, {
     now,
@@ -1769,9 +1783,10 @@ export function planGrantPrecheck(
     approver: { kind: "user", id: "app_api_call" },
     compatibilityLevel: entry.policy.level as PolicyCompatibilityLevel,
   });
-  if (decision.verdict === "allow") return null;
+  // 有效用户授权覆盖这次动作 → **凭授权跳过审批卡**(计划级授权的目的:不再逐次弹卡)。
+  if (decision.verdict === "allow") return { kind: "authorized" };
   // 有绑定授权、但它说 deny / require-approval → 在这个计划下**不准**,不执行。
-  return `${decision.reason}(绑定授权 ${bound.grantId}:方法 ${entry.method})`;
+  return { kind: "deny", reason: `${decision.reason}(绑定授权 ${bound.grantId}:方法 ${entry.method})` };
 }
 
 /**
@@ -1943,33 +1958,44 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           }
         }
 
-        // ── 【ARC-004 步③】计划级授权预判:动作执行**之前**,先按绑定的受限授权判死活 ──
+        // ── 【ARC-004 步③/④】计划级授权预判:动作执行**之前**,先按绑定的受限授权判死活 ──
         // 提在 `gateAppAction` **之前**:一枚被撤销 / 过期 / 非用户的绑定授权 = 这个计划已明说
-        // 「不准」,连审批都不该弹(硬拒绝,不问用户)。⚠️ **danger 除外** —— 高风险动作本来就
-        // 「每次都要用户本人批、受限授权不能替代」(见 policyEngine 的 danger 分支),故仍走既有
-        // 审批卡,不被这里的计划预判改道。
+        // 「不准」,连审批都不该弹(硬拒绝,不问用户);而一枚**有效、用户签发**的绑定授权 =
+        // 这次动作**已被覆盖** → **跳过审批卡**直接执行(这就是「计划级授权不再逐次弹卡」)。
+        // ⚠️ **danger 除外** —— 高风险动作本来就「每次都要用户本人批、受限授权不能替代」
+        // (见 policyEngine 的 danger 分支),故仍走既有审批卡,不被这里的计划预判改道。
+        let grantAuthorized = false;
         if (entry.policy.level !== "danger") {
-          const grantDenied = planGrantPrecheck(entry, args, sessionId);
-          if (grantDenied) {
+          const pre = planGrantPrecheck(entry, args, sessionId);
+          if (pre?.kind === "deny") {
             const op = makeOp("REJECTED", entry.method, operationId, {
               code: OP_CODE.policyDenied,
-              reason: grantDenied,
+              reason: pre.reason,
             });
             settle(op.resultKind, op);
             return operationToolResult(op);
           }
+          grantAuthorized = pre?.kind === "authorized";
         }
 
         // 领到了(或没带幂等键)→ 现在执行。此后**每一条 return 前都要 settle**(仅在带键时),
         // 否则这条 id 会永远停在 CLAIMED,同 id 之后永远只能看到"在途"。
-        const denied = await gateAppAction(
-          ctx,
-          entry.policy.level,
-          entry.method,
-          args.input,
-          `${entry.method}${entry.policy.reason ? `:${entry.policy.reason}` : entry.doc ? `:${clipLine(entry.doc, 160)}` : ""}`,
-          entry.policy.reason,
-        );
+        //
+        // ★ 有**有效用户授权**时(`grantAuthorized`)不再弹审批卡 —— 授权本就是"这次不用再问"。
+        // 否则走 `gateAppAction`;它只会在**用户本人新鲜点头**那一刻回调
+        // `signPlanGrantForUserApproval`,把这次批准的来源与作用域铸成 grant(ARC-004 签发端)。
+        // 完全访问的系统默认放行 / 已记的「始终允许」**不**触发签发 —— agent / system 不能给自己发授权。
+        const denied = grantAuthorized
+          ? null
+          : await gateAppAction(
+              ctx,
+              entry.policy.level,
+              entry.method,
+              args.input,
+              `${entry.method}${entry.policy.reason ? `:${entry.policy.reason}` : entry.doc ? `:${clipLine(entry.doc, 160)}` : ""}`,
+              entry.policy.reason,
+              () => signPlanGrantForUserApproval(entry, args, sessionId),
+            );
         if (denied) {
           // 审批被拒 / 只读模式 / 不开放 / 无审批通道 → 命令**没执行** → REJECTED。
           const op = makeOp("REJECTED", entry.method, operationId, {

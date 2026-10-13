@@ -23,7 +23,7 @@ import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js
 import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog, appApiBindingId } from "@main/appControl/tools.js";
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import { GrantStore, type GrantDecision } from "@main/appControl/grantStore.js";
-import { setGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { setGrantStore, getGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import type { ActorRef, CoreIntent, Grant } from "@contracts/policyEngine";
 import { isEnvelopeMethod } from "@main/appControl/commandOutcome.js";
 import { setOperationLedger, type OperationLedger } from "@main/appControl/operations.js";
@@ -876,6 +876,8 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   recordRpcHandler("session:rename", async (_e, raw) => { renameRuns += 1; return { session: { id: "s9", title: (raw as { title?: string }).title } }; });
 
   // ① 授权下有效动作:放行 + 执行 + 记账(usedCount 从 0 → 1)。
+  //    ⚠️ 步④(签发端)之后,**有效用户授权覆盖这次动作 → 跳过审批卡**(不再逐次弹卡)。
+  //    故这里 `asked.length` 是 0 而非 1 —— 这正是本切片要钉的新行为(旧行为是"仍走一次")。
   {
     const store = freshStore();
     const input = { id: "s9", title: "n1" };
@@ -883,7 +885,7 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const { ctx, asked } = ctxWith({ allow: true });
     const r = await call("session.rename", input, ctx);
     check("★ ARC-004③ 授权内动作:放行且执行", r.isError !== true, textOf(r));
-    check("★ ARC-004③ 授权内动作:按方法审批仍走一次", asked.length === 1, asked.length);
+    check("★ ARC-004④ 有效用户授权覆盖 → **不再弹审批卡**(asked=0)", asked.length === 0, asked.length);
     check("★ ARC-004③ 执行成功后记账:绑定授权 usedCount +1", store.get(g.grantId, Date.now())?.usedCount === 1, store.get(g.grantId, Date.now())?.usedCount);
   }
 
@@ -967,6 +969,82 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
 
   setGrantStore(null); // 复位,免得影响后面的用例。
   // 恢复本段前 `session:rename` 的返回形状(后续用例若用到)。
+  recordRpcHandler("session:rename", async (_e, raw) => ({ session: { id: "s9", title: (raw as { title?: string }).title } }));
+}
+
+/* ── 3c-quinquies. 【ARC-004 步④ · 签发端】用户本人点头 → 铸 grant → 之后不再弹卡 ──────────
+ *
+ * 洞(源码可确认):`issueGrant(` 全仓**零生产调用方** —— 授权表永远是空的,`planGrantPrecheck`
+ * 只会走「无绑定授权 → 默认审批链」。本切片给签发口接一条**真实的签发入口**:用户在审批卡上
+ * **本人点头**后,把这次批准的**来源与作用域**铸成 `Grant` 存进 `getGrantStore()`。
+ *
+ * ## 承重红例(撤掉接线即真红)
+ *
+ *   ① ★ **用户批准后该动作不再弹卡**:第一次弹卡点头 → 铸出 grant;同动作**再调** → asked=0
+ *      且照常执行(计划级授权的目的:覆盖整个计划、不再逐次弹卡)。
+ *   ② ★ **agent / system 自批不产生授权**:完全访问模式是**系统替用户放行**、不是本人点的那
+ *      一次 —— 不得铸 grant(store 仍空);撤掉 gateAppAction 里那道"只在新鲜 requestApproval
+ *      通过后才回调"的守卫(把回调提到 bypass/always 早返回之前)→ 这条立刻红。
+ *   ③ ★ 「始终允许」是**之前**某次批准的复用,不是这次本人点头 → 不产生新授权。
+ *   ④ danger 档本人批准**不铸授权**(高风险每次都要本人批,受限授权不能替代)。
+ *
+ * ⚠️ `signPlanGrantForUserApproval` 只给 **write** 档签(read/ui 从不弹卡;danger 每次要批)。
+ */
+{
+  const freshStore = (): GrantStore => { const s = new GrantStore({ newId: (n) => `g${n}` }); setGrantStore(s); return s; };
+  // 直接从**生产单例读取口** `getGrantStore()` 取授权 —— 证明签发端写进的正是执行点读的那个 store
+  // (而不是测试另造的一个),把「同一份共享实现」这条钉在断言里。
+  const boundFor = (method: string, input: unknown): Grant | null =>
+    getGrantStore().findBoundFor({ method, core: { sshHostKey: appApiBindingId("me", method, input) } }, Date.now());
+  let renameRuns = 0;
+  recordRpcHandler("session:rename", async (_e, raw) => { renameRuns += 1; return { session: { id: "s9", title: (raw as { title?: string }).title } }; });
+
+  // ① ★ 承重:用户本人点头一次 → 铸 grant;同动作**再调**不弹卡且执行。
+  {
+    freshStore();
+    const input = { id: "s9", title: "plan" };
+    const c1 = ctxWith({ allow: true });
+    const r1 = await call("session.rename", input, c1.ctx);
+    check("★ ARC-004④ 用户点头一次:执行成功", r1.isError !== true, textOf(r1));
+    check("★ ARC-004④ 用户点头一次:确实弹过一次卡", c1.asked.length === 1, c1.asked.length);
+    check("★ ARC-004④ 用户点头 → **铸出一枚 grant**(store 不再空)", boundFor("session.rename", input) !== null);
+    // 同动作第二次:不弹卡(有授权覆盖),照常执行。
+    const c2 = ctxWith({ allow: true });
+    const before = renameRuns;
+    const r2 = await call("session.rename", input, c2.ctx);
+    check("★ ARC-004④ 用户批准后**该动作不再弹卡**(asked=0)且执行", c2.asked.length === 0 && r2.isError !== true && renameRuns === before + 1, { asked: c2.asked.length, runs: renameRuns - before });
+  }
+
+  // ② ★ 承重:agent / system 自批(完全访问的系统默认放行)**不产生授权**。
+  {
+    freshStore();
+    const input = { id: "s9", title: "bypass" };
+    const { ctx, asked } = ctxWith({ mode: "bypassPermissions" });
+    await call("session.rename", input, ctx);
+    check("★ ARC-004④ 完全访问放行(系统默认,非本人):确实没弹卡", asked.length === 0, asked.length);
+    check("★ ARC-004④ **agent/system 自批不产生授权**(store 仍空)", boundFor("session.rename", input) === null);
+  }
+
+  // ③ ★ 承重:「始终允许」复用不是本人新鲜点头 → 不产生新授权。
+  {
+    freshStore();
+    const input = { id: "s9", title: "always" };
+    const { ctx, asked } = ctxWith({ always: new Set(["mcode-app:session.rename"]) });
+    await call("session.rename", input, ctx);
+    check("★ ARC-004④ 始终允许:不弹卡", asked.length === 0, asked.length);
+    check("★ ARC-004④ 始终允许复用**不产生新授权**(store 仍空)", boundFor("session.rename", input) === null);
+  }
+
+  // ④ danger 档本人批准**不铸授权**。
+  {
+    freshStore();
+    const input = { url: "https://x/y.git" };
+    const { ctx } = ctxWith({ allow: true });
+    await call("plugins.installGit", input, ctx);
+    check("★ ARC-004④ 高风险动作本人批准**不铸授权**(每次都要批)", boundFor("plugins.installGit", input) === null);
+  }
+
+  setGrantStore(null);
   recordRpcHandler("session:rename", async (_e, raw) => ({ session: { id: "s9", title: (raw as { title?: string }).title } }));
 }
 
