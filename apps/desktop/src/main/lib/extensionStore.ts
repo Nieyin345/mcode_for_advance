@@ -30,6 +30,7 @@ import {
   withoutStoreValue,
   EXTENSION_STORE_FILE,
   EXTENSION_STORE_MAX,
+  EXTENSION_TOTAL_MAX,
   type ExtensionStoreFile,
   type ExtensionStoreListEntry,
   type ExtensionStoreListFilesResult,
@@ -300,9 +301,48 @@ export function writeFileInExtension(
       return { ok: false, reason: "invalidPath" };
     }
   }
+  // 【MC-096】**累计配额**:单文件 4MB 不封总量 —— 没有这条,一个扩展能写无数个 4MB 文件
+  // 把磁盘塞满。算该扩展目录当前总量 + 本次增量,超 `EXTENSION_TOTAL_MAX` 即拒(与单文件
+  // 超限同一个 `tooLarge` 口径)。覆盖写时先扣掉旧文件的大小。
+  const existing = existsSync(res.abs) ? safeFileSize(res.abs) : 0;
+  const used = directoryBytes(extensionDir(root, extensionId)) - existing;
+  if (used + bytes > EXTENSION_TOTAL_MAX) {
+    return { ok: false, reason: "tooLarge", limit: EXTENSION_TOTAL_MAX };
+  }
   mkdirSync(dirname(res.abs), { recursive: true });
   atomicWrite(res.abs, content);
   return { ok: true, bytes };
+}
+
+/** 一个文件的字节数;读不到 / 是目录 → 0(只用于配额估算,不参与安全判定)。 */
+function safeFileSize(path: string): number {
+  try {
+    const st = statSync(path);
+    return st.isFile() ? st.size : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** 一个目录(含子目录)下所有普通文件的字节数之和。符号链接不跟随(避免把库外算进来)。 */
+function directoryBytes(dir: string): number {
+  let total = 0;
+  const walk = (d: string): void => {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const p = join(d, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) walk(p);
+      else if (entry.isFile()) total += safeFileSize(p);
+    }
+  };
+  walk(dir);
+  return total;
 }
 
 /**

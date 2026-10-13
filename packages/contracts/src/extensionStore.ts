@@ -78,6 +78,14 @@ export const ExtensionStoreKeySchema = z
 export const EXTENSION_STORE_MAX = 4 * 1024 * 1024;
 
 /**
+ * 【MC-096】**整个扩展目录的累计字节上限** —— 键值(store.json)+ 文件通道写的所有文件的
+ * 总大小。`EXTENSION_STORE_MAX` 只封单份/单文件;没有这条,一个扩展可以写无数个 4MB 文件
+ * 把磁盘塞满。取 8×单份(32MB):足够一份像样的面板数据 + 若干导出/截图,又给"一个扩展
+ * 不能吃掉整块盘"划一道明确的线。超限**拒写**(与单文件超限同一个 `tooLarge` 口径)。
+ */
+export const EXTENSION_TOTAL_MAX = 32 * 1024 * 1024;
+
+/**
  * 存储文件名(该扩展目录**根**下的键值文件)。键值通道的读写只动这一个名字的文件。
  *
  * 键值通道(`readStore` / `persist`)与文件通道的**保留闸**共用这一个名字(不写第二份

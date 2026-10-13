@@ -38,6 +38,7 @@ import {
   EXTENSION_STORE_WRITE_FILE_CHANNEL,
   EXTENSION_STORE_LIST_FILES_CHANNEL,
   EXTENSION_STORE_MAX,
+  EXTENSION_TOTAL_MAX,
   EXTENSION_STORE_FILE,
   isValidExtensionId,
   isSafeExtensionRelPath,
@@ -273,6 +274,30 @@ eq("ListFilesSchema 拒 ..", ExtensionStoreListFilesSchema.safeParse({ extension
   check("listFiles 根列到 notes/(目录)", rootLs.ok && rootLs.entries.some((e) => e.name === "notes" && e.isDir), rootLs);
   check("listFiles 目录在前、普通文件在后", rootLs.ok && rootLs.entries[0]?.isDir === true, rootLs.ok ? rootLs.entries.map((e) => e.name) : rootLs);
   deepEq("listFiles 列不存在目录 = notFound", listFilesInExtension(ROOT, "ext-files", "no-such-dir"), { ok: false, reason: "notFound" });
+
+  // ★ 【MC-096 累计配额】单文件 4MB 不封总量 —— 写满累计上限后**下一次写被拒**(否则一个扩展
+  //   能写无数个 4MB 文件把磁盘塞满)。用 EXTENSION_TOTAL_MAX/单块 块数逼近(不真写 32MB,改用
+  //   尽量少的块:每块 EXTENSION_STORE_MAX 大小,写 `floor(TOTAL/单个)+1` 块,最后一块该被拒)。
+  {
+    const chunk = "y".repeat(EXTENSION_STORE_MAX); // 4MB 一块(单文件上限内,允许)
+    const fullChunks = Math.floor(EXTENSION_TOTAL_MAX / EXTENSION_STORE_MAX); // 8 块
+    let wroteAll = true;
+    for (let i = 0; i < fullChunks; i += 1) {
+      const w2 = writeFileInExtension(ROOT, "ext-total", `chunk-${i}.txt`, chunk);
+      if (!w2.ok) { wroteAll = false; break; }
+    }
+    check("★ MC-096:累计上限内写满 8 块 4MB 都成功", wroteAll);
+    // 第 9 块(再 4MB)→ 超累计上限,拒。
+    const overflow = writeFileInExtension(ROOT, "ext-total", "chunk-overflow.txt", chunk);
+    deepEq("★ MC-096:超累计上限 → 拒写 tooLarge", overflow, { ok: false, reason: "tooLarge", limit: EXTENSION_TOTAL_MAX });
+    check("★ MC-096:被拒的第 9 块没落盘", !existsSync(join(extensionsDir(ROOT), "ext-total", "chunk-overflow.txt")));
+    // 覆盖一个**已存在**的块(不增加总量)→ 仍可写(扣掉旧大小后不超限)。
+    const overwrite = writeFileInExtension(ROOT, "ext-total", "chunk-0.txt", "small");
+    check("★ MC-096:覆盖写不增加总量 → 仍可写(只算增量)", overwrite.ok === true, overwrite);
+    // 别的扩展不受 ext-total 配额牵连(配额按扩展目录各算)。
+    const other = writeFileInExtension(ROOT, "ext-total-other", "big.txt", chunk);
+    check("★ MC-096:配额按扩展各算(别的扩展不受牵连)", other.ok === true, other);
+  }
   deepEq("listFiles 列一个文件当目录 = notADir", listFilesInExtension(ROOT, "ext-files", "empty.txt"), { ok: false, reason: "notADir" });
 }
 
