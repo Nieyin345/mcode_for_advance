@@ -68,7 +68,7 @@ import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, 
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
 import type { TerminalCreateInput, TerminalCreateResult, TerminalWriteInput, TerminalOpResult, TerminalResizeInput, TerminalKillInput, TerminalListInput, TerminalInfo } from "./terminal.js";
 import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserAuthRespondResult, BrowserDownloadActionInput } from "./browser.js";
-import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, SkillsCopyToProjectInput, SkillsCopyToProjectResult,
+import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, SkillsCopyToProjectInput, SkillsCopyToProjectResult, EnginesMatrixStatus,
   SkillPreset, SkillsPresetSaveInput, SkillsPresetDeleteInput,
   SkillsProjectOverviewInput, SkillsProjectOverviewResult,
   ProviderInfo, OutputStyleListInput, OutputStyleEntry,
@@ -574,7 +574,7 @@ export interface RpcMap {
    *  frontmatter. Always resolves (degrades to an empty list on any IO
    *  error). `projectPath` is accepted but ignored (single-scope since the
    *  context-hosting rework). */
-  "skills.list": (input: SkillsListInput) => Promise<{ skills: SkillInfo[] }>;
+  "skills.list": (input: SkillsListInput) => Promise<{ skills: SkillInfo[]; enginesMatrixStatus?: EnginesMatrixStatus }>;
   /** Read one skill's full SKILL.md source (no truncation). Missing file →
    *  empty content. */
   "skills.read": (input: SkillsReadInput) => Promise<{ content: string }>;

@@ -73,11 +73,14 @@ import {
   defaultSkillsRoot,
   parseSkillFrontmatter,
   readEnginesMap,
+  readEnginesMapDetailed,
+  enginesMapPath,
   writeEnginesMap,
   setEnginesEntry,
   engineEnabled,
   skillNamesInRoot,
 } from "@main/lib/skillEngines.js";
+import type { EnginesMatrixStatus } from "@contracts/ipc";
 
 /** True if `abs` is inside `root` (or equals it), after normalizing both.
  *  Containment check for write/delete ops — same logic as files.ts pathWithin.
@@ -465,6 +468,22 @@ async function scanZcodePluginSkillDirs(): Promise<string[]> {
  * 项目技能**排在通用库之上**（见下面 `SOURCE_RANK`）—— 局部覆盖全局是用户
  * 期望的方向：项目里放一份同名技能，就是为了在这一项目里用它的版本。
  */
+/**
+ * 【MC-077】矩阵文件的读状态 —— 面板据它如实提示「引擎矩阵配置损坏 / 已恢复」。
+ *
+ * 用的是**唯一一份** `readEnginesMapDetailed`(它自己已经含 fail-closed 与 last-good 恢复),
+ * 这里只投影 `status` / `recovered` / `error` 三个字段,**不重算**任何判定 —— 与实际生效
+ * 的权限来自同一次读,不可能漂移。
+ */
+export function skillsEnginesMatrixStatus(): EnginesMatrixStatus {
+  const read = readEnginesMapDetailed(enginesMapPath(resolveSkillRoot()));
+  return {
+    status: read.status,
+    recovered: read.recovered,
+    ...(read.error !== undefined ? { error: read.error } : {}),
+  };
+}
+
 export async function listSkillsForProject(projectPath: string | undefined): Promise<SkillInfo[]> {
   // Per-engine availability for the universal library — resolved here once so
   // both the composer menu and the settings panel see the same state.
@@ -850,7 +869,9 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
     // 报错而不是清单。兄弟无参 handler 一律这个写法(见 `context.get` /`memory.list`)。
     const input = SkillsListSchema.parse(raw ?? {});
     const skills = await listSkillsForProject(input.projectPath);
-    return { skills };
+    // 【MC-077】带上矩阵文件的读状态 —— 面板据此如实提示「你的引擎矩阵配置损坏了、
+    // 已按保守策略处理」,而不是把坏文件**静默**当成「用户重新选择了全允许」。
+    return { skills, enginesMatrixStatus: skillsEnginesMatrixStatus() };
   });
 
   // ── Set one universal skill's per-engine availability ──

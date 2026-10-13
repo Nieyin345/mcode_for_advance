@@ -79,6 +79,24 @@ export interface SkillEngineState {
   pi: boolean;
 }
 
+/**
+ * 【MC-077】Skills / MCP 引擎矩阵文件这一次**读出来是什么状态** —— 让面板能如实告诉
+ * 用户「你的配置损坏了、已按保守策略恢复/已 fail-closed」，而不是把坏文件**静默**当成
+ * 「用户重新选择了全允许」。
+ *
+ *  - `VALID` —— 文件在、能解,`perEngine` 就是用户存的那份;
+ *  - `MISSING` —— 从没设过(合法,按默认全可见);
+ *  - `INVALID` —— 存在但坏了 / 读不动。**此时 `perEngine` 已按 fail-closed 给出**
+ *    (有 last-good 就恢复到它,没有就全拒绝),`recovered` 说是不是从备份恢复的。
+ */
+export interface EnginesMatrixStatus {
+  status: "VALID" | "MISSING" | "INVALID";
+  /** `INVALID` 且成功从 last-good 恢复出非空/空配置时为 true。 */
+  recovered: boolean;
+  /** `INVALID` 时可读的原因(给用户看的那一句)。 */
+  error?: string;
+}
+
 /** One registered AI backend surfaced to the renderer via `provider.list`.
  *  The capabilities descriptor drives which composer chips / dropdown entries
  *  the UI renders for a given provider (declarative capability negotiation). */

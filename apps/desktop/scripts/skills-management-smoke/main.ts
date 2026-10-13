@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { SkillInfo } from "@contracts/ipc";
+import type { SkillInfo, EnginesMatrixStatus } from "@contracts/ipc";
 
 const home = process.env.MCODE_SKILLS_SMOKE_HOME;
 const artifacts = process.env.MCODE_SKILLS_SMOKE_ARTIFACTS;
@@ -62,6 +62,21 @@ await test("only callable skills with a regular SKILL.md are listed; hidden/syst
   assert.ok(skills.some(s => s.name === "empty-source"));
   for (const name of [".system", "hidden-valid-name", "support-files", "not-markdown", "../escape", "skill-installer"]) assert.ok(!skills.some(s => s.name === name), "unexpected row: " + name);
   assert.ok(skills.every(s => SKILL_NAME_RE.test(s.name)));
+});
+// 【MC-077】skills.list 带回矩阵读状态 —— 面板据此如实提示「引擎矩阵配置损坏 / 已恢复」。
+// 判据立**在真实状态变化上**:合法矩阵 → VALID;把文件写坏 → INVALID(面板据此提示)。
+await test("skills.list carries the engines-matrix read status", async () => {
+  const matrixFile = join(root, ".mcode-engines.json");
+  writeFileSync(matrixFile, JSON.stringify({ "displayed-name": { codex: false } }));
+  const okRes = await call<{ enginesMatrixStatus?: EnginesMatrixStatus }>(IPC.SKILLS_LIST, {});
+  assert.equal(okRes.enginesMatrixStatus?.status, "VALID", "合法矩阵应为 VALID");
+  // 写坏它 → 下一次读必须是 INVALID（不是静默当「全允许」）。
+  writeFileSync(matrixFile, "{ 这不是 json");
+  const badRes = await call<{ enginesMatrixStatus?: EnginesMatrixStatus }>(IPC.SKILLS_LIST, {});
+  assert.equal(badRes.enginesMatrixStatus?.status, "INVALID", "损坏矩阵应为 INVALID");
+  assert.equal(typeof badRes.enginesMatrixStatus?.recovered, "boolean");
+  // 清掉,免得影响后续用例。
+  rmSync(matrixFile, { force: true });
 });
 await test("engine name discovery uses the same valid-document rule", () => {
   const names = skillNamesInRoot(root);
