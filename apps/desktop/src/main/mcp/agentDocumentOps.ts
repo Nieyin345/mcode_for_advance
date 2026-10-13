@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { hostname, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 import { textFileHash, withDocFileLock } from "./agentTextFiles.js";
 
 export type AgentPdfOperation =
@@ -156,100 +157,18 @@ async function assertUnchangedOrThrow(abs: string, original: Buffer, label: stri
 }
 
 /**
- * 【MC-069 残余】**跨进程文件租约** —— 进程内 `withDocFileLock` 的那张 `Map` 只对本进程
- * 排队:两个独立 Mcode 进程(或一个 Mcode + 一个外部编辑器)各自从同一版本读取、各自通过
- * 自己进程内的锁,再分别替换整个文件,照样丢更新(复审 §45.5 的 E2 时序)。这里用磁盘上一个
- * 独占创建的锁文件把互斥**抬到宿主级**,让两个 OS 进程也串行。
- *
- * 原语:`fs.open(lockPath, 'wx')` = `O_CREAT|O_EXCL`,内核保证同路径只有一个能创建成功;
- * 抢到的把 `{host,pid,token,createdAt}` 写进去并**持有**到本次读-改-写结束。抢不到的读取
- * 现有锁:若持有者是**本机已死进程**(`process.kill(pid,0)` 抛 `ESRCH`)或锁**过期**
- * (超过 `STALE_MS` —— 防 pid 复用/跨机),判定为陈旧并回收重抢;否则短抖动重试到超时。
- *
- * 这不是"进程内 Map 的复印件":它跨进程、跨编辑器同样有效,落盘事实可被第三方进程观测。
- */
-const LEASE_STALE_MS = 120_000;
-const LEASE_WAIT_MS = 60_000;
-/** 锁文件已存在但读不出合法 JSON 时,按 mtime 判"正被另一进程创建中(新鲜)→ 退让"还是"写崩了(陈旧)→ 回收"。 */
-const LEASE_FRESH_GRACE_MS = 5_000;
-
-interface LeaseRecord { host: string; pid: number; token: string; createdAt: number; }
-
-function leaseOwnerAlive(rec: LeaseRecord): boolean {
-  if (rec.host !== hostname()) return Date.now() - rec.createdAt < LEASE_STALE_MS;
-  try {
-    process.kill(rec.pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
-async function tryAcquireOsLease(lockPath: string, token: string): Promise<boolean> {
-  const rec: LeaseRecord = { host: hostname(), pid: process.pid, token, createdAt: Date.now() };
-  try {
-    // `wx` = O_CREAT|O_EXCL:同路径只有一个进程能创建成功。**不持有 fd** —— 租约由"文件存在"表示。
-    await fs.writeFile(lockPath, JSON.stringify(rec), { flag: "wx", encoding: "utf8" });
-    return true;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "EEXIST") throw err;
-  }
-  // 已存在:读现有锁判断持有者死活。**注意** `wx` 建文件与写入内容之间有一瞬空窗,
-  // 另一进程此刻读到的可能是**空/半截**内容 —— 绝不能就此判"陈旧"去删活锁(那等于没有锁),
-  // 见 doc-ops-smoke 里两独立进程用例暴露的抢锁竞态。
-  const raw = await fs.readFile(lockPath, "utf8").catch(() => "");
-  let existing: LeaseRecord | null = null;
-  try { existing = JSON.parse(raw) as LeaseRecord; } catch { existing = null; }
-  if (existing && Number.isFinite(existing.pid)) {
-    if (!leaseOwnerAlive(existing)) await fs.rm(lockPath, { force: true }).catch(() => undefined);
-    return false;
-  }
-  // 内容还不完整:按 mtime 新鲜度判 —— 新鲜(另一进程正写)→ 退让;陈旧(写到一半崩了)→ 回收。
-  const st = await fs.stat(lockPath).catch(() => null);
-  if (st && Date.now() - st.mtimeMs > LEASE_FRESH_GRACE_MS) {
-    await fs.rm(lockPath, { force: true }).catch(() => undefined);
-  }
-  return false;
-}
-
-async function acquireOsFileLease(lockPath: string, waitMs = LEASE_WAIT_MS): Promise<() => Promise<void>> {
-  const token = randomUUID();
-  const deadline = Date.now() + waitMs;
-  while (true) {
-    if (await tryAcquireOsLease(lockPath, token)) {
-      return async () => {
-        // 只删**本 token 持有**的那份锁 —— 别把回收后又抢到锁的第三方误删。
-        const raw = await fs.readFile(lockPath, "utf8").catch(() => "");
-        try {
-          if ((JSON.parse(raw) as LeaseRecord).token === token) await fs.rm(lockPath, { force: true });
-        } catch { /* 已被回收/替换:不动 */ }
-      };
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `FILE_VERSION_CONFLICT:文件正被另一个进程编辑(跨进程文件租约未在 ${waitMs}ms 内取得),拒绝并发覆盖:${lockPath}；请稍后重试`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 30 + Math.floor(Math.random() * 70)));
-  }
-}
-
-/**
- * 文档读-改-写的**统一跨进程事务入口**:先把互斥抬到宿主级(磁盘锁文件),再叠加本进程的
+ * 文档读-改-写的**统一跨进程事务入口**:先把互斥抬到宿主级(磁盘文件租约),再叠加本进程的
  * 串行 `withDocFileLock`,锁内才是调用方的读-改-写。两级都要:磁盘租约挡**别的进程**,
  * 进程内 Map 挡**同进程内的并发 async**(避免同一进程自己和自己抢磁盘锁、白等)。
+ *
+ * 【MC-069 → MC-097 收口】这段原先在此**私有**实现(`tryAcquireOsLease` /
+ * `acquireOsFileLease` / `LEASE_*` 常量都在本文件里)。`ipc/files.ts` 的 `FILE_WRITE`
+ * (Markdown/源码保存)同样需要按路径的宿主级互斥,**不能**另起第二套锁,于是把它抽到
+ * `lib/osFileLease.ts`,与本文件共用同一份(`withOsFileLease`)。此处只保留「文件租约 +
+ * 进程内锁」两级叠加这一处调用点差异。
  */
 export async function withDocumentFileLease<T>(file: string, action: (real: string) => Promise<T>): Promise<T> {
-  const resolved = path.resolve(file);
-  const real = await fs.realpath(resolved).catch(() => resolved);
-  const lockPath = `${real}.mcode-lock`;
-  const release = await acquireOsFileLease(lockPath);
-  try {
-    return await withDocFileLock(real, action);
-  } finally {
-    await release().catch(() => undefined);
-  }
+  return withOsFileLease(file, (real) => withDocFileLock(real, action));
 }
 
 async function renderMarkdownPdf(markdown: string, outputPath: string): Promise<void> {

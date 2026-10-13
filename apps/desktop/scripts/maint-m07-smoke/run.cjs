@@ -12,19 +12,33 @@ const esbuild = viteRequire("esbuild");
 const out = mkdtempSync(join(tmpdir(), "mcode-maint-m07-smoke-"));
 try {
   const bundle = join(out, "smoke.mjs");
+  const alias = {
+    "@main/store/repositories.js": "./scripts/maint-m07-smoke/stubs.ts",
+    "@main/lib/dataRoot.js": "./scripts/maint-m07-smoke/stubs.ts",
+    "@main/lib/logger.js": "./scripts/maint-m07-smoke/stubs.ts",
+    "electron": "./scripts/maint-m07-smoke/stubs.ts",
+  };
   esbuild.buildSync({
     absWorkingDir: app,
     entryPoints: ["scripts/maint-m07-smoke/main.ts"],
     outfile: bundle, bundle: true, platform: "node", format: "esm",
     tsconfig: "tsconfig.json", logLevel: "error",
-    alias: {
-      "@main/store/repositories.js": "./scripts/maint-m07-smoke/stubs.ts",
-      "@main/lib/dataRoot.js": "./scripts/maint-m07-smoke/stubs.ts",
-      "@main/lib/logger.js": "./scripts/maint-m07-smoke/stubs.ts",
-      "electron": "./scripts/maint-m07-smoke/stubs.ts",
-    },
+    alias,
   });
-  const result = spawnSync(process.execPath, [bundle], { stdio: "inherit", timeout: 60000 });
+  // 【MC-097 跨进程】另打一份**独立子进程入口**,由 main.ts 用 `spawn(node, [$OUT/child-write.mjs,…])`
+  // 各起一个真 OS 进程并发写同一路径,证明宿主级文件租约真的跨进程(进程内 Map 做不到)。
+  const childBundle = join(out, "child-write.mjs");
+  esbuild.buildSync({
+    absWorkingDir: app,
+    entryPoints: ["scripts/maint-m07-smoke/child-write.ts"],
+    outfile: childBundle, bundle: true, platform: "node", format: "esm",
+    tsconfig: "tsconfig.json", logLevel: "error",
+    alias,
+  });
+  const result = spawnSync(process.execPath, [bundle], {
+    stdio: "inherit", timeout: 90000,
+    env: { ...process.env, MCODE_M07_CHILD_ENTRY: childBundle },
+  });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
 } finally {

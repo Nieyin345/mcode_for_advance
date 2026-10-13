@@ -33,6 +33,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
+import { spawn } from "node:child_process";
 import { IPC } from "@contracts/ipc";
 import { listDirGuarded, readFileGuarded, registerFileHandlers } from "@main/ipc/files.js";
 import { projectPaths, warnings } from "./stubs.js";
@@ -75,6 +76,31 @@ async function call(channel: string, payload: unknown): Promise<{ ok?: boolean; 
   const fn = handlers.get(channel);
   if (!fn) throw new Error(`handler not registered: ${channel}`);
   return (await fn(null, payload)) as { ok?: boolean; conflict?: boolean };
+}
+
+/** 起一个**独立 OS 进程**去调真实的 FILE_WRITE(入口由 run.cjs 打成 mjs 并经环境变量给出)。 */
+const childEntry = process.env.MCODE_M07_CHILD_ENTRY ?? "";
+function spawnWrite(filePath: string, fill: string, count: number, expectedVersion: string): Promise<{ ok: boolean; conflict?: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    if (!childEntry || !existsSync(childEntry)) {
+      reject(new Error(`缺少 child-write 入口(应经 run.cjs 设置):${childEntry}`));
+      return;
+    }
+    const child = spawn(
+      process.execPath,
+      [childEntry, filePath, projectRoot, fill, String(count), expectedVersion],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let out = "", errOut = "";
+    child.stdout.on("data", (d: Buffer) => { out += d.toString("utf8"); });
+    child.stderr.on("data", (d: Buffer) => { errOut += d.toString("utf8"); });
+    child.once("error", reject);
+    child.once("close", () => {
+      const line = out.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "";
+      try { resolve(JSON.parse(line) as { ok: boolean; conflict?: boolean; error?: string }); }
+      catch { resolve({ ok: false, error: `子进程无可解析输出:stdout=${out.trim()} stderr=${errOut.trim()}` }); }
+    });
+  });
 }
 
 try {
@@ -122,6 +148,82 @@ try {
     // 清理:这两份文件不能影响后面「listDir 列得出 src 只有 1 条」那类断言。
     rmSync(casPath, { force: true });
     rmSync(newPath, { force: true });
+  }
+
+  /* ── 1c. 【MC-097】同路径跨进程写锁:并发写同一路径必须**串行**(互斥,不只是 CAS) ──
+   * 提交点 CAS + 原子替换只挡得住「静默覆盖」与「半写」,**不是互斥**:两个拿着同一
+   * `expectedVersion` 的写者若都还没落盘就都通过了 CAS,再各自 rename,就会交错。修复把这段
+   * 临界区包进**按路径的宿主级文件租约**(`lib/osFileLease.ts`,与 Excel/PDF/DOCX 共用同一份),
+   * 同路径串行 → 先到的落盘后,后到的 CAS 重读必看到新版本而冲突。这里直接并发调**真实**
+   * FILE_WRITE 处理器验这一点;不同路径必须**互不阻塞**(锁是按路径的,不是全局的)。 */
+  console.log("\n【MC-097】同路径并发写互斥 + 不同路径不阻塞");
+  {
+    // ① 同路径、同一 expectedVersion 的两发并发写 → 恰好一个成功,另一个明确冲突(不静默覆盖)。
+    const racePath = join(projectRoot, "src", "race.ts");
+    writeFileSync(racePath, "race-v1\n", "utf-8");
+    const raceVersion = (await readFileGuarded(racePath)).version;
+    // 用一份**够大的内容**拉宽「CAS 通过 → 落盘」的窗口:撤掉租约时两发都更容易在对方落盘前
+    // 通过 CAS、双双报成功(变异下可靠转红);有租约时序列化让它不可能。
+    const bigA = "A".repeat(2_000_000) + "\n";
+    const bigB = "B".repeat(2_000_000) + "\n";
+    const [raceA, raceB] = await Promise.allSettled([
+      call(IPC.FILE_WRITE, { filePath: racePath, content: bigA, expectedVersion: raceVersion }),
+      call(IPC.FILE_WRITE, { filePath: racePath, content: bigB, expectedVersion: raceVersion }),
+    ]);
+    const a = raceA.status === "fulfilled" ? raceA.value : { ok: false as const };
+    const b = raceB.status === "fulfilled" ? raceB.value : { ok: false as const };
+    const okCount = [a, b].filter((r) => r.ok === true).length;
+    const conflictCount = [a, b].filter((r) => r.ok === false && r.conflict === true).length;
+    check("★ MC-097:同路径同版本并发写 → 恰好一个成功(不交错)", okCount, 1);
+    check("★ MC-097:另一个明确 conflict(而非静默覆盖)", conflictCount, 1);
+    const landed = readFileSync(racePath, "utf-8");
+    check(
+      "★ MC-097:落盘的是唯一胜者的完整内容(无撕裂/半写)",
+      landed === bigA || landed === bigB,
+      true,
+    );
+    rmSync(racePath, { force: true });
+
+    // ② 不同路径并发写 → 两发都必须成功(锁是按路径的,不同路径不互相阻塞)。
+    const diffA = join(projectRoot, "src", "diff-a.ts");
+    const diffB = join(projectRoot, "src", "diff-b.ts");
+    const [da, db] = await Promise.allSettled([
+      call(IPC.FILE_WRITE, { filePath: diffA, content: "da\n" }),
+      call(IPC.FILE_WRITE, { filePath: diffB, content: "db\n" }),
+    ]);
+    const dOk = [da, db].every(
+      (r) => r.status === "fulfilled" && (r.value as { ok?: boolean }).ok === true,
+    );
+    check("★ MC-097:不同路径并发写 → 两个都成功(不互相阻塞)", dOk, true);
+    check(
+      "★ MC-097:两个不同路径各自内容都落盘",
+      readFileSync(diffA, "utf-8") === "da\n" && readFileSync(diffB, "utf-8") === "db\n",
+      true,
+    );
+    rmSync(diffA, { force: true });
+    rmSync(diffB, { force: true });
+
+    // ③ **真正的跨进程**:两个独立 OS 进程对同一路径、同一 expectedVersion 并发写 →
+    //    仍然恰好一个成功、另一个 conflict。进程内锁**给不出**这个结论(两个进程各有一张
+    //    Map,互不知情),只有按路径的宿主级文件租约能保证。
+    const crossPath = join(projectRoot, "src", "cross-proc.ts");
+    writeFileSync(crossPath, "cross-v1\n", "utf-8");
+    const crossVersion = (await readFileGuarded(crossPath)).version as string;
+    const [pa, pb] = await Promise.all([
+      spawnWrite(crossPath, "A", 2_000_000, crossVersion),
+      spawnWrite(crossPath, "B", 2_000_000, crossVersion),
+    ]);
+    const crossOk = [pa, pb].filter((r) => r.ok === true).length;
+    const crossConflict = [pa, pb].filter((r) => r.ok === false && r.conflict === true).length;
+    check("★ MC-097:两个独立 OS 进程同版本并发写 → 恰好一个成功", crossOk, 1);
+    check("★ MC-097:另一个明确 conflict(跨进程互斥生效)", crossConflict, 1);
+    const crossLanded = readFileSync(crossPath, "utf-8");
+    check(
+      "★ MC-097:跨进程落盘的是唯一胜者的完整内容(非撕裂)",
+      crossLanded === "A".repeat(2_000_000) + "\n" || crossLanded === "B".repeat(2_000_000) + "\n",
+      true,
+    );
+    rmSync(crossPath, { force: true });
   }
 
   /* ── 2. 越界仍然要挡住(所有平台) ──────────────────────────────────────── */

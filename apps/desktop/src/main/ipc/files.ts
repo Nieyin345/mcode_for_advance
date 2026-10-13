@@ -60,6 +60,7 @@ import {
   samePath,
 } from "@main/lib/pathGuard.js";
 import { cachedTreeFiles, sortDirents, SEARCH_MAX_DEPTH, SEARCH_MAX_VISIT } from "@main/lib/walkCache.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 
 /* 包含性判定只用 `lib/pathGuard.ts` 那**一份**(见 CLAUDE.md「共享实现只有一份」)。
  *
@@ -769,25 +770,34 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
         return { ok: false };
       }
       await mkdir(parent, { recursive: true });
-      // 【MC-097】**最终提交点**的乐观并发检查(CAS)。渲染端在 `readFile` 之后、`writeFile`
-      // 之前会隔一次 IPC —— 另一个 Agent/进程完全可能在这个窗口里改了这个文件(独立复审的
-      // E2)。从前 `FILE_WRITE` 直接 `writeFile`,旧编辑器保存会**静默覆盖**别人的改动。
-      // 现在:调用方给了 `expectedVersion`(读到的那一版内容哈希)时,在**真正写之前**重读
-      // 当前内容比对该哈希,不一致就冲突拒绝 —— 与 `memory/store.ts` 的 `assertRevision`
-      // 同一条纪律,CAS 落在**写那一刻**,不是在渲染端。
-      if (input.expectedVersion !== undefined) {
-        const current = await fileContentVersion(input.filePath);
-        if (current !== input.expectedVersion) {
-          log.warn(`file.writeFile conflict — ${input.filePath} 已被改动(期望 ${input.expectedVersion},现为 ${current ?? "不存在"})`);
-          return { ok: false, conflict: true };
+      // 【MC-097】**同路径跨进程租约**包住「最终提交点 CAS + 原子替换」这一整段临界区。
+      // 光有提交点 CAS + 原子替换只挡得住「静默覆盖」和「半写」,**不是互斥**:两个持有同一
+      // `expectedVersion` 的写者若都还没落盘就都通过了 CAS,再各自 rename,就会交错。宿主级
+      // 文件租约(见 `lib/osFileLease.ts`,与 Excel/PDF/DOCX 共用**同一份**原语,不另起第二层锁)
+      // 让同一路径的写者**串行**:先到的落盘后,后到的 CAS 重读必然看到新版本 → 冲突拒绝。
+      // 不同路径的锁文件不同,互不阻塞。
+      //
+      // CAS 本身(渲染端在 `readFile` 之后、`writeFile` 之前隔了一次 IPC,另一个 Agent/进程
+      // 完全可能在这个窗口里改了这个文件 —— 独立复审的 E2)与 `memory/store.ts` 的
+      // `assertRevision` 同一条纪律:**重读比对落在写那一刻,而不是在渲染端**。
+      const outcome = await withOsFileLease(input.filePath, async () => {
+        if (input.expectedVersion !== undefined) {
+          const current = await fileContentVersion(input.filePath);
+          if (current !== input.expectedVersion) {
+            log.warn(`file.writeFile conflict — ${input.filePath} 已被改动(期望 ${input.expectedVersion},现为 ${current ?? "不存在"})`);
+            return { ok: false, conflict: true } as const;
+          }
         }
+        // 【MC-097】**原子替换**:先写同目录临时文件并 fsync,再 rename 覆盖 —— 中断/崩溃不会
+        // 留下半写内容(从前直接 `writeFile` 目标文件,写一半断电就毁原文件)。临时名带随机后缀,
+        // 避免两个并发写撞同一个 tmp。
+        await atomicReplaceFile(input.filePath, input.content);
+        return { ok: true } as const;
+      });
+      if (outcome.ok) {
+        log.info(`file.writeFile saved: ${relative(root, input.filePath) || input.filePath}`);
       }
-      // 【MC-097】**原子替换**:先写同目录临时文件并 fsync,再 rename 覆盖 —— 中断/崩溃不会
-      // 留下半写内容(从前直接 `writeFile` 目标文件,写一半断电就毁原文件)。临时名带随机后缀,
-      // 避免两个并发写撞同一个 tmp。
-      await atomicReplaceFile(input.filePath, input.content);
-      log.info(`file.writeFile saved: ${relative(root, input.filePath) || input.filePath}`);
-      return { ok: true };
+      return outcome;
     } catch (err) {
       log.error(`file.writeFile failed for ${input.filePath}: ${(err as Error).message}`);
       return { ok: false };
