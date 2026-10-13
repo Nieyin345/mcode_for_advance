@@ -1015,7 +1015,7 @@ console.log("\n分层工作流复用与记忆注入所有权");
   // tools.ts 的接线同源)。断言:agent 作用域下**本项目 + 全局**可读写,跨项目/旧布局被拒;
   // 无作用域(桌面用户)保留全局管理权限。
   const { registerMemoryHandlers } = await import("@main/ipc/memory.js");
-  const { runWithAgentMemoryScope } = await import("@main/memory/agentScope.js");
+  const { runWithAgentMemoryScopeForSession } = await import("@main/memory/agentScope.js");
   const handlers = new Map<string, (evt: unknown, raw: unknown) => unknown>();
   const fakeIpc = { handle: (ch: string, fn: never) => handlers.set(ch, fn) } as never;
   registerMemoryHandlers(fakeIpc);
@@ -1031,7 +1031,7 @@ console.log("\n分层工作流复用与记忆注入所有权");
   saveMemoryFile({ path: globalPath, content: "全局内容" });
 
   // ① agent 作用域(p_memory):本项目 + 全局可读,别的项目**拒**。
-  runWithAgentMemoryScope("p_memory", () => {
+  runWithAgentMemoryScopeForSession("isolated-memory-test", () => {
     let selfOk = true;
     try { call("memory:read", { path: projPath }); } catch { selfOk = false; }
     check("★ MC-092:agent 读**本项目**记忆可以", selfOk);
@@ -1067,8 +1067,7 @@ console.log("\n分层工作流复用与记忆注入所有权");
   try { call("memory:read", { path: otherPath }); } catch { desktopCrossOk = false; }
   check("★ MC-092:桌面用户(无作用域)仍能读任意项目记忆(保留全局管理权限)", desktopCrossOk);
 
-  // ③ 缺失身份保守拒绝:`runWithAgentMemoryScopeForSession` 对无效会话抛错。
-  const { runWithAgentMemoryScopeForSession } = await import("@main/memory/agentScope.js");
+  // ③ 缺失身份保守拒绝:对无效会话,读记忆时解析身份会抛错。
   let noSessionThrew = false;
   try { runWithAgentMemoryScopeForSession("不存在的会话", () => call("memory:read", { path: projPath })); } catch { noSessionThrew = true; }
   check("★ MC-092:agent 会话身份缺失/无效时**保守拒绝**(不是降级成全权限)", noSessionThrew);

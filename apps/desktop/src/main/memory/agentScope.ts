@@ -30,35 +30,37 @@ import { SessionRepo } from "@main/store/repositories.js";
 import { MEMORY_PROJECT_ID } from "./paths.js";
 
 interface AgentMemoryScope {
-  /** 会话所属项目 id(宿主解析,不是模型给的)。 */
-  projectId: string;
+  /** 会话 id(宿主给的)。项目身份**延迟**到真正需要时再解析 —— 见下。 */
+  sessionId: string;
 }
 
 const storage = new AsyncLocalStorage<AgentMemoryScope>();
 
-/** 当前调用链是否处在 agent 记忆作用域里;在则返回其项目 id,否则 `undefined`。 */
-export function currentAgentMemoryProjectId(): string | undefined {
-  return storage.getStore()?.projectId;
-}
-
 /**
- * 在给定的项目身份下跑一段调用(agent 经 `app_api_call` 调 `memory.*` 时由 `tools.ts` 包上)。
- * 作用域随异步链传播,`fn` 一返回即消失。
- */
-export function runWithAgentMemoryScope<T>(projectId: string, fn: () => T): T {
-  return storage.run({ projectId }, fn);
-}
-
-/**
- * 从会话 id 解析出项目身份并跑 `fn`;会话没有有效项目 id 时**拒绝**(不静默降级成全权限)。
+ * 当前调用链是否处在 agent 记忆作用域里;在则返回其**会话所属项目 id**,否则 `undefined`。
  *
- * @throws 会话不存在 / 项目 id 形状不合法 —— 记不清属于谁时,记忆访问必须 fail-closed。
+ * ⚠️ **身份在这里才解析**(而不是装作用域时):装作用域的 `tools.ts` 那条路对**任何**
+ * `memory.*` 调用都包一层,而有些调用(如被 smoke 换桩的 handler)根本不会走到读记忆那一步
+ * —— 那时去查库既无意义又可能撞上未初始化的库。真正要判作用域的是**执行点**(记忆 handler),
+ * 所以解析收在这里:只有真的读/写/列记忆时才查 `SessionRepo`,那才是"该保守拒绝"的时刻。
+ *
+ * 会话不存在 / 项目 id 形状不合法 → **抛错**(fail-closed,不降级成全权限)。
  */
-export function runWithAgentMemoryScopeForSession<T>(sessionId: string, fn: () => T): T {
-  const session = SessionRepo.get(sessionId);
+export function currentAgentMemoryProjectId(): string | undefined {
+  const scope = storage.getStore();
+  if (scope === undefined) return undefined; // 桌面用户(无作用域):全局管理权限。
+  const session = SessionRepo.get(scope.sessionId);
   const projectId = session?.projectId;
   if (typeof projectId !== "string" || !MEMORY_PROJECT_ID.test(projectId)) {
     throw new Error("这次调用没有可用的宿主会话项目身份,拒绝访问记忆。");
   }
-  return storage.run({ projectId }, fn);
+  return projectId;
+}
+
+/**
+ * 在给定的项目身份下跑一段调用(agent 经 `app_api_call` 调 `memory.*` 时由 `tools.ts` 包上)。
+ * 作用域随异步链传播,`fn` 一返回即消失。**只记会话 id**,项目身份延迟到执行点解析。
+ */
+export function runWithAgentMemoryScopeForSession<T>(sessionId: string, fn: () => T): T {
+  return storage.run({ sessionId }, fn);
 }

@@ -1568,14 +1568,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "modules:catalog",
   "doc": "全部模块(**内置 + 已装**)的清单:各自的贡献项、宿主能力表、以及内置只读模块能当工作流目标的那几项。",
   "input": "(无参数)",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: 'resource.read'[]; contributions: { id: string; title: { zh: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.install",
   "channel": "modules:install",
   "doc": "安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单。",
-  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: 'resource.read'[]; contributions: { id: string; title: { zh: str…; confirmReadAccess: true }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: 'resource.read'[]; contributions: { id: string; title: { zh: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; confirmReadAccess: true }",
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.invoke",
@@ -1589,7 +1589,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "modules:remove",
   "doc": "卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单。",
   "input": "{ moduleId: string }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: 'resource.read'[]; contributions: { id: string; title: { zh: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.task",
@@ -2131,6 +2131,20 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
+  "method": "scene.plan",
+  "channel": "scene:plan",
+  "doc": "【ARC-002 / MC-058】**只读**的场景规划:给一份候选 SceneSpec,校验(一次报全)通过则编译出有序变更计划(拓扑排序 + 稳定 digest)。**不建任何资源、不申请授权** —— 模型提出计划 ≠ 获得执行权限;真正的部署是另一条命令且需独立计划级授权。",
+  "input": "{ spec?: unknown }",
+  "output": "{ ok: false; problems: { path: string; message: string; }[] } | { ok: true; plan: ScenePlanWire }"
+ },
+ {
+  "method": "scene.preflight",
+  "channel": "scene:preflight",
+  "doc": "【ARC-002 / MC-058】**只读**的场景预检:校验(一次报全)+ 编译 + **能力预检**(声明的能力在本机在不在、对这个引擎适不适用)。必需能力缺了 `preflight.ok=false`(部署该被挡住);可选能力缺了进 `gaps` 但不挡。不建资源、不装插件、不申请授权。",
+  "input": "{ spec?: unknown }",
+  "output": "{ ok: false; problems: { path: string; message: string; }[] } | { ok: true; plan: ScenePlanWire; preflight: ScenePreflightWire }"
+ },
+ {
   "method": "session.archive",
   "channel": "session:archive",
   "doc": "Set a session's archived flag (soft-delete; restorable).",
@@ -2359,7 +2373,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "skills:list",
   "doc": "Discover skills for the composer `/` menu. Scans the user-global `~/.mcode/skills/` universal library and parses each SKILL.md's frontmatter. Always resolves (degrades to an empty list on any IO error). `projectPath` is accepted but ignored (single-scope sinc…",
   "input": "{ projectPath?: string | undefined }",
-  "output": "{ skills: SkillInfo[] }"
+  "output": "{ skills: SkillInfo[]; enginesMatrixStatus?: EnginesMatrixStatus | undefined }"
  },
  {
   "method": "skills.marketAdd",

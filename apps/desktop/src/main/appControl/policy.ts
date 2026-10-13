@@ -293,6 +293,7 @@ export const DOMAIN_LABELS: Record<string, string> = {
   runs: "工作流运行历史",
   monitoring: "监控总览",
   projectInit: "项目初始化模板:列出、读、存、删、预览、应用",
+  scene: "场景:校验候选声明、编译变更计划、部署前能力预检(只读,不执行)",
   skills: "技能:列出、读、存、删、导入、复制到项目、预设、引擎可见性",
   plugins: "插件:列出、安装、卸载、启停、市场",
   mcp: "外部 MCP 服务器:列出、新增、删除、启停、授权、导入",
