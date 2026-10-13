@@ -60,6 +60,25 @@ window.labApi.engineTools={
 // ── 插件页(PluginsPanel)夹具 ──
 window.labPluginEvents=[];
 window.labPlugins=[];  // 空列表:已安装 pane 直接显示空态,安装表单仍可打开
+// 【ARC-014】`?case=plugins&readiness=1` 时塞一个插件:含通用 skill + Claude 专用 command。
+// componentReadiness 里 Claude **全就绪**(ready),Pi **部分兼容**(有缺口)。用来验面板把
+// 「全部就绪」与「部分兼容」**分开显示**,而不是只显示 ANY 兼容。(用**额外参数**而非新 case ——
+// `main.jsx` 只在 `case===plugins` 时挂 PluginsPanel。)
+if (new URLSearchParams(location.search).get('readiness') === '1') {
+  window.labPlugins = [{
+    name: 'mixed-pack', version: '1.0.0', description: 'skill + Claude command', rootDir: '/tmp/mixed-pack',
+    enabled: true, installedAt: '2026-01-01T00:00:00.000Z',
+    source: { kind: 'local', ref: '/tmp/mixed-pack' },
+    components: { skills: [{ id: 'lit' }], commands: [{ id: 'review' }], agents: [], hooks: [], mcpServers: [], apps: [] },
+    compatibleProviderIds: ['claude-sdk', 'pi-sdk'],
+    deliveredProviderIds: ['claude-sdk', 'pi-sdk'],
+    engines: { claude: true, codex: true, pi: true },
+    componentReadiness: {
+      'claude-sdk': { ready: true, satisfied: ['skill:0', 'command:0'], gaps: [], providerId: 'claude-sdk' },
+      'pi-sdk': { ready: false, satisfied: ['skill:0'], gaps: [{ componentId: 'command:0', status: 'INCOMPATIBLE', reason: '', reportedBy: 'pi-sdk' }], providerId: 'pi-sdk' },
+    },
+  }];
+}
 window.labMarketplaces=[];
 window.labApi.plugins={
   list:async()=>({plugins:window.labPlugins}),

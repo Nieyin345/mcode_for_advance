@@ -168,6 +168,23 @@ await withAuditPage(here,async page=>{
   await page.sleep(100);
   check('plain Enter adds the marketplace once',await page.eval('labPluginEvents.filter(e=>e.m==="marketplaceAdd").length===1'));
  });
+ // 【ARC-014】插件页把「全部组件就绪(ALL)」与「部分兼容」**分开显示**,而不是只显示
+ // ANY 兼容。夹具:含通用 skill + Claude 专用 command 的插件 —— Claude 全就绪、Pi 部分兼容。
+ // 判据:Claude 那行显示「全部组件就绪」,Pi 那行显示「部分兼容」且**不**显示「全部组件就绪」。
+ await test('plugins-component-readiness',async()=>{
+  await go('plugins&readiness=1');
+  await page.waitFor("document.body.innerText.includes('mixed-pack')");
+  // 展开插件详情(点那一行的展开按钮 —— 它带 aria-expanded)。
+  await page.eval(`(()=>{const b=[...document.querySelectorAll('button[aria-expanded]')].find(e=>e.offsetParent!==null&&e.textContent.includes('mixed-pack'));b&&b.click();})()`);
+  await page.sleep(150);
+  const txt=await page.eval('document.body.innerText');
+  check('★ Claude 行显示「全部组件就绪」',txt.includes('全部组件就绪'),txt.slice(0,400));
+  check('★ Pi 行显示「部分兼容」',txt.includes('部分兼容'),txt.slice(0,400));
+  // 承重:Pi 那一行**不能**也说「全部组件就绪」—— 用行内文本定位 Pi 行。若把 ALL 判定
+  // 退化成恒 true,Pi 行会也显示「全部组件就绪」,这条就会红。
+  const piLine=await page.eval(`(()=>{const els=[...document.querySelectorAll('div')].filter(e=>e.children.length<=8&&e.textContent.trim().startsWith('Pi'));return els.length?els[0].textContent:''})()`);
+  check('★ Pi 行不谎报「全部组件就绪」(ALL 语义承重)',!piLine.includes('全部组件就绪'),piLine);
+ });
  // 界面字体名是 CJK 文本(如「思源黑体」)。中文输入法按 Enter 确认候选词时不能 blur
  // (=不能提交);只有真 Enter 才 blur 提交。判据用焦点:守卫在 → 组词后输入框仍有焦点。
  await test('font-family-enter-respects-ime',async()=>{

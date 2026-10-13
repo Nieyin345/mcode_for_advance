@@ -831,6 +831,8 @@ export const zh = {
   "settings.plugins.engineNoneClaude": "没有 Claude 能用的组件",
   "settings.plugins.engineNoneCodex": "没有技能或 MCP,Codex 用不了",
   "settings.plugins.engineNonePi": "没有技能,Pi 用不了",
+  "settings.plugins.engineAllReady": "全部组件就绪",
+  "settings.plugins.enginePartial": "部分兼容:{gaps} 收不到",
   "settings.plugins.hooksNotExecuted": "已声明 {n} 条 hooks —— 当前版本不执行,相关自动化不会生效",
   "settings.plugins.reviewTitle": "插件已安装",
   "settings.plugins.reviewDesc":

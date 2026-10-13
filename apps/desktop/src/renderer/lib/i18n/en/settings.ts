@@ -826,6 +826,8 @@ export const en = {
   "settings.plugins.engineNoneClaude": "Nothing Claude can use",
   "settings.plugins.engineNoneCodex": "No skills or MCP — nothing for Codex",
   "settings.plugins.engineNonePi": "No skills — nothing for Pi",
+  "settings.plugins.engineAllReady": "all components ready",
+  "settings.plugins.enginePartial": "partial: {gaps} not delivered",
   "settings.plugins.hooksNotExecuted":
     "{n} hooks declared — not executed in this version; their automation stays inactive",
   "settings.plugins.reviewTitle": "Plugin installed",

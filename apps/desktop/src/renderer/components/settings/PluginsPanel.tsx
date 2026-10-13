@@ -195,6 +195,27 @@ function engineReceives(
   return parts;
 }
 
+/**
+ * 【ARC-014】这个引擎**是不是收得到该插件的全部组件**(ALL 语义)。返回要显示的一句话,
+ * 或缺省(老宿主没有这份事实 → `null`,不显示 —— 不猜)。
+ *
+ * 与上面那行 ANY(兼容列表里有没有该引擎)是**两件事**:一个含通用 Skill + Claude 专用
+ * Command 的插件对 Pi「兼容」(ANY 为真),但 Pi 收不到那个 Command(ALL 为假)。这里把后
+ * 者显式说出来,用户才知道「勾上了这个引擎,但它只拿到一部分」。
+ */
+function componentReadinessHint(
+  p: PluginState,
+  providerId: string,
+  t: ReturnType<typeof useI18n>["t"],
+): string | null {
+  const r = p.componentReadiness?.[providerId];
+  if (r === undefined) return null;
+  if (r.ready) return t("settings.plugins.engineAllReady");
+  const gaps = r.gaps.length;
+  if (gaps === 0) return null;
+  return t("settings.plugins.enginePartial", { gaps });
+}
+
 /** Why an engine cannot use the plugin at all (tooltip of a struck-out key). */
 function engineNoneKey(engine: PluginEngineId): MessageId {
   if (engine === "codex") return "settings.plugins.engineNoneCodex";
@@ -319,6 +340,14 @@ function EngineDeliveryTable({
                 {can && e.id === "claude" && hasHooks && (
                   <span className="ml-1.5 text-warning no-underline">
                     {hasUnmappableHook ? t("settings.plugins.engineHooksUnmappable") : t("settings.plugins.engineHooksNote")}
+                  </span>
+                )}
+                {/* 【ARC-014】ALL 语义:这个引擎收不收得到该插件的**全部**组件。与上面那行
+                    (ANY:兼容列表里有没有它)是两件事 —— 一个含通用 Skill + Claude 专用 Command 的
+                    插件对 Pi「兼容」,但 Pi 收不到那个 Command。缺省(老宿主)就不显示这段。 */}
+                {can && componentReadinessHint(plugin, e.provider, t) !== null && (
+                  <span className="ml-1.5 text-content-subtle no-underline">
+                    {componentReadinessHint(plugin, e.provider, t)}
                   </span>
                 )}
               </span>
