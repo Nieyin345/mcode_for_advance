@@ -3086,6 +3086,64 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     runner.dispose();
   }
 
+  /* ── 【MC-091 续·E2】清账**晚于**真正派发 —— 派发路上抛错时欠账必须原样留着 ──
+   *
+   * 上面三段验的是"账记得对、并得进载荷、跨重启读得回",但都建立在"这次运行真的派发了"
+   * 之上。复核点名的 E2 窗口是:清账写在 `runtimeManager.bindSession` / `SettingRepo.set
+   * (EVENT_CHAIN_PREFIX + ...)` / 建 `startWorkflowRun` **之前** —— 那几步任意一步抛,
+   * `fire` 走 catch 返回 `{ok:false}`,而这笔欠账**已经被清掉了**,那两条丢弃就永久静默
+   * 丢了(盘上也清了)。修复把 drain 挪到 `startWorkflowRun(...).finally(settleClaim)` 之后。
+   *
+   * 造法:让 `SettingRepo.set` 对**本次会话的 EVENT_CHAIN 键**抛一次 —— 那正是 fire 里
+   * 载荷已并、账未清的那两步之间。`buildTriggers` 的 reload 不写这个键,所以只有派发那一次
+   * 命中。断言:运行没派发 + 内存账还在 + 盘上账还在(不是"跑绿算完",是它真没被吞)。
+   */
+  {
+    resetRuns();
+    SettingRepo.set(DROPPED_KEY, "{}");
+    const wf = nextId(), nodeId = "t_drop_predispatch_fail";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file", [NODE_TRIGGER_PATHS_PARAM_KEY]: "e2-*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "派发前抛错不能吞掉欠账",
+    } });
+    const key = `${wf}:${nodeId}`;
+    const runner = await startRunner();
+    await runner.runNow(wf, nodeId); // 建后台会话(随后按它的 id 精确注入)
+    const sessionId = runsOfNode(nodeId)[0]!.sessionId;
+    const chainKey = `automation.eventChain.${sessionId}`;
+    const flushTick = (): void => (runner as unknown as { onTick(): void }).onTick();
+
+    // 攒一笔欠账(忙时重排队那条路只进账、不派发)。
+    setRunBusy(sessionId, true);
+    for (let i = 0; i < 502; i += 1) {
+      const name = `e2-${String(i).padStart(4, "0")}.md`;
+      writeFileSync(join(PROJ_DIR, name), `# ${i}`);
+      runner.onFsChange(PROJ_DIR, name);
+    }
+    await sleep(1000); // 越过合并窗口 → 忙时分支重排
+    const owed = runner.droppedUndelivered.get(key)?.count ?? 0;
+    check("E2 场景先攒出一笔欠账", owed >= 1, runner.droppedUndelivered.get(key));
+    flushTick();
+    setRunBusy(sessionId, false);
+
+    // 解忙 → 等它真的派发,但这次派发会在 EVENT_CHAIN 那一步抛。
+    const before = runsOfNode(nodeId).length;
+    const originalSet = SettingRepo.set;
+    SettingRepo.set = (k, value) => {
+      if (k === chainKey) throw new Error("injected dispatch-phase write failure");
+      return originalSet.call(SettingRepo, k, value);
+    };
+    try {
+      await sleep(3500); // 覆盖忙时退避(最多 2000ms)+ 合并窗口
+      eq("E2 派发确实失败了(没有新运行)", runsOfNode(nodeId).length, before);
+      eq("★ E2 派发前抛错时内存欠账还在(没被提前清)", runner.droppedUndelivered.get(key)?.count ?? 0, owed);
+      check("★ E2 账没从盘上被提前清掉", (droppedOnDisk()[key]?.count ?? 0) >= owed, droppedOnDisk()[key]);
+    } finally {
+      SettingRepo.set = originalSet;
+      runner.dispose();
+    }
+  }
+
   /* ── 忙时回看间隔按指数退避增长(不是每秒重扫一遍) ──
    *
    * `BUSY_RETRY_MIN_MS` 那段注释白纸黑字写着"指数退避到半分钟封顶",而它的实现靠

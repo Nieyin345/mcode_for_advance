@@ -2327,12 +2327,14 @@ class AutomationRunner {
       // 载荷里没有条目列表可并,拿它们清账等于把这份欠账**静默吞掉**(下一个数据批再也读不到)。
       // 所以那两路走过这里时不动账 —— 欠账留着,等下一次真正的数据批交付。
       const undelivered = this.droppedCountOf(triggerKey(trigger));
+      // 把欠账并进载荷事实(file/event 两路);**但先不清账** —— 清账必须等这次运行**真的
+      // 派发出去**之后(见下面 `startWorkflowRun` 之后的 drain)。从前在这里就 drain,若紧接着
+      // 的 `bindSession` / `SettingRepo.set` / 建运行抛错(走 catch),欠账**已经被清**而运行
+      // 从未发生 —— 那笔丢弃就永久静默丢了(复核点名的 E2 窗口:清账早于真正派发)。
       if (undelivered > 0 && payload.kind === "file") {
         payload = { ...payload, overflowDropped: undelivered };
-        this.drainDroppedUndelivered(triggerKey(trigger));
       } else if (undelivered > 0 && payload.kind === "event") {
         payload = { ...payload, itemsOverflowDropped: undelivered };
-        this.drainDroppedUndelivered(triggerKey(trigger));
       }
       const payloadText = describeTriggerPayload(payload);
       const prompt = `${trigger.task}\n\n${payloadText}`;
@@ -2394,6 +2396,12 @@ class AutomationRunner {
         // 会把它认出来,不重复执行、报成"结果不确定"。这就是"领取→执行"的收尾边界。
         settleClaim();
       });
+      // 【MC-091 续】**真正派发出去之后**才清欠账 —— 到这一行说明 `bindSession` / `SettingRepo.set`
+      // / 建 `startWorkflowRun` 都成功了(没走上面的 catch)。只对承载数据的 file/event 两路清:
+      // manual/schedule 不并账、也不清账(留给下一次真正的数据批交付,避免静默吞债)。
+      if (undelivered > 0 && (payload.kind === "file" || payload.kind === "event")) {
+        this.drainDroppedUndelivered(triggerKey(trigger));
+      }
       return { ok: true };
     } catch (err) {
       // 见文件头不变量 ①:从这里冒出去炸的是**事件流**(这条路是从 `subscribe` / 计时器进来的)。
