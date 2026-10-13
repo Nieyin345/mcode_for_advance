@@ -270,6 +270,14 @@ export function saveMemoryFile(input: MemorySaveInput, origin?: MemoryWriteOrigi
   if (origin) extra.push(`mcodeLastWriter: ${JSON.stringify(origin)}`);
   const pinned = input.pinned ?? /^pinned: true$/m.test(/^---\r?\n([\s\S]*?)\r?\n---/.exec(before ?? "")?.[1] ?? "");
   const raw = [`---`, `title: ${quoteTitle(title)}`, `updatedAt: ${updatedAt}`, ...extra, ...(pinned ? ["pinned: true"] : []), `---`, "", input.content.replace(/\s+$/, ""), ""].join("\n");
+  // 【MC-093】对**最终完整待保存内容**做统一判据 —— 不只正文。从前只查 `input.content`,
+  // 于是**标题**与**继承来的 frontmatter 元数据**(`extra`,来自已存在的旧文件)里的
+  // 密钥能绕过闸门;而标题会进记忆列表、也会进自动注入模型上下文的材料里。所以这一关
+  // 落在组装完成的 `raw` 上(它 = 标题 + 元数据 + 正文),与面向前一次的 `input.content`
+  // 检查是**补充**关系(内容那支仍在上面早退,这里补标题/元数据一支)。
+  if (looksLikeSecret(raw)) {
+    throw new Error("记忆包含疑似私钥或访问密钥，未保存；请仅记录凭据的管理位置，不记录值。");
+  }
   const tmp = `${target}.${randomUUID()}.mcode-tmp`;
   try {
     mkdirSync(dirname(target), { recursive: true });

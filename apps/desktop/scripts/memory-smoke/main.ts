@@ -896,6 +896,37 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
     try { saveMemoryFile({ path: "global/rules/sha.md", content: "pdf_sha256 = " + "a".repeat(64) }); } catch { sha = false; }
     check("裸 64 位 sha256 不被误拒(它不是令牌形状)", sha);
   }
+  // ★ 【MC-093】闸门要对**整份待保存内容**统一判定,不只正文 —— 标题、以及从旧文件
+  //   继承来的 frontmatter 元数据里的密钥同样不能落库。标题会进记忆列表、也会随自动注入
+  //   进模型上下文;元数据会原样留在文件的 frontmatter 里。从前只查 `input.content`,
+  //   于是这两条路都是**漏网**。
+  {
+    // ① 正文干净、**标题**里带密钥 → 拒。
+    let titleBlocked = false;
+    try { saveMemoryFile({ path: "global/rules/title-secret.md", content: "这段正文完全正常。", title: "我的密钥 ghp_" + "A".repeat(36) }); } catch { titleBlocked = true; }
+    check("★ 标题里的密钥也被拒(不只查正文)", titleBlocked);
+    // 反证:同样形状的路径、正常标题 → 存得进去(所以上面那次抛只可能来自标题内容)。
+    let titleOk = true;
+    try { saveMemoryFile({ path: "global/rules/title-plain.md", content: "正常正文。", title: "正常标题" }); } catch { titleOk = false; }
+    check("标题正常时不被误拒", titleOk);
+    // ② 已存在的文件 frontmatter 里带着密钥,更新时继承进 `extra` → 拒。
+    //   路径与内容都干净,唯一能触发的是**继承来的元数据**。
+    const metaPath = "global/rules/inherit-secret.md";
+    // 手写一份带密钥 frontmatter 的文件(绕过 saveMemoryFile 的闸门,模拟历史/人工文件)。
+    const memRoot = memoryRoot();
+    const absMeta = join(memRoot, metaPath);
+    mkdirSync(dirname(absMeta), { recursive: true });
+    writeFileSync(absMeta, ["---", "title: 旧的", "updatedAt: 1", `note: my key AKIA${"A".repeat(16)}`, "---", "", "旧正文", ""].join("\n"), "utf8");
+    // ⚠️ **必须带上真实 revision** —— 否则抛的是 `MemoryConflictError`(无版本覆盖已有文件),
+    // 那是**另一个理由的抛**,断言会**假绿**(实测:变异撤掉判据后这条仍绿)。带版本后,
+    // 唯一能抛的就是"继承来的元数据像密钥"。
+    const metaRev = readMemoryFile(metaPath).revision;
+    let metaBlocked = false;
+    try { saveMemoryFile({ path: metaPath, content: "新正文,没有任何密钥。", expectedRevision: metaRev }); } catch { metaBlocked = true; }
+    check("★ 从旧文件继承的元数据里的密钥也被拒", metaBlocked);
+    // 被拒之后文件**原样不变**(没有半写)。
+    check("被拒后文件内容未被改动", readMemoryFile(metaPath).content.trim() === "旧正文");
+  }
   const preview = manageMemory({ action: "preview", source: `legacy:${legacy}` });
   check("旧记录可预览并带摘要", preview.ok && !!preview.digest && !!preview.content?.includes("legacy-private-needle"));
   const imported = manageMemory({ action: "import", source: `legacy:${legacy}`, digest: preview.digest!, category: "rules", projectId: "p_memory", global: false, confirmed: true });
