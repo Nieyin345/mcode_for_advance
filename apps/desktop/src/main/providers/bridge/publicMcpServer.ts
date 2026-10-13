@@ -61,7 +61,9 @@ import { type PublicCredentialSnapshot } from "@contracts/publicMcpScope";
 /** 密钥在路径里的位置:`<MCP_ENDPOINT_PATH>/<密钥>`。 */
 export const PUBLIC_MCP_PATH_PREFIX = `${MCP_ENDPOINT_PATH}/`;
 
-/** 密钥字节数。32 字节 = 256 位随机,50 字符十六进制。 */
+/** 密钥字节数。32 字节 = 256 位随机,`toString("hex")` 后成 **64** 个十六进制字符。
+ *  (早期注释误写「50 字符」—— 那是文档错误,不改生成长度;长度由
+ *  `public-mcp-session-smoke` 的「link secret is full length」钉在 64。) */
 const SECRET_BYTES = 32;
 
 /**
