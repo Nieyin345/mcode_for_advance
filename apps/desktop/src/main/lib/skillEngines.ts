@@ -138,8 +138,21 @@ function parseEnginesMapText(raw: string): { ok: true; map: SkillEnginesMap } | 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ok: false };
   const out: SkillEnginesMap = {};
   for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
-    const entry = minimizeEntry(value as SkillEngineEntry);
+    // 【MC-077】**部分损坏也要整份判 INVALID** —— 从前这里对类型不对的某一项 `continue`
+    // 跳过,于是 `{"private":{"codex":false}}` 被写坏成 `{"private":5}` 时,用户的「禁用
+    // codex 上的 private」**静默丢失**,而 `engineEnabled` 对缺失项默认 true → 该技能在
+    // codex 上被**误当成重新启用**。坏文件绝不能解释成「用户主动改成全部允许」:一项不合法
+    // 就让整份走 INVALID 分支,由 `readEnginesMapDetailed` 回退最后一份确认过的映射;
+    // 无备份则 fail-closed(发 `ENGINES_DENY_ALL` 哨兵)。
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return { ok: false };
+    const raw = value as Record<string, unknown>;
+    // 引擎字段**只能是已知引擎的三选一且为布尔**;`{"codex": 5}` 或 `{"vim": false}`
+    // (未知引擎名)同样是损坏 —— 后者从前会被 `minimizeEntry` 静默丢弃、退化成"全允许"。
+    for (const engine of Object.keys(raw)) {
+      if (!(SKILL_ENGINES as readonly string[]).includes(engine)) return { ok: false };
+      if (raw[engine] !== undefined && typeof raw[engine] !== "boolean") return { ok: false };
+    }
+    const entry = minimizeEntry(raw as SkillEngineEntry);
     if (entry) out[name] = entry;
   }
   return { ok: true, map: out };

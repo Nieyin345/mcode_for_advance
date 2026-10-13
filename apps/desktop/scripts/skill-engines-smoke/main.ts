@@ -107,9 +107,15 @@ try {
     "utf-8",
   );
   const defensive = readEnginesMap(root);
-  eqDeep("坏条目逐个丢弃,只留 good-skill", defensive, { "good-skill": { codex: false } });
-  eq("good-skill 对 codex 禁用", engineEnabled(defensive, "good-skill", "codex"), false);
-  eq("good-skill 对 pi 仍启用(缺键 = true)", engineEnabled(defensive, "good-skill", "pi"), true);
+  // 【MC-077】一条**混合**矩阵里只要有任何一条不合法,整份就判 INVALID → 无 last-good
+  // → fail-closed(全拒)。从前那句「坏条目逐个丢弃,只留 good-skill」是 **fail-open**:
+  // 它把坏项跳过、好项照用,而 `engineEnabled` 对缺失项默认 true —— 于是"用户禁了某引擎上
+  // 的某技能"一旦文件被写坏,就静默变成"重新启用"。坏文件绝不能解释成用户主动放宽。
+  eq("★ 混合矩阵有非法项 → 整份 fail-closed(good-skill 对 codex 也拒)",
+    engineEnabled(defensive, "good-skill", "codex"), false);
+  eq("★ …且 good-skill 对 pi 也拒(不因坏项而整份放行)", engineEnabled(defensive, "good-skill", "pi"), false);
+  eq("★ 含非法项的混合矩阵不产生任何「可用」决议",
+    engineEnabled(defensive, "good-skill", "claude"), false);
 
   /* ── setEnginesEntry + round-trip ── */
   const map = readEnginesMap(root);
@@ -302,19 +308,38 @@ check(
   }
 }
 
-// 【MC-077】部分条目类型异常(VALID,坏条目逐个丢弃,不牵连好条目,也不误触 fail-closed)。
+// 【MC-077】部分条目类型异常 → **整份 INVALID**(不是"丢弃坏条目、好条目照用")。
+// 有 last-good(这里是合法的空矩阵)时按 last-good 恢复;无 last-good 才对受限能力 fail-closed。
 {
   const r6 = join(mkdtempSync(join(tmpdir(), "mcode-skill-engines-partial-")), "skills");
   mkdirSync(r6, { recursive: true });
   try {
-    writeEnginesMap(r6, {});
+    writeEnginesMap(r6, {}); // 先落一份合法的空矩阵当 last-good
     writeFileSync(enginesMapPath(r6), JSON.stringify({ ok: { codex: false }, bad: "x", alsobad: [1] }), "utf-8");
     const partial = readEnginesMapDetailed(enginesMapPath(r6));
-    eq("部分坏条目:整体仍是 VALID", partial.status, "VALID");
-    eq("部分坏条目:好条目保留(codex 禁用)", engineEnabled(partial.map, "ok", "codex"), false);
-    eq("部分坏条目:未提及项仍可见(没有误触 fail-closed)", engineEnabled(partial.map, "unmentioned", "claude"), true);
+    // ★ 承重:含坏项的矩阵**整份判 INVALID**(从前这里断言 VALID 并把坏项一丢了之 ——
+    // 那正是复核失败点:坏项静默丢弃后 `engineEnabled` 对缺失项默认 true = 重新启用)。
+    eq("部分坏条目 → 整份 INVALID(不再逐个丢弃)", partial.status, "INVALID");
+    eq("部分坏条目 → 从 last-good 恢复(recovered)", partial.recovered, true);
+    // 恢复出的是 last-good(空矩阵 = 用户明确全允许),不是"好条目 + 坏条目丢掉"的杂糅。
+    eq("恢复内容 = last-good(用户明确的全允许)", engineEnabled(partial.map, "unmentioned", "claude"), true);
   } finally {
     rmSync(r6, { recursive: true, force: true });
+  }
+}
+// 【MC-077】同类损坏但**无** last-good → 受限能力 fail-closed(绝不解释成全允许)。
+{
+  const r6b = join(mkdtempSync(join(tmpdir(), "mcode-skill-engines-partial-nobak-")), "skills");
+  mkdirSync(r6b, { recursive: true });
+  try {
+    writeFileSync(enginesMapPath(r6b), JSON.stringify({ private: { codex: false }, corrupted: 5 }), "utf-8");
+    rmSync(lastGoodEnginesMapPath(enginesMapPath(r6b)), { force: true });
+    const broken = readEnginesMapDetailed(enginesMapPath(r6b));
+    eq("★ 部分坏 + 无备份 → INVALID", broken.status, "INVALID");
+    eq("★ …且原禁用项不被当成重新启用(private 对 codex 拒)", engineEnabled(broken.map, "private", "codex"), false);
+    eq("★ …任意项都拒(不因坏项而整份放行)", engineEnabled(broken.map, "private", "claude"), false);
+  } finally {
+    rmSync(r6b, { recursive: true, force: true });
   }
 }
 

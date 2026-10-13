@@ -103,12 +103,26 @@ try {
     eq(`坏内容 ${content.slice(0, 12)} → 拒绝任意 server(codex)`,
       mcpEngineEnabled(readEnginesMapFile(bad), "any", "codex"), false);
   }
-  // 能解析成对象、但条目全被丢弃的 → 仍是 VALID 空映射(全可见语义,不是损坏)。
-  for (const content of ['{"x": 5}', '{"x": {"vim": false}}']) {
+  // 【MC-077】能解析成对象、但**任一**条目不合法 → **整份判 INVALID**(不是「丢弃坏条目、
+  // 其余照用」)。从前这里 `continue` 跳过坏项并返回 VALID 空 map(全可见),于是
+  // `{"private":{"codex":false}}` 被写坏成 `{"private":5}` 时,用户的禁用**静默丢失**、
+  // 该 server 在 codex 上被**误当成重新启用** —— 这正是 MC-077 复核失败的 fail-open 反例。
+  // 现在任一非法项(值非对象、或引擎字段非布尔)都让整份走 INVALID:无 last-good → fail-closed。
+  for (const content of ['{"x": 5}', '{"x": {"vim": false}}', '{"private": 5}', '{"private": {"codex": "no"}}']) {
     writeFileSync(bad, content, "utf-8");
-    eqDeep(`${content.slice(0, 12)} 全坏条目 → VALID 空 map(全可见)`, readEnginesMapFile(bad), {});
-    eq(`${content.slice(0, 12)} → 任意 server 可见`,
-      mcpEngineEnabled(readEnginesMapFile(bad), "any", "claude"), true);
+    rmSync(`${bad}.last-good`, { force: true });
+    eq(`${content.slice(0, 20)} 非法项 → 任意 server 拒绝(fail-closed,不再全可见)`,
+      mcpEngineEnabled(readEnginesMapFile(bad), "any", "claude"), false);
+    eq(`★ ${content.slice(0, 20)} 非法项 → 原禁用条目不被当成重新启用(codex 也拒)`,
+      mcpEngineEnabled(readEnginesMapFile(bad), "private", "codex"), false);
+  }
+  // 对照:**合法**的部分禁用映射照常生效(`{"x": {"vim": false}}` 那种"未知引擎名"曾被我
+  // 误当合法 —— 这里改用已知引擎名,证明"合法项照用"没有被上面那条误伤)。
+  {
+    writeFileSync(bad, '{"x": {"claude": false}}', "utf-8");
+    rmSync(`${bad}.last-good`, { force: true });
+    eq("对照:合法禁用项照常生效(claude 拒)", mcpEngineEnabled(readEnginesMapFile(bad), "x", "claude"), false);
+    eq("对照:合法禁用项只禁该引擎(codex 仍可见)", mcpEngineEnabled(readEnginesMapFile(bad), "x", "codex"), true);
   }
 
   /* ── 【MC-077 复审 E1】无 last-good 的坏矩阵 → 派生视图 fail-closed(空) ── */
