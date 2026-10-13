@@ -31,6 +31,14 @@ import { setOperationLedger, type OperationLedger } from "@main/appControl/opera
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import { ApprovalBridge } from "@main/claude/ApprovalBridge.js";
+import { registerAgentSshHandlers } from "@main/ipc/agentSsh.js";
+import {
+  grantHostTrust,
+  revokeHostTrustGrant,
+  findHostTrustGrant,
+  listHostTrustGrants,
+} from "@main/mcp/agentRemoteSsh.js";
+import { __clearSettings, __dumpSettings } from "./stubs/repositories.js";
 import { __setSendToRendererThrows } from "./stubs/window.js";
 import {
   ACTIONS_BY_SLOT,
@@ -2380,6 +2388,108 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
   check("★ MC-095 E2:面板 api.call 调 extensionStore.readFile 时**也装了**无身份作用域",
     panelScope !== undefined && (panelScope as { extensionId?: unknown }).extensionId === undefined && panelScope !== "unset",
     panelScope);
+}
+
+/* ────────────────────── MC-052 agent 路:模型不能自批 SSH 主机信任 ──────────────────────
+ *
+ * 【台账缺口】MC-052 复核要求:「缺真实用户带外核对后持久授信/撤权,并证明**不能从模型参数
+ * 伪造**的 E1」。`remote-ssh-smoke` §7 已证**宿主 IPC**(`registerAgentSshHandlers`)那条闭环;
+ * 这里补的是同一件事的 **agent 路**(`app_api_call` + `policyFor`)一侧 —— 模型无论怎么填参数,
+ * 都不能把"我信任这台主机"变成一次已批准的连接。
+ *
+ * 判据分三处,缺一处都拦不住"看着授了信、其实模型自己签的"这种最难查的坏:
+ *   ① 权限表:`agentSsh.approveHost` / `revokeHost` 钉 **danger**(不是 write),`list` 只读
+ *      —— 对**生产** `policyFor` 的源码断言;
+ *   ② 模型自批被拒:经 `invokeAppTool("app_api_call", …)` 调 `agentSsh.approveHost`,审批被拒
+ *      → **REJECTED 且授权表里一条都没有**(信任没被建立);模型**伪造** `approvalSource` 被
+ *      schema 拒(参数层断死);
+ *   ③ 唯一铸造口:只有**用户本人新鲜点头**(宿主 handler 里 `approvalSource:"user"` 写死)那条路
+ *      才把**持久**授权写进表;再经**同一路**撤销 → 信任消失(带外授信可撤回)。
+ *
+ * 驱动的是**真** `registerAgentSshHandlers`(注册进 appControl registry 的 handler,与 agent
+ * `app_api_call` 走 `callRpc` 调的正是同一份)与**真** `grantHostTrust` / `findHostTrustGrant`。
+ * SettingRepo 换成本套的内存替身(stubs/repositories.ts),授权表 / known-hosts 落盘不碰 sql.js。
+ */
+console.log("\n§MC-052 agent 路:模型不能经 app_api_call 自批 SSH 主机信任");
+{
+  __clearOperationLog();
+  __clearSettings();
+  // 注册**真** 宿主 IPC handler 到 appControl registry —— agent 的 `app_api_call` 经 `callRpc`
+  // 调的正是这一份(与桌面渲染端 `window.api` 走同一段代码)。
+  registerAgentSshHandlers({ handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => recordRpcHandler(ch, fn) } as never);
+
+  const fpA = `SHA256:${"A".repeat(43)}`;
+  const approveArgs = (extra: Record<string, unknown> = {}) => ({
+    method: "agentSsh.approveHost",
+    input: { hostPort: "h:22", fingerprint: fpA, ...extra },
+  });
+
+  // ① 权限表:approveHost / revokeHost 是 danger(每次弹卡、不给始终允许),list 只读。
+  check("★ MC-052:agentSsh.approveHost 钉 danger(不是 write,不给始终允许)", policyFor("agentSsh.approveHost").level === "danger", policyFor("agentSsh.approveHost"));
+  check("★ MC-052:agentSsh.revokeHost 钉 danger", policyFor("agentSsh.revokeHost").level === "danger", policyFor("agentSsh.revokeHost"));
+  check("★ MC-052:agentSsh.list 只读(read)", policyFor("agentSsh.list").level === "read", policyFor("agentSsh.list"));
+
+  // ② 审批被拒 → 命令没执行 → REJECTED,且**授权表里一条都没有**(信任没被建立)。
+  {
+    const { ctx, asked } = ctxWith({ allow: false });
+    const r = await invokeAppTool("app_api_call", approveArgs(), "me", ctx);
+    check("★ MC-052:模型调 approveHost、用户拒绝 → REJECTED(没执行)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+    check("★ MC-052:approveHost 是 danger → 审批卡按危险前缀点名", asked.length === 1 && asked[0]?.req.toolName === `${APP_DANGER_APPROVAL_PREFIX}agentSsh.approveHost`, asked.map((a) => a.req.toolName));
+    check("★ MC-052:被拒后授权表里没有任何条目(模型没能建立信任)", listHostTrustGrants().length === 0 && findHostTrustGrant("h:22") === null, { grants: listHostTrustGrants(), found: findHostTrustGrant("h:22") });
+  }
+
+  // ②b 模型给一个"看起来很危险"的 always-allow(想靠"始终允许"免弹卡)—— danger **不认**。
+  {
+    __clearSettings();
+    const { ctx, asked } = ctxWith({ always: new Set([`${APP_DANGER_APPROVAL_PREFIX}agentSsh.approveHost`, "mcode-app:agentSsh.approveHost"]), allow: false });
+    const r = await invokeAppTool("app_api_call", approveArgs(), "me", ctx);
+    check("★ MC-052:danger 不认「始终允许」→ 仍必须弹卡(asked=1)", asked.length === 1, asked.length);
+    check("★ MC-052:始终允许也拿不到信任 → REJECTED 且表仍空", opResultOf(r)?.resultKind === "REJECTED" && listHostTrustGrants().length === 0, { kind: opResultOf(r)?.resultKind, grants: listHostTrustGrants().length });
+  }
+
+  // ②c **完全访问**(bypass)也照问 —— danger 档在任何权限模式下都要用户本人点头。
+  {
+    __clearSettings();
+    const { ctx, asked } = ctxWith({ mode: "bypassPermissions", allow: false });
+    const r = await invokeAppTool("app_api_call", approveArgs(), "me", ctx);
+    check("★ MC-052:完全访问下 approveHost 仍弹卡(asked=1)", asked.length === 1, asked.length);
+    check("★ MC-052:完全访问 + 用户拒绝 → REJECTED 且表空", opResultOf(r)?.resultKind === "REJECTED" && listHostTrustGrants().length === 0, opResultOf(r)?.resultKind);
+  }
+
+  // ②d 模型**伪造** approvalSource 想自批(绕过审批卡直接落盘一次 user 授权)→ schema `.strict()` 拒。
+  {
+    __clearSettings();
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_api_call", approveArgs({ approvalSource: "agent" }), "me", ctx);
+    check("★ MC-052:模型伪造 approvalSource=agent → REJECTED(schema 拒,不是静默采纳)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+    check("★ MC-052:伪造参数没能落下任何授权", listHostTrustGrants().length === 0 && findHostTrustGrant("h:22") === null, findHostTrustGrant("h:22"));
+  }
+
+  // ②e 畸形指纹(模型手填非法形状)→ schema 拒,不建立信任。
+  {
+    __clearSettings();
+    const { ctx } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_api_call", { method: "agentSsh.approveHost", input: { hostPort: "h:22", fingerprint: "not-a-fingerprint" } }, "me", ctx);
+    check("★ MC-052:畸形指纹 → REJECTED(schema 拒)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+    check("★ MC-052:畸形指纹没能落下任何授权", listHostTrustGrants().length === 0, listHostTrustGrants());
+  }
+
+  // ③ 唯一铸造口:**用户本人新鲜点头**(经真实宿主 handler,approvalSource 在 handler 里写死为
+  //    "user")→ 持久授权真的落盘;再经**同一路**撤销 → 授权消失(带外授信可撤回)。
+  {
+    __clearSettings();
+    const { ctx, asked } = ctxWith({ allow: true });
+    const r = await invokeAppTool("app_api_call", approveArgs(), "me", ctx);
+    check("★ MC-052:用户本人点头 → approveHost 执行成功(SUCCEEDED)", asked.length === 1 && opResultOf(r)?.resultKind === "SUCCEEDED", { asked: asked.length, kind: opResultOf(r)?.resultKind });
+    check("★ MC-052:持久授权真的落盘(readback:find 到 user 授权)", findHostTrustGrant("h:22")?.fingerprint === fpA, findHostTrustGrant("h:22"));
+    check("★ MC-052:授权来源是 user(不是模型填的)", findHostTrustGrant("h:22")?.approvalSource === "user", findHostTrustGrant("h:22")?.approvalSource);
+
+    // 撤销也走同一路(danger,用户本人点头)—— 撤销后 find 不到,信任消失。
+    const rev = await invokeAppTool("app_api_call", { method: "agentSsh.revokeHost", input: { hostPort: "h:22" } }, "me", ctx);
+    check("★ MC-052:经同一路撤销 → 授权表里没有这条(带外授信可撤回)", opResultOf(rev)?.resultKind !== "REJECTED" && findHostTrustGrant("h:22") === null && listHostTrustGrants().length === 0, { kind: opResultOf(rev)?.resultKind, found: findHostTrustGrant("h:22") });
+  }
+
+  __clearSettings();
 }
 
 console.log(`\n${passed}/${passed + failures.length} 通过`);

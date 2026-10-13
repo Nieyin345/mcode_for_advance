@@ -363,6 +363,70 @@ console.log("\n[3c] MC-052 首次信任:无 pin 且未授信 → 暂停认证(�
   await new Promise<void>((resolve) => tserver.close(() => resolve()));
 }
 
+console.log("\n[3c-4] MC-014 E1:凭据发送前的**可观测顺序** —— 未知主机 / 指纹变更 / 断线重连都不发凭据");
+{
+  // 台账 MC-014 的缺口:「缺真实 SSH 首次凭据发送前拒绝、指纹变更和断线重连的 E1 证据」。
+  // 判据立在**服务器侧可观测的事实**上:这台假服务器**只接受 password** 并**数**它收到几次
+  // `authentication(password)` 事件。ssh2 的 hostVerifier 返回 false 时于**密钥交换阶段**
+  // 断开 —— 服务器一个 authentication 事件都收不到。这样"不发送凭据"是结构性可证的,
+  // 而不是靠一句提示文字(硬规矩 3:判据要立在可观测事实上)。
+  SettingRepo.__clear();
+  let credAttempts = 0;
+  const clients = new Set<any>();
+  const server = new SshServer({ hostKeys: [hostKey] }, (client) => {
+    clients.add(client);
+    client.on("close", () => clients.delete(client));
+    client.on("authentication", (ctx) => { if (ctx.method === "password") { credAttempts++; ctx.accept(); } else ctx.reject(["password"]); });
+    client.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (!addr || typeof addr === "string") throw new Error("mc014-e1 server missing port");
+  const hostPort = `127.0.0.1:${addr.port}`;
+  const pub = ssh2.utils.parseKey(hostKey);
+  if (pub instanceof Error || Array.isArray(pub)) throw new Error("mc014-e1 fixture key did not parse");
+  const actualFp = __remoteSshTest.fingerprintOfHostKey(pub.getPublicSSH());
+  const m = createAgentRemoteSshManager();
+
+  // (a) 未知主机(无 pin、无授权、无自填指纹)→ 在**发凭据之前**拒绝:服务器 0 次 password。
+  const unknown = await m.connect({ ownerSessionId: "mc014e1", host: "127.0.0.1", port: addr.port, username: "u", password: "p" });
+  check("★ MC-014 E1(a):未知主机 → 待批准(error)", unknown.state === "error" && unknown.hostKeyPendingConfirmation === true, unknown);
+  check("★ MC-014 E1(a):未知主机 → 拒绝发生在**凭据发送前**(服务器 0 次 password 认证)", credAttempts === 0, credAttempts);
+  await m.disconnect("mc014e1", unknown.connectionId);
+
+  // 先经宿主受信入口授信、以正确指纹连上并记 pin(建立"此后可信"的前提)。
+  __remoteSshTest.grantHostTrust({ hostPort, fingerprint: actualFp, approvalSource: "user" });
+  const pinned = await m.connect({ ownerSessionId: "mc014e1", host: "127.0.0.1", port: addr.port, username: "u", password: "p", expectedFingerprint: actualFp });
+  check("★ MC-014 E1 前提:授信首连成功并进入认证", pinned.state === "ready" && credAttempts > 0, { state: pinned.state, credAttempts });
+
+  // (b) 指纹变更:把记录换成另一个**合法形状**的错值,新建一条连接去连同一 host:port。
+  //     必须在**发凭据之前**拒绝 —— 服务器收到的 password 次数**不再增长**。
+  const credBeforeMismatch = credAttempts;
+  SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify({ [hostPort]: `SHA256:${"C".repeat(43)}` }));
+  const changed = await m.connect({ ownerSessionId: "mc014e1", host: "127.0.0.1", port: addr.port, username: "u", password: "DIFFERENT-PW" });
+  check("★ MC-014 E1(b):指纹变更 → error(拒连且点名主机密钥变了)", changed.state === "error" && (changed.lastError ?? "").includes("主机密钥变了"), changed);
+  check("★ MC-014 E1(b):指纹变更 → 拒绝发生在**凭据发送前**(服务器未收到新 password)", credAttempts === credBeforeMismatch, { credAttempts, credBeforeMismatch });
+
+  // (c) 断线重连**重新校验**:恢复正确指纹连上,再把它换成错值并强制掉线。
+  //     自动重连走到 hostVerifier 时必须**再次拒绝**,且期间**不发凭据**。
+  SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify({ [hostPort]: actualFp }));
+  await m.disconnect("mc014e1", pinned.connectionId);
+  const live = await m.connect({ ownerSessionId: "mc014e1", host: "127.0.0.1", port: addr.port, username: "u", password: "p" });
+  check("★ MC-014 E1 前提:正确指纹下重连成功(ready)", live.state === "ready", live);
+  const credBeforeReconnect = credAttempts;
+  SettingRepo.set(__remoteSshTest.SSH_KNOWN_HOSTS_SETTING_KEY, JSON.stringify({ [hostPort]: `SHA256:${"D".repeat(43)}` }));
+  for (const c of [...clients]) c.end();
+  const reverified = await waitFor(() => m.status("mc014e1", live.connectionId), (s) => s.state === "error", 5000);
+  check("★ MC-014 E1(c):断线重连**重新校验**指纹 → 指纹已变则停在 error 不放行", reverified.state === "error", reverified);
+  // 重连的握手同样在 hostVerifier 阶段被拒 —— 服务器没有为这次重连收到任何新凭据。
+  check("★ MC-014 E1(c):重连被拒也在**凭据发送前**(服务器未为此收到新 password)", credAttempts === credBeforeReconnect, { credAttempts, credBeforeReconnect });
+
+  m.disposeOwner("mc014e1");
+  SettingRepo.__clear();
+  for (const c of [...clients]) c.end();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
 console.log("\n[3c-3] MC-014 第47.2节:授信首连的 pin 没落盘成功 → 拒绝认证(耐久回执)");
 {
   // 从前 writeKnownHost 的返回值只用来决定要不要报 hostKeyRecorded,然后**无条件

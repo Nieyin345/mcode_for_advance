@@ -3,8 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-OUT=$(mktemp -d /tmp/mcode-app-control-smoke.XXXXXX)
-trap 'rm -rf "$OUT"' EXIT
+# ⚠️ **产物目录必须在 `.tmp/` 下,不能是 `/tmp`。** 【MC-052】之后本套经 `--external:ssh2`
+# 拉着 ssh2 的 import 到运行时,**由 node 从产物目录往上**找 `node_modules`;`/tmp` 在 Windows
+# 上落到 `%LOCALAPPDATA%\Temp`,从那儿往上找不到仓库里的 `node_modules`(实测
+# `ERR_MODULE_NOT_FOUND: Cannot find package 'ssh2'`)。`agent-mail-smoke` / `mcode-admin-smoke`
+# 同一个位置。`.tmp/` 已在 .gitignore 里。
+mkdir -p ./.tmp/app-control-smoke
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # ⚠️ `--alias:@main/claude/RuntimeManager.js` 是**必需的**,不是保险。【MC-059】之后
@@ -13,14 +17,21 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 # `agentTools → agentRemoteSsh → ssh2 → cpu-features.node`(原生模块),打包阶段就卡死
 # (同 publicMcpSession.ts 文件头记过的那次)。本套不验无窗口那一路(那条回归在
 # claude-ipc-smoke,它才有真 SQLite),这里换成显式抛的替身即可。
+#
+# ⚠️ `--external:ssh2` 与 `--alias:@main/store/repositories.js` 是【MC-052】新加
+# (本套现在**真**驱动 `agentRemoteSsh.ts` 的授权服务来证明 agent 路够不到 approveHost):
+# 前者避开 cpu-features 原生模块(ssh2 的 import 运行时解析,故产物须在 `.tmp/` 下);
+# 后者把 SettingRepo 换成内存表,让授权表 / known-hosts 落盘不碰 sql.js + electron。
 "$ESBUILD" scripts/app-control-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --external:ssh2 \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@main/window.js=./scripts/app-control-smoke/stubs/window.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/app-control-smoke/stubs/runtimeManager.ts \
+  --alias:@main/store/repositories.js=./scripts/app-control-smoke/stubs/repositories.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
-  --outfile="$OUT/smoke.mjs" --log-level=error
+  --outfile=./.tmp/app-control-smoke/smoke.mjs --log-level=error
 
-node "$OUT/smoke.mjs"
+node ./.tmp/app-control-smoke/smoke.mjs
