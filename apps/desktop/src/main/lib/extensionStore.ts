@@ -75,15 +75,9 @@ function extensionRootWithinExtensions(root: string, extensionId: string): boole
  * **根目录不是物理上真正的子目录**(Junction 逃逸)→ 也当空,不跟随到库外去读。
  */
 export function readStore(root: string, extensionId: string): ExtensionStoreFile {
-  if (!isValidExtensionId(extensionId)) return emptyStore();
-  if (!extensionRootWithinExtensions(root, extensionId)) return emptyStore();
-  const path = extensionStorePath(root, extensionId);
-  try {
-    if (!existsSync(path)) return emptyStore();
-    return parseStoreFile(readFileSync(path, "utf8"));
-  } catch {
-    return emptyStore();
-  }
+  // 【MC-096】走**三态读** —— 主文件坏时能试 last-good 恢复(纯 `parseStoreFile` 会把坏数据
+  // 当空,读不到备份里那份仍有效的键值)。
+  return readStoreRaw(root, extensionId).file;
 }
 
 /** 读一条。 */
@@ -94,6 +88,9 @@ export function readValue(root: string, extensionId: string, key: string): unkno
 /**
  * 【MC-096】读一份存储并**区分三态** —— 写侧据此对「坏数据」fail-closed(不覆盖)。
  * 根目录逃逸 / id 非法一律当 `MISSING`(读不到那份文件,写也被包含闸挡住)。
+ *
+ * **坏数据先试 last-good**:主文件坏掉时,若存在一份确认过的 `store.json.last-good`,就用它
+ * (status 标 `VALID`),不让用户的键值因为一次写坏全丢。last-good 也坏/没有 → 才 `CORRUPT`。
  */
 function readStoreRaw(root: string, extensionId: string): ExtensionStoreRead {
   if (!isValidExtensionId(extensionId)) return { status: "MISSING", file: emptyStore() };
@@ -101,16 +98,39 @@ function readStoreRaw(root: string, extensionId: string): ExtensionStoreRead {
   const path = extensionStorePath(root, extensionId);
   try {
     if (!existsSync(path)) return { status: "MISSING", file: emptyStore() };
-    return readStoreFileDetailed(readFileSync(path, "utf8"));
+    const main = readStoreFileDetailed(readFileSync(path, "utf8"));
+    if (main.status !== "CORRUPT") return main;
+    // 【MC-096】主文件坏 → 试 last-good 恢复(不让坏数据把用户键值全丢)。
+    const recovered = readLastGood(root, extensionId);
+    return recovered ?? main;
   } catch {
     return { status: "CORRUPT", file: emptyStore() };
+  }
+}
+
+/** 【MC-096】确认过的上一份存储的备份路径。 */
+function lastGoodStorePath(root: string, extensionId: string): string {
+  return `${extensionStorePath(root, extensionId)}.last-good`;
+}
+
+/** 从 last-good 备份读出一份**有效**存储;读不出 / 坏 → null。 */
+function readLastGood(root: string, extensionId: string): ExtensionStoreRead | null {
+  try {
+    const raw = readFileSync(lastGoodStorePath(root, extensionId), "utf8");
+    const parsed = readStoreFileDetailed(raw);
+    return parsed.status === "VALID" ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
 /** 写一份(整份落盘)。**根目录逃逸时不落盘** —— 返回 `false`(MC-095 物理包含闸)。 */
 function persist(root: string, extensionId: string, file: ExtensionStoreFile): boolean {
   if (!extensionRootWithinExtensions(root, extensionId)) return false;
-  atomicWrite(extensionStorePath(root, extensionId), serializeStore(file));
+  const serialized = serializeStore(file);
+  // 【MC-096】先刷新 last-good(确认过的这一份),再写主文件 —— 主文件下次写坏时能恢复。
+  try { atomicWrite(lastGoodStorePath(root, extensionId), serialized); } catch { /* 备份失败不阻断主写 */ }
+  atomicWrite(extensionStorePath(root, extensionId), serialized);
   return true;
 }
 

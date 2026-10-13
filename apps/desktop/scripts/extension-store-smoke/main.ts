@@ -159,9 +159,10 @@ eq("C 扩展(从没写过)读同键 = null", readValue(ROOT, "ext-c", "notes"), 
   const badPath = extensionStorePath(ROOT, badId);
   mkdirSync(dirname(badPath), { recursive: true });
   writeFileSync(badPath, "{ this is not json", "utf-8");
+  rmSync(`${badPath}.last-good`, { force: true }); // 无 last-good 才谈得上"坏数据"
   const before = readFileSync(badPath, "utf-8");
-  // 读侧仍宽容(当空,不抛)—— 扩展不崩。
-  eq("★ MC-096:坏 store.json 读侧仍宽容(当空 = null)", readValue(ROOT, badId, "x"), null);
+  // 无 last-good 的坏数据:读侧宽容(当空,不抛)—— 扩展不崩。
+  eq("★ MC-096:坏 store.json(无 last-good)读侧仍宽容(当空 = null)", readValue(ROOT, badId, "x"), null);
   // 写侧 fail-closed:坏数据拒写。
   check("★ MC-096:坏 store.json → writeValue 拒写(不覆盖)", writeValue(ROOT, badId, "newKey", "newVal") === false);
   eq("★ MC-096:拒写后磁盘内容逐字节未变(坏数据还在,没被盖成新的一份)", readFileSync(badPath, "utf-8"), before);
@@ -170,6 +171,16 @@ eq("C 扩展(从没写过)读同键 = null", readValue(ROOT, "ext-c", "notes"), 
   check("★ MC-096:合法 store.json 照常写(正控)", writeValue(ROOT, badId, "added", 1) === true);
   eq("★ MC-096:写入后原有键仍在(没被清掉)", readValue(ROOT, badId, "keep"), "KEEP");
   eq("★ MC-096:写入后新键也在", readValue(ROOT, badId, "added"), 1);
+
+  // 【MC-096】last-good 恢复:正常写过之后(已刷新 last-good),主文件被写坏 → 从 last-good 读回,
+  //   用户的键值不再因为一次写坏全丢(复核点名的"坏 JSON 不应无告警变空")。
+  check("★ MC-096:正常写已生成 last-good 备份", existsSync(`${badPath}.last-good`));
+  writeFileSync(badPath, "{ corrupted later", "utf-8"); // 主文件坏,last-good 还在
+  eq("★ MC-096:主文件坏但 last-good 在 → 读回 last-good 的键(keep 仍在)", readValue(ROOT, badId, "keep"), "KEEP");
+  eq("★ MC-096:…last-good 里的新键也读得到(added)", readValue(ROOT, badId, "added"), 1);
+  // 反证:last-good 也没了 → 才当空(不假装有数据)。
+  rmSync(`${badPath}.last-good`, { force: true });
+  eq("★ MC-096:last-good 也坏/没有 → 读回空(null,不假装有数据)", readValue(ROOT, badId, "keep"), null);
 }
 
 // 文件真的落在按扩展分的路径下。
