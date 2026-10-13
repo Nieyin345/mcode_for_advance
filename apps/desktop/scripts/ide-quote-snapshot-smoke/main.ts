@@ -256,6 +256,12 @@ async function run() {
 
   console.log(`\nide-quote-snapshot-smoke:${checks - failures}/${checks} 通过`);
   if (failures > 0) process.exitCode = 1;
+  // ⚠️ **必须显式退出。** 真 `EditPane` 的挂载会留下假 DOM 的定时器句柄(夹具把
+  // `requestAnimationFrame` / `window.setTimeout` 映到真 `setTimeout`),事件循环因此不空。
+  // 只设 `process.exitCode` 的话,进程会一直活着到 `build.mjs` 的 60s `spawnSync` 超时 ——
+  // 那时 `status` 是 `null`,`if (unit.status !== 0)` 把**成功当失败**,而且日志里明明印着
+  // 「10/10 通过」。这正是本仓点名过的「看着绿、其实坏」,所以这里显式 `process.exit`。
+  process.exit(failures > 0 ? 1 : 0);
 }
 
 await run();

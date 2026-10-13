@@ -3158,8 +3158,16 @@ configureMcpToolHost(null);
     check("★ 本机会话 id 仍在 keptLegacy(不回收)", report.keptLegacy.includes("sess_local_chat"), report.keptLegacy);
 
     // 进程结束(停掉)→ 该 owner 不再有在途资源 → 下一次 prune 应把它回收。
+    // ⚠️ **stop 是异步的**:`agent_process_stop` 返回时进程**未必**已经从「在途」表里落下去
+    // (真机上是 SIGTERM→退出的窗口,并行跑套件时尤其明显)。此前这里 stop 完**立刻** prune,
+    // 偶尔读到 `processes: 1` 的残影 → 「进程结束后该 owner 变为可回收」假红。改为**轮询**:
+    // 一直 prune 到它真的可回收为止(有界等待),而不是赌一次 race。
     await call(busyOwner, "agent_process_stop", { process_id: procId });
-    const after = pruneOrphanedOwners();
+    let after = pruneOrphanedOwners();
+    for (let i = 0; i < 100 && !after.pruned.includes(busyOwner); i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      after = pruneOrphanedOwners();
+    }
     check("★ 进程结束后该 owner 变为可回收(不再受控保留)", after.pruned.includes(busyOwner), after);
     check("★ …且已不在 keptBusy 里", !after.keptBusy.includes(busyOwner), after.keptBusy);
     // 归属数已回落到只剩「不归本模块管」的 legacy + 本机 id。
