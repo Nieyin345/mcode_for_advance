@@ -647,29 +647,30 @@ async function ui(cmd: AppUiCommand): Promise<AppUiReply> {
 async function headlessNewSession(a: {
   project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; title?: string;
 }): Promise<string | null> {
-  const { createOrReuseSession } = await import("@main/lib/sessionStart.js");
+  // 【ARC-001】建会话 + 发首条是**唯一一份业务命令** —— 桌面 `claude:startSession` IPC 与这条
+  // headless 路都调 `appServices/sessionCommands.ts` 的 `createSessionAndSend`(硬规矩 2)。
+  // 这里只剩它那条路独有的两件事:① 挑项目(不传就取第一个);② 把 `sendError` 翻成 agent
+  // 那条路原先那句「对话已建好…但第一条消息没发出去」(结果形状不变)。
+  const { createSessionAndSend } = await import("@main/appServices/sessionCommands.js");
   const { ProjectRepo } = await import("@main/store/repositories.js");
-  const { runtimeManager } = await import("@main/claude/RuntimeManager.js");
   const project = a.project_id
     ? ProjectRepo.get(a.project_id)
     : ProjectRepo.list()[0];
   if (!project) return "没有可用的项目,请给 project_id";
-  const { session } = createOrReuseSession({
-    projectId: project.id,
-    kind: "chat",
-    effort: "default",
-    permissionMode: "default",
-    ...(a.provider_id ? { providerId: a.provider_id } : {}),
-    ...(a.model ? { model: a.model } : {}),
-    ...(a.title ? { title: a.title } : {}),
-  }, "desktop");
-  const cwd = session.worktreePath ?? project.path;
-  const handle = await runtimeManager.sendTurn(session, {
+  const { session, sendError } = await createSessionAndSend({
+    input: {
+      projectId: project.id,
+      kind: "chat",
+      effort: "default",
+      permissionMode: "default",
+      ...(a.provider_id ? { providerId: a.provider_id } : {}),
+      ...(a.model ? { model: a.model } : {}),
+      ...(a.title ? { title: a.title } : {}),
+    },
     prompt: a.prompt ?? "",
-    cwd,
     ...(a.workflow_id ? { workflowId: a.workflow_id } : {}),
-  });
-  if (handle === null) return `对话已建好(${session.id}),但第一条消息没发出去(上一轮还在运行)`;
+  }, "agent");
+  if (sendError !== null) return `对话已建好(${session.id}),但第一条消息没发出去(上一轮还在运行)`;
   return null;
 }
 

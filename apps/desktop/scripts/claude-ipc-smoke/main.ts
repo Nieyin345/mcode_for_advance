@@ -30,7 +30,7 @@
  *
  * Run: scripts/claude-ipc-smoke/run.sh
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
@@ -43,6 +43,11 @@ import { ProjectRepo, SessionRepo, MessageRepo, SettingRepo } from "@main/store/
 import { registerClaudeHandlers } from "@main/ipc/claude.js";
 import { invokeAppTool } from "@main/appControl/tools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
+import {
+  __createSessionAndSendCount,
+  __resetCreateSessionAndSendCount,
+  createSessionAndSend,
+} from "@main/appServices/sessionCommands.js";
 
 import {
   approvals,
@@ -1498,6 +1503,94 @@ console.log("\n18. 【MC-059】无渲染窗口时 app_session_new / app_session_
   }
 
   rmSync(MC059_DIR, { recursive: true, force: true });
+}
+
+/* ──────────────── 19. 【ARC-001】「建会话 + 发首条」只有一处实现 ──────────────── */
+
+/**
+ * ## 这条守的是什么(硬规矩 2:共享实现只有一份)
+ *
+ * ARC-001 的 remaining 点名的第①条:业务动作要从"各入口各写一遍"收成**唯一一份**服务函数
+ * (`appServices/sessionCommands.ts` 的 `createSessionAndSend`)。此前桌面 `claude:startSession`
+ * IPC 建会话、agent 那条 headless 路(`appControl/tools.ts` 的 `headlessNewSession`)又**内联**了
+ * 「查项目 → createOrReuseSession → 解析 cwd → sendTurn」一整段 —— 两处会漂开。
+ *
+ * ## 判据(承重红例:**两条路都调同一个服务函数**)
+ *
+ * `createSessionAndSend` 里有一个调用计数器(`__createSessionAndSendCount`)。两条路各走一次,
+ * 计数器必须**各加一**(共 +2)。若哪条路回去内联自己那段(绕开服务函数),它那一次就不计数 →
+ * **真红**。这是**行为级**的判据,不是 grep 源码 —— 内联得再像也骗不过计数器。
+ *
+ * 另加一条**源码级**反向控制:两条调用方文件里都**不再**直接 `createOrReuseSession`
+ * 建会话(建会话这半必须经服务函数);出现直接调用就是有人又分了一份实现。
+ */
+console.log("\n19. 【ARC-001】建会话+发首条只有一处实现(桌面 IPC 与 agent headless 共调 createSessionAndSend)");
+
+{
+  const textOf = (r: { content: Array<{ type: string; text?: string }> }): string =>
+    r.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n");
+  const appCtx = {
+    getPermissionMode: () => undefined,
+    isToolAlwaysAllowed: () => false,
+    requestApproval: async () => ({ allow: true }),
+  } as unknown as ProviderContext;
+
+  // 一个**全新的项目**(不用 §2/§18 的项目,避开残留空壳的复用)。
+  const ARC001_DIR = mkdtempSync(join(tmpdir(), "mcode-arc001-proj-"));
+  ProjectRepo.create({
+    id: "p_arc001",
+    name: "ARC-001 唯一服务回归项目",
+    path: ARC001_DIR,
+    archived: false,
+    group: null,
+    sortOrder: 3,
+    pinnedAt: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  } as never);
+
+  // —— 路①:桌面 IPC `claude:startSession` → 服务函数应被记一次。
+  fresh();
+  __resetCreateSessionAndSendCount();
+  const ipcRes = await call<{ session: { id: string; projectId: string } }>(IPC.CLAUDE_START_SESSION, {
+    projectId: "p_arc001",
+  });
+  eq("ARC-001:桌面 IPC 建会话落在指定项目里(行为不变)", ipcRes.session.projectId, "p_arc001");
+  eq("ARC-001:桌面 IPC 建会话经唯一服务函数(计数 +1)", __createSessionAndSendCount(), 1);
+
+  // —— 路②:agent 那条无窗口 headless 路 → 同一个服务函数应再记一次。
+  fresh();
+  __resetCreateSessionAndSendCount();
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  const agentRes = await invokeAppTool(
+    "app_session_new",
+    { project_id: "p_arc001", prompt: "无窗口发首条" },
+    "me",
+    appCtx,
+  );
+  check("ARC-001:agent headless 建会话+发首条不失败", agentRes.isError !== true, textOf(agentRes));
+  eq("★ ARC-001:agent headless 也走**同一个**服务函数(计数 +1,承重)", __createSessionAndSendCount(), 1);
+  eq("★ ARC-001:headless 这一轮真的派出去了(sendTurn 被调到)", sendTurns.length, 1);
+  eq("★ ARC-001:headless 派的是那句话", sendTurns[0]?.prompt, "无窗口发首条");
+  // 两条路都经服务函数 ⇒ 服务函数是唯一实现。给一个总数复核(清零后连走两条)。
+  __resetCreateSessionAndSendCount();
+  await call(IPC.CLAUDE_START_SESSION, { projectId: "p_arc001" });
+  await invokeAppTool("app_session_new", { project_id: "p_arc001", prompt: "再来一条" }, "me", appCtx);
+  eq("★ ARC-001:桌面 IPC 与 agent headless 共调同一条命令(计数 = 2)", __createSessionAndSendCount(), 2);
+
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  rmSync(ARC001_DIR, { recursive: true, force: true });
+
+  // —— 源码级反向控制:两条调用方都不再**直接** createOrReuseSession(建会话只该经服务函数)。
+  const srcOf = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
+  const ipcSrc = srcOf("src/main/ipc/claude.ts");
+  const toolsSrc = srcOf("src/main/appControl/tools.ts");
+  const svcSrc = srcOf("src/main/appServices/sessionCommands.ts");
+  check("★ ARC-001:桌面 IPC 不再直接调 createOrReuseSession(建会话经服务函数)", !/createOrReuseSession\s*\(/.test(ipcSrc), ipcSrc.match(/createOrReuseSession\s*\(/g));
+  check("★ ARC-001:agent headless 段不再直接调 createOrReuseSession", !/createOrReuseSession\s*\(/.test(toolsSrc), toolsSrc.match(/createOrReuseSession\s*\(/g));
+  check("ARC-001:服务函数本身才是 createOrReuseSession 的调用点", /createOrReuseSession\s*\(/.test(svcSrc));
 }
 
 /* ──────────────── 收尾 ──────────────── */

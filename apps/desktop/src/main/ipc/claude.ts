@@ -46,7 +46,7 @@ import { forkSession as forkSessionIntoNew } from "@main/lib/sessionFork.js";
 import { broadcastSessionChanged, broadcastSettingChanged } from "@main/lib/sessionSync.js";
 import { isSyncedSettingKey } from "@contracts/ipc/settingsSync";
 import { budgetCommitWorthBackingUp, lastGoodTurnBudgetKey } from "@main/lib/turnPolicy.js";
-import { createOrReuseSession } from "@main/lib/sessionStart.js";
+import { createSessionAndSend } from "@main/appServices/sessionCommands.js";
 import {
   cancelWorkflowRun,
   graphRunIntent,
@@ -150,11 +150,13 @@ async function materializeWorktreeSession(session: Session, project: Project): P
 }
 
 export function registerClaudeHandlers(ipcMain: IpcMain): void {
-  ipcMain.handle(IPC.CLAUDE_START_SESSION, (_evt, raw) => {
+  ipcMain.handle(IPC.CLAUDE_START_SESSION, async (_evt, raw) => {
     const input = StartSessionSchema.parse(raw);
-    // Reuses the project's still-fresh "New session" row when one exists —
-    // only creates a new row otherwise (see createOrReuseSession).
-    const { session } = createOrReuseSession(input, "desktop");
+    // 【ARC-001】「建会话」这一条业务命令只有一处实现 —— agent 那条 headless 路
+    // (`appControl/tools.ts` 的 `headlessNewSession`)调的是**同一个** `createSessionAndSend`。
+    // 桌面这条只要会话行(首条消息由用户随后经 `claude:sendTurn` 发),所以不传 prompt ——
+    // 结果形状照旧 `{ session }`(复用 `createOrReuseSession` 的既有语义)。
+    const { session } = await createSessionAndSend({ input }, "desktop");
     return { session };
   });
 
