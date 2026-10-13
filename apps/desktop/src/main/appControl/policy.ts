@@ -28,6 +28,12 @@ const BLOCKED: Record<string, string> = {
   "claude.respondQuestion": "不能替用户回答提问卡",
   "claude.respondPlanApproval": "不能替用户批准计划",
   "workflow.approve": "自动化/导入工作流的执行授权只能由用户本人给",
+  // 【MC-061】主机 hook 授权(插件 hook 的执行授权)的签发 / 撤销 = 「用户点头」这件事的
+  // 落点 —— 与 `workflow.approve` 同一条纪律。agent **任何理由都不该**签出 / 撤销它(签了
+  // 就等于自己给自己授权去跑不受信命令),故直接 **blocked**(不是"每次弹卡"),让
+  // `app_api_call` 与自定义面板的 `mcode.api.call` 都够不到;真正够得到的只有桌面渲染端。
+  "hooks.issueHostHookGrant": "插件 hook 的执行授权只能由用户本人在插件面板签发",
+  "hooks.revokeHostHookGrant": "插件 hook 授权只能由用户本人撤销",
   "customModel.getToken": "API Key / 令牌不给模型",
   "piModels.getApiKey": "API Key 不给模型",
   "codexModels.getApiKey": "API Key 不给模型",
@@ -242,6 +248,8 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "monitoring.overview": "read",
   "monitoring.runs": "read",
   "hooks.runs": "read",
+  // 【MC-061】列出主机 hook 授权是只读(设置 → 插件 → 钩子授权);签 / 撤在上面 BLOCKED 档。
+  "hooks.listHostHookGrants": "read",
   "projectInit.preview": "read",
   "outputStyle.list": "read",
   "onlyoffice.sessionState": "read",

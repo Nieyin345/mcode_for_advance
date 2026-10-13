@@ -82,6 +82,8 @@ import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFile
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
 import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefaultInput, WorkflowShippedUpdateInput } from "./workflow.js";
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
+import type { HostHookGrantListInput, HostHookGrantIssueInput, HostHookGrantRevokeInput } from "./hostHookGrants.js";
+import type { HostHookGrant } from "../hostHookGrant.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_REVIEW_CHANNEL, MEMORY_REVIEW_DELETE_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemoryReviewDeleteInput, type MemoryReviewResult, type MemorySaveInput } from "../memory.js";
 import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, LibraryReadAssetInput, LibraryReadAssetResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput } from "./library.js";
@@ -1038,6 +1040,18 @@ export interface RpcMap {
   "hooks.remove": (input: HooksRemoveInput) => Promise<{ ok: boolean; error?: string }>;
   /** 拿一条**还没存下来**的配置试跑一次,把那一次的结果返回。 */
   "hooks.test": (input: HooksTestInput) => Promise<{ run: HookRun }>;
+  /** 【MC-061】列出当前全部**主机 hook 授权**(设置 → 插件 → 钩子授权)。只读 —— 只给
+   *  桌面渲染端;`app_api_call` 里这两条(issue/revoke)一律 blocked,故不走 agent。 */
+  "hooks.listHostHookGrants": (input: HostHookGrantListInput) => Promise<{ grants: HostHookGrant[] }>;
+  /** 【MC-061】**用户真实操作**后签发一份主机 hook 授权(落盘)。`grantId` / 时间 / `revoked`
+   *  由主进程签发(schema `.strict()`;agent 经 `app_api_call` 够不到这条 —— blocked)。 */
+  "hooks.issueHostHookGrant": (input: HostHookGrantIssueInput) => Promise<{
+    ok: boolean;
+    error?: string;
+    grant?: HostHookGrant;
+  }>;
+  /** 【MC-061】撤销一份主机 hook 授权(按 grantId);撤销后该来源回到**默认拒绝**。 */
+  "hooks.revokeHostHookGrant": (input: HostHookGrantRevokeInput) => Promise<{ ok: boolean; error?: string }>;
   // ── Plugins (settings panel; docs/plugin-feasibility.md v1) ──
   /** List installed plugins (manifest + component summaries + enable state).
    *  Enabled plugins are delivered to providers at the next turn start. */
@@ -1914,6 +1928,11 @@ export const IPC = {
   HOOKS_SAVE: "hooks:save",
   HOOKS_REMOVE: "hooks:remove",
   HOOKS_TEST: "hooks:test",
+  // 【MC-061】插件 hook 的用户签发入口(设置 → 插件 → 钩子授权)。issue/revoke 钉 blocked,
+  // 只给桌面渲染端;列表是只读。
+  HOOKS_HOST_HOOK_GRANTS_LIST: "hooks:listHostHookGrants",
+  HOOKS_HOST_HOOK_GRANT_ISSUE: "hooks:issueHostHookGrant",
+  HOOKS_HOST_HOOK_GRANT_REVOKE: "hooks:revokeHostHookGrant",
   // Plugins (settings panel): list/install (local/git/marketplace)/enable/
   // remove + marketplace management. No push channel — every RPC resolves
   // when done and the panel re-lists.

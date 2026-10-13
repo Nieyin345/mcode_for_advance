@@ -123,7 +123,7 @@ registerHookHandlers(fakeIpc);
 
 const FILE = hooksFilePath();
 
-console.log("\n§0 五个 channel 都接上了");
+console.log("\n§0 八个 channel 都接上了");
 
 for (const [name, channel] of [
   ["list", IPC.HOOKS_LIST],
@@ -131,10 +131,13 @@ for (const [name, channel] of [
   ["save", IPC.HOOKS_SAVE],
   ["remove", IPC.HOOKS_REMOVE],
   ["test", IPC.HOOKS_TEST],
+  ["listHostHookGrants", IPC.HOOKS_HOST_HOOK_GRANTS_LIST],
+  ["issueHostHookGrant", IPC.HOOKS_HOST_HOOK_GRANT_ISSUE],
+  ["revokeHostHookGrant", IPC.HOOKS_HOST_HOOK_GRANT_REVOKE],
 ] as const) {
   check(`hooks.${name} 注册上了`, handlers.has(channel), channel);
 }
-eq("正好五条(不多推一条不该有的)", handlers.size, 5);
+eq("正好八条(不多推一条不该有的)", handlers.size, 8);
 
 /**
  * 调一条 channel。**默认 raw 是 `undefined`** —— 那正是"无参 invoke"时 Electron 递进来
@@ -708,6 +711,173 @@ const rebuild = (await call(IPC.HOOKS_SAVE, { hook: h({ id: "h_fresh", name: "�
 eq("整份坏掉时保存仍然不抛", rebuild.ok, true);
 eq("重建出一份干净的", readHooks().hooks.length, 1);
 eq("重建的就是刚存的那条", readHooks().hooks[0]?.id, "h_fresh");
+
+/* ────────────────────── 6. 主机 hook 授权:用户签发入口(MC-061)────────────────────── */
+
+console.log("\n§6 用户签发主机 hook 授权:签发 → 插件 hook 变 granted(真跑);撤销 → 回到默认拒绝");
+
+/*
+ * 这一节验的是**那扇门本身**:此前 `issueHostHookGrant` **没有任何生产调用方** ——
+ * 普通用户在界面上没法给自己装的插件里某条 hook 授信,于是「默认拒绝」事实上成了
+ * 「永远拒绝」。这层三条 RPC 补上它,且**授权真的驱动执行**(不是面板上标个字样)。
+ *
+ * 判据分三层,缺一层都拦不住「看着授了信、实际不跑」这种最难查的坏:
+ *   ① 决定层:签发后 `decidePluginHookExecution` 从 denied 翻成 allowed(面板据此标 granted);
+ *   ② 执行层:签发后事件真的把那条 hook 跑起来;撤销后**不再跑**(环里留一条带原因的 skipped);
+ *   ③ 门禁层:agent 经 `app_api_call` **够不到** issue/revoke(`policyFor` = blocked),调用方
+ *      也**伪造不了**宿主字段(`grantId` / `revoked` 等 → schema `.strict()` 直接拒)。
+ */
+
+const { decidePluginHookExecution, hostHookSourceOf, hostHookCommandDigest, resetHostHookGrants } =
+  await import("@main/hooks/hostHookGrants.js");
+const { mapClaudeHookEvent } = await import("@contracts/hook");
+const { policyFor } = await import("@main/appControl/policy.js");
+const { assembleHostHookGrantPersist } = await import("@main/hooks/hostHookGrantFile.js");
+
+// 从干净态起:清内存授权 + 接上落盘(<临时数据根>/hooks/host-hook-grants.json)。
+resetHostHookGrants();
+assembleHostHookGrantPersist(DATA);
+const GRANT_FILE = join(DATA, "hooks", "host-hook-grants.json");
+
+/* 一条插件声明 —— 直接喂给宿主 `HookRunner`(它的注入缝就是为无头验证留的)。命令是一段
+ * 真脚本,跑一次就往标记文件里追一个字符,数出来的就是"真的跑了几次"。 */
+const PMARK = join(WORK, "plugin-grant.txt");
+const PLUGIN = "ipc-demo-plugin";
+const PLUGIN_VERSION = "1.0.0";
+const PLUGIN_CMD = `node "${TRIGGER}" "${PMARK}"`;
+hookRunner.setPluginHookSource(() => [
+  { pluginId: PLUGIN, version: PLUGIN_VERSION, nativeEvent: "PreToolUse", command: PLUGIN_CMD },
+]);
+// 用户手写的钩子别掺进来(§3/§4/§5 在盘上留了几条)。
+writeFileSync(FILE, JSON.stringify({ version: 1, hooks: [] }), "utf-8");
+
+const pluginHits = (): number => (existsSync(PMARK) ? readFileSync(PMARK, "utf-8").length : 0);
+const emitToolUse = (callId: string): void =>
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: callId, input: {}, requiresApproval: false });
+
+// 面板与执行**同一份**来源身份(唯一构造点)—— 授权按它绑定。
+const pluginSource = hostHookSourceOf({
+  pluginId: PLUGIN,
+  version: PLUGIN_VERSION,
+  nativeEvent: "PreToolUse",
+  command: PLUGIN_CMD,
+});
+const mapped = mapClaudeHookEvent("PreToolUse");
+
+/* ── ① 决定层:签发前默认拒绝 ── */
+eq(
+  "签发前:这条插件 hook 默认拒绝(没有有效授权就不跑)",
+  decidePluginHookExecution(pluginSource, mapped, Date.now()).decide,
+  "denied",
+);
+
+/* ── 门禁层:agent 够不到这两条,调用方也伪造不了宿主字段 ── */
+check(
+  "★ agent 经 app_api_call 够不到签发(issue 钉 blocked,不是每次弹卡)",
+  policyFor("hooks.issueHostHookGrant").level === "blocked",
+  policyFor("hooks.issueHostHookGrant"),
+);
+check(
+  "★ agent 也够不到撤销(revoke 钉 blocked)",
+  policyFor("hooks.revokeHostHookGrant").level === "blocked",
+  policyFor("hooks.revokeHostHookGrant"),
+);
+eq("列表是只读(list 档)", policyFor("hooks.listHostHookGrants").level, "read");
+
+// 调用方想自签一份"已撤销"的授权绕过门禁 —— schema `.strict()` 直接拒(宿主字段给不了)。
+let forgedRevoked: unknown = "没抛";
+try {
+  await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, { pluginId: PLUGIN, revoked: true });
+} catch (err) {
+  forgedRevoked = (err as Error).message;
+}
+check("★ 伪造宿主字段(revoked)被 schema 拒(不是静默采纳)", forgedRevoked !== "没抛", forgedRevoked);
+
+// 缺插件名 → 拒(不是拿半份东西去签发)。
+let noPlugin: unknown = "没抛";
+try {
+  await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, {});
+} catch (err) {
+  noPlugin = (err as Error).message;
+}
+check("缺 pluginId 签发:显式拒", noPlugin !== "没抛", noPlugin);
+
+/* ── 用户经 IPC 签发(走真 handler,命令摘要绑真摘要)── */
+const issued = (await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, {
+  pluginId: PLUGIN,
+  version: PLUGIN_VERSION,
+  events: ["PreToolUse"],
+  commandDigest: hostHookCommandDigest(PLUGIN_CMD),
+})) as { ok: boolean; grant?: { grantId: string; pluginId: string; expiresAt: number } };
+eq("签发成功", issued.ok, true);
+eq("签发的 grantId 由宿主给(不在 input 里)", typeof issued.grant?.grantId, "string");
+check("宿主给了有效期(expiresAt 在未来)", (issued.grant?.expiresAt ?? 0) > Date.now(), issued.grant?.expiresAt);
+
+/* ── ① 决定层:签发后翻成 allowed(面板据此标 granted)── */
+eq(
+  "签发后:同一条插件 hook 变 allowed(面板会标 granted)",
+  decidePluginHookExecution(pluginSource, mapped, Date.now()).decide,
+  "allowed",
+);
+
+/* ── 持久化:签发落盘,重启可载回 ── */
+check("签发落到了 <数据根>/hooks/host-hook-grants.json", existsSync(GRANT_FILE), GRANT_FILE);
+{
+  const env = JSON.parse(readFileSync(GRANT_FILE, "utf-8")) as { version: number; grants: Array<{ grantId: string }> };
+  eq("盘上信封版本正确", env.version, 1);
+  eq("盘上留有刚签发的那一份", env.grants.some((g) => g.grantId === issued.grant?.grantId), true);
+  // 断链验证:重装持久化(模拟重启)后授权仍在 —— 证明"跨重启活着",不是只在内存。
+  resetHostHookGrants();
+  assembleHostHookGrantPersist(DATA);
+  eq("重启(重载)后授权仍在,同一条 hook 仍 allowed", decidePluginHookExecution(pluginSource, mapped, Date.now()).decide, "allowed");
+}
+
+/* ── 列表 RPC 看得见它 ── */
+const listedGrants = (await call(IPC.HOOKS_HOST_HOOK_GRANTS_LIST)) as { grants: Array<{ grantId: string }> };
+eq("列表 RPC 看得见刚签的那一份", listedGrants.grants.some((g) => g.grantId === issued.grant?.grantId), true);
+
+/* ── ② 执行层:签发后事件真的把这条 hook 跑起来 ── */
+const before = pluginHits();
+emitToolUse("call_granted_1");
+await until("签发后插件 hook 真的跑起来", () => pluginHits() > before);
+eq("签发后真事件跑了一次(授权驱动执行,不是面板标字样)", pluginHits() - before, 1);
+
+/* ── 用户经 IPC 撤销 → 回到默认拒绝 ── */
+const revoked = (await call(IPC.HOOKS_HOST_HOOK_GRANT_REVOKE, { grantId: issued.grant?.grantId })) as { ok: boolean };
+eq("撤销成功", revoked.ok, true);
+eq(
+  "撤销后:同一条插件 hook 回到 denied(默认拒绝)",
+  decidePluginHookExecution(pluginSource, mapped, Date.now()).decide,
+  "denied",
+);
+
+/* ── ② 执行层:撤销后事件**不再**把它跑起来 ── */
+const beforeRevoke = pluginHits();
+emitToolUse("call_revoked_1");
+await until(
+  "撤销后事件被记为 denied(环里出现带原因的 skipped)",
+  () => hookRunner.listRuns().some((r) => r.hookId.startsWith("ph_") && r.status === "skipped"),
+);
+eq("撤销后事件**没有**再跑这条 hook(计数不增)", pluginHits(), beforeRevoke);
+// 撤销这件事**要可数** —— 不是静默不跑(仓库硬规矩 3)。
+{
+  const deniedRun = hookRunner.listRuns().find((r) => r.hookId.startsWith("ph_") && r.status === "skipped");
+  check("被挡下的那次**带原因**(排错时唯一的现场)", (deniedRun?.error?.length ?? 0) > 0, deniedRun?.error);
+}
+// 撤销也幂等:再撤一次仍回 ok(想要的结局已经在了)。
+const revokedAgain = (await call(IPC.HOOKS_HOST_HOOK_GRANT_REVOKE, { grantId: issued.grant?.grantId })) as { ok: boolean };
+eq("重复撤销幂等(已撤销也算成功)", revokedAgain.ok, true);
+// 撤销空 grantId → 拒(不是"撤了个空 id 也算成功")。
+let revokeEmpty: unknown = "没抛";
+try {
+  await call(IPC.HOOKS_HOST_HOOK_GRANT_REVOKE, { grantId: "" });
+} catch (err) {
+  revokeEmpty = (err as Error).message;
+}
+check("空 grantId 撤销:显式拒", revokeEmpty !== "没抛", revokeEmpty);
+
+// 收尾:断开注入缝,免得影响后续(本套到此结束)。
+hookRunner.setPluginHookSource(() => []);
 
 /* ────────────────────── 收尾 ────────────────────── */
 

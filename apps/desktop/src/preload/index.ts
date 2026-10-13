@@ -1007,6 +1007,14 @@ const api = {
     save: ((input) => ipcRenderer.invoke(IPC.HOOKS_SAVE, input)) as RpcMap["hooks.save"],
     remove: ((input) => ipcRenderer.invoke(IPC.HOOKS_REMOVE, input)) as RpcMap["hooks.remove"],
     test: ((input) => ipcRenderer.invoke(IPC.HOOKS_TEST, input)) as RpcMap["hooks.test"],
+    /** 【MC-061】插件 hook 的**用户签发入口**。issue/revoke 在主进程 `appControl/policy.ts`
+     *  里钉死 **blocked**(agent 够不到);真正调它们的是设置页那颗按钮 = 用户动作。 */
+    listHostHookGrants: ((input) =>
+      ipcRenderer.invoke(IPC.HOOKS_HOST_HOOK_GRANTS_LIST, input)) as RpcMap["hooks.listHostHookGrants"],
+    issueHostHookGrant: ((input) =>
+      ipcRenderer.invoke(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, input)) as RpcMap["hooks.issueHostHookGrant"],
+    revokeHostHookGrant: ((input) =>
+      ipcRenderer.invoke(IPC.HOOKS_HOST_HOOK_GRANT_REVOKE, input)) as RpcMap["hooks.revokeHostHookGrant"],
   },
 
   /** Plugins (settings panel): install/enable/remove over ~/.mcode/plugins +

@@ -607,9 +607,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "file.readFile",
   "channel": "file:readFile",
-  "doc": "读一个文本文件(转文件 diff 卡片用)。**路径必须落在某个已知项目根内**,否则**静默返回空串**;读不出(GBK/UTF-16 走 `decodeTextBuffer` 尽力解码,失败也回空串),不抛。",
+  "doc": "【MC-097】回传 `version`(内容 sha256)—— 渲染端保存时带 `writeFile.expectedVersion` 做 CAS。",
   "input": "{ filePath: string // Absolute or cwd-relative path. }",
-  "output": "{ content: string }"
+  "output": "{ content: string; version?: string | null | undefined }"
  },
  {
   "method": "file.rename",
@@ -628,9 +628,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "file.writeFile",
   "channel": "file:writeFile",
-  "doc": "Write content to a file (creates parents), scoped to a project root.",
-  "input": "{ content: string; filePath: string // Absolute or cwd-relative path. }",
-  "output": "{ ok: boolean }"
+  "doc": "【MC-097】`conflict:true` = 带 `expectedVersion` 的 CAS 冲突(磁盘已被改动,未写)。",
+  "input": "{ content: string; filePath: string // Absolute or cwd-relative path.; expectedVersion?: string | undefined // 【MC-097】可选**乐观并发条件**:调用方读到的那一版内容的哈希(见 `file:readFile` 回传的 `version`)。给了它,主进程在**最终提交点**重读当… }",
+  "output": "{ ok: boolean; conflict?: boolean | undefined }"
  },
  {
   "method": "git.cancelGenerateCommitMessage",
@@ -808,6 +808,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ status: GitWorktreeInfo | null }"
  },
  {
+  "method": "hooks.issueHostHookGrant",
+  "channel": "hooks:issueHostHookGrant",
+  "doc": "【MC-061】**用户真实操作**后签发一份主机 hook 授权(落盘)。`grantId` / 时间 / `revoked` 由主进程签发(schema `.strict()`;agent 经 `app_api_call` 够不到这条 —— blocked)。",
+  "input": "{ pluginId: string // 贡献这条 hook 的插件名(manifest name)。; version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
+  "output": "{ ok: boolean; error?: string | undefined; grant?: HostHookGrant | undefined }"
+ },
+ {
   "method": "hooks.list",
   "channel": "hooks:list",
   "doc": "全部钩子 + 读得见但用不了的条目。**坏条目不静默丢弃** —— 用户写的钩子不生效时, 这一页是唯一能解释为什么的地方。",
@@ -815,10 +822,24 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ hooks: { id: string; name: string; enabled: boolean; command: string; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res…; problems: { where: string; error: string; }[] }"
  },
  {
+  "method": "hooks.listHostHookGrants",
+  "channel": "hooks:listHostHookGrants",
+  "doc": "【MC-061】列出当前全部**主机 hook 授权**(设置 → 插件 → 钩子授权)。只读 —— 只给 桌面渲染端;`app_api_call` 里这两条(issue/revoke)一律 blocked,故不走 agent。",
+  "input": "{}",
+  "output": "{ grants: HostHookGrant[] }"
+ },
+ {
   "method": "hooks.remove",
   "channel": "hooks:remove",
   "doc": "删一条钩子(按 id)。",
   "input": "{ id: string }",
+  "output": "{ ok: boolean; error?: string | undefined }"
+ },
+ {
+  "method": "hooks.revokeHostHookGrant",
+  "channel": "hooks:revokeHostHookGrant",
+  "doc": "【MC-061】撤销一份主机 hook 授权(按 grantId);撤销后该来源回到**默认拒绝**。",
+  "input": "{ grantId: string }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -1462,7 +1483,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "memory.save",
   "channel": "memory:save",
   "doc": "存正文(frontmatter 由主进程维护)。",
-  "input": "{ path: string; content: string; title?: string | undefined; pinned?: boolean | undefined; expectedRevision?: string | null | undefined }",
+  "input": "{ path: string; content: string; title?: string | undefined; expectedRevision?: string | null | undefined; pinned?: boolean | undefined }",
   "output": "{ ok: boolean; revision?: string | undefined; error?: string | undefined; code?: 'conflict' | undefined }"
  },
  {
