@@ -70,7 +70,10 @@ import { getGrantStore } from "./grantStoreRuntime.js";
 import type { GrantDecision } from "./grantStore.js";
 import type { ActionIntent, ActorRef, CoreIntent, PolicyCompatibilityLevel } from "@contracts/policyEngine";
 import { physicalPath } from "@main/lib/realPathWithin.js";
-import { runWithAgentMemoryScopeForSession } from "@main/memory/agentScope.js";
+import {
+  runWithAgentMemoryScopeForSession,
+  runWithUnboundAgentExtensionScope,
+} from "@main/memory/agentScope.js";
 import { registeredRpcChannels, rpcHandlerFor } from "./registry.js";
 import { redactValue, renderResult, slimSessions } from "./redact.js";
 import { runUiCommand } from "./uiBridge.js";
@@ -671,7 +674,13 @@ export async function panelApiCall(
   // ── 真正执行 RPC(到这里一定被调一次)──────────────────────────────
   let result: unknown;
   try {
-    result = await callRpc(entry, input);
+    // 【MC-095】面板的 `api.call` 与 agent 的 `app_api_call` 走同一条 `callRpc`,同样**不带**
+    // 宿主铸造的扩展身份 —— 面板脚本能借它填别人的 `extensionId` 读另一个扩展的数据区
+    // (与 E1 同源)。这里同样包「没有扩展身份」的作用域 → handler 一律拒。面板要用**自己**
+    // 的存储走 `mcode.storage.*` / `mcode.extension.*`(桥用 `host.item.id` 自绑,不经这里)。
+    result = entry.method.startsWith("extensionStore.")
+      ? await runWithUnboundAgentExtensionScope(() => callRpc(entry, input))
+      : await callRpc(entry, input);
   } catch (err) {
     // ZodError = 参数在**执行之前**就被挡下 → 命令没跑 → REJECTED(可安全改参数重来)。
     if (err instanceof z.ZodError) {
@@ -736,7 +745,7 @@ async function ui(cmd: AppUiCommand): Promise<AppUiReply> {
  * REJECTED)。这里不吞、不改写 —— 判据只有一份(`lib/sessionStart.ts`)。
  */
 async function headlessNewSession(a: {
-  project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; title?: string; expected_revision?: string;
+  project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; title?: string; expected_revision?: string; permission_grant?: string;
 }, actorId: string): Promise<string | null> {
   // 【ARC-001】建会话 + 发首条是**唯一一份业务命令** —— 桌面 `claude:startSession` IPC 与这条
   // headless 路都调 `appServices/sessionCommands.ts` 的 `createSessionAndSend`(硬规矩 2)。
@@ -770,6 +779,10 @@ async function headlessNewSession(a: {
     // 【ARC-001 步③】Agent 若带了乐观并发修订号,原样交给服务函数核对;核对失败它会抛,
     // 由 `runSessionNew` 翻成 REJECTED(没执行)。缺席 = 不启用。
     ...(a.expected_revision ? { expectedRevision: a.expected_revision } : {}),
+    // 【ARC-001 步④】Agent 若带了一枚计划授权句柄,原样交给服务函数 —— 由**宿主**从目标项目
+    // 解析权威资源身份、去 `getGrantStore()` 取回授权、交唯一判定核 `evaluate` 核对(不是
+    // 采信这个字符串)。核不过会抛 `SessionGrantRefusedError`,由 `runSessionNew` 翻成 REJECTED。
+    ...(a.permission_grant ? { permissionGrant: a.permission_grant } : {}),
   });
   if (sendError !== null) return `对话已建好(${session.id}),但第一条消息没发出去(上一轮还在运行)`;
   return null;
@@ -1150,6 +1163,11 @@ export function appMcpTools(): McpToolSpec[] {
           "先从 session.list* 读到那条空壳的 updatedAt,原样填在这里;主进程复用前会核对它还是不是那一版," +
           "对不上就拒绝(什么都没建),不会静默复用/新建一条你没预期的对话。省略 = 不做这个保护(照旧)。",
         ),
+        permission_grant: z.string().optional().describe(
+          "计划授权句柄(可选 grantId)。要在**某个已批准的计划/任务**之下开这个对话时带上它:" +
+          "主进程会自己去跟授权库核对这枚授权是否存在、仍有效、且覆盖这次建会话(方法 session.create + 目标项目对得上);" +
+          "核不过就拒绝(什么都没建)—— 绝不采信你自报的字符串。省略 = 不按计划授权开(照旧)。",
+        ),
       },
       handler: async () => fail("内部错误:app_session_new 必须经 invokeAppTool 调用"),
     },
@@ -1457,6 +1475,8 @@ type SessionNewArgs = {
   title?: string;
   /** 【ARC-001 步③】乐观并发修订号(可选);见工具描述与 `ActionContext.expectedRevision`。 */
   expected_revision?: string;
+  /** 【ARC-001 步④】计划授权句柄(可选 `grantId`);见工具描述与 `ActionContext.permissionGrant`。 */
+  permission_grant?: string;
 };
 type SessionSendArgs = { session_id: string; prompt: string; workflow_id?: string; background?: boolean };
 
@@ -1484,7 +1504,7 @@ async function runSessionNew(a: SessionNewArgs, sessionId: string, ctx: Provider
   // 【ARC-001 步③】走了乐观并发修订号 → **必须**经会真核对它的那条路(headless 经唯一业务
   // 命令 `createSessionAndSend`)。UI 桥那条渲染端 `new_session` **不认** `expected_revision`
   // 这个字段 —— 先走它等于把闸悄悄绕过去,那正是本切片要堵的口子。所以带修订号时**不**走 UI。
-  if (a.expected_revision === undefined) {
+  if (a.expected_revision === undefined && a.permission_grant === undefined) {
     const reply = await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title });
     // 【MC-059】窗口没开 → 走主进程同一套服务,不因界面缺失而失败。
     if (uiUnavailable(reply)) return runSessionNewHeadless(a, sessionId, method, operationId);
@@ -1508,10 +1528,12 @@ async function runSessionNew(a: SessionNewArgs, sessionId: string, ctx: Provider
 }
 
 /**
- * `app_session_new` 的**无窗口 / 带修订号**那条分支:经唯一业务命令 `createSessionAndSend`。
+ * `app_session_new` 的**无窗口 / 带修订号 / 带授权句柄**那条分支:经唯一业务命令 `createSessionAndSend`。
  *   - 修订号对不上 → `createSessionAndSend` 抛 `SessionRevisionConflictError`,**什么都没执行**
  *     → **REJECTED**(`revision_conflict`,可安全重来:重读状态再试),**绝不**像别的失败那样
  *     报 UNCERTAIN(那会诱导 Agent 以为"可能已建一半"而放弃重试);
+ *   - 【ARC-001 步④】带了授权句柄却核不过(不存在 / 失效 / 不覆盖)→ 抛 `SessionGrantRefusedError`,
+ *     **什么都没执行** → **REJECTED**(`grant_refused`,可安全重来:取一枚有效授权再来);
  *   - 其它失败 → 会话行**可能已经落库**(createOrReuseSession 已跑)、只是首条没起 → UNCERTAIN。
  */
 async function runSessionNewHeadless(
@@ -1531,6 +1553,17 @@ async function runSessionNewHeadless(
       return operationToolResult(
         makeOp("REJECTED", method, operationId, {
           code: OP_CODE.revisionConflict,
+          reason: errText(thrown),
+        }),
+      );
+    }
+    // 【ARC-001 步④】授权句柄核不过:授权被宿主从 `getGrantStore()` 取回后交 `evaluate` 判,
+    // 不存在 / 失效 / 不覆盖这次动作 → 拒绝。**没建、没发** → REJECTED(可安全重来:取一枚
+    // 有效授权再来)。绝不报 UNCERTAIN —— 会话行一行都没写。
+    if (code === "grant_refused") {
+      return operationToolResult(
+        makeOp("REJECTED", method, operationId, {
+          code: OP_CODE.grantRefused,
           reason: errText(thrown),
         }),
       );
@@ -2076,10 +2109,19 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           // 宿主铸的会话项目身份 —— 否则模型能带 `projects/<别的项目>/…` 读写任意项目记忆,
           // 或 `list` 出全部(专用记忆工具本来就有这道隔离,通用路从前没有)。作用域只包
           // 这一次 `callRpc`,桌面渲染端走真实 IPC(不经这里)不受影响,保留全局管理权限。
-          const scoped = entry.method.startsWith("memory.");
-          result = scoped
-            ? await runWithAgentMemoryScopeForSession(sessionId, () => callRpc(entry, args.input))
-            : await callRpc(entry, args.input);
+          //
+          // 【MC-095】扩展数据区同理:`extensionStore.*` 收请求者自填的 `extensionId`,通用
+          // 路从前不绑调用主体 —— 模型能填别人的扩展 id 读写其键值/文件。这里包一层**没有
+          // 扩展身份**的作用域(同一个 `agentScope` 机制,`runWithUnboundAgentExtensionScope`),
+          // handler 见「有作用域但身份对不上」即**一律拒**(fail-closed)。当前无任何 agent
+          // 会话带扩展身份,故通用路的正确行为就是拒。桌面面板走渲染端直连(不经这里)不受影响。
+          if (entry.method.startsWith("memory.")) {
+            result = await runWithAgentMemoryScopeForSession(sessionId, () => callRpc(entry, args.input));
+          } else if (entry.method.startsWith("extensionStore.")) {
+            result = await runWithUnboundAgentExtensionScope(() => callRpc(entry, args.input));
+          } else {
+            result = await callRpc(entry, args.input);
+          }
         } catch (err) {
           // ZodError = 参数在**执行之前**就被挡下 → 命令没跑 → REJECTED。
           if (err instanceof z.ZodError) {

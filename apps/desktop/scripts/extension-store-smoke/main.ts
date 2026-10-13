@@ -64,6 +64,11 @@ import {
   listFilesInExtension,
 } from "../../src/main/lib/extensionStore.js";
 import { registerExtensionStoreHandlers } from "../../src/main/ipc/extensions.js";
+import {
+  runWithAgentExtensionScopeForExtension,
+  runWithUnboundAgentExtensionScope,
+  currentAgentExtensionScope,
+} from "../../src/main/memory/agentScope.js";
 
 let checks = 0;
 let failed = 0;
@@ -658,6 +663,118 @@ check("三条通道都注册了", handlers.has(EXTENSION_STORE_GET_CHANNEL) && h
       panelSrc.includes('call("extension.listFiles"'));
   }
 
+  /* ─────────────────── §8 可信扩展身份绑定(MC-095 E1)───────────────────
+   *
+   * 复核 E1 复现的缺陷:六条 `extensionStore.*` RPC 都收请求者自填的 `extensionId`,主进程
+   * handler 从前不绑调用主体。一个**没有可信扩展身份**的通用调用(`app_api_call` / 面板
+   * `api.call`)把 `extensionId:"private-plugin-a"` 填进 `get` / `readFile`,就能读到另一个
+   * 扩展的私有键值 / 文件(`foreignKv=PRIVATE_A_ONLY`)—— handler 一点都不知道这是谁在调。
+   *
+   * 修复:`tools.ts` 在通用路装**没有扩展身份**的作用域(`runWithUnboundAgentExtensionScope`,
+   * 与记忆作用域共用同一套 `agentScope` 机制),六条 handler 在入口过 `assertExtensionAccess`
+   * → 有作用域但身份对不上 = **一律拒**;桌面渲染端直连(无作用域)= 保留(桥已自绑 id)。
+   *
+   * 本段**真注册并调生产** `registerExtensionStoreHandlers`(§4 已注册),只用作用域模拟
+   * 「谁在调」——这正是 E1 探针的判据:预置 `private-plugin-a` 的私有数据,从无可信身份的
+   * 调用去读,必须**拿不到**。 */
+  console.log("\n§8 可信扩展身份绑定(MC-095 E1)");
+
+  /** 跑一次**异步** handler 调用,把「拒绝(抛 / reject)」与「返回」压成统一形状。
+   *  真实 `ipcMain.handle` 的回调可以是 async,`call` 返回 Promise —— 拒绝以 reject 形式来。 */
+  async function callSettled(fn: () => unknown): Promise<{ threw: boolean; message?: string; value?: unknown }> {
+    try {
+      return { threw: false, value: await fn() };
+    } catch (err) {
+      return { threw: true, message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /* ── 8.0 先确证作用域模块的判据本身(纯函数,不经 handler)── */
+  {
+    // 无作用域(桌面直连)→ undefined;装「无身份」→ 有作用域、id empty;装「代表某扩展」→ 该 id。
+    check("无作用域时 currentAgentExtensionScope() = undefined(桌面直连)", currentAgentExtensionScope() === undefined);
+    const unbound = runWithUnboundAgentExtensionScope(() => currentAgentExtensionScope());
+    check("装『无身份』作用域后,作用域存在但 extensionId 为空", unbound !== undefined && unbound.extensionId === undefined, unbound);
+    const bound = runWithAgentExtensionScopeForExtension("ext-x", () => currentAgentExtensionScope());
+    check("装『代表 ext-x』作用域后,extensionId = ext-x", bound?.extensionId === "ext-x", bound);
+    // 作用域只在这一段调用链里生效 —— 一出来就没了(与记忆作用域同款)。
+    check("作用域退出调用链后消失(不泄漏到后续调用)", currentAgentExtensionScope() === undefined);
+  }
+
+  /* ── 8.1 预置 private-plugin-a 的私有键值 + 文件(桌面无作用域路,放行)── */
+  {
+    // 桌面渲染端直连(无作用域)= 桥已自绑 id,保留「任意 id」—— 这条**必须仍放行**。
+    deepEq("桌面直连:无作用域的 set 仍成功(面板路不受影响)", await call(EXTENSION_STORE_SET_CHANNEL, { extensionId: "private-plugin-a", key: "secret", value: "PRIVATE_A_ONLY" }), { ok: true });
+    deepEq("桌面直连:无作用域的 writeFile 仍成功", await call(EXTENSION_STORE_WRITE_FILE_CHANNEL, { extensionId: "private-plugin-a", relPath: "secret.txt", content: "PRIVATE_A_FILE" }), { ok: true, bytes: 14 });
+    eq("桌面直连:无作用域的 get 读得到自己的值", ((await call(EXTENSION_STORE_GET_CHANNEL, { extensionId: "private-plugin-a", key: "secret" })) as { value: unknown }).value, "PRIVATE_A_ONLY");
+  }
+
+  /* ── 8.2 通用无身份调用 → 六条通道全拒,且一个字节都不泄漏 / 不落盘 ── */
+  {
+    // 无身份作用域 = 通用 `app_api_call` / 面板 `api.call` 那条路。
+    const refused: Array<[string, () => unknown]> = [
+      ["get", () => call(EXTENSION_STORE_GET_CHANNEL, { extensionId: "private-plugin-a", key: "secret" })],
+      ["readFile", () => call(EXTENSION_STORE_READ_FILE_CHANNEL, { extensionId: "private-plugin-a", relPath: "secret.txt" })],
+      ["listFiles", () => call(EXTENSION_STORE_LIST_FILES_CHANNEL, { extensionId: "private-plugin-a" })],
+      ["set", () => call(EXTENSION_STORE_SET_CHANNEL, { extensionId: "private-plugin-a", key: "planted", value: "X" })],
+      ["remove", () => call(EXTENSION_STORE_REMOVE_CHANNEL, { extensionId: "private-plugin-a", key: "secret" })],
+      ["writeFile", () => call(EXTENSION_STORE_WRITE_FILE_CHANNEL, { extensionId: "private-plugin-a", relPath: "planted.txt", content: "X" })],
+    ];
+    for (const [label, fn] of refused) {
+      const r = await runWithUnboundAgentExtensionScope(() => callSettled(fn));
+      check(`★ MC-095:通用无身份调用 ${label} 被拒(抛错)`, r.threw, r);
+      // 拒绝理由必须点明「未绑定可信扩展身份」—— 不是某条别的原因(如路径非法)顺便挡住。
+      check(`★ MC-095:${label} 的拒绝理由点明未绑定身份`, (r.message ?? "").includes("未绑定可信扩展身份"), r.message);
+    }
+    // 读被拒 → 私有数据**一个字节都没泄漏**(E1 的核心判据:foreignKv 拿不到)。
+    const leakedKv = await runWithUnboundAgentExtensionScope(() => callSettled(() => call(EXTENSION_STORE_GET_CHANNEL, { extensionId: "private-plugin-a", key: "secret" })));
+    check("★ MC-095:通用读拿不到 foreignKv(不是'读到 null'而是'根本没执行')", leakedKv.threw, leakedKv);
+    // 写被拒 → 磁盘上**没有**多出 planted 数据(拒绝是"没执行",不是"执行了但返回 false")。
+    eq("★ MC-095:被拒的 set 没在磁盘落盘(键值未变)", ((await call(EXTENSION_STORE_GET_CHANNEL, { extensionId: "private-plugin-a", key: "planted" })) as { value: unknown }).value, null);
+    check("★ MC-095:被拒的 writeFile 没在磁盘落盘", !existsSync(join(extensionDir(ROOT, "private-plugin-a"), "planted.txt")));
+    eq("★ MC-095:被拒的 remove 没删掉原值(secret 仍在)", ((await call(EXTENSION_STORE_GET_CHANNEL, { extensionId: "private-plugin-a", key: "secret" })) as { value: unknown }).value, "PRIVATE_A_ONLY");
+    eq("★ MC-095:被拒的 readFile 没泄漏文件内容(文件仍在)", ((await call(EXTENSION_STORE_READ_FILE_CHANNEL, { extensionId: "private-plugin-a", relPath: "secret.txt" })) as { ok: boolean; content?: string }).content, "PRIVATE_A_FILE");
+  }
+
+  /* ── 8.3 正控:身份**匹配**时放行(闸不是"一律拒")── */
+  {
+    // 装「代表 private-plugin-a」的作用域 → 该扩展的数据区**放行**(否则闸会把合法的
+    // "代某扩展行事"也拒掉,测不出真假)。
+    const got = await runWithAgentExtensionScopeForExtension("private-plugin-a", () => call(EXTENSION_STORE_GET_CHANNEL, { extensionId: "private-plugin-a", key: "secret" }));
+    eq("★ MC-095 正控:身份匹配时 get 放行(读到自己的值)", (got as { value: unknown }).value, "PRIVATE_A_ONLY");
+    const rf = await runWithAgentExtensionScopeForExtension("private-plugin-a", () => call(EXTENSION_STORE_READ_FILE_CHANNEL, { extensionId: "private-plugin-a", relPath: "secret.txt" }));
+    deepEq("★ MC-095 正控:身份匹配时 readFile 放行", rf, { ok: true, content: "PRIVATE_A_FILE" });
+    // 身份匹配时的写也放行(闸只挡"越到别的扩展",不误伤自己)。
+    const w = await runWithAgentExtensionScopeForExtension("private-plugin-a", () => call(EXTENSION_STORE_SET_CHANNEL, { extensionId: "private-plugin-a", key: "own", value: "ok" }));
+    deepEq("★ MC-095 正控:身份匹配时 set 放行", w, { ok: true });
+  }
+
+  /* ── 8.4 跨扩展:身份绑在 ext-b,却去读 private-plugin-a → 拒 ── */
+  {
+    const cross = await runWithAgentExtensionScopeForExtension("ext-b", () => callSettled(() => call(EXTENSION_STORE_GET_CHANNEL, { extensionId: "private-plugin-a", key: "secret" })));
+    check("★ MC-095:身份绑 ext-b 去读 private-plugin-a → 拒(跨扩展)", cross.threw, cross);
+    // 但写**自己**(ext-b)放行 —— 证明闸是按 id 判的,不是"有身份就拒"。
+    const own = await runWithAgentExtensionScopeForExtension("ext-b", () => callSettled(() => call(EXTENSION_STORE_SET_CHANNEL, { extensionId: "ext-b", key: "k", value: 1 })));
+    check("★ MC-095:身份绑 ext-b 去写 ext-b 自己 → 放行", !own.threw, own);
+  }
+
+  /* ── 8.5 源码级:接线是"唯一一份"(共享实现),且通用路两个入口都装了 ── */
+  {
+    const toolsSrc = readFileSync(join(SRC_DIR, "main", "appControl", "tools.ts"), "utf8");
+    const extIpcSrc = readFileSync(join(SRC_DIR, "main", "ipc", "extensions.ts"), "utf8");
+    const scopeSrc = readFileSync(join(SRC_DIR, "main", "memory", "agentScope.ts"), "utf8");
+    // 通用 `app_api_call` 与面板 `api.call` **两条**执行点都用同一个作用域函数包 extensionStore。
+    const wraps = toolsSrc.match(/runWithUnboundAgentExtensionScope\(\(\) => callRpc/g) ?? [];
+    check("★ MC-095:通用路与面板路**两处**都装了扩展作用域(不是只堵一处)", wraps.length >= 2, wraps.length);
+    check("★ MC-095:通用路只对 extensionStore.* 装(不误罩别的域)", /entry\.method\.startsWith\("extensionStore\."\)/.test(toolsSrc));
+    // 六条 handler **共用**同一个判据函数(硬规矩:共享实现只有一份)。
+    const asserts = extIpcSrc.match(/assertExtensionAccess\(input\.extensionId\)/g) ?? [];
+    eq("★ MC-095:六条 handler 都过同一道 assertExtensionAccess", asserts.length, 6);
+    check("★ MC-095:assertExtensionAccess 复用 agentScope 的唯一判据", extIpcSrc.includes("extensionAccessRefusal"));
+    check("★ MC-095:作用域机制与记忆共用同一模块(未另起第二套)", scopeSrc.includes("runWithUnboundAgentExtensionScope") && scopeSrc.includes("runWithAgentMemoryScopeForSession"));
+  }
+
   console.log(`\nextension-store-smoke:${checks - failed}/${checks} 通过`);
   if (failed > 0) process.exit(1);
 })();
+

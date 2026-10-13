@@ -4,6 +4,10 @@
 #
 # 桩:dataRoot(真那个 import electron)。@main/lib/extensionStore.ts 会用 appContext 的
 # atomicWrite(纯 node:fs,不 import electron),所以不用换桩。
+#
+# 【MC-095】`main/ipc/extensions.ts` 现在引 `main/memory/agentScope.js`(可信扩展身份闸),
+# 那里顶部 import 了 `SessionRepo` —— 不换桩会顺带把 `repositories → db → electron`
+# 整条链收进 bundle。换掉 `repositories`(与 memory-smoke 同一份形状),本套不读会话。
 set -euo pipefail
 cd "$(dirname "$0")/../.."          # → apps/desktop
 
@@ -17,6 +21,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --alias:@main/lib/dataRoot.js=./scripts/extension-store-smoke/stubs/dataRoot.ts \
+  --alias:@main/store/repositories.js=./scripts/extension-store-smoke/stubs/repositories.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/smoke.mjs"

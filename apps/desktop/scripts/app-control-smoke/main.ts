@@ -26,6 +26,7 @@ import { GrantStore, type GrantDecision } from "@main/appControl/grantStore.js";
 import { setGrantStore, getGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import type { ActorRef, CoreIntent, Grant } from "@contracts/policyEngine";
 import { isEnvelopeMethod } from "@main/appControl/commandOutcome.js";
+import { currentAgentExtensionScope } from "@main/memory/agentScope.js";
 import { setOperationLedger, type OperationLedger } from "@main/appControl/operations.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
@@ -2333,6 +2334,47 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
     check("★ ARC-009:面板·没带 approved → needsApproval 且不挂 operation(是暂停,不是拒绝)",
       r.ok === false && r.needsApproval === true && r.operation === undefined, r);
   }
+}
+
+/* ── 【MC-095 E2】通用 `app_api_call` / 面板 `api.call` 调 extensionStore.* 装**无身份**作用域 ──
+ *
+ * 复核 E1:六条 `extensionStore.*` 收请求者自填 `extensionId`,通用路从前不绑主体 —— 模型
+ * 填别人的扩展 id 就能读写其私有数据。修复:两个通用入口(`app_api_call` 与面板 `api.call`)
+ * 在 `callRpc` 外层包 `runWithUnboundAgentExtensionScope`(同一个 `agentScope` 机制),
+ * handler 见「有作用域但身份对不上」即拒。
+ *
+ * 这里**端到端**证明那个作用域真的在 agent 路径被装上:录一条 `extensionStore:get` 的假
+ * handler,让它读 `currentAgentExtensionScope()` 并把结果带回来。真实生产 handler 的判据
+ * (`assertExtensionAccess`)已在 extension-store-smoke §8 用**真 handler** 验过;这一条验的是
+ * 「agent 那条 `invokeAppTool → callRpc` 链上,作用域确实被装上了」——两层合起来才是闭环。 */
+{
+  __clearOperationLog();
+  const { ctx } = ctxWith({ allow: true });
+  let observedScope: unknown = "unset";
+  recordRpcHandler("extensionStore:get", async () => {
+    observedScope = currentAgentExtensionScope();
+    return { value: "SHOULD_NOT_REACH_IF_SCOPED" };
+  });
+  await invokeAppTool("app_api_call", { method: "extensionStore.get", input: { extensionId: "private-plugin-a", key: "secret" } }, "me", ctx);
+  check("★ MC-095 E2:agent 经 app_api_call 调 extensionStore.get 时**装了**无身份作用域",
+    observedScope !== undefined && (observedScope as { extensionId?: unknown }).extensionId === undefined && observedScope !== "unset",
+    observedScope);
+  // 正控:别的域**不**装扩展作用域(作用域只对 extensionStore.* 生效,不误罩)。
+  let otherScope: unknown = "unset";
+  recordRpcHandler("project:list", async () => { otherScope = currentAgentExtensionScope(); return { projects: [] }; });
+  await invokeAppTool("app_api_call", { method: "project.list" }, "me", ctx);
+  check("★ MC-095 E2 正控:非 extensionStore 域**不**装扩展作用域", otherScope === undefined, otherScope);
+
+  // 面板 `api.call` 那条路同理(同一份作用域函数、同一处 callRpc 包法)。
+  let panelScope: unknown = "unset";
+  recordRpcHandler("extensionStore:readFile", async () => {
+    panelScope = currentAgentExtensionScope();
+    return { ok: false as const, reason: "notFound" as const };
+  });
+  await panelApiCall("extensionStore.readFile", { extensionId: "private-plugin-a", relPath: "x" }, false, "我的面板");
+  check("★ MC-095 E2:面板 api.call 调 extensionStore.readFile 时**也装了**无身份作用域",
+    panelScope !== undefined && (panelScope as { extensionId?: unknown }).extensionId === undefined && panelScope !== "unset",
+    panelScope);
 }
 
 console.log(`\n${passed}/${passed + failures.length} 通过`);
