@@ -44,14 +44,40 @@
  * 为什么修订号是**会话行的 `updatedAt`** 而不是整库的 `durableRevision`、以及这个选法诚实的
  * 残余,写在 `lib/sessionStart.ts` 的 `sessionRevisionOf` 文件头 —— 别在这里再抄一遍。
  *
- * ⚠️ **本切片仍存在的残余(如实记录,不假称做全)**:`permissionGrant`(计划级授权句柄)仍未落
- * —— 它要等授权判定核先铺进这条命令链,此处**不造**一个没有消费者的空字段冒充结构完整。
+ * ## 【ARC-001 步④】permissionGrant —— 计划级授权句柄(宿主核对,不是模型自报)
+ *
+ * 步②落了「谁在调」、步③落了 `expectedRevision`。步④落 remaining 点名的最后一个字段
+ * `permissionGrant`(计划级授权句柄)。授权判定核(`policyEngine.evaluate` + `grantStore` +
+ * `grantStoreRuntime.getGrantStore`)与「计划 digest 绑 `scopedCore.scenePlan`」的接缝
+ * (`scenePlanCoreIntent`)已经铺好,所以这个字段**不再**是「无消费者的空字段」。
+ *
+ * 语义:调用方(可信边界)可以带上一枚 `grantId` —— 本命令**不采信**它是"授权"(那不是把
+ * 授权交给模型自报名),而是**由宿主自己**从目标项目解析出这次「建会话」动作的**权威资源身份**
+ * (`{ method: "session.create", core: { projectPath } }`,路径经 `physicalPath` 规范化),
+ * 再拿这个 grantId 去 `getGrantStore()` 取回授权、交给**唯一**那份判定核 `evaluate` 核对。
+ *   - 授权不存在 / 已撤销 / 已过期 / 不覆盖这次动作(方法不在表内、核心意图被换)→ **拒绝**
+ *     (抛 {@link SessionGrantRefusedError},什么都不建/不发)—— 「拒绝无法核实的授权」;
+ *   - 授权真的覆盖 → 这次建会话就**跑在它之下**:记为 `lastPermissionGrant`(可观测),
+ *     建行成功后按唯一记账口 `recordUse` 记一次(于是 `maxCount` / `maxBudget` 真承重,
+ *     不是只声明不兑现的死字段)。
+ *
+ * ⚠️ **本切片诚实划定的边界**:① 它**不绕过审批** —— 本命令从不做审批(审批在各自入口:
+ * agent 路在 `gateAppAction`、桌面/手机是用户本人动作);带授权只是"授权核覆盖了这次动作"
+ * 这一条**可核对的宿主事实**,不是"跳过审批"。② 目前**没有生产签发口**签出覆盖
+ * `session.create` 的授权(现有签发口只签 `app_api_call` 的单方法指纹授权、及场景部署的
+ * `scene.apply` 计划授权)—— 字段的**消费者**在本命令(写入前核对、拒绝不可核实者),
+ * 但给「无人值守建会话」签发这类授权的**生产者**属后续切片;缺生产者时该字段缺席,既有
+ * 调用方一律不受影响。
  */
 import type { StartSessionInput } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
+import type { ActorRef, CoreIntent } from "@contracts/policyEngine";
 import { createOrReuseSession } from "@main/lib/sessionStart.js";
 import { ProjectRepo } from "@main/store/repositories.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
+import { evaluate } from "@main/appControl/policyEngine.js";
+import { getGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { physicalPath } from "@main/lib/realPathWithin.js";
 
 /**
  * 发起一条会话业务命令的**主体种类**。
@@ -89,6 +115,108 @@ export interface ActionContext {
    * `lib/sessionStart.ts` 的 `sessionRevisionOf` 文件头。
    */
   expectedRevision?: string;
+  /**
+   * **计划级授权句柄**(ARC-001 步④)—— 一枚 `Grant.grantId`。**宿主核对,不是模型自报**:
+   * 本命令**不采信**这个字符串本身是授权,而是从**目标项目**解析出「建会话」动作的权威资源
+   * 身份(见 {@link SESSION_CREATE_METHOD} + {@link sessionCreateCore}),拿它去
+   * `getGrantStore()` 取回授权、交唯一判定核 `evaluate` 核对。覆盖了 → 这次建会话跑在它之下;
+   * 核不到 / 失效 / 不覆盖 → **拒绝**(抛 {@link SessionGrantRefusedError},什么都不建/不发)。
+   *
+   * ⚠️ 它**不绕过审批**:审批在各自入口做,本命令从不弹卡。带授权只是"授权核覆盖了这次动作"
+   * 这一条宿主事实。缺席 = 不启用,既有调用方一律不受影响(见文件头步④的诚实边界)。
+   */
+  permissionGrant?: string;
+}
+
+/**
+ * 「建会话」这次动作在授权核里的**方法名** —— 计划级授权(`Grant.allowedActions`)含它,
+ * 且 `scopedCore.projectPath` 等于目标项目的权威路径时,这次建会话才算跑在它之下。
+ */
+export const SESSION_CREATE_METHOD = "session.create";
+
+/**
+ * 从**目标项目**解析出「建会话」动作的**权威核心意图** —— 与 `appControl/tools.ts` 的
+ * `resolveActionCore` 同一份路径规范化(`physicalPath`:resolve + 跟真实目的地 + 折叠大小写),
+ * 让「批准了项目 A、却来建项目 B 的会话」判得出核心意图被换。
+ *
+ * 项目路径取不到规范化身份时退回**空核心** —— 空核心对任何带路径的授权都判为"核心意图不符"
+ * (见 `invalidationsFor`:`wanted.projectPath === undefined` 时 grant 的 projectPath 若存在
+ * 即判改动),于是**拒绝**而不是误放行(硬规矩 3:坏东西显式报出来)。
+ */
+export function sessionCreateCore(projectId: string): CoreIntent {
+  const project = ProjectRepo.get(projectId);
+  const id = project ? physicalPath(project.path) : null;
+  return id ? { projectPath: id } : {};
+}
+
+/**
+ * 计划级授权**核实不过** —— 调用方带来的 `permissionGrant` 核不到 / 失效(撤销 / 过期)/
+ * 不覆盖这次建会话动作(方法不在授权表内、或核心意图——项目路径——被换)。**什么都没执行**:
+ * 没建行、没复用、没发首条。上层据此拒绝(与 `SessionRevisionConflictError` 同取向:
+ * 坏东西显式报出来,绝不静默按"没有授权"照旧执行)。
+ *
+ * ⚠️ 与 `SessionRevisionConflictError` 一样,**只在调用方主动带了 grantId 时才可能抛** ——
+ * 没带这个字段的既有调用方一律不受影响。
+ */
+export class SessionGrantRefusedError extends Error {
+  readonly code = "grant_refused";
+  /** 调用方带来的 grantId(原样带回,便于上层/日志点名)。 */
+  readonly grantId: string;
+  /** 稳定短码,便于调用方按 code 分派(不解析人读 reason)。 */
+  readonly reason_code: "grant_not_found" | "grant_invalid" | "grant_scope_mismatch" | "grant_denied";
+  constructor(grantId: string, reason_code: SessionGrantRefusedError["reason_code"], message: string) {
+    super(message);
+    this.name = "SessionGrantRefusedError";
+    this.grantId = grantId;
+    this.reason_code = reason_code;
+  }
+}
+
+/**
+ * 【ARC-001 步④】**核实**这次建会话是否跑在一枚计划级授权之下 —— 由**宿主**核,不采信
+ * 调用方带来的字符串。
+ *
+ * 判据只有一处在做:唯一判定核 `policyEngine.evaluate`。本函数只负责**组装**(从 grantId
+ * 取回授权、从目标项目解析权威核心意图、注入时钟),不手写第二套"准不准"。
+ *
+ * @returns 覆盖这次动作、且有效的授权 grantId;调用方**没带** grantId 时返回 `null`(不启用)。
+ * @throws  {@link SessionGrantRefusedError} —— 带了 grantId 却核不过(核不到 / 失效 / 不覆盖)。
+ */
+function resolvePermissionGrant(projectId: string, grantId: string | undefined): string | null {
+  if (grantId === undefined) return null;
+  const store = getGrantStore();
+  const core = sessionCreateCore(projectId);
+  const intent = { method: SESSION_CREATE_METHOD, core };
+  // 调用方带来的是**具体某一枚** grantId,故按 id 取回(`get`)—— 它对"不存在 / 已撤销 /
+  // 已过期"一律回 null:调用方指名要跑在授权 X 之下、X 却不可用 → 没有授权可交 evaluate
+  // 判 scope,这里显式拒绝(绝不静默按"无授权"照旧执行)。这与 appControl 的
+  // planGrantPrecheck 不同:那边是**按资源 / 方法找**授权、需要 `findBoundFor` 让失效态也
+  // 能被取出交 evaluate 判死活;这里已由调用方指名 id,按 id 取 + 不可用即拒是同一条判据
+  // 的另一种落法(撤销 / 过期在本函数就拦下,故 `grant_not_found` 一并承载这两态)。
+  const bound = store.get(grantId, Date.now());
+  if (!bound) {
+    // 核不到 / 已撤销 / 已过期 —— get 对这三种一律回 null。此时**没有**授权可交 evaluate
+    // 判 scope,故这里显式拒绝(绝不静默按"无授权"照旧执行)。
+    throw new SessionGrantRefusedError(
+      grantId,
+      "grant_not_found",
+      `这次建会话要跑在授权「${grantId}」之下,但该授权不存在 / 已撤销 / 已过期 —— 拒绝执行,什么都没建。`,
+    );
+  }
+  const decision = evaluate(intent, bound, {
+    now: Date.now(),
+    requester: { kind: "agent", id: "session.create" },
+    approver: { kind: "user", id: "session.create" },
+    compatibilityLevel: "write",
+  });
+  if (decision.verdict === "allow") return bound.grantId;
+  // 授权在、但不覆盖这次动作(方法不在表内 / 核心意图被换 / 超次数 / 超预算)。
+  const code = decision.invalidatedBy?.length ? "grant_scope_mismatch" : "grant_denied";
+  throw new SessionGrantRefusedError(
+    grantId,
+    code,
+    `这次建会话要跑在授权「${grantId}」之下,但该授权不覆盖它:${decision.reason}`,
+  );
 }
 
 /**
@@ -121,13 +249,15 @@ export interface CreateSessionAndSendResult {
 let createSessionAndSendCount = 0;
 /** 最近一次收到的 ActionContext —— 让回归能证「各端各填了自己的身份」(ARC-001 步②)。 */
 let lastActionContext: ActionContext | null = null;
+/** 最近一次**真的核实通过**的计划级授权 grantId —— 让回归能证「授权被宿主核对过、不是自报」(ARC-001 步④)。 */
+let lastPermissionGrant: string | null = null;
 
 /**
  * 建一条对话(或复用项目里那份还新鲜的「新对话」空壳),可选地把它第一条消息发出去。
  *
- * 解析链:**项目 → `createOrReuseSession`(唯一复用判据)→ cwd(会话自己的工作树优先,
- * 否则项目根)→ `runtimeManager.sendTurn`**。`sendTurn` 返回 null = 上一轮还在运行、这轮
- * 没接 —— 如实落进 `sendError`,不假装发成功(硬规矩 3:坏东西显式报出来)。
+ * 解析链:**项目 → 计划级授权核实(步④,可选)→ `createOrReuseSession`(唯一复用判据)→
+ * cwd(会话自己的工作树优先,否则项目根)→ `runtimeManager.sendTurn`**。`sendTurn` 返回 null
+ * = 上一轮还在运行、这轮没接 —— 如实落进 `sendError`,不假装发成功(硬规矩 3:坏东西显式报出来)。
  *
  * `action` 就是「谁在调」的结构化事实(见 {@link ActionContext})—— 本函数只**读**它,
  * 把它派生成 `createOrReuseSession` 要的渠道名(mobile → mobile,其余 → desktop),
@@ -139,6 +269,12 @@ export async function createSessionAndSend(
 ): Promise<CreateSessionAndSendResult> {
   createSessionAndSendCount += 1;
   lastActionContext = action;
+  lastPermissionGrant = null;
+  // 【ARC-001 步④】**先核计划级授权**(在写任何一行之前)——带了 `permissionGrant` 就由宿主
+  // 拿目标项目的权威资源身份去 `getGrantStore()` 取回授权、交唯一判定核 `evaluate` 核对:
+  // 覆盖了才继续(记为 lastPermissionGrant),核不到 / 失效 / 不覆盖**一律拒绝**
+  // (抛 `SessionGrantRefusedError`,什么都不建/不发)。缺席 = 不启用,既有调用方不受影响。
+  const grantId = resolvePermissionGrant(args.input.projectId, action.permissionGrant);
   // 【ARC-001 步③】把 `expectedRevision` 交给唯一的复用判据 `createOrReuseSession` —— 它对
   // 不上就抛 `SessionRevisionConflictError`(什么都不建/不发)。异常**不在这里吞**:桌面 IPC
   // 让它变成 IPC 错误、手机端变成 RpcError、agent 侧由 `headlessNewSession` 的调用方翻成
@@ -148,6 +284,18 @@ export async function createSessionAndSend(
     action.actorKind === "mobile" ? "mobile" : "desktop",
     action.expectedRevision,
   );
+  // 【ARC-001 步④】授权覆盖的这次建会话**真落定了** → 按唯一记账口 `recordUse` 记一次
+  // (`usedCount` +1 / `budgetUsed`)。记账记的是"真的用掉了",故放在写成功之后 —— 于是
+  // `maxCount` / `maxBudget` 才真承重,而不是只声明不兑现的死字段。记账失败(记账口自身
+  // 口径上的撤销 / 过期竞态)不该反过来把一次**已经落定**的建会话翻成失败,故吞成 null 不报。
+  if (grantId !== null) {
+    lastPermissionGrant = grantId;
+    try {
+      getGrantStore().recordUse(grantId, 0, Date.now());
+    } catch {
+      // 授权在核过之后、记账之前被撤销 / 过期 —— 已落定的建会话不回退,只是这次不记账。
+    }
+  }
   if (args.prompt === undefined) {
     // 只建会话 —— 与桌面「新建对话」同一条:不因为这里少发一条消息而改变落库/广播行为。
     return { session, reused, sendError: null };
@@ -179,6 +327,7 @@ export function __createSessionAndSendCount(): number {
 export function __resetCreateSessionAndSendCount(): void {
   createSessionAndSendCount = 0;
   lastActionContext = null;
+  lastPermissionGrant = null;
 }
 /**
  * 最近一次收到的 ActionContext(ARC-001 步②)—— 让回归能证「桌面传 user / agent 传 agent /
@@ -186,4 +335,12 @@ export function __resetCreateSessionAndSendCount(): void {
  */
 export function __lastActionContext(): ActionContext | null {
   return lastActionContext;
+}
+/**
+ * 最近一次**真的核实通过**的计划级授权 grantId(ARC-001 步④)—— 让回归能证「授权是宿主从
+ * `getGrantStore()` 取回、经唯一判定核 `evaluate` 核对过的」,而不是把模型自报的字符串当成
+ * 授权。`null` = 最近一次建会话没跑在授权之下(缺席 / 核不过时不会到这里)。
+ */
+export function __lastPermissionGrant(): string | null {
+  return lastPermissionGrant;
 }

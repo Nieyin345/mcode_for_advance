@@ -46,9 +46,14 @@ import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import {
   __createSessionAndSendCount,
   __lastActionContext,
+  __lastPermissionGrant,
   __resetCreateSessionAndSendCount,
   createSessionAndSend,
 } from "@main/appServices/sessionCommands.js";
+import { GrantStore } from "@main/appControl/grantStore.js";
+import { getGrantStore, setGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { physicalPath } from "@main/lib/realPathWithin.js";
+import type { ActorRef, CoreIntent } from "@contracts/policyEngine";
 
 import {
   approvals,
@@ -1867,6 +1872,191 @@ console.log("\n19b. 【ARC-001 步③】expectedRevision —— 复用前的乐�
   setRendererPortForTest(null);
   delete (globalThis as Record<string, unknown>).window;
   rmSync(OCC_DIR, { recursive: true, force: true });
+}
+
+/* ──────────── 19c. 【ARC-001 步④】permissionGrant —— 计划级授权句柄(宿主核对)──────────── */
+
+/**
+ * ## 这条守的是什么(台账 remaining 点名的最后一个 ActionContext 字段)
+ *
+ * `ActionContext.permissionGrant`(计划级授权句柄)。授权核(`policyEngine.evaluate`)与持有核
+ * (`grantStore` / `getGrantStore`)已在其它切片铺好,本切片把它接到**唯一业务命令**
+ * `createSessionAndSend` 上:**不采信**调用方自报的字符串,而是由宿主从**目标项目**解析出
+ * 「建会话」动作的权威资源身份(`session.create` + `projectPath`),拿 grantId 去
+ * `getGrantStore()` 取回授权、交唯一判定核 `evaluate` 核对。覆盖了 → 这次建会话跑在它之下;
+ * 核不到 / 失效 / 不覆盖 → **拒绝**(什么都没建)。
+ *
+ * ## 承重红例(判别式 —— 必须**成对**)
+ *
+ *   - **正面**:带**覆盖**这次建会话的、有效的用户授权 → 建会话成功 + `__lastPermissionGrant()`
+ *     就是那枚 grantId + 该授权 `usedCount` +1(证明核过了、授权真承重、不是空字段);
+ *   - **反面**(四种核不过,各自真红):① 授权不存在;② 授权已撤销;③ 授权**不覆盖**(方法不在
+ *     表内);④ 授权**核心意图不符**(项目路径是另一个项目)→ **一律拒绝**,且**一条会话都没建**。
+ *
+ * 只测正面,一个"从不核"的实现全绿;只测反面,一个"一律拒"的坏实现也全绿。
+ *
+ * ## 为什么用**真实项目路径**造授权
+ *
+ * `sessionCreateCore(projectId)` 从项目行取 `path` 再经 `physicalPath`(resolve + 跟真实目的地)。
+ * 故有效授权钉的 `scopedCore.projectPath` 必须**等于**那条规范化路径 —— 这里用**生产同一份**
+ * `physicalPath` 算,不另抄一份格式(那会把"格式对不对"和"核没核"混在一起)。
+ */
+console.log("\n19c. 【ARC-001 步④】permissionGrant —— 计划级授权句柄(宿主核对,非模型自报)");
+
+{
+  const textOf19c = (r: { content: Array<{ type: string; text?: string }> }): string =>
+    r.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n");
+  const codeOf19c = (r: { structuredContent?: Record<string, unknown> }): unknown =>
+    (r.structuredContent?.operation_result as { code?: unknown } | undefined)?.code;
+  const kindOf19c = (r: { structuredContent?: Record<string, unknown> }): unknown =>
+    (r.structuredContent?.operation_result as { resultKind?: unknown } | undefined)?.resultKind;
+
+  const appCtx19c = {
+    getPermissionMode: () => undefined,
+    isToolAlwaysAllowed: () => false,
+    requestApproval: async () => ({ allow: true }),
+  } as unknown as ProviderContext;
+
+  const USER19c: ActorRef = { kind: "user", id: "u19c" };
+  const freshStore19c = (): GrantStore => { const s = new GrantStore({ newId: (n) => `gr${n}` }); setGrantStore(s); return s; };
+
+  const GRANT_DIR = mkdtempSync(join(tmpdir(), "mcode-grant-proj-"));
+  const mkProject = (id: string, dir: string): void => {
+    ProjectRepo.create({
+      id, name: `授权项目 ${id}`, path: dir, archived: false, group: null,
+      sortOrder: 9, pinnedAt: null, createdAt: Date.now(), updatedAt: Date.now(),
+    } as never);
+  };
+
+  /** 造一份**覆盖给定项目建会话**的有效用户授权(scopedCore.projectPath = 该项目的规范化路径)。 */
+  const issueFor = (
+    store: GrantStore,
+    projectDir: string,
+    over: { allowedActions?: string[]; ttlMs?: number } = {},
+  ): string => {
+    const core: CoreIntent = { projectPath: physicalPath(projectDir) ?? projectDir };
+    const g = store.issueGrant(
+      {
+        verdict: "allow", reason: "用户批准了在这个项目里开对话的计划。", compatibilityLevel: "write",
+        sceneId: "scene-19c", allowedActions: over.allowedActions ?? ["session.create"], scopedCore: core,
+        configHash: "cfg-19c", ttlMs: over.ttlMs ?? 3_600_000,
+      },
+      USER19c, Date.now(),
+    );
+    return g.grantId;
+  };
+
+  const headless = (): void => { setRendererPortForTest(null); delete (globalThis as Record<string, unknown>).window; };
+
+  // ── 正面:带覆盖这次建会话的有效授权 → 建会话成功 + 授权被记为"跑在它之下" + 记账。 ──
+  fresh();
+  freshStore19c();
+  mkProject("p_grant_ok", GRANT_DIR);
+  headless();
+  {
+    const gid = issueFor(getGrantStore(), GRANT_DIR);
+    const before = SessionRepo.listByProject("p_grant_ok").length;
+    const r = await invokeAppTool("app_session_new", { project_id: "p_grant_ok", permission_grant: gid }, "me", appCtx19c);
+    check("★ ARC-001④:带覆盖动作的有效授权 → 建会话成功(授权核放行)", r.isError !== true, textOf19c(r));
+    eq("★ ARC-001④:真的建了会话(+1)", SessionRepo.listByProject("p_grant_ok").length, before + 1);
+    eq("★ ARC-001④:服务函数记为跑在授权之下(宿主核对过、非模型自报)", __lastPermissionGrant(), gid);
+    eq("★ ARC-001④:授权被记账 usedCount +1(maxCount 真承重)", getGrantStore().get(gid, Date.now())?.usedCount, 1);
+  }
+
+  // ── 反面①:授权**不存在** → 拒绝,且一条会话都没建。 ──
+  fresh();
+  freshStore19c();
+  mkProject("p_grant_missing", GRANT_DIR);
+  headless();
+  {
+    const r = await invokeAppTool("app_session_new", { project_id: "p_grant_missing", permission_grant: "no-such-grant" }, "me", appCtx19c);
+    eq("★ ARC-001④:授权不存在 → REJECTED(没执行)", kindOf19c(r), "REJECTED");
+    eq("★ ARC-001④:授权不存在 → 稳定短码 grant_refused", codeOf19c(r), "grant_refused");
+    eq("★ ARC-001④:授权不存在 → 一条会话都没建", SessionRepo.listByProject("p_grant_missing").length, 0);
+  }
+
+  // ── 反面②:授权**已撤销** → 拒绝。 ──
+  fresh();
+  freshStore19c();
+  mkProject("p_grant_revoked", GRANT_DIR);
+  headless();
+  {
+    const store = getGrantStore();
+    const gid = issueFor(store, GRANT_DIR);
+    store.revoke(gid);
+    const r = await invokeAppTool("app_session_new", { project_id: "p_grant_revoked", permission_grant: gid }, "me", appCtx19c);
+    eq("★ ARC-001④:授权已撤销 → REJECTED", kindOf19c(r), "REJECTED");
+    eq("★ ARC-001④:授权已撤销 → 稳定短码 grant_refused", codeOf19c(r), "grant_refused");
+    eq("★ ARC-001④:授权已撤销 → 一条会话都没建", SessionRepo.listByProject("p_grant_revoked").length, 0);
+  }
+
+  // ── 反面③:授权存在但**不覆盖这次动作**(方法不在表内)→ 拒绝。 ──
+  fresh();
+  freshStore19c();
+  mkProject("p_grant_method", GRANT_DIR);
+  headless();
+  {
+    const gid = issueFor(getGrantStore(), GRANT_DIR, { allowedActions: ["session.rename"] });
+    const r = await invokeAppTool("app_session_new", { project_id: "p_grant_method", permission_grant: gid }, "me", appCtx19c);
+    eq("★ ARC-001④:授权不覆盖方法 session.create → REJECTED", kindOf19c(r), "REJECTED");
+    eq("★ ARC-001④:授权不覆盖方法 → 稳定短码 grant_refused", codeOf19c(r), "grant_refused");
+    eq("★ ARC-001④:授权不覆盖方法 → 一条会话都没建", SessionRepo.listByProject("p_grant_method").length, 0);
+  }
+
+  // ── 反面④:授权有效、方法对,但**核心意图不符**(钉的是别的项目路径)→ 拒绝。 ──
+  fresh();
+  freshStore19c();
+  const OTHER_DIR = mkdtempSync(join(tmpdir(), "mcode-grant-other-"));
+  mkProject("p_grant_scope", GRANT_DIR);
+  headless();
+  {
+    // 授权钉的是**另一个项目**的路径 → 在 p_grant_scope 里建会话核心意图被换。
+    const gid = issueFor(getGrantStore(), OTHER_DIR);
+    const r = await invokeAppTool("app_session_new", { project_id: "p_grant_scope", permission_grant: gid }, "me", appCtx19c);
+    eq("★ ARC-001④:授权钉的是别的项目路径(核心意图被换)→ REJECTED", kindOf19c(r), "REJECTED");
+    eq("★ ARC-001④:核心意图不符 → 稳定短码 grant_refused", codeOf19c(r), "grant_refused");
+    eq("★ ARC-001④:核心意图不符 → 一条会话都没建", SessionRepo.listByProject("p_grant_scope").length, 0);
+    rmSync(OTHER_DIR, { recursive: true, force: true });
+  }
+
+  // ── 反向控制:不带 permission_grant → 行为**照旧**(既有调用方不受影响)。 ──
+  fresh();
+  freshStore19c();
+  mkProject("p_grant_legacy", GRANT_DIR);
+  headless();
+  {
+    __resetCreateSessionAndSendCount();
+    const good = await invokeAppTool("app_session_new", { project_id: "p_grant_legacy" }, "me", appCtx19c);
+    check("★ ARC-001④:不带授权句柄 → 照旧建会话(既有行为不变)", good.isError !== true, textOf19c(good));
+    eq("★ ARC-001④:不带授权句柄 → 不记为跑在授权之下", __lastPermissionGrant(), null);
+  }
+
+  // ── 窗口**在**时,带授权句柄也**不许**走 UI 路(UI 的 new_session 不认这枚句柄)。 ──
+  fresh();
+  freshStore19c();
+  mkProject("p_grant_win", GRANT_DIR);
+  {
+    const gid = issueFor(getGrantStore(), GRANT_DIR);
+    const { APP_CONTROL_RENDERER_GLOBAL } = await import("@contracts/appControl");
+    const seen: Array<{ op: string }> = [];
+    (globalThis as Record<string, unknown>).window = {
+      [APP_CONTROL_RENDERER_GLOBAL]: async (raw: string) => {
+        const cmd = JSON.parse(raw) as { op: string };
+        seen.push(cmd);
+        return JSON.stringify({ ok: true, data: { sessionId: "s_from_ui" } });
+      },
+    };
+    setRendererPortForTest({ executeJavaScript: async (code) => (0, eval)(code) });
+    const ok = await invokeAppTool("app_session_new", { project_id: "p_grant_win", permission_grant: gid }, "me", appCtx19c);
+    check("★ ARC-001④:窗口在、带授权句柄 → 不走 UI 路(没下发 op=new_session)", !seen.some((c) => c.op === "new_session"), seen);
+    check("★ ARC-001④:窗口在、带授权句柄 → 走 headless 核对路并成功", ok.isError !== true, textOf19c(ok));
+    eq("★ ARC-001④:窗口在、带授权句柄 → 仍记为跑在授权之下", __lastPermissionGrant(), gid);
+  }
+
+  setGrantStore(null);
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  rmSync(GRANT_DIR, { recursive: true, force: true });
 }
 
 

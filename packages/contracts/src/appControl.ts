@@ -222,6 +222,12 @@ export const OP_CODE = {
    *  可安全重来:重新读取当前状态、合并后再试。判据见 `lib/sessionStart.ts` 的
    *  `SessionRevisionConflictError`。 */
   revisionConflict: "revision_conflict",
+  /** 计划级授权句柄核不过(ARC-001 步④:`ActionContext.permissionGrant`)—— 调用方带来的
+   *  `grantId` 不存在 / 已撤销 / 已过期 / 不覆盖这次动作(方法不在授权表内、或目标项目与授权
+   *  钉住的资源不符)。**什么都没执行**(没建行、没复用、没发首条),属**没执行,可安全重来**
+   *  (重取一枚有效授权再来)。判据见 `appServices/sessionCommands.ts` 的
+   *  `SessionGrantRefusedError`。 */
+  grantRefused: "grant_refused",
 } as const;
 
 /** 成功系列(业务已落定)—— 这两个 `resultKind` 都不该让 Agent 当成"失败去重试"。 */
