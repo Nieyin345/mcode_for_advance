@@ -20,6 +20,11 @@ import {
   type SceneSpec,
 } from "@contracts/sceneSpec";
 import { compileScenePlan, sceneSpecDigest } from "@contracts/scenePlan";
+import {
+  compileSceneCommands,
+  serviceForKind,
+  SCENE_KIND_SERVICE_MAP,
+} from "@contracts/sceneCommands";
 import { sceneCapabilityPreflight } from "@contracts/scenePreflight";
 import {
   projectInitToSceneSpec,
@@ -443,6 +448,120 @@ function goodSpec(): unknown {
   // sceneIdFromName 直接判据。
   eq("sceneIdFromName 折叠非法字符", sceneIdFromName("My Project!!"), "my-project");
   eq("sceneIdFromName 全非 ASCII 得空", sceneIdFromName("研究"), "");
+}
+
+/* ── 10. SceneCompiler:把 ScenePlan 翻成对现有服务的命令(纯描述符,不执行)(ARC-002 / MC-058) ── */
+{
+  // 一份覆盖**全部 9 种 kind** 的声明;automation 写在它的依赖 wf 前面,强制拓扑排序重排。
+  const eachKind = (): unknown => ({
+    schemaVersion: SCENE_SPEC_SCHEMA_VERSION,
+    sceneId: "all-kinds",
+    goal: "每种资源各建一个",
+    capabilities: [],
+    resources: [
+      { kind: "automation", id: "auto", spec: { cron: "0 9 * * *" }, dependsOn: ["wf"] },
+      { kind: "workflow", id: "wf", spec: { name: "巡检" } },
+      { kind: "skill", id: "sk", spec: { name: "coverage", content: "x" } },
+      { kind: "plugin", id: "pl", spec: { source: "marketplace", name: "research-pack" } },
+      { kind: "mcp", id: "mc", spec: { name: "coverage", config: { url: "http://x" } } },
+      { kind: "hook", id: "hk", spec: { event: "post-save", command: "echo" } },
+      { kind: "module", id: "md", spec: { manifest: { id: "core.file.inspect" } } },
+      { kind: "panel", id: "pn", spec: { html: "<div>面板</div>" } },
+      { kind: "scaffold", id: "sc", spec: { entry: "directory", path: "data" } },
+    ],
+    acceptance: {
+      description: "每种资源各回读一次",
+      expectResourceIds: ["auto", "wf", "sk", "pl", "mc", "hk", "md", "pn", "sc"],
+    },
+  });
+
+  const v = validateSceneSpec(eachKind());
+  check("编译命令前提前置:9 种 kind 声明合法", v.ok, v.ok ? undefined : v.problems);
+  if (v.ok) {
+    const spec: SceneSpec = v.spec;
+    const plan = compileScenePlan(spec);
+    const compiled = compileSceneCommands(plan, spec);
+
+    // ★ 承重:每种 kind 各产出一条命令(9 种 = 9 条,一条不落)。
+    eq("★ 9 种 kind 各产出一条命令", compiled.commands.length, 9);
+    const kinds = new Set(compiled.commands.map((c) => c.kind));
+    check(
+      "★ 每种资源 kind 都被发射(workflow/automation/skill/plugin/mcp/hook/module/panel/scaffold)",
+      ["workflow", "automation", "skill", "plugin", "mcp", "hook", "module", "panel", "scaffold"].every((k) => kinds.has(k as never)),
+      [...kinds],
+    );
+
+    // ★ 顺序取自计划(automation 写在前面,但计划按拓扑重排 → 命令也这样)。
+    eq("★ 命令顺序 = 计划顺序", compiled.commands.map((c) => c.actionId).join(","), plan.steps.map((s) => s.actionId).join(","));
+    eq("★ 依赖的 wf 命令排第一", compiled.commands[0].actionId, "wf");
+    eq("命令 order 从 0 起严格递增", compiled.commands.map((c) => c.order).join(","), "0,1,2,3,4,5,6,7,8");
+    // 依赖者(dependsOn 非空)必定排在被依赖者之后 —— 按 actionId 查,不靠下标。
+    const autoCmd = compiled.commands.find((c) => c.actionId === "auto")!;
+    const wfCmd = compiled.commands.find((c) => c.actionId === "wf")!;
+    check("★ 依赖 auto 的 wf 排在它之前", wfCmd.order < autoCmd.order, { wf: wfCmd.order, auto: autoCmd.order });
+    eq("命令保留依赖信息", autoCmd.dependsOn.join(","), "wf");
+
+    // ★ 载荷逐字:每条命令的 payload 就是 spec 里那条资源的 spec(键完全一致)。
+    const resourceById = new Map(spec.resources.map((r) => [r.id, r] as const));
+    check(
+      "★ 每条命令的 payload 逐字等于该资源的 spec",
+      compiled.commands.every((c) => JSON.stringify(c.payload) === JSON.stringify(resourceById.get(c.resourceId)!.spec)),
+      compiled.commands.map((c) => ({ id: c.actionId, p: c.payload, s: resourceById.get(c.resourceId)?.spec })),
+    );
+    eq("automation 命令带原 cron 载荷", autoCmd.payload.cron, "0 9 * * *");
+    eq("scaffold 命令带原 entry 载荷", compiled.commands.find((c) => c.kind === "scaffold")!.payload.entry, "directory");
+
+    // ★ 服务映射是**声明**:确定的 kind 给确定标签,不确定的显式 needsResolution。
+    eq("workflow → workflow.save", SCENE_KIND_SERVICE_MAP.workflow.serviceLabel, "workflow.save");
+    eq("automation → workflow.save(自动化是带 trigger 的工作流)", SCENE_KIND_SERVICE_MAP.automation.serviceLabel, "workflow.save");
+    eq("skill → skills.save", SCENE_KIND_SERVICE_MAP.skill.serviceLabel, "skills.save");
+    eq("mcp → mcp.save", SCENE_KIND_SERVICE_MAP.mcp.serviceLabel, "mcp.save");
+    eq("hook → hooks.save", SCENE_KIND_SERVICE_MAP.hook.serviceLabel, "hooks.save");
+    eq("module → modules.install", SCENE_KIND_SERVICE_MAP.module.serviceLabel, "modules.install");
+    // ★ 无法把**单条命令**稳妥派到单一入口的 kind:needsResolution 显式置真(不猜)。
+    //   plugin 连服务都无单一入口(installLocal/Git/Marketplace)→ label 为 null;
+    //   panel / scaffold 有归属服务,但入口吃整份配置 / 整份模板,也要决议。
+    check("★ plugin 无单一入口 → needsResolution 且无标签", SCENE_KIND_SERVICE_MAP.plugin.needsResolution && SCENE_KIND_SERVICE_MAP.plugin.serviceLabel === null, SCENE_KIND_SERVICE_MAP.plugin);
+    check("★ panel 需并入整份配置 → needsResolution(标签指向归属服务 setting.set)", SCENE_KIND_SERVICE_MAP.panel.needsResolution && SCENE_KIND_SERVICE_MAP.panel.serviceLabel === "setting.set", SCENE_KIND_SERVICE_MAP.panel);
+    check("★ scaffold 需先归模板再提交 → needsResolution(标签指向归属服务 projectInit.apply)", SCENE_KIND_SERVICE_MAP.scaffold.needsResolution && SCENE_KIND_SERVICE_MAP.scaffold.serviceLabel === "projectInit.apply", SCENE_KIND_SERVICE_MAP.scaffold);
+    check("非决议 kind 一律 needsResolution=false(workflow/skill/mcp/hook/module)", [SCENE_KIND_SERVICE_MAP.workflow, SCENE_KIND_SERVICE_MAP.automation, SCENE_KIND_SERVICE_MAP.skill, SCENE_KIND_SERVICE_MAP.mcp, SCENE_KIND_SERVICE_MAP.hook, SCENE_KIND_SERVICE_MAP.module].every((e) => !e.needsResolution));
+    eq("需决议的 3 类进入 unresolved", compiled.unresolved.length, 3);
+    check("unresolved 指名 plugin/panel/scaffold 三条命令", compiled.unresolved.every((id) => compiled.commands.some((c) => c.commandId === id && c.service.needsResolution)), compiled.unresolved);
+    check("每条命令都带 commandId(部署绑定用)", compiled.commands.every((c) => typeof c.commandId === "string" && c.commandId.length > 0), compiled.commands.map((c) => c.commandId));
+
+    // ★ 稳定:同一 plan + 同一 spec 重复编译 → 逐字节相同的 digest 与每条 commandId。
+    const again = compileSceneCommands(compileScenePlan(v.spec), v.spec);
+    eq("★ 重复编译 → 相同的命令集 digest", again.digest, compiled.digest);
+    check("★ 重复编译 → 每条 commandId 相同", again.commands.map((c) => c.commandId).join(",") === compiled.commands.map((c) => c.commandId).join(","), again.commands.map((c) => c.commandId));
+    eq("命令集带 planDigest", compiled.planDigest, plan.digest);
+
+    // ★ 不静默丢:绕开校验塞进一个枚举外的 kind,仍产出一条带 needsResolution 的命令。
+    const bogusSpec = {
+      schemaVersion: SCENE_SPEC_SCHEMA_VERSION,
+      sceneId: "bogus-kind",
+      goal: "g",
+      capabilities: [],
+      resources: [{ kind: "teleporter", id: "tp", spec: { beam: "up" } }],
+      acceptance: { description: "x", expectResourceIds: ["tp"] },
+    } as unknown as SceneSpec;
+    const bogusPlan = compileScenePlan(bogusSpec);
+    const bogusCmd = compileSceneCommands(bogusPlan, bogusSpec);
+    eq("★ 未知 kind 不静默丢:仍产出一条命令", bogusCmd.commands.length, 1);
+    check("★ 未知 kind → needsResolution 且无服务标签", bogusCmd.commands[0].service.needsResolution && bogusCmd.commands[0].service.serviceLabel === null, bogusCmd.commands[0].service);
+    eq("未知 kind 进 unresolved", bogusCmd.unresolved.length, 1);
+    eq("serviceForKind(枚举外) 显式报无法映射", serviceForKind("teleporter").needsResolution, true);
+    eq("serviceForKind(workflow) 给确定标签", serviceForKind("workflow").serviceLabel, "workflow.save");
+
+    // 计划与 spec 不匹配(不同版本)→ 显式抛错,不产出缺斤少两的命令集。
+    let threw = false;
+    try {
+      const otherSpec = validateSceneSpec({ ...(eachKind() as Record<string, unknown>), goal: "改了目标" });
+      if (otherSpec.ok) compileSceneCommands(plan, otherSpec.spec);
+    } catch { threw = true; }
+    check("★ 计划与 spec 的 specDigest 不一致 → 抛错(不静默)", threw);
+  } else {
+    check("每种 kind 声明前置合法", false);
+  }
 }
 
 console.log(`\nscene-spec-smoke: ${total - failures}/${total} 通过`);

@@ -18,6 +18,7 @@ export * from "./sceneTask.js";
 export * from "./configBinding.js";
 export * from "./sceneSpec.js";
 export * from "./scenePlan.js";
+export * from "./sceneCommands.js";
 export * from "./sceneDeployment.js";
 export * from "./scenePreflight.js";
 export * from "./sceneProjectInit.js";
