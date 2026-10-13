@@ -18,6 +18,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import {
   emptyStore,
   getStoreValue,
+  isReservedExtensionRelPath,
   isSafeExtensionRelPath,
   isValidExtensionId,
   parseStoreFile,
@@ -25,6 +26,7 @@ import {
   storeBytes,
   withStoreValue,
   withoutStoreValue,
+  EXTENSION_STORE_FILE,
   EXTENSION_STORE_MAX,
   type ExtensionStoreFile,
   type ExtensionStoreListEntry,
@@ -47,7 +49,7 @@ export function extensionDir(root: string, extensionId: string): string {
 
 /** 该扩展的存储文件:`<数据根>/extensions/<扩展 id>/store.json`。 */
 export function extensionStorePath(root: string, extensionId: string): string {
-  return join(extensionDir(root, extensionId), "store.json");
+  return join(extensionDir(root, extensionId), EXTENSION_STORE_FILE);
 }
 
 /**
@@ -158,7 +160,7 @@ function physicalExtensionDir(root: string, extensionId: string): string | null 
   }
 }
 
-type ResolveResult = { ok: true; abs: string; dir: string } | { ok: false; reason: "invalidPath" | "notFound" };
+type ResolveResult = { ok: true; abs: string; dir: string } | { ok: false; reason: "invalidPath" | "reserved" | "notFound" };
 
 /**
  * 把 `relPath` 拼成该扩展目录下的**物理**绝对路径,并确认它**没有逃出**那个目录。
@@ -169,6 +171,12 @@ type ResolveResult = { ok: true; abs: string; dir: string } | { ok: false; reaso
  *
  * 逃逸判据:`target` 必须等于扩展目录,或以其 + `sep` 开头(与 `pathGuard.contained` 同一
  * 姿势);两端都过 `realpath`,一个中间段是 symlink 的路径在这里露馅。
+ *
+ * ★ **内部保留文件闸(MC-096)**:解析出来的 `target` 若落在该扩展目录**根**、且文件名是
+ * `store.json`(或其临时/备份变体),一律拒(`reserved`)—— 公共文件通道不许覆盖扩展自己
+ * 的键值存储。词法判据是契约层的 {@link isReservedExtensionRelPath}(唯一一份),这里对它
+ * 解析出的真实路径再拦一道。判据挂在 `relPath` 上(而非 `target`):扩展目录根就是 store.json
+ * 的所在目录,根级文件名与 `relPath` 是段级对应的。
  */
 function resolveInExtension(
   root: string,
@@ -178,6 +186,8 @@ function resolveInExtension(
 ): ResolveResult {
   if (!isValidExtensionId(extensionId)) return { ok: false, reason: "invalidPath" };
   if (!isSafeExtensionRelPath(relPath)) return { ok: false, reason: "invalidPath" };
+  // ★ 内部保留文件(store.json 及其 .mcode-tmp / 备份变体)—— 公共文件通道不许寻址。
+  if (isReservedExtensionRelPath(relPath)) return { ok: false, reason: "reserved" };
   let dir = physicalExtensionDir(root, extensionId);
   if (dir === null) {
     if (!createDir) return { ok: false, reason: "notFound" };
@@ -310,6 +320,9 @@ export function listFilesInExtension(
   }
   const entries: ExtensionStoreListEntry[] = [];
   for (const name of names) {
+    const entryRel = `${prefix}${name}`;
+    // ★ 内部保留文件(MC-096):根级 store.json 及其临时/备份变体不列 —— 与读/写闸同一判据。
+    if (isReservedExtensionRelPath(entryRel)) continue;
     const childAbs = join(target, name);
     let childStat;
     try {
@@ -318,9 +331,9 @@ export function listFilesInExtension(
       continue; // 列到一半被删了 —— 跳过,不抛
     }
     if (childStat.isDirectory()) {
-      entries.push({ name, relPath: `${prefix}${name}`, isDir: true });
+      entries.push({ name, relPath: entryRel, isDir: true });
     } else if (childStat.isFile()) {
-      entries.push({ name, relPath: `${prefix}${name}`, isDir: false, size: childStat.size });
+      entries.push({ name, relPath: entryRel, isDir: false, size: childStat.size });
     }
     // 符号链接等其它类型不列(它们正是逃逸的载体)。
   }

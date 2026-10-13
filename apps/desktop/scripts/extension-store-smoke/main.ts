@@ -38,8 +38,10 @@ import {
   EXTENSION_STORE_WRITE_FILE_CHANNEL,
   EXTENSION_STORE_LIST_FILES_CHANNEL,
   EXTENSION_STORE_MAX,
+  EXTENSION_STORE_FILE,
   isValidExtensionId,
   isSafeExtensionRelPath,
+  isReservedExtensionRelPath,
   getStoreValue,
   parseStoreFile,
   serializeStore,
@@ -408,6 +410,57 @@ function makeDirLink(target: string, linkPath: string): "symlink" | "junction" |
   rmSync(rootLink, { recursive: true, force: true });
 }
 
+/* ─────────────────── §6.5 内部保留文件闸(MC-096)───────────────────
+ *
+ * E1 复现的缺陷:键值 `important=KEEP_ME` 落进 `<扩展目录>/store.json` 后,用**公共文件
+ * 通道** `writeFileInExtension(root,"good","store.json","NOT_JSON")` 返回 `{ok:true}` ——
+ * 把这个扩展自己的键值存储整个覆盖成一段非 JSON,随后 `readValue` 回 null(解析层把损坏
+ * 默认为空),数据无告警丢失。
+ *
+ * 修复:文件通道(`readFileInExtension`/`writeFileInExtension`/`listFilesInExtension`)
+ * 对该扩展目录**根**下的内部保留文件(`store.json` 及其临时/备份变体,同一常量
+ * `EXTENSION_STORE_FILE`)一律拒(`reason:"reserved"`)。子目录里的同名文件照常可读写
+ * (那是扩展自己的数据)。 */
+console.log("\n§6.5 内部保留文件闸(MC-096)");
+
+// ① 纯词法判据(契约层)。
+eq("保留判据:store.json 保留", isReservedExtensionRelPath("store.json"), true);
+eq("保留判据:store.json.mcode-tmp 保留", isReservedExtensionRelPath("store.json.mcode-tmp"), true);
+eq("保留判据:store.json.bak 保留", isReservedExtensionRelPath("store.json.bak"), true);
+eq("保留判据:大小写变体 Store.json 保留", isReservedExtensionRelPath("Store.json"), true);
+eq("保留判据:子目录 a/store.json 不保留", isReservedExtensionRelPath("a/store.json"), false);
+eq("保留判据:普通文件 notes.md 不保留", isReservedExtensionRelPath("notes.md"), false);
+eq("保留判据:store.txt 不保留", isReservedExtensionRelPath("store.txt"), false);
+eq("保留判据:./store.json 仍保留", isReservedExtensionRelPath("./store.json"), true);
+
+{
+  const id = "ext-reserved";
+  // 键值先写一条,值就是"要被毁掉的证据"。
+  eq("保留闸:键值写成功", writeValue(ROOT, id, "important", "KEEP_ME"), true);
+  eq("保留闸:键值读得到", readValue(ROOT, id, "important"), "KEEP_ME");
+
+  // ② 文件通道写 store.json 必须被拒,且**一个字节都不落盘**。
+  deepEq("★ 文件通道写 store.json 被拒(不是 ok:true)", writeFileInExtension(ROOT, id, "store.json", "NOT_JSON"), { ok: false, reason: "reserved" });
+  deepEq("★ 文件通道写 store.json.mcode-tmp 被拒", writeFileInExtension(ROOT, id, "store.json.mcode-tmp", "X"), { ok: false, reason: "reserved" });
+  deepEq("★ 文件通道写大小写变体 Store.json 被拒", writeFileInExtension(ROOT, id, "Store.json", "X"), { ok: false, reason: "reserved" });
+  // (撤掉修复时,上面这条会返回 ok:true 并真覆盖 —— 下面这条才是"数据还在"的独立判据。)
+  eq("★ 键值未被覆盖(重要数据还在)", readValue(ROOT, id, "important"), "KEEP_ME");
+  check("★ 存储文件内容仍是合法键值(不是 NOT_JSON)", readFileSync(extensionStorePath(ROOT, id), "utf8").includes("KEEP_ME"));
+
+  // ③ 读 / 列也不许寻址保留文件(否则能读出内部键值、列出内部文件)。
+  deepEq("★ 文件通道读 store.json 被拒", readFileInExtension(ROOT, id, "store.json"), { ok: false, reason: "reserved" });
+  deepEq("★ 文件通道读 store.json.mcode-tmp 被拒", readFileInExtension(ROOT, id, "store.json.mcode-tmp"), { ok: false, reason: "reserved" });
+  const rootLs = listFilesInExtension(ROOT, id);
+  check("★ listFiles 根级不含 store.json(保留文件被过滤)", rootLs.ok && rootLs.entries.every((e) => e.name.toLowerCase() !== "store.json"), rootLs.ok ? rootLs.entries.map((e) => e.name) : rootLs);
+  deepEq("★ listFiles 列 store.json 这个文件被拒", listFilesInExtension(ROOT, id, "store.json"), { ok: false, reason: "reserved" });
+
+  // ④ 子目录里的同名文件**不是**保留文件 —— 扩展自己的数据照常可读写(不误伤)。
+  deepEq("保留闸不误伤子目录同名文件(写)", writeFileInExtension(ROOT, id, "sub/store.json", "LEGIT"), { ok: true, bytes: 5 });
+  deepEq("保留闸不误伤子目录同名文件(读)", readFileInExtension(ROOT, id, "sub/store.json"), { ok: true, content: "LEGIT" });
+}
+
+
+
 /* ─────────────────── §4 IPC handler(全部三层接线的行为面)── */
 console.log("\n§4 IPC handler:三层接线 + 行为");
 
@@ -482,6 +535,15 @@ check("三条通道都注册了", handlers.has(EXTENSION_STORE_GET_CHANNEL) && h
     reason: "tooLarge",
     limit: EXTENSION_STORE_MAX,
   });
+
+  // MC-096:经 IPC 的公共文件通道也不许寻址内部保留文件 —— 键值仍在。
+  {
+    const id = "ipc-reserved";
+    await call(EXTENSION_STORE_SET_CHANNEL, { extensionId: id, key: "important", value: "KEEP_ME" });
+    deepEq("★ IPC writeFile 写 store.json 被拒", await call(EXTENSION_STORE_WRITE_FILE_CHANNEL, { extensionId: id, relPath: "store.json", content: "NOT_JSON" }), { ok: false, reason: "reserved" });
+    deepEq("★ IPC readFile 读 store.json 被拒", await call(EXTENSION_STORE_READ_FILE_CHANNEL, { extensionId: id, relPath: "store.json" }), { ok: false, reason: "reserved" });
+    eq("★ IPC 后键值仍在(KEEP_ME)", ((await call(EXTENSION_STORE_GET_CHANNEL, { extensionId: id, key: "important" })) as { value: unknown }).value, "KEEP_ME");
+  }
 
   // 越界路径:zod 在 IPC 边界就拒(handler 抛),不落到 lib。
   for (const [label, api, bad] of [

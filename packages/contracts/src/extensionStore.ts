@@ -77,6 +77,43 @@ export const ExtensionStoreKeySchema = z
  */
 export const EXTENSION_STORE_MAX = 4 * 1024 * 1024;
 
+/**
+ * 存储文件名(该扩展目录**根**下的键值文件)。键值通道的读写只动这一个名字的文件。
+ *
+ * 键值通道(`readStore` / `persist`)与文件通道的**保留闸**共用这一个名字(不写第二份
+ * 字符串字面量)—— 详见 {@link isReservedExtensionRelPath}。
+ */
+export const EXTENSION_STORE_FILE = "store.json";
+
+/**
+ * 扩展目录根下的**内部保留文件**判据(纯词法,renderer 与 main 共用)。
+ *
+ * 键值通道把数据存在 `<扩展目录>/store.json`;它的原子写(`atomicWrite`)又会在这旁边
+ * 落一份临时文件(`<file>.mcode-tmp`)。**公共文件通道绝不能寻址它们** —— 否则一个扩展
+ * 用文件接口往 `store.json` 写一段非 JSON,就把自己的键值存储整份毁掉(MC-096,解析层把
+ * 损坏默认为空,数据无告警丢失)。
+ *
+ * 判据:**只在该扩展目录根**、且文件名等于 store.json 或以 `store.json.` 开头(覆盖
+ * `.mcode-tmp` 临时文件与将来的备份变体)。子目录里的同名文件(`a/store.json`)不是保留
+ * 文件 —— 那是扩展自己的数据,照常可读写。
+ *
+ * **大小写不敏感**:Windows 文件系统不分大小写,`Store.json` 会**别名**到 `store.json`
+ * 同一个文件,不这么判就留一条覆盖后门。在大小写敏感的文件系统上这只会**过度拒绝**一个
+ * 内部保留名(可接受,内部命名空间),不放过任何真覆盖。
+ *
+ * 这一层是**词法第一道**;主进程 `main/lib/extensionStore.ts` 的 `resolveInExtension` 再
+ * 拦一道(真实落盘路径),两层都过才落盘(与 `isSafeExtensionRelPath` 同一姿势)。
+ */
+export function isReservedExtensionRelPath(p: string): boolean {
+  if (typeof p !== "string") return false;
+  // 按两种分隔符切段、丢掉空段与 `.` 段后,保留文件只可能是**单段**(根级文件名)。
+  const segments = p.split(/[\\/]+/).filter((s) => s.length > 0 && s !== ".");
+  if (segments.length !== 1) return false;
+  const name = segments[0].toLowerCase();
+  const store = EXTENSION_STORE_FILE.toLowerCase();
+  return name === store || name.startsWith(`${store}.`);
+}
+
 /* ─────────────────────────── IPC 载荷形状 ─────────────────────────── */
 
 export const ExtensionStoreGetSchema = z.object({
@@ -156,10 +193,13 @@ export const ExtensionRelPathSchema = z
   .max(EXTENSION_REL_PATH_MAX)
   .refine(isSafeExtensionRelPath, "路径不合法(必须是该扩展目录内的相对路径,不能是绝对路径或含 ..)");
 
-/** 文件通道失败的原因。`tooLarge` 只在写时出现;`notAFile` / `notADir` 分读写。 */
+/** 文件通道失败的原因。`tooLarge` 只在写时出现;`notAFile` / `notADir` 分读写。
+ *  `reserved` = 路径指向该扩展自己的**内部保留文件**(`store.json` 及其临时/备份变体),
+ *  普通文件通道不许寻址它 —— 见 {@link isReservedExtensionRelPath}(MC-096)。 */
 export type ExtensionFileErrorReason =
   | "invalidPath"
   | "escapes"
+  | "reserved"
   | "notFound"
   | "notAFile"
   | "notADir"
