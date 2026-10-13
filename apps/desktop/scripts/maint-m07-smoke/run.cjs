@@ -17,6 +17,9 @@ try {
     "@main/lib/dataRoot.js": "./scripts/maint-m07-smoke/stubs.ts",
     "@main/lib/logger.js": "./scripts/maint-m07-smoke/stubs.ts",
     "electron": "./scripts/maint-m07-smoke/stubs.ts",
+    // 【MC-097 E1】把 `node:fs/promises` 换成转发壳,让 `open`/`rename` 可按需注入失败
+    // (模拟写临时文件 / rename 提交步崩溃)。未设开关时逐调用转发真实实现,生产代码一行未改。
+    "node:fs/promises": "./scripts/maint-m07-smoke/fsFaultShim.ts",
   };
   esbuild.buildSync({
     absWorkingDir: app,

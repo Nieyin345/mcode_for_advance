@@ -30,12 +30,14 @@
  *
  * Run: scripts/maint-m07-smoke/run.sh
  */
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, dirname, basename } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { tmpdir, hostname } from "node:os";
+import { join, dirname, basename, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { IPC } from "@contracts/ipc";
 import { listDirGuarded, readFileGuarded, registerFileHandlers } from "@main/ipc/files.js";
+import { acquireOsFileLease } from "@main/lib/osFileLease.js";
+import { setFsFault } from "./fsFaultShim.js";
 import { projectPaths, warnings } from "./stubs.js";
 
 let checks = 0;
@@ -115,7 +117,179 @@ try {
   check("rename 改得动", (await call(IPC.FILE_RENAME, { oldPath: exact, newPath: renamedExact })).ok, true);
   check("改完文件真在新名字上", existsSync(renamedExact), true);
 
-  /* ── 1b. 【MC-097】写入的乐观并发(CAS)+ 原子替换 ──────────────────────────
+  /* ── 1b. 【MC-097】故障注入 E1:崩溃 / 租约失效下的原子性与可恢复性 ──────────────
+   * 真实 Electron 两端并发做不了(那是无头套件之外的事),但「写临时文件 / rename 崩了会怎样」
+   * 可以在**不改生产代码**的前提下注入:用 esbuild 把 `node:fs/promises` 换成一份转发壳
+   * (`fsFaultShim.ts`),让 `open`(临时文件创建)或 `rename`(原子替换提交步)按需失败。壳里
+   * 未设故障开关时逐调用转发真实实现。断言的是**用户能看到的事实**:原文件一个字节都没动、
+   * 磁盘上没留下半截临时文件、卡死的租约能被下一个写者回收、失败者释放锁后别人写得进。 */
+  console.log("\n【MC-097 E1】故障注入:崩溃/租约失效下的原子性与可恢复性");
+  {
+    // 锁文件是 `${real}.mcode-lock`(见 lib/osFileLease.ts)—— realpath 解析,文件不存在时
+    // 回落到 `resolve`(与实际实现同一套兜底,便于对刚删掉的文件清锁)。
+    const mkLockPath = (f: string): string => {
+      let real: string;
+      try { real = realpathSync(f); } catch { real = resolve(f); }
+      return `${real}.mcode-lock`;
+    };
+    const tmpResidue = (dir: string): string[] =>
+      readdirSync(dir).filter((n) => n.includes(".mcode-tmp"));
+
+    // 找一个**确定已死**的 pid(在本机探测:kill(pid,0) 抛 ESRCH 即为不存在),给租约回收用。
+    let deadPid = -1;
+    for (let p = 40_000; p < 60_000; p++) {
+      try { process.kill(p, 0); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ESRCH") { deadPid = p; break; } }
+    }
+    check("前提:探测到一个已死 pid(供陈旧租约回收)", deadPid > 0, true);
+
+    // ① 注入 rename 失败(临时文件已写+fsync,提交那一步崩)→ 原文件逐字节不变,无临时残留。
+    {
+      const p = join(projectRoot, "src", "e1-rename.ts");
+      const ORIGINAL = "ORIGINAL-BYTES-MUST-SURVIVE\n";
+      writeFileSync(p, ORIGINAL, "utf-8");
+      const before = readFileSync(p);
+      const ver = (await readFileGuarded(p)).version;
+      setFsFault({ failRename: (target) => target === p });
+      let outcome: { ok?: boolean; conflict?: boolean };
+      try {
+        outcome = await call(IPC.FILE_WRITE, { filePath: p, content: "SHOULD-NOT-LAND\n", expectedVersion: ver });
+      } finally {
+        setFsFault(null);
+      }
+      check("★ E1:rename 崩溃 → 写入如实报失败(不静默成功)", outcome.ok === false, true);
+      check("★ E1:rename 崩溃 → 原文件逐字节不变(没被半写/覆盖)", readFileSync(p).equals(before), true);
+      check("★ E1:rename 崩溃 → 磁盘不留 .mcode-tmp 临时残留", tmpResidue(join(projectRoot, "src")).length, 0);
+      // 崩溃后这个文件仍可读、可重写(回读证明没被污染)。
+      check("★ E1:崩溃后文件仍可读回原内容", readFileSync(p, "utf-8"), ORIGINAL);
+    }
+
+    // ② 注入临时文件 open 失败(写临时文件前就崩)→ 同样原文件不动、无残留。
+    {
+      const p = join(projectRoot, "src", "e1-open.ts");
+      const ORIGINAL = "OPEN-FAIL-ORIGINAL\n";
+      writeFileSync(p, ORIGINAL, "utf-8");
+      const before = readFileSync(p);
+      setFsFault({ failOpen: (target) => target.includes(".mcode-tmp") });
+      let outcome: { ok?: boolean };
+      try {
+        outcome = await call(IPC.FILE_WRITE, { filePath: p, content: "NOPE\n" });
+      } finally {
+        setFsFault(null);
+      }
+      check("★ E1:临时文件 open 崩溃 → 报失败", outcome.ok === false, true);
+      check("★ E1:临时文件 open 崩溃 → 原文件逐字节不变", readFileSync(p).equals(before), true);
+      check("★ E1:临时文件 open 崩溃 → 不留临时残留", tmpResidue(join(projectRoot, "src")).length, 0);
+    }
+
+    // ③ 陈旧租约(死 pid)被回收 → 下一个写者照常写入(不再永久阻塞)。
+    //    直接对**共享原语** `acquireOsFileLease` 断言(给的超时很短):回收失效时它是**快速而精确**的红
+    //    (2s 后抛 FILE_VERSION_CONFLICT),不必等 FILE_WRITE 那 60s 的默认等待 —— 变异跑才跑得完。
+    {
+      const p = join(projectRoot, "src", "e1-stale-pid.ts");
+      writeFileSync(p, "stale-base\n", "utf-8");
+      const lockPath = mkLockPath(p);
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ host: hostname(), pid: deadPid, token: "dead-token", createdAt: Date.now() }),
+        "utf-8",
+      );
+      check("前提:已埋下一个死 pid 的陈旧租约", existsSync(lockPath), true);
+      let acquired = false;
+      try { const rel = await acquireOsFileLease(lockPath, 2_000); acquired = true; await rel(); }
+      catch { acquired = false; }
+      check("★ E1:死 pid 陈旧租约被回收(2000ms 内取得,未卡到超时)", acquired, true);
+      const cleaned = !existsSync(lockPath);
+      check("★ E1:回收成功后原陈旧锁已清(不留残骸)", cleaned, true);
+      // 端到端:FILE_WRITE 也照常写入 —— 证明"下一个写者 proceeds"。**只在回收成功且锁确实被清时跑**,
+      // 否则(回收/释放失效)这里会白等 60s 默认租约超时,把变异跑拖垮;上面已红。
+      if (acquired && cleaned) {
+        const res = await call(IPC.FILE_WRITE, { filePath: p, content: "RECLAIMED\n" });
+        check("★ E1:回收后下一个写者(FILE_WRITE)写入成功", res.ok, true);
+        check("★ E1:回收后内容真的落盘", readFileSync(p, "utf-8"), "RECLAIMED\n");
+        check("★ E1:写入完成后锁文件已释放", existsSync(lockPath), false);
+      }
+    }
+
+    // ③b 陈旧租约(非本机 host + 旧时间戳)被回收 → 下一个写者照常写入。
+    {
+      const p = join(projectRoot, "src", "e1-stale-host.ts");
+      writeFileSync(p, "stale-host-base\n", "utf-8");
+      const lockPath = mkLockPath(p);
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ host: "some-other-host-not-" + hostname(), pid: 1234, token: "x", createdAt: Date.now() - 10 * 60_000 }),
+        "utf-8",
+      );
+      check("前提:已埋下一个跨机+过期时间戳的陈旧租约", existsSync(lockPath), true);
+      let acquired = false;
+      try { const rel = await acquireOsFileLease(lockPath, 2_000); acquired = true; await rel(); }
+      catch { acquired = false; }
+      check("★ E1:跨机过期陈旧租约被回收(2000ms 内取得)", acquired, true);
+      const cleaned = !existsSync(lockPath);
+      check("★ E1:回收成功后原陈旧锁已清(跨机)", cleaned, true);
+      if (acquired && cleaned) {
+        const res = await call(IPC.FILE_WRITE, { filePath: p, content: "RECLAIMED-HOST\n" });
+        check("★ E1:回收后下一个写者写入成功(跨机)", res.ok, true);
+        check("★ E1:回收后内容真的落盘(跨机)", readFileSync(p, "utf-8"), "RECLAIMED-HOST\n");
+      }
+    }
+
+    // ④ 持有租约时写入失败必须**释放**租约 —— 否则下一个写者会一直阻塞到超时。
+    {
+      const p = join(projectRoot, "src", "e1-release.ts");
+      writeFileSync(p, "hold-base\n", "utf-8");
+      const lockPath = mkLockPath(p);
+      setFsFault({ failRename: (target) => target === p });
+      let failed: { ok?: boolean };
+      try {
+        failed = await call(IPC.FILE_WRITE, { filePath: p, content: "FIRST-FAILS\n" });
+      } finally {
+        setFsFault(null);
+      }
+      check("前提:注入后首发写入确实失败", failed.ok === false, true);
+      const released = !existsSync(lockPath);
+      check("★ E1:失败者释放了租约(锁文件已不在 → 后续写不被永久阻塞)", released, true);
+      // 后续写(无注入)必须成功且**很快**返回(没有等到 60s 租约超时)。只在已释放时跑,免得
+      // 释放失效时白等 60s(上面那条已红)。
+      if (released) {
+        const t0 = Date.now();
+        const second = await call(IPC.FILE_WRITE, { filePath: p, content: "SECOND-OK\n" });
+        const elapsed = Date.now() - t0;
+        check("★ E1:后续写者立刻写入成功(未卡在租约超时)", second.ok, true);
+        check("★ E1:后续写者耗时远小于租约等待上限(证明租约已释放)", elapsed < 5_000, true);
+        check("★ E1:后续写内容真的落盘", readFileSync(p, "utf-8"), "SECOND-OK\n");
+      }
+    }
+
+    // ⑤ CAS 失败后,用**当前**版本重试必须成功(文件可读 + 可重写,不是一次冲突就死锁)。
+    {
+      const p = join(projectRoot, "src", "e1-cas-retry.ts");
+      writeFileSync(p, "base\n", "utf-8");
+      const v0 = (await readFileGuarded(p)).version;
+      const first = await call(IPC.FILE_WRITE, { filePath: p, content: "first\n", expectedVersion: v0 });
+      check("前提:首发 CAS 写入成功", first.ok, true);
+      const stale = await call(IPC.FILE_WRITE, { filePath: p, content: "should-not-land\n", expectedVersion: v0 });
+      check("★ E1:过期版本 CAS 失败(拒绝)", stale.ok === false && stale.conflict === true, true);
+      check("★ E1:CAS 失败时磁盘未被覆盖", readFileSync(p, "utf-8"), "first\n");
+      // 回读当前版本 → 用它重试 → 必须成功。
+      const v1 = (await readFileGuarded(p)).version;
+      check("前提:回读拿到的是当前版本(与过期版本不同)", v1 !== v0 && typeof v1 === "string", true);
+      const retry = await call(IPC.FILE_WRITE, { filePath: p, content: "second\n", expectedVersion: v1 });
+      check("★ E1:CAS 失败后用当前版本重试 → 成功(文件可读+可重写)", retry.ok, true);
+      check("★ E1:重试内容真的落盘", readFileSync(p, "utf-8"), "second\n");
+    }
+
+    // 清理本段产物,别影响后面「src 只有 1 条」之类断言。
+    const e1Files = ["e1-rename.ts", "e1-open.ts", "e1-stale-pid.ts", "e1-stale-host.ts", "e1-release.ts", "e1-cas-retry.ts"];
+    for (const n of e1Files) {
+      const p = join(projectRoot, "src", n);
+      rmSync(p, { force: true });
+      // 兜底:任何一例若留下锁文件,一并清掉(下一段断言依赖磁盘干净)。
+      rmSync(mkLockPath(p), { force: true });
+    }
+  }
+
+  /* ── 1c. 【MC-097】写入的乐观并发(CAS)+ 原子替换 ──────────────────────────
    * 从前 FILE_WRITE 只收 `{filePath,content}` 直接 `writeFile`:渲染端读到写之间隔一次 IPC,
    * 另一个 Agent 改了文件也会被静默覆盖;写一半崩溃还会毁原文件。现在带 `expectedVersion`
    * (读到的那版内容哈希)时,主进程在**提交点**比对,不一致就 `{ok:false,conflict:true}`。 */
@@ -150,7 +324,7 @@ try {
     rmSync(newPath, { force: true });
   }
 
-  /* ── 1c. 【MC-097】同路径跨进程写锁:并发写同一路径必须**串行**(互斥,不只是 CAS) ──
+  /* ── 1d. 【MC-097】同路径跨进程写锁:并发写同一路径必须**串行**(互斥,不只是 CAS) ──
    * 提交点 CAS + 原子替换只挡得住「静默覆盖」与「半写」,**不是互斥**:两个拿着同一
    * `expectedVersion` 的写者若都还没落盘就都通过了 CAS,再各自 rename,就会交错。修复把这段
    * 临界区包进**按路径的宿主级文件租约**(`lib/osFileLease.ts`,与 Excel/PDF/DOCX 共用同一份),
