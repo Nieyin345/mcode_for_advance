@@ -67,7 +67,8 @@ import { computePanelCaptureRect } from "./panelCaptureRect.js";
 import { DOMAIN_LABELS, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
 import { evaluate } from "./policyEngine.js";
 import { getGrantStore } from "./grantStoreRuntime.js";
-import type { ActionIntent, PolicyCompatibilityLevel } from "@contracts/policyEngine";
+import type { ActionIntent, CoreIntent, PolicyCompatibilityLevel } from "@contracts/policyEngine";
+import { physicalPath } from "@main/lib/realPathWithin.js";
 import { registeredRpcChannels, rpcHandlerFor } from "./registry.js";
 import { redactValue, renderResult, slimSessions } from "./redact.js";
 import { runUiCommand } from "./uiBridge.js";
@@ -1528,6 +1529,91 @@ function replayRevokedReason(
 }
 
 /**
+ * 【ARC-004 步③ 之二】把 `app_api_call` 的 `ActionIntent.core` 从**请求指纹**升级为**宿主
+ * 解析出的真实资源身份**。
+ *
+ * ## 它补的是哪条洞(源码可确认)
+ *
+ * 上一片把 `evaluate` 接进执行点,但 `core` 用的是**请求指纹**(`appApiBindingId` = 会话 +
+ * 方法 + 参数摘要)承载「资源身份」。指纹对**时间/会话/字面参数**敏感,对**资源本身**无感:
+ * 「批准写项目 A、却来写项目 B」在指纹模型下只是「另一份参数」,而 `findBoundFor` 按资源身份
+ * 精确匹配时**根本匹配不到**(指纹不同),于是直接落到「无授权 → 走默认审批链」—— `evaluate`
+ * 里那条 `invalidationsFor` 分支(核心意图变更 → 批准失效)**永远不可达**。
+ *
+ * 本函数让执行点从**调用的入参**里解析出真实的**权威资源身份**(路径经 `physicalPath`
+ * 规范化:resolve + 折叠大小写,与 `pathGuard` 同一套判据),填进 `intent.core` 对应的**语义
+ * 维度**。于是「批准 A、调 B」→ `core` 里那是**不同的路径** → `evaluate` 判 `projectPath` 变了
+ * → `require-approval` → 不执行。这正是本切片要钉的行为。
+ *
+ * ## 覆盖哪些方法(只覆盖语义确实对得上的;其余如实兜底)
+ *
+ *   - **file.*** —— 目标路径的规范化身份。`file.writeFile`/`readFile`/`readBinary` 取
+ *     `filePath`,`mkdir` 取 `dirPath`,`rename` 取 `oldPath`,`copy` 取 `srcPath`,
+ *     `listDir`/`search`/`grep` 取 `projectPath`(后三者的 `projectPath` **本就是根**,语义与
+ *     `CoreIntent.projectPath` 完全一致;前几者把**目标文件路径**放进同一个**路径类**维度 ——
+ *     CoreIntent 没有更细的「file」槽,而判据要的是「换了路径 = 批准失效」)。
+ *   - **git.*** —— `repoPath` 的规范化身份 → `projectPath`(`gitRemote` 需 `git remote get-url`
+ *     才能得到,本层拿不到,**故不用它**,如实向下兜底)。
+ *   - **terminal.create** —— `projectPath` 的规范化身份 → `projectPath`。
+ *
+ * **明确不覆盖(保持请求指纹兜底,并如实注释原因):**
+ *   - `mcp.*` —— 全是 **danger** 档,`planGrantPrecheck` 对 danger **根本不跑**(见
+ *     `invokeAppTool`:`entry.policy.level !== "danger"` 才预判),故在此解析 `mcp` 身份是
+ *     **死代码**,不做。
+ *   - `project.*` —— `project.delete`/`archive`/`pin`/`rename` 等收的是**项目 id**(非路径),
+ *     `CoreIntent` 没有「id」维度;`create` 收 `path` 但属新建(无「已被批准的同资源」语义)。
+ *     一律兜底。
+ *   - `library.*` —— 收的是**条目 id**(宿主内部标识),非路径;`sshHostKey` / `deleteScope`
+ *     在本层(`app_api_call`)没有携带权威身份的入参(SSH 走 danger 的 `agentSsh.*`;删除的
+ *     「是否递归」由宿主在 trash 里定,不在入参)。一律兜底。
+ *
+ * @returns `core` 填好的核心意图;`real` = 这次是否用了**真实资源身份**(true 时执行点才允许
+ *   退到「按动作取授权」`findGoverningFor` —— 见 `planGrantPrecheck`;指纹兜底时绝不退,否则会把
+ *   「另一件事」误当「越权」硬拒)。
+ */
+const FILE_PATH_ARG: Record<string, string> = {
+  "file.writeFile": "filePath",
+  "file.readFile": "filePath",
+  "file.readBinary": "filePath",
+  "file.mkdir": "dirPath",
+  "file.rename": "oldPath",
+  "file.copy": "srcPath",
+  "file.listDir": "projectPath",
+  "file.search": "projectPath",
+  "file.grep": "projectPath",
+};
+
+export function resolveActionCore(
+  method: string,
+  input: unknown,
+  sessionId: string,
+): { core: CoreIntent; real: boolean } {
+  const o = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const pathIdentity = (raw: unknown): string | null => {
+    if (typeof raw !== "string" || raw.trim() === "") return null;
+    return physicalPath(raw); // resolve + 跟真实目的地 + 折叠大小写;拿不到返回 null
+  };
+  // ① file.*:目标路径的规范化身份。
+  const fileArg = FILE_PATH_ARG[method];
+  if (fileArg) {
+    const id = pathIdentity(o[fileArg]);
+    if (id) return { core: { projectPath: id }, real: true };
+  }
+  // ② git.*:repoPath 的规范化身份(本层拿不到 gitRemote,不用它)。
+  if (method.startsWith("git.")) {
+    const id = pathIdentity(o.repoPath);
+    if (id) return { core: { projectPath: id }, real: true };
+  }
+  // ③ terminal.create:projectPath 的规范化身份。
+  if (method === "terminal.create") {
+    const id = pathIdentity(o.projectPath);
+    if (id) return { core: { projectPath: id }, real: true };
+  }
+  // ④ 兜底:请求指纹承载「资源身份」(换会话 / 换方法 / 换参数 = 换了一件事 = 该绑另一枚授权)。
+  return { core: { sshHostKey: appApiBindingId(sessionId, method, input) }, real: false };
+}
+
+/**
  * 【ARC-004 步③】`app_api_call` **执行动作之前**的计划级授权预判 —— 把唯一判定核
  * `policyEngine.evaluate` 接到真实执行点上。
  *
@@ -1574,14 +1660,23 @@ function planGrantPrecheck(
 ): string | null {
   const store = getGrantStore();
   const input = (args as { input?: unknown }).input ?? null;
-  // 核心意图:宿主按动作解析出的**权威资源身份**。app_api_call 走的是方法与参数,尚无
-  // 宿主解析出的 projectPath / mcp / gitRemote / sshHostKey / deleteScope —— 故这里用
-  // **请求指纹**(会话 + 方法 + 规范化参数摘要)承载「资源身份」:换会话 / 换方法 / 换参数
-  // = 换了资源 = 该绑另一枚授权 —— 这正是 findBoundFor 按「资源身份 + 动作」匹配的那件事。
-  const core: ActionIntent["core"] = { sshHostKey: appApiBindingId(sessionId, entry.method, input) };
+  const { core, real } = resolveActionCore(entry.method, input, sessionId);
   const intent: ActionIntent = { method: entry.method, core };
   const now = Date.now();
-  const bound = store.findBoundFor(intent, now);
+  // ── 取「绑定的那枚授权」:真实资源身份 vs 请求指纹,两条**不同**的取回口 ──────────
+  //
+  // 【真资源身份】先按「资源身份 + 动作」精确找(命中 = 这正是那枚授权管的事);**找不到
+  // 再按动作**取回管这个动作的授权(`findGoverningFor`,**不看**资源)—— 交给 `evaluate`
+  // 用 `invalidationsFor` 判「核心意图被换」。这是本切片要钉的行为:**批准了项目 A、却来写
+  // 项目 B** → `findBoundFor` 按资源 A 匹配不到,`findGoverningFor` 交出那枚授权,`evaluate`
+  // 判 `projectPath` 变了 → `require-approval` → 不执行。
+  //
+  // 【请求指纹兜底】尚无宿主解析出的资源身份的方法(如 `session.rename`):核心意图**就是**
+  // 请求本身,换参数 = 换了一件事 = 不绑这枚授权 = 走默认审批链 —— 故用 `findBoundFor`
+  // 精确匹配,绝不退到 `findGoverningFor`(否则「另一件事」会被误判成「越权」而硬拒)。
+  const bound = real
+    ? (store.findBoundFor(intent, now) ?? store.findGoverningFor(intent, now))
+    : store.findBoundFor(intent, now);
   // 没有绑定授权 → 不是授权下的动作,放行给 gateAppAction 的既有审批链(默认路径)。
   if (!bound) return null;
   const decision = evaluate(intent, bound, {
@@ -1606,8 +1701,11 @@ function planGrantPrecheck(
 function recordPlanGrantUse(entry: ApiEntry, args: unknown, sessionId: string): void {
   const store = getGrantStore();
   const input = (args as { input?: unknown }).input ?? null;
-  const core: ActionIntent["core"] = { sshHostKey: appApiBindingId(sessionId, entry.method, input) };
-  const bound = store.findBoundFor({ method: entry.method, core }, Date.now());
+  const { core, real } = resolveActionCore(entry.method, input, sessionId);
+  const intent: ActionIntent = { method: entry.method, core };
+  const bound = real
+    ? (store.findBoundFor(intent, Date.now()) ?? store.findGoverningFor(intent, Date.now()))
+    : store.findBoundFor(intent, Date.now());
   if (!bound) return;
   try {
     store.recordUse(bound.grantId, 0, Date.now());

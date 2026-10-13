@@ -200,6 +200,39 @@ export class GrantStore {
   }
 
   /**
+   * 按**动作(method)**找**管这个动作的那枚授权** —— **不看**核心意图是否一致。交回给调用方
+   * (执行点)喂 `evaluate`,让 `evaluate` 自己判「核心意图被改动」(`invalidationsFor`)。
+   *
+   * ## 为什么需要它(而 `findBoundFor` 不够)
+   *
+   * `findBoundFor` 只在**核心意图已一致**(`invalidationsFor` 为空)时才交出授权 —— 于是
+   * 「批准了项目 A、却来写项目 B」这种**核心意图被换**的动作,在 `findBoundFor` 眼里就是
+   * 「没有绑定授权」,直接落到「无授权 → 走默认审批链」。这样 `evaluate` 里那条
+   * `invalidationsFor` 分支(核心意图变更 → 批准失效 → 重新批准)**永远不可达、变异也变不红**
+   * —— 又是「接上了却没用」的假接线。
+   *
+   * 要让它真承重,执行点必须能在「按资源身份精确匹配不到」时,拿到**管这个动作的那枚授权**
+   * (不看它钉住的资源),再交给 `evaluate` 去判资源是否被换。本方法就是那把「按动作取回口」:
+   * 返回第一份 `allowedActions` 含 `intent.method` 的授权(**有效且用户签发者优先**,否则退回
+   * 第一个匹配的失效 / 非用户授权);一个都匹配不到才 `null`。
+   *
+   * ⚠️ **只该对「核心意图带真实资源身份」的动作用它** —— 对**请求指纹兜底**的动作(尚无宿主
+   * 解析出的资源身份),核心意图就是请求本身,换参数 ≠ 换资源,必须保持 `findBoundFor` 的
+   * 「换参数 = 不绑这枚授权 = 走默认审批」语义(否则会把「另一件事」误当成「越权」硬拒)。
+   */
+  findGoverningFor(intent: ActionIntent, now: number): Grant | null {
+    let fallback: Grant | null = null;
+    for (const g of this.grants.values()) {
+      if (!g.allowedActions.includes(intent.method)) continue;
+      // ① 仍有效 **且** 用户签发 = 最优,直接回。
+      if (g.approvalSource.kind === "user" && isGrantActive(g, now)) return g;
+      // ② 否则记住第一份匹配的(已撤销 / 已过期 / 非用户签发),作为退路 —— 让 evaluate 去判它。
+      if (fallback === null) fallback = g;
+    }
+    return fallback;
+  }
+
+  /**
    * **记一次使用** —— 一次动作在授权下真的执行了,把 `usedCount`(+1)与 `budgetUsed`(加上这次的
    * 估算费用)回写。**必须在动作执行**成功**之后**调,不是审批通过时 —— 记账记的是"真的用掉了",
    * 不是"打算用"。

@@ -21,9 +21,10 @@ import { DOMAIN_LABELS, policyFor } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog, appApiBindingId } from "@main/appControl/tools.js";
+import { physicalPath } from "@main/lib/realPathWithin.js";
 import { GrantStore, type GrantDecision } from "@main/appControl/grantStore.js";
 import { setGrantStore } from "@main/appControl/grantStoreRuntime.js";
-import type { ActorRef } from "@contracts/policyEngine";
+import type { ActorRef, CoreIntent, Grant } from "@contracts/policyEngine";
 import { isEnvelopeMethod } from "@main/appControl/commandOutcome.js";
 import { setOperationLedger, type OperationLedger } from "@main/appControl/operations.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
@@ -967,6 +968,105 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   setGrantStore(null); // 复位,免得影响后面的用例。
   // 恢复本段前 `session:rename` 的返回形状(后续用例若用到)。
   recordRpcHandler("session:rename", async (_e, raw) => ({ session: { id: "s9", title: (raw as { title?: string }).title } }));
+}
+
+/* ── 3c-quater. 【ARC-004 步③ 之二】执行点解析**真实资源身份**填进 intent.core ──────────
+ *
+ * 上一片把 `evaluate` 接进执行点,但 `intent.core` 用**请求指纹**承载「资源身份」—— 指纹
+ * 对会话/方法/字面参数敏感,对**资源本身**无感。于是「批准写项目 A、却来写项目 B」在指纹
+ * 模型下只是「另一份参数」,`findBoundFor` 按资源身份匹配不到 → 直接落到默认审批链,
+ * `evaluate` 里那条 `invalidationsFor`(核心意图变更 → 批准失效)**永远不可达**。
+ *
+ * 本切片让执行点从**入参**解析出真实的**权威资源身份**(路径经 `physicalPath` 规范化)填进
+ * `intent.core`。承重红例 = **批准了资源 A,调 B → 不执行 / REJECTED**。
+ *
+ * ⚠️ 取授权口的取舍(两条不同路):**真实资源身份**的方法先 `findBoundFor` 精确找,找不到再
+ * `findGoverningFor` 按动作取回(不看资源,交给 evaluate 判「被换」);**请求指纹兜底**的方法
+ * 只走 `findBoundFor`(换参数 = 换了一件事 = 不绑这枚授权 = 走默认审批,绝不误判成越权)。
+ */
+{
+  const USER: ActorRef = { kind: "user", id: "u1" };
+  const freshStore = (): GrantStore => { const s = new GrantStore({ newId: (n) => `g${n}` }); setGrantStore(s); return s; };
+  // 用**生产同一份**身份函数造授权 —— 不另抄一份格式(硬规矩 2)。
+  const issueFor = (store: GrantStore, method: string, core: CoreIntent, over: Partial<GrantDecision> = {}): Grant =>
+    store.issueGrant(
+      { verdict: "allow", reason: "用户批准了这个计划。", compatibilityLevel: "write", sceneId: "scene-1", allowedActions: [method], scopedCore: core, configHash: "cfg-1", ttlMs: 3_600_000, ...over },
+      USER,
+      Date.now(),
+    );
+
+  // 两个**不同**的资源根(都落在现存的 cwd 下 —— `physicalPath` 需要现存祖先;两条互相不同
+  // 即可,不依赖测试机有没有 C: 盘)。归一化变体用 `sub/..` 表达:resolve 会在**每个平台**上
+  // 折叠它,故等价拼写的命中不依赖大小写不敏感的 FS。
+  const root = process.cwd();
+  const alphaPath = join(root, "__smoke_alpha__", "a.ts");
+  const alphaSame = join(root, "__smoke_alpha__", "sub", "..", "a.ts"); // resolve 后 == alphaPath
+  const betaPath = join(root, "__smoke_beta__", "a.ts");
+  check("承重夹具:两条路径的规范化身份确实不同", physicalPath(alphaPath) !== physicalPath(betaPath), { a: physicalPath(alphaPath), b: physicalPath(betaPath) });
+  check("承重夹具:等价拼写的规范化身份确实相同(resolve 折叠 sub/..)", physicalPath(alphaSame) === physicalPath(alphaPath), { s: physicalPath(alphaSame), a: physicalPath(alphaPath) });
+
+  let writeRuns = 0;
+  recordRpcHandler("file:writeFile", async (_e, raw) => { writeRuns += 1; return { ok: true, path: (raw as { filePath?: string }).filePath }; });
+  let stageRuns = 0;
+  recordRpcHandler("git:stage", async () => { stageRuns += 1; return { ok: true }; });
+
+  // ① 承重：批准**项目 A**，却来写**项目 B** → **不执行**、REJECTED、报「核心意图已改动」。
+  {
+    const store = freshStore();
+    const g = issueFor(store, "file.writeFile", { projectPath: physicalPath(alphaPath) as string });
+    const before = writeRuns;
+    const { ctx, asked } = ctxWith({ allow: true });
+    const r = await call("file.writeFile", { filePath: betaPath, content: "x" }, ctx);
+    check("★ ARC-004③b 批准 A 却写 B → 不执行(handler 未被调用)", writeRuns === before, writeRuns - before);
+    check("★ ARC-004③b 批准 A 却写 B → REJECTED 且点名核心意图被改动", r.isError === true && textOf(r).includes("核心意图") && textOf(r).includes("projectPath"), textOf(r).slice(0, 240));
+    check("★ ARC-004③b 批准 A 却写 B → 连审批都不弹(硬拒绝)", asked.length === 0, asked.length);
+    void g;
+  }
+
+  // ② 正控:批准的是**同一个资源**(即便换一种等价拼写)→ 放行、执行、记账。
+  {
+    const store = freshStore();
+    const g = issueFor(store, "file.writeFile", { projectPath: physicalPath(alphaPath) as string });
+    const before = writeRuns;
+    const { ctx } = ctxWith({ allow: true });
+    const r = await call("file.writeFile", { filePath: alphaSame, content: "x" }, ctx);
+    check("★ ARC-004③b 批准 A、写 A(等价拼写)→ 放行且执行", r.isError !== true && writeRuns === before + 1, textOf(r).slice(0, 200));
+    check("★ ARC-004③b 批准 A、写 A → 记账 usedCount +1", store.get(g.grantId, Date.now())?.usedCount === 1, store.get(g.grantId, Date.now())?.usedCount);
+  }
+
+  // ③ git.*:repoPath 的规范化身份进 projectPath —— 批准仓库 R1、操作 R2 → 不执行。
+  {
+    const store = freshStore();
+    const repoA = join(root, "__smoke_repo_a__");
+    const repoB = join(root, "__smoke_repo_b__");
+    issueFor(store, "git.stage", { projectPath: physicalPath(repoA) as string });
+    const before = stageRuns;
+    const { ctx } = ctxWith({ allow: true });
+    const r = await call("git.stage", { repoPath: repoB, filePaths: ["a"] }, ctx);
+    check("★ ARC-004③b 批准仓库 R1 却操作 R2 → 不执行", stageRuns === before, stageRuns - before);
+    check("★ ARC-004③b 批准仓库 R1 却操作 R2 → REJECTED 且点名 projectPath", r.isError === true && textOf(r).includes("projectPath"), textOf(r).slice(0, 240));
+    // 正控:同一个仓库 → 放行执行。
+    const r2 = await call("git.stage", { repoPath: repoA, filePaths: ["a"] }, ctx);
+    check("★ ARC-004③b 批准仓库 R1、操作 R1 → 放行且执行", r2.isError !== true && stageRuns === before + 1, textOf(r2).slice(0, 200));
+  }
+
+  // ④ 指纹兜底**不被误判**:session.rename 没有真实资源身份,换参数 = 另一件事 = 不绑这枚授权
+  //    → 走默认审批链、不硬拒(证明指纹方法没被错路由到「按资源取授权」那条路上)。
+  {
+    const store = freshStore();
+    const inA = { id: "s9", title: "A" };
+    const g = issueFor(store, "session.rename", { sshHostKey: appApiBindingId("me", "session.rename", inA) }, { maxCount: 1 });
+    store.recordUse(g.grantId, 0, Date.now()); // A 已用满
+    let renames = 0;
+    recordRpcHandler("session:rename", async (_e, raw) => { renames += 1; return { session: { id: "s9", title: (raw as { title?: string }).title } }; });
+    const before = renames;
+    const { ctx } = ctxWith({ allow: true });
+    const r = await call("session.rename", { id: "s9", title: "B" }, ctx);
+    check("★ ARC-004③b 指纹方法换参数 = 另一件事 → 不被当越权硬拒、照常执行", r.isError !== true && renames === before + 1, textOf(r).slice(0, 200));
+    recordRpcHandler("session:rename", async (_e, raw) => ({ session: { id: "s9", title: (raw as { title?: string }).title } }));
+  }
+
+  setGrantStore(null);
 }
 
 /* ── 3d. MC-066:业务层 ok:false 不能被回报成 SUCCEEDED ───────────────────────
