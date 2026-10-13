@@ -3115,6 +3115,84 @@ configureMcpToolHost(null);
   }
 }
 
+/* ── 【MC-089 留存审计 / 安全释放】旧凭据失效后,在途资源要能**看见**也要能**明确终止** ──
+ * 台账 remaining:有活资源的孤儿 owner 只「保留归属」还不够,得让运维看得见「这条凭据死了,
+ * 名下还有几个资源」,并给宿主一条**明确终止**的入口。走真实生产路径:真淘汰 + 真起进程,
+ * 断言 ① 留存报告带凭据与资源计数;② 审计环形记录留痕;③ `releaseOwnerResources` 真终止进程
+ * 并回收归属;④ 在用/非本模块 owner 拒绝释放(不误杀)。 */
+{
+  const {
+    issueClientSession,
+    rememberSyntheticOwner,
+    resolveClientSessionDetailed,
+    pruneOrphanedOwners,
+    releaseOwnerResources,
+    retentionAuditLog,
+    __trackedOwnerCount,
+    __resetPublicClientSessions,
+  } = await import("@main/providers/bridge/publicClientSessions.js");
+  __resetPublicClientSessions();
+  const synthetic = "sess_public_release";
+  const orphan = issueClientSession("cred-doomed");
+  rememberSyntheticOwner(synthetic, orphan);
+  for (let i = 0; i < 4100; i++) issueClientSession("cred-a"); // 真淘汰 orphan
+  eq("★ (前置)待释放 owner 已被真淘汰", resolveClientSessionDetailed("cred-doomed", orphan).kind, "expired");
+
+  const root = mkdtempSync(path.join(tmpdir(), "mcode-mc089-release-"));
+  const probeHost = createWebToolHost({
+    gateFor: () => ({
+      permissionMode: () => "bypassPermissions" as PermissionMode,
+      isAlwaysAllowed: () => true,
+      async requestApproval() {
+        return { allow: true };
+      },
+    }),
+    cwdFor: () => root,
+    sandboxRootFor: () => root,
+  });
+  const scopeFor = (owner: string) => ({
+    credentialId: "proj", projectId: "proj", sessionId: "sess_shared", canonicalRoot: root,
+    grantRevision: "rev:shared", revocationEpoch: 0, clientSessionId: owner, actorId: owner, traceId: `t:${owner}`,
+  });
+  const call = (owner: string, name: string, args: Record<string, unknown> = {}) =>
+    probeHost.callTool(name, args, { sessionId: "sess_shared", audience: "public", ownerId: owner, publicScope: scopeFor(owner) });
+  const cmd = process.platform === "win32" ? "ping -n 30 127.0.0.1 > nul" : "sleep 30";
+  const started = await call(orphan, "agent_process_start", { command: cmd, wait_ms: 0 });
+  const procId = /proc_[0-9a-f]+/.exec(started.text)?.[0] ?? "";
+  check("★ (前置)已在待释放 owner 名下起了真进程", procId.startsWith("proc_"), started.text);
+  try {
+    // ① 留存报告:受控保留的明细要带**它当初的凭据**与**活资源计数**。
+    const report = pruneOrphanedOwners();
+    const detail = report.keptBusyDetails.find((k) => k.ownerId === orphan);
+    check("★ 留存报告含该忙 owner 的明细", !!detail, report.keptBusyDetails);
+    eq("★ 明细带它当初绑定的凭据(运维看得见「哪条链接死了」)", detail?.credentialId, "cred-doomed");
+    eq("★ 明细报出 1 个在途进程", detail?.resources.processes, 1);
+
+    // ② 审计环形记录留痕(可被运维/诊断读)。
+    const log = retentionAuditLog();
+    const last = log[log.length - 1];
+    check("★ 留存审计记录了这次淘汰事件", !!last && last.keptBusy.some((k) => k.ownerId === orphan), last);
+
+    // ③ 安全释放:显式终止该 owner 名下资源并回收归属。释放后进程应不可再操作。
+    const rel = releaseOwnerResources(orphan);
+    eq("★ 释放已失效的忙 owner 成功", rel.reason, "released");
+    eq("★ 释放报出它释放了 1 个进程", rel.resources.processes, 1);
+    // 进程已被 disposeOwner 终止 → 再 stop 应报「没有这个进程会话」(证明资源真被终止,不是只清归属)。
+    const after = await call(orphan, "agent_process_stop", { process_id: procId });
+    check("★ 释放后进程真被终止(再 stop 找不到该会话)", /没有这个进程会话/.test(after.text), after.text);
+    eq("★ 释放后归属记录里的该 owner 已回收", __trackedOwnerCount(), 0);
+
+    // ④ 安全护栏:在用 owner / 非本模块 owner 一律拒绝释放(不误杀)。
+    const liveOwner = issueClientSession("cred-live");
+    eq("★ 仍有效的会话拒绝被释放", releaseOwnerResources(liveOwner).reason, "still-valid");
+    eq("★ legacy owner 不归本模块释放", releaseOwnerResources("legacy:cred-a").reason, "not-managed");
+  } finally {
+    try { await call(orphan, "agent_process_stop", { process_id: procId }); } catch { /* 已停 */ }
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+    __resetPublicClientSessions();
+  }
+}
+
 console.log(`\n${passed}/${checks} 通过`);
 if (failures.length > 0) {
   console.log(`\n失败 ${failures.length} 条:`);

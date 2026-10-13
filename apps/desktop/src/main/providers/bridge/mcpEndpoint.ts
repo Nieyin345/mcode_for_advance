@@ -353,7 +353,19 @@ export async function handleMcpRequest(
       // 【MC-089】刚签发可能触发了淘汰(超上限)→ 顺手回收「已被淘汰的会话」留下的孤儿归属,
       // 免得 `syntheticOwners` 只涨不落(独立复核实测 4400 次签发 → 归属 4401 条)。
       // 只清**确定失效**的 pcs_ owner;仍在用 / legacy / 本机 id 保留(见 pruneOrphanedOwners)。
-      pruneOrphanedOwners();
+      const prune = pruneOrphanedOwners();
+      // 【MC-089 留存审计】受控保留的忙 owner 要**显式报出来**(不静默):旧凭据已失效,名下
+      // 还有在途进程/搜索/SSH。运维据这条日志看到「哪条凭据死了,还挂着几个资源」;宿主可对
+      // 这些 owner 调 `releaseOwnerResources` 明确终止。
+      if (prune.keptBusyDetails.length > 0) {
+        log.warn(
+          `public mcp: ${prune.keptBusyDetails.length} orphaned owner(s) kept busy after session eviction ` +
+            `(resources still running) — ` +
+            prune.keptBusyDetails
+              .map((k) => `${k.credentialId ?? "?"}:${k.resources.processes}p/${k.resources.searches}s/${k.resources.ssh}ssh`)
+              .join(", "),
+        );
+      }
     }
     publicScope = {
       credentialId: credential.credentialId,

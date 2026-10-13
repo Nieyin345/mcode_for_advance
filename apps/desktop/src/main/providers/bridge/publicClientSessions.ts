@@ -41,13 +41,14 @@ const issued = new Map<string, IssuedSession>();
 const MAX_ISSUED = 4096;
 
 /**
- * 【MC-089】被淘汰的客户端会话 id —— 淘汰只是把 id 从 {@link issued} 删掉,让它不可再认证;
- * 但它名下**记录过的 owner**(见 {@link syntheticOwners})不会因此消失。若不联动回收,
- * 反复 initialize 会让 `syntheticOwners` 只涨不落(独立复核实测:4400 次签发 → 归属 4401 条,
- * 而最早的身份早已失效)。这里把**刚被淘汰**的 id 记下来,供 {@link pruneOrphanedOwners} 判断
- * 「这个 owner 的会话已失效」。
+ * 【MC-089】被淘汰的客户端会话 id → **它当初绑定到哪条凭据** —— 淘汰只是把 id 从
+ * {@link issued} 删掉,让它不可再认证;但它名下**记录过的 owner**(见 {@link syntheticOwners})
+ * 不会因此消失。若不联动回收,反复 initialize 会让 `syntheticOwners` 只涨不落(独立复核实测:
+ * 4400 次签发 → 归属 4401 条,而最早的身份早已失效)。这里把**刚被淘汰**的 id 连同它的凭据
+ * 记下来,供 {@link pruneOrphanedOwners} 判断「这个 owner 的会话已失效」、并在**留存报告**
+ * 里说清「哪条凭据死了,名下还挂着几个活资源」(Value: Map key 被淘汰的会话 id → credentialId)。
  */
-const evicted = new Set<string>();
+const evicted = new Map<string, string>();
 
 /** 不会做握手的老客户端共用的 owner —— 每个凭据一个,对应 legacy shared-workspace。 */
 export function legacyClientSessionId(credentialId: string): string {
@@ -60,15 +61,16 @@ export function issueClientSession(credentialId: string): string {
   issued.set(id, { credentialId, at: Date.now() });
   if (issued.size > MAX_ISSUED) {
     const oldest = [...issued.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, issued.size - MAX_ISSUED);
-    for (const [key] of oldest) {
+    for (const [key, rec] of oldest) {
       issued.delete(key);
-      // 记下淘汰 —— 归属回收据此判定「这个 owner 的会话已失效」(见 pruneOrphanedOwners)。
-      evicted.add(key);
+      // 记下淘汰(连同它当初的凭据)—— 归属回收据此判定「这个 owner 的会话已失效」,
+      // 留存报告据此说清「哪条凭据死了」(见 pruneOrphanedOwners / MC-089)。
+      evicted.set(key, rec.credentialId);
     }
-    // 淘汰集本身也要有界:被回收后出队的 id 从 evicted 里清掉(见 pruneOrphanedOwners 的 finally);
+    // 淘汰集本身也要有界:被回收后出队的 id 从 evicted 里清掉(见 pruneOrphanedOwners);
     // 这里再兜一个上限,防止「淘汰了但用户一直不回收」把它撑大。
     if (evicted.size > MAX_ISSUED) {
-      const drop = [...evicted].slice(0, evicted.size - MAX_ISSUED);
+      const drop = [...evicted.keys()].slice(0, evicted.size - MAX_ISSUED);
       for (const k of drop) evicted.delete(k);
     }
   }
@@ -120,6 +122,7 @@ export function __resetPublicClientSessions(): void {
   issued.clear();
   syntheticOwners.clear();
   evicted.clear();
+  retentionAudit.length = 0;
 }
 
 /* ─────────────── 合成会话 → 它名下出现过的 owner(删除清理用) ─────────────── */
@@ -208,16 +211,168 @@ function ownerHasInFlightWork(ownerId: string): boolean {
   return false;
 }
 
+/* ─────────────── 【MC-089】在途资源计数 / 安全释放(供留存报告与宿主显式调用) ─────────────── */
+
+/** 一个 owner 名下**活**资源的计数(按资源管理器分)。用于留存报告说清「N 个资源还在跑」。 */
+export interface OwnerResourceCounts {
+  processes: number;
+  searches: number;
+  ssh: number;
+}
+
+/**
+ * **在途资源计数探针** —— 与 {@link registerOwnerWorkProbe} 同一个套路(注册而非 import,
+ * 保持本模块纯净)。区别:探针只回答「有没有」,这个回答「各几个」,供留存报告如实报数。
+ */
+type OwnerResourceCounter = (ownerId: string) => OwnerResourceCounts;
+const resourceCounters = new Set<OwnerResourceCounter>();
+
+/** 登记一个「这个 owner 名下各有多少活资源」的计数探针;返回注销函数。 */
+export function registerOwnerResourceCounter(fn: OwnerResourceCounter): () => void {
+  resourceCounters.add(fn);
+  return () => {
+    resourceCounters.delete(fn);
+  };
+}
+
+/**
+ * 汇总所有计数探针。**无探针 / 探针抛错**都给全 0 —— 这里只用于**报告**(如实报数),
+ * 不参与「留不留下」的判定(那个由保守的 {@link ownerHasInFlightWork} 决定);报告缺数
+ * 不等于「没资源」,所以调用方拿到 0 时应理解为「计数不可得」而非「确无资源」。
+ */
+function ownerResourceCounts(ownerId: string): OwnerResourceCounts {
+  for (const counter of resourceCounters) {
+    try {
+      return counter(ownerId);
+    } catch {
+      break;
+    }
+  }
+  return { processes: 0, searches: 0, ssh: 0 };
+}
+
+/**
+ * **安全释放器** —— 真正去终止/迁移某个 owner 名下资源的钩子(由持有三个资源管理器的
+ * `main/mcp/agentTools.ts` 注册,内部调各管理器的 `disposeOwner`)。
+ *
+ * ⚠️ 本模块只有归属**记录**,没有资源本身(进程/搜索/SSH 都是进程级单例,住在别处)。
+ * 所以「安全释放」= 由注册进来的钩子执行终止,再据此回收本模块的归属记录 —— 这样
+ * 「谁终止资源」只有**一份实现**(资源管理器自己的 `disposeOwner`),不另造第二张注册表。
+ */
+type OwnerResourceReleaser = (ownerId: string) => void;
+const resourceReleasers = new Set<OwnerResourceReleaser>();
+
+/** 登记一个「终止该 owner 名下所有资源」的释放器;返回注销函数。 */
+export function registerOwnerResourceReleaser(fn: OwnerResourceReleaser): () => void {
+  resourceReleasers.add(fn);
+  return () => {
+    resourceReleasers.delete(fn);
+  };
+}
+
+/** {@link releaseOwnerResources} 的结果 —— 如实报出释放了没、为什么、动了几个资源。 */
+export interface OwnerReleaseResult {
+  ownerId: string;
+  released: boolean;
+  /**
+   * `released` 的原因:
+   *  - `"released"` —— 已终止其名下资源并回收归属;
+   *  - `"still-valid"` —— 会话**仍有效**,不是孤儿,拒绝(避免误杀在用 owner);
+   *  - `"not-managed"` —— 非本服务签发的 owner(legacy / 本机会话 id)不归本模块释放;
+   *  - `"no-releaser"` —— 没有已注册的释放器(资源管理器还没接上),不动。
+   */
+  reason: "released" | "still-valid" | "not-managed" | "no-releaser";
+  /** 释放前名下的活资源计数(报告用)。 */
+  resources: OwnerResourceCounts;
+}
+
+/**
+ * **显式释放某个 owner 名下的在途资源**(终止它,并回收其在归属集合里的记录)。
+ *
+ * ## 为什么需要它(MC-089)
+ *
+ * 被淘汰的客户端会话若名下有在途资源,{@link pruneOrphanedOwners} 会**受控保留**其归属
+ * (不静默丢弃)。但「保留」本身不解决资源:那条老对话的凭据可能已被吊销/换掉,资源却还在跑。
+ * 台账要求给出「认证恢复 / 安全迁移或**明确终止**并留审计」的路径 —— 这就是那条**明确终止**
+ * 的入口:宿主(或运维)对一个已知失效的 owner 调它,资源经各自管理器的 `disposeOwner` 一并
+ * 终止,归属记录随之回收。
+ *
+ * ## 安全护栏(只动**确定失效**的孤儿)
+ *
+ *  - 会话**仍有效**(`issued` 里还在)→ 拒绝(`still-valid`),绝不动在用 owner;
+ *  - 非 `pcs_` 前缀(legacy / 本机会话 id)→ 拒绝(`not-managed`),不归本模块生命周期;
+ *  - 没有已注册的释放器 → 拒绝(`no-releaser`),不假装释放了。
+ * 只有「本服务签发过、已淘汰」的孤儿才走终止路径 —— 与 `pruneOrphanedOwners` 的保守判据同源。
+ */
+export function releaseOwnerResources(ownerId: string): OwnerReleaseResult {
+  const resources = ownerResourceCounts(ownerId);
+  if (issued.has(ownerId)) return { ownerId, released: false, reason: "still-valid", resources };
+  if (!ownerId.startsWith("pcs_")) return { ownerId, released: false, reason: "not-managed", resources };
+  if (resourceReleasers.size === 0) return { ownerId, released: false, reason: "no-releaser", resources };
+  for (const releaser of resourceReleasers) {
+    try {
+      releaser(ownerId);
+    } catch {
+      // 释放失败不抛出 —— 归属不回收,下次还能再试(显式,不静默假装成功)。
+      return { ownerId, released: false, reason: "no-releaser", resources };
+    }
+  }
+  // 资源已终止 → 回收归属记录(该 owner 名下所有合成会话里的条目)。
+  for (const owners of syntheticOwners.values()) owners.delete(ownerId);
+  for (const [syntheticId, owners] of [...syntheticOwners]) if (owners.size === 0) syntheticOwners.delete(syntheticId);
+  evicted.delete(ownerId);
+  return { ownerId, released: true, reason: "released", resources };
+}
+
+/* ─────────────── 【MC-089】留存审计(谁能看到「旧凭据死了,还挂着活资源」) ─────────────── */
+
+/**
+ * 一次淘汰时**受控保留的忙 owner**记录 —— 留存报告/审计的原子。
+ *
+ * 台账要的是「让运维看得见:这条凭据死了,N 个资源还在它名下跑」。owner id 是随机 uuid,
+ * 单看没信息量;配上**它当初的凭据**与**活资源计数**才是一份能给运维读、也能被断言核对的记录。
+ */
+export interface KeptBusyOwner {
+  ownerId: string;
+  /** 这个 owner 的客户端会话当初绑定到哪条凭据(吊销/到期时凭此知道"哪条链接死了");未知为 `null`。 */
+  credentialId: string | null;
+  /** 名下还在跑的活资源计数。 */
+  resources: OwnerResourceCounts;
+}
+
+/** 一次淘汰留存事件的审计记录(有界环形)。 */
+export interface RetentionAuditEvent {
+  at: number;
+  /** 这次因有在途资源而**受控保留**的孤儿 owner(带凭据与资源计数)。 */
+  keptBusy: KeptBusyOwner[];
+  /** 这次因确定失效且空闲而回收的 owner 数。 */
+  prunedCount: number;
+}
+
+const MAX_AUDIT_EVENTS = 64;
+const retentionAudit: RetentionAuditEvent[] = [];
+
+/** 诊断 / 运维读:最近的淘汰留存审计(最早的在前,最多 {@link MAX_AUDIT_EVENTS} 条)。 */
+export function retentionAuditLog(): readonly RetentionAuditEvent[] {
+  return retentionAudit;
+}
+
 /** 一次归属回收的结果 —— 如实报出收回了哪些、保留了哪些(不静默)。 */
 export interface OwnerPruneReport {
   /** 被回收的 owner:会话**已被淘汰**且**名下无在途资源**,归属记录可以清。 */
   pruned: string[];
   /**
-   * **受控保留**的孤儿 owner:会话已被淘汰,但**名下还有在途资源**(运行的进程 / 搜索 /
-   * SSH)—— 台账要求「仍有任务的 owner 受控保留」,这里不动它。等资源自己结束(下次
-   * prune 再收)、或用户删合成会话时由 `ownersForSession` 统一释放。
+   * **受控保留**的孤儿 owner(仅 id,便于既有断言):会话已被淘汰,但**名下还有在途资源**
+   * (运行的进程 / 搜索 / SSH)—— 台账要求「仍有任务的 owner 受控保留」,这里不动它。
+   * 等资源自己结束(下次 prune 再收)、或宿主显式 {@link releaseOwnerResources} 终止、
+   * 或用户删合成会话时由 `ownersForSession` 统一释放。
    */
   keptBusy: string[];
+  /**
+   * {@link keptBusy} 的**明细**(带凭据与活资源计数)—— 留存报告正文:运维据它看到
+   * 「哪条凭据死了,名下还挂着几个进程/搜索/SSH」。
+   */
+  keptBusyDetails: KeptBusyOwner[];
   /** **因不归本模块管而保留**的 owner:legacy(`legacy:<credentialId>`)或本机会话 id。 */
   keptLegacy: string[];
   /** 仍在用的 owner 数(会话仍有效)—— 保留,不动。 */
@@ -252,7 +407,7 @@ export interface OwnerPruneReport {
  */
 export function pruneOrphanedOwners(): OwnerPruneReport {
   const pruned: string[] = [];
-  const keptBusy: string[] = [];
+  const keptBusySet = new Set<string>();
   const keptLegacy: string[] = [];
   let retained = 0;
   for (const [syntheticId, owners] of syntheticOwners) {
@@ -263,7 +418,7 @@ export function pruneOrphanedOwners(): OwnerPruneReport {
       if (!owner.startsWith("pcs_")) { keptLegacy.push(owner); continue; }
       // 本服务签发过(pcs_ 前缀)、但已不在 issued 里 = 已被淘汰。
       // 【MC-089 在途资源】名下还有活资源(进程/搜索/SSH)→ 受控保留,不回收归属。
-      if (ownerHasInFlightWork(owner)) { keptBusy.push(owner); continue; }
+      if (ownerHasInFlightWork(owner)) { keptBusySet.add(owner); continue; }
       // 已被淘汰且空闲 → 回收。
       owners.delete(owner);
       pruned.push(owner);
@@ -271,7 +426,20 @@ export function pruneOrphanedOwners(): OwnerPruneReport {
     }
     if (owners.size === 0) syntheticOwners.delete(syntheticId);
   }
-  return { pruned, keptBusy, keptLegacy, retained };
+  // 【MC-089 留存审计】把这次受控保留的忙 owner 记成可读记录:带上「它当初的凭据」与
+  // 「名下几个活资源」,运维据此看到「这条凭据死了,N 个资源还在跑」(owner id 是随机 uuid,
+  // 单看没信息量)。空报告不记,免得审计被无意义事件刷屏。
+  const keptBusy = [...keptBusySet];
+  const keptBusyDetails: KeptBusyOwner[] = keptBusy.map((ownerId) => ({
+    ownerId,
+    credentialId: evicted.get(ownerId) ?? null,
+    resources: ownerResourceCounts(ownerId),
+  }));
+  if (keptBusy.length > 0 || pruned.length > 0) {
+    retentionAudit.push({ at: Date.now(), keptBusy: keptBusyDetails, prunedCount: pruned.length });
+    if (retentionAudit.length > MAX_AUDIT_EVENTS) retentionAudit.splice(0, retentionAudit.length - MAX_AUDIT_EVENTS);
+  }
+  return { pruned, keptBusy, keptBusyDetails, keptLegacy, retained };
 }
 
 /** 诊断 / 断言用:当前归属集合里 owner 的总数(去重前)。 */

@@ -79,7 +79,7 @@ import { readEnvSnapshot } from "@main/providers/envPrompt.js";
 import type { LibraryForAi, SandboxReadCheck, SandboxReadKind } from "./sandboxReadPolicy.js";
 import { PUBLIC_SCOPE_UNAVAILABLE } from "@contracts/publicMcpScope";
 import { ownersForSession, forgetSyntheticSession } from "@main/providers/bridge/publicClientSessions.js";
-import { registerOwnerWorkProbe } from "@main/providers/bridge/publicClientSessions.js";
+import { registerOwnerWorkProbe, registerOwnerResourceCounter, registerOwnerResourceReleaser } from "@main/providers/bridge/publicClientSessions.js";
 import { fail, image, text, type McpToolContext, type McpToolSpec } from "./sdk.js";
 import { structured as structuredResult } from "./sdk.js";
 import {
@@ -1209,15 +1209,32 @@ registerAgentSessionDisposer((sessionId) => {
 registerAgentShutdownHook(() => agentProcesses.disposeAll());
 // 【MC-089 在途资源】归属回收前问一句「这个 owner 名下还有活资源吗」——
 // 客户端会话被淘汰后,它的 owner 若还在跑进程/搜索/连着 SSH,**不能**当孤儿清掉归属
-// (台账「仍有任务的 owner 受控保留」)。只读探针(只 list,不 dispose)。
-registerOwnerWorkProbe((owner) => {
-  const hasLiveProcess = agentProcesses.list(owner).some((p) => p.status === "running");
-  if (hasLiveProcess) return true;
-  const hasLiveSearch = agentSearches.list(owner).some((s) => s.status === "running");
-  if (hasLiveSearch) return true;
-  // SSH:存在任一尚未主动关闭的连接即视为在途(连接带 keepalive + 自动重连,不能靠收归属
-  // 让它消失;远端 tmux/nohup 任务也按设计继续跑)。
-  return agentRemoteSsh.list(owner).some((c) => c.state !== "closed");
+// (台账「仍有任务的 owner 受控保留」)。这里把「活资源」的判据、计数、终止三件事**共用同
+// 一句谓词/同一批管理器**:探针只回答有没有、计数只回答各几个、释放器真去 `disposeOwner` ——
+// 一份实现,不另造第二张注册表(纯模块 publicClientSessions.ts 不 import electron/db/ssh2)。
+/** 该 owner 名下各有多少**活**资源(进程/搜索/SSH)—— 判定「有没有」与「有几个」同源。 */
+function liveResourcesOf(owner: string): { processes: number; searches: number; ssh: number } {
+  return {
+    processes: agentProcesses.list(owner).filter((p) => p.status === "running").length,
+    searches: agentSearches.list(owner).filter((s) => s.status === "running").length,
+    // SSH:存在任一尚未主动关闭的连接即视为在途(连接带 keepalive + 自动重连,不能靠收归属
+    // 让它消失;远端 tmux/nohup 任务也按设计继续跑)。
+    ssh: agentRemoteSsh.list(owner).filter((c) => c.state !== "closed").length,
+  };
+}
+const hasLiveResources = (owner: string): boolean => {
+  const r = liveResourcesOf(owner);
+  return r.processes > 0 || r.searches > 0 || r.ssh > 0;
+};
+registerOwnerWorkProbe(hasLiveResources);
+// 【MC-089 留存报告】同一个判据的**计数**版:淘汰时如实报「这条凭据名下还挂着几个资源」。
+registerOwnerResourceCounter(liveResourcesOf);
+// 【MC-089 安全释放】宿主显式终止某个已失效 owner 的在途资源 —— 直接复用它名下资源的
+// 管理器 `disposeOwner`(与删会话走**同一个**释放实现),不另起一条终止路径。
+registerOwnerResourceReleaser((owner) => {
+  agentProcesses.disposeOwner(owner);
+  agentSearches.disposeOwner(owner);
+  agentRemoteSsh.disposeOwner(owner);
 });
 
 export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
