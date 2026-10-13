@@ -7,6 +7,14 @@ import { getEffectiveTheme, getThemeStylePreference } from "@main/lib/theme.js";
 import { log } from "@main/lib/logger.js";
 import { logStartup } from "@main/lib/startupTimer.js";
 import { IPC } from "@contracts/ipc";
+import { flushPendingSettingNotifications, setSettingNotifyPort } from "@main/customUi/settingSync.js";
+
+// 【ARC-009】把发件端口装给 settingSync —— 它需要「窗口此刻能不能收」+「发一条」,但不能
+// import 本文件(会循环)。改由这里注入:`sendToRenderer` / `hasLiveRendererWindow` 就在本模块。
+setSettingNotifyPort({
+  hasLiveRenderer: hasLiveRendererWindow,
+  send: (channel, payload) => sendToRenderer(channel, payload),
+});
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -152,6 +160,15 @@ export function createMainWindow(): BrowserWindow {
   mainWindow.on("ready-to-show", () => {
     logStartup("ready-to-show");
     mainWindow?.show();
+  });
+
+  // 【ARC-009】窗口在 Agent 写设置那一刻还不存在时,刷新通知被攒下(见
+  // `customUi/settingSync.ts`)。等渲染端**真的加载完**(`did-finish-load` 保证渲染端 JS
+  // 已跑、`setting.changed` 的订阅已挂上)再补发 —— 用 `ready-to-show` 太早:那时只保证
+  // "能画了",渲染端 store 未必订阅好。多窗口(主窗口被替换)时每条新窗口都补发一次;
+  // 队列是**有界**的、键去重的,重复补发不放大。
+  mainWindow.webContents.on("did-finish-load", () => {
+    flushPendingSettingNotifications();
   });
 
   // Forward window focus/blur to the renderer so it can make notification
