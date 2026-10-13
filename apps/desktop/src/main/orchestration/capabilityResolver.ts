@@ -52,15 +52,33 @@ export function pluginCapabilityDescriptors(
   pluginName: string,
   declarations: readonly PluginCapabilityDeclaration[],
 ): CapabilityDescriptor[] {
-  return declarations.map((declaration) => ({
-    kind: declaration.kind,
-    id: declaration.id,
-    source: `plugin:${pluginName}`,
-    capabilities: declaration.capabilities,
-    nodeTypes: declaration.nodeTypes,
-    runnerKinds: declaration.runnerKinds as NodeRunnerKind[] | undefined,
-    providers: declaration.providers,
-  }));
+  // 【MC-099】**只收插件真正能贡献的 kind**。`builtin`(宿主内置模块能力)与 `executor`
+  // (Executor Registry 里注册的执行器)是**宿主自己的领地** —— 一份插件清单**声明**
+  // `kind:"builtin", id:"nonexistent.host.action"` 并不代表它真的存在,而
+  // `pluginCapabilityDescriptors` 从前**无条件**把它转成"可用"descriptor,于是场景能力
+  // 预检会把这句自报当成事实(实测:只声明、没有任何执行器 → `resolveCapabilities.ok`
+  // 从 false 变 true)。宿主侧那两个来源(`hostCapabilityDescriptors` /
+  // `executorCapabilityDescriptors`)才是这两类能力的**唯一权威**;插件声明的这里一律丢弃
+  // —— 丢弃会在 `collectCapabilityInventory` 的调用方日志里显式报出(不静默)。
+  const PLUGIN_CONTRIBUTABLE_KINDS = new Set<CapabilityDescriptor["kind"]>(["skill", "mcp", "plugin", "provider"]);
+  return declarations
+    .filter((declaration) => PLUGIN_CONTRIBUTABLE_KINDS.has(declaration.kind))
+    .map((declaration) => ({
+      kind: declaration.kind,
+      id: declaration.id,
+      source: `plugin:${pluginName}`,
+      capabilities: declaration.capabilities,
+      nodeTypes: declaration.nodeTypes,
+      runnerKinds: declaration.runnerKinds as NodeRunnerKind[] | undefined,
+      providers: declaration.providers,
+    }));
+}
+
+/** 【MC-099】一份插件清单里**被拒绝的**宿主领地能力声明(诊断 / 面板用)。 */
+export function rejectedPluginHostCapabilities(
+  declarations: readonly PluginCapabilityDeclaration[],
+): PluginCapabilityDeclaration[] {
+  return declarations.filter((d) => d.kind === "builtin" || d.kind === "executor");
 }
 
 /** 【ARC-003】逐组件交付报告 → **组件级可用性标签**。

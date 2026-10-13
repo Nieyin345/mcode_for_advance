@@ -21,6 +21,7 @@ import {
   collectCapabilityInventory,
   executorCapabilityDescriptors,
   pluginCapabilityDescriptors,
+  rejectedPluginHostCapabilities,
   providerIdsForWorkflowPreflight,
   requirementsForNode,
 } from "../../src/main/orchestration/capabilityResolver.js";
@@ -124,6 +125,7 @@ if (!pluginManifestCheck.success) throw new Error("unreachable");
 const pluginDescs = pluginCapabilityDescriptors("research-pack", pluginManifestCheck.data.capabilities ?? []);
 ok(pluginDescs.length === 2, "plugin declarations become descriptors");
 ok(pluginDescs.every((d) => d.source === "plugin:research-pack"), "plugin descriptors carry their origin");
+
 
 const claudeProvider = {
   id: "claude-sdk",
@@ -493,6 +495,47 @@ ok(
     "pi-sdk": piSrc,
     "codex-sdk": codexSrc,
   };
+
+/* 【MC-099】插件**自报宿主领地能力**不得变成「可用」descriptor —— 声明 ≠ 事实。
+ * `builtin`(宿主内置模块能力)与 `executor`(Executor Registry 里的执行器)只有宿主自己的
+ * 两个来源才是权威。这里声明一个**根本不存在**的 builtin,断言它被拒;而 skill/mcp 照收
+ * (证明拦的是"别人管的 kind",不是"什么都拦")。
+ *
+ * 为什么承重:独立复审实测 —— 只声明 `{kind:"builtin", id:"nonexistent.host.action"}` 后,
+ * `resolveCapabilities` 对「要 nonexistent.host.action」的需求从 `ok:false` **变 true**,尽管
+ * 宿主**没有任何执行器**加载它。声明假阳性绝不能被读成"已获得该能力"。 */
+{
+  const spoofManifest = PluginManifestSchema.safeParse({
+    name: "fictional-ext",
+    version: "1.0.0",
+    capabilities: [
+      { kind: "builtin", id: "nonexistent.host.action" },
+      { kind: "executor", id: "code" },
+      { kind: "skill", id: "legit-skill" },
+    ],
+  });
+  ok(spoofManifest.success, "MC-099:含宿主领地声明的 manifest 仍能**解析**(schema 不拒)");
+  if (spoofManifest.success) {
+    const descs = pluginCapabilityDescriptors("fictional-ext", spoofManifest.data.capabilities ?? []);
+    const ids = descs.map((d) => `${d.kind}:${d.id}`);
+    ok(!ids.includes("builtin:nonexistent.host.action"), "★ MC-099:插件声明的 builtin 不被转成可用 descriptor");
+    ok(!ids.includes("executor:code"), "★ MC-099:插件声明的 executor 不被转成可用 descriptor");
+    ok(ids.includes("skill:legit-skill"), "MC-099:插件能贡献的 kind(skill)照常收(不是「什么都拦」)");
+    const rejected = rejectedPluginHostCapabilities(spoofManifest.data.capabilities ?? []);
+    ok(rejected.length === 2 && rejected.some((r) => r.id === "nonexistent.host.action"), "MC-099:被拒的宿主领地声明可被显式报出(不静默丢)");
+    // ★ 端到端:注入到 inventory 后,对那个不存在能力的**需求**照样判缺(不因自报而通过)。
+    const spoofInv = collectCapabilityInventory({
+      providers: [claudeProvider],
+      plugins: [{ name: "fictional-ext", manifest: spoofManifest.data }],
+    });
+    const needPhantom = checkNodeCapabilities(
+      { id: "mcode.main", runner: { kind: "prompt" } } as never,
+      [{ kind: "builtin", id: "nonexistent.host.action" }],
+      spoofInv,
+    );
+    ok(!needPhantom.ok, "★ MC-099:仅靠插件的自报声明,对不存在能力的需求仍判缺(fail-closed 不通过)");
+  }
+}
   // 能力 id → 适配器里那个布尔旗标在 capability 块里的字面名。
   const flagName: Record<string, string> = {
     approval: "supportsApproval",
