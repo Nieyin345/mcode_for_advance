@@ -12,6 +12,7 @@ import {
   type CapabilityRequirement,
   providerCapabilityIds,
 } from "@contracts/capability";
+import { semanticsCapabilityIds } from "@contracts/providerSemantics";
 import { injectTargetOf, isModelDecider, mcpServerNamesOf, pluginNamesOf, providerIdOf, skillNamesOf, type NodeTypeManifest, type NodeRunnerKind } from "@contracts/nodeType";
 import type { WorkflowNode } from "@contracts/workflow";
 import type { AgentProvider } from "@contracts/provider";
@@ -23,15 +24,25 @@ export interface NodeCapabilityCheckContext {
   providerId?: string;
 }
 
-/** provider 的能力清单 → 一份 provider descriptor。优先用显式的
- *  `capabilityIds`(清单化声明),没有则从旧布尔旗标推导 —— 三个内置引擎
- *  (claude / pi / codex)不用改一行代码就能参与能力检查。 */
+/** provider 的能力清单 → 一份 provider descriptor。
+ *
+ * 【ARC-008】优先读**语义矩阵** `@contracts/providerSemantics` —— 那是「谁支持什么、
+ * 失败是什么码」的唯一可核对事实,由 smoke 逐格与三适配器源码对账。矩阵里没有这家引擎
+ * (第三方自定义引擎)时,回退到适配器自报的 `capabilityIds`,再回退到布尔旗标推导
+ * (`providerCapabilityIds`)。三个内置引擎在矩阵里有条目、投影结果与旗标推导**一致**
+ * (见 `capability-smoke` 的逐格对账);矩阵是权威,后两者是兜底。
+ *
+ * 从前这里只读 `capabilityIds ?? providerCapabilityIds(...)` —— **矩阵那份事实没有
+ * 任何生产调用方**,于是「引擎支持什么」实际由界面各自的布尔旗标决定。现在预检这条
+ * 路真的消费矩阵:矩阵说 Pi 不支持 MCP,预检就把「选了 Pi 又要挂 MCP」判成缺能力
+ * (需求侧见 `requirementsForNode` 的 `capabilities:["mcp"]`)。 */
 export function providerCapabilityDescriptor(provider: AgentProvider): CapabilityDescriptor {
+  const fromMatrix = semanticsCapabilityIds(provider.id);
   return {
     kind: "provider",
     id: provider.id,
     source: provider.displayName,
-    capabilities: provider.capabilities.capabilityIds ?? providerCapabilityIds(provider.capabilities),
+    capabilities: fromMatrix ?? provider.capabilities.capabilityIds ?? providerCapabilityIds(provider.capabilities),
   };
 }
 
