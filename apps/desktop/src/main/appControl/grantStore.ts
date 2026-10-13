@@ -17,6 +17,9 @@
  *    (那是 ARC-004 明令禁止的假授权:空 `scopedCore`、可写任意资源、无过期)。
  * 3. **无效即查不出。** 撤销过的 / 过期了的 / 不存在的 grant,`get` / `findFor` **一律返回 null**;
  *    调用方(执行点)因此只会拿到有效授权,或拿不到(→ 回到「重新批准」)。
+ *    ★ **唯一的例外是 `findBoundFor`**:它专门把「绑定的那枚授权(含失效态)」交回给
+ *    `evaluate` 判 —— 否则 `evaluate` 的三条 deny 分支(撤销 / 过期 / 非用户)会成死代码。
+ *    想要「只给我有效授权」的调用方仍用 `get` / `findFor`。
  *
  * ⚠️ 本模块**不接最终执行点**,也不做持久化落盘 —— 那是后续切片。这里只交付可无头测的持有核
  * 与签发口,让步③(执行点迁移)有东西可拿。
@@ -164,6 +167,36 @@ export class GrantStore {
       return g;
     }
     return null;
+  }
+
+  /**
+   * 按**资源身份 + 动作**找**绑定的那枚授权**(不管死活),交回给调用方(执行点)自己去判。
+   *
+   * ## 为什么需要它(而不是直接用 `findFor`)
+   *
+   * `findFor` 只回**仍有效**的授权 —— 已撤销 / 已过期 / 非用户签发的授权会被它**藏成 `null`**。
+   * 执行点若拿 `findFor` 的结果去喂 `evaluate`,`evaluate` 里那三条 deny 分支(撤销 / 过期 /
+   * 来源非用户)**永远不可达**:要么拿到有效授权放行、要么拿到 null 走「重新批准」——
+   * 「硬拒绝」成了死代码,**变异也变不红**(这就是「接上了却没用」的假接线)。
+   *
+   * 要让它真承重,执行点必须能拿到**治理该动作的原始授权(含失效态)**,再交给 `evaluate`
+   * 判。本方法就是那把「不管死活的取回口」:返回第一份 ① `allowedActions` 含 `intent.method`、
+   * ② 核心意图未被 `intent.core` 改动(`invalidationsFor` 为空)的授权 —— **有效且用户签发者
+   * 优先**,否则退回**第一个匹配的失效 / 非用户授权**;一个都匹配不到才 `null`。
+   *
+   * 于是 `evaluate(intent, store.findBoundFor(intent, now), ctx)` 能走到**全部** deny 分支。
+   */
+  findBoundFor(intent: ActionIntent, now: number): Grant | null {
+    let fallback: Grant | null = null;
+    for (const g of this.grants.values()) {
+      if (!g.allowedActions.includes(intent.method)) continue;
+      if (invalidationsFor(intent.core, g.scopedCore).length > 0) continue;
+      // ① 仍有效 **且** 用户签发 = 最优,直接回。
+      if (g.approvalSource.kind === "user" && isGrantActive(g, now)) return g;
+      // ② 否则记住第一份匹配的(已撤销 / 已过期 / 非用户签发),作为退路 —— 让 evaluate 去判它。
+      if (fallback === null) fallback = g;
+    }
+    return fallback;
   }
 
   /**

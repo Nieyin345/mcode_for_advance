@@ -65,6 +65,9 @@ import {
 } from "./operations.js";
 import { computePanelCaptureRect } from "./panelCaptureRect.js";
 import { DOMAIN_LABELS, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
+import { evaluate } from "./policyEngine.js";
+import { getGrantStore } from "./grantStoreRuntime.js";
+import type { ActionIntent, PolicyCompatibilityLevel } from "@contracts/policyEngine";
 import { registeredRpcChannels, rpcHandlerFor } from "./registry.js";
 import { redactValue, renderResult, slimSessions } from "./redact.js";
 import { runUiCommand } from "./uiBridge.js";
@@ -1525,6 +1528,107 @@ function replayRevokedReason(
 }
 
 /**
+ * 【ARC-004 步③】`app_api_call` **执行动作之前**的计划级授权预判 —— 把唯一判定核
+ * `policyEngine.evaluate` 接到真实执行点上。
+ *
+ * ## 它补的是哪条洞(源码可确认)
+ *
+ * 步①②④ 交付了判定核 `evaluate`、持有核 `GrantStore`、启动装配 `getGrantStore()`,但
+ * **没有任何执行点调用过 `evaluate`** —— 判定核是**只声明不兑现**的死代码。本函数是第一个
+ * 生产调用点:动作真正跑之前,先看它有没有落在一份受限授权里。
+ *
+ * ## 为什么用 `findBoundFor` 而不是 `findFor`(本步最关键的取舍)
+ *
+ * `findFor` 只回**仍有效**的授权 —— 撤销 / 过期 / 非用户签发的会被它**藏成 `null`**。若这里写
+ * `evaluate(intent, store.findFor(intent, now), ctx)`,`evaluate` 的三条 deny 分支(撤销 / 过期 /
+ * 来源非用户)**永远不可达**:要么拿到有效授权放行、要么拿 null 去「重新批准」—— 硬拒绝成了
+ * 死代码,**变异也变不红**。故这里用 `findBoundFor`:它把**治理该动作的那枚原始授权(含失效态)**
+ * 交出来,`evaluate` 才真去判它死活。
+ *
+ * ## 判定守卫(为什么不是「一律拒」)
+ *
+ * 真实执行点**已经**有 `gateAppAction` 在管每一次调用的审批。本预判**只在真的存在一枚绑定授权
+ * 时**才施加:**有绑定授权 → 必须 `evaluate` 判 `allow` 才继续**;任何非 `allow` 都不执行、如实报
+ * 拒绝原因。理由是:一枚绑定授权意味着「这个动作本就是要在它之下跑的」,它说 `deny`(撤销 / 过期 /
+ * 非用户签发)或 `require-approval`(超次数 / 超预算 / 核心意图被换)都是「在这个计划下**不准**」。
+ * 而**没有**绑定授权时(`findBoundFor` 为 null)→ 一律放行给 `gateAppAction`:app_api_call 的默认
+ * 路径就是「无 grant、按方法分级 + 每次审批」,不能因为「没授权」把整套功能全拒了。
+ *
+ * ## 三种结果怎么落(与 evaluate 的 verdict 一一对应)
+ *
+ *   - `bound === null`(没有授权管这个动作)→ 放行,走 `gateAppAction` 既有审批链;
+ *   - `bound !== null` 且 `allow`(在有效授权内)→ 放行,执行后按命中的 grant 记一次账;
+ *   - `bound !== null` 且 `deny` / `require-approval`(撤销 / 过期 / 非用户 / 超次数 / 超预算 / 核心
+ *     意图被换)→ **不执行**,返回拒绝原因。这样 `evaluate` 的每一条非 allow 分支(含最容易成死代码
+ *     的三条 deny)都真的承重、可被变异测红。
+ *
+ * ⚠️ 这是**第一个执行点**的谨慎接线(ARC-004 明说后续切片才逐个迁)。真正的「计划级授权覆盖整个
+ * 计划、根本不再单次弹卡」需要签发端 + 请求身份带 grantId 的端到端,仍属后续切片。
+ *
+ * @returns 放行 `null`;被硬拒绝时返回拒绝原因(原样给模型),执行点据此**不执行**。
+ */
+function planGrantPrecheck(
+  entry: ApiEntry,
+  args: unknown,
+  sessionId: string,
+): string | null {
+  const store = getGrantStore();
+  const input = (args as { input?: unknown }).input ?? null;
+  // 核心意图:宿主按动作解析出的**权威资源身份**。app_api_call 走的是方法与参数,尚无
+  // 宿主解析出的 projectPath / mcp / gitRemote / sshHostKey / deleteScope —— 故这里用
+  // **请求指纹**(会话 + 方法 + 规范化参数摘要)承载「资源身份」:换会话 / 换方法 / 换参数
+  // = 换了资源 = 该绑另一枚授权 —— 这正是 findBoundFor 按「资源身份 + 动作」匹配的那件事。
+  const core: ActionIntent["core"] = { sshHostKey: appApiBindingId(sessionId, entry.method, input) };
+  const intent: ActionIntent = { method: entry.method, core };
+  const now = Date.now();
+  const bound = store.findBoundFor(intent, now);
+  // 没有绑定授权 → 不是授权下的动作,放行给 gateAppAction 的既有审批链(默认路径)。
+  if (!bound) return null;
+  const decision = evaluate(intent, bound, {
+    now,
+    requester: { kind: "agent", id: sessionId },
+    approver: { kind: "user", id: "app_api_call" },
+    compatibilityLevel: entry.policy.level as PolicyCompatibilityLevel,
+  });
+  if (decision.verdict === "allow") return null;
+  // 有绑定授权、但它说 deny / require-approval → 在这个计划下**不准**,不执行。
+  return `${decision.reason}(绑定授权 ${bound.grantId}:方法 ${entry.method})`;
+}
+
+/**
+ * 已执行的授权动作,把这次使用记回绑定的那枚授权(`usedCount` / `budgetUsed`)。
+ *
+ * 判据与预判同源:`findBoundFor` 拿到的那枚 grant(若它此刻仍有效)才记账;`recordUse` 自身对
+ * 撤销 / 过期会抛,故只在 `isGrantActive`(由 store 内建)成立时才调 —— 记不到就静默跳过,不影响
+ * 已经落定的执行结果(记账是**事后**的,不该反过来把成功报成失败)。没有绑定授权 = 不是授权下
+ * 的动作 = 不记账。
+ */
+function recordPlanGrantUse(entry: ApiEntry, args: unknown, sessionId: string): void {
+  const store = getGrantStore();
+  const input = (args as { input?: unknown }).input ?? null;
+  const core: ActionIntent["core"] = { sshHostKey: appApiBindingId(sessionId, entry.method, input) };
+  const bound = store.findBoundFor({ method: entry.method, core }, Date.now());
+  if (!bound) return;
+  try {
+    store.recordUse(bound.grantId, 0, Date.now());
+  } catch {
+    // 撤销 / 过期后不再记账(recordUse 的口径)—— 静默跳过,不把一个已成功的执行翻成失败。
+  }
+}
+
+/**
+ * `app_api_call` 的**授权绑定身份** —— 会话 + 方法 + 规范化参数摘要。同一件事(同会话 / 同
+ * 方法 / 同参数)恒得同一 id;换其一即换身份(该绑另一枚授权)。用 `|` 分隔,避免摘要嵌 NUL
+ * 在展示里看不见。
+ *
+ * **导出是为了让断言与生产共用同一份身份格式**(硬规矩 2:共享实现只有一份)—— 测试据此
+ * 造出与该动作真正绑定的那枚授权,不另抄一份格式字符串。
+ */
+export function appApiBindingId(sessionId: string, method: string, input: unknown): string {
+  return `app_api_call|${sessionId}|${method}|${requestDigestOf(input)}`;
+}
+
+/**
  * 唯一入口。引擎侧(Claude 进程内 MCP / Codex 动态工具 / Pi 扩展)都调它。
  */
 export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {
@@ -1657,6 +1761,23 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           }
         }
 
+        // ── 【ARC-004 步③】计划级授权预判:动作执行**之前**,先按绑定的受限授权判死活 ──
+        // 提在 `gateAppAction` **之前**:一枚被撤销 / 过期 / 非用户的绑定授权 = 这个计划已明说
+        // 「不准」,连审批都不该弹(硬拒绝,不问用户)。⚠️ **danger 除外** —— 高风险动作本来就
+        // 「每次都要用户本人批、受限授权不能替代」(见 policyEngine 的 danger 分支),故仍走既有
+        // 审批卡,不被这里的计划预判改道。
+        if (entry.policy.level !== "danger") {
+          const grantDenied = planGrantPrecheck(entry, args, sessionId);
+          if (grantDenied) {
+            const op = makeOp("REJECTED", entry.method, operationId, {
+              code: OP_CODE.policyDenied,
+              reason: grantDenied,
+            });
+            settle(op.resultKind, op);
+            return operationToolResult(op);
+          }
+        }
+
         // 领到了(或没带幂等键)→ 现在执行。此后**每一条 return 前都要 settle**(仅在带键时),
         // 否则这条 id 会永远停在 CLAIMED,同 id 之后永远只能看到"在途"。
         const denied = await gateAppAction(
@@ -1717,6 +1838,11 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           settle(op.resultKind, op);
           return operationToolResult(op);
         }
+
+        // ── 【ARC-004 步③】动作真的执行了 → 给绑定的那枚授权记一次账(usedCount / budgetUsed)──
+        // 记账记的是「真的用掉了」,不是「打算用」—— 故放在成功执行之后。没有绑定授权 = 不是授权下
+        // 的动作 → 不记账(recordPlanGrantUse 内部判)。
+        recordPlanGrantUse(entry, args, sessionId);
 
         // ── 领域结果解码(MC-066):RPC resolve ≠ 业务成功 ───────────────────
         // 不同 IPC 的合法返回有 void / 数据对象 / {ok:true|false} / 判别联合等多种语义。

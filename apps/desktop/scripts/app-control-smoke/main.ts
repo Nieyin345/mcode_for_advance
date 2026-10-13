@@ -20,7 +20,10 @@ import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
 import { DOMAIN_LABELS, policyFor } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
-import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog } from "@main/appControl/tools.js";
+import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog, appApiBindingId } from "@main/appControl/tools.js";
+import { GrantStore, type GrantDecision } from "@main/appControl/grantStore.js";
+import { setGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import type { ActorRef } from "@contracts/policyEngine";
 import { isEnvelopeMethod } from "@main/appControl/commandOutcome.js";
 import { setOperationLedger, type OperationLedger } from "@main/appControl/operations.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
@@ -826,6 +829,144 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   check("★ MC-084:带 claim_not_durable 稳定短码(区别于普通拒绝)", op?.code === "claim_not_durable", op);
   check("★ MC-084:可安全重试(retryable=true)", op?.retryable === true, op?.retryable);
   __clearOperationLog();
+}
+
+/* ── 3c-ter. 【ARC-004 步③】执行点接到判定口:app_api_call 之前的计划级授权预判 ──────────
+ *
+ * 步①②④ 交付了判定核 `evaluate` 与持有核 `GrantStore`,但**没有任何执行点调用过 `evaluate`**
+ * —— 判定核是只声明不兑现的死代码。本切片把 `app_api_call` 的执行**之前**接上预判:
+ *   ① 有绑定授权且有效 → 放行并**记账**(usedCount +1);
+ *   ② ★承重:绑定的那枚授权**已撤销** → 不执行、如实报拒绝(命中 evaluate 的 deny 分支);
+ *   ③ ★承重:绑定的那枚授权**已过期** → 不执行、报拒绝(命中 evaluate 的过期 deny 分支);
+ *   ④ ★承重:授权**来源非用户**(agent 自铸)→ 不执行、报拒绝(命中 evaluate 的来源分支);
+ *   ⑤ ★承重:超**次数上限** → 不执行(命中 evaluate 的 maxCount 分支);
+ *   ⑥ 正控:**没有**绑定授权 → 照常走 gateAppAction(默认路径不被掐死);
+ *   ⑦ 正控:授权下执行**成功一次**,绑定授权的 usedCount 真的 +1(记账口真的接到执行上)。
+ *
+ * ⚠️ **陷阱(上一条车道勘察出)**:若预判写成 `evaluate(intent, store.findFor(intent, now), …)`,
+ * `findFor` 会把失效授权藏成 `null` → evaluate 的三条 deny 分支**永远不可达**、变异也变不红。
+ * 故执行点改用 `findBoundFor`(交出绑定的原始授权含失效态)。下面 ②③④ 就是用来证明它**不是**
+ * 假接线的:把 `findBoundFor` 换回 `findFor`,这三条立刻真红。 */
+{
+  const USER: ActorRef = { kind: "user", id: "u1" };
+  // 用**生产同一份**绑定身份格式造授权 —— 不另抄一份格式字符串。
+  const decideFor = (
+    session: string,
+    method: string,
+    input: unknown,
+    over: Partial<GrantDecision> = {},
+  ): GrantDecision => ({
+    verdict: "allow",
+    reason: "用户批准了这个计划。",
+    compatibilityLevel: "write",
+    sceneId: "scene-1",
+    allowedActions: [method],
+    scopedCore: { sshHostKey: appApiBindingId(session, method, input) },
+    configHash: "cfg-1",
+    ttlMs: 3_600_000,
+    ...over,
+  });
+  // 每次用**全新的内存 store** 当单例,避免用例间串味。
+  const freshStore = (): GrantStore => { const s = new GrantStore({ newId: (n) => `g${n}` }); setGrantStore(s); return s; };
+
+  // 自有执行计数:本段**不**依赖先前那段 fakes 的 `calls` map(它自己的 handler 不喂它),
+  // 免得把「本段 handler 没记数」误当成「没执行」。
+  let renameRuns = 0;
+  recordRpcHandler("session:rename", async (_e, raw) => { renameRuns += 1; return { session: { id: "s9", title: (raw as { title?: string }).title } }; });
+
+  // ① 授权下有效动作:放行 + 执行 + 记账(usedCount 从 0 → 1)。
+  {
+    const store = freshStore();
+    const input = { id: "s9", title: "n1" };
+    const g = store.issueGrant(decideFor("me", "session.rename", input, { maxCount: 3 }), USER, Date.now());
+    const { ctx, asked } = ctxWith({ allow: true });
+    const r = await call("session.rename", input, ctx);
+    check("★ ARC-004③ 授权内动作:放行且执行", r.isError !== true, textOf(r));
+    check("★ ARC-004③ 授权内动作:按方法审批仍走一次", asked.length === 1, asked.length);
+    check("★ ARC-004③ 执行成功后记账:绑定授权 usedCount +1", store.get(g.grantId, Date.now())?.usedCount === 1, store.get(g.grantId, Date.now())?.usedCount);
+  }
+
+  // ② ★ 承重:绑定授权**已撤销** → 不执行、报拒绝(evaluate 的 revoked deny 分支)。
+  {
+    const store = freshStore();
+    const input = { id: "s9", title: "rev" };
+    const g = store.issueGrant(decideFor("me", "session.rename", input), USER, Date.now());
+    store.revoke(g.grantId);
+    const before = renameRuns;
+    const { ctx, asked } = ctxWith({ allow: true });
+    const r = await call("session.rename", input, ctx);
+    check("★ ARC-004③ 绑定授权已撤销 → 不执行(handler 未被调用)", renameRuns === before, renameRuns - before);
+    check("★ ARC-004③ 绑定授权已撤销 → REJECTED 且报撤销原因", r.isError === true && textOf(r).includes("已被撤销"), textOf(r).slice(0, 220));
+    check("★ ARC-004③ 绑定授权已撤销 → 连审批都不弹(硬拒绝,不问用户)", asked.length === 0, asked.length);
+  }
+
+  // ③ ★ 承重:绑定授权**已过期** → 不执行、报拒绝(evaluate 的过期 deny 分支)。
+  {
+    const store = freshStore();
+    const input = { id: "s9", title: "exp" };
+    // 签发于很久之前、ttl 极短 → 现在必已过期。
+    store.issueGrant(decideFor("me", "session.rename", input, { ttlMs: 1 }), USER, Date.now() - 10_000);
+    const before = renameRuns;
+    const { ctx } = ctxWith({ allow: true });
+    const r = await call("session.rename", input, ctx);
+    check("★ ARC-004③ 绑定授权已过期 → 不执行", renameRuns === before, renameRuns - before);
+    check("★ ARC-004③ 绑定授权已过期 → REJECTED 且报过期原因", r.isError === true && textOf(r).includes("已过期"), textOf(r).slice(0, 220));
+  }
+
+  // ④ ★ 承重:授权**来源非用户**(agent 自铸,绕过 issueGrant 用持久化注入)→ 不执行。
+  //    issueGrant 只认用户签发,故这里模拟「一份已经被塞进 store 的非用户授权」(伪造 / 导入)。
+  {
+    const store = freshStore();
+    const input = { id: "s9", title: "forged" };
+    store.issueGrant(decideFor("me", "session.rename", input), USER, Date.now());
+    // 直接改内存里那枚授权的来源(唯 issueGrant 能构造,但持久化注入 / 伪造路径存在)——
+    // 用 findBoundFor 应当仍交出它,evaluate 判 approvalSource.kind !== user → deny。
+    const bound = store.findBoundFor({ method: "session.rename", core: { sshHostKey: appApiBindingId("me", "session.rename", input) } }, Date.now());
+    if (bound) bound.approvalSource = { kind: "agent", id: "a1" };
+    const before = renameRuns;
+    const { ctx } = ctxWith({ allow: true });
+    const r = await call("session.rename", input, ctx);
+    check("★ ARC-004③ 授权来源非用户 → 不执行", renameRuns === before, renameRuns - before);
+    check("★ ARC-004③ 授权来源非用户 → REJECTED 且报来源原因", r.isError === true && textOf(r).includes("不是用户本人"), textOf(r).slice(0, 220));
+  }
+
+  // ⑤ ★ 承重:超**次数上限** → 不执行(evaluate 的 maxCount 分支,证明记账真的喂给了判定)。
+  {
+    const store = freshStore();
+    const input = { id: "s9", title: "cnt" };
+    const g = store.issueGrant(decideFor("me", "session.rename", input, { maxCount: 1 }), USER, Date.now());
+    store.recordUse(g.grantId, 0, Date.now()); // 已用满 1 次
+    const before = renameRuns;
+    const { ctx } = ctxWith({ allow: true });
+    const r = await call("session.rename", input, ctx);
+    check("★ ARC-004③ 超次数上限 → 不执行", renameRuns === before, renameRuns - before);
+    check("★ ARC-004③ 超次数上限 → REJECTED 且报次数上限", r.isError === true && textOf(r).includes("次数上限"), textOf(r).slice(0, 220));
+  }
+
+  // ⑥ 正控:**没有**绑定授权 → 照常走 gateAppAction(默认路径不被掐死):写档正常执行。
+  {
+    freshStore();
+    const before = renameRuns;
+    const { ctx, asked } = ctxWith({ allow: true });
+    const r = await call("session.rename", { id: "s9", title: "no-grant" }, ctx);
+    check("★ ARC-004③ 正控:无绑定授权 → 照常审批并执行", r.isError !== true && asked.length === 1 && renameRuns === before + 1, textOf(r));
+  }
+
+  // ⑦ 正控:授权下动作**换了参数** = 换身份 = 不再绑定那枚授权 → 走默认路径,不误拒。
+  {
+    const store = freshStore();
+    const g = store.issueGrant(decideFor("me", "session.rename", { id: "s9", title: "A" }, { maxCount: 1 }), USER, Date.now());
+    store.recordUse(g.grantId, 0, Date.now()); // A 已用满
+    const before = renameRuns;
+    const { ctx } = ctxWith({ allow: true });
+    // 换成另一份参数 B:不绑定 g(身份不同)→ 不被 g 的 maxCount 误拒,照常执行。
+    const r = await call("session.rename", { id: "s9", title: "B" }, ctx);
+    check("★ ARC-004③ 换参数 = 换身份:不被别的授权的上限误拒", r.isError !== true && renameRuns === before + 1, textOf(r));
+  }
+
+  setGrantStore(null); // 复位,免得影响后面的用例。
+  // 恢复本段前 `session:rename` 的返回形状(后续用例若用到)。
+  recordRpcHandler("session:rename", async (_e, raw) => ({ session: { id: "s9", title: (raw as { title?: string }).title } }));
 }
 
 /* ── 3d. MC-066:业务层 ok:false 不能被回报成 SUCCEEDED ───────────────────────
