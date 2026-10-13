@@ -23,8 +23,15 @@ import { compileScenePlan, sceneSpecDigest } from "@contracts/scenePlan";
 import {
   compileSceneCommands,
   serviceForKind,
+  adaptScenePayload,
   SCENE_KIND_SERVICE_MAP,
 } from "@contracts/sceneCommands";
+// 各 kind 的**真实** RPC 入参 schema —— 断言「投影后的入参真能过下游契约」(MC-058)。
+import { WorkflowSaveSchema, HooksSaveSchema } from "@contracts/ipc/workflow";
+import { SkillsSaveSchema } from "@contracts/ipc/skills";
+import { McpSaveSchema } from "@contracts/ipc/mcp";
+import { ModuleInstallSchema } from "@contracts/ipc/modules";
+import { EXAMPLE_MODULE } from "@contracts/modules";
 import { sceneCapabilityPreflight } from "@contracts/scenePreflight";
 import {
   projectInitToSceneSpec,
@@ -561,6 +568,171 @@ function goodSpec(): unknown {
     check("★ 计划与 spec 的 specDigest 不一致 → 抛错(不静默)", threw);
   } else {
     check("每种 kind 声明前置合法", false);
+  }
+}
+
+/* ── 11. 载荷适配:命令携带的 RPC 入参真能过**真实** schema(MC-058 缺陷) ── */
+{
+  // ★ 承重(MC-058):这五类过去把声明正文**逐字**当 RPC 载荷,实测被真实 handler 的 Schema.parse
+  //   全数拒绝。适配器 `adaptScenePayload` 把它投影成真实入参 —— 这里逐类拿**生产 schema** 验。
+  const schemas: Record<string, { safeParse: (v: unknown) => { success: boolean } }> = {
+    workflow: WorkflowSaveSchema as never,
+    hook: HooksSaveSchema as never,
+    skill: SkillsSaveSchema as never,
+    mcp: McpSaveSchema as never,
+    module: ModuleInstallSchema as never,
+  };
+
+  // ① workflow:声明正文 = WorkflowDoc(含 id/name/nodes/edges/builtin/updatedAt);投影后包一层 `workflow`。
+  {
+    const doc = { id: "wf1", name: "巡检", nodes: [], edges: [], builtin: false, updatedAt: 1 };
+    const a = adaptScenePayload("workflow", doc);
+    check("★ workflow 声明 → 投影成功", a.ok, a.ok ? undefined : a.problems);
+    if (a.ok) {
+      check("★ workflow 投影后的入参过 WorkflowSaveSchema", WorkflowSaveSchema.safeParse(a.input).success, a.input);
+      check("投影出 { workflow } 包一层(不是裸 doc)", typeof a.input.workflow === "object" && a.input.workflow !== null, a.input);
+      eq("workflow.id 保真", (a.input.workflow as Record<string, unknown>).id, "wf1");
+    }
+    // ★ 承重:把**裸声明**当入参喂真实 schema 必被拒(证明这层不是多余) —— 复现台账那条负例。
+    check("★ 裸声明 {name} 直接喂 WorkflowSaveSchema 被拒(复现缺陷)", !WorkflowSaveSchema.safeParse({ name: "巡检" }).success);
+  }
+
+  // ② automation:声明正文 = 带 trigger 的 WorkflowDoc,同一入口同一形状。
+  {
+    const doc = { id: "auto1", name: "每日", trigger: "schedule", nodes: [], edges: [], builtin: false, updatedAt: 1 };
+    const a = adaptScenePayload("automation", doc);
+    check("automation 声明 → 投影成功", a.ok, a.ok ? undefined : a.problems);
+    if (a.ok) check("automation 投影后的入参过 WorkflowSaveSchema", WorkflowSaveSchema.safeParse(a.input).success, a.input);
+  }
+
+  // ③ workflow expectedRevision:给了要透传,没给不必造(schema 视 null)。
+  {
+    const withRev = adaptScenePayload("workflow", { id: "wf", name: "x", nodes: [], edges: [], builtin: false, updatedAt: 1, expectedRevision: "a".repeat(64) });
+    check("expectedRevision 合法哈希 → 通过", withRev.ok, withRev.ok ? undefined : withRev.problems);
+    if (withRev.ok) eq("expectedRevision 透传", withRev.input.expectedRevision, "a".repeat(64));
+    // 非法 expectedRevision(不是 64 hex)→ 明确问题,不静默。
+    const badRev = adaptScenePayload("workflow", { id: "wf", name: "x", nodes: [], edges: [], builtin: false, updatedAt: 1, expectedRevision: "short" });
+    check("★ 非法 expectedRevision → 明确问题(不静默)", !badRev.ok, badRev.ok ? badRev.input : badRev.problems);
+  }
+
+  // ④ hook:声明正文 = HookSpec;投影出 { hook }。
+  {
+    const hook = { id: "hk1", name: "保存后", event: "turn.done", command: "echo hi", enabled: true };
+    const a = adaptScenePayload("hook", hook);
+    check("hook 声明 → 投影成功", a.ok, a.ok ? undefined : a.problems);
+    if (a.ok) {
+      check("hook 投影后的入参过 HooksSaveSchema", HooksSaveSchema.safeParse(a.input).success, a.input);
+      check("投影出 { hook } 包一层", typeof a.input.hook === "object" && a.input.hook !== null, a.input);
+    }
+    check("★ 裸 hook {id} 直接喂 HooksSaveSchema 被拒(缺 hook 包装)", !HooksSaveSchema.safeParse({ id: "hk1" }).success);
+  }
+
+  // ⑤ skill:声明正文 = SkillsSave 入参(source/name/content)。
+  {
+    const a = adaptScenePayload("skill", { source: "global", name: "coverage", content: "---\nname: coverage\n---\n" });
+    check("skill 声明 → 投影成功", a.ok, a.ok ? undefined : a.problems);
+    if (a.ok) check("skill 投影后的入参过 SkillsSaveSchema", SkillsSaveSchema.safeParse(a.input).success, a.input);
+    // ★ 承重:缺 `source` → 明确问题(SCENE_KIND_SERVICE_MAP 说 skills.save 要 SkillsSaveInput)。
+    const missingSource = adaptScenePayload("skill", { name: "coverage", content: "x" });
+    check("★ skill 缺 source → 明确问题(不产半成品)", !missingSource.ok && missingSource.problems.some((p) => p.path.includes("source")), missingSource.ok ? missingSource.input : missingSource.problems);
+  }
+
+  // ⑥ mcp:声明正文 = McpSave 入参(name + config)。
+  {
+    const a = adaptScenePayload("mcp", { name: "coverage", config: { type: "http", url: "https://x/mcp" } });
+    check("mcp 声明 → 投影成功", a.ok, a.ok ? undefined : a.problems);
+    if (a.ok) check("mcp 投影后的入参过 McpSaveSchema", McpSaveSchema.safeParse(a.input).success, a.input);
+    // ★ 仅给 name(无 config)→ 明确问题。
+    const noConfig = adaptScenePayload("mcp", { name: "coverage" });
+    check("★ mcp 缺 config → 明确问题", !noConfig.ok && noConfig.problems.some((p) => p.path.includes("config")), noConfig.ok ? noConfig.input : noConfig.problems);
+    // 非法服务器名(带路径分隔符)→ 明确问题。
+    const badName = adaptScenePayload("mcp", { name: "../evil", config: { type: "http", url: "https://x" } });
+    check("★ mcp 非法服务器名 → 明确问题", !badName.ok, badName.ok ? badName.input : badName.problems);
+  }
+
+  // ⑦ module:声明正文 = { manifest, confirmReadAccess:true };须显式给确认。
+  {
+    const a = adaptScenePayload("module", { manifest: EXAMPLE_MODULE, confirmReadAccess: true });
+    check("module 声明(带 confirmReadAccess)→ 投影成功", a.ok, a.ok ? undefined : a.problems);
+    if (a.ok) check("module 投影后的入参过 ModuleInstallSchema", ModuleInstallSchema.safeParse(a.input).success, a.input);
+    // ★ confirmReadAccess 缺 → 明确问题(**绝不**自动置真:那是冒充用户已批准读取权限)。
+    const noConfirm = adaptScenePayload("module", { manifest: EXAMPLE_MODULE });
+    check("★ module 缺 confirmReadAccess → 明确问题(不替用户确认)", !noConfirm.ok, noConfirm.ok ? noConfirm.input : noConfirm.problems);
+    // manifest 形状不全(只给 id)→ 明确问题。
+    const badManifest = adaptScenePayload("module", { manifest: { id: "core.file.inspect" }, confirmReadAccess: true });
+    check("★ module manifest 形状不全 → 明确问题", !badManifest.ok, badManifest.ok ? badManifest.input : badManifest.problems);
+  }
+
+  // ⑧ 需先决议的 kind → 明确问题(不猜）。
+  for (const k of ["plugin", "panel", "scaffold"] as const) {
+    const a = adaptScenePayload(k, { any: "thing" });
+    check(`★ ${k} 无单条确定性入参 → 明确问题(不投影)`, !a.ok && a.problems.length > 0, a.ok ? a.input : a.problems);
+  }
+  // ⑨ 未知 kind(绕过校验)→ 明确问题,不抛。
+  {
+    const a = adaptScenePayload("teleporter" as never, { beam: "up" });
+    check("★ 未知 kind → 明确问题(不抛)", !a.ok && a.problems.length > 0, a.ok ? a.input : a.problems);
+  }
+
+  // ⑩ 端到端:compileSceneCommands 产出的命令携带的 rpcInput 真能过真实 schema。
+  //    一份**填了真实必需字段**的声明(workflow/skill/mcp/hook/module 五类)。
+  {
+    const good = validateSceneSpec({
+      schemaVersion: SCENE_SPEC_SCHEMA_VERSION,
+      sceneId: "real-payload",
+      goal: "五类真实载荷",
+      capabilities: [],
+      resources: [
+        { kind: "workflow", id: "wf", spec: { id: "wf", name: "巡检", nodes: [], edges: [], builtin: false, updatedAt: 1 } },
+        { kind: "skill", id: "sk", spec: { source: "global", name: "coverage", content: "---\nname: coverage\n---\n" } },
+        { kind: "mcp", id: "mc", spec: { name: "coverage", config: { type: "http", url: "https://x/mcp" } } },
+        { kind: "hook", id: "hk", spec: { id: "hk", name: "保存后", event: "turn.done", command: "echo", enabled: true } },
+        { kind: "module", id: "md", spec: { manifest: EXAMPLE_MODULE, confirmReadAccess: true } },
+      ],
+      acceptance: { description: "五类各回读一次", expectResourceIds: ["wf", "sk", "mc", "hk", "md"] },
+    });
+    check("真实载荷声明合法", good.ok, good.ok ? undefined : good.problems);
+    if (good.ok) {
+      const compiled = compileSceneCommands(compileScenePlan(good.spec), good.spec);
+      eq("五类各产出一条命令", compiled.commands.length, 5);
+      // ★★ 承重:每条命令都带非空 rpcInput,且**过它那个 kind 的真实 schema**(与 §11 的 schemas 同源)。
+      for (const c of compiled.commands) {
+        check(`★${c.kind} 命令带非空 rpcInput`, c.rpcInput !== null, c);
+        if (c.rpcInput !== null && schemas[c.kind]) {
+          check(`★${c.kind} 命令的 rpcInput 过真实 schema(${c.service.serviceLabel})`, schemas[c.kind].safeParse(c.rpcInput).success, { input: c.rpcInput, kind: c.kind });
+        }
+        eq(`${c.kind} 命令无投影问题`, c.payloadProblems.length, 0);
+        // payload 仍是**逐字声明**(记账/digest 的真相),与 rpcInput 分开。
+        check(`${c.kind} payload 仍是原声明正文`, JSON.stringify(c.payload) === JSON.stringify(good.spec.resources.find((r) => r.id === c.resourceId)!.spec), c.payload);
+      }
+    }
+  }
+
+  // ⑪ 端到端:声明**缺必需字段**时命令明确带 payloadProblems、rpcInput 为 null(不静默产半成品)。
+  {
+    const bad = validateSceneSpec({
+      schemaVersion: SCENE_SPEC_SCHEMA_VERSION,
+      sceneId: "bad-payload",
+      goal: "缺字段",
+      capabilities: [],
+      resources: [
+        // workflow 只给 name(缺 workflow doc 必需字段)。
+        { kind: "workflow", id: "wf", spec: { name: "只有名字" } },
+        // skill 缺 source。
+        { kind: "skill", id: "sk", spec: { name: "coverage", content: "x" } },
+      ],
+      acceptance: { description: "x", expectResourceIds: ["wf", "sk"] },
+    });
+    check("缺字段声明在 SceneSpec 层仍合法(形状自洽)", bad.ok, bad.ok ? undefined : bad.problems);
+    if (bad.ok) {
+      const compiled = compileSceneCommands(compileScenePlan(bad.spec), bad.spec);
+      const wf = compiled.commands.find((c) => c.kind === "workflow")!;
+      const sk = compiled.commands.find((c) => c.kind === "skill")!;
+      eq("★ workflow 缺必需字段 → rpcInput 为 null", wf.rpcInput, null);
+      check("★ workflow 缺必需字段 → 带明确 payloadProblems", wf.payloadProblems.length > 0, wf.payloadProblems);
+      eq("★ skill 缺 source → rpcInput 为 null", sk.rpcInput, null);
+      check("★ skill 缺 source → 明确点名 source", sk.payloadProblems.some((p) => p.path.includes("source")), sk.payloadProblems);
+    }
   }
 }
 

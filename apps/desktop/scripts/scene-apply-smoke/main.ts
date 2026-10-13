@@ -92,7 +92,10 @@ interface MountOpts {
 
 /**
  * 把「各服务」的 save / read / remove handler 挂上,背后是内存宿主 `host`。
- * 形状与生产各服务入口一致(save 收声明正文、read 按 id 查、remove 按 id 删)。
+ *
+ * ⚠️ **形状就是各服务真实 RPC 入参**(不是声明正文):`applyScene` 派发的是投影后的 `rpcInput`
+ * (MC-058)。所以 `workflow:save` 收到的是 `{ workflow: WorkflowDoc, expectedRevision? }`,资源 id
+ * 在 `workflow.id` 里 —— 与生产 handler `WorkflowSaveSchema.parse(raw)` 同形。
  */
 function mountHost(host: Host, opts: MountOpts = {}): void {
   recordRpcHandler("workflow:save", (_e, raw) => {
@@ -101,10 +104,11 @@ function mountHost(host: Host, opts: MountOpts = {}): void {
     opts.onSave?.(p);
     const fail = opts.failSave?.(p);
     if (fail) throw new Error(fail);
-    const id = typeof p.id === "string" ? p.id : null;
+    const wf = p.workflow as Record<string, unknown> | undefined;
+    const id = wf !== undefined && typeof wf.id === "string" ? wf.id : null;
     // silentSave:入口**返回成功**却不在宿主里登记(模拟"报成功但资源没真建成")—— 独立回读会
     // 据此判它不存在,证明验收的 observed 不是照抄部署记录里 done 的步。
-    if (id !== null && !opts.silentSave?.(p)) host.workflows.set(id, p);
+    if (id !== null && !opts.silentSave?.(p)) host.workflows.set(id, wf as Record<string, unknown>);
     return { ok: true };
   });
   recordRpcHandler("workflow:get", (_e, raw) => {
@@ -163,14 +167,20 @@ function specWith(sceneId: string, resources: SceneSpec["resources"], expect: st
 }
 
 /**
- * 一条 workflow/automation 资源 —— 声明正文里带 `id`(= 场景资源 id,与 WorkflowDoc.id 同义),
- * 宿主据此登记/回读。资源 id 与声明正文的 `id` 一致才回读得到(这就是「按 id 独立回读」)。
+ * 一条 workflow/automation 资源的**声明正文** —— 现在必须是**真实 WorkflowDoc**(含 id/name/
+ * nodes/edges/builtin/updatedAt),因为派发前要过 `WorkflowSaveSchema`(MC-058 的载荷适配)。
+ * 资源 id 与 doc.id 一致才回读得到(这就是「按 id 独立回读」)。
  */
+function wfDoc(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { id, name: id, nodes: [], edges: [], builtin: false, updatedAt: 1, ...extra };
+}
 function wfRes(id: string, spec: Record<string, unknown> = {}, dependsOn?: string[]): SceneSpec["resources"][number] {
-  return { kind: "workflow", id, spec: { id, ...spec }, ...(dependsOn ? { dependsOn } : {}) };
+  return { kind: "workflow", id, spec: wfDoc(id, spec), ...(dependsOn ? { dependsOn } : {}) };
 }
 function autoRes(id: string, spec: Record<string, unknown> = {}, dependsOn?: string[]): SceneSpec["resources"][number] {
-  return { kind: "automation", id, spec: { id, ...spec }, ...(dependsOn ? { dependsOn } : {}) };
+  // 自动化 = **带 trigger 的** WorkflowDoc(见 @contracts/workflow 文件头)。`trigger` 是真实
+  // WorkflowDoc 字段,会**穿过** zod 投影存活到派发入参里 —— 故用它当「这一步是不是自动化」的判据。
+  return { kind: "automation", id, spec: wfDoc(id, { trigger: "schedule", ...spec }), ...(dependsOn ? { dependsOn } : {}) };
 }
 
 /** 校验后的 spec(前置断言,不合法直接抛,免得后面测的是坏输入)。 */
@@ -178,6 +188,15 @@ function checked(raw: SceneSpec): SceneSpec {
   const r = validateSceneSpec(raw);
   if (!r.ok) throw new Error("前置场景不合法:" + JSON.stringify(r.problems));
   return r.spec;
+}
+
+/** 一次 `workflow:save` 派发的入参里,那份 WorkflowDoc(适配器把裸声明包成 `{ workflow }`)。 */
+function docOf(p: Record<string, unknown>): Record<string, unknown> {
+  return (p.workflow ?? {}) as Record<string, unknown>;
+}
+/** 这条派发是不是「自动化」那一步(它的 WorkflowDoc 带 trigger;工作流那步不带)。 */
+function isAutoPayload(p: Record<string, unknown>): boolean {
+  return docOf(p).trigger !== undefined;
 }
 
 /** 一枚**绑定本计划**的用户计划级授权(默认各字段合法,可覆写来造每一档失效)。 */
@@ -271,7 +290,8 @@ console.log("\n③ apply:逐步派发 + 记录 + 独立回读验收");
     eq("部署记下发起者身份", r.deployment.actor.actorId, "sess_1");
   }
   eq("★ 既有服务被调两次(两条命令各一次)", calls.length, 2);
-  check("★ 派发顺序 = 拓扑序(先工作流载荷、后触发器载荷)", calls[0]?.name !== undefined && calls[1]?.cron !== undefined, calls);
+  check("★ 派发顺序 = 拓扑序,且派发的是**投影后**的入参(先工作流 {workflow}、后触发器 {workflow:cron})", docOf(calls[0] ?? {}).name !== undefined && isAutoPayload(calls[1] ?? {}), calls);
+  check("★ 派发的确是 { workflow, ... } 形状(不是裸声明)", calls[0]?.workflow !== undefined, calls[0]);
   check("★ 宿主里真的建成了这两条", host.workflows.has("wf") && host.workflows.has("auto"));
   // 逐步落盘:回读得到同一份。
   const back = loadDeployment("dep_happy");
@@ -284,7 +304,7 @@ console.log("\n④ apply:一步失败 → 整体 PARTIAL,绝不报成 ACTIVE");
 {
   clearRpcHandlers();
   const host = newHost();
-  mountHost(host, { failSave: (p) => (p.cron !== undefined ? "cron 语法被拒(测试注入)" : null) });
+  mountHost(host, { failSave: (p) => (isAutoPayload(p) ? "cron 语法被拒(测试注入)" : null) });
   const spec = checked(specWith(
     "partial_scene",
     [
@@ -313,7 +333,7 @@ console.log("\n⑤ apply:依赖不成立 → 被依赖步不执行(不猜、不�
   clearRpcHandlers();
   const host = newHost();
   let calls = 0;
-  mountHost(host, { failSave: (p) => (p.cron !== undefined ? null : "建工作流失败(测试注入)"), onSave: () => { calls += 1; } });
+  mountHost(host, { failSave: (p) => (isAutoPayload(p) ? null : "建工作流失败(测试注入)"), onSave: () => { calls += 1; } });
   const spec = checked(specWith(
     "dep_scene",
     [
@@ -528,7 +548,7 @@ console.log("\n⑩ 补偿:一步失败 → 逆序撤销前面已建成、可补�
   const host = newHost();
   const removed: string[] = [];
   mountHost(host, {
-    failSave: (p) => (p.cron !== undefined ? "触发器建不起来(测试注入)" : null),
+    failSave: (p) => (isAutoPayload(p) ? "触发器建不起来(测试注入)" : null),
     onRemove: (id) => removed.push(id),
   });
   const spec = checked(specWith(
@@ -571,11 +591,12 @@ console.log("\n⑪ 补偿:不可补偿 / 无逆操作 → 如实记未补偿(不
     clearRpcHandlers();
     const host = newHost();
     const removed: string[] = [];
-    mountHost(host, { failSave: (p) => (p.cron !== undefined ? "触发器建不起来(测试注入)" : null), onRemove: (id) => removed.push(id) });
+    mountHost(host, { failSave: (p) => (isAutoPayload(p) ? "触发器建不起来(测试注入)" : null), onRemove: (id) => removed.push(id) });
     const spec = checked(specWith(
       "noncomp_scene",
       [
-        { kind: "workflow", id: "wf", spec: { id: "wf", name: "巡检", compensable: false } },
+        // 可补偿性来自**声明正文**的 `compensable`(scene 层字段,投影时被 schema strip 掉,不进 RPC)。
+        wfRes("wf", { compensable: false }),
         autoRes("auto", { cron: "坏表达式" }, ["wf"]),
       ],
       ["wf", "auto"],
@@ -599,11 +620,11 @@ console.log("\n⑪ 补偿:不可补偿 / 无逆操作 → 如实记未补偿(不
     clearRpcHandlers();
     const host = newHost();
     const removed: string[] = [];
-    mountHost(host, { failSave: (p) => (p.cron !== undefined ? "触发器建不起来(测试注入)" : null), onRemove: (id) => removed.push(id) });
+    mountHost(host, { failSave: (p) => (isAutoPayload(p) ? "触发器建不起来(测试注入)" : null), onRemove: (id) => removed.push(id) });
     const spec = checked(specWith(
       "noinverse_scene",
       [
-        { kind: "skill", id: "sk", spec: { name: "sk", content: "---\nname: sk\n---\n" } },
+        { kind: "skill", id: "sk", spec: { source: "global", name: "sk", content: "---\nname: sk\n---\n" } },
         autoRes("auto", { cron: "坏表达式" }, ["sk"]),
       ],
       ["sk", "auto"],
@@ -627,7 +648,7 @@ console.log("\n⑪ 补偿:不可补偿 / 无逆操作 → 如实记未补偿(不
     clearRpcHandlers();
     const host = newHost();
     mountHost(host, {
-      failSave: (p) => (p.cron !== undefined ? "触发器建不起来(测试注入)" : null),
+      failSave: (p) => (isAutoPayload(p) ? "触发器建不起来(测试注入)" : null),
       failRemove: () => "删工作流被拒(测试注入)",
     });
     const spec = checked(specWith(
@@ -655,7 +676,7 @@ console.log("\n⑫ 收尾验收:入口报成功、资源却没真建成 → 记�
   clearRpcHandlers();
   const host = newHost();
   // 工作流 save 返回 `{ok:true}` 却不登记到宿主 —— 记录里那步会走到 done。
-  mountHost(host, { silentSave: (p) => p.id === "wf" });
+  mountHost(host, { silentSave: (p) => docOf(p).id === "wf" });
   const spec = checked(specWith("silentsave_scene", [wfRes("wf", { name: "巡检" })], ["wf"]));
   const plan = compileScenePlan(spec);
   const r = await applyScene({ deploymentId: "dep_silentsave", spec, actor: ACTOR, grant: grantFor(plan.digest) });
@@ -667,6 +688,215 @@ console.log("\n⑫ 收尾验收:入口报成功、资源却没真建成 → 记�
     eq("★★ 验收不通过(回读查不到,没照抄记录里 done 的步)", r.deployment.acceptance?.passed, false);
     eq("★ 缺的这条列进 missing", (r.deployment.acceptance?.missing ?? []).join(","), "wf");
     eq("★ 回读 observed 为空", r.readback.observed.length, 0);
+  }
+}
+
+/* ── 13. ★★ 载荷适配:派发的是**投影后**入参;声明填不全 → 记 failed、不派发半成品(MC-058) ── */
+console.log("\n⑬ 载荷适配:派发投影后入参;缺字段 → 明确不执行(不派发会被 Schema 拒的半成品)");
+{
+  // 13a. ★★ 承重:声明正文**不是** RPC 入参形状(name-only)时,若照旧逐字派发,真实 handler 会
+  //      在 Schema.parse 处拒。这里让 handler 就**按真实契约**判(缺 workflow 直接抛)—— 证明层没漏。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    const calls: Array<Record<string, unknown>> = [];
+    // 这个 handler 复刻生产 `WorkflowSaveSchema` 的形状要求:必须 `{ workflow:{id,...} }`,否则抛。
+    recordRpcHandler("workflow:save", (_e, raw) => {
+      const p = (raw ?? {}) as Record<string, unknown>;
+      calls.push(p);
+      const wf = p.workflow as Record<string, unknown> | undefined;
+      if (wf === undefined || typeof wf.id !== "string" || typeof wf.name !== "string") {
+        throw new Error("workflow.save:入参缺 workflow(真实 WorkflowSaveSchema 会拒)");
+      }
+      host.workflows.set(wf.id, wf);
+      return { ok: true };
+    });
+    recordRpcHandler("workflow:get", (_e, raw) => ({
+      workflow: typeof (raw as Record<string, unknown> | undefined)?.id === "string" && host.workflows.has(String((raw as Record<string, unknown>).id)) ? { id: (raw as Record<string, unknown>).id } : null,
+      revision: null,
+      review: null,
+    }));
+    // 声明正文给**真实 WorkflowDoc** → 适配器包成 { workflow } → handler 收下。
+    const spec = checked(specWith("adapt_scene", [wfRes("wf", { name: "巡检工作流" })], ["wf"]));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_adapt", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      eq("★ 工作流步 done(投影后入参被真实形状的 handler 收下)", r.deployment.steps[0]?.status, "done");
+      eq("★ 整体 ACTIVE", r.deployment.status, "active");
+      eq("★ 验收通过", r.deployment.acceptance?.passed, true);
+    }
+    eq("★ handler 被调一次", calls.length, 1);
+    check("★ 派发的入参是 { workflow:{id,name,...} } 形状(不是裸 {name})", calls[0]?.workflow !== undefined && (calls[0].workflow as Record<string, unknown>).id === "wf", calls);
+    check("★ 宿主里真的建成了(证明派发形状真被真实契约接受)", host.workflows.has("wf"));
+  }
+
+  // 13b. ★★ 承重:声明**缺必需字段** → 该步记 failed、**handler 一次都不被调**(不派发半成品)。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    let calls = 0;
+    mountHost(host, { onSave: () => { calls += 1; } });
+    // workflow 只给 name(缺 WorkflowDoc 必需字段)→ 投影失败 → 不派发。
+    const spec = checked(specWith("missing_scene", [{ kind: "workflow", id: "wf", spec: { name: "只有名字" } }], ["wf"]));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_missing", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied(执行过,只是没成)", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      eq("★ 缺必需字段的步记为 failed", r.deployment.steps[0]?.status, "failed");
+      check("★ 失败原因说明缺该服务真实入参的必需字段(不静默、不派发半成品)", (r.deployment.steps[0]?.error ?? "").includes("真实入参") && (r.deployment.steps[0]?.error ?? "").includes("未执行"), r.deployment.steps[0]?.error);
+      eq("★ 整体 FAILED(没有资源被建)", r.deployment.status, "failed");
+      eq("★ 验收不通过", r.deployment.acceptance?.passed, false);
+    }
+    eq("★★ 缺字段的步**一次都没派发**(handler 未被调)", calls, 0);
+  }
+
+  // 13c. dry-run 也要如实预判:缺字段的步静态判定**不会跑**并给出原因。
+  {
+    clearRpcHandlers();
+    const spec = specWith("dry_missing_scene", [{ kind: "skill", id: "sk", spec: { name: "cov", content: "x" } }], ["sk"]);
+    const dry = dryRunScene(spec);
+    check("dry-run 通过(声明形状自洽)", dry.ok === true, dry);
+    if (dry.ok) {
+      eq("★ 缺 source 的 skill 步静态判定不会跑", dry.steps[0]?.willRun, false);
+      check("★ 给出「缺必需字段」的原因(不静默)", (dry.steps[0]?.notAppliedReason ?? "").includes("必需字段"), dry.steps[0]);
+      check("★ dry-run 带出投影问题清单", (dry.steps[0]?.payloadProblems.length ?? 0) > 0, dry.steps[0]?.payloadProblems);
+    }
+  }
+}
+
+/* ── 14. ★★ 补偿安全闸:覆盖既有资源 → **绝不打删除**;本次新建 → 才撤(MC-058 危险修复) ── */
+console.log("\n⑭ 补偿安全闸:覆盖既有资源失败后**不删除**既有;本次新建的才撤");
+{
+  /** 带修订号的宿主(save 递增修订号;get 回读 workflow + 当前修订号)—— 用来验「覆盖 vs 新建」判据与 CAS。 */
+  interface RHost {
+    workflows: Map<string, Record<string, unknown>>;
+    rev: Map<string, string>;
+    seq: number;
+    removed: string[];
+  }
+  const makeRHost = (): RHost => ({ workflows: new Map(), rev: new Map(), seq: 0, removed: [] });
+  /** 挂上按**真实形状**(`{workflow}`)收的 save / 按 id 回读(get) / 删除(remove)。 */
+  const mountRHost = (
+    h: RHost,
+    opts: { failSave?: (p: Record<string, unknown>) => string | null; onFail?: () => void } = {},
+  ): void => {
+    recordRpcHandler("workflow:save", (_e, raw) => {
+      const p = (raw ?? {}) as Record<string, unknown>;
+      const wf = p.workflow as Record<string, unknown> | undefined;
+      if (wf === undefined || typeof wf.id !== "string" || typeof wf.name !== "string") {
+        throw new Error("workflow.save:入参缺 workflow(真实 WorkflowSaveSchema 会拒)");
+      }
+      const fail = opts.failSave?.(p);
+      if (fail) { opts.onFail?.(); throw new Error(fail); } // 失败也先按需改动宿主(模拟并发写者),再抛。
+      const id = String(wf.id);
+      h.seq += 1;
+      h.workflows.set(id, wf);
+      h.rev.set(id, `rev${h.seq}`);
+      return { ok: true };
+    });
+    recordRpcHandler("workflow:get", (_e, raw) => {
+      const id = String((raw as Record<string, unknown> | undefined)?.id ?? "");
+      const present = h.workflows.has(id);
+      return { workflow: present ? { id } : null, revision: present ? (h.rev.get(id) ?? null) : null, review: null };
+    });
+    recordRpcHandler("workflow:remove", (_e, raw) => {
+      const id = String((raw as Record<string, unknown> | undefined)?.id ?? "");
+      h.removed.push(id);
+      h.workflows.delete(id);
+      h.rev.delete(id);
+      return { ok: true, wasBuiltin: false };
+    });
+  };
+
+  // 14a. ★★ 承重:覆盖**部署前已存在**的用户工作流 → 失败后补偿**不删除它**(用户数据幸存)。
+  //      这正是复审复现的危险:旧代码会 `workflow.remove({id})` 把用户原有 wf 整个删掉。
+  {
+    clearRpcHandlers();
+    const h = makeRHost();
+    // 部署前:用户已有一条 "wf_prior"(带它的原有内容)。
+    h.workflows.set("wf_prior", { id: "wf_prior", name: "用户原有的巡检", nodes: [{ id: "n0" }], edges: [], builtin: false, updatedAt: 111 });
+    h.rev.set("wf_prior", "rev_user_orig");
+    const hadOldAtStart = h.workflows.has("wf_prior");
+    mountRHost(h, { failSave: (p) => (isAutoPayload(p) ? "触发器建不起来(测试注入)" : null) });
+    const spec = checked(specWith(
+      "overwrite_scene",
+      [wfRes("wf_prior", { name: "被场景覆盖后的名字" }), autoRes("auto", { cron: "坏表达式" }, ["wf_prior"])],
+      ["wf_prior", "auto"],
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_overwrite", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      const wfStep = r.deployment.steps.find((s) => s.actionId === "wf_prior");
+      const autoStep = r.deployment.steps.find((s) => s.actionId === "auto");
+      eq("前置:开始时就存在那条用户工作流", hadOldAtStart, true);
+      eq("触发步失败", autoStep?.status, "failed");
+      // ★★ 承重:既有资源**必须幸存** —— 补偿不许把它删掉。
+      check("★★ 覆盖的**既有工作流幸存**(补偿没删它)", h.workflows.has("wf_prior"));
+      eq("★★ 逆操作一次都没对既有资源调(没删)", h.removed.includes("wf_prior"), false);
+      // 该步保持 done(资源还在),补偿如实记 applied:false + 原因(不静默)。
+      eq("★ 该步保持 done(既有资源未被撤)", wfStep?.status, "done");
+      eq("★ 补偿 applied=false(不删除)", wfStep?.compensation?.applied, false);
+      check("★ 记下「覆盖了既有资源故不删除」的原因(不静默)", (wfStep?.compensation?.reason ?? "").includes("不删除") && (wfStep?.compensation?.reason ?? "").includes("已存在"), wfStep?.compensation);
+      eq("★ 派发前探测记录为 preExisting", wfStep?.priorExistence, "preExisting");
+      eq("★ 整体状态 PARTIAL(既有资源还在、触发器没建成)", r.deployment.status, "partial");
+      // 落盘也带着 priorExistence(解码器认这三个字段)。
+      const backWf = loadDeployment("dep_overwrite")?.steps.find((s) => s.actionId === "wf_prior");
+      eq("★ 落盘的步保留 priorExistence=preExisting", backWf?.priorExistence, "preExisting");
+    }
+  }
+
+  // 14b. ★★ 承重:本次**新建**的资源 → 失败后补偿**真的撤销它**(反之亦须成立,别因噎废食)。
+  {
+    clearRpcHandlers();
+    const h = makeRHost();
+    mountRHost(h, { failSave: (p) => (isAutoPayload(p) ? "触发器建不起来(测试注入)" : null) });
+    const spec = checked(specWith(
+      "create_scene",
+      [wfRes("wf_new", { name: "本次新建的巡检" }), autoRes("auto", { cron: "坏表达式" }, ["wf_new"])],
+      ["wf_new", "auto"],
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_create", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      const wfStep = r.deployment.steps.find((s) => s.actionId === "wf_new");
+      eq("★ 派发前探测记录为 created(本次新建)", wfStep?.priorExistence, "created");
+      eq("★ 本次新建的步被补偿(状态 compensated)", wfStep?.status, "compensated");
+      eq("★ 补偿 applied=true", wfStep?.compensation?.applied, true);
+      check("★ 逆操作真的删了本次新建的资源", h.removed.includes("wf_new"));
+      check("★ 宿主里本次新建的资源被清掉", !h.workflows.has("wf_new"));
+      eq("★ 全被补偿 → 整体 FAILED", r.deployment.status, "failed");
+    }
+  }
+
+  // 14c. ★ CAS:本次新建、但建成后**被别的写者改过**(修订号变了)→ 补偿**不删除**(免毁后来改动)。
+  {
+    clearRpcHandlers();
+    const h = makeRHost();
+    // 失败那一步被派发时,把先前建成的 "wf_cas" 修订号改掉(模拟建成后被并发写者改过),再抛。
+    mountRHost(h, {
+      failSave: (p) => (isAutoPayload(p) ? "触发器建不起来(测试注入)" : null),
+      onFail: () => { if (h.workflows.has("wf_cas")) h.rev.set("wf_cas", "rev_changed_by_other_writer"); },
+    });
+    const spec = checked(specWith(
+      "cas_scene",
+      [wfRes("wf_cas", { name: "巡检" }), autoRes("auto", { cron: "坏表达式" }, ["wf_cas"])],
+      ["wf_cas", "auto"],
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_cas", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      const wfStep = r.deployment.steps.find((s) => s.actionId === "wf_cas");
+      eq("前置:派发前是本次新建(created)", wfStep?.priorExistence, "created");
+      // ★ 建后被改过 → CAS 不匹配 → 不删除,如实记原因。
+      check("★ 建成后被改动 → 补偿**不删除**", h.workflows.has("wf_cas"));
+      eq("★ 该步保持 done(未被撤)", wfStep?.status, "done");
+      eq("★ 补偿 applied=false(CAS 不匹配)", wfStep?.compensation?.applied, false);
+      check("★ 记下「建成后已被改动故不删」的原因(不静默)", (wfStep?.compensation?.reason ?? "").includes("改动"), wfStep?.compensation);
+    }
   }
 }
 

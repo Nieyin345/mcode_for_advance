@@ -36,10 +36,12 @@ import {
   type SceneDeploymentActor,
   type SceneDeploymentStep,
   type SceneDeploymentStatus,
+  type SceneStepPriorExistence,
   type SceneStepStatus,
 } from "@contracts/sceneDeployment";
 
 const STEP_STATUSES: readonly SceneStepStatus[] = ["pending", "running", "done", "failed", "compensated"];
+const PRIOR_EXISTENCES: readonly SceneStepPriorExistence[] = ["created", "preExisting", "unknown"];
 const ACTOR_KINDS: readonly SceneDeploymentActor["actorKind"][] = ["user", "agent", "system"];
 
 /** 编码:整条 `SceneDeployment` → 落 `payload` 的 JSON 串。 */
@@ -103,6 +105,19 @@ export function decodeDeployment(raw: string): SceneDeployment | null {
     if (step.finishedAt !== undefined) {
       if (typeof step.finishedAt !== "number" || !Number.isFinite(step.finishedAt)) return null;
       out.finishedAt = step.finishedAt;
+    }
+    // 派发前探测的三项(MC-058 补偿安全闸):形状不对就拒收整条(不静默吞成 undefined)。
+    if (step.priorExistence !== undefined) {
+      if (!PRIOR_EXISTENCES.includes(step.priorExistence as SceneStepPriorExistence)) return null;
+      out.priorExistence = step.priorExistence as SceneStepPriorExistence;
+    }
+    if (step.priorRevision !== undefined) {
+      if (step.priorRevision !== null && typeof step.priorRevision !== "string") return null;
+      out.priorRevision = (step.priorRevision as string | null) ?? null;
+    }
+    if (step.createdRevision !== undefined) {
+      if (step.createdRevision !== null && typeof step.createdRevision !== "string") return null;
+      out.createdRevision = (step.createdRevision as string | null) ?? null;
     }
     if (step.compensation !== undefined) {
       const c = step.compensation as Record<string, unknown>;

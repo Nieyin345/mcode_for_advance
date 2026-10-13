@@ -38,6 +38,14 @@
  */
 import type { SceneSpec, SceneResourceKind } from "./sceneSpec.js";
 import { sceneSpecDigest, type ScenePlan } from "./scenePlan.js";
+import type { ZodTypeAny } from "zod";
+// 各 kind 的**真实** RPC 入参 schema —— 适配器用它校验投影后的入参(硬规矩 2:只有一份形状,
+// 绝不在这里另抄一份字段清单)。逐个按域 import,不走 `@contracts/ipc` 大 barrel(免得把整面
+// IPC契约拉进渲染端 bundle)。
+import { WorkflowSaveSchema, HooksSaveSchema } from "./ipc/workflow.js";
+import { SkillsSaveSchema } from "./ipc/skills.js";
+import { McpSaveSchema } from "./ipc/mcp.js";
+import { ModuleInstallSchema } from "./ipc/modules.js";
 
 /**
  * 一种资源 kind 到**既有服务入口点**的声明。
@@ -230,6 +238,20 @@ export interface SceneStepCommand {
   compensable: boolean;
   /** 本命令要交给服务的**声明正文**——就是 spec 里那条资源的 `spec`，逐字(不增删字段)。 */
   payload: Record<string, unknown>;
+  /**
+   * **投影后的真实 RPC 入参**(见 {@link adaptScenePayload})—— 执行端**必须**派发这一份,不是
+   * `payload`。`null` = 载荷投影失败(见 {@link payloadProblems}),此时**不可派发**。
+   *
+   * 为什么与 `payload` 分开:声明正文仍是**记账 / digest 的真相**(`payload` 逐字保留,报告与审计
+   * 看的是用户声明了什么),而 `rpcInput` 是把它翻成下游 schema 能收的形状 —— 两者不是一回事,
+   * 混成一个就会「改了下游契约 → 记录的声明也变了」。
+   */
+  rpcInput: Record<string, unknown> | null;
+  /**
+   * 载荷投影失败时的**明确问题**(空数组 = 投影成功)。**绝不静默** —— 投影不出来的原因(缺字段 /
+   * 未知 kind / 需先决议)逐条列出,执行端据此把该步如实记为「未执行 / 无法派发」。
+   */
+  payloadProblems: ScenePayloadProblem[];
   /** 该 kind 的既有服务入口声明(见 {@link SCENE_KIND_SERVICE_MAP})。 */
   service: SceneKindServiceEntry;
 }
@@ -302,6 +324,133 @@ export function serviceForKind(kind: string): SceneKindServiceEntry {
     ?? unknownKindEntry(kind);
 }
 
+/* ── 载荷适配(MC-058 点名的缺字段缺陷:命令载荷缺真实 RPC 必需字段) ── */
+
+/**
+ * 一条载荷适配问题。`path` 指向**投影后** RPC 入参里的位置(如 `workflow` / `source`),
+ * 便于执行端 / 报告 / 模型定位;`message` 给一句人读说明(取自真实 schema 的 zod 报错)。
+ */
+export interface ScenePayloadProblem {
+  path: string;
+  message: string;
+}
+
+/**
+ * 载荷适配结果:要么是**能通过真实 schema 的 RPC 入参**,要么是**明确的投影问题**。
+ * 二选一,不并存 —— 绝不产出一个「半成品入参」交给执行端(那会在 Zod 校验处才失败)。
+ */
+export type ScenePayloadAdaptResult =
+  | { ok: true; input: Record<string, unknown> }
+  | { ok: false; problems: ScenePayloadProblem[] };
+
+/**
+ * 用真实 schema 校验一个候选入参,把 zod 报错翻成 {@link ScenePayloadProblem}。
+ * `ok` 时返回 **schema 解析后**的 data(passthrough / strip 已按该 schema 的取向规整)。
+ */
+function adaptViaSchema(schema: ZodTypeAny, candidate: Record<string, unknown>): ScenePayloadAdaptResult {
+  const parsed = schema.safeParse(candidate);
+  if (parsed.success) return { ok: true, input: parsed.data as Record<string, unknown> };
+  return {
+    ok: false,
+    problems: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+  };
+}
+
+/**
+ * **把一条资源的声明正文投影成它要交给的那个既有服务的真实 RPC 入参**(MC-058)。
+ *
+ * ## 它补的洞
+ *
+ * `SceneResourceRef.spec` 是**声明形态**,而每个 kind 映射到的既有 RPC 要的是**另一种入参形状**
+ * —— `workflow.save` 要 `{ workflow: WorkflowDoc, expectedRevision? }`、`hooks.save` 要 `{ hook }`、
+ * `skills.save` 要 `{ source, name, content }`、`mcp.save` 要 `{ name, config }`、`modules.install`
+ * 要 `{ manifest, confirmReadAccess }`。直接把 `spec` 逐字当入参派发,会在**真实 handler 的
+ * Schema.parse 处**被拒(实测:五类合法 SceneSpec 编出的请求五类全被拒)。
+ *
+ * ## 判据
+ *
+ *  - **只用真实 schema 校验**(硬规矩 2:形状只有一份,绝不在这里另抄字段清单)—— 各 kind 各自
+ *    用 `WorkflowSaveSchema` / `HooksSaveSchema` / `SkillsSaveSchema` / `McpSaveSchema` /
+ *    `ModuleInstallSchema` 解析投影后的候选;解析不过 → 返回**明确问题**,不产出半成品。
+ *  - **不猜、不替用户确认**:`modules.install` 的 `confirmReadAccess` **必须由声明显式给出**
+ *    (台账 ARC-002 明确:不能因为场景被批准了就把它自动置真);缺它 → 报问题。
+ *  - **无法稳妥投影的 kind**(plugin/panel/scaffold 需先决议、枚举外的 kind)→ 返回**明确问题**
+ *    (与 `SCENE_KIND_SERVICE_MAP` 的 `needsResolution` 同一取向:不猜一个入口 / 一份入参)。
+ *
+ * ## 各 kind 的投影规则(声明正文 `spec` 是什么)
+ *
+ *  - `workflow` / `automation`:`spec` **就是** `WorkflowDoc`;可选 `spec.expectedRevision`(乐观
+ *    并发修订号,需先读一次才有 —— 不给则 schema 视为 null,即新建)。自动化即带 `trigger` 的
+ *    工作流,同一入口同一形状。
+ *  - `hook`:`spec` **就是** `HookSpec`;包一层 `{ hook }`。
+ *  - `skill`:`spec` **就是** `{ source, name, content, projectPath?, newName? }`。
+ *  - `mcp`:`spec` **就是** `{ name, config, replace? }`。
+ *  - `module`:`spec` 给 `{ manifest, confirmReadAccess }`(strict,两字段都要)。
+ *
+ * @param kind 资源种类。
+ * @param spec 该资源的声明正文(逐字来自 `SceneResourceRef.spec`)。
+ */
+export function adaptScenePayload(kind: SceneResourceKind, spec: Record<string, unknown>): ScenePayloadAdaptResult {
+  switch (kind) {
+    case "workflow":
+    case "automation": {
+      // 声明正文 **就是** WorkflowDoc;`expectedRevision` 从它里面**提出来**单独放(否则会被
+      // WorkflowDocSchema strip 掉或当成多余键)。
+      const { expectedRevision, ...workflow } = spec;
+      const candidate: Record<string, unknown> = { workflow };
+      if (expectedRevision !== undefined) candidate.expectedRevision = expectedRevision;
+      return adaptViaSchema(WorkflowSaveSchema, candidate);
+    }
+    case "hook":
+      // 声明正文 **就是** HookSpec;hooks.save 要 `{ hook }` 包一层。
+      return adaptViaSchema(HooksSaveSchema, { hook: spec });
+    case "skill":
+      // 声明正文 **就是** SkillsSave 入参(projectPath 缺省 = 全局库)。
+      return adaptViaSchema(SkillsSaveSchema, spec);
+    case "mcp":
+      // 声明正文 **就是** McpSave 入参。
+      return adaptViaSchema(McpSaveSchema, spec);
+    case "module":
+      // modules.install 是 strict:`{ manifest, confirmReadAccess: true }`。
+      // ⚠️ `confirmReadAccess` **必须由声明显式给出**(值是字面量 true)—— 绝不因为「场景被批准」
+      //    就自动置真(那是把「场景级授权」冒充「用户已批准模块读取权限」)。
+      return adaptViaSchema(ModuleInstallSchema, {
+        manifest: spec.manifest,
+        confirmReadAccess: spec.confirmReadAccess,
+      });
+    case "plugin":
+      return {
+        ok: false,
+        problems: [{
+          path: "",
+          message: "plugin 无单一安装入口(installLocal / installGit / installMarketplace),需先按 spec.source 决议才能选定入参 —— 本层不猜,不投影",
+        }],
+      };
+    case "panel":
+      return {
+        ok: false,
+        problems: [{
+          path: "",
+          message: "panel 落在整块 customUi.config.v1(一个整块 setting)里,无单条入参 —— 需先决议,本层不投影",
+        }],
+      };
+    case "scaffold":
+      return {
+        ok: false,
+        problems: [{
+          path: "",
+          message: "scaffold 交整份模板 projectInit.apply(且需先 preview 取 digest),无单条入参 —— 需先决议,本层不投影",
+        }],
+      };
+    default:
+      // 枚举外(调用方绕开了 validateSceneSpec)→ 显式「无法映射」,不抛、不静默产出一个必然失败的入参。
+      return {
+        ok: false,
+        problems: [{ path: "", message: `未知的资源 kind「${kind}」不在 SceneResourceKind 枚举里,无既有服务入口,无法投影 RPC 入参` }],
+      };
+  }
+}
+
 /**
  * 一条命令的**稳定 id** —— 由计划 digest + 本步 actionId + kind + order + 载荷共同决定
  * （键序无关）。部署把步骤绑回命令靠它；同一计划 + 同一载荷重复编译得到同一个 id。
@@ -341,6 +490,12 @@ export function compileSceneCommands(plan: ScenePlan, spec: SceneSpec): SceneCom
       throw new Error(`compileSceneCommands:计划步骤 ${step.actionId} 的资源在声明里找不到(计划与 spec 不匹配)`);
     }
     const service = serviceForKind(step.kind);
+    // 载荷逐字：就是那条资源的 spec（浅拷贝一层，避免下游误改到 spec 上那份）。这是**声明正文
+    // / 记账 / digest 的真相**，不因下游契约而变。
+    const payload: Record<string, unknown> = { ...resource.spec };
+    // 投影成**真实 RPC 入参**(MC-058)：交给执行端派发的是这一份,不是 payload。投影失败 → 明确的
+    // 问题清单(绝不静默产出一个会在真实 handler 处被 Schema.parse 拒的入参)。
+    const adapted = adaptScenePayload(step.kind, payload);
     const base: Omit<SceneStepCommand, "commandId"> = {
       sceneId: plan.sceneId,
       actionId: step.actionId,
@@ -349,8 +504,9 @@ export function compileSceneCommands(plan: ScenePlan, spec: SceneSpec): SceneCom
       order: step.order,
       dependsOn: [...step.dependsOn],
       compensable: step.compensable,
-      // 载荷逐字：就是那条资源的 spec（浅拷贝一层，避免下游误改到 spec 上那份）。
-      payload: { ...resource.spec },
+      payload,
+      rpcInput: adapted.ok ? adapted.input : null,
+      payloadProblems: adapted.ok ? [] : adapted.problems,
       service,
     };
     const commandId = sceneCommandId({
@@ -379,6 +535,9 @@ export function sceneCommandsDigest(plan: Omit<SceneCommandPlan, "digest">): str
       order: c.order,
       dependsOn: c.dependsOn,
       payload: c.payload,
+      // 投影后的真实入参也参与摘要：换了下游契约 / 少字段 → 命令集 digest 变(部署绑定它)。
+      rpcInput: c.rpcInput,
+      payloadProblems: c.payloadProblems,
       serviceLabel: c.service.serviceLabel,
       needsResolution: c.service.needsResolution,
     })),

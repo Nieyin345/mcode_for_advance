@@ -37,10 +37,14 @@
  *  - **独立回读**({@link readbackScene}):收尾验收的 `observed` **不再**取自「本次部署记录里走到
  *    `done` 的步」,而是按 kind 调**既有回读入口**重新查询宿主真实资源,只把查得到的收进 observed。
  *    资源被带外删掉 / 入口报成功却没真建成时,记录仍说 done,但回读查不到 → 验收不通过。
- *  - **失败补偿**({@link compensateDoneSteps}):中途某步失败时,**逆序**对之前已建成、声明
- *    `compensable` 的步调**逆操作**撤销其资源(该步迁到 `compensated`),不让失败的部署留下孤儿。
- *    不可补偿 / 无稳妥逆操作 / 逆操作失败 → **保持 `done` 但如实记一条 `compensation`**(`applied:false`
- *    + 人读原因),**绝不静默**(硬规矩 3),也绝不猜一个入口去删(免得删错东西)。
+ *  - **失败补偿**({@link compensateDoneSteps}):中途某步失败时,**逆序**对之前已建成、**本次新建**
+ *    且声明 `compensable` 的步调**逆操作**撤销其资源(该步迁到 `compensated`),不让失败的部署留
+ *    下孤儿。**补偿安全闸**:派发前先探测目标资源是**本次新建**(`created`)还是**覆盖了既有资源**
+ *    (`preExisting`)—— **只撤本次新建的**;覆盖既有的 / 探测未知的**绝不删除**(`workflow.save`
+ *    的 id 是主键,盲目补偿会把用户原有工作流整个删掉)。建成后又被别的写者改过(修订号变)也
+ *    **不删**(CAS)。不可补偿 / 无稳妥逆操作 / 逆操作失败 / **既有资源不删** → **保持 `done` 但
+ *    如实记一条 `compensation`**(`applied:false` + 人读原因),**绝不静默**(硬规矩 3),也绝不
+ *    猜一个入口去删(免得删错东西)。
  *
  * ## 这一层**不做**什么(MC-058 仍未关闭的部分,如实列出)
  *
@@ -76,6 +80,7 @@ import {
   type SceneDeployment,
   type SceneDeploymentActor,
   type SceneStepCompensation,
+  type SceneStepPriorExistence,
   type SceneStepStatus,
 } from "@contracts/sceneDeployment";
 import type { Grant } from "@contracts/policyEngine";
@@ -109,6 +114,11 @@ export interface SceneDryRunStep {
   willRun: boolean;
   /** 不会执行的原因(会执行时为 `null`);不会静默—— 必给一句人读原因。 */
   notAppliedReason: string | null;
+  /**
+   * 载荷**投影**失败的问题(声明缺该服务真实入参的必需字段 / 未知 kind);空 = 投影成功。
+   * 与 `needsResolution` 分开:那是「入口不定」,这是「入口定了但声明填不全」—— 两类都不会跑,但原因不同。
+   */
+  payloadProblems: Array<{ path: string; message: string }>;
 }
 
 /**
@@ -147,10 +157,16 @@ export function dryRunScene(spec: unknown): SceneDryRunResult {
 
   const willRunById = new Map<string, boolean>();
   const steps: SceneDryRunStep[] = commands.commands.map((c) => {
-    let willRun = !c.service.needsResolution;
+    let willRun = true;
     let reason: string | null = null;
     if (c.service.needsResolution) {
+      willRun = false;
       reason = `需要先按「${c.service.resolutionHint ?? "资源声明"}」进一步决议才能选定服务入口,本层不猜入口、不执行`;
+    } else if (c.rpcInput === null) {
+      // 入口定了,但声明填不全该服务真实入参的必需字段 → 派发会在真实 Schema.parse 处被拒。
+      // 与其跑一个必然失败的命令,不如**明确说这一步不会跑**并给出缺什么(不静默)。
+      willRun = false;
+      reason = `声明缺该服务真实入参的必需字段,无法投影成可派发的 RPC 入参(本层不派发半成品):${c.payloadProblems.map((p) => `${p.path ? `${p.path}:` : ""}${p.message}`).join("; ")}`;
     } else {
       const badDep = c.dependsOn.find((dep) => willRunById.get(dep) === false);
       if (badDep !== undefined) {
@@ -169,6 +185,7 @@ export function dryRunScene(spec: unknown): SceneDryRunResult {
       dependsOn: [...c.dependsOn],
       willRun,
       notAppliedReason: reason,
+      payloadProblems: c.payloadProblems.map((p) => ({ ...p })),
     };
   });
 
@@ -363,13 +380,78 @@ export async function readbackScene(deployment: SceneDeployment, spec: SceneSpec
   return { steps, observed, unverifiable };
 }
 
+/* ─────────────── 派发前探测(MC-058 补偿安全闸:资源是本次新建还是覆盖既有) ─────────────── */
+
+/** 派发**前**对目标资源的一次探测结果:它存不存在(created / preExisting)、当前修订号。 */
+interface PriorResourceProbe {
+  existence: SceneStepPriorExistence;
+  /** 探测到的当前修订号(byArg 结果里的 `revision` 字段;拿不到为 `null`)。 */
+  revision: string | null;
+}
+
+/**
+ * **派发前探测**目标资源在宿主里是否**已经存在** —— 调该 kind 的既有回读入口查一次。
+ *
+ * 这是补偿安全闸的第一半(MC-058):`workflow.save` 的 `id` 是**主键**,往一个已存在的 id 存
+ * 就是**覆盖**它。故补偿必须知道「这一步动的是谁的资源」——只有**本次新建**的才敢撤,**覆盖
+ * 既有的绝不删除**(删了就把用户原有资源整个抹掉)。
+ *
+ * 判据只有「查得到 = 已存在」,与 {@link probeResource} 同一份回读口径;查不到 / 无入口 / 出错
+ * 一律记 **`unknown`**(**绝不猜成 `created`** —— 猜错会误删)。
+ *
+ * @param actionId 资源 id(= 计划步骤的 actionId)。
+ * @param kind 资源种类(决定回读入口与匹配字段)。
+ */
+async function probeExistingResource(actionId: string, kind: SceneResourceKind): Promise<PriorResourceProbe> {
+  const rb = serviceForKind(kind).readback;
+  if (rb === null) return { existence: "unknown", revision: null };
+  try {
+    const entry = findEntry(rb.label);
+    if (!entry) return { existence: "unknown", revision: null };
+    if (rb.mode === "byArg") {
+      const res = (await callRpc(entry, { [rb.arg as string]: actionId })) as Record<string, unknown> | null;
+      const node = res?.[rb.field];
+      const present = typeof node === "object" && node !== null && !Array.isArray(node);
+      const revision = typeof res?.revision === "string" ? res.revision : null;
+      return { existence: present ? "preExisting" : "created", revision };
+    }
+    const res = (await callRpc(entry, {})) as Record<string, unknown> | null;
+    const list = res?.[rb.field];
+    const present =
+      Array.isArray(list) && list.some((x) => typeof x === "object" && x !== null && (x as Record<string, unknown>)[rb.matchField] === actionId);
+    const revision = typeof res?.revision === "string" ? res.revision : null;
+    return { existence: present ? "preExisting" : "created", revision };
+  } catch {
+    return { existence: "unknown", revision: null };
+  }
+}
+
 /* ───────────────────────── 补偿(失败时撤销已建成资源) ───────────────────────── */
 
 /**
- * **补偿** —— 某步失败时,把之前**已建成**(`done`)的步骤按**逆序**逐个尝试撤销
- * (MC-058 的补偿路径,「失败不留下孤儿」)。
+ * **补偿** —— 某步失败时,把之前**本次新建**(`done` 且派发前探测为 `created`)的步骤按**逆序**
+ * 逐个尝试撤销(MC-058 的补偿路径,「失败不留下孤儿」)。
  *
- * 逐条判据(**不静默**):
+ * ## 补偿安全闸:只撤**本次新建**的,绝不误删既有资源(MC-058 点名的危险)
+ *
+ * `workflow.save` 的 `id` 是**主键** —— 往一个已存在的 id 存就是**覆盖**它(内置工作流也能被覆盖,
+ * 见 `ipc/workflow.ts`)。若补偿盲目对之前走到 `done` 的步全调 `workflow.remove({id})`,那么一次
+ * **覆盖了用户原有 `wf` 之后失败**的部署,会在补偿时**把用户那条工作流整个删掉** —— 覆盖已经毁了
+ * 一份,补偿再补一刀,用户数据就没了。故本函数**只撤派发前探测为 `created`(本次新建)**的步:
+ *
+ *  - 该步派发前 **`preExisting`**(覆盖了既有资源)→ **不删除**,记 `applied:false` + 「覆盖了部署前
+ *    已存在的资源,不删除(免得毁掉用户原有数据)」——**覆盖已经毁了原内容,删除只会雪上加霜**;
+ *  - 该步派发前 **`unknown`**(探测不可用)→ **不删除**,记 `applied:false` + 「为免误删保守不撤销」;
+ *  - 只有 **`created`** 才继续走下面「有没有稳妥逆操作」的判定。
+ *
+ * ## CAS:建成本次新建的资源后又被别的写者改过 → 也不删
+ *
+ * 即便某步是 `created`,若它建成后**回读到的修订号**(`createdRevision`)与**补偿时**再查到的修
+ * 订号不一致,说明建成后**被别的写者改过** —— 那时删除会毁掉别人的改动,故**不删除**,记
+ * `applied:false` + 「建成后已被改动」。修订号拿不到(该 kind 回读入口不给)时跳过这道 CAS
+ * (仅凭「本次新建」仍可撤)。
+ *
+ * ## 其余逐条判据(**不静默**)
  *  - 该步声明 `compensable === false` → **不撤销**,记为 `applied:false` + 「声明不可补偿」;
  *  - 该 kind 无稳妥逆操作(`compensation.label === null`,如 skill/panel/scaffold)→ **不撤销**,
  *    记为 `applied:false` + 「无稳妥逆操作」的原因(本层**不猜**一个入口去删,免得删错);
@@ -385,9 +467,24 @@ async function compensateDoneSteps(d: SceneDeployment, commands: SceneCommandPla
   const doneByAction = new Map(d.steps.filter((s) => s.status === "done").map((s) => [s.actionId, s] as const));
   // 逆序:先撤最后建成的。
   for (const command of [...commands.commands].reverse()) {
-    if (!doneByAction.has(command.actionId)) continue;
+    const step = doneByAction.get(command.actionId);
+    if (step === undefined) continue;
     const kind = command.kind;
     const entry = serviceForKind(kind).compensation;
+
+    // ① 补偿安全闸(MC-058 危险):**只撤本次新建的资源**。覆盖既有 / 探测未知 → 绝不删除。
+    if (step.priorExistence !== "created") {
+      const reason =
+        step.priorExistence === "preExisting"
+          ? "该步**覆盖了部署前已存在的资源**(同 id 主键),补偿**不删除**它 —— 删除会毁掉用户原有数据;被覆盖的原有内容需人工核对 / 恢复"
+          : "派发前探测不到该资源是否本次新建(无回读入口 / 入口未注册 / 查询出错),为免误删,**保守不撤销**,请人工核对";
+      d = advanceDeployment(d, {
+        actionId: command.actionId,
+        status: "done",
+        compensation: { applied: false, inverseLabel: null, reason },
+      }, clock());
+      continue;
+    }
 
     if (!command.compensable) {
       d = advanceDeployment(d, {
@@ -406,6 +503,23 @@ async function compensateDoneSteps(d: SceneDeployment, commands: SceneCommandPla
       continue;
     }
 
+    // ② CAS:建成后又被别的写者改过 → 不删(删了会毁掉别人的改动)。
+    if (step.createdRevision != null) {
+      const now = await probeExistingResource(command.actionId, kind);
+      if (now.existence === "preExisting" && now.revision !== null && now.revision !== step.createdRevision) {
+        d = advanceDeployment(d, {
+          actionId: command.actionId,
+          status: "done",
+          compensation: {
+            applied: false,
+            inverseLabel: entry.label,
+            reason: `该步本次新建,但建成后资源已被**改动**(修订号 ${step.createdRevision} → ${now.revision}),补偿**不删除**,以免毁掉后来的改动;请人工核对`,
+          },
+        }, clock());
+        continue;
+      }
+    }
+
     try {
       const inv = findEntry(entry.label);
       if (!inv) throw new Error(`逆操作入口「${entry.label}」在当前版本里没有注册`);
@@ -413,7 +527,7 @@ async function compensateDoneSteps(d: SceneDeployment, commands: SceneCommandPla
       d = advanceDeployment(d, {
         actionId: command.actionId,
         status: "compensated",
-        compensation: { applied: true, inverseLabel: entry.label, reason: `已用 ${entry.label} 撤销「${command.actionId}」` },
+        compensation: { applied: true, inverseLabel: entry.label, reason: `已用 ${entry.label} 撤销本次新建的「${command.actionId}」` },
       }, clock());
     } catch (err) {
       d = advanceDeployment(d, {
@@ -511,8 +625,35 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
       continue;
     }
 
+    // 载荷投影失败(声明缺该服务真实入参的必需字段 / 未知 kind)→ 不派发半成品,如实记「未执行」。
+    // MC-058 点名的缺陷正是这里:过去把声明逐字当入参派发,必然在真实 Schema.parse 处被拒。
+    if (command.rpcInput === null) {
+      d = advanceDeployment(
+        d,
+        {
+          actionId: command.actionId,
+          status: "failed",
+          error: `声明缺该服务「${command.service.serviceLabel ?? "(无)"}」真实入参的必需字段,无法投影成可派发的 RPC 入参,本次未执行(不派发半成品):${command.payloadProblems.map((p) => `${p.path ? `${p.path}:` : ""}${p.message}`).join("; ")}`,
+        },
+        clock(),
+      );
+      persistStep(d);
+      anyFailed = true;
+      continue;
+    }
+
+    // 派发前探测(MC-058 补偿安全闸):目标资源是**本次新建**还是**覆盖既有**?只有本次新建的
+    // 才敢在补偿时撤销 —— 往一个已存在的 id 存就是**覆盖**它(workflow.save 的 id 是主键),
+    // 盲目补偿会把用户原有资源整个删掉。探测不可用一律记 `unknown`(绝不猜成 created)。
+    const prior = await probeExistingResource(command.actionId, command.kind);
+
     // 派发:running → 落盘 → callRpc(既有服务)→ done/failed → 落盘。
-    d = advanceDeployment(d, { actionId: command.actionId, status: "running" }, clock());
+    d = advanceDeployment(d, {
+      actionId: command.actionId,
+      status: "running",
+      priorExistence: prior.existence,
+      priorRevision: prior.revision,
+    }, clock());
     persistStep(d);
 
     const label = command.service.serviceLabel;
@@ -523,8 +664,12 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
       }
       // 与 `app_api_call` **同一条**通路:同一批 handler、同一份授权判定核。这里直连 `callRpc`
       // (不经逐次审批卡)—— 计划级授权**就是**覆盖整个计划的授权(见文件头)。
-      await callRpc(entry, command.payload);
-      d = advanceDeployment(d, { actionId: command.actionId, status: "done" }, clock());
+      // ★ 派发的是**投影后的真实 RPC 入参**(`rpcInput`,已过该服务的真实 schema),不是声明正文
+      //   `payload` —— 后者是记账/digest 的真相,形状与下游入参不是一回事(MC-058)。
+      await callRpc(entry, command.rpcInput);
+      // 建成后**再回读一次**修订号,作为补偿时的 CAS 判据(建成后又被别的写者改过 → 不删)。
+      const after = await probeExistingResource(command.actionId, command.kind);
+      d = advanceDeployment(d, { actionId: command.actionId, status: "done", createdRevision: after.revision }, clock());
     } catch (err) {
       d = advanceDeployment(
         d,

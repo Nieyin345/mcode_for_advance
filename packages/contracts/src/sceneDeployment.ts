@@ -55,13 +55,31 @@ export interface SceneDeploymentActor {
  * 都留一条带人读原因的记录。
  */
 export interface SceneStepCompensation {
-  /** 逆操作是否**真的执行了**(false = 无逆操作 / 不可补偿 / 逆操作失败)。 */
+  /** 逆操作是否**真的执行了**(false = 无逆操作 / 不可补偿 / 逆操作失败 / **未撤销既有资源**)。 */
   applied: boolean;
   /** 执行逆操作所用的服务入口标签(如 `workflow.remove`);未执行时为 `null`。 */
   inverseLabel: string | null;
-  /** 人读说明:撤了什么 / 为什么撤不了(不可补偿 / 无逆操作 / 逆操作失败)。 */
+  /** 人读说明:撤了什么 / 为什么撤不了(不可补偿 / 无逆操作 / 逆操作失败 / **覆盖了既有资源故不删**)。 */
   reason: string;
 }
+
+/**
+ * 该步**派发之前**,目标资源是本次新建还是**覆盖了部署前已存在的资源**(MC-058 的补偿安全闸)。
+ *
+ * ## 为什么必须有这一档(它挡的是「补偿会误删用户原有资源」)
+ *
+ * `workflow.save` 的 `id` 是**主键** —— 存一个已存在的 id 就是**覆盖**它(内置工作流也能被覆盖,
+ * 见 `ipc/workflow.ts` 的 `WorkflowSaveSchema`)。所以一次失败部署若覆盖了用户原有的 `wf`,旧代码
+ * 的补偿会调 `workflow.remove({id})` **把用户原有资源整个删掉** —— 覆盖已经毁了一份,补偿再补一刀,
+ * 用户数据就没了。故补偿**只撤本次真正新建的资源**,覆盖既有的步**绝不删除**(见
+ * `sceneDeploy.ts` 的 `compensateDoneSteps`)。
+ *
+ *  - `created` = 派发前探测到目标**不存在**,是本次新建的;
+ *  - `preExisting` = 派发前目标**已存在**,这一步是**覆盖**它;
+ *  - `unknown` = 探测不可用(无回读入口 / 入口未注册 / 查询出错)—— 如实标未知,**绝不猜成
+ *    created**(猜错就会误删),补偿时按「不删」保守处置。
+ */
+export type SceneStepPriorExistence = "created" | "preExisting" | "unknown";
 
 /** 部署里的一步 —— 对应计划里的一条 {@link import("./scenePlan.js").ScenePlanStep}。 */
 export interface SceneDeploymentStep {
@@ -75,6 +93,20 @@ export interface SceneDeploymentStep {
   /** 本步开始/结束时刻(ms epoch)。 */
   startedAt?: number;
   finishedAt?: number;
+  /**
+   * **派发前**探测到的目标资源状态 —— 本次是新建(`created`)还是覆盖了既有资源(`preExisting`),
+   * 或探测不可用(`unknown`)。补偿据此**只撤本次新建的**,绝不误删既有资源。见
+   * {@link SceneStepPriorExistence}。
+   */
+  priorExistence?: SceneStepPriorExistence;
+  /** 派发**前**目标资源的修订号(既有资源才拿得到;新建 / 拿不到时为 `null`)。配合 `priorExistence`。 */
+  priorRevision?: string | null;
+  /**
+   * 本次建成**后**回读到的修订号 —— 补偿时的 **CAS 判据**:若此刻的修订号已与它不同,说明建成后
+   * 被别的写者改过,补偿**不删除**(删了就毁掉别人的改动)。拿不到修订号时为 `null`(该 kind 的
+   * 回读入口不给修订号)→ CAS 跳过(仅凭「本次新建」仍可撤)。
+   */
+  createdRevision?: string | null;
   /** 本步的补偿结果(只在后续某步失败触发补偿后才有)。见 {@link SceneStepCompensation}。 */
   compensation?: SceneStepCompensation;
 }
@@ -124,6 +156,12 @@ export interface SceneStepAdvance {
   error?: string;
   /** 本步被补偿的结果(迁到 `compensated` 时带)。 */
   compensation?: SceneStepCompensation;
+  /** 派发前探测到的目标资源状态(新建 / 覆盖既有 / 未知)。见 {@link SceneStepPriorExistence}。 */
+  priorExistence?: SceneStepPriorExistence;
+  /** 派发前目标资源的修订号(既有资源才拿得到)。 */
+  priorRevision?: string | null;
+  /** 建成后回读到的修订号 —— 补偿时的 CAS 判据。 */
+  createdRevision?: string | null;
 }
 
 /**
@@ -204,6 +242,15 @@ export function advanceDeployment(
   }
   const prev = record.steps[idx];
   const next: SceneDeploymentStep = { actionId: prev.actionId, status: advance.status };
+  // 派发前探测的三项 **跨状态迁移保留**(它们描述的是「这一步动的是谁的资源」,与迁移无关):
+  // 先继承 prev,再用本次 advance 给的值覆盖。这样 running 时记下的 priorExistence 在
+  // done/compensated 后仍在,补偿读得到。
+  const priorExistence = advance.priorExistence ?? prev.priorExistence;
+  if (priorExistence !== undefined) next.priorExistence = priorExistence;
+  const priorRevision = advance.priorRevision !== undefined ? advance.priorRevision : prev.priorRevision;
+  if (priorRevision !== undefined) next.priorRevision = priorRevision;
+  const createdRevision = advance.createdRevision !== undefined ? advance.createdRevision : prev.createdRevision;
+  if (createdRevision !== undefined) next.createdRevision = createdRevision;
   if (advance.status === "running") {
     next.startedAt = now;
     // 重试:保留原 startedAt 语义不需要,这里以本次运行为准;清掉上次的终态字段。
