@@ -1608,6 +1608,19 @@ console.log("\n19. 【ARC-001】建会话+发首条只有一处实现(桌面 IPC
   eq("★ ARC-001②:mobile 路走同一份命令(计数 +1)", __createSessionAndSendCount(), 1);
   eq("★ ARC-001②:mobile 路仍落到指定项目(行为不变)", mobileRes.session.projectId, "p_arc001");
 
+  // 【MC-059】mobile **生产入口**(`mobileRpc.ts` 的 `claude:startSession`)也必须经同一份命令
+  // —— 此前它内联 `createOrReuseSession`,绕过服务函数(三端里唯一漏网的一条)。这条是**源码级
+  // 接线不变量**(不动态 import mobileRpc,那会把整条 mobile 模块链拉进 bundle、需要更多
+  // electron 桩):剥注释后断言 handler 里出现 `createSessionAndSend`、且**不再**内联
+  // `createOrReuseSession(`。撤掉修复后必须真红。
+  {
+    const raw = readFileSync(join(process.cwd(), "src/main/mobile/mobileRpc.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const handler = /"claude:startSession":\s*async\s*\([\s\S]*?\n  \},/.exec(raw)?.[0] ?? "";
+    check("★ MC-059:mobile 生产入口真的调了唯一服务函数 createSessionAndSend", handler.includes("createSessionAndSend("), handler.slice(0, 160));
+    check("★ MC-059:mobile 生产入口不再内联 createOrReuseSession(三端统一)", !handler.includes("createOrReuseSession("), handler.slice(0, 160));
+  }
+
   // 两条路都经服务函数 ⇒ 服务函数是唯一实现。给一个总数复核(清零后连走两条)。
   __resetCreateSessionAndSendCount();
   await call(IPC.CLAUDE_START_SESSION, { projectId: "p_arc001" });

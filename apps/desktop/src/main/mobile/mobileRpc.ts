@@ -88,7 +88,8 @@ import {
 } from "@main/lib/sessionSync.js";
 import { deleteProjectEverywhere, deleteSessionEverywhere, SystemProjectDeleteError } from "@main/lib/rowDeletion.js";
 import { isMobileAccessibleSettingKey, isSyncedSettingKey } from "@contracts/ipc/settingsSync";
-import { createOrReuseSession } from "@main/lib/sessionStart.js";
+import { createSessionAndSend } from "@main/appServices/sessionCommands.js";
+import { randomUUID } from "node:crypto";
 import {
   cancelWorkflowRun,
   graphRunIntent,
@@ -345,12 +346,16 @@ const HANDLERS: Record<string, RpcHandler> = {
   },
 
   // ── Session lifecycle / turns ───────────────────────────────────────────
-  "claude:startSession": (raw) => {
+  "claude:startSession": async (raw) => {
     const input = StartSessionSchema.parse(raw);
-    // Same create-or-reuse semantics as the desktop IPC — the phone's "new
-    // session" tap also floats the project's fresh row instead of stacking
-    // empty ones.
-    const { session } = createOrReuseSession(input, "mobile");
+    // 【ARC-001 / MC-059】走**唯一**业务命令 `createSessionAndSend`（与桌面 IPC、agent
+    // headless 同一份），不再内联 `createOrReuseSession` —— 三端「新建对话」的业务动作
+    // 只有一处实现，不会因为漏了后半截而行为漂移。手机端身份 = `mobile`（actorKind 派生
+    // 出渠道名，结果形状照旧 `{ session }`）。
+    const { session } = await createSessionAndSend(
+      { input },
+      { actorKind: "mobile", actorId: "mobile", operationId: randomUUID(), scope: input.projectId },
+    );
     return { session };
   },
 
