@@ -1641,6 +1641,235 @@ console.log("\n19. 【ARC-001】建会话+发首条只有一处实现(桌面 IPC
   check("ARC-001:服务函数本身才是 createOrReuseSession 的调用点", /createOrReuseSession\s*\(/.test(svcSrc));
 }
 
+/* ──────────── 19b. 【ARC-001 步③】expectedRevision —— 复用前的乐观并发修订号 ──────────── */
+
+/**
+ * ## 这条守的是什么(台账 remaining:`ActionContext.expectedRevision` 未落)
+ *
+ * 步②落了「谁在调」;步③落 remaining 点名的 `expectedRevision`(乐观并发修订号)。判据:
+ * 调用方读了一条「新对话」空壳、拿到它的**行修订号**(会话行的 `updatedAt`,见
+ * `lib/sessionStart.ts` 的 `sessionRevisionOf`),把它带进来 —— 命令在**复用前**先核对
+ * 它还是不是那一版,对不上就**拒绝**(抛 `SessionRevisionConflictError`,**什么都不建、不发**),
+ * 绝不静默复用/新建一条调用方没预期的会话。
+ *
+ * ## 承重红例(判别式 —— 必须**成对**)
+ *
+ *   - **正面**:带**正确**修订号 → 复用成功(证明闸门不是"一律抛"的假实现);
+ *   - **反面**:带**过期**修订号 → 拒绝,且**没多出一条会话**(证明闸门真的在核、且在写之前核)。
+ *
+ * 两条缺一不可:只测反面,一个"永远抛"的坏实现也能全绿;只测正面,一个"从不核"的实现也全绿。
+ *
+ * ## 为什么用**直接建行 + 自选 updatedAt**(而不是靠两次调用自然撞号)
+ *
+ * `updated_at` 是 `Date.now()`,两次调用可能落在**同一毫秒** → 修订号不变 → 反面用例会
+ * **偶发假绿**(没检测到冲突)。所以这里**直接 `SessionRepo.create` 一条 `updatedAt` 自选的
+ * 空壳行**,让"哪一版"完全确定 —— 反面用例钉的是一个**必然不同**的旧版本号。
+ */
+console.log("\n19b. 【ARC-001 步③】expectedRevision —— 复用前的乐观并发修订号");
+
+{
+  const textOf19 = (r: { content: Array<{ type: string; text?: string }> }): string =>
+    r.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n");
+  const codeOf = (r: { structuredContent?: Record<string, unknown> }): unknown =>
+    (r.structuredContent?.operation_result as { code?: unknown } | undefined)?.code;
+  const kindOf = (r: { structuredContent?: Record<string, unknown> }): unknown =>
+    (r.structuredContent?.operation_result as { resultKind?: unknown } | undefined)?.resultKind;
+
+  const appCtx19 = {
+    getPermissionMode: () => undefined,
+    isToolAlwaysAllowed: () => false,
+    requestApproval: async () => ({ allow: true }),
+  } as unknown as ProviderContext;
+
+  /** 建一个全新项目 + 一条 `updatedAt` 自选的「新对话」空壳行(完全确定"是哪一版")。 */
+  const seedShell = (projectId: string, shellId: string, dir: string, updatedAt: number): void => {
+    ProjectRepo.create({
+      id: projectId,
+      name: `OCC 项目 ${projectId}`,
+      path: dir,
+      archived: false,
+      group: null,
+      sortOrder: 9,
+      pinnedAt: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as never);
+    SessionRepo.create({
+      id: shellId,
+      projectId,
+      providerId: "claude-sdk",
+      claudeSessionId: null,
+      kind: "chat",
+      parentSessionId: null,
+      title: "New session", // findFreshByProject 的复用判据:默认占位标题
+      status: "idle",
+      model: "",
+      effort: "default",
+      permissionMode: "default",
+      workflowId: "default",
+      customModelId: null,
+      envMode: "local",
+      worktreePath: null,
+      archived: false,
+      pinnedAt: null,
+      contextSnapshot: null,
+      todos: null,
+      subagents: null,
+      planDraft: null,
+      turnFiles: null,
+      usageHistory: null,
+      bookmarks: null,
+      subagentTranscripts: null,
+      createdAt: updatedAt,
+      updatedAt, // ← 断言"是哪一版"全靠它
+    } as unknown as Session);
+  };
+
+  const OCC_DIR = mkdtempSync(join(tmpdir(), "mcode-occ-proj-"));
+
+  /** 正面用例要能**干净地红**:闸门若"一律抛",这里会抛 —— 用 try 收成 null 让断言
+   *  报一条 FAIL(而不是让整个套件崩在这里,把后面的用例一起带没)。 */
+  const tryStart = async (raw: Record<string, unknown>): Promise<string | null> => {
+    try {
+      const r = await call<{ session: { id: string } }>(IPC.CLAUDE_START_SESSION, raw);
+      return r.session.id;
+    } catch {
+      return null;
+    }
+  };
+
+  // ── 路①:桌面 IPC —— 正面(修订号对)与反面(修订号过期)成对。 ──
+  fresh();
+  seedShell("p_occ", "s_occ_shell", OCC_DIR, 1000);
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+
+  // 正面:带的正是这一版 → 复用成功(闸门不是"一律抛")。
+  eq(
+    "★ ARC-001③:桌面 IPC 带**正确**修订号 → 复用了那条空壳",
+    await tryStart({ projectId: "p_occ", expectedRevision: "1000" }),
+    "s_occ_shell",
+  );
+
+  // 反面:同一条空壳,带一个**必然不同**的旧版本号 → 拒绝(复用前核,不写任何一行)。
+  const beforeCount = SessionRepo.listByProject("p_occ").length;
+  const staleMsg = await catching(IPC.CLAUDE_START_SESSION, {
+    projectId: "p_occ",
+    expectedRevision: "999",
+  });
+  check("★ ARC-001③:桌面 IPC 带**过期**修订号 → 拒绝(不是静默复用)", /修订号/.test(staleMsg), staleMsg);
+  eq("★ ARC-001③:被拒时没有多建会话(拒绝发生在写之前)", SessionRepo.listByProject("p_occ").length, beforeCount);
+
+  // 正面②:重新读回当前行的修订号,再带它 → 又能复用(证明闸门读的是**活的**版本)。
+  const live = SessionRepo.listByProject("p_occ").find((s) => s.id === "s_occ_shell");
+  const liveRev = String(live?.updatedAt);
+  __resetCreateSessionAndSendCount();
+  eq(
+    "★ ARC-001③:带上**当前**修订号 → 复用成功",
+    await tryStart({ projectId: "p_occ", expectedRevision: liveRev }),
+    "s_occ_shell",
+  );
+
+  // ── 路②:agent headless —— 同样的成对判据(经唯一业务命令,非 UI 路)。 ──
+  fresh();
+  seedShell("p_occ_agent", "s_occ_agent_shell", OCC_DIR, 7000);
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+
+  const agentOk = await invokeAppTool(
+    "app_session_new",
+    { project_id: "p_occ_agent", prompt: "带着正确修订号", expected_revision: "7000" },
+    "me",
+    appCtx19,
+  );
+  check("★ ARC-001③:agent 带**正确**修订号 → 建/复用成功", agentOk.isError !== true, textOf19(agentOk));
+
+  const agentBefore = SessionRepo.listByProject("p_occ_agent").length;
+  const agentStale = await invokeAppTool(
+    "app_session_new",
+    { project_id: "p_occ_agent", prompt: "带着过期修订号", expected_revision: "1" },
+    "me",
+    appCtx19,
+  );
+  eq("★ ARC-001③:agent 带**过期**修订号 → REJECTED(没执行)", kindOf(agentStale), "REJECTED");
+  eq("★ ARC-001③:agent 带过期修订号 → 稳定短码 revision_conflict", codeOf(agentStale), "revision_conflict");
+  check("★ ARC-001③:agent 被拒时 isError=true(如实报错)", agentStale.isError === true, textOf19(agentStale));
+  eq("★ ARC-001③:agent 被拒时没有多建会话(拒绝发生在写之前)", SessionRepo.listByProject("p_occ_agent").length, agentBefore);
+
+  // ── 反面③:带修订号但**根本没有可复用的空壳** → 同样拒绝,不静默新建。 ──
+  fresh();
+  ProjectRepo.create({
+    id: "p_occ_empty",
+    name: "OCC 空项目",
+    path: OCC_DIR,
+    archived: false,
+    group: null,
+    sortOrder: 9,
+    pinnedAt: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  } as never);
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  const emptyMsg = await catching(IPC.CLAUDE_START_SESSION, {
+    projectId: "p_occ_empty",
+    expectedRevision: "1",
+  });
+  check("★ ARC-001③:没有可复用空壳却带了修订号 → 拒绝(不静默新建)", /修订号/.test(emptyMsg), emptyMsg);
+  eq("★ ARC-001③:被拒时一条也没建出来", SessionRepo.listByProject("p_occ_empty").length, 0);
+
+  // ── 反面④:窗口**在**时,带修订号的请求也**不许**走 UI 路(UI 的 new_session 不认
+  //     expected_revision —— 走它等于把闸悄悄绕过去)。判据:UI 桥没收到 op=new_session,
+  //     且过期修订号照样被 REJECTED。 ──
+  fresh();
+  seedShell("p_occ_win", "s_occ_win_shell", OCC_DIR, 5000);
+  {
+    const { APP_CONTROL_RENDERER_GLOBAL } = await import("@contracts/appControl");
+    const seen: Array<{ op: string }> = [];
+    (globalThis as Record<string, unknown>).window = {
+      [APP_CONTROL_RENDERER_GLOBAL]: async (raw: string) => {
+        const cmd = JSON.parse(raw) as { op: string };
+        seen.push(cmd);
+        return JSON.stringify({ ok: true, data: { sessionId: "s_from_ui" } });
+      },
+    };
+    setRendererPortForTest({ executeJavaScript: async (code) => (0, eval)(code) });
+
+    const winStale = await invokeAppTool(
+      "app_session_new",
+      { project_id: "p_occ_win", prompt: "窗口在、带过期修订号", expected_revision: "1" },
+      "me",
+      appCtx19,
+    );
+    check("★ ARC-001③:窗口在时带修订号 → 不走 UI 路(没下发 op=new_session)", !seen.some((c) => c.op === "new_session"), seen);
+    eq("★ ARC-001③:窗口在时带过期修订号 → REJECTED(闸没被 UI 路绕过)", kindOf(winStale), "REJECTED");
+    eq("★ ARC-001③:窗口在、带过期修订号 → 稳定短码 revision_conflict", codeOf(winStale), "revision_conflict");
+
+    // 对照:窗口在时**不带**修订号 → 照旧走 UI 路(没把正常路径也堵了)。
+    const winLegacy = await invokeAppTool(
+      "app_session_new",
+      { project_id: "p_occ_win", prompt: "窗口在、不带修订号" },
+      "me",
+      appCtx19,
+    );
+    check("★ ARC-001③:窗口在、不带修订号 → 照旧走 UI 路(op=new_session)", seen.some((c) => c.op === "new_session"), seen);
+    check("★ ARC-001③:窗口在、不带修订号的对照调用不失败", winLegacy.isError !== true, textOf19(winLegacy));
+  }
+
+  // ── 反向控制:不带 expectedRevision 时,行为**照旧**(闸门缺席 = 不启用)。 ──
+  fresh();
+  seedShell("p_occ_legacy", "s_occ_legacy_shell", OCC_DIR, 3);
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  const legacy = await call<{ session: { id: string } }>(IPC.CLAUDE_START_SESSION, { projectId: "p_occ_legacy" });
+  eq("★ ARC-001③:不带修订号 → 照旧复用(既有调用方行为不变)", legacy.session.id, "s_occ_legacy_shell");
+
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  rmSync(OCC_DIR, { recursive: true, force: true });
+}
+
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(PROJECT_DIR, { recursive: true, force: true });

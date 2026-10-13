@@ -161,11 +161,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     // 【ARC-001 步②】传入结构化的 ActionContext:桌面路 = **用户**(actorKind: "user")。
     // 从前这里传的是裸字符串 `"desktop"` —— 那只是一个渠道名,表达不了「谁在调」。现在
     // 「谁」是结构化事实:agent 那条路填 `agent`、手机端填 `mobile`,本函数与服务函数都只读它。
+    // 【ARC-001 步③】把可选的 `expectedRevision`(乐观并发修订号)也带上:渲染端要复用某条
+    // 「新对话」空壳、且怕它已被改过时,会在 `StartSessionInput` 里给出那一版的修订号;给了就
+    // 由服务函数在复用前核对,对不上抛错 → 这里变成 IPC 拒绝(不建、不发)。缺席 = 不启用。
     const { session } = await createSessionAndSend({ input }, {
       actorKind: "user",
       actorId: "desktop",
       operationId: randomUUID(),
       scope: input.projectId,
+      ...(input.expectedRevision ? { expectedRevision: input.expectedRevision } : {}),
     });
     return { session };
   });

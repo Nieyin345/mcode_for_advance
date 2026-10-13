@@ -32,9 +32,20 @@
  * actorKind 直接支持)。`source` 这个渠道名由 `actorKind` **派生**出来喂给
  * `createOrReuseSession` —— 结果形状与行为**一律不变**(mobile → mobile,其余 → desktop)。
  *
- * ⚠️ **本切片已知残余(如实记录,不假称做全)**:`permissionGrant`(计划级授权句柄)与
- * `expectedRevision`(乐观并发修订号)两个字段尚未落 —— 它们要等授权判定核与资源修订号
- * 先铺进这条命令链,此处**不造**一个没有消费者的空字段冒充结构完整。
+ * ## 【ARC-001 步③】expectedRevision —— 复用前的乐观并发修订号
+ *
+ * 步②落了「谁在调」(actorKind / actorId / operationId / scope)。步③落 remaining 点名的
+ * `expectedRevision`:调用方读了一条「新对话」空壳、拿到它的**行修订号**(会话行的
+ * `updatedAt`),把那份修订号带进来;本命令在复用前**先核对**,对不上就抛
+ * `SessionRevisionConflictError` —— **什么都不建、什么都不发**,绝不静默复用/新建一条调用方
+ * 没预期的会话。判据只有一处(`lib/sessionStart.ts` 的 `assertSessionRevision`),本函数只
+ * 把它透传下去。
+ *
+ * 为什么修订号是**会话行的 `updatedAt`** 而不是整库的 `durableRevision`、以及这个选法诚实的
+ * 残余,写在 `lib/sessionStart.ts` 的 `sessionRevisionOf` 文件头 —— 别在这里再抄一遍。
+ *
+ * ⚠️ **本切片仍存在的残余(如实记录,不假称做全)**:`permissionGrant`(计划级授权句柄)仍未落
+ * —— 它要等授权判定核先铺进这条命令链,此处**不造**一个没有消费者的空字段冒充结构完整。
  */
 import type { StartSessionInput } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
@@ -64,6 +75,20 @@ export interface ActionContext {
   operationId: string;
   /** 作用域(当前 = 目标项目 id);可选,调用方拿得到就带上。 */
   scope?: string;
+  /**
+   * **乐观并发修订号**(ARC-001 步③)—— 可选的 OCC 令牌。调用方读了一条"新对话"空壳、
+   * 拿到它的修订号(会话行的 `updatedAt`,见 `lib/sessionStart.ts` 的
+   * `sessionRevisionOf`),把那份修订号带进来;命令在复用前**先核对**它还是不是那一版,
+   * **对不上就拒绝**(抛 `SessionRevisionConflictError`,什么都不建/不发),绝不静默
+   * 复用/新建一条调用方没预期的会话。缺席 = 不启用,既有调用方行为一律不变。
+   *
+   * ⚠️ **本切片如实划定的边界**:这里**不是**整库的 `durableRevision`
+   * (`@contracts/commit` 那份进程内 fsync 序号)。两条理由都可核对:那个计数器住在
+   * `store/db.ts` 的模块私有 `let` 里、**没有纯读取出口**,且本切片改动面不含 `store/db.ts`;
+   * 会话命令真正自然的修订号是**会话行自己的 `updatedAt`**。为什么、以及残余,见
+   * `lib/sessionStart.ts` 的 `sessionRevisionOf` 文件头。
+   */
+  expectedRevision?: string;
 }
 
 /**
@@ -114,9 +139,14 @@ export async function createSessionAndSend(
 ): Promise<CreateSessionAndSendResult> {
   createSessionAndSendCount += 1;
   lastActionContext = action;
+  // 【ARC-001 步③】把 `expectedRevision` 交给唯一的复用判据 `createOrReuseSession` —— 它对
+  // 不上就抛 `SessionRevisionConflictError`(什么都不建/不发)。异常**不在这里吞**:桌面 IPC
+  // 让它变成 IPC 错误、手机端变成 RpcError、agent 侧由 `headlessNewSession` 的调用方翻成
+  // REJECTED(没执行,可安全重来)。`undefined` 一律照旧(既有调用方不受影响)。
   const { session, reused } = createOrReuseSession(
     args.input,
     action.actorKind === "mobile" ? "mobile" : "desktop",
+    action.expectedRevision,
   );
   if (args.prompt === undefined) {
     // 只建会话 —— 与桌面「新建对话」同一条:不因为这里少发一条消息而改变落库/广播行为。

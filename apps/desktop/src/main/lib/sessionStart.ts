@@ -86,6 +86,66 @@ function resolveProfileSeed(profileId: string): SessionProfileSeed {
   return profileSeedOf(loaded.profile);
 }
 
+/**
+ * **会话行的修订号** —— 「建会话 + 发首条」这条业务命令的乐观并发判据(ARC-001 步③:
+ * `ActionContext.expectedRevision`)。
+ *
+ * ## 它是什么
+ *
+ * 一次会话行写入(改设置 / 改标题 / 改状态 / 绑工作树…)都会把 `updated_at` 盖章成现在
+ * (`SessionRepo` 里每一条 UPDATE 都带 `updated_at = Date.now()`)。所以**一行的 `updatedAt`
+ * 就是这一行"被改到第几版"的单调标记** —— 调用方读完一条空壳、拿到它的修订号,再带着这个
+ * 修订号来命令,就能断言"我读到的那份还没被别的写入动过"。
+ *
+ * ## 为什么不是整库的 durableRevision(如实记录)
+ *
+ * 台账 ARC-009 的 `durableRevision`(`store/db.ts`)是**整库** fsync 序号,本切片**没有**用它,
+ * 两个原因都是可核对的:① 那个计数器住在 `store/db.ts` 的模块私有 `let` 里,**没有任何纯读取
+ * 出口**(唯一接近的 `commitNow()` 会强推一次 fsync 并让计数器自增,是副作用不是读);本切片
+ * 改动面不含 `store/db.ts`(另一条车道拥有它),不去动它。② 它**进程内**、每次启动归零
+ * (见文件头「进程内单调、不跨进程比较」),拿它当 OCC 令牌会在重启后对不上。会话命令的
+ * **自然修订号是会话行自己的 `updatedAt`**,所以本切片用它。
+ */
+export function sessionRevisionOf(session: Session): string {
+  return String(session.updatedAt);
+}
+
+/**
+ * 修订号对不上 —— 调用方要复用/断言的那条会话已经不是它读到的那一版。**什么都没执行**:
+ * 没建行、没复用、没发首条。上层据此拒绝(见 `appControl/tools.ts` 的 REJECTED 映射),
+ * **绝不静默新建一条调用方没预期的会话**(硬规矩 3:坏东西显式报出来)。形状与
+ * `memory/store.ts` 的 `MemoryConflictError` 同款。
+ */
+export class SessionRevisionConflictError extends Error {
+  readonly code = "revision_conflict";
+  /** 调用方断言的修订号(原样带回,便于上层/日志点名)。 */
+  readonly expected: string;
+  /** 当前实际修订号;没有可复用的空壳时为 null。 */
+  readonly actual: string | null;
+  constructor(expected: string, actual: string | null) {
+    super(
+      actual === null
+        ? `会话修订号对不上:调用方断言的是「${expected}」,但项目里已没有可复用的「新对话」空壳` +
+          "(它已被使用 / 归档 / 删除)。请重新读取当前状态后再重试。"
+        : `会话修订号对不上:调用方断言「${expected}」,当前实际「${actual}」` +
+          "(这条空壳在你读取之后已被改过)。请重新读取最新状态、合并后再重试。",
+    );
+    this.name = "SessionRevisionConflictError";
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+/**
+ * 复用前的乐观并发闸。`expectedRevision` 缺席 = 不启用(既有调用方一律不受影响);
+ * 给了就**必须**与这条空壳当前修订号逐字节相同,否则抛 {@link SessionRevisionConflictError}。
+ */
+function assertSessionRevision(fresh: Session, expectedRevision: string | undefined): void {
+  if (expectedRevision === undefined) return;
+  const actual = sessionRevisionOf(fresh);
+  if (actual !== expectedRevision) throw new SessionRevisionConflictError(expectedRevision, actual);
+}
+
 /** 「复用」不能跨角色。见 {@link createOrReuseSession} 里 side 那一段的注释。 */
 function sameProfile(session: Session, seed: SessionProfileSeed | null): boolean {
   const stored = session.agentProfile ?? null;
@@ -108,6 +168,17 @@ function queueSessionMemory(sessionId: string, enabled: boolean): void {
 export function createOrReuseSession(
   input: StartSessionInput,
   source: "desktop" | "mobile",
+  /**
+   * 可选**乐观并发修订号**(ARC-001 步③:`ActionContext.expectedRevision`)。给了就启用
+   * OCC:复用判据挑中的那条空壳,**当前修订号必须逐字节等于它**,否则抛
+   * {@link SessionRevisionConflictError};给了却**没有任何可复用的空壳**(会被使用 / 归档 /
+   * 删除,或这条请求带显式标题因而根本不复用)同样抛 —— 调用方断言的是"复用第 X 版的那个
+   * 壳",静默去新建一条它没预期的会话正是要堵的口子。缺席 = 不启用,既有调用方行为不变。
+   *
+   * 修订号 = 会话行的 `updatedAt`(见 {@link sessionRevisionOf} 的文件头:为什么是它,
+   * 以及为什么**没有**用整库的 `durableRevision`)。
+   */
+  expectedRevision?: string,
 ): { session: Session; reused: boolean } {
   // Side-chat Q&A sessions: reuse the parent's still-fresh "Quick ask" row
   // when one exists (same anti-stacking rule as main sessions below — a
@@ -143,6 +214,9 @@ export function createOrReuseSession(
       // 点「空白」留下的那个空壳 —— 而那个壳**看不见**角色是否存在(建完就打开了,用户
       // 只会发现"它不是那个角色")。对不上的时候宁可不复用:多一个空壳,也不要一个错的。
       if (fresh && sameProfile(fresh, seed)) {
+        // 【ARC-001 步③】乐观并发闸:调用方断言的就是"复用第 X 版的那个空壳" ——
+        // 修订号对不上就**当场拒绝**(还没写任何一行),绝不静默复用到另一版。
+        assertSessionRevision(fresh, expectedRevision);
         // Re-aim at the current composer config (updateSettings skips
         // undefined fields and bumps updated_at; the ask tab sorts by
         // created_at, so the row stays in place in its list).
@@ -162,6 +236,9 @@ export function createOrReuseSession(
         return { session, reused: true };
       }
     }
+    // 【ARC-001 步③】带 expectedRevision 却没有可复用的空壳(没有父会话 / 没有空壳 /
+    // 角色对不上)= 调用方断言的那一版根本不在 → 拒绝,不静默新建一条它没预期的会话。
+    if (expectedRevision !== undefined) throw new SessionRevisionConflictError(expectedRevision, null);
     const now = Date.now();
     const session: Session = {
       id: uid("sess_"),
@@ -224,6 +301,9 @@ export function createOrReuseSession(
   if (input.title === undefined || input.title === "New session") {
     const fresh = SessionRepo.findFreshByProject(input.projectId);
     if (fresh) {
+      // 【ARC-001 步③】乐观并发闸:调用方断言"复用第 X 版的那个空壳",修订号对不上就
+      // **当场拒绝**(还没写任何一行),绝不静默复用到另一版。
+      assertSessionRevision(fresh, expectedRevision);
       // Re-aim at the current composer config. `updateSettings` skips
       // undefined fields, so unset inputs keep the row's stored value; a
       // fresh row has no messages yet, so the per-session provider lock
@@ -254,6 +334,10 @@ export function createOrReuseSession(
       return { session, reused: true };
     }
   }
+
+  // 【ARC-001 步③】带 expectedRevision 却没有可复用的空壳(没有空壳 / 带显式标题因而
+  // 本就不复用)= 调用方断言的那一版不在 → 拒绝,不静默新建一条它没预期的会话。
+  if (expectedRevision !== undefined) throw new SessionRevisionConflictError(expectedRevision, null);
 
   const now = Date.now();
   const session: Session = {

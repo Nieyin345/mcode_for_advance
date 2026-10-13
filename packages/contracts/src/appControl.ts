@@ -217,6 +217,11 @@ export const OP_CODE = {
   claimNotDurable: "claim_not_durable",
   /** 业务层明确拒绝(如 `{ok:false,error}`,不是抛异常)—— 命令没执行。 */
   domainRejected: "domain_rejected",
+  /** 乐观并发修订号对不上(ARC-001 步③:`ActionContext.expectedRevision`)—— 调用方要复用
+   *  的那条会话空壳已经不是它读到的那一版。**什么都没执行**(没建行、没复用、没发首条),
+   *  可安全重来:重新读取当前状态、合并后再试。判据见 `lib/sessionStart.ts` 的
+   *  `SessionRevisionConflictError`。 */
+  revisionConflict: "revision_conflict",
 } as const;
 
 /** 成功系列(业务已落定)—— 这两个 `resultKind` 都不该让 Agent 当成"失败去重试"。 */

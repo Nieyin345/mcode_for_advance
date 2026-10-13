@@ -84,6 +84,15 @@ export const StartSessionSchema = z.object({
    *  不给、给 false = 不注记忆。**「空白」和「不带记忆的档案」是两件事**,前者连
    *  `agentProfileId` 都没有,后者有指令只是不注记忆 —— 别把它们合成一个。 */
   memory: z.boolean().optional(),
+  /** **乐观并发修订号**(ARC-001 步③)—— 可选。要在「复用项目里那条还没发言的
+   *  『New session』空壳」上做并发保护时带上它:先从 `session.list*` 读到那条空壳的
+   *  `updatedAt`,原样填在这里。主进程在**复用前**核对它还是不是那一版(`lib/sessionStart.ts`
+   *  的 `sessionRevisionOf` = 会话行的 `updatedAt`),对不上就抛错拒绝 —— **不建、不发** ——
+   *  绝不静默复用/新建一条调用方没预期的会话。省略 = 不做这个保护(既有调用方行为不变)。
+   *
+   *  ⚠️ 它是**会话行的修订号**,不是整库的 `durableRevision`(那份进程内 fsync 序号,
+   *  `store/db.ts` 没有纯读取出口、且本切片不动它)。理由与残余见 `sessionRevisionOf` 文件头。 */
+  expectedRevision: z.string().optional(),
 });
 export type StartSessionInput = z.infer<typeof StartSessionSchema>;
 

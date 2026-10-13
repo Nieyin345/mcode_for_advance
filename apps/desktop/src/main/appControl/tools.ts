@@ -730,8 +730,13 @@ async function ui(cmd: AppUiCommand): Promise<AppUiReply> {
  *
  * 返回 `null` 表示"不是 UI 不可用,该走原路"(例如 UI 报的是别的业务错误)。
  */
+/**
+ * 【ARC-001 步③】headless 路把 `expectedRevision` 透传给唯一业务命令时,它抛出的
+ * `SessionRevisionConflictError` **原样往外抛**(由 {@link runSessionNew} 接住并翻成
+ * REJECTED)。这里不吞、不改写 —— 判据只有一份(`lib/sessionStart.ts`)。
+ */
 async function headlessNewSession(a: {
-  project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; title?: string;
+  project_id?: string; prompt?: string; provider_id?: string; model?: string; workflow_id?: string; title?: string; expected_revision?: string;
 }, actorId: string): Promise<string | null> {
   // 【ARC-001】建会话 + 发首条是**唯一一份业务命令** —— 桌面 `claude:startSession` IPC 与这条
   // headless 路都调 `appServices/sessionCommands.ts` 的 `createSessionAndSend`(硬规矩 2)。
@@ -762,6 +767,9 @@ async function headlessNewSession(a: {
     actorId,
     operationId: randomUUID(),
     scope: project.id,
+    // 【ARC-001 步③】Agent 若带了乐观并发修订号,原样交给服务函数核对;核对失败它会抛,
+    // 由 `runSessionNew` 翻成 REJECTED(没执行)。缺席 = 不启用。
+    ...(a.expected_revision ? { expectedRevision: a.expected_revision } : {}),
   });
   if (sendError !== null) return `对话已建好(${session.id}),但第一条消息没发出去(上一轮还在运行)`;
   return null;
@@ -1137,6 +1145,11 @@ export function appMcpTools(): McpToolSpec[] {
         workflow_id: z.string().optional(),
         background: z.boolean().optional(),
         title: z.string().optional().describe("新对话的标题;省略则用默认占位(之后按会话标题生成设置自动起名)"),
+        expected_revision: z.string().optional().describe(
+          "乐观并发修订号(可选)。要在「复用项目里那条还没发言的『新对话』空壳」上做并发保护时带上它:" +
+          "先从 session.list* 读到那条空壳的 updatedAt,原样填在这里;主进程复用前会核对它还是不是那一版," +
+          "对不上就拒绝(什么都没建),不会静默复用/新建一条你没预期的对话。省略 = 不做这个保护(照旧)。",
+        ),
       },
       handler: async () => fail("内部错误:app_session_new 必须经 invokeAppTool 调用"),
     },
@@ -1442,6 +1455,8 @@ type SessionNewArgs = {
   workflow_id?: string;
   background?: boolean;
   title?: string;
+  /** 【ARC-001 步③】乐观并发修订号(可选);见工具描述与 `ActionContext.expectedRevision`。 */
+  expected_revision?: string;
 };
 type SessionSendArgs = { session_id: string; prompt: string; workflow_id?: string; background?: boolean };
 
@@ -1466,33 +1481,70 @@ async function runSessionNew(a: SessionNewArgs, sessionId: string, ctx: Provider
       makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
     );
   }
-  const reply = await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title });
-  // 【MC-059】窗口没开 → 走主进程同一套服务,不因界面缺失而失败。
-  if (uiUnavailable(reply)) {
-    const err = await headlessNewSession(a, sessionId);
-    // headless 报错时**会话行可能已经落库**(createOrReuseSession 已跑)、只是首条没起 →
-    // 无法确认 → UNCERTAIN(绝不报成"没执行"让 Agent 重开一个新对话)。
-    if (err !== null) {
+  // 【ARC-001 步③】走了乐观并发修订号 → **必须**经会真核对它的那条路(headless 经唯一业务
+  // 命令 `createSessionAndSend`)。UI 桥那条渲染端 `new_session` **不认** `expected_revision`
+  // 这个字段 —— 先走它等于把闸悄悄绕过去,那正是本切片要堵的口子。所以带修订号时**不**走 UI。
+  if (a.expected_revision === undefined) {
+    const reply = await ui({ op: "new_session", projectId: a.project_id, providerId: a.provider_id, model: a.model, prompt: a.prompt, workflowId: a.workflow_id, background: a.background, title: a.title });
+    // 【MC-059】窗口没开 → 走主进程同一套服务,不因界面缺失而失败。
+    if (uiUnavailable(reply)) return runSessionNewHeadless(a, sessionId, method, operationId);
+    if (!reply.ok) {
+      // UI 桥回了**业务失败**:会话可能**已经建好**,只是首条没发出(见函数头)→ UNCERTAIN。
       return operationToolResult(
-        makeOp("UNCERTAIN", method, operationId, { code: OP_CODE.rpcUncertain, reason: err }),
+        makeOp("UNCERTAIN", method, operationId, {
+          code: OP_CODE.rpcUncertain,
+          reason: `新开对话未成功,无法确认是否已经建好(可能留下一个空会话):${reply.error ?? "界面操作失败"}`,
+        }),
       );
     }
-    return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已新建对话(无界面模式)。");
-  }
-  if (!reply.ok) {
-    // UI 桥回了**业务失败**:会话可能**已经建好**,只是首条没发出(见函数头)→ UNCERTAIN。
     return operationToolResult(
-      makeOp("UNCERTAIN", method, operationId, {
-        code: OP_CODE.rpcUncertain,
-        reason: `新开对话未成功,无法确认是否已经建好(可能留下一个空会话):${reply.error ?? "界面操作失败"}`,
-      }),
+      makeOp("SUCCEEDED", method, operationId),
+      reply.data === undefined ? undefined : renderResult(reply.data),
+      "已新建对话。",
     );
   }
-  return operationToolResult(
-    makeOp("SUCCEEDED", method, operationId),
-    reply.data === undefined ? undefined : renderResult(reply.data),
-    "已新建对话。",
-  );
+  // 带了预期修订号 → 直接走 headless 核对路径。
+  return runSessionNewHeadless(a, sessionId, method, operationId);
+}
+
+/**
+ * `app_session_new` 的**无窗口 / 带修订号**那条分支:经唯一业务命令 `createSessionAndSend`。
+ *   - 修订号对不上 → `createSessionAndSend` 抛 `SessionRevisionConflictError`,**什么都没执行**
+ *     → **REJECTED**(`revision_conflict`,可安全重来:重读状态再试),**绝不**像别的失败那样
+ *     报 UNCERTAIN(那会诱导 Agent 以为"可能已建一半"而放弃重试);
+ *   - 其它失败 → 会话行**可能已经落库**(createOrReuseSession 已跑)、只是首条没起 → UNCERTAIN。
+ */
+async function runSessionNewHeadless(
+  a: SessionNewArgs,
+  sessionId: string,
+  method: string,
+  operationId: string,
+): Promise<ToolResult> {
+  let err: string | null;
+  try {
+    err = await headlessNewSession(a, sessionId);
+  } catch (thrown) {
+    // 修订号冲突:调用方断言的那一版空壳已不在/已变。没建、没发 → REJECTED(与
+    // `REJECTED` 的默认语义一致:没执行,重读当前状态后再来即可,故不覆写 retryable)。
+    const code = (thrown as { code?: unknown })?.code;
+    if (code === "revision_conflict") {
+      return operationToolResult(
+        makeOp("REJECTED", method, operationId, {
+          code: OP_CODE.revisionConflict,
+          reason: errText(thrown),
+        }),
+      );
+    }
+    throw thrown;
+  }
+  if (err !== null) {
+    // headless 报错时**会话行可能已经落库**(createOrReuseSession 已跑)、只是首条没起 →
+    // 无法确认 → UNCERTAIN(绝不报成"没执行"让 Agent 重开一个新对话)。
+    return operationToolResult(
+      makeOp("UNCERTAIN", method, operationId, { code: OP_CODE.rpcUncertain, reason: err }),
+    );
+  }
+  return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已新建对话(无界面模式)。");
 }
 
 /**
