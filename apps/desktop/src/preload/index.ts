@@ -973,6 +973,9 @@ const api = {
     apply: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_APPLY, input)) as RpcMap["projectInit.apply"],
     setDefault: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_SET_DEFAULT, input)) as RpcMap["projectInit.setDefault"],
   },
+  scene: {
+    plan: ((input) => ipcRenderer.invoke(IPC.SCENE_PLAN, input)) as RpcMap["scene.plan"],
+  },
   memory: {
     assistant: ((input) => ipcRenderer.invoke(IPC.MEMORY_ASSISTANT, input)) as RpcMap["memory.assistant"],
     manage: ((input) => ipcRenderer.invoke(IPC.MEMORY_MANAGE, input)) as RpcMap["memory.manage"],

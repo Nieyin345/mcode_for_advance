@@ -20,6 +20,7 @@ import {
   type SceneSpec,
 } from "@contracts/sceneSpec";
 import { compileScenePlan, sceneSpecDigest } from "@contracts/scenePlan";
+import { planScene } from "../../src/main/appServices/scenePlanning.js";
 
 let failures = 0;
 let total = 0;
@@ -212,6 +213,24 @@ function goodSpec(): unknown {
       eq("同层资源保持书写顺序(不被重排)", compileScenePlan(sameLevel.spec).steps.map((s) => s.resourceId).join(","), "b,a,c");
     } else check("sameLevel 前置合法", false);
   }
+}
+
+/* ── 7. scene.plan 服务:校验 + 编译的真实入口(给纯函数接首个生产调用方) ── */
+{
+  // 合法 spec → ok + plan。
+  const good = planScene({ spec: goodSpec() });
+  check("★ scene.plan 合法声明 → ok", good.ok, good.ok ? undefined : good.problems);
+  if (good.ok) {
+    eq("scene.plan 计划步骤数 = 资源数", good.plan.steps.length, 2);
+    eq("scene.plan 依赖的 workflow 在前", good.plan.steps[0].resourceId, "wf_inspect");
+    check("scene.plan 带 planDigest", typeof good.plan.digest === "string" && good.plan.digest.length > 0);
+  }
+  // 非法 spec → problems 一次报全,不抛。
+  const bad = planScene({ spec: { schemaVersion: 999, sceneId: "X", goal: "", capabilities: [], resources: [], acceptance: {} } });
+  check("★ scene.plan 非法声明 → 不抛,返回 problems", !bad.ok);
+  if (!bad.ok) check("scene.plan 一次报全(>=3 条)", bad.problems.length >= 3, bad.problems);
+  // 非对象输入不炸。
+  check("scene.plan 非对象输入 → problems 不炸", !planScene({ spec: 42 }).ok);
 }
 
 console.log(`\nscene-spec-smoke: ${total - failures}/${total} 通过`);

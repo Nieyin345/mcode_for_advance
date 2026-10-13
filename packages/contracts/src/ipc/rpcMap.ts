@@ -1,4 +1,5 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
+import type { ScenePlanInput, ScenePlanResult } from "./scene.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET_CHANNEL,
@@ -993,6 +994,8 @@ export interface RpcMap {
   "projectInit.apply": (input: ProjectInitApplyInput) => Promise<ProjectInitResult>;
   /** 设定裸 `/init` 预选的场景;`null` 清除。 */
   "projectInit.setDefault": (input: {id: string | null}) => Promise<{ok: true}>;
+  /** 【ARC-002 / MC-058】**只读**的场景规划:给一份候选 SceneSpec,校验(一次报全)通过则编译出有序变更计划(拓扑排序 + 稳定 digest)。**不建任何资源、不申请授权** —— 模型提出计划 ≠ 获得执行权限;真正的部署是另一条命令且需独立计划级授权。 */
+  "scene.plan": (input: ScenePlanInput) => Promise<ScenePlanResult>;
   /** 记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。 */
   "memory.assistant": (input: MemoryAssistantInput) => Promise<MemoryAssistantResult>;
   /** 记忆维护(桌面专用,模型拿不到):按 `action`(list/preview/import/history/restore)操作原生记忆来源。`import`/`restore` 要带 digest + `confirmed:true`。 */
@@ -1886,6 +1889,7 @@ export const IPC = {
   PROJECT_INIT_PREVIEW: "projectInit:preview",
   PROJECT_INIT_APPLY: "projectInit:apply",
   PROJECT_INIT_SET_DEFAULT: "projectInit:setDefault",
+  SCENE_PLAN: "scene:plan",
   MEMORY_LIST: MEMORY_LIST_CHANNEL,
   MEMORY_READ: MEMORY_READ_CHANNEL,
   MEMORY_SAVE: MEMORY_SAVE_CHANNEL,

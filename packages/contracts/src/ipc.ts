@@ -170,3 +170,4 @@ export * from "./memoryAssistant.js";
 export * from "./extensionStore.js";
 
 export * from "./ipc/projectInit.js";
+export * from "./ipc/scene.js";
