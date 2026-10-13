@@ -1034,9 +1034,16 @@ export async function startWorkflowRun(args: {
     state: { record: [], rounds: [], picks: [], outcomes: [], awaiting: [], ...(entry !== undefined ? { entry } : {}) },
   };
 
+  // 【MC-090】配置快照是**不可变的起跑事实** —— 起跑那一刻锁下(或从续跑存档接回),
+  // 之后每次写盘都必须原样带上。曾经 `writeRun` 无保留地重建 `latest`,把这一字段
+  // 从**第一份**存档起就抹掉,于是真实运行行的 `configSnapshot` 常为空,`RUNS_HISTORY`
+  // 的版本审计读不到任何东西。这里把它抽成一份冻结值,`writeRun` 每次注入 ——
+  // 更新状态(甚至续跑再接)都不得改写这份「当时用的是什么」。
+  const frozenConfigSnapshot = latest.configSnapshot;
+
   /** 普通快照尽力写;派发前由调用方检查返回值,不能无存档跑副作用。 */
   const writeRun = (status: "running" | "success" | "failed" | "cancelled", state: RunState, durable = false): boolean => {
-    latest = { workflowRevision: revision, originSessionId, inFlightNodeIds: [...active.inFlightNodeIds], prompt, cwd, state, attempts: [...choiceAttempts] };
+    latest = { workflowRevision: revision, originSessionId, inFlightNodeIds: [...active.inFlightNodeIds], prompt, cwd, state, attempts: [...choiceAttempts], ...(frozenConfigSnapshot !== undefined ? { configSnapshot: frozenConfigSnapshot } : {}) };
     return saveRun({ runId, sessionId: session.id, workflowId: session.workflowId, status, snapshot: latest }, { durable });
   };
 

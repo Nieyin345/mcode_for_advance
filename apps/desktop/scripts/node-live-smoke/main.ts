@@ -404,6 +404,38 @@ eq("收场之后不再有任何进度事件(定时器 / 订阅都清干净了)",
   eq("取消之后进度也停了(时间那条不会自己接着走)", progressFor("agent", SECOND).length, n);
 }
 
+/* ──────────────── 6. 【MC-090】起跑即落盘的配置快照不能被 writeRun 抹掉 ──────────────── */
+
+/**
+ * 用户看到的是「这一轮到底用了哪一版指令/引擎/模型」在运行史里查不到。
+ *
+ * 根因:`runner.ts` 初始化 `latest` 时给了 `configSnapshot`,但 `writeRun` **无保留地重建**
+ * `latest`,于是**第一份**存档就没有它 —— 而第一份正是紧接着写出去的那份。此后每次覆盖
+ * 同样没有。这里走**真实**起跑链(上面几次 `startWorkflowRun` 已把运行行落进真库),
+ * 直接读回持久化的运行史,断言那份快照**真的在盘上**,不是只在 `saveRun` 的编码器里。
+ *
+ * ⚠️ 断言必须查快照对象的**具体字段**(`takenAt`),不能只查"有 configSnapshot 这个键"
+ * —— 撤掉修复后字段整个消失,查键存在才是那条能变红的判据。
+ */
+{
+  const { runHistory } = await import("@main/orchestration/runStore.js");
+  const rows = runHistory(PARENT, 20);
+  check("MC-090:运行史里真有这次运行的存档行(前提)", rows.length >= 1, { rows: rows.length });
+  const withSnapshot = rows.filter((r) => r.snapshot?.configSnapshot?.takenAt !== undefined);
+  check(
+    "★ MC-090:真实起跑落盘的每一行都带着配置快照(writeRun 没抹掉它)",
+    rows.length > 0 && withSnapshot.length === rows.length,
+    { rows: rows.length, withSnapshot: withSnapshot.length, sample: rows[0]?.snapshot?.configSnapshot },
+  );
+  // ★ 承重:快照里记的是**当时用的引擎/模型**(审计要回答的问题),不是空对象。
+  const first = withSnapshot[0];
+  check(
+    "★ MC-090:快照带 takenAt 与引擎事实(不是被抹空的 {})",
+    first !== undefined && typeof first.snapshot?.configSnapshot?.takenAt === "number" && Array.isArray(first.snapshot?.configSnapshot?.skills),
+    { snap: first?.snapshot?.configSnapshot },
+  );
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });
