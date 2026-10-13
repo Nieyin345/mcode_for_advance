@@ -6,7 +6,7 @@ import {
   ModuleWorkflowTargetSchema, ModuleCatalogSchema, ModuleWorkflowCallSchema,
   ModuleWorkflowExecutionInputSchema, MODULE_SCHEMA_MAX_BYTES,
 } from "@contracts/moduleCapability";
-import { EXAMPLE_MODULE, ModuleManifestSchema, ModuleInvokeSchema, ResourceSchema } from "@contracts/modules";
+import { EXAMPLE_MODULE, ModuleManifestSchema, ModuleInvokeSchema, ResourceSchema, missingCapabilityPermission, actionInvocationDenied } from "@contracts/modules";
 import { NodeRunnerSchema, isRunnerImplemented, isNodeRunnable, renderNodeTypeCatalog, showsNodeCapability, validateNodeParams, type NodeTypeManifest } from "@contracts/nodeType";
 
 let count = 0;
@@ -100,6 +100,27 @@ check("shared validator rejects invalid identities and missing fields", () => {
   for (const params of [{ ...call, moduleId: "CORE" }, { ...call, contributionId: "" }, { moduleId: call.moduleId }]) assert.equal(validateNodeParams(manifest, params).ok, false);
 });
 check("shared validation is not user module authorization", () => assert.equal(validateNodeParams(manifest, { ...call, moduleId: "user.file-report" }).ok, true));
+// 【MC-060】执行点放行判定 actionInvocationDenied 是**纯函数**,与准入判定 missingCapabilityPermission
+// 分开:准入问"能不能挂",这里问"这一次执行放不放行"。非 action 一律放行;action 要 resource.write
+// 作用域**且**有审批通道,否则给中文拒绝原因(fail-closed)。
+check("execution gate: non-action kinds never need approval", () => {
+  assert.equal(actionInvocationDenied("query", ["resource.read"], false), undefined);
+  assert.equal(actionInvocationDenied("task", ["resource.read"], false), undefined);
+});
+check("execution gate: action without resource.write scope is denied", () => {
+  assert.match(actionInvocationDenied("action", ["resource.read"], true) ?? "", /resource\.write/);
+});
+check("execution gate: action without an approval channel is denied (fail-closed)", () => {
+  assert.match(actionInvocationDenied("action", ["resource.read", "resource.write"], false) ?? "", /审批通道/);
+});
+check("execution gate: only scoped action with an approval channel passes this layer", () => {
+  assert.equal(actionInvocationDenied("action", ["resource.read", "resource.write"], true), undefined);
+});
+check("admission gate (missingCapabilityPermission) is a separate decision from the execution gate", () => {
+  // 准入放行(有 resource.read)不等于执行放行(action 仍要 resource.write) —— 两层不合并。
+  assert.equal(missingCapabilityPermission("action", ["resource.read"]), "resource.write");
+  assert.equal(missingCapabilityPermission("query", ["resource.read"]), undefined);
+});
 check("other runner parameter behavior is not tightened", () => {
   const legacy: NodeTypeManifest = { ...manifest, id: "legacy.prompt", runner: { kind: "prompt" }, params: [{ key: "prompt", kind: "text", label: "Prompt", required: true }] };
   assert.equal(validateNodeParams(legacy, { prompt: "hello", script: "legacy extra data" }).ok, true);

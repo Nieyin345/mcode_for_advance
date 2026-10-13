@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import {
-  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, missingCapabilityPermission,
+  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, missingCapabilityPermission, actionInvocationDenied,
   type ModuleManifest, type ModuleInvoke, type ModuleResource, type ModuleResult, type ModuleTask,
   type ModuleReply, type ModuleCatalog, type ModuleTaskRef,
 } from "@contracts/modules";
@@ -20,6 +20,16 @@ export interface Capability<I> {
   run(input: I, context: CapabilityContext): Promise<ModuleResult>;
 }
 type ErasedCapability = Omit<Capability<unknown>, "input">;
+/** 【MC-060】一次 `action` 能力执行前的审批请求。**作用域**随请求一起交给审批端口 ——
+ * 批准方按 `moduleId:contributionId` + 具体 `resource`(已过 `authorize` 的工作区范围)
+ * 决定放不放行;审批端口由宿主注入(与 `authorize`/`persist` 同款),故 host 仍不 import
+ * Electron/DB/UI。 */
+export interface ActionApprovalRequest {
+  moduleId: string;
+  contributionId: string;
+  capabilityId: string;
+  resource: ModuleResource;
+}
 type LiveTask = { snapshot: ModuleTask; controller: AbortController; requestKey: string; fingerprint: string; timer: ReturnType<typeof setTimeout> };
 
 /** Transport-independent host. It never imports Electron, DB or a UI store.
@@ -34,6 +44,11 @@ export class ModuleHost {
   constructor(private readonly options: {
     authorize(resource: ModuleResource): Promise<void>;
     persist(manifests: ModuleManifest[]): Promise<void>;
+    /** 【MC-060】`action` 能力**每次执行**前的审批端口 —— 与 `authorize`/`persist` 同款由宿主
+     * 注入,故 host 仍不 import Electron/DB/UI。**resolve = 批准**(放行执行),**reject = 拒绝**
+     * (原样把原因抛给调用端)。缺省(未注入)= 没有审批通道,`action` 执行一律被拒(fail-closed),
+     * 与 `gateAppAction` 在无审批环境下的取向一致。写档动作绝不能被"没界面问"默认放行。 */
+    requestApproval?(request: ActionApprovalRequest): Promise<void>;
   }) {}
 
   register<I>(definition: Capability<I>): void {
@@ -189,6 +204,22 @@ export class ModuleHost {
     await this.options.authorize(resource);
     // Authorization may await disk IO while a module is replaced/removed.
     if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
+    // 【MC-060】`action` 能力的**受控执行宿主**:准入(能否挂这个能力)在 register/validate 已判;
+    // 这里有**第二层** —— 每一次 `action` 执行前,必须①模块清单显式持有 `resource.write`(作用域),
+    // ②存在审批通道,再③经该通道拿到批准。三条任一不满足即拒,且绝不落到执行。判定复用
+    // `@contracts/modules` 的 `actionInvocationDenied`(只有这一份),host 只负责问审批端口、
+    // 拒绝时抛原因。资源作用域已由上面的 `authorize(resource)` 建立,审批请求把同一资源一并交上去,
+    // 让批准方看到"批的是哪个模块贡献、动哪个文件"。action 之外(query/task)不受影响。
+    const actionDenied = actionInvocationDenied(definition.kind, module.permissions, this.options.requestApproval !== undefined);
+    if (actionDenied) throw Error(actionDenied);
+    if (definition.kind === "action") {
+      // 无审批通道已在上一步被拒,故这里 `requestApproval` 必存在;resolve 放行,reject 原样抛。
+      await this.options.requestApproval!({
+        moduleId: module.id, contributionId: contribution.id, capabilityId: definition.id, resource: structuredClone(resource),
+      });
+      // 审批可能挂起等待用户;期间模块若被换/撤,按变化重来(与 authorize 后的同一取向)。
+      if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
+    }
     if (definition.kind !== "task") {
       const value = definition.output.parse(await definition.run(resource, {signal:new AbortController().signal,progress:()=>{}}));
       return {type:"result",value:structuredClone(value),view:structuredClone(contribution.view)};

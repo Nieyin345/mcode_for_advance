@@ -57,6 +57,31 @@ export function missingCapabilityPermission(
   if (kind === "action" && !permissions.includes("resource.write")) return "resource.write";
   return undefined;
 }
+
+/** 【MC-060】**执行**一个能力前的放行判定 —— 与 `missingCapabilityPermission`(准入)分开的
+ *  那一层。准入问的是「这份清单/元数据能不能**挂**这个能力」;本函数问的是「**这一次执行**
+ *  放不放行」。两份判定各管一段,不合成一个真相。
+ *
+ *  - 非 `action` 能力:只需过 `authorize(resource)` 的资源作用域(`undefined` = 放行)。
+ *  - `action` 能力:是唯一会**真改东西**的种类,故**必须有显式作用域背书 + 审批通道**——
+ *    ① 模块清单持有 `resource.write`(越权则拒);
+ *    ② 宿主注入了审批端口(`approvalChannelAvailable`)—— 没有审批通道的环境**一律拒**,
+ *       与 `gateAppAction` 同款 fail-closed:不能因为"没界面问用户"就默认放行写动作。
+ *
+ *  返回拒绝原因(中文,直接给调用端);`undefined` = 这一层放行(实际执行仍需已通过的资源
+ *  授权与逐次审批结果)。**判定只有这一份**:ModuleHost 在 `invoke` 的执行点上调用它,不在
+ *  别处再写一遍 `kind === "action"`。
+ */
+export function actionInvocationDenied(
+  kind: ModuleCapabilityDescriptor["kind"],
+  permissions: readonly string[],
+  approvalChannelAvailable: boolean,
+): string | undefined {
+  if (kind !== "action") return undefined;
+  if (!permissions.includes("resource.write")) return "action 能力执行需要模块声明 resource.write 权限";
+  if (!approvalChannelAvailable) return "action 能力执行需要审批通道,当前环境没有可用的审批通道,为安全起见未执行。";
+  return undefined;
+}
 export const ModuleInvokeSchema = z.object({ moduleId: Id, contributionId: LocalId, resource: ResourceSchema, requestId: z.string().min(1).max(100) }).strict();
 export type ModuleInvoke = z.infer<typeof ModuleInvokeSchema>;
 export const ModuleTaskRefSchema = z.object({ moduleId: Id, taskId: z.string().min(1).max(100) }).strict();

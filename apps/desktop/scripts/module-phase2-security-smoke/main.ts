@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { EXAMPLE_MODULE, ModuleManifestSchema, ResourceSchema, ResultSchema, type ModuleInvoke, type ModuleReply, type ModuleTask } from '@contracts/modules';
 import { JsonSchemaDocumentSchema, ModuleCatalogSchema, ModuleWorkflowCallSchema } from '@contracts/moduleCapability';
 import { ModuleHost } from '../../src/main/modules/ModuleHost.js';
+import type { ActionApprovalRequest } from '../../src/main/modules/ModuleHost.js';
 import { fileCapabilities, resolveModuleResource } from '../../src/main/modules/fileCapabilities.js';
 import { getModuleHost } from '../../src/main/modules/service.js';
 
@@ -108,6 +109,43 @@ await test('AUTH user install shares the same resource.write gate as builtin adm
   // 对照:同一份用户清单显式声明 resource.write → install 通过(判定不是无条件拒)。
   const catalog=await h.install({...EXAMPLE_MODULE,id:'user.action-ok',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.action3'}]});
   assert.ok(catalog.modules.some(m=>m.id==='user.action-ok'),'user action module admitted with resource.write');
+});
+// 【MC-060 承重】action 能力的**受控执行宿主**:准入(能不能挂这个能力)在 register/validate 已判,
+// 这条盯的是**执行点**的第二层 —— 一次 action  invocation 必须 ①模块清单持有 resource.write(作用域),
+// ②存在审批通道,③经通道批准。三条任一不满足即拒,绝不落到 capability.run。判定复用 @contracts/modules
+// 的 actionInvocationDenied(只有这一份)。撤掉 invoke 里那两行 → noChannel/refusing 两条 assert.rejects
+// 会静默**执行成功**(不再是 Promise 拒绝)→ **真红**。
+await test('AUTH action invocation needs an injected approval channel, scoped, once per call',async()=>{
+  // (a) 没有审批通道的宿主:action 执行一律拒(fail-closed,与 gateAppAction 无审批环境同款)。
+  const noChannel=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+  noChannel.register({id:'core.test.mutate1',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:7})});
+  noChannel.addBuiltin({...EXAMPLE_MODULE,id:'core.mutate1',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.mutate1'}]});
+  await denies(noChannel.invoke(call('core.mutate1')),/审批通道/);
+
+  // (b) 有审批通道但用户拒绝 → 拒,且审批请求带上**正确作用域**(模块贡献 + 具体资源)。
+  let seen:ActionApprovalRequest|undefined;
+  const refusing=new ModuleHost({authorize:async()=>{},persist:async()=>{},
+    requestApproval:async req=>{seen=req;throw Error('用户拒绝了这次操作,未执行。');}});
+  refusing.register({id:'core.test.mutate2',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:7})});
+  refusing.addBuiltin({...EXAMPLE_MODULE,id:'core.mutate2',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.mutate2'}]});
+  await denies(refusing.invoke(call('core.mutate2')),/用户拒绝/);
+  assert.equal(seen?.moduleId,'core.mutate2');
+  assert.equal(seen?.contributionId,'inspect');
+  assert.equal(seen?.capabilityId,'core.test.mutate2');
+  assert.equal(seen?.resource.path,file,'approval request must scope the exact resource');
+
+  // (c) 对照(证明不是无条件拒):审批通道批准 → action 真执行、返回结果,且**每次调用只问一次**。
+  let approved=0;
+  const allowing=new ModuleHost({authorize:async()=>{},persist:async()=>{},
+    requestApproval:async()=>{approved++;}});
+  allowing.register({id:'core.test.mutate3',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:7})});
+  allowing.addBuiltin({...EXAMPLE_MODULE,id:'core.mutate3',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.mutate3'}]});
+  const reply=await allowing.invoke(call('core.mutate3'));
+  assert.equal(reply.type,'result');if(reply.type==='result')assert.equal(reply.value.bytes,7);
+  assert.equal(approved,1,'approval asked exactly once per action invocation');
+  // 非 action(query/task)不弹审批:普通只读能力照常直接返回,不受这道闸影响。
+  const plain=await host.invoke(call('core.file-report','info','no-approval-needed'));
+  assert.equal(plain.type,'result');
 });
 await test('AUTH extra trusted source projectPath capabilityId and requestId cannot enter user parameters',async()=>{
   const params={moduleId:'core.file-report',contributionId:'inspect',path:file};
