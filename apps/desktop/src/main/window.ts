@@ -22,7 +22,7 @@ setSettingNotifyPort({
 // 阶段就撞原生模块)。这里注入「窗口能不能收 / 发一条」,与上面那句同源。
 setHostHookGrantNotifyPort({
   hasLiveRenderer: hasLiveRendererWindow,
-  send: (channel, payload) => sendToRenderer(channel, payload),
+  send: (payload) => sendToRenderer(IPC.HOST_HOOK_GRANTS_CHANGED, payload),
 });
 
 let mainWindow: BrowserWindow | null = null;

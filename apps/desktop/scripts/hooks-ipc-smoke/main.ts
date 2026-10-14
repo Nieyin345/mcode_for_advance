@@ -1021,7 +1021,7 @@ console.log("\n§9 授权签发 / 撤销 / 用尽 → 推送渲染端(面板据�
   let liveRenderer = true;
   setHostHookGrantNotifyPort({
     hasLiveRenderer: () => liveRenderer,
-    send: (_channel, payload) => pushed.push(payload as (typeof pushed)[number]),
+    send: (payload) => pushed.push(payload as (typeof pushed)[number]),
   });
 
   const P9 = "push-demo-plugin";

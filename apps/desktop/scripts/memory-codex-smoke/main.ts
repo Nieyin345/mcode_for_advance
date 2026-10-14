@@ -81,6 +81,7 @@ const PUSH_CHANNELS = [
   "browser:event",
   "claude:event",
   "composer:attach",
+  "hooks:hostHookGrantsChanged",
   "library:changed",
   "lsp:event",
   "market:progress",

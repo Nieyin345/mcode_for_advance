@@ -107,7 +107,13 @@ let seq = 0;
  */
 export interface HostHookGrantNotifyPort {
   hasLiveRenderer(): boolean;
-  send(channel: string, payload: unknown): void;
+  /**
+   * 发一条。**签名里不带 channel** —— 通道由本模块定死(见 {@link notifyGrantsChanged}),
+   * 装配端只提供「怎么发出去」(`window.ts` 给的就是 `sendToRenderer`)。这样通道名只有
+   * 一个出处,`ipc-wiring-smoke` 的推送出口扫描器也能在这份源码里直接看见
+   * `sendToRenderer(IPC.HOST_HOOK_GRANTS_CHANGED, …)`。
+   */
+  send(payload: unknown): void;
 }
 
 let notifyPort: HostHookGrantNotifyPort | null = null;
@@ -126,7 +132,9 @@ export function setHostHookGrantNotifyPort(p: HostHookGrantNotifyPort): void {
  */
 function notifyGrantsChanged(pluginId: string, reason: string, grantId?: string): void {
   if (notifyPort === null || !notifyPort.hasLiveRenderer()) return;
-  notifyPort.send(IPC.HOST_HOOK_GRANTS_CHANGED, {
+  // 载荷自带 `channel` 判别键(与 `library:changed` / `workflow:changed` 同形)。
+  // 通道**在这里定死**,装出去的 `send` 只管怎么发 —— 见 {@link HostHookGrantNotifyPort}。
+  notifyPort.send({
     channel: IPC.HOST_HOOK_GRANTS_CHANGED,
     pluginId,
     reason,
