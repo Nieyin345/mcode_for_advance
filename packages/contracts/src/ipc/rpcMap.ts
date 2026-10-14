@@ -1,6 +1,6 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
 import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult } from "./scene.js";
-import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult } from "./unattended.js";
+import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult, UnattendedListIpcResult, UnattendedResumeInput, UnattendedAbandonInput, UnattendedAbandonIpcResult } from "./unattended.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET_CHANNEL,
@@ -1011,6 +1011,12 @@ export interface RpcMap {
   "unattended.approve": (input: UnattendedApproveInput) => Promise<UnattendedApproveResult>;
   /** 【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。 */
   "unattended.run": (input: UnattendedRunInput) => Promise<UnattendedRunIpcResult>;
+  /** 【MC-059 残余 ④】**列出等待批准 / 待执行**的无人值守计划(跨重启)—— 重启后从计划存档 + `GrantStore` 现取现算,每条给三态(`waiting_approval` / `resumable` / `completed`)。**只读**,一步不执行。与 `unattended.*` 同一条纪律:**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。 */
+  "unattendedPlans.list": () => Promise<UnattendedListIpcResult>;
+  /** 【MC-059 残余 ④】**续跑**一份等待中的计划 —— 只给 `planId`,正文与授权 id 由宿主从存档 + `GrantStore` 取回(**取不到即拒、一步不建**)。已建成的操作**跳过**(不重复外部副作用)。**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。 */
+  "unattendedPlans.resume": (input: UnattendedResumeInput) => Promise<UnattendedRunIpcResult>;
+  /** 【MC-059 残余 ④】**明确放弃**一份等待中的计划(不再列出、不再可续跑)。幂等。**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。 */
+  "unattendedPlans.abandon": (input: UnattendedAbandonInput) => Promise<UnattendedAbandonIpcResult>;
   /** 记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。 */
   "memory.assistant": (input: MemoryAssistantInput) => Promise<MemoryAssistantResult>;
   /** 记忆维护(桌面专用,模型拿不到):按 `action`(list/preview/import/history/restore)操作原生记忆来源。`import`/`restore` 要带 digest + `confirmed:true`。 */
@@ -1926,6 +1932,9 @@ export const IPC = {
   SCENE_APPLY: "scene:apply",
   UNATTENDED_APPROVE: "unattended:approve",
   UNATTENDED_RUN: "unattended:run",
+  UNATTENDED_PLANS_LIST: "unattendedPlans:list",
+  UNATTENDED_PLANS_RESUME: "unattendedPlans:resume",
+  UNATTENDED_PLANS_ABANDON: "unattendedPlans:abandon",
   MEMORY_LIST: MEMORY_LIST_CHANNEL,
   MEMORY_READ: MEMORY_READ_CHANNEL,
   MEMORY_SAVE: MEMORY_SAVE_CHANNEL,

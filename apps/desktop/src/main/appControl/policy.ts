@@ -92,7 +92,14 @@ const BLOCKED: Record<string, string> = {
   // `policyFor` 的动词兜底会把它们猜成 `write`(弹卡),那意味着 agent 能弹审批卡去批准一个
   // 计划 —— 这正是要堵的死角。
   "unattended.approve": "无人值守任务计划的授权只能由用户在计划预览页本人批准",
-  "unattended.run": "无人值守任务计划只能由用户批准后执行"
+  "unattended.run": "无人值守任务计划只能由用户批准后执行",
+  // 【MC-059 残余 ④】无人值守计划的**跨重启**面(列出等待中 / 续跑 / 放弃)—— 与上面两条同一条
+  // 纪律:**续跑**会在本机真的建会话 / 发首条,是「用户点头」的执行那半,agent 不该自己续自己
+  // 批过的计划;`list` 虽是只读,但它读的是「哪些计划在等用户批准」这类**治理事实**,也不开给
+  // agent(与 `agentSsh.list` 同取向)。三条一律 blocked。
+  "unattendedPlans.list": "无人值守计划的等待列表是用户的治理视图,agent 不必读",
+  "unattendedPlans.resume": "续跑无人值守计划会在本机建会话,只能由用户本人发起",
+  "unattendedPlans.abandon": "放弃计划是用户的治理动作,只能由用户本人发起"
 };
 
 const DANGER: Record<string, string> = {
@@ -323,6 +330,8 @@ export const DOMAIN_LABELS: Record<string, string> = {
   // 【MC-059】无人值守计划:用户签发计划级授权 + 有界执行(appServices/unattendedTaskPlan)。
   // 两条都在 BLOCKED 档(agent 够不到,见上),这里只给 `app_api_list` 一个域标签。
   unattended: "无人值守任务计划:用户签发计划级授权、有界执行(建会话)",
+  // 【MC-059 残余 ④】计划跨重启面:列出等待中 / 续跑 / 放弃(同样全在 BLOCKED 档)。
+  unattendedPlans: "无人值守计划跨重启:列出等待批准 / 待执行的计划、续跑、放弃",
   skills: "技能:列出、读、存、删、导入、复制到项目、预设、引擎可见性",
   plugins: "插件:列出、安装、卸载、启停、市场",
   mcp: "外部 MCP 服务器:列出、新增、删除、启停、授权、导入",

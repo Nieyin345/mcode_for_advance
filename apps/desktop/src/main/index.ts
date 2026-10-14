@@ -31,6 +31,7 @@ import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
 import { setOperationLedger } from "@main/appControl/operations.js";
 import { assembleGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { assembleUnattendedPlanStore } from "@main/appServices/unattendedPlanStore.js";
 import { assembleHostHookGrantPersist } from "@main/hooks/hostHookGrantFile.js";
 import { assembleModuleApprovalPort } from "@main/modules/moduleApproval.js";
 import { assembleSceneRuntime } from "@main/orchestration/sceneTaskRuntime.js";
@@ -206,6 +207,13 @@ app.whenReady().then(async () => {
     // 装配点是可注入 dataRoot 的纯函数,这里只传真实的 `dataRoot()`。撤销 / 过期随文件
     // 跨重启生效。装上之后不回退 —— 静默降级会让「授权已持久」变成假象。
     assembleGrantStore(dataRoot());
+    // **无人值守计划存档(MC-059 残余 ④)** —— 启动时把计划**正文**落盘装上:落点是**独立文件**
+    // `<数据根>/appControl/unattended-plans.json`(与授权同源、不参与设置导入导出,理由见
+    // `unattendedPlanStore.ts` 文件头)。此前计划正文只活在渲染端内存里 —— 进程一关,授权的
+    // sceneId 还在 `grants.json`,但「它对应哪份计划」无从读回,跨重启的「等待批准 / 待执行」
+    // 列表与续跑都无从谈起。装上后签发的计划跨重启读得回、列得出、续得了;撤销 / 过期随授权
+    // 文件生效。装上之后不回退 —— 静默降级会让「计划已持久」变成假象。
+    assembleUnattendedPlanStore(dataRoot());
     // **主机 hook 授权(HostHookGrant,MC-061)** —— 启动时把落盘真装上:落点是**独立文件**
     // `<数据根>/hooks/host-hook-grants.json`(不参与设置导入导出,理由见 hostHookGrantFile.ts)。
     // 装配点只传真实的 `dataRoot()`。此前授权表纯内存,重启即空 —— 用户对某条插件 hook 的授信

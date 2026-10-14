@@ -2582,7 +2582,28 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "unattended.run",
   "channel": "unattended:run",
   "doc": "【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。",
-  "input": "{ projectId: string; grantId: string // 上一次 `unattended.approve` 签出的授权 id。; planId: string; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[]; maxCount: number }",
+  "input": "{ projectId: string; grantId: string // 上一次 `unattended.approve` 签出的授权 id。; planId: string; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[]; maxCount: number; initiatorSessionId?: string | undefined // **发起者坐标**(MC-059 残余 ②)—— 渲染端坐在哪条会话里点的「执行」。它**不是**发起者 身份本身,只是一枚宿主**能核实**的坐标:宿主拿它去 `Session… }",
+  "output": "{ ok: false; kind: 'refused'; code: string; reason: string } | { ok: true; kind: 'ran'; report: UnattendedExecutionReportWire }"
+ },
+ {
+  "method": "unattendedPlans.abandon",
+  "channel": "unattendedPlans:abandon",
+  "doc": "【MC-059 残余 ④】**明确放弃**一份等待中的计划(不再列出、不再可续跑)。幂等。**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。",
+  "input": "{ planId: string }",
+  "output": "{ planId: string; abandoned: boolean // 这次调用是否真的把一条**未放弃**的计划标记为放弃(`false` = 记录不存在或已放弃)。 }"
+ },
+ {
+  "method": "unattendedPlans.list",
+  "channel": "unattendedPlans:list",
+  "doc": "【MC-059 残余 ④】**列出等待批准 / 待执行**的无人值守计划(跨重启)—— 重启后从计划存档 + `GrantStore` 现取现算,每条给三态(`waiting_approval` / `resumable` / `completed`)。**只读**,一步不执行。与 `unattended.*` 同一条纪律:**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。",
+  "input": "(无参数)",
+  "output": "{ plans: PendingUnattendedPlanWire[] }"
+ },
+ {
+  "method": "unattendedPlans.resume",
+  "channel": "unattendedPlans:resume",
+  "doc": "【MC-059 残余 ④】**续跑**一份等待中的计划 —— 只给 `planId`,正文与授权 id 由宿主从存档 + `GrantStore` 取回(**取不到即拒、一步不建**)。已建成的操作**跳过**(不重复外部副作用)。**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。",
+  "input": "{ planId: string // 要续跑的计划 id(存档里的键)。; initiatorSessionId?: string | undefined // **发起者坐标**(与 `unattended.run` 的 `initiatorSessionId` 同义、同一条纪律)—— 渲染端 坐在哪条会话里点的「续跑」。只是一枚宿主*… }",
   "output": "{ ok: false; kind: 'refused'; code: string; reason: string } | { ok: true; kind: 'ran'; report: UnattendedExecutionReportWire }"
  },
  {

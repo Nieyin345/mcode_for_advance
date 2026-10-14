@@ -40,9 +40,15 @@
  *     核不过 / 计划过期)→ **停在那一条并如实报**,绝不静默重试或假装跑完。
  */
 import { createHash } from "node:crypto";
-import type { ActorRef, CoreIntent } from "@contracts/policyEngine";
+import type { ActorRef, CoreIntent, Grant } from "@contracts/policyEngine";
+import { countBudgetExhausted } from "@contracts/policyEngine";
 import { createSessionAndSend, SESSION_CREATE_METHOD, sessionCreateCore } from "./sessionCommands.js";
 import { getGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import {
+  getUnattendedPlanStore,
+  type UnattendedPlanRecord,
+  type UnattendedPlanStatus,
+} from "./unattendedPlanStore.js";
 
 /** 一条**无人值守操作** —— 计划里一次有界的动作。当前只支持 `session.create`。 */
 export interface UnattendedOperation {
@@ -253,17 +259,43 @@ function stepCodeOf(thrown: unknown): string {
  *      `plan_expired`,不拿一枚过期授权继续建会话。
  *
  * @param now 判定"计划是否已过期"的时刻(可注入,便于确定性测);缺省真实时钟。
+ * @param opts 可选的执行监督钩子(MC-059 残余 ④ 的续跑依据):
+ *   - `skipOperationIds` —— **续跑时跳过已建成的操作**(不重跑 = 不重复外部副作用,与
+ *     `sceneDeploy` 的 `runPlanSteps` 跳过 `done` 步同取向);
+ *   - `onStepSettled` —— 每步**落定后**回写进度(续跑崩溃可再续;缺省不回写)。
  */
+export interface ExecuteUnattendedOptions {
+  /** 续跑时**跳过**已建成的操作 id 集合(不重跑)。 */
+  skipOperationIds?: ReadonlySet<string>;
+  /** 每步落定后的回写钩子(进执行报告的**该步结果**;缺省无操作)。 */
+  onStepSettled?: (result: UnattendedStepResult) => void;
+}
+
 export async function executeUnattendedPlan(
   plan: UnattendedTaskPlan,
   issued: IssuedUnattendedPlan,
   actorId: string,
   now: number = Date.now(),
+  opts: ExecuteUnattendedOptions = {},
 ): Promise<UnattendedExecutionReport> {
   const results: UnattendedStepResult[] = [];
   let stoppedAt: string | null = null;
   let stopCode: string | null = null;
   for (const op of plan.operations) {
+    // 续跑:已建成的操作**直接跳过** —— 不重跑(重跑就是重复建会话 / 重复发首条),
+    // 如实记一条 `skipped_done`,不进 `stoppedAt`(它不是一次失败)。
+    if (opts.skipOperationIds?.has(op.operationId)) {
+      const skipped: UnattendedStepResult = {
+        operationId: op.operationId,
+        ok: true,
+        sessionId: null,
+        code: "skipped_done",
+        reason: "此操作在上一次执行中已建成,续跑跳过(不重跑,避免重复的外部副作用)。",
+      };
+      results.push(skipped);
+      opts.onStepSettled?.(skipped);
+      continue;
+    }
     // ③ 过期即停:不拿过期授权继续。
     if (now >= issued.expiresAt) {
       stoppedAt = op.operationId;
@@ -299,25 +331,29 @@ export async function executeUnattendedPlan(
           ...(op.expectedRevision ? { expectedRevision: op.expectedRevision } : {}),
         },
       );
-      results.push({
+      const settled: UnattendedStepResult = {
         operationId: op.operationId,
         ok: sendError === null,
         sessionId: session.id,
         code: sendError === null ? null : "send_failed",
         reason: sendError,
-      });
+      };
+      results.push(settled);
+      opts.onStepSettled?.(settled);
     } catch (thrown) {
       // ② 拒绝即停:修订冲突 / 授权核不过 —— 记下来、就地停,不静默重试。
       const code = stepCodeOf(thrown);
       stoppedAt = op.operationId;
       stopCode = code;
-      results.push({
+      const settled: UnattendedStepResult = {
         operationId: op.operationId,
         ok: false,
         sessionId: null,
         code,
         reason: String((thrown as Error)?.message ?? thrown),
-      });
+      };
+      results.push(settled);
+      opts.onStepSettled?.(settled);
       break;
     }
   }
@@ -388,6 +424,23 @@ export function approveUnattendedPlan(
   };
   try {
     const issued = issueUnattendedTaskPlan(plan, now);
+    // 【MC-059 残余 ④】把计划**正文**落盘(与授权同源地走 `appControl/` 下的独立 JSON)—— 授权
+    // 只记 sceneId,靠这份记录才能把「sceneId ↔ 哪份计划」对回来、重启后列得出「待执行」。签发
+    // 成功即写一条 `pending` 记录(`completedOperationIds` 空)。写失败不回滚授权(授权已铸出、
+    // 是本机事实),但**如实**在返回里不含这份记录 —— 调用方据此知道跨重启列表会缺它。
+    getUnattendedPlanStore().put({
+      planId: issued.planId,
+      sceneId: issued.sceneId,
+      projectId: issued.projectId,
+      grantId: issued.grantId,
+      operations: input.operations,
+      maxCount: issued.maxCount,
+      createdAt: now,
+      status: "pending",
+      completedOperationIds: [],
+      lastStoppedAt: null,
+      lastStopCode: null,
+    });
     return {
       ok: true,
       kind: "granted",
@@ -411,6 +464,68 @@ export function approveUnattendedPlan(
 export type UnattendedRunOutcome =
   | { ok: false; kind: "refused"; code: string; reason: string }
   | { ok: true; kind: "ran"; report: UnattendedExecutionReport };
+
+/**
+ * 从**取回的授权**重建执行端的 `IssuedUnattendedPlan`(只喂 `executeUnattendedPlan` 真读的字段:
+ * `grantId` 与 `expiresAt` 承重;其余如实带回,便于报告对账)。执行(首次)与续跑共用。
+ */
+function issuedFromGrant(plan: UnattendedTaskPlan, grant: Grant, now: number): IssuedUnattendedPlan {
+  return {
+    planId: plan.planId,
+    sceneId: grant.sceneId,
+    grantId: grant.grantId,
+    projectId: plan.projectId,
+    scopedCore: grant.scopedCore,
+    allowedActions: [...grant.allowedActions],
+    maxCount: grant.maxCount ?? plan.maxCount,
+    expiresAt: grant.expiresAt,
+    operationCount: plan.operations.length,
+  };
+}
+
+/**
+ * 执行一份计划并**回写进度到存档**(首次与续跑共用的一条执行核 —— 硬规矩 2:判定只有一份)。
+ *
+ * 判据:
+ *   - 起始跳过集 = 存档里那份记录的 `completedOperationIds`(**续跑跳过已建成**;首次为空);
+ *   - 每步落定后把成功建成的 operationId 收进集合;
+ *   - 收尾:全部建成 → 记录 status = `completed`(且保留已建成集);否则 `pending` +
+ *     记 `lastStoppedAt` / `lastStopCode`(如实记「停在哪一条」)。
+ *
+ * 存档**只**记进度事实(建成了哪几条),**不自带**「还能不能跑」的判断 —— 那仍由授权核现取现判。
+ */
+async function executeAndRecordProgress(
+  plan: UnattendedTaskPlan,
+  issued: IssuedUnattendedPlan,
+  actorId: string,
+  now: number,
+  store: ReturnType<typeof getUnattendedPlanStore>,
+): Promise<UnattendedExecutionReport> {
+  const record = store.get(plan.planId);
+  const completed = new Set<string>(record?.completedOperationIds ?? []);
+  const report = await executeUnattendedPlan(plan, issued, actorId, now, {
+    skipOperationIds: completed,
+    onStepSettled: (r) => {
+      if (r.ok && r.code !== "plan_expired") completed.add(r.operationId);
+    },
+  });
+  const allDone = plan.operations.every((op) => completed.has(op.operationId));
+  const status: UnattendedPlanStatus = allDone ? "completed" : "pending";
+  store.put({
+    planId: plan.planId,
+    sceneId: issued.sceneId,
+    projectId: plan.projectId,
+    grantId: issued.grantId,
+    operations: plan.operations,
+    maxCount: issued.maxCount,
+    createdAt: record?.createdAt ?? now,
+    status,
+    completedOperationIds: [...completed],
+    lastStoppedAt: allDone ? null : report.stoppedAt,
+    lastStopCode: allDone ? null : report.stopCode,
+  });
+  return report;
+}
 
 /**
  * **正式执行一份已批准的无人值守计划**(MC-059 用户可达通道的后一半)。
@@ -452,27 +567,193 @@ export async function runUnattendedPlanWithGrant(
       reason: `授权「${input.grantId}」不存在 / 已撤销 / 已过期 —— 需要重新批准这次无人值守计划。`,
     };
   }
-  // 从取回的授权重建执行端的 `IssuedUnattendedPlan`(只喂 executeUnattendedPlan 真读的字段:
-  // grantId 与 expiresAt 承重;其余如实带回,便于报告对账)。
+  // 从取回的授权重建执行端的 `IssuedUnattendedPlan`(与续跑入口**共用**同一份重建逻辑)。
   const plan: UnattendedTaskPlan = {
     ...input,
     ...(input.sceneId !== undefined ? { sceneId: input.sceneId } : {}),
     ttlMs: grant.expiresAt - now,
     actor: { kind: "user", id: "unattended.approval" },
   };
-  const issued: IssuedUnattendedPlan = {
-    planId: plan.planId,
-    sceneId: grant.sceneId,
-    grantId: grant.grantId,
-    projectId: plan.projectId,
-    scopedCore: grant.scopedCore,
-    allowedActions: [...grant.allowedActions],
-    maxCount: grant.maxCount ?? plan.maxCount,
-    expiresAt: grant.expiresAt,
-    operationCount: plan.operations.length,
-  };
-  const report = await executeUnattendedPlan(plan, issued, actorId, now);
+  const issued = issuedFromGrant(plan, grant, now);
+  // 首次执行也**回写进度**:计划跑到一半崩了,存档里那份记录带着 `completedOperationIds`,
+  // 下次开机就能列出来续跑(不是从头再跑一遍)。
+  const report = await executeAndRecordProgress(plan, issued, actorId, now, getUnattendedPlanStore());
   return { ok: true, kind: "ran", report };
+}
+
+/* ───────────────────── MC-059 残余 ④:跨重启 WAITING_APPROVAL 闭环 ───────────────────── */
+
+/**
+ * 一条**等待批准 / 待执行**计划的**跨重启视图** —— 重启后从存档读回,配它此刻的授权死活。
+ *
+ * `kind` 三态,调用方不必自己拼判据(判据只有一份,在 {@link listUnattendedPlans}):
+ *   - `waiting_approval` —— 记录在,但**授权取不到 / 已过期 / 已撤销 / 次数已用尽** →
+ *     这条计划需要**重新批准**(绝不复用一枚失效授权继续跑);
+ *   - `resumable` —— 记录在、授权仍有效、且**还有没建成的操作** → 可从**下一条**续跑;
+ *   - `completed` —— 所有操作都已建成(或记录已标记完成)。
+ *
+ * ⚠️ **过期 / 已撤销的绝不复活**:`waiting_approval` 只是「列出来让用户重新决定」,不是
+ * 「续跑入口放行」。续跑入口({@link resumeUnattendedPlanWithGrant})照样从 `GrantStore` 取
+ * 授权,**取不到即拒**——列表状态与执行闸是两条独立判定,列表宽松、执行严格。
+ */
+export interface PendingUnattendedPlanView {
+  planId: string;
+  sceneId: string;
+  projectId: string;
+  grantId: string;
+  /** 计划声明的操作总数。 */
+  operationCount: number;
+  /** **已建成**的操作数(跨重启从存档读回)。 */
+  completedCount: number;
+  /** 剩余未建成的操作 id(可续跑的就是这些)。 */
+  remainingOperationIds: string[];
+  /** 上面三态之一。 */
+  kind: "waiting_approval" | "resumable" | "completed";
+  /** 授权此刻到期时刻;授权取不到(已撤销 / 不存在)时为 `null`。 */
+  expiresAt: number | null;
+  createdAt: number;
+  /** 上次执行停在哪一条 / 为什么(没跑过或没停过为 `null`)。 */
+  lastStoppedAt: string | null;
+  lastStopCode: string | null;
+}
+
+/**
+ * **列出「等待批准 / 待执行」的计划**(MC-059 残余 ④:重启后读得回)。
+ *
+ * ## 判据(只有一处 —— 这里)
+ *
+ * 对存档里**每一条**记录(`UnattendedPlanStore.listAll`,含完成 / 放弃的)算一次:
+ *  1. 记录 `status === "abandoned"` → **不出现在列表里**(用户已明确放弃,不再提示);
+ *  2. 已建成的操作集 = `completedOperationIds`;剩余 = 声明里未建成的那些;
+ *  3. 剩余为空(或 status 已 `completed`)→ `completed`;
+ *  4. 否则,授权经 `getGrantStore().get(grantId, now)` 取回:取不到(不存在 / 已撤销 /
+ *     已过期)→ `waiting_approval`;取得到但 `maxCount` 已用尽(`countBudgetExhausted`)→
+ *     也 `waiting_approval`(授权核已判它「需重新批准」);取得到且有余量 → `resumable`。
+ *
+ * ⚠️ 授权死活一律走 `GrantStore.get` + 唯一预算判据 `countBudgetExhausted` —— **本函数不另写
+ * 一套「还能不能跑」**,与执行端核的是同一份。
+ *
+ * @param now 可注入时钟(缺省 `Date.now`)。
+ */
+export function listUnattendedPlans(now: number = Date.now()): PendingUnattendedPlanView[] {
+  const store = getUnattendedPlanStore();
+  const grantStore = getGrantStore();
+  const out: PendingUnattendedPlanView[] = [];
+  for (const rec of store.listAll()) {
+    if (rec.status === "abandoned") continue;
+    const completed = new Set(rec.completedOperationIds);
+    const remaining = rec.operations.filter((op) => !completed.has(op.operationId)).map((op) => op.operationId);
+    const grant = grantStore.get(rec.grantId, now);
+    let kind: PendingUnattendedPlanView["kind"];
+    if (remaining.length === 0 || rec.status === "completed") {
+      kind = "completed";
+    } else if (grant === null || countBudgetExhausted(grant.maxCount, grant.usedCount)) {
+      // 授权取不到 / 次数已用尽 —— 这条计划**需要重新批准**(绝不复活失效授权去续跑)。
+      kind = "waiting_approval";
+    } else {
+      kind = "resumable";
+    }
+    out.push({
+      planId: rec.planId,
+      sceneId: rec.sceneId,
+      projectId: rec.projectId,
+      grantId: rec.grantId,
+      operationCount: rec.operations.length,
+      completedCount: completed.size,
+      remainingOperationIds: remaining,
+      kind,
+      expiresAt: grant?.expiresAt ?? null,
+      createdAt: rec.createdAt,
+      lastStoppedAt: rec.lastStoppedAt,
+      lastStopCode: rec.lastStopCode,
+    });
+  }
+  return out;
+}
+
+/**
+ * **续跑一份等待中的无人值守计划**(MC-059 残余 ④:重启后继续执行)。
+ *
+ * ## 为什么入参只给 `planId`(不给计划正文,也不给授权内容)
+ *
+ * 计划的正文与授权 id **都已落盘**(`approveUnattendedPlan` 写、{@link listUnattendedPlans} 读)。
+ * 续跑时**宿主自己**从存档读回正文({@link UnattendedPlanStore.get})、从 `GrantStore` 取回授权
+ * (`get`)—— 调用方给不了、也不需要给正文(给了反而能偷换「续跑的是哪份计划」)。取不到记录
+ * (`no_record`)/ 取不到授权(`no_grant`)一律**明确拒绝、一步不建**(与「没有授权绝不执行」同一条
+ * 纪律,不是「退化到默认放行」)。这与 `sceneDeploy.resumeScene` 的取向一致:**续跑不重新发明正文**。
+ *
+ * ## 续跑仍走评审核 + 唯一业务命令(不是第二套执行)
+ *
+ * 见 {@link executeAndRecordProgress} —— 它与首次执行**共用**一条执行核,起始跳过集取自存档的
+ * `completedOperationIds`。已建成的操作**不重跑**(不重复外部副作用),`failed` / 未跑的重试。
+ *
+ * @param planId 要续跑的计划 id(存档里的键)。
+ * @param actorId 发起这次续跑的会话 / 主体 id(进执行报告,不参与判定)。
+ * @param now 可注入时钟(缺省 `Date.now`;既用于取授权,也用于判断计划是否过期)。
+ */
+export async function resumeUnattendedPlanWithGrant(
+  planId: string,
+  actorId: string,
+  now: number = Date.now(),
+): Promise<UnattendedRunOutcome> {
+  const store = getUnattendedPlanStore();
+  const rec: UnattendedPlanRecord | null = store.get(planId);
+  if (rec === null) {
+    return {
+      ok: false,
+      kind: "refused",
+      code: "no_record",
+      reason: `存档里没有计划「${planId}」—— 无从续跑。若这是一份全新计划,请走正常批准流程。`,
+    };
+  }
+  if (rec.status === "abandoned") {
+    return {
+      ok: false,
+      kind: "refused",
+      code: "abandoned",
+      reason: `计划「${planId}」已被明确放弃 —— 不续跑。要重新执行请走正常批准流程。`,
+    };
+  }
+  // 取回授权(**含失效态**:`get` 对「不存在 / 已撤销 / 已过期」一律回 null)。取不到 → 拒绝。
+  const grant = getGrantStore().get(rec.grantId, now);
+  if (grant === null) {
+    return {
+      ok: false,
+      kind: "refused",
+      code: "no_grant",
+      reason: `计划「${planId}」的授权「${rec.grantId}」不存在 / 已撤销 / 已过期 —— 需要重新批准后再续跑。`,
+    };
+  }
+  // 从存档的正文 + 取回的授权重建执行端输入(与首次执行共用同一条重建 + 执行核)。
+  const plan: UnattendedTaskPlan = {
+    planId: rec.planId,
+    ...(rec.sceneId !== undefined ? { sceneId: rec.sceneId } : {}),
+    projectId: rec.projectId,
+    operations: rec.operations,
+    ttlMs: grant.expiresAt - now,
+    maxCount: rec.maxCount,
+    actor: { kind: "user", id: "unattended.approval" },
+  };
+  const issued = issuedFromGrant(plan, grant, now);
+  const report = await executeAndRecordProgress(plan, issued, actorId, now, store);
+  return { ok: true, kind: "ran", report };
+}
+
+/**
+ * **明确放弃一份计划**(MC-059 残余 ④:可「继续执行**或**明确放弃」的那半)。
+ *
+ * 把存档里那条记录标成 `abandoned` —— 于是 {@link listUnattendedPlans} 不再列出它、
+ * {@link resumeUnattendedPlanWithGrant} 也拒绝续跑(`abandoned`)。**不撤销授权**(授权是独立
+ * 治理事实,由用户另行撤销;放弃的是「这份计划」,不是「这枚授权」),也不删记录(留痕可审计)。
+ *
+ * @returns `true` = 真的把一条**未放弃**的计划标记为放弃;`false` = 记录不存在或已放弃(幂等 no-op)。
+ */
+export function abandonUnattendedPlan(planId: string): boolean {
+  const store = getUnattendedPlanStore();
+  const rec = store.get(planId);
+  if (rec === null || rec.status === "abandoned") return false;
+  store.put({ ...rec, status: "abandoned" });
+  return true;
 }
 
 /**

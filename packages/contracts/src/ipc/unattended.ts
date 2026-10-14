@@ -106,6 +106,18 @@ export const UnattendedRunInputSchema = z.object({
   maxCount: z.number().int().positive(),
   /** 上一次 `unattended.approve` 签出的授权 id。 */
   grantId: z.string().min(1),
+  /**
+   * **发起者坐标**(MC-059 残余 ②)—— 渲染端坐在哪条会话里点的「执行」。它**不是**发起者
+   * 身份本身,只是一枚宿主**能核实**的坐标:宿主拿它去 `SessionRepo.get` 取回那条会话,取得到
+   * 才据此产出可信的发起者标识(`session:<id>`);取不到 = 一枚伪造的坐标 → **拒绝执行**,
+   * 绝不静默采信成一个身份字符串。
+   *
+   * ⚠️ 与 `actor` 一样**不给身份、只给坐标**:调用方给不了"我是谁",只能指一条**真实存在**
+   * 的会话(「用户本人发起的那个 UI 动作」的落点),身份由宿主产生(ARC-004:ActionContext
+   * 由宿主产生,不可让 Agent 模型参数填写)。省缺时宿主退回按 IPC 事件的 `sender` 派生
+   * (见 `ipc/unattended.ts`)。**绝不**让调用方直接填一个 `actorId` 字符串。
+   */
+  initiatorSessionId: z.string().min(1).optional(),
 });
 export type UnattendedRunInput = z.infer<typeof UnattendedRunInputSchema>;
 
@@ -139,3 +151,69 @@ export interface UnattendedExecutionReportWire {
 export type UnattendedRunIpcResult =
   | { ok: false; kind: "refused"; code: string; reason: string }
   | { ok: true; kind: "ran"; report: UnattendedExecutionReportWire };
+
+/* ─────────── 【MC-059 残余 ④】跨重启:列出等待中的计划 / 续跑 / 放弃 ─────────── */
+
+/**
+ * 一条**等待批准 / 待执行**计划的跨重启视图(过 IPC 的形状;与
+ * `PendingUnattendedPlanView` 同形)。宿主在**重启后**从计划存档 + `GrantStore` 现取现算。
+ *
+ * `kind` 三态由宿主算好(判据只有一处),调用方不必自己拼:
+ *  - `waiting_approval` —— 授权取不到 / 已过期 / 已撤销 / 次数已用尽 → 需**重新批准**;
+ *  - `resumable` —— 授权仍有效、且还有没建成的操作 → 可**续跑**(从下一条起);
+ *  - `completed` —— 所有操作都已建成。
+ */
+export interface PendingUnattendedPlanWire {
+  planId: string;
+  sceneId: string;
+  projectId: string;
+  grantId: string;
+  /** 计划声明的操作总数。 */
+  operationCount: number;
+  /** **已建成**的操作数(跨重启从存档读回)。 */
+  completedCount: number;
+  /** 剩余未建成的操作 id(可续跑的就是这些)。 */
+  remainingOperationIds: string[];
+  /** 上面三态之一。 */
+  kind: "waiting_approval" | "resumable" | "completed";
+  /** 授权此刻到期时刻;授权取不到(已撤销 / 不存在)时为 `null`。 */
+  expiresAt: number | null;
+  createdAt: number;
+  /** 上次执行停在哪一条 / 为什么(没跑过或没停过为 `null`)。 */
+  lastStoppedAt: string | null;
+  lastStopCode: string | null;
+}
+
+/** 列出等待中计划的结果 —— **只读**(不执行任何一步)。 */
+export interface UnattendedListIpcResult {
+  plans: PendingUnattendedPlanWire[];
+}
+
+/**
+ * 续跑入参 —— **只给 `planId`**:计划正文与授权 id 都已落盘,由宿主从存档 + `GrantStore`
+ * 自己取回。调用方给不了正文(给了反而能偷换「续跑的是哪份计划」)。
+ */
+export const UnattendedResumeInputSchema = z.object({
+  /** 要续跑的计划 id(存档里的键)。 */
+  planId: z.string().min(1),
+  /**
+   * **发起者坐标**(与 `unattended.run` 的 `initiatorSessionId` 同义、同一条纪律)—— 渲染端
+   * 坐在哪条会话里点的「续跑」。只是一枚宿主**能核实**的坐标(取得到才产出可信标识),省缺时
+   * 宿主退回按 IPC 事件的 `sender` 派生。**绝不让调用方自填身份。**
+   */
+  initiatorSessionId: z.string().min(1).optional(),
+});
+export type UnattendedResumeInput = z.infer<typeof UnattendedResumeInputSchema>;
+
+/** 放弃入参 —— 把一条等待中的计划**明确放弃**(不再列出、不再可续跑)。 */
+export const UnattendedAbandonInputSchema = z.object({
+  planId: z.string().min(1),
+});
+export type UnattendedAbandonInput = z.infer<typeof UnattendedAbandonInputSchema>;
+
+/** 放弃结果 —— 幂等:`abandoned` 为 `false` 时表示记录不存在 / 已放弃(不是错误)。 */
+export interface UnattendedAbandonIpcResult {
+  planId: string;
+  /** 这次调用是否真的把一条**未放弃**的计划标记为放弃(`false` = 记录不存在或已放弃)。 */
+  abandoned: boolean;
+}

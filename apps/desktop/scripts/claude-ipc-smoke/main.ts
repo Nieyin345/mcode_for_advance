@@ -30,7 +30,7 @@
  *
  * Run: scripts/claude-ipc-smoke/run.sh
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
@@ -52,14 +52,25 @@ import {
   createSessionAndSend,
 } from "@main/appServices/sessionCommands.js";
 import { GrantStore } from "@main/appControl/grantStore.js";
-import { getGrantStore, setGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { getGrantStore, setGrantStore, assembleGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import {
   UnattendedPlanRefusedError,
   executeUnattendedPlan,
   issueUnattendedTaskPlan,
   unattendedPlanDigest,
+  listUnattendedPlans,
+  resumeUnattendedPlanWithGrant,
+  abandonUnattendedPlan,
   type UnattendedTaskPlan,
 } from "@main/appServices/unattendedTaskPlan.js";
+import {
+  assembleUnattendedPlanStore,
+  setUnattendedPlanStore,
+  getUnattendedPlanStore,
+  unattendedPlanStorePath,
+  parseUnattendedPlans,
+} from "@main/appServices/unattendedPlanStore.js";
+import { resolveUnattendedInitiator } from "@main/ipc/unattended.js";
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import type { ActorRef, CoreIntent } from "@contracts/policyEngine";
 
@@ -2417,6 +2428,226 @@ console.log("\n19e. 【MC-059】无人值守计划的三层 IPC 入口 —— �
   setRendererPortForTest(null);
   delete (globalThis as Record<string, unknown>).window;
   rmSync(UTPE_DIR, { recursive: true, force: true });
+}
+
+
+/* ── 19f. 【MC-059 残余 ②④】发起者身份可追溯 + 跨重启 WAITING_APPROVAL 闭环 ── */
+
+/**
+ * ## 这条守的是什么(§19d/§19e 只证了"能签能跑",没证这两位)
+ *
+ * 台账 MC-059 的两条 remaining:
+ *
+ *  **② 发起者身份** —— §19e 的 handler 把 `run` 的 `actorId` **写死**成 `"unattended.ipc"`,
+ *  一个每次运行都一样的常量,追不到「用户本人在哪条会话里点的执行」。本切片改成由**宿主**
+ *  从一枚**可信坐标**产出:渲染端给的 `initiatorSessionId` 只是一枚**坐标**(宿主拿它去
+ *  `SessionRepo.get` 核实那条会话真的存在,存在才认,产出 `session:<id>`);核不到 = 伪造的
+ *  坐标 → **拒绝执行**(`unknown_initiator`),**绝不**当成一个能用的身份字符串放行。缺省时
+ *  退回按 IPC 事件的 `sender` 派生 `desktop:wc:<id>` —— 同样是宿主事实。**调用方给不了身份。**
+ *
+ *  **④ 跨重启 WAITING_APPROVAL** —— §19e 的批准与执行在同一个进程生命周期里;进程一关,
+ *  授权的 sceneId 还在盘上,但「它对应哪份计划」无从读回。本切片把**计划正文**落盘(独立文件
+ *  `<数据根>/appControl/unattended-plans.json`,与授权同源),于是重启后能**读回**、能**列出**
+ *  「等待批准 / 待执行」、能**续跑**(跳过已建成,只跑剩下的)或**明确放弃**。过期 / 已撤销的
+ *  绝不复活(列表判 `waiting_approval`、续跑取不到授权即拒)。
+ *
+ * ## 承重判据(缺一即假绿)
+ *
+ *  - 发起者:伪造坐标 → `unknown_initiator` + 一步不建;真实坐标 → 执行报告的 actorId 是
+ *    `session:<id>`(不再是常量);源码级:handler 里不再出现 `"unattended.ipc"`。
+ *  - 跨重启:**从同一数据根重新装配 store**(进程内状态全丢)→ 列表读得出那条计划、判 `resumable`、
+ *    剩 `[op3]`;**续跑只对剩下的 op3 调一次业务命令**(计数是判据 —— 已建成的两步**没重跑**);
+ *    撤销后列表判 `waiting_approval`、续跑拒 `no_grant`;`abandon` 后不再列出、续跑拒 `abandoned`;
+ *    坏 JSON → 空列表(fail-safe)。
+ */
+console.log("\n19f. 【MC-059 残余】发起者可追溯(②)+ 计划跨重启待执行 / 续跑 / 放弃(④)");
+
+{
+  const UTPF_DIR = mkdtempSync(join(tmpdir(), "mcode-utpf-proj-"));
+  const mkProject = (id: string, dir: string): void => {
+    ProjectRepo.create({
+      id, name: `无人值守跨重启项目 ${id}`, path: dir, archived: false, group: null,
+      sortOrder: 9, pinnedAt: null, createdAt: Date.now(), updatedAt: Date.now(),
+    } as never);
+  };
+  const headless = (): void => { setRendererPortForTest(null); delete (globalThis as Record<string, unknown>).window; };
+  /** 一条合法计划声明(与 §19e 同形,但不带 method —— method 由 handler 写死)。 */
+  const planBody = (projectId: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    planId: `plan-${projectId}`,
+    projectId,
+    operations: [
+      { operationId: "op1", title: "跨重启第一步", prompt: "第一步" },
+      { operationId: "op2", title: "跨重启第二步", prompt: "第二步" },
+    ],
+    ttlMs: 600_000,
+    maxCount: 2,
+    ...over,
+  });
+  // 计划存档真的写到 <数据根>/appControl/unattended-plans.json(与授权同源、独立文件)。
+  const planStorePath = unattendedPlanStorePath(DATA);
+
+  // ── ② 发起者身份:从可信坐标产出(单元级:解析口本身) ──
+  check("★ ④:unattendedPlans.list 通道真的注册进了 handler 表", handlers.has(IPC.UNATTENDED_PLANS_LIST));
+  check("★ ④:unattendedPlans.resume 通道真的注册进了 handler 表", handlers.has(IPC.UNATTENDED_PLANS_RESUME));
+  check("★ ④:unattendedPlans.abandon 通道真的注册进了 handler 表", handlers.has(IPC.UNATTENDED_PLANS_ABANDON));
+  mkProject("p_utpf_id", UTPF_DIR);
+  headless();
+  const realSid = mkSession("sess_initiator_real");
+  eq("★ ②:给了真实会话坐标 → 产出 session:<id>",
+    resolveUnattendedInitiator(null, "sess_initiator_real"), `session:${realSid}`);
+  eq("★ ②:给了不存在的会话坐标 → null(拒绝,不采信)",
+    resolveUnattendedInitiator(null, "ghost-no-such-session"), null);
+  eq("★ ②:没给坐标 → 按 IPC 事件 sender 派生",
+    resolveUnattendedInitiator({ sender: { id: 7 } } as never, undefined), "desktop:wc:7");
+  eq("★ ②:没坐标也没 sender → 稳定兜底 desktop",
+    resolveUnattendedInitiator(null, undefined), "desktop");
+
+  // ── ② handler 走真路:伪造的发起会话 → 拒绝执行,一步不建。 ──
+  fresh(); setGrantStore(null); setUnattendedPlanStore(null);
+  assembleGrantStore(DATA); assembleUnattendedPlanStore(DATA); headless();
+  {
+    const granted = await call<{ ok: boolean; grantId?: string }>(IPC.UNATTENDED_APPROVE, planBody("p_utpf_id"));
+    const before = SessionRepo.listByProject("p_utpf_id").length;
+    const refused = await call<{ ok: boolean; kind: string; code?: string }>(
+      IPC.UNATTENDED_RUN,
+      { ...planBody("p_utpf_id"), grantId: granted.grantId, initiatorSessionId: "ghost-no-such-session" },
+    );
+    check("★ ②:run 用伪造的发起会话 → refused", refused.ok === false && refused.kind === "refused", refused);
+    eq("★ ②:拒绝码 unknown_initiator", refused.code, "unknown_initiator");
+    eq("★ ②:伪造发起者时一条会话都没建(不静默放行)", SessionRepo.listByProject("p_utpf_id").length, before);
+  }
+
+  // ── ② handler 走真路:真实的发起会话 → ran,执行报告的发起者 = session:<id>。 ──
+  {
+    const granted = await call<{ ok: boolean; grantId?: string }>(IPC.UNATTENDED_APPROVE, planBody("p_utpf_id"));
+    const ran = await call<{ ok: boolean; kind: string }>(
+      IPC.UNATTENDED_RUN,
+      { ...planBody("p_utpf_id"), grantId: granted.grantId, initiatorSessionId: realSid },
+    );
+    check("★ ②:run 用真实发起会话 → ran", ran.ok === true && ran.kind === "ran", ran);
+    eq("★ ②:执行报告里的发起者 = session:<id>(不再是写死的 unattended.ipc)",
+      __lastActionContext()?.actorId, `session:${realSid}`);
+  }
+
+  // ── ② 源码级:handler 不再写死 actorId 常量,而走宿主核实的解析口。 ──
+  {
+    const ipcRaw = readFileSync(join(process.cwd(), "src/main/ipc/unattended.ts"), "utf8");
+    // 剥掉注释再判 —— 注释里**正当**地记着"从前是 `"unattended.ipc"` 常量"这段历史,
+    // 判据要落在**活代码**上(与 policy-engine-smoke 的 `code` 剥注释同款)。
+    const ipcSrc = ipcRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    check("★ ②:handler 活代码里不再把 actorId 写死为 unattended.ipc", !/unattended\.ipc/.test(ipcSrc),
+      ipcSrc.match(/unattended\.ipc[^\n]*/g));
+    check("★ ②:handler 走宿主核实的发起者解析口 resolveUnattendedInitiator",
+      /resolveUnattendedInitiator\s*\(/.test(ipcSrc), ipcSrc.match(/resolveUnattendedInitiator[^\n]*/g));
+  }
+
+  // ── ④ 跨重启:签发 → 落盘 → "重启"读回 → 待执行列表 → 续跑(跳过已建成)。 ──
+  mkProject("p_utpf_restart", UTPF_DIR);
+  headless();
+  {
+    fresh(); setGrantStore(null); setUnattendedPlanStore(null);
+    assembleGrantStore(DATA); assembleUnattendedPlanStore(DATA); headless();
+    // 3 步计划:第三步带对不上的修订号 → 头两步建成、第三步停住(制造"执行到一半")。
+    const body = planBody("p_utpf_restart", {
+      planId: "plan_restart", maxCount: 3,
+      operations: [
+        { operationId: "op1", title: "重启第一步", prompt: "a" },
+        { operationId: "op2", title: "重启第二步", prompt: "b" },
+        { operationId: "op3", title: "重启第三步", prompt: "c", expectedRevision: "999" },
+      ],
+    });
+    const granted = await call<{ ok: boolean; kind: string; grantId?: string }>(IPC.UNATTENDED_APPROVE, body);
+    check("★ ④:approve → granted", granted.ok === true && granted.kind === "granted", granted);
+
+    // 计划正文真落盘(与授权同源、独立文件;不是塞进 grants.json,也不会被授权 flush 冲掉)。
+    check("★ ④:计划正文落到 <数据根>/appControl/unattended-plans.json", existsSync(planStorePath), planStorePath);
+    const parsedOnDisk = parseUnattendedPlans(readFileSync(planStorePath, "utf8"));
+    eq("★ ④:落盘记录里这条计划是 pending", parsedOnDisk.find((p) => p.planId === "plan_restart")?.status, "pending");
+    eq("★ ④:授权文件与计划文件是两份(不混在同一份里)",
+      planStorePath !== join(DATA, "appControl", "grants.json"), true);
+
+    // 首次执行:两步成、第三步停在 revision_conflict —— 制造"执行到一半"。
+    const firstRun = await call<{ ok: boolean; kind: string; report?: { stoppedAt: string | null; stopCode: string | null } }>(
+      IPC.UNATTENDED_RUN, { ...body, grantId: granted.grantId, initiatorSessionId: realSid },
+    );
+    check("★ ④:首次执行 → ran", firstRun.ok === true && firstRun.kind === "ran", firstRun.kind);
+    eq("★ ④:首次执行停在 op3", firstRun.report?.stoppedAt, "op3");
+    eq("★ ④:停住码 revision_conflict", firstRun.report?.stopCode, "revision_conflict");
+    const builtAfterFirst = SessionRepo.listByProject("p_utpf_restart").length;
+    eq("★ ④:首次执行建出 2 条会话(前两步)", builtAfterFirst, 2);
+
+    // ── "重启":从**同一数据根**重新装配两个 store —— 进程内状态全丢,只从盘上读回。 ──
+    setGrantStore(null);
+    setUnattendedPlanStore(null);
+    assembleUnattendedPlanStore(DATA); // 读回 unattended-plans.json
+    assembleGrantStore(DATA);          // 读回 grants.json
+
+    // 重启后列得出「待执行」:这条计划 resumable、已完成 2、剩 op3。
+    const listed = listUnattendedPlans();
+    const view = listed.find((p) => p.planId === "plan_restart");
+    check("★ ④:重启后列得出这条计划", view !== undefined, listed.map((p) => p.planId));
+    eq("★ ④:重启后它是 resumable(授权仍有效 + 有剩下的步)", view?.kind, "resumable");
+    eq("★ ④:重启后已完成数 = 2", view?.completedCount, 2);
+    same("★ ④:重启后剩余 = [op3]", view?.remainingOperationIds, ["op3"]);
+
+    // 续跑:跳过已建成的 op1/op2(不重跑),只重试剩下的 op3。
+    __resetCreateSessionAndSendCount();
+    const resumed = await resumeUnattendedPlanWithGrant("plan_restart", `session:${realSid}`);
+    check("★ ④:续跑 → ran", resumed.ok === true && resumed.kind === "ran", resumed.kind);
+    // ★★ 承重:续跑只对**剩下的 op3** 调一次业务命令 —— op1/op2 被跳过、没重跑。判据是**调用计数**
+    //     (状态本来就在盘上,证明不了它没重跑;§18 的 scene resume 同款教训)。
+    eq("★★ ④:续跑只重试了剩下的 op3(业务命令只被调一次 op3)", __createSessionAndSendCount(), 1);
+    eq("★ ④:续跑没重跑已建成的两步(会话数不变)", SessionRepo.listByProject("p_utpf_restart").length, builtAfterFirst);
+
+    // 撤销授权 → 列表判 waiting_approval(绝不复活);续跑拒 no_grant,一步不建。
+    getGrantStore().revoke(granted.grantId!);
+    eq("★ ④:授权被撤销 → 列表判 waiting_approval(需重新批准)",
+      listUnattendedPlans().find((p) => p.planId === "plan_restart")?.kind, "waiting_approval");
+    const nBefore = SessionRepo.listByProject("p_utpf_restart").length;
+    const refusedResume = await resumeUnattendedPlanWithGrant("plan_restart", "me");
+    check("★ ④:撤销后续跑 → refused", refusedResume.ok === false && refusedResume.kind === "refused", refusedResume);
+    if (refusedResume.ok === false && refusedResume.kind === "refused") eq("★ ④:拒绝码 no_grant", refusedResume.code, "no_grant");
+    eq("★ ④:撤销后一条会话都没建", SessionRepo.listByProject("p_utpf_restart").length, nBefore);
+  }
+
+  // ── ④ 放弃 + 过期:abandon 后不再列出 / 续跑拒 abandoned;过期授权判 waiting_approval。 ──
+  mkProject("p_utpf_abandon", UTPF_DIR);
+  headless();
+  {
+    fresh(); setGrantStore(null); setUnattendedPlanStore(null);
+    assembleGrantStore(DATA); assembleUnattendedPlanStore(DATA); headless();
+    await call(IPC.UNATTENDED_APPROVE, planBody("p_utpf_abandon"));
+    eq("★ ④:放弃前这条计划在列表里(前提)", listUnattendedPlans().some((p) => p.planId === "plan-p_utpf_abandon"), true);
+    eq("★ ④:abandon 返回 abandoned=true(真的标记了)", abandonUnattendedPlan("plan-p_utpf_abandon"), true);
+    eq("★ ④:放弃后不再列出(用户已明确放弃,不再提示)", listUnattendedPlans().some((p) => p.planId === "plan-p_utpf_abandon"), false);
+    const r = await resumeUnattendedPlanWithGrant("plan-p_utpf_abandon", "me");
+    check("★ ④:放弃后续跑 → refused", r.ok === false && r.kind === "refused", r);
+    if (r.ok === false && r.kind === "refused") eq("★ ④:拒绝码 abandoned", r.code, "abandoned");
+    eq("★ ④:abandon 幂等(再放弃一个已放弃的 = false)", abandonUnattendedPlan("plan-p_utpf_abandon"), false);
+
+    // 过期授权:签一个短有效期计划,在**未来**时刻列 / 续跑 → waiting_approval / no_grant。
+    await call(IPC.UNATTENDED_APPROVE, planBody("p_utpf_abandon", { planId: "plan_expiring", ttlMs: 1_000 }));
+    const future = Date.now() + 10_000_000;
+    eq("★ ④:授权过期 → 列表判 waiting_approval(过期绝不复活)",
+      listUnattendedPlans(future).find((p) => p.planId === "plan_expiring")?.kind, "waiting_approval");
+    const expiredResume = await resumeUnattendedPlanWithGrant("plan_expiring", "me", future);
+    check("★ ④:过期后续跑 → refused", expiredResume.ok === false && expiredResume.kind === "refused", expiredResume);
+    if (expiredResume.ok === false && expiredResume.kind === "refused") eq("★ ④:过期拒绝码 no_grant", expiredResume.code, "no_grant");
+
+    // 读不到记录 / 坏 JSON 的 fail-safe。
+    const noRec = await resumeUnattendedPlanWithGrant("no-such-plan", "me");
+    check("★ ④:续跑一条不存在的计划 → refused", noRec.ok === false && noRec.kind === "refused", noRec);
+    if (noRec.ok === false && noRec.kind === "refused") eq("★ ④:拒绝码 no_record", noRec.code, "no_record");
+    same("★ ④:坏 JSON → 空列表(fail-safe,不崩、不当成有效计划)", parseUnattendedPlans("{ 这不是 json"), []);
+    same("★ ④:null(文件不存在)→ 空列表", parseUnattendedPlans(null), []);
+  }
+
+  // 复位,免得把落了盘的示例计划带进后续用例。
+  setUnattendedPlanStore(null);
+  setGrantStore(null);
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  rmSync(UTPF_DIR, { recursive: true, force: true });
 }
 
 

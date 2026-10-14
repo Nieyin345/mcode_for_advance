@@ -121,6 +121,12 @@ const pin: Array<[string, string]> = [
   // `write` —— agent 能弹审批卡去**批准一个会真的建会话 / 发首条消息的计划**,那是死角。钉 blocked。
   ["unattended.approve", "blocked"],
   ["unattended.run", "blocked"],
+  // 【MC-059 残余 ④】计划的跨重启面(列出等待中 / 续跑 / 放弃)—— 续跑会在本机真的建会话、
+  // 放弃是治理动作、列表读的是治理事实,三条一律不开给 agent。动作名不在 EXPLICIT 表里,
+  // 若不钉 blocked,`policyFor` 的动词兜底会把 `...resume` / `...abandon` 猜成 `write`。
+  ["unattendedPlans.list", "blocked"],
+  ["unattendedPlans.resume", "blocked"],
+  ["unattendedPlans.abandon", "blocked"],
   ["plugins.installGit", "danger"],
   ["mcp.save", "danger"],
   ["hooks.save", "danger"],

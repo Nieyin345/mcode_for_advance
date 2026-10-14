@@ -988,6 +988,14 @@ const api = {
     approve: ((input) => ipcRenderer.invoke(IPC.UNATTENDED_APPROVE, input)) as RpcMap["unattended.approve"],
     run: ((input) => ipcRenderer.invoke(IPC.UNATTENDED_RUN, input)) as RpcMap["unattended.run"],
   },
+  // 无人值守计划的**跨重启**面(MC-059 残余 ④):列出等待批准 / 待执行的计划、续跑、放弃。
+  // 独立命名空间(不塞进上面的 `unattended` —— 那会强制渲染端 `webApi.ts` 同步补项,而它是
+  // 手机端**故意不做**的一块;独立命名空间在 webApi 的 Proxy 兜底里自然变 unsupported)。
+  unattendedPlans: {
+    list: (() => ipcRenderer.invoke(IPC.UNATTENDED_PLANS_LIST)) as RpcMap["unattendedPlans.list"],
+    resume: ((input) => ipcRenderer.invoke(IPC.UNATTENDED_PLANS_RESUME, input)) as RpcMap["unattendedPlans.resume"],
+    abandon: ((input) => ipcRenderer.invoke(IPC.UNATTENDED_PLANS_ABANDON, input)) as RpcMap["unattendedPlans.abandon"],
+  },
   memory: {
     assistant: ((input) => ipcRenderer.invoke(IPC.MEMORY_ASSISTANT, input)) as RpcMap["memory.assistant"],
     manage: ((input) => ipcRenderer.invoke(IPC.MEMORY_MANAGE, input)) as RpcMap["memory.manage"],
