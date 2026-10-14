@@ -226,10 +226,18 @@ try {
       bridgeSrc.includes("visionRelayConfigured: () => relay.configured()"),
   );
   // 装配点也得真的登记 —— 登记口是模块级单例,"定义了但没人 set"是最典型的假绿。
-  const mainSrc = readFileSync(resolve(process.cwd(), "src/main/index.ts"), "utf8");
+  // ⚠️ 装配序列已从 `index.ts` **抽进** `startup/assembleStartup.ts`(为了给启动链补无头回归网,
+  // 见 startup-wiring-smoke)。所以这里要**两处都看**:
+  //   ① 装配函数里真的 `setVisionRelayImpl(...)`(登记口是模块级单例,"定义了没人 set"最典型的假绿);
+  //   ② `index.ts` **真的调了**那个装配函数 —— 否则成了「抽出去没人接线」的另一种假绿。
+  // **先剥注释再匹配** —— 否则那句解释性注释里的 `assembleStartup()` 就命中了,等于用注释
+  // 冒充接线(正是本断言要防的假绿)。只认**真调用**:剥注释后仍出现 `assembleStartup({`。
+  const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  const mainSrc = stripComments(readFileSync(resolve(process.cwd(), "src/main/index.ts"), "utf8"));
+  const startupSrc = readFileSync(resolve(process.cwd(), "src/main/startup/assembleStartup.ts"), "utf8");
   check(
     "★ 应用装配时真的登记了中继实现(不是只定义了登记口)",
-    mainSrc.includes("setVisionRelayImpl(") && mainSrc.includes("visionRelayConfigured"),
+    startupSrc.includes("setVisionRelayImpl(") && /assembleStartup\(\{/.test(mainSrc),
   );
   const claudeSrc2 = readFileSync(resolve(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
   const codexSrc = readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");

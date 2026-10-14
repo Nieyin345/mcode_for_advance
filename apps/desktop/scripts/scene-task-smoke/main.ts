@@ -727,11 +727,16 @@ console.log("\nARC-013 步②:场景任务运行期入口 —— 装配 + 诚实
   );
   const ctorSites = [...code.matchAll(/new SceneTaskRegistry\(/g)].length;
   check("★ new SceneTaskRegistry 只出现在装配/复位默认上", ctorSites === 2, ctorSites);
-  // 真实调用端的落点:启动路径装配(index.ts)引用 assembleSceneRuntime。**先剥注释**,
-  // 否则一句被注释掉的调用也能骗过正则 —— 那正是「没接线却显示已接线」的假绿。
-  const idx = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8");
-  const idxCode = idx.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-  check("★ 启动路径**真的**装配了场景任务运行期入口(真实调用端,不是注释)", /^\s*assembleSceneRuntime\(\);/m.test(idxCode));
+  // ⚠️ 装配序列已从 `index.ts` **抽进** `startup/assembleStartup.ts`(见 startup-wiring-smoke)。
+  // **先剥注释**再匹配(否则一句被注释掉的调用也能骗过正则 —— 那正是「没接线却显示已接线」的假绿);
+  // 并且要确认 `index.ts` **真的调了**那个装配函数,防「抽出去没人接线」。
+  const strip = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  const startupCode = strip(readFileSync(join(process.cwd(), "src/main/startup/assembleStartup.ts"), "utf8"));
+  const idxCode = strip(readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8"));
+  check(
+    "★ 启动路径**真的**装配了场景任务运行期入口(真实调用端,不是注释)",
+    /^\s*assembleSceneRuntime\(\);/m.test(startupCode) && /assembleStartup\(/.test(idxCode),
+  );
 }
 
 /* ─────────────────── 16. ARC-013 步③:场景总预算接到真实派发(起前 reserve、收轮 settle) ───────────────────
