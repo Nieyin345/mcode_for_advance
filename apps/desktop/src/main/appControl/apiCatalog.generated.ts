@@ -2572,6 +2572,20 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ engine: 'claude' | 'codex' | 'pi'; groups: ToolUsageGroup[]; totalEstTokens: number }"
  },
  {
+  "method": "unattended.approve",
+  "channel": "unattended:approve",
+  "doc": "【MC-059】**用户签发无人值守任务计划的计划级授权** —— 用户在无人值守计划预览页点「批准」的落点。宿主把一份有界操作序列(`session.create`)铸成一枚绑定目标项目权威路径、签发主体(**写死为 user**)、有效期、次数上限的计划级授权。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(批准主体必须是用户本人);手机端 `webApi.ts` 显式 unsupported。",
+  "input": "{ projectId: string // 这些操作跑在**哪个项目**里(权威路径由签发口从项目行解析,不采信调用方给的路径)。; ttlMs: number // 授权有效期的毫秒数(签发口只拒非正数;具体上限由签发口策略定)。; planId: string // 一次批准 / 执行的稳定 id(重试是同一 id 的覆盖,不是新计划)。; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[] // 有界的操作序列(至少一条)。; maxCount: number // 次数量上限(签发口要求 ≥ 操作条数)。 }",
+  "output": "{ ok: true; kind: 'granted'; planId: string; grantId: string; projectId: string; scopedProjectPath: string // 授权钉住的权威资源路径(= 目标项目规范化后的 `projectPath`)。; maxCount: number; operationCount: number; expiresAt: number } | { ok: false; kind: 'refused'; code: string; …"
+ },
+ {
+  "method": "unattended.run",
+  "channel": "unattended:run",
+  "doc": "【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。",
+  "input": "{ projectId: string; grantId: string // 上一次 `unattended.approve` 签出的授权 id。; planId: string; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[]; maxCount: number }",
+  "output": "{ ok: false; kind: 'refused'; code: string; reason: string } | { ok: true; kind: 'ran'; report: UnattendedExecutionReportWire }"
+ },
+ {
   "method": "usage.stats",
   "channel": "usage:stats",
   "doc": "Aggregate the persisted per-turn usage history into summary / per-model / per-day views for the requested time range. Read-only.",

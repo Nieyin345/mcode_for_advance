@@ -116,6 +116,11 @@ const pin: Array<[string, string]> = [
   // 能弹审批卡去**批准一个会在本机建资源的计划**,那是死角。钉在 blocked。
   ["scene.approve", "blocked"],
   ["scene.apply", "blocked"],
+  // 【MC-059】无人值守任务计划的两条**写**通道(= 「用户点头批准这份计划」这件事的落点)。
+  // 与 scene.* 同一条纪律:它们不在 EXPLICIT 表里,若不在 BLOCKED 表就会被动词兜底猜成
+  // `write` —— agent 能弹审批卡去**批准一个会真的建会话 / 发首条消息的计划**,那是死角。钉 blocked。
+  ["unattended.approve", "blocked"],
+  ["unattended.run", "blocked"],
   ["plugins.installGit", "danger"],
   ["mcp.save", "danger"],
   ["hooks.save", "danger"],

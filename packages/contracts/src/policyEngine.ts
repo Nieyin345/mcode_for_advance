@@ -129,6 +129,25 @@ export interface Grant {
   revoked?: boolean;
 }
 
+/**
+ * **次数预算用尽没有** —— 「批了几次就只能是几次」那条纪律的**唯一一份实现**。
+ *
+ * 判据只有一句(`used >= limit`),但它是两处**同一类**约束的公共落点:
+ *   - ARC-004 的计划级授权 `Grant.maxCount` / `usedCount`(主进程 `policyEngine.evaluate`);
+ *   - 【MC-061】主机 hook 授权 `HostHookGrant.maxRuns` / `usedRuns`(由宿主 HookRunner 逐次记账)。
+ *
+ * 两处各写一遍的话,迟早分家 —— 而分家的表现是「某一路的上限比声明多一次 / 少一次」,
+ * 只在计数里看得出,是最难查的一类坏。所以判据收在这里,两边都调它。
+ *
+ * `limit` 未声明(`undefined`)= **不限**,永不用尽(与 `maxCount` / `maxRuns` 的缺省语义一致);
+ * `used` 缺省按 `0`(还没用过)。**声明了 0 也立即用尽**(`0 >= 0`)—— 那是「一次都不许」,
+ * 与「不限」是两件事。
+ */
+export function countBudgetExhausted(limit: number | undefined, used: number | undefined): boolean {
+  if (limit === undefined) return false;
+  return (used ?? 0) >= limit;
+}
+
 export type PolicyVerdict = "allow" | "require-approval" | "deny";
 
 /** 判定结果。 */

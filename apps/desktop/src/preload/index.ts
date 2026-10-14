@@ -981,6 +981,13 @@ const api = {
     approve: ((input) => ipcRenderer.invoke(IPC.SCENE_APPROVE, input)) as RpcMap["scene.approve"],
     apply: ((input) => ipcRenderer.invoke(IPC.SCENE_APPLY, input)) as RpcMap["scene.apply"],
   },
+  unattended: {
+    // 无人值守任务计划:用户签发计划级授权 + 正式执行。**只有桌面渲染端**够得到
+    // (agent 侧 policy.ts 判 blocked,mobile 的 webApi 里显式 unsupported)—— 批准一份会
+    // 真的建会话 / 发首条的计划,是「用户点头」这件事的落点。
+    approve: ((input) => ipcRenderer.invoke(IPC.UNATTENDED_APPROVE, input)) as RpcMap["unattended.approve"],
+    run: ((input) => ipcRenderer.invoke(IPC.UNATTENDED_RUN, input)) as RpcMap["unattended.run"],
+  },
   memory: {
     assistant: ((input) => ipcRenderer.invoke(IPC.MEMORY_ASSISTANT, input)) as RpcMap["memory.assistant"],
     manage: ((input) => ipcRenderer.invoke(IPC.MEMORY_MANAGE, input)) as RpcMap["memory.manage"],

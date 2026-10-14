@@ -83,7 +83,16 @@ const BLOCKED: Record<string, string> = {
   // 的动词兜底会按 `approve` / `apply` 猜 —— `apply` 会落到兜底 `write`(弹卡),`approve`
   // 同样落到 `write`。那意味着 agent 能弹出审批卡去批准一个计划 —— 这正是要堵的死角。
   "scene.approve": "场景部署的计划级授权只能由用户在预览页本人批准",
-  "scene.apply": "场景部署只能由用户在预览页批准后执行"
+  "scene.apply": "场景部署只能由用户在预览页批准后执行",
+  // 【MC-059】无人值守任务计划的两条**写**通道 —— 与 `scene.approve` / `scene.apply` 完全
+  // 同一条纪律:批准一份会**真的建会话 / 发首条消息**的计划,是「用户点头」这件事本身。
+  // agent 任何理由都不该自己批自己的计划(批了就等于自己给自己授权去建会话),故直接
+  // **blocked**,让 `app_api_call` 够不到;真正够得到的只有桌面渲染端。
+  // ⚠️ 这两条的动词(`approve` / `run`)不在 `EXPLICIT` 表里 —— 若不显式钉 blocked,
+  // `policyFor` 的动词兜底会把它们猜成 `write`(弹卡),那意味着 agent 能弹审批卡去批准一个
+  // 计划 —— 这正是要堵的死角。
+  "unattended.approve": "无人值守任务计划的授权只能由用户在计划预览页本人批准",
+  "unattended.run": "无人值守任务计划只能由用户批准后执行"
 };
 
 const DANGER: Record<string, string> = {
@@ -311,6 +320,9 @@ export const DOMAIN_LABELS: Record<string, string> = {
   monitoring: "监控总览",
   projectInit: "项目初始化模板:列出、读、存、删、预览、应用",
   scene: "场景:校验候选声明、编译变更计划、部署前能力预检(只读,不执行)",
+  // 【MC-059】无人值守计划:用户签发计划级授权 + 有界执行(appServices/unattendedTaskPlan)。
+  // 两条都在 BLOCKED 档(agent 够不到,见上),这里只给 `app_api_list` 一个域标签。
+  unattended: "无人值守任务计划:用户签发计划级授权、有界执行(建会话)",
   skills: "技能:列出、读、存、删、导入、复制到项目、预设、引擎可见性",
   plugins: "插件:列出、安装、卸载、启停、市场",
   mcp: "外部 MCP 服务器:列出、新增、删除、启停、授权、导入",

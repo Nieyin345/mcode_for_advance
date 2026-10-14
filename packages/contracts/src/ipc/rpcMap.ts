@@ -1,5 +1,6 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
 import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult } from "./scene.js";
+import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult } from "./unattended.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET_CHANNEL,
@@ -1006,6 +1007,10 @@ export interface RpcMap {
   "scene.approve": (input: SceneApprovalInput) => Promise<SceneApprovalResult>;
   /** 【ARC-002 / MC-058】**执行一次场景部署** —— 建部署记录 → 按计划拓扑序逐步派发到既有服务 → 逐步落盘 → 独立回读真实资源 → 验收。授权**不给内容、只给 id**,由宿主从 `GrantStore` 取回原始授权(含失效态)交 `policyEngine.evaluate` 判:非用户签发 / 已撤销 / 已过期 / 绑的是另一份计划 / 不在允许动作表 → 拒绝执行,连记录都不建。 */
   "scene.apply": (input: SceneApplyInput) => Promise<SceneApplyIpcResult>;
+  /** 【MC-059】**用户签发无人值守任务计划的计划级授权** —— 用户在无人值守计划预览页点「批准」的落点。宿主把一份有界操作序列(`session.create`)铸成一枚绑定目标项目权威路径、签发主体(**写死为 user**)、有效期、次数上限的计划级授权。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(批准主体必须是用户本人);手机端 `webApi.ts` 显式 unsupported。 */
+  "unattended.approve": (input: UnattendedApproveInput) => Promise<UnattendedApproveResult>;
+  /** 【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。 */
+  "unattended.run": (input: UnattendedRunInput) => Promise<UnattendedRunIpcResult>;
   /** 记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。 */
   "memory.assistant": (input: MemoryAssistantInput) => Promise<MemoryAssistantResult>;
   /** 记忆维护(桌面专用,模型拿不到):按 `action`(list/preview/import/history/restore)操作原生记忆来源。`import`/`restore` 要带 digest + `confirmed:true`。 */
@@ -1915,6 +1920,8 @@ export const IPC = {
   SCENE_PREFLIGHT: "scene:preflight",
   SCENE_APPROVE: "scene:approve",
   SCENE_APPLY: "scene:apply",
+  UNATTENDED_APPROVE: "unattended:approve",
+  UNATTENDED_RUN: "unattended:run",
   MEMORY_LIST: MEMORY_LIST_CHANNEL,
   MEMORY_READ: MEMORY_READ_CHANNEL,
   MEMORY_SAVE: MEMORY_SAVE_CHANNEL,

@@ -41,6 +41,7 @@ import type { ProviderContext } from "@contracts/provider";
 import { initDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, MessageRepo, SettingRepo } from "@main/store/repositories.js";
 import { registerClaudeHandlers } from "@main/ipc/claude.js";
+import { registerUnattendedHandlers } from "@main/ipc/unattended.js";
 import { invokeAppTool } from "@main/appControl/tools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import {
@@ -140,6 +141,8 @@ const fakeIpc = {
 } as unknown as IpcMain;
 
 registerClaudeHandlers(fakeIpc);
+// 【MC-059】真 handler:无人值守计划的用户签发 + 执行入口(走真 handler,不是复述其逻辑)。
+registerUnattendedHandlers(fakeIpc);
 
 async function call<T = unknown>(channel: string, raw?: unknown): Promise<T> {
   const fn = handlers.get(channel);
@@ -2278,6 +2281,142 @@ console.log("\n19d. 【MC-059】无人值守任务计划 —— 计划级授权�
   setRendererPortForTest(null);
   delete (globalThis as Record<string, unknown>).window;
   rmSync(UTP_DIR, { recursive: true, force: true });
+}
+
+
+/* ──────────── 19e. 【MC-059】无人值守计划的三层 IPC 入口 —— 走**真 handler** ──────────── */
+
+/**
+ * ## 这条守的是什么(§19d 只证了服务函数,没证用户够得到)
+ *
+ * §19d 证的是 `issueUnattendedTaskPlan` / `executeUnattendedPlan` 这套**服务函数**,但它
+ * **只在 appServices**,没有三层 IPC 入口 —— 用户够不到。本切片补上 `ipc/unattended.ts` 的
+ * 两条通道(`unattended.approve` / `unattended.run`)。这一节走**真 handler**(不再复述其逻辑
+ * —— 那套在有人改回老写法时照样全绿,因为套件从头到尾没碰过 handler 一行)。
+ *
+ * ## 承重判据(缺一即假死)
+ *
+ *   - **签发主体写死为 user**:approve 的 raw 里**塞一个 `actor:{kind:"agent"}`** → schema
+ *     把它 strip 掉、服务函数把主体补成 user → 真签出的 grant 的 `approvalSource.kind` 是
+ *     `user`(调用方给不了身份)。
+ *   - **取不到授权即拒**:run 带一个不存在的 grantId → `refused` / `code=no_grant`,**一条会话
+ *     都没建**(绝不静默放行)。
+ *   - **授权被撤销即拒**:approve 签发后 revoke → run → `refused` / `no_grant`、一条没建。
+ *   - **正面**:approve 签出的 grantId 交给 run → `ran`、逐条建出 2 条会话(与 §19d 同一条
+ *     有界执行,只是入口换成了真 handler)。
+ */
+console.log("\n19e. 【MC-059】无人值守计划的三层 IPC 入口 —— 走真 handler(签发主体写死 user / 取不到即拒)");
+
+{
+  const freshStore19e = (): GrantStore => { const s = new GrantStore({ newId: (n) => `uh${n}` }); setGrantStore(s); return s; };
+  const headless = (): void => { setRendererPortForTest(null); delete (globalThis as Record<string, unknown>).window; };
+
+  const UTPE_DIR = mkdtempSync(join(tmpdir(), "mcode-utpe-proj-"));
+  const mkProject = (id: string, dir: string): void => {
+    ProjectRepo.create({
+      id, name: `无人值守入口项目 ${id}`, path: dir, archived: false, group: null,
+      sortOrder: 9, pinnedAt: null, createdAt: Date.now(), updatedAt: Date.now(),
+    } as never);
+  };
+  /** 一份合法计划**声明**(与 §19d 同形,但不带 method —— method 由 handler 写死)。 */
+  const approveRaw = (projectId: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    planId: `plan-${projectId}`,
+    projectId,
+    operations: [
+      { operationId: "op1", title: "入口第一步", prompt: "入口第一步" },
+      { operationId: "op2", title: "入口第二步", prompt: "入口第二步" },
+    ],
+    ttlMs: 600_000,
+    maxCount: 2,
+    ...over,
+  });
+
+  check("★ MC-059:unattended.approve 通道真的注册进了 handler 表", handlers.has(IPC.UNATTENDED_APPROVE));
+  check("★ MC-059:unattended.run 通道真的注册进了 handler 表", handlers.has(IPC.UNATTENDED_RUN));
+
+  // ── 正面:approve 签发(主体写死 user)→ run 有界执行建出 2 条会话。 ──
+  fresh(); freshStore19e(); mkProject("p_utpe_ok", UTPE_DIR); headless();
+  {
+    // ⚠️ raw 里**塞一个 actor:{kind:"agent"}** —— schema 会 strip 掉它、服务函数把主体补成
+    //    user。若哪天有人把「调用方给的 actor」接上,这条会红。
+    const granted = await call<{ ok: boolean; kind: string; grantId?: string; scopedProjectPath?: string }>(
+      IPC.UNATTENDED_APPROVE,
+      approveRaw("p_utpe_ok", { actor: { kind: "agent", id: "a-evil" } }),
+    );
+    check("★ MC-059:approve 合法计划 → granted", granted.ok === true && granted.kind === "granted", granted);
+    eq("★ MC-059:approve 钉住的资源路径 = 目标项目权威路径", granted.scopedProjectPath, physicalPath(UTPE_DIR));
+    // 签发主体必须是 user —— 调用方塞的 agent 身份被彻底忽略。
+    eq("★ MC-059:签发主体写死为 user(调用方塞的 agent 身份被忽略)", getGrantStore().get(granted.grantId!, Date.now())?.approvalSource.kind, "user");
+
+    const before = SessionRepo.listByProject("p_utpe_ok").length;
+    const ran = await call<{ ok: boolean; kind: string; report?: { stoppedAt: string | null; results: Array<{ ok: boolean }> } }>(
+      IPC.UNATTENDED_RUN,
+      { ...approveRaw("p_utpe_ok"), grantId: granted.grantId },
+    );
+    check("★ MC-059:run 合法授权 → ran", ran.ok === true && ran.kind === "ran", ran);
+    eq("★ MC-059:run 逐条跑完(stoppedAt 为 null)", ran.report?.stoppedAt, null);
+    eq("★ MC-059:run 建出 2 条会话(计划里 2 条操作各自建行)", SessionRepo.listByProject("p_utpe_ok").length, before + 2);
+  }
+
+  // ── 反面①:run 带一个不存在的 grantId → 拒绝执行,一条都不建。 ──
+  fresh(); freshStore19e(); mkProject("p_utpe_missing", UTPE_DIR); headless();
+  {
+    const refused = await call<{ ok: boolean; kind: string; code?: string }>(
+      IPC.UNATTENDED_RUN,
+      { ...approveRaw("p_utpe_missing"), grantId: "no-such-grant" },
+    );
+    check("★ MC-059:run 取不到授权 → refused", refused.ok === false && refused.kind === "refused", refused);
+    eq("★ MC-059:run 取不到授权 → 稳定码 no_grant", refused.code, "no_grant");
+    eq("★ MC-059:run 取不到授权 → 一条会话都没建(不静默放行)", SessionRepo.listByProject("p_utpe_missing").length, 0);
+  }
+
+  // ── 反面②:签出后撤销 → run 拒绝执行,一条都不建。 ──
+  fresh(); freshStore19e(); mkProject("p_utpe_revoked", UTPE_DIR); headless();
+  {
+    const granted = await call<{ ok: boolean; grantId?: string }>(IPC.UNATTENDED_APPROVE, approveRaw("p_utpe_revoked"));
+    getGrantStore().revoke(granted.grantId!);
+    const refused = await call<{ ok: boolean; kind: string; code?: string }>(
+      IPC.UNATTENDED_RUN,
+      { ...approveRaw("p_utpe_revoked"), grantId: granted.grantId },
+    );
+    check("★ MC-059:run 授权已撤销 → refused", refused.ok === false && refused.kind === "refused", refused);
+    eq("★ MC-059:run 授权已撤销 → 稳定码 no_grant", refused.code, "no_grant");
+    eq("★ MC-059:run 授权已撤销 → 一条会话都没建", SessionRepo.listByProject("p_utpe_revoked").length, 0);
+  }
+
+  // ── 反面③:approve 的目标项目解析不出权威路径 → refused(unresolvable_scope),签发口如实报。 ──
+  fresh(); freshStore19e(); headless();
+  {
+    const refused = await call<{ ok: boolean; kind: string; code?: string }>(
+      IPC.UNATTENDED_APPROVE,
+      approveRaw("p_utpe_nosuch"),
+    );
+    check("★ MC-059:approve 未知项目 → refused", refused.ok === false && refused.kind === "refused", refused);
+    eq("★ MC-059:approve 未知项目 → 稳定码 unresolvable_scope", refused.code, "unresolvable_scope");
+  }
+
+  // ── 源码级接线:handler 真调服务函数 + 写死 session.create 方法。 ──
+  {
+    const srcOf = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
+    const ipcSrc = srcOf("src/main/ipc/unattended.ts");
+    check("★ MC-059:handler 真调签发服务 approveUnattendedPlan(不内联签发逻辑)",
+      /approveUnattendedPlan\s*\(/.test(ipcSrc), ipcSrc.match(/approveUnattendedPlan[^\n]*/g));
+    check("★ MC-059:handler 的执行入口只交给 runUnattendedPlanWithGrant(不内联执行)",
+      /runUnattendedPlanWithGrant\s*\(/.test(ipcSrc), ipcSrc.match(/runUnattendedPlanWithGrant[^\n]*/g));
+    check("★ MC-059:handler 把操作的方法写死为 SESSION_CREATE_METHOD(调用方给不了别的动作)",
+      /method:\s*SESSION_CREATE_METHOD/.test(ipcSrc), ipcSrc.match(/SESSION_CREATE_METHOD[^\n]*/g));
+    // 服务函数硬编码 user 主体(调用方给不了)。
+    const svcSrc = srcOf("src/main/appServices/unattendedTaskPlan.ts");
+    check("★ MC-059:签发服务把主体写死为 user(kind:\"user\")",
+      /kind:\s*"user",\s*id:\s*"unattended\.approval"/.test(svcSrc), svcSrc.match(/unattended\.approval[^\n]*/g));
+    check("★ MC-059:执行服务从 GrantStore.get 取回授权(收不到自填的授权内容)",
+      /getGrantStore\(\)\s*\.\s*get\s*\(/.test(svcSrc), svcSrc.match(/getGrantStore\(\)[^\n]*/g));
+  }
+
+  setGrantStore(null);
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  rmSync(UTPE_DIR, { recursive: true, force: true });
 }
 
 

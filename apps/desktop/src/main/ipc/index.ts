@@ -1,5 +1,6 @@
 import { registerProjectInitHandlers } from "./projectInit.js";
 import { registerSceneHandlers } from "./scene.js";
+import { registerUnattendedHandlers } from "./unattended.js";
 import { registerModuleHandlers } from "./modules.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
 import { ipcMain, type IpcMain } from "electron";
@@ -114,6 +115,7 @@ export function registerIpcHandlers(): void {
   registerMemoryHandlers(ipc);
   registerProjectInitHandlers(ipc);
   registerSceneHandlers(ipc);
+  registerUnattendedHandlers(ipc);
   registerMemoryAssistantHandlers(ipc);
   registerMonitoringHandlers(ipc);
   registerCustomUiPanelHandlers(ipc);

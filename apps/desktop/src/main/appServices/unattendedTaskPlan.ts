@@ -324,6 +324,157 @@ export async function executeUnattendedPlan(
   return { planId: plan.planId, grantId: issued.grantId, started: now, results, stoppedAt, stopCode };
 }
 
+/* ───────────────────── MC-059:用户签发 + 正式执行入口(IPC 三层落点) ───────────────────── */
+
+/**
+ * 计划的**正文**(去掉主体与有效期处置的那部分)—— 批准与执行两半共用的坐标。两个入口都
+ * **不含** `actor`:主体是治理事实,由宿主补(见 {@link approveUnattendedPlan})。
+ */
+export interface UnattendedPlanBody {
+  planId: string;
+  /** 计划授权在授权核里的 scene id(缺省 `unattended.<planId>`)。 */
+  sceneId?: string;
+  projectId: string;
+  operations: UnattendedOperation[];
+  maxCount: number;
+}
+
+/**
+ * 审批结果 —— 两态分开,调用方不必解析人读文案(与 `@contracts/ipc/unattended.js` 同形)。
+ */
+export type UnattendedApprovalOutcome =
+  | {
+      ok: true;
+      kind: "granted";
+      planId: string;
+      grantId: string;
+      projectId: string;
+      /** 授权钉住的权威资源路径(= 目标项目规范化后的 `projectPath`)。 */
+      scopedProjectPath: string;
+      maxCount: number;
+      operationCount: number;
+      expiresAt: number;
+    }
+  | { ok: false; kind: "refused"; code: string; reason: string };
+
+/**
+ * **用户签发一枚计划级授权**(MC-059 的用户可达通道的前一半 —— 与 `sceneDeploy.ts` 的
+ * `approveSceneDeployment` 同取向)。
+ *
+ * ## 为什么签发主体在**这里**写死为 `user`
+ *
+ * 授权是**治理事实**,只能由宿主产生(ARC-004:ActionContext 不可让 Agent 模型参数填写)。
+ * 本函数的入参**没有** `actor` 字段 —— 它自己把 `actor` 补成「用户本人」。于是「自签一份
+ * 主体是 agent 的授权」从**这层**就断了(handler 那层也一样:契约 schema 里根本没有 `actor`)。
+ * 签发口 `issueGrant` 另有一道 `subject.kind === "user"` 兜底。
+ *
+ * ## 判据全在签发口
+ *
+ * 本函数不重复判 ⑤ 条判据(空计划 / 有效期 / 条数 / 项目路径),只把它们的稳定短码**翻译**成
+ * `refused` 结果 —— 判定只有一份({@link issueUnattendedTaskPlan})。
+ *
+ * @param input.planId / projectId / operations / ttlMs / maxCount —— 调用方给的**坐标**。
+ * @param now 可注入时钟(缺省 `Date.now`)。
+ */
+export function approveUnattendedPlan(
+  input: UnattendedPlanBody & { ttlMs: number },
+  now: number = Date.now(),
+): UnattendedApprovalOutcome {
+  // 签发主体**写死为用户本人** —— 调用方给不了、也改不了这个身份(见上)。
+  const plan: UnattendedTaskPlan = {
+    ...input,
+    ...(input.sceneId !== undefined ? { sceneId: input.sceneId } : {}),
+    actor: { kind: "user", id: "unattended.approval" },
+  };
+  try {
+    const issued = issueUnattendedTaskPlan(plan, now);
+    return {
+      ok: true,
+      kind: "granted",
+      planId: issued.planId,
+      grantId: issued.grantId,
+      projectId: issued.projectId,
+      scopedProjectPath: issued.scopedCore.projectPath ?? "",
+      maxCount: issued.maxCount,
+      operationCount: issued.operationCount,
+      expiresAt: issued.expiresAt,
+    };
+  } catch (err) {
+    if (err instanceof UnattendedPlanRefusedError) {
+      return { ok: false, kind: "refused", code: err.reason_code, reason: err.message };
+    }
+    return { ok: false, kind: "refused", code: "unexpected", reason: (err as Error)?.message ?? String(err) };
+  }
+}
+
+/** 正式执行入口的结果(与 `@contracts/ipc/unattended.js` 的 `UnattendedRunIpcResult` 同形)。 */
+export type UnattendedRunOutcome =
+  | { ok: false; kind: "refused"; code: string; reason: string }
+  | { ok: true; kind: "ran"; report: UnattendedExecutionReport };
+
+/**
+ * **正式执行一份已批准的无人值守计划**(MC-059 用户可达通道的后一半)。
+ *
+ * ## 为什么入参只给 `grantId`,不给授权内容
+ *
+ * 与 `sceneDeploy.ts` 的 `applySceneWithGrant` 同一条纪律:授权是**治理事实**,只能由宿主
+ * 产生。收一份自填的授权,调用方就能拼一份 `{approvalSource:{kind:'user'}, ...}` 把判定整个
+ * 绕过。所以这里只收一个 id:宿主用 `GrantStore.get(grantId, now)` **取回**那枚授权
+ * (**已撤销 / 已过期 / 不存在的 `get` 一律回 `null`**),取不到 = 没有可判的治理事实 →
+ * **明确拒绝,一步不建**(与「没有授权绝不执行」同一条纪律,不是「退化到默认放行」)。
+ *
+ * ⚠️ **这里只把「授权取得到」当作入口闸**;「这枚授权真的覆盖这次建会话吗」(方法 / 项目路径 /
+ * 次数上限)由 `executeUnattendedPlan` 逐条交给**唯一业务命令** `createSessionAndSend` 去核
+ * (`resolvePermissionGrant` → `policyEngine.evaluate`)—— 判定只有一份。于是批准项目 A、却
+ * 来跑项目 B 的计划,会在第一条操作处被判 `grant_scope_mismatch` 并**就地停住**。
+ *
+ * ## 执行主体
+ *
+ * 逐条操作跑在**计划授权**之下(`actorKind: "agent"`,与本文件既有的 `executeUnattendedPlan`
+ * 同一取向)—— 授权才是治理单位,`actorId` 只用于执行报告 / 对账,不参与判定。
+ *
+ * @param input 计划正文(与批准时同一份)+ 上一次 {@link approveUnattendedPlan} 签出的 `grantId`。
+ * @param actorId 发起这次无人值守运行的会话 / 主体 id(进执行报告,不参与判定)。
+ * @param now 可注入时钟(缺省 `Date.now`;既用于取授权,也用于判断计划是否过期)。
+ */
+export async function runUnattendedPlanWithGrant(
+  input: UnattendedPlanBody & { grantId: string },
+  actorId: string,
+  now: number = Date.now(),
+): Promise<UnattendedRunOutcome> {
+  // 取回授权。`get` 对「不存在 / 已撤销 / 已过期」一律回 null —— 取不到就明确拒绝,不静默放行。
+  const grant = getGrantStore().get(input.grantId, now);
+  if (grant === null) {
+    return {
+      ok: false,
+      kind: "refused",
+      code: "no_grant",
+      reason: `授权「${input.grantId}」不存在 / 已撤销 / 已过期 —— 需要重新批准这次无人值守计划。`,
+    };
+  }
+  // 从取回的授权重建执行端的 `IssuedUnattendedPlan`(只喂 executeUnattendedPlan 真读的字段:
+  // grantId 与 expiresAt 承重;其余如实带回,便于报告对账)。
+  const plan: UnattendedTaskPlan = {
+    ...input,
+    ...(input.sceneId !== undefined ? { sceneId: input.sceneId } : {}),
+    ttlMs: grant.expiresAt - now,
+    actor: { kind: "user", id: "unattended.approval" },
+  };
+  const issued: IssuedUnattendedPlan = {
+    planId: plan.planId,
+    sceneId: grant.sceneId,
+    grantId: grant.grantId,
+    projectId: plan.projectId,
+    scopedCore: grant.scopedCore,
+    allowedActions: [...grant.allowedActions],
+    maxCount: grant.maxCount ?? plan.maxCount,
+    expiresAt: grant.expiresAt,
+    operationCount: plan.operations.length,
+  };
+  const report = await executeUnattendedPlan(plan, issued, actorId, now);
+  return { ok: true, kind: "ran", report };
+}
+
 /**
  * 计划内容的**稳定摘要** —— 让「批准的是这一份计划吗」可核对(与 `scenePlanCoreIntent` 同取向:
  * 计划一旦被改,摘要就变,旧授权不该再覆盖它)。当前不参与 grant 的 `scopedCore`(那绑的是
