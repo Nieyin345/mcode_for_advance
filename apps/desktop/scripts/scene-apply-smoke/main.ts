@@ -1380,6 +1380,190 @@ console.log("\n⑳ MC-058 残余:resume 生产入口 resumeSceneWithGrant");
   setGrantStore(null);
 }
 
+/* ── ㉑ ★★ MC-058 残余②③:回读/补偿按**真实服务身份**钉死 + `resourceUid` 落盘 ──
+ *
+ * 回读与补偿用的**不是**场景内的资源 id(`actionId`),而是该资源在**它自己的服务**里的稳定身份
+ * (`workflow/automation`→`doc.id`、`skill`→`SkillInfo.name`、`mcp`→`McpServerEntry.name`、
+ * `hook`→`HookSpec.id`、`module`→`ModuleManifest.id`;见 `sceneCommands.ts` 的 `identityPath`)。
+ * **声明里推不出稳定身份**的 kind(plugin/panel/scaffold)回读时如实记 `unverifiable`,**绝不**
+ * 拿一个永远匹配不上的值假装回读过了。承重判据:**故意让场景 id 与服务身份不同** —— 旧行为按场景
+ * id 查一个按服务身份索引的列表,**永远匹配不上**(observed 空、验收假失败 / 补偿删错或删不掉)。
+ */
+console.log("\n㉑ MC-058 残余②③:回读/补偿按真实服务身份钉死 + resourceUid 落盘");
+{
+  // 21a. ★★ 承重:workflow 的场景 id 与 doc.id **不同** → 回读按 `doc.id` 命中,resourceUid 落 doc.id。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    mountHost(host);
+    const spec = checked(specWith(
+      "identity_scene",
+      // 场景资源 id = "wf_scene";声明正文的 WorkflowDoc.id = "wf_real"(两者刻意不同)。
+      [{ kind: "workflow", id: "wf_scene", spec: wfDoc("wf_real", { name: "巡检" }) }],
+      ["wf_scene"],
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_identity", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      const step = r.deployment.steps.find((s) => s.actionId === "wf_scene");
+      eq("★ 工作流步 done", step?.status, "done");
+      // ★★ 承重:旧行为按 actionId("wf_scene")查 workflow.get → 宿主里没有它 → observed 空、验收假失败。
+      eq("★★ 回读按 doc.id 命中(不是按场景 id)", r.readback.observed.join(","), "wf_scene");
+      eq("★★ 验收通过(观察值取自真实服务身份)", r.deployment.acceptance?.passed, true);
+      eq("★★ resourceUid 落该资源的服务侧身份(doc.id)", step?.resourceUid, "wf_real");
+      check("★ 宿主里登记的是 doc.id(wf_real)", host.workflows.has("wf_real"));
+      check("★ 宿主里没有以场景 id 命名的资源(证明回读没按场景 id 查)", !host.workflows.has("wf_scene"));
+    }
+  }
+
+  // 21b. ★★ 承重:compensation 的逆操作按**服务身份**调 —— workflow.remove 收到 doc.id,不是场景 id。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    const removed: string[] = [];
+    mountHost(host, {
+      failSave: (p) => (isAutoPayload(p) ? "触发器建不起来(测试注入)" : null),
+      onRemove: (id) => removed.push(id),
+    });
+    const spec = checked(specWith(
+      "comp_identity_scene",
+      [
+        { kind: "workflow", id: "wf_scene", spec: wfDoc("wf_real", { name: "巡检" }) },
+        autoRes("auto", { cron: "坏表达式" }, ["wf_scene"]),
+      ],
+      ["wf_scene", "auto"],
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_comp_identity", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      const wfStep = r.deployment.steps.find((s) => s.actionId === "wf_scene");
+      eq("★ 已建成的工作流步被补偿", wfStep?.status, "compensated");
+      // ★★ 承重:逆操作按服务身份(doc.id="wf_real")删 —— 旧行为按场景 id("wf_scene")删,删不到真资源。
+      eq("★★ 逆操作按 doc.id 调(不是场景 id)", removed.join(","), "wf_real");
+      check("★ 宿主里的真资源被清掉(按 doc.id)", !host.workflows.has("wf_real"));
+    }
+  }
+
+  // 21c. ★ skill:hooks.save 由 HookSpec.id 回读;场景 id 与 HookSpec.id 不同 → 按后者命中。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    // hooks 的 save/list 走 HookSpec.id。场景 id 用 "hk_scene",HookSpec.id 用 "h_real"。
+    recordRpcHandler("hooks:save", (_e, raw) => {
+      const h = (raw as Record<string, unknown> | undefined)?.hook as Record<string, unknown> | undefined;
+      if (h !== undefined && typeof h.id === "string") host.hooks.add(h.id);
+      return { ok: true };
+    });
+    recordRpcHandler("hooks:list", () => ({ hooks: [...host.hooks].map((id) => ({ id })), problems: [] }));
+    recordRpcHandler("workflow:get", () => ({ workflow: null, revision: null, review: null }));
+    const spec = checked(specWith(
+      "hook_identity_scene",
+      [{ kind: "hook", id: "hk_scene", spec: { id: "h_real", name: "记录", event: "tool.use", command: "echo hi", enabled: true } }],
+      ["hk_scene"],
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_hook_identity", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      const step = r.deployment.steps.find((s) => s.actionId === "hk_scene");
+      eq("★ 钩子步 done", step?.status, "done");
+      eq("★★ 回读按 HookSpec.id 命中", r.readback.observed.join(","), "hk_scene");
+      eq("★ resourceUid 落 HookSpec.id", step?.resourceUid, "h_real");
+      check("★ 宿主里登记的是 HookSpec.id(h_real)", host.hooks.has("h_real"));
+    }
+  }
+
+  // 21d. ★ module:回读按 `ModuleManifest.id`(声明里的 spec.manifest.id);resourceUid 落该 id。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    // modules:install 收 {manifest, confirmReadAccess},把 manifest.id 登记进 catalog。
+    recordRpcHandler("modules:install", (_e, raw) => {
+      const m = (raw as Record<string, unknown> | undefined)?.manifest as Record<string, unknown> | undefined;
+      if (m !== undefined && typeof m.id === "string") host.modules.add(m.id);
+      return { modules: [...host.modules].map((id) => ({ id })), capabilities: [], workflowTargets: [] };
+    });
+    recordRpcHandler("modules:catalog", () => ({ modules: [...host.modules].map((id) => ({ id })) }));
+    recordRpcHandler("workflow:get", () => ({ workflow: null, revision: null, review: null }));
+    const manifest = {
+      apiVersion: 1, id: "user.coverage.report", version: "1.0.0",
+      title: { zh: "覆盖率报告", en: "Coverage" }, permissions: ["resource.read"],
+      contributions: [{
+        id: "inspect", slot: "files.context", title: { zh: "生成", en: "Create" }, capability: "core.file.inspect",
+        view: { title: { zh: "报告", en: "Report" }, fields: [{ key: "bytes", title: { zh: "字节", en: "Bytes" } }] },
+      }],
+    };
+    const spec = checked(specWith(
+      "module_identity_scene",
+      [{ kind: "module", id: "md_scene", spec: { manifest, confirmReadAccess: true } }],
+      ["md_scene"],
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_module_identity", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    if (r.ok && r.kind === "applied") {
+      const step = r.deployment.steps.find((s) => s.actionId === "md_scene");
+      eq("★ 模块步 done", step?.status, "done");
+      eq("★★ 回读按 ModuleManifest.id 命中", r.readback.observed.join(","), "md_scene");
+      eq("★★ resourceUid 落 ModuleManifest.id", step?.resourceUid, "user.coverage.report");
+      check("★ 宿主里登记的是 ModuleManifest.id", host.modules.has("user.coverage.report"));
+    }
+  }
+
+  // 21e. ★★ 承重:plugin/panel/scaffold 声明里推不出稳定身份 → 回读**如实记 unverifiable**(不是 observed)。
+  //      这里用**市场来源**的插件(声明里带 `spec.name` —— 但那是市场**条目名**,不等于安装后插件
+  //      manifest 给出的 `PluginState.name`,故仍不是可从声明推出的稳定身份)。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    mountHost(host);
+    const spec = checked(specWith(
+      "unverifiable_scene",
+      [
+        wfRes("wf", { name: "巡检" }),
+        { kind: "plugin", id: "pl", spec: { source: "marketplace", name: "research-pack" } },
+      ],
+      ["wf"], // 只期望回读工作流(plugin 无稳定身份,不列入验收期望)
+    ));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_unverifiable", spec, actor: ACTOR, grant: grantFor(plan.digest), compensateOnFailure: false });
+    if (r.ok && r.kind === "applied") {
+      eq("★ 工作流回读得到", r.readback.observed.join(","), "wf");
+      // ★★ 承重:plugin 落进 unverifiable,且原因点名「稳定身份」,readLabel 是它在读的入口。
+      //   若有人给 plugin 编一个 identityPath(如 name),这里会拿市场的**条目名**去查
+      //   plugins.list —— 查不到 / 报错 → 原因不再是「稳定身份」,本断言真红。
+      check("★★ plugin 被如实列入 unverifiable(不当成 present)", r.readback.unverifiable.includes("pl"), r.readback);
+      const plStep = r.readback.steps.find((s) => s.actionId === "pl");
+      check("★★ unverifiable 原因点名「稳定身份」(不静默当成查过了)", (plStep?.unverifiableReason ?? "").includes("稳定身份"), plStep?.unverifiableReason);
+      eq("★ unverifiable 也带上它尝试读的入口标签", plStep?.readLabel, "plugins.list");
+      check("★ plugin 不在 observed 里(没被当成回读到了)", !r.readback.observed.includes("pl"));
+    } else {
+      check("apply 应返回 applied", false, r);
+    }
+  }
+
+  // 21f. ★ 声明缺稳定身份字段(workflow 只有 name、没有 id)→ 回读也如实记 unverifiable,不冒充。
+  {
+    clearRpcHandlers();
+    const host = newHost();
+    mountHost(host);
+    // workflow 只给 name(缺 doc.id)→ 投影本就失败(failed),回读时身份也取不到。
+    const spec = checked(specWith("missing_identity_scene", [{ kind: "workflow", id: "wf_scene", spec: { name: "只有名字" } }], ["wf_scene"]));
+    const plan = compileScenePlan(spec);
+    const r = await applyScene({ deploymentId: "dep_missing_identity", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+    if (r.ok && r.kind === "applied") {
+      const step = r.readback.steps.find((s) => s.actionId === "wf_scene");
+      check("★★ 缺稳定身份字段 → 回读如实记 unverifiable", r.readback.unverifiable.includes("wf_scene"), r.readback);
+      check("★ 原因点名缺的是哪个身份字段(不静默)", (step?.unverifiableReason ?? "").includes("id"), step?.unverifiableReason);
+      check("★ 不在 observed 里(没被当成回读到了)", !r.readback.observed.includes("wf_scene"));
+    } else {
+      check("apply 应返回 applied", false, r);
+    }
+  }
+}
+
 closeDb();
 
 console.log(`\nscene-apply-smoke: ${total - failures}/${total} 通过`);

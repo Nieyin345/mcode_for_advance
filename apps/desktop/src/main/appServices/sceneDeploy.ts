@@ -62,12 +62,15 @@
  *    用户点头后为场景签出这枚 `scene.apply` 授权(ARC-004 的签发口目前只签 `app_api_call` 的单方法
  *    指纹授权),是**下一片** —— 在那之前,本层的真实调用方必须先持有一枚绑定本计划的用户授权,
  *    否则一律拒绝。**这是有意的缺口,不是静默放行。**
- *  - **回读入口未逐个按真实契约钉死身份**:byList 的匹配字段取各列表返回的形状(skills 按 `name`、
- *    mcp 按 `name`、hooks/modules 按 `id`);各服务返回形状不统一时未逐个核对到真实资源身份。
- *  - **resourceUid 未落**:各服务返回形状不统一,本层**不猜**一个 uid(免得把 A 服务的返回当 B
- *    服务的 id),留待后续切片按服务逐个接。
- *  - **补偿未覆盖 plugin/panel/scaffold**:plugin 仍 needsResolution(不执行,无建成可撤);panel /
- *    scaffold 无撤销入口,如实记未补偿。skill 亦无稳妥逆操作(需 `source`)。
+ *  - **回读入口已逐个按真实契约钉死身份**(MC-058 残余②已补):回读与补偿都用该资源在**它自己的
+ *    服务**里的稳定身份({@link sceneResourceIdentity},按 kind 的 `identityPath` 从声明正文取
+ *    —— workflow/automation→`doc.id`、skill/mcp→`name`、hook→`id`、module→`manifest.id`),**不是**
+ *    场景内的资源 id。**声明里推不出稳定身份**的 kind(plugin / panel / scaffold:`identityPath`
+ *    为 null)回读时**如实记 `unverifiable`**,绝不拿一个永远匹配不上的值假装回读过了。`resourceUid`
+ *    随之落进部署步骤(有稳定身份的服务才落)。
+ *  - **补偿未覆盖 plugin/panel/scaffold**:plugin 仍 needsResolution(不执行,无建成可撤;且插件名
+ *    来自插件 manifest,声明时未知);panel / scaffold 无撤销入口,如实记未补偿。skill 亦无稳妥逆
+ *    操作(需 `source`)。
  *  - **needsResolution(plugin/panel/scaffold)未决议**:这些 kind 无单条确定入口,本层**明确**
  *    记为「未执行」并写清原因,**绝不**猜一个入口去跑。
  */
@@ -80,6 +83,7 @@ import {
 import { compileScenePlan, type ScenePlan } from "@contracts/scenePlan";
 import {
   compileSceneCommands,
+  sceneResourceIdentity,
   serviceForKind,
   type SceneCommandPlan,
 } from "@contracts/sceneCommands";
@@ -363,14 +367,25 @@ export interface SceneReadbackResult {
 }
 
 /**
- * 对**一条**资源做独立回读 —— 调 `service.readback` 描述的既有入口,按 id/名单**重新查询**
- * 宿主真实资源。判据只有「查得到才 present」:绝不从部署记录里推。
+ * 对**一条**资源做独立回读 —— 调 `service.readback` 描述的既有入口,按**服务侧稳定身份**
+ * 重新查询宿主真实资源。判据只有「查得到才 present」:绝不从部署记录里推。
  *
- * @param actionId 资源 id(= 计划步骤的 actionId)。
+ * ## 按**真实契约钉死身份**(MC-058 残余②)
+ *
+ * 回读用的**不是**场景内的资源 id(`actionId`),而是该资源在**它自己的服务**里的稳定身份
+ * ——由 {@link sceneResourceIdentity} 从声明正文(`spec`)按 kind 的 `identityPath` 取出
+ * (`workflow`→`doc.id`、`skill`/`mcp`→`name`、`hook`→`id`、`module`→`manifest.id`)。各服务
+ * 返回形状不统一,身份字段也各不相同;拿场景 id 去查一个按服务身份索引的列表,会**永远匹配
+ * 不上**(假绿)。**声明里推不出稳定身份**(该 kind 的 `identityPath` 为 null,如 plugin / panel /
+ * scaffold;或这一条声明缺那个字段)时,如实记 **`unverifiable`**,**绝不**用它去查。
+ *
+ * @param actionId 资源 id(= 计划步骤的 actionId;回读结果按它回报)。
  * @param kind 资源种类(决定回读入口与匹配字段)。
+ * @param spec 该资源的声明正文(提供它在服务侧的稳定身份)。
  */
-async function probeResource(actionId: string, kind: SceneResourceKind): Promise<SceneStepReadback> {
-  const rb = serviceForKind(kind).readback;
+async function probeResource(actionId: string, kind: SceneResourceKind, spec: Record<string, unknown>): Promise<SceneStepReadback> {
+  const entry = serviceForKind(kind);
+  const rb = entry.readback;
   if (rb === null) {
     return {
       actionId,
@@ -380,21 +395,35 @@ async function probeResource(actionId: string, kind: SceneResourceKind): Promise
       unverifiableReason: `kind「${kind}」无单条确定回读入口,无法独立回读(如实记为「未验证」,不当成 present)`,
     };
   }
+  // ★ 按真实契约钉死身份:声明里推不出稳定身份 → 坦白记「未验证」,绝不用永远匹配不上的值假装回读过了。
+  const identity = sceneResourceIdentity(kind, spec);
+  if (identity === null) {
+    return {
+      actionId,
+      kind,
+      observed: false,
+      readLabel: rb.label,
+      unverifiableReason:
+        entry.identityPath === null
+          ? `kind「${kind}」的声明里没有可从声明推出的稳定身份,无法可靠回读(如实记为「未验证」,绝不拿一个永远匹配不上的值假装回读过了)`
+          : `声明正文里缺稳定身份字段「${entry.identityPath}」,无法可靠回读(如实记为「未验证」)`,
+    };
+  }
   try {
-    const entry = findEntry(rb.label);
-    if (!entry) {
+    const rpc = findEntry(rb.label);
+    if (!rpc) {
       return { actionId, kind, observed: false, readLabel: rb.label, unverifiableReason: `回读入口「${rb.label}」在当前版本里没有注册` };
     }
     if (rb.mode === "byArg") {
-      const res = (await callRpc(entry, { [rb.arg as string]: actionId })) as Record<string, unknown> | null;
+      const res = (await callRpc(rpc, { [rb.arg as string]: identity })) as Record<string, unknown> | null;
       const node = res?.[rb.field];
       const observed = typeof node === "object" && node !== null && !Array.isArray(node);
       return { actionId, kind, observed, readLabel: rb.label, unverifiableReason: null };
     }
-    const res = (await callRpc(entry, {})) as Record<string, unknown> | null;
+    const res = (await callRpc(rpc, {})) as Record<string, unknown> | null;
     const list = res?.[rb.field];
     const observed =
-      Array.isArray(list) && list.some((x) => typeof x === "object" && x !== null && (x as Record<string, unknown>)[rb.matchField] === actionId);
+      Array.isArray(list) && list.some((x) => typeof x === "object" && x !== null && (x as Record<string, unknown>)[rb.matchField] === identity);
     return { actionId, kind, observed, readLabel: rb.label, unverifiableReason: null };
   } catch (err) {
     return { actionId, kind, observed: false, readLabel: rb.label, unverifiableReason: `回读查询出错:${(err as Error).message}` };
@@ -412,11 +441,11 @@ async function probeResource(actionId: string, kind: SceneResourceKind): Promise
  * @param spec 该部署基于的场景声明(提供每条资源的 kind)。
  */
 export async function readbackScene(deployment: SceneDeployment, spec: SceneSpec): Promise<SceneReadbackResult> {
-  const kindById = new Map<string, SceneResourceKind>(spec.resources.map((r) => [r.id, r.kind] as const));
+  const resourceById = new Map(spec.resources.map((r) => [r.id, r] as const));
   const steps: SceneStepReadback[] = [];
   for (const step of deployment.steps) {
-    const kind = kindById.get(step.actionId);
-    if (kind === undefined) {
+    const resource = resourceById.get(step.actionId);
+    if (resource === undefined) {
       steps.push({
         actionId: step.actionId,
         kind: "workflow",
@@ -426,7 +455,7 @@ export async function readbackScene(deployment: SceneDeployment, spec: SceneSpec
       });
       continue;
     }
-    steps.push(await probeResource(step.actionId, kind));
+    steps.push(await probeResource(step.actionId, resource.kind, resource.spec));
   }
   const observed = steps.filter((s) => s.observed).map((s) => s.actionId);
   const unverifiable = steps.filter((s) => s.unverifiableReason !== null).map((s) => s.actionId);
@@ -435,47 +464,58 @@ export async function readbackScene(deployment: SceneDeployment, spec: SceneSpec
 
 /* ─────────────── 派发前探测(MC-058 补偿安全闸:资源是本次新建还是覆盖既有) ─────────────── */
 
-/** 派发**前**对目标资源的一次探测结果:它存不存在(created / preExisting)、当前修订号。 */
+/** 派发**前**对目标资源的一次探测结果:它存不存在(created / preExisting)、当前修订号、服务侧身份。 */
 interface PriorResourceProbe {
   existence: SceneStepPriorExistence;
   /** 探测到的当前修订号(byArg 结果里的 `revision` 字段;拿不到为 `null`)。 */
   revision: string | null;
+  /**
+   * 探测所用 / 回读到的**服务侧稳定身份**(`workflow`→doc.id、`skill`/`mcp`→name、`hook`→id、
+   * `module`→manifest.id);声明里推不出稳定身份时为 `null`(此时不探测、记 `unknown`)。落进
+   * 部署步骤的 `resourceUid` —— 补偿时用它去撤真实资源(按服务身份,不是按场景 id)。
+   */
+  uid: string | null;
 }
 
 /**
- * **派发前探测**目标资源在宿主里是否**已经存在** —— 调该 kind 的既有回读入口查一次。
+ * **派发前探测**目标资源在宿主里是否**已经存在** —— 调该 kind 的既有回读入口查一次,查的是
+ * 该资源在**它自己的服务**里的稳定身份(见 {@link sceneResourceIdentity})。
  *
  * 这是补偿安全闸的第一半(MC-058):`workflow.save` 的 `id` 是**主键**,往一个已存在的 id 存
  * 就是**覆盖**它。故补偿必须知道「这一步动的是谁的资源」——只有**本次新建**的才敢撤,**覆盖
  * 既有的绝不删除**(删了就把用户原有资源整个抹掉)。
  *
  * 判据只有「查得到 = 已存在」,与 {@link probeResource} 同一份回读口径;查不到 / 无入口 / 出错
- * 一律记 **`unknown`**(**绝不猜成 `created`** —— 猜错会误删)。
+ * / **声明里推不出稳定身份** 一律记 **`unknown`**(**绝不猜成 `created`** —— 猜错会误删)。
  *
- * @param actionId 资源 id(= 计划步骤的 actionId)。
  * @param kind 资源种类(决定回读入口与匹配字段)。
+ * @param spec 该资源的声明正文(提供它在服务侧的稳定身份)。
  */
-async function probeExistingResource(actionId: string, kind: SceneResourceKind): Promise<PriorResourceProbe> {
-  const rb = serviceForKind(kind).readback;
-  if (rb === null) return { existence: "unknown", revision: null };
+async function probeExistingResource(kind: SceneResourceKind, spec: Record<string, unknown>): Promise<PriorResourceProbe> {
+  const entry = serviceForKind(kind);
+  const rb = entry.readback;
+  if (rb === null) return { existence: "unknown", revision: null, uid: null };
+  // ★ 按真实契约钉死身份:声明里推不出稳定身份 → 不探测(记 unknown),绝不用场景 id 冒充服务身份。
+  const uid = sceneResourceIdentity(kind, spec);
+  if (uid === null) return { existence: "unknown", revision: null, uid: null };
   try {
-    const entry = findEntry(rb.label);
-    if (!entry) return { existence: "unknown", revision: null };
+    const rpc = findEntry(rb.label);
+    if (!rpc) return { existence: "unknown", revision: null, uid };
     if (rb.mode === "byArg") {
-      const res = (await callRpc(entry, { [rb.arg as string]: actionId })) as Record<string, unknown> | null;
+      const res = (await callRpc(rpc, { [rb.arg as string]: uid })) as Record<string, unknown> | null;
       const node = res?.[rb.field];
       const present = typeof node === "object" && node !== null && !Array.isArray(node);
       const revision = typeof res?.revision === "string" ? res.revision : null;
-      return { existence: present ? "preExisting" : "created", revision };
+      return { existence: present ? "preExisting" : "created", revision, uid };
     }
-    const res = (await callRpc(entry, {})) as Record<string, unknown> | null;
+    const res = (await callRpc(rpc, {})) as Record<string, unknown> | null;
     const list = res?.[rb.field];
     const present =
-      Array.isArray(list) && list.some((x) => typeof x === "object" && x !== null && (x as Record<string, unknown>)[rb.matchField] === actionId);
+      Array.isArray(list) && list.some((x) => typeof x === "object" && x !== null && (x as Record<string, unknown>)[rb.matchField] === uid);
     const revision = typeof res?.revision === "string" ? res.revision : null;
-    return { existence: present ? "preExisting" : "created", revision };
+    return { existence: present ? "preExisting" : "created", revision, uid };
   } catch {
-    return { existence: "unknown", revision: null };
+    return { existence: "unknown", revision: null, uid };
   }
 }
 
@@ -556,9 +596,30 @@ async function compensateDoneSteps(d: SceneDeployment, commands: SceneCommandPla
       continue;
     }
 
+    // ★ 按真实契约钉死身份(MC-058 残余②③):撤销用的是该资源在**它自己的服务**里的稳定身份
+    //   (workflow→doc.id、mcp→name、hook→id、module→manifest.id),不是场景内的资源 id。
+    //   声明里推不出稳定身份 → 不撤(记 applied:false + 原因),绝不拿场景 id 冒充服务身份去删
+    //   —— 那要么删不掉、要么删错。
+    const identity = sceneResourceIdentity(kind, command.payload);
+    if (identity === null) {
+      d = advanceDeployment(d, {
+        actionId: command.actionId,
+        status: "done",
+        compensation: {
+          applied: false,
+          inverseLabel: null,
+          reason:
+            serviceForKind(kind).identityPath === null
+              ? `该 kind「${kind}」的声明里没有可从声明推出的稳定身份,无从按服务身份撤销,保守不撤销,请人工核对`
+              : `声明正文里缺稳定身份字段「${serviceForKind(kind).identityPath}」,无从定位要撤销的真实资源,保守不撤销,请人工核对`,
+        },
+      }, clock());
+      continue;
+    }
+
     // ② CAS:建成后又被别的写者改过 → 不删(删了会毁掉别人的改动)。
     if (step.createdRevision != null) {
-      const now = await probeExistingResource(command.actionId, kind);
+      const now = await probeExistingResource(kind, command.payload);
       if (now.existence === "preExisting" && now.revision !== null && now.revision !== step.createdRevision) {
         d = advanceDeployment(d, {
           actionId: command.actionId,
@@ -576,11 +637,11 @@ async function compensateDoneSteps(d: SceneDeployment, commands: SceneCommandPla
     try {
       const inv = findEntry(entry.label);
       if (!inv) throw new Error(`逆操作入口「${entry.label}」在当前版本里没有注册`);
-      await callRpc(inv, { [entry.arg]: command.actionId });
+      await callRpc(inv, { [entry.arg]: identity });
       d = advanceDeployment(d, {
         actionId: command.actionId,
         status: "compensated",
-        compensation: { applied: true, inverseLabel: entry.label, reason: `已用 ${entry.label} 撤销本次新建的「${command.actionId}」` },
+        compensation: { applied: true, inverseLabel: entry.label, reason: `已用 ${entry.label} 撤销本次新建的「${identity}」` },
       }, clock());
     } catch (err) {
       d = advanceDeployment(d, {
@@ -741,7 +802,9 @@ async function runPlanSteps(
     // 派发前探测(MC-058 补偿安全闸):目标资源是**本次新建**还是**覆盖既有**?只有本次新建的
     // 才敢在补偿时撤销 —— 往一个已存在的 id 存就是**覆盖**它(workflow.save 的 id 是主键),
     // 盲目补偿会把用户原有资源整个删掉。探测不可用一律记 `unknown`(绝不猜成 created)。
-    const prior = await probeExistingResource(command.actionId, command.kind);
+    // 探测用**服务侧稳定身份**(见 `sceneResourceIdentity`),不是场景 id;探测到的 uid 落进
+    // 部署记录的 `resourceUid`(补偿按它撤真实资源)。
+    const prior = await probeExistingResource(command.kind, command.payload);
 
     // 派发:running → 落盘 → callRpc(既有服务)→ done/failed → 落盘。
     d = advanceDeployment(d, {
@@ -749,6 +812,7 @@ async function runPlanSteps(
       status: "running",
       priorExistence: prior.existence,
       priorRevision: prior.revision,
+      ...(prior.uid !== null ? { resourceUid: prior.uid } : {}),
     }, clock());
     persistStep(d);
 
@@ -777,8 +841,13 @@ async function runPlanSteps(
         }
       }
       // 建成后**再回读一次**修订号,作为补偿时的 CAS 判据(建成后又被别的写者改过 → 不删)。
-      const after = await probeExistingResource(command.actionId, command.kind);
-      d = advanceDeployment(d, { actionId: command.actionId, status: "done", createdRevision: after.revision }, clock());
+      const after = await probeExistingResource(command.kind, command.payload);
+      d = advanceDeployment(d, {
+        actionId: command.actionId,
+        status: "done",
+        createdRevision: after.revision,
+        ...(after.uid !== null ? { resourceUid: after.uid } : {}),
+      }, clock());
     } catch (err) {
       d = advanceDeployment(
         d,

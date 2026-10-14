@@ -24,6 +24,7 @@ import {
   compileSceneCommands,
   serviceForKind,
   adaptScenePayload,
+  sceneResourceIdentity,
   SCENE_KIND_SERVICE_MAP,
 } from "@contracts/sceneCommands";
 // 各 kind 的**真实** RPC 入参 schema —— 断言「投影后的入参真能过下游契约」(MC-058)。
@@ -558,6 +559,33 @@ function goodSpec(): unknown {
     eq("未知 kind 进 unresolved", bogusCmd.unresolved.length, 1);
     eq("serviceForKind(枚举外) 显式报无法映射", serviceForKind("teleporter").needsResolution, true);
     eq("serviceForKind(workflow) 给确定标签", serviceForKind("workflow").serviceLabel, "workflow.save");
+
+    // ★★ MC-058 残余②③:每个 kind 的**服务侧稳定身份**在声明正文里的点分路径(identityPath),
+    //    以及 `sceneResourceIdentity` 从声明正文取值的行为。判据逐个对照各服务**真实返回形状**
+    //    (workflow.get→WorkflowDoc.id、skills.list→SkillInfo.name、mcp.list→McpServerEntry.name、
+    //    hooks.list→HookSpec.id、modules.catalog→ModuleManifest.id)。
+    //    拿场景内 id 去查一个按服务身份索引的列表会永远匹配不上 —— 故身份必须逐 kind 显式钉死。
+    eq("workflow 身份 = doc.id", SCENE_KIND_SERVICE_MAP.workflow.identityPath, "id");
+    eq("automation 身份 = doc.id(自动化即工作流)", SCENE_KIND_SERVICE_MAP.automation.identityPath, "id");
+    eq("skill 身份 = name(skills.list 的 SkillInfo.name)", SCENE_KIND_SERVICE_MAP.skill.identityPath, "name");
+    eq("mcp 身份 = name(mcp.list 的 McpServerEntry.name)", SCENE_KIND_SERVICE_MAP.mcp.identityPath, "name");
+    eq("hook 身份 = id(HookSpec.id)", SCENE_KIND_SERVICE_MAP.hook.identityPath, "id");
+    eq("module 身份 = manifest.id(ModuleManifest.id)", SCENE_KIND_SERVICE_MAP.module.identityPath, "manifest.id");
+    // ★ 无稳定身份的 kind:identityPath 显式为 null(绝不编一个永远匹配不上的字段)。
+    check("★ plugin 无稳定身份(插件名来自 manifest,声明时未知)→ identityPath=null", SCENE_KIND_SERVICE_MAP.plugin.identityPath === null, SCENE_KIND_SERVICE_MAP.plugin.identityPath);
+    check("★ panel 无稳定身份(落整块配置)→ identityPath=null", SCENE_KIND_SERVICE_MAP.panel.identityPath === null, SCENE_KIND_SERVICE_MAP.panel.identityPath);
+    check("★ scaffold 无稳定身份(整份模板落盘)→ identityPath=null", SCENE_KIND_SERVICE_MAP.scaffold.identityPath === null, SCENE_KIND_SERVICE_MAP.scaffold.identityPath);
+    // `sceneResourceIdentity` 逐 kind 从声明正文取服务身份(点分路径;非空字符串才算)。
+    eq("sceneResourceIdentity(workflow) 取 spec.id", sceneResourceIdentity("workflow", { id: "wf1", name: "x" }), "wf1");
+    eq("sceneResourceIdentity(skill) 取 spec.name(不是 spec.id)", sceneResourceIdentity("skill", { name: "coverage", source: "global" }), "coverage");
+    eq("sceneResourceIdentity(mcp) 取 spec.name", sceneResourceIdentity("mcp", { name: "srv" }), "srv");
+    eq("sceneResourceIdentity(hook) 取 spec.id", sceneResourceIdentity("hook", { id: "h_1" }), "h_1");
+    eq("sceneResourceIdentity(module) 走点分路径 spec.manifest.id", sceneResourceIdentity("module", { manifest: { id: "user.x" }, confirmReadAccess: true }), "user.x");
+    // ★ 取不到时**返回 null**(绝不退化成拿别的字段冒充、也不用场景 id 顶替)。
+    eq("★ 声明缺身份字段 → null(不冒充)", sceneResourceIdentity("workflow", { name: "只有名字没有 id" }), null);
+    check("★ 无稳定身份的 kind → 恒 null(plugin)", sceneResourceIdentity("plugin", { source: "local" }) === null);
+    eq("★ module 声明缺 manifest 里的 id → null", sceneResourceIdentity("module", { manifest: {} }), null);
+    eq("★ 空串不算身份 → null", sceneResourceIdentity("skill", { name: "" }), null);
 
     // 计划与 spec 不匹配(不同版本)→ 显式抛错,不产出缺斤少两的命令集。
     let threw = false;

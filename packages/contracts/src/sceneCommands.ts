@@ -70,6 +70,14 @@ export interface SceneKindServiceEntry {
   readback: SceneKindReadback | null;
   /** **补偿（逆操作）**描述 —— 某步失败后撤销本 kind 已建成资源用。见 {@link SceneKindCompensation}。 */
   compensation: SceneKindCompensation;
+  /**
+   * 一条资源在**服务侧**的稳定身份,在资源声明正文(`spec`)里的**点分路径**(如 `id` /
+   * `name` / `manifest.id`)。回读与补偿都用**这个值**去查 / 撤真实的服务资源 —— 见
+   * {@link sceneResourceIdentity} 的说明:`null` = 该 kind 的声明里没有可从声明推出的稳定身份
+   * (如 `plugin` 的插件名来自它自己的 manifest,声明时未知),调用端据此**如实记为未验证 /
+   * 无稳妥逆操作**,绝不拿一个永远匹配不上的值假装回读过了。
+   */
+  identityPath: string | null;
   /** 需要部署器按资源声明 / 上下文进一步决议才能选定入口点。 */
   needsResolution: boolean;
   /** 决议所需依据（如 `spec.source` / `spec.entry`）；不需要决议时为 `null`。 */
@@ -138,6 +146,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     serviceLabel: "workflow.save",
     readback: { label: "workflow.get", mode: "byArg", arg: "id", field: "workflow", matchField: "id" },
     compensation: { label: "workflow.remove", arg: "id", note: "workflow.remove 按 id 删掉刚建成的工作流。" },
+    // 声明正文就是 WorkflowDoc；服务侧身份是 `WorkflowDoc.id`（`workflow.get` 收 `{id}`、`workflow.remove` 收 `{id}`）。
+    identityPath: "id",
     needsResolution: false,
     resolutionHint: null,
     note: "工作流图交既有 workflow.save 建立（WorkflowSaveInput）。",
@@ -147,6 +157,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     serviceLabel: "workflow.save",
     readback: { label: "workflow.get", mode: "byArg", arg: "id", field: "workflow", matchField: "id" },
     compensation: { label: "workflow.remove", arg: "id", note: "自动化就是工作流，workflow.remove 按 id 删除。" },
+    // 自动化就是带 trigger 的工作流，服务侧身份同为 `WorkflowDoc.id`。
+    identityPath: "id",
     needsResolution: false,
     resolutionHint: null,
     note: "自动化就是带 trigger 的工作流（见 @contracts/workflow 文件头），无独立 automation.save，走同一个 workflow.save。",
@@ -156,6 +168,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     serviceLabel: "skills.save",
     readback: { label: "skills.list", mode: "byList", arg: null, field: "skills", matchField: "name" },
     compensation: { label: null, arg: null, note: "skills.delete 还要 source（global/project）才能定位删哪条目录，单靠资源 id 不足以稳妥撤销——本层不猜，如实记为未补偿。" },
+    // `skills.list` 返回 `{skills:[SkillInfo]}`，SkillInfo 的稳定身份是 `name`（SkillsSaveInput.name 落成目录名）。
+    identityPath: "name",
     needsResolution: false,
     resolutionHint: null,
     note: "技能声明交既有 skills.save 落成 SKILL.md（SkillsSaveInput）。",
@@ -164,16 +178,23 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     kind: "plugin",
     serviceLabel: null,
     readback: { label: "plugins.list", mode: "byList", arg: null, field: "plugins", matchField: "name" },
-    compensation: { label: "plugins.remove", arg: "name", note: "plugins.remove 按插件名卸载（若这一步已建成）。" },
+    compensation: { label: "plugins.remove", arg: "name", note: "plugins.remove 按插件名卸载——但插件名来自插件自己的 manifest（`PluginState.name`），安装前声明里没有它（见 identityPath 说明），故本 kind 的补偿无从取到入参，保持未执行。" },
+    // ★ 无稳定身份：`plugins.list` 返回的 `PluginState.name` 是插件**自己的 manifest** 名，
+    //   与声明正文（`spec.source` / `spec.source==="marketplace"` 时的 `spec.name` 是市场**条目名**、
+    //   不等于 manifest 名）不是一回事 —— 声明里没有可从声明推出的插件名。
+    //   绝不拿市场的条目名/来源当插件名去回读（那会永远匹配不上，是「假装回读过了」）。
+    identityPath: null,
     needsResolution: true,
     resolutionHint: "spec.source(本地 / git / 市场)",
-    note: "插件安装入口取决于来源：plugins.installLocal / plugins.installGit / plugins.installMarketplace——仓里无单一 plugins.install，交部署器按 spec.source 决议。",
+    note: "插件安装入口取决于来源：plugins.installLocal / plugins.installGit / plugins.installMarketplace——仓里无单一 plugins.install，交部署器按 spec.source 决议。安装后的插件名由插件 manifest 给出，声明时未知。",
   },
   mcp: {
     kind: "mcp",
     serviceLabel: "mcp.save",
     readback: { label: "mcp.list", mode: "byList", arg: null, field: "servers", matchField: "name" },
     compensation: { label: "mcp.remove", arg: "name", note: "mcp.remove 按服务器名删掉刚写入的 MCP 声明。" },
+    // `mcp.list` 返回 `{servers:[McpServerEntry]}`，稳定身份是 `name`（McpSaveInput.name；同名 server 会被 mcp.save 拒）。
+    identityPath: "name",
     needsResolution: false,
     resolutionHint: null,
     note: "MCP 声明交既有 mcp.save（McpSaveInput）。",
@@ -183,6 +204,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     serviceLabel: "hooks.save",
     readback: { label: "hooks.list", mode: "byList", arg: null, field: "hooks", matchField: "id" },
     compensation: { label: "hooks.remove", arg: "id", note: "hooks.remove 按钩子 id 删掉刚装上的钩子。" },
+    // `hooks.list` 返回 `{hooks:[HookSpec]}`，稳定身份是 HookSpec.id（HooksSaveInput.hook.id）。
+    identityPath: "id",
     needsResolution: false,
     resolutionHint: null,
     note: "钩子声明交既有 hooks.save（HooksSaveInput），与 HookRunner 同一份定义。",
@@ -192,6 +215,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     serviceLabel: "modules.install",
     readback: { label: "modules.catalog", mode: "byList", arg: null, field: "modules", matchField: "id" },
     compensation: { label: "modules.remove", arg: "moduleId", note: "modules.remove 按模块 id 卸载刚装上的模块。" },
+    // `modules.catalog` 返回 `{modules:[ModuleManifest]}`，稳定身份是 `ModuleManifest.id`（声明正文里的 `spec.manifest.id`）。
+    identityPath: "manifest.id",
     needsResolution: false,
     resolutionHint: null,
     note: "模块声明交既有 modules.install（ModuleInstallInput）。",
@@ -201,6 +226,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     serviceLabel: "setting.set",
     readback: null,
     compensation: { label: null, arg: null, note: "面板落在整块 customUi.config.v1 里，无单条删除入口（删一条要重写整块配置）；本层不猜，如实记为未补偿。" },
+    // 面板落在整块 customUi.config.v1 里，无单条可回读的稳定身份。
+    identityPath: null,
     needsResolution: true,
     resolutionHint: "customUi.config.v1",
     note: "面板落在自定义 UI 配置这一个整块 setting（CUSTOM_UI_SETTING_KEY）里——需决议：单条面板要并进整份配置，不是逐面板一个入口。",
@@ -210,6 +237,8 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     serviceLabel: "projectInit.apply",
     readback: null,
     compensation: { label: null, arg: null, note: "脚手架条目由整份模板 projectInit.apply 落盘，无单条撤销入口；本层不猜，如实记为未补偿。" },
+    // 脚手架条目由整份模板落盘，无逐条可回读的稳定身份。
+    identityPath: null,
     needsResolution: true,
     resolutionHint: "spec.entry(目录 / 文件 / 记忆 / 说明文件)",
     note: "脚手架交既有 projectInit.apply，但该入口吃整份模板且需先 preview 取 digest——需决议：单条条目要先按 spec.entry 归到模板里再一起提交。",
@@ -309,10 +338,40 @@ function unknownKindEntry(kind: string): SceneKindServiceEntry {
     serviceLabel: null,
     readback: null,
     compensation: { label: null, arg: null, note: `未知 kind「${kind}」无逆操作。` },
+    identityPath: null,
     needsResolution: true,
     resolutionHint: null,
     note: `未知的资源 kind「${kind}」——不在 SceneResourceKind 枚举里，无既有服务可映射（应先经 validateSceneSpec）。`,
   };
+}
+
+/**
+ * **从资源声明正文里取它在服务侧的稳定身份** —— 按 {@link SceneKindServiceEntry.identityPath}
+ * 的点分路径在 `spec` 里取值(如 `id` / `name` / `manifest.id`),取到**非空字符串**才算数,
+ * 否则返回 `null`。
+ *
+ * 回读与补偿都用**这个值**去查/撤真实的服务资源 —— 它不是场景内的资源 id(`SceneResourceRef.id`,
+ * 那只在场景内唯一),而是该资源在**它自己的服务**里的身份(id / 插件名 / 服务器名…)。判据只有
+ * 「声明里点分路径上是一个非空字符串」:路径不存在、值是 `undefined` / 非字符串 / 空串 → `null`
+ * (**绝不**退化成用场景 id 冒充服务身份 —— 那样会拿一个对不上服务的值去回读,是「假装回读过了」)。
+ *
+ * `null` 有两种来源,含义不同,调用端都要**如实**区分:
+ *  - `identityPath === null`(该 kind 声明里本就没有可从声明推出的稳定身份,如 `plugin` /
+ *    `panel` / `scaffold`)—— 回读/补偿**天生无可依据**;
+ *  - `identityPath` 非 null 但声明里**缺**那个字段(声明填不全)—— 这一条资源**这一次**取不到身份。
+ *
+ * @param kind 资源种类。
+ * @param spec 该资源的声明正文(逐字来自 `SceneResourceRef.spec`)。
+ */
+export function sceneResourceIdentity(kind: SceneResourceKind, spec: Record<string, unknown>): string | null {
+  const path = serviceForKind(kind).identityPath;
+  if (path === null) return null;
+  let cur: unknown = spec;
+  for (const seg of path.split(".")) {
+    if (cur === null || typeof cur !== "object" || Array.isArray(cur)) return null;
+    cur = (cur as Record<string, unknown>)[seg];
+  }
+  return typeof cur === "string" && cur.length > 0 ? cur : null;
 }
 
 /**
