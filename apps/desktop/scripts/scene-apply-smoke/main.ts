@@ -32,14 +32,14 @@
  *
  * Run: scripts/scene-apply-smoke/run.sh
  */
-import { initDb, closeDb, getDb } from "@main/store/db.js";
+import { initDb, closeDb, getDb, commitNow } from "@main/store/db.js";
 import { validateSceneSpec, SCENE_SPEC_SCHEMA_VERSION, type SceneSpec } from "@contracts/sceneSpec";
 import { compileScenePlan } from "@contracts/scenePlan";
 import { evaluateAcceptance } from "@contracts/sceneDeployment";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { scenePlanCoreIntent } from "@main/appControl/policyEngine.js";
 import type { Grant } from "@contracts/policyEngine";
-import type { SceneDeploymentActor } from "@contracts/sceneDeployment";
+import type { SceneDeploymentActor, SceneDeployment } from "@contracts/sceneDeployment";
 import {
   dryRunScene,
   applyScene,
@@ -50,9 +50,17 @@ import {
   resumeSceneWithGrant,
   SCENE_APPLY_METHOD,
 } from "@main/appServices/sceneDeploy.js";
-import { setGrantStore } from "@main/appControl/grantStoreRuntime.js";
+import { setGrantStore, assembleGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import { GrantStore } from "@main/appControl/grantStore.js";
-import { loadDeployment } from "@main/appServices/sceneDeploymentStore.js";
+import { loadDeployment, decodeDeployment } from "@main/appServices/sceneDeploymentStore.js";
+// ★ MC-058 / ARC-002 崩溃—重启—续跑(**真跨进程**,不是同进程模拟):起真子进程 + 磁盘上的
+//   宿主快照 / 调用日志(内存不跨进程,跨进程事实必须落盘才能核对)。
+import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import initSqlJs from "sql.js/dist/sql-asm.js";
+import { dataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
 
 let failures = 0;
 let total = 0;
@@ -227,6 +235,204 @@ function countRows(): number {
   const n = Number((stmt.getAsObject() as { n: number }).n);
   stmt.free();
   return n;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * ★★ MC-058 / ARC-002 崩溃 → 重启 → 续跑 → 验证(**真跨进程**,不是同进程模拟)
+ *
+ * 上面 ⑱⑲⑳ 测 resumeScene / resumeSceneWithGrant 的判据,但**全在同一进程内** —— DB 一直
+ * 开着,`loadDeployment` 读的是同一个连接。复审要的是**真的崩了再起来**:一个进程写到一半
+ * **被杀**,另一个**全新进程**读回盘上那份半成品、跳过已建成、只跑剩下的。
+ *
+ * ## 怎么搭(三段)
+ *
+ *  - **父进程**(本文件,非 crash/restart 模式)编排:`spawn(node, [自己, "crash"])` 起一个真子进程;
+ *    子进程里真发生 `SIGKILL(self)`(证明它**没跑完**);父进程再 `spawn(node, [自己, "restart"])`
+ *    起第二个真进程续跑;最后父进程按 **磁盘上的宿主快照**(子进程每步 save 后写下的 host.json)
+ *    与**另开句柄读 mcode.db** 做独立验证。
+ *  - **子进程**(同一个 bundle,靠 `process.argv[2]` 分模式)各自 `initDb()` —— 各自的 sql.js 内存库
+ *    独立,但**同一个 `MCODE_SMOKE_DATA_ROOT`**(临时目录),于是盘上 `mcode.db` / `host.json` /
+ *    `grant.json` / `calls.log` 都是那**同一份**跨进程共享的事实。走**落盘版** `GrantStore`
+ *    (`assembleGrantStore`),否则新进程读不回上一步签的授权(`findBoundFor` 找不到 → 莫名 no_grant)。
+ *  - **宿主快照**:上面各节的服务 handler 后面是内存 `Map`;内存不跨进程,所以本节的 handler 每步
+ *    save 后把宿主序列化到 `<dataRoot>/host.json`。子进程启动时读它 —— 于是「宿主里真的建成了什么」
+ *    在两个进程之间是**同一份可核对的磁盘事实**。
+ *
+ * ## 「已建成的步没被重跑」的证据(不是记录里的状态)
+ *
+ * 每个进程每次派发都往 `<dataRoot>/calls.log` **追加一行**资源 id(append-only,跨进程累积)。
+ * 「续跑没重跑已建成的工作流」= 那一步的 id 在 calls.log 里**恰好出现一次**(总调用 3 行 =
+ * wf 1 + auto 2),而**不是**看部署记录里那步是不是 done(记录本来就在盘上,不证明没重跑)。
+ *
+ * ## 安全前提(与 run.sh 同一条,不放松)
+ *
+ * 子进程继承父进程的 `MCODE_SMOKE_DATA_ROOT`(=run.sh 的 mktemp 临时目录);`initDb()` 在路径不存在时
+ * 会新建空库,**指错地方等于毁用户数据**。三个进程指向**同一个**临时目录,才不会读到彼此没写的库。
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
+const SMOKE_MODE = process.argv[2] ?? "";
+const CRASH_SCENE = "crash_resume_scene";
+const CRASH_DEPLOY = "dep_crash_resume";
+const CRASH_WF = "wf_crash";
+const CRASH_AUTO = "auto_crash";
+
+/** 本节那份场景声明(工作流 + 依赖它的自动化)。三处 spec 逐字相同,重编译出的 digest 才一致,
+ *  `resumeScene` 的「plan digest 必须与盘上那份一致」那道闸才放行。 */
+function crashSpec(): SceneSpec {
+  return checked(specWith(
+    CRASH_SCENE,
+    [wfRes(CRASH_WF, { name: "巡检" }), autoRes(CRASH_AUTO, { cron: "0 9 * * *" }, [CRASH_WF])],
+    [CRASH_WF, CRASH_AUTO],
+  ));
+}
+
+function hostFile(): string { return join(dataRoot(), "host.json"); }
+function callsFile(): string { return join(dataRoot(), "calls.log"); }
+function grantFile(): string { return join(dataRoot(), "grant.json"); }
+function survivedFile(): string { return join(dataRoot(), "CRASH_SURVIVED"); }
+function restartResultFile(): string { return join(dataRoot(), "restart-result.json"); }
+function existsFile(f: string): boolean { try { readFileSync(f); return true; } catch { return false; } }
+
+/** 读共享的宿主快照(不存在 = 空宿主)。子进程启动时读盘,把**内存里没有**的宿主状态补回来。 */
+function loadHost(): Host {
+  const h = newHost();
+  try {
+    const raw = JSON.parse(readFileSync(hostFile(), "utf8")) as { workflows?: Record<string, Record<string, unknown>> };
+    for (const [id, doc] of Object.entries(raw.workflows ?? {})) h.workflows.set(id, doc);
+  } catch { /* 没有快照 = 空宿主(第一个进程第一次跑) */ }
+  return h;
+}
+function saveHost(h: Host): void {
+  writeFileSync(hostFile(), JSON.stringify({ workflows: Object.fromEntries(h.workflows) }), "utf8");
+}
+/** append-only 调用日志:**跨进程累积**,是「某一步到底被派发了几次」的唯一判据。 */
+function logCall(id: string): void { writeFileSync(callsFile(), id + "\n", { flag: "a" }); }
+function readCalls(): string[] {
+  try { return readFileSync(callsFile(), "utf8").split("\n").filter((s) => s !== ""); } catch { return []; }
+}
+
+/**
+ * 挂本节的「可跨进程」服务:每次 `workflow:save` 先 append 一行调用记录(失败也记 —— 要能证明
+ * 这一步**被派发过**),再按注入开关决定抛不抛;成功则更新内存宿主**并落盘** host.json。
+ * 形状与上面 `mountHost` 同(收 `{workflow}`、回读 `{workflow,revision}`)。
+ */
+function mountCrossProcessHost(host: Host, autoFails: () => boolean): void {
+  recordRpcHandler("workflow:save", (_e, raw) => {
+    const wf = (raw as Record<string, unknown> | undefined)?.workflow as Record<string, unknown> | undefined;
+    if (wf === undefined || typeof wf.id !== "string" || typeof wf.name !== "string") {
+      throw new Error("workflow.save:入参缺 workflow(真实 WorkflowSaveSchema 会拒)");
+    }
+    logCall(wf.id); // 「这个入口被派发到了」——失败也要能证明被调过。
+    if (autoFails() && wf.trigger !== undefined) throw new Error("触发器建不起来(测试注入,模拟崩溃前失败)");
+    host.workflows.set(wf.id, wf);
+    saveHost(host);
+    return { ok: true };
+  });
+  recordRpcHandler("workflow:get", (_e, raw) => {
+    const id = (raw as Record<string, unknown> | undefined)?.id;
+    const present = typeof id === "string" && host.workflows.has(id);
+    return { workflow: present ? { id } : null, revision: null, review: null };
+  });
+  recordRpcHandler("workflow:remove", (_e, raw) => {
+    const id = String((raw as Record<string, unknown> | undefined)?.id ?? "");
+    host.workflows.delete(id);
+    saveHost(host);
+    return { ok: true, wasBuiltin: false };
+  });
+}
+
+/**
+ * **子进程**(同一个 bundle,靠 `process.argv[2]` = `crash` / `restart` 分模式)。两个子进程各自
+ * `initDb()` —— 各自的 sql.js **内存库**独立,但**同一个** `MCODE_SMOKE_DATA_ROOT`(run.sh 的临时
+ * 目录,经环境变量继承),于是盘上 `mcode.db` / `host.json` / `grant.json` / `calls.log` 都是那**同一份**
+ * 跨进程共享的事实。走**落盘版** `GrantStore`(`assembleGrantStore`),否则新进程读不回上一步签的授权。
+ */
+async function runChild(mode: string): Promise<void> {
+  assembleGrantStore(dataRoot());
+  await initDb();
+  clearRpcHandlers();
+
+  if (mode === "crash") {
+    // ① 校验(不合法则在这里抛,进程非零退出,父进程会看到)→ ② 申请计划级授权(落盘) → ③ 部署。
+    const spec = crashSpec();
+    const plan = compileScenePlan(spec);
+    const approved = approveSceneDeployment({ spec, planDigest: plan.digest, ttlMs: 60_000 });
+    if (!(approved.ok && approved.kind === "granted")) throw new Error("crash 子进程:签授权失败 " + JSON.stringify(approved));
+    writeFileSync(grantFile(), approved.grantId, "utf8");
+
+    const host = loadHost();
+    mountCrossProcessHost(host, () => true); // 触发器一步恒失败
+    // 补偿**关掉**:要的是一份「工作流 done、触发器 failed」的半成品留在盘上(与 ⑱ 的起点同一形状,
+    // 只是这一份真的跨进程)。
+    const r = await applySceneWithGrant({
+      deploymentId: CRASH_DEPLOY, grantId: approved.grantId, spec, actor: ACTOR, compensateOnFailure: false,
+    });
+    if (!(r.ok && r.kind === "applied")) throw new Error("crash 子进程:半部署未返回 applied " + JSON.stringify(r));
+
+    // ★ 模拟**进程被杀**。下面那行「幸存标记」若被写出来,说明 kill 没生效 —— 父进程据此证明
+    //   这个进程**真的死在第③步之后**,而不是跑到了正常结尾。
+    process.kill(process.pid, "SIGKILL");
+    writeFileSync(survivedFile(), "进程没有真的死掉(kill 未生效)", "utf8");
+    return;
+  }
+
+  if (mode === "restart") {
+    // 全新进程:内存里**什么都没有**(下面两条前置断言就是钉这个)。
+    const freshHost = newHost();
+    // ① 盘上那份半成品记录**读得回来** —— 它来自磁盘的 mcode.db,不是本进程内存。
+    const record = loadDeployment(CRASH_DEPLOY);
+    // ② 内存宿主此刻是**空的**(新起的进程);host.json 里才有上一步建成的 wf。
+    const diskHost = loadHost();
+    const grantId = readFileSync(grantFile(), "utf8").trim();
+
+    const spec = crashSpec();
+    mountCrossProcessHost(diskHost, () => false); // 这次触发器一步会成功
+    const r = await resumeSceneWithGrant({
+      deploymentId: CRASH_DEPLOY, grantId, spec, actor: ACTOR,
+    });
+    writeFileSync(restartResultFile(), JSON.stringify({
+      recordBefore: record === null ? null : { status: record.status, wf: record.steps.find((s) => s.actionId === CRASH_WF)?.status, auto: record.steps.find((s) => s.actionId === CRASH_AUTO)?.status },
+      freshHostHasWf: freshHost.workflows.has(CRASH_WF),
+      diskHostHasWf: diskHost.workflows.has(CRASH_WF),
+      result: r.ok && r.kind === "applied" ? { status: r.deployment.status, passed: r.deployment.acceptance?.passed ?? null, steps: r.deployment.steps.map((s) => `${s.actionId}:${s.status}`) } : { error: JSON.stringify(r) },
+    }), "utf8");
+    return;
+  }
+}
+
+/** 父进程侧:起一个真子进程跑某个模式,收齐它的退出码与输出。 */
+function spawnChild(mode: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const script = fileURLToPath(import.meta.url);
+    const child = spawn(process.execPath, [script, mode], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+/** 父进程侧**独立回读**盘上的部署记录(另开一个 sql.js 句柄读 mcode.db,不看任何内存)。 */
+async function diskDeployment(id: string): Promise<SceneDeployment | null> {
+  const SQL = await initSqlJs();
+  let copy: InstanceType<typeof SQL.Database>;
+  try { copy = new SQL.Database(readFileSync(join(dataRoot(), DATA_DB_FILENAME))); }
+  catch { return null; }
+  try {
+    const stmt = copy.prepare("SELECT payload FROM scene_deployments WHERE deployment_id = ?");
+    stmt.bind([id]);
+    const payload = stmt.step() ? String(stmt.getAsObject().payload) : null;
+    stmt.free();
+    return payload ? decodeDeployment(payload) : null;
+  } catch { return null; } finally { copy.close(); }
+}
+
+// ── 子进程早退:crash / restart 只跑 runChild,**绝不**落到下面那整段 smoke ──
+// 否则子进程会把整段 smoke 的行也写进共享的 mcode.db,污染跨进程证据。
+if (SMOKE_MODE === "crash" || SMOKE_MODE === "restart") {
+  await runChild(SMOKE_MODE);
+  process.exit(0);
 }
 
 await initDb();
@@ -1562,6 +1768,59 @@ console.log("\n㉑ MC-058 残余②③:回读/补偿按真实服务身份钉死 
       check("apply 应返回 applied", false, r);
     }
   }
+}
+
+console.log("\n㉒ MC-058/ARC-002:崩溃 → 真重启 → 续跑 → 独立验证(跨进程)");
+{
+  // 干净起步:清掉上一轮的共享文件(临时目录里,删了无害)。
+  for (const f of [hostFile(), callsFile(), grantFile(), survivedFile(), restartResultFile()]) {
+    try { rmSync(f, { force: true }); } catch { /* 没有就算了 */ }
+  }
+  // 把父进程自己的库 flush 到盘上,给子进程一个一致的起点(子进程会读这份 mcode.db)。
+  commitNow();
+
+  // ── 第一段:真子进程跑「校验 → 授权 → 部署到一半 → 被杀」。──
+  const crash = await spawnChild("crash");
+  check("① 崩溃子进程收到信号(非零退出 = 被真的杀掉,不是正常跑完)", crash.code !== 0, { code: crash.code, stderr: crash.stderr.slice(0, 400) });
+  check("★★ 崩溃子进程没能跑到「幸存标记」那一行(kill 真的生效了)", !existsFile(survivedFile()), { stderr: crash.stderr.slice(0, 200) });
+  // 父进程**独立**读盘:崩溃那一步留下的部分执行记录真的在磁盘上。
+  const diskAfterCrash = await diskDeployment(CRASH_DEPLOY);
+  check("★★ 盘上读得到那份**半成品**记录(真正落过盘、跨进程还在)", diskAfterCrash !== null);
+  eq("★★ 盘上记录:工作流步 done、触发器步 failed(部分执行)", diskAfterCrash ? `${diskAfterCrash.steps.find((s) => s.actionId === CRASH_WF)?.status},${diskAfterCrash.steps.find((s) => s.actionId === CRASH_AUTO)?.status}` : "", "done,failed");
+  eq("★★ 盘上记录整体为 PARTIAL", diskAfterCrash?.status, "partial");
+  // 崩溃子进程派发过的两步(各一次)。
+  eq("崩溃子进程派发过 wf、auto 各一次", readCalls().join(","), `${CRASH_WF},${CRASH_AUTO}`);
+  // 宿主快照(磁盘)里只建成了 wf。
+  check("崩溃后磁盘宿主快照里只有工作流(触发器没建成)", existsFile(hostFile()) && !readFileSync(hostFile(), "utf8").includes(CRASH_AUTO));
+
+  // ── 第二段:全新进程读回记录、跳过已建成、只跑剩下的。──
+  const restart = await spawnChild("restart");
+  eq("② 重启子进程正常退出(0)", restart.code, 0);
+  const rr = JSON.parse(readFileSync(restartResultFile(), "utf8")) as {
+    recordBefore: { status: string; wf: string; auto: string } | null;
+    freshHostHasWf: boolean; diskHostHasWf: boolean;
+    result: { status?: string; passed?: boolean; steps?: string[]; error?: string };
+  };
+  // 重启是**真的重启**:新进程内存里没有任何记录(先断言内存是空的,再证明它从磁盘读回)。
+  eq("★★ 重启进程**内存里**原本没有那条记录(recordBefore 是从磁盘读回的)", rr.recordBefore?.status, "partial");
+  eq("★★ 重启进程内存宿主原本为空(wf 来自磁盘,不是内存)", rr.freshHostHasWf, false);
+  eq("★★ 重启进程从**磁盘快照**读回了已建成的 wf", rr.diskHostHasWf, true);
+  // 续跑结果。
+  eq("★★ 续跑后整体 ACTIVE(已建成的跳过、失败的补上)", rr.result.status, "active");
+  eq("★★ 续跑后验收通过", rr.result.passed, true);
+  check("★★ 续跑后两步都 done", rr.result.steps?.join(",") === `${CRASH_WF}:done,${CRASH_AUTO}:done`, rr.result.steps);
+
+  // ── 第三段:父进程**独立第三视角**回读磁盘 —— 最终资源真的都在、且已建成步没被重跑。──
+  const finalDisk = await diskDeployment(CRASH_DEPLOY);
+  eq("★★ 父进程独立回读盘上记录:整体 ACTIVE", finalDisk?.status, "active");
+  eq("★★ 父进程独立回读:验收通过", finalDisk?.acceptance?.passed, true);
+  const finalHost = JSON.parse(readFileSync(hostFile(), "utf8")) as { workflows: Record<string, unknown> };
+  check("★★ 磁盘宿主快照里最终两条资源都在(工作流 + 触发器真的建成了)", CRASH_WF in finalHost.workflows && CRASH_AUTO in finalHost.workflows, Object.keys(finalHost.workflows));
+  // ★★ 承重:已建成的 wf **没有被重跑** —— 它全程只在 calls.log 里出现**一次**(跨两个进程共 3 行:wf 1 + auto 2)。
+  //     判据是 handler 被派发的次数,不是记录里的状态(状态本来就在盘上,不证明它没重跑)。
+  const allCalls = readCalls();
+  eq("★★ wf 全程只被派发一次(已建成步没被重跑)—— handler 调用次数判据", allCalls.filter((c) => c === CRASH_WF).length, 1);
+  eq("★★ 总派发 = wf 一次 + auto 两次(崩溃前一次 + 续跑一次)", allCalls.join(","), `${CRASH_WF},${CRASH_AUTO},${CRASH_AUTO}`);
 }
 
 closeDb();
