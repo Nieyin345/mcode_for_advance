@@ -96,6 +96,7 @@ import {
   canAuthorizeHook,
   hookGrantIssueInput,
   pluginGrants,
+  shouldRefetchHookGrants,
 } from "./pluginHookGrantsView.js";
 import {
   IconPuzzle,
@@ -1320,6 +1321,27 @@ function HookGrantsSection({ plugin }: { plugin: PluginState }) {
   // busy state disables just the control that fired.
   const [pending, setPending] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  /**
+   * 【MC-061 残余】订阅「主机 hook 授权变了」推送 —— 授权**签发 / 撤销 / 用尽**时主进程推一条,
+   * 这一块据此**重读**(不必等用户手动切页)。推送带 `pluginId`,所以只在该条说的就是**本插件**
+   * 时重读(判据走纯函数 {@link shouldRefetchHookGrants});别的插件的授权变了不该让这一块也重拉。
+   *
+   * `refetch` 有意**不进依赖数组**:`useRpc` 的 `refetch` 每次渲染都是新函数(它是个稳定的
+   * `run` 回调,但引用会变),放进依赖会反复重订阅。这里只按 `plugin.name` 重订阅 —— 订阅逻辑
+   * 只用到它。`refetchRef` 保证回调里调到的永远是最新那份 `refetch`。
+   *
+   * 手机端 `webApi.ts` 没有这条推送(空实现返回 no-op 的退订函数),`?.` 兜住老 preload ——
+   * 与 `LibrarySection` 订阅 `library:changed` 是同一姿势。
+   */
+  const refetchRef = useRef(refetch);
+  refetchRef.current = refetch;
+  useEffect(() => {
+    const off = window.api?.on?.hostHookGrantsChanged?.((msg) => {
+      if (shouldRefetchHookGrants(plugin.name, msg.pluginId)) void refetchRef.current();
+    });
+    return off;
+  }, [plugin.name]);
 
   const now = Date.now();
   const pluginGrantList = pluginGrants(grants, plugin.name);

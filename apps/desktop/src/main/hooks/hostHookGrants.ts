@@ -24,6 +24,7 @@
  * 「卸载后 hook 同步撤销」这条台账要求因此是**一句真的调用**,不是口号。
  */
 import { createHash } from "node:crypto";
+import { IPC } from "@contracts/ipc";
 import {
   decideHostHookExecution,
   hostHookGrantCovers,
@@ -83,6 +84,55 @@ export function hostHookIdOf(source: HostHookSource): string {
 /** 主机 hook 授权表。模块级单例(生产在装配点用它;测试可 `resetHostHookGrants` 清空)。 */
 let grants = new Map<string, HostHookGrant>();
 let seq = 0;
+
+/**
+ * **授权变了 → 推渲染端**(MC-061 残余)。面板那一栏此前**没有推送通道**,授权**签发 / 撤销 /
+ * 用尽**只有等用户手动切页(refetch)才更新 —— 用户盯着那一栏,看不到状态已经变了。
+ *
+ * ## 为什么是**注入的端口**,不直接 import window.ts
+ *
+ * 本模块是**纯**的(不 import electron / sql / window):`plugins-smoke` / `hooks-ipc-smoke`
+ * 把整张 import 图打包进 node 跑,而 `window.ts` 拖着 `electron`。直接 import 它等于让这两套
+ * 无头 smoke 在打包阶段就撞上原生模块。所以留一个窄端口(「窗口能不能收 / 发一条」),由
+ * `window.ts` 在模块加载时装入 —— 与 `customUi/settingSync.ts` 的 `SettingNotifyPort` **同一
+ * 姿势**(那条通路补的是「Agent 改设置后桌面不刷新」,这条补的是「授权变了面板不刷新」)。
+ *
+ * ## 没有窗口时**静默跳过**(不攒、不补发)
+ *
+ * `customUi/settingSync.ts` 会把窗口不在时的那条通知**攒起来**、窗口出现时补发 —— 因为那里
+ * 的通知是「一次**已提交**的业务写入需要被桌面看见」,丢了就是真的丢了。**这里不同**:面板
+ * 每次挂载 / 展开插件行都 `useRpc` 现读一遍(`listHostHookGrants`),所以窗口不在时没有"会永久
+ * 丢失的刷新" —— 窗口一出现,面板自己就会读最新。故这里按**静默跳过**处理(与那条通路"没有
+ * 窗口就不推"的**调用姿势**一致,只是不做补发)。
+ */
+export interface HostHookGrantNotifyPort {
+  hasLiveRenderer(): boolean;
+  send(channel: string, payload: unknown): void;
+}
+
+let notifyPort: HostHookGrantNotifyPort | null = null;
+
+/** 装配发件端口。`window.ts` 在自己的模块初始化时调一次(它手上有 sendToRenderer/hasLiveRendererWindow)。 */
+export function setHostHookGrantNotifyPort(p: HostHookGrantNotifyPort): void {
+  notifyPort = p;
+}
+
+/**
+ * 推一条「某插件的授权变了」。**没有窗口 / 端口未装 → 静默跳过**(见 {@link HostHookGrantNotifyPort})。
+ * 这是**唯一**的推出口 —— 签发 / 撤销 / 用尽三处都走它,免得各写一份通道名(`IPC.HOST_HOOK_GRANTS_CHANGED`)。
+ *
+ * `channel` / payload 形状对齐其它 main → renderer 广播(`library:changed` / `workflow:changed`):
+ * 消息自身带 `channel` 判别键,渲染端按它分发。
+ */
+function notifyGrantsChanged(pluginId: string, reason: string, grantId?: string): void {
+  if (notifyPort === null || !notifyPort.hasLiveRenderer()) return;
+  notifyPort.send(IPC.HOST_HOOK_GRANTS_CHANGED, {
+    channel: IPC.HOST_HOOK_GRANTS_CHANGED,
+    pluginId,
+    reason,
+    ...(grantId !== undefined ? { grantId } : {}),
+  });
+}
 
 /**
  * 可注入的持久化接口 —— 本模块不实现落盘,只认这个窄接口(与 ARC-004 的 `GrantStorePersist`
@@ -237,6 +287,9 @@ export function issueHostHookGrant(input: {
   };
   grants.set(grant.grantId, grant);
   flush();
+  // 【MC-061 残余】新授权 → 推面板那一块刷新(只在实际**新建**时推:上面复用分支直接 return,
+  // 没走到这里 —— 复用没有改变面板该显示的东西)。见 {@link notifyGrantsChanged}。
+  notifyGrantsChanged(grant.pluginId, "issue", grant.grantId);
   return grant;
 }
 
@@ -274,6 +327,12 @@ export function recordHostHookRun(source: HostHookSource, now: number): boolean 
     if (g.maxRuns !== undefined) {
       g.usedRuns = (g.usedRuns ?? 0) + 1;
       flush();
+      // 【MC-061 残余】**这一笔把这批授权的余额用光了** → 推面板把那一条翻成「已用尽」。
+      // 只在**刚好用尽**的这一笔记(下一条事件仍会读到 `exhausted`,但那不是"变了"——面板早
+      // 已刷过;重复推只是噪音)。见 {@link notifyGrantsChanged}。
+      if (countBudgetExhausted(g.maxRuns, g.usedRuns)) {
+        notifyGrantsChanged(g.pluginId, "exhausted", g.grantId);
+      }
     }
     return true;
   }
@@ -286,6 +345,8 @@ export function revokeHostHookGrant(grantId: string): boolean {
   if (!g || g.revoked) return false;
   g.revoked = true;
   flush();
+  // 【MC-061 残余】撤销 → 推面板把那一条翻成「已撤销」。幂等分支(本来就撤了)不推 —— 没变。
+  notifyGrantsChanged(g.pluginId, "revoke", grantId);
   return true;
 }
 
@@ -301,7 +362,12 @@ export function revokeHostHookGrants(pluginId: string): number {
       n += 1;
     }
   }
-  if (n > 0) flush();
+  if (n > 0) {
+    flush();
+    // 【MC-061 残余】按插件整撤(停用 / 卸载)→ 推面板整个插件那一块重读(一次整撤多份,不逐份推)。
+    // 没撤到任何一份时不推 —— 没变。
+    notifyGrantsChanged(pluginId, "revoke-all");
+  }
   return n;
 }
 

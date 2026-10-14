@@ -1950,6 +1950,9 @@ export const IPC = {
   HOOKS_HOST_HOOK_GRANTS_LIST: "hooks:listHostHookGrants",
   HOOKS_HOST_HOOK_GRANT_ISSUE: "hooks:issueHostHookGrant",
   HOOKS_HOST_HOOK_GRANT_REVOKE: "hooks:revokeHostHookGrant",
+  /** Main → renderer push:插件 hook 授权变了(签发 / 撤销 / 用尽)。面板据此**只刷那一块**,
+   *  不必等用户手动切页 —— 见 `HostHookGrantsChangedMessage`。 */
+  HOST_HOOK_GRANTS_CHANGED: "hooks:hostHookGrantsChanged",
   // Plugins (settings panel): list/install (local/git/marketplace)/enable/
   // remove + marketplace management. No push channel — every RPC resolves
   // when done and the panel re-lists.

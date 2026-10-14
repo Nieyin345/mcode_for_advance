@@ -990,6 +990,133 @@ console.log("\n§7 用户签发的**入参形状**:命令/matcher 原文(宿主�
 // 收尾:断开注入缝,免得影响后续(本套到此结束)。
 hookRunner.setPluginHookSource(() => []);
 
+/* ────────────────────── 9. 授权变更推送(MC-061 残余)────────────────────── */
+
+console.log("\n§9 授权签发 / 撤销 / 用尽 → 推送渲染端(面板据此刷新,不必等手动切页)");
+
+/*
+ * 台账 MC-061 末条残余:「面板**没有推送通道**,授权过期 / 用尽要等下次 refetch 才更新」。
+ * 修法是复用本仓既有的「主进程 → 渲染端推一条,让界面刷新」通路 —— 与 `customUi/settingSync.ts`
+ * 的 `SettingNotifyPort` **同一姿势**(那个端口由 `window.ts` 在模块加载时装配;它补的是「Agent
+ * 改设置后桌面不刷新」,这条补的是「授权变了面板不刷新」)。
+ *
+ * 但 `hostHookGrants.ts` 是**纯模块**(不 import electron/window,否则本套与 plugins-smoke
+ * 在打包阶段就撞原生模块),所以推送走**注入的端口**(`setHostHookGrantNotifyPort`)。这一节用
+ * 一个**收件人替身**验三件事,缺一层就是「发了没人收」的假接线:
+ *   ① 三重生命事件(签发 / 撤销 / 用尽 / 按插件整撤)各推一条,且**指明是哪个插件 + 哪一份授权**;
+ *   ② **没变不推**(幂等复用 / 重复撤销 / 撤空气)—— 否则面板会被无意义的刷新刷屏;
+ *   ③ **没有窗口时静默跳过、不炸**(`hasLiveRenderer` 为假)—— 与 settingSync 同一姿势。
+ */
+{
+  const {
+    setHostHookGrantNotifyPort,
+    hostHookSourceOf: sourceOf9,
+    recordHostHookRun,
+    issueHostHookGrant,
+    revokeHostHookGrants,
+  } = await import("@main/hooks/hostHookGrants.js");
+
+  /** 收件人替身 —— 生产里 `window.ts` 装配的是真 `sendToRenderer`(本套没有窗口)。 */
+  const pushed: Array<{ channel: string; pluginId: string; reason: string; grantId?: string }> = [];
+  let liveRenderer = true;
+  setHostHookGrantNotifyPort({
+    hasLiveRenderer: () => liveRenderer,
+    send: (_channel, payload) => pushed.push(payload as (typeof pushed)[number]),
+  });
+
+  const P9 = "push-demo-plugin";
+  const CMD9 = "echo nines";
+  const src9 = sourceOf9({ pluginId: P9, version: "1.0.0", nativeEvent: "PreToolUse", command: CMD9 });
+
+  /* ① 签发 → 推一条 issue(带 pluginId + grantId)。 */
+  pushed.length = 0;
+  const g9 = (await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, {
+    pluginId: P9,
+    version: "1.0.0",
+    events: ["PreToolUse"],
+    command: CMD9,
+  })) as { ok: boolean; grant: { grantId: string } };
+  eq("签发成功", g9.ok, true);
+  eq("★ 签发推了一条给渲染端", pushed.length, 1);
+  eq("★ 推送走了既有广播姿势的通道(hooks:hostHookGrantsChanged)", pushed[0]?.channel, IPC.HOST_HOOK_GRANTS_CHANGED);
+  eq("★ 推送指明是哪个插件(面板只刷它那一块)", pushed[0]?.pluginId, P9);
+  eq("推送 reason 说清是「签发」", pushed[0]?.reason, "issue");
+  eq("推送带上 grantId(具体是哪一份授权)", pushed[0]?.grantId, g9.grant.grantId);
+
+  /* 幂等复用**不推** —— 没变。 */
+  pushed.length = 0;
+  await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, {
+    pluginId: P9,
+    version: "1.0.0",
+    events: ["PreToolUse"],
+    command: CMD9,
+  });
+  eq("★ 同来源幂等再签:复用旧的一份,**不推**(面板没变化)", pushed.length, 0);
+
+  /* ② 撤销 → 推一条 revoke。 */
+  pushed.length = 0;
+  await call(IPC.HOOKS_HOST_HOOK_GRANT_REVOKE, { grantId: g9.grant.grantId });
+  eq("★ 撤销推了一条给渲染端", pushed.length, 1);
+  eq("撤销 reason=revoke", pushed[0]?.reason, "revoke");
+  eq("撤销带 pluginId", pushed[0]?.pluginId, P9);
+  /* 重复撤销(幂等)**不推**。 */
+  pushed.length = 0;
+  await call(IPC.HOOKS_HOST_HOOK_GRANT_REVOKE, { grantId: g9.grant.grantId });
+  eq("★ 重复撤销(幂等)不再推(没变)", pushed.length, 0);
+
+  /* ③ 新来源 + 小预算:用尽**那一刻**推一条 exhausted(面板把那一行翻成「已用尽」)。 */
+  const P9B = "push-demo-plugin-b";
+  const src9b = sourceOf9({ pluginId: P9B, version: "1.0.0", nativeEvent: "PreToolUse", command: "echo b" });
+  issueHostHookGrant({
+    pluginId: P9B,
+    version: "1.0.0",
+    events: ["PreToolUse"],
+    commandDigest: src9b.commandDigest,
+    maxRuns: 2,
+    ttlMs: 60_000,
+    now: Date.now(),
+  });
+  pushed.length = 0;
+  eq("第一笔记账返回 true(还有余额)", recordHostHookRun(src9b, Date.now()), true);
+  eq("★ 还有余额 → 不推(没变)", pushed.length, 0);
+  eq("第二笔记账返回 true(刚好用尽)", recordHostHookRun(src9b, Date.now()), true);
+  eq("★ 刚好用尽 → 推一条 exhausted", pushed.length, 1);
+  eq("用尽 reason=exhausted", pushed[0]?.reason, "exhausted");
+  eq("用尽带 pluginId", pushed[0]?.pluginId, P9B);
+  pushed.length = 0;
+  eq("用尽后再记一笔返回 false(无可用授权)", recordHostHookRun(src9b, Date.now()), false);
+  eq("★ 用尽后不再重复推(面板早已刷过)", pushed.length, 0);
+
+  /* ④ 按插件整撤(插件停用 / 卸载)→ 推一条 revoke-all。 */
+  const P9C = "push-demo-plugin-c";
+  issueHostHookGrant({ pluginId: P9C, version: "1.0.0", ttlMs: 60_000, now: Date.now() });
+  pushed.length = 0;
+  eq("按插件整撤撤掉一份", revokeHostHookGrants(P9C), 1);
+  eq("★ 整撤推了一条", pushed.length, 1);
+  eq("整撤 reason=revoke-all", pushed[0]?.reason, "revoke-all");
+  eq("整撤带 pluginId", pushed[0]?.pluginId, P9C);
+  pushed.length = 0;
+  eq("撤一份都不存在 → 返回 0", revokeHostHookGrants("none-such-plugin-9"), 0);
+  eq("★ 没撤到任何一份 → 不推(没变)", pushed.length, 0);
+
+  /* ⑤ 没有窗口 → 静默跳过、不炸(与 settingSync「没有窗口就不推」同一姿势)。 */
+  liveRenderer = false;
+  pushed.length = 0;
+  const g9c = (await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, {
+    pluginId: "push-demo-no-window",
+    version: "1.0.0",
+    events: ["PreToolUse"],
+    command: "echo nw",
+  })) as { ok: boolean };
+  eq("没有窗口时签发仍然成功(不因推送缺席而失败)", g9c.ok, true);
+  eq("★ 没有窗口 → 一条都不推(静默跳过,不炸)", pushed.length, 0);
+
+  // 收尾:复位端口与授权表(本套到此结束)。
+  setHostHookGrantNotifyPort({ hasLiveRenderer: () => false, send: () => {} });
+  resetHostHookGrants();
+}
+
+
 /* ────────────────────── 8. 审计读取:`hooks.runs` 真的返回落盘审计(MC-061)────────────────────── */
 
 console.log("\n§8 审计读取:hooks.runs 返回落盘审计(不只 50 条会被顶掉的内存环)");

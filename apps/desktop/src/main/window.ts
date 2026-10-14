@@ -8,10 +8,19 @@ import { log } from "@main/lib/logger.js";
 import { logStartup } from "@main/lib/startupTimer.js";
 import { IPC } from "@contracts/ipc";
 import { flushPendingSettingNotifications, setSettingNotifyPort } from "@main/customUi/settingSync.js";
+import { setHostHookGrantNotifyPort } from "@main/hooks/hostHookGrants.js";
 
 // 【ARC-009】把发件端口装给 settingSync —— 它需要「窗口此刻能不能收」+「发一条」,但不能
 // import 本文件(会循环)。改由这里注入:`sendToRenderer` / `hasLiveRendererWindow` 就在本模块。
 setSettingNotifyPort({
+  hasLiveRenderer: hasLiveRendererWindow,
+  send: (channel, payload) => sendToRenderer(channel, payload),
+});
+
+// 【MC-061 残余】同一姿势:把发件端口装给 hostHookGrants —— 授权签发 / 撤销 / 用尽时要推面板
+// 刷新那一块,而 hostHookGrants 是**纯模块**(不 import electron/window,否则无头 smoke 打包
+// 阶段就撞原生模块)。这里注入「窗口能不能收 / 发一条」,与上面那句同源。
+setHostHookGrantNotifyPort({
   hasLiveRenderer: hasLiveRendererWindow,
   send: (channel, payload) => sendToRenderer(channel, payload),
 });

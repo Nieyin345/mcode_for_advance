@@ -78,3 +78,20 @@ export function pluginGrants(
     .filter((g) => g.pluginId === pluginId)
     .sort((a, b) => b.issuedAt - a.issuedAt || (a.grantId < b.grantId ? 1 : -1));
 }
+
+/**
+ * 【MC-061 残余】收到一条主机 hook 授权变更推送后,**这一块**(某个插件行)要不要重读?
+ *
+ * 授权栏是**按插件分块**显示的 —— 每个展开的插件行渲染一份 {@link HookGrantsSection}。推送
+ * 带 `pluginId`(见 `HostHookGrantsChangedMessage`),所以一块只该在**这条推送说的就是它**时
+ * 重读。不带这个判据、每块都无条件重读的话,一次签发会让**所有**展开的插件行一起重拉
+ * (`listHostHookGrants` 是全局表),那正是"推送"设计要避免的噪音。
+ *
+ * 纯函数、不 import React —— 好让 `renderer-pure-smoke` 逐条钉住"只刷它那一块"这条纪律。
+ */
+export function shouldRefetchHookGrants(
+  sectionPluginId: string,
+  messagePluginId: string,
+): boolean {
+  return sectionPluginId === messagePluginId;
+}

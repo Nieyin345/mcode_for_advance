@@ -1200,6 +1200,17 @@ const api = {
         ipcRenderer.off(IPC.WORKFLOW_CHANGED, listener);
       };
     },
+    /** 【MC-061 残余】插件 hook 授权变了(签发 / 撤销 / 用尽)。设置 → 插件里那一块授权栏
+     *  据此**只刷它自己**(消息带 `pluginId`)—— 不必等用户手动切页才看到状态已变。 */
+    hostHookGrantsChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "hooks:hostHookGrantsChanged" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.HOST_HOOK_GRANTS_CHANGED) handler(msg);
+      };
+      ipcRenderer.on(IPC.HOST_HOOK_GRANTS_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.HOST_HOOK_GRANTS_CHANGED, listener);
+      };
+    },
     /** AI 往这次对话挂了一个附件 —— 渲染端把它加成输入框里的一个标签,效果与用户
      *  自己挂完全一致(能删、参与去重、随下一条消息发出去)。 */
     composerAttach(handler: (msg: Extract<MainToRendererMessage, { channel: "composer:attach" }>) => void): () => void {

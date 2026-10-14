@@ -86,3 +86,36 @@ export const HostHookGrantRevokeSchema = z
   .object({ grantId: z.string().min(1).max(200) })
   .strict();
 export type HostHookGrantRevokeInput = z.infer<typeof HostHookGrantRevokeSchema>;
+
+/**
+ * **主机 hook 授权变了 → 推送渲染端**(main → renderer)。MC-061 残余:面板此前**没有推送
+ * 通道**,授权**过期 / 用尽**只有等用户手动切页(refetch)才更新 —— 用户盯着那一栏,却看不到
+ * 状态已经变了。
+ *
+ * ## 什么时候推
+ *
+ * 授权生命周期里三件事:① 用户**签发**一份(面板那一栏多一行);② **撤销**(那一行翻成「已撤销」);
+ * ③ 执行**次数用尽**(`usedRuns >= maxRuns`,那一行翻成「已用尽」—— 见 `hostHookGrants.ts` 的
+ * `recordHostHookRun`)。三件事都改的是**面板上那一栏的字**,所以都推一条。
+ *
+ * ## 为什么带 `pluginId`(而不是只报「变了」)
+ *
+ * `library:changed` / `workflow:changed` 那两条广播故意做得很粗(只报「变了」,整表重拉),
+ * 因为它们的读者是**整屏一份列表**。这里不同:授权是**按插件分块**显示的(`HookGrantsSection`
+ * 每个展开的插件行一份),一条针对插件 A 的推送不该让插件 B 那一块也重读 —— 带 `pluginId`
+ * 让面板**只刷它**(见渲染端 `shouldRefetchHookGrants`)。
+ *
+ * ## `reason` 只用于日志 / 排查
+ *
+ * 与那两条广播同一条纪律:渲染端一律重读,不按 `reason` 增量打补丁(细粒度增量要维护两边状态机,
+ * 重读一次是毫秒级的)。
+ */
+export interface HostHookGrantsChangedMessage {
+  channel: "hooks:hostHookGrantsChanged";
+  /** 哪个插件的授权变了 —— 面板据此只刷它自己那一块。 */
+  pluginId: string;
+  /** 变了什么(`issue` / `revoke` / `revoke-all` / `exhausted`)。只用于日志与排查。 */
+  reason: string;
+  /** 具体哪一份授权变了(`issue` / `revoke` / `exhausted` 带;`revoke-all` 是整插件,不带)。 */
+  grantId?: string;
+}

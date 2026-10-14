@@ -13,6 +13,7 @@ import type { ThemeChangedMessage } from "../theme.js";
 import type { UpdateAvailableMessage, UpdateDownloadProgressMessage, UpdateDownloadedMessage } from "./app.js";
 import type { RuntimeEventMessage, ToolchainEventMessage } from "./runtimes.js";
 import type { LibraryChangedMessage, WorkflowChangedMessage, ComposerAttachMessage } from "./library.js";
+import type { HostHookGrantsChangedMessage } from "./hostHookGrants.js";
 
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
@@ -234,5 +235,6 @@ export type MainToRendererMessage =
   | ToolchainEventMessage
   | LibraryChangedMessage
   | WorkflowChangedMessage
-  | ComposerAttachMessage;
+  | ComposerAttachMessage
+  | HostHookGrantsChangedMessage;
 

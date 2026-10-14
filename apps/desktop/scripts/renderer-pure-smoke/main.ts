@@ -914,6 +914,34 @@ section("18. 插件 hook 授权:面板入参构造 + 面板真的接上了签发
   check("★ HooksPanel 真的读 hooks.runs 的 audit 栏(不是只接 runs)", hooksPanel.includes("res.audit"), hooksPanel.match(/\.audit[\s\S]{0,40}/)?.[0]);
   check("★ HooksPanel 把审计栏渲染成独立一栏(AuditRow)", hooksPanel.includes("AuditRow"), hooksPanel.match(/<AuditRow[\s\S]{0,40}/)?.[0]);
   check("★ 审计栏与内存环是**两栏**(各读各的:runs 与 audit 都进 state)", hooksPanel.includes("HookAuditEntry") && hooksPanel.includes("setAudit("));
+
+  /* 【MC-061 残余】面板**推送通道**:授权**签发 / 撤销 / 用尽**时主进程推一条,面板据此刷新
+     —— 不必等用户手动切页。台账原话:「面板无推送通道,授权过期/用尽要等下次 refetch 才更新」。
+     两件要钉住,缺一件就是"发了没人收"的假接线:
+       ① **判据纯函数** `shouldRefetchHookGrants`:一份推送只该刷**它说的那个插件**那一块
+          (授权栏按插件分块显示);别的插件变了不该让这一块也重拉。
+       ② 面板源码**真的订阅了**这条推送(不是只声明了类型)。 */
+  const { shouldRefetchHookGrants } = await import("../../src/renderer/components/settings/pluginHookGrantsView.js");
+  // ① 判据:只刷它那一块。写成"恒真"或"恒假"都过不了这一对。
+  check("★ 推送说的就是本插件 → 这一块重读", shouldRefetchHookGrants("demo-plugin", "demo-plugin"));
+  check("★ 推送说的是别的插件 → 这一块**不**重读(只刷它自己)", !shouldRefetchHookGrants("demo-plugin", "other-plugin"));
+
+  // ② 接线不变量:面板真的订阅了推送(见 `window.api?.on?.hostHookGrantsChanged?.(`)。
+  check(
+    "★ 面板真的订阅了授权变更推送(hostHookGrantsChanged)",
+    panel.includes("hostHookGrantsChanged"),
+    panel.match(/hostHookGrantsChanged[\s\S]{0,40}/)?.[0],
+  );
+  check(
+    "★ 收到推送后调 refetch(不是接了推送却不刷新)",
+    panel.includes("hostHookGrantsChanged") && panel.includes("refetchRef.current()"),
+    panel.match(/hostHookGrantsChanged[\s\S]{0,120}/)?.[0],
+  );
+  check(
+    "★ 面板用 shouldRefetchHookGrants 判(只刷它那一块,不是每块都重拉)",
+    panel.includes("shouldRefetchHookGrants("),
+    panel.match(/shouldRefetchHookGrants\([^\n]*/g)?.slice(0, 2),
+  );
 }
 
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
