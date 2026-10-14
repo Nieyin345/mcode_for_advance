@@ -882,6 +882,8 @@ const on: Api["on"] = {
   libraryChanged: () => () => {},
   // 工作流那一摊同理:设置 → 工作流是桌面端专属的面板。
   workflowsChanged: () => () => {},
+  // 【MC-061 残余】插件 hook 授权变更推送同理:设置 → 插件是桌面端专属面板,手机端没有它。
+  hostHookGrantsChanged: () => () => {},
   composerAttach: () => () => {},
 };
 
