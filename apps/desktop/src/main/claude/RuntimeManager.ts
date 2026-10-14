@@ -30,6 +30,7 @@ import { pendingBackflowPrompt, pendingCreationMemoryPrompt, clearBackflow } fro
 import { clearAgentMail, mailNoticeText, peekAgentMailBatch, setDeliveryPort, type MailNotice } from "@main/lib/agentMail.js";
 import { readTaskOutputFile } from "@main/lib/taskOutput.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
+import { toolProfileForSession } from "@main/orchestration/toolProfileForSession.js";
 import { memorySectionFrom, type MemoryInjectionSection, type MemoryInjectionTrace } from "@contracts/memory";
 import { traceMemoryTurn } from "@main/memory/injection.js";
 import { buildEnvPrompt, envPromptFingerprint } from "@main/providers/envPrompt.js";
@@ -1644,6 +1645,11 @@ class RuntimeManager {
       // 轮预算：host 侧统一强制（三引擎一致）；Claude native 的
       // maxTurns / maxBudgetUsd 在 provider 里照着传，算双保险。
       budget: rt.budget,
+      // 【MC-100/101 生产侧画像来源】本入口是生产路径上**发起** StartTurnRequest 的地方 ——
+      // 在这里按会话种类派生画像(side Q&A → chat 桶;其余 → 显式 full)。派生是**显式**的:
+      // 推不出更小画像就**显式**取 full,而不是省略参数(见 `@contracts/toolProfile` 文件头)。
+      // 派生逻辑唯一一份(硬规矩 2)—— provider 侧不再各自判断。
+      toolProfile: toolProfileForSession(session),
       // 失败回退链的剩余部分（Claude native 的 Options.fallbackModel 双保险；
       // host 侧 turn.done error 的重发是主路径）。空链不传。
       fallbackModels: rt.fallbackModels.length > 0 ? rt.fallbackModels : undefined,

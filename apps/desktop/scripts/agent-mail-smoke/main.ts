@@ -1699,5 +1699,47 @@ console.log("\nMC-033b:收件箱字节上限对多字节内容同样成立");
   }
 }
 
+/* ── MC-100/101: 生产侧画像来源(req.toolProfile 不再永远缺省 full)────────
+ *
+ * 上一轮把选择链接通了,但**没有任何生产代码设过 `StartTurnRequest.toolProfile`** —— 于是每轮
+ * 都是缺省 `full`,裁剪链接通了却从不裁。这一段驱动**真的** `RuntimeManager.sendTurn`(只把 SDK
+ * 换成记录桩),断言它**真的把非 full 画像传下去了**:side(Q&A 子会话)→ 小画像 `chat`;
+ * chat / node / automation 推不出更小画像 → **显式** `full`。测的是「生产入口发出去的那个请求」,
+ * 不是纯函数能算出小画像(后者测不到「接线」这一层 —— 正是本仓点名的假绿)。 */
+console.log("\n⑰ 生产侧画像来源:sendTurn 真的把画像传给了 provider");
+{
+  const providerId = "tool-profile-smoke";
+  const requests: StartTurnRequest[] = [];
+  providerRegistry.register({
+    id: providerId, displayName: "Tool profile smoke",
+    capabilities: { supportsApproval: false, supportsResume: false, supportsStreaming: false, supportsMcp: false, supportsAskUserQuestion: false },
+    startTurn: async (req) => {
+      requests.push(req);
+      return { done: new Promise<void>(() => {}), interrupt: () => {}, isRunning: () => true };
+    },
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+  const last = (): StartTurnRequest | undefined => requests.at(-1);
+  const side = mkSession({ kind: "side", title: "画像:Q&A 子会话", providerId });
+  const chat = mkSession({ kind: "chat", title: "画像:主对话", providerId });
+  const node = mkSession({ kind: "node", title: "画像:图节点", parentSessionId: chat.id, nodeId: "tp-node", providerId });
+  const auto = mkSession({ kind: "automation", title: "画像:自动化", providerId, workflowId: "default" });
+  for (const s of [side, chat, node, auto]) runtimeManager.bindSession(s);
+  try {
+    await runtimeManager.sendTurn(side, { prompt: "讲一下这段代码", cwd: "C:/work/paper" });
+    check("★ 生产入口真的传了画像(side 请求带 toolProfile 字段,非省略)", last()?.toolProfile !== undefined, true);
+    eq("★ side(Q&A 子会话)→ 小画像 chat(不是缺省 full)", last()?.toolProfile?.name, "chat");
+    for (const [label, s] of [["chat 主对话", chat], ["node 图节点", node], ["automation 自动化", auto]] as const) {
+      await runtimeManager.sendTurn(s, { prompt: "普通一轮", cwd: "C:/work/paper" });
+      check(`${label} 的请求确实带了 toolProfile 字段(显式,非省略)`, last()?.toolProfile !== undefined, true);
+      eq(`★ ${label} → 显式 full(推不出更小画像就不裁)`, last()?.toolProfile?.name, "full");
+    }
+    const names = requests.map((r) => r.toolProfile?.name);
+    check("★ 画像随会话种类变化(side=chat 与 chat/node/automation=full 确有差异)", names.includes("chat") && names.includes("full"), names);
+  } finally {
+    for (const s of [side, chat, node, auto]) runtimeManager.dispose(s.id);
+  }
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);
