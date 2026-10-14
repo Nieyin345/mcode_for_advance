@@ -49,7 +49,7 @@ ARC-002 开发完成保持空勾`
   另:`ui-interaction-smoke`(手写 UI 组件替身名单漏 `Badge`)与 `resume-fault-smoke`(`ipc/engineTools.ts` 新增 `readEngineToolPolicyStatus` 而桩未导出)是同类的「桩跟不上生产装配」假红,补桩即绿。
 - `2026-10-14 | 收口三 | REVIEW_PASSED | E1 | **推送到远端**:20 个提交已 `git push origin master`(`d76114ed..a0d63ad8`)。
 - ⚠️ **AOCI 索引未维护**:本轮结束时 `aoci_maintain` / `aoci_overview` / `aoci_rules` / `aoci_search` **全部返回空响应**(另一会话 `查看项目索引并调用 aoci MCP 维护` 持有该索引)。本轮对受管源码的改动**尚未**进索引。
-- `2026-10-14 | 收口四 | DEV_CLAIM | — | 又派 4 条并行车道继续收口剩余可无头闭合的缺口:**MC-100/101 生产侧画像来源**(现默认永远 `full`,裁剪链接通却从不真裁 = 假接线)、**MC-061 取消预算 + `hook_runs` 审计读取/轮转**、**MC-058 崩溃续跑 resume 入口**、**MC-059 计划审批三层 IPC 入口**。结果待回。
+- `2026-10-14 | 收口四 | DEV_CLAIM | — | 又派 4 条并行车道继续收口剩余可无头闭合的缺口:**MC-100/101 生产侧画像来源**(现默认永远 `full`,裁剪链接通却从不真裁 = 假接线)、**MC-061 取消预算 + `hook_runs` 审计读取/轮转**、**MC-058 崩溃续跑 resume 入口**、**MC-059 计划审批三层 IPC 入口**。结果待回。
 - `2026-10-14 | 收口五 | DEV_CLAIM | E1 | 四条车道全部回收并逐一由主会话**独立复跑变异**确认(不只看车道自报):
   · **MC-058 resume 入口**(`548db921`):`resumeScene`/`resumeSceneWithGrant` 读回盘上部分执行的部署、跳过已 `done` 步只跑剩下的;`compensated` 步按**重建**处理(资源已被补偿撤销、当下不在)。scene-apply 191→242。独立复跑:把「已 done 跳过」改成 `if (false)` → handler 被调两次(`wf,auto` 而非 `auto`)真红。
   · **MC-059 三层 IPC 入口**(`1cb4a7ea`):`unattended.approve`/`unattended.run` 契约→RpcMap→preload→handler 全通,主体写死 user、执行只收 grantId、policy 钉 blocked、catalog 重生成(400)。claude-ipc 271→324、app-control 407→429。独立复跑:删 BLOCKED → 「权限 unattended.approve = blocked」真红 `{"level":"write"}`。**渲染端仍无按钮**(与 `scene.*` 同现状)。
@@ -287,7 +287,7 @@ ble 存档闸门**(提交 `9210f128`)。复核点名三处逐条堵上:① **无
 | `MC-093` 记忆旧文件读取与写入敏感信息一致性 | `[x]` | `[x]` | W04 | 完整候选元数据/标题写侧敏感拒绝 + 历史/人工旧文件读侧遮蔽，memory / memory-injection E1 复核通过。 |
 | `MC-094` 项目 Skill 管理与 SDK 实际发现范围不一致 | `[x]` | `[ ]` | W04/W05/ARC-014 | 宿主解析项目 Skill 并实际交付 Claude/Codex/Pi；验证模型可见与文件读取。（开发 2026-10-14：Codex/Pi 接项目根，pi-skill-scope 16/16、skill-engines 90/0） |
 | `MC-095` 扩展数据区隔离边界不完整 | `[x]` | `[x]` | W02/W05 | 扩展物理根 Junction 越界拒绝 + 通用 Agent 无身份/跨身份读写拒绝，extension-store / app-control E1 复核通过。 |
-| `MC-096` 扩展文件通道可覆盖内部 store.json | `[ ]` | `[ ]` | W05/W07 | 保留文件闸 + 坏数据写侧拒绝 + 32MB 容量 + 坏 JSON 读侧 last-good 恢复均已落(extension-store 177/177);总量检查与写入间的并发竞态未消。 |
+| `MC-096` 扩展文件通道可覆盖内部 store.json | `[x]` | `[ ]` | W05/W07 | 保留文件闸 + 坏数据写侧拒绝 + 32MB 容量 + 坏 JSON 读侧 last-good 恢复；键值迁入点前缀保留名 `.mcode-store.json`(物理隔离 + 读回退旧名并迁移)；总量检查移进宿主级目录租约内复查(§9 消除并发竞态)；extension-store 271/271。独立复核待做。 |
 | `MC-097` Markdown/源码编辑的校验与写入非原子 | `[x]` | `[x]` | W07 | 跨进程租约、CAS、原子替换与失败注入回读，maint-m07 / editor-save 全量绿，E1 复核通过。 |
 | `MC-098` 引用正文和行号取自不同选区快照 | `[x]` | `[x]` | W07/W08 | Monaco 文本与行号一并冻结快照，renderer-pure / markdown-quote 回归绿，E1 复核通过。 |
 | `MC-099` 插件自声明不存在的宿主能力被场景预检误判已就绪 | `[x]` | `[x]` | W01/W04/W05/ARC-003/006 | Manifest 虚构 builtin/executor 不能骗过实际就绪判断，capability / scene-preflight E1 复核通过。 |
@@ -546,7 +546,7 @@ ble 存档闸门**(提交 `9210f128`)。复核点名三处逐条堵上:① **无
 | `MC-093` | P1/P2｜记忆保存前只检查正文敏感凭据而不检查标题和继承元数据 | `[x]` | `[x]` | REVIEW_PASSED（2026-10-14 E1/E2）：完整候选元数据/标题写侧敏感拒绝 + 历史/人工旧文件读侧遮蔽，memory / memory-injection E1 复核通过。 |
 | `MC-094` | P1/P2｜项目级 Skill 在管理/复制 UI 中可见，但 Codex/Pi SDK 没装配项目技能目录 | `[x]` | `[ ]` | Codex/Pi 已修 / 待复核 |
 | `MC-095` | P1｜扩展私有数据区顶层 Junction 可逃逸；Agent RPC 未绑定调用扩展的身份 | `[x]` | `[x]` | REVIEW_PASSED（2026-10-14 E1/E2）：扩展物理根 Junction 越界拒绝 + 通用 Agent 无身份/跨身份读写拒绝，extension-store / app-control E1 复核通过。 |
-| `MC-096` | P1/P2｜扩展文件通道可覆盖内部 store.json，导致键值存储丢失 | `[ ]` | `[ ]` | store.json 文件闸、坏数据写侧拒绝与 32MB 容量已落；恢复/诊断、并发配额不完整，开发未完成 |
+| `MC-096` | P1/P2｜扩展文件通道可覆盖内部 store.json，导致键值存储丢失 | `[x]` | `[ ]` | 键值迁入点前缀保留名 `.mcode-store.json`(物理隔离命名空间,读写回退旧名并迁移)、坏数据读侧 last-good 恢复/写侧 fail-closed、32MB 累计配额且在宿主级目录租约内复查(§9 并发竞态)、文件通道词法+realpath 双闸拒保留名；extension-store 271/271。独立复核待做 |
 | `MC-097` | P1｜Markdown/源码保存只在 Renderer 比对后调用主进程直写，缺少跨进程 CAS 与原子替换 | `[x]` | `[x]` | REVIEW_PASSED（2026-10-14 E1/E2）：跨进程租约、CAS、原子替换与失败注入回读，maint-m07 / editor-save 全量绿，E1 复核通过。 |
 | `MC-098` | P2｜Monaco 引用正文与行号分别在选中和选择目标时读取 | `[x]` | `[x]` | REVIEW_PASSED（2026-10-14 E1/E2）：Monaco 文本与行号一并冻结快照，renderer-pure / markdown-quote 回归绿，E1 复核通过。 |
 | `MC-099` | P1｜插件 Manifest 宣称不存在的 builtin/executor/provider 能力，宿主预检误判 READY | `[x]` | `[x]` | REVIEW_PASSED（2026-10-14 E1/E2）：Manifest 虚构 builtin/executor 不能骗过实际就绪判断，capability / scene-preflight E1 复核通过。 |
@@ -939,3 +939,12 @@ ble 存档闸门**(提交 `9210f128`)。复核点名三处逐条堵上:① **无
 - **新证据**：`skill-delivery-smoke` 加深 §E（驱动真 `startTurn`，断言 `query({options})` 的 `tools`/`mcpServers`、`createAgentSession({tools})`、`thread/start({dynamicTools})` 随**画像与预算**真变化）：E1 Claude full 不设 tools / minimal 设白名单且 app server 恒留、E2 Pi full→undefined / minimal→数组、E3 Codex full/minimal 过滤、E4 research≠minimal、E5-E7 **full+预算**三引擎都真收窄。`skill-delivery-smoke 46/46`；`effective-tools-smoke 137/137`、`provider-context-smoke 56/56`、`engine-tools-smoke 51/51` 未破；双包 `tsc --noEmit` 0 错。
 - **变异**：三处适配器各自撤掉 `budgetNarrowed` 判用 → E5/E6/E7 **真红**（逐项点名，含实际预算前后集合），逐字节 `cmp -s` 还原。
 - **remaining（如实，不冒充到那一步）**：本段证的是「宿主交给 SDK 的入参」随画像/预算正确 —— **真二进制**（claude/codex/pi）读到这些入参后**自己**如何扫描/枚举/暴露、`KNOWN_BUILTIN_TOOLS` 是否为 SDK 权威枚举、Codex 闭源二进制对 `dynamicTools` 的解释，仍须 **U1 活会话**验收；token 估计仍是 4 字符/词粗估。**MC-100/101 保持开发空勾、复核空勾**。
+
+---
+
+**2026-10-15 增量｜MC-096 两条 remaining 已闭合(开发侧，待独立复核)**：
+
+- 台账 §3/§6 旧文写的「store.json 未迁入物理隔离命名空间」与「总量检查与写入间并发竞态未消」**均已在当前源码闭合**，本轮核实并把状态从 `[ ]` 更正为开发 `[x]`。
+- **物理隔离命名空间**：`lib/extensionStore.ts` 键值文件改为 `<数据根>/extensions/<id>/.mcode-store.json`（点前缀保留命名空间）；读侧**新名优先、旧名回退**（老数据认作 VALID 不当 MISSING），写侧落新名后清旧名即迁移；`EXTENSION_STORE_FILE` / `LEGACY_EXTENSION_STORE_FILE` 与契约层 `isReservedExtensionRelPath` 是唯一一份判据，新旧两种写法都被文件通道的「词法 + realpath」双闸拒。
+- **并发竞态**：`writeFileInExtension` 的累计配额（`EXTENSION_TOTAL_MAX` 32MB）**移进 `withOsFileLease`（宿主级按目录租约）内复查** —— 修好前两个并发写各读到「目录还差一点」就都放行、合起来击穿上限；修好后第二个写者等第一个释放，读到已落盘用量即拒。smoke §9 以 `7×4MB` 填到临界 + 两个 `3MB` 并发写做承重断言（只落一个）。
+- **E1**：`extension-store-smoke 271/271`（含 §9 并发竞态、命名空间迁移与回退）。**remaining（如实）**：并发竞态仍以**单进程钩子**确定性复现（租约原语本身宿主级，跨 OS 进程由 MC-097 的真子进程 E1 佐证）；**独立复核未做**。
