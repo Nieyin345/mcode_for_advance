@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-14T15:31:38Z",
+  "updated_at": "2026-10-14T16:02:39Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -77,9 +77,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "5b0143cc0e2641d63b66e8e6ea26b8022fec816072ab761a32f121ca200aae6d",
-      "size": 1101960,
-      "normalized_sha256": "5b0143cc0e2641d63b66e8e6ea26b8022fec816072ab761a32f121ca200aae6d"
+      "sha256": "5a3d7f83b745fccb941fa15727d5124ca83b80d368418be458dbfca5592112d9",
+      "size": 1114430,
+      "normalized_sha256": "5a3d7f83b745fccb941fa15727d5124ca83b80d368418be458dbfca5592112d9"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -7149,6 +7149,48 @@
       "size": 647,
       "normalized_sha256": "909ad32d16b1d62eff1a5600adb7dd8709b32c2618a0967dbf143662b2129838"
     },
+    "apps/desktop/scripts/vision-relay-heavy-smoke/main.ts": {
+      "role": "index",
+      "sha256": "b13b607cddd10e5a7b6d4157648666dcc21f69e9ca7bc420b9bfca3f5576531d",
+      "size": 10241,
+      "normalized_sha256": "b13b607cddd10e5a7b6d4157648666dcc21f69e9ca7bc420b9bfca3f5576531d"
+    },
+    "apps/desktop/scripts/vision-relay-heavy-smoke/run.sh": {
+      "role": "index",
+      "sha256": "55b83153e929ddbf27b6865e6233082fca4a066e987fe25f3bc4decd3bcc9fad",
+      "size": 2615,
+      "normalized_sha256": "55b83153e929ddbf27b6865e6233082fca4a066e987fe25f3bc4decd3bcc9fad"
+    },
+    "apps/desktop/scripts/vision-relay-heavy-smoke/stubs/customEnv.ts": {
+      "role": "index",
+      "sha256": "d26e36b46e0123f58ff75a8e1a1867afe111e05cdcfc372bd4dd29bf186523b2",
+      "size": 1220,
+      "normalized_sha256": "d26e36b46e0123f58ff75a8e1a1867afe111e05cdcfc372bd4dd29bf186523b2"
+    },
+    "apps/desktop/scripts/vision-relay-heavy-smoke/stubs/git.ts": {
+      "role": "index",
+      "sha256": "b886f9255df57f0a34b31f93ed846181f68f5ab79078f7b86d48ea5b8d8ab432",
+      "size": 1352,
+      "normalized_sha256": "b886f9255df57f0a34b31f93ed846181f68f5ab79078f7b86d48ea5b8d8ab432"
+    },
+    "apps/desktop/scripts/vision-relay-heavy-smoke/stubs/repositories.ts": {
+      "role": "index",
+      "sha256": "b0e193f985bf131c49892612337a1228b3a9f941646eec332934ac48d6bfb89b",
+      "size": 540,
+      "normalized_sha256": "b0e193f985bf131c49892612337a1228b3a9f941646eec332934ac48d6bfb89b"
+    },
+    "apps/desktop/scripts/vision-relay-heavy-smoke/stubs/sdk.ts": {
+      "role": "index",
+      "sha256": "ee02b07d5ce97b8c8019abca6702609383ef2e213707be2babf457fde37adaab",
+      "size": 3521,
+      "normalized_sha256": "ee02b07d5ce97b8c8019abca6702609383ef2e213707be2babf457fde37adaab"
+    },
+    "apps/desktop/scripts/vision-relay-heavy-smoke/stubs/sdkBinaryPath.ts": {
+      "role": "index",
+      "sha256": "0a8b9b30eb18736cfb13d2b4b03c65af322121a962e64afed3d8af821e327083",
+      "size": 440,
+      "normalized_sha256": "0a8b9b30eb18736cfb13d2b4b03c65af322121a962e64afed3d8af821e327083"
+    },
     "apps/desktop/scripts/vision-relay-smoke/main.ts": {
       "role": "index",
       "sha256": "035bfc888700adf80eef34923cb0b9dad46f33f20bb858480a2c74e7576079b1",
@@ -10126,15 +10168,15 @@
     },
     "apps/desktop/src/renderer/components/ide/FileEditor.tsx": {
       "role": "index",
-      "sha256": "268f46c76c617b0c6850d5761f9db172b0748cf3e9f50c4a903f7ba025d261bf",
-      "size": 116336,
-      "normalized_sha256": "268f46c76c617b0c6850d5761f9db172b0748cf3e9f50c4a903f7ba025d261bf"
+      "sha256": "91e293c13992ef2fc9b60cb31ed0ce1d6967a9bc05d074c55dffaf24aa4b5dff",
+      "size": 118972,
+      "normalized_sha256": "91e293c13992ef2fc9b60cb31ed0ce1d6967a9bc05d074c55dffaf24aa4b5dff"
     },
     "apps/desktop/src/renderer/components/ide/FileTree.tsx": {
       "role": "index",
-      "sha256": "b6170e41ebe1f7a087f36557ec33d32cf697a071c58178d8f9ecbca1244b9b83",
-      "size": 61281,
-      "normalized_sha256": "b6170e41ebe1f7a087f36557ec33d32cf697a071c58178d8f9ecbca1244b9b83"
+      "sha256": "2d26d1de721ef9838bb35fd5b7039e8e36ef4b0de69b4d34b417bd56658db7de",
+      "size": 62128,
+      "normalized_sha256": "2d26d1de721ef9838bb35fd5b7039e8e36ef4b0de69b4d34b417bd56658db7de"
     },
     "apps/desktop/src/renderer/components/ide/FilesPanel.tsx": {
       "role": "index",
@@ -10198,9 +10240,9 @@
     },
     "apps/desktop/src/renderer/components/ide/SearchDialog.tsx": {
       "role": "index",
-      "sha256": "da3559d2b3afe7fa17ed282e5f23a692f36b1f1bef3d416965e65b9556d84772",
-      "size": 31391,
-      "normalized_sha256": "da3559d2b3afe7fa17ed282e5f23a692f36b1f1bef3d416965e65b9556d84772"
+      "sha256": "bb24e7f2671c58a998575d3f8483a6d31c894935d552b8dfb3d43ea6cf39d2de",
+      "size": 33486,
+      "normalized_sha256": "bb24e7f2671c58a998575d3f8483a6d31c894935d552b8dfb3d43ea6cf39d2de"
     },
     "apps/desktop/src/renderer/components/ide/TaskListPanel.tsx": {
       "role": "index",
@@ -10282,9 +10324,9 @@
     },
     "apps/desktop/src/renderer/components/layout/MobileConnectDialog.tsx": {
       "role": "index",
-      "sha256": "79ddbe0edf4b97ba2df1f6ea315b0aa498d9e7569eb17fa0a8de405f506b3887",
-      "size": 19531,
-      "normalized_sha256": "79ddbe0edf4b97ba2df1f6ea315b0aa498d9e7569eb17fa0a8de405f506b3887"
+      "sha256": "eb187d4601e055af5eb720bc0349cf63c598a0882db8197b6b3e485d214ca67a",
+      "size": 20347,
+      "normalized_sha256": "eb187d4601e055af5eb720bc0349cf63c598a0882db8197b6b3e485d214ca67a"
     },
     "apps/desktop/src/renderer/components/layout/ProjectManageMenu.tsx": {
       "role": "index",
@@ -10348,9 +10390,9 @@
     },
     "apps/desktop/src/renderer/components/layout/Toaster.tsx": {
       "role": "index",
-      "sha256": "72e7a939dd52e7c9536e0d46620174018b0996e03d40102cb4e06c5fd53ad2ec",
-      "size": 3654,
-      "normalized_sha256": "72e7a939dd52e7c9536e0d46620174018b0996e03d40102cb4e06c5fd53ad2ec"
+      "sha256": "6ef0da32fa855ee9d1c7253cb586a067465d5d7e02a6ae8979ca08016a1698d0",
+      "size": 6707,
+      "normalized_sha256": "6ef0da32fa855ee9d1c7253cb586a067465d5d7e02a6ae8979ca08016a1698d0"
     },
     "apps/desktop/src/renderer/components/layout/UnifiedTabsBar.tsx": {
       "role": "index",
@@ -10372,9 +10414,9 @@
     },
     "apps/desktop/src/renderer/components/layout/statusBarPresentation.ts": {
       "role": "index",
-      "sha256": "c1a1707ec6cbee5e750ae784cfcee01895119d7bb5c8a7ec18cbf3702870c683",
-      "size": 2041,
-      "normalized_sha256": "c1a1707ec6cbee5e750ae784cfcee01895119d7bb5c8a7ec18cbf3702870c683"
+      "sha256": "677e29024118da7e14d7906d1a32a132c4b54aaa82180d52c7e7805324471acb",
+      "size": 2560,
+      "normalized_sha256": "677e29024118da7e14d7906d1a32a132c4b54aaa82180d52c7e7805324471acb"
     },
     "apps/desktop/src/renderer/components/library/CollectionContextMenu.tsx": {
       "role": "index",
@@ -10396,9 +10438,9 @@
     },
     "apps/desktop/src/renderer/components/library/FileViewer.tsx": {
       "role": "index",
-      "sha256": "4432859f7412a9cf6f00681edd3ebaf6863a745f5002efc47b71d6fa22f16fa1",
-      "size": 27908,
-      "normalized_sha256": "4432859f7412a9cf6f00681edd3ebaf6863a745f5002efc47b71d6fa22f16fa1"
+      "sha256": "ed9cc7112a12f6299bc6e9c112cbd32c68c1754854db646388d408762da618e5",
+      "size": 33054,
+      "normalized_sha256": "ed9cc7112a12f6299bc6e9c112cbd32c68c1754854db646388d408762da618e5"
     },
     "apps/desktop/src/renderer/components/library/GroupContextMenu.tsx": {
       "role": "index",
@@ -10456,9 +10498,9 @@
     },
     "apps/desktop/src/renderer/components/library/PdfPreviewImpl.tsx": {
       "role": "index",
-      "sha256": "8447fe733a6c3572f30594bb5670aa88c003d0225b563dae0f47aa427a546d92",
-      "size": 20032,
-      "normalized_sha256": "8447fe733a6c3572f30594bb5670aa88c003d0225b563dae0f47aa427a546d92"
+      "sha256": "f7d01acdbbfba1d973c669c4079cdf9014e050528fbefc20a3021233a4641fa3",
+      "size": 21045,
+      "normalized_sha256": "f7d01acdbbfba1d973c669c4079cdf9014e050528fbefc20a3021233a4641fa3"
     },
     "apps/desktop/src/renderer/components/library/PreviewPanel.tsx": {
       "role": "index",
@@ -10582,9 +10624,9 @@
     },
     "apps/desktop/src/renderer/components/modules/CapabilityCatalogPanel.tsx": {
       "role": "index",
-      "sha256": "4e8885cad065107ee593a8bfeeed47e500eb04b69b734c08276380d42a7622c4",
-      "size": 8792,
-      "normalized_sha256": "4e8885cad065107ee593a8bfeeed47e500eb04b69b734c08276380d42a7622c4"
+      "sha256": "e6d557ced6f10e1cc89b896a037076bd8b16f813361f8c5e2c763c999c26c6bc",
+      "size": 8851,
+      "normalized_sha256": "e6d557ced6f10e1cc89b896a037076bd8b16f813361f8c5e2c763c999c26c6bc"
     },
     "apps/desktop/src/renderer/components/modules/CapabilitySchemaView.tsx": {
       "role": "index",
@@ -10609,6 +10651,12 @@
       "sha256": "9c44705c7f937f1e51ec0727cc7879c63cf4becf644f1a69d07efded08501630",
       "size": 17446,
       "normalized_sha256": "9c44705c7f937f1e51ec0727cc7879c63cf4becf644f1a69d07efded08501630"
+    },
+    "apps/desktop/src/renderer/components/settings/AgentSshTrustPanel.tsx": {
+      "role": "index",
+      "sha256": "90907fc83bd3c9b31091c138afc023f6486f856b201bb82fb0b50dd13d5a4cef",
+      "size": 10214,
+      "normalized_sha256": "90907fc83bd3c9b31091c138afc023f6486f856b201bb82fb0b50dd13d5a4cef"
     },
     "apps/desktop/src/renderer/components/settings/AppearanceExtras.tsx": {
       "role": "index",
@@ -10648,9 +10696,9 @@
     },
     "apps/desktop/src/renderer/components/settings/EngineToolsPanel.tsx": {
       "role": "index",
-      "sha256": "224a0c79dcc51ff1883c83d1b6a9fe0831243e31eeb57d7098c510a19b0b4585",
-      "size": 7660,
-      "normalized_sha256": "224a0c79dcc51ff1883c83d1b6a9fe0831243e31eeb57d7098c510a19b0b4585"
+      "sha256": "3ff65c5db0388df3865e2349f48563b33b455e0210efbd23410796f6fce93365",
+      "size": 8170,
+      "normalized_sha256": "3ff65c5db0388df3865e2349f48563b33b455e0210efbd23410796f6fce93365"
     },
     "apps/desktop/src/renderer/components/settings/FontSizeStepper.tsx": {
       "role": "index",
@@ -10678,9 +10726,9 @@
     },
     "apps/desktop/src/renderer/components/settings/HooksPanel.tsx": {
       "role": "index",
-      "sha256": "ed56354d1d236e2ff11bd7a6ca03bb8c9f21d650a6cec9861d56412000ba5841",
-      "size": 31181,
-      "normalized_sha256": "ed56354d1d236e2ff11bd7a6ca03bb8c9f21d650a6cec9861d56412000ba5841"
+      "sha256": "738a10ddd84cae7a34bf69ebebf9bfcf4bda6722a1d300eb49f8cfca81bfb61e",
+      "size": 34305,
+      "normalized_sha256": "738a10ddd84cae7a34bf69ebebf9bfcf4bda6722a1d300eb49f8cfca81bfb61e"
     },
     "apps/desktop/src/renderer/components/settings/InstitutionAuthPanel.tsx": {
       "role": "index",
@@ -10720,9 +10768,9 @@
     },
     "apps/desktop/src/renderer/components/settings/McpPanel.tsx": {
       "role": "index",
-      "sha256": "9131e0f027ab1bc6063b9a4704c90d1448f06ba60e7b9400df017272ad01c8c9",
-      "size": 55853,
-      "normalized_sha256": "9131e0f027ab1bc6063b9a4704c90d1448f06ba60e7b9400df017272ad01c8c9"
+      "sha256": "0f18e3bd070dd80ac79737bfbc870a958ddac701d86b7b849474c419f668eb42",
+      "size": 56250,
+      "normalized_sha256": "0f18e3bd070dd80ac79737bfbc870a958ddac701d86b7b849474c419f668eb42"
     },
     "apps/desktop/src/renderer/components/settings/NotificationsPanel.tsx": {
       "role": "index",
@@ -10756,9 +10804,9 @@
     },
     "apps/desktop/src/renderer/components/settings/PluginsPanel.tsx": {
       "role": "index",
-      "sha256": "f50b83f937ecd44abe594c0f7971cb3f356ebbae9077c66a125d14e00936c94a",
-      "size": 76789,
-      "normalized_sha256": "f50b83f937ecd44abe594c0f7971cb3f356ebbae9077c66a125d14e00936c94a"
+      "sha256": "4c3908d6e4bd86ef137774e7d9cd2a18fc8523bb420e18d3fd18255fde22b4ab",
+      "size": 90356,
+      "normalized_sha256": "4c3908d6e4bd86ef137774e7d9cd2a18fc8523bb420e18d3fd18255fde22b4ab"
     },
     "apps/desktop/src/renderer/components/settings/ProjectMcpView.tsx": {
       "role": "index",
@@ -10796,6 +10844,12 @@
       "size": 18269,
       "normalized_sha256": "4d1c73f3abc5e8cd1604e90602410b7f3497aa30b4867483f50bc1bc2df89ea9"
     },
+    "apps/desktop/src/renderer/components/settings/SceneDeployPanel.tsx": {
+      "role": "index",
+      "sha256": "7a7f4ec0a55dfe1412a6dbba5f85a79c024df0e32758fab989ef6dcb544afee7",
+      "size": 22975,
+      "normalized_sha256": "7a7f4ec0a55dfe1412a6dbba5f85a79c024df0e32758fab989ef6dcb544afee7"
+    },
     "apps/desktop/src/renderer/components/settings/ScopeTabs.tsx": {
       "role": "index",
       "sha256": "904f5ac7c08157e450e0b7e05b97409849a06b81a30ec582119a456ddf1ea060",
@@ -10822,9 +10876,9 @@
     },
     "apps/desktop/src/renderer/components/settings/SettingsPage.tsx": {
       "role": "index",
-      "sha256": "de086c18d54947103f3fc493507b221ee47ddc4fcdbe86071561a47355626df8",
-      "size": 22252,
-      "normalized_sha256": "de086c18d54947103f3fc493507b221ee47ddc4fcdbe86071561a47355626df8"
+      "sha256": "e61fa05fddd6d8a6f3b818a090b4d7c7ce3a4a88bda93cfcd6dca5b7183a7334",
+      "size": 23620,
+      "normalized_sha256": "e61fa05fddd6d8a6f3b818a090b4d7c7ce3a4a88bda93cfcd6dca5b7183a7334"
     },
     "apps/desktop/src/renderer/components/settings/SettingsSection.tsx": {
       "role": "index",
@@ -10840,9 +10894,9 @@
     },
     "apps/desktop/src/renderer/components/settings/SettingsTransferSection.tsx": {
       "role": "index",
-      "sha256": "e818f41cbcd9d66dc9a70bcf2c836ccef7fc2424b848095fe39b4cc1d2e2f287",
-      "size": 3350,
-      "normalized_sha256": "e818f41cbcd9d66dc9a70bcf2c836ccef7fc2424b848095fe39b4cc1d2e2f287"
+      "sha256": "61e61ed3a36335f070093b1a747adce74536b93bbf2eb2e41bb5684a3bea3874",
+      "size": 4105,
+      "normalized_sha256": "61e61ed3a36335f070093b1a747adce74536b93bbf2eb2e41bb5684a3bea3874"
     },
     "apps/desktop/src/renderer/components/settings/ShortcutRecorder.tsx": {
       "role": "index",
@@ -10940,11 +10994,23 @@
       "size": 1708,
       "normalized_sha256": "9584e71a37edbc042e18c13f456964328da29a3f9481209741bc44b92b48fffe"
     },
+    "apps/desktop/src/renderer/components/settings/pluginHookGrantsView.ts": {
+      "role": "index",
+      "sha256": "5448dc8be7ac98b6ea82bb56afc9236d6be8e49af51715993550410a97dcf308",
+      "size": 5025,
+      "normalized_sha256": "5448dc8be7ac98b6ea82bb56afc9236d6be8e49af51715993550410a97dcf308"
+    },
     "apps/desktop/src/renderer/components/settings/runtimePolicyDraft.ts": {
       "role": "index",
       "sha256": "4dcf65fe347b35e4d31ab48f9f42260c6caf76e1879d14ac597077bb38c5e85f",
       "size": 2520,
       "normalized_sha256": "4dcf65fe347b35e4d31ab48f9f42260c6caf76e1879d14ac597077bb38c5e85f"
+    },
+    "apps/desktop/src/renderer/components/settings/sceneDeployView.ts": {
+      "role": "index",
+      "sha256": "09c098016c56127dcb090d8efb1e2df4f834ebc91bf3b8dec10c6f4823d405ca",
+      "size": 18019,
+      "normalized_sha256": "09c098016c56127dcb090d8efb1e2df4f834ebc91bf3b8dec10c6f4823d405ca"
     },
     "apps/desktop/src/renderer/components/settings/useMarketProgress.tsx": {
       "role": "index",
@@ -10960,9 +11026,9 @@
     },
     "apps/desktop/src/renderer/components/settings/workflows/AutomationRunSection.tsx": {
       "role": "index",
-      "sha256": "12f9597d928f2c5ebdd45ceac0649734ddb1f7b15acfde2705ab14fd7aad544e",
-      "size": 8572,
-      "normalized_sha256": "12f9597d928f2c5ebdd45ceac0649734ddb1f7b15acfde2705ab14fd7aad544e"
+      "sha256": "8f37dbe6750ce0e7d49554ba836005c5379922a48260b0daec64e135b5a644df",
+      "size": 9062,
+      "normalized_sha256": "8f37dbe6750ce0e7d49554ba836005c5379922a48260b0daec64e135b5a644df"
     },
     "apps/desktop/src/renderer/components/settings/workflows/CodeParamDialog.tsx": {
       "role": "index",
@@ -11026,9 +11092,9 @@
     },
     "apps/desktop/src/renderer/components/settings/workflows/WorkflowCanvas.tsx": {
       "role": "index",
-      "sha256": "efcdffc5da8238c901e3d39cd4cc0be7f27434878bef3cc1b3bae9c5cb38fbc0",
-      "size": 30477,
-      "normalized_sha256": "efcdffc5da8238c901e3d39cd4cc0be7f27434878bef3cc1b3bae9c5cb38fbc0"
+      "sha256": "f0548fd5c323a3d8c2910cfaee9ef67f99db9f87687c7865b490ea6e5902b728",
+      "size": 31393,
+      "normalized_sha256": "f0548fd5c323a3d8c2910cfaee9ef67f99db9f87687c7865b490ea6e5902b728"
     },
     "apps/desktop/src/renderer/components/settings/workflows/WorkflowLibraryView.tsx": {
       "role": "index",
@@ -11152,9 +11218,9 @@
     },
     "apps/desktop/src/renderer/components/ui/confirm-dialog.tsx": {
       "role": "index",
-      "sha256": "4a972a5aa849fca1795de6be5024d4e53747ae52a998b1978f8931d9a36e2abb",
-      "size": 3038,
-      "normalized_sha256": "4a972a5aa849fca1795de6be5024d4e53747ae52a998b1978f8931d9a36e2abb"
+      "sha256": "d803b40218a6ddcf2d4688e384660c9c268fc4aa3d99edcec14e7006ce788267",
+      "size": 9158,
+      "normalized_sha256": "d803b40218a6ddcf2d4688e384660c9c268fc4aa3d99edcec14e7006ce788267"
     },
     "apps/desktop/src/renderer/components/ui/dialog.tsx": {
       "role": "index",
@@ -11487,9 +11553,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/core.ts": {
       "role": "index",
-      "sha256": "00403b9bcf1b508446253ac1c8902c92bc12cd225bf8b01104a911ea0159211f",
-      "size": 3688,
-      "normalized_sha256": "00403b9bcf1b508446253ac1c8902c92bc12cd225bf8b01104a911ea0159211f"
+      "sha256": "5b9d10cbee54e84056c22c94a8aabe7625283b243534466ea179d56a878e3aa1",
+      "size": 3846,
+      "normalized_sha256": "5b9d10cbee54e84056c22c94a8aabe7625283b243534466ea179d56a878e3aa1"
     },
     "apps/desktop/src/renderer/lib/i18n/en/agentProfiles.ts": {
       "role": "index",
@@ -11499,9 +11565,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/en/browser.ts": {
       "role": "index",
-      "sha256": "69a00c66641b10a8c54cad6b07002b1f387dd10a38e747282c47bcc15c7ee6f1",
-      "size": 4317,
-      "normalized_sha256": "69a00c66641b10a8c54cad6b07002b1f387dd10a38e747282c47bcc15c7ee6f1"
+      "sha256": "cd8756d637e6ad1d107e40a4283bb17a8a784c853571f2907489850ebb6336f2",
+      "size": 4885,
+      "normalized_sha256": "cd8756d637e6ad1d107e40a4283bb17a8a784c853571f2907489850ebb6336f2"
     },
     "apps/desktop/src/renderer/lib/i18n/en/chat-composer.ts": {
       "role": "index",
