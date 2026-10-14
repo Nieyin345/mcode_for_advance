@@ -46,6 +46,8 @@ import {
   readbackScene,
   approveSceneDeployment,
   applySceneWithGrant,
+  resumeScene,
+  resumeSceneWithGrant,
   SCENE_APPLY_METHOD,
 } from "@main/appServices/sceneDeploy.js";
 import { setGrantStore } from "@main/appControl/grantStoreRuntime.js";
@@ -1161,6 +1163,221 @@ console.log("\n⑰ MC-058:初始存档 durable 失败 → 拒绝开工");
   eq("★ 一步都没派发", calls, 0);
   check("★ 宿主里没建出任何资源", !host.workflows.has("wf"));
   eq("★ 也没留下部署行", countRows(), before);
+}
+
+/* ── ⑱ ★★ MC-058 残余:崩溃续跑的 resume 入口 —— 跳过已建成、只跑剩下的 ──
+ *
+ * 复核点名的那条残余是:**落盘够了(每步 durable 存档),但没有一个 resume 入口把已 done 的步跳过
+ * 重跑。** 这一节先制造一份**真的部分执行**的部署(一步成、一步败,补偿关掉),再 `resumeScene`
+ * 读盘续跑:**已 done 的步不重跑(handler 不再被调一次 —— 这是本条的核心判据,断言的是 handler
+ * 调用次数,不是记录里的状态),failed 的步重试。** 另测:授权缺失/不符拒 resume、plan digest 变了
+ * 拒 resume、读不到记录拒 resume、`compensated` 的步在 resume 时**重建**(资源被撤过,必须补回)。
+ */
+console.log("\n⑱ MC-058 残余:resume 入口:跳过已建成步(handler 不再调)、只重试剩下的");
+{
+  clearRpcHandlers();
+  const host = newHost();
+  // 逐次 save 的**资源 id** 记录 —— 用它数「某一步的 handler 到底被调了几次」。
+  let saveCalls: string[] = [];
+  // 可变的失败开关:第一趟(模拟崩溃前)触发器失败;续跑前关掉 → 重试会成功。
+  let failAuto = true;
+  mountHost(host, {
+    failSave: (p) => (failAuto && isAutoPayload(p) ? "触发器建不起来(测试注入,模拟崩溃前失败)" : null),
+    onSave: (p) => { saveCalls.push(String(docOf(p).id)); },
+  });
+  const spec = checked(specWith(
+    "resume_scene",
+    [wfRes("wf", { name: "巡检" }), autoRes("auto", { cron: "0 9 * * *" }, ["wf"])],
+    ["wf", "auto"],
+  ));
+  const plan = compileScenePlan(spec);
+
+  // 第一趟:一次**部分执行**的部署(wf 成、auto 败),补偿关掉 → 盘上留一份 partial 记录。
+  const first = await applyScene({
+    deploymentId: "dep_resume", spec, actor: ACTOR, grant: grantFor(plan.digest), compensateOnFailure: false,
+  });
+  check("前置:首趟部署返回 applied", first.ok === true && first.kind === "applied", first);
+  if (first.ok && first.kind === "applied") {
+    eq("前置:工作流步成", first.deployment.steps[0]?.status, "done");
+    eq("前置:触发器步败", first.deployment.steps[1]?.status, "failed");
+    eq("前置:整体 PARTIAL", first.deployment.status, "partial");
+  }
+  eq("前置:首趟两个 handler 各被调一次(wf, auto)", saveCalls.join(","), "wf,auto");
+  // 盘上那份记录确实是 partial(延续的前提是它真的在盘上)。
+  const onDisk = loadDeployment("dep_resume");
+  eq("前置:盘上记录是 PARTIAL(部分执行真的落盘了)", onDisk?.status, "partial");
+  eq("前置:盘上 wf 步是 done", onDisk?.steps.find((s) => s.actionId === "wf")?.status, "done");
+
+  // 「崩溃」后再来:关掉失败、清空调用记录 —— 续跑。
+  failAuto = false;
+  saveCalls = [];
+  const r2 = await resumeScene({ deploymentId: "dep_resume", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+  check("★ resume 返回 applied", r2.ok === true && r2.kind === "applied", r2);
+  if (r2.ok && r2.kind === "applied") {
+    eq("★ 续跑后整体 ACTIVE(两步都成)", r2.deployment.status, "active");
+    check("★ 两步都 done", r2.deployment.steps.every((s) => s.status === "done"), r2.deployment.steps);
+    eq("★ 续跑后验收通过", r2.deployment.acceptance?.passed, true);
+  }
+  // ★★ 承重:已 done 的 wf 步**没有被再派发一次** —— 只重试了 failed 的 auto。判据是 handler 调用
+  //     次数(不是记录里的状态:状态本来就在盘上,不证明它没重跑)。
+  eq("★★ 续跑只重试失败的那一步 —— handler 只被 auto 调一次(wf 未重跑)", saveCalls.join(","), "auto");
+  eq("★ 盘上记录续跑后也更新为 ACTIVE", loadDeployment("dep_resume")?.status, "active");
+
+  // 18b. 授权闸在 resume 上一样严:**不因「是 resume」放宽** —— 已撤销的授权照样拒,一步不跑。
+  saveCalls = [];
+  const revoked = await resumeScene({
+    deploymentId: "dep_resume", spec, actor: ACTOR,
+    grant: grantFor(plan.digest, { revoked: true }),
+  });
+  check("★ resume 用已撤销的授权 → refused(不放宽)", revoked.ok === false && revoked.kind === "refused", revoked);
+  if (revoked.ok === false && revoked.kind === "refused") eq("拒绝码 = revoked", revoked.refusal.code, "revoked");
+  eq("★ 被拒的 resume 一个 handler 都没调", saveCalls.length, 0);
+
+  // 18c. resume 用**绑另一份计划**的授权 → 拒(与 applyScene 同一条判定)。
+  saveCalls = [];
+  const wrongPlanGrant = await resumeScene({
+    deploymentId: "dep_resume", spec, actor: ACTOR,
+    grant: grantFor("deadbeef".repeat(8)),
+  });
+  check("★ resume 用绑错计划的授权 → refused", wrongPlanGrant.ok === false && wrongPlanGrant.kind === "refused", wrongPlanGrant);
+  if (wrongPlanGrant.ok === false && wrongPlanGrant.kind === "refused") eq("拒绝码 = plan_mismatch", wrongPlanGrant.refusal.code, "plan_mismatch");
+  eq("★ 被拒的 resume 一个 handler 都没调", saveCalls.length, 0);
+
+  // 18d. ★ plan digest 变了(声明在崩溃后被改过)→ 拒 resume,绝不把新计划套到旧记录上。
+  {
+    const tampered = checked(specWith(
+      "resume_scene",
+      [wfRes("wf", { name: "巡检(崩溃后被改过)" }), autoRes("auto", { cron: "0 9 * * *" }, ["wf"])],
+      ["wf", "auto"],
+    ));
+    const tamperedPlan = compileScenePlan(tampered);
+    check("前置:改过声明的计划 digest 与盘上那份不同", tamperedPlan.digest !== plan.digest);
+    saveCalls = [];
+    // 授权绑**新**计划(先过授权闸),但盘上记录还是**旧**计划 → digest 对不上 → 拒续跑。
+    const r = await resumeScene({
+      deploymentId: "dep_resume", spec: tampered, actor: ACTOR, grant: grantFor(tamperedPlan.digest),
+    });
+    check("★ 声明在崩溃后改过(digest 变)→ 拒 resume", r.ok === false && r.kind === "refused", r);
+    if (r.ok === false && r.kind === "refused") {
+      eq("★ 拒绝码 = resume_plan_changed", r.refusal.code, "resume_plan_changed");
+      check("拒因点明「计划不一致」(不静默)", r.refusal.reason.includes("不一致"), r.refusal.reason);
+    }
+    eq("★ 被拒的 resume 一个 handler 都没调", saveCalls.length, 0);
+    // 盘上那份记录**没被改动**(拒绝不留痕)。
+    eq("★ 盘上记录仍是续跑前的 ACTIVE(digest 不符时没碰它)", loadDeployment("dep_resume")?.status, "active");
+  }
+
+  // 18e. 盘上没有这份记录 → 拒 resume(无从续跑,不静默当成新部署去建)。
+  saveCalls = [];
+  const noRec = await resumeScene({ deploymentId: "dep_no_such", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+  check("★ 盘上无记录 → 拒 resume(不当作全新部署)", noRec.ok === false && noRec.kind === "refused", noRec);
+  if (noRec.ok === false && noRec.kind === "refused") eq("拒绝码 = no_record", noRec.refusal.code, "no_record");
+  eq("★ 无记录的 resume 一个 handler 都没调", saveCalls.length, 0);
+  check("★ 也没为它凭空建一条部署行", loadDeployment("dep_no_such") === null);
+}
+
+/* ── ⑲ ★★ MC-058 残余:compensated 的步在 resume 时**重建**(资源被撤过,必须补回,不是跳过) ──
+ *
+ * `compensated` = 本步建成过、但后续步失败触发了补偿、其资源已被逆操作撤销 —— **资源当下已不在**。
+ * 故它不是「已建成」,resume 必须**重试重建**(否则场景少一条资源、验收永远过不了)。
+ */
+console.log("\n⑲ MC-058 残余:resume 对 compensated 的步**重建**(不是跳过 —— 资源已被撤)");
+{
+  clearRpcHandlers();
+  const host = newHost();
+  let saveCalls: string[] = [];
+  let failAuto = true;
+  mountHost(host, {
+    failSave: (p) => (failAuto && isAutoPayload(p) ? "触发器建不起来(测试注入)" : null),
+    onSave: (p) => { saveCalls.push(String(docOf(p).id)); },
+  });
+  const spec = checked(specWith(
+    "resume_comp_scene",
+    [wfRes("wf", { name: "巡检" }), autoRes("auto", { cron: "0 9 * * *" }, ["wf"])],
+    ["wf", "auto"],
+  ));
+  const plan = compileScenePlan(spec);
+
+  // 第一趟:补偿**开**着 → wf 建成后被补偿撤销(状态 compensated),auto 败。
+  const first = await applyScene({ deploymentId: "dep_resume_comp", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+  check("前置:首趟部署返回 applied", first.ok === true && first.kind === "applied", first);
+  if (first.ok && first.kind === "applied") {
+    const wfStep = first.deployment.steps.find((s) => s.actionId === "wf");
+    eq("前置:wf 步被补偿(compensated)", wfStep?.status, "compensated");
+    eq("前置:整体 FAILED(没留下资源)", first.deployment.status, "failed");
+  }
+  check("前置:宿主里 wf 已被撤销(资源不在)", !host.workflows.has("wf"));
+  const onDiskComp = loadDeployment("dep_resume_comp");
+  eq("前置:盘上 wf 步是 compensated", onDiskComp?.steps.find((s) => s.actionId === "wf")?.status, "compensated");
+
+  // 「崩溃」后关掉失败 → 续跑。compensated 的 wf 与 failed 的 auto **都要重建**。
+  failAuto = false;
+  saveCalls = [];
+  const r = await resumeScene({ deploymentId: "dep_resume_comp", spec, actor: ACTOR, grant: grantFor(plan.digest) });
+  check("★ resume 返回 applied", r.ok === true && r.kind === "applied", r);
+  if (r.ok && r.kind === "applied") {
+    eq("★★ compensated 的 wf 步被**重建**(不是跳过)", r.deployment.steps.find((s) => s.actionId === "wf")?.status, "done");
+    eq("★ 失败的 auto 步重试成功", r.deployment.steps.find((s) => s.actionId === "auto")?.status, "done");
+    eq("★ 续跑后整体 ACTIVE", r.deployment.status, "active");
+    eq("★ 续跑后验收通过", r.deployment.acceptance?.passed, true);
+    check("★ 宿主里 wf 真的被补回来了", host.workflows.has("wf") && host.workflows.has("auto"));
+  }
+  // ★ 两条都重试了(compensated 的 wf + failed 的 auto);都不算「已建成」故都不能跳过。
+  eq("★ 续跑重试了 wf(重建)与 auto 两步", saveCalls.join(","), "wf,auto");
+}
+
+/* ── ⑳ ★ MC-058 残余:resume 的**正式生产入口**(grantId → 取回授权 → 续跑) ── */
+console.log("\n⑳ MC-058 残余:resume 生产入口 resumeSceneWithGrant");
+{
+  clearRpcHandlers();
+  setGrantStore(null); // 干净起步(模块级单例)。
+  const host = newHost();
+  let failAuto = true;
+  let saveCalls: string[] = [];
+  mountHost(host, {
+    failSave: (p) => (failAuto && isAutoPayload(p) ? "触发器建不起来(测试注入)" : null),
+    onSave: (p) => { saveCalls.push(String(docOf(p).id)); },
+  });
+  const spec = checked(specWith(
+    "resume_entry_scene",
+    [wfRes("wf", { name: "巡检" }), autoRes("auto", { cron: "0 9 * * *" }, ["wf"])],
+    ["wf", "auto"],
+  ));
+  const plan = compileScenePlan(spec);
+
+  // 首趟:直接 applyScene 造一份 partial 记录(补偿关,让 wf 留在盘上)。
+  await applyScene({ deploymentId: "dep_resume_entry", spec, actor: ACTOR, grant: grantFor(plan.digest), compensateOnFailure: false });
+  eq("前置:盘上是 PARTIAL", loadDeployment("dep_resume_entry")?.status, "partial");
+
+  // grantId 取不到 → 拒(不留后门)。
+  const ghost = await resumeSceneWithGrant({
+    deploymentId: "dep_resume_entry", grantId: "grant-does-not-exist", spec, actor: ACTOR,
+  });
+  check("★ 授权取不到 → refused(不是静默放行)", ghost.ok === false && ghost.kind === "refused", ghost);
+  if (ghost.ok === false && ghost.kind === "refused") eq("拒绝码 = no_grant", ghost.refusal.code, "no_grant");
+
+  // 正路:签发一枚真授权 → resumeSceneWithGrant 取回它续跑(已 done 的 wf 不重跑)。
+  failAuto = false;
+  saveCalls = [];
+  const approved = approveSceneDeployment({ spec, planDigest: plan.digest, ttlMs: 60_000 });
+  check("前置:签出计划级授权", approved.ok === true && approved.kind === "granted", approved);
+  let grantId = "";
+  if (approved.ok && approved.kind === "granted") grantId = approved.grantId;
+  const r = await resumeSceneWithGrant({
+    deploymentId: "dep_resume_entry", grantId, spec, actor: ACTOR,
+  });
+  check("★ 持有效授权 → 真的续跑", r.ok === true && r.kind === "applied", r);
+  if (r.ok && r.kind === "applied") {
+    eq("★ 续跑后整体 ACTIVE", r.deployment.status, "active");
+    eq("★ 验收通过", r.deployment.acceptance?.passed, true);
+  }
+  check("★ 宿主里两步都建成", host.workflows.has("wf") && host.workflows.has("auto"));
+  eq("★ 生产入口真落盘(回读得到)", loadDeployment("dep_resume_entry")?.status, "active");
+  // ★ 生产入口续跑**也**跳过已 done 的 wf —— 只重试了 auto(证明它派发到 resumeScene 而非
+  //   applyScene:后者会把全 pending 的步骤重跑一遍)。
+  eq("★ 生产入口续跑只重试失败的 auto(wf 未重跑)", saveCalls.join(","), "auto");
+
+  setGrantStore(null);
 }
 
 closeDb();

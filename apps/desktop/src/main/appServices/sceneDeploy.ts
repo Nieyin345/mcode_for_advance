@@ -46,6 +46,16 @@
  *    如实记一条 `compensation`**(`applied:false` + 人读原因),**绝不静默**(硬规矩 3),也绝不
  *    猜一个入口去删(免得删错东西)。
  *
+ * ## 崩溃续跑(resume 入口,MC-058 残余已补)
+ *
+ * `applyScene` 每一步都 `saveDeployment({durable:true})`,所以一份**部分执行**的部署记录真的在盘上。
+ * {@link resumeScene} 是**读它、跳过已 `done` 的步、只跑剩下的**入口(不是从头再跑一遍 —— 那会把已
+ * 建成的步再派发一次,即重复的外部副作用)。判据:读回记录(读不到 → `no_record`)、plan digest 必须
+ * 与盘上那份**一致**(改了 → `resume_plan_changed`,绝不把新计划套到旧记录上)、授权走**同一份**判定核
+ * (不因「是 resume」放宽)。已 `done` 的步不重跑;`failed`/`pending`/`compensated` 的步重试
+ * (`compensated` 的资源已被撤销,必须重建 —— 见 {@link resumeScene} 的说明)。执行核与 `applyScene`
+ * **共用**(`runPlanSteps`),不长第二套。
+ *
  * ## 这一层**不做**什么(MC-058 仍未关闭的部分,如实列出)
  *
  *  - **授权签发端未接**:本层只**消费**一枚计划级授权(校验它是否绑定本计划并放行)。**谁**在
@@ -92,7 +102,7 @@ import { callRpc, findEntry } from "@main/appControl/tools.js";
 //   表达业务拒绝,不抛异常 —— 不检查它,一步被拒也会被记成 done(洞)。
 import { decodeDomainOutcome, type DomainOutcome } from "@main/appControl/commandOutcome.js";
 import { log } from "@main/lib/logger.js";
-import { saveDeployment } from "./sceneDeploymentStore.js";
+import { loadDeployment, saveDeployment } from "./sceneDeploymentStore.js";
 
 /**
  * 一次场景部署的「apply」动作在授权核里的**方法名**。计划级授权(`Grant.allowedActions`)必须含它,
@@ -242,7 +252,14 @@ export interface SceneApplyRefusal {
     | "plan_mismatch"
     | "no_grant"
     /** 部署存档的**初始那一笔** durable 落盘失败 —— 建了也记不住,故不建(MC-058)。 */
-    | "archive_not_durable";
+    | "archive_not_durable"
+    /** 崩溃续跑时盘上**没有**这份部署记录 —— 无从续跑,需作为一次全新部署重新预览批准(MC-058 残余)。 */
+    | "no_record"
+    /**
+     * 崩溃续跑时本次声明编译出的计划 digest 与**盘上那份记录**不一致 —— 声明在崩溃后被改过,
+     * 拒绝把新计划套到旧记录上续跑(MC-058 残余)。这与授权绑计划 digest 是**两条独立**判定。
+     */
+    | "resume_plan_changed";
   /** 给用户 / 模型看的一句人话。 */
   reason: string;
 }
@@ -620,7 +637,7 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
   }
 
   // ④ 建记录 + 初始落盘。**初始那一笔落不下去就不开工** —— 见下面 `persistStep` 的第一个参数。
-  let d = createDeployment({ deploymentId: input.deploymentId, plan, actor: input.actor, now: clock() });
+  const d = createDeployment({ deploymentId: input.deploymentId, plan, actor: input.actor, now: clock() });
   if (!persistStepOrRefuse(d)) {
     // 「存档都写不进去还照样建资源」= 建完就没人记得建过什么,崩溃后无法回读、无法补偿。
     // 这与「没有授权绝不执行」是同一条纪律:治理事实落不了地,就不执行。
@@ -629,11 +646,48 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
     return { ok: false, kind: "refused", refusal: { code: "archive_not_durable", reason } };
   }
 
-  const doCompensate = input.compensateOnFailure ?? true;
+  // ⑤ 逐条命令 + ⑤b 补偿 + ⑥ 收尾验收(与 `resumeScene` **共用**同一条执行核 `runPlanSteps` /
+  //     `finishDeployment` —— 硬规矩 2:执行判据只有一份,绝不为 resume 再长一套)。
+  const d2 = await runPlanSteps(d, commands, clock, input.compensateOnFailure ?? true);
+  return finishDeployment(d2, spec, clock);
+}
+
+/**
+ * **按计划拓扑序执行尚未建成的步** —— `applyScene`(全新部署,起点全 `pending`)与
+ * {@link resumeScene}(崩溃续跑,起点含已 `done` 的步)**共用**的同一条执行核。
+ *
+ * ## ★ 跳过已 `done` 的步(MC-058 残余:崩溃续跑的 resume 入口)
+ *
+ * 盘上那份部署记录里**已 `done`** 的步**不重跑** —— 重跑就是**重复的外部副作用**(再 `callRpc` 一次
+ * `workflow.save` / `hooks.save` …)。本函数对每一步先查它在记录里的当前状态,`done` 的直接 `continue`
+ * (既不派发、也不改它的记录)。于是「续跑」只跑剩下的,而不是从头再来一遍。全新部署的起点全是
+ * `pending`,这一条对它是空操作(不改变原行为)。
+ *
+ * `failed` / `pending`(以及 `compensated`,见 {@link resumeScene})都**不是** `done` → 照常走下面
+ * 的重试路径(重建资源)。
+ *
+ * 逐条判据与落盘时机见 {@link applyScene} 的说明(依赖闸 / needsResolution / 载荷投影 / 派发前探测 /
+ * 业务结果解码 / 建成后 CAS 回读),这里一字不差地复用。
+ *
+ * @param d 起始记录(全新部署给全 `pending` 的记录;续跑给盘上读回的记录)。
+ * @param commands 该计划的命令集(顺序取自计划,不重排)。
+ * @param clock 可注入时钟。
+ * @param doCompensate 有步失败时是否补偿(见 {@link SceneApplyInput.compensateOnFailure})。
+ */
+async function runPlanSteps(
+  d: SceneDeployment,
+  commands: SceneCommandPlan,
+  clock: () => number,
+  doCompensate: boolean,
+): Promise<SceneDeployment> {
   let anyFailed = false;
 
-  // ⑤ 逐条命令,按计划拓扑序(依赖必先于被依赖者,故到某步时它的依赖都已处理完)。
+  // 逐条命令,按计划拓扑序(依赖必先于被依赖者,故到某步时它的依赖都已处理完)。
   for (const command of commands.commands) {
+    // ★ 已建成的步**跳过重跑**(MC-058 残余)—— 不派发、不改记录。`compensated` 不在此列:它的
+    //   资源已被撤销,记录不是 `done`,下面照常重试(重建)。
+    if (stepStatusOf(d, command.actionId) === "done") continue;
+
     // 依赖闸:任一依赖没走到 done → 本步不执行(failed + 明说原因)。
     const failedDep = command.dependsOn.find((dep) => stepStatusOf(d, dep) !== "done");
     if (failedDep !== undefined) {
@@ -736,20 +790,30 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
     persistStep(d);
   }
 
-  // ⑤b 补偿(MC-058):有步失败且开启补偿 → 逆序撤销之前已建成、可补偿的步,不让失败留下孤儿。
-  //     补偿结果写进各步的 `compensation`(成功撤销的步迁到 `compensated`),逐条不静默。
+  // 补偿(MC-058):有步失败且开启补偿 → 逆序撤销之前已建成、可补偿的步,不让失败留下孤儿。
+  // 补偿结果写进各步的 `compensation`(成功撤销的步迁到 `compensated`),逐条不静默。
   if (anyFailed && doCompensate) {
     d = await compensateDoneSteps(d, commands, clock);
     persistStep(d);
   }
 
-  // ⑥ 收尾验收:**独立回读**宿主真实资源(MC-058 点名的缺口)—— observed 取自 `readbackScene`
-  //     的实际查询结果,**不是**「记录里走到 done 的步」。资源被带外删掉 / 补偿撤销后 → 查不到。
-  const readback = await readbackScene(d, spec);
-  d = evaluateAcceptance(d, spec.acceptance.expectResourceIds, readback.observed, clock());
-  persistStep(d);
+  return d;
+}
 
-  return { ok: true, kind: "applied", deployment: d, readback };
+/**
+ * **收尾验收** —— 独立回读宿主真实资源(MC-058 点名的缺口)并写进记录。`applyScene` / `resumeScene`
+ * 共用:`observed` 取自 {@link readbackScene} 的**实际查询结果**,不是「记录里走到 done 的步」——
+ * 资源被带外删掉 / 补偿撤销后 → 查不到。
+ */
+async function finishDeployment(
+  d: SceneDeployment,
+  spec: SceneSpec,
+  clock: () => number,
+): Promise<SceneApplyResult> {
+  const readback = await readbackScene(d, spec);
+  const d2 = evaluateAcceptance(d, spec.acceptance.expectResourceIds, readback.observed, clock());
+  persistStep(d2);
+  return { ok: true, kind: "applied", deployment: d2, readback };
 }
 
 /**
@@ -898,6 +962,153 @@ export async function applySceneWithGrant(input: {
   }
 
   return applyScene({
+    deploymentId: input.deploymentId,
+    spec: input.spec,
+    actor: input.actor,
+    grant,
+    ...(input.now !== undefined ? { now: input.now } : {}),
+    ...(input.compensateOnFailure !== undefined ? { compensateOnFailure: input.compensateOnFailure } : {}),
+  });
+}
+
+/* ───────────────────────── MC-058 残余:崩溃续跑的 resume 入口 ───────────────────────── */
+
+/** `resumeScene` 的入参 —— 与 {@link SceneApplyInput} 同形,但**不**新建记录:起点是盘上那份。 */
+export interface SceneResumeInput {
+  /** 要续跑的那次部署的 id(盘上那份记录的键)。 */
+  deploymentId: string;
+  /** 该部署基于的声明(与原来那次是**同一份** —— digest 变了会被拒,见 {@link resumeScene})。 */
+  spec: unknown;
+  /** 谁续跑的(进本次执行的授权判定;记录里的 actor 保持原样不被改)。 */
+  actor: SceneDeploymentActor;
+  /** 计划级授权 —— 与 {@link applyScene} **同一份**判定核,**不因「是 resume」放宽**。 */
+  grant: Grant;
+  /** 可注入时钟(缺省 `Date.now`)。 */
+  now?: () => number;
+  /** 续跑中某步仍失败时是否补偿(缺省 `true`,与 {@link applyScene} 同取向)。 */
+  compensateOnFailure?: boolean;
+}
+
+/**
+ * **崩溃续跑的 resume 入口**(MC-058 的残余项)—— 把盘上那份**部分执行**的部署记录读完,
+ * **跳过已建成的步**、只跑剩下的。
+ *
+ * ## 它补的洞
+ *
+ * `applyScene` 每一步都 `saveDeployment({durable:true})`,所以崩溃后盘上**真的**留着一份「哪几步
+ * 走到了 `done`、哪几步 `failed`」的记录 —— 但此前**没有任何入口**能把它读完只跑剩下的:唯一的执行
+ * 入口 `applyScene` 是「从全 `pending` 重新开始」,拿它续跑会把**已建成的步再派发一次**(重复的
+ * 外部副作用 —— 再 `callRpc` 一次 `workflow.save` / 装一次钩子),这正是本项要防的。
+ *
+ * ## 判据(「跳过已建成、只跑剩下的」,不是「从头再来一遍」)
+ *
+ *  1. **读回**盘上的部署记录({@link loadDeployment});读不到(没这条 / 解码失败)→ 拒绝
+ *     (`no_record`,需作为一次全新部署重新预览批准 —— **不**静默当成新部署去建)。
+ *  2. **plan digest 必须与盘上那份一致**:本次声明重编译出的 `plan.digest` 与记录里的
+ *     `planDigest` 不等 → 拒绝(`resume_plan_changed`)。**声明在崩溃后被改过就拒绝续跑** ——
+ *     绝不把新计划套到旧记录上(那会让「哪些步已建成」的记录与新计划对不上,续跑出的部署是两半
+ *     拼的)。这与授权绑计划 digest 是**两条独立**判定:授权管「这次该不该跑」,这条管「续跑的是
+ *     不是盘上那个计划」。
+ *  3. **授权走同一份判定核**({@link authorizeApply} → `policyEngine.evaluate`)—— 与
+ *     {@link applyScene} **一字不差**,绝不因为「是 resume」就放宽(已撤销 / 过期 / 非用户签发 /
+ *     绑另一份计划 → 一律拒绝,一步都不跑)。
+ *  4. **逐步执行**交给与 `applyScene` **共用**的执行核 {@link runPlanSteps}:它对每一步先查记录,
+ *     **已 `done` 的步直接跳过**(不派发、不改记录),`failed` / `pending` 的步照常重试。
+ *
+ * ## `compensated` 的步:续跑时**重试(重建)**,不跳过
+ *
+ * `compensated` 表示该步**本已成功建成,但后续某步失败触发了补偿,它的资源已被逆操作撤销** ——
+ * 资源**当下已不在**。故续跑时它与 `pending` / `failed` 同类:**必须重试重建**。理由:
+ *  - 场景**声明**了这条资源,补偿把它撤了 ⇒ 现在场景里**缺**这条资源;跳过它,续跑结束后的部署会
+ *    少建一条 —— 与 `evaluateAcceptance` 的判据(`compensated` 归入「没留下资源」)直接冲突,验收
+ *    永远过不了,且用户拿到一份「说有这条、实际没有」的假记录(硬规矩 3)。
+ *  - 重试**安全**:补偿只撤**本次新建**(`created`)的资源(见 {@link compensateDoneSteps} 的安全闸),
+ *    所以「这条资源的由头是本次部署新建、现在已不存在」是有保证的;重建不会覆盖用户既有资源。
+ *  - 执行核 {@link runPlanSteps} 判据只有「`done` 才跳过」,`compensated` 自然落进重试路径;重试时
+ *    `advanceDeployment` 迁到 `running` 会**丢掉旧的 `compensation` 字段**(新记录只从 prev 继承
+ *    `priorExistence` / `priorRevision` / `createdRevision`),不会把「撤销过」的痕迹错记到重建后的步上。
+ *
+ * ## 找不到记录 / digest 不符时
+ *
+ * 两者都**不留后门**:拒绝且**不执行任何一步**、**不改盘上那份记录**。拒绝码分别是 `no_record` /
+ * `resume_plan_changed`(见 {@link SceneApplyRefusal})。
+ */
+export async function resumeScene(input: SceneResumeInput): Promise<SceneApplyResult> {
+  const clock = input.now ?? Date.now;
+
+  // ① 校验(一次报全)—— 不合法不执行任何东西。
+  const validation = validateSceneSpec(input.spec);
+  if (!validation.ok) return { ok: false, kind: "invalid", problems: validation.problems };
+  const spec = validation.spec;
+
+  // ② 编译计划 + 命令(与原来那次同一份 spec,digest 才对得上)。
+  const plan = compileScenePlan(spec);
+  const commands = compileSceneCommands(plan, spec);
+
+  // ③ 授权判定 —— 与 applyScene **同一份**判定核,**不因「是 resume」放宽**。不放行不碰记录。
+  const refusal = authorizeApply(plan, input.actor, input.grant, clock());
+  if (refusal !== null) {
+    log.warn(`scene resume ${input.deploymentId}: 拒绝续跑(${refusal.code})—— ${refusal.reason}`);
+    return { ok: false, kind: "refused", refusal };
+  }
+
+  // ④ 读回盘上那份记录。读不到 = 无从续跑(绝不静默当成新部署去建)。
+  const record = loadDeployment(input.deploymentId);
+  if (record === null) {
+    const reason = `盘上没有部署记录「${input.deploymentId}」(不存在 / 存档读不回来),无从续跑。若这是一次全新部署,请走正常预览批准流程,而不是 resume。`;
+    log.warn(`scene resume ${input.deploymentId}: ${reason}`);
+    return { ok: false, kind: "refused", refusal: { code: "no_record", reason } };
+  }
+
+  // ⑤ plan digest 必须与盘上那份一致 —— 声明在崩溃后被改过就拒绝续跑(绝不把新计划套到旧记录上)。
+  if (record.planDigest !== plan.digest) {
+    const reason = `本次声明编译出的计划摘要(${plan.digest.slice(0, 12)}…)与盘上部署记录的不一致(记录 ${record.planDigest.slice(0, 12)}…)—— 声明在崩溃后可能被改过,拒绝把新计划套到旧记录上续跑。请重新预览并批准。`;
+    log.warn(`scene resume ${input.deploymentId}: ${reason}`);
+    return { ok: false, kind: "refused", refusal: { code: "resume_plan_changed", reason } };
+  }
+
+  // ⑥ 逐步执行(共用执行核):已 `done` 的步**跳过重跑**、`failed`/`pending`/`compensated` 的步重试,
+  //    再收尾验收。落盘沿用同一份 `persistStep`(durable)。
+  const d = await runPlanSteps(record, commands, clock, input.compensateOnFailure ?? true);
+  return finishDeployment(d, spec, clock);
+}
+
+/**
+ * **resume 的正式生产入口** —— 与 {@link applySceneWithGrant} 同形:只收 `grantId`,宿主自己从
+ * `GrantStore` 取回那枚授权(**含失效态**)交给 {@link resumeScene} 的判定核。取不到 / 与本次计划
+ * 不匹配 → 拒绝(`no_grant`),**不**执行任何一步、**不**改盘上记录。
+ *
+ * 为什么另开一条而不复用 `applySceneWithGrant`:那条会把「续跑的起点」当全新部署(**全 `pending`**),
+ * 于是已建成的步会被**再建一次** —— 正是 resume 要防的重复副作用。这条把起点钉在**盘上那份记录**上。
+ */
+export async function resumeSceneWithGrant(input: {
+  deploymentId: string;
+  grantId: string;
+  spec: unknown;
+  actor: SceneDeploymentActor;
+  compensateOnFailure?: boolean;
+  now?: () => number;
+}): Promise<SceneApplyResult> {
+  const clock = input.now ?? Date.now;
+  const validation = validateSceneSpec(input.spec);
+  if (!validation.ok) return { ok: false, kind: "invalid", problems: validation.problems };
+
+  const plan = compileScenePlan(validation.spec);
+  const intent = { method: SCENE_APPLY_METHOD, core: scenePlanCoreIntent(plan) };
+  const grant = getGrantStore().findBoundFor(intent, clock());
+  if (grant === null || grant.grantId !== input.grantId) {
+    log.warn(`scene resume ${input.deploymentId}: 授权 ${input.grantId} 取不到(不存在 / 与本次计划不匹配),拒绝续跑`);
+    return {
+      ok: false,
+      kind: "refused",
+      refusal: {
+        code: "no_grant",
+        reason: `授权「${input.grantId}」不存在,或它绑的不是这一次要续跑的计划 —— 需要重新预览并批准。`,
+      },
+    };
+  }
+
+  return resumeScene({
     deploymentId: input.deploymentId,
     spec: input.spec,
     actor: input.actor,
