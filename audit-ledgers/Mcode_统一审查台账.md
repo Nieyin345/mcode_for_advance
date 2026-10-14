@@ -544,7 +544,7 @@ ble 存档闸门**(提交 `9210f128`)。复核点名三处逐条堵上:① **无
 | `MC-091` | P1/P2｜文件繁忙重排队不遵守 500 项封顶；事件合并 items 无界累积 | `[ ]` | `[ ]` | 事件合并限 100、丢弃有持久恢复游标、清账晚于真正派发、**全局背压 + E3 启动竞态 + 欠账上界面**；但**分片持久队列 / 统一截断原语**未做，开发未完成 |
 | `MC-092` | P1｜三引擎通用 app_api_call 的 memory.* RPC 可绕开专用记忆项目 ACL | `[x]` | `[ ]` | 主路径已修 2026-10-14（memory-smoke 238→264）/ manage·assistant·review·诊断输出全覆盖 |
 | `MC-093` | P1/P2｜记忆保存前只检查正文敏感凭据而不检查标题和继承元数据 | `[x]` | `[x]` | REVIEW_PASSED（2026-10-14 E1/E2）：完整候选元数据/标题写侧敏感拒绝 + 历史/人工旧文件读侧遮蔽，memory / memory-injection E1 复核通过。 |
-| `MC-094` | P1/P2｜项目级 Skill 在管理/复制 UI 中可见，但 Codex/Pi SDK 没装配项目技能目录 | `[x]` | `[ ]` | Codex/Pi 已修 / 待复核 |
+| `MC-094` | P1/P2｜项目级 Skill 在管理/复制 UI 中可见，但 Codex/Pi SDK 没装配项目技能目录 | `[x]` | `[ ]` | Codex/Pi 已修；`skill-delivery-smoke` 驱动真三 provider startTurn，断言 Claude options.skills / Codex extraRoots 项目根 / Pi loader.getSkills 的同名优先级与禁用即时生效（46/46）；真二进制内部扫描仍待活会话 |
 | `MC-095` | P1｜扩展私有数据区顶层 Junction 可逃逸；Agent RPC 未绑定调用扩展的身份 | `[x]` | `[x]` | REVIEW_PASSED（2026-10-14 E1/E2）：扩展物理根 Junction 越界拒绝 + 通用 Agent 无身份/跨身份读写拒绝，extension-store / app-control E1 复核通过。 |
 | `MC-096` | P1/P2｜扩展文件通道可覆盖内部 store.json，导致键值存储丢失 | `[x]` | `[ ]` | 键值迁入点前缀保留名 `.mcode-store.json`(物理隔离命名空间,读写回退旧名并迁移)、坏数据读侧 last-good 恢复/写侧 fail-closed、32MB 累计配额且在宿主级目录租约内复查(§9 并发竞态)、文件通道词法+realpath 双闸拒保留名；extension-store 271/271。独立复核待做 |
 | `MC-097` | P1｜Markdown/源码保存只在 Renderer 比对后调用主进程直写，缺少跨进程 CAS 与原子替换 | `[x]` | `[x]` | REVIEW_PASSED（2026-10-14 E1/E2）：跨进程租约、CAS、原子替换与失败注入回读，maint-m07 / editor-save 全量绿，E1 复核通过。 |
