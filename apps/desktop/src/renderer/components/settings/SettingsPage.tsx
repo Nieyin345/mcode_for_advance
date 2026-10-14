@@ -29,6 +29,7 @@ import {
   IconNotebook,
   IconAdjustmentsHorizontal,
   IconShieldLock,
+  IconRocket,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { IconLoader2 } from "@renderer/lib/icons.js";
@@ -55,6 +56,7 @@ const PANEL_LOADERS = {
   SkillsPanel: () => import("./SkillsPanel.js"),
   WorkflowsPanel: () => import("./workflows/WorkflowsPanel.js"),
   HooksPanel: () => import("./HooksPanel.js"),
+  SceneDeployPanel: () => import("./SceneDeployPanel.js"),
   McpPanel: () => import("./McpPanel.js"),
   AgentSshTrustPanel: () => import("./AgentSshTrustPanel.js"),
   EngineToolsPanel: () => import("./EngineToolsPanel.js"),
@@ -106,6 +108,7 @@ const RuntimesPanel = lazy(() => PANEL_LOADERS.RuntimesPanel().then((m) => ({ de
 const SkillsPanel = lazy(() => PANEL_LOADERS.SkillsPanel().then((m) => ({ default: m.SkillsPanel })));
 const WorkflowsPanel = lazy(() => PANEL_LOADERS.WorkflowsPanel().then((m) => ({ default: m.WorkflowsPanel })));
 const HooksPanel = lazy(() => PANEL_LOADERS.HooksPanel().then((m) => ({ default: m.HooksPanel })));
+const SceneDeployPanel = lazy(() => PANEL_LOADERS.SceneDeployPanel().then((m) => ({ default: m.SceneDeployPanel })));
 const McpPanel = lazy(() => PANEL_LOADERS.McpPanel().then((m) => ({ default: m.McpPanel })));
 const AgentSshTrustPanel = lazy(() => PANEL_LOADERS.AgentSshTrustPanel().then((m) => ({ default: m.AgentSshTrustPanel })));
 const EngineToolsPanel = lazy(() => PANEL_LOADERS.EngineToolsPanel().then((m) => ({ default: m.EngineToolsPanel })));
@@ -156,7 +159,7 @@ function PanelLoading() {
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "agent-ssh" | "engine-tools" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "scene-deploy" | "mcp" | "agent-ssh" | "engine-tools" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -257,6 +260,9 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       // 运行监控排在用量前面:两者都是"看系统发生了什么"(用量看花了多少 token,
       // 监控看自动化跑了成什么样),放一组,先看跑得怎么样、再看花销。
+      // 场景部署排在最后:它把前面那些块(工作流/钩子/MCP/技能…)作为**一份声明**整体建出来,
+      // 是这一整组能力的"合拢"入口 —— 排在能看见那些块的页面之后,顺序才对得上。
+      { id: "scene-deploy", labelKey: "sceneDeploy.nav", icon: IconRocket },
       { id: "monitoring", labelKey: "settings.nav.monitoring", icon: IconActivity },
       { id: "usage", labelKey: "settings.nav.usage", icon: IconChartBar },
       { id: "about", labelKey: "settings.nav.about", icon: IconInfoCircle },
@@ -407,6 +413,7 @@ export function SettingsPage() {
             {active === "workflows" && <WorkflowsPanel purpose="workflow" />}
             {active === "automation" && <WorkflowsPanel purpose="automation" />}
             {active === "hooks" && <HooksPanel />}
+            {active === "scene-deploy" && <SceneDeployPanel />}
             {active === "runtimes" && <RuntimesPanel />}
             {active === "mcp" && <McpPanel />}
             {active === "agent-ssh" && <AgentSshTrustPanel />}
