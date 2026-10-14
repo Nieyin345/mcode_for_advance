@@ -59,19 +59,39 @@ export function hasActiveRun(sessionId: string): boolean {
   return busySessions.has(sessionId);
 }
 
+/**
+ * 【MC-091 E3】**按节点**指定下一次 `startWorkflowRun` 的落地结果(`RunResult.status`)。
+ *
+ * 真 `startWorkflowRun` 返回 `RunResult | null`,而 `automationRunner` 的 `.then` 现在按
+ * 这个结果把定时领取结算成成功 / 失败 / 不确定三态。从前这个桩 resolve `void`(等价于
+ * "拿不到结果"),换成真返回一个 `RunResult` 才验得出三态映射。
+ *
+ * ⚠️ 是**按 `entry.nodeId` 键控**的,不是全局一次性的:`start()` 的启动 tick 会让**所有**
+ * `* * * * *` 定时触发器在同一分钟一起 fire,全局一次性状态会被**别的触发器先消费掉**。
+ * 未指定的节点默认 `"success"`。
+ */
+export type StubRunStatus = "success" | "failed" | "cancelled";
+const runStatusByNode = new Map<string, StubRunStatus>();
+export function setRunStatusForNode(nodeId: string, status: StubRunStatus): void {
+  runStatusByNode.set(nodeId, status);
+}
+
 export function startWorkflowRun(args: {
   session: Session;
   cwd?: string;
   prompt?: string;
   entry?: CapturedRun["entry"];
-}): Promise<void> {
+}): Promise<{ status: "success" | "failed" | "cancelled" }> {
   runs.push({
     sessionId: args.session.id,
     cwd: args.cwd,
     prompt: args.prompt,
     entry: args.entry,
   });
-  // 真那一个是"跑完整张图"的 promise,调用方不 await(见 `fire()` 的 `void`)。给一个
-  // 立刻解决的即可 —— 它上面还挂着 `.catch` 兜"起跑之后才失败",这里不制造失败。
-  return Promise.resolve();
+  // 真那一个是"跑完整张图"的 promise,调用方不 await(见 `fire()` 的 `void`)。返回一个
+  // **带 status 的结果** —— `automationRunner` 的 `.then` 按它结算领取三态(MC-091 E3)。
+  // 按 `entry.nodeId` 取本次落地状态(默认为 success);不制造失败。
+  const nodeId = args.entry?.nodeId;
+  const status = nodeId !== undefined ? (runStatusByNode.get(nodeId) ?? "success") : "success";
+  return Promise.resolve({ status });
 }

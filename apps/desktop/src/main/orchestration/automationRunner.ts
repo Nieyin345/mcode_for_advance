@@ -46,7 +46,7 @@ import { existsSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, addToFileBacklog, classifyFileChange, reconcileFileChangeKind, shouldIgnoreWatchPath, isWithinWatchRoot, type FileChange, type FileChangeKind, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, addToFileBacklog, capOldest, classifyFileChange, reconcileFileChangeKind, shouldIgnoreWatchPath, isWithinWatchRoot, type FileChange, type FileChangeKind, type HookEvent } from "@contracts/hook";
 import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import {
   NODE_COMMAND_PARAM_KEY,
@@ -94,12 +94,18 @@ import {
   WATCH_WORKFLOW_ID,
 } from "./builtins.js";
 import {
+  claimCancelledReason,
+  claimFailureReason,
   claimRecoveryReason,
+  claimStatusOfRunOutcome,
+  isTerminalClaimStatus,
   isTriggerClaims,
   pendingClaims,
   pruneClaims,
+  runOutcomeOfStatus,
   scheduleClaimId,
   triggerKeyOfClaim,
+  type AutomationRunOutcome,
   type TriggerClaim,
 } from "./triggerClaim.js";
 import { getWorkflow, listWorkflows, saveWorkflow } from "./library.js";
@@ -1307,9 +1313,10 @@ class AutomationRunner {
    */
   private writeTriggerClaimDurable(claimId: string, claim: TriggerClaim): boolean {
     const prev = this.triggerClaims.get(claimId);
-    // **单调性**:`SUCCEEDED` 是终态,不许被迟到的 `CLAIMED` 覆盖回去(见文件头那条
-    // "崩溃点不能被后来的内存值骗到")。这里只为防御 —— 正常路径不会这么调。
-    if (prev?.status === "SUCCEEDED" && claim.status !== "SUCCEEDED") return true;
+    // **单调性**:终态(`SUCCEEDED`/`FAILED`/`UNCERTAIN`)不许被迟到的 `CLAIMED` 覆盖回去
+    // (见文件头那条"崩溃点不能被后来的内存值骗到")。终态之间可以互相推进(正常路径不会,
+    // 但恢复时 `CLAIMED`→`UNCERTAIN` 与收尾时跑出 `FAILED` 都走这里)。这里只为防御。
+    if (prev !== undefined && isTerminalClaimStatus(prev.status) && claim.status === "CLAIMED") return true;
     this.triggerClaims.set(claimId, claim);
     // 【ARC-005】落盘前先记下这一行在**内存表**里的旧值 —— 非 durable 时要连它一起还原。
     const priorRaw = SettingRepo.get(TRIGGER_CLAIMS_SETTING_KEY);
@@ -1547,6 +1554,9 @@ class AutomationRunner {
    *  - 崩在**结算之后** → 盘上是 `SUCCEEDED` → 什么都不用做。
    *
    * 由 `start()` 在 `reloadAll()` 之后、启动 tick 之前调用。
+   *
+   * 【MC-091 E3】恢复把 `CLAIMED` 转成 `UNCERTAIN`(不是 `SUCCEEDED`)—— "拿不到结果"
+   * 与"下游成功"是两件事,不再混同。
    */
   private recoverIncompleteClaims(): void {
     const pending = pendingClaims(this.triggerClaims);
@@ -1569,12 +1579,39 @@ class AutomationRunner {
     }
   }
 
-  /** 一条定时领取结算为 `SUCCEEDED`(运行收尾 / 未派发的跳过都调)。没有对应领取就什么都不做。 */
-  private settleTriggerClaim(claimId: string | undefined): void {
+  /**
+   * 一条定时领取**收尾结算**。没有对应领取就什么都不做。
+   *
+   * 【MC-091 E3】收尾分两种口径:
+   *
+   *  - **没指定业务结果**(`outcome === undefined`):这是"派发**没真的成立**、决策已落定"
+   *    的那一组收尾(工作流删了 / 修订变了 / 关掉了 / 项目没了 / 上一次还在跑)。结算成
+   *    `SUCCEEDED`,语义是"这一格领取被确定地关上、不会待恢复",**不是**下游业务成功 ——
+   *    原因由 `skip()` 记进 `AutomationFacts.lastError`。
+   *  - **指定了业务结果**(派发真的成立、运行 promise 收尾):按
+   *    {@link AutomationRunOutcome} 落 `SUCCEEDED` / `FAILED` / `UNCERTAIN`,并给 FAILED /
+   *    UNCERTAIN 记一条可读的事实,让界面分得出「成功 / 失败 / 结果不确定」。
+   */
+  private settleTriggerClaim(claimId: string | undefined, outcome?: AutomationRunOutcome): void {
     if (claimId === undefined) return;
     const prev = this.triggerClaims.get(claimId);
     if (prev === undefined) return;
-    this.writeTriggerClaimDurable(claimId, { status: "SUCCEEDED", minute: prev.minute, at: Date.now() });
+    const status = outcome === undefined ? "SUCCEEDED" : claimStatusOfRunOutcome(outcome);
+    const now = Date.now();
+    this.writeTriggerClaimDurable(claimId, { status, minute: prev.minute, at: now });
+    // FAILED / UNCERTAIN(业务层面)要让人看得见 —— 成功不记(界面那一栏"最近一次跑过"
+    // 由 `recordFired` 说,不需要再挂一句"成功了")。
+    if (outcome === "failed" || outcome === "uncertain") {
+      const triggerKeyOf = triggerKeyOfClaim(claimId);
+      const trigger = triggerKeyOf === null ? undefined : this.all().find((t) => `${t.workflowId}:${t.nodeId}` === triggerKeyOf);
+      if (trigger !== undefined) {
+        this.facts.recordBlocked(
+          triggerSeedOf(trigger),
+          outcome === "failed" ? claimFailureReason() : claimCancelledReason(),
+          now,
+        );
+      }
+    }
   }
 
   /**
@@ -1694,9 +1731,12 @@ class AutomationRunner {
       // "存在、要办"的),但它的方向必须留下来 —— 否则模型看不出"这个文件是被删了"。
       // changes 与 files 是**同一批路径**(见 PendingFire.changes 的说明),一并按上限收口,
       // 免得一条抖动的目录把方向表也顶到无限长。丢的条数只由 `files` 那一侧统计一次。
-      if (pending.changes.size >= PENDING_FILES_LIMIT && !pending.changes.has(abs)) {
-        const oldest = pending.changes.keys().next().value;
-        if (oldest !== undefined) pending.changes.delete(oldest);
+      // 收口走**唯一一份** `capOldest`(MC-091 统一截断原语):加**新**路径时才裁,先丢到
+      // `limit-1` 再 set 新路径(与 `files` 那一路同一取舍:丢最早的)。已在表里的路径是
+      // 原地更新值(不重排、不触发裁剪),与从前 `Map.set` 的行为一致。
+      if (!pending.changes.has(abs) && pending.changes.size >= PENDING_FILES_LIMIT) {
+        const { kept } = capOldest([...pending.changes.entries()], PENDING_FILES_LIMIT - 1);
+        pending.changes = new Map(kept);
       }
       pending.changes.set(abs, kind);
       if (present && !pending.files.includes(abs)) {
@@ -2286,8 +2326,11 @@ class AutomationRunner {
     // (项目没了 / 工作流改了 / 关掉了 / 上一次还在跑 / 起跑抛错)都要把它结算成
     // `SUCCEEDED`:这一次的**决策已经落定**(不重跑),不是"崩在中间"那种不确定态。
     // 只有真正进入 `startWorkflowRun` 的那条路把结算推到运行 promise 落地上。
+    //
+    // 【MC-091 E3】不带 `outcome` 的调用 = "决定不跑、决策已落定"那组收尾(语义见
+    // `settleTriggerClaim`);真正派发那一路的 `.finally` 带**业务结果**走三态映射。
     const claimId = opts?.claimId;
-    const settleClaim = (): void => this.settleTriggerClaim(claimId);
+    const settleClaim = (outcome?: AutomationRunOutcome): void => this.settleTriggerClaim(claimId, outcome);
     try {
       // An old debounced event may fire while a new workflow revision reloads.
       const current = getWorkflow(trigger.workflowId);
@@ -2484,15 +2527,20 @@ class AutomationRunner {
             ...(opts?.manual === true ? { manual: true } : {}),
           },
         },
+      }).then((result) => {
+        // 【MC-091 E3】运行 promise **成功落地** → 按**业务结果**结算领取(不再一律
+        // `SUCCEEDED`)。`RunResult.status` ∈ success/failed/cancelled;`null` = 运行没能
+        // 真正跑起来(启动早退)。后两者都映成 **UNCERTAIN**(取消 / 拿不到结果,绝不假装成功)。
+        // 崩溃点若落在这之前,盘上仍是 `CLAIMED` → 重启时 `recoverIncompleteClaims` 会把它
+        // 认出来,不重复执行、报成"结果不确定"。这就是"领取→执行"的收尾边界。
+        settleClaim(runOutcomeOfStatus(result?.status));
       }).catch((err) => {
         log.warn(`[automation] 运行失败:${(err as Error).message}`);
         // 起跑之后才失败的,`lastFire` 已经记了;这里补上「为什么没跑成」。
         this.facts.recordBlocked(triggerSeedOf(trigger), `运行失败:${(err as Error).message}`, Date.now());
-      }).finally(() => {
-        // 【MC-051】运行 promise 落地(成功或失败)之后,这条定时领取**才**算确认完成。
-        // 崩溃点若落在这之前,盘上仍是 `CLAIMED` → 重启时 `recoverIncompleteClaims`
-        // 会把它认出来,不重复执行、报成"结果不确定"。这就是"领取→执行"的收尾边界。
-        settleClaim();
+        // 【MC-091 E3】引擎预检 / 起跑抛错 = 这一次运行**明确失败** → 领取落 `FAILED`
+        // (不再落 `SUCCEEDED` 冒充成功)。
+        settleClaim("failed");
       });
       // 【MC-091 续】**真正派发出去之后**才清欠账 —— 到这一行说明 `bindSession` / `SettingRepo.set`
       // / 建 `startWorkflowRun` 都成功了(没走上面的 catch)。只对承载数据的 file/event 两路清:

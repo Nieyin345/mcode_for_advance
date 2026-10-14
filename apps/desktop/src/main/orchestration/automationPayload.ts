@@ -9,7 +9,7 @@
  * 用词要像人说话(「到点了:2026-09-16 09:00」),而不是把事件对象 JSON 塞进去 ——
  * 后者会让模型去猜字段含义,而它手里没有 schema。
  */
-import type { EventItemFactKey, FileChange, HookEvent } from "@contracts/hook";
+import { capOldest, type EventItemFactKey, type FileChange, type HookEvent } from "@contracts/hook";
 
 /** 列表最多列这么多项,剩下的折成一句"还有几个"。文件连着变(churn)时一串路径能上千,
  *  全塞进提示词纯属浪费 token —— 而模型要的是"变了些文件"这个事实,不是清单本身。 */
@@ -327,7 +327,7 @@ export function mergeEventPayload(
   facts: { toolName?: string; subjects?: readonly string[] },
   item: Partial<Record<EventItemFactKey, string>> | undefined,
 ): TriggerPayload {
-  const items = prior?.kind === "event" ? [...(prior.items ?? [])] : [];
+  let items = prior?.kind === "event" ? [...(prior.items ?? [])] : [];
   let dropped = prior?.kind === "event" ? (prior.itemsOverflowDropped ?? 0) : 0;
   if (item !== undefined) {
     const id = item.itemId;
@@ -338,10 +338,11 @@ export function mergeEventPayload(
   // 吐不同 `itemId` 的事件流会让它只涨不落(实测 1500 个唯一 itemId → 保留 1500),而
   // 载荷要整个进 `data.trigger` 与运行历史。达到上限时丢**最早**的(与文件那一路同一取舍),
   // 并把丢的条数**如实累加**进 `itemsOverflowDropped` —— 静默截断是这一路最坏的坏法。
-  const overflow = items.length - MAX_EVENT_ITEMS;
-  if (overflow > 0) {
-    items.splice(0, overflow);
-    dropped += overflow;
+  // 截断走**唯一一份** `capOldest`(MC-091 统一截断原语,与 `addToFileBacklog` 同源)。
+  const { kept, dropped: capDropped } = capOldest(items, MAX_EVENT_ITEMS);
+  if (capDropped > 0) {
+    items = kept;
+    dropped += capDropped;
   }
   return {
     kind: "event",

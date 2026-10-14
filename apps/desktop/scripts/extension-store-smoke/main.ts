@@ -40,6 +40,7 @@ import {
   EXTENSION_STORE_MAX,
   EXTENSION_TOTAL_MAX,
   EXTENSION_STORE_FILE,
+  LEGACY_EXTENSION_STORE_FILE,
   isValidExtensionId,
   isSafeExtensionRelPath,
   isReservedExtensionRelPath,
@@ -54,6 +55,7 @@ import {
   extensionsDir,
   extensionDir,
   extensionStorePath,
+  legacyExtensionStorePath,
   readStore,
   readValue,
   writeValue,
@@ -149,7 +151,10 @@ console.log("\n§2 磁盘侧:按扩展隔离 + 路径");
 
 eq("extensions 目录 = <root>/extensions", extensionsDir(ROOT), join(ROOT, "extensions"));
 eq("单扩展目录 = <root>/extensions/<id>", extensionDir(ROOT, "ext-a"), join(ROOT, "extensions", "ext-a"));
-eq("存储文件 = <root>/extensions/<id>/store.json", extensionStorePath(ROOT, "ext-a"), join(ROOT, "extensions", "ext-a", "store.json"));
+eq("存储文件 = <root>/extensions/<id>/.mcode-store.json(MC-096 保留命名空间)", extensionStorePath(ROOT, "ext-a"), join(ROOT, "extensions", "ext-a", ".mcode-store.json"));
+eq("契约 EXTENSION_STORE_FILE = .mcode-store.json(点前缀保留名)", EXTENSION_STORE_FILE, ".mcode-store.json");
+eq("契约 LEGACY_EXTENSION_STORE_FILE = store.json(旧名仍认)", LEGACY_EXTENSION_STORE_FILE, "store.json");
+eq("旧存储文件 = <root>/extensions/<id>/store.json(只读回退用)", legacyExtensionStorePath(ROOT, "ext-a"), join(ROOT, "extensions", "ext-a", "store.json"));
 
 // ★ 核心:按扩展隔离。
 writeValue(ROOT, "ext-a", "notes", "A 的笔记");
@@ -217,7 +222,7 @@ eq("★ MC-096:拒写后原文件内容未变", readFileSync(extensionStorePath(
 // 非法 id:读写都拒。
 eq("非法 id(.. )读 = 空", Object.keys(readStore(ROOT, "..").values).length, 0);
 eq("非法 id(.. )写返回 false", writeValue(ROOT, "..", "k", "v"), false);
-check("非法 id 没有在数据根外层建文件", !existsSync(join(ROOT, "..", "store.json")));
+check("非法 id 没有在数据根外层建文件", !existsSync(join(ROOT, "..", EXTENSION_STORE_FILE)) && !existsSync(join(ROOT, "..", LEGACY_EXTENSION_STORE_FILE)));
 removeValue(ROOT, "ext-a/../x", "k"); // 只该静默不动
 check("非法 id 的 removeValue 不建任何东西", !existsSync(join(ROOT, "x")));
 
@@ -490,7 +495,7 @@ await (async () => {
 console.log("\n§6.5 内部保留文件闸(MC-096)");
 
 // ① 纯词法判据(契约层)。
-eq("保留判据:store.json 保留", isReservedExtensionRelPath("store.json"), true);
+eq("保留判据:store.json 保留(旧名也要挡,否则旧名又能被写穿)", isReservedExtensionRelPath("store.json"), true);
 eq("保留判据:store.json.mcode-tmp 保留", isReservedExtensionRelPath("store.json.mcode-tmp"), true);
 eq("保留判据:store.json.bak 保留", isReservedExtensionRelPath("store.json.bak"), true);
 eq("保留判据:大小写变体 Store.json 保留", isReservedExtensionRelPath("Store.json"), true);
@@ -498,6 +503,12 @@ eq("保留判据:子目录 a/store.json 不保留", isReservedExtensionRelPath("
 eq("保留判据:普通文件 notes.md 不保留", isReservedExtensionRelPath("notes.md"), false);
 eq("保留判据:store.txt 不保留", isReservedExtensionRelPath("store.txt"), false);
 eq("保留判据:./store.json 仍保留", isReservedExtensionRelPath("./store.json"), true);
+// ★ 【MC-096】新命名空间(.mcode-store.json)同样保留 —— 迁移后的真名。
+eq("★ 保留判据:.mcode-store.json 保留(新命名空间)", isReservedExtensionRelPath(".mcode-store.json"), true);
+eq("★ 保留判据:.mcode-store.json.last-good 保留", isReservedExtensionRelPath(".mcode-store.json.last-good"), true);
+eq("★ 保留判据:.mcode-store.json.mcode-tmp 保留", isReservedExtensionRelPath(".mcode-store.json.mcode-tmp"), true);
+eq("★ 保留判据:大小写变体 .Mcode-Store.JSON 保留", isReservedExtensionRelPath(".Mcode-Store.JSON"), true);
+eq("★ 保留判据:子目录 a/.mcode-store.json 不保留", isReservedExtensionRelPath("a/.mcode-store.json"), false);
 
 await (async () => {
   const id = "ext-reserved";
@@ -509,6 +520,8 @@ await (async () => {
   deepEq("★ 文件通道写 store.json 被拒(不是 ok:true)", await writeFileInExtension(ROOT, id, "store.json", "NOT_JSON"), { ok: false, reason: "reserved" });
   deepEq("★ 文件通道写 store.json.mcode-tmp 被拒", await writeFileInExtension(ROOT, id, "store.json.mcode-tmp", "X"), { ok: false, reason: "reserved" });
   deepEq("★ 文件通道写大小写变体 Store.json 被拒", await writeFileInExtension(ROOT, id, "Store.json", "X"), { ok: false, reason: "reserved" });
+  // ★ 【MC-096】新命名空间(.mcode-store.json)的真名同样不许被文件通道寻址。
+  deepEq("★ 文件通道写 .mcode-store.json 被拒(新命名空间)", await writeFileInExtension(ROOT, id, ".mcode-store.json", "NOT_JSON"), { ok: false, reason: "reserved" });
   // (撤掉修复时,上面这条会返回 ok:true 并真覆盖 —— 下面这条才是"数据还在"的独立判据。)
   eq("★ 键值未被覆盖(重要数据还在)", readValue(ROOT, id, "important"), "KEEP_ME");
   check("★ 存储文件内容仍是合法键值(不是 NOT_JSON)", readFileSync(extensionStorePath(ROOT, id), "utf8").includes("KEEP_ME"));
@@ -516,8 +529,9 @@ await (async () => {
   // ③ 读 / 列也不许寻址保留文件(否则能读出内部键值、列出内部文件)。
   deepEq("★ 文件通道读 store.json 被拒", readFileInExtension(ROOT, id, "store.json"), { ok: false, reason: "reserved" });
   deepEq("★ 文件通道读 store.json.mcode-tmp 被拒", readFileInExtension(ROOT, id, "store.json.mcode-tmp"), { ok: false, reason: "reserved" });
+  deepEq("★ 文件通道读 .mcode-store.json 被拒(新命名空间)", readFileInExtension(ROOT, id, ".mcode-store.json"), { ok: false, reason: "reserved" });
   const rootLs = listFilesInExtension(ROOT, id);
-  check("★ listFiles 根级不含 store.json(保留文件被过滤)", rootLs.ok && rootLs.entries.every((e) => e.name.toLowerCase() !== "store.json"), rootLs.ok ? rootLs.entries.map((e) => e.name) : rootLs);
+  check("★ listFiles 根级不含 store.json / .mcode-store.json(保留文件被过滤)", rootLs.ok && rootLs.entries.every((e) => e.name.toLowerCase() !== "store.json" && e.name.toLowerCase() !== ".mcode-store.json"), rootLs.ok ? rootLs.entries.map((e) => e.name) : rootLs);
   deepEq("★ listFiles 列 store.json 这个文件被拒", listFilesInExtension(ROOT, id, "store.json"), { ok: false, reason: "reserved" });
 
   // ④ 子目录里的同名文件**不是**保留文件 —— 扩展自己的数据照常可读写(不误伤)。
@@ -854,7 +868,9 @@ check("三条通道都注册了", handlers.has(EXTENSION_STORE_GET_CHANNEL) && h
     // 预置一份"要被保护"的键值;任何一条保留路径写法若漏网,就会把它毁掉。
     eq("复制语义:预置键值写成功", writeValue(ROOT, id, "important", "KEEP_ME"), true);
     // 一个"复制/改名目标"的各种路径写法 —— 都应被同一道保留闸拒(reserved),且不落盘。
-    for (const spelling of ["store.json", "./store.json", ".\\store.json", "Store.JSON", "store.json.last-good", "store.json.mcode-tmp"]) {
+    // 【MC-096】**新旧两种写法都列** —— 只挡新名的话,迁移期的旧名又能被写穿。
+    for (const spelling of ["store.json", "./store.json", ".\\store.json", "Store.JSON", "store.json.last-good", "store.json.mcode-tmp",
+                            ".mcode-store.json", ".mcode-store.json.last-good", ".mcode-store.json.mcode-tmp", ".Mcode-Store.JSON"]) {
       deepEq(`★ 复制语义:寻址保留文件写法 ${JSON.stringify(spelling)} 被拒(reserved)`, await writeFileInExtension(ROOT, id, spelling, "NOT_JSON"), { ok: false, reason: "reserved" });
       deepEq(`★ 复制语义:读保留文件写法 ${JSON.stringify(spelling)} 被拒(reserved)`, readFileInExtension(ROOT, id, spelling), { ok: false, reason: "reserved" });
     }
@@ -869,6 +885,64 @@ check("三条通道都注册了", handlers.has(EXTENSION_STORE_GET_CHANNEL) && h
     const storeSrc = readFileSync(join(SRC_DIR, "main", "lib", "extensionStore.ts"), "utf8");
     check("★ 复制语义:保留判据在 lib 只引用契约的唯一一份", storeSrc.includes("isReservedExtensionRelPath(relPath)"));
   })();
+
+/* ─────────────────── §11 物理隔离命名空间 + 向后兼容迁移(MC-096)───────────────────
+ *
+ * 缺陷:键值文件从前是裸名 `store.json`,与用户自己在扩展目录里放的文件**同层** —— 只靠
+ * 通道拒绝挡覆盖,命名空间本身没隔离。修复:挪进点前缀保留名 `.mcode-store.json`。
+ *
+ * 这一段验三件事(全用**真磁盘**):
+ *   ① 新写落在新命名空间(`.mcode-store.json`),不再产出裸 `store.json`;
+ *   ② **向后兼容**:手工造一份旧名 `store.json`(模拟迁移前的老数据)→ 读得到、认作有效
+ *      (不是当 MISSING 静默丢);last-good 恢复对旧名同样生效;
+ *   ③ **迁移**:对一份旧名数据写一次 → 内容迁进新名、旧名(及其 .last-good)被清掉。 */
+console.log("\n§11 物理隔离命名空间 + 向后兼容迁移(MC-096)");
+await (async () => {
+  // ① 新写落进新命名空间。
+  {
+    const id = "ext-newspace";
+    eq("新写返回成功", writeValue(ROOT, id, "k", "v"), true);
+    check("★ 新写落在 .mcode-store.json(保留命名空间)", existsSync(extensionStorePath(ROOT, id)));
+    check("★ 新写不再产出裸 store.json(与用户文件同层的老名)", !existsSync(legacyExtensionStorePath(ROOT, id)));
+    eq("新命名空间里的键读得到", readValue(ROOT, id, "k"), "v");
+  }
+
+  // ② 向后兼容:手工造旧名数据(模拟老版本落盘的裸 store.json)。
+  {
+    const id = "ext-legacy";
+    const legacyPath = legacyExtensionStorePath(ROOT, id);
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    writeFileSync(legacyPath, JSON.stringify({ version: 1, values: { oldKey: "OLD_VALUE" } }), "utf8");
+    check("前提:旧名 store.json 确实存在(不是新名)", existsSync(legacyPath) && !existsSync(extensionStorePath(ROOT, id)));
+    // ★ 承重:老数据必须读得到、且**认作有效**(不是当 MISSING 静默丢)。
+    eq("★ 旧名 store.json 的数据读得到(向后兼容,不当 MISSING)", readValue(ROOT, id, "oldKey"), "OLD_VALUE");
+    check("★ 旧名数据没被当成 MISSING 清掉(文件仍在)", existsSync(legacyPath));
+    // 旧名主文件坏 → 旧名的 last-good 也能恢复(与新的同一套恢复逻辑)。
+    writeFileSync(`${legacyPath}.last-good`, JSON.stringify({ version: 1, values: { recovered: "FROM_BACKUP" } }), "utf8");
+    writeFileSync(legacyPath, "{ corrupted legacy", "utf8");
+    eq("★ 旧名主文件坏 → 旧名 last-good 恢复(仍不当空)", readValue(ROOT, id, "recovered"), "FROM_BACKUP");
+  }
+
+  // ③ 迁移:对旧名数据写一次 → 内容迁进新名、旧名清掉。
+  {
+    const id = "ext-migrate";
+    const legacyPath = legacyExtensionStorePath(ROOT, id);
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    writeFileSync(legacyPath, JSON.stringify({ version: 1, values: { keep: "KEEP" } }), "utf8");
+    writeFileSync(`${legacyPath}.last-good`, JSON.stringify({ version: 1, values: { keep: "KEEP" } }), "utf8");
+    eq("迁移前读得到旧数据", readValue(ROOT, id, "keep"), "KEEP");
+    // 写一条 → 触发迁移(persist 落新名 + 清旧名)。
+    eq("对旧名数据写一条成功", writeValue(ROOT, id, "added", 1), true);
+    check("★ 迁移后新名文件出现", existsSync(extensionStorePath(ROOT, id)));
+    check("★ 迁移后旧名 store.json 被清掉", !existsSync(legacyPath));
+    check("★ 迁移后旧名的 last-good 也被清掉", !existsSync(`${legacyPath}.last-good`));
+    // 原有键 + 新键都在(迁移不丢数据)。
+    eq("★ 迁移后原有键仍在(keep)", readValue(ROOT, id, "keep"), "KEEP");
+    eq("★ 迁移后新键在(added)", readValue(ROOT, id, "added"), 1);
+    // 再读一次:走的是新名(旧名已不在)。
+    eq("迁移后从新名读 keep", readValue(ROOT, id, "keep"), "KEEP");
+  }
+})();
 
   console.log(`\nextension-store-smoke:${checks - failed}/${checks} 通过`);
   if (failed > 0) process.exit(1);

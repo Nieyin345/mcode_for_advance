@@ -1032,6 +1032,37 @@ export function shouldIgnoreWatchPath(
 }
 
 /**
+ * 【MC-091】**统一截断原语** —— 超限就丢**最早**的,并把丢的条数**如实报出**。
+ *
+ * ## 为什么只留一份
+ *
+ * 仓库里"超限丢最早的、丢弃要如实计数"这件事原先在几处**各自实现**(文件积压
+ * `addToFileBacklog`、事件条目 `mergeEventPayload`、监听期间的方向表),每处写法不同 ——
+ * 于是"丢是允许的,假装没丢不允许"这条规矩要靠每处都记得写对;一处漏计就退化成静默截断
+ * (模型以为它办的是全部,少办的永远没人办、也不报错)。抽成这**唯一一份**纯函数,几处
+ * 都改调它,判据只有一个、只在一条注释里说清。
+ *
+ * ## 判据(窄,不做任何"智能"取舍)
+ *
+ * 只按**位置**丢:保留**最后** `limit` 条(最近的),丢掉最早的 `overflow` 条。不改顺序、
+ * 不重排、不去重(去重是调用方各自的事,如 `addToFileBacklog`)。`limit <= 0` 时队列恒空,
+ * 整条都算丢(不静默扩成无限)。恒返回 `0` 会让调用方以为"没丢" —— 而载荷里恰恰是不完整
+ * 的列表,那正是本函数要终结的坏法。
+ *
+ * @param items 现有条目(不就地改;返回新数组)
+ * @param limit 上限(见 `automationRunner` 的 `PENDING_FILES_LIMIT` / `automationPayload`
+ *   的 `MAX_EVENT_ITEMS`)
+ * @returns 保留的条目(`kept`,最近那批)+ 这次因超限丢掉的条数(`dropped`)
+ */
+export function capOldest<T>(items: readonly T[], limit: number): { kept: T[]; dropped: number } {
+  const cap = limit > 0 ? limit : 0;
+  const overflow = items.length - cap;
+  if (overflow <= 0) return { kept: [...items], dropped: 0 };
+  // 只丢**最早**的几条(从队首),留下的是最近发生的 —— 与原来 `shift()` 的取舍一致。
+  return { kept: items.slice(overflow), dropped: overflow };
+}
+
+/**
  * 【ARC-015】把一条路径收进文件触发的**积压队列**,并在超限时**如实报出丢了几条**。
  *
  * ## 为什么是一个显式结果,而不是就地 `shift()` 一下
@@ -1046,6 +1077,7 @@ export function shouldIgnoreWatchPath(
  * 假装没丢不允许。** 判据要窄,不做任何"智能"取舍 —— 只丢**最早**的,不重排。
  *
  * 去重:`path` 已在队列里时原样返回(`dropped` = 0),与"文件反复变只算一次"一致。
+ * 去重之后的上限截断走**唯一一份** {@link capOldest}(MC-091 统一截断原语)。
  *
  * @param backlog 现有队列(不就地改;返回新数组)
  * @param path 要收进来的路径(调用方已归一)
@@ -1059,15 +1091,8 @@ export function addToFileBacklog(
 ): { backlog: string[]; dropped: number } {
   // 已在里面:不重复收,也不丢任何东西(同"文件反复变只算一次")。
   if (backlog.includes(path)) return { backlog: [...backlog], dropped: 0 };
-  const next = [...backlog, path];
-  // limit <= 0 时队列恒空,整条都算丢掉(边界:调用方不该传 0,但不静默扩成无限)。
-  const cap = limit > 0 ? limit : 0;
-  const overflow = next.length - cap;
-  if (overflow <= 0) return { backlog: next, dropped: 0 };
-  // 只丢**最早**的几条(从队首),留下的是最近发生的 —— 与原来 `shift()` 的取舍一致。
-  // ⚠️ 丢了几条要**如实报出**:`dropped` 就是被挤掉的条数(`overflow`)。恒返回 0 会让
-  // 调用方以为"没丢",而载荷里恰恰是不完整的列表 —— 那正是本函数要终结的"静默截断"。
-  return { backlog: next.slice(overflow), dropped: overflow };
+  const { kept, dropped } = capOldest([...backlog, path], limit);
+  return { backlog: kept, dropped };
 }
 
 /**

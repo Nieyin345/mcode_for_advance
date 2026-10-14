@@ -10,12 +10,14 @@
  * 问题 —— *这一分钟到底是"领了、执行了、完成了",还是"领了、进程就没了"?*
  *
  * 这里把定时派发做成一条**显式领取**:派发之前先 durable 写一条 `CLAIMED`;运行
- * 真正完成之后再 durable 结算成 `SUCCEEDED`。重启时,盘上任何**不是 `SUCCEEDED`** 的
- * 领取都属于"上一个进程在执行途中消失了" —— 它**绝不重复执行**(幂等红线),但也
- * **不被静默丢弃**:交给人看到「上一次的运行结果不确定」。这与台账建议的
- * `durable trigger-claim / dispatch ledger`(PENDING/CLAIMED/RUNNING/SUCCEEDED/
- * FAILED/UNCERTAIN)是同一套设计,只是本切片把 RUNNING 折进 CLAIMED(见下),用最少
- * 的状态覆盖"领取→执行→完成"这条跨崩边界的全部语义。
+ * 真正收尾之后再 durable 结算。**【MC-091 E3】结算不再是"promise 落地就记成功"** —— 它把
+ * 运行结果映射成业务三态 `SUCCEEDED` / `FAILED` / `UNCERTAIN`(见 {@link TriggerClaimStatus}),
+ * 于是"下游到底成功没有"这件事在账本里说得清,不再被一句笼统的 `SUCCEEDED` 盖住。重启时,
+ * 盘上任何仍是 `CLAIMED` 的领取都属于"上一个进程在执行途中消失了" —— 它**绝不重复执行**
+ * (幂等红线),但也**不被静默丢弃**:转成 `UNCERTAIN` 交给人看到「上一次的运行结果不确定」。
+ * 这与台账建议的 `durable trigger-claim / dispatch ledger`(PENDING/CLAIMED/RUNNING/SUCCEEDED/
+ * FAILED/UNCERTAIN)是同一套设计,只是本切片把 RUNNING 折进 CLAIMED(见下),用最少的
+ * 状态覆盖"领取→执行→完成"这条跨崩边界的全部语义。
  *
  * ## 为什么落盘走 settings,不是新开一张表(与 `lastMinute` 同一条理由)
  *
@@ -42,13 +44,69 @@
 /**
  * 一条定时领取的状态。
  *
- *  - `CLAIMED` —— 已 durable 领取、**还没确认完成**(正在执行 / 进程崩在这条缝里);
- *  - `SUCCEEDED` —— 这一次派发已经走完(工作流本身成功或失败都算"走完了"),唯一**成功终态**;
- *  - `UNCERTAIN` —— 重启时发现上一个进程把 `CLAIMED` 留在了盘上:`CLAIMED` 经恢复**转成**
- *    它 —— 既不重复执行,也不再每次重启反复报告同一件事。它同样是**终态**,但说的事实是
- *    "上次那次没确认完成,已告诉人,等人处置",与 `SUCCEEDED` 不是一回事。
+ * ## 【MC-091 E3】SUCCEEDED **就是**「下游业务成功」,不再等价于「Promise 落地」
+ *
+ * 从前这里只有两态 `CLAIMED` / `SUCCEEDED`,而 `SUCCEEDED` 在实现里被**每一条收尾路径**
+ * (包括"派发被跳过 / 工作流删了 / 上一次还在跑")无差别地写下去 —— 于是它实际说的是
+ * 「领取已终结 / promise 落地」,**不能**解释成「下游业务成功」。台账点名的正是这处语义混同:
+ * 一场失败的运行也会显示成 `SUCCEEDED`,用户看不出它到底成功没有。
+ *
+ * 现在把它拆成**业务三态**,落成三个终态(与 `RunResult.status` 一一对应,见
+ * {@link runOutcomeOfStatus}):
+ *
+ *  - `SUCCEEDED` —— 派发**成立**且那次运行以 `success` 收尾(唯一**业务成功**终态);
+ *  - `FAILED` —— 派发成立但那次运行以 `failed` 收尾(节点失败 / 引擎预检失败等);
+ *  - `UNCERTAIN` —— 拿不到确定结果:运行被**取消**,或重启时发现上一个进程把 `CLAIMED`
+ *    留在盘上(进程在执行途中消失)。既不重复执行,也不假装成功。
+ *
+ * `CLAIMED` 仍是**进行中**(已 durable 领取、还没确认完成)。
+ *
+ * ⚠️ **明确的一处例外**:一条**没真的派发**的收尾(工作流被删 / 修订变了 / 用户关掉 /
+ * 项目没了 / 上一次还在跑)**照旧结算成 `SUCCEEDED`** —— 它说的是"这一格领取被确定地
+ * 关上、不会待恢复",**不是**下游业务成功。这类"决定不跑"的收尾由 `skip()` 把**原因**
+ * 记进 `AutomationFacts.lastError`,业务结果**以事实表里的原因**为准,而不是从 claim 状态
+ * 反推。派发真的成立那一路才是三态映射的来源。
  */
-export type TriggerClaimStatus = "CLAIMED" | "SUCCEEDED" | "UNCERTAIN";
+export type TriggerClaimStatus = "CLAIMED" | "SUCCEEDED" | "FAILED" | "UNCERTAIN";
+
+/**
+ * 【MC-091 E3】一次定时派发**下游业务结果**的三态 —— 与 `TriggerClaim` 终态是同一件事的
+ * 两种叫法(见 {@link claimStatusOfRunOutcome}),冒烟直接钉住这条映射本身。
+ */
+export type AutomationRunOutcome = "success" | "failed" | "uncertain";
+
+/**
+ * 【MC-091 E3】运行结果(`RunResult.status`,可能拿不到)→ 业务三态。
+ *
+ * - `success` → 成功;
+ * - `failed` → 失败;
+ * - `cancelled` / `null` / `undefined`(结果拿不到)→ **不确定** —— 绝不把"取消"或
+ *   "压根没拿到结果"当成功。
+ */
+export function runOutcomeOfStatus(
+  status: "success" | "failed" | "cancelled" | null | undefined,
+): AutomationRunOutcome {
+  if (status === "success") return "success";
+  if (status === "failed") return "failed";
+  return "uncertain";
+}
+
+/** 【MC-091 E3】业务三态 → 领取终态(一一对应;`success`/`failed`/`uncertain` 各有其态)。 */
+export function claimStatusOfRunOutcome(outcome: AutomationRunOutcome): TriggerClaimStatus {
+  switch (outcome) {
+    case "success":
+      return "SUCCEEDED";
+    case "failed":
+      return "FAILED";
+    case "uncertain":
+      return "UNCERTAIN";
+  }
+}
+
+/** 一条领取记录状态是不是**终态**(`CLAIMED` 是唯一的进行中态)。 */
+export function isTerminalClaimStatus(status: TriggerClaimStatus): boolean {
+  return status !== "CLAIMED";
+}
 
 /** 盘上一条领取记录。 */
 export interface TriggerClaim {
@@ -82,7 +140,7 @@ export function isTriggerClaims(raw: unknown): raw is Record<string, TriggerClai
   return Object.entries(raw).every(([key, value]) => {
     if (key.length === 0 || typeof value !== "object" || value === null) return false;
     const c = value as Record<string, unknown>;
-    if (c.status !== "CLAIMED" && c.status !== "SUCCEEDED" && c.status !== "UNCERTAIN") return false;
+    if (c.status !== "CLAIMED" && c.status !== "SUCCEEDED" && c.status !== "FAILED" && c.status !== "UNCERTAIN") return false;
     return typeof c.minute === "number" && Number.isFinite(c.minute) &&
       typeof c.at === "number" && Number.isFinite(c.at);
   });
@@ -90,21 +148,37 @@ export function isTriggerClaims(raw: unknown): raw is Record<string, TriggerClai
 
 /**
  * 还**没有确认完成**的领取 id —— 重启时,这些就是"上一个进程在执行途中消失了"的那些。
- * 只有 `CLAIMED` 算"待恢复";`SUCCEEDED` 与已处置过的 `UNCERTAIN` 都是终态。
+ * 只有 `CLAIMED` 算"待恢复";`SUCCEEDED` / `FAILED` / `UNCERTAIN` 都是终态。
  */
 export function pendingClaims(claims: ReadonlyMap<string, TriggerClaim>): string[] {
   return [...claims.entries()].filter(([, c]) => c.status === "CLAIMED").map(([id]) => id);
 }
 
-/** 重启恢复时给用户看的一句话。 */
+/** 重启恢复时给用户看的一句话(结果不确定 —— 既没成功也没失败)。 */
 export function claimRecoveryReason(): string {
-  return "上一次的定时运行领取了但没有确认完成(进程可能在执行途中退出了),这一次不重复执行;如需重跑请手动运行一次";
+  return "上一次的定时运行领取了但没有确认完成(进程可能在执行途中退出了),结果不确定,这次不重复执行;如需重跑请手动运行一次";
 }
 
 /**
- * 修剪:未处置的 `CLAIMED` 与 `UNCERTAIN` **一律保留**(要留着被恢复消费 / 等人看到,
- * 按容量淘汰会丢掉"没确认完成"这件事);`SUCCEEDED` 最多留 `keep` 条,按"最近更新"排。
- * 与 `lastMinute` 的历史封顶同一条思路。
+ * 【MC-091 E3】一次**失败**收尾给用户看的一句话 —— 与 `claimRecoveryReason` 的 UNCERTAIN
+ * 那句分开:这里下游业务**明确失败**(不是"拿不到结果")。
+ */
+export function claimFailureReason(): string {
+  return "上一次的定时运行执行失败(工作流未成功收尾);如需重跑请手动运行一次";
+}
+
+/**
+ * 【MC-091 E3】一次运行被**取消**收尾给用户看的一句话 —— 取消同样落 `UNCERTAIN`(既没
+ * 成功也没失败),但措辞与"进程消失的恢复"分开,用户看得出是主动取消的。
+ */
+export function claimCancelledReason(): string {
+  return "上一次的定时运行被取消了(结果不确定);如需重跑请手动运行一次";
+}
+
+/**
+ * 修剪:未处置的 `CLAIMED` / `FAILED` / `UNCERTAIN` **一律保留**(要留着被恢复消费 / 等人
+ * 看到「上一次失败了 / 结果不确定」,按容量淘汰会丢掉这条事实);`SUCCEEDED` 最多留 `keep`
+ * 条,按"最近更新"排。与 `lastMinute` 的历史封顶同一条思路。
  */
 export function pruneClaims(
   claims: ReadonlyMap<string, TriggerClaim>,

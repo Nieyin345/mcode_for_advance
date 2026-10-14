@@ -1,5 +1,5 @@
 /**
- * **扩展专用的持久数据区**(报告 E12)—— `<数据根>/extensions/<扩展 id>/store.json`。
+ * **扩展专用的持久数据区**(报告 E12)—— `<数据根>/extensions/<扩展 id>/.mcode-store.json`。
  *
  * ## 为什么单开这块地基
  *
@@ -18,10 +18,15 @@
  *   ├── library/            ← 文献库
  *   └── extensions/         ← ★ 本模块
  *         └── <扩展 id>/
- *               └── store.json   ← 该扩展私有的键值存储
+ *               └── .mcode-store.json   ← 该扩展私有的键值存储(点前缀保留命名空间)
  * ```
  *
  * 一个扩展一个目录 ⟹ 换项目不丢、删别的扩展不影响它、单个扩展写爆也挤不到别人。
+ *
+ * 【MC-096】键值文件用**点前缀保留名** `.mcode-store.json`(见 {@link EXTENSION_STORE_FILE}),
+ * 不再是与用户文件同层的裸 `store.json` —— 一个正常书写的扩展不可能产出这个名字,物理上
+ * 就跟用户自己的文件分开。旧数据仍落在裸 `store.json`(见 {@link LEGACY_EXTENSION_STORE_FILE}),
+ * 读得到且在下次写时迁进新名。
  *
  * ## 边界(纯模块)
  *
@@ -88,10 +93,30 @@ export const EXTENSION_TOTAL_MAX = 32 * 1024 * 1024;
 /**
  * 存储文件名(该扩展目录**根**下的键值文件)。键值通道的读写只动这一个名字的文件。
  *
+ * 【MC-096】从前是裸名 `store.json`,与用户自己在扩展目录里放的 `store.json` **混在同一
+ * 层** —— 只靠文件通道的保留闸挡住覆盖,命名空间本身没有隔离。现在挪进一个**点前缀的保留
+ * 命名空间**(`.mcode-store.json`):一个正常书写、不引用内部名的扩展**不可能**产出这个
+ * 名字(它要显式知道内部命名约定),物理上就跟用户文件分开了。
+ *
  * 键值通道(`readStore` / `persist`)与文件通道的**保留闸**共用这一个名字(不写第二份
  * 字符串字面量)—— 详见 {@link isReservedExtensionRelPath}。
  */
-export const EXTENSION_STORE_FILE = "store.json";
+export const EXTENSION_STORE_FILE = ".mcode-store.json";
+
+/**
+ * 【MC-096】**旧**存储名 —— 迁移前落盘用的裸名,仍要能被读取(向后兼容)。
+ *
+ * 老数据(用 `store.json` 存的扩展)必须读得到,且读到时**认作有效**(不是当成 MISSING
+ * 静默丢);下一次写会把它迁进 {@link EXTENSION_STORE_FILE} 并清掉旧文件。同时**保留判据
+ * 必须覆盖它** —— 否则旧名又能被文件通道写穿(见 {@link isReservedExtensionRelPath})。
+ */
+export const LEGACY_EXTENSION_STORE_FILE = "store.json";
+
+/** 根级**内部保留名**的两个基准(新 + 旧)—— 见 {@link isReservedExtensionRelPath}。 */
+const RESERVED_STORE_NAMES = [
+  EXTENSION_STORE_FILE.toLowerCase(),
+  LEGACY_EXTENSION_STORE_FILE.toLowerCase(),
+];
 
 /**
  * 扩展目录根下的**内部保留文件**判据(纯词法,renderer 与 main 共用)。
@@ -101,9 +126,12 @@ export const EXTENSION_STORE_FILE = "store.json";
  * 用文件接口往 `store.json` 写一段非 JSON,就把自己的键值存储整份毁掉(MC-096,解析层把
  * 损坏默认为空,数据无告警丢失)。
  *
- * 判据:**只在该扩展目录根**、且文件名等于 store.json 或以 `store.json.` 开头(覆盖
- * `.mcode-tmp` 临时文件与将来的备份变体)。子目录里的同名文件(`a/store.json`)不是保留
- * 文件 —— 那是扩展自己的数据,照常可读写。
+ * 判据:**只在该扩展目录根**、且文件名从**新名或旧名**之一派生 —— 等于 {@link
+ * EXTENSION_STORE_FILE}(`.mcode-store.json`)或 {@link LEGACY_EXTENSION_STORE_FILE}
+ * (`store.json`),或以它们 + `.` 开头(覆盖 `.mcode-tmp` 临时文件与 `.last-good`
+ * 备份变体)。**新旧两种写法都要覆盖** —— 只挡新名的话,迁移期的旧 `store.json` 又能被
+ * 文件通道写穿(MC-096)。子目录里的同名文件(`a/store.json`)不是保留文件 —— 那是扩展
+ * 自己的数据,照常可读写。
  *
  * **大小写不敏感**:Windows 文件系统不分大小写,`Store.json` 会**别名**到 `store.json`
  * 同一个文件,不这么判就留一条覆盖后门。在大小写敏感的文件系统上这只会**过度拒绝**一个
@@ -118,8 +146,8 @@ export function isReservedExtensionRelPath(p: string): boolean {
   const segments = p.split(/[\\/]+/).filter((s) => s.length > 0 && s !== ".");
   if (segments.length !== 1) return false;
   const name = segments[0].toLowerCase();
-  const store = EXTENSION_STORE_FILE.toLowerCase();
-  return name === store || name.startsWith(`${store}.`);
+  // 新旧两个基准名各判一次(旧名 = 迁移前落盘的裸名,仍要被挡,不让它被写穿)。
+  return RESERVED_STORE_NAMES.some((base) => name === base || name.startsWith(`${base}.`));
 }
 
 /* ─────────────────────────── IPC 载荷形状 ─────────────────────────── */

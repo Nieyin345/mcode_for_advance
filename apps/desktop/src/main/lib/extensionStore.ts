@@ -1,5 +1,10 @@
 /**
- * 扩展专用数据区的**磁盘侧** —— `<数据根>/extensions/<扩展 id>/store.json`。
+ * 扩展专用数据区的**磁盘侧** —— `<数据根>/extensions/<扩展 id>/.mcode-store.json`。
+ *
+ * 【MC-096】键值文件用**点前缀保留名** `.mcode-store.json`(见 `EXTENSION_STORE_FILE`),
+ * 不再是与用户文件同层的裸 `store.json` —— 物理上就分进一个不可能与用户文件重名的保留
+ * 命名空间。旧数据仍落在裸 `store.json`(`LEGACY_EXTENSION_STORE_FILE`):**读得到、认作
+ * 有效**(不是当成 MISSING 静默丢),读到或写到时迁进新名并清掉旧文件。
  *
  * 纯函数(读 / 写 / 删 / 路径拼装)只收一个 `root`(数据根),**不 import electron**;
  * 无头 smoke 直接 bundle 本文件、传一个临时目录当数据根。真正的 IPC handler 在
@@ -13,7 +18,7 @@
  * 记录、也撞不见别的扩展。落盘走 `atomicWrite`(tmp + rename),写到一半崩了不会留下
  * 半份 JSON。
  */
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
   emptyStore,
@@ -29,6 +34,7 @@ import {
   withStoreValue,
   withoutStoreValue,
   EXTENSION_STORE_FILE,
+  LEGACY_EXTENSION_STORE_FILE,
   EXTENSION_STORE_MAX,
   EXTENSION_TOTAL_MAX,
   type ExtensionStoreFile,
@@ -51,9 +57,23 @@ export function extensionDir(root: string, extensionId: string): string {
   return join(extensionsDir(root), extensionId);
 }
 
-/** 该扩展的存储文件:`<数据根>/extensions/<扩展 id>/store.json`。 */
+/**
+ * 该扩展的存储文件:`<数据根>/extensions/<扩展 id>/.mcode-store.json`(**保留命名空间**)。
+ *
+ * 【MC-096】点前缀的保留名 —— 一个正常书写、不引用内部命名约定的扩展不可能产出它,于是
+ * 物理上就跟用户自己在扩展目录里放的文件分开了(不是只靠通道拒绝)。
+ */
 export function extensionStorePath(root: string, extensionId: string): string {
   return join(extensionDir(root, extensionId), EXTENSION_STORE_FILE);
+}
+
+/**
+ * 【MC-096】**旧**存储文件:`<数据根>/extensions/<扩展 id>/store.json`(迁移前的裸名)。
+ *
+ * 只用于**读**(向后兼容老数据)与**迁移收尾清理**。新写一律走 {@link extensionStorePath}。
+ */
+export function legacyExtensionStorePath(root: string, extensionId: string): string {
+  return join(extensionDir(root, extensionId), LEGACY_EXTENSION_STORE_FILE);
 }
 
 /**
@@ -90,34 +110,59 @@ export function readValue(root: string, extensionId: string, key: string): unkno
  * 【MC-096】读一份存储并**区分三态** —— 写侧据此对「坏数据」fail-closed(不覆盖)。
  * 根目录逃逸 / id 非法一律当 `MISSING`(读不到那份文件,写也被包含闸挡住)。
  *
- * **坏数据先试 last-good**:主文件坏掉时,若存在一份确认过的 `store.json.last-good`,就用它
+ * **坏数据先试 last-good**:主文件坏掉时,若存在一份确认过的 `<file>.last-good`,就用它
  * (status 标 `VALID`),不让用户的键值因为一次写坏全丢。last-good 也坏/没有 → 才 `CORRUPT`。
+ *
+ * 【MC-096】读**新命名空间**(`.mcode-store.json`);新名不在时**回退读旧名**
+ * (`store.json`,向后兼容)—— 老数据读得到、认作有效,不是当成 MISSING 静默丢。
  */
 function readStoreRaw(root: string, extensionId: string): ExtensionStoreRead {
+  return locateStore(root, extensionId);
+}
+
+/**
+ * 【MC-096】定位并读取一份存储(新命名空间优先,旧名回退)。
+ *
+ * 优先级:新名(`.mcode-store.json`)存在就用它;不存在时回退旧名(`store.json`)。
+ * 两者都读不出 → `MISSING`。新名存在但坏 → **不**去看旧名(那是坏数据,fail-closed,
+ * 不能拿旧名把它当"不存在"盖掉)。写侧 `persist` 无条件落新名并清旧名 —— 迁移因此
+ * 在**任何一次写**上都会发生,读侧的 `legacy` 分派无需带出去。
+ */
+function locateStore(root: string, extensionId: string): ExtensionStoreRead {
   if (!isValidExtensionId(extensionId)) return { status: "MISSING", file: emptyStore() };
   if (!extensionRootWithinExtensions(root, extensionId)) return { status: "MISSING", file: emptyStore() };
-  const path = extensionStorePath(root, extensionId);
+  const mainPath = extensionStorePath(root, extensionId);
   try {
-    if (!existsSync(path)) return { status: "MISSING", file: emptyStore() };
-    const main = readStoreFileDetailed(readFileSync(path, "utf8"));
-    if (main.status !== "CORRUPT") return main;
-    // 【MC-096】主文件坏 → 试 last-good 恢复(不让坏数据把用户键值全丢)。
-    const recovered = readLastGood(root, extensionId);
-    return recovered ?? main;
+    // ① 新命名空间优先。
+    if (existsSync(mainPath)) {
+      const main = readStoreFileDetailed(readFileSync(mainPath, "utf8"));
+      if (main.status !== "CORRUPT") return main;
+      // 主文件坏 → 试 last-good 恢复(不让坏数据把用户键值全丢)。
+      return readLastGood(mainPath) ?? main;
+    }
+    // ② 新名不在 → 回退旧名(迁移前的老数据):读得到、认作有效。
+    const legacyPath = legacyExtensionStorePath(root, extensionId);
+    if (existsSync(legacyPath)) {
+      const legacy = readStoreFileDetailed(readFileSync(legacyPath, "utf8"));
+      if (legacy.status !== "CORRUPT") return legacy;
+      // 旧名主文件也坏 → 试它的 last-good(同样不让一次写坏全丢)。
+      return readLastGood(legacyPath) ?? legacy;
+    }
+    return { status: "MISSING", file: emptyStore() };
   } catch {
     return { status: "CORRUPT", file: emptyStore() };
   }
 }
 
-/** 【MC-096】确认过的上一份存储的备份路径。 */
-function lastGoodStorePath(root: string, extensionId: string): string {
-  return `${extensionStorePath(root, extensionId)}.last-good`;
+/** 【MC-096】确认过的上一份存储的备份路径(`<store 文件>.last-good`)。 */
+function lastGoodStorePath(storePath: string): string {
+  return `${storePath}.last-good`;
 }
 
-/** 从 last-good 备份读出一份**有效**存储;读不出 / 坏 → null。 */
-function readLastGood(root: string, extensionId: string): ExtensionStoreRead | null {
+/** 从 `<storePath>.last-good` 备份读出一份**有效**存储;读不出 / 坏 → null。 */
+function readLastGood(storePath: string): ExtensionStoreRead | null {
   try {
-    const raw = readFileSync(lastGoodStorePath(root, extensionId), "utf8");
+    const raw = readFileSync(lastGoodStorePath(storePath), "utf8");
     const parsed = readStoreFileDetailed(raw);
     return parsed.status === "VALID" ? parsed : null;
   } catch {
@@ -125,13 +170,24 @@ function readLastGood(root: string, extensionId: string): ExtensionStoreRead | n
   }
 }
 
-/** 写一份(整份落盘)。**根目录逃逸时不落盘** —— 返回 `false`(MC-095 物理包含闸)。 */
+/**
+ * 写一份(整份落盘)。**根目录逃逸时不落盘** —— 返回 `false`(MC-095 物理包含闸)。
+ *
+ * 【MC-096】落盘进**新命名空间**(`.mcode-store.json`)。写成功后**清掉旧名**
+ * (`store.json` + 它的 `.last-good`)—— 迁移收尾:新文件已是权威,旧名留着只会让下次
+ * 读又回退到它。旧名不存在时 `rmSync(force)` 是 no-op,不报错。
+ */
 function persist(root: string, extensionId: string, file: ExtensionStoreFile): boolean {
   if (!extensionRootWithinExtensions(root, extensionId)) return false;
   const serialized = serializeStore(file);
+  const storePath = extensionStorePath(root, extensionId);
   // 【MC-096】先刷新 last-good(确认过的这一份),再写主文件 —— 主文件下次写坏时能恢复。
-  try { atomicWrite(lastGoodStorePath(root, extensionId), serialized); } catch { /* 备份失败不阻断主写 */ }
-  atomicWrite(extensionStorePath(root, extensionId), serialized);
+  try { atomicWrite(lastGoodStorePath(storePath), serialized); } catch { /* 备份失败不阻断主写 */ }
+  atomicWrite(storePath, serialized);
+  // 迁移收尾:新命名空间已是权威,把旧名的两份(主文件 + 备份)清掉,免得下次读又回退过去。
+  const legacyPath = legacyExtensionStorePath(root, extensionId);
+  try { rmSync(legacyPath, { force: true }); } catch { /* 清不掉不影响新文件已落盘的事实 */ }
+  try { rmSync(lastGoodStorePath(legacyPath), { force: true }); } catch { /* 同上 */ }
   return true;
 }
 
@@ -170,7 +226,7 @@ export function usedBytes(root: string, extensionId: string): number {
 
 /* ═══════════════════════ 文件通道:该扩展自己目录下的任意文件(报告附录 P)═══════════════════════
  *
- * 键值(`store.json`)只能装小东西;面板要落一份 Markdown / 导出 JSON / 截图时,得在一个
+ * 键值(`.mcode-store.json`)只能装小东西;面板要落一份 Markdown / 导出 JSON / 截图时,得在一个
  * **该扩展自己的**目录下读写任意文件 —— 而面板唯一的文件接口 `mcode.files.read` 受项目根
  * 闸门,库外静默返回空串(真机实测:项目内读到 2417 字符、数据根里那份读回 0)。这三条补上。
  *
@@ -217,10 +273,11 @@ type ResolveResult = { ok: true; abs: string; dir: string } | { ok: false; reaso
  * 姿势);两端都过 `realpath`,一个中间段是 symlink 的路径在这里露馅。
  *
  * ★ **内部保留文件闸(MC-096)**:解析出来的 `target` 若落在该扩展目录**根**、且文件名是
- * `store.json`(或其临时/备份变体),一律拒(`reserved`)—— 公共文件通道不许覆盖扩展自己
- * 的键值存储。词法判据是契约层的 {@link isReservedExtensionRelPath}(唯一一份),这里对它
- * 解析出的真实路径再拦一道。判据挂在 `relPath` 上(而非 `target`):扩展目录根就是 store.json
- * 的所在目录,根级文件名与 `relPath` 是段级对应的。
+ * 内部保留名(新 `.mcode-store.json` 或旧 `store.json`,及其临时/备份变体),一律拒
+ * (`reserved`)—— 公共文件通道不许覆盖扩展自己的键值存储。**新旧两种写法都要挡** —— 否则
+ * 迁移期的旧名又能被写穿。词法判据是契约层的 {@link isReservedExtensionRelPath}(唯一一份),
+ * 这里对它解析出的真实路径再拦一道。判据挂在 `relPath` 上(而非 `target`):扩展目录根就是
+ * store 文件的所在目录,根级文件名与 `relPath` 是段级对应的。
  */
 function resolveInExtension(
   root: string,

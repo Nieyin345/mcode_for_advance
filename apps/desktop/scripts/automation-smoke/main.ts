@@ -35,7 +35,7 @@ import { withAutomationOrigin } from "@main/orchestration/automationEventOrigin.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
-import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, shouldIgnoreWatchPath, isSpecificGlob, classifyFileChange, reconcileFileChangeKind, isWithinWatchRoot, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, capOldest, shouldIgnoreWatchPath, isSpecificGlob, classifyFileChange, reconcileFileChangeKind, isWithinWatchRoot, type HookEvent } from "@contracts/hook";
 import { enqueueEventEnvelope, settleEventEnvelope, isPendingEnvelope, envelopeTerminal, digestOfPayload } from "@contracts/durableEvent";
 import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import {
@@ -102,9 +102,12 @@ const AUTO_CONVERT_WORKFLOW_ID = "wf_auto_convert";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
 
 import {
+  claimStatusOfRunOutcome,
+  isTerminalClaimStatus,
   isTriggerClaims,
   pendingClaims,
   pruneClaims,
+  runOutcomeOfStatus,
   scheduleClaimId,
   triggerKeyOfClaim,
   type TriggerClaim,
@@ -117,7 +120,7 @@ import { suppressNodeKey } from "@contracts/libraryTypes";
 // 真读 settings 表。这一套的后半段(见第 13 节)直接 `new` 它来验「重启后同一分钟不
 // 再触发」与「删掉的文件不进载荷」——那两条的实现全在实例状态里,不真跑一遍验不到。
 import { automationRunner } from "@main/orchestration/automationRunner.js";
-import { resetRuns, runs, runsOfNode, setRunBusy } from "./stubs/runner.js";
+import { resetRuns, runs, runsOfNode, setRunBusy, setRunStatusForNode } from "./stubs/runner.js";
 import { failNextExclusiveCreate, disarmExclusiveCreate } from "./stubs/fsSync.js";
 import { boundSessionIds, runtimeManager } from "./stubs/runtimeManager.js";
 
@@ -3878,12 +3881,37 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     );
     check("MC-051:坏状态(拼错)整张表不认", !isTriggerClaims({ "a@1": { status: "NOPE", minute: 1, at: 2 } }));
     check("MC-051:坏形状(值是字符串)整张表不认", !isTriggerClaims({ "a@1": "CLAIMED" }));
+    // 【MC-091 E3】`FAILED` 是合法的第四态(业务失败终态)。
+    check("MC-091 E3:FAILED 是合法领取态", isTriggerClaims({ "f@1": { status: "FAILED", minute: 1, at: 2 } }));
     const sampleClaims: Map<string, TriggerClaim> = new Map([
       ["a@1", { status: "CLAIMED", minute: 1, at: 1 }],
       ["b@1", { status: "SUCCEEDED", minute: 1, at: 1 }],
       ["c@1", { status: "UNCERTAIN", minute: 1, at: 1 }],
+      ["d@1", { status: "FAILED", minute: 1, at: 1 }],
     ]);
-    eq("MC-051:待恢复只挑 CLAIMED(SUCCEEDED/UNCERTAIN 都是终态)", pendingClaims(sampleClaims).join(","), "a@1");
+    eq("MC-051:待恢复只挑 CLAIMED(SUCCEEDED/FAILED/UNCERTAIN 都是终态)", pendingClaims(sampleClaims).join(","), "a@1");
+
+    // -- 【MC-091 E3】SUCCEEDED 语义 = 下游业务成功(三态映射:成功/失败/不确定)--
+    eq("MC-091 E3:success → 成功", runOutcomeOfStatus("success"), "success");
+    eq("MC-091 E3:failed → 失败", runOutcomeOfStatus("failed"), "failed");
+    eq("MC-091 E3:★ cancelled → 不确定(绝不假装成功)", runOutcomeOfStatus("cancelled"), "uncertain");
+    eq("MC-091 E3:★ 拿不到结果(null)→ 不确定(不假装成功)", runOutcomeOfStatus(null), "uncertain");
+    eq("MC-091 E3:★ 拿不到结果(undefined)→ 不确定", runOutcomeOfStatus(undefined), "uncertain");
+    eq("MC-091 E3:success → 领取终态 SUCCEEDED", claimStatusOfRunOutcome("success"), "SUCCEEDED");
+    eq("MC-091 E3:failed → 领取终态 FAILED", claimStatusOfRunOutcome("failed"), "FAILED");
+    eq("MC-091 E3:uncertain → 领取终态 UNCERTAIN", claimStatusOfRunOutcome("uncertain"), "UNCERTAIN");
+    check("MC-091 E3:CLAIMED 是唯一非终态", !isTerminalClaimStatus("CLAIMED") && isTerminalClaimStatus("SUCCEEDED") && isTerminalClaimStatus("FAILED") && isTerminalClaimStatus("UNCERTAIN"));
+    check(
+      "MC-091 E3:修剪也保留 FAILED/UNCERTAIN(不只 CLAIMED)",
+      (() => {
+        const m: Map<string, TriggerClaim> = new Map();
+        m.set("fail@1", { status: "FAILED", minute: 1, at: 1 });
+        m.set("unc@1", { status: "UNCERTAIN", minute: 1, at: 1 });
+        for (let i = 0; i < 100; i++) m.set(`done@${i}`, { status: "SUCCEEDED", minute: 1, at: i });
+        const kept = pruneClaims(m, 10);
+        return kept.has("fail@1") && kept.has("unc@1") && [...kept.values()].filter((c) => c.status === "SUCCEEDED").length === 10;
+      })(),
+    );
     check(
       "MC-051:修剪保留未完成、只封顶已完成",
       (() => {
@@ -3913,6 +3941,52 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     eq("MC-051:领取带着它对应的分钟", diskClaims()[`${keyS}@${minuteS}`]?.minute, minuteS);
     eq("MC-051:本分钟只起一次运行", runsOfNode(nodeIdS).length, 1);
     settleRunner.dispose();
+
+    // -- 【MC-091 E3】行为:下游业务失败 → 领取落 FAILED(不再冒充 SUCCEEDED)--
+    resetRuns();
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    SettingRepo.set(CLAIMS_KEY, "{}");
+    const wfFail = nextId(), nodeIdFail = "t_claim_failout";
+    makeAutomation({ workflowId: wfFail, nodeId: nodeIdFail, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "下游业务失败",
+    } });
+    const keyFail = `${wfFail}:${nodeIdFail}`;
+    const minuteFail = 30_000_000;
+    setRunStatusForNode(nodeIdFail, "failed"); // 这一次运行以 failed 收尾
+    const failRunner = await withClockAsync(minuteFail * 60_000, () => startRunner());
+    await sleep(20);
+    eq("★ MC-091 E3:下游业务失败 → 领取落 FAILED(不是 SUCCEEDED)", diskClaims()[`${keyFail}@${minuteFail}`]?.status, "FAILED");
+    check(
+      "★ MC-091 E3:界面看得见「上一次失败」",
+      (failRunner.statusOf(wfFail)[0]?.lastError ?? "").includes("执行失败") === true,
+      failRunner.statusOf(wfFail),
+    );
+    failRunner.dispose();
+
+    // -- 【MC-091 E3】行为:运行被取消 → 领取落 UNCERTAIN(既不成功也不失败)--
+    resetRuns();
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    SettingRepo.set(CLAIMS_KEY, "{}");
+    const wfCancel = nextId(), nodeIdCancel = "t_claim_cancelout";
+    makeAutomation({ workflowId: wfCancel, nodeId: nodeIdCancel, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "运行被取消",
+    } });
+    const keyCancel = `${wfCancel}:${nodeIdCancel}`;
+    const minuteCancel = 31_000_000;
+    setRunStatusForNode(nodeIdCancel, "cancelled");
+    const cancelRunner = await withClockAsync(minuteCancel * 60_000, () => startRunner());
+    await sleep(20);
+    eq("★ MC-091 E3:运行取消 → 领取落 UNCERTAIN(不假装成功)", diskClaims()[`${keyCancel}@${minuteCancel}`]?.status, "UNCERTAIN");
+    check(
+      "★ MC-091 E3:界面看得见「上一次被取消」",
+      (cancelRunner.statusOf(wfCancel)[0]?.lastError ?? "").includes("取消") === true,
+      cancelRunner.statusOf(wfCancel),
+    );
+    cancelRunner.dispose();
 
     // -- 行为②:同一分钟多条触发器,各自生成一条独立领取(台账验收矩阵②)--
     // 这一批只 3 条,远在 64 条已完成封顶之下,所以领取能稳定读回。判据:*键互不相同*
@@ -4102,6 +4176,40 @@ console.log("\n【ARC-015】文件积压超限 → 显式 OVERFLOW(不是静默�
   // 极端上限:limit<=0 时队列恒空,整条都算丢(不静默扩成无限)。
   const zero = addToFileBacklog([], "x", 0);
   check("上限 0:整条被丢且报出", zero.backlog.length === 0 && zero.dropped === 1, zero);
+}
+
+/* ── 【MC-091】统一截断原语 `capOldest`:超限丢最早、如实报数,几处共用唯一一份 ── */
+console.log("\n【MC-091】统一截断原语 capOldest(唯一一份:丢最早 + 如实计数)");
+{
+  // 未超限:原样保留、不丢。
+  const under = capOldest(["a", "b"], 5);
+  check("未超限:全留 + 不丢", under.kept.join() === "a,b" && under.dropped === 0, under);
+  // 恰好到上限不丢。
+  const exact = capOldest(["a", "b", "c"], 3);
+  check("恰好到上限不丢", exact.kept.join() === "a,b,c" && exact.dropped === 0, exact);
+  // 越一格:丢最早的一条、报出 1,留下最近那批。
+  const over = capOldest(["a", "b", "c", "d"], 3);
+  check("越一格:丢最早 + 报出 1", over.kept.join() === "b,c,d" && over.dropped === 1, over);
+  // 超多格:一次丢多格(留下最近 limit 条)。
+  const many = capOldest(["a", "b", "c", "d", "e"], 2);
+  check("超多格:一次丢够 + 报出准确条数", many.kept.join() === "d,e" && many.dropped === 3, many);
+  // 纯:不改原数组(调用方按返回值替换)。
+  const src = ["a", "b", "c"];
+  capOldest(src, 2);
+  check("纯函数:不改原数组", src.join() === "a,b,c", src);
+  // 极端上限:limit<=0 时全丢、条数如实。
+  const zero = capOldest(["a", "b"], 0);
+  check("上限 0:全丢 + 报出 2", zero.kept.length === 0 && zero.dropped === 2, zero);
+  // 空数组:不丢。
+  const empty = capOldest([], 3);
+  check("空数组:不丢", empty.kept.length === 0 && empty.dropped === 0, empty);
+  // ★ 承重:同一份判据既是 `addToFileBacklog` 也是 `mergeEventPayload` 的上限来源 ——
+  //   文件名把"唯一一份"钉死(将来谁再各写一套,这条断言会因 import 消失而红)。
+  check("★ capOldest 与 addToFileBacklog 同源(超限结果一致:丢最早、报数同)", (() => {
+    const viaCap = capOldest(["a", "b", "c"], 2);
+    const viaBacklog = addToFileBacklog(["a", "b"], "c", 2);
+    return viaCap.kept.join() === viaBacklog.backlog.join() && viaCap.dropped === viaBacklog.dropped;
+  })());
 }
 
 {
