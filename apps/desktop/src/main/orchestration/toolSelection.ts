@@ -46,6 +46,10 @@ export interface EngineToolSelection {
   inventory: EffectiveToolInventory;
   /** 该画像应暴露的**原始形态**工具名(与清单里的名字同形 —— Claude 带 `mcp__<server>__` 前缀)。 */
   selected: string[];
+  /** 是否有一个**生效的预算**真的收窄了 `selected`(`applyToolBudget` 返回的集合比画像集小)。
+   *  关键:`full` 画像 + 预算 时,适配器**不能**再走「undefined = 引擎启用全部」那条短路 ——
+   *  否则预算被算了却丢掉(假接线)。见三个 `*ForProfile` 适配器。 */
+  budgetNarrowed: boolean;
 }
 
 /**
@@ -124,9 +128,18 @@ export function resolveEngineToolSelection(
     name: profileName,
     userOverride: opts.profile?.userOverride,
   });
-  const selection: EngineToolSelection = { engine, profileName, inventory, selected: unbudgeted };
+  const selection: EngineToolSelection = {
+    engine,
+    profileName,
+    inventory,
+    selected: unbudgeted,
+    budgetNarrowed: false,
+  };
   // 预算在画像之后、装配之前收一刀(floor 恒留)。
-  selection.selected = applyToolBudget(selection, opts.budget);
+  const budgeted = applyToolBudget(selection, opts.budget);
+  selection.selected = budgeted;
+  // 预算**真的**收窄了集合才置位:full 画像下适配器据此不再走「undefined=启用全部」短路。
+  selection.budgetNarrowed = budgeted.length !== unbudgeted.length;
   return selection;
 }
 
@@ -140,7 +153,8 @@ export function resolveEngineToolSelection(
  *   名字与清单里的裸名同形)。
  */
 export function piToolsAllowlist(selection: EngineToolSelection): string[] | undefined {
-  return selection.profileName === FULL_PROFILE_NAME ? undefined : selection.selected;
+  if (selection.profileName === FULL_PROFILE_NAME && !selection.budgetNarrowed) return undefined;
+  return selection.selected;
 }
 
 /**
@@ -154,7 +168,7 @@ export function codexDynamicToolsForProfile<T extends { name?: unknown }>(
   tools: readonly T[],
   selection: EngineToolSelection,
 ): T[] {
-  if (selection.profileName === FULL_PROFILE_NAME) return [...tools];
+  if (selection.profileName === FULL_PROFILE_NAME && !selection.budgetNarrowed) return [...tools];
   const keep = new Set(selection.selected);
   return tools.filter((t) => typeof t.name === "string" && keep.has(t.name));
 }
@@ -176,7 +190,7 @@ export function claudeToolSelectionOptions(
   selection: EngineToolSelection,
   opts: { allBuiltin: readonly string[]; allServers: readonly string[] },
 ): { tools: string[] | undefined; mcpServers: string[] } {
-  if (selection.profileName === FULL_PROFILE_NAME) {
+  if (selection.profileName === FULL_PROFILE_NAME && !selection.budgetNarrowed) {
     return { tools: undefined, mcpServers: [...opts.allServers] };
   }
   const builtin = new Set(opts.allBuiltin);

@@ -16,6 +16,8 @@
 interface CodexDelivery {
   /** 最近一次 skills/extraRoots/set 收到的 extraRoots(未收到过则 null)。 */
   extraRoots: string[] | null;
+  /** 【MC-100/101】最近一次 thread/start 或 thread/resume 收到的 dynamicTools 名字列表。 */
+  dynamicToolNames: string[] | null;
   /** 收到的所有 request method(顺序)。 */
   calls: string[];
 }
@@ -23,7 +25,7 @@ interface CodexDelivery {
 function delivery(): CodexDelivery {
   const g = globalThis as unknown as { __codexDelivery?: CodexDelivery };
   if (!g.__codexDelivery) {
-    g.__codexDelivery = { extraRoots: null, calls: [] };
+    g.__codexDelivery = { extraRoots: null, dynamicToolNames: null, calls: [] };
   }
   return g.__codexDelivery;
 }
@@ -32,6 +34,15 @@ interface ServerFrame {
   id: number;
   method: string;
   params: Record<string, unknown>;
+}
+
+/** 从 thread/start 或 thread/resume 的 params 里抽 dynamicTools 的 name 列表(MC-100/101)。 */
+function captureDynamicTools(params?: Record<string, unknown>): void {
+  const tools = params?.["dynamicTools"];
+  if (!Array.isArray(tools)) return;
+  delivery().dynamicToolNames = tools
+    .map((t) => (t && typeof t === "object" ? (t as { name?: unknown }).name : undefined))
+    .filter((n): n is string => typeof n === "string");
 }
 
 export class CodexAppServerClient {
@@ -62,10 +73,12 @@ export class CodexAppServerClient {
     if (method === "initialize") return Promise.resolve({});
     if (method === "thread/resume") {
       this.mainThreadId = "resumed-thread";
+      captureDynamicTools(params);
       return Promise.resolve({ thread: { id: "resumed-thread" } });
     }
     if (method === "thread/start") {
       this.mainThreadId = "smoke-thread";
+      captureDynamicTools(params);
       return Promise.resolve({ thread: { id: "smoke-thread" } });
     }
     if (method === "skills/extraRoots/set") {

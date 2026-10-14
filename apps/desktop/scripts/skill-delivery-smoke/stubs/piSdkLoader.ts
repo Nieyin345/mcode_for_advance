@@ -105,14 +105,19 @@ function makeFakeSession() {
   };
 }
 
-/** 本套件观察 Pi 交付的窗口:最近一次 createAgentSession 收到的 resourceLoader。 */
+/** 本套件观察 Pi 交付的窗口:最近一次 createAgentSession 收到的 resourceLoader、
+ *  以及【MC-100/101】模型可见工具白名单(`tools`)与内置禁用(`excludeTools`)。 */
 interface PiDelivery {
   loader: DefaultResourceLoader | null;
+  /** createAgentSession 收到的 `tools`(undefined = 引擎「启用全部」)。 */
+  tools: unknown;
+  /** createAgentSession 收到的 `excludeTools`。 */
+  excludeTools: unknown;
   calls: number;
 }
 function delivery(): PiDelivery {
   const g = globalThis as unknown as { __piDelivery?: PiDelivery };
-  if (!g.__piDelivery) g.__piDelivery = { loader: null, calls: 0 };
+  if (!g.__piDelivery) g.__piDelivery = { loader: null, tools: undefined, excludeTools: undefined, calls: 0 };
   return g.__piDelivery;
 }
 
@@ -132,10 +137,12 @@ const sdk = {
   },
   DefaultResourceLoader,
   getAgentDir,
-  async createAgentSession(opts: { resourceLoader?: DefaultResourceLoader }) {
+  async createAgentSession(opts: { resourceLoader?: DefaultResourceLoader; tools?: unknown; excludeTools?: unknown }) {
     const d = delivery();
     d.calls += 1;
     d.loader = opts.resourceLoader ?? null;
+    d.tools = opts.tools;
+    d.excludeTools = opts.excludeTools;
     return { session: makeFakeSession() };
   },
   createReadToolDefinition: () => ({}),

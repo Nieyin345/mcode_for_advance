@@ -82,6 +82,7 @@ interface ClaudeDelivery {
 }
 interface CodexDelivery {
   extraRoots: string[] | null;
+  dynamicToolNames: string[] | null;
   calls: string[];
 }
 interface PiDelivery {
@@ -90,6 +91,8 @@ interface PiDelivery {
         getSkills(): { skills: Array<{ name: string; baseDir?: string }>; diagnostics: unknown[] };
       }
     | null;
+  tools: unknown;
+  excludeTools: unknown;
   calls: number;
 }
 const g = globalThis as unknown as {
@@ -160,7 +163,7 @@ async function claudeDeliveredSkills(cwd: string): Promise<unknown> {
 }
 
 async function codexDeliveredRoots(cwd: string): Promise<string[]> {
-  g.__codexDelivery = { extraRoots: null, calls: [] };
+  g.__codexDelivery = { extraRoots: null, dynamicToolNames: null, calls: [] };
   const { ctx } = makeCtx();
   const provider = new CodexAgentSdkProvider();
   const handle = await provider.startTurn(
@@ -173,7 +176,7 @@ async function codexDeliveredRoots(cwd: string): Promise<string[]> {
 }
 
 async function piDelivered(cwd: string): Promise<Array<{ name: string; baseDir?: string }>> {
-  g.__piDelivery = { loader: null, calls: 0 };
+  g.__piDelivery = { loader: null, tools: undefined, excludeTools: undefined, calls: 0 };
   const { ctx } = makeCtx();
   const provider = new PiAgentSdkProvider();
   const handle = await provider.startTurn(
@@ -184,6 +187,49 @@ async function piDelivered(cwd: string): Promise<Array<{ name: string; baseDir?:
   const loader = g.__piDelivery.loader;
   if (!loader) return [];
   return loader.getSkills().skills.map((s) => ({ name: s.name, baseDir: s.baseDir }));
+}
+
+/* ── MC-100/101:驱动一次带**画像/预算**的真实 startTurn,回引擎真正收到的工具形态 ── */
+type ProfileReq = { toolProfile?: { name: string }; toolBudget?: { maxTools?: number; maxTokens?: number } };
+
+/** Claude:回 `query()` 收到的 options(mcpServers / tools)。 */
+async function claudeDeliveredOptions(cwd: string, profile: ProfileReq["toolProfile"], budget?: ProfileReq["toolBudget"]): Promise<Record<string, unknown>> {
+  g.__claudeDelivery = { skills: undefined, options: null, calls: 0 };
+  const { ctx } = makeCtx();
+  const provider = new ClaudeAgentSdkProvider();
+  const handle = await provider.startTurn(
+    { sessionId: "cl-profile", cwd, prompt: "hi", toolProfile: profile, toolBudget: budget } as never,
+    ctx as never,
+  );
+  await handle.done;
+  return g.__claudeDelivery.options ?? {};
+}
+
+/** Pi:回 `createAgentSession` 收到的 { tools, excludeTools }。 */
+async function piDeliveredTools(cwd: string, profile: ProfileReq["toolProfile"], budget?: ProfileReq["toolBudget"]): Promise<{ tools: unknown; excludeTools: unknown }> {
+  g.__piDelivery = { loader: null, tools: undefined, excludeTools: undefined, calls: 0 };
+  const { ctx } = makeCtx();
+  const provider = new PiAgentSdkProvider();
+  const handle = await provider.startTurn(
+    { sessionId: "pi-profile", cwd, prompt: "hi", toolProfile: profile, toolBudget: budget } as never,
+    ctx as never,
+  );
+  await handle.done;
+  return { tools: g.__piDelivery.tools, excludeTools: g.__piDelivery.excludeTools };
+}
+
+/** Codex:回 `thread/start` 收到的 dynamicTools 名字列表。 */
+async function codexDeliveredToolNames(cwd: string, profile: ProfileReq["toolProfile"], budget?: ProfileReq["toolBudget"]): Promise<string[] | null> {
+  g.__codexDelivery = { extraRoots: null, dynamicToolNames: null, calls: [] };
+  const { ctx } = makeCtx();
+  const provider = new CodexAgentSdkProvider();
+  const handle = await provider.startTurn(
+    { sessionId: "cx-profile", cwd, prompt: "hi", toolProfile: profile, toolBudget: budget } as never,
+    ctx as never,
+  );
+  await handle.done;
+  await new Promise((r) => setTimeout(r, 5));
+  return g.__codexDelivery.dynamicToolNames;
 }
 
 /* ── 夹具:全球库 alpha / beta,项目专有 proj-only,同名 shadow ── */
@@ -324,9 +370,115 @@ try {
     check("★ C6 损坏有备份 → Pi 恢复后 alpha 仍不交付(不复活)", !c6.includes("alpha"), c6);
   }
 
+  /* ═════════════ §E MC-100/101:工具画像在**真实 startTurn** 里真的裁到了 SDK 入参 ═════════════ */
+  // 台账两轮复核反复点名:「发现层/选择层纯函数通过了,但**没证明**各 SDK 在真实请求里照做」。
+  // 这一段驱动真的 provider `startTurn`,断言**引擎真正收到的那份工具集**随画像变化 —— 桩捕获的
+  // 就是 `query({options})` / `createAgentSession({tools})` / `thread/start({dynamicTools})` 的
+  // 真实入参,不是纯函数返回值。
+  console.log("\n§E MC-100/101:画像裁到 SDK 真实入参(Claude options.tools / Pi tools / Codex dynamicTools)");
+  {
+    // 夹具:把矩阵清干净(段 A–C 可能留了受限矩阵),让技能/工具两侧都不受 §A–C 影响。
+    rmSync(matrixFile, { force: true });
+    rmSync(lastGoodEnginesMapPath(matrixFile), { force: true });
+
+    const fullProfile = { name: "full" as const };
+    const minimalProfile = { name: "minimal" as const };
+    const researchProfile = { name: "research" as const };
+
+    // E1 Claude:`options.tools` 与 `options.mcpServers` 随画像收窄,floor 的 app server 恒留。
+    {
+      const full = await claudeDeliveredOptions(projectDir, fullProfile);
+      const min = await claudeDeliveredOptions(projectDir, minimalProfile);
+      const fullServers = (full["mcpServers"] as Record<string, unknown>) ?? {};
+      const minServers = (min["mcpServers"] as Record<string, unknown>) ?? {};
+      check("★ E1 Claude full → 不设 options.tools(保留 SDK 预设,全量)",
+        full["tools"] === undefined, full["tools"]);
+      check("★ E1 Claude minimal → 设了 options.tools(收窄到选中白名单)",
+        Array.isArray(min["tools"]), min["tools"]);
+      check("★ E1 Claude minimal → mcpServers 少于 full(真实裁掉 server)",
+        Object.keys(minServers).length < Object.keys(fullServers).length,
+        { min: Object.keys(minServers), full: Object.keys(fullServers) });
+      check("★ E1 Claude minimal → app server 恒留(floor 发现通道 app_api_* 在它上面)",
+        Object.keys(minServers).includes("mcode-app"), Object.keys(minServers));
+      check("★ E1 Claude minimal → 内置白名单仍含计划模式/提问(harness 平面不被裁)",
+        Array.isArray(min["tools"]) && (min["tools"] as string[]).includes("EnterPlanMode")
+          && (min["tools"] as string[]).includes("AskUserQuestion"), min["tools"]);
+    }
+
+    // E2 Pi:`createAgentSession` 的 `tools` 白名单,full → undefined(引擎启用全部)。
+    {
+      const full = await piDeliveredTools(projectDir, fullProfile);
+      const min = await piDeliveredTools(projectDir, minimalProfile);
+      check("★ E2 Pi full → tools = undefined(引擎自己的『启用全部』语义)",
+        full.tools === undefined, full.tools);
+      check("★ E2 Pi minimal → tools 是数组白名单(真实收窄)",
+        Array.isArray(min.tools), min.tools);
+      check("★ E2 Pi minimal 白名单非空且只含发现通道 floor",
+        Array.isArray(min.tools) && (min.tools as string[]).length > 0
+          && (min.tools as string[]).includes("app_api_call"), min.tools);
+    }
+
+    // E3 Codex:`thread/start` 的 `dynamicTools` 名字集合随画像收窄。
+    {
+      const full = await codexDeliveredToolNames(projectDir, fullProfile);
+      const min = await codexDeliveredToolNames(projectDir, minimalProfile);
+      check("★ E3 Codex full → dynamicTools 非空(全量动态工具)",
+        Array.isArray(full) && full.length > 0, full);
+      check("★ E3 Codex minimal → dynamicTools 少于 full(真实过滤)",
+        Array.isArray(min) && Array.isArray(full) && min.length < full.length,
+        { min: min?.length, full: full?.length });
+    }
+
+    // E4 同一批工具,换**不同**画像 → 引擎收到的集合真的不同(research ≠ minimal,不是两条都一样)。
+    {
+      const min = await claudeDeliveredOptions(projectDir, minimalProfile);
+      const res = await claudeDeliveredOptions(projectDir, researchProfile);
+      const minServers = Object.keys((min["mcpServers"] as Record<string, unknown>) ?? {});
+      const resServers = Object.keys((res["mcpServers"] as Record<string, unknown>) ?? {});
+      check("★ E4 Claude research vs minimal → 交付 server 集合不同(画像真承载信息)",
+        minServers.sort().join(",") !== resServers.sort().join(","),
+        { min: minServers.sort(), research: resServers.sort() });
+      check("★ E4 Claude research → 资料库 server 保留(mcode-library 属 research 桶)",
+        resServers.includes("mcode-library"), resServers);
+    }
+
+    // E5 预算(toolBudget)在画像之后再收一刀:极小 maxTools → Pi 白名单被截到 floor 附近。
+    {
+      const full = await piDeliveredTools(projectDir, fullProfile, { maxTools: 3 });
+      check("★ E5 Pi full+maxTools=3 → 预算把白名单截到 ≤3 且与 full(undefined)不同",
+        Array.isArray(full.tools) && (full.tools as string[]).length <= 3, full.tools);
+    }
+
+    // E6 full 画像 + 预算 → Claude 也必须真收窄(不能因画像=full 就走「全量 server」短路把预算丢掉)。
+    {
+      const fullNoBudget = await claudeDeliveredOptions(projectDir, fullProfile);
+      const fullBudget = await claudeDeliveredOptions(projectDir, fullProfile, { maxTools: 3 });
+      const noBudgetServers = Object.keys((fullNoBudget["mcpServers"] as Record<string, unknown>) ?? {});
+      check("★ E6 Claude full(无预算)→ 不设 options.tools(全量)",
+        fullNoBudget["tools"] === undefined, fullNoBudget["tools"]);
+      check("★ E6 Claude full+maxTools=3 → tools 被设(预算对 full 也生效,不短路)",
+        Array.isArray(fullBudget["tools"]), fullBudget["tools"]);
+      check("★ E6 Claude full+maxTools=3 → 收窄后的 server 少于无预算时",
+        Object.keys((fullBudget["mcpServers"] as Record<string, unknown>) ?? {}).length < noBudgetServers.length,
+        { budgeted: Object.keys((fullBudget["mcpServers"] as Record<string, unknown>) ?? {}), none: noBudgetServers });
+    }
+
+    // E7 full 画像 + 预算 → Codex dynamicTools 同样真收窄。
+    {
+      const fullNoBudget = await codexDeliveredToolNames(projectDir, fullProfile);
+      const fullBudget = await codexDeliveredToolNames(projectDir, fullProfile, { maxTools: 3 });
+      check("★ E7 Codex full(无预算)→ dynamicTools 全量",
+        Array.isArray(fullNoBudget) && fullNoBudget.length > 0, fullNoBudget);
+      check("★ E7 Codex full+maxTools=3 → dynamicTools 被预算收窄(少于无预算)",
+        Array.isArray(fullBudget) && Array.isArray(fullNoBudget) && fullBudget.length < fullNoBudget.length,
+        { budgeted: fullBudget, none: fullNoBudget });
+    }
+  }
+
   /* ═════════════ §D 诚实标注(不冒充已做) ═════════════ */
   console.log("\n§D 边界(仍需活模型验收,不在本套件)");
   check("○ 本套件只证「宿主交给 SDK 的入参」正确;真三二进制读到根后如何扫描/命名/同名谁赢 = U1 活会话验收", true);
+  check("○ MC-100/101 本段证的是「画像/预算真到达 SDK 入参」;真二进制内部是否照此只暴露这些工具(builtin 权威枚举、SKILL 名解析)仍须 U1 活会话验收", true);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
