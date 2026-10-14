@@ -24,18 +24,14 @@ import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { startMobileServer, stopMobileServer, getMobileServer } from "@main/mobile/MobileHttpServer.js";
 import { autoStartMobileTunnel, disposeMobileTunnel } from "@main/mobile/mobileTunnel.js";
 import { initAgentDelegate } from "@main/mcp/delegateHost.js";
-import { setVisionRelayImpl } from "@main/mcp/visionRelayRegistry.js";
 import { describeImage, visionRelayConfigured } from "@main/lib/visionRelay.js";
 import { relayManager } from "@main/relay/RelayManager.js";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
-import { setOperationLedger } from "@main/appControl/operations.js";
-import { assembleGrantStore } from "@main/appControl/grantStoreRuntime.js";
-import { assembleUnattendedPlanStore } from "@main/appServices/unattendedPlanStore.js";
-import { assembleHostHookGrantPersist } from "@main/hooks/hostHookGrantFile.js";
 import { assembleModuleApprovalPort } from "@main/modules/moduleApproval.js";
-import { assembleSceneRuntime } from "@main/orchestration/sceneTaskRuntime.js";
 import { DurableOperationLedger } from "@main/store/operationLedger.js";
+// 启动装配序列(electron-free 的纯函数,见文件头)—— 抽取自本文件原来那段内联装配。
+import { assembleStartup } from "@main/startup/assembleStartup.js";
 import { initUpdater } from "@main/updater.js";
 import { ensureShippedInitializersSeeded } from "@main/projectInit/service.js";
 import { initAutoArchiver } from "@main/session/AutoArchiver.js";
@@ -188,56 +184,26 @@ app.whenReady().then(async () => {
     } catch (err) {
       log.warn(`seed shipped project initializers failed: ${String(err)}`);
     }
-    // **视觉中继**(报告 D10 / Q1)—— 装配期把真实实现登进登记口,`agent_read_image`
-    // 才拿得到它。必须在这里登记:`lib/visionRelay.ts` 要读设置(→ db → electron)与发
-    // SDK query,不能静态 import 进工具表(`mcp/agentTools.ts` 是纯模块,无头套件要引它)。
-    // 没配模型时 `describeImage` 会如实返回「未配置」,能力等于不存在。
-    setVisionRelayImpl({
-      describeImage: describeImage,
-      configured: visionRelayConfigured,
-    });
-    // **操作账本(MC-067 / ARC-009 步②)** —— 启动时装上 sql.js durable 版,让"同一个
-    // operationId 不重复执行"跨进程成立(重启后同一 id 会回放,不再重发)。默认那份是
-    // 进程内内存版(见 appControl/operations.ts);这里换成表 + 唯一约束 + 原子领取的权威版。
-    // 装上之后不回退 —— 静默降级会让"已经持久记账"变成假象。DB 此刻已 ready(在 then 里)。
-    setOperationLedger(DurableOperationLedger);
-    // **计划级授权 GrantStore(ARC-004 步④)** —— 启动时把签发口 + 落盘真装上,统一走
-    // `getGrantStore()` 这个单例读取口(各模块不再各 new 一份)。落点是**独立文件**
-    // `<数据根>/appControl/grants.json`(不参与设置导入导出,理由见 grantStoreFile.ts)。
-    // 装配点是可注入 dataRoot 的纯函数,这里只传真实的 `dataRoot()`。撤销 / 过期随文件
-    // 跨重启生效。装上之后不回退 —— 静默降级会让「授权已持久」变成假象。
-    assembleGrantStore(dataRoot());
-    // **无人值守计划存档(MC-059 残余 ④)** —— 启动时把计划**正文**落盘装上:落点是**独立文件**
-    // `<数据根>/appControl/unattended-plans.json`(与授权同源、不参与设置导入导出,理由见
-    // `unattendedPlanStore.ts` 文件头)。此前计划正文只活在渲染端内存里 —— 进程一关,授权的
-    // sceneId 还在 `grants.json`,但「它对应哪份计划」无从读回,跨重启的「等待批准 / 待执行」
-    // 列表与续跑都无从谈起。装上后签发的计划跨重启读得回、列得出、续得了;撤销 / 过期随授权
-    // 文件生效。装上之后不回退 —— 静默降级会让「计划已持久」变成假象。
-    assembleUnattendedPlanStore(dataRoot());
-    // **主机 hook 授权(HostHookGrant,MC-061)** —— 启动时把落盘真装上:落点是**独立文件**
-    // `<数据根>/hooks/host-hook-grants.json`(不参与设置导入导出,理由见 hostHookGrantFile.ts)。
-    // 装配点只传真实的 `dataRoot()`。此前授权表纯内存,重启即空 —— 用户对某条插件 hook 的授信
-    // 每次开机都得重签(把「默认拒绝」错当「永远拒绝」)。接上后签发 / 撤销都落盘,重启经 load()
-    // 载回,撤销 / 过期随文件跨重启生效。装上之后不回退 —— 静默降级会让「授权已持久」变成假象。
-    assembleHostHookGrantPersist(dataRoot());
-    // **扩展模块 action 能力的审批端口(MC-060)** —— 启动时装上真端口:一个 `action` 能力
-    // **每次执行**前弹一个原生确认框,由用户本人点头/拒绝(见 modules/moduleApproval.ts)。
-    // 端口类型与 fail-closed 空实现留在 modules/service.ts(纯 Node,无头套件会 bundle 它),
-    // 这一层只负责把 Electron 的原生对话框接到那个注入口上。此前生产 host **没注入**审批端口,
-    // action 能力一旦接入会被 fail-closed 拒 —— 装配缺席正是本片要补的那个洞。装上之后不回退。
-    assembleModuleApprovalPort();
-    // **场景任务注册表(ARC-013 步②)** —— 启动时装上,统一走 `getSceneRegistry()` 这个
-    // 单例读取口(各模块不再各 new 一份)。取消走 `cancelSceneTask()` / `sceneCancelReport()`,
-    // 握着不可中断外部动作(git push / SSH)的任务取消时如实报 `uncertain`,绝不谎称已取消。
-    // 此刻是**进程内内存版**(纯逻辑,无持久化);SceneTask 落 DB 与重启恢复是后续切片。
-    assembleSceneRuntime();
-    // 扩展桥的配对令牌持久化到 settings 表 —— 必须跨重启稳定，否则 mcode 每次
-    // 启动都换一个令牌，浏览器里的扩展会静默掉线（用户只会看到"未连接"而不知道
-    // 为什么）。注入点必须在这儿：桥模块本身不能碰 db.ts，那会把 electron 拉进
-    // 无头 smoke（见 extensionBridge.ts 文件头）。
-    configureExtensionBridgeTokenStore({
-      get: () => SettingRepo.get(BRIDGE_TOKEN_SETTING_KEY),
-      set: (value) => SettingRepo.set(BRIDGE_TOKEN_SETTING_KEY, value),
+    // **启动装配序列** —— 这一段(视觉中继 / 操作账本 / 三个落盘 store / 审批端口 /
+    // 场景运行期 / 扩展桥令牌持久化)此前逐条内联在这里。抽成 `assembleStartup()`
+    // (electron-free 的纯函数)是为了让它**可被无头 smoke 断言**:`index.ts` 顶层就
+    // import electron,改这里没有任何回归网。顺序即语义、失败即中止(逐字保留原行为),
+    // 细节与理由见 `startup/assembleStartup.ts` 文件头。
+    //
+    // 两处 electron 相关装配(原生审批框 / 令牌落盘)经 deps **注入**真实现 —— 它们本身
+    // 碰 electron / db,不能静态 import 进那个无头模块;此处只把真实现传进去。
+    assembleStartup({
+      dataRoot: dataRoot(),
+      operationLedger: DurableOperationLedger,
+      // `lib/visionRelay.ts` 读设置(→ db → electron)与发 SDK query,不能静态 import 进
+      // 工具表(纯模块);这里把真实实现登进登记口,`agent_read_image` 才拿得到它。
+      visionRelay: { describeImage, configured: visionRelayConfigured },
+      assembleModuleApprovalPort,
+      configureExtensionBridgeTokenStore,
+      bridgeTokenStore: {
+        get: () => SettingRepo.get(BRIDGE_TOKEN_SETTING_KEY),
+        set: (value) => SettingRepo.set(BRIDGE_TOKEN_SETTING_KEY, value),
+      },
     });
     // 网页版模型的工具通路:扩展从同一个服务的 `/mcp` 进来,拿 mcode 的工具表。
     // 工具表和进程内那两个 server 是同一份,审批闸门也是同一个(见 webToolHost.ts
