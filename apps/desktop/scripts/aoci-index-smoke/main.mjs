@@ -58,6 +58,10 @@ const DIR_RE = /^===(.+?)===$/;
 const ENTRY_RE = /^(\S+)\[([A-Z0-9]{1,6})\]:/;
 // 关系引用路径可含中文(如 docs/Mcode-公众号风介绍.md);以 `,`/空白/`|` 为界。
 const REF_RE = /code:([^\s,|]+)/g;
+// `code:` 关系引用**只出现在 R 字段**。F/A/S 是自由文本,里面可能有形如 `{ok:false,code:conflict}`
+// 或「每条code:关系引用不悬空」这样的字面,那不是引用 —— 只扫 R 段,避免把散文里的 `code:`
+// 当成悬空引用报假红。
+const R_SEGMENT_RE = /\|\s*R:(.*?)(?:\s*\|\s*[FAS]:|$)/s;
 
 let curDir = null; // 归一化后的目录段绝对路径
 const entries = []; // { name, dirKey, lineNo }
@@ -77,10 +81,14 @@ for (let i = 0; i < lines.length; i++) {
   if (em && curDir !== null) {
     entries.push({ name: em[1], dirKey: curDir, lineNo });
   }
-  let rm;
-  REF_RE.lastIndex = 0;
-  while ((rm = REF_RE.exec(ln)) !== null) {
-    refs.push({ ref: rm[1], lineNo });
+  // 只在 R 段里找 `code:` 引用(F/A/S 的自由文本可能含形如 `code:conflict` 的字面)。
+  const rSeg = R_SEGMENT_RE.exec(ln);
+  if (rSeg) {
+    let rm;
+    REF_RE.lastIndex = 0;
+    while ((rm = REF_RE.exec(rSeg[1])) !== null) {
+      refs.push({ ref: rm[1], lineNo });
+    }
   }
 }
 

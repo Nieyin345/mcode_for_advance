@@ -77,9 +77,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c505d3124fa20c8143148e3d4a90c6378a8d3d265802aaa3678a3a3e4153d337",
-      "size": 1101654,
-      "normalized_sha256": "c505d3124fa20c8143148e3d4a90c6378a8d3d265802aaa3678a3a3e4153d337"
+      "sha256": "5b0143cc0e2641d63b66e8e6ea26b8022fec816072ab761a32f121ca200aae6d",
+      "size": 1101960,
+      "normalized_sha256": "5b0143cc0e2641d63b66e8e6ea26b8022fec816072ab761a32f121ca200aae6d"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -227,9 +227,9 @@
     },
     "apps/desktop/scripts/aoci-index-smoke/main.mjs": {
       "role": "index",
-      "sha256": "f7c0ebdec9f13b9701af5a24da1c0bb3918326a1e194ea787b6283df6fb45558",
-      "size": 6607,
-      "normalized_sha256": "f7c0ebdec9f13b9701af5a24da1c0bb3918326a1e194ea787b6283df6fb45558"
+      "sha256": "f7f44caa4e7577b515c1f80379f5b3e12f77ede0dd3690d9fa2efd6677daff33",
+      "size": 7124,
+      "normalized_sha256": "f7f44caa4e7577b515c1f80379f5b3e12f77ede0dd3690d9fa2efd6677daff33"
     },
     "apps/desktop/scripts/aoci-index-smoke/run.sh": {
       "role": "index",
