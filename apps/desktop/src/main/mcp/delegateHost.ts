@@ -67,6 +67,13 @@ async function ensureDelegateSession(callerSessionId: string | null): Promise<{ 
   // 而界面上显示的沙箱是新那个,这种错位查起来很要命。
   if (existing && existing.projectId === projectId) {
     runtimeManager.bindSession(existing);
+    // ⚠️ **复用也要把审批模式重新钉回 bypass**(与 `publicMcpSession.ensureSyntheticSession`
+    // / `ensureLinkSession` 一字不差的规矩)。这条会话的免审批是功能的定义,不是可调偏好
+    // (见上面 permissionMode 那段)。只在**建**的时候钉一次的话,用户在界面上把这条会话
+    // 改成 `dontAsk`/`default` 之后,下一次委派就会静默被拒或弹卡挂死 —— 而外面那条 AI
+    // 只看得到 `running`,文件头承诺的"无人值守也跑得动"就漏了。`bindSession` 是幂等的
+    // (已存在就早退),它给 `canUseTool` 播的种取自**落盘的那行**,所以这里必须补这一钉。
+    runtimeManager.setPermissionMode(existing.id, "bypassPermissions");
     return { sessionId: existing.id, cwd: project.path };
   }
 
