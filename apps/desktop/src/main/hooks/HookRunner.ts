@@ -50,7 +50,7 @@ import { HookRunRepo, ProjectRepo, SessionRepo, type HookRunRow } from "@main/st
 import { log } from "@main/lib/logger.js";
 import { uid } from "@main/utils.js";
 import { createEventSubjects } from "./eventSubjects.js";
-import { decidePluginHookExecution } from "./hostHookGrants.js";
+import { decidePluginHookExecution, recordHostHookRun } from "./hostHookGrants.js";
 import type { HostHookSource } from "@contracts/hostHookGrant";
 import { pluginHookSpecsFrom, type EnabledPluginHookDeclaration, type PluginHookSpecEntry } from "./pluginHooks.js";
 import { runHookCommand } from "./runCommand.js";
@@ -82,10 +82,16 @@ export interface DeliveryCounts {
    *  在拿到有效 HostHookGrant 之前**一律不跑**,而那件事必须**数得出来** —— 否则"我的插件
    *  钩子为什么不响"只能从会被顶掉的 50 条环里猜(见 {@link DeliveryCounts} 的整体理由)。 */
   denied: number;
+  /**
+   * 【MC-061 执行预算】插件 hook 因**授权执行次数用尽**(`usedRuns >= maxRuns`)没有执行的
+   * 次数。与 `denied` **分开数**:「没授过信」和「授过、用完了」是两件不同的事实,混成一个
+   * 数会把用户往"我明明点过授权"那个方向带偏(面板据此说"次数已用尽,需重新授权")。
+   */
+  budgetExhausted: number;
 }
 
 function emptyCounts(): DeliveryCounts {
-  return { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0, retried: 0, denied: 0 };
+  return { accepted: 0, dropped: 0, coalesced: 0, unsupported: 0, retried: 0, denied: 0, budgetExhausted: 0 };
 }
 
 /**
@@ -288,7 +294,7 @@ class HookRunner {
     const authoredHits = authored.filter((spec) => matchesHook(spec, event, subjects));
     // 【MC-061】插件候选:先按事件/主语匹配,**再逐条走授权判定** —— 判定的唯一落点。
     // 不 `granted` 的**明确记一条 skipped(带原因)+ denied 计数**,不静默丢掉(仓库硬规矩 3)。
-    const pluginHits: Array<{ spec: HookSpec; source: HostHookSource; allowed: boolean; reason: string }> = [];
+    const pluginHits: Array<{ spec: HookSpec; source: HostHookSource; allowed: boolean; reason: string; exhausted: boolean }> = [];
     for (const entry of this.pluginEntriesNow(cwd)) {
       if (!matchesHook(entry.spec, event, subjects)) continue;
       const decision = decidePluginHookExecution(entry.source, event, Date.now());
@@ -297,8 +303,15 @@ class HookRunner {
       this.pluginSources.set(entry.spec.id, entry.source);
       pluginHits.push(
         decision.decide === "allowed"
-          ? { spec: entry.spec, source: entry.source, allowed: true, reason: "" }
-          : { spec: entry.spec, source: entry.source, allowed: false, reason: decision.reason },
+          ? { spec: entry.spec, source: entry.source, allowed: true, reason: "", exhausted: false }
+          : {
+              spec: entry.spec,
+              source: entry.source,
+              allowed: false,
+              reason: decision.reason,
+              // 【MC-061 执行预算】「用尽」与「未授信」分开记(见 DeliveryCounts.budgetExhausted)。
+              exhausted: decision.decide === "exhausted",
+            },
       );
     }
     if (authoredHits.length === 0 && pluginHits.length === 0) return;
@@ -312,12 +325,12 @@ class HookRunner {
       data: e,
     };
 
-    // 【MC-061】被授权挡下的插件 hook:**记 skipped + denied 计数**。这是"我的插件钩子
-    // 为什么不响"的**唯一**可数出口(环只留 50 条、会被顶掉)。
+    // 【MC-061】被授权挡下的插件 hook:**记 skipped + denied/budgetExhausted 计数**。这是
+    // "我的插件钩子为什么不响"的**唯一**可数出口(环只留 50 条、会被顶掉)。
     for (const hit of pluginHits) {
       if (hit.allowed) continue;
       this.pushRun(hit.spec, payload, "skipped", hit.reason);
-      this.bumpCount(hit.spec.id, "denied");
+      this.bumpCount(hit.spec.id, hit.exhausted ? "budgetExhausted" : "denied");
     }
 
     const toRun = [...authoredHits, ...pluginHits.filter((h) => h.allowed).map((h) => h.spec)];
@@ -415,7 +428,8 @@ class HookRunner {
       const decision = decidePluginHookExecution(pluginSource, spec.event, now);
       if (decision.decide !== "allowed") {
         this.pushRun(spec, payload, "skipped", decision.reason);
-        this.bumpCount(spec.id, "denied");
+        // 【MC-061 执行预算】用尽与未授信分开数(见 DeliveryCounts.budgetExhausted)。
+        this.bumpCount(spec.id, decision.decide === "exhausted" ? "budgetExhausted" : "denied");
         log.info(`[hooks] 「${spec.name}」起进程前复验未通过,不执行:${decision.reason}`);
         return;
       }
@@ -464,7 +478,20 @@ class HookRunner {
       let attempts = 0;
       for (;;) {
         attempts += 1;
-        // 每一次真起进程都算一次 accepted(重试也是真起了一个进程)。
+        // 【MC-061 执行预算】插件 hook 的**真执行**逐次记账 —— 该来源那份授权 `usedRuns` +1,
+        // 用尽后下一条事件判 `exhausted`(见 `recordHostHookRun` / `decideHostHookExecution`)。
+        // 只在**起进程前**那一刻记(与上面的复验同一个时间点):判定放行 → 记一笔 → 起进程。
+        // 记账找不到可用授权时**不记**(`false`)—— 少记一笔只会让预算更保守,绝不反向放宽。
+        if (pluginSource !== undefined && !recordHostHookRun(pluginSource, Date.now())) {
+          // 走到这儿说明复验放行、但记账瞬间那份授权已不覆盖/仍无余额 —— 极窄的竞态窗口。
+          // 不静默起进程:记一条带原因的 skipped,让"为什么没跑"在环里看得到(不变量 3)。
+          this.pushRun(spec, payload, "skipped", "执行次数预算已用尽,未起进程");
+          this.bumpCount(spec.id, "budgetExhausted");
+          log.info(`[hooks] 「${spec.name}」记账时已无可用授权(预算用尽 / 撤权),不执行`);
+          break;
+        }
+        // 每一次真起进程都算一次 accepted(重试也是真起了一个进程)。放在记账之后:accepted
+        // 的口径是"真的起了进程",而预算用尽那次**没起**进程。
         this.bumpCount(spec.id, "accepted");
         const record = this.pushRun(spec, payload, "running");
         const result = await runHookCommand(effective, payload);

@@ -922,6 +922,50 @@ export interface HookRun {
 }
 
 /**
+ * 【MC-061 审计读取】`hook_runs` 表的一行 —— 一条**插件 hook 的持久执行事实**,可跨重启回读。
+ *
+ * ## 与 {@link HookRun} 的区别
+ *
+ * `HookRun` 是**内存里那 50 条环**(`HookRunner.RUN_RING`)的一条:用户手写的钩子也进那个环,
+ * 但它会被新记录顶掉、进程一重启就没。`HookAuditEntry` 是**落盘审计**:只有**插件 hook**
+ * (带来源身份、经授权执行)落这张表,它是"这份来源的这条钩子跑没跑、哪份授权放行的、被撤权 /
+ * 预算用尽挡下几次"的合规账本。两者语义不同,故不合并成一个类型 —— 一个是排错窗口,一个是
+ * 审计事实。
+ *
+ * ## 为什么没有 stdout / stderr
+ *
+ * 审计要的是「跑没跑、为什么」,不是完整输出(见 `HookRunRow` 的文件头)。输出上限那么大,
+ * 逐条留着是写放大换不到审计价值。
+ *
+ * 字段与主进程 `store/repositories.ts` 的 `HookRunRow` **逐一对应**(结构兼容,直接透传即可)。
+ */
+export interface HookAuditEntry {
+  runId: string;
+  hookId: string;
+  /** 贡献这条 hook 的插件名(`HostHookSource.pluginId`)。 */
+  pluginId: string;
+  /** 插件版本;未声明为 null。 */
+  pluginVersion: string | null;
+  /** 原生事件名(如 `PreToolUse`)。 */
+  nativeEvent: string;
+  /** 命令内容摘要(改命令 = 新来源,旧授权作废)。 */
+  commandDigest: string;
+  /** matcher 摘要;未声明 matcher 为 null。 */
+  matcherDigest: string | null;
+  /** 统一 HookEvent(映射后的)。 */
+  event: string;
+  sessionId: string;
+  sessionKind: string;
+  /** running | ok | failed | timeout | skipped。 */
+  status: string;
+  exitCode: number | null;
+  durationMs: number | null;
+  /** 跳过 / 失败的**原因**(含授权拒绝 / 预算用尽的理由)。 */
+  error: string | null;
+  startedAt: number;
+}
+
+/**
  * 【MC-061】Claude 原生 hook 事件名 → Mcode 统一 {@link HookEvent}。
  *
  * 插件里带的是 Claude 的 hooks.json 事件名(`PreToolUse` / `PostToolUse` / `Stop` / …)。

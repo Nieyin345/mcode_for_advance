@@ -1550,6 +1550,8 @@ export const en = {
 
   "settings.hooks.runsTitle": "Runs since launch",
   "settings.hooks.runsEmpty": "Nothing has run since launch (run history is kept in memory and cleared on restart).",
+  "settings.hooks.auditTitle": "Plugin audit log",
+  "settings.hooks.auditEmpty": "No plugin hooks have run yet (this lists only hooks shipped by plugins, kept across restarts).",
   "settings.hooks.sessionNode": "node",
   "settings.hooks.runStatus.ok": "ok",
   "settings.hooks.runStatus.failed": "failed",

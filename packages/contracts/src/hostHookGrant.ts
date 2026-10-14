@@ -25,7 +25,12 @@
  * 形状对齐 ARC-004 的 `Grant`(有 `expiresAt` / `revoked` / 按来源绑定),但**不共用一份
  * 实现**:PolicyEngine 的 Grant 面向 `app_api_call` 的资源动作,这里的来源身份是
  * `(pluginId, version, commandDigest)`。两处各自解释清楚的代价,比强行合并成一个万能授权小。
+ *
+ * ⚠️ 唯一**共用**的是「次数预算用尽没有」那一条判据(`countBudgetExhausted`)—— 它不是"万能
+ * 授权模型",只是一句 `used >= limit`:两处各写一遍,分家的表现是"某一路上限悄悄多/少一次"，
+ * 只在计数里看得出。其余(来源身份、有效期、撤销)两处各管各的。
  */
+import { countBudgetExhausted } from "./policyEngine.js";
 
 /** 一条插件 hook 的**来源身份** —— 授权绑定的是它,不是"某条命令文本"。 */
 export interface HostHookSource {
@@ -70,6 +75,22 @@ export interface HostHookGrant {
   expiresAt: number;
   /** 撤销标记;true 即视为无效(与过期同一条纪律)。 */
   revoked: boolean;
+  /**
+   * 【MC-061 执行预算】**这条授权最多允许真执行多少次**。缺省 = 不限(旧授权语义不变)。
+   *
+   * 它是「批了几次就只能是几次」这条纪律在**主机 hook 授权**上的落点 —— 与 ARC-004 计划级
+   * 授权的 `Grant.maxCount` 是**同一类**约束(判据共用唯一一份 `countBudgetExhausted`,见
+   * `@contracts/policyEngine`)。一条插件 hook 挂在 `tool.use` 上时一轮能触发几十次;没有上限
+   * 就等于把「一次授信」读成了「永久无限执行」。用尽后该来源回到**默认拒绝**,需重新授权
+   * (重签得一份新的、账从 0 起 —— 见 `issueHostHookGrant` 的复用判据)。
+   */
+  maxRuns?: number;
+  /**
+   * 【MC-061 执行预算】**已经真执行了多少次**(宿主每真起一次进程记一笔,见
+   * `recordHostHookRun`)。只在 `maxRuns` 声明时累加(没有上限的授权不必记,免得一个恒增的
+   * 死字段 —— 与 `Grant.recordUse` 只对 `maxBudget` 累加同一条纪律)。缺省 = 0(还没用过)。
+   */
+  usedRuns?: number;
 }
 
 /** 一份授权此刻是否有效(未撤销 **且** 未过期;`now < expiresAt`)。 */
@@ -77,11 +98,39 @@ export function isHostHookGrantActive(grant: HostHookGrant, now: number): boolea
   return !grant.revoked && now < grant.expiresAt;
 }
 
-/** 一次判定 —— 三条互斥的结论,各自是一种**确定的事实**。 */
+/**
+ * 【MC-061 复审】这份授权**覆盖**这条来源吗(不含时间 / 撤销判定)—— 匹配判据的**唯一一份**。
+ *
+ * 与 {@link isHostHookGrantActive} 拆开,是因为**读表的一方不止一处**:判定(`decideHostHookExecution`)
+ * 与记账(`recordHostHookRun` 找要累加的那份授权)必须按**同一把尺子**认「这条来源归哪份授权」。
+ * 各写一遍匹配条件的话,迟早出现「判定按 A 放行、记账记到 B 上」—— 而那种错只会让预算在某条
+ * 授权上悄悄不承重,不报错。
+ */
+export function hostHookGrantCovers(grant: HostHookGrant, source: HostHookSource): boolean {
+  return (
+    grant.pluginId === source.pluginId &&
+    (grant.version === undefined || grant.version === source.version) &&
+    (grant.events.length === 0 || grant.events.includes(source.nativeEvent)) &&
+    (grant.commandDigest === "" || grant.commandDigest === source.commandDigest) &&
+    // 【MC-061 复审】matcher 摘要也参与匹配:授权绑定了 matcher(非空)时,来源的 matcher
+    // 摘要必须一致 —— 放宽 matcher(管得着的范围变大)= 来源变了,旧授权不再覆盖。
+    ((grant.matcherDigest ?? "") === "" || (grant.matcherDigest ?? "") === (source.matcherDigest ?? ""))
+  );
+}
+
+/** 一次判定 —— 四条互斥的结论,各自是一种**确定的事实**。 */
 export type HostHookDecision =
   | { decide: "allowed"; grantId: string }
   | { decide: "denied"; reason: string }
-  | { decide: "unmappable"; reason: string };
+  | { decide: "unmappable"; reason: string }
+  /**
+   * 【MC-061 执行预算】有有效授权,但它的**执行次数预算已用尽**(`usedRuns >= maxRuns`)。
+   *
+   * 与 `denied` 分开,是因为这是**另一种确定的事实**:不是"没授过信",而是"授过、用完了"。
+   * 面板据此说「本次授权的执行次数已用尽,需要重新授权」而不是「未授信」—— 后者会把用户
+   * 往"我明明点过授权"那个方向带偏。与 `denied` 一样**不执行**(用尽即停,不静默重试)。
+   */
+  | { decide: "exhausted"; reason: string };
 
 /**
  * **这条插件 hook 此刻准不准跑** —— 纯函数,授权判定的唯一落点。
@@ -98,18 +147,9 @@ export function decideHostHookExecution(
   now: number,
 ): HostHookDecision {
   // 匹配的授权:同一插件 + (同版本或授权不限版本)+ (事件为空集或含该事件)
-  // + (摘要为空或与来源一致),且此刻仍有效。
-  const matches = grants.filter(
-    (g) =>
-      isHostHookGrantActive(g, now) &&
-      g.pluginId === source.pluginId &&
-      (g.version === undefined || g.version === source.version) &&
-      (g.events.length === 0 || g.events.includes(source.nativeEvent)) &&
-      (g.commandDigest === "" || g.commandDigest === source.commandDigest) &&
-      // 【MC-061 复审】matcher 摘要也参与匹配:授权绑定了 matcher(非空)时,来源的 matcher
-      // 摘要必须一致 —— 放宽 matcher(管得着的范围变大)= 来源变了,旧授权不再覆盖。
-      ((g.matcherDigest ?? "") === "" || (g.matcherDigest ?? "") === (source.matcherDigest ?? "")),
-  );
+  // + (摘要为空或与来源一致),且此刻仍有效(未撤销、未过期)。覆盖判据走**唯一一份**
+  // `hostHookGrantCovers`(记账也用同一把尺子,见它的注释)。
+  const matches = grants.filter((g) => isHostHookGrantActive(g, now) && hostHookGrantCovers(g, source));
   if (matches.length === 0) {
     // **默认拒绝** —— 没有有效授权就不跑。这条分支必须在最前面:它是安全默认。
     return {
@@ -124,6 +164,18 @@ export function decideHostHookExecution(
       reason: `插件 ${source.pluginId} 的 hook 事件「${source.nativeEvent}」映射不到 Mcode 的统一事件,无法投递。`,
     };
   }
-  // 命中:取第一份匹配的(有效者按传入顺序)。grantId 供审计/日志用。
-  return { decide: "allowed", grantId: matches[0].grantId };
+  // 【MC-061 执行预算】在**覆盖本条来源的有效授权**里,找一份预算**还有余额**的。
+  // 判据走**唯一一份** `countBudgetExhausted`(与 ARC-004 的 `Grant.maxCount` 共用,见
+  // `@contracts/policyEngine`)—— 「批了几次就只能是几次」只有一份实现。
+  const usable = matches.find((g) => !countBudgetExhausted(g.maxRuns, g.usedRuns));
+  if (usable === undefined) {
+    // 每一份覆盖来源的有效授权都用尽了 → 明确报"用尽",不是"未授信"(两者事实不同)。
+    const g = matches[0];
+    return {
+      decide: "exhausted",
+      reason: `插件 ${source.pluginId} 的 hook(${source.nativeEvent})的执行次数已用尽(${g.usedRuns ?? 0} / ${g.maxRuns ?? 0}),需要重新授权。`,
+    };
+  }
+  // 命中:取第一份**有效且仍有余额**的。grantId 供审计/日志用。
+  return { decide: "allowed", grantId: usable.grantId };
 }

@@ -26,11 +26,13 @@
 import { createHash } from "node:crypto";
 import {
   decideHostHookExecution,
+  hostHookGrantCovers,
   isHostHookGrantActive,
   type HostHookDecision,
   type HostHookGrant,
   type HostHookSource,
 } from "@contracts/hostHookGrant";
+import { countBudgetExhausted } from "@contracts/policyEngine";
 
 /**
  * 命令内容的**稳定摘要** —— 授权按它绑定(见 `HostHookSource.commandDigest`):命令被改过,
@@ -169,10 +171,15 @@ function grantIdempotencyKey(input: {
  * **签发**一份授权。**只有宿主经用户授信时调它** —— 插件自己不能给自己发(本函数不暴露给
  * 插件 manifest 的任何入口)。`ttlMs` 必须为正(与 ARC-004 的 `issueGrant` 同一条纪律)。
  *
- * **持久幂等**:来源身份与事件集合相同、且**当前仍有效**的授权已存在时,**复用那一份**
- * (返回它、不新建、不续期)。于是"点两次授权"不会在表里留下两条覆盖同一来源的有效授权 ——
- * 撤一次就真的撤干净(见 {@link grantIdempotencyKey})。已撤销 / 已过期的那份**不算数**:
- * 重新授权是**一份新的有效授权**,不是把旧的复活。
+ * **持久幂等**:来源身份与事件集合相同、且**当前仍有效、预算未用尽**的授权已存在时,**复用
+ * 那一份**(返回它、不新建、不续期)。于是"点两次授权"不会在表里留下两条覆盖同一来源的有效
+ * 授权 —— 撤一次就真的撤干净(见 {@link grantIdempotencyKey})。已撤销 / 已过期 / **已用尽
+ * 执行预算**的那份**不算数**:重新授权是**一份新的有效授权**(账从 `usedRuns = 0` 起),不是
+ * 把旧的复活。⚠️ 「已用尽的不复用」是必须的一条:否则用户在预算用尽后点的那一下会**复用到
+ * 那份已用尽的授权**上,于是「重新授权」永远救不回来 —— 表现是按钮点了、hook 还是不跑。
+ *
+ * `maxRuns` 省略 = **不限次数**(旧调用方 / 测试的语义不变);声明了就是「这批最多跑几次」,
+ * 由 `recordHostHookRun` 逐次记账,用尽即 `exhausted`(见 `decideHostHookExecution`)。
  */
 export function issueHostHookGrant(input: {
   pluginId: string;
@@ -180,11 +187,15 @@ export function issueHostHookGrant(input: {
   events?: string[];
   commandDigest?: string;
   matcherDigest?: string;
+  maxRuns?: number;
   ttlMs: number;
   now: number;
 }): HostHookGrant {
   if (!(input.ttlMs > 0)) {
     throw new Error("主机 hook 授权必须有正的有效期(ttlMs > 0)。");
+  }
+  if (input.maxRuns !== undefined && (!Number.isInteger(input.maxRuns) || input.maxRuns < 0)) {
+    throw new Error("主机 hook 授权的执行次数上限必须是非负整数(maxRuns >= 0)。");
   }
   const commandDigest = input.commandDigest ?? "";
   const matcherDigest = input.matcherDigest ?? "";
@@ -195,9 +206,11 @@ export function issueHostHookGrant(input: {
     commandDigest,
     matcherDigest,
   });
-  // 已有**有效**的同来源授权 → 复用它(幂等):不新建第二条覆盖同一来源的活授权。
+  // 已有**有效且预算未用尽**的同来源授权 → 复用它(幂等):不新建第二条覆盖同一来源的活授权。
+  // ⚠️ 已用尽的**不复用**(否则"重新授权"救不回那份 maxRuns 用完的授权,见函数头)。
   for (const g of grants.values()) {
     if (!isHostHookGrantActive(g, input.now)) continue;
+    if (countBudgetExhausted(g.maxRuns, g.usedRuns)) continue;
     const same = grantIdempotencyKey({
       pluginId: g.pluginId,
       version: g.version,
@@ -218,10 +231,53 @@ export function issueHostHookGrant(input: {
     issuedAt: input.now,
     expiresAt: input.now + input.ttlMs,
     revoked: false,
+    // 只在声明了上限时才带 `usedRuns`(没有上限的授权不必记一个恒增的死字段 —— 与
+    // `Grant.recordUse` 只对 `maxBudget` 累加同一条纪律)。
+    ...(input.maxRuns !== undefined ? { maxRuns: input.maxRuns, usedRuns: 0 } : {}),
   };
   grants.set(grant.grantId, grant);
   flush();
   return grant;
+}
+
+/**
+ * **记一次真执行**,并回答「这次能不能起进程」。一条插件 hook 在授权下**真的起了进程**之前
+ * 调它:找到该来源那份(仍在用、未用尽)的授权,`usedRuns` +1。契约是「批了几次就只能是几次」
+ * 在主机 hook 授权上的落点:没有这个口,`maxRuns` 就是**只声明不兑现**的死字段(每次判定都读到
+ * 0,可以无限次执行 —— 与 ARC-004 的 `Grant.recordUse` 要堵的是同一个洞,判据也共用
+ * `countBudgetExhausted`)。
+ *
+ * ## 返回值 = 这份来源此刻还有可用授权吗(调用方据此决定起不起进程)
+ *
+ *  - 找到**覆盖该来源、仍有效、未用尽**的授权 → `true`。其中:
+ *    - 它声明了 `maxRuns` → `usedRuns` +1(真记账,下次判定据此判 `exhausted`);
+ *    - 它**没有** `maxRuns`(**不限次数**)→ 不记账(那是恒增的死字段),但照样 `true`
+ *      —— 「不限」的意思是**永远可用**,不是"没有余额"。
+ *  - 找不到→ `false`(该来源已被撤权 / 过期 / 预算用尽)。这不是错误:调用方真正起进程前
+ *    会**复验**授权,这一步是那道复验在**记账时刻**的继续 —— 少记一笔只会让预算更保守,
+ *    绝不反向放宽。调用方按 `false` **不起进程**、并记一条带原因的 skipped。
+ *
+ * ## 匹配判据只有一份
+ *
+ * 只对**覆盖该来源**的那一份记(走**唯一一份** `hostHookGrantCovers` —— 与判定同一把尺子,
+ * 免得"判定按 A 放行、记账记到 B 上")。有多份覆盖且都有余额时,记在**判定会选中的那一份**
+ * (与 `decideHostHookExecution` 相同的"第一份有效且未用尽"顺序)。
+ *
+ * 记账失败**绝不抛**:它是旁路,坏了不该冒到事件流(见 `HookRunner` 不变量 1)。
+ */
+export function recordHostHookRun(source: HostHookSource, now: number): boolean {
+  for (const g of grants.values()) {
+    if (!isHostHookGrantActive(g, now)) continue;
+    if (!hostHookGrantCovers(g, source)) continue;
+    if (countBudgetExhausted(g.maxRuns, g.usedRuns)) continue; // 这一份用尽了,再看下一份
+    // 声明了上限才记账;不限次数的授权不必记一个恒增的死字段(见 `HostHookGrant.usedRuns`)。
+    if (g.maxRuns !== undefined) {
+      g.usedRuns = (g.usedRuns ?? 0) + 1;
+      flush();
+    }
+    return true;
+  }
+  return false;
 }
 
 /** 撤销一份授权(幂等)。返回 true 表示这次真的从"有效"翻成"已撤销"。 */

@@ -1203,6 +1203,68 @@ eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user ma
   }
 }
 
+/* ── 【MC-061 执行预算】授权带**次数上限**:批了几次就只能是几次,用尽即 `exhausted` ──
+ *
+ * 台账点名的「(cancellation budget) for host hook execution」在 hook 语境里**就是**这条:
+ * 一条挂在 `tool.use` 上的插件 hook 一轮能触发几十次,`ttlMs` 只限时间**不限次数** —— 没有
+ * 次数上限,"一次授信"就等于"24 小时内无限次执行不受信命令"。这与 ARC-004 计划级授权的
+ * `Grant.maxCount` 是**同一类**约束,判据共用唯一一份 `countBudgetExhausted`。 */
+{
+  const { decideHostHookExecution: decideB } = await import("@contracts/hostHookGrant");
+  const { countBudgetExhausted } = await import("@contracts/policyEngine");
+  const {
+    issueHostHookGrant: issueB,
+    recordHostHookRun,
+    resetHostHookGrants: resetB,
+    listHostHookGrants: listB,
+  } = await import("../../src/main/hooks/hostHookGrants.js");
+  const srcB = { pluginId: "budget-plugin", version: "1.0.0", commandDigest: "sha:b", nativeEvent: "PreToolUse" };
+  const NOW = 5_000_000;
+
+  // 判据只有一份(与 `Grant.maxCount` 共用):`undefined` = 不限,用尽;`0` = 一次都不许。
+  eq(countBudgetExhausted(undefined, 99), false, "MC-061:未声明上限 = 不限,永不用尽");
+  eq(countBudgetExhausted(3, undefined), false, "MC-061:上限 3、没用过 → 未用尽");
+  eq(countBudgetExhausted(3, 2), false, "MC-061:上限 3、用 2 → 未用尽");
+  eq(countBudgetExhausted(3, 3), true, "MC-061:上限 3、用满 3 → 用尽(>= 即用尽)");
+  eq(countBudgetExhausted(0, undefined), true, "MC-061:声明 0 → 立即用尽(一次都不许)");
+
+  // 声明 maxRuns=2:前两次 allowed、用尽后第 3 次 `exhausted`(不是 denied —— 事实不同)。
+  resetB();
+  const gB = issueB({ pluginId: "budget-plugin", version: "1.0.0", commandDigest: "sha:b", maxRuns: 2, ttlMs: 600_000, now: NOW });
+  eq(gB.maxRuns, 2, "MC-061:签发带下次数上限");
+  eq(gB.usedRuns, 0, "MC-061:新授权的账从 0 起");
+  eq(decideB(srcB, "tool.use", listB(), NOW).decide, "allowed", "MC-061:有余额 → allowed(第 1 次)");
+  eq(recordHostHookRun(srcB, NOW), true, "MC-061:真执行记一笔 → 返回 true(仍可用)");
+  eq(listB()[0].usedRuns, 1, "MC-061:记账后 usedRuns = 1");
+  eq(decideB(srcB, "tool.use", listB(), NOW).decide, "allowed", "MC-061:用 1 / 上限 2 → 仍 allowed(第 2 次)");
+  eq(recordHostHookRun(srcB, NOW), true, "MC-061:第 2 次执行仍记账成功");
+  eq(decideB(srcB, "tool.use", listB(), NOW).decide, "exhausted", "★ MC-061:用满 2 次 → exhausted(不是 denied)");
+  // 用尽后**不再执行**:记账返回 false(调用方据此不起进程)。
+  eq(recordHostHookRun(srcB, NOW), false, "★ MC-061:用尽后记账返回 false(不再起进程)");
+  eq(listB()[0].usedRuns, 2, "MC-061:用尽后再记账不越界(仍停在 2)");
+  // 用尽 ≠ 撤销:授权本身仍有效(只是没余额)—— `isHostHookGrantActive` 那一栏该是 true。
+  eq(listB()[0].revoked, false, "MC-061:用尽只是没余额,授权未被撤销");
+
+  // 未声明上限的授权:**永远 allowed、永不 exhausted**,且不累加 usedRuns(恒增死字段不做)。
+  resetB();
+  issueB({ pluginId: "budget-plugin", version: "1.0.0", commandDigest: "sha:b", ttlMs: 600_000, now: NOW });
+  for (let i = 0; i < 5; i += 1) recordHostHookRun(srcB, NOW);
+  eq(decideB(srcB, "tool.use", listB(), NOW).decide, "allowed", "MC-061:未声明上限 → 跑很多次仍 allowed");
+  eq(listB()[0].usedRuns, undefined, "MC-061:未声明上限的授权不累加 usedRuns(不造死字段)");
+
+  // **重新授权救得回来**:用尽后重签一份,复用的判据**跳过**已用尽的那份 → 得一份新的、账从 0 起。
+  resetB();
+  const oldG = issueB({ pluginId: "budget-plugin", version: "1.0.0", commandDigest: "sha:b", maxRuns: 1, ttlMs: 600_000, now: NOW });
+  recordHostHookRun(srcB, NOW); // 用满 1
+  eq(decideB(srcB, "tool.use", listB(), NOW).decide, "exhausted", "MC-061:前置:maxRuns=1 已用尽 → exhausted");
+  const newG = issueB({ pluginId: "budget-plugin", version: "1.0.0", commandDigest: "sha:b", maxRuns: 1, ttlMs: 600_000, now: NOW });
+  ok(newG.grantId !== oldG.grantId, "★ MC-061:用尽后重签 → 不复用旧的那份(得一份新的授权)");
+  eq(newG.usedRuns, 0, "MC-061:重签的新授权账从 0 起");
+  eq(decideB(srcB, "tool.use", listB(), NOW).decide, "allowed", "★ MC-061:重签后救得回来 → 又 allowed");
+
+  resetB();
+}
+
 /* ── 【MC-061 复审修复】停用 / 卸载**真的**撤销该插件的全部 hook 授权 ──
  * 独立复审点名:`setPluginEnabled` / `removePlugin` 里**没有** `revokeHostHookGrants` 调用 ——
  * 「停用插件后它的 hook 仍凭旧授权在跑」是静默的信任残留。这里装一份插件、签发授权,再停用 / 卸载,

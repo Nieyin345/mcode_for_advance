@@ -906,6 +906,14 @@ section("18. 插件 hook 授权:面板入参构造 + 面板真的接上了签发
   check("★ 面板真的调 revokeHostHookGrant(能撤)", panel.includes("api.hooks.revokeHostHookGrant("), panel.match(/revokeHostHookGrant\([^\n]*/g)?.slice(0, 2));
   check("★ 面板的签发入参走 hookGrantIssueInput(不是手拼一份)", panel.includes("hookGrantIssueInput("));
   check("★ 面板读授权列表走 useRpc(渲染端读数据走统一读钩子)", panel.includes("useRpc(") && panel.includes("listHostHookGrants"));
+
+  /* 【MC-061】审计读取真的被**消费**:`hooks.runs` 返回的落盘审计栏若不接进面板,就是
+     "返回了但没人读"的假接线 —— 与台账点名的"裁剪链接通却从不真裁"同一种坏。这里钉住
+     HooksPanel 源码真的读 `res.audit` 并把它渲染出来(而不是只接 `runs` 那一栏)。 */
+  const hooksPanel = readFileSync(join(process.cwd(), "src/renderer/components/settings/HooksPanel.tsx"), "utf8");
+  check("★ HooksPanel 真的读 hooks.runs 的 audit 栏(不是只接 runs)", hooksPanel.includes("res.audit"), hooksPanel.match(/\.audit[\s\S]{0,40}/)?.[0]);
+  check("★ HooksPanel 把审计栏渲染成独立一栏(AuditRow)", hooksPanel.includes("AuditRow"), hooksPanel.match(/<AuditRow[\s\S]{0,40}/)?.[0]);
+  check("★ 审计栏与内存环是**两栏**(各读各的:runs 与 audit 都进 state)", hooksPanel.includes("HookAuditEntry") && hooksPanel.includes("setAudit("));
 }
 
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);

@@ -1937,6 +1937,17 @@ export const SceneDeploymentRepo = {
 /* ───────────────────── 插件 hook 执行审计(MC-061)───────────────────── */
 
 /**
+ * 【MC-061 审计轮转】`hook_runs` 的**有界保留上限**。每次落一条就轮转一次,只留最近的
+ * 这么多行(见 {@link HookRunRepo.prune})。取 500:足够回答"最近这条插件 hook 跑成没有 /
+ * 被挡下几次"(排错窗口),又不至于让一条高频插件 hook 把库撑大。
+ *
+ * ⚠️ 这是**持久审计表**的上限,与 `HookRunner` 那 50 条**内存环**(`RUN_RING`)是两份不同的
+ * 东西:环是"这次会话里最近发生了什么"、会被进程重启清掉;本表跨重启活着。ARC-007 明确
+ * 禁止的是"把 RUN_RING 从 50 改到 5000"(拿内存环当账本)—— 这里不是那条。
+ */
+export const HOOK_RUNS_RETAIN = 500;
+
+/**
  * `hook_runs` 表里的一行 —— 一条**插件 hook 的执行事实**(审计)。
  *
  * ## 为什么只落插件 hook,不落用户手写的钩子
@@ -2029,6 +2040,10 @@ export const HookRunRepo = {
    * `timeout`)+ 退出码 / 耗时 / 原因覆盖上去 —— 于是"这一条到底跑成没有"只有**一行**、
    * 一个答案(与 `WorkflowRunRepo.save` 的 upsert 同形状)。来源身份列不参与覆盖:同一次
    * 执行的来源不会中途变(命令摘要绑定,变了就是另一个 `hookId`,另一个 `runId`)。
+   *
+   * ⚠️ 每次落一条就**轮转一次**(见 {@link prune}):审计是有界保留的,不是无限账本 ——
+   * 一条挂在 `tool.use` 上的插件 hook 一轮就能落几十行,不设上限迟早把库撑爆。轮转只丢
+   * **最旧**的,保住"最近发生过什么"这个排错窗口。
    */
   record(row: HookRunRow): void {
     getDb().run(
@@ -2060,7 +2075,33 @@ export const HookRunRepo = {
         v(row.startedAt),
       ],
     );
+    this.prune(HOOK_RUNS_RETAIN);
     persist();
+  },
+
+  /**
+   * 【MC-061 审计轮转】**有界保留**:只在表里留下最近的 `retain` 行,更旧的丢掉。
+   *
+   * 与 `WorkflowRunRepo.pruneSession` 同一条纪律(丢**最旧**的、`run_id` 作并列决胜),
+   * 只是这里没有"按会话"那一维 —— 审计窗口是整个插件 hook 执行历史。返回这次删掉几行
+   * (可断言"轮转真的发生了")。
+   *
+   * ⚠️ 不是"把环从 50 改大"那条被禁的做法:本函数管的是**持久审计表**的有界保留,不碰
+   * `HookRunner` 那 50 条内存环(那是另一份、语义不同的东西 —— 见 `HookRunner.RUN_RING`)。
+   */
+  prune(retain: number): number {
+    const keep = retain > 0 ? retain : 0;
+    const before = getDb().exec("SELECT COUNT(*) FROM hook_runs")[0]?.values[0]?.[0] as number | undefined;
+    getDb().run(
+      `DELETE FROM hook_runs
+        WHERE run_id NOT IN (
+          SELECT run_id FROM hook_runs
+           ORDER BY started_at DESC, run_id DESC LIMIT ?
+        )`,
+      [v(keep)],
+    );
+    const after = getDb().exec("SELECT COUNT(*) FROM hook_runs")[0]?.values[0]?.[0] as number | undefined;
+    return Math.max(0, (before ?? 0) - (after ?? 0));
   },
 
   /** 一条执行审计行。没有返回 null。 */

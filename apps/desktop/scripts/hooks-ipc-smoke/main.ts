@@ -808,10 +808,14 @@ const issued = (await call(IPC.HOOKS_HOST_HOOK_GRANT_ISSUE, {
   version: PLUGIN_VERSION,
   events: ["PreToolUse"],
   commandDigest: hostHookCommandDigest(PLUGIN_CMD),
-})) as { ok: boolean; grant?: { grantId: string; pluginId: string; expiresAt: number } };
+})) as { ok: boolean; grant?: { grantId: string; pluginId: string; expiresAt: number; maxRuns?: number; usedRuns?: number } };
 eq("签发成功", issued.ok, true);
 eq("签发的 grantId 由宿主给(不在 input 里)", typeof issued.grant?.grantId, "string");
 check("宿主给了有效期(expiresAt 在未来)", (issued.grant?.expiresAt ?? 0) > Date.now(), issued.grant?.expiresAt);
+// 【MC-061 执行预算】次数上限由**宿主**盖(调用方 schema 里没有 maxRuns,给不了)—— 见
+// `HOST_HOOK_GRANT_MAX_RUNS`。账从 0 起;这是台账点名的「取消预算」在 IPC 这条路上的落地。
+check("★ 宿主盖了执行次数上限(maxRuns 是有限正数,调用方给不了)", Number.isInteger(issued.grant?.maxRuns) && (issued.grant?.maxRuns ?? 0) > 0, issued.grant?.maxRuns);
+eq("新授权的账从 0 起(usedRuns)", issued.grant?.usedRuns, 0);
 
 /* ── ① 决定层:签发后翻成 allowed(面板据此标 granted)── */
 eq(
@@ -985,6 +989,42 @@ console.log("\n§7 用户签发的**入参形状**:命令/matcher 原文(宿主�
 
 // 收尾:断开注入缝,免得影响后续(本套到此结束)。
 hookRunner.setPluginHookSource(() => []);
+
+/* ────────────────────── 8. 审计读取:`hooks.runs` 真的返回落盘审计(MC-061)────────────────────── */
+
+console.log("\n§8 审计读取:hooks.runs 返回落盘审计(不只 50 条会被顶掉的内存环)");
+
+/*
+ * 台账另一条待办:「`hook_runs` 审计的**读取**」。此前审计只**写**不读 —— 落了盘却没有任何
+ * RPC 把它取出来。现在 `hooks.runs` 一并返回两栏:
+ *   - `runs`:内存环(含用户手写钩子、会被顶掉);
+ *   - `audit`:**落盘审计**(只插件 hook、跨重启活着)。
+ *
+ * 判据立在"同一次插件 hook 执行,在**审计栏**里看得到、且带**可查询的来源身份**"上 ——
+ * 若 handler 只透传内存环(不接 `HookRunRepo.list`),审计栏为空,第一条就红。
+ */
+{
+  // §6 里刚有一条插件 hook 真跑过(PMARK 计数)并被撤权挡下过 —— 那些都落了审计表。
+  const auditRes = (await call(IPC.HOOKS_RUNS)) as {
+    runs: Array<{ runId: string }>;
+    audit: Array<{ runId: string; hookId: string; pluginId: string; nativeEvent: string; status: string; commandDigest: string }>;
+  };
+  check("hooks.runs 返回了 audit 栏(不是只有 runs)", Array.isArray(auditRes.audit), Object.keys(auditRes));
+  check("★ 审计栏里有插件 hook 的执行行(落盘审计被读出来了)", auditRes.audit.length >= 1, auditRes.audit.length);
+  check("审计行带可查询的来源身份(pluginId / nativeEvent)", auditRes.audit.every((r) => typeof r.pluginId === "string" && r.pluginId.length > 0 && typeof r.nativeEvent === "string"), auditRes.audit.slice(0, 2));
+  check("审计行的命令摘要是 sha256 指纹", (auditRes.audit[0]?.commandDigest ?? "").startsWith("sha256:"), auditRes.audit[0]?.commandDigest);
+  // 审计栏是**落盘审计**:它只装插件 hook(带来源身份),不装用户手写的钩子 —— 与内存环不同。
+  check(
+    "★ 审计栏只含插件 hook(用户手写钩子不进审计表)",
+    auditRes.audit.every((r) => r.hookId.startsWith("ph_")),
+    auditRes.audit.map((r) => r.hookId).slice(0, 5),
+  );
+  // 收尾前把审计表清干净(免得污染同库的其它断言 —— 本套虽自成一库,仍照纪律收干净)。
+  const { HookRunRepo } = await import("@main/store/repositories.js");
+  HookRunRepo.prune(0);
+  const after = (await call(IPC.HOOKS_RUNS)) as { audit: unknown[] };
+  eq("prune(0) 之后审计栏清空(读取跟着轮转走)", after.audit.length, 0);
+}
 
 /* ────────────────────── 收尾 ────────────────────── */
 

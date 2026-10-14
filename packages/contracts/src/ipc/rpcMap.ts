@@ -45,7 +45,7 @@ import type { PiProviderPublic } from "../piModel.js";
 import type { CodexProviderPublic } from "../codexModel.js";
 import type { NodeTypeCatalog } from "../nodeType.js";
 import type { AgentProfileCatalog } from "../agentProfile.js";
-import type { HookSpec, HookRun } from "../hook.js";
+import type { HookSpec, HookRun, HookAuditEntry } from "../hook.js";
 import type { WorkflowDoc, WorkflowListEntry, WorkflowReviewInfo } from "../workflow.js";
 import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsEnginesSetInput, PluginsProjectListInput, PluginsProjectSetInput, PluginProjectRow, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
 import type {
@@ -1041,8 +1041,12 @@ export interface RpcMap {
   "hooks.list": () => Promise<{ hooks: HookSpec[]; problems: Array<{ where: string; error: string }> }>;
   /** 最近的执行记录(新的在前)。**不进对话流** —— 一个挂在 `tool.use` 上的钩子一轮
    *  会触发几十次,塞进消息流就是把对话刷屏;而节点会话是隐藏的,那些事件本来也不该
-   *  出现在父对话里。 */
-  "hooks.runs": () => Promise<{ runs: HookRun[] }>;
+   *  出现在父对话里。
+   *
+   *  【MC-061】另带一份**落盘审计**(`audit`):只有**插件 hook** 进那张表(带来源身份、
+   *  经授权执行),它跨重启活着、不会被 50 条环顶掉 —— 回答"这份来源的这条钩子跑没跑、
+   *  被撤权 / 预算用尽挡下几次"。`runs` 仍是内存环(含用户手写钩子),两栏语义不同、都给。 */
+  "hooks.runs": () => Promise<{ runs: HookRun[]; audit: HookAuditEntry[] }>;
   /** 存一条钩子(**整份给过来**,不是"改哪个字段")—— 用户从头写的东西局部更新没意义,整份过来让校验只在一处发生。返回 `{ ok, error? }`。 */
   "hooks.save": (input: HooksSaveInput) => Promise<{ ok: boolean; error?: string }>;
   /** 删一条钩子(按 id)。 */

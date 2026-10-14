@@ -35,6 +35,7 @@ import type {
   PolicyContext,
   PolicyDecision,
 } from "@contracts/policyEngine";
+import { countBudgetExhausted } from "@contracts/policyEngine";
 import { policyFor } from "./policy.js";
 
 /** 两个 MCP 身份是否相等(命令 + env 摘要)。都缺省 = 相等。 */
@@ -197,8 +198,8 @@ export function evaluate(intent: ActionIntent, grant: Grant | null, context: Pol
       compatibilityLevel: level,
     };
   }
-  // 次数上限。
-  if (grant.maxCount !== undefined && (grant.usedCount ?? 0) >= grant.maxCount) {
+  // 次数上限。判据走**唯一一份** `countBudgetExhausted`(主机 hook 授权 `maxRuns` 共用它)。
+  if (countBudgetExhausted(grant.maxCount, grant.usedCount)) {
     return {
       verdict: "require-approval",
       reason: `已达授权次数上限(${grant.maxCount}),需要重新批准。`,

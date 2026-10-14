@@ -1545,6 +1545,8 @@ export const zh = {
 
   "settings.hooks.runsTitle": "本次启动以来的执行",
   "settings.hooks.runsEmpty": "本次启动以来还没有执行过（执行记录只保存在内存里，重启后清空）。",
+  "settings.hooks.auditTitle": "插件的落盘审计",
+  "settings.hooks.auditEmpty": "还没有插件钩子被执行过（这一栏只记插件带来的钩子，跨重启保留）。",
   "settings.hooks.sessionNode": "节点",
   "settings.hooks.runStatus.ok": "成功",
   "settings.hooks.runStatus.failed": "失败",

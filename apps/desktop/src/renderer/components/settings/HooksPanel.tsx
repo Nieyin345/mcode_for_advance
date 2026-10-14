@@ -34,6 +34,7 @@ import {
   DEFAULT_HOOK_TIMEOUT_MS,
   HOOK_EVENTS,
   hookSubjectOf,
+  type HookAuditEntry,
   type HookEvent,
   type HookRun,
   type HookSpec,
@@ -150,6 +151,8 @@ export function HooksPanel() {
   const [hooks, setHooks] = useState<HookSpec[] | null>(null);
   const [problems, setProblems] = useState<Array<{ where: string; error: string }>>([]);
   const [runs, setRuns] = useState<HookRun[]>([]);
+  /** 【MC-061】落盘审计(只插件 hook、跨重启活着)—— 与 `runs` 那份内存环是两栏。 */
+  const [audit, setAudit] = useState<HookAuditEntry[]>([]);
   const [listError, setListError] = useState<string | null>(null);
 
   /** 选中的那一条(磁盘上的)。 */
@@ -185,7 +188,10 @@ export function HooksPanel() {
 
   const loadRuns = useCallback(async (): Promise<void> => {
     try {
-      setRuns((await api.hooks.runs()).runs);
+      const res = await api.hooks.runs();
+      setRuns(res.runs);
+      // 【MC-061】审计栏可能缺(旧 preload 没这一项时是 `undefined`)—— 退化成空,不炸。
+      setAudit(res.audit ?? []);
     } catch {
       // 记录拉不到不影响编辑 —— 它只是排错用的窗口。
     }
@@ -395,23 +401,40 @@ export function HooksPanel() {
         </div>
       </div>
 
-      {/* ───────── 下:最近的执行 ───────── */}
-      <ListPane
-        className="mt-3 h-[190px] shrink-0"
-        title={t("settings.hooks.runsTitle")}
-        count={runs.length}
-        isEmpty={runs.length === 0}
-        empty={t("settings.hooks.runsEmpty")}
-      >
-        {runs.map((run) => (
-          <RunRow
-            key={run.runId}
-            run={run}
-            expanded={expandedRun === run.runId}
-            onToggle={() => setExpandedRun(expandedRun === run.runId ? null : run.runId)}
-          />
-        ))}
-      </ListPane>
+      {/* ───────── 下:执行记录(两栏)─────────
+          左边是**内存环**(本次启动以来,含用户手写钩子,会被顶掉);右边是【MC-061】**落盘
+          审计**(只插件 hook、经授权执行,跨重启活着)。两栏语义不同,故分开列,不混成一个表 ——
+          "本次启动跑过什么"和"这份插件来源被授信后跑过什么"是两个问题。 */}
+      <div className="mt-3 grid h-[190px] shrink-0 grid-cols-2 gap-4">
+        <ListPane
+          title={t("settings.hooks.runsTitle")}
+          count={runs.length}
+          isEmpty={runs.length === 0}
+          empty={t("settings.hooks.runsEmpty")}
+        >
+          {runs.map((run) => (
+            <RunRow
+              key={run.runId}
+              run={run}
+              expanded={expandedRun === run.runId}
+              onToggle={() => setExpandedRun(expandedRun === run.runId ? null : run.runId)}
+            />
+          ))}
+        </ListPane>
+
+        {/* 【MC-061】落盘审计。只有插件 hook 进这一栏(带来源身份)—— 用户手写的钩子没有
+            "哪份授权放行"这回事,不进审计表(见 `HookRunRow` 的文件头)。 */}
+        <ListPane
+          title={t("settings.hooks.auditTitle")}
+          count={audit.length}
+          isEmpty={audit.length === 0}
+          empty={t("settings.hooks.auditEmpty")}
+        >
+          {audit.map((entry) => (
+            <AuditRow key={entry.runId} entry={entry} />
+          ))}
+        </ListPane>
+      </div>
 
       <ConfirmDialog
         open={confirmRemove}
@@ -754,6 +777,42 @@ function RunRow({
             </pre>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 【MC-061】**落盘审计**的一行(插件 hook)。与 {@link RunRow} 不同:它没有 stdout/stderr
+ * (审计要的是"跑没跑、为什么",不是完整输出),所以不展开 —— 一行里就把「状态 / 时间 /
+ * 来源 / 事件 / 结局」摆出来。`status` 是落盘列,取值同 `HookRunStatus`,但类型上是 `string`,
+ * 所以按 `Map` 查词条,查不到时退回原样(旧数据 / 将来新增状态不会崩)。
+ */
+function AuditRow({ entry }: { entry: HookAuditEntry }) {
+  const { t } = useI18n();
+  const meta = RUN_STATUS[entry.status as HookRun["status"]];
+  const eventLabel = (EVENT_LABELS as Record<string, MessageId>)[entry.event];
+  const label = `${entry.pluginId} @ ${entry.pluginVersion ?? "?"}`;
+  return (
+    <div className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-[0.7857em]">
+      <span className={cn("w-[52px] shrink-0 font-medium", meta?.cls ?? "text-content-subtle")}>
+        {meta ? t(meta.key) : entry.status}
+      </span>
+      <span className="shrink-0 tabular-nums text-content-subtle">{formatRunTime(entry.startedAt)}</span>
+      {/* 来源身份是这一栏的**重点** —— 审计要回答"这份来源的这条钩子跑没跑"。 */}
+      <span className="min-w-0 flex-1 truncate text-content" title={label}>
+        {label}
+      </span>
+      <span className="shrink-0 text-content-subtle">
+        {eventLabel ? t(eventLabel) : entry.nativeEvent}
+      </span>
+      {entry.exitCode !== null && entry.exitCode !== 0 && (
+        <span className="shrink-0 tabular-nums text-danger">exit {entry.exitCode}</span>
+      )}
+      {entry.error && (
+        <span className="min-w-0 max-w-[40%] truncate text-content-subtle" title={entry.error}>
+          {entry.error}
+        </span>
       )}
     </div>
   );

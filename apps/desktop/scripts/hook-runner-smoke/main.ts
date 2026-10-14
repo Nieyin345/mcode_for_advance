@@ -1182,6 +1182,144 @@ const { HookRunRepo } = await import("@main/store/repositories.js");
   check("审计行保存了来源身份的可查询投影(plugin_id / native_event)", okRow?.pluginId === "demo-plugin" && okRow?.nativeEvent === "PreToolUse", okRow);
 }
 
+/* ──────────────── 17. 插件 hook 的**执行次数预算**(MC-061) ──────────────── */
+
+// 台账点名的「取消预算 (cancellation budget) for host hook execution」在这个语境里**就是**
+// 「授权带次数上限」:一条挂在 `tool.use` 上的插件 hook 一轮能触发几十次,`ttlMs` 只限时间、
+// **不限次数**。没有上限,"一次授信"就等于"24 小时内无限次执行不受信命令"。这条预算:
+//   - **有界**:授权的 `maxRuns` 声明了上限;
+//   - **可核**:超界即判 `exhausted`(不是 denied —— 事实不同:授过、用完了);
+//   - **可停**:用尽后 `deliver` 里记账返回 false → **不起进程**,记一条带原因的 skipped。
+// 判据与 ARC-004 的 `Grant.maxCount` 共用唯一一份 `countBudgetExhausted`(仓库硬规矩 2)。
+console.log("\n插件 hook 执行次数预算:有界 / 可核 / 可停(用尽即停在物理上)");
+
+const { issueHostHookGrant: issueBudget, resetHostHookGrants: resetBudget } = await import(
+  "@main/hooks/hostHookGrants.js"
+);
+const { pluginHookSpecsFrom: specsFromBudget } = await import("@main/hooks/pluginHooks.js");
+{
+  // 从干净态起:只留这一个插件来源。
+  hookRunner.setPluginHookSource(() => []);
+  writeHooks([]);
+  resetBudget();
+  const bCmd = makeCmd({ tag: "budget-hook" });
+  const bDecls = [{ pluginId: "budget-plugin", version: "1.0.0", nativeEvent: "PreToolUse", command: bCmd.command }];
+  const bHookId = specsFromBudget(bDecls)[0].spec.id;
+  hookRunner.setPluginHookSource(() => bDecls);
+
+  // maxRuns=2:前两条事件各真跑一次,第三条被预算挡下。
+  // maxRuns=2:前两条事件各真跑一次,第三条被预算挡下。
+  issueBudget({ pluginId: "budget-plugin", version: "1.0.0", maxRuns: 2, ttlMs: 600_000, now: Date.now() });
+  // ⚠️ `emit` 是同步的,`onEvent` 逐条 await:连着发三条时,第一条还在跑,后两条会被**并发
+  // 上限 1** 挡成 dropped —— 那样测的就不是预算。而且命令**一写标记就继续**,标记出现 ≠ 进程
+  // 已退出、`inFlight` 已释放。所以每条都要**等到它真落终态**(进程退出、槽位释放)再发下一条。
+  const emitBudget = (callId: string): void =>
+    rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: callId, input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  const settledCount = (): number =>
+    hookRunner.listRuns().filter((r) => r.hookId === bHookId && r.status !== "running").length;
+  // 第 1 条:真跑一次。
+  emitBudget("budget_0");
+  await until("第 1 条真跑一次并落终态", () => bCmd.hits() === 1 && settledCount() >= 1, 8000);
+  await new Promise((r) => setTimeout(r, 150)); // 等 `inFlight` 槽位释放(终态略早于 finally)
+  // 第 2 条:仍在预算内,再真跑一次。
+  emitBudget("budget_1");
+  await until("第 2 条真跑一次(预算内)", () => bCmd.hits() === 2 && settledCount() >= 2, 8000);
+  await new Promise((r) => setTimeout(r, 150));
+  // 第 3 条:预算已用尽 → 判 exhausted,不起进程。
+  emitBudget("budget_2");
+  await until("第 3 条落定(exhausted 计数出现)", () => (hookRunner.deliveryCountsOf(bHookId)?.budgetExhausted ?? 0) >= 1, 8000);
+  await new Promise((r) => setTimeout(r, 400));
+  // ★ 承重:上限 2 → 真的只起了 2 个进程(第 3 条**没起**——预算在物理上停住了它)。
+  eq("★ maxRuns=2:真执行恰好 2 次(超出上限的第 3 条没起进程)", bCmd.hits(), 2);
+  eq("预算内两条都记 accepted", hookRunner.deliveryCountsOf(bHookId)?.accepted, 2);
+  eq("★ 超界那条记 budgetExhausted(不是 denied —— 事实不同)", hookRunner.deliveryCountsOf(bHookId)?.budgetExhausted, 1);
+  eq("denied 计数为 0(它是「用尽」不是「未授信」)", hookRunner.deliveryCountsOf(bHookId)?.denied, 0);
+  const exhaustedRun = hookRunner.listRuns().find((r) => r.hookId === bHookId && r.status === "skipped" && (r.error ?? "").includes("用尽"));
+  check("超界那条落一条带原因的 skipped(不静默)", exhaustedRun !== undefined, hookRunner.listRuns().filter((r) => r.hookId === bHookId).map((r) => ({ s: r.status, e: r.error })));
+
+  // **用尽后重新授权就救得回来**:重签一份(复用判据跳过已用尽的那份)→ 又能跑。
+  const bCmd2 = makeCmd({ tag: "budget-hook-2" });
+  const bDecls2 = [{ pluginId: "budget-plugin", version: "1.0.0", nativeEvent: "PreToolUse", command: bCmd2.command }];
+  const bHookId2 = specsFromBudget(bDecls2)[0].spec.id;
+  hookRunner.setPluginHookSource(() => bDecls2);
+  // 发一条前先等**上一条真落终态**(命令一写标记就继续,而 `inFlight` 要到进程退出后才释放;
+  // 不等就发,下一条会被**并发上限 1** 挡成 dropped —— 那测的就不是预算了)。见上面的同名说明。
+  const settle2 = async (): Promise<void> => {
+    await until(
+      "上一条真落终态(inFlight 槽位释放)",
+      () => !hookRunner.listRuns().some((r) => r.hookId === bHookId2 && r.status === "running"),
+      4000,
+    );
+    await new Promise((r) => setTimeout(r, 120));
+  };
+  issueBudget({ pluginId: "budget-plugin", version: "1.0.0", maxRuns: 1, ttlMs: 600_000, now: Date.now() });
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "budget_re1", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("重签后第 1 次跑起来", () => bCmd2.hits() === 1, 4000);
+  await settle2();
+  // 用尽:再一条 → 被挡。
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "budget_re2", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("第 2 条被挡下(budgetExhausted)", () => (hookRunner.deliveryCountsOf(bHookId2)?.budgetExhausted ?? 0) >= 1, 4000);
+  await new Promise((r) => setTimeout(r, 200));
+  eq("maxRuns=1:只跑了 1 次,第 2 条没起", bCmd2.hits(), 1);
+  // 重新授权(同一来源)→ 复用判据跳过已用尽那份 → 又能跑。
+  issueBudget({ pluginId: "budget-plugin", version: "1.0.0", maxRuns: 1, ttlMs: 600_000, now: Date.now() });
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "budget_re3", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("★ 重新授权后又能跑一次", () => bCmd2.hits() === 2, 4000);
+  eq("★ 用尽后重签 → 该来源又能执行(救得回来)", bCmd2.hits(), 2);
+
+  hookRunner.setPluginHookSource(() => []);
+  resetBudget();
+  writeHooks([]);
+}
+
+/* ──────────────── 18. 审计表的**有界轮转**(MC-061) ──────────────── */
+
+// 台账另一条待办:`hook_runs` 审计的**读取 / 轮转**。读取已接到 `hooks.runs`(见
+// `ipc/hooks.ts`);轮转是这条:「一条挂在 `tool.use` 上的插件 hook 一轮能落几十行,
+// 不设上限迟早把库撑爆」。`HookRunRepo.prune(retain)` 只留最近 retain 行,返回删了几行。
+console.log("\n审计表有界轮转(prune:只留最近 N 行)");
+
+{
+  const { HookRunRepo: Repo, HOOK_RUNS_RETAIN } = await import("@main/store/repositories.js");
+  // 落 6 条审计行(不同 runId —— upsert 会覆盖同行,所以每条用新 id)。
+  // ⚠️ `startedAt` 取一个**远未来**的基准:prune 按 `started_at DESC` 全局留最新的,而表里
+  // 已经有很多条 `startedAt ≈ 现在` 的真行(§14/§16/§17 落的)。若这里用 1970,这 6 条就是
+  // **全局最旧**,prune 会先把它们删掉 —— 断言测的就不是"留最近 N 条"了。
+  const BASE = 9_000_000_000_000;
+  const mkRow = (n: number) => ({
+    runId: `hrun_rotate_${n}`,
+    hookId: "ph_rotate",
+    pluginId: "rotate-plugin",
+    pluginVersion: null,
+    nativeEvent: "PreToolUse",
+    commandDigest: "sha256:rotate",
+    matcherDigest: null,
+    event: "tool.use",
+    sessionId: SESSION,
+    sessionKind: "chat",
+    status: "ok",
+    exitCode: 0,
+    durationMs: 1,
+    error: null,
+    startedAt: BASE + n,
+  });
+  for (let n = 0; n < 6; n += 1) Repo.record(mkRow(n));
+  check("落 6 条审计行后都在表里", Repo.listForHook("ph_rotate", 50).length === 6, Repo.listForHook("ph_rotate", 50).length);
+  // 轮转到只留最近 2 条(全局)→ 这 6 条是全局最新的,故只留最近两条、其余全删(含表里
+  // §14/§16/§17 落的那些旧行 —— prune 是**全局**保最近 N,不是按 hook 分组)。
+  const beforeCount = Repo.list(10_000).length;
+  const deleted = Repo.prune(2);
+  eq("★ prune(2) 后全局只留最近 2 行", Repo.list(10_000).length, 2);
+  eq("prune 返回删掉的条数(可断言轮转真发生了)", deleted, beforeCount - 2);
+  check("prune 真的删了东西(不是 no-op)", deleted >= 4, deleted);
+  const kept = Repo.listForHook("ph_rotate", 50).map((r) => r.runId).sort();
+  eq("★ 留下的是**最近**的两条(丢最旧,保住排错窗口)", kept.join(","), "hrun_rotate_4,hrun_rotate_5");
+  // 保留上限是有界的常量(不是无限账本)——
+  check(`保留上限 HOOK_RUNS_RETAIN 是有限正数(${HOOK_RUNS_RETAIN})`, Number.isInteger(HOOK_RUNS_RETAIN) && HOOK_RUNS_RETAIN > 0, HOOK_RUNS_RETAIN);
+  // 边界:prune(0) 清空该表(retain <= 0 合法,不静默扩成无限)。
+  eq("prune(0) 清空该表", Repo.prune(0) >= 0 && Repo.list(50).length, 0);
+}
+
 rmSync(DATA, { recursive: true, force: true });
 rmSync(WORK, { recursive: true, force: true });
 

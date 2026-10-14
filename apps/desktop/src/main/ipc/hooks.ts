@@ -39,6 +39,7 @@ import {
 } from "@contracts/ipc";
 import { hookRunner } from "@main/hooks/HookRunner.js";
 import { readHooks, removeHook, saveHook } from "@main/hooks/store.js";
+import { HookRunRepo, type HookRunRow } from "@main/store/repositories.js";
 import {
   hostHookCommandDigest,
   issueHostHookGrant,
@@ -47,17 +48,58 @@ import {
 } from "@main/hooks/hostHookGrants.js";
 
 /**
+ * 【MC-061】审计读取一次给多少条。审计表有界保留 {@link HOOK_RUNS_RETAIN}(500),这里取
+ * 100 —— 界面那栏是"最近发生了什么"的窗口,不是把整张账本灌给渲染端。新的在前。
+ */
+const HOOK_RUNS_READ_LIMIT = 100;
+
+/**
+ * 读**最近的插件 hook 执行审计**(落盘,跨重启活着)。读盘失败**不抛** —— 审计是附加信息,
+ * 坏了不该让整个「钩子」设置页打不开(与 `HookRunner.auditRun` 落盘失败只留日志同一姿势)。
+ * `HookRunRow` 与契约的 `HookAuditEntry` 结构逐一对应,直接透传。
+ */
+function readHookAudit(limit: number): HookRunRow[] {
+  try {
+    return HookRunRepo.list(limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * 一份新签发主机 hook 授权的**有效期** —— 由宿主定,调用方给不了(`ttlMs` 不在 schema 里)。
  * 24 小时:既不是"一次会话"那么短(用户不想每开一次机就重签),也不是"永久"(撤权/过期这道
  * 纪律要真的有用武之地)。到期即回到**默认拒绝**,要点用就再签一次。
  */
 const HOST_HOOK_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * 【MC-061 执行预算】一份主机 hook 授权最多允许**真执行**多少次 —— 由**宿主**定,调用方给不了
+ * (`maxRuns` 不在 schema 里,与 `ttlMs` 同一条纪律:调用方不该能签出"无限次"的授权)。
+ *
+ * 这是台账 MC-061 点名的「**取消预算 (cancellation budget)**」在宿主 hook 执行上的落点:
+ * 一条挂在 `tool.use` 上的插件 hook 一轮能触发几十次,`ttlMs` 只限时间、不限次数 —— 没有
+ * 次数上限,"一次授信"就等价于"24 小时内无限次执行不受信命令"。`decideHostHookExecution`
+ * 按它判 `exhausted`(与 ARC-004 的 `Grant.maxCount` 共用 `countBudgetExhausted` 那一份实现):
+ * 用尽后该来源回到**默认拒绝**,必须重新授权(重签得一份新的、账从 0 起)。
+ *
+ * 取 1000:足够覆盖正常的长期使用(一轮几十次 × 一天若干轮),又是**有限**的一个数 ——
+ * 用尽即停、需用户重新点头,而不是无声地无限跑下去。
+ */
+const HOST_HOOK_GRANT_MAX_RUNS = 1000;
+
 export function registerHookHandlers(ipcMain: IpcMain): void {
   // 无参 handler 不接 raw、也不 parse —— 与 `workflow.list` / `runtimes.list` 同一条
   // 纪律(无参 invoke 时 handler 收到的是 `undefined`)。
   ipcMain.handle(IPC.HOOKS_LIST, async () => readHooks());
-  ipcMain.handle(IPC.HOOKS_RUNS, async () => ({ runs: hookRunner.listRuns() }));
+  // 【MC-061】执行记录两栏:**内存环**(`runs`,含用户手写钩子、会被顶掉)+ **落盘审计**
+  // (`audit`,只插件 hook、跨重启活着)。审计读取读盘失败**不该**让这页打不开 —— 环那一栏
+  // 是用户的排错窗口,审计是附加信息;读盘异常时降级成空审计表(不抛),与 HookRunner
+  // 落盘失败只留日志同一姿势(见文件头"这一层很薄")。
+  ipcMain.handle(IPC.HOOKS_RUNS, async () => ({
+    runs: hookRunner.listRuns(),
+    audit: readHookAudit(HOOK_RUNS_READ_LIMIT),
+  }));
 
   ipcMain.handle(IPC.HOOKS_SAVE, async (_evt, raw) => {
     const input = HooksSaveSchema.parse(raw);
@@ -102,6 +144,8 @@ export function registerHookHandlers(ipcMain: IpcMain): void {
         ...(input.events !== undefined ? { events: input.events } : {}),
         ...(commandDigest !== undefined ? { commandDigest } : {}),
         ...(matcherDigest !== undefined ? { matcherDigest } : {}),
+        // 【MC-061 执行预算】次数上限由**宿主**盖(调用方给不了)—— 见常量那段。
+        maxRuns: HOST_HOOK_GRANT_MAX_RUNS,
         ttlMs: HOST_HOOK_GRANT_TTL_MS,
         now: Date.now(),
       });
