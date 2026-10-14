@@ -9,6 +9,7 @@ import {
   ModuleCapabilityDescriptorSchema,
   type ModuleCapabilityDescriptor, type ModuleWorkflowTarget,
 } from "@contracts/moduleCapability";
+import { createIsolatedActionRun } from "./isolatedActionRunner.js";
 
 export interface CapabilityContext { signal: AbortSignal; progress(value: number): void; }
 export interface Capability<I> {
@@ -17,9 +18,18 @@ export interface Capability<I> {
   metadata?: ModuleCapabilityDescriptor["metadata"];
   input: z.ZodType<I>;
   output: z.ZodType<ModuleResult>;
-  run(input: I, context: CapabilityContext): Promise<ModuleResult>;
+  /** 【MC-060 残余】普通实现:运行在**宿主进程内**。与 `isolatedSource` 二选一(见 register)。 */
+  run?(input: I, context: CapabilityContext): Promise<ModuleResult>;
+  /** 【MC-060 残余】**隔离实现** —— 一段 `async (input) => ModuleResult` 的源码,由宿主派发到
+   *  一个 `node:worker_threads` 的 worker 线程里执行(见 `isolatedActionRunner.ts`)。只有 `action`
+   *  能力可以走它(把会改东西的第三方代码挪出宿主线程)。见该模块顶注:**挡全局污染 / 崩线程 /
+   *  挂死,但挡不住内存共享与系统调用** —— 这不是沙箱。 */
+  isolatedSource?: string;
+  /** 隔离执行的超时(毫秒)。缺省走 runner 的 30 秒。 */
+  isolatedTimeoutMs?: number;
 }
-type ErasedCapability = Omit<Capability<unknown>, "input">;
+type ErasedCapability = Omit<Capability<unknown>, "input" | "run" | "isolatedSource" | "isolatedTimeoutMs">
+  & { run(input: unknown, context: CapabilityContext): Promise<ModuleResult> };
 /** 【MC-060】一次 `action` 能力执行前的审批请求。**作用域**随请求一起交给审批端口 ——
  * 批准方按 `moduleId:contributionId` + 具体 `resource`(已过 `authorize` 的工作区范围)
  * 决定放不放行;审批端口由宿主注入(与 `authorize`/`persist` 同款),故 host 仍不 import
@@ -78,13 +88,27 @@ export class ModuleHost {
     if (descriptor.kind === "query" && metadata?.limits?.taskTimeoutMs !== undefined) {
       throw Error("Query capabilities cannot advertise a task timeout");
     }
+    // 【MC-060 残余】执行体必须**恰好**给一种:宿主内 `run`,或隔离 `isolatedSource`。
+    // 隔离只对 `action` 开(会改东西的第三方代码才需要挪出宿主线程;query/task 走宿主)。
+    if ((definition.run === undefined) === (definition.isolatedSource === undefined)) {
+      throw Error("Capability must provide exactly one of run or isolatedSource");
+    }
+    if (definition.isolatedSource !== undefined && descriptor.kind !== "action") {
+      throw Error("Only action capabilities may run in an isolated worker");
+    }
     // A later mutation of the caller's definition must not swap out the
     // implementation or input validator after a capability was registered.
     const inputSchema = definition.input;
-    const run = definition.run.bind(definition);
+    const isolatedRun = definition.isolatedSource === undefined
+      ? null
+      : createIsolatedActionRun({ source: definition.isolatedSource },
+          definition.isolatedTimeoutMs === undefined ? {} : { timeoutMs: definition.isolatedTimeoutMs });
+    const run = definition.run === undefined ? null : definition.run.bind(definition);
     this.capabilities.set(descriptor.id, {
       ...descriptor, output: definition.output,
-      run: (input, context) => run(inputSchema.parse(input), context),
+      run: (input, context) => isolatedRun
+        ? isolatedRun(inputSchema.parse(input), context)
+        : run!(inputSchema.parse(input), context),
     });
   }
   private validate(raw: unknown): ModuleManifest {

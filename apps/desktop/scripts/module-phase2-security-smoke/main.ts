@@ -7,6 +7,9 @@ import { EXAMPLE_MODULE, ModuleManifestSchema, ResourceSchema, ResultSchema, act
 import { JsonSchemaDocumentSchema, ModuleCatalogSchema, ModuleWorkflowCallSchema } from '@contracts/moduleCapability';
 import { ModuleHost } from '../../src/main/modules/ModuleHost.js';
 import type { ActionApprovalRequest } from '../../src/main/modules/ModuleHost.js';
+import {
+  runIsolatedAction, isolationFailure, configureIsolatedWorkerFactory, defaultIsolatedWorkerFactory,
+} from '../../src/main/modules/isolatedActionRunner.js';
 import { fileCapabilities, resolveModuleResource } from '../../src/main/modules/fileCapabilities.js';
 import { getModuleHost, configureModuleApprovalPort, requestModuleActionApproval } from '../../src/main/modules/service.js';
 import { thrownResultKind } from '../../src/main/appControl/commandOutcome.js';
@@ -231,6 +234,86 @@ await test('AUTH production host wires a real approval port, fail-closed until a
   } finally {
     configureModuleApprovalPort(null);
   }
+});
+// 【MC-060 残余 承重】**第三方 action 的隔离执行进程** —— 台账原话：「运行时无 worker/child-process
+// 的 action 执行路径」。这几条把那条路径钉住:**作用域/审批闸在派发到隔离进程之前**、**有超时**、
+// **隔离进程崩了/超时了宿主不崩且回可区分的失败**、**取消真的停掉隔离进程**。判据一律「撤掉修复
+// → 真红」,且**先证明副作用在非隔离路径下真会泄漏**(正控),再证明隔离后不泄漏 —— 否则「隔离
+// 里的副作用没影响宿主」是假绿(测试 action 本来就没写那个副作用)。
+await test('ISO isolated action runs in a worker thread and its result round-trips',async()=>{
+  const result=await runIsolatedAction({source:'async (input) => ({ bytes: input.bytes * 2 })'},{bytes:21});
+  assert.equal(result.bytes,42);
+});
+await test('ISO GLOBAL-POLLUTION: a global set in the isolated worker never reaches the host (with in-process positive control)',async()=>{
+  const probe=(globalThis as Record<string,unknown>).__mcode_isolate_probe;
+  assert.equal(probe,undefined,'precondition: probe global is clean');
+  const source='async () => { globalThis.__mcode_isolate_probe = "leaked"; return { bytes: 1 }; }';
+  // 正控:同一段源码在**宿主进程内**执行,全局**真的会被设上** —— 证明这条断言分得出「隔离」与「不隔离」。
+  await (new Function('return ('+source+')')() as ()=>Promise<unknown>)();
+  assert.equal((globalThis as Record<string,unknown>).__mcode_isolate_probe,'leaked','positive control: in-process eval leaks the global');
+  delete (globalThis as Record<string,unknown>).__mcode_isolate_probe;
+  // 隔离:同一段源码在 worker 线程里跑,宿主那份 globalThis 是**另一份** —— 宿主不被污染。
+  await runIsolatedAction({source},{});
+  assert.equal((globalThis as Record<string,unknown>).__mcode_isolate_probe,undefined,'isolated: host global stayed clean');
+});
+await test('ISO a runaway worker is terminated by the timeout and the host survives',async()=>{
+  const start=Date.now();
+  let failure:unknown;
+  // **真挂死**:同步忙循环把 worker 线程**占住**(不会被事件循环排空而自退),只能靠 terminate 打断。
+  const hang='async () => { const until = Date.now() + 3000; while (Date.now() < until) {} return { bytes: 1 }; }';
+  try{await runIsolatedAction({source:hang},{},{timeoutMs:400});assert.fail('expected timeout');}catch(e){failure=e;}
+  assert.equal(isolationFailure(failure)?.code,'isolated_timeout','a hung action must fail with a distinguishable timeout');
+  assert.ok(Date.now()-start>=380,'the timeout must actually elapse');
+  assert.ok(Date.now()-start<5000,'terminate must actually interrupt the busy loop, not wait for it');
+  assert.equal((await runIsolatedAction({source:'async () => ({ alive: true })'},{})).alive,true,'host survives a runaway worker');
+});
+await test('ISO CRASH-ISOLATION: process.exit inside the worker does not take the host down',async()=>{
+  let failure:unknown;
+  try{await runIsolatedAction({source:'async () => { process.exit(7); }'},{},{timeoutMs:2000});assert.fail('expected crash');}catch(e){failure=e;}
+  assert.equal(isolationFailure(failure)?.code,'isolated_crash','a worker that exits before returning is a distinguishable crash, not a success');
+  // 宿主若被 process.exit 带走,这条之后的断言根本不会执行 —— 「宿主存活」由本行可达证明。
+  assert.equal((await runIsolatedAction({source:'async () => ({ alive: true })'},{})).alive,true,'host still runs isolated actions after a worker crash');
+});
+await test('ISO CANCELLATION stops the worker and reports a distinguishable cancel',async()=>{
+  const controller=new AbortController();
+  // 同样用忙循环:线程一直活着,只有 abort 的 terminate 能停它。
+  const hang='async () => { const until = Date.now() + 3000; while (Date.now() < until) {} return { bytes: 1 }; }';
+  const running=runIsolatedAction({source:hang},{},{timeoutMs:4000,signal:controller.signal});
+  setTimeout(()=>controller.abort(),40);
+  let failure:unknown;
+  try{await running;assert.fail('expected cancellation');}catch(e){failure=e;}
+  assert.equal(isolationFailure(failure)?.code,'isolated_cancelled','an aborted action must fail with isolated_cancelled, not a timeout');
+});
+await test('ISO GATE-BEFORE-DISPATCH: a denied action spawns zero workers; an approved one spawns exactly one',async()=>{
+  const created:Array<{ fired:boolean }>=[];
+  try{
+    configureIsolatedWorkerFactory(boot=>{const w=defaultIsolatedWorkerFactory(boot);created.push({fired:true});return w;});
+    // (a) 无审批通道 → 执行点闸先拒,**绝不派发到隔离进程**(0 spawn)。
+    const noChannel=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+    noChannel.register({id:'core.test.iso1',kind:'action',input:ResourceSchema,output:ResultSchema,isolatedSource:'async () => ({ bytes: 1 })'});
+    noChannel.addBuiltin({...EXAMPLE_MODULE,id:'core.iso1',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.iso1'}]});
+    await denies(noChannel.invoke(call('core.iso1')),/审批通道/);
+    assert.equal(created.length,0,'a refused action must never reach the isolated process');
+    // (b) 有审批通道且放行 → 真派发一次隔离执行,结果带回宿主。
+    const allowing=new ModuleHost({authorize:async()=>{},persist:async()=>{},requestApproval:async()=>{}});
+    allowing.register({id:'core.test.iso2',kind:'action',input:ResourceSchema,output:ResultSchema,isolatedSource:'async (input) => ({ bytes: input.path.length })'});
+    allowing.addBuiltin({...EXAMPLE_MODULE,id:'core.iso2',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.iso2'}]});
+    const reply=await allowing.invoke(call('core.iso2'));
+    assert.equal(reply.type,'result');if(reply.type==='result')assert.equal(reply.value.bytes,file.length);
+    assert.equal(created.length,1,'an approved action dispatches exactly one isolated worker');
+  } finally { configureIsolatedWorkerFactory(null); }
+});
+await test('ISO REGISTRATION: a capability is exactly one of run/isolatedSource, and isolation is action-only',async()=>{
+  const h=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+  // 两者都给 / 都不给 → 拒(执行体恰好一种)。
+  assert.throws(()=>h.register({id:'core.test.both',kind:'action',input:ResourceSchema,output:ResultSchema,run:async()=>({bytes:1}),isolatedSource:'async () => ({ bytes: 1 })'}),/exactly one/);
+  assert.throws(()=>h.register({id:'core.test.neither',kind:'action',input:ResourceSchema,output:ResultSchema}),/exactly one/);
+  // query/task 不许走隔离(只有会改东西的 action 才挪出宿主线程)。
+  assert.throws(()=>h.register({id:'core.test.iso-query',kind:'query',input:ResourceSchema,output:ResultSchema,isolatedSource:'async () => ({ bytes: 1 })'}),/action/);
+  // 对照(证明不是空过):action + isolatedSource 注册**通过**。
+  const ok=new ModuleHost({authorize:async()=>{},persist:async()=>{}});
+  ok.register({id:'core.test.iso-ok',kind:'action',input:ResourceSchema,output:ResultSchema,isolatedSource:'async () => ({ bytes: 1 })'});
+  assert.ok(ok.catalog().capabilities.some(c=>c.id==='core.test.iso-ok'));
 });
 await test('AUTH extra trusted source projectPath capabilityId and requestId cannot enter user parameters',async()=>{
   const params={moduleId:'core.file-report',contributionId:'inspect',path:file};
