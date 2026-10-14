@@ -4130,6 +4130,112 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     check("ARC-005:重试成功后内存表才有这一格", (SettingRepo.get(LAST_MINUTE_KEY) ?? "").includes(keyH), SettingRepo.get(LAST_MINUTE_KEY));
   }
 
+  /* ── 【MC-091 续·故障注入①】恢复游标(`automation.droppedUndelivered`)落盘失败 ──
+   *
+   * 上面几节验了欠账"记得对、并得进载荷、跨重启读得回",但**没有一处让这张表的落盘
+   * 真失败过**。复核点名的正是这条异常路径:存储此刻坏了、`SettingRepo.set` 抛错时,
+   * 恢复游标的行为必须成立 ——
+   *
+   *  - **不能静默丢**:那一次 `flushDroppedUndelivered` 抛错被 catch(只记日志),但
+   *    `recordDropped` 记在**内存**里的那笔欠账必须原样留着(`droppedDirty` 保持 true),
+   *    下一跳补落 —— 而不是把内存表清掉、让这笔丢弃随进程消失;
+   *  - **不能写成半截**:失败的那一次磁盘上不该出现半份表(要么是旧值,要么空,绝不是
+   *    "内存清空后的空表"把旧账覆盖没)。
+   *
+   * 造法:文件触发器合并窗口开得极大(整场不收口),喂爆单条 500 上限 → 超出的进恢复
+   * 游标(内存脏);注入 `SettingRepo.set` 对 `DROPPED_KEY` 抛错 → 跑一跳 `onTick`
+   * (等价 30 秒节流到点)→ flush 抛。断言内存账仍在、盘上没被写成空表;解除注入后再跑
+   * 一跳 → 补落盘;dispose 后新 runner `start()` → 从盘上读回。撤掉 catch 里的"保留内存 +
+   * 保持脏"语义(改成失败即清内存),内存账那条会真红。 */
+  {
+    resetRuns();
+    SettingRepo.set(DROPPED_KEY, "{}");
+    const wf = nextId(), nodeId = "t_dropped_flush_fail";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file", [NODE_TRIGGER_PATHS_PARAM_KEY]: "ff-*.md",
+      // 合并窗口极大 —— 这一格整场都不收口,好让欠账**只进不交付**,专注验落盘那一步。
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 3_600_000, task: "游标落盘失败不能静默丢",
+    } });
+    const key = `${wf}:${nodeId}`;
+    const runner = await startRunner();
+    const flushTick = (): void => (runner as unknown as { onTick(): void }).onTick();
+    try {
+      // 攒出一笔未交付欠账:单条上限 500,喂 504 条 → 超出的进恢复游标(内存标脏)。
+      for (let i = 0; i < 504; i += 1) {
+        const name = `ff-${String(i).padStart(4, "0")}.md`;
+        writeFileSync(join(PROJ_DIR, name), `# ${i}`);
+        runner.onFsChange(PROJ_DIR, name);
+      }
+      const owed = runner.droppedUndelivered.get(key)?.count ?? 0;
+      check("★ 故障注入①:注入前先攒出一笔未交付欠账", owed >= 1, runner.droppedUndelivered.get(key));
+
+      // 注入:游标那一次落盘抛错(模拟存储此刻坏了)。
+      const origSet = SettingRepo.set;
+      SettingRepo.set = (k, v) => {
+        if (k === DROPPED_KEY) throw new Error("injected dropped-ledger write failure");
+        return origSet.call(SettingRepo, k, v);
+      };
+      try {
+        flushTick(); // 节流到点 → flush 抛,被 catch 吞成一行日志
+        eq("★ 故障注入①:落盘失败后内存欠账**原样留着**(没被静默丢)", runner.droppedUndelivered.get(key)?.count ?? 0, owed);
+        check("★ 故障注入①:落盘失败后盘上没写出这一笔(不是被清空的假象)", droppedOnDisk()[key] === undefined, droppedOnDisk());
+      } finally { SettingRepo.set = origSet; }
+
+      // 存储修好 → 下一跳补落。
+      flushTick();
+      check("★ 故障注入①:存储修好后下一跳把欠账补落盘(没丢)", (droppedOnDisk()[key]?.count ?? 0) >= owed, droppedOnDisk()[key]);
+      runner.dispose();
+
+      // 跨重启还能读回 —— 这才是"恢复游标"这个词的兑现。
+      const revived = await startRunner();
+      check("★ 故障注入①:重启后从盘上读回这笔欠账(恢复游标真的可恢复)", (revived.droppedUndelivered.get(key)?.count ?? 0) >= owed, revived.droppedUndelivered.get(key));
+      revived.dispose();
+    } finally { SettingRepo.set(DROPPED_KEY, "{}"); }
+  }
+
+  /* ── 【MC-091 续·故障注入②】领取**结算**落盘失败:不留幻影终态、补偿回 CLAIMED ──
+   *
+   * `ARC-005` 那一节注入的是**第一笔**写(`CLAIMED`,`prev === undefined`)的失败,断言
+   * JS Map 那一格被删、盘上仍空。这里补的是**另一半**异常路径:派发已经 durable 写好
+   * `CLAIMED` 之后,**收尾结算**(写终态 `SUCCEEDED`)**落盘失败**时的补偿语义 ——
+   *
+   *  - **不留幻影**:内存里那格必须回滚成**先前那个值**(`CLAIMED`),而不是停在
+   *    `SUCCEEDED`(`rollbackTriggerClaim(claimId, prev)` 的 `prev !== undefined` 分支);
+   *  - **盘上也不能被冲成 `SUCCEEDED`** —— 否则下一次成功落盘会把内存里的假终态盖上磁盘,
+   *    重启时读到一条"成功"的领取,而那次运行的结果其实并没被 durable 确认;
+   *  - 账目退回 `CLAIMED` 后,它仍是**待恢复**:重启时 `recoverIncompleteClaims` 会把它
+   *    处置成 `UNCERTAIN`(不重复执行)—— 这正是"落盘失败**不重复执行**、也不假装成功"。
+   *
+   * 造法同 `ARC-005`:拿真类的实例、按内部表面直接调(`start()` 会顺带 tick,不想被它
+   * 搅),用 `failNextExclusiveCreate()` 让那一次 `commitNow()` 返回非 durable。撤掉
+   * `rollbackTriggerClaim` 那条,内存/盘上的 `CLAIMED` 两条断言各会真红(停在幻影
+   * `SUCCEEDED`)。 */
+  {
+    const CLAIMS_KEY = "automation.triggerClaims";
+    type SettleSurface = RunnerInternals & {
+      triggerClaims: Map<string, TriggerClaim>;
+      writeTriggerClaimDurable(claimId: string, claim: TriggerClaim): boolean;
+    };
+    const r = newRunner() as SettleSurface;
+    SettingRepo.set(CLAIMS_KEY, "{}");
+    const claimId = scheduleClaimId(`${nextId()}:t_settle_fail`, 999_777);
+    // 派发那一刻:CLAIMED durable 落定(第一笔写,成功)。
+    eq("故障注入②:派发前 CLAIMED 先 durable 落定", r.writeTriggerClaimDurable(claimId, { status: "CLAIMED", minute: 999_777, at: Date.now() }), true);
+    // 收尾结算这一步落盘失败(commitNow 返回 APPLIED_NOT_DURABLE)。
+    failNextExclusiveCreate();
+    let settled: boolean;
+    try {
+      settled = r.writeTriggerClaimDurable(claimId, { status: "SUCCEEDED", minute: 999_777, at: Date.now() });
+    } finally { disarmExclusiveCreate(); }
+    eq("故障注入②:结算落盘失败 → 返回 false(调用方不把这次当成功)", settled, false);
+    eq("★ 故障注入②:结算失败后**内存**回滚成 CLAIMED(不留幻影成功)", r.triggerClaims.get(claimId)?.status, "CLAIMED");
+    eq("★ 故障注入②:结算失败后**盘上**仍是 CLAIMED(没被冲成假成功)", (JSON.parse(SettingRepo.get(CLAIMS_KEY) ?? "{}") as Record<string, { status?: string }>)[claimId]?.status, "CLAIMED");
+    check("★ 故障注入②:退回 CLAIMED 后它仍是待恢复(重启不会重复执行,而是处置成不确定)", pendingClaims(r.triggerClaims).includes(claimId), pendingClaims(r.triggerClaims));
+    // 故障解除 → 结算重试成功,这一次才真的落定 SUCCEEDED。
+    eq("故障注入②:故障解除后结算重试成功", r.writeTriggerClaimDurable(claimId, { status: "SUCCEEDED", minute: 999_777, at: Date.now() }), true);
+    eq("故障注入②:重试成功后盘上才是 SUCCEEDED", (JSON.parse(SettingRepo.get(CLAIMS_KEY) ?? "{}") as Record<string, { status?: string }>)[claimId]?.status, "SUCCEEDED");
+  }
+
   /* ── 收尾:这一节的实例都 dispose 了,别让 timer / watcher 挂着 ── */
 }
 
