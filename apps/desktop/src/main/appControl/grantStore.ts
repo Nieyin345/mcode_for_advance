@@ -74,9 +74,49 @@ export interface GrantStoreDeps {
 /** 签发口拒绝一项输入的信号 —— 显式报出来,不静默跳过。 */
 export class GrantStoreError extends Error {}
 
+/**
+ * **授权 id 必须全局唯一 —— 撞了就拒,绝不静默覆盖。**(MC-016)
+ *
+ * 从前 `issueGrant` 是 `Map.set(grantId, grant)`:新授权与旧授权**同名即覆盖** —— 连旧审批
+ * 作用域、撤销状态一起丢。而默认 id 生成器 `grant-<seq>` 的 `seq` **从 0 起、重启后不恢复**
+ * (构造函数只把持久 grant `Map.set` 进去,没动 `seq`)。于是「签发过授权 → 重启 → 再签发」
+ * 的第二份授权会拿到 `grant-1`,**把第一份覆盖掉**(E1 红例
+ * `ID_COLLISION grant-1 grant-1 DURABLE_COUNT 1 FIRST_OVERWRITTEN true`)。
+ *
+ * 这条守卫把「覆盖」改成「**显式拒绝**」:id 已被占用(不论死活)就抛 —— 调用方拿到的是
+ * 一个明确的错误,而不是一个「看起来签发成功、其实吞掉了旧授权」的假象(README 硬规矩 3)。
+ *
+ * ⚠️ 与 `newId` 恢复(`restoreSeq`)是**两道独立防线**:恢复 seq 让默认生成器通常不撞;
+ * 这条守卫兜住自定义生成器 / 并发 / 任何残余撞车。**两道都留着** —— 只靠恢复 seq 的话,
+ * 一个返回固定串的自定义 `newId` 仍会静默覆盖。
+ */
+function assertGrantIdFree(grants: Map<string, Grant>, grantId: string): void {
+  if (grants.has(grantId)) {
+    throw new GrantStoreError(
+      `授权 id「${grantId}」已被占用 —— 拒绝签发以免覆盖既有授权(旧授权的审批作用域与撤销状态会一并丢失)。`,
+    );
+  }
+}
+
 /** 一份 grant 此刻是否有效:未撤销 **且** 未过期(`now < expiresAt`,与 evaluate 同一判据)。 */
 export function isGrantActive(grant: Grant, now: number): boolean {
   return !grant.revoked && now < grant.expiresAt;
+}
+
+/** 默认 id 格式 `grant-<n>` 的序号提取;不是这个格式的返回 null(自定义生成器产出的 id)。 */
+function seqOf(grantId: string): number | null {
+  const m = /^grant-(\d+)$/.exec(grantId);
+  return m ? Number(m[1]) : null;
+}
+
+/** 已载入授权里默认格式的最大序号 —— 构造函数用它恢复 `seq`,让重启后不重号。 */
+function maxSeqIn(grants: Grant[]): number {
+  let max = 0;
+  for (const g of grants) {
+    const n = seqOf(g.grantId);
+    if (n !== null && n > max) max = n;
+  }
+  return max;
 }
 
 export class GrantStore {
@@ -89,7 +129,14 @@ export class GrantStore {
     this.persist = deps.persist;
     this.newId = deps.newId ?? ((n) => `grant-${n}`);
     const loaded = this.persist?.load();
-    if (loaded) for (const g of loaded) this.grants.set(g.grantId, g);
+    if (loaded) {
+      for (const g of loaded) this.grants.set(g.grantId, g);
+      // ★ **恢复 seq 计数器**(MC-016):默认生成器是 `grant-<seq>`,而 `seq` 每次构造都从 0
+      //    起 —— 若不从已载入的 id 里把最大值捞回来,重启后第一份新授权又会是 `grant-1`,
+      //    与已载入的那份撞名。只认默认格式 `grant-<数字>`(自定义生成器可能完全不含量词,
+      //    那种情况由 `issueGrant` 的占用守卫兜底)。
+      this.seq = maxSeqIn(loaded);
+    }
   }
 
   /**
@@ -112,8 +159,11 @@ export class GrantStore {
       throw new GrantStoreError("授权必须有正的有效期(ttlMs > 0)。");
     }
     this.seq += 1;
+    const grantId = this.newId(this.seq);
+    // ★ 占用即拒(MC-016)—— 见 `assertGrantIdFree` 的说明。
+    assertGrantIdFree(this.grants, grantId);
     const grant: Grant = {
-      grantId: this.newId(this.seq),
+      grantId,
       sceneId: decision.sceneId,
       allowedActions: [...decision.allowedActions],
       scopedCore: { ...decision.scopedCore },

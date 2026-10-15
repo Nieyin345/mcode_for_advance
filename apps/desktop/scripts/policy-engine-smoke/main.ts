@@ -596,6 +596,38 @@ const memBlob = (): BlobIO & { peek: () => string | null } => {
   eq("序列化:原样带出 expiresAt", env.grants[0].expiresAt, g.expiresAt);
 }
 
+/* ══ 16b. ★ MC-016:授权 id 重启后不重用、撞名不覆盖 ══
+ *
+ * 旧行为:`seq` 每次构造都从 0 起、载入持久授权只 `Map.set` 不恢复计数器 → 默认生成器
+ * `grant-<seq>` 重启后第一批新授权又是 `grant-1`,**覆盖掉**载入的那份(连审批作用域、
+ * 撤销状态一起丢)。两道防线各测一遍:① 恢复 seq;② 占用守卫(自定义生成器绕不过)。 */
+{
+  // 用同一份持久层模拟「重启」:第一次签发 grant-1,重开后再签,必须是 grant-2(不撞)。
+  const box: { grants: Grant[] | null } = { grants: null };
+  const persist = { load: () => box.grants, save: (gs: Grant[]) => { box.grants = gs; } };
+  const s1 = new GrantStore({ persist }); // 默认生成器 grant-<seq>
+  const g1 = s1.issueGrant(decision({ allowedActions: ["a"] }), USER, 1_000);
+  eq("MC-016:首次签发得到 grant-1", g1.grantId, "grant-1");
+  const s2 = new GrantStore({ persist }); // 模拟重启
+  const g2 = s2.issueGrant(decision({ allowedActions: ["b"] }), USER, 2_000);
+  eq("★ MC-016:重启后再签发不再重用 grant-1(得到 grant-2)", g2.grantId, "grant-2");
+  eq("★ MC-016:重启后旧授权仍在、未被覆盖", s2.get(g1.grantId, 1_500)?.allowedActions[0], "a");
+  eq("★ MC-016:两份授权同时存在(持久层两条)", box.grants?.length, 2);
+
+  // ② 占用守卫:自定义生成器返回一个已被占用的 id → 拒,不静默覆盖。
+  const s3 = new GrantStore({ newId: () => "same" });
+  const g3 = s3.issueGrant(decision(), USER, 1_000);
+  eq("MC-016 正控:首次用自定义 id 签得出", g3.grantId, "same");
+  let collisionThrew = false;
+  try {
+    s3.issueGrant(decision({ allowedActions: ["z"] }), USER, 1_000);
+  } catch (e) {
+    collisionThrew = e instanceof GrantStoreError;
+  }
+  eq("★ MC-016:自定义生成器撞名 → 抛 GrantStoreError(不覆盖)", collisionThrew, true);
+  eq("★ MC-016:撞名被拒后原授权一字未动", s3.get("same", 1_500)?.allowedActions[0], "file.write");
+}
+
 /* ══ 17. 源码断言:落盘层不 import electron / sql;授权不落可导入 setting ══ */
 {
   const raw = readFileSync(join(process.cwd(), "src/main/appControl/grantStoreFile.ts"), "utf8");
