@@ -289,4 +289,50 @@ equal("disable returns no listening port", disabledStatus.port, 0);
   __resetPublicClientSessions();
 }
 
+/* ── ★ MC-022:损坏的公网配置**拒绝写入**,不静默覆盖原有链接 / 审计 ──
+ *
+ * 两处副本同根因(读不懂 → 空表 → 读-改-写整表覆盖):
+ *   ① 项目链接表(readProjectLinks → add/remove/regenerate);
+ *   ② 留存审计环(publicMcpRetentionAudit → appendRetentionAudit)。
+ * 读侧降级成空仍然对(那是给"没配过"用的);错的是**拿它当写基准**。 */
+{
+  const { addPublicMcpProjectLink, removePublicMcpProjectLink, publicMcpRetentionAudit } =
+    await import("../../src/main/providers/bridge/publicMcpSession.js");
+
+  // ① 项目链接表:盘上是**截断的**原链接(含 p-a)→ 给新项目加链接必须拒绝、原字节不动。
+  resetRepositories([{ id: "p-new", name: "New", path: "/tmp/new", archived: false }]);
+  SettingRepo.set("publicMcp.projectLinks", '[{"projectId":"p-a","secret":"' + "a".repeat(40));
+  const corruptBytes = SettingRepo.get("publicMcp.projectLinks");
+  let addThrew = false;
+  try { addPublicMcpProjectLink("p-new"); } catch { addThrew = true; }
+  equal("★ MC-022:链接表损坏时新增 → 拒绝(不静默)", addThrew, true);
+  equal("★ MC-022:原字节一字未动(没被新链接覆盖)", SettingRepo.get("publicMcp.projectLinks"), corruptBytes);
+  // 损坏时删除也必须拒(否则会拿空表回写)。
+  const delThrew = (() => { try { removePublicMcpProjectLink("p-a"); return false; } catch { return true; } })();
+  equal("★ MC-022:链接表损坏时删除 → 也拒绝(不拿空表回写)", delThrew, true);
+  equal("★ MC-022:删除被拒后原字节仍未动", SettingRepo.get("publicMcp.projectLinks"), corruptBytes);
+
+  // ② 留存审计环:盘上是截断的旧环(含一条 retained-busy)→ 真触发一次追加事件,不得覆盖它。
+  SettingRepo.set("publicMcp.retentionAudit", '[{"kind":"retained-busy","at":1,"keptBusy":[{"ownerId":"o1","credentialId":"cred-x","resources":{"processes":1,"searches":0,"ssh":0}}],"prunedCount":0}');
+  const corruptRing = SettingRepo.get("publicMcp.retentionAudit");
+  equal("MC-022:坏环读成空(读侧降级不变)", publicMcpRetentionAudit().length, 0);
+  // 走真扇出路径:签发 → 淘汰一份忙 owner → prune 触发 retained-busy 事件 → 经持久出口
+  // `appendRetentionAudit` 落盘。若这里没拦住,坏环会被覆盖成"只含这条新事件"的干净环。
+  const { issueClientSession: issueA, rememberSyntheticOwner: rememberA, pruneOrphanedOwners: pruneA,
+    registerOwnerWorkProbe: probeA, __setMaxIssuedForTest: setMaxA, __resetPublicClientSessions: resetA } =
+    await import("../../src/main/providers/bridge/publicClientSessions.js");
+  resetA();
+  setMaxA(1);
+  const busyA = issueA("cred-busy-a");
+  rememberA("sess_mc022", busyA);
+  const offProbeA = probeA((id) => id === busyA);
+  for (let i = 0; i < 3; i += 1) issueA(`cred-c-${i}`); // 顶掉 busyA
+  pruneA(); // 触发 retained-busy 扇出 → appendRetentionAudit
+  equal("★ MC-022:坏审计环经真追加路径后**原字节未被覆盖**(没被新事件顶成干净环)",
+    SettingRepo.get("publicMcp.retentionAudit"), corruptRing);
+  offProbeA();
+  setMaxA(null);
+  resetA();
+}
+
 console.log("public MCP session lifecycle smoke passed");

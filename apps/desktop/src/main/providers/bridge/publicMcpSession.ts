@@ -324,6 +324,23 @@ interface StoredProjectLink {
   sessionId: string | null;
 }
 
+/**
+ * 项目链接存档的**健康度**(MC-022)—— 让写侧能区分「真没配过」与「读不懂」。
+ * 与 `unattendedPlanStore.classify*Archive` / `hostHookGrantFile.classify*Archive` 同判据。
+ */
+type LinkArchiveHealth = "absent" | "valid" | "corrupt";
+
+function classifyProjectLinks(raw: string | null | undefined): LinkArchiveHealth {
+  if (!raw) return "absent";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return "corrupt";
+  }
+  return Array.isArray(parsed) ? "valid" : "corrupt";
+}
+
 function readProjectLinks(): StoredProjectLink[] {
   const raw = SettingRepo.get(PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY);
   if (!raw) return [];
@@ -351,6 +368,23 @@ function readProjectLinks(): StoredProjectLink[] {
     });
   }
   return out;
+}
+
+/**
+ * **写侧守卫**(MC-022):存档读不懂时**拒绝写入**,原字节一个不动并抛可诊断错误。
+ *
+ * 从前 `addPublicMcpProjectLink` 直接 `readProjectLinks()`(坏 → `[]`)再整表 `writeProjectLinks`,
+ * 于是「已有链接 A、字符串被截断、用户给新项目 B 加链接」会把 A 静默抹掉 —— 生成了隐式权限
+ * 更替(`A` 的 URL 失效)。损坏不是"没配过",不能让写侧拿空表当基准。
+ */
+function assertProjectLinksWritable(): StoredProjectLink[] {
+  const raw = SettingRepo.get(PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY);
+  if (classifyProjectLinks(raw) === "corrupt") {
+    throw new Error(
+      "公网项目链接配置损坏(读不懂)—— 拒绝写入以免抹掉原有链接与它们的授权;请先修复或清除该设置再试。",
+    );
+  }
+  return readProjectLinks();
 }
 
 function writeProjectLinks(links: StoredProjectLink[]): void {
@@ -428,12 +462,33 @@ function normalizeCounts(value: unknown): { processes: number; searches: number;
   return { processes: num(rec.processes), searches: num(rec.searches), ssh: num(rec.ssh) };
 }
 
-/** 把一条事件追加进持久审计环(有界),**durable**(`SettingRepo.set` 走 `persist()`)。 */
+/** 把一条事件追加进持久审计环(有界),**durable**(`SettingRepo.set` 走 `persist()`)。
+ *
+ * ★ **MC-022(第二副本):环本身读不懂时,不能在空表上追加后整环覆盖。** 从前
+ *   `publicMcpRetentionAudit()` 对坏 JSON 返回 `[]`,`appendRetentionAudit` 就在这个空表上
+ *   push 再 `SettingRepo.set(…)` —— 截断前的留存审计(哪条凭据死了、名下还挂着资源)被**永久
+ *   抹掉**。与项目链接表同一条根因。这里:读不懂就**丢弃这次追加**(审计是旁路,不该因它崩),
+ *   并把原字节留在盘上供人工查看 —— 绝不覆盖。 */
 function appendRetentionAudit(event: PublicSessionAuditEvent): void {
+  const raw = SettingRepo.get(PUBLIC_MCP_RETENTION_AUDIT_SETTING_KEY);
+  if (raw && classifyAuditRing(raw) === "corrupt") {
+    log.warn("public mcp: 留存审计环读不懂 —— 本次事件未落盘(不覆盖原字节);请修复或清除该设置。");
+    return;
+  }
   const ring = publicMcpRetentionAudit();
   ring.push(event);
   if (ring.length > MAX_RETENTION_AUDIT) ring.splice(0, ring.length - MAX_RETENTION_AUDIT);
   SettingRepo.set(PUBLIC_MCP_RETENTION_AUDIT_SETTING_KEY, JSON.stringify(ring));
+}
+
+/** 留存审计环的健康度(MC-022 第二副本)—— 与项目链接表同判据。 */
+function classifyAuditRing(raw: string | null | undefined): "absent" | "valid" | "corrupt" {
+  if (!raw) return "absent";
+  try {
+    return Array.isArray(JSON.parse(raw)) ? "valid" : "corrupt";
+  } catch {
+    return "corrupt";
+  }
 }
 
 /**
@@ -533,8 +588,13 @@ export function revalidatePublicMcpCredential(snapshot: PublicCredentialSnapshot
  * 每次请求都会走到这里(密钥比对成功之后),所以只做两次按主键的读;建会话只在
  * 第一次或会话被用户删掉之后发生。
  */
-function ensureLinkSession(projectId: string): string | null {  const project = ProjectRepo.get(projectId);
+function ensureLinkSession(projectId: string): string | null {
+  const project = ProjectRepo.get(projectId);
   if (!project) return null;
+  // ⚠️ 这里**不**用 `assertProjectLinksWritable`(那会抛):本函数在**每个请求**的热路径上。
+  // 损坏时 `readProjectLinks()` 已返回 `[]` → 下面 `link` 为 undefined → 返回 null(请求被拒),
+  // **写根本到不了**(`writeProjectLinks` 只在找到 link 后才有)。所以这里保持 fail-closed 的
+  // 降级即可,不必也不该把"拒绝"变成热路径上的异常。
   const links = readProjectLinks();
   const link = links.find((l) => l.projectId === projectId);
   if (!link) return null;
@@ -583,7 +643,7 @@ function ensureAllLinkSessions(): void {
 export function addPublicMcpProjectLink(projectId: string): PublicMcpStatus {
   const id = projectId.trim();
   if (!ProjectRepo.get(id)) throw new Error(`项目 ${id} 不存在`);
-  const links = readProjectLinks();
+  const links = assertProjectLinksWritable(); // MC-022:损坏时拒绝写入,不抹掉原有链接
   if (!links.some((l) => l.projectId === id)) {
     links.push({ projectId: id, secret: newSecret(), sessionId: null });
     writeProjectLinks(links);
@@ -602,7 +662,7 @@ export function addPublicMcpProjectLink(projectId: string): PublicMcpStatus {
 /** 删掉一条项目链接:URL 立刻失效。会话留着 —— 那是审计记录,不该跟着链接消失。 */
 export function removePublicMcpProjectLink(projectId: string): PublicMcpStatus {
   const id = projectId.trim();
-  const links = readProjectLinks();
+  const links = assertProjectLinksWritable(); // MC-022
   const next = links.filter((l) => l.projectId !== id);
   if (next.length !== links.length) {
     writeProjectLinks(next);
@@ -616,7 +676,7 @@ export function removePublicMcpProjectLink(projectId: string): PublicMcpStatus {
 /** 换某条项目链接的密钥(旧 URL 立刻失效,会话不变)。 */
 export function regeneratePublicMcpProjectLinkSecret(projectId: string): PublicMcpStatus {
   const id = projectId.trim();
-  const links = readProjectLinks();
+  const links = assertProjectLinksWritable(); // MC-022
   const link = links.find((l) => l.projectId === id);
   if (!link) throw new Error(`项目 ${id} 还没有公网链接`);
   link.secret = newSecret();
