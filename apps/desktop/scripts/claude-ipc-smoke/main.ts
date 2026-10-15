@@ -2680,6 +2680,35 @@ console.log("\n19f. 【MC-059 残余】发起者可追溯(②)+ 计划跨重启�
     eq("★ MC-017(计划核):remove 落盘失败 → 内存里仍在(与磁盘一致)", store.listAll().length, 1);
   }
 
+  // ── ★ MC-029:坏存档读成空表后,**拒绝写入** —— 下一次 put 不得覆盖原字节。
+  //    台账 E1 红例:截断的 unattended-plans.json(含 p1)→ load 得空 → put(p2) 整表回写 →
+  //    `OLD_BYTES_RETAINED false`,p1 永久丢失。修法:健康度 `corrupt` 时 commit 抛错。
+  {
+    const { UnattendedPlanStore, fileUnattendedPlanPersist, classifyUnattendedPlanArchive } =
+      await import("@main/appServices/unattendedPlanStore.js");
+    const aRec = (id: string) => ({
+      planId: id, sceneId: "s", projectId: "p", grantId: "g",
+      operations: [{ actionId: "a1", method: "m", payload: {} }],
+      maxCount: 1, createdAt: 1, status: "pending" as const,
+      completedOperationIds: [], lastStoppedAt: null, lastStopCode: null,
+    }) as never;
+    // 健康度分类：真·空 vs 损坏要分得开。
+    eq("★ MC-029:null(文件不存在)→ absent", classifyUnattendedPlanArchive(null), "absent");
+    eq("★ MC-029:非 JSON(截断)→ corrupt", classifyUnattendedPlanArchive("{ truncated"), "corrupt");
+    eq("★ MC-029:版本不符 → corrupt", classifyUnattendedPlanArchive(JSON.stringify({ version: 999, plans: [] })), "corrupt");
+    eq("★ MC-029:plans 不是数组 → corrupt", classifyUnattendedPlanArchive(JSON.stringify({ version: 1, plans: "x" })), "corrupt");
+
+    // 端到端复现 E1:盘上有一份**被截断的** p1 存档 → store 载入 → put(p2) 必须**拒绝**。
+    const blob = (() => { let t: string | null = "{ \"version\": 1, \"plans\": [ {\"pl"; return { read: () => t, write: (s: string) => { t = s; } }; })();
+    const originalBytes = blob.read();
+    const store = new UnattendedPlanStore({ persist: fileUnattendedPlanPersist(blob as never) });
+    check("★ MC-029:坏存档被识别为 corrupt", store.isArchiveCorrupt() === true, store.isArchiveCorrupt());
+    let writeThrew = false;
+    try { store.put(aRec("p2")); } catch { writeThrew = true; }
+    eq("★ MC-029:坏存档存在时 put → 拒绝(抛错,不静默)", writeThrew, true);
+    eq("★ MC-029:原字节一字未动(没被 p2 覆盖)", blob.read(), originalBytes);
+  }
+
   // 复位,免得把落了盘的示例计划带进后续用例。
   setUnattendedPlanStore(null);
   setGrantStore(null);

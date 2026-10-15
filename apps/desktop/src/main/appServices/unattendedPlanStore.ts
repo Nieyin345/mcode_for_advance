@@ -83,7 +83,20 @@ export interface UnattendedPlanEnvelope {
 export interface UnattendedPlanStorePersist {
   load(): UnattendedPlanRecord[] | null;
   save(plans: UnattendedPlanRecord[]): void;
+  /**
+   * **存档健康度**(MC-029)—— 让持有核能区分「本来是空的」与「读不懂」。
+   *
+   * 从前 `load()` 把两者都化成 `[]`,于是损坏的存档被当成"从未有过计划",下一次 `put`
+   * 整表 `save` 就把原坏文件**覆盖**了(截断前的计划正文、完成步骤、授权指针全不可恢复)。
+   * 有了这个口,持有核在 `corrupt` 时**拒绝写入**,原字节一个不动。
+   *
+   * 可选:自定义持久化(测试桩)不实现它时按 `absent` 处理(不阻塞写入)。
+   */
+  health?(): UnattendedPlanStoreHealth;
 }
+
+/** 存档健康度:不存在 / 有效 / 损坏(读不懂)。 */
+export type UnattendedPlanStoreHealth = "absent" | "valid" | "corrupt";
 
 /** 授权文件路径的姊妹:`<数据根>/appControl/unattended-plans.json`(数据根**由调用方注入**,纯字符串)。 */
 export function unattendedPlanStorePath(dataRoot: string): string {
@@ -151,11 +164,38 @@ export function parseUnattendedPlans(json: string | null): UnattendedPlanRecord[
   return env.plans.filter(isUnattendedPlanRecordShape);
 }
 
+/**
+ * **存档健康度**(MC-029)—— 与 {@link parseUnattendedPlans} **同一套判据**,只是保留
+ * "为什么空"这一层:文件不存在 = `absent`(真空);文件在但读不懂 = `corrupt`。
+ *
+ * 分母必须与 `parseUnattendedPlans` 逐条对齐(`null` / 非 JSON / 非对象 / 版本不符 /
+ * `plans` 不是数组 ⇒ corrupt),否则会出现「解析当空、健康说有效」的错配。
+ * `plans` 数组里**个别**坏记录被丢不算 corrupt —— 那是有意的「丢一条只会收紧」。
+ */
+export function classifyUnattendedPlanArchive(json: string | null): UnattendedPlanStoreHealth {
+  if (json == null) return "absent";
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    return "corrupt";
+  }
+  if (!data || typeof data !== "object") return "corrupt";
+  const env = data as Partial<UnattendedPlanEnvelope>;
+  if (env.version !== UNATTENDED_PLAN_STORE_VERSION) return "corrupt";
+  if (!Array.isArray(env.plans)) return "corrupt";
+  return "valid";
+}
+
 /** 把一份 `BlobIO` 适配成 {@link UnattendedPlanStorePersist}(与 `fileGrantPersist` 同姿势)。 */
 export function fileUnattendedPlanPersist(blob: BlobIO): UnattendedPlanStorePersist {
   return {
     load: () => parseUnattendedPlans(blob.read()),
     save: (plans) => blob.write(serializeUnattendedPlans(plans)),
+    // 只如实**报告**健康度,不在这里 import logger —— 本模块的硬约定是「不 import electron」
+    // (文件头 / 与 GrantStore 同姿势),而 `@main/lib/logger` 依赖 electron。上报由持有核的
+    // `isArchiveCorrupt()` 与调用方(装配层)负责(硬规矩 3 的"显式报出来"落在那里)。
+    health: () => classifyUnattendedPlanArchive(blob.read()),
   };
 }
 
@@ -174,11 +214,22 @@ function cloneRecord(p: UnattendedPlanRecord): UnattendedPlanRecord {
 export class UnattendedPlanStore {
   private plans = new Map<string, UnattendedPlanRecord>();
   private readonly persist?: UnattendedPlanStorePersist;
+  /** 载入时存档是否读不懂(MC-029)—— 为真则**拒绝写入**,保住原字节。 */
+  private readonly corrupt: boolean;
 
   constructor(deps: { persist?: UnattendedPlanStorePersist } = {}) {
     this.persist = deps.persist;
+    // 载入前先问健康度(MC-029):损坏的存档读成空表这件事**要记住**,否则下一次 `put`
+    // 会拿"空表"当基准整表回写,把原坏文件抹掉。既有的自定义持久化桩没实现 `health`
+    // 时按 absent 处理(不阻塞写入,保持向后兼容)。
+    this.corrupt = this.persist?.health?.() === "corrupt";
     const loaded = this.persist?.load();
     if (loaded) for (const p of loaded) this.plans.set(p.planId, p);
+  }
+
+  /** 存档此刻是否处于「读不懂、已拒绝写入」状态(供诊断 / 测试)。 */
+  isArchiveCorrupt(): boolean {
+    return this.corrupt;
   }
 
   /** 写入 / 覆盖一份计划记录(重试是同一 planId 的覆盖)。落盘走可注入的 persist。 */
@@ -219,8 +270,17 @@ export class UnattendedPlanStore {
   /**
    * **唯一的持久提交点**(MC-017)—— 先 `save` 候选全量,成功后才发布成活动表。
    * `save` 抛错时 `this.plans` 一字未动:内存与磁盘同版本。与 `GrantStore.commit` 同一条纪律。
+   *
+   * **MC-029 加的那道闸**:载入时若存档是 `corrupt`(读不懂),`this.corrupt` 为真 ——
+   * 此刻**拒绝任何写入**,把原字节原样保住,并抛出可诊断的错误。否则下一次 `put` 会拿
+   * 「损坏读成空表」当基准整表回写,把截断前的计划正文 / 完成步骤 / 授权指针**永久抹掉**。
    */
   private commit(next: Map<string, UnattendedPlanRecord>): void {
+    if (this.corrupt) {
+      throw new Error(
+        "unattended-plans.json 内容读不懂 —— 拒绝写入以免覆盖原存档(原字节已保留;请修复或删除该文件后重启)。",
+      );
+    }
     this.persist?.save([...next.values()]);
     this.plans = next;
   }

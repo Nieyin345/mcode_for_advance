@@ -76,6 +76,9 @@ export function serializeHostHookGrants(grants: HostHookGrant[]): string {
  *   - `null`(文件不存在)→ 空;
  *   - 非 JSON、非对象、版本不符、`grants` 不是数组 → 空;
  *   - 数组里**逐条**校验:形状不对的那一条**丢掉**,其余保留(丢一条授权只会收紧,不会放宽)。
+ *
+ * ⚠️ **注意**:把损坏读成空表是安全的**读**语义,但**不能**成为**写**的依据 —— 见
+ * {@link classifyHostHookGrantArchive} 与 `hostHookGrants.ts` 的 `commit`(MC-029)。
  */
 export function parseHostHookGrants(json: string | null): HostHookGrant[] {
   if (json == null) return [];
@@ -92,11 +95,34 @@ export function parseHostHookGrants(json: string | null): HostHookGrant[] {
   return env.grants.filter(isHostHookGrantShape);
 }
 
+/**
+ * **存档健康度**(MC-029,与 `unattendedPlanStore.classifyUnattendedPlanArchive` 同判据):
+ * 文件不存在 = `absent`;在但读不懂 = `corrupt`。分母与 {@link parseHostHookGrants} 逐条对齐。
+ * 个别坏记录被丢**不算** corrupt(那是有意的"丢一条只会收紧")。
+ */
+export function classifyHostHookGrantArchive(json: string | null): "absent" | "valid" | "corrupt" {
+  if (json == null) return "absent";
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    return "corrupt";
+  }
+  if (!data || typeof data !== "object") return "corrupt";
+  const env = data as Partial<HostHookGrantEnvelope>;
+  if (env.version !== HOST_HOOK_GRANT_VERSION) return "corrupt";
+  if (!Array.isArray(env.grants)) return "corrupt";
+  return "valid";
+}
+
 /** 把一份 `BlobIO` 适配成 `hostHookGrants.ts` 认的窄持久化接口。 */
 export function fileHostHookGrantPersist(blob: BlobIO): HostHookGrantPersist {
   return {
     load: () => parseHostHookGrants(blob.read()),
     save: (grants) => blob.write(serializeHostHookGrants(grants)),
+    // 只如实报告健康度,不在这里 import logger(本模块 electron-free);上报由持有核的
+    // `isArchiveCorrupt()` 与装配层负责。
+    health: () => classifyHostHookGrantArchive(blob.read()),
   };
 }
 

@@ -44,6 +44,7 @@ import { setOperationLedger } from "@main/appControl/operations.js";
 import { assembleGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import { assembleUnattendedPlanStore } from "@main/appServices/unattendedPlanStore.js";
 import { assembleHostHookGrantPersist } from "@main/hooks/hostHookGrantFile.js";
+import { isHostHookGrantArchiveCorrupt } from "@main/hooks/hostHookGrants.js";
 import { assembleSceneRuntime } from "@main/orchestration/sceneTaskRuntime.js";
 import { setVisionRelayImpl, type VisionRelayImpl } from "@main/mcp/visionRelayRegistry.js";
 // 类型-only:extensionBridge.ts 会 `import electron`,但 `import type` 在编译期被抹掉,
@@ -64,6 +65,11 @@ export interface StartupAssemblyDeps {
   configureExtensionBridgeTokenStore: (store: BridgeTokenStore) => void;
   /** 令牌存取实现(生产由 `SettingRepo` 读写 `web.bridgeToken`)。 */
   bridgeTokenStore: BridgeTokenStore;
+  /**
+   * 装配期**上报**一条损坏告警(MC-029)。可选 —— 生产传 `log.error` 一类;无头 smoke 可省。
+   * 本模块整体保持 electron-free,所以**注入**而不是直接 import `@main/lib/logger`(它依赖 electron)。
+   */
+  reportCorruption?: (message: string) => void;
 }
 
 /**
@@ -78,9 +84,21 @@ export function assembleStartup(deps: StartupAssemblyDeps): void {
   // 计划级授权 GrantStore(ARC-004 步④):落盘到 `<数据根>/appControl/grants.json`。
   assembleGrantStore(deps.dataRoot);
   // 无人值守计划存档(MC-059 残余④):落盘到 `<数据根>/appControl/unattended-plans.json`。
-  assembleUnattendedPlanStore(deps.dataRoot);
+  // ★ MC-029:装配后立刻查健康度 —— 存档读不懂时持有核会**拒绝写入**(保全原字节),这件事
+  //   必须显式报出来(硬规矩 3),否则用户看到的是"从没有过计划"。
+  if (assembleUnattendedPlanStore(deps.dataRoot).isArchiveCorrupt()) {
+    deps.reportCorruption?.(
+      "unattended-plans.json 读不懂(可能写入中断被截断)—— 已停用该存档的写入以免覆盖原字节;原文件保留在 <数据根>/appControl/ 下,修复或删除后重启即可。",
+    );
+  }
   // 主机 hook 授权(MC-061):落盘到 `<数据根>/hooks/host-hook-grants.json`。
+  // ★ MC-029:同无人值守存档 —— 读不懂时拒绝写入并显式报出来(保全原字节)。
   assembleHostHookGrantPersist(deps.dataRoot);
+  if (isHostHookGrantArchiveCorrupt()) {
+    deps.reportCorruption?.(
+      "host-hook-grants.json 读不懂(可能写入中断被截断)—— 已停用该存档的写入以免覆盖原字节;原文件保留在 <数据根>/hooks/ 下,修复或删除后重启即可。",
+    );
+  }
   // 扩展模块 action 能力的审批端口(MC-060):把 Electron 原生对话框接到 fail-closed 注入口上。
   deps.assembleModuleApprovalPort();
   // 场景任务注册表(ARC-013 步②):装配一份全新的进程内运行期(注册表 + 总账一起重置)。

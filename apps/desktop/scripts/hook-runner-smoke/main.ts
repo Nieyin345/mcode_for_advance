@@ -1179,6 +1179,31 @@ console.log("\n主机 hook 授权:签发 / 撤销落盘,重启后仍生效");
     resetP();
   }
 
+  // ── ★ MC-029:坏存档读成空表后**拒绝写入** —— 不得覆盖原字节(第二副本:hook 授权)。
+  //    台账 E1 红例:截断的 host-hook-grants.json(含 hhg-1)→ load 得空 → 保存 hhg-2 →
+  //    `AFTER_SAVE ["hhg-2"]`,原损坏字节被覆写。
+  {
+    const { classifyHostHookGrantArchive } = await import("@main/hooks/hostHookGrantFile.js");
+    const { isHostHookGrantArchiveCorrupt } = await import("@main/hooks/hostHookGrants.js");
+    eq("★ MC-029(hook):null → absent", classifyHostHookGrantArchive(null), "absent");
+    eq("★ MC-029(hook):非 JSON(截断)→ corrupt", classifyHostHookGrantArchive("{ truncated"), "corrupt");
+    eq("★ MC-029(hook):版本不符 → corrupt", classifyHostHookGrantArchive(JSON.stringify({ version: 999, grants: [] })), "corrupt");
+
+    let text: string | null = '{ "version": 1, "grants": [ { "grantId": "hhg-1"';
+    const corruptBlob = { read: () => text, write: (t: string) => { text = t; } };
+    const original = text;
+    configureHostHookGrantPersist(fileHostHookGrantPersist(corruptBlob as never));
+    // ⚠️ 这里**不能**再 `resetP()` —— `resetHostHookGrants` 会清掉 archiveCorrupt 标记,
+    //    而标记正是本用例要验的东西(`configureHostHookGrantPersist` 已重置授权表,无需 reset)。
+    check("★ MC-029(hook):坏存档被识别为 corrupt", isHostHookGrantArchiveCorrupt() === true, isHostHookGrantArchiveCorrupt());
+    let issueThrew29 = false;
+    try { issueP({ pluginId: "corrupt-plugin", version: "1.0.0", ttlMs: 600_000, now: Date.now() }); } catch { issueThrew29 = true; }
+    eq("★ MC-029(hook):坏存档存在时签发 → 拒绝(抛错,不静默)", issueThrew29, true);
+    eq("★ MC-029(hook):原字节一字未动(没被新签发覆盖)", text, original);
+    configureHostHookGrantPersist(undefined);
+    resetP();
+  }
+
   // 收尾:把持久化复位回内存版(不泄漏到套件之外)。
   configureHostHookGrantPersist(undefined);
   resetP();

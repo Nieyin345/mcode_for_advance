@@ -204,6 +204,8 @@ app.whenReady().then(async () => {
         get: () => SettingRepo.get(BRIDGE_TOKEN_SETTING_KEY),
         set: (value) => SettingRepo.set(BRIDGE_TOKEN_SETTING_KEY, value),
       },
+      // MC-029:装配期发现的存档损坏用真日志报出来(装配函数本身 electron-free,靠注入)。
+      reportCorruption: (message) => log.error(message),
     });
     // 网页版模型的工具通路:扩展从同一个服务的 `/mcp` 进来,拿 mcode 的工具表。
     // 工具表和进程内那两个 server 是同一份,审批闸门也是同一个(见 webToolHost.ts

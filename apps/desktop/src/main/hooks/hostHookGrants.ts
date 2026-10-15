@@ -152,9 +152,14 @@ export interface HostHookGrantPersist {
   load(): HostHookGrant[] | null;
   /** 落盘全量授权。 */
   save(grants: HostHookGrant[]): void;
+  /** **存档健康度**(MC-029)—— 让持有核区分「本来空」与「读不懂」,损坏时拒绝写入保全原字节。
+   *  可选:自定义持久化(测试桩)不实现时按 `absent` 处理。 */
+  health?(): "absent" | "valid" | "corrupt";
 }
 
 let persist: HostHookGrantPersist | undefined;
+/** 当前存档是否读不懂(MC-029)—— 为真则**拒绝写入**,保住原字节(见 `commit`)。 */
+let archiveCorrupt = false;
 
 /**
  * 从已载入的授权里**续上 id 序号** —— id 形如 `hhg-<n>`,取最大 n 作为 `seq` 起点,于是重启后
@@ -177,8 +182,18 @@ function seqOfLoaded(loaded: readonly HostHookGrant[]): number {
  * —— 同一进程按内存放行、重启后磁盘旧态又回来。与 `GrantStore.commit` 同一条纪律。
  */
 function commit(next: Map<string, HostHookGrant>): void {
+  if (archiveCorrupt) {
+    throw new Error(
+      "host-hook-grants.json 内容读不懂 —— 拒绝写入以免覆盖原存档(原字节已保留;请修复或删除该文件后重启)。",
+    );
+  }
   persist?.save([...next.values()]);
   grants = next;
+}
+
+/** 存档此刻是否处于「读不懂、已拒绝写入」状态(供诊断 / 测试)。 */
+export function isHostHookGrantArchiveCorrupt(): boolean {
+  return archiveCorrupt;
 }
 
 /**
@@ -190,6 +205,9 @@ function commit(next: Map<string, HostHookGrant>): void {
  */
 export function configureHostHookGrantPersist(next: HostHookGrantPersist | undefined): void {
   persist = next;
+  // 载入前先问健康度(MC-029):损坏的存档读成空表**要记住**,否则下一次签发 / 撤销会拿
+  // "空表"当基准整表回写,把原坏文件抹掉。测试桩没实现 health 时按 absent(不阻塞)。
+  archiveCorrupt = next?.health?.() === "corrupt";
   const loaded = next?.load() ?? null;
   grants = new Map();
   seq = 0;
@@ -203,6 +221,9 @@ export function configureHostHookGrantPersist(next: HostHookGrantPersist | undef
 export function resetHostHookGrants(): void {
   grants = new Map();
   seq = 0;
+  // 复位也清掉损坏标记:测试里「配置一份坏存档 → 复位 → 配置一份好存档」不该被前一次的标记
+  // 永久卡住写入(`configureHostHookGrantPersist` 每次都会重新判定,但显式清一下更不容易踩)。
+  archiveCorrupt = false;
 }
 
 /** 当前全部授权(只读快照;诊断 / 断言用)。 */
