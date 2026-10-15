@@ -316,6 +316,33 @@ if (existsSync(promptReadme)) {
   // 反向:表里出现的每个 kind 契约必须认得(表不能自己发明执行原语)。
   const invented = tableKinds.filter((k) => !contractKinds.includes(k));
   same("表里没有契约不认得的 kind(不能自己发明执行原语)", invented, []);
+
+  // ★ **每行的「现在能用吗」标记必须与 isNodeRunnable 一致。**
+  //
+  // 上面只比了种类**集合**,而 `command` 在表里**占两行**(命令进参数 / 命令进自带脚本),
+  // 两行首列都是 `command` —— 集合断言对"自带脚本那行写着 ❌"**完全看不见**。那正是
+  // MC-005 的缺口:实现早已落地(`entryRunner.ts` + `commandExecutor` 分流),README 却
+  // 还把 `entry` 形态教成"执行还没实现",而这份 README 是系统提示词指给模型读的 ——
+  // 模型照它绕开命令节点。逐行比对 ✅/❌,任一行说反了这里就红。
+  const rows = tableLines
+    .map((l) => l.split("|"))
+    .map((cells) => ({
+      kind: /`([a-z]+(?:-[a-z]+)*)`/.exec(cells[1] ?? "")?.[1] ?? "",
+      runnable: (cells[3] ?? "").includes("✅"),
+    }))
+    .filter((r) => r.kind.length > 0 && r.kind !== "kind");
+  check(
+    "★ 表里解析出了 command 的两行(否则下面的逐行比对是空过)",
+    rows.filter((r) => r.kind === "command").length === 2,
+    rows,
+  );
+  for (const r of rows) {
+    check(
+      `★ README 表里 ${r.kind} 的「能用吗」与 isNodeRunnable 一致`,
+      r.runnable === contractKinds.includes(r.kind),
+      { kind: r.kind, README标记: r.runnable ? "✅" : "❌", 契约认它能跑: contractKinds.includes(r.kind) },
+    );
+  }
 }
 
 /* ──────────────── 3. 数据根坏掉时,应用还起得来吗 ──────────────── */

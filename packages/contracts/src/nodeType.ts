@@ -38,10 +38,11 @@ import { MODULE_CAPABILITY_RUNNER_KIND, ModuleCapabilityRunnerSchema, ModuleWork
  * 要求 Mcode 执行任意代码。但这不构成限制:绝大多数第三方节点都能落进 `command`
  * (跑它自己带的脚本)。
  *
- * ⚠️ **`command` 有两种形状,实现程度不同**(见 {@link IMPLEMENTED_RUNNER_KINDS}):
- * 命令来自**节点参数**的(`entry` 缺省,内置的 `mcode.command` 那种)已实现;命令来自
- * **清单自带脚本**的(`entry` 填了,第三方插件那种)仍只定形状、未实现 —— 遇到会**明确
- * 报错**,而不是假装跑了。
+ * ⚠️ **`command` 有两种形状,两种都已实现**(见 {@link IMPLEMENTED_RUNNER_KINDS} 与
+ * {@link isNodeRunnable}):命令来自**节点参数**的(`entry` 缺省,内置的 `mcode.command`
+ * 那种)与命令来自**清单自带脚本**的(`entry` 填了,第三方插件那种,见 `entryRunner.ts`)
+ * 都真的能跑。解析基准不同——前者的命令写在图上,后者的脚本相对**清单目录**解析——但
+ * 「跑不跑得起来」这件事对两者一律为真。
  *
  * ## 三种来源与优先级
  *
@@ -642,8 +643,9 @@ export type NodeParamSpec = z.infer<typeof NodeParamSpecSchema>;
  * - `branch`:不跑东西。出边选谁,由参数 `decider` 说了算 —— `user`(默认,把决定权
  *   交给用户)或 `model`(跑一轮模型自己选,即过去的"决策节点")。
  * - `trigger`:图的起点 —— "什么情况下起一次运行"。不跑东西,它是自动化的声明。
- * - `command`:在本机跑一个进程。`param` 形状(**已实现**):跑什么由图上的参数写;
- *   `entry` 形状(第三方自带脚本,**尚未实现**):调度器遇到会明确拒绝。
+ * - `command`:在本机跑一个进程。`param` 形状:跑什么由图上的参数写;
+ *   `entry` 形状(第三方自带脚本):脚本相对**清单目录**解析,同样能跑(见 `isNodeRunnable`
+ *   与 `entryRunner.ts`)。
  *
  * `command` 的字段刻意只有最少的几个:`entry` 是**相对清单所在目录**的脚本路径
  * (解析时会拒绝逃出该目录的路径,规则抄 `pluginManifest.ts` 的 `resolveInRoot`)。
@@ -745,8 +747,8 @@ export const NodeRunnerSchema = z.discriminatedUnion("kind", [
    *
    * - **`entry` 缺省**(内置 `mcode.command` 那种):命令来自**节点参数**
    *   (见 {@link NODE_COMMAND_PARAM_KEY}),跑什么由画图的人写。
-   * - **`entry` 填了**(第三方插件那种):跑清单目录里自带的脚本。这种**仍未实现**,
-   *   调度器遇到会明确拒绝(见 {@link isNodeRunnable} 的那条补刀)。
+   * - **`entry` 填了**(第三方插件那种):跑清单目录里自带的脚本。这种**也实现了** ——
+   *   解析基准是清单目录,执行走 `entryRunner.ts`(见 {@link isNodeRunnable} 的说明)。
    *
    * ## 为什么它没有审批
    *
@@ -1951,15 +1953,12 @@ export function renderNodeTypeCatalog(entries: NodeTypeEntry[]): string {
       lines.push(`  依赖:${text}`);
     }
     if (!isNodeRunnable(m)) {
-      // **判据必须是 isNodeRunnable,不能只看 kind。** `command` 有两种形状:命令来自
-      // 节点参数的(内置 `mcode.command`)已实现,命令来自清单自带脚本的(`entry` 填了)
-      // 还没实现。只看 kind 会把内置 command 也说成"跑不了" —— 而模型是**照着这段字
-      // 建图的**,说错它就会绕开命令节点、改用又贵又慢的模型节点。
-      const why =
-        m.runner.kind === "command" && m.runner.entry !== undefined
-          ? "脚本型命令(command 自带 runner.entry)尚未实现"
-          : `执行方式 ${m.runner.kind} 尚未实现`;
-      lines.push(`  ⚠️ 这个类型当前**跑不了**(${why}),只能画进图里。`);
+      // **判据必须是 isNodeRunnable,不能只看 kind。** 从前这里按 `command` 的两种形状
+      // 分支写"脚本型命令尚未实现" —— 但两种 command 现在**都跑得起来**,`isNodeRunnable`
+      // 对它们恒真,那条分支永远不会执行(是死代码,也是一句假话)。模型是**照着这段字
+      // 建图的**,说错它就会绕开命令节点、改用又贵又慢的模型节点。所以这里只输出
+      // ``isNodeRunnable`` 自己的结论,不再二次判 kind。
+      lines.push(`  ⚠️ 这个类型当前**跑不了**(执行方式 ${m.runner.kind} 尚未实现),只能画进图里。`);
     }
   }
   return lines.join("\n");

@@ -1375,13 +1375,14 @@ class Run {
         return { status: "failed", summary: "", error: `节点类型「${node.type}」没有安装` };
       }
       if (!isNodeRunnable(manifest)) {
+        // ⚠️ **判据只有一处:`isNodeRunnable`**(见 `contracts/src/nodeType.ts` 的文件头)。
+        // 从前这里特判 ``command`` + ``entry`` 给出一句"脚本型命令节点还没有实现" —— 但
+        // `command` 的两种形状都实现了,那个特判**永远不成立**(死代码,也是给模型看的一句
+        // 假话)。现在只输出 `isNodeRunnable` 自己的结论。
         return {
           status: "failed",
           summary: "",
-          error:
-            manifest.runner.kind === "command" && manifest.runner.entry !== undefined
-              ? "脚本型命令节点(command 自带 runner.entry)还没有实现 —— 把脚本要干的活写进「命令」参数里就能跑"
-              : `执行方式「${manifest.runner.kind}」还没有实现`,
+          error: `执行方式「${manifest.runner.kind}」还没有实现`,
         };
       }
       // **触发器自己不跑东西。** 正常路径下走不到这里:被触发的那个由 `entry` 预置了

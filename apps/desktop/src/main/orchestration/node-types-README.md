@@ -103,19 +103,19 @@
 | `condition` | `{ "kind": "condition" }` | ✅ 纯规则自动挑 true / false,不启动模型、命令或 eval |
 | `trigger` | `{ "kind": "trigger" }` | ✅ 自动化的起点(手动/定时/文件/事件) |
 | `command`(命令进**参数**) | `{ "kind": "command" }` | ✅ **能跑** —— 内置的 `mcode.command` 就是这个形状:命令写在节点参数里,本机起进程跑 |
-| `command`(命令进**自带脚本**) | `{ "kind": "command", "entry": "./x.py", "interpreter": "python", "args": [] }` | ❌ **形状定好了,执行还没实现** |
+| `command`(命令进**自带脚本**) | `{ "kind": "command", "entry": "./x.py", "interpreter": "python", "args": [] }` | ✅ **能跑** —— 第三方插件随包发的脚本;脚本相对**清单所在目录**解析,本机起进程跑 |
 | `code` | `{ "kind": "code", "language": "python" }` | ✅ 能用 —— 内置的 `mcode.code`,写一段脚本跑,产出 `exitCode`/`stdout`/`stderr` |
 | `module-capability` | `{ "kind": "module-capability" }` | ✅ 内置 `mcode.module-capability`，通过同一宿主调用只读内置模块贡献，不运行用户模块或脚本 |
 
 `command` 的 `entry` 是**相对本文档所在目录**的路径,逃出这个目录的路径会被拒绝。
 
-> ⚠️ **注意区分两种 command**:
+> ⚠️ **两种 command 都能跑,区别只在「命令从哪来」**:
 >
 > - **命令写在参数里的**(`{"kind":"command"}`,内置 `mcode.command`)—— ✅ **能画、能存、能跑**。
-> - **命令来自自带脚本的**(`entry` 填了,第三方插件那种)—— 能画、能存,但**跑不了**;
->   画布上会明确标出来,执行时也会明确报错,不会假装跑过。**要把脚本干的活写进「命令」参数里。**
+> - **命令来自自带脚本的**(`entry` 填了,第三方插件那种)—— ✅ **能画、能存、能跑**;
+>   脚本相对**清单所在目录**解析,`cwd` 就是那个目录。
 >
-> 判定这件事的**唯一函数**是 `isNodeRunnable`(见 `contracts/src/nodeType.ts`)—— 
+> 判定「跑不跑得起来」的**唯一函数**是 `isNodeRunnable`(见 `contracts/src/nodeType.ts`)—— 
 > 调度器的拒绝与渲染端的徽标读的都是它,不要只看 `runner.kind` 自己判。
 
 ### 模块能力调用：只读内置贡献
