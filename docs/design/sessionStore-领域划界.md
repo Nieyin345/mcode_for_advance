@@ -96,6 +96,23 @@ store 里 import 了 **45 个 `*_SETTING_KEY`**，对应 K 域（25 个字段）
 **收益**：K 域 25 个字段 + 约 50 个 `setXxx` action（约 600–900 行）可移出。
 **风险**：低 —— 这些都是**读多写少**的偏好，路径已经存在（`reduceSettingChanged`）。
 
+> ⚠️ **否决记录（2026-10-15 实测）：① 在现有约束下做不到，别照这段直接动手。**
+>
+> 有人按这段去做了，逐字段核完得出**两个互相独立的硬约束**，任一都足以否决：
+>
+> 1. **字段是 `SessionState` 的必填成员，而这个接口住在 `sessionStoreTypes.ts`**。移字段
+>    必须同时删掉那份类型里的字段与 `setXxx` 签名 —— 这是接口契约层面就动不了（不是"缺个
+>    读设置路径"）。变异验证：只删 `sessionStore.ts` 字面量里一行 `voiceEngine`，`tsc`
+>    立刻报 `Property 'voiceEngine' is missing ... but required in type 'SessionState'`。
+> 2. **`useSetting(key)` 今天不存在**（全仓 `export function use*Setting` = 0 命中，preload
+>    的 `on:` 里也没有 setting 相关）。`useRpc` 是一次性读、**不订阅 `setting.changed`**，
+>    改用它会让手机端改设置后桌面端读到陈旧值（现在靠 store 的 `applySyncedSetting` 当场
+>    套用）—— 那是**改变行为**，不是重构。
+>
+> 所以要真做，得**先**（a）解冻 `sessionStoreTypes.ts`（或把这一簇字段/setter 拆进一个可变
+> 的片段再 re-export）、（b）造一个能订阅 `setting.changed` 的反应式读设置机制。两件都是
+> 前置工程，不是这条能顺手做的。这段设想**保留**是因为方向仍对，但**步骤缺失**。
+
 **② 给 action 一个归档机制，而不是继续往 store 加**
 
 140 个 action 只碰 ≤2 个成员，说明多数 `setXxx` 其实是**一行 `set({...})`**。
@@ -193,6 +210,40 @@ store 里 import 了 **45 个 `*_SETTING_KEY`**，对应 K 域（25 个字段）
 这需要**按功能重新划分 hooks**，是设计工作，而且 `ChatPane` 是消息流主视图 ——
 改错的影响面大。**当前没有回归网**（0 套覆盖它），所以第一步应该是
 **先建网再动刀**（仓库硬规矩 7）。本轮不排。
+
+---
+
+## 附三、其余「大文件」的逐一裁定（2026-10-15）
+
+用同一套 AST 判据（**一个文件里有 N 个互相独立的单元 → 该拆**）扫了全仓 ≥1200 行的
+文件。结论按「拆 / 不拆」分列，**不拆的也说清为什么**——避免下次有人重新调研一遍。
+
+### 不拆（判据不满足）
+
+| 文件 | 行数 | 判据结果 |
+|---|---|---|
+| `sessionStoreHelpers.ts` | 3700 | **165 个顶层块，只有 17 个 ≥40 行**；全部大块合计 1478 行（40%），其余 870 行是注释/空行。**这是「很多小函数」，不是「几个大块」** —— 拆完会变成 20 个小文件，比一个大文件更糟。⚠️ 早先我判它「跨族依赖 24+18+7 条所以不拆」，那个数字来自**我人工分的族**、不是真实块依赖；重测后**16/17 个大块零依赖**。两条路的结论一样（不拆），但**理由不同**：真实理由是「块太小太碎」。 |
+| `ChatPane.tsx` | 3767 | 见附二：一个 3367 行的巨型组件函数，不是多个单元。 |
+| `main/workflows/assets.ts` | 1758 | 4 个 Python 常量。**"内嵌"是有理由的设计**（一条路径 vs dev/打包两条，注释在文件头），且台账 MC-006/008 说这些脚本本该移出本体 —— 拆它等于给待移除的东西加固。 |
+| `renderer/lib/fileIconTables.ts` | 2982 | **刚拆出来的**（从 `fileIcon.tsx`），三块纯数据，就是这个形态的终点。 |
+
+### 值得拆但**先要补网**（本轮未做）
+
+| 文件 | 行数 | 独立单元 | 为什么没做 |
+|---|---|---|---|
+| `components/layout/LeftBar.tsx` | 2429 | 5（`SessionRow` 243 / `ProjectNode` 198 / `GroupNode` 136 / `WorktreeGroupNode` 119 / `ProjectContextMenu` 100） | **零覆盖**（`smokes-for.sh` 明说「改这里没有回归网」）。组件用的是 47 处 store 订阅，预览台要造 47 字段 stub。硬规矩 7：先补测试再动刀。 |
+| `components/settings/PluginsPanel.tsx` | 2349 | 5（`MarketplacePane` 332 / `HookGrantsSection` 228 / `ComponentDetails` 132 …） | 同上，零覆盖。 |
+| `components/ide/GitRepoCard.tsx` | 1998 | 5（`CommitBox` 257 **dep=0** / `FileRow` 207 / `BranchGroup` 99 **dep=0** / `FileGroup` 85） | 零覆盖；`dep=0` 的两个是纯搬迁，风险最低，可作**下一步的首选**。 |
+| `components/settings/workflows/ParamField.tsx` | 1276 | 5 | 零覆盖。 |
+
+### 建网的正确路子（已验证存在）
+
+`scripts/ui-probe/probe.mjs` + `scripts/flow-preview/` 那套：**真浏览器 + 真鼠标键盘 +
+可计算的像素**（取坐标像素比 RGB、数非背景色像素、算对比度、比 scrollWidth/clientWidth、
+hitTest）。判据是**测量值**，不是"我看截图觉得对"。
+
+模板四件套：`index.html` + `entry.tsx`（真渲染组件）+ `store-stub.ts`（造 store 数据）+
+`api-stub.ts`。`run.sh` 用 esbuild 打 iife，再跑 `drive-*.mjs`。
 
 ## 附：13 个域（可复用为分区名）
 
