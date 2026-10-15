@@ -28,6 +28,7 @@ import { makeWorkflowId, uniqueWorkflowName } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/nodeType";
 import { SettingRepo, WorkflowRepo } from "@main/store/repositories.js";
+import { log } from "@main/lib/logger.js";
 import { uiLocale } from "@main/lib/dialogText.js";
 import { BUILTIN_WORKFLOWS } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
@@ -399,18 +400,50 @@ export function removeWorkflow(id: string): { ok: boolean; wasBuiltin: boolean }
  *  的回落目标;放 workflows 表会被 listWorkflows 当成覆盖行列出来。 */
 const WORKFLOW_PINNED_DEFAULTS_KEY = "workflow.pinnedDefaults";
 
-/** 读自定默认表。存坏(JSON 坏/形状不对)按**空表**处理 —— 与屏蔽规则同一条纪律:
- *  坏数据退回"没配过"(恢复默认落回出厂),不反过来把用户挡死。 */
-function loadPinnedDefaults(): Record<string, WorkflowDoc> {
+/**
+ * 自定默认表的读出结果 —— **三态,不是 `Record`。
+ *
+ * ## 为什么必须是三态(MC-028)
+ *
+ * 从前 `loadPinnedDefaults` 把"坏数据"和"恰好是空表"都塌成 `{}`。读侧塌陷没问题
+ * (退回"没配过"是对的);但 {@link pinWorkflowDefault} 是**读-改-写**:它拿这个 `{}`
+ * 当写入基准,`map[id] = doc` 之后整份写回 —— 盘上已有的 A/B 两份快照就被当成
+ * "不存在",在新写入那一刻**静默丢掉**。字符串被截断(断电、磁盘满、手工改坏)
+ * 正是这个形状。
+ *
+ * 所以 `corrupt` 单独一态:**写侧见到它就拒绝**(旧字节一个都不动),读侧仍可降级
+ * 成空表继续跑 —— 与 `secretMapStore.ts` 同一条纪律(损坏不静默跳过,见仓库硬规矩 3)。
+ */
+type PinnedDefaultsRead =
+  | { kind: "ok"; map: Record<string, WorkflowDoc> }
+  | { kind: "corrupt"; reason: string };
+
+/** 读自定默认表,区分**三态**。`raw === null`(从没钉过)= 合法的空表,不是损坏。
+ *  损坏一律**记日志**(上报,硬规矩 3)—— 用户手改坏那一行、或者字符串被截断时,
+ *  日志是他唯一的线索(读侧退回空表是刻意的,那是给"恢复默认落回出厂"用的降级)。 */
+function readPinnedDefaults(): PinnedDefaultsRead {
   const raw = SettingRepo.get(WORKFLOW_PINNED_DEFAULTS_KEY);
-  if (raw === null) return {};
+  if (raw === null) return { kind: "ok", map: {} };
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return parsed as Record<string, WorkflowDoc>;
-  } catch {
-    return {};
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      const reason = `顶层是 ${parsed === null ? "null" : Array.isArray(parsed) ? "数组" : typeof parsed},期望对象`;
+      log.error(`${WORKFLOW_PINNED_DEFAULTS_KEY}: 自定默认快照形状不对,已当作空表继续(盘上内容未动):${reason}`);
+      return { kind: "corrupt", reason };
+    }
+    return { kind: "ok", map: parsed as Record<string, WorkflowDoc> };
+  } catch (err) {
+    const reason = (err as Error).message;
+    log.error(`${WORKFLOW_PINNED_DEFAULTS_KEY}: 自定默认快照不是合法 JSON,已当作空表继续(盘上内容未动):${reason}`);
+    return { kind: "corrupt", reason };
   }
+}
+
+/** 读侧:坏数据退回**空表**(恢复默认落回出厂,不反过来把用户挡死)。写侧**不许**用
+ *  它当基准 —— 那是 MC-028;写侧一律走 {@link readPinnedDefaults} 并拒绝 `corrupt`。 */
+function loadPinnedDefaults(): Record<string, WorkflowDoc> {
+  const read = readPinnedDefaults();
+  return read.kind === "ok" ? read.map : {};
 }
 
 /**
@@ -427,7 +460,18 @@ export function pinWorkflowDefault(id: string): { ok: boolean; error?: string } 
   if (workflowReviewError(doc) !== null) {
     return { ok: false, error: "这一版还在等待审阅 —— 先在审阅里启用,再把它设为默认" };
   }
-  const map = loadPinnedDefaults();
+  // ⚠️ **MC-028:坏表不许当写入基准。** 这是"读-改-写":盘上那份若读不出来,`loadPinnedDefaults`
+  // 会给一个空表,`map[id] = doc` 之后整份写回 —— 盘上已有的 A/B 两份快照就被当成
+  // "不存在",在这一刻**静默丢掉**。所以先三态读,`corrupt` 就拒绝、盘上一个字节不动,
+  // 并如实报错(硬规矩 3:坏东西显式报出来)。用户先修好/删掉那一行设置再重试。
+  const read = readPinnedDefaults();
+  if (read.kind === "corrupt") {
+    return {
+      ok: false,
+      error: "自定默认快照表已损坏,读不出已有的默认 —— 为免把它们覆盖掉,这次没有保存。先修复设置(或删掉损坏的快照)再试。",
+    };
+  }
+  const map = read.map;
   map[id] = doc;
   SettingRepo.set(WORKFLOW_PINNED_DEFAULTS_KEY, JSON.stringify(map));
   return { ok: true };

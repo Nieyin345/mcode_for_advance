@@ -1848,6 +1848,77 @@ console.log("\n自定义 UI 运行自动化(回收站)");
   eq("不存在的大类不当成空范围", resGroupGone.error, "这个大类已经不存在了");
 }
 
+/* ──────────────── 21. ★ MC-028:损坏的默认快照表不许当写入基准 ──────────────── */
+
+/**
+ * 「设为默认」是**读-改-写**:`loadPinnedDefaults()` → `map[id] = doc` → 整份写回。
+ * 从前读坏数据时它返回 `{}`(塌成"没配过"),于是盘上已有的 A/B 两份快照被当成
+ * "不存在",在写入那一刻**静默丢掉**。存储字符串被截断(断电 / 磁盘满 / 手改坏)
+ * 正是这个形状。
+ *
+ * 判据立在**盘上的字节**上("旧快照有没有被抹掉")和**用户看到的那行字**上
+ * ("有没有被告知"),不立在内部函数名上。写侧见到损坏必须 fail-closed(旧字节一个
+ * 都不动),读侧仍降级成空表 —— 与 `secretMapStore.ts` 同一条纪律(硬规矩 3)。
+ */
+console.log("\n★ 损坏的自定默认表不能被静默覆盖");
+
+{
+  const KEY = "workflow.pinnedDefaults";
+
+  // 夹具:先正常钉两份(A、B)—— 这就是"已有 A/B 快照"。
+  for (const id of ["wf_pinA", "wf_pinB"]) {
+    await callAsync(IPC.WORKFLOW_SAVE, { workflow: goodDoc({ id, name: id }) });
+    await callAsync(IPC.WORKFLOW_PIN_DEFAULT, { id });
+  }
+  const before = SettingRepo.get(KEY)!;
+  check(
+    "夹具:A / B 两份快照确实钉在盘上",
+    before.includes("wf_pinA") && before.includes("wf_pinB"),
+    before.slice(0, 80),
+  );
+
+  // 把存储字符串**截断** —— 正是 MC-028 的形状。
+  const truncated = before.slice(0, Math.floor(before.length / 2));
+  SettingRepo.set(KEY, truncated);
+  const bytesOnDisk = SettingRepo.get(KEY)!;
+  eq("夹具:盘上现在是一段截断的坏 JSON", bytesOnDisk, truncated);
+
+  // 用户给 C 设默认 —— 从前这里会把 A/B 当成"不存在"、整份写回,把 A/B 抹掉。
+  await callAsync(IPC.WORKFLOW_SAVE, { workflow: goodDoc({ id: "wf_pinC", name: "wf_pinC" }) });
+  const pinBefore = logLines.length;
+  const res = obj(await callAsync(IPC.WORKFLOW_PIN_DEFAULT, { id: "wf_pinC" }));
+
+  eq("★ 坏表 → 拒绝设默认(不是默默成功)", res.ok, false);
+  check(
+    "★ 拒绝时说清了原因(不是空错误)",
+    typeof res.error === "string" && (res.error as string).length > 10,
+    res.error,
+  );
+  // ★ **判据立在盘上的字节上**:旧的那段坏字节一个都没动 —— 没被一个空表盖掉。
+  eq("★ 盘上的字节一个都没变(旧快照没被抹掉)", SettingRepo.get(KEY), bytesOnDisk);
+  check(
+    "★ 而且日志里说了话(用户唯一的线索)",
+    logLines.slice(pinBefore).some((l) => l.includes("workflow.pinnedDefaults")),
+    logLines.slice(pinBefore),
+  );
+
+  // **区分「真·空表」与「损坏表」**:合法 JSON 的 `{}` 不是损坏,照样能钉。
+  SettingRepo.set(KEY, "{}");
+  const emptyOk = obj(await callAsync(IPC.WORKFLOW_PIN_DEFAULT, { id: "wf_pinA" }));
+  eq("★ 合法的空表能钉(空 ≠ 坏)", emptyOk.ok, true);
+
+  // 修好表(把 A/B 放回去)之后:设默认成功,而且 A/B 一个不丢。
+  SettingRepo.set(KEY, before);
+  const ok2 = obj(await callAsync(IPC.WORKFLOW_PIN_DEFAULT, { id: "wf_pinC" }));
+  eq("修好后 → 设默认成功", ok2.ok, true);
+  const after = SettingRepo.get(KEY)!;
+  check(
+    "而且 A/B 两份旧快照都还在(只新增了 C,没有丢)",
+    after.includes("wf_pinA") && after.includes("wf_pinB") && after.includes("wf_pinC"),
+    after.slice(0, 120),
+  );
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 console.log(`\norchestration-ipc-smoke: ${checks - failures}/${checks} 通过`);
