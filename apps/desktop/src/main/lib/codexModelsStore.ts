@@ -27,6 +27,7 @@ import { randomUUID } from "node:crypto";
 import type { CodexModelOption, CodexProviderConfig, CodexProviderPublic } from "@contracts/codexModel";
 import { SettingRepo } from "@main/store/repositories.js";
 import { encrypt, decrypt } from "@main/lib/secretStore.js";
+import { readSecretMap, writeSecretMap } from "@main/lib/secretMapStore.js";
 import { log } from "@main/lib/logger.js";
 
 const PROVIDERS_SETTING_KEY = "codexProviders";
@@ -72,19 +73,11 @@ function writeProviders(list: StoredProvider[]): void {
 }
 
 function readKeyMap(): KeyMap {
-  const raw = SettingRepo.get(KEYS_SETTING_KEY);
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? (parsed as KeyMap) : {};
-  } catch (err) {
-    log.error(`codexProviderKeys: failed to parse: ${(err as Error).message}`);
-    return {};
-  }
+  return readSecretMap(KEYS_SETTING_KEY, "Codex 供应商密钥");
 }
 
 function writeKeyMap(map: KeyMap): void {
-  SettingRepo.set(KEYS_SETTING_KEY, JSON.stringify(map));
+  writeSecretMap(KEYS_SETTING_KEY, map);
 }
 
 function validateProvider(id: string, cfg: CodexProviderConfig): string | null {

@@ -971,6 +971,12 @@ export interface SessionState {
   >;
   /** User-defined custom-model configs (desensitized — tokens masked). */
   customModels: CustomModelPublic[];
+  /** 加密密钥表（`customModelKeys`）读出过损坏内容。
+   *
+   *  为真时 {@link customModels} 会**显得比实际少**（读不出来的当没有），所以
+   *  设置页要显示"密钥表损坏"——否则用户会以为自己的配置凭空消失了。
+   *  main 侧算好下发（`customModel.list` 的 `storeInvalid`），渲染端不自己判断。 */
+  customModelsStoreInvalid: boolean;
   /** Registered AI backends from `provider.list`. Empty until initDeferred. */
   providers: ProviderInfo[];
   /** Pi SDK models the user can pick (from ~/.pi/agent/models.json +
@@ -2813,6 +2819,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   customModelId: null,
   lastModelByProvider: EMPTY_LAST_MODEL_BY_PROVIDER,
   customModels: EMPTY_CUSTOM_MODELS,
+  customModelsStoreInvalid: false,
   providers: EMPTY_PROVIDERS,
   piAvailableModels: EMPTY_PI_MODELS,
   codexAvailableModels: EMPTY_CODEX_MODELS,
@@ -7349,8 +7356,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   reloadCustomModels: async () => {
     try {
-      const { models } = await api.customModel.list();
-      set({ customModels: models });
+      const { models, storeInvalid } = await api.customModel.list();
+      set({ customModels: models, customModelsStoreInvalid: storeInvalid });
       // A persisted composer pick whose custom config was deleted falls back
       // to auto.
       validateComposerSelection(set, get);

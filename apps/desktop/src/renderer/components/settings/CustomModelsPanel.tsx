@@ -681,6 +681,7 @@ type ListItem = { kind: Family; id: string; name: string; sub: string };
 export function CustomModelsPanel() {
   const { t } = useI18n();
   const customModels = useSessionStore((s) => s.customModels);
+  const customModelsStoreInvalid = useSessionStore((s) => s.customModelsStoreInvalid);
   const reloadCustomModels = useSessionStore((s) => s.reloadCustomModels);
 
   const [tab, setTab] = useState<Family>("claude");
@@ -1163,6 +1164,18 @@ export function CustomModelsPanel() {
         className="mb-3"
         title={t("settings.customModels.title")}
       />
+
+      {/* 密钥表损坏 —— 必须显式说出来。损坏时上面的清单会**显得比实际少**
+          （读不出来的当没有），不说的话用户会以为自己的配置凭空消失了。
+          同 agentSsh 的 storeInvalid 一个路子。 */}
+      {customModelsStoreInvalid && (
+        <div
+          data-slot="store-invalid"
+          className="mb-3 rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-[0.7857em] text-danger"
+        >
+          {t("settings.customModels.storeInvalid")}
+        </div>
+      )}
 
       {/* ───────── Claude / Pi family tabs ───────── */}
       <div className="mb-3 flex w-fit items-center gap-0.5 rounded-lg border border-edge bg-surface/40 p-0.5">

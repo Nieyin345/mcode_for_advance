@@ -87,6 +87,13 @@ function toPublic(r: Record_): CustomModelPublic {
 }
 
 export const CustomModelStore = {
+  /** 真模块有这一条（密钥表损坏上报，给 `customModel.list` 的 `storeInvalid` 用）。
+   *  本套是内存桩，永远不损坏 —— 但**方法必须在**，否则真代码按真模块的形状调它会炸
+   *  （桩比真模块少一个方法，与"桩比真模块多导出"是同一种漂移）。 */
+  keysStoreInvalid(): boolean {
+    return false;
+  },
+
   listPublic(): CustomModelPublic[] {
     return records.map(toPublic);
   },

@@ -24,8 +24,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import type { PiModelsFile, PiProviderConfig, PiProviderPublic } from "@contracts/piModel";
-import { SettingRepo } from "@main/store/repositories.js";
 import { encrypt, decrypt } from "@main/lib/secretStore.js";
+import { readSecretMap, writeSecretMap } from "@main/lib/secretMapStore.js";
 import { log } from "@main/lib/logger.js";
 
 /** Encrypted apiKey map keyed by provider name. Stored as plain JSON in the
@@ -34,19 +34,11 @@ const KEYS_SETTING_KEY = "piProviderKeys";
 type KeyMap = Record<string, string>;
 
 function readKeyMap(): KeyMap {
-  const raw = SettingRepo.get(KEYS_SETTING_KEY);
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? (parsed as KeyMap) : {};
-  } catch (err) {
-    log.error(`piProviderKeys: failed to parse: ${(err as Error).message}`);
-    return {};
-  }
+  return readSecretMap(KEYS_SETTING_KEY, "Pi 供应商密钥");
 }
 
 function writeKeyMap(map: KeyMap): void {
-  SettingRepo.set(KEYS_SETTING_KEY, JSON.stringify(map));
+  writeSecretMap(KEYS_SETTING_KEY, map);
 }
 
 /** Path to ~/.pi/agent/models.json (Pi SDK's default read target). */

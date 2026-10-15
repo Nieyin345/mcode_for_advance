@@ -291,7 +291,7 @@ const delRes = (await call(IPC.CUSTOM_MODEL_DELETE, { id: savedId })) as {
   models: Array<Record<string, unknown>>;
 };
 same("删掉之后列表里就没有它了", delRes.models, []);
-same("再 list 一次也还是没有", (await call(IPC.CUSTOM_MODEL_LIST)) as unknown, { models: [] });
+same("再 list 一次也还是没有", ((await call(IPC.CUSTOM_MODEL_LIST)) as { models: unknown[] }).models, []);
 eq(
   "它的密钥也跟着没了（getToken 拿不到）",
   ((await call(IPC.CUSTOM_MODEL_GET_TOKEN, { id: savedId })) as { token: unknown }).token,

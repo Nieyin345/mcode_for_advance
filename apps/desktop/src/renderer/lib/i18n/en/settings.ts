@@ -453,6 +453,7 @@ export const en = {
   "settings.customModels.pullModelsNeedUrl": "Fill in the base URL first.",
   "settings.customModels.listModelsFailed": "Could not fetch the model list: {error}. You can still type model ids manually.",
   "settings.customModels.listModelsEmpty": "The endpoint returned no models. Please type model ids manually.",
+  "settings.customModels.storeInvalid": "The key store could not be read, so the list below may be incomplete (entries that failed to load are shown as absent). Nothing on disk was changed — re-saving the affected entries will overwrite the bad record.",
   "settings.customModels.apiKeyHint": "The key is encrypted with safeStorage in the settings table and injected into Pi at turn start.",
   "settings.customModels.apiKeyKeepPlaceholder": "Empty = keep current key",
   "settings.customModels.authHeaderLabel": "Add Authorization: Bearer header automatically",

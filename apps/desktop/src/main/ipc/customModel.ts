@@ -50,7 +50,12 @@ const TEST_TIMEOUT_MS = 30_000;
 
 export function registerCustomModelHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.CUSTOM_MODEL_LIST, () => {
-    return { models: CustomModelStore.listPublic() };
+    return {
+      models: CustomModelStore.listPublic(),
+      // 密钥表损坏时清单会显得少（读不出来的当没有），界面据此显示"密钥表损坏"
+      // 而不是让用户以为配置凭空消失。同 `agentSsh.list` 的 storeInvalid。
+      storeInvalid: CustomModelStore.keysStoreInvalid(),
+    };
   });
 
   ipcMain.handle(IPC.CUSTOM_MODEL_SAVE, (_evt, raw) => {

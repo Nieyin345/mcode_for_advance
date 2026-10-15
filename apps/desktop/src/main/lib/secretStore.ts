@@ -45,6 +45,7 @@ import type {
 import { resolveProtocol } from "@contracts/customModel";
 import { sanitizeCustomHeaders } from "@main/providers/upstreamHeaders.js";
 import { SettingRepo } from "@main/store/repositories.js";
+import { readSecretMap, writeSecretMap, secretMapCorrupted } from "@main/lib/secretMapStore.js";
 import { log } from "@main/lib/logger.js";
 
 /** Settings-table key for the encrypted-token map. */
@@ -94,18 +95,11 @@ export function decrypt(b64: string): string {
 }
 
 function readKeyMap(): KeyMap {
-  const raw = SettingRepo.get(KEYS_SETTING_KEY);
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? (parsed as KeyMap) : {};
-  } catch {
-    return {};
-  }
+  return readSecretMap(KEYS_SETTING_KEY, "自定义模型密钥");
 }
 
 function writeKeyMap(map: KeyMap): void {
-  SettingRepo.set(KEYS_SETTING_KEY, JSON.stringify(map));
+  writeSecretMap(KEYS_SETTING_KEY, map);
 }
 
 /** Normalize a possibly-undefined authMode to a concrete value (default
@@ -286,6 +280,18 @@ function maskToken(plain: string): string {
 }
 
 export const CustomModelStore = {
+  /**
+   * 加密密钥表读出过损坏内容（进程生命周期内只增不减）。
+   *
+   * 为真时 {@link listPublic} 的清单会**显得比实际少**（读不出来的一律当没有），
+   * 所以设置页必须据此显示"密钥表损坏"，而不是让用户以为配置凭空消失了。
+   * 暴露成方法而不是让 RPC 层 import 内部常量，是为了让"损坏"这件事的**定义**
+   * 留在这份存储自己手里。
+   */
+  keysStoreInvalid(): boolean {
+    return secretMapCorrupted(KEYS_SETTING_KEY);
+  },
+
   /** List all configs (desensitized — tokens masked, never cleartext). */
   listPublic(): CustomModelPublic[] {
     const metas = readMeta();

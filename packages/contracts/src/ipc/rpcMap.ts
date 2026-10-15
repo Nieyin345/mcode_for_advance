@@ -314,8 +314,12 @@ export interface RpcMap {
    *  window, then pushes `notification:focusSession` so the renderer navigates. */
   "notification.focusSession": (input: FocusSessionInput) => Promise<void>;
   // Custom models (user-defined Anthropic-compatible endpoints)
-  /** 列全部自定义模型配置(**脱敏**版,不含 token;取明文另走 `customModel.getToken`)。 */
-  "customModel.list": () => Promise<{ models: CustomModelPublic[] }>;
+  /** 列全部自定义模型配置(**脱敏**版,不含 token;取明文另走 `customModel.getToken`)。
+   *
+   *  `storeInvalid`:加密密钥表(`customModelKeys`)读出过损坏内容。为真时**清单会显得
+   *  比实际少**(读不出来的一律当没有),设置页据此显示"密钥表损坏",而不是让用户以为
+   *  自己的配置凭空消失了。同 `agentSsh.list` 的 `storeInvalid` 一个路子。 */
+  "customModel.list": () => Promise<{ models: CustomModelPublic[]; storeInvalid: boolean }>;
   /** 新建或更新一份自定义模型配置(传 `id` 且存在即更新,**token 缺省时保留旧的**)。失败时抛的话是**给人看的中文**——设置页把它原样贴在红字里。 */
   "customModel.save": (input: SaveCustomModelInput) => Promise<{ models: CustomModelPublic[] }>;
   /** 删一份自定义模型配置(连同加密 token 一起删)。id 不存在**不报错**、静默当成功(只按 id 过滤)。返回删完的脱敏清单。 */

@@ -103,54 +103,55 @@ MC-009 / MC-011 / MC-027 / MC-031 那一类"静默失败/假成功"，根因都�
 |---|---|---|---|
 | `readKeyMap` / `writeKeyMap` | **3** | **是，逐行同构** | ⚠️ **`secretStore` 那份坏数据时静默返回 `{}`；另两份 `log.error`** |
 | `describeFsError` | **3** | **是，文案有差** | ⚠️ 同一 EISDIR，`files.ts` 说"目标不是一个文件"，`memory/store.ts` 说"不是一个文件" |
-| `pathWithin` | 4 | **2 真 2 转发** | ⚠️ `ipc/skills.ts:89` 是**字面路径版**，不跟 symlink |
+| `pathWithin` | 4 | **1 真 1 转发 2 同名但语义不同** | ✅ `ipc/skills.ts:89` 的**字面版是刻意的**（见下），不是缺陷 |
 | `readJsonBody` | 3 | **是，逐行同构** | HTTP 请求体读取，三份各自实现 |
 | `errText` / `describeFetchError` / `toUnpackedPath` | 3 / 3 / 3 | 是 | 语义各偏一点 |
 
 ### 两个有实际后果的
 
-**（a）`ipc/skills.ts:89` 绕过 symlink 围栏**
+**（a）~~`ipc/skills.ts:89` 绕过 symlink 围栏~~ —— ✅ 已核实：这不是缺陷，是我判错了。**
+
+> **2026-10-15 更正。** 本报告初稿把 `ipc/skills.ts` 那份字面路径 `pathWithin`
+> 列为"绕过 symlink 围栏"的缺陷，并按其建议改成了转发给 `realPathWithin`
+> —— **改完 `skills-management-smoke` 立刻红了**，红的是这条：
+>
+> ```
+> FAIL symlink/junction deletion removes only the link, never the shared target
+> ```
+>
+> 读源码确认了设计意图（`skills.ts:1005` 的注释）：
+>
+> > a symlinked skill (common when users link a shared checkout like gstack)
+> > must only have the LINK removed — unlinking the target would destroy the
+> > shared source.
+>
+> **技能目录允许是指向工区外的符号链接**，那是用户链共享 checkout 的常规做法；
+> 删除分支专门用 `lstat` + `unlink` 只删链接。**字面判定正是为了让这种链接存在**。
+> 换成跟物理目的地的判定，链接会被判越界 → 从列表消失、也删不掉 → 功能没了。
+>
+> `realPathWithin.ts` 的文件头其实早就写了这条区分（"问『这份文件是不是库里的记录』"
+> 与"问『往这儿写会不会改到库』"是两问，一个函数兼不了）。我读到了那段还是判错了。
+>
+> **保留的改进**：原注释只写 "same logic as files.ts pathWithin" —— 那句话确实
+> **误导人**（不是"same"）。已改成解释"为什么这里**必须**用字面判定"，并指向
+> 那条两问区分。**代码一行未动。**
+>
+> **教训**（写进下面的"未做完"）：我拿"同名函数必是同义"当判据推出来的结论是错的；
+> 是既有的回归网把我拦住的。**这类判断本应先跑一遍相关套件再写进报告。**
+
+**（b）`secretStore` 的静默**（已修，见下）
+
+三份 `readKeyMap` 逐行同构，**唯一差别**是后者不打日志：
 
 ```ts
-/** True if `abs` is inside `root` (or equals it), after normalizing both.
- *  Containment check for write/delete ops — same logic as files.ts pathWithin.
- *  Separator-aware so "/foo/bar" doesn't match root "/foo/ba". */
-function pathWithin(root: string, abs: string): boolean {
-  const r = path.resolve(root);
-  const a = path.resolve(abs);
-  if (a === r) return true;
-  return a.startsWith(r + sep);
-}
+// piModelsStore.ts / codexModelsStore.ts
+} catch (err) { log.error(`piProviderKeys: failed to parse: ${(err as Error).message}`); return {}; }
+// secretStore.ts  ← 少了那行
+} catch { return {}; }
 ```
 
-**注释说 "same logic as files.ts pathWithin" —— 这句话是错的。** `files.ts` 走的是
-`lib/pathGuard.ts` → `lib/realPathWithin.ts`，那份**跟 symlink/junction 的物理目的地**；
-这一份只看字面。于是技能目录的**写/删**操作，在"工作区里的链接指向工作区外面"时
-**判它合法**。
-
-**已核对的调用点**（全部是写/删/改名/拷贝）：
-
-| 行 | 操作 |
-|---|---|
-| `skills.ts:950` | 创建技能目录 |
-| `skills.ts:965` | 改名（`newDir`） |
-| `skills.ts:995` | **删除**技能目录 |
-| `skills.ts:1049` / `:1054` | 库↔通用库拷贝（源 / 目的地两道） |
-| `skills.ts:1327` | 全局技能根的目标围栏 |
-
-⚠️ **一处要说明白，免得把严重性讲过头**：`:1049` 的 `srcDir` 来自
-`skillNamesInRoot()` 的扫描结果，**不是用户输入**；`:1054` / `:1327` 的
-`destDir` 是 `path.join(root, name)`，而 `name` 来自已发现的技能名。
-所以这几处**当前很难被实际触发**——真正能被用户名字直接影响的只有
-`:950`（`input.name`）和 `:965`（`input.newName`），而这两处紧接着还有
-`fs.lstat` 检查。
-
-**结论**：这是一处**判据不一致**（同一件事两种判据）而非**活跃可利用的漏洞**。
-但按硬规矩 5「共享实现只有一份」它就该收敛——而且它是**唯一一处漏网**的，
-`agentTools.ts:2984` 已经修好了。
-
-（`mcp/agentTools.ts:2984` 有一模一样的函数名，但它是**正确的转发**，注释里还专门写了
-MC-001/MC-006 的修复经过——说明这个坑踩过一次，只是 `ipc/skills.ts` 没跟上。）
+**存储损坏时，用户的 API Key 表读取失败且没有任何日志** —— 违反硬规矩 3
+「坏东西显式报出来，不静默跳过」，而且发生在**凭据**上。这是真的，已修。
 
 **（b）`secretStore` 的静默**
 
@@ -303,7 +304,7 @@ MC-001/MC-006 的修复经过——说明这个坑踩过一次，只是 `ipc/ski
 | # | 问题 | 值不值得做 | 为什么 |
 |---|---|---|---|
 | 一 | 451 处散装 + 9371 行上帝对象 | **最值得** | 它是**其他很多问题的根因**（静默失败、状态不一致）；而且还在恶化 |
-| 二 | 5 组重复实现（2 组有行为差异） | **值得，且便宜** | 收敛成本低；两处差异（凭据静默、symlink 围栏）是**安全相关** |
+| 二 | 5 组重复实现（1 组有行为差异） | **值得，且便宜** | 收敛成本低；`secretStore` 那处静默**安全相关**。⚠️`pathWithin` 已排除（是我判错） |
 | 三 | 三引擎能力无统一判据 | **值得** | 不做的话 MC-009 类问题会**持续再生** |
 | 四 | 动效总闸 / 高对比度 | **值得，便宜** | 半天量级；同时补无障碍缺口 + 一个自配置开关 |
 | 五 | ChatPane 3766 行零测试 | 值得，但**成本高** | 要先切开才能测；排在切 store 之后 |
@@ -329,3 +330,9 @@ MC-001/MC-006 的修复经过——说明这个坑踩过一次，只是 `ipc/ski
    （Claude 每个工具的硬性约束 vs mcode 的对应）没有完整写进本文——
    那部分更适合直接进台账，按 MC 编号维护。
 5. **本文全部是 E2**。没有一条做过变异验证，没有一条有 E1 红/绿例。
+6. **⚠️ 本报告出过一次实打实的误判**（`pathWithin`，见第二节 (a) 的更正）：
+   我把"同名函数"当成了"同一语义"，据此判定 `ipc/skills.ts` 绕过 symlink 围栏
+   —— 错的。该函数是**刻意**的字面判定，为的是允许符号链接指向共享 checkout。
+   是既有的 `skills-management-smoke` 把我拦住的。
+   **教训**：结构性判断在写进报告前，应先跑一遍相关回归网；
+   "同名"不是判据，"读注释 + 跑测试"才是。

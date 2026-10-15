@@ -84,7 +84,19 @@ import {
 import type { EnginesMatrixStatus } from "@contracts/ipc";
 
 /** True if `abs` is inside `root` (or equals it), after normalizing both.
- *  Containment check for write/delete ops — same logic as files.ts pathWithin.
+ *
+ *  ⚠️ **这里刻意用字面判定，不是「漏了跟 symlink」。** 与 files/git/LSP 共用的
+ *  `realPathWithin`（跟物理目的地）**语义不同，且这里需要的正是字面那一半**：
+ *
+ *  技能目录**允许**是指向工区外的符号链接 —— 那是用户把共享 checkout（如 gstack）
+ *  链进来的常规做法（见 `SKILLS_DELETE` 的 `lstat` 分支）。若换成跟物理目的地的
+ *  判定，`root/<link> → 外部` 会被判越界，那个链接就从列表里消失、也删不掉，
+ *  共享 checkout 的功能直接没了（`skills-management-smoke` 有一条专门钉它）。
+ *
+ *  真正的越界（`../` 逃逸）在这里由字面 `startsWith(root + sep)` 挡住；而"删到
+ *  共享目标"由删除处的 `lstat` + `unlink` 只删链接来防 —— **两问分开答**，
+ *  正是 `realPathWithin.ts` 文件头写的那条区分（资料库 MC-001）。
+ *
  *  Separator-aware so "/foo/bar" doesn't match root "/foo/ba". */
 function pathWithin(root: string, abs: string): boolean {
   const r = path.resolve(root);
