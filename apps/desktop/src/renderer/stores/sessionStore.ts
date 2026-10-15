@@ -1,3 +1,26 @@
+// ───────────────────────────────────────────────────────────────────────────
+// 职责分区（2026-10-15）
+//
+// 本文件是全局唯一的会话 store；下面的巨大对象字面量按「域」分区，
+// 分区名前缀（A–M / 0）与清单来自 docs/design/sessionStore-领域划界.md
+// 的「附：13 个域」一节。每个域块前有一行注释头：
+//
+//     // ─────────────── F 编辑器 / IDE ───────────────
+//
+// 规矩：**新加 action 必须落在某个分区里。** 不许随手追加到文件末尾或
+// 任意位置 —— 那样这个文件会重新退化成「什么都往里塞」的杂物间，而它
+// 正是 6061 行 action 里平均只碰 3.5 个成员、140 个只碰 ≤2 个的原因：
+// 不是逻辑纠缠，是缺归档。先归位，再谈别的。
+//
+// 为什么分区而不是拆成多个 store：164 个 state 字段**全部**被外部文件引用
+// （model 被 87 个文件读、locale 被 70 个），拆 store 会制造 164 条跨 store
+// import；而 state 字面量只占全文件 1.7%，收益上限极低、代价极高。详见
+// docs/design/sessionStore-领域划界.md —— 那里的结论是「该搬的是类型和
+// 设置镜像（已搬），不是 state」。
+//
+// 分区不改变任何行为：它只是注释边界。分区内成员的**顺序**是历史顺序，
+// 未按域重排（重排会改动代码行，本约束不允许）。
+// ───────────────────────────────────────────────────────────────────────────
 import { create } from "zustand";
 import type { Project, Session, SessionBookmark } from "@contracts/session";
 import type { SessionRunningSnapshotEvent, TurnFilesEvent, CompactResultEvent, TurnRewoundEvent, RuntimeEvent, NodeArtifact, NodeExecutionRecord, PermissionMode, EffortLevel, AskUserQuestionItem, ApprovalRequestEvent, PlanApprovalRequestEvent, PlanUpdateEvent, WorkflowNodeResultEvent, WorkflowChoiceOption, SubagentSnapshot, TranscriptBlock, ContextSnapshot, TurnUsageRecord, EngineCommandInfo } from "@contracts/runtime";
@@ -560,6 +583,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * 单条关闭(菜单里那个**置灰**的「关闭」)不走这里:用户点不动它,提示挂在菜单项的
    * `title` 上,再弹一条 toast 是重复。
    */
+  // ─────────────── F 编辑器 / IDE ───────────────
   reportBlockedIdeClose: (blocked) => {
     if (blocked.length === 0) return;
     const locale = get().locale;
@@ -571,6 +595,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     useToastStore.getState().push({ kind: "warning", title, body });
   },
 
+  // ─────────────── A 会话与项目骨架 ───────────────
   projects: [],
   activeProjectId: null,
   sessionsByProject: {},
@@ -594,6 +619,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Persisted in `settings` table; init() overwrites from the DB. Default is
   // `tabs` (unified tab bar) — new users land on the tabbed center pane;
   // anyone who explicitly picked a mode keeps their stored choice.
+  // ─────────────── I 布局（纯 UI） ───────────────
   displayMode: "tabs",
   // Tab strips wrap onto multiple rows instead of horizontal scrolling.
   // Persisted under `ui.tabBarMultiRow`; init() overwrites from the DB.
@@ -601,15 +627,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   tabBarMultiRow: false,
   // Left-bar view: classic project tree is the default; init() overwrites
   // from the persisted ui.leftBarMode preference.
+  // ─────────────── J 应用级 UI 外壳 ───────────────
   leftBarMode: "tree",
   // UI theme style (orthogonal to light/dark). Default "classic"; init()
   // overwrites from the persisted ui.themeStyle preference.
+  // ─────────────── K 设置镜像（落库偏好） ───────────────
   themeStyle: "classic",
   // Center focus for the unified tab bar (`tabs` displayMode). UI-only.
+  // ─────────────── I 布局（纯 UI） ───────────────
   centerTabFocus: "chat",
   // UI language. Persisted in `settings` table; init() overwrites from the
   // DB. "zh" is the default (and the pre-i18n behavior) so existing users see
   // no change until they opt into English.
+  // ─────────────── K 设置镜像（落库偏好） ───────────────
   locale: "zh",
   // Session auto-archive rules. Persisted as JSON in `settings`; initDeferred
   // hydrates. Disabled by default so existing users opt in.
@@ -619,6 +649,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   chatDensity: "comfortable",
   // Persisted in `settings` table; init() overwrites from the DB. Default
   // "flat" so existing users see no change until they opt into grouping.
+  // ─────────────── A 会话与项目骨架 ───────────────
   projectView: "flat",
   // Per-group metadata (color + order). Empty until init() hydrates from the
   // `ui.projectGroups` JSON blob; groups not present here fall back to default
@@ -626,6 +657,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   groupMeta: {},
   // Persisted in `settings` table; init() overwrites from the DB. Defaults
   // mirror the CSS var defaults in styles.css (14px = text-sm).
+  // ─────────────── K 设置镜像（落库偏好） ───────────────
   chatFontSize: 14,
   // Persisted in `settings` table; init() overwrites from the DB. Default
   // 14px mirrors the --right-panel-font-size CSS var in styles.css.
@@ -649,18 +681,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   shortcutRecording: false,
   gestureSettings: DEFAULT_GESTURE_SETTINGS,
   gestureRecording: null,
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
     messagesBySession: {},
     hasMoreMessagesBySession: {},
     loadingMessagesBySession: {},
     loadingOlderBySession: {},
     historyLoadedBySession: {},
   runningBySession: {},
+  // ─────────────── L 引擎与模型 ───────────────
   engineCommandsByProvider: {},
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   runningTurnStartedAt: {},
   waitingBranchesBySession: {},
   runningTurnModelBySession: {},
   turnErrorBySession: {},
   // Stream sidebar cache: empty + dirty so the first mount fetches.
+  // ─────────────── A 会话与项目骨架 ───────────────
   streamSessions: [],
   streamHasMore: false,
   streamTotal: 0,
@@ -669,12 +705,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // ui.streamScope choice.
   streamScope: null,
   worktreeInfoByRepo: {},
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   interruptedBySession: {},
   turnIncompleteBySession: {},
   upstreamIssueBySession: {},
   unreadBySession: {},
+  // ─────────────── J 应用级 UI 外壳 ───────────────
   isWindowFocused: true,
+  // ─────────────── L 引擎与模型 ───────────────
   providerHealthById: {},
+  // ─────────────── J 应用级 UI 外壳 ───────────────
   settingsOpen: false,
   settingsSection: null,
   settingsFocusWorkflowId: null,
@@ -687,6 +727,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Layout panel visibility — lifted from App.tsx useState. Right panel
   // starts hidden by default (the titlebar toggle / command palette reopens
   // it). NOT persisted.
+  // ─────────────── I 布局（纯 UI） ───────────────
   leftOpen: true,
   rightOpen: false,
   bottomTerminalOpen: false,
@@ -697,7 +738,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   widePanelPct: WIDE_PANEL_PCT_DEFAULT,
   widePanelSnapshot: null,
   // Mobile-shell fullscreen viewer (file/diff/plan) - closed by default.
+  // ─────────────── J 应用级 UI 外壳 ───────────────
   mobileViewer: null,
+  // ─────────────── H 浏览器面板 ───────────────
   browserTabCount: 0,
   browserDeviceToolbarOpen: false,
   browserTabs: [],
@@ -707,10 +750,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Draggable pane sizes. Persisted as one JSON blob (UI_PANE_WIDTHS_SETTING_KEY);
   // init() hydrates + clamps. These defaults match the original hardcoded
   // widths so the first-run layout is unchanged.
+  // ─────────────── I 布局（纯 UI） ───────────────
   leftWidthPct: LEFT_WIDTH_PCT_DEFAULT,
   rightWidth: 360,
   bottomTerminalHeight: 280,
   editorWidthPct: 50,
+  // ─────────────── L 引擎与模型 ───────────────
   permissionMode: "default",
   workflowId: "default",
     envChoice: "local",
@@ -725,59 +770,77 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   codexAvailableModels: EMPTY_CODEX_MODELS,
   skills: EMPTY_SKILLS,
   effort: "high",
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   todosBySession: {},
+  // ─────────────── C 待决交互（问答 / 审批 / 计划） ───────────────
   planBySession: {},
   planDrawerPlanBySession: {},
   planTabActiveBySession: {},
   planApprovalDraftBySession: {},
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   subagentsBySession: {},
   subagentTranscriptsBySession: {},
   workflowNodeTranscripts: {},
   contextSnapshotBySession: {},
   usageHistoryBySession: {},
+  // ─────────────── C 待决交互（问答 / 审批 / 计划） ───────────────
   pendingQuestionBySession: {},
   pendingApprovals: [],
   pendingPlanApprovalBySession: {},
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   turnFilesBySession: {},
   bookmarksBySession: {},
+  // ─────────────── D 撰写区（composer） ───────────────
   chatFileQueueBySession: {},
   chatElementQueueBySession: {},
   promptQueueBySession: {},
   composerDraftBySession: {},
   // Side chat (right-panel ask tab). Lists hydrate on demand per parent.
+  // ─────────────── E 侧聊 / 子聊 ───────────────
   sideChatsByParent: {},
   activeSideChatId: null,
   sideChatSeedBySession: {},
+  // ─────────────── D 撰写区（composer） ───────────────
   composerDraftTouchBySession: {},
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   pendingSubagentView: null,
   pendingBookmarkJump: null,
   // IDE right-panel. Editor state is per-project (keyed by projectId);
   // init() hydrates from the settings table. rightPanelTab / ideEditorMode
   // are global user prefs.
+  // ─────────────── I 布局（纯 UI） ───────────────
   rightPanelTab: "files",
   rightPanelTabSeq: 0,
+  // ─────────────── M 项目级自定义命令 ───────────────
   customCommandsByProject: {},
+  // ─────────────── F 编辑器 / IDE ───────────────
   ideOpenFilesByProject: {},
   ideFileDisplayNamesByProject: {},
   ideActiveFileByProject: {},
   ideFileViewModeByProject: {},
   ideEditorMode: "tabs",
+  // ─────────────── G Git ───────────────
   gitDiffOpenMode: "center",
   gitDiffDialogTabs: [],
   gitDiffDialogActiveId: null,
   gitDiffDialogOpen: false,
   gitDiffDialogViewMode: "single",
+  // ─────────────── F 编辑器 / IDE ───────────────
   ideExpandedDirsByProject: {},
+  // ─────────────── G Git ───────────────
   gitDiffByProject: {},
   ideDiffBeforeByProject: {},
   commitGenModel: null,
   commitGenPrompt: "",
   conflictResolveModel: null,
+  // ─────────────── K 设置镜像（落库偏好） ───────────────
   titleGenEnabled: false,
   titleGenModel: null,
   visionRelayModel: null,
   outputStyle: null,
+  // ─────────────── G Git ───────────────
   collapsedGitRepos: {} as Record<string, boolean>,
+  // ─────────────── F 编辑器 / IDE ───────────────
   ideFocusNonce: 0,
   ideTreeReveal: null,
   idePendingReveal: null,
@@ -785,11 +848,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   navBackByProject: {},
   navForwardByProject: {},
   lspLanguages: [] as LspLanguageState[],
+  // ─────────────── L 引擎与模型 ───────────────
   runtimes: [] as RuntimeAgentState[],
+  // ─────────────── F 编辑器 / IDE ───────────────
   lspPhasesByWorkspace: {} as Record<string, { phase: "starting" | "running" | "stopped" | "importing"; error?: string; detail?: string }>,
 
   /** True once `init()` has started, to guard against React StrictMode's
    *  double-effect in dev (which would otherwise fire init twice). */
+  // ─────────────── 0 生命周期（init） ───────────────
   _initStarted: false,
 
   init: async () => {
@@ -1441,6 +1507,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── A 会话与项目骨架 ───────────────
   addProjectFromFolder: async () => {
     const { path } = await api.pickFolder();
     if (!path) return null;
@@ -2089,6 +2156,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  the union is re-sorted by the same (createdAt, id) key the DB pages by.
    *  This is what makes "chat on the phone → come back to the PC" show the
    *  full thread instead of just the phone-driven tail. */
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   prefetchSessionMessages: async (sessionId) => {
     if (get().historyLoadedBySession[sessionId]) return;
     if (get().loadingMessagesBySession[sessionId]) return;
@@ -2193,6 +2261,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  user can re-open the tab to see the latest state. We only drop the
    *  tab from the strip; the underlying session row + runtime binding
    *  are untouched. */
+  // ─────────────── A 会话与项目骨架 ───────────────
   closeTab: (sessionId) => {
     const previousActiveId = get().activeSessionId;
     set((s) => {
@@ -2403,6 +2472,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     );
   },
 
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   resyncSessionMessages: async (sessionId) => {
     if (get().runningBySession[sessionId]) return;
     // 【UI-039】登记本次补拉的代次。同会话若已有更晚的补拉发起,那次会再自增 —— 本回包
@@ -2450,6 +2520,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   /** Set a project's archived flag (soft-delete; restorable from the archived view). */
+  // ─────────────── A 会话与项目骨架 ───────────────
   archiveProject: async (id, archived) => {
     let project: Project;
     try {
@@ -2685,6 +2756,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => ({ ...applySessionPinnedState(s, session), streamDirty: true }));
   },
 
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   addBookmark: async (sessionId, input) => {
     const bookmark: SessionBookmark = {
       // Time + random suffix: two bookmarks added in the same millisecond
@@ -4248,6 +4320,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── J 应用级 UI 外壳 ───────────────
   setSettingsOpen: (open, section, focusWorkflowId) => {
     set(
       open
@@ -4291,6 +4364,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
   setSearchDialogOpen: (open) => set({ searchDialogOpen: open }),
+  // ─────────────── I 布局（纯 UI） ───────────────
   setLeftOpen: (open) => {
     // While wide-panel (3:7) mode is on the left sidebar must stay closed —
     // guard in the store so no caller/command can open it.
@@ -4343,6 +4417,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     }
   },
+  // ─────────────── H 浏览器面板 ───────────────
   setBrowserTabCount: (count) => set({ browserTabCount: Math.max(0, count) }),
   setBrowserDeviceToolbarOpen: (open) => set({ browserDeviceToolbarOpen: open }),
   suppressBrowserView: (suppressed) =>
@@ -4413,6 +4488,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // value, clamp, and set synchronously (instant UI). The DB write is
   // debounced so a drag (many mousemove events) only hits the settings table
   // once after the user stops. reset* restore the defaults (double-click).
+  // ─────────────── I 布局（纯 UI） ───────────────
   adjustLeftWidthPct: (deltaPct) => {
     // The divider sits to the RIGHT of the sidebar, so dragging it right
     // (delta>0) widens the sidebar — no sign flip (unlike the right-bar /
@@ -4500,6 +4576,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
   },
 
+  // ─────────────── J 应用级 UI 外壳 ───────────────
   setLeftBarMode: async (mode) => {
     set({ leftBarMode: mode });
     // Entering the stream with a warm-but-dirty cache should show fresh
@@ -4513,6 +4590,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── K 设置镜像（落库偏好） ───────────────
   setThemeStyle: (style) => {
     set({ themeStyle: style });
     // Fire-and-forget — a failed write keeps the in-session choice (same
@@ -4526,6 +4604,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
   },
 
+  // ─────────────── A 会话与项目骨架 ───────────────
   setStreamScope: (scope) => {
     // Dirty, not just a value swap: the cached pages were fetched under the
     // OLD scope — the view must refetch its first page so the list AND the
@@ -4601,6 +4680,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   /** Direct focus switch for the unified center tab bar (tabs displayMode).
    *  See the `centerTabFocus` field doc — natural actions flip it too. */
+  // ─────────────── I 布局（纯 UI） ───────────────
   setCenterTabFocus: (focus) => {
     set({ centerTabFocus: focus });
   },
@@ -4608,6 +4688,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   /** Update the UI language. Same immediate-flip + fire-and-forget-persist
    *  pattern as setDisplayMode. Also mirrors the choice onto
    *  <html lang> so assistive tech + font selection follow the UI language. */
+  // ─────────────── K 设置镜像（落库偏好） ───────────────
   setLocale: async (locale) => {
     set({ locale });
     document.documentElement.lang = locale === "en" ? "en" : "zh-CN";
@@ -4648,6 +4729,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   /** Toggle the left-bar project view between flat and grouped. Same
    *  immediate-flip + fire-and-forget-persist pattern as setDisplayMode. */
+  // ─────────────── A 会话与项目骨架 ───────────────
   setProjectView: async (mode) => {
     set({ projectView: mode });
     try {
@@ -4808,6 +4890,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── K 设置镜像（落库偏好） ───────────────
   setChatFontSize: async (px) => {
     const clamped = clampFontSize(px);
     set({ chatFontSize: clamped });
@@ -5095,6 +5178,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  immediately so the chip reflects the change without a round-trip; the
    *  DB write is fire-and-forget — if it fails, the next `selectSession`
    *  (or app restart) will re-hydrate from the row. */
+  // ─────────────── L 引擎与模型 ───────────────
   setPermissionMode: (mode) => {
     const sessionId = get().activeSessionId;
     set((s) => ({
@@ -5440,6 +5524,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── F 编辑器 / IDE ───────────────
   reloadLspLanguages: async () => {
     try {
       const { languages } = await api.lsp.list();
@@ -5466,6 +5551,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── L 引擎与模型 ───────────────
   reloadRuntimes: async () => {
     if (!isElectron) return;
     try {
@@ -5494,6 +5580,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ runtimes: next });
   },
 
+  // ─────────────── F 编辑器 / IDE ───────────────
   prewarmJavaLspForActiveProject: () => {
     if (!isElectron) return;
     if (!get().lspLanguages.some((l) => l.language === "java" && l.enabled)) return;
@@ -5505,6 +5592,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  // ─────────────── L 引擎与模型 ───────────────
   reloadSkills: async () => {
     // Resolve the active project's path. skills.list scans that root's
     // .claude/skills in addition to the user-global dir; without a project
@@ -5575,6 +5663,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── C 待决交互（问答 / 审批 / 计划） ───────────────
   dismissQuestion: () => {
     const sessionId = get().activeSessionId;
     if (!sessionId) return;
@@ -5865,12 +5954,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       ...(s.displayMode === "tabs" ? { centerTabFocus: "editor" as const } : {}),
     }));
   },
+  // ─────────────── J 应用级 UI 外壳 ───────────────
   openMobileViewer: (target) => {
     set({ mobileViewer: target });
   },
   closeMobileViewer: () => {
     set({ mobileViewer: null });
   },
+  // ─────────────── C 待决交互（问答 / 审批 / 计划） ───────────────
   closePlanDrawer: (sessionId) => {
     set((s) => {
       const { [sessionId]: _dropPlan, ...restPlan } = s.planDrawerPlanBySession;
@@ -5921,6 +6012,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   rewindTurn: async (files, targetFiles) => {
     const sessionId = get().activeSessionId;
     // 【MC-002】没有会话 = 没法撤销,**不是**"撤销了 0 个文件"。空结果会让卡片画
@@ -5948,6 +6040,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── F 编辑器 / IDE ───────────────
   revealInFileTree: (filePath) => {
     // Panel-first: switching the tab + bumping the focus nonce both matter
     // even before the tree reveal lands — the user asked to GO somewhere, so
@@ -5960,6 +6053,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
   },
 
+  // ─────────────── L 引擎与模型 ───────────────
   refreshProviderHealth: async (providerId, options) => {
     const requestGeneration = providerHealthRequestGate.begin(providerId);
     set((s) => ({
@@ -5996,6 +6090,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
   },
 
+  // ─────────────── D 撰写区（composer） ───────────────
   enqueueChatFile: (filePath) => {
     const sessionId = get().activeSessionId;
     if (!sessionId) return;
@@ -6205,6 +6300,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   /* ─────────────────── IDE right-panel actions ─────────────────── */
 
+  // ─────────────── I 布局（纯 UI） ───────────────
   setRightPanelTab: (tab) => {
     set((s) => ({ rightPanelTab: tab, rightPanelTabSeq: s.rightPanelTabSeq + 1 }));
     void api.setting.set({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY, value: tab }).catch((err) => {
@@ -6212,6 +6308,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  // ─────────────── E 侧聊 / 子聊 ───────────────
   openSideChatPanel: () => {
     set({ rightOpen: true });
     // **切到 `flow`**（2026-09-21 改）：子对话列表现在长在「工作流运行」那张面板的
@@ -6407,6 +6504,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  // ─────────────── B 会话内容（消息 / 回合） ───────────────
   openSubagentTranscript: (sessionId, taskId) => {
     set({ pendingSubagentView: { sessionId, taskId }, rightOpen: true });
     // `tasks`（2026-10-10）：原生子代理的展开视图现在住在「任务列表」页
@@ -6467,6 +6565,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ pendingBookmarkJump: null });
   },
 
+  // ─────────────── M 项目级自定义命令 ───────────────
   setCustomCommandsByProject: (projectId, commands) => {
     set((s) => ({
       customCommandsByProject: { ...s.customCommandsByProject, [projectId]: commands },
@@ -6498,6 +6597,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     );
   },
 
+  // ─────────────── F 编辑器 / IDE ───────────────
   openFileInIde: (filePath, opts) => {
     const pid = get().activeProjectId;
     if (!pid) return; // no active project - nothing to scope to
@@ -7089,6 +7189,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       .catch((err) => console.error("setting.set(ideEditorMode) failed:", err));
   },
 
+  // ─────────────── G Git ───────────────
   setGitDiffOpenMode: (mode) => {
     set({ gitDiffOpenMode: mode });
     void api.setting
@@ -7143,6 +7244,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ gitDiffDialogViewMode: mode });
   },
 
+  // ─────────────── F 编辑器 / IDE ───────────────
   toggleDirExpanded: (dirPath) => {
     const pid = get().activeProjectId;
     if (!pid) return;
@@ -7181,6 +7283,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  // ─────────────── G Git ───────────────
   setGitDiffBefore: (filePath, before) => {
     get().setGitDiffPair(filePath, { before });
   },
@@ -7229,6 +7332,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       .catch((err) => console.error("setting.set(conflictResolveModel) failed:", err));
   },
 
+  // ─────────────── K 设置镜像（落库偏好） ───────────────
   setTitleGenEnabled: (enabled) => {
     set({ titleGenEnabled: enabled });
     void api.setting
@@ -7257,6 +7361,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       .catch((err) => console.error("setting.set(outputStyle) failed:", err));
   },
 
+  // ─────────────── G Git ───────────────
   toggleCollapsedGitRepo: (repoPath) => {
     set((s) => {
       const next = { ...s.collapsedGitRepos };
