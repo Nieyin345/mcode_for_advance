@@ -120,7 +120,7 @@ function maxSeqIn(grants: Grant[]): number {
 }
 
 export class GrantStore {
-  private readonly grants = new Map<string, Grant>();
+  private grants = new Map<string, Grant>();
   private readonly persist?: GrantStorePersist;
   private readonly newId: (seq: number) => string;
   private seq = 0;
@@ -176,8 +176,12 @@ export class GrantStore {
       approvalSource: { ...subject },
       revoked: false,
     };
-    this.grants.set(grant.grantId, grant);
-    this.flush();
+    // ★ **先落盘、成功后才发布内存**(MC-017):否则 `save` 抛错会留下一份「内存里有、磁盘上
+    //    没有」的活授权 —— 同一进程按它放行动作,重启后它又消失。候选状态是**副本**,落盘
+    //    失败时内存一字未动(`commit` 里只 `save` 成功才 `this.grants = next`)。
+    const next = new Map(this.grants);
+    next.set(grant.grantId, grant);
+    this.commit(next);
     return grant;
   }
 
@@ -188,8 +192,11 @@ export class GrantStore {
   revoke(grantId: string): boolean {
     const g = this.grants.get(grantId);
     if (!g || g.revoked) return false;
-    g.revoked = true;
-    this.flush();
+    // 先落盘、成功后才改内存(MC-017):落盘失败时**内存里它仍是活的** —— 与磁盘一致,
+    // 不会出现「内存说撤了、磁盘说还活着、重启后权限又回来」。
+    const next = new Map(this.grants);
+    next.set(grantId, { ...g, revoked: true });
+    this.commit(next);
     return true;
   }
 
@@ -308,13 +315,28 @@ export class GrantStore {
     if (!isGrantActive(g, now)) {
       throw new GrantStoreError(`记账失败:授权 ${grantId} 已撤销或已过期,不该在它下面执行动作。`);
     }
-    g.usedCount = (g.usedCount ?? 0) + 1;
-    if (g.maxBudget !== undefined) g.budgetUsed = (g.budgetUsed ?? 0) + cost;
-    this.flush();
-    return g;
+    // 先落盘、成功后才发布内存(MC-017):落盘失败时计数器**不动** —— 不会出现「内存 +1、
+    // 磁盘 0、重启后归零」(那样 `maxCount` 又能被无限用)。
+    const bumped: Grant = {
+      ...g,
+      usedCount: (g.usedCount ?? 0) + 1,
+      ...(g.maxBudget !== undefined ? { budgetUsed: (g.budgetUsed ?? 0) + cost } : {}),
+    };
+    const next = new Map(this.grants);
+    next.set(grantId, bumped);
+    this.commit(next);
+    return bumped;
   }
 
-  private flush(): void {
-    this.persist?.save([...this.grants.values()]);
+  /**
+   * **唯一的持久提交点** —— 先 `save` 候选全量、**成功后才**把候选发布成活动快照。
+   *
+   * `save` 抛错时 `this.grants` 一字未动:内存与磁盘**同版本**,不会分裂(MC-017)。从前
+   * 三个 mutation 都是「先改内存、后 `flush`」,`flush` 里 `save` 抛错就留下「内存说改了、
+   * 磁盘说没改」的分裂态 —— 同一进程按内存放行、重启后磁盘的旧态又回来。
+   */
+  private commit(next: Map<string, Grant>): void {
+    this.persist?.save([...next.values()]);
+    this.grants = next;
   }
 }

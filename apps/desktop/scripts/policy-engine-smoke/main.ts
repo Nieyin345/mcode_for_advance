@@ -628,6 +628,58 @@ const memBlob = (): BlobIO & { peek: () => string | null } => {
   eq("★ MC-016:撞名被拒后原授权一字未动", s3.get("same", 1_500)?.allowedActions[0], "file.write");
 }
 
+/* ══ 16c. ★ MC-017:落盘失败 → 内存与磁盘不分裂 ══
+ *
+ * 旧行为:三个 mutation 都「先改内存、后 flush」,`save` 抛错时留下一份「内存里有、磁盘上
+ * 没有」的活授权(或撤销/记账的内存态与磁盘态不符)。修法:先 save 候选全量,成功后才发布
+ * 成活动快照(唯一提交点 `commit`)。下面逐条注入抛错的 save。 */
+{
+  const disk = () => { throw new Error("disk error (injected)"); };
+  // ① 签发时落盘失败 → 抛错,且内存里**没有**这份授权(不能有活授权却落不了盘)。
+  {
+    const store = new GrantStore({ newId: () => "g-x", persist: { load: () => null, save: disk } });
+    let threw = false;
+    try { store.issueGrant(decision(), USER, 1_000); } catch (e) { threw = e instanceof GrantStoreError || (e as Error).message.includes("disk error"); }
+    eq("★ MC-017:签发落盘失败 → 抛错", threw, true);
+    eq("★ MC-017:签发落盘失败 → 内存里没有那份活授权(不分裂)", store.get("g-x", 1_500), null);
+  }
+  // ② 撤销时落盘失败 → 抛错,且内存里它**仍是活的**(与磁盘一致,重启不会"权限又回来")。
+  {
+    const box: { grants: Grant[] | null } = { grants: null };
+    let failNext = false;
+    const persist = { load: () => box.grants, save: (gs: Grant[]) => { if (failNext) throw new Error("disk error (injected)"); box.grants = gs; } };
+    const store = new GrantStore({ persist, newId: () => "g-rev" });
+    const g = store.issueGrant(decision(), USER, 1_000);
+    failNext = true;
+    let threw = false;
+    try { store.revoke(g.grantId); } catch (e) { threw = (e as Error).message.includes("disk error"); }
+    eq("★ MC-017:撤销落盘失败 → 抛错", threw, true);
+    eq("★ MC-017:撤销落盘失败 → 内存里仍是活的(磁盘没改,内存也不改)", store.get(g.grantId, 1_500)?.revoked, false);
+  }
+  // ③ 记账时落盘失败 → 抛错,且内存计数**不动**(否则 maxCount 又能被无限用)。
+  {
+    const box: { grants: Grant[] | null } = { grants: null };
+    let failNext = false;
+    const persist = { load: () => box.grants, save: (gs: Grant[]) => { if (failNext) throw new Error("disk error (injected)"); box.grants = gs; } };
+    const store = new GrantStore({ persist, newId: () => "g-use" });
+    const g = store.issueGrant(decision({ maxCount: 3 }), USER, 1_000);
+    failNext = true;
+    let threw = false;
+    try { store.recordUse(g.grantId, 0, 1_100); } catch (e) { threw = (e as Error).message.includes("disk error"); }
+    eq("★ MC-017:记账落盘失败 → 抛错", threw, true);
+    eq("★ MC-017:记账落盘失败 → 内存计数不动(仍 0)", store.get(g.grantId, 1_500)?.usedCount, 0);
+  }
+  // 正控:落盘正常时三个 mutation 都真的生效(证明上面的"不动"不是"根本没实现")。
+  {
+    const box: { grants: Grant[] | null } = { grants: null };
+    const store = new GrantStore({ persist: { load: () => box.grants, save: (gs: Grant[]) => { box.grants = gs; } }, newId: () => "g-ok" });
+    const g = store.issueGrant(decision(), USER, 1_000);
+    store.recordUse(g.grantId, 0, 1_100);
+    eq("MC-017 正控:落盘正常时账记上了", store.get(g.grantId, 1_500)?.usedCount, 1);
+    eq("MC-017 正控:落盘正常时撤销真生效", store.revoke(g.grantId), true);
+  }
+}
+
 /* ══ 17. 源码断言:落盘层不 import electron / sql;授权不落可导入 setting ══ */
 {
   const raw = readFileSync(join(process.cwd(), "src/main/appControl/grantStoreFile.ts"), "utf8");

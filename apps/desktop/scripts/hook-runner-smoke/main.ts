@@ -1057,6 +1057,7 @@ console.log("\n主机 hook 授权:签发 / 撤销落盘,重启后仍生效");
     configureHostHookGrantPersist,
     issueHostHookGrant: issueP,
     revokeHostHookGrant: revokeP,
+    recordHostHookRun,
     resetHostHookGrants: resetP,
     listHostHookGrants: listP,
     decidePluginHookExecution: decideP,
@@ -1141,6 +1142,41 @@ console.log("\n主机 hook 授权:签发 / 撤销落盘,重启后仍生效");
     check("★ 落盘层复用 grantStoreFile 的 atomicFileBlob(不另写一份文件 IO)", /atomicFileBlob/.test(code) && /grantStoreFile\.js/.test(code));
     // 落点由 hostHookGrantStorePath 决定(单一事实源)。
     check("★ 装配复用 hostHookGrantStorePath(落点单一事实源)", /hostHookGrantStorePath\(/.test(code));
+  }
+
+  // ── ★ MC-017:落盘失败 → 内存与磁盘不分裂(签发 / 记账 / 撤销三处都「先 save 后发布」)。
+  //    从前三处都是「先改内存、后 flush」,save 抛错就留下一份「内存说改了、磁盘说没改」的
+  //    分裂态 —— 同一进程按内存放行、重启后磁盘旧态又回来。
+  {
+    let failSave = false;
+    const failingBlob = { read: () => null as string | null, write: () => { if (failSave) throw new Error("disk error (injected)"); } };
+    // ① 签发:落盘失败 → 抛,且表里**没有**这份(不能有活授权却落不了盘)。
+    configureHostHookGrantPersist(fileHostHookGrantPersist(failingBlob as never));
+    resetP();
+    failSave = true;
+    let issueThrew = false;
+    try { issueP({ pluginId: "fail-plugin", version: "1.0.0", ttlMs: 600_000, now: Date.now() }); } catch { issueThrew = true; }
+    eq("★ MC-017(host hook):签发落盘失败 → 抛错", issueThrew, true);
+    eq("★ MC-017(host hook):签发落盘失败 → 表里没有那份活授权(不分裂)", listP().length, 0);
+
+    // ② 撤销 / 记账:落盘失败时内存状态不变(与磁盘一致)。用可切换失败的 blob 造一份已存的。
+    let okSave = true;
+    const box: { text: string | null } = { text: null };
+    configureHostHookGrantPersist(fileHostHookGrantPersist({ read: () => box.text, write: (t: string) => { if (!okSave) throw new Error("disk error (injected)"); box.text = t; } } as never));
+    resetP();
+    const g17 = issueP({ pluginId: "mc017-plugin", version: "1.0.0", maxRuns: 5, ttlMs: 600_000, now: Date.now() });
+    const before17 = listP().find((x) => x.grantId === g17.grantId)?.usedRuns ?? 0;
+    okSave = false;
+    let useThrew = false;
+    let revokeThrew = false;
+    try { recordHostHookRun({ pluginId: "mc017-plugin", version: "1.0.0", commandDigest: "", nativeEvent: "PreToolUse" }, Date.now()); } catch { useThrew = true; }
+    try { revokeP(g17.grantId); } catch { revokeThrew = true; }
+    eq("★ MC-017(host hook):记账落盘失败 → 抛错", useThrew, true);
+    eq("★ MC-017(host hook):记账落盘失败 → 内存计数不动(不分裂)", listP().find((x) => x.grantId === g17.grantId)?.usedRuns ?? 0, before17);
+    eq("★ MC-017(host hook):撤销落盘失败 → 抛错", revokeThrew, true);
+    eq("★ MC-017(host hook):撤销落盘失败 → 内存里仍是活的(与磁盘一致)", listP().find((x) => x.grantId === g17.grantId)?.revoked, false);
+    configureHostHookGrantPersist(undefined);
+    resetP();
   }
 
   // 收尾:把持久化复位回内存版(不泄漏到套件之外)。

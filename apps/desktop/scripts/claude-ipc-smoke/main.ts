@@ -2642,6 +2642,44 @@ console.log("\n19f. 【MC-059 残余】发起者可追溯(②)+ 计划跨重启�
     same("★ ④:null(文件不存在)→ 空列表", parseUnattendedPlans(null), []);
   }
 
+  // ── ★ MC-017:计划记录核的落盘失败 → 内存与磁盘不分裂(与 GrantStore / HostHookGrants
+  //    同根因、同修法:先 save 候选全量,成功后才发布内存)。从前 `put` 先 `Map.set` 后
+  //    `flush`、`remove` 先 `Map.delete` 后 `flush` —— save 抛错就留下「内存删了、磁盘还有」
+  //    (台账 E1 红例:`AFTER_FAILED_REMOVE_MEMORY false DISK 1`),重启后记录又回来。
+  {
+    const { UnattendedPlanStore } = await import("@main/appServices/unattendedPlanStore.js");
+    const aRecord = () => ({
+      planId: "plan_mc017",
+      kind: "waiting_approval" as const,
+      ops: [],
+      operations: [],
+      completedOperationIds: [],
+    }) as never;
+    // ① 落盘正常:put 真的进表、remove 真的删掉(正控 —— 证明下面"不动"不是"没实现")。
+    const box: { plans: unknown[] | null } = { plans: null };
+    let failSave = false;
+    const store = new UnattendedPlanStore({
+      persist: { load: () => box.plans as never, save: (ps) => { if (failSave) throw new Error("disk error (injected)"); box.plans = ps as never; } },
+    });
+    store.put(aRecord());
+    eq("MC-017(计划核)正控:落盘正常时 put 进表", store.listAll().length, 1);
+    eq("MC-017(计划核)正控:落盘正常时 remove 真删", store.remove("plan_mc017"), true);
+    // ② put 时落盘失败 → 抛错,内存里**没有**这条(不分裂)。
+    failSave = true;
+    let putThrew = false;
+    try { store.put(aRecord()); } catch { putThrew = true; }
+    eq("★ MC-017(计划核):put 落盘失败 → 抛错", putThrew, true);
+    eq("★ MC-017(计划核):put 落盘失败 → 内存里没有这条(不分裂)", store.listAll().length, 0);
+    // ③ remove 时落盘失败 → 抛错,内存里**仍在**(与磁盘一致,重启不会"删了的又回来")。
+    failSave = false;
+    store.put(aRecord());
+    failSave = true;
+    let removeThrew = false;
+    try { store.remove("plan_mc017"); } catch { removeThrew = true; }
+    eq("★ MC-017(计划核):remove 落盘失败 → 抛错", removeThrew, true);
+    eq("★ MC-017(计划核):remove 落盘失败 → 内存里仍在(与磁盘一致)", store.listAll().length, 1);
+  }
+
   // 复位,免得把落了盘的示例计划带进后续用例。
   setUnattendedPlanStore(null);
   setGrantStore(null);

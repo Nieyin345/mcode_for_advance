@@ -172,7 +172,7 @@ function cloneRecord(p: UnattendedPlanRecord): UnattendedPlanRecord {
 
 /** 计划记录的**持有核** —— 纯逻辑(内存 Map + 可注入的窄持久化接口),与 `GrantStore` 同姿势。 */
 export class UnattendedPlanStore {
-  private readonly plans = new Map<string, UnattendedPlanRecord>();
+  private plans = new Map<string, UnattendedPlanRecord>();
   private readonly persist?: UnattendedPlanStorePersist;
 
   constructor(deps: { persist?: UnattendedPlanStorePersist } = {}) {
@@ -183,12 +183,15 @@ export class UnattendedPlanStore {
 
   /** 写入 / 覆盖一份计划记录(重试是同一 planId 的覆盖)。落盘走可注入的 persist。 */
   put(record: UnattendedPlanRecord): void {
-    this.plans.set(record.planId, {
+    // ★ 先落盘、成功后才发布内存(MC-017):`save` 抛错时内存一字未动 —— 不会留下「内存里
+    //    有、磁盘上没有」的记录(重启后又消失)。候选表是**副本**,`commit` 里只 save 成功才换。
+    const next = new Map(this.plans);
+    next.set(record.planId, {
       ...record,
       operations: record.operations.map((o) => ({ ...o })),
       completedOperationIds: [...record.completedOperationIds],
     });
-    this.flush();
+    this.commit(next);
   }
 
   /** 读一份计划记录(不存在为 null)。 */
@@ -204,13 +207,22 @@ export class UnattendedPlanStore {
 
   /** 删除一份计划记录(放弃后清理;幂等)。返回是否真的删掉了一条。 */
   remove(planId: string): boolean {
-    const had = this.plans.delete(planId);
-    if (had) this.flush();
-    return had;
+    // 先落盘、成功后才删内存(MC-017):落盘失败时它**仍在** —— 与磁盘一致,重启后不会
+    // 「删掉的记录又回来」(台账 E1 红例:`AFTER_FAILED_REMOVE_MEMORY false DISK 1`)。
+    if (!this.plans.has(planId)) return false;
+    const next = new Map(this.plans);
+    next.delete(planId);
+    this.commit(next);
+    return true;
   }
 
-  private flush(): void {
-    this.persist?.save([...this.plans.values()]);
+  /**
+   * **唯一的持久提交点**(MC-017)—— 先 `save` 候选全量,成功后才发布成活动表。
+   * `save` 抛错时 `this.plans` 一字未动:内存与磁盘同版本。与 `GrantStore.commit` 同一条纪律。
+   */
+  private commit(next: Map<string, UnattendedPlanRecord>): void {
+    this.persist?.save([...next.values()]);
+    this.plans = next;
   }
 }
 

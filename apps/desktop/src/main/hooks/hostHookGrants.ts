@@ -169,9 +169,16 @@ function seqOfLoaded(loaded: readonly HostHookGrant[]): number {
   return max;
 }
 
-/** 把当前表落盘(未接持久化时是 no-op)。 */
-function flush(): void {
-  persist?.save([...grants.values()]);
+/**
+ * **唯一的持久提交点**(MC-017)—— 先 `save` 候选全量,成功后才发布成活动表。
+ *
+ * `save` 抛错时 `grants` 一字未动:内存与磁盘同版本。从前三个 mutation(签发 / 记账 /
+ * 撤销)都是「先改内存、后 `flush`」,`save` 抛错就留下「内存说改了、磁盘说没改」的分裂态
+ * —— 同一进程按内存放行、重启后磁盘旧态又回来。与 `GrantStore.commit` 同一条纪律。
+ */
+function commit(next: Map<string, HostHookGrant>): void {
+  persist?.save([...next.values()]);
+  grants = next;
 }
 
 /**
@@ -293,8 +300,9 @@ export function issueHostHookGrant(input: {
     // `Grant.recordUse` 只对 `maxBudget` 累加同一条纪律)。
     ...(input.maxRuns !== undefined ? { maxRuns: input.maxRuns, usedRuns: 0 } : {}),
   };
-  grants.set(grant.grantId, grant);
-  flush();
+  const next = new Map(grants);
+  next.set(grant.grantId, grant);
+  commit(next);
   // 【MC-061 残余】新授权 → 推面板那一块刷新(只在实际**新建**时推:上面复用分支直接 return,
   // 没走到这里 —— 复用没有改变面板该显示的东西)。见 {@link notifyGrantsChanged}。
   notifyGrantsChanged(grant.pluginId, "issue", grant.grantId);
@@ -333,12 +341,15 @@ export function recordHostHookRun(source: HostHookSource, now: number): boolean 
     if (countBudgetExhausted(g.maxRuns, g.usedRuns)) continue; // 这一份用尽了,再看下一份
     // 声明了上限才记账;不限次数的授权不必记一个恒增的死字段(见 `HostHookGrant.usedRuns`)。
     if (g.maxRuns !== undefined) {
-      g.usedRuns = (g.usedRuns ?? 0) + 1;
-      flush();
+      // 先落盘、成功后才发布内存(MC-017):落盘失败时计数不动 —— 不会「内存 +1、磁盘 0」。
+      const bumped: HostHookGrant = { ...g, usedRuns: (g.usedRuns ?? 0) + 1 };
+      const next = new Map(grants);
+      next.set(g.grantId, bumped);
+      commit(next);
       // 【MC-061 残余】**这一笔把这批授权的余额用光了** → 推面板把那一条翻成「已用尽」。
       // 只在**刚好用尽**的这一笔记(下一条事件仍会读到 `exhausted`,但那不是"变了"——面板早
       // 已刷过;重复推只是噪音)。见 {@link notifyGrantsChanged}。
-      if (countBudgetExhausted(g.maxRuns, g.usedRuns)) {
+      if (countBudgetExhausted(g.maxRuns, bumped.usedRuns)) {
         notifyGrantsChanged(g.pluginId, "exhausted", g.grantId);
       }
     }
@@ -351,8 +362,11 @@ export function recordHostHookRun(source: HostHookSource, now: number): boolean 
 export function revokeHostHookGrant(grantId: string): boolean {
   const g = grants.get(grantId);
   if (!g || g.revoked) return false;
-  g.revoked = true;
-  flush();
+  // 先落盘、成功后才改内存(MC-017):落盘失败时它**仍是活的** —— 与磁盘一致,重启不会
+  // 「撤销又回来」。
+  const next = new Map(grants);
+  next.set(grantId, { ...g, revoked: true });
+  commit(next);
   // 【MC-061 残余】撤销 → 推面板把那一条翻成「已撤销」。幂等分支(本来就撤了)不推 —— 没变。
   notifyGrantsChanged(g.pluginId, "revoke", grantId);
   return true;
@@ -363,15 +377,16 @@ export function revokeHostHookGrant(grantId: string): boolean {
  * 台账「卸载后 hook 同步撤销」就落在这**一句调用**上(不是需要各入口自己记得)。
  */
 export function revokeHostHookGrants(pluginId: string): number {
+  const next = new Map(grants);
   let n = 0;
   for (const g of grants.values()) {
     if (g.pluginId === pluginId && !g.revoked) {
-      g.revoked = true;
+      next.set(g.grantId, { ...g, revoked: true });
       n += 1;
     }
   }
   if (n > 0) {
-    flush();
+    commit(next);
     // 【MC-061 残余】按插件整撤(停用 / 卸载)→ 推面板整个插件那一块重读(一次整撤多份,不逐份推)。
     // 没撤到任何一份时不推 —— 没变。
     notifyGrantsChanged(pluginId, "revoke-all");
