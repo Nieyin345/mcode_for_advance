@@ -317,6 +317,38 @@ MC-009 / MC-011 / MC-027 / MC-031 那一类"静默失败/假成功"，根因都�
 
 ---
 
+## 七之二、已实施的拆分（2026-10-15）
+
+按本文第一节的判据（「一个文件里有 N 个互相独立的单元 → 该拆」）实际拆了三处。
+**判据不是行数，是"独立单元的个数"**：
+
+| 文件 | 拆前 | 拆后 | 为什么拆 / 为什么不拆 |
+|---|---|---|---|
+| `main/store/repositories.ts` | 3277 行 | 63 行 barrel + 13 个实体文件 | ✅ **13 个互相独立的 Repo**，跨单元依赖只有 3 条（全指向 `makeId`） |
+| `renderer/lib/fileIcon.tsx` | 2531 行 | 119 行 + `fileIconTables.ts`(2404 行纯数据) | ✅ 两张表 **零内部依赖**（探针实测） |
+| `main/workflows/assets.ts` | 1758 行 | **未拆** | ❌ 4 个 Python 常量的"内嵌"是**有理由的设计**（一条路径 vs dev/打包两条）；且台账 MC-006/008 说这些脚本**本该移出本体**，拆它等于给待移除的东西加固 |
+| `renderer/stores/sessionStoreHelpers.ts` | 3700 行 | **未拆** | ❌ 8 个"独立单元"之间**跨族依赖 24+18+7 条**，是真纠缠，不是塞一起 |
+| `renderer/stores/sessionStore.ts` | 9379 行 | **未拆** | ❌ 6721 行的 store 引用 28 个内部符号。需要先做**领域划界**（设计工作），硬拆会把耦合固化 |
+
+### 两条配套的回归网
+
+- `scripts/repositories-barrel-smoke/`（11 条）——把"拆分前的导出面"写死成契约，
+  断言 barrel 今天仍能取到每一个、每个 Repo 只在一个实体文件里定义。
+  **它当天就抓到了我自己漏写的 `HOOK_RUNS_RETAIN`。**
+- `scripts/file-icon-tables-smoke/`（9 条）——`gen.mjs` 从"扫文本"改成"读显式清单"
+  之后，核对「清单 == 表里实际取值」。两个方向都做过变异验证（改表忘改清单 / 改清单忘改表）。
+
+### 顺手修好的三处「green but vacuous」
+
+按源码**文本**断言的套件，在文件搬家后会**静默空过** —— 最危险的一类，因为绿灯看着一切正常：
+
+| 套件 | 原断言 | 改成 |
+|---|---|---|
+| `projects-ipc-smoke` | 扫 `repositories.ts` 的分页 SQL 要有 `, id DESC` | 扫整个 `repositories/` 目录 |
+| `library-mcp-smoke` | 同上（library_items） | 同上 |
+| `ipc-wiring-smoke` | `!repositories.ts.includes("LongTaskRepo")` | 连目录一起扫 |
+
+---
 ## 八、没做完 / 不确定的（如实写）
 
 1. **Codex 到底支不支持上下文压缩** —— 只在注释里看到 `context_compaction` 字样，

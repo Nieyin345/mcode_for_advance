@@ -9,7 +9,7 @@
 //   2. each of them is still present in the bundle (reachable dynamically) —
 //      i.e. the feature was deferred, not dropped;
 //   3. the App static closure stays under a byte budget.
-//   4. only the generated file-icon subset is bundled, and it matches fileIcon.tsx;
+//   4. only the generated file-icon subset is bundled, and it matches the icon
 //   5. every production dependency is used by main/preload (installer weight).
 import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -73,11 +73,13 @@ try{
   let bytes=0;const reachSet=new Set(reach.keys());
   for(const o of Object.values(outputs))for(const [m,v] of Object.entries(o.inputs))if(reachSet.has(m))bytes+=v.bytesInOutput;
   // The full material-icon-theme collection must not be bundled at all any
-  // more — only the generated subset — and the subset must match fileIcon.tsx.
+  // more — only the generated subset — and the subset must match the icon tables
   const fullIcons=Object.keys(inputs).some(k=>norm(k).includes('/@iconify-json/material-icon-theme/'));
   check('★ full material-icon-theme collection is not bundled (subset only)', !fullIcons);
   const gen=spawnSync(process.execPath,[join(desktop,'scripts/file-icon-subset/gen.mjs'),'--check'],{encoding:'utf8'});
-  check('★ fileIconCollection.json matches the icons fileIcon.tsx references', gen.status===0, (gen.stderr||gen.stdout).trim());
+  // 2026-10-15：表从 fileIcon.tsx 拆到 fileIconTables.ts，gen.mjs 已改指新文件；
+  // 这条仍走 gen.mjs --check，所以两边一致与否照样由它把关。
+  check('★ fileIconCollection.json matches the icons the icon tables reference', gen.status===0, (gen.stderr||gen.stdout).trim());
   const BUDGET=4*1024*1024;
   console.log(`App static closure: ${(bytes/1024).toFixed(0)}KB minified (budget ${(BUDGET/1024).toFixed(0)}KB)`);
   check('★ App static closure within budget', bytes<=BUDGET, `${(bytes/1024).toFixed(0)}KB`);
