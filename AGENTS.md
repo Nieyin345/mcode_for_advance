@@ -83,7 +83,12 @@ apps/desktop/src/
     lib/
       logger.ts                # 文件+stderr 日志(userData/logs/main.log)
       askQuestion.ts           # ★ 共享:parseQuestions / formatAnswersForModel / ASK_SYSTEM_PROMPT(Claude + Pi 共用)
-    store/{db,repositories}.ts # SQLite 持久化(sql.js)
+    store/db.ts                # SQLite 持久化(sql.js) —— 连接/迁移/persist
+    store/repositories.ts      # ★ Repository 层**入口(barrel)**,只转发;实现在下面那个目录
+    store/repositories/        # ★ 按实体拆:每张表一个文件(project/session/message/setting/
+                               #   workflow/workflowRun/scene/hookRun/library/collection/note/
+                               #   libraryLink + makeId)。**改某张表就去对应文件**。
+                               #   拆分前是 3277 行 13 张表挤在一个文件里(2026-10-15 拆)。
   preload/index.ts             # contextBridge 白名单 API
   renderer/                    # 前端(React)
     stores/sessionStore.ts     # ★ Zustand store,ingest RuntimeEvent → ChatMessage(locale 状态也在此)

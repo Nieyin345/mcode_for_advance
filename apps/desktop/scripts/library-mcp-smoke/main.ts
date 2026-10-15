@@ -739,7 +739,13 @@ console.log("\n写工具的那道门只在有屏蔽时才拦");
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     // run.sh 里 `cd apps/desktop` 再跑,所以 cwd 就是 apps/desktop(同 ipc-wiring-smoke)。
-    const src = readFileSync(join(process.cwd(), "src/main/store/repositories.ts"), "utf8");
+    // 同 projects-ipc-smoke：2026-10-15 拆成目录后改成扫整个 repositories/。
+    const { readdirSync } = await import("node:fs");
+    const repoDir = join(process.cwd(), "src/main/store/repositories");
+    const src = readdirSync(repoDir)
+      .filter((f: string) => f.endsWith(".ts"))
+      .map((f: string) => readFileSync(join(repoDir, f), "utf8"))
+      .join("\n");
     const paginated = src.match(/SELECT i\.\* FROM library_items i \$\{whereSql\} ORDER BY [^`]*LIMIT \? OFFSET \?/g) ?? [];
     check(
       "★ 会翻页的 library_items 查询以 `, id DESC` 收尾(并列行顺序稳定、翻页不跳条)",

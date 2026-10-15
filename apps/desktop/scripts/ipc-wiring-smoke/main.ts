@@ -1038,7 +1038,15 @@ check("长任务 RPC 契约和 IPC 常量已移除", !rpcMap.includes('"longtask
 check("preload 不再暴露长任务入口", !preloadSrc.includes("IPC.LONGTASK_START"));
 check("主进程不再启动循环器", !read(join(MAIN, "index.ts")).includes("longTaskRunner"));
 check("运行时事件不再广播长任务", !read(join(CONTRACTS, "runtime.ts")).includes("LongTaskUpdateEvent"));
-check("主进程不再读写历史长任务", !read(join(MAIN, "store/repositories.ts")).includes("LongTaskRepo"));
+// 2026-10-15：`store/repositories.ts` 拆成 `repositories/<实体>.ts` + barrel。
+// 只读 barrel 的话这条断言会**空过**（barrel 里只剩转发语句）——改成连目录一起扫。
+check(
+  "主进程不再读写历史长任务",
+  !read(join(MAIN, "store/repositories.ts")).includes("LongTaskRepo") &&
+    !readdirSync(join(MAIN, "store/repositories"))
+      .filter((f) => f.endsWith(".ts"))
+      .some((f) => read(join(MAIN, "store/repositories", f)).includes("LongTaskRepo")),
+);
 
 if (failures > 0) {
   console.error(`\n${failures} failed, ${checks - failures} passed`);

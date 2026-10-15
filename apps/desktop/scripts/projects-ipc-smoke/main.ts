@@ -29,7 +29,7 @@
  *
  * Run: scripts/projects-ipc-smoke/run.sh
  */
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
@@ -1003,7 +1003,14 @@ console.log("\n分页 SQL 的排序要有 id 兜底(否则翻页可能跳过一�
   // 于是某条会话在翻页时被**静默跳过**(渲染端按 id 去重只挡得住重复,挡不住跳过)。
   // 同文件的兄弟分页器(WorkflowRunRepo.listForSession / pruneSession / 消息游标)都带了
   // id 兜底,这两条从前漏了。判据钉在源码上:两处 LIMIT 分页 SQL 都必须以 `, id DESC` 收尾。
-  const repo = readFileSync(join(process.cwd(), "src/main/store/repositories.ts"), "utf8");
+  // 2026-10-15：`repositories.ts` 按实体拆成 `repositories/<实体>.ts` + 一个 barrel。
+  // 判据从"扫那一个文件"改成"扫整个目录" —— 将来再加一张表也照样覆盖到，
+  // 不必每次搬文件都来改这里（这个文件本身就是那次搬迁的漏网者）。
+  const repoDir = join(process.cwd(), "src/main/store/repositories");
+  const repo = readdirSync(repoDir)
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => readFileSync(join(repoDir, f), "utf8"))
+    .join("\n");
   // 翻页那两条是 `let sql = \`SELECT ... ORDER BY updated_at DESC, created_at DESC[, id DESC]\`;`
   // —— 赋给 `sql` 之后才追加 LIMIT/OFFSET。逐字匹配这个形状,其余 `LIMIT 1` 的单行查询不在此列。
   const paginated = repo.match(/let sql = `SELECT \* FROM sessions[^`]*ORDER BY updated_at DESC, created_at DESC([^`]*)`/g) ?? [];
