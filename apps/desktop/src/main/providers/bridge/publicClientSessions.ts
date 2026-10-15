@@ -81,9 +81,16 @@ export function issueClientSession(credentialId: string): string {
     }
     // 淘汰集本身也要有界:被回收后出队的 id 从 evicted 里清掉(见 pruneOrphanedOwners);
     // 这里再兜一个上限,防止「淘汰了但用户一直不回收」把它撑大。
+    //
+    // ★ **MC-034:但受控保留的忙 owner 不能因容量被丢掉凭据映射。** 若最老的那批里正好有
+    //   一个**名下还挂着活资源**的 owner,把它从 `evicted` 删掉,过后 `pruneOrphanedOwners`
+    //   保留它时 `credentialId` 就变成 `null` —— 运维再也说不清"哪条凭据死了、名下还挂着
+    //   资源"(与 MC-089「可溯源」相悖)。所以容量裁剪**跳过**忙 owner:宁可让 `evicted`
+    //   比上限多占几个位置(数量有界:受控保留的忙 owner 不会无限增长),也不丢凭据来源。
     if (evicted.size > maxIssued) {
-      const drop = [...evicted.keys()].slice(0, evicted.size - maxIssued);
-      for (const k of drop) evicted.delete(k);
+      const overflow = evicted.size - maxIssued;
+      const droppable = [...evicted.keys()].filter((k) => !ownerHasInFlightWork(k)).slice(0, overflow);
+      for (const k of droppable) evicted.delete(k);
     }
   }
   return id;

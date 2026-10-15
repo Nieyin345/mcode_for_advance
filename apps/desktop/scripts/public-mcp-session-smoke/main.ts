@@ -244,4 +244,49 @@ equal("disable returns no listening port", disabledStatus.port, 0);
   settingsStore.set("publicMcp.retentionAudit", "");
 }
 
+/* ── ★ MC-034:忙 owner 的凭据映射不能被**淘汰集的容量**顶掉 ──
+ *
+ * 上面那段刻意只 churn 3 次,好让 orphan 留在有界的 `evicted`(上限 3)里。可真实场景是
+ * **大量初始化签发**:最早的忙 owner 会被后来的淘汰记录顶出 `evicted`,于是
+ * `pruneOrphanedOwners` 保留它时 `credentialId` 变 `null` —— 运维再也说不清"哪条凭据死了、
+ * 名下还挂着资源"(台账 E1:`EARLIEST_CREDENTIAL null`)。
+ *
+ * 本段放开 churn:orphan 名下**始终有活资源**,连签远超 `evicted` 上限的条数 → 它仍在
+ * `evicted` 里、仍带着原始凭据。 */
+{
+  const {
+    issueClientSession,
+    rememberSyntheticOwner,
+    pruneOrphanedOwners,
+    registerOwnerWorkProbe,
+    __setMaxIssuedForTest,
+    __resetPublicClientSessions,
+  } = await import("../../src/main/providers/bridge/publicClientSessions.js");
+
+  __resetPublicClientSessions();
+  __setMaxIssuedForTest(2);
+  const busy = issueClientSession("cred-original");
+  rememberSyntheticOwner("sess_mc034", busy);
+  // 名下始终有活资源(探针恒真)—— 与真实"还有进程/搜索/SSH 在跑"一致。
+  const off = registerOwnerWorkProbe((id) => id === busy);
+  // 连签远超 evicted 上限(2)的条数:若容量裁剪不看"忙不忙",busy 的凭据映射会被顶掉。
+  for (let i = 0; i < 10; i += 1) issueClientSession(`cred-churn-${i}`);
+
+  pruneOrphanedOwners(); // 第一次:受控保留忙 owner(这一步是台账 E1 复现点)
+  // 再来一批 churn + 再 prune,确认凭据**持续**留存(不是碰巧第一次还在)。
+  for (let i = 0; i < 10; i += 1) issueClientSession(`cred-more-${i}`);
+  const kept = pruneOrphanedOwners().keptBusyDetails;
+  const busyDetail = kept.find((k) => k.ownerId === busy);
+  equal("★ MC-034:忙 owner 被受控保留", busyDetail !== undefined, true);
+  equal(
+    "★ MC-034:忙 owner 的原始凭据仍在(没被淘汰集容量顶成 null)",
+    busyDetail?.credentialId,
+    "cred-original",
+  );
+
+  off();
+  __setMaxIssuedForTest(null);
+  __resetPublicClientSessions();
+}
+
 console.log("public MCP session lifecycle smoke passed");
