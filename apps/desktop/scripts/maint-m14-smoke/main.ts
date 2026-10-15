@@ -29,9 +29,10 @@
  *
  * Run: scripts/maint-m14-smoke/run.sh
  */
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { MCP_MANAGEMENT_SETTING_KEY, type McpManagementState } from "@contracts/ipc";
 import {
@@ -441,6 +442,110 @@ async function main(): Promise<void> {
       () => cappedSearches.start({ ownerSessionId: "st-3", type: "files", pattern: "note", root: searchRoot, literalSearch: true, waitMs: 0 }),
       /RESOURCE_BUSY.*总数已达上限 2/,
     );
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * C4 【MC-027】遍历读口要能区分「完整无命中」与「不完整无命中」。
+   *
+   * 从前 walkDir 的 readdir 失败返回 []、visitFile 的 fs.open 失败返回 null —— 坏掉的
+   * 子树被当成"空/不存在",目标文本恰在里面就报 0 results + completed(假完整)。下面用
+   * 真造的不可读目录/文件(Windows 走 icacls /deny,POSIX 走 chmod 000)注入故障,证明
+   * 结果如实标 partial 并列出没搜到的位置。
+   *
+   * ⚠️ 注入前先验证"故障真的生效"(readdir/open 真的被拒),否则断言就是空过 —— 那正是
+   *    这个仓库踩过的坑。生效不了就**报红**,不静默跳过。
+   * ───────────────────────────────────────────────────────────────────────── */
+  console.log("C4. mcp/agentSearchSessions.ts —— 遍历读口区分完整/不完整(MC-027)");
+
+  /** 让某目录/文件不可读;返回还原函数(务必在结尾调,否则临时目录清不掉)。 */
+  function denyRead(target: string): () => void {
+    if (platform() === "win32") {
+      const user = process.env.USERNAME ?? "";
+      execFileSync("icacls", [target, "/deny", `${user}:(R)`], { stdio: "pipe" });
+      return () => { try { execFileSync("icacls", [target, "/remove:d", user], { stdio: "pipe" }); } catch { /* best effort */ } };
+    }
+    chmodSync(target, 0o000);
+    return () => { try { chmodSync(target, 0o700); } catch { /* best effort */ } };
+  }
+
+  {
+    const faultRoot = join(work, "fault-readdir");
+    mkdirSync(join(faultRoot, "ok"), { recursive: true });
+    mkdirSync(join(faultRoot, "locked"), { recursive: true });
+    writeFileSync(join(faultRoot, "ok", "hit.txt"), "NEEDLE_027\n", "utf-8");
+    writeFileSync(join(faultRoot, "locked", "secret.txt"), "NEEDLE_027\n", "utf-8");
+    const restore = denyRead(join(faultRoot, "locked"));
+    // 先证故障真的生效:readdir(locked) 必须失败,否则后面的断言是空过 → 直接报红。
+    let injected = false;
+    try { readdirSync(join(faultRoot, "locked")); } catch { injected = true; }
+    check("★ 故障注入真的生效(locked 目录 readdir 被拒)", injected);
+    if (!injected) {
+      restore();
+    } else {
+      const srch = createAgentSearchSessions();
+      const r = await srch.start({ ownerSessionId: A, type: "content", pattern: "NEEDLE_027", root: faultRoot, literalSearch: true, waitMs: 3_000 });
+      const page = await srch.read({ ownerSessionId: A, searchId: r.searchId, offset: 0, length: 500, waitMs: 3_000 });
+      check("★ 一个坏目录不瘫痪正常子树(ok/hit.txt 仍被搜到)", page.results.some((x) => x.includes("ok/hit.txt")), page.results);
+      check("★ 坏目录使结果标为不完整(partial=true),不是假 completed", page.partial === true, { partial: page.partial, status: page.status });
+      check("★ 没搜到的位置被如实登记(skippedCount>=1)", page.skippedCount >= 1, { skippedCount: page.skippedCount });
+      check("★ skippedPaths 点名那个没搜到的目录", page.skippedPaths.some((p) => p.includes("locked")), page.skippedPaths);
+      check("★ 状态仍是 completed(只是不完整),不是 error", page.status === "completed", page.status);
+      srch.disposeOwner(A);
+      restore();
+    }
+  }
+
+  {
+    // 文件打不开:一个坏文件不能瘫痪整次搜索,也要如实登记。
+    const faultRoot = join(work, "fault-open");
+    mkdirSync(faultRoot, { recursive: true });
+    writeFileSync(join(faultRoot, "open.txt"), "NEEDLE_027\n", "utf-8");
+    writeFileSync(join(faultRoot, "locked.txt"), "NEEDLE_027\n", "utf-8");
+    const restore = denyRead(join(faultRoot, "locked.txt"));
+    let injected = false;
+    try { readFileSync(join(faultRoot, "locked.txt")); } catch { injected = true; }
+    check("★ 故障注入真的生效(locked.txt 打不开)", injected);
+    if (!injected) {
+      restore();
+    } else {
+      const srch = createAgentSearchSessions();
+      const r = await srch.start({ ownerSessionId: A, type: "content", pattern: "NEEDLE_027", root: faultRoot, literalSearch: true, waitMs: 3_000 });
+      const page = await srch.read({ ownerSessionId: A, searchId: r.searchId, offset: 0, length: 500, waitMs: 3_000 });
+      check("★ 打不开的文件不瘫痪整次搜索(open.txt 仍被搜到)", page.results.some((x) => x.includes("open.txt")), page.results);
+      check("★ 打不开的文件使结果标为不完整(partial=true)", page.partial === true, { partial: page.partial });
+      check("★ skippedPaths 点名那个打不开的文件", page.skippedPaths.some((p) => p.includes("locked.txt")), page.skippedPaths);
+      srch.disposeOwner(A);
+      restore();
+    }
+  }
+
+  {
+    // 完整无命中:同一棵树没有故障时,partial 必须是 false —— 与"不完整无命中"分开。
+    const cleanRoot = join(work, "clean");
+    mkdirSync(cleanRoot, { recursive: true });
+    writeFileSync(join(cleanRoot, "a.txt"), "hello world\n", "utf-8");
+    const srch = createAgentSearchSessions();
+    const r = await srch.start({ ownerSessionId: A, type: "content", pattern: "ZZZ_NOT_PRESENT", root: cleanRoot, literalSearch: true, waitMs: 3_000 });
+    const page = await srch.read({ ownerSessionId: A, searchId: r.searchId, offset: 0, length: 500, waitMs: 3_000 });
+    check("★ 完整无命中:0 结果且 partial=false、skippedCount=0", page.totalResults === 0 && page.partial === false && page.skippedCount === 0, { total: page.totalResults, partial: page.partial, skipped: page.skippedCount });
+    srch.disposeOwner(A);
+  }
+
+  {
+    // 深度上限:超过 max-depth 的分支不再走,也要如实登记为"没搜到的地方",不能静默。
+    const deepRoot = join(work, "deep");
+    let cur = deepRoot;
+    mkdirSync(cur, { recursive: true });
+    for (let i = 0; i < 33; i += 1) {
+      cur = join(cur, `d${i}`);
+      mkdirSync(cur, { recursive: true });
+    }
+    writeFileSync(join(cur, "buried.txt"), "NEEDLE_027\n", "utf-8");
+    const srch = createAgentSearchSessions();
+    const r = await srch.start({ ownerSessionId: A, type: "content", pattern: "NEEDLE_027", root: deepRoot, literalSearch: true, waitMs: 3_000 });
+    const page = await srch.read({ ownerSessionId: A, searchId: r.searchId, offset: 0, length: 500, waitMs: 3_000 });
+    check("★ 撞深度上限时如实标 partial(不当成完整无命中)", page.partial === true && page.totalResults === 0, { partial: page.partial, total: page.totalResults });
+    srch.disposeOwner(A);
   }
 
   /* ══════════════ D. agentSessionCleanup:删会话时的统一释放点 ══════════════ */

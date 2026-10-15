@@ -535,8 +535,23 @@ function formatSearchResult(out: AgentSearchReadResult): string {
     `scanned_files: ${out.scannedFiles}`,
   ];
   if (out.error) meta.push(`error: ${out.error}`);
+  // 【MC-027】遍历中有的位置(目录/文件)没能搜到 —— 如实报出来,别把部分结果当全量。
+  // 尤其 `total_results: 0` + partial 时,模型**不能**据此断言"没有"。
+  if (out.partial) {
+    meta.push(`partial: true`);
+    meta.push(`skipped_count: ${out.skippedCount}`);
+    if (out.skippedPaths.length > 0) {
+      const shown = out.skippedPaths.slice(0, 20);
+      const more = out.skippedCount > shown.length ? ` …等共 ${out.skippedCount} 个` : "";
+      meta.push(`skipped_paths: ${shown.join(", ")}${more}`);
+    }
+  }
   const body = out.results.length > 0 ? out.results.map((r, i) => `[${out.offset + i}] ${r}`).join("\n") : "(本页暂无结果)";
-  return `${meta.join("\n")}\n--- results ---\n${body}`;
+  const warn = out.partial
+    ? `\n⚠️ 本次搜索**不完整**:有 ${out.skippedCount} 个位置(目录或文件)没能搜到,结果可能不全;` +
+      (out.totalResults === 0 ? "「没有结果」不能当作「不存在」。" : "请勿据此断言目标不存在。")
+    : "";
+  return `${meta.join("\n")}\n--- results ---\n${body}${warn}`;
 }
 
 async function runCaptured(exe: string, args: string[], timeoutMs = 10_000, env?: NodeJS.ProcessEnv, maxOutputBytes = MAX_CHILD_OUTPUT_BYTES): Promise<{ stdout: string; stderr: string; code: number | null }> {
@@ -2220,7 +2235,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           const list = agentSearches.list(ownerOf(ctx));
           if (list.length === 0) return "当前对话没有搜索会话";
           return list.map((s) =>
-            `${s.searchId}\t${s.status}\t${s.type}\tresults=${s.totalResults}\tscanned=${s.scannedFiles}\t${s.pattern}\t${s.root}`,
+            `${s.searchId}\t${s.status}\t${s.type}\tresults=${s.totalResults}\tscanned=${s.scannedFiles}${s.partial ? `\tpartial=true(${s.skippedCount} 处没搜到)` : ""}\t${s.pattern}\t${s.root}`,
           ).join("\n");
         }),
     },

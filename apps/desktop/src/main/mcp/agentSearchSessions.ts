@@ -6,6 +6,12 @@ import { createInterface } from "node:readline";
 export type AgentSearchType = "files" | "content";
 export type AgentSearchStatus = "running" | "completed" | "stopped" | "error";
 
+/**
+ * 【MC-027】per-session 记下**没能搜到的位置**的上限。实际读口返回的 `skippedPaths`
+ * 最多这么长,`skippedCount` 记全量 —— 免得一棵坏树把结果 payload 撑爆。
+ */
+const MAX_SKIPPED_PATHS = 50;
+
 const MAX_SEARCH_SESSIONS_PER_OWNER = 12;
 /**
  * **端点全局搜索会话上限**(MC-063)。per-owner 上限挡不住"多开几个对话各占一点"把
@@ -40,6 +46,16 @@ interface SearchSession {
   finishedAt: number | null;
   error: string | null;
   stopped: boolean;
+  /**
+   * 【MC-027】**这次搜索有没有漏搜到地方**(某目录 readdir 失败、某文件打不开、
+   * 或撞了深度上限)。`false` 才是「完整无命中」;`true` 表示结果可能不全,
+   * 模型不能把它当全量。
+   */
+  partial: boolean;
+  /** 没能搜到的位置(相对 root,正斜杠),最多 {@link MAX_SKIPPED_PATHS} 条。 */
+  skippedPaths: string[];
+  /** 没能搜到的位置**总数**(不限 {@link MAX_SKIPPED_PATHS})。 */
+  skippedCount: number;
 }
 
 export interface AgentSearchReadResult {
@@ -51,6 +67,16 @@ export interface AgentSearchReadResult {
   totalResults: number;
   scannedFiles: number;
   error: string | null;
+  /**
+   * 【MC-027】结果是否**不完整** —— 有位置(目录/文件)因为出错或深度上限没能搜到。
+   * `totalResults === 0 && partial === true` 是「不完整无命中」,与「完整无命中」
+   * (partial=false)不同:前者不能断言目标不存在。
+   */
+  partial: boolean;
+  /** 没能搜到的位置(相对 root,正斜杠),最多 {@link MAX_SKIPPED_PATHS} 条。 */
+  skippedPaths: string[];
+  /** 没能搜到的位置总数(可能大于 `skippedPaths.length`)。 */
+  skippedCount: number;
 }
 
 export interface AgentSearchListItem {
@@ -62,6 +88,10 @@ export interface AgentSearchListItem {
   totalResults: number;
   scannedFiles: number;
   startedAt: number;
+  /** 【MC-027】是否漏搜过位置(见 {@link AgentSearchReadResult.partial})。 */
+  partial: boolean;
+  /** 【MC-027】没能搜到的位置总数。 */
+  skippedCount: number;
 }
 
 export interface AgentSearchSessions {
@@ -145,6 +175,9 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
       totalResults: s.results.length,
       scannedFiles: s.scannedFiles,
       error: s.error,
+      partial: s.partial,
+      skippedPaths: s.skippedPaths.slice(),
+      skippedCount: s.skippedCount,
     };
   }
 
@@ -186,6 +219,9 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
         finishedAt: null,
         error: null,
         stopped: false,
+        partial: false,
+        skippedPaths: [],
+        skippedCount: 0,
       };
       sessions.set(state.id, state);
       void runSearch(state, {
@@ -232,6 +268,8 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
           totalResults: s.results.length,
           scannedFiles: s.scannedFiles,
           startedAt: s.startedAt,
+          partial: s.partial,
+          skippedCount: s.skippedCount,
         }));
     },
 
@@ -298,9 +336,23 @@ async function walkDir(
   opts: { canRead?: (absolutePath: string) => boolean; matcher: (value: string) => boolean; fileMatcher: RegExp | null; includeHidden: boolean; contextLines: number },
   depth: number,
 ): Promise<void> {
-  if (state.stopped || state.results.length >= state.maxResults || depth > 30) return;
+  if (state.stopped || state.results.length >= state.maxResults) return;
+  // 【MC-027】深度上限:这一层往下不再遍历,如实记成"没搜到的地方",不当成"不存在"。
+  if (depth > 30) {
+    recordSkip(state, root, dir, "超出遍历深度上限");
+    return;
+  }
   if (opts.canRead && !opts.canRead(dir)) return;
-  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    // 【MC-027】readdir 失败(如 EACCES/EPERM)。从前静默返回 `[]`,子树被当成"空",
+    // 结果里少了文件却仍标 `completed` —— 假完整。现在**显式登记这棵子树没搜到**,
+    // 但不抛:一个好目录搜不了不该瘫痪其余正常子树。
+    recordSkip(state, root, dir, errnoText(err));
+    return;
+  }
   for (const entry of entries) {
     if (state.stopped || state.results.length >= state.maxResults) return;
     if (!opts.includeHidden && entry.name.startsWith(".")) continue;
@@ -317,6 +369,25 @@ async function walkDir(
   }
 }
 
+/** 【MC-027】登记一个"没能搜到的位置"。去重、限条数,`skippedCount` 记全量。 */
+function recordSkip(state: SearchSession, root: string, abs: string, reason: string): void {
+  state.partial = true;
+  state.skippedCount += 1;
+  // 相对 root 的路径更短、对模型更有意义;root 本身(相对为空)回退成绝对路径。
+  const rel = path.relative(root, abs).replace(/\\/g, "/") || ".";
+  if (state.skippedPaths.length >= MAX_SKIPPED_PATHS) return;
+  const entry = reason ? `${rel} (${reason})` : rel;
+  if (!state.skippedPaths.includes(entry)) state.skippedPaths.push(entry);
+}
+
+/** 【MC-027】把常见 OS 读错误翻成一句人话,同 runSearch 里那条口径;其余原样。 */
+function errnoText(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "EACCES" || code === "EPERM") return "没有读取权限";
+  if (code === "ENOENT") return "已被删除";
+  return code ?? (err instanceof Error ? err.message : String(err));
+}
+
 async function visitFile(
   state: SearchSession,
   abs: string,
@@ -331,48 +402,68 @@ async function visitFile(
     return;
   }
 
-  const fd = await fs.open(abs, "r").catch(() => null);
-  if (!fd) return;
+  let fd: Awaited<ReturnType<typeof fs.open>>;
+  try {
+    fd = await fs.open(abs, "r");
+  } catch (err) {
+    // 【MC-027】文件打不开(EACCES/EPERM/占用…)。从前返回 `null` 当没命中 ——
+    // 目标文本恰在这文件里就报成"不存在"。现在如实登记,不抛。
+    recordSkip(state, state.root, abs, errnoText(err));
+    return;
+  }
   try {
     const stat = await fd.stat();
     const head = Buffer.alloc(Math.min(stat.size, 8192));
     if (head.length > 0) await fd.read(head, 0, head.length, 0);
+    // 二进制文件**有意**不搜(同 ripgrep),不是"漏搜",不进 skipped。
     if (head.includes(0)) return;
+  } catch (err) {
+    // 读头部失败(磁盘错误/权限):同样如实登记,不抛。
+    recordSkip(state, state.root, abs, errnoText(err));
+    return;
   } finally {
-    await fd.close();
+    await fd.close().catch(() => {});
   }
 
   const before: Array<{ n: number; text: string }> = [];
   const pending: Array<{ n: number; lines: string[]; remaining: number }> = [];
-  const rl = createInterface({ input: createReadStream(abs, { encoding: "utf8" }), crlfDelay: Infinity });
   let lineNo = 0;
-  for await (const raw of rl) {
-    if (state.stopped || state.results.length + pending.length >= state.maxResults) break;
-    lineNo += 1;
-    const line = String(raw);
+  try {
+    const rl = createInterface({ input: createReadStream(abs, { encoding: "utf8" }), crlfDelay: Infinity });
+    for await (const raw of rl) {
+      if (state.stopped || state.results.length + pending.length >= state.maxResults) break;
+      lineNo += 1;
+      const line = String(raw);
 
-    for (let i = pending.length - 1; i >= 0; i -= 1) {
-      const p = pending[i]!;
-      if (p.remaining <= 0) continue;
-      p.lines.push(`${lineNo}: ${clip(line)}`);
-      p.remaining -= 1;
-      if (p.remaining === 0) {
-        state.results.push(`${rel}:${p.n}\n${p.lines.join("\n")}`);
-        pending.splice(i, 1);
+      for (let i = pending.length - 1; i >= 0; i -= 1) {
+        const p = pending[i]!;
+        if (p.remaining <= 0) continue;
+        p.lines.push(`${lineNo}: ${clip(line)}`);
+        p.remaining -= 1;
+        if (p.remaining === 0) {
+          state.results.push(`${rel}:${p.n}\n${p.lines.join("\n")}`);
+          pending.splice(i, 1);
+        }
       }
-    }
 
-    if (opts.matcher(line) && state.results.length + pending.length < state.maxResults) {
-      const lines = [
-        ...before.map((b) => `${b.n}: ${clip(b.text)}`),
-        `${lineNo}: ${clip(line)}`,
-      ];
-      if (opts.contextLines === 0) state.results.push(`${rel}:${lineNo}: ${clip(line)}`);
-      else pending.push({ n: lineNo, lines, remaining: opts.contextLines });
-    }
+      if (opts.matcher(line) && state.results.length + pending.length < state.maxResults) {
+        const lines = [
+          ...before.map((b) => `${b.n}: ${clip(b.text)}`),
+          `${lineNo}: ${clip(line)}`,
+        ];
+        if (opts.contextLines === 0) state.results.push(`${rel}:${lineNo}: ${clip(line)}`);
+        else pending.push({ n: lineNo, lines, remaining: opts.contextLines });
+      }
 
-    before.push({ n: lineNo, text: line });
-    while (before.length > opts.contextLines) before.shift();
+      before.push({ n: lineNo, text: line });
+      while (before.length > opts.contextLines) before.shift();
+    }
+  } catch (err) {
+    // 【MC-027】正文读取中途失败(文件被删/占用/IO 错)。从前这个异常会冒到 `runSearch`
+    // 外层 catch,把**整次搜索**打成 `error` —— 一个坏文件瘫痪所有正常子树。现在只登记
+    // **这一个文件**漏搜,其余结果照旧保留;已攒进 results 的命中不撤回。
+    recordSkip(state, state.root, abs, errnoText(err));
+    return;
   }
   for (const p of pending) {
     if (state.results.length >= state.maxResults) break;
