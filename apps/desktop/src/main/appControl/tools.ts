@@ -55,7 +55,7 @@ import {
 } from "@contracts/appControl";
 import { fail, image, text, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js";
 import { API_CATALOG, type ApiCatalogEntry } from "./apiCatalog.generated.js";
-import { decodeDomainOutcome, resultKindOfOutcome, sideEffectClassOf, thrownResultKind } from "./commandOutcome.js";
+import { decodeDomainOutcome, resolveOperationOutcome, resultKindOfOutcome, resultKindOfOperationOutcome, opExtraFromOutcome, sideEffectClassOf, thrownResultKind } from "./commandOutcome.js";
 import {
   getOperationLedger,
   intentFingerprint,
@@ -709,14 +709,16 @@ export async function panelApiCall(
   // 拒绝**或**可能已部分提交** —— 从前这条路**没跑解码**,把业务拒绝也当 `ok:true` 交回
   // 面板(与 agent 那条路 MC-066 修的是同一个洞)。这里补齐,按登记语义落 REJECTED /
   // UNCERTAIN。
-  const outcome = decodeDomainOutcome(entry.method, result);
-  if (outcome.kind !== "accepted") {
-    const op = makeOp(resultKindOfOutcome(outcome), entry.method, randomUUID(), { code: outcome.code, reason: outcome.reason });
+  const outcome = resolveOperationOutcome(entry.method, result);
+  if (outcome && outcome.kind !== "accepted") {
+    const op = makeOp(resultKindOfOperationOutcome(outcome), entry.method, randomUUID(), opExtraFromOutcome(outcome));
     return { ok: false, error: formatOperationResult(op), operation: op };
   }
+  // 聚合结果**完全成功**时也带上(可能为空的)warnings/码 —— 用 opExtraFromOutcome 收口。
+  const extra = outcome ? opExtraFromOutcome(outcome) : {};
   // 结果打码 —— 与 agent 的 `renderResult` 同一份 `redactValue`。密钥类设置键上面已前置
   // 拦掉,这里是兜底(如返回值里嵌着别的凭据字段)。
-  return { ok: true, result: redactValue(result), operation: makeOp("SUCCEEDED", entry.method, randomUUID()) };
+  return { ok: true, result: redactValue(result), operation: makeOp("SUCCEEDED", entry.method, randomUUID(), extra) };
 }
 
 function errText(err: unknown): string {
@@ -2168,12 +2170,11 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         // 显式登记过结果合同的方法(如 browser.* 的 {ok,error} 信封)在这里判:ok:false 是
         // 业务**明确拒绝**(没执行)→ REJECTED,而不是 SUCCEEDED。
         const body = renderResult(slimSessions(result));
-        const outcome = decodeDomainOutcome(entry.method, result);
-        if (outcome.kind !== "accepted") {
-          const op = makeOp(resultKindOfOutcome(outcome), entry.method, operationId, {
-            code: outcome.code,
-            reason: outcome.reason,
-          });
+        const outcome = resolveOperationOutcome(entry.method, result);
+        // `accepted` = 完全成功(含空批次);`null` = 没登记合同(返回即成功)。两种都往下走。
+        // 失败/部分成功/无法确认在这里提前返回,**不**降级成失败成功混杂。
+        if (outcome && outcome.kind !== "accepted") {
+          const op = makeOp(resultKindOfOperationOutcome(outcome), entry.method, operationId, opExtraFromOutcome(outcome));
           settle(op.resultKind, op, body);
           return operationToolResult(op, body);
         }

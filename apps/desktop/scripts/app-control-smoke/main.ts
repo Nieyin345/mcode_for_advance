@@ -25,7 +25,7 @@ import { physicalPath } from "@main/lib/realPathWithin.js";
 import { GrantStore, type GrantDecision } from "@main/appControl/grantStore.js";
 import { setGrantStore, getGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import type { ActorRef, CoreIntent, Grant } from "@contracts/policyEngine";
-import { isEnvelopeMethod } from "@main/appControl/commandOutcome.js";
+import { isEnvelopeMethod, isAggregateMethod } from "@main/appControl/commandOutcome.js";
 import { currentAgentExtensionScope } from "@main/memory/agentScope.js";
 import { setOperationLedger, type OperationLedger } from "@main/appControl/operations.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
@@ -1782,6 +1782,82 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   check("★ MC-066:skills.copyToProject 未登记为 ok/error 信封合同(返回 {copied,skipped,failed},无 ok)", isEnvelopeMethod("skills.copyToProject") === false);
   // 正控:真正登记过的信封方法仍为 true(证明上面的 false 不是"判据整体失灵")。
   check("★ MC-066 正控:skills.save 仍是已登记的信封合同", isEnvelopeMethod("skills.save") === true);
+}
+
+/* ── 3d-8b. 【MC-011】聚合结果合同:全失败/部分失败不再报 SUCCEEDED ──────────────
+ *
+ * 这两族返回的是**聚合结果**(`{imported,skipped,errors}` / `{items,added,errors}`),
+ * **没有 `ok` 字段** —— 所以走不了 ok/error 信封那条路。从前 `decodeDomainOutcome` 对
+ * 「无 descriptor」一律按"返回即成功" → agent 拿到 `SUCCEEDED`,哪怕**十个路径全都不存在、
+ * 一个都没导进去**(真相只在正文 `errors` 里)。这正是 MC-011。
+ *
+ * 修法:另立**聚合合同**(不登进 EXACT,免得 `isEnvelopeMethod` 变真、把每次成功也判成
+ * UNCERTAIN),按"成功数组 vs 失败数组"的**同时**空/非空分档。下面逐档断言。 */
+{
+  const { ctx } = ctxWith({ allow: true });
+
+  // 全失败:10 个路径全不存在 → errors 非空、items 为空 → FAILED(不是 SUCCEEDED)。
+  recordRpcHandler("library:importFiles", async () => ({
+    items: [],
+    added: 0,
+    skipped: 0,
+    errors: [{ path: "/no/a.pdf", error: "文件不存在" }, { path: "/no/b.pdf", error: "文件不存在" }],
+    converted: { ok: 0, failed: 0 },
+  }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.importFiles", input: { paths: ["/no/a.pdf", "/no/b.pdf"] } }, "me", ctx);
+    check("★ MC-011:library.importFiles 全失败 → FAILED(不是 SUCCEEDED)", opResultOf(r)?.resultKind === "FAILED", opResultOf(r));
+    check("★ MC-011:全失败判 isError=true(agent 不会当成功)", r.isError === true, r.isError);
+  }
+
+  // 部分成功:一项进了库、一项失败 → SUCCEEDED_WITH_WARNINGS(已提交,带可观测 warning)。
+  recordRpcHandler("library:importFiles", async () => ({
+    items: [{ id: "lib_1" }],
+    added: 1,
+    skipped: 0,
+    errors: [{ path: "/no/b.pdf", error: "文件不存在" }],
+    converted: { ok: 1, failed: 0 },
+  }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.importFiles", input: { paths: ["/ok/a.pdf", "/no/b.pdf"] } }, "me", ctx);
+    check("★ MC-011:library.importFiles 部分成功 → SUCCEEDED_WITH_WARNINGS(已提交)", opResultOf(r)?.resultKind === "SUCCEEDED_WITH_WARNINGS", opResultOf(r));
+    const warnings = (opResultOf(r)?.warnings ?? []) as Array<{ code?: string }>;
+    check("★ MC-011:部分成功带一条 import_partial_failed 的 warning(不吞)", warnings.some((w) => w.code === "import_partial_failed"), opResultOf(r)?.warnings);
+  }
+
+  // 全成功:正控 —— 不能因为加了判据就把正常导入判红。
+  recordRpcHandler("library:importFiles", async () => ({ items: [{ id: "lib_1" }], added: 1, skipped: 0, errors: [], converted: { ok: 1, failed: 0 } }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.importFiles", input: { paths: ["/ok/a.pdf"] } }, "me", ctx);
+    check("★ MC-011 正控:library.importFiles 全成功 → SUCCEEDED", opResultOf(r)?.resultKind === "SUCCEEDED", opResultOf(r));
+  }
+
+  // 空批次(一个都没输入):不是失败 —— 空 items + 空 errors → SUCCEEDED(no-op)。
+  recordRpcHandler("library:importFiles", async () => ({ items: [], added: 0, skipped: 0, errors: [], converted: { ok: 0, failed: 0 } }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "library.importFiles", input: { paths: [] } }, "me", ctx);
+    check("★ MC-011:library.importFiles 空批次 → SUCCEEDED(no-op,不是失败)", opResultOf(r)?.resultKind === "SUCCEEDED", opResultOf(r));
+  }
+
+  // skills.import 同族:每一条都非法名 → errors 非空、imported 空 → FAILED。
+  recordRpcHandler("skills:import", async () => ({ imported: [], skipped: 0, errors: [{ name: "../x", error: "无效的 skill 名" }] }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.import", input: { items: [{ name: "../x" }] } }, "me", ctx);
+    check("★ MC-011:skills.import 全失败 → FAILED(不是 SUCCEEDED)", opResultOf(r)?.resultKind === "FAILED", opResultOf(r));
+  }
+
+  // skills.copyToProject 的失败字段叫 `failed`(不是 `errors`)—— 证明判据按**语义**取数组,
+  // 不是硬绑一个字段名。
+  recordRpcHandler("skills:copyToProject", async () => ({ copied: [], skipped: [], failed: [{ name: "a", reason: "项目路径无效" }] }));
+  {
+    const r = await invokeAppTool("app_api_call", { method: "skills.copyToProject", input: { projectPath: "/p", names: ["a"] } }, "me", ctx);
+    check("★ MC-011:skills.copyToProject 全失败(`failed` 字段)→ FAILED", opResultOf(r)?.resultKind === "FAILED", opResultOf(r));
+  }
+
+  // 判据锚:聚合方法**不是**信封方法(两条路互斥,将来谁把聚合方法误加进 EXACT → 这里红)。
+  check("★ MC-011:library.importFiles 不是信封方法(聚合合同另立一张表)", isEnvelopeMethod("library.importFiles") === false);
+  check("★ MC-011:isAggregateMethod 认得聚合族", isAggregateMethod("skills.import") && isAggregateMethod("library.importNotes") && isAggregateMethod("library.importGeneric"));
+  check("★ MC-011 正控:isAggregateMethod 不认信封方法", isAggregateMethod("skills.save") === false && isAggregateMethod("browser.create") === false);
 }
 
 /* ── 3d-9. 【MC-066 残余① 续】onlyoffice 域 ──────────────────────────────────

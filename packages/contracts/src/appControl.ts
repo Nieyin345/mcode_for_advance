@@ -195,6 +195,11 @@ export type OperationResult = z.infer<typeof OperationResultSchema>;
 /** 界面刷新通知失败(业务已提交)这条 warning 的稳定短码。 */
 export const OP_WARNING_UI_REFRESH_FAILED = "ui_refresh_failed";
 
+/** 批量导入**部分失败**(业务已提交:成功的项确实入库了)这条 warning 的稳定短码。
+ *  见 `main/appControl/commandOutcome.ts` 的聚合结果合同 —— 从前这类"聚合结果、没有 ok
+ *  字段"的方法按"返回即成功"处理,**全失败也报 SUCCEEDED**(MC-011)。 */
+export const OP_WARNING_IMPORT_PARTIAL_FAILED = "import_partial_failed";
+
 /** 稳定结果短码 —— 桌面 / 手机 / 三个 SDK 判据一致,别各写各的字符串。 */
 export const OP_CODE = {
   methodNotFound: "method_not_found",

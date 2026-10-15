@@ -15,8 +15,8 @@
  * JSON 上做字符串规则推断** —— 每个可由 Agent 调用的方法族在**这里显式登记**它的结果合同
  * (okError 家族 + ok:false 的语义),没登记的方法按「返回即成功」处理(void / 数据结果)。
  */
-import type { OperationResultKind } from "@contracts/appControl";
-import { OP_CODE } from "@contracts/appControl";
+import type { OperationResultKind, OperationWarning } from "@contracts/appControl";
+import { OP_CODE, OP_WARNING_IMPORT_PARTIAL_FAILED } from "@contracts/appControl";
 import { moduleRefusal } from "@contracts/modules";
 import { policyFor, type AppPolicyLevel } from "./policy.js";
 
@@ -418,6 +418,117 @@ export function isEnvelopeMethod(method: string): boolean {
   return outcomeDescriptor(method) !== undefined;
 }
 
+/* ─────────────────── 聚合结果合同(MC-011)───────────────────
+ *
+ * ## 它在补哪个洞
+ *
+ * 一批**批量导入**方法返回的是**聚合结果**：
+ *
+ *   - `skills.import`          → `{ imported: string[], skipped, errors: [{name,error}] }`
+ *   - `skills.copyToProject`   → `{ copied: string[], skipped: string[], failed: [{name,reason}] }`
+ *   - `library.importFiles`    → `{ items, added, skipped, errors: [{path,error}], converted }`
+ *   - `library.importNotes`    → `{ items, added, skipped, errors }`
+ *   - `library.importGeneric`  → `{ items, added, skipped, errors, converted }`
+ *
+ * 它们**没有 `ok` 字段**、**不是 ok/error 信封**，所以从前 `decodeDomainOutcome` 落到
+ * 「无 descriptor = accepted」 → agent 拿到的 `resultKind` 恒为 **SUCCEEDED**。可真相可能
+ * 是「10 个路径全都不存在、一个都没导进去」—— 那条 `errors` 只在正文里，agent 会照
+ * `SUCCEEDED` 向用户报「已导入」(README 最高原则 6)。这正是 `ok:false` 类洞，只是这两族
+ * 的"失败"藏在**聚合数组**里，不在信封里。
+ *
+ * ## 为什么不登记进 `EXACT`
+ *
+ * 因为 `isEnvelopeMethod` 读的就是 `outcomeDescriptor`，把聚合方法登进去会让
+ * `asEnvelope` 拿到一个没有 `ok` 的对象 → 判「合同被违反」→ 把**每次都成功的导入**
+ * 判成 UNCERTAIN(错登 > 漏登)。`app-control-smoke` §3d-8 就钉着「`skills.import` 不是信封
+ * 方法」。所以聚合合同**另立一张表**，判据**另走一个解析口**(`resolveOperationOutcome`),
+ * 不动信封那条路。
+ *
+ * ## 判据:成功数组 + 失败数组,按两者**同时**为空/非空分档
+ *
+ * 各 handler 的字段名不同(`imported`/`copied`/`items`/`added`;`errors`/`failed`),但语义
+ * 一致:一类是"真的成了的项",一类是"真的失败了的项"。**只按这两类的数量判**,
+ * 不把 `skipped`(=重复/已存在,不是失败)算进去 —— `skipped` 是计数器,不是失败数组。
+ *
+ * - 成功非空、失败空   → accepted(完全成功);
+ * - 成功非空、失败非空 → SUCCEEDED_WITH_WARNINGS(部分成功,**已提交**);
+ * - 成功空、失败非空   → FAILED(全失败,**什么都没进库** —— 这才是要修的那条);
+ * - 两者都空           → accepted(**一个都没输入**,等价于空批次 no-op,不算失败)。 */
+interface AggregateDescriptor {
+  /** 从返回值里取「成功项数」与「失败项数」。取不到(形状变了)就返回 null(= 不判,安全落 accepted)。 */
+  tally: (raw: Record<string, unknown>) => { succeeded: number; failed: number } | null;
+}
+
+/** `imported`/`copied`/`items`/`added` 里**任意一个**是非空数组/正数,即"有成功项"。 */
+function anyNonEmpty(list: unknown): boolean {
+  if (Array.isArray(list)) return list.length > 0;
+  if (typeof list === "number") return list > 0;
+  return false;
+}
+function anyNonEmptyAmong(raw: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((k) => anyNonEmpty(raw[k]));
+}
+function anyFailedAmong(raw: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((k) => Array.isArray(raw[k]) && (raw[k] as unknown[]).length > 0);
+}
+
+const AGGREGATE = new Map<string, AggregateDescriptor>([
+  ["skills.import", { tally: (r) => ({ succeeded: anyNonEmptyAmong(r, ["imported", "added"]) ? 1 : 0, failed: anyFailedAmong(r, ["errors"]) ? 1 : 0 }) }],
+  ["skills.copyToProject", { tally: (r) => ({ succeeded: anyNonEmptyAmong(r, ["copied", "added"]) ? 1 : 0, failed: anyFailedAmong(r, ["failed"]) ? 1 : 0 }) }],
+  ["library.importFiles", { tally: (r) => ({ succeeded: anyNonEmptyAmong(r, ["items", "added"]) ? 1 : 0, failed: anyFailedAmong(r, ["errors"]) ? 1 : 0 }) }],
+  ["library.importNotes", { tally: (r) => ({ succeeded: anyNonEmptyAmong(r, ["items", "added"]) ? 1 : 0, failed: anyFailedAmong(r, ["errors"]) ? 1 : 0 }) }],
+  ["library.importGeneric", { tally: (r) => ({ succeeded: anyNonEmptyAmong(r, ["items", "added"]) ? 1 : 0, failed: anyFailedAmong(r, ["errors"]) ? 1 : 0 }) }],
+]);
+
+/** 这个方法是不是「用聚合数组表达业务结果」(与信封合同互斥)。 */
+export function isAggregateMethod(method: string): boolean {
+  return AGGREGATE.has(method);
+}
+
+/**
+ * **唯一的结果解析口** —— 信封合同与聚合合同都从这里进,消费点(`tools.ts` 的三处)只调
+ * 这一个,不各自 recall 两张表。返回 `null` = 这个方法没有登记任何结果合同,"返回即成功"
+ * (void / 数据对象)。
+ *
+ * 之所以不让消费点先试 `decodeDomainOutcome` 再补聚合:那样每个消费点都要记得补第二刀,
+ * 而 MC-011 的教训正是"漏一刀就静默报成功"。
+ */
+export interface OperationOutcome {
+  kind: "accepted" | "rejected" | "partial" | "succeededWithWarnings" | "failed";
+  reason?: string;
+  code?: string;
+  warnings?: OperationWarning[];
+}
+
+export function resolveOperationOutcome(method: string, raw: unknown): OperationOutcome | null {
+  if (AGGREGATE.has(method)) {
+    const agg = AGGREGATE.get(method)!;
+    if (!raw || typeof raw !== "object") return null; // 形状不符 → 不判(安全)
+    const t = agg.tally(raw as Record<string, unknown>);
+    if (!t) return null;
+    if (t.failed === 0) return { kind: "accepted" };
+    if (t.succeeded === 0) {
+      return { kind: "failed", code: OP_CODE.domainRejected, reason: `${method}:全部失败,一项都没成功。` };
+    }
+    return {
+      kind: "succeededWithWarnings",
+      warnings: [
+        {
+          code: OP_WARNING_IMPORT_PARTIAL_FAILED,
+          message: `${method}:部分成功,有失败项(成功的已入库,失败的见正文 errors)。`,
+          retryable: false,
+        },
+      ],
+    };
+  }
+  if (isEnvelopeMethod(method)) {
+    const outcome = decodeDomainOutcome(method, raw);
+    if (outcome.kind === "accepted") return { kind: "accepted" };
+    return { kind: outcome.kind, code: outcome.code, reason: outcome.reason };
+  }
+  return null;
+}
+
 /**
  * 严格判定:返回的对象是不是 `{ok: boolean, error?: unknown}` 信封。**逐字段查**,不做
  * 字符串规则推断 —— 只有显式登记过的方法才会走到这里,再补一层形状自证。
@@ -467,6 +578,35 @@ export function resultKindOfOutcome(outcome: DomainOutcome): OperationResultKind
     case "partial":
       return "UNCERTAIN";
   }
+}
+
+/** 统一结果判定(信封 + 聚合) → OperationResult 分类。 */
+export function resultKindOfOperationOutcome(outcome: OperationOutcome): OperationResultKind {
+  switch (outcome.kind) {
+    case "accepted":
+      return "SUCCEEDED";
+    case "rejected":
+      return "REJECTED";
+    case "partial":
+      return "UNCERTAIN";
+    case "failed":
+      return "FAILED";
+    case "succeededWithWarnings":
+      return "SUCCEEDED_WITH_WARNINGS";
+  }
+}
+
+/** 从统一结果判定取 `makeOp` 的附加字段(code / reason / warnings),消费点共用一份。 */
+export function opExtraFromOutcome(outcome: OperationOutcome): {
+  code?: string;
+  reason?: string;
+  warnings?: OperationWarning[];
+} {
+  return {
+    ...(outcome.code !== undefined ? { code: outcome.code } : {}),
+    ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+    ...(outcome.warnings !== undefined ? { warnings: outcome.warnings } : {}),
+  };
 }
 
 /**
