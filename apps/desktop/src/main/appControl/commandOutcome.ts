@@ -139,10 +139,13 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    * `ipc/files.ts` 的 file 写操作都返回裸 `{ok:boolean}`(没有 error 字段),ok:false
    * 既可能是「root 守卫拒绝」(在任何动作之前),也可能是 catch 到写入抛错。**逐条按
    * 最坏情况分类**:
-   *   - `file.writeFile`:落盘走单次 `fs.writeFile`(**非原子**)—— 写到一半失败可能把目标
-   *     截断 → `maybePartial`;
+   *   - `file.writeFile`:落盘走**原子替换**(`ipc/files.ts` 的 `atomicReplaceFile`:临时文件
+   *     → `fsync` → `rename`),并整段由 `withOsFileLease` 串行、提交点走 CAS —— 不存在
+   *     "单次 `fs.writeFile` 写到一半把目标截断"这回事。仍归 `maybePartial` 是因为 ok:false
+   *     可能落在**提交点之后**(租约内 CAS 失败),保守分类不诱导盲目重试;
    *   - `file.mkdir`:`mkdir recursive` 建到一半失败可能留下部分父目录 → `maybePartial`;
-   *   - `file.copy`:`copyFile`(**非原子**)中途失败可能留下半截目标 → `maybePartial`;
+   *   - `file.copy`:`copyFile`(**非原子**,未走 `atomicReplaceFile`)中途失败可能留下半截
+   *     目标 → `maybePartial`;
    *   - `file.rename`:`fs.rename` **原子**(同卷成功/失败二选一,跨卷 EXDEV 直接抛、不动),
    *     守卫拒绝也在动作之前 → `refusal`。 */
   ["file.writeFile", { falseMeans: "maybePartial" }],

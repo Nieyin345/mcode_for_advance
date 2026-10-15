@@ -1345,15 +1345,16 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     check("★ MC-066:git.generateCommitMessage 合法 ok:false → REJECTED(纯计算)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
   }
 
-  // file 域:写操作返回裸 {ok:boolean}。**按最坏情况分类** —— 非原子写(writeFile/copy)、
-  // mkdir recursive 半成 → UNCERTAIN;fs.rename 原子(同卷二选一/跨卷 EXDEV 抛)→ REJECTED。
+  // file 域:写操作返回裸 {ok:boolean}。**按最坏情况分类** —— writeFile(原子替换,但 ok:false
+  // 可能落在提交点之后)、copy(真·非原子)、mkdir recursive 半成 → UNCERTAIN;
+  // fs.rename 原子(同卷二选一/跨卷 EXDEV 抛)→ REJECTED。
   recordRpcHandler("file:writeFile", async () => ({ ok: false as const }));
   recordRpcHandler("file:mkdir", async () => ({ ok: false as const }));
   recordRpcHandler("file:copy", async () => ({ ok: false as const }));
   recordRpcHandler("file:rename", async () => ({ ok: false as const }));
   {
     const r = await invokeAppTool("app_api_call", { method: "file.writeFile", input: { filePath: "C:/proj/a.ts", content: "x" } }, "me", ctx);
-    check("★ MC-066:file.writeFile 合法 ok:false → UNCERTAIN(非原子写可能半截)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
+    check("★ MC-066:file.writeFile 合法 ok:false → UNCERTAIN(提交点后的失败,保守不盲目重试)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
   }
   {
     const r = await invokeAppTool("app_api_call", { method: "file.copy", input: { srcPath: "C:/proj/a.ts", destDir: "C:/proj" } }, "me", ctx);
@@ -1362,6 +1363,42 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   {
     const r = await invokeAppTool("app_api_call", { method: "file.rename", input: { oldPath: "C:/proj/a.ts", newPath: "C:/proj/b.ts" } }, "me", ctx);
     check("★ MC-066:file.rename 合法 ok:false → REJECTED(rename 原子)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
+  }
+
+  // ★ **分类注释必须与实现同版本。**(MC-012)
+  //
+  // `commandOutcome.ts` 里描述 file 域落盘原子性的那段注释,从前写着 `file.writeFile` 走
+  // "单次 fs.writeFile(**非原子**)" —— 而实现早已升级成 `atomicReplaceFile`(临时文件 +
+  // fsync + rename)+ `withOsFileLease` + 提交点 CAS。这份注释**就是判据**(`maybePartial`/
+  // `refusal` 决定 agent 要不要重试),判据漂移是仓库明令要消灭的东西。这里把"注释里的
+  // 说法"与"实现里的调用"钉在一起——任一侧单独改就红。
+  {
+    const outcome = readFileSync(join(process.cwd(), "src/main/appControl/commandOutcome.ts"), "utf8");
+    const files = readFileSync(join(process.cwd(), "src/main/ipc/files.ts"), "utf8");
+    // 实现侧:file:writeFile 真 handler 走 atomicReplaceFile(不是裸 writeFile)。
+    check(
+      "★ file:writeFile 真 handler 走 atomicReplaceFile(不是裸 fs.writeFile)",
+      /IPC\.FILE_WRITE[\s\S]{0,3000}?atomicReplaceFile\(/.test(files),
+    );
+    check(
+      "★ atomicReplaceFile 真是原子替换(临时文件 → fsync → rename)",
+      /function atomicReplaceFile[\s\S]{0,600}?handle\.sync\(\)[\s\S]{0,200}?rename\(tmp, filePath\)/.test(files),
+    );
+    check("★ file:copy 真走裸 copyFile(与下面那条「非原子」说法相符)", /await copyFile\(/.test(files));
+    // 注释侧(逐行取,避免窗口误差):writeFile 那行不得再说「非原子」。
+    const writeFileLine = outcome.split("\n").find((l) => l.includes("`file.writeFile`:"));
+    check(
+      "★ commandOutcome 的 file.writeFile 分类行不再说「非原子」",
+      !!writeFileLine && !writeFileLine.includes("非原子"),
+      writeFileLine,
+    );
+    // 反向:copy 那行的「非原子」必须留着(它确实走裸 copyFile)。
+    const copyLine = outcome.split("\n").find((l) => l.includes("`file.copy`:"));
+    check(
+      "★ commandOutcome 的 file.copy 分类行仍如实说「非原子」",
+      !!copyLine && copyLine.includes("非原子"),
+      copyLine,
+    );
   }
 
   // automation.watch:startWatch 的 ok:false 全是起跑前拒绝 → REJECTED。
