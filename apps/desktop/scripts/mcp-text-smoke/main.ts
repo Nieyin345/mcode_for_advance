@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, readdirSync, chmodSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir, platform } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
@@ -16,7 +17,10 @@ async function call(name: string, args: Record<string, unknown>, other = false):
 }
 const body = (r: ToolResult): string => r.content.filter(c => c.type === "text").map(c => c.text).join("\n");
 let checks = 0;
-function check(name: string, value: unknown): void { assert.ok(value, name); checks++; console.log("PASS " + name); }
+function check(name: string, value: unknown, detail?: unknown): void {
+  assert.ok(value, detail === undefined ? name : `${name} — ${JSON.stringify(detail)}`);
+  checks++; console.log("PASS " + name);
+}
 try {
   for (let n = 0; n < 10; n++) {
     writeFileSync(path.join(root, "race.txt"), "alpha\nbeta\n");
@@ -164,6 +168,107 @@ try {
     assert.equal(toolTextOf(t([{ type: "text", text: "a" }, { type: "text", text: "b" }])), "a\nb", "多文本块换行连接");
     assert.equal(toolTextOf(t([{ type: "image", data: "z", mimeType: "image/png" }])), "", "纯图片→空串");
     check("ARC-017 共享文本提取器:纯文本/纯图片/混合/未知块都有确定返回", true);
+  }
+  // ★ 【MC-027】walkFiles 是**另一套遍历核**(agent_grep/agent_glob 走它),它从前对
+  //   readdir 失败是 `catch { return; }` 静默跳过 —— 坏掉的子树被当成"空",部分结果
+  //   报成完整。这里真造不可读目录(Windows 走 icacls /deny,POSIX 走 chmod 000),
+  //   证明 agent_grep/agent_glob 如实标 partial 并点名没搜到的位置。
+  //   ⚠️ 注入前先验证"故障真的生效",否则断言空过(这仓库踩过的坑)。
+  {
+    const fault = mkdtempSync(path.join(tmpdir(), "mcode-text-walk-fault-"));
+    const restores: Array<() => void> = [];
+    const denyRead = (target: string): void => {
+      if (platform() === "win32") {
+        const user = process.env.USERNAME ?? "";
+        execFileSync("icacls", [target, "/deny", `${user}:(R)`], { stdio: "pipe" });
+        restores.push(() => { try { execFileSync("icacls", [target, "/remove:d", user], { stdio: "pipe" }); } catch { /* best effort */ } });
+      } else {
+        chmodSync(target, 0o000);
+        restores.push(() => { try { chmodSync(target, 0o700); } catch { /* best effort */ } });
+      }
+    };
+    try {
+      mkdirSync(path.join(fault, "ok"));
+      mkdirSync(path.join(fault, "locked"));
+      writeFileSync(path.join(fault, "ok", "hit.txt"), "NEEDLE_027\n");
+      writeFileSync(path.join(fault, "locked", "secret.txt"), "NEEDLE_027\n");
+      denyRead(path.join(fault, "locked"));
+      // 先证故障真的生效:readdir(locked) 必须失败,否则后面的断言是空过 → 报红。
+      let injected = false;
+      try { readdirSync(path.join(fault, "locked")); } catch { injected = true; }
+      check("★ 故障注入真的生效(locked 目录 readdir 被拒)", injected);
+
+      // 同一份含故障的树跑 grep/glob:一个坏目录不能瘫痪正常子树。
+      const grepFault = await call("agent_grep", { path: fault, pattern: "NEEDLE_027", literal: true });
+      const globFault = await call("agent_glob", { path: fault, pattern: "**/*.txt" });
+      if (!injected) {
+        check("★(前提失败)grep/glob 漏搜断言无法成立", false);
+      } else {
+        check("★ 一个坏目录不瘫痪 agent_grep 的正常子树(ok/hit.txt 仍被搜到)", body(grepFault).includes("ok/hit.txt") || body(grepFault).includes("ok\\hit.txt"), body(grepFault));
+        check("★ agent_grep 坏目录使结果标为不完整(partial=true),不是假完整", grepFault.structuredContent?.partial === true, grepFault.structuredContent);
+        check("★ agent_grep 如实登记没搜到的位置(skipped_count>=1 且点名 locked)", Number(grepFault.structuredContent?.skipped_count) >= 1 && ((grepFault.structuredContent?.skipped_paths as string[]) ?? []).some((p) => p.includes("locked")), grepFault.structuredContent);
+        check("★ agent_grep 的人话警告点出「不完整」", body(grepFault).includes("不完整"), body(grepFault));
+        check("★ agent_glob 坏目录使结果标为不完整(partial=true)", globFault.structuredContent?.partial === true, globFault.structuredContent);
+        check("★ agent_glob 如实登记没搜到的位置(点名 locked)", ((globFault.structuredContent?.skipped_paths as string[]) ?? []).some((p) => p.includes("locked")), globFault.structuredContent);
+      }
+    } finally {
+      for (const r of restores.reverse()) r();
+      rmSync(fault, { recursive: true, force: true });
+    }
+  }
+  // ★ 【MC-027】agent_grep 里"文件打不开"(readFile 失败)也是同款漏搜:从前 `catch{null}`
+  //   当没命中,目标文本恰在这文件里就报成"不存在"。单独造一个不可读**文件**证明它被登记。
+  {
+    const fileFault = mkdtempSync(path.join(tmpdir(), "mcode-text-grep-fault-"));
+    const restoreFns: Array<() => void> = [];
+    try {
+      writeFileSync(path.join(fileFault, "open.txt"), "NEEDLE_027\n");
+      writeFileSync(path.join(fileFault, "locked.txt"), "NEEDLE_027\n");
+      if (platform() === "win32") {
+        const user = process.env.USERNAME ?? "";
+        execFileSync("icacls", [path.join(fileFault, "locked.txt"), "/deny", `${user}:(R)`], { stdio: "pipe" });
+        restoreFns.push(() => { try { execFileSync("icacls", [path.join(fileFault, "locked.txt"), "/remove:d", user], { stdio: "pipe" }); } catch { /* best effort */ } });
+      } else {
+        chmodSync(path.join(fileFault, "locked.txt"), 0o000);
+        restoreFns.push(() => { try { chmodSync(path.join(fileFault, "locked.txt"), 0o700); } catch { /* best effort */ } });
+      }
+      let injected = false;
+      try { readFileSync(path.join(fileFault, "locked.txt")); } catch { injected = true; }
+      check("★ 故障注入真的生效(locked.txt 打不开)", injected);
+      const g = await call("agent_grep", { path: fileFault, pattern: "NEEDLE_027", literal: true });
+      if (!injected) {
+        check("★(前提失败)打不开文件的漏搜断言无法成立", false);
+      } else {
+        check("★ 打不开的文件不瘫痪整次 grep(open.txt 仍被搜到)", body(g).includes("open.txt"), body(g));
+        check("★ 打不开的文件使 grep 标为不完整(partial=true)", g.structuredContent?.partial === true, g.structuredContent);
+        check("★ 打不开的文件被 grep 如实登记(点名 locked.txt)", ((g.structuredContent?.skipped_paths as string[]) ?? []).some((p) => p.includes("locked.txt")), g.structuredContent);
+      }
+    } finally {
+      for (const r of restoreFns.reverse()) r();
+      rmSync(fileFault, { recursive: true, force: true });
+    }
+  }
+  // ★ 【MC-027】完整无命中:同一棵树没有故障时,partial 必须是 false —— 与"不完整无命中"
+  //   分开。这正是不完整遍历核改造的判据:0 结果 + partial=false 才敢说"不存在"。
+  {
+    const clean = mkdtempSync(path.join(tmpdir(), "mcode-text-walk-clean-"));
+    try {
+      writeFileSync(path.join(clean, "a.txt"), "hello world\n");
+      const g = await call("agent_grep", { path: clean, pattern: "ZZZ_NOT_PRESENT_027", literal: true });
+      check(
+        "★ 完整无命中:0 结果且 partial=false、skipped_count=0",
+        g.structuredContent?.count === 0 && g.structuredContent?.partial === false && g.structuredContent?.skipped_count === 0,
+        g.structuredContent,
+      );
+      const gl = await call("agent_glob", { path: clean, pattern: "**/*.nomatch" });
+      check(
+        "★ glob 完整无命中:0 结果且 partial=false",
+        gl.structuredContent?.count === 0 && gl.structuredContent?.partial === false,
+        gl.structuredContent,
+      );
+    } finally {
+      rmSync(clean, { recursive: true, force: true });
+    }
   }
   console.log(`MCP text contract: ${checks} checks passed`);
 } finally { rmSync(root, { recursive: true, force: true }); }

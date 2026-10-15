@@ -215,6 +215,8 @@ const MAX_WALK_DEPTH = 15;
 const MAX_WALK_RESULTS = 800;
 /** 一次遍历最多看多少个目录项 —— 结果上限管不住"走了很久一个都没命中"的情况。 */
 const MAX_WALK_VISITS = 200_000;
+/** 【MC-027】一次遍历最多记这么多"没搜到的位置" —— 同 `agentSearchSessions.MAX_SKIPPED_PATHS`。 */
+const MAX_WALK_SKIPPED_PATHS = 50;
 /** grep 最多扫多少个文件 / 单个文件多大就跳过。 */
 const MAX_GREP_FILES = 20_000;
 const MAX_GREP_FILE_BYTES = 8 * 1024 * 1024;
@@ -456,6 +458,9 @@ const GLOB_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
   files: z.array(z.string()).describe("路径列表(相对会话工作目录;工作目录外的给绝对路径),最多 500 条"),
   truncated: z.boolean().describe("是否没列全(超过 500 条或目录太大没搜完)"),
   base: z.string().describe("搜索起点目录的绝对路径"),
+  partial: z.boolean().describe("【MC-027】是否**漏搜**过位置(某目录无权限/被删,或撞深度上限);true 时 0 结果不能当作「不存在」"),
+  skipped_count: z.number().int().describe("【MC-027】没能搜到的位置(目录)总数"),
+  skipped_paths: z.array(z.string()).describe("【MC-027】没能搜到的位置(相对 base 的正斜杠路径),最多 50 条"),
 };
 
 /** `agent_grep` 的返回结构 —— 同 glob 一个道理:模型靠 count 判断找到没有。 */
@@ -465,6 +470,9 @@ const GREP_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
   matches: z.array(z.string()).describe("匹配行，形如 `相对工作目录的路径:行号: 内容`"),
   scanned_files: z.number().int().describe("实际扫描过的文件数"),
   truncated: z.boolean().describe("是否没搜完(达到 max_results,或文件太多只扫了一部分)"),
+  partial: z.boolean().describe("【MC-027】是否**漏搜**过位置(某目录/文件无权限或被删,或撞深度上限);true 时 0 结果不能当作「不存在」"),
+  skipped_count: z.number().int().describe("【MC-027】没能搜到的位置(目录/文件)总数"),
+  skipped_paths: z.array(z.string()).describe("【MC-027】没能搜到的位置(相对搜索起点的正斜杠路径),最多 50 条"),
 };
 
 function formatRemoteConnection(info: RemoteConnectionInfo): string {
@@ -1094,6 +1102,78 @@ interface WalkOptions {
   includeHidden?: boolean;
   /** 命中多少个就停,默认 {@link MAX_WALK_RESULTS}。 */
   maxHits?: number;
+  /** 【MC-027】外部漏搜登记器 —— grep 传进来,好把随后 readFile 失败也记进同一份。 */
+  skips?: WalkSkips;
+}
+
+interface WalkResult {
+  hits: WalkHit[];
+  /** 撞了命中/访问上限(`MAX_WALK_RESULTS` / `MAX_WALK_VISITS`) —— 是"够多了主动停",
+   *  与"漏搜"分开。 */
+  truncated: boolean;
+  /**
+   * 【MC-027】**这次遍历有没有漏搜到地方**(某目录 readdir 失败,或撞了深度上限)。
+   * `false` 才是「完整无命中」;`true` 表示结果可能不全,模型不能据此断言目标不存在。
+   */
+  partial: boolean;
+  /** 没能搜到的位置(相对 root,正斜杠),最多 {@link MAX_WALK_SKIPPED_PATHS} 条。 */
+  skippedPaths: string[];
+  /** 没能搜到的位置总数(不限 {@link MAX_WALK_SKIPPED_PATHS})。 */
+  skippedCount: number;
+}
+
+interface WalkSkips {
+  record: (abs: string, reason: string) => void;
+  snapshot: () => { partial: boolean; skippedPaths: string[]; skippedCount: number };
+}
+
+/** 【MC-027】walkFiles 里"没能搜到的位置"的登记器 —— 语义同 `agentSearchSessions.recordSkip`:
+ *  置 `partial`、`skippedCount` 记全量、`skippedPaths` 去重并限 {@link MAX_WALK_SKIPPED_PATHS} 条。
+ *  导出式累加器,好让 `agent_grep` 把"遍历漏搜"与"随后 readFile 失败"记进同一份。 */
+function createWalkSkips(root: string): WalkSkips {
+  let partial = false;
+  let skippedCount = 0;
+  const skippedPaths: string[] = [];
+  return {
+    record(abs, reason) {
+      partial = true;
+      skippedCount += 1;
+      const rel = path.relative(root, abs).replace(/\\/g, "/") || ".";
+      if (skippedPaths.length >= MAX_WALK_SKIPPED_PATHS) return;
+      const entry = reason ? `${rel} (${reason})` : rel;
+      if (!skippedPaths.includes(entry)) skippedPaths.push(entry);
+    },
+    snapshot() {
+      return { partial, skippedPaths: skippedPaths.slice(), skippedCount };
+    },
+  };
+}
+
+/** 【MC-027】把常见 OS 读错误翻成一句人话 —— 与 `agentSearchSessions.errnoText` 同一口径。 */
+function walkErrnoText(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "EACCES" || code === "EPERM") return "没有读取权限";
+  if (code === "ENOENT") return "已被删除";
+  return code ?? (err instanceof Error ? err.message : String(err));
+}
+
+/** 【MC-027】遍历漏搜的**结构化字段** —— `agent_grep`/`agent_glob` 两个读口共用一份形状。 */
+function walkSkipFields(w: WalkResult): { partial: boolean; skipped_count: number; skipped_paths: string[] } {
+  return { partial: w.partial, skipped_count: w.skippedCount, skipped_paths: w.skippedPaths };
+}
+
+/** 【MC-027】遍历漏搜的**人话警告** —— 与 `formatSearchResult` 那条同口径。 */
+function walkSkipText(w: WalkResult, empty: boolean): string {
+  if (!w.partial) return "";
+  return (
+    `\n⚠️ 本次搜索**不完整**:有 ${w.skippedCount} 个位置(目录或文件)没能搜到,结果可能不全;` +
+    (empty ? "「没有结果」不能当作「不存在」。" : "请勿据此断言目标不存在。")
+  );
+}
+
+/** 一个没有任何命中、也没有任何漏搜的遍历结果。 */
+function emptyWalk(): WalkResult {
+  return { hits: [], truncated: false, partial: false, skippedPaths: [], skippedCount: 0 };
 }
 
 /**
@@ -1103,19 +1183,34 @@ interface WalkOptions {
  * 过滤 —— 项目根下随便一个缓存目录就把 800 个名额占满,`**\/foo.ts` 明明存在也回
  * "没有匹配",grep 也只扫了前 800 个文件就说没找到(而且都不说自己没搜完)。
  * 现在命中数和访问数各有上限,撞上了就如实报 `truncated`。
+ *
+ * 【MC-027】`truncated` **只**反映上面那两种上限(主动停);目录 readdir 失败、深度上限
+ * 这类**被动漏搜**另记 `partial`/`skippedPaths`/`skippedCount` —— 从前 readdir 失败是
+ * `catch { return; }` 静默跳过,坏掉的子树被当成"空",`agent_grep`/`agent_glob` 就把
+ * 部分结果报成了完整。
  */
-async function walkFiles(root: string, opts: WalkOptions = {}): Promise<{ hits: WalkHit[]; truncated: boolean }> {
+async function walkFiles(root: string, opts: WalkOptions = {}): Promise<WalkResult> {
   const hits: WalkHit[] = [];
   const maxHits = opts.maxHits ?? MAX_WALK_RESULTS;
+  const skips = opts.skips ?? createWalkSkips(root);
   let visited = 0;
   let truncated = false;
   const walk = async (dir: string, depth: number): Promise<void> => {
-    if (truncated || depth > MAX_WALK_DEPTH) return;
+    if (truncated) return;
+    // 【MC-027】深度上限:这一层往下不再走,如实记成"没搜到的地方",不当成"不存在"。
+    if (depth > MAX_WALK_DEPTH) {
+      skips.record(dir, "超出遍历深度上限");
+      return;
+    }
     let entries: import("node:fs").Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return; // 无权限 / 已被删 —— 跳过,不炸整次遍历
+    } catch (err) {
+      // 【MC-027】readdir 失败(无权限 / 已被删…)。从前静默 `return`、子树被当成"空",
+      // 结果里少了文件却仍标"完整" —— 假完整。现在**显式登记这棵子树没搜到**,但不抛:
+      // 一个好目录搜不了不该瘫痪其余正常子树。
+      skips.record(dir, walkErrnoText(err));
+      return;
     }
     for (const entry of entries) {
       if (hits.length >= maxHits || visited >= MAX_WALK_VISITS) {
@@ -1140,7 +1235,7 @@ async function walkFiles(root: string, opts: WalkOptions = {}): Promise<{ hits: 
     }
   };
   await walk(root, 0);
-  return { hits, truncated };
+  return { hits, truncated, ...skips.snapshot() };
 }
 
 /** glob 里不带通配符的前导目录段(`src/main/*.ts` → `src/main`),用来把遍历起点挪进去。 */
@@ -2015,17 +2110,17 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
                   includeHidden: args.include_hidden ?? globWantsHidden(args.pattern),
                   maxHits: 2000,
                 })
-              : { hits: [] as WalkHit[], truncated: false };
+              : emptyWalk();
           const rels = found.hits.map((h) => shownPath(ctx, h.abs));
           if (rels.length === 0) {
             const hint = !args.pattern.includes("/") && !args.pattern.includes("**")
               ? `;\`*\` 不跨目录,要递归找请用 \`**/${args.pattern}\``
               : "";
             return {
-              text: `没有匹配「${args.pattern}」的文件(从 ${base} 搜起${found.truncated ? ",目录太大没搜完,请缩小起点" : ""})${hint}`,
+              text: `没有匹配「${args.pattern}」的文件(从 ${base} 搜起${found.truncated ? ",目录太大没搜完,请缩小起点" : ""})${hint}${walkSkipText(found, true)}`,
               // 空结果也要给结构化 —— 模型靠 `count === 0` 判断"真没有,换个模式"，
               // 而不是从人话里读"没有匹配"。
-              structured: { count: 0, files: [], truncated: found.truncated, base },
+              structured: { count: 0, files: [], truncated: found.truncated, base, ...walkSkipFields(found) },
             };
           }
           const shown = rels.slice(0, 500);
@@ -2034,8 +2129,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             ? `\n…(${found.truncated ? `至少 ${rels.length} 个` : `共 ${rels.length} 个`},只列前 ${shown.length} 个,请收窄模式或起点)`
             : "";
           return {
-            text: `匹配 ${found.truncated ? "≥" : ""}${rels.length} 个:\n${shown.map((r) => `- ${r}`).join("\n")}${tail}`,
-            structured: { count: rels.length, files: shown, truncated, base },
+            text: `匹配 ${found.truncated ? "≥" : ""}${rels.length} 个:\n${shown.map((r) => `- ${r}`).join("\n")}${tail}${walkSkipText(found, false)}`,
+            structured: { count: rels.length, files: shown, truncated, base, ...walkSkipFields(found) },
           };
         }),
       outputSchema: GLOB_OUTPUT_SCHEMA,
@@ -2088,6 +2183,9 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
 
           const st = await fs.stat(base).catch(() => null);
           if (!st) throw new Error(`路径不存在:${base}`);
+          // 【MC-027】遍历漏搜(readdir 失败 / 深度上限)与随后单个文件 readFile 失败记进**同一份**,
+          // 好让「完整无命中」与「不完整无命中」分开。目录根的相对路径出 root 本身。
+          const skips = st.isFile() ? createWalkSkips(path.dirname(base)) : createWalkSkips(base);
           const walked = st.isFile()
             ? { hits: [{ abs: base, rel: path.basename(base), isDir: false }], truncated: false }
             : await walkFiles(base, {
@@ -2095,6 +2193,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
                 nameFilter: include,
                 includeHidden: args.include_hidden ?? false,
                 maxHits: MAX_GREP_FILES,
+                skips,
               });
 
           const cap = args.max_results ?? 100;
@@ -2105,8 +2204,16 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             if (lines.length >= cap) break;
             const size = (await fs.stat(t.abs).catch(() => null))?.size ?? 0;
             if (size > MAX_GREP_FILE_BYTES) continue;
-            const buf = await fs.readFile(t.abs).catch(() => null);
-            if (!buf || isBinary(buf)) continue;
+            let buf: Buffer | null = null;
+            try {
+              buf = await fs.readFile(t.abs);
+            } catch (err) {
+              // 【MC-027】文件打不开(EACCES/EPERM/占用…)。从前 `catch { null }` 当没命中 ——
+              // 目标文本恰在这文件里就报成"不存在"。现在如实登记,不抛。
+              skips.record(t.abs, walkErrnoText(err));
+              continue;
+            }
+            if (isBinary(buf)) continue;
             scanned += 1;
             const shown = shownPath(ctx, t.abs);
             const textLines = buf.toString("utf-8").split(/\r?\n/);
@@ -2118,13 +2225,14 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               lines.push(`${shown}:${i + 1}: ${clipped}`);
             }
           }
+          const walkedResult: WalkResult = { ...walked, ...skips.snapshot() };
           const unfinished = walked.truncated
             ? `\n…(文件太多,只扫了前 ${walked.hits.length} 个;请缩小 path 或加 glob)`
             : "";
           if (lines.length === 0) {
             return {
-              text: `${note}没有匹配「${args.pattern}」的内容(扫了 ${scanned} 个文件)${unfinished}`,
-              structured: { count: 0, matches: [], scanned_files: scanned, truncated: walked.truncated },
+              text: `${note}没有匹配「${args.pattern}」的内容(扫了 ${scanned} 个文件)${unfinished}${walkSkipText(walkedResult, true)}`,
+              structured: { count: 0, matches: [], scanned_files: scanned, truncated: walked.truncated, ...walkSkipFields(walkedResult) },
             };
           }
           const hitCap = lines.length >= cap;
@@ -2133,13 +2241,15 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               note +
               lines.join("\n") +
               (hitCap ? `\n…(达到上限 ${cap} 行,可能没搜完)` : "") +
-              unfinished,
+              unfinished +
+              walkSkipText(walkedResult, false),
             structured: {
               count: lines.length,
               line_truncated: lineTruncated,
               matches: lines,
               scanned_files: scanned,
               truncated: hitCap || walked.truncated,
+              ...walkSkipFields(walkedResult),
             },
           };
         }),
