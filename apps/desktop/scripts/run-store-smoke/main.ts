@@ -208,8 +208,31 @@ if (MODE === "write") {
     eq("配置快照往返后还在", rt?.configSnapshot?.takenAt, 12345);
     eq("配置快照里的档案哈希往返不丢", rt?.configSnapshot?.profiles?.p_research_v1, "deadbeef");
     eq("配置快照里的技能往返不丢", rt?.configSnapshot?.skills?.[0], "lit");
-    check("配置快照形状坏(profiles 是数组)→ 丢弃,不塞给审计",
+    // 【MC-032】未锁版的**历史**存档:坏 configSnapshot 只丢弃(仍可作历史看),但**已锁版**的
+    // 存档损坏时必须**拒续跑** —— 见下一段。这里先钉旧存档的宽松行为没变。
+    check("未锁版历史存档:配置快照形状坏(profiles 是数组)→ 丢弃,不塞给审计",
       decodeSnapshot(JSON.stringify({ ...withCfg, configSnapshot: { takenAt: 1, profiles: [], skills: [] } }))?.configSnapshot === undefined);
+  }
+  // 【MC-032】已绑定图版本(有 workflowRevision)的存档:**存在但坏**的 configSnapshot 必须
+  // 拒绝续跑,不能静默丢掉(丢掉 = 再次保存时抹去原配置审计,且无从区分"没变化"与"损坏")。
+  {
+    const pinnedCfg = { ...snapshotOf([]), workflowRevision: "a".repeat(64), inFlightNodeIds: ["command"],
+      configSnapshot: { takenAt: 12345, profiles: { p_v1: "deadbeef" }, skills: ["lit"] } };
+    // 正控:合法快照仍能续、config 带着。
+    eq("MC-032 正控:已锁版 + 合法快照 → 可续且 config 在", decodeSnapshot(JSON.stringify(pinnedCfg))?.configSnapshot?.takenAt, 12345);
+    // ★ 仅把 takenAt 改成错误类型(其余运行状态完整、workflowRevision 有效)→ 必须拒。
+    check("★ MC-032:已锁版 + configSnapshot 损坏(takenAt 类型错)→ 拒绝续跑(不是静默丢弃)",
+      decodeSnapshot(JSON.stringify({ ...pinnedCfg, configSnapshot: { takenAt: "nope", profiles: { p_v1: "deadbeef" }, skills: ["lit"] } })) === null);
+    // ★ profiles 坏(是数组)同理 —— 存在但不合法一律拒。
+    check("★ MC-032:已锁版 + configSnapshot 的 profiles 损坏 → 拒绝续跑",
+      decodeSnapshot(JSON.stringify({ ...pinnedCfg, configSnapshot: { takenAt: 1, profiles: [], skills: [] } })) === null);
+    // ★ 真正的 null 也算"存在但坏"(区别于 undefined = 老存档压根没有)。
+    check("★ MC-032:已锁版 + configSnapshot 是 null → 拒绝续跑(存在即须合法)",
+      decodeSnapshot(JSON.stringify({ ...pinnedCfg, configSnapshot: null })) === null);
+    // ⚠️ 关键区分:已锁版但**压根没有** configSnapshot(= 老存档/没绑档案)→ **不拒**,照常可续。
+    const noCfg = { ...snapshotOf([]), workflowRevision: "a".repeat(64), inFlightNodeIds: ["command"] };
+    check("★ MC-032:已锁版但压根没有 configSnapshot(老存档)→ 不拒,可续(区分「没有」与「损坏」)",
+      decodeSnapshot(JSON.stringify(noCfg)) !== null);
   }
   // 【ARC-016】审计:拿运行当时的档案哈希与「现在」比,挑出落后项 —— 回答「这轮用的是哪一版、
   // 现在还一样吗」。判据只对**运行用过的**资源做,「没变」「当时没绑到」都不算落后。

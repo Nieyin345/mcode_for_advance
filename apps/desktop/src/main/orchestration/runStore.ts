@@ -316,7 +316,14 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
       !Array.isArray(state.awaiting) || awaiting.length !== state.awaiting.length ||
       !Array.isArray(parsed.attempts) || parsed.attempts.filter(isCountTuple).length !== parsed.attempts.length ||
       typeof parsed.prompt !== "string" ||
-      (state.entry !== undefined && !isRunEntry(state.entry))
+      (state.entry !== undefined && !isRunEntry(state.entry)) ||
+      // ★ **MC-032:`configSnapshot` 存在但不合法也要拒。** 从前它只在这里"条件展开"
+      //   (`...(isRunConfigSnapshot(...) ? { configSnapshot } : {})`),于是**有值却损坏**时
+      //   静默丢掉、调用方无从区分"配置没变化"与"快照损坏";再次保存会不带这个字段,把原配置
+      //   审计**永久抹掉**。已锁版(有 `workflowRevision`)的续跑对**任何存在但不合法**的
+      //   `configSnapshot` 一律拒 —— 与上面 record/outcomes 的严格性同一条纪律。
+      //   ⚠️ 注意区分:`undefined`(老存档压根没有)= 合法(不拒);`null` 或形状不对 = 损坏(拒)。
+      (parsed.configSnapshot !== undefined && !isRunConfigSnapshot(parsed.configSnapshot))
     )) {
       log.warn("workflow run snapshot: 已绑定图版本的状态损坏,拒绝续跑以避免重复副作用");
       return null;
