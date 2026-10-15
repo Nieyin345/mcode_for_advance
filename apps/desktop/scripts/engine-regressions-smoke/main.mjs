@@ -455,7 +455,13 @@ test("provider health check is wired across desktop, web/mobile and provider-sco
   ].map((path) => readFileSync(resolve(here, path), "utf8"));
   for (const source of files) assert.match(source, /provider(?::|\.)healthCheck|PROVIDER_HEALTH_CHECK/);
   for (const source of files) assert.doesNotMatch(source, /claude:healthCheck|claudeHealthCheck/);
-  const store = readFileSync(resolve(here, "../../src/renderer/stores/sessionStore.ts"), "utf8");
+  // 2026-10-15：类型层搬去了 sessionStoreTypes.ts，而下面几条断言里
+  // `providerHealthById` 是个**字段声明**（可能只在那边）。两个文件一起读，
+  // 免得将来它单独挪动时这条断言静默空过（assert.match 在"目标文件里没有"
+  // 和"真的没写"之间分不出来）。action 侧（refreshProviderHealth 等）仍在原文件。
+  const store =
+    readFileSync(resolve(here, "../../src/renderer/stores/sessionStore.ts"), "utf8") +
+    readFileSync(resolve(here, "../../src/renderer/stores/sessionStoreTypes.ts"), "utf8");
   assert.match(store, /providerHealthById/);
   assert.match(store, /refreshProviderHealth\(id\)/);
   assert.match(store, /refreshProviderHealth\(get\(\)\.providerId\)/);

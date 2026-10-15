@@ -1043,7 +1043,15 @@ console.log("\n视觉中继:面板接线与 store 链");
   );
 
   // (c) sessionStore 链:字段 + 首屏 getMany + setter 落盘。
-  const store = read("src/renderer/stores/sessionStore.ts");
+  //
+  // 2026-10-15：`visionRelayModel` 这个**字段声明**随类型层搬到了
+  // `sessionStoreTypes.ts`，而 `setVisionRelayModel` 这个 action 仍在
+  // `sessionStore.ts`。所以读的是**两个文件拼起来**——只读后者会让
+  // 「声明了字段」那半静默空过（断言测的是它真正关心的东西，不是文件在哪）。
+  const store =
+    read("src/renderer/stores/sessionStore.ts") +
+    "\n" +
+    read("src/renderer/stores/sessionStoreTypes.ts");
   check(
     "…sessionStore 声明了 visionRelayModel 字段与 setVisionRelayModel 动作",
     /visionRelayModel:\s*string\s*\|\s*null;/.test(store) &&
