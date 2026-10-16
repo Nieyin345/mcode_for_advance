@@ -2281,7 +2281,8 @@ const src = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
 const claude = src("src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts");
 check("Claude 挂上 mcode-app", claude.includes("options.mcpServers[APP_MCP_SERVER] = await buildAppMcpServer("));
 check("Claude canUseTool 对 app_ 放行(handler 自己审)", claude.includes("mcp__${APP_MCP_SERVER}__app_"));
-const codex = src("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts");
+// ⚠️ `buildDynamicTools` 已拆到 `CodexDynamicTools.ts` —— 扫**两文件拼接**。
+const codex = src("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts") + "\n" + src("src/main/providers/codex-sdk/CodexDynamicTools.ts");
 check("Codex 动态工具挂上", codex.includes("...appToolDescriptors(),") && codex.includes("invokeAppEngineTool(name, args, req.sessionId, ctx)"));
 const pi = src("src/main/providers/pi-sdk/mcodeExtension.ts");
 check("Pi 注册并在守卫放行", pi.includes("for (const tool of appToolDescriptors())") && pi.includes('toolName.startsWith("app_")) return;'));

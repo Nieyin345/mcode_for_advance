@@ -151,7 +151,9 @@ function scanArgsReads(src: string): Map<string, Set<string>> {
 // ⚠️ Claude 的浏览器注册已拆到 `ClaudeBrowserMcpServer.ts` —— 扫**两文件拼接**。
 const claudeSrc = readFileSync(join(SRC, "claude-sdk", "ClaudeAgentSdkProvider.ts"), "utf8")
   + "\n" + readFileSync(join(SRC, "claude-sdk", "ClaudeBrowserMcpServer.ts"), "utf8");
-const codexSrc = readFileSync(join(SRC, "codex-sdk", "CodexAgentSdkProvider.ts"), "utf8");
+// ⚠️ Codex 的浏览器注册在 `buildDynamicTools` 里，已拆到 `CodexDynamicTools.ts` —— 扫**两文件拼接**。
+const codexSrc = readFileSync(join(SRC, "codex-sdk", "CodexAgentSdkProvider.ts"), "utf8")
+  + "\n" + readFileSync(join(SRC, "codex-sdk", "CodexDynamicTools.ts"), "utf8");
 // ⚠️ `registerBrowserTools` 已拆到 `mcodeExtensionBrowser.ts` —— 扫**两文件拼接**。
 const piSrc = readFileSync(join(SRC, "pi-sdk", "mcodeExtension.ts"), "utf8")
   + "\n" + readFileSync(join(SRC, "pi-sdk", "mcodeExtensionBrowser.ts"), "utf8");

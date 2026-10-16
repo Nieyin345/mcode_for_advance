@@ -847,7 +847,9 @@ console.log("\n跨引擎桥(library/engineTools.ts)");
   const piSrc = readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8");
   check("Pi:注册了库工具", piSrc.includes("libraryToolDescriptors()") && piSrc.includes("invokeLibraryTool(tool.name"));
   check("Pi:只读库工具在 tool_call 守卫里直接放行(写工具仍走审批)", piSrc.includes("isLibraryReadonlyTool(toolName)"));
-  const cxSrc = readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
+  // ⚠️ `buildDynamicTools` 已拆到 `CodexDynamicTools.ts` —— 扫**两文件拼接**。
+  const cxSrc = readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8")
+    + "\n" + readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexDynamicTools.ts"), "utf8");
   check("Codex:动态工具表带上库工具", cxSrc.includes("...libraryToolDescriptors()"));
   check("Codex:库工具走带审批的派发", cxSrc.includes("invokeLibraryToolGated("));
 

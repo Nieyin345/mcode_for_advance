@@ -1459,7 +1459,9 @@ async function main(): Promise<void> {
     const piSrc = readFileSync("src/main/providers/pi-sdk/mcodeExtension.ts", "utf8");
     check("Pi 注册了工作流工具", piSrc.includes("workflowEngineBridge.descriptors()") && piSrc.includes("workflowEngineBridge.invoke(tool.name"));
     check("Pi 守卫放行只读工作流工具", piSrc.includes("workflowEngineBridge.isReadonly(toolName)"));
-    const cxSrc = readFileSync("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts", "utf8");
+    // ⚠️ `buildDynamicTools` 已拆到 `CodexDynamicTools.ts` —— 扫**两文件拼接**。
+    const cxSrc = readFileSync("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts", "utf8")
+      + "\n" + readFileSync("src/main/providers/codex-sdk/CodexDynamicTools.ts", "utf8");
     check("Codex 挂了工作流动态工具", cxSrc.includes("...workflowEngineBridge.descriptors()"));
     check("Codex 派发走带审批的那条", cxSrc.includes("workflowEngineBridge.invokeGated(name"));
   }

@@ -209,7 +209,9 @@ function eq(name: string, actual: unknown, expected: unknown): void {
   // 只读判据要盯**写形态**(调用/赋值),不能盯裸词 —— 注释里合法地会提到
   // `options.mcpServers` 与 `registerTool`(说明"与它们同源")。这里只禁真写路径。
   check("★ 诊断是只读的(无 registerTool 调用 / options.mcpServers 赋值)", !/\.registerTool\s*\(/.test(src) && !/options\.mcpServers\s*=/.test(src));
-  const codexSrc = readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
+  // ⚠️ `buildDynamicTools` 已拆到 `CodexDynamicTools.ts` —— 扫**两文件拼接**。
+  const codexSrc = readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8")
+    + "\n" + readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexDynamicTools.ts"), "utf8");
   check("★ buildDynamicTools 已导出(供诊断复用)", /export function buildDynamicTools/.test(codexSrc));
   const ipcSrc = readFileSync(resolve(process.cwd(), "src/main/ipc/engineTools.ts"), "utf8");
   check("★ KNOWN_BUILTIN_TOOLS 已导出(内置清单唯一来源)", /export const KNOWN_BUILTIN_TOOLS/.test(ipcSrc));
@@ -418,7 +420,9 @@ function eq(name: string, actual: unknown, expected: unknown): void {
 {
   const claudeSrc = readFileSync(resolve(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
   const piSrc = readFileSync(resolve(process.cwd(), "src/main/providers/pi-sdk/PiAgentSdkProvider.ts"), "utf8");
-  const codexSrc = readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
+  // ⚠️ `buildDynamicTools` 已拆到 `CodexDynamicTools.ts` —— 扫**两文件拼接**。
+  const codexSrc = readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8")
+    + "\n" + readFileSync(resolve(process.cwd(), "src/main/providers/codex-sdk/CodexDynamicTools.ts"), "utf8");
 
   check("★ Claude provider 调 resolveEngineToolSelection(\"claude\", …)", /resolveEngineToolSelection\(\s*"claude"/.test(claudeSrc));
   check("★ Claude provider 把选择结果赋进 options(调 claudeToolSelectionOptions)", claudeSrc.includes("claudeToolSelectionOptions(") && claudeSrc.includes("options.tools = "));

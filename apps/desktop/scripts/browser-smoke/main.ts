@@ -1093,12 +1093,14 @@ console.log("\nMC-043:三个 provider 都把自己的项目身份接进每个浏
   ];
 
   for (const [name, rel] of providers) {
-    // ⚠️ Claude 与 Pi 的浏览器注册已各自拆到 `*Browser*.ts` —— 扫**两文件拼接**。
+    // ⚠️ Claude / Pi / Codex 的浏览器注册已各自拆出 —— 扫**两文件拼接**。
     const extra = rel.endsWith("claude-sdk/ClaudeAgentSdkProvider.ts")
       ? "\n" + readFileSync(join(process.cwd(), "src/main/providers/claude-sdk/ClaudeBrowserMcpServer.ts"), "utf8")
-      : rel.endsWith("mcodeExtension.ts")
-        ? "\n" + readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtensionBrowser.ts"), "utf8")
-        : "";
+      : rel.endsWith("codex-sdk/CodexAgentSdkProvider.ts")
+        ? "\n" + readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexDynamicTools.ts"), "utf8")
+        : rel.endsWith("mcodeExtension.ts")
+          ? "\n" + readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtensionBrowser.ts"), "utf8")
+          : "";
     const src = readFileSync(join(process.cwd(), rel), "utf8") + extra;
     const misses: string[] = [];
     // 扫每次 `browserXxx(` 调用,取其**配平到参数表结束**的那段文本(含嵌套对象/数组),
