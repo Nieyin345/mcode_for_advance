@@ -56,7 +56,7 @@ const PANEL_LOADERS = {
   SkillsPanel: () => import("./SkillsPanel.js"),
   WorkflowsPanel: () => import("./workflows/WorkflowsPanel.js"),
   HooksPanel: () => import("./HooksPanel.js"),
-  SceneDeployPanel: () => import("./SceneDeployPanel.js"),
+  GovernancePanel: () => import("./GovernancePanel.js"),
   McpPanel: () => import("./McpPanel.js"),
   AgentSshTrustPanel: () => import("./AgentSshTrustPanel.js"),
   EngineToolsPanel: () => import("./EngineToolsPanel.js"),
@@ -108,7 +108,7 @@ const RuntimesPanel = lazy(() => PANEL_LOADERS.RuntimesPanel().then((m) => ({ de
 const SkillsPanel = lazy(() => PANEL_LOADERS.SkillsPanel().then((m) => ({ default: m.SkillsPanel })));
 const WorkflowsPanel = lazy(() => PANEL_LOADERS.WorkflowsPanel().then((m) => ({ default: m.WorkflowsPanel })));
 const HooksPanel = lazy(() => PANEL_LOADERS.HooksPanel().then((m) => ({ default: m.HooksPanel })));
-const SceneDeployPanel = lazy(() => PANEL_LOADERS.SceneDeployPanel().then((m) => ({ default: m.SceneDeployPanel })));
+const GovernancePanel = lazy(() => PANEL_LOADERS.GovernancePanel().then((m) => ({ default: m.GovernancePanel })));
 const McpPanel = lazy(() => PANEL_LOADERS.McpPanel().then((m) => ({ default: m.McpPanel })));
 const AgentSshTrustPanel = lazy(() => PANEL_LOADERS.AgentSshTrustPanel().then((m) => ({ default: m.AgentSshTrustPanel })));
 const EngineToolsPanel = lazy(() => PANEL_LOADERS.EngineToolsPanel().then((m) => ({ default: m.EngineToolsPanel })));
@@ -413,7 +413,9 @@ export function SettingsPage() {
             {active === "workflows" && <WorkflowsPanel purpose="workflow" />}
             {active === "automation" && <WorkflowsPanel purpose="automation" />}
             {active === "hooks" && <HooksPanel />}
-            {active === "scene-deploy" && <SceneDeployPanel />}
+            {/* 【MC-001】同一个治理视图:场景部署 + 无人值守任务计划(后端全通却没入口的那条) ——
+                两半共用「计划 → 批准(绑正文)→ 执行(只递 grantId)」的心算模型,挂在一起用户学一次就够。 */}
+            {active === "scene-deploy" && <GovernancePanel />}
             {active === "runtimes" && <RuntimesPanel />}
             {active === "mcp" && <McpPanel />}
             {active === "agent-ssh" && <AgentSshTrustPanel />}

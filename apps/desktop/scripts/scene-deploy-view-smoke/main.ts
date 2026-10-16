@@ -342,12 +342,16 @@ section("9. 面板真的接上四条入口 + 挂进设置页(只声明不接线 
   check("★ 面板用 buildSceneApprovalInput / buildSceneApplyInput 构造入参", panel.includes("buildSceneApprovalInput(") && panel.includes("buildSceneApplyInput("));
 
   const settingsPage = readFileSync(join(process.cwd(), "src/renderer/components/settings/SettingsPage.tsx"), "utf8");
-  check("★ SettingsPage 声明了 SceneDeployPanel 的懒加载 loader", /SceneDeployPanel:\s*\(\)\s*=>\s*import\("\.\/SceneDeployPanel\.js"\)/.test(settingsPage), settingsPage.match(/.*SceneDeployPanel.*/g)?.slice(0, 2));
+  // 【MC-001】面板自 MC-001 起经 `GovernancePanel`(场景部署 + 无人值守两半的子页签壳)
+  // 挂进设置页 —— 声明链变成 SettingsPage → GovernancePanel → SceneDeployPanel,三段都要接上。
+  const governance = readFileSync(join(process.cwd(), "src/renderer/components/settings/GovernancePanel.tsx"), "utf8");
+  check("★ SettingsPage 声明了 GovernancePanel 的懒加载 loader", /GovernancePanel:\s*\(\)\s*=>\s*import\("\.\/GovernancePanel\.js"\)/.test(settingsPage), settingsPage.match(/.*GovernancePanel.*/g)?.slice(0, 2));
   check(
-    "★ 场景部署面板真的被渲染(scene-deploy 一节挂上组件)",
-    /active === "scene-deploy"\s*&&\s*<SceneDeployPanel\s*\/>/.test(settingsPage),
-    settingsPage.match(/.*SceneDeployPanel.*/g)?.slice(0, 3),
+    "★ 治理视图真的被渲染(scene-deploy 一节挂上组件)",
+    /active === "scene-deploy"\s*&&\s*<GovernancePanel\s*\/>/.test(settingsPage),
+    settingsPage.match(/.*GovernancePanel.*/g)?.slice(0, 3),
   );
+  check("★ GovernancePanel 真的渲染 SceneDeployPanel(没有中间断链)", governance.includes("SceneDeployPanel"), governance.match(/.*SceneDeployPanel.*/g)?.slice(0, 2));
   check("★ 导航里有一项指向它(sceneDeploy.nav)", settingsPage.includes('"sceneDeploy.nav"'), settingsPage.match(/.*sceneDeploy\.nav.*/g)?.slice(0, 2));
 }
 

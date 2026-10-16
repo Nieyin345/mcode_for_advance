@@ -16,6 +16,7 @@ import { zh as zhMemory } from "./zh/memory.js";
 import { zh as zhMobile } from "./zh/mobile.js";
 import { zh as zhCustomUi } from "./zh/customUi.js";
 import { zh as zhSceneDeploy } from "./zh/sceneDeploy.js";
+import { unattendedZh as zhUnattended } from "./zh/unattended.js";
 import { en as enCommon } from "./en/common.js";
 import { en as enLayout } from "./en/layout.js";
 import { en as enLib } from "./en/lib.js";
@@ -33,6 +34,7 @@ import { en as enMemory } from "./en/memory.js";
 import { en as enMobile } from "./en/mobile.js";
 import { en as enCustomUi } from "./en/customUi.js";
 import { en as enSceneDeploy } from "./en/sceneDeploy.js";
+import { unattendedEn as enUnattended } from "./en/unattended.js";
 
 /**
  * Flat message catalogs, merged per locale. The zh catalog is the source of
@@ -62,6 +64,7 @@ const zh = {
   ...zhMobile,
   ...zhCustomUi,
   ...zhSceneDeploy,
+  ...zhUnattended,
 };
 
 export type MessageId = keyof typeof zh;
@@ -84,6 +87,7 @@ const en: Record<MessageId, string> = {
   ...enMobile,
   ...enCustomUi,
   ...enSceneDeploy,
+  ...enUnattended,
 };
 
 /**
