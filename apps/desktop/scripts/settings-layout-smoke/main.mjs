@@ -72,8 +72,12 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {App} from ${JSON.stringify(join(root,'App.tsx').replaceAll('\\','/'))};
 import {useSessionStore} from ${JSON.stringify(join(root,'stores/sessionStore.ts').replaceAll('\\','/'))};
+import {useToastStore} from ${JSON.stringify(join(root,'stores/toastStore.ts').replaceAll('\\','/'))};
 window.React=React;
 window.__store=useSessionStore;
+// MC-046 焦点断言的夹具件:吐司栈挂在根级、在设置层与 inert 壳之外,拿它当
+// "层外的可聚焦元素"探针(见下方 P4 的守卫)。
+window.__toast=useToastStore;
 try{
   createRoot(document.getElementById('root')).render(<App/>);
   window.__mounted=true;
@@ -167,6 +171,33 @@ const check=(name,ok,detail)=>{results.push(!!ok);console.log(`${ok?'PASS':'FAIL
 /** 量一根几何:`aside[data-testid=...]` 的 rect。 */
 const rectExpr=(sel)=>`(()=>{const e=document.querySelector(${JSON.stringify(sel)});if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)};})()`;
 
+/** 派发一次**真实**的 Tab 键(CDP 输入事件,走浏览器自己的焦点遍历 —— 不是
+ *  在页面里手调 focus())。rawKeyDown + keyUp 是浏览器接受 Tab 的最短组合。 */
+const pressTab=async(page,shift)=>{
+  const base={modifiers:shift?8:0,windowsVirtualKeyCode:9,nativeVirtualKeyCode:9,code:'Tab',key:'Tab'};
+  await page.send('Input.dispatchKeyEvent',{type:'rawKeyDown',...base});
+  await page.send('Input.dispatchKeyEvent',{type:'keyUp',...base});
+  await page.sleep(60);
+};
+
+/** 与 useFocusTrap 同一套「可聚焦」判据(见 hooks/useFocusTrap.ts 的
+ *  FOCUSABLE_SELECTOR):断言数的是真实参与 Tab 的元素,不是"源码里写了什么"。 */
+const FOCUSABLE_SEL=["a[href]","button:not([disabled])","input:not([disabled]):not([type='hidden'])","select:not([disabled])","textarea:not([disabled])","summary","[contenteditable]:not([contenteditable='false'])","[tabindex]:not([tabindex='-1'])"].join(",");
+
+/** 把设置层内首/尾可聚焦元素存到 window 上,并返回总数 —— 供回绕断言比对。 */
+const layerEndsExpr=`(()=>{const sel=${JSON.stringify(FOCUSABLE_SEL)};
+  const root=document.querySelector(".settings-root");if(!root)return {count:0};
+  const vis=el=>el.getClientRects().length>0&&getComputedStyle(el).visibility!=="hidden";
+  const list=[...root.querySelectorAll(sel)].filter(vis);
+  window.__firstFocusable=list[0]||null;window.__lastFocusable=list[list.length-1]||null;
+  return {count:list.length};})()`;
+
+/** 焦点现场:activeElement 是不是在设置层里 / 层外的 inert 后台里。 */
+const focusWhereExpr=`(()=>{const a=document.activeElement;const root=document.querySelector(".settings-root");
+  return {insideRoot:!!(root&&a&&root.contains(a)),activeIsBody:a===document.body,
+    tag:a?a.tagName:null,inInert:!!(a&&a.closest&&a.closest("[inert]")),
+    isFirst:a===window.__firstFocusable,isLast:a===window.__lastFocusable};})()`;
+
 try{
   await withAuditPage(dir,async page=>{
     await page.goto('', 'window.__mounted===true');
@@ -179,6 +210,26 @@ try{
     };
     check('工作区左栏已渲染',before.sidebar&&before.sidebar.w>0,before.sidebar);
     check('主列已渲染',before.main&&before.main.w>0,before.main);
+
+    // —— MC-046(焦点归还断言的锚):打开设置**前**,先在真实工作区里聚焦一个
+    // 控件,并把元素记到 window 上;关闭设置后焦点必须回到它身上。——
+    const preFocused=await page.eval(`(()=>{const sel=${JSON.stringify(FOCUSABLE_SEL)};
+      const vis=el=>el.getClientRects().length>0&&getComputedStyle(el).visibility!=='hidden';
+      const list=[...document.querySelectorAll('[data-testid="workspace-main"] '+sel)].filter(vis);
+      if(!list.length)return false;
+      window.__preFocusTarget=list[0];
+      window.__preFocusTarget.focus();
+      return document.activeElement===window.__preFocusTarget;})()`);
+    check('打开设置前能聚焦工作区控件(关闭后焦点归还断言的锚)',preFocused===true,preFocused);
+
+    // MC-046 夹具:**层外**的可聚焦探针。吐司栈挂在根级、在设置层与 inert 壳
+    // 之外 —— 若设置层不接管 Tab(或后台不 inert),原生 Tab 会停在这根吐司的
+    // 关闭按钮上(台账登记的反例就是"第一下 Tab 落到覆盖层外的控件")。sticky
+    // (duration=0)保证它全程活着;测完 clear。
+    await page.eval(`window.__toast.getState().push({kind:'info',title:'MC-046 层外焦点探针',duration:0})`);
+    await page.waitFor('document.querySelector("[data-toast-id] button")!==null');
+    const toastReady=await page.eval(`(()=>{const t=document.querySelector("[data-toast-id]");const b=t&&t.querySelector("button");if(!b)return false;const r=b.getBoundingClientRect();return r.width>0&&r.height>0;})()`);
+    if(toastReady!==true)throw Error('MC-046 夹具前置失败:层外吐司探针没有渲染出来(后续"不逃到层外"的断言会空过)');
 
     // 像用户那样打开设置:走 store 的同一个动作。
     await page.eval(`window.__store.getState().setSettingsOpen(true)`);
@@ -211,6 +262,63 @@ try{
     check('「常规」页的内容真的渲染了(不是空壳/错误页)',bodyText.includes('语言')||bodyText.includes('显示'),bodyText.slice(0,120));
     check('工作区子树没有被卸载(终端保活)',during.sidebar!==null);
 
+    // ══════════ MC-046:设置层拥有键盘焦点 ══════════
+    // 判据立在**用户可观察的焦点状态**上:activeElement 在哪、真实 Tab 键把焦点
+    // 带到哪。不是断"源码里有没有调 focus()"。
+
+    // 量层内首/尾可聚焦元素(与 useFocusTrap 同一套判据),供回绕断言比对。
+    const ends=await page.eval(layerEndsExpr);
+    check('设置层里的可聚焦元素足够做首尾回绕断言(夹具有效性)',ends.count>=3,ends);
+    const firstText=await page.eval('window.__firstFocusable?window.__firstFocusable.textContent.slice(0,20):null');
+
+    // 1) 打开设置后,焦点必须已经在设置层内(且不是 body)。
+    const fOpen=await page.eval(focusWhereExpr);
+    check('★ 打开设置后焦点立即落在设置层内(不是 BODY)',fOpen.insideRoot&&!fOpen.activeIsBody,{...fOpen,ends,firstText});
+    // 2) 初始焦点就是层内第一个控件(设置标题栏的「返回工作区」按钮)。
+    check('★ 初始焦点是层内第一个可聚焦控件(设置标题栏「返回工作区」按钮)',fOpen.isFirst&&typeof firstText==='string'&&firstText.includes('返回工作区'),{...fOpen,firstText});
+
+    // 3) 后台整棵工作区被 inert —— 退出 Tab 序与辅助技术读序。
+    const inertState=await page.eval(`(()=>{const w=document.querySelector("[data-testid=workspace-main]");return w?!!(w.closest("[inert]")):null;})()`);
+    check('★ 后台工作区子树被 inert(整棵退出 Tab 序)',inertState===true,inertState);
+    // 4) inert 真生效:后台控件即使被程序化聚焦也不接受(焦点不移动)。
+    // ⚠️ 必须挑**可见的可聚焦**控件(与 preFocus 锚同一套判据)—— 拿第一个
+    // `button` 可能撞上 display:none 保活子树里的按钮,那种本来就 focus() 不动,
+    // 断言会假绿(实测:inert 不存在时它也绿)。
+    const deepInert=await page.eval(`(()=>{const sel=${JSON.stringify(FOCUSABLE_SEL)};
+      const vis=el=>el.getClientRects().length>0&&getComputedStyle(el).visibility!=='hidden';
+      const list=[...document.querySelectorAll('[data-testid="workspace-main"] '+sel)].filter(vis);
+      if(!list.length)return {found:false};
+      const b=list[0];b.focus();
+      return {found:true,focusMoved:document.activeElement===b};})()`);
+    check('★ 后台控件即使被程序化聚焦也不接受(inert 真生效)',deepInert.found&&!deepInert.focusMoved,deepInert);
+
+    // 回绕断言前重取一次首/尾(懒加载面板落位后 DOM 可能已定稿,重取保证比对的是当前节点)。
+    await page.eval(layerEndsExpr);
+
+    // 5) 层内首控件上 Shift+Tab:回绕到层内**末**控件,不许逃到层外吐司/BODY。
+    await page.eval('window.__firstFocusable.focus()');
+    await pressTab(page,true);
+    const fShift=await page.eval(focusWhereExpr);
+    check('★ 首控件上 Shift+Tab 回绕到层内末控件,不逃到层外',fShift.insideRoot&&fShift.isLast,{...fShift,ends});
+
+    // 6) 层内末控件上 Tab:回绕到层内**首**控件,不落进层外吐司。
+    await page.eval('window.__lastFocusable.focus()');
+    await pressTab(page,false);
+    const fWrap=await page.eval(focusWhereExpr);
+    check('★ 末控件上 Tab 回绕到层内首控件,不落进层外吐司',fWrap.insideRoot&&fWrap.isFirst,{...fWrap,ends});
+
+    // 7) 自末控件起连续 Tab 五次,每一步焦点都还在设置层内(第一步回绕到首)。
+    await page.eval('window.__lastFocusable.focus()');
+    const trail=[];let allInside=true;
+    for(let i=0;i<5;i++){
+      await pressTab(page,false);
+      const w=await page.eval(focusWhereExpr);
+      trail.push({step:i+1,tag:w.tag,inside:w.insideRoot,isFirst:w.isFirst});
+      if(!w.insideRoot)allInside=false;
+    }
+    check('★ 自末控件起连续 Tab 五次,每一步焦点都在设置层内',allInside&&trail[0].isFirst,trail);
+    // ══════════ /MC-046 ══════════
+
     // 真正的退出路径:设置自己那条标题栏上的「返回工作区」按钮(鼠标点,不是调 store)。
     const backRect=await page.eval(`(()=>{const b=[...document.querySelectorAll('.settings-root button')].find(e=>e.textContent.includes('返回工作区'));if(!b)return null;const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
     check('设置标题栏有「返回工作区」按钮',backRect!==null,backRect);
@@ -226,6 +334,37 @@ try{
     };
     check('关闭设置后左栏复原',JSON.stringify(before.sidebar)===JSON.stringify(after.sidebar),after.sidebar);
     check('关闭设置后主列复原',JSON.stringify(before.main)===JSON.stringify(after.main),after.main);
+
+    // MC-046:关闭后焦点必须**归还**到打开前聚焦的工作区控件(不是 body、不是
+    // 设置层里的按钮)。
+    const restored=await page.eval(`document.activeElement===window.__preFocusTarget`);
+    const restoredWhere=await page.eval(focusWhereExpr);
+    check('★ 关闭设置后焦点归还到打开前那个工作区控件',restored===true,{restored,...restoredWhere});
+    // 归还断言要有意义,后台必须先解除 inert —— 否则"焦点在工作区里"是 inert
+    // 生效前的假象(顺带验证 inert 随关闭撤销,工作区回到可交互)。
+    const inertCleared=await page.eval(`(()=>{const w=document.querySelector("[data-testid=workspace-main]");return w?!(w.closest("[inert]")):false;})()`);
+    check('★ 关闭设置后工作区的 inert 被撤销(后台重新可交互)',inertCleared===true,inertCleared);
+
+    // 清掉层外焦点探针,别让它影响后续断言/截图。
+    await page.eval('window.__toast.getState().clear()');
+
+    // MC-046 第二轮:键盘路径关闭(Escape 仍归 SettingsPage 自己的监听 —— hook
+    // 不重复处理它)。打开 → 焦点在层内 → 按 Escape → 设置关闭且焦点再次归还。
+    await page.eval(`window.__store.getState().setSettingsOpen(true)`);
+    await page.waitFor('document.querySelector(".settings-root")!==null');
+    await page.sleep(400);
+    const fReopen=await page.eval(focusWhereExpr);
+    if(fReopen.insideRoot){
+      await page.send('Input.dispatchKeyEvent',{type:'rawKeyDown',windowsVirtualKeyCode:27,nativeVirtualKeyCode:27,code:'Escape',key:'Escape'});
+      await page.send('Input.dispatchKeyEvent',{type:'keyUp',windowsVirtualKeyCode:27,nativeVirtualKeyCode:27,code:'Escape',key:'Escape'});
+    }
+    let escapedClosed=false;
+    try{await page.waitFor('document.querySelector(".settings-root")===null',3000);escapedClosed=true;}catch{}
+    await page.sleep(150);
+    const fEscRestored=await page.eval(`document.activeElement===window.__preFocusTarget`);
+    check('★ Escape 仍能关闭设置(SettingsPage 的 Escape 所有权未被 hook 顶掉)',escapedClosed,{fReopen});
+    check('★ Escape 关闭后焦点同样归还到打开前的控件',escapedClosed&&fEscRestored===true,fEscRestored);
+
     check('全程没有未捕获异常',page.exceptions.length===0,page.exceptions.slice(0,3));
 
     await page.screenshot('settings-open.png');

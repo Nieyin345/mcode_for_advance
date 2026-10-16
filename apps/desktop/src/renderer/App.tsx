@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useEffect, useMemo, useRef } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { ThreePaneLayout } from "./components/layout/ThreePaneLayout.js";
 import { Divider } from "./components/layout/Divider.js";
@@ -21,6 +21,7 @@ import { CustomUiToolbar } from "./components/customUi/CustomUiToolbar.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
 import { VoiceListeningOverlay } from "./components/layout/VoiceListeningOverlay.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
+import { useFocusTrap } from "./hooks/useFocusTrap.js";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts.js";
 import { useMouseGestures } from "./hooks/useMouseGestures.js";
 import { useSuppressBrowserView } from "./hooks/useSuppressBrowserView.js";
@@ -87,9 +88,18 @@ const FileViewer = lazy(() =>
 const SettingsOverlay = memo(function SettingsOverlay() {
   const open = useSessionStore((s) => s.settingsOpen);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
+  // 【MC-046】焦点接管:打开时记录原焦点 → 移入层内首个控件,层内 Tab/Shift+Tab
+  // 闭环,关闭/卸载时归还。键盘所有权和鼠标遮盖一样,是这层的契约 —— 完整的
+  // 模态语义另一半(被盖住的后台 inert)在 WorkspaceInertShell。Escape 仍归
+  // SettingsPage 自己的监听(见 useFocusTrap 文件头)。
+  const rootRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(rootRef, open);
   if (!open) return null;
   return (
-    <div className="settings-root fixed inset-0 z-30 flex flex-col bg-surface-muted">
+    <div
+      ref={rootRef}
+      className="settings-root fixed inset-0 z-30 flex flex-col bg-surface-muted"
+    >
       {/* Empty leftOpen/rightOpen: in settings mode the titlebar renders only
           the back button + heading (the workspace toggles are gone), so the
           panel flags below are inert. */}
@@ -164,6 +174,37 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
         />
       )}
     </>
+  );
+});
+
+/**
+ * 【MC-046】被设置覆盖层盖住时,把整棵工作区**标 inert**(React 19 原生支持
+ * `inert` 布尔 prop):子树退出 Tab 序、退出辅助技术读序、不接受指针与焦点。
+ * 这是模态语义的另一半 —— 焦点管理的 hook(useFocusTrap)只保证焦点在
+ * 设置层内循环/归位;如果不 inert,原生 Tab 走到设置层最后一个元素后照样会
+ * 走进后台(以及根上其它可聚焦层),屏幕阅读器也照样念到被盖住的控件。
+ *
+ * 为什么是**包壳**而不是卸载:工作区子树必须全程挂载(终端 PTY 保活、Monaco/
+ * 草稿状态,见 App 主注释里那条不变量);inert 只改可达性,不动布局、不卸载任何
+ * 东西 —— 几何断言(settings-layout-smoke)钉着"打开设置前后左栏/主列逐像素不变",
+ * 这个包壳按原 flex 参数逐字复刻(工作区仍是 root 里唯一的在流 flex 子项),
+ * 不引入任何盒子变化。
+ *
+ * 为什么做成**自订阅的 memo 组件**、而不是在 App 里读 `settingsOpen` 再传 prop:
+ * 与 SettingsOverlay 同理 —— App 一旦订阅这个字段,每次开关设置都会调和整棵
+ * 应用树(正是"点设置很卡"的老账)。这里只有这个包壳重渲染,`children` 元素
+ * 身份不变,React 直接跳过子树。
+ */
+const WorkspaceInertShell = memo(function WorkspaceInertShell({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const settingsOpen = useSessionStore((s) => s.settingsOpen);
+  return (
+    <div className="flex min-w-0 flex-1" inert={settingsOpen}>
+      {children}
+    </div>
   );
 });
 
@@ -373,88 +414,93 @@ export function App() {
           beside the browser overlay so it covers both the chat and right
           columns. Renders null when not applicable. */}
       <WidePlanDialog />
-      <WorkspaceSidebar
-        leftOpen={leftOpen}
-        leftBarMode={leftBarMode}
-        leftWidthPct={leftWidthPct}
-        onResizeLeft={handleLeftResize}
-        onResetLeft={resetLeftWidthPct}
-      />
-      {/*
-        Right column — the 7 of the 3:7 split: the toolbar (Titlebar) on top
-        and the main panel below (center chat/editor pane + right IDE panel,
-        plus the bottom terminal inside the center main).
-      */}
-      <div data-testid="workspace-main" className="flex min-w-0 flex-1 flex-col">
-        {/*
-          Workspace shell is ALWAYS mounted — the settings view renders as a
-          full-window overlay on top of it, not as a mutually-exclusive
-          sibling. This is critical: BottomTerminalBar (→ TerminalPanel →
-          every TerminalView) lives inside ThreePaneLayout. A ternary swap
-          `settingsOpen ? <Settings> : <Workspace>` would unmount the whole
-          workspace subtree on every settings open, killing all live PTYs
-          (TerminalView's cleanup calls api.terminal.kill) and destroying
-          scrollback — and racing many concurrent pty.kill() calls on Windows
-          occasionally crashes the main process. Keeping the workspace mounted
-          preserves the carefully-built cross-project terminal keep-alive (see
-          TerminalPanel.tsx) exactly as designed. Nothing below reads
-          `settingsOpen`: the workspace keeps its exact layout (including the
-          left rail's width) and the overlay just covers it — see
-          SettingsOverlay for why that matters for open latency.
-        */}
-        <Titlebar
-          mode="workspace"
+      {/* 【MC-046】工作区整体包进 inert 壳:设置打开时整棵后台子树退出
+          Tab 序与辅助技术(几何逐像素不变,子树全程挂载 —— 见 WorkspaceInertShell
+          自己的注释)。 */}
+      <WorkspaceInertShell>
+        <WorkspaceSidebar
           leftOpen={leftOpen}
-          rightOpen={rightOpen}
-          bottomTerminalOpen={bottomTerminalOpen}
-          onToggleLeft={() => setLeftOpen(!leftOpen)}
-          onToggleRight={() => setRightOpen(!rightOpen)}
-          onToggleBottomTerminal={() => setBottomTerminalOpen(!bottomTerminalOpen)}
+          leftBarMode={leftBarMode}
+          leftWidthPct={leftWidthPct}
+          onResizeLeft={handleLeftResize}
+          onResetLeft={resetLeftWidthPct}
         />
-        {/* Main panel row — bg-surface-muted as the contrasting track so the
-            center pane's rounded left-edge corners (in ThreePaneLayout)
-            reveal this muted color through the notches and read as clean
-            arcs. The left sidebar (bg-surface-muted) blends into the track
-            on its side; the center pane (bg-surface) separates from the
-            track by the flat color step alone (no shadow). */}
-        <div className="relative flex min-h-0 flex-1 bg-surface-muted">
+        {/*
+          Right column — the 7 of the 3:7 split: the toolbar (Titlebar) on top
+          and the main panel below (center chat/editor pane + right IDE panel,
+          plus the bottom terminal inside the center main).
+        */}
+        <div data-testid="workspace-main" className="flex min-w-0 flex-1 flex-col">
           {/*
-            Center is ONE stable tree across wide mode (CenterPane takes the
-            wide flag as a render variation) — the old ternary swap
-            `<WidePanelSplit/> : <CenterPane/>` remounted every ChatPane
-            (Tiptap, timeline) + the whole right panel on each toggle, which
-            read as a lag. Wide mode only re-shapes the layout: the right
-            aside switches to the percentage share (rightWidthPct) and stays
-            open (setWidePanelOpen forces rightOpen=true on enter and
-            restores the snapshot on exit), so RightPanel — file tree, git
-            scan, browser view ownership — is never torn down.
+            Workspace shell is ALWAYS mounted — the settings view renders as a
+            full-window overlay on top of it, not as a mutually-exclusive
+            sibling. This is critical: BottomTerminalBar (→ TerminalPanel →
+            every TerminalView) lives inside ThreePaneLayout. A ternary swap
+            `settingsOpen ? <Settings> : <Workspace>` would unmount the whole
+            workspace subtree on every settings open, killing all live PTYs
+            (TerminalView's cleanup calls api.terminal.kill) and destroying
+            scrollback — and racing many concurrent pty.kill() calls on Windows
+            occasionally crashes the main process. Keeping the workspace mounted
+            preserves the carefully-built cross-project terminal keep-alive (see
+            TerminalPanel.tsx) exactly as designed. Nothing below reads
+            `settingsOpen`: the workspace keeps its exact layout (including the
+            left rail's width) and the overlay just covers it — see
+            SettingsOverlay for why that matters for open latency.
           */}
-          <ThreePaneLayout
-            left={null}
-            center={<CenterPane wide={widePanelOpen} />}
-            right={<RightPanel />}
-            toolbar={<CustomUiToolbar />}
-            leftOpen={false}
+          <Titlebar
+            mode="workspace"
+            leftOpen={leftOpen}
             rightOpen={rightOpen}
-            bottomTerminal={<BottomTerminalBar active={bottomTerminalOpen} />}
             bottomTerminalOpen={bottomTerminalOpen}
-            rightWidth={rightWidth}
-            rightWidthPct={widePanelOpen ? widePanelPct : undefined}
-            bottomTerminalHeight={bottomTerminalHeight}
-            onResizeRight={widePanelOpen ? handleWidePanelResize : adjustRightWidth}
-            onResizeBottomTerminal={adjustBottomTerminalHeight}
-            onResetRight={widePanelOpen ? resetWidePanelPct : resetRightWidth}
-            onResetBottomTerminal={resetBottomTerminalHeight}
+            onToggleLeft={() => setLeftOpen(!leftOpen)}
+            onToggleRight={() => setRightOpen(!rightOpen)}
+            onToggleBottomTerminal={() => setBottomTerminalOpen(!bottomTerminalOpen)}
           />
-          {/* Git diff dialog (the "dialog" open-mode). Portaled to <body>;
-              renders nothing when closed or empty. Mounted at the workspace
-              level so it overlays the editor while staying app-scoped.
-              Lazy-loaded with monaco since it reuses the Monaco DiffPane. */}
-          <Suspense fallback={null}>
-            <GitDiffDialog />
-          </Suspense>
+          {/* Main panel row — bg-surface-muted as the contrasting track so the
+              center pane's rounded left-edge corners (in ThreePaneLayout)
+              reveal this muted color through the notches and read as clean
+              arcs. The left sidebar (bg-surface-muted) blends into the track
+              on its side; the center pane (bg-surface) separates from the
+              track by the flat color step alone (no shadow). */}
+          <div className="relative flex min-h-0 flex-1 bg-surface-muted">
+            {/*
+              Center is ONE stable tree across wide mode (CenterPane takes the
+              wide flag as a render variation) — the old ternary swap
+              `<WidePanelSplit/> : <CenterPane/>` remounted every ChatPane
+              (Tiptap, timeline) + the whole right panel on each toggle, which
+              read as a lag. Wide mode only re-shapes the layout: the right
+              aside switches to the percentage share (rightWidthPct) and stays
+              open (setWidePanelOpen forces rightOpen=true on enter and
+              restores the snapshot on exit), so RightPanel — file tree, git
+              scan, browser view ownership — is never torn down.
+            */}
+            <ThreePaneLayout
+              left={null}
+              center={<CenterPane wide={widePanelOpen} />}
+              right={<RightPanel />}
+              toolbar={<CustomUiToolbar />}
+              leftOpen={false}
+              rightOpen={rightOpen}
+              bottomTerminal={<BottomTerminalBar active={bottomTerminalOpen} />}
+              bottomTerminalOpen={bottomTerminalOpen}
+              rightWidth={rightWidth}
+              rightWidthPct={widePanelOpen ? widePanelPct : undefined}
+              bottomTerminalHeight={bottomTerminalHeight}
+              onResizeRight={widePanelOpen ? handleWidePanelResize : adjustRightWidth}
+              onResizeBottomTerminal={adjustBottomTerminalHeight}
+              onResetRight={widePanelOpen ? resetWidePanelPct : resetRightWidth}
+              onResetBottomTerminal={resetBottomTerminalHeight}
+            />
+            {/* Git diff dialog (the "dialog" open-mode). Portaled to <body>;
+                renders nothing when closed or empty. Mounted at the workspace
+                level so it overlays the editor while staying app-scoped.
+                Lazy-loaded with monaco since it reuses the Monaco DiffPane. */}
+            <Suspense fallback={null}>
+              <GitDiffDialog />
+            </Suspense>
+          </div>
         </div>
-      </div>
+      </WorkspaceInertShell>
       {/* Settings is a full-window surface, mounted at the ROOT (not inside
           the workspace column) so no workspace ancestor's overflow or
           stacking context can clip it. It renders null when closed. */}
