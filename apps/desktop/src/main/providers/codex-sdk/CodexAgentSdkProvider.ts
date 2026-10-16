@@ -68,6 +68,12 @@ import { CodexFileSnapshot } from "./CodexFileSnapshot.js";
 import { resolveCodexBinaryPath } from "./codexBinaryResolve.js";
 import type { TurnDoneReason } from "@contracts/runtime";
 import {
+  CODEX_EFFORT_VALUES,
+  isCodexEffortValue,
+  type ThinkingLevelKey,
+  type ThinkingLevelMap,
+} from "@contracts/thinkingMap";
+import {
   buildStructuredOutputPrompt,
   buildCorrectivePrompt,
   parseStructuredOutput,
@@ -228,6 +234,83 @@ function codexModeToPolicy(mode: CodexPermissionMode): {
     default:
       return { sandbox: "workspace-write", approvalPolicy: "on-request" };
   }
+}
+
+/**
+ * 会话思考档位 → `turn/start` 的 `effort`（**翻译层**，2026-10-17 加）。
+ *
+ * 返回要发的字符串；`undefined` = **不传 effort**（用模型默认档位）。
+ *
+ * ## 为什么不能原样发
+ *
+ * codex 的 effort 是**二进制的封闭枚举**（`@contracts/thinkingMap` 的
+ * `CODEX_EFFORT_VALUES`，`minimal … persistent`，从 codex.exe 抠出来的）—— 这正是
+ * 三引擎功能对齐里给 Codex 单列一个 `ThinkingCapability`（`"enum"`）的原因。用户在
+ * 设置页给某档配了枚举外的值（如 `{kind:"string", value:"reasoning_high"}`）时，
+ * **不能静默发**：发过去不生效（甚至可能被服务端拒），而用户以为自己配上了。所以统一
+ * 走 `isCodexEffortValue` 校验 —— 不在枚举内 → `log.warn`(带模型 id、用户填的值、
+ * 以及 codex 只认哪些) + **不传 effort**。
+ *
+ * ## 各 binding kind 的落点
+ *
+ * | binding | 落点 |
+ * |---|---|
+ * | `passthrough` / 该档没配 | 会话档位名原样发（若在枚举内；不在则同上警告 + 不传） |
+ * | `off` | 不传（引擎/模型默认） |
+ * | `string` | 校验后发该值（枚举外 → 警告 + 不传） |
+ * | `number` / `budget` | **codex 上没有落点**（UI 不会给这两项；防御性处理：）等同 `passthrough`，记一条 info 说明原因 |
+ *
+ * `effort` 缺席或 `"default"` → 不传（与改动前一致）。
+ */
+export function resolveCodexEffort(
+  effort: string | undefined,
+  map: ThinkingLevelMap | undefined,
+  opts?: { modelLabel?: string; log?: Pick<ProviderContext["log"], "info" | "warn"> },
+): string | undefined {
+  if (!effort || effort === "default") return undefined;
+  const level: string = effort;
+  const allowed = CODEX_EFFORT_VALUES.join("/");
+  const where = opts?.modelLabel ? `模型「${opts.modelLabel}」` : "当前模型";
+  /** 档位名原样发的共同出口:在枚举内就发,否则警告 + 不传。 */
+  const passthrough = (): string | undefined => {
+    if (isCodexEffortValue(level)) return level;
+    opts?.log?.warn(
+      `codex: ${where}的会话档位「${level}」不在 codex 的 effort 枚举内（codex 只认 ${allowed}），` +
+        `本轮不传 effort、改用模型默认档位。`,
+    );
+    return undefined;
+  };
+  const binding = map?.[level as ThinkingLevelKey];
+  if (binding) {
+    switch (binding.kind) {
+      case "off":
+        // 这一档不支持 —— 不传,用引擎/模型默认（等价旧 Pi 形状里的 null）。
+        return undefined;
+      case "string": {
+        const v = binding.value.trim();
+        if (!v) return undefined; // 空白值 = 没配（与 Claude 侧同一处理）
+        if (isCodexEffortValue(v)) return v;
+        opts?.log?.warn(
+          `codex: ${where}的档位「${level}」映射值「${v}」不在 codex 的 effort 枚举内` +
+            `（codex 只认 ${allowed}），本轮不传 effort、改用模型默认档位。`,
+        );
+        return undefined;
+      }
+      case "number":
+      case "budget":
+        // codex 没有整数 effort、也没有 token 预算两条路 —— 落不到就等同
+        // passthrough（UI 不会给这两项,这里是防御性处理）,留一条日志说明原因。
+        opts?.log?.info(
+          `codex: ${where}的档位「${level}」映射 kind="${binding.kind}" 在 codex 上没有落点` +
+            `（它只认枚举内的 effort），按 passthrough 处理、原样发档位名。`,
+        );
+        return passthrough();
+      case "passthrough":
+      default:
+        break;
+    }
+  }
+  return passthrough();
 }
 
 /* ── static baseline for the model picker ── */
@@ -601,11 +684,19 @@ export class CodexAgentSdkProvider implements AgentProvider {
         // turn/start has no such field and silently drops it (provider
         // switches ride thread/resume above). 结构化输出的纠错轮复用同一组
         // overrides，保证两轮跑在同一配置上。
+        //
+        // effort 经 `resolveCodexEffort`（2026-10-17 加）：按**当前模型**的
+        // `thinkingLevelMap` 把会话档位翻成 codex 认识的值；枚举外的映射被拦下并
+        // 记 warn、不传 effort（见该函数）。`"default"`/没配 → 不传。
+        const mappedEffort = resolveCodexEffort(req.effort, selectedModel?.thinkingLevelMap, {
+          modelLabel: `${providerId}/${modelId}`,
+          log: ctx.log,
+        });
         const turnOverrides: Record<string, unknown> = {
           model: modelId,
           approvalPolicy,
           sandboxPolicy: { type: sandboxPolicyType(mode) },
-          ...(req.effort && req.effort !== "default" ? { effort: req.effort } : {}),
+          ...(mappedEffort ? { effort: mappedEffort } : {}),
         };
 
         // 起一轮并等它终态：turn/start 立即返回，完成靠通知（waitTurnDone 在

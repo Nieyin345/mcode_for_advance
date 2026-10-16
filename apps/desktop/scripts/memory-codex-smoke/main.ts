@@ -58,6 +58,23 @@ function same(name: string, actual: unknown, expected: unknown): void {
   check(name, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
 }
 
+/** 对象键排序后的规范化形态（递归）。比较"内容相同"的映射表用它 ——
+ *  zod 的 schema 会按字段声明顺序**重排键**，`JSON.stringify` 对键序敏感，
+ *  直接用 `same` 断映射表会红在"键的顺序不一样"这种与语义无关的差异上。 */
+function canonical(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(canonical);
+  if (v && typeof v === "object") {
+    const src = v as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(src).sort()) out[k] = canonical(src[k]);
+    return out;
+  }
+  return v;
+}
+function sameMap(name: string, actual: unknown, expected: unknown): void {
+  check(name, JSON.stringify(canonical(actual)) === JSON.stringify(canonical(expected)), { actual, expected });
+}
+
 /**
  * 数据根。`run.sh` 已经 `export MCODE_SMOKE_DATA_ROOT`(桩里没设就抛),这里再兜一层:
  * 万一有人直接 `node` 跑打包产物,也得有个能负责任的临时目录,而不是回落到真库。
@@ -657,6 +674,111 @@ console.log("\nCodex 供应商:config.toml 真的重生成、且不含 Key");
   check("wire_api 钉死在 responses", body.includes(`wire_api = "responses"`), body);
   // 没开 imageGeneration 就不该有那个解锁用的 header。
   check("没开 imageGeneration 时不写那个 header", !body.includes("x-openai-actor-authorization"), body);
+}
+
+console.log("\nCodex 供应商:思考强度映射存得进、读得回");
+
+/* ── 【思考强度映射】存储半场（2026-10-17 加）──
+ * 三引擎功能对齐里 Codex 缺的那一格：每模型一张「会话档位 → 发什么」的表。
+ * 发送半场（provider 把档位翻成 effort、枚举外的值拦下 + warn）由
+ * `codex-effort-smoke` 驱动真的 `startTurn` 断言；**这里钉的是它进得来、回得去** ——
+ * 发送半场要从 `listPublic()` 读回这张表，存储层把字段丢了或改形了，
+ * provider 翻译得再对也是白搭（"设置页配了、发出去的还是档位名"）。
+ *
+ * 走的是真的 save handler（`SaveCodexProviderSchema` 收窄）+ 真的 store（settings 表），
+ * 判据立在 `listPublic()` 读回的投影上，不是读源码相信写进去了。 */
+{
+  const MAP_IN = {
+    high: { kind: "string", value: "xhigh" },
+    low: { kind: "off" },
+    medium: { kind: "passthrough" },
+    // 防御性 kind：UI 不给 Codex 这两项，但 schema 收得下、存储不许丢字段
+    // （丢了 = 用户切了引擎两边形状对不上；留着 = provider 侧按"落不到"处理）。
+    minimal: { kind: "number", value: 3 },
+    xhigh: { kind: "budget", tokens: 8192 },
+    max: { kind: "string", value: "ultra" },
+  };
+  const savedMap = (await call(IPC.CODEX_MODELS_SAVE, {
+    ...PROVIDER,
+    id: "map-gw",
+    models: [{ id: "gpt-map", label: "Map", thinkingLevelMap: MAP_IN }],
+    apiKey: "sk-map",
+  })) as { providers: Array<{ id: string; models: Array<Record<string, unknown>> }> };
+  const savedModels = savedMap.providers.find((p) => p.id === "map-gw")?.models ?? [];
+  sameMap(
+    "★ save → list 往返后每个档位、每种 binding kind 都原样回来",
+    savedModels[0]?.thinkingLevelMap,
+    MAP_IN,
+  );
+
+  // 同名再存一次（更新路径）：映射也在更新里落下去了，不是只在"新建"那一刻写。
+  const MAP_UPDATED = { high: { kind: "string", value: "max" } };
+  const updated = (await call(IPC.CODEX_MODELS_SAVE, {
+    ...PROVIDER,
+    id: "map-gw",
+    models: [{ id: "gpt-map", label: "Map", thinkingLevelMap: MAP_UPDATED }],
+  })) as { providers: Array<{ id: string; models: Array<Record<string, unknown>> }> };
+  sameMap(
+    "★ 更新路径同样落盘（改小映射后读回的是新的那份，不是旧的）",
+    updated.providers.find((p) => p.id === "map-gw")?.models[0]?.thinkingLevelMap,
+    MAP_UPDATED,
+  );
+
+  // 没配映射的模型字段**缺席**（不是 undefined 还是空对象 —— 与 label/hint 同规矩：
+  // 缺席 = 没配，读回方按"没配 = passthrough"处理）。
+  const noMap = (await call(IPC.CODEX_MODELS_SAVE, {
+    ...PROVIDER,
+    id: "map-gw2",
+    models: [{ id: "plain" }],
+    apiKey: "sk-plain",
+  })) as { providers: Array<{ id: string; models: Array<Record<string, unknown>> }> };
+  const plainModel = noMap.providers.find((p) => p.id === "map-gw2")?.models[0] ?? {};
+  check(
+    "没配映射的模型不带 thinkingLevelMap 字段（缺席 = 没配）",
+    !("thinkingLevelMap" in plainModel),
+    plainModel,
+  );
+  // 空对象也不算配（与上面同义：空表 = 没配,不落盘一个空壳）。
+  const emptyMap = (await call(IPC.CODEX_MODELS_SAVE, {
+    ...PROVIDER,
+    id: "map-gw2",
+    models: [{ id: "plain", thinkingLevelMap: {} }],
+  })) as { providers: Array<{ id: string; models: Array<Record<string, unknown>> }> };
+  const emptyModel = emptyMap.providers.find((p) => p.id === "map-gw2")?.models[0] ?? {};
+  check("空对象映射不落盘（空表 = 没配）", !("thinkingLevelMap" in emptyModel), emptyModel);
+
+  // 枚举外的值**存储层照收**（这是模型自己的配置,现在拦它会让用户"配不进"）；
+  // 拦在**发送那一刻**（`codex-effort-smoke` 的 B4），且必须 warn、不静默发。
+  const outside = (await call(IPC.CODEX_MODELS_SAVE, {
+    ...PROVIDER,
+    id: "map-gw3",
+    models: [{ id: "odd", thinkingLevelMap: { high: { kind: "string", value: "reasoning_high" } } }],
+    apiKey: "sk-odd",
+  })) as { providers: Array<{ id: string; models: Array<Record<string, unknown>> }> };
+  sameMap(
+    "枚举外的映射值存储层照收（拦在发送那一刻,不是存的时候）",
+    outside.providers.find((p) => p.id === "map-gw3")?.models[0]?.thinkingLevelMap,
+    { high: { kind: "string", value: "reasoning_high" } },
+  );
+
+  // 不被 schema 认识的 binding kind 被 zod 拒掉（不是静默剥字段 —— 剥了下场是
+  // "设置页配了、存进库就没了"）。
+  let badKindThrew = "";
+  try {
+    await call(IPC.CODEX_MODELS_SAVE, {
+      ...PROVIDER,
+      id: "map-gw4",
+      models: [{ id: "bad", thinkingLevelMap: { high: { kind: "wobble", value: "x" } } }],
+      apiKey: "sk-bad",
+    });
+  } catch (err) {
+    badKindThrew = (err as Error).message;
+  }
+  check("未知 binding kind 被 schema 明确拒绝（不静默剥掉）", badKindThrew.length > 0, badKindThrew);
+
+  await call(IPC.CODEX_MODELS_DELETE, { id: "map-gw" });
+  await call(IPC.CODEX_MODELS_DELETE, { id: "map-gw2" });
+  await call(IPC.CODEX_MODELS_DELETE, { id: "map-gw3" });
 }
 
 console.log("\nCodex 供应商:eye-icon 那条路");

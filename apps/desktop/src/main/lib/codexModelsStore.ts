@@ -351,6 +351,13 @@ export const CodexModelsStore = {
           ...(m.label?.trim() ? { label: m.label.trim() } : {}),
           ...(m.hint?.trim() ? { hint: m.hint.trim() } : {}),
           ...(typeof m.contextWindow === "number" && m.contextWindow > 0 ? { contextWindow: m.contextWindow } : {}),
+          // 【思考强度映射】每模型「会话档位 → 发什么」（2026-10-17 加）。它不在
+          // `turn/start` 那一刻才从 UI 现查 —— 主进程 `CodexAgentSdkProvider`
+          // 按这份表把档位翻成 codex 认识的 effort。空对象不写（与上面几项同形：
+          // 缺席 = 没配，读回方按"没配 = passthrough"处理）。
+          ...(m.thinkingLevelMap && Object.keys(m.thinkingLevelMap).length > 0
+            ? { thinkingLevelMap: m.thinkingLevelMap }
+            : {}),
         })),
     };
     const idx = providers.findIndex((p) => p.id === id);
