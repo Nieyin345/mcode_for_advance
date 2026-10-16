@@ -73,6 +73,75 @@ await test('creation snapshot retains its own framing and independent backflow',
 });
 // Extension tests for the new in-memory diagnostic store are appended after the
 // initial red run. Above cases load the existing production implementation.
+
+/* ── 【MC-031】读不出来的记忆必须如实披露,不能静默丢 ──────────────────────────
+ * 从前 `scopedMemorySnapshot` 不传 `onUnreadable`,`readMemoryFile` 的 `catch { continue }`
+ * 把读不到的条目静静跳过 —— 注入给模型的记忆少了条目而没人知道。下面用**真权限拒绝**
+ * (Windows `icacls /deny`,POSIX `chmod 000`)造「列表时还在、读时读不了」,验证:
+ *   ① 返回值带披露句(模型看得见);② 回调收到路径(落日志那份);③ 正文不泄露;
+ *   ④ 空库仍返回 ""(不误报);⑤ 全可读时不出现披露句(不误报)。
+ * 每组都**先自证真读不了**(防断言空过)。 */
+{
+  const { execFileSync } = await import('node:child_process');
+  const { readMemoryFile } = await import('@main/memory/store.js');
+  const user = process.env.USERNAME ?? process.env.USER ?? '';
+  const deny = (p: string): boolean => {
+    try {
+      if (process.platform === 'win32') { execFileSync('icacls', [p, '/deny', `${user}:(R)`], { stdio: 'ignore' }); }
+      else { execFileSync('chmod', ['000', p], { stdio: 'ignore' }); }
+      // 自证:真被拒了才继续,否则断言会空过。
+      try { readMemoryFile(relOf(p)); return false; } catch { return true; }
+    } catch { return false; }
+  };
+  const allow = (p: string): void => {
+    try {
+      if (process.platform === 'win32') { execFileSync('icacls', [p, '/remove:d', user], { stdio: 'ignore' }); }
+      else { execFileSync('chmod', ['644', p], { stdio: 'ignore' }); }
+    } catch { /* 清理尽力而为 */ }
+  };
+  const relOf = (abs: string): string => abs.slice(memoryRoot().length + 1).replaceAll('\\', '/');
+  const absOf = (rel: string): string => join(memoryRoot(), rel.replaceAll('/', (process.platform === 'win32' ? '\\' : '/')));
+
+  await test('★ MC-031:唯一记忆读不出来时,返回值如实披露(不是空串)', () => {
+    reset(); note('projects/A/rules/broken.md', 'DENIED_BODY_SHOULD_NOT_LEAK', 'Broken');
+    const abs = absOf('projects/A/rules/broken.md');
+    if (!deny(abs)) { console.log('  (跳过:本环境造不出 EPERM 夹具)'); return; }
+    try {
+      const seen: string[] = [];
+      const text = scopedMemorySnapshot('A', '', (p) => seen.push(p));
+      assert.notEqual(text, '', '读不出来时不应返回空串(空串=整节消失=静默)');
+      assert.match(text, /条记忆读不出来/);
+      assert.match(text, /broken\.md/);
+      assert.doesNotMatch(text, /DENIED_BODY_SHOULD_NOT_LEAK/, '正文绝不能泄露');
+      assert.ok(seen.some((p) => p.includes('broken.md')), 'onUnreadable 回调应收到该路径: ' + JSON.stringify(seen));
+    } finally { allow(abs); }
+  });
+
+  await test('★ MC-031:部分失败时好的照常注入、坏的如实报出', () => {
+    reset();
+    note('projects/A/rules/ok.md', 'GOOD_READABLE_BODY', 'Good');
+    note('projects/A/rules/bad.md', 'BAD_DENIED_BODY', 'Bad');
+    const abs = absOf('projects/A/rules/bad.md');
+    if (!deny(abs)) { console.log('  (跳过:本环境造不出 EPERM 夹具)'); return; }
+    try {
+      const text = scopedMemorySnapshot('A', 'GOOD_READABLE_BODY');
+      assert.match(text, /GOOD_READABLE_BODY/, '可读条照常注入');
+      assert.match(text, /条记忆读不出来/);
+      assert.match(text, /bad\.md/);
+      assert.doesNotMatch(text, /BAD_DENIED_BODY/);
+    } finally { allow(abs); }
+  });
+
+  await test('★ MC-031:全可读 / 真空库都不出现披露句(不误报)', () => {
+    reset();
+    assert.equal(scopedMemorySnapshot('A', 'x'), '', '真空库仍返回空串(保持"整节不出现")');
+    note('projects/A/rules/ok.md', 'ONLY_GOOD', 'Only');
+    const text = scopedMemorySnapshot('A', 'ONLY_GOOD');
+    assert.match(text, /ONLY_GOOD/);
+    assert.doesNotMatch(text, /读不出来/, '没有坏条时不得出现披露句');
+  });
+}
+
 const failed=results.filter(r=>!r.ok).length;
 writeFileSync(join(process.env.MEMORY_INJECTION_ARTIFACTS!,'results.json'),JSON.stringify({passed:results.length-failed,failed,checks:results},null,2));
 console.log(`${results.length-failed}/${results.length} memory-injection checks passed; ${failed} failed`);

@@ -273,9 +273,25 @@ function countOccurrencesUpTo(hay: string, needle: string, cap: number): number 
   return count;
 }
 
-/** Host-scoped retrieval: legacy/unclassified records never enter an engine implicitly. */
-export function scopedMemorySnapshot(projectId: string, query = ""): string {
-  const all = listMemoryFiles().filter(meta => visibleMemory(meta.path, projectId));
+/** Host-scoped retrieval: legacy/unclassified records never enter an engine implicitly.
+ *
+ * ★ **MC-031:读不出来的记忆必须如实披露,不能静默丢。** 从前 `listMemoryFiles()` 不传
+ *   `onUnreadable`(store 每个丢弃点都调它)、下面 `readMemoryFile` 的 `catch { continue }`
+ *   也把读不到的条目静静跳过 —— 注入给模型的记忆**少了条目而没人知道**。现在:
+ *   - 列表阶段复用 store 既有的 `onUnreadable` 回调(不另造机制);
+ *   - 读取阶段 `catch` 也把路径记下来(TOCTOU:列表时还在、读时没了);
+ *   - 合并去重后**过项目可见谓词**(别把整棵树收集到的**别项目**不可读路径漏进本项目注入);
+ *   - 披露句写进**返回值**(真正拼进提示词、并出现在注入预览里的那一份),最多点名 8 条。
+ *
+ * ⚠️ 空库(无不可读)仍返回 `""` —— 保持"整节不出现"的旧语义,只有**真的漏了**才加披露。 */
+export function scopedMemorySnapshot(
+  projectId: string,
+  query = "",
+  onUnreadable?: (path: string) => void,
+): string {
+  const unreadable: string[] = [];
+  const all = listMemoryFiles({ onUnreadable: (p) => unreadable.push(p) })
+    .filter(meta => visibleMemory(meta.path, projectId));
   const relevant = searchMemory(query, { projectId, limit: 8 });
   const terms = queryTerms(query);
   const ordered = [...all.filter(m => m.pinned).slice(0, 4), ...relevant.map(h => h.meta),
@@ -286,11 +302,20 @@ export function scopedMemorySnapshot(projectId: string, query = ""): string {
     if (seen.has(meta.path) || seen.size >= DEFAULT_LIMIT) continue;
     seen.add(meta.path);
     let record: ReturnType<typeof readMemoryFile>;
-    try { record = readMemoryFile(meta.path); } catch { continue; }
+    try { record = readMemoryFile(meta.path); } catch { unreadable.push(meta.path); continue; }
     // 【MC-093 读侧】注入模型前遮蔽历史/人工记录里的疑似凭据(与保存闸门同一份判据)。
     const text = `- 【${meta.title}】 (${meta.path}; revision=${record.revision})\n${bodyPreview(redactSecrets(record.content.trim()), terms)}`;
     if (chars + text.length > SNAPSHOT_CAP - 300) continue;
     chars += text.length; blocks.push(text);
   }
-  return blocks.length ? `范围：本项目 + 显式全局；选中 ${blocks.length}/${all.length} 条；正文受长度预算限制。\n` + blocks.join("\n\n") : "";
+  // 只保留**本项目可见**的不可读路径(列表阶段扫的是整棵树,别项目的坏条不该出现在本项目注入里),
+  // 去重后逐条上报给调用方(落日志/UI),再拼一句进返回值让模型也知道"这一轮少了东西"。
+  const missing = [...new Set(unreadable)].filter(p => visibleMemory(p, projectId));
+  for (const p of missing) onUnreadable?.(p);
+  const disclosure = missing.length
+    ? `${missing.length} 条记忆读不出来,本轮未注入(${missing.slice(0, 8).join("、")}${missing.length > 8 ? " …" : ""})；`
+    : "";
+  if (!blocks.length && !disclosure) return "";
+  const head = `${disclosure}范围：本项目 + 显式全局；选中 ${blocks.length}/${all.length} 条；正文受长度预算限制。`;
+  return blocks.length ? `${head}\n${blocks.join("\n\n")}` : head;
 }

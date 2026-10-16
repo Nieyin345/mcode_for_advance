@@ -1535,7 +1535,13 @@ class RuntimeManager {
     const memorySections: MemoryInjectionSection[] = [];
     if (automaticMemoryForTurn(session.kind, input.memoryManagedByWorkflow)) {
       try {
-        memoryPrompt = memorySectionFrom(scopedMemorySnapshot(session.projectId, input.prompt)) || undefined;
+        // 【MC-031】读不出来的记忆**落日志**(硬规矩 3):注入少了条目要留痕,不能静默。
+        // 返回值里也带了同一句披露(模型看得见),这条日志是给用户/排错那份。
+        memoryPrompt = memorySectionFrom(
+          scopedMemorySnapshot(session.projectId, input.prompt, (path) =>
+            log.warn(`[memory] 记忆读不出来,本轮未注入: ${path}`),
+          ),
+        ) || undefined;
         memorySections.push({ source: "chat", state: memoryPrompt ? "included" : "empty", text: memoryPrompt ?? "" });
       } catch (err) {
         log.warn(`[memory] 主对话取长期记忆失败，本轮不注入: ${(err as Error).message}`);
