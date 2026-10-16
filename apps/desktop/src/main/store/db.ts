@@ -450,6 +450,8 @@ function migrate(database: Database): void {
     CREATE TABLE IF NOT EXISTS hook_runs (
       run_id         TEXT PRIMARY KEY,
       hook_id        TEXT NOT NULL,
+      -- 【MC-010】plugin | user(老库迁移来的行为空串,读取侧按 plugin 解释)
+      source         TEXT NOT NULL DEFAULT '',
       plugin_id      TEXT NOT NULL,
       plugin_version TEXT,
       native_event   TEXT NOT NULL,
@@ -597,6 +599,10 @@ function migrate(database: Database): void {
   // 老库没有这两列;ALTER 出来的既有行按 DEFAULT 'attached' 读,语义不变。
   addColumnIfMissing(database, "library_items", "entry_mode", "TEXT NOT NULL DEFAULT 'attached'");
   addColumnIfMissing(database, "library_items", "file_path", "TEXT");
+
+  // 【MC-010】hook_runs 的执行来源列(plugin | user)。老库里的行都是插件语义
+  // (当时只落插件),ALTER 补出的空串在读取侧按 plugin 解释 —— 语义不变。
+  addColumnIfMissing(database, "hook_runs", "source", "TEXT NOT NULL DEFAULT ''");
 
   // Composite index for paginated message reads (cursor on created_at). The
   // single-column idx_messages_session above serves the same queries but

@@ -1332,13 +1332,13 @@ console.log("\n主机 hook 授权:可选额度字段严格校验(坏记录隔离
   }
 }
 
-/* ──────────────── 16. 插件 hook 执行**落盘审计**(MC-061) ──────────────── */
+/* ──────────────── 16. 钩子执行**落盘审计**(MC-061 / MC-010) ──────────────── */
 
 // MC-061 点名的缺口:执行记录只进内存里 50 条的环 + 计数,**进程一关就没了**。
-// 现在插件 hook 的每次执行(含被授权挡下的)落一行持久审计(见 `HookRunRepo` /
-// `hook_runs` 表)。用户手写的钩子**不落**(那是用户自己的命令,不是不受信来源,
-// 逐条落库是写放大换不到审计价值 —— 判据落在 `HookRunner.auditRun`)。
-console.log("\n插件 hook:执行记录**落进 DB**(不只 50 条会被顶掉的环)");
+// 现在两种来源的每次真实执行都落一行持久审计(MC-010 把判据从「是不是插件来源」改为
+// 「是不是一次真实执行」;来源降为一列 `source`)。插件行**全落**(含被授权挡下的 skipped
+// —— 那是合规账本);用户行只落真起过进程的(去抖跳过没起进程、且高频,不入库)。
+console.log("\n钩子执行**落进 DB**(不只 50 条会被顶掉的环)");
 
 const { HookRunRepo } = await import("@main/store/repositories.js");
 {
@@ -1359,11 +1359,51 @@ const { HookRunRepo } = await import("@main/store/repositories.js");
   // 落定是**覆盖同一行**(同 runId upsert),不是多插一行 —— 不留悬空的 running 行。
   check("终态覆盖 running(同一 runId,不留悬空 running 行)", rows.every((r) => r.status !== "running"), rows.map((r) => r.status));
 
-  // 用户手写的钩子不进审计表:hookA(`hooks.json` 里那条)的 id 在 DB 里查不到。
-  eq("用户手写的钩子不进审计表(它是用户自己的命令)", HookRunRepo.listForHook(hookA.id, 50).length, 0);
+  // 【MC-010】用户手写的钩子**也进审计表** —— 判据从「是不是插件来源」改为「是不是
+  // 一次真实执行」,来源降为一列。hookA(`hooks.json` 里那条)在 §1 真起过进程。
+  const userRows = HookRunRepo.listForHook(hookA.id, 50);
+  check("★ MC-010:用户手写的钩子也落审计表(跨重启可查「跑了没、成没成」)", userRows.length >= 1, userRows.map((r) => r.status));
+  check("★ MC-010:用户行的 source 列是 user(来源是列,不是落不落的判据)", userRows.every((r) => r.source === "user"), userRows.map((r) => r.source));
+  check("★ MC-010:用户行有终态(真起过进程 → ok,不停在 running)", userRows.some((r) => r.status === "ok"), userRows.map((r) => r.status));
+  check("★ MC-010:用户行的命令摘要是 sha256 指纹(与插件行同一份实现)", (userRows[0]?.commandDigest ?? "").startsWith("sha256:"), userRows[0]?.commandDigest);
+  check("★ MC-010:插件行的 source 列仍是 plugin", okRow !== undefined ? HookRunRepo.get(okRow.runId)?.source === "plugin" : false, okRow?.runId);
 
   // 来源身份里**可查询的**投影列:命令摘要那一条被保存下来(不是只存 id)。
   check("审计行保存了来源身份的可查询投影(plugin_id / native_event)", okRow?.pluginId === "demo-plugin" && okRow?.nativeEvent === "PreToolUse", okRow);
+}
+
+/* ──────────────── 16b.【MC-010 第四轮复审】审计读取失败必须显式报出 ──────────────── */
+
+// 从前 `readHookAudit` 把所有 `HookRunRepo.list` 错误 catch 成 `[]` —— 「确实一次没执行」
+// 与「审计数据库读不出来」在界面上长得一模一样。现在失败经 `auditError` 如实带出。
+console.log("\n审计读取失败:如实带出去(不是静默空表)");
+
+{
+  const fakeIpc = {
+    handle: (ch: string, fn: (...args: unknown[]) => unknown) => handlers.set(ch, fn),
+  } as never;
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const { registerHookHandlers } = await import("@main/ipc/hooks.js");
+  registerHookHandlers(fakeIpc);
+  const call = (ch: string) => handlers.get(ch)!(null);
+
+  // 正常路径:读得出来 → audit 有行(§16 已落过)、auditError 为 null。
+  const okRes = (await call("hooks:runs")) as { audit: unknown[]; auditError: string | null };
+  check("正常读 → auditError 为 null(不谎报错误)", okRes.auditError === null && okRes.audit.length >= 1, { err: okRes.auditError, n: okRes.audit.length });
+
+  // 失败路径:让 Repo.list 抛(模拟 DB 读坏)—— auditError 必须带出原因,不是空数组的谎。
+  const { HookRunRepo: Repo2 } = await import("@main/store/repositories.js");
+  const origList = Repo2.list;
+  try {
+    Repo2.list = (() => {
+      throw new Error("disk I/O error (mutated)");
+    }) as never;
+    const badRes = (await call("hooks:runs")) as { audit: unknown[]; auditError: string | null };
+    check("★ 读失败 → auditError 带出原因(不是静默空表)", typeof badRes.auditError === "string" && badRes.auditError.includes("disk I/O error"), badRes.auditError);
+    check("★ 读失败时 audit 降级为空数组(不炸掉整页)", Array.isArray(badRes.audit) && badRes.audit.length === 0, badRes.audit.length);
+  } finally {
+    Repo2.list = origList;
+  }
 }
 
 /* ──────────────── 17. 插件 hook 的**执行次数预算**(MC-061) ──────────────── */
@@ -1473,6 +1513,7 @@ console.log("\n审计表有界轮转(prune:只留最近 N 行)");
   const mkRow = (n: number) => ({
     runId: `hrun_rotate_${n}`,
     hookId: "ph_rotate",
+    source: "plugin" as const,
     pluginId: "rotate-plugin",
     pluginVersion: null,
     nativeEvent: "PreToolUse",

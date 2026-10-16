@@ -50,7 +50,7 @@ import { HookRunRepo, ProjectRepo, SessionRepo, type HookRunRow } from "@main/st
 import { log } from "@main/lib/logger.js";
 import { uid } from "@main/utils.js";
 import { createEventSubjects } from "./eventSubjects.js";
-import { decidePluginHookExecution, recordHostHookRun } from "./hostHookGrants.js";
+import { decidePluginHookExecution, hostHookCommandDigest, recordHostHookRun } from "./hostHookGrants.js";
 import type { HostHookSource } from "@contracts/hostHookGrant";
 import { pluginHookSpecsFrom, type EnabledPluginHookDeclaration, type PluginHookSpecEntry } from "./pluginHooks.js";
 import { runHookCommand } from "./runCommand.js";
@@ -556,24 +556,38 @@ class HookRunner {
   }
 
   /**
-   * 【MC-061】把一条记录写进 `hook_runs` 审计表 —— **只对插件 hook**(带来源身份的)。
+   * 【MC-010】把一条执行记录写进 `hook_runs` 审计表 —— **两种来源都落**。
    *
-   * 用户手写的钩子直接返回:它没有"哪份授权放行"这回事,逐条落库是写放大换不到审计价值
-   * (见 `HookRunRow` 的文件头)。落库**绝不**冒到事件流(不变量 1):sink 抛错只留一行
-   * 日志 —— 审计是**旁路**,它坏了,钩子照跑、对话照走。
+   * 判据是「**这是一次真实执行**」(真起过进程,或被授权/预算/去抖明确挡下),与来源
+   * 解耦;来源身份降为**一列** `source`(`plugin | user`)。从前只落插件来源,用户手写
+   * 钩子的失败只活在 50 条内存环里、重启即失 —— 「文件保存时跑 eslint 静默没跑」这类
+   * 恰恰最需要跨重启可查(README 硬规矩 3)。
+   *
+   * 落库**绝不**冒到事件流(不变量 1):sink 抛错只留一行日志 —— 审计是**旁路**,
+   * 它坏了,钩子照跑、对话照走。
    */
   private auditRun(spec: HookSpec, payload: HookPayload, record: HookRun): void {
     const source = this.pluginSources.get(spec.id);
-    if (source === undefined) return; // 用户手写的钩子不落库
     if (this.hookRunSink === null) return; // 显式关掉(无头脚本)
+    // 【MC-010】判据是「这是一次真实执行」,与来源解耦:
+    //  - 插件行**全落**(含被授权 / 预算挡下的 skipped)—— 那是 MC-061 的合规账本
+    //    (「被撤权挡下几次」本身就是要记的事实);
+    //  - 用户行只落**真起过进程的**(running → 终态 upsert)。去抖窗口那种 skipped
+    //    没起进程,且挂在 tool.use 上的用户钩子高频触发时去抖跳过是常态 —— 逐条落库
+    //    会把 500 行的保留窗口整段淹没,真正的失败反而被挤出去(那正是本片要修的坏)。
+    if (source === undefined && record.status === "skipped") return;
     const row: HookRunRow = {
       runId: record.runId,
       hookId: spec.id,
-      pluginId: source.pluginId,
-      pluginVersion: source.version ?? null,
-      nativeEvent: source.nativeEvent,
-      commandDigest: source.commandDigest,
-      matcherDigest: source.matcherDigest ?? null,
+      source: source !== undefined ? "plugin" : "user",
+      // 用户手写的钩子没有插件来源身份 —— 这些投影列按"无来源"填,它们是**列不是判据**。
+      pluginId: source?.pluginId ?? "user",
+      pluginVersion: source?.version ?? null,
+      // 用户钩子没有「原生事件名」这一回事(hooks.json 直接按统一事件声明)——
+      // 这一列按统一事件名填,它是可查询的事实列,不是判据。
+      nativeEvent: source?.nativeEvent ?? payload.event,
+      commandDigest: source?.commandDigest ?? this.userCommandDigestOf(spec),
+      matcherDigest: source?.matcherDigest ?? (spec.matcher !== undefined && spec.matcher.trim() !== "" ? hostHookCommandDigest(spec.matcher) : null),
       event: payload.event,
       sessionId: payload.session.id,
       sessionKind: payload.session.kind,
@@ -587,6 +601,16 @@ class HookRunner {
       this.hookRunSink(row);
     } catch (err) {
       log.warn(`[hooks] 审计落盘失败(${spec.name}):${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** 用户手写钩子的命令摘要 —— 与插件来源共用 `hostHookCommandDigest`(同一份实现),
+   *  按 spec 里的命令现算(用户钩子的"来源"就是它自己的定义)。 */
+  private userCommandDigestOf(spec: HookSpec): string {
+    try {
+      return hostHookCommandDigest(spec.command);
+    } catch {
+      return "sha256:unavailable";
     }
   }
 

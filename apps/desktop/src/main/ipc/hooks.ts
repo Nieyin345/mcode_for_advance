@@ -38,6 +38,7 @@ import {
   HostHookGrantRevokeSchema,
 } from "@contracts/ipc";
 import { hookRunner } from "@main/hooks/HookRunner.js";
+import { log } from "@main/lib/logger.js";
 import { readHooks, removeHook, saveHook } from "@main/hooks/store.js";
 import { HookRunRepo, type HookRunRow } from "@main/store/repositories.js";
 import {
@@ -54,15 +55,21 @@ import {
 const HOOK_RUNS_READ_LIMIT = 100;
 
 /**
- * 读**最近的插件 hook 执行审计**(落盘,跨重启活着)。读盘失败**不抛** —— 审计是附加信息,
+ * 读**最近的钩子执行审计**(落盘,跨重启活着)。读盘失败**不抛** —— 审计是附加信息,
  * 坏了不该让整个「钩子」设置页打不开(与 `HookRunner.auditRun` 落盘失败只留日志同一姿势)。
  * `HookRunRow` 与契约的 `HookAuditEntry` 结构逐一对应,直接透传。
+ *
+ * 【MC-010 第四轮复审】从前这里 `catch { return [] }` —— 「确实一次都没执行」与「审计
+ * 数据库读不出来」在界面上长得一模一样。现在把失败**如实带出去**(`auditError` 列),
+ * 面板据此把空审计栏换成显式的错误提示(README 硬规矩 3:坏东西显式报出来)。
  */
-function readHookAudit(limit: number): HookRunRow[] {
+function readHookAudit(limit: number): { rows: HookRunRow[]; error: string | null } {
   try {
-    return HookRunRepo.list(limit);
-  } catch {
-    return [];
+    return { rows: HookRunRepo.list(limit), error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`[hooks] 审计读取失败:${message}`);
+    return { rows: [], error: message };
   }
 }
 
@@ -93,13 +100,13 @@ export function registerHookHandlers(ipcMain: IpcMain): void {
   // 纪律(无参 invoke 时 handler 收到的是 `undefined`)。
   ipcMain.handle(IPC.HOOKS_LIST, async () => readHooks());
   // 【MC-061】执行记录两栏:**内存环**(`runs`,含用户手写钩子、会被顶掉)+ **落盘审计**
-  // (`audit`,只插件 hook、跨重启活着)。审计读取读盘失败**不该**让这页打不开 —— 环那一栏
-  // 是用户的排错窗口,审计是附加信息;读盘异常时降级成空审计表(不抛),与 HookRunner
-  // 落盘失败只留日志同一姿势(见文件头"这一层很薄")。
-  ipcMain.handle(IPC.HOOKS_RUNS, async () => ({
-    runs: hookRunner.listRuns(),
-    audit: readHookAudit(HOOK_RUNS_READ_LIMIT),
-  }));
+  // (`audit`,跨重启活着;MC-010 起两种来源都落)。审计读取读盘失败**不该**让这页打不开
+  // —— 环那一栏是用户的排错窗口,审计是附加信息;但失败要**如实带出去**(`auditError`),
+  // 让面板能把空审计栏换成显式错误,而不是让「一次没执行」和「读不出来」长得一样。
+  ipcMain.handle(IPC.HOOKS_RUNS, async () => {
+    const audit = readHookAudit(HOOK_RUNS_READ_LIMIT);
+    return { runs: hookRunner.listRuns(), audit: audit.rows, auditError: audit.error };
+  });
 
   ipcMain.handle(IPC.HOOKS_SAVE, async (_evt, raw) => {
     const input = HooksSaveSchema.parse(raw);

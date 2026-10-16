@@ -1058,7 +1058,7 @@ export interface RpcMap {
    *  【MC-061】另带一份**落盘审计**(`audit`):只有**插件 hook** 进那张表(带来源身份、
    *  经授权执行),它跨重启活着、不会被 50 条环顶掉 —— 回答"这份来源的这条钩子跑没跑、
    *  被撤权 / 预算用尽挡下几次"。`runs` 仍是内存环(含用户手写钩子),两栏语义不同、都给。 */
-  "hooks.runs": () => Promise<{ runs: HookRun[]; audit: HookAuditEntry[] }>;
+  "hooks.runs": () => Promise<{ runs: HookRun[]; audit: HookAuditEntry[]; auditError: string | null }>;
   /** 存一条钩子(**整份给过来**,不是"改哪个字段")—— 用户从头写的东西局部更新没意义,整份过来让校验只在一处发生。返回 `{ ok, error? }`。 */
   "hooks.save": (input: HooksSaveInput) => Promise<{ ok: boolean; error?: string }>;
   /** 删一条钩子(按 id)。 */

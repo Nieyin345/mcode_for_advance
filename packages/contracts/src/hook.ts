@@ -942,7 +942,11 @@ export interface HookRun {
 export interface HookAuditEntry {
   runId: string;
   hookId: string;
-  /** 贡献这条 hook 的插件名(`HostHookSource.pluginId`)。 */
+  /** 【MC-010】这次执行的来源 —— `plugin`(不受信来源,经授权驱动)或 `user`
+   *  (用户手写在 hooks.json 里)。落不落库的判据从「是不是插件」改为「是不是
+   *  一次真实执行」后,来源降为**一列事实**,供界面分栏/过滤。 */
+  source: "plugin" | "user";
+  /** 贡献这条 hook 的插件名(`HostHookSource.pluginId`)。用户手写的钩子填 `"user"`。 */
   pluginId: string;
   /** 插件版本;未声明为 null。 */
   pluginVersion: string | null;

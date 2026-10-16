@@ -21,15 +21,19 @@ import { v } from "../sessionSchema.js";
 export const HOOK_RUNS_RETAIN = 500;
 
 /**
- * `hook_runs` 表里的一行 —— 一条**插件 hook 的执行事实**(审计)。
+ * `hook_runs` 表里的一行 —— 一次**钩子执行事实**(审计)。
  *
- * ## 为什么只落插件 hook,不落用户手写的钩子
+ * ## 【MC-010】为什么用户手写的钩子也落这一行
  *
- * MC-061 要的审计,是**不受信的插件命令**被宿主授权驱动执行时留下的账:「这份来源的
- * 这条钩子跑没跑、哪份授权放行的、被撤权挡下几次」。用户手写的钩子(`hooks.json`)是
- * 用户**自己的**命令,它每次触发的记录只是排错窗口(50 条环),不是合规账本;而且它就
- * 在用户自己项目的常见路径上(`tool.use` 一轮几十次),逐条落库是**写放大换不到审计价值**。
- * 判据落在 `HookRunner.pushRun`(见那里):只有带插件来源身份的执行才进这张表。
+ * 从前的判据是「**是不是插件来源**」:只有带插件来源身份的执行进这张表,用户手写的
+ * 钩子不进(MC-061 的写放大理由)。但那条判据让「文件保存时跑 eslint」这类用户钩子
+ * 的失败**只活在 50 条内存环里** —— 进程一重启就查不到「它到底跑没跑」,恰是最需要
+ * 「跑了没、成没成」可见的一类(README 硬规矩 3)。
+ *
+ * 【MC-010】把判据与来源**解耦**:记不记的判据是「**这是一次真实执行**(真起过进程
+ * 或被明确挡下)」;来源身份降为**一列** `source`(`plugin | user`),不决定记不记。
+ * 插件行的来源投影列(`plugin_id` / `native_event` / `command_digest`)照旧;用户行
+ * 填 `"user"` / 事件名 / 命令摘要,这些是**列不是判据**。
  *
  * ## 没有 payload 列
  *
@@ -44,9 +48,12 @@ export const HOOK_RUNS_RETAIN = 500;
 export interface HookRunRow {
   runId: string;
   hookId: string;
-  /** 贡献这条 hook 的插件名(`HostHookSource.pluginId`)。 */
+  /** 【MC-010】这次执行的**来源** —— `plugin`(不受信来源,经授权驱动)或
+   *  `user`(用户手写在 hooks.json 里)。是**一列事实**,不是落不落的判据。 */
+  source: "plugin" | "user";
+  /** 贡献这条 hook 的插件名(`HostHookSource.pluginId`)。用户手写的钩子填 `"user"`。 */
   pluginId: string;
-  /** 插件版本;未声明为 null(授权不限版本的语义与之一致)。 */
+  /** 插件版本;未声明为 null(授权不限版本的语义与之一致)。用户钩子为 null。 */
   pluginVersion: string | null;
   /** 原生事件名(如 `PreToolUse`)。 */
   nativeEvent: string;
@@ -70,6 +77,7 @@ export interface HookRunRow {
 interface HookRunDbRow {
   run_id: string;
   hook_id: string;
+  source: string;
   plugin_id: string;
   plugin_version: string | null;
   native_event: string;
@@ -89,6 +97,8 @@ function rowToHookRun(r: HookRunDbRow): HookRunRow {
   return {
     runId: r.run_id,
     hookId: r.hook_id,
+    // 老库迁移来的行 `source` 为空串(ALTER 补列)→ 按插件来源读(那是唯一的旧语义)。
+    source: r.source === "user" ? "user" : "plugin",
     pluginId: r.plugin_id,
     pluginVersion: r.plugin_version,
     nativeEvent: r.native_event,
@@ -121,10 +131,10 @@ export const HookRunRepo = {
   record(row: HookRunRow): void {
     getDb().run(
       `INSERT INTO hook_runs
-         (run_id, hook_id, plugin_id, plugin_version, native_event, command_digest,
+         (run_id, hook_id, source, plugin_id, plugin_version, native_event, command_digest,
           matcher_digest, event, session_id, session_kind, status, exit_code,
           duration_ms, error, started_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(run_id) DO UPDATE SET
          status       = excluded.status,
          exit_code    = excluded.exit_code,
@@ -133,6 +143,7 @@ export const HookRunRepo = {
       [
         v(row.runId),
         v(row.hookId),
+        v(row.source),
         v(row.pluginId),
         v(row.pluginVersion),
         v(row.nativeEvent),
@@ -187,7 +198,8 @@ export const HookRunRepo = {
     return row ? rowToHookRun(row) : null;
   },
 
-  /** 某条**插件 hook** 的执行历史,新的在前(跨重启可回读 —— 环只有 50 条、会被顶掉)。 */
+  /** 某条 hook 的执行历史,**两种来源都含**(MC-010 起),新的在前 ——
+   *  跨重启可回读(环只有 50 条、会被顶掉)。 */
   listForHook(hookId: string, limit: number): HookRunRow[] {
     const stmt = getDb().prepare(
       `SELECT * FROM hook_runs

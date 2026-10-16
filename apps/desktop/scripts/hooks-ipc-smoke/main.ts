@@ -1134,18 +1134,18 @@ console.log("\n§8 审计读取:hooks.runs 返回落盘审计(不只 50 条会�
   // §6 里刚有一条插件 hook 真跑过(PMARK 计数)并被撤权挡下过 —— 那些都落了审计表。
   const auditRes = (await call(IPC.HOOKS_RUNS)) as {
     runs: Array<{ runId: string }>;
-    audit: Array<{ runId: string; hookId: string; pluginId: string; nativeEvent: string; status: string; commandDigest: string }>;
+    audit: Array<{ runId: string; hookId: string; source: string; pluginId: string; nativeEvent: string; status: string; commandDigest: string }>;
+    auditError: string | null;
   };
   check("hooks.runs 返回了 audit 栏(不是只有 runs)", Array.isArray(auditRes.audit), Object.keys(auditRes));
   check("★ 审计栏里有插件 hook 的执行行(落盘审计被读出来了)", auditRes.audit.length >= 1, auditRes.audit.length);
   check("审计行带可查询的来源身份(pluginId / nativeEvent)", auditRes.audit.every((r) => typeof r.pluginId === "string" && r.pluginId.length > 0 && typeof r.nativeEvent === "string"), auditRes.audit.slice(0, 2));
   check("审计行的命令摘要是 sha256 指纹", (auditRes.audit[0]?.commandDigest ?? "").startsWith("sha256:"), auditRes.audit[0]?.commandDigest);
-  // 审计栏是**落盘审计**:它只装插件 hook(带来源身份),不装用户手写的钩子 —— 与内存环不同。
-  check(
-    "★ 审计栏只含插件 hook(用户手写钩子不进审计表)",
-    auditRes.audit.every((r) => r.hookId.startsWith("ph_")),
-    auditRes.audit.map((r) => r.hookId).slice(0, 5),
-  );
+  // 【MC-010】审计栏现在装**两种来源**(判据从「是不是插件来源」改为「是不是一次真实执行」,
+  // 来源降为 `source` 一列)—— 插件行与用户手写行都在,各自带对得上的来源值。
+  check("★ MC-010:审计栏含插件行且带来源列", auditRes.audit.some((r) => r.hookId.startsWith("ph_") && r.source === "plugin"), auditRes.audit.map((r) => `${r.hookId}:${r.source}`).slice(0, 5));
+  check("★ MC-010:用户手写钩子的行也在审计栏(跨重启可查「跑了没」)", auditRes.audit.some((r) => !r.hookId.startsWith("ph_") && r.source === "user"), auditRes.audit.map((r) => `${r.hookId}:${r.source}`).slice(0, 5));
+  check("★ MC-010:正常读时 auditError 为 null(不谎报读取失败)", auditRes.auditError === null, auditRes.auditError);
   // 收尾前把审计表清干净(免得污染同库的其它断言 —— 本套虽自成一库,仍照纪律收干净)。
   const { HookRunRepo } = await import("@main/store/repositories.js");
   HookRunRepo.prune(0);

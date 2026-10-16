@@ -151,8 +151,11 @@ export function HooksPanel() {
   const [hooks, setHooks] = useState<HookSpec[] | null>(null);
   const [problems, setProblems] = useState<Array<{ where: string; error: string }>>([]);
   const [runs, setRuns] = useState<HookRun[]>([]);
-  /** 【MC-061】落盘审计(只插件 hook、跨重启活着)—— 与 `runs` 那份内存环是两栏。 */
+  /** 【MC-061】落盘审计(跨重启活着;MC-010 起两种来源都落)—— 与 `runs` 那份内存环是两栏。 */
   const [audit, setAudit] = useState<HookAuditEntry[]>([]);
+  /** 【MC-010 第四轮复审】审计读取失败的原因。「一次没执行」与「读不出来」必须**分开呈现**
+   *  (从前 catch 成空数组,两种情形在界面上长得一模一样)。 */
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
 
   /** 选中的那一条(磁盘上的)。 */
@@ -192,6 +195,8 @@ export function HooksPanel() {
       setRuns(res.runs);
       // 【MC-061】审计栏可能缺(旧 preload 没这一项时是 `undefined`)—— 退化成空,不炸。
       setAudit(res.audit ?? []);
+      // 【MC-010】主进程读审计失败时把原因带出来(旧 preload 没有这个字段 → undefined → null)。
+      setAuditError(res.auditError ?? null);
     } catch {
       // 记录拉不到不影响编辑 —— 它只是排错用的窗口。
     }
@@ -403,8 +408,8 @@ export function HooksPanel() {
 
       {/* ───────── 下:执行记录(两栏)─────────
           左边是**内存环**(本次启动以来,含用户手写钩子,会被顶掉);右边是【MC-061】**落盘
-          审计**(只插件 hook、经授权执行,跨重启活着)。两栏语义不同,故分开列,不混成一个表 ——
-          "本次启动跑过什么"和"这份插件来源被授信后跑过什么"是两个问题。 */}
+          审计**(跨重启活着;MC-010 起两种来源都落,来源作为一列展示)。两栏语义不同,
+          故分开列,不混成一个表 —— "本次启动跑过什么"和"跨重启留下了什么账"是两个问题。 */}
       <div className="mt-3 grid h-[190px] shrink-0 grid-cols-2 gap-4">
         <ListPane
           title={t("settings.hooks.runsTitle")}
@@ -422,14 +427,19 @@ export function HooksPanel() {
           ))}
         </ListPane>
 
-        {/* 【MC-061】落盘审计。只有插件 hook 进这一栏(带来源身份)—— 用户手写的钩子没有
-            "哪份授权放行"这回事,不进审计表(见 `HookRunRow` 的文件头)。 */}
+        {/* 【MC-061】落盘审计(MC-010 起两种来源都进)。读盘失败时**显式报出来** ——
+            「一次没执行」与「审计读不出来」不许长得一样。 */}
         <ListPane
           title={t("settings.hooks.auditTitle")}
           count={audit.length}
-          isEmpty={audit.length === 0}
+          isEmpty={audit.length === 0 && auditError === null}
           empty={t("settings.hooks.auditEmpty")}
         >
+          {auditError !== null && (
+            <div className="rounded bg-danger/10 px-1.5 py-1 text-[0.7857em] text-danger" title={auditError}>
+              {t("settings.hooks.auditReadError", { message: auditError })}
+            </div>
+          )}
           {audit.map((entry) => (
             <AuditRow key={entry.runId} entry={entry} />
           ))}
@@ -792,14 +802,16 @@ function AuditRow({ entry }: { entry: HookAuditEntry }) {
   const { t } = useI18n();
   const meta = RUN_STATUS[entry.status as HookRun["status"]];
   const eventLabel = (EVENT_LABELS as Record<string, MessageId>)[entry.event];
-  const label = `${entry.pluginId} @ ${entry.pluginVersion ?? "?"}`;
+  // 【MC-010】来源是一列事实:插件行照旧显示「插件名 @ 版本」,用户手写行显示
+  // 那条钩子的名字(审计不再只服务插件,报告「你这条 hook 跑没跑」也要能读)。
+  const label = entry.source === "user" ? t("settings.hooks.auditSourceUser") : `${entry.pluginId} @ ${entry.pluginVersion ?? "?"}`;
   return (
     <div className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-[0.7857em]">
       <span className={cn("w-[52px] shrink-0 font-medium", meta?.cls ?? "text-content-subtle")}>
         {meta ? t(meta.key) : entry.status}
       </span>
       <span className="shrink-0 tabular-nums text-content-subtle">{formatRunTime(entry.startedAt)}</span>
-      {/* 来源身份是这一栏的**重点** —— 审计要回答"这份来源的这条钩子跑没跑"。 */}
+      {/* 来源身份是这一栏的**重点** —— 审计要回答"这条钩子跑没跑、哪来的"。 */}
       <span className="min-w-0 flex-1 truncate text-content" title={label}>
         {label}
       </span>
