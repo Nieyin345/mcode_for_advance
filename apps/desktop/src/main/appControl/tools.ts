@@ -66,6 +66,16 @@ import {
 import { computePanelCaptureRect } from "./panelCaptureRect.js";
 import { DOMAIN_LABELS, domainsMatchingTaskWord, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
 import { APP_API_TUTORIALS, tutorialsMatchingWord } from "./appApiTutorials.js";
+import {
+  describeWorkflowToolParams,
+  publishedToolsWithDocs,
+  publishedToolMethodName,
+  publishWorkflowTool,
+  renderWorkflowParams,
+  unpublishWorkflowTool,
+  validateWorkflowParams,
+} from "@main/orchestration/publishedTools.js";
+import { getWorkflow } from "@main/orchestration/library.js";
 import { evaluate } from "./policyEngine.js";
 import { getGrantStore } from "./grantStoreRuntime.js";
 import type { GrantDecision } from "./grantStore.js";
@@ -1024,6 +1034,34 @@ export function appMcpTools(): McpToolSpec[] {
               e.doc.toLowerCase().includes(q) ||
               taskDomains.has(domainOf(e.method))),
         );
+        // 【MC-041】动态实例(用户发布的派生工具)并入同一份索引 —— 查询与目录
+        // 走的就是这条路,没有第二套。纯派生工具命中且静态目录为空时,直接回它。
+        if (!args.domain) {
+          const published = publishedToolsWithDocs();
+          const hits = published.filter(
+            (p) =>
+              q &&
+              (p.name.toLowerCase().includes(q) ||
+                p.docName.toLowerCase().includes(q) ||
+                publishedToolMethodName(p.tool).toLowerCase().includes(q) ||
+                (p.tool.description ?? "").toLowerCase().includes(q)),
+          );
+          if (hits.length > 0 && picked.length === 0) {
+            const lines = hits.map(
+              (p) =>
+                `- ${publishedToolMethodName(p.tool)} [需批准] — 用户发布的工作流「${p.docName}」${p.tool.description ? `:${p.tool.description}` : ""}` +
+                `\n  参数:${describeWorkflowToolParams(p.workflowId)}\n  调用:app_workflow_run({workflow_id:"${p.workflowId}", params:{…}})${
+                  (() => {
+                    const s = getWorkflow(p.workflowId)?.inputSchema;
+                    return Array.isArray(s?.required) && (s!.required as unknown[]).length > 0 ? `(必填:${(s!.required as unknown[]).join(" / ")})` : "";
+                  })()
+                }`,
+            );
+            return text(
+              `匹配「${args.query!.trim()}」的用户派生工具(共 ${hits.length} 个;这些是工作流发布出来的,不在静态 RPC 目录里):\n${lines.join("\n")}`,
+            );
+          }
+        }
         if (picked.length === 0) return text("没有匹配的方法。不带参数调用一次看全部功能域。");
         const lines = picked.map(
           (e) => `- ${e.method} [${LEVEL_LABEL[e.policy.level]}]${e.registered ? "" : "(未注册)"}${e.doc ? ` — ${clipLine(e.doc, 120)}` : ""}`,
@@ -1052,6 +1090,25 @@ export function appMcpTools(): McpToolSpec[] {
           .describe("full = 参数按完整嵌套结构展开;默认 compact(第一层,给清单用的那份)"),
       },
       handler: async (args: { method: string; setting_key?: string; detail?: "compact" | "full" }) => {
+        // 【MC-041】派生工具的描述走同一入口:`workflow.run.<名字>`。
+        if (args.method.startsWith("workflow.run.")) {
+          const p = publishedToolsWithDocs().find((x) => publishedToolMethodName(x.tool) === args.method);
+          if (!p) return fail(`没有发布过名为「${args.method.slice("workflow.run.".length)}」的派生工具。用 app_api_list({query:"<工作流名>"}) 查已发布的。`);
+          const doc = getWorkflow(p.workflowId);
+          return text(
+            [
+              `方法:${args.method}(用户发布的工作流派生工具)`,
+              `权限:需批准(执行时弹审批卡;发布/撤销本身也是)`,
+              `说明:${p.tool.description ?? `运行工作流「${p.docName}」`}`,
+              `workflow_id:${p.workflowId}`,
+              `参数:${describeWorkflowToolParams(p.workflowId)}`,
+              doc?.outputSchema && Object.keys(doc.outputSchema).length > 0 ? `产出声明:${JSON.stringify(doc.outputSchema)}` : null,
+              `调用:app_workflow_run({workflow_id:"${p.workflowId}", params:{…}})(参数按上面的 schema 校验,不符会在执行前拒绝)`,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
+        }
         const e = findEntry(args.method);
         if (!e) return fail(unknownMethodHint(args.method));
         const inputText = args.detail === "full" ? e.inputFull : e.input;
@@ -1236,15 +1293,41 @@ export function appMcpTools(): McpToolSpec[] {
       name: "app_workflow_run",
       description:
         "运行一个工作流。带触发器的自动化:立即跑一次(trigger_node_id 不传且只有一个触发器时自动选)。" +
-        "普通工作流(没有触发器):在对话里按它跑 —— 需要 prompt;给 session_id 发到那个对话,不给就新开一个。需批准。",
+        "普通工作流(没有触发器):在对话里按它跑 —— 需要 prompt;给 session_id 发到那个对话,不给就新开一个。需批准。" +
+        "【派生工具】用户发布过的工作流也可以带 params 结构化调用:params 按该工作流的 inputSchema 校验," +
+        "不符会在执行前拒绝。发布的工具用 app_api_list({query}) 查,app_api_describe 看参数。",
       inputSchema: {
         workflow_id: z.string(),
         trigger_node_id: z.string().optional(),
         prompt: z.string().optional(),
         session_id: z.string().optional(),
         project_id: z.string().optional(),
+        // 【MC-041】结构化实参:按工作流 inputSchema 校验后渲染进正文。
+        params: z.record(z.string(), z.unknown()).optional().describe("结构化实参(按工作流 inputSchema 校验;见 app_api_describe workflow.run.<名字>)"),
       },
       handler: async () => fail("内部错误:app_workflow_run 必须经 invokeAppTool 调用"),
+    },
+    {
+      // 【MC-041】把用户自建工作流发布为带参数的派生工具(检索/描述/结构化调用的入口)。
+      name: "app_workflow_publish",
+      description:
+        "把一份工作流**发布为派生工具**(它是复用入口:发布后可按名字被 app_api_list 检索到、" +
+        "app_api_describe 看参数、app_workflow_run 带 params 结构�化调用)。发布要真人批准;" +
+        "撤销用 app_workflow_unpublish。参数 schema 来自工作流自己的 inputSchema(没声明就无参)。",
+      inputSchema: {
+        workflow_id: z.string().describe("要发布的工作流 id(workflow.list 查)"),
+        name: z.string().describe("派生工具名(用户可读的短名,如「文献整理」;检索按它匹配)"),
+        description: z.string().optional().describe("一句话说明它做什么"),
+      },
+      handler: async () => fail("内部错误:app_workflow_publish 必须经 invokeAppTool 调用"),
+    },
+    {
+      name: "app_workflow_unpublish",
+      description: "撤销一个已发布的派生工具(从检索索引里移除;工作流本体不动)。需批准。",
+      inputSchema: {
+        workflow_id: z.string(),
+      },
+      handler: async () => fail("内部错误:app_workflow_unpublish 必须经 invokeAppTool 调用"),
     },
   ];
 }
@@ -1374,13 +1457,83 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext, sessionId: string): 
  *     从前的失败会让 Agent 重开一个新对话;现判 **UNCERTAIN**。
  * 旧成功文案(不带状态行)保持原样,只多挂一个 `structuredContent.operation_result`。
  */
+/** 【MC-041】发布工作流为派生工具 —— 走既有审批链(发布是用户可见的能力面变化,真人批准)。 */
+async function runWorkflowPublish(
+  args: { workflow_id: string; name: string; description?: string },
+  ctx: ProviderContext,
+): Promise<ToolResult> {
+  const method = "app_workflow_publish";
+  const operationId = randomUUID();
+  const denied = await gateAppAction(ctx, "write", "workflow_publish", args, `把工作流 ${args.workflow_id} 发布为派生工具「${args.name}」`);
+  if (denied) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
+    );
+  }
+  // 审批之后才发布:审批被拒 = 什么都没发生(REJECTED,可改条件重来)。
+  const r = publishWorkflowTool({ workflowId: args.workflow_id, name: args.name, description: args.description });
+  if (!r.ok) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: r.error ?? "发布失败" }),
+    );
+  }
+  return operationToolResult(
+    makeOp("SUCCEEDED", method, operationId),
+    undefined,
+    `已发布「${args.name}」。现在 app_api_list({query:"${args.name}"}) 能检索到它,app_workflow_run({workflow_id:"${args.workflow_id}", params:{…}}) 可结构化调用。`,
+  );
+}
+
+/** 【MC-041】撤销发布(幂等)。 */
+async function runWorkflowUnpublish(args: { workflow_id: string }, ctx: ProviderContext): Promise<ToolResult> {
+  const method = "app_workflow_unpublish";
+  const operationId = randomUUID();
+  const denied = await gateAppAction(ctx, "write", "workflow_unpublish", args, `撤销工作流 ${args.workflow_id} 的派生工具发布`);
+  if (denied) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
+    );
+  }
+  const r = unpublishWorkflowTool(args.workflow_id);
+  if (!r.ok) {
+    return operationToolResult(
+      makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: r.error ?? "撤销失败" }),
+    );
+  }
+  return operationToolResult(
+    makeOp("SUCCEEDED", method, operationId),
+    undefined,
+    r.existed ? "已撤销发布(工作流本体未动)。" : "这份工作流本来就没有发布过(目标状态已达成)。",
+  );
+}
+
 async function runWorkflow(
-  args: { workflow_id: string; trigger_node_id?: string; prompt?: string; session_id?: string; project_id?: string },
+  args: { workflow_id: string; trigger_node_id?: string; prompt?: string; session_id?: string; project_id?: string; params?: Record<string, unknown> },
   sessionId: string,
   ctx: ProviderContext,
 ): Promise<ToolResult> {
   const method = "app_workflow_run";
   const operationId = randomUUID();
+  // 【MC-041】结构化实参:按工作流 inputSchema **执行前**校验;不符即拒,不执行。
+  let paramsNote = "";
+  if (args.params !== undefined) {
+    const doc = getWorkflow(args.workflow_id);
+    if (!doc) {
+      return operationToolResult(
+        makeOp("REJECTED", method, operationId, {
+          code: OP_CODE.methodNotFound,
+          reason: `工作流 ${args.workflow_id} 不存在(先 app_api_call workflow.list 查 id)。`,
+        }),
+      );
+    }
+    const verdict = validateWorkflowParams(doc, args.params);
+    if (!verdict.ok) {
+      return operationToolResult(
+        makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: `参数校验未通过(未执行):${verdict.error}` }),
+      );
+    }
+    paramsNote = renderWorkflowParams(doc, verdict.normalized);
+  }
   const statusEntry = findEntry("automation.statusAll");
   let triggers: Array<{ nodeId: string; title: string; workflowId: string }> = [];
   if (statusEntry?.registered) {
@@ -1438,12 +1591,14 @@ async function runWorkflow(
     );
   }
   // 普通工作流:在对话里按它跑。
-  const prompt = args.prompt?.trim();
+  // 【MC-041】结构化实参渲染进正文(paramsNote 由上面的校验路径生成);
+  // 没有 prompt 但有 params 时,params 本身就当正文(派生工具调用不必再手写 prompt)。
+  const prompt = [args.prompt?.trim(), paramsNote].filter(Boolean).join("\n\n");
   if (!prompt) {
     return operationToolResult(
       makeOp("REJECTED", method, operationId, {
         code: OP_CODE.rpcFailed,
-        reason: "这个工作流没有触发器,要在对话里跑:请给 prompt(以及可选的 session_id / project_id)。",
+        reason: "这个工作流没有触发器,要在对话里跑:请给 prompt(以及可选的 session_id / project_id),或给 params(按 inputSchema 的结构化实参)。",
       }),
     );
   }
@@ -2354,6 +2509,10 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         return await runSessionSend(args as SessionSendArgs, sessionId, ctx);
       case "app_workflow_run":
         return await runWorkflow(args as { workflow_id: string }, sessionId, ctx);
+      case "app_workflow_publish":
+        return await runWorkflowPublish(args as { workflow_id: string; name: string; description?: string }, ctx);
+      case "app_workflow_unpublish":
+        return await runWorkflowUnpublish(args as { workflow_id: string }, ctx);
       default:
         return await spec.handler(args, { sessionId });
     }
