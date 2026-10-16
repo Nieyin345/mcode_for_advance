@@ -273,4 +273,9 @@ export function registerBrowserHandlers(ipcMain: IpcMain): void {
       return { ok: false as const, error: msg };
     }
   });
+
+  // 【MC-023】保管库健康态 —— 设置界面据此显示「加密不可用、已停用持久化」的原因。
+  ipcMain.handle(IPC.BROWSER_VAULT_STATUS, () => {
+    return BrowserManager.vaultStatus();
+  });
 }

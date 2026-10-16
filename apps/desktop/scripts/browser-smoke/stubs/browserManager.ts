@@ -202,6 +202,16 @@ export const BrowserManager = {
     return rec("clearBrowserCookies", [], { ok: true });
   },
 
+  vaultStatus(): unknown {
+    return rec("vaultStatus", [], {
+      encryptionAvailable: false,
+      persistLogin: true,
+      savedCount: 0,
+      plaintextErased: false,
+      lastError: null,
+    });
+  },
+
   respondAuth(requestId: string, username: string, password: string): BrowserAuthRespondStatus {
     return rec("respondAuth", [requestId, username, password], "accepted");
   },

@@ -332,6 +332,24 @@ export interface BrowserOpResult {
   error?: string;
 }
 
+/**
+ * 【MC-023】Cookie 保管库的健康态 —— 设置界面「记住网站登录状态」一行据此显示:
+ * 加密不可用时明确写「已停用持久化 + 原因」,而不是从前那种静默把凭据明文写进
+ * 普通 settings 行。
+ */
+export interface BrowserVaultStatus {
+  /** safeStorage(系统钥匙串/DPAPI)现在是否可用 —— 不可用时不保存 Cookie。 */
+  encryptionAvailable: boolean;
+  /** 用户是否开着「记住网站登录状态」。 */
+  persistLogin: boolean;
+  /** 上次成功保存的 Cookie 条数(-1 = 本进程还没保存过)。 */
+  savedCount: number;
+  /** 本次进程是否擦除过旧版本留下的明文保管库字段。 */
+  plaintextErased: boolean;
+  /** 最近一次保存被拒的原因(加密不可用/失败);成功即 null。 */
+  lastError: string | null;
+}
+
 /* ── Address history ──
  *  History is written by main only (on did-navigate); these RPCs let the
  *  renderer remove entries without racing main's writes. */

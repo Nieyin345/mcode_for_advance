@@ -10,6 +10,7 @@ import {
   BROWSER_DATA_DIR_SETTING_KEY,
   BROWSER_PERSIST_LOGIN_SETTING_KEY,
   BROWSER_SCREENSHOT_DIR_SETTING_KEY,
+  type BrowserVaultStatus,
 } from "@contracts/ipc";
 
 /**
@@ -241,18 +242,27 @@ function DataDirRow() {
  *  all browser cookies into the settings table on a timer and before quit,
  *  and re-injects them into the browser session before its first navigation —
  *  session cookies from sites where "remember me" was unchecked survive
- *  restarts too. */
+ *  restarts too.
+ *
+ *  【MC-023】保存只走系统钥匙串加密;safeStorage 不可用时不落盘、并在这里
+ *  如实写一句原因(从前是静默把凭据明文写进普通 settings 行)。 */
 function PersistLoginRow() {
   const { t } = useI18n();
   const [enabled, setEnabled] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [vault, setVault] = useState<BrowserVaultStatus | null>(null);
 
   useEffect(() => {
     void (async () => {
       const { value } = await api.setting.get({ key: BROWSER_PERSIST_LOGIN_SETTING_KEY });
       setEnabled(value !== "0");
       setLoaded(true);
+      try {
+        setVault(await api.browser.vaultStatus());
+      } catch {
+        // 状态读不到不阻塞这一行 —— 主区功能(开关)照常可用。
+      }
     })();
   }, []);
 
@@ -264,6 +274,8 @@ function PersistLoginRow() {
         key: BROWSER_PERSIST_LOGIN_SETTING_KEY,
         value: checked ? "1" : "0",
       });
+      // 开关有时效性(改了持久化策略) —— 顺手刷新状态行。
+      setVault(await api.browser.vaultStatus());
     } catch (err) {
       // 回弹开关**只是**把界面拨回原样,并没说清"为什么没生效" —— 与同文件另两行
       // (目录保存失败画 ErrorNote)、以及 HooksPanel 开关(失败走 toast)是同一条规矩:
@@ -279,11 +291,24 @@ function PersistLoginRow() {
       title={t("settings.browser.persistLogin")}
       desc={t("settings.browser.persistLoginDesc")}
       descExtra={
-        error !== null ? (
-          <ErrorNote title={t("settings.saveFailed")} className="mt-1">
-            {error}
-          </ErrorNote>
-        ) : undefined
+        <>
+          {/* 【MC-023】加密不可用 → 明确说"已停用持久化 + 为什么",不再静默明文降级。 */}
+          {enabled && vault && !vault.encryptionAvailable && (
+            <div className="mt-1 rounded border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] leading-relaxed text-warning">
+              {t("settings.browser.vaultEncryptionUnavailable")}
+            </div>
+          )}
+          {vault?.plaintextErased && (
+            <div className="mt-1 text-[11px] leading-relaxed text-content-subtle">
+              {t("settings.browser.vaultPlaintextErased")}
+            </div>
+          )}
+          {error !== null ? (
+            <ErrorNote title={t("settings.saveFailed")} className="mt-1">
+              {error}
+            </ErrorNote>
+          ) : undefined}
+        </>
       }
     >
       <Switch

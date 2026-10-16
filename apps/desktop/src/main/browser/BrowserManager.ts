@@ -1038,15 +1038,69 @@ class BrowserManagerImpl {
   // the settings table on a background timer and before quit, and re-inject
   // them into the session before its first navigation (restoreCookieVault).
   // The snapshot is safeStorage-encrypted when the OS credential store is
-  // available (cookies are credentials); plaintext is the fallback where it
-  // isn't, and the restore fallback for vaults written before encryption.
+  // available (cookies are credentials). 【MC-023】以前"加密不可用就退明文":
+  // 凭据原样落进普通 settings 行 —— 那是机密材料最不该去的地方。现在**永不落
+  // 明文**:加密不可用时保存被停用,并把原因写进 `vaultStatus()` 供设置界面显示
+  // (硬规矩 3:坏东西显式报出来,不静默降级)。旧版本留下的明文字段在第一次
+  // 加载/保存时被擦除(见 eraseLegacyPlaintextVault)。
   // Gated by `browser.persistLogin` (default on). Once the app upgrades to
   // Electron ≥ 41 the native store works again; the vault simply keeps
   // shadowing it as a belt-and-braces copy.
 
+  /**
+   * 【MC-023】保管库的当前健康态 —— 设置界面据此区分「在保存」「加密不可用、
+   * 持久化已停用(以及为什么)」「有旧明文被清掉」。
+   *
+   * `encryptionAvailable` 每次都现问 safeStorage(它可能随系统钥匙串状态变化);
+   * `plaintextErased` 在本次进程里擦了旧明文字段后置位(只报事实,不是状态机)。
+   */
+  vaultStatus(): {
+    encryptionAvailable: boolean;
+    persistLogin: boolean;
+    savedCount: number;
+    plaintextErased: boolean;
+    lastError: string | null;
+  } {
+    return {
+      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      persistLogin: isPersistLoginEnabled(),
+      savedCount: Math.max(0, this.lastVaultSaved),
+      plaintextErased: this.plaintextVaultErased,
+      lastError: this.vaultLastError,
+    };
+  }
+
+  /**
+   * 【MC-023】擦掉旧版本留下的明文保管库字段(旧版在加密不可用时把 cookie JSON
+   * 写进 `browser.cookieVault`)。返回是否真的擦掉了东西 —— 幂等:字段为空/不存在
+   * 时什么都不做,不制造无谓的写盘。
+   *
+   * 为什么放在**读**路径也调:一台从旧版本升级来的机器,可能从此不再进入 save
+   * (persistLogin 关了 / 加密一直不可用)—— 明文字段只要还在,就是一份躺着的
+   * 凭据。恢复时读到明文同样先擦(它已经完成使命:注入回 session)。
+   */
+  private eraseLegacyPlaintextVault(): boolean {
+    try {
+      if (SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY)) {
+        SettingRepo.set(BROWSER_COOKIE_VAULT_SETTING_KEY, "");
+        this.plaintextVaultErased = true;
+        log.warn("browser: legacy plaintext cookie vault erased (plaintext persistence is retired)");
+        return true;
+      }
+    } catch (err) {
+      log.warn(
+        `browser: legacy plaintext cookie vault erase failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return false;
+  }
+
   /** Snapshot the session's live cookies into the settings table. Runs on the
    *  background timer and from the app's before-quit hook. */
   async saveCookieVault(): Promise<{ ok: boolean; saved: number }> {
+    // 无论走哪条路,旧的明文字段都不留(even when persistLogin is off — the
+    // legacy plaintext is exactly what must not survive a toggle).
+    this.eraseLegacyPlaintextVault();
     if (!isPersistLoginEnabled()) return { ok: true, saved: 0 };
     const ses = browserSession();
     const cookies = await ses.cookies.get({});
@@ -1067,25 +1121,37 @@ class BrowserManagerImpl {
     const plain = JSON.stringify(vault);
     // Cookies are credentials — store them via the OS credential store
     // (DPAPI/Keychain/keyring) when available; base64 ciphertext in the
-    // settings table. Plaintext legacy key is the fallback where encryption
-    // is unavailable (Linux without a keyring) and remains the restore
-    // fallback for vaults written before the encrypted key existed.
+    // settings table. 【MC-023】加密不可用时**不落盘**:宁可这次重启丢登录态,
+    // 也不把凭据明文写进普通 settings 行。原因记进 lastError 供 UI 显示。
     let encrypted = false;
     try {
       if (safeStorage.isEncryptionAvailable()) {
         SettingRepo.set(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY, safeStorage.encryptString(plain).toString("base64"));
         encrypted = true;
-        // Migration: once an encrypted copy exists, blank the plaintext one.
-        if (SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY)) {
-          SettingRepo.set(BROWSER_COOKIE_VAULT_SETTING_KEY, "");
-        }
+      } else {
+        this.vaultLastError = "系统钥匙串/凭据存储不可用,safeStorage 无法加密 —— 本次不会保存 Cookie(避免明文落盘)。";
+        log.warn("browser: safeStorage unavailable — cookie vault save skipped (plaintext persistence is retired)");
       }
     } catch (err) {
+      this.vaultLastError = `加密失败,本次不保存 Cookie:${err instanceof Error ? err.message : String(err)}`;
       log.warn(
-        `browser: cookie vault encryption failed (storing plaintext): ${err instanceof Error ? err.message : String(err)}`,
+        `browser: cookie vault encryption failed (save skipped, plaintext refused): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (!encrypted) SettingRepo.set(BROWSER_COOKIE_VAULT_SETTING_KEY, plain);
+    if (encrypted) {
+      this.vaultLastError = null;
+    } else {
+      // 加密不可用/失败时,把上一次成功留下的密文也清掉 —— 那是可能过期的凭据
+      // 副本,留着只会让"已停用持久化"的状态名不副实。
+      try {
+        if (SettingRepo.get(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY)) {
+          SettingRepo.set(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY, "");
+        }
+      } catch {
+        /* ciphertext clear is best-effort; the status above already reports the failure */
+      }
+      return { ok: false, saved: 0 };
+    }
     // Belt-and-braces for Electron ≥ 41, where the native store does commit.
     try {
       await ses.cookies.flushStore();
@@ -1106,15 +1172,25 @@ class BrowserManagerImpl {
    *  just the SameSite attribute rather than the whole cookie). */
   private vaultRestored = new WeakSet<Session>();
   private lastVaultSaved = -1;
+  /** 【MC-023】本次进程是否擦过旧明文字段(状态面板如实报一次)。 */
+  private plaintextVaultErased = false;
+  /** 【MC-023】最近一次保存被拒的原因(加密不可用/失败),成功即清。 */
+  private vaultLastError: string | null = null;
 
   private async restoreCookieVault(ses: Session): Promise<void> {
     if (this.vaultRestored.has(ses)) return;
     this.vaultRestored.add(ses);
-    if (!isPersistLoginEnabled()) return;
-    // Preferred source: safeStorage-encrypted vault. Decrypt failure (e.g.
-    // the DB row was copied from another OS user) falls through to the legacy
-    // plaintext key rather than losing all sign-in state.
+    if (!isPersistLoginEnabled()) {
+      // 【MC-023】持久化被关掉时,旧明文那行就是躺着的凭据 —— 直接擦。
+      // (开启时不能在**这里**擦:下面还要把它读出来当一次性迁移来源。)
+      this.eraseLegacyPlaintextVault();
+      return;
+    }
+    // Preferred source: safeStorage-encrypted vault. 【MC-023】密文解不开(如 DB
+    // 行来自另一个系统用户)只如实记日志,不再回退明文 —— 明文字段已退役:
+    // 还在的旧明文走下面那条一次性读取路径,读出来注入后立即擦除。
     let raw: string | null = null;
+    let fromLegacyPlaintext = false;
     const enc = SettingRepo.get(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY);
     if (enc && safeStorage.isEncryptionAvailable()) {
       try {
@@ -1125,7 +1201,10 @@ class BrowserManagerImpl {
         );
       }
     }
-    if (!raw) raw = SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY);
+    if (!raw) {
+      raw = SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY);
+      fromLegacyPlaintext = !!raw;
+    }
     if (!raw) return;
     let vault: VaultCookie[];
     try {
@@ -1172,6 +1251,16 @@ class BrowserManagerImpl {
       }
     }
     if (restored > 0) log.info(`browser: cookie vault restored (${restored} cookies)`);
+    // 【MC-023】旧明文读出来注入完就擦 —— 一次性的迁移读取,不留第二份副本。
+    if (fromLegacyPlaintext) this.eraseLegacyPlaintextVault();
+  }
+
+  /** 【MC-023】无头回归套件(navigate-main)专用:清掉"该 session 已恢复过"的
+   *  记忆再跑一次恢复 —— 好在一套脚本里验多组保管库状态。生产路径从不调它:
+   *  "每个 session 实例只恢复一次"本就是刻意的闸(见 {@link vaultRestored})。 */
+  async restoreCookieVaultForTest(): Promise<void> {
+    this.vaultRestored = new WeakSet<Session>();
+    await this.restoreCookieVault(browserSession());
   }
 
   /** Start the background vault timer (once; unref'd so it never holds the

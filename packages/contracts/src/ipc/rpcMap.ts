@@ -69,7 +69,7 @@ import type { GetThemeResult, SetThemeInput, AppInfoResult, CheckForUpdatesResul
 import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, ClipboardSaveFileInput, ClipboardSaveFileResult, ClipboardWriteImageInput, ClipboardWriteImageResult, FileListDirInput, FileTreeEntry, FileSearchInput, FileSearchResult, FileWriteInput, FileMkdirInput, FileDeleteInput, FileRenameInput, FileCopyInput, FileGrepInput, FileGrepResult, RgStatusResult, RgInstallInput, RgInstallResult, DialogPickFilesInput } from "./files.js";
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
 import type { TerminalCreateInput, TerminalCreateResult, TerminalWriteInput, TerminalOpResult, TerminalResizeInput, TerminalKillInput, TerminalListInput, TerminalInfo } from "./terminal.js";
-import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserAuthRespondResult, BrowserDownloadActionInput } from "./browser.js";
+import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserAuthRespondResult, BrowserDownloadActionInput, BrowserVaultStatus } from "./browser.js";
 import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, SkillsCopyToProjectInput, SkillsCopyToProjectResult, EnginesMatrixStatus,
   SkillPreset, SkillsPresetSaveInput, SkillsPresetDeleteInput,
   SkillsProjectOverviewInput, SkillsProjectOverviewResult,
@@ -538,6 +538,10 @@ export interface RpcMap {
    *  AND wipe the persisted cookie vault, so sign-ins cannot resurrect on
    *  restart via restoreCookieVault. */
   "browser.clearCookies": () => Promise<BrowserOpResult>;
+  /** 【MC-023】Cookie 保管库健康态:加密是否可用、持久化是否在保存、已保存多少条、
+   *  是否擦过旧明文、最近一次被拒的原因。设置界面据此显示"加密不可用、已停用
+   *  持久化(原因)" —— 不再有静默的明文降级。 */
+  "browser.vaultStatus": () => Promise<BrowserVaultStatus>;
   /** Remove one entry from the address-bar history. */
   "browser.historyRemove": (input: BrowserHistoryRemoveInput) => Promise<BrowserOpResult>;
   /** Clear the whole address-bar history. */
@@ -1775,6 +1779,8 @@ export const IPC = {
   // Clear sign-in state (cookies) of the embedded browser — separate from
   // clearCache, which deliberately keeps cookies so users stay signed in.
   BROWSER_CLEAR_COOKIES: "browser:clearCookies",
+  // 【MC-023】Cookie 保管库健康态(加密是否可用 / 是否在保存 / 旧明文是否已擦)
+  BROWSER_VAULT_STATUS: "browser:vaultStatus",
   // Address history + HTTP Basic Auth (embedded browser)
   BROWSER_HISTORY_REMOVE: "browser:historyRemove",
   BROWSER_HISTORY_CLEAR: "browser:historyClear",

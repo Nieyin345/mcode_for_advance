@@ -45,7 +45,7 @@ const { initDb } = await import("@main/store/db.js");
 const { SettingRepo, ProjectRepo } = await import("@main/store/repositories.js");
 const { BrowserManager } = await import("@main/browser/BrowserManager.js");
 const el = await import("./navigate-stubs/electron.js");
-const { BROWSER_PERSIST_LOGIN_SETTING_KEY, BROWSER_COOKIE_VAULT_SETTING_KEY } = await import("@contracts/ipc");
+const { BROWSER_PERSIST_LOGIN_SETTING_KEY, BROWSER_COOKIE_VAULT_SETTING_KEY, BROWSER_COOKIE_VAULT_ENC_SETTING_KEY } = await import("@contracts/ipc");
 
 await initDb();
 
@@ -127,6 +127,85 @@ check(
 
 // 关掉浏览器,别留活视图。
 BrowserManager.close(browserId);
+
+/* ────────────────── MC-023:cookie 保管库永不落明文 ────────────────── */
+
+console.log("\nMC-023:cookie 保管库(真 BrowserManager,假 session/假 safeStorage)");
+
+// 造一批"凭据"给假 session 的 cookies.get() 返回 —— 落盘内容里绝不该出现这些原文。
+const SECRET = "SECRET_SESSION_VALUE_42";
+el.setFakeCookies([
+  { name: "sid", value: SECRET, domain: "example.com", hostOnly: true, path: "/", secure: true, httpOnly: true },
+]);
+
+{
+  // ① 加密不可用(默认):保存必须**拒写** —— 不落密文,更不落明文原文。
+  el.setEncryptionAvailable(false);
+  SettingRepo.set(BROWSER_PERSIST_LOGIN_SETTING_KEY, "1");
+  SettingRepo.set(BROWSER_COOKIE_VAULT_SETTING_KEY, "");
+  SettingRepo.set(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY, "");
+  const res = await BrowserManager.saveCookieVault();
+  check("★ 加密不可用:保存如实报失败(ok=false),不假装成功", res.ok === false, res);
+  check("★ 加密不可用:普通 settings 行里没有明文凭据原文", !(SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY) ?? "").includes(SECRET), {
+    row: SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY),
+  });
+  check("★ 加密不可用:密文行也没有被写入", (SettingRepo.get(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY) ?? "") === "", {
+    enc: SettingRepo.get(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY),
+  });
+  const st = BrowserManager.vaultStatus();
+  check("★ 状态如实报「加密不可用 + 被拒原因」", st.encryptionAvailable === false && typeof st.lastError === "string" && st.lastError.length > 0, st);
+}
+
+{
+  // ② 加密可用:走密文 —— 磁盘上没有原文,而恢复能解回来(登录态仍跨重启)。
+  el.setEncryptionAvailable(true);
+  const res = await BrowserManager.saveCookieVault();
+  check("加密可用:保存成功", res.ok === true && res.saved === 1, res);
+  const enc = SettingRepo.get(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY) ?? "";
+  check("★ 加密可用:落盘的是密文,不含凭据原文", enc.length > 0 && !enc.includes(SECRET), { encHead: enc.slice(0, 24) });
+  check("★ 加密可用:上次被拒的原因被清掉", BrowserManager.vaultStatus().lastError === null, BrowserManager.vaultStatus());
+
+  // 恢复(真路径):新 session 上注入 cookie —— 值应能解回原文。
+  // (闸门只在 MC-045 那段用;这里直通,读假 session 记下的 set() 序列。)
+  el.resetSetRecords();
+  await BrowserManager.restoreCookieVaultForTest();
+  const restored = el.setRecords();
+  check("★ 密文保管库仍能恢复登录态到 session", restored.includes(`sid=${SECRET}`), restored);
+}
+
+{
+  // ③ 旧版明文迁移:某台升级来的机器,旧的明文字段还在 → 恢复读一次注入后必须擦掉。
+  el.setEncryptionAvailable(false);
+  const legacyPlain = JSON.stringify([
+    { name: "sid", value: SECRET, domain: "example.com", hostOnly: true, path: "/", secure: true, httpOnly: true },
+  ]);
+  SettingRepo.set(BROWSER_COOKIE_VAULT_SETTING_KEY, legacyPlain);
+  SettingRepo.set(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY, "");
+  el.resetSetRecords();
+  await BrowserManager.restoreCookieVaultForTest();
+  const restored = el.setRecords();
+  check("★ 旧明文先被读出来注入回 session(登录态不白丢)", restored.includes(`sid=${SECRET}`), restored);
+  check(
+    "★ 注入完成后明文字段被擦除(一次性迁移,不留第二份副本)",
+    (SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY) ?? "") === "",
+    { row: SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY) },
+  );
+  check("★ 状态如实报「擦过旧明文」", BrowserManager.vaultStatus().plaintextErased === true, BrowserManager.vaultStatus());
+}
+
+{
+  // ④ 持久化被关闭:即使明文字段还在,也不该留着 —— 关掉后没有任何"下次登录"会用它的理由。
+  SettingRepo.set(BROWSER_PERSIST_LOGIN_SETTING_KEY, "0");
+  SettingRepo.set(BROWSER_COOKIE_VAULT_SETTING_KEY, "[]"); // 任意非空
+  el.resetSetRecords();
+  await BrowserManager.restoreCookieVaultForTest();
+  const restored = el.setRecords();
+  check("持久化关闭:什么都不恢复", restored.length === 0, restored);
+  check("★ 持久化关闭:明文行被擦(躺着的凭据不留)", (SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY) ?? "") === "", {
+    row: SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY),
+  });
+  SettingRepo.set(BROWSER_PERSIST_LOGIN_SETTING_KEY, "1");
+}
 
 rmSync(DATA, { recursive: true, force: true });
 

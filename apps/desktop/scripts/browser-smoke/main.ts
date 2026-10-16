@@ -522,10 +522,21 @@ console.log("\nIPC:零参通道(raw 就是 undefined)");
 for (const [name, channel, fn] of [
   ["clearCache", IPC.BROWSER_CLEAR_CACHE, "clearBrowserCache"],
   ["clearCookies", IPC.BROWSER_CLEAR_COOKIES, "clearBrowserCookies"],
+  ["vaultStatus", IPC.BROWSER_VAULT_STATUS, "vaultStatus"],
 ] as const) {
   const { out, calls } = await callAndRecord(channel, undefined);
-  eq(`${name}: 不传任何入参也返回 ok`, (out as { ok: boolean }).ok, true);
-  eq(`${name}: 走到了 ${fn}`, calls, [fn]);
+  if (name === "vaultStatus") {
+    // 【MC-023】status 不是 {ok} 形状 —— 它要求"原样转发被委托方的健康态"。
+    eq(`${name}: 走到了 ${fn}`, calls, [fn]);
+    eq(
+      `${name}: 原样交回保管库健康态(不吞字段)`,
+      (out as { encryptionAvailable?: boolean }).encryptionAvailable,
+      false,
+    );
+  } else {
+    eq(`${name}: 不传任何入参也返回 ok`, (out as { ok: boolean }).ok, true);
+    eq(`${name}: 走到了 ${fn}`, calls, [fn]);
+  }
 }
 
 // historyClear 是唯一一条"契约声明了入参、preload 却不传"的通道(见 run.sh 里的

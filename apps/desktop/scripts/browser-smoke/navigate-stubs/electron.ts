@@ -38,12 +38,26 @@ export function releaseCookieGate(): void {
   releaseGate();
 }
 
-/** 假会话分区的 cookies —— `set` 挂闸门,`get` 空。 */
+/** 假会话分区的 cookies —— `set` 挂闸门,`get` 返回测试预置的集合(默认空)。 */
+let fakeCookieList: Array<Record<string, unknown>> = [];
+/** 【MC-023】测试预置 `cookies.get()` 返回什么。 */
+export function setFakeCookies(list: Array<Record<string, unknown>>): void {
+  fakeCookieList = list;
+}
+/** 【MC-023】`cookies.set()` 每次注入的 `name=value`,按序 —— 恢复路径的断言读它。 */
+const restoredSets: string[] = [];
+export function setRecords(): string[] {
+  return [...restoredSets];
+}
+export function resetSetRecords(): void {
+  restoredSets.length = 0;
+}
 const fakeCookies = {
   async get(): Promise<unknown[]> {
-    return [];
+    return fakeCookieList.map((c) => ({ session: false, ...c }));
   },
-  async set(): Promise<void> {
+  async set(details: { name: string; value: string }): Promise<void> {
+    restoredSets.push(`${details.name}=${details.value}`);
     await gate;
   },
   async remove(): Promise<void> {},
@@ -162,10 +176,21 @@ class FakeWebContents {
   navigationHistory = { canGoBack: () => false, canGoForward: () => false, goBack(): void {}, goForward(): void {} };
 }
 
+let encryptionAvailable = false;
+/** 【MC-023】测试切换 safeStorage 的加密可用性(默认 false = 无钥匙串的 Linux)。
+ *  加密"可用"时用一层可逆的假变换 —— 断言只关心"落盘的到底是不是明文原文"。 */
+export function setEncryptionAvailable(v: boolean): void {
+  encryptionAvailable = v;
+}
+
 export const safeStorage = {
-  isEncryptionAvailable: (): boolean => false,
-  encryptString: (s: string): Buffer => Buffer.from(s, "utf8"),
-  decryptString: (b: Buffer): string => b.toString("utf8"),
+  isEncryptionAvailable: (): boolean => encryptionAvailable,
+  encryptString: (s: string): Buffer => Buffer.from(`enc:${s}`, "utf8"),
+  decryptString: (b: Buffer): string => {
+    const t = b.toString("utf8");
+    if (!t.startsWith("enc:")) throw new Error("not encrypted by this fake keychain");
+    return t.slice(4);
+  },
 };
 
 export const app = {
