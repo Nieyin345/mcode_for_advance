@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { ProviderContext, ApprovalRequest, ProviderApprovalDecision } from "@contracts/provider";
 import { APP_DANGER_APPROVAL_PREFIX, APP_CONTROL_RENDERER_GLOBAL } from "@contracts/appControl";
 import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
-import { DOMAIN_LABELS, policyFor } from "@main/appControl/policy.js";
+import { DOMAIN_LABELS, policyFor, isCredentialBearingMethod } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog, appApiBindingId } from "@main/appControl/tools.js";
@@ -90,6 +90,57 @@ check("清单里没有构建机绝对路径", !API_CATALOG.some((e) => /[A-Z]:\/
     sample?.output,
   );
 }
+// 【MC-004】**凭据本体方法**必须整族 blocked:判据是「返回体里带可直接拿去用的凭据」,
+// 不是「名字里带密钥词」。钉在这里的是**一族**,不是五个方法 —— `publicMcp` 整个域
+// (每个方法都返回同一份 `publicMcpStatus()`,含主密钥 + 各项目链接密钥)与
+// `webBridge` 的对、`onlyoffice` 的配置/探测。撤掉 `CREDENTIAL_BEARING` 里任一条 → 红。
+{
+  const CREDENTIAL_METHODS = [
+    // 中继配置(明文 SSH 密码)。从前单列在 BLOCKED,现在归一族。
+    "relay.getConfig",
+    // ONLYOFFICE 配置 / 本机探测(都带 jwtSecret)。
+    "onlyoffice.getConfig",
+    "onlyoffice.detectLocal",
+    // 扩展桥:状态与重置都返回配对令牌。
+    "webBridge.status",
+    "webBridge.regenerateToken",
+    // 公网 MCP:整域返回体含主密钥与项目链接密钥。
+    "publicMcp.status",
+    "publicMcp.setEnabled",
+    "publicMcp.regenerateSecret",
+    "publicMcp.startTunnel",
+    "publicMcp.stopTunnel",
+    "publicMcp.setProject",
+    "publicMcp.setTunnelConfig",
+    "publicMcp.addProjectLink",
+    "publicMcp.removeProjectLink",
+    "publicMcp.regenerateProjectLinkSecret",
+    // 手机配对:返回配对码 + nonce,拿到即可换设备令牌。
+    "mobile.startPairing",
+  ];
+  const wrong = CREDENTIAL_METHODS.filter((m) => policyFor(m).level !== "blocked");
+  check(
+    "★ MC-004:凭据本体方法整族 blocked(含 publicMcp 全族与 startPairing)",
+    wrong.length === 0,
+    wrong.map((m) => `${m}=${policyFor(m).level}`),
+  );
+  // 引导语必须在 —— `app_api_describe` 会把它显示给模型,没有引导就只剩一句"不开放",
+  // 模型下一轮还会换个名字再试。
+  const guided = CREDENTIAL_METHODS.filter((m) => (policyFor(m).reason ?? "").length >= 8);
+  check("★ MC-004:每条都有引导语(要看状态走哪条路)", guided.length === CREDENTIAL_METHODS.length, guided);
+  // **正控:不含密钥的同域摘要方法照常是 read** —— 别把整域一刀切,那会让模型连
+  // "OnlyOffice 通没通"都问不了(与 relay.getConfig 收进黑名单而 relay.status 不收同一条)。
+  const READ_OK = ["relay.status", "onlyoffice.status", "onlyoffice.sessionState", "mobile.getStatus"];
+  const wronglyBlocked = READ_OK.filter((m) => policyFor(m).level !== "read");
+  check("★ MC-004 正控:不含密钥的同域摘要方法仍是 read", wronglyBlocked.length === 0, wronglyBlocked.map((m) => `${m}=${policyFor(m).level}`));
+  // 族与 `isCredentialBearingMethod` 一致(两个出口同一个判据,别分家)。
+  check(
+    "★ MC-004:isCredentialBearingMethod 与族表一致",
+    CREDENTIAL_METHODS.every((m) => isCredentialBearingMethod(m)) &&
+      !isCredentialBearingMethod("relay.status") &&
+      !isCredentialBearingMethod("onlyoffice.status"),
+  );
+}
 const levels = new Map<string, number>();
 for (const e of API_CATALOG) levels.set(policyFor(e.method).level, (levels.get(policyFor(e.method).level) ?? 0) + 1);
 check("五档都有人", ["read", "write", "danger", "blocked", "ui"].every((l) => (levels.get(l) ?? 0) > 0), [...levels]);
@@ -132,8 +183,8 @@ const pin: Array<[string, string]> = [
   ["hooks.save", "danger"],
   ["project.delete", "danger"],
   ["setting.set", "danger"],
-  ["publicMcp.setEnabled", "danger"],
-  ["publicMcp.addProjectLink", "danger"],
+  ["publicMcp.setEnabled", "blocked"],
+  ["publicMcp.addProjectLink", "blocked"],
   ["app.moveDataRoot", "danger"],
   ["session.rename", "write"],
   ["project.create", "write"],

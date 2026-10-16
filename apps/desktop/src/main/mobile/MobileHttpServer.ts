@@ -45,13 +45,13 @@ import { isIP } from "node:net";
 import { app } from "electron";
 import { awaitDb, getDb } from "@main/store/db.js";
 import { SettingRepo } from "@main/store/repositories.js";
+// 【MC-004】密钥设置键的判据 —— 全仓唯一一份(见 @main/lib/secretKeys 文件头)。
+import { isSecretSettingKey } from "@main/lib/secretKeys.js";
 import {
   MOBILE_DEFAULT_PORT,
   MOBILE_PORT_SETTING_KEY,
   MOBILE_ENABLED_SETTING_KEY,
   MOBILE_BIND_ADDRESS_SETTING_KEY,
-  MOBILE_PAIRED_DEVICES_SETTING_KEY,
-  MOBILE_LOGIN_SETTING_KEY,
   SSE_HEARTBEAT_INTERVAL_MS,
   PairingVerifyInputSchema,
   MobileLoginInputSchema,
@@ -278,38 +278,24 @@ async function authorize(req: IncomingMessage, allowQueryToken = false): Promise
   return pairingManager.validateToken(token);
 }
 
-/** Setting keys the **LAN-facing** surface must never read or write.
+/**
+ * 【MC-004】`touchesBlockedSetting` 的判据现在走 `@main/lib/secretKeys` 的**共享**
+ * `isSecretSettingKey` —— 从前这里是两张硬编码的键集合(只有
+ * `mobile.pairedDevices` / `mobile.passwordLogin`),而 `appControl/tools.ts` 与
+ * `settings/settingsTransfer.ts` 各写一遍**不同的**正则。三处判据漂开过一次,现在
+ * 一份:凡"密钥本体"设置键(通用词 / 结构性名字 / 显式名单三层)一律不在这条
+ * HTTP 桥上读写。
  *
- *  `mobile.pairedDevices` holds every paired device's token **in plaintext**
- *  (see {@link PairingManager}). `setting:get` / `setting:getMany` are on the
- *  mobile whitelist because the phone shell reads its own preferences — so
- *  without this guard any one paired phone could ask for that key and read
- *  **every other phone's token**, then use it. Symmetrically, `setting:set`
- *  would let a phone rewrite the list: wipe every device (denial of service) or
- *  inject a record with a token of its choosing.
- *
- *  This is scoped to the HTTP bridge on purpose. The desktop renderer keeps its
- *  read access to the same key — it is local, and the DB file it reads from is
- *  already the user's own trust boundary (see the note in PairingManager). The
- *  difference here is the **network**: the bridge is reachable by every device
- *  on the LAN, so it must not hand out other devices' credentials.
- *
- *  This is the belt; the braces are in `mobileRpc.ts`: the `setting:*`
- *  handlers only serve keys on an allowlist (`isMobileAccessibleSettingKey`),
- *  which keeps the rest of the table (relay VPS config, public-MCP secret,
- *  cookie vault, MCP / LSP / terminal-shell config, workflow review records)
- *  away from the phone as well. */
-const LAN_UNREADABLE_SETTING_KEYS = new Set<string>([MOBILE_PAIRED_DEVICES_SETTING_KEY, MOBILE_LOGIN_SETTING_KEY]);
-
-/** True if this RPC request carries a setting key the LAN surface must not
- *  touch — checked for **every** method, not just the `setting:*` family, so a
- *  future handler that forwards a key can't reopen the hole by accident. */
+ * 为什么这道闸比"密钥"更宽是**对的**:这条桥的对面是局域网里任何一台设备,拿到
+ * 一个键就少一层门槛;而多挡一个非密钥键的代价只是手机壳读不到它 —— 手机壳需要的
+ * 偏好键本来就走 `isMobileAccessibleSettingKey` 的白名单(见 `contracts/ipc/settingsSync`)。
+ */
 function touchesBlockedSetting(body: MobileRpcRequest): boolean {
   const input = body.input as { key?: unknown; keys?: unknown } | null | undefined;
   if (!input || typeof input !== "object") return false;
   const keys: unknown[] = [input.key];
   if (Array.isArray(input.keys)) keys.push(...input.keys);
-  return keys.some((k) => typeof k === "string" && LAN_UNREADABLE_SETTING_KEYS.has(k));
+  return keys.some((k) => isSecretSettingKey(k));
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -576,9 +562,9 @@ async function handleRpc(req: IncomingMessage, res: ServerResponse, device: Pair
     sendJson(res, 400, { ok: false, error: "missing method", status: 400 });
     return;
   }
-  // One key is off-limits over the LAN (see LAN_UNREADABLE_SETTING_KEYS): it
-  // holds every device's token in plaintext, so a single paired phone reading
-  // it would own every other phone.
+  // Setting keys that are credential material are off-limits over the LAN (see
+  // touchesBlockedSetting): the device table holds every device's token in
+  // plaintext, so a single paired phone reading it would own every other phone.
   if (touchesBlockedSetting(body)) {
     log.warn(`mobile: rpc ${body.method} refused — setting key is not reachable over the LAN bridge`);
     sendJson(res, 403, { ok: false, error: "forbidden setting key", status: 403 });

@@ -9,9 +9,10 @@
  *              改权限、开公网……):**每次都弹**,卡片上不给「始终允许」,
  *              「完全访问」也照问。用户在 2026-10-02 明确选的就是这一档。
  *   - `blocked` 不开放:替用户回答审批/提问(自己批自己)、读 API Key、
- *              依赖麦克风/系统对话框/编辑器内部状态、会直接改写聊天记录底层存储的。
+ *               依赖麦克风/系统对话框/编辑器内部状态、会直接改写聊天记录底层存储的,
+ *               以及**返回体里带凭据本体**的方法(见 {@link CREDENTIAL_BEARING})。
  *
- * 判定顺序:显式表(BLOCKED → DANGER → WRITE/READ/UI 例外)→ 按动词猜 → 兜底 `write`。
+ * 判定顺序:显式表(BLOCKED → 凭据本体 → DANGER → WRITE/READ/UI 例外)→ 按动词猜 → 兜底 `write`。
  * **兜底是 write 而不是 read** —— 新加的 RPC 没人来归类时,宁可多问一次。
  */
 
@@ -37,13 +38,11 @@ const BLOCKED: Record<string, string> = {
   "customModel.getToken": "API Key / 令牌不给模型",
   "piModels.getApiKey": "API Key 不给模型",
   "codexModels.getApiKey": "API Key 不给模型",
-  // 中继配置里含**明文 SSH 密码**(`RelayVpsConfig.password`)。它不叫 *Token / *ApiKey,
-  // 所以漏在下面那条按名兜底之外(见 app-control-smoke 的 `/getToken|getApiKey/` 断言),
-  // 而同类的 `customModel.getToken` / `*Models.getApiKey` 都在 BLOCKED —— 判据不一致
-  // (报告附录 C 的「一处值得产品再想」)。值本身已被 `redactValue` 按键名(`password`)
-  // 打码,但**打码靠键名**、换个字段名就漏;直接不给模型最省事。要看状态用 `relay.status`
-  // (不含凭据)。此条只挡 **agent 的 `app_api_call`**,设置页走自己的 `window.api`,不受影响。 */
-  "relay.getConfig": "中继配置含明文 SSH 密码,不给模型;要看状态用 relay.status",
+  // 【MC-004】`relay.getConfig` / `onlyoffice.getConfig` / `onlyoffice.detectLocal` /
+  // `webBridge.*` / `publicMcp.*` 这一批**凭据本体方法**从前逐条列在这里或散在
+  // `DANGER` / `EXPLICIT` 里 —— 判据不统一、按名追漏正是漏掉 `relay.getConfig` 的原因。
+  // 现已收成下面唯一一张表 {@link CREDENTIAL_BEARING}，`policyFor` 里先于动词兜底执行。
+  // 加新方法请加**那张表**，不要再往这里加。
   "voice.start": "需要麦克风音频流,只能在界面上用",
   "voice.feed": "需要麦克风音频流,只能在界面上用",
   "voice.stop": "需要麦克风音频流,只能在界面上用",
@@ -176,24 +175,16 @@ const DANGER: Record<string, string> = {
   "codexModels.save": "新增/修改 Codex 模型提供方(含密钥)",
   "codexModels.delete": "删除 Codex 模型提供方",
   "onlyoffice.setConfig": "改 OnlyOffice 服务地址与 JWT 密钥",
-  // 远程访问:开了就是把这台机器交给别人
-  "webBridge.regenerateToken": "重置浏览器扩展令牌(已连的扩展会断开)",
-  "publicMcp.setEnabled": "开关公网 MCP(开启后持有链接的人可免审批操作本机)",
-  "publicMcp.regenerateSecret": "重置公网 MCP 密钥",
-  "publicMcp.startTunnel": "启动公网隧道",
-  "publicMcp.stopTunnel": "停止公网隧道",
-  "publicMcp.setProject": "改公网 MCP 可写项目",
-  "publicMcp.setTunnelConfig": "改公网隧道配置",
-  "publicMcp.addProjectLink": "给项目新开一条公网 MCP 链接(持有链接的人可免审批操作该项目)",
-  "publicMcp.removeProjectLink": "删除项目的公网 MCP 链接",
-  "publicMcp.regenerateProjectLinkSecret": "重置项目公网 MCP 链接的密钥",
+  // 远程访问:开了就是把这台机器交给别人。
+  // 【MC-004】`webBridge.regenerateToken` / `publicMcp.*` 这一族返回体里都带凭据本体,
+  // 已统一收进 {@link CREDENTIAL_BEARING}(blocked) —— 别再往这里加它们的同族方法。
   // SSH 主机信任审批:批准一台陌生主机的指纹 = 把凭据发给它。这条**本身就是"用户点头"的
   // 唯一落点**,绝不能由 agent 自批。虽然 `app_api_call` 只面向本机三个引擎(公网/浏览器桥
   // 不挂它),仍把所有 agent 可达路径钉在 danger(每次弹卡、不给始终允许、"完全访问"也照问),
   // 让"模型想自己批准一台主机"这件事在**每一道闸**上都被挡住。
   "agentSsh.approveHost": "批准 SSH 主机信任(把凭据发给这台主机);只能由用户在设置里本人操作",
   "agentSsh.revokeHost": "撤销 SSH 主机信任",
-  "mobile.startPairing": "开始手机配对",
+  // 【MC-004】`mobile.startPairing`(返回配对码 + nonce)收进了 {@link CREDENTIAL_BEARING}。
   "mobile.revokeDevice": "撤销已配对手机",
   "mobile.setLogin": "设置手机远程登录的账号密码",
   "mobile.clearLogin": "关闭手机远程的账号密码登录",
@@ -277,8 +268,9 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "hooks.listHostHookGrants": "read",
   "projectInit.preview": "read",
   "outputStyle.list": "read",
+  // 【MC-004】`onlyoffice.detectLocal` 从前钉在这里 —— 它返回体里带 jwtSecret,已收进
+  // {@link CREDENTIAL_BEARING}(blocked)。要看状态用 `onlyoffice.status`(连通性,不含密钥)。
   "onlyoffice.sessionState": "read",
-  "onlyoffice.detectLocal": "read",
   "theme.get": "read",
   "voice.modelList": "read",
   "voice.getModelDir": "read",
@@ -296,9 +288,72 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
 
 const READ_VERB = /^(list|get|read|status|search|info|stats|overview|catalog|history|runs|sessions|tasks|task|has|show|preview|check|describe|count)/;
 
+/**
+ * 【MC-004】**凭据本体方法** —— 返回体里带明文密钥 / 令牌的方法,一律不开放给
+ * `app_api_call`(agent)与 `panelApiCall`(自定义面板)。值是每个方法的**引导语**,
+ * 会出现在拒绝理由与 `app_api_describe` 里,告诉模型"要看状态该走哪条路"。
+ *
+ * ## 为什么是一张独立的表,而不是继续往 `BLOCKED` 里逐条加
+ *
+ * 加进 `BLOCKED` 是**逐条追漏**:`relay.getConfig` 当初就是因为名字里没有 `*Token`/`*ApiKey`
+ * 而漏在按名兜底之外、单独补进去的(见上面那条注释)。同一天还有几个同类方法走的是
+ * `policyFor` 的**动词兜底** —— `getConfig` / `status` 都以读动词开头 → 判 `read` →
+ * **自动放行**,只靠 `redactValue` 的**字段名正则**打码。而打码本身按仓库自己的注释就是
+ * 脆的(「打码靠键名、换个字段名就漏」)。于是同一件事有三种判据:relay 钉 blocked、
+ * 同族靠动词兜底 + 键名打码、setting 键靠 `isSecretSettingKey`。违反 README 硬规矩 5。
+ *
+ * 这张表把「返回体含凭据本体」收成**一处**,在 `policyFor` 里**先于**动词兜底执行。
+ * 判据是「这个方法返回**密钥本身**」,不是「名字里带密钥词」—— 按名猜正是漏掉
+ * `relay.getConfig` 的原因。
+ * ⚠️ **同族要全收**:`publicMcp` 的 `setEnabled` / `startTunnel` 这类**写**方法返回的也是
+ * 同一份 `publicMcpStatus()`(含主密钥),只收 `status` 等于把同一条泄漏留在隔壁方法上。
+ * 判断标准一句话:**返回体里有没有可以直接拿去用的凭据** —— 有就收进来,写方法也一样。
+ *
+ * ⚠️ **加新方法之前先问**:它返回的字段里有没有**可直接拿去用的**凭据?
+ * 若是「有没有配 / 连没连上 / 地址是什么」这类**摘要**,不要加进来 —— 那是该给模型看的
+ * (`relay.status` / `onlyoffice.status` / `mobile.getStatus` / `git.status` 就是不收的先例)。
+ * 真需要状态,请给那个域加一个**不含密钥的摘要方法**。
+ */
+const CREDENTIAL_BEARING = new Map<string, string>([
+  // 中继配置含明文 SSH 密码(`RelayVpsConfig.password`)。要看状态用 relay.status。
+  ["relay.getConfig", "中继配置含明文 SSH 密码;要看状态用 relay.status(不含凭据)"],
+  // ONLYOFFICE 配置含文档服务器的 JWT 密钥(`jwtSecret`,签发/伪造回调令牌用)。
+  // 要看状态用 onlyoffice.status(连通性)或 onlyoffice.sessionState(会话)。
+  ["onlyoffice.getConfig", "只读配置里有 JWT 密钥;要看状态用 onlyoffice.status"],
+  // 本机探测结果里带着同一个 jwtSecret(见 localInstall 的 detectLocal)。
+  ["onlyoffice.detectLocal", "本机探测结果里带 JWT 密钥;要看状态用 onlyoffice.status"],
+  // 扩展桥状态里带 `token`(浏览器扩展的配对令牌,拿到即可冒充扩展)。
+  ["webBridge.status", "状态里带浏览器扩展配对令牌,拿到即可冒充扩展"],
+  ["webBridge.regenerateToken", "返回新的扩展配对令牌(已连的扩展会被断开)"],
+  // 公网 MCP:**这个域的每个方法**返回体都是同一份 `publicMcpStatus()` —— 含 `secret`
+  // (公网端点的主密钥)与 `projectLinks[].secret`(每条项目链接的明文路径密钥)。拿到
+  // 就等于拿到免审批通道,所以整个域一律不开放。设置页走自己的 `window.api`,不受影响。
+  ["publicMcp.status", "状态里带公网主密钥与各项目链接密钥;请在设置 → 公网 MCP 里查看"],
+  ["publicMcp.setEnabled", "返回体带公网主密钥;开关公网 MCP 请用户在设置里操作"],
+  ["publicMcp.regenerateSecret", "返回新的公网主密钥"],
+  ["publicMcp.startTunnel", "返回体带公网主密钥;启动隧道请用户在设置里操作"],
+  ["publicMcp.stopTunnel", "返回体带公网主密钥;停止隧道请用户在设置里操作"],
+  ["publicMcp.setProject", "返回体带公网主密钥;改沙箱项目请用户在设置里操作"],
+  ["publicMcp.setTunnelConfig", "返回体带公网主密钥;改隧道配置请用户在设置里操作"],
+  ["publicMcp.addProjectLink", "返回体带新链接密钥与公网主密钥;加项目链接请用户在设置里操作"],
+  ["publicMcp.removeProjectLink", "返回体带公网主密钥;删项目链接请用户在设置里操作"],
+  ["publicMcp.regenerateProjectLinkSecret", "返回新的项目链接密钥"],
+  // 配对返回里有 `nonce` + 6 位配对码 —— 拿到就能换一台设备令牌(手机端全功能面)。
+  ["mobile.startPairing", "返回配对码与 nonce,拿到即可换设备令牌;配对请用户在设置里发起"],
+]);
+
+/** 这个方法是不是「返回体含凭据本体」的(见 {@link CREDENTIAL_BEARING})。 */
+export function isCredentialBearingMethod(method: string): boolean {
+  return CREDENTIAL_BEARING.has(method);
+}
+
 /** 某个方法的权限档。未知方法按 `write` 处理(宁可多问)。 */
 export function policyFor(method: string): AppPolicy {
   if (method in BLOCKED) return { level: "blocked", reason: BLOCKED[method] };
+  // 【MC-004】凭据本体方法**先于**动词兜底判掉 —— 否则 `getConfig` / `status` 会被
+  // `READ_VERB` 判成 `read` 自动放行。与 BLOCKED 同一档:不给模型,也不给「始终允许」。
+  const credential = CREDENTIAL_BEARING.get(method);
+  if (credential !== undefined) return { level: "blocked", reason: credential };
   if (method in DANGER) return { level: "danger", reason: DANGER[method] };
   const explicit = EXPLICIT[method];
   if (explicit) return { level: explicit };

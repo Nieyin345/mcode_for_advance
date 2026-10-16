@@ -28,6 +28,7 @@ import {
   isTransferableSettingKey,
   scrubSecrets,
 } from "@main/settings/settingsTransfer.js";
+import { isSecretSettingKey } from "@main/lib/secretKeys.js";
 
 let failures = 0;
 let checks = 0;
@@ -245,6 +246,42 @@ console.log("\n字节预算:按 UTF-8 字节计量,多字节内容不虚报为�
   const ascii = { a: "abcdef", b: { c: 1 } };
   const [, , overflowAscii] = scrubSecrets(ascii, 0, { nodes: 100, bytes: 10 }) as [unknown, number, boolean];
   check("正控:同字面长度的 ASCII 内容在预算内不判 overflow", overflowAscii === false, { overflowAscii });
+}
+
+console.log("\n【MC-004】密钥键判据唯一一份:三条路(导出 / agent 读设置 / 局域网桥)同源");
+{
+  // 从前这三处各写一遍、而且**已经漂开**:`appControl/tools.ts` 的孪生正则认
+  // `cookieVault` 而 `settingsTransfer.ts` 这条认 `paireddevices` / `passwordlogin`,
+  // 手机侧是硬编码两键集合。现在全部从 `@main/lib/secretKeys` 取同一份判据。
+  // 这里钉的是**判据本身**的行为(判据立在"这个键被不被当密钥"上,不是"谁 import 了谁")。
+  // 三条路各自在漂移里**漏过**的那个键,现在都要被同一份判据认出来。
+  const DRIFT_KEYS = [
+    "browser.cookieVault",     // 从前 tools.ts 认、settingsTransfer 不认
+    "browser.cookieVault.enc", // `.enc` 尾缀(settingsTransfer 认、tools 不认)
+    "mobile.pairedDevices",    // 从前手机侧硬编码、settingsTransfer 正则认、tools 不认
+    "mobile.passwordLogin",    // 同上
+    // 结构性形状:全小写/全大写也不该骗过判据。
+    "providerkeys",
+    "PROVIDERTOKENS",
+    // 显式名单层。
+    "relay.vpsConfig",
+    "onlyoffice.config",
+    "publicMcp.projectLinks",
+    "mcp.management",
+  ];
+  const missed = DRIFT_KEYS.filter((k) => !isSecretSettingKey(k));
+  check("★ MC-004:漂移里漏过的键,共享判据全部认出来", missed.length === 0, missed);
+  // 导出侧用它当第一道闸 —— 每个漂移键都不可导出。
+  const leaked = DRIFT_KEYS.filter((k) => isTransferableSettingKey(k));
+  check("★ MC-004:这些键经导出侧也不可迁移", leaked.length === 0, leaked);
+  // 正控:公开元数据 `customModels` 仍可导出(它由 scrubSecrets 深度清洗,不是密钥本体)。
+  // 判据立在"元数据照常搬走"上 —— 若有人把它塞进共享密钥名单,这条会红。
+  check("★ MC-004 正控:customModels(公开元数据)仍可导出", isTransferableSettingKey("customModels") === true);
+  check("正控:普通偏好仍可导出", isTransferableSettingKey("ui.locale") === true);
+  // 正控:不是密钥的键**不**被共享判据误伤 —— 否则手机壳读不到自己的偏好。
+  const NOT_SECRET = ["ui.locale", "ui.appearance.theme", "workflow.maxParallel", "ui.voiceEngine"];
+  const overblocked = NOT_SECRET.filter((k) => isSecretSettingKey(k));
+  check("正控:普通偏好键不被误判成密钥", overblocked.length === 0, overblocked);
 }
 
 console.log(`\nsettings-export-secrets-smoke:${checks - failures}/${checks} 通过`);

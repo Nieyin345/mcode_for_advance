@@ -22,26 +22,19 @@
 
 import { CUSTOM_UI_SETTING_KEY } from "@contracts/customUi";
 import { validateCustomUiWrite } from "@main/customUi/configValidation.js";
+// 【MC-004】密钥键判据(通用词 + 结构形状 + 显式名单)收进了 `@main/lib/secretKeys`
+// 的**唯一一份** `isSecretSettingKey` —— 从前这里(`SECRET_KEY_RE` / `SECRET_STORE_KEY_RE`)
+// 与 `appControl/tools.ts`、`mobile/MobileHttpServer.ts` 各写一遍,而且已经漂开
+// (本文件认 `paireddevices` / `passwordlogin`,那边的孪生正则认 `cookieVault`,手机侧
+// 是硬编码键集合)。现在三处共享同一份判据,新增密钥键加在 `secretKeys.ts` 一处即可。
+//
+// ⚠️ 本文件**只**用它挡住"真密钥";`customModels`(公开元数据)不在这份判据里,它能照常
+// 导出 —— 导出的 `customHeaders` 由下面的 `scrubSecrets` 深度清洗(见 `EXCLUDED_KEYS`
+// 里那条注释)。这与 agent 读设置那侧**故意不同**:那边没有深度清洗,所以额外挡住它。
+import { isSecretSettingKey } from "@main/lib/secretKeys.js";
 
 export const SETTINGS_EXPORT_FORMAT = "mcode-settings";
 export const SETTINGS_EXPORT_VERSION = 1;
-
-/** key 名里出现这些片段就当密钥,不导出也不导入。
- *
- *  ⚠️ **词尾的 `s?` 不是可有可无的。** 自定义模型密钥存在 `customModelKeys` 里 ——
- *  复数形式。早先这里只认单数(`api[-_.]?key|apikey|token|...`),`Keys` 一个都没命中,
- *  于是那个键从两道筛子里**同时漏过去**(见 `EXCLUDED_KEYS` 里那一条的注释)。复数不该
- *  让一道按名字设的闸门失效。 */
-const SECRET_KEY_RE =
-  /(api[-_.]?keys?|apikeys?|tokens?|secrets?|passw(or)?ds?|credentials?|cookies?|authorization|private[-_.]?keys?|paireddevices|passwordlogin|\.enc$)/i;
-
-/** **密钥本体**那批键的**结构性**名字:`<某个东西>+Keys/Tokens/Secrets` 结尾
- *  (驼峰或点分)。加密的凭据 map 全仓都是这个形状 —— `customModelKeys`、
- *  `piProviderKeys`、`codexProviderKeys`、`publicMcp.*Secret`。它们**不在**
- *  {@link SECRET_KEY_RE} 里(那个只认 `apiKey`/`token` 这种通用词),而逐个往
- *  `EXCLUDED_KEYS` 里加是**追着漏**的写法 —— 下一个人再加一个 `xxxKeys` 又会忘。
- *  这里按键名的**形状**一次挡住,和 `.enc` 尾缀是同一类判据。 */
-const SECRET_STORE_KEY_RE = /(Keys|Tokens|Secrets|Credentials|Passwords)$/i;
 
 /** **安全授信**键 —— 这些存的是"用户在本机明确批准过的信任决定"(SSH 主机指纹、
  *  项目 MCP 信任、设备信任)。它们**绝不是"跟着人走的偏好"**,一律不可导入导出。
@@ -75,20 +68,20 @@ const SECURITY_GRANT_PREFIXES = [
   "securityGrant.",
 ];
 
-/** 精确排除的键(本机路径 / 运行状态 / 含密钥的整块配置)。 */
+/** 精确排除的键(本机路径 / 运行状态 / 含密钥的整块配置)。
+ *  【MC-004】头两条(`customModelKeys` / `mcp.management`)现在的**主判据**已在共享的
+ *  `isSecretSettingKey`(见文件头)里 —— `isTransferableSettingKey` 会先问它。这里保留
+ *  同名条目是**防御性冗余**(判据万一被改宽,这两条仍在),不是唯一防线。 */
 const EXCLUDED_KEYS = new Set<string>([
-  // ⚠️ **自定义模型的密钥本体。** 这个键名**不会**被 `SECRET_KEY_RE` 命中 —— 正则认的是
-  // `api[-_.]?key` / `apikey`,而它是 `customModel**Keys**(复数)`,两个词都不在表里。
-  // 值在 `safeStorage` 不可用的机器上是**明文 base64**(见 `main/lib/secretStore.ts` 的
-  // `encrypt()` 降级路径),可逆。少这一条,导出设置就把全部网关密钥写进那个 JSON 文件,
-  // 而用户导出它正是为了分享 / 搬机器 —— 与文件头「绝不导出密钥」那句直接相悖。
+  // ⚠️ **自定义模型的密钥本体。** 值在 `safeStorage` 不可用的机器上是**明文 base64**
+  // (见 `main/lib/secretStore.ts` 的 `encrypt()` 降级路径),可逆。少这一条,导出设置就
+  // 把全部网关密钥写进那个 JSON 文件,而用户导出它正是为了分享 / 搬机器 —— 与文件头
+  // 「绝不导出密钥」那句直接相悖。
   // (`customModels` 那一条是**公开元数据**、不含密钥,该照常导出,不要一起排掉。)
   "customModelKeys",
   // ⚠️ **MCP 服务器配置里的凭据。** 每个 server 的 `env`(stdio,常放 `GITHUB_TOKEN`
   // 之类)与 `headers`(http/sse,常放 `Authorization`)是原样保存的 —— 导出设置即是分享,
-  // 带着这些键就等于把 API key 写进那个 JSON 文件。键名 `mcp.management` 不被
-  // `SECRET_KEY_RE` 命中,所以必须显式列出(与 `appControl/tools.ts` 的 `SECRET_SETTING_KEYS`
-  // 同一条:同一个事实两处都要认,别只在一边拦)。
+  // 带着这些键就等于把 API key 写进那个 JSON 文件。共享判据已按显式名单认它。
   "mcp.management",
   "app.dataRoot",
   "browser.dataDir",
@@ -157,8 +150,8 @@ const EXCLUDED_PREFIXES = [
 
 export function isTransferableSettingKey(key: string): boolean {
   if (!key || key.length > 200) return false;
-  if (SECRET_KEY_RE.test(key)) return false;
-  if (SECRET_STORE_KEY_RE.test(key)) return false;
+  // 【MC-004】密钥键判据走共享的那一份(通用词 + 结构形状 + 显式名单),见文件头。
+  if (isSecretSettingKey(key)) return false;
   // 【MC-031 / MC-052】安全授信一律不可迁移 —— 单列一类,不是再往排除表里加一条。
   if (SECURITY_GRANT_KEYS.has(key)) return false;
   if (SECURITY_GRANT_PREFIXES.some((p) => key.startsWith(p))) return false;

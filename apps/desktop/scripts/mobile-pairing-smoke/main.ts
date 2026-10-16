@@ -779,13 +779,31 @@ console.log("\n设置白名单 / 同步");
   SettingRepo.set("ui.locale", "en");
   {
     const r = await rpcAs(tA, "setting:get", { key: "relay.vpsConfig" });
-    eq("setting:get 中继配置 → 200", r.status, 200);
-    check("但读不到内容(null)", !r.text.includes("SECRET_VPS") && r.text.includes("null"), r.text.slice(0, 200));
+    // 【MC-004】中继配置是**凭据本体**(明文 SSH 密码),共享判据
+    // (`@main/lib/secretKeys`)在**每一条方法**上先拦一层 → 403,不再落到
+    // "白名单外 → 当没有(null)"那条路上。判据从硬编码两键(pairedDevices /
+    // passwordLogin)换成三层共享判据之后,这一类键在局域网桥上**连 200 都拿不到**。
+    eq("setting:get 中继配置 → 403(凭据本体,LAN 桥先拦)", r.status, 403);
+    check("响应里没有密码原文", !r.text.includes("SECRET_VPS"), r.text.slice(0, 200));
     const many = await rpcAs(tA, "setting:getMany", { keys: ["ui.locale", "relay.vpsConfig"] });
-    eq("setting:getMany 混着要 → 200", many.status, 200);
-    const result = (JSON.parse(many.text) as { result: Record<string, string | null> }).result;
-    eq("放行的键照常拿到", result["ui.locale"], "en");
-    eq("不放行的键是 null", result["relay.vpsConfig"], null);
+    eq("setting:getMany 夹带凭据键 → 403(与 5b 的 pairedDevices 同一条)", many.status, 403);
+    // 正控:不含密钥的放行键照常拿到 —— 共享判据没有误伤手机壳要用的偏好。
+    const ok = await rpcAs(tA, "setting:getMany", { keys: ["ui.locale"] });
+    eq("正控:普通偏好仍 200", ok.status, 200);
+    const result = (JSON.parse(ok.text) as { result: Record<string, string | null> }).result;
+    eq("正控:放行的键照常拿到", result["ui.locale"], "en");
+  }
+
+  // 【MC-004】共享判据的**漂移键**在 LAN 桥上一律 403 —— 从前手机侧是两张硬编码键的
+  // 集合,`browser.cookieVault`(另一处孪生正则认、手机侧不认)能经这条桥被读走。
+  // 现在三处共享同一份判据,漂移中的任一个键都要被挡。
+  {
+    for (const key of ["browser.cookieVault", "mobile.passwordLogin", "PROVIDERTOKENS"]) {
+      SettingRepo.set(key, "SECRET_DRIFT_MARKER");
+      const r = await rpcAs(tA, "setting:get", { key });
+      eq(`MC-004:漂移键 ${key} 在 LAN 桥 → 403`, r.status, 403);
+      check(`MC-004:${key} 的原文没有进响应`, !r.text.includes("SECRET_DRIFT_MARKER"), r.text.slice(0, 120));
+    }
   }
 
   // ── 写:不放行的键 403,且真的没写进去 ──

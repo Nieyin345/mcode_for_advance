@@ -70,6 +70,8 @@ import { getGrantStore } from "./grantStoreRuntime.js";
 import type { GrantDecision } from "./grantStore.js";
 import type { ActionIntent, ActorRef, CoreIntent, PolicyCompatibilityLevel } from "@contracts/policyEngine";
 import { physicalPath } from "@main/lib/realPathWithin.js";
+// 【MC-004】密钥设置键判据 —— 全仓唯一一份(见 @main/lib/secretKeys 文件头)。
+import { isSecretSettingKey as isSharedSecretSettingKey } from "@main/lib/secretKeys.js";
 import {
   runWithAgentMemoryScopeForSession,
   runWithUnboundAgentExtensionScope,
@@ -99,60 +101,33 @@ export const APP_APPROVAL_PREFIX = "mcode-app:";
  * 也不匹配 `sk-` 那类前缀),两道都绕过去了。所以这里必须按**键名**拦在调用之前,
  * 而不是指望结果打码。
  *
- * 将来再有"密钥存在设置表里"的键,加进这个集合(或让它匹配下面那条正则)。
+ * ## 判据不再写在这里
+ *
+ * 【MC-004】名单与两条正则从前写在**本文件**、`settings/settingsTransfer.ts`、
+ * `mobile/MobileHttpServer.ts` **三处**,而且已经漂开(一处认 `cookieVault`、另一处认
+ * `paireddevices`)。现已收成 `@main/lib/secretKeys` 的**唯一一份** `isSecretSettingKey`,
+ * 三个消费方共享 —— 往下看那份文件头的三层判据,新增密钥键加在那里。
+ *
+ * ⚠️ **这一侧(agent 读设置)在共享判据之上多挡一个键**(见 {@link READ_SIDE_EXTRA_SECRET_KEYS}):
+ * 共享判据只收真密钥,而这侧的防线是 `redactValue` 的按字段名打码(仓库记录过它脆弱)。
  */
-const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
-  "customModelKeys",
-  "customModels",
-  // ⚠️ **下面这几条是同一种洞的另几个实例(2026-10-09)。** 它们同样把凭据存成**一整块
-  //    JSON 字符串**、键名又**不含** `key`/`token`/`secret`/`password` 那几个词 ——
-  //   于是 `SECRET_SETTING_KEY_RE` 和 `SECRET_SETTING_STORE_RE` 两道**都绕过去**,
-  //   而它们的**值**里嵌着 `password` / `jwtSecret` / `secret` 这些字段。`setting.get`
-  //   把整块 JSON 当**一个字符串**返回,`redactString` 只按值的**形态**认密钥
-  //   (`sk-…`/`ghp_…`/40+ 位十六进制…),认不出 `"password":"S3cr3t-vps-pw!"` 这种 ——
-  //   于是整段凭据原样交给模型。这与 #105/#106 是同一类"密钥换条路就漏",改法也一样:
-  //   按键名拦在调用之前。判据来自同仓另两处**已经把这几条当密钥**的地方 ——
-  //   `settings/transfer.ts` 的 `EXCLUDED_KEYS`(导出即分享,绝不带密钥)与
-  //   `mobile/MobileHttpServer.ts` 的 `LAN_UNREADABLE_SETTING_KEYS`(局域网可读的手机端
-  //   都不给)。照抄它们的名单,别让同一个事实在三处各写一遍还写岔。
-  /** SSH 主机 + 用户 + **password**(见 `contracts/relay.ts` 的 `RelayVpsConfig`)。 */
-  "relay.vpsConfig",
-  /** 服务地址 + **JWT 签名密钥**(`jwtSecret`,能签发/伪造 OnlyOffice 令牌)。 */
-  "onlyoffice.config",
-  /** 每条项目链接的 `/mcp/<secret>` 明文密钥(见 `publicMcpSession.ts`)。 */
-  "publicMcp.projectLinks",
-  /** 已配对手机的 `{ deviceToken }`(bearer 令牌)。值是 64 位十六进制,现在**恰好**
-   *  被"值的形态"那道拦住,但那条判据依赖令牌恰好是十六进制 —— 换一种编码就漏。按
-   *  键名钉死(手机侧 `LAN_UNREADABLE_SETTING_KEYS` 也是这么钉的)。 */
-  "mobile.pairedDevices",
-  /** MCP 服务器的配置(每个 server 的 `env` / `headers`)。stdio server 的 `env` 里常放
-   *  **API key**(如 `GITHUB_TOKEN`),http/sse server 的 `headers` 里常放 `Authorization`
-   *  —— `contracts/ipc/mcp.ts` 明说 headers 原样保存。键名 `mcp.management` 两道正则
-   *  (`SECRET_SETTING_KEY_RE` / `SECRET_SETTING_STORE_RE`)都不命中,而 `setting.get`
-   *  是 read/自动批准、把整块 JSON 当一个字符串返回 → 凭据原样交给模型。与 #133 那四条
-   *  同一种洞,改法一样:按键名拦在调用之前。 */
-  "mcp.management",
-]);
-/** 兜底:名字里带密钥词的设置键也不给。宁可多拦一个键,也不漏一个。 */
-const SECRET_SETTING_KEY_RE =
-  /(api[-_.]?keys?|apikeys?|tokens?|secrets?|passw(or)?ds?|credentials?|cookies?|authorization|private[-_.]?keys?|cookieVault)/i;
-/** 密钥本体的**结构性**名字(见 `settingsTransfer.ts` 里 `SECRET_STORE_KEY_RE` 那段:
- *  加密凭据 map 全仓都是 `<东西>+Keys/Tokens/Secrets` 收尾)。逐个往集合里加是追着漏,
- *  这里按键名的形状一次挡住 —— `customModelKeys` / `piProviderKeys` / `codexProviderKeys`
- *  都在内。
- *  ⚠️ 末尾的 `/i` **不能省**:`settingsTransfer.ts` 里那条同名规则带 `/i`(导出时按它剔),
- *  这里不带就会**判据漂开** —— 一个 `providerkeys` 这样的全小写键能在导出时被剔掉、
- *  却仍能经 `setting.get` 交给模型。两条判据必须逐字同形。 */
-const SECRET_SETTING_STORE_RE = /(Keys|Tokens|Secrets|Credentials|Passwords)$/i;
+
+/**
+ * 【MC-004】本侧(agent 经 `setting.get*` 读设置)**额外**要挡的键。
+ *
+ * `customModels` 的值是**公开元数据**(地址 / 名字 / 模型 id),共享判据不收它 —— 导出
+ * 设置那条路有 `scrubSecrets` 深度清洗(把 `customHeaders` 里的鉴权头删掉、元数据照常
+ * 导出),所以导出侧显式豁免、保持可导出。但**这一侧**只有 `redactValue` 的按**字段名**
+ * 打码,而用户配在 `customHeaders` 上的网关密钥字段名任取(`x-api-key` / `Authorization`
+ * / 自定义名),按名打码正是仓库反复记录的洞(「打码靠键名、换个字段名就漏」)。判据不一
+ * 对等:拒绝多读一个键的代价是模型看不到一段公开元数据,放行的代价是网关密钥明文进上下文。
+ */
+const READ_SIDE_EXTRA_SECRET_KEYS: ReadonlySet<string> = new Set(["customModels"]);
 
 /** 这个设置键是不是"密钥本体",不能经 `setting.get*` 交给模型。 */
 export function isSecretSettingKey(key: unknown): boolean {
   if (typeof key !== "string" || key.length === 0) return false;
-  return (
-    SECRET_SETTING_KEYS.has(key) ||
-    SECRET_SETTING_KEY_RE.test(key) ||
-    SECRET_SETTING_STORE_RE.test(key)
-  );
+  return READ_SIDE_EXTRA_SECRET_KEYS.has(key) || isSharedSecretSettingKey(key);
 }
 
 /** `setting.get` / `setting.getMany` 的入参里,有没有踩到密钥键。 */
