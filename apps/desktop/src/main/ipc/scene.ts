@@ -1,9 +1,9 @@
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
-import { SceneApplyInputSchema, SceneApprovalInputSchema } from "@contracts/ipc/scene.js";
+import { SceneApplyInputSchema, SceneApprovalInputSchema, SceneResumeInputSchema } from "@contracts/ipc/scene.js";
 import { planScene } from "@main/appServices/scenePlanning.js";
 import { preflightScene } from "@main/appServices/scenePreflight.js";
-import { approveSceneDeployment, applySceneWithGrant } from "@main/appServices/sceneDeploy.js";
+import { approveSceneDeployment, applySceneWithGrant, resumeSceneWithGrant } from "@main/appServices/sceneDeploy.js";
 
 /** 【ARC-002 / MC-058】**只读**的场景规划:校验候选 SceneSpec 并编译出有序变更计划。
  *  不建资源、不申请授权(模型提出计划 ≠ 获得执行权限)。 */
@@ -30,6 +30,20 @@ export function registerSceneHandlers(ipc: IpcMain): void {
   ipc.handle(IPC.SCENE_APPLY, async (_event, raw) => {
     const input = SceneApplyInputSchema.parse(raw);
     return applySceneWithGrant({
+      deploymentId: input.deploymentId,
+      grantId: input.grantId,
+      spec: input.spec,
+      actor: { actorKind: input.actorKind, actorId: input.actorId },
+      ...(input.compensateOnFailure !== undefined ? { compensateOnFailure: input.compensateOnFailure } : {}),
+    });
+  });
+  // 【MC-002】**续跑** —— 与 apply 同形、同一条判定核(`resumeSceneWithGrant` 内部与
+  // `applySceneWithGrant` 共用 `authorizeApply` + `runPlanSteps`,不因「是 resume」放宽)。
+  // 与上面两条**同一条纪律**:agent 侧 policy 判 blocked(见 `policy.ts`),真正够得到的
+  // 只有桌面渲染端。`resumeScene` 从前**只有 smoke 在调** —— 部署中断后用户只能从头重跑。
+  ipc.handle(IPC.SCENE_RESUME, async (_event, raw) => {
+    const input = SceneResumeInputSchema.parse(raw);
+    return resumeSceneWithGrant({
       deploymentId: input.deploymentId,
       grantId: input.grantId,
       spec: input.spec,

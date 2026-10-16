@@ -38,6 +38,7 @@ import { compileSceneCommands } from "@contracts/sceneCommands";
 import type {
   SceneApprovalInput,
   SceneApplyInput,
+  SceneResumeInput,
   SceneDeploymentWire,
   ScenePlanWire,
 } from "@contracts/ipc";
@@ -346,6 +347,19 @@ export function canDeploy(state: SceneDeployState): boolean {
   return state.preview !== null && state.preview.ok && state.grant !== null;
 }
 
+/**
+ * 【MC-002】**能不能续跑** —— 预览成功 + 持有授权 + **上一次部署留下了部分执行记录**
+ * (`partial` / `failed`)。`deploymentId` 在一次部署内是稳定的(重试是同一 id 的覆盖),
+ * 所以续跑直接复用它 —— 主进程按它读回盘上那份「哪几步 done」的记录,跳过已完成的。
+ *
+ * `active`(全部完成)不显示续跑:没有剩余步骤可跑,按钮只会让用户以为还有事没做完。
+ */
+export function canResume(state: SceneDeployState): boolean {
+  if (state.preview === null || !state.preview.ok || state.grant === null) return false;
+  const outcome = state.apply;
+  return outcome !== null && outcome.ok && (outcome.deployment.status === "partial" || outcome.deployment.status === "failed");
+}
+
 /* ───────────────────────── 入参构造 ───────────────────────── */
 
 /**
@@ -387,4 +401,16 @@ export function buildSceneApplyInput(spec: unknown, state: SceneDeployState): Sc
     actorKind: "user",
     actorId: "desktop",
   };
+}
+
+/**
+ * 【MC-002】构造 `scene.resume` 的入参 —— 与 {@link buildSceneApplyInput} **同一份形状、
+ * 同一条纪律**(只给 `grantId`,不给授权内容;`deploymentId` 复用同一次部署那个)。
+ * 单列一个函数只是因为**通道不同**:主进程按通道分派到 `resumeSceneWithGrant`,
+ * 而它读回盘上那份部分执行的记录、跳过已 done 的步骤。
+ */
+export function buildSceneResumeInput(spec: unknown, state: SceneDeployState): SceneResumeInput | null {
+  const base = buildSceneApplyInput(spec, state);
+  if (base === null) return null;
+  return { ...base };
 }

@@ -152,6 +152,25 @@ export const SceneApplyInputSchema = z.object({
 });
 export type SceneApplyInput = z.infer<typeof SceneApplyInputSchema>;
 
+/**
+ * 【MC-002】**续跑入参** —— 与 {@link SceneApplyInput} **同形**(同一份 spec、同一枚
+ * 计划级授权、同样的执行核 `runPlanSteps`),唯一的差别是它的语义:跳过盘上记录里已经
+ * `done` 的步骤,从断点接着跑。
+ *
+ * 为什么单列一条而不是给 apply 加个 `resume: true`:续跑与首跑走的是 `sceneDeploy.ts` 里
+ * **两个**入口(`applySceneWithGrant` / `resumeSceneWithGrant`),判定核是同一份
+ * (`authorizeApply`,**不因「是 resume」放宽**)——「哪个入口」这件事该由**通道**说出来,
+ * 而不是藏在一个布尔参数里,那样审计与 policy 都得解析参数才知道发生了什么。
+ *
+ * `deploymentId` 必须对应盘上**已存在**的部分执行记录:读不到就明确拒绝 —— 绝不静默
+ * 当成一次新部署去建(那会把「续跑」变成「重复建资源」)。
+ */
+export const SceneResumeInputSchema = SceneApplyInputSchema;
+export type SceneResumeInput = z.infer<typeof SceneResumeInputSchema>;
+
+/** 续跑结果 —— 与 {@link SceneApplyIpcResult} 同形(同一条执行核,同一条返回形状)。 */
+export type SceneResumeIpcResult = SceneApplyIpcResult;
+
 /** 一条资源的独立回读(**过 IPC 的形状**;判据是「查得到才算 present」)。 */
 export interface SceneStepReadbackWire {
   actionId: string;

@@ -21,6 +21,8 @@ export const en = {
   "sceneDeploy.approving": "Approving…",
   "sceneDeploy.deploy": "Deploy",
   "sceneDeploy.deploying": "Deploying…",
+  "sceneDeploy.resume": "Resume remaining steps",
+  "sceneDeploy.resuming": "Resuming…",
   "sceneDeploy.reset": "Clear",
 
   /* ── stage hints ── */

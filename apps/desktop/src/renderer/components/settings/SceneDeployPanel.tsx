@@ -53,6 +53,7 @@ import {
 } from "@renderer/lib/icons.js";
 import type {
   SceneApplyIpcResult,
+  SceneResumeIpcResult,
   SceneApprovalResult,
   SceneDeploymentWire,
   ScenePlanWire,
@@ -62,10 +63,12 @@ import { PanelHeader } from "./PanelHeader.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import {
   buildSceneApplyInput,
+  buildSceneResumeInput,
   buildSceneApprovalInput,
   buildScenePreview,
   canApprove,
   canDeploy,
+  canResume,
   canPreview,
   INITIAL_SCENE_DEPLOY_STATE,
   mergePreviewWithPlan,
@@ -104,7 +107,7 @@ export function SceneDeployPanel() {
   /** 预览时的输入错误(空 / JSON 坏)—— 与「声明不合法」是两回事。 */
   const [previewError, setPreviewError] = useState<MessageId | null>(null);
   const [previewErrorParam, setPreviewErrorParam] = useState<string>("");
-  const [busy, setBusy] = useState<"approve" | "apply" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "apply" | "resume" | null>(null);
 
   // ── 读:能力预检(参数化,门控在「预览」这次点击上;不在每次击键时发) ──
   const { data: preflight, loading: preflightLoading, error: preflightError } = useRpc(
@@ -164,6 +167,31 @@ export function SceneDeployPanel() {
     setBusy("apply");
     try {
       const res: SceneApplyIpcResult = await api.scene.apply(input);
+      if (res.ok) {
+        dispatch({ type: "applied", deployment: res.deployment, observed: res.readback.observed });
+      } else if (res.kind === "refused") {
+        dispatch({ type: "applyRefused", reason: res.reason });
+      } else {
+        dispatch({
+          type: "applyRefused",
+          reason: res.problems.map((p) => t("sceneDeploy.problemLine", { path: p.path, message: p.message })).join("; "),
+        });
+      }
+    } catch (err) {
+      dispatch({ type: "applyRefused", reason: (err as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }, [parsedSpec, state, t]);
+
+  /** 【MC-002】续跑(写):与部署同一条路,只是主进程按 `scene.resume` 跳过盘上已 done 的步骤。 */
+  const resume = useCallback(async (): Promise<void> => {
+    if (parsedSpec === null) return;
+    const input = buildSceneResumeInput(parsedSpec, state);
+    if (input === null) return;
+    setBusy("resume");
+    try {
+      const res: SceneResumeIpcResult = await api.scene.resume(input);
       if (res.ok) {
         dispatch({ type: "applied", deployment: res.deployment, observed: res.readback.observed });
       } else if (res.kind === "refused") {
@@ -244,6 +272,12 @@ export function SceneDeployPanel() {
         >
           {busy === "apply" ? t("sceneDeploy.deploying") : t("sceneDeploy.deploy")}
         </Button>
+        {/* 【MC-002】部署中断(partial/failed)后才出现 —— 跳过已完成的步骤接着跑。 */}
+        {canResume(state) ? (
+          <Button variant="secondary" size="sm" disabled={!grantActive || busy !== null} onClick={() => void resume()}>
+            {busy === "resume" ? t("sceneDeploy.resuming") : t("sceneDeploy.resume")}
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"

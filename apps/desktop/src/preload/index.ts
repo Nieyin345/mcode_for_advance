@@ -980,6 +980,8 @@ const api = {
     // mobile 的 webApi 里显式 unsupported)—— 这两条就是「用户点头」这件事的落点。
     approve: ((input) => ipcRenderer.invoke(IPC.SCENE_APPROVE, input)) as RpcMap["scene.approve"],
     apply: ((input) => ipcRenderer.invoke(IPC.SCENE_APPLY, input)) as RpcMap["scene.apply"],
+    // 【MC-002】续跑(部署中断后从断点接着跑)—— 与 apply 同形同判据。
+    resume: ((input) => ipcRenderer.invoke(IPC.SCENE_RESUME, input)) as RpcMap["scene.resume"],
   },
   unattended: {
     // 无人值守任务计划:用户签发计划级授权 + 正式执行。**只有桌面渲染端**够得到

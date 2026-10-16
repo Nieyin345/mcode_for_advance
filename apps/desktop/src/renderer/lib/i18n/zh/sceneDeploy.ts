@@ -27,6 +27,8 @@ export const zh = {
   "sceneDeploy.approving": "批准中…",
   "sceneDeploy.deploy": "部署",
   "sceneDeploy.deploying": "部署中…",
+  "sceneDeploy.resume": "续跑剩余步骤",
+  "sceneDeploy.resuming": "续跑中…",
   "sceneDeploy.reset": "清空",
 
   /* ── 阶段提示 ── */
