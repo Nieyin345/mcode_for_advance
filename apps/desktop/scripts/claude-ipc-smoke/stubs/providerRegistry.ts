@@ -6,9 +6,10 @@
  *
  * - `ipc/claude.ts` 的 `PROVIDER_LIST`(列引擎)—— 空数组是**诚实**的:这个无头
  *   环境里确实一个都没装;
- * - `lib/sessionFork.ts` 的 `resolve()` —— 只在源会话有 `claudeSessionId` 时才走到,
- *   本套的分叉夹具用它验"引擎不支持复制对话时该抛"。所以这里给一个**可编程**的桩:
- *   默认没有 `forkSession`(多数引擎都没有),要验成功路径时再挂一个。
+ * - `lib/sessionFork.ts` 取引擎那一行(现为 `getRequired()`;MC-013 之前是
+ *   `resolve()`,本桩仍为历史对照保留该成员)—— 只在源会话有 `claudeSessionId` 时
+ *   才走到,本套的分叉夹具用它验"引擎不支持复制对话时该抛"。所以这里给一个**可编程**
+ *   的桩:默认没有 `forkSession`(多数引擎都没有),要验成功路径时再挂一个。
  */
 import type { AgentProvider } from "@contracts/provider";
 
@@ -58,12 +59,13 @@ export const providerRegistry = {
     return [];
   },
   /**
-   * ⚠️ 这里**不能**抛。
+   * 【MC-013】真注册表的 `resolve` **已删除**（全仓无调用端）。本桩保留它仅为历史
+   * 对照;真方法不存在了,谁再"退回 resolve"会在编译期就断。
    *
-   * 真的 `resolve` 是「按 id 找,找不到退回第一个注册的」——它从不抛(除非一个引擎都没
-   * 注册)。而 `sessionFork.ts:45` 只要源会话有 `claudeSessionId` 就一定会走到这一行,
-   * 无论引擎支不支持复制对话 —— **"支不支持"正是靠返回来的这个 provider 上有没有
-   * `forkSession` 判断的**。
+   * ⚠️ 这里**不能**抛(原注释,保留):真的 `resolve` 是「按 id 找,找不到退回第一个
+   * 注册的」——它从不抛(除非一个引擎都没注册)。而 `sessionFork.ts` 只要源会话有
+   * `claudeSessionId` 就一定会走到取引擎那一行,无论引擎支不支持复制对话 ——
+   * **"支不支持"正是靠返回来的这个 provider 上有没有 `forkSession` 判断的**。
    *
    * 这里踩过:最初写成"调到了说明夹具摆错了,直接抛",于是
    * 「引擎不支持复制对话时要抛」那条断言拿到的是本桩的报错文案(`resolve 不该被调到`),

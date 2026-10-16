@@ -14,9 +14,9 @@
  * `list()` 拿到空数组也不影响别的断言(`collectCapabilityInventory` 会记一条"没装"的
  * 问题,那是**诚实**的:这个无头环境里确实一个引擎都没装)。
  *
- * ⚠️ **不是空文件。** `get` 返回 `undefined` 是正确的("没装");而 `resolve` 在真的
- * 那边认不出 id 时会抛 —— 这一套**不该**走到它(走到了说明有代码绕过了前面那道判据,
- * 那正是要显形的事)。
+ * ⚠️ **不是空文件。** `get` 返回 `undefined` 是正确的("没装");而 `resolve` 已在
+ * 【MC-013】里从真注册表**删除** —— 本桩保留它(且一调就抛)是一条**绊线**:走到了
+ * 说明有代码复引入了已删除的接口,或绕过了前面那道判据,那正是要显形的事。
  */
 import type { AgentProvider } from "@contracts/provider";
 const smokeProvider = { id: "claude-sdk", displayName: "Smoke Provider" } as AgentProvider;
@@ -36,7 +36,7 @@ export const providerRegistry = {
   },
   resolve(_id?: string): AgentProvider {
     throw new Error(
-      "node-live-smoke:不该走到 providerRegistry.resolve —— 夹具里没有任何一步指定引擎",
+      "node-live-smoke:不该走到 providerRegistry.resolve(该接口已按 MC-013 删除)—— 夹具里没有任何一步指定引擎",
     );
   },
   get default(): AgentProvider {

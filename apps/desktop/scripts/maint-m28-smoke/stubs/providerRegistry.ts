@@ -3,7 +3,9 @@ import type { AgentProvider } from "@contracts/provider";
 export const providerRegistry = {
   get(_id: string): AgentProvider | undefined { return undefined; },
   list(): AgentProvider[] { return []; },
-  resolve(_id?: string): AgentProvider { throw new Error("maint-m28-smoke:不该走到 providerRegistry.resolve"); },
+  // 【MC-013】真注册表的 `resolve` 已删除;本桩保留它作绊线 —— 走到了说明有代码
+  // 复引入了已删除的接口(或绕过判据),那正是要显形的事。
+  resolve(_id?: string): AgentProvider { throw new Error("maint-m28-smoke:不该走到 providerRegistry.resolve(该接口已按 MC-013 删除)"); },
   get default(): AgentProvider { throw new Error("maint-m28-smoke:没有注册任何引擎"); },
   register(_p: AgentProvider): void { /* 无头脚本里不注册引擎 */ },
 };

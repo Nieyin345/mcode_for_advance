@@ -25,9 +25,9 @@
  *
  * ## 为什么能无头跑、假的是哪一半
  *
- * `runner.ts` 直接 import 了 `@main/claude/RuntimeManager.js`,而真的那个一旦
- * `bindSession` 就会 `providerRegistry.resolve` —— 整条引擎链(三个 SDK 实现 + 每个的
- * MCP 工具表)全在链上,无头起不来。所以**引擎那一侧是假的**(见 `stubs/runtimeManager.ts`),
+ * `runner.ts` 直接 import 了 `@main/claude/RuntimeManager.js`,而真的那个的 import
+ * 链上挂着 `providerRegistry`(模块底部注册三家引擎)—— 整条引擎链(三个 SDK 实现 +
+ * 每个的 MCP 工具表)全在链上,无头起不来。所以**引擎那一侧是假的**(见 `stubs/runtimeManager.ts`),
  * 被测的 `startWorkflowRun` 是**真的** —— 这一套读的是真代码发出去的事件,不是抄本。
  *
  * 时钟也是**可控**的(桩里的 `advance()`):否则"已跑 3 分 12 秒"只验得出"有个数字",

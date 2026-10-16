@@ -3,6 +3,9 @@
  *
  * Add new providers here (one register call each). The rest of the system
  * (RuntimeManager, IPC, frontend) resolves providers by id from this registry.
+ *
+ * 【MC-013】「新会话默认引擎」**不由**本注册表的注册顺序决定 —— 权威是常量
+ * `DEFAULT_PROVIDER_ID`(@contracts/ipc/settings.ts)。见下方 default getter 的说明。
  */
 import type { AgentProvider } from "@contracts/provider";
 import { ClaudeAgentSdkProvider } from "./claude-sdk/ClaudeAgentSdkProvider.js";
@@ -27,14 +30,16 @@ class ProviderRegistry {
   /**
    * 【MC-056】取**指定**引擎,取不到就抛 —— 绝不回退默认。
    *
-   * 已有会话(`session.providerId` 有值)的回合、分叉**必须**走这一条。从前它们调
-   * {@link resolve},而 `resolve` 在 id 有值但查不到时**静默返回默认引擎**(当前注册的
-   * 第一家 = claude-sdk)。于是一段标着 `pi-sdk` 的历史会话(引擎被卸了 / 存值写错 /
-   * 升级不兼容)再发一轮,会**悄悄换 Claude 跑** —— 审批模式、工具可见性、底层会话
-   * 记录、成本全对不上用户选的那个场景,而且没有任何地方报出来。
+   * 从前取引擎走 `resolve(id)`(已按 MC-013 删除):它在 id 有值但查不到时**静默返回
+   * 默认引擎**(当前注册的第一家 = claude-sdk)。于是一段标着 `pi-sdk` 的历史会话
+   * (引擎被卸了 / 存值写错 / 升级不兼容)再发一轮,会**悄悄换 Claude 跑** —— 审批模式、
+   * 工具可见性、底层会话记录、成本全对不上用户选的那个场景,而且没有任何地方报出来。
    *
    * 抛错让上层把"引擎不可用"变成一个**结构化失败**(保持原 providerId 与记录不动,
    * 给用户"装回原引擎 / 显式迁移"两条路),而不是换一个引擎继续跑。
+   *
+   * 新代码取引擎:`get()` 是可容忍缺失的探测口(列表 / 能力清单);凡是**取不到就没法
+   * 继续**的路径走本方法 —— 当前正式调用端只有 `lib/sessionFork.ts`(复制对话)。
    */
   getRequired(id: string): AgentProvider {
     const p = this.providers.get(id);
@@ -48,33 +53,26 @@ class ProviderRegistry {
     return p;
   }
 
-  /**
-   * 【MC-056】**只为新建且用户未指定引擎的会话**取默认(第一家注册的)。
-   *
-   * 与 {@link resolve} 的区别是语义:这个名字明说"这是给新会话兜底的",将来谁想把它
-   * 用在已有会话上,名字就会刺眼。已有会话一律走 {@link getRequired}。
-   */
-  getDefaultForNewSession(): AgentProvider {
-    return this.default;
-  }
-
-  /**
-   * ⚠️ **已弃用于已有会话。** 只要 `id` 有值(missing)就静默回退默认 —— 这正是 MC-056
-   * 那个"悄悄换引擎"的根。新代码:新建未指定用 {@link getDefaultForNewSession},已有
-   * 会话用 {@link getRequired}。保留本方法只为不打断别处尚未迁移的调用点,别再新增。
-   */
-  resolve(id?: string): AgentProvider {
-    if (id) {
-      const p = this.providers.get(id);
-      if (p) return p;
-    }
-    return this.default;
-  }
-
   list(): AgentProvider[] {
     return [...this.providers.values()];
   }
 
+  /**
+   * 【MC-013】**不**是「新会话默认引擎」的解析口 —— 别再往这个方向用它。
+   *
+   * 「新会话默认引擎」的权威是常量 `DEFAULT_PROVIDER_ID`(@contracts/ipc/settings.ts),
+   * 由 `sessionStart.ts` / `delegateHost.ts` / `automationRunner.ts` / `publicMcpSession.ts`
+   * 等入口直接引用。本 getter 只是**注册顺序的偶然结果**(当前 = 第一家 = claude-sdk),
+   * 两个事实目前**恰好相等**,但改注册顺序不会改默认引擎 —— 想改默认,改常量。
+   *
+   * ⚠️ **未决(MC-013 remaining)**:「常量硬编码 vs 注册表首家」的取舍需产品定。
+   * 现状是两份事实并存、由本注释钉住权威;待产品拍板后收敛成一份(删本 getter 的
+   * 「第一家」语义,或让常量从注册表解析)。
+   *
+   * 目前**全仓无调用端**(2026-10-17 实测;连同已删的 `resolve()` / `getDefaultForNewSession()`
+   * 一起核查过) —— 保留它是因为语义本身没错,需要「按注册顺序兜底」时仍可用;
+   * 若将来长期无调用,可一并删除。
+   */
   get default(): AgentProvider {
     const first = this.providers.values().next().value as AgentProvider | undefined;
     if (!first) throw new Error("No providers registered");

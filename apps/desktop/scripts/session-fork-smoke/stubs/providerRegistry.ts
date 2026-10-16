@@ -24,10 +24,11 @@ export function setFakeProvider(provider: FakeProvider): void {
 }
 
 export const providerRegistry = {
-  // ⚠️ **必须与真注册表的回退语义逐字一致**:查不到 id 时返回**默认引擎**(第一家注册的),
-  // 而不是一个空对象。上一版这里给空对象,于是 MC-056 那条断言在变异(把 getRequired 退回
-  // resolve)下**照样绿** —— 因为空对象没有 forkSession,报的是"不支持分叉"而不是"引擎不可用",
-  // 断言测到了别人的职责。现在它会像真注册表那样回退到已注册的默认引擎。
+  /** 【MC-013】真注册表的 `resolve` **已删除**（全仓无调用端）。本桩保留它仅为历史对照：
+   *  上一版这里必须与真注册表的回退语义逐字一致，好让「把 getRequired 退回 resolve」的
+   *  变异能被测到（当时给空对象会让 MC-056 那条断言在变异下照样绿 —— 空对象没有
+   *  forkSession，报的是"不支持分叉"而不是"引擎不可用"，断言测到了别人的职责）。
+   *  真方法既已不存在，"退回"这条路也在编译期就断了；留此成员只为不抹掉那段来历。 */
   resolve(id: string): FakeProvider {
     const found = providers.get(id);
     if (found) return found;
@@ -35,7 +36,7 @@ export const providerRegistry = {
     return dflt ?? { id, calls: [], deleteCalls: [] };
   },
   /** 【MC-056】真注册表语义:取不到就**抛** —— 调用方(forkSession)靠它拒绝在引擎
-   *  不可用时静默换默认引擎。与上面 `resolve` 的"回退默认"刻意相反,这正是要区分的两问。 */
+   *  不可用时静默换默认引擎。这正是它当初要与 `resolve` 的"回退默认"区分开的理由。 */
   getRequired(id: string): FakeProvider {
     const found = providers.get(id);
     if (!found) {

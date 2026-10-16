@@ -1,8 +1,8 @@
 import type { AutomationEventOrigin } from "@main/orchestration/automationEventOrigin.js";
 /**
  * `@main/claude/RuntimeManager.js` 的替身 —— 见 main.ts 文件头「为什么引擎那一侧是假的」。
- * 真的那个一旦 `bindSession` 就会 `providerRegistry.resolve`,整条引擎链(三个 SDK 实现
- * + 每个的 MCP 工具表)全在链上。
+ * 真的那个的 import 链上挂着 `providerRegistry`(注册三家引擎),整条引擎链
+ * (三个 SDK 实现 + 每个的 MCP 工具表)全在链上。
  *
  * ## 它只做真 RuntimeManager 对 `runner.ts` 可见的那几件
  *

@@ -11,6 +11,8 @@ export function setFakeProvider(provider: FakeProvider): void {
 }
 
 export const providerRegistry = {
+  /** 【MC-013】真注册表的 `resolve` 已删除;本桩保留它仅为历史对照(真方法不存在了,
+   *  「退回 resolve」的路在编译期已断)。 */
   resolve(id: string): FakeProvider {
     if (!current || current.id !== id) return { id, calls: [] };
     return current;

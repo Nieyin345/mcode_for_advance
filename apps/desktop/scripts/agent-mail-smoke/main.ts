@@ -1741,5 +1741,30 @@ console.log("\n⑰ 生产侧画像来源:sendTurn 真的把画像传给了 provi
   }
 }
 
+/* ── 【MC-013】注册表死接口面已删,活着的入口语义不变 ────────────────
+ *
+ * 本套是唯一**直接使用真注册表**的无头套件(`run.sh` 只换 dataRoot / logger /
+ * electron / window 四个桩),所以「接口面」这条回归只能落在这里。删掉的两个方法
+ * 各是 MC-056 的半边:
+ *   - `resolve(id?)` 在 id 有值但查不到时静默回退默认引擎(悄悄换引擎的根);
+ *   - `getDefaultForNewSession()` 自述「给新会话兜底」,但新会话实际走
+ *     `DEFAULT_PROVIDER_ID` 常量 —— 它只是让「新会话默认引擎」多出一个假出口。
+ * 判据是**真注册表对象上的属性**与**真调用的抛/不抛**,不是 grep 源码文本 ——
+ * 文本断言在一个把函数体清空的实现上照样绿。 */
+console.log("\n⑱【MC-013】注册表死接口面已删,活着的入口语义不变");
+{
+  const reg = providerRegistry as unknown as Record<string, unknown>;
+  eq("resolve 已删(全仓无调用端的静默回退口)", typeof reg.resolve, "undefined");
+  eq("getDefaultForNewSession 已删(与 DEFAULT_PROVIDER_ID 重复的第二出口)", typeof reg.getDefaultForNewSession, "undefined");
+
+  // 活着的入口照常:`get` 是容忍缺失的探测口,`getRequired` 取不到必抛(MC-056 语义)。
+  eq("get 对在册引擎照常返回(正控)", providerRegistry.get("claude-sdk")?.id, "claude-sdk");
+  eq("get 对不在册的引擎照旧返回 undefined(探测口语义)", providerRegistry.get("mc013-ghost-engine"), undefined);
+  let threw: (Error & { code?: string }) | undefined;
+  try { providerRegistry.getRequired("mc013-ghost-engine"); } catch (err) { threw = err as Error & { code?: string }; }
+  check("★ getRequired 取不到就抛结构化失败(MC-056 的活着的入口)", threw !== undefined && threw.code === "PROVIDER_UNAVAILABLE", threw?.code);
+  eq("getRequired 对在册引擎照常返回", providerRegistry.getRequired("claude-sdk").id, "claude-sdk");
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);
