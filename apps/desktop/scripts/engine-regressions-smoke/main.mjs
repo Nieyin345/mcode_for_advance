@@ -642,6 +642,9 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
 });
 
 test("workflow provider overrides survive node-session reuse and drive provider-scoped UI", () => {
+  // 有些符号已随子块搬进 `*Parts.tsx` —— 扫**两文件拼接**。这里先定义,好让下面的
+  // `rd(...)` 在使用前就有值。
+  const rd = (p) => { try { return readFileSync(resolve(here, "../../" + p), "utf8"); } catch { return ""; } };
   const runner = readFileSync(resolve(here, "../../src/main/orchestration/runner.ts"), "utf8");
   assert.match(runner, /override\.length > 0 \? override : sameEngine \? conversation\.model : ""/);
   assert.match(runner, /SessionRepo\.updateSettings\(existing\.id/);
@@ -659,7 +662,8 @@ test("workflow provider overrides survive node-session reuse and drive provider-
   assert.match(refs, /failed: !stale && failed/);
   assert.match(refs, /s\.customModels\.find\(\(cfg\) => cfg\.id === s\.customModelId\)/);
   assert.doesNotMatch(refs, /for \(const cfg of s\.customModels\)/);
-  const fields = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/ParamField.tsx"), "utf8");
+  // ⚠️ `ParamField` 的控件族已拆到 `ParamFieldParts.tsx` —— 扫**两文件拼接**。
+  const fields = rd("src/renderer/components/settings/workflows/ParamField.tsx") + "\n" + rd("src/renderer/components/settings/workflows/ParamFieldParts.tsx");
   assert.match(fields, /unsupportedMcp/);
   assert.match(fields, /mcpUnsupportedProvider/);
   assert.match(fields, /paramRefLoadFailed/);
@@ -687,7 +691,6 @@ test("workflow provider overrides survive node-session reuse and drive provider-
   assert.match(piSkills, /const explicitPicks = !!/, "MC-074: explicitPicks 守卫存在");
   // ⚠️ `PluginsPanel` / `McpPanel` / `SkillsPanel` 的子块已拆到各自的 `*Parts.tsx`
   //    —— 扫的是**两文件拼接**（符号可能落在任一边）。这两条曾经因搬家变空过。
-  const rd = (p) => { try { return readFileSync(resolve(here, "../../" + p), "utf8"); } catch { return ""; } };
   const pluginPanel = rd("src/renderer/components/settings/PluginsPanel.tsx") + "\n" + rd("src/renderer/components/settings/PluginsPanelParts.tsx");
   assert.match(pluginPanel, /plugin\.compatibleProviderIds/);
   assert.match(pluginPanel, /settings\.plugins\.providerIncompatible/);

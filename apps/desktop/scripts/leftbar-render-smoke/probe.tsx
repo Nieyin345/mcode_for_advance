@@ -8,6 +8,7 @@
 // 变异验证：把 `GroupNode` 的 `{groupName}` 改成一个常量，本套必须红。
 import "./globals.js";
 import { renderToString } from "react-dom/server";
+import type { Project, Session } from "@contracts/session";
 import {
   ProjectNode,
   SessionRow,
@@ -16,12 +17,12 @@ import {
   SortableProjectNode,
   ProjectContextMenu,
   GroupDialog,
-} from "../../src/renderer/components/layout/LeftBarParts.tsx";
-import { LeftBar } from "../../src/renderer/components/layout/LeftBar.tsx";
+} from "../../src/renderer/components/layout/LeftBarParts.js";
+import { LeftBar } from "../../src/renderer/components/layout/LeftBar.js";
 
 let failures = 0;
 let total = 0;
-function check(name, cond, detail) {
+function check(name: string, cond: boolean, detail?: unknown): void {
   total++;
   if (cond) console.log(`  ok   ${name}`);
   else {
@@ -34,12 +35,16 @@ function check(name, cond, detail) {
 const project = {
   id: "p1",
   name: "研究项目",
+  path: "D:/ws/p1",
   rootPath: "D:/ws/p1",
   color: "a",
   createdAt: 1,
   updatedAt: 2,
+  archived: false,
   pinned: false,
-};
+  pinnedAt: null,
+  sortOrder: 0,
+} as unknown as Project;
 const session = {
   id: "s1",
   projectId: "p1",
@@ -51,7 +56,7 @@ const session = {
   pinned: false,
   worktreePath: null,
   contextSnapshot: null,
-};
+} as unknown as Session;
 const noop = () => {};
 
 const projectNodeProps = {
@@ -85,9 +90,9 @@ const projectNodeProps = {
   onContextProject: noop,
 };
 
-function mustRender(name, node, expectSubstring) {
+function mustRender(name: string, node: import("react").ReactElement, expectSubstring?: string): string {
   let html = "";
-  let err = null;
+  let err: unknown = null;
   try {
     html = renderToString(node);
   } catch (e) {
@@ -96,7 +101,7 @@ function mustRender(name, node, expectSubstring) {
   check(
     `${name} 真渲染成功`,
     err === null,
-    err ? String(err && err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : err) : undefined,
+    err ? String(err instanceof Error ? err.stack?.split("\n").slice(0, 3).join(" | ") : err) : undefined,
   );
   if (err === null && expectSubstring !== undefined) {
     check(`${name} 渲染出预期标记`, html.includes(expectSubstring), html.slice(0, 200));
@@ -105,11 +110,28 @@ function mustRender(name, node, expectSubstring) {
 }
 
 console.log("\n[1] LeftBar 主组件（现在 import Parts 里的子块）");
-mustRender("LeftBar", <LeftBar />, undefined);
+mustRender("LeftBar", <LeftBar />);
 
 console.log("\n[2] 拆出去的子单元逐个真渲染");
 mustRender("ProjectNode", <ProjectNode {...projectNodeProps} />, "研究项目");
-mustRender("SessionRow", <SessionRow session={session} active={false} running={false} />, "会话一");
+mustRender(
+  "SessionRow",
+  <SessionRow
+    session={session}
+    active={false}
+    isRunning={false}
+    unreadCount={0}
+    onSelect={noop}
+    onTogglePin={noop}
+    onArchive={noop}
+    onDelete={noop}
+    onNewWorktreeSession={noop}
+    hideWorktreeBadge={false}
+    registerNode={noop}
+    onContext={noop}
+  />,
+  "会话一",
+);
 mustRender(
   "WorktreeContextMenu",
   <WorktreeContextMenu
@@ -120,7 +142,6 @@ mustRender(
     onRename={noop}
     onRemove={noop}
   />,
-  undefined,
 );
 mustRender(
   "GroupNode",
@@ -139,8 +160,9 @@ mustRender(
 );
 mustRender(
   "SortableProjectNode",
-  <SortableProjectNode projectId="p1"><ProjectNode {...projectNodeProps} /></SortableProjectNode>,
-  undefined,
+  <SortableProjectNode projectId="p1">
+    <ProjectNode {...projectNodeProps} />
+  </SortableProjectNode>,
 );
 mustRender(
   "ProjectContextMenu",
@@ -155,12 +177,10 @@ mustRender(
     onRemoveFromGroup={noop}
     onOpenFolder={noop}
   />,
-  undefined,
 );
 mustRender(
   "GroupDialog",
   <GroupDialog state={{ mode: "create", projectId: "p1" }} onClose={noop} onSubmit={async () => {}} />,
-  undefined,
 );
 
 console.log(`\nleftbar-render-smoke:${total - failures}/${total} 通过`);
