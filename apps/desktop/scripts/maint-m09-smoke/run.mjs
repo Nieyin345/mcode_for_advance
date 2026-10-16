@@ -22,7 +22,8 @@ function load(relative,names,bindings=false){
  const js=ts.transpileModule(nodes.join('\n')+'\n;globalThis.extracted={'+names.join(',')+'};',{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
  const context={exports:{}};vm.runInNewContext(js,context,{timeout:1000});return context.extracted;
 }
-const main=load('src/main/lsp/LspManager.ts',['filePathToUri','dirPathToUri']);
+// ⚠️ `filePathToUri` / `dirPathToUri` 已拆到 `LspManagerUtils.ts` —— 从新文件取。
+const main=load('src/main/lsp/LspManagerUtils.ts',['filePathToUri','dirPathToUri']);
 const renderer=load('src/renderer/lib/lspProviders.ts',['filePathToUri','uriToFilePath','decodeURIComponentSafe','bindModelToPath','unbindModel','modelToLspUri'],true);
 const checks=[];
 function test(name,fn){try{fn();checks.push({name,pass:true});console.log('PASS '+name);}catch(e){checks.push({name,pass:false,error:String(e)});console.log('FAIL '+name+'\n'+e);}}
