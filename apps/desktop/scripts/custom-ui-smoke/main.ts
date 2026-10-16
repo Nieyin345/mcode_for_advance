@@ -683,8 +683,10 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
   const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const stripComments = (s: string) => s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // ⚠️ `ItemEditor` / `AdvancedSection` 已拆到 `CustomUiPanelParts.tsx` —— 扫**两文件拼接**。
   const panel = stripComments(
-    readFileSync(join(process.cwd(), "src/renderer/components/settings/CustomUiPanel.tsx"), "utf8"),
+    readFileSync(join(process.cwd(), "src/renderer/components/settings/CustomUiPanel.tsx"), "utf8")
+    + "\n" + readFileSync(join(process.cwd(), "src/renderer/components/settings/CustomUiPanelParts.tsx"), "utf8"),
   );
   check("★ 高级复制按钮走共享 copyText(不再裸 navigator.clipboard)", /copyText\(text\)/.test(panel));
   check("★ 不再有没接住的 `void navigator.clipboard.writeText`", !/void\s+navigator\.clipboard\.writeText/.test(panel));
