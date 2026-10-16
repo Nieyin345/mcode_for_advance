@@ -706,7 +706,8 @@ test("workflow provider overrides survive node-session reuse and drive provider-
   assert.match(pluginPanel, /ops\.setBusyKey\(null\);[\s\S]*ops\.setError\(msg\)/);
   const profilesView = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/AgentProfilesView.tsx"), "utf8");
   assert.match(profilesView, /if \(saved\) setDraft\(null\)/);
-  const nodeInspector = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/NodeInspector.tsx"), "utf8");
+  // ⚠️ `NodeInspector` 的三段面板已拆到 `NodeInspectorParts.tsx` —— 扫**两文件拼接**。
+  const nodeInspector = rd("src/renderer/components/settings/workflows/NodeInspector.tsx") + "\n" + rd("src/renderer/components/settings/workflows/NodeInspectorParts.tsx");
   assert.match(nodeInspector, /if \(saved\) setNaming\(null\)/);
   const workflowsPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/WorkflowsPanel.tsx"), "utf8");
   assert.match(workflowsPanel, /Promise<boolean>/);
