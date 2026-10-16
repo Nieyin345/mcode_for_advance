@@ -17,6 +17,9 @@ export const en = {
   // users think the entire library was about to be deleted.
   "library.collection.deleteConfirm": "Delete the category “{name}”? Its items are not deleted — they simply no longer belong to this category.",
   "library.collection.empty": "No items in this category yet",
+  "library.loadFailed": "Couldn't load this collection's items: {error}",
+  "library.loadFailedStale": "Refresh failed — what's below may be stale: {error}",
+  "library.retry": "Retry",
 
   // Sidebar management: groups (sections) and sub-types (tabs) are managed by right-click in the sidebar
   "library.group.rename": "Rename level-1 category",

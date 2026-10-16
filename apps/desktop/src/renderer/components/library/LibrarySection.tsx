@@ -203,6 +203,8 @@ export function LibrarySection({
   const expandCollection = useLibraryStore((s) => s.expandCollection);
   const loadCollectionItems = useLibraryStore((s) => s.loadCollectionItems);
   const itemsByCollection = useLibraryStore((s) => s.itemsByCollection);
+  // 【MC-050】每个库的拉取失败原因 —— 界面据此把「加载中」与「加载失败+重试」分开。
+  const itemsError = useLibraryStore((s) => s.itemsError);
   const allItems = useLibraryStore((s) => s.allItems);
   const allItemsTotal = useLibraryStore((s) => s.allItemsTotal);
   const loadAllItems = useLibraryStore((s) => s.loadAllItems);
@@ -1142,7 +1144,27 @@ export function LibrarySection({
       第四级)+ 「新建三级分类」输入行。二级分类自己不画行 —— 它就是上面那个 tab。 */
   const renderSubContent = (c: LibraryCollection) => {
     const items = itemsByCollection[c.id];
+    const err = itemsError[c.id];
     const kids = childrenOf.get(c.id) ?? [];
+    // 【MC-050】加载失败且**从未加载过**时,不能继续显示 `…`(那是「加载中」的样子,
+    // 会永远停在那里)。显式报错 + 重试;已加载过的库刷新失败则保留旧内容并在下方
+    // 标一行「可能过期」(旧快照当 stale fallback,但必须可见 —— 硬规矩 3)。
+    if (err !== undefined && items === undefined) {
+      return (
+        <div className="flex items-center gap-2 px-2 py-1 text-[0.85em]">
+          <span className="min-w-0 flex-1 truncate text-danger" title={err}>
+            {t("library.loadFailed", { error: err })}
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted hover:bg-surface-hover"
+            onClick={() => void loadCollectionItems(c.id)}
+          >
+            {t("library.retry")}
+          </button>
+        </div>
+      );
+    }
     return (
       <>
         {renamingId === c.id && renameInputRow(c)}
@@ -1156,6 +1178,20 @@ export function LibrarySection({
             {(items ?? []).map((item) => renderItemRow(item, c.id))}
             {kids.map((k) => renderCollectionRow(k, new Set([c.id])))}
           </>
+        )}
+        {err !== undefined && (
+          <div className="flex items-center gap-2 px-2 py-0.5 text-[0.8em]">
+            <span className="min-w-0 flex-1 truncate text-warning" title={err}>
+              {t("library.loadFailedStale", { error: err })}
+            </span>
+            <button
+              type="button"
+              className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted hover:bg-surface-hover"
+              onClick={() => void loadCollectionItems(c.id)}
+            >
+              {t("library.retry")}
+            </button>
+          </div>
         )}
         {creatingSubInputFor(c)}
         {/* ⚠️ **新建笔记的起名行这里也要画。** 二级分类是横排 tab,它自己的内容走的是

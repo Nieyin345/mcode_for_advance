@@ -21,6 +21,9 @@ export const zh = {
    *  而这一条删的是树上的一个节点。原来写成「删除文献库」会让用户以为整个库要没了。 */
   "library.collection.deleteConfirm": "删除分类「{name}」？里面的资料不会被删除，只是不再属于这个分类。",
   "library.collection.empty": "这个分类还没有资料",
+  "library.loadFailed": "这个分类的资料读不出来:{error}",
+  "library.loadFailedStale": "刷新失败,下面可能是过期内容:{error}",
+  "library.retry": "重试",
 
   // 左栏管理。层级术语(用户 2026-09-28 定名):一级分类(group) → 二级分类
   // (根 collection) → 三级分类(嵌套 collection) → 条目。代码标识符不改,

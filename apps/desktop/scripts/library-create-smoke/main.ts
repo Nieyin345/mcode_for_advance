@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
-import type { LibraryCollection } from "@contracts/library";
+import type { LibraryCollection, LibraryItem } from "@contracts/library";
 import type { CollectionCreateInput } from "@contracts/ipc/library";
 import { IPC } from "@contracts/ipc";
 import { useBackend } from "./stubs/api.js";
@@ -50,10 +50,15 @@ if (process.argv.includes("--recover")) {
     };
     const create = (input: CollectionCreateInput) =>
       invoke(IPC.LIBRARY_CREATE_COLLECTION, input) as Promise<{ collections: LibraryCollection[] }>;
+    /** 【MC-050】真 handler 的条目读取 —— 失败注入时作为"正常态"的还原点。 */
+    const listLib = (input: { collectionId?: string; limit: number }) =>
+      invoke(IPC.LIBRARY_LIST, input) as Promise<{ items: LibraryItem[]; total: number }>;
     useBackend({
       createCollection: create,
       listCollections: () =>
         invoke(IPC.LIBRARY_LIST_COLLECTIONS, {}) as Promise<{ collections: LibraryCollection[] }>,
+      // 【MC-050】条目读取走真 handler(可被下面替换成抛错,验失败态)。
+      list: listLib,
     });
     const { useLibraryStore } = await import("@renderer/stores/libraryStore.js");
     await useLibraryStore.getState().loadCollections();
@@ -105,6 +110,50 @@ if (process.argv.includes("--recover")) {
       const res = (await invoke(IPC.LIBRARY_CONVERT, undefined)) as { converted: number };
       equal("library.convert 接受省略的 input(undefined)", typeof res.converted, "number");
       console.log("  ok   library.convert 接受省略的 input(undefined)");
+    }
+
+    // ── 【MC-050】条目读取失败**不再被静默吞掉** ──
+    //   从前 `loadCollectionItems` 的 `catch {}` 什么都不做:界面上永久 `…`(与
+    //   「正在加载」分不清)、已加载过的库刷新失败静默留旧内容。现在失败显式记进
+    //   `itemsError`,成功即清。
+    {
+      const st = () => useLibraryStore.getState();
+      // ① 首次成功:条目到位、无错误。
+      await st().loadCollectionItems(docsId);
+      equal("★ MC-050:首次加载成功后该库无错误标记", st().itemsError[docsId], undefined);
+
+      // ② 让下一次 list 抛(模拟主进程未就绪 / I/O 错)。
+      let failing = true;
+      const origList = listLib;
+      useBackend({
+        createCollection: create,
+        listCollections: () =>
+          invoke(IPC.LIBRARY_LIST_COLLECTIONS, {}) as Promise<{ collections: LibraryCollection[] }>,
+        list: async (input) => {
+          if (failing) throw new Error("FAKE_EACCES");
+          return origList(input);
+        },
+      });
+      // 一个**从未加载过**的库读失败 → itemsError 记下原因(不是永久 undefined 的 `…`)。
+      // 用 **store 的方法**建(它同时更新 store 的 collections —— 成功路径的守卫
+      // `collections.some(...)` 依赖这一点,用底层 create 会让守卫提前 return)。
+      const freshId = (await st().createCollection("MC050 未加载过", "docs"))!;
+      await useLibraryStore.getState().loadCollectionItems(freshId);
+      equal("★ MC-050:首次读失败 → itemsError 记下原因(界面能显式报错而不是永久 …)", st().itemsError[freshId], "FAKE_EACCES");
+      equal("★ MC-050:读失败时该库仍无缓存(界面据此出错误行而不是空态谎)", st().itemsByCollection[freshId], undefined);
+
+      // ③ 已加载过的库刷新失败 → 旧内容保留(stale fallback)但错误也记着(必须可见)。
+      const before = st().itemsByCollection[docsId]?.length ?? -1;
+      await useLibraryStore.getState().loadCollectionItems(docsId);
+      equal("★ MC-050:刷新失败旧内容保留(stale fallback)", st().itemsByCollection[docsId]?.length, before);
+      equal("★ MC-050:刷新失败同时记错误(旧内容必须标「可能过期」)", st().itemsError[docsId], "FAKE_EACCES");
+
+      // ④ 重试成功 → 错误清除(提示要消失)。
+      failing = false;
+      await useLibraryStore.getState().loadCollectionItems(freshId);
+      equal("★ MC-050:重试成功后错误清除", st().itemsError[freshId], undefined);
+      await useLibraryStore.getState().loadCollectionItems(docsId);
+      equal("★ MC-050:重试成功后旧库的错误也清除", st().itemsError[docsId], undefined);
     }
 
     // 模拟此前创建成功却看不见的记录，以及旧回填写出的空串记录。

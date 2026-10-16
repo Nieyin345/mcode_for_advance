@@ -95,6 +95,18 @@ interface LibraryState {
    *  {@link TREE_PAGE} 条,`total > allItems.length` 时"全部显示"视图要如实写一句
    *  "还有 N 条" —— 否则孤儿条目(不属于任何分类、只在"全部"里看得见)会被静默漏掉。 */
   allItemsTotal: number;
+  /**
+   * 【MC-050】每个库最近一次拉取**失败**的原因(成功即清)。
+   *
+   * 从前 `loadCollectionItems` 的 `catch {}` 只留一行注释"主进程未就绪"就把错误吞了 ——
+   * 展开一个从未加载的分类、I/O 正巧出错,界面会**永久显示 `…`**(`itemsByCollection[id]`
+   * 始终 undefined),用户分不清"在加载"与"读失败了";已加载过的库刷新失败则静默留旧
+   * 内容,没有任何"可能过期"的标记。这条记下失败原因,界面据此区分「加载中」与
+   * 「加载失败 + 重试」,并给 `refreshItems` 的旧内容标 stale(硬规矩 3:坏东西显式报出来)。
+   */
+  itemsError: Record<string, string>;
+  /** 全库口径(`loadAllItems`)最近一次失败的原因;成功即清。 */
+  allItemsError: string | null;
 
   loadCollections: () => Promise<void>;
   /** 新建并返回 id。归属必须来自触发新建的那个大类，不能沿用上次选中分类的大类。 */
@@ -134,6 +146,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   itemsByCollection: {},
   allItems: null,
   allItemsTotal: 0,
+  itemsError: {},
+  allItemsError: null,
 
   loadCollections: async () => {
     const request = ++collectionsRequest;
@@ -209,9 +223,15 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       const res = await api.library.list({ collectionId: id, limit: TREE_PAGE });
       if (latestItemsRequest.get(id) !== request) return;
       if (get().loaded && !get().collections.some((c) => c.id === id)) return;
-      set((s) => ({ itemsByCollection: { ...s.itemsByCollection, [id]: res.items } }));
-    } catch {
-      // 主进程未就绪 —— 保持空列表,不抛
+      set((s) => ({
+        itemsByCollection: { ...s.itemsByCollection, [id]: res.items },
+        // 【MC-050】成功即清该库的失败标记(重试成功后错误提示要消失)。
+        itemsError: Object.fromEntries(Object.entries(s.itemsError).filter(([k]) => k !== id)),
+      }));
+    } catch (err) {
+      // 【MC-050】失败**显式记下**(从前这里静默吞掉:界面永久 `…`,与"正在加载"分不清)。
+      if (latestItemsRequest.get(id) !== request) return; // 过期请求的失败不覆盖新状态
+      set((s) => ({ itemsError: { ...s.itemsError, [id]: err instanceof Error ? err.message : String(err) } }));
     }
   },
 
@@ -219,9 +239,12 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     const request = ++allItemsRequest;
     try {
       const res = await api.library.list({ limit: TREE_PAGE });
-      if (request === allItemsRequest) set({ allItems: res.items, allItemsTotal: res.total });
-    } catch {
-      // 主进程未就绪 —— 保持空,不抛
+      if (request === allItemsRequest) set({ allItems: res.items, allItemsTotal: res.total, allItemsError: null });
+    } catch (err) {
+      // 【MC-050】同 loadCollectionItems:失败不再静默。
+      if (request === allItemsRequest) {
+        set({ allItemsError: err instanceof Error ? err.message : String(err) });
+      }
     }
   },
 
