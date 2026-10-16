@@ -22,6 +22,7 @@
  * 临时文件再改名更简单也更安全:要么是旧的完整内容,要么是新的完整内容。
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { parseHooksFile, stripBom, validateHook, type HookSpec, type HooksFile } from "@contracts/hook";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -35,19 +36,73 @@ export function hooksFilePath(): string {
   return join(dataRoot(), HOOKS_FILENAME);
 }
 
+/**
+ * 【MC-051】hooks.json 的**健康分类** —— 读/写/删共用一份判据(仓库硬规矩 2)。
+ *
+ * 从前 `readRawHooks` 把「读盘异常」「损坏 JSON」「没有有效 hooks 数组」一律降成
+ * `null`,而 `commitHooks` 对 `null` 的处理是**直接整份重写** —— 用户手写的损坏
+ * 原文被一次普通保存悄悄覆盖,没有备份、没有拒绝。台账点名的坏例。
+ *
+ * 四态(与插件配置的 `classifyJsonSetting` 同一条纪律):
+ *  - `missing`   文件不存在 —— **唯一**允许创建文件的状态;
+ *  - `valid`     读得懂(顶层形状对),照常读/合并写;
+ *  - `corrupt`   读得到但读不懂(JSON 语法坏 / 顶层形状不对)—— 普通写入**拒绝**,
+ *                原字节保全,重建走显式的恢复操作(见 {@link rebuildCorruptHooksFile});
+ *  - `read_error` 读不动(existsSync 通过但 readFileSync 抛,如 EACCES)—— 同拒绝。
+ */
+export type HooksFileHealth =
+  | { state: "missing" }
+  | { state: "valid"; text: string }
+  | { state: "corrupt"; text: string; error: string }
+  | { state: "read_error"; error: string };
+
+/** 一处分层的读:文件在 → 读文本 → 判形状。readHooks/readRawHooks/commitHooks 共用。 */
+export function classifyHooksFile(): HooksFileHealth {
+  const file = hooksFilePath();
+  if (!existsSync(file)) return { state: "missing" };
+  let text: string;
+  try {
+    text = readFileSync(file, "utf-8");
+  } catch (err) {
+    return { state: "read_error", error: (err as Error).message };
+  }
+  const body = stripBom(text);
+  if (body.trim().length === 0) return { state: "valid", text }; // 空文件 = 没钩子(与 parseHooksFile 同)
+  let raw: unknown;
+  try {
+    raw = JSON.parse(body);
+  } catch (err) {
+    return { state: "corrupt", text, error: `不是合法的 JSON:${(err as Error).message}` };
+  }
+  const list = (raw as { hooks?: unknown } | null)?.hooks;
+  if (list !== undefined && !Array.isArray(list)) {
+    return { state: "corrupt", text, error: "hooks 要是一个数组" };
+  }
+  if (Array.isArray(list) || Array.isArray(raw)) return { state: "valid", text };
+  return { state: "corrupt", text, error: "顶层要是一个钩子数组,或者一个有 hooks 数组的对象" };
+}
+
+/** 损坏状态下的保存拒绝语 —— 一处措辞,UI / Agent 看到同一句话(点名怎么恢复)。 */
+function corruptRefusal(health: Extract<HooksFileHealth, { state: "corrupt" | "read_error" }>): { ok: false; error: string } {
+  const why = health.state === "read_error" ? `读不动:${health.error}` : `读不懂:${health.error}`;
+  return {
+    ok: false,
+    error: `${HOOKS_FILENAME} ${why} —— 为保住你的原始内容,这次保存被拒绝(不是没保存成功,是故意的)。请先直接修好文件;或在设置页用「备份并重建」显式重建(会先把原件备份成 ${HOOKS_FILENAME}.corrupt-<时间>.bak)。`,
+  };
+}
+
 /** 读全部钩子。**文件不存在、读不了、格式不对都不抛** —— 钩子是附加能力,它坏了
  *  不该让设置页打不开(与 `parseWorkflowDoc` 退化成空文档同一条)。 */
 export function readHooks(): HooksFile {
-  const file = hooksFilePath();
-  if (!existsSync(file)) return { hooks: [], problems: [] };
-  try {
-    return parseHooksFile(readFileSync(file, "utf-8"));
-  } catch (err) {
+  const health = classifyHooksFile();
+  if (health.state === "missing") return { hooks: [], problems: [] };
+  if (health.state === "read_error") {
     return {
       hooks: [],
-      problems: [{ where: HOOKS_FILENAME, error: `读不了:${(err as Error).message}` }],
+      problems: [{ where: HOOKS_FILENAME, error: `读不了:${health.error}` }],
     };
   }
+  return parseHooksFile(health.text);
 }
 
 /**
@@ -58,7 +113,8 @@ export function readHooks(): HooksFile {
  * 名字让"上次写崩了留下的垃圾"能被下一次覆盖掉。
  *
  * ⚠️ **它写的就是给它的那一份**(不给盘上原来的东西留位置)。`saveHook` / `removeHook`
- * 走的是 {@link commitHooks} —— 那一个会把看不懂的条目搬回去。用这个函数等于"整份重写"。
+ * 走的是 {@link commitHooks} —— 那一个会把看不懂的条目搬回去、并在损坏时拒绝;
+ * 用这个函数等于"整份重写"(测试夹具与显式重建用它)。
  */
 export function writeHooks(hooks: HookSpec[]): { ok: true } | { ok: false; error: string } {
   return writeRaw(hooks);
@@ -81,24 +137,18 @@ function writeRaw(items: readonly unknown[]): { ok: true } | { ok: false; error:
 /**
  * 盘上那个数组的**原始**内容 —— 没解析过、没过滤过,一个条目就是一个元素。
  *
- * `null` = 整份读不出来(不是 JSON、或者顶层形状不对)。那种情况下没有"剩下的照原样搬
- * 回去"这回事 —— 只能整份重写(见 {@link commitHooks})。
+ * 调用方必须先过 {@link classifyHooksFile}:只有 `valid` / `missing` 才拿得到数组
+ * (missing → 空数组);`corrupt` / `read_error` 由 {@link commitHooks} 在更外层拒掉,
+ * 不会走到这里。
  */
-function readRawHooks(): unknown[] | null {
-  const file = hooksFilePath();
-  if (!existsSync(file)) return [];
-  let raw: unknown;
-  try {
-    // BOM 同 `parseHooksFile`:这里若读不出来就会走“整份重写”,把用户手写的内容全盖掉。
-    raw = JSON.parse(stripBom(readFileSync(file, "utf-8")));
-  } catch {
-    return null;
-  }
+function readRawHooks(health: Extract<HooksFileHealth, { state: "missing" | "valid" }>): unknown[] {
+  if (health.state === "missing") return [];
+  const raw = JSON.parse(stripBom(health.text)) as unknown;
   const list = (raw as { hooks?: unknown } | null)?.hooks;
   if (Array.isArray(list)) return list;
   // 顶层直接是数组也认 —— 与 `parseHooksFile` 同一条(用户手写最自然的写法),
   // 判据只有一份、住在契约里,这里照着它认。
-  return Array.isArray(raw) ? raw : null;
+  return Array.isArray(raw) ? raw : [];
 }
 
 /** 这一条我们看懂了吗。看懂了给 `HookSpec`,看不懂(或只是个我们认不出的形状)给 `null`。
@@ -123,16 +173,27 @@ function understoodOrNull(item: unknown): HookSpec | null {
  * 顺带:`readHooks` 与"下一次保存"是**两个时刻**,中间用户可能正在编辑器里改这个文件。
  * 搬回去比覆盖更接近"只动我改的那一条"。
  *
+ * ## 【MC-051】整份读不懂时**拒绝**,不是重写
+ *
+ * 从前这里 `raw === null`(整份读不出来)就 `writeRaw(next)` —— 用户手写的损坏原文
+ * 被一次普通保存悄悄覆盖,没有备份、没有拒绝。现在按 {@link classifyHooksFile} 分岔:
+ *  - `missing` → 唯一允许创建的状态,写新的一份;
+ *  - `valid`   → 照旧按序合并(看不懂的条目录在原处);
+ *  - `corrupt` / `read_error` → **拒绝**并点名恢复路径(见 {@link corruptRefusal}),
+ *    原字节保全 —— 重建必须走显式的 {@link rebuildCorruptHooksFile}(用户授权)。
+ *
  * ## 对法
  *
  * 按**顺序**走盘上那份:看懂的那条按 id 替换成新值(被删掉的就跳过,即真的删掉),
  * 看不懂的原样留在那个位置;`next` 里新加的追加在末尾。
  */
 function commitHooks(next: HookSpec[]): { ok: true } | { ok: false; error: string } {
-  const raw = readRawHooks();
-  // 整份读不出来 —— 搬不回去,只能写成新的一份。原内容靠 `readHooks` 报出的那条
-  // problem 说话,不在这儿假装能保住。
-  if (raw === null) return writeRaw(next);
+  const health = classifyHooksFile();
+  if (health.state === "corrupt" || health.state === "read_error") {
+    log.warn(`[hooks] 拒绝保存:${HOOKS_FILENAME} ${health.state === "corrupt" ? "损坏" : "读不动"}(${health.error})—— 原文件保持不动`);
+    return corruptRefusal(health);
+  }
+  const raw = readRawHooks(health);
 
   const byId = new Map(next.map((spec) => [spec.id, spec]));
   const claimed = new Set<string>();
@@ -154,7 +215,68 @@ function commitHooks(next: HookSpec[]): { ok: true } | { ok: false; error: strin
   return writeRaw(merged);
 }
 
-/** 新增或覆盖一条(按 id)。 */
+/**
+ * 【MC-051】**显式**把损坏的 hooks.json 备份并重建 —— 唯一的重建入口,且必须由用户
+ * 在界面上点(或经 Agent 的同一通道,见 `ipc/hooks.ts` 的 `hooks:rebuildCorrupt`）。
+ *
+ * 步骤(顺序有意):读原文 → 写备份 `hooks.json.corrupt-<时间戳>.bak` → **校验备份
+ * 与原文 sha256 一致** → 才写新文件。备份写失败 / 校验不过就中止,原文件不动 ——
+ * 「重建」这个词承诺的原件保全要靠这一步真的成立。
+ *
+ * `next` 为空 = 重建出一个空文件(用户想从头写);常用法是先 `readHooks()` 拿到
+ * 能看懂的条目再递进来(那些条目本来就被读出来了,不必让用户重打一遍)。
+ */
+export function rebuildCorruptHooksFile(
+  next: HookSpec[] = [],
+): { ok: true; backupPath: string } | { ok: false; error: string } {
+  const health = classifyHooksFile();
+  if (health.state === "missing" || health.state === "valid") {
+    // 没坏就没有"重建"这回事 —— 普通保存路径足够(不静默地做用户没要的事)。
+    return { ok: false, error: `${HOOKS_FILENAME} 没有损坏,不需要重建(直接普通保存即可)` };
+  }
+  const originalText = health.state === "corrupt" ? health.text : readOriginalForBackup();
+  if (originalText === null) {
+    return { ok: false, error: `${HOOKS_FILENAME} 读不动,连备份都做不了 —— 请先处理文件权限` };
+  }
+  const backupPath = `${hooksFilePath()}.corrupt-${Date.now()}.bak`;
+  try {
+    writeFileSync(backupPath, originalText, "utf-8");
+  } catch (err) {
+    return { ok: false, error: `备份写不进去(${backupPath}):${(err as Error).message} —— 未重建,原文件未动` };
+  }
+  // 校验备份与原文逐字节一致 —— 「先备份再重建」的承诺在这里被核验,不是嘴上说说。
+  const digest = (t: string): string => createHash("sha256").update(t, "utf8").digest("hex");
+  let backupText: string;
+  try {
+    backupText = readFileSync(backupPath, "utf-8");
+  } catch (err) {
+    return { ok: false, error: `备份写完后读不回来(${backupPath}):${(err as Error).message} —— 未重建,原文件未动` };
+  }
+  if (digest(backupText) !== digest(originalText)) {
+    return { ok: false, error: `备份与原文 sha256 不一致(${backupPath})—— 未重建,原文件未动` };
+  }
+  const written = writeRaw(next);
+  if (!written.ok) return { ok: false, error: `重建写失败:${written.error}(原件已备份在 ${backupPath})` };
+  log.info(`[hooks] 损坏的 ${HOOKS_FILENAME} 已备份到 ${backupPath} 并重建(${next.length} 条)`);
+  return { ok: true, backupPath };
+}
+
+/** `read_error` 状态下尽力读一次原文(给备份用);读不到返回 null。 */
+function readOriginalForBackup(): string | null {
+  try {
+    return readFileSync(hooksFilePath(), "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 新增或覆盖一条(按 id)。
+ *
+ * 【MC-051】**文件整体损坏时这条会拒绝**(`ok:false` + 点名恢复路径)—— 那正是
+ * 「用户手写崩了、保存又把它盖掉」那条坏例的正面。拒绝不是没保存成功,是**故意的**:
+ * 原字节必须有人先看过、点过「备份并重建」({@link rebuildCorruptHooksFile})才动。
+ */
 export function saveHook(spec: HookSpec): { ok: true } | { ok: false; error: string } {
   const check = validateHook(spec);
   if (!check.ok) return check;

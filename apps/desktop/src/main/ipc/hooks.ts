@@ -30,6 +30,7 @@
 import type { IpcMain } from "electron";
 import {
   IPC,
+  HooksRebuildCorruptSchema,
   HooksRemoveSchema,
   HooksSaveSchema,
   HooksTestSchema,
@@ -39,7 +40,7 @@ import {
 } from "@contracts/ipc";
 import { hookRunner } from "@main/hooks/HookRunner.js";
 import { log } from "@main/lib/logger.js";
-import { readHooks, removeHook, saveHook } from "@main/hooks/store.js";
+import { classifyHooksFile, readHooks, rebuildCorruptHooksFile, removeHook, saveHook } from "@main/hooks/store.js";
 import { HookRunRepo, type HookRunRow } from "@main/store/repositories.js";
 import {
   hostHookCommandDigest,
@@ -98,7 +99,14 @@ const HOST_HOOK_GRANT_MAX_RUNS = 1000;
 export function registerHookHandlers(ipcMain: IpcMain): void {
   // 无参 handler 不接 raw、也不 parse —— 与 `workflow.list` / `runtimes.list` 同一条
   // 纪律(无参 invoke 时 handler 收到的是 `undefined`)。
-  ipcMain.handle(IPC.HOOKS_LIST, async () => readHooks());
+  // 【MC-051】`hooks.list` 连**文件健康态**一并给出 —— 面板据此区分「个别条目坏」(problems
+  // 非空)与「整份文件损坏」(corrupt/read_error,此时任一普通保存都会被拒,该出「备份并重建」
+  // 按钮)。两者都读不懂条目,但用户要做的事完全不同。
+  ipcMain.handle(IPC.HOOKS_LIST, async () => {
+    const file = readHooks();
+    const health = classifyHooksFile();
+    return { ...file, fileHealth: health.state };
+  });
   // 【MC-061】执行记录两栏:**内存环**(`runs`,含用户手写钩子、会被顶掉)+ **落盘审计**
   // (`audit`,跨重启活着;MC-010 起两种来源都落)。审计读取读盘失败**不该**让这页打不开
   // —— 环那一栏是用户的排错窗口,审计是附加信息;但失败要**如实带出去**(`auditError`),
@@ -116,6 +124,14 @@ export function registerHookHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.HOOKS_REMOVE, async (_evt, raw) => {
     const input = HooksRemoveSchema.parse(raw);
     return removeHook(input.id);
+  });
+
+  // 【MC-051】损坏文件的**显式重建** —— 普通 save/remove 在整份损坏时拒绝(保住原字节),
+  // 这一条是唯一能吃下损坏状态的入口:备份原件 → 校验 sha256 → 才重建。用户必须**明确
+  // 点**这个动作(不是保存时顺手替他做)。
+  ipcMain.handle(IPC.HOOKS_REBUILD_CORRUPT, async (_evt, raw) => {
+    const input = HooksRebuildCorruptSchema.parse(raw);
+    return rebuildCorruptHooksFile(input.hooks ?? []);
   });
 
   ipcMain.handle(IPC.HOOKS_TEST, async (_evt, raw) => {

@@ -1027,6 +1027,8 @@ const api = {
     runs: (() => ipcRenderer.invoke(IPC.HOOKS_RUNS)) as RpcMap["hooks.runs"],
     save: ((input) => ipcRenderer.invoke(IPC.HOOKS_SAVE, input)) as RpcMap["hooks.save"],
     remove: ((input) => ipcRenderer.invoke(IPC.HOOKS_REMOVE, input)) as RpcMap["hooks.remove"],
+    rebuildCorrupt: ((input) =>
+      ipcRenderer.invoke(IPC.HOOKS_REBUILD_CORRUPT, input)) as RpcMap["hooks.rebuildCorrupt"],
     test: ((input) => ipcRenderer.invoke(IPC.HOOKS_TEST, input)) as RpcMap["hooks.test"],
     /** 【MC-061】插件 hook 的**用户签发入口**。issue/revoke 在主进程 `appControl/policy.ts`
      *  里钉死 **blocked**(agent 够不到);真正调它们的是设置页那颗按钮 = 用户动作。 */

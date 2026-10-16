@@ -1050,7 +1050,7 @@ export interface RpcMap {
   // (理由见 `@contracts/hook`),所以对话、工作流节点、将来的自动化一视同仁。
   /** 全部钩子 + 读得见但用不了的条目。**坏条目不静默丢弃** —— 用户写的钩子不生效时,
    *  这一页是唯一能解释为什么的地方。 */
-  "hooks.list": () => Promise<{ hooks: HookSpec[]; problems: Array<{ where: string; error: string }> }>;
+  "hooks.list": () => Promise<{ hooks: HookSpec[]; problems: Array<{ where: string; error: string }>; fileHealth: "missing" | "valid" | "corrupt" | "read_error" }>;
   /** 最近的执行记录(新的在前)。**不进对话流** —— 一个挂在 `tool.use` 上的钩子一轮
    *  会触发几十次,塞进消息流就是把对话刷屏;而节点会话是隐藏的,那些事件本来也不该
    *  出现在父对话里。
@@ -1063,6 +1063,10 @@ export interface RpcMap {
   "hooks.save": (input: HooksSaveInput) => Promise<{ ok: boolean; error?: string }>;
   /** 删一条钩子(按 id)。 */
   "hooks.remove": (input: HooksRemoveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 【MC-051】显式「备份损坏原件 → 校验 sha256 → 重建」—— 唯一能吃下整份损坏
+   *  hooks.json 的操作。普通 save/remove 在损坏时**拒绝**(不覆盖原字节);这里
+   *  备份成功且校验通过才重建,返回备份路径。 */
+  "hooks.rebuildCorrupt": (input: { hooks?: HookSpec[] }) => Promise<{ ok: boolean; error?: string; backupPath?: string }>;
   /** 拿一条**还没存下来**的配置试跑一次,把那一次的结果返回。 */
   "hooks.test": (input: HooksTestInput) => Promise<{ run: HookRun }>;
   /** 【MC-061】列出当前全部**主机 hook 授权**(设置 → 插件 → 钩子授权)。只读 —— 只给
@@ -1961,6 +1965,8 @@ export const IPC = {
   HOOKS_SAVE: "hooks:save",
   HOOKS_REMOVE: "hooks:remove",
   HOOKS_TEST: "hooks:test",
+  // 【MC-051】损坏文件的显式重建(备份原件 → 校验 → 重建);普通 save/remove 损坏时拒。
+  HOOKS_REBUILD_CORRUPT: "hooks:rebuildCorrupt",
   // 【MC-061】插件 hook 的用户签发入口(设置 → 插件 → 钩子授权)。issue/revoke 钉 blocked,
   // 只给桌面渲染端;列表是只读。
   HOOKS_HOST_HOOK_GRANTS_LIST: "hooks:listHostHookGrants",

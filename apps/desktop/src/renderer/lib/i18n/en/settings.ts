@@ -1561,6 +1561,13 @@ export const en = {
   "settings.hooks.auditEmpty": "No hooks have run yet (kept across restarts; both your own hooks and plugin hooks land here).",
   "settings.hooks.auditSourceUser": "My own hook",
   "settings.hooks.auditReadError": "The audit log can't be read (this is not \"nothing ran\"): {message}",
+  "settings.hooks.fileCorrupt":
+    "hooks.json can't be parsed at all (this is not one bad entry). Saving has been refused to preserve your original content — not a single byte was touched. Fix the file, or click \"Back up and rebuild\".",
+  "settings.hooks.fileReadError": "hooks.json can't be read (likely permissions). Saving has been refused; the original is untouched.",
+  "settings.hooks.rebuild": "Back up and rebuild",
+  "settings.hooks.rebuilding": "Rebuilding…",
+  "settings.hooks.rebuiltBackup": "Rebuilt. The original was backed up to: {path}",
+  "settings.hooks.rebuildFailed": "Rebuild failed",
   "settings.hooks.sessionNode": "node",
   "settings.hooks.runStatus.ok": "ok",
   "settings.hooks.runStatus.failed": "failed",

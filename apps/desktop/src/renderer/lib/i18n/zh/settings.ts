@@ -1558,6 +1558,13 @@ export const zh = {
   "settings.hooks.auditEmpty": "还没有钩子被执行过（这一栏跨重启保留；你手写的钩子与插件带来的钩子都在这里）。",
   "settings.hooks.auditSourceUser": "我手写的钩子",
   "settings.hooks.auditReadError": "审计读不出来了（不是「没执行过」）：{message}",
+  "settings.hooks.fileCorrupt":
+    "hooks.json 整份读不懂（不是某一条坏了）。为保住你的原始内容，保存已被拒绝——原件一个字节都没动。修好文件，或点右边「备份并重建」。",
+  "settings.hooks.fileReadError": "hooks.json 读不动（多半是权限）。保存已被拒绝，原件未动。",
+  "settings.hooks.rebuild": "备份并重建",
+  "settings.hooks.rebuilding": "重建中…",
+  "settings.hooks.rebuiltBackup": "重建完成。原件已备份到：{path}",
+  "settings.hooks.rebuildFailed": "重建失败",
   "settings.hooks.sessionNode": "节点",
   "settings.hooks.runStatus.ok": "成功",
   "settings.hooks.runStatus.failed": "失败",

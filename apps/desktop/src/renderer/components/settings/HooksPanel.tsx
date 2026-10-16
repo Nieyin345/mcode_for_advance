@@ -150,6 +150,12 @@ export function HooksPanel() {
 
   const [hooks, setHooks] = useState<HookSpec[] | null>(null);
   const [problems, setProblems] = useState<Array<{ where: string; error: string }>>([]);
+  /** 【MC-051】`hooks.json` 的文件健康态 —— 整份损坏(corrupt/read_error)时普通保存
+   *  会被拒,面板出「备份并重建」按钮;个别条目坏(problems 非空)不算整份损坏。 */
+  const [fileHealth, setFileHealth] = useState<"missing" | "valid" | "corrupt" | "read_error">("valid");
+  const [rebuilding, setRebuilding] = useState(false);
+  /** 重建成功后的备份路径 —— 显式给用户看一眼(「你的原件在这里」)。 */
+  const [rebuildBackup, setRebuildBackup] = useState<string | null>(null);
   const [runs, setRuns] = useState<HookRun[]>([]);
   /** 【MC-061】落盘审计(跨重启活着;MC-010 起两种来源都落)—— 与 `runs` 那份内存环是两栏。 */
   const [audit, setAudit] = useState<HookAuditEntry[]>([]);
@@ -177,6 +183,7 @@ export function HooksPanel() {
       const res = await api.hooks.list();
       setHooks(res.hooks);
       setProblems(res.problems);
+      setFileHealth(res.fileHealth ?? "valid"); // 旧 preload 没这个字段 → 当正常
       setListError(null);
       return res.hooks;
     } catch (err) {
@@ -206,6 +213,30 @@ export function HooksPanel() {
     void load();
     void loadRuns();
   }, [load, loadRuns]);
+
+  /** 【MC-051】显式「备份损坏原件 → 校验 → 重建」。默认把**当前读得出的条目**带进去
+   *  (那些条目本来就读出来了,不必让用户重打);损坏原文先被备份成 `.bak` 才动。 */
+  const rebuildCorrupt = useCallback(async (): Promise<void> => {
+    setRebuilding(true);
+    setSaveError(null);
+    try {
+      const res = await api.hooks.rebuildCorrupt({ hooks: hooks ?? [] });
+      if (!res.ok) {
+        setSaveError(res.error ?? t("settings.hooks.rebuildFailed"));
+        return;
+      }
+      // 重建成功:重读一遍(健康态翻回 valid、按钮消失),并把备份路径显式告诉用户。
+      await load();
+      setSaveError(null);
+      if (res.backupPath !== undefined) {
+        setRebuildBackup(res.backupPath);
+      }
+    } catch (err) {
+      setSaveError((err as Error).message);
+    } finally {
+      setRebuilding(false);
+    }
+  }, [hooks, load, t]);
 
   /** 选中一条:把草稿换成它。**不拦截未保存的改动** —— 钩子这一页没有自动保存,
    *  而"切走就丢"正是显式保存的语义(用户没按保存,就是不想要那些改动)。 */
@@ -346,11 +377,30 @@ export function HooksPanel() {
 
       {/* 文件里读得见、但用不了的条目。**必须说出来** —— 用户写的钩子不生效时,这一页
           是唯一能解释为什么的地方(同 `workflow.nodeTypes` 的 problems)。 */}
-      {(problems.length > 0 || listError !== null) && (
-        <ErrorNote tone="warning" icon={IconAlertTriangle} className="mb-3">
+      {(problems.length > 0 || listError !== null || fileHealth === "corrupt" || fileHealth === "read_error" || rebuildBackup !== null) && (
+        <ErrorNote tone={fileHealth === "corrupt" || fileHealth === "read_error" ? "danger" : "warning"} icon={IconAlertTriangle} className="mb-3">
           {listError !== null ? (
             <div>{t("settings.hooks.loadFailed", { error: listError })}</div>
           ) : null}
+          {/* 【MC-051】整份文件损坏:普通保存会被拒(保住原字节),必须显式重建。 */}
+          {(fileHealth === "corrupt" || fileHealth === "read_error") && (
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                {t(fileHealth === "corrupt" ? "settings.hooks.fileCorrupt" : "settings.hooks.fileReadError")}
+              </div>
+              <button
+                type="button"
+                disabled={rebuilding}
+                onClick={() => void rebuildCorrupt()}
+                className="shrink-0 rounded border border-danger/40 px-2 py-0.5 text-danger hover:bg-danger/10 disabled:opacity-50"
+              >
+                {rebuilding ? t("settings.hooks.rebuilding") : t("settings.hooks.rebuild")}
+              </button>
+            </div>
+          )}
+          {rebuildBackup !== null && (
+            <div className="text-content-subtle">{t("settings.hooks.rebuiltBackup", { path: rebuildBackup })}</div>
+          )}
           {problems.map((p) => (
             <div key={`${p.where}:${p.error}`}>
               <span className="font-medium">{p.where}</span>:{p.error}

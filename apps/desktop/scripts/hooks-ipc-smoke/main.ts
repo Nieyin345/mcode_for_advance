@@ -123,7 +123,7 @@ registerHookHandlers(fakeIpc);
 
 const FILE = hooksFilePath();
 
-console.log("\n§0 八个 channel 都接上了");
+console.log("\n§0 九个 channel 都接上了");
 
 for (const [name, channel] of [
   ["list", IPC.HOOKS_LIST],
@@ -131,13 +131,15 @@ for (const [name, channel] of [
   ["save", IPC.HOOKS_SAVE],
   ["remove", IPC.HOOKS_REMOVE],
   ["test", IPC.HOOKS_TEST],
+  // 【MC-051】损坏文件的显式重建(备份原件 → 校验 → 重建)。
+  ["rebuildCorrupt", IPC.HOOKS_REBUILD_CORRUPT],
   ["listHostHookGrants", IPC.HOOKS_HOST_HOOK_GRANTS_LIST],
   ["issueHostHookGrant", IPC.HOOKS_HOST_HOOK_GRANT_ISSUE],
   ["revokeHostHookGrant", IPC.HOOKS_HOST_HOOK_GRANT_REVOKE],
 ] as const) {
   check(`hooks.${name} 注册上了`, handlers.has(channel), channel);
 }
-eq("正好八条(不多推一条不该有的)", handlers.size, 8);
+eq("正好九条(不多推一条不该有的)", handlers.size, 9);
 
 /**
  * 调一条 channel。**默认 raw 是 `undefined`** —— 那正是"无参 invoke"时 Electron 递进来
@@ -703,14 +705,44 @@ eq("障碍没了之后存得进去(上一次的失败没留下后遗症)", recov
 eq("两条都在了", readHooks().hooks.length, 2);
 check("而且没有遗留的临时文件", !existsSync(`${FILE}.tmp`), `${FILE}.tmp`);
 
-/* `hooks.json` 本身坏了(不是 JSON)时保存要能重建 —— 那正是"用户手写崩了"的救法。 */
-writeFileSync(FILE, "{ 又坏了", "utf-8");
-const rebuild = (await call(IPC.HOOKS_SAVE, { hook: h({ id: "h_fresh", name: "重建" }) })) as {
-  ok: boolean;
-};
-eq("整份坏掉时保存仍然不抛", rebuild.ok, true);
-eq("重建出一份干净的", readHooks().hooks.length, 1);
-eq("重建的就是刚存的那条", readHooks().hooks[0]?.id, "h_fresh");
+/* 【MC-051】`hooks.json` 本身坏了(不是 JSON)时:
+   - 普通保存**拒绝**并点名恢复路径 —— 原字节保全,不悄悄覆盖(从前这里是"重建并成功",
+     台账把那条旧预期点名要改);
+   - 重建走**显式**通道 `hooks:rebuildCorrupt`:备份原件 → 校验 sha256 → 才写新文件。 */
+{
+  const ORIGINAL = "{ 又坏了,这是用户手写到一半的内容";
+  writeFileSync(FILE, ORIGINAL, "utf-8");
+
+  const refused = (await call(IPC.HOOKS_SAVE, { hook: h({ id: "h_fresh", name: "重建" }) })) as {
+    ok: boolean;
+    error?: string;
+  };
+  eq("★ MC-051:整份坏掉时普通保存**拒绝**(不抛、不静默覆盖)", refused.ok, false);
+  check(
+    "★ MC-051:拒绝语点名恢复路径(备份并重建)",
+    typeof refused.error === "string" && refused.error.includes("备份并重建"),
+    refused.error,
+  );
+  eq("★ MC-051:被拒后原文件**逐字节还在**(没被覆盖)", readFileSync(FILE, "utf-8"), ORIGINAL);
+
+  // 显式重建:备份 → 校验 → 重建。
+  const rebuilt = (await call(IPC.HOOKS_REBUILD_CORRUPT, { hooks: [h({ id: "h_fresh", name: "重建" })] })) as {
+    ok: boolean;
+    error?: string;
+    backupPath?: string;
+  };
+  eq("★ MC-051:显式重建成功", rebuilt.ok, true);
+  check("★ MC-051:重建返回备份路径", typeof rebuilt.backupPath === "string" && rebuilt.backupPath.endsWith(".bak"), rebuilt.backupPath);
+  eq("★ MC-051:备份内容逐字节等于损坏原件", readFileSync(rebuilt.backupPath!, "utf-8"), ORIGINAL);
+  eq("重建出一份干净的", readHooks().hooks.length, 1);
+  eq("重建的就是刚存的那条", readHooks().hooks[0]?.id, "h_fresh");
+
+  // 没坏的时候「重建」要拒绝(不静默做用户没要的事)。
+  const noNeed = (await call(IPC.HOOKS_REBUILD_CORRUPT, {})) as { ok: boolean; error?: string };
+  eq("★ MC-051:文件没坏时显式重建拒绝(不做多余动作)", noNeed.ok, false);
+
+  rmSync(rebuilt.backupPath!, { force: true });
+}
 
 /* ────────────────────── 6. 主机 hook 授权:用户签发入口(MC-061)────────────────────── */
 

@@ -293,6 +293,11 @@ export type HooksSaveInput = z.infer<typeof HooksSaveSchema>;
 export const HooksRemoveSchema = z.object({ id: z.string().min(1) });
 export type HooksRemoveInput = z.infer<typeof HooksRemoveSchema>;
 
+/** 【MC-051】显式重建损坏的 hooks.json。`hooks` 省略 = 重建出空文件;给了就先校验
+ *  每一条(`validateHook`,与 save 同一份判据)再递进去 —— 坏条目不许借重建混进新文件。 */
+export const HooksRebuildCorruptSchema = z.object({ hooks: z.array(HookSpecSchema).max(500).optional() });
+export type HooksRebuildCorruptInput = z.infer<typeof HooksRebuildCorruptSchema>;
+
 /** 试跑。给的是**还没存下来**的那一份 —— 用户正是想在打开它之前看看会发生什么。 */
 export const HooksTestSchema = z.object({ hook: HookSpecSchema });
 export type HooksTestInput = z.infer<typeof HooksTestSchema>;

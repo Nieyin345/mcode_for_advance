@@ -42,7 +42,7 @@ import {
 import type { RuntimeEvent } from "@contracts/runtime";
 import { createEventSubjects, fileSubjects } from "@main/hooks/eventSubjects.js";
 import { runHookCommand } from "@main/hooks/runCommand.js";
-import { hooksFilePath, readHooks, removeHook, saveHook, writeHooks } from "@main/hooks/store.js";
+import { hooksFilePath, readHooks, rebuildCorruptHooksFile, removeHook, saveHook, writeHooks } from "@main/hooks/store.js";
 
 /* ────────────────────── 骨架 ────────────────────── */
 
@@ -442,10 +442,23 @@ check(
   onDisk().hooks,
 );
 
-// 整份坏掉时没有任何一条能按原样搬回去 —— 那种情况下只能退化成空,并由 problem 说明。
-putOnDisk("{ 这不是 JSON");
-eq("整份坏掉时保存仍然不抛", saveHook(hook({ id: "h_fresh" })).ok, true);
-eq("整份坏掉之后重建出一份干净的", readHooks().hooks.length, 1);
+// 【MC-051】整份坏掉时普通保存**拒绝**(从前这里期望"仍然不抛并重建成功"—— 正是台账
+// 点名要改的旧预期:那种行为把用户手写的损坏原文悄悄盖掉了)。重建走显式入口:
+// 备份原件 → 校验 sha256 → 才写新文件。
+const CORRUPT = "{ 这不是 JSON,是用户手写到一半的内容";
+putOnDisk(CORRUPT);
+const refused = saveHook(hook({ id: "h_fresh" }));
+eq("★ MC-051:整份坏掉时普通保存拒绝(不抛、也不覆盖)", refused.ok, false);
+check("★ MC-051:拒绝后损坏原文逐字节还在", readFileSync(FILE, "utf-8") === CORRUPT, readFileSync(FILE, "utf-8").slice(0, 40));
+const rebuilt = rebuildCorruptHooksFile([hook({ id: "h_fresh" })]);
+eq("★ MC-051:显式重建成功", rebuilt.ok, true);
+check(
+  "★ MC-051:重建前原件被备份(内容逐字节一致)",
+  rebuilt.ok && readFileSync(rebuilt.backupPath, "utf-8") === CORRUPT,
+  rebuilt.ok ? rebuilt.backupPath : rebuilt,
+);
+if (rebuilt.ok) rmSync(rebuilt.backupPath, { force: true });
+eq("整份坏掉(显式重建)之后是一份干净的", readHooks().hooks.length, 1);
 
 /* ── 匹配与"命令能不能跑"无关 ── */
 
