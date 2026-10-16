@@ -1,7 +1,7 @@
 /**
  * Unattended task plan strings (MC-001 panel) — English dictionary.
  */
-export const unattendedEn = {
+export const en = {
   "unattended.title": "Unattended task plans",
   "unattended.intro":
     "Write a bounded list of session creations (title + first message per entry), approve it yourself, then run it — each operation creates a session and sends its first message. What you approve is the list itself; running only passes the grant id, the host fetches the content.",

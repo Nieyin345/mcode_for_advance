@@ -1,7 +1,7 @@
 /**
  * 无人值守任务计划的文案(MC-001 面板)—— zh 是 `MessageId` 的源,缺 key typecheck 会红。
  */
-export const unattendedZh = {
+export const zh = {
   "unattended.title": "无人值守任务计划",
   "unattended.intro":
     "把一份有界的会话创建清单(每条:标题 + 首条消息)写成计划,你本人批准后执行 —— 它会为每条操作建一条会话并发出首条消息。批准的对象是这份清单本身;执行时只递授权 id,内容由宿主取回。",

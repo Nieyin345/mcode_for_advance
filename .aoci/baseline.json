@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-16T20:08:53Z",
+  "updated_at": "2026-10-16T20:22:14Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -77,9 +77,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "dd7a7c7db1286e2d2c588197614fe635fe9370b2c150ac5f658faaa68c10a738",
-      "size": 1185740,
-      "normalized_sha256": "dd7a7c7db1286e2d2c588197614fe635fe9370b2c150ac5f658faaa68c10a738"
+      "sha256": "2817f89522877980368a8f8dcdcdfd215dc7d046ac789134e52f38e7b3567caa",
+      "size": 1186079,
+      "normalized_sha256": "2817f89522877980368a8f8dcdcdfd215dc7d046ac789134e52f38e7b3567caa"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -12027,9 +12027,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/core.ts": {
       "role": "index",
-      "sha256": "8070922f156c7d7520d6fe6c76cf434cfe62d4cd56a6bc026da0fe6a5c83ff7d",
-      "size": 4018,
-      "normalized_sha256": "8070922f156c7d7520d6fe6c76cf434cfe62d4cd56a6bc026da0fe6a5c83ff7d"
+      "sha256": "b6f9dc27894405c0133db1258e0d70fd83ce2b9d965fb8e8b31a559193644b36",
+      "size": 3998,
+      "normalized_sha256": "b6f9dc27894405c0133db1258e0d70fd83ce2b9d965fb8e8b31a559193644b36"
     },
     "apps/desktop/src/renderer/lib/i18n/en/agentProfiles.ts": {
       "role": "index",
@@ -12135,9 +12135,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/en/unattended.ts": {
       "role": "index",
-      "sha256": "8a106f9616c8f122c4481cfbf370c423868d073c0a57eecec237492fc280b3ec",
-      "size": 2959,
-      "normalized_sha256": "8a106f9616c8f122c4481cfbf370c423868d073c0a57eecec237492fc280b3ec"
+      "sha256": "51be75d7ebffee61fd96d4ac015cef51d01a5d9f457d8914ae4948b9703c8e17",
+      "size": 2949,
+      "normalized_sha256": "51be75d7ebffee61fd96d4ac015cef51d01a5d9f457d8914ae4948b9703c8e17"
     },
     "apps/desktop/src/renderer/lib/i18n/index.ts": {
       "role": "index",
@@ -12249,9 +12249,9 @@
     },
     "apps/desktop/src/renderer/lib/i18n/zh/unattended.ts": {
       "role": "index",
-      "sha256": "28ce60cf73d600161389fd90022cd24ac3fd4e1e842389e3a19501f952cfbdcf",
-      "size": 2933,
-      "normalized_sha256": "28ce60cf73d600161389fd90022cd24ac3fd4e1e842389e3a19501f952cfbdcf"
+      "sha256": "cfd60bda1d1794a876ac352e9c0b0f7bf8967d75826140581f23e7a39b1e7103",
+      "size": 2923,
+      "normalized_sha256": "cfd60bda1d1794a876ac352e9c0b0f7bf8967d75826140581f23e7a39b1e7103"
     },
     "apps/desktop/src/renderer/lib/icons.tsx": {
       "role": "index",
