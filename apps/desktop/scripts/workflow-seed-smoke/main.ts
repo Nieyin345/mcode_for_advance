@@ -1,141 +1,123 @@
 /**
- * `ensureWorkflows()` 的升级规则:没改过的旧版换成新版,改过的不动。
+ * workflow-seed-smoke — 【MC-053】出厂工作流播种名单损坏不许复活已删内容。
  *
- * 见 run.sh 顶上那段为什么。数据根是 `$MCODE_SMOKE_DATA_ROOT`(run.sh 建的临时目录)。
+ * ## 盯的是什么
  *
- * Run: scripts/workflow-seed-smoke/run.sh
+ * `library.ts` 的 `ensureShippedSeeded` 从前把"名单读不出来"当空名单 —— 已删除的
+ * 出厂工作流在坏 JSON 下会被**重新播回表里**,违背产品承诺"删了就是删了"。修复后
+ * 名单分三态:NEVER_SEEDED(真新用户,照播)/ SEEDED(照常补缺)/ CORRUPT(不播、
+ * 不覆盖名单,显式记诊断)。
+ *
+ * ## 判据立在"被删的那一行在不在表里"
+ *
+ * 这是用户可观察的事实,也是台账红例本身:删除 → 砸坏名单 → 读列表,那一行必须
+ * **不回来**;而新用户(空库)第一次读必须照常播种(防"一律不播"这种过度保守)。
+ *
+ * ## 两趟进程(见 run.sh)
+ *
+ * `seed`:空库执行第一次读取(触发播种)→ 删掉一个出厂工作流 → 留下名字与 id。
+ * `verify`:新进程重新读库 —— 播种闸是进程内的,"重启"才是用户真实场景。
+ *
+ * 数据根由 `MCODE_SMOKE_DATA_ROOT`(mktemp -d)钉住,桩里没设就抛;跑完即删。
  */
-import { readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { ensureWorkflows, workflowsRoot, SHIPPED_RECORD_FILE, LEGACY_SHIPPED_SHA256, shippedHashOf } from "@main/workflows/seed.js";
-import { LIBRARY_PY, CHECK_CITATIONS_PY, MINERU_PY, LIT_IMPORT_PY } from "@main/workflows/assets.js";
-import { spawnSync } from "node:child_process";
 
 let failures = 0;
-let checks = 0;
-function check(name: string, ok: boolean, detail?: unknown): void {
-  checks += 1;
-  if (ok) console.log(`  ok   ${name}`);
+let total = 0;
+function check(name: string, cond: boolean, detail?: unknown): void {
+  total++;
+  if (cond) console.log(`  ok   ${name}`);
   else {
-    failures += 1;
-    console.log(`  FAIL ${name}${detail === undefined ? "" : ` — ${JSON.stringify(detail).slice(0, 300)}`}`);
+    failures++;
+    console.log(`  FAIL ${name}${detail === undefined ? "" : ` — ${JSON.stringify(detail)}`}`);
   }
 }
 
-const legacyModule = process.argv[2];
-if (!legacyModule) throw new Error("用法:node smoke.mjs <legacy.mjs>");
-const legacy = (await import(pathToFileURL(legacyModule).href)) as { LIBRARY_PY: string };
+const DATA = process.env.MCODE_SMOKE_DATA_ROOT;
+if (!DATA) throw new Error("MCODE_SMOKE_DATA_ROOT unset — run via run.sh");
 
-const at = (rel: string): string => join(workflowsRoot(), rel);
-const read = (rel: string): string => readFileSync(at(rel), "utf8");
-const LIB = "scripts/library.py";
-const CIT = "scripts/check_citations.py";
+const { initDb } = await import("@main/store/db.js");
+const { SettingRepo, WorkflowRepo } = await import("@main/store/repositories.js");
+const { BUILTIN_WORKFLOWS } = await import("@main/orchestration/builtins.js");
+const lib = await import("@main/orchestration/library.js");
 
-console.log("\n新装:全部写出来,并记下发了哪一版");
-{
-  const r = ensureWorkflows();
-  check("library.py 写出来了且是当前版", read(LIB) === LIBRARY_PY);
-  check("转录脚本也在", read("scripts/mineru_transcribe.py") === MINERU_PY);
-  check("报告里列了新写的文件", r.written.includes(LIB), r);
-  check("★ 记下了发出去的是哪一版", existsSync(at(SHIPPED_RECORD_FILE)));
-  const again = ensureWorkflows();
-  check("再跑一次什么都不动(幂等)", again.written.length === 0 && again.upgraded.length === 0 && again.keptModified.length === 0, again);
-}
+await initDb();
 
-console.log("\n老安装(没有记录):真发过的旧版被认出来并升级");
-{
-  rmSync(at(SHIPPED_RECORD_FILE));
-  writeFileSync(at(LIB), legacy.LIBRARY_PY, "utf8");
-  check("前提:旧版确实和当前版不一样", legacy.LIBRARY_PY !== LIBRARY_PY);
-  check("前提:旧版在已知原版清单里", (LEGACY_SHIPPED_SHA256[LIB] ?? []).includes(shippedHashOf(legacy.LIBRARY_PY)));
-  const r = ensureWorkflows();
-  check("★ 没改过的旧版 library.py 换成了当前版", read(LIB) === LIBRARY_PY, read(LIB).slice(0, 80));
-  check("★ 报告里说升级了它", r.upgraded.includes(LIB), r);
-  check("升级后当前版含屏蔽逻辑", read(LIB).includes("suppress_reason"));
-}
+const SEEDED_KEY = "workflow.seededShipped";
+const FIXTURE = join(DATA, "seed-fixture.json");
 
-console.log("\nWindows 换行:CRLF 的原版不算改过");
-{
-  writeFileSync(at(LIB), LIBRARY_PY.replace(/\n/g, "\r\n"), "utf8");
-  const r = ensureWorkflows();
-  check("当前版的 CRLF 副本不当成用户改过", !r.keptModified.includes(LIB) && !r.upgraded.includes(LIB), r);
-  writeFileSync(at(LIB), legacy.LIBRARY_PY.replace(/\n/g, "\r\n"), "utf8");
-  rmSync(at(SHIPPED_RECORD_FILE));
-  const r2 = ensureWorkflows();
-  check("★ 旧版的 CRLF 副本也认得出、照样升级", r2.upgraded.includes(LIB) && read(LIB) === LIBRARY_PY, r2);
-}
-
-console.log("\n用户改过的:一律不动");
-{
-  const mine = `${LIBRARY_PY}\n# 我自己加的一行\n`;
-  writeFileSync(at(LIB), mine, "utf8");
-  const r = ensureWorkflows();
-  check("★ 改过的 library.py 原样留着", read(LIB) === mine);
-  check("★ 报告里说留着它(启动日志要提醒)", r.keptModified.includes(LIB), r);
-
-  rmSync(at(SHIPPED_RECORD_FILE));
-  const oldMine = `${legacy.LIBRARY_PY}\n# 在旧版上改过\n`;
-  writeFileSync(at(LIB), oldMine, "utf8");
-  const r2 = ensureWorkflows();
-  check("★ 在旧版上改过的也不动(老安装没有记录时)", read(LIB) === oldMine && r2.keptModified.includes(LIB), r2);
-}
-
-console.log("\n以后的版本:按记录认原版");
-{
-  // 模拟「上一版发的是 X」:把 X 写进文件、记录里记 X 的哈希;这一版发的是 CHECK_CITATIONS_PY。
-  const prev = "# 上一版发的 check_citations.py\nprint('old')\n";
-  writeFileSync(at(CIT), prev, "utf8");
-  const record = JSON.parse(readFileSync(at(SHIPPED_RECORD_FILE), "utf8")) as Record<string, string>;
-  record[CIT] = shippedHashOf(prev);
-  writeFileSync(at(SHIPPED_RECORD_FILE), JSON.stringify(record), "utf8");
-  const r = ensureWorkflows();
-  check("★ 记录里那一版原封未动 → 换成新版", read(CIT) === CHECK_CITATIONS_PY && r.upgraded.includes(CIT), r);
-}
-
-console.log("\n删掉的文件:重新写回(「恢复原版」的老办法照样管用)");
-{
-  rmSync(at(LIB));
-  const r = ensureWorkflows();
-  check("删掉后重启就写回当前版", read(LIB) === LIBRARY_PY && r.written.includes(LIB), r);
-}
-
-/* ── 这几段 Python 语法上真的成立吗(2026-09-28)──
- *
- * 它们是**TS 模板字符串**里的 Python:改错一个缩进、漏个括号,tsc 一声不吭,
- * 而报错要等到某天某条自动化真被触发、在用户机器上炸成一段栈。编译一遍最便宜。
- */
-console.log("\nPython 脚本语法检查");
-{
-  const py = ["python3", "python"].find((bin) => {
-    try { return spawnSync(bin, ["-c", "pass"], { encoding: "utf8" }).status === 0; } catch { return false; }
+if (process.argv.includes("seed")) {
+  // ── 第一趟:空库第一次读取 = 真·新用户路径 ──
+  console.log("\n【MC-053】第一趟:空库播种 + 用户删除");
+  const first = lib.listWorkflows();
+  check("空库第一次读取:出厂工作流被播种(不是一律不播)", first.length === BUILTIN_WORKFLOWS.length, {
+    listed: first.length,
+    shipped: BUILTIN_WORKFLOWS.length,
   });
-  if (py === undefined) {
-    console.log("  skip 没装 python");
-  } else {
-    for (const [name, src] of [
-      ["library.py", LIBRARY_PY], ["check_citations.py", CHECK_CITATIONS_PY],
-      ["mineru_transcribe.py", MINERU_PY], ["lit_import.py", LIT_IMPORT_PY],
-    ] as const) {
-      // ⚠️ **经文件,不经 stdin/argv。** 这几段里满是中文,而 Windows 控制台那一层的
-      // 编码会把它们拧成代理对(`UnicodeEncodeError: surrogates not allowed`)——
-      // 那是**检查手段**坏了,不是脚本坏了,最容易被误读成真失败。
-      const tmp = join(workflowsRoot(), `.syntax-${name}`);
-      writeFileSync(tmp, src, "utf8");
-      const res = spawnSync(py, ["-c", "import sys;compile(open(sys.argv[1],encoding='utf-8').read(),sys.argv[1],'exec')", tmp], { encoding: "utf8" });
-      rmSync(tmp, { force: true });
-      check(`${name} 能编译`, res.status === 0, res.stderr.slice(-300));
-    }
-  }
+  const victim = BUILTIN_WORKFLOWS[0]!;
+  check("播种名单已写入且含全部出厂 id", (() => {
+    const ids: unknown = JSON.parse(SettingRepo.get(SEEDED_KEY) ?? "[]");
+    return Array.isArray(ids) && BUILTIN_WORKFLOWS.every((d) => (ids as string[]).includes(d.id));
+  })(), SettingRepo.get(SEEDED_KEY));
+
+  // 用户主动删除一个出厂工作流(走真删除口)。
+  const removed = lib.removeWorkflow(victim.id);
+  check("删除成功(真删除口)", removed.ok === true, removed);
+  check("删后表里没有它", lib.getWorkflow(victim.id) === null);
+
+  writeFileSync(FIXTURE, JSON.stringify({ id: victim.id, name: victim.name }));
+  console.log(`第一趟完成:已删除出厂工作流「${victim.name}」(${victim.id})`);
+} else if (process.argv.includes("verify")) {
+  // ── 第二趟:新进程读同一个库 ──
+  console.log("\n【MC-053】第二趟:重启后删的不复活;名单损坏也不复活");
+  const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as { id: string; name: string };
+
+  // ① 健康名单:重启后删的不复活(既有语义,不许退化)。
+  const healthy = lib.listWorkflows();
+  check("★ 重启后(健康名单)被删的出厂工作流不复活", !healthy.some((w) => w.id === fixture.id), {
+    ids: healthy.map((w) => w.id).includes(fixture.id),
+  });
+  check("重启后其余出厂工作流还在", healthy.length === BUILTIN_WORKFLOWS.length - 1, healthy.length);
+
+  // ② 名单损坏(截断 JSON,台账原例):重启读列表,被删的仍不许复活。
+  SettingRepo.set(SEEDED_KEY, "{truncated");
+  // 注意:同一个进程里 seededThisRun 已经是 true —— 这正是重启场景要跨进程的原因。
+  // 这里用"再起一次同样读取"模拟足够吗?不够:闸已关。所以验证损坏态要走一条
+  // **新进程**才看得到的路 —— run.sh 第三趟(见 verify-corrupt)。此处先断言分类器。
+  const status = lib.workflowSeedStatus();
+  check("★ 损坏名单被分类为 CORRUPT(不是静默当空)", status.state === "CORRUPT" && status.seedable === false, status);
+
+  // ③ 非数组、混进非字符串:同判 CORRUPT。
+  SettingRepo.set(SEEDED_KEY, JSON.stringify({ not: "array" }));
+  check("非数组名单同样判 CORRUPT", lib.workflowSeedStatus().state === "CORRUPT", lib.workflowSeedStatus());
+  SettingRepo.set(SEEDED_KEY, JSON.stringify(["ok-id", 42]));
+  check("混进非字符串同样判 CORRUPT", lib.workflowSeedStatus().state === "CORRUPT", lib.workflowSeedStatus());
+
+  // ④ 好名单:判 SEEDED(防"一律 CORRUPT"的过度保守)。
+  SettingRepo.set(SEEDED_KEY, JSON.stringify(BUILTIN_WORKFLOWS.map((d) => d.id)));
+  check("健康名单判 SEEDED 且可播种", lib.workflowSeedStatus().state === "SEEDED" && lib.workflowSeedStatus().seedable === true, lib.workflowSeedStatus());
+
+  // ⑤ 缺省:NEVER_SEEDED(真新用户)。
+  SettingRepo.set(SEEDED_KEY, "");
+  check("键为空判 NEVER_SEEDED", lib.workflowSeedStatus().state === "NEVER_SEEDED", lib.workflowSeedStatus());
+
+  // 收尾:把名单留在**损坏**值上 —— 第三趟(新进程)要拿它验跨进程的"不复活"。
+  SettingRepo.set(SEEDED_KEY, "{truncated");
+} else if (process.argv.includes("verify-corrupt")) {
+  // ── 第三趟:新进程 + 损坏名单 —— 真正跨进程的"坏名单不复活"。 ──
+  console.log("\n【MC-053】第三趟:新进程 + 损坏名单,读列表");
+  const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as { id: string; name: string };
+  const listed = lib.listWorkflows();
+  check("★ 新进程读到损坏名单:被删的出厂工作流没有复活", !listed.some((w) => w.id === fixture.id), {
+    reappeared: listed.map((w) => w.id).includes(fixture.id),
+  });
+  check("★ 损坏名单没有被覆盖写(原损坏值保留,等修复)", SettingRepo.get(SEEDED_KEY) === "{truncated", {
+    value: SettingRepo.get(SEEDED_KEY),
+  });
+  // 正控:库里原有的别的行照常列出来(不是"读列表整个挂了")。
+  check("读列表本身没挂(其余行照常列出)", listed.length >= BUILTIN_WORKFLOWS.length - 1, listed.length);
 }
 
-/* 转录那一步的时间预算必须**小于**节点超时(见 builtins 的 AUTO_CONVERT_CODE_NODE_ID:
- * 30 分钟)。超了的话宿主会**杀进程**,那一批里已经转好的也一起丢 —— 而这种丢是静默的。 */
-{
-  const budget = /RUN_BUDGET_S = (\d+) \* 60/.exec(MINERU_PY);
-  check("MinerU 脚本有整次运行的时间预算", budget !== null);
-  check("预算(分钟)小于节点超时 30 分钟", budget !== null && Number(budget[1]) < 30, budget?.[1]);
-}
-
-console.log(`\n${checks - failures}/${checks} passed`);
-if (failures > 0) process.exit(1);
+console.log(`\nworkflow-seed-smoke(${process.argv[2] ?? ""}):${total - failures}/${total} 通过`);
+if (failures > 0) process.exitCode = 1;

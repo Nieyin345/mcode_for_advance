@@ -62,6 +62,36 @@ const WORKFLOW_SEEDED_SETTING_KEY = "workflow.seededShipped";
 
 let seededThisRun = false;
 
+/**
+ * 【MC-053】播种名单的三态 —— 从前"读不出来"和"从没播过"共用一个空数组,坏名单
+ * 会导致**已删除的出厂工作流被重新播回来**(违背"删了就是删了"的产品承诺)。
+ *
+ * Z 形判据(坏 JSON / 不是数组 / 混进非字符串 ⇒ CORRUPT,一个字节都不许重播):
+ *   - `NEVER_SEEDED`:键不存在(真·新用户)—— 照常播种,写名单;
+ *   - `SEEDED`:键存在且形状合法 —— 只补名单里没有的 id(升级新增),已有行不动;
+ *   - `CORRUPT`:键存在但读不出来 —— **不播种、不覆盖名单**,记诊断,等专门的
+ *     修复路径(删掉该键 = 明确选择"当作全新"才允许重播)。硬规矩 3:坏东西显式
+ *     报出来,不静默猜测。
+ *
+ * 与 MC-051(整份 hooks.json)与 MC-054(守望模板)同一条协议:坏存档不做任何
+ * 可能造成内容复活的推断。
+ */
+type SeedState = { kind: "NEVER_SEEDED" } | { kind: "SEEDED"; ids: string[] } | { kind: "CORRUPT"; reason: string };
+
+function classifySeedList(): SeedState {
+  const raw = SettingRepo.get(WORKFLOW_SEEDED_SETTING_KEY);
+  if (raw === null || raw === "") return { kind: "NEVER_SEEDED" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: "CORRUPT", reason: "播种名单不是合法 JSON" };
+  }
+  if (!Array.isArray(parsed)) return { kind: "CORRUPT", reason: "播种名单不是数组" };
+  if (parsed.some((x) => typeof x !== "string")) return { kind: "CORRUPT", reason: "播种名单里混进了非字符串" };
+  return { kind: "SEEDED", ids: parsed as string[] };
+}
+
 /** 把出厂版播种成表里的普通行(幂等,进程内只跑一次)。三件事:
  *  - 名单里没有的自带 id:表里没行就写一行(`builtin` 压成 false —— 播进来的就是
  *    普通行),已有行(旧模型下用户改过的"覆盖行")就只记名单、不动内容;
@@ -72,16 +102,19 @@ let seededThisRun = false;
 function ensureShippedSeeded(): void {
   if (seededThisRun) return;
   try {
-    const raw = SettingRepo.get(WORKFLOW_SEEDED_SETTING_KEY);
-    let seeded: string[] = [];
-    try {
-      const parsed: unknown = raw === null ? [] : JSON.parse(raw);
-      if (Array.isArray(parsed)) seeded = parsed.filter((x): x is string => typeof x === "string");
-    } catch {
-      // 坏名单当空名单 —— 重播是幂等的(只补缺行,不覆盖既有行)。
+    const state = classifySeedList();
+    if (state.kind === "CORRUPT") {
+      // 【MC-053】坏名单 → 不播种、不覆盖。已删除的自带工作流不会被一个坏 JSON
+      // 复活;从没播过的机器遇到这种状态(外部改库)也如实停在"未播种",等修复。
+      // 每次读取入口都会再报一次 —— 这是有意的(状态没变化就还是坏的)。
+      log.warn(
+        `workflow: 播种名单损坏(${state.reason}),已跳过出厂工作流播种 —— 删除过的自带内容不会被重新装回;修复请清空 setting「${WORKFLOW_SEEDED_SETTING_KEY}」后再试。`,
+      );
+      seededThisRun = true;
+      return;
     }
-    const seededSet = new Set(seeded);
-    let changed = false;
+    const seededSet = new Set(state.kind === "SEEDED" ? state.ids : []);
+    let changed = state.kind === "NEVER_SEEDED";
     for (const doc of BUILTIN_WORKFLOWS) {
       if (seededSet.has(doc.id)) continue;
       seededSet.add(doc.id);
@@ -99,6 +132,15 @@ function ensureShippedSeeded(): void {
   } catch {
     // DB 未就绪等瞬态问题:保持未播状态,下一次再试。
   }
+}
+
+/** 【MC-053】播种状态供诊断/测试读(不回传损坏原始值,避免把可能含敏感内容的坏串
+ *  再扩散;只回状态与原因)。`CORRUPT` 时 `seedable=false` —— 任何调用方都不该在
+ *  这个状态下做"补播种"这类会复活内容的事。 */
+export function workflowSeedStatus(): { state: "NEVER_SEEDED" | "SEEDED" | "CORRUPT"; reason?: string; seedable: boolean } {
+  const state = classifySeedList();
+  if (state.kind === "CORRUPT") return { state: "CORRUPT", reason: state.reason, seedable: false };
+  return { state: state.kind, seedable: true };
 }
 
 /** 全部工作流 —— 就是表里的行(含播种进来的自带行)。 */

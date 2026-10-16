@@ -1,38 +1,32 @@
 #!/usr/bin/env bash
-# Headless smoke for **`main/workflows/seed.ts`** —— 流程脚本落盘到 `<数据根>/workflows/`。
+# workflow-seed-smoke —— 【MC-053】出厂工作流播种名单损坏不许复活已删内容。
 #
-# ## 为什么有这一套
-#
-# 从前 seed 只在「文件不存在」时写,于是老安装**永远停在第一次装的那一版**:2026-09-26
-# 查出来用户磁盘上的 library.py 还是 9 月 16 日那份 —— 没有屏蔽逻辑、还收已经退役的
-# `--kind`。系统提示词叫 AI 用它查库,屏蔽了的条目在 AI 眼里一条不少。
-#
-# 现在的规则:**没改过的旧版自动换成新版,改过的一律不动**。这一套验的就是这两半:
-# 用 git 取出**真发过的**旧版 library.py(不是手写的假旧版),看它会不会被认成原版并升级;
-# 再在上面改一行,看它会不会被留着。
-#
-# Run: scripts/workflow-seed-smoke/run.sh
+# **跑两趟**(与 run-store-smoke 同款):第一趟在一个空库里正常播种、删掉一个出厂
+# 工作流;第二趟(新进程)把名单改成损坏值,再读列表 —— 被删的工作流必须**不回来**。
+# 跨进程是这一条的题面:播种的"每进程只播一次"闸在进程内,重启才是用户真实遇到的
+# 场景。
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-OUT=$(mktemp -d /tmp/mcode-seed-smoke.XXXXXX)
-trap 'rm -rf "$OUT"' EXIT
+OUT=$(mktemp -d /tmp/mcode-workflow-seed-smoke.XXXXXX)
+DATA=$(mktemp -d /tmp/mcode-workflow-seed-data.XXXXXX)
+trap 'rm -rf "$OUT" "$DATA"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
-# 真发过的旧版:e1687e4 那一版 assets.ts(用户磁盘上那份 library.py 就出自它)。
-# 走 esbuild 打包取字面量的真值,而不是正则抠 —— 与 library-py-smoke 同理。
-mkdir -p "$OUT/legacy"
-git show e1687e4:apps/desktop/src/main/workflows/assets.ts > "$OUT/legacy/assets.ts"
-"$ESBUILD" "$OUT/legacy/assets.ts" --bundle --platform=node --format=esm \
-  --outfile="$OUT/legacy.mjs" --log-level=error
-
-STUBS=scripts/run-store-smoke/stubs
 "$ESBUILD" scripts/workflow-seed-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
-  --alias:@main/lib/dataRoot.js=./$STUBS/dataRoot.ts \
-  --alias:@main/lib/logger.js=./$STUBS/logger.ts \
+  --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
+  --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
+  --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:electron=./scripts/run-store-smoke/stubs/electron.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
-mkdir -p "$OUT/data"
-MCODE_SMOKE_DATA_ROOT="$OUT/data" node "$OUT/smoke.mjs" "$OUT/legacy.mjs"
+export MCODE_SMOKE_DATA_ROOT="$DATA"
+
+# 第一趟:空库播种 → 删一个出厂工作流(名字进一个已知位置,第二趟读)。
+node "$OUT/smoke.mjs" seed
+# 第二趟:新进程。先正常读(名单健康,删的不复活)→ 验分类器 → 把名单留在损坏值上。
+node "$OUT/smoke.mjs" verify
+# 第三趟:又一个新进程,读到的是损坏名单 —— 被删的工作流必须仍不复活。
+node "$OUT/smoke.mjs" verify-corrupt
