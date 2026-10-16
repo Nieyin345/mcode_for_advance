@@ -685,15 +685,18 @@ test("workflow provider overrides survive node-session reuse and drive provider-
   // 判据仍是"每个点选名按 pi 的引擎矩阵过滤",但形态带上了 `as string[]` 收窄。
   assert.match(piSkills, /\(allowNames as string\[\]\)\.filter\(\(name\) => engineEnabled\(enginesMap, name, "pi"\)\)/);
   assert.match(piSkills, /const explicitPicks = !!/, "MC-074: explicitPicks 守卫存在");
-  const pluginPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/PluginsPanel.tsx"), "utf8");
+  // ⚠️ `PluginsPanel` / `McpPanel` / `SkillsPanel` 的子块已拆到各自的 `*Parts.tsx`
+  //    —— 扫的是**两文件拼接**（符号可能落在任一边）。这两条曾经因搬家变空过。
+  const rd = (p) => { try { return readFileSync(resolve(here, "../../" + p), "utf8"); } catch { return ""; } };
+  const pluginPanel = rd("src/renderer/components/settings/PluginsPanel.tsx") + "\n" + rd("src/renderer/components/settings/PluginsPanelParts.tsx");
   assert.match(pluginPanel, /plugin\.compatibleProviderIds/);
   assert.match(pluginPanel, /settings\.plugins\.providerIncompatible/);
-  const mcpPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/McpPanel.tsx"), "utf8");
+  const mcpPanel = rd("src/renderer/components/settings/McpPanel.tsx") + "\n" + rd("src/renderer/components/settings/McpPanelParts.tsx");
   assert.match(mcpPanel, /if \(!res\.ok \|\| !res\.perEngine\)/);
   assert.match(mcpPanel, /settings\.mcp\.builtinProviderHint/);
   const mcpIpc = readFileSync(resolve(here, "../../src/main/ipc/mcp.ts"), "utf8");
   assert.match(mcpIpc, /perEngine: \{ claude: true, codex: false \}/);
-  const skillsPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/SkillsPanel.tsx"), "utf8");
+  const skillsPanel = rd("src/renderer/components/settings/SkillsPanel.tsx") + "\n" + rd("src/renderer/components/settings/SkillsPanelParts.tsx");
   assert.match(skillsPanel, /if \(!res\.ok \|\| !res\.perEngine\)/);
   assert.match(skillsPanel, /matrixBusyRef/);
   assert.match(skillsPanel, /disabled=\{engineBusy\}/);

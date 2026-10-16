@@ -906,7 +906,9 @@ console.log("\nMCP 面板:操作失败的话不许被重拉清掉");
 //   判据钉源码:**`await load()` 必须出现在 `if (!res.ok)` 之前**(错误在之后挂才留住)。
 {
   const { readFileSync } = await import("node:fs");
-  const mcp = readFileSync(join(process.cwd(), "src/renderer/components/settings/McpPanel.tsx"), "utf8");
+  // ⚠️ `McpPanel` 的子块已拆到 `McpPanelParts.tsx` —— 扫**两文件拼接**（写操作可能落在任一边）。
+  const mcp = readFileSync(join(process.cwd(), "src/renderer/components/settings/McpPanel.tsx"), "utf8")
+    + "\n" + readFileSync(join(process.cwd(), "src/renderer/components/settings/McpPanelParts.tsx"), "utf8");
   const code = mcp.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
   // 四条都要:有 `if (!res.ok) setError` 的地方,同一 try 内的 `await load()` 必须排在它前面。
   const badOrder = [...code.matchAll(/if \(!res\.ok\)[^\n]*setError\([^\n]*\);\s*await load\(\);/g)].length;
@@ -948,7 +950,9 @@ console.log("\n插件面板:git 安装的同步防重入");
 //   判据钉源码:submit 开头必须有 ref 守卫、进入后立刻置位、结束时复位。
 {
   const { readFileSync } = await import("node:fs");
-  const plugins = readFileSync(join(process.cwd(), "src/renderer/components/settings/PluginsPanel.tsx"), "utf8");
+  // ⚠️ `GitInstallForm`（含这个 ref 闸）已从 `PluginsPanel.tsx` 拆到 `PluginsPanelParts.tsx`
+  //    —— 扫的是**现在的家**。这条曾经因搬家变空过（按源码文本扫描、文件一移动就静默失效）。
+  const plugins = readFileSync(join(process.cwd(), "src/renderer/components/settings/PluginsPanelParts.tsx"), "utf8");
   const code = plugins.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
   check(
     "★ git 安装的 submit 有同步 submittingRef 闸(回车路径绕过 disabled 时挡双提交)",

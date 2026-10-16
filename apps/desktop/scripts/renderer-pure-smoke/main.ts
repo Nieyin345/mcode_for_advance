@@ -901,7 +901,12 @@ section("18. 插件 hook 授权:面板入参构造 + 面板真的接上了签发
   // ⑤ 接线不变量:面板源码真的调了签发 / 撤销入口 + 用了那个构造(只声明不接线 = 没接通)。
   const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const panel = readFileSync(join(process.cwd(), "src/renderer/components/settings/PluginsPanel.tsx"), "utf8");
+  // ⚠️ `HookGrantsSection` 等子块已从 `PluginsPanel.tsx` 拆到 `PluginsPanelParts.tsx`
+  //    —— 扫**两文件拼接**（这些调用可能落在任一边）。曾经因搬家变空过。
+  const readPanel = (f: string) => {
+    try { return readFileSync(join(process.cwd(), `src/renderer/components/settings/${f}`), "utf8"); } catch { return ""; }
+  };
+  const panel = readPanel("PluginsPanel.tsx") + "\n" + readPanel("PluginsPanelParts.tsx");
   check("★ 面板真的调 issueHostHookGrant(不是只声明了 RPC)", panel.includes("api.hooks.issueHostHookGrant("), panel.match(/issueHostHookGrant\([^\n]*/g)?.slice(0, 2));
   check("★ 面板真的调 revokeHostHookGrant(能撤)", panel.includes("api.hooks.revokeHostHookGrant("), panel.match(/revokeHostHookGrant\([^\n]*/g)?.slice(0, 2));
   check("★ 面板的签发入参走 hookGrantIssueInput(不是手拼一份)", panel.includes("hookGrantIssueInput("));
