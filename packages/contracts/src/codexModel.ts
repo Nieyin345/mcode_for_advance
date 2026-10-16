@@ -16,6 +16,8 @@
  */
 
 /** One model entry under a provider. */
+import type { ThinkingLevelMap } from "./thinkingMap.js";
+
 export interface CodexModelOption {
   /** Model id sent to the API (also used for thread/turn `model`). */
   id: string;
@@ -30,6 +32,17 @@ export interface CodexModelOption {
    *  windows never race on the shared config file. Omitted → codex's
    *  fallback metadata. */
   contextWindow?: number;
+  /** 每模型「会话档位 → 发给 codex 的 `reasoning_effort`」（2026-10-17 加，
+   *  补上三引擎功能对齐里 Codex 缺的那一格）。
+   *
+   *  ⚠️ **codex 的 effort 是二进制的封闭枚举**（`@contracts/thinkingMap` 的
+   *  `CODEX_EFFORT_VALUES`，从 codex.exe 抠出来的）。所以这一格能表达的只有
+   *  「选它认识的哪个档」或「不传」—— UI 上给的是**下拉**而不是自由输入，
+   *  `string` binding 的值会被 `isCodexEffortValue` 校验，不认识的值主进程会
+   *  拦下来并记 warn，**不静默发一个它不认的值**。
+   *
+   *  没配 = 用会话档位名原样发（若是枚举内的）；配了 = 按 binding 翻译。 */
+  thinkingLevelMap?: ThinkingLevelMap;
 }
 
 /** Persisted shape of one provider entry (settings table, no secrets). */

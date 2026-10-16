@@ -23,7 +23,7 @@ import type {
 } from "@contracts/provider";
 import type { AskUserQuestionItem, AskUserQuestionOption, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
-import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel, resolveMappedEffort, isNamedEffort } from "./customEnv.js";
+import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel, resolveMappedEffort } from "./customEnv.js";
 import type { ClaudeContextWindowTag } from "./claudeTokenUsage.js";
 import { ASK_SYSTEM_PROMPT } from "@main/lib/askQuestion.js";
 import { CLAUDE_IDENTITY_PROMPT, CLAUDE_PLAN_MODE_NUDGE, fileArchitecturePrompt, joinPromptSections } from "@main/lib/systemPrompt.js";
@@ -550,12 +550,19 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // only the five named levels reach the wire, validated by the UI's
       // capabilities.thinkingLevels list.
       // See https://platform.claude.com/docs/en/build-with-claude/effort
-      // Per-turn reasoning effort. `Options.effort` is a CLOSED union
-      // (low/medium/high/xhigh/max) — a per-model `thinkingLevelMap` mapping to
-      // an arbitrary gateway string can't ride this. Only pass it through when
-      // the resolved value IS one of the named levels; anything else goes via
-      // the `CLAUDE_CODE_EFFORT_LEVEL` env override below (see buildCustomEnv).
-      effort: isNamedEffort(mappedEffort) ? (mappedEffort as Options["effort"]) : undefined,
+      // Per-turn reasoning effort —— `resolveMappedEffort` 现在返回**落点判别式**
+      // （2026-10-17 改，见 customEnv 里那段表）：命名档与**整数**都走 `Options.effort`
+      // （SDK 的 `effort` 也收 number，sdk.d.ts:87），token 预算走
+      // `Options.thinking.budgetTokens`，自定义字符串走 env（下面那段）。
+      effort:
+        mappedEffort.target === "effort" || mappedEffort.target === "effortNumber"
+          ? (mappedEffort.value as Options["effort"])
+          : undefined,
+      // `{ type:"enabled", budgetTokens:N }` —— **另一种语义**：固定预算，不是自适应档位。
+      // 只有用户在映射里显式选了「token 预算」才走这条。
+      ...(mappedEffort.target === "thinkingBudget"
+        ? { thinking: { type: "enabled" as const, budgetTokens: mappedEffort.tokens } }
+        : {}),
       // Permission mode: the contract is an open string; the SDK's type is a
       // narrow union. The UI only offers claude's 4 modes for this provider
       // (declared in capabilities.permissionModes), so the cast is safe. The
@@ -729,10 +736,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // settings.json、CLAUDE.md 都还是 Mcode 托管的那份），项目级一律不读。
     options.settingSources = ["user"];
     options.env = { ...options.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
-    // 思考强度的**自定义值**（映射出的、不是命名档的那个）只能走 env ——
-    // Options.effort 是封闭联合。命名档上面已经经 Options.effort 传了，这里不重复。
-    if (mappedEffort && !isNamedEffort(mappedEffort)) {
-      options.env = { ...options.env, CLAUDE_CODE_EFFORT_LEVEL: mappedEffort };
+    // 思考强度的**自定义字符串**只能走 env —— `Options.effort` 是封闭联合、且整数那支
+    // 已在上面的 Options 构造里传了。命名档与整数都不重复走这里。
+    if (mappedEffort.target === "env") {
+      options.env = { ...options.env, CLAUDE_CODE_EFFORT_LEVEL: mappedEffort.value };
     }
     ensureMaterialized(instructionsSourcePath(dataRoot()), [memoryInstructionPath(MCODE_CONFIG_DIR, "CLAUDE.md")]);
 

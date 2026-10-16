@@ -113,6 +113,8 @@ export function isValidHeaderValue(value: string): boolean {
 /** One selectable model on a custom endpoint. Mirrors the Pi side's flat
  *  per-provider model list: just the gateway-side model id plus a 1M-context
  *  declaration — no display name, no per-tier role. */
+import type { ThinkingLevelMap } from "./thinkingMap.js";
+
 export interface CustomModelEntry {
   /** The actual model id the gateway routes to, e.g. "deepseek-v4-pro".
    *  Injected as ANTHROPIC_MODEL when selected; mirrored onto the background
@@ -127,11 +129,15 @@ export interface CustomModelEntry {
    *  can read pictures, so one can be picked as the 「视觉中继」model when the
    *  session's own model has no vision. Absent = not declared. */
   supportsVision?: boolean;
-  /** 每模型「思考强度档位 → 该网关要的具体值」映射（2026-10-11 加）。
-   *  与 Pi 的 `thinkingLevelMap` 同一形状、同一语义：不同网关对同一档位用的标识符
-   *  不一样（A 家要 "high"、B 家要 "3"），这一格让用户把它接对。
-   *  三态：缺席 = 用网关/引擎默认；字符串 = 具体值；null = 该档位不支持（下拉里隐藏）。 */
-  thinkingLevelMap?: Record<string, string | null>;
+  /** 每模型「思考强度档位 → 翻译成什么」（2026-10-17 升级成带 kind 的形状）。
+   *
+   *  ⚠️ **老配置里是 `Record<string, string|null>`**（2026-10-11 那版，照抄 Pi 的形状）。
+   *  读进来走 `thinkingMapFromLegacy` 归一（`null` → `{kind:"off"}`、字符串 →
+   *  `{kind:"string"}`），所以磁盘上两种形状都能读、新写的只有新形状。
+   *
+   *  Claude 侧能落到的字段比 Pi 多（见 `@contracts/thinkingMap` 文件头那张表）：
+   *  命名档 / 整数 / token 预算 / 自定义字符串各走不同的路。 */
+  thinkingLevelMap?: ThinkingLevelMap;
 }
 
 /** Fully-resolved config passed to the provider at turn time (main-process

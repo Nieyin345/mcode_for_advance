@@ -15,6 +15,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
 import { useNarrowViewport } from "@renderer/hooks/useNarrowViewport.js";
 import type { PermissionModeOption, ThinkingLevelOption } from "@contracts/provider";
+import { bindingDisplay, type ThinkingLevelKey } from "@contracts/thinkingMap";
 
 /**
  * Thinking-level and permission-mode pickers for the composer toolbar.
@@ -292,13 +293,16 @@ export function EffortChip({
   // Provider declares no thinking levels → hide the chip.
   if (!levels || levels.length === 0) return null;
 
-  /** 当前会话所选自定义模型里，这个档位映射成的具体值（没配就 undefined）。 */
+  /** 当前会话所选自定义模型里，这个档位映射成的**可见值**（没配就 undefined）。
+   *
+   *  ⚠️ 2026-10-17 起 binding 是判别式（`{kind:"string",value}` / `{kind:"number",…}` /
+   *  `{kind:"budget",tokens}` / …），不再是裸字符串 —— 显示统一走
+   *  `bindingDisplay`（与设置页那份**同一实现**，见 `@contracts/thinkingMap`）。 */
   const mappedValueOf = (level: string): string | undefined => {
     if (!customModelId) return undefined;
     const cfg = customModels.find((m) => m.id === customModelId);
     const entry = cfg?.models.find((m) => m.id === selectedModelId) ?? cfg?.models[0];
-    const v = entry?.thinkingLevelMap?.[level];
-    return typeof v === "string" && v.trim() ? v.trim() : undefined;
+    return bindingDisplay(entry?.thinkingLevelMap?.[level as ThinkingLevelKey]);
   };
 
   const activeLevel = levels.find((l) => l.value === effort);

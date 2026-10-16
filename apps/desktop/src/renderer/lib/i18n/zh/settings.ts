@@ -484,6 +484,12 @@ export const zh = {
   "settings.customModels.thinkingMapHint": "思考级别映射(默认=用模型默认;不支持=UI 隐藏该档;映射值=发送给 provider 的具体字符串)",
   "settings.customModels.thinkingMapEdit": "思考强度映射",
   "settings.customModels.thinkingValuePlaceholder": "如 max / high",
+  /** token 预算那一路（只有 Claude 有：Options.thinking.budgetTokens）。 */
+  "settings.customModels.thinkingBudgetPlaceholder": "如 8192",
+  /** 「具体值」的种类 —— 不同引擎能给的不一样（见 @contracts/thinkingMap 的表）。 */
+  "settings.customModels.thinkingValueKind.string": "文本",
+  "settings.customModels.thinkingValueKind.number": "数字",
+  "settings.customModels.thinkingValueKind.budget": "token 预算",
   "settings.customModels.thinkingDefault": "默认",
   "settings.customModels.thinkingNull": "不支持",
   "settings.customModels.thinkingValue": "映射值",

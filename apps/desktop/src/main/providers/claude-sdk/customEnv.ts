@@ -90,6 +90,7 @@ import {
 // 那份 import 了 logger，而 logger 拉 electron；这个文件被无头 smoke 直接 bundle
 // （agent-env-smoke / plugins-smoke），会把 electron 带进去当场崩掉。
 import { MCODE_SESSION_HEADER } from "@contracts/customModel";
+import { resolveEffortForClaude, type ResolvedEffort } from "@contracts/thinkingMap";
 
 /** Mcode's own Claude config directory. We always set CLAUDE_CONFIG_DIR to
  *  this path so the bundled claude binary reads its user-level config
@@ -147,33 +148,34 @@ export function resolveActiveModel(cfg: ApiConfig): string | undefined {
   return entry.supports1m ? with1MSuffix(entry.id) : entry.id;
 }
 
-/** Claude SDK `Options.effort` 只认这五个命名档（封闭联合）。 */
-const NAMED_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
-export function isNamedEffort(v: string | undefined): v is "low" | "medium" | "high" | "xhigh" | "max" {
-  return v !== undefined && NAMED_EFFORTS.has(v);
-}
-
-/** 把会话级 effort **档位**按当前模型的 `thinkingLevelMap` 翻成网关要的具体值
- *  （2026-10-11 加，三引擎功能对齐）。用户的诉求原话：「不同的 api 的思考强度的
- *  标识符不一样」—— 不同网关对同一档位用的词不同（A 家 "high"、B 家 "3"）。
+/**
+ * 把会话级 effort **档位**按当前模型的 `thinkingLevelMap` 翻成「**发到哪个字段**」。
  *
- *  返回值是一个字符串档位名：
- *   - 命中映射的字符串 → 用它（网关要什么就发什么）；
- *   - 命中 null → 该档位不支持，返回 undefined（不传，用模型默认）；
- *   - 未配 / "default" → 命名档原样返回，`default` 返回 undefined。
+ * ## 为什么返回的不是字符串（2026-10-17 改）
  *
- *  ⚠️ 调用方注意：`Options.effort` 是**封闭联合**，所以只有命名档能走它；自定义值
- *  必须放进 `CLAUDE_CODE_EFFORT_LEVEL` env（见 startTurn 里的用法）。 */
+ * 从前这里返回一个字符串，调用方只能把它塞进 `Options.effort`（封闭联合）或
+ * `CLAUDE_CODE_EFFORT_LEVEL` env。但 Claude SDK 实际有**四条不同的路**
+ * （`sdk.d.ts` 实测）：
+ *
+ * | 用户想表达的 | 该走的路 |
+ * |---|---|
+ * | 命名档（low…max） | `Options.effort`（封闭联合） |
+ * | **任意整数** | `Options.effort`（**它也收 number**，sdk.d.ts:87） |
+ * | **token 预算** | `Options.thinking = { type:"enabled", budgetTokens:N }` |
+ * | 自定义字符串 | `CLAUDE_CODE_EFFORT_LEVEL` env（网关认不认看它自己） |
+ *
+ * 返回一个字符串就把后三条压扁成一条了 —— 用户填的数字会被当成字符串发进 env，
+ * token 预算**根本没有落点**。所以改成返回判别式，由调用方按 `target` 落到对应字段。
+ *
+ * 翻译逻辑本身在 `@contracts/thinkingMap`（三个引擎共用一份）；这里只负责
+ * 「从 ApiConfig 里把当前模型那张映射表取出来」。
+ */
 export function resolveMappedEffort(
   effort: string | undefined,
   apiConfig: Pick<ApiConfig, "selectedModel" | "models"> | undefined,
-): string | undefined {
-  if (!effort || effort === "default") return undefined;
+): ResolvedEffort {
   const entry = apiConfig?.models?.find((m) => m.id === apiConfig.selectedModel);
-  const mapped = entry?.thinkingLevelMap?.[effort];
-  if (typeof mapped === "string" && mapped.trim()) return mapped.trim();
-  if (mapped === null) return undefined;
-  return effort;
+  return resolveEffortForClaude(effort, entry?.thinkingLevelMap);
 }
 
 /**

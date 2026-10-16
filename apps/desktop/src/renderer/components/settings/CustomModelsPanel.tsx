@@ -69,6 +69,13 @@ import {
   FormActions,
 } from "./CustomModelsPanelParts.js";
 import type { TestState, ClaudeModelFormState, CustomHeaderRow } from "./CustomModelsPanelParts.js";
+import type { ThinkingRowMode, ThinkingRowValue } from "./CustomModelsPanelParts.js";
+import {
+  thinkingMapFromLegacy,
+  thinkingMapToLegacy,
+  type ThinkingLevelBinding,
+  type ThinkingLevelMap,
+} from "@contracts/thinkingMap";
 
 /**
  * Unified model-config panel — the single "模型配置" settings surface.
@@ -104,43 +111,74 @@ import type { TestState, ClaudeModelFormState, CustomHeaderRow } from "./CustomM
  * 表单里用两个平行表表示（与 Pi 表单一致）：`thinking[档位]` 是三态选择
  * (default / null / value)，`thinkingValue[档位]` 在选 value 时填具体字符串。
  * 落到配置时折成 `{ [档位]: 值 | null }`。 */
-function defaultThinkingModes(): Record<PiThinkingKey, "default" | "null" | "value"> {
+function defaultThinkingModes(): Record<PiThinkingKey, ThinkingRowMode> {
   return { off: "default", minimal: "default", low: "default", medium: "default", high: "default", xhigh: "default" };
 }
-function emptyThinkingValues(): Record<PiThinkingKey, string> {
-  return { off: "", minimal: "", low: "", medium: "", high: "", xhigh: "" };
+function emptyThinkingValues(): Record<PiThinkingKey, ThinkingRowValue> {
+  const blank = (): ThinkingRowValue => ({ kind: "string", text: "", num: "", budget: "" });
+  return {
+    off: blank(), minimal: blank(), low: blank(), medium: blank(),
+    high: blank(), xhigh: blank(),
+  };
+}
+
+/** 一个 binding → 表单「具体值」那半边（kind + 三个框）。 */
+function rowValueFromBinding(b: ThinkingLevelBinding | undefined): ThinkingRowValue {
+  const base: ThinkingRowValue = { kind: "string", text: "", num: "", budget: "" };
+  if (!b) return base;
+  if (b.kind === "string") return { ...base, kind: "string", text: b.value };
+  if (b.kind === "number") return { ...base, kind: "number", num: String(b.value) };
+  if (b.kind === "budget") return { ...base, kind: "budget", budget: String(b.tokens) };
+  return base;
+}
+
+/** 表单「具体值」那半边 → binding。**填不出来就返回 undefined**（= 不写这一档）。 */
+function bindingFromRowValue(v: ThinkingRowValue): ThinkingLevelBinding | undefined {
+  if (v.kind === "number") {
+    const n = Number(v.num.trim());
+    // 整数才收（SDK 的 effort 收 number，非整数没有意义）
+    return Number.isFinite(n) && Number.isInteger(n) ? { kind: "number", value: n } : undefined;
+  }
+  if (v.kind === "budget") {
+    const n = Number(v.budget.trim());
+    return Number.isFinite(n) && n > 0 ? { kind: "budget", tokens: Math.round(n) } : undefined;
+  }
+  const t = v.text.trim();
+  return t ? { kind: "string", value: t } : undefined;
 }
 
 /** 从配置里的 `thinkingLevelMap` 还原成表单的两张表。 */
-function thinkingFromMap(map: Record<string, string | null> | undefined): {
-  thinking: Record<PiThinkingKey, "default" | "null" | "value">;
-  thinkingValue: Record<PiThinkingKey, string>;
+function thinkingFromMap(map: ThinkingLevelMap | undefined): {
+  thinking: Record<PiThinkingKey, ThinkingRowMode>;
+  thinkingValue: Record<PiThinkingKey, ThinkingRowValue>;
 } {
   const thinking = defaultThinkingModes();
   const thinkingValue = emptyThinkingValues();
   for (const k of PI_THINKING_KEYS) {
-    const v = map?.[k];
-    if (v === null) thinking[k] = "null";
-    else if (typeof v === "string") {
+    const b = map?.[k];
+    if (!b) continue;
+    if (b.kind === "off") thinking[k] = "null";
+    else if (b.kind === "string" || b.kind === "number" || b.kind === "budget") {
       thinking[k] = "value";
-      thinkingValue[k] = v;
+      thinkingValue[k] = rowValueFromBinding(b);
     }
+    // passthrough 落在 default（= 不写这一档）
   }
   return { thinking, thinkingValue };
 }
 
 /** 表单两张表 → 配置里的 `thinkingLevelMap`（全 default 就不写）。 */
 function thinkingMapFromForm(
-  thinking: Record<PiThinkingKey, "default" | "null" | "value">,
-  thinkingValue: Record<PiThinkingKey, string>,
-): Record<string, string | null> | undefined {
-  const out: Record<string, string | null> = {};
+  thinking: Record<PiThinkingKey, ThinkingRowMode>,
+  thinkingValue: Record<PiThinkingKey, ThinkingRowValue>,
+): ThinkingLevelMap | undefined {
+  const out: ThinkingLevelMap = {};
   for (const k of PI_THINKING_KEYS) {
     const mode = thinking[k];
-    if (mode === "null") out[k] = null;
+    if (mode === "null") out[k] = { kind: "off" };
     else if (mode === "value") {
-      const v = thinkingValue[k].trim();
-      if (v) out[k] = v;
+      const b = bindingFromRowValue(thinkingValue[k]);
+      if (b) out[k] = b;
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -215,8 +253,8 @@ interface PiModelFormState {
    *  models to TEXT-ONLY, which makes pi-ai swap user-attached images for an
    *  "(image omitted)" placeholder before the request leaves the process. */
   vision: boolean;
-  thinking: Record<PiThinkingKey, "default" | "null" | "value">;
-  thinkingValue: Record<PiThinkingKey, string>;
+  thinking: Record<PiThinkingKey, ThinkingRowMode>;
+  thinkingValue: Record<PiThinkingKey, ThinkingRowValue>;
 }
 
 interface PiFormState {
@@ -238,15 +276,8 @@ function emptyPiModel(): PiModelFormState {
     maxTokens: "",
     reasoning: false,
     vision: true,
-    thinking: {
-      off: "default",
-      minimal: "default",
-      low: "default",
-      medium: "default",
-      high: "default",
-      xhigh: "default",
-    },
-    thinkingValue: { off: "", minimal: "", low: "", medium: "", high: "", xhigh: "" },
+    // thinking / thinkingValue 从同一处来（不手抄两份，免得两者形状漂开）
+    ...thinkingFromMap(undefined),
   };
 }
 
@@ -265,15 +296,10 @@ function piModelFromDef(def: PiModelDefinition): PiModelFormState {
   // still shows vision ON because the provider patches it in at turn time
   // whenever the user actually attaches an image (see PiAgentSdkProvider).
   m.vision = def.input ? def.input.includes("image") : true;
-  const tlm = def.thinkingLevelMap ?? {};
-  for (const k of PI_THINKING_KEYS) {
-    const v = tlm[k];
-    if (v === null) m.thinking[k] = "null";
-    else if (typeof v === "string") {
-      m.thinking[k] = "value";
-      m.thinkingValue[k] = v;
-    } else m.thinking[k] = "default";
-  }
+  // ⚠️ 盘上（models.json）仍是旧形状 `string | null` —— 先归一成 binding 再进表单。
+  const normalized = thinkingFromMap(thinkingMapFromLegacy(def.thinkingLevelMap));
+  m.thinking = normalized.thinking;
+  m.thinkingValue = normalized.thinkingValue;
   return m;
 }
 
@@ -307,22 +333,10 @@ function piConfigFromForm(form: PiFormState): PiProviderConfig {
       // models.json models is text-only, which silently strips user-attached
       // images (replaced by an "(image omitted)" placeholder in the request).
       def.input = m.vision ? ["text", "image"] : ["text"];
-      const tlm: NonNullable<PiModelDefinition["thinkingLevelMap"]> = {};
-      let hasMap = false;
-      for (const k of PI_THINKING_KEYS) {
-        const mode = m.thinking[k];
-        if (mode === "null") {
-          tlm[k] = null;
-          hasMap = true;
-        } else if (mode === "value") {
-          const v = m.thinkingValue[k].trim();
-          if (v) {
-            tlm[k] = v;
-            hasMap = true;
-          }
-        }
-      }
-      if (hasMap) def.thinkingLevelMap = tlm;
+      // ⚠️ Pi SDK 只认旧形状 `Record<档位, string | null>` —— 用 thinkingMapToLegacy
+      // 把 binding 还原回去（数字/预算转成它的字符串形式，因为 Pi 那边没有这两条路）。
+      const tlm = thinkingMapToLegacy(thinkingMapFromForm(m.thinking, m.thinkingValue));
+      if (tlm) def.thinkingLevelMap = tlm;
       return def;
     });
   const cfg: PiProviderConfig = {};
@@ -1532,6 +1546,7 @@ function ClaudeProviderForm({
                   <ThinkingMapEditor
                     thinking={m.thinking}
                     thinkingValue={m.thinkingValue}
+                    capability="flexible"
                     onChange={(patch) => updateModel(idx, patch)}
                   />
                 )}
@@ -1867,6 +1882,7 @@ function PiProviderForm({
                     <ThinkingMapEditor
                       thinking={m.thinking}
                       thinkingValue={m.thinkingValue}
+                      capability="free"
                       onChange={(patch) => updateModel(idx, patch)}
                     />
                   </div>

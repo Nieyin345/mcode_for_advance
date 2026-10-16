@@ -746,25 +746,84 @@ eq("换令牌不影响桥地址", rotated.url, status.url);
 const { stopExtensionBridge } = await import("@main/providers/bridge/extensionBridge.js");
 stopExtensionBridge();
 
-/* ── 思考强度映射（resolveMappedEffort / isNamedEffort，2026-10-11 加）──
- *  用户诉求：「不同的 api 的思考强度的标识符不一样」，所以每个模型可配一张
- *  「档位 → 网关要的具体值」表。这一段钉住翻译规则（纯函数，无需起进程）。 */
+/* ── 思考强度映射（2026-10-17 升级成判别式 binding）──
+ *  用户诉求：「不同的模型、api 对应的不一样，**甚至接受的字段都不一样**」。
+ *  所以翻译结果不再是一个字符串，而是一个**落点判别式** —— 四条路各去不同的字段：
+ *    命名档 → Options.effort；整数 → Options.effort（SDK 也收 number）；
+ *    预算 → Options.thinking.budgetTokens；自定义串 → CLAUDE_CODE_EFFORT_LEVEL env。
+ *  这一段钉住翻译规则（纯函数，无需起进程）。 */
 {
-  const { resolveMappedEffort, isNamedEffort } = await import("@main/providers/claude-sdk/customEnv.js");
-  const cfg = (selectedModel: string, map: Record<string, string | null>) => ({
+  const { resolveMappedEffort } = await import("@main/providers/claude-sdk/customEnv.js");
+  const { isCodexEffortValue, thinkingMapFromLegacy, thinkingMapToLegacy } =
+    await import("@contracts/thinkingMap");
+
+  /** 造一个 ApiConfig 形状（只带映射解析要用的两个字段）。 */
+  const cfg = (selectedModel: string, map: Record<string, unknown>) => ({
     selectedModel,
     models: [{ id: selectedModel, thinkingLevelMap: map }],
   });
-  eq("★ 映射命中：档位翻成网关要的值", resolveMappedEffort("high", cfg("m", { high: "3" })), "3");
-  eq("档位没配 → 命名档原样", resolveMappedEffort("high", cfg("m", { low: "1" })), "high");
-  eq("default → 不传", resolveMappedEffort("default", cfg("m", { high: "3" })), undefined);
-  eq("★ 映射为 null → 该档不支持，不传", resolveMappedEffort("high", cfg("m", { high: null })), undefined);
-  eq("空白值的映射不算数 → 回落到命名档", resolveMappedEffort("high", cfg("m", { high: "   " })), "high");
-  eq("没有 apiConfig → 命名档原样", resolveMappedEffort("medium", undefined), "medium");
-  eq("★ 只按**选中模型**的映射翻，不串到别的模型",
-    resolveMappedEffort("high", { selectedModel: "a", models: [{ id: "a" }, { id: "b", thinkingLevelMap: { high: "9" } }] }),
-    "high");
-  check("★ 命名档判定：只有那五个算命名档", isNamedEffort("high") && !isNamedEffort("3") && !isNamedEffort(undefined) && !isNamedEffort("default"));
+  // ⚠️ 显式标 `kind: "string"` —— 不标的话 TS 推成 `string`，与判别式对不上
+  const S = (v: string): { kind: "string"; value: string } => ({ kind: "string", value: v });
+
+  // ── 旧行为（2026-10-11 那版）必须一条不丢 ──
+  same("★ 映射命中：档位翻成网关要的值（走 env）",
+    resolveMappedEffort("high", cfg("m", { high: S("3") })), { target: "env", value: "3" });
+  same("档位没配 → 命名档原样（走 effort）",
+    resolveMappedEffort("high", cfg("m", { low: S("1") })), { target: "effort", value: "high" });
+  same("default → 不传", resolveMappedEffort("default", cfg("m", { high: S("3") })), { target: "omit" });
+  same("★ 映射为 off → 该档不支持，不传",
+    resolveMappedEffort("high", cfg("m", { high: { kind: "off" } })), { target: "omit" });
+  same("空白值的映射不算数 → 回落到命名档",
+    resolveMappedEffort("high", cfg("m", { high: S("   ") })), { target: "effort", value: "high" });
+  same("没有 apiConfig → 命名档原样",
+    resolveMappedEffort("medium", undefined), { target: "effort", value: "medium" });
+  same("★ 只按**选中模型**的映射翻，不串到别的模型",
+    resolveMappedEffort("high", { selectedModel: "a", models: [{ id: "a" }, { id: "b", thinkingLevelMap: { high: S("9") } }] }),
+    { target: "effort", value: "high" });
+
+  // ── 新能力：映射出的值**恰好是**命名档时，走 effort 而不是 env ──
+  same("★ 映射成命名档 → 走 Options.effort（比 env 可靠）",
+    resolveMappedEffort("medium", cfg("m", { medium: S("high") })), { target: "effort", value: "high" });
+
+  // ── 新能力：整数 / token 预算（2026-10-17 之前**根本没有落点**）──
+  same("★ 映射成整数 → Options.effort 的 number 支（sdk.d.ts:87）",
+    resolveMappedEffort("high", cfg("m", { high: { kind: "number", value: 3 } })),
+    { target: "effortNumber", value: 3 });
+  same("★ 映射成 token 预算 → Options.thinking.budgetTokens",
+    resolveMappedEffort("high", cfg("m", { high: { kind: "budget", tokens: 8192 } })),
+    { target: "thinkingBudget", tokens: 8192 });
+  same("passthrough 显式写着 → 等同没配",
+    resolveMappedEffort("high", cfg("m", { high: { kind: "passthrough" } })),
+    { target: "effort", value: "high" });
+  same("★ 没配的非命名档 → 走 env（没有别的落点）",
+    resolveMappedEffort("ultra", cfg("m", {})), { target: "env", value: "ultra" });
+
+  /* ── 旧形状 ⇄ 新形状（磁盘上仍是 `string | null`，读进来要归一）── */
+  same("旧形状：字符串 → string binding",
+    thinkingMapFromLegacy({ high: "3" }), { high: S("3") });
+  same("旧形状：null → off binding",
+    thinkingMapFromLegacy({ high: null }), { high: { kind: "off" } });
+  eq("旧形状：空的 → undefined（不写这一档）",
+    thinkingMapFromLegacy({}), undefined);
+  eq("旧形状：空白字符串不算数",
+    thinkingMapFromLegacy({ high: "  " }), undefined);
+  same("新 → 旧：string 原样",
+    thinkingMapToLegacy({ high: S("3") }), { high: "3" });
+  same("新 → 旧：off → null",
+    thinkingMapToLegacy({ high: { kind: "off" } }), { high: null });
+  same("★ 新 → 旧：数字转成字符串形式（Pi 那边只认 string|null）",
+    thinkingMapToLegacy({ high: { kind: "number", value: 3 } }), { high: "3" });
+  same("★ 新 → 旧：预算同理",
+    thinkingMapToLegacy({ high: { kind: "budget", tokens: 8192 } }), { high: "8192" });
+  eq("新 → 旧：passthrough 不写",
+    thinkingMapToLegacy({ high: { kind: "passthrough" } }), undefined);
+
+  /* ── Codex：枚举校验（它会拒绝枚举外的值）──
+   *  枚举是从 codex.exe 抠出来的（minimal low medium high xhigh max ultra persistent）。 */
+  check("★ Codex 枚举内的值通过",
+    isCodexEffortValue("high") && isCodexEffortValue("minimal") && isCodexEffortValue("persistent"));
+  check("★ Codex 枚举外的值被拒（网关做不到随便填）",
+    !isCodexEffortValue("reasoning_high") && !isCodexEffortValue("3") && !isCodexEffortValue(""));
 }
 
 /* ────────────────────────── 收尾 ────────────────────────── */

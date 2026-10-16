@@ -71,7 +71,12 @@ export interface PiModelDefinition {
   baseUrl?: string;
   /** Whether the model supports extended thinking. */
   reasoning?: boolean;
-  /** Per-thinking-level mapping (tri-state, see above). */
+  /** Per-thinking-level mapping —— **这是 `models.json` 的落盘形状**
+   *  （`string | null`），Pi SDK 只认它，不要改。
+   *
+   *  Mcode 内部（表单 / IPC 的 `thinkingLevelMap` 字段）用带 kind 的
+   *  `@contracts/thinkingMap` 形状；存盘时经 `thinkingMapToLegacy` 还原成这个。
+   *  两种形状的转换在 `@contracts/thinkingMap` 里。 */
   thinkingLevelMap?: PiThinkingLevelMap;
   /** Supported input types: ["text"] or ["text","image"]. */
   input?: string[];

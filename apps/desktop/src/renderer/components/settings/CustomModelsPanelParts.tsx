@@ -38,6 +38,7 @@ import { SiClaude, SiGoogle } from "@renderer/lib/icons.js";
 import type { AuthMode, Protocol } from "@contracts/customModel";
 import { isValidHeaderName, isValidHeaderValue } from "@contracts/customModel";
 import { PI_THINKING_KEYS, type PiThinkingKey } from "@contracts/piModel";
+import { CODEX_EFFORT_VALUES, type ThinkingCapability } from "@contracts/thinkingMap";
 
 /* ════════════════════════ shared option constants ════════════════════════ */
 // Static Select option catalogs carrying a per-option icon, so every dropdown
@@ -254,11 +255,14 @@ export interface ClaudeModelFormState {
   /** 声明该模型接受**图片输入**（用户自述，不上行）。供「视觉中继」挑眼睛用 ——
    *  与 Pi 侧的 `vision` 同一语义，只是这里只存一份声明。 */
   supportsVision: boolean;
-  /** 每模型「档位 → 该网关要的值」映射（与 Pi 同一形状）。空串 = 用默认；
-   *  复选框勾上但值为空 = 该档位不支持（null）。这里用 `thinking`/`thinkingValue`
-   *  两个平行表，落到配置时再折算成 `{ [档位]: 值 | null }`。 */
-  thinking: Record<PiThinkingKey, "default" | "null" | "value">;
-  thinkingValue: Record<PiThinkingKey, string>;
+  /** 每模型「档位 → 翻译成什么」。表单里用 `thinking`（三态）+ `thinkingValue`
+   *  （具体值）两个平行表，落到配置时由 `thinkingMapFromForm` 折成判别式的
+   *  `ThinkingLevelMap`（见 `@contracts/thinkingMap`）。
+   *
+   *  ⚠️ 具体值那半边是 `ThinkingRowValue`（带 kind：文本 / 数字 / token 预算）——
+   *  不再是一个字符串，因为 Claude 有三条不同的落点（见 `ThinkingMapEditor`）。 */
+  thinking: Record<PiThinkingKey, ThinkingRowMode>;
+  thinkingValue: Record<PiThinkingKey, ThinkingRowValue>;
 }
 
 /** One editable row of the custom-headers list. Held as rows rather than a
@@ -503,19 +507,141 @@ export function ProviderFormShell({
   );
 }
 
+/**
+ * 一个档位「具体值」的输入控件 —— **按引擎能力给不同形态**。
+ *
+ * - `enum`（Codex）：下拉，只列 `CODEX_EFFORT_VALUES`（二进制认的那串）+ 几个常用档位名。
+ *   ⚠️ 下拉里出现的值**必须是枚举内的** —— 让用户手打一个"看起来合理"的词，是这一格
+ *   最容易骗人的失败方式（填了、存了、发出去 codex 不认、静默用默认）。
+ * - `flexible`（Claude）：先选**值类型**（文本 / 数字 / token 预算），再填对应的框。
+ * - `free`（Pi）：自由文本。
+ */
+function ThinkingValueInput({
+  capability,
+  value,
+  onChange,
+}: {
+  capability: ThinkingCapability;
+  value: ThinkingRowValue;
+  onChange: (v: ThinkingRowValue) => void;
+}) {
+  const { t } = useI18n();
+  if (capability === "enum") {
+    return (
+      <Select.Root
+        value={value.text}
+        onValueChange={(v: unknown) => onChange({ ...value, kind: "string", text: String(v ?? "") })}
+      >
+        <Select.Trigger className="flex-1">
+          {/* 值本身就是 `CODEX_EFFORT_VALUES` 里的裸字符串，直接显示即可
+              （与下面 flexible 分支用函数取 label 不同 —— 那里要翻译成人话）。 */}
+          <Select.Value>
+            {(val: string) => val || t("settings.customModels.thinkingValuePlaceholder")}
+          </Select.Value>
+        </Select.Trigger>
+        <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+          {CODEX_EFFORT_VALUES.map((v) => (
+            <Select.Item key={v} value={v}><Select.ItemText>{v}</Select.ItemText></Select.Item>
+          ))}
+        </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+      </Select.Root>
+    );
+  }
+  if (capability === "flexible") {
+    return (
+      <span className="flex flex-1 items-center gap-1">
+        <Select.Root
+          value={value.kind}
+          onValueChange={(v) => onChange({ ...value, kind: v as ThinkingRowValue["kind"] })}
+        >
+          <Select.Trigger className="w-24 shrink-0">
+            <Select.Value>
+              {(val: string) => t(`settings.customModels.thinkingValueKind.${val}` as MessageId)}
+            </Select.Value>
+          </Select.Trigger>
+          <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+            {(["string", "number", "budget"] as const).map((kind) => (
+              <Select.Item key={kind} value={kind}>
+                <Select.ItemText>{t(`settings.customModels.thinkingValueKind.${kind}` as MessageId)}</Select.ItemText>
+              </Select.Item>
+            ))}
+          </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+        </Select.Root>
+        <Input
+          value={value.kind === "number" ? value.num : value.kind === "budget" ? value.budget : value.text}
+          onChange={(e) =>
+            onChange(
+              value.kind === "number"
+                ? { ...value, num: e.target.value }
+                : value.kind === "budget"
+                  ? { ...value, budget: e.target.value }
+                  : { ...value, text: e.target.value },
+            )
+          }
+          placeholder={t(
+            value.kind === "budget"
+              ? "settings.customModels.thinkingBudgetPlaceholder"
+              : "settings.customModels.thinkingValuePlaceholder",
+          )}
+          className="flex-1"
+        />
+      </span>
+    );
+  }
+  // free（Pi）
+  return (
+    <Input
+      value={value.text}
+      onChange={(e) => onChange({ ...value, text: e.target.value })}
+      placeholder={t("settings.customModels.thinkingValuePlaceholder")}
+      className="flex-1"
+    />
+  );
+}
+
+/** 一个档位在表单里的三态（旧形状，Pi/Claude 一直在用）。 */
+export type ThinkingRowMode = "default" | "null" | "value";
+
+/** 表单里「具体值」那半边的类型 —— 按引擎能力给不同的输入控件。 */
+export type ThinkingRowValue = {
+  /** 自由文本（Pi / Claude 的自定义字符串）。 */
+  text: string;
+  /** 数字（只有 Claude 的 Options.effort 收 number）。 */
+  num: string;
+  /** token 预算（只有 Claude 的 thinking.budgetTokens）。 */
+  budget: string;
+  /** 具体值的**种类** —— 决定这一行右边给什么控件。 */
+  kind: "string" | "number" | "budget";
+};
+
 /** 展开一个模型行时看它的思考强度档位映射。
  *
- *  与 Pi 表单里那段**同一份 UI**（2026-10-11 统一）：六个档位，每个可选
- *  「默认 / 不支持 / 具体值」。用户的诉求原话是「不同的 api 的思考强度的标识符
- *  不一样」—— 不同网关对同一档位用的词不同，这一格就是把它接对的地方。 */
+ *  ## 为什么要按能力渲染（2026-10-17 改）
+ *
+ *  三个引擎**能接受的东西不一样**（查过各自的 SDK / 二进制，见
+ *  `@contracts/thinkingMap` 的文件头那张表）：
+ *
+ *  - **Pi**：任意字符串，由 pi-ai 的每个 wire adapter 逐条翻译 → 给自由输入框；
+ *  - **Claude**：命名档 / **整数**（`Options.effort` 也收 number）/ **token 预算**
+ *    （`Options.thinking.budgetTokens`）/ 自定义字符串（只能走 env）→ 给「值类型」选择；
+ *  - **Codex**：**二进制的封闭枚举** → 只能下拉选它认识的，填别的**不会生效**。
+ *
+ *  用一个统一的自由文本表就会让用户在 Codex 上填一个永远不生效的值 —— 那比不给这一格更糟。
+ *  所以同一个组件按 `capability` 渲染三种形态，**判据（哪些档位、什么语义）只有一份**。 */
 export function ThinkingMapEditor({
   thinking,
   thinkingValue,
+  capability,
   onChange,
 }: {
-  thinking: Record<PiThinkingKey, "default" | "null" | "value">;
-  thinkingValue: Record<PiThinkingKey, string>;
-  onChange: (patch: { thinking?: Record<PiThinkingKey, "default" | "null" | "value">; thinkingValue?: Record<PiThinkingKey, string> }) => void;
+  thinking: Record<PiThinkingKey, ThinkingRowMode>;
+  thinkingValue: Record<PiThinkingKey, ThinkingRowValue>;
+  /** 这一家引擎能表达什么（见上面的表）。 */
+  capability: ThinkingCapability;
+  onChange: (patch: {
+    thinking?: Record<PiThinkingKey, ThinkingRowMode>;
+    thinkingValue?: Record<PiThinkingKey, ThinkingRowValue>;
+  }) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -547,11 +673,10 @@ export function ThinkingMapEditor({
               </Select.List></Select.Popup></Select.Positioner></Select.Portal>
             </Select.Root>
             {thinking[k] === "value" && (
-              <Input
+              <ThinkingValueInput
+                capability={capability}
                 value={thinkingValue[k]}
-                onChange={(e) => onChange({ thinkingValue: { ...thinkingValue, [k]: e.target.value } })}
-                placeholder={t("settings.customModels.thinkingValuePlaceholder")}
-                className="flex-1"
+                onChange={(v) => onChange({ thinkingValue: { ...thinkingValue, [k]: v } })}
               />
             )}
           </label>

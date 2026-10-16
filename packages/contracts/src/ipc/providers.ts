@@ -11,6 +11,42 @@ import type { CustomModelInput } from "../customModel.js";
 /* ── Custom model configs (user-defined Anthropic-compatible endpoints) ── */
 
 /** One selectable model within a custom-model config. */
+/**
+ * 思考强度档位 → 翻译成什么（判别式，与 `@contracts/thinkingMap` 的
+ * `ThinkingLevelBinding` 同形）。
+ *
+ * ⚠️ **这是 IPC 的校验边界**：renderer 传来的形状在这里被收窄。zod 会把
+ * schema 之外的键**静默剥掉**，所以每加一种 binding kind，这里都要跟着加 ——
+ * 少一格的表现是"设置页勾了、存进库就没了"。
+ */
+const ThinkingLevelBindingSchema = z.discriminatedUnion("kind", [
+  // 档位名原样发
+  z.object({ kind: z.literal("passthrough") }),
+  // 这一档不支持：不传参数
+  z.object({ kind: z.literal("off") }),
+  // 翻译成指定字符串（Pi 由 SDK 逐 adapter 翻译；Codex 限枚举内的值；Claude 走 env）
+  z.object({ kind: z.literal("string"), value: z.string().min(1) }),
+  // 整数档（只有 Claude 的 Options.effort 收 number）
+  z.object({ kind: z.literal("number"), value: z.number().int() }),
+  // 思考 token 预算（只有 Claude：Options.thinking.budgetTokens）
+  z.object({ kind: z.literal("budget"), tokens: z.number().int().positive() }),
+]);
+
+/** 档位键固定那七个。用 partial record 而不是裸 record：拼错的键会被拒掉，
+ *  而不是变成一条永远不生效的孤儿配置。 */
+const ThinkingLevelMapSchema = z
+  .object({
+    off: ThinkingLevelBindingSchema.optional(),
+    minimal: ThinkingLevelBindingSchema.optional(),
+    low: ThinkingLevelBindingSchema.optional(),
+    medium: ThinkingLevelBindingSchema.optional(),
+    high: ThinkingLevelBindingSchema.optional(),
+    xhigh: ThinkingLevelBindingSchema.optional(),
+    max: ThinkingLevelBindingSchema.optional(),
+  })
+  .strict()
+  .optional();
+
 const CustomModelEntrySchema = z.object({
   id: z.string().min(1),
   supports1m: z.boolean().optional(),
@@ -18,11 +54,12 @@ const CustomModelEntrySchema = z.object({
    *  必须列出来,zod 会把未在 schema 里的键**静默剥掉** —— 少了这一格,设置页的
    *  「支持图片输入」开关勾了也存不进库。 */
   supportsVision: z.boolean().optional(),
-  /** 每模型「思考强度档位 → 该网关要的具体值」映射（2026-10-11 加，与 Pi 的
-   *  `thinkingLevelMap` 同一形状、同一语义）。不同网关对同一档位用的标识符不一样，
-   *  这一格让用户在设置里把它接对。三态：缺席 = 用网关/引擎默认；字符串 = 具体值；
-   *  null = 这个档位不支持（下拉里隐藏）。 */
-  thinkingLevelMap: z.record(z.string(), z.union([z.string(), z.null()])).optional(),
+  /** 每模型「思考强度档位 → 翻译成什么」（2026-10-17 升级成带 kind 的判别式）。
+   *
+   *  ⚠️ **老配置是 `Record<string, string|null>`**（2026-10-11 那版）。磁盘上的
+   *  老形状在**读**的时候由 `thinkingMapFromLegacy` 归一；这里只管**写**进来的
+   *  新形状。两种形状的转换全在 `@contracts/thinkingMap`。 */
+  thinkingLevelMap: ThinkingLevelMapSchema,
 });
 
 const AuthModeSchema = z.enum(["auth_token", "api_key"]);
@@ -163,6 +200,10 @@ export const SaveCodexProviderSchema = z.object({
       /** Optional context-window override (spawned as `-c
        *  model_context_window=<n>`, process-local). */
       contextWindow: z.number().int().positive().optional(),
+      /** 会话档位 → 发给 codex 的 `reasoning_effort`。⚠️ codex 的 effort 是
+       *  **二进制的封闭枚举**（`@contracts/thinkingMap` 的 `CODEX_EFFORT_VALUES`），
+       *  所以 UI 给的是下拉；枚举外的值主进程会拦下来记 warn，不会静默发。 */
+      thinkingLevelMap: ThinkingLevelMapSchema,
     }),
   ).min(1),
   /** 额外请求头，落到该 provider 的 config.toml `http_headers`。 */
