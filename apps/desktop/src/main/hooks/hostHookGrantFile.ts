@@ -29,7 +29,12 @@
  */
 import { join } from "node:path";
 import type { HostHookGrant } from "@contracts/hostHookGrant";
-import { atomicFileBlob, type BlobIO } from "@main/appControl/grantStoreFile.js";
+import {
+  atomicFileBlob,
+  filterShapesOrWarn,
+  isOptionalNonNegativeInteger,
+  type BlobIO,
+} from "@main/appControl/grantStoreFile.js";
 import { configureHostHookGrantPersist, type HostHookGrantPersist } from "./hostHookGrants.js";
 
 /** 落盘信封的版本号;形状将来变了靠它分辨「旧文件」,而不是把旧数据硬读成新结构。 */
@@ -47,9 +52,12 @@ export function hostHookGrantStorePath(dataRoot: string): string {
 }
 
 /**
- * 一份授权是否**形状正确**到足以落盘 / 载回。缺必需字段 / 类型不对一律判否(→ 丢弃)。
- * 只校验**必需**字段(见契约 `HostHookGrant`);可选字段(`matcherDigest` / `version`)允许缺省。
- * 丢一条授权只会收紧,不会放宽。
+ * 一份授权是否**形状正确**到足以落盘 / 载回。缺必需字段 / 类型不对一律判否(→ 隔离)。
+ * 可选字段(`matcherDigest` / `version`)允许缺省;但**执行预算字段同样严格**(MC-020,
+ * 与 `grantStoreFile.isGrantShape` 一套判据):`maxRuns` / `usedRuns` 缺席合法、在场必须是
+ * 有限非负整数 —— 第四轮 E1 红例证实过 `usedRuns: 'bad'` 会让 `countBudgetExhausted`
+ * 的数值比较(`'bad' >= 1` 为 false)把「已用尽」误读成「还有余额」,额度被绕过。
+ * 坏记录**隔离**只会收紧,不会放宽。
  */
 export function isHostHookGrantShape(x: unknown): x is HostHookGrant {
   if (!x || typeof x !== "object") return false;
@@ -62,6 +70,9 @@ export function isHostHookGrantShape(x: unknown): x is HostHookGrant {
   if (!(g.matcherDigest === undefined || typeof g.matcherDigest === "string")) return false;
   if (typeof g.issuedAt !== "number" || typeof g.expiresAt !== "number") return false;
   if (typeof g.revoked !== "boolean") return false;
+  // ★ MC-020:执行预算字段的**严格**校验(与 grantStoreFile 共用 ../../appControl/grantStoreFile 的判据)。
+  if (!isOptionalNonNegativeInteger(g.maxRuns)) return false;
+  if (!isOptionalNonNegativeInteger(g.usedRuns)) return false;
   return true;
 }
 
@@ -75,7 +86,9 @@ export function serializeHostHookGrants(grants: HostHookGrant[]): string {
  * 反序列化 —— **fail-safe**:任何读不懂的输入都当空 store。
  *   - `null`(文件不存在)→ 空;
  *   - 非 JSON、非对象、版本不符、`grants` 不是数组 → 空;
- *   - 数组里**逐条**校验:形状不对的那一条**丢掉**,其余保留(丢一条授权只会收紧,不会放宽)。
+ *   - 数组里**逐条**校验:形状不对的那一条**隔离**(不进结果、不参与额度判定)并
+ *     **显式报告**(共用 `grantStoreFile.filterShapesOrWarn` 的 `console.warn`);
+ *     其余保留(丢一条授权只会收紧,不会放宽)。
  *
  * ⚠️ **注意**:把损坏读成空表是安全的**读**语义,但**不能**成为**写**的依据 —— 见
  * {@link classifyHostHookGrantArchive} 与 `hostHookGrants.ts` 的 `commit`(MC-029)。
@@ -92,7 +105,7 @@ export function parseHostHookGrants(json: string | null): HostHookGrant[] {
   const env = data as Partial<HostHookGrantEnvelope>;
   if (env.version !== HOST_HOOK_GRANT_VERSION) return [];
   if (!Array.isArray(env.grants)) return [];
-  return env.grants.filter(isHostHookGrantShape);
+  return filterShapesOrWarn(env.grants, isHostHookGrantShape, "host-hook-grants.json");
 }
 
 /**

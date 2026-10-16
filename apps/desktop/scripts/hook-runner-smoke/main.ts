@@ -1209,6 +1209,129 @@ console.log("\n主机 hook 授权:签发 / 撤销落盘,重启后仍生效");
   resetP();
 }
 
+/* ──────────────── 15b. ★ MC-020:主机 hook 授权的可选额度字段(maxRuns/usedRuns)严格校验 ──────────────── */
+
+// 第四轮 E1 红例点名:`isHostHookGrantShape` 漏验可选 `maxRuns/usedRuns` ——
+// `{ maxRuns: 1, usedRuns: "bad" }` 通过形状校验后,`countBudgetExhausted` 的数值比较
+// (`'bad' >= 1` 为 false)会把「已用尽」误读成「还有余额」。修法与计划级授权同一套:
+// 缺席合法、在场必须是有限非负整数;坏记录**隔离**(不进表、不参与额度判定)并显式报告。
+console.log("\n主机 hook 授权:可选额度字段严格校验(坏记录隔离,不绕过次数预算)");
+
+{
+  const {
+    configureHostHookGrantPersist: configureP,
+    issueHostHookGrant: issueF,
+    recordHostHookRun: recordF,
+    resetHostHookGrants: resetF,
+    listHostHookGrants: listF,
+    decidePluginHookExecution: decideF,
+  } = await import("@main/hooks/hostHookGrants.js");
+  const { fileHostHookGrantPersist: fileP, parseHostHookGrants: parseF, isHostHookGrantShape: shapeF } = await import(
+    "@main/hooks/hostHookGrantFile.js"
+  );
+
+  const SOURCE = { pluginId: "mc020-plugin", version: "1.0.0", commandDigest: "", nativeEvent: "PreToolUse" };
+  const nowF = Date.now();
+  // 一份形状合法的底稿(全部必需字段齐);坏值用例在其上覆写。
+  const base = {
+    grantId: "hhg-mc020",
+    pluginId: "mc020-plugin",
+    version: "1.0.0",
+    events: [],
+    commandDigest: "",
+    issuedAt: nowF,
+    expiresAt: nowF + 600_000,
+    revoked: false,
+  };
+
+  // ── ① 合法边界:maxRuns=0 立即用尽;maxRuns=1 用一次即尽;更不限仍可用 ──
+  {
+    // maxRuns=0 = 「一次都不许」—— decide 直接 exhausted,记账口也拒绝(物理上停住)。
+    resetF();
+    issueF({ pluginId: "mc020-plugin", version: "1.0.0", maxRuns: 0, ttlMs: 600_000, now: nowF });
+    eq("★ MC-020(hook) 边界:maxRuns=0 立即用尽 → exhausted(不是当成不限)", decideF(SOURCE, "tool.use", nowF).decide, "exhausted");
+    eq("★ MC-020(hook) 边界:maxRuns=0 记账返回 false(不起进程)", recordF(SOURCE, nowF), false);
+
+    // maxRuns=1:第一次真允许(记账 true、usedRuns=1),第二次 exhausted、记账 false。
+    resetF();
+    const g1 = issueF({ pluginId: "mc020-plugin", version: "1.0.0", maxRuns: 1, ttlMs: 600_000, now: nowF });
+    eq("★ MC-020(hook) 边界:maxRuns=1 首次判定 allowed", decideF(SOURCE, "tool.use", nowF).decide, "allowed");
+    eq("MC-020(hook) 边界:首次记账 true", recordF(SOURCE, nowF), true);
+    eq("MC-020(hook) 边界:usedRuns 记成 1", listF().find((x) => x.grantId === g1.grantId)?.usedRuns, 1);
+    eq("★ MC-020(hook) 边界:maxRuns=1 用尽后判定 exhausted", decideF(SOURCE, "tool.use", nowF).decide, "exhausted");
+    eq("★ MC-020(hook) 边界:用尽后记账 false(不起进程)", recordF(SOURCE, nowF), false);
+
+    // 未声明 maxRuns = 不限:反复记账都 true,判定始终 allowed(不误伤)。
+    resetF();
+    issueF({ pluginId: "mc020-plugin", version: "1.0.0", ttlMs: 600_000, now: nowF });
+    eq("MC-020(hook) 边界:不限次数首次 true", recordF(SOURCE, nowF), true);
+    eq("MC-020(hook) 边界:不限次数再次仍 true", recordF(SOURCE, nowF), true);
+    eq("★ MC-020(hook) 边界:未声明 maxRuns → 判定仍 allowed(不限)", decideF(SOURCE, "tool.use", nowF).decide, "allowed");
+    resetF();
+  }
+
+  // ── ② 坏值 → 形状判否(逐值,与计划级授权同款两组)──
+  {
+    const bad = (over: Record<string, unknown>): unknown => ({ ...base, ...over });
+    const cases: Array<[string, unknown]> = [
+      ["usedRuns='bad'", bad({ maxRuns: 1, usedRuns: "bad" })],
+      ["usedRuns=NaN", bad({ maxRuns: 1, usedRuns: Number.NaN })],
+      ["usedRuns=-1", bad({ maxRuns: 1, usedRuns: -1 })],
+      ["usedRuns=1.5(小数)", bad({ maxRuns: 1, usedRuns: 1.5 })],
+      ["maxRuns='bad'", bad({ maxRuns: "bad" })],
+      ["maxRuns=NaN", bad({ maxRuns: Number.NaN })],
+      ["maxRuns=-1", bad({ maxRuns: -1 })],
+      ["maxRuns=1.5(小数)", bad({ maxRuns: 1.5 })],
+      ["revoked='no'(既有严格的对照项)", bad({ revoked: "no" })],
+    ];
+    for (const [name, fixture] of cases) {
+      eq(`★ MC-020(hook) 坏值判否:${name}`, shapeF(fixture), false);
+    }
+    // 正控:合法可选值不误伤(含缺席与 0 边界)。
+    eq("MC-020(hook) 正控:maxRuns=0 / usedRuns=0 合法(边界)", shapeF(bad({ maxRuns: 0, usedRuns: 0 })), true);
+    eq("MC-020(hook) 正控:两字段全缺席仍合法(向后兼容)", shapeF(base), true);
+  }
+
+  // ── ③ ★ 承重:坏记录隔离后不能绕过次数预算 ──
+  {
+    // 修复前:坏记录进表,`'bad' >= 1` 为 false → `countBudgetExhausted` 判「没用尽」
+    // → decide 误判 allowed。修复后:隔离 → 表里没有它 → 默认拒绝。
+    const brokenJson = JSON.stringify({ version: 1, grants: [{ ...base, maxRuns: 1, usedRuns: "bad" }] });
+    eq("★ MC-020(hook):usedRuns='bad' 的记录被隔离(parse 不收)", parseF(brokenJson).length, 0);
+
+    const corruptBlob = { read: () => brokenJson, write: () => {} };
+    configureP(fileP(corruptBlob as never));
+    eq("★ MC-020(hook):坏记录重开后表里没有它", listF().length, 0);
+    eq(
+      "★ MC-020(hook):预算判定不再被绕过(修复前 'bad'>=1 为 false → allowed;现在隔离后默认拒绝)",
+      decideF(SOURCE, "tool.use", nowF).decide,
+      "denied",
+    );
+
+    // 对照:同一份 JSON 把 usedRuns 换成合法值 1 → 形状合法、被收、且正确判「已用尽」。
+    const goodJson = JSON.stringify({ version: 1, grants: [{ ...base, maxRuns: 1, usedRuns: 1 }] });
+    eq("MC-020(hook) 对照:合法 usedRuns=1 仍被收(不误伤)", parseF(goodJson).length, 1);
+    configureP(fileP({ read: () => goodJson, write: () => {} } as never));
+    eq("MC-020(hook) 对照:合法已用尽记录仍参与判定(判 exhausted)", decideF(SOURCE, "tool.use", nowF).decide, "exhausted");
+    configureP(undefined);
+    resetF();
+  }
+
+  // ── ④ ★ 显式报告:坏记录被隔离必须报出来(不静默丢)──
+  {
+    const captured: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => { captured.push(args.map(String).join(" ")); };
+    try {
+      parseF(JSON.stringify({ version: 1, grants: [{ ...base, usedRuns: "bad" }, { ...base, grantId: "hhg-ok" }] }));
+    } finally {
+      console.warn = origWarn;
+    }
+    check("★ MC-020(hook):坏记录被隔离时有显式报告(console.warn,不静默)", captured.some((m) => m.includes("已隔离")), captured);
+    check("★ MC-020(hook):报告点名文件与第几条", captured.some((m) => m.includes("host-hook-grants.json") && m.includes("第 1 条")), captured);
+  }
+}
+
 /* ──────────────── 16. 插件 hook 执行**落盘审计**(MC-061) ──────────────── */
 
 // MC-061 点名的缺口:执行记录只进内存里 50 条的环 + 计数,**进程一关就没了**。

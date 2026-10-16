@@ -25,6 +25,7 @@ import type {
   Grant,
   PolicyContext,
 } from "@contracts/policyEngine";
+import { countBudgetExhausted } from "@contracts/policyEngine";
 import { policyFor } from "@main/appControl/policy.js";
 import { evaluate, isDeleteScopeWidened, invalidationsFor, scenePlanCoreIntent } from "@main/appControl/policyEngine.js";
 import {
@@ -38,6 +39,7 @@ import {
   atomicFileBlob,
   fileGrantPersist,
   grantStorePath,
+  isGrantShape,
   parseGrants,
   serializeGrants,
   type BlobIO,
@@ -680,7 +682,116 @@ const memBlob = (): BlobIO & { peek: () => string | null } => {
   }
 }
 
-/* ══ 17. 源码断言:落盘层不 import electron / sql;授权不落可导入 setting ══ */
+/* ══ 16d. ★ MC-020:可选额度字段的严格形状校验 —— 坏记录隔离且不能绕过额度判定 ══
+ *
+ * 缺口(台账 MC-020 + 第四轮 E1 红例):`isGrantShape` 只查必需字段 ——
+ * `{ maxCount: 1, usedCount: "bad" }` 能通过形状校验进 Map,而 `countBudgetExhausted`
+ * 是 `used >= limit` 的**数值比较**:`'bad' >= 1` 为 false → 「已用尽」被误读成
+ * 「还有余额」,额度判定整体被绕过。修法:可选字段缺席合法,在场必须是布尔 / 有限非负
+ * 整数;坏记录**隔离**(不进 Map、不参与判定)并**显式报告**(console.warn,不静默丢)。
+ *
+ * 判据立在**可观察行为**上:坏值记录被隔离(parseGrants 不收、重开 store 查不到)
+ * 且同一份数据在修复前本会放行的额度判定,现在不再放行。 */
+{
+  // ── ① 合法边界仍正常参与判定(maxCount=0 / =1 / 用完)──
+  {
+    // maxCount=0 = 「一次都不许」(0 >= 0 立即用尽)—— 不是「不限」。
+    const s0 = new GrantStore({ newId: () => "g-zero" });
+    const g0 = s0.issueGrant(decision({ allowedActions: ["project.create"], scopedCore: {}, maxCount: 0 }), USER, 1_000);
+    eq("★ MC-020 边界:maxCount=0 立即用尽 → 不放行(不是当成不限)", evaluate(intent("project.create", {}), s0.get(g0.grantId, 1_100), ctx({ now: 1_100 })).verdict !== "allow", true);
+
+    // maxCount=1:用之前放行,记一次之后用尽。
+    const s1 = new GrantStore({ newId: () => "g-one" });
+    const g1 = s1.issueGrant(decision({ allowedActions: ["project.create"], scopedCore: {}, maxCount: 1 }), USER, 1_000);
+    eq("★ MC-020 边界:maxCount=1 未用时仍放行", evaluate(intent("project.create", {}), s1.get(g1.grantId, 1_100), ctx({ now: 1_100 })).verdict, "allow");
+    s1.recordUse(g1.grantId, 0, 1_150);
+    eq("★ MC-020 边界:maxCount=1 用尽后 → 不放行", evaluate(intent("project.create", {}), s1.get(g1.grantId, 1_200), ctx({ now: 1_200 })).verdict !== "allow", true);
+
+    // 未声明 maxCount = 不限,永不用尽(不误伤)。
+    const sN = new GrantStore({ newId: () => "g-none" });
+    const gN = sN.issueGrant(decision({ allowedActions: ["project.create"], scopedCore: {} }), USER, 1_000);
+    sN.recordUse(gN.grantId, 0, 1_100);
+    sN.recordUse(gN.grantId, 0, 1_200);
+    eq("★ MC-020 边界:未声明 maxCount → 记多少次仍放行(不限)", evaluate(intent("project.create", {}), sN.get(gN.grantId, 1_300), ctx({ now: 1_300 })).verdict, "allow");
+  }
+
+  // ── ② 坏值 → 形状判否(逐值)──
+  {
+    const bad = (over: Record<string, unknown>): unknown => ({ ...grant(), ...over });
+    const cases: Array<[string, unknown]> = [
+      ["usedCount='bad'", bad({ usedCount: "bad" })],
+      ["usedCount=NaN", bad({ usedCount: Number.NaN })],
+      ["usedCount=-1", bad({ usedCount: -1 })],
+      ["usedCount=1.5(小数)", bad({ usedCount: 1.5 })],
+      ["maxCount='bad'", bad({ maxCount: "bad" })],
+      ["maxCount=NaN", bad({ maxCount: Number.NaN })],
+      ["maxCount=-1", bad({ maxCount: -1 })],
+      ["maxCount=1.5(小数)", bad({ maxCount: 1.5 })],
+      ["maxBudget='x'", bad({ maxBudget: "x" })],
+      ["budgetUsed='x'", bad({ budgetUsed: "x" })],
+      ["budgetUsed=-1", bad({ budgetUsed: -1 })],
+      ["revoked='no'", bad({ revoked: "no" })],
+      ["revoked=0(数值冒充布尔)", bad({ revoked: 0 })],
+    ];
+    for (const [name, fixture] of cases) {
+      eq(`★ MC-020 坏值判否:${name}`, isGrantShape(fixture), false);
+    }
+    // 正控:合法可选值仍判对(边界与缺省都不误伤)。
+    eq("MC-020 正控:maxCount=0 合法(边界)", isGrantShape(bad({ maxCount: 0 })), true);
+    eq("MC-020 正控:usedCount=0 / revoked=false 合法", isGrantShape(bad({ usedCount: 0, revoked: false })), true);
+    eq("MC-020 正控:可选字段全缺席仍合法(向后兼容)", isGrantShape(grant()), true);
+  }
+
+  // ── ③ ★ 承重:坏记录整体隔离,不能绕过额度判定 ──
+  {
+    // 根因本身也是可观察事实:`countBudgetExhausted` 是数值比较,坏值 `'bad'` 会被误读。
+    // (这条钉的是「为什么必须隔离」—— 比较口不会替我们挡住坏类型。)
+    eq("★ MC-020 根因:countBudgetExhausted(1, 'bad') 判「没用尽」(数值比较误读)", countBudgetExhausted(1, "bad" as unknown as number), false);
+    // 修复前:`{ maxCount:1, usedCount:'bad' }` 通过形状校验进来;`'bad' >= 1` 为 false
+    // → `countBudgetExhausted` 判「没用尽」→ evaluate 放行 —— 额度被绕过。
+    // 修复后:该条被隔离(parseGrants 不收、重开 store 查不到)→ 没有可用的 grant
+    // → evaluate 不放行。
+    const brokenJson = JSON.stringify({
+      version: 1,
+      grants: [grant({ allowedActions: ["project.create"], scopedCore: {}, maxCount: 1, usedCount: "bad" as unknown as number })],
+    });
+    const kept = parseGrants(brokenJson);
+    eq("★ MC-020:usedCount='bad' 的记录被隔离(parseGrants 不收)", kept.length, 0);
+
+    const blob: BlobIO = { read: () => brokenJson, write: () => {} };
+    const store = new GrantStore({ persist: fileGrantPersist(blob) });
+    eq("★ MC-020:坏记录重开后 store 里没有它(get 查不到)", store.get("g1", 1_500), null);
+    const d = evaluate(intent("project.create", {}), store.findBoundFor(intent("project.create", {}), 1_500), ctx({ now: 1_500 }));
+    eq("★ MC-020:额度判定不再被绕过(修复前 'bad'>=1 为 false → 放行;现在不放行)", d.verdict !== "allow", true);
+
+    // 对照:同一份 JSON 把 usedCount 换成合法值 1 → 形状合法、被收、且额度逻辑正确判「已用尽」。
+    const goodJson = JSON.stringify({
+      version: 1,
+      grants: [grant({ allowedActions: ["project.create"], scopedCore: {}, maxCount: 1, usedCount: 1 })],
+    });
+    const keptGood = parseGrants(goodJson);
+    eq("MC-020 对照:合法 usedCount=1 仍被收(不误伤)", keptGood.length, 1);
+    const goodStore = new GrantStore({ persist: fileGrantPersist({ read: () => goodJson, write: () => {} }) });
+    const dGood = evaluate(intent("project.create", {}), goodStore.get("g1", 1_500), ctx({ now: 1_500 }));
+    eq("MC-020 对照:合法已用尽的记录仍参与判定(判不放行)", dGood.verdict !== "allow", true);
+  }
+
+  // ── ④ ★ 显式报告:坏记录被隔离这件事必须报出来(不静默丢,硬规矩 3)──
+  {
+    const captured: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => { captured.push(args.map(String).join(" ")); };
+    try {
+      parseGrants(JSON.stringify({ version: 1, grants: [grant({ usedCount: "bad" as unknown as number }), grant({ grantId: "g-ok" })] }));
+    } finally {
+      console.warn = origWarn;
+    }
+    check("★ MC-020:坏记录被隔离时有显式报告(console.warn,不静默)", captured.some((m) => m.includes("已隔离")), captured);
+    check("★ MC-020:报告点名文件与第几条", captured.some((m) => m.includes("grants.json") && m.includes("第 1 条")), captured);
+  }
+}
+
+
 {
   const raw = readFileSync(join(process.cwd(), "src/main/appControl/grantStoreFile.ts"), "utf8");
   const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");

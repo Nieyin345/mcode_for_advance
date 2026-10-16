@@ -72,9 +72,37 @@ export function grantStorePath(dataRoot: string): string {
 }
 
 /**
- * 一份 grant 是否**形状正确**到足以落盘 / 载回。缺必需字段 / 类型不对一律判否(→ 丢弃)。
- * 只校验**必需**字段(见契约 `Grant`);可选字段(`revoked` / `usedCount` / `budgetUsed` …)
- * 原样随 JSON 往返,不做类型纠缠 —— 丢一条授权只会收紧,不会放宽。
+ * **可选布尔字段的严格判据**(MC-020)—— 缺席(`undefined`)仍合法(向后兼容),
+ * 在场则必须是布尔;`"no"` / `0` / `null` 这类类型错一律判坏。
+ *
+ * 与 {@link isOptionalNonNegativeInteger} 一样是**两套授权解码器共用**的唯一一份判据:
+ * 计划级授权(本文件)与主机 hook 授权(`../../hooks/hostHookGrantFile.ts`)逐字复用,
+ * 免得一处收紧、另一处漂松(仓库硬规矩 2)。
+ */
+export function isOptionalBoolean(v: unknown): boolean {
+  return v === undefined || typeof v === "boolean";
+}
+
+/**
+ * **可选数值字段的严格判据**(MC-020)—— 缺席仍合法;在场必须是**有限非负整数**
+ * (`Number.isFinite` 且 `Number.isInteger` 且 `>= 0`)。`'bad'` / `NaN` / `Infinity`
+ * / `-1` / `1.5` 全部判坏。
+ *
+ * 为什么必须收这么紧:`countBudgetExhausted` 是 `used >= limit` 的**数值比较**,
+ * `'bad' >= 1` 为 false —— 坏值(mc-020 第四轮 E1 红例: `maxCount:1, usedCount:'bad'`)
+ * 一旦混进表,「已用尽」就被误读成「还有余额」,额度判定被整体绕过。隔离比比较更早、
+ * 也更省事:坏记录根本不该进表。
+ */
+export function isOptionalNonNegativeInteger(v: unknown): boolean {
+  return v === undefined || (typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0);
+}
+
+/**
+ * 一份 grant 是否**形状正确**到足以落盘 / 载回。缺必需字段 / 类型不对一律判否(→ 隔离)。
+ * **可选字段同样严格**(MC-020):缺席合法,在场必须是布尔 / 有限非负整数 ——
+ * `revoked: "no"`、`usedCount: "bad"`、`usedCount: NaN` / -1 / 小数这类坏值若放进表,
+ * 会让 `countBudgetExhausted` 的数值比较误读额度(`'bad' >= 1` 为 false),
+ * 把「已用尽」错当「还有余额」。坏记录**隔离**(不进 Map、不参与额度判定),只会收紧。
  */
 export function isGrantShape(x: unknown): x is Grant {
   if (!x || typeof x !== "object") return false;
@@ -87,6 +115,12 @@ export function isGrantShape(x: unknown): x is Grant {
   if (typeof g.expiresAt !== "number") return false;
   const src = g.approvalSource as Record<string, unknown> | undefined;
   if (!src || typeof src !== "object" || typeof src.kind !== "string" || typeof src.id !== "string") return false;
+  // ★ MC-020:可选字段的**严格**校验(两套解码器共用判据,见文件头 helper)。
+  if (!isOptionalBoolean(g.revoked)) return false;
+  if (!isOptionalNonNegativeInteger(g.maxCount)) return false;
+  if (!isOptionalNonNegativeInteger(g.usedCount)) return false;
+  if (!isOptionalNonNegativeInteger(g.maxBudget)) return false;
+  if (!isOptionalNonNegativeInteger(g.budgetUsed)) return false;
   return true;
 }
 
@@ -97,11 +131,46 @@ export function serializeGrants(grants: Grant[]): string {
 }
 
 /**
+ * **逐条校验并隔离坏记录 + 显式报告**(MC-020)—— 形状对的留下,坏的**不进结果**,
+ * 并在 `console.warn` 里报出「第几条、被隔离了」。
+ *
+ * 为什么用 `console.warn` 而不是 `@main/lib/logger`:本文件是 **electron-free 叶子**
+ * (文件头写着「不 import electron」),真 logger 依赖 electron —— 与
+ * `sessionCleanupHooks.ts` 同一取舍(那个叶子的注释同样写着「用 console.warn 而不是
+ * @main/lib/logger 是为了保住这个叶子的零依赖」)。
+ *
+ * 为什么报告是「隔离」而不是「抛」:坏记录按不存在处理 = 授权收紧(回到重新批准),
+ * 是 fail-safe;但**不静默**(仓库硬规矩 3)—— 用户/日志得看得见哪一条没了、为什么。
+ * 两套授权解码器(本文件与 `../../hooks/hostHookGrantFile.ts`)共用这一份「隔离+报告」
+ * 流程,措辞与行为不会漂成两套。
+ */
+export function filterShapesOrWarn<T>(
+  items: readonly unknown[],
+  isShape: (x: unknown) => x is T,
+  fileLabel: string,
+): T[] {
+  const kept: T[] = [];
+  items.forEach((item, index) => {
+    if (isShape(item)) {
+      kept.push(item);
+      return;
+    }
+    const rawId = (item as Record<string, unknown> | null)?.grantId;
+    const who = typeof rawId === "string" && rawId !== "" ? `(grantId「${rawId}」)` : "";
+    console.warn(
+      `${fileLabel} 第 ${index + 1} 条记录形状不合法(必需字段缺失或可选字段类型错误),已隔离、不参与授权判定:${who}`,
+    );
+  });
+  return kept;
+}
+
+/**
  * 反序列化 —— **fail-safe**:任何读不懂的输入都当空 store。
  *   - `null`(文件不存在)→ 空;
  *   - 非 JSON、非对象、版本不符、`grants` 不是数组 → 空;
- *   - 数组里**逐条**校验:形状不对的那一条**丢掉**,其余保留(丢一条授权只会收紧,
- *     不会放宽 —— 与「坏数据当空」同一条纪律)。
+ *   - 数组里**逐条**校验:形状不对的那一条**隔离**(不进结果、不参与额度判定)并
+ *     **显式报告**(`console.warn`,见 {@link filterShapesOrWarn})—— 不静默丢;
+ *     其余保留(丢一条授权只会收紧,不会放宽 —— 与「坏数据当空」同一条纪律)。
  */
 export function parseGrants(json: string | null): Grant[] {
   if (json == null) return [];
@@ -115,7 +184,7 @@ export function parseGrants(json: string | null): Grant[] {
   const env = data as Partial<GrantStoreEnvelope>;
   if (env.version !== GRANT_STORE_VERSION) return [];
   if (!Array.isArray(env.grants)) return [];
-  return env.grants.filter(isGrantShape);
+  return filterShapesOrWarn(env.grants, isGrantShape, "grants.json");
 }
 
 /** 把一份 `BlobIO` 适配成 `GrantStore` 认的窄持久化接口。 */

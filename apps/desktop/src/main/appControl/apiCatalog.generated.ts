@@ -398,7 +398,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "codexModels.save",
   "channel": "codexModels:save",
   "doc": "新建或更新一个 Codex provider(**upsert**,apiKey 空 + 已存在=保留旧 key)。会拒绝与他人**算出同一个环境变量名**的 id(否则两个供应商的 Key 会静默互相覆盖)并重写 config.toml。",
-  "input": "{ id: string; name: string; models: { id: string; label?: string | undefined; hint?: string | undefined; contextWindow?: number | undefined; }[]; baseUrl: string; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头，落到该 provider 的 config.toml `http_headers`。; imageGeneration?: boolean | undefined // Opt-in: unlock codex's image generation tool by injecting the `x-openai-actor-authorizati… }",
+  "input": "{ id: string; name: string; models: { id: string; label?: string | undefined; hint?: string | undefined; contextWindow?: number | undefined; thinkingLevelMap?: { max?: { kind: 'passthrough'; } | …; baseUrl: string; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头，落到该 provider 的 config.toml `http_headers`。; imageGeneration?: boolean | undefined // Opt-in: unlock codex's image generation tool by injecting the `x-openai-actor-authorizati… }",
   "output": "{ providers: CodexProviderPublic[] }"
  },
  {
@@ -439,9 +439,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "customModel.list",
   "channel": "customModel:list",
-  "doc": "列全部自定义模型配置(**脱敏**版,不含 token;取明文另走 `customModel.getToken`)。",
+  "doc": "列全部自定义模型配置(**脱敏**版,不含 token;取明文另走 `customModel.getToken`)。 `storeInvalid`:加密密钥表(`customModelKeys`)读出过损坏内容。为真时**清单会显得 比实际少**(读不出来的一律当没有),设置页据此显示\"密钥表损坏\",而不是让用户以为 自己的配置凭空消失了。同 `agentSsh.list` 的 `storeInvalid` 一个路子。",
   "input": "(无参数)",
-  "output": "{ models: CustomModelPublic[] }"
+  "output": "{ models: CustomModelPublic[]; storeInvalid: boolean }"
  },
  {
   "method": "customModel.save",
@@ -2178,6 +2178,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【ARC-002 / MC-058】**只读**的场景预检:校验(一次报全)+ 编译 + **能力预检**(声明的能力在本机在不在、对这个引擎适不适用)。必需能力缺了 `preflight.ok=false`(部署该被挡住);可选能力缺了进 `gaps` 但不挡。不建资源、不装插件、不申请授权。",
   "input": "{ spec?: unknown }",
   "output": "{ ok: false; problems: { path: string; message: string; }[] } | { ok: true; plan: ScenePlanWire; preflight: ScenePreflightWire }"
+ },
+ {
+  "method": "scene.resume",
+  "channel": "scene:resume",
+  "doc": "【MC-002】**续跑一次中断的场景部署** —— 与 `scene.apply` 同形(同一份 spec、同一枚计划级授权、同一条执行核 `runPlanSteps`),语义是**跳过盘上记录里已 done 的步骤、从断点接着跑**。判定核不因「是 resume」放宽(与 apply 逐字同源)。盘上读不到那条 `deploymentId` 的部分执行记录 → 明确拒绝(绝不静默当成新部署去建资源)。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(与 appl…",
+  "input": "{ deploymentId: string; grantId: string // 上一次 `scene.approve` 签出的授权 id。; actorKind: 'user' | 'system' | 'agent' // 谁发起的(结构化身份;渲染端只能声明「这是桌面用户点的」,宿主不复核它,判定看的是 grant)。; actorId: string; spec?: unknown; compensateOnFailure?: boolean | undefined // 某步失败时是否补偿(缺省由主进程定 = true)。 }",
+  "output": "{ ok: false; kind: 'invalid'; problems: { path: string; message: string; }[] } | { ok: false; kind: 'refused'; code: string; reason: string } | { ok: true; kind: 'applied'; deployment: SceneDeploymentWire; readback: SceneReadbackWire }"
  },
  {
   "method": "session.archive",
