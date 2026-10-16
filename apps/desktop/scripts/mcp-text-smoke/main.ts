@@ -8,6 +8,22 @@ import { agentMcpTools } from "@main/mcp/agentTools.js";
 import { fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
 import { textBlocksOf, toolTextOf, type ToolResult } from "@main/mcp/sdk.js";
 
+/**
+ * 读整组「agent 工具」源文件。
+ *
+ * `agentTools.ts` 拆成三个文件（主表 + `agentToolRuntime.ts` + `agentWalkGlob.ts`）之后，
+ * 「某个实现只有一份」这类断言如果只扫主文件就会**静默空过** —— 判据本来就是「整组里没有
+ * 第二份」，所以这里一次读全，谁搬去哪都拦得住。
+ */
+function readAgentToolSources(): { toolsSrc: string; walkSrc: string; runtimeSrc: string } {
+  return {
+    toolsSrc: readFileSync("src/main/mcp/agentTools.ts", "utf8"),
+    walkSrc: readFileSync("src/main/mcp/agentWalkGlob.ts", "utf8"),
+    runtimeSrc: readFileSync("src/main/mcp/agentToolRuntime.ts", "utf8"),
+  };
+}
+
+
 const root = mkdtempSync(path.join(tmpdir(), "mcode-text-contract-"));
 const tools = agentMcpTools({ cwdFor: () => root });
 const anotherHost = agentMcpTools({ cwdFor: () => root });
@@ -102,10 +118,18 @@ try {
   //   `agentTools.ts` 与 `agentSearchSessions.ts` 各写一份、且已漂了(前者多了 `coverage`),
   //   于是 `agent_search` 会翻进 `coverage/` 报生成产物的命中,而 `agent_grep` 不会。
   {
-    const toolsSrc = readFileSync("src/main/mcp/agentTools.ts", "utf8");
+    // ⚠️ 判据是**整组 agent 工具文件**里只有一份 —— 不是「某个文件里有」。拆出
+    //   `agentToolRuntime.ts` / `agentWalkGlob.ts` 之后 SKIP_DIRS 的用法搬去了后者，
+    //   只扫 `agentTools.ts` 会让这条**静默空过**。
+    const agentToolSrcs = [
+      readFileSync("src/main/mcp/agentTools.ts", "utf8"),
+      readFileSync("src/main/mcp/agentWalkGlob.ts", "utf8"),
+      readFileSync("src/main/mcp/agentToolRuntime.ts", "utf8"),
+    ];
     check(
-      "★ agentTools 不再自带一份 SKIP_DIRS(改用 agentSearchSessions 那份)",
-      !/const SKIP_DIRS = new Set/.test(toolsSrc) && /import \{[^}]*SKIP_DIRS[^}]*\} from "\.\/agentSearchSessions\.js"/.test(toolsSrc),
+      "★ agent 工具里只有一份 SKIP_DIRS(改用 agentSearchSessions 那份)",
+      !agentToolSrcs.some((src) => /const SKIP_DIRS = new Set/.test(src)) &&
+        /import \{[^}]*SKIP_DIRS[^}]*\} from "\.\/agentSearchSessions\.js"/.test(agentToolSrcs[1]),
     );
   }
   // ★ 搜索起点不存在时,交给模型的那句 `error` 要说人话(中文),不是原始英文 OS 错误。
@@ -140,18 +164,17 @@ try {
   //   `resolvePythonExe`,不得自带"遍历候选取第一个"的逻辑。
   {
     const docOpsSrc = readFileSync("src/main/mcp/agentDocumentOps.ts", "utf8");
-    const toolsSrc = readFileSync("src/main/mcp/agentTools.ts", "utf8");
+    // 同上：这一份实现搬去了 `agentToolRuntime.ts`，要扫整组才算数。
+    const agentToolSrcs2 = [
+      readFileSync("src/main/mcp/agentTools.ts", "utf8"),
+      readFileSync("src/main/mcp/agentWalkGlob.ts", "utf8"),
+      readFileSync("src/main/mcp/agentToolRuntime.ts", "utf8"),
+    ];
     check(
-      "★ agentDocumentOps 走共享的 resolvePythonExe(不自带「取 PATH 第一个」)",
-      /import \{[^}]*resolvePythonExe[^}]*\} from "@main\/lib\/pythonResolve\.js"/.test(docOpsSrc) &&
-        /await resolvePythonExe\(\)/.test(docOpsSrc) &&
-        !/for \(const exe of (candidates|process\.platform)/.test(docOpsSrc),
-    );
-    check(
-      "★ agentTools 走共享的 resolvePythonExe(不自带「取 PATH 第一个」)",
-      /import \{[^}]*resolvePythonExe[^}]*\} from "@main\/lib\/pythonResolve\.js"/.test(toolsSrc) &&
-        /await resolvePythonExe\(\)/.test(toolsSrc) &&
-        !/for \(const exe of (candidates|process\.platform)/.test(toolsSrc),
+      "★ agent 工具走共享的 resolvePythonExe(不自带「取 PATH 第一个」)",
+      agentToolSrcs2.every((src) => !/for \(const exe of (candidates|process\.platform)/.test(src)) &&
+        /import \{[^}]*resolvePythonExe[^}]*\} from "@main\/lib\/pythonResolve\.js"/.test(agentToolSrcs2[2]) &&
+        /await resolvePythonExe\(\)/.test(agentToolSrcs2[2]),
     );
   }
   // 【ARC-017】共享文本提取器:纯文本 / 纯图片 / 混合 / 未知块 都有确定返回,不靠宽泛断言。
