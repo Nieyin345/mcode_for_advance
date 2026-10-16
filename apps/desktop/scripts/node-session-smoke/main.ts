@@ -825,6 +825,75 @@ const originalRunSave = repo.save;
   check("pure continuation releases the session", !runner.hasActiveRun(sid));
 }
 
+/* ──────────────── 【MC-003】场景任务注册表接线 ────────────────
+ *
+ * 从前 `SceneTaskRegistry`（父子任务治理 / 取消传播 / 外部动作 uncertain）是**纯孤岛** ——
+ * 生产 0 调用端，只有 smoke 调它。本段钉的是**真接线**：跑一次真 `startWorkflowRun`，
+ * 看真注册表里有没有根/子任务；`cancelWorkflowRun` 有没有把取消传播下去；往订阅者灌一条
+ * SSH 工具事件之后，取消报告还诚不诚实（uncertain 不许被吞成「干净全停」）。
+ */
+{
+  const { getSceneRegistry, setSceneRuntime } = await import("@main/orchestration/sceneTaskRuntime.js");
+  setSceneRuntime(null); // 每段自己一套干净注册表（与生产装配同姿势）
+  const reg = getSceneRegistry();
+
+  const sid = "scene-wire", workflowId = "wf_scene_wire";
+  const original = nodeSessionDoc();
+  WorkflowRepo.save({ ...original, id: workflowId });
+  SessionRepo.create({ ...parentSession(sid), workflowId });
+
+  const from = rt.bindLog.length;
+  const done = startWorkflowRun({ session: SessionRepo.get(sid)!, prompt: "两格活分头做。", cwd: process.cwd() });
+  await waitFor("scene-wire 两格都起来", () => rt.bindLog.slice(from).filter((id) => id !== sid).length >= 2);
+
+  // ① 根 + 子任务真的注册了（用任务清单反查根:唯一 parentTaskId=null 的那条）。
+  const all = reg.tasksOfScene(sid);
+  const rootTask = all.find((t) => t.parentTaskId === null);
+  check("★ MC-003:这次运行在注册表里有根任务", rootTask !== undefined, all.map((t) => t.taskId));
+  const children = all.filter((t) => t.parentTaskId !== null);
+  check("★ MC-003:两格各登记了一条子任务", children.length >= 2, children.map((t) => `${t.taskId}:${t.sessionId}`));
+  // 子任务绑的会话 id 与节点会话对上（取消传播按会话中断才有落点）。
+  const nodeSess = children.map((c) => c.sessionId).filter((x): x is string => x !== null);
+  check("★ MC-003:子任务绑的正是节点的会话", nodeSess.includes(nodeSessionOf(sid, "agentA")!.id) && nodeSess.includes(nodeSessionOf(sid, "agentB")!.id), nodeSess);
+
+  // ② 干净取消：传播到子任务，报告如实。
+  const reports: string[] = [];
+  const unsub = rt.published;
+  cancelWorkflowRun(sid);
+  await done;
+  const after = reg.tasksOfScene(sid);
+  check("★ MC-003:取消传播 —— 根与子任务都进了终态", after.every((t) => ["cancelled", "uncertain", "completed", "failed"].includes(t.state)), after.map((t) => `${t.taskId}:${t.state}`));
+  check("★ MC-003:没有卡在 running/pending 的孤儿", after.every((t) => t.state !== "running" && t.state !== "pending"), after.map((t) => `${t.taskId}:${t.state}`));
+
+  // ③ 外部动作在飞 → uncertain 不许被吞。
+  setSceneRuntime(null);
+  const reg2 = getSceneRegistry();
+  const sid2 = "scene-wire-ssh", workflowId2 = "wf_scene_wire_ssh";
+  WorkflowRepo.save({ ...original, id: workflowId2 });
+  SessionRepo.create({ ...parentSession(sid2), workflowId: workflowId2 });
+  const from2 = rt.bindLog.length;
+  const done2 = startWorkflowRun({ session: SessionRepo.get(sid2)!, prompt: "两格活分头做。", cwd: process.cwd() });
+  await waitFor("scene-wire-ssh 两格都起来", () => rt.bindLog.slice(from2).filter((id) => id !== sid2).length >= 2);
+  // 往 agentA 的会话灌一条 SSH 工具调用（订阅者按会话 id 找子任务标 externalActionInFlight）。
+  const aSess = nodeSessionOf(sid2, "agentA")!.id;
+  const emit = rt.nodeEmit(aSess);
+  check("前置:拿得到 agentA 那一轮的 emit", emit !== undefined);
+  emit?.({ type: "tool.use", sessionId: aSess, toolCallId: "c1", toolName: "mcp__mcode-app__agent_ssh_exec", input: { connection_id: "x", command: "git push" }, requiresApproval: false });
+  // 等一拍让订阅者处理（同步 set，这里只是稳妥）。
+  await new Promise((r) => setTimeout(r, 30));
+  const marked = reg2.tasksOfScene(sid2).find((t) => t.sessionId === aSess);
+  check("★ MC-003:SSH 工具在飞 → 该步标了外部动作在途", marked?.externalActionInFlight === true, marked && { id: marked.taskId, inflight: marked.externalActionInFlight });
+
+  const errsBefore = rt.published.filter((e) => e.type === "error").length;
+  cancelWorkflowRun(sid2);
+  await done2;
+  const after2 = reg2.tasksOfScene(sid2);
+  const uncertain = after2.filter((t) => t.state === "uncertain");
+  check("★ MC-003:外部动作在飞的步记成 uncertain（绝不谎报 cancelled）", uncertain.length === 1 && uncertain[0]!.sessionId === aSess, after2.map((t) => `${t.taskId}:${t.state}`));
+  const errs = rt.published.filter((e) => e.type === "error").slice(errsBefore);
+  check("★ MC-003:取消报告如实发出去（点名要人工核对）", errs.some((e) => (e as { message?: string }).message?.includes("核对") === true), errs.map((e) => (e as { message?: string }).message));
+}
+
 rmSync(DATA, { recursive: true, force: true });
 
 console.log(`\n${checks - failures}/${checks} 通过`);

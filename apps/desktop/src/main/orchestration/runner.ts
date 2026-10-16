@@ -18,6 +18,35 @@ function displayTitle(node: WorkflowNode, manifest: NodeTypeManifest | undefined
 }
 
 /**
+ * 【MC-003】**这个工具调用是不是"不可中断的外部动作"** —— 停 JS 的 Promise 停不了它,
+ * 所以它在飞时用户按停,注册表必须记 `uncertain`(待人工/外部系统核对)而不是
+ * **谎报 `cancelled`**。
+ *
+ * 判据由**宿主**给(工具名 + 入参),不是模型参数 —— 模型改不了自己这一步算不算外部动作。
+ *
+ * 现有两类:
+ *  - **SSH 系列**(`agent_ssh_*` / `agent_remote_job_*`):远端已经跑起来的命令/作业
+ *    停不掉,建远程资源(端口转发 / 上传)同理;
+ *  - **`app_api_call` 里的推送 / 远程写**(`git.push` / `git.merge` 等):推出去的提交
+ *    已经在别人能看到的地方了。
+ *
+ * ⚠️ **宁可多标不可少标**(标错的代价是取消时报一句"请核对",漏标的代价是**假成功**)。
+ */
+function isExternalActionTool(toolName: string, input: unknown): boolean {
+  // MCP 工具名过桥后形如 `mcp__<server>__<tool>`,取尾段判。
+  const bare = toolName.includes("__") ? toolName.slice(toolName.lastIndexOf("__") + 2) : toolName;
+  if (/^agent_ssh_(exec|connect)$/.test(bare)) return true;
+  if (/^agent_remote_job_(start|cancel)$/.test(bare)) return true;
+  if (bare === "app_api_call" || bare === "app_api_call_read") {
+    const method = (input as { method?: unknown } | null | undefined)?.method;
+    if (typeof method !== "string") return false;
+    // 推送到远程 / 合并到远程可见分支 —— 落定之后本机停不住。
+    return /^(git\.(push|merge|worktreeMergeBack)|publicMcp\.)/.test(method);
+  }
+  return false;
+}
+
+/**
  * 工作流节点的**真实执行器** —— 把调度器的 {@link RunPorts} 接到会话与回合上。
  *
  * ## 一个节点 = 一个隐藏子会话(`kind: "node"`)
@@ -94,9 +123,12 @@ import { CollectionRepo, LibraryRepo, MessageRepo, SessionRepo, SettingRepo, Wor
 import { uid } from "@main/utils.js";
 import {
   ensureSceneBudgetAccount,
+  getSceneRegistry,
+  markSceneExternalAction,
   parseSceneBudgetLimits,
   releaseSceneReservation,
   reserveSceneBudget,
+  sceneCancelReport,
   SCENE_BUDGET_SETTING_KEY,
   settleSceneReservation,
 } from "./sceneTaskRuntime.js";
@@ -343,6 +375,9 @@ interface ActiveRun {
   settled: Promise<void>;
   /** 落地 {@link ActiveRun.settled} 的那一下。 */
   finish: () => void;
+  /** 【MC-003】这次运行在场景任务注册表里的根任务 id(装配即注册)。
+   *  取消入口按它传播到全部节点子任务;外部动作标记也挂在它派生的子任务上。 */
+  sceneRootTaskId: string;
 }
 
 /** 一个对话同一时刻只跑一次图。`sessionId → run`。 */
@@ -736,12 +771,37 @@ export function parkedRunTeardown(sessionId: string): Promise<void> | null {
  * 让一个正在跑的图停下来。**"停"的定义是"不再派发新的"** —— 已经跑起来的那些节点
  * 会被逐个 interrupt(它们的回合会以 `interrupted` 收场),它们的下游因为依赖没满足
  * 而不会启动(见 `scheduler.ts`)。
+ *
+ * 【MC-003】**取消同时传播到场景任务注册表** —— 在中断回合之外,把这次运行的根任务连同
+ * 其全部节点子任务收成终态(从前内核里那段"取消传播 + 外部动作在飞记 `uncertain`"的
+ * 语义**没有任何生产调用端**,真实取消一个都没接上)。返回**不撒谎的报告**:
+ * `uncertain` 非空时**不是干净的全停**,那句"请人工核对"必须发出去 —— 用户以为系统停了、
+ * 而那个 git push 可能照样落了地,没人核对才是最难查的失败。
  */
 export function cancelWorkflowRun(sessionId: string): boolean {
   const cancelPending = pendingStarts.get(sessionId);
   if (cancelPending) { cancelPending(); return true; }
   const active = runs.get(sessionId);
   if (!active) return false;
+  // 【MC-003】先把注册表收干净(同步、在 abort 之前):abort 之后节点会**并发地**收场,
+  // 而 `cancelInto` 读的 `externalActionInFlight` 正是"这一刻有没有不可中断的东西在飞"
+  // —— 放在 abort 之前取证,报告说的才是取消**那一刻**的事实。
+  const outcome = getSceneRegistry().cancel(active.sceneRootTaskId);
+  if (outcome.ok) {
+    const report = sceneCancelReport(outcome.value);
+    if (!report.cleanStop) {
+      log.warn(`workflow run ${active.runId}: ${report.message}`);
+      // 如实报给用户 —— 不能停在日志里(那句"请人工核对"就是给用户的)。
+      try {
+        runtimeManager.emitExternal({ type: "error", sessionId, message: `取消完成,但需要你核对:${report.message}` });
+      } catch {
+        // 广播失败不该拦取消本身(下面那句 abort 才是"停"的正事)。
+      }
+    }
+  } else {
+    // 根注册失败过(见运行开始那段)—— 取消照走,只少了传播这一层。
+    log.warn(`workflow run ${active.runId}: 场景任务根取不到(${outcome.code}),取消只中断当前回合`);
+  }
   active.abort.abort();
   return true;
 }
@@ -979,6 +1039,42 @@ export async function startWorkflowRun(args: {
   const runId = resumed !== undefined ? resumed.runId : uid("run_");
   /** 落地 `settled` 的那一下(见 `ActiveRun.settled`)。 */
   let finishRun!: () => void;
+  // 【MC-003】**把这次运行注册进场景任务注册表**(内核从前只有纯核定,生产 0 调用端)。
+  //
+  // 注册表存在两个真事实,都需要一个**根**:① 用户的取消要**传播到全部节点子任务**
+  // (只中断当前回合会留下继续烧预算的孤儿);② 某一步握着不可中断的外部动作
+  // (SSH / 推送建远程资源)时取消,要记 `uncertain` 而不是**谎报 `cancelled`**。
+  // 没有根就没有这两条 —— 内核里写着的语义一条都到不了真实派发。
+  //
+  // **注册失败不该拦整张图**:注册表是纯内存的补充账(它不落盘、不参与判定),
+  // 建不上(比如同一 session 残留了同名根)时如实记一行、图照跑 —— 与"没配场景预算
+  // 就走老路"同一条纪律:接线是加约束,不是改行为。
+  const sceneRootTaskId = `scene-run:${runId}`;
+  {
+    const nowMs = Date.now();
+    const reg = getSceneRegistry();
+    const created = reg.createRootTask({
+      sceneId: session.id,
+      taskId: sceneRootTaskId,
+      parentTaskId: null,
+      sessionId: session.id,
+      originAgentId: "workflow.runner",
+      providerId: session.providerId,
+      triggerOrigin: session.kind === "automation" || automationOrigin !== undefined ? "automation" : "workflow",
+      // 能力清单:**不约束**(空表 = 不设限,与注册表 `spawn` 的"只收窄不放宽"兼容
+      // —— 空父集会让任何带能力的子任务被判 CAPABILITY_ESCALATION,所以这里必须给全量
+      // 而不是空)。注册表本片只用于**取消传播与外部动作诚实性**,不承担能力收窄。
+      allowedCapabilities: ["fs", "net", "shell", "mcp"],
+      budgetAccountId: `scene:${session.id}`,
+      // 根任务不派生**任务级**子任务:一个节点 = 一条子任务(fanout 上限取大)。
+      maxFanout: 1000,
+      maxDepth: 1,
+      deadline: null,
+    });
+    if (!created.ok) {
+      log.warn(`workflow run ${runId}: 场景任务根注册失败(${created.code}),取消传播本趟不生效:${created.message}`);
+    }
+  }
   const active: ActiveRun = {
     runId,
     workflowId: doc.id,
@@ -993,6 +1089,7 @@ export async function startWorkflowRun(args: {
       finishRun = resolve;
     }),
     finish: () => finishRun(),
+    sceneRootTaskId,
   };
   runs.set(session.id, active);
 
@@ -1092,6 +1189,12 @@ export async function startWorkflowRun(args: {
    * 下一次 `tool.use` 直接盖掉。这样卡片上永远写着**最近一次**发生的事,而不是闪回空白。
    */
   const activity = new Map<string, string>();
+  /**
+   * 【MC-003】节点会话 id → 它在场景任务注册表里的子任务 id。
+   * `tool.use` / `tool.result` 订阅者按它找到该标谁的外部动作在飞标记。
+   * 注册失败 / 没登记的会话不在表里 —— 那些步骤不参与注册表,静默无操作。
+   */
+  const externalActionTaskOf = new Map<string, string>();
   /**
    * 每段被观察的会话**最后一次有动静**是什么时候(见 `armStallWatchdog`)。
    *
@@ -1220,6 +1323,21 @@ export async function startWorkflowRun(args: {
       activity.set(e.sessionId, e.toolName);
       // 这一轮动过工具 —— 卡死之后就不再自动重跑了(见 `toolUsed`)。
       toolUsed.add(e.sessionId);
+      // 【MC-003】**不可中断的外部动作在飞 → 如实标记**。这条标记是 `cancel` 判
+      // `uncertain` 的**唯一输入**(见 `sceneTaskRegistry.cancelInto`):用户此刻按停,
+      // 停 JS 的 Promise 停不了已经发出去的 git push / SSH 建远程资源 —— 没有这条标记,
+      // 注册表会把那一步记成干净的 `cancelled`,即**谎报已停**。
+      // 判据由**宿主**按工具名给出(不是模型参数):SSH 系列 + 推送到远程的 app_api 调用。
+      const childTaskId = externalActionTaskOf.get(e.sessionId);
+      if (childTaskId !== undefined && isExternalActionTool(e.toolName, e.input)) {
+        getSceneRegistry().markExternalAction(childTaskId, true);
+      }
+    } else if (e.type === "tool.result") {
+      // 【MC-003】外部动作收了 → 撤掉在飞标记(它已经落定,不再是"停不掉的")。
+      const childTaskId = externalActionTaskOf.get(e.sessionId);
+      if (childTaskId !== undefined) {
+        getSceneRegistry().markExternalAction(childTaskId, false);
+      }
     } else if (e.type === "subagent.update") {
       // 子代理是**这一轮里最长的静默期**:主代理派出去等着的时候,它自己一个字都不发。
       // 拿名单上那个还在跑的代理名报出去,比停在最后一个工具名上准确得多 —— 用户看到
@@ -1739,6 +1857,9 @@ export async function startWorkflowRun(args: {
     active.executing += 1;
     /** 场景总账给这一步开的预留凭据(没配场景预算时保持 null,走老路)。 */
     let heldReservation: SceneBudgetReservation | null = null;
+    /** 【MC-003】这一步在场景任务注册表里的子任务 id(注册失败时保持 null —— 取消传播
+     *  对这一步不生效,但不拦派发,见根任务那段注释)。 */
+    let sceneChildTaskId: string | null = null;
     try {
       // **起子任务之前,先从场景总账预留预算(ARC-013 接线)。**
       //
@@ -1764,6 +1885,33 @@ export async function startWorkflowRun(args: {
           };
         }
         heldReservation = res.value;
+      }
+      // 【MC-003】**把这一步登记进场景任务注册表**(根任务在运行开始时已建)。
+      // 登记的是"派发事实":取消入口按根传播到这些子任务,`markExternalAction` 也挂在
+      // 它们身上。注册失败只记日志 —— 与根任务同一条纪律(加约束,不改行为)。
+      {
+        const spawned = getSceneRegistry().spawn(active.sceneRootTaskId, {
+          sceneId: session.id,
+          taskId: `scene-node:${runId}:${node.id}`,
+          parentTaskId: active.sceneRootTaskId,
+          sessionId: nodeSession.id,
+          originAgentId: "workflow.runner",
+          providerId: nodeSession.providerId,
+          triggerOrigin: "workflow",
+          allowedCapabilities: [],
+          budgetAccountId: `scene:${session.id}`,
+          maxFanout: 0,
+          maxDepth: 0,
+          deadline: null,
+        });
+        if (spawned.ok) {
+          sceneChildTaskId = spawned.value.taskId;
+          getSceneRegistry().setState(sceneChildTaskId, "running");
+          // 【MC-003】订阅者按**会话 id** 找到这一步的子任务(事件带的是会话 id)。
+          externalActionTaskOf.set(nodeSession.id, sceneChildTaskId);
+        } else {
+          log.warn(`workflow run ${runId}: 节点 ${node.id} 场景任务登记失败(${spawned.code}),本步取消传播不生效`);
+        }
       }
       const handle = await runtimeManager.sendTurn(nodeSession, {
         prompt: input.prompt,
@@ -1819,6 +1967,16 @@ export async function startWorkflowRun(args: {
         } else {
           releaseSceneReservation(heldReservation.reservationId);
         }
+      }
+      // 【MC-003】**把这一步的子任务收成终态**(注册成功时)。判据与实际结局同源:
+      // 看门狗判死 / 报错 → failed;被取消 → cancelled;其余成功 → completed。
+      // ⚠️ **不确定态由 `cancel` 那条路写**(它先落 `uncertain`,终态不可迁出),所以
+      // 这里对"已经是终态"的任务调 `setState` 会被拒 —— 那是**正常**的,静默跳过。
+      if (sceneChildTaskId !== null) {
+        const outcome = outcomeOf(nodeSession.id);
+        const next =
+          outcome.status === "success" ? "completed" : outcome.status === "cancelled" ? "cancelled" : "failed";
+        getSceneRegistry().setState(sceneChildTaskId, next);
       }
     }
     return outcomeOf(nodeSession.id);
