@@ -10,6 +10,8 @@
 export { Button, buttonVariants } from "./button.js";
 export type { ButtonProps } from "./button.js";
 
+export { ClickableRow } from "./clickable-row.js";
+
 export { Input } from "./input.js";
 export type { InputProps } from "./input.js";
 

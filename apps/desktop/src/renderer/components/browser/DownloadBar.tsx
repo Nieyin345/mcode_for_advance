@@ -1,5 +1,6 @@
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { ClickableRow } from "@renderer/components/ui/clickable-row.js";
 import {
   IconDownload,
   IconLoader2,
@@ -67,20 +68,23 @@ export function DownloadBar({ items, onOpen, onReveal, onDismiss }: DownloadBarP
       </span>
       <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         {items.map((d) => (
-          <span
+          // 【MC-049】完成态 chip 可点开文件 —— 键盘(Enter/Space)也要能开;
+          // 未完成态 disabled(不是控件、不进 Tab 序)。嵌套两个按钮各自
+          // stopPropagation,不会连带触发外层打开。
+          <ClickableRow
             key={d.downloadId}
+            as="div"
+            disabled={d.state !== "completed"}
+            onClick={() => onOpen(d.downloadId)}
             className={cn(
               "inline-flex shrink-0 items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[11px]",
               d.state === "completed" &&
-                "cursor-pointer border-accent/40 bg-accent/10 text-accent transition-colors hover:bg-accent/20",
+                "cursor-pointer border-accent/40 bg-accent/10 text-accent transition-colors hover:bg-accent/20 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
               d.state === "progressing" && "border-edge bg-surface text-content",
               (d.state === "cancelled" || d.state === "interrupted") &&
                 "border-red-500/40 bg-red-500/10 text-content-muted",
             )}
             title={d.state === "completed" ? `${d.path}\n${t("browser.downloadOpenFile")}` : d.path}
-            onClick={() => {
-              if (d.state === "completed") onOpen(d.downloadId);
-            }}
           >
             {d.state === "progressing" ? (
               <IconLoader2 size={11} className="animate-spin opacity-70" />
@@ -123,7 +127,7 @@ export function DownloadBar({ items, onOpen, onReveal, onDismiss }: DownloadBarP
             >
               <IconX size={10} />
             </button>
-          </span>
+          </ClickableRow>
         ))}
       </div>
     </div>

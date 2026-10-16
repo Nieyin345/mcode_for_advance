@@ -34,6 +34,7 @@ import { useState, useMemo } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { IconBookmark } from "@renderer/lib/icons.js";
+import { ClickableRow } from "@renderer/components/ui/clickable-row.js";
 import type { Block, ChatMessage } from "@renderer/stores/sessionStore.js";
 
 /** Translator signature matching the `t` returned by {@link useI18n}, so
@@ -222,10 +223,17 @@ function TimelineDash({
   const text = excerpt ?? blocksToText(message.blocks, t);
 
   return (
-    <div
-      className="relative flex h-5 w-5 cursor-pointer items-center justify-center"
+    // 【MC-049】刻度点击跳到该消息 —— 键盘也要能跳(共享 ClickableRow)。
+    // onFocus/onBlur 与 hover 同源:hover 卡在键盘聚焦时也要出现,否则聚焦一个
+    // 纯色块没有任何提示。鼠标离开/失焦都收起。aria-label 用预览正文当名字
+    // (纯色刻度自身无文本,读屏无从念起)。
+    <ClickableRow
+      className="relative flex h-5 w-5 cursor-pointer items-center justify-center rounded focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+      aria-label={title ?? text ?? t("chatStream.timeline.noText")}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onFocus={() => setHovered(true)}
+      onBlur={() => setHovered(false)}
       onClick={onJump}
     >
       {bookmarked ? (
@@ -277,6 +285,6 @@ function TimelineDash({
           </div>
         </div>
       )}
-    </div>
+    </ClickableRow>
   );
 }

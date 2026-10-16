@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ClickableRow } from "@renderer/components/ui/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Block, ChatMessage } from "@renderer/stores/sessionStore.js";
 import type { SubagentSnapshot, TurnUsageRecord } from "@contracts/runtime";
@@ -508,10 +509,11 @@ function UserStep({ message, onJump }: { message: ChatMessage; onJump: (messageI
   const { t } = useI18n();
   const { text, attachments } = userMessagePreview(message);
   return (
-    <div
+    // 【MC-049】点击跳到聊天 → 键盘也要能跳(共享 ClickableRow)。
+    <ClickableRow
       onClick={() => onJump(message.id)}
       title={t("ide.turns.jumpToChat")}
-      className="relative flex cursor-pointer items-start gap-2 rounded-md py-1 pl-0.5 pr-1.5 transition-colors hover:bg-surface-hover"
+      className="relative flex cursor-pointer items-start gap-2 rounded-md py-1 pl-0.5 pr-1.5 transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
     >
       <StepGlyph className="bg-accent/15 text-accent">
         <IconUser size={11} />
@@ -532,7 +534,7 @@ function UserStep({ message, onJump }: { message: ChatMessage; onJump: (messageI
           </p>
         )}
       </div>
-    </div>
+    </ClickableRow>
   );
 }
 
@@ -754,11 +756,11 @@ function StepRow({
 }) {
   return (
     <div className="relative">
-      <div
+      <ClickableRow
         onClick={onClick}
         title={title}
         className={cn(
-          "relative flex cursor-pointer items-start gap-2 rounded-md py-1 pl-0.5 pr-1.5 transition-colors hover:bg-surface-hover",
+          "relative flex cursor-pointer items-start gap-2 rounded-md py-1 pl-0.5 pr-1.5 transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
           accent === "danger" && "bg-danger/5 hover:bg-danger/10",
           accent === "attention" && "bg-amber-400/5 hover:bg-amber-400/10",
         )}
@@ -772,7 +774,7 @@ function StepRow({
           />
         )}
         {children}
-      </div>
+      </ClickableRow>
       {lane}
     </div>
   );
@@ -816,12 +818,16 @@ function SubagentLane({
 
   return (
     <div className="relative my-0.5 ml-[18px] rounded-r-md border-l border-dashed border-edge pl-2 pr-1">
-      <div
-        onClick={snapshot ? () => onOpenSubagent(snapshot.taskId) : undefined}
+      {/* 【MC-049】只有 live 快照才可点开转录 —— 没有快照时 disabled,
+          行不是控件、也不进 Tab 序(无 onClick 的 div 本来就不该被聚焦)。 */}
+      <ClickableRow
+        onClick={() => snapshot && onOpenSubagent(snapshot.taskId)}
+        disabled={!snapshot}
         title={snapshot ? t("ide.turns.openTranscript") : undefined}
         className={cn(
           "flex items-center gap-1.5 rounded-md px-1 py-0.5",
-          snapshot && "cursor-pointer transition-colors hover:bg-surface-hover",
+          snapshot &&
+            "cursor-pointer transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
         )}
       >
         <IconGitFork size={10} className="shrink-0 text-content-subtle" />
@@ -849,7 +855,7 @@ function SubagentLane({
           {meta.spin && <IconLoader2 size={9} className="animate-spin" />}
           {t(meta.labelKey)}
         </span>
-      </div>
+      </ClickableRow>
       {snapshot?.lastToolName && (
         <div className="truncate px-1 text-[10px] leading-snug text-content-subtle">
           {t("ide.turns.subagentLast", { tool: snapshot.lastToolName })}

@@ -42,6 +42,7 @@ import {
 import { registerEditorSelectionActions } from "@renderer/components/customUi/CustomSlotHosts.js";
 import "@renderer/lib/monacoSetup.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { ClickableRow } from "@renderer/components/ui/clickable-row.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { setLastCursor, type NavEntry } from "@renderer/lib/editorNav.js";
 import { useScrollMemory } from "@renderer/lib/scrollMemory.js";
@@ -1853,10 +1854,13 @@ function ImagePreviewPane({ filePath }: { filePath: string }) {
         backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0",
       }}
     >
-      <div
-        className="flex min-h-full min-w-full items-center justify-center p-6"
+      {/* 【MC-049】点击缩放图片 —— 键盘也要能切(共享 ClickableRow:Enter/Space 激活)。
+          这一层铺满整个滚动区、内容是张图,给 aria-label 当无障碍名(否则读屏只念路径)。 */}
+      <ClickableRow
         onClick={() => setNatural((n) => !n)}
         title={natural ? t("ide.editor.imageFitHint") : t("ide.editor.imageNaturalHint")}
+        aria-label={natural ? t("ide.editor.imageFitHint") : t("ide.editor.imageNaturalHint")}
+        className="flex min-h-full min-w-full items-center justify-center p-6 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
       >
         <img
           src={dataUrl}
@@ -1868,7 +1872,7 @@ function ImagePreviewPane({ filePath }: { filePath: string }) {
           )}
           style={natural ? { maxHeight: "none", maxWidth: "none" } : undefined}
         />
-      </div>
+      </ClickableRow>
     </div>
   );
 }

@@ -34,6 +34,7 @@ import { useState, type ComponentType, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useNow } from "@renderer/hooks/useNow.js";
+import { ClickableRow } from "@renderer/components/ui/clickable-row.js";
 import type { TablerIconProps } from "@renderer/lib/icons.js";
 import {
   IconBookmark,
@@ -207,12 +208,17 @@ function SubagentRow({
   ];
 
   return (
-    <li
-      onClick={onPick ? () => onPick(agent) : undefined}
+    // 【MC-049】有 onPick 的行可点开子代理转录 —— 键盘也要能开(共享 ClickableRow,
+    // as="li" 保住 ul>li 结构);没有 onPick 时 disabled,不是控件、不进 Tab 序。
+    <ClickableRow
+      as="li"
+      disabled={!onPick}
+      onClick={() => onPick?.(agent)}
       title={onPick ? t("chatStream.activity.viewSubagent") : undefined}
       className={cn(
         "group relative border-b border-edge/35 py-2 pl-3.5 pr-3 last:border-b-0",
-        onPick && "cursor-pointer hover:bg-surface-muted/60",
+        onPick &&
+          "cursor-pointer hover:bg-surface-muted/60 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
       )}
     >
       {/* Left stripe: a sweeping shimmer while the agent is alive, a static
@@ -279,7 +285,7 @@ function SubagentRow({
           <span className="absolute -inset-y-px right-0 w-px bg-content-subtle/55" />
         </span>
       )}
-    </li>
+    </ClickableRow>
   );
 }
 

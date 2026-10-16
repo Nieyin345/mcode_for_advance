@@ -27,7 +27,7 @@
  * It pops above the ring, flipping below when there's no room; a transparent
  * fixed backdrop handles outside-click dismissal.
  */
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -87,6 +87,16 @@ export function ContextStatsPopover({
     window.addEventListener("resize", recompute);
     return () => window.removeEventListener("resize", recompute);
   }, [anchorRect.top]);
+
+  // 【MC-049 同族】Escape 关闭 —— backdrop 是鼠标专属出口,键盘用户没有它。
+  // WatchSegment 的同类 popover 已有这条(window keydown);这里补齐,口径一致。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   // Fixed positioning relative to the viewport (portaled to <body> so the
   // composer card's overflow-hidden can't clip the panel — the same reason

@@ -23,6 +23,7 @@ import type { BrowserBookmarkEntry, BrowserHistoryEntry } from "@contracts/ipc";
 import type { BrowserMode } from "./BrowserPanel.js";
 import { formatBytes, type DownloadBarItem } from "./DownloadBar.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { ClickableRow } from "@renderer/components/ui/index.js";
 
 /**
  * Toolbar for the embedded browser panel. Pure presentational - all state
@@ -230,10 +231,12 @@ function TreeEntryRow({
   onOpen: () => void;
 }) {
   return (
-    <div
+    // 【MC-049】整行可点 → 键盘也要能开(role/tabIndex/Enter/Space 走共享包装)。
+    <ClickableRow
       onClick={onOpen}
       title={openTitle}
-      className="group flex cursor-pointer items-center gap-2 py-1 pl-[26px] pr-2.5 transition-colors hover:bg-surface-hover"
+      aria-label={title}
+      className="group flex cursor-pointer items-center gap-2 py-1 pl-[26px] pr-2.5 transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
     >
       {favicon}
       <div className="min-w-0 flex-1">
@@ -241,8 +244,8 @@ function TreeEntryRow({
         {subtitle && <div className="truncate text-[11px] text-content-subtle">{subtitle}</div>}
         {extra}
       </div>
-      {ops && <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">{ops}</div>}
-    </div>
+      {ops && <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex">{ops}</div>}
+    </ClickableRow>
   );
 }
 
@@ -584,13 +587,14 @@ export function BrowserToolbar({
               {t("browser.history")}
             </div>
             {filteredHistory.map((entry, i) => (
-              <div
+              <ClickableRow
                 key={entry.url}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => pickHistoryEntry(entry)}
                 onMouseEnter={() => setHighlight(i)}
+                aria-label={entry.title || entry.url}
                 className={cn(
-                  "flex cursor-pointer items-center gap-2 px-2.5 py-1.5",
+                  "flex cursor-pointer items-center gap-2 px-2.5 py-1.5 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
                   i === highlight ? "bg-surface-hover" : "bg-transparent",
                 )}
               >
@@ -612,7 +616,7 @@ export function BrowserToolbar({
                 >
                   <IconTrash size={12} />
                 </button>
-              </div>
+              </ClickableRow>
             ))}
             {history.length > 0 && (
               <button
