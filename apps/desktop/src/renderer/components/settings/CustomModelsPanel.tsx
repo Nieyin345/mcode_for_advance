@@ -105,8 +105,11 @@ import {
 /* ── 思考强度档位映射（三引擎共用同一形状）──
  *
  * 不同网关/引擎对同一个思考档位用的标识符不一样（A 家要 "high"、B 家要 "3"、
- * C 家要 "reasoning_high"）。Pi 早在它的 models.json 里就有这套（`thinkingLevelMap`）；
- * 2026-10-11 把同一套推广到 Claude 与 Codex 的每模型设置里。
+ * C 家要 "reasoning_high"），而且**接受的字段也不同**：命名档走 Options.effort、
+ * 整数也走它、token 预算走 Options.thinking，自定义串只能走环境变量；
+ * Codex 则只能用二进制自己的枚举。逐条落点见 `@contracts/thinkingMap`
+ * （`resolveEffortForClaude` / `isCodexEffortValue`）。Pi 早在它的 models.json 里
+ * 就有 `thinkingLevelMap`；2026-10-17 把同一套接进 Claude 与 Codex 的每模型设置。
  *
  * 表单里用两个平行表表示（与 Pi 表单一致）：`thinking[档位]` 是三态选择
  * (default / null / value)，`thinkingValue[档位]` 在选 value 时填具体字符串。
