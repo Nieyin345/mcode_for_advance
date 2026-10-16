@@ -631,6 +631,176 @@ const unblocked = asOk(await call(IPC.PLUGINS_REMOVE, { name: "live-plugin" }));
 eq("回合停了之后 → ok", unblocked.ok, true);
 check("…这次真的删掉了", !existsSync(path.join(PLUGINS_ROOT, "live-plugin")));
 
+/* ────────────────────────── 10b. 配置损坏 → 拒绝投递 ────────────────────────── */
+
+console.log("\n[10b] 配置损坏 → fail-closed 拒绝投递(MC-019)");
+/* 存盘 JSON 被截断时,旧行为把兜底值当事实继续算,而四个策略键的兜底值
+ * (空表 / 全开的引擎开关 / 空 denylist)恰好都是**放宽**方向 ——
+ * 「对 pi 禁用的插件」会按 pi:true 重新投递,「已关的 MCP 服务」会重新出现。
+ * 现在:存在但读不懂 → 显式报告(console.warn 点名键)+ 拒绝投递。
+ * 断言都在可观察行为上(投递查询与警告),不钉内部结构。 */
+const failsafe = mkPlugin("failclosed-src", { name: "failclosed", version: "1.0.0" }, { skills: ["fc-skill"] });
+writeFileSync(
+  path.join(failsafe, ".mcp.json"),
+  JSON.stringify({ mcpServers: { fserver: { command: "node", args: ["fc.js"] } } }),
+);
+await installLocal(failsafe);
+await call(IPC.PLUGINS_SET_ENABLED, { name: "failclosed", enabled: true });
+
+/** 抓 console.warn(损坏报告的出口);finally 里恢复,断言抛错也不带脏全局。 */
+async function withCapturedWarns<T>(fn: () => Promise<T>): Promise<{ result: T; warns: string[] }> {
+  const warns: string[] = [];
+  const real = console.warn;
+  console.warn = (...args: unknown[]) => { warns.push(args.map((a) => String(a)).join(" ")); };
+  try {
+    return { result: await fn(), warns };
+  } finally {
+    console.warn = real;
+  }
+}
+const rootsOf = (provider: string) => pluginManager.getEnabledPluginSkillRoots(undefined, provider);
+const mcpNames = async () => (await pluginManager.getPluginMcpServers()).map(([n]) => n);
+const projA = path.join(base, "proj-a");
+
+/* 正控 ①:一切合法 / 没配过时,行为与修复前一致(不误伤)。 */
+eq("正控:三个引擎都收到技能根", (await rootsOf("claude-sdk")).length + (await rootsOf("codex-sdk")).length + (await rootsOf("pi-sdk")).length, 3);
+check("正控:MCP 服务在投递里", (await mcpNames()).includes("failclosed__fserver"), await mcpNames());
+
+/* 场景 A:plugins.engines 对 pi 关着,存盘被截断 → 不得按「全开」重新投递。 */
+eq("A0:合法开关表先关掉 pi", asOk(await call(IPC.PLUGINS_ENGINES_SET, { name: "failclosed", pi: false })).ok, true);
+eq("A0 正控:pi 被收窄(disables 生效)", (await rootsOf("pi-sdk")).length, 0);
+eq("A0 正控:claude 不受影响", (await rootsOf("claude-sdk")).length, 1);
+SettingRepo.set("plugins.engines", '{"failclosed":{"pi":false');
+const aWarns = await withCapturedWarns(async () => {
+  const r = { claude: (await rootsOf("claude-sdk")).length, codex: (await rootsOf("codex-sdk")).length, pi: (await rootsOf("pi-sdk")).length };
+  return { r, mcp: await mcpNames() };
+});
+eq("A1:坏 JSON 时 claude 不被投递", aWarns.result.r.claude, 0);
+eq("A1:坏 JSON 时 codex 不被投递", aWarns.result.r.codex, 0);
+eq("A1:坏 JSON 时 pi 不被投递(不再按 pi:true 重开)", aWarns.result.r.pi, 0);
+eq("A1:坏 JSON 时插件 MCP 也不被投递", aWarns.result.mcp.length, 0);
+check(
+  "A2:损坏被显式报告(点名设置键)",
+  aWarns.warns.some((w) => w.includes("plugins.engines") && w.includes("损坏")),
+  aWarns.warns,
+);
+const aAgain = await withCapturedWarns(async () => (await rootsOf("claude-sdk")).length);
+check(
+  "A2:同一条损坏不刷屏(重复读不重复报)",
+  aAgain.warns.filter((w) => w.includes("plugins.engines")).length === 0,
+  aAgain.warns,
+);
+SettingRepo.set("plugins.engines", JSON.stringify({ failclosed: { claude: true, codex: true, pi: false } }));
+eq("A3:键恢复后照常投递(无残留污染)", (await rootsOf("claude-sdk")).length, 1);
+eq("A3:恢复后 pi 仍按合法开关收窄", (await rootsOf("pi-sdk")).length, 0);
+
+/* 场景 A4:JSON 本身合法、但叶子是越界值(pi:"bad")—— 旧读法把非 false 一律当开,
+ * 正是"部分损坏"那一类;现在形状校验让整键进损坏态,同样拒绝投递。 */
+SettingRepo.set("plugins.engines", '{"failclosed":{"pi":"bad"}}');
+const a4Warns = await withCapturedWarns(async () => ({ claude: (await rootsOf("claude-sdk")).length, pi: (await rootsOf("pi-sdk")).length }));
+eq("A4:形状坏(叶子非布尔)时也不投递", a4Warns.result.claude, 0);
+eq("A4:…pi 也不投递", a4Warns.result.pi, 0);
+check("A4:…同样显式报告", a4Warns.warns.some((w) => w.includes("plugins.engines")), a4Warns.warns);
+SettingRepo.set("plugins.engines", JSON.stringify({ failclosed: { claude: true, codex: true, pi: false } }));
+eq("A5:再次恢复后照常", (await rootsOf("claude-sdk")).length, 1);
+
+/* 场景 B:项目覆盖把插件关掉,覆盖表被截断 → 不得回落到全局「已启用」。 */
+SettingRepo.set("plugins.projectOverrides", JSON.stringify({ [projA]: { failclosed: { enabled: false } } }));
+eq("B0 正控:该项目里被覆盖关掉", (await pluginManager.getEnabledPlugins(projA)).length, 0);
+SettingRepo.set("plugins.projectOverrides", '{"broken');
+const bWarns = await withCapturedWarns(async () => ({
+  proj: (await pluginManager.getEnabledPlugins(projA)).length,
+  global: (await pluginManager.getEnabledPlugins()).length,
+}));
+eq("B1:坏 JSON 时该项目仍不投递(覆盖丢失≠放开)", bWarns.result.proj, 0);
+eq("B1:坏 JSON 时全局也不投递(fail-closed 到全场)", bWarns.result.global, 0);
+check("B2:损坏被显式报告", bWarns.warns.some((w) => w.includes("plugins.projectOverrides")), bWarns.warns);
+SettingRepo.set("plugins.projectOverrides", "{}");
+eq("B3:覆盖表清干净后全局恢复投递", (await pluginManager.getEnabledPlugins()).length, 1);
+SettingRepo.set("plugins.projectOverrides", JSON.stringify({ [projA]: { failclosed: { enabled: "no" } } }));
+const b4Warns = await withCapturedWarns(async () => (await pluginManager.getEnabledPlugins()).length);
+eq("B4:覆盖表形状坏(enabled 非布尔)也不投递", b4Warns.result, 0);
+check("B4:…显式报告", b4Warns.warns.some((w) => w.includes("plugins.projectOverrides")), b4Warns.warns);
+SettingRepo.set("plugins.projectOverrides", "{}");
+eq("B5:恢复后全局照常", (await pluginManager.getEnabledPlugins()).length, 1);
+
+/* 场景 C:插件 MCP 服务被关(denylist),denylist 被截断 → 服务不得重新出现。 */
+eq("C0:先关掉该服务", pluginManager.setPluginMcpDisabled("failclosed__fserver", true).ok, true);
+check("C0 正控:关闭后投递里没有它", !(await mcpNames()).includes("failclosed__fserver"), await mcpNames());
+SettingRepo.set("plugins.mcpDisabled", '["failclosed__fserver"');
+const cWarns = await withCapturedWarns(async () => ({ mcp: await mcpNames(), skills: (await rootsOf("claude-sdk")).length }));
+check("C1:denylist 坏 JSON 时被关的服务不出现", !cWarns.result.mcp.includes("failclosed__fserver"), cWarns.result.mcp);
+eq("C1:…且整个 MCP 交付被拒(不是当空名单继续)", cWarns.result.mcp.length, 0);
+eq("C1:技能投递不受 denylist 损坏牵连(只拒 MCP 那一路)", cWarns.result.skills, 1);
+check("C2:损坏被显式报告", cWarns.warns.some((w) => w.includes("plugins.mcpDisabled")), cWarns.warns);
+SettingRepo.set("plugins.mcpDisabled", "[]");
+check("C3:名单恢复后服务重新在投递里", (await mcpNames()).includes("failclosed__fserver"), await mcpNames());
+SettingRepo.set("plugins.mcpDisabled", JSON.stringify({ oops: true }));
+const c4Warns = await withCapturedWarns(async () => (await mcpNames()).length);
+eq("C4:名单形状坏(JSON 合法但不是数组)也拒投递", c4Warns.result, 0);
+check(
+  "C4:…显式报告(恢复后再损坏会重新报)",
+  c4Warns.warns.some((w) => w.includes("plugins.mcpDisabled")),
+  c4Warns.warns,
+);
+SettingRepo.set("plugins.mcpDisabled", "[]");
+/* 场景 D:插件被停用,启用名单被截断 → 不投递 + 报告(旧读法静默当空,无人知晓)。 */
+await call(IPC.PLUGINS_SET_ENABLED, { name: "failclosed", enabled: false });
+eq("D0 正控:停用后不投递", (await rootsOf("claude-sdk")).length, 0);
+SettingRepo.set("plugins.enabled", '["failclosed"');
+const dWarns = await withCapturedWarns(async () => ({
+  skills: (await rootsOf("claude-sdk")).length,
+  mcp: (await mcpNames()).length,
+}));
+eq("D1:坏 JSON 时不投递(技能)", dWarns.result.skills, 0);
+eq("D1:坏 JSON 时不投递(MCP)", dWarns.result.mcp, 0);
+check("D2:损坏被显式报告", dWarns.warns.some((w) => w.includes("plugins.enabled")), dWarns.warns);
+
+/* 场景 W:写侧守卫 —— 键损坏时 setter 拒绝写、原字节一个不动。
+ * 读-改-写若拿兜底值当基准,会把"坏了"洗成"合法",而兜底方向恰是放宽:
+ * 引擎表兜底=全开、denylist 兜底=空名单(谁都能进)、启用名单兜底=全停(误伤)。 */
+SettingRepo.set("plugins.engines", '{"failclosed":{"pi":false');
+const wEngines = asOk(await call(IPC.PLUGINS_ENGINES_SET, { name: "failclosed", codex: false }));
+eq("W1:引擎表损坏时 enginesSet → ok:false", wEngines.ok, false);
+check("W1:…错误里点名设置键", (wEngines.error ?? "").includes("plugins.engines"), wEngines);
+eq("W1:…原字节一个没动", SettingRepo.get("plugins.engines"), '{"failclosed":{"pi":false');
+SettingRepo.set("plugins.engines", JSON.stringify({ failclosed: { claude: true, codex: true, pi: false } }));
+
+SettingRepo.set("plugins.mcpDisabled", "not json");
+const wMcp = pluginManager.setPluginMcpDisabled("failclosed__fserver", true);
+eq("W2:名单损坏时 setPluginMcpDisabled → ok:false", wMcp.ok, false);
+check("W2:…错误里点名设置键", (wMcp.error ?? "").includes("plugins.mcpDisabled"), wMcp);
+eq("W2:…原字节一个没动", SettingRepo.get("plugins.mcpDisabled"), "not json");
+SettingRepo.set("plugins.mcpDisabled", JSON.stringify(["failclosed__fserver"]));
+check("W2 正控:恢复后已关服务仍是关的(守卫没改语义)", !(await mcpNames()).includes("failclosed__fserver"), await mcpNames());
+SettingRepo.set("plugins.mcpDisabled", "[]");
+
+SettingRepo.set("plugins.enabled", '["failclosed"');
+const wEnable = asOk(await call(IPC.PLUGINS_SET_ENABLED, { name: "failclosed", enabled: false }));
+eq("W3:启用名单损坏时 setEnabled → ok:false", wEnable.ok, false);
+check("W3:…错误里点名设置键", (wEnable.error ?? "").includes("plugins.enabled"), wEnable);
+eq("W3:…原字节一个没动", SettingRepo.get("plugins.enabled"), '["failclosed"');
+SettingRepo.set("plugins.enabled", JSON.stringify(["failclosed"]));
+
+SettingRepo.set("plugins.projectOverrides", "[1,");
+const wProj = asOk(await call(IPC.PLUGINS_PROJECT_SET, { projectPath: projA, name: "failclosed", enabled: false }));
+eq("W4:覆盖表损坏时 projectSet → ok:false", wProj.ok, false);
+eq("W4:…原字节一个没动", SettingRepo.get("plugins.projectOverrides"), "[1,");
+SettingRepo.set("plugins.projectOverrides", "{}");
+
+SettingRepo.set("plugins.enabled", "{broken");
+const treeBeforeRefuse = treeOf(PLUGINS_ROOT);
+const wRemove = asOk(await call(IPC.PLUGINS_REMOVE, { name: "failclosed" }));
+eq("W5:启用名单损坏时 remove → ok:false", wRemove.ok, false);
+same("W5:…插件目录一个字没动(拒绝要干净,不留半截)", treeOf(PLUGINS_ROOT), treeBeforeRefuse);
+check("W5:…错误里点名设置键", (wRemove.error ?? "").includes("plugins.enabled"), wRemove);
+SettingRepo.set("plugins.enabled", JSON.stringify(["failclosed"]));
+
+/* 收尾:恢复合法状态并撤掉夹具,后续小节面对的还是干净设置表。 */
+SettingRepo.set("plugins.enabled", "[]");
+eq("收尾:fixture 卸载 ok", asOk(await call(IPC.PLUGINS_REMOVE, { name: "failclosed" })).ok, true);
+same("收尾:装/卸一轮后没有留下半截", stagingLeftovers(), []);
+
 /* ────────────────────────── 11. 坏输入怎么报 ────────────────────────── */
 
 console.log("\n[11] 输入 schema 挡下来的东西");

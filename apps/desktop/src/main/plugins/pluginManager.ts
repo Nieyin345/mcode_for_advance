@@ -119,6 +119,132 @@ function writeJsonSetting(key: string, value: unknown): void {
   SettingRepo.set(key, JSON.stringify(value));
 }
 
+/* 【MC-019】插件策略配置的**健康度** —— 把「真没配过」与「读不懂」分开。
+ * 与 publicMcpSession.classifyProjectLinks / hostHookGrantFile.classify*Archive 同判据:
+ * absent(键不存在,照旧当没配过)/ valid / corrupt(存在但读不懂 → 调用侧必须 fail-closed)。 */
+type PluginConfigHealth = "absent" | "valid" | "corrupt";
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** plugins.engines 的合法形状:{ [插件名]: { claude?/codex?/pi?: boolean } }。
+ *  叶子写坏的(非布尔)条目会让**整键**进损坏态 —— 布尔翻转方向恰是"禁用变开启"。 */
+function isPluginEnginesMapShape(parsed: unknown): boolean {
+  if (!isPlainObject(parsed)) return false;
+  for (const entry of Object.values(parsed)) {
+    if (!isPlainObject(entry)) return false;
+    for (const id of PLUGIN_ENGINE_IDS) {
+      if (id in entry && typeof entry[id] !== "boolean") return false;
+    }
+  }
+  return true;
+}
+
+/** plugins.projectOverrides 的合法形状 —— 同款严格到叶子(见上)。 */
+function isPluginProjectMapShape(parsed: unknown): boolean {
+  if (!isPlainObject(parsed)) return false;
+  for (const rows of Object.values(parsed)) {
+    if (!isPlainObject(rows)) return false;
+    for (const ov of Object.values(rows)) {
+      if (!isPlainObject(ov)) return false;
+      if ("enabled" in ov && typeof ov.enabled !== "boolean") return false;
+      if ("engines" in ov) {
+        const e = ov.engines;
+        if (!isPlainObject(e)) return false;
+        for (const id of PLUGIN_ENGINE_IDS) {
+          if (id in e && typeof e[id] !== "boolean") return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+/** plugins.enabled / plugins.mcpDisabled 的合法形状:字符串数组(名单)。
+ *  叶子里出现非字符串 → 损坏:旧读法会把该条**静默过滤掉**,禁用名单因此悄悄少人。 */
+function isPluginNameListShape(parsed: unknown): boolean {
+  return Array.isArray(parsed) && parsed.every((n) => typeof n === "string");
+}
+
+/**
+ * 【MC-019】读一个 JSON 设置键并给出健康度。`absent` = 键不存在(或空串,与
+ * {@link readJsonSetting} 的 `!raw` 同义)—— 照旧当"没配过";`corrupt` = 存在但
+ * 读不懂(JSON 语法坏 / 形状不对 / 读都读不动)—— 调用侧必须拒绝投递,不能再拿
+ * 兜底值继续算:这四个键的兜底值(空表 / 全开)恰好都是**放宽**方向,
+ * "坏 JSON → 禁用规则变默认开启"。
+ */
+function classifyJsonSetting(
+  key: string,
+  isValidShape: (parsed: unknown) => boolean,
+): { health: PluginConfigHealth; error?: string } {
+  let raw: string | null;
+  try {
+    raw = SettingRepo.get(key);
+  } catch (err) {
+    // 库故障 / 磁盘拒读:无法区分「没配过」,按损坏 fail-closed(不是回退兜底值)。
+    return { health: "corrupt", error: err instanceof Error ? err.message : String(err) };
+  }
+  if (!raw) return { health: "absent" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { health: "corrupt", error: err instanceof Error ? err.message : String(err) };
+  }
+  return isValidShape(parsed) ? { health: "valid" } : { health: "corrupt", error: "形状不符合预期" };
+}
+
+/** 损坏即**显式报告**(硬规矩 3)。本模块不 import `@main/lib/logger`(它依赖 electron)
+ *  —— 走与本文件既有 MC-030 同款的 console.warn 出口,点名设置键与原因,绝不静默。 */
+function reportCorruptPluginSetting(key: string, error: string | undefined): void {
+  console.warn(
+    `[plugins] 插件配置「${key}」损坏(读不懂:${error ?? "未知原因"})—— 本轮拒绝投递,绝不当"没配过"把已禁用的插件/引擎重新放开;请修复或清除该设置。`,
+  );
+}
+
+/** 损坏只报一次(直到该键恢复)—— enabledPluginsNow 挂在宿主每事件的分发路径上
+ *  (见 HookRunner),不节流会把同一条损坏刷成日志洪水。键恢复后清位,再损坏会再报。 */
+const corruptSettingReported = new Set<string>();
+
+/** 键损坏 → 显式报告并返回 true(调用方据此 fail-closed 拒绝投递)。 */
+function isCorruptPluginSetting(key: string, isValidShape: (parsed: unknown) => boolean): boolean {
+  const health = classifyJsonSetting(key, isValidShape);
+  if (health.health !== "corrupt") {
+    corruptSettingReported.delete(key);
+    return false;
+  }
+  if (!corruptSettingReported.has(key)) {
+    corruptSettingReported.add(key);
+    reportCorruptPluginSetting(key, health.error);
+  }
+  return true;
+}
+
+/** 四个投递策略键里,三个在 {@link enabledPluginsNow} 这道总闸上把关
+ *  (启用名单 / 项目覆盖 / 引擎开关);mcpDisabled 由 {@link getPluginMcpServers}
+ *  自己把(它是唯一直通 MCP 投递的那把闸,不管插件的启用与否)。 */
+const PLUGIN_DELIVERY_POLICY_KEYS: ReadonlyArray<readonly [string, (parsed: unknown) => boolean]> = [
+  [PLUGINS_ENABLED_SETTING_KEY, isPluginNameListShape],
+  [PLUGINS_PROJECT_SETTING_KEY, isPluginProjectMapShape],
+  [PLUGINS_ENGINES_SETTING_KEY, isPluginEnginesMapShape],
+];
+
+/** 【MC-019】写侧守卫:键损坏时**拒绝写入**(读侧同一判据)。修复前 setter 拿兜底值
+ *  当基准读-改-写,把「坏了」洗成「合法」,方向还是放宽 —— 引擎表兜底是空表(=全开),
+ *  用户动一个引擎就会把原禁用整表按全开基准写回;mcpDisabled 兜底是空名单,动一个
+ *  服务就会把别的插件已关的服务静默放开。返回 setter 既有的 {ok:false,error} 形状。 */
+function refuseIfCorrupt(
+  key: string,
+  isValidShape: (parsed: unknown) => boolean,
+): { ok: false; error: string } | null {
+  if (!isCorruptPluginSetting(key, isValidShape)) return null;
+  return {
+    ok: false,
+    error: `插件配置「${key}」损坏(读不懂)—— 拒绝写入,以免拿兜底值把损坏洗成合法并放宽投递;请先修复或清除该设置。`,
+  };
+}
+
 /** Enabled plugin names (empty when never configured). */
 export function readEnabledPlugins(): string[] {
   const names = readJsonSetting<string[]>(PLUGINS_ENABLED_SETTING_KEY, []);
@@ -179,6 +305,10 @@ export function setPluginEngines(
 ): { ok: boolean; error?: string } {
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
   if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
+  // 【MC-019】引擎表损坏时拒绝写 — 否则这次读-改-写会拿兜底空表当基准,
+  // 把「坏了」洗成「合法」,而空表语义恰是**全开**:原禁用条目全部消失。
+  const refuse = refuseIfCorrupt(PLUGINS_ENGINES_SETTING_KEY, isPluginEnginesMapShape);
+  if (refuse) return refuse;
   const map = readPluginEnginesMap();
   const next = pluginEngineSwitches(name, map);
   for (const id of PLUGIN_ENGINE_IDS) {
@@ -256,6 +386,10 @@ export function setPluginProjectOverride(
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
   if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
   if (!path.isAbsolute(projectPath)) return { ok: false, error: "项目路径必须是绝对路径" };
+  // 【MC-019】覆盖表损坏时拒绝写 — 不然这次写把坏表洗成只含本项目的"合法"表,
+  // 其他项目的覆盖(多半是"关")被静默丢弃,那些项目按全局状态重新投递。
+  const refuse = refuseIfCorrupt(PLUGINS_PROJECT_SETTING_KEY, isPluginProjectMapShape);
+  if (refuse) return refuse;
   const map = readPluginProjectMap();
   const key = sameProjectKey(projectPath, Object.keys(map)) ?? path.resolve(projectPath);
   const rows = { ...(map[key] ?? {}) };
@@ -1067,6 +1201,10 @@ export async function installFromGit(url: string, ref?: string): Promise<Install
 export function setPluginEnabled(name: string, enabledValue: boolean): { ok: boolean; error?: string } {
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
   if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
+  // 【MC-019】启用名单损坏时拒绝写 — 读-改-写会把坏值洗成"合法"名单,
+  // 而兜底空表 = 全部停用(用户会以为只动了一个插件)。
+  const refuse = refuseIfCorrupt(PLUGINS_ENABLED_SETTING_KEY, isPluginNameListShape);
+  if (refuse) return refuse;
   const names = readEnabledPlugins().filter((n) => n !== name);
   if (enabledValue) names.push(name);
   writeEnabledPlugins(names);
@@ -1080,6 +1218,14 @@ export function removePlugin(name: string): { ok: boolean; error?: string } {
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
   const base = path.join(PLUGINS_ROOT, name);
   if (!existsSync(base)) return { ok: false, error: `插件 ${name} 未安装` };
+  // 【MC-019】逐个键检查它**无条件回写**的那两个策略键:启用名单与 MCP 禁用名单。
+  // 损坏时回写会把坏值洗成兜底空表 —— 别的插件静默停用 / 别的已关服务静默放开。
+  // 放在任何文件改动之前:拒绝要干净,不留"目录删了、设置没动"的半截。
+  // (未安装的早退在上面:那条路径一个字节都不写,没有可洗的东西。)
+  const refuse =
+    refuseIfCorrupt(PLUGINS_ENABLED_SETTING_KEY, isPluginNameListShape) ??
+    refuseIfCorrupt(PLUGINS_MCP_DISABLED_SETTING_KEY, isPluginNameListShape);
+  if (refuse) return refuse;
   // 先整体改名挪开再删:Windows 上插件文件被占用(它的 MCP 服务还在跑)时,直接
   // `rmSync` 会删掉一半后抛出 —— 插件残缺却仍处于启用状态。改名要么整体成功、要么
   // 什么都没动,失败就如实告诉用户。
@@ -1635,6 +1781,18 @@ export async function getEnabledPlugins(projectPath?: string): Promise<EnabledPl
  * 而多写第二份扫描逻辑 = 迟早与这一份分家。**只有这一份扫描。**
  */
 export function enabledPluginsNow(projectPath?: string): EnabledPlugin[] {
+  // 【MC-019】先过**配置健康闸**:启用名单 / 项目覆盖 / 引擎开关三个策略键,
+  //   任一个"存在但读不懂"→ 本轮**拒绝投递全部插件**(fail-closed)。
+  //   从前坏 JSON 会静默落进各自的兜底值(空表 / 全开),而兜底方向恰好是放宽:
+  //   `p:{pi:false}` 截断成 `{broken` 后 `pluginEngineSwitches('p')` 得 `pi:true`,
+  //   被禁用的插件被"默认开启"重新投递。损坏不是"没配过",不能拿兜底值继续算。
+  //   损坏同时经 reportCorruptPluginSetting 显式报告(console.warn,含键名与原因)。
+  //   刻意不短路(逐个检查全部键):多键同时损坏时每个键都要有机会被报出来。
+  let corrupt = false;
+  for (const [key, shape] of PLUGIN_DELIVERY_POLICY_KEYS) {
+    if (isCorruptPluginSetting(key, shape)) corrupt = true;
+  }
+  if (corrupt) return [];
   const enabledNames = new Set(readEnabledPlugins());
   // 项目级覆盖(会话 cwd 落在某个项目里时):项目里开的补进来、关的拿掉。
   const overrides = projectOverridesFor(projectPath);
@@ -1843,6 +2001,12 @@ export async function getPluginMcpServers(
   precomputed?: EnabledPlugin[],
   providerId?: string,
 ): Promise<Array<[string, McpServerConfig]>> {
+  // 【MC-019】禁用名单是 MCP 投递的唯一直通闸(getPluginMcpServers 绕不开它)。
+  //   名单"存在但读不懂"→ 拒绝交付**任何**插件 MCP 服务,而不是当空名单继续 ——
+  //   从前坏 JSON 落进空 Set,原禁用服务 `p__s` 会被重新交付(同一条 fail-open 链)。
+  if (isCorruptPluginSetting(PLUGINS_MCP_DISABLED_SETTING_KEY, isPluginNameListShape)) {
+    return [];
+  }
   const disabled = readMcpDisabled();
   const out: Array<[string, McpServerConfig]> = [];
   for (const p of precomputed ?? (await getEnabledPlugins())) {
@@ -1864,6 +2028,10 @@ export function setPluginMcpDisabled(
   serverName: string,
   disabledValue: boolean,
 ): { ok: boolean; error?: string; previousDisabled?: boolean } {
+  // 【MC-019】禁用名单损坏时拒绝写 — 读-改-写会拿兜底空名单当基准,
+  // 别的插件已关的服务被这次「关一个服务」的操作静默放开。
+  const refuse = refuseIfCorrupt(PLUGINS_MCP_DISABLED_SETTING_KEY, isPluginNameListShape);
+  if (refuse) return refuse;
   const current = readMcpDisabled();
   const previousDisabled = current.has(serverName);
   const next = new Set([...current].filter((n) => n !== serverName));
