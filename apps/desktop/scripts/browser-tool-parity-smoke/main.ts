@@ -150,7 +150,9 @@ function scanArgsReads(src: string): Map<string, Set<string>> {
 
 const claudeSrc = readFileSync(join(SRC, "claude-sdk", "ClaudeAgentSdkProvider.ts"), "utf8");
 const codexSrc = readFileSync(join(SRC, "codex-sdk", "CodexAgentSdkProvider.ts"), "utf8");
-const piSrc = readFileSync(join(SRC, "pi-sdk", "mcodeExtension.ts"), "utf8");
+// ⚠️ `registerBrowserTools` 已拆到 `mcodeExtensionBrowser.ts` —— 扫**两文件拼接**。
+const piSrc = readFileSync(join(SRC, "pi-sdk", "mcodeExtension.ts"), "utf8")
+  + "\n" + readFileSync(join(SRC, "pi-sdk", "mcodeExtensionBrowser.ts"), "utf8");
 
 const claude = scanTools(claudeSrc, "inputSchema:");
 const codex = scanTools(codexSrc, "inputSchema:");
@@ -241,7 +243,8 @@ console.log("\n浏览器工具的**广告**也得按同一个开关来");
   // 都必须被 `browserToolsEnabled`(或等价的开关)守着。
   const claudeSrc = readFileSync(join(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
   const codexSrc = readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
-  const piSrc = readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8");
+  const piSrc = readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8")
+    + "\n" + readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtensionBrowser.ts"), "utf8");
 
   // 每处调用点,取它所在那一行的上下文,必须能看到开关守卫。
   const usageCallers = (src: string): string[] =>
