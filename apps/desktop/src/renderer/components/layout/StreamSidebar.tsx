@@ -64,7 +64,7 @@ import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { WorktreeMergeBackDialog, WorktreeRemoveDialog } from "@renderer/components/chat/WorktreeMergeBack.js";
 import { ProjectManageMenuPopup, type ManageMenuState } from "./ProjectManageMenu.js";
-import { LibrarySections } from "@renderer/components/library/LibrarySection.js";
+import { LibrarySections } from "@renderer/components/library/LibrarySectionParts.js";
 import { SidebarQuickActions } from "./SidebarQuickActions.js";
 import { ArchivedRow, HoverIconButton, RenameDialog, SessionContextMenu } from "./SidebarShared.js";
 import { BrandLogo } from "./BrandLogo.js";

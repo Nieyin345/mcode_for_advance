@@ -16,7 +16,7 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { cn } from "@renderer/lib/cn.js";
-import { LibrarySections, LibraryTrashRow } from "@renderer/components/library/LibrarySection.js";
+import { LibrarySections, LibraryTrashRow } from "@renderer/components/library/LibrarySectionParts.js";
 import {
   IconFolder,
   IconGitFork,
