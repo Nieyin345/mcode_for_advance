@@ -48,7 +48,9 @@ try {
   // 剪贴板粘贴目录**只有一个出口**(`pasteTempDir()`):写(通过 clipboard:saveFile)与
   // 读放行(isPasteTempPath 守卫)必须指向同一个目录。从前两处各写一份字面量,改名漏一处
   // 就"写进 A、放行的却是 B",粘贴的图片在编辑器里打不开。这条盯住它别再分家。
-  const filesSrc = readFileSync(join(process.cwd(), "src/main/ipc/files.ts"), "utf8");
+  // ⚠️ `pasteTempDir` / `isPasteTempPath` 已拆到 `filesTextCodec.ts` —— 扫**两文件拼接**。
+  const filesSrc = readFileSync(join(process.cwd(), "src/main/ipc/files.ts"), "utf8")
+    + "\n" + readFileSync(join(process.cwd(), "src/main/ipc/filesTextCodec.ts"), "utf8");
   check("粘贴目录名只有一份字面量(读/写共用 pasteTempDir)", (filesSrc.match(/"mcode-pastes"/g) ?? []).length, 1);
   // 「`where <name>` 取第一个**真实存在**的命中」这条规则从前在 `binaryResolve.which()`
   // (只看第一行)与 `bashEnv.whereFirst()`(逐行)各写一份、方向还相反 —— LSP 装没装、
