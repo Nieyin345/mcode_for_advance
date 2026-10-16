@@ -806,7 +806,18 @@ export function listPlugins(): PluginState[] {
   if (!existsSync(PLUGINS_ROOT)) return [];
   const enginesMap = readPluginEnginesMap();
   const out: PluginState[] = [];
-  for (const entry of readdirSync(PLUGINS_ROOT)) {
+  let entries: string[];
+  try {
+    entries = readdirSync(PLUGINS_ROOT);
+  } catch (err) {
+    // 【MC-030】从前这里**完全没守卫**:`readdirSync` 抛 EACCES 会让整个 `plugins.list`
+    //   炸掉(一个坏根 → 面板/能力目录全空)。更坏的是它**看起来像"一个插件都没装"**。
+    //   现在如实记错误再返回空列表 —— 至少可诊断,不是静默的空。
+    //   (完整修复要给 `plugins.list` 加 problems 字段并贯通 contracts/preload/面板,另切。)
+    console.warn(`[plugins] 读不了插件根目录(${PLUGINS_ROOT}),本次按空列表返回: ${(err as Error).message}`);
+    return [];
+  }
+  for (const entry of entries) {
     // Skip housekeeping dirs (marketplaces / staging / dotfiles).
     if (entry.startsWith(".") || entry === "marketplaces") continue;
     if (!PLUGIN_NAME_RE.test(entry)) continue;
@@ -1669,8 +1680,12 @@ export function enabledPluginsNow(projectPath?: string): EnabledPlugin[] {
           ),
         ),
       });
-    } catch {
-      /* invalid manifest on disk — skip this plugin for this turn */
+    } catch (err) {
+      // 【MC-030】从前这里是空 `catch {}` —— 一个**已启用**插件的 manifest 坏了,它会从
+      //   本轮的启用集里**静默消失**(模型那侧插件工具就没了,而没人知道为什么)。至少留痕:
+      //   坏东西显式报出来(硬规矩 3)。真正"从 UI 可读"的诊断要给 `plugins.list` 加 problems
+      //   字段并贯通 contracts/preload/面板(另切,见 MC-030 的系统性修复)。
+      console.warn(`[plugins] 已启用插件「${name}」加载失败,本轮跳过: ${(err as Error).message}`);
     }
   }
   return out;

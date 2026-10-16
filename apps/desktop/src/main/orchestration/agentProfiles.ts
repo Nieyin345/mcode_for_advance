@@ -66,8 +66,13 @@ export function readAgentProfiles(): AgentProfileCatalog {
   let names: string[];
   try {
     names = readdirSync(dir);
-  } catch {
-    // 目录不存在是**正常情况**(一份档案都还没存过),不是问题。
+  } catch (err) {
+    // 【MC-030】**只有真·ENOENT 才是「一份档案都还没存过」的正常空**;ACL 拒绝 / 硬盘错误这类
+    //   **读不了**必须如实记进 `problems`(字段本来就有,界面 `AgentProfilesView` 在消费),
+    //   否则已存的档案会因暂时读不了而静默消失。
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      out.problems.push({ file: dir, error: `读不了目录:${(err as Error).message}` });
+    }
     return out;
   }
   for (const name of names.filter((n) => n.toLowerCase().endsWith(FILE_SUFFIX)).sort()) {

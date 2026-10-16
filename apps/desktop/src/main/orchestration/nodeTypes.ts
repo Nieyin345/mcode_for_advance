@@ -1081,8 +1081,13 @@ function loadDir(dir: string, source: NodeTypeSource, from: string): NodeTypeCat
   let names: string[];
   try {
     names = readdirSync(dir);
-  } catch {
-    // 目录不存在是**正常情况**(没人写过自定义节点),不是问题。
+  } catch (err) {
+    // 【MC-030】**只有真·ENOENT 才是「没人写过自定义节点」的正常空**;ACL 拒绝 / 硬盘错误
+    //   这类**读不了**必须如实记进 `problems` —— 否则目录里明明有节点类型,却因为暂时读不了
+    //   而静默消失(模型/工作流下一轮就看不到它们了)。`problems` 字段本来就有,界面在消费。
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      out.problems.push({ file: dir, error: `读不了目录:${(err as Error).message}` });
+    }
     return out;
   }
   for (const name of names.filter((n) => n.toLowerCase().endsWith(".json")).sort()) {

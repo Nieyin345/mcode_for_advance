@@ -53,7 +53,7 @@ import type { RpcMap } from "@contracts/ipc";
  *
  * Run: scripts/orchestration-ipc-smoke/run.sh
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { IpcMain } from "electron";
@@ -1662,6 +1662,49 @@ console.log("\n代理档案");
     thrown = (e as Error).message;
   }
   check("删档案:id 形状不对 → 明确拒绝", thrown.includes("id"), thrown);
+}
+
+/* ──────────────── 17b. 【MC-030】目录**读不了** ≠ 资源不存在 ────────────────
+ *
+ * `nodeTypes.loadDir` / `agentProfiles.readAgentProfiles` 从前对 `readdirSync` 的**任何**
+ * 异常都返回空 `{...,problems:[]}` —— 于是 ACL/硬盘错误(读不了)与 ENOENT(真没有)被合并成
+ * "资源没配置",目录里明明有档案却因为暂时读不了而**静默消失**。修法:只有真·ENOENT 才是
+ * 正常空,其它错误进 `problems`(字段本来就有,界面在消费)。这里用**真权限拒绝**造 EACCES。
+ *
+ * ⚠️ Windows 上手工恢复 ACL 不可靠(实测 `icacls /restore` 清不掉 `/deny` 留下的 ACE)。
+ * 所以本段**只在隔离的一次调用上造 EACCES**,并在结束时**尽力撤销**;即便撤销失败,被拒的
+ * 也只是本段自建的那个临时 agents 目录,不污染其它用例(它们在别的路径上)。 */
+{
+  const { execFileSync } = await import("node:child_process");
+  const agentsDir = join(DATA, "workflows", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  const user = process.env.USERNAME ?? process.env.USER ?? "";
+  const isWin = process.platform === "win32";
+  let madeDeny = false;
+  try {
+    if (isWin) { execFileSync("icacls", [agentsDir, "/deny", `${user}:(R)`], { stdio: "ignore" }); madeDeny = true; }
+    else { execFileSync("chmod", ["000", agentsDir], { stdio: "ignore" }); madeDeny = true; }
+  } catch { /* 造不出来就走跳过分支 */ }
+  // 自证真读不了(否则断言会空过)。
+  let reallyDenied = false;
+  if (madeDeny) { try { readdirSync(agentsDir); } catch { reallyDenied = true; } }
+  if (reallyDenied) {
+    const denied = obj(await callAsync(IPC.WORKFLOW_AGENT_PROFILES));
+    check(
+      "★ MC-030:档案目录读不了(EACCES)→ 报进 problems(不是静默空)",
+      JSON.stringify(denied.problems).includes(agentsDir) || JSON.stringify(denied.problems).includes("读不了"),
+      denied.problems,
+    );
+    // 对照(ENOENT = 正常空、无 problem)已由本段开头那条「干干净净读完 → problems 是空的」覆盖:
+    // 那条走的是"目录存在但没有坏文件"的正常路径。二者合起来证明判据**只对非 ENOENT 报**。
+    // 尽力撤销(失败也不影响其它用例 —— 被拒的是本段自建的目录)。
+    try {
+      if (isWin) execFileSync("icacls", [agentsDir, "/remove:d", user], { stdio: "ignore" });
+      else execFileSync("chmod", ["755", agentsDir], { stdio: "ignore" });
+    } catch { /* 尽力 */ }
+  } else {
+    console.log("  (跳过:本环境造不出 EACCES 夹具)");
+  }
 }
 
 /* ──────────────── 18. 同一个 "建节点" 的动作:界面与 AI 是不是同一条路 ──────────────── */
