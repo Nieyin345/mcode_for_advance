@@ -132,13 +132,6 @@ export const CONTEXT_USAGE_PATH_B_TIMEOUT_MS = 3_000;
  *  lag after the last background-agent edge. */
 export const SETTLE_GRACE_MS = 1_500;
 
-/** Trailing punctuation that never legitimately ends a COMPLETE final reply:
- *  (full/half-width) colon, comma, enumeration comma, semicolon. When the
- *  turn's LAST assistant message is text-only and ends on one of these, the
- *  model announced a continuation that never arrived — see the
- *  "unfinished-text" branch of maybeEmitTurnIncomplete. */
-export const UNFINISHED_TRAILING_RE = /[：:，,、；;]$/;
-
 export function safeJsonParse<T>(s: string): T | undefined {
   try {
     return JSON.parse(s) as T;

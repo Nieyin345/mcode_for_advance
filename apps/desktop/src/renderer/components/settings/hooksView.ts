@@ -109,9 +109,7 @@ export const HOOK_EVENT_UNSUPPORTED_BY: Partial<Record<HookEvent, readonly HookE
   "todo.update": ["pi"],
   // Pi 不报子代理名册。宿主那次"重放"也救不了:名册本身就来自这个事件。
   "subagent.update": ["pi"],
-  // "一轮没跑完"是 claude 那套截断检测的产物(工具没回结果 / 末段文本像被切断)。
-  // Codex 与 Pi 各自的 adapter 没有这一步。
-  "turn.incomplete": ["pi", "codex"],
+  // 【MC-009】三家的 adapter 现在消费同一份截断判据,没有差别,不再登记。
   // 上下文压缩:codex 的 adapter 明确把 `context_compaction` 丢掉。
   "compact.result": ["codex"],
   // 上游重试提示:见上面那条 ⚠️(只有 claude 走自定义模型桥接那条路)。

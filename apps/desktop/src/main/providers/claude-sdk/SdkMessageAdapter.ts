@@ -56,8 +56,9 @@ import {
   SentinelScanner,
   CONTEXT_USAGE_PATH_B_TIMEOUT_MS,
   SETTLE_GRACE_MS,
-  UNFINISHED_TRAILING_RE,
 } from "./SdkMessageHelpers.js";
+
+import { detectTurnIncomplete } from "../turnIncomplete.js";
 
 import {
   normalizeClaudeTokenUsage,
@@ -594,47 +595,33 @@ export class SdkMessageAdapter {
    *  subtype=success, no final text, no error). Without this check the user
    *  just sees the work stop with a "turn complete" toast.
    *
-   *  Conditions are deliberately narrow to avoid false positives:
-   *  - last result subtype must be "success" (errors already surface);
-   *  - the turn must not be user-interrupted (dangling tools are expected
-   *    there);
-   *  - Task launches are excluded — a backgrounded subagent legitimately
-   *    outlives the parent stream, and its Task tool_use may never get an
-   *    in-stream tool_result. */
+   *  判据本体自 2026-10-17 起抽到 ../turnIncomplete.js —— Pi / Codex 两个
+   *  适配器消费同一份（【MC-009】同一网关症状此前只堵了 Claude 一家）。
+   *  这里只负责把本适配器的状态喂成中立事实、记日志、发事件。 */
   private maybeEmitTurnIncomplete(): void {
-    if (this.state.lastResultSubtype !== "success") return;
-    if (this.abortSignal?.aborted) return;
-
-    const pending = [...this.state.emittedToolUse]
-      .filter((id) => !this.state.resultedToolUseIds.has(id))
-      .map((id) => ({ toolCallId: id, toolName: this.state.toolUseNames.get(id) ?? "" }))
-      .filter((c) => c.toolName !== "Task");
-
-    let kind: TurnIncompleteEvent["kind"] | null = null;
-    if (pending.length > 0) {
-      kind = "dangling-tools";
-    } else if (
-      !this.state.textEmitted &&
-      this.state.emittedToolUse.size > 0 &&
-      !this.state.interactionToolSeen
-    ) {
-      // Tools ran but the model never narrated anything — also a truncated
-      // turn (a healthy turn always ends with the final text reply). Only
-      // checked when tools ran: a completely empty turn (no content at all)
-      // usually means the SDK is about to throw / has already surfaced an
-      // error, and the error card covers it. Turns driven by interaction
-      // tools (plan mode / AskUserQuestion) legitimately end text-less.
-      kind = "empty-response";
-    } else if (this.finalNarrationLooksCutOff()) {
-      kind = "unfinished-text";
-    }
-    if (!kind) return;
+    const facts = {
+      endedSuccessfully: this.state.lastResultSubtype === "success",
+      aborted: this.abortSignal?.aborted === true,
+      danglingToolCalls: [...this.state.emittedToolUse]
+        .filter((id) => !this.state.resultedToolUseIds.has(id))
+        .map((id) => ({ toolCallId: id, toolName: this.state.toolUseNames.get(id) ?? "" }))
+        // Task 启动的排除留在本侧：背景子代理合法地比父流活得久，它的
+        // Task tool_use 可以永远收不到 in-stream tool_result。
+        .filter((c) => c.toolName !== "Task"),
+      textEmitted: this.state.textEmitted,
+      toolUseCount: this.state.emittedToolUse.size,
+      interactionToolSeen: this.state.interactionToolSeen,
+      lastAssistantText: this.state.lastAssistantText,
+      lastAssistantHadToolUse: this.state.lastAssistantHadToolUse,
+    };
+    const verdict = detectTurnIncomplete(facts);
+    if (!verdict) return;
 
     this.ctx.log.warn(
-      `turn incomplete (gateway likely returned an empty final response): kind=${kind} pendingToolCalls=[${pending
+      `turn incomplete (gateway likely returned an empty final response): kind=${verdict.kind} pendingToolCalls=[${verdict.pendingToolCalls
         .map((c) => c.toolName)
         .join(", ")}]${
-        kind === "unfinished-text"
+        verdict.kind === "unfinished-text"
           ? ` finalTextTail=${JSON.stringify(this.state.lastAssistantText.slice(-80))}`
           : ""
       }`,
@@ -642,33 +629,9 @@ export class SdkMessageAdapter {
     this.ctx.emit({
       type: "turn.incomplete",
       sessionId: this.sessionId,
-      kind,
-      pendingToolCalls: kind === "dangling-tools" ? pending : [],
+      kind: verdict.kind,
+      pendingToolCalls: verdict.pendingToolCalls,
     } satisfies TurnIncompleteEvent);
-  }
-
-  /** Third truncation shape (observed 2026-09-02 on the deepseek
-   *  OpenAI-protocol bridge): the model narrated its next step — "先读当前
-   *  完整 `onSplitConfirm`:" — and the announced tool call never arrived;
-   *  the bridge flattens every finish_reason to end_turn, so with no
-   *  tool_use block to keep the loop alive the CLI closed the turn as
-   *  success right after the text. A healthy final reply never ends with
-   *  continuation punctuation (colon / comma / …) or an unclosed ``` fence.
-   *
-   *  Guards: the turn must have RUN tools (this gateway failure happens
-   *  mid-work; pure-chat turns stay out of scope because a lone question to
-   *  the user can legitimately end with a colon), and the final message must
-   *  be text-only — a trailing tool dispatch (e.g. a backgrounded Task)
-   *  makes punctuation on earlier narration inconclusive. */
-  private finalNarrationLooksCutOff(): boolean {
-    if (this.state.emittedToolUse.size === 0) return false;
-    if (!this.state.textEmitted) return false;
-    if (this.state.lastAssistantHadToolUse) return false;
-    const text = this.state.lastAssistantText.trimEnd();
-    if (text.length === 0) return false;
-    if (UNFINISHED_TRAILING_RE.test(text)) return true;
-    // Odd ``` count = a code fence opened but never closed.
-    return (text.match(/```/g) ?? []).length % 2 === 1;
   }
 
   /* ──────────────── per-message-type handlers ──────────────── */

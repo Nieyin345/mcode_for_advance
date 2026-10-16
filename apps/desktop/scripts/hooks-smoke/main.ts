@@ -606,7 +606,9 @@ for (const event of HOOK_EVENTS) {
 eq("待办清单:Pi 不发", hookEventUnsupportedBy("todo.update").join(","), "pi");
 eq("子代理状态:Pi 不发", hookEventUnsupportedBy("subagent.update").join(","), "pi");
 eq("上下文压缩:Codex 不发", hookEventUnsupportedBy("compact.result").join(","), "codex");
-eq("一轮没跑完:Pi、Codex 都不发", [...hookEventUnsupportedBy("turn.incomplete")].sort().join(","), "codex,pi");
+// 【MC-009】截断检测抽成引擎无关的共享判据后,Pi / Codex 也发这个事件了
+// (从前只有 Claude 一家,同一网关症状在另两家静默报完成)。反向断言:
+eq("一轮没跑完:三个引擎都发", hookEventUnsupportedBy("turn.incomplete").length, 0);
 eq("上游重试:Pi、Codex 都不发", [...hookEventUnsupportedBy("upstream.issue")].sort().join(","), "codex,pi");
 // 反向的一条:别把"没查出问题"写成"全都不支持"。
 eq("工具开始:三个引擎都发", hookEventUnsupportedBy("tool.use").length, 0);

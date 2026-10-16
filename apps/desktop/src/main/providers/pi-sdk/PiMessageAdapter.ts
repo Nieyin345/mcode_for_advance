@@ -26,10 +26,11 @@
  * surfaced as a visible `error` block so the failure is never silent.
  */
 import { randomUUID } from "node:crypto";
-import type { RuntimeEvent, TurnDoneReason, ContextUsageEvent } from "@contracts/runtime";
+import type { RuntimeEvent, TurnDoneReason, ContextUsageEvent, TurnIncompleteEvent } from "@contracts/runtime";
 import type { ProviderContext } from "@contracts/provider";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { FileSnapshot } from "@main/lib/fileSnapshot.js";
+import { detectTurnIncomplete } from "../turnIncomplete.js";
 
 /**
  * Hook the provider installs so the adapter can ask for a token-usage snapshot
@@ -104,9 +105,22 @@ export class PiMessageAdapter {
   private deferTurnDone = false;
   /** 终态 agent_end 时最后一帧 assistant 消息的文本（结构化输出校验用）。 */
   private finalTurnText = "";
+  /** 【MC-009】末条 assistant 消息里带 toolCall 块（回合截断判据的守卫：
+   *  末尾挂着工具派发时，前面叙述的标点不可推断）。 */
+  private finalTurnHadToolUse = false;
   /** The most recent terminal assistant stop reason, including a corrective
    *  structured-output prompt when one was needed. */
   private finalTurnReason: TurnDoneReason = "end_turn";
+  /** 【MC-009】回合截断检测的中立事实（判据本体在 ../../providers/turnIncomplete.ts，
+   *  三个引擎共用一份）。从前 Pi 侧没有这个检测：同一网关症状（空补全 /
+   *  finish_reason 被抹平）在 Claude 下弹琥珀警告卡，在这里静默报完成。 */
+  private readonly toolUseIds = new Set<string>();
+  private readonly resultedToolUseIds = new Set<string>();
+  private readonly toolUseNames = new Map<string, string>();
+  private textEmitted = false;
+  private interactionToolSeen = false;
+  /** turn.done 只查一次截断（同一轮可能多路径收尾，守卫与 turnDoneEmitted 同理）。 */
+  private turnIncompleteChecked = false;
 
   constructor(
     private readonly ctx: ProviderContext,
@@ -220,6 +234,7 @@ export class PiMessageAdapter {
         // toolcall_start). Without this the store's open-turn heuristic would
         // append every tool to the turn's first message, flattening the
         // interleaved "text → tool → text → tool" timeline into one pile.
+        // (【MC-009】截断判据的记账不在这里 —— emit 漏斗统一记，见 emit。)
         this.emit({
           type: "tool.use",
           sessionId: this.sessionId,
@@ -367,7 +382,9 @@ export class PiMessageAdapter {
     // 结构化输出 defer 模式：记下最终文本后直接返回 —— token 快照与 turn.done
     // 由提供方在轮末校验（可能还有一轮纠错 prompt）后经 flushDeferredTurnDone
     // 发出，保证 turn.done 恰好一次且落在校验之后。
-    this.finalTurnText = this.extractFinalAssistantText(event.messages);
+    const finalShape = this.extractFinalAssistantShape(event.messages);
+    this.finalTurnText = finalShape.text;
+    this.finalTurnHadToolUse = finalShape.hadToolUse;
     this.finalTurnReason = this.pickDoneReason(event.messages);
     if (this.deferTurnDone) return;
     if (this.turnDoneEmitted) return;
@@ -381,23 +398,27 @@ export class PiMessageAdapter {
     });
   }
 
-  /** 从 agent_end 的 `messages` 里取最后一帧 assistant 消息的文本部分（结构
-   *  化输出校验用）。结构化读取（role/content），与 terminalErrorFromMessages
-   *  同一套防 union 漂移的窄访问。 */
-  private extractFinalAssistantText(messages: readonly unknown[] | undefined): string {
-    if (!messages || messages.length === 0) return "";
+  /** 从 agent_end 的 `messages` 里取最后一帧 assistant 消息的文本与
+   *  「是否带工具派发」。文本供结构化输出校验；hadToolUse 供【MC-009】
+   *  截断判据的守卫（末条挂着工具派发时，前面叙述的标点不可推断）。
+   *  结构化读取（role/content），与 terminalErrorFromMessages 同一套防
+   *  union 漂移的窄访问。 */
+  private extractFinalAssistantShape(messages: readonly unknown[] | undefined): { text: string; hadToolUse: boolean } {
+    if (!messages || messages.length === 0) return { text: "", hadToolUse: false };
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i] as { role?: string; content?: unknown };
       if (m.role !== "assistant") continue;
       const parts = Array.isArray(m.content) ? m.content : [];
       let text = "";
+      let hadToolUse = false;
       for (const part of parts) {
         const p = part as { type?: string; text?: string };
         if (p?.type === "text" && typeof p.text === "string") text += p.text;
+        else if (p?.type === "toolCall") hadToolUse = true;
       }
-      return text;
+      return { text, hadToolUse };
     }
-    return "";
+    return { text: "", hadToolUse: false };
   }
 
   /** Extract the terminal model error (if any) from an agent_end's `messages`.
@@ -652,6 +673,64 @@ export class PiMessageAdapter {
   }
 
   private emit(e: RuntimeEvent): void {
+    // 【MC-009】截断判据的中立事实在此漏斗记账 —— 与 Codex 侧同姿势（一处
+    // 记账天然覆盖全部路径）。Pi 无背景子代理工具，所以没有 Claude/Codex 的
+    // 「Task/collab 可合法悬空」排除项。
+    if (e.type === "tool.use") {
+      this.toolUseIds.add(e.toolCallId);
+      this.toolUseNames.set(e.toolCallId, e.toolName);
+      const n = e.toolName;
+      if (n === "AskUserQuestion" || n === "EnterPlanMode" || n === "ExitPlanMode") {
+        this.interactionToolSeen = true;
+      }
+    } else if (e.type === "tool.result") {
+      this.resultedToolUseIds.add(e.toolCallId);
+    } else if (e.type === "text.delta") {
+      this.textEmitted = true;
+    }
+    // turn.done 发出**之前**先跑引擎无关的截断判据（判据本体在
+    // ../../providers/turnIncomplete.ts）—— 与 Claude 侧同一时序：renderer
+    // 的琥珀警告卡能盖过"回合完成"的 toast。只查成功收尾的轮（reason
+    // end_turn）：中断 / 错误已各自浮出，悬空工具在那些路径是预期行为。
+    // 用 emit 漏斗而不是三个收尾路径（handleAgentEnd / flushDeferredTurnDone
+    // / finalizeTurn）各接一遍 —— 漏斗天然覆盖全部，漏一条就漏一个引擎的检测。
+    if (e.type === "turn.done" && e.reason === "end_turn" && !this.turnIncompleteChecked) {
+      this.turnIncompleteChecked = true;
+      this.maybeEmitTurnIncomplete();
+    }
     this.ctx.emit(e);
+  }
+
+  /** 【MC-009】同一网关症状（空补全 / finish_reason 被抹平）的 Pi 侧检测。
+   *  喂中立事实给共享判据、记日志、发事件 —— 与 SdkMessageAdapter 同姿势。 */
+  private maybeEmitTurnIncomplete(): void {
+    const dangling = [...this.toolUseIds]
+      .filter((id) => !this.resultedToolUseIds.has(id))
+      .map((id) => ({ toolCallId: id, toolName: this.toolUseNames.get(id) ?? "" }));
+    const verdict = detectTurnIncomplete({
+      endedSuccessfully: true, // emit 漏斗只在 reason==="end_turn" 时进来
+      aborted: false,
+      danglingToolCalls: dangling,
+      textEmitted: this.textEmitted,
+      toolUseCount: this.toolUseIds.size,
+      interactionToolSeen: this.interactionToolSeen,
+      lastAssistantText: this.finalTurnText,
+      lastAssistantHadToolUse: this.finalTurnHadToolUse,
+    });
+    if (!verdict) return;
+
+    this.ctx.log.warn(
+      `turn incomplete (gateway likely returned an empty final response): kind=${verdict.kind} pendingToolCalls=[${verdict.pendingToolCalls
+        .map((c) => c.toolName)
+        .join(", ")}]${
+        verdict.kind === "unfinished-text" ? ` finalTextTail=${JSON.stringify(this.finalTurnText.slice(-80))}` : ""
+      }`,
+    );
+    this.ctx.emit({
+      type: "turn.incomplete",
+      sessionId: this.sessionId,
+      kind: verdict.kind,
+      pendingToolCalls: verdict.pendingToolCalls,
+    } satisfies TurnIncompleteEvent);
   }
 }

@@ -57,6 +57,7 @@ import type {
   RuntimeEvent,
   TurnDoneReason,
   ContextUsageEvent,
+  TurnIncompleteEvent,
   SubagentSnapshot,
   TranscriptBlock,
   SubagentUpdateEvent,
@@ -65,6 +66,7 @@ import type { ProviderContext } from "@contracts/provider";
 import type { NotificationFrame } from "./CodexAppServerClient.js";
 import type { CodexFileSnapshot } from "./CodexFileSnapshot.js";
 import { buildCodexTokenSnapshot, type CodexUsage } from "./codexTokenUsage.js";
+import { detectTurnIncomplete } from "../turnIncomplete.js";
 
 export class CodexMessageAdapter {
   /** Set when the user interrupts; late notifications are dropped. */
@@ -150,6 +152,27 @@ export class CodexMessageAdapter {
   private liveTranscriptThreads = new Set<string>();
   /** Dedupes processed subagent item edges (id × started/completed). */
   private transcriptEdgesSeen = new Set<string>();
+  /** 【MC-009】回合截断检测的中立事实（判据本体在 ../turnIncomplete.ts，
+   *  三个引擎共用一份）。从前 Codex 侧没有这个检测：同一网关症状（空补全 /
+   *  finish_reason 被抹平）在 Claude 下弹琥珀警告卡，在这里静默报完成。
+   *  工具/文本事实经 this.emit 漏斗记账 —— 主线程的全部 tool.use 都经
+   *  emitToolUse、全部 tool.result 都经 this.emit，子代理线程的 item 走
+   *  handleSubagentThreadItem 不经过这两个事件类型，天然隔离。 */
+  private readonly toolUseIds = new Set<string>();
+  private readonly resultedToolUseIds = new Set<string>();
+  private readonly toolUseNames = new Map<string, string>();
+  private textEmitted = false;
+  private interactionToolSeen = false;
+  /** 最后一个内容事件是工具派发（Claude 的 lastAssistantHadToolUse 对应物：
+   *  Codex 的工具是独立 item，不带在 agentMessage 里）。 */
+  private lastContentWasToolUse = false;
+  /** 【MC-009】collab 工具族（spawnAgent / wait / …）的 tool-use id ——
+   *  对应 Claude 侧按名字排除的 Task：背景子代理合法地比父流活得久，
+   *  它的 tool_result 可以永远不来。按登记排除而不是按名字（collab 工具名
+   *  是开放集合，见 CodexMessageHelpers 的 "| …"）。 */
+  private readonly collabToolUseIds = new Set<string>();
+  /** turn.done 只查一次截断（同一轮可能多路径收尾，守卫与 turnDoneEmitted 同理）。 */
+  private turnIncompleteChecked = false;
 
   constructor(
     private readonly ctx: ProviderContext,
@@ -744,6 +767,10 @@ export class CodexMessageAdapter {
     // Task-tool analogue) — without it spawning a subagent is invisible in
     // the conversation.
     if (!completed) {
+      // 【MC-009】collab 工具族登记：背景子代理可合法比父流活得久，它的
+      // tool_result 可能永远不来 —— 截断判据按登记排除（对应 Claude 侧按
+      // 名字排除 Task）。
+      this.collabToolUseIds.add(item.id);
       this.emitToolUse(item.id, toolName, input);
     } else {
       this.emit({
@@ -1056,7 +1083,71 @@ export class CodexMessageAdapter {
   }
 
   private emit(e: RuntimeEvent): void {
+    // 【MC-009】截断判据的中立事实在此漏斗记账 —— 主线程全部 tool.use /
+    // tool.result / text.delta 都经这里，子代理线程的事件走各自的 transcript
+    // 路径不与此交叉（天然隔离）。account BEFORE the turn.done check so the
+    // same call that ends the turn is also the last accounted event.
+    if (e.type === "tool.use") {
+      this.toolUseIds.add(e.toolCallId);
+      this.toolUseNames.set(e.toolCallId, e.toolName);
+      this.lastContentWasToolUse = true;
+      const n = e.toolName;
+      if (n === "ask_user_question" || n === "enter_plan_mode" || n === "exit_plan_mode") {
+        this.interactionToolSeen = true;
+      }
+    } else if (e.type === "tool.result") {
+      this.resultedToolUseIds.add(e.toolCallId);
+    } else if (e.type === "text.delta") {
+      this.textEmitted = true;
+      this.lastContentWasToolUse = false;
+    }
+    // turn.done 发出**之前**先跑引擎无关的截断判据（判据本体在
+    // ../turnIncomplete.ts）—— 与 Claude 侧同一时序：renderer 的琥珀警告
+    // 卡能盖过"回合完成"的 toast。只查成功收尾的轮。
+    // 用 emit 漏斗而不是三条收尾路径（finishTurn / flushDeferredTurnDone /
+    // finalizeAborted/Error）各接一遍 —— 漏斗天然覆盖全部收尾，漏接一条就
+    // 漏一个检测点。
+    if (e.type === "turn.done" && e.reason === "end_turn" && !this.turnIncompleteChecked) {
+      this.turnIncompleteChecked = true;
+      this.maybeEmitTurnIncomplete();
+    }
     this.ctx.emit(e);
+  }
+
+  /** 【MC-009】同一网关症状（空补全 / finish_reason 被抹平）的 Codex 侧检测。
+   *  喂中立事实给共享判据、记日志、发事件 —— 与 SdkMessageAdapter 同姿势。 */
+  private maybeEmitTurnIncomplete(): void {
+    const dangling = [...this.toolUseIds]
+      .filter((id) => !this.resultedToolUseIds.has(id) && !this.collabToolUseIds.has(id))
+      .map((id) => ({ toolCallId: id, toolName: this.toolUseNames.get(id) ?? "" }));
+    const verdict = detectTurnIncomplete({
+      endedSuccessfully: true, // 调用点已限定 reason==="end_turn"
+      aborted: this.aborted,
+      danglingToolCalls: dangling,
+      textEmitted: this.textEmitted,
+      toolUseCount: this.toolUseIds.size,
+      interactionToolSeen: this.interactionToolSeen,
+      lastAssistantText: this.getFinalTurnText(),
+      // Codex 的工具是独立 item 不在 agentMessage 里："末条是文本" = 最后一个
+      // 内容事件不是工具派发。文本后紧跟工具派发的轮不算被打断（派发本身
+      // 可能就是承诺的下一步）。
+      lastAssistantHadToolUse: this.lastContentWasToolUse,
+    });
+    if (!verdict) return;
+
+    this.ctx.log.warn(
+      `turn incomplete (gateway likely returned an empty final response): kind=${verdict.kind} pendingToolCalls=[${verdict.pendingToolCalls
+        .map((c) => c.toolName)
+        .join(", ")}]${
+        verdict.kind === "unfinished-text" ? ` finalTextTail=${JSON.stringify(this.getFinalTurnText().slice(-80))}` : ""
+      }`,
+    );
+    this.ctx.emit({
+      type: "turn.incomplete",
+      sessionId: this.sessionId,
+      kind: verdict.kind,
+      pendingToolCalls: verdict.pendingToolCalls,
+    } satisfies TurnIncompleteEvent);
   }
 }
 
