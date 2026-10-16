@@ -129,6 +129,7 @@ export const en = {
   "settings.genModel": "Generation model",
   "settings.unknownError": "Unknown error",
   "settings.nameCharsError": "Name may only contain letters, digits, underscores and hyphens",
+  "settings.loadFailed": "Failed to load",
   "settings.saveFailed": "Save failed",
   "settings.deleteFailed": "Delete failed",
   "settings.operationFailed": "Operation failed",

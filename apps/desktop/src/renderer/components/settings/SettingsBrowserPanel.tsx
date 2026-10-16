@@ -3,6 +3,7 @@ import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, ErrorNote, Input, Switch } from "@renderer/components/ui/index.js";
+import { useSettingValue } from "@renderer/hooks/useSettingValue.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
@@ -54,24 +55,11 @@ export function SettingsBrowserPanel() {
   );
 }
 
-function ScreenshotDirRow() {
+export function ScreenshotDirRow() {
   const { t } = useI18n();
-  const [dir, setDir] = useState("");
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Load the current setting on mount (panel is freshly mounted per nav
-  // switch, so reload its value each time it's shown).
-  useEffect(() => {
-    setSaved(false);
-    void (async () => {
-      const { value } = await api.setting.get({ key: BROWSER_SCREENSHOT_DIR_SETTING_KEY });
-      setDir(value ?? "");
-      setLoaded(true);
-    })();
-  }, []);
+  // 【MC-047】读/存生命周期收进共享 hook(与 ShellSection 同一份):读失败显式
+  // 报错 + 重试,不再永远灰;目录选择/保存失败接进同一出口。
+  const s = useSettingValue(BROWSER_SCREENSHOT_DIR_SETTING_KEY);
 
   const pickDir = async () => {
     // 选目录对话框失败要说出来 —— 与 DataRootPanel.move 同一条规矩:裸 `void`
@@ -79,29 +67,13 @@ function ScreenshotDirRow() {
     // 屏幕上一句话没有。接进本行已有的错误出口。
     try {
       const { path } = await api.pickFolder();
-      if (path) {
-        setDir(path);
-        setSaved(false);
-      }
+      if (path) s.setValue(path);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setPickError(err instanceof Error ? err.message : String(err));
     }
   };
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      await api.setting.set({ key: BROWSER_SCREENSHOT_DIR_SETTING_KEY, value: dir.trim() });
-      setSaved(true);
-    } catch (err) {
-      // **失败要说出来** —— 从前只有 try/finally,抛了就静默:用户点「保存」
-      // 既看不到「已保存」也看不到错,像按钮坏了。
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
+  const [pickError, setPickError] = useState<string | null>(null);
+  const errText = s.error ?? pickError;
 
   return (
     <SettingRow
@@ -111,34 +83,40 @@ function ScreenshotDirRow() {
     >
       <div className="flex gap-2">
         <Input
-          value={dir}
-          onChange={(e) => {
-            setDir((e.target as HTMLInputElement).value);
-            setSaved(false);
-          }}
+          value={s.value ?? ""}
+          onChange={(e) => s.setValue((e.target as HTMLInputElement).value)}
           placeholder={t("settings.browser.screenshotPlaceholder")}
           spellCheck={false}
-          disabled={!loaded}
+          disabled={!s.ready}
           className="min-w-0 flex-1 font-mono"
         />
-        <Button variant="secondary" size="sm" onClick={() => void pickDir()} disabled={!loaded}>
+        <Button variant="secondary" size="sm" onClick={() => void pickDir()} disabled={!s.ready}>
           {t("settings.browser.chooseDir")}
         </Button>
         <Button
           variant="primary"
           size="sm"
-          onClick={() => void save()}
-          disabled={saving || !loaded}
+          onClick={() => void s.save()}
+          disabled={s.saving || !s.ready}
         >
-          {saving ? t("settings.saving") : t("common.save")}
+          {s.saving ? t("settings.saving") : t("common.save")}
         </Button>
       </div>
-      {saved && (
+      {s.saved && (
         <p className="mt-1 text-[0.7857em] text-accent">{t("settings.browser.savedScreenshot")}</p>
       )}
-      {error !== null && (
-        <ErrorNote title={t("settings.saveFailed")} className="mt-1">
-          {error}
+      {errText !== null && (
+        <ErrorNote title={t(s.ready ? "settings.saveFailed" : "settings.loadFailed")} className="mt-1">
+          {errText}
+          {!s.ready && (
+            <button
+              type="button"
+              onClick={s.retry}
+              className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
+            >
+              {t("common.retry")}
+            </button>
+          )}
         </ErrorNote>
       )}
     </SettingRow>
@@ -148,51 +126,24 @@ function ScreenshotDirRow() {
 /** Browser session data directory (cookies / form & login records / local
  *  storage / IndexedDB …). Mirrors ScreenshotDirRow; the main process
  *  reads `browser.dataDir` when creating the browser session partition. */
-function DataDirRow() {
+export function DataDirRow() {
   const { t } = useI18n();
-  const [dir, setDir] = useState("");
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setSaved(false);
-    void (async () => {
-      const { value } = await api.setting.get({ key: BROWSER_DATA_DIR_SETTING_KEY });
-      setDir(value ?? "");
-      setLoaded(true);
-    })();
-  }, []);
+  // 【MC-047】同 ScreenshotDirRow:共享 hook + 显式读失败 + 重试。
+  const s = useSettingValue(BROWSER_DATA_DIR_SETTING_KEY);
+  const [pickError, setPickError] = useState<string | null>(null);
 
   const pickDir = async () => {
     // 与 ScreenshotDirRow / DataRootPanel.move 同一条规矩:选目录失败不能落成
     // unhandled rejection,接进本行已有的错误出口。
     try {
       const { path } = await api.pickFolder();
-      if (path) {
-        setDir(path);
-        setSaved(false);
-      }
+      if (path) s.setValue(path);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setPickError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      await api.setting.set({ key: BROWSER_DATA_DIR_SETTING_KEY, value: dir.trim() });
-      setSaved(true);
-    } catch (err) {
-      // **失败要说出来** —— 从前只有 try/finally,抛了就静默:用户点「保存」
-      // 既看不到「已保存」也看不到错,像按钮坏了。
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
+  const errText = s.error ?? pickError;
 
   return (
     <SettingRow
@@ -202,36 +153,42 @@ function DataDirRow() {
     >
       <div className="flex gap-2">
         <Input
-          value={dir}
-          onChange={(e) => {
-            setDir((e.target as HTMLInputElement).value);
-            setSaved(false);
-          }}
+          value={s.value ?? ""}
+          onChange={(e) => s.setValue((e.target as HTMLInputElement).value)}
           placeholder={t("settings.browser.dataDirPlaceholder")}
           spellCheck={false}
-          disabled={!loaded}
+          disabled={!s.ready}
           className="min-w-0 flex-1 font-mono"
         />
-        <Button variant="secondary" size="sm" onClick={() => void pickDir()} disabled={!loaded}>
+        <Button variant="secondary" size="sm" onClick={() => void pickDir()} disabled={!s.ready}>
           {t("settings.browser.chooseDir")}
         </Button>
         <Button
           variant="primary"
           size="sm"
-          onClick={() => void save()}
-          disabled={saving || !loaded}
+          onClick={() => void s.save()}
+          disabled={s.saving || !s.ready}
         >
-          {saving ? t("settings.saving") : t("common.save")}
+          {s.saving ? t("settings.saving") : t("common.save")}
         </Button>
       </div>
-      {saved && (
+      {s.saved && (
         <p className="mt-1 text-[0.7857em] text-accent">
           {t("settings.browser.savedDataDir")}
         </p>
       )}
-      {error !== null && (
-        <ErrorNote title={t("settings.saveFailed")} className="mt-1">
-          {error}
+      {errText !== null && (
+        <ErrorNote title={t(s.ready ? "settings.saveFailed" : "settings.loadFailed")} className="mt-1">
+          {errText}
+          {!s.ready && (
+            <button
+              type="button"
+              onClick={s.retry}
+              className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
+            >
+              {t("common.retry")}
+            </button>
+          )}
         </ErrorNote>
       )}
     </SettingRow>
@@ -246,42 +203,37 @@ function DataDirRow() {
  *
  *  【MC-023】保存只走系统钥匙串加密;safeStorage 不可用时不落盘、并在这里
  *  如实写一句原因(从前是静默把凭据明文写进普通 settings 行)。 */
-function PersistLoginRow() {
+export function PersistLoginRow() {
   const { t } = useI18n();
-  const [enabled, setEnabled] = useState(true);
-  const [loaded, setLoaded] = useState(false);
+  // 【MC-047】开关型设置也走同一份读生命周期:未加载成功前开关禁用(不能拿
+  // 默认值 true 假装已读),读失败显式报错 + 重试。
+  const s = useSettingValue(BROWSER_PERSIST_LOGIN_SETTING_KEY);
   const [error, setError] = useState<string | null>(null);
   const [vault, setVault] = useState<BrowserVaultStatus | null>(null);
+  const enabled = s.ready ? s.value !== "0" : true;
 
   useEffect(() => {
+    if (!s.ready) return;
     void (async () => {
-      const { value } = await api.setting.get({ key: BROWSER_PERSIST_LOGIN_SETTING_KEY });
-      setEnabled(value !== "0");
-      setLoaded(true);
       try {
         setVault(await api.browser.vaultStatus());
       } catch {
         // 状态读不到不阻塞这一行 —— 主区功能(开关)照常可用。
       }
     })();
-  }, []);
+  }, [s.ready]);
 
   const toggle = async (checked: boolean) => {
-    setEnabled(checked);
     setError(null);
-    try {
-      await api.setting.set({
-        key: BROWSER_PERSIST_LOGIN_SETTING_KEY,
-        value: checked ? "1" : "0",
-      });
-      // 开关有时效性(改了持久化策略) —— 顺手刷新状态行。
-      setVault(await api.browser.vaultStatus());
-    } catch (err) {
-      // 回弹开关**只是**把界面拨回原样,并没说清"为什么没生效" —— 与同文件另两行
-      // (目录保存失败画 ErrorNote)、以及 HooksPanel 开关(失败走 toast)是同一条规矩:
-      // 写失败要在看得见的地方报出来,不能只是静默回弹。
-      setError(err instanceof Error ? err.message : String(err));
-      setEnabled(!checked); // revert the optimistic flip on failure
+    // 写失败时 hook 的值不动(未落盘的值不发布)—— 开关从 `s.value` 派生,自动回弹。
+    const ok = await s.save(checked ? "1" : "0");
+    if (!ok && s.error === null) setError(t("settings.saveFailed"));
+    if (ok) {
+      try {
+        setVault(await api.browser.vaultStatus());
+      } catch {
+        /* 状态刷新失败不影响开关本身 */
+      }
     }
   };
 
@@ -303,18 +255,27 @@ function PersistLoginRow() {
               {t("settings.browser.vaultPlaintextErased")}
             </div>
           )}
-          {error !== null ? (
-            <ErrorNote title={t("settings.saveFailed")} className="mt-1">
-              {error}
+          {(error ?? s.error) !== null && (
+            <ErrorNote title={t(s.ready ? "settings.saveFailed" : "settings.loadFailed")} className="mt-1">
+              {error ?? s.error}
+              {!s.ready && (
+                <button
+                  type="button"
+                  onClick={s.retry}
+                  className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
+                >
+                  {t("common.retry")}
+                </button>
+              )}
             </ErrorNote>
-          ) : undefined}
+          )}
         </>
       }
     >
       <Switch
         checked={enabled}
         onCheckedChange={(v) => void toggle(v)}
-        disabled={!loaded}
+        disabled={!s.ready || s.saving}
         label={t("settings.browser.persistLogin")}
       />
     </SettingRow>

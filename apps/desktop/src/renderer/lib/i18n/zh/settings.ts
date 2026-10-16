@@ -132,6 +132,7 @@ export const zh = {
   "settings.genModel": "生成模型",
   "settings.unknownError": "未知错误",
   "settings.nameCharsError": "名称只能包含字母、数字、下划线和连字符",
+  "settings.loadFailed": "读取失败",
   "settings.saveFailed": "保存失败",
   "settings.deleteFailed": "删除失败",
   "settings.operationFailed": "操作失败",

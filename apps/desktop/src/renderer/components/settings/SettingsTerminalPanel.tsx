@@ -6,6 +6,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, Dialog, Input, Select } from "@renderer/components/ui/index.js";
 import { ErrorNote } from "@renderer/components/ui/index.js";
+import { useSettingValue } from "@renderer/hooks/useSettingValue.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
@@ -47,39 +48,29 @@ export function SettingsTerminalPanel() {
 
 /* ───────────────────────── Shell section ───────────────────────── */
 
-function ShellSection() {
+/** 导出供 `settings-form-lifecycle-smoke` 直接挂载(假 React 运行时只渲染根组件,
+ *  子组件不会被展开 —— 读/存生命周期的断言必须把这一节本身当根)。 */
+export function ShellSection() {
   const { t } = useI18n();
-  const [shell, setShell] = useState("");
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  /** 保存失败的原因。**失败必须说出来** —— 从前这里只有 `try/finally`,抛了就静默:
-   *  用户点「保存」既看不到「已保存」也看不到任何错,像按钮坏了。 */
-  const [error, setError] = useState<string | null>(null);
+  // 【MC-047】读/存生命周期收进共享 hook:读失败 → 显式错误 + 重试,控件不再
+  // 永远灰;读不出来时不把未知当空值写回去(见 useSettingValue 文件头)。
+  const shell = useSettingValue(TERMINAL_SHELL_SETTING_KEY);
 
-  // Load the current setting on mount (panel is freshly mounted per nav
-  // switch, so reload its value each time it's shown).
-  useEffect(() => {
-    setSaved(false);
-    void (async () => {
-      const { value } = await api.setting.get({ key: TERMINAL_SHELL_SETTING_KEY });
-      setShell(value ?? "");
-      setLoaded(true);
-    })();
-  }, []);
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      await api.setting.set({ key: TERMINAL_SHELL_SETTING_KEY, value: shell.trim() });
-      setSaved(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
+  const settingsErrorNote = (labelKey: "settings.loadFailed" | "settings.saveFailed") =>
+    shell.error !== null ? (
+      <ErrorNote title={t(labelKey)} className="mt-1">
+        {shell.error}
+        {!shell.ready && (
+          <button
+            type="button"
+            onClick={shell.retry}
+            className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
+          >
+            {t("common.retry")}
+          </button>
+        )}
+      </ErrorNote>
+    ) : null;
 
   return (
     <SettingsSection
@@ -95,33 +86,29 @@ function ShellSection() {
         <div className="flex gap-2">
           <Input
             id="setting-terminal-shell"
-            value={shell}
+            value={shell.value ?? ""}
             onChange={(e) => {
-              setShell((e.target as HTMLInputElement).value);
-              setSaved(false);
+              shell.setValue((e.target as HTMLInputElement).value);
             }}
             placeholder={t("settings.terminal.shellPlaceholder")}
             spellCheck={false}
-            disabled={!loaded}
+            disabled={!shell.ready}
             className="min-w-0 flex-1 font-mono"
           />
           <Button
             variant="primary"
             size="sm"
-            onClick={() => void save()}
-            disabled={saving || !loaded}
+            onClick={() => void shell.save()}
+            disabled={shell.saving || !shell.ready}
           >
-            {saving ? t("settings.saving") : t("common.save")}
+            {shell.saving ? t("settings.saving") : t("common.save")}
           </Button>
         </div>
-        {saved && (
+        {shell.saved && (
           <p className="mt-1 text-[0.7857em] text-accent">{t("settings.terminal.shellSaved")}</p>
         )}
-        {error !== null && (
-          <ErrorNote title={t("settings.saveFailed")} className="mt-1">
-            {error}
-          </ErrorNote>
-        )}
+        {/* 读失败与存失败分措辞:读失败给重试钮,存失败只说原因(值还在,用户可再点保存)。 */}
+        {settingsErrorNote(shell.ready ? "settings.saveFailed" : "settings.loadFailed")}
       </SettingRow>
     </SettingsSection>
   );
