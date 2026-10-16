@@ -23,4 +23,7 @@ if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; dependencies must b
   --tsconfig=tsconfig.json \
   --outfile="$OUT/child-writer.mjs" --log-level=error
 
-MCODE_DOC_OPS_CHILD_ENTRY="$OUT/child-writer.mjs" node "$OUT/smoke.mjs"
+# 【MC-024】文本文件的跨进程 E1 夹具:同款独立子进程入口,对同一份 .txt 做读-改-写。
+"$ESBUILD" scripts/doc-ops-smoke/child-text-writer.ts   --bundle --platform=node --format=esm   --tsconfig=tsconfig.json   --outfile="$OUT/child-text-writer.mjs" --log-level=error
+
+MCODE_DOC_OPS_CHILD_ENTRY="$OUT/child-writer.mjs" MCODE_DOC_OPS_TEXT_CHILD_ENTRY="$OUT/child-text-writer.mjs" node "$OUT/smoke.mjs"

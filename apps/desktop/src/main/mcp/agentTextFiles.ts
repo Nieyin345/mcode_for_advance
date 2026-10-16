@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { TextDecoder } from "node:util";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 
 /** Shared across tool hosts: concurrent edits to one real path must not lose updates. */
 const writes = new Map<string, Promise<unknown>>();
@@ -15,6 +16,29 @@ export async function withTextFileLock<T>(file: string, action: (real: string) =
   finally { if (writes.get(key) === task) writes.delete(key); }
 }
 export const textFileHash = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * 【MC-024】Agent 文本文件的**宿主级**读-改-写租约 —— 「跨进程租约 + 进程内串行」两级。
+ *
+ * ## 它补的是哪条洞
+ *
+ * `withTextFileLock` 只是本进程的一张 `Map`:两个 Mcode 实例(或一个 Mcode + 一个外部
+ * 编辑器)各自从同一版本读取、各自通过自己进程内的锁、再分别替换整个文件 —— **丢更新**。
+ * 「读旧哈希 → 校验 → rename」两步之间没有跨进程互斥,第二个提交者的校验同样通过
+ * (它读到的还是旧哈希),于是 A 的修改被 B 静默覆盖。
+ *
+ * ## 修法:与 `ipc/files.ts` 的 FILE_WRITE 和 Excel/PDF/DOCX **共用同一份**宿主级原语
+ *
+ * `lib/osFileLease.ts` 的磁盘独占锁(台账要求的「跨写入口统一」——这是第 3 个接入点,
+ * 不是新锁)。进程内 `Map` 保留在内层:同进程的 async 并发先用它排队,免得两个协程
+ * 互相抢磁盘锁浪费抖动;跨进程那层由 `withOsFileLease` 兜。
+ *
+ * 遵守锁的进程之间保证串行 + 校验冲突可见;不遵守锁的第三方编辑器仍只能靠
+ * `expected_sha256` 的乐观校验兜(该边界与原实现一致,见 `replaceTextFile` 注释)。
+ */
+export async function withAgentTextFileLease<T>(file: string, action: (real: string) => Promise<T>): Promise<T> {
+  return withOsFileLease(file, (real) => withTextFileLock(real, action));
+}
 
 /**
  * 【MC-069】二进制文档写入(Excel/DOCX/PDF)**共用同一把**按真实物理路径的进程内串行锁。

@@ -47,6 +47,7 @@ import {
   readTextPage,
   formatTextPage,
   withTextFileLock,
+  withAgentTextFileLease,
   replaceTextFile,
   textFileHash,
   grepMatchPreview,
@@ -697,7 +698,9 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         attempt(async () => {
           const abs = pOf(ctx, args.path);
           await fs.mkdir(path.dirname(abs), { recursive: true });
-          await withTextFileLock(abs, (real) => fs.writeFile(real, args.content, { flag: args.append ? "a" : "w" }));
+          // 【MC-024】写整文件也要跨进程互斥(从前只有进程内 Map;另一个 Mcode 实例
+          // 或外部编辑器并发写同一路径会丢更新)。
+          await withAgentTextFileLease(abs, (real) => fs.writeFile(real, args.content, { flag: args.append ? "a" : "w" }));
           return `已${args.append ? "追加" : "写入"} ${abs}(${args.content.length} 字符)`;
         }),
     },
@@ -878,7 +881,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       ) =>
         attempt(async () => {
           const target = pOf(ctx, args.path);
-          return withTextFileLock(target, async (abs) => {
+          // 【MC-024】整段读-改-写放进**宿主级**租约:两个 Mcode 实例(或 + 外部编辑器)
+          // 并发编辑同一物理路径时,后来者要么排在后面(看到新版本),要么校验冲突被拒 ——
+          // 不再出现"A 的修改被 B 静默覆盖"。
+          return withAgentTextFileLease(target, async (abs) => {
           // 失败一律**抛**(→ isError),不是回一句普通文本:从前"没找到 old_string"回的是成功
           // 结果,模型很容易当成改好了接着往下走。
           const edits =

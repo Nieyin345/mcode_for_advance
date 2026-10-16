@@ -76,6 +76,25 @@ function spawnExcelWriter(file: string, range: string, value: string): Promise<{
   });
 }
 
+/** 【MC-024】起一个**独立 OS 进程**编辑同一份文本文件。 */
+const textChildEntry = process.env.MCODE_DOC_OPS_TEXT_CHILD_ENTRY ?? "";
+function spawnTextWriter(file: string, marker: string, startAtMs: number): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    assert.ok(textChildEntry && existsSync(textChildEntry), `缺少 child-text-writer 入口(应经 run.sh 设置):${textChildEntry}`);
+    const child = spawn(process.execPath, [textChildEntry, file, marker, String(startAtMs)], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", errOut = "";
+    child.stdout.on("data", (d: Buffer) => { out += d.toString("utf8"); });
+    child.stderr.on("data", (d: Buffer) => { errOut += d.toString("utf8"); });
+    child.once("error", reject);
+    child.once("close", () => {
+            const line = out.trim().split(/[\r\n]+/).filter(Boolean).at(-1) ?? "";
+
+      try { resolve(JSON.parse(line) as { ok: boolean; error?: string }); }
+      catch { resolve({ ok: false, error: `子进程无可解析输出:stdout=${out.trim()} stderr=${errOut.trim()}` }); }
+    });
+  });
+}
+
 try {
   // ══════════ A. Excel:并发编辑不重叠单元格 ══════════
   await test("★ Excel 两个不重叠并发编辑:两份修改都在(或之一明确 FILE_VERSION_CONFLICT),绝不静默丢更新", async () => {
@@ -240,6 +259,29 @@ try {
     console.log(`    → ok=${ok} applied=${applied}`);
     assert.equal(applied, ok, `成功 ${ok} 次但文件里只落了 ${applied} 处改动(静默丢更新)`);
   });
+  // ══════════ D.【MC-024】文本文件:两个独立 OS 进程并发读-改-写 ══════════
+  await test("★ 文本:两个独立 OS 进程并发读-改-写同一文件 —— 两份标记都在,或之一明确冲突;绝不静默丢更新", async () => {
+    const target = path.join(root, "concurrent.txt");
+    await fs.writeFile(target, "base\n", "utf8");
+    // 两个子进程各自「读全文 → 追加自己一行 → rename」,让它们几乎同时开抢(共同起跑时刻)。
+    const startAt = Date.now() + 1200;
+    const [a, b] = await Promise.all([
+      spawnTextWriter(target, "PROC_A", startAt),
+      spawnTextWriter(target, "PROC_B", startAt),
+    ]);
+    const okCount = [a, b].filter((r) => r.ok).length;
+    const conflict = [a, b].filter((r) => !r.ok).length;
+    const text = await fs.readFile(target, "utf8");
+    const applied = ["PROC_A", "PROC_B"].filter((m) => text.includes(m)).length;
+    console.log(`    → ok=${okCount} conflict=${conflict} applied=${applied}`);
+    // 宿主级租约下两个读-改-写**串行**:第二个进租约时读到的是第一个写完的新内容,
+    // 于是两份都必须成功、标记都必须保留(台账失败反例说"Y 结果丢失",修复后不丢)。
+    // 任一失败(冲突)说明串行没做到;报成功却丢标记 = 静默丢更新(更坏)。
+    assert.equal(applied, okCount, `成功 ${okCount} 次但文件里只落了 ${applied} 处改动(静默丢更新):${JSON.stringify({ a, b, text })}`);
+    assert.equal(okCount, 2, `两个进程没有都成功(租约未把读-改-写串行):${JSON.stringify({ a, b })}`);
+    assert.ok(text.includes("PROC_A") && text.includes("PROC_B"), `两份标记没有同时保留:${text}`);
+  });
+
 } finally {
   console.log(`\ndoc-ops: ${passed} passed, ${failures.length} failed`);
   if (failures.length) process.exitCode = 1;
