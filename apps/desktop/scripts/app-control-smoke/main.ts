@@ -604,6 +604,29 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   }
   const dom = await invokeAppTool("app_api_list", { domain: "plugins" }, "me", ctx);
   check("app_api_list 按域、带权限档", textOf(dom).includes("plugins.installGit [高风险·每次批准]"), textOf(dom).slice(0, 300));
+
+  // 【MC-039】agent 拿**用户原话**查,不必先知道内部术语。
+  // 红例(台账):query=创建自动化 / 创建扩展 命中 0 —— 从前只做 method/doc 字面子串;
+  // 修复后按任务词命中功能域,返回该域全部方法(候选),并在开头说明口径。
+  {
+    const auto = await invokeAppTool("app_api_list", { query: "创建自动化" }, "me", ctx);
+    const autoText = textOf(auto);
+    check("★ 「创建自动化」按任务词命中 automation 域(从前 0 条)", autoText.includes("automation."), autoText.slice(0, 200));
+    check("★ 并且说明是按任务词命中(不是假装精确匹配)", autoText.includes("任务词命中功能域"), autoText.slice(0, 120));
+    const ext = await invokeAppTool("app_api_list", { query: "创建扩展" }, "me", ctx);
+    check("★ 「创建扩展」命中 plugins 域", textOf(ext).includes("plugins."), textOf(ext).slice(0, 200));
+    const panel = await invokeAppTool("app_api_list", { query: "自定义面板" }, "me", ctx);
+    check("★ 「自定义面板」命中 customUi 域", textOf(panel).includes("customUi."), textOf(panel).slice(0, 200));
+    const engine = await invokeAppTool("app_api_list", { query: "设置引擎" }, "me", ctx);
+    check("★ 「设置引擎」命中 provider/piModels/codexModels 相关域", /provider\.|piModels\.|codexModels\./.test(textOf(engine)), textOf(engine).slice(0, 200));
+    // 精确方法名查询不受影响(仍然字面命中,不带上"任务词"口径)。
+    const exact = await invokeAppTool("app_api_list", { query: "plugins.installGit" }, "me", ctx);
+    check("精确方法名查询仍然字面命中", textOf(exact).includes("plugins.installGit") && !textOf(exact).includes("任务词命中功能域"), textOf(exact).slice(0, 160));
+    // 无关词不命中(防"任何词都返回一大片")。
+    const none = await invokeAppTool("app_api_list", { query: "zzzznonsense" }, "me", ctx);
+    check("无关词仍然 0 命中", textOf(none).includes("没有匹配"), textOf(none).slice(0, 120));
+  }
+
   const desc = await invokeAppTool("app_api_describe", { method: "session.rename" }, "me", ctx);
   check("app_api_describe 有参数格式", textOf(desc).includes("参数:") && textOf(desc).includes("title"), textOf(desc));
 }

@@ -64,7 +64,7 @@ import {
   setOperationLedger,
 } from "./operations.js";
 import { computePanelCaptureRect } from "./panelCaptureRect.js";
-import { DOMAIN_LABELS, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
+import { DOMAIN_LABELS, domainsMatchingTaskWord, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
 import { evaluate } from "./policyEngine.js";
 import { getGrantStore } from "./grantStoreRuntime.js";
 import type { GrantDecision } from "./grantStore.js";
@@ -1001,16 +1001,27 @@ export function appMcpTools(): McpToolSpec[] {
           );
         }
         const q = args.query?.trim().toLowerCase();
+        // 【MC-039】查询除了方法名/说明的**字面子串**,再走一层"任务词 → 域":
+        // agent 拿用户原话(「创建自动化」)查得到,不必先知道内部术语。域命中的
+        // 返回该域**全部**方法(候选列表;细节交给 app_api_describe)。
+        const taskDomains = q ? domainsMatchingTaskWord(q) : new Set<string>();
         const picked = all.filter(
           (e) =>
             (!args.domain || domainOf(e.method) === args.domain.trim()) &&
-            (!q || e.method.toLowerCase().includes(q) || e.doc.toLowerCase().includes(q)),
+            (!q ||
+              e.method.toLowerCase().includes(q) ||
+              e.doc.toLowerCase().includes(q) ||
+              taskDomains.has(domainOf(e.method))),
         );
         if (picked.length === 0) return text("没有匹配的方法。不带参数调用一次看全部功能域。");
         const lines = picked.map(
           (e) => `- ${e.method} [${LEVEL_LABEL[e.policy.level]}]${e.registered ? "" : "(未注册)"}${e.doc ? ` — ${clipLine(e.doc, 120)}` : ""}`,
         );
-        return text(`${picked.length} 个方法:\n${lines.join("\n")}`);
+        // 任务词命中(而非字面命中)时把口径说清:返回的是"可能是你要的功能域下的全部方法",
+        // 免得 agent 以为每个都是精确匹配。
+        const hitDomains = [...taskDomains].filter((d) => all.some((e) => domainOf(e.method) === d));
+        const viaTasks = q && hitDomains.length > 0 ? `(「${args.query!.trim()}」按任务词命中功能域:${hitDomains.join(" / ")},下面是这些域的全部方法)` : "";
+        return text(`${picked.length} 个方法${viaTasks}:\n${lines.join("\n")}`);
       },
     },
     {

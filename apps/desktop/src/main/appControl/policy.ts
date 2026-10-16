@@ -424,3 +424,93 @@ export const DOMAIN_LABELS: Record<string, string> = {
   engineTools: "引擎内置工具的禁用清单(按引擎勾选/手填要砍掉哪些 SDK 自带工具)",
   extensionStore: "扩展专用数据区(某个扩展自己的键值存储,与项目/核心数据分开)",
 };
+
+/**
+ * 【MC-039】**任务词别名** —— 用户/模型说人话(「创建自动化」)时的检索入口。
+ *
+ * `app_api_list({query})` 从前只做 `method.includes(q) || doc.includes(q)`:agent 拿
+ * 用户原话「创建自动化」查 0 条,必须先知道内部术语 `automation.*` 才找得到。
+ * 域标签({@link DOMAIN_LABELS})是**说明**不是检索词 —— 这里补一层"任务词 → 域",
+ * 让查询按**意图**命中,精确方法名调用不受影响。
+ *
+ * 口径:
+ *   - 键是**域**(与 `method` 第一个点号前的前缀同一套,别引进第二套分类);
+ *   - 每条给中英任务词(词,不是句子);短词要挑不易误伤的(如 `自动化`)——
+ *     命中面大一点没关系(返回的是候选列表,`app_api_describe` 再看细节);
+ *   - **新增域时顺手想一句"用户会怎么找它"**;缺别名只是少一条检索路,不影响正确性。
+ */
+export const DOMAIN_TASK_ALIASES: Record<string, readonly string[]> = {
+  project: ["项目", "工程", "创建项目", "新建项目", "project", "workspace"],
+  session: ["对话", "会话", "聊天", "会话记录", "chat", "conversation", "history"],
+  claude: ["跑对话", "发送消息", "中断", "插话", "回退", "子代理", "dispatch", "interrupt"],
+  setting: ["设置", "配置", "偏好", "settings", "preference", "config"],
+  provider: ["引擎", "模型", "切换模型", "健康检查", "provider", "model", "engine"],
+  customModel: ["自定义模型", "网关", "api 地址", "密钥", "gateway", "api key"],
+  piModels: ["pi 模型", "pi 提供方"],
+  codexModels: ["codex 模型"],
+  theme: ["主题", "外观", "深色", "浅色", "theme", "appearance"],
+  library: ["资料库", "文献", "论文", "导入文献", "笔记", "library", "paper", "zotero"],
+  memory: ["记忆", "长期记忆", "记住", "memory", "recall"],
+  workflow: ["工作流", "流程", "编排", "节点", "workflow", "graph", "pipeline"],
+  automation: ["自动化", "自动跑", "定时", "触发", "守望", "automation", "trigger", "watch"],
+  customUi: ["自定义界面", "自定义面板", "面板", "扩展界面", "custom ui", "panel"],
+  runs: ["运行记录", "执行历史", "runs", "execution history"],
+  monitoring: ["监控", "总览", "monitoring", "overview"],
+  projectInit: ["项目模板", "初始化模板", "脚手架", "template", "scaffold"],
+  scene: ["场景", "部署", "预检", "scene", "deploy", "preflight"],
+  unattended: ["无人值守", "计划授权", "自动执行计划"],
+  unattendedPlans: ["未完成的计划", "续跑", "计划恢复"],
+  skills: ["技能", "skill", "技能库"],
+  plugins: ["插件", "扩展", "plugin", "extension"],
+  mcp: ["外部工具", "mcp 服务器", "mcp server"],
+  agentSsh: ["ssh 信任", "主机指纹", "ssh host"],
+  hooks: ["钩子", "hook", "钩子脚本"],
+  modules: ["模块", "module"],
+  context: ["全局指令", "claude.md", "agents.md", "instructions"],
+  outputStyle: ["输出风格", "output style"],
+  tools: ["工具用量", "工具统计", "tool usage"],
+  usage: ["用量", "花费", "统计", "usage", "cost", "tokens"],
+  file: ["文件", "读写文件", "目录", "搜索文件", "file", "directory", "grep"],
+  rg: ["ripgrep", "全文搜索"],
+  git: ["git", "提交", "分支", "合并", "代码版本", "commit", "branch", "merge"],
+  terminal: ["终端", "命令行", "terminal", "shell 面板"],
+  shell: ["打开文件", "打开目录", "系统打开", "open", "explorer"],
+  clipboard: ["剪贴板", "复制", "clipboard", "copy"],
+  browser: ["浏览器", "内嵌浏览器", "网页", "browser", "web page"],
+  lsp: ["语言服务器", "lsp", "language server"],
+  onlyoffice: ["office", "文档编辑", "docx", "xlsx"],
+  notification: ["通知", "notification", "提醒"],
+  voice: ["语音输入", "语音模型", "voice"],
+  app: ["应用信息", "版本", "更新", "version", "update"],
+  runtimes: ["运行时", "引擎可执行文件", "runtime"],
+  toolchain: ["工具链", "pandoc", "python", "latex", "toolchain"],
+  webBridge: ["浏览器扩展桥", "网页模型", "extension bridge"],
+  publicMcp: ["公网 mcp", "外网访问", "public mcp", "tunnel"],
+  mobile: ["手机", "配对", "mobile", "pairing"],
+  relay: ["中继", "relay", "服务器中转"],
+  dialog: ["系统对话框", "选目录", "选文件", "dialog", "file picker"],
+  engineTools: ["引擎工具禁用", "禁用工具", "disallowed tools"],
+  extensionStore: ["扩展数据", "扩展存储", "extension store"],
+};
+
+/** 【MC-039】查一个查询词命中的域集合(大小写不敏感的子串匹配;域标签与任务别名都算)。
+ *
+ * 两个方向:
+ *   - 正向:别名/标签**包含**查询(「自动化」→ alias「自动化」);
+ *   - 反向:查询**包含**别名(整句「帮我创建自动化」→ alias「创建自动化」)——
+ *     但这条只在查询**不像方法名**时启用:方法名里天然带着域词
+ *     (`plugins.installGit` 含 "git"),反向匹配会把精确方法查询炸成一大片。
+ *     判据:`/^[a-z_][a-z0-9_]*\.[a-z]/i` 形如 `域.方法` = 方法查询,不做反向。 */
+export function domainsMatchingTaskWord(query: string): Set<string> {
+  const q = query.trim().toLowerCase();
+  const out = new Set<string>();
+  if (!q) return out;
+  const looksLikeMethod = /^[a-z_][a-z0-9_]*\.[a-z0-9_]/i.test(query.trim());
+  for (const [domain, label] of Object.entries(DOMAIN_LABELS)) {
+    if (domain.toLowerCase().includes(q) || label.toLowerCase().includes(q)) out.add(domain);
+  }
+  for (const [domain, aliases] of Object.entries(DOMAIN_TASK_ALIASES)) {
+    if (aliases.some((a) => a.toLowerCase().includes(q) || (!looksLikeMethod && q.includes(a.toLowerCase())))) out.add(domain);
+  }
+  return out;
+}
