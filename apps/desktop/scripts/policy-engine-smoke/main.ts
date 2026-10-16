@@ -506,6 +506,70 @@ const decision = (over: Partial<GrantDecision> = {}): GrantDecision => ({
   eq("★ 记账随持久化落盘(重启后 usedCount 不归零)", re.get(g6.grantId, 1_200)?.usedCount, 1);
 }
 
+/* ══ 13c. ★ MC-021:claimUse / releaseUse —— 原子领取与退还(派发前领取 → 结算) ══
+ *
+ * 缺口:执行点从前是「检查(evaluate)→ 派发 → 事后 recordUse」,`maxCount=1` 的两条并发
+ * 操作在任何一次记账**之前**都过检查;且记账在业务结果解码之前,业务明确拒绝(没执行)也
+ * 被计为已用。`claimUse` 把「检查 + 递增 + 落盘」收进一个同步临界区;`releaseUse` 是确定
+ * 没执行时的退还口。这里钉纯逻辑层:额度判据走**同一份** `countBudgetExhausted`、两个
+ * mutation 都走同一道 `commit` 落盘口。 */
+{
+  // ① 领取:未用尽 → 领取成功(计数 +1);用尽 → 抛(调用方据此不执行)。
+  const s = new GrantStore({ newId: () => "g-claim" });
+  const g = s.issueGrant(decision({ maxCount: 1 }), USER, 1_000);
+  const claimed = s.claimUse(g.grantId, 0, 1_100);
+  eq("★ MC-021 领取:未用尽 → 领取成功且计数 +1", claimed.usedCount, 1);
+  eq("领取后 store 里也是 1", s.get(g.grantId, 1_100)?.usedCount, 1);
+  let exhaustedThrew = false;
+  try { s.claimUse(g.grantId, 0, 1_150); } catch (e) { exhaustedThrew = e instanceof GrantStoreError && (e as Error).message.includes("次数上限"); }
+  eq("★ MC-021 领取:已用尽再领 → 抛 GrantStoreError(次数上限)", exhaustedThrew, true);
+  // ② 退还:确定没执行 → 计数退回去,同一额度还能再领(「拒绝不吃额度」)。
+  const refunded = s.releaseUse(g.grantId);
+  eq("★ MC-021 退还:usedCount 回到 0", refunded.usedCount, 0);
+  const reclaimed = s.claimUse(g.grantId, 0, 1_200);
+  eq("★ MC-021 退还:退还后还能再领(额度真的还回来了)", reclaimed.usedCount, 1);
+  // ③ 退还下限 0:没领过就退 → 不产生负计数。
+  const s2 = new GrantStore({ newId: () => "g-refund0" });
+  const g2 = s2.issueGrant(decision(), USER, 1_000);
+  eq("★ MC-021 退还:未领取时退还 → 钳在 0(不出负计数)", s2.releaseUse(g2.grantId).usedCount, 0);
+  // ④ 预算维度:领取也核预算、退还也退预算(对称)。
+  const s3 = new GrantStore({ newId: () => "g-claimbud" });
+  const g3 = s3.issueGrant(decision({ maxBudget: 10 }), USER, 1_000);
+  s3.claimUse(g3.grantId, 8, 1_100);
+  eq("★ MC-021 预算:领取 cost 累加进 budgetUsed", s3.get(g3.grantId, 1_100)?.budgetUsed, 8);
+  let overBudgetThrew = false;
+  try { s3.claimUse(g3.grantId, 5, 1_150); } catch (e) { overBudgetThrew = e instanceof GrantStoreError && (e as Error).message.includes("费用上限"); }
+  eq("★ MC-021 预算:超预算领取被拒(与 evaluate 同判据)", overBudgetThrew, true);
+  s3.releaseUse(g3.grantId, 8);
+  eq("★ MC-021 预算:退还同样退回 budgetUsed(对称)", s3.get(g3.grantId, 1_200)?.budgetUsed, 0);
+  // ⑤ 失效授权不能领取(与 recordUse 同一道有效性判据);退还**不查有效性**(账本修正)。
+  const s4 = new GrantStore({ newId: () => "g-claimrev" });
+  const g4 = s4.issueGrant(decision(), USER, 1_000);
+  s4.claimUse(g4.grantId, 0, 1_100);
+  s4.revoke(g4.grantId);
+  let claimRevokedThrew = false;
+  try { s4.claimUse(g4.grantId, 0, 1_150); } catch (e) { claimRevokedThrew = e instanceof GrantStoreError; }
+  eq("★ MC-021 领取:撤销后领取被拒", claimRevokedThrew, true);
+  // ⚠️ 撤销后 `get` 一律回 null(无效即查不出),故退还结果从返回值看,不从 get 看。
+  let releaseAfterRevokeThrew = false;
+  let releaseAfterRevokeCount: number | null = null;
+  try { releaseAfterRevokeCount = s4.releaseUse(g4.grantId).usedCount ?? -1; } catch { releaseAfterRevokeThrew = true; }
+  check("★ MC-021 退还:撤销后仍可退还(账本修正,不查有效性)", releaseAfterRevokeThrew === false && releaseAfterRevokeCount === 0, { threw: releaseAfterRevokeThrew, usedCount: releaseAfterRevokeCount });
+  // ⑥ 领取落盘失败 → 抛且内存计数不动(与 MC-017 三个 mutation 同一道 commit 口)。
+  const box: { grants: Grant[] | null } = { grants: null };
+  let failNext = false;
+  const s5 = new GrantStore({ persist: { load: () => box.grants, save: (gs) => { if (failNext) throw new Error("disk error (injected)"); box.grants = gs; } }, newId: () => "g-claimdisk" });
+  const g5 = s5.issueGrant(decision({ maxCount: 3 }), USER, 1_000);
+  failNext = true;
+  let claimDiskThrew = false;
+  try { s5.claimUse(g5.grantId, 0, 1_100); } catch (e) { claimDiskThrew = (e as Error).message.includes("disk error"); }
+  eq("★ MC-021 领取落盘失败 → 抛错", claimDiskThrew, true);
+  eq("★ MC-021 领取落盘失败 → 内存计数不动(仍 0,不分裂)", s5.get(g5.grantId, 1_200)?.usedCount, 0);
+  failNext = false;
+  s5.claimUse(g5.grantId, 0, 1_300);
+  eq("MC-021 领取正控:磁盘正常时领取真的落上", s5.get(g5.grantId, 1_400)?.usedCount, 1);
+}
+
 /* ══ 14. 可注入持久化:只认窄接口,不拉 sql.js ══ */
 {
   const box: { grants: Grant[] | null } = { grants: null };

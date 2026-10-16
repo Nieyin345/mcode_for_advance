@@ -1223,6 +1223,133 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   setGrantStore(null);
 }
 
+/* ── 3c-sedies. 【MC-021】授权额度:派发前**原子领取** → 按结构化结果**结算** ──────────
+ *
+ * 缺口(台账 MC-021,源码已核实):旧时序是「`planGrantPrecheck` 检查 → `await callRpc` 派发
+ * → 事后 `recordUse`」。两个缺口:① `maxCount=1` 的授权两条并发操作在**任何** recordUse 之前
+ * 都过检查 → 各执行一次(额度被并发穿透);② 记账在业务结果解码**之前**跑 —— `callRpc` 合法
+ * 返回 `{ok:false}`(业务明确拒绝、没执行)也被计为已用。
+ *
+ * 修法(本段钉的就是它):预判照旧 → **派发前** `claimUse` 原子领取(检查与 `usedCount`+1 在
+ * 同一同步临界区、且同步落盘)→ 派发 → 按 `resolveOperationOutcome` 的结果**结算**:
+ *   - 确定成功(SUCCEEDED 系列)→ 保留计数;
+ *   - 确定拒绝(REJECTED,没执行)→ **退还**(`releaseUse`,额度还能再用);
+ *   - UNCERTAIN(可能已部分执行)→ **保留**,并在结果里显式说明「按已使用保留」。
+ *
+ * ## 承重红例(撤掉领取 / 结算即真红)
+ *
+ *   ① ★ 并发:`maxCount=1` 的授权两条 `Promise.all` 并发(同一绑定身份)→ handler **只被调
+ *      一次**(旧时序下两次都过预检、各执行一次);② ★ 退还:业务 ok:false(REJECTED)→
+ *      usedCount 回退到 0、**还能再用**;③ SUCCEEDED → 保留 1 次、第二次被拒(正控式配对);
+ *   ④ ★ UNCERTAIN → 保留 1 次 + 结果里有「保留」的显式说明(不谎报退还);⑤ ★ 领取落盘失败
+ *      → **命令一次都不执行**、内存计数不动(领取的"耐久"维度)。
+ */
+{
+  const USER21: ActorRef = { kind: "user", id: "u21" };
+  const freshStore21 = (): GrantStore => { const s = new GrantStore({ newId: (n) => `m${n}` }); setGrantStore(s); return s; };
+  const issue21 = (
+    store: GrantStore,
+    method: string,
+    core: CoreIntent,
+    over: Partial<GrantDecision> = {},
+  ): Grant =>
+    store.issueGrant(
+      { verdict: "allow", reason: "用户批准了这个计划。", compatibilityLevel: "write", sceneId: "scene-21", allowedActions: [method], scopedCore: core, configHash: "cfg-21", ttlMs: 3_600_000, ...over },
+      USER21,
+      Date.now(),
+    );
+  const root21 = process.cwd();
+
+  // ① ★ 承重:并发穿透 —— maxCount=1,两条**同身份**并发,最多一条真正执行。
+  {
+    const store = freshStore21();
+    const input = { id: "s9", title: "conc" };
+    const g = issue21(store, "session.rename", { sshHostKey: appApiBindingId("me", "session.rename", input) }, { maxCount: 1 });
+    let runs = 0;
+    recordRpcHandler("session:rename", async (_e, raw) => { runs += 1; return { session: { id: "s9", title: (raw as { title?: string }).title } }; });
+    const { ctx } = ctxWith({ allow: true });
+    const [r1, r2] = await Promise.all([call("session.rename", input, ctx), call("session.rename", input, ctx)]);
+    check("★ MC-021 并发:maxCount=1 两条并发 → handler 只被调一次(额度不可被并发穿透)", runs === 1, runs);
+    const kinds = [opResultOf(r1)?.resultKind, opResultOf(r2)?.resultKind].sort();
+    check("★ MC-021 并发:一条成功、一条拒绝(不是两条都执行)", kinds[0] === "REJECTED" && kinds[1] === "SUCCEEDED", kinds);
+    const deniedText = [textOf(r1), textOf(r2)].find((t) => t.includes("操作未执行")) ?? "";
+    check("★ MC-021 并发:拒绝那条点名次数上限(预判在领取后被第二次调用看到)", deniedText.includes("次数上限"), deniedText.slice(0, 220));
+    check("★ MC-021 并发:额度最终记 1 次", store.get(g.grantId, Date.now())?.usedCount === 1, store.get(g.grantId, Date.now())?.usedCount);
+  }
+
+  // ② ★ 承重:REJECTED 退还 —— 业务明确拒绝(没执行)不占额度,退还后还能再用。
+  {
+    const store = freshStore21();
+    const repo = join(root21, "__smoke_grant_repo__");
+    const g = issue21(store, "git.stage", { projectPath: physicalPath(repo) as string }, { maxCount: 1 });
+    let runs = 0;
+    recordRpcHandler("git:stage", async () => { runs += 1; return { ok: false as const, error: "仓库路径不在任何已添加的项目内" }; });
+    const { ctx } = ctxWith({ allow: true });
+    const r1 = await call("git.stage", { repoPath: repo, filePaths: ["a"] }, ctx);
+    check("★ MC-021 结算:业务 ok:false → REJECTED(命令没执行)", opResultOf(r1)?.resultKind === "REJECTED", opResultOf(r1));
+    check("★ MC-021 结算:确定没执行 → usedCount 退还回 0(额度没被业务拒绝吃掉)", store.get(g.grantId, Date.now())?.usedCount === 0, store.get(g.grantId, Date.now())?.usedCount);
+    const r2 = await call("git.stage", { repoPath: repo, filePaths: ["a"] }, ctx);
+    check("★ MC-021 结算:退还后额度还能再用(第二次仍真的执行)", runs === 2 && opResultOf(r2)?.resultKind === "REJECTED", { runs, kind: opResultOf(r2)?.resultKind });
+  }
+
+  // ③ 配对正控:SUCCEEDED → 保留计数(没执行才退还,执行了就得占额度)。
+  {
+    const store = freshStore21();
+    const repo = join(root21, "__smoke_grant_repo_ok__");
+    const g = issue21(store, "git.stage", { projectPath: physicalPath(repo) as string }, { maxCount: 1 });
+    let runs = 0;
+    recordRpcHandler("git:stage", async () => { runs += 1; return { ok: true as const }; });
+    const { ctx } = ctxWith({ allow: true });
+    const r1 = await call("git.stage", { repoPath: repo, filePaths: ["a"] }, ctx);
+    check("★ MC-021 配对:成功 → SUCCEEDED", r1.isError !== true && opResultOf(r1)?.resultKind === "SUCCEEDED", opResultOf(r1));
+    check("★ MC-021 配对:成功 → usedCount 保留 1(不退还)", store.get(g.grantId, Date.now())?.usedCount === 1, store.get(g.grantId, Date.now())?.usedCount);
+    const r2 = await call("git.stage", { repoPath: repo, filePaths: ["a"] }, ctx);
+    check("★ MC-021 配对:用尽后第二次被拒、handler 不再执行", runs === 1 && opResultOf(r2)?.resultKind === "REJECTED" && textOf(r2).includes("次数上限"), { runs, kind: opResultOf(r2)?.resultKind });
+  }
+
+  // ④ ★ 承重:UNCERTAIN → 保留计数(宁可多记不可少记)+ 结果里**显式说明**保留,不谎报。
+  {
+    const store = freshStore21();
+    const file = join(root21, "__smoke_grant_file__", "a.ts");
+    const g = issue21(store, "file.writeFile", { projectPath: physicalPath(file) as string }, { maxCount: 1 });
+    recordRpcHandler("file:writeFile", async () => ({ ok: false as const }));
+    const { ctx } = ctxWith({ allow: true });
+    const r = await call("file.writeFile", { filePath: file, content: "x" }, ctx);
+    const op = opResultOf(r) as { resultKind?: unknown; warnings?: Array<{ code?: string; message?: string }> } | undefined;
+    check("★ MC-021 结算:可能已部分落定(ok:false 的 maybePartial)→ UNCERTAIN", op?.resultKind === "UNCERTAIN", op?.resultKind);
+    check("★ MC-021 结算:UNCERTAIN → usedCount 保留 1(不退还)", store.get(g.grantId, Date.now())?.usedCount === 1, store.get(g.grantId, Date.now())?.usedCount);
+    const retained = (op?.warnings ?? []).find((w) => w.code === "grant_use_retained");
+    check("★ MC-021 结算:保留这件事在结构化结果里有可观测警告(不静默)", retained !== undefined, op?.warnings);
+    check("★ MC-021 结算:正文同样说明「保留、不退还」", textOf(r).includes("保留") && textOf(r).includes("不退还"), textOf(r).slice(0, 300));
+  }
+
+  // ⑤ ★ 承重:领取的"耐久"维度 —— 领取落盘失败 → 命令一次都不执行、内存计数不动。
+  {
+    const box: { grants: Grant[] | null } = { grants: null };
+    let failNext = false;
+    const store = new GrantStore({
+      newId: (n) => `m${n}`,
+      persist: { load: () => box.grants, save: (gs: Grant[]) => { if (failNext) throw new Error("disk error (injected)"); box.grants = gs; } },
+    });
+    setGrantStore(store);
+    const input = { id: "s9", title: "durable" };
+    const g = issue21(store, "session.rename", { sshHostKey: appApiBindingId("me", "session.rename", input) }, { maxCount: 1 });
+    let runs = 0;
+    recordRpcHandler("session:rename", async (_e, raw) => { runs += 1; return { session: { id: "s9", title: (raw as { title?: string }).title } }; });
+    failNext = true;
+    const { ctx } = ctxWith({ allow: true });
+    const r = await call("session.rename", input, ctx);
+    failNext = false;
+    check("★ MC-021 耐久:领取落盘失败 → 命令一次都没执行(副作用 0)", runs === 0, runs);
+    check("★ MC-021 耐久:→ REJECTED 且报领取失败", opResultOf(r)?.resultKind === "REJECTED" && textOf(r).includes("领取失败"), textOf(r).slice(0, 240));
+    check("★ MC-021 耐久:内存计数不动(仍 0,磁盘与内存不分裂)", store.get(g.grantId, Date.now())?.usedCount === 0, store.get(g.grantId, Date.now())?.usedCount);
+  }
+
+  setGrantStore(null);
+  // 恢复本段前 `session:rename` 的返回形状(后续用例若用到)。
+  recordRpcHandler("session:rename", async (_e, raw) => ({ session: { id: "s9", title: (raw as { title?: string }).title } }));
+}
+
 /* ── 3d. MC-066:业务层 ok:false 不能被回报成 SUCCEEDED ───────────────────────
  *
  * 旧行为:`callRpc` 只要 Promise resolve 就 `makeOp("SUCCEEDED")`。而 `ipc/browser.ts`

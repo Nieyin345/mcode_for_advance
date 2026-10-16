@@ -58,8 +58,28 @@
  *   - 授权不存在 / 已撤销 / 已过期 / 不覆盖这次动作(方法不在表内、核心意图被换)→ **拒绝**
  *     (抛 {@link SessionGrantRefusedError},什么都不建/不发)—— 「拒绝无法核实的授权」;
  *   - 授权真的覆盖 → 这次建会话就**跑在它之下**:记为 `lastPermissionGrant`(可观测),
- *     建行成功后按唯一记账口 `recordUse` 记一次(于是 `maxCount` / `maxBudget` 真承重,
- *     不是只声明不兑现的死字段)。
+ *     且**在建任何一行之前**按唯一领取口 `claimUse` **原子领取**一次额度(检查与递增在同一
+ *     同步临界区、且同步落盘)—— 于是 `maxCount` / `maxBudget` 真承重,不是只声明不兑现的
+ *     死字段;**领取失败(已用尽 / 失效 / 落盘失败)同样抛 `SessionGrantRefusedError`,
+ *     什么都不建**(fail-closed)。
+ *
+ * ## 【MC-021】为什么要「领取 → 建 → 结算」而不是「先建后记账」
+ *
+ * 从前的时序是「核过授权 → 建行 → `recordUse` 记一次(记账失败 catch 成静默跳过)」——
+ * 两个缺口:① 记账在**副作用之后**:建行与绑定都落定、进程在记账前崩溃 → 这次使用不计数,
+ * `maxCount` 的额度被崩溃路径穿透;② 记账失败被**静默吞掉**(记账是"旁路"的旧口径),
+ * 磁盘写不进去时调用方毫无察觉,照样返回成功 —— 额度在磁盘故障下直接失效。
+ * 新时序把这两条反过来:**派发前领取**(领取失败 = 拒绝执行)、**按结果结算**(见下),
+ * 计数先于副作用耐久落盘,宁可多记不可少记。
+ *
+ * ## 【MC-021】结算:修订冲突 → 退还
+ *
+ * `createOrReuseSession` 对**修订号对不上**抛 {@link SessionRevisionConflictError},而它
+ * 明确「什么都没建、什么都没发」(见 `lib/sessionStart.ts` 的 OCC 语义)= 确定**没执行**
+ * → 把刚领的那次额度**退还**(`releaseUse`),重抛异常。其余抛错(建行/绑定途中出错)可能
+ * 已部分落定 → **保留**计数(与 UNCERTAIN 同口径,宁可多记不可少记)。退还本身再失败
+ * (落盘故障)不回退已抛的异常,只记 `log.warn` 显式报告 —— 偏差是"多占了一次额度",
+ * 不静默(硬规矩 3)。
  *
  * ⚠️ **本切片诚实划定的边界**:① 它**不绕过审批** —— 本命令从不做审批(审批在各自入口:
  * agent 路在 `gateAppAction`、桌面/手机是用户本人动作);带授权只是"授权核覆盖了这次动作"
@@ -72,12 +92,13 @@
 import type { StartSessionInput } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import type { ActorRef, CoreIntent } from "@contracts/policyEngine";
-import { createOrReuseSession } from "@main/lib/sessionStart.js";
+import { createOrReuseSession, SessionRevisionConflictError } from "@main/lib/sessionStart.js";
 import { ProjectRepo } from "@main/store/repositories.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { evaluate } from "@main/appControl/policyEngine.js";
 import { getGrantStore } from "@main/appControl/grantStoreRuntime.js";
 import { physicalPath } from "@main/lib/realPathWithin.js";
+import { log } from "@main/lib/logger.js";
 
 /**
  * 发起一条会话业务命令的**主体种类**。
@@ -275,26 +296,55 @@ export async function createSessionAndSend(
   // 覆盖了才继续(记为 lastPermissionGrant),核不到 / 失效 / 不覆盖**一律拒绝**
   // (抛 `SessionGrantRefusedError`,什么都不建/不发)。缺席 = 不启用,既有调用方不受影响。
   const grantId = resolvePermissionGrant(args.input.projectId, action.permissionGrant);
+  // 【MC-021】**派发前原子领取**一次额度(在建任何一行之前)—— 检查(有效 / 未用尽 / 未超
+  // 预算)与 `usedCount` +1 在 `claimUse` 的同一同步临界区内完成、并同步落盘。领取失败
+  // (核过后被并发用尽 / 撤销 / 过期 / 落盘失败)→ 与核不过同取向:**拒绝,什么都不建**。
+  // 于是"核过授权 → 建行 → 事后记账"那条额度可被崩溃 / 并发穿透的旧时序不存在了。
+  if (grantId !== null) {
+    try {
+      getGrantStore().claimUse(grantId, 0, Date.now());
+    } catch (err) {
+      throw new SessionGrantRefusedError(
+        grantId,
+        "grant_denied",
+        `这次建会话要跑在授权「${grantId}」之下,但该授权此刻无法领取额度:${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   // 【ARC-001 步③】把 `expectedRevision` 交给唯一的复用判据 `createOrReuseSession` —— 它对
   // 不上就抛 `SessionRevisionConflictError`(什么都不建/不发)。异常**不在这里吞**:桌面 IPC
   // 让它变成 IPC 错误、手机端变成 RpcError、agent 侧由 `headlessNewSession` 的调用方翻成
   // REJECTED(没执行,可安全重来)。`undefined` 一律照旧(既有调用方不受影响)。
-  const { session, reused } = createOrReuseSession(
-    args.input,
-    action.actorKind === "mobile" ? "mobile" : "desktop",
-    action.expectedRevision,
-  );
-  // 【ARC-001 步④】授权覆盖的这次建会话**真落定了** → 按唯一记账口 `recordUse` 记一次
-  // (`usedCount` +1 / `budgetUsed`)。记账记的是"真的用掉了",故放在写成功之后 —— 于是
-  // `maxCount` / `maxBudget` 才真承重,而不是只声明不兑现的死字段。记账失败(记账口自身
-  // 口径上的撤销 / 过期竞态)不该反过来把一次**已经落定**的建会话翻成失败,故吞成 null 不报。
+  let created: { session: Session; reused: boolean };
+  try {
+    created = createOrReuseSession(
+      args.input,
+      action.actorKind === "mobile" ? "mobile" : "desktop",
+      action.expectedRevision,
+    );
+  } catch (err) {
+    // 【MC-021】**按结果结算**:修订冲突 = 调用方断言的那一版根本不在,`createOrReuseSession`
+    // 明确「什么都没建、什么都没发」= 确定**没执行** → 把刚领的额度**退还**(额度还能再用)。
+    // 其余抛错(建行 / 绑定途中出错)可能已部分落定 → **保留**计数(宁可多记不可少记,
+    // 与 UNCERTAIN 同口径)。退还再失败只显式报告(偏差方向 = 多占一次,绝不静默)。
+    if (grantId !== null && err instanceof SessionRevisionConflictError) {
+      try {
+        getGrantStore().releaseUse(grantId);
+      } catch (refundErr) {
+        log.warn(
+          `建会话授权「${grantId}」的额度退还失败(${refundErr instanceof Error ? refundErr.message : String(refundErr)}):` +
+            "这次建会话因修订冲突没执行,但授权额度仍占用了 1 次(偏差方向=多占,不影响任何已落定状态)。",
+        );
+      }
+    }
+    throw err;
+  }
+  const { session, reused } = created;
+  // 【ARC-001 步④】授权覆盖的这次建会话**真落定了** → 保留派发前领取的那笔计数
+  // (`claimUse` 已记,这里只记可观测事实)。【MC-021】不再有"事后补记 + catch 吞掉":
+  // 计数在派发前已经耐久落盘,记账失败不再是静默旁路。
   if (grantId !== null) {
     lastPermissionGrant = grantId;
-    try {
-      getGrantStore().recordUse(grantId, 0, Date.now());
-    } catch {
-      // 授权在核过之后、记账之前被撤销 / 过期 —— 已落定的建会话不回退,只是这次不记账。
-    }
   }
   if (args.prompt === undefined) {
     // 只建会话 —— 与桌面「新建对话」同一条:不因为这里少发一条消息而改变落库/广播行为。

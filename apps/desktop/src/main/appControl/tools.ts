@@ -1805,7 +1805,8 @@ export function resolveActionCore(
  *   - `bound === null`(没有授权管这个动作)→ `null`,放行给 `gateAppAction` 既有审批链;
  *   - `bound !== null` 且 `allow`(在有效授权内)→ `{ kind: "authorized" }` —— 这枚用户签发的
  *     有效授权**就是**这次的授权,执行点据此**不再弹审批卡**(ARC-004 的「计划级授权覆盖整个
- *     计划、不再逐次弹卡」),执行后按命中的 grant 记一次账;
+ *     计划、不再逐次弹卡」);随后**派发前原子领取一次额度**(`claimGrantUseForDispatch`),
+ *     按结构化结果结算(MC-021);
  *   - `bound !== null` 且 `deny` / `require-approval`(撤销 / 过期 / 非用户 / 超次数 / 超预算 / 核心
  *     意图被换)→ `{ kind: "deny" }`,**不执行**。这样 `evaluate` 的每一条非 allow 分支(含最容易
  *     成死代码的三条 deny)都真的承重、可被变异测红。
@@ -1857,14 +1858,52 @@ export function planGrantPrecheck(
 }
 
 /**
- * 已执行的授权动作,把这次使用记回绑定的那枚授权(`usedCount` / `budgetUsed`)。
- *
- * 判据与预判同源:`findBoundFor` 拿到的那枚 grant(若它此刻仍有效)才记账;`recordUse` 自身对
- * 撤销 / 过期会抛,故只在 `isGrantActive`(由 store 内建)成立时才调 —— 记不到就静默跳过,不影响
- * 已经落定的执行结果(记账是**事后**的,不该反过来把成功报成失败)。没有绑定授权 = 不是授权下
- * 的动作 = 不记账。
+ * 【MC-021】两条**本地**的授权结算 warning 短码 —— 只由 `app_api_call` 的领取 / 结算路径
+ * 产出,故不放进 `@contracts/appControl` 的 `OP_WARNING_*`(那组是跨端共享的稳定码);
+ * 消费者若需分流,按字符串匹配即可(与 `OP_WARNING_UI_REFRESH_FAILED` 同一形状)。
  */
-function recordPlanGrantUse(entry: ApiEntry, args: unknown, sessionId: string): void {
+const OP_WARNING_GRANT_USE_RETAINED = "grant_use_retained";
+const OP_WARNING_GRANT_REFUND_FAILED = "grant_refund_failed";
+
+/**
+ * 【MC-021】**派发前原子领取**一枚绑定授权的额度 —— 「先检查后记账」改成「领取 → 派发 → 结算」
+ * 的第一半。
+ *
+ * ## 它补的是哪条洞(源码可确认)
+ *
+ * 旧时序(连同其记账函数 `recordPlanGrantUse` 一并删除):`planGrantPrecheck` 用 `evaluate`
+ * **检查**额度通过 → gate → `await callRpc` 派发 → **之后**才 `recordUse` 记一次。两个缺口都在
+ * 这个时序里:
+ *   ① `maxCount: 1` 的授权两条**并发**操作在**任何** recordUse 之前都通过了检查 → 各执行
+ *      一次副作用(额度被并发穿透);`await` 横在检查与记账之间是根因;
+ *   ② 记账在 `resolveOperationOutcome`(业务结果解码)**之前**跑 —— `callRpc` 合法返回
+ *      `{ok:false}`(业务**明确拒绝**、没执行)也被计为已用。
+ *
+ * ## 新时序(本函数 = 第一步)
+ *
+ *   ① 预判(`planGrantPrecheck`)仍先跑 —— 撤销 / 过期 / 非用户 / 核心意图被换等**硬拒**
+ *      由它在弹卡之前拦下(那是判定,不是计账);
+ *   ② **派发之前**(还在同步路径上、`await` 之前)调本函数:`claimUse` 在**同一个同步临界区**
+ *      里检查(有效 / 未用尽 / 未超预算)并 `usedCount` +1、走 `commit` 同步落盘 —— 第二个并发
+ *      调用在这一步就看到已用尽、拿不到授权(而不是"都通过检查各自执行");
+ *   ③ 派发后按**结构化结果**(`resolveOperationOutcome` / `decodeDomainOutcome` / 抛错分类)
+ *      结算:确定成功 → 保留;**确定拒绝(没执行)→ 退还**({@link releaseGrantUseForSettlement});
+ *      UNCERTAIN → 保留(宁可多记不可少记,并在结果文本里说明)。
+ *
+ * ## 领取失败 = 不执行,如实报拒绝
+ *
+ * `claimUse` 抛(已用尽 / 失效 / 落盘失败)→ 返回一句拒绝原因,调用方**连 gate 都不进**、
+ * 不执行,按 `policy_denied` 落账。这与"预判拒绝"同一条纪律:拿不到额度就别跑。
+ *
+ * @returns `null` = 没绑定授权(不是授权下的动作,无需领取,照走默认审批链);
+ *   `{ claimed }` = 领取成功(带回 grantId 供结算退还);`{ denied }` = 有绑定授权但领取失败,
+ *   必须不执行。
+ */
+function claimGrantUseForDispatch(
+  entry: ApiEntry,
+  args: unknown,
+  sessionId: string,
+): { claimed: { grantId: string } } | { denied: string } | null {
   const store = getGrantStore();
   const input = (args as { input?: unknown }).input ?? null;
   const { core, real } = resolveActionCore(entry.method, input, sessionId);
@@ -1872,11 +1911,40 @@ function recordPlanGrantUse(entry: ApiEntry, args: unknown, sessionId: string): 
   const bound = real
     ? (store.findBoundFor(intent, Date.now()) ?? store.findGoverningFor(intent, Date.now()))
     : store.findBoundFor(intent, Date.now());
-  if (!bound) return;
+  if (!bound) return null;
   try {
-    store.recordUse(bound.grantId, 0, Date.now());
-  } catch {
-    // 撤销 / 过期后不再记账(recordUse 的口径)—— 静默跳过,不把一个已成功的执行翻成失败。
+    store.claimUse(bound.grantId, 0, Date.now());
+  } catch (err) {
+    return {
+      denied: `授权额度领取失败:${err instanceof Error ? err.message : String(err)}(授权 ${bound.grantId}:方法 ${entry.method})`,
+    };
+  }
+  return { claimed: { grantId: bound.grantId } };
+}
+
+/**
+ * 【MC-021】**按结构化结果结算**领取过的那笔额度 —— 第二半。
+ *
+ * 判据:
+ *   - **没有领取过**(本次不在授权之下)→ 不结算,返回 null;
+ *   - 结果确定为 **REJECTED**(业务明确拒绝 / 命令没执行)→ **退还**(`releaseUse`,回滚
+ *     `usedCount`/`budgetUsed`)—— 没执行就不占额度,额度还能再用;
+ *   - 其余(SUCCEEDED / SUCCEEDED_WITH_WARNINGS / FAILED / UNCERTAIN / 任何抛错路径)→ **保留**
+ *     —— 尤其 UNCERTAIN(可能已部分执行):**宁可多记不可少记**,由调用方在结果文本里说明;
+ *   - 退还是账本修正,失败(落盘失败)不翻案已落定的执行结果,只返回一句说明由调用方挂到
+ *     warning / reason 上 —— 但那会留下「领取在、退还在」的偏差(计数偏多),必须显式报告
+ *     (硬规矩 3,不静默)。
+ */
+function releaseGrantUseForSettlement(
+  claimed: { grantId: string } | null,
+  resultKind: OperationResult["resultKind"],
+): string | null {
+  if (!claimed || resultKind !== "REJECTED") return null;
+  try {
+    getGrantStore().releaseUse(claimed.grantId);
+    return null;
+  } catch (err) {
+    return `授权额度退还失败(${err instanceof Error ? err.message : String(err)});这次没执行的调用仍占用了 1 次授权额度。`;
   }
 }
 
@@ -2083,6 +2151,42 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           return operationToolResult(op);
         }
 
+        // ── 【MC-021】派发前**原子领取**授权额度(领取 → 派发 → 结算)──────────────────
+        // 从此处到 `callRpc` 之间**不得出现 `await`** —— `claimUse` 的「检查 + 递增 + 落盘」
+        // 必须在同一同步临界区内完成:两个并发调用因此不可能都通过检查、再各自执行(旧的
+        // 「先检查后记账」把 `await callRpc` 横在检查与记账之间,`maxCount=1` 的授权被并发
+        // 穿透)。领取失败(已用尽 / 失效 / 落盘失败)→ **连执行都不执行**,如实报 policy_denied。
+        let claimedGrant: { grantId: string } | null = null;
+        if (entry.policy.level !== "danger") {
+          const claim = claimGrantUseForDispatch(entry, args, sessionId);
+          if (claim && "denied" in claim) {
+            const op = makeOp("REJECTED", entry.method, operationId, {
+              code: OP_CODE.policyDenied,
+              reason: claim.denied,
+            });
+            settle(op.resultKind, op);
+            return operationToolResult(op);
+          }
+          claimedGrant = claim?.claimed ?? null;
+        }
+        // 结算口(在**每一条**派发之后的 return 前调):确定没执行(REJECTED)→ 退还额度;
+        // UNCERTAIN(可能已部分执行)→ 保留并在结果里说明;其余(成功系列 / FAILED)→ 保留。
+        // 退还是账本修正,失败本身不翻案已落定的执行结果,只把偏差写进结果文本 / warning。
+        const settleGrant = (op: OperationResult): void => {
+          const refundNote = releaseGrantUseForSettlement(claimedGrant, op.resultKind);
+          if (claimedGrant && op.resultKind === "UNCERTAIN") {
+            op.warnings.push({
+              code: OP_WARNING_GRANT_USE_RETAINED,
+              message: "本次执行结果不确定(可能已部分执行),授权额度按「已使用」保留,不退还(宁可多记不可少记)。",
+              retryable: false,
+            });
+          }
+          if (refundNote) {
+            op.reason = op.reason ? `${op.reason}(${refundNote})` : refundNote;
+            op.warnings.push({ code: OP_WARNING_GRANT_REFUND_FAILED, message: refundNote, retryable: false });
+          }
+        };
+
         // ── 真正执行 RPC(到这里一定被调一次)──────────────────────────────
         let result: unknown;
         try {
@@ -2110,6 +2214,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
               code: OP_CODE.rpcFailed,
               reason: errText(err),
             });
+            settleGrant(op);
             settle(op.resultKind, op);
             return operationToolResult(op);
           }
@@ -2131,25 +2236,25 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
                   reason: errText(err),
                 });
           // ★ UNCERTAIN 也**落账** —— 同 id 再试会被回放成 UNCERTAIN,**不再盲发第二次 RPC**。
+          settleGrant(op);
           settle(op.resultKind, op);
           return operationToolResult(op);
         }
-
-        // ── 【ARC-004 步③】动作真的执行了 → 给绑定的那枚授权记一次账(usedCount / budgetUsed)──
-        // 记账记的是「真的用掉了」,不是「打算用」—— 故放在成功执行之后。没有绑定授权 = 不是授权下
-        // 的动作 → 不记账(recordPlanGrantUse 内部判)。
-        recordPlanGrantUse(entry, args, sessionId);
 
         // ── 领域结果解码(MC-066):RPC resolve ≠ 业务成功 ───────────────────
         // 不同 IPC 的合法返回有 void / 数据对象 / {ok:true|false} / 判别联合等多种语义。
         // 显式登记过结果合同的方法(如 browser.* 的 {ok,error} 信封)在这里判:ok:false 是
         // 业务**明确拒绝**(没执行)→ REJECTED,而不是 SUCCEEDED。
+        //
+        // 【MC-021】结算**就挂在解码结果上**:成功 → 保留领取的那笔计数;确定拒绝(没执行)
+        // → 退还(额度还能再用);其余(UNCERTAIN / 部分成功等)→ 保留(宁可多记不可少记)。
         const body = renderResult(slimSessions(result));
         const outcome = resolveOperationOutcome(entry.method, result);
         // `accepted` = 完全成功(含空批次);`null` = 没登记合同(返回即成功)。两种都往下走。
         // 失败/部分成功/无法确认在这里提前返回,**不**降级成失败成功混杂。
         if (outcome && outcome.kind !== "accepted") {
           const op = makeOp(resultKindOfOperationOutcome(outcome), entry.method, operationId, opExtraFromOutcome(outcome));
+          settleGrant(op);
           settle(op.resultKind, op, body);
           return operationToolResult(op, body);
         }
@@ -2170,6 +2275,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           };
           op = makeOp("SUCCEEDED_WITH_WARNINGS", entry.method, operationId, { warnings: [warning] });
         }
+        settleGrant(op);
         settle(op.resultKind, op, body);
         return operationToolResult(op, body);
       }

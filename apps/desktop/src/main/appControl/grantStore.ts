@@ -7,7 +7,9 @@
  *   - 存 / 取 grant by id;
  *   - **撤销**(revoke,幂等)、**过期**(expiresAt,过期即视为不存在);
  *   - **按资源身份查**(给定动作的资源身份 + method,找匹配的、仍有效的 grant);
- *   - 一个**签发口** `issueGrant(decision, subject, now)` —— **只有它**能产 `Grant`。
+ *   - 一个**签发口** `issueGrant(decision, subject, now)` —— **只有它**能产 `Grant`;
+ *   - **记一次使用** `recordUse` 与 MC-021 的**原子领取 / 退还**(`claimUse` / `releaseUse`)
+ *     —— 「派发前领取耐久额度、按结构化结果结算」的两个落点。
  *
  * ## 硬约定
  * 1. **纯逻辑。** 内存 `Map` + 由调用方传入的 `now`(可注入时钟)。**不 import electron / sql**。
@@ -31,6 +33,7 @@ import type {
   Grant,
   PolicyDecision,
 } from "@contracts/policyEngine";
+import { countBudgetExhausted } from "@contracts/policyEngine";
 import { invalidationsFor } from "./policyEngine.js";
 
 /**
@@ -326,6 +329,75 @@ export class GrantStore {
     next.set(grantId, bumped);
     this.commit(next);
     return bumped;
+  }
+
+  /**
+   * **原子领取一次额度**(MC-021)——「派发前领取耐久额度」的落点:检查(存在 / 有效 / 未用尽 /
+   * 未超预算)与 `usedCount` +1 在**同一同步临界区内完成**,并走 {@link commit} 同步落盘。
+   * 单线程 JS 的一个同步方法体就是一个临界区 —— 两次并发调用不可能「都通过检查、再各自递增」:
+   * 第一份领取落盘后,第二份在检查处就会看到已用尽的计数并被拒。
+   *
+   * ## 它补的是哪条洞(源码可确认)
+   *
+   * 从前执行点是「先检查后记账」:`planGrantPrecheck` 用 `evaluate` 检查额度,**之后**才
+   * `await callRpc` 派发、最后才记一次账。`maxCount: 1` 的授权两个并发操作都能在任何一次记账
+   * **之前**通过检查 → 各执行一次副作用(额度被并发穿透);且记账在业务结果解码**之前**跑,
+   * 业务明确拒绝(`{ok:false}`,没执行)也被计为已用。领取把「检查与递增」合进一个临界区后,
+   * 「两个都过检查」在结构上不可能;结算(退还 / 保留)由调用方在拿到**结构化结果**之后
+   * 按 {@link releaseUse} 落账。
+   *
+   * ## 与 `recordUse` 的关系
+   *
+   * `recordUse` 是裸的「记一次」(无额度检查);`claimUse` = 检查 + 委派 `recordUse`
+   * (同一份递增与落盘实现,不另抄一份)。执行点在**派发之前**调它;命中「已用尽 / 已失效 /
+   * 落盘失败」一律抛 —— 调用方**不得执行**,如实报拒绝(硬规矩 3:坏东西显式报出来)。
+   */
+  claimUse(grantId: string, cost = 0, now: number): Grant {
+    const g = this.grants.get(grantId);
+    if (!g) throw new GrantStoreError(`领取失败:授权 ${grantId} 不存在。`);
+    if (!isGrantActive(g, now)) {
+      throw new GrantStoreError(`领取失败:授权 ${grantId} 已撤销或已过期,不该在它下面执行动作。`);
+    }
+    // 次数上限判据与 `evaluate` / 主机 hook 授权**共用同一份** `countBudgetExhausted`。
+    if (countBudgetExhausted(g.maxCount, g.usedCount)) {
+      throw new GrantStoreError(`领取失败:授权 ${grantId} 已达次数上限(${g.maxCount}),需要重新批准。`);
+    }
+    if (g.maxBudget !== undefined && (g.budgetUsed ?? 0) + cost > g.maxBudget) {
+      throw new GrantStoreError(`领取失败:授权 ${grantId} 超出费用上限(${g.maxBudget}),需要重新批准。`);
+    }
+    return this.recordUse(grantId, cost, now);
+  }
+
+  /**
+   * **退还一次额度**(MC-021 的结算口之一)—— 业务返回**结构化结果**为「明确拒绝 / 没执行」时,
+   * 把 {@link claimUse} 领下的计数退回去(`usedCount - 1`,`budgetUsed - cost`),同样走
+   * {@link commit} 落盘。下限 0(重复退还不产生负计数;计数不变时不落盘,免无谓写盘)。
+   *
+   * ## 为什么退还**不查有效性**
+   *
+   * 退还是**账本修正**,不是执行权限:领取已经落盘,结算就必须能落盘 —— 否则「领取在、
+   * 退还在」的账会分裂。授权在领取之后被撤销 / 过期,不影响这笔修正(撤销管的是"还能不能
+   * 执行",不是"已经领的那笔算不算")。这与 `recordUse` 刻意检查有效性不同:那是**新增**
+   * 一笔使用(等于声明「我在你下面执行了」),必须在有效授权下;退还只是撤回一笔没执行的使用。
+   */
+  releaseUse(grantId: string, cost = 0): Grant {
+    const g = this.grants.get(grantId);
+    if (!g) throw new GrantStoreError(`退还失败:授权 ${grantId} 不存在。`);
+    const usedCount = Math.max(0, (g.usedCount ?? 0) - 1);
+    const budgetUsed = g.maxBudget !== undefined ? Math.max(0, (g.budgetUsed ?? 0) - cost) : undefined;
+    const usedChanged = usedCount !== (g.usedCount ?? 0);
+    const budgetChanged = budgetUsed !== undefined && budgetUsed !== (g.budgetUsed ?? 0);
+    if (!usedChanged && !budgetChanged) return g;
+    const refunded: Grant = {
+      ...g,
+      usedCount,
+      ...(g.maxBudget !== undefined ? { budgetUsed } : {}),
+    };
+    // 先落盘、成功后才发布内存(MC-017 同一道 commit 口):落盘失败时计数不动。
+    const next = new Map(this.grants);
+    next.set(grantId, refunded);
+    this.commit(next);
+    return refunded;
   }
 
   /**
