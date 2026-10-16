@@ -736,6 +736,45 @@ const originalRunSave = repo.save;
     check("重复收尾幂等", twice);
   }
 
+  // 【MC-052】删一个会话不许碰到**别的**会话的坏 job 行。
+  // 红例(台账):一条属于 foreign 会话、内容损坏的 job,在删除毫无关联的会话时被
+  // 无条件删除(旧代码 catch → doomed.add)。修复后归属判据只剩"可证明归属":
+  //   · 坏行不在任何被删会话的索引/指针里 → 保留原字节;
+  //   · 坏行的 id 恰在被删会话的索引里(旁证) → 才删。
+  {
+    const doomedSrc = SessionRepo.get(PARENT_B)!;
+    const foreignSrc = SessionRepo.get(PARENT)!;
+    const badForeign = "memory.assistant.job.bad-foreign";
+    SettingRepo.set(badForeign, "{ foreign user content damaged");
+
+    // 目标会话自己的**健康** job(应当被删)与**损坏但索引指向它**的 job(旁证成立,应删)。
+    const healthy = store.createAssistantJob(doomedSrc.id, doomedSrc.projectId, "w1", "checkpoint");
+    const healthyKey = `memory.assistant.job.${healthy.id}`;
+    SettingRepo.set("memory.assistant.source." + doomedSrc.id, JSON.stringify([healthy.id, "owned-bad"]));
+    const ownedBad = "memory.assistant.job.owned-bad";
+    SettingRepo.set(ownedBad, "{ broken owned job");
+
+    // 无关会话的健康 job —— 必须完好保留(旧行为就守得住,新行为不许退化)。
+    const foreignHealthy = store.createAssistantJob(foreignSrc.id, foreignSrc.projectId, "w2", "capture");
+    const foreignHealthyKey = `memory.assistant.job.${foreignHealthy.id}`;
+
+    const badForeignRawBefore = SettingRepo.get(badForeign);
+    check("收尾前:无关坏行在表里", badForeignRawBefore === "{ foreign user content damaged", badForeignRawBefore);
+
+    store.dropAssistantJobs(doomedSrc.id);
+
+    eq("★ 无关会话的坏 job 行**原字节保留**(归属未知,不越权删)", SettingRepo.get(badForeign), "{ foreign user content damaged");
+    eq("★ 本会话的健康 job 照常删掉", SettingRepo.get(healthyKey), null);
+    eq("★ 本会话索引可证明归属的坏 job 删掉(旁证成立)", SettingRepo.get(ownedBad), null);
+    check("★ 无关会话的健康 job 完好", SettingRepo.get(foreignHealthyKey) !== null, SettingRepo.get(foreignHealthyKey));
+
+    // 再删 foreign 会话时,那条坏行仍保留(它是坏数据,但从不被任何人"顺手"删)。
+    store.dropAssistantJobs(foreignSrc.id);
+    eq("★ 再删 foreign 会话也不碰它(坏行从不被顺手删)", SettingRepo.get(badForeign), "{ foreign user content damaged");
+    // 清场,免得后续断言的表里留着它。
+    SettingRepo.deleteMany([badForeign, `memory.assistant.source.${doomedSrc.id}`]);
+  }
+
   // ★ 坏掉的记忆助手行报的是**同一句中文**,不是 `SyntaxError`/`ZodError` 的英文原句。
   //   `SettingRepo.get` 的值可能不是合法 JSON(半截写盘、外部改库、旧 schema),而 `op:"list"`
   //   轮询每 2 秒打一次这条路、渲染端把异常原样摆进红色危险面板。同一文件下面那句"索引形状

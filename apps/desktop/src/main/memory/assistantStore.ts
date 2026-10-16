@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { MemoryAssistantJobSchema, type MemoryAssistantJob, type MemoryAssistantKind } from "@contracts/memoryAssistant";
 import { SessionRepo, SettingRepo } from "@main/store/repositories.js";
+import { log } from "@main/lib/logger.js";
 const key = (id: string) => `memory.assistant.job.${id}`;
 const indexKey = (id: string) => `memory.assistant.source.${id}`;
 const targetKey = (id: string) => `memory.assistant.target.${id}`;
@@ -114,18 +115,51 @@ export function acknowledgeAssistantTurn(targetId: string, jobId: string, reason
  * ⚠️ **job 本体是按 `jobId`(随机 UUID)存的,不能按会话 id 前缀找。** 只能扫一遍
  * `memory.assistant.job.` 前缀,解析出 `sourceSessionId` / `targetSessionId` 再对。
  * 这张表不大,而且删会话是低频操作,一次前缀查询足够。
+ *
+ * ## 【MC-052】损坏行不能凭"读不出来"推断归属
+ *
+ * 从前这里 `catch { doomed.add(k) }` —— **任何**解析失败的行都被无条件删掉。而
+ * `memory.assistant.job.` 是全表前缀:一条属于**别的会话**、只是损坏了的 job,会在
+ * 用户删除一个**毫不相干**的会话时被顺手永久删除。这是越权的数据破坏:
+ * "解析失败"证明的是"这一行读不出来",不是"这一行属于正在删的会话"。
+ *
+ * 修复后的归属判据只有一条:**能从行里证明它连着目标会话**:
+ *   - 解析成功的:按 source/target id 精确对(与健康行同一条判据);
+ *   - 解析失败的:**保留**。它可能属于任何会话,任何人都不该在删别的会话时替它做主。
+ *     归属未证明的坏行留给专门的诊断/维护路径(见 {@link listAssistantJobs} 的坏行
+ *     显式报错与设置界面的角标),不在这里静默销毁。
+ *
+ * 代价:一条真正属于目标会话、又恰好损坏的 job 会长留表里 —— 这是**有意**的取舍
+ * (与台账"身份未知的损坏记录保留并单独标记待诊断"一致):宁可留一条死行,不可错删
+ * 一条活数据。它不会被 `listAssistantJobs` 读出来(那条路对坏行显式抛错),所以不会
+ * 伪装成可用的交接材料。
  */
 export function dropAssistantJobs(sessionId: string): void {
   const doomed = new Set<string>();
   const doomedJobIds = new Set<string>();
+  const preservedCorrupt: string[] = [];
   // 只收**真的在表里**的键:`deleteMany` 会 persist(),而 persist 重写整个库文件 ——
   // 一个从没碰过记忆助手的会话不该因为删它而多写一次整库。
   for (const k of [indexKey(sessionId), targetKey(sessionId)]) {
     if (SettingRepo.get(k)) doomed.add(k);
   }
+  // 【MC-052】两条**可证明归属**的旁证 —— 用于"行本身坏了、但索引/指针能证明它
+  // 连着本次要删的会话"的场合(索引与指针都是按会话 id 写的,只由本模块写入):
+  //   1. 该会话的 job 索引里列出的 id;
+  //   2. 该会话的 pending 交接指针(值就是 job id)。
+  const ownedJobIds = new Set<string>();
+  try {
+    const ids: unknown = JSON.parse(SettingRepo.get(indexKey(sessionId)) ?? "[]");
+    if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string") ownedJobIds.add(id);
+  } catch {
+    /* 索引本身坏了:它自己会被 doomed 收走(上一段),能证明的归属到此为止 */
+  }
+  const targetPointer = SettingRepo.get(targetKey(sessionId));
+  if (targetPointer) ownedJobIds.add(targetPointer);
   for (const k of SettingRepo.keysWithPrefix(JOB_PREFIX)) {
     const raw = SettingRepo.get(k);
     if (!raw) continue;
+    const suffixId = k.slice(JOB_PREFIX.length);
     try {
       const job = MemoryAssistantJobSchema.parse(JSON.parse(raw));
       if (job.sourceSessionId === sessionId || job.targetSessionId === sessionId) {
@@ -133,8 +167,14 @@ export function dropAssistantJobs(sessionId: string): void {
         doomedJobIds.add(job.id);
       }
     } catch {
-      /* 坏行:留着也读不出来,顺带清掉 */
-      doomed.add(k);
+      // 【MC-052】坏行只有**旁证能证明归属**时才删(见上的 ownedJobIds);
+      // 证明不了的一律保留 —— 见函数头。
+      if (ownedJobIds.has(suffixId)) {
+        doomed.add(k);
+        doomedJobIds.add(suffixId);
+      } else {
+        preservedCorrupt.push(k);
+      }
     }
   }
   // 悬挂的交接指针:**别的**会话的 `.target.<id>` 指着一条刚被删掉的 job。不清的话
@@ -143,6 +183,12 @@ export function dropAssistantJobs(sessionId: string): void {
     if (doomed.has(k)) continue;
     const id = SettingRepo.get(k);
     if (id && doomedJobIds.has(id)) doomed.add(k);
+  }
+  if (preservedCorrupt.length > 0) {
+    // 显式报出来(硬规矩 3),但**不删** —— 留给诊断路径。
+    log.warn(
+      `memory: 保留 ${preservedCorrupt.length} 条无法解析的记忆助手 job 行(归属未知,不随本次会话删除): ${preservedCorrupt.join(", ")}`,
+    );
   }
   SettingRepo.deleteMany([...doomed]);
 }
