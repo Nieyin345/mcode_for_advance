@@ -29,6 +29,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { createHash } from "node:crypto";
 import * as path from "node:path";
 import {
+  AGENT_PROFILE_ID_RE,
   parseAgentProfile,
   validateAgentProfile,
   type AgentProfile,
@@ -44,15 +45,34 @@ export function agentProfilesDir(): string {
 
 const FILE_SUFFIX = ".json";
 
+/**
+ * 【MC-033】一个引用**是不是**一个合法的档案 id(形如 `p_xxxx`)。
+ *
+ * 这是**唯一**的档案引用判据 —— 落盘、删除、哈希三处共用同一份。正则来自契约
+ * (`AGENT_PROFILE_ID_RE`),与 `AgentProfileSchema` 里那格是**同一个常量**,不另抄一遍。
+ *
+ * 从前 `agentProfileContentHash` 直接 `path.join(dir, id + ".json")` 而不验 id:工作流
+ * 契约里 `params` 是开放的 `z.record(z.string(), z.unknown())`,于是节点上一个额外参数
+ * (键名以 `profileId` 结尾)可以塞进 `../../x`,宿主就去读档案目录**之外**的文件算哈希;
+ * 同一个缺口在 `removeAgentProfile` 那侧更重 —— `rmSync` 会删掉界外的 `.json` 文件。
+ * 判据钉在**拼路径之前**,所以两个方向一起收口。
+ */
+export function isAgentProfileIdRef(id: string): boolean {
+  return typeof id === "string" && AGENT_PROFILE_ID_RE.test(id);
+}
+
 /** 读全部档案。**目录不存在、单个文件坏了都不抛** —— 档案是附加能力,它坏了不该让
  *  工作流页打不开(同 `loadNodeTypes` 对坏清单的处理)。 */
 /**
  * ARC-016: 一份档案**内容**的哈希(供运行记录锁版)。读不到/坏了 → null。
  * 只哈希文件字节,不含任何解密后的密钥字段。
+ *
+ * 【MC-033】id 不是合法档案引用时**直接返回 null,不碰文件系统** —— 参数来自节点上的
+ * 自由字段,不能让它决定读哪个路径。
  */
 export function agentProfileContentHash(id: string): string | null {
-  if (!id) return null;
-  const file = path.join(agentProfilesDir(), id.endsWith(FILE_SUFFIX) ? id : id + FILE_SUFFIX);
+  const file = fileOf(id);
+  if (!file) return null;
   try {
     return createHash("sha256").update(readFileSync(file, "utf-8")).digest("hex");
   } catch {
@@ -106,10 +126,17 @@ export function readAgentProfiles(): AgentProfileCatalog {
   return out;
 }
 
-/** 一份档案的落盘路径。**id 已经由 schema 限制了字符集**(见 `AGENT_PROFILE_ID_RE`),
- *  所以拼进来不会有路径穿越。 */
-function fileOf(id: string): string {
-  return path.join(agentProfilesDir(), `${id}${FILE_SUFFIX}`);
+/**
+ * 一份档案的落盘路径 —— **唯一的拼路径口**,三处(读哈希 / 写 / 删)共用。
+ *
+ * 【MC-033】id **必须是合法档案引用**(`AGENT_PROFILE_ID_RE`,与 schema 同一常量):
+ * 不合法就返回 `null`,调用方**一个字节都不碰**。从前只有写路径走这里、且假定
+ * 「id 已经被 schema 限制过」,而读哈希与删除是各自 `path.join` 的 —— MCP 那条
+ * `agent_profile_remove` 的入参是裸 `z.string()`,于是 `../../x` 能到 `rmSync`。
+ * 判据集中在这里,新增调用点就不可能绕过。
+ */
+function fileOf(id: string): string | null {
+  return isAgentProfileIdRef(id) ? path.join(agentProfilesDir(), `${id}${FILE_SUFFIX}`) : null;
 }
 
 /**
@@ -123,8 +150,9 @@ export function saveAgentProfile(
 ): { ok: true } | { ok: false; error: string } {
   const check = validateAgentProfile(profile);
   if (!check.ok) return check;
-  const dir = agentProfilesDir();
   const file = fileOf(check.profile.id);
+  if (!file) return { ok: false, error: `档案 id「${check.profile.id}」不是合法引用(须形如 p_xxxx)` };
+  const dir = agentProfilesDir();
   const tmp = `${file}.tmp`;
   try {
     mkdirSync(dir, { recursive: true });
@@ -146,6 +174,9 @@ export function saveAgentProfile(
  */
 export function removeAgentProfile(id: string): { ok: true } | { ok: false; error: string } {
   const file = fileOf(id);
+  // 【MC-033】非法引用**明说拒绝**,不静默当"本来就不在" —— MCP 那条路的入参是裸
+  //  z.string(),`../../x` 从前能一路走到 rmSync 删界外文件;现在连"成功的假象"都不给。
+  if (!file) return { ok: false, error: `档案 id「${id}」不是合法引用(须形如 p_xxxx)` };
   if (!existsSync(file)) return { ok: true };
   try {
     rmSync(file, { force: true });

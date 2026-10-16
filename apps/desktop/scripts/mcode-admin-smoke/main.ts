@@ -1322,6 +1322,32 @@ async function main(): Promise<void> {
   check("agent_profile_remove 删得掉", (await call(tools, "agent_profile_remove", { id: profileId })).includes("已删掉"));
   check("删不存在的 → 也算成功,但如实说", (await call(tools, "agent_profile_remove", { id: "p_nope" })).includes("本来就不在"));
 
+  /* ── MC-033 档案引用的路径围栏 ──
+   *
+   * MCP 这条 `agent_profile_remove` 的入参从前是**裸 `z.string()`**(与 IPC 那条
+   * `AgentProfileRemoveSchema` 不同,后者带 `p_` 正则),而 `removeAgentProfile` 直接
+   * `path.join(dir, id + ".json")` —— 于是 `../../x` 能走到 `rmSync`,删掉档案目录之外的
+   * `.json`。读哈希那侧同理,而它的 id 来自节点上**开放的** `params`(键名以 `profileId`
+   * 结尾就收),连工具都不用过。
+   *
+   * 判据立在**界外文件还在不在**:在数据根里造一个真会被 `path.join` 拼中的诱饵文件,
+   * 试完删它仍在 —— 光看返回值(「本来就不在」)是抓不住这个的,那句话在没有修复时
+   * 同样成立。 */
+  {
+    const { mkdirSync, writeFileSync, existsSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const root = process.env.MCODE_SMOKE_DATA_ROOT ?? "";
+    const agentsDir = join(root, "workflows", "agents");
+    const decoy = join(root, "workflows", "decoy.json");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(decoy, '{"不":"该被删的界外文件"}', "utf-8");
+    const traversal = "../decoy";
+    const removeOut = await call(tools, "agent_profile_remove", { id: traversal });
+    check("★ MC-033: `../decoy` 不是合法档案引用 → 明说拒绝", removeOut.includes("不是合法引用"), removeOut);
+    check("★ MC-033: 界外文件**一个字节都没动**(rmSync 没走到它)", existsSync(decoy), decoy);
+    if (existsSync(decoy)) rmSync(decoy, { force: true });
+  }
+
   /* ── 记忆 server(mcode-memory)—— 记忆系统的**写入侧** ──
    *
    * 记忆从前只有存储 + 注入两半,**写入口一直是空的**:`saveMemoryFile` 只有渲染端
