@@ -162,17 +162,17 @@ async function callAsync(channel: string, raw?: unknown): Promise<unknown> {
 /** 把 `unknown` 收成能点属性的形状 —— 断言里读返回值的字段用。 */
 const obj = (v: unknown): Record<string, unknown> => v as Record<string, unknown>;
 
-/* ──────────────── 1. 28 条 handler 一条不少、一条不多 ──────────────── */
+/* ──────────────── 1. 29 条 handler 一条不少、一条不多 ──────────────── */
 
 console.log("\n注册面");
 
-// 28 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
+// 29 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
 // 点了没反应;多一条 = 白名单那边没跟上(renderer 根本调不到,但说明有人改了这里
 // 却没改契约那一份)。
 const registered = [...handlers.keys()].sort();
 check(
-  `注册了 28 条 handler(实际 ${registered.length})`,
-  registered.length === 28,
+  `注册了 29 条 handler(实际 ${registered.length})`,
+  registered.length === 29,
   registered,
 );
 
@@ -201,6 +201,7 @@ const expectedChannels: Array<[string, string]> = [
   ["守望活跃状态", IPC.AUTOMATION_WATCH_STATUS],
   ["命令模板(读)", IPC.AUTOMATION_WATCH_TEMPLATES],
   ["命令模板(存)", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE],
+  ["命令模板(显式重建)", IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD],
   ["钉住默认工作流", IPC.WORKFLOW_PIN_DEFAULT],
   ["恢复默认", IPC.WORKFLOW_RESTORE_DEFAULT],
   ["应用出厂版更新", IPC.WORKFLOW_APPLY_SHIPPED_UPDATE],
@@ -208,7 +209,7 @@ const expectedChannels: Array<[string, string]> = [
   ["自定义 UI 运行自动化", IPC.CUSTOM_UI_RUN_AUTOMATION],
 ];
 const missing = expectedChannels.filter(([, ch]) => !handlers.has(ch)).map(([name]) => name);
-same("剩下那条名叫「命令模板(读)」在内的 28 条一条不缺", missing, []);
+same("包括「命令模板(显式重建)」在内的 29 条一条不缺", missing, []);
 
 /* ──────────────── 2. 种子铺出来的目录 ──────────────── */
 
@@ -857,7 +858,7 @@ console.log("\n删一份工作流");
   eq("删完真的取不到了", obj(await callAsync(IPC.WORKFLOW_GET, { id: "wf_smoke" })).workflow, null);
 }
 
-/* ──────────────── 9. 守望模板:坏条目去哪了(已知问题,断言记录现状) ──────────────── */
+/* ──────────────── 9. 守望模板:健康态、拒写与显式重建(MC-054) ──────────────── */
 
 console.log("\n守望命令模板");
 
@@ -876,19 +877,21 @@ console.log("\n守望命令模板");
     (got.templates as Array<{ id: string }>).map((t) => t.id),
     ["a", "d"],
   );
+  // 【MC-054】返回值把**完整性**带出来了 —— 从前只有日志,界面拿不到。
+  eq("★ MC-054:返回值带 health=partial(有一条读不出)", got.health, "partial");
+  same(
+    "★ MC-054:problems 列出坏了几条(界面能说「有几条读不出来」)",
+    (got.problems as string[]).length,
+    2,
+  );
 
-  // **半截状态**:存一份坏的里面混着好的,读回来时好的那些不能被顺手丢了。
-  // (`loadWatchTemplates` 逐条 safeParse,坏的丢掉 —— 这是刻意的,注释里写了理由。)
-
-  // ✅ **丢掉的那几条要在日志里说话。** 判据立在**用户能看到的那行字**上:用户手改
-  // setting 之后模板不见了,他唯一的线索就是日志。这条断言抓的是**桩打到 stderr 上的
-  // 那几行**(见 `stubs/logger.ts` 的文件头:它故意不静默)。
+  // 丢掉的那几条同时要在日志里说话(这条以前就有,钉住别退化)。
   const before = logLines.length;
   SettingRepo.set("automation.watch.templates", JSON.stringify(mixed));
   obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
   const newLines = logLines.slice(before);
   check(
-    "★ 丢掉坏条目时日志里说了话(以前一个字都不报)",
+    "丢掉坏条目时日志里说了话(以前一个字都不报)",
     newLines.some((l) => l.includes("命令模板") && l.includes("跳过")),
     newLines,
   );
@@ -898,48 +901,89 @@ console.log("\n守望命令模板");
     newLines,
   );
 
-  // 整个 setting 是坏 JSON → 同样要说话(这一条以前就有,钉住别退化)。
-  const before2 = logLines.length;
+  // 【MC-054】partial 状态下**普通全量保存被拒绝** —— 界面没看见那些坏条目,照写
+  // 就是替用户把它们抹掉(台账点名的「新保存会覆盖原始设置」)。
+  const refusedPartial = obj(
+    await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+      templates: [{ id: "a", name: "好的", command: "echo 1" }],
+    }),
+  );
+  eq("★ MC-054:partial 时普通保存被拒绝(不静默抹掉读不出的条目)", refusedPartial.ok, false);
+  check(
+    "★ MC-054:拒绝语点名了「读不出来的条目」与恢复路径",
+    typeof refusedPartial.error === "string" &&
+      refusedPartial.error.includes("读不出来的条目") &&
+      refusedPartial.error.includes("备份并重建"),
+    refusedPartial.error,
+  );
+  // 被拒后原值逐字节还在(没有被覆盖)。
+  eq(
+    "★ MC-054:被拒后原 setting 逐字节还在",
+    SettingRepo.get("automation.watch.templates"),
+    JSON.stringify(mixed),
+  );
+
+  // 整个 setting 是坏 JSON → health=corrupt,保存也被拒。
   SettingRepo.set("automation.watch.templates", "{坏 JSON");
-  const empty = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  same("整个 setting 是坏 JSON → 当没有模板,不抛", empty.templates, []);
-  check(
-    "而且是坏 JSON 时也要说话",
-    logLines.slice(before2).some((l) => l.includes("命令模板")),
-    logLines.slice(before2),
+  const corrupt = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
+  same("整个 setting 是坏 JSON → 当没有模板,不抛", corrupt.templates, []);
+  eq("★ MC-054:坏 JSON → health=corrupt", corrupt.health, "corrupt");
+  const refusedCorrupt = obj(
+    await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+      templates: [{ id: "a", name: "好的", command: "echo 1" }],
+    }),
+  );
+  eq("★ MC-054:corrupt 时普通保存被拒绝", refusedCorrupt.ok, false);
+  eq(
+    "★ MC-054:被拒后坏 JSON 原文逐字节还在",
+    SettingRepo.get("automation.watch.templates"),
+    "{坏 JSON",
   );
 
-  // 存的是合法 JSON 但**不是数组**(用户手改成一个对象)—— 这条以前是**静默返回 []**,
-  // 现在也要说话。
-  const before3 = logLines.length;
+  // 存的是合法 JSON 但不是数组 → 同样 corrupt(一条都读不出来)。
   SettingRepo.set("automation.watch.templates", JSON.stringify({ 不是: "数组" }));
-  same(
-    "存的是个对象不是数组 → 当没有模板",
-    obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES)).templates,
-    [],
-  );
-  check(
-    "★ 而且这种形状也要说话(以前是静默返回 [])",
-    logLines.slice(before3).some((l) => l.includes("命令模板")),
-    logLines.slice(before3),
-  );
+  const notArray = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
+  same("存的是个对象不是数组 → 当没有模板", notArray.templates, []);
+  eq("★ MC-054:不是数组 → health=corrupt", notArray.health, "corrupt");
 
-  // 存回一份好的,确认这条链没被坏数据卡死(坏了的不该让_写_也坏掉)。
+  // 【MC-054】显式重建:备份原值 → 校验 → 重建(部分损坏的常用法:保住读得出的好条目)。
+  SettingRepo.set("automation.watch.templates", JSON.stringify(mixed));
+  const rebuilt = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
+  eq("★ MC-054:显式重建成功", rebuilt.ok, true);
+  check(
+    "★ MC-054:重建返回备份键",
+    typeof rebuilt.backupKey === "string" && rebuilt.backupKey.startsWith("automation.watch.templates.corrupt-"),
+    rebuilt.backupKey,
+  );
+  eq(
+    "★ MC-054:备份内容逐字节等于损坏原值",
+    SettingRepo.get(rebuilt.backupKey as string),
+    JSON.stringify(mixed),
+  );
+  eq("★ MC-054:重建保住了读得出的好条目(2 条)", rebuilt.kept, 2);
+  const afterRebuild = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
+  eq("★ MC-054:重建后健康态翻回 valid", afterRebuild.health, "valid");
+  same(
+    "★ MC-054:重建后剩下的就是那两条好的",
+    (afterRebuild.templates as Array<{ id: string }>).map((t) => t.id),
+    ["a", "d"],
+  );
+  SettingRepo.delete(rebuilt.backupKey as string);
+
+  // 没坏的时候「重建」要拒绝(不静默做用户没要的事)。
+  const noNeed = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
+  eq("★ MC-054:文件没坏时显式重建拒绝(不做多余动作)", noNeed.ok, false);
+
+  // 健康状态下正常保存照旧(没被上面的拒写卡死)。
   const saveRes = obj(
     await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
       templates: [{ id: "a", name: "好的", command: "echo 1" }],
     }),
   );
-  eq("存模板返回 ok", saveRes.ok, true);
+  eq("健康时存模板返回 ok", saveRes.ok, true);
   const back = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
   same("存进去的读得回来", (back.templates as Array<{ id: string }>).map((t) => t.id), ["a"]);
-
-  // ⚠️ **仍然没修的那半条(断言只记录现状)**:返回值里只有 `templates` 一个键,
-  // 界面拿不到"有几条读不了"。`nodeTypes.ts` 那条路是带 `problems` 的;这里要带就得改
-  // 契约 `automation.watchTemplates` 的返回类型(那个文件不在我分到的两个文件里)。
-  // 所以今天**只有日志**,界面上一句都没有 —— 修法见报告。
-  const silent = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  eq("⚠️ 返回值里仍然没有说明(只有 templates 一个键,界面看不到)", Object.keys(silent).length, 1);
+  eq("正常读的 health=valid", back.health, "valid");
 }
 
 /* ──────────────── 10. 自动化运行历史:存档坏掉的那些 ──────────────── */

@@ -82,7 +82,7 @@ import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
 import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefaultInput, WorkflowShippedUpdateInput } from "./workflow.js";
-import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
+import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchTemplatesRebuildInput, WatchCommandTemplate } from "./workflow.js";
 import type { HostHookGrantListInput, HostHookGrantIssueInput, HostHookGrantRevokeInput } from "./hostHookGrants.js";
 import type { HostHookGrant } from "../hostHookGrant.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
@@ -960,9 +960,22 @@ export interface RpcMap {
   /** 这条会话上有没有正在跑的守望(面板提示"上一次还在跑"用)。 */
   "automation.watchStatus": (input: WatchStatusInput) => Promise<{ active: boolean }>;
   /** 全部命令模板(守望面板的下拉)。**无参 handler**,同 `workflow.agentProfiles`。 */
-  "automation.watchTemplates": () => Promise<{ templates: WatchCommandTemplate[] }>;
+  "automation.watchTemplates": () => Promise<{
+    templates: WatchCommandTemplate[];
+    /** 【MC-054】设置的完整性:absent=没配过 / valid / partial=有条目读不出(problems 列出) /
+     *  corrupt=整份坏 / read_error=读不动。partial 与 corrupt 下普通保存会被拒绝。 */
+    health: "absent" | "valid" | "partial" | "corrupt" | "read_error";
+    problems: string[];
+  }>;
   /** 存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。 */
-  "automation.watchTemplatesSave": (input: WatchTemplatesSaveInput) => Promise<{ ok: boolean }>;
+  "automation.watchTemplatesSave": (input: WatchTemplatesSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 【MC-054】显式「备份损坏原值 → 校验 → 重建」—— 唯一能吃下损坏状态的操作。 */
+  "automation.rebuildWatchTemplates": (input: WatchTemplatesRebuildInput) => Promise<{
+    ok: boolean;
+    error?: string;
+    backupKey?: string;
+    kept?: number;
+  }>;
   /** 全部触发器的**事实状态**(挂没挂上 / 为什么 / 最近一次跑,见
    *  `AutomationTriggerFacts`)。**无参 handler**,同 `workflow.agentProfiles`。 */
   "automation.statusAll": () => Promise<AutomationTriggerFacts[]>;
@@ -1914,6 +1927,8 @@ export const IPC = {
   AUTOMATION_WATCH_STATUS: "automation:watchStatus",
   /** 全部命令模板(守望面板的下拉)。 */
   AUTOMATION_WATCH_TEMPLATES: "automation:watchTemplates",
+  // 【MC-054】损坏/部分损坏的命令模板设置的显式重建(备份原值 → 校验 → 重建)。
+  AUTOMATION_WATCH_TEMPLATES_REBUILD: "automation:rebuildWatchTemplates",
   /** 存整份命令模板列表。 */
   AUTOMATION_WATCH_TEMPLATES_SAVE: "automation:watchTemplatesSave",
   /** 全部触发器的事实状态(自动化管理页回答「它怎么没反应」的那份)。 */

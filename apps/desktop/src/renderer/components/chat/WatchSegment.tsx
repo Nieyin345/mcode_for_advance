@@ -126,6 +126,11 @@ function WatchPanel({
 
   const [templates, setTemplates] = useState<WatchCommandTemplate[]>([]);
   const [templateId, setTemplateId] = useState(NO_TEMPLATE);
+  /** 【MC-054】设置完整性状态与逐条问题 —— 「一条都没有」与「有几条读不出来」分开说。 */
+  const [tplHealth, setTplHealth] = useState<"absent" | "valid" | "partial" | "corrupt" | "read_error">("valid");
+  const [tplProblems, setTplProblems] = useState<string[]>([]);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [tplBackupKey, setTplBackupKey] = useState<string | null>(null);
   const [command, setCommand] = useState("");
   const [message, setMessage] = useState("");
   /** 「存为模板」的名字输入。 */
@@ -147,6 +152,9 @@ function WatchPanel({
         ]);
         if (cancelled) return;
         setTemplates(tpl.templates);
+        // 【MC-054】健康态随读一起回来(旧 preload 没这两字段 → 当正常)。
+        setTplHealth(tpl.health ?? "valid");
+        setTplProblems(tpl.problems ?? []);
         setActive(status.active);
       } catch {
         if (!cancelled) setTemplates([]);
@@ -196,16 +204,42 @@ function WatchPanel({
     if (tpl) setCommand(tpl.command);
   };
 
+  /** 【MC-048】乐观更新要么被后端确认、要么**回滚到权威状态**。
+   *
+   *  从前 `removeTemplate` 直接 `setTemplates(next)` + `catch {}` —— 保存失败时下拉里
+   *  的项已经没了、选择也清了,重新打开面板却还能看到它(持久化没变)。现在:失败即
+   *  把所有受影响状态退回**调用前**的样子,并显式提示(删除是个轻动作,但"显示的与
+   *  盘上的不一致"不是)。返回是否成功,调用方据此决定要不要再动别的状态。 */
+  const persistTemplates = async (
+    next: WatchCommandTemplate[],
+  ): Promise<boolean> => {
+    try {
+      const res = await api.automation.saveWatchTemplates({ templates: next });
+      if (!res.ok) {
+        // 【MC-054】损坏/部分损坏时主进程会拒绝并给原因 —— 显式提示,不改本地状态。
+        setNotice(res.error ?? t("composer.watch.saveFailed"));
+        return false;
+      }
+      setNotice(null);
+      return true;
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  };
+
   const removeTemplate = async (): Promise<void> => {
     if (templateId === NO_TEMPLATE) return;
+    // 【MC-048】先算好"退回去是什么"(调用前的快照),失败时逐字段恢复。
+    const prevTemplates = templates;
+    const prevId = templateId;
     const next = templates.filter((x) => x.id !== templateId);
     setTemplates(next);
     setTemplateId(NO_TEMPLATE);
-    try {
-      await api.automation.saveWatchTemplates({ templates: next });
-    } catch {
-      // 存失败就不存了 —— 本地列表已经改了,下次打开面板重读会看到旧值;不在这里
-      // 报错打断人(删模板是个轻动作,不值得一张错误卡)。
+    if (!(await persistTemplates(next))) {
+      // 失败 → 回滚(选项、选择都退回原样;notice 已由 persistTemplates 设好)。
+      setTemplates(prevTemplates);
+      setTemplateId(prevId);
     }
   };
 
@@ -213,15 +247,18 @@ function WatchPanel({
     const cmd = command.trim();
     const name = tplName.trim();
     if (!cmd || !name) return;
+    // 【MC-048】同样先快照;失败回滚(输入框里的内容不清 —— 那是用户打的字)。
+    const prevTemplates = templates;
+    const prevId = templateId;
     const tpl: WatchCommandTemplate = { id: `watchtpl_${Date.now()}`, name, command: cmd };
     const next = [...templates, tpl];
     setTemplates(next);
     setTemplateId(tpl.id);
     setTplName("");
-    try {
-      await api.automation.saveWatchTemplates({ templates: next });
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : String(e));
+    if (!(await persistTemplates(next))) {
+      setTemplates(prevTemplates);
+      setTemplateId(prevId);
+      setTplName(name); // 名字还给用户,别让他重打
     }
   };
 
@@ -249,6 +286,31 @@ function WatchPanel({
     }
   };
 
+  /** 【MC-054】显式「备份损坏原值 → 校验 → 重建」。省略 templates = 把当前读得出的
+   *  好条目原样保住重写(部分损坏的常用法;主进程那边读得出什么就保什么)。 */
+  const rebuildTemplates = async (): Promise<void> => {
+    setRebuilding(true);
+    setNotice(null);
+    try {
+      const res = await api.automation.rebuildWatchTemplates({});
+      if (!res.ok) {
+        setNotice(res.error ?? t("composer.watch.tplRebuildFailed"));
+        return;
+      }
+      // 重建成功:重读一遍(健康态翻回正常、红条消失),把备份键告诉用户。
+      const tpl = await api.automation.watchTemplates();
+      setTemplates(tpl.templates);
+      setTplHealth(tpl.health ?? "valid");
+      setTplProblems(tpl.problems ?? []);
+      setTemplateId(NO_TEMPLATE);
+      if (res.backupKey !== undefined) setTplBackupKey(res.backupKey);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRebuilding(false);
+    }
+  };
+
   return createPortal(
     <>
       {/* 全屏透明 backdrop:点外关闭。z-40 垫在面板(z-50)下面。 */}
@@ -265,6 +327,31 @@ function WatchPanel({
           {t("composer.watch.title")}
           <InfoHint>{t("composer.watch.intro")}</InfoHint>
         </div>
+
+        {/* 【MC-054】设置损坏:普通保存会被主进程拒绝(保住原值),这里显式说清 + 给重建入口。 */}
+        {(tplHealth === "corrupt" || tplHealth === "read_error" || tplHealth === "partial") && (
+          <div className="mt-2 rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-[11px] leading-relaxed text-danger">
+            <div className="flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                {t(tplHealth === "partial" ? "composer.watch.tplPartial" : "composer.watch.tplCorrupt")}
+                {tplProblems.length > 0 && (
+                  <div className="mt-0.5 text-danger/80">{tplProblems.join(" / ")}</div>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={rebuilding}
+                onClick={() => void rebuildTemplates()}
+                className="shrink-0 rounded border border-danger/40 px-1.5 py-0.5 hover:bg-danger/10 disabled:opacity-50"
+              >
+                {rebuilding ? t("composer.watch.tplRebuilding") : t("composer.watch.tplRebuild")}
+              </button>
+            </div>
+            {tplBackupKey !== null && (
+              <div className="mt-0.5 text-danger/80">{t("composer.watch.tplRebuiltBackup", { key: tplBackupKey })}</div>
+            )}
+          </div>
+        )}
 
         {/* 命令模板:选中的直接填进下面的命令框;旁边那把回收站只对"已选中"生效。 */}
         <label className="mt-2.5 mb-1 block text-[11px] font-medium text-content-muted">

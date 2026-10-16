@@ -448,6 +448,13 @@ export const en = {
   "composer.watch.activeHint": "A watch is already running for this session",
   "composer.watch.failed": "Watch failed to start: {error}",
   "composer.watch.failedGeneric": "Watch failed to start",
+  "composer.watch.saveFailed": "Save failed",
+  "composer.watch.tplPartial": "Some command templates can't be read (the good ones still show). Saving as-is would wipe what you hand-wrote, so it was blocked — fix them, or click 「Back up and rebuild」.",
+  "composer.watch.tplCorrupt": "The command-template setting is unreadable. Saving was blocked (the original is untouched) — click 「Back up and rebuild」.",
+  "composer.watch.tplRebuild": "Back up and rebuild",
+  "composer.watch.tplRebuilding": "Rebuilding…",
+  "composer.watch.tplRebuiltBackup": "Rebuilt. Original backed up under setting key: {key}",
+  "composer.watch.tplRebuildFailed": "Rebuild failed",
 
   // ── Criteria bar (renderer of the main agent's "fixed criteria" param, see chat/SearchFilterBar) ──
   "chat.nodeCriteria.title": "Fixed criteria",

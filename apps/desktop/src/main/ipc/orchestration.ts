@@ -27,6 +27,7 @@ import {
   WatchCommandTemplateSchema,
   WatchStartSchema,
   WatchStatusSchema,
+  WatchTemplatesRebuildSchema,
   WatchTemplatesSaveSchema,
   WorkflowChooseSchema,
   WorkflowRetrySchema,
@@ -420,53 +421,171 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   });
 
   // 无参 handler,同 `WORKFLOW_AGENT_PROFILES`。
-  ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES, async () => ({ templates: loadWatchTemplates() }));
+  // 【MC-054】返回值带**完整性状态**:`health` 区分「没配过/好好的/整份坏/读不动」,
+  // `problems` 列出被跳过的坏条目 —— 界面据此把「一条都没有」与「有几条读不出来」
+  // 分开说(从前只有日志,界面上一句都没有)。
+  ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES, async () => loadWatchTemplatesReport());
 
+  // 【MC-054】整份损坏时**拒绝**普通保存 —— 与 MC-051 的 hooks.json 同一条纪律
+  // (损坏原件不静默覆盖;显式修复走 `automation.rebuildCorruptWatchTemplates`)。
   ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, async (_evt, raw) => {
     const input = WatchTemplatesSaveSchema.parse(raw);
+    const health = classifyWatchTemplates();
+    if (health.state === "corrupt" || health.state === "read_error") {
+      log.warn(`[workflow] 拒绝保存命令模板:${WATCH_TEMPLATES_KEY} 损坏(${health.detail}) —— 原值保持不动`);
+      return {
+        ok: false,
+        error: `命令模板的设置在库里坏得读不出来(${health.detail})—— 为保住你的原始内容,这次保存被拒绝。请在守望面板上用「备份并重建」显式重建(原值会先备份成 ${WATCH_TEMPLATES_KEY}.corrupt-<时间>)。`,
+      };
+    }
+    // 逐条坏(个别条目读不了)时**也拒全量写** —— 那份 `input.templates` 是从界面当前列表
+    // 来的,而界面根本没看见被跳过的坏条目:照写等于替用户把它们抹掉(台账点名的
+    // 「新保存会覆盖原始设置」)。用户要抹,走显式重建。
+    if (health.state === "partial") {
+      return {
+        ok: false,
+        error: `命令模板里还有 ${health.problems.length} 条读不出来的条目 —— 直接整份保存会把你手写的那几条抹掉。请先修好它们,或在守望面板上用「备份并重建」显式重建。`,
+      };
+    }
+    // 读得懂(或没配过、或整份是空)→ 正常整份写。
     SettingRepo.set(WATCH_TEMPLATES_KEY, JSON.stringify(input.templates));
     return { ok: true };
   });
+
+  // 【MC-054】显式「备份损坏原值 → 校验 → 重建」—— 唯一能吃下损坏/部分损坏的操作。
+  ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, async (_evt, raw) => {
+    const input = WatchTemplatesRebuildSchema.parse(raw);
+    return rebuildCorruptWatchTemplates(input.templates);
+  });
+
+  // 【MC-054】部分损坏时的「显式抢救」:把读得出的好条目原样**重写**成一份干净的
+  // (原值先备份)。与上面那条区别:那条要求调用方给完整新列表,这条复用当前读得出的那些。
 }
 
 /* ── 命令模板的存取(D4:名字 + 命令的数组,存 setting)── */
 
 const WATCH_TEMPLATES_KEY = "automation.watch.templates";
 
-/** 读出来时**逐条过一遍 schema**:setting 是用户数据,手改坏了一条不该把整个面板
- *  弄挂 —— 坏的丢掉,好的照常显示。
+/**
+ * 【MC-054】命令模板设置的**健康分类** —— 读/保存/重建三处共用一份判据
+ * (与 MC-051 的 `classifyHooksFile` 同一条纪律)。
  *
- *  ⚠️ **丢掉的那几条要说话。** 以前这里只有 `catch` 那条坏 JSON 打了日志,逐条被
- *  `safeParse` 挡下的**一声不响** —— 用户看到的现象是"我在 setting 里加的那条模板不见
- *  了",而日志里一个线索都没有(硬规矩第 3 条,同 `nodeTypes.ts` 的 `problems`)。
- *  返回值那一层没有 `problems` 这个通道(契约 `automation.watchTemplates` 只声明了
- *  `{ templates }`,加字段要动 `@contracts`,不在这次改的范围里),所以至少**日志里要有**。 */
-function loadWatchTemplates(): WatchCommandTemplate[] {
-  const raw = SettingRepo.get(WATCH_TEMPLATES_KEY);
-  if (raw === null || raw.length === 0) return [];
+ *  - `absent`    键不存在 / 空串 —— 「没配过」,唯一允许随意写的状态;
+ *  - `valid`     读得懂且**每一条都过得去 schema**;
+ *  - `partial`   读得懂(是数组),但有条目过不去 schema —— 好的照常显示,
+ *                坏的要报出来;**普通全量保存拒绝**(界面看不见那些条目,
+ *                照写就是替用户抹掉,台账红例);
+ *  - `corrupt`   不是 JSON / 顶层不是数组 —— 一条都读不出来;
+ *  - `read_error` `SettingRepo.get` 抛(库未就绪 / 磁盘拒读)。
+ */
+type WatchTemplatesHealth =
+  | { state: "absent" }
+  | { state: "valid"; templates: WatchCommandTemplate[] }
+  | { state: "partial"; templates: WatchCommandTemplate[]; problems: string[] }
+  | { state: "corrupt"; detail: string }
+  | { state: "read_error"; detail: string };
+
+function classifyWatchTemplates(): WatchTemplatesHealth {
+  let raw: string | null;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      log.warn(`[workflow] 命令模板存的不是数组,当没有模板处理:${raw.slice(0, 80)}`);
-      return [];
-    }
-    const out: WatchCommandTemplate[] = [];
-    const dropped: string[] = [];
-    for (const item of parsed) {
-      const check = WatchCommandTemplateSchema.safeParse(item);
-      if (check.success) out.push(check.data);
-      else dropped.push(check.error.issues[0]?.message ?? "形状不对");
-    }
-    if (dropped.length > 0) {
-      log.warn(
-        `[workflow] 命令模板里有 ${dropped.length} 条读不了,已跳过(好的照常显示):${dropped.join(" / ")}`,
-      );
-    }
-    return out;
-  } catch {
-    log.warn(`[workflow] 命令模板存的是坏 JSON,当没有模板处理:${raw.slice(0, 80)}`);
-    return [];
+    raw = SettingRepo.get(WATCH_TEMPLATES_KEY);
+  } catch (err) {
+    return { state: "read_error", detail: err instanceof Error ? err.message : String(err) };
   }
+  if (raw === null || raw.length === 0) return { state: "absent" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { state: "corrupt", detail: `不是合法的 JSON:${(err as Error).message}` };
+  }
+  if (!Array.isArray(parsed)) return { state: "corrupt", detail: "存的不是数组" };
+  const templates: WatchCommandTemplate[] = [];
+  const problems: string[] = [];
+  for (const item of parsed) {
+    const check = WatchCommandTemplateSchema.safeParse(item);
+    if (check.success) templates.push(check.data);
+    else problems.push(check.error.issues[0]?.message ?? "形状不对");
+  }
+  if (problems.length > 0) return { state: "partial", templates, problems };
+  return { state: "valid", templates };
+}
+
+/**
+ * 读出来时**逐条过一遍 schema**:setting 是用户数据,手改坏了一条不该把整个面板
+ * 弄挂 —— 坏的丢掉,好的照常显示。丢掉的那几条要说话(**日志 + 返回值两条路都要**;
+ * 从前只有日志,界面上一句都没有 —— MC-054)。
+ */
+function loadWatchTemplatesReport(): {
+  templates: WatchCommandTemplate[];
+  health: "absent" | "valid" | "partial" | "corrupt" | "read_error";
+  problems: string[];
+} {
+  const health = classifyWatchTemplates();
+  switch (health.state) {
+    case "absent":
+      return { templates: [], health: "absent", problems: [] };
+    case "valid":
+      return { templates: health.templates, health: "valid", problems: [] };
+    case "partial":
+      log.warn(
+        `[workflow] 命令模板里有 ${health.problems.length} 条读不了,已跳过(好的照常显示):${health.problems.join(" / ")}`,
+      );
+      return { templates: health.templates, health: "partial", problems: health.problems };
+    case "corrupt":
+      log.warn(`[workflow] 命令模板${health.detail},当没有模板处理(保存会被拒绝,原件保全)`);
+      return { templates: [], health: "corrupt", problems: [health.detail] };
+    case "read_error":
+      log.warn(`[workflow] 命令模板读不出来:${health.detail}`);
+      return { templates: [], health: "read_error", problems: [health.detail] };
+  }
+}
+
+/**
+ * 【MC-054】**显式**把损坏 / 部分损坏的命令模板备份并重建 —— 唯一能吃下坏状态的操作。
+ *
+ * 与 MC-051 的 `rebuildCorruptHooksFile` 同一套顺序:读原值 → 写备份键
+ * (`<key>.corrupt-<时间戳>`)→ **校验备份与原文逐字节一致** → 才写主键。任何一步
+ * 失败即中止、原值不动。`templates` 省略 = 把**当前读得出的好条目**原样保住重写
+ * (部分损坏的常用法:救回好的,丢掉读不出的那几条 —— 这一步是用户明确点的)。
+ */
+function rebuildCorruptWatchTemplates(
+  next: WatchCommandTemplate[] | undefined,
+): { ok: true; backupKey: string; kept: number } | { ok: false; error: string } {
+  const health = classifyWatchTemplates();
+  if (health.state === "absent" || health.state === "valid") {
+    return { ok: false, error: "命令模板没有损坏,不需要重建(直接普通保存即可)" };
+  }
+  let original: string | null = null;
+  try {
+    original = SettingRepo.get(WATCH_TEMPLATES_KEY);
+  } catch {
+    original = null;
+  }
+  if (original === null || original.length === 0) {
+    return { ok: false, error: "命令模板的原值读不出来,连备份都做不了" };
+  }
+  const backupKey = `${WATCH_TEMPLATES_KEY}.corrupt-${Date.now()}`;
+  try {
+    SettingRepo.set(backupKey, original);
+  } catch (err) {
+    return { ok: false, error: `备份写不进去(${backupKey}):${(err as Error).message} —— 未重建,原值未动` };
+  }
+  // 校验备份与原文逐字节一致 —— 「先备份再重建」的承诺在这里被核验。
+  let backupText: string | null;
+  try {
+    backupText = SettingRepo.get(backupKey);
+  } catch (err) {
+    return { ok: false, error: `备份写完后读不回来(${backupKey}):${(err as Error).message} —— 未重建,原值未动` };
+  }
+  if (backupText !== original) {
+    return { ok: false, error: `备份与原文不一致(${backupKey})—— 未重建,原值未动` };
+  }
+  // 重建内容:调用方给了就用它;没给 = 把当前读得出的好条目原样保住(部分损坏的常用法)。
+  const kept = next ?? (health.state === "partial" ? health.templates : []);
+  SettingRepo.set(WATCH_TEMPLATES_KEY, JSON.stringify(kept));
+  log.info(`[workflow] 损坏的命令模板已备份到 ${backupKey} 并重建(${kept.length} 条)`);
+  return { ok: true, backupKey, kept: kept.length };
 }
 
 /** 一次给界面看几条历史。窗口里只有一条列表,给多了也是滚 —— 二十条够看出"它在按时跑"。 */

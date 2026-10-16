@@ -240,6 +240,13 @@ export const WatchTemplatesSaveSchema = z.object({
 });
 export type WatchTemplatesSaveInput = z.infer<typeof WatchTemplatesSaveSchema>;
 
+/** 【MC-054】显式重建损坏/部分损坏的命令模板设置。`templates` 省略 = 把当前读得出的
+ *  好条目原样保住重写(部分损坏的常用法);给了就过 schema 校验再写。 */
+export const WatchTemplatesRebuildSchema = z.object({
+  templates: z.array(WatchCommandTemplateSchema).max(200).optional(),
+});
+export type WatchTemplatesRebuildInput = z.infer<typeof WatchTemplatesRebuildSchema>;
+
 /**
  * 一次运行的结局。与 `workflow_runs.status` 那一列**一一对应**
  * (见 `main/store/repositories.ts` 的 `WorkflowRunStatus`)。

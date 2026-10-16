@@ -470,6 +470,13 @@ export const zh = {
   "composer.watch.activeHint": "这个会话已有一个守望在跑",
   "composer.watch.failed": "守望启动失败：{error}",
   "composer.watch.failedGeneric": "守望启动失败",
+  "composer.watch.saveFailed": "保存失败",
+  "composer.watch.tplPartial": "命令模板里有条目读不出来（好的照常显示）。直接保存会把你手写的那几条抹掉，已被拦下——修好它们，或点右边「备份并重建」。",
+  "composer.watch.tplCorrupt": "命令模板的设置在库里坏得读不出来。保存已被拦下（原值未动）——点右边「备份并重建」。",
+  "composer.watch.tplRebuild": "备份并重建",
+  "composer.watch.tplRebuilding": "重建中…",
+  "composer.watch.tplRebuiltBackup": "已重建。原值备份在设置键：{key}",
+  "composer.watch.tplRebuildFailed": "重建失败",
 
   // ── 固定条件条(主对话节点「固定条件」参数的渲染端,见 chat/SearchFilterBar) ──
   // 这一句是**这一条的说明**,挂在左边那个小图标上(它是这一整排的统称,每个条件自己

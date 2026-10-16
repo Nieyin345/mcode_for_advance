@@ -935,6 +935,11 @@ const api = {
         IPC.AUTOMATION_WATCH_TEMPLATES_SAVE,
         input,
       )) as RpcMap["automation.watchTemplatesSave"],
+    rebuildWatchTemplates: ((input) =>
+      ipcRenderer.invoke(
+        IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD,
+        input,
+      )) as RpcMap["automation.rebuildWatchTemplates"],
     // 全部触发器的事实状态(自动化管理页回答「它怎么没反应」的那份)。
     statusAll: (() =>
       ipcRenderer.invoke(IPC.AUTOMATION_STATUS_ALL)) as RpcMap["automation.statusAll"],
