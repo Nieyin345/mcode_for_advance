@@ -219,7 +219,9 @@ const { IPC, MCP_MANAGEMENT_SETTING_KEY, MCP_RESERVED_NAME } = await import("@co
   eq("保留名判据:整段前缀拒绝(不只字面名)", JSON.stringify([isReservedMcpServerName("mcode-app"), isReservedMcpServerName("mcode-memory")]), "[true,true]");
   eq("字面名当然也拒", isReservedMcpServerName(MCP_RESERVED_NAME), true);
   eq("普通名放行", isReservedMcpServerName("my-server"), false);
-  const panel = readFileSync("src/renderer/components/settings/McpPanel.tsx", "utf8");
+  // ⚠️ `McpPanel` 的对话框（含这个名字校验）已从 `McpPanel.tsx` 拆到 `McpPanelParts.tsx`
+  //    —— 扫的是**现在的家**。这条曾经因搬家变空过（按源码文本扫描、文件一移动就静默失效）。
+  const panel = readFileSync("src/renderer/components/settings/McpPanelParts.tsx", "utf8");
   const market = readFileSync("src/renderer/components/settings/McpMarketView.tsx", "utf8");
   check("★ McpPanel 用共享 isReservedMcpServerName(不再只比字面名)", panel.includes("isReservedMcpServerName(trimmedName)"), "");
   check("★ McpMarketView 用共享判据(不再内联前缀正则)", market.includes("isReservedMcpServerName(trimmedName)") && !market.includes("/^mcode["), "");
