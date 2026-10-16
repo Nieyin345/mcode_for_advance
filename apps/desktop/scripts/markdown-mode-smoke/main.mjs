@@ -17,12 +17,25 @@ const ts = require("typescript");
 const path = join(desktop, "src/renderer/components/ide/FileEditor.tsx");
 const source = readFileSync(path, "utf8");
 const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+// ⚠️ 文件类型分类器已拆到 `fileEditorKinds.ts`（`FileEditor.tsx` 尾部那一组纯判定）。
+// 这一套**要执行真的分类器**（不是抄一份正则），所以两个文件都要读进来再挑 ——
+// 只读主文件会报 `Missing production AST boundary: isMarkdown`（真发生过）。
+const kindsPath = join(desktop, "src/renderer/components/ide/fileEditorKinds.ts");
+const kindsSource = readFileSync(kindsPath, "utf8");
+const kindsAst = ts.createSourceFile(kindsPath, kindsSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const functions = ["FileEditor", "EditorToolbar", "isMarkdown", "isPdfFile", "isImage", "isUnsupported"];
 const selected = ast.statements.filter(node =>
   ts.isFunctionDeclaration(node) && functions.includes(node.name?.text) ||
   ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
     ts.isIdentifier(d.name) && /TOGGLE_(LABEL|TITLE)_KEY$/.test(d.name.text)));
-for (const name of functions) assert.ok(selected.some(n => n.name?.text === name), `Missing production AST boundary: ${name}`);
+const selectedKinds = kindsAst.statements.filter(node =>
+  ts.isFunctionDeclaration(node) && functions.includes(node.name?.text));
+for (const name of functions) {
+  assert.ok(
+    selected.some(n => n.name?.text === name) || selectedKinds.some(n => n.name?.text === name),
+    `Missing production AST boundary: ${name}`,
+  );
+}
 // Import the production contract classifiers at AST boundaries too. A copied
 // extension regex goes stale when Office support changes independently.
 const officePath = join(desktop, "../../packages/contracts/src/ipc/onlyoffice.ts");
@@ -36,7 +49,9 @@ const officeNodes = officeAst.statements.filter(node =>
     ts.isIdentifier(d.name) && officeNames.includes(d.name.text)));
 assert.equal(officeNodes.length, officeNames.length, "Production Office classifier boundaries");
 const code = ts.transpileModule([
-  ...officeNodes.map(n => n.getText(officeAst)), ...selected.map(n => n.getText(ast)),
+  ...officeNodes.map(n => n.getText(officeAst)),
+  ...selected.map(n => n.getText(ast)),
+  ...selectedKinds.map(n => n.getText(kindsAst)),
 ].join("\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
     jsx: ts.JsxEmit.React, jsxFactory: "h" },
