@@ -28,7 +28,7 @@ import { __mount, __flush, __nodes, __text } from "./fakeReact.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { GitRepoCard } from "@renderer/components/ide/GitRepoCard.js";
 import { SearchDialog } from "@renderer/components/ide/SearchDialog.js";
-import type { GitFileStatus, GitRepo, GitStatusResult } from "@contracts/ipc";
+import type { GitFileStatus, GitRepo, GitStatusResult, GitBranchListResult, GitBranchInfo } from "@contracts/ipc";
 
 let failures = 0;
 let checks = 0;
@@ -284,7 +284,9 @@ async function statusCodeParityScenario(): Promise<void> {
   const { join } = await import("node:path");
   const root = process.cwd();
   for (const rel of [
-    "src/renderer/components/ide/GitRepoCard.tsx",
+    // ⚠️ `StatusCodeIcon` 从 `GitRepoCard.tsx` 搬到了 `GitRepoCardParts.tsx`（拆子组件）——
+    //    扫的是**现在的家**。这条曾经因此变空过（按源码文本扫描、文件一移动就空转）。
+    "src/renderer/components/ide/GitRepoCardParts.tsx",
     "src/renderer/components/ide/GitDiffDialog.tsx",
   ]) {
     const src = readFileSync(join(root, rel), "utf8");
@@ -395,6 +397,95 @@ async function taskListPollSeqScenario(): Promise<void> {
   );
 }
 
+/**
+ * **渲染结构网**（拆 `GitRepoCard` 的判别用）。
+ *
+ * `GitRepoCard.tsx` 有 5 个可独立搬走的子组件（`CommitBox` / `BranchGroup` /
+ * `OperationLog` / `FileGroup` / `FileRow`）。搬文件是**纯结构改动**——但"纯结构"不等于
+ * "不会坏"：搬错一个 import、漏带一个 props，UI 就少画一块，而没网时它会**静默变空**。
+ *
+ * 这段把卡片需要的**全部数据形状**摆出来（当前分支、有已暂存 + 未暂存 + 冲突文件、
+ * 有分支列表、有 op 日志），然后逐个断言**每个子组件画出来的那个元素节点**存在、
+ * 且带着该带的 props。判据立在"屏幕上那一块有没有画出来"上，不是内部函数名。
+ *
+ * ⚠️ 子组件在假运行时里**不被调用**（fakeReact 只造元素）——所以这里查的是**元素节点的
+ * props**，那正是父组件传给子组件的东西；拆分后只要 props 没变，这段就仍绿。
+ */
+async function gitRepoCardRenderStructureScenario(): Promise<void> {
+  const staged: GitStatusResult = {
+    branch: "main",
+    ahead: 2,
+    behind: 1,
+    files: [
+      { path: "src/a.ts", index: "modified", workingTree: "unmodified" } as GitFileStatus,
+      { path: "src/b.ts", index: "unmodified", workingTree: "modified" } as GitFileStatus,
+      { path: "src/conflict.ts", index: "unmerged", workingTree: "unmerged" } as GitFileStatus,
+    ],
+  };
+  const branches: GitBranchListResult = {
+    current: "main",
+    detached: false,
+    local: [{ name: "main", current: true, commit: "abc1234", label: "init", type: "local" } as GitBranchInfo],
+    remote: [{ name: "origin/main", current: false, commit: "abc1234", label: "init", type: "remote" } as GitBranchInfo],
+    tags: [{ name: "v1.0.0", current: false, commit: "abc1234", label: "release", type: "tag" } as GitBranchInfo],
+  };
+
+  const mount = async () => {
+    resetCalls();
+    useSessionStore.setState({
+      locale: "zh",
+      activeProjectId: "p1",
+      gitChangeVersionByRepo: {},
+      commitGenModel: null,
+      commitGenPrompt: "",
+    });
+    // ⚠️ 回包形状:`git.status` 直接回 `{status}`、`git.listBranches` 直接回 `{branches}` ——
+    //    组件解构的是 `const { status } = await api.git.status(...)`。多包一层会让它
+    //    解出 undefined(卡片显示"无法读取分支"),网就假红了。
+    setOverride("git.status", { status: staged });
+    setOverride("git.listBranches", { branches });
+    __mount(() => GitRepoCard({ repo: REPO }));
+    await __flush();
+  };
+  const hasNodeWith = (pred: (p: Record<string, unknown>) => boolean): boolean =>
+    __nodes().some((n) => pred(n.props as Record<string, unknown>));
+
+  await mount();
+
+  // ⚠️ 子组件在假运行时里**不被调用**（fakeReact 只造元素），所以 `__text()` 里**没有**
+  //    文件路径/分支名 —— 那些在子组件内部才渲染。判据得立在**元素节点的 props** 上。
+  const propsOf = (pred: (p: Record<string, unknown>) => boolean): Record<string, unknown>[] =>
+    __nodes().map((n) => n.props as Record<string, unknown>).filter(pred);
+
+  // ① CommitBox：有可提交内容时画出来（带 onChange + onCommit）。
+  check(
+    "★ 渲染结构:有已暂存文件时 CommitBox 画出来(带 onChange/onCommit)",
+    hasNodeWith((p) => typeof p.onChange === "function" && typeof p.onCommit === "function"),
+  );
+  // ② FileGroup：已暂存 / 未暂存两组各带自己的 files（这是"文件列表画出来了"的直接判据）。
+  const fileGroups = propsOf((p) => Array.isArray(p.files) && typeof p.labelKey === "string");
+  check("★ 渲染结构:FileGroup 画出来了(带 files + labelKey)", fileGroups.length >= 1, fileGroups.map((g) => (g.files as unknown[]).length));
+  const allGroupedPaths = fileGroups.flatMap((g) => (g.files as Array<{ path: string }>).map((f) => f.path));
+  for (const fp of ["src/a.ts", "src/b.ts", "src/conflict.ts"]) {
+    check(`★ 渲染结构:文件 ${fp} 进了某个 FileGroup`, allGroupedPaths.includes(fp), allGroupedPaths);
+  }
+  // ③ 已暂存组与未暂存组是两个不同的 FileGroup（分组逻辑没被拆坏）。
+  const stagedGroup = fileGroups.find((g) => (g.files as Array<{ path: string }>).some((f) => f.path === "src/a.ts"));
+  const unstagedGroup = fileGroups.find((g) => (g.files as Array<{ path: string }>).some((f) => f.path === "src/b.ts"));
+  check("★ 渲染结构:已暂存组与未暂存组是两个不同的 FileGroup", !!stagedGroup && !!unstagedGroup && stagedGroup !== unstagedGroup);
+  // ④ OperationLog：只在**有日志时**才画（`logs.length > 0`）——先触发一次操作产生日志，
+  //    再断言它画出来（带 logs 数组）。
+  check("渲染结构前提:初始无日志时 OperationLog 不画", propsOf((p) => Array.isArray(p.logs)).length === 0);
+  // 走"新建分支框回车"那条路产生一条 checkout 日志（与 scenario 同一入口）。
+  (newBranchInput().props.onChange as (e: unknown) => void)({ target: { value: "feature-render" } });
+  await __flush();
+  (newBranchInput().props.onKeyDown as (e: unknown) => void)(keyEvent("Enter"));
+  await __flush();
+  check("★ 渲染结构:有日志后 OperationLog 元素在树里(带 logs 数组)", propsOf((p) => Array.isArray(p.logs)).length > 0);
+  // ⑤ 主组件本身画出了仓库名（标题区，这部分在主组件内渲染，所以 __text 有）。
+  check("★ 渲染结构:卡片画出了仓库名", __text().includes("repo") || __text().includes("proj"), __text().slice(0, 200));
+}
+
 await scenario();
 await gitErrorBannerScenario();
 await searchDialogScenario();
@@ -403,6 +494,7 @@ await fileTreeDeleteFailureScenario();
 await branchSwitchFailureScenario();
 await turnFlowTokenUnitScenario();
 await taskListPollSeqScenario();
+await gitRepoCardRenderStructureScenario();
 
 console.log(`\nide-ime-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;
