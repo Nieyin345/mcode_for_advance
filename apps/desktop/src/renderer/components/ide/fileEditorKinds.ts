@@ -11,7 +11,7 @@
  *
  * **纯搬迁，函数体逐字节一致。**
  */
-import { extname } from "node:path";
+import { extname } from "@renderer/lib/path.js";
 
 /** `.md` / `.markdown` —— 决定编辑器默认进预览还是源码模式。 */
 /** True for `.pdf` —— 默认走预览、渲染分支走 `PdfPreviewPane`。
