@@ -65,6 +65,7 @@ import {
 } from "./operations.js";
 import { computePanelCaptureRect } from "./panelCaptureRect.js";
 import { DOMAIN_LABELS, domainsMatchingTaskWord, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
+import { APP_API_TUTORIALS, tutorialsMatchingWord } from "./appApiTutorials.js";
 import { evaluate } from "./policyEngine.js";
 import { getGrantStore } from "./grantStoreRuntime.js";
 import type { GrantDecision } from "./grantStore.js";
@@ -175,7 +176,17 @@ export function apiEntries(): ApiEntry[] {
     if (known.has(ch)) continue;
     // 通道名形如 `domain:verb` —— 方法名就按 `domain.verb` 起。
     const method = ch.replace(/:/g, ".");
-    out.push({ method, channel: ch, doc: "", input: "(清单里没有说明,按报错提示传参)", output: "unknown", policy: policyFor(method), registered: true });
+    out.push({
+      method,
+      channel: ch,
+      doc: "",
+      input: "(清单里没有说明,按报错提示传参)",
+      // 【MC-040】没进生成清单的通道没有深展开版 —— full 与浅版一致(见 describe handler)。
+      inputFull: "(清单里没有说明,按报错提示传参)",
+      output: "unknown",
+      policy: policyFor(method),
+      registered: true,
+    });
   }
   return out;
 }
@@ -814,7 +825,7 @@ const UI_ACTIONS = [
 ] as const;
 
 /** 只读 / 界面类工具名(引擎侧若要按名字预放行可以用;真正的闸门在 handler 里)。 */
-export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_ui_state", "app_panel_api_list"]);
+export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_api_tutorial", "app_ui_state", "app_panel_api_list"]);
 
 /* ─────────────────── 自定义面板/扩展的对外接口(给 agent 查)─────────────────── */
 
@@ -1026,21 +1037,32 @@ export function appMcpTools(): McpToolSpec[] {
     },
     {
       name: "app_api_describe",
-      description: "看某个 Mcode 方法的完整说明、参数格式、返回格式和权限档。调用 app_api_call 之前先看一眼。",
+      description:
+        "看某个 Mcode 方法的完整说明、参数格式、返回格式和权限档。调用 app_api_call 之前先看一眼。" +
+        "参数里嵌套结构显示成 {…} 时,加 detail=\"full\" 拿**逐层展开**的完整结构(嵌套到若干层;" +
+        "仍然截断处会给字段名提示)。",
       inputSchema: {
         method: z.string().describe("方法名,如 session.rename(来自 app_api_list)"),
         setting_key: z.string().optional().describe("查看已知 JSON 设置的结构,例如 customUi.config.v1"),
+        // 【MC-040】浅展开(常驻清单)只到第一层,`workflow.save` 这类"入参是一棵树"的
+        // 方法嵌套层全在省略号里 —— full 按需展开(嵌套多层 + 字段注释),不常驻上下文。
+        detail: z
+          .enum(["compact", "full"])
+          .optional()
+          .describe("full = 参数按完整嵌套结构展开;默认 compact(第一层,给清单用的那份)"),
       },
-      handler: async (args: { method: string; setting_key?: string }) => {
+      handler: async (args: { method: string; setting_key?: string; detail?: "compact" | "full" }) => {
         const e = findEntry(args.method);
         if (!e) return fail(unknownMethodHint(args.method));
+        const inputText = args.detail === "full" ? e.inputFull : e.input;
+        const noteFull = args.detail === "full" && e.inputFull !== e.input ? "(完整嵌套结构)" : "";
         return text(
           [
             `方法:${e.method}`,
             `权限:${LEVEL_LABEL[e.policy.level]}${e.policy.reason ? `(${e.policy.reason})` : ""}`,
             e.registered ? null : "⚠️ 当前版本没有注册这个方法的处理函数",
             e.doc ? `说明:${e.doc}` : null,
-            `参数:${e.input}`,
+            `参数${noteFull}:${inputText}`,
             `返回:${e.output}`,
             args.setting_key === CUSTOM_UI_SETTING_KEY && ["setting.get", "setting.set"].includes(e.method)
               ? `value 是 JSON 字符串;其解码后的结构为:\n${JSON.stringify(zodToJsonSchema(CustomUiConfigSchema, { target: "jsonSchema7", $refStrategy: "none" }))}\n条目 id 必须唯一,动作必须适用于相应插槽。保留未修改的条目与布局;先读再写。` : null,
@@ -1062,6 +1084,40 @@ export function appMcpTools(): McpToolSpec[] {
         slot: z.string().optional().describe("挂载位,如 library.item / files.context / toolbar / rightPanel.tab"),
       },
       handler: async (args: { method?: string; slot?: string }) => panelApiList(args),
+    },
+    {
+      // 【MC-040】按任务查步骤 —— 「创建自动化」这类事是多个方法按顺序调,
+      // 单看任何一个方法的说明都拼不出来。不带参数列全部教程主题。
+      name: "app_api_tutorial",
+      description:
+        "按**任务**查「该按什么顺序调哪些方法」(创建自动化 / 自定义面板 / 工作流 / 导入论文 / 引擎模型配置 / 记忆交接)。" +
+        "app_api_list 解决「有没有这个功能」,这里解决「这件事怎么串起来做」。不带参数列出全部主题。",
+      inputSchema: {
+        query: z.string().optional().describe("任务关键词,如 创建自动化 / 面板 / 交接"),
+      },
+      handler: async (args: { query?: string }) => {
+        const q = args.query?.trim();
+        if (!q) {
+          return text(
+            `共 ${APP_API_TUTORIALS.length} 篇教程:\n` +
+              APP_API_TUTORIALS.map((t) => `- ${t.id}:${t.title}(关键词:${t.keywords.slice(0, 6).join(" / ")})`).join("\n") +
+              `\n\n下一步:app_api_tutorial({query:"<关键词>"}) 看某篇的步骤。方法细节用 app_api_describe。`,
+          );
+        }
+        const hits = tutorialsMatchingWord(q);
+        if (hits.length === 0) {
+          return text(`没有匹配「${q}」的教程。不带参数看全部主题;或 app_api_list({query:"${q}"}) 直接按词搜方法。`);
+        }
+        return text(
+          hits
+            .map((t) => {
+              const steps = t.steps.map((s, i) => `  ${i + 1}. ${s.method} —— ${s.note}`).join("\n");
+              const pitfalls = t.pitfalls?.length ? `\n  常见坑:\n${t.pitfalls.map((p) => `   · ${p}`).join("\n")}` : "";
+              return `## ${t.title}(${t.id})\n${steps}${pitfalls}`;
+            })
+            .join("\n\n"),
+        );
+      },
     },
     {
       name: "app_api_call",

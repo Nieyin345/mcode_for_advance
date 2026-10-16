@@ -28,6 +28,22 @@ const LIMIT_DOC = 260;
 const LIMIT_FIELD_DOC = 90;
 const LIMIT_INPUT = 900;
 const LIMIT_OUTPUT = 260;
+/**
+ * 【MC-040】`inputFull` —— 对**浅展开被截断**的入参再展开一层(递归深度 2),
+ * 供 `app_api_describe({detail:"full"})` 按需返回。
+ *
+ * 为什么做成第二份而不是直接把浅的那份加大:清单是**每回合常驻**在模型上下文里
+ * 的(`app_api_list` 的输出 + 提示词),逐条膨胀会挤占预算;完整结构只有"要动手调
+ * 这个方法"时才需要 —— 按需展开的代价落在 describe 那一次调用上。
+ */
+const LIMIT_INPUT_FULL = 3200;
+/**
+ * 深度预算。取 4 的理由(以台账红例 `workflow.save` 为尺):调用方要看到
+ * `workflow.nodes[].position.x` —— 参数对象(1) → `workflow` 字段(2) →
+ * `WorkflowDoc` 字段(3) → `nodes` 元素(4) → 深度耗尽时 `summaryOf` 列出
+ * `position` 的**字段名**。再深就只有预算在挡(见 LIMIT_INPUT_FULL)。
+ */
+const FULL_DEPTH = 5;
 
 /* ── 通道字符串:IPC 对象里的 KEY: "literal" / KEY: SOME_CHANNEL,外加 *_CHANNEL 常量 ── */
 function walk(dir) {
@@ -128,6 +144,103 @@ function describeShape(type, node, emptyLabel) {
   return `{ ${lines.join("; ")} }`;
 }
 
+/**
+ * 【MC-040】深度展开:`depth` 层嵌套对象逐层摊开,每层字段名+类型+注释首句。
+ *
+ * 浅展开(`describeShape`,给常驻清单)只摊第一层,嵌套对象留 `{…}`;而
+ * `workflow.save` 那种"入参里有一棵图"的方法,恰恰是嵌套层决定调用合法性
+ * (`nodes[].position` / `edges[].from` 全在省略号里)。full 版按需生成:
+ * 深度到 {@link FULL_DEPTH} 或字符预算耗尽为止 —— 用**预算**而不是硬深度兜底,
+ * 免得一个超级节点把整段撑爆(截断处显式留 `…`)。
+ */
+function describeShapeDeep(type, node, budget, depth, seen = new Set()) {
+  // ⚠️ 这里**不能用** NoTruncation 的 `flags` —— 那是给浅层一次性打印用的;递归类型
+  // (自引用接口)会让 `typeToString` 自己栈溢出。默认截断(TS 自己会打 `…`)天然安全。
+  // 某些病态深类型连默认截断都可能爆栈 —— 兜底给 "unknown",不让整个生成器倒。
+  const safeToString = (t, n) => {
+    try {
+      return checker.typeToString(t, n);
+    } catch {
+      return "unknown";
+    }
+  };
+  const primitive = () => clip(safeToString(type, node), 200);
+  if (!type || budget.left <= 0) return "…";
+  // `unknown` / `any`:没有可展开的结构。
+  if (type.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) return primitive();
+  // 环(自引用类型)与同一类型重复出现:给名字,别递归。
+  // ⚠️ key 用 `type.id`(checker 内部给的稳定数字),**不能**用 typeToString ——
+  // 对深层自引用类型,typeToString 自己就可能爆栈(见 primitive 的 catch)。
+  const key = type.id;
+  if (seen.has(key)) return clip(safeToString(type, node), 120);
+  if (type.isUnion()) {
+    const parts = type.types
+      .map((t) => describeShapeDeep(t, node, budget, depth, seen))
+      .filter((t) => t && t !== "void");
+    // 对象联合逐支摊(判别式联合的样子);纯标量联合合并成一行。
+    const allObjects = type.types.every(
+      (t) => (t.flags & ts.TypeFlags.Object) !== 0 || t.isUnion() || t.isIntersection(),
+    );
+    if (parts.length > 1 && allObjects) return parts.join(" | ");
+    return primitive();
+  }
+  // 数组:展开**元素**形状,而不是把 Array 原型上的 length/push/… 当字段列出来。
+  // 元素递归同样降 depth —— **必须先查 depth**:数组分支在 props 分支之前,
+  // 若把 depth<=0 的守卫留在后面,`Array<Array<…>>` 会先在这里无限递归(实测爆栈)。
+  // ⚠️ `getNumberIndexType()` 在病态递归类型上可能让 checker 自己爆栈 —— 兜底。
+  // ⚠️ 只有 **Object** 标志的类型才走数组分支:`string` 也有数字索引签名
+  // (string[0] => string),不挡会打印成 `Array<string>`。
+  if (depth > 0 && (type.flags & ts.TypeFlags.Object) !== 0) {
+    let numberIndex = undefined;
+    try {
+      numberIndex = type.getNumberIndexType?.();
+    } catch {
+      numberIndex = undefined;
+    }
+    if (numberIndex && !(numberIndex.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any))) {
+      const elem = describeShapeDeep(numberIndex, node, budget, depth - 1, seen);
+      return `Array<${elem}>`;
+    }
+  }
+  let props = [];
+  try {
+    props = checker.getPropertiesOfType(type);
+  } catch {
+    props = [];
+  }
+  const isObjectLike = (type.flags & ts.TypeFlags.Object) !== 0 || type.isIntersection();
+  if (!isObjectLike || props.length === 0) return primitive();
+  if (depth <= 0) {
+    // 到深度上限:给"这个对象有哪些字段"的提示,别只说 `{…}`(那正是台账红例)。
+    // ⚠️ **必须滤掉原型成员**:数组/Map 这类结构在 checker 里是对象,`getPropertiesOfType`
+    // 会把 `length/push/pop/…` 全列出来 —— 那不是"这棵树有哪些字段",是噪声。
+    const own = props.filter((p) => {
+      const d = p.valueDeclaration ?? p.declarations?.[0];
+      return d !== undefined && !ts.isSourceFile(d.getSourceFile());
+    });
+    const names = (own.length > 0 ? own : props).map((p) => p.name);
+    return `{ ${names.slice(0, 24).join("; ")}${names.length > 24 ? "; …" : ""} }`;
+  }
+  seen.add(key);
+  const lines = [];
+  for (const p of props) {
+    if (budget.left <= 0) {
+      lines.push("…");
+      break;
+    }
+    const decl = p.valueDeclaration ?? p.declarations?.[0];
+    const pt = checker.getTypeOfSymbolAtLocation(p, decl ?? node);
+    const optional = (p.flags & ts.SymbolFlags.Optional) !== 0;
+    const d = clip(firstSentence(docOf(p)), LIMIT_FIELD_DOC);
+    const rendered = describeShapeDeep(pt, decl ?? node, budget, depth - 1, seen);
+    const line = `${p.name}${optional ? "?" : ""}: ${rendered}${d ? ` // ${d}` : ""}`;
+    budget.left -= line.length;
+    lines.push(line);
+  }
+  seen.delete(key);
+  return `{ ${lines.join("; ")} }`;
+}
+
 const entries = [];
 for (const member of rpcIface.members) {
   if (!ts.isPropertySignature(member) || !member.name || !member.type) continue;
@@ -137,10 +250,19 @@ for (const member of rpcIface.members) {
   const fnType = checker.getTypeFromTypeNode(member.type);
   const sig = fnType.getCallSignatures()[0];
   let input = "(无参数)";
+  let inputFull = "(无参数)";
   let output = "void";
   if (sig) {
     const param = sig.getParameters()[0];
-    if (param) input = describeShape(checker.getTypeOfSymbolAtLocation(param, member), member, "(无参数)");
+    if (param) {
+      const rawInput = describeShape(checker.getTypeOfSymbolAtLocation(param, member), member, "(无参数)");
+      input = clip(rawInput, LIMIT_INPUT);
+      // 【MC-040】浅展开被截断时才生成 full 版(没截断的两份相同,别白占体积)。
+      inputFull =
+        input !== clip(rawInput, LIMIT_INPUT_FULL * 10) || rawInput.includes("{…")
+          ? clip(describeShapeDeep(checker.getTypeOfSymbolAtLocation(param, member), member, { left: LIMIT_INPUT_FULL }, FULL_DEPTH), LIMIT_INPUT_FULL)
+          : input;
+    }
     let ret = sig.getReturnType();
     const awaited = checker.getAwaitedType?.(ret);
     if (awaited) ret = awaited;
@@ -152,14 +274,14 @@ for (const member of rpcIface.members) {
     console.warn(`skip ${method}: no preload/IPC channel`);
     continue;
   }
-  entries.push({ method, channel, doc, input: clip(input, LIMIT_INPUT), output: clip(output, LIMIT_OUTPUT) });
+  entries.push({ method, channel, doc, input: clip(input, LIMIT_INPUT), inputFull, output: clip(output, LIMIT_OUTPUT) });
 }
 entries.sort((a, b) => a.method.localeCompare(b.method));
 
 const body =
   `// ⚠️ 生成文件,别手改。来源:packages/contracts/src/ipc/rpcMap.ts + src/preload/index.ts\n` +
   `// 重新生成:在 apps/desktop 下 \`node scripts/gen-app-api-catalog.mjs\`\n` +
-  `export interface ApiCatalogEntry {\n  method: string;\n  channel: string;\n  doc: string;\n  input: string;\n  output: string;\n}\n\n` +
+  `export interface ApiCatalogEntry {\n  method: string;\n  channel: string;\n  doc: string;\n  /** 浅展开(给每回合常驻的 app_api_list 输出;嵌套对象留 {…})。 */\n  input: string;\n  /** 【MC-040】深展开(给 app_api_describe({detail:\"full\"}) 按需返回;嵌套到 2 层)。 */\n  inputFull: string;\n  output: string;\n}\n\n` +
   `export const API_CATALOG: readonly ApiCatalogEntry[] = ${JSON.stringify(entries, null, 1)};\n`;
 mkdirSync(dirname(outFile), { recursive: true });
 writeFileSync(outFile, body, "utf8");

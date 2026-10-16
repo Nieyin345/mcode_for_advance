@@ -21,6 +21,7 @@ import { DOMAIN_LABELS, policyFor, isCredentialBearingMethod } from "@main/appCo
 import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog, appApiBindingId } from "@main/appControl/tools.js";
+import { APP_API_TUTORIALS } from "@main/appControl/appApiTutorials.js";
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import { GrantStore, type GrantDecision } from "@main/appControl/grantStore.js";
 import { setGrantStore, getGrantStore } from "@main/appControl/grantStoreRuntime.js";
@@ -2525,6 +2526,61 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
     "engineTools.get / engineTools.set 在清单里",
     catalogMethods.has("engineTools.get") && catalogMethods.has("engineTools.set"),
   );
+}
+
+/* ── 【MC-040】帮助分级(detail=full)与教程索引 ──
+ *
+ * 台账红例:`workflow.save` 的浅版 input 291 字符、嵌套结构全在 `{…}` 里 —— agent
+ * 拼不出合法的图。这段钉三件事:① 生成器产出了深展开且嵌套字段真的展开了;②
+ * `app_api_describe({detail:"full"})` 交回的是深版;③ 教程索引的每一步引用的方法
+ * 都真实存在于目录(方法改名而教程没跟 → 这条红,防"过期示例")。
+ */
+{
+  // ① 生成器产物:深版必须真的把嵌套层展开(而不是又一份省略号)。
+  const ws = API_CATALOG.find((e) => e.method === "workflow.save");
+  check("守卫:workflow.save 在目录里", ws !== undefined, "");
+  check("★ 浅版保持紧凑(给每回合常驻清单)", ws!.input.length <= 900, ws!.input.length);
+  check("★ 深版更长且展开了 position 的字段(x/y 可见)", ws!.inputFull.length > ws!.input.length && /position: \{[^}]*x\s*:/.test(ws!.inputFull), {
+    shallow: ws!.input.length,
+    full: ws!.inputFull.length,
+    hasPositionXY: /position: \{[^}]*x\s*:/.test(ws!.inputFull),
+  });
+  check("★ 深版不把 Array 原型当字段列(length/push 之类)", !/nodes: \{[^}]*push/.test(ws!.inputFull), "");
+  check("★ 深版不把 string 误判成 Array", !/type: Array</.test(ws!.inputFull), "");
+
+  // ② describe handler 真的分岔:full 交回深版、compact(默认)交浅版。
+  const { ctx } = ctxWith();
+  const shallow = await invokeAppTool("app_api_describe", { method: "workflow.save" }, "me", ctx);
+  const full = await invokeAppTool("app_api_describe", { method: "workflow.save", detail: "full" }, "me", ctx);
+  check("★ 默认 compact:参数段与清单浅版一致", textOf(shallow).includes(ws!.input.slice(0, 120)), "");
+  check("★ detail=full:参数段是深版(嵌套可见)且标注口径", textOf(full).includes(ws!.inputFull.slice(0, 120)) && textOf(full).includes("完整嵌套结构"), {
+    hasFull: textOf(full).includes(ws!.inputFull.slice(0, 120)),
+    hasNote: textOf(full).includes("完整嵌套结构"),
+  });
+  check("★ full 只影响参数段:权限/返回照旧在", textOf(full).includes("权限:") && textOf(full).includes("返回:"), "");
+
+  // ③ 教程索引:调用面 + 每一步的方法都真实存在。
+  const tutList = await invokeAppTool("app_api_tutorial", {}, "me", ctx);
+  check("★ 不带参数列出全部教程主题", textOf(tutList).includes("创建自动化") && textOf(tutList).includes("自定义面板"), textOf(tutList).slice(0, 200));
+  const tutHit = await invokeAppTool("app_api_tutorial", { query: "创建自动化" }, "me", ctx);
+  check("★ 「创建自动化」查得到步骤(含 workflow.save 与 automation.watch)", textOf(tutHit).includes("workflow.save") && textOf(tutHit).includes("automation.watch"), textOf(tutHit).slice(0, 220));
+  const tutMiss = await invokeAppTool("app_api_tutorial", { query: "zzzznonsense" }, "me", ctx);
+  check("无关词查不到教程(不硬塞一篇)", textOf(tutMiss).includes("没有匹配"), textOf(tutMiss).slice(0, 120));
+
+  // ★ 防"过期示例":教程每一步的方法名必须在生成目录里。方法改名而教程没跟 → 红。
+  {
+    const catalogSet = new Set(API_CATALOG.map((e) => e.method));
+    const bad: string[] = [];
+    for (const t of APP_API_TUTORIALS) {
+      for (const s of t.steps) {
+        // 教程可以引 app_api_* 自身(在工具表而不是目录里)。
+        if (s.method.startsWith("app_")) continue;
+        if (!catalogSet.has(s.method)) bad.push(`${t.id}: ${s.method}`);
+      }
+    }
+    check("★ 教程引用的每个方法都在目录里(方法改名教程没跟 → 这条红)", bad.length === 0, bad);
+  }
+  check("★ app_api_tutorial 是只读工具(自动放行,不问审批)", APP_READONLY_TOOLS.has("app_api_tutorial"));
 }
 
 /* ── 自定义面板的 `mcode.api.call`(`panelApiCall`)──
