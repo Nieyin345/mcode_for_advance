@@ -148,7 +148,9 @@ function scanArgsReads(src: string): Map<string, Set<string>> {
   return out;
 }
 
-const claudeSrc = readFileSync(join(SRC, "claude-sdk", "ClaudeAgentSdkProvider.ts"), "utf8");
+// ⚠️ Claude 的浏览器注册已拆到 `ClaudeBrowserMcpServer.ts` —— 扫**两文件拼接**。
+const claudeSrc = readFileSync(join(SRC, "claude-sdk", "ClaudeAgentSdkProvider.ts"), "utf8")
+  + "\n" + readFileSync(join(SRC, "claude-sdk", "ClaudeBrowserMcpServer.ts"), "utf8");
 const codexSrc = readFileSync(join(SRC, "codex-sdk", "CodexAgentSdkProvider.ts"), "utf8");
 // ⚠️ `registerBrowserTools` 已拆到 `mcodeExtensionBrowser.ts` —— 扫**两文件拼接**。
 const piSrc = readFileSync(join(SRC, "pi-sdk", "mcodeExtension.ts"), "utf8")
@@ -241,7 +243,8 @@ console.log("\n浏览器工具的**广告**也得按同一个开关来");
   // 工具没注册就不能广告,否则关掉浏览器后模型照提示去调一个不存在的工具。
   // 三引擎各自拼自己的提示词,所以这条是**跨引擎不变量**:每处 `browserToolsUsagePrompt()`
   // 都必须被 `browserToolsEnabled`(或等价的开关)守着。
-  const claudeSrc = readFileSync(join(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
+  const claudeSrc = readFileSync(join(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8")
+    + "\n" + readFileSync(join(process.cwd(), "src/main/providers/claude-sdk/ClaudeBrowserMcpServer.ts"), "utf8");
   const codexSrc = readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
   const piSrc = readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8")
     + "\n" + readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtensionBrowser.ts"), "utf8");
