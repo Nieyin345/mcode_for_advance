@@ -73,6 +73,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "void"
  },
  {
+  "method": "automation.rebuildWatchTemplates",
+  "channel": "automation:rebuildWatchTemplates",
+  "doc": "【MC-054】显式「备份损坏原值 → 校验 → 重建」—— 唯一能吃下损坏状态的操作。",
+  "input": "{ templates?: { id: string; name: string; command: string; }[] | undefined }",
+  "output": "{ ok: boolean; error?: string | undefined; backupKey?: string | undefined; kept?: number | undefined }"
+ },
+ {
   "method": "automation.run",
   "channel": "automation:run",
   "doc": "**立刻跑一次**。走的就是那条自动化的 manual 那条路(见 `automationRunner.runNow`), 所以试出来的结果和它定时跑起来是同一样东西。 `ok: false` 时 `error` 是**给人看的句子**(比如\"这个触发器不在一条已保存的自动化里\"), 不是异常 —— 用户点了一个还没存过的触发器,该得到一句解释而不是一个错误框。",
@@ -119,14 +126,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "automation:watchTemplates",
   "doc": "全部命令模板(守望面板的下拉)。**无参 handler**,同 `workflow.agentProfiles`。",
   "input": "(无参数)",
-  "output": "{ templates: { id: string; name: string; command: string; }[] }"
+  "output": "{ templates: { id: string; name: string; command: string; }[]; health: 'valid' | 'absent' | 'partial' | 'corrupt' | 'read_error' // 【MC-054】设置的完整性:absent=没配过 / valid / partial=有条目读不出(problems 列出) / corrupt=整份坏 / read_erro…; problems: string[] }"
  },
  {
   "method": "automation.watchTemplatesSave",
   "channel": "automation:watchTemplatesSave",
   "doc": "存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。",
   "input": "{ templates: { id: string; name: string; command: string; }[] }",
-  "output": "{ ok: boolean }"
+  "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
   "method": "browser.authRespond",
@@ -819,7 +826,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "hooks:list",
   "doc": "全部钩子 + 读得见但用不了的条目。**坏条目不静默丢弃** —— 用户写的钩子不生效时, 这一页是唯一能解释为什么的地方。",
   "input": "(无参数)",
-  "output": "{ hooks: { id: string; name: string; enabled: boolean; command: string; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res…; problems: { where: string; error: string; }[] }"
+  "output": "{ hooks: { id: string; name: string; enabled: boolean; command: string; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res…; problems: { where: string; error: string; }[]; fileHealth: 'valid' | 'corrupt' | 'read_e…"
  },
  {
   "method": "hooks.listHostHookGrants",
@@ -827,6 +834,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【MC-061】列出当前全部**主机 hook 授权**(设置 → 插件 → 钩子授权)。只读 —— 只给 桌面渲染端;`app_api_call` 里这两条(issue/revoke)一律 blocked,故不走 agent。",
   "input": "{}",
   "output": "{ grants: HostHookGrant[] }"
+ },
+ {
+  "method": "hooks.rebuildCorrupt",
+  "channel": "hooks:rebuildCorrupt",
+  "doc": "【MC-051】显式「备份损坏原件 → 校验 sha256 → 重建」—— 唯一能吃下整份损坏 hooks.json 的操作。普通 save/remove 在损坏时**拒绝**(不覆盖原字节);这里 备份成功且校验通过才重建,返回备份路径。",
+  "input": "{ hooks?: { id: string; name: string; enabled: boolean; command: string; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res… }",
+  "output": "{ ok: boolean; error?: string | undefined; backupPath?: string | undefined }"
  },
  {
   "method": "hooks.remove",
@@ -847,7 +861,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "hooks:runs",
   "doc": "最近的执行记录(新的在前)。**不进对话流** —— 一个挂在 `tool.use` 上的钩子一轮 会触发几十次,塞进消息流就是把对话刷屏;而节点会话是隐藏的,那些事件本来也不该 出现在父对话里。 【MC-061】另带一份**落盘审计**(`audit`):只有**插件 hook** 进那张表(带来源身份、 经授权执行),它跨重启活着、不会被 50 条环顶掉 —— 回答\"这份来源的这条钩子跑没跑、 被撤权 / 预算用尽挡下几次\"。`runs` 仍是内存环(含用户手写钩子),两栏语义不同、都给。",
   "input": "(无参数)",
-  "output": "{ runs: HookRun[]; audit: HookAuditEntry[] }"
+  "output": "{ runs: HookRun[]; audit: HookAuditEntry[]; auditError: string | null }"
  },
  {
   "method": "hooks.save",
