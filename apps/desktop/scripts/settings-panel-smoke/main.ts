@@ -820,12 +820,16 @@ console.log("\n渲染端的旧回包竞态");
   //   发第二次 `importGithub`(真的会**再克隆一遍仓库**)。按钮的 `disabled` 挡不住回车,
   //   需要一个**同步** ref 闸(同 PluginsPanel 的 submittingRef)。判据钉源码:进入闸前
   //   检查、进入后立刻置位、结束时复位。
+  //
+  //   ⚠️ `ImportSkillsDialog` 已从 `SkillsPanel.tsx` 拆到 `SkillsPanelParts.tsx` —— 扫的是
+  //   **现在的家**。这条曾经因此变空过(按源码文本扫描、文件一移动就静默失效)。
+  const importDialogSrc = readFileSync(join(process.cwd(), "src/renderer/components/settings/SkillsPanelParts.tsx"), "utf8");
   check(
     "★ SkillsPanel 的 GitHub 导入有同步 ghBusyRef 闸(回车绕过 disabled 时挡双提交)",
-    /const ghBusyRef = useRef\(false\);/.test(skillsPanel) &&
-      /if \(!url \|\| ghBusyRef\.current\) return;/.test(skillsPanel) &&
-      /ghBusyRef\.current = true;/.test(skillsPanel),
-    skillsPanel.match(/ghBusyRef\.current[^\n]*/g),
+    /const ghBusyRef = useRef\(false\);/.test(importDialogSrc) &&
+      /if \(!url \|\| ghBusyRef\.current\) return;/.test(importDialogSrc) &&
+      /ghBusyRef\.current = true;/.test(importDialogSrc),
+    importDialogSrc.match(/ghBusyRef\.current[^\n]*/g),
   );
 }
 
