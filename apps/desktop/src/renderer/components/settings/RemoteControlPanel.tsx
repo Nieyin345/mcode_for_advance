@@ -402,6 +402,16 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
         <span className="block text-[0.7857em] font-medium text-content-muted">
           {t("settings.remoteControl.sandboxLabel")}
         </span>
+        {/* 【MC-018】显式选过的项目失效时**明确提示**，而不是静默回退到第一个项目 ——
+            那个回退会把公网授权扩到用户没选过的目录。此时公网调用已被 fail closed。 */}
+        {status?.sandboxProjectMissing ? (
+          <p className="flex items-start gap-1.5 rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7143em] leading-relaxed text-danger">
+            <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>
+              {t("settings.remoteControl.sandboxMissing", { id: status.sandboxProjectMissingId ?? "" })}
+            </span>
+          </p>
+        ) : null}
         <Select.Root
           value={status?.sandboxProjectId ?? ""}
           onValueChange={(v) => void run(() => api.publicMcp.setProject({ projectId: (v as string) || null }))}

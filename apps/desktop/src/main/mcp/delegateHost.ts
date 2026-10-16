@@ -17,7 +17,7 @@ import {
 import { configureDelegateDeps } from "@main/mcp/delegateServer.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { ProjectRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
-import { publicMcpProjectId, publicMcpProjectIdForSession } from "@main/providers/bridge/publicMcpSession.js";
+import { publicMcpProjectBinding, publicMcpProjectId, publicMcpProjectIdForSession } from "@main/providers/bridge/publicMcpSession.js";
 import { uid } from "@main/utils.js";
 import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
@@ -54,7 +54,16 @@ function readDelegateSessions(): Record<string, string> {
  */
 async function ensureDelegateSession(callerSessionId: string | null): Promise<{ sessionId: string; cwd: string }> {
   const projectId = publicMcpProjectIdForSession(callerSessionId) ?? publicMcpProjectId();
-  if (!projectId) throw new Error("需要一个项目才能委派,但一个项目都没有");
+  if (!projectId) {
+    // 【MC-018】"选了但失效"与"一个项目都没有"是**两件事**,分开报 —— 用户看到的
+    // 提示不同、要做的事也不同(前者去设置页重挑沙箱项目,后者先建一个项目)。
+    const binding = publicMcpProjectBinding();
+    throw new Error(
+      binding.state === "missing"
+        ? `公网沙箱指向的项目「${binding.chosen}」不在了 —— 为避免把授权扩到别的项目,已拒绝;请在 设置 → 公网 MCP 重新指定`
+        : "需要一个项目才能委派,但一个项目都没有",
+    );
+  }
   const project = ProjectRepo.get(projectId);
   if (!project) throw new Error(`项目 ${projectId} 不在了`);
 

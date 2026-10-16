@@ -262,8 +262,39 @@ function defaultProjectId(): string | null {
 }
 
 /**
+ * 【MC-018】**显式沙箱项目绑定**的三态解析 —— 全仓唯一一份。
+ *
+ *  - `unset`:用户**从没选过**(设置键空)。回退"第一个非归档项目"是**设计**
+ *    (见 {@link defaultProjectId}),不是缺陷。
+ *  - `valid`:用户选了、项目还在 → 用它。
+ *  - `missing`:**用户选了 A,但 A 现在查不到**(被删 / 数据目录换了)。
+ *    从前 `publicMcpProjectId` 对这一态**静默回退到第一个项目** —— 于是带着
+ *    "同一个公网密钥"的链接在 A 消失后**转而授权 B**:旧的长期 URL 一夜之间指向
+ *    另一个目录,而用户没做任何确认。授权对象的身份变了却没人问过用户,
+ *    是 fail-closed 的破坏。现在这一态**不解析出任何项目**,由各消费方处置
+ *    (凭据层返回 null → 入口 404;委派层抛错;设置页把状态标出来)。
+ *
+ * 未选与失效**必须分开** —— 这正是台账点名的那条判据(`UNSET` 与 `MISSING` 不是一件事)。
+ */
+type PublicMcpProjectBinding =
+  | { state: "unset"; projectId: null }
+  | { state: "valid"; projectId: string }
+  | { state: "missing"; projectId: null; chosen: string };
+
+/** 读显式绑定并分类(见 {@link PublicMcpProjectBinding})。唯一的分类点。 */
+export function publicMcpProjectBinding(): PublicMcpProjectBinding {
+  const chosen = SettingRepo.get(PUBLIC_MCP_PROJECT_ID_SETTING_KEY)?.trim();
+  if (!chosen) return { state: "unset", projectId: null };
+  if (ProjectRepo.get(chosen)) return { state: "valid", projectId: chosen };
+  return { state: "missing", projectId: null, chosen };
+}
+
+/**
  * **公网那条通路用哪个项目** —— 用户在设置里选的那个;
  * 没选过就退回"第一个非归档项目"(见 {@link defaultProjectId})。
+ *
+ * ⚠️ **选了但失效**这一态**不**回退(见 {@link PublicMcpProjectBinding} 的 `missing`):
+ * 返回 `null`,让凭据层 / 委派层各自 fail closed,而不是把授权扩到另一个项目。
  *
  * 为什么要有"用户选的"这一层:早先这里直接就是 `defaultProjectId`,而且**建会话时
  * 定死** —— 用户换了项目、改了目录，沙箱还指着老那个，永远不会变。用户报的就是这个
@@ -271,8 +302,9 @@ function defaultProjectId(): string | null {
  * 下一次工具调用就生效。
  */
 export function publicMcpProjectId(): string | null {
-  const chosen = SettingRepo.get(PUBLIC_MCP_PROJECT_ID_SETTING_KEY)?.trim();
-  if (chosen && ProjectRepo.get(chosen)) return chosen;
+  const binding = publicMcpProjectBinding();
+  if (binding.state === "valid") return binding.projectId;
+  if (binding.state === "missing") return null;
   return defaultProjectId();
 }
 
@@ -911,6 +943,11 @@ export function initPublicMcp(deps?: { mobilePort?: () => number }): void {
     },
     // 设置页那个下拉框:让用户自己挑沙箱项目(见 `PUBLIC_MCP_PROJECT_ID_SETTING_KEY`)。
     sandboxProjectId: () => publicMcpProjectId(),
+    // 【MC-018】"选了但失效"这一态报给设置页(它要提示用户重新指定,见契约字段注释)。
+    sandboxProjectMissingId: () => {
+      const binding = publicMcpProjectBinding();
+      return binding.state === "missing" ? binding.chosen : null;
+    },
     availableProjects: () =>
       ProjectRepo.list()
         .filter((p) => !p.archived)
@@ -1039,6 +1076,14 @@ export function regeneratePublicMcpSecret(): PublicMcpStatus {
  *
  * 传 `null` = 取消选择(回退到"第一个非归档项目")。传不存在的 id 也当取消 —— 与其存一个
  * 悬空引用,不如明确回退。**不用重启任何东西**:工具调用每次都现读这个设置。
+ *
+ * 【MC-018】**取消 ≠ 忽略失效**。这里"传不存在的 id 当取消"说的是**用户此刻的操作**:
+ * 设置页给的选择器只会传真实项目 id,所以"传了个查不到的 id"只可能是程序侧的错误调用 ——
+ * 那种情况明确归零(而不是存悬空引用),让人**看得见**自己传错了。真正危险的是**另一条
+ * 时间线**:用户选了 A(A 当时有效)→ 之后 A 被删 → 设置键里**还留着 A**。那一刻没有
+ * 任何函数被调用,没人有机会"归零" —— 由 {@link publicMcpProjectBinding} 把这一态
+ * 判成 `missing` 并 fail closed,绝不静默改绑到别的项目。两件事分开,别在这里"顺手"
+ * 把失效的选择清掉:清掉了就再也报不出"你选的 A 不在了"。
  */
 export function setPublicMcpProject(projectId: string | null): PublicMcpStatus {
   const valid = projectId?.trim() && ProjectRepo.get(projectId.trim());
@@ -1047,7 +1092,11 @@ export function setPublicMcpProject(projectId: string | null): PublicMcpStatus {
     log.info(`public mcp: sandbox project set to ${projectId}`);
   } else {
     SettingRepo.set(PUBLIC_MCP_PROJECT_ID_SETTING_KEY, "");
-    log.info("public mcp: sandbox project cleared (falls back to the first project)");
+    log.info(
+      projectId
+        ? `public mcp: 传入的沙箱项目 id「${projectId}」查不到 —— 按取消选择处理(见 setPublicMcpProject 注释)`
+        : "public mcp: sandbox project cleared (falls back to the first project)",
+    );
   }
   return publicMcpStatus();
 }

@@ -395,11 +395,26 @@ export interface PublicMcpStatus {
   tunnelPhase: "stopped" | "starting" | "ready" | "reconnecting" | "failed";
   /** 隧道失败的原因（没装 cloudflared / 超时 / 断开）；非 failed 为 null。 */
   tunnelError: string | null;
-  /** **文件工具的沙箱根**（= 用户选的那个项目目录）。null = 没选/没项目。
+  /** **文件工具的沙箱根**（= 用户选的那个项目目录）。null = 没选/没项目/选的失效。
    *  只约束 `agent_*` 文件工具；`agent_bash` 不受它限制。 */
   sandboxRoot: string | null;
-  /** 沙箱用的是**哪个项目**的 id。null = 还没选（回退到第一个非归档项目）。 */
+  /** 沙箱用的是**哪个项目**的 id。null = 还没选（回退到第一个非归档项目）**或**选的
+   *  那个已失效（此时**不**回退，见 `sandboxProjectMissing`）。 */
   sandboxProjectId: string | null;
+  /**
+   * 【MC-018】**用户显式选过的沙箱项目已经失效**（被删 / 数据目录换了）。
+   *
+   * 与"还没选"是**两件事**：没选时回退到第一个非归档项目是设计；而"选了 A、A 没了"
+   * 从前会**静默改绑**到第一个项目 —— 带着同一个公网密钥的旧链接转而授权另一个目录，
+   * 用户没点过任何确认。现在这一态 fail closed（公网入口 404），并由这里把事实报给
+   * 设置页，提示用户重新指定。
+   *
+   * 为 `true` 时 `sandboxProjectId` / `sandboxRoot` 必为 null。
+   */
+  sandboxProjectMissing: boolean;
+  /** 失效的那个项目 id（供设置页提示"你选的 X 不在了"）；`sandboxProjectMissing` 为
+   *  false 时是 null。 */
+  sandboxProjectMissingId: string | null;
   /** 可选的沙箱项目清单 —— 设置页那个下拉框用它。名字 + id + 路径。 */
   availableProjects: { id: string; name: string; path: string }[];
   /** 隧道模式(见 `PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY`)。缺省 `quick`。 */

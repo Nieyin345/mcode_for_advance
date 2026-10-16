@@ -213,6 +213,20 @@ await (async () => {
   check("★ 拒绝理由点名了原因(需要一个项目)", msg.includes("需要一个项目"), msg);
 })();
 
+/* ── 5b. 【MC-018】选了但失效 ≠ 一个项目都没有:两条提示可区分,且都不许静默改绑 ── */
+await (async () => {
+  // 用户显式选了 A、之后 A 被删,库里只剩 B —— 从前这里会静默回退到 B(把授权扩出去)。
+  resetRepositories([{ id: "p-b", name: "Beta", path: "/tmp/beta", archived: false }]);
+  __resetRuntime();
+  __resetDelegateJobs();
+  SettingRepo.set(PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY, "1");
+  SettingRepo.set(PUBLIC_MCP_SESSION_ID_SETTING_KEY, "chatgpt-sess");
+  SettingRepo.set(PUBLIC_MCP_PROJECT_ID_SETTING_KEY, "p-a");
+  const msg = await rejects("★ MC-018:选的沙箱项目失效时委派被拒(绝不落到 B)", () => startOn("chatgpt-sess"));
+  check("★ MC-018:提示点名失效的项目 + 去哪重选(A 而不是 B)", msg.includes("p-a") && msg.includes("重新指定"), msg);
+  eq("★ MC-018:没有在 B 里建任何委派会话", sessionsOf().length, 0);
+})();
+
 /* ── 6. 会话行"错位"时重建:项目的委派会话指向别项目,必须重建 ───────────────── */
 await (async () => {
   resetRepositories([{ id: "p-a", name: "Alpha", path: "/tmp/alpha", archived: false }]);

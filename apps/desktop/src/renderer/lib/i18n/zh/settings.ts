@@ -327,6 +327,8 @@ export const zh = {
     "⚠️ 打开后,拿到链接的人可以在这台电脑上做任何事(读写文件、执行命令、杀进程、SSH),不弹审批。只填进你自己账号的 ChatGPT,别把链接发给任何人。",
   "settings.remoteControl.sandboxLabel": "允许操作的项目",
   "settings.remoteControl.sandboxNone": "（未选择）",
+  "settings.remoteControl.sandboxMissing":
+    "⚠️ 你选的沙箱项目（{id}）已经不在了 —— 为避免把公网授权悄悄扩到别的项目，公网调用已暂停。请在这里重新选一个项目。",
   "settings.remoteControl.sandboxAt": "文件读写被限制在这个项目目录里:{path}",
   "settings.remoteControl.sandboxHint":
     "选一个项目 —— 公网来的文件读写只会在这个目录里发生。改完立刻生效,不用重启。",

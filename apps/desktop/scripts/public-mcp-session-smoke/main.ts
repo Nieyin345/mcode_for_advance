@@ -335,4 +335,50 @@ equal("disable returns no listening port", disabledStatus.port, 0);
   resetA();
 }
 
+/* ── MC-018:显式选的沙箱项目**失效**时绝不静默改绑 ──
+ *
+ * 从前 `publicMcpProjectId` 把"用户选了 A、A 没了"与"从没选过"当同一态,都回退到
+ * 第一个非归档项目 —— 于是带**同一个公网密钥**的旧链接在 A 消失后转而授权 B,
+ * 用户没确认过任何东西。现在两态分开:`unset` 才回退,`missing` fail closed。 */
+{
+  const {
+    publicMcpProjectBinding,
+    publicMcpProjectId,
+  } = await import("../../src/main/providers/bridge/publicMcpSession.js");
+
+  // 场景:用户显式选了 A、开过公网;之后 A 被删,库里只剩 B。
+  resetRepositories([{ id: "p-b", name: "Beta", path: "/tmp/beta", archived: false }]);
+  SettingRepo.set("publicMcp.projectId", "p-a");
+
+  const binding = publicMcpProjectBinding();
+  equal("★ MC-018:选了 A 但 A 没了 → 判成 missing(不是 unset)", binding.state, "missing");
+  equal("★ MC-018:missing 态不解析出任何项目(绝不落到 B)", publicMcpProjectId(), null);
+  equal("★ MC-018:missing 态带回失效的 id 供界面提示", binding.state === "missing" ? binding.chosen : null, "p-a");
+  const statusView = extrasForTest().sandboxProjectMissingId();
+  equal("★ MC-018:状态把这件事实报给设置页", statusView, "p-a");
+
+  // 正控:从没选过(unset)时回退第一个项目是**设计**,不许被修成 fail closed。
+  SettingRepo.set("publicMcp.projectId", "");
+  equal("正控:没选过 → unset", publicMcpProjectBinding().state, "unset");
+  equal("正控:没选过 → 仍回退第一个非归档项目(B)", publicMcpProjectId(), "p-b");
+
+  // 正控:选了、项目还在 → valid,解析出它。
+  SettingRepo.set("publicMcp.projectId", "p-b");
+  equal("正控:选了且有效 → valid", publicMcpProjectBinding().state, "valid");
+  equal("正控:选了且有效 → 解析出那个项目", publicMcpProjectId(), "p-b");
+
+  // 默认链接的凭据快照在 missing 态 fail closed(入口据此回 404,不落到任何项目)。
+  SettingRepo.set("publicMcp.projectId", "p-a");
+  equal("★ MC-018:missing 态默认链接拿不到凭据快照(入口 fail closed)", publicMcpCredentialFor(null), null);
+
+  // 显式重选一个有效项目 → 立刻恢复(用户重新指定之后才能再用)。
+  resetRepositories([
+    { id: "p-b", name: "Beta", path: "/tmp/beta", archived: false },
+    { id: "p-a", name: "Alpha", path: "/tmp/alpha", archived: false },
+  ]);
+  SettingRepo.set("publicMcp.projectId", "p-a"); // A 回来了
+  equal("★ MC-018:项目恢复(或用户重选)后 binding 回 valid", publicMcpProjectBinding().state, "valid");
+  equal("★ MC-018:恢复后凭据快照又能解析出根", publicMcpCredentialFor(null)?.canonicalRoot, "/tmp/alpha");
+}
+
 console.log("public MCP session lifecycle smoke passed");

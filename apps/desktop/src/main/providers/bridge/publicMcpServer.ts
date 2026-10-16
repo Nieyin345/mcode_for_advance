@@ -408,6 +408,8 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
 export type PublicMcpStatus = ContractPublicMcpStatus;
 
 export function publicMcpStatus(): PublicMcpStatus {
+  // 【MC-018】失效的显式选择:与"还没选"分开报(见契约里那两个字段的注释)。
+  const missingId = sandboxProjectMissingProvider?.() ?? null;
   return {
     enabled: store?.getEnabled() ?? false,
     port: localPort,
@@ -418,6 +420,8 @@ export function publicMcpStatus(): PublicMcpStatus {
     tunnelError: tunnelErrorProvider?.() ?? null,
     sandboxRoot: sandboxRootProvider?.() ?? null,
     sandboxProjectId: sandboxProjectIdProvider?.() ?? null,
+    sandboxProjectMissing: missingId !== null,
+    sandboxProjectMissingId: missingId,
     availableProjects: availableProjectsProvider?.() ?? [],
     projectLinks: projectLinksProvider?.() ?? [],
     // 隧道配置那一组:没注入(无头 smoke)时给一组"quick + 什么都没配"的缺省,
@@ -454,6 +458,8 @@ let tunnelPhaseProvider: (() => "stopped" | "starting" | "ready" | "reconnecting
 let tunnelErrorProvider: (() => string | null) | null = null;
 let sandboxRootProvider: (() => string | null) | null = null;
 let sandboxProjectIdProvider: (() => string | null) | null = null;
+/** 【MC-018】显式选过的沙箱项目失效时报出它(见 `PublicMcpStatus.sandboxProjectMissing`)。 */
+let sandboxProjectMissingProvider: (() => string | null) | null = null;
 let availableProjectsProvider: (() => { id: string; name: string; path: string }[]) | null = null;
 /** 隧道配置视图。**可选** —— 无头 smoke 装配时不给,状态里就是一组缺省值。 */
 let tunnelConfigProvider: (() => PublicMcpTunnelView) | null = null;
@@ -468,6 +474,8 @@ export function configurePublicMcpExtras(next: {
   tunnelError: () => string | null;
   sandboxRoot: () => string | null;
   sandboxProjectId: () => string | null;
+  /** 【MC-018】失效的显式选择(项目 id);没有就返回 null。 */
+  sandboxProjectMissingId: () => string | null;
   availableProjects: () => { id: string; name: string; path: string }[];
   /** 可选:不给就按 quick + 空配置显示(见 `publicMcpStatus`)。 */
   tunnelConfig?: () => PublicMcpTunnelView;
@@ -481,5 +489,6 @@ export function configurePublicMcpExtras(next: {
   tunnelErrorProvider = next.tunnelError;
   sandboxRootProvider = next.sandboxRoot;
   sandboxProjectIdProvider = next.sandboxProjectId;
+  sandboxProjectMissingProvider = next.sandboxProjectMissingId;
   availableProjectsProvider = next.availableProjects;
 }

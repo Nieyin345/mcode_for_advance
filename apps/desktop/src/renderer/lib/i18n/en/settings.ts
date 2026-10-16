@@ -322,6 +322,8 @@ export const en = {
     "⚠️ Once open, anyone holding the link can do anything on this machine (read/write files, run commands, kill processes, SSH) with no approval prompt. Only paste it into your own ChatGPT account — never share the link.",
   "settings.remoteControl.sandboxLabel": "Project it may touch",
   "settings.remoteControl.sandboxNone": "(none selected)",
+  "settings.remoteControl.sandboxMissing":
+    "⚠️ The sandbox project you picked ({id}) no longer exists — public calls are paused so the grant is not silently widened to another project. Pick a project again here.",
   "settings.remoteControl.sandboxAt": "File read/write is confined to this project directory: {path}",
   "settings.remoteControl.sandboxHint":
     "Pick a project — file operations coming from the internet only happen inside that directory. Changes apply immediately, no restart.",
