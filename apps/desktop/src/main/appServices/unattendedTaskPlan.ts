@@ -50,6 +50,36 @@ import {
   type UnattendedPlanStatus,
 } from "./unattendedPlanStore.js";
 
+/**
+ * **读侧守卫**(MC-029)—— 存档读不懂时,列出 / 续跑 / 执行 / 签发 / 放弃都不许把它
+ * 当成「没有计划」。
+ *
+ * 写侧闸(存档核 `commit` 的 corrupt 拒绝)只保住了**原字节**;但消费端若把
+ * `load()` 的「读不懂 → 空表」继续转述给用户,用户看到的仍是「没有等待中的计划 /
+ * 这份计划不存在」—— 与「真的没有计划」无法区分,恢复(修好 JSON)也就无从谈起。
+ * 「用户没有计划」与「存档读不懂」对用户的含义完全不同:前者无需动作,后者是一个
+ * 需要修复的**损坏**。判据不另写一套 —— 直接问存档核自己(`isArchiveCorrupt`,与写侧
+ * 闸同一枚标记、同一份 `classify*` 判据)。
+ *
+ * 文案里必须带「unattended-plans.json 读不懂」这层意思(稳定子串,两个副本的拒绝话
+ * 都含它);「续跑报 no_record」那句「存档里没有计划」恰恰是这里要消除的谎。
+ */
+export const UNATTENDED_ARCHIVE_CORRUPT_CODE = "archive_corrupt";
+
+function unattendedArchiveCorruptReason(): string {
+  return (
+    "unattended-plans.json 读不懂(可能写入中断被截断)—— 计划存档已停用写入,也列不出 / " +
+    "续跑任何计划;原文件保留在 <数据根>/appControl/ 下,修复或删除它后重启即可。"
+  );
+}
+
+/** 存档读不懂 → 抛可诊断错误(供返回值类入口;`refused` 类入口直接返回拒绝结果)。 */
+function assertPlanArchiveReadable(): void {
+  if (getUnattendedPlanStore().isArchiveCorrupt()) {
+    throw new Error(unattendedArchiveCorruptReason());
+  }
+}
+
 /** 一条**无人值守操作** —— 计划里一次有界的动作。当前只支持 `session.create`。 */
 export interface UnattendedOperation {
   /** 这条操作在计划内的稳定 id(记进执行报告,便于对账"停在哪一条")。 */
@@ -416,6 +446,12 @@ export function approveUnattendedPlan(
   input: UnattendedPlanBody & { ttlMs: number },
   now: number = Date.now(),
 ): UnattendedApprovalOutcome {
+  // ★ MC-029(读侧):存档读不懂时**先拒** —— 正文记不进去,签出去的授权就是「有授权、
+  //   列不出、续不了」的孤儿(台账触发链的「重启后又创建另一个 p2」正是这一步)。
+  //   放在签发**之前**:拒绝时不产生任何新授权。
+  if (getUnattendedPlanStore().isArchiveCorrupt()) {
+    return { ok: false, kind: "refused", code: UNATTENDED_ARCHIVE_CORRUPT_CODE, reason: unattendedArchiveCorruptReason() };
+  }
   // 签发主体**写死为用户本人** —— 调用方给不了、也改不了这个身份(见上)。
   const plan: UnattendedTaskPlan = {
     ...input,
@@ -557,6 +593,11 @@ export async function runUnattendedPlanWithGrant(
   actorId: string,
   now: number = Date.now(),
 ): Promise<UnattendedRunOutcome> {
+  // ★ MC-029(读侧):存档读不懂 → **建任何会话之前**就拒绝。执行完回写不了进度,重启后
+  //   续跑会重跑已建成的步(重复的外部副作用)—— 与「授权取不到」同一档,先拒再说。
+  if (getUnattendedPlanStore().isArchiveCorrupt()) {
+    return { ok: false, kind: "refused", code: UNATTENDED_ARCHIVE_CORRUPT_CODE, reason: unattendedArchiveCorruptReason() };
+  }
   // 取回授权。`get` 对「不存在 / 已撤销 / 已过期」一律回 null —— 取不到就明确拒绝,不静默放行。
   const grant = getGrantStore().get(input.grantId, now);
   if (grant === null) {
@@ -637,6 +678,10 @@ export interface PendingUnattendedPlanView {
  */
 export function listUnattendedPlans(now: number = Date.now()): PendingUnattendedPlanView[] {
   const store = getUnattendedPlanStore();
+  // ★ MC-029(读侧):存档读不懂 → **拒绝**(抛),不是回一张空表。空表在这里是一句谎 ——
+  //   界面会把它翻成「没有等待中的计划」,与「真的没有」无法区分;抛错会落进渲染端
+  //   `useRpc` 的 listError(ErrorNote 现有路径),用户看到的是「读不懂、怎么修」。
+  assertPlanArchiveReadable();
   const grantStore = getGrantStore();
   const out: PendingUnattendedPlanView[] = [];
   for (const rec of store.listAll()) {
@@ -697,6 +742,11 @@ export async function resumeUnattendedPlanWithGrant(
   now: number = Date.now(),
 ): Promise<UnattendedRunOutcome> {
   const store = getUnattendedPlanStore();
+  // ★ MC-029(读侧):存档读不懂 → 明确拒绝并说清,不是 `no_record`(「存档里没有计划」——
+  //   那正是这个缺陷要消除的谎:计划很可能**还在坏字节里**,只是读不出来)。
+  if (store.isArchiveCorrupt()) {
+    return { ok: false, kind: "refused", code: UNATTENDED_ARCHIVE_CORRUPT_CODE, reason: unattendedArchiveCorruptReason() };
+  }
   const rec: UnattendedPlanRecord | null = store.get(planId);
   if (rec === null) {
     return {
@@ -750,6 +800,9 @@ export async function resumeUnattendedPlanWithGrant(
  */
 export function abandonUnattendedPlan(planId: string): boolean {
   const store = getUnattendedPlanStore();
+  // ★ MC-029(读侧):存档读不懂 → 抛错,不谎报 `false`(「不存在或已放弃」在坏存档下
+  //   无法证实 —— 计划可能还在坏字节里)。渲染端的 abandon 已有 catch 显示这条错。
+  assertPlanArchiveReadable();
   const rec = store.get(planId);
   if (rec === null || rec.status === "abandoned") return false;
   store.put({ ...rec, status: "abandoned" });

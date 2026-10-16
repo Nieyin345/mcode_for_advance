@@ -24,11 +24,14 @@
  *    `grantStoreFile.ts` 文件头)。故本模块**不碰 DB / SettingRepo**,只走**同一套**文件落盘
  *    机制(`atomicWrite` + `BlobIO`),与授权文件并列放在 `appControl/` 下。
  *
- * ## 坏数据 = 空 store(fail-safe),与 `grantStoreFile.ts` 同一条纪律
+ * ## 坏数据:读不崩(空 store),但**不许当写回基准**,也不许对消费端谎报「没有计划」(MC-029)
  *
- * 读到的文件坏掉(非 JSON / 非本信封 / 版本不符)→ 当**空 store**,不崩;数组里**逐条**校验,
- * 形状不对的那一条丢掉、其余保留。空 store 的后果是「看不出有哪些计划在等」—— 回到「重新
- * 批准」,是**收紧**而非放宽;唯一条纪律是**绝不**把读不懂的东西当成一份有效计划去执行。
+ * 读到的文件坏掉(非 JSON / 非本信封 / 版本不符)→ 解析当**空 store**,不崩;数组里**逐条**
+ * 校验,形状不对的那一条丢掉、其余保留。但「空」只是一半事实:**持有核记着 `corrupt`**
+ * (`isArchiveCorrupt()`),`commit` 在 corrupt 时**拒绝任何写入**(原字节一个不动,绝不拿空表
+ * 回写);消费端(list / resume / run / abandon,见 `unattendedTaskPlan.ts`)也据此**显式拒绝**
+ * 而不是把「读不懂」说成「没有计划」。空串(零字节文件)与文件不存在同判 `absent` —— 没有可
+ * 恢复的字节,不算损坏。唯一条纪律是**绝不**把读不懂的东西当成一份有效计划去执行。
  */
 import { join } from "node:path";
 import type { BlobIO } from "@main/appControl/grantStoreFile.js";
@@ -166,14 +169,17 @@ export function parseUnattendedPlans(json: string | null): UnattendedPlanRecord[
 
 /**
  * **存档健康度**(MC-029)—— 与 {@link parseUnattendedPlans} **同一套判据**,只是保留
- * "为什么空"这一层:文件不存在 = `absent`(真空);文件在但读不懂 = `corrupt`。
+ * "为什么空"这一层:文件不存在 / 空串 = `absent`(真空);文件在但读不懂 = `corrupt`。
  *
  * 分母必须与 `parseUnattendedPlans` 逐条对齐(`null` / 非 JSON / 非对象 / 版本不符 /
  * `plans` 不是数组 ⇒ corrupt),否则会出现「解析当空、健康说有效」的错配。
  * `plans` 数组里**个别**坏记录被丢不算 corrupt —— 那是有意的「丢一条只会收紧」。
+ *
+ * 空串与 MC-022 的 `classifyProjectLinks` 同判据(`!raw` → absent):零字节文件里没有
+ * 任何可恢复的字节,当成「没有计划」;把用户亲手清空的文件说成「损坏」是误报。
  */
 export function classifyUnattendedPlanArchive(json: string | null): UnattendedPlanStoreHealth {
-  if (json == null) return "absent";
+  if (json == null || json === "") return "absent";
   let data: unknown;
   try {
     data = JSON.parse(json);

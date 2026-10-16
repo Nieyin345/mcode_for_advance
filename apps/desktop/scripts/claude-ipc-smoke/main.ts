@@ -30,7 +30,7 @@
  *
  * Run: scripts/claude-ipc-smoke/run.sh
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
@@ -69,6 +69,7 @@ import {
   getUnattendedPlanStore,
   unattendedPlanStorePath,
   parseUnattendedPlans,
+  classifyUnattendedPlanArchive,
 } from "@main/appServices/unattendedPlanStore.js";
 import { resolveUnattendedInitiator } from "@main/ipc/unattended.js";
 import { physicalPath } from "@main/lib/realPathWithin.js";
@@ -2707,6 +2708,136 @@ console.log("\n19f. 【MC-059 残余】发起者可追溯(②)+ 计划跨重启�
     try { store.put(aRec("p2")); } catch { writeThrew = true; }
     eq("★ MC-029:坏存档存在时 put → 拒绝(抛错,不静默)", writeThrew, true);
     eq("★ MC-029:原字节一字未动(没被 p2 覆盖)", blob.read(), originalBytes);
+  }
+
+  // ── ★ MC-029(读侧):坏存档时 list / resume / run / abandon / approve **显式区分**,
+  //    不谎报「没有计划」;修复(用户把 JSON 修好)后一切照常。写侧闸(上一块)只保住了原字节 ——
+  //    但消费端若把「读不懂」继续当成空表,用户看到的仍是「没有等待中的计划 / 这份计划不存在」,
+  //    与「真的没有计划」无法区分。这里在**真装配**(盘上有真文件)下端到端验这条判据。
+  {
+    /** 读侧拒绝文案的稳定子串(断言不锁全文)。 */
+    const READ_MARK = "unattended-plans.json 读不懂";
+    /** 写侧闸(store.commit 的既有错误)文案的稳定子串。 */
+    const WRITE_MARK = "unattended-plans.json 内容读不懂";
+
+    // ── 正控(③):absent(文件不存在 / 空串)→ 正常 put;空串不误报损坏(用户亲手清空 ≠ 损坏)。
+    {
+      const { UnattendedPlanStore, fileUnattendedPlanPersist } = await import("@main/appServices/unattendedPlanStore.js");
+      eq("★ MC-029(读侧)正控:null(文件不存在)→ absent", classifyUnattendedPlanArchive(null), "absent");
+      eq("★ MC-029(读侧)正控:空串(零字节文件)→ absent,不误报损坏", classifyUnattendedPlanArchive(""), "absent");
+      let t: string | null = null;
+      const mem = { read: () => t, write: (s: string) => { t = s; } };
+      const s = new UnattendedPlanStore({ persist: fileUnattendedPlanPersist(mem as never) });
+      let putThrew = false;
+      try {
+        s.put({
+          planId: "plan_absent_ok", sceneId: "s", projectId: "p", grantId: "g",
+          operations: [{ operationId: "op1", method: "session.create", prompt: "x" }],
+          maxCount: 1, createdAt: 1, status: "pending", completedOperationIds: [], lastStoppedAt: null, lastStopCode: null,
+        });
+      } catch { putThrew = true; }
+      eq("★ MC-029(读侧)正控:absent 时 put 正常成功(不误拦)", putThrew, false);
+      check("★ MC-029(读侧)正控:absent 时 put 确实落盘", mem.read() !== null);
+    }
+
+    mkProject("p_utpf_corrupt", UTPF_DIR);
+    headless();
+    fresh(); setGrantStore(null); setUnattendedPlanStore(null);
+    assembleGrantStore(DATA); assembleUnattendedPlanStore(DATA); headless();
+
+    // 正控(④):先弄一份**有效**存档(含一条 pending 计划)+ 一枚真授权 —— 证明驱动器本身工作。
+    const granted = await call<{ ok: boolean; grantId?: string }>(
+      IPC.UNATTENDED_APPROVE, planBody("p_utpf_corrupt", { planId: "plan_corrupt_keep", maxCount: 2 }),
+    );
+    check("★ MC-029(读侧)正控:先经 approve 落一份有效计划(granted)", granted.ok === true, granted);
+    const validBytes = readFileSync(planStorePath, "utf8");
+    eq("★ MC-029(读侧)正控:有效存档判 valid", classifyUnattendedPlanArchive(validBytes), "valid");
+    eq("★ MC-029(读侧)正控:有效存档下列表里有这条计划",
+      listUnattendedPlans().some((p) => p.planId === "plan_corrupt_keep"), true);
+
+    // 把盘上文件换成**截断的**坏 JSON(模拟写入中断),重装配 —— 这就是「重启后读到坏存档」。
+    writeFileSync(planStorePath, "{ \"version\": 1, \"plans\": [ {\"plan", "utf8");
+    const corruptBytes = readFileSync(planStorePath, "utf8");
+    setGrantStore(null); setUnattendedPlanStore(null);
+    assembleGrantStore(DATA); assembleUnattendedPlanStore(DATA); headless();
+    check("★ MC-029(读侧):坏存档重装配后持有核知道 corrupt",
+      getUnattendedPlanStore().isArchiveCorrupt() === true);
+
+    // ① list:坏存档必须**显式区分** —— 不是「没有等待中的计划」那句谎。
+    //    契约层 list 没有 refusal 形状(只回 {plans}),所以显式 = **拒绝**:handler 抛错 →
+    //    渲染端 useRpc 的 listError 落进 ErrorNote(现有路径;不新增契约字段、不动渲染端)。
+    const listRes = await call<{ plans: unknown[] }>(IPC.UNATTENDED_PLANS_LIST).catch(() => null);
+    check("★ MC-029(读侧)①:corrupt 时 list **拒绝**(不是 {plans:[]} 的空表谎)", listRes === null, listRes);
+    const listErr = await catching(IPC.UNATTENDED_PLANS_LIST);
+    check("★ MC-029(读侧)①:list 的拒绝话说清「存档读不懂」(与真·没有计划可区分)",
+      listErr.includes(READ_MARK), listErr);
+
+    // ③ resume:坏存档 → 明确拒绝且说清「存档读不懂」,不是谎报 no_record(「这份计划不存在」)。
+    const resResume = await call<{ ok: boolean; kind: string; code?: string; reason?: string }>(
+      IPC.UNATTENDED_PLANS_RESUME, { planId: "plan_corrupt_keep" },
+    );
+    check("★ MC-029(读侧)③:corrupt 时 resume → refused", resResume.ok === false && resResume.kind === "refused", resResume);
+    eq("★ MC-029(读侧)③:拒绝码 archive_corrupt(不是 no_record 那句谎)", resResume.code, "archive_corrupt");
+    check("★ MC-029(读侧)③:拒绝话说清是存档读不懂(与 no_record 可区分)",
+      typeof resResume.reason === "string" && resResume.reason.includes(READ_MARK), resResume.reason);
+
+    // ③' run:坏存档 → 同样**拒绝**,而且发生在**建任何会话之前** —— 否则会话建了、进度回写不了,
+    //    重启后重试 = 重复的外部副作用。
+    const beforeSessions = SessionRepo.listByProject("p_utpf_corrupt").length;
+    const resRun = await call<{ ok: boolean; kind: string; code?: string }>(
+      IPC.UNATTENDED_RUN,
+      { ...planBody("p_utpf_corrupt", { planId: "plan_corrupt_keep" }), grantId: granted.grantId, initiatorSessionId: realSid },
+    ).catch(() => null);
+    check("★ MC-029(读侧)③:corrupt 时 run → refused(不执行再崩在回写)", resRun !== null && resRun.ok === false && resRun.kind === "refused", resRun);
+    eq("★ MC-029(读侧)③:run 拒绝码 archive_corrupt", resRun?.code, "archive_corrupt");
+    eq("★ MC-029(读侧)③:run 被拒时一条会话都没建", SessionRepo.listByProject("p_utpf_corrupt").length, beforeSessions);
+
+    // ③'' approve:坏存档 → **先拒**,不给「授权铸了、正文记不进」的孤儿授权(台账触发链的
+    //     「重启后又创建另一个 p2」正是这一步)。
+    const resApprove2 = await call<{ ok: boolean; kind: string; code?: string }>(
+      IPC.UNATTENDED_APPROVE, planBody("p_utpf_corrupt", { planId: "plan_corrupt_p2" }),
+    );
+    check("★ MC-029(读侧)③:corrupt 时 approve 新计划 → refused", resApprove2.ok === false && resApprove2.kind === "refused", resApprove2);
+    eq("★ MC-029(读侧)③:approve 拒绝码 archive_corrupt(不是含糊的 unexpected)", resApprove2.code, "archive_corrupt");
+    const grantsOnDisk = readFileSync(join(DATA, "appControl", "grants.json"), "utf8");
+    check("★ MC-029(读侧)③:approve 被拒时没有铸出孤儿授权(正文记不进的授权不签发)",
+      !grantsOnDisk.includes("plan_corrupt_p2"), grantsOnDisk.includes("plan_corrupt_p2"));
+
+    // ②abandon/put 级兜底:坏存档 → 不谎报 abandoned=false;绕过服务层直接 put 也被写侧闸拒。
+    const abandonErr = await catching(IPC.UNATTENDED_PLANS_ABANDON, { planId: "plan_corrupt_keep" });
+    check("★ MC-029(读侧)②:corrupt 时 abandon 拒绝并说清(不谎报 abandoned=false)",
+      abandonErr.includes(READ_MARK), abandonErr);
+    let putRefused = false;
+    try {
+      getUnattendedPlanStore().put({
+        planId: "plan_bypass_attempt", sceneId: "s", projectId: "p_utpf_corrupt", grantId: granted.grantId ?? "g",
+        operations: [{ operationId: "op1", method: "session.create", prompt: "x" }],
+        maxCount: 1, createdAt: 1, status: "pending", completedOperationIds: [], lastStoppedAt: null, lastStopCode: null,
+      });
+    } catch (err) {
+      putRefused = (err as Error).message.includes(WRITE_MARK);
+    }
+    eq("★ MC-029(读侧)③:绕过服务层直接 put 也被写侧闸拒绝(还说清原因)", putRefused, true);
+
+    // ④ 原字节仍未被动过(以上所有被拒操作都没写盘)。
+    eq("★ MC-029(读侧)④:一串被拒操作之后坏字节仍一字未动", readFileSync(planStorePath, "utf8"), corruptBytes);
+
+    // ⑤ 恢复:用户把 JSON 修好(用先前的有效字节),重装配后一切照常 ——
+    //    list 恢复、resume 不再报 archive_corrupt(授权是否仍有效是另一条独立判定)。
+    writeFileSync(planStorePath, validBytes, "utf8");
+    setGrantStore(null); setUnattendedPlanStore(null);
+    assembleGrantStore(DATA); assembleUnattendedPlanStore(DATA); headless();
+    check("★ MC-029(读侧)⑤:修好 JSON 重装配后持有核不再报 corrupt",
+      getUnattendedPlanStore().isArchiveCorrupt() === false);
+    const listRes2 = await call<{ plans: Array<{ planId: string }> }>(IPC.UNATTENDED_PLANS_LIST).catch(() => null);
+    check("★ MC-029(读侧)⑤:修好后 list 恢复(不再拒绝)", listRes2 !== null, listRes2);
+    eq("★ MC-029(读侧)⑤:修好后那条计划又列得出来",
+      listRes2?.plans.some((p) => p.planId === "plan_corrupt_keep"), true);
+    const resResume2 = await call<{ ok: boolean; code?: string }>(
+      IPC.UNATTENDED_PLANS_RESUME, { planId: "plan_corrupt_keep" },
+    ).catch(() => null);
+    check("★ MC-029(读侧)⑤:修好后 resume 不再报 archive_corrupt(授权另行判定)",
+      resResume2 !== null && resResume2.code !== "archive_corrupt", resResume2);
   }
 
   // 复位,免得把落了盘的示例计划带进后续用例。
