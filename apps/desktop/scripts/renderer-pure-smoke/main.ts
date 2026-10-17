@@ -949,5 +949,45 @@ section("18. 插件 hook 授权:面板入参构造 + 面板真的接上了签发
   );
 }
 
+/* ── 【MC-048】守望面板:读失败与"没有模板"必须分得开 ── */
+
+console.log("\n【MC-048】守望面板读口:空表 vs 读失败");
+{
+  const { loadWatchPanelState, watchPanelLoadFailure } = await import(
+    "../../src/renderer/components/chat/watchPanelLoad.js"
+  );
+  // 正常空表:健康态随主进程给的值(absent),没有伪造的"读失败"。
+  const empty = await loadWatchPanelState({
+    templates: async () => ({ templates: [], health: "absent", problems: [] }),
+    status: async () => ({ active: false }),
+  });
+  check("空表:健康态 absent、问题列表为空", empty.health === "absent" && empty.problems.length === 0, empty);
+  // 旧 preload 不带健康态字段 → 当正常(向后兼容)。
+  const legacy = await loadWatchPanelState({
+    templates: async () => ({ templates: [] }),
+    status: async () => ({ active: true }),
+  });
+  check("旧 preload 没有 health 字段时当正常(不误报)", legacy.health === "valid", legacy);
+  // ① 读失败:显式 read_error + 原因(从前这里是"空表 + valid",红条不出现)。
+  const failure = watchPanelLoadFailure(new Error("IPC 读失败:EPERM"));
+  check("★ 读失败映射成 read_error(不是空表的 valid)", failure.health === "read_error", failure);
+  check("★ 读失败带上原因(面板红条要能说清)", failure.problems[0]?.includes("EPERM") === true, failure.problems);
+  // ② 判据立在**两者可区分**上:同样的 templates 数组长度(0),健康态必须不同。
+  check(
+    "★★ 同为 0 条:'没有模板'与'读失败'的健康态不同",
+    empty.templates.length === failure.templates.length && empty.health !== failure.health,
+    { empty: empty.health, failed: failure.health },
+  );
+  // ③ 非 Error 抛出也要有可读原因(不出现 "[object Object]")。
+  const weird = watchPanelLoadFailure({ code: 7 });
+  check("非 Error 抛出也给可读原因", (weird.problems[0] ?? "").length > 0, weird.problems);
+  // ④ 主进程给 partial/corrupt 时原样透传(面板据此画不同文案)。
+  const corrupt = await loadWatchPanelState({
+    templates: async () => ({ templates: [], health: "corrupt", problems: ["第 1 条读不出"] }),
+    status: async () => ({ active: false }),
+  });
+  check("主进程的 corrupt 健康态原样透传", corrupt.health === "corrupt" && corrupt.problems[0] === "第 1 条读不出", corrupt);
+}
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

@@ -37,6 +37,7 @@ import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
+import { loadWatchPanelState, watchPanelLoadFailure } from "./watchPanelLoad.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
 import { Input, Button, InfoHint, Select } from "@renderer/components/ui/index.js";
 import type { WatchCommandTemplate } from "@contracts/ipc";
@@ -110,7 +111,6 @@ export function WatchSegment({
 }
 
 /* ───────── 起跑面板 ───────── */
-
 function WatchPanel({
   sessionId,
   anchorRect,
@@ -140,24 +140,32 @@ function WatchPanel({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // 打开时读一次:命令模板 + 活跃状态。读不到就当空(桌面上不该发生;兜底是
-  // "没有模板",面板照常能用) —— 绝不让面板因此打不开。
+  // 打开时读一次:命令模板 + 活跃状态。**读失败与"没有模板"必须分得开**(MC-048):
+  // 从前 `catch { setTemplates([]) }` 让读失败与空表长得一模一样 —— 面板照常能用,
+  // 但健康态仍是 `valid`、红条不出现,用户看到的是一个"没有模板"的正常面板,
+  // 而真实设置可能坏着/读不动。现在失败显式落到 `tplHealth = "read_error"` 并带原因,
+  // 面板的红条(M574 起就有)照常给出诊断与「备份并重建」入口。
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const [tpl, status] = await Promise.all([
-          api.automation.watchTemplates(),
-          api.automation.watchStatus({ sessionId }),
-        ]);
+        const loaded = await loadWatchPanelState({
+          templates: () => api.automation.watchTemplates(),
+          status: () => api.automation.watchStatus({ sessionId }),
+        });
         if (cancelled) return;
-        setTemplates(tpl.templates);
+        setTemplates(loaded.templates);
         // 【MC-054】健康态随读一起回来(旧 preload 没这两字段 → 当正常)。
-        setTplHealth(tpl.health ?? "valid");
-        setTplProblems(tpl.problems ?? []);
-        setActive(status.active);
-      } catch {
-        if (!cancelled) setTemplates([]);
+        setTplHealth(loaded.health);
+        setTplProblems(loaded.problems);
+        setActive(loaded.active);
+      } catch (e) {
+        if (cancelled) return;
+        const failed = watchPanelLoadFailure(e);
+        setTemplates(failed.templates);
+        // 【MC-048】读失败不再伪装成"空表":显式标记并带上原因(红条据此显示)。
+        setTplHealth(failed.health);
+        setTplProblems(failed.problems);
       }
     })();
     return () => {
