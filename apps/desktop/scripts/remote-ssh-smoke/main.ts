@@ -258,6 +258,59 @@ check("disposeOwner forgets all of the conversation's connections", mgr.list(own
 let disposedGone = false;
 try { mgr.status(owner, conn2.connectionId); } catch { disposedGone = true; }
 check("disposed connection id no longer resolves", disposedGone);
+
+/* 【ARC-006】连接配额 —— 与进程(8/24)、搜索(12/48)同一纪律。
+ * 这里用**不同的密码**让每条都是"新连接"(相同配置会被去重复用,见上面的循环)。 */
+console.log("\n[3b] ssh connection quotas: per-owner + endpoint-wide");
+const quotaOwner = "sess-quota";
+const quotaOwner2 = "sess-quota-other";
+const quotaOwners = ["sess-quota-b", "sess-quota-c"];
+const openedQuota: string[] = [];
+try {
+  for (let i = 0; i < 8; i++) {
+    const c = await mgr.connect({ ownerSessionId: quotaOwner, host: "127.0.0.1", port: addr.port, username: "u", password: `quota-${i}`, keepaliveIntervalMs: 5000 });
+    openedQuota.push(c.connectionId);
+  }
+  check("前提:8 条不同连接都建起来了", mgr.list(quotaOwner).length === 8, mgr.list(quotaOwner).length);
+  let perOwnerRejected = "";
+  try {
+    await mgr.connect({ ownerSessionId: quotaOwner, host: "127.0.0.1", port: addr.port, username: "u", password: "quota-overflow", keepaliveIntervalMs: 5000 });
+  } catch (e) { perOwnerRejected = String(e); }
+  check("★ 【ARC-006】同一对话第 9 条 SSH 连接被拒(每 owner 8 条)", /8 条 SSH 连接/.test(perOwnerRejected), perOwnerRejected);
+
+  // 端点全局 24:每个 owner 只能开到 8,所以用**三个** owner 各开 8 条把总数推到 24,
+  // 再由**第四**个 owner 触发全局拒绝 —— 这样看到的是全局上限,不是每个 owner 的上限。
+  for (const ownerId of quotaOwners) {
+    for (let i = 0; i < 8; i++) {
+      const c = await mgr.connect({ ownerSessionId: ownerId, host: "127.0.0.1", port: addr.port, username: "u", password: `${ownerId}-${i}`, keepaliveIntervalMs: 5000 });
+      openedQuota.push(c.connectionId);
+    }
+  }
+  const liveBefore = [...new Set([quotaOwner, ...quotaOwners])].reduce((n, o) => n + mgr.list(o).length, 0);
+  check("前提:三个 owner 各 8 条,共 24 条", liveBefore === 24, liveBefore);
+  let totalRejected = "";
+  try {
+    await mgr.connect({ ownerSessionId: quotaOwner2, host: "127.0.0.1", port: addr.port, username: "u", password: "quota-over-total", keepaliveIntervalMs: 5000 });
+  } catch (e) { totalRejected = String(e); }
+  check("★ 【ARC-006】端点全局 SSH 连接数在 24 处被拒", /上限\(24\)/.test(totalRejected) || /上限\(24\)/.test(decodeURIComponent(totalRejected)), totalRejected);
+  check("★ 【ARC-006】拒的时候总数确实已经到 24(不是更早)", [...new Set([quotaOwner, ...quotaOwners])].reduce((n, o) => n + mgr.list(o).length, 0) === 24, {
+    perOwner: [quotaOwner, ...quotaOwners].map((o) => mgr.list(o).length),
+  });
+} finally {
+  // 配额用例的清理 —— 每条都主动断开,不留给后面的段落。
+  for (const id of openedQuota) {
+    for (const ownerId of [quotaOwner, quotaOwner2, ...quotaOwners]) {
+      try { await mgr.disconnect(ownerId, id); } catch { /* 不属于这个 owner 的会抛,忽略 */ }
+    }
+  }
+  // ⚠️ 按 owner 整体收尾 —— **不能只断 `openedQuota` 里记下的 id**:变异验证时
+  // 全局上限被撤,"本应被拒"的第 25 条会真的建起来,而它的 id 根本没进列表;那条
+  // 长连接与保活定时器会让 node 在断言跑完后**不退出**,看起来像卡死(实测 M2
+  // 变异挂了 20+ 分钟)。`disposeOwner` 按 owner 关掉该 owner 名下全部连接。
+  for (const ownerId of [quotaOwner, quotaOwner2, ...quotaOwners]) mgr.disposeOwner(ownerId);
+}
+const remaining = [quotaOwner, quotaOwner2, ...quotaOwners].reduce((n, o) => n + mgr.list(o).length, 0);
+check("配额用例收尾:所有 owner 名下都不剩连接", remaining === 0, remaining);
 await waitFor(() => serverClients.size, (n) => n === 0, 2500);
 await new Promise((resolve) => setTimeout(resolve, 1500));
 check("disposed connection is closed and does not reconnect", serverClients.size === 0, serverClients.size);

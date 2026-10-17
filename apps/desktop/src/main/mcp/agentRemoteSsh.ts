@@ -36,6 +36,18 @@ const MAX_EXEC_TIMEOUT_MS = MAX_SSH_EXEC_TIMEOUT_MS;
  */
 export const DEFAULT_JOB_LOG_WAIT_MS = 55_000;
 export const MAX_JOB_LOG_WAIT_MS = 55_000;
+
+/** 【ARC-006】每个 owner 同时开着的 SSH 连接上限。
+ *
+ * 进程(8/owner、24 全局)与后台搜索(12/owner、48 全局)早就各有配额,SSH 没有 ——
+ * 而 SSH 是**唯一**能把 owner 长期钉在"忙"状态的资源(`ownerHasInFlightWork` 会为此
+ * 保留它的淘汰凭据,见 `publicClientSessions`)。公网链接被复用时,一个客户端反复
+ * `connect` 不 `disconnect` 就能让无数 owner 同时"有名下活资源",把受控保留的规模
+ * 撑大。**每个连接本身都真实存在**(长连接、保活包),所以这是真实的资源消耗,
+ * 不是纯内存泄漏 —— 与另外两类资源同一个理由要设上限。 */
+const MAX_CONNECTIONS_PER_OWNER = 8;
+/** 端点全局上限 —— 与 `agentProcessSessions.ts` 的 `MAX_RUNNING_TOTAL`(24)同一量级。 */
+const MAX_CONNECTIONS_TOTAL = 24;
 const JOB_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** 包在每条 exec 前面、写到 stderr 的进程号标记 —— 超时后靠它去远端杀掉整个进程组。 */
 const EXEC_PID_MARK = "__MCODE_EXEC_PID=";
@@ -606,6 +618,17 @@ export function createAgentRemoteSshManager() {
         return infoOf(existing);
       }
     }
+    // 【ARC-006】连接配额 —— 与进程/搜索同一套纪律(见 MAX_CONNECTIONS_*):
+    // 已有**可复用**的同配置连接在上面的循环里已经返回;走到这里就是一条新连接。
+    // 计数只算**未关闭**的(`closed`/`error` 不再耗资源,重连由各自 entry 负责)。
+    const live = [...entries.values()].filter((e) => !e.intentionalClose && e.state !== "closed");
+    if (live.filter((e) => e.ownerSessionId === input.ownerSessionId).length >= MAX_CONNECTIONS_PER_OWNER) {
+      throw new Error(`当前对话已有 ${MAX_CONNECTIONS_PER_OWNER} 条 SSH 连接,请先断开不用的连接`);
+    }
+    if (live.length >= MAX_CONNECTIONS_TOTAL) {
+      throw new Error(`同时在开的 SSH 连接已达上限(${MAX_CONNECTIONS_TOTAL})，请先断开不用的连接`);
+    }
+
     const entry: RemoteEntry = {
       id: `ssh_${randomBytes(8).toString("hex")}`,
       ownerSessionId: input.ownerSessionId,
