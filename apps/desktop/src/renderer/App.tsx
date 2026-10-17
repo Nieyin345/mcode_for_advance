@@ -1,15 +1,5 @@
-import { lazy, memo, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
-import { cn } from "@renderer/lib/cn.js";
-import { ClassicShell } from "./components/shell/ClassicShell.js";
-import { Divider } from "./components/layout/Divider.js";
+import { lazy, memo, Suspense, useEffect, useRef } from "react";
 import { Titlebar } from "./components/layout/Titlebar.js";
-import { LeftBar } from "./components/layout/LeftBar.js";
-import { StreamSidebar } from "./components/layout/StreamSidebar.js";
-import { ChatPane } from "./components/chat/ChatPane.js";
-import { SessionTabs } from "./components/layout/SessionTabs.js";
-import { UnifiedTabsBar } from "./components/layout/UnifiedTabsBar.js";
-import { RightPanel } from "./components/layout/RightPanel.js";
-import { BottomTerminalBar } from "./components/layout/BottomTerminalBar.js";
 import { CommandPalette } from "./components/layout/CommandPalette.js";
 import { SearchDialog } from "./components/ide/SearchDialog.js";
 import { ModelConfigPrompt } from "./components/chat/ModelConfigPrompt.js";
@@ -17,7 +7,7 @@ import { AskChoiceDialog } from "./components/chat/AskChoiceDialog.js";
 import { BrowserPanel } from "./components/browser/BrowserPanel.js";
 import { Toaster } from "./components/layout/Toaster.js";
 import { CustomUiHost } from "./components/customUi/CustomUiHost.js";
-import { CustomUiToolbar } from "./components/customUi/CustomUiToolbar.js";
+import { ClassicShell } from "./components/shell/ClassicShell.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
 import { VoiceListeningOverlay } from "./components/layout/VoiceListeningOverlay.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
@@ -32,8 +22,6 @@ import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance, useThemeStyle } from "./lib/appearance.js";
 import { useUiPrefsAppearance } from "./lib/uiPrefs.js";
 import { useI18n } from "./lib/i18n/index.js";
-import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
-import { useFileViewStore } from "./stores/fileViewStore.js";
 import { startWorkflowLive } from "./lib/workflowLive.js";
 import { installAppControlHost } from "./lib/appControlHost.js";
 
@@ -45,12 +33,6 @@ import { installAppControlHost } from "./lib/appControlHost.js";
 // avoid. All three are only needed once the user opens a file, a diff dialog
 // or the plan tab — well after first paint. Vite splits them into separate
 // chunks automatically.
-const FileEditor = lazy(() =>
-  import("./components/ide/FileEditor.js").then((m) => ({ default: m.FileEditor })),
-);
-const GitDiffDialog = lazy(() =>
-  import("./components/ide/GitDiffDialog.js").then((m) => ({ default: m.GitDiffDialog })),
-);
 const PlanViewer = lazy(() =>
   import("./components/chat/PlanViewer.js").then((m) => ({ default: m.PlanViewer })),
 );
@@ -63,9 +45,6 @@ const PlanViewer = lazy(() =>
 // click on the gear then opens instantly instead of waiting on a chunk load.
 const loadSettingsPage = () => import("./components/settings/SettingsPage.js");
 const SettingsPage = lazy(() => loadSettingsPage().then((m) => ({ default: m.SettingsPage })));
-const FileViewer = lazy(() =>
-  import("./components/library/FileViewer.js").then((m) => ({ default: m.FileViewer })),
-);
 
 /**
  * Subscribe to settings visibility outside the App root. The workspace shell
@@ -115,95 +94,6 @@ const SettingsOverlay = memo(function SettingsOverlay() {
           <SettingsPage />
         </Suspense>
       </div>
-    </div>
-  );
-});
-
-interface WorkspaceSidebarProps {
-  leftOpen: boolean;
-  leftBarMode: string;
-  leftWidthPct: number;
-  onResizeLeft: (deltaPx: number) => void;
-  onResetLeft: () => void;
-}
-
-const WorkspaceSidebarContents = memo(function WorkspaceSidebarContents({ mode }: { mode: string }) {
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      {mode === "stream" ? <StreamSidebar /> : <LeftBar />}
-    </div>
-  );
-});
-
-/**
- * 左侧工作区栏。**设置打开时不做布局变化** —— 见 `App` 里 `SettingsOverlay`
- * 上面的那段注释:设置覆盖层是整窗的,这一栏本来就被盖住,再把它
- * `display:none` 只会让它右边的主列从 80% 宽被撑到 100%,连带对话虚拟列表
- * 重新测量折行、Files 树重排、每个挂着的 TerminalView 重 fit 并发一条
- * `pty.resize`。那些重排全发生在**看不见**的树上,是"点设置很卡"的主因。
- *
- * 所以设置打开时这里一个字节都不变(宽度、Divider 都保持原样);视觉上照样
- * 看不到它 —— 覆盖层不透明,且 z-30 在它上面。
- */
-const WorkspaceSidebar = memo(function WorkspaceSidebar({
-  leftOpen,
-  leftBarMode,
-  leftWidthPct,
-  onResizeLeft,
-  onResetLeft,
-}: WorkspaceSidebarProps) {
-  return (
-    <>
-      <aside
-        data-testid="workspace-sidebar"
-        className={cn(
-          "flex h-full min-w-0 shrink-0 flex-col rounded-tl-3xl bg-surface-muted",
-          !leftOpen && "hidden",
-        )}
-        style={{ flexGrow: 0, flexBasis: `${leftWidthPct}%` }}
-      >
-        <WorkspaceSidebarContents mode={leftBarMode} />
-      </aside>
-      {leftOpen && (
-        <Divider
-          orientation="vertical"
-          hideLine
-          className="z-20"
-          onResize={onResizeLeft}
-          onDoubleClick={onResetLeft}
-        />
-      )}
-    </>
-  );
-});
-
-/**
- * 【MC-046】被设置覆盖层盖住时,把整棵工作区**标 inert**(React 19 原生支持
- * `inert` 布尔 prop):子树退出 Tab 序、退出辅助技术读序、不接受指针与焦点。
- * 这是模态语义的另一半 —— 焦点管理的 hook(useFocusTrap)只保证焦点在
- * 设置层内循环/归位;如果不 inert,原生 Tab 走到设置层最后一个元素后照样会
- * 走进后台(以及根上其它可聚焦层),屏幕阅读器也照样念到被盖住的控件。
- *
- * 为什么是**包壳**而不是卸载:工作区子树必须全程挂载(终端 PTY 保活、Monaco/
- * 草稿状态,见 App 主注释里那条不变量);inert 只改可达性,不动布局、不卸载任何
- * 东西 —— 几何断言(settings-layout-smoke)钉着"打开设置前后左栏/主列逐像素不变",
- * 这个包壳按原 flex 参数逐字复刻(工作区仍是 root 里唯一的在流 flex 子项),
- * 不引入任何盒子变化。
- *
- * 为什么做成**自订阅的 memo 组件**、而不是在 App 里读 `settingsOpen` 再传 prop:
- * 与 SettingsOverlay 同理 —— App 一旦订阅这个字段,每次开关设置都会调和整棵
- * 应用树(正是"点设置很卡"的老账)。这里只有这个包壳重渲染,`children` 元素
- * 身份不变,React 直接跳过子树。
- */
-const WorkspaceInertShell = memo(function WorkspaceInertShell({
-  children,
-}: {
-  children: ReactNode;
-}) {
-  const settingsOpen = useSessionStore((s) => s.settingsOpen);
-  return (
-    <div className="flex min-w-0 flex-1" inert={settingsOpen}>
-      {children}
     </div>
   );
 });
@@ -414,8 +304,9 @@ export function App() {
           beside the browser overlay so it covers both the chat and right
           columns. Renders null when not applicable. */}
       <WidePlanDialog />
-      {/* 【ARC-005 V1】经典工作区外壳已抽成 ClassicShell(逐字搬运,零行为变化)。
-          下一步的 WorkspaceShell 与它共用同一批已挂载组件实例。 */}
+      {/* 【MC-046】工作区整体包进 inert 壳:设置打开时整棵后台子树退出
+          Tab 序与辅助技术(几何逐像素不变,子树全程挂载 —— 见 WorkspaceInertShell
+          自己的注释)。 */}
       <ClassicShell
         leftOpen={leftOpen}
         leftBarMode={leftBarMode}
@@ -456,19 +347,12 @@ export function App() {
   );
 }
 
-/** Center pane router. `tabs` displayMode renders the UNIFIED tab bar —
- *  session tabs and editor file tabs share ONE strip, and whichever tab is
- *  active (chat or editor) takes the full center width (no split). `single`
- *  mode keeps the legacy layout: a horizontal split between the chat column
- *  (left) and the file-editor column (right), where the editor column only
- *  appears when a file or plan tab is open (see the design notes in
- *  docs/tech-stack.md).
- *
- *  `wide` (wide-panel 3:7 mode) is a RENDER VARIATION, not a different tree:
- *  the same components stay mounted and only the editor surface is hidden
- *  (the plan opens as the WidePlanDialog overlay instead). Toggling wide is
- *  a relayout, never a remount — the chat panes (Tiptap composers, scroll,
- *  drafts) and everything else below this point survive the toggle. */
+/** Wide-mode plan viewer: the PlanViewer as a fullscreen dialog overlay. The
+ *  wide 3:7 layout has no editor column, so a plan tab (set via openPlanDrawer)
+ *  would otherwise render nowhere. Mirrors the mobile shell's fullscreen plan
+ *  viewer, but reuses the desktop PlanViewer as-is (edit mode, 待审阅 badge,
+ *  approval-draft save). While open the embedded browser view is suppressed —
+ *  the OS-level WebContentsView would otherwise float above this DOM overlay. */
 function WidePlanDialog() {
   const { t } = useI18n();
   const widePanelOpen = useSessionStore((s) => s.widePanelOpen);
@@ -509,10 +393,3 @@ function WidePlanDialog() {
     </div>
   );
 }
-
-/** The editor half: OpenTabsBar (only in tabs editor-mode, and not when
- *  `hideTabsBar` — the unified center bar passes that since it already
- *  renders the file tabs) + the active tab's content. Resolves the project
- *  path from the active project so FileEditor can show relative paths in
- *  its toolbar. When the plan tab is active, renders PlanViewer instead of
- *  FileEditor. */

@@ -1,14 +1,16 @@
 /**
  * 【ARC-005 V1】ClassicShell —— 经典工作区外壳,从 App.tsx **整段逐字**抽出。
  *
- * 渲染内容就是原来 App 里的那段 `<WorkspaceInertShell>…</WorkspaceInertShell>`:
- * 左栏(WorkspaceSidebar)+ 右列(Titlebar + ThreePaneLayout + 底部终端)。
- * 每个 class、每个 data-testid、每个 flex 参数都与抽出前逐字节一致 ——
- * settings-layout-smoke 的几何断言钉着「打开设置前后左栏/主列逐像素不变」。
+ * 渲染内容就是原来 App 里的那段 `<WorkspaceInertShell>…</WorkspaceInertShell>`
+ * (左栏 WorkspaceSidebar + 右列 Titlebar/ThreePaneLayout/底部终端),连同它
+ * 直接依赖的 CenterPane / UnifiedTabbedPane / SplitCenterPane / ChatColumn /
+ * EditorColumn 一起搬进来 —— 每个 class、每个 data-testid、每个 flex 参数都与
+ * 抽出前逐字节一致。settings-layout-smoke 的几何断言钉着「打开设置前后左栏/
+ * 主列逐像素不变」。
  *
- * **零行为变化**:所读的值全部由 App 以 props 传入(就是原来闭包里读的那批),
- * App 仍持有订阅与两个分隔线处理函数(rootRef 量的是整窗宽度,不能挪进这个
- * 只占剩余宽度的子树里)。
+ * **零行为变化**:状态值全部来自 props(见 ClassicShellProps,就是工作区 JSX
+ * 分支今天在 App 闭包里读的那批);App 仍持有订阅与两个分隔线处理函数
+ * (rootRef 量的是整窗宽度,不能挪进这个只占剩余宽度的子树里)。
  *
  * 为什么抽出来:ARC-005 的下一步是会话优先的 `WorkspaceShell`,两个壳必须复用
  * **同一批已挂载的组件实例** —— 壳切换只许重新摆放,不许卸载工作区子树
@@ -21,18 +23,20 @@ import { Divider } from "../layout/Divider.js";
 import { Titlebar } from "../layout/Titlebar.js";
 import { LeftBar } from "../layout/LeftBar.js";
 import { StreamSidebar } from "../layout/StreamSidebar.js";
-import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
-import { CustomUiToolbar } from "../customUi/CustomUiToolbar.js";
-import { useSessionStore } from "../../stores/sessionStore.js";
-import { useFileViewStore } from "../../stores/fileViewStore.js";
-import { useI18n } from "../../lib/i18n/index.js";
 import { ChatPane } from "../chat/ChatPane.js";
 import { SessionTabs } from "../layout/SessionTabs.js";
 import { UnifiedTabsBar } from "../layout/UnifiedTabsBar.js";
 import { RightPanel } from "../layout/RightPanel.js";
+import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
 import { OpenTabsBar } from "../ide/OpenTabsBar.js";
+import { CustomUiToolbar } from "../customUi/CustomUiToolbar.js";
+import { useSessionStore } from "../../stores/sessionStore.js";
+import { useFileViewStore } from "../../stores/fileViewStore.js";
+import { useI18n } from "../../lib/i18n/index.js";
 
-// 与 App 同一份懒加载边界(Monaco / PDF / 设置面板不进首屏 chunk)。
+// Lazy-load the Monaco-backed editor / diff dialog / plan viewer and the
+// read-only file preview (moved here verbatim from App.tsx) so the large
+// monaco-editor library stays out of the initial workspace chunk.
 const FileEditor = lazy(() =>
   import("../ide/FileEditor.js").then((m) => ({ default: m.FileEditor })),
 );
@@ -135,130 +139,19 @@ const WorkspaceInertShell = memo(function WorkspaceInertShell({
   );
 });
 
-/**
- * ClassicShell 的 props —— **就是工作区 JSX 分支今天在 App 闭包里读的那些值**,
- * 一个不多、一个不少。预览壳替换时,App 只换传参来源,不换这组契约。
- */
-export interface ClassicShellProps {
-  leftOpen: boolean;
-  leftBarMode: string;
-  leftWidthPct: number;
-  handleLeftResize: (deltaPx: number) => void;
-  resetLeftWidthPct: () => void;
-  setLeftOpen: (open: boolean) => void;
-  rightOpen: boolean;
-  setRightOpen: (open: boolean) => void;
-  bottomTerminalOpen: boolean;
-  setBottomTerminalOpen: (open: boolean) => void;
-  widePanelOpen: boolean;
-  widePanelPct: number;
-  rightWidth: number;
-  bottomTerminalHeight: number;
-  handleWidePanelResize: (deltaPx: number) => void;
-  adjustRightWidth: (deltaPx: number) => void;
-  adjustBottomTerminalHeight: (deltaPx: number) => void;
-  resetWidePanelPct: () => void;
-  resetRightWidth: () => void;
-  resetBottomTerminalHeight: () => void;
-}
-
-/**
- * 经典工作区外壳。状态值全部来自 props(见 ClassicShellProps);只有
- * `WorkspaceInertShell` 自己就地订阅 `settingsOpen`(与抽出前相同 —— 它是
- * 自订阅的 memo 包壳,设置开关只重渲染这一层)。
- */
-export function ClassicShell({ leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
-  return (
-    // 【MC-046】工作区整体包进 inert 壳:设置打开时整棵后台子树退出
-    // Tab 序与辅助技术(几何逐像素不变,子树全程挂载 —— 见 WorkspaceInertShell
-    // 自己的注释)。
-    <WorkspaceInertShell>
-      <WorkspaceSidebar
-        leftOpen={leftOpen}
-        leftBarMode={leftBarMode}
-        leftWidthPct={leftWidthPct}
-        onResizeLeft={handleLeftResize}
-        onResetLeft={resetLeftWidthPct}
-      />
-      {/*
-        Right column — the 7 of the 3:7 split: the toolbar (Titlebar) on top
-        and the main panel below (center chat/editor pane + right IDE panel,
-        plus the bottom terminal inside the center main).
-      */}
-      <div data-testid="workspace-main" className="flex min-w-0 flex-1 flex-col">
-        {/*
-          Workspace shell is ALWAYS mounted — the settings view renders as a
-          full-window overlay on top of it, not as a mutually-exclusive
-          sibling. This is critical: BottomTerminalBar (→ TerminalPanel →
-          every TerminalView) lives inside ThreePaneLayout. A ternary swap
-          `settingsOpen ? <Settings> : <Workspace>` would unmount the whole
-          workspace subtree on every settings open, killing all live PTYs
-          (TerminalView's cleanup calls api.terminal.kill) and destroying
-          scrollback — and racing many concurrent pty.kill() calls on Windows
-          occasionally crashes the main process. Keeping the workspace mounted
-          preserves the carefully-built cross-project terminal keep-alive (see
-          TerminalPanel.tsx) exactly as designed. Nothing below reads
-          `settingsOpen`: the workspace keeps its exact layout (including the
-          left rail's width) and the overlay just covers it — see
-          SettingsOverlay for why that matters for open latency.
-        */}
-        <Titlebar
-          mode="workspace"
-          leftOpen={leftOpen}
-          rightOpen={rightOpen}
-          bottomTerminalOpen={bottomTerminalOpen}
-          onToggleLeft={() => setLeftOpen(!leftOpen)}
-          onToggleRight={() => setRightOpen(!rightOpen)}
-          onToggleBottomTerminal={() => setBottomTerminalOpen(!bottomTerminalOpen)}
-        />
-        {/* Main panel row — bg-surface-muted as the contrasting track so the
-            center pane's rounded left-edge corners (in ThreePaneLayout)
-            reveal this muted color through the notches and read as clean
-            arcs. The left sidebar (bg-surface-muted) blends into the track
-            on its side; the center pane (bg-surface) separates from the
-            track by the flat color step alone (no shadow). */}
-        <div className="relative flex min-h-0 flex-1 bg-surface-muted">
-          {/*
-            Center is ONE stable tree across wide mode (CenterPane takes the
-            wide flag as a render variation) — the old ternary swap
-            `<WidePanelSplit/> : <CenterPane/>` remounted every ChatPane
-            (Tiptap, timeline) + the whole right panel on each toggle, which
-            read as a lag. Wide mode only re-shapes the layout: the right
-            aside switches to the percentage share (rightWidthPct) and stays
-            open (setWidePanelOpen forces rightOpen=true on enter and
-            restores the snapshot on exit), so RightPanel — file tree, git
-            scan, browser view ownership — is never torn down.
-          */}
-          <ThreePaneLayout
-            left={null}
-            center={<CenterPane wide={widePanelOpen} />}
-            right={<RightPanel />}
-            toolbar={<CustomUiToolbar />}
-            leftOpen={false}
-            rightOpen={rightOpen}
-            bottomTerminal={<BottomTerminalBar active={bottomTerminalOpen} />}
-            bottomTerminalOpen={bottomTerminalOpen}
-            rightWidth={rightWidth}
-            rightWidthPct={widePanelOpen ? widePanelPct : undefined}
-            bottomTerminalHeight={bottomTerminalHeight}
-            onResizeRight={widePanelOpen ? handleWidePanelResize : adjustRightWidth}
-            onResizeBottomTerminal={adjustBottomTerminalHeight}
-            onResetRight={widePanelOpen ? resetWidePanelPct : resetRightWidth}
-            onResetBottomTerminal={resetBottomTerminalHeight}
-          />
-          {/* Git diff dialog (the "dialog" open-mode). Portaled to <body>;
-              renders nothing when closed or empty. Mounted at the workspace
-              level so it overlays the editor while staying app-scoped.
-              Lazy-loaded with monaco since it reuses the Monaco DiffPane. */}
-          <Suspense fallback={null}>
-            <GitDiffDialog />
-          </Suspense>
-        </div>
-      </div>
-    </WorkspaceInertShell>
-  );
-}
-
+/** Center pane router. `tabs` displayMode renders the UNIFIED tab bar —
+ *  session tabs and editor file tabs share ONE strip, and whichever tab is
+ *  active (chat or editor) takes the full center width (no split). `single`
+ *  mode keeps the legacy layout: a horizontal split between the chat column
+ *  (left) and the file-editor column (right), where the editor column only
+ *  appears when a file or plan tab is open (see the design notes in
+ *  docs/tech-stack.md).
+ *
+ *  `wide` (wide-panel 3:7 mode) is a RENDER VARIATION, not a different tree:
+ *  the same components stay mounted and only the editor surface is hidden
+ *  (the plan opens as the WidePlanDialog overlay instead). Toggling wide is
+ *  a relayout, never a remount — the chat panes (Tiptap composers, scroll,
+ *  drafts) and everything else below this point survive the toggle. */
 function CenterPane({ wide }: { wide: boolean }) {
   const displayMode = useSessionStore((s) => s.displayMode);
   if (displayMode === "tabs") {
@@ -542,13 +435,12 @@ function ChatColumn() {
   );
 }
 
-/** Wide-mode plan viewer: the PlanViewer as a fullscreen dialog overlay. The
- *  wide 3:7 layout has no editor column, so a plan tab (set via openPlanDrawer)
- *  would otherwise render nowhere. Mirrors the mobile shell's fullscreen plan
- *  viewer, but reuses the desktop PlanViewer as-is (edit mode, 待审阅 badge,
- *  approval-draft save). While open the embedded browser view is suppressed —
- *  the OS-level WebContentsView would otherwise float above this DOM overlay. */
-
+/** The editor half: OpenTabsBar (only in tabs editor-mode, and not when
+ *  `hideTabsBar` — the unified center bar passes that since it already
+ *  renders the file tabs) + the active tab's content. Resolves the project
+ *  path from the active project so FileEditor can show relative paths in
+ *  its toolbar. When the plan tab is active, renders PlanViewer instead of
+ *  FileEditor. */
 function EditorColumn({
   filePath,
   hideTabsBar = false,
@@ -624,5 +516,126 @@ function EditorColumn({
         )}
       </div>
     </>
+  );
+}
+
+/**
+ * ClassicShell 的 props —— **就是工作区 JSX 分支今天在 App 闭包里读的那些值**,
+ * 一个不多、一个不少。将来的 WorkspaceShell 复用这组契约时,App 只换传参来源。
+ */
+export interface ClassicShellProps {
+  leftOpen: boolean;
+  leftBarMode: string;
+  leftWidthPct: number;
+  handleLeftResize: (deltaPx: number) => void;
+  resetLeftWidthPct: () => void;
+  setLeftOpen: (open: boolean) => void;
+  rightOpen: boolean;
+  setRightOpen: (open: boolean) => void;
+  bottomTerminalOpen: boolean;
+  setBottomTerminalOpen: (open: boolean) => void;
+  widePanelOpen: boolean;
+  widePanelPct: number;
+  rightWidth: number;
+  bottomTerminalHeight: number;
+  handleWidePanelResize: (deltaPx: number) => void;
+  adjustRightWidth: (deltaPx: number) => void;
+  adjustBottomTerminalHeight: (deltaPx: number) => void;
+  resetWidePanelPct: () => void;
+  resetRightWidth: () => void;
+  resetBottomTerminalHeight: () => void;
+}
+
+/**
+ * 经典工作区外壳。状态值全部来自 props(见 ClassicShellProps);只有
+ * `WorkspaceInertShell` 自己就地订阅 `settingsOpen`(与抽出前相同 —— 它是
+ * 自订阅的 memo 包壳,设置开关只重渲染这一层)。
+ */
+export function ClassicShell({ leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
+  return (
+    <WorkspaceInertShell>
+      <WorkspaceSidebar
+        leftOpen={leftOpen}
+        leftBarMode={leftBarMode}
+        leftWidthPct={leftWidthPct}
+        onResizeLeft={handleLeftResize}
+        onResetLeft={resetLeftWidthPct}
+      />
+      {/*
+        Right column — the 7 of the 3:7 split: the toolbar (Titlebar) on top
+        and the main panel below (center chat/editor pane + right IDE panel,
+        plus the bottom terminal inside the center main).
+      */}
+      <div data-testid="workspace-main" className="flex min-w-0 flex-1 flex-col">
+        {/*
+          Workspace shell is ALWAYS mounted — the settings view renders as a
+          full-window overlay on top of it, not as a mutually-exclusive
+          sibling. This is critical: BottomTerminalBar (→ TerminalPanel →
+          every TerminalView) lives inside ThreePaneLayout. A ternary swap
+          `settingsOpen ? <Settings> : <Workspace>` would unmount the whole
+          workspace subtree on every settings open, killing all live PTYs
+          (TerminalView's cleanup calls api.terminal.kill) and destroying
+          scrollback — and racing many concurrent pty.kill() calls on Windows
+          occasionally crashes the main process. Keeping the workspace mounted
+          preserves the carefully-built cross-project terminal keep-alive (see
+          TerminalPanel.tsx) exactly as designed. Nothing below reads
+          `settingsOpen`: the workspace keeps its exact layout (including the
+          left rail's width) and the overlay just covers it — see
+          SettingsOverlay for why that matters for open latency.
+        */}
+        <Titlebar
+          mode="workspace"
+          leftOpen={leftOpen}
+          rightOpen={rightOpen}
+          bottomTerminalOpen={bottomTerminalOpen}
+          onToggleLeft={() => setLeftOpen(!leftOpen)}
+          onToggleRight={() => setRightOpen(!rightOpen)}
+          onToggleBottomTerminal={() => setBottomTerminalOpen(!bottomTerminalOpen)}
+        />
+        {/* Main panel row — bg-surface-muted as the contrasting track so the
+            center pane's rounded left-edge corners (in ThreePaneLayout)
+            reveal this muted color through the notches and read as clean
+            arcs. The left sidebar (bg-surface-muted) blends into the track
+            on its side; the center pane (bg-surface) separates from the
+            track by the flat color step alone (no shadow). */}
+        <div className="relative flex min-h-0 flex-1 bg-surface-muted">
+          {/*
+            Center is ONE stable tree across wide mode (CenterPane takes the
+            wide flag as a render variation) — the old ternary swap
+            `<WidePanelSplit/> : <CenterPane/>` remounted every ChatPane
+            (Tiptap, timeline) + the whole right panel on each toggle, which
+            read as a lag. Wide mode only re-shapes the layout: the right
+            aside switches to the percentage share (rightWidthPct) and stays
+            open (setWidePanelOpen forces rightOpen=true on enter and
+            restores the snapshot on exit), so RightPanel — file tree, git
+            scan, browser view ownership — is never torn down.
+          */}
+          <ThreePaneLayout
+            left={null}
+            center={<CenterPane wide={widePanelOpen} />}
+            right={<RightPanel />}
+            toolbar={<CustomUiToolbar />}
+            leftOpen={false}
+            rightOpen={rightOpen}
+            bottomTerminal={<BottomTerminalBar active={bottomTerminalOpen} />}
+            bottomTerminalOpen={bottomTerminalOpen}
+            rightWidth={rightWidth}
+            rightWidthPct={widePanelOpen ? widePanelPct : undefined}
+            bottomTerminalHeight={bottomTerminalHeight}
+            onResizeRight={widePanelOpen ? handleWidePanelResize : adjustRightWidth}
+            onResizeBottomTerminal={adjustBottomTerminalHeight}
+            onResetRight={widePanelOpen ? resetWidePanelPct : resetRightWidth}
+            onResetBottomTerminal={resetBottomTerminalHeight}
+          />
+          {/* Git diff dialog (the "dialog" open-mode). Portaled to <body>;
+              renders nothing when closed or empty. Mounted at the workspace
+              level so it overlays the editor while staying app-scoped.
+              Lazy-loaded with monaco since it reuses the Monaco DiffPane. */}
+          <Suspense fallback={null}>
+            <GitDiffDialog />
+          </Suspense>
+        </div>
+      </div>
+    </WorkspaceInertShell>
   );
 }
