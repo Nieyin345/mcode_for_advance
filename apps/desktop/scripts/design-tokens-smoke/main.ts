@@ -158,6 +158,10 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   check("★ 暗色 --content 指到 --m-gray-20", /--content:\s*var\(--m-gray-20\)/.test(css));
   check("★ --accent 仍是 emerald(未擅自换成陶土橙)", /--accent:\s*5 150 105;/.test(css));
   check("陶土橙作为备选品牌色暴露", css.includes("--brand-clay:") && css.includes("--brand-clay-strong:"));
+  // 用户气泡接到 Claude 的陶土浅底(亮/暗各一档),alpha 已按实色调高。
+  check("★ 亮色用户气泡指到 --m-orange-100", /--user-bubble:\s*var\(--m-orange-100\)/.test(css));
+  check("★ 暗色用户气泡指到 --m-orange-850", /--user-bubble:\s*var\(--m-orange-850\)/.test(css));
+  check("用户气泡 alpha 已按近实色调高", /--user-bubble-alpha:\s*0\.9;/.test(css) && /--user-bubble-alpha:\s*0\.55;/.test(css));
   check("sketch 主题仍覆盖 --surface", /html\.sketch:not\(\.dark\)[\s\S]{0,400}--surface:/.test(css));
 }
 

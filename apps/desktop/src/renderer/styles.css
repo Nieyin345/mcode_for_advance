@@ -192,13 +192,16 @@ div:has(> [role="menu"]) {
    * chat-density section below). Consumed by the Markdown container in
    * Markdown.tsx. */
   --chat-font-weight: 450;
-  --user-bubble: 82 82 91; /* default = zinc-500 (neutral gray), R G B triplet */
+  /* 【ARC-005 V0】用户气泡改用 Claude 的**陶土浅底**（open-claude-ui 的
+   * --cds-bg-user-message = orange 极浅档）。仍是可配置的 R G B 三元组，
+   * 设置里的自定义颜色照常覆盖。 */
+  --user-bubble: var(--m-orange-100); /* #f7d8cb — Claude user bubble */
   /* Bubble tint strength is theme-scoped (consumed via .user-bubble-fill):
    * one alpha can't serve both themes. 15% of the default over white lands
    * ~1.26:1 — a visible soft bubble; over the near-black dark surface the
    * SAME 15% resolved to ~1.1:1 (the "bubble you can't see" report).
    * .dark raises it — see there. */
-  --user-bubble-alpha: 0.15;
+  --user-bubble-alpha: 0.9; /* 【ARC-005】Claude 气泡是近实色浅陶土,不是淡叠色 */
 
   /* Global side-panel + settings base font size - user-configurable via
    * Settings -> 外观 -> 全局字体大小. Despite the var's legacy name it drives
@@ -268,14 +271,14 @@ div:has(> [role="menu"]) {
    * background. Line height is density-driven (--chat-md-leading) and shared
    * across themes. */
   --chat-font-weight: 500;
-  --user-bubble: 113 113 122; /* default = zinc-500 (\#71717a) */
+  --user-bubble: var(--m-orange-850); /* #240e07 — dark counterpart */
   /* Low-alpha gray over #1a1d24 barely moves: 15% ≈ 1.1:1, indistinguishable
    * from the chat surface. 25% lands the bubble at ~1.30:1 — the same
    * layering step as --surface-muted vs --surface (sidebar track vs main),
    * which reads as a clear-but-calm layer in the dark ramp. Applies to ANY
    * user-picked bubble color, not just the default (the tint strength is the
    * problem, not the default hue). */
-  --user-bubble-alpha: 0.25;
+  --user-bubble-alpha: 0.55; /* 【ARC-005】深色下陶土深档减淡,避免过黑 */
 
   /* Global side-panel + settings base font size - user-configurable via
    * Settings -> 外观 -> 全局字体大小. Despite the var's legacy name it drives
