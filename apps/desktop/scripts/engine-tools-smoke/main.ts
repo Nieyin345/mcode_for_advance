@@ -621,6 +621,26 @@ try {
     // ⑥ 两件事独立:guidance 不影响读工具名的派生(禁用才影响)。
     check("★ MC-043:说明不清除工具名(guidance 与 exclude 互不干扰)",
       readToolNameForTurn("claude", []) === "Read");
+
+    // ⑦ 【ARC-003 验收】「切引擎不串提示」:三份说明并存时各读各的,互不串。
+    writeEngineToolPolicy({
+      claude: { exclude: [], guidance: "CLAUDE-ONLY 优先 Read" },
+      pi: { exclude: [], guidance: "PI-ONLY 用 read" },
+      codex: { exclude: [], guidance: "CODEX-ONLY 走 shell" },
+    });
+    const gClaude = resolveEngineToolGuidanceForProviderFile(defaultEngineToolPolicyPath(), "claude");
+    const gPi = resolveEngineToolGuidanceForProviderFile(defaultEngineToolPolicyPath(), "pi");
+    const gCodex = resolveEngineToolGuidanceForProviderFile(defaultEngineToolPolicyPath(), "codex");
+    check("★ ARC-003:三引擎说明各读各的(切引擎不串提示)",
+      gClaude.includes("CLAUDE-ONLY") && !gClaude.includes("PI-ONLY") && !gClaude.includes("CODEX-ONLY") &&
+      gPi.includes("PI-ONLY") && !gPi.includes("CLAUDE-ONLY") &&
+      gCodex.includes("CODEX-ONLY") && !gCodex.includes("CLAUDE-ONLY"),
+      { gClaude, gPi, gCodex });
+    // 渲染面同样隔离:每段只含自己那一份。
+    check("★ ARC-003:渲染出的片段只含本引擎的说眀",
+      toolGuidancePrompt("claude", gClaude).includes("CLAUDE-ONLY") &&
+      !toolGuidancePrompt("claude", gClaude).includes("PI-ONLY") &&
+      toolGuidancePrompt("pi", gPi).includes("PI-ONLY"));
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
