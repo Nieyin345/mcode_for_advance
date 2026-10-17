@@ -1025,5 +1025,126 @@ console.log("\n【MC-048】守望面板读口:空表 vs 读失败");
   eq("非冲突(普通拒绝)不由它处理", watchSaveConflictState({ error: "损坏" }, { templates: [] }), null);
 }
 
+/* ── 【MC-048】模板事务围栏:并发增删、失败、冲突、关闭 ── */
+
+console.log("\n【MC-048】模板事务围栏(单一异步变更协议)");
+{
+  const { createWatchTemplatesSync } = await import(
+    "../../src/renderer/components/chat/watchTemplatesSync.js"
+  );
+  const { watchTemplatesRevision } = await import("@contracts/ipc/workflow");
+  type Tpl = { id: string; name: string; command: string };
+  const tpl = (id: string): Tpl => ({ id, name: id, command: "echo " + id });
+
+  /** 假后端:盘上列表 + 可注入的行为(每笔的结果),记录每次保存。 */
+  const backend = (initial: Tpl[]) => {
+    let disk = [...initial];
+    const saves: Array<{ templates: Tpl[]; expectedRevision?: string }> = [];
+    let nextBehavior: Array<"ok" | "fail" | "conflict-once"> = [];
+    let revision = watchTemplatesRevision(disk);
+    return {
+      get disk() { return disk; },
+      get saves() { return saves; },
+      pushBehavior(...behaviors: Array<"ok" | "fail" | "conflict-once">) { nextBehavior.push(...behaviors); },
+      read: async () => ({ templates: [...disk], health: "valid" as const, problems: [] as string[], revision }),
+      save: async (input: { templates: Tpl[]; expectedRevision?: string }) => {
+        saves.push(input);
+        const behavior = nextBehavior.shift() ?? "ok";
+        await new Promise((r) => setTimeout(r, 5));
+        if (behavior === "fail") return { ok: false, error: "fake disk full" };
+        if (behavior === "conflict-once") {
+          // 模拟另一个客户端在这笔之前改了盘:更新盘,回冲突。
+          disk = [...disk, tpl("ZZ")];
+          revision = watchTemplatesRevision(disk);
+          return { ok: false, conflict: true, error: "已被别处改动" };
+        }
+        if (input.expectedRevision !== undefined && input.expectedRevision !== revision) {
+          return { ok: false, conflict: true, error: "已被别处改动" };
+        }
+        disk = [...input.templates];
+        revision = watchTemplatesRevision(disk);
+        return { ok: true };
+      },
+    };
+  };
+
+  // ① 台账红例:删除 A 与新增 C 并发,必须串行且两笔都生效。
+  {
+    const be = backend([tpl("A"), tpl("B")]);
+    const changes: Array<{ ids: string[]; pending: boolean }> = [];
+    const sync = createWatchTemplatesSync({
+      read: be.read, save: be.save,
+      onChange: (snap) => changes.push({ ids: snap.templates.map((t) => t.id), pending: snap.pending }),
+    });
+    await sync.load();
+    const p1 = sync.mutate((cur) => cur.filter((t) => t.id !== "A"));
+    const p2 = sync.mutate((cur) => [...cur, tpl("C")]);
+    const [r1, r2] = await Promise.all([p1, p2]);
+    check("★ MC-048:并发两笔都成功", r1.ok && r2.ok, [r1, r2]);
+    eq("★ MC-048:盘上是两笔叠加的结果(不是后完成覆盖先完成)", be.disk.map((t) => t.id).join(","), "B,C");
+    const last = changes[changes.length - 1]!;
+    eq("★ MC-048:UI 最终列表与盘上一致", last.ids.join(","), "B,C");
+    eq("★ MC-048:结束时没有 pending", last.pending, false);
+    eq("★ MC-048:第二笔保存的基准含第一笔的结果", be.saves[1]!.templates.map((t) => t.id).join(","), "B,C");
+  }
+
+  // ② 单笔失败:如实提示,之后的排队作废,UI = 盘上。
+  {
+    const be = backend([tpl("A")]);
+    let notice: string | null = null;
+    let lastIds: string[] = [];
+    const sync = createWatchTemplatesSync({
+      read: be.read, save: be.save,
+      onChange: (snap, n) => { lastIds = snap.templates.map((t) => t.id); if (n !== null) notice = n; },
+    });
+    await sync.load();
+    be.pushBehavior("fail");
+    const r1 = sync.mutate((cur) => [...cur, tpl("B")]);
+    const r2 = sync.mutate((cur) => [...cur, tpl("C")]);
+    const [a, b] = await Promise.all([r1, r2]);
+    eq("第一笔失败", a.ok, false);
+    eq("★ MC-048:失败后排队的那笔也如实失败(不建立在未成功的状态上)", b.ok, false);
+    eq("★ MC-048:失败有可读提示", notice, "fake disk full");
+    eq("★ MC-048:失败后 UI 列表 = 盘上(A,没有 B/C)", lastIds.join(","), "A");
+    eq("★ MC-048:盘上一个字节没变", be.disk.map((t) => t.id).join(","), "A");
+  }
+
+  // ③ 冲突:重读权威 + 把这一笔重放一次,成功且不丢外部改动。
+  {
+    const be = backend([tpl("A")]);
+    let notice: string | null = null;
+    let lastIds: string[] = [];
+    const sync = createWatchTemplatesSync({
+      read: be.read, save: be.save,
+      onChange: (snap, n) => { lastIds = snap.templates.map((t) => t.id); if (n !== null) notice = n; },
+    });
+    await sync.load();
+    be.pushBehavior("conflict-once");
+    const res = await sync.mutate((cur) => [...cur, tpl("B")]);
+    eq("★ MC-048:冲突后重放成功", res.ok, true);
+    eq("★ MC-048:外部改动(ZZ)与本地改动(B)都在", be.disk.map((t) => t.id).join(","), "A,ZZ,B");
+    eq("★ MC-048:冲突解决后 UI = 盘上", lastIds.join(","), "A,ZZ,B");
+    check("★ MC-048:冲突解决有提示(用户知道重载了)", typeof notice === "string" && (notice as string).includes("别处改动"), notice);
+  }
+
+  // ④ 关闭:排队作废、在飞结果不回写。
+  {
+    const be = backend([]);
+    let callbacks = 0;
+    const sync = createWatchTemplatesSync({
+      read: be.read, save: be.save,
+      onChange: () => { callbacks++; },
+    });
+    await sync.load();
+    void sync.mutate((cur) => [...cur, tpl("X")]);
+    sync.close();
+    // 判据是"close 之后"的回调数不再增长 —— close 前的 pending 投影是允许的。
+    const afterClose = callbacks;
+    await new Promise((r) => setTimeout(r, 30));
+    eq("★ MC-048:关闭后不再回调组件状态", callbacks, afterClose);
+    check("关闭后提交的变换被拒", (await sync.mutate((cur) => [...cur])).ok === false);
+  }
+}
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

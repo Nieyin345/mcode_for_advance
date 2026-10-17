@@ -37,8 +37,8 @@ import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
-import { loadWatchPanelState, watchPanelLoadFailure, watchSaveConflictState } from "./watchPanelLoad.js";
-import { watchTemplatesRevision } from "@contracts/ipc/workflow";
+import { loadWatchPanelState, watchPanelLoadFailure } from "./watchPanelLoad.js";
+import { createWatchTemplatesSync, type WatchTemplatesSync } from "./watchTemplatesSync.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
 import { Input, Button, InfoHint, Select } from "@renderer/components/ui/index.js";
 import type { WatchCommandTemplate } from "@contracts/ipc";
@@ -129,8 +129,10 @@ function WatchPanel({
   const [templateId, setTemplateId] = useState(NO_TEMPLATE);
   /** 【MC-054】设置完整性状态与逐条问题 —— 「一条都没有」与「有几条读不出来」分开说。 */
   const [tplHealth, setTplHealth] = useState<"absent" | "valid" | "partial" | "corrupt" | "read_error">("valid");
-  /** 【MC-054】本次读到的原值版本;保存时带回,主进程据此拒绝覆盖别处的改动。 */
-  const [tplRevision, setTplRevision] = useState<string | null>(null);
+  /** 【MC-048】增删模板共用的事务围栏(串行队列 + 共同基准 + CAS + 冲突重载 + 关闭取消)。
+   *  revision 由它保管(读时拿到、保存时带回),组件不再自己记。 */
+  const syncRef = useRef<WatchTemplatesSync | null>(null);
+  const [tplPending, setTplPending] = useState(false);
   const [tplProblems, setTplProblems] = useState<string[]>([]);
   const [rebuilding, setRebuilding] = useState(false);
   const [tplBackupKey, setTplBackupKey] = useState<string | null>(null);
@@ -150,6 +152,20 @@ function WatchPanel({
   // 面板的红条(M574 起就有)照常给出诊断与「备份并重建」入口。
   useEffect(() => {
     let cancelled = false;
+    // 【MC-048】单一事务围栏:所有模板变更经它排队;它把权威状态投影回组件状态。
+    const sync = createWatchTemplatesSync({
+      read: () => api.automation.watchTemplates(),
+      save: (input) => api.automation.saveWatchTemplates(input),
+      onChange: (snapshot, notice) => {
+        if (cancelled) return;
+        setTemplates(snapshot.templates);
+        setTplHealth(snapshot.health);
+        setTplProblems(snapshot.problems);
+        setTplPending(snapshot.pending);
+        if (notice !== null) setNotice(notice);
+      },
+    });
+    syncRef.current = sync;
     void (async () => {
       try {
         const loaded = await loadWatchPanelState({
@@ -157,12 +173,13 @@ function WatchPanel({
           status: () => api.automation.watchStatus({ sessionId }),
         });
         if (cancelled) return;
+        // 读口仍由 loadWatchPanelState 负责(它区分"读失败"与"没有模板"并带上原因),
+        // 但**权威状态进入围栏**:先喂给它,后续变更才有共同基准。
         setTemplates(loaded.templates);
-        // 【MC-054】健康态随读一起回来(旧 preload 没这两字段 → 当正常)。
         setTplHealth(loaded.health);
         setTplProblems(loaded.problems);
-        setTplRevision(loaded.revision);
         setActive(loaded.active);
+        await sync.load();
       } catch (e) {
         if (cancelled) return;
         const failed = watchPanelLoadFailure(e);
@@ -170,11 +187,13 @@ function WatchPanel({
         // 【MC-048】读失败不再伪装成"空表":显式标记并带上原因(红条据此显示)。
         setTplHealth(failed.health);
         setTplProblems(failed.problems);
-        setTplRevision(failed.revision);
       }
     })();
     return () => {
       cancelled = true;
+      // 面板关闭:排队作废、在飞结果忽略 —— 不能事后把已关面板的状态改回去。
+      sync.close();
+      syncRef.current = null;
     };
   }, [sessionId]);
 
@@ -217,81 +236,41 @@ function WatchPanel({
     if (tpl) setCommand(tpl.command);
   };
 
-  /** 【MC-048】乐观更新要么被后端确认、要么**回滚到权威状态**。
+  /**
+   * 【MC-048】一次模板变更 = 交给**事务围栏**的变换(不是此刻快照)。
    *
-   *  从前 `removeTemplate` 直接 `setTemplates(next)` + `catch {}` —— 保存失败时下拉里
-   *  的项已经没了、选择也清了,重新打开面板却还能看到它(持久化没变)。现在:失败即
-   *  把所有受影响状态退回**调用前**的样子,并显式提示(删除是个轻动作,但"显示的与
-   *  盘上的不一致"不是)。返回是否成功,调用方据此决定要不要再动别的状态。 */
-  const persistTemplates = async (
-    next: WatchCommandTemplate[],
+   * 围栏保证:共同基准(在上一条确认后的列表上算)、同一时刻只有一笔在飞、保存确认后
+   * 才更新界面、带原值 revision、冲突时重载并重放一次、失败时连同排队一起如实作废、
+   * 面板关闭后不再回写。从前删除与新增各写一份"先乐观改、失败回滚"的 catch —— 两笔
+   * 并发时后完成的覆盖先完成的,界面与盘上分岔(第十六轮 E1)。
+   */
+  const runMutation = async (
+    transform: (current: readonly WatchCommandTemplate[]) => WatchCommandTemplate[],
   ): Promise<boolean> => {
-    try {
-      // 【MC-054】带回读到的 revision:另一端期间改过 → 主进程拒绝(不覆盖对方的保存)。
-      const res = await api.automation.saveWatchTemplates({
-        templates: next,
-        ...(tplRevision !== null ? { expectedRevision: tplRevision } : {}),
-      });
-      if (!res.ok) {
-        // 【MC-054】并发冲突:**重新加载**盘上当前内容(不继续显示自己那份过期的),
-        // 否则下一次保存还会撞在同一个旧 revision 上 —— "拒绝"只是换了地方丢更新。
-        if (res.conflict === true) {
-          const reloaded = await api.automation.watchTemplates();
-          const conflict = watchSaveConflictState(res, reloaded);
-          if (conflict !== null) {
-            setNotice(conflict.notice);
-            setTemplates(conflict.templates);
-            setTplHealth(conflict.health);
-            setTplProblems(conflict.problems);
-            setTplRevision(conflict.revision);
-            setTemplateId(NO_TEMPLATE);
-          }
-          return false;
-        }
-        // 【MC-054】损坏/部分损坏时主进程会拒绝并给原因 —— 显式提示,不改本地状态。
-        setNotice(res.error ?? t("composer.watch.saveFailed"));
-        return false;
-      }
-      // 保存成功:revision 随内容变了 —— 下一次保存必须用新的,否则自己撞自己。
-      setTplRevision(watchTemplatesRevision(next));
-      setNotice(null);
-      return true;
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : String(e));
-      return false;
-    }
+    const sync = syncRef.current;
+    if (sync === null) return false;
+    return (await sync.mutate(transform)).ok;
   };
 
   const removeTemplate = async (): Promise<void> => {
     if (templateId === NO_TEMPLATE) return;
-    // 【MC-048】先算好"退回去是什么"(调用前的快照),失败时逐字段恢复。
-    const prevTemplates = templates;
-    const prevId = templateId;
-    const next = templates.filter((x) => x.id !== templateId);
-    setTemplates(next);
-    setTemplateId(NO_TEMPLATE);
-    if (!(await persistTemplates(next))) {
-      // 失败 → 回滚(选项、选择都退回原样;notice 已由 persistTemplates 设好)。
-      setTemplates(prevTemplates);
-      setTemplateId(prevId);
-    }
+    const targetId = templateId;
+    // 变换按 id 删 —— 即使排队期间列表因前一条变换变了,删的仍是用户点的那条。
+    const ok = await runMutation((current) => current.filter((x) => x.id !== targetId));
+    // 成功:选择清空;失败:选择退回原来那条(列表已由围栏给权威态 + 提示语)。
+    setTemplateId(ok ? NO_TEMPLATE : targetId);
   };
 
   const saveTemplate = async (): Promise<void> => {
     const cmd = command.trim();
     const name = tplName.trim();
     if (!cmd || !name) return;
-    // 【MC-048】同样先快照;失败回滚(输入框里的内容不清 —— 那是用户打的字)。
-    const prevTemplates = templates;
-    const prevId = templateId;
     const tpl: WatchCommandTemplate = { id: `watchtpl_${Date.now()}`, name, command: cmd };
-    const next = [...templates, tpl];
-    setTemplates(next);
-    setTemplateId(tpl.id);
-    setTplName("");
-    if (!(await persistTemplates(next))) {
-      setTemplates(prevTemplates);
-      setTemplateId(prevId);
+    const ok = await runMutation((current) => [...current, tpl]);
+    if (ok) {
+      setTemplateId(tpl.id);
+      setTplName("");
+    } else {
       setTplName(name); // 名字还给用户,别让他重打
     }
   };
@@ -332,11 +311,9 @@ function WatchPanel({
         return;
       }
       // 重建成功:重读一遍(健康态翻回正常、红条消失),把备份键告诉用户。
-      const tpl = await api.automation.watchTemplates();
-      setTemplates(tpl.templates);
-      setTplHealth(tpl.health ?? "valid");
-      setTplProblems(tpl.problems ?? []);
-      setTplRevision(tpl.revision ?? null);
+      // 重建改的是盘上原值:让围栏重读权威状态(它保管 revision,后续变更基于新基准)。
+      const sync = syncRef.current;
+      if (sync !== null) await sync.load();
       setTemplateId(NO_TEMPLATE);
       if (res.backupKey !== undefined) setTplBackupKey(res.backupKey);
     } catch (e) {
@@ -423,7 +400,7 @@ function WatchPanel({
             variant="ghost"
             size="icon"
             title={t("composer.watch.deleteTemplate")}
-            disabled={templateId === NO_TEMPLATE}
+            disabled={templateId === NO_TEMPLATE || tplPending}
             onClick={() => void removeTemplate()}
           >
             <IconTrash size={13} />
@@ -452,7 +429,7 @@ function WatchPanel({
             variant="ghost"
             size="sm"
             className="shrink-0"
-            disabled={command.trim().length === 0 || tplName.trim().length === 0 || busy}
+            disabled={command.trim().length === 0 || tplName.trim().length === 0 || busy || tplPending}
             onClick={() => void saveTemplate()}
           >
             {t("composer.watch.saveTemplate")}
