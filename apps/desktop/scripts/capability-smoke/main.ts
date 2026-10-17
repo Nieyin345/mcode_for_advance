@@ -38,6 +38,9 @@ const ok = (condition: boolean, message: string): void => {
   if (!condition) throw new Error(`FAIL: ${message}`);
   checks.push(message);
 };
+const okEq = (actual: string, expected: string, message: string): void => {
+  ok(actual === expected, `${message} — actual=${actual} expected=${expected}`);
+};
 
 /* ── 1. 核心解析:builtin executor + provider + plugin skill(CAP-03/04/06) ── */
 
@@ -542,6 +545,41 @@ ok(
     );
     ok(!needPhantom.ok, "★ MC-099:仅靠插件的自报声明,对不存在能力的需求仍判缺(fail-closed 不通过)");
   }
+}
+
+/* ── 【MC-035】内置能力目录只有一份：目录 = 实现产出 = 预检声明 ──
+ *
+ * 从前 `capabilityResolver.HOST_CAPABILITY_DECLARATIONS` 与
+ * `fileCapabilities()` 各手写一遍同一对 id/kind；加一个内置能力要改两处，漏一处
+ * 只会在别处的断言里**事后**红。现在两边都从 `builtinCapabilityCatalogue` 派生，
+ * 这一段把三者的**逐项一致**钉死。
+ */
+{
+  const { BUILTIN_CAPABILITY_CATALOGUE } = await import(
+    "../../src/main/modules/builtinCapabilityCatalogue.js"
+  );
+  const { HOST_CAPABILITY_DECLARATIONS } = await import(
+    "../../src/main/orchestration/capabilityResolver.js"
+  );
+  const implemented = fileCapabilities(() => true).map((c) => ({ id: c.id, kind: c.kind }));
+
+  ok(BUILTIN_CAPABILITY_CATALOGUE.length > 0, "★ MC-035:内置能力目录非空(防断言空过)");
+  const catalogue = BUILTIN_CAPABILITY_CATALOGUE.map((e) => ({ id: e.id, kind: e.kind }));
+  okEq(
+    JSON.stringify(implemented),
+    JSON.stringify(catalogue),
+    "★ MC-035:fileCapabilities() 的产出与目录逐项一致(id + kind + 顺序)",
+  );
+  okEq(
+    JSON.stringify(HOST_CAPABILITY_DECLARATIONS.map((d) => d.id)),
+    JSON.stringify(catalogue.map((c) => c.id)),
+    "★ MC-035:预检声明表从目录派生(id 与顺序一致)",
+  );
+  // 反向守卫：目录里的每个 kind 都落在 ModuleHost 认的三个值里。
+  ok(
+    catalogue.every((c) => ["query", "action", "task"].includes(c.kind)),
+    "目录里的 kind 都是 ModuleHost 认的种类",
+  );
 }
 
 /* ── 【MC-099 E1】真实宿主注册 / 场景必需项 / 权威声明表 ──

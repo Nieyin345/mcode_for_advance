@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ResourceSchema, ResultSchema, type ModuleResource } from "@contracts/modules";
 import type { JsonSchemaDocument, ModuleCapabilityMetadata } from "@contracts/moduleCapability";
 import type { Capability, CapabilityContext } from "./ModuleHost.js";
+import { BUILTIN_CAPABILITY_CATALOGUE } from "./builtinCapabilityCatalogue.js";
 
 // Discovery-only, bounded draft-07 subset; ResourceSchema/ResultSchema and
 // resolveModuleResource remain the actual runtime validation and authorization.
@@ -103,10 +104,19 @@ export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<
       return {bytes,sha256:hash.digest("hex")};
     } finally {await file.close();}
   };
-  return [
-    {id:"core.file.inspect",kind:"task",metadata:inspectionMetadata,input:ResourceSchema,output:ResultSchema,run:inspect},
-    {id:"core.file.info",kind:"query",metadata:fileInfoMetadata,input:ResourceSchema,output:ResultSchema,run:async resource=>{
+  // 【MC-035】id/kind **不在这里手写**:从 `builtinCapabilityCatalogue` 取,两条实现按
+  // id 挂上去。catalogue 里加了而这里没实现 → 下面那个 `throw` 会**立刻**在注册期炸,
+  // 而不是让能力目录与真实注册各说各话。
+  const implementations: Record<string, Capability<ModuleResource>> = {
+    "core.file.inspect": {id:"core.file.inspect",kind:"task",metadata:inspectionMetadata,input:ResourceSchema,output:ResultSchema,run:inspect},
+    "core.file.info": {id:"core.file.info",kind:"query",metadata:fileInfoMetadata,input:ResourceSchema,output:ResultSchema,run:async resource=>{
       const value=await stat(await resolveModuleResource(resource,knownRoot));return {bytes:value.size,modifiedAt:value.mtimeMs};
     }},
-  ];
+  };
+  return BUILTIN_CAPABILITY_CATALOGUE.map((entry) => {
+    const implementation = implementations[entry.id];
+    if (!implementation) throw Error(`内置能力 ${entry.id} 在目录里但没有实现`);
+    if (implementation.kind !== entry.kind) throw Error(`内置能力 ${entry.id} 的种类与目录不一致(目录 ${entry.kind},实现 ${implementation.kind})`);
+    return implementation;
+  });
 }

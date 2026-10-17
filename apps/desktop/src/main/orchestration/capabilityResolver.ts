@@ -17,6 +17,7 @@ import { injectTargetOf, isModelDecider, mcpServerNamesOf, pluginNamesOf, provid
 import type { WorkflowNode } from "@contracts/workflow";
 import type { AgentProvider } from "@contracts/provider";
 import type { ComponentDeliveryReport, PluginCapabilityDeclaration, PluginManifest } from "@contracts/plugin";
+import { BUILTIN_CAPABILITY_CATALOGUE } from "@main/modules/builtinCapabilityCatalogue.js";
 
 export interface NodeCapabilityCheckContext {
   nodeType: string;
@@ -167,18 +168,18 @@ export function hostCapabilityDescriptors(
 }
 
 /**
- * **宿主注册的内置能力声明**(ARC-006 步①)—— 唯一权威的一份 id / 模块种类清单。
+ * **宿主注册的内置能力声明**(ARC-006 步①)—— 从 {@link BUILTIN_CAPABILITY_CATALOGUE}
+ * **派生**,不再手写第二份。
  *
- * 与 `modules/service.ts` 里 `host.register(capability)` 的实际注册**同源**(那里的
- * `fileCapabilities(...)` 产出同两个 id 与 kind)。刻意在这里**只放声明、不放实现**:预检
- * 装配路径不能 import `modules/service`(它会碰 `dataRoot()`,把 DB/electron 拖进来)。
- * 若将来 `fileCapabilities` 增删能力,这里要跟着改 —— 两份名单靠
- * `capability-smoke` 的「喂进目录后查得到」断言钉着,漂了会红。
+ * 【MC-035】从前这里是一份逐条手写的 `{ id, moduleKind }` 列表,与
+ * `modules/fileCapabilities.ts` 的实际注册各写一遍 —— 加一个内置能力要改两处,
+ * 漏一处就漂(`capability-smoke` 只能**事后**发现)。现在 id/kind 的唯一权威在
+ * `modules/builtinCapabilityCatalogue.ts`(纯常量,不碰 fs/dataRoot/electron),
+ * 本文件只做「catalogue → 预检 descriptor 形状」的翻译。
  */
-export const HOST_CAPABILITY_DECLARATIONS: readonly HostCapabilitySource[] = [
-  { id: "core.file.inspect", moduleKind: "task", source: "host" },
-  { id: "core.file.info", moduleKind: "query", source: "host" },
-];
+export const HOST_CAPABILITY_DECLARATIONS: readonly HostCapabilitySource[] = BUILTIN_CAPABILITY_CATALOGUE.map(
+  (entry) => ({ id: entry.id, moduleKind: entry.kind === "action" ? "task" : entry.kind, source: entry.source }),
+);
 
 /** 装配一台机器上的能力清单。**所有来源都是参数**:providers 来自 provider 注册表、
  *  executors 来自 NodeExecutorRegistry(`kinds()` + `capabilities()`)、plugins 来自
