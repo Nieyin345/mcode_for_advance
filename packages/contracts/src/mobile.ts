@@ -190,6 +190,13 @@ export type SetMobileLoginInput = z.infer<typeof SetMobileLoginSchema>;
 export interface MobileRpcRequest {
   method: string;
   input: unknown;
+  /**
+   * 【MC-014】可选的幂等键。与桌面 IPC 的 `__operationId`、Agent 的 `operation_id`
+   * 是**同一个概念**：同一次用户意图重试时原样带回，宿主据此保证写操作**只执行
+   * 一次**（同 id 换方法/参数/设备 = 冲突）。省略 = 不去重（旧行为）。
+   * 只对显式的写方法生效（`channelIdempotency.ts` 的 `MOBILE_MUTATING_METHODS`）。
+   */
+  operationId?: string;
 }
 
 export interface MobileRpcOk<T = unknown> {

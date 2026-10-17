@@ -110,6 +110,12 @@ import { generateSessionTitle } from "@main/ipc/titleGen.js";
 import { getWorkflow, listWorkflows } from "@main/orchestration/library.js";
 import { workflowReviewError } from "@main/orchestration/workflowTrust.js";
 import { closeSession, openOnlyOfficeSession } from "@main/onlyoffice/OnlyOfficeBridge.js";
+import {
+  beginChannelOperation,
+  channelOperationResult,
+  mobileMethodIsMutating,
+  usableOperationId,
+} from "@main/appControl/channelIdempotency.js";
 
 /** Identity of the calling device, made available to every handler. */
 export interface DeviceContext {
@@ -791,14 +797,59 @@ export function registerMobileRpcHandlers(extra: Record<string, RpcHandler>): vo
 /** Dispatch a mobile RPC request. Validates the method is whitelisted, runs the
  *  handler, and returns its JSON-able result. Throws {@link RpcError} for
  *  handled failures (not-found, validation, conflict) — the HTTP layer maps
- *  those to status codes. */
+ *  those to status codes.
+ *
+ *  【MC-014】跨通道幂等：请求体里带 `operationId` 且方法是**显式写方法**
+ *  （`channelIdempotency.ts` 的 `MOBILE_MUTATING_METHODS`）时，先过共享操作账本
+ *  —— 与桌面 IPC / `app_api_call` **同一份**。同 id 重试只执行一次；同意图已成功
+ *  → 回放旧结果（手机端拿到的 JSON 与首次一致）；不同意图 → 409。
+ *  不带键 / 只读方法 → 原路，不加任何开销。 */
 export async function dispatchMobileRpc(
   req: MobileRpcRequest,
   ctx: DeviceContext,
 ): Promise<unknown> {
   const handler = HANDLERS[req.method];
   if (!handler) throw new RpcError(`unknown method: ${req.method}`, 404);
-  return handler(req.input, ctx);
+  const operationId = usableOperationId(req.operationId);
+  if (operationId === null || !mobileMethodIsMutating(req.method)) {
+    return handler(req.input, ctx);
+  }
+  const decision = beginChannelOperation({
+    operationId,
+    ownerId: `device:${ctx.device.deviceId}`,
+    sessionId: `device:${ctx.device.deviceId}`,
+    sceneId: "mobile-rpc",
+    method: req.method,
+    input: req.input ?? null,
+    grantRevision: "mobile-rpc",
+  });
+  if (decision.kind === "replay") {
+    // 回放：同 id 的同一操作已结算。手机端读的是 JSON，正文优先。
+    return decision.body === undefined ? undefined : JSON.parse(decision.body);
+  }
+  if (decision.kind === "conflict") throw new RpcError(decision.reason, 409);
+  if (decision.kind === "in-progress" || decision.kind === "uncertain" || decision.kind === "claim-not-durable") {
+    throw new RpcError(decision.reason, 409);
+  }
+  try {
+    const out = await handler(req.input, ctx);
+    let body: string | undefined;
+    try {
+      body = JSON.stringify(out);
+    } catch {
+      body = undefined;
+    }
+    decision.settle(channelOperationResult("SUCCEEDED", req.method, operationId), body);
+    return out;
+  } catch (err) {
+    decision.settle(
+      channelOperationResult("UNCERTAIN", req.method, operationId, {
+        code: "rpc_failed",
+        reason: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    throw err;
+  }
 }
 
 /** Compose the sentinel-fallback prompt from an AskUserQuestion answer map.

@@ -23,6 +23,13 @@ export function registerCustomUiPanelHandlers(ipcMain: IpcMain): void {
   // 只用于确认框正文(哪个面板要调什么),不参与判据。
   ipcMain.handle(IPC.CUSTOM_UI_PANEL_API_CALL, async (_evt, raw) => {
     const input = CustomUiPanelApiSchema.parse(raw);
-    return panelApiCall(input.method, input.input, input.approved === true, input.panelLabel ?? "");
+    return panelApiCall(
+      input.method,
+      input.input,
+      input.approved === true,
+      input.panelLabel ?? "",
+      // 【MC-014】可选幂等键 —— 面板脚本重试同一件写操作时原样带回。
+      input.operationId,
+    );
   });
 }

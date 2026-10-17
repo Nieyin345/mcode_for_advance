@@ -4,7 +4,6 @@ import { registerUnattendedHandlers } from "./unattended.js";
 import { registerModuleHandlers } from "./modules.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
 import { ipcMain, type IpcMain } from "electron";
-import { recordRpcHandler } from "@main/appControl/registry.js";
 import { IPC } from "@contracts/ipc";
 import { awaitDb } from "@main/store/db.js";
 import { registerProjectHandlers } from "./projects.js";
@@ -55,23 +54,21 @@ import { registerExtensionStoreHandlers } from "./extensions.js";
  * before initDb() resolved" throw. Once the DB is ready the promise is
  * already resolved, so the guard is a no-op for all subsequent calls.
  *
+ * 【MC-014】同一个包装点也是**跨通道幂等**的桌面接线处：入参里带
+ * `__operationId` 且该通道属于有副作用的档位时，先过共享操作账本
+ * （`appControl/channelIdempotency.ts`，与 `app_api_call` 同一份账本）。
+ * 没带键 / 只读通道 → 原样执行，不写账、不多一次 fsync。
+ *
  * Only the `handle` method is intercepted; the register* functions use nothing
  * else from IpcMain, so a minimal object suffices.
+ *
+ * 【可测性】本函数**导出**并从 `import()` 侧被冒烟直接取用（`#region ipc-guarded`）
+ * —— 台账 MC-014 要求「桌面 IPC 通道真的过了账本」，而那条判据只有拿到这个包装器
+ * 才能验；从源码复制一份形状去测等于没测接线。
  */
-function createDbGuardedIpc(target: IpcMain): IpcMain {
-  const wrapped: Pick<IpcMain, "handle"> = {
-    handle(channel, handler) {
-      const guarded = async (event: Parameters<typeof handler>[0], raw: unknown) => {
-        await awaitDb();
-        return handler(event, raw);
-      };
-      target.handle(channel, guarded);
-      // 同一个函数留一份给 mcode-app 的 `app_api_call`(agent 调功能 = 界面按按钮,走同一段代码)。
-      recordRpcHandler(channel, guarded as (event: unknown, raw: unknown) => unknown);
-    },
-  };
-  return wrapped as unknown as IpcMain;
-}
+import { createDbGuardedIpc } from "./dbGuardedIpc.js";
+export { createDbGuardedIpc };
+
 
 /** Register all renderer->main IPC handlers. */
 export function registerIpcHandlers(): void {

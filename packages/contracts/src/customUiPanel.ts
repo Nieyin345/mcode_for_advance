@@ -94,6 +94,13 @@ export const CustomUiPanelApiSchema = z.object({
   approved: z.boolean().optional(),
   /** 面板的显示名 —— 只用于确认框正文(哪个面板要调什么),不参与任何判据。 */
   panelLabel: z.string().max(200).optional(),
+  /**
+   * 【MC-014】可选的幂等键 —— 与 Agent 的 `operation_id`、桌面 IPC 的
+   * `__operationId`、手机 RPC 的 `operationId` 是**同一个概念**:面板脚本重试同一件
+   * 写操作时原样带回,宿主保证**只执行一次**。省略 = 不去重(旧行为)。
+   * 只对 write / danger 档生效;只读方法带键也不会进账本。
+   */
+  operationId: z.string().max(200).optional(),
 });
 export type CustomUiPanelApiInput = z.infer<typeof CustomUiPanelApiSchema>;
 export type CustomUiPanelApiResult = {

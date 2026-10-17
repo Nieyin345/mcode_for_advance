@@ -949,6 +949,54 @@ const tA = await pairFresh("转发断言");
   const locked = await rpcTok(tA, "session:updateSettings", { sessionId: "ms_locked", envMode: "local" });
   eq("已物化的会话改 envMode 被拒(整条拒,不是悄悄忽略)", locked.status === 200, false);
 
+
+/* ── 【MC-014】手机 RPC 的跨通道幂等(与桌面/面板同一份账本)──────────────
+ *
+ * 审核复核失败点:幂等只覆盖 app_api_call + 五个 Agent 自带工具,手机 RPC 重试
+ * 写操作时会重复执行。这里用**真 HTTP 服务 + 真 dispatchMobileRpc** 钉:
+ *   1. 带同一个 operationId 重试 `session:rename` → 只落一次,第二次回放首次结果;
+ *   2. 同 id 换参数 → 409,且标题**没被改写**;
+ *   3. 不带 operationId → 两次都执行(匿名行为不变);
+ *   4. 只读方法(`session:list`)带 id 不生效。
+ */
+console.log("\n【MC-014】手机 RPC 幂等");
+{
+  const { SessionRepo } = await import("@main/store/repositories.js");
+  const now = Date.now();
+  SessionRepo.create({
+    id: "idem_s", projectId: "mp_a", providerId: "claude-sdk", claudeSessionId: null, kind: "chat",
+    parentSessionId: null, nodeId: null, title: "初始", status: "idle",
+    model: "default", effort: "default", permissionMode: "default", workflowId: "default",
+    customModelId: null, envMode: "local", worktreePath: null, archived: false, pinnedAt: null,
+    contextSnapshot: null, todos: null, subagents: null, planDraft: null, turnFiles: null,
+    usageHistory: null, bookmarks: null, subagentTranscripts: null, createdAt: now, updatedAt: now,
+  } as never);
+
+  const rpcWithId = (method: string, input: unknown, operationId?: string) =>
+    req("/api/rpc", { method: "POST", token: tA, body: { method, input, ...(operationId ? { operationId } : {}) } });
+
+  const first = await rpcWithId("session:rename", { id: "idem_s", title: "第一次" }, "mob-op-1");
+  const second = await rpcWithId("session:rename", { id: "idem_s", title: "第一次" }, "mob-op-1");
+  eq("★ 手机·同 id 重试 → 两次都 200", [first.status, second.status].join(","), "200,200");
+  eq("★ 手机·第二次是回放(结果逐字一致)", second.text, first.text);
+  eq("★ 手机·标题是第一次写的值", SessionRepo.get("idem_s")?.title, "第一次");
+
+  // 同 id 换参数 → 409,且标题不变。
+  const conflict = await rpcWithId("session:rename", { id: "idem_s", title: "另一次" }, "mob-op-1");
+  eq("★ 手机·同 id 换参数 → 409(意图冲突)", conflict.status, 409);
+  eq("★ 手机·冲突时标题没被改写", SessionRepo.get("idem_s")?.title, "第一次");
+
+  // 不带键 → 两次都执行。
+  await rpcWithId("session:rename", { id: "idem_s", title: "匿名一" });
+  await rpcWithId("session:rename", { id: "idem_s", title: "匿名二" });
+  eq("手机·不带幂等键 → 照常执行(旧行为)", SessionRepo.get("idem_s")?.title, "匿名二");
+
+  // 只读方法带 id 不进账本:两次都读、都 200。
+  const list1 = await rpcWithId("project:list", {}, "mob-read-1");
+  const list2 = await rpcWithId("project:list", {}, "mob-read-1");
+  eq("手机·只读方法带同 id 两次都 200", [list1.status, list2.status].join(","), "200,200");
+}
+
   rmSync(pathA, { recursive: true, force: true });
   rmSync(pathB, { recursive: true, force: true });
 }

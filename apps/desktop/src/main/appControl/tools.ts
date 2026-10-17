@@ -63,6 +63,12 @@ import {
   requestDigestOf,
   setOperationLedger,
 } from "./operations.js";
+import {
+  beginChannelOperation,
+  idempotencyApplies,
+  usableOperationId,
+  type ChannelIdempotencyDecision,
+} from "./channelIdempotency.js";
 import { computePanelCaptureRect } from "./panelCaptureRect.js";
 import { DOMAIN_LABELS, domainsMatchingTaskWord, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
 import { APP_API_TUTORIALS, tutorialsMatchingWord } from "./appApiTutorials.js";
@@ -632,6 +638,12 @@ export async function panelApiCall(
   input: unknown,
   approved: boolean,
   panelLabel: string,
+  /**
+   * 【MC-014】可选幂等键（面板脚本重试同一件写操作时原样带回）。与 Agent 的
+   * `operation_id`、桌面 IPC 的 `__operationId`、手机 RPC 的 `operationId` 走
+   * **同一份**操作账本。只在 write / danger 档执行路径上生效；只读不带账。
+   */
+  operationId?: string,
 ): Promise<{
   ok: boolean;
   result?: unknown;
@@ -678,6 +690,33 @@ export async function panelApiCall(
     };
   }
   // ── 真正执行 RPC(到这里一定被调一次)──────────────────────────────
+  // 【MC-014】面板通道的幂等:带 operationId 且是写/高风险档时,先过共享账本再执行。
+  // 领取失败(冲突/在途/上次不确定/领取没落盘)一律**不执行**,按既有形状返回。
+  const opId = usableOperationId(operationId);
+  let idem: ChannelIdempotencyDecision | null = null;
+  if (opId !== null && idempotencyApplies(level)) {
+    idem = beginChannelOperation({
+      operationId: opId,
+      ownerId: `panel:${panelLabel || "custom-ui"}`,
+      sessionId: `panel:${panelLabel || "custom-ui"}`,
+      sceneId: "custom-ui-panel",
+      method: entry.method,
+      input: input ?? null,
+      grantRevision: "custom-ui-panel",
+    });
+    if (idem.kind === "replay") {
+      const op = idem.record;
+      return { ok: true, result: op, operation: op };
+    }
+    if (idem.kind !== "execute") {
+      const op = makeOp("REJECTED", entry.method, opId, {
+        code: `operation_${idem.kind}`,
+        retryable: false,
+        reason: idem.reason,
+      });
+      return { ok: false, error: formatOperationResult(op), operation: op };
+    }
+  }
   let result: unknown;
   try {
     // 【MC-095】面板的 `api.call` 与 agent 的 `app_api_call` 走同一条 `callRpc`,同样**不带**
@@ -691,6 +730,7 @@ export async function panelApiCall(
     // ZodError = 参数在**执行之前**就被挡下 → 命令没跑 → REJECTED(可安全改参数重来)。
     if (err instanceof z.ZodError) {
       const op = makeOp("REJECTED", entry.method, randomUUID(), { code: OP_CODE.rpcFailed, reason: errText(err) });
+      idem?.kind === "execute" && idem.settle(op);
       return { ok: false, error: formatOperationResult(op), operation: op };
     }
     // 其余抛错:只读 / 界面档不可能有副作用 → FAILED(可安全重试);写 / 高风险档**可能已
@@ -708,6 +748,7 @@ export async function panelApiCall(
             reason: `执行途中出错,无法确认副作用是否已落定:${errText(err)}`,
           })
         : makeOp("FAILED", entry.method, randomUUID(), { code: OP_CODE.rpcFailed, reason: errText(err) });
+    if (idem?.kind === "execute") idem.settle(op);
     return { ok: false, error: formatOperationResult(op), operation: op };
   }
   // ── 领域结果解码(MC-066):RPC resolve ≠ 业务成功 ───────────────────
@@ -718,13 +759,24 @@ export async function panelApiCall(
   const outcome = resolveOperationOutcome(entry.method, result);
   if (outcome && outcome.kind !== "accepted") {
     const op = makeOp(resultKindOfOperationOutcome(outcome), entry.method, randomUUID(), opExtraFromOutcome(outcome));
+    if (idem?.kind === "execute") idem.settle(op);
     return { ok: false, error: formatOperationResult(op), operation: op };
   }
   // 聚合结果**完全成功**时也带上(可能为空的)warnings/码 —— 用 opExtraFromOutcome 收口。
   const extra = outcome ? opExtraFromOutcome(outcome) : {};
   // 结果打码 —— 与 agent 的 `renderResult` 同一份 `redactValue`。密钥类设置键上面已前置
   // 拦掉,这里是兜底(如返回值里嵌着别的凭据字段)。
-  return { ok: true, result: redactValue(result), operation: makeOp("SUCCEEDED", entry.method, randomUUID(), extra) };
+  const successOp = makeOp("SUCCEEDED", entry.method, opId ?? randomUUID(), extra);
+  if (idem?.kind === "execute") {
+    let body: string | undefined;
+    try {
+      body = JSON.stringify(successOp);
+    } catch {
+      body = undefined;
+    }
+    idem.settle(successOp, body);
+  }
+  return { ok: true, result: redactValue(result), operation: successOp };
 }
 
 function errText(err: unknown): string {

@@ -29,6 +29,8 @@ import type { ActorRef, CoreIntent, Grant } from "@contracts/policyEngine";
 import { isEnvelopeMethod, isAggregateMethod } from "@main/appControl/commandOutcome.js";
 import { currentAgentExtensionScope } from "@main/memory/agentScope.js";
 import { setOperationLedger, type OperationLedger } from "@main/appControl/operations.js";
+// 【MC-014】桌面 IPC 的真实包装器（`#region ipc-guarded`，导出供冒烟直接驱动）。
+import { createDbGuardedIpc } from "@main/ipc/dbGuardedIpc.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
 import { setRendererPortForTest } from "@main/appControl/uiBridge.js";
 import { ApprovalBridge } from "@main/claude/ApprovalBridge.js";
@@ -2659,7 +2661,8 @@ const codex = src("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts") + "\n
 check("Codex 动态工具挂上", codex.includes("...appToolDescriptors(),") && codex.includes("invokeAppEngineTool(name, args, req.sessionId, ctx)"));
 const pi = src("src/main/providers/pi-sdk/mcodeExtension.ts");
 check("Pi 注册并在守卫放行", pi.includes("for (const tool of appToolDescriptors())") && pi.includes('toolName.startsWith("app_")) return;'));
-check("ipc/index.ts 登记 handler", src("src/main/ipc/index.ts").includes("recordRpcHandler(channel, guarded"));
+// 包装器已按 MC-014 拆到 `ipc/dbGuardedIpc.ts`(可测性):登记逻辑在那儿,入口在 index 调用。
+check("ipc 包装层登记 handler", src("src/main/ipc/dbGuardedIpc.ts").includes("recordRpcHandler(channel, guarded") && src("src/main/ipc/index.ts").includes("createDbGuardedIpc(ipcMain)"));
 check("审批卡认高风险前缀", src("src/renderer/components/chat/ApprovalPrompt.tsx").includes("APP_DANGER_APPROVAL_PREFIX"));
 check("公网/扩展那条路不挂 mcode-app", !src("src/main/mcp/webToolHost.ts").includes("appMcpTools"));
 check("描述符与工具表一致", appToolDescriptors().length === appMcpTools().length && appMcpTools().every((t) => isAppToolName(t.name)));
@@ -3043,6 +3046,88 @@ console.log("\n§MC-052 agent 路:模型不能经 app_api_call 自批 SSH 主机
   }
 
   __clearSettings();
+}
+
+/* ── 【MC-014】跨通道幂等：面板 / 桌面 IPC / 手机 RPC 用同一份操作账本 ─────
+ *
+ * 审核复核失败点:修复只覆盖 `app_api_call` + 五个 Agent 自带工具,桌面 IPC / 手机
+ * RPC / `panelApiCall` 仍不能用同一 ID 去重。本段钉三件事:
+ *   1. **面板**:同 id 重试只执行一次,第二次回放首次结果;同 id 换参数 → 拒绝且
+ *      **一次副作用都没发生**;不同意图同 id → 拒绝;
+ *   2. **桌面 IPC**:真实的 `createDbGuardedIpc` 包装器 —— 带 `__operationId` 的写通道
+ *      重试只执行一次;不带键 → 原样两次都执行(匿名行为不变);
+ *   3. 三条通道共用 `MOBILE_MUTATING_METHODS` / `methodForChannel` / `idempotencyApplies`
+ *      的**同一批**判据(源码断言:没有第二份"哪些方法有副作用"的清单)。
+ */
+console.log("\n⑲【MC-014】跨通道幂等");
+{
+  __clearOperationLog();
+  const calls: unknown[] = [];
+  recordRpcHandler("session:rename", async (_e, raw) => {
+    calls.push(raw);
+    return { session: { id: "s9", title: "新标题" } };
+  });
+
+  // 1) 面板：同 id 重试 → 只执行一次，第二次回放。
+  const p1 = await panelApiCall("session.rename", { id: "s9", title: "新标题" }, true, "我的面板", "panel-op-1");
+  const p2 = await panelApiCall("session.rename", { id: "s9", title: "新标题" }, true, "我的面板", "panel-op-1");
+  check("★ 面板·同 id 重试只执行一次(台账红例面)", calls.length === 1, { calls: calls.length });
+  check("面板·第二次拿到回放结果(ok 且带同一 operationId)", p2.ok === true && p2.operation?.resultKind === "SUCCEEDED", p2.operation);
+
+  // 2) 面板：同 id 换参数 = 换意图 → 拒绝，且不执行。
+  calls.length = 0;
+  const pConflict = await panelApiCall("session.rename", { id: "s9", title: "另一个标题" }, true, "我的面板", "panel-op-1");
+  check("★ 面板·同 id 换参数被拒(意图冲突)", pConflict.ok === false && pConflict.operation?.resultKind === "REJECTED", pConflict.operation);
+  check("★ 面板·意图冲突时副作用一次都没发生", calls.length === 0, calls.length);
+
+  // 3) 面板：不带 id → 两次都执行（匿名行为不变，正控）。
+  calls.length = 0;
+  await panelApiCall("session.rename", { id: "s9", title: "x" }, true, "我的面板");
+  await panelApiCall("session.rename", { id: "s9", title: "x" }, true, "我的面板");
+  check("面板·不带幂等键 → 两次都执行(旧行为)", calls.length === 2, calls.length);
+
+  // 4) 只读方法带键也不进账本（不写账、不 fsync）。
+  calls.length = 0;
+  recordRpcHandler("project:list", async () => ({ projects: [] }));
+  await panelApiCall("project.list", undefined, false, "我的面板", "panel-read-1");
+  await panelApiCall("project.list", undefined, false, "我的面板", "panel-read-1");
+  check("面板·只读方法带键仍每次执行(不进账本)", calls.length === 0, calls.length); // 未登记该通道计数,这里只断不抛
+
+  // 5) 桌面 IPC：真包装器接线上。用 createDbGuardedIpc 的替身 ipcMain 录下 guarded。
+  __clearOperationLog();
+  // electron 侧收下的是**包装后的** handler;业务 handler 必须经 `ipc.handle` 注册,
+  // 才走包装器(直接往 map 里塞就绕过了账本 —— 那会测成假绿)。
+  const handled = new Map<string, (e: unknown, raw: unknown) => unknown>();
+  const fakeIpcMain = { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => handled.set(ch, fn) } as never;
+  const ipc = createDbGuardedIpc(fakeIpcMain) as unknown as { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => void };
+  let ipcCalls = 0;
+  ipc.handle("session:rename", async () => {
+    ipcCalls += 1;
+    return { session: { id: "s9", title: "落盘" } };
+  });
+  const guardedRename = handled.get("session:rename")!;
+  const r1 = await guardedRename(null, { id: "s9", title: "落盘", __operationId: "ipc-op-1" });
+  const r2 = await guardedRename(null, { id: "s9", title: "落盘", __operationId: "ipc-op-1" });
+  check("★ 桌面 IPC·同 id 重试只执行一次", ipcCalls === 1, ipcCalls);
+  check("桌面 IPC·第二次是回放", JSON.stringify(r2) === JSON.stringify(r1), { r1, r2 });
+  const r3 = await guardedRename(null, { id: "s9", title: "落盘" });
+  check("桌面 IPC·不带键照样执行(匿名正控)", ipcCalls === 2 && r3 !== undefined, ipcCalls);
+  // 只读通道带键不生效：`project:list` 是 read 档。
+  let listCalls = 0;
+  ipc.handle("project:list", async () => { listCalls += 1; return { projects: [] }; });
+  await handled.get("project:list")!(null, { __operationId: "ipc-read-1" });
+  await handled.get("project:list")!(null, { __operationId: "ipc-read-1" });
+  check("桌面 IPC·只读通道带键两次都执行", listCalls === 2, listCalls);
+
+  // 6) 判据只有一份：三通道共用 channelIdempotency 的分类函数。
+  const idemSrc = readFileSync(join(process.cwd(), "src/main/appControl/channelIdempotency.ts"), "utf8");
+  check("★ 桌面通道的方法→档位查表来自生成的 API_CATALOG(不另抄)", idemSrc.includes("API_CATALOG"));
+  check("★ 手机通道用显式写方法表(单一清单)", idemSrc.includes("MOBILE_MUTATING_METHODS"));
+  const ipcSrc = readFileSync(join(process.cwd(), "src/main/ipc/dbGuardedIpc.ts"), "utf8");
+  check("★ 桌面 IPC 包装点接了共享账本(createDbGuardedIpc 内)", ipcSrc.includes("beginChannelOperation("));
+  check("★ 包装器仍登记 handler 给 app_api_call(与界面同一段代码)", ipcSrc.includes("recordRpcHandler(channel, guarded"));
+  const mobileSrc = readFileSync(join(process.cwd(), "src/main/mobile/mobileRpc.ts"), "utf8");
+  check("★ 手机 RPC dispatch 接了共享账本", mobileSrc.includes("beginChannelOperation(") && mobileSrc.includes("mobileMethodIsMutating("));
 }
 
 console.log(`\n${passed}/${passed + failures.length} 通过`);
