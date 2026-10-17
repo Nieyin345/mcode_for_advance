@@ -1,0 +1,121 @@
+/* 【ARC-005 V0】会话流微动效 —— 从 open-claude-ui（MIT）的 cds-theme.css 提取
+ * 的纯 CSS 部分（不依赖 Framer Motion / React）。上游是 REA 对 Claude 桌面端
+ * 生产包的反向取证。只搬动画本体；类名沿用上游，便于对照手册。
+ *
+ * 变量约定：上游 --cds-clay / --cds-fill-* 一律映射到 Mcode 语义名
+ * （--brand-clay / --danger），不引入第二套主题变量。
+ *
+ * ⚠️ 尊重减弱动效：styles.css 的 html[data-reduce-motion="true"] 总闸会把这些
+ * 动画压到近零（已有断言钉住），这里不需要再写一份媒体查询。
+ */
+
+@keyframes timeline-quiet-dot {
+  0%, 8%   { opacity: 0; transform: translateY(2px); }
+  22%      { opacity: 1; transform: translateY(-2.5px); }
+  36%, 70% { opacity: 1; transform: translateY(0); }
+  90%, 100%{ opacity: 0; transform: translateY(0); }
+}
+
+@keyframes timeline-expand {
+  0%   { opacity: 0; grid-template-rows: 0fr; }
+  100% { opacity: 1; grid-template-rows: 1fr; }
+}
+
+@keyframes timeline-status-rise {
+  0%   { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: none; }
+}
+
+@keyframes timeline-status-fall {
+  0%   { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateY(-4px); }
+}
+
+@keyframes cds-skeleton-sweep {
+  0%   { transform: translate(-100%); }
+  100% { transform: translate(100%); }
+}
+
+@keyframes dframe-clay-breathe {
+  0%, 100% { filter: brightness(0.96); transform: scale(0.86); }
+  50%      { filter: brightness(1.06); transform: scale(1); }
+}
+
+@keyframes cds-dot-pulse {
+  0%, 5%   { opacity: 0.2857; animation-timing-function: cubic-bezier(0.165, 0.84, 0.44, 1); }
+  15%, 25% { opacity: 1;      animation-timing-function: cubic-bezier(0.165, 0.84, 0.44, 1); }
+  65%, 100%{ opacity: 0.2857; }
+}
+
+@keyframes dframe-dot-blink {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}
+
+.timeline-expand {
+  grid-template-rows: 1fr;
+  display: grid;
+}
+
+.timeline-expand > * {
+  align-self: start;
+  min-width: 0;
+  min-height: 0;
+}
+
+.timeline-expand-enter {
+  animation: .2s cubic-bezier(.19, 1, .22, 1) timeline-expand;
+}
+
+.timeline-status-enter-quiet { animation: .24s cubic-bezier(.3, .7, .4, 1) timeline-status-rise; }
+.timeline-status-exit-quiet { animation: .18s ease-out forwards timeline-status-fall; }
+
+.timeline-expand {
+  grid-template-rows: 1fr;
+  display: grid;
+}
+
+.timeline-status-exit-quiet { animation: .18s ease-out forwards timeline-status-fall; }
+
+.timeline-expand {
+  grid-template-rows: 1fr;
+  display: grid;
+}
+
+.timeline-quiet-dots {
+  gap: 3.5px;
+  display: inline-flex;
+  position: relative;
+  top: .26em;
+}
+
+.timeline-quiet-dots > span {
+  background: rgb(var(--brand-clay));
+  opacity: 0;
+  border-radius: 50%;
+  width: 3px;
+  height: 3px;
+  animation: 1.9s cubic-bezier(.4, 0, .2, 1) infinite timeline-quiet-dot;
+}
+
+.timeline-quiet-dots > span:nth-child(2) { animation-delay: .15s; }
+.timeline-quiet-dots > span:nth-child(3) { animation-delay: .3s; }
+
+.timeline-block-enter {
+  animation: .3s cubic-bezier(.22, 1, .36, 1) both timeline-block-enter;
+}
+
+.timeline-quiet-dots > span:nth-child(3) { animation-delay: .3s; }
+
+.timeline-block-enter {
+  animation: .3s cubic-bezier(.22, 1, .36, 1) both timeline-block-enter;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: block;
+  position: relative;
+}
+

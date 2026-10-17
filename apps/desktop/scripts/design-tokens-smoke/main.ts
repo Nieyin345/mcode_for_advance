@@ -137,6 +137,16 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   for (const t of ["--m-panel-radius", "--m-radius-composer", "--m-message-bubble-radius", "--m-shadow-composer"]) {
     check("几何 token " + t + " 已生成", geomTokens.includes(t + ":"));
   }
+  // 会话流微动效(从上游纯 CSS 提取):关键帧与类都在,且不残留上游变量。
+  const motion = read("src/renderer/chat-motion.css");
+  for (const kf of ["timeline-quiet-dot", "timeline-expand", "cds-skeleton-sweep", "dframe-clay-breathe", "dframe-dot-blink"]) {
+    check("动效关键帧 " + kf + " 已提取", motion.includes("@keyframes " + kf));
+  }
+  check("★ 微动效不残留上游变量(--cds-*)", !motion.includes("var(--cds-"));
+  check("三点波浪类已提取", motion.includes(".timeline-quiet-dots"));
+  check("状态灯类已提取", motion.includes(".status-dot"));
+  check("styles.css 引入了微动效", read("src/renderer/styles.css").includes('@import "./chat-motion.css";'));
+
   const cssAliases = read("src/renderer/styles.css");
   for (const a of ["--radius-panel:", "--radius-composer:", "--radius-bubble:", "--shadow-composer:", "--hairline:"]) {
     check("样式别名 " + a.replace(":", "") + " 已接", cssAliases.includes(a));
