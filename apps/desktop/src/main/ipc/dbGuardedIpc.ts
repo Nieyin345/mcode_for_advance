@@ -33,8 +33,12 @@ export function createDbGuardedIpc(target: IpcMain): IpcMain {
         const operationId = operationIdFromIpcInput(raw);
         if (operationId !== null) {
           const method = methodForChannel(channel);
-          // 查不到方法（渲染端专用通道）/ 只读档 → 不介入。
-          if (method !== null && idempotencyApplies(policyFor(method).level)) {
+          // 查不到方法（渲染端专用通道）/ 无副作用 → 不介入。
+          // 【MC-014】判的必须是**副作用**而不是授权档:scene.apply / scene.resume /
+          // unattended.run 对 Agent 是 blocked,但桌面用户重试同一个 `__operationId`
+          // 会重复执行真实写 —— `idempotencyApplies(方法名)` 走 `sideEffectClassOf`,
+          // 这些通道已在 `policy.ts` 的 BLOCKED_MUTATING 里显式标出。
+          if (method !== null && idempotencyApplies(method)) {
             const decision = beginChannelOperation({
               operationId,
               ownerId: "desktop-ipc",

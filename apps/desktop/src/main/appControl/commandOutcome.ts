@@ -617,12 +617,16 @@ export function opExtraFromOutcome(outcome: OperationOutcome): {
 }
 
 /**
- * 副作用类别 —— 由**已收口的权限档**推导(read/ui = 只读;write/danger = 有副作用),
- * 不另立一套判据免得与 `policyFor` 漂开。blocked 走不到执行,按只读对待。
+ * 副作用类别 —— 与「谁能调」**正交**的那一维,由 `policyFor` 的 `effect` 给:
+ * write/danger 默认有副作用;**blocked 但有副作用的方法**(scene.apply 等,只有桌面
+ * 渲染端够得到)由 policy 显式标出 —— 【MC-014】第十五轮复核的根因正是从前的实现
+ * 拿 `level` 当副作用档位,把"不给 Agent"误读成"没有副作用",于是桌面用户重试同一
+ * `__operationId` 会重复执行。判据只有这一份,`idempotencyApplies` 也消费它。
  */
 export function sideEffectClassOf(method: string): "readonly" | "mutating" {
-  const level = policyFor(method).level;
-  return level === "write" || level === "danger" ? "mutating" : "readonly";
+  const entry = policyFor(method);
+  if (entry.effect !== undefined) return entry.effect;
+  return entry.level === "write" || entry.level === "danger" ? "mutating" : "readonly";
 }
 
 /**
@@ -637,5 +641,16 @@ export function sideEffectClassOf(method: string): "readonly" | "mutating" {
  */
 export function thrownResultKind(error: unknown, level: AppPolicyLevel): OperationResultKind {
   if (moduleRefusal(error)) return "REJECTED";
-  return level === "write" || level === "danger" ? "UNCERTAIN" : "FAILED";
+  // 【MC-014】与 `sideEffectClassOf` 同一条正交判据:blocked-but-mutating 的方法
+  // (scene.apply 等)抛错同样**可能已部分提交**,必须 UNCERTAIN —— 从前按 level 判,
+  // 它们被当只读 → FAILED,调用方会安全重试,重复产生副作用。
+  return sideEffectClassOfFromLevel(level) === "mutating" ? "UNCERTAIN" : "FAILED";
+}
+
+/** 裸档位 → 副作用类别。方法名已知时请用 {@link sideEffectClassOf}(会查到
+ *  `BLOCKED_MUTATING`);这里只回答"这个**档位**本身**意味着有副作用吗"。
+ *  blocked 单看档位无从判断 —— 走这个入口的调用方都已在执行路径上(blocked 到不了),
+ *  故按只读处理不会漏掉真实写;需要精确判断时用方法名版本。 */
+function sideEffectClassOfFromLevel(level: AppPolicyLevel): "readonly" | "mutating" {
+  return level === "write" || level === "danger" ? "mutating" : "readonly";
 }

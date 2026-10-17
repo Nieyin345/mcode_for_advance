@@ -40,6 +40,7 @@ import {
   type OperationLedger,
 } from "@main/appControl/operations.js";
 import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
+import { sideEffectClassOf } from "@main/appControl/commandOutcome.js";
 
 /** 一条幂等调用的意图参数（通道无关 —— 谁调都填这几个）。 */
 export interface ChannelOperationIntent {
@@ -79,8 +80,15 @@ export type ChannelIdempotencyDecision =
  * `policyFor` 的档位判据（`commandOutcome.ts` 的 `sideEffectClassOf` 同一处收口）
  * 这里是它的**唯一**复用点 —— 不要再在通道里各写一遍 `level === "write"`。
  */
-export function idempotencyApplies(level: string): boolean {
-  return level === "write" || level === "danger";
+export function idempotencyApplies(levelOrMethod: string): boolean {
+  // 【MC-014】两种调用形状共用**同一份**副作用判据:
+  //  - 传方法名(点号)→ 走 `sideEffectClassOf`(含 blocked-but-mutating);
+  //  - 传裸档位(read/ui/write/danger/blocked)→ 只有 write/danger 有副作用。
+  // 从前这里只认档位,而 `policyFor(scene.apply).level === "blocked"` —— 副作用被判成
+  // 只读,桌面重试同一个幂等键会重复执行(第十五轮复核红例)。方法名含 "." 就是点号
+  // 方法;裸档位不含。
+  if (levelOrMethod.includes(".")) return sideEffectClassOf(levelOrMethod) === "mutating";
+  return levelOrMethod === "write" || levelOrMethod === "danger";
 }
 
 /** 幂等键是否可接受（长度上限见契约）。空串/非字符串按「没带」处理返回 null。 */

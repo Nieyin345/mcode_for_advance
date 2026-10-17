@@ -694,7 +694,9 @@ export async function panelApiCall(
   // 领取失败(冲突/在途/上次不确定/领取没落盘)一律**不执行**,按既有形状返回。
   const opId = usableOperationId(operationId);
   let idem: ChannelIdempotencyDecision | null = null;
-  if (opId !== null && idempotencyApplies(level)) {
+  // 【MC-014】按**方法**判副作用(不是档位):blocked-but-mutating 的方法由面板
+  // 走不到(level blocked 已在上面拒),这里保持一致入口、不另判一次。
+  if (opId !== null && idempotencyApplies(entry.method)) {
     idem = beginChannelOperation({
       operationId: opId,
       ownerId: `panel:${panelLabel || "custom-ui"}`,

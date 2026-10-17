@@ -18,10 +18,28 @@
 
 export type AppPolicyLevel = "read" | "ui" | "write" | "danger" | "blocked";
 
+/**
+ * 【MC-014】**副作用档位** —— 与「谁有权调用」分开的**另一个维度**。
+ *
+ * 台账第十五轮复核点名的根因:把授权级别当副作用档位用 —— `scene.apply` /
+ * `scene.resume` / `unattended.run` 因为**不给 Agent**(`blocked`)而被幂等账本判成
+ * "无副作用",于是原生桌面用户重试同一个 `__operationId` 会**重复执行**真实写操作。
+ *
+ * 两件事本来就正交:
+ *   - `level` 回答"谁能调"(blocked = 谁都不能 / danger = 每次问 / write = 问一次 …);
+ *   - `effect` 回答"调用有没有副作用"(决定**要不要进幂等账本**、抛错算不算 UNCERTAIN)。
+ *
+ * 默认由 `level` 推导(write/danger → mutating,其余 → readonly);**被 blocked 但确有
+ * 副作用的**通道在 {@link BLOCKED_MUTATING} 里显式列出 —— 它们只有桌面渲染端够得到,
+ * 而桌面用户同样会重试。判据只有这一份,三通道(桌面 IPC / 面板 / 手机)与
+ * `sideEffectClassOf` 共用。
+ */
 export interface AppPolicy {
   level: AppPolicyLevel;
   /** blocked / danger 的原因(给模型和审批卡看)。 */
   reason?: string;
+  /** 【MC-014】副作用档位;缺省按 `level` 推导(见 {@link sideEffectOfLevel})。 */
+  effect?: "readonly" | "mutating";
 }
 
 const BLOCKED: Record<string, string> = {
@@ -380,8 +398,44 @@ export function isCredentialBearingMethod(method: string): boolean {
 }
 
 /** 某个方法的权限档。未知方法按 `write` 处理(宁可多问)。 */
+/**
+ * 【MC-014】被 blocked 但**一定会产生副作用**的方法 —— 幂等账本必须照看它们。
+ *
+ * 为什么要单列:这些方法对 Agent 是 blocked(审批/执行权只属于用户本人),只有桌面
+ * 渲染端会调;但"用户自己重试"和"Agent 重试"在幂等上是同一件事 —— 同一个
+ * `__operationId` 第二次到达时必须回放/拒绝,而不是再执行一遍。把它们标成只读会让
+ * `dbGuardedIpc` / `panelApiCall` 直接跳过账本(第十五轮复核的实测反例)。
+ *
+ * 只收**真正会改东西**的;`scene.listDeployments` / `unattendedPlans.list` 这类只读
+ * 治理视图虽然也 blocked,但重试没有副作用,留在默认只读档(不给一次整库 fsync)。
+ */
+const BLOCKED_MUTATING: ReadonlySet<string> = new Set([
+  "claude.approve",
+  "claude.respondQuestion",
+  "claude.respondPlanApproval",
+  "workflow.approve",
+  "hooks.issueHostHookGrant",
+  "hooks.revokeHostHookGrant",
+  "modules.issueWorkflowGrant",
+  "modules.revokeWorkflowGrant",
+  "scene.approve",
+  "scene.apply",
+  "scene.resume",
+  "unattended.approve",
+  "unattended.run",
+  "unattendedPlans.resume",
+  "unattendedPlans.abandon",
+]);
+
 export function policyFor(method: string): AppPolicy {
-  if (method in BLOCKED) return { level: "blocked", reason: BLOCKED[method] };
+  if (method in BLOCKED) {
+    return {
+      level: "blocked",
+      reason: BLOCKED[method],
+      // 【MC-014】副作用与「谁能调」正交 —— 见 BLOCKED_MUTATING 的注释。
+      ...(BLOCKED_MUTATING.has(method) ? { effect: "mutating" as const } : {}),
+    };
+  }
   // 【MC-004】凭据本体方法**先于**动词兜底判掉 —— 否则 `getConfig` / `status` 会被
   // `READ_VERB` 判成 `read` 自动放行。与 BLOCKED 同一档:不给模型,也不给「始终允许」。
   const credential = CREDENTIAL_BEARING.get(method);

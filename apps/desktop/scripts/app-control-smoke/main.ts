@@ -3129,6 +3129,47 @@ console.log("\n⑲【MC-014】跨通道幂等");
   await handled.get("project:list")!(null, { __operationId: "ipc-read-1" });
   check("桌面 IPC·只读通道带键两次都执行", listCalls === 2, listCalls);
 
+  // 5b) 【MC-014 第十五轮】blocked-but-mutating:scene.apply 对 Agent 是 blocked,
+  // 但桌面用户重试同一个 __operationId 必须只执行一次 —— 从前按 level 判副作用,
+  // blocked 被当只读,账本整个跳过(台账红例)。
+  {
+    const before = ipcCalls;
+    let applyCalls = 0;
+    const applied = new Map<string, (e: unknown, raw: unknown) => unknown>();
+    const applyIpcMain = { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => applied.set(ch, fn) } as never;
+    const applyIpc = createDbGuardedIpc(applyIpcMain) as unknown as { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => void };
+    ipc.handle("scene:apply", async () => {
+      applyCalls += 1;
+      return { ok: true, kind: "applied", deployment: { deploymentId: "d1" } };
+    });
+    const guardedApply = handled.get("scene:apply")!;
+    const a1 = await guardedApply(null, { deploymentId: "d1", __operationId: "scene-op-1" });
+    const a2 = await guardedApply(null, { deploymentId: "d1", __operationId: "scene-op-1" });
+    check("★ MC-014:blocked 但确有副作用的 scene:apply 同 id 重试只执行一次", applyCalls === 1, applyCalls);
+    check("★ MC-014:第二次是回放(不是再执行)", JSON.stringify(a2) === JSON.stringify(a1), { a1, a2 });
+    // 换参数同 id → 拒绝且不再执行。
+    let conflictErr: unknown = null;
+    try { await guardedApply(null, { deploymentId: "d2", __operationId: "scene-op-1" }); } catch (e) { conflictErr = e; }
+    check("★ MC-014:同 id 换参数被拒且副作用不增加", conflictErr !== null && applyCalls === 1, { applyCalls, conflictErr });
+    check("匿名(不带键)场景执行仍照旧", (await guardedApply(null, { deploymentId: "d3" })) !== undefined && applyCalls === 2, applyCalls);
+    void before; void applyIpc; void applied;
+  }
+
+  // 5c) 【MC-014】副作用档位与授权档位**正交**的判据本身(纯函数,防空过)。
+  {
+    const { policyFor } = await import("@main/appControl/policy.js");
+    const { sideEffectClassOf } = await import("@main/appControl/commandOutcome.js");
+    const { idempotencyApplies } = await import("@main/appControl/channelIdempotency.js");
+    for (const m of ["scene.apply", "scene.resume", "unattended.run", "scene.approve", "hooks.issueHostHookGrant"]) {
+      check(`★ MC-014:${m} 对 Agent blocked 但副作用为 mutating`, policyFor(m).level === "blocked" && sideEffectClassOf(m) === "mutating", policyFor(m));
+      check(`★ MC-014:${m} 的幂等守卫生效(idempotencyApplies 按方法名)`, idempotencyApplies(m) === true);
+    }
+    // 对照:blocked 的只读治理视图不因 blocked 被误当有副作用(不给白写一次 fsync)。
+    check("★ MC-014:scene.listDeployments 仍按只读(scene 部署记录只读)", sideEffectClassOf("scene.listDeployments") === "readonly" && idempotencyApplies("scene.listDeployments") === false);
+    check("MC-014:普通写档照旧 mutating", idempotencyApplies("session.rename") === true && idempotencyApplies("write") === true);
+    check("MC-014:只读档照旧只读", idempotencyApplies("project.list") === false && idempotencyApplies("read") === false);
+  }
+
   // 6) 判据只有一份：三通道共用 channelIdempotency 的分类函数。
   const idemSrc = readFileSync(join(process.cwd(), "src/main/appControl/channelIdempotency.ts"), "utf8");
   check("★ 桌面通道的方法→档位查表来自生成的 API_CATALOG(不另抄)", idemSrc.includes("API_CATALOG"));
