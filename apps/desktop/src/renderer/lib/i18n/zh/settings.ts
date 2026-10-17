@@ -1091,6 +1091,7 @@ export const zh = {
   "settings.skills.nodesFromProfile": "代理档案",
   "settings.skills.nodesFromWorkflow": "工作流",
   "settings.skills.nodesLoadFailed": "读工作流失败:{error}",
+  "settings.skills.nodesIncomplete": "有 {n} 份工作流没读回来 —— 下面的「没有被任何节点用到」可能漏掉了它们引用的名字,别拿它当清理依据。",
   "settings.skills.sourceGlobal": "全局",
   "settings.skills.sourceBuiltin": "内置",
   "settings.skills.builtinReadOnly": "内置技能 — 随应用发布,只读",

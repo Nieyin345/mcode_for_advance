@@ -26,63 +26,18 @@
  * 得逐个 `workflow.get`。档案那条一次 `agent_profiles.list` 就够（它带 `params`）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AgentProfile } from "@contracts/agentProfile";
-import type { WorkflowDoc } from "@contracts/workflow";
 import { NODE_SKILLS_PARAM_KEY } from "@contracts/nodeType";
 import type { SkillInfo } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconSparkles, IconArrowsSplit, IconRobotFace, IconAlertTriangle } from "@renderer/lib/icons.js";
-
-/** 一处引用：谁在用这个技能。 */
-interface SkillUse {
-  /** 展示用的来源名（工作流名 / 档案名）。 */
-  label: string;
-  kind: "workflow" | "profile";
-  /** 工作流 id 或档案 id —— 点进去要用。 */
-  refId: string;
-  /** 工作流里的哪一格（档案没有这个概念）。 */
-  nodeTitle?: string;
-}
-
-/** 一个技能 + 它的全部引用。 */
-interface SkillUsage {
-  name: string;
-  uses: SkillUse[];
-}
-
-/** 从一份工作流文档里数出"每个节点挂了哪些技能"(`paramKey` 换成 MCP / 插件那一格
- *  就是同一张反查表 —— 三种东西在节点上都是"一组名字"参数)。 */
-function collectWorkflowUses(doc: WorkflowDoc, into: Map<string, SkillUse[]>, paramKey: string): void {
-  for (const node of doc.nodes) {
-    const raw = node.params?.[paramKey];
-    if (!Array.isArray(raw)) continue;
-    for (const name of raw) {
-      if (typeof name !== "string" || name.length === 0) continue;
-      const list = into.get(name) ?? [];
-      list.push({
-        label: doc.name,
-        kind: "workflow",
-        refId: doc.id,
-        ...(node.title ? { nodeTitle: node.title } : {}),
-      });
-      into.set(name, list);
-    }
-  }
-}
-
-/** 从一份代理档案里数出它挂了哪些技能。档案存的就是"一组节点参数"。 */
-function collectProfileUses(profile: AgentProfile, into: Map<string, SkillUse[]>, paramKey: string): void {
-  const raw = profile.params?.[paramKey];
-  if (!Array.isArray(raw)) return;
-  for (const name of raw) {
-    if (typeof name !== "string" || name.length === 0) continue;
-    const list = into.get(name) ?? [];
-    list.push({ label: profile.name, kind: "profile", refId: profile.id });
-    into.set(name, list);
-  }
-}
+import {
+  buildNodesUsage,
+  splitUsedAndUnused,
+  type ReferenceUse,
+  type UnreadWorkflow,
+} from "./nodesUsageView.js";
 
 export function SkillNodesView({
   skills,
@@ -109,33 +64,46 @@ export function SkillNodesView({
   onJumpToProfile: (profileId: string) => void;
 }) {
   const { t } = useI18n();
-  const [usage, setUsage] = useState<Map<string, SkillUse[]> | null>(null);
+  const [usage, setUsage] = useState<Map<string, ReferenceUse[]> | null>(null);
+  const [unread, setUnread] = useState<UnreadWorkflow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     setError(null);
-    const into = new Map<string, SkillUse[]>();
     try {
       // 档案那一条一次就够（`agent_profiles.list` 带 params）。
       const catalog = await api.workflow.agentProfiles();
-      for (const p of catalog.profiles) collectProfileUses(p, into, paramKey);
 
       // 工作流**得逐个 get** —— `workflow.list` 只给列表项，不含 nodes。
       // 串行不并行：这些是本地 sqlite 读，并发几十个只会把连接池打满，
       // 而这里本来就是个设置页的一次性加载。
+      //
+      // ⚠️ **单份读不回来不等于"没人用"**（【MC-050 同类】）：从前的 `catch { 跳过 }`
+      // 让一份读不回来的工作流**悄悄**从"被使用"里消失，它的技能掉进"没用到"那栏 ——
+      // 而那一栏的用途是清理。现在失败**逐条记下**，结果标为不完整（见 `nodesUsageView`）。
       const list = await api.workflow.list();
+      const gets: Array<{ workflow: Awaited<ReturnType<typeof api.workflow.get>>["workflow"]; error?: string }> = [];
       for (const entry of list.workflows) {
         try {
           const res = await api.workflow.get({ id: entry.id });
-          if (res.workflow) collectWorkflowUses(res.workflow, into, paramKey);
-        } catch {
-          // 单份读不回来（存档坏了 / 刚被删）不该让整页失败 —— 跳过它。
+          gets.push({ workflow: res.workflow });
+        } catch (err) {
+          gets.push({ workflow: null, error: err instanceof Error ? err.message : String(err) });
         }
       }
-      setUsage(into);
+
+      const result = buildNodesUsage({
+        profiles: catalog.profiles,
+        workflows: list.workflows.map((w) => ({ id: w.id, name: w.name })),
+        workflowGets: gets,
+        paramKey,
+      });
+      setUsage(result.usage);
+      setUnread(result.unreadWorkflows);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setUsage(new Map());
+      setUnread([]);
     }
   }, [paramKey]);
 
@@ -143,19 +111,8 @@ export function SkillNodesView({
     void load();
   }, [load]);
 
-  // 把"有引用的"和"没引用的"分开 —— 两边的用途完全不同：前者是"删之前先看看谁在用"，
-  // 后者是"这一堆我根本没配过"。
-  const { used, unused } = useMemo(() => {
-    const u: SkillUsage[] = [];
-    const un: Array<Pick<SkillInfo, "name"> & { description?: string }> = [];
-    for (const s of skills) {
-      const uses = usage?.get(s.name);
-      if (uses && uses.length > 0) u.push({ name: s.name, uses });
-      else un.push(s);
-    }
-    u.sort((a, b) => b.uses.length - a.uses.length || a.name.localeCompare(b.name));
-    return { used: u, unused: un };
-  }, [skills, usage]);
+  // 把"有引用的"和"没引用的"分开 —— 判据在 `nodesUsageView.splitUsedAndUnused`。
+  const { used, unused } = useMemo(() => splitUsedAndUnused(skills, usage), [skills, usage]);
 
   if (usage === null) {
     return (
@@ -174,6 +131,23 @@ export function SkillNodesView({
         <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[0.8571em] text-warning">
           <IconAlertTriangle size={14} className="shrink-0" />
           {t("settings.skills.nodesLoadFailed", { error })}
+        </div>
+      )}
+      {/* 【MC-050 同类】目录不完整 —— 读不回来的工作流可能引用了任何名字，
+          所以下面"没被任何节点用到"那段**不能当清理依据**。逐条点名是哪几份。 */}
+      {unread.length > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[0.8571em] text-warning">
+          <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <div>{t("settings.skills.nodesIncomplete", { n: unread.length })}</div>
+            <ul className="mt-1 space-y-0.5 text-[0.8571em] text-warning/90">
+              {unread.map((w) => (
+                <li key={w.id} className="truncate" title={w.error}>
+                  {w.id} · {w.error}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 
@@ -230,7 +204,8 @@ export function SkillNodesView({
           </div>
         ))}
 
-        {/* 没被任何节点用到的 —— 单独一段，因为它的用途是"清理"。 */}
+        {/* 没被任何节点用到的 —— 单独一段，因为它的用途是"清理"。
+            ⚠️ 有工作流没读回来时，这一段**不是"确实没人用"**（【MC-050 同类】）。 */}
         {unused.length > 0 && (
           <div className="border-t border-edge">
             <div className="px-3 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
