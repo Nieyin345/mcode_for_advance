@@ -270,5 +270,12 @@ for (const engine of engines) {
   }
 }
 
+/* ── 9. 【MC-043 验收】面板提供「编辑 / 还原默认」,且还原不是第二套存储 ── */
+{
+  const panelSrc = read("src/renderer/components/settings/EngineToolsPanel.tsx");
+  check("★ 面板有「还原为内置说明」按钮", panelSrc.includes("guidanceReset") && /setGuidance\(""\)/.test(panelSrc));
+  check("★ 还原走同一份状态(清空 = 从未写过),不另建存储", !/guidanceDefault|defaultGuidance/.test(panelSrc));
+}
+
 console.log(`\nbase-capability-matrix-smoke: ${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

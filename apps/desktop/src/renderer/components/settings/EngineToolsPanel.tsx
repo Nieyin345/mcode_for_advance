@@ -162,6 +162,19 @@ function EngineCard({
             />
           </Field>
           <p className="text-xs text-content-muted">{t("settings.engineTools.guidanceHint")}</p>
+          {/* 【MC-043 验收】「编辑 / 还原默认」:清空说明 = 回到引擎内置的通用说明
+              (与"从未写过"同一语义),所以还原不是第二套存储,只是把这段清空。 */}
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setGuidance("")}
+              disabled={guidance.trim() === ""}
+            >
+              {t("settings.engineTools.guidanceReset")}
+            </Button>
+          </div>
           {guidance.trim() && (
             <details className="rounded border border-edge bg-surface-muted/40 px-3 py-2">
               <summary className="cursor-pointer text-xs text-content-muted">{t("settings.engineTools.guidancePreview")}</summary>
