@@ -210,11 +210,28 @@ section("B3. 挂载点不在条件分支里(壳偏好怎么翻都不卸载子树
     "★ ClassicShell 与 SettingsOverlay 并列挂载(覆盖层不是三元替换)",
     /<ClassicShell[\s\S]{0,1600}<SettingsOverlay/.test(app),
   );
-  // 壳偏好不许在 App 里成为 ClassicShell 的开关:V1 两种取值都渲染同一棵树。
+  // 【ARC-005 V2】壳偏好只许经 `variant` prop 进入,**不许**在 App 里换组件类型。
+  // 判据两条:
+  //   ① `variant={shellVariantOf(shellPref)}` 真的挂在 ClassicShell 上;
+  //   ② App 里不存在 `x === "workspace" ? <SomeShell` 这类元素级三元 ——
+  //      那会让 React 卸载整棵工作区子树(PTY cleanup → api.terminal.kill)。
   check(
-    "★ App 尚未把 shellPref 接入条件渲染(WorkspaceShell 未实装,V1 只铺偏好)",
-    !app.includes("shellPref ?"),
+    "★ App 把 shellPref 经 variant prop 传入(不换组件类型)",
+    /<ClassicShell[\s\S]{0,200}variant=\{shellVariantOf\(shellPref\)\}/.test(app),
   );
+  // 逐行扫:不许同一行里既有 shellPref 的三元又有壳元素(三元换类型 = 卸载子树)。
+  const ternaryShellLines = app.split(String.fromCharCode(10)).filter((line) =>
+    line.includes("shellPref") && line.includes("?") && (line.includes("<ClassicShell") || line.includes("<WorkspaceShell")));
+  eq("★ App 里没有壳偏好的元素级三元(三元会卸载工作区子树)", ternaryShellLines.length, 0);
+  const shellSrc = read("src/renderer/components/shell/ClassicShell.tsx");
+  check("ClassicShellProps 有 variant", /variant\?:\s*ShellVariant/.test(shellSrc));
+  check("默认 variant 是 classic(不传 = 原样)", /variant = "classic"/.test(shellSrc));
+  // workspace 变体的两处 class 差异必须在位且**只**在 class 上。
+  check("★ workspace 变体加侧栏最小宽度", /min-w-\[240px\]/.test(shellSrc));
+  check("★ workspace 变体用 CDS 10px 圆角", /rounded-tl-\[10px\]/.test(shellSrc));
+  const wsSrc = read("src/renderer/components/shell/WorkspaceShell.tsx");
+  check("WorkspaceShell 只是 ClassicShell 的 variant 包装", /variant="workspace"/.test(wsSrc));
+  check("shellVariantOf 只认 workspace", /pref === "workspace" \? "workspace" : "classic"/.test(wsSrc));
 }
 
 console.log(`\nworkspace-shell-smoke: ${total - failures}/${total} 通过`);

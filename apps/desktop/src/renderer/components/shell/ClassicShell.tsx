@@ -33,6 +33,7 @@ import { CustomUiToolbar } from "../customUi/CustomUiToolbar.js";
 import { useSessionStore } from "../../stores/sessionStore.js";
 import { useFileViewStore } from "../../stores/fileViewStore.js";
 import { useI18n } from "../../lib/i18n/index.js";
+import type { ShellVariant } from "./shellPrefs.js";
 
 // Lazy-load the Monaco-backed editor / diff dialog / plan viewer and the
 // read-only file preview (moved here verbatim from App.tsx) so the large
@@ -56,9 +57,11 @@ interface WorkspaceSidebarProps {
   leftWidthPct: number;
   onResizeLeft: (deltaPx: number) => void;
   onResetLeft: () => void;
+  /** 【ARC-005 V2】布局变体。只改 class(宽度下限/圆角/分隔线),不改子树。 */
+  variant?: ShellVariant;
 }
 
-const WorkspaceSidebarContents = memo(function WorkspaceSidebarContents({ mode }: { mode: string }) {
+export const WorkspaceSidebarContents = memo(function WorkspaceSidebarContents({ mode }: { mode: string }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       {mode === "stream" ? <StreamSidebar /> : <LeftBar />}
@@ -82,13 +85,20 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
   leftWidthPct,
   onResizeLeft,
   onResetLeft,
+  variant = "classic",
 }: WorkspaceSidebarProps) {
+  // 【ARC-005 V2】workspace 变体:侧栏给个最小宽度(会话标题不至于被压成一条),
+  // 起始圆角收成 CDS 的 10px,并且不再画分隔线 —— Claude 桌面端的会话列表与
+  // 主列靠色阶差 + 主列圆角缺口分隔,不靠一根线。拖动热区两种变体都在
+  // (Divider 的 hideLine 只影响画不画线)。
+  const isWorkspace = variant === "workspace";
   return (
     <>
       <aside
         data-testid="workspace-sidebar"
         className={cn(
-          "flex h-full min-w-0 shrink-0 flex-col rounded-tl-3xl bg-surface-muted",
+          "flex h-full shrink-0 flex-col bg-surface-muted",
+          isWorkspace ? "min-w-[240px] rounded-tl-[10px]" : "min-w-0 rounded-tl-3xl",
           !leftOpen && "hidden",
         )}
         style={{ flexGrow: 0, flexBasis: `${leftWidthPct}%` }}
@@ -152,7 +162,7 @@ const WorkspaceInertShell = memo(function WorkspaceInertShell({
  *  (the plan opens as the WidePlanDialog overlay instead). Toggling wide is
  *  a relayout, never a remount — the chat panes (Tiptap composers, scroll,
  *  drafts) and everything else below this point survive the toggle. */
-function CenterPane({ wide }: { wide: boolean }) {
+export function CenterPane({ wide }: { wide: boolean }) {
   const displayMode = useSessionStore((s) => s.displayMode);
   if (displayMode === "tabs") {
     return <UnifiedTabbedPane wide={wide} />;
@@ -441,7 +451,7 @@ function ChatColumn() {
  *  path from the active project so FileEditor can show relative paths in
  *  its toolbar. When the plan tab is active, renders PlanViewer instead of
  *  FileEditor. */
-function EditorColumn({
+export function EditorColumn({
   filePath,
   hideTabsBar = false,
 }: {
@@ -524,6 +534,10 @@ function EditorColumn({
  * 一个不多、一个不少。将来的 WorkspaceShell 复用这组契约时,App 只换传参来源。
  */
 export interface ClassicShellProps {
+  /** 【ARC-005 V2】布局变体(唯一允许随 `ui.shell` 变的东西)。
+   *  ⚠️ 切壳必须在**这里**发生,不许在 App 里换组件类型 —— 换类型会卸载整棵
+   *  工作区子树(PTY/Monaco/草稿保活立刻失效)。 */
+  variant?: ShellVariant;
   leftOpen: boolean;
   leftBarMode: string;
   leftWidthPct: number;
@@ -551,10 +565,11 @@ export interface ClassicShellProps {
  * `WorkspaceInertShell` 自己就地订阅 `settingsOpen`(与抽出前相同 —— 它是
  * 自订阅的 memo 包壳,设置开关只重渲染这一层)。
  */
-export function ClassicShell({ leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
+export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
   return (
     <WorkspaceInertShell>
       <WorkspaceSidebar
+        variant={variant}
         leftOpen={leftOpen}
         leftBarMode={leftBarMode}
         leftWidthPct={leftWidthPct}

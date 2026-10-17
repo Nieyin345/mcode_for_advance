@@ -101,6 +101,11 @@ export const zh = {
   "settings.general.reduceMotionSystem": "跟随系统",
   "settings.general.reduceMotionOn": "开启(减少动画)",
   "settings.general.reduceMotionOff": "关闭(保留动画)",
+  "settings.general.shell": "界面外壳",
+  "settings.general.shellDesc":
+    "决定工作区的整体摆放方式。经典是现有布局;会话优先把左侧会话列表加宽、去掉分隔线,更接近 Claude 桌面端。切换只改摆放,不会重启终端或编辑器。",
+  "settings.general.shellClassic": "经典",
+  "settings.general.shellWorkspace": "会话优先",
   "settings.general.pasteThreshold": "长文本折叠阈值",
   "settings.general.pasteThresholdDesc":
     "在输入框粘贴超过此字符数的内容时,会折叠为输入框上方的卡片而非直接插入正文({min}–{max})。",

@@ -8,6 +8,7 @@ import { BrowserPanel } from "./components/browser/BrowserPanel.js";
 import { Toaster } from "./components/layout/Toaster.js";
 import { CustomUiHost } from "./components/customUi/CustomUiHost.js";
 import { ClassicShell } from "./components/shell/ClassicShell.js";
+import { shellVariantOf } from "./components/shell/WorkspaceShell.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
 import { VoiceListeningOverlay } from "./components/layout/VoiceListeningOverlay.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
@@ -247,6 +248,13 @@ export function App() {
     if (ideFocusNonce > 0) setRightOpen(true);
   }, [ideFocusNonce, setRightOpen]);
 
+  // 【ARC-005 V2】外壳偏好:**只换 variant,不换组件类型**。这里永远渲染同一个
+  // 经典外壳元素,`variant` 只影响左栏宽度下限/圆角/分隔线。写成
+  // `shell === "workspace" ? 工作区壳 : 经典壳` 会让 React 卸载
+  // 整棵工作区子树(TerminalView 的 cleanup 调 api.terminal.kill —— Windows 上
+  // 批量 kill 偶发崩主进程,Monaco/草稿也全丢)。见 ClassicShellProps.variant。
+  const shellPref = useSessionStore((s) => s.shellPref);
+
   // Root row ref — measures the full window width so the left divider's px
   // drag delta can be converted into percentage points of that width (the
   // sidebar share is percentage-based so the 3:7 split scales on resize).
@@ -308,6 +316,7 @@ export function App() {
           Tab 序与辅助技术(几何逐像素不变,子树全程挂载 —— 见 WorkspaceInertShell
           自己的注释)。 */}
       <ClassicShell
+        variant={shellVariantOf(shellPref)}
         leftOpen={leftOpen}
         leftBarMode={leftBarMode}
         leftWidthPct={leftWidthPct}

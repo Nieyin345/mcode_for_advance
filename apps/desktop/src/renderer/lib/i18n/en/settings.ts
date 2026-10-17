@@ -98,6 +98,11 @@ export const en = {
   "settings.general.reduceMotionSystem": "Follow system",
   "settings.general.reduceMotionOn": "On (reduce animation)",
   "settings.general.reduceMotionOff": "Off (keep animation)",
+  "settings.general.shell": "Interface shell",
+  "settings.general.shellDesc":
+    "How the workspace is laid out. Classic keeps the current layout; Session-first widens the session list, drops the divider line and reads closer to Claude Desktop. Switching only re-arranges panes — terminals and editors are not restarted.",
+  "settings.general.shellClassic": "Classic",
+  "settings.general.shellWorkspace": "Session-first",
   "settings.general.pasteThreshold": "Long-paste folding threshold",
   "settings.general.pasteThresholdDesc":
     "Pasting more than this many characters into the composer folds the content into a card above the input instead of inserting it inline ({min}–{max}).",

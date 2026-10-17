@@ -31,6 +31,14 @@ export type { ShellPreference };
 export const DEFAULT_SHELL_PREF: ShellPreference = "classic";
 
 /**
+ * 【ARC-005 V2】布局变体 —— 与 `ShellPreference` **同一组取值**,但语义是
+ * "这棵树怎么摆"而不是"用户选了哪个壳"。单独命名是因为它是 ClassicShell 的
+ * prop 类型:切壳只许改这个 prop,不许在 App 里换组件类型(换类型 = 卸载整棵
+ * 工作区子树,PTY/Monaco 保活立刻失效)。
+ */
+export type ShellVariant = ShellPreference;
+
+/**
  * 把设置表里的原始字符串解析成外壳偏好。缺行、空串、坏值(例如手持设备
  * 写入门户留下的脏数据)一律回落到默认值 —— 与 `parseAutoArchiveConfig`
  * 的「坏值不炸、退回默认」同一规矩。
