@@ -1146,5 +1146,53 @@ console.log("\n【MC-048】模板事务围栏(单一异步变更协议)");
   }
 }
 
+/* ═══════════════ 【ARC-005 V2】Esc 只关最内层(escapeLayer) ═══════════════ */
+{
+  const { openEscapeLayer, isTopEscapeLayer, claimEscape, escapeLayerStack, resetEscapeLayersForTests } =
+    await import("../../src/renderer/lib/escapeLayer.js");
+  resetEscapeLayersForTests();
+
+  check("空栈时谁都不是栈顶(没人兜底吃 Esc)", !isTopEscapeLayer("a"));
+
+  const closeA = openEscapeLayer("a");
+  check("只开一层时它就是栈顶", isTopEscapeLayer("a"));
+  const closeB = openEscapeLayer("b");
+  check("★ 后开的一层是最内层(b)", isTopEscapeLayer("b"));
+  check("★ 外层(a)不再认领 Esc —— 一次按键不会连关两层", claimEscape("a") === false);
+  check("内层(b)认领 Esc", claimEscape("b") === true);
+  eq("栈序是外→内", escapeLayerStack().join(","), "a,b");
+
+  closeB();
+  check("内层关闭后外层重新认领", claimEscape("a") === true);
+  closeA();
+  eq("全部关闭后栈为空", escapeLayerStack().length, 0);
+
+  const closeC = openEscapeLayer("c");
+  const closeD = openEscapeLayer("d");
+  closeC();
+  closeC();
+  eq("重复 close 不影响其他层", escapeLayerStack().join(","), "d");
+  closeD();
+
+  openEscapeLayer("same");
+  openEscapeLayer("same");
+  eq("同 id 只占一个位置", escapeLayerStack().filter((x) => x === "same").length, 1);
+  resetEscapeLayersForTests();
+
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = process.cwd();
+  for (const [file, id] of [
+    ["src/renderer/components/chat/ActivityCluster.tsx", "chat.activity-cluster"],
+    ["src/renderer/components/chat/PlanViewer.tsx", "chat.plan-viewer"],
+  ] as const) {
+    const src = readFileSync(join(root, file), "utf8");
+    check(`★ ${file} 打开时开层`, src.includes(`openEscapeLayer("${id}")`));
+    check(`★ ${file} 处理 Esc 前先 claim`, src.includes(`claimEscape("${id}")`) && src.includes(`if (!claimEscape("${id}")) return;`));
+    check(`${file} 卸载时关层`, src.includes("closeLayer();"));
+  }
+}
+
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

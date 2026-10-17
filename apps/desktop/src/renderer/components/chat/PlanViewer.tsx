@@ -8,6 +8,7 @@ import type { editor } from "monaco-editor";
 import "@renderer/lib/monacoSetup.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useMonacoTheme } from "../ide/FileEditor.js";
 import {
@@ -174,9 +175,15 @@ export function PlanViewer({
 
   // Esc closes the plan view in read mode; in edit mode it cancels the edit
   // first (matches the dialog / drawer convention).
+  //
+  // 【ARC-005 V2】只在**它是当前最内层**时响应:计划面板之上还可能开着活动弹层 /
+  // 选择器 / 确认框,那些先收到 Esc 并关掉自己;本层若不在栈顶就原样放行,
+  // 否则一次按键会连关两层。
   useEffect(() => {
+    const closeLayer = openEscapeLayer("chat.plan-viewer");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (!claimEscape("chat.plan-viewer")) return;
         e.preventDefault();
         e.stopPropagation();
         if (editing) cancelEdit();
@@ -184,7 +191,10 @@ export function PlanViewer({
       }
     };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    return () => {
+      closeLayer();
+      document.removeEventListener("keydown", onKey, true);
+    };
   }, [editing, cancelEdit, onClose]);
 
   // Clear the saved-indicator timer on unmount.

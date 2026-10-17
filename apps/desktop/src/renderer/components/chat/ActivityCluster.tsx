@@ -31,6 +31,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { SessionBookmark } from "@contracts/session";
@@ -85,10 +86,18 @@ export function ActivityCluster({
 
   // Escape / outside-press dismissal. Capture phase, so the panel closes before
   // any surface underneath reacts to the same press.
+  //
+  // 【ARC-005 V2】Esc 只归**最内层**:活动弹层开着时按 Esc 只关它,不能顺带把
+  // PlanViewer / 设置层也关掉。捕获阶段的 stopPropagation 拦不住分处不同子树的
+  // 另一个捕获监听,所以判据走 escapeLayer 的打开顺序栈;不是栈顶就原样放行。
   useEffect(() => {
     if (!openKind && !sheetNode) return;
+    const closeLayer = openEscapeLayer("chat.activity-cluster");
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (!claimEscape("chat.activity-cluster")) return;
+        e.preventDefault();
+        e.stopPropagation();
         setOpenKind(null);
         setSheetNode(null);
       }
@@ -105,6 +114,7 @@ export function ActivityCluster({
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("pointerdown", onDown, true);
     return () => {
+      closeLayer();
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("pointerdown", onDown, true);
     };
