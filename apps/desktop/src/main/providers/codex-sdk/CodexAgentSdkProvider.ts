@@ -1057,7 +1057,9 @@ async function ensureCodexHomeIdentity(browserToolsEnabled: boolean): Promise<st
     // The user's file architecture — see fileArchitecturePrompt. The drift check
     // below means a data-root change rewrites AGENTS.md on the next call, so the
     // paths here can't go stale silently.
-    fileArchitecturePrompt(dataRoot(), scriptsDir()),
+    // 【MC-044】engine="codex":它没有与 Claude/Pi 同名的文件工具(读写走自己的
+    // shell/exec),提示词因此**不点名**任何读工具,只写「用你当前可用的读取方式」。
+    fileArchitecturePrompt(dataRoot(), scriptsDir(), "codex"),
     ASK_NATIVE_TOOL_PROMPT,
     PLAN_MODE_PROMPT,
     // ⚠️ **浏览器工具广告只在启用时才拼。** 工具定义按同一个开关砍(见

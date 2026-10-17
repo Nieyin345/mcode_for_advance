@@ -57,6 +57,9 @@ export const listPluginProjectRows = notHere("listPluginProjectRows");
 export const setPluginProjectOverride = notHere("setPluginProjectOverride");
 export const removePlugin = notHere("removePlugin");
 export const listMarketplaces = notHere("listMarketplaces");
+// 【MC-037】`ipc/plugins.ts` 的 marketplaceList handler 现在还会问损坏诊断 —— 桩必须
+// 有同名导出(否则 esbuild 直接报 No matching export)。本套件不碰市场,绊线语义不变。
+export const pluginMarketplacesCorrupt = notHere("pluginMarketplacesCorrupt");
 export const addMarketplace = notHere("addMarketplace");
 export const removeMarketplace = notHere("removeMarketplace");
 export const refreshMarketplace = notHere("refreshMarketplace");

@@ -268,7 +268,7 @@ export class PiAgentSdkProvider implements AgentProvider {
     // so flipping it lands on the next message.
     const mcpManagement = await getMcpManagement();
     const browserToolsEnabled = !mcpManagement.browserDisabled;
-    const mcodeExtension = createMcodeExtension({ ctx, cwd: req.cwd, strict, sessionId: req.sessionId, projectPath: req.cwd, turnNumber: req.turnNumber, browserToolsEnabled });
+    const mcodeExtension = createMcodeExtension({ ctx, cwd: req.cwd, strict, sessionId: req.sessionId, projectPath: req.cwd, turnNumber: req.turnNumber, browserToolsEnabled, excludedTools: piExcludedTools });
 
     // 【MC-100/101】按任务画像 + 预算算本轮的**模型可见工具白名单**(共享选择层,唯一一份)。
     // `full`(默认)→ `undefined` = Pi 的"启用全部";更小的画像 → 选中名字白名单。

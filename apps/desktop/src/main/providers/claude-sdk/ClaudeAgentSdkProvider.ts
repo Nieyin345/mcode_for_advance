@@ -26,7 +26,7 @@ import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
 import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel, resolveMappedEffort } from "./customEnv.js";
 import type { ClaudeContextWindowTag } from "./claudeTokenUsage.js";
 import { ASK_SYSTEM_PROMPT } from "@main/lib/askQuestion.js";
-import { CLAUDE_IDENTITY_PROMPT, CLAUDE_PLAN_MODE_NUDGE, fileArchitecturePrompt, joinPromptSections } from "@main/lib/systemPrompt.js";
+import { CLAUDE_IDENTITY_PROMPT, claudePlanModeNudge, fileArchitecturePrompt, joinPromptSections } from "@main/lib/systemPrompt.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { scriptsDir } from "@main/workflows/seed.js";
@@ -539,6 +539,11 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // 自定义值走 CLAUDE_CODE_EFFORT_LEVEL env（见 buildCustomEnv 与 resolveMappedEffort）。
     const mappedEffort = resolveMappedEffort(req.effort, req.apiConfig);
 
+    // 【MC-044】当轮的真实工具排除表 —— 解一次，三处消费(disallowedTools / 系统
+    // 提示词的工具名 / toolSelection),保证"提示词说的"与"实际给模型的"同源。
+    // 损坏且无 last-good 时 resolver 抛错拒本轮(MC-071 语义不变,只是提前到 appends 之前)。
+    const excludedForTurn = resolveEngineExcludedToolsForProvider("claude");
+
     const options: Options = {
       abortController: ac,
       cwd: req.cwd,
@@ -594,10 +599,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // 【MC-071 残余 E1】走「状态与执行授权同源」的 resolver：策略文件损坏且**无
       // last-good** 时**抛错拒绝本轮**(在绑定 disallowedTools 之前),而不是拿到空排除表
       // 把原本禁用的 Bash 静默重新启用;有备份则按恢复值继续。
-      disallowedTools: (() => {
-        const excluded = resolveEngineExcludedToolsForProvider("claude");
-        return excluded.length > 0 ? excluded : undefined;
-      })(),
+      disallowedTools: excludedForTurn.length > 0 ? excludedForTurn : undefined,
       // SDK #359: On Windows there is a timing/buffering race in the stdio
       // control-stream transport that causes "Tool permission request failed:
       // AbortError: Tool permission stream closed before response received"
@@ -1182,12 +1184,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // without this. Paths only (see fileArchitecturePrompt): the library changes
     // between turns, so the model reads the manifests / queries with the script
     // instead of being handed a list that would already be stale.
-    appends.push(fileArchitecturePrompt(dataRoot(), scriptsDir()));
+    appends.push(fileArchitecturePrompt(dataRoot(), scriptsDir(), "claude", excludedForTurn));
     if (process.platform === "win32") {
       appends.push(bashPathHintFor(detectBashEnv("claude")));
     }
     if (isUiPlanMode) {
-      appends.push(CLAUDE_PLAN_MODE_NUDGE);
+      appends.push(claudePlanModeNudge(excludedForTurn));
     }
     // Host 统一解析「记忆背景 → 角色身份 → 当前工作流」，三个 provider 消费同一组
     // sections；Claude 这里只负责放进原生 systemPrompt append。顺序也集中在一处，
@@ -1315,7 +1317,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         profile: req.toolProfile,
         budget: req.toolBudget,
         browserEnabled: !mcpState.browserDisabled && claudeMaySee(BROWSER_MCP_SERVER),
-        excluded: resolveEngineExcludedToolsForProvider("claude"),
+        excluded: excludedForTurn,
       });
       const allServers = Object.keys(options.mcpServers ?? {});
       const sel = claudeToolSelectionOptions(claudeToolSelection, {

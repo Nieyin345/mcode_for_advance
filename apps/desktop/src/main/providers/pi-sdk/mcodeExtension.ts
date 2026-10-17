@@ -182,6 +182,9 @@ export interface CreateMcodeExtensionOptions {
    *  Claude provider's options.mcpServers injection); read per-turn by the
    *  provider, so flipping it lands on the next message. */
   browserToolsEnabled: boolean;
+  /** 【MC-044】当轮真实的工具排除表(用户禁用的 Pi 内置工具)——系统提示词
+   *  点名工具前必须问它,禁用的工具不许出现在广告里。 */
+  excludedTools?: readonly string[];
 }
 
 /**
@@ -196,6 +199,7 @@ export interface CreateMcodeExtensionOptions {
  */
 export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineExtension {
   const { ctx, cwd, strict, sessionId, projectPath, turnNumber, browserToolsEnabled } = opts;
+  const excludedTools = opts.excludedTools ?? [];
 
   // ── Plan mode state (per-turn, in-process) ──────────────────────────
   // Tracked here rather than via ctx.getPermissionMode() because the latter
@@ -284,7 +288,7 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
         registerBrowserTools(pi, { ctx, sessionId, projectPath, turnNumber });
       }
       registerPlanModeTools(pi, { ctx, sessionId, planMode });
-      registerSystemPromptInjector(pi, { browserToolsEnabled });
+      registerSystemPromptInjector(pi, { browserToolsEnabled, excludedTools });
     },
   };
 }
@@ -718,7 +722,7 @@ const PLAN_MODE_PROMPT = [
  */
 function registerSystemPromptInjector(
   pi: ExtensionAPI,
-  deps: { browserToolsEnabled: boolean },
+  deps: { browserToolsEnabled: boolean; excludedTools: readonly string[] },
 ): void {
   pi.on(
     "before_agent_start",
@@ -733,7 +737,9 @@ function registerSystemPromptInjector(
         instructions,
         // The user's file architecture — see fileArchitecturePrompt. Re-read per
         // turn (not cached) because the data root is user-settable.
-        fileArchitecturePrompt(dataRoot(), scriptsDir()),
+        // 【MC-044】引擎 + 当轮排除表都传进去:提示词里的工具名按 Pi 的真实面孔
+        // (小写 read)派生,禁用后不再点名。
+        fileArchitecturePrompt(dataRoot(), scriptsDir(), "pi", deps.excludedTools),
         ASK_NATIVE_TOOL_PROMPT,
         PLAN_MODE_PROMPT,
         // Advertise the browser tools only when they are actually registered
