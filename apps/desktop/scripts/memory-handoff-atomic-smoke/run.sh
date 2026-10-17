@@ -12,6 +12,10 @@
 #   4. verify-restart  新进程读盘:不许有不可见 job、不许有半个指针;重试正控;两目标并发
 #   5. crash-consume   武装「指针清理写点」→ 消费回执时崩溃(旧代码:consumed 已落盘、指针还在)
 #   6. verify-consume  新进程:指针不许悬挂在终结态;中断的消费可重试;重复消费幂等
+#   7. crash-expire    武装「指针清理写点」→ 过期迁移时崩溃(旧代码:只单键写 job,
+#                      这个写点根本走不到 —— 崩溃趟会报"故障注入没触发";修复后同一
+#                      事务被整体杀死)
+#   8. verify-expire   新进程:中断的过期迁移保持旧状态可重试,重试后整体可见
 #
 # ⚠️ 2..6 各趟**必须**单独 `node` 起进程 —— 崩掉的趟本来就活不过它自己;
 #    `set -e` 会被 exit(9) 终止脚本,所以崩溃趟用 `|| true`(下一趟的断言就是判据:
@@ -56,3 +60,7 @@ node "$OUT/smoke.mjs" verify-restart
 node "$OUT/smoke.mjs" crash-consume || true
 # 6) 又一条新进程。
 node "$OUT/smoke.mjs" verify-consume
+# 7) 【MC-025 补漏】过期也是发表点:再崩一趟,这次打在过期迁移的指针清理写点上。
+node "$OUT/smoke.mjs" crash-expire || true
+# 8) 再一条新进程:中断的过期迁移必须保持旧状态可重试,重试后整体可见。
+node "$OUT/smoke.mjs" verify-expire

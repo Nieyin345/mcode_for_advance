@@ -139,6 +139,19 @@ if (pass === "seed") {
   eq("撤回后 T3 读不到待接收包", store.pendingAssistantHandoff(T3), null);
   eq("撤回后 job 状态为 cancelled", store.readAssistantJob(c.id)?.status, "cancelled");
 
+  // 【MC-025 补漏】**过期也是发表点**。一份已 queued、目标还没读走的包过期后,状态终结
+  // 与指针清理必须同一事务(与撤回/消费同一协议)。这里只做**同进程正控**;跨进程的
+  // 崩溃形状由 crash-expire / verify-expire 两趟现场造夹具(它们排在 verify-restart
+  // 之后 —— 那一趟的 listAssistantJobs 会经读口把所有过期包迁移掉,seed 里造的
+  // queued-过期夹具活不到第五趟)。
+  const e0 = readyJob();
+  store.queueAssistantHandoff(e0.id, SOURCE, T2);
+  eq("过期正控:T2 能看到待接收包", store.pendingAssistantHandoff(T2)?.id, e0.id);
+  store.saveAssistantJob({ ...store.readAssistantJob(e0.id)!, expiresAt: Date.now() - 1 });
+  const expired = store.readAssistantJob(e0.id);
+  check("★★ 同进程:已 queued 的包过期后状态为 expired", expired?.status === "expired", expired?.status);
+  check("★★ 同进程:过期迁移清掉目标指针(不留终结态悬挂)", !SettingRepo.get(targetKeyOf(T2)), SettingRepo.get(targetKeyOf(T2)));
+
   writeFileSync(FIXTURE, JSON.stringify({ sourceId: SOURCE, jobA: a.id, cancelledJob: c.id } satisfies Fixture));
   flushDb();
   finish(pass);
@@ -203,6 +216,61 @@ if (pass === "seed") {
   eq("撤回状态跨重启持久", store.readAssistantJob(f.cancelledJob)?.status, "cancelled");
   eq("撤回清掉的指针跨重启仍为空", SettingRepo.get(targetKeyOf(T3)), "");
   eq("撤回清掉的指针跨重启仍清(读口)", store.pendingAssistantHandoff(T3), null);
+
+  flushDb();
+  finish(pass);
+} else if (pass === "crash-expire") {
+  console.log("【MC-025 补漏】第七趟:武装目标指针写点,过期迁移时崩溃(期望 exit 9)");
+  const f = readFixture();
+  // 夹具**现场造**:verify-restart / verify-consume 的读口会经 listAssistantJobs 把
+  // 先前造的一切过期包迁移掉,seed 里存的过期夹具活不到这里。T1 在 verify-consume
+  // 消费完 jobA 之后是空闲目标。
+  const e2 = readyJob();
+  store.queueAssistantHandoff(e2.id, f.sourceId, T1);
+  store.saveAssistantJob({ ...store.readAssistantJob(e2.id)!, expiresAt: Date.now() - 1 });
+  // ⚠️ 用**原始存储行**确认夹具,不能再走读口 —— readAssistantJob 本身就会触发迁移。
+  const queuedRow = (JSON.parse(SettingRepo.get(`memory.assistant.job.${e2.id}`) ?? "{}") as { status?: string }).status;
+  eq("过期夹具在盘上是 queued(未经读口)", queuedRow, "queued");
+  eq("过期夹具的指针在 T1", SettingRepo.get(targetKeyOf(T1)), e2.id);
+  if (failures > 0) process.exit(1);
+  // 崩溃趟不跑 finish(不可达),自己的 id 得先落盘给 verify-expire 读。
+  writeFileSync(join(DATA, "mc025-expire2.json"), JSON.stringify({ id: e2.id }));
+  armWriteFault("exit", "memory.assistant.target.");
+  try {
+    // 读口触发过期迁移 —— 旧代码在这里只 saveAssistantJob(单键写),不会碰到 target 写点;
+    // 修复后同一事务同时写 job 与指针清理,整个事务在写前被杀。
+    store.readAssistantJob(e2.id);
+  } catch (err) {
+    emit(`  FAIL 过期迁移在故障注入之前抛错:${String(err)}`);
+    process.exit(1);
+  }
+  emit("  FAIL 故障注入没有触发 —— 过期迁移没把指针清理纳入同一事务(退回单键写)");
+  process.exit(1);
+} else if (pass === "verify-expire") {
+  console.log("【MC-025 补漏】第六趟:新进程 —— 过期迁移要么整体可见、要么保持旧状态可重试");
+  const f = readFixture();
+  const { id: e2 } = JSON.parse(readFileSync(join(DATA, "mc025-expire2.json"), "utf8")) as { id: string };
+  // ⚠️ 先读**原始存储行**,不能先走读口 —— readAssistantJob 本身就会触发迁移,
+  // 读了就分不清"崩溃前"与"迁移后"。
+  // ① 修复后:整个事务在写前被杀 → job 仍 queued(旧状态、可重试),不是"已过期但指针还在"。
+  const statusRaw = (JSON.parse(SettingRepo.get(`memory.assistant.job.${e2}`) ?? "{}") as { status?: string }).status;
+  eq("★ 中断的过期迁移保持旧状态 queued(可重试),不是半个迁移", statusRaw, "queued");
+  // ② 旧代码的死法:单键写已落盘(expired)、指针没清 —— 状态与指针分裂。
+  eq("★ 崩溃后指针仍指向同一个包(没有替将来更新的发表做主)", SettingRepo.get(targetKeyOf(T1)), e2);
+  // ③ 重试正控:再读一次,整体成功 —— 状态 expired 且指针已清。
+  const retried = store.readAssistantJob(e2);
+  check("★ 重试的过期迁移整体成功:状态 expired 且正文被清", retried?.status === "expired" && retried.result === "", { status: retried?.status, result: retried?.result });
+  eq("重试后 T1 指针已清", SettingRepo.get(targetKeyOf(T1)), "");
+  eq("重试后 T1 读不到待接收包", store.pendingAssistantHandoff(T1), null);
+  // ④ 全表不变式(放在最后:上面的读口已把夹具迁移完):任何指针都不得悬挂在终结态。
+  const dangling: Array<{ pointer: string; status: string | undefined }> = [];
+  for (const k of SettingRepo.keysWithPrefix("memory.assistant.target.")) {
+    const id = SettingRepo.get(k);
+    if (!id) continue;
+    const job = store.readAssistantJob(id);
+    if (job && job.status !== "queued") dangling.push({ pointer: id, status: job.status });
+  }
+  eq("★ 重启后没有任何指针悬挂在终结态", dangling.length, 0);
 
   flushDb();
   finish(pass);

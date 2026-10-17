@@ -32,7 +32,16 @@ export function readAssistantJob(id: string): MemoryAssistantJob | null {
   if (!raw) return null;
   const job = parseJob(raw);
   if (job.status !== "running" && job.expiresAt < Date.now() && job.result) {
-    job.result = ""; job.status = "expired"; saveAssistantJob(job);
+    job.result = ""; job.status = "expired";
+    // 【MC-025 补漏】过期也是**发表点**:状态终结与目标指针清理同一事务,与撤回/消费
+    // 同一协议。从前这里只 `saveAssistantJob` —— 一份已 queued、还没被目标读走的包
+    // 过期后,`.target.<目标>` 指针仍指着它,成为"job 已终结、指针还悬挂"的残余态。
+    // 指针 CAS 与 {@link cancelAssistantJob} 同款:仍指向本 job 才清。
+    const entries: Array<readonly [string, string]> = [[key(job.id), JSON.stringify(job)]];
+    if (job.targetSessionId && SettingRepo.get(targetKey(job.targetSessionId)) === job.id) {
+      entries.push([targetKey(job.targetSessionId), ""]);
+    }
+    SettingRepo.setMany(entries);
   }
   return job;
 }
