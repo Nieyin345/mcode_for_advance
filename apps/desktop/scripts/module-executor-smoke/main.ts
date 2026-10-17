@@ -502,12 +502,13 @@ try {
     assert.equal(outcome.outputs?.runs, before + 1);
   });
 
-  await test("real host: user.* modules are denied through the workflow entry", async () => {
+  await test("real host: user.* modules without a workflow grant are denied through the workflow entry", async () => {
     const outcome = await realExecutor.execute(
       contextOf({ cwd: root, moduleCall: callOf({ moduleId: "user.demo", requestId: "wf:user" }) }),
     );
     assert.equal(outcome.status, "failed");
-    assert.match(outcome.error ?? "", /工作流需要一个已注册的内置只读贡献/);
+    // 【MC-036】拒绝原因从"不是内置模块"改为"缺宿主核验的工作流授权" —— 未授权仍拒。
+    assert.match(outcome.error ?? "", /需要宿主核验的工作流授权/);
   });
 
   await test("real host: a forged core id without builtin registration is denied", async () => {

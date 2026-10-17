@@ -179,6 +179,11 @@ const pin: Array<[string, string]> = [
   ["unattendedPlans.list", "blocked"],
   ["unattendedPlans.resume", "blocked"],
   ["unattendedPlans.abandon", "blocked"],
+  // 【MC-036】用户模块的**工作流运行授权**(= 自动运行权)的签发 / 撤销。与
+  // `hooks.issueHostHookGrant` / `workflow.approve` 同一条纪律:agent 不得把"这个模块
+  // 菜单能调"自行升成"这个模块可以自动跑",故钉 blocked(不是可弹卡的 write)。
+  ["modules.issueWorkflowGrant", "blocked"],
+  ["modules.revokeWorkflowGrant", "blocked"],
   ["plugins.installGit", "danger"],
   ["mcp.save", "danger"],
   ["hooks.save", "danger"],

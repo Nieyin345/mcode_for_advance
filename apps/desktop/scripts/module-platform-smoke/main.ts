@@ -64,7 +64,7 @@ setTestHost(host);
 const ipcHandlers=new Map<string,(event:never,raw:unknown)=>unknown>();
 const ipcStub:Pick<IpcMain,"handle">={handle(channel,handler){ipcHandlers.set(channel,handler);}};
 registerModuleHandlers(ipcStub as IpcMain);
-await test("all seven IPC routes registered",()=>assert.equal(ipcHandlers.size,7));
+await test("all nine IPC routes registered",()=>assert.equal(ipcHandlers.size,9));
 await test("IPC install rejects absent explicit consent",()=>assert.rejects(Promise.resolve(ipcHandlers.get(IPC.MODULE_INSTALL)!({} as never,{manifest}))));
 await test("IPC invoke rejects unknown caller fields",()=>assert.rejects(Promise.resolve(ipcHandlers.get(IPC.MODULE_INVOKE)!({} as never,{moduleId:"core.inspect",contributionId:"inspect",resource,requestId:"badipc",trusted:true}))));
 await test("IPC catalog calls the same host",async()=>{const catalog=await ipcHandlers.get(IPC.MODULE_CATALOG)!({} as never,undefined);assert.deepEqual(catalog,host.catalog());});

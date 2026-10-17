@@ -9,7 +9,9 @@ const q=new URLSearchParams(location.search);
 useSessionStore.setState({locale:q.get('locale')==='en'?'en':'zh'});
 window.pendingRpc=[];const waiting=new Map();let sequence=0;
 window.resolveRpc=({id,data,error})=>{const p=waiting.get(id);waiting.delete(id);if(error)p.reject(Error(error));else p.resolve(data);};
-window.testApi.modules=Object.fromEntries(['catalog','install','remove','invoke','task','tasks','cancel'].map(name=>[name,input=>new Promise((resolve,reject)=>{const id=++sequence;waiting.set(id,{resolve,reject});window.pendingRpc.push({id,name,input});})]));
+window.testApi.modules=Object.fromEntries(['catalog','install','remove','invoke','task','tasks','cancel','issueWorkflowGrant','revokeWorkflowGrant'].map(name=>[name,input=>new Promise((resolve,reject)=>{const id=++sequence;waiting.set(id,{resolve,reject});window.pendingRpc.push({id,name,input});})]));
+// 【MC-036】授权面板读"已登记项目"作为工作区候选;与 modules 同一条 pump。
+window.testApi.project={list:()=>new Promise((resolve,reject)=>{const id=++sequence;waiting.set(id,{resolve,reject});window.pendingRpc.push({id,name:'project.list',input:undefined});})};
 
 // TEST FIXTURE ONLY: the production `mcode.module-capability` node type is
 // registered by task 05. This manifest follows interface-v2 §4 (three params)

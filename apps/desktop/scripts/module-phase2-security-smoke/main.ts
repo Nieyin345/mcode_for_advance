@@ -34,13 +34,17 @@ async function terminal(h:ModuleHost, reply:ModuleReply):Promise<ModuleTask> {
 const results: Array<{name:string;status:string;error?:string}> = [];
 async function test(name:string, fn:()=>unknown){try{await fn();results.push({name,status:'PASS'});console.log('PASS '+name);}catch(e){const error=String(e);results.push({name,status:'FAIL',error});console.error('FAIL '+name+' '+error);}}
 async function denies(p:Promise<unknown>, pattern:RegExp){await assert.rejects(p,e=>{assert.ok(e instanceof Error);assert.notEqual(e.name,'TypeError');assert.match(e.message,pattern);return true;});}
+// 【MC-036】用户模块的拒绝原因拆成两类:未授权(缺宿主核验的工作流授权)与
+// 伪造/未知内置目标(仍沿用原判定)。`host`/`restarted` 都没有注入授权存档,故用户模块
+// 在这里走的是"未授权"那一支。
+const denyUserWorkflow = /需要宿主核验的工作流授权/;
 const denyWorkflow = /工作流需要一个已注册的内置只读贡献/;
 
 await test('AUTH user module works from menu but not workflow',async()=>{
   await host.install(EXAMPLE_MODULE);
   const menu=await terminal(host,await host.invoke(call(EXAMPLE_MODULE.id,'inspect','menu-user')));
   assert.equal(menu.status,'completed');assert.equal(menu.result?.bytes,Buffer.byteLength(body));
-  await denies(host.invokeForWorkflow(call(EXAMPLE_MODULE.id,'inspect','workflow-user')),denyWorkflow);
+  await denies(host.invokeForWorkflow(call(EXAMPLE_MODULE.id,'inspect','workflow-user')),denyUserWorkflow);
 });
 // The mutation run intentionally executes exactly the security assertion above.
 if(process.env.P2_SECURITY_MUTATION!=='workflow-auth') {
@@ -51,7 +55,7 @@ await test('COMPAT v1 manifest persists and restored module retains menu authori
   for(const c of fileCapabilities(p=>p===root))restarted.register(c);
   for(const m of saved)restarted.restore(m);
   assert.equal((await terminal(restarted,await restarted.invoke(call(EXAMPLE_MODULE.id,'inspect','restore-menu')))).status,'completed');
-  await denies(restarted.invokeForWorkflow(call(EXAMPLE_MODULE.id,'inspect','restore-wf')),denyWorkflow);
+  await denies(restarted.invokeForWorkflow(call(EXAMPLE_MODULE.id,'inspect','restore-wf')),denyUserWorkflow);
 });
 await test('COMPAT old catalog has no invented metadata or workflow targets',()=>{
   const old=ModuleCatalogSchema.parse({modules:[EXAMPLE_MODULE],capabilities:[{id:'core.file.inspect',kind:'task'}]});

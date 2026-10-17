@@ -1861,11 +1861,27 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ type: 'result'; value: Record<string, string | number | boolean | null>; view: { title: { zh: string; en: string; }; fields: { title: { zh: string; en: string; }; key: string; }[]; } } | { type: 'task'; task: ModuleTask }"
  },
  {
+  "method": "modules.issueWorkflowGrant",
+  "channel": "modules:issueWorkflowGrant",
+  "doc": "【MC-036】给一个已安装的用户模块的只读贡献**签发**工作流运行授权(绑定模块 id/版本/ 贡献/能力/工作区)。由设置页里用户本人的点击发起;Agent 侧钉 blocked(见 `appControl/policy.ts`)—— 自动运行权不能由模型自己给自己升。返回签发后的目录。",
+  "input": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
+  "inputFull": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+ },
+ {
   "method": "modules.remove",
   "channel": "modules:remove",
   "doc": "卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单。",
   "input": "{ moduleId: string }",
   "inputFull": "{ moduleId: string }",
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+ },
+ {
+  "method": "modules.revokeWorkflowGrant",
+  "channel": "modules:revokeWorkflowGrant",
+  "doc": "【MC-036】撤销一条工作流运行授权(同一 (模块,版本,贡献,能力,工作区) 幂等键)。",
+  "input": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
+  "inputFull": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
   "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {

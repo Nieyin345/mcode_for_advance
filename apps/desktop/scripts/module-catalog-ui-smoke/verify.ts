@@ -36,11 +36,47 @@ const rich=ModuleCatalogSchema.parse({
   ],
   workflowTargets:[{moduleId:"core.file-report",contributionId:"inspect",capabilityId:"core.file.inspect"}],
 });
-type Mode="hold"|"fail"|"empty"|"real"|"legacy"|"rich";
+/**
+ * 【MC-036】授权分面的夹具目录：一个**未授权**的用户模块只读贡献(可被授权) +
+ * 一个已授权目标的用户模块(出现在 workflowTargets)+ 一个损坏的授权表变体。
+ */
+const grantCandidate={moduleId:"user.file-report",moduleVersion:"2.0.0",contributionId:"inspect",capabilityId:"core.file.inspect",grants:[] as Array<{projectPath:string;grantedAt:number}>};
+const grantCatalog=ModuleCatalogSchema.parse({
+  modules:[rich.modules[0]!,...rich.modules.slice(1)],
+  capabilities:rich.capabilities,
+  workflowTargets:rich.workflowTargets,
+  workflowGrantCandidates:[grantCandidate],
+  workflowGrantStatus:{archive:"valid"},
+});
+const corruptGrantCatalog=ModuleCatalogSchema.parse({
+  ...rich,
+  workflowGrantCandidates:[grantCandidate],
+  workflowGrantStatus:{archive:"corrupt",reason:"第 1 条授权记录形状不合法"},
+});
+/** 【MC-036】授权替身的状态:签发 / 撤销改它,`catalog` 从它派生 —— 组件签发后会
+ *  `refetch()` 重读目录,所以替身必须"记住"刚刚发生的授权,否则面板永远画不出已授权态。 */
+const grantedState={on:false};
+const grantedCatalog=():unknown=>grantedState.on
+  ? ModuleCatalogSchema.parse({
+      ...grantCatalog,
+      workflowTargets:[...(grantCatalog.workflowTargets??[]),{moduleId:grantCandidate.moduleId,contributionId:grantCandidate.contributionId,capabilityId:grantCandidate.capabilityId}],
+      workflowGrantCandidates:[{...grantCandidate,grants:[{projectPath:join(root,"project"),grantedAt:1}]}],
+    })
+  : structuredClone(grantCatalog);
+type Mode="hold"|"fail"|"empty"|"real"|"legacy"|"rich"|"grants"|"grants-corrupt";
 let mode:Mode="hold";const held:Call[]=[];
 interface Call {id:number;name:string;input:unknown}
-const catalog=():unknown=>{if(mode==="fail")throw Error("catalog unavailable (fixture)");if(mode==="empty")return {modules:[],capabilities:[]};if(mode==="legacy")return structuredClone(legacy);if(mode==="rich")return structuredClone(rich);return host.catalog();};
-const handlers:Record<string,(input:unknown)=>unknown>={catalog,tasks:()=>[]};
+const catalog=():unknown=>{if(mode==="fail")throw Error("catalog unavailable (fixture)");if(mode==="empty")return {modules:[],capabilities:[]};if(mode==="legacy")return structuredClone(legacy);if(mode==="rich")return structuredClone(rich);if(mode==="grants")return structuredClone(grantedCatalog());if(mode==="grants-corrupt")return structuredClone(corruptGrantCatalog);return host.catalog();};
+const projectRoot=join(root,"project");
+const handlers:Record<string,(input:unknown)=>unknown>={
+  catalog,tasks:()=>[],
+  // 【MC-036】授权写入口的**替身**:把变更记下来并翻动 grantedState;组件随后 refetch
+  // 重读 catalog 时拿到的新目录就带上了(或撤掉了)这一条授权。
+  "project.list":()=>({projects:[{id:"p1",name:"Fixture project",path:projectRoot,archived:false,sortOrder:0,pinnedAt:null}]}),
+  issueWorkflowGrant:(input:unknown)=>{issues.push(input as never);grantedState.on=true;return structuredClone(grantedCatalog());},
+  revokeWorkflowGrant:(input:unknown)=>{revokes.push(input as never);grantedState.on=false;return structuredClone(grantedCatalog());},
+};
+const issues:Array<Record<string,unknown>>=[];const revokes:Array<Record<string,unknown>>=[];
 writeFileSync(join(dir,"index.html"),`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Module catalog UI regression</title><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script>window.testApi={};window.fixtureRoot=${JSON.stringify(root)};</script><script src="/bundle.js"></script></body></html>`);
 let passed=0;const pass=(name:string)=>{passed++;console.log("PASS "+name);};
 interface Page {eval(source:string):Promise<unknown>;waitFor(source:string):Promise<void>;send(method:string,params:Record<string,unknown>):Promise<unknown>;sleep(ms:number):Promise<void>;goto(params:string,ready:string):Promise<void>;screenshot(name:string):Promise<void>;exceptions:string[];}
@@ -138,6 +174,28 @@ await withAuditPage(dir,async(page:Page)=>{
   assert.match(await text("[data-testid=card-host]"),/读取文件信息/);pass("workflow node card renders the new runner kind");
   await inspector("doc=blank&locale=en","rich");await page.waitFor("document.querySelector('[data-testid=module-target-trigger]') && !document.querySelector('[data-testid=module-target-loading]')");
   assert.match(await text("[data-testid=module-capability-fields]"),/Capability/);assert.match(await text("[data-testid=module-capability-fields]"),/File path/);assert.match(await text("[data-testid=module-target-trigger]"),/Choose a capability/);assert.equal(await rawKeys(),false);pass("inspector fields render in English with no raw dictionary keys");
+  // ── 【MC-036】授权面板 ──
+  await inspector("doc=blank","grants");await page.waitFor("document.querySelector('[data-testid=module-grant-candidate]')");
+  assert.equal(await page.eval("document.querySelectorAll('[data-testid=module-grant-candidate]').length"),1);
+  assert.match(await text("[data-testid=module-grant-panel]"),/授权后/);
+  assert.equal(await page.eval("!!document.querySelector('[data-testid=module-grant-issue]')"),true);
+  await page.eval("document.querySelector('[data-testid=module-grant-issue]').addEventListener('click',()=>{window.__grantClicked=(window.__grantClicked||0)+1})");
+  await mouse("[data-testid=module-grant-issue]");await page.sleep(800);
+  assert.equal(await page.eval("window.__grantClicked"),1,"button click must reach the component");
+  await page.waitFor("document.querySelector('[data-testid=module-grant-revoke]')");
+  // 签发入参 = 目录候选的完整键(模块/版本/贡献/能力/工作区),不来自节点参数。
+  assert.deepEqual(issues.at(-1),{moduleId:"user.file-report",moduleVersion:"2.0.0",contributionId:"inspect",capabilityId:"core.file.inspect",projectPath:projectRoot});
+  pass("grant panel issues a grant with the full host-candidate identity and workspace scope");
+  await click("撤销授权");await page.waitFor("document.querySelector('[data-testid=module-grant-issue]')");
+  assert.deepEqual(revokes.at(-1),{moduleId:"user.file-report",moduleVersion:"2.0.0",contributionId:"inspect",capabilityId:"core.file.inspect",projectPath:projectRoot});
+  pass("revoking sends the same identity and returns to the ungranted state");
+  await inspector("doc=blank","grants-corrupt");await page.waitFor("document.querySelector('[data-testid=module-grant-corrupt]')");
+  assert.match(await text("[data-testid=module-grant-corrupt]"),/损坏/);
+  assert.equal(await page.eval("document.querySelector('[data-testid=module-grant-issue]').disabled===true"),true);
+  // 坏表下用户模块目标一个都不发布(内置目标照常,所以这里看的是"用户模块不在下拉里")。
+  const corruptOptions=await page.eval("[...document.querySelectorAll('[data-testid=module-target-option]')].map(e=>e.textContent.trim())") as string[];
+  assert.equal(corruptOptions.some(option=>option.includes("用户导入报告")),false);
+  pass("a corrupt grant table is shown explicitly, grant buttons are disabled and no user module is offered (fail closed)");
   assert.deepEqual(page.exceptions,[]);pass("no uncaught browser errors");
  } finally {stop=true;await pump;}
 });

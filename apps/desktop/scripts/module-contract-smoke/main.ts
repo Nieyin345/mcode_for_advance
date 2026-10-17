@@ -4,7 +4,9 @@ import { z } from "zod";
 import {
   JsonSchemaDocumentSchema, ModuleCapabilityMetadataSchema, ModuleCapabilityDescriptorSchema,
   ModuleWorkflowTargetSchema, ModuleCatalogSchema, ModuleWorkflowCallSchema,
-  ModuleWorkflowExecutionInputSchema, MODULE_SCHEMA_MAX_BYTES,
+  ModuleWorkflowExecutionInputSchema, MODULE_SCHEMA_MAX_BYTES, MODULE_WORKFLOW_GRANT_FILE_VERSION,
+  ModuleWorkflowGrantSchema, classifyModuleWorkflowGrants, serializeModuleWorkflowGrants,
+  moduleWorkflowGrantKey, applyModuleWorkflowGrantChange,
 } from "@contracts/moduleCapability";
 import { EXAMPLE_MODULE, ModuleManifestSchema, ModuleInvokeSchema, ResourceSchema, missingCapabilityPermission, actionInvocationDenied } from "@contracts/modules";
 import { NodeRunnerSchema, isRunnerImplemented, isNodeRunnable, renderNodeTypeCatalog, showsNodeCapability, validateNodeParams, type NodeTypeManifest } from "@contracts/nodeType";
@@ -84,7 +86,14 @@ check("catalog rejects duplicate workflow targets", () => assert.equal(ModuleCat
 check("catalog rejects target without matching module contribution", () => assert.equal(ModuleCatalogSchema.safeParse({ ...catalog, workflowTargets: [{ ...target, contributionId: "missing" }] }).success, false));
 check("catalog rejects mismatched capability target", () => assert.equal(ModuleCatalogSchema.safeParse({ ...catalog, workflowTargets: [{ ...target, capabilityId: "core.file.info" }] }).success, false));
 check("catalog never advertises action as workflow target", () => assert.equal(ModuleCatalogSchema.safeParse({ ...catalog, capabilities: [{ id: "core.file.inspect", kind: "action" }] }).success, false));
-check("catalog never advertises user module as workflow target", () => assert.equal(ModuleCatalogSchema.safeParse({ ...catalog, modules: [EXAMPLE_MODULE], workflowTargets: [{ ...target, moduleId: EXAMPLE_MODULE.id }] }).success, false));
+// 【MC-036】旧契约"永不接受 user 目标"翻面:宿主现在是**唯一**决定发布哪些用户目标的一方
+// (只有持有有效工作流授权的用户模块才会进 workflowTargets)。契约层只查引用一致性 ——
+// 形状合法的 user 目标必须能通过,否则宿主发布的合法目录会被自己的 schema 拒掉。
+check("catalog accepts a shape-valid user target; host authorization decides publication", () => {
+  const userCatalog = { ...catalog, modules: [EXAMPLE_MODULE], workflowTargets: [{ ...target, moduleId: EXAMPLE_MODULE.id }] };
+  assert.equal(ModuleCatalogSchema.safeParse(userCatalog).success, true);
+  assert.equal(ModuleCatalogSchema.safeParse({ ...catalog, workflowTargets: [{ ...target, moduleId: "attacker.file-report" }] }).success, false, "unknown prefix still rejected");
+});
 // Shared save/import validation must reuse the frozen schema even for an old
 // manifest with no param specs. Execution-time validation is not a substitute.
 check("shared module validator accepts the frozen three fields", () => assert.deepEqual(validateNodeParams(manifest, call), { ok: true }));
@@ -126,6 +135,80 @@ check("other runner parameter behavior is not tightened", () => {
   assert.equal(validateNodeParams(legacy, { prompt: "hello", script: "legacy extra data" }).ok, true);
   assert.equal(validateNodeParams(legacy, {}).ok, false);
   assert.equal(NodeRunnerSchema.safeParse({ kind: "unknown-runner" }).success, false);
+});
+// ── 【MC-036】用户模块的工作流运行授权:模型 / 三态分类器 / 唯一写入口 ──
+const userGrant = { moduleId: EXAMPLE_MODULE.id, moduleVersion: "1.0.0", contributionId: "inspect", capabilityId: "core.file.inspect", projectPath: "C:/project" };
+const userTarget = { moduleId: EXAMPLE_MODULE.id, contributionId: "inspect", capabilityId: "core.file.inspect" };
+const userCatalog = { modules: [EXAMPLE_MODULE], capabilities: [{ id: "core.file.inspect", kind: "task", metadata }], workflowTargets: [userTarget] };
+check("grant record binds module/version/contribution/capability/workspace and nothing else", () => {
+  assert.deepEqual(ModuleWorkflowGrantSchema.parse({ ...userGrant, grantedAt: 1 }), { ...userGrant, grantedAt: 1 });
+  assert.equal(ModuleWorkflowGrantSchema.safeParse({ ...userGrant, grantedAt: 1, trusted: true }).success, false);
+  assert.equal(ModuleWorkflowGrantSchema.safeParse({ ...userGrant, grantedAt: 1, moduleId: "core.file-report" }).success, false, "grants cover user.* only");
+  assert.equal(ModuleWorkflowGrantSchema.safeParse({ ...userGrant, grantedAt: -1 }).success, false);
+  assert.equal(ModuleWorkflowGrantSchema.safeParse({ ...userGrant }).success, false, "grantedAt is required");
+});
+check("grant archive: absent/valid/corrupt are distinct and a bad record poisons the whole table", () => {
+  assert.deepEqual(classifyModuleWorkflowGrants(null), { state: "absent" });
+  assert.deepEqual(classifyModuleWorkflowGrants("   "), { state: "absent" });
+  assert.equal(classifyModuleWorkflowGrants("{").state, "corrupt");
+  assert.equal(classifyModuleWorkflowGrants("[]").state, "corrupt", "a bare array is not the envelope");
+  assert.equal(classifyModuleWorkflowGrants(JSON.stringify({ version: MODULE_WORKFLOW_GRANT_FILE_VERSION + 1, grants: [] })).state, "corrupt");
+  assert.equal(classifyModuleWorkflowGrants(JSON.stringify({ version: MODULE_WORKFLOW_GRANT_FILE_VERSION, grants: "x" })).state, "corrupt");
+  const oneBad = classifyModuleWorkflowGrants(JSON.stringify({ version: MODULE_WORKFLOW_GRANT_FILE_VERSION, grants: [{ ...userGrant, grantedAt: 1 }, { ...userGrant }] }));
+  assert.equal(oneBad.state, "corrupt", "one malformed record must not be silently dropped");
+  const good = classifyModuleWorkflowGrants(serializeModuleWorkflowGrants([{ ...userGrant, grantedAt: 5 }]));
+  assert.equal(good.state, "valid");
+  if (good.state === "valid") assert.deepEqual(good.grants, [{ ...userGrant, grantedAt: 5 }]);
+});
+check("issue is idempotent on the full identity and revoke removes exactly that record", () => {
+  const first = applyModuleWorkflowGrantChange(null, { kind: "issue", grant: userGrant, grantedAt: 1 });
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  const second = applyModuleWorkflowGrantChange(first.text, { kind: "issue", grant: userGrant, grantedAt: 2 });
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  const parsed = classifyModuleWorkflowGrants(second.text);
+  assert.equal(parsed.state, "valid");
+  if (parsed.state === "valid") {
+    assert.equal(parsed.grants.length, 1, "re-issuing the same identity must not accumulate rows");
+    assert.equal(parsed.grants[0]?.grantedAt, 2, "re-issuing refreshes grantedAt");
+  }
+  // 换工作区 = 另一条授权(旧授权不会被覆盖掉)。
+  const otherWorkspace = applyModuleWorkflowGrantChange(second.text, { kind: "issue", grant: { ...userGrant, projectPath: "C:/other" }, grantedAt: 3 });
+  assert.equal(otherWorkspace.ok, true);
+  if (otherWorkspace.ok) {
+    const both = classifyModuleWorkflowGrants(otherWorkspace.text);
+    assert.equal(both.state === "valid" ? both.grants.length : -1, 2);
+  }
+  const revoked = applyModuleWorkflowGrantChange(second.text, { kind: "revoke", grant: userGrant });
+  assert.equal(revoked.ok, true);
+  if (revoked.ok) {
+    const after = classifyModuleWorkflowGrants(revoked.text);
+    assert.equal(after.state === "valid" ? after.grants.length : -1, 0);
+    assert.equal(revoked.changed, true);
+  }
+  // 撤销一条本来就没有的授权:幂等成功、内容不变。
+  const noop = applyModuleWorkflowGrantChange(first.text, { kind: "revoke", grant: { ...userGrant, contributionId: "missing" } });
+  assert.equal(noop.ok, true);
+  if (noop.ok) assert.equal(noop.changed, false);
+  // 幂等键对版本/能力/工作区都敏感。
+  const key = moduleWorkflowGrantKey(userGrant);
+  for (const change of [{ moduleVersion: "1.0.1" }, { capabilityId: "core.file.info" }, { projectPath: "C:/other" }]) {
+    assert.notEqual(moduleWorkflowGrantKey({ ...userGrant, ...change }), key, JSON.stringify(change));
+  }
+});
+check("a corrupt archive is never rewritten from an empty base", () => {
+  const changed = applyModuleWorkflowGrantChange("{broken", { kind: "issue", grant: userGrant, grantedAt: 1 });
+  assert.equal(changed.ok, false);
+  if (!changed.ok) assert.match(changed.error, /损坏/);
+  const revoked = applyModuleWorkflowGrantChange("{broken", { kind: "revoke", grant: userGrant });
+  assert.equal(revoked.ok, false);
+});
+check("catalog shape accepts host-granted user targets but still rejects action and unknown prefixes", () => {
+  assert.equal(ModuleCatalogSchema.safeParse(userCatalog).success, true);
+  assert.equal(ModuleCatalogSchema.safeParse({ ...userCatalog, modules: [{ ...EXAMPLE_MODULE, id: "other.file-report" }] }).success, false, "unknown module prefix");
+  assert.equal(ModuleCatalogSchema.safeParse({ ...userCatalog, capabilities: [{ id: "core.file.inspect", kind: "action", metadata }] }).success, false, "actions never become targets");
+  assert.equal(ModuleCatalogSchema.safeParse({ ...userCatalog, workflowTargets: [{ ...userTarget, capabilityId: "core.file.info" }], capabilities: [{ id: "core.file.inspect", kind: "task", metadata }, { id: "core.file.info", kind: "query", metadata }] }).success, false, "target must match the contribution's capability");
 });
 console.log(`${count} module contract checks passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

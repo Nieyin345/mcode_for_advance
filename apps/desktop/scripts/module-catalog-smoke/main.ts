@@ -213,7 +213,9 @@ await test('only actual built-ins may use core namespace; action contributions c
 });
 await test('user module still works from menu but workflow denies it before file authorization', async () => {
   const before = authorized;
-  await denied(workflow(host, input('user.file-report', 'inspect', 'user-workflow')), /工作流需要一个已注册的内置只读贡献/);
+  // 【MC-036】未授权的用户模块仍被工作流拒(判据没有因为授权记录而放宽),但拒绝原因
+  // 现在是"缺工作流授权"而不是"不是内置模块"。
+  await denied(workflow(host, input('user.file-report', 'inspect', 'user-workflow')), /需要宿主核验的工作流授权/);
   assert.equal(authorized, before, 'workflow must reject untrusted module before authorize');
   const menu = await host.invoke(input('user.file-report', 'inspect', 'user-menu'));
   assert.equal(menu.type, 'task');

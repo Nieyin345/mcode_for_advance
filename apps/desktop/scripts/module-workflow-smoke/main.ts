@@ -17,7 +17,7 @@ import "../../src/preload/index.js";
 import { createModuleClient } from "@contracts/moduleClient";
 import { IPC } from "@contracts/ipc";
 import { EXAMPLE_MODULE } from "@contracts/modules";
-import { MODULE_CAPABILITY_NODE_TYPE_ID, MODULE_CAPABILITY_RUNNER_KIND, ModuleCatalogSchema, ModuleWorkflowExecutionInputSchema } from "@contracts/moduleCapability";
+import { MODULE_CAPABILITY_NODE_TYPE_ID, MODULE_CAPABILITY_RUNNER_KIND, ModuleCatalogSchema, ModuleWorkflowExecutionInputSchema, classifyModuleWorkflowGrants } from "@contracts/moduleCapability";
 import { isNodeRunnable, NodeTypeManifestSchema, type NodeOutcome, type NodeTypeManifest } from "@contracts/nodeType";
 import { WorkflowDocSchema, type WorkflowDoc, type WorkflowNode } from "@contracts/workflow";
 import { dataRootCalls } from "./stubs/dataRoot.js";
@@ -164,32 +164,130 @@ await check("runtime authorization rejects outside files and unknown workspaces"
   assert.equal(unknown.status, "failed"); assert.match(unknown.error ?? "", /未知工作区/);
 });
 await host.install({ ...EXAMPLE_MODULE, id: "user.workflow-fixture" });
-await check("user modules stay menu-callable but are rejected by the workflow path", async () => {
+const fixtureGrant = { moduleId: "user.workflow-fixture", moduleVersion: "1.0.0", contributionId: "inspect", capabilityId: "core.file.inspect", projectPath: workspace };
+await check("用户模块未授权时工作流路径仍被拒绝(菜单可用不等于可自动运行)", async () => {
   const menu = await host.invoke({ moduleId: "user.workflow-fixture", contributionId: "inspect", requestId: "menu-fixture", resource: { projectPath: workspace, path: join(workspace, "module-inspect-demo.txt") } });
   assert.equal(menu.type, "task");
+  assert.ok(!host.catalog().workflowTargets?.some(target => target.moduleId === "user.workflow-fixture"), "未授权用户模块不得出现在 workflowTargets");
   const outcome = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })));
-  assert.equal(outcome.status, "failed"); assert.match(outcome.error ?? "", /内置只读贡献/);
+  assert.equal(outcome.status, "failed");
+  assert.match(outcome.error ?? "", /需要宿主核验的工作流授权/);
+  // 守卫:授权记录只覆盖 user.* —— 每一条记录在分类器里就按 moduleId 前缀拒收,
+  // 一份伪造的 core.* 记录会把整表判坏(而不是被悄悄当成内置授权)。
+  const forged = { version: 1, grants: [{ moduleId: "core.file-report", moduleVersion: "1.0.0", contributionId: "inspect", capabilityId: "core.file.inspect", projectPath: workspace, grantedAt: 1 }] };
+  assert.equal(classifyModuleWorkflowGrants(JSON.stringify(forged)).state, "corrupt");
 });
-await check("unknown contribution fails instead of falling back to a model", async () => {
+await check("授予工作流运行权后,菜单与工作流(含真实调度器)都能调用且输出一致", async () => {
+  const issued = await host.issueWorkflowGrant(fixtureGrant);
+  assert.equal(issued.moduleVersion, "1.0.0");
+  assert.ok(host.catalog().workflowTargets?.some(target => target.moduleId === "user.workflow-fixture" && target.contributionId === "inspect"), "授权后目标必须出现在 workflowTargets");
+  const menu = await host.invoke({ moduleId: "user.workflow-fixture", contributionId: "inspect", requestId: "menu-fixture-granted", resource: { projectPath: workspace, path: join(workspace, "module-inspect-demo.txt") } });
+  assert.equal(menu.type, "task");
+  const outcome = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })));
+  assert.equal(outcome.status, "success", outcome.error);
+  // 菜单路径(真实宿主任务)与工作流路径(执行器→宿主)对同一文件给出同一份「字节数/SHA-256」。
+  const menuTask = menu.type === "task" ? menu.task : undefined;
+  let settled = menuTask;
+  for (let i = 0; i < 200 && settled?.status === "running"; i++) { await new Promise(resolve => setTimeout(resolve, 5)); settled = host.task({ moduleId: "user.workflow-fixture", taskId: menuTask!.id }); }
+  assert.equal(settled?.status, "completed", settled?.error);
+  assert.deepEqual(outcome.outputs, settled?.result);
+  assert.equal(outcome.outputs?.sha256, expectedHash);
+});
+await check("撤销授权后工作流路径立刻失败闭合,菜单仍可调用", async () => {
+  const revoked = await host.revokeWorkflowGrant(fixtureGrant);
+  assert.equal(revoked.revoked, true);
+  const outcome = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })));
+  assert.equal(outcome.status, "failed");
+  assert.match(outcome.error ?? "", /需要宿主核验的工作流授权/);
+  assert.ok(!host.catalog().workflowTargets?.some(target => target.moduleId === "user.workflow-fixture"));
+  const menu = await host.invoke({ moduleId: "user.workflow-fixture", contributionId: "inspect", requestId: "menu-after-revoke", resource: { projectPath: workspace, path: join(workspace, "module-inspect-demo.txt") } });
+  assert.equal(menu.type, "task");
+});
+await check("换版本或换授权工作区后旧授权失效", async () => {
+  await host.issueWorkflowGrant(fixtureGrant);
+  assert.equal((await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })))).status, "success");
+  // 换资源范围:旧授权只覆盖 workspace,别的(同一套桩认得的)工作区不覆盖。
+  const otherWorkspace = evidenceDir;
+  const other = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" }), otherWorkspace));
+  assert.equal(other.status, "failed");
+  assert.match(other.error ?? "", /需要宿主核验的工作流授权/);
+  // 换版本:模块清单换成 1.0.1 后,1.0.0 的授权不再命中。
+  await host.install({ ...EXAMPLE_MODULE, id: "user.workflow-fixture", version: "1.0.1" });
+  const outdated = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })));
+  assert.equal(outdated.status, "failed");
+  assert.match(outdated.error ?? "", /需要宿主核验的工作流授权/);
+  // 恢复:按当前版本重新授权后,工作流重新可用。
+  await host.issueWorkflowGrant({ ...fixtureGrant, moduleVersion: "1.0.1" });
+  assert.equal((await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })))).status, "success");
+  // 复原清单版本与授权(旧版本的授权仍在表里,但不会命中恢复后的 1.0.0 —— 需要再授一次)。
+  await host.install({ ...EXAMPLE_MODULE, id: "user.workflow-fixture" });
+  await host.issueWorkflowGrant(fixtureGrant);
+});
+await check("授权表损坏时 fail-closed + 显式诊断,且拒绝改写", async () => {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const grantFile = path.join(process.env.P2_WORKFLOW_DATA_ROOT!, "ui-modules", "workflow-grants.json");
+  const original = await fs.readFile(grantFile, "utf8");
+  try {
+    await fs.writeFile(grantFile, "{ 这不是合法 JSON", "utf8");
+    const catalog = host.catalog();
+    assert.equal(catalog.workflowGrantStatus?.archive, "corrupt");
+    assert.ok(catalog.workflowGrantStatus?.reason);
+    assert.ok(!catalog.workflowTargets?.some(target => target.moduleId === "user.workflow-fixture"), "坏表下用户模块目标必须全部不可用");
+    const outcome = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })));
+    assert.equal(outcome.status, "failed");
+    assert.match(outcome.error ?? "", /需要宿主核验的工作流授权/);
+    // 坏表不当空表:签发 / 撤销都拒绝改写原字节。
+    await assert.rejects(host.issueWorkflowGrant(fixtureGrant), /损坏/);
+    await assert.rejects(host.revokeWorkflowGrant(fixtureGrant), /损坏/);
+    assert.equal(await fs.readFile(grantFile, "utf8"), "{ 这不是合法 JSON", "坏表必须原样保留,不得被空表覆盖");
+  } finally {
+    await fs.writeFile(grantFile, original, "utf8");
+  }
+  // 修复后立即恢复(读侧不缓存)。
+  assert.equal((await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })))).status, "success");
+});
+await check("未知贡献失败而不是落到模型", async () => {
   const outcome = await runner.execute(contextFor(inputFor({ ...node.params, contributionId: "missing" })));
   assert.equal(outcome.status, "failed");
 });
-await check("real main IPC and preload carry metadata and workflow targets unchanged", async () => {
+await check("真实主进程 IPC 与 preload 原样携带元数据、工作流目标与授权分面", async () => {
   registerModuleHandlers(fakeIpcMain);
-  assert.equal(handlers.size, 7);
+  assert.equal(handlers.size, 9);
   const api = preloadApi();
   const catalog = await api.modules.catalog();
   ModuleCatalogSchema.parse(catalog);
   assert.deepEqual(catalog, host.catalog());
-  assert.equal(catalog.workflowTargets?.length, 2);
+  // 内置两个 + 已获授权的用户模块一个。
+  assert.equal(catalog.workflowTargets?.length, 3);
+  assert.ok(catalog.workflowTargets?.some(target => target.moduleId === "user.workflow-fixture"));
   assert.ok(catalog.capabilities.every(capability => capability.metadata));
+  assert.equal(catalog.workflowGrantStatus?.archive, "valid");
+  assert.ok(catalog.workflowGrantCandidates?.some(candidate => candidate.moduleId === "user.workflow-fixture"));
   assert.equal(Reflect.has(api.modules, "invokeForWorkflow"), false);
-  assert.equal([...handlers.keys()].some(key => key.includes("Workflow")), false);
+  // 授权签发 / 撤销是**真人 UI 动作**,但走的是公开 IPC 面:preload 上有,主进程有 handler。
+  assert.equal(typeof api.modules.issueWorkflowGrant, "function");
+  assert.equal(typeof api.modules.revokeWorkflowGrant, "function");
+  assert.ok(handlers.has(IPC.MODULE_ISSUE_WORKFLOW_GRANT));
+  assert.ok(handlers.has(IPC.MODULE_REVOKE_WORKFLOW_GRANT));
   const client = createModuleClient(api.modules, "core.file-report");
   const reply = await client.invoke("info", { projectPath: workspace, path: join(workspace, "module-inspect-demo.txt") }, "preload-info");
   assert.equal(reply.type, "result");
   if (reply.type === "result") assert.equal(reply.value.bytes, expectedBytes);
   assert.ok(handlers.has(IPC.MODULE_CATALOG));
+});
+await check("授权 IPC 经 preload 真实往返:签发→目录可见→撤销→目录消失", async () => {
+  const api = preloadApi();
+  await api.modules.revokeWorkflowGrant(fixtureGrant);
+  assert.ok(!(await api.modules.catalog()).workflowTargets?.some(target => target.moduleId === "user.workflow-fixture"));
+  const issued = await api.modules.issueWorkflowGrant(fixtureGrant);
+  assert.ok(issued.workflowTargets?.some(target => target.moduleId === "user.workflow-fixture"));
+  const revoked = await api.modules.revokeWorkflowGrant(fixtureGrant);
+  assert.ok(!revoked.workflowTargets?.some(target => target.moduleId === "user.workflow-fixture"));
+  // IPC 形状校验:多带一个字段被拒。
+  await assert.rejects(api.modules.issueWorkflowGrant({ ...fixtureGrant, trusted: true } as never));
+  // 留在"已授权"状态给后续断言用(与上面菜单/工作流一致的最终态)。
+  await api.modules.issueWorkflowGrant(fixtureGrant);
 });
 await check("mobile modules are explicitly rejected before any network request", async () => {
   Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { lang: "en" } } });

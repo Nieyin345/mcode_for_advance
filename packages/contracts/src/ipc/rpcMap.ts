@@ -122,6 +122,12 @@ export interface RpcMap {
   "modules.cancel": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
   /** 列某个项目下**仍在内存里**的模块任务(进程重启后为空,不落库)。 */
   "modules.tasks": (input: {projectPath:string}) => Promise<import("../modules.js").ModuleTask[]>;
+  /** 【MC-036】给一个已安装的用户模块的只读贡献**签发**工作流运行授权(绑定模块 id/版本/
+   *  贡献/能力/工作区)。由设置页里用户本人的点击发起;Agent 侧钉 blocked(见
+   *  `appControl/policy.ts`)—— 自动运行权不能由模型自己给自己升。返回签发后的目录。 */
+  "modules.issueWorkflowGrant": (input: import("../moduleCapability.js").ModuleWorkflowGrantRequest) => Promise<import("../modules.js").ModuleCatalog>;
+  /** 【MC-036】撤销一条工作流运行授权(同一 (模块,版本,贡献,能力,工作区) 幂等键)。 */
+  "modules.revokeWorkflowGrant": (input: import("../moduleCapability.js").ModuleWorkflowGrantRequest) => Promise<import("../modules.js").ModuleCatalog>;
   // ── 扩展专用数据区(见 `@contracts/extensionStore`,报告 E12)──
   /** 读一条扩展自己的键值。没有返回 `null`(同面板 `mcode.storage.get`)。 */
   "extensionStore.get": (input: ExtensionStoreGetInput) => Promise<ExtensionStoreGetResult>;
@@ -1539,6 +1545,9 @@ export const IPC = {
   MODULE_TASK: "modules:task",
   MODULE_CANCEL: "modules:cancel",
   MODULE_TASKS: "modules:tasks",
+  // 【MC-036】工作流运行授权的签发 / 撤销 —— 只供桌面设置页的真人点击;agent 侧 blocked。
+  MODULE_ISSUE_WORKFLOW_GRANT: "modules:issueWorkflowGrant",
+  MODULE_REVOKE_WORKFLOW_GRANT: "modules:revokeWorkflowGrant",
   /** 扩展专用数据区(见 `@contracts/extensionStore`)。渠道字符串本体钉在契约模块里。 */
   EXTENSION_STORE_GET: EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET: EXTENSION_STORE_SET_CHANNEL,

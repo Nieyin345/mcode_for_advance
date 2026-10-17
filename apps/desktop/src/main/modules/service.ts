@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, open, readFile, rename, unlink, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
@@ -37,10 +38,27 @@ export function getModuleHost(): Promise<ModuleHost> {
   if (!hostPromise) hostPromise=createHost().catch(error=>{hostPromise=null;throw error;});
   return hostPromise;
 }
+/** 【MC-036】工作流授权的落点 —— 与模块清单同目录的独立文件(理由见
+ *  `@contracts/moduleCapability` 的 `MODULE_WORKFLOW_GRANT_FILE_VERSION` 注释)。 */
+const workflowGrantPath = (dir: string): string => join(dir, "workflow-grants.json");
 async function createHost(): Promise<ModuleHost> {
-  const dir=join(dataRoot(),"ui-modules"),path=join(dir,"manifests.json");
+  const dir=join(dataRoot(),"ui-modules"),path=join(dir,"manifests.json"),grantPath=workflowGrantPath(dir);
   const host=new ModuleHost({
     authorize:async resource=>{await resolveModuleResource(resource,isKnownWorkspaceRoot);},
+    // 【MC-036】工作流运行授权:读侧现读文件(不缓存 → 撤销在下一次判定立刻生效);
+    // 读不动(权限等)交给宿主按 fail-closed 处理。写侧 tmp+rename 原子写,与模块清单同一套。
+    readWorkflowGrants:()=>{try{return readFileSync(grantPath,"utf8");}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return null;throw error;}},
+    persistWorkflowGrants:async text=>{
+      // 一张授权表最多几十条;上限只为防"被外部写成一个巨大文件后整份读进内存"。
+      if(Buffer.byteLength(text)>256*1024)throw Error("Workflow grant store exceeds 256 KiB");
+      await mkdir(dir,{recursive:true});
+      const temp=join(dir,"workflow-grants-"+randomUUID()+".tmp");
+      try {
+        const file=await open(temp,"wx");
+        try {await file.writeFile(text,"utf8");await file.sync();}finally {await file.close();}
+        await rename(temp,grantPath);
+      } finally {await unlink(temp).catch(()=>{});}
+    },
     // 【MC-060】生产审批通道:把 `requestModuleActionApproval` 交给宿主,`action` 能力每次执行
     // 前经它拿用户批准。装配期由 `index.ts` 装上真端口(`assembleModuleApprovalPort`);未装配时
     // 该函数 fail-closed 抛 `approval_unavailable` —— 于是"有通道"(这个选项存在)与"通道真能

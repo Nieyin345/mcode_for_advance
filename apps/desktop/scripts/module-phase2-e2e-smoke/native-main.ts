@@ -117,7 +117,8 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
       assert.ok(catalog.workflowTargets?.some(t => t.moduleId === "core.file-report" && t.contributionId === "inspect"));
       assert.ok(catalog.workflowTargets?.some(t => t.moduleId === "core.file-report" && t.contributionId === "info"));
       assert.equal(await js("typeof window.api.modules.invokeForWorkflow"), "undefined");
-      assert.deepEqual(await js("Object.keys(window.api.modules).sort()"), ["cancel", "catalog", "install", "invoke", "remove", "task", "tasks"]);
+      // 【MC-036】公开面新增两条**真人授权**入口;注意 `invokeForWorkflow` 仍不得出现在 preload 上。
+      assert.deepEqual(await js("Object.keys(window.api.modules).sort()"), ["cancel", "catalog", "install", "invoke", "issueWorkflowGrant", "remove", "revokeWorkflowGrant", "task", "tasks"]);
       assert.equal(await js("typeof window.require"), "undefined");
     });
     if (phase === "create") {
@@ -214,17 +215,30 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
         assert.equal(workflowReviewOf(getWorkflow(imported.id)!)?.pending, true);
         await writeFile(join(dir, "imported-id.txt"), imported.id);
       });
-      await check("user v1 module stays menu-callable but actual runner denies its workflow invocation", async () => {
+      await check("user v1 module stays menu-callable but actual runner denies its workflow invocation until granted", async () => {
         await js(`window.api.modules.install({manifest:${JSON.stringify(EXAMPLE_MODULE)},confirmReadAccess:true})`);
         const menu = await js<{ type: string }>(`window.api.modules.invoke({moduleId:${JSON.stringify(EXAMPLE_MODULE.id)},contributionId:'inspect',resource:{projectPath:${JSON.stringify(root)},path:${JSON.stringify(join(root, "manual.txt"))}},requestId:'native-user-menu'})`); assert.equal(menu.type, "task");
         const deniedDoc = structuredClone(getWorkflow(id)!); deniedDoc.id = "wf_p2_user_denied"; deniedDoc.name = "User module denied"; deniedDoc.nodes[1].params.moduleId = EXAMPLE_MODULE.id;
         assert.equal((await saveWorkflow(deniedDoc)).ok, true);
+        // 【MC-036】未授权 → 真实运行器拒绝,原因是缺工作流授权(不再是"不是内置模块")。
         const requested = await js<{ ok: boolean }>(`window.api.automation.run({workflowId:${JSON.stringify(deniedDoc.id)},triggerNodeId:'start'})`);
         assert.equal(requested.ok, true);
         await until(() => WorkflowRunRepo.listForAutomationWorkflow(deniedDoc.id, 10).some(row => row.status === "failed"), "user workflow denied by actual runner");
         const row = WorkflowRunRepo.listForAutomationWorkflow(deniedDoc.id, 10)[0];
         const failed = decodeSnapshot(row.payload); assert.ok(failed);
-        assert.match(new Map(failed.state.outcomes).get("inspect")?.error ?? "", /工作流需要一个已注册的内置只读贡献/);
+        assert.match(new Map(failed.state.outcomes).get("inspect")?.error ?? "", /需要宿主核验的工作流授权/);
+        // 【MC-036】真人经公开 IPC 授权后,同一张图在真实运行器里成功;再撤销后立刻失败闭合。
+        const grant = { moduleId: EXAMPLE_MODULE.id, moduleVersion: EXAMPLE_MODULE.version, contributionId: "inspect", capabilityId: "core.file.inspect", projectPath: root };
+        const granted = await js<{ workflowTargets?: Array<{ moduleId: string }> }>(`window.api.modules.issueWorkflowGrant(${JSON.stringify(grant)})`);
+        assert.ok(granted.workflowTargets?.some(target => target.moduleId === EXAMPLE_MODULE.id));
+        const allowedDoc = structuredClone(deniedDoc); allowedDoc.id = "wf_p2_user_granted"; allowedDoc.name = "User module granted";
+        assert.equal((await saveWorkflow(allowedDoc)).ok, true);
+        assert.equal((await js<{ ok: boolean }>(`window.api.automation.run({workflowId:${JSON.stringify(allowedDoc.id)},triggerNodeId:'start'})`)).ok, true);
+        await until(() => WorkflowRunRepo.listForAutomationWorkflow(allowedDoc.id, 10).some(row => row.status === "success"), "granted user module runs through the real scheduler");
+        const revoked = await js<{ workflowTargets?: Array<{ moduleId: string }> }>(`window.api.modules.revokeWorkflowGrant(${JSON.stringify(grant)})`);
+        assert.equal(revoked.workflowTargets?.some(target => target.moduleId === EXAMPLE_MODULE.id), false);
+        assert.equal((await js<{ ok: boolean }>(`window.api.automation.run({workflowId:${JSON.stringify(allowedDoc.id)},triggerNodeId:'start'})`)).ok, true);
+        await until(() => WorkflowRunRepo.listForAutomationWorkflow(allowedDoc.id, 10).filter(row => row.status === "failed").length >= 1, "revoked user module fails closed in the real runner");
       });
       await check("real file menu uses the same service and renders real query results in Electron", async () => {
         await js("window.p2.setView('modules')");

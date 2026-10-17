@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ModuleCapabilityDescriptor, ModuleWorkflowTarget } from "./moduleCapability.js";
+import type { ModuleCapabilityDescriptor, ModuleWorkflowGrantCandidate, ModuleWorkflowGrantStatus, ModuleWorkflowTarget } from "./moduleCapability.js";
 
 /** v1 is a declarative, read-only extension surface, NOT a JavaScript sandbox.
  * Both bundled and imported manifests use this contract and the same host. */
@@ -151,8 +151,15 @@ export type ModuleReply = { type: "result"; value: ModuleResult; view: ModuleCon
 export interface ModuleCatalog {
   modules: ModuleManifest[];
   capabilities: ModuleCapabilityDescriptor[];
-  /** Host-derived read-only builtin targets. Missing means unavailable, not all modules. */
+  /** Host-derived read-only targets. Missing means unavailable, not all modules.
+   *  【MC-036】内置目标 + **有宿主核验工作流授权**的用户模块目标。 */
   workflowTargets?: ModuleWorkflowTarget[];
+  /** 【MC-036】用户模块里可被授权的只读贡献（含它已有的授权工作区）—— UI 授权面板的
+   *  候选来源。与 `workflowTargets` 同一份宿主判定，缺省 = 此版本没有该分面。 */
+  workflowGrantCandidates?: ModuleWorkflowGrantCandidate[];
+  /** 【MC-036】授权表健康度。`corrupt` = 整表不信任（所有用户模块工作流目标不可用），
+   *  带原因供 UI 显式诊断。缺省 = 旧宿主，按"没有分面"处理。 */
+  workflowGrantStatus?: ModuleWorkflowGrantStatus;
 }
 
 /** This example is used by the import editor, docs and tests; no executable code. */

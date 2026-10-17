@@ -152,6 +152,16 @@ export function secretSettingRefusal(method: string, input: unknown): string | n
     : `设置键「${String(hit)}」是密钥本体,不读给模型(与 customModel.getToken / piModels.getApiKey 同一条规矩)。要改密钥请让用户在 设置 里操作。`;
 }
 
+/**
+ * 【MC-036】**工作流运行授权**的写保护不在本文件:授权落在一份**独立文件**
+ * (`<数据根>/ui-modules/workflow-grants.json`,理由见 `@contracts/moduleCapability`),
+ * 不经 `setting.set`,所以没有可被 Agent 整行改写的设置键。签发 / 撤销的唯一通道是
+ * `modules.issueWorkflowGrant` / `modules.revokeWorkflowGrant` —— 那两条在
+ * `appControl/policy.ts` 的 `BLOCKED` 表里,`app_api_call` 与面板桥都够不到;
+ * 真正够得到的只有桌面设置页里用户本人的点击。文件本身用 tmp+rename 原子写,
+ * 坏存档整表拒读拒写(见 `classifyModuleWorkflowGrants`)。
+ */
+
 const LEVEL_LABEL: Record<AppPolicyLevel, string> = {
   read: "只读·自动",
   ui: "界面·自动",

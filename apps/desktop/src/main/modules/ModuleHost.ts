@@ -6,8 +6,11 @@ import {
   type ModuleReply, type ModuleCatalog, type ModuleTaskRef,
 } from "@contracts/modules";
 import {
-  ModuleCapabilityDescriptorSchema,
+  ModuleCapabilityDescriptorSchema, ModuleWorkflowGrantSchema, classifyModuleWorkflowGrants,
+  moduleWorkflowGrantKey, serializeModuleWorkflowGrants,
   type ModuleCapabilityDescriptor, type ModuleWorkflowTarget,
+  type ModuleWorkflowGrant, type ModuleWorkflowGrantArchive, type ModuleWorkflowGrantCandidate,
+  type ModuleWorkflowGrantRequest,
 } from "@contracts/moduleCapability";
 import { createIsolatedActionRun } from "./isolatedActionRunner.js";
 
@@ -42,6 +45,21 @@ export interface ActionApprovalRequest {
 }
 type LiveTask = { snapshot: ModuleTask; controller: AbortController; requestKey: string; fingerprint: string; timer: ReturnType<typeof setTimeout> };
 
+/** 【MC-036】签发 / 撤销授权的入参形状 —— 与记录同形但**不带** `grantedAt`(签发时补,
+ * 撤销时按同一幂等键不参与匹配)。宿主自带的校验只认这几个字段,不在 IPC 层另写一份。 */
+const parseGrantInput = (raw: unknown): ModuleWorkflowGrantRequest => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw Error("工作流授权入参必须是对象");
+  const value = raw as Record<string, unknown>;
+  const allowed = new Set(["moduleId", "moduleVersion", "contributionId", "capabilityId", "projectPath"]);
+  for (const key of Object.keys(value)) if (!allowed.has(key)) throw Error("工作流授权入参包含未知字段:" + key);
+  // 复用契约 schema 的形状校验:搭一条 grantedAt 占位记录过同一个 schema,再拆掉占位。
+  const parsed = ModuleWorkflowGrantSchema.parse({ ...value, grantedAt: 0 });
+  return {
+    moduleId: parsed.moduleId, moduleVersion: parsed.moduleVersion,
+    contributionId: parsed.contributionId, capabilityId: parsed.capabilityId, projectPath: parsed.projectPath,
+  };
+};
+
 /** Transport-independent host. It never imports Electron, DB or a UI store.
  * Imported modules are data only; only host-registered capabilities can execute. */
 export class ModuleHost {
@@ -59,6 +77,13 @@ export class ModuleHost {
      * (原样把原因抛给调用端)。缺省(未注入)= 没有审批通道,`action` 执行一律被拒(fail-closed),
      * 与 `gateAppAction` 在无审批环境下的取向一致。写档动作绝不能被"没界面问"默认放行。 */
     requestApproval?(request: ActionApprovalRequest): Promise<void>;
+    /** 【MC-036】用户模块的**工作流运行授权**存档(读侧)：返回存档原文(`null` = 文件还不存在)。
+     * 缺省 = 没有授权来源 → 所有 `user.*` 工作流目标一律不可用(与从前取向一致)。
+     * 原文由 `classifyModuleWorkflowGrants` 判三态;坏存档**整表不信任**(fail-closed)。 */
+    readWorkflowGrants?(): string | null;
+    /** 【MC-036】授权存档的**写侧**：把新原文交回宿主注入的持久化(tmp+rename 原子写)。
+     * 缺省 = 没有持久化通道 → 签发被拒(fail-closed:授权必须跨重启有效,不能只活在内存里)。 */
+    persistWorkflowGrants?(text: string): Promise<void>;
   }) {}
 
   register<I>(definition: Capability<I>): void {
@@ -167,6 +192,19 @@ export class ModuleHost {
       if (this.builtinIds.has(id)) throw Error("Builtin module cannot be removed");
       if (!this.modules.has(id)) throw Error("Unknown module");
       await this.options.persist([...this.modules.values()].filter(m => m.id !== id && !this.builtinIds.has(m.id)));
+      // 【MC-036】把该模块的工作流授权一并撤掉:否则重新安装一份同名同版本的清单会
+      // **静默继承**旧授权 —— 卸载这件事在用户眼里等于"这个模块不再存在",它的旧许可
+      // 不该跟着一个新装上的副本复活。坏授权表时**拒绝卸载**?不:卸载本身是收紧,
+      // 但写不进去就不能假装撤了 —— 所以坏表时卸载照常、授权留到用户修复(表既然
+      // 读不懂,它本来就一条都不会生效,不会放宽)。
+      const archive = this.workflowGrants();
+      if (archive.state === "valid") {
+        const remaining = archive.grants.filter(grant => grant.moduleId !== id);
+        if (remaining.length !== archive.grants.length) {
+          try { await this.writeGrantsOrRefuse(remaining); }
+          catch { /* 落盘失败:表里那条授权因为模块已不在,任何判定都不会命中 —— 收紧,如实保留 */ }
+        }
+      }
       this.modules.delete(id);
       for (const j of this.jobs.values()) if (j.snapshot.moduleId === id && j.snapshot.status === "running") this.cancel({moduleId: id, taskId: j.snapshot.id});
       return this.catalog();
@@ -174,41 +212,179 @@ export class ModuleHost {
   }
   /** A core-looking ID is not proof of trust. Only the host's actual builtin
    * registration, an existing contribution and a live read-only capability
-   * may produce a workflow target (and pass the workflow invocation gate). */
+   * may produce a workflow target (and pass the workflow invocation gate).
+   *
+   * 【MC-036】`user.*` 模块的第二个来源:一条**宿主核验过**的工作流运行授权
+   * (`readWorkflowGrants` 的存档,绑定模块身份/版本/能力/工作区)。这里只做
+   * 「目标形状 + 只读类别」判定;**授权本身**在 `authorizedWorkflowTarget` 里按
+   * 具体运行的工作区再核一次 —— 目录只发布"有授权可依"的目标,执行口用同一份
+   * 授权结果判放行。两条路都不碰 `builtinIds` 之外的隐式信任:没有 grant 的
+   * 用户模块在两边都不可用。 */
   private readonlyWorkflowTarget(moduleId: string, contributionId: string): ModuleWorkflowTarget | undefined {
-    if (!this.builtinIds.has(moduleId)) return undefined;
+    if (!this.builtinIds.has(moduleId) && !moduleId.startsWith("user.")) return undefined;
     const module = this.modules.get(moduleId);
     const contribution = module?.contributions.find(c => c.id === contributionId);
     const capability = contribution && this.capabilities.get(contribution.capability);
     if (!capability || (capability.kind !== "query" && capability.kind !== "task")) return undefined;
     return {moduleId, contributionId, capabilityId: capability.id};
   }
+  /** 【MC-036】授权存档的**唯一读取点**。每次调用现读注入源(文件 / 桩),于是
+   * 撤销在下一次判定立刻生效,不需要重启。坏存档整表不信任(fail-closed),并
+   * 把原因随目录带给 UI 做显式诊断。 */
+  private workflowGrants(): ModuleWorkflowGrantArchive {
+    let raw: string | null = null;
+    try {
+      raw = this.options.readWorkflowGrants?.() ?? null;
+    } catch (error) {
+      // 读不动(文件权限 / 桩抛错)与"读不懂"同一档:没有可核验的授权 → 不可用。
+      return { state: "corrupt", reason: `授权表读取失败:${error instanceof Error ? error.message : String(error)}` };
+    }
+    return classifyModuleWorkflowGrants(raw);
+  }
+  /** 【MC-036】**工作流运行权的唯一判据** —— `catalog.workflowTargets`、
+   * `invokeForWorkflow` 与执行器共用这一份结果。
+   *
+   *  - 内置模块:宿主真实 `addBuiltin` 登记 + 只读贡献(与从前一致,判据未放宽);
+   *  - 用户模块:同一条只读贡献判定 **且** 存在一条绑定 (模块 id、模块版本、
+   *    贡献、能力、**本次运行的工作区根**) 的授权记录。版本/能力/贡献/工作区
+   *    任一变化,旧记录不再命中 —— grant 失效。
+   *
+   * `projectPath` 为 `undefined` 时(目录枚举)只要求"至少有任一工作区的有效授权";
+   * 执行时永远给具体工作区,所以"换个项目跑"不会被旧授权覆盖。 */
+  private authorizedWorkflowTarget(moduleId: string, contributionId: string, archive: ModuleWorkflowGrantArchive, projectPath?: string): ModuleWorkflowTarget | undefined {
+    const target = this.readonlyWorkflowTarget(moduleId, contributionId);
+    if (!target) return undefined;
+    if (this.builtinIds.has(moduleId)) return target;
+    const module = this.modules.get(moduleId);
+    if (!module) return undefined;
+    if (archive.state !== "valid") return undefined;
+    const hit = archive.grants.some(grant =>
+      grant.moduleId === module.id
+      && grant.moduleVersion === module.version
+      && grant.contributionId === contributionId
+      && grant.capabilityId === target.capabilityId
+      && (projectPath === undefined || grant.projectPath === projectPath));
+    return hit ? target : undefined;
+  }
+  /** 【MC-036】目录里给授权面板的候选人:用户模块的只读贡献 + 已有授权的工作区。
+   * 只发布**形状合法且指向已注册只读能力**的贡献;未授权也列出(那正是可授权的对象)。 */
+  private grantCandidates(archive: ModuleWorkflowGrantArchive): ModuleWorkflowGrantCandidate[] {
+    const grants = archive.state === "valid" ? archive.grants : [];
+    const candidates: ModuleWorkflowGrantCandidate[] = [];
+    for (const module of this.modules.values()) {
+      if (!module.id.startsWith("user.")) continue;
+      for (const contribution of module.contributions) {
+        const target = this.readonlyWorkflowTarget(module.id, contribution.id);
+        if (!target) continue;
+        const mine = grants
+          .filter(grant => grant.moduleId === module.id && grant.moduleVersion === module.version
+            && grant.contributionId === contribution.id && grant.capabilityId === target.capabilityId)
+          .map(grant => ({ projectPath: grant.projectPath, grantedAt: grant.grantedAt }));
+        candidates.push({ moduleId: module.id, moduleVersion: module.version, contributionId: contribution.id, capabilityId: target.capabilityId, grants: mine });
+      }
+    }
+    return candidates;
+  }
+  /** 【MC-036】**工作流运行权的唯一判据**(单次判定用:现读一份授权存档) —— 与
+   * `catalog` 内循环调的是同一个 `authorizedWorkflowTarget`;这里只负责"取当前存档"。 */
+  private authorizedWorkflowTargetNow(moduleId: string, contributionId: string, projectPath?: string): ModuleWorkflowTarget | undefined {
+    return this.authorizedWorkflowTarget(moduleId, contributionId, this.workflowGrants(), projectPath);
+  }
+  /** 【MC-036】当前授权存档的健康度(目录里带给 UI;corrupt 时附原因,显式诊断)。 */
+  workflowGrantStatus(): { archive: "absent" | "valid" | "corrupt"; reason?: string } {
+    const archive = this.workflowGrants();
+    if (archive.state === "corrupt") return { archive: "corrupt", reason: archive.reason };
+    return { archive: archive.state };
+  }
   catalog(): ModuleCatalog {
+    // 授权存档一次读出,供目标发布 / 候选人 / 健康度三处共用 —— 目录读取只碰一次持久层。
+    const archive = this.workflowGrants();
     const workflowTargets: ModuleWorkflowTarget[] = [];
-    for (const id of this.builtinIds) {
+    const publishable = [...this.builtinIds, ...[...this.modules.keys()].filter(id => id.startsWith("user."))];
+    for (const id of publishable) {
       const module = this.modules.get(id);
       if (!module) continue;
       for (const contribution of module.contributions) {
-        const target = this.readonlyWorkflowTarget(id, contribution.id);
+        const target = this.authorizedWorkflowTarget(id, contribution.id, archive);
         if (target) workflowTargets.push(target);
       }
     }
     const capabilities: ModuleCapabilityDescriptor[] = [...this.capabilities.values()].map(({id,kind,metadata}) => ({
       id, kind, ...(metadata === undefined ? {} : {metadata}),
     }));
-    return structuredClone({ modules: [...this.modules.values()], capabilities, workflowTargets });
+    return structuredClone({
+      modules: [...this.modules.values()], capabilities, workflowTargets,
+      workflowGrantCandidates: this.grantCandidates(archive),
+      workflowGrantStatus: archive.state === "corrupt" ? { archive: "corrupt", reason: archive.reason } : { archive: archive.state },
+    });
   }
   /** Host-internal workflow entry. Never expose this through IPC/preload: a
    * renderer is not permitted to self-declare automated-run authorization. */
   async invokeForWorkflow(input: ModuleInvoke): Promise<ModuleReply> {
     const parsed = ModuleInvokeSchema.parse(input);
     await this.mutation;
-    if (!this.readonlyWorkflowTarget(parsed.moduleId, parsed.contributionId)) {
+    // 【MC-036】按**本次运行的工作区**核授权:菜单可调用(user.* 有 resource.read)不等于
+    // 可自动运行;没有覆盖该工作区的 grant 时与从前一样拒绝,但文案说清楚缺什么。
+    if (parsed.moduleId.startsWith("user.")) {
+      if (!this.authorizedWorkflowTargetNow(parsed.moduleId, parsed.contributionId, parsed.resource.projectPath)) {
+        throw Error("用户模块在工作流中运行需要宿主核验的工作流授权(模块/版本/能力/工作区),请在模块设置里授权");
+      }
+    } else if (!this.authorizedWorkflowTargetNow(parsed.moduleId, parsed.contributionId)) {
       throw Error("工作流需要一个已注册的内置只读贡献");
     }
     // Reuse the menu's envelope, contribution, extension, realpath/known-root
     // authorization, task limits, cancellation and request-id deduplication.
     return this.invoke(parsed);
+  }
+  /** 【MC-036】**签发**一条工作流运行授权。只有真人经桌面 IPC 调到这里 —— 本方法
+   * 不暴露给工作流/Agent(IPC 侧在 `appControl/policy.ts` 钉 blocked)。宿主核验:
+   * 模块存在且是 `user.*`、版本与当前清单一致、贡献存在且指向已注册的只读 query/task 能力。
+   * 重复签发是幂等的(同一 (模块,版本,贡献,能力,工作区) 只保留一条,刷新 `grantedAt`)。 */
+  issueWorkflowGrant(raw: unknown): Promise<ModuleWorkflowGrant> {
+    return this.serializeMutation(async () => {
+      const input = parseGrantInput(raw);
+      const module = this.modules.get(input.moduleId);
+      if (!module || !module.id.startsWith("user.")) throw Error("只能给已安装的用户模块签发工作流授权");
+      if (module.version !== input.moduleVersion) throw Error("模块版本已变化,请按当前版本重新授权");
+      const target = this.readonlyWorkflowTarget(module.id, input.contributionId);
+      if (!target || target.capabilityId !== input.capabilityId) throw Error("该贡献不是可授权的只读能力(已变化或不存在)");
+      const archive = this.workflowGrants();
+      if (archive.state === "corrupt") {
+        throw Error(`工作流授权表损坏(${archive.reason}),已拒绝签发以免覆盖原存档;修复请删除或改正文件「ui-modules/workflow-grants.json」后重启。`);
+      }
+      const grant: ModuleWorkflowGrant = {
+        moduleId: module.id, moduleVersion: module.version,
+        contributionId: input.contributionId, capabilityId: target.capabilityId,
+        projectPath: input.projectPath, grantedAt: Date.now(),
+      };
+      const key = moduleWorkflowGrantKey(grant);
+      const next = (archive.state === "valid" ? archive.grants : []).filter(existing => moduleWorkflowGrantKey(existing) !== key);
+      next.push(grant);
+      await this.writeGrantsOrRefuse(next);
+      return grant;
+    });
+  }
+  /** 【MC-036】**撤销**一条工作流运行授权(按同一幂等键)。幂等:目标状态达成即可。 */
+  revokeWorkflowGrant(raw: unknown): Promise<{ revoked: boolean }> {
+    return this.serializeMutation(async () => {
+      const input = parseGrantInput(raw);
+      const archive = this.workflowGrants();
+      if (archive.state === "corrupt") {
+        throw Error(`工作流授权表损坏(${archive.reason}),无法安全撤销;修复请删除或改正文件「ui-modules/workflow-grants.json」后重启。`);
+      }
+      if (archive.state === "absent") return { revoked: false };
+      const key = moduleWorkflowGrantKey(input);
+      const next = archive.grants.filter(existing => moduleWorkflowGrantKey(existing) !== key);
+      if (next.length === archive.grants.length) return { revoked: false };
+      await this.writeGrantsOrRefuse(next);
+      return { revoked: true };
+    });
+  }
+  /** 写授权的唯一出口:没有持久化端口 → **拒绝签发**(fail-closed,不能"只存在内存里
+   * 假装授过权");落盘成功才发布(与 `commitHooks` 同一条:先持久、后宣告)。 */
+  private async writeGrantsOrRefuse(grants: readonly ModuleWorkflowGrant[]): Promise<void> {
+    if (!this.options.persistWorkflowGrants) throw Error("当前环境没有工作流授权的持久化通道,已拒绝签发(授权必须跨重启有效)");
+    await this.options.persistWorkflowGrants(serializeModuleWorkflowGrants(grants));
   }
   private finish(job: LiveTask, status: ModuleTask["status"], result?: ModuleResult, error?: string): void {
     if (job.snapshot.status !== "running") return;

@@ -16,6 +16,10 @@ const api = {
     task: ((input) => ipcRenderer.invoke(IPC.MODULE_TASK,input)) as RpcMap["modules.task"],
     cancel: ((input) => ipcRenderer.invoke(IPC.MODULE_CANCEL,input)) as RpcMap["modules.cancel"],
     tasks: ((input) => ipcRenderer.invoke(IPC.MODULE_TASKS,input)) as RpcMap["modules.tasks"],
+    // 【MC-036】真人授权入口(设置页的点按)。Agent 侧同一对方法名在 `appControl/policy.ts`
+    // 钉 blocked,`app_api_call` 到不了 —— 这两条不是模型可用的自动化授权通道。
+    issueWorkflowGrant: ((input) => ipcRenderer.invoke(IPC.MODULE_ISSUE_WORKFLOW_GRANT,input)) as RpcMap["modules.issueWorkflowGrant"],
+    revokeWorkflowGrant: ((input) => ipcRenderer.invoke(IPC.MODULE_REVOKE_WORKFLOW_GRANT,input)) as RpcMap["modules.revokeWorkflowGrant"],
   },
   /** 扩展专用数据区(报告 E12):一个扩展一块私有键值存储,坐落在
    *  `<数据根>/extensions/<扩展 id>/store.json`(见 `@contracts/extensionStore`)。 */

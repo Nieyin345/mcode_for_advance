@@ -4,10 +4,19 @@
  * ## 候选只来自宿主
  *
  * 下拉里的每一项都是 `modules.catalog` 返回的 **`workflowTargets`** —— 宿主按真实的内置
- * 登记与只读 query/task 生成的那份。这里**不按 ID 前缀**(`core.`)自己判可信,也不把
- * 用户导入的模块列进来:目录里没有 targets(旧宿主、加载失败、空目录)就是"没有可选
- * 目标",而不是"全部都能选"。执行时宿主还会再校验一次(见 interface-v2 §2/§6),
+ * 登记与只读 query/task 生成的那份；【MC-036】其中用户模块那几项是**有宿主核验工作流
+ * 授权**的（绑定模块版本/贡献/能力/工作区）。这里**不按 ID 前缀**(`core.`)自己判可信,
+ * 也不把未授权的用户模块列进来:目录里没有 targets(旧宿主、加载失败、空目录)就是"没有
+ * 可选目标",而不是"全部都能选"。执行时宿主还会再校验一次(见 interface-v2 §2/§6),
  * 这里的下拉只是配置入口,**不是授权**。
+ *
+ * ## 授权入口(MC-036)
+ *
+ * 用户模块列表(含尚未授权的)来自 `workflowGrantCandidates`,**只有**它才驱动授权按钮;
+ * 点「授权」= 以用户本人的身份调用 `modules.issueWorkflowGrant`（同一文件里可选工作区，
+ * 因为授权绑定资源范围）。Agent 侧同一对方法钉 blocked —— 这条 UI 是唯一签发入口。
+ * 授权表损坏时 `workflowGrantStatus` 为 `corrupt`:所有用户模块目标不可用，面板显式报
+ * 原因并禁止写（与 MC-051/053 同协议：坏表不当空表、不覆盖）。
  *
  * ## 只写三个参数
  *
@@ -18,15 +27,16 @@
  *
  * ## 失效的选择要看得见
  *
- * 目录变化后(模块被移除、贡献改名),已保存的 moduleId/contributionId 不再是一个
- * 可选目标。此时**保持原值**并显示"已失效",绝不自动换成另一个能力。
+ * 目录变化后(模块被移除、贡献改名、授权被撤销/版本变化),已保存的 moduleId/contributionId
+ * 不再是一个可选目标。此时**保持原值**并显示"已失效",绝不自动换成另一个能力。
  *
  * ## 路径可以是变量
  *
  * 路径沿用检查器既有的「插入变量」机制;含 `{{...}}` 时它只是一段模板,运行时由
  * 调度器的变量解析展开后再交宿主做真实路径校验 —— 这里不把它当成本地文件处理。
  */
-import { ModuleWorkflowCallSchema, type ModuleWorkflowTarget } from "@contracts/moduleCapability";
+import { useState } from "react";
+import { ModuleWorkflowCallSchema, type ModuleWorkflowGrantCandidate, type ModuleWorkflowTarget } from "@contracts/moduleCapability";
 import type { NodeParamSpec } from "@contracts/nodeType";
 import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
@@ -45,6 +55,16 @@ const FORBIDDEN_PARAM_KEYS = ["projectPath", "requestId", "capabilityId", "trust
 const targetKey = (moduleId: string, contributionId: string): string => JSON.stringify([moduleId, contributionId]);
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
 
+/** 【MC-036】授权按钮点击的那一刻要交给宿主的完整键（含版本与能力）—— 全部取自目录
+ *  的候选，节点参数里的 `moduleId/contributionId` 只是用来对齐"这一项"。 */
+const grantRequestOf = (candidate: ModuleWorkflowGrantCandidate, projectPath: string) => ({
+  moduleId: candidate.moduleId,
+  moduleVersion: candidate.moduleVersion,
+  contributionId: candidate.contributionId,
+  capabilityId: candidate.capabilityId,
+  projectPath,
+});
+
 export function ModuleCapabilityFields({
   params,
   onChange,
@@ -56,6 +76,10 @@ export function ModuleCapabilityFields({
 }) {
   const { t, locale } = useI18n();
   const catalog = useRpc(() => api.modules.catalog(), [], { toastOnError: false });
+  // 工作区候选:授权绑定资源范围,下拉里只给已登记的项目根(与执行端 `context.cwd` 同源)。
+  const projects = useRpc(() => api.project.list(), [], { toastOnError: false });
+  const [grantBusy, setGrantBusy] = useState<string | null>(null);
+  const [grantError, setGrantError] = useState<string | null>(null);
   const moduleId = str(params.moduleId);
   const contributionId = str(params.contributionId);
   const path = str(params.path);
@@ -70,6 +94,27 @@ export function ModuleCapabilityFields({
   const shape = selectedKey !== "" && path !== ""
     ? ModuleWorkflowCallSchema.safeParse({ moduleId, contributionId, path })
     : null;
+  const grantStatus = catalog.data?.workflowGrantStatus;
+  const grantCandidates = catalog.data?.workflowGrantCandidates ?? [];
+  const projectPaths = (projects.data?.projects ?? []).map((project) => project.path);
+  // 节点上当前选中的贡献若在候选里,优先用它所在的模块;否则列出全部候选(未授权的
+  // 用户模块也在这里 —— 那正是可授权的对象)。每个候选行用 <projectPath> 选择范围。
+  const showGrantPanel = grantCandidates.length > 0 || grantStatus?.archive === "corrupt";
+
+  const grantFor = async (candidate: ModuleWorkflowGrantCandidate, projectPath: string, kind: "issue" | "revoke"): Promise<void> => {
+    const key = `${targetKey(candidate.moduleId, candidate.contributionId)}|${projectPath}|${kind}`;
+    setGrantBusy(key); setGrantError(null);
+    try {
+      const request = grantRequestOf(candidate, projectPath);
+      if (kind === "issue") await api.modules.issueWorkflowGrant(request);
+      else await api.modules.revokeWorkflowGrant(request);
+      await catalog.refetch();
+    } catch (error) {
+      setGrantError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGrantBusy(null);
+    }
+  };
 
   const label = (key: string): string => {
     if (key === "") return t("settings.workflows.moduleTargetPick");
@@ -150,6 +195,51 @@ export function ModuleCapabilityFields({
           {" · "}
           {capability?.metadata ? capability.metadata.description[locale] : t("settings.workflows.moduleTargetNoMetadata")}
         </p>
+      )}
+
+      {showGrantPanel && (
+        <div data-testid="module-grant-panel" className="mb-3 flex flex-col gap-2 rounded border border-edge p-2">
+          <p className="text-[0.7143em] leading-relaxed text-content-subtle">{t("settings.workflows.moduleGrantHelp")}</p>
+          {grantStatus?.archive === "corrupt" && (
+            <div data-testid="module-grant-corrupt">
+              <ErrorNote title={t("settings.workflows.moduleGrantCorrupt")}>
+                {grantStatus.reason ?? t("settings.workflows.moduleGrantCorruptDetail")}
+              </ErrorNote>
+            </div>
+          )}
+          {grantError && (
+            <div data-testid="module-grant-error">
+              <ErrorNote title={t("settings.workflows.moduleGrantError")}>{grantError}</ErrorNote>
+            </div>
+          )}
+          {grantCandidates.map((candidate) => {
+            const grantedPaths = new Set(candidate.grants.map((grant) => grant.projectPath));
+            const candidateLabel = catalog.data ? workflowTargetLabel(catalog.data, candidate, locale) : `${candidate.moduleId} / ${candidate.contributionId}`;
+            return (
+              <div key={targetKey(candidate.moduleId, candidate.contributionId)} data-testid="module-grant-candidate" className="flex flex-col gap-1">
+                <span className="text-[0.7143em] font-medium text-content">{candidateLabel}</span>
+                {projectPaths.length === 0 && <span className="text-[0.7143em] text-content-subtle">{t("settings.workflows.moduleGrantNoWorkspace")}</span>}
+                {projectPaths.map((projectPath) => {
+                  const granted = grantedPaths.has(projectPath);
+                  const busy = grantBusy === `${targetKey(candidate.moduleId, candidate.contributionId)}|${projectPath}|${granted ? "revoke" : "issue"}`;
+                  return (
+                    <div key={projectPath} className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 break-all text-[0.7143em] text-content-subtle">{projectPath}</span>
+                      <Button
+                        size="sm"
+                        data-testid={granted ? "module-grant-revoke" : "module-grant-issue"}
+                        disabled={busy || grantStatus?.archive === "corrupt"}
+                        onClick={() => void grantFor(candidate, projectPath, granted ? "revoke" : "issue")}
+                      >
+                        {granted ? t("settings.workflows.moduleGrantRevoke") : t("settings.workflows.moduleGrantIssue")}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       <ParamField
