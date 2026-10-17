@@ -401,6 +401,35 @@ export function stopSession(sessionId: string): { text: string } {
   return { text };
 }
 
+/**
+ * 【ARC-006】渲染进程**没了**（崩溃 / 整页重载 / 窗口销毁）时丢弃全部语音会话。
+ *
+ * 会话是渲染端驱动的：每次正常退出都走 `VOICE_STOP`/`VOICE_CANCEL`，而那些路径
+ * 都优雅地 `delete` 了 Map 条目。但只要渲染进程在**录音中途**消失，这两条 IPC 就
+ * 永远不会再来 —— 每条这样的会话会留下一个条目加一个原生 `OnlineStream`，直到应用
+ * 退出，而主进程这一侧没有任何地方回收它（`window.ts` 的 `render-process-gone`
+ * 从前只记一行日志）。
+ *
+ * 为什么不挂"会话删除"钩子：语音会话的键是**渲染端的不透明 token**，不是会话 id，
+ * 删会话与它无关。它的生命周期终点只有两个 —— 客户端主动停止，或客户端本身消失。
+ * 这个函数就是第二个终点；由 `window.ts` 在 webContents 的 `destroyed` 上调用。
+ *
+ * 与 `cancelSession` 同一姿势：先 `inputFinished()` 让原生流自己收尾，再丢引用。
+ */
+export function cancelAllSessions(reason: string): number {
+  const count = sessions.size;
+  for (const [sessionId, s] of sessions) {
+    try {
+      s.stream?.inputFinished();
+    } catch (err) {
+      log.warn(`[voice] ${reason}: inputFinished failed for ${sessionId}: ${(err as Error).message}`);
+    }
+  }
+  sessions.clear();
+  if (count > 0) log.info(`[voice] ${reason}: dropped ${count} in-flight session(s)`);
+  return count;
+}
+
 /** Cancel/discard a session without committing text. */
 export function cancelSession(sessionId: string): void {
   const s = sessions.get(sessionId);

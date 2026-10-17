@@ -255,6 +255,7 @@ const {
   feedPcm,
   stopSession,
   cancelSession,
+  cancelAllSessions,
   resetRecognizerCache,
   warmupRecognizer,
 } = await import("@main/voice/speechRecognizer.js");
@@ -642,6 +643,24 @@ console.log("\n§3 缓存下来的识别器跟不跟得上模型根的变化");
   stopSession("s4");
   setSelectedModel(M1);
   resetRecognizerCache();
+
+  // 【ARC-006】渲染进程在录音中途消失 → 没有任何 STOP/CANCEL 会再来。
+  // `cancelAllSessions` 是那个终点的唯一清理口：它必须把**所有**在途会话丢掉，
+  // 并且像 cancelSession 一样先优雅关闭原生流（否则每条留下一个 OnlineStream）。
+  console.log("\n§3b 渲染进程消失:在途语音会话要一起收掉(ARC-006)");
+  const streamsBefore = sherpaStub.createdStreams.length;
+  await startSession("gone-1", "zh-CN", "zipformer");
+  await startSession("gone-2", "zh-CN", "zipformer");
+  eq("前提:两条会话起得来(整流计数 +2)", sherpaStub.createdStreams.length, streamsBefore + 2);
+  const finishedBefore = sherpaStub.calls.filter((c) => c.startsWith("inputFinished")).length;
+  const dropped = cancelAllSessions("render-process-gone");
+  eq("★ 丢掉的是两条在途会话", dropped, 2);
+  eq("★ 每条都优雅关闭了原生流(inputFinished 各一次)", sherpaStub.calls.filter((c) => c.startsWith("inputFinished")).length, finishedBefore + 2);
+  eq("★ 再调一次没有东西可丢(幂等)", cancelAllSessions("render-process-gone"), 0);
+  // 收掉之后再 start 同一 id 应当是全新会话（Map 里确实没残留）。
+  await startSession("gone-1", "zh-CN", "zipformer");
+  eq("★ 清理之后同一 token 能重新开会话(没有残条目挡路)", sherpaStub.createdStreams.length, streamsBefore + 3);
+  cancelSession("gone-1");
 }
 
 /* ════════════════════════ §4 下载:失败、半截、取消 ════════════════════════ */

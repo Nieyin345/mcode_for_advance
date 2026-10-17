@@ -907,3 +907,17 @@ test("MC-057: Pi/Codex resume failure must NOT silently start a fresh session", 
   assert.match(codexResume, /if \(resumeRequested\)\s*\{[\s\S]*?throw new Error\(/,
     "Codex must refuse to thread/start when resume was requested but yielded nothing");
 });
+
+test("【ARC-006】渲染进程消失时主进程收掉语音会话（window 侧接线）", () => {
+  // 行为在 voice-smoke §3b 验（cancelAllSessions 真的丢掉在途会话、关流、幂等）。
+  // 这条钉的是**接线**：主进程窗口真的在 webContents 的两种消失事件上调了它 ——
+  // 少了这段接线，voice-smoke 仍然全绿，而那正是"写了没人调"的形态。
+  const windowSource = readFileSync(resolve(here, "../../src/main/window.ts"), "utf8");
+  assert.match(windowSource, /on\("render-process-gone"[\s\S]{0,200}dropRendererScopedState\(/,
+    "render-process-gone must drop renderer-scoped main-process state");
+  assert.match(windowSource, /on\("destroyed"[\s\S]{0,200}dropRendererScopedState\(/,
+    "webContents destroyed must also drop it (normal close/reload, not just crashes)");
+  assert.match(windowSource, /import\("\.\/voice\/speechRecognizer\.js"\)/,
+    "the wiring must reach cancelAllSessions via a lazy import (window.ts must not pull in the native voice engine)");
+  assert.match(windowSource, /cancelAllSessions\(/, "wiring must call cancelAllSessions");
+});

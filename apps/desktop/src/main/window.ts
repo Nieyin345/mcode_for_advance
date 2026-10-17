@@ -222,6 +222,18 @@ export function createMainWindow(): BrowserWindow {
     process.stderr.write(`${line}\n`);
     log.error(line);
   });
+  // 【ARC-006】渲染进程消失时，主进程侧那些**只能由渲染端收尾**的状态也得收 ——
+  // 最典型的是语音会话：正常退出走 VOICE_STOP/CANCEL，进程崩了就没有下一次 IPC，
+  // 每条在录的会话会留下一个原生 OnlineStream 直到应用退出。用动态 import 是为了
+  // 让 `window.ts` 的加载不拖上语音引擎（sherpa-onnx 原生模块）—— 只在真的出事时才需要它。
+  // `destroyed` 覆盖正常销毁/重载，`render-process-gone` 覆盖崩溃。
+  const dropRendererScopedState = (reason: string): void => {
+    void import("./voice/speechRecognizer.js")
+      .then((m) => m.cancelAllSessions(reason))
+      .catch((err: unknown) => log.warn(`[voice] ${reason}: cleanup failed: ${err instanceof Error ? err.message : String(err)}`));
+  };
+  mainWindow.webContents.on("render-process-gone", () => dropRendererScopedState("render-process-gone"));
+  mainWindow.webContents.on("destroyed", () => dropRendererScopedState("webContents-destroyed"));
   mainWindow.webContents.on("did-fail-load", (_e, code, desc, url) => {
     const line = `[renderer:FAIL_LOAD] ${code} ${desc} ${url}`;
     process.stderr.write(`${line}\n`);
