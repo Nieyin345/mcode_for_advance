@@ -182,7 +182,15 @@ export function registerHookHandlers(ipcMain: IpcMain): void {
     const input = HostHookGrantRevokeSchema.parse(raw);
     // 幂等:已撤销 / 找不到都算"想要的结局已经在了"(与 `hooks.remove` 同一条纪律)——
     // 撤销这份授权后,匹配它的那条插件 hook 立刻回到**默认拒绝**(判定每条事件现算)。
-    revokeHostHookGrant(input.grantId);
-    return { ok: true };
+    //
+    // 【MC-017】落盘失败（`commit` 抛）**不许被吞成 `{ok:true}`** —— 那会让界面以为授权已
+    // 撤销,而磁盘上它仍是活的(重启后"撤权又回来")。如实回 `{ok:false}` 并点名原因;
+    // 界面已有 `revokeFailed` 错误行,用户能看见"没撤成"。
+    try {
+      revokeHostHookGrant(input.grantId);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: `撤销失败(授权仍可能有效):${err instanceof Error ? err.message : String(err)}` };
+    }
   });
 }

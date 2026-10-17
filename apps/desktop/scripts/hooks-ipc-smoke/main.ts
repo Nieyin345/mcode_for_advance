@@ -1185,6 +1185,55 @@ console.log("\n§8 审计读取:hooks.runs 返回落盘审计(不只 50 条会�
   eq("prune(0) 之后审计栏清空(读取跟着轮转走)", after.audit.length, 0);
 }
 
+/* ── 【MC-017】撤销落盘失败 → IPC 必须回 ok:false（不许谎称已撤） ──
+ *
+ * 验收条件原文:「撤销失败要可见并阻止误称已撤权」。`revokeHostHookGrant` 落盘失败会抛
+ * （`commit` 的 MC-017 口），但 IPC 层若把它吞成 `{ok:true}`，面板就会以为已撤销 —— 而
+ * 磁盘上它仍是活的，重启后「撤权又回来」。这一节注入一个会抛的 persist，走**真实 IPC
+ * handler**，断言：① 返回 ok:false 且带原因；② 内存里那份仍是活的（与磁盘一致）；
+ * ③ 后续事件仍判 allowed（没有"假撤销"）。
+ */
+{
+  const {
+    issueHostHookGrant,
+    configureHostHookGrantPersist,
+    listHostHookGrants: listAllGrants,
+    decidePluginHookExecution: decide17,
+  } = await import("@main/hooks/hostHookGrants.js");
+  const P17 = "revoke-fail-plugin";
+  // `sourceOf9` 只在上面那个块里可见 —— 这里重建同一形状的来源身份。
+  const src17 = hostHookSourceOf({ pluginId: P17, version: "1.0.0", nativeEvent: "PreToolUse", command: "echo r17" });
+  const g17 = issueHostHookGrant({
+    pluginId: P17,
+    version: "1.0.0",
+    events: ["PreToolUse"],
+    commandDigest: src17.commandDigest,
+    ttlMs: 60_000,
+    now: Date.now(),
+  });
+  // 换上「写就抛」的持久化（模拟磁盘拒绝）。configure 会重载内存，所以把这份授权一起重放。
+  const issuedGrant = listAllGrants().find((x) => x.grantId === g17.grantId)!;
+  configureHostHookGrantPersist({
+    load: () => [issuedGrant],
+    save: () => { throw new Error("disk error (injected revoke)"); },
+  });
+  // 变异守卫：handler 若吞掉（或漏掉）异常，这里会抛 —— 先捕获，让断言**以失败行的形式**
+  // 出现，而不是把整套脚本炸掉（否则后面的断言一条都看不到，红得不精确）。
+  let revokeRes: { ok: boolean; error?: string } | null = null;
+  let revokeThrew: string | null = null;
+  try {
+    revokeRes = (await call(IPC.HOOKS_HOST_HOOK_GRANT_REVOKE, { grantId: g17.grantId })) as { ok: boolean; error?: string };
+  } catch (err) {
+    revokeThrew = (err as Error).message;
+  }
+  eq("★ MC-017:撤销落盘失败 → IPC 回 ok:false(不谎称已撤)", revokeRes?.ok, false);
+  check("★ MC-017:失败原因点名「撤销失败」并带底层错误", (revokeRes?.error ?? revokeThrew ?? "").includes("撤销失败") && (revokeRes?.error ?? revokeThrew ?? "").includes("disk error"), revokeRes?.error ?? revokeThrew);
+  eq("★ MC-017:失败后内存里那份仍是活的(与磁盘一致)", listAllGrants().find((x) => x.grantId === g17.grantId)?.revoked, false);
+  eq("★ MC-017:失败后同一条 hook 仍判 allowed(没有假撤销)", decide17(src17, "PreToolUse", Date.now()).decide, "allowed");
+  // 复原持久化与授权表，免得污染后续断言。
+  assembleHostHookGrantPersist(DATA);
+}
+
 /* ────────────────────── 收尾 ────────────────────── */
 
 rmSync(DATA, { recursive: true, force: true });
