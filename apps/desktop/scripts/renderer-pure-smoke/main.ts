@@ -1004,6 +1004,25 @@ console.log("\n【MC-048】守望面板读口:空表 vs 读失败");
     status: async () => ({ active: false }),
   });
   check("主进程的 corrupt 健康态原样透传", corrupt.health === "corrupt" && corrupt.problems[0] === "第 1 条读不出", corrupt);
+
+  /* ── 【MC-054】原值版本:读口带回 revision;冲突时重读并换掉本地列表 ── */
+  const { watchSaveConflictState } = await import("../../src/renderer/components/chat/watchPanelLoad.js");
+  const withRevision = await loadWatchPanelState({
+    templates: async () => ({ templates: [], health: "valid", problems: [], revision: "watchtpl:fnv1a:0badf00d" }),
+    status: async () => ({ active: false }),
+  });
+  eq("★ MC-054:读口带回 revision(保存时原样交回主进程)", withRevision.revision, "watchtpl:fnv1a:0badf00d");
+  eq("旧主进程没有 revision 字段 → null(保存时不带,行为与从前一致)", legacy.revision, null);
+  eq("读失败时 revision 为 null(无从比对)", failure.revision, null);
+
+  const conflict = watchSaveConflictState(
+    { conflict: true, error: "已被别处改动", currentRevision: "watchtpl:fnv1a:11111111" },
+    { templates: [{ id: "a", name: "甲", command: "echo 1" }], health: "valid", problems: [], revision: "watchtpl:fnv1a:11111111" },
+  );
+  check("★ MC-054:冲突 → 给出提示语", conflict?.notice === "已被别处改动", conflict);
+  eq("★ MC-054:冲突 → 本地列表换成盘上当前内容", conflict?.templates.map((t) => t.id).join(","), "a");
+  eq("★ MC-054:冲突 → revision 换成新的(下一次保存不再撞)", conflict?.revision, "watchtpl:fnv1a:11111111");
+  eq("非冲突(普通拒绝)不由它处理", watchSaveConflictState({ error: "损坏" }, { templates: [] }), null);
 }
 
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);

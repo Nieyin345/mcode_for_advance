@@ -37,7 +37,8 @@ import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
-import { loadWatchPanelState, watchPanelLoadFailure } from "./watchPanelLoad.js";
+import { loadWatchPanelState, watchPanelLoadFailure, watchSaveConflictState } from "./watchPanelLoad.js";
+import { watchTemplatesRevision } from "@contracts/ipc/workflow";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
 import { Input, Button, InfoHint, Select } from "@renderer/components/ui/index.js";
 import type { WatchCommandTemplate } from "@contracts/ipc";
@@ -128,6 +129,8 @@ function WatchPanel({
   const [templateId, setTemplateId] = useState(NO_TEMPLATE);
   /** 【MC-054】设置完整性状态与逐条问题 —— 「一条都没有」与「有几条读不出来」分开说。 */
   const [tplHealth, setTplHealth] = useState<"absent" | "valid" | "partial" | "corrupt" | "read_error">("valid");
+  /** 【MC-054】本次读到的原值版本;保存时带回,主进程据此拒绝覆盖别处的改动。 */
+  const [tplRevision, setTplRevision] = useState<string | null>(null);
   const [tplProblems, setTplProblems] = useState<string[]>([]);
   const [rebuilding, setRebuilding] = useState(false);
   const [tplBackupKey, setTplBackupKey] = useState<string | null>(null);
@@ -158,6 +161,7 @@ function WatchPanel({
         // 【MC-054】健康态随读一起回来(旧 preload 没这两字段 → 当正常)。
         setTplHealth(loaded.health);
         setTplProblems(loaded.problems);
+        setTplRevision(loaded.revision);
         setActive(loaded.active);
       } catch (e) {
         if (cancelled) return;
@@ -166,6 +170,7 @@ function WatchPanel({
         // 【MC-048】读失败不再伪装成"空表":显式标记并带上原因(红条据此显示)。
         setTplHealth(failed.health);
         setTplProblems(failed.problems);
+        setTplRevision(failed.revision);
       }
     })();
     return () => {
@@ -222,12 +227,33 @@ function WatchPanel({
     next: WatchCommandTemplate[],
   ): Promise<boolean> => {
     try {
-      const res = await api.automation.saveWatchTemplates({ templates: next });
+      // 【MC-054】带回读到的 revision:另一端期间改过 → 主进程拒绝(不覆盖对方的保存)。
+      const res = await api.automation.saveWatchTemplates({
+        templates: next,
+        ...(tplRevision !== null ? { expectedRevision: tplRevision } : {}),
+      });
       if (!res.ok) {
+        // 【MC-054】并发冲突:**重新加载**盘上当前内容(不继续显示自己那份过期的),
+        // 否则下一次保存还会撞在同一个旧 revision 上 —— "拒绝"只是换了地方丢更新。
+        if (res.conflict === true) {
+          const reloaded = await api.automation.watchTemplates();
+          const conflict = watchSaveConflictState(res, reloaded);
+          if (conflict !== null) {
+            setNotice(conflict.notice);
+            setTemplates(conflict.templates);
+            setTplHealth(conflict.health);
+            setTplProblems(conflict.problems);
+            setTplRevision(conflict.revision);
+            setTemplateId(NO_TEMPLATE);
+          }
+          return false;
+        }
         // 【MC-054】损坏/部分损坏时主进程会拒绝并给原因 —— 显式提示,不改本地状态。
         setNotice(res.error ?? t("composer.watch.saveFailed"));
         return false;
       }
+      // 保存成功:revision 随内容变了 —— 下一次保存必须用新的,否则自己撞自己。
+      setTplRevision(watchTemplatesRevision(next));
       setNotice(null);
       return true;
     } catch (e) {
@@ -310,6 +336,7 @@ function WatchPanel({
       setTemplates(tpl.templates);
       setTplHealth(tpl.health ?? "valid");
       setTplProblems(tpl.problems ?? []);
+      setTplRevision(tpl.revision ?? null);
       setTemplateId(NO_TEMPLATE);
       if (res.backupKey !== undefined) setTplBackupKey(res.backupKey);
     } catch (e) {

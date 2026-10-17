@@ -1018,9 +1018,13 @@ export interface RpcMap {
      *  corrupt=整份坏 / read_error=读不动。partial 与 corrupt 下普通保存会被拒绝。 */
     health: "absent" | "valid" | "partial" | "corrupt" | "read_error";
     problems: string[];
+    /** 【MC-054】当前内容的权威修订(id 排序后的稳定哈希,见 `watchTemplatesRevision`)。 */
+    revision?: string;
   }>;
-  /** 存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。 */
-  "automation.watchTemplatesSave": (input: WatchTemplatesSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。
+   *  【MC-054】带 `expectedRevision` 时做原值版本检查:盘上已被别处改动 → `ok:false`
+   *  并说明,不覆盖对方刚保存的内容(两端并发编辑不再静默丢更新)。 */
+  "automation.watchTemplatesSave": (input: WatchTemplatesSaveInput) => Promise<{ ok: boolean; error?: string; conflict?: boolean; currentRevision?: string }>;
   /** 【MC-054】显式「备份损坏原值 → 校验 → 重建」—— 唯一能吃下损坏状态的操作。 */
   "automation.rebuildWatchTemplates": (input: WatchTemplatesRebuildInput) => Promise<{
     ok: boolean;

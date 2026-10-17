@@ -16,6 +16,7 @@ import type { IpcMain } from "electron";
 import { dialog } from "electron";
 import { readFile, writeFile } from "node:fs/promises";
 import type { AutomationRunEntry, AutomationTriggerFacts, PersistedWorkflowRunLite, WatchCommandTemplate } from "@contracts/ipc";
+import { watchTemplatesRevision } from "@contracts/ipc/workflow";
 import {
   AgentProfileRemoveSchema,
   AgentProfileSaveSchema,
@@ -469,6 +470,20 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
         error: `命令模板里还有 ${health.problems.length} 条读不出来的条目 —— 直接整份保存会把你手写的那几条抹掉。请先修好它们,或在守望面板上用「备份并重建」显式重建。`,
       };
     }
+    // 【MC-054】原值版本检查(两端并发编辑):调用方给了 expectedRevision 就必须与
+    // 盘上当前内容一致 —— 不一致 = 有人在此期间改过,拒绝覆盖并**把当前 revision
+    // 带回去**(调用方据此重读后再决定)。读与写用同一个 `watchTemplatesRevision`,
+    // 两边不可能漂开。没给 revision = 旧调用方,维持整份写(兼容取舍,见契约注释)。
+    const current = loadWatchTemplatesReport();
+    if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
+      log.warn(`[workflow] 拒绝保存命令模板:版本已变(期望 ${input.expectedRevision},当前 ${current.revision})`);
+      return {
+        ok: false,
+        conflict: true,
+        currentRevision: current.revision,
+        error: "命令模板已被别处改动(另一个窗口、Agent 或设置导入)—— 为避免覆盖对方刚保存的内容,这次保存被拒绝。请重新加载后再改。",
+      };
+    }
     // 读得懂(或没配过、或整份是空)→ 正常整份写。
     SettingRepo.set(WATCH_TEMPLATES_KEY, JSON.stringify(input.templates));
     return { ok: true };
@@ -542,24 +557,28 @@ function loadWatchTemplatesReport(): {
   templates: WatchCommandTemplate[];
   health: "absent" | "valid" | "partial" | "corrupt" | "read_error";
   problems: string[];
+  /** 【MC-054】当前内容的权威修订(保存方的 `expectedRevision` 与它比对)。 */
+  revision: string;
 } {
   const health = classifyWatchTemplates();
   switch (health.state) {
     case "absent":
-      return { templates: [], health: "absent", problems: [] };
+      return { templates: [], health: "absent", problems: [], revision: watchTemplatesRevision([]) };
     case "valid":
-      return { templates: health.templates, health: "valid", problems: [] };
+      return { templates: health.templates, health: "valid", problems: [], revision: watchTemplatesRevision(health.templates) };
     case "partial":
       log.warn(
         `[workflow] 命令模板里有 ${health.problems.length} 条读不了,已跳过(好的照常显示):${health.problems.join(" / ")}`,
       );
-      return { templates: health.templates, health: "partial", problems: health.problems };
+      return { templates: health.templates, health: "partial", problems: health.problems, revision: watchTemplatesRevision(health.templates) };
     case "corrupt":
       log.warn(`[workflow] 命令模板${health.detail},当没有模板处理(保存会被拒绝,原件保全)`);
-      return { templates: [], health: "corrupt", problems: [health.detail] };
+      return { templates: [], health: "corrupt", problems: [health.detail], revision: watchTemplatesRevision([]) };
     case "read_error":
       log.warn(`[workflow] 命令模板读不出来:${health.detail}`);
-      return { templates: [], health: "read_error", problems: [health.detail] };
+      // 读不动时 revision 无从谈起 —— 给空表的修订只是形状占位;保存侧在
+      // `read_error` 已经被拒(上面那条分支先于 CAS),故它不会被用于比对。
+      return { templates: [], health: "read_error", problems: [health.detail], revision: watchTemplatesRevision([]) };
   }
 }
 

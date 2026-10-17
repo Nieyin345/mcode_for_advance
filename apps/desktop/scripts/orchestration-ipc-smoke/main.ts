@@ -59,6 +59,7 @@ import type { IpcMain } from "electron";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import type { WorkflowDoc } from "@contracts/workflow";
 import { agentProfileContentHash } from "@main/orchestration/agentProfiles.js";
+import { watchTemplatesRevision } from "@contracts/ipc/workflow";
 
 let failures = 0;
 let checks = 0;
@@ -985,6 +986,58 @@ console.log("\n守望命令模板");
   const back = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
   same("存进去的读得回来", (back.templates as Array<{ id: string }>).map((t) => t.id), ["a"]);
   eq("正常读的 health=valid", back.health, "valid");
+
+  /* ── 【MC-054】原值版本检查:两端并发编辑不许静默丢更新 ──────────────────
+     台账第十六轮红例:两个客户端都读了健康空表,各存 [A]、[B],两次都 ok:true,
+     最后只剩 [B](第一个人的保存无声消失)。现在保存方带回读到的 revision,
+     盘上已变 → 拒绝 + 带回 currentRevision,由界面重读。 */
+  SettingRepo.set("automation.watch.templates", JSON.stringify([]));
+  const readA = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
+  const readB = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
+  check("★ MC-054:读返回 revision", typeof readA.revision === "string" && (readA.revision as string).length > 0, readA.revision);
+  eq("★ MC-054:同内容两次读 revision 相同(判的是内容)", readA.revision, readB.revision);
+  const saveA = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+    templates: [{ id: "A", name: "甲", command: "echo A" }],
+    expectedRevision: readA.revision,
+  }));
+  eq("客户端 A 用当前 revision 保存成功", saveA.ok, true);
+  const saveB = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+    templates: [{ id: "B", name: "乙", command: "echo B" }],
+    expectedRevision: readB.revision,
+  }));
+  eq("★ MC-054:A 已保存后,B 用旧 revision 保存被拒(不覆盖 A 的)", saveB.ok, false);
+  eq("★ MC-054:拒绝标了 conflict", saveB.conflict, true);
+  check("★ MC-054:带回盘上当前 revision 供界面重读", typeof saveB.currentRevision === "string", saveB.currentRevision);
+  same(
+    "★ MC-054:盘上仍是 A 的内容(第一个人的保存没有无声消失)",
+    (JSON.parse(SettingRepo.get("automation.watch.templates") ?? "[]") as Array<{ id: string }>).map((t) => t.id),
+    ["A"],
+  );
+  // 不带 expectedRevision 的旧调用方:行为与从前一致(整份写)—— 兼容取舍。
+  const legacySave = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+    templates: [{ id: "L", name: "旧", command: "echo L" }],
+  }));
+  eq("★ MC-054:旧调用方(不带 revision)仍可保存(兼容)", legacySave.ok, true);
+  // 同一个版本连续保存两次(自撞):第二次必须用第一次之后的新 revision。
+  const r1 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
+  const s1 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+    templates: [{ id: "X", name: "一", command: "echo 1" }], expectedRevision: r1.revision,
+  }));
+  eq("第一次保存成功", s1.ok, true);
+  const staleAgain = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+    templates: [{ id: "Y", name: "二", command: "echo 2" }], expectedRevision: r1.revision,
+  }));
+  eq("★ MC-054:用旧 revision 再存一次被拒(自己撞自己也要挡)", staleAgain.ok, false);
+  const r2 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
+  const s2 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+    templates: [{ id: "Y", name: "二", command: "echo 2" }], expectedRevision: r2.revision,
+  }));
+  eq("★ MC-054:重读后的新 revision 保存通过", s2.ok, true);
+  // 顺序无关:同一批模板换顺序 → revision 不变(判内容,不判写法)。
+  const ordered = [{ id: "a", name: "甲", command: "echo 1" }, { id: "b", name: "乙", command: "echo 2" }];
+  const reversed = [...ordered].reverse();
+  eq("★ MC-054:模板顺序不同但内容相同 → revision 相同", watchTemplatesRevision(ordered), watchTemplatesRevision(reversed));
+  eq("★ MC-054:内容改一个字节 → revision 变", watchTemplatesRevision(ordered) === watchTemplatesRevision([{ ...ordered[0], command: "echo 1 " }, ordered[1]]), false);
 }
 
 /* ──────────────── 10. 自动化运行历史:存档坏掉的那些 ──────────────── */

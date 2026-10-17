@@ -252,7 +252,17 @@ export type WatchStatusInput = z.infer<typeof WatchStatusSchema>;
  */
 export const WatchTemplatesSaveSchema = z.object({
   templates: z.array(WatchCommandTemplateSchema),
-});
+  /** 【MC-054】**原值版本检查** —— 保存方上次读到的 revision(见
+   *  `automation.watchTemplates` 的返回值)。给了就必须与当前盘上一致:
+   *  另一端在此期间改过 → 拒绝并说明"已被别处改动,请重新加载"。
+   *
+   *  为什么是可选:老客户端/Agent 的旧调用不带它(行为与从前一致 = 整份覆盖);
+   *  桌面面板**总是**带(它在打开时就读到了 revision)—— 于是"界面上两份并发编辑"
+   *  这条台账红例被堵住,而既有调用方不被无谓打断。缺省不拒绝是**兼容取舍**,不是
+   *  安全默认:需要防丢更新的调用方必须给 revision。
+   */
+  expectedRevision: z.string().min(1).max(200).optional(),
+}).strict();
 export type WatchTemplatesSaveInput = z.infer<typeof WatchTemplatesSaveSchema>;
 
 /** 【MC-054】显式重建损坏/部分损坏的命令模板设置。`templates` 省略 = 把当前读得出的
@@ -261,6 +271,32 @@ export const WatchTemplatesRebuildSchema = z.object({
   templates: z.array(WatchCommandTemplateSchema).max(200).optional(),
 });
 export type WatchTemplatesRebuildInput = z.infer<typeof WatchTemplatesRebuildSchema>;
+
+/**
+ * 【MC-054】命令模板内容的**权威修订标识**(纯函数,主进程与渲染端共用)。
+ *
+ * 取值 = 对「规范化后的模板数组」做一次稳定哈希。规范化按 id 排序、只保留 schema 字段,
+ * 于是"同样的内容、不同的键顺序"得到同一个 revision —— revision 判的是**内容**,
+ * 不是字符串写法。读(`automation.watchTemplates`)与写(`...Save` 的 expectedRevision)
+ * 用**同一个**函数,两边不可能漂开。
+ *
+ * 契约包不能 import node:crypto(渲染端也 import 它),所以用与 `scenePlan` 同款的
+ * 确定性 fnv1a —— 这里要的是"变化可检测",不是密码学强度。
+ */
+export function watchTemplatesRevision(templates: readonly unknown[]): string {
+  const canon = JSON.stringify(templates
+    .map((t) => {
+      const v = t as { id?: unknown; name?: unknown; command?: unknown };
+      return [typeof v.id === "string" ? v.id : "", typeof v.name === "string" ? v.name : "", typeof v.command === "string" ? v.command : ""];
+    })
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < canon.length; i++) {
+    h ^= canon.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `watchtpl:fnv1a:${h.toString(16).padStart(8, "0")}`;
+}
 
 /**
  * 一次运行的结局。与 `workflow_runs.status` 那一列**一一对应**
