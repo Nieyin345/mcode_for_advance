@@ -825,6 +825,14 @@ export interface SessionState {
    *  means "use the default section". Cleared on close. */
   settingsSection: string | null;
   /**
+   * 【MC-045】主动导航请求的修订号。`setSettingsOpen(true, section)` 每次带
+   * section 调用时 +1 —— 设置页**已打开**时再来一次深链(跨面板跳转)也走这条路,
+   * 单纯看 `settingsSection` 分不清"这次是新请求"与"上次打开遗留的值"。设置页
+   * 订阅本字段,变化时把 `active` 切到请求的栏目(手动点击导航**不**改修订号,
+   * 所以旧请求不会把用户的手动选择弹回去)。关闭时归零。
+   */
+  settingsNavRevision: number;
+  /**
    * **一次性**的"打开设置后选中哪一份工作流/自动化"。技能/插件页的「节点」反查里点一行
    * 时带上它,`WorkflowLibraryView` 挂载后选中并清掉(见 `setSettingsOpen` 的第三参)。
    * `null` = 不指定(打开停在库列表,不自动选)。和 `settingsSection` 一样 **close 时清**。

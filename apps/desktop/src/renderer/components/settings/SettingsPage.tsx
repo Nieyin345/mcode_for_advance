@@ -307,6 +307,28 @@ export function SettingsPage() {
         : NAV_ITEMS[0].id) as SectionId,
   );
 
+  // 【MC-045】设置页**已打开**时来的深链(跨面板跳转 / Agent 指定栏目)必须当场
+  // 切过去 —— 从前 `active` 只在首次挂载读一次 `settingsSection`,已打开时再调
+  // `setSettingsOpen(true, "workflows")` 只改 Store,左侧高亮和内容都停在原栏目
+  // (台账红例)。修订号变化 = 一次**新**导航请求:消费它、切 `active`。
+  // 手动点导航**不**递增修订号,所以这条 effect 不会把用户的手动选择弹回去;
+  // 用户手动切走后旧请求(同修订号)也不会重放 —— 它已经消费过了。
+  const settingsNavRevision = useSessionStore((s) => s.settingsNavRevision);
+  useEffect(() => {
+    if (!settingsNavRevision) return;
+    const section = useSessionStore.getState().settingsSection;
+    const mapped =
+      section === "data-root" ? "library-types" : section === "office" ? "runtimes" : section;
+    if (mapped && NAV_ITEMS.some((n) => n.id === mapped)) {
+      setActive(mapped as SectionId);
+    } else if (mapped) {
+      // 过期/非法 section(如已退役的 id):显式回退到首项并留下诊断 —— 不静默
+      // 停在没有对应内容的旧栏目上。
+      console.warn(`settings: 未知的深链栏目 "${mapped}",回退到「${NAV_ITEMS[0].id}」`);
+      setActive(NAV_ITEMS[0].id);
+    }
+  }, [settingsNavRevision]);
+
   // Esc returns to the workspace (preserves the modal's keyboard shortcut) —
   // but only when no nested overlay owns Escape (UI-005, see escapeClosesSettings).
   useEffect(() => {

@@ -319,6 +319,53 @@ try{
     check('★ 自末控件起连续 Tab 五次,每一步焦点都在设置层内',allInside&&trail[0].isFirst,trail);
     // ══════════ /MC-046 ══════════
 
+    // ══════════ MC-045:设置**已打开**时的深链必须当场切栏 ══════════
+    // 判据立在被高亮的那一项(左栏可视激活态)与内容区正文上 —— 台账红例就是
+    // 「Store 改了、左栏高亮和内容停在原栏目」。
+    /** 左栏当前被高亮(accent 竖条)的那一项的文字 —— active 的用户可见判据。 */
+    const activeNavExpr=`(()=>{const nav=document.querySelector('.settings-root nav');if(!nav)return null;
+      const marker=nav.querySelector('span.bg-accent');
+      return marker&&marker.closest('button')?marker.closest('button').innerText.trim():null;})()`;
+    const navBefore=await page.eval(activeNavExpr);
+    check('MC-045 前置:此刻高亮在「常规」(夹具有效性)',navBefore==='常规',navBefore);
+
+    // 1) 已打开时深链(跨面板跳转的真实调用形状:`setSettingsOpen(true, section)`)。
+    await page.eval(`window.__store.getState().setSettingsOpen(true,"workflows")`);
+    await page.sleep(350);
+    const navAfterJump=await page.eval(activeNavExpr);
+    const bodyAfterJump=await page.eval('document.querySelector(".settings-root").innerText');
+    check('★ 已打开时深链「workflows」:左栏高亮当场切到「工作流」',navAfterJump==='工作流',navAfterJump);
+    check('★ 深链后内容区真的换成工作流页(不是停在上一个栏目)',bodyAfterJump.includes('工作流库'),bodyAfterJump.slice(0,160));
+
+    // 2) 手动点导航(真实鼠标)切回「常规」——不被旧请求弹回(sleep 后仍停在常规)。
+    const generalRect=await page.eval(`(()=>{const nav=document.querySelector('.settings-root nav');
+      const b=[...nav.querySelectorAll('button')].find(e=>e.innerText.trim()==='常规');if(!b)return null;
+      const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    if(generalRect){
+      await page.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,x:generalRect.x,y:generalRect.y});
+      await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,x:generalRect.x,y:generalRect.y});
+    }
+    await page.sleep(350);
+    const navAfterManual=await page.eval(activeNavExpr);
+    await page.sleep(250);
+    const navAfterManualLate=await page.eval(activeNavExpr);
+    check('★ 手动切回「常规」生效且不被过期深链弹回',navAfterManual==='常规'&&navAfterManualLate==='常规',{navAfterManual,navAfterManualLate});
+
+    // 3) 遗留 id(`data-root` → 资料库类型)的深链同样当场切栏。
+    await page.eval(`window.__store.getState().setSettingsOpen(true,"data-root")`);
+    await page.sleep(350);
+    check('★ 遗留 id「data-root」深链当场切到「文档管理」',(await page.eval(activeNavExpr))==='文档管理',await page.eval(activeNavExpr));
+
+    // 4) 未知栏目:显式回退到「常规」(有诊断 warn),不静默停在旧栏目上。
+    // ⚠️ 先切到**非常规**(workflows),这样"回退到常规"才有判别力 —— 上一状态
+    // 就是常规的话,变异(不消费请求)下这条会假绿(实测过)。
+    await page.eval(`window.__store.getState().setSettingsOpen(true,"workflows")`);
+    await page.sleep(350);
+    await page.eval(`window.__store.getState().setSettingsOpen(true,"definitely-retired")`);
+    await page.sleep(350);
+    check('★ 未知深链栏目显式回退到「常规」(不再停在旧栏目)',(await page.eval(activeNavExpr))==='常规',await page.eval(activeNavExpr));
+    // ══════════ /MC-045 ══════════
+
     // 真正的退出路径:设置自己那条标题栏上的「返回工作区」按钮(鼠标点,不是调 store)。
     const backRect=await page.eval(`(()=>{const b=[...document.querySelectorAll('.settings-root button')].find(e=>e.textContent.includes('返回工作区'));if(!b)return null;const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
     check('设置标题栏有「返回工作区」按钮',backRect!==null,backRect);

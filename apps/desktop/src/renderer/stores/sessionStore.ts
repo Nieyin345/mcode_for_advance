@@ -718,6 +718,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   settingsOpen: false,
   settingsSection: null,
   settingsFocusWorkflowId: null,
+  // 【MC-045】主动导航请求的**修订号** —— 设置页已打开时再来一次
+  // `setSettingsOpen(true, section)`,光看 `settingsSection` 分不清"新请求"
+  // 与"上次打开遗留的旧值";修订号每次显式带 section 的调用 +1,设置页据此
+  // 消费一次请求并把 `active` 切过去。关闭(=reset)时归零。
+  settingsNavRevision: 0,
   modelConfigPromptOpen: false,
   modelGuardPulse: 0,
   commandPaletteOpen: false,
@@ -4328,8 +4333,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             settingsOpen: true,
             settingsSection: section ?? null,
             settingsFocusWorkflowId: focusWorkflowId ?? null,
+            // 【MC-045】只对**带 section 的显式导航**递增 —— 普通的齿轮打开
+            // (无 section)不该把用户从当前栏目弹回首页。设置页已打开时再来
+            // 一次带 section 的调用(跨面板深链)也走这里,修订号变化 = 新请求。
+            settingsNavRevision: section
+              ? get().settingsNavRevision + 1
+              : get().settingsNavRevision,
           }
-        : { settingsOpen: false, settingsSection: null, settingsFocusWorkflowId: null },
+        : { settingsOpen: false, settingsSection: null, settingsFocusWorkflowId: null, settingsNavRevision: 0 },
     );
     // Closing the settings dialog may have changed the voice model setup
     // (download / select / remove in 语音输入) — re-check so the composer mic
