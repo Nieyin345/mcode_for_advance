@@ -1,5 +1,5 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
-import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult, SceneResumeInput, SceneResumeIpcResult } from "./scene.js";
+import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult, SceneResumeInput, SceneResumeIpcResult, SceneDeploymentListInput, SceneDeploymentListIpcResult } from "./scene.js";
 import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult, UnattendedListIpcResult, UnattendedResumeInput, UnattendedAbandonInput, UnattendedAbandonIpcResult } from "./unattended.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
@@ -1086,6 +1086,8 @@ export interface RpcMap {
   "scene.apply": (input: SceneApplyInput) => Promise<SceneApplyIpcResult>;
   /** 【MC-002】**续跑一次中断的场景部署** —— 与 `scene.apply` 同形(同一份 spec、同一枚计划级授权、同一条执行核 `runPlanSteps`),语义是**跳过盘上记录里已 done 的步骤、从断点接着跑**。判定核不因「是 resume」放宽(与 apply 逐字同源)。盘上读不到那条 `deploymentId` 的部分执行记录 → 明确拒绝(绝不静默当成新部署去建资源)。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(与 apply 同一条纪律:执行授权只能由用户本人给)。 */
   "scene.resume": (input: SceneResumeInput) => Promise<SceneResumeIpcResult>;
+  /** 【MC-002】**列出某个场景已落盘的部署记录**(重启后发现未完成部署的唯一读通道)。**只读**,不执行任何步骤。`deploymentId` 只活在渲染端内存里,重启后没有这条通道用户就永远看不到盘上那份 `partial/failed`。`resumable` 只是"状态上还能接着跑"的只读推导,**不是授权** —— 真正续跑仍要用户重新预览 + 批准(`scene.approve`),旧 grant 可能已过期。**只有桌面渲染端够得到它**(agent 侧 blocked,手机端 unsupported)。 */
+  "scene.listDeployments": (input: SceneDeploymentListInput) => Promise<SceneDeploymentListIpcResult>;
   /** 【MC-059】**用户签发无人值守任务计划的计划级授权** —— 用户在无人值守计划预览页点「批准」的落点。宿主把一份有界操作序列(`session.create`)铸成一枚绑定目标项目权威路径、签发主体(**写死为 user**)、有效期、次数上限的计划级授权。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(批准主体必须是用户本人);手机端 `webApi.ts` 显式 unsupported。 */
   "unattended.approve": (input: UnattendedApproveInput) => Promise<UnattendedApproveResult>;
   /** 【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。 */
@@ -2031,6 +2033,8 @@ export const IPC = {
   SCENE_APPROVE: "scene:approve",
   SCENE_APPLY: "scene:apply",
   SCENE_RESUME: "scene:resume",
+  /** 【MC-002】重启后**发现**未完成部署(只读;桌面端够得到,agent 侧 blocked)。 */
+  SCENE_LIST_DEPLOYMENTS: "scene:listDeployments",
   UNATTENDED_APPROVE: "unattended:approve",
   UNATTENDED_RUN: "unattended:run",
   UNATTENDED_PLANS_LIST: "unattendedPlans:list",

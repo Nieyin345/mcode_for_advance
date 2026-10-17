@@ -91,4 +91,16 @@ export const zh = {
   "sceneDeploy.stepCompensation": "补偿:{reason}",
   "sceneDeploy.readbackUnverifiable": "无法独立回读:{ids}",
   "sceneDeploy.digestMismatch": "本机预览与宿主返回的计划摘要不一致(理论上不应发生)——以宿主为准,请复核。",
+
+  /* ── 【MC-002】重启后发现的未完成部署 ── */
+  "sceneDeploy.unfinishedTitle": "未完成的部署",
+  "sceneDeploy.unfinishedHint": "这些是盘上留下的部署记录(应用重启后仍可见)。选一条把它的声明放回输入框,重新预览并批准后即可续跑剩余步骤。",
+  "sceneDeploy.unfinishedEmpty": "这个场景没有留下部署记录。",
+  "sceneDeploy.unfinishedLoadError": "读取部署记录失败:{reason}",
+  "sceneDeploy.unfinishedRetry": "重试",
+  "sceneDeploy.unfinishedResumable": "可续跑",
+  "sceneDeploy.unfinishedNotResumable": "不续跑",
+  "sceneDeploy.unfinishedNoSnapshot": "这份旧记录没有声明快照,无法一键恢复声明;可在上方粘贴原声明后重新预览。",
+  "sceneDeploy.unfinishedRestore": "恢复到输入框",
+  "sceneDeploy.unfinishedRowMeta": "{status} · 更新于 {updatedAt}",
 } as const;

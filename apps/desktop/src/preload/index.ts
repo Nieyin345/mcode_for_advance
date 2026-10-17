@@ -1009,6 +1009,8 @@ const api = {
     apply: ((input) => ipcRenderer.invoke(IPC.SCENE_APPLY, input)) as RpcMap["scene.apply"],
     // 【MC-002】续跑(部署中断后从断点接着跑)—— 与 apply 同形同判据。
     resume: ((input) => ipcRenderer.invoke(IPC.SCENE_RESUME, input)) as RpcMap["scene.resume"],
+    // 【MC-002】重启后**发现**未完成部署(只读,不执行)—— 渲染端据此恢复"有未完成部署"入口。
+    listDeployments: ((input) => ipcRenderer.invoke(IPC.SCENE_LIST_DEPLOYMENTS, input)) as RpcMap["scene.listDeployments"],
   },
   unattended: {
     // 无人值守任务计划:用户签发计划级授权 + 正式执行。**只有桌面渲染端**够得到

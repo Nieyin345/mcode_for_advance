@@ -171,6 +171,44 @@ export type SceneResumeInput = z.infer<typeof SceneResumeInputSchema>;
 /** 续跑结果 —— 与 {@link SceneApplyIpcResult} 同形(同一条执行核,同一条返回形状)。 */
 export type SceneResumeIpcResult = SceneApplyIpcResult;
 
+/**
+ * 【MC-002】**重启后发现未完成部署** —— 一条已落盘的部署记录(进程崩溃 / 重启后还在)。
+ *
+ * 台账原话:渲染端内存里的 `deploymentId` 一重启就没了,盘上那份 `partial/failed` 记录
+ * **没有任何读通道**能发现它。本形状就是那条读通道的每一行。
+ *
+ * 两个特征刻意保留:
+ *  - `deployment: null` —— 这一行**存在过**是真的,只是存档解不回来(坏 payload)或
+ *    schema 版本不认识;照样列出(与 `listDeploymentsByScene` 的取舍一致),不让用户
+ *    以为"什么都没发生过";
+ *  - `resumable` —— **只读推导**:状态是 `partial`/`failed` 且存档可读。它**不是**授权,
+ *    UI 据此显示"可续跑",真正执行仍要用户重新预览 + 批准(旧的 grant 可能已过期)。
+ */
+export interface SceneDeploymentListEntryWire {
+  deploymentId: string;
+  sceneId: string;
+  status: "deploying" | "active" | "partial" | "failed";
+  createdAt: number;
+  updatedAt: number;
+  /** 存档解码结果;读不回来为 `null`(行仍列出)。 */
+  deployment: SceneDeploymentWire | null;
+  /** 台账要求的"能不能接着跑"—— 只读判定,不是授权。 */
+  resumable: boolean;
+}
+
+/** 一次查询的结果 —— `ok:false` 只用于"库读不动"这种真故障(不是"没有记录")。 */
+export type SceneDeploymentListIpcResult =
+  | { ok: true; deployments: SceneDeploymentListEntryWire[] }
+  | { ok: false; reason: string };
+
+/** 只读列表入参:按场景 id 查(与部署记录里的 `sceneId` 同一字段)。 */
+export const SceneDeploymentListInputSchema = z.object({
+  sceneId: z.string().min(1).max(200),
+  /** 最多列多少条(宿主有上限;默认 20)。 */
+  limit: z.number().int().positive().max(100).optional(),
+});
+export type SceneDeploymentListInput = z.infer<typeof SceneDeploymentListInputSchema>;
+
 /** 一条资源的独立回读(**过 IPC 的形状**;判据是「查得到才算 present」)。 */
 export interface SceneStepReadbackWire {
   actionId: string;
@@ -229,4 +267,6 @@ export interface SceneDeploymentWire {
     passed: boolean;
     checkedAt: number;
   } | null;
+  /** 【MC-002】部署时的声明快照 —— 重启后 UI 靠它把声明放回输入框(旧记录没有这一项)。 */
+  specSnapshot?: { spec: unknown; specDigest: string };
 }

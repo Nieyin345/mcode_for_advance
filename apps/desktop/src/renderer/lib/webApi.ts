@@ -935,6 +935,7 @@ export function createWebApi(): Api {
       approve: async () => webUnsupported("scene.approve"),
       apply: async () => webUnsupported("scene.apply"),
       resume: async () => webUnsupported("scene.resume"),
+      listDeployments: async () => webUnsupported("scene.listDeployments"),
     } satisfies Api["scene"],
     // 无人值守任务计划(用户签发 + 执行)在手机上**故意不做**:批准一份会真的建会话 / 发首条
     // 消息的计划,是坐在那台机器前的动作。明确 unsupported,不是忘了接(与 scene.* 同一取舍)。

@@ -126,6 +126,25 @@ export interface SceneAcceptanceResult {
 }
 
 /** 一条部署记录。 */
+/** 【MC-002】部署记录里的**声明快照** —— 进程崩溃 / 重启后,用户手里没有任何地方还能拿到
+ *  当初那份 SceneSpec(它只活在渲染端的内存里)。没有它,「重启后发现未完成部署」就只能
+ *  告诉用户"有个东西没跑完",却无法把声明放回输入框让用户重新预览批准 —— 发现链断在最后一步。
+ *
+ *  为什么**必须**存在部署记录里,而不是另开一张表:部署记录本身就是"这次跑的是什么"的
+ *  唯一真相(`specDigest` 已经覆盖整份 spec;快照是同一份事实的可读形态)。另存一份迟早
+ *  与 `specDigest` 漂开,而 resume 的判据恰恰是「这份 spec 重编译出的 planDigest 必须等于
+ *  记录里的」—— 快照与 digest 同生共死才可靠。
+ *
+ *  可选(`specSnapshot?`):旧存档没有这一项,读回来就是 `undefined` —— 列表照样列出、
+ *  仍可 `resumable`,只是 UI 不能一键恢复声明(会明说"这份旧记录没有声明快照")。
+ */
+export interface SceneDeploymentSpecSnapshot {
+  /** 当初部署用的那份 SceneSpec 原文(已过 `validateSceneSpec`)。 */
+  spec: unknown;
+  /** 与 `spec` 一起记下的摘要(= 记录顶层的 `specDigest`,读侧会复核)。 */
+  specDigest: string;
+}
+
 export interface SceneDeployment {
   /** 本次部署的稳定 id(一次部署一个;重试是新的 advance,不是新 id)。 */
   deploymentId: string;
@@ -144,6 +163,8 @@ export interface SceneDeployment {
   steps: SceneDeploymentStep[];
   /** 验收结果(还没验收时为 null)。 */
   acceptance: SceneAcceptanceResult | null;
+  /** 【MC-002】声明快照(见 {@link SceneDeploymentSpecSnapshot})。旧记录没有 = `undefined`。 */
+  specSnapshot?: SceneDeploymentSpecSnapshot;
 }
 
 /** 一次步骤状态迁移的输入。 */
@@ -201,6 +222,8 @@ export function createDeployment(input: {
   plan: ScenePlan;
   actor: SceneDeploymentActor;
   now: number;
+  /** 【MC-002】部署时的声明快照(渲染端重启后靠它把声明放回输入框)。缺省不写 —— 与旧调用方兼容。 */
+  specSnapshot?: SceneDeploymentSpecSnapshot;
 }): SceneDeployment {
   const steps: SceneDeploymentStep[] = input.plan.steps.map((s) => ({
     actionId: s.actionId,
@@ -216,6 +239,7 @@ export function createDeployment(input: {
     status: deriveDeploymentStatus(steps),
     steps,
     acceptance: null,
+    ...(input.specSnapshot === undefined ? {} : { specSnapshot: input.specSnapshot }),
   };
 }
 

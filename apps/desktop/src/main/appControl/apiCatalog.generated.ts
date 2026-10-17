@@ -544,8 +544,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "customModel.test",
   "channel": "customModel:test",
   "doc": "连通性测试**单条**模型:走的是真实那一整条链路(binary + env builder),不是捷径 fetch —— \"测得过 = 保存后一定能用\"。",
-  "input": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; timeoutMs?: number | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
-  "inputFull": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; timeoutMs?: number | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
+  "input": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; timeoutMs?: number | undefined; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
+  "inputFull": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; timeoutMs?: number | undefined; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
   "output": "{ ok: boolean; detail?: string | undefined // claude's version string or model echo, when available.; error?: string | undefined // Error message on failure (auth / network / timeout / bad model). }"
  },
  {
@@ -840,8 +840,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "git.merge",
   "channel": "git:merge",
   "doc": "Merge `source` into the current branch. Conflicts are reported via `conflict` + `conflictedFiles` (same shape as git.pull).",
-  "input": "{ repoPath: string; source: string }",
-  "inputFull": "{ repoPath: string; source: string }",
+  "input": "{ source: string; repoPath: string }",
+  "inputFull": "{ source: string; repoPath: string }",
   "output": "{ ok: boolean; error?: string | undefined; conflict?: boolean | undefined // Set when the merge stopped with conflicts.; conflictedFiles?: string[] | undefined; upToDate?: boolean | undefined // True when HEAD already contained everything (no merge was execut…"
  },
  {
@@ -856,8 +856,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "git.mergePreview",
   "channel": "git:mergePreview",
   "doc": "Preview a merge of `source` into the current branch without touching the working tree (incoming commit count / fast-forward / up-to-date).",
-  "input": "{ repoPath: string; source: string }",
-  "inputFull": "{ repoPath: string; source: string }",
+  "input": "{ source: string; repoPath: string }",
+  "inputFull": "{ source: string; repoPath: string }",
   "output": "{ ok: boolean; error?: string | undefined; upToDate: boolean // True when HEAD already contains every commit of `source` — nothing to do.; fastForward: boolean // True when the merge can fast-forward (HEAD has no commits `source` lacks).; incomingCommits: num…"
  },
  {
@@ -1696,8 +1696,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "memory.manage",
   "channel": "memory:manage",
   "doc": "记忆维护(桌面专用,模型拿不到):按 `action`(list/preview/import/history/restore)操作原生记忆来源。`import`/`restore` 要带 digest + `confirmed:true`。",
-  "input": "{ action: 'list' } | { action: 'preview'; source: string } | { action: 'import'; source: string; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
-  "inputFull": "{ action: 'list' } | { action: 'preview'; source: string } | { action: 'import'; source: string; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
+  "input": "{ action: 'list' } | { source: string; action: 'preview' } | { source: string; action: 'import'; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
+  "inputFull": "{ action: 'list' } | { source: string; action: 'preview' } | { source: string; action: 'import'; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
   "output": "{ ok: boolean; error?: string | undefined; content?: string | undefined; digest?: string | undefined; path?: string | undefined; sources?: { id: string; label: string; }[] | undefined; projects?: { id: string; name: string; }[] | undefined; history?: { id: st…"
  },
  {
@@ -1856,8 +1856,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "modules.install",
   "channel": "modules:install",
   "doc": "安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单。",
-  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; confirmReadAccess: true }",
-  "inputFull": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; confirmReadAccess: true }",
+  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
+  "inputFull": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
   "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
@@ -2541,6 +2541,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: true; kind: 'granted'; grantId: string; expiresAt: number } | { ok: false; kind: 'refused'; reason: string } | { ok: false; kind: 'invalid'; problems: { path: string; message: string; }[] }"
  },
  {
+  "method": "scene.listDeployments",
+  "channel": "scene:listDeployments",
+  "doc": "【MC-002】**列出某个场景已落盘的部署记录**(重启后发现未完成部署的唯一读通道)。**只读**,不执行任何步骤。`deploymentId` 只活在渲染端内存里,重启后没有这条通道用户就永远看不到盘上那份 `partial/failed`。`resumable` 只是\"状态上还能接着跑\"的只读推导,**不是授权** —— 真正续跑仍要用户重新预览 + 批准(`scene.approve`),旧 grant 可能已过期。**只有桌面渲染端够得到它**(agent 侧 blocked,手机端 unsuppor…",
+  "input": "{ sceneId: string; limit?: number | undefined // 最多列多少条(宿主有上限;默认 20)。 }",
+  "inputFull": "{ sceneId: string; limit?: number | undefined // 最多列多少条(宿主有上限;默认 20)。 }",
+  "output": "{ ok: true; deployments: SceneDeploymentListEntryWire[] } | { ok: false; reason: string }"
+ },
+ {
   "method": "scene.plan",
   "channel": "scene:plan",
   "doc": "【ARC-002 / MC-058】**只读**的场景规划:给一份候选 SceneSpec,校验(一次报全)通过则编译出有序变更计划(拓扑排序 + 稳定 digest)。**不建任何资源、不申请授权** —— 模型提出计划 ≠ 获得执行权限;真正的部署是另一条命令且需独立计划级授权。",
@@ -2800,8 +2808,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "skills.delete",
   "channel": "skills:delete",
   "doc": "Delete a skill directory (symlink → unlink link only; real dir → recursive remove). Returns ok:false + error on any IO failure.",
-  "input": "{ name: string; source: 'global' | 'project'; projectPath?: string | undefined }",
-  "inputFull": "{ name: string; source: 'global' | 'project'; projectPath?: string | undefined }",
+  "input": "{ source: 'global' | 'project'; name: string; projectPath?: string | undefined }",
+  "inputFull": "{ source: 'global' | 'project'; name: string; projectPath?: string | undefined }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -2920,16 +2928,16 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "skills.read",
   "channel": "skills:read",
   "doc": "Read one skill's full SKILL.md source (no truncation). Missing file → empty content.",
-  "input": "{ name: string // Discovered logical name (frontmatter name or directory fallback).; source: 'global' | 'project' | 'plugin' | 'builtin' // Which skills root to read from.; projectPath?: string | undefined }",
-  "inputFull": "{ name: string // Discovered logical name (frontmatter name or directory fallback).; source: 'global' | 'project' | 'plugin' | 'builtin' // Which skills root to read from.; projectPath?: string | undefined }",
+  "input": "{ source: 'global' | 'project' | 'plugin' | 'builtin' // Which skills root to read from.; name: string // Discovered logical name (frontmatter name or directory fallback).; projectPath?: string | undefined }",
+  "inputFull": "{ source: 'global' | 'project' | 'plugin' | 'builtin' // Which skills root to read from.; name: string // Discovered logical name (frontmatter name or directory fallback).; projectPath?: string | undefined }",
   "output": "{ content: string }"
  },
  {
   "method": "skills.save",
   "channel": "skills:save",
   "doc": "Create or overwrite a skill's SKILL.md (full content write; creates the skill directory if absent). Returns ok:false + error on any IO failure.",
-  "input": "{ content: string // Full SKILL.md text (frontmatter + body).; name: string; source: 'global' | 'project'; projectPath?: string | undefined; newName?: string | undefined }",
-  "inputFull": "{ content: string // Full SKILL.md text (frontmatter + body).; name: string; source: 'global' | 'project'; projectPath?: string | undefined; newName?: string | undefined }",
+  "input": "{ source: 'global' | 'project'; content: string // Full SKILL.md text (frontmatter + body).; name: string; projectPath?: string | undefined; newName?: string | undefined }",
+  "inputFull": "{ source: 'global' | 'project'; content: string // Full SKILL.md text (frontmatter + body).; name: string; projectPath?: string | undefined; newName?: string | undefined }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {

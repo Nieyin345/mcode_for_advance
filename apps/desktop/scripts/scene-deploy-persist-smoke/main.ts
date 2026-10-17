@@ -47,6 +47,7 @@ import {
   saveDeployment,
   loadDeployment,
   listDeploymentsByScene,
+  listDeploymentEntries,
 } from "@main/appServices/sceneDeploymentStore.js";
 import { dataRoot, DATA_DB_FILENAME } from "../run-store-smoke/stubs/dataRoot.js";
 
@@ -90,15 +91,16 @@ function plan(sceneId: string, wfId: string, autoId: string) {
     ],
     acceptance: { description: "工作流与定时触发器都可见", expectResourceIds: [wfId, autoId] },
   };
-  const r = validateSceneSpec(raw);
-  if (!r.ok) throw new Error("前置场景不合法:" + JSON.stringify(r.problems));
-  return compileScenePlan(r.spec);
+  const v = validateSceneSpec(raw);
+  if (!v.ok) throw new Error("前置场景不合法:" + JSON.stringify(v.problems));
+  return { plan: compileScenePlan(v.spec), spec: v.spec };
 }
 
 /** 驱动状态机建一条**部分成功**的部署(工作流 done、触发器 failed → PARTIAL)。 */
 function partialDeployment(deploymentId: string, sceneId: string, wfId: string, autoId: string): SceneDeployment {
-  const p = plan(sceneId, wfId, autoId);
-  let d = createDeployment({ deploymentId, plan: p, actor: ACTOR, now: 1000 });
+  const { plan: p, spec: sceneSpec } = plan(sceneId, wfId, autoId);
+  // 【MC-002】与生产 `applyScene` 一致:部署记录带声明快照(重启后 UI 靠它恢复输入框)。
+  let d = createDeployment({ deploymentId, plan: p, actor: ACTOR, now: 1000, specSnapshot: { spec: sceneSpec, specDigest: p.specDigest } });
   d = advanceDeployment(d, { actionId: wfId, status: "running" }, 1100);
   d = advanceDeployment(d, { actionId: wfId, status: "done", resourceUid: `${wfId}_uid` }, 1200);
   d = advanceDeployment(d, { actionId: autoId, status: "running" }, 1300);
@@ -281,6 +283,45 @@ if (MODE === "write") {
     eq("★ 磁盘上的 V1 逐字节未变(没被覆盖)", (await diskPayload("dep_enc")) ?? "", v1Disk);
   }
 
+  /* ── 10.【MC-002】声明快照:随记录落盘、往返保真、digest 不符整条拒收 ── */
+  console.log("\n⑩ 声明快照:往返保真 / digest 不符拒收 / 旧记录兼容");
+  {
+    const d = partialDeployment("dep_snap", SCENE, "wf_s", "auto_s");
+    check("生产形状带 specSnapshot", d.specSnapshot !== undefined);
+    saveDeployment(d, { durable: true });
+    const back = loadDeployment("dep_snap");
+    check("★ 快照在磁盘往返后仍在", back?.specSnapshot !== undefined);
+    eq("★ 快照 digest 与顶层 specDigest 一致", back?.specSnapshot?.specDigest, back?.specDigest);
+    check("★ 快照里的声明能重新通过校验(重启后可直接恢复输入框)",
+      validateSceneSpec(back?.specSnapshot?.spec).ok === true, back?.specSnapshot?.spec);
+
+    // digest 不符:整条读不回来(一份对不上的快照比没有更糟)。
+    const tampered = JSON.stringify({ ...d, specSnapshot: { spec: d.specSnapshot?.spec, specDigest: "scenespec:fnv1a:01020304" } });
+    eq("★ 快照 digest 与记录不一致 → 解码拒收整条", decodeDeployment(tampered), null);
+
+    // 旧记录(无快照)照常可读 —— 兼容不回退。
+    const legacy = JSON.stringify({ ...d, specSnapshot: undefined });
+    check("★ 没有快照的旧记录仍能解码(兼容)", decodeDeployment(legacy) !== null && decodeDeployment(legacy)?.specSnapshot === undefined);
+
+    // 【MC-002】列表投影:resumable 只对 partial/failed 且存档可读为真(这是 IPC 线格
+    // 判据的唯一一份,handler 只是包装)。
+    const entries = listDeploymentEntries(SCENE, 50);
+    const snapEntry = entries.find((e) => e.deploymentId === "dep_snap");
+    eq("★ 列表投影:partial 记录标可续跑", snapEntry?.resumable, true);
+    check("★ 列表投影:记录带声明快照(UI 可恢复输入)", snapEntry?.deployment?.specSnapshot !== undefined);
+    const activeEntry = entries.find((e) => e.deploymentId === DEP_A);
+    eq("★ 列表投影:active 记录不可续跑", activeEntry?.resumable, false);
+
+    // 坏存档 → 行仍列出,但不可续跑(没有可续的起点)。
+    SceneDeploymentRepo.save({
+      deploymentId: "dep_broken_resume", sceneId: SCENE, status: "partial",
+      specDigest: "x", planDigest: "y", payload: "{坏",
+    });
+    const broken = listDeploymentEntries(SCENE, 50).find((e) => e.deploymentId === "dep_broken_resume");
+    check("★ 坏存档行仍列出,但 resumable=false(不假装能续跑)", broken !== undefined && broken.resumable === false && broken.deployment === null);
+    SceneDeploymentRepo.remove("dep_broken_resume");
+  }
+
   console.log(`\n[write 阶段] 通过 ${total - failures}/${total}`);
   if (failures > 0) process.exitCode = 1;
   closeDb();
@@ -302,6 +343,10 @@ if (MODE === "write") {
 
     // 名字对得上内容:fault 那条不应是别的。
     check("★ 列表里部署内容都能解码", list.every((e) => e.deployment !== null));
+    // 【MC-002】跨进程:重启后新进程从盘上记录里拿得到当初那份声明(发现链的最后一步)。
+    const snap = list.find((e) => e.deploymentId === "dep_snap")?.deployment?.specSnapshot;
+    check("★ 新进程里从部署记录读回声明快照(重启后能恢复输入框)", snap !== undefined);
+    eq("★ 读回的快照能重新通过校验", validateSceneSpec(snap?.spec).ok, true);
   }
 
   console.log(`\n[verify 阶段] 通过 ${total - failures}/${total}`);

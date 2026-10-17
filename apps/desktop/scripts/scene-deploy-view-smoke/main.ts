@@ -41,6 +41,7 @@ import {
   SCENE_APPROVAL_TTL_MS,
   sceneDeployReducer,
   sceneDeployStage,
+  restoreFromDeployment,
   type SceneDeployState,
 } from "../../src/renderer/components/settings/sceneDeployView.js";
 import { SCENE_SPEC_SCHEMA_VERSION, type SceneSpec } from "@contracts/sceneSpec";
@@ -327,6 +328,43 @@ section("8. newDeploymentId 唯一 + TTL 常量");
   eq("TTL = 10 分钟", SCENE_APPROVAL_TTL_MS, 600000);
 }
 
+/* ───────────────────────── 8b. 【MC-002】重启后从盘上记录恢复声明 ───────────────────────── */
+
+section("8b. restoreFromDeployment + restored:发现 → 选择 → 只还原输入,不还原授权");
+
+{
+  const snapshotEntry = {
+    deployment: {
+      deploymentId: "dep_r1",
+      sceneId: "scene_a",
+      specDigest: "x",
+      planDigest: "y",
+      actor: { actorKind: "user" as const, actorId: "desktop" },
+      createdAt: 1,
+      status: "partial" as const,
+      steps: [],
+      acceptance: null,
+      specSnapshot: { spec: twoResSpec(), specDigest: "x" },
+    },
+  };
+  const restored = restoreFromDeployment(snapshotEntry);
+  check("★ 有快照 → 恢复出可解析的声明文本", restored !== null && parseSceneSpecText(restored.specText).ok, restored);
+  if (restored !== null) {
+    const parsed = parseSceneSpecText(restored.specText);
+    eq("…恢复的声明就是当初那份(sceneId 相同)", parsed.ok ? (parsed.spec as { sceneId: string }).sceneId : null, "scene_a");
+  }
+  eq("没有快照的旧记录 → null(不猜)", restoreFromDeployment({ deployment: { ...snapshotEntry.deployment, specSnapshot: undefined } }), null);
+  eq("记录读不回来(deployment=null) → null", restoreFromDeployment({ deployment: null }), null);
+
+  // 状态机:restored 只保留 specText + deploymentId,预览/授权/结局全部为空。
+  const after = sceneDeployReducer(INITIAL_SCENE_DEPLOY_STATE, { type: "restored", text: "{}", deploymentId: "dep_r1" });
+  eq("restored 保留盘上的 deploymentId(续跑必须复用同一次部署)", after.deploymentId, "dep_r1");
+  eq("restored 不恢复预览(必须重新预览)", after.preview, null);
+  eq("restored 不恢复授权(必须重新批准)", after.grant, null);
+  eq("restored 不恢复部署结局", after.apply, null);
+  check("restored 之后 canDeploy 为假(没有授权)", !canDeploy(after));
+}
+
 /* ───────────────────────── 9. 接线不变量(源码正则 backstop) ───────────────────────── */
 
 section("9. 面板真的接上四条入口 + 挂进设置页(只声明不接线 = 用户点不到)");
@@ -340,6 +378,9 @@ section("9. 面板真的接上四条入口 + 挂进设置页(只声明不接线 
   check("★ 面板调 scene.apply(显式 await,写操作)", /await api\.scene\.apply\(/.test(panel), panel.match(/scene\.apply\([^\n]*/)?.[0]);
   check("★ 面板用状态机(dispatch + canApprove/canDeploy 门控)", panel.includes("sceneDeployReducer") && panel.includes("canApprove(") && panel.includes("canDeploy("));
   check("★ 面板用 buildSceneApprovalInput / buildSceneApplyInput 构造入参", panel.includes("buildSceneApprovalInput(") && panel.includes("buildSceneApplyInput("));
+  // 【MC-002】重启后发现未完成部署:列表读通道真的接上(且是读 → useRpc),恢复动作真的存在。
+  check("★ 面板经 useRpc 调 scene.listDeployments(重启后发现入口)", panel.includes("api.scene.listDeployments(") && panel.includes("useRpc("));
+  check("★ 面板把记录恢复成输入(restoreFromDeployment + restored 动作)", panel.includes("restoreFromDeployment(") && panel.includes('type: "restored"'));
   // 【MC-001 系统性修复第 3 条】场景与无人值守共用**同一个**「预览 → 批准 → 执行」动作栏,
   // 不再各写一份。判据落在 `PlanApprovalBar` 真的被渲染 + 两族面板各自传给它的 testId 上。
   check("★ 场景面板用共享 PlanApprovalBar 渲染批准/执行动作栏(不另写一份)", /<PlanApprovalBar[\s/>]/.test(panel) && panel.includes("scene-deploy-approval-bar"));

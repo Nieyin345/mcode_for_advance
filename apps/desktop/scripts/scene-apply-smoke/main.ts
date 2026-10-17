@@ -509,6 +509,12 @@ console.log("\n③ apply:逐步派发 + 记录 + 独立回读验收");
   const back = loadDeployment("dep_happy");
   eq("★ 部署真落进 scene_deployments(回读得到)", back?.status, "active");
   eq("★ 回读的部署 id 对得上", back?.deploymentId, "dep_happy");
+  // 【MC-002】生产 applyScene 路径必须把**声明快照**随记录落盘 —— 重启后渲染端没有任何
+  // 别处能拿到当初那份 spec(deploymentId 只在它内存里)。夹具直接调 createDeployment 的套件
+  // 覆盖不到这一句;这里走的是真实执行入口。
+  check("★ 生产 apply 路径落盘的记录带声明快照", back?.specSnapshot !== undefined);
+  eq("★ 快照 digest 与记录 specDigest 一致", back?.specSnapshot?.specDigest, back?.specDigest);
+  eq("★ 快照里的 sceneId 就是这次部署的场景", (back?.specSnapshot?.spec as { sceneId?: string } | undefined)?.sceneId, "happy_scene");
 }
 
 /* ── 4. ★ 一步失败 → PARTIAL(不是 ACTIVE)(不补偿路径) ── */

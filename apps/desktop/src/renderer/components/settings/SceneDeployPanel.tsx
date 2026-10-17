@@ -53,6 +53,7 @@ import {
 } from "@renderer/lib/icons.js";
 import type {
   SceneApplyIpcResult,
+  SceneDeploymentListEntryWire as SceneDeployListEntry,
   SceneResumeIpcResult,
   SceneApprovalResult,
   SceneDeploymentWire,
@@ -65,6 +66,7 @@ import { PANEL_MAX_W } from "./panelWidth.js";
 import {
   buildSceneApplyInput,
   buildSceneResumeInput,
+  restoreFromDeployment,
   buildSceneApprovalInput,
   buildScenePreview,
   canApprove,
@@ -109,6 +111,24 @@ export function SceneDeployPanel() {
   const [previewError, setPreviewError] = useState<MessageId | null>(null);
   const [previewErrorParam, setPreviewErrorParam] = useState<string>("");
   const [busy, setBusy] = useState<"approve" | "apply" | "resume" | null>(null);
+  /** 【MC-002】重启后发现未完成部署:场景 id 从当前文本解析(与预览同一份 parse);
+   *  有合法 sceneId 时才查询。读失败**显式报出**(不伪装成"没有记录")。 */
+  const [unfinishedRefresh, setUnfinishedRefresh] = useState(0);
+  const sceneIdForList = useMemo(() => {
+    const parsed = parseSceneSpecText(state.specText);
+    if (!parsed.ok) return null;
+    const id = (parsed.spec as { sceneId?: unknown }).sceneId;
+    return typeof id === "string" && id.length > 0 ? id : null;
+  }, [state.specText]);
+  const {
+    data: unfinished,
+    loading: unfinishedLoading,
+    error: unfinishedError,
+  } = useRpc(
+    () => api.scene.listDeployments({ sceneId: sceneIdForList! }),
+    [sceneIdForList, unfinishedRefresh],
+    { enabled: sceneIdForList !== null, toastOnError: false },
+  );
 
   // ── 读:能力预检(参数化,门控在「预览」这次点击上;不在每次击键时发) ──
   const { data: preflight, loading: preflightLoading, error: preflightError } = useRpc(
@@ -185,6 +205,19 @@ export function SceneDeployPanel() {
     }
   }, [parsedSpec, state, t]);
 
+  /** 【MC-002】把盘上一条未完成部署的声明快照放回输入框(只还原输入,不还原授权 ——
+   *  用户必须重新预览 + 批准;旧 grant 可能已过期/撤销)。没有快照的旧记录显式说明。 */
+  const restoreRecord = useCallback((entry: SceneDeployListEntry) => {
+    const restored = restoreFromDeployment(entry);
+    if (restored === null) {
+      dispatch({ type: "applyRefused", reason: t("sceneDeploy.unfinishedNoSnapshot") });
+      return;
+    }
+    setPreviewError(null);
+    setPreviewRequest(null);
+    dispatch({ type: "restored", text: restored.specText, deploymentId: entry.deploymentId });
+  }, [t]);
+
   /** 【MC-002】续跑(写):与部署同一条路,只是主进程按 `scene.resume` 跳过盘上已 done 的步骤。 */
   const resume = useCallback(async (): Promise<void> => {
     if (parsedSpec === null) return;
@@ -236,6 +269,56 @@ export function SceneDeployPanel() {
       <p className="mb-3 border-l-2 border-warning/40 px-4 py-2 text-[0.7143em] leading-relaxed text-content-subtle">
         {t("sceneDeploy.specHint")}
       </p>
+
+      {/* ───────── 【MC-002】未完成的部署(重启后仍可发现) ───────── */}
+      {sceneIdForList !== null && (
+        <section className="mb-3 rounded border border-edge bg-surface/50 p-2.5" data-testid="scene-unfinished">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[0.8571em] font-medium text-content">
+            <IconListCheck size={14} className="text-accent" />
+            {t("sceneDeploy.unfinishedTitle")}
+            <Button variant="ghost" size="sm" disabled={unfinishedLoading} onClick={() => setUnfinishedRefresh((n) => n + 1)} className="ml-auto gap-1">
+              <IconRefresh size={12} />
+              {t("sceneDeploy.unfinishedRetry")}
+            </Button>
+          </div>
+          {unfinishedError !== null ? (
+            <ErrorNote tone="danger" icon={IconAlertTriangle}>
+              {t("sceneDeploy.unfinishedLoadError", { reason: unfinishedError.message })}
+            </ErrorNote>
+          ) : unfinished?.ok === false ? (
+            <ErrorNote tone="danger" icon={IconAlertTriangle}>
+              {t("sceneDeploy.unfinishedLoadError", { reason: unfinished.reason })}
+            </ErrorNote>
+          ) : unfinished?.ok === true && unfinished.deployments.length === 0 ? (
+            <div className="text-[0.7857em] text-content-subtle">{t("sceneDeploy.unfinishedEmpty")}</div>
+          ) : unfinished?.ok === true ? (
+            <ul className="space-y-1">
+              {unfinished.deployments.map((entry) => (
+                <li key={entry.deploymentId} className="flex items-center gap-2 rounded border border-edge bg-surface px-2 py-1.5 text-[0.7857em]">
+                  <Badge variant={entry.resumable ? "warning" : "neutral"}>
+                    {entry.resumable ? t("sceneDeploy.unfinishedResumable") : t("sceneDeploy.unfinishedNotResumable")}
+                  </Badge>
+                  <span className="min-w-0 flex-1 truncate font-mono text-content-subtle" title={entry.deploymentId}>
+                    {entry.deploymentId}
+                  </span>
+                  <span className="text-content-subtle">
+                    {t("sceneDeploy.unfinishedRowMeta", {
+                      status: t(`sceneDeploy.deployStatus.${entry.status}`),
+                      updatedAt: new Date(entry.updatedAt).toLocaleString(),
+                    })}
+                  </span>
+                  <Button variant="secondary" size="sm" disabled={busy !== null || entry.deployment === null} onClick={() => restoreRecord(entry)}>
+                    {t("sceneDeploy.unfinishedRestore")}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Spinner label={t("common.loading")} />
+          )}
+          <p className="mt-1.5 text-[0.7143em] leading-relaxed text-content-subtle">{t("sceneDeploy.unfinishedHint")}</p>
+        </section>
+      )}
 
       {/* ───────── 声明输入 ───────── */}
       <Field className="mb-3" label={t("sceneDeploy.specLabel")}>

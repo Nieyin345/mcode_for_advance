@@ -530,7 +530,12 @@ export async function applyScene(input: SceneApplyInput): Promise<SceneApplyResu
   }
 
   // ④ 建记录 + 初始落盘。**初始那一笔落不下去就不开工** —— 见下面 `persistStep` 的第一个参数。
-  const d = createDeployment({ deploymentId: input.deploymentId, plan, actor: input.actor, now: clock() });
+  // 【MC-002】把**声明本身**随部署记录一起落盘:重启后渲染端没有任何别处能拿到当初那份
+  // spec(`deploymentId` 只在它内存里)。快照的 digest 与 plan.specDigest 同源,读侧会复核。
+  const d = createDeployment({
+    deploymentId: input.deploymentId, plan, actor: input.actor, now: clock(),
+    specSnapshot: { spec, specDigest: plan.specDigest },
+  });
   if (!persistStepOrRefuse(d)) {
     // 「存档都写不进去还照样建资源」= 建完就没人记得建过什么,崩溃后无法回读、无法补偿。
     // 这与「没有授权绝不执行」是同一条纪律:治理事实落不了地,就不执行。

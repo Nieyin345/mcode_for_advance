@@ -257,6 +257,20 @@ export function newDeploymentId(now: number = Date.now()): string {
   return `scene-deploy-${now.toString(36)}-${deploymentSeq.toString(36)}`;
 }
 
+/**
+ * 【MC-002】**重启后从盘上记录恢复输入框** —— 把一条可续跑的部署记录里的声明快照还原成
+ * 面板状态。**只还原输入**,不还原授权:审批对象是一次性的计划 digest,重启后旧授权
+ * (可能已过期/已撤销)绝不能静默复用 —— 用户必须重新预览 + 批准。这是台账要求的
+ * 「发现 → 选择 → 重新预览批准 → 续跑」里"发现 + 选择"那一步。
+ *
+ * 没有声明快照的旧记录返回 `null`(UI 明说"这份旧记录没有声明快照",不猜)。
+ */
+export function restoreFromDeployment(entry: { deployment: SceneDeploymentWire | null }): { specText: string } | null {
+  const snapshot = entry.deployment?.specSnapshot;
+  if (!snapshot) return null;
+  return { specText: JSON.stringify(snapshot.spec, null, 2) };
+}
+
 /** 状态迁移。见文件头:编辑作废、批准绑计划 digest、部署只认 grantId。 */
 export type SceneDeployAction =
   /** 用户改了粘贴框文本 —— 作废预览与授权(spec 变了,旧计划与旧授权都失效)。 */
@@ -272,7 +286,9 @@ export type SceneDeployAction =
   /** 部署被拒 / 声明不合法。 */
   | { type: "applyRefused"; reason: string }
   /** 清空一切(面板上的「清空」)。 */
-  | { type: "reset" };
+  | { type: "reset" }
+  /** 【MC-002】重启后发现未完成部署 → 把它的声明放回输入框。**不恢复授权**(见 restoreFromDeployment)。 */
+  | { type: "restored"; text: string; deploymentId: string };
 
 /**
  * 状态机 —— 纯函数。四条不变量写在这里(而不是散在组件的 onClick 里):
@@ -316,6 +332,10 @@ export function sceneDeployReducer(state: SceneDeployState, action: SceneDeployA
       return { ...state, apply: null, applyError: action.reason };
     case "reset":
       return INITIAL_SCENE_DEPLOY_STATE;
+    case "restored":
+      // 与 `edit` 同一条不变量(换声明 = 旧预览/旧授权作废),唯一的差别是 `deploymentId`
+      // 保留盘上那个 —— 续跑必须复用同一次部署的 id(否则 `resumeScene` 报 no_record)。
+      return { ...INITIAL_SCENE_DEPLOY_STATE, specText: action.text, deploymentId: action.deploymentId };
   }
 }
 

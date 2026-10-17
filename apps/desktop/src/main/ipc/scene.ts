@@ -1,6 +1,7 @@
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
-import { SceneApplyInputSchema, SceneApprovalInputSchema, SceneResumeInputSchema } from "@contracts/ipc/scene.js";
+import { SceneApplyInputSchema, SceneApprovalInputSchema, SceneDeploymentListInputSchema, SceneResumeInputSchema } from "@contracts/ipc/scene.js";
+import { listDeploymentEntries } from "@main/appServices/sceneDeploymentStore.js";
 import { planScene } from "@main/appServices/scenePlanning.js";
 import { preflightScene } from "@main/appServices/scenePreflight.js";
 import { approveSceneDeployment, applySceneWithGrant, resumeSceneWithGrant } from "@main/appServices/sceneDeploy.js";
@@ -36,6 +37,20 @@ export function registerSceneHandlers(ipc: IpcMain): void {
       actor: { actorKind: input.actorKind, actorId: input.actorId },
       ...(input.compensateOnFailure !== undefined ? { compensateOnFailure: input.compensateOnFailure } : {}),
     });
+  });
+  // 【MC-002】**发现未完成部署** —— 重启后 `deploymentId` 只活在渲染端内存里,没有这条
+  // 读通道就永远看不到盘上那份 partial/failed。**只读**:不执行任何步骤、不碰授权;
+  // `resumable` 是状态推导,真正续跑仍要重新预览 + 批准。与 approve/apply/resume 同一条
+  // 纪律:agent 侧 `policy.ts` 判 blocked,手机端 unsupported。
+  ipc.handle(IPC.SCENE_LIST_DEPLOYMENTS, async (_event, raw) => {
+    const input = SceneDeploymentListInputSchema.parse(raw ?? {});
+    try {
+      // 投影判据在 store 层(`listDeploymentEntries`,与无头套件共用同一份)。
+      return { ok: true, deployments: listDeploymentEntries(input.sceneId, input.limit ?? 20) };
+    } catch (error) {
+      // 库读不动是真故障(不是"没有记录")—— 显式报出来,不伪装成空列表。
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
   });
   // 【MC-002】**续跑** —— 与 apply 同形、同一条判定核(`resumeSceneWithGrant` 内部与
   // `applySceneWithGrant` 共用 `authorizeApply` + `runPlanSteps`,不因「是 resume」放宽)。

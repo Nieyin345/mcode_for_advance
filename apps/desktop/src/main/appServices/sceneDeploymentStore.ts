@@ -153,6 +153,18 @@ export function decodeDeployment(raw: string): SceneDeployment | null {
     };
   }
 
+  // 【MC-002】声明快照(可选;旧存档没有就是 undefined)。有它时**必须**与顶层 specDigest
+  // 一致 —— 一份对不上的快照比没有更糟:UI 会把它当"当初那份声明"恢复出来,而 digest
+  // 说的却是另一份。不一致整条读不回来(与其它字段形状不对同档)。
+  let specSnapshot: SceneDeployment["specSnapshot"];
+  if (r.specSnapshot !== undefined && r.specSnapshot !== null) {
+    const s = r.specSnapshot as Record<string, unknown>;
+    if (typeof s !== "object" || s === null) return null;
+    if (typeof s.specDigest !== "string" || s.specDigest !== r.specDigest) return null;
+    if (s.spec === undefined) return null;
+    specSnapshot = { spec: s.spec, specDigest: s.specDigest };
+  }
+
   return {
     deploymentId: r.deploymentId,
     sceneId: r.sceneId,
@@ -164,6 +176,7 @@ export function decodeDeployment(raw: string): SceneDeployment | null {
     status: deriveDeploymentStatus(steps),
     steps,
     acceptance,
+    ...(specSnapshot === undefined ? {} : { specSnapshot }),
   };
 }
 
@@ -261,6 +274,34 @@ export interface SceneDeploymentListEntry {
   updatedAt: number;
   /** 解码所得;读不回来为 `null`(那一行存在过是真的,只是没有可读的状态)。 */
   deployment: SceneDeployment | null;
+}
+
+/**
+ * 【MC-002】**重启后发现的未完成部署** —— 给渲染端的投影(与 `scene.listDeployments` 的
+ * 线格同形)。`resumable` 是**只读推导**:状态上还有没跑完的步骤 **且** 存档读得回来
+ * (读不回来就无从续跑)。它**不是授权** —— 真正续跑仍要用户重新预览 + 批准。
+ *
+ * 投影住在 store 层而不是 IPC handler 里:同一份判据要让无头套件针对**真数据库**验证,
+ * handler 也就只剩"解析入参 + 包装 ok/error"这一层(不复制判据)。
+ */
+export function listDeploymentEntries(sceneId: string, limit: number): Array<{
+  deploymentId: string;
+  sceneId: string;
+  status: SceneDeploymentStatus;
+  createdAt: number;
+  updatedAt: number;
+  deployment: SceneDeployment | null;
+  resumable: boolean;
+}> {
+  return listDeploymentsByScene(sceneId, limit).map((entry) => ({
+    deploymentId: entry.deploymentId,
+    sceneId: entry.sceneId,
+    status: entry.status,
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+    deployment: entry.deployment,
+    resumable: entry.deployment !== null && (entry.deployment.status === "partial" || entry.deployment.status === "failed"),
+  }));
 }
 
 /**

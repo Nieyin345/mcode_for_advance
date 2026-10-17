@@ -85,4 +85,16 @@ export const en = {
   "sceneDeploy.stepCompensation": "Compensation: {reason}",
   "sceneDeploy.readbackUnverifiable": "Could not be independently read back: {ids}",
   "sceneDeploy.digestMismatch": "The local preview and the host's returned plan digest disagree (this shouldn't happen) — trusting the host, please re-check.",
+
+  /* ── 【MC-002】unfinished deployments discovered after restart ── */
+  "sceneDeploy.unfinishedTitle": "Unfinished deployments",
+  "sceneDeploy.unfinishedHint": "These records are on disk (still visible after an app restart). Pick one to put its spec back into the input, then preview and approve again to resume the remaining steps.",
+  "sceneDeploy.unfinishedEmpty": "No deployment records for this scene.",
+  "sceneDeploy.unfinishedLoadError": "Failed to read deployment records: {reason}",
+  "sceneDeploy.unfinishedRetry": "Retry",
+  "sceneDeploy.unfinishedResumable": "Resumable",
+  "sceneDeploy.unfinishedNotResumable": "Not resumable",
+  "sceneDeploy.unfinishedNoSnapshot": "This old record has no spec snapshot, so it cannot restore the spec in one click; paste the original spec above and preview again.",
+  "sceneDeploy.unfinishedRestore": "Restore to input",
+  "sceneDeploy.unfinishedRowMeta": "{status} · updated {updatedAt}",
 } as const;
