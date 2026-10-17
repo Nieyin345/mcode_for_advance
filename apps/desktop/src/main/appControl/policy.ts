@@ -191,7 +191,8 @@ const DANGER: Record<string, string> = {
   "piModels.delete": "删除 Pi 模型提供方",
   "codexModels.save": "新增/修改 Codex 模型提供方(含密钥)",
   "codexModels.delete": "删除 Codex 模型提供方",
-  "onlyoffice.setConfig": "改 OnlyOffice 服务地址与 JWT 密钥",
+  // 【MC-004】`onlyoffice.setConfig` 已收进 {@link CREDENTIAL_BEARING}(它的返回体带 jwtSecret 原文)
+  // —— 不再在这里留一条永不可达的死条目。
   // 远程访问:开了就是把这台机器交给别人。
   // 【MC-004】`webBridge.regenerateToken` / `publicMcp.*` 这一族返回体里都带凭据本体,
   // 已统一收进 {@link CREDENTIAL_BEARING}(blocked) —— 别再往这里加它们的同族方法。
@@ -346,6 +347,10 @@ const CREDENTIAL_BEARING = new Map<string, string>([
   ["onlyoffice.getConfig", "只读配置里有 JWT 密钥;要看状态用 onlyoffice.status"],
   // 本机探测结果里带着同一个 jwtSecret(见 localInstall 的 detectLocal)。
   ["onlyoffice.detectLocal", "本机探测结果里带 JWT 密钥;要看状态用 onlyoffice.status"],
+  // 【MC-004 复核补漏】写入口**返回的也是同一份 `OnlyOfficeConfig`**(含 `jwtSecret` 原文,
+  // 见 `setOnlyOfficeConfig` 的返回)。从前它只走 DANGER(每次弹卡),模型点一次卡就能拿到
+  // 密钥 —— 与 `getConfig` 同一条洞。设置页经 `window.api` 直接调,不走这里,不受影响。
+  ["onlyoffice.setConfig", "写入返回体里带 JWT 密钥;配置请在 设置 → 文档工具链 里改"],
   // 扩展桥状态里带 `token`(浏览器扩展的配对令牌,拿到即可冒充扩展)。
   ["webBridge.status", "状态里带浏览器扩展配对令牌,拿到即可冒充扩展"],
   ["webBridge.regenerateToken", "返回新的扩展配对令牌(已连的扩展会被断开)"],

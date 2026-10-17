@@ -101,9 +101,10 @@ check("清单里没有构建机绝对路径", !API_CATALOG.some((e) => /[A-Z]:\/
   const CREDENTIAL_METHODS = [
     // 中继配置(明文 SSH 密码)。从前单列在 BLOCKED,现在归一族。
     "relay.getConfig",
-    // ONLYOFFICE 配置 / 本机探测(都带 jwtSecret)。
+    // ONLYOFFICE 配置 / 本机探测 / **写入**(写入口返回的也是同一份含 jwtSecret 的配置)。
     "onlyoffice.getConfig",
     "onlyoffice.detectLocal",
+    "onlyoffice.setConfig",
     // 扩展桥:状态与重置都返回配对令牌。
     "webBridge.status",
     "webBridge.regenerateToken",
