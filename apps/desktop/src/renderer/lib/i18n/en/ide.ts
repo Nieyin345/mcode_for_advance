@@ -412,6 +412,8 @@ export const en = {
   "ide.turns.usageTotal": "{n} tokens total",
   "ide.turns.cacheHit": "{n}% cache hit",
   "ide.turns.noUsage": "No usage record",
+  "ide.genoffice.toggle": "GenOffice view",
+  "ide.genoffice.toggleHint": "Toggle between the GenOffice structured view and the OnlyOffice editor",
   "ide.genoffice.cliReady": "GenOffice ready",
   "ide.genoffice.cliMissing": "GenOffice not built",
   "ide.genoffice.unavailable": "This document cannot be opened with GenOffice yet",

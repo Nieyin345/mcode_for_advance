@@ -429,6 +429,8 @@ export const zh = {
   "ide.turns.usageTotal": "共 {n} tokens",
   "ide.turns.cacheHit": "缓存命中 {n}%",
   "ide.turns.noUsage": "无用量记录",
+  "ide.genoffice.toggle": "GenOffice 视图",
+  "ide.genoffice.toggleHint": "在 GenOffice 结构化视图与 OnlyOffice 编辑器之间切换",
   "ide.genoffice.cliReady": "GenOffice 已就绪",
   "ide.genoffice.cliMissing": "GenOffice 未构建",
   "ide.genoffice.unavailable": "这个文档暂时无法用 GenOffice 打开",

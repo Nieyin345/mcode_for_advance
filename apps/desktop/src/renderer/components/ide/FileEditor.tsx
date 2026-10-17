@@ -188,6 +188,11 @@ export function FileEditor({
         canDiff={diffBefore != null && !historyOnly && !office}
         onToggleMode={() => setViewMode(filePath, effectiveMode === "edit" ? "diff" : "edit")}
         isMarkdown={markdown}
+        canUseGenoffice={office && genofficeReady}
+        genofficeActive={useGenoffice}
+        onToggleGenoffice={() =>
+          setViewMode(filePath, useGenoffice ? "wysiwyg" : "genoffice")
+        }
         isImage={image}
         isUnsupported={unsupported}
         onTogglePreview={() =>
@@ -293,6 +298,9 @@ function EditorToolbar({
   isImage,
   isUnsupported,
   onTogglePreview,
+  canUseGenoffice,
+  genofficeActive,
+  onToggleGenoffice,
   editorMode,
   onToggleEditorMode,
 }: {
@@ -305,6 +313,10 @@ function EditorToolbar({
   isImage: boolean;
   isUnsupported: boolean;
   onTogglePreview: () => void;
+  /** 【ARC-007】GenOffice CLI 就绪时才出现「GenOffice 视图」按钮。 */
+  canUseGenoffice: boolean;
+  genofficeActive: boolean;
+  onToggleGenoffice: () => void;
   editorMode: "tabs" | "replace";
   onToggleEditorMode: () => void;
 }) {
@@ -483,6 +495,23 @@ function EditorToolbar({
           >
             {mode === "edit" ? <IconEye size={12} /> : <IconEdit size={12} />}
             {t(mode === "edit" ? "ide.editor.modeDiffLabel" : "ide.editor.modeEditLabel")}
+          </button>
+        )}
+        {/* 【ARC-007】GenOffice 视图切换 —— 只在能力就绪时出现(未构建不画死按钮)。
+            只读结构化视图;完整可视化编辑等方案 A。 */}
+        {canUseGenoffice && (
+          <button
+            type="button"
+            onClick={onToggleGenoffice}
+            className={cn(
+              "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
+              "text-content-muted hover:bg-surface-hover hover:text-content",
+              genofficeActive && "text-accent",
+            )}
+            title={t("ide.genoffice.toggleHint")}
+          >
+            <IconEye size={12} />
+            {t("ide.genoffice.toggle")}
           </button>
         )}
         {/* Office files stay in OnlyOffice. Other previewable binary types
