@@ -26,7 +26,7 @@ import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
 import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel, resolveMappedEffort } from "./customEnv.js";
 import type { ClaudeContextWindowTag } from "./claudeTokenUsage.js";
 import { ASK_SYSTEM_PROMPT } from "@main/lib/askQuestion.js";
-import { CLAUDE_IDENTITY_PROMPT, claudePlanModeNudge, fileArchitecturePrompt, joinPromptSections } from "@main/lib/systemPrompt.js";
+import { CLAUDE_IDENTITY_PROMPT, claudePlanModeNudge, fileArchitecturePrompt, joinPromptSections, toolGuidancePrompt } from "@main/lib/systemPrompt.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { scriptsDir } from "@main/workflows/seed.js";
@@ -51,7 +51,7 @@ import {
 import { getOutputStyleSetting } from "@main/lib/outputStyleConfig.js";
 import { getEnabledPlugins, getPluginMcpServers, getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { defaultSkillsRoot, enabledSkillNames, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
-import { resolveEngineExcludedToolsForProvider } from "@main/lib/engineToolPolicy.js";
+import { resolveEngineExcludedToolsForProvider, resolveEngineToolGuidanceForProvider } from "@main/lib/engineToolPolicy.js";
 import { KNOWN_BUILTIN_TOOLS } from "@main/ipc/engineTools.js";
 import { claudeToolSelectionOptions, resolveEngineToolSelection } from "@main/orchestration/toolSelection.js";
 import { readMcpEnginesMap, mcpEngineEnabled } from "@main/lib/mcpEngines.js";
@@ -1185,6 +1185,9 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // between turns, so the model reads the manifests / queries with the script
     // instead of being handed a list that would already be stale.
     appends.push(fileArchitecturePrompt(dataRoot(), scriptsDir(), "claude", excludedForTurn));
+    // 【MC-043】用户在「引擎工具」里写的工具使用偏好(空 = 不注入);它只是指导,
+    // 不改变任何工具的可用性(真实限制由上面的 disallowedTools 决定)。
+    appends.push(toolGuidancePrompt("claude", resolveEngineToolGuidanceForProvider("claude")));
     if (process.platform === "win32") {
       appends.push(bashPathHintFor(detectBashEnv("claude")));
     }

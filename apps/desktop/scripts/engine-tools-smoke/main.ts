@@ -277,8 +277,11 @@ try {
   const claudeSrc = readFileSync(resolve(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
   check(
     "Claude provider 把策略接到 SDK 的 disallowedTools(走同源 resolver)",
+    // 【MC-044】解析结果现在解**一次**三处共用(disallowedTools / 系统提示词的工具名 /
+    // toolSelection)——断言钉「同源 resolver 被调用」+「disallowedTools 用的是它的结果」，
+    // 不再钉旧的内联 IIFE 形状(那个形状随 MC-044 消失，不是行为回退)。
     claudeSrc.includes("resolveEngineExcludedToolsForProvider(\"claude\")") &&
-      /disallowedTools:\s*\(\(\)/.test(claudeSrc),
+      /disallowedTools:\s*excludedForTurn/.test(claudeSrc),
   );
   const piSrc = readFileSync(resolve(process.cwd(), "src/main/providers/pi-sdk/PiAgentSdkProvider.ts"), "utf8");
   check(
@@ -566,6 +569,58 @@ try {
       ipcBackups.length === 1 && readFileSync(join(SMOKE_HOME, ".mcode", ipcBackups[0]), "utf-8").includes('"exclude":"Bash"'),
       { ipcBackups, content: readFileSync(join(SMOKE_HOME, ".mcode", ipcBackups[0]), "utf-8") },
     );
+  }
+
+  /* ══════════ 【MC-043】工具使用说明(guidance):只进提示词、不改权限 ══════════
+   *
+   * 台账:面板只有禁用勾选,用户想在"搜索/读取"上改优先级/默认策略(而不禁用原生工具)
+   * 时无处可写。修复后 guidance 存在**同一份**策略文件里(复用严格 Schema / last-good /
+   * 损坏保护),三个 provider 各注入一段带硬边界的说明。
+   * 判据:①契约不再丢弃该字段;②写进去能读出来;③超限/错形显式拒绝;
+   *      ④渲染出的提示词明说"不是权限指令";⑤禁用与说明是两件独立的事。
+   */
+  {
+    const { validateEngineToolPolicy, resolveEngineToolGuidanceForProviderFile } = await import("@main/lib/engineToolPolicy.js");
+    const { toolGuidancePrompt, readToolNameForTurn } = await import("@main/lib/systemPrompt.js");
+
+    // ① 严格 Schema 接受 guidance,并保留 exclude。
+    const okPolicy = validateEngineToolPolicy({ claude: { exclude: ["Bash"], guidance: "读 PDF 优先 agent_read_document。" } });
+    check("★ MC-043:严格 Schema 接受 guidance 且保留 exclude",
+      okPolicy.ok === true && okPolicy.policy.claude?.exclude.join() === "Bash" && okPolicy.policy.claude?.guidance === "读 PDF 优先 agent_read_document。",
+      okPolicy);
+
+    // ② 单独 guidance(不禁用任何工具)也合法 —— "只改说明"是核心用例。
+    const onlyGuidance = validateEngineToolPolicy({ pi: { exclude: [], guidance: "搜索用 grep,不要 bash grep。" } });
+    check("★ MC-043:只有 guidance、exclude 为空也合法(只改说明不禁用)",
+      onlyGuidance.ok === true && onlyGuidance.policy.pi?.guidance === "搜索用 grep,不要 bash grep。" && onlyGuidance.policy.pi?.exclude.length === 0,
+      onlyGuidance);
+
+    // ③ 超限 / 非字符串 / 未知字段 → 显式拒绝(不静默丢)。
+    const tooLong = validateEngineToolPolicy({ claude: { exclude: [], guidance: "x".repeat(4001) } });
+    check("★ MC-043:guidance 超上限 → 显式拒绝(不静默截断)", tooLong.ok === false && /4000/.test(tooLong.error), tooLong);
+    const notString = validateEngineToolPolicy({ claude: { exclude: [], guidance: 42 } });
+    check("MC-043:guidance 非字符串 → 显式拒绝", notString.ok === false && /guidance 必须是字符串/.test(notString.error), notString);
+    const unknown = validateEngineToolPolicy({ claude: { exclude: [], toolPrompt: "x" } });
+    check("MC-043:未知字段仍判 INVALID(写错字段名 = 以为设了实际没设)", unknown.ok === false && /未知字段/.test(unknown.error), unknown);
+
+    // ④ 落盘 → 读回(真文件,隔离 HOME)。
+    const { writeEngineToolPolicy, defaultEngineToolPolicyPath } = await import("@main/lib/engineToolPolicy.js");
+    writeEngineToolPolicy({ claude: { exclude: [], guidance: "  读资料库 PDF 走 agent_read_document。  " } });
+    const readBack = resolveEngineToolGuidanceForProviderFile(defaultEngineToolPolicyPath(), "claude");
+    check("★ MC-043:写盘后按引擎读回 guidance(首尾空白被规范化)", readBack === "读资料库 PDF 走 agent_read_document。", readBack);
+    check("MC-043:没写说明的引擎读回空串", resolveEngineToolGuidanceForProviderFile(defaultEngineToolPolicyPath(), "pi") === "");
+
+    // ⑤ 提示词渲染:非空才成段,且明说是偏好、不改权限、不能当调用禁用工具的理由。
+    const rendered = toolGuidancePrompt("claude", "读 PDF 优先 agent_read_document。");
+    check("★ MC-043:提示词段明确标注「偏好,不是权限指令」",
+      rendered.includes("用户的工具使用偏好") && rendered.includes("不是权限指令"), rendered.slice(0, 200));
+    check("★ MC-043:提示词段写明不改变工具可用性(不能当调用禁用工具的理由)",
+      rendered.includes("不改变任何工具的实际可用性"), rendered.slice(0, 300));
+    check("MC-043 正控:空 guidance 不产生任何片段(不改变默认行为)", toolGuidancePrompt("claude", "   ") === "");
+
+    // ⑥ 两件事独立:guidance 不影响读工具名的派生(禁用才影响)。
+    check("★ MC-043:说明不清除工具名(guidance 与 exclude 互不干扰)",
+      readToolNameForTurn("claude", []) === "Read");
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

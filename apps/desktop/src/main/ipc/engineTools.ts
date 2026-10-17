@@ -56,6 +56,8 @@ function snapshotOf(policy: EngineToolPolicy, read?: EngineToolPolicyRead): Engi
       exclude: excludedToolsForEngine(policy, engine),
       supported: engineSupportsToolExclusion(engine),
       known: KNOWN_BUILTIN_TOOLS[engine],
+      // 【MC-043】用户为该引擎写的工具使用说明(空 = 没写)。
+      guidance: policy[engine]?.guidance?.trim() ?? "",
     };
   }
   // 【MC-071/MC-042】带出策略文件的状态 —— 损坏时 UI 显式告警,而不是把 fail-open 当成用户主动启用。
@@ -100,7 +102,7 @@ export function registerEngineToolHandlers(ipcMain: IpcMain): void {
     // 【MC-042】工具名过**同一份严格 Schema**（与读取/写入/Provider 装配同源）。
     // 从前非法名被静默剔除，用户以为禁用了、实际没有 —— 与「坏 exclude 读成空」
     // 同族的 fail-open。现在显式拒绝并点名哪个名字不合法。
-    const candidate: EngineToolPolicy = { [input.engine]: { exclude: input.exclude } };
+    const candidate: EngineToolPolicy = { [input.engine]: { exclude: input.exclude, ...(input.guidance !== undefined ? { guidance: input.guidance } : {}) } };
     const validated = validateEngineToolPolicy(candidate);
     if (!validated.ok) {
       return { ok: false, error: `工具名不合法,未保存:${validated.error}` };
@@ -112,8 +114,10 @@ export function registerEngineToolHandlers(ipcMain: IpcMain): void {
       // 兜住（显式保存是 resolver 拒绝语与 UI 告警共同指向的恢复路径，必须走得通；
       // 但读不懂的原始字节绝不静默销毁）。
       const read = readEngineToolPolicyStatus();
-      // 全量替换该引擎的 exclude（空数组 = 不设限，条目会被 minimize 掉）。
-      const next: EngineToolPolicy = { ...read.policy, [input.engine]: { exclude: input.exclude } };
+      // 全量替换该引擎的 exclude（空数组 = 不设限，条目会被 minimize 掉）；
+      // 【MC-043】guidance 省略 = 保留已存值，空串 = 清除（与契约注释一致）。
+      const guidance = input.guidance !== undefined ? input.guidance.trim() : (read.policy[input.engine]?.guidance ?? "");
+      const next: EngineToolPolicy = { ...read.policy, [input.engine]: { exclude: input.exclude, ...(guidance ? { guidance } : {}) } };
       writeEngineToolPolicy(next);
       const after = readEngineToolPolicyStatus();
       return { ok: true, snapshot: snapshotOf(after.policy, after) };

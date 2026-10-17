@@ -24,6 +24,12 @@ export interface EngineToolEngineState {
   /** 该引擎**已知**的内置工具名（只读，供 UI 列出来勾选）。可能为空 —— 该引擎的
    *  内置工具随 SDK 版本变化，这里只列可静态确定的常见那几个。 */
   known: string[];
+  /**
+   * 【MC-043】用户为该引擎写的**工具使用说明**（何时选哪个工具、调用注意、例子）。
+   * 与 `exclude` 是两件事：这段只影响模型的选择指导，**不改任何权限**。
+   * 空串 = 没写（引擎用内置的通用说明）。
+   */
+  guidance: string;
 }
 
 /**
@@ -55,5 +61,10 @@ export const EngineToolsSetInputSchema = z.object({
   /** 工具名列表；空数组 = 该引擎不设限。非法名（非字符串/字符集不合法）**显式拒绝**
    *  整个保存（MC-042：静默剔除会让用户以为禁用了、实际没有）。 */
   exclude: z.array(z.string()),
+  /**
+   * 【MC-043】该引擎的工具使用说明（可选）。省略 = 不改变已存的说明；空串 = 清除。
+   * 它只进提示词、不改权限；上限见 `GUIDANCE_MAX_CHARS`（主进程校验）。
+   */
+  guidance: z.string().optional(),
 });
 export type EngineToolsSetInput = z.infer<typeof EngineToolsSetInputSchema>;

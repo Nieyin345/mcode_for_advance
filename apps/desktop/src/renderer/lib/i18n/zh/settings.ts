@@ -1997,6 +1997,10 @@ export const zh = {
   "settings.engineTools.policyCorruptRecovered": "工具禁用配置损坏，已回退到最后一份确认过的策略。你的禁用列表仍按上一份生效；建议重新保存一次。",
   "settings.engineTools.policyCorruptNoBackup": "工具禁用配置损坏，且没有可用备份：新的回合会被拒绝执行（不会按「不设限」静默继续）。请重新保存一次来确认你的禁用列表。",
   "settings.engineTools.saveFailed": "保存失败",
+  "settings.engineTools.guidanceLabel": "工具使用说明（可选）",
+  "settings.engineTools.guidanceHint": "写给模型看的**选择偏好**：何时用哪个工具、调用注意、例子。它只进提示词，**不改任何权限**——真正禁用工具请用上面的勾选。留空 = 用内置通用说明。",
+  "settings.engineTools.guidancePlaceholder": "例如：读资料库里的 PDF 时优先用 agent_read_document；搜索用 Grep 而不是 Bash 里的 grep。",
+  "settings.engineTools.guidancePreview": "本轮将注入的文本预览",
 
   // ── 能力 × 引擎矩阵(设置 → 引擎工具 页顶部那张只读表)──
   // 它把散在技能 / MCP / 插件各页的引擎能力面汇到一处。只读说明,不是控件 ——

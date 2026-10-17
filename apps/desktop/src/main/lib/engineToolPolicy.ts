@@ -48,10 +48,18 @@ import path from "node:path";
 export const ENGINE_TOOL_ENGINES = ["claude", "pi", "codex"] as const;
 export type EngineToolEngine = (typeof ENGINE_TOOL_ENGINES)[number];
 
-/** 一个引擎的禁用项。目前只有一个字段：要禁用的工具名列表。 */
+/** 一个引擎的禁用项 + 【MC-043】用户可编辑的工具使用说明。 */
 export interface EngineToolEntry {
   /** 该引擎**不可用**的内置工具名（exact match，大小写敏感 —— 工具名就是这个大小写）。 */
   exclude: string[];
+  /**
+   * 【MC-043】用户为该引擎写的**工具使用上下文**(何时选哪个工具、调用注意、例子)。
+   * 与 `exclude`(真实能力限制)是**两件事**:这段只影响模型的选择指导,不改任何权限
+   * —— UI 上分开呈现,提示词里也单独成段(`toolGuidancePrompt`)。
+   *
+   * 空/缺省 = 不用自定义(引擎用内置的通用说明)。
+   */
+  guidance?: string;
 }
 
 /** 整份策略：引擎 → 条目。引擎键缺席 = 该引擎不设限。 */
@@ -96,12 +104,18 @@ function normalizeExclude(names: unknown): string[] {
   return [...seen].sort();
 }
 
-/** 收窄成最小形态：只有非空 exclude 的引擎才留下。`null` = 整份策略为空。 */
+/** 【MC-043】guidance 的字符上限 —— 它每轮进提示词,过长挤占上下文。 */
+export const GUIDANCE_MAX_CHARS = 4000;
+
+/** 收窄成最小形态：exclude 与 guidance 都为空的引擎不留。`null` = 整份策略为空。 */
 function minimizePolicy(policy: EngineToolPolicy): EngineToolPolicy | null {
   const out: EngineToolPolicy = {};
   for (const engine of ENGINE_TOOL_ENGINES) {
     const exclude = normalizeExclude(policy[engine]?.exclude);
-    if (exclude.length > 0) out[engine] = { exclude };
+    const guidance = policy[engine]?.guidance?.trim() ?? "";
+    if (exclude.length > 0 || guidance) {
+      out[engine] = { exclude, ...(guidance ? { guidance } : {}) };
+    }
   }
   return Object.keys(out).length > 0 ? out : null;
 }
@@ -163,11 +177,29 @@ export function validateEngineToolPolicy(
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
       return { ok: false, error: `${engine} 的配置必须是一个对象(实际:${describeJsonValue(entry)})` };
     }
-    const extraKeys = Object.keys(entry).filter((k) => k !== "exclude");
+    // 【MC-043】合法字段:exclude(真实限制)+ guidance(工具使用说明)。未知字段仍判
+    // INVALID —— 写错字段名 = 用户以为设了、实际没设,与 bad exclude 同族 fail-open。
+    const extraKeys = Object.keys(entry).filter((k) => k !== "exclude" && k !== "guidance");
     if (extraKeys.length > 0) {
-      return { ok: false, error: `${engine} 出现未知字段:${extraKeys.join("、")}(只支持 exclude)` };
+      return { ok: false, error: `${engine} 出现未知字段:${extraKeys.join("、")}(只支持 exclude / guidance)` };
     }
+    if ("guidance" in entry) {
+      const g = (entry as { guidance: unknown }).guidance;
+      if (typeof g !== "string") {
+        return { ok: false, error: `${engine}.guidance 必须是字符串(实际:${describeJsonValue(g)})` };
+      }
+      if (g.length > GUIDANCE_MAX_CHARS) {
+        return { ok: false, error: `${engine}.guidance 超过 ${GUIDANCE_MAX_CHARS} 字(实际 ${g.length} 字);它会每轮进提示词,过长会挤占上下文` };
+      }
+    }
+    // guidance 可以单独存在(只写说明不禁用任何工具) —— 所以缺 exclude 时,只有
+    // 两者都缺才算"空的引擎键"。
     if (!("exclude" in entry)) {
+      if ("guidance" in entry) {
+        const g = (entry as { guidance: string }).guidance.trim();
+        if (g) out[engine] = { exclude: [], guidance: g };
+        continue;
+      }
       return { ok: false, error: `${engine} 缺少 exclude 数组(没设置过就别写这个引擎键;明确全启用写 "exclude": [])` };
     }
     const rawExclude = (entry as { exclude: unknown }).exclude;
@@ -186,7 +218,11 @@ export function validateEngineToolPolicy(
       }
     }
     const exclude = normalizeExclude(rawExclude);
-    if (exclude.length > 0) out[engine] = { exclude };
+    const guidance = "guidance" in entry ? String((entry as { guidance: unknown }).guidance).trim() : "";
+    // 空 exclude + 空 guidance = 该引擎什么都没设 —— 不写条目(与 MINIMIZE 同向)。
+    if (exclude.length > 0 || guidance) {
+      out[engine] = { exclude, ...(guidance ? { guidance } : {}) };
+    }
   }
   return { ok: true, policy: out };
 }
@@ -306,6 +342,29 @@ export function readEngineToolPolicyStatus(): EngineToolPolicyRead {
  */
 export function resolveEngineExcludedToolsForProvider(engine: EngineToolEngine): string[] {
   return resolveEngineExcludedToolsForProviderFile(defaultEngineToolPolicyPath(), engine);
+}
+
+/**
+ * 【MC-043】读取用户为某引擎写的**工具使用说明**(`guidance`)。空/缺省 → `""`。
+ *
+ * 与 {@link resolveEngineExcludedToolsForProvider} 的取舍**有意不同**:
+ *   - 排除表**损坏即拒绝执行**(限制不能被静默放宽);
+ *   - 说明是**指导性文字** —— 文件损坏时没有可恢复值就返回空串(不拒绝本轮)。
+ *     把一段"用户偏好"的读取失败升级成"拒绝服务",与它想保护的东西不成比例;
+ *     而它不参与任何授权判定,空串只是退回内置通用说明。
+ */
+export function resolveEngineToolGuidanceForProvider(engine: EngineToolEngine): string {
+  return resolveEngineToolGuidanceForProviderFile(defaultEngineToolPolicyPath(), engine);
+}
+
+/** 显式路径版(供回归套件用隔离文件驱动同一套判定)。 */
+export function resolveEngineToolGuidanceForProviderFile(file: string, engine: EngineToolEngine): string {
+  try {
+    const read = readEngineToolPolicyDetailed(file);
+    return read.policy[engine]?.guidance?.trim() ?? "";
+  } catch {
+    return "";
+  }
 }
 
 /**

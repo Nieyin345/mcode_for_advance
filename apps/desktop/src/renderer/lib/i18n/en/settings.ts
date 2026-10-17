@@ -2007,6 +2007,10 @@ export const en = {
   "settings.engineTools.addCustomButton": "Disable",
   "settings.engineTools.appliesNextTurn": "Changes take effect on the next turn (the engine reads this policy when a turn starts).",
   "settings.engineTools.saveFailed": "Save failed",
+  "settings.engineTools.guidanceLabel": "Tool usage guidance (optional)",
+  "settings.engineTools.guidanceHint": "Preferences written for the model: when to pick which tool, usage notes, examples. Prompt-only — it changes **no permissions**; use the toggles above to actually disable tools. Empty = built-in generic guidance.",
+  "settings.engineTools.guidancePlaceholder": "e.g. Prefer agent_read_document for library PDFs; search with Grep rather than grep inside Bash.",
+  "settings.engineTools.guidancePreview": "Preview of the text injected this turn",
   "settings.engineTools.policyCorruptRecovered": "The tool-disable policy file is corrupt; fell back to the last confirmed policy. Your disabled list still applies as before — re-save it to refresh the file.",
   "settings.engineTools.policyCorruptNoBackup": "The tool-disable policy file is corrupt and no backup is available, so new turns are refused (tools will not silently run unrestricted). Re-save to confirm your disabled list.",
 

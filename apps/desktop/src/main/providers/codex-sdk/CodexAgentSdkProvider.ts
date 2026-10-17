@@ -3,6 +3,7 @@ import { appToolDescriptors, invokeAppEngineTool, isAppToolName } from "@main/ap
 import { libraryToolDescriptors, invokeLibraryToolGated, isLibraryToolName } from "@main/library/engineTools.js";
 import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 import { buildDynamicTools } from "./CodexDynamicTools.js";
+import { resolveEngineToolGuidanceForProvider } from "@main/lib/engineToolPolicy.js";
 export { buildDynamicTools } from "./CodexDynamicTools.js";
 import { agentToolDescriptors, invokeAgentToolGated, isAgentToolName, registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 import { textBlocksOf } from "@main/mcp/sdk.js";
@@ -89,7 +90,7 @@ import { getMcpManagement } from "@main/lib/mcpConfig.js";
 import { mcpEngineEnabled, readMcpEnginesMap } from "@main/lib/mcpEngines.js";
 import { codexDynamicToolsForProfile, resolveEngineToolSelection } from "@main/orchestration/toolSelection.js";
 import { BROWSER_MCP_SERVER, BROWSER_READONLY_SUFFIXES } from "@main/mcp/toolRules.js";
-import { CODEX_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
+import { CODEX_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt, toolGuidancePrompt } from "@main/lib/systemPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { readInstructionsSource, instructionsSourcePath } from "@main/lib/appContext.js";
 import { defaultSkillsRoot, engineEnabled, projectSkillRootsFor, readEnginesMap, skillNamesInRoot, skillRootsIn } from "@main/lib/skillEngines.js";
@@ -1060,6 +1061,9 @@ async function ensureCodexHomeIdentity(browserToolsEnabled: boolean): Promise<st
     // 【MC-044】engine="codex":它没有与 Claude/Pi 同名的文件工具(读写走自己的
     // shell/exec),提示词因此**不点名**任何读工具,只写「用你当前可用的读取方式」。
     fileArchitecturePrompt(dataRoot(), scriptsDir(), "codex"),
+    // 【MC-043】用户为该引擎写的工具使用偏好(空 = 不注入)。进 content → 拨动设置会让
+    // 下面的漂移比较判不等、当场重写 AGENTS.md(与 browserToolsEnabled 同一机制)。
+    toolGuidancePrompt("codex", resolveEngineToolGuidanceForProvider("codex")),
     ASK_NATIVE_TOOL_PROMPT,
     PLAN_MODE_PROMPT,
     // ⚠️ **浏览器工具广告只在启用时才拼。** 工具定义按同一个开关砍(见

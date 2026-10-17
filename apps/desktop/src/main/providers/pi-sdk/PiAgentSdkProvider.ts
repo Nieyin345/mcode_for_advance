@@ -51,7 +51,7 @@ import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { resolveGitBash } from "@main/lib/binaryResolve.js";
 import { getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
-import { resolveEngineExcludedToolsForProvider } from "@main/lib/engineToolPolicy.js";
+import { resolveEngineExcludedToolsForProvider, resolveEngineToolGuidanceForProvider } from "@main/lib/engineToolPolicy.js";
 import { registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
 import { piToolsAllowlist, resolveEngineToolSelection } from "@main/orchestration/toolSelection.js";
@@ -151,6 +151,9 @@ export class PiAgentSdkProvider implements AgentProvider {
     // last-good** 时**抛错拒绝本轮**(在绑定 excludeTools 之前),而不是拿到空排除表
     // 把原本禁用的工具静默重新启用;有备份则按恢复值继续。
     const piExcludedTools = resolveEngineExcludedToolsForProvider("pi");
+    // 【MC-043】用户为该引擎写的工具使用说明(指导性文字,空 = 不注入;读取失败按空处理,
+    // 见 resolveEngineToolGuidanceForProvider 的取舍说明)。
+    const piGuidance = resolveEngineToolGuidanceForProvider("pi");
     // guard): deny writes outside the project working directory, except in
     // bypassPermissions where the user opted out of all checks. WSL paths are
     // normalized in every mode. Enforced by the extension's tool_call handler
@@ -268,7 +271,7 @@ export class PiAgentSdkProvider implements AgentProvider {
     // so flipping it lands on the next message.
     const mcpManagement = await getMcpManagement();
     const browserToolsEnabled = !mcpManagement.browserDisabled;
-    const mcodeExtension = createMcodeExtension({ ctx, cwd: req.cwd, strict, sessionId: req.sessionId, projectPath: req.cwd, turnNumber: req.turnNumber, browserToolsEnabled, excludedTools: piExcludedTools });
+    const mcodeExtension = createMcodeExtension({ ctx, cwd: req.cwd, strict, sessionId: req.sessionId, projectPath: req.cwd, turnNumber: req.turnNumber, browserToolsEnabled, excludedTools: piExcludedTools, guidance: piGuidance });
 
     // 【MC-100/101】按任务画像 + 预算算本轮的**模型可见工具白名单**(共享选择层,唯一一份)。
     // `full`(默认)→ `undefined` = Pi 的"启用全部";更小的画像 → 选中名字白名单。

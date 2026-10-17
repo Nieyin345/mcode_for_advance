@@ -43,6 +43,8 @@ function EngineCard({
   const { t } = useI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set(state.exclude));
   const [custom, setCustom] = useState("");
+  // 【MC-043】工具使用说明草稿(与 exclude 分开:说明只进提示词、不改权限)。
+  const [guidance, setGuidance] = useState(state.guidance ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,6 +52,9 @@ function EngineCard({
   useEffect(() => {
     setSelected(new Set(state.exclude));
   }, [state.exclude.join("\u0000")]);
+  useEffect(() => {
+    setGuidance(state.guidance ?? "");
+  }, [state.guidance]);
 
   const toggle = (name: string) => {
     setSelected((prev) => {
@@ -71,7 +76,7 @@ function EngineCard({
     setBusy(true);
     setError(null);
     try {
-      const res = await api.engineTools.set({ engine: engine as "claude" | "pi" | "codex", exclude: [...selected] });
+      const res = await api.engineTools.set({ engine: engine as "claude" | "pi" | "codex", exclude: [...selected], guidance });
       if (!res.ok || !res.snapshot) {
         setError(res.error ?? t("settings.engineTools.saveFailed"));
       } else {
@@ -144,6 +149,27 @@ function EngineCard({
             </div>
           </Field>
 
+          {/* 【MC-043】工具使用说明 —— 与上面的禁用勾选是**两件事**:这段只进提示词,
+              不改任何权限。Codex 也支持(它不是"禁用",是"怎么写说明")。 */}
+          <Field label={t("settings.engineTools.guidanceLabel")}>
+            <textarea
+              value={guidance}
+              onChange={(e) => setGuidance(e.target.value)}
+              placeholder={t("settings.engineTools.guidancePlaceholder")}
+              rows={4}
+              maxLength={4000}
+              className="w-full resize-y rounded-md border border-edge bg-surface px-3 py-2 text-sm text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+            />
+          </Field>
+          <p className="text-xs text-content-muted">{t("settings.engineTools.guidanceHint")}</p>
+          {guidance.trim() && (
+            <details className="rounded border border-edge bg-surface-muted/40 px-3 py-2">
+              <summary className="cursor-pointer text-xs text-content-muted">{t("settings.engineTools.guidancePreview")}</summary>
+              <pre className="mt-2 whitespace-pre-wrap font-mono text-[0.7857em] text-content">{`## 用户的工具使用偏好(${engine})
+
+${guidance.trim()}`}</pre>
+            </details>
+          )}
           <p className="text-xs text-content-muted">{t("settings.engineTools.appliesNextTurn")}</p>
           {error && <ErrorNote>{error}</ErrorNote>}
           <div className="flex justify-end">
