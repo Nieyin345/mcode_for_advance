@@ -712,7 +712,8 @@ check(
 );
 check(
   "认得出 DB 就绪包装器那条间接写法(target.handle(channel) 的通道名来自形参,不算漏接线)",
-  scan.viaParam.some((s) => s.file === "ipc/index.ts"),
+  // 【MC-014】包装器从 `ipc/index.ts` 拆到了 `ipc/dbGuardedIpc.ts`(可导入测试)。
+  scan.viaParam.some((s) => s.file === "ipc/dbGuardedIpc.ts"),
   scan.viaParam.map((s) => `${s.file}:${s.line} ${s.raw}`),
 );
 check(
@@ -722,7 +723,7 @@ check(
 );
 check(
   "认得出 DB 就绪包装器那条间接写法(target.handle(channel))",
-  scan.indirect.some((s) => s.file === "ipc/index.ts"),
+  scan.indirect.some((s) => s.file === "ipc/dbGuardedIpc.ts"),
   scan.indirect.map((s) => `${s.file}:${s.line}`),
 );
 
