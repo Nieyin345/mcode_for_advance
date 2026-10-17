@@ -33,7 +33,7 @@
 import { join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
-import { LIBRARY_PY, CHECK_CITATIONS_PY, MINERU_PY } from "./assets.js";
+import { LIBRARY_PY, CHECK_CITATIONS_PY } from "./assets.js";
 import { seedShippedFiles, shippedHashOf, type SeedReport, type ShippedFile } from "./shippedFiles.js";
 
 /** 比对用的哈希 —— 唯一实现在 `./shippedFiles.js`,这里再导出供既有调用方(`seed-smoke` 等)复用。 */
@@ -118,7 +118,10 @@ export const LEGACY_SHIPPED_SHA256: Readonly<Record<string, readonly string[]>> 
     "cd41100e699c880336ab615649ed6ac9d913c7f9fef0ccb7176fc9f887fb76e3", // 344aad1
   ],
   "scripts/check_citations.py": ["e0fbb2971c386aed7faf5cc0a79cadba0c12d2534765ca94c5a1b50835324ee2"],
-  "scripts/mineru_transcribe.py": ["0cf861437921d1e378dc485295923b302321c497c2643a2485b77a70e1bdb73c"],
+  // `scripts/mineru_transcribe.py` 的历次哈希**已删**（MC-008，2026-10-17）：这个文件
+  // 不再落盘（见 `ensureWorkflows` 里那段注释），历史哈希没有可消费的落点。老用户
+  // 磁盘上残留的那一份不会被本流程触碰（`seedShippedFiles` 只动清单里的文件），它本来
+  // 也没有任何调用方，可随时手动删除。
   "README.md": ["7e89e005d1f72982574aa83b8cbff8259b266272dd92ff017859152ffc816223"],
 };
 
@@ -133,8 +136,19 @@ export function ensureWorkflows(): SeedReport {
     { rel: "README.md", body: README },
     { rel: "scripts/library.py", body: LIBRARY_PY },
     { rel: "scripts/check_citations.py", body: CHECK_CITATIONS_PY },
-    // 内置自动化「下载完自动转 Markdown」那一步跑的转录脚本(见 `builtins.ts`)。
-    { rel: "scripts/mineru_transcribe.py", body: MINERU_PY },
+    // ⚠️ **`mineru_transcribe.py` / `lit_import.py` 不在这里**（MC-008，2026-10-17）。
+    //
+    // 从前这里还落一份 `MINERU_PY`，注释写着「内置自动化『下载完自动转 Markdown』那一步
+    // 跑的转录脚本(见 `builtins.ts`)」—— 那句话**早就过时了**：那条自动化 2026-10-10
+    // 起外置成预设 `resources/presets/workflows.json` 的 `wf_auto_convert`，脚本正文
+    // 直接内联在那个 code 节点的 `params.code` 里。落盘的副本**没有任何调用方**，还
+    // 与预设那份构成「同一段 Python 两个物理副本」—— 改一处忘一处，用户跑的是没改的
+    // 那份（台账 MC-008 的失败反例）。
+    //
+    // 现在**只有一份权威正文**（`assets.ts` 的常量），预设由
+    // `scripts/preset-scripts-sync/run.sh --write` 从它生成，`preset-scripts-sync-smoke`
+    // 逐字节核对。别再往回加落盘项 —— 除非同时让某个预设/内置**真的调用**它。
+    //
     // ⚠️ **外部检索脚本已移除**（2026-09-22 用户要求）。
     //
     // 原先这里还会铺一整套 `scripts/search-scripts/`（多源检索客户端、PubMed、

@@ -1,5 +1,15 @@
 /**
- * 流程脚本的**正文**,以字符串形式随应用发布,首次使用时写到 `<数据根>/workflows/scripts/`。
+ * 流程脚本的**正文**,以字符串形式随应用发布。
+ *
+ * **两种去处，一个权威源**（MC-008，2026-10-17 统一）：
+ *
+ * | 常量 | 去处 |
+ * |---|---|
+ * | `LIBRARY_PY` / `CHECK_CITATIONS_PY` | 经 `seed.ts` 落盘到 `<数据根>/workflows/scripts/`，系统提示词把路径指给模型 |
+ * | `MINERU_PY` / `LIT_IMPORT_PY` | **不落盘**；内联进预设 `resources/presets/workflows.json` 的 code 节点，由 `scripts/preset-scripts-sync/run.sh --write` **生成** |
+ *
+ * 落盘那两份的规矩（用户改过的不覆盖）见 `seed.ts` 文件头。预设那两份**禁止手改
+ * JSON** —— `preset-scripts-sync-smoke` 逐字节核对生成结果，手改会被打红。
  *
  * ## 为什么内嵌成字符串,而不是放 resources/ 再复制
  *
@@ -1083,8 +1093,15 @@ if __name__ == "__main__":
 /**
  * **把一条条目的 PDF 交给 MinerU 的在线解析 API,拿回 Markdown + 配图。**
  *
- * 内置自动化 `wf_auto_convert`「下载完自动转 Markdown」的转录那一步跑它 —— 用户
+ * 预设自动化 `wf_auto_convert`「文件到位后在线转 Markdown」的转录那一步跑它 —— 用户
  * 手上的转录工具五花八门,而这一条是**装都不用装**的那条:走 HTTP。
+ *
+ * ⚠️ **这份正文同时是预设里那段 Python 的唯一权威来源**（MC-008）。预设
+ * `resources/presets/workflows.json` 的 `wf_auto_convert/auto-convert-code` 节点内联
+ * 的 `params.code` 是**从这个常量生成**的 —— 改完这里跑
+ * `bash scripts/preset-scripts-sync/run.sh --write`，再跑 `preset-scripts-sync-smoke`
+ * 核对。**不要手改 JSON 里那段正文**，它会漂移（真实故障：改了这里，用户导入预设后
+ * 跑的还是旧版）。
  *
  * ⚠️ 它要求环境变量 `MINERU_TOKEN`(见脚本头)。**没有就明确失败**,不静默降级去走
  * 「Agent 轻量解析」那条免 token 的路 —— 那条只给一份 Markdown,配图全变占位符,
@@ -1203,8 +1220,9 @@ MODEL_VERSION = (os.environ.get("MINERU_MODEL_VERSION") or "vlm").strip()
 POLL_INTERVAL_S = 3
 POLL_TIMEOUT_S = 30 * 60
 
-# ⚠️ **整次运行的时间预算，必须小于节点超时**（见 「builtins.ts」 的
-# 「AUTO_CONVERT_CODE_NODE_ID」：30 分钟）。
+# ⚠️ **整次运行的时间预算，必须小于节点超时**（见预设
+# 「resources/presets/workflows.json」 的 「wf_auto_convert/auto-convert-code」：
+# 1800000 毫秒 = 30 分钟）。
 #
 # 这一条是算出来的坑：合并窗口里常常是**好几条**一起进来（下载是并发的），而上面那个
 # 30 分钟是**每条**的。两条各等 20 分钟，节点在 30 分钟处被**杀掉** —— 杀掉的进程发不出
@@ -1622,8 +1640,10 @@ if __name__ == "__main__":
 `;
 
 /**
- * 「文献导入(PDF / DOI)」里**收文件**那一步的脚本(见 `orchestration/builtins.ts` 的
- * `AUTO_DOWNLOAD_*`)。同 `MINERU_PY`:正文**直接当 code 参数**,不落文件再调。
+ * 「文献导入(PDF / DOI)」里**收文件**那一步的脚本(预设 `wf_auto_download` 的
+ * `auto-download-collect` 节点)。同 `MINERU_PY`:这是**唯一权威正文**，预设里的
+ * `params.code` 由 `scripts/preset-scripts-sync/run.sh --write` 从它生成 ——
+ * 改完这里要重新生成并跑 `preset-scripts-sync-smoke` 核对，别手改 JSON。
  *
  * 它只做判断,不写库 —— 报一句 `outputs.importFiles`,由主进程调 `importAnyFiles`
  * 真去收(界面上那两颗「导入文件」按钮同一个函数)。为什么写库必须在主进程:资料库
