@@ -88,4 +88,7 @@ export interface DocumentCapabilities {
   needsSidecar: string[];
   /** 说明（直接给用户/模型看）。 */
   note: string;
+  /** 【ARC-007】各域的 ops 目录（GenOffice `guide <domain> --json` 的说明文本）。
+   *  让 Agent 不必猜 op 名；取不到时缺省。 */
+  opsGuides?: Record<string, string>;
 }

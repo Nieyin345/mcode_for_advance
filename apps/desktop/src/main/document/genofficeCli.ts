@@ -176,6 +176,16 @@ export async function sheetRead(ports: GenofficePorts, file: string, signal?: Ab
   return invoke(ports, ["sheet", "read", file, "--json"], signal ? { signal } : {});
 }
 
+/** `guide <domain> [op]`：机器可读的 ops 目录（`--json`）。Agent 据此知道"能做哪些编辑操作"，
+ *  而不是靠猜 op 名。只读、不碰文件。 */
+export async function guideOps(
+  ports: GenofficePorts, domain: "docs" | "slides" | "sheet" | "pdf" | "markdown", op?: string, signal?: AbortSignal,
+): Promise<GenofficeResult> {
+  const args = ["guide", domain, "--json"];
+  if (op !== undefined) args.push(op);
+  return invoke(ports, args, signal ? { signal } : {});
+}
+
 /** `convert`：格式转换。`out` 同样过路径围栏（CLI 会真的写它）。 */
 export async function convertFile(
   ports: GenofficePorts,

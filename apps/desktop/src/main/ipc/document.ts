@@ -24,7 +24,7 @@ import {
   type DocumentIpcResult,
 } from "@contracts/ipc";
 import { documentKindOf } from "@contracts/documentKind";
-import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, sheetRead, convertFile, type GenofficeResult } from "@main/document/genofficeCli.js";
+import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, sheetRead, convertFile, guideOps, type GenofficeResult } from "@main/document/genofficeCli.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 
@@ -157,7 +157,7 @@ export function registerDocumentHandlers(ipc: IpcMain): void {
     }));
   });
 
-  ipc.handle(IPC.DOCUMENT_CAPABILITIES, async (): Promise<DocumentCapabilities> => capabilities());
+  ipc.handle(IPC.DOCUMENT_CAPABILITIES, async (): Promise<DocumentCapabilities> => capabilities(p.ok ? p.ports : null));
 }
 
 function unavailable(): DocumentIpcResult {
@@ -168,7 +168,20 @@ function unavailable(): DocumentIpcResult {
   };
 }
 
-function capabilities(): DocumentCapabilities {
+async function capabilities(portsArg: { cliPath: string; withinWorkspace(q: string): boolean } | null): Promise<DocumentCapabilities> {
+  const base = capabilitiesStatic();
+  if (portsArg === null) return base;
+  // ops 目录：让 Agent 经 app_api_describe 就能看到"能做哪些编辑操作"。
+  // 失败只是少一段说明，不影响能力报告本身（如实标注）。
+  const guides: Record<string, string> = {};
+  for (const domain of ["docs", "slides"] as const) {
+    const r = await guideOps(portsArg, domain);
+    if (r.ok) guides[domain] = typeof r.envelope.summary === "string" ? r.envelope.summary : "";
+  }
+  return { ...base, opsGuides: guides };
+}
+
+function capabilitiesStatic(): DocumentCapabilities {
   const cliPath = resolveGenofficeCliPath(repoRoot());
   return {
     cli: { available: cliPath !== null, path: cliPath },
