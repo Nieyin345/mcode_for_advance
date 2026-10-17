@@ -201,8 +201,16 @@ section("6. 【ARC-005】Composer 外框接上游几何/阴影 token");
   // 三元组，裸写进 box-shadow 会展开成 "195 194 183"，整条声明在计算值阶段
   // 失效、阴影静默消失 —— 这正是 gen-cds-tokens 的 VAR_MAP 修复要钉住的。
   const tokens = read("src/renderer/tokens.cds.css");
-  const shadowDecls = tokens.split("\n").filter((l) => /--m-shadow-composer/.test(l)).join("\n");
-  check("★ Composer 阴影 token 存在(3 态)", (shadowDecls.match(/--m-shadow-composer/g) ?? []).length === 3, shadowDecls.length);
+  // 亮色与暗色各一组三态(resting / hover / focus)。暗色组不是重复:上游在
+  // `.dark` 里把 alpha 从 0.035 调到 0.4、focus 从 0.08 调到 0.65 —— 没有它,
+  // 深底上的卡片阴影几乎不可见。
+  const darkAt = tokens.indexOf(".dark {");
+  const lightPart = darkAt >= 0 ? tokens.slice(0, darkAt) : tokens;
+  const darkPart = darkAt >= 0 ? tokens.slice(darkAt) : "";
+  const countIn = (part: string): number => (part.match(/--m-shadow-composer/g) ?? []).length;
+  check("★ Composer 阴影 token 亮色 3 态", countIn(lightPart) === 3, countIn(lightPart));
+  check("★ Composer 阴影 token 暗色 3 态(上游 .dark 覆盖)", countIn(darkPart) === 3, countIn(darkPart));
+  const shadowDecls = lightPart + String.fromCharCode(10) + darkPart;
   const bareRefs = shadowDecls.replace(/rgb\(var\(--(edge|input-edge)\)\)/g, "WRAPPED");
   check("★ Composer 阴影引用边线色都包了 rgb()(防整条阴影静默失效)",
     !/var\(--(edge|input-edge)\)/.test(bareRefs), bareRefs.slice(0, 300));

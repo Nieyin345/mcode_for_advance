@@ -64,6 +64,27 @@ function parseGeometry(css) {
   return out;
 }
 
+/** 暗色主题里**重定义**的几何/阴影 token。
+ *
+ *  为什么必须单独取:上游用 `.dark` / `[data-mode="dark"]` 把阴影的 alpha 调强
+ *  (亮色 0.035 → 暗色 0.4、focus 0.08 → 0.65,并把边线换成半透明白)。只看第一处
+ *  定义会让 Mcode 的暗色主题沿用亮色阴影 —— 在深底上几乎看不见,卡片浮不起来。
+ *
+ *  只取 GEOMETRY_KEYS 里的键(色阶是主题无关的原始层,不在此列)。找不到暗色块
+ *  就返回空 Map(上游没有暗色覆盖也是合法状态),调用方据此决定是否生成 `.dark`。 */
+function parseDarkGeometry(css) {
+  const out = new Map();
+  const darkStart = css.search(/\[data-mode="dark"\]\s*,\s*\.dark\s*\{/);
+  if (darkStart < 0) return out;
+  // 从 dark 选择器起点截到文件尾:后续块里同名的不会再定义(上游结构如此)。
+  const dark = parseGeometry(css.slice(darkStart));
+  for (const key of GEOMETRY_KEYS) {
+    const value = dark.get(key);
+    if (value !== undefined) out.set(key, value);
+  }
+  return out;
+}
+
 function parseRamps(css) {
   const ramp = new Map();
   for (const line of css.split("\n")) {
@@ -138,6 +159,15 @@ for (const [name, value] of [...geometry].sort(([a], [b]) => (a < b ? -1 : 1))) 
   lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${remapVars(value)};`);
 }
 lines.push("}", "");
+// 暗色覆盖:同名 token 在 `.dark` 下重定。上游没有暗色块时整段省略(不留空块)。
+const darkGeometry = parseDarkGeometry(upstream);
+if (darkGeometry.size > 0) {
+  lines.push("/* 暗色覆盖:上游 .dark 重定义的阴影(alpha 调强、边线换半透明白)。", " * 没有这段,暗色下卡片阴影会沿用亮色的 0.035 alpha,几乎不可见。 */", ".dark {");
+  for (const [name, value] of [...darkGeometry].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${remapVars(value)};`);
+  }
+  lines.push("}", "");
+}
 
 const output = lines.join("\n");
 if (process.argv.includes("--check")) {
@@ -150,8 +180,8 @@ if (process.argv.includes("--check")) {
     console.error("tokens.cds.css 与上游不一致 —— 重跑 node scripts/gen-cds-tokens.mjs");
     process.exit(1);
   }
-  console.log(`tokens.cds.css 与上游一致(${ramps.size} 个色阶 + ${geometry.size} 个几何/阴影)。`);
+  console.log(`tokens.cds.css 与上游一致(${ramps.size} 个色阶 + ${geometry.size} 个几何/阴影 + ${darkGeometry.size} 个暗色覆写)。`);
 } else {
   writeFileSync(outPath, output, "utf8");
-  console.log(`wrote ${ramps.size} ramps + ${geometry.size} geometry tokens → ${outPath}`);
+  console.log(`wrote ${ramps.size} ramps + ${geometry.size} geometry + ${darkGeometry.size} dark overrides → ${outPath}`);
 }
