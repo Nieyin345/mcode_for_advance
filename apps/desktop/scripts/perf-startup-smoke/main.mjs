@@ -55,7 +55,6 @@ try{
     // Retired 2026-09-28 (7862578): library/file Office preview moved to the
     // OnlyOffice viewer, so nothing renders these any more. Keep guarding the
     // static graph; the "still bundled" half no longer applies.
-    ['docx-preview','/docx-preview/','retired'],
     ['pptx-preview','/pptx-preview/','retired'],
     ['@js-preview/excel','/@js-preview/excel/','retired'],
     ['KaTeX (rehype-katex, chat math)','/rehype-katex/'],

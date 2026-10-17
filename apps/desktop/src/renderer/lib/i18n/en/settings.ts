@@ -1088,6 +1088,7 @@ export const en = {
   "settings.skills.nodesFromWorkflow": "Workflow",
   "settings.skills.nodesLoadFailed": "Failed to read workflows: {error}",
   "settings.skills.nodesIncomplete": "{n} workflow(s) could not be read — the \"not used by any node\" list below may be missing names they reference; do not use it as a cleanup basis.",
+  "settings.skills.nodesEmptyIncomplete": "The catalog is incomplete — some workflows could not be read, so whether any node uses them cannot be determined; do not conclude \"no node uses anything\".",
   "settings.skills.sourceGlobal": "Global",
   "settings.skills.sourceBuiltin": "Built-in",
   "settings.skills.builtinReadOnly": "Built-in skill — ships with the app, read-only",

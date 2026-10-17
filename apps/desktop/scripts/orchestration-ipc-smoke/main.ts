@@ -1,4 +1,3 @@
-import { loadAutomationHistory } from "@renderer/lib/automationHistory.js";
 import type { RpcMap } from "@contracts/ipc";
 /**
  * Headless smoke for **`main/ipc/orchestration.ts`** 与 **`main/orchestration/nodeTypesSeed.ts`**
@@ -1312,19 +1311,10 @@ console.log("\n对话里那张「跑过什么」");
   eq("限制条数仍保留最新项目运行", (await history(1))[0]?.runId, "r_project_B");
   eq("后台会话入口认最近运行而非最近创建会话", obj(await callAsync(IPC.AUTOMATION_SESSIONS, { workflowId: "wf_hist" })).sessionId, "s_hist_B");
   same("会话入口包含所有项目且不含聊天会话", (obj(await callAsync(IPC.AUTOMATION_SESSIONS, { workflowId: "wf_hist" })).sessionIds as string[]).sort(), ["s_hist_B", "s_smoke_auto"]);
-  const port = {
-    sessions: ((input) => callAsync(IPC.AUTOMATION_SESSIONS, input)) as RpcMap["automation.sessions"],
-    history: ((input) => callAsync(IPC.RUNS_HISTORY, input)) as RpcMap["runs.history"],
-  };
-  const detailed = await loadAutomationHistory("wf_hist", port);
-  same("真实历史面板加载器保留全部项目且过滤其他工作流", detailed.map(r => r.runId).sort(), ["r_broken", "r_future", "r_ok", "r_project_B"]);
-  eq("历史面板跨项目排序", detailed[0]?.runId, "r_project_B");
-  eq("历史面板全局限制条数", (await loadAutomationHistory("wf_hist", port, 2)).length, 2);
-  eq("旧版单会话响应仍可读取", (await loadAutomationHistory("wf_hist", { ...port, sessions: async () => ({ sessionId: "s_smoke_auto" }) })).length, 3);
-  eq("尚无会话时历史面板为空", (await loadAutomationHistory("wf_hist", { ...port, sessions: async () => ({ sessionId: null }) })).length, 0);
-  let reads = 0;
-  await loadAutomationHistory("wf_hist", { ...port, sessions: async () => ({ sessionId: "s_hist_B", sessionIds: ["s_hist_B", "s_hist_B"] }), history: async (input) => { reads++; return port.history(input); } });
-  eq("重复会话 id 只查询一次", reads, 1);
+  // 【2026-10-17】`@renderer/lib/automationHistory.ts` 已删除:它唯一的消费方(旧自动化
+  // 历史面板)已由 `automation.runs` 单通道取代,该模块在 src 里零 import。这里原先
+  // 那一组 loadAutomationHistory 断言随之删除 —— 被测函数不存在了,留着只会测一个副本。
+  // `runs.history` 通道本身仍被 `WorkflowBoardPanel` 使用,上一段的 handler 断言继续覆盖。
 
 }
 

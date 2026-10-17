@@ -378,74 +378,12 @@ test("shared approval/question UI uses the active provider name", () => {
   assert.match(slash, /provider: engineName/);
 });
 
-test("shared status bar presents each provider's own checking/ready/error health", async () => {
-  const { describeStatusBar } = await import("../../src/renderer/components/layout/statusBarPresentation.ts");
-  const labels = {
-    "layout.status.checkingProvider": "Checking…",
-    "layout.status.providerUnavailable": "Unavailable",
-    "layout.status.healthTimeout": "Check timed out",
-    "layout.status.healthCancelling": "Cancelling (releasing resources)…",
-    "layout.status.healthUnknown": "Status unknown",
-    "layout.status.providerNotRegistered": "Not registered",
-    "layout.status.healthUnsupported": "Check unsupported",
-    "layout.status.ready": "Ready",
-    "layout.status.auto": "Auto",
-    "layout.status.selectModel": "Select a model",
-  };
-  const t = (key) => labels[key];
-  const pi = describeStatusBar({
-    providerId: "pi-sdk", providerName: "Pi",
-    health: { loading: false, ok: true, version: "1.2.3" },
-    model: "default", customModelName: "Stale Claude gateway", t,
-  });
-  assert.deepEqual(pi, {
-    statusText: "Pi · Ready · 1.2.3", statusColor: "text-accent",
-    statusMissing: false, statusTitle: undefined, modelLabel: "Select a model",
-  });
-  const codex = describeStatusBar({
-    providerId: "codex-sdk", providerName: "Codex",
-    health: { loading: true, ok: null },
-    model: "gpt-5-codex", t,
-  });
-  assert.equal(codex.statusText, "Codex · Checking…");
-  assert.equal(codex.modelLabel, "gpt-5-codex");
-  const claude = describeStatusBar({
-    providerId: "claude-sdk", providerName: "Claude",
-    health: { loading: false, ok: false, error: "missing binary" },
-    model: "sonnet", customModelName: "Custom gateway", t,
-  });
-  assert.equal(claude.statusText, "Claude · Unavailable");
-  assert.equal(claude.statusColor, "text-danger");
-  assert.equal(claude.statusMissing, true);
-  assert.equal(claude.statusTitle, "missing binary");
-  assert.equal(claude.modelLabel, "Custom gateway · Sonnet");
-  const timeout = describeStatusBar({
-    providerId: "codex-sdk", providerName: "Codex",
-    health: { loading: false, ok: false, code: "timeout", error: "slow" },
-    model: "default", t,
-  });
-  assert.equal(timeout.statusText, "Codex · Check timed out");
-  // 【MC-076】超时后底层资源正在释放 → 中性态,不是红色"不可用"。
-  const cancelling = describeStatusBar({
-    providerId: "codex-sdk", providerName: "Codex",
-    health: { loading: false, ok: false, code: "cancelling", error: "releasing" },
-    model: "default", t,
-  });
-  assert.equal(cancelling.statusText, "Codex · Cancelling (releasing resources)…");
-  assert.equal(cancelling.statusMissing, false, "cancelling must not read as Unavailable");
-  assert.equal(cancelling.statusColor, "text-content-subtle", "cancelling is neutral, not danger");
-  assert.equal(cancelling.statusTitle, "releasing");
-  const unknown = describeStatusBar({
-    providerId: "codex-sdk", providerName: "Codex",
-    health: { loading: false, ok: false, code: "unknown", error: "?" },
-    model: "default", t,
-  });
-  assert.equal(unknown.statusText, "Codex · Status unknown");
-  const component = readFileSync(resolve(here, "../../src/renderer/components/layout/StatusBar.tsx"), "utf8");
-  assert.match(component, /describeStatusBar\(/, "the visible component must use the tested presenter");
-  assert.match(component, /force: true/, "failed status must offer a forced retry");
-});
-
+// 【2026-10-17】`StatusBar.tsx` 与其 presenter(`statusBarPresentation.ts`)已删除 ——
+// 全渲染端没有任何组件渲染它们(死代码,见台账 MC-013 同类)。原先这里的 presenter
+// 断言测的是一个**没人调用的函数**,留着它只会制造"健康状态展示已被验证"的假象。
+// 状态的实际呈现点现在是 `ChatPane` 的 `providerName` 传递与 composer 的引擎标签,
+// 由上面那条 "shared provider identity" 断言覆盖;`providerHealthById` 的读取/刷新
+// 链路由下一条 "provider health check is wired…" 覆盖。
 test("provider health check is wired across desktop, web/mobile and provider-scoped state", () => {
   const files = [
     "../../src/main/ipc/claude.ts",

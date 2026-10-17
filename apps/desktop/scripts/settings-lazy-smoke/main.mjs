@@ -46,7 +46,6 @@ try{
   const chain=p=>{const c=[];for(let x=p;x;x=set.get(x))c.unshift(short(x));return c.join(' -> ');};
   const HEAVY=[['Monaco editor','/node_modules/monaco-editor/'],['@monaco-editor/react','/@monaco-editor/react/'],
     ['Milkdown','/@milkdown/'],['CodeMirror','/@codemirror/'],['EmbedPDF','/@embedpdf/'],['xterm','/@xterm/xterm/'],
-    ['docx-preview','/docx-preview/'],['pptx-preview','/pptx-preview/'],['@js-preview/excel','/@js-preview/excel/'],
     ['Monaco setup (workers/themes)','src/renderer/lib/monacoSetup.ts'],['FileEditor','src/renderer/components/ide/FileEditor.tsx']];
   for(const [label,frag] of HEAVY){
     const hit=[...set.keys()].find(k=>norm(k).includes(frag));
