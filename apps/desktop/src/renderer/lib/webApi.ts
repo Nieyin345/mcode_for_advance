@@ -927,6 +927,14 @@ export function createWebApi(): Api {
     } satisfies Api["projectInit"],
     // Scene planning/preflight is desktop-only in v1 (SceneSpec compilation and the
     // host capability inventory live in the main process). Reject explicitly.
+    // 【ARC-007】文档能力在手机上**故意不做**:文档编辑是坐在那台机器前的动作,
+    // 且需要本机 GenOffice CLI。明确 unsupported(与 scene.* 同一取舍)。
+    document: {
+      read: async () => webUnsupported("document.read"),
+      edit: async () => webUnsupported("document.edit"),
+      convert: async () => webUnsupported("document.convert"),
+      capabilities: async () => webUnsupported("document.capabilities"),
+    } satisfies Api["document"],
     scene: {
       plan: async () => webUnsupported("scene.plan"),
       preflight: async () => webUnsupported("scene.preflight"),

@@ -146,15 +146,15 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "全部命令模板(守望面板的下拉)。**无参 handler**,同 `workflow.agentProfiles`。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ templates: { id: string; name: string; command: string; }[]; health: 'valid' | 'absent' | 'corrupt' | 'partial' | 'read_error' // 【MC-054】设置的完整性:absent=没配过 / valid / partial=有条目读不出(problems 列出) / corrupt=整份坏 / read_erro…; problems: string[] }"
+  "output": "{ templates: { id: string; name: string; command: string; }[]; health: 'valid' | 'absent' | 'corrupt' | 'partial' | 'read_error' // 【MC-054】设置的完整性:absent=没配过 / valid / partial=有条目读不出(problems 列出) / corrupt=整份坏 / read_erro…; problems: string[]; revision?: stri…"
  },
  {
   "method": "automation.watchTemplatesSave",
   "channel": "automation:watchTemplatesSave",
-  "doc": "存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。",
-  "input": "{ templates: { id: string; name: string; command: string; }[] }",
-  "inputFull": "{ templates: { id: string; name: string; command: string; }[] }",
-  "output": "{ ok: boolean; error?: string | undefined }"
+  "doc": "存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。 【MC-054】带 `expectedRevision` 时做原值版本检查:盘上已被别处改动 → `ok:false` 并说明,不覆盖对方刚保存的内容(两端并发编辑不再静默丢更新)。",
+  "input": "{ templates: { id: string; name: string; command: string; }[]; expectedRevision?: string | undefined // 【MC-054】**原值版本检查** —— 保存方上次读到的 revision(见 `automation.watchTemplates` 的返回值)。给了就必须与当前盘上一致:… }",
+  "inputFull": "{ templates: { id: string; name: string; command: string; }[]; expectedRevision?: string | undefined // 【MC-054】**原值版本检查** —— 保存方上次读到的 revision(见 `automation.watchTemplates` 的返回值)。给了就必须与当前盘上一致:… }",
+  "output": "{ ok: boolean; error?: string | undefined; conflict?: boolean | undefined; currentRevision?: string | undefined }"
  },
  {
   "method": "browser.authRespond",
@@ -595,6 +595,38 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "(无参数)",
   "inputFull": "(无参数)",
   "output": "{ path: string | null }"
+ },
+ {
+  "method": "document.capabilities",
+  "channel": "document:capabilities",
+  "doc": "【ARC-007】报告本机文档能力(CLI 在不在、哪些路由需要 headless 宿主/原生 sidecar)。",
+  "input": "(无参数)",
+  "inputFull": "(无参数)",
+  "output": "{ cli: { available: boolean; path: string | null; } // CLI bundle 是否可用。; local: string[] // 不需要额外宿主即可运行的路由。; needsApp: string[] // 需要 headless Electron（`GENOFFICE_APP_BIN`）的路由。; needsSidecar: string[] // 需要原生 sidecar（Rust xlsx）/ wasm 的路由。; note: string // 说明（…"
+ },
+ {
+  "method": "document.convert",
+  "channel": "document:convert",
+  "doc": "【ARC-007】格式转换(输出路径同样过围栏)。",
+  "input": "{ to: string; inputPath: string; outputPath: string // 输出路径；必须同样落在已知工作区内。; force?: boolean | undefined }",
+  "inputFull": "{ to: string; inputPath: string; outputPath: string // 输出路径；必须同样落在已知工作区内。; force?: boolean | undefined }",
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown } | { ok: false; kind: 'failed' | 'unavailable' | 'refused'; reason: string; code?: string | number | undefined }"
+ },
+ {
+  "method": "document.edit",
+  "channel": "document:edit",
+  "doc": "【ARC-007】按 GenOffice ops 编辑并保存。`dryRun` 只演练。路径同样过工作区围栏。",
+  "input": "{ filePath: string; ops: unknown[] // GenOffice 的 ops 数组（形状由 CLI 校验；CAS 见计划 B.2）。; dryRun?: boolean | undefined // 只演练不写盘。; track?: boolean | undefined // docx：把内容编辑记成修订。 }",
+  "inputFull": "{ filePath: string; ops: unknown[] // GenOffice 的 ops 数组（形状由 CLI 校验；CAS 见计划 B.2）。; dryRun?: boolean | undefined // 只演练不写盘。; track?: boolean | undefined // docx：把内容编辑记成修订。 }",
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown } | { ok: false; kind: 'failed' | 'unavailable' | 'refused'; reason: string; code?: string | number | undefined }"
+ },
+ {
+  "method": "document.read",
+  "channel": "document:read",
+  "doc": "【ARC-007】读文档结构(docx 块 / pptx 页 / xlsx 表)。**只读**,路径必须落在已知工作区内。",
+  "input": "{ filePath: string // 绝对路径；必须落在某个已知工作区根内（主进程复核，不采信调用方）。; full?: boolean | undefined // 仅 docx 有效：返回全文而非预览。; range?: string | undefined // 仅 docx 有效：块索引范围（CLI 语法 `a-b`）。 }",
+  "inputFull": "{ filePath: string // 绝对路径；必须落在某个已知工作区根内（主进程复核，不采信调用方）。; full?: boolean | undefined // 仅 docx 有效：返回全文而非预览。; range?: string | undefined // 仅 docx 有效：块索引范围（CLI 语法 `a-b`）。 }",
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown } | { ok: false; kind: 'failed' | 'unavailable' | 'refused'; reason: string; code?: string | number | undefined }"
  },
  {
   "method": "engineTools.get",

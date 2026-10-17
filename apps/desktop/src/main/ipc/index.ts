@@ -1,5 +1,6 @@
 import { registerProjectInitHandlers } from "./projectInit.js";
 import { registerSceneHandlers } from "./scene.js";
+import { registerDocumentHandlers } from "./document.js";
 import { registerUnattendedHandlers } from "./unattended.js";
 import { registerModuleHandlers } from "./modules.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
@@ -112,6 +113,7 @@ export function registerIpcHandlers(): void {
   registerMemoryHandlers(ipc);
   registerProjectInitHandlers(ipc);
   registerSceneHandlers(ipc);
+  registerDocumentHandlers(ipc);
   registerUnattendedHandlers(ipc);
   registerMemoryAssistantHandlers(ipc);
   registerMonitoringHandlers(ipc);

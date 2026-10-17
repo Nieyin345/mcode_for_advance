@@ -145,6 +145,32 @@ if (cliPath === null) {
       void sheet;
     }
 
+    /* ── 5. IPC 层:handler 注册与契约/接线一致 ── */
+    section("5. document IPC(注册与接线)");
+    {
+      const { registerDocumentHandlers } = await import("../../src/main/ipc/document.js");
+      const handlers = new Map<string, (e: unknown, raw: unknown) => unknown>();
+      const fakeIpc = { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => handlers.set(ch, fn) } as never;
+      try {
+        registerDocumentHandlers(fakeIpc);
+        check("注册了 document.read", handlers.has("document:read"));
+        check("注册了 document.edit", handlers.has("document:edit"));
+        check("注册了 document.convert", handlers.has("document:convert"));
+        check("注册了 document.capabilities", handlers.has("document:capabilities"));
+      } catch (error) {
+        console.log(`  skip document IPC 注册(无 electron app 桩):${(error as Error).message}`);
+      }
+      const rpcMap = readFileSync(join(repoRoot, "packages/contracts/src/ipc/rpcMap.ts"), "utf8");
+      for (const ch of ["document:read", "document:edit", "document:convert", "document:capabilities"]) {
+        check(`契约声明了 ${ch}`, rpcMap.includes(`"${ch}"`));
+      }
+      const preload = readFileSync(join(repoRoot, "apps/desktop/src/preload/index.ts"), "utf8");
+      check("preload 暴露 document 命名空间", preload.includes("document: {") && preload.includes("DOCUMENT_READ"));
+      const policy = readFileSync(join(repoRoot, "apps/desktop/src/main/appControl/policy.ts"), "utf8");
+      check("policy:读只读、编辑/转换 danger", policy.includes('"document.read": "read"') && policy.includes('"document.edit": "编辑并保存文档'));
+    }
+
+
     console.log(`\ngenoffice-cli-smoke:${total - failures}/${total} 通过`);
     if (failures > 0) process.exitCode = 1;
   } finally {

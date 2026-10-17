@@ -117,6 +117,10 @@ const BLOCKED: Record<string, string> = {
   // 【MC-002】只读列表也不给 agent:它带整条部署记录(步骤/资源 uid/错误),是"用户看"
   // 的面,且与 approve/apply/resume 同一族(agent 拿到也做不了任何事,只会误以为能自行续跑)。
   "scene.listDeployments": "场景部署记录只在桌面预览页展示",
+  // 【ARC-007】文档能力:读走只读档;编辑/转换写盘 —— 走 write 档(弹审批),
+  // 与其它写功能同一条纪律。capabilities 是只读诊断。
+  "document.read": "read",
+  "document.capabilities": "read",
   // 【MC-059】无人值守任务计划的两条**写**通道 —— 与 `scene.approve` / `scene.apply` 完全
   // 同一条纪律:批准一份会**真的建会话 / 发首条消息**的计划,是「用户点头」这件事本身。
   // agent 任何理由都不该自己批自己的计划(批了就等于自己给自己授权去建会话),故直接
@@ -184,6 +188,9 @@ const DANGER: Record<string, string> = {
   "project.delete": "彻底删除项目及其全部对话(不可恢复)",
   "session.delete": "彻底删除对话(不可恢复)",
   "file.delete": "删除文件",
+  // 【ARC-007】文档编辑/转换会**直接改写用户文档** —— 与删除同档(每次问、不可撤销)。
+  "document.edit": "编辑并保存文档(会改写原文件)",
+  "document.convert": "格式转换并写出新文件",
   "library.deleteItems": "从资料库删除条目(可选连文件一起删)",
   "library.deleteCollection": "删除资料库分类",
   "app.moveDataRoot": "迁移整个数据目录并重启应用",
@@ -468,6 +475,8 @@ export const DOMAIN_LABELS: Record<string, string> = {
   monitoring: "监控总览",
   projectInit: "项目初始化模板:列出、读、存、删、预览、应用",
   scene: "场景:校验候选声明、编译变更计划、部署前能力预检(只读,不执行)",
+  // 【ARC-007】文档能力(GenOffice CLI 适配层):结构化读、按 ops 编辑、格式转换、能力诊断。
+  document: "文档:读取结构(Word/PPT/Excel)、按操作编辑保存、格式转换、本机能力诊断",
   // 【MC-059】无人值守计划:用户签发计划级授权 + 有界执行(appServices/unattendedTaskPlan)。
   // 两条都在 BLOCKED 档(agent 够不到,见上),这里只给 `app_api_list` 一个域标签。
   unattended: "无人值守任务计划:用户签发计划级授权、有界执行(建会话)",
@@ -541,6 +550,7 @@ export const DOMAIN_TASK_ALIASES: Record<string, readonly string[]> = {
   monitoring: ["监控", "总览", "monitoring", "overview"],
   projectInit: ["项目模板", "初始化模板", "脚手架", "template", "scaffold"],
   scene: ["场景", "部署", "预检", "scene", "deploy", "preflight"],
+  document: ["文档", "编辑文档", "word", "docx", "ppt", "pptx", "excel", "xlsx", "pdf", "转换格式", "document", "convert"],
   unattended: ["无人值守", "计划授权", "自动执行计划"],
   unattendedPlans: ["未完成的计划", "续跑", "计划恢复"],
   skills: ["技能", "skill", "技能库"],

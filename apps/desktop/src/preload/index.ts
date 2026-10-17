@@ -1012,6 +1012,14 @@ const api = {
     // 【MC-002】重启后**发现**未完成部署(只读,不执行)—— 渲染端据此恢复"有未完成部署"入口。
     listDeployments: ((input) => ipcRenderer.invoke(IPC.SCENE_LIST_DEPLOYMENTS, input)) as RpcMap["scene.listDeployments"],
   },
+  // 【ARC-007】文档能力(GenOffice CLI 适配层)。用户点按钮与 Agent 的 app_api_call
+  // 走同一段主进程代码;路径围栏在宿主侧复核。
+  document: {
+    read: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_READ, input)) as RpcMap["document.read"],
+    edit: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_EDIT, input)) as RpcMap["document.edit"],
+    convert: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_CONVERT, input)) as RpcMap["document.convert"],
+    capabilities: (() => ipcRenderer.invoke(IPC.DOCUMENT_CAPABILITIES)) as RpcMap["document.capabilities"],
+  },
   unattended: {
     // 无人值守任务计划:用户签发计划级授权 + 正式执行。**只有桌面渲染端**够得到
     // (agent 侧 policy.ts 判 blocked,mobile 的 webApi 里显式 unsupported)—— 批准一份会
