@@ -613,7 +613,11 @@ test("workflow provider overrides survive node-session reuse and drive provider-
   assert.match(resultCard, /chatStream\.workflowStep\.engine/);
 
   const automation = readFileSync(resolve(here, "../../src/main/orchestration/automationRunner.ts"), "utf8");
-  assert.match(automation, /origin\?\.providerId \?\? configuredProviderId \?\? DEFAULT_PROVIDER_ID/);
+  // 【MC-013】默认引擎收敛到唯一出口后,表达式里的末段由契约常量换成了 defaultProviderId()
+  // —— 判据仍是"没有显式/配置的引擎时落到默认引擎",且必须**走那唯一出口**(不再
+  // 各自 import 常量)。两条断言分开钉:形状 + 出口。
+  assert.match(automation, /origin\?\.providerId \?\? configuredProviderId \?\? defaultProviderId\(\)/);
+  assert.ok(!/DEFAULT_PROVIDER_ID/.test(automation), "automation must use the single defaultProviderId() exit, not the raw constant");
   assert.match(automation, /origin\?\.model \?\? configuredModel \?\? "default"/);
   const nodeTypes = readFileSync(resolve(here, "../../src/main/orchestration/nodeTypes.ts"), "utf8");
   assert.match(nodeTypes, /label: "无人值守引擎"/);
