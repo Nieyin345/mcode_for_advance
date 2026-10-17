@@ -29,6 +29,35 @@ await withAuditPage(here,async page=>{
   await page.send('Input.insertText',{text:'SHOULD_NOT_EDIT'});
   await page.sleep(500);
   check('preview does not write or normalize source to disk',await page.eval('__previewAudit.audit.writes.length===0&&!document.querySelector(".milkdown .ProseMirror").textContent.includes("SHOULD_NOT_EDIT")'));
+  // 【MC-055】只读预览的表格是 content-first:短列紧凑、长列拿宽度,而不是 50/50。
+  // 判据立在**真实布局**上(同一页面、真 Crepe CSS),不是在源码里 grep 一条 CSS。
+  await page.eval(`(() => {
+    const host = document.createElement("div");
+    host.id = "table-fixture";
+    host.className = "mcode-markdown-preview";
+    host.style.cssText = "width: 860px; padding: 0;";
+    host.innerHTML = '<div class="milkdown"><div class="editor"><div class="ProseMirror"><div class="tableWrapper"><table><tbody>'
+      + '<tr><th><p>ID</p></th><th><p>' + "这是一段很长很长的说明文字,用来验证长列会按内容获得更多宽度而不是被平均分配".repeat(2) + '</p></th></tr>'
+      + '<tr><td><p>1</p></td><td><p>短</p></td></tr>'
+      + '</tbody></table></div></div></div></div>';
+    document.body.appendChild(host);
+  })()`);
+  const tableLayout = await page.eval('getComputedStyle(document.querySelector("#table-fixture table")).tableLayout');
+  check('★ [MC-055] 只读预览表格不是 fixed 等宽', tableLayout === 'auto', tableLayout);
+  const widths = await page.eval('Array.from(document.querySelectorAll("#table-fixture th")).map(th => Math.round(th.getBoundingClientRect().width))');
+  check('★ [MC-055] 短列明显小于长列(内容优先)', widths.length === 2 && widths[0] < widths[1] * 0.5, widths);
+  const wrapperScrolls = await page.eval('getComputedStyle(document.querySelector("#table-fixture .tableWrapper")).overflowX');
+  check('★ [MC-055] 超宽表格在块内横向滚动', wrapperScrolls === 'auto', wrapperScrolls);
+  // `width: max-content` 的**行为**判据:自然宽度超过容器时表格真的伸出去,由 wrapper
+  // 滚 —— 这与 `width: 100% + auto` 有本质区别(后者会把列压回收缩,永远不溢出不滚动)。
+  await page.eval(`(() => {
+    const t = document.querySelector("#table-fixture table");
+    const cols = Array.from({ length: 8 }, (_, i) => '<th><p>' + '非常长的列标题文字'.repeat(4) + i + '</p></th>').join("");
+    t.querySelector("thead") ?? t.insertAdjacentHTML("afterbegin", "<thead><tr>" + cols + "</tr></thead>");
+  })()`);
+  const overflow = await page.eval('(() => { const w = document.querySelector("#table-fixture .tableWrapper"); const t = document.querySelector("#table-fixture table"); return { table: Math.round(t.getBoundingClientRect().width), wrapper: Math.round(w.getBoundingClientRect().width), scrollable: w.scrollWidth > w.clientWidth }; })()');
+  check('★ [MC-055] 宽表按内容伸出并可横向滚动(不是被压回 100%)', overflow.table > overflow.wrapper && overflow.scrollable, overflow);
+  await page.eval('document.querySelector("#table-fixture")?.remove()');
   await page.eval('__switchPreview("second")');
   await page.waitFor('__previewAudit.imageReads.includes("C:/isolated/second/images/ref.png")');
   check('switching document changes image base without stale editor',await page.eval('document.querySelectorAll(".milkdown .ProseMirror").length===1'));

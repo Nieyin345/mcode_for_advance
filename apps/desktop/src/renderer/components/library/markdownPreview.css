@@ -1,4 +1,50 @@
+/**
+ * 【MC-055】只读 Markdown 预览的表格宽度 —— 与聊天/工作区的 content-first 规则对齐。
+ *
+ * ## 为什么需要覆盖（不改第三方包）
+ *
+ * `@milkdown/prose` 的 `tables.css` 给编辑器定了
+ *
+ *   `.ProseMirror table { table-layout: fixed; width: 100%; }`
+ *
+ * 这对**编辑**是对的：拖动列宽时列宽必须稳定，否则内容一多列就跳。但它被
+ * `MarkdownPreviewPane`（资料库只读预览）原样继承，于是「第一列只有 ID、第二列是
+ * 长句」的表格被平均分成两半 —— 台账 MC-055 的实测是 409/409px，短列浪费、长列
+ * 挤成竖条。聊天与工作区只读预览走的是 `react-markdown`（`chat/Markdown.tsx`），
+ * 早就用 `max-content + min-width:100%` 做内容优先，同一个文档两处排版不一致。
+ *
+ * ## 只限定在只读外壳里
+ *
+ * 作用域钉在 `.mcode-markdown-preview`（`MarkdownPreviewPane` 自己的根 class）；
+ * `MarkdownEditorPane` 的编辑器**没有**这个 class，所以编辑态的列宽拖拽、手动
+ * `colwidth`、ProseMirror 的 `column-resize-handle` 一行都不受影响。台账明确要求
+ * 「不得一处 CSS hack 让可编辑表格的手动列宽和光标行为倒退」，这就是那条边界。
+ *
+ * ## 规则逐条对应聊天侧
+ *
+ * - `table-layout: auto` —— 让浏览器按内容分配列宽；
+ * - `width: max-content` + `min-width: 100%` —— 内容稀疏时仍铺满（与从前观感一致），
+ *   内容超宽时按自然宽度伸出，由 `.tableWrapper` 的 `overflow-x: auto` 滚动
+ *   （上游已经给了这个 wrapper，不要再造一层）；
+ * - 单元格 `max-width: 32ch` —— 长散文在可读尺度换行，而不是拉成一条巨长的行
+ *   （聊天侧 `th/td` 的 `max-w-[32ch]` 是同一个数字）。
+ *
+ * ⚠️ **将来若在预览里加了编辑入口**：不能把这条规则套到可编辑的 ProseMirror 上 ——
+ * 那正是上面说的"手动列宽倒退"。给编辑态一个不同的根 class。
+ */
+
 .mcode-markdown-preview .milkdown .editor { padding: 12px 16px; min-height: 0; }
 .mcode-markdown-preview .milkdown { min-width: 0; }
 .mcode-markdown-preview img { max-width: 100%; height: auto; }
 .mcode-markdown-preview .milkdown .ProseMirror { overflow-wrap: anywhere; }
+
+/* 【MC-055】content-first 表格 —— 与 chat/Markdown.tsx 的 w-max/min-w-full/32ch 同源。 */
+.mcode-markdown-preview .milkdown .ProseMirror table {
+  table-layout: auto;
+  width: max-content;
+  min-width: 100%;
+}
+.mcode-markdown-preview .milkdown .ProseMirror th,
+.mcode-markdown-preview .milkdown .ProseMirror td {
+  max-width: 32ch;
+}
