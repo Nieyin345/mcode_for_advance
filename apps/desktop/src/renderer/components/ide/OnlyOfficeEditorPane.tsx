@@ -68,6 +68,28 @@ function originOf(url: string): string {
   }
 }
 
+/** 我们在**全局对象本身**上做的来源标记。
+ *
+ *  为什么不能只靠模块级 `docsApiOrigin`:模块状态活不过 HMR/重新初始化,而厂商脚本
+ *  只注册一次全局 —— 重载后我们会看到一个"来源未知"的全局。台账 MC-056 的复核
+ *  反例正是这一支:来源未知时按"就是本次请求的那台"接受,等于把 A 的 SDK 冒充成 B。
+ *  把来源钉在**全局对象**上,标记与全局同生共死:模块重载后仍可核对;外部注入的
+ *  全局没有标记 → 无法证明来源 → fail-closed(宁可报错要求重启,也不混用)。 */
+const ORIGIN_MARKER = "__mcodeDocsApiOrigin";
+
+function markOrigin(global: DocsApiGlobal, origin: string): void {
+  try {
+    (global as unknown as Record<string, unknown>)[ORIGIN_MARKER] = origin;
+  } catch {
+    // 冻结对象:标记写不进去也没关系 —— 读回来是 undefined,一律按"无法证明来源"处理。
+  }
+}
+
+function markedOriginOf(global: DocsApiGlobal): string | null {
+  const v = (global as unknown as Record<string, unknown>)[ORIGIN_MARKER];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 /** 按 URL 缓存的 api.js 加载器(见文件头"只能加载一次")。 */
 const scriptLoads = new Map<string, Promise<DocsApiGlobal>>();
 function loadDocsApi(url: string): Promise<DocsApiGlobal> {
@@ -76,16 +98,27 @@ function loadDocsApi(url: string): Promise<DocsApiGlobal> {
   const requestedOrigin = originOf(url);
   const p = new Promise<DocsApiGlobal>((resolve, reject) => {
     if (window.DocsAPI) {
-      if (docsApiOrigin !== null && docsApiOrigin !== requestedOrigin) {
+      // 页面里已有全局:先核对**可验证的**来源,再决定用不用。
+      //   1. 全局带标记且与本次请求同源 → 用它(同源重复打开 / HMR 后重载);
+      //   2. 全局带标记但不同源 → 拒绝(单例全局无法原地替换);
+      //   3. 全局**没有标记** → 来源无法证明(外部注入 / 旧版本加载器残留)。
+      //      台账明确要求这一支 fail-closed:不能假定它来自本次请求的服务器。
+      const known = markedOriginOf(window.DocsAPI) ?? docsApiOrigin;
+      if (known === null) {
         reject(new Error(
-          `OnlyOffice SDK was loaded from ${docsApiOrigin}, but this document asks for ${requestedOrigin}. ` +
+          `Cannot verify which Document Server the loaded OnlyOffice SDK belongs to ` +
+          `(requested ${requestedOrigin}). The vendor script installs a single global that cannot be ` +
+          "swapped in place — restart Mcode to load the requested server.",
+        ));
+        return;
+      }
+      if (known !== requestedOrigin) {
+        reject(new Error(
+          `OnlyOffice SDK was loaded from ${known}, but this document asks for ${requestedOrigin}. ` +
           "The vendor script installs a single global and cannot be swapped in place — restart Mcode before using the new Document Server.",
         ));
         return;
       }
-      // 来源未知(页面在本次加载前就已经有 DocsAPI):按"就是这一台"接受,并把来源
-      // 钉成它 —— 从这一刻起再切别的服务器就会被上面那条挡住。
-      docsApiOrigin ??= requestedOrigin;
       resolve(window.DocsAPI);
       return;
     }
@@ -95,6 +128,8 @@ function loadDocsApi(url: string): Promise<DocsApiGlobal> {
     s.onload = () => {
       if (window.DocsAPI) {
         docsApiOrigin = requestedOrigin;
+        // 标记钉在全局上(见 ORIGIN_MARKER):模块重载后仍能核对来源。
+        markOrigin(window.DocsAPI, requestedOrigin);
         resolve(window.DocsAPI);
       } else reject(new Error("api.js loaded but DocsAPI is missing"));
     };

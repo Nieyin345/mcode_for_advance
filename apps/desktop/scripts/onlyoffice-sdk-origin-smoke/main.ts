@@ -108,25 +108,59 @@ check("★ 切到 B：被拒绝（不复用 A 的全局）", switchError !== nul
 check("★ 拒绝语点名两台服务器（用户知道该重启谁）", Boolean(switchError && switchError.includes("server-a.test") && switchError.includes("server-b.test")), switchError);
 check("★ 切到 B：没有偷偷插入 B 的 script", inserted.length === 1, inserted.length);
 
-// ── 5. 页面里已有一个来源未知的全局：接受它，但之后切服务器仍拒绝 ─────────
+// ── 5. 页面里已有一个来源未知的全局：**拒绝**（台账复核反例） ─────────────
+// 模块状态（docsApiOrigin）活不过 HMR/重新初始化，而厂商全局只注册一次 —— 这时全局
+// 在、模块认不出它来自哪台服务器。旧实现按「就是本次请求的那台」接受，复核反例
+// 注入 A 的全局、请求 B，拿到的是 A 且没有加载 B。现在必须 fail-closed。
+reset();
+inserted = [];
+fakeWindow.DocsAPI = { DocEditor: class {} };   // 外部注入、无来源标记
+let unknownError: string | null = null;
+let unknownResolved: unknown = null;
+try {
+  unknownResolved = await loadDocsApi(A);
+} catch (err) {
+  unknownError = err instanceof Error ? err.message : String(err);
+}
+check("★ 来源未知的全局：拒绝复用（不假定它来自本次请求）", unknownError !== null && unknownResolved === null, { unknownError, unknownResolved: Boolean(unknownResolved) });
+check("★ 拒绝语点名请求的服务器与「无法核对来源」", Boolean(unknownError && unknownError.includes("server-a.test") && /verify/i.test(unknownError)), unknownError);
+check("★ 来源未知时也没有偷偷插入 script", inserted.length === 0, inserted.length);
+
+// ── 5b. 同一全局，但请求的是**它自己记录的来源**：接受（HMR 后重载路径） ──
+// 通过真实加载器先装一次 A（全局被标记），再模拟「模块重载」：reset() 清掉模块级
+// 状态而**保留**全局上的标记 —— 之后请求 A 必须直接复用，不再重新下载。
 reset();
 inserted = [];
 fakeWindow.DocsAPI = { DocEditor: class {} };
-const adopted = await loadDocsApi(A);
-check("已有全局 + 本次就是它：接受（不插 script）", Boolean(adopted) && inserted.length === 0, inserted.length);
-let adoptError: string | null = null;
+await (async () => {
+  // 直接走一次加载让加载器给全局打标记（全局已存在 → 先删掉，让它走脚本路径）。
+  delete fakeWindow.DocsAPI;
+  await loadDocsApi(A);
+})();
+check("前提：首次加载后全局带来源标记", (fakeWindow.DocsAPI as Record<string, unknown> | undefined)?.["__mcodeDocsApiOrigin"] === "https://server-a.test", (fakeWindow.DocsAPI as Record<string, unknown> | undefined)?.["__mcodeDocsApiOrigin"]);
+const beforeReloadInserts = inserted.length;
+reset(); // 模块级状态清空（模拟 HMR / 重新初始化），全局与标记保留
+let afterReload: unknown = null;
+let reloadReuseError: string | null = null;
 try {
-  await loadDocsApi(B);
+  afterReload = await loadDocsApi(A);
 } catch (err) {
-  adoptError = err instanceof Error ? err.message : String(err);
+  reloadReuseError = err instanceof Error ? err.message : String(err);
 }
-check("★ 接受未知来源后，切服务器仍被拒绝", adoptError !== null, adoptError);
+check(
+  "★ 模块重载后（全局带标记）请求同源：直接复用",
+  Boolean(afterReload) && reloadReuseError === null && inserted.length === beforeReloadInserts,
+  { inserts: inserted.length, before: beforeReloadInserts, reloadReuseError },
+);
+let reloadSwitchError: string | null = null;
+try { await loadDocsApi(B); } catch (err) { reloadSwitchError = err instanceof Error ? err.message : String(err); }
+check("★ 模块重载后切到 B：仍被拒绝（标记跨重载生效）", reloadSwitchError !== null && reloadSwitchError.includes("server-a.test") && reloadSwitchError.includes("server-b.test"), reloadSwitchError);
 
 // ── 6. 拒绝之后回到原服务器：仍可用（拒绝没有把 A 也锁死） ────────────────
-// 注意：第 5 段做过 reset() 并换了一个新的全局对象，所以这里比的是**第 5 段里被接受
+// 注意：第 5 段做过 reset() 并换了一个新的全局对象，所以这里比的是**第 5b 段里被接受
 // 的那个对象**，而不是第 3 段的 `first`（那两个属于不同的模块状态）。
 const backToA = await loadDocsApi(A);
-check("被拒绝一次后，回到 A 仍复用原全局", backToA === adopted, { same: backToA === adopted });
+check("被拒绝一次后，回到 A 仍复用原全局", backToA === afterReload, { same: backToA === afterReload });
 
 void snippet; // 段落只用于"标记存在"的判据；转换在构建期完成。
 
