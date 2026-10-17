@@ -921,6 +921,7 @@ export const zh = {
   "settings.market.addFailed": "添加来源失败:{error}",
   "settings.market.removeFailed": "移除来源失败:{error}",
   "settings.market.installFailed": "安装失败:{error}",
+  "settings.market.recordsCorrupt": "来源记录读不出来({reason}),这里只显示了内置来源;为避免覆盖原记录,添加/移除/刷新已暂停。请先修复或清空该记录再重试。",
   "settings.skillMarket.hint": "添加公开 GitHub 来源只读取目录和 SKILL.md 头部简介，不克隆整仓。点击安装才下载所选技能及其目录内的配套文件到总库，同名跳过。其他 Git/私有仓库请使用本地文件夹；装好后到「总库」调引擎开关。",
   "settings.skillMarket.searchPlaceholder": "搜索技能",
   "settings.skillMarket.addPlaceholder": "公开 GitHub owner/repo 或仓库网址",

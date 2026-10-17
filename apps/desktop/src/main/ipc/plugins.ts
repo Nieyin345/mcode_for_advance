@@ -40,6 +40,7 @@ import {
   setPluginProjectOverride,
   removePlugin,
   listMarketplaces,
+  pluginMarketplacesCorrupt,
   addMarketplace,
   removeMarketplace,
   refreshMarketplace,
@@ -103,7 +104,9 @@ export function registerPluginsHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC.PLUGINS_MARKETPLACE_LIST, async () => {
-    return { marketplaces: listMarketplaces() };
+    // 【MC-037】坏记录不许静默当空表 —— 列表照常(内含出厂市场)但**如实报**。
+    const corrupt = pluginMarketplacesCorrupt();
+    return { marketplaces: listMarketplaces(), ...(corrupt ? { corrupt } : {}) };
   });
 
   ipcMain.handle(IPC.PLUGINS_MARKETPLACE_ADD, async (evt, raw) => {

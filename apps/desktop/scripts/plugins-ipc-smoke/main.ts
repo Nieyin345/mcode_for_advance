@@ -241,7 +241,7 @@ function stagingLeftovers(): string[] {
 
 const installLocal = (p: string) => call(IPC.PLUGINS_INSTALL_LOCAL, { localPath: p });type InstallRes = { ok: boolean; error?: string; plugin?: { name: string; rootDir: string; enabled: boolean; components: { skills: Array<{ name: string }> } } };
 const asInstall = (r: unknown) => r as InstallRes;
-type OkRes = { ok: boolean; error?: string };
+type OkRes = { ok: boolean; error?: string; corrupt?: boolean };
 const asOk = (r: unknown) => r as OkRes;
 
 /* ────────────────────────── 1. 接线 ────────────────────────── */
@@ -480,6 +480,51 @@ check(
     (m) => m.name === "manifest-says-this",
   ),
 );
+
+/* ══════════ 【MC-037】坏记录:不许静默当空表、不许被下一次写覆盖 ══════════
+ *
+ * 插件侧比台账写的更严重:`listMarketplaces` 读列表时会调 `ensureBuiltin` 往
+ * (降级空)表里补出厂项**并整表写回** —— 打开一次面板就把用户的自定义市场记录
+ * 抹掉了。判据立在设置行的**值**上(用户数据),不在"调没调 classify"上。
+ */
+console.log("\n[6b] MC-037 插件市场坏记录");
+{
+  const MARKET_KEY = "plugins.marketplaces";
+  const healthyRecords = SettingRepo.__dump()[MARKET_KEY]!;
+  check("夹具:健康记录在盘上(含用户市场 marketplace-a)", healthyRecords.includes("marketplace-a"), healthyRecords.slice(0, 120));
+  SettingRepo.set(MARKET_KEY, "{broken");
+  const afterCorrupt = SettingRepo.__dump()[MARKET_KEY]!;
+
+  // ① 读列表:照常给出厂市场,但**如实报** corrupt,且绝不落盘。
+  const listCorrupt = (await call(IPC.PLUGINS_MARKETPLACE_LIST)) as { marketplaces: Array<{ name: string }>; corrupt?: { reason: string } };
+  check("★ 坏记录如实报(corrupt 有值)", !!listCorrupt.corrupt, listCorrupt.corrupt);
+  check("读侧降级:列表仍给出厂市场(不是整个挂了)", listCorrupt.marketplaces.length >= 1, listCorrupt.marketplaces.map((m) => m.name));
+  eq("★ 打开列表**一个字节都不写**(从前这里 ensureBuiltin 会整表覆写)", SettingRepo.__dump()[MARKET_KEY], afterCorrupt);
+
+  // ② 写侧拒绝:add/remove/refresh 都拒,值不动。
+  const addRejected = asOk(await call(IPC.PLUGINS_MARKETPLACE_ADD, { kind: "local", ref: mkMarketplace("mp-c", { name: "mp-c", plugins: [] }) }));
+  eq("★ 坏记录下加市场 → ok:false", addRejected.ok, false);
+  eq("…带 corrupt 标记", addRejected.corrupt, true);
+  const removeRejected = asOk(await call(IPC.PLUGINS_MARKETPLACE_REMOVE, { name: "marketplace-a" }));
+  eq("坏记录下删市场 → ok:false(不许拿空表判'不存在')", removeRejected.ok, false);
+  eq("…带 corrupt 标记", removeRejected.corrupt, true);
+  const refreshRejected = asOk(await call(IPC.PLUGINS_MARKETPLACE_REFRESH, { name: "marketplace-a" }));
+  eq("坏记录下刷新市场 → ok:false", refreshRejected.ok, false);
+  eq("★ 一串被拒操作之后设置行的值一个不动", SettingRepo.__dump()[MARKET_KEY], afterCorrupt);
+
+  // ③ 修复后恢复:原记录重新可用。
+  SettingRepo.set(MARKET_KEY, healthyRecords);
+  const listHealed = (await call(IPC.PLUGINS_MARKETPLACE_LIST)) as { marketplaces: Array<{ name: string }>; corrupt?: { reason: string } };
+  eq("修复后不再报 corrupt", listHealed.corrupt, undefined);
+  check("修复后原用户市场又列得出来", listHealed.marketplaces.some((m) => m.name === "marketplace-a"), listHealed.marketplaces.map((m) => m.name));
+
+  // 正控:从未写过(absent)不算损坏 —— 但此刻别的测试已建过记录,改用"空串"档。
+  SettingRepo.set(MARKET_KEY, "");
+  const listAbsent = (await call(IPC.PLUGINS_MARKETPLACE_LIST)) as { marketplaces: Array<{ name: string }>; corrupt?: { reason: string } };
+  eq("空值 = 从未写过 = 不报损坏(合法初始态)", listAbsent.corrupt, undefined);
+  check("…且出厂市场照常补进列表(首次打开路径不回归)", listAbsent.marketplaces.length >= 1, listAbsent.marketplaces.length);
+  SettingRepo.set(MARKET_KEY, healthyRecords);
+}
 
 /* ────────────────────────── 7. 半截状态 ────────────────────────── */
 

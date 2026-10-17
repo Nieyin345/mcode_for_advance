@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { buildMcpMarketConfig } from "@contracts/ipc";
 import {
   addMcpMarketSource,
   listMcpMarketSources,
+  mcpMarketSourcesCorrupt,
   normalizeRegistryBase,
   registryServerToEntry,
   removeMcpMarketSource,
@@ -18,6 +19,7 @@ import {
   listSkillMarkets,
   removeSkillMarket,
   skillMarketBundle,
+  skillMarketsCorrupt,
 } from "@main/lib/skillMarket.js";
 import { parseGithubSkillIndex } from "@main/lib/githubSkillCatalog.js";
 import { defaultSkillsRoot, parseSkillFrontmatter } from "@main/lib/skillEngines.js";
@@ -179,8 +181,7 @@ await test("skill market: local catalog add / scan / install / remove", async ()
 });
 
 // 坏的技能索引:抛出的句子**必须给用户看**(它经 `installSkillsFromMarket` 的 catch
-// 原样回给设置面板)。同一函数里三句判据,从前只有第一句是中英双语,后两句是**纯英文**
-// (`Invalid cached skill` / `Invalid cached file`)—— 中文用户点「安装」只见一行英文。
+// 原样回给设置面板)。同一函数里三句判据,从前只有第一句是中英双语,后两句是**纯英文**// (`Invalid cached skill` / `Invalid cached file`)—— 中文用户点「安装」只见一行英文。
 // 判据:三句都要含中文,不只是前一句。
 await test("技能索引损坏时的报错是给用户看的中文", () => {
   const good = {
@@ -207,5 +208,106 @@ await test("技能索引损坏时的报错是给用户看的中文", () => {
   // 正控:好的索引不该抛(否则上面三条是"总是抛"造成的假绿)。
   assert.equal(throwText(good), "", "合法索引不应抛");
 });
+
+/* ══════════ 【MC-037】坏记录不许被读成"从未添加过"、更不许被下一次写入覆盖 ══════════
+ *
+ * 台账红例:有自定义来源的 markets.json / mcp.marketSources 被截断或手改坏之后,
+ * readRecords/readUserSources 把坏数据当空表 → 列表谎报"还没添加过";随后 add 拿
+ * 这个空数组整表写回,历史来源**静默消失**。
+ *
+ * 判据立在**盘上的字节**与**用户可见的错误**上:损坏时①读侧如实报(列表照常给
+ * 内置/官方,但 `corrupt` 标记有值)②写侧拒绝且原字节一个不动③修好之后一切恢复。
+ * 不钉实现(不查"调没调 classify")。
+ */
+{
+  // ⚠️ 夹具在 corpus 里区分**已导入**与**待导入**两段英文,避免和既有的中文断言互相干扰。
+  const skillRecordsPath = path.join(homedir(), ".mcode", "skill-markets", "markets.json");
+  const corruptJson = "{\"markets\":["; // 半截写入的典型形状
+
+  // ── 技能市场:文件副本 ──
+  await test("MC-037 技能市场:坏记录如实报、拒绝写入、字节不动、修复后恢复", async () => {
+    // 先建一份**健康**记录(一个真实市场),再把它砸坏 —— 复刻"已有来源被损坏"。
+    const cat = path.join(out, "mc037-catalog");
+    mkdirSync(path.join(cat, "skills", "gamma"), { recursive: true });
+    writeFileSync(path.join(cat, "skills", "gamma", "SKILL.md"), "---\nname: gamma\ndescription: G\n---\n");
+    const add = await addSkillMarket({ kind: "local", ref: cat });
+    assert.equal(add.ok, true, add.error);
+    const healthyBytes = readFileSync(skillRecordsPath, "utf8");
+    assert.ok(healthyBytes.includes(add.name!), "夹具:健康记录在盘上");
+
+    // ① 砸坏:读取如实报,而不是当空表。
+    writeFileSync(skillRecordsPath, corruptJson, "utf8");
+    const corruptState = skillMarketsCorrupt();
+    assert.ok(corruptState, "坏记录必须如实报(不能静默当空表)");
+    assert.ok(/合法 JSON|顶层不是数组|读取失败/.test(corruptState!.reason), `原因要能给人看:${corruptState!.reason}`);
+    // 读侧降级:内置市场照常列出(不是"列表整个挂了")。
+    const stillListed = await listSkillMarkets();
+    assert.ok(stillListed.length >= 2 && stillListed.every((m) => m.builtin), "坏记录下列表仍给内置市场");
+
+    // ② 写侧拒绝:加新市场被拒,且**盘上字节一个不动**。
+    const rejected = await addSkillMarket({ kind: "local", ref: cat });
+    assert.equal(rejected.ok, false, "坏记录下添加必须被拒");
+    assert.equal(rejected.corrupt, true, "拒绝要带 corrupt 标记,便于 UI 分口径");
+    assert.equal(readFileSync(skillRecordsPath, "utf8"), corruptJson, "★ 原字节一个不动(不许被覆盖)");
+    // 移除/刷新同样拒绝(不许拿降级空表判"不存在")。
+    assert.equal((await removeSkillMarket("whatever")).ok, false);
+    assert.equal((await removeSkillMarket("whatever")).corrupt, true);
+
+    // ③ 修复之后一切恢复:健康记录重新可用,添加照常。
+    writeFileSync(skillRecordsPath, healthyBytes, "utf8");
+    assert.equal(skillMarketsCorrupt(), null, "修复后不再报损坏");
+    assert.ok((await listSkillMarkets()).some((m) => m.name === add.name), "修复后原市场又列得出来");
+    const cat2 = path.join(out, "mc037-catalog-2");
+    mkdirSync(path.join(cat2, "skills", "delta"), { recursive: true });
+    writeFileSync(path.join(cat2, "skills", "delta", "SKILL.md"), "---\nname: delta\ndescription: D\n---\n");
+    const added2 = await addSkillMarket({ kind: "local", ref: cat2 });
+    assert.equal(added2.ok, true, added2.error);
+  });
+
+  // ── MCP 市场:SettingRepo 行副本(同一判据) ──
+  await test("MC-037 MCP 市场:坏设置行如实报、拒绝写入、值不动", async () => {
+    const { SettingRepo: stubRepo } = await import("@main/store/repositories.js");
+    const KEY = "mcp.marketSources";
+    // 夹具:先建一个**自定义来源**(前一个测试结尾把 Old 删掉了),再砸坏。
+    // ⚠️ 用 `old.example.com`(假 fetch 认识这个 host;别的 host 会 404,夹具会假红)。
+    const seeded = await addMcpMarketSource({ url: "https://old.example.com", label: "MC037" });
+    assert.equal(seeded.ok, true, seeded.error);
+    const healthy = stubRepo.get(KEY)!;
+    assert.ok(healthy.includes("old.example.com"), "夹具:已有自定义来源");
+    stubRepo.set(KEY, "{not json");
+    const corrupt = mcpMarketSourcesCorrupt();
+    assert.ok(corrupt, "坏行必须如实报");
+    // ① 读侧降级:列表仍给官方来源。
+    assert.equal(listMcpMarketSources().length, 1);
+    assert.equal(listMcpMarketSources()[0].id, "official");
+    // ② 写侧拒绝 —— ⚠️ 拒绝发生在**网络检查之前**(本地事实,不必等 fetch);
+    //    fetch 会打到假注册中心并成功,所以这条若绿是"因为坏表拒",不是"因为网络拒"。
+    const rejected = await addMcpMarketSource({ url: "https://another.invalid" });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.corrupt, true, "拒绝带 corrupt 标记");
+    assert.equal(stubRepo.get(KEY), "{not json", "★ 设置行的值一个不动");
+    const rmRejected = removeMcpMarketSource(seeded.id!);
+    assert.equal(rmRejected.corrupt, true, "坏行时移除也拒(不许拿空表判'不存在')");
+    assert.equal(stubRepo.get(KEY), "{not json");
+    // ③ 修复后恢复。
+    stubRepo.set(KEY, healthy);
+    assert.equal(mcpMarketSourcesCorrupt(), null);
+    assert.equal(listMcpMarketSources().length, 2, "修复后自定义来源又列得出来");
+  });
+
+  // 正控:从未写过(absent)与损坏**必须分开** —— 全新用户第一次添加要照常成功。
+  await test("MC-037 正控:从未写过(absent)不算损坏,首次添加照常成功", async () => {
+    const { SettingRepo: stubRepo } = await import("@main/store/repositories.js");
+    const KEY = "mcp.marketSources";
+    const before = stubRepo.get(KEY)!;
+    stubRepo.set(KEY, "");
+    assert.equal(mcpMarketSourcesCorrupt(), null, "空值 = 从未写过 = 合法初始态");
+    // ⚠️ 同样用假 fetch 认识的 host(否则 404 拒,绿的原因就不是判据了)。
+    const added = await addMcpMarketSource({ url: "https://old.example.com", label: "Fresh" });
+    assert.equal(added.ok, true, added.error);
+    assert.ok(listMcpMarketSources().some((s) => s.label === "Fresh"));
+    stubRepo.set(KEY, before);
+  });
+}
 
 console.log(`market-smoke: ${passed} passed`);

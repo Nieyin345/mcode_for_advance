@@ -459,6 +459,8 @@ export function PluginsPanel() {
   // say the hooks won't run — never let the user assume they will).
   const [hookWarn, setHookWarn] = useState<PluginState | null>(null);
   const [pendingRemove, setPendingRemove] = useState<PluginState | null>(null);
+  // 【MC-037】插件市场记录损坏的读侧诊断(列表只剩出厂市场时必须说清是"记录读不出来")。
+  const [marketplacesCorrupt, setMarketplacesCorrupt] = useState<string | null>(null);
 
   /** Re-list both collections; returns the fresh data so callers (e.g. the
    *  marketplace add flow) can react to what actually landed. Null on error. */
@@ -469,6 +471,7 @@ export function PluginsPanel() {
       const marketplaces = m.marketplaces ?? EMPTY_MARKETPLACES;
       setPlugins(plugins);
       setMarketplaces(marketplaces);
+      setMarketplacesCorrupt(m.corrupt?.reason ?? null);
       return { plugins, marketplaces };
     } catch (err) {
       console.error("PluginsPanel load failed:", err);
@@ -596,6 +599,12 @@ export function PluginsPanel() {
           }
         >
           {error}
+        </ErrorNote>
+      )}
+
+      {marketplacesCorrupt && !error && (
+        <ErrorNote className="mt-2 flex-none" action={null}>
+          {t("settings.market.recordsCorrupt", { reason: marketplacesCorrupt })}
         </ErrorNote>
       )}
 

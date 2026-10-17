@@ -653,14 +653,16 @@ export interface RpcMap {
   "skills.importGithub": (
     input: SkillsImportGithubInput,
   ) => Promise<SkillsImportGithubResult>;
-  /** Skill market: catalogs (built-in + user added) with their entries. */
-  "skills.marketList": (input: SkillsMarketListInput) => Promise<{ markets: SkillMarketState[] }>;
+  /** Skill market: catalogs (built-in + user added) with their entries.
+   *  【MC-037】`corrupt` 有值 = 用户记录读不出来(列表只含内置市场,写入被拒)——
+   *  界面必须把"没有自定义来源"与"记录损坏"分开说。 */
+  "skills.marketList": (input: SkillsMarketListInput) => Promise<{ markets: SkillMarketState[]; corrupt?: { reason: string } }>;
   /** Add a skill market (git URL / owner/repo / local directory) — fetches it. */
-  "skills.marketAdd": (input: SkillsMarketAddInput) => Promise<{ ok: boolean; error?: string; name?: string }>;
+  "skills.marketAdd": (input: SkillsMarketAddInput) => Promise<{ ok: boolean; error?: string; name?: string; corrupt?: boolean }>;
   /** Remove a user-added skill market (built-ins cannot be removed). */
-  "skills.marketRemove": (input: SkillsMarketNameInput) => Promise<{ ok: boolean; error?: string }>;
+  "skills.marketRemove": (input: SkillsMarketNameInput) => Promise<{ ok: boolean; error?: string; corrupt?: boolean }>;
   /** Re-fetch one market's catalog (network). */
-  "skills.marketRefresh": (input: SkillsMarketNameInput) => Promise<{ ok: boolean; error?: string }>;
+  "skills.marketRefresh": (input: SkillsMarketNameInput) => Promise<{ ok: boolean; error?: string; corrupt?: boolean }>;
   /** Copy market skills into the universal library (existing names skipped). */
   "skills.marketInstall": (input: SkillsMarketInstallInput) => Promise<SkillsMarketInstallResult>;
   // MCP management (settings panel)
@@ -735,12 +737,14 @@ export interface RpcMap {
   }>;
   /** 撤销某 `host:port` 的授权(用户撤回批准)。 */
   "agentSsh.revokeHost": (input: AgentSshHostPortInput) => Promise<{ ok: boolean; error?: string }>;
-  /** MCP market: registry sources (built-in official registry + user added). */
-  "mcp.marketSources": (input: McpMarketSourcesInput) => Promise<{ sources: McpMarketSource[] }>;
-  /** 加一个 MCP 注册中心(市场源)。**先连通探一次**再落,连不上/已存在/非 http(s) 都回 `{ ok:false, error }`(不抛);成功回新分配的 `id`。 */
-  "mcp.marketSourceAdd": (input: McpMarketSourceAddInput) => Promise<{ ok: boolean; error?: string; id?: string }>;
+  /** MCP market: registry sources (built-in official registry + user added).
+   *  【MC-037】`corrupt` 有值 = 用户来源记录读不出来(列表只含官方,写入被拒)。 */
+  "mcp.marketSources": (input: McpMarketSourcesInput) => Promise<{ sources: McpMarketSource[]; corrupt?: { reason: string } }>;
+  /** 加一个 MCP 注册中心(市场源)。**先连通探一次**再落,连不上/已存在/非 http(s) 都回 `{ ok:false, error }`(不抛);成功回新分配的 `id`。
+   *  【MC-037】用户记录损坏时 `corrupt:true` + 拒绝写入(原设置行一个不动)。 */
+  "mcp.marketSourceAdd": (input: McpMarketSourceAddInput) => Promise<{ ok: boolean; error?: string; id?: string; corrupt?: boolean }>;
   /** 删一个用户加的 MCP 注册中心(**内置那个删不掉**)。 */
-  "mcp.marketSourceRemove": (input: McpMarketSourceRemoveInput) => Promise<{ ok: boolean; error?: string }>;
+  "mcp.marketSourceRemove": (input: McpMarketSourceRemoveInput) => Promise<{ ok: boolean; error?: string; corrupt?: boolean }>;
   /** Search one registry (network); entries carry ready install options. */
   "mcp.marketSearch": (input: McpMarketSearchInput) => Promise<McpMarketSearchResult>;
   // Context hosting (settings panel): global instructions + tool usage
@@ -1127,8 +1131,9 @@ export interface RpcMap {
   /** Uninstall every installed version of a plugin. Rejected while any turn
    *  is running. */
   "plugins.remove": (input: PluginsRemoveInput) => Promise<{ ok: boolean; error?: string }>;
-  /** List user-added marketplaces with their parsed entries. */
-  "plugins.marketplaceList": () => Promise<{ marketplaces: PluginMarketplaceState[] }>;
+  /** List user-added marketplaces with their parsed entries.
+   *  【MC-037】`corrupt` 有值 = 用户记录读不出来(列表只含出厂市场,写入被拒)。 */
+  "plugins.marketplaceList": () => Promise<{ marketplaces: PluginMarketplaceState[]; corrupt?: { reason: string } }>;
   /** Add a marketplace (git URL or local directory). */
   "plugins.marketplaceAdd": (
     input: PluginsMarketplaceAddInput,

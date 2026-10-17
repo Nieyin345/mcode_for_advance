@@ -75,6 +75,7 @@ import {
   type PluginState,
 } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
+import { classifyMarketRegistry, marketRegistryCorruptMessage, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 import {
   findPluginManifest,
@@ -255,9 +256,27 @@ function writeEnabledPlugins(names: string[]): void {
   writeJsonSetting(PLUGINS_ENABLED_SETTING_KEY, names);
 }
 
+/** 【MC-037】插件市场记录三态 —— 与技能/MCP 市场共用分类核(`lib/marketRegistry.ts`)。 */
+function readMarketplaceRecordsState(): MarketRegistryRead<PluginMarketplaceRecord> {
+  let raw: string | null;
+  try {
+    raw = SettingRepo.get(PLUGINS_MARKETPLACES_SETTING_KEY);
+  } catch (err) {
+    return { kind: "corrupt", reason: `读取失败(${(err as Error).message})` };
+  }
+  return classifyMarketRegistry(raw, (value) => (Array.isArray(value) ? (value as PluginMarketplaceRecord[]) : null), "插件市场");
+}
+
+/** 读侧降级出口:损坏 → 空表(列表展示出厂市场,`ensureBuiltin` 的落盘在损坏时被拒)。 */
 function readMarketplaceRecords(): PluginMarketplaceRecord[] {
-  const recs = readJsonSetting<PluginMarketplaceRecord[]>(PLUGINS_MARKETPLACES_SETTING_KEY, []);
-  return Array.isArray(recs) ? recs : [];
+  const state = readMarketplaceRecordsState();
+  return state.kind === "ok" ? state.records : [];
+}
+
+/** 给 `plugins.marketplaceList` 附的损坏诊断。 */
+export function pluginMarketplacesCorrupt(): { reason: string } | null {
+  const state = readMarketplaceRecordsState();
+  return state.kind === "corrupt" ? { reason: state.reason } : null;
 }
 
 function readMcpDisabled(): Set<string> {
@@ -1300,6 +1319,7 @@ function isBuiltinMarketplaceRecord(rec: PluginMarketplaceRecord): boolean {
  *  (a user's own catalogs stay first, which is also where the panel opens). */
 function ensureBuiltinMarketplaceRecords(
   records: PluginMarketplaceRecord[],
+  opts?: { persist?: boolean },
 ): PluginMarketplaceRecord[] {
   let changed = false;
   const knownUrls = new Set<string>();
@@ -1326,7 +1346,7 @@ function ensureBuiltinMarketplaceRecords(
     });
     changed = true;
   }
-  if (changed) writeJsonSetting(PLUGINS_MARKETPLACES_SETTING_KEY, out);
+  if (changed && opts?.persist !== false) writeJsonSetting(PLUGINS_MARKETPLACES_SETTING_KEY, out);
   return out;
 }
 
@@ -1437,8 +1457,13 @@ export async function addMarketplace(input: {
   kind: "git" | "local";
   ref: string;
   name?: string;
-}, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string }> {
-  const records = readMarketplaceRecords();
+}, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string; corrupt?: boolean }> {
+  // 【MC-037】写回前先问健康度:损坏记录拒绝进入修改事务(原设置行一个不动)。
+  const state = readMarketplaceRecordsState();
+  if (state.kind === "corrupt") {
+    return { ok: false, error: marketRegistryCorruptMessage("插件市场", state.reason), corrupt: true };
+  }
+  const records = state.kind === "ok" ? state.records : [];
   // Same repository (however it was spelled) already listed — usually one of the
   // shipped catalogs, which must be refreshed rather than added a second time.
   if (
@@ -1489,8 +1514,13 @@ function sanitizeMarketplaceName(ref: string): string {
   return cleaned || "marketplace";
 }
 
-export function removeMarketplace(name: string): { ok: boolean; error?: string } {
-  const records = readMarketplaceRecords();
+export function removeMarketplace(name: string): { ok: boolean; error?: string; corrupt?: boolean } {
+  // 【MC-037】坏表时"不存在"是谎 —— 记录可能就在坏字节里;拒绝而非覆盖。
+  const state = readMarketplaceRecordsState();
+  if (state.kind === "corrupt") {
+    return { ok: false, error: marketRegistryCorruptMessage("插件市场", state.reason), corrupt: true };
+  }
+  const records = state.kind === "ok" ? state.records : [];
   const rec = records.find((r) => r.name === name);
   if (!rec) return { ok: false, error: `marketplace ${name} 不存在` };
   // Shipped catalogs are part of the product surface, not user state: the panel
@@ -1507,8 +1537,13 @@ export function removeMarketplace(name: string): { ok: boolean; error?: string }
 }
 
 /** Re-fetch a marketplace tree (git: fresh clone; local: re-copy). */
-export async function refreshMarketplace(name: string, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string }> {
-  const record = readMarketplaceRecords().find((r) => r.name === name);
+export async function refreshMarketplace(name: string, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string; corrupt?: boolean }> {
+  // 【MC-037】刷新不写 records(只动目录),但坏表时"不存在"仍是谎 —— 同样拒绝。
+  const state = readMarketplaceRecordsState();
+  if (state.kind === "corrupt") {
+    return { ok: false, error: marketRegistryCorruptMessage("插件市场", state.reason), corrupt: true };
+  }
+  const record = (state.kind === "ok" ? state.records : []).find((r) => r.name === name);
   if (!record) return { ok: false, error: `marketplace ${name} 不存在` };
   const dest = marketplaceDirOf(name);
   const staging = path.join(PLUGINS_ROOT, `.mp-staging-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -1531,7 +1566,16 @@ export function listMarketplaces(): PluginMarketplaceState[] {
   const installed = new Set(listPlugins().map((p) => p.name));
   // Also the seeding point for the shipped catalogs: any list call (i.e. opening
   // the plugin panel) makes sure they are present in the records.
-  return ensureBuiltinMarketplaceRecords(readMarketplaceRecords()).map((rec) => {
+  // 【MC-037】但**损坏时绝不能落盘** —— 从前 readMarketplaceRecords 把坏表降级成
+  // 空表,ensureBuiltin 往空表里塞出厂项再整表写回:**打开一次面板就抹掉了用户的
+  // 自定义市场记录**(比 add 路径更早、更隐蔽)。损坏时退回纯内存合并(展示照常),
+  // 一个字节不写。
+  const state = readMarketplaceRecordsState();
+  const records = state.kind === "ok" ? state.records : [];
+  const merged = state.kind === "corrupt"
+    ? ensureBuiltinMarketplaceRecords(records, { persist: false })
+    : ensureBuiltinMarketplaceRecords(records);
+  return merged.map((rec) => {
     const dir = marketplaceDirOf(rec.name);
     const manifest = existsSync(dir) ? readMarketplaceManifest(dir) : null;
     const ecosystem = recordEcosystem(rec, dir);

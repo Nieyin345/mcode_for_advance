@@ -55,6 +55,7 @@ import { maskMcpConfig, mergeMcpSecretEdits } from "@main/lib/mcpSecretEdit.js";
 import {
   addMcpMarketSource,
   listMcpMarketSources,
+  mcpMarketSourcesCorrupt,
   removeMcpMarketSource,
   searchMcpMarket,
 } from "@main/lib/mcpMarket.js";
@@ -991,7 +992,9 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
   // Read-only towards the config — installing goes through MCP_SAVE.
   ipcMain.handle(IPC.MCP_MARKET_SOURCES, (_evt, raw) => {
     McpMarketSourcesSchema.parse(raw ?? {});
-    return { sources: listMcpMarketSources() };
+    // 【MC-037】坏记录不许静默当空表 —— 读侧降级(列表照常给内置)但**如实报**,
+    // 让界面/Agent 能把"没有来源"与"记录读不出来"分开。
+    return { sources: listMcpMarketSources(), ...(mcpMarketSourcesCorrupt() ? { corrupt: mcpMarketSourcesCorrupt()! } : {}) };
   });
   ipcMain.handle(IPC.MCP_MARKET_SOURCE_ADD, (_evt, raw) => addMcpMarketSource(McpMarketSourceAddSchema.parse(raw)));
   ipcMain.handle(IPC.MCP_MARKET_SOURCE_REMOVE, (_evt, raw) => removeMcpMarketSource(McpMarketSourceRemoveSchema.parse(raw).id));

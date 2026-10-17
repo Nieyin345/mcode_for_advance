@@ -11,6 +11,7 @@
  * 记录存成文件(`markets.json`),不进数据库 —— 技能本来就全是文件,便于 smoke 隔离。
  */
 import { promoteMarketCatalog, type MarketProgressSink } from "@main/lib/marketClone.js";
+import { classifyMarketRegistry, marketRegistryCorruptMessage, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -53,22 +54,48 @@ function recordsPath(): string {
   return path.join(skillMarketsRoot(), RECORDS_FILE);
 }
 
-function readRecords(): MarketRecord[] {
+/** 逐条校验(顶层形状合法时用)——个别坏行丢弃,不阻塞整表。 */
+function parseRecordList(value: unknown): MarketRecord[] | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as { markets?: unknown };
+  if (!Array.isArray(raw.markets)) return null;
+  return raw.markets.filter(
+    (r): r is MarketRecord =>
+      !!r &&
+      typeof (r as MarketRecord).name === "string" &&
+      SKILL_MARKET_NAME_RE.test((r as MarketRecord).name) &&
+      !!(r as MarketRecord).source &&
+      ((r as MarketRecord).source.kind === "git" || (r as MarketRecord).source.kind === "local") &&
+      typeof (r as MarketRecord).source.ref === "string",
+  );
+}
+
+/**
+ * 【MC-037】市场记录分三态(**读列表/写回前都先问它**)。
+ *
+ * 从前这里 `catch { return [] }` —— `markets.json` 被截断/手改坏之后,列表把
+ * "损坏" 谎报成 "从未添加过";用户再加一个市场,`addSkillMarket` 拿这个空数组
+ * 当旧清单整表写回,历史来源**静默消失**。分类核与 MCP/插件市场共用
+ * (见 `lib/marketRegistry.ts`)。
+ */
+function readRecordsState(): MarketRegistryRead<MarketRecord> {
+  let raw: string | null = null;
   try {
-    const raw = JSON.parse(readFileSync(recordsPath(), "utf8")) as { markets?: unknown };
-    if (!Array.isArray(raw.markets)) return [];
-    return raw.markets.filter(
-      (r): r is MarketRecord =>
-        !!r &&
-        typeof (r as MarketRecord).name === "string" &&
-        SKILL_MARKET_NAME_RE.test((r as MarketRecord).name) &&
-        !!(r as MarketRecord).source &&
-        ((r as MarketRecord).source.kind === "git" || (r as MarketRecord).source.kind === "local") &&
-        typeof (r as MarketRecord).source.ref === "string",
-    );
-  } catch {
-    return [];
+    raw = readFileSync(recordsPath(), "utf8");
+  } catch (err) {
+    // 文件不存在 = absent(合法初始态);别的读失败(EACCES 等)= corrupt ——
+    // 读不出来时绝不能假装"没有来源",否则下一次写入会覆盖读不到的旧数据。
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { kind: "absent" };
+    return { kind: "corrupt", reason: `读取失败(${code ?? (err as Error).message})` };
   }
+  return classifyMarketRegistry(raw, parseRecordList, "技能市场");
+}
+
+/** 读侧降级出口:损坏 → 空表(供列表继续展示**内置**市场),但写侧必须走 readRecordsState 拒绝。 */
+function readRecords(): MarketRecord[] {
+  const state = readRecordsState();
+  return state.kind === "ok" ? state.records : [];
 }
 
 async function writeRecords(records: MarketRecord[]): Promise<void> {
@@ -203,6 +230,13 @@ async function scanCatalog(rec: MarketRecord): Promise<ScannedSkill[]> {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** 给 `skills.marketList` 附的损坏诊断(【MC-037】):有值时列表照常给内置市场,
+ *  但界面/Agent 可据此把"没有自定义来源"与"记录读不出来"分开。 */
+export function skillMarketsCorrupt(): { reason: string } | null {
+  const state = readRecordsState();
+  return state.kind === "corrupt" ? { reason: state.reason } : null;
+}
+
 export async function listSkillMarkets(): Promise<SkillMarketState[]> {
   const libRoot = defaultSkillsRoot();
   const out: SkillMarketState[] = [];
@@ -253,9 +287,15 @@ export async function addSkillMarket(input: {
   kind: "git" | "local";
   ref: string;
   name?: string;
-}, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string; name?: string }> {
+}, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string; name?: string; corrupt?: boolean }> {
   try {
-    const records = withBuiltins(readRecords());
+    // 【MC-037】写回前先问健康度:损坏记录**拒绝进入修改事务**(原字节一个不动)。
+    // 从前拿"读不出来 → []"当旧清单,`writeRecords([...[], rec])` 会把历史来源抹掉。
+    const state = readRecordsState();
+    if (state.kind === "corrupt") {
+      return { ok: false, error: marketRegistryCorruptMessage("技能市场", state.reason), corrupt: true };
+    }
+    const records = withBuiltins(state.kind === "ok" ? state.records : []);
     let ref = input.ref.trim();
     let defaultName: string;
     if (input.kind === "git") {
@@ -299,17 +339,27 @@ export async function addSkillMarket(input: {
   }
 }
 
-export async function removeSkillMarket(name: string): Promise<{ ok: boolean; error?: string }> {
-  const rec = withBuiltins(readRecords()).find((r) => r.name === name);
+export async function removeSkillMarket(name: string): Promise<{ ok: boolean; error?: string; corrupt?: boolean }> {
+  // 【MC-037】损坏时不能拿降级空表判"市场不存在"(那是谎,来源可能就在坏字节里)。
+  const state = readRecordsState();
+  if (state.kind === "corrupt") {
+    return { ok: false, error: marketRegistryCorruptMessage("技能市场", state.reason), corrupt: true };
+  }
+  const rec = withBuiltins(state.kind === "ok" ? state.records : []).find((r) => r.name === name);
   if (!rec) return { ok: false, error: `市场不存在:${name}` };
   if (rec.builtin) return { ok: false, error: "内置市场不能移除" };
-  await writeRecords(readRecords().filter((r) => r.name !== name));
+  await writeRecords((state.kind === "ok" ? state.records : []).filter((r) => r.name !== name));
   if (rec.source.kind === "git") await fs.rm(catalogDir(rec), { recursive: true, force: true }).catch(() => {});
   return { ok: true };
 }
 
-export async function refreshSkillMarket(name: string, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string }> {
-  const rec = withBuiltins(readRecords()).find((r) => r.name === name);
+export async function refreshSkillMarket(name: string, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string; corrupt?: boolean }> {
+  // 【MC-037】刷新末尾要写 fetchedAt —— 坏表同样拒绝(否则刷新会顺手重建 records)。
+  const state = readRecordsState();
+  if (state.kind === "corrupt") {
+    return { ok: false, error: marketRegistryCorruptMessage("技能市场", state.reason), corrupt: true };
+  }
+  const rec = withBuiltins(state.kind === "ok" ? state.records : []).find((r) => r.name === name);
   if (!rec) return { ok: false, error: `市场不存在:${name}` };
   if (rec.source.kind === "local") {
     return existsSync(catalogDir(rec)) ? { ok: true } : { ok: false, error: `目录不存在:${rec.source.ref}` };

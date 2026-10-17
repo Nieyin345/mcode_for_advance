@@ -35,11 +35,15 @@ export function SkillMarketView({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // 【MC-037】用户记录损坏的**读侧**诊断:列表只剩内置市场,必须说清是"记录读不出来",
+  // 不是"你还没加过"。写侧(添加/移除/刷新)的拒绝会经 error 显示同一句话。
+  const [recordsCorrupt, setRecordsCorrupt] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
       const res = await api.skills.marketList({});
       setMarkets(res.markets ?? []);
+      setRecordsCorrupt(res.corrupt?.reason ?? null);
       return res.markets ?? [];
     } catch (err) {
       setError((err as Error).message);
@@ -192,6 +196,11 @@ export function SkillMarketView({
       {error && (
         <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
           {error}
+        </div>
+      )}
+      {recordsCorrupt && !error && (
+        <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
+          {t("settings.market.recordsCorrupt", { reason: recordsCorrupt })}
         </div>
       )}
       {note && !error && (

@@ -916,6 +916,7 @@ export const en = {
   "settings.market.addFailed": "Could not add the source: {error}",
   "settings.market.removeFailed": "Could not remove the source: {error}",
   "settings.market.installFailed": "Install failed: {error}",
+  "settings.market.recordsCorrupt": "The source records can't be read ({reason}), so only built-in sources are shown; add/remove/refresh are paused to avoid overwriting the original records. Fix or clear the records, then retry.",
   "settings.skillMarket.hint": "GitHub sources load only the file index and SKILL.md metadata, not a repository clone. Install downloads only the selected skill and files in its folder (existing names are skipped). Use a local folder for other Git hosts/private repositories; set engines in Library.",
   "settings.skillMarket.searchPlaceholder": "Search skills",
   "settings.skillMarket.addPlaceholder": "Public GitHub owner/repo or repository URL",

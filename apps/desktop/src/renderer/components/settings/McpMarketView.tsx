@@ -48,12 +48,15 @@ export function McpMarketView({
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [installing, setInstalling] = useState<McpMarketEntry | null>(null);
+  // 【MC-037】用户来源记录损坏的读侧诊断(同 SkillMarketView)。
+  const [sourcesCorrupt, setSourcesCorrupt] = useState<string | null>(null);
   const seq = useRef(0);
 
   const reloadSources = useCallback(async () => {
     try {
       const res = await api.mcp.marketSources({});
       setSources(res.sources ?? []);
+      setSourcesCorrupt(res.corrupt?.reason ?? null);
       return res.sources ?? [];
     } catch (err) {
       setError((err as Error).message);
@@ -178,6 +181,11 @@ export function McpMarketView({
       {error && (
         <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
           {error}
+        </div>
+      )}
+      {sourcesCorrupt && !error && (
+        <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
+          {t("settings.market.recordsCorrupt", { reason: sourcesCorrupt })}
         </div>
       )}
       {note && !error && (

@@ -67,6 +67,7 @@ import {
   refreshSkillMarket,
   removeSkillMarket,
   skillMarketBundle,
+  skillMarketsCorrupt,
 } from "@main/lib/skillMarket.js";
 import { getPluginSkillSources } from "@main/plugins/pluginManager.js";
 import {
@@ -1391,7 +1392,9 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
   // ── Skill market (「市场」tab): catalog repos of skills, see lib/skillMarket.ts ──
   ipcMain.handle(IPC.SKILLS_MARKET_LIST, async (_evt, raw) => {
     SkillsMarketListSchema.parse(raw ?? {});
-    return { markets: await listSkillMarkets() };
+    // 【MC-037】坏记录不许静默当空表 —— 列表照常(含内置市场)但**如实报**。
+    const corrupt = skillMarketsCorrupt();
+    return { markets: await listSkillMarkets(), ...(corrupt ? { corrupt } : {}) };
   });
   ipcMain.handle(IPC.SKILLS_MARKET_ADD, async (evt, raw) => {
     const input = SkillsMarketAddSchema.parse(raw);

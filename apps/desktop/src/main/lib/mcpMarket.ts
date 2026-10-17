@@ -17,6 +17,7 @@ import {
   type McpMarketSearchResult,
   type McpMarketSource,
 } from "@contracts/ipc";
+import { classifyMarketRegistry, marketRegistryCorruptMessage, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
 import { SettingRepo } from "@main/store/repositories.js";
 
 export const MCP_MARKET_SOURCES_SETTING_KEY = "mcp.marketSources";
@@ -31,20 +32,42 @@ export const OFFICIAL_MCP_REGISTRY: McpMarketSource = {
 const FETCH_TIMEOUT_MS = 20_000;
 const PAGE_SIZE = 30;
 
-function readUserSources(): McpMarketSource[] {
+function parseUserSources(value: unknown): McpMarketSource[] | null {
+  if (!Array.isArray(value)) return null;
+  return value
+    .filter(
+      (s): s is McpMarketSource =>
+        !!s && typeof s.id === "string" && typeof s.url === "string" && typeof s.label === "string",
+    )
+    .map((s) => ({ id: s.id, label: s.label, url: s.url, builtin: false }));
+}
+
+/**
+ * 【MC-037】用户来源三态。从前坏 JSON / 非数组一律 `[]` —— 列表谎报"没加过",
+ * `addMcpMarketSource` 拿空数组整表写回会把历史来源抹掉。分类核与技能/插件
+ * 市场共用(见 `lib/marketRegistry.ts`)。
+ */
+function readUserSourcesState(): MarketRegistryRead<McpMarketSource> {
+  let raw: string | null;
   try {
-    const raw = SettingRepo.get(MCP_MARKET_SOURCES_SETTING_KEY);
-    const list = raw ? (JSON.parse(raw) as unknown) : [];
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter(
-        (s): s is McpMarketSource =>
-          !!s && typeof s.id === "string" && typeof s.url === "string" && typeof s.label === "string",
-      )
-      .map((s) => ({ id: s.id, label: s.label, url: s.url, builtin: false }));
-  } catch {
-    return [];
+    raw = SettingRepo.get(MCP_MARKET_SOURCES_SETTING_KEY);
+  } catch (err) {
+    // 读口本身失败(DB 未就绪等):同样绝不能假装"没有来源"。
+    return { kind: "corrupt", reason: `读取失败(${(err as Error).message})` };
   }
+  return classifyMarketRegistry(raw, parseUserSources, "MCP 注册中心");
+}
+
+/** 读侧降级出口:损坏 → 空表(列表继续展示内置官方来源)。 */
+function readUserSources(): McpMarketSource[] {
+  const state = readUserSourcesState();
+  return state.kind === "ok" ? state.records : [];
+}
+
+/** 给 IPC 列表附的损坏诊断 —— 有值时 UI/Agent 可据此显式提示,而不是把坏表当空表。 */
+export function mcpMarketSourcesCorrupt(): { reason: string } | null {
+  const state = readUserSourcesState();
+  return state.kind === "corrupt" ? { reason: state.reason } : null;
 }
 
 export function listMcpMarketSources(): McpMarketSource[] {
@@ -107,10 +130,17 @@ async function fetchServers(
 export async function addMcpMarketSource(input: {
   url: string;
   label?: string;
-}): Promise<{ ok: boolean; error?: string; id?: string }> {
+}): Promise<{ ok: boolean; error?: string; id?: string; corrupt?: boolean }> {
   const base = normalizeRegistryBase(input.url);
   if (!base) return { ok: false, error: "不是有效的 http(s) 地址" };
-  const all = listMcpMarketSources();
+  // 【MC-037】写回前先问健康度:损坏记录拒绝进入修改事务(原设置行一个不动)。
+  // ⚠️ 顺序有意在**网络检查之前** —— 坏表是本地事实,不必等 fetch 失败才发现;
+  // 而且拒绝语要说清是"记录损坏",不是"连不上"。
+  const state = readUserSourcesState();
+  if (state.kind === "corrupt") {
+    return { ok: false, error: marketRegistryCorruptMessage("MCP 注册中心", state.reason), corrupt: true };
+  }
+  const all = [OFFICIAL_MCP_REGISTRY, ...(state.kind === "ok" ? state.records : [])];
   if (all.some((s) => s.url.toLowerCase() === base.toLowerCase())) return { ok: false, error: "这个注册中心已经在列表里了" };
   try {
     await fetchServers(base, { limit: "1" });
@@ -122,14 +152,19 @@ export async function addMcpMarketSource(input: {
   let i = 2;
   while (all.some((s) => s.id === id)) id = `custom-${host.replace(/[^A-Za-z0-9]+/g, "-")}-${i++}`;
   const label = input.label?.trim() || host;
-  const next = [...readUserSources(), { id, label, url: base, builtin: false }];
+  const next = [...(state.kind === "ok" ? state.records : []), { id, label, url: base, builtin: false }];
   SettingRepo.set(MCP_MARKET_SOURCES_SETTING_KEY, JSON.stringify(next.map(({ id: a, label: b, url: c }) => ({ id: a, label: b, url: c }))));
   return { ok: true, id };
 }
 
-export function removeMcpMarketSource(id: string): { ok: boolean; error?: string } {
+export function removeMcpMarketSource(id: string): { ok: boolean; error?: string; corrupt?: boolean } {
   if (id === OFFICIAL_MCP_REGISTRY.id) return { ok: false, error: "内置注册中心不能移除" };
-  const list = readUserSources();
+  // 【MC-037】坏表时"不存在"是谎 —— 来源可能就在坏字节里。
+  const state = readUserSourcesState();
+  if (state.kind === "corrupt") {
+    return { ok: false, error: marketRegistryCorruptMessage("MCP 注册中心", state.reason), corrupt: true };
+  }
+  const list = state.kind === "ok" ? state.records : [];
   if (!list.some((s) => s.id === id)) return { ok: false, error: "注册中心不存在" };
   SettingRepo.set(
     MCP_MARKET_SOURCES_SETTING_KEY,
