@@ -574,7 +574,12 @@ main()
     // disposeOwner/stop initiate process-tree shutdown. Windows may still
     // hold the child's cwd briefly; async retries also let close events drain.
     // Bounded: a genuinely leaked handle still fails this suite, not ignored.
-    await rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    //
+    // ⚠️ 2026-10-17：全量并行跑时 10×100ms(=1s)不够 —— 6 路 light 并发下 `rg`
+    // 子进程的 cwd 句柄释放得更慢，最后一个断言都绿了却在清理阶段 EBUSY 崩掉
+    // （日志里只有 "crashed: EBUSY"，看起来像断言失败，实际断言全过）。改成
+    // 30×200ms(=6s)：仍然有界、真正泄漏的句柄照样红，但不再把"机器忙"报成"测试坏"。
+    await rm(work, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
     console.log(`\n${checks - failures}/${checks} checks passed`);
     if (failures > 0) {
       console.error(`maint-m14-smoke: ${failures} failing check(s)`);
@@ -584,9 +589,10 @@ main()
   .catch(async (err: unknown) => {
     console.error(`maint-m14-smoke crashed: ${err instanceof Error ? err.stack : String(err)}`);
     try {
-      await rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      await rm(work, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
     } catch (cleanupError) {
-      console.error("maint-m14-smoke cleanup failed:", cleanupError);
+      // 说清楚这是**清理**失败，不是断言失败 —— 两者都该红，但别让日志误导排查。
+      console.error("maint-m14-smoke cleanup failed (assertions above may all have passed):", cleanupError);
     }
     process.exit(1);
   });
