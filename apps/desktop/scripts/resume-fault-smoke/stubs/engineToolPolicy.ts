@@ -15,3 +15,6 @@ export const resolveEngineExcludedToolsForProviderFile = () => [];
 // 【MC-042】`ipc/engineTools.ts` 的 set 入口 import 了它（静默剔除 → 显式拒绝）。
 // 本套不测策略判定，桩按"总是合法、什么都不禁"回——与本文件其余桩同义（不设限）。
 export const validateEngineToolPolicy = () => ({ ok: true as const, policy: {} });
+// 【MC-043】用户为该引擎写的工具使用说明。本套不测策略判定 —— 同义返回空串
+// (调用方 `toolGuidancePrompt` 见空即丢段,不改变默认行为)。
+export const resolveEngineToolGuidanceForProvider = () => "";

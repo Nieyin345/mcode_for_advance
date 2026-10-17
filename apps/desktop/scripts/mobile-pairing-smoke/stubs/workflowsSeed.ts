@@ -42,6 +42,12 @@ export function scriptPath(name: string): string {
   return join(scriptsDir(), name);
 }
 
+
+/** 【MC-006】`workflows/presetScripts.ts` 经 `@main/workflows/seed.js` 取记录文件名 ——
+ *  与 `seed.ts` 共用一份记录(判据是"scripts/ 下这个文件上次写出去的是哪一版")。
+ *  桩必须照抄这个导出面,否则整条 import 图以 "No matching export" 挂在打包。 */
+export const SHIPPED_RECORD_FILE = ".mcode-shipped.json";
+
 export function ensureWorkflows(): void {
   calls += 1;
 }

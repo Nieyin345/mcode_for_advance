@@ -849,11 +849,21 @@ console.log("\n浏览器设置面板:选目录与登录开关的失败出口");
     "utf8",
   );
   const code = browser.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
-  const catchSetError = (code.match(/catch \(err\) \{\s*setError\(/g) ?? []).length;
+  // ⚠️ **判据跟着实现走,但测的是行为不是写法**：MC-047(97d445d4)把两处选目录的
+  // 失败出口从 `setError` 拆成各自的 `setPickError`(与 `useSettingValue` 的 `s.error`
+  // 在 `errText` 里合并显示)。只数 `setError` 会让这条永远数到 0 —— 而那正是
+  // 「错误出口存在」这件事实本身。所以数的是**所有 catch → set*Error 出口**。
+  // ⚠️ **判据跟着实现走,但测的是行为不是写法**：MC-047(97d445d4)把两处选目录的
+  // 失败出口从 `setError` 拆成各自的 `setPickError`(与 `useSettingValue` 的 `s.error`
+  // 在 `errText` 里合并显示),持久登录开关的失败则落在 `toggle` 的 `if (!ok …) setError`
+  // 分支上(写失败 hook 不发布值,开关自动回弹 + 一行错误)。只数 `setError` 会让这条
+  // 永远数到 0 —— 而那正是「错误出口存在」这件事实本身。
+  const pickDirOutlets = (code.match(/catch \(err\) \{\s*setPickError\(/g) ?? []).length;
+  const toggleOutlet = /\.save\([^)]*\)[\s\S]{0,200}?if \(!ok[^\n]*setError\(/.test(code) ? 1 : 0;
   check(
-    "★ 浏览器设置:两处 pickDir + 持久登录开关都有 catch → setError 出口(从前静默)",
-    catchSetError >= 5,
-    { catchSetError },
+    "★ 浏览器设置:两处 pickDir + 持久登录开关都有失败出口(从前静默)",
+    pickDirOutlets >= 2 && toggleOutlet === 1,
+    { pickDirOutlets, toggleOutlet },
   );
 }
 
