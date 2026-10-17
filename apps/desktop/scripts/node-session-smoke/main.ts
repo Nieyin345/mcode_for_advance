@@ -931,6 +931,67 @@ const originalRunSave = repo.save;
   check("★ MC-003:外部动作在飞的步记成 uncertain（绝不谎报 cancelled）", uncertain.length === 1 && uncertain[0]!.sessionId === aSess, after2.map((t) => `${t.taskId}:${t.state}`));
   const errs = rt.published.filter((e) => e.type === "error").slice(errsBefore);
   check("★ MC-003:取消报告如实发出去（点名要人工核对）", errs.some((e) => (e as { message?: string }).message?.includes("核对") === true), errs.map((e) => (e as { message?: string }).message));
+  // ③ 复核补漏:正常跑完(不是取消)时根任务也必须进终态 —— 从前只有 cancel 一条路
+  //    会动根,正常结束的 run 把根永久留在 pending/running(注册表孤儿)。
+  {
+    setSceneRuntime(null);
+    const reg3 = getSceneRegistry();
+    const sid3 = "scene-wire-normal", workflowId3 = "wf_scene_wire_normal";
+    // 一张**会自然跑完**的图（纯条件节点，不需要模型 → 不 park）。
+    WorkflowRepo.save({
+      ...original,
+      id: workflowId3,
+      nodes: [
+        { id: "pure", type: "mcode.condition", title: "Pure", position: { x: 0, y: 0 }, params: {
+          expression: { logic: "and", rules: [{ ref: "{{user}}", op: "contains", value: "go" }] },
+        } },
+        ...["yes", "no"].map((id) => ({ id, type: "mcode.trigger", title: id, position: { x: 200, y: 0 }, params: { triggerKind: "manual", enabled: false } })),
+      ],
+      edges: [
+        { id: "yes", from: "pure", to: "yes", label: "true" },
+        { id: "no", from: "pure", to: "no", label: "false" },
+      ],
+    });
+    SessionRepo.create({ ...parentSession(sid3), workflowId: workflowId3 });
+    const done3 = startWorkflowRun({ session: SessionRepo.get(sid3)!, prompt: "go", cwd: process.cwd() });
+    await done3;
+    const after3 = reg3.tasksOfScene(sid3);
+    const root3 = after3.find((t) => t.parentTaskId === null);
+    check("★ MC-003 复核:正常跑完后根任务进了终态(不留在 pending/running)", root3 !== undefined && ["completed", "failed", "cancelled", "uncertain"].includes(root3.state), root3 && { id: root3.taskId, state: root3.state });
+    check("★ MC-003 复核:正常跑完后没有卡在 pending/running 的任务", after3.every((t) => t.state !== "running" && t.state !== "pending"), after3.map((t) => `${t.taskId}:${t.state}`));
+  }
+
+  // ④ 复核补漏:「让开」(parkedRunTeardown)也必须走注册表取消 —— 从前它只删 map + abort,
+  //    根/子任务全部成为永不终态的孤儿,而 run 已不在 map 里、之后无人能取消。
+  {
+    setSceneRuntime(null);
+    const reg4 = getSceneRegistry();
+    const sid4 = "scene-wire-park", workflowId4 = "wf_scene_wire_park";
+    // 一张会在岔路口**等人**的图（parked 的前提：executing === 0 且有等待中的选择）。
+    WorkflowRepo.save({
+      ...original,
+      id: workflowId4,
+      nodes: [
+        { id: "entry", type: "mcode.main", title: "主对话", params: { instruction: "选一个" }, position: { x: 0, y: 0 } },
+        { id: "fork", type: "mcode.branch", title: "下一步做什么", params: {}, position: { x: 0, y: 120 } },
+        { id: "a", type: "mcode.agent", title: "甲", params: { instruction: "做甲" }, position: { x: 0, y: 240 } },
+        { id: "b", type: "mcode.agent", title: "乙", params: { instruction: "做乙" }, position: { x: 200, y: 240 } },
+      ],
+      edges: [
+        { id: "e1", from: "entry", to: "fork" },
+        { id: "e2", from: "fork", to: "a", label: "走甲" },
+        { id: "e3", from: "fork", to: "b", label: "走乙" },
+      ],
+    });
+    SessionRepo.create({ ...parentSession(sid4), workflowId: workflowId4 });
+    void startWorkflowRun({ session: SessionRepo.get(sid4)!, prompt: "帮我选。", cwd: process.cwd() });
+    await waitFor("scene-wire-park 图停在岔路口等人", () => runner.isRunParked(sid4));
+    const parked = runner.parkedRunTeardown(sid4);
+    check("前置:让开拿到收尾 promise(图确实停在等人)", parked !== null, parked);
+    await parked;
+    const after4 = reg4.tasksOfScene(sid4);
+    check("★ MC-003 复核:让开后根与子任务都进终态(不再留孤儿)", after4.length > 0 && after4.every((t) => !["running", "pending"].includes(t.state)), after4.map((t) => `${t.taskId}:${t.state}`));
+  }
 }
 
 rmSync(DATA, { recursive: true, force: true });

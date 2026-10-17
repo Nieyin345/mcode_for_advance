@@ -763,6 +763,26 @@ export function parkedRunTeardown(sessionId: string): Promise<void> | null {
   const active = runs.get(sessionId) as ActiveRun;
   log.info(`workflow run ${active.runId}: 用户在它等人时又说话了 —— 让开 (${sessionId})`);
   runs.delete(sessionId);
+  // 【MC-003 复核补漏】**让开也走注册表取消** —— 从前这里只删 map + abort，根/子任务
+  // 全部留在注册表里成为永不终态的孤儿，而 run 已不在 map 里，之后没有任何入口能取消它们。
+  // 与 `cancelWorkflowRun` 同一姿势：abort 之前取证（"取消那一刻在飞什么"），报告不干净时
+  // 如实告知用户（不能让"请人工核对"只停在日志里）。
+  {
+    const outcome = getSceneRegistry().cancel(active.sceneRootTaskId);
+    if (outcome.ok) {
+      const report = sceneCancelReport(outcome.value);
+      if (!report.cleanStop) {
+        log.warn(`workflow run ${active.runId}: ${report.message}`);
+        try {
+          runtimeManager.emitExternal({ type: "error", sessionId, message: `让开时并非干净全停,需要你核对:${report.message}` });
+        } catch {
+          /* 广播失败不拦让开本身 */
+        }
+      }
+    } else if (outcome.code !== "TASK_NOT_FOUND") {
+      log.warn(`workflow run ${active.runId}: 让开时取消场景任务失败(${outcome.code}):${outcome.message}`);
+    }
+  }
   active.abort.abort();
   return active.settled;
 }
@@ -2537,6 +2557,23 @@ export async function startWorkflowRun(args: {
     // 一张旧卡片点下去,**一次已经结束的运行会被接起来重跑**(还会因为状态对不上而报错)。
     // 代价是一次同步整库写,而这是**每次运行只有一次**的收口,值得。
     const settled: RunResult["status"] = result === null ? "failed" : result.status;
+    // 【MC-003 复核补漏】**正常跑完 / 失败收场时把根任务收成终态** —— 从前只有
+    // `cancelWorkflowRun` 一条路会动根任务，正常结束的 run 的根会永久停在
+    // `pending/running`（注册表里留下永不终态的孤儿）。取消那条路已经由
+    // `registry.cancel` 落终态并（必要时）记 uncertain，这里只补"不是取消"的收场：
+    //   - 节点子任务各自在 `runInNodeSession` 的 finally 里 settle；根没有别的收尾点。
+    //   - 取消时 `cancel` 已把根迁到终态，`setState` 对终态任务会结构化拒绝 —— 这里
+    //     显式 swallow（"已经是终态"正是我们想要的结果，不是错误）。
+    {
+      const reg = getSceneRegistry();
+      const finalState = settled === "success" ? "completed" : settled === "cancelled" ? "cancelled" : "failed";
+      const applied = reg.setState(sceneRootTaskId, finalState);
+      // 终态任务再 setState 会被结构化拒绝(TASK_NOT_FOUND 带"已处于终态"的说明);
+      // 那正是取消路径先落过的终态,不是错误。根已被移除(不存在)同理。
+      if (!applied.ok && applied.code !== "TASK_NOT_FOUND") {
+        log.warn(`workflow run ${runId}: 场景根任务收尾失败(${applied.code}):${applied.message}`);
+      }
+    }
     // ⚠️ **返回值必须看**(MC-028)。这一列是"能不能续跑"的唯一判据 —— 存盘失败却照常
     // 广播 `turn.done`、解除运行态,用户看到的是"流程结束",而磁盘上留的可能是更早的
     // `running` / `interrupted`。重启后 `resumableFor` 会拿那份陈旧的快照去比对,于是
