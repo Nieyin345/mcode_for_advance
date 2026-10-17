@@ -8,7 +8,7 @@ import { startWorkflowRun, cancelWorkflowRun, hasActiveRun } from "@main/orchest
 import { getWorkflow } from "@main/orchestration/library.js";
 import { decodeSnapshot } from "@main/orchestration/runStore.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
-import { createAssistantJob, listAssistantJobs, pendingAssistantHandoff, queueAssistantHandoff, readAssistantJob, saveAssistantJob } from "./assistantStore.js";
+import { cancelAssistantJob, createAssistantJob, listAssistantJobs, pendingAssistantHandoff, queueAssistantHandoff, readAssistantJob, saveAssistantJob } from "./assistantStore.js";
 import { clampRunEvidence, clampSourceContext, textOf, SOURCE_BUDGET } from "./sourceText.js";
 import { currentAgentMemoryProjectId } from "./agentScope.js";
 const active = new Map<string, AbortController>();
@@ -102,7 +102,8 @@ export async function memoryAssistant(input: MemoryAssistantInput): Promise<Memo
       }
       if (job.status === "consumed" || job.status === "expired") return { jobs: listAssistantJobs(source.id), incoming: pendingAssistantHandoff(source.id) ?? undefined, injections: memoryInjectionsFor(source.id) };
       if (job.status === "running") { active.get(job.id)?.abort(); cancelWorkflowRun(job.workerSessionId); }
-      job.status = "cancelled"; job.result = ""; saveAssistantJob(job);
+      // 【MC-025】取消也走存储核:job 终结与目标指针清理同一事务(见 cancelAssistantJob 注释)。
+      cancelAssistantJob(job);
     } else {
       if (job.status === "queued" && job.targetSessionId && !input.targetSessionId) target = SessionRepo.get(job.targetSessionId);
       else if (input.targetSessionId) target = SessionRepo.get(input.targetSessionId);

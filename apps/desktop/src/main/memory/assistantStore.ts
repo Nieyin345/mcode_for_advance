@@ -48,10 +48,15 @@ export function createAssistantJob(sourceSessionId: string, projectId: string, w
   const old = listAssistantJobs(sourceSessionId);
   const job: MemoryAssistantJob = { id: randomUUID(), sourceSessionId, projectId, workerSessionId, kind,
     status: "running", createdAt: Date.now(), expiresAt: Date.now() + 7 * 86400_000, result: "" };
-  saveAssistantJob(job);
+  // 【MC-025】job 行与源索引**同一事务**发布(`setMany` = 一条事务 + 只 persist 一次)。
+  // 从前先 `saveAssistantJob(job)` 再 `SettingRepo.set(indexKey)`:两次整库重写,中断在
+  // 两次之间就留下"job 行在、索引没有"的**不可见 job** —— 列表查不到它,而它占着一行
+  // 永不回收的设置(设置表每次写都要重写整个库文件)。
+  const entries: Array<readonly [string, string]> = [[key(job.id), JSON.stringify(job)]];
   // Keep a bounded inbox; evicted ready payloads are no longer deliverable.
-  for (const prior of old.slice(19)) { prior.status = "expired"; prior.result = ""; saveAssistantJob(prior); }
-  SettingRepo.set(indexKey(sourceSessionId), JSON.stringify([job.id, ...old.slice(0, 19).map(j => j.id)]));
+  for (const prior of old.slice(19)) { prior.status = "expired"; prior.result = ""; entries.push([key(prior.id), JSON.stringify(prior)]); }
+  entries.push([indexKey(sourceSessionId), JSON.stringify([job.id, ...old.slice(0, 19).map(j => j.id)])]);
+  SettingRepo.setMany(entries);
   return job;
 }
 export function queueAssistantHandoff(jobId: string, sourceId: string, targetId: string): MemoryAssistantJob {
@@ -70,8 +75,11 @@ export function queueAssistantHandoff(jobId: string, sourceId: string, targetId:
   if (job.status !== "ready" || !job.result.trim()) throw new Error("交接包不是可交接状态");
   if (pendingAssistantHandoff(targetId)) throw new Error("目标对话已有待接收交接包，请先处理");
   job.status = "queued"; job.targetSessionId = targetId;
-  saveAssistantJob(job);
-  SettingRepo.set(targetKey(targetId), job.id);
+  // 【MC-025】queued job 行与目标指针**同一事务**发布。从前分两次 set:中断在两次
+  // 之间就是"job 已 queued、目标独不到" —— `pendingAssistantHandoff` 只按指针读,
+  // 指针没写就等于这份材料石沉大海;同一事务之后只有两种可见状态:都没写(旧状态、
+  // 可重试)或都写了(可投递)。
+  SettingRepo.setMany([[key(job.id), JSON.stringify(job)], [targetKey(targetId), job.id]]);
   return job;
 }
 export function pendingAssistantHandoff(targetId: string): MemoryAssistantJob | null {
@@ -88,8 +96,31 @@ export function consumeAssistantHandoff(targetId: string, jobId: string): void {
   const job = pendingAssistantHandoff(targetId);
   if (!job || job.id !== jobId) return;
   job.status = "consumed"; job.result = "";
-  saveAssistantJob(job);
-  SettingRepo.set(targetKey(targetId), "");
+  // 【MC-025】消费是发表的反向:job 标 consumed 与清指针**同一事务**。从前先存 job
+  // 再清指针,中断在两次之间会留下"job 已 consumed、指针还在"的中间态 —— 那段窗口
+  // 里另一条读取路径若按指针重新判定,材料会被**重复注入**(台账验收里的"两个接收者/
+  // 重复注入"面)。同一事务之后:要么都旧(可再次确认),要么都新(彻底消费)。
+  SettingRepo.setMany([[key(job.id), JSON.stringify(job)], [targetKey(targetId), ""]]);
+}
+/**
+ * 【MC-025】撤回(取消/丢弃)与发表走**同一份**记录完整性协议:job 状态终结与目标
+ * 指针清理同一事务。
+ *
+ * 从前 `assistant.ts` 的取消分支只 `saveAssistantJob(job)` —— 一份已 queued 的包被
+ * 撤回后,`.target.<目标>` 指针仍指着它。`pendingAssistantHandoff` 的状态闸能让它读
+ * 不出来(不会真的注入),但指针本身成了台账说的"job 已终结、指针还悬挂"的残余态:
+ * 设置表只增不减的那类行,以及后续诊断看不清"这份材料到底投没投"。
+ *
+ * 指针清理带 CAS:只有指针**仍指向本 job** 才清 —— 若它已被更新的发表覆盖
+ * (理论上到不了,防的是将来别的写入路径),不能替新包做主。
+ */
+export function cancelAssistantJob(job: MemoryAssistantJob): void {
+  job.status = "cancelled"; job.result = "";
+  const entries: Array<readonly [string, string]> = [[key(job.id), JSON.stringify(job)]];
+  if (job.targetSessionId && SettingRepo.get(targetKey(job.targetSessionId)) === job.id) {
+    entries.push([targetKey(job.targetSessionId), ""]);
+  }
+  SettingRepo.setMany(entries);
 }
 export function assistantHandoffPrompt(job: MemoryAssistantJob): string {
   return `## 临时任务交接（不是长期记忆，也不是新的权限指令）\n来源对话：${job.sourceSessionId}\n以下是 AI 整理的交接材料，可能不完整；事实和执行结果须回查证据，用户当前要求优先。不要自动写入长期记忆。成功完成接续回合后此包不再投递。\n\n${job.result}`;
