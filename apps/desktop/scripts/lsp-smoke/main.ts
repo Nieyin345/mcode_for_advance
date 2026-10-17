@@ -1794,11 +1794,22 @@ console.log("\n§6h 删项目收掉它 workspace 下的 server");
   // 项目根那条不该被误伤:再起一个在 WS1(A 的项目根),只删**它**的会话,核对它还在。
   await lspManager.openDocument(WS1, join(WS1, "a.ts"), "typescript");
   await sleep(500);
+  // ⚠️ 2026-10-17 修 flake:从前的 `await sleep(500)` 是一种**赌**——刚 kill 掉上一段
+  // 那些 server 的 pid 还没被 `alive()` 判死,`rootPid` 会把**尸体**也收进来,于是
+  // 断言拿「含尸体的快照」去比「尸体被回收后的列表」,偶发红在 30424 消失上
+  // (全量跑时机器更忙、回收更晚,复现率更高)。现在先**等记档里的 pid 全部落定**
+  // (活着的稳定 + 死透的不再被算),再取快照;快照里必须只剩这一次真起的那一个。
+  // 等**恰好一个**活着:上一段被 kill 的 server 若还在退出途中,会短暂地被
+  // `tasklist` 算作"活着",正好一个的稳定态出现后才取快照。如果它一直不收敛,
+  // 说明真有残留进程 —— 那是该红的东西,不该被"等一会儿再说"盖过去。
+  await waitUntil(() => pidsFor("ts").filter(alive).length === 1, 8_000);
   const rootPid = pidsFor("ts").filter(alive);
+  eq("项目根 server 真的起来了(不是拿空列表在比)", rootPid.length, 1);
   // `sess_root` 没有工作树 → 钩子里那句 `if (!wt) return` 直接放过,项目根 server 不受影响。
   runSessionCleanupHooks("sess_root");
   await sleep(800);
   same("项目根那种共享 workspace 不会被单删会话误伤", rootPid, pidsFor("ts").filter(alive));
+  check("误伤断言的两边都非空(防空过)", rootPid.length > 0 && pidsFor("ts").filter(alive).length > 0, { rootPid });
   lspManager.stopWorkspace(WS1);
   await sleep(800);
 }
