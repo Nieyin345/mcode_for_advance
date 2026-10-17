@@ -45,7 +45,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
@@ -394,6 +394,33 @@ function dirSizeCached(dir: string): number {
   const bytes = dirSize(dir);
   diskCache.set(dir, { bytes, at: Date.now() });
   return bytes;
+}
+
+/**
+ * 丢掉某台引擎名下**所有版本目录**的磁盘占用缓存。
+ *
+ * ⚠️ 2026-10-17 修的一处判据错位:`removeRuntime` 从前只 `diskCache.delete(join(root,
+ * agent))`,而缓存键是 `join(root, agent, version)`(`dirSizeCached(managed.dir)`)。
+ * 两个键永远不会相等 —— 那句删除**一直是空操作**,旧版本目录的条目从不被回收;每次
+ * 升级后设置面板列一次,就多一条永久小对象。用一个前缀删,把键形状的细节收在这里,
+ * 调用方只表达"这台引擎的文件都没了"。
+ */
+function forgetDiskSizesOf(agent: RuntimeAgentId): void {
+  const root = getManagedRuntimeRoot();
+  if (!root) return;
+  const prefix = join(root, agent) + sep;
+  for (const key of [...diskCache.keys()]) if (key.startsWith(prefix)) diskCache.delete(key);
+}
+
+/** 测试用:数一下某台引擎名下还留着几条磁盘占用缓存(生产不调用)。
+ *  这个 Map 是纯内存、没有用户可见出口 —— 没有这个读数,「卸载时清掉旧版本条目」
+ *  就只能靠读源码宣称,断言无法变红（实测:撤掉修复,`diskBytes` 断言仍然绿,
+ *  因为目录已不存在、`dirSizeCached` 再也不会被问）。 */
+export function __diskSizeCacheKeysForTest(agent: RuntimeAgentId): string[] {
+  const root = getManagedRuntimeRoot();
+  if (!root) return [];
+  const prefix = join(root, agent) + sep;
+  return [...diskCache.keys()].filter((key) => key.startsWith(prefix));
 }
 
 /* ── public API ── */
@@ -817,7 +844,8 @@ export async function removeRuntime(agent: RuntimeAgentId): Promise<{ ok: boolea
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: msg };
   }
-  diskCache.delete(dir);
+  // 键是 `<root>/<agent>/<version>`,不是 `<root>/<agent>` —— 用前缀删(见 forgetDiskSizesOf)。
+  forgetDiskSizesOf(agent);
   lastErrors.set(agent, "");
   log.info(`runtime removed: ${agent}`);
   return { ok: true };

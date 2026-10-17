@@ -253,6 +253,7 @@ const {
   installRuntimeFromLocalPath,
   listRuntimes,
   removeRuntime,
+  __diskSizeCacheKeysForTest,
   installedVersionOf,
   isRuntimeInstalling,
 } = await import("@main/runtimes/runtimeInstaller.js");
@@ -540,8 +541,19 @@ check("pi 先装上了(夹具)", installedVersionOf("pi") === "0.83.0");
 const beforeRemovePi = existsSync(join(agentDir("pi"), "0.83.0"));
 check("pi 的目录确实在", beforeRemovePi);
 
+// 【2026-10-17】删之前先让 diskBytes 缓存**真的被填上**（升级后的旧版本目录也算在内）：
+// 从前 `removeRuntime` 只 delete `<root>/<agent>`，而缓存键是 `<root>/<agent>/<version>`
+// —— 两个键永不相等，那句删除一直是空操作。这里用"删之前读一次、删后再读"来观察，
+// 不直接摸私有 Map（判据立在用户能看到的 diskBytes 上）。
+const beforeRemoveClaude = (await listRuntimes()).find((r) => r.agent === "claude");
+check("前提：删之前 claude 确实报出非零占用（缓存已被填过）", (beforeRemoveClaude?.diskBytes ?? 0) > 0, beforeRemoveClaude?.diskBytes);
+
 const rRemove = await removeRuntime("claude");
 check("删 claude 成功", rRemove.ok === true, rRemove);
+// ⚠️ 只断 `diskBytes === 0` 是**抓不住**的:目录已经不存在,`dirSizeCached` 再也不会
+// 被问,旧缓存条目躺在内存里也不会出现在任何读数里(实测:撤掉修复,那条断言仍绿)。
+// 真正的判据是"缓存里属于这台引擎的键清空了"—— 这是纯内存状态,只能靠测试读数观察。
+eq("★★ 删之后该引擎名下的磁盘占用缓存条目清空（不是只删了永远对不上的 `<root>/<agent>` 键）", __diskSizeCacheKeysForTest("claude").length, 0);
 eq("claude 的安装没了", installedVersionOf("claude"), null);
 check("claude 的目录整个没了", !existsSync(agentDir("claude")));
 check("★ 删 claude 不会碰到 pi 的东西", existsSync(join(agentDir("pi"), "0.83.0", "node_modules")));
