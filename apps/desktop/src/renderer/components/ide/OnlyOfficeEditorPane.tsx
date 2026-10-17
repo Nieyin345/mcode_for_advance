@@ -43,13 +43,49 @@ declare global {
   }
 }
 
-/** 按 URL 缓存的 api.js 加载器（见文件头"只能加载一次"）。 */
+/**
+ * 【MC-056】`window.DocsAPI` 是**哪一台** Document Server 注册的。
+ *
+ * `api.js` 是单例:它把 `DocsAPI` 挂到 window 上,**先装的赢** —— 后插一个不同服务器
+ * 的 api.js 也不会把全局换成新的(厂商脚本只在自己没定义过时注册)。所以"看见
+ * `window.DocsAPI` 就直接用"在**第一次**是对的,在**切换服务器之后**就是把 A 的 SDK
+ * 配上 B 的会话 config —— 台账 MC-056 的实测(`requestedServer=B,returnedServer=A`)。
+ *
+ * 修法是把来源记下来、拿它和本次请求比:
+ *   - 同源 → 复用(重复打开同一台服务器不再下载);
+ *   - 不同源 → **拒绝**并明说先重启。诚实地说,这一条是 fail-closed 而不是"热切换":
+ *     全局是单例、旧 iframe/DocEditor 还在用旧 SDK,能可靠换掉的只有"重新加载整个
+ *     渲染进程"。假装已经换成 B 只会把加载/保存失败推迟到用户点保存那一刻。
+ */
+// #region docsapi-loader
+let docsApiOrigin: string | null = null;
+/** 报错里给用户看的服务器身份 —— 只取 origin,不带路径/查询(可能含令牌)。 */
+function originOf(url: string): string {
+  try {
+    return new URL(url, window.location.href).origin;
+  } catch {
+    return url;
+  }
+}
+
+/** 按 URL 缓存的 api.js 加载器(见文件头"只能加载一次")。 */
 const scriptLoads = new Map<string, Promise<DocsApiGlobal>>();
 function loadDocsApi(url: string): Promise<DocsApiGlobal> {
   const cached = scriptLoads.get(url);
   if (cached) return cached;
+  const requestedOrigin = originOf(url);
   const p = new Promise<DocsApiGlobal>((resolve, reject) => {
     if (window.DocsAPI) {
+      if (docsApiOrigin !== null && docsApiOrigin !== requestedOrigin) {
+        reject(new Error(
+          `OnlyOffice SDK was loaded from ${docsApiOrigin}, but this document asks for ${requestedOrigin}. ` +
+          "The vendor script installs a single global and cannot be swapped in place — restart Mcode before using the new Document Server.",
+        ));
+        return;
+      }
+      // 来源未知(页面在本次加载前就已经有 DocsAPI):按"就是这一台"接受,并把来源
+      // 钉成它 —— 从这一刻起再切别的服务器就会被上面那条挡住。
+      docsApiOrigin ??= requestedOrigin;
       resolve(window.DocsAPI);
       return;
     }
@@ -57,8 +93,10 @@ function loadDocsApi(url: string): Promise<DocsApiGlobal> {
     s.src = url;
     s.async = true;
     s.onload = () => {
-      if (window.DocsAPI) resolve(window.DocsAPI);
-      else reject(new Error("api.js loaded but DocsAPI is missing"));
+      if (window.DocsAPI) {
+        docsApiOrigin = requestedOrigin;
+        resolve(window.DocsAPI);
+      } else reject(new Error("api.js loaded but DocsAPI is missing"));
     };
     s.onerror = () => {
       scriptLoads.delete(url);
@@ -70,6 +108,13 @@ function loadDocsApi(url: string): Promise<DocsApiGlobal> {
   scriptLoads.set(url, p);
   return p;
 }
+
+/** 测试用:重置模块级 SDK 身份(生产不调用)。 */
+export function __resetDocsApiOriginForTest(): void {
+  docsApiOrigin = null;
+  scriptLoads.clear();
+}
+// #endregion docsapi-loader
 
 let idSeq = 0;
 
