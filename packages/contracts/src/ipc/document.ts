@@ -39,12 +39,21 @@ export type DocumentReadInput = z.infer<typeof DocumentReadSchema>;
 
 export const DocumentEditSchema = z.object({
   filePath: PathSchema,
-  /** GenOffice 的 ops 数组（形状由 CLI 校验；CAS 见计划 B.2）。 */
+  /** GenOffice 的 ops 数组（形状由 CLI 校验）。 */
   ops: z.array(z.unknown()).min(1).max(500),
   /** 只演练不写盘。 */
   dryRun: z.boolean().optional(),
   /** docx：把内容编辑记成修订。 */
   track: z.boolean().optional(),
+  /**
+   * 【ARC-007】**原值版本检查** —— 与 `file.writeFile` 的 `expectedVersion` 同一算法
+   * （原始字节的 sha256，见 `fileContentVersion`）。给了就必须与盘上当前一致：
+   * 另一端（Agent / 另一个窗口）在此期间改过 → 拒绝且**不执行**，把当前版本带回去。
+   * 这让"旧 UI 的自动保存覆盖 Agent 已落盘内容"变成可判定的拒绝，而不是静默丢更新。
+   *
+   * 可选是兼容取舍（旧调用方不带 = 整份执行）；编辑器保存路径**必须**带。
+   */
+  expectedRevision: z.string().min(1).max(200).optional(),
 }).strict();
 export type DocumentEditInput = z.infer<typeof DocumentEditSchema>;
 
@@ -59,8 +68,13 @@ export type DocumentConvertInput = z.infer<typeof DocumentConvertSchema>;
 
 /** 一次文档操作的结果 —— `kind` 区分"拒绝(没执行)"/"能力不可用"/"执行失败"/"成功"。 */
 export type DocumentIpcResult =
-  | { ok: true; command: string; summary: string | null; detail: unknown }
-  | { ok: false; kind: "refused" | "unavailable" | "failed"; reason: string; code?: number | string };
+  | { ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null }
+  | {
+      ok: false; kind: "refused" | "unavailable" | "failed" | "conflict";
+      reason: string; code?: number | string;
+      /** conflict 时盘上的当前版本（调用方据此重读后再决定）。 */
+      currentRevision?: string | null;
+    };
 
 /** 能力报告：CLI 在不在、各格式/路由归哪档。 */
 export interface DocumentCapabilities {

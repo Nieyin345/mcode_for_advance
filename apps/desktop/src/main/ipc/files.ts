@@ -89,18 +89,11 @@ import {
  *  读放行(`isPasteTempPath` 的守卫)必须指向同一个目录:从前两处各写一份字面量,
  *  改名漏一处,就会"粘进来的文件写进 A、放行的却是 B",编辑器预览粘贴图片直接打不开。 */
 
-/** 【MC-097】一个文件**当前内容**的稳定版本哈希(缓存无关,直接读当前字节)。文件不存在
- *  时返回 `null`(与"内容为空串"区分:新建 vs 空文件是两种不同的事实)。渲染端 `readFile`
- *  回传同一算法的版本,`writeFile` 的 `expectedVersion` 就是它 —— 两端必须同一份(`createHash`)。
- */
-export async function fileContentVersion(filePath: string): Promise<string | null> {
-  try {
-    const buf = await readFile(filePath);
-    return createHash("sha256").update(buf).digest("hex");
-  } catch {
-    return null; // 不存在 / 读不了 —— 当作"没有可匹配的版本"。
-  }
-}
+/** 【MC-097】文件内容版本的唯一实现在 `@main/lib/fileVersion`（【ARC-007】抽成
+ *  叶子模块，避免只算版本的调用方被本文件的 electron import 拖进来）。此处重导出
+ *  保持既有调用方不变。 */
+export { fileContentVersion } from "@main/lib/fileVersion.js";
+import { fileContentVersion as currentFileVersion } from "@main/lib/fileVersion.js";
 
 /** 【MC-097】**原子替换**:写同目录随机后缀的临时文件 → `fsync` 落盘 → `rename` 覆盖目标。
  *  中断/崩溃只会留下一个可丢的临时文件,**不会**毁掉原文件(从前直接 `writeFile` 目标,
@@ -576,7 +569,7 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
       // `assertRevision` 同一条纪律:**重读比对落在写那一刻,而不是在渲染端**。
       const outcome = await withOsFileLease(input.filePath, async () => {
         if (input.expectedVersion !== undefined) {
-          const current = await fileContentVersion(input.filePath);
+          const current = await currentFileVersion(input.filePath);
           if (current !== input.expectedVersion) {
             log.warn(`file.writeFile conflict — ${input.filePath} 已被改动(期望 ${input.expectedVersion},现为 ${current ?? "不存在"})`);
             return { ok: false, conflict: true } as const;

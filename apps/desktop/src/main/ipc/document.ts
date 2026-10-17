@@ -26,6 +26,7 @@ import {
 import { documentKindOf } from "@contracts/documentKind";
 import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, sheetRead, convertFile, type GenofficeResult } from "@main/document/genofficeCli.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
+import { fileContentVersion } from "@main/lib/fileVersion.js";
 
 /**
  * 仓库根的**可注入解析** —— 默认惰性 `require("electron").app.getAppPath()`
@@ -121,10 +122,31 @@ export function registerDocumentHandlers(ipc: IpcMain): void {
   ipc.handle(IPC.DOCUMENT_EDIT, async (_evt, raw) => {
     const input = DocumentEditSchema.parse(raw);
     if (!p.ok) return unavailable();
-    return toWire(await docsApply(p.ports, input.filePath, input.ops, {
+    // 【ARC-007】原值版本检查(与 file.writeFile 的 expectedVersion 同一算法)。
+    // 检查在**执行前**；CLI 写入后不再复核 —— 那一段是 CLI 的原子写,宿主无法插进去。
+    // 因此判据是"读到版本 → 立刻执行",窗口极小;真正的并发互斥留给后续
+    // VersionedFileStore 切片(计划 B.2),这里先把"旧草稿静默覆盖"堵住。
+    if (input.expectedRevision !== undefined) {
+      const current = await fileContentVersion(input.filePath);
+      if (current !== input.expectedRevision) {
+        return {
+          ok: false,
+          kind: "conflict",
+          reason: "文档已被别处改动(另一个窗口、Agent 或外部编辑器)—— 为避免覆盖对方刚保存的内容,这次编辑未执行。请重新加载后再改。",
+          currentRevision: current,
+        };
+      }
+    }
+    const result = await docsApply(p.ports, input.filePath, input.ops, {
       ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
       ...(input.track !== undefined ? { track: input.track } : {}),
-    }));
+    });
+    // 成功时回传新版本(dryRun 不写盘,版本不变)。
+    if (result.ok && input.dryRun !== true) {
+      const wire = toWire(result);
+      return wire.ok ? { ...wire, revision: await fileContentVersion(input.filePath) } : wire;
+    }
+    return toWire(result);
   });
 
   ipc.handle(IPC.DOCUMENT_CONVERT, async (_evt, raw) => {

@@ -168,6 +168,15 @@ if (cliPath === null) {
       check("preload 暴露 document 命名空间", preload.includes("document: {") && preload.includes("DOCUMENT_READ"));
       const policy = readFileSync(join(repoRoot, "apps/desktop/src/main/appControl/policy.ts"), "utf8");
       check("policy:读只读、编辑/转换 danger", policy.includes('"document.read": "read"') && policy.includes('"document.edit": "编辑并保存文档'));
+
+      // 【ARC-007】原值版本检查真的接在 handler 上(源码断言 + 契约字段)。
+      const docHandler = readFileSync(join(repoRoot, "apps/desktop/src/main/ipc/document.ts"), "utf8");
+      check("★ handler 在编辑前比对 expectedRevision", docHandler.includes("fileContentVersion(") && docHandler.includes("input.expectedRevision"));
+      check("★ 冲突带 currentRevision 返回", docHandler.includes('kind: "conflict"') && docHandler.includes("currentRevision: current"));
+      check("★ 成功编辑回传新 revision", docHandler.includes("revision: await fileContentVersion"));
+      const docContract = readFileSync(join(repoRoot, "packages/contracts/src/ipc/document.ts"), "utf8");
+      check("契约有 expectedRevision 字段", docContract.includes("expectedRevision: z.string()"));
+      check("结果类型有 conflict 档", docContract.includes('"conflict"'));
     }
 
 
