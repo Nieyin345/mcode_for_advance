@@ -222,5 +222,45 @@ console.log("\n§F resources/presets/scripts/");
   check("随包脚本正文来自 assets 常量（不是另一份手写）", CHECK_CITATIONS_PY.includes("#!/usr/bin/env python3"));
 }
 
+/* ─────────── §G 打包布局解析（MC-007 复核补漏）─────────── */
+
+console.log("\n§G 预置文件在「打包布局」下也能解析");
+{
+  // 打包态的形状:`extraResources` 把 `resources/presets/*` 铺到 `<resourcesPath>/presets/`,
+  // **没有**再套一层 `resources/`。用一个临时根**真的造出**这种布局,断言通用解析器
+  // 找得到 —— 从前它对每个根都拼 `resources/presets/…`,打包态一律 absent。
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  const { resolvePresetFile, readPresetJson, presetPathCandidatesIn } = await import("@main/lib/presetFiles.js");
+  const root = mkdtempSync(joinPath(tmpdir(), "mcode-preset-packed-"));
+  try {
+    mkdirSync(joinPath(root, "presets"), { recursive: true });
+    writeFileSync(joinPath(root, "presets", "workflows.json"), JSON.stringify({ workflows: [] }), "utf8");
+    check(
+      "★ 打包布局(root/presets/file)能被解析到",
+      resolvePresetFile("workflows.json", [root]) === joinPath(root, "presets", "workflows.json"),
+      resolvePresetFile("workflows.json", [root]),
+    );
+    const read = readPresetJson("workflows.json", [root]);
+    check("★ 打包布局读得回合法 JSON(health=ok)", read.health === "ok", read);
+    mkdirSync(joinPath(root, "resources", "presets"), { recursive: true });
+    writeFileSync(joinPath(root, "resources", "presets", "workflows.json"), JSON.stringify({ workflows: [{ id: "dev" }] }), "utf8");
+    const picked = readPresetJson("workflows.json", [root]);
+    check(
+      "★ 两种布局同时存在时优先开发布局(不改变开发态行为)",
+      picked.health === "ok" && JSON.stringify(picked).includes('"id":"dev"'),
+      picked,
+    );
+    const missing = readPresetJson("nope.json", [root]);
+    check("★ absent 文案列出两种布局的真实路径", missing.health === "absent" && missing.path.includes(joinPath(root, "presets", "nope.json")) && missing.path.includes(joinPath(root, "resources", "presets", "nope.json")), missing);
+    check("presetPathCandidatesIn 给出两种布局", presetPathCandidatesIn(root, "x.json").length === 2);
+    const real = readPresetJson("workflows.json");
+    check("开发态:真仓库的资源目录仍解析得到 workflows.json", real.health === "ok", real);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 console.log(`\npreset-scripts-sync-smoke: ${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);

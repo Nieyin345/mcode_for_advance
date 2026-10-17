@@ -54,6 +54,23 @@ export function presetRelativePath(fileName: string): string {
  *
  * `MCODE_PRESET_ROOT` 是给**打包验证 / 特殊安装布局**留的显式覆盖:设了就**只**用它
  * —— 一个显式指定的位置读不到时报 `absent`,而不是悄悄落到别的候选上装作读到了。
+ *
+ * ## 【MC-007 复核补漏】同一个根下要试**两种布局**
+ *
+ * 同一份内容在两种宿主里的挂法**不同**:
+ *
+ *   - **开发 / 无头**:`<cwd>/resources/presets/<file>`(`cwd` = `apps/desktop`)。
+ *   - **打包**:`electron-builder.yml` 的 `extraResources: from resources/presets → to presets`
+ *     把内容铺到 **`<process.resourcesPath>/presets/`** —— 那里**没有**再套一层
+ *     `resources/`。从前这里对 `process.resourcesPath` 也拼 `resources/presets/…`,
+ *     实际解析成 `<resources>/resources/presets/…`(永远不存在);macOS 从 Finder 启动时
+ *     `cwd` 是 `/`,两个 cwd 候选也救不回 —— 打包态会一致报 `absent`(Windows 只是靠
+ *     快捷方式的 cwd 恰好是安装目录才碰巧命中)。`MCODE_PRESET_ROOT` 覆盖只在验证时设,
+ *     挡不住真实用户。
+ *
+ * 所以**每个根都按「完整相对路径 → 根下 `presets/`」两种布局各试一次**
+ * ({@link presetPathCandidatesIn})。这比"按根的身份猜布局"稳 —— 调用方传进来的候选
+ * 可以是任意临时目录(打包验证就是这么做的),身份判断在那种场合无从谈起。
  */
 export function presetRootCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
   const override = env["MCODE_PRESET_ROOT"];
@@ -65,15 +82,20 @@ export function presetRootCandidates(env: NodeJS.ProcessEnv = process.env): stri
   return roots;
 }
 
+/** 某个根下该文件的两种可能路径(开发布局在前、打包布局在后)。 */
+export function presetPathCandidatesIn(root: string, fileName: string): string[] {
+  return [join(root, presetRelativePath(fileName)), join(root, "presets", fileName)];
+}
+
 /** 解析到**第一个真实存在**的预置文件;都不在返回 null(调用方报 `absent`)。 */
 export function resolvePresetFile(
   fileName: string,
   candidates: readonly string[] = presetRootCandidates(),
 ): string | null {
-  const rel = presetRelativePath(fileName);
   for (const root of candidates) {
-    const file = join(root, rel);
-    if (existsSync(file)) return file;
+    for (const file of presetPathCandidatesIn(root, fileName)) {
+      if (existsSync(file)) return file;
+    }
   }
   return null;
 }
@@ -97,7 +119,8 @@ export function readPresetJson(
     return {
       health: "absent",
       reason: `没有找到出厂预置文件(${rel});试过:${candidates.join("、")}`,
-      path: candidates.map((root) => join(root, rel)).join("、"),
+      // 报**真实试过**的路径(两种布局都算),否则打包态排查时会被引导到不存在的目录。
+      path: candidates.flatMap((root) => presetPathCandidatesIn(root, fileName)).join("、"),
     };
   }
 
