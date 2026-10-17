@@ -1,4 +1,4 @@
-import { RUNTIME_FALLBACK_MODELS_SETTING_KEY } from "@contracts/ipc";
+import { RUNTIME_FALLBACK_MODELS_SETTING_KEY, DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import { automationOriginOf } from "@main/orchestration/automationEventOrigin.js";
 import type { RuntimeEvent } from "@contracts/runtime";
 /**
@@ -64,7 +64,7 @@ import { AGENT_ENGINE_MCP_SERVER } from "@main/mcp/agentEngineBridge.js";
 import { MCP_WORKFLOW_SERVER } from "@contracts/ipc/mcp";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { parseIncomingMail, readOutgoingMail, isAgentMailTool } from "@renderer/lib/agentMail.js";
-import { providerRegistry } from "@main/providers/registry.js";
+import { providerRegistry, ProviderRegistry } from "@main/providers/registry.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import type { BridgeHandle } from "@main/providers/bridge/bridgeServer.js";
@@ -1756,6 +1756,9 @@ console.log("\n⑱【MC-013】注册表死接口面已删,活着的入口语义�
   const reg = providerRegistry as unknown as Record<string, unknown>;
   eq("resolve 已删(全仓无调用端的静默回退口)", typeof reg.resolve, "undefined");
   eq("getDefaultForNewSession 已删(与 DEFAULT_PROVIDER_ID 重复的第二出口)", typeof reg.getDefaultForNewSession, "undefined");
+  // 【独立复核要求】`default` getter 按注册顺序返回第一家 —— 那是「默认引擎」的第二份
+  // 事实。审核明确要求收敛成一份:它必须**不存在**,而不是留着却没人调。
+  eq("default getter 已删(注册顺序不再参与默认引擎推导)", typeof reg.default, "undefined");
 
   // 活着的入口照常:`get` 是容忍缺失的探测口,`getRequired` 取不到必抛(MC-056 语义)。
   eq("get 对在册引擎照常返回(正控)", providerRegistry.get("claude-sdk")?.id, "claude-sdk");
@@ -1764,6 +1767,49 @@ console.log("\n⑱【MC-013】注册表死接口面已删,活着的入口语义�
   try { providerRegistry.getRequired("mc013-ghost-engine"); } catch (err) { threw = err as Error & { code?: string }; }
   check("★ getRequired 取不到就抛结构化失败(MC-056 的活着的入口)", threw !== undefined && threw.code === "PROVIDER_UNAVAILABLE", threw?.code);
   eq("getRequired 对在册引擎照常返回", providerRegistry.getRequired("claude-sdk").id, "claude-sdk");
+
+  /* ── 默认引擎只有一份事实:getDefaultProviderId() ≡ DEFAULT_PROVIDER_ID 常量 ──
+   *
+   * 这里要做的是「同一个真相」而不是「两个恰好相等的值」:断言 getter 的返回值
+   * **逐字等于契约常量**,并且它**不随注册顺序变化**。注册顺序的变异用一个
+   * 独立的临时注册表复现(不污染真表)——同一个 id 在表里注册多少次,结果都一样。 */
+  eq("★ getDefaultProviderId() 与契约常量逐字一致(唯一真相)", providerRegistry.getDefaultProviderId(), DEFAULT_PROVIDER_ID);
+
+  /* ── 两种注册顺序的变异测试（台账要求的「两注册顺序反例」）────────────────
+   *
+   * 单例的注册顺序是固定的(claude→pi→codex),而默认引擎恰好是 claude-sdk —— 拿它
+   * 测不出「按第一家兜底」的回归(改回去也照样绿)。所以用**两个独立实例**,以相反
+   * 顺序注册同一批 id:无论谁排第一,getDefaultProviderId() 都必须是同一个常量。 */
+  const fake = (id: string): AgentProvider => ({
+    id,
+    displayName: id,
+    capabilities: {
+      supportsApproval: false, supportsResume: false, supportsStreaming: false,
+      supportsMcp: false, supportsAskUserQuestion: false,
+    },
+    startTurn: async () => ({ done: Promise.resolve(), interrupt: () => {}, isRunning: () => false }),
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+  const forward = new ProviderRegistry();
+  forward.register(fake("zzz-last-engine"));
+  forward.register(fake("aaa-first-engine"));
+  const backward = new ProviderRegistry();
+  backward.register(fake("aaa-first-engine"));
+  backward.register(fake("zzz-last-engine"));
+  // 前提:两个实例的"第一家"确实不同(否则下面的断言没有区分力)。
+  check(
+    "前提:两个注册表的第一家不同(顺序真的相反)",
+    forward.list()[0]!.id !== backward.list()[0]!.id,
+    { forwardFirst: forward.list()[0]!.id, backwardFirst: backward.list()[0]!.id },
+  );
+  eq("★ 顺序 A(zzz 先注册):默认引擎仍是常量", forward.getDefaultProviderId(), DEFAULT_PROVIDER_ID);
+  eq("★ 顺序 B(aaa 先注册):默认引擎仍是常量", backward.getDefaultProviderId(), DEFAULT_PROVIDER_ID);
+  // 默认引擎没注册时也**不回退**到任何在册引擎(否则就是第二份事实)。
+  check(
+    "★ 默认引擎未注册时不回退到在册引擎(不静默换引擎)",
+    forward.getDefaultProviderId() === DEFAULT_PROVIDER_ID && forward.get(forward.getDefaultProviderId()) === undefined,
+    forward.getDefaultProviderId(),
+  );
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

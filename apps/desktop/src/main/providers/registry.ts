@@ -4,16 +4,26 @@
  * Add new providers here (one register call each). The rest of the system
  * (RuntimeManager, IPC, frontend) resolves providers by id from this registry.
  *
- * 【MC-013】「新会话默认引擎」**不由**本注册表的注册顺序决定 —— 权威是常量
- * `DEFAULT_PROVIDER_ID`(@contracts/ipc/settings.ts)。见下方 default getter 的说明。
+ * 【MC-013】「新会话默认引擎」**只有一份事实**：常量 `DEFAULT_PROVIDER_ID`
+ * (@contracts/ipc/settings.ts)。本注册表**不**提供任何"默认引擎"解析口 ——
+ * 从前那个按注册顺序返回第一家的 `default` getter 已删除(审核要求收敛到一处)。
+ * 注册顺序只影响 `list()` 的展示顺序，与默认引擎无关。
  */
 import type { AgentProvider } from "@contracts/provider";
+import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import { ClaudeAgentSdkProvider } from "./claude-sdk/ClaudeAgentSdkProvider.js";
 import { PiAgentSdkProvider } from "./pi-sdk/PiAgentSdkProvider.js";
 import { CodexAgentSdkProvider } from "./codex-sdk/CodexAgentSdkProvider.js";
 import { createProviderHealthProbe } from "./providerHealth.js";
 
-class ProviderRegistry {
+/**
+ * 【MC-013】注册表类**导出**（生产仍只用下面那个单例）。
+ *
+ * 导出是为了让「默认引擎与注册顺序无关」这条判据能被**真的变异验证**：单例里内置
+ * 引擎的注册顺序固定，拿它测不出一条"按第一家兜底"的回归（就算改回去，第一家恰好
+ * 还是 claude-sdk，套件照样绿）。套件用两个独立实例注册相反的次序来判。
+ */
+export class ProviderRegistry {
   private providers = new Map<string, AgentProvider>();
 
   register(p: AgentProvider): void {
@@ -58,25 +68,19 @@ class ProviderRegistry {
   }
 
   /**
-   * 【MC-013】**不**是「新会话默认引擎」的解析口 —— 别再往这个方向用它。
+   * 【MC-013】**只有一个默认引擎出口** —— 就是本方法，它直接读权威常量
+   * `DEFAULT_PROVIDER_ID`。
    *
-   * 「新会话默认引擎」的权威是常量 `DEFAULT_PROVIDER_ID`(@contracts/ipc/settings.ts),
-   * 由 `sessionStart.ts` / `delegateHost.ts` / `automationRunner.ts` / `publicMcpSession.ts`
-   * 等入口直接引用。本 getter 只是**注册顺序的偶然结果**(当前 = 第一家 = claude-sdk),
-   * 两个事实目前**恰好相等**,但改注册顺序不会改默认引擎 —— 想改默认,改常量。
+   * 从前这里还有一个 `default` getter，按**注册顺序**返回第一家（恰好也是
+   * claude-sdk），于是「默认引擎」同时存在两份事实（常量 + 注册顺序）。审核明确
+   * 要求收敛成一份：注册顺序不再参与任何默认值推导，本方法是唯一入口。
    *
-   * ⚠️ **未决(MC-013 remaining)**:「常量硬编码 vs 注册表首家」的取舍需产品定。
-   * 现状是两份事实并存、由本注释钉住权威;待产品拍板后收敛成一份(删本 getter 的
-   * 「第一家」语义,或让常量从注册表解析)。
-   *
-   * 目前**全仓无调用端**(2026-10-17 实测;连同已删的 `resolve()` / `getDefaultForNewSession()`
-   * 一起核查过) —— 保留它是因为语义本身没错,需要「按注册顺序兜底」时仍可用;
-   * 若将来长期无调用,可一并删除。
+   * 常量指向的引擎若没注册（被卸载/构建裁剪），**照常返回该 id**而不是回退到别的
+   * 引擎 —— 选择引擎失败必须由下游变成可见的结构化失败（见 {@link getRequired}），
+   * 不能在这里悄悄换一个。
    */
-  get default(): AgentProvider {
-    const first = this.providers.values().next().value as AgentProvider | undefined;
-    if (!first) throw new Error("No providers registered");
-    return first;
+  getDefaultProviderId(): string {
+    return DEFAULT_PROVIDER_ID;
   }
 }
 
