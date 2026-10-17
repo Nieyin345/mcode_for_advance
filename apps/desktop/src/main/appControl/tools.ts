@@ -1273,6 +1273,7 @@ export function appMcpTools(): McpToolSpec[] {
           "主进程会自己去跟授权库核对这枚授权是否存在、仍有效、且覆盖这次建会话(方法 session.create + 目标项目对得上);" +
           "核不过就拒绝(什么都没建)—— 绝不采信你自报的字符串。省略 = 不按计划授权开(照旧)。",
         ),
+        operation_id: z.string().optional().describe("幂等键(可选):重试同一次建对话时原样带回上次返回的 operationId,宿主据此去重、不会建出第二条。"),
       },
       handler: async () => fail("内部错误:app_session_new 必须经 invokeAppTool 调用"),
     },
@@ -1286,6 +1287,7 @@ export function appMcpTools(): McpToolSpec[] {
         prompt: z.string(),
         workflow_id: z.string().optional().describe("让这条消息按某个工作流跑"),
         background: z.boolean().optional().describe("true = 发完切回原来的对话"),
+        operation_id: z.string().optional().describe("幂等键(可选):重试同一条消息时原样带回,宿主据此去重、不会把同一句话发两遍。"),
       },
       handler: async () => fail("内部错误:app_session_send 必须经 invokeAppTool 调用"),
     },
@@ -1304,6 +1306,7 @@ export function appMcpTools(): McpToolSpec[] {
         project_id: z.string().optional(),
         // 【MC-041】结构化实参:按工作流 inputSchema 校验后渲染进正文。
         params: z.record(z.string(), z.unknown()).optional().describe("结构化实参(按工作流 inputSchema 校验;见 app_api_describe workflow.run.<名字>)"),
+        operation_id: z.string().optional().describe("幂等键(可选):重试同一次运行/发布时原样带回,宿主据此去重。"),
       },
       handler: async () => fail("内部错误:app_workflow_run 必须经 invokeAppTool 调用"),
     },
@@ -1318,6 +1321,7 @@ export function appMcpTools(): McpToolSpec[] {
         workflow_id: z.string().describe("要发布的工作流 id(workflow.list 查)"),
         name: z.string().describe("派生工具名(用户可读的短名,如「文献整理」;检索按它匹配)"),
         description: z.string().optional().describe("一句话说明它做什么"),
+        operation_id: z.string().optional().describe("幂等键(可选):重试同一次发布时原样带回,宿主据此去重。"),
       },
       handler: async () => fail("内部错误:app_workflow_publish 必须经 invokeAppTool 调用"),
     },
@@ -1326,6 +1330,7 @@ export function appMcpTools(): McpToolSpec[] {
       description: "撤销一个已发布的派生工具(从检索索引里移除;工作流本体不动)。需批准。",
       inputSchema: {
         workflow_id: z.string(),
+        operation_id: z.string().optional().describe("幂等键(可选):重试同一次撤销时原样带回,宿主据此去重。"),
       },
       handler: async () => fail("内部错误:app_workflow_unpublish 必须经 invokeAppTool 调用"),
     },
@@ -1459,25 +1464,27 @@ async function runUiAction(a: UiArgs, ctx: ProviderContext, sessionId: string): 
  */
 /** 【MC-041】发布工作流为派生工具 —— 走既有审批链(发布是用户可见的能力面变化,真人批准)。 */
 async function runWorkflowPublish(
-  args: { workflow_id: string; name: string; description?: string },
+  args: { workflow_id: string; name: string; description?: string; operationId?: string },
   ctx: ProviderContext,
+  finish?: (r: OperationResult, body?: string, note?: string) => ToolResult,
 ): Promise<ToolResult> {
   const method = "app_workflow_publish";
-  const operationId = randomUUID();
+  const operationId = args.operationId ?? randomUUID();
+  const emitResult = finish ?? ((r: OperationResult, body?: string, note?: string) => operationToolResult(r, body, note));
   const denied = await gateAppAction(ctx, "write", "workflow_publish", args, `把工作流 ${args.workflow_id} 发布为派生工具「${args.name}」`);
   if (denied) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
     );
   }
   // 审批之后才发布:审批被拒 = 什么都没发生(REJECTED,可改条件重来)。
   const r = publishWorkflowTool({ workflowId: args.workflow_id, name: args.name, description: args.description });
   if (!r.ok) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: r.error ?? "发布失败" }),
     );
   }
-  return operationToolResult(
+  return emitResult(
     makeOp("SUCCEEDED", method, operationId),
     undefined,
     `已发布「${args.name}」。现在 app_api_list({query:"${args.name}"}) 能检索到它,app_workflow_run({workflow_id:"${args.workflow_id}", params:{…}}) 可结构化调用。`,
@@ -1485,22 +1492,27 @@ async function runWorkflowPublish(
 }
 
 /** 【MC-041】撤销发布(幂等)。 */
-async function runWorkflowUnpublish(args: { workflow_id: string }, ctx: ProviderContext): Promise<ToolResult> {
+async function runWorkflowUnpublish(
+  args: { workflow_id: string; operationId?: string },
+  ctx: ProviderContext,
+  finish?: (r: OperationResult, body?: string, note?: string) => ToolResult,
+): Promise<ToolResult> {
   const method = "app_workflow_unpublish";
-  const operationId = randomUUID();
+  const operationId = args.operationId ?? randomUUID();
+  const emitResult = finish ?? ((r: OperationResult, body?: string, note?: string) => operationToolResult(r, body, note));
   const denied = await gateAppAction(ctx, "write", "workflow_unpublish", args, `撤销工作流 ${args.workflow_id} 的派生工具发布`);
   if (denied) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
     );
   }
   const r = unpublishWorkflowTool(args.workflow_id);
   if (!r.ok) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: r.error ?? "撤销失败" }),
     );
   }
-  return operationToolResult(
+  return emitResult(
     makeOp("SUCCEEDED", method, operationId),
     undefined,
     r.existed ? "已撤销发布(工作流本体未动)。" : "这份工作流本来就没有发布过(目标状态已达成)。",
@@ -1508,18 +1520,20 @@ async function runWorkflowUnpublish(args: { workflow_id: string }, ctx: Provider
 }
 
 async function runWorkflow(
-  args: { workflow_id: string; trigger_node_id?: string; prompt?: string; session_id?: string; project_id?: string; params?: Record<string, unknown> },
+  args: { workflow_id: string; trigger_node_id?: string; prompt?: string; session_id?: string; project_id?: string; params?: Record<string, unknown>; operationId?: string },
   sessionId: string,
   ctx: ProviderContext,
+  finish?: (r: OperationResult, body?: string, note?: string) => ToolResult,
 ): Promise<ToolResult> {
   const method = "app_workflow_run";
-  const operationId = randomUUID();
+  const operationId = args.operationId ?? randomUUID();
+  const emitResult = finish ?? ((r: OperationResult, body?: string, note?: string) => operationToolResult(r, body, note));
   // 【MC-041】结构化实参:按工作流 inputSchema **执行前**校验;不符即拒,不执行。
   let paramsNote = "";
   if (args.params !== undefined) {
     const doc = getWorkflow(args.workflow_id);
     if (!doc) {
-      return operationToolResult(
+      return emitResult(
         makeOp("REJECTED", method, operationId, {
           code: OP_CODE.methodNotFound,
           reason: `工作流 ${args.workflow_id} 不存在(先 app_api_call workflow.list 查 id)。`,
@@ -1528,7 +1542,7 @@ async function runWorkflow(
     }
     const verdict = validateWorkflowParams(doc, args.params);
     if (!verdict.ok) {
-      return operationToolResult(
+      return emitResult(
         makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: `参数校验未通过(未执行):${verdict.error}` }),
       );
     }
@@ -1545,7 +1559,7 @@ async function runWorkflow(
     if (!nodeId) {
       if (triggers.length > 1) {
         // 参数不足:**没有运行被起** → REJECTED(可改条件重来)。
-        return operationToolResult(
+        return emitResult(
           makeOp("REJECTED", method, operationId, {
             code: OP_CODE.rpcFailed,
             reason: `这条自动化有 ${triggers.length} 个触发器,请用 trigger_node_id 指定:\n${triggers.map((t) => `- ${t.nodeId}(${t.title})`).join("\n")}`,
@@ -1556,13 +1570,13 @@ async function runWorkflow(
     }
     const denied = await gateAppAction(ctx, "write", "workflow_run", args, `立即运行自动化 ${args.workflow_id}(触发器 ${nodeId})`);
     if (denied) {
-      return operationToolResult(
+      return emitResult(
         makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
       );
     }
     const runEntry = findEntry("automation.run");
     if (!runEntry) {
-      return operationToolResult(
+      return emitResult(
         makeOp("REJECTED", method, operationId, { code: OP_CODE.methodNotFound, reason: "当前版本没有 automation.run" }),
       );
     }
@@ -1571,7 +1585,7 @@ async function runWorkflow(
       r = await callRpc(runEntry, { workflowId: args.workflow_id, triggerNodeId: nodeId });
     } catch (err) {
       // 起自动化是**有副作用**的动作(可能已经起了运行)→ 抛错不能当"失败可重试"。
-      return operationToolResult(
+      return emitResult(
         makeOp("UNCERTAIN", method, operationId, {
           code: OP_CODE.rpcUncertain,
           reason: `启动自动化途中出错,无法确认运行是否已经起:${errText(err)}`,
@@ -1580,11 +1594,11 @@ async function runWorkflow(
     }
     const outcome = decodeDomainOutcome("automation.run", r);
     if (outcome.kind !== "accepted") {
-      return operationToolResult(
+      return emitResult(
         makeOp(resultKindOfOutcome(outcome), method, operationId, { code: outcome.code, reason: outcome.reason }),
       );
     }
-    return operationToolResult(
+    return emitResult(
       makeOp("SUCCEEDED", method, operationId),
       undefined,
       `已开始运行自动化 ${args.workflow_id}。运行记录用 app_api_call automation.runs 查。`,
@@ -1595,7 +1609,7 @@ async function runWorkflow(
   // 没有 prompt 但有 params 时,params 本身就当正文(派生工具调用不必再手写 prompt)。
   const prompt = [args.prompt?.trim(), paramsNote].filter(Boolean).join("\n\n");
   if (!prompt) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, {
         code: OP_CODE.rpcFailed,
         reason: "这个工作流没有触发器,要在对话里跑:请给 prompt(以及可选的 session_id / project_id),或给 params(按 inputSchema 的结构化实参)。",
@@ -1603,7 +1617,7 @@ async function runWorkflow(
     );
   }
   if (args.session_id === sessionId) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, {
         code: OP_CODE.rpcFailed,
         reason: "不能让你自己所在的对话去跑,换一个对话或不传 session_id 新开一个。",
@@ -1618,7 +1632,7 @@ async function runWorkflow(
     args.session_id ? `在对话 ${args.session_id} 里按工作流 ${args.workflow_id} 发送:${clipLine(prompt, 200)}` : `新开对话,按工作流 ${args.workflow_id} 发送:${clipLine(prompt, 200)}`,
   );
   if (denied) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
     );
   }
@@ -1634,32 +1648,32 @@ async function runWorkflow(
       // 发送路径:消息没发出去 = 没落任何东西 → REJECTED。
       const msg = await headlessSend(args.session_id, prompt, args.workflow_id);
       if (msg !== null) {
-        return operationToolResult(
+        return emitResult(
           makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: msg }),
         );
       }
-      return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已按工作流发出(无渲染窗口,走主进程)。");
+      return emitResult(makeOp("SUCCEEDED", method, operationId), undefined, "已按工作流发出(无渲染窗口,走主进程)。");
     }
     // 新会话路径:headless 报错时**会话行可能已经落库**,只是第一条消息没起 → 无法确认 → UNCERTAIN。
     const msg = await headlessNewSession({ project_id: args.project_id, prompt, workflow_id: args.workflow_id }, sessionId);
     if (msg !== null) {
-      return operationToolResult(
+      return emitResult(
         makeOp("UNCERTAIN", method, operationId, { code: OP_CODE.rpcUncertain, reason: msg }),
       );
     }
-    return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已按工作流发出(无渲染窗口,走主进程)。");
+    return emitResult(makeOp("SUCCEEDED", method, operationId), undefined, "已按工作流发出(无渲染窗口,走主进程)。");
   }
   if (!reply.ok) {
     // UI 桥回了一个**业务失败**:可能是"对话已建好…但第一条消息没发出去"这种**已落一半**,
     // 不能当"没执行"诱使 Agent 重开一个新对话 → UNCERTAIN。
-    return operationToolResult(
+    return emitResult(
       makeOp("UNCERTAIN", method, operationId, {
         code: OP_CODE.rpcUncertain,
         reason: `按工作流发出未成功,可能已在对话里落了一部分:${reply.error ?? "界面操作失败"}`,
       }),
     );
   }
-  return operationToolResult(
+  return emitResult(
     makeOp("SUCCEEDED", method, operationId),
     reply.data === undefined ? undefined : renderResult(reply.data),
     "已按工作流发出。",
@@ -1694,13 +1708,21 @@ type SessionSendArgs = { session_id: string; prompt: string; workflow_id?: strin
  *   - 无窗口 headless 回退:建会话(可能已落库)+ 发首条,`headlessNewSession` 报错时同样
  *     **会话可能已建好** → UNCERTAIN。
  */
-async function runSessionNew(a: SessionNewArgs, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {
+async function runSessionNew(
+  a: SessionNewArgs & { operationId?: string },
+  sessionId: string,
+  ctx: ProviderContext,
+  /** 【MC-014】带幂等键时由账本守卫提供:每次返回都必须走它(它负责 settle)。 */
+  finish?: (r: OperationResult, body?: string, note?: string) => ToolResult,
+): Promise<ToolResult> {
   const method = "app_session_new";
-  const operationId = randomUUID();
+  const operationId = a.operationId ?? randomUUID();
+  // 【MC-014】带幂等键时所有返回都经 finish(它负责 settle;否则账本永远停在 CLAIMED)。
+  const emitResult = finish ?? ((r: OperationResult, body?: string, note?: string) => operationToolResult(r, body, note));
   const what = a.prompt ? `新开对话并发送:${clipLine(a.prompt, 200)}` : "新开一个对话";
   const denied = await gateAppAction(ctx, "write", "session_new", a, what);
   if (denied) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
     );
   }
@@ -1713,14 +1735,14 @@ async function runSessionNew(a: SessionNewArgs, sessionId: string, ctx: Provider
     if (uiUnavailable(reply)) return runSessionNewHeadless(a, sessionId, method, operationId);
     if (!reply.ok) {
       // UI 桥回了**业务失败**:会话可能**已经建好**,只是首条没发出(见函数头)→ UNCERTAIN。
-      return operationToolResult(
+      return emitResult(
         makeOp("UNCERTAIN", method, operationId, {
           code: OP_CODE.rpcUncertain,
           reason: `新开对话未成功,无法确认是否已经建好(可能留下一个空会话):${reply.error ?? "界面操作失败"}`,
         }),
       );
     }
-    return operationToolResult(
+    return emitResult(
       makeOp("SUCCEEDED", method, operationId),
       reply.data === undefined ? undefined : renderResult(reply.data),
       "已新建对话。",
@@ -1792,11 +1814,17 @@ async function runSessionNewHeadless(
  *     (旧的两态会让 Agent 当成"没发出去"而**重发一条**,也就是把同一句话发两遍);
  *   - 无窗口 headless 回退:消息没发出去 = 没落任何东西 → REJECTED。
  */
-async function runSessionSend(a: SessionSendArgs, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {
+async function runSessionSend(
+  a: SessionSendArgs & { operationId?: string },
+  sessionId: string,
+  ctx: ProviderContext,
+  finish?: (r: OperationResult, body?: string, note?: string) => ToolResult,
+): Promise<ToolResult> {
   const method = "app_session_send";
-  const operationId = randomUUID();
+  const operationId = a.operationId ?? randomUUID();
+  const emitResult = finish ?? ((r: OperationResult, body?: string, note?: string) => operationToolResult(r, body, note));
   if (a.session_id === sessionId) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, {
         code: OP_CODE.rpcFailed,
         reason: "不能给你自己所在的对话发消息。",
@@ -1805,7 +1833,7 @@ async function runSessionSend(a: SessionSendArgs, sessionId: string, ctx: Provid
   }
   const denied = await gateAppAction(ctx, "write", "session_send", a, `给对话 ${a.session_id} 发送:${clipLine(a.prompt, 200)}`);
   if (denied) {
-    return operationToolResult(
+    return emitResult(
       makeOp("REJECTED", method, operationId, { code: OP_CODE.approvalDenied, reason: denied }),
     );
   }
@@ -1814,22 +1842,22 @@ async function runSessionSend(a: SessionSendArgs, sessionId: string, ctx: Provid
     // 无窗口路径:消息没发出去 = 没落任何东西 → REJECTED。
     const err = await headlessSend(a.session_id, a.prompt, a.workflow_id);
     if (err !== null) {
-      return operationToolResult(
+      return emitResult(
         makeOp("REJECTED", method, operationId, { code: OP_CODE.rpcFailed, reason: err }),
       );
     }
-    return operationToolResult(makeOp("SUCCEEDED", method, operationId), undefined, "已发送(无界面模式)。");
+    return emitResult(makeOp("SUCCEEDED", method, operationId), undefined, "已发送(无界面模式)。");
   }
   if (!reply.ok) {
     // UI 桥回了**业务失败**:渲染端可能在**消息已发出之后**才出错(见函数头)→ UNCERTAIN。
-    return operationToolResult(
+    return emitResult(
       makeOp("UNCERTAIN", method, operationId, {
         code: OP_CODE.rpcUncertain,
         reason: `发送未确认成功,消息可能已经发出(界面在之后出错):${reply.error ?? "界面操作失败"}`,
       }),
     );
   }
-  return operationToolResult(
+  return emitResult(
     makeOp("SUCCEEDED", method, operationId),
     reply.data === undefined ? undefined : renderResult(reply.data),
     "已发送。",
@@ -1867,6 +1895,94 @@ function makeOp(
     resources: [],
     ...extra,
   };
+}
+
+/**
+ * 【MC-014】**自带工具**(`app_session_new` / `app_session_send` / `app_workflow_run` /
+ * `app_workflow_publish` / `app_workflow_unpublish`)的幂等守卫 —— 与 `app_api_call` 共用
+ * **同一份** {@link getOperationLedger} 账本(意图绑定 + 原子领取 + 全态结算),不另造一套。
+ *
+ * 台账洞:从前幂等只挂在 `app_api_call` 这一条垂直切片上;三个自带工具在 Agent 重试时
+ * **没有去重** —— `app_session_new` 重试可能建出两条会话、`app_session_send` 重试可能把
+ * 同一句话发两遍(它们对 UI 桥失败已经归 UNCERTAIN 不诱导重试,但"重试本身"不去重)。
+ *
+ * 语义与 `app_api_call` 逐字对齐(同一份 `begin` 裁决):
+ *   - `conflict`(同 id 不同意图)→ REJECTED `operation_id_conflict`,不回放旧成功;
+ *   - `claim-not-durable` → REJECTED `claim_not_durable`,**不执行**;
+ *   - `in-progress` → UNCERTAIN `operation_in_progress`,**不双执行**;
+ *   - `replay` / `uncertain` → 回放旧结算(同 id 同意图,不再执行第二次);
+ *   - `claimed` → 可执行;调用方**必须在每条返回前** {@link settle} —— 否则该 id 永远
+ *     停在 CLAIMED,之后同 id 只能看到"在途"。为此把结算包成 `finish()` 一次返回。
+ *
+ * ⚠️ **只对带了 `operation_id` 的调用生效**:Agent 不传 = 每次都是一次新动作(与
+ * `app_api_call` 一致),不让每个匿名调用都写一行账 + 一次整库 fsync。
+ */
+function withSelfToolIdempotency(
+  method: string,
+  args: Record<string, unknown>,
+  sessionId: string,
+  run: (operationId: string, finish: (r: OperationResult, body?: string, note?: string) => ToolResult) => Promise<ToolResult>,
+): Promise<ToolResult> | null {
+  const providedId =
+    typeof args.operation_id === "string" && args.operation_id.trim() !== "" ? args.operation_id.trim() : undefined;
+  if (!providedId) return null; // 无幂等键 → 走原路(operationId 由 run 自生成)
+  const ledger = getOperationLedger();
+  const intent: OperationIntent = {
+    operationId: providedId,
+    ownerId: sessionId,
+    sessionId,
+    sceneId: method,
+    method,
+    requestDigest: requestDigestOf(args),
+    effectKind: sideEffectClassOf(method),
+    grantRevision: "default",
+  };
+  const begin = ledger.begin(intent);
+  if (begin.begin === "conflict") {
+    return Promise.resolve(operationToolResult(makeOp("REJECTED", method, providedId, {
+      code: OP_CODE.operationIdConflict,
+      retryable: false,
+      reason: `operation_id「${providedId}」之前被用在另一个不同的操作(方法/参数/会话不同)。复用同一个幂等键到别的操作上会被拒;换一个 operation_id。`,
+    })));
+  }
+  if (begin.begin === "claim-not-durable") {
+    return Promise.resolve(operationToolResult(makeOp("REJECTED", method, providedId, {
+      code: OP_CODE.claimNotDurable,
+      reason: "这次操作的幂等领取无法同步落盘(磁盘写入失败),为避免重启后重复执行,本次**没有执行**。请确认磁盘可写后再重试。",
+    })));
+  }
+  if (begin.begin === "in-progress") {
+    return Promise.resolve(operationToolResult(makeOp("UNCERTAIN", method, providedId, {
+      code: OP_CODE.operationInProgress,
+      reason: "同一 operationId 的这次操作正在执行中,本次没有重复执行;等它结束后再回来看结果。",
+    })));
+  }
+  if (begin.begin === "replay" || begin.begin === "uncertain") {
+    const replayed = begin.record.result;
+    if (replayed) {
+      return Promise.resolve(operationToolResult(replayed, begin.record.body, "(重放:同一 operationId 的同一操作之前已结算,本次**未重复执行**)"));
+    }
+    return Promise.resolve(operationToolResult(makeOp("UNCERTAIN", method, providedId, {
+      code: OP_CODE.rpcUncertain,
+      reason: "同幂等键的操作之前已登记但没有可回放的结果,无法确认;不要盲目重试。",
+    })));
+  }
+  return run(providedId, (r, body, note) => {
+    ledger.settle(providedId, { status: r.resultKind, result: r, ...(body !== undefined ? { body } : {}) });
+    return operationToolResult(r, body, note);
+  }).then(
+    (r) => r,
+    (err: unknown) => {
+      // 【MC-014】抛错路径**也必须结算** —— 否则这条 id 永远停在 CLAIMED,之后同 id
+      // 只能看到"在途",既不能重试也拿不到可读的失败(实测:发布路径 getDb 未就绪时
+      // 就是这样卡死的)。分类用共享的 thrownResultKind(写档抛错可能已部分提交 →
+      // UNCERTAIN,只读档 → FAILED),与 app_api_call 的抛错分类同一份判据。
+      const kind = thrownResultKind(err, policyFor(method).level);
+      const op = makeOp(kind, method, providedId, { code: OP_CODE.rpcFailed, reason: errText(err) });
+      ledger.settle(providedId, { status: kind, result: op });
+      return operationToolResult(op);
+    },
+  );
 }
 
 /**
@@ -2503,16 +2619,29 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
       }
       case "app_ui":
         return await runUiAction(args as UiArgs, ctx, sessionId);
+      // 【MC-014】五条自带工具也过**同一份**操作账本(只在带 operation_id 时)。
+      // 守卫返回非 null = 已经在账本层裁决掉(冲突/在途/回放/未落盘),不执行;
+      // null = 没带幂等键,走原路(operationId 由各 run 自生成)。
       case "app_session_new":
-        return await runSessionNew(args as SessionNewArgs, sessionId, ctx);
+        return (await withSelfToolIdempotency("app_session_new", args, sessionId, (id, finish) =>
+          runSessionNew({ ...(args as SessionNewArgs), operationId: id }, sessionId, ctx, finish))) ??
+          await runSessionNew(args as SessionNewArgs, sessionId, ctx);
       case "app_session_send":
-        return await runSessionSend(args as SessionSendArgs, sessionId, ctx);
+        return (await withSelfToolIdempotency("app_session_send", args, sessionId, (id, finish) =>
+          runSessionSend({ ...(args as SessionSendArgs), operationId: id }, sessionId, ctx, finish))) ??
+          await runSessionSend(args as SessionSendArgs, sessionId, ctx);
       case "app_workflow_run":
-        return await runWorkflow(args as { workflow_id: string }, sessionId, ctx);
+        return (await withSelfToolIdempotency("app_workflow_run", args, sessionId, (id, finish) =>
+          runWorkflow({ ...(args as { workflow_id: string }), operationId: id }, sessionId, ctx, finish))) ??
+          await runWorkflow(args as { workflow_id: string }, sessionId, ctx);
       case "app_workflow_publish":
-        return await runWorkflowPublish(args as { workflow_id: string; name: string; description?: string }, ctx);
+        return (await withSelfToolIdempotency("app_workflow_publish", args, sessionId, (id, finish) =>
+          runWorkflowPublish({ ...(args as { workflow_id: string; name: string; description?: string }), operationId: id }, ctx, finish))) ??
+          await runWorkflowPublish(args as { workflow_id: string; name: string; description?: string }, ctx);
       case "app_workflow_unpublish":
-        return await runWorkflowUnpublish(args as { workflow_id: string }, ctx);
+        return (await withSelfToolIdempotency("app_workflow_unpublish", args, sessionId, (id, finish) =>
+          runWorkflowUnpublish({ ...(args as { workflow_id: string }), operationId: id }, ctx, finish))) ??
+          await runWorkflowUnpublish(args as { workflow_id: string }, ctx);
       default:
         return await spec.handler(args, { sessionId });
     }

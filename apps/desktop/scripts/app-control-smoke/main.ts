@@ -2478,6 +2478,91 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   delete (globalThis as Record<string, unknown>).window;
 }
 
+/* ── 5d. 【MC-014】五条自带工具共用同一份操作账本(带 operation_id 时幂等) ──
+ *
+ * 台账洞:幂等只挂在 `app_api_call` 上;`app_session_new/send`、`app_workflow_run`、
+ * `app_workflow_publish/unpublish` 重试时**没有去重** —— 重试一次建对话可能建出两条,
+ * 重发一条消息可能发两遍。修复后它们过与 `app_api_call` **同一份** `getOperationLedger()`:
+ * 同 id 同意图 → 只执行一次(第二次回放);同 id 换参数 → 冲突不回放;并发 → 在途不双执行。
+ *
+ * 判据钉在**副作用真的发生了几次**上(渲染端桥被调了几次),不是"调没调账本"。
+ */
+{
+  const bridgeCalls: string[] = [];
+  const idemWin: Record<string, unknown> = {
+    [APP_CONTROL_RENDERER_GLOBAL]: async (raw: string) => {
+      const cmd = JSON.parse(raw) as { op?: string; prompt?: string; title?: string };
+      bridgeCalls.push(`${cmd.op}:${cmd.prompt ?? cmd.title ?? ""}`);
+      if (cmd.op === "new_session") return JSON.stringify({ ok: true, data: { sessionId: "s-idem", sent: Boolean(cmd.prompt) } });
+      if (cmd.op === "send") return JSON.stringify({ ok: true, data: { sessionId: "other", mode: "sent" } });
+      return JSON.stringify({ ok: true, data: {} });
+    },
+  };
+  (globalThis as Record<string, unknown>).window = idemWin;
+  setRendererPortForTest({ executeJavaScript: async (code) => (0, eval)(code) });
+  __clearOperationLog();
+
+  // ① app_session_new:同一 operation_id 重试 → 只建一次(第二次是重放,不是第二次执行)。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    bridgeCalls.length = 0;
+    const a = await invokeAppTool("app_session_new", { project_id: "p1", prompt: "建一次", operation_id: "op-new-1" }, "me", ctx);
+    const b = await invokeAppTool("app_session_new", { project_id: "p1", prompt: "建一次", operation_id: "op-new-1" }, "me", ctx);
+    check("★ MC-014:app_session_new 同 operation_id 重试 → 只执行一次(桥只调一次)",
+      bridgeCalls.filter((c) => c.startsWith("new_session")).length === 1, bridgeCalls);
+    check("★ MC-014:app_session_new 重试回放旧结果(SUCCEEDED,不是再次执行)",
+      opResultOf(b)?.resultKind === "SUCCEEDED" && textOf(b).includes("重放"), { a: opResultOf(a), b: opResultOf(b) });
+    check("…重放的 operationId 就是调用方给的幂等键", opResultOf(b)?.operationId === "op-new-1", opResultOf(b));
+  }
+
+  // ② app_session_send:同一 id 重试 → 同一句话不会发两遍。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    bridgeCalls.length = 0;
+    await invokeAppTool("app_session_send", { session_id: "other", prompt: "只说一次", operation_id: "op-send-1" }, "me", ctx);
+    await invokeAppTool("app_session_send", { session_id: "other", prompt: "只说一次", operation_id: "op-send-1" }, "me", ctx);
+    check("★ MC-014:app_session_send 同 operation_id 重试 → 同一句话只发一次(不重复注入)",
+      bridgeCalls.filter((c) => c.startsWith("send:")).length === 1, bridgeCalls);
+  }
+
+  // ③ 同 id 换参数 = 换意图 → 冲突,不回放旧成功也不执行新动作。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    bridgeCalls.length = 0;
+    const conflict = await invokeAppTool("app_session_send", { session_id: "other", prompt: "换了内容", operation_id: "op-send-1" }, "me", ctx);
+    check("★ MC-014:同 operation_id 换参数 → 冲突拒绝(不回放、不执行)",
+      opResultOf(conflict)?.resultKind === "REJECTED" && opResultOf(conflict)?.code === "operation_id_conflict", opResultOf(conflict));
+    check("…冲突时副作用一次都没发生", bridgeCalls.length === 0, bridgeCalls);
+  }
+
+  // ④ 不带 operation_id → 每次都执行(幂等只在带键时生效,与 app_api_call 一致)。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    bridgeCalls.length = 0;
+    await invokeAppTool("app_session_send", { session_id: "other", prompt: "两次都要发" }, "me", ctx);
+    await invokeAppTool("app_session_send", { session_id: "other", prompt: "两次都要发" }, "me", ctx);
+    check("MC-014 正控:不带 operation_id 时两次都执行(匿名调用不去重)",
+      bridgeCalls.filter((c) => c.startsWith("send:")).length === 2, bridgeCalls);
+  }
+
+  // ⑤ 抛错路径也必须结算 —— 不能把 id 永远留在 CLAIMED(实测过的真缺陷:发布路径
+  //    getDb 未就绪时抛错,从前 throw 穿过 finish,第二次同 id 只得"在途")。
+  //    本套件不 initDb,正好天然制造"执行抛错":publish 要读库。
+  {
+    const { ctx } = ctxWith({ allow: true });
+    const first = await invokeAppTool("app_workflow_publish", { workflow_id: "wf_idem", name: "幂等工具", operation_id: "op-pub-1" }, "me", ctx);
+    check("★ MC-014:执行抛错也返回结构化结果(不是裸失败文本)", opResultOf(first) !== undefined, JSON.stringify(first).slice(0, 300));
+    const second = await invokeAppTool("app_workflow_publish", { workflow_id: "wf_idem", name: "幂等工具", operation_id: "op-pub-1" }, "me", ctx);
+    check("★ MC-014:抛错路径已结算 —— 同 id 重试得到失败/不确定回放,不再卡在\"在途\"",
+      opResultOf(second)?.code !== "operation_in_progress", opResultOf(second));
+    check("…重试回放的 operationId 仍是调用方给的幂等键", opResultOf(second)?.operationId === "op-pub-1", opResultOf(second));
+  }
+
+  setRendererPortForTest(null);
+  delete (globalThis as Record<string, unknown>).window;
+  __clearOperationLog();
+}
+
 /* ── 6. 接线(源码) ── */
 const src = (p: string): string => readFileSync(join(process.cwd(), p), "utf8");
 const claude = src("src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts");
