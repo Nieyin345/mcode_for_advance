@@ -2669,6 +2669,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: true; path: string; count: number; skipped: number; scrubbed: number } | { ok: false; canceled?: boolean | undefined; error?: string | undefined }"
  },
  {
+  "method": "setting.exportToPath",
+  "channel": "setting:exportToPath",
+  "doc": "【MC-026】导出到**显式路径**(Agent 可编排;不弹系统保存框)。清洗与界面导出同一份; 审批走宿主的 danger 卡。",
+  "input": "{ path: string // 绝对路径。必须是 .json;父目录必须存在(不替调用方递归建目录 —— 打错路径要显式报)。 }",
+  "inputFull": "{ path: string // 绝对路径。必须是 .json;父目录必须存在(不替调用方递归建目录 —— 打错路径要显式报)。 }",
+  "output": "{ ok: true; path: string; count: number; skipped: number; scrubbed: number } | { ok: false; canceled?: boolean | undefined; error?: string | undefined }"
+ },
+ {
   "method": "setting.get",
   "channel": "setting:get",
   "doc": "读一个设置键,**没有返回 `null`**(不是空串)。注意:`mcp.management` 等密钥设置键本体不许经这条直读,会被 appControl 的 `secretSettingRefusal` 拦。",
@@ -2690,6 +2698,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "从 JSON 文件导入设置(主进程弹打开框;先备份当前设置)。",
   "input": "undefined | { mode?: 'merge' | 'restore' | undefined }",
   "inputFull": "undefined | { mode?: 'merge' | 'restore' | undefined }",
+  "output": "{ ok: true; count: number; skipped: number; deleted?: number | undefined; backupPath?: string | undefined } | { ok: false; canceled?: boolean | undefined; error?: string | undefined }"
+ },
+ {
+  "method": "setting.importFromText",
+  "channel": "setting:importFromText",
+  "doc": "【MC-026】从**JSON 文本**导入(Agent 可编排;不弹系统打开框)。解析/清洗/导入前备份/ 整批事务与界面导入同一份。",
+  "input": "{ text: string // 导出档的 JSON 文本(与 `setting.exportToPath` 写出的格式相同)。; mode?: 'merge' | 'restore' | undefined // 与界面导入相同的两种模式(见上)。 }",
+  "inputFull": "{ text: string // 导出档的 JSON 文本(与 `setting.exportToPath` 写出的格式相同)。; mode?: 'merge' | 'restore' | undefined // 与界面导入相同的两种模式(见上)。 }",
   "output": "{ ok: true; count: number; skipped: number; deleted?: number | undefined; backupPath?: string | undefined } | { ok: false; canceled?: boolean | undefined; error?: string | undefined }"
  },
  {
