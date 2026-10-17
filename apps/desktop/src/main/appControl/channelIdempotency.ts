@@ -32,7 +32,6 @@
  */
 import { randomUUID } from "node:crypto";
 import type { OperationResult } from "@contracts/appControl";
-import type { ProviderContext } from "@contracts/provider";
 import {
   getOperationLedger,
   intentFingerprint,
@@ -40,7 +39,6 @@ import {
   requestDigestOf,
   type OperationLedger,
 } from "@main/appControl/operations.js";
-import { sideEffectClassOf } from "@main/appControl/commandOutcome.js";
 import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
 
 /** 一条幂等调用的意图参数（通道无关 —— 谁调都填这几个）。 */
@@ -294,4 +292,3 @@ export function operationIdFromIpcInput(raw: unknown): string | null {
   return usableOperationId((raw as Record<string, unknown>)[DESKTOP_OPERATION_ID_KEY]);
 }
 
-export type { ProviderContext };
