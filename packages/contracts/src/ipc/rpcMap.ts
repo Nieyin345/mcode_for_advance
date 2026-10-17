@@ -82,7 +82,7 @@ import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
 import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefaultInput, WorkflowShippedUpdateInput } from "./workflow.js";
-import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchTemplatesRebuildInput, WatchCommandTemplate } from "./workflow.js";
+import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, WorkflowImportPresetInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchTemplatesRebuildInput, WatchCommandTemplate } from "./workflow.js";
 import type { HostHookGrantListInput, HostHookGrantIssueInput, HostHookGrantRevokeInput } from "./hostHookGrants.js";
 import type { HostHookGrant } from "../hostHookGrant.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
@@ -909,6 +909,33 @@ export interface RpcMap {
   "workflow.importFromFile": (input: { id?: string }) => Promise<{
     ok: boolean;
     canceled?: boolean;
+    id?: string;
+    name?: string;
+    errors?: string[];
+    warnings?: string[];
+    error?: string;
+  }>;
+  /** 【MC-007】列出**出厂预置工作流**(装包里 `resources/presets/workflows.json`,
+   *  开发时读仓库那份)。这是用户/Agent 发现"这个版本带了哪些可导入内容"的唯一入口。
+   *
+   *  返回摘要,**不含图本体**。`health` 三态必须原样带到调用方:`absent`(这个安装没带)
+   *  与 `corrupt`(带了但坏了)要能分开说,否则都表现成"空列表"。
+   *
+   *  ⚠️ 无参 handler,同 `workflow.list`。 */
+  "workflow.listPresets": () => Promise<{
+    health: import("../workflow.js").PresetCatalogHealth;
+    /** `health !== "ok"` 时的原因(给人和 Agent 看)。 */
+    reason?: string;
+    /** 命中的文件路径(诊断用;`absent` 时是尝试过的位置)。 */
+    path: string;
+    presets: import("../workflow.js").PresetWorkflowSummary[];
+    /** 逐条问题(坏条目、重复 id)—— 其余条目照常可用。 */
+    problems: string[];
+  }>;
+  /** 【MC-007】按出厂预置导入一份。**永远新建**(名字重了自动加后缀);要覆盖用
+   *  `workflow.import`。解析/校验/落库走与文本导入**同一个** `importWorkflowInto`。 */
+  "workflow.importPreset": (input: WorkflowImportPresetInput) => Promise<{
+    ok: boolean;
     id?: string;
     name?: string;
     errors?: string[];
@@ -1922,6 +1949,9 @@ export const IPC = {
   WORKFLOW_EXPORT: "workflow:export",
   WORKFLOW_IMPORT: "workflow:import",
   WORKFLOW_IMPORT_FROM_FILE: "workflow:importFromFile",
+  // 【MC-007】出厂预置:列出 + 按 id 导入(release 装包里那份可发现、可导入)
+  WORKFLOW_LIST_PRESETS: "workflow:listPresets",
+  WORKFLOW_IMPORT_PRESET: "workflow:importPreset",
   // 代理档案:一份存下来的子 agent 配置,建节点时直接套用(见 contracts/agentProfile.ts)
   WORKFLOW_AGENT_PROFILES: "workflow:agentProfiles",
   WORKFLOW_SAVE_AGENT_PROFILE: "workflow:saveAgentProfile",

@@ -35,6 +35,7 @@ import {
   WorkflowApproveSchema,
   WorkflowGetSchema,
   WorkflowImportSchema,
+  WorkflowImportPresetSchema,
   WorkflowPinDefaultSchema,
   WorkflowRemoveSchema,
   WorkflowRestoreDefaultSchema,
@@ -68,6 +69,7 @@ import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
 import { hasActiveRun, resolveWorkflowChoice, resolveWorkflowRetry } from "@main/orchestration/runner.js";
 import { exportWorkflowDoc } from "@main/orchestration/workflowValidation.js";
+import { decoratePresetCatalog, readPresetCatalog, readPresetWorkflow } from "@main/orchestration/presetWorkflows.js";
 import { SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 
 /**
@@ -263,6 +265,26 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
       return { ok: false, error: (err as Error).message };
     }
     return finishImport(await importWorkflowInto(text, input.id ? { id: input.id } : {}));
+  });
+
+  // ── 出厂预置(【MC-007】)──
+  //
+  // 这两条把 `resources/presets/workflows.json` 从"仓库里的一份文件"变成**用户与
+  // Agent 都可发现、可导入**的内容。路径解析在 `presetWorkflows.ts`(打包/开发两套
+  // 布局),这里只补上需要 DB 的那一半(同名提示)与导入执行 —— 导入走**同一个**
+  // `importWorkflowInto`,不另写解析/校验/落库。
+  ipcMain.handle(IPC.WORKFLOW_LIST_PRESETS, async () => {
+    const existing = listWorkflows().map((w) => w.name);
+    return decoratePresetCatalog(readPresetCatalog(), existing);
+  });
+
+  ipcMain.handle(IPC.WORKFLOW_IMPORT_PRESET, async (_evt, raw) => {
+    const input = WorkflowImportPresetSchema.parse(raw);
+    const found = readPresetWorkflow(input.id);
+    if ("error" in found) return { ok: false, errors: [found.error], warnings: [] };
+    // **永远新建**(不给 opts.id):出厂预设的语义是"要一份新的",重名由
+    // `importWorkflowInto` 自动加后缀。要覆盖请走 `workflow.import`。
+    return finishImport(await importWorkflowInto(exportWorkflowDoc(found.doc)));
   });
 
   // ── 代理档案 ──

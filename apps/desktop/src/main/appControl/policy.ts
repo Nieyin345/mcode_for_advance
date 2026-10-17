@@ -256,6 +256,10 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "memory.categories": "read",
   "workflow.nodeTypes": "read",
   "workflow.agentProfiles": "read",
+  // 【MC-007】出厂预置列表只读(列出装包带了哪些可导入内容)。
+  "workflow.listPresets": "read",
+  // 导入 = 往库里新增一行工作流,与 `workflow.import` 同一档(写,每次审批)。
+  "workflow.importPreset": "write",
   "session.messages": "read",
   "session.hasNodes": "read",
   "tools.usage": "read",

@@ -374,6 +374,37 @@ export const WorkflowListEntrySchema = z.object({
 });
 export type WorkflowListEntry = z.infer<typeof WorkflowListEntrySchema>;
 
+/* ── 出厂预设(【MC-007】:装包里那份可导入的内容) ── */
+
+/** 出厂预置 catalog 的健康态。
+ *
+ *  - `ok`:读到了、至少解析出一条;
+ *  - `absent`:这个安装里**没有**预置文件(开发目录没带上 / 打包漏了 extraResources);
+ *  - `corrupt`:文件在,但读不出来或整份坏掉。
+ *
+ *  三个状态都必须能到界面 —— `absent` 与 `corrupt` 的处理不同(前者是"这个版本没带",
+ *  后者是"带了但坏了"),而不说就都表现成"空列表",用户和 Agent 都分不出。
+ */
+export const PRESET_CATALOG_HEALTH = ["ok", "absent", "corrupt"] as const;
+export type PresetCatalogHealth = (typeof PRESET_CATALOG_HEALTH)[number];
+
+/** 一条出厂预设的**摘要**(不含 doc 本体 —— 58KB 的图不该在列表里来回搬)。 */
+export const PresetWorkflowSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  icon: z.string().optional(),
+  /** 图型(有节点)/ 提示词型。判据与 `WorkflowListEntry.kind` 相同。 */
+  kind: z.enum(["prompt", "graph"]),
+  /** 有触发器 = 自动化那一栏(同 `purposeOf`)。 */
+  trigger: WorkflowTriggerSchema.optional(),
+  nodeCount: z.number(),
+  /** 库里**已有同名**工作流。导入永远新建(= 重名会自动加后缀),所以这是
+   *  "你可能已经导过了"的提示,不是"就是同一条"。 */
+  sameNameExists: z.boolean(),
+});
+export type PresetWorkflowSummary = z.infer<typeof PresetWorkflowSummarySchema>;
+
 /* ── 生成 id ── */
 
 /**

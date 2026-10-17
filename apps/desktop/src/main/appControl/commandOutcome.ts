@@ -198,6 +198,10 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["workflow.save", { falseMeans: "refusal" }],
   ["workflow.import", { falseMeans: "refusal" }],
   ["workflow.importFromFile", { falseMeans: "refusal" }],
+  // 【MC-007】出厂预设导入:ok:false(预置文件没有这一条 / 文件读不出 / 解析失败 /
+  // `saveWorkflow` 拒绝)全部发生在任何落库**之前** → `refusal`(与 import 同一条
+  // 闸门,理由同上)。`workflow.listPresets` 只读、无 ok 信封,不登记。
+  ["workflow.importPreset", { falseMeans: "refusal" }],
   ["workflow.pinDefault", { falseMeans: "refusal" }],
   ["workflow.restoreDefault", { falseMeans: "refusal" }],
   ["workflow.retry", { falseMeans: "refusal" }],

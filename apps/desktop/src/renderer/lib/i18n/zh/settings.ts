@@ -1803,6 +1803,26 @@ export const zh = {
     "「{name}」的节点图、参数、流程文字会整份换成文件里那一份，现在的这一版就没了。这一步不能撤销。",
   "settings.workflows.transferHint": "导出的是已经保存的那一版，画布上没保存的改动不会被带出去。",
 
+  // ── 出厂预设（【MC-007】）──
+  // 随应用发行、用户按需导入的内容。三种健康态**分别措辞**——「这个版本没带」与
+  // 「带了但文件坏了」不是一回事，都画成空列表的话用户不知道该不该报问题。
+  "settings.workflows.presetsButton": "出厂预设",
+  "settings.workflows.presetsTitle": "导入出厂预设",
+  "settings.workflows.presetsDesc":
+    "随 Mcode 一起发布的流程与自动化。导入**总是新建一份**——名字重了会自动加后缀。",
+  "settings.workflows.presetsLoadFailed": "出厂预设列表读不出来：{error}",
+  "settings.workflows.presetsAbsent":
+    "这个安装里没有带出厂预设。如果你期望它们存在，可能是安装包漏了 presets 目录。",
+  "settings.workflows.presetsCorrupt":
+    "出厂预设文件在，但读不出来。应用其余部分不受影响；请把这个情况报给我们。",
+  "settings.workflows.presetsEmpty": "这个版本没有出厂预设。",
+  "settings.workflows.presetsProblems": "有 {n} 条预设读不出来",
+  "settings.workflows.presetImport": "导入",
+  "settings.workflows.presetKindGraph": "{n} 个节点",
+  "settings.workflows.presetKindPrompt": "流程文字",
+  "settings.workflows.presetBadgeAutomation": "自动化",
+  "settings.workflows.presetAlreadyInLibrary": "库里已有同名",
+
   // ── 保存（手点）──
   // 状态行和「保存」那颗按钮并排，在编辑区标题行上。
   "settings.workflows.savePending": "有未保存的改动",

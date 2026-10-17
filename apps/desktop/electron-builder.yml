@@ -83,6 +83,25 @@ files:
 # 而 asar 里的条目不是普通文件路径,Read/Bash 会读不到),并在
 # `main/plugins/pluginManager.ts` 的 `getEnabledPlugins()` 里把那条投递链加回去。
 
+# ── 出厂预置内容(【MC-007】)──
+#
+# `resources/presets/workflows.json` 是用户**按需导入**的出厂工作流(检索/精读/写作/
+# 评审/代码 + 两条自动化)。它**必须随安装包走**,否则 release 用户与 Agent 都拿不到
+# —— 2026-10-10 把内容从 `builtins.ts` 摘出去时漏了这一步,内容外置了却没有可达路径。
+#
+# 走 `extraResources`(而不是 `files`):这是**数据文件**,要的是 `resources/presets/
+# workflows.json` 这个普通文件路径 —— 主进程用 `process.resourcesPath` 去读
+# (`main/orchestration/presetWorkflows.ts` 的候选表);塞进 asar 之后 `readFileSync`
+# 读到的是 asar 虚拟路径,打包后的行为与开发态就不是同一回事了。
+#
+# ⚠️ 将来往 `resources/presets/` 加**别的**出厂内容(项目初始化模板等),都在这一条
+# 通配里 —— 不允许再加第二条 `extraResources`,也不允许把内容抄进 `builtins.ts`。
+extraResources:
+  - from: resources/presets
+    to: presets
+    filter:
+      - "*.json"
+
 # node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
 # runtime. Unpack them from the asar so they can be require()'d from disk.
 #

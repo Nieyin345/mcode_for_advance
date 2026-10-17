@@ -893,6 +893,12 @@ const api = {
         IPC.WORKFLOW_IMPORT_FROM_FILE,
         input,
       )) as RpcMap["workflow.importFromFile"],
+    // 【MC-007】出厂预置(装包里那份可导入内容)。列表无参;导入只给预设 id ——
+    // 预置文件在哪是主进程的事(打包走 resourcesPath,开发走仓库)。
+    listPresets: (() =>
+      ipcRenderer.invoke(IPC.WORKFLOW_LIST_PRESETS)) as RpcMap["workflow.listPresets"],
+    importPreset: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_IMPORT_PRESET, input)) as RpcMap["workflow.importPreset"],
     agentProfiles: (() =>
       ipcRenderer.invoke(IPC.WORKFLOW_AGENT_PROFILES)) as RpcMap["workflow.agentProfiles"],
     saveAgentProfile: ((input) =>

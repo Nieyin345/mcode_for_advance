@@ -146,7 +146,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "全部命令模板(守望面板的下拉)。**无参 handler**,同 `workflow.agentProfiles`。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ templates: { id: string; name: string; command: string; }[]; health: 'valid' | 'absent' | 'partial' | 'corrupt' | 'read_error' // 【MC-054】设置的完整性:absent=没配过 / valid / partial=有条目读不出(problems 列出) / corrupt=整份坏 / read_erro…; problems: string[] }"
+  "output": "{ templates: { id: string; name: string; command: string; }[]; health: 'valid' | 'absent' | 'corrupt' | 'partial' | 'read_error' // 【MC-054】设置的完整性:absent=没配过 / valid / partial=有条目读不出(problems 列出) / corrupt=整份坏 / read_erro…; problems: string[] }"
  },
  {
   "method": "automation.watchTemplatesSave",
@@ -368,8 +368,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "claude.respondPlanApproval",
   "channel": "claude:respondPlanApproval",
   "doc": "Submit the user's approve/reject decision on a pending ExitPlanMode plan.",
-  "input": "{ requestId: string; sessionId: string; approved: boolean; editedPlan?: string | undefined; reason?: string | undefined; feedback?: string | undefined }",
-  "inputFull": "{ requestId: string; sessionId: string; approved: boolean; editedPlan?: string | undefined; reason?: string | undefined; feedback?: string | undefined }",
+  "input": "{ requestId: string; sessionId: string; approved: boolean; reason?: string | undefined; editedPlan?: string | undefined; feedback?: string | undefined }",
+  "inputFull": "{ requestId: string; sessionId: string; approved: boolean; reason?: string | undefined; editedPlan?: string | undefined; feedback?: string | undefined }",
   "output": "{ status: ApprovalReceiptStatus; requestId: string }"
  },
  {
@@ -600,8 +600,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "engineTools.set",
   "channel": "engineTools:set",
   "doc": "Replace the exclusion list for one engine. Claude → `disallowedTools`, Pi → `excludeTools`; Codex accepts the write but reports `supported:false`. Takes effect on the next turn.",
-  "input": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名（非字符串/字符集不合法）**显式拒绝** 整个保存（MC-042：静默剔除会让用户以为禁用了、实际没有）。; engine: 'claude' | 'codex' | 'pi' }",
-  "inputFull": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名（非字符串/字符集不合法）**显式拒绝** 整个保存（MC-042：静默剔除会让用户以为禁用了、实际没有）。; engine: 'claude' | 'codex' | 'pi' }",
+  "input": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名（非字符串/字符集不合法）**显式拒绝** 整个保存（MC-042：静默剔除会让用户以为禁用了、实际没有）。; engine: 'claude' | 'codex' | 'pi'; guidance?: string | undefined // 【MC-043】该引擎的工具使用说明（可选）。省略 = 不改变已存的说明；空串 = 清除。 }",
+  "inputFull": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名（非字符串/字符集不合法）**显式拒绝** 整个保存（MC-042：静默剔除会让用户以为禁用了、实际没有）。; engine: 'claude' | 'codex' | 'pi'; guidance?: string | undefined // 【MC-043】该引擎的工具使用说明（可选）。省略 = 不改变已存的说明；空串 = 清除。 }",
   "output": "{ ok: boolean; error?: string | undefined; snapshot?: EngineToolsSnapshot | undefined }"
  },
  {
@@ -1551,10 +1551,10 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "mcp.marketSourceAdd",
   "channel": "mcp:marketSourceAdd",
-  "doc": "加一个 MCP 注册中心(市场源)。**先连通探一次**再落,连不上/已存在/非 http(s) 都回 `{ ok:false, error }`(不抛);成功回新分配的 `id`。",
+  "doc": "加一个 MCP 注册中心(市场源)。**先连通探一次**再落,连不上/已存在/非 http(s) 都回 `{ ok:false, error }`(不抛);成功回新分配的 `id`。 【MC-037】用户记录损坏时 `corrupt:true` + 拒绝写入(原设置行一个不动)。",
   "input": "{ url: string; label?: string | undefined }",
   "inputFull": "{ url: string; label?: string | undefined }",
-  "output": "{ ok: boolean; error?: string | undefined; id?: string | undefined }"
+  "output": "{ ok: boolean; error?: string | undefined; id?: string | undefined; corrupt?: boolean | undefined }"
  },
  {
   "method": "mcp.marketSourceRemove",
@@ -1562,15 +1562,15 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "删一个用户加的 MCP 注册中心(**内置那个删不掉**)。",
   "input": "{ id: string }",
   "inputFull": "{ id: string }",
-  "output": "{ ok: boolean; error?: string | undefined }"
+  "output": "{ ok: boolean; error?: string | undefined; corrupt?: boolean | undefined }"
  },
  {
   "method": "mcp.marketSources",
   "channel": "mcp:marketSources",
-  "doc": "MCP market: registry sources (built-in official registry + user added).",
+  "doc": "MCP market: registry sources (built-in official registry + user added). 【MC-037】`corrupt` 有值 = 用户来源记录读不出来(列表只含官方,写入被拒)。",
   "input": "{}",
   "inputFull": "{}",
-  "output": "{ sources: McpMarketSource[] }"
+  "output": "{ sources: McpMarketSource[]; corrupt?: { reason: string; } | undefined }"
  },
  {
   "method": "mcp.projectCopy",
@@ -2103,10 +2103,10 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "plugins.marketplaceList",
   "channel": "plugins:marketplaceList",
-  "doc": "List user-added marketplaces with their parsed entries.",
+  "doc": "List user-added marketplaces with their parsed entries. 【MC-037】`corrupt` 有值 = 用户记录读不出来(列表只含出厂市场,写入被拒)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ marketplaces: PluginMarketplaceState[] }"
+  "output": "{ marketplaces: PluginMarketplaceState[]; corrupt?: { reason: string; } | undefined }"
  },
  {
   "method": "plugins.marketplaceRefresh",
@@ -2794,7 +2794,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "Add a skill market (git URL / owner/repo / local directory) — fetches it.",
   "input": "{ kind: 'local' | 'git'; ref: string // GitHub `owner/repo`, any git URL, or an absolute local directory.; requestId?: string | undefined; name?: string | undefined }",
   "inputFull": "{ kind: 'local' | 'git'; ref: string // GitHub `owner/repo`, any git URL, or an absolute local directory.; requestId?: string | undefined; name?: string | undefined }",
-  "output": "{ ok: boolean; error?: string | undefined; name?: string | undefined }"
+  "output": "{ ok: boolean; error?: string | undefined; name?: string | undefined; corrupt?: boolean | undefined }"
  },
  {
   "method": "skills.marketInstall",
@@ -2807,10 +2807,10 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "skills.marketList",
   "channel": "skills:marketList",
-  "doc": "Skill market: catalogs (built-in + user added) with their entries.",
+  "doc": "Skill market: catalogs (built-in + user added) with their entries. 【MC-037】`corrupt` 有值 = 用户记录读不出来(列表只含内置市场,写入被拒)—— 界面必须把\"没有自定义来源\"与\"记录损坏\"分开说。",
   "input": "{}",
   "inputFull": "{}",
-  "output": "{ markets: SkillMarketState[] }"
+  "output": "{ markets: SkillMarketState[]; corrupt?: { reason: string; } | undefined }"
  },
  {
   "method": "skills.marketRefresh",
@@ -2818,7 +2818,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "Re-fetch one market's catalog (network).",
   "input": "{ name: string; requestId?: string | undefined }",
   "inputFull": "{ name: string; requestId?: string | undefined }",
-  "output": "{ ok: boolean; error?: string | undefined }"
+  "output": "{ ok: boolean; error?: string | undefined; corrupt?: boolean | undefined }"
  },
  {
   "method": "skills.marketRemove",
@@ -2826,7 +2826,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "Remove a user-added skill market (built-ins cannot be removed).",
   "input": "{ name: string; requestId?: string | undefined }",
   "inputFull": "{ name: string; requestId?: string | undefined }",
-  "output": "{ ok: boolean; error?: string | undefined }"
+  "output": "{ ok: boolean; error?: string | undefined; corrupt?: boolean | undefined }"
  },
  {
   "method": "skills.presetsDelete",
@@ -3197,12 +3197,28 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: boolean; canceled?: boolean | undefined; id?: string | undefined; name?: string | undefined; errors?: string[] | undefined; warnings?: string[] | undefined; error?: string | undefined }"
  },
  {
+  "method": "workflow.importPreset",
+  "channel": "workflow:importPreset",
+  "doc": "【MC-007】按出厂预置导入一份。**永远新建**(名字重了自动加后缀);要覆盖用 `workflow.import`。解析/校验/落库走与文本导入**同一个** `importWorkflowInto`。",
+  "input": "{ id: string // 出厂预设的 id(`workflow.listPresets` 里那一条的 `id`)。 }",
+  "inputFull": "{ id: string // 出厂预设的 id(`workflow.listPresets` 里那一条的 `id`)。 }",
+  "output": "{ ok: boolean; id?: string | undefined; name?: string | undefined; errors?: string[] | undefined; warnings?: string[] | undefined; error?: string | undefined }"
+ },
+ {
   "method": "workflow.list",
   "channel": "workflow:list",
   "doc": "全部工作流:内置打底 + 用户覆盖 + 自建。**不含 nodes / edges**,画布打开某一项 时才走 `workflow.get` 取完整文档。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
   "output": "{ workflows: { id: string; kind: 'prompt' | 'graph'; name: string; builtin: boolean; edited: boolean; updatedAt: number; description?: string | undefined; pinned?: boolean … }"
+ },
+ {
+  "method": "workflow.listPresets",
+  "channel": "workflow:listPresets",
+  "doc": "【MC-007】列出**出厂预置工作流**(装包里 `resources/presets/workflows.json`, 开发时读仓库那份)。这是用户/Agent 发现\"这个版本带了哪些可导入内容\"的唯一入口。 返回摘要,**不含图本体**。`health` 三态必须原样带到调用方:`absent`(这个安装没带) 与 `corrupt`(带了但坏了)要能分开说,否则都表现成\"空列表\"。 ⚠️ 无参 handler,同 `workflow.list`。",
+  "input": "(无参数)",
+  "inputFull": "(无参数)",
+  "output": "{ health: 'absent' | 'corrupt' | 'ok'; reason?: string | undefined // `health !== \"ok\"` 时的原因(给人和 Agent 看)。; path: string // 命中的文件路径(诊断用;`absent` 时是尝试过的位置)。; presets: { id: string; kind: 'prompt' | 'graph'; name: string; nodeCount: number; sameNameExists: bool…"
  },
  {
   "method": "workflow.nodeTypes",

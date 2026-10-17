@@ -162,17 +162,17 @@ async function callAsync(channel: string, raw?: unknown): Promise<unknown> {
 /** 把 `unknown` 收成能点属性的形状 —— 断言里读返回值的字段用。 */
 const obj = (v: unknown): Record<string, unknown> => v as Record<string, unknown>;
 
-/* ──────────────── 1. 29 条 handler 一条不少、一条不多 ──────────────── */
+/* ──────────────── 1. 31 条 handler 一条不少、一条不多 ──────────────── */
 
 console.log("\n注册面");
 
-// 29 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
+// 31 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
 // 点了没反应;多一条 = 白名单那边没跟上(renderer 根本调不到,但说明有人改了这里
 // 却没改契约那一份)。
 const registered = [...handlers.keys()].sort();
 check(
-  `注册了 29 条 handler(实际 ${registered.length})`,
-  registered.length === 29,
+  `注册了 31 条 handler(实际 ${registered.length})`,
+  registered.length === 31,
   registered,
 );
 
@@ -187,6 +187,8 @@ const expectedChannels: Array<[string, string]> = [
   ["导出", IPC.WORKFLOW_EXPORT],
   ["导入(文本)", IPC.WORKFLOW_IMPORT],
   ["导入(选文件)", IPC.WORKFLOW_IMPORT_FROM_FILE],
+  ["出厂预设(列出)", IPC.WORKFLOW_LIST_PRESETS],
+  ["出厂预设(导入)", IPC.WORKFLOW_IMPORT_PRESET],
   ["代理档案列表", IPC.WORKFLOW_AGENT_PROFILES],
   ["存代理档案", IPC.WORKFLOW_SAVE_AGENT_PROFILE],
   ["删代理档案", IPC.WORKFLOW_REMOVE_AGENT_PROFILE],
@@ -209,7 +211,7 @@ const expectedChannels: Array<[string, string]> = [
   ["自定义 UI 运行自动化", IPC.CUSTOM_UI_RUN_AUTOMATION],
 ];
 const missing = expectedChannels.filter(([, ch]) => !handlers.has(ch)).map(([name]) => name);
-same("包括「命令模板(显式重建)」在内的 29 条一条不缺", missing, []);
+same("包括「命令模板(显式重建)」在内的 31 条一条不缺", missing, []);
 
 /* ──────────────── 2. 种子铺出来的目录 ──────────────── */
 
@@ -2004,6 +2006,145 @@ console.log("\n★ 损坏的自定默认表不能被静默覆盖");
     after.includes("wf_pinA") && after.includes("wf_pinB") && after.includes("wf_pinC"),
     after.slice(0, 120),
   );
+}
+
+/* ──────────────── 22. ★ MC-007:出厂预设可发现、可导入 ──────────────── */
+
+console.log("\n出厂预设");
+
+// 这一段钉的是台账那条「孤岛」:内容外置到 `resources/presets/workflows.json` 之后,
+// **没有任何运行时代码读它**、也没有构建配置把它打进安装包、更没有界面入口。
+//
+// 判据立在**用户能看到的那个结果**上:列表里有那七份、导入之后库里真的多了一行、
+// 坏文件/缺文件时说得清是哪种坏 —— 而不是"函数返回了一个对象"。
+{
+  const { presetRootCandidates, readPresetCatalog, readPresetWorkflow } = await import(
+    "@main/orchestration/presetWorkflows.js"
+  );
+
+  // 0) 预置文件本身**真的在这个仓库里**(不然下面全部会退化成"absent 也对")。
+  const real = readPresetCatalog(presetRootCandidates());
+  eq("仓库里的出厂预设读得到(health:ok)", real.health, "ok");
+  check("读到了至少一份预设", real.presets.length >= 7, { count: real.presets.length, path: real.path });
+  check(
+    "七份都在(检索/精读/写作/评审/代码 + 两条自动化)",
+    ["search", "read", "write", "review", "code", "wf_auto_download", "wf_auto_convert"].every((id) =>
+      real.presets.some((p) => p.id === id),
+    ),
+    real.presets.map((p) => p.id),
+  );
+  check("每一条都带着可显示的名字", real.presets.every((p) => p.name.trim().length > 0), real.presets);
+  // 分栏依据必须一路带到渲染端:两条自动化得能被分进「自动化」那一栏。
+  eq("两条自动化的 trigger 字段反推得出来", real.presets.filter((p) => p.trigger !== undefined).length, 2);
+  eq(
+    "五个对话模式不是自动化",
+    real.presets.filter((p) => p.trigger === undefined).length,
+    5,
+  );
+  check("提示词型与图型都能分得出来", real.presets.every((p) => p.kind === "graph" || p.kind === "prompt"));
+  eq("没有逐条问题(这份仓库文件是干净的)", real.problems.length, 0);
+
+  // 1) **真实那条 IPC**:列表带着库里的同名提示。
+  const listed = obj(await callAsync(IPC.WORKFLOW_LIST_PRESETS));
+  eq("listPresets → health:ok", listed.health, "ok");
+  const presets = listed.presets as Array<{ id: string; name: string; sameNameExists: boolean }>;
+  check("IPC 返回的条数与文件里一致", presets.length === real.presets.length, {
+    ipc: presets.length,
+    file: real.presets.length,
+  });
+  // 先存一份与某条预设同名的,再列一次 —— 那个提示必须出现。
+  const target = real.presets.find((p) => p.id === "code")!;
+  await callAsync(IPC.WORKFLOW_SAVE, {
+    workflow: goodDoc({ id: "wf_same_name", name: target.name }),
+  });
+  const listed2 = obj(await callAsync(IPC.WORKFLOW_LIST_PRESETS));
+  const sameEntry = (listed2.presets as Array<{ id: string; sameNameExists: boolean }>).find((p) => p.id === "code");
+  eq("库里已有同名时那条预设标了出来", sameEntry?.sameNameExists, true);
+  const otherEntry = (listed2.presets as Array<{ id: string; sameNameExists: boolean }>).find((p) => p.id === "read");
+  eq("别的条目没被误标", otherEntry?.sameNameExists, false);
+
+  // 2) **按预置导入**:真的往库里多出一行,而且走的是同一个落库闸门。
+  resetSent();
+  const before = (obj(await callAsync(IPC.WORKFLOW_LIST)).workflows as Array<{ id: string }>).length;
+  const imported = obj(await callAsync(IPC.WORKFLOW_IMPORT_PRESET, { id: "read" }));
+  eq("导入一条预置 → ok", imported.ok, true);
+  check("给回了一个新 id(不是预设自己的 id)", String(imported.id).startsWith("wf_") && imported.id !== "read", imported.id);
+  const after = (obj(await callAsync(IPC.WORKFLOW_LIST)).workflows as Array<{ id: string }>).length;
+  eq("库里真的多了一行", after, before + 1);
+  eq(
+    "导入广播了一次(与两条文本导入同一个收尾)",
+    sent.filter((s) => s.channel === IPC.WORKFLOW_CHANGED).length,
+    1,
+  );
+  // 名字重了要加后缀(前面刚存过一份同名的) —— 与「从文件导入」同一条去重规则。
+  check("与库里同名时名字被绕开了", imported.name !== target.name, {
+    imported: imported.name,
+    existing: target.name,
+  });
+  // 导进来的是一份**完整文档**:节点图也真的在。
+  const fetched = obj(await callAsync(IPC.WORKFLOW_GET, { id: imported.id }));
+  const doc = obj(fetched.workflow) as { nodes?: unknown[]; prompt?: string };
+  check(
+    "导进来的文档带着它原本的内容(图或流程文字至少一样)",
+    (doc.nodes?.length ?? 0) > 0 || String(doc.prompt ?? "").length > 0,
+    { nodes: doc.nodes?.length, promptLen: String(doc.prompt ?? "").length },
+  );
+
+  // 3) **预设不存在** → 说清是哪一条,而不是"导入了一份空白"。
+  const ghost = obj(await callAsync(IPC.WORKFLOW_IMPORT_PRESET, { id: "preset_没这个" }));
+  eq("不存在的预设 → ok:false", ghost.ok, false);
+  check("报文里点得到那个 id", String((ghost.errors as string[])?.join(" ")).includes("preset_没这个"), ghost.errors);
+
+  // 4) **缺文件 / 坏文件** 是两种不同的可观测状态(硬规矩 3:不静默当空列表)。
+  const absentRoot = mkdtempSync(join(tmpdir(), "mcode-preset-absent-"));
+  try {
+    const absent = readPresetCatalog([absentRoot]);
+    eq("没有预置文件 → health:absent", absent.health, "absent");
+    check("absent 带着原因(试过哪些位置)", String(absent.reason ?? "").length > 0, absent.reason);
+    eq("absent 时列表为空", absent.presets.length, 0);
+
+    const corruptRoot = mkdtempSync(join(tmpdir(), "mcode-preset-corrupt-"));
+    try {
+      mkdirSync(join(corruptRoot, "resources", "presets"), { recursive: true });
+      writeFileSync(join(corruptRoot, "resources", "presets", "workflows.json"), "{这不是 json", "utf8");
+      const corrupt = readPresetCatalog([corruptRoot]);
+      eq("坏 JSON → health:corrupt(不是 absent,也不是空列表)", corrupt.health, "corrupt");
+      check("corrupt 带着解析器的原话", String(corrupt.reason ?? "").includes("JSON"), corrupt.reason);
+
+      // 形状对但**没有一条**解析得出来 → 同样是 corrupt(而不是"这个版本没带内容")。
+      writeFileSync(
+        join(corruptRoot, "resources", "presets", "workflows.json"),
+        JSON.stringify({ workflows: [{ not: "a doc" }, { also: "not" }] }),
+        "utf8",
+      );
+      const allBad = readPresetCatalog([corruptRoot]);
+      eq("一条都解析不出来 → health:corrupt", allBad.health, "corrupt");
+      check("逐条问题被列出来了(不静默丢弃)", allBad.problems.length >= 2, allBad.problems);
+
+      // 部分坏:好的照常可用,坏的进 problems —— 这才是"其余条目照常可用"。
+      writeFileSync(
+        join(corruptRoot, "resources", "presets", "workflows.json"),
+        JSON.stringify({
+          workflows: [
+            goodDoc({ id: "preset_good", name: "好的一条" }),
+            { not: "a doc" },
+          ],
+        }),
+        "utf8",
+      );
+      const partial = readPresetCatalog([corruptRoot]);
+      eq("部分坏 → health 仍是 ok", partial.health, "ok");
+      eq("好的那条在", partial.presets.length, 1);
+      eq("坏的那条进 problems", partial.problems.length, 1);
+      // 坏条目**不能**被导入(按 id 取不到它)。
+      const badFetch = readPresetWorkflow("preset_good", [corruptRoot]);
+      check("按 id 取得到好的那条", !("error" in badFetch), badFetch);
+    } finally {
+      rmSync(corruptRoot, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(absentRoot, { recursive: true, force: true });
+  }
 }
 
 /* ──────────────── 收尾 ──────────────── */

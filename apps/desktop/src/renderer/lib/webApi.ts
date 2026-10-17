@@ -633,6 +633,9 @@ const workflow: Api["workflow"] = {
   export: () => webUnsupported("workflow.export"),
   import: () => webUnsupported("workflow.import"),
   importFromFile: () => webUnsupported("workflow.importFromFile"),
+  // 出厂预置:文件在主进程那一侧(桌面安装包里),手机端没有那条通道 → 显式不可用。
+  listPresets: () => webUnsupported("workflow.listPresets"),
+  importPreset: () => webUnsupported("workflow.importPreset"),
   // 代理档案也是桌面端的事(它是画布/检查器那一套的一部分)。**照样要列出来** ——
   // 共用的 `WorkflowLibraryView` 在 effect 里拉它,少一个方法就是一次
   // `undefined is not a function`,那会让 React 19 整棵卸载(见文件头)。

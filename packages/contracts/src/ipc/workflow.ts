@@ -101,6 +101,21 @@ export const WorkflowImportSchema = z.object({
 export type WorkflowImportInput = z.infer<typeof WorkflowImportSchema>;
 
 /**
+ * 按出厂预设导入(【MC-007】)。**不给路径**:路径由主进程解析 —— 渲染端与 Agent
+ * 只说"要哪一份",安装包里预置文件在哪是宿主的事(开发/打包两种布局,见
+ * `main/orchestration/presetWorkflows.ts` 的候选表)。
+ *
+ * 导入执行走**与 `workflow.import` 同一个** `importWorkflowInto`(解析 → 校验 → 落库
+ * 一份都不重复)。所以这里没有 `id`:出厂预设的语义是"要一份新的",要覆盖请用
+ * `workflow.import` 那条路。
+ */
+export const WorkflowImportPresetSchema = z.object({
+  /** 出厂预设的 id(`workflow.listPresets` 里那一条的 `id`)。 */
+  id: z.string().min(1),
+});
+export type WorkflowImportPresetInput = z.infer<typeof WorkflowImportPresetSchema>;
+
+/**
  * 用户在**岔路口**上选了一条路(`mcode.branch` 那个节点正停在那儿等人)。
  *
  * ## 它是"回答",不是"发消息"

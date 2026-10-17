@@ -47,7 +47,7 @@ import { MAIN_NODE_TYPE_ID, TRIGGER_NODE_TYPE_ID, type NodeTypeCatalog } from "@
 import type { WorkflowDoc, WorkflowListEntry, WorkflowNode, WorkflowPosition, WorkflowReviewInfo } from "@contracts/workflow";
 import { workflowDisplayName, workflowIcon } from "@renderer/lib/workflowLabels.js";
 import { isEditableTarget } from "@renderer/lib/shortcuts.js";
-import { IconLoader2, IconAlertTriangle, IconArrowsSplit, IconPlus, IconRefresh } from "@renderer/lib/icons.js";
+import { IconLoader2, IconAlertTriangle, IconArrowsSplit, IconDownload, IconPlus, IconRefresh } from "@renderer/lib/icons.js";
 import {
   isDocDirty,
   forSave,
@@ -81,6 +81,7 @@ import { WorkflowCanvas } from "./WorkflowCanvas.js";
 import { NodeInspector } from "./NodeInspector.js";
 import { SaveStateLine, type SaveState } from "./SaveStateLine.js";
 import { WorkflowListRow } from "./WorkflowListRow.js";
+import { PresetImportDialog } from "./PresetImportDialog.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 /**
@@ -214,6 +215,9 @@ export function WorkflowLibraryView({
   /** 「恢复默认」的确认框开关(破坏性:当前版本会被钉住的快照覆盖)。 */
   const [pendingRestore, setPendingRestore] = useState(false);
   const [pendingShippedUpdate, setPendingShippedUpdate] = useState(false);
+  /** 【MC-007】「从出厂预设导入」对话框开关。导入成功后走 `handleImported` ——
+   *  与「从文件导入」同一个交接(收草稿 + 切过去),不另写一套。 */
+  const [presetOpen, setPresetOpen] = useState(false);
   const [shippedBusy, setShippedBusy] = useState(false);
   /** 最后发起的那次 `workflow.get`。用户连点两个工作流时两次请求会并发,回来顺序
    *  不保证 —— 只认最后一次发出的那个,否则详情面板会显示成上一个的内容。 */
@@ -1009,8 +1013,28 @@ export function WorkflowLibraryView({
               <IconPlus size={12} />
               {t(labels.create)}
             </Button>
+            {/* 【MC-007】出厂预设入口。**两组都只有"工作流"那一栏** —— 预设里两条
+                自动化本来就在同一份文件里,而按栏分两次导入只会让用户困惑
+                (「为什么我在这里看不到刚导进来的那条」:它进了另一栏)。 */}
+            {purpose === "workflow" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setPresetOpen(true)}
+                className="mt-0.5 w-full justify-center gap-1"
+              >
+                <IconDownload size={12} />
+                {t("settings.workflows.presetsButton")}
+              </Button>
+            )}
           </div>
         </aside>
+
+        <PresetImportDialog
+          open={presetOpen}
+          onOpenChange={setPresetOpen}
+          onImported={handleImported}
+        />
 
         {/* ───────── 右:画布 + 检查器 ───────── */}
         <div className="flex min-h-0 min-w-0 flex-col">

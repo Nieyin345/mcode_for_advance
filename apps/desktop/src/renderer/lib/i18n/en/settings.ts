@@ -1811,6 +1811,27 @@ export const en = {
   "settings.workflows.transferHint":
     "Whatever is already saved is what gets exported; unsaved canvas changes are not included.",
 
+  // ── Factory presets (MC-007) ──
+  // Content shipped with the app that the user imports on demand. The preset file
+  // lives in the install package; the three health states are deliberately worded
+  // differently — "this build has none" vs "it's there but broken" are not the same.
+  "settings.workflows.presetsButton": "Factory presets",
+  "settings.workflows.presetsTitle": "Import a factory preset",
+  "settings.workflows.presetsDesc":
+    "Workflows and automations that ship with Mcode. Importing always creates a new entry — if the name is taken, a suffix is added.",
+  "settings.workflows.presetsLoadFailed": "Could not list factory presets: {error}",
+  "settings.workflows.presetsAbsent":
+    "This installation does not include the factory presets. If you expected them, the package may be missing its presets folder.",
+  "settings.workflows.presetsCorrupt":
+    "The factory preset file is present but unreadable. The rest of the app is unaffected; please report this.",
+  "settings.workflows.presetsEmpty": "No factory presets in this build.",
+  "settings.workflows.presetsProblems": "{n} preset entry (or entries) could not be read",
+  "settings.workflows.presetImport": "Import",
+  "settings.workflows.presetKindGraph": "{n} nodes",
+  "settings.workflows.presetKindPrompt": "Prompt",
+  "settings.workflows.presetBadgeAutomation": "Automation",
+  "settings.workflows.presetAlreadyInLibrary": "Already in library",
+
   // ── Saving (explicit) ──
   // The status line sits next to the Save button in the editor's title row.
   "settings.workflows.savePending": "Unsaved changes",
