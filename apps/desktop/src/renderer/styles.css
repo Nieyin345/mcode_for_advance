@@ -1,3 +1,4 @@
+@import "./tokens.cds.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -102,37 +103,46 @@ div:has(> [role="menu"]) {
    * ~1.10:1 against the white main surface — visually one continuous sheet;
    * the deeper step (~1.16:1) plus the darker --edge below restores the
    * track/recess layering without touching the white "paper" work area. */
-  --surface: 255 255 255; /* white — center pane, right panel, popups */
-  --surface-muted: 240 242 246; /* cool zinc-100/150 — sidebar track, inset wells */
-  --surface-hover: 226 229 235; /* cool zinc-200 — hover/active fills */
+  /* 【ARC-005 V0】语义层重指到 open-claude-ui 的 CDS 原始色阶（MIT，见
+   * tokens.cds.css 的生成说明）。语义名不变 —— 840 处 `bg-surface/50` 这类
+   * alpha 用法零改动。方向与 Claude 一致：由外向内越来越亮（muted 20 → surface
+   * 10 → 卡片 0），与旧 zinc 的冷偏色不同，改用中性偏暖的灰阶。 */
+  --surface: var(--m-gray-10); /* #fcfcfb — center pane, right panel, popups */
+  --surface-muted: var(--m-gray-20); /* #f9f9f7 — sidebar track, inset wells */
+  --surface-hover: var(--m-gray-50); /* #f0efec — hover/active fills */
   /* content (text) — deepened one stop for stronger contrast on white.
    * Body stays at near-black zinc-950; muted/subtle drop one shade each
    * (zinc-700 / zinc-500) so secondary text doesn't wash out. */
-  --content: 9 9 11; /* zinc-950 — near-black, max contrast on white */
-  --content-muted: 63 63 70; /* zinc-700 — one stop darker than before */
-  --content-subtle: 113 113 122; /* zinc-500 — one stop darker than before */
+  --content: var(--m-gray-850); /* #151515 — near-black, max contrast on #fcfcfb */
+  --content-muted: var(--m-gray-600); /* #52514e ≈ 7.5:1 */
+  --content-subtle: var(--m-gray-500); /* #6d6b67 ≈ 5.1:1 (AA for small text) */
   /* borders. --edge is a cool zinc-300, one stop DEEPER than --surface-hover:
    * borders must read as separators on white (~1.46:1) — the old zinc-200
    * equaled the hover fill, so panel dividers / card outlines washed out and
    * hover feedback had the same value as the border it sat next to. */
-  --edge: 213 216 222; /* cool zinc-300 */
+  --edge: var(--m-gray-200); /* #c3c2b7 — CDS hairline tone */
   /* Structural pane dividers (three-pane shell borders, the draggable
    * splitter hairlines, the tab-strip underline) — one stop LIGHTER than
    * --edge: these lines run the full window height, and at the card-border
    * value they read as heavy rules across the whole UI. Cards and in-panel
    * separators keep --edge. */
-  --panel-edge: 222 225 231; /* cool zinc-250 (~1.35:1 on white) */
+  --panel-edge: var(--m-gray-150); /* #d2d1c7 (~1.3:1 on #fcfcfb) */
   /* Composer input box outline — one stop deeper than --edge so the box
    * reads clearly at a glance in both themes (dark needs the brighter-than-
    * edge direction, light the deeper-than-edge direction). Only the composer
    * container uses it — panel dividers / cards keep --edge. */
-  --input-edge: 202 205 212;
+  --input-edge: var(--m-gray-250); /* #b4b3a8 */
   /* accent + status. Light text-bearing tokens sit at the 700 stop: the 600
    * shades resolved to ~3.2:1 (amber) / ~3.8:1 (emerald) on white — below
    * the 4.5:1 AA bar for the small colored text they feed (approval prompts,
    * diff tallies, status labels). Dark keeps its 400/500 shades, which pass
    * from the other side on near-black. Icons/dots only need the 3:1
    * non-text bar, but sharing the darker token keeps light chrome coherent. */
+  /* 【ARC-005】Claude 的陶土橙先作为**备选品牌色**单独暴露，不替换 --accent：
+   * clay #d97757 作小字号文字只有 ~3.1:1，而 `text-accent` 有 311 处，直接换会
+   * 跌破 AA。是否把品牌色整体切到 clay 是产品决定（等用户对照截图）。 */
+  --brand-clay: var(--m-orange-350); /* #eb6834 可作强调底/大图标 */
+  --brand-clay-strong: var(--m-orange-500); /* #ae461c ≈ 5.5:1 可作文字 */
   --accent: 5 150 105; /* emerald-600 — brand: buttons, icons, focus rings */
   --accent-strong: 4 120 87; /* emerald-700 — small accent TEXT (≥4.5:1) */
   /* Inline code span foreground — plain body color on BOTH themes (GitHub
@@ -221,47 +231,15 @@ div:has(> [role="menu"]) {
    * = muted track, center/right = surface) read as one cool palette with
    * brightness hierarchy, not a warm/cold split. Text stays neutral
    * white/gray — it doesn't follow the tint, keeping contrast clean. */
-  --surface: 26 29 36; /* #1a1d24 — slate-tinted near-black; the base app
-                        * background (center pane, right sidebar, popups,
-                        * titlebar). B channel sits ~10 above R so the cool
-                        * bias matches --surface-muted. */
-  --surface-muted: 44 49 60; /* #2c313c — slate-tinted recess: inset panels /
-                              * track / left sidebar / code-block & tool-result
-                              * wells in the data stream. Tinted cool (B channel
-                              * runs higher than R/G) so recesses read as a calm
-                              * blue-gray instead of flat neutral — the VS Code
-                              * Dark+ look. The gap to --surface is ~20, enough
-                              * that /40 /60 alpha variants still resolve as a
-                              * visible layer. */
-  --surface-hover: 58 64 78; /* #3a404e — hover/active states, lifted in step
-                              * and keeping the same slate tint so the three
-                              * layers (surface → muted → hover) stay on one
-                              * cool ramp. */
-  --content: 231 232 236; /* soft off-white (#e7e8ec) — ~14.5:1 on the new
-                           * surface, still well above WCAG AAA (7:1) */
-  /* Secondary/tertiary text — brightened one step from the old
-   * #aaadb4 / #848891. On a near-black surface a mid-gray at a "passing"
-   * ratio still reads perceptually dimmer than the same ratio on white
-   * (white-on-dark loses apparent contrast to the eye), and model replies
-   * are dominated by bullet lists / tables / tool cards rendered at muted —
-   * the whole reply body read one tier dimmer than its intro paragraph.
-   * New values: muted ≈9.2:1, subtle ≈6.6:1 on the base surface (both clear
-   * WCAG AA for body text). Tier gaps stay wide (content 231 → muted 188 →
-   * subtle 158) so the three levels still resolve as distinct. */
-  --content-muted: 188 191 198; /* #bcbfc6 — lists / tables / thinking body /
-                                 * tool-card labels */
-  --content-subtle: 158 162 171; /* #9ea2ab — metadata: paths / summaries /
-                                  * timestamps / markers / hints */
-  --edge: 45 51 64; /* #2d3340 — slate-tinted to match the muted/hover ramp;
-                     * one notch below hover so borders read as separators,
-                     * not highlights. */
-  --panel-edge: 45 51 64; /* mirrors dark --edge — the lighter structural
-                           * divider is a light-mode-only concern */
-  --input-edge: 95 99 110; /* cool gray — brighter than --edge so the
-                            * composer box outline stays visible on the
-                            * background. Tuned to read clearly without
-                            * being as bright as the muted-text color. */
-  --accent: 16 185 129; /* emerald-500 */
+  --surface: var(--m-gray-850); /* #151515 — Claude dark canvas */
+  --surface-muted: var(--m-gray-800); /* #20201f — recess / sidebar track */
+  --surface-hover: var(--m-gray-750); /* #2c2c2a — hover/active */
+  --content: var(--m-gray-20); /* #f9f9f7 — dark text, ~15:1 on #151515 */
+  --content-muted: var(--m-gray-250); /* #b4b3a8 — secondary */
+  --content-subtle: var(--m-gray-350); /* #97958d ≈ 4.7:1 — metadata */
+  --edge: var(--m-gray-750); /* #2c2c2a */
+  --panel-edge: var(--m-gray-750); /* mirrors --edge */
+  --input-edge: var(--m-gray-700); /* #383835 — brighter than --edge */
   --accent-strong: 16 185 129; /* emerald-500 — dark accent is already ~6.6:1
                                  * on the slate surface, so the small-text
                                  * variant can simply mirror it */

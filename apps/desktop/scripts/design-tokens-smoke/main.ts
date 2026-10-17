@@ -119,5 +119,38 @@ section("4. 设置流水线接齐(源码断言)");
   }
 }
 
+section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
+{
+  const { execFileSync } = await import("node:child_process");
+  let checkOk = true;
+  let checkMsg = "";
+  try {
+    checkMsg = execFileSync(process.execPath, ["scripts/gen-cds-tokens.mjs", "--check"], { cwd: root, encoding: "utf8" });
+  } catch (e) {
+    checkOk = false;
+    checkMsg = (e as { stderr?: string }).stderr ?? String(e);
+  }
+  check("★ tokens.cds.css 与上游 open-claude-ui 一致", checkOk, checkMsg.slice(0, 300));
+
+  const tokens = read("src/renderer/tokens.cds.css");
+  const rampCount = (tokens.match(/^  --m-/gm) ?? []).length;
+  check("原始色阶数量合理(>=60)", rampCount >= 60, rampCount);
+  for (const probe of ["--m-gray-10", "--m-gray-850", "--m-orange-350", "--m-orange-500"]) {
+    check("原始色阶 " + probe + " 在生成物里", tokens.includes(probe + ":"));
+  }
+  check("★ 生成物是 R G B 三元组(不是 hex)", /--m-gray-10:\s*252 252 251;/.test(tokens));
+
+  const css = read("src/renderer/styles.css");
+  check("styles.css 引入了生成物", css.includes('@import "./tokens.cds.css";'));
+  check("★ 亮色 --surface 指到 --m-gray-10", /--surface:\s*var\(--m-gray-10\)/.test(css));
+  check("★ 暗色 --surface 指到 --m-gray-850", /--surface:\s*var\(--m-gray-850\)/.test(css));
+  check("★ 亮色 --content 指到 --m-gray-850", /--content:\s*var\(--m-gray-850\)/.test(css));
+  check("★ 暗色 --content 指到 --m-gray-20", /--content:\s*var\(--m-gray-20\)/.test(css));
+  check("★ --accent 仍是 emerald(未擅自换成陶土橙)", /--accent:\s*5 150 105;/.test(css));
+  check("陶土橙作为备选品牌色暴露", css.includes("--brand-clay:") && css.includes("--brand-clay-strong:"));
+  check("sketch 主题仍覆盖 --surface", /html\.sketch:not\(\.dark\)[\s\S]{0,400}--surface:/.test(css));
+}
+
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
