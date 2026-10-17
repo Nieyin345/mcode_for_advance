@@ -262,6 +262,29 @@ for (const engine of engines) {
     check("浏览器关时清单里没有任何 browser_* 工具", browserNames.length > 0 && browserNames.every((n) => !off.has(n)), browserNames.filter((n) => off.has(n)));
   }
 
+  // ⑥b.【MC-006】通用系统提示词**不许**含具体领域的脚本名/领域词。
+  // 台账第十六轮复核的失败判据:真实 `fileArchitecturePrompt` 输出里出现了
+  // `check_citations.py` 与「写作的引用核对」。断言立在**渲染后的正文**上(不是源码),
+  // 三个引擎逐一核对 —— 三个 SDK 注入的是同一段正文,一个引擎看到就等于都看到。
+  {
+    const forbidden: Array<[string, RegExp]> = [
+      ["具体脚本名 check_citations.py", /check_citations\.py/],
+      ["学术引用核对", /引用核对|citation check/i],
+      ["论文/学术/文献综述等学术场景词", /论文|学术|文献综述|paper writing|academic/i],
+      ["研究项目模板术语", /refs\.bib|BibTeX/i],
+    ];
+    for (const engine of ["claude", "pi", "codex"] as const) {
+      const body = renderArch("C:", "C:\s", engine);
+      // 防空过:正文确实是一大段(includes 树结构),不是空串。
+      check(`MC-006 提示词正文非空(${engine})`, body.includes("mcode.db") && body.includes("library.py"), body.length);
+      for (const [label, pattern] of forbidden) {
+        check(`★ MC-006 通用提示词不含${label}(${engine})`, !pattern.test(body), body.match(pattern)?.[0]);
+      }
+    }
+    // 反向正控:领域词**出现**时这套判据真的抓得到(防止正则写错永远不匹配)。
+    check("★ MC-006 判据本身能抓到领域词(正控)", /check_citations\.py/.test("…运行 check_citations.py …"));
+  }
+
   // ⑥ 渲染面不变:提示词里点名读工具的那句话,引擎换掉时名字跟着换(同一渲染器,不是两份)。
   {
     const claudePrompt = renderArch("C:\f", "C:\f\s", "claude");
