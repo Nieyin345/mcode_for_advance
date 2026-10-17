@@ -855,9 +855,22 @@ body {
   --dur-base: 200ms;     /* 默认 */
   --dur-sheet: 300ms;    /* 面板滑入 */
   --dur-slow: 450ms;     /* 回弹归位 */
-  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  /* 【ARC-005 V0】曲线换成 open-claude-ui 的 REA 取证值（上游 11 条全收；
+   * 数值不同就是不同，不拿近似值冒充）。`--ease-out` 与上游同名但曲线不同，
+   * 这里保留 Mcode 原有值以免改动未知调用方，另起 `--ease-swift` 等新名。 */
+  --ease-out: cubic-bezier(0, 0, 0.2, 1); /* Mcode 原有（保留兼容） */
   --ease-snap: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-overshoot: cubic-bezier(0.34, 1.3, 0.64, 1);
+  /* 上游取证曲线（新名，供新代码使用） */
+  --ease-swift: cubic-bezier(0.16, 1, 0.3, 1);      /* 高频微交互 */
+  --ease-expand: cubic-bezier(0.19, 1, 0.22, 1);    /* 0fr→1fr 展开 */
+  --ease-enter: cubic-bezier(0.22, 1, 0.36, 1);     /* 消息块入场 */
+  --ease-pop: cubic-bezier(0.34, 1.56, 0.64, 1);    /* 弹窗回弹 */
+  --ease-pulse: cubic-bezier(0.4, 0, 0.2, 1);       /* 思考三点 */
+  --ease-rise: cubic-bezier(0.3, 0.7, 0.4, 1);      /* 状态条抬升 */
+  --ease-fall: cubic-bezier(0, 0, 0.2, 1);          /* 状态条下落 */
+  /* 真弹簧（linear() 采样，cubic-bezier 做不出二次回弹） */
+  --spring-btn: linear(0, 0.2459, 0.6526, 0.9468, 1.0764, 1.0915, 1.0585, 1.0219, 0.9993, 0.9914, 0.9921, 0.9957, 0.9988, 1.0004, 1);
 
   /* 焦点环三层：内 1px 背景色（任何底色上都读得出来）+ 1px 强调色 +
    * 6px 光晕。危险操作用同一形状、只换颜色 —— 用户不用重新学（报告 §3.6）。 */

@@ -138,6 +138,7 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
     check("几何 token " + t + " 已生成", geomTokens.includes(t + ":"));
   }
   // 会话流微动效(从上游纯 CSS 提取):关键帧与类都在,且不残留上游变量。
+
   const motion = read("src/renderer/chat-motion.css");
   for (const kf of ["timeline-quiet-dot", "timeline-expand", "cds-skeleton-sweep", "dframe-clay-breathe", "dframe-dot-blink"]) {
     check("动效关键帧 " + kf + " 已提取", motion.includes("@keyframes " + kf));
@@ -148,6 +149,7 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   check("styles.css 引入了微动效", read("src/renderer/styles.css").includes('@import "./chat-motion.css";'));
 
   const cssAliases = read("src/renderer/styles.css");
+  check("★ 真弹簧用 linear() 采样(cubic-bezier 做不出二次回弹)", /--spring-btn:\s*linear\(0,\s*0\.2459/.test(cssAliases));
   for (const a of ["--radius-panel:", "--radius-composer:", "--radius-bubble:", "--shadow-composer:", "--hairline:"]) {
     check("样式别名 " + a.replace(":", "") + " 已接", cssAliases.includes(a));
   }
@@ -161,6 +163,10 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   check("★ 生成物是 R G B 三元组(不是 hex)", /--m-gray-10:\s*252 252 251;/.test(tokens));
 
   const css = read("src/renderer/styles.css");
+  // 上游取证曲线与真弹簧(linear 采样)。
+  for (const t of ["--ease-swift:", "--ease-expand:", "--ease-enter:", "--ease-pop:", "--ease-pulse:", "--ease-rise:", "--ease-fall:"]) {
+    check("上游曲线 " + t.replace(":", "") + " 已接", css.includes(t));
+  }
   check("styles.css 引入了生成物", css.includes('@import "./tokens.cds.css";'));
   check("★ 亮色 --surface 指到 --m-gray-10", /--surface:\s*var\(--m-gray-10\)/.test(css));
   check("★ 暗色 --surface 指到 --m-gray-850", /--surface:\s*var\(--m-gray-850\)/.test(css));
