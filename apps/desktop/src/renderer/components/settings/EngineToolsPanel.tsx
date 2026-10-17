@@ -219,7 +219,7 @@ export function EngineToolsPanel() {
               禁用的内置工具,矩阵那一格必须如实显示「已被用户禁用」—— 静态声明与运行时
               事实同时可见,而不是两张互相打脸的说明。 */}
           <EngineCapabilityMatrix
-            excludedByEngine={snap ? {
+            excludedByEngine={snap?.engines ? {
               claude: snap.engines.claude.exclude,
               pi: snap.engines.pi.exclude,
               codex: snap.engines.codex.exclude,
@@ -235,12 +235,15 @@ export function EngineToolsPanel() {
                 : t("settings.engineTools.policyCorruptNoBackup")}
             </ErrorNote>
           )}
-          {!snap ? (
+          {!snap?.engines ? (
             rpc.loading ? (
               <div className="flex justify-center py-12">
                 <Spinner />
               </div>
-            ) : null
+            ) : (
+              // 快照形状不对(旧宿主/桩/版本不一致):显式说"读不出来",不白屏。
+              rpc.error ? null : <ErrorNote>{t("settings.loadFailed")}</ErrorNote>
+            )
           ) : (
             ENGINE_TOOL_ENGINE_IDS.map((engine) => (
               <EngineCard key={engine} engine={engine} state={snap.engines[engine]} onSaved={setSnapshot} />

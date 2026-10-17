@@ -356,6 +356,22 @@ try{
     await page.sleep(350);
     check('★ 遗留 id「data-root」深链当场切到「文档管理」',(await page.eval(activeNavExpr))==='文档管理',await page.eval(activeNavExpr));
 
+    // 3b) 【ARC-004 验收】Agent 的 open_settings 落在**同一状态机**上:契约把
+    //     `section` 定义成自由字符串(`{op:"open_settings"; section?: string}`),所以
+    //     MCP/插件/技能页与 Agent 三条路只要都调用 `setSettingsOpen(true, section)`,
+    //     行为就一致。这里按 Agent 的真实调用形状再走一遍(与上面同一条实现),
+    //     包括一个**合法**目标和一个**过期**目标。
+    await page.eval(`window.__store.getState().setSettingsOpen(true,"engine-tools")`);
+    await page.sleep(350);
+    check('★ Agent open_settings 合法栏目(engine-tools)当场切栏',(await page.eval(activeNavExpr))==='引擎工具',await page.eval(activeNavExpr));
+    await page.eval(`window.__store.getState().setSettingsOpen(true,"retired-agent-only")`);
+    await page.sleep(350);
+    check('★ Agent open_settings 过期栏目同样显式回退「常规」',(await page.eval(activeNavExpr))==='常规',await page.eval(activeNavExpr));
+
+    // 3c) 收尾:回到「工作流」—— 下一段(焦点/关闭)假设当前仍在设置内且栏目合法。
+    await page.eval(`window.__store.getState().setSettingsOpen(true,"workflows")`);
+    await page.sleep(350);
+
     // 4) 未知栏目:显式回退到「常规」(有诊断 warn),不静默停在旧栏目上。
     // ⚠️ 先切到**非常规**(workflows),这样"回退到常规"才有判别力 —— 上一状态
     // 就是常规的话,变异(不消费请求)下这条会假绿(实测过)。
