@@ -1056,11 +1056,12 @@ export type GitDiffOpenMode = z.infer<typeof GitDiffOpenModeSchema>;
  *  - "diff": read-only Monaco DiffEditor (vs a before-snapshot)
  *  - "preview": rendered Markdown preview (read-only)
  *  - "wysiwyg": 所见即所得编辑（只有 Markdown 用；MDXEditor，工具栏 + 表格/公式/链接）
+ *  - "genoffice": 【ARC-007】GenOffice 文档视图（结构化只读；CLI 就绪且用户显式选择时）
  *
  *  Markdown 默认走 **"wysiwyg"**（2026-09-21 用户改的：点开就该能改，
  *  不是先看点不动的一屏），源码视图 / 预览仍然在工具栏上一键可切。
  *  纯渲染端状态，不过 IPC 校验。 */
-export type FileViewMode = "edit" | "diff" | "preview" | "wysiwyg";
+export type FileViewMode = "edit" | "diff" | "preview" | "wysiwyg" | "genoffice";
 
 /* ── Settings ── */
 export const GetSettingSchema = z.object({ key: z.string() });

@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import Editor, { DiffEditor, useMonaco } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { api } from "@renderer/lib/api.js";
+import { useRpc } from "@renderer/hooks/useRpc.js";
 import { FileConflictError, textFileWrites } from "@renderer/lib/markdownFileWrites.js";
 import { useDiskPoll } from "@renderer/lib/useDiskPoll.js";
 import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import { isOnlyOfficeSupportedPath, isOnlyOfficeViewOnlyPath, type FileViewMode } from "@contracts/ipc";
+import { GenofficeDocumentPane } from "./GenofficeDocumentPane.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
@@ -110,6 +112,17 @@ export function FileEditor({
   // 本地 docx/pptx/xlsx 渲染组件留给 AI/其他专用流程，不作为 IDE 的用户预览档。
   const markdown = isMarkdown(filePath);
   const office = isOnlyOfficeSupportedPath(filePath);
+  /**
+   * 【ARC-007】GenOffice 文档视图是**可选优先档**：能力就绪（CLI 构建好）且用户在这个
+   * 项目里为这个文件选了 genoffice 时才用；默认仍是 OnlyOffice（旧引擎在替换验收前
+   * 保持可靠回退，台账"未完成不得默认启用"）。能力不可用时按钮不出现。
+   */
+  const genoffice = useRpc(() => api.document.capabilities(), [], { enabled: office, toastOnError: false });
+  const genofficeReady = genoffice.data?.cli.available === true;
+  const viewModePref = useSessionStore((s) =>
+    pid ? s.ideFileViewModeByProject[pid]?.[filePath] : undefined,
+  );
+  const useGenoffice = office && genofficeReady && viewModePref === "genoffice";
   const defaultMode: FileViewMode = markdown || office
     ? "wysiwyg"
     : isPdfFile(filePath)
@@ -148,7 +161,9 @@ export function FileEditor({
   //  - wysiwyg: Markdown 的所见即所得（Milkdown），或 OnlyOffice 文档编辑器。
   // Markdown 的旧 preview 偏好只在此适配，不改其他文件/项目的已保存偏好。
   //  - edit: the normal editable Monaco instance (default for non-md files).
-  const effectiveMode: FileViewMode = office
+  const effectiveMode: FileViewMode = useGenoffice
+    ? "genoffice"
+    : office
     ? "wysiwyg"
     : historyOnly || (viewMode === "diff" && diffBefore != null)
       ? "diff"
@@ -194,6 +209,8 @@ export function FileEditor({
       <div className="min-h-0 flex-1">
         {effectiveMode === "diff" && diffBefore != null ? (
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
+        ) : effectiveMode === "genoffice" ? (
+          <GenofficeDocumentPane key={filePath} filePath={filePath} />
         ) : effectiveMode === "wysiwyg" ? (
           office ? (
             <OnlyOfficeEditorPane
@@ -239,6 +256,7 @@ const TOGGLE_LABEL_KEY = {
   diff: "ide.editor.togglePreview",
   preview: "ide.editor.toggleEdit",
   wysiwyg: "ide.editor.toggleSource",
+  genoffice: "ide.editor.toggleSource",
 } as const satisfies Record<FileViewMode, string>;
 
 const TOGGLE_TITLE_KEY = {
@@ -246,6 +264,7 @@ const TOGGLE_TITLE_KEY = {
   diff: "ide.editor.switchToPreview",
   preview: "ide.editor.switchToSource",
   wysiwyg: "ide.editor.switchToSourceView",
+  genoffice: "ide.editor.switchToSourceView",
 } as const satisfies Record<FileViewMode, string>;
 
 /** Markdown 两档（Milkdown ↔ 源码）。与图片/二进制预览按钮分开，避免误导。 */
@@ -254,12 +273,14 @@ const MARKDOWN_TOGGLE_LABEL_KEY = {
   diff: "ide.editor.toggleEdit",
   preview: "ide.editor.toggleEdit",
   wysiwyg: "ide.editor.toggleSource",
+  genoffice: "ide.editor.toggleSource",
 } as const satisfies Record<FileViewMode, string>;
 const MARKDOWN_TOGGLE_TITLE_KEY = {
   edit: "ide.editor.switchToMarkdownEdit",
   diff: "ide.editor.switchToMarkdownEdit",
   preview: "ide.editor.switchToMarkdownEdit",
   wysiwyg: "ide.editor.switchToSourceView",
+  genoffice: "ide.editor.switchToSourceView",
 } as const satisfies Record<FileViewMode, string>;
 
 function EditorToolbar({
