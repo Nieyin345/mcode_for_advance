@@ -28,7 +28,10 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
   useSuppressBrowserView(manager || reply !== null);
   const [busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
   const busyRef=useRef(false),alive=useRef(true);
-  const [draft,setDraft]=useState(JSON.stringify(EXAMPLE_MODULE,null,2)),[consent,setConsent]=useState(false);
+  const [draft,setDraft]=useState(JSON.stringify(EXAMPLE_MODULE,null,2)),[consent,setConsent]=useState(false),[codeConsent,setCodeConsent]=useState(false);
+  // 【MC-035】草稿里是否声明了执行程序 —— 决定"执行代码"那份同意需不需要出现。
+  // 解析失败(草稿写坏)时不显示,安装时会由 schema 给出更准确的错误。
+  const draftHasProgram=(()=>{try{return (JSON.parse(draft) as {program?:unknown}).program!==undefined;}catch{return false;}})();
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
   const history=useRpc(()=>api.modules.tasks({projectPath}),[projectPath],{enabled:manager,toastOnError:false});
   const mutate=async(fn:()=>Promise<void>)=>{
@@ -46,8 +49,12 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
   const install=async()=>{
     await mutate(async()=>{
       const manifest=ModuleManifestSchema.parse(JSON.parse(draft));
-      await api.modules.install({manifest,confirmReadAccess:true});
-      if(alive.current){setConsent(false);await catalog.refetch();}
+      await api.modules.install({
+        manifest,confirmReadAccess:true,
+        // 【MC-035】可执行扩展的第二次同意由 UI 的独立勾选框给出;纯声明式模块不传。
+        ...(manifest.program!==undefined?{confirmExecutableCode:true as const}:{}),
+      });
+      if(alive.current){setConsent(false);setCodeConsent(false);await catalog.refetch();}
     });
   };
   return <Surface.Provider value={{catalog:catalog.data,busy,openManager:()=>setManager(true),invoke}}>
@@ -64,10 +71,15 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         </div>)}</div>
         <CapabilityCatalogPanel catalog={catalog.data} loading={catalog.loading} error={catalog.error} onRetry={()=>void catalog.refetch()}/>
         <label className="block space-y-2 text-sm"><span>{t("ide.modules.manifest")}</span>
-          <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);}} spellCheck={false}/>
+          <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);setCodeConsent(false);}} spellCheck={false}/>
         </label>
         <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>{t("ide.modules.consent")}</label>
-        <Button variant="primary" disabled={busy||!consent} onClick={()=>void install()}>{t("ide.modules.install")}</Button>
+        {/* 【MC-035】执行代码是**另一件事**:与只读声明的同意分开勾。清单里没有 program 时
+            不出现 —— 不给纯声明式模块制造"你到底同意了啥"的歧义。 */}
+        {draftHasProgram && <label className="flex items-center gap-2 text-xs" data-testid="module-code-consent">
+          <input type="checkbox" checked={codeConsent} onChange={e=>setCodeConsent(e.target.checked)}/>{t("ide.modules.codeConsent")}
+        </label>}
+        <Button variant="primary" disabled={busy||!consent||(draftHasProgram&&!codeConsent)} onClick={()=>void install()}>{t("ide.modules.install")}</Button>
         <h3 className="text-sm font-semibold">{t("ide.modules.history")}</h3>
         <p className="text-xs text-content-muted">{t("ide.modules.retention")}</p>
         <Button onClick={()=>void history.refetch()}>{t("ide.modules.refresh")}</Button>

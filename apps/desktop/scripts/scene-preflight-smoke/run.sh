@@ -16,6 +16,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/providers/registry.js=./scripts/scene-preflight-smoke/stubs/registry.ts \
   --alias:@main/plugins/pluginManager.js=./scripts/scene-preflight-smoke/stubs/pluginManager.ts \
   --alias:@main/orchestration/executionEngine.js=./scripts/scene-preflight-smoke/stubs/executionEngine.ts \
+  --alias:@main/modules/service.js=./scripts/scene-preflight-smoke/stubs/moduleService.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"

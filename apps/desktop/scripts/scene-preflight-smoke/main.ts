@@ -17,6 +17,7 @@
  * Run: scripts/scene-preflight-smoke/run.sh
  */
 import { preflightScene } from "../../src/main/appServices/scenePreflight.js";
+import { resetStubModuleCatalog, setStubModuleCatalog } from "./stubs/moduleService.js";
 
 let failures = 0;
 let total = 0;
@@ -70,6 +71,22 @@ async function main(): Promise<void> {
       eq("计划仍编译出来(预检不阻断规划)", typeof r.plan.digest === "string" && r.plan.digest.length > 0, true);
       eq("缺口点名 ghost-pack", r.preflight.requiredGaps[0].id, "ghost-pack");
     }
+  }
+
+  /* ── 2b.【MC-035】已安装扩展的能力在**同一份**清单里:目录里有什么,预检就认什么 ── */
+  {
+    // 对照(防空过):目录为空时,同名扩展能力必须被判缺失。
+    resetStubModuleCatalog();
+    const absent = spec() as Record<string, unknown>;
+    absent.capabilities = [{ kind: "module", id: "module.demo.convert", required: true }];
+    const before = await preflightScene({ spec: absent });
+    check("★ 宿主目录里没有的扩展能力 → 预检判缺失", before.ok && !before.preflight.ok, before.ok ? before.preflight : before);
+
+    // 目录里注册了(宿主分配 id)→ 同一声明就位。证明预检读的是**宿主注册表**。
+    setStubModuleCatalog([{ id: "module.demo.convert", kind: "query" }]);
+    const after = await preflightScene({ spec: absent });
+    check("★ 宿主目录里注册后的扩展能力 → 预检就位", after.ok && after.preflight.ok, after.ok ? after.preflight : after);
+    resetStubModuleCatalog();
   }
 
   /* ── 3. 合法 + 缺可选能力 → 预检仍通过,但如实报缺口 ── */

@@ -12,6 +12,19 @@ import { readAutomationEventChain, runWithAutomationOrigin, snapshotAutomationOr
  * (调度器里还有第三份,只有 `title || type` 两级 —— 它拿不到清单:`manifestOf` 是异步的,
  * 而调度器刻意保持"不看清单也能走完"。那里的回退少一级是诚实的。)
  */
+/** 【MC-035】能力预检里的扩展能力声明 —— 现读宿主目录。宿主初始化失败时返回空集并
+ *  **显式记日志**:这次预检会少看到几条扩展能力(报"缺能力"的文案里能对上),而不是
+ *  把整个能力清单装配判失败、连内置能力也一起丢掉。 */
+async function extensionDeclarationsForPreflight(runId: string): Promise<HostCapabilitySource[]> {
+  try {
+    const host = await (await import("@main/modules/service.js")).getModuleHost();
+    return hostCapabilityDeclarationsFromCatalog(host.catalog());
+  } catch (error) {
+    log.warn(`workflow run ${runId}: 扩展能力清单读取失败,这次预检只含内置能力:${(error as Error).message}`);
+    return [];
+  }
+}
+
 function displayTitle(node: WorkflowNode, manifest: NodeTypeManifest | undefined): string {
   if (node.title.trim().length > 0) return node.title;
   return manifest?.name ?? node.type;
@@ -251,7 +264,8 @@ import {
 } from "./scheduler.js";
 // 能力预检的清单装配(G4/CAP):纯函数翻译层在 `capabilityResolver.ts`,已启用插件的
 // 清单来自 pluginManager(异步读盘,所以端口做成 Promise,并按次运行缓存)。
-import { HOST_CAPABILITY_DECLARATIONS, collectCapabilityInventory, providerIdsForWorkflowPreflight } from "./capabilityResolver.js";
+import { HOST_CAPABILITY_DECLARATIONS, collectCapabilityInventory, hostCapabilityDeclarationsFromCatalog, providerIdsForWorkflowPreflight } from "./capabilityResolver.js";
+import type { HostCapabilitySource } from "./capabilityResolver.js";
 import { getEnabledPlugins } from "@main/plugins/pluginManager.js";
 
 /**
@@ -2409,7 +2423,13 @@ export async function startWorkflowRun(args: {
                 // modules/service**(那会碰 dataRoot,把 DB/electron 拖进这条预检路径);
                 // 这里喂的是 ModuleHost 注册的那两个能力 id 的**声明**(见
                 // fileCapabilities.ts),与 plugins 那条同形 —— 只做发现,不做第二套执行。
-                hostCapabilities: HOST_CAPABILITY_DECLARATIONS,
+                // 【MC-035】已安装扩展的能力与内置能力同一份清单 —— 现读宿主目录,
+                // 与模块面板/app_api/场景预检消费同一个注册表。宿主初始化失败**不拖垮**
+                // 整份清单:内置声明照旧,扩展那部分缺席并显式记一笔(不静默)。
+                hostCapabilities: [
+                  ...HOST_CAPABILITY_DECLARATIONS,
+                  ...await extensionDeclarationsForPreflight(runId),
+                ],
               }),
               executorKinds,
             };

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import {
-  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, missingCapabilityPermission, actionInvocationRefusal, moduleRefusal, moduleRefusalError,
+  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, ResultSchema, missingCapabilityPermission, actionInvocationRefusal, moduleRefusal, moduleRefusalError,
+  extensionCapabilityShortName, extensionCapabilityAssignment, MODULE_CAPABILITY_PREFIX,
   type ModuleManifest, type ModuleInvoke, type ModuleResource, type ModuleResult, type ModuleTask,
   type ModuleReply, type ModuleCatalog, type ModuleTaskRef,
 } from "@contracts/modules";
@@ -13,6 +14,7 @@ import {
   type ModuleWorkflowGrantRequest,
 } from "@contracts/moduleCapability";
 import { createIsolatedActionRun } from "./isolatedActionRunner.js";
+import { runPermissionedProcess, verifyPermissionedProgram } from "./permissionedProcessRunner.js";
 
 /** Windows/macOS 的文件系统大小写不敏感 —— 授权路径比对与幂等键据此折叠大小写
  *  (与 `lib/pathGuard.samePath` 同一平台判据;[MC-036])。 */
@@ -68,6 +70,10 @@ const parseGrantInput = (raw: unknown): ModuleWorkflowGrantRequest => {
  * Imported modules are data only; only host-registered capabilities can execute. */
 export class ModuleHost {
   private readonly capabilities = new Map<string, ErasedCapability>();
+  /** 【MC-035】**宿主分配**的扩展能力 → 所属模块。与 `capabilities` 同一张注册表:
+   *  `catalog` / `validate` / `invoke` 只看 `capabilities`,这张表只回答"卸载/替换时
+   *  该撤哪几个"以及"这个 id 是不是某模块的执行能力"(撤销即删,故不存在撤销后残留)。 */
+  private readonly extensionCapabilities = new Map<string, string>();
   private readonly modules = new Map<string, ModuleManifest>();
   private readonly builtinIds = new Set<string>();
   private readonly jobs = new Map<string, LiveTask>();
@@ -88,6 +94,15 @@ export class ModuleHost {
     /** 【MC-036】授权存档的**写侧**：把新原文交回宿主注入的持久化(tmp+rename 原子写)。
      * 缺省 = 没有持久化通道 → 签发被拒(fail-closed:授权必须跨重启有效,不能只活在内存里)。 */
     persistWorkflowGrants?(text: string): Promise<void>;
+    /** 【MC-035】资源 → **真实路径**的解析(生产注入 `resolveModuleResource`)。扩展进程的
+     *  `--allow-fs-read` 必须按真实路径放行,否则符号链接/junction 会让"允许读 A"实际
+     *  读到 B。缺省退回字面路径(仅测试/无文件系统宿主使用)。 */
+    resolveResource?(resource: ModuleResource): Promise<string>;
+    /** 【MC-035】安装期**程序核验**(生产注入受控进程求值,见 `verifyPermissionedProgram`)。
+     * 缺省 = **拒绝**带 program 的安装(fail-closed:没有核验通道就不装可执行代码)。
+     * 这与 `requestApproval` 的取向一致 —— 没有安全通道时不执行,而不是默认放行。 */
+    verifyProgram?(source: string, capabilities: readonly string[], timeoutMs: number | undefined):
+      Promise<{ ok: true } | { ok: false; reason: string }>;
   }) {}
 
   register<I>(definition: Capability<I>): void {
@@ -144,6 +159,24 @@ export class ModuleHost {
     const manifest = ModuleManifestSchema.parse(raw);
     if (!manifest.permissions.includes("resource.read")) throw Error("resource.read permission required");
     for (const c of manifest.contributions) {
+      // 【MC-035】`module.<短名>` 是**扩展程序能力**:它的实现不在注册表里等着被引用,
+      // 而是由本模块的 `program` 在安装期派生(见 bindProgram)。这里只挡形状 —— 短名
+      // 必须是单段、清单引用的每个短名必须由 program 覆盖(由 ModuleManifestSchema 的
+      // refine 与安装期核验共同保证)。指向**别的模块**的 `module.*` 不可能命中:
+      // 分配后的 id 带模块 slug,validate 阶段看到的 `module.x` 不是宿主分配形状。
+      const short = extensionCapabilityShortName(c.capability);
+      if (short !== undefined) {
+        if (manifest.program === undefined) throw Error("Module capability requires a program declaration");
+        // 扩展能力默认按只读对待;`resource.write` 只影响执行期权限,不改变准入 ——
+        // 程序是否真被放行写,由 invoke 的 action 判定 + OS 权限参数共同决定。
+        if (!manifest.permissions.includes("resource.read")) throw Error("resource.read permission required");
+        continue;
+      }
+      // `module.` 前缀但不是合法单段短名(如 `module.a.b`):**明确拒绝**,不落进
+      // "Unknown capability" —— 那条文案会让作者以为"能力忘了注册",而真相是短名形状不对。
+      if (c.capability.startsWith(MODULE_CAPABILITY_PREFIX)) {
+        throw Error("扩展能力短名必须是一段:module." + c.capability.slice(MODULE_CAPABILITY_PREFIX.length));
+      }
       const capability = this.capabilities.get(c.capability);
       if (!capability) throw Error("Unknown capability: " + c.capability);
       // 【MC-060】v1 的安全默认仍在:**纯 JSON 清单不直接成为执行权限**。但一个**显式
@@ -167,12 +200,77 @@ export class ModuleHost {
   addBuiltin(raw: unknown): void {
     const manifest = this.validate(raw);
     if (!manifest.id.startsWith("core.") || this.modules.has(manifest.id)) throw Error("Invalid builtin module ID");
+    // 【MC-035】内置模块不跑用户代码:带 program 的清单在这里就拒,不给"内置外壳
+    // 包一段扩展代码"留下混合形态。
+    if (manifest.program !== undefined) throw Error("Builtin modules cannot declare a program");
     this.modules.set(manifest.id, manifest); this.builtinIds.add(manifest.id);
+  }
+  /** 【MC-035】**把模块清单里的 `program` 派生成宿主能力** —— 安装、恢复共用这**一份**
+   *  绑定逻辑(撤销由 {@link unbindProgram} 单点负责)。
+   *
+   *  分配规则:短名 `convert` → `module.<模块 slug>.convert`(见 `extensionCapabilityAssignment`)。
+   *  每个被清单引用的短名注册成一个能力;引用它的是 action 类(`resource.write`)时按
+   *  `action` 注册(执行前必审批),否则是 `query`。执行体一律 **受控子进程**
+   *  (`runPermissionedProcess`)—— `run` 只做参数搬运,不在这里 eval 任何源码。
+   *
+   *  ⚠️ 同一模块的旧能力必须先撤(install 覆盖同 id 模块时),否则 `register` 会以
+   *  "Duplicate capability" 失败 —— 调用方保证顺序(见 install/restore)。
+   */
+  private bindProgram(manifest: ModuleManifest): void {
+    if (manifest.program === undefined) return;
+    const isAction = manifest.permissions.includes("resource.write");
+    const bound = new Set<string>();
+    for (const contribution of manifest.contributions) {
+      const short = extensionCapabilityShortName(contribution.capability);
+      if (short === undefined) continue;
+      const id = extensionCapabilityAssignment(manifest.id, short);
+      // 同一个短名可能被多个贡献引用(不同视图/标题)—— 只注册一次。
+      // ⚠️ 不用 `capabilities.has(id)` 判重:覆盖安装(同 id 模块、新版本/新源码)时
+      // 旧能力还在注册表里,靠它跳过就会**沿用旧执行体**(台账:换版本不得继承旧实现)。
+      // 调用方(install/restore)保证传入前该模块的旧能力已被 unbindProgram 撤掉。
+      if (bound.has(id)) continue;
+      bound.add(id);
+      const source = manifest.program.source;
+      const timeoutMs = manifest.program.timeoutMs ?? 15_000;
+      this.register({
+        id, kind: isAction ? "action" : "query",
+        input: ResourceSchema, output: ResultSchema,
+        run: async (resource, context) => {
+          // 资源在 invoke 里已过 authorize;这里再解析出**真实路径**交给权限参数
+          // (authorize 只判不返回)。逐次审批也已在 invoke 里完成 —— 不做第二套判定。
+          const realPath = await this.resolveResourcePath(resource);
+          return runPermissionedProcess({
+            source, capability: short,
+            resource: { projectPath: resource.projectPath, path: realPath },
+            allowWrite: isAction,
+            timeoutMs,
+            signal: context.signal,
+          });
+        },
+      });
+      this.extensionCapabilities.set(id, manifest.id);
+    }
+  }
+  /** 【MC-035】资源解析的**可选注入**:返回真实路径的解析器(通常是 `resolveModuleResource`)。
+   *  未注入时退回字面 `resource.path` —— 授权判定仍由 `authorize` 完成,但扩展进程的
+   *  `--allow-fs-read` 会按字面路径给,故生产装配**必须**注入。 */
+  private async resolveResourcePath(resource: ModuleResource): Promise<string> {
+    if (!this.options.resolveResource) return resource.path;
+    return this.options.resolveResource(resource);
+  }
+  /** 【MC-035】撤掉某模块派生的全部扩展能力(卸载 / 重装前调用)。**幂等**。 */
+  private unbindProgram(moduleId: string): void {
+    for (const [id, owner] of [...this.extensionCapabilities]) {
+      if (owner !== moduleId) continue;
+      this.capabilities.delete(id);
+      this.extensionCapabilities.delete(id);
+    }
   }
   /** Restoration only after the host has validated its own persisted store. */
   restore(raw: unknown): void {
     const manifest = this.validate(raw);
     if (!manifest.id.startsWith("user.") || this.modules.has(manifest.id)) throw Error("Invalid persisted module ID");
+    this.bindProgram(manifest);
     this.modules.set(manifest.id, manifest);
   }
   private serializeMutation<T>(fn: () => Promise<T>): Promise<T> {
@@ -185,8 +283,25 @@ export class ModuleHost {
       const manifest = this.validate(raw);
       if (!manifest.id.startsWith("user.")) throw Error("External IDs must start with user.");
       if (!this.modules.has(manifest.id) && this.modules.size >= 32) throw Error("Module limit reached");
+      // 【MC-035】带执行程序的扩展:**落盘之前**先在受控进程里核验(求值工厂、确认每个
+      // 被引用的短名都是函数)。核验不过 → 安装失败,清单不写、能力不注册、磁盘不变
+      // (台账验收:"失败安装不污染注册表或磁盘")。
+      if (manifest.program !== undefined) {
+        if (!this.options.verifyProgram) {
+          throw Error("当前环境没有可用的扩展程序核验通道,已拒绝安装可执行扩展(fail-closed)");
+        }
+        const referenced = [...new Set(manifest.contributions
+          .map(c => extensionCapabilityShortName(c.capability))
+          .filter((v): v is string => v !== undefined))];
+        const verdict = await this.options.verifyProgram(manifest.program.source, referenced, manifest.program.timeoutMs);
+        if (!verdict.ok) throw Error("扩展程序核验失败,未安装:" + verdict.reason);
+      }
       const next = new Map(this.modules); next.set(manifest.id, manifest);
       await this.options.persist([...next.values()].filter(m => !this.builtinIds.has(m.id)));
+      // 覆盖同 id 模块时先撤旧能力再绑新能力 —— 否则 register 以 Duplicate 失败,
+      // 且旧的执行体会被新清单"继承"(台账:换版本不得沿用旧实现)。
+      this.unbindProgram(manifest.id);
+      this.bindProgram(manifest);
       this.modules.set(manifest.id, manifest);
       return this.catalog();
     });
@@ -210,9 +325,19 @@ export class ModuleHost {
         }
       }
       this.modules.delete(id);
+      // 【MC-035】撤销该模块派生的扩展能力 —— 能力注册表与模块清单同生共死:
+      // 卸载后再调它的 `module.*` 能力只会在 invoke 的"能力不可用"处失败。
+      this.unbindProgram(id);
       for (const j of this.jobs.values()) if (j.snapshot.moduleId === id && j.snapshot.status === "running") this.cancel({moduleId: id, taskId: j.snapshot.id});
       return this.catalog();
     });
+  }
+  /** 【MC-035】贡献引用的**实际注册 id**:内置能力就是清单里写的 id;扩展程序能力则是
+   *  宿主分配后的 `module.<slug>.<短名>`。目录/执行/workflow 目标**只**经这一个函数把
+   *  清单引用翻成注册表键,不在各处各写一遍拼接。 */
+  private capabilityIdOf(module: ModuleManifest, capabilityRef: string): string {
+    const short = extensionCapabilityShortName(capabilityRef);
+    return short === undefined ? capabilityRef : extensionCapabilityAssignment(module.id, short);
   }
   /** A core-looking ID is not proof of trust. Only the host's actual builtin
    * registration, an existing contribution and a live read-only capability
@@ -228,7 +353,8 @@ export class ModuleHost {
     if (!this.builtinIds.has(moduleId) && !moduleId.startsWith("user.")) return undefined;
     const module = this.modules.get(moduleId);
     const contribution = module?.contributions.find(c => c.id === contributionId);
-    const capability = contribution && this.capabilities.get(contribution.capability);
+    const capabilityId = module !== undefined && contribution !== undefined ? this.capabilityIdOf(module, contribution.capability) : undefined;
+    const capability = capabilityId !== undefined ? this.capabilities.get(capabilityId) : undefined;
     if (!capability || (capability.kind !== "query" && capability.kind !== "task")) return undefined;
     return {moduleId, contributionId, capabilityId: capability.id};
   }
@@ -406,7 +532,7 @@ export class ModuleHost {
     const module = this.modules.get(input.moduleId);
     const contribution = module?.contributions.find(c => c.id === input.contributionId);
     if (!module || !contribution) throw Error("模块或贡献不可用");
-    const definition = this.capabilities.get(contribution.capability);
+    const definition = this.capabilities.get(this.capabilityIdOf(module, contribution.capability));
     if (!definition) throw Error("能力不可用");
     const resource = ResourceSchema.parse(input.resource);
     if (contribution.extensions && !contribution.extensions.some(ext => resource.path.toLowerCase().endsWith(ext))) throw Error("不支持的文件类型");

@@ -26,7 +26,9 @@ import { executionEngine } from "@main/orchestration/executionEngine.js";
 import {
   HOST_CAPABILITY_DECLARATIONS,
   collectCapabilityInventory,
+  hostCapabilityDeclarationsFromCatalog,
 } from "@main/orchestration/capabilityResolver.js";
+import { getModuleHost } from "@main/modules/service.js";
 
 /** 把一份 `ScenePlanResult` 的计划部分转成过 IPC 的线格(与 `planScene` 保持一致的一份实现)。 */
 function toPlanWire(plan: ReturnType<typeof compileScenePlan>): ScenePlanWire {
@@ -64,11 +66,14 @@ export async function preflightScene(input: ScenePreflightInput): Promise<SceneP
     compatibleProviderIds: p.compatibleProviderIds,
     componentReports: p.componentReports,
   }));
+  // 【MC-035】已安装扩展的能力进**同一份**清单:从宿主注册表现读(卸载/重装后立刻生效),
+  // 与 `modules.catalog` / `app_api_*` / 工作流预检看的是同一张注册表,不另存声明。
+  const moduleCatalog = await (await getModuleHost()).catalog();
   const inventory = collectCapabilityInventory({
     providers: providerRegistry.list(),
     plugins,
     executorKinds: [...executionEngine.kinds()],
-    hostCapabilities: HOST_CAPABILITY_DECLARATIONS,
+    hostCapabilities: [...HOST_CAPABILITY_DECLARATIONS, ...hostCapabilityDeclarationsFromCatalog(moduleCatalog)],
   });
   const preflight = sceneCapabilityPreflight(validation.spec, inventory);
   return {

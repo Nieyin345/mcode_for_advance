@@ -8,6 +8,7 @@ import { isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { EXAMPLE_MODULE, ModuleManifestSchema, moduleRefusalError, type ModuleManifest } from "@contracts/modules";
 import { ModuleHost, type ActionApprovalRequest } from "./ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "./fileCapabilities.js";
+import { verifyPermissionedProgram } from "./permissionedProcessRunner.js";
 
 /**
  * 【MC-060】**生产审批端口** —— 一个 `action` 能力**每次执行**前,宿主经它拿到用户批准。
@@ -64,6 +65,14 @@ async function createHost(): Promise<ModuleHost> {
     // 该函数 fail-closed 抛 `approval_unavailable` —— 于是"有通道"(这个选项存在)与"通道真能
     // 问用户"统一由那一个端口决定,宿主不再需要一个"有没有通道"的布尔。
     requestApproval: requestModuleActionApproval,
+    // 【MC-035】扩展程序的两个生产端口:
+    //  - 资源解析:与 `authorize` 走**同一个** `resolveModuleResource` —— 授权判定与
+    //    真实路径解析不各写一份,扩展进程的 `--allow-fs-read` 拿到的就是被判定过的那个路径;
+    //  - 安装期核验:受控子进程求值工厂(零文件系统放行),引用短名缺失/工厂恶意读盘 →
+    //    安装失败且不落盘。
+    resolveResource: (resource) => resolveModuleResource(resource, isKnownWorkspaceRoot),
+    verifyProgram: (source, capabilities, timeoutMs) =>
+      verifyPermissionedProgram(source, capabilities, timeoutMs ?? 10_000),
     persist:async manifests=>{
       const body=JSON.stringify(manifests,null,2);
       if(Buffer.byteLength(body)>512*1024)throw Error("Module store exceeds 512 KiB");
@@ -99,7 +108,15 @@ async function createHost(): Promise<ModuleHost> {
   try {
     if((await stat(path)).size>512*1024)throw Error("Module store exceeds 512 KiB");
     saved=z.array(ModuleManifestSchema).max(31).parse(JSON.parse(await readFile(path,"utf8")));
+    // 【MC-035】持久化里出现引用 `module.*` 的清单,说明它是扩展包 —— 但恢复时**没有**
+    // 用户点头这一次。信任模型不变:装过一次(安装期已核验 + 用户同意)才允许重启后复活;
+    // 落盘本身只经 `install` 写,所以"出现在 manifests.json 里"就是"装过"的证据。
   }catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
-  for(const manifest of saved)host.restore(manifest);
+  // 【MC-035】恢复期的程序核验失败不拖垮整个宿主:跳过那一条并显式记录(坏东西报出来,
+  // 不静默跳过 —— 但也不能让一份损坏的清单把其余模块全挡在门外)。
+  for(const manifest of saved){
+    try{host.restore(manifest);}
+    catch(error){console.warn(`[modules] 恢复模块 ${manifest.id} 失败:${error instanceof Error?error.message:String(error)}`);}
+  }
   return host;
 }

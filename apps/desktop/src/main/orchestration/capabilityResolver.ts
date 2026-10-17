@@ -18,6 +18,7 @@ import type { WorkflowNode } from "@contracts/workflow";
 import type { AgentProvider } from "@contracts/provider";
 import type { ComponentDeliveryReport, PluginCapabilityDeclaration, PluginManifest } from "@contracts/plugin";
 import { BUILTIN_CAPABILITY_CATALOGUE } from "@main/modules/builtinCapabilityCatalogue.js";
+import { MODULE_CAPABILITY_PREFIX } from "@contracts/modules";
 
 export interface NodeCapabilityCheckContext {
   nodeType: string;
@@ -180,6 +181,29 @@ export function hostCapabilityDescriptors(
 export const HOST_CAPABILITY_DECLARATIONS: readonly HostCapabilitySource[] = BUILTIN_CAPABILITY_CATALOGUE.map(
   (entry) => ({ id: entry.id, moduleKind: entry.kind === "action" ? "task" : entry.kind, source: entry.source }),
 );
+
+/**
+ * 【MC-035】**已加载用户扩展的能力声明** —— 从宿主目录的 `capabilities` 里筛出扩展程序
+ * 注册的那部分(`module.<slug>.<短名>`,见 `@contracts/modules` 的
+ * `extensionCapabilityShortName`)。台账要求「同一能力注册表同时喂给 modules.catalog、
+ * app_api_*、capabilityResolver、工作流预检」—— 本函数就是**宿主注册表到预检**的那一段
+ * 翻译,不另存一份清单。声明在调用时现算:卸载/重装后下一次预检立刻看到新集合。
+ *
+ * `action` 在契约里映射成 `task`(与内置声明同一条映射,见 `HOST_CAPABILITY_DECLARATIONS`)。
+ *
+ * 判据用**前缀**而不是清单引用那套"单段短名":分配后的 id 是
+ * `module.<模块 slug>.<短名>`(slug 自身可含点),与清单里写的 `module.<短名>` 不是同一种
+ * 形状。`module.` 这个命名空间不向清单开放(`ModuleHost.validate` 只会把引用经分配后
+ * 注册;内置目录一律 `core.*`),故前缀本身就是"这是宿主分配的扩展能力"的判据。
+ */
+export function hostCapabilityDeclarationsFromCatalog(
+  catalog: { capabilities: readonly { id: string; kind: "query" | "action" | "task" }[] } | undefined,
+): HostCapabilitySource[] {
+  if (!catalog) return [];
+  return catalog.capabilities
+    .filter(c => c.id.startsWith(MODULE_CAPABILITY_PREFIX) && c.id.length > MODULE_CAPABILITY_PREFIX.length)
+    .map(c => ({ id: c.id, moduleKind: c.kind === "action" ? "task" as const : c.kind, source: "module-extension" }));
+}
 
 /** 装配一台机器上的能力清单。**所有来源都是参数**:providers 来自 provider 注册表、
  *  executors 来自 NodeExecutorRegistry(`kinds()` + `capabilities()`)、plugins 来自
