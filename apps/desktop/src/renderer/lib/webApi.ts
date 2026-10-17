@@ -256,8 +256,18 @@ async function rpc<T = unknown>(method: string, input?: unknown): Promise<T> {
 
 /** Desktop-only stub: throws a clear error. Used for whitelisted-group
  *  members that exist on the desktop Api shape but have no web meaning. */
+/** 手机端"这个命名空间不存在"的**标记** —— 调用方据此把"平台不支持"与"真失败"
+ *  分开(后者要显式报错/重试,前者不该打扰用户)。`webUnsupported` 抛的 Error 带它。 */
+export const WEB_UNSUPPORTED_MARKER = "mcode.webUnsupported";
+
+export function isWebUnsupportedError(err: unknown): boolean {
+  return err instanceof Error && (err as Error & { code?: string }).code === WEB_UNSUPPORTED_MARKER;
+}
+
 function webUnsupported(name: string): never {
-  throw new Error(translate(uiLocale(), "lib.web.unavailable", { name }));
+  const e = new Error(translate(uiLocale(), "lib.web.unavailable", { name })) as Error & { code?: string };
+  e.code = WEB_UNSUPPORTED_MARKER;
+  throw e;
 }
 
 /** Callable proxy standing in for an absent desktop-only namespace

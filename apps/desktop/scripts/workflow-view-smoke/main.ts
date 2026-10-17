@@ -156,6 +156,27 @@ import { matchDecisionOption, referenceableOutputsOf } from "@contracts/outputCo
 import { renderTemplate, type NodeTemplateScope } from "@contracts/nodeTemplate";
 
 let failures = 0;
+/** 去掉行注释与块注释(判据钉在源码上时,注释里的旧写法会造成假绿)。
+ *  故意不用正则:本文件经多层脚本编辑过,嵌套转义会把字面量写坏。 */
+function stripComments(src: string): string {
+  let out = String();
+  let i = 0;
+  while (i < src.length) {
+    if (src.startsWith('/*', i)) {
+      const end = src.indexOf('*/', i + 2);
+      i = end < 0 ? src.length : end + 2;
+      continue;
+    }
+    if (src.startsWith('//', i)) {
+      const nl = src.indexOf(String.fromCharCode(10), i);
+      i = nl < 0 ? src.length : nl + 1;
+      continue;
+    }
+    out += src[i];
+    i += 1;
+  }
+  return out;
+}
 let checks = 0;
 
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -3280,5 +3301,23 @@ console.log("\n保存归并、撤销重做、多入口与标签布局回归");
     code.match(/FLOW_HEIGHT_SETTING_KEY[^\n]*/g),
   );
 }
-console.log(`\n${checks - failures}/${checks} passed`);
+/* ── 【MC-047 同类补漏】看板高度偏好:读失败必须显式,且不得拿默认值覆盖 ── */
+{
+  const panel = readFileSync("src/renderer/components/chat/WorkflowBoardPanel.tsx", "utf8");
+  const code = stripComments(panel);
+  check(
+    "★ 读失败与'从没设过'分开:非 web 失败落 loadError(不再静默用默认)",
+    code.includes("setLoadError(") && code.includes("isWebUnsupportedError(err)"),
+  );
+  check(
+    "★ 读失败时先关落盘闸门(persistReady),重试成功才允许写",
+    code.includes("setPersistReady(false)") && code.includes("if (!persistReady) return;"),
+  );
+  check(
+    "★ 失败行给用户看:错误文本 + 重试按钮",
+    code.includes("settings.loadFailed") && code.includes("setLoadRetry("),
+  );
+}
+console.log(`
+${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);

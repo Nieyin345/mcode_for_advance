@@ -89,6 +89,7 @@ import {
   IconTrash,
 } from "@renderer/lib/icons.js";
 import { UI_WORKFLOW_BOARD_FLOW_HEIGHT_SETTING_KEY } from "@contracts/ipc/settingsSync";
+import { isWebUnsupportedError } from "@renderer/lib/webApi.js";
 
 /** 图那一块的高度存在哪个 setting 键下。和右栏宽度用同一个做法:面板自己的一个
  *  小偏好,不值得单开一个设置页。键本身住在 contracts —— 它在「跟着屏幕走」的表里
@@ -197,23 +198,41 @@ export function WorkflowBoardPanel() {
   const [ctxNode, setCtxNode] = useState<FlowContextTarget | null>(null);
 
   // 读回上次拖到的高度。读不到就用默认值 —— 第一次打开、或者这条设置还没写过。
+  //
+  // 【MC-047 同类补漏】从前这里 `catch { /* 用默认 */ }`:读**失败**与"从没设过"长得
+  // 一模一样,而紧接着的拖动会 `set` 一条新值 —— 一次瞬时读失败 + 一次拖动 = 用户上次
+  // 的高度被静默覆盖。手机端确实没有这个命名空间,但那条路由是 `webUnsupported`
+  // (同步抛特定的标记),可以单独识别;其余失败必须显式说出来并**先把落盘闸门关上**
+  // (`persistReady`),等重试成功再允许写。
+  const [persistReady, setPersistReady] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadRetry, setLoadRetry] = useState(0);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const res = await api.setting.get({ key: FLOW_HEIGHT_SETTING_KEY });
         const n = res.value === null ? NaN : Number(res.value);
-        if (!cancelled && Number.isFinite(n)) {
-          setFlowH(Math.min(FLOW_H_MAX, Math.max(FLOW_H_MIN, Math.round(n))));
+        if (!cancelled) {
+          setPersistReady(true);
+          setLoadError(null);
+          if (Number.isFinite(n)) {
+            setFlowH(Math.min(FLOW_H_MAX, Math.max(FLOW_H_MIN, Math.round(n))));
+          }
         }
-      } catch {
-        // 手机端 web shim 没有这个命名空间 —— 用默认高度即可,不必打扰用户。
+      } catch (err) {
+        if (cancelled) return;
+        // 手机端 web shim:没有这个命名空间。默认高度即可,不打扰用户(且不写回 ——
+        // 手机端本来就不该改桌面的偏好)。
+        if (isWebUnsupportedError(err)) return;
+        setPersistReady(false);
+        setLoadError(err instanceof Error ? err.message : String(err));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadRetry]);
 
   /** 拖分隔条:夹在上下限之间,**立刻**写进设置。
    *
@@ -227,6 +246,8 @@ export function WorkflowBoardPanel() {
    *     (`store.toast.settingSaveFailed`,toastStore 按标题去重 —— 拖动时高频触发也只弹一张)。
    */
   const persistFlowH = (value: number): void => {
+    // 读失败过一次、还没重试成功:不拿默认值覆盖盘上的真实偏好。
+    if (!persistReady) return;
     void api.setting.set({ key: FLOW_HEIGHT_SETTING_KEY, value: String(value) }).catch((err: unknown) => {
       useToastStore.getState().push({
         kind: "error",
@@ -374,6 +395,22 @@ export function WorkflowBoardPanel() {
         </div>
       </div>
 
+      {/* 【MC-047 同类补漏】高度偏好读失败:显式说出来 + 重试;在重试成功前拖动也
+          不落盘(persistReady=false),不拿默认值覆盖盘上的真实偏好。 */}
+      {loadError !== null && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface px-2.5 py-1 text-[0.7857em]">
+          <span className="min-w-0 flex-1 truncate text-danger" title={loadError}>
+            {t("settings.loadFailed")}
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted hover:bg-surface-hover"
+            onClick={() => setLoadRetry((n) => n + 1)}
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
       {/* **上半：工作流图**。它自己滚（图可能比这一块高），**不跟下面那块一起滚** ——
           用户要的是"上面是图、下面是列表"两块，不是一整条长页面。 */}
       <div className="shrink-0 overflow-y-auto">
