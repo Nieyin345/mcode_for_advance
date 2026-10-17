@@ -536,7 +536,34 @@ export function domainsMatchingTaskWord(query: string): Set<string> {
     if (domain.toLowerCase().includes(q) || label.toLowerCase().includes(q)) out.add(domain);
   }
   for (const [domain, aliases] of Object.entries(DOMAIN_TASK_ALIASES)) {
-    if (aliases.some((a) => a.toLowerCase().includes(q) || (!looksLikeMethod && q.includes(a.toLowerCase())))) out.add(domain);
+    if (aliases.some((a) => a.toLowerCase().includes(q) || (!looksLikeMethod && queryContainsAlias(q, a.toLowerCase())))) out.add(domain);
   }
   return out;
+}
+
+/** 反向匹配(`查询包含别名`)的判据 —— 【MC-039 复核补漏】裸 `q.includes(alias)` 会让
+ *  短 ASCII 别名在**词内部**误伤:`"digital signature"` 含 `git`、`"happy path"` 类
+ *  查询被拉进无关域。返回的是候选列表,但"列出一大片无关域"与"找不到"一样糟 ——
+ *  用户会以为这就是全部相关操作。
+ *
+ *  规则:
+ *   - **中文别名**没有词边界,按子串(整句「帮我创建自动化」要能命中「创建自动化」);
+ *   - **ASCII 别名**要求前后不紧邻 ASCII 字母/数字(词边界),`git commit` 命中 `git`,
+ *     `digital` 不命中;含空格的短语(如 `api key`)同样按两端边界判;
+ *   - **短别名(<3 字符)不做反向** —— `pi`/`ai` 这类在任何英文句子里都会撞上,
+ *     正向匹配(查询是别名的子串)仍保留。 */
+function queryContainsAlias(q: string, alias: string): boolean {
+  if (alias.length === 0) return false;
+  // 中文/符号开头:无词边界概念,按子串(「扩展」两字也要能命中「创建扩展」)。
+  if (!/^[a-z0-9]/.test(alias)) return q.includes(alias);
+  // 短 ASCII 别名才禁用反向匹配(`pi`/`ai` 在任何英文句子里都会撞上)。
+  if (alias.length < 3) return false;
+  for (let from = 0; ; ) {
+    const i = q.indexOf(alias, from);
+    if (i < 0) return false;
+    const before = i === 0 ? "" : q[i - 1]!;
+    const after = q[i + alias.length] ?? "";
+    if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+    from = i + 1;
+  }
 }

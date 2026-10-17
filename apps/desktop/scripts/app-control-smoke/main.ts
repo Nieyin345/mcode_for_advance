@@ -634,6 +634,15 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     // 无关词不命中(防"任何词都返回一大片")。
     const none = await invokeAppTool("app_api_list", { query: "zzzznonsense" }, "me", ctx);
     check("无关词仍然 0 命中", textOf(none).includes("没有匹配"), textOf(none).slice(0, 120));
+    // 【MC-039 复核补漏】短 ASCII 别名不许在**词内部**误伤:反向匹配是"查询包含别名",
+    // 裸子串会把 "digital signature" 拉进 git 域(含 "git")。
+    const digital = await invokeAppTool("app_api_list", { query: "digital signature" }, "me", ctx);
+    check("★ 词内部的子串不触发反向匹配(digital 不是 git)", !textOf(digital).includes("任务词命中功能域:git"), textOf(digital).slice(0, 160));
+    const happy = await invokeAppTool("app_api_list", { query: "happy path" }, "me", ctx);
+    check("★ 'happy path' 不被短别名误伤(不按任务词命中任何域)", !textOf(happy).includes("任务词命中功能域"), textOf(happy).slice(0, 160));
+    // 词边界上的整词仍然命中(修复没有把反向匹配一起关掉)。
+    const full = await invokeAppTool("app_api_list", { query: "帮我 git commit 一下" }, "me", ctx);
+    check("★ 整词 'git' 仍按任务词命中 git 域", textOf(full).includes("任务词命中功能域:git"), textOf(full).slice(0, 160));
   }
 
   const desc = await invokeAppTool("app_api_describe", { method: "session.rename" }, "me", ctx);
