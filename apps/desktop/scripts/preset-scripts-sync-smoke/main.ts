@@ -166,7 +166,7 @@ console.log("\n§E seed.ts 落盘清单（静态 + 真跑 ensureWorkflows）");
 {
   const seed = readFileSync(join(process.cwd(), "src/main/workflows/seed.ts"), "utf8");
   const shipped = [...seed.matchAll(/rel:\s*"scripts\/([\w.]+\.py)",\s*body:\s*(\w+)/g)].map((m) => ({ file: m[1]!, body: m[2]! }));
-  check("seed.ts 的落盘脚本从 assets 常量取正文（没有手写第二份）", shipped.length >= 2, shipped);
+  check("seed.ts 的落盘脚本从 assets 常量取正文（没有手写第二份）", shipped.length >= 1, shipped);
   check(
     "★ 落盘清单不含无调用方的 mineru_transcribe.py / lit_import.py（与预设内联对齐）",
     !shipped.some((s) => s.file === "mineru_transcribe.py" || s.file === "lit_import.py"),
@@ -179,7 +179,9 @@ console.log("\n§E seed.ts 落盘清单（静态 + 真跑 ensureWorkflows）");
   );
   // 正控：真正有调用方的那两份仍在清单里（防"为了对齐把该落的也删了"）。
   check("library.py 仍落盘（系统提示词指名它）", shipped.some((s) => s.file === "library.py" && s.body === "LIBRARY_PY"), shipped);
-  check("check_citations.py 仍落盘", shipped.some((s) => s.file === "check_citations.py" && s.body === "CHECK_CITATIONS_PY"), shipped);
+  // 【MC-006】check_citations.py **不再**随启动落盘 —— 它是学术场景脚本,改由导入
+  // 「写作」类工作流时按需落盘(见 main/workflows/presetScripts.ts)。
+  check("★ check_citations.py 不再随启动落盘(MC-006)", !shipped.some((s) => s.file === "check_citations.py"), shipped);
 
   // **真跑一遍**：判据不是"源码里写着什么"，而是"启动落盘之后盘上有什么"。
   // 数据根由 run.sh 的 MCODE_SMOKE_DATA_ROOT 指向 mktemp 目录（dataRoot 桩）。
@@ -187,11 +189,37 @@ console.log("\n§E seed.ts 落盘清单（静态 + 真跑 ensureWorkflows）");
   const { scriptsDir } = (await import("@main/workflows/seed.js")) as typeof import("@main/workflows/seed.js");
   const { existsSync } = await import("node:fs");
   const report = ensureWorkflows();
-  check("ensureWorkflows 写下了 README + library.py + check_citations.py", report.written.length === 3, report);
+  check("ensureWorkflows 只写 README + library.py(两个文件)", report.written.length === 2, report);
   check("★ 落盘后 scripts/mineru_transcribe.py 不在盘上（没有调用方的落盘副本已消除）", !existsSync(join(scriptsDir(), "mineru_transcribe.py")), scriptsDir());
   check("★ 落盘后 scripts/lit_import.py 不在盘上", !existsSync(join(scriptsDir(), "lit_import.py")), scriptsDir());
   const libPath = join(scriptsDir(), "library.py");
   check("★ 落盘的 library.py 与 LIBRARY_PY 逐字节相同（正文来自常量）", existsSync(libPath) && readFileSync(libPath, "utf8").replace(/\r\n/g, "\n") === (await import("@main/workflows/assets.js")).LIBRARY_PY, libPath);
+}
+
+/* ─────────── §F 随预设携带的脚本文件（MC-006）─────────── */
+
+console.log("\n§F resources/presets/scripts/");
+{
+  const { readFileSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { PRESET_BUNDLED_SCRIPTS } = await import("../lib/presetCodegen.js");
+  const { CHECK_CITATIONS_PY } = await import("@main/workflows/assets.js");
+  check("映射表至少有一项", PRESET_BUNDLED_SCRIPTS.length >= 1, PRESET_BUNDLED_SCRIPTS.map((s) => s.fileName));
+  for (const script of PRESET_BUNDLED_SCRIPTS) {
+    const file = join(process.cwd(), "resources", "presets", "scripts", script.fileName);
+    check(`磁盘上的 ${script.fileName} 存在`, existsSync(file), file);
+    check(
+      `★ 磁盘上的 ${script.fileName} 与 assets.ts 逐字节一致（禁止手改）`,
+      existsSync(file) && readFileSync(file, "utf8") === script.body,
+      file,
+    );
+  }
+  // 生产侧那张表与生成侧那张表**指的是同一批文件**（两边各写一份会漂）。
+  const prod = readFileSync(join(process.cwd(), "src/main/workflows/presetScripts.ts"), "utf8");
+  for (const script of PRESET_BUNDLED_SCRIPTS) {
+    check(`生产落盘清单里也提到 ${script.fileName}`, prod.includes(`"${script.fileName}"`), script.fileName);
+  }
+  check("随包脚本正文来自 assets 常量（不是另一份手写）", CHECK_CITATIONS_PY.includes("#!/usr/bin/env python3"));
 }
 
 console.log(`\npreset-scripts-sync-smoke: ${checks - failures}/${checks} 通过`);

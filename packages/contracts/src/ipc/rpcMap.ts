@@ -899,7 +899,8 @@ export interface RpcMap {
     id?: string;
     name?: string;
     /** 原样带回来的校验报告(错误逐条 + 警告)。**整份拒绝**:过不了闸门的图不写库,
-     *  所以 `ok: false` 时库里什么都没变。 */
+     *  所以 `ok: false` 时库里什么都没变。**成功时也可能非空**(【MC-006】:这份图
+     *  引用了随预设携带、但当前安装里缺失的脚本)。 */
     errors?: string[];
     warnings?: string[];
     error?: string;
@@ -1063,6 +1064,14 @@ export interface RpcMap {
   "projectInit.apply": (input: ProjectInitApplyInput) => Promise<ProjectInitResult>;
   /** 设定裸 `/init` 预选的场景;`null` 清除。 */
   "projectInit.setDefault": (input: {id: string | null}) => Promise<{ok: true}>;
+  /** 【MC-006】列**出厂初始化预设**(装包 `resources/presets/project-init.json`,开发读仓库)。
+   *  与 `workflow.listPresets` 同一套分发与三态;不带草稿正文,只有摘要。无参 handler。 */
+  "projectInit.listPresets": () => Promise<import("./projectInit.js").ProjectInitPresetList>;
+  /** 【MC-006】按预设 id 导入一份。**永远新建**;重名自动加 `-N` 后缀(名字是命令的一部分,
+   *  只能用 `INIT_NAME_RE` 允许的字符)。校验/落库走与界面保存同一个 `saveProjectInitializer`。 */
+  "projectInit.importPreset": (input: import("./projectInit.js").ProjectInitImportPresetInput) => Promise<{
+    ok: boolean; id?: string; name?: string; error?: string;
+  }>;
   /** 【ARC-002 / MC-058】**只读**的场景规划:给一份候选 SceneSpec,校验(一次报全)通过则编译出有序变更计划(拓扑排序 + 稳定 digest)。**不建任何资源、不申请授权** —— 模型提出计划 ≠ 获得执行权限;真正的部署是另一条命令且需独立计划级授权。 */
   "scene.plan": (input: ScenePlanInput) => Promise<ScenePlanResult>;
   /** 【ARC-002 / MC-058】**只读**的场景预检:校验(一次报全)+ 编译 + **能力预检**(声明的能力在本机在不在、对这个引擎适不适用)。必需能力缺了 `preflight.ok=false`(部署该被挡住);可选能力缺了进 `gaps` 但不挡。不建资源、不装插件、不申请授权。 */
@@ -2009,6 +2018,9 @@ export const IPC = {
   PROJECT_INIT_PREVIEW: "projectInit:preview",
   PROJECT_INIT_APPLY: "projectInit:apply",
   PROJECT_INIT_SET_DEFAULT: "projectInit:setDefault",
+  // 【MC-006】出厂初始化预设:列出 + 按 id 导入(装包里那份可发现、可导入)
+  PROJECT_INIT_LIST_PRESETS: "projectInit:listPresets",
+  PROJECT_INIT_IMPORT_PRESET: "projectInit:importPreset",
   SCENE_PLAN: "scene:plan",
   SCENE_PREFLIGHT: "scene:preflight",
   SCENE_APPROVE: "scene:approve",

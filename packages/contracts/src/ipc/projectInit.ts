@@ -73,6 +73,32 @@ export interface ProjectInitSummary {
   agentFile?: AgentFileName;
 }
 export interface ProjectInitList { templates: ProjectInitSummary[]; /** 裸 `/init` 预选的场景;没设或已删除时为 null。 */ defaultId: string | null; }
+
+/* ── 出厂预设(【MC-006】) ── */
+
+/** 按出厂预设导入(【MC-006】)。路径由主进程解析(装包 `resources/presets/` vs 开发仓库),
+ *  渲染端与 Agent 只说"要哪一份"。导入走 `saveProjectInitializer` 那**同一条**闸门。
+ *
+ *  ⚠️ 这是 `ProjectInitIdSchema` 之外的另一类 id:预设清单里的稳定 id,不是库里模板的 uuid。 */
+export const ProjectInitImportPresetSchema = z.object({ id: z.string().min(1) }).strict();
+export type ProjectInitImportPresetInput = z.infer<typeof ProjectInitImportPresetSchema>;
+
+/** 一条出厂预设的摘要。名字冲突由主进程算好(`sameNameExists`),界面不用再拉全库比对。 */
+export interface ProjectInitPresetSummary {
+  id: string;
+  name: string;
+  description: string;
+  agentFile?: string;
+  sameNameExists: boolean;
+}
+export interface ProjectInitPresetList {
+  /** `absent` = 这个安装没带出厂预设;`corrupt` = 带了但坏了。两者必须分开说,否则都表现成空列表。 */
+  health: "ok" | "absent" | "corrupt";
+  reason?: string;
+  path: string;
+  presets: ProjectInitPresetSummary[];
+  problems: string[];
+}
 const Id = z.string().uuid();
 const Revision = z.string().regex(/^[a-f0-9]{64}$/);
 export const ProjectInitIdSchema = z.object({ id: Id }).strict();

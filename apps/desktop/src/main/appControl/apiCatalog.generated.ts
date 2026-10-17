@@ -2269,12 +2269,28 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; content: string; pinned: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
  },
  {
+  "method": "projectInit.importPreset",
+  "channel": "projectInit:importPreset",
+  "doc": "【MC-006】按预设 id 导入一份。**永远新建**;重名自动加 `-N` 后缀(名字是命令的一部分, 只能用 `INIT_NAME_RE` 允许的字符)。校验/落库走与界面保存同一个 `saveProjectInitializer`。",
+  "input": "{ id: string }",
+  "inputFull": "{ id: string }",
+  "output": "{ ok: boolean; id?: string | undefined; name?: string | undefined; error?: string | undefined }"
+ },
+ {
   "method": "projectInit.list",
   "channel": "projectInit:list",
   "doc": "列**项目初始化模板**(`{templates, defaultId}`)。⚠️ 从前这里挂着上面那句记忆 文件的说明 —— 一段 JSDoc 误抄,把调用方引到 `memory.*` 上去找\"记忆文件\",而它 返回的其实是模板表(报告附录 E 的新-E1)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
   "output": "{ templates: ProjectInitSummary[]; defaultId: string | null }"
+ },
+ {
+  "method": "projectInit.listPresets",
+  "channel": "projectInit:listPresets",
+  "doc": "【MC-006】列**出厂初始化预设**(装包 `resources/presets/project-init.json`,开发读仓库)。 与 `workflow.listPresets` 同一套分发与三态;不带草稿正文,只有摘要。无参 handler。",
+  "input": "(无参数)",
+  "inputFull": "(无参数)",
+  "output": "{ health: 'absent' | 'corrupt' | 'ok' // `absent` = 这个安装没带出厂预设;`corrupt` = 带了但坏了。两者必须分开说,否则都表现成空列表。; reason?: string | undefined; path: string; presets: ProjectInitPresetSummary[]; problems: string[] }"
  },
  {
   "method": "projectInit.preview",
@@ -3218,7 +3234,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "收下一份导出的 JSON。**`id` 给了就是覆盖那一份**(必须已存在),不给就是新建 (id 现生成、重名自动加后缀)。",
   "input": "{ text: string // 文件的 JSON 正文(渲染端读好了给过来)。; id?: string | undefined // 覆盖哪一份。不给就是新建。 }",
   "inputFull": "{ text: string // 文件的 JSON 正文(渲染端读好了给过来)。; id?: string | undefined // 覆盖哪一份。不给就是新建。 }",
-  "output": "{ ok: boolean; id?: string | undefined // 存下来的那一份的 id —— 界面据此打开它。; name?: string | undefined; errors?: string[] | undefined // 原样带回来的校验报告(错误逐条 + 警告)。**整份拒绝**:过不了闸门的图不写库, 所以 `ok: false` 时库里什么都没变。; warnings?: string[] | undefined; error?: string | undefined }"
+  "output": "{ ok: boolean; id?: string | undefined // 存下来的那一份的 id —— 界面据此打开它。; name?: string | undefined; errors?: string[] | undefined // 原样带回来的校验报告(错误逐条 + 警告)。**整份拒绝**:过不了闸门的图不写库, 所以 `ok: false` 时库里什么都没变。**成功时也可能非空**(【MC-006】:…; warnings?: string[] | undefined; error?:…"
  },
  {
   "method": "workflow.importFromFile",

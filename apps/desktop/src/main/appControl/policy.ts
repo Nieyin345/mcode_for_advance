@@ -288,6 +288,9 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   // 【MC-061】列出主机 hook 授权是只读(设置 → 插件 → 钩子授权);签 / 撤在上面 BLOCKED 档。
   "hooks.listHostHookGrants": "read",
   "projectInit.preview": "read",
+  // 【MC-006】出厂初始化预设列表只读;导入=往库里新增一条模板,按写处理(每次审批)。
+  "projectInit.listPresets": "read",
+  "projectInit.importPreset": "write",
   "outputStyle.list": "read",
   // 【MC-004】`onlyoffice.detectLocal` 从前钉在这里 —— 它返回体里带 jwtSecret,已收进
   // {@link CREDENTIAL_BEARING}(blocked)。要看状态用 `onlyoffice.status`(连通性,不含密钥)。

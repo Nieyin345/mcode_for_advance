@@ -85,6 +85,17 @@ export const en = {
   "init.agentSkipped": "Some items failed, so the guide-file request was not sent. Fix them and run again.",
   "init.noAttachments": "/init does not take skills or attachments. Write extra instructions after /init or in the preview window.",
   "init.promptCard": "Initialization prompt",
+  // Factory presets (MC-006): shipped with the app, imported on demand (no auto-seeding).
+  "init.presetsButton": "Factory presets",
+  "init.presetsTitle": "Import a factory initializer",
+  "init.presetsDesc": "Initialization scenarios that ship with Mcode. Importing always creates a new entry — if the name is taken, a suffix is added. Imported templates are ordinary templates: editable and deletable.",
+  "init.presetsLoadFailed": "Could not list factory presets: {error}",
+  "init.presetsAbsent": "This installation does not include the factory initializers. If you expected them, the package may be missing its presets folder.",
+  "init.presetsCorrupt": "The factory preset file is present but unreadable. The rest of the app is unaffected; please report this.",
+  "init.presetsEmpty": "No factory initializers in this build.",
+  "init.presetsProblems": "{n} preset entry (or entries) could not be read",
+  "init.presetImport": "Import",
+  "init.presetAlreadyInLibrary": "Already in library",
 
   "memory.assistant.title": "Memory and handoff",
   "memory.assistant.scope": "Only this conversation is processed. Long-term memory requires approval; temporary handoffs never enter the memory library. Background tasks use the selected model.",

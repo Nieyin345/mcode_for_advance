@@ -994,6 +994,9 @@ const api = {
     preview: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_PREVIEW, input)) as RpcMap["projectInit.preview"],
     apply: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_APPLY, input)) as RpcMap["projectInit.apply"],
     setDefault: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_SET_DEFAULT, input)) as RpcMap["projectInit.setDefault"],
+    // 【MC-006】出厂初始化预设(装包里那份)。列表无参;导入只给预设 id。
+    listPresets: (() => ipcRenderer.invoke(IPC.PROJECT_INIT_LIST_PRESETS)) as RpcMap["projectInit.listPresets"],
+    importPreset: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_IMPORT_PRESET, input)) as RpcMap["projectInit.importPreset"],
   },
   scene: {
     plan: ((input) => ipcRenderer.invoke(IPC.SCENE_PLAN, input)) as RpcMap["scene.plan"],

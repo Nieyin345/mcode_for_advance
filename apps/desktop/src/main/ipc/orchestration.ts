@@ -234,7 +234,7 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
    */
   const finishImport = (
     res: Awaited<ReturnType<typeof importWorkflowInto>>,
-  ): { ok: true; id: string; name: string } | { ok: false; errors: string[]; warnings: string[] } => {
+  ): { ok: true; id: string; name: string; warnings?: string[] } | { ok: false; errors: string[]; warnings: string[] } => {
     if (!res.ok) return res;
     notifyWorkflowsChanged(`ipc:workflow_import:${res.id}`);
     requestWorkflowReload(res.id);

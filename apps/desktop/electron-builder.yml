@@ -94,13 +94,18 @@ files:
 # (`main/orchestration/presetWorkflows.ts` 的候选表);塞进 asar 之后 `readFileSync`
 # 读到的是 asar 虚拟路径,打包后的行为与开发态就不是同一回事了。
 #
-# ⚠️ 将来往 `resources/presets/` 加**别的**出厂内容(项目初始化模板等),都在这一条
-# 通配里 —— 不允许再加第二条 `extraResources`,也不允许把内容抄进 `builtins.ts`。
+# ⚠️ 将来往 `resources/presets/` 加**别的**出厂内容,都在这一条通配里 —— 不允许再加
+# 第二条 `extraResources`,也不允许把内容抄进本体代码。当前:
+#   - workflows.json             出厂预置工作流(MC-007)
+#   - project-init.json          出厂项目初始化模板(MC-006:不自动播种,按需导入)
+#   - scripts/check_citations.py 随「写作」类工作流携带的脚本(MC-006):导入引用它的
+#                                工作流时才落盘到数据根,不导入的安装里不出现
 extraResources:
   - from: resources/presets
     to: presets
     filter:
       - "*.json"
+      - "scripts/**"
 
 # node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
 # runtime. Unpack them from the asar so they can be require()'d from disk.

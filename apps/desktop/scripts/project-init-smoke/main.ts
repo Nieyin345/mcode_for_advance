@@ -8,8 +8,7 @@ import { join } from "node:path";
 import { ProjectInitDraftSchema, type ProjectInitDraft } from "@contracts/ipc/projectInit";
 import { listProjectInitializers, getProjectInitializer, saveProjectInitializer, deleteProjectInitializer, previewProjectInitializer, applyProjectInitializer, setDefaultProjectInitializer } from "../../src/main/projectInit/service.js";
 import { readMemoryFile } from "../../src/main/memory/store.js";
-import { ensureShippedInitializersSeeded } from "../../src/main/projectInit/service.js";
-import { SHIPPED_INITIALIZERS } from "../../src/main/projectInit/shipped.js";
+import { importProjectInitPreset, readProjectInitPresets } from "../../src/main/projectInit/presets.js";
 import { setRoot, projects, sessions, events, settings } from "./stubs.js";
 const base = await mkdtemp(join(tmpdir(), "mcode-project-init-"));
 let root = "", data = "", passed = 0, failed = 0, count = 0;
@@ -147,116 +146,107 @@ try {
   saveProjectInitializer({draft:draft()});const p=await preview();const settled=await Promise.allSettled([1,2].map(()=>applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest})));
   assert.equal(settled.filter(r=>r.status==="fulfilled").length,1);assert.equal(events.length,1);assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),draft().files[0].content);
  });
- // 出厂模板(2026-09-30):只播一次、删了不复活、不抢用户的同名命令、内容本身能真的落盘。
- await test("shipped initializer drafts pass the schema",()=>{
-  for(const s of SHIPPED_INITIALIZERS){assert.equal(ProjectInitDraftSchema.safeParse(s.draft).success,true,s.draft.name);assert.ok(s.draft.directories.every(d=>s.draft.files.some(f=>f.path.startsWith(d.split("/")[0]+"/README"))),"every top folder has a README");}
+ // ── 【MC-006】出厂模板改成"预设 + 按需导入",不再自动播种 ──
+ //
+ // 台账失败反例:本体按固定 UUID 给每个新装用户**播种**三份学术场景模板(研究项目 /
+ // 论文写作),做通用软件开发的人打开「初始化」就见到 notes/references/experiments。
+ // 现在三份正文住在 resources/presets/project-init.json,导入是用户动作。
+ await test("出厂预设文件里三份模板都在,且都过契约 schema",()=>{
+  const { catalog, drafts }=readProjectInitPresets();
+  assert.equal(catalog.health,"ok",JSON.stringify(catalog));
+  assert.equal(drafts.length,3,"三份(研究项目/代码项目/论文写作)");
+  assert.deepEqual(catalog.problems,[]);
+  assert.deepEqual(drafts.map(d=>d.draft.name).sort(),["代码项目","研究项目","论文写作"].sort());
+  for(const s of drafts){
+   assert.equal(ProjectInitDraftSchema.safeParse(s.draft).success,true,s.draft.name);
+   assert.ok(s.draft.directories.every(d=>s.draft.files.some(f=>f.path.startsWith(d.split("/")[0]+"/README"))),"every top folder has a README");
+  }
  });
- await test("shipped initializer seeds once and is idempotent",()=>{
-  ensureShippedInitializersSeeded();const names=listProjectInitializers().templates.map(t=>t.name);
-  assert.deepEqual(names,[...SHIPPED_INITIALIZERS.map(s=>s.draft.name)].sort((a,b)=>a.localeCompare(b)));
-  ensureShippedInitializersSeeded();assert.equal(listProjectInitializers().templates.length,SHIPPED_INITIALIZERS.length);
+ await test("★ 启动**不再**播种:库里空着,不 import 就什么都没有",()=>{
+  // 这条是 MC-006 的核心判据 —— 从前启动时就悄悄写进去了。现在没有那个调用点,
+  // 模板只可能来自用户动作(导入/手建)。
+  assert.equal(listProjectInitializers().templates.length,0);
  });
- await test("deleted shipped initializer never resurrects",()=>{
-  ensureShippedInitializersSeeded();for(const t of listProjectInitializers().templates)deleteProjectInitializer({id:t.id,expectedRevision:t.revision});
-  ensureShippedInitializersSeeded();assert.equal(listProjectInitializers().templates.length,0);
+ await test("按 id 导入一份预设:建成普通模板、可以再改",()=>{
+  const { drafts }=readProjectInitPresets();
+  const research=drafts.find(d=>d.draft.name==="研究项目")!;
+  const res=importProjectInitPreset(research.id);
+  assert.equal(res.ok,true,JSON.stringify(res));
+  if(!res.ok)return;
+  const stored=getProjectInitializer({id:res.id});
+  assert.equal(stored.name,"研究项目");
+  // stored 带 id/revision(模板契约是 strict),校验 draft 本体要剥掉这两个。
+  const {id:_id,revision:_rev,...storedDraft}=stored;
+  assert.equal(ProjectInitDraftSchema.safeParse(storedDraft).success,true);
+  // 导入进来就是普通模板:改它不会影响预设文件里的那一份。
+  saveProjectInitializer({id:res.id,expectedRevision:stored.revision,draft:{...storedDraft,name:"我的研究项目"}});
+  assert.equal(getProjectInitializer({id:res.id}).name,"我的研究项目");
+  assert.equal(readProjectInitPresets().drafts.find(d=>d.id===research.id)!.draft.name,"研究项目");
  });
- await test("shipped initializer yields to a user template with the same command",()=>{
-  const mine=saveProjectInitializer({draft:draft(SHIPPED_INITIALIZERS[0].draft.name)});ensureShippedInitializersSeeded();
-  const same=listProjectInitializers().templates.filter(t=>t.name===SHIPPED_INITIALIZERS[0].draft.name);assert.equal(same.length,1);assert.equal(same[0].id,mine.id);
-  assert.equal(listProjectInitializers().templates.length,SHIPPED_INITIALIZERS.length,"the other shipped scenarios still seed");
+ await test("重名导入自动加后缀(不因为名字撞了而失败)",()=>{
+  const { drafts }=readProjectInitPresets();
+  const research=drafts.find(d=>d.draft.name==="研究项目")!;
+  const first=importProjectInitPreset(research.id);
+  assert.ok(first.ok && first.name==="研究项目",JSON.stringify(first));
+  const second=importProjectInitPreset(research.id);
+  assert.equal(second.ok,true,JSON.stringify(second));
+  if(!second.ok)return;
+  assert.equal(second.name,"研究项目-2");
+  const third=importProjectInitPreset(research.id);
+  assert.ok(third.ok && third.name==="研究项目-3",JSON.stringify(third));
  });
- await test("shipped research initializer creates folders, READMEs and pinned memories",async()=>{
-  ensureShippedInitializersSeeded();const shipped=SHIPPED_INITIALIZERS[0].draft;const command="init-"+shipped.name;
+ await test("不存在的预设 id → 明确报错(不是静默成功)",()=>{
+  const res=importProjectInitPreset("00000000-0000-4000-8000-000000000000");
+  assert.equal(res.ok,false);
+  if(!res.ok)assert.match(res.error,/没有 id/);
+ });
+ await test("导入的研究项目模板真的能落盘:目录、README、置顶记忆",async()=>{
+  const { drafts }=readProjectInitPresets();
+  const thesis=drafts.find(d=>d.draft.name==="论文写作")!;
+  const res=importProjectInitPreset(thesis.id);
+  assert.equal(res.ok,true,JSON.stringify(res));
+  if(!res.ok)return;
+  const command="init-"+res.name;
   const p=await previewProjectInitializer({sessionId:"s1",command});const r=await applyProjectInitializer({sessionId:"s1",command,digest:p.digest});
   assert.ok(r.actions.every(a=>a.status==="created"),JSON.stringify(r.actions.filter(a=>a.status!=="created")));
-  assert.match(await readFile(join(root,"data/README.md"),"utf8"),/raw/);assert.deepEqual(await readdir(join(root,"data/raw")),[]);
-  assert.match(readMemoryFile("projects/p1/rules/项目目录约定.md").content,/data\/raw/);
-  assert.match(await readFile(join(data,"memory/projects/p1/project/项目概况.md"),"utf8"),/pinned: true/);
+  assert.match(await readFile(join(root,"manuscript/README.md"),"utf8"),/main.tex/);
+  assert.match(readMemoryFile("projects/p1/rules/写作约定.md").content,/不编造文献/);
+ });
+ await test("没有预置文件 → health:absent;坏 JSON → health:corrupt(都不是空列表)",async()=>{
+  // 硬规矩 3:「这个安装没带」与「带了但坏了」是两种不同的可观测状态,不能都画成空列表。
+  const { mkdtemp:mk,writeFile:wf,mkdir:mkd,rm:rmdir }=await import("node:fs/promises");
+  const empty=await mk("preset-absent-");
+  try{
+   const absent=readProjectInitPresets([empty]).catalog;
+   assert.equal(absent.health,"absent");
+   assert.ok(String(absent.reason).length>0,"absent 要带原因");
+   assert.equal(absent.presets.length,0);
+   await mkd(join(empty,"resources","presets"),{recursive:true});
+   await wf(join(empty,"resources","presets","project-init.json"),"{这不是 json","utf8");
+   const corrupt=readProjectInitPresets([empty]).catalog;
+   assert.equal(corrupt.health,"corrupt");
+   assert.match(String(corrupt.reason),/JSON/);
+  }finally{await rmdir(empty,{recursive:true,force:true});}
+ });
+ await test("出厂预设逐条校验:坏条目进 problems,好的照常可用",async()=>{
+  const { mkdtemp:mk,writeFile:wf,mkdir:mkd }=await import("node:fs/promises");
+  const tmp=await mk("preset-bad-");
+  try{
+   await mkd(join(tmp,"resources","presets"),{recursive:true});
+   await wf(join(tmp,"resources","presets","project-init.json"),JSON.stringify({
+    templates:[{id:"good",draft:{name:"好模板",description:"",directories:["x"],files:[{path:"x/README.md",content:"# x"}],memories:[],agentFile:{enabled:false,filename:"AGENTS.md",focus:""}}},{id:"bad",draft:{name:"../../逃逸"}}]
+   }),"utf8");
+   const { catalog, drafts }=readProjectInitPresets([tmp]);
+   assert.equal(catalog.health,"ok");
+   assert.equal(drafts.length,1);
+   assert.equal(drafts[0].draft.name,"好模板");
+   assert.equal(catalog.problems.length,1);
+   assert.match(catalog.problems[0],/不是合法的初始化模板/);
+   // 报错要点得出**哪里**不合法(路径逃逸),不是一句笼统的"坏"。
+   assert.match(catalog.problems[0],/name/,"逐条问题里要带出错字段");
+  }finally{await (await import("node:fs/promises")).rm(tmp,{recursive:true,force:true});}
  });
 
- // AI 生成说明文件(2026-10):只出计划和提示词,文件由引擎在对话里写;三个引擎拿到的是同一段提示词。
- const agentDraft=(over:Partial<ProjectInitDraft>={}):ProjectInitDraft=>({name:"代码",description:"",directories:[],files:[],memories:[],agentFile:{enabled:true,filename:"AGENTS.md",focus:"重点写测试命令"},...over});
- const agentRun=async(command="init-代码")=>{const p=await previewProjectInitializer({sessionId:"s1",command});return {p,r:await applyProjectInitializer({sessionId:"s1",command,digest:p.digest})};};
- await test("agent-only template is valid, disabled agent alone is still empty",()=>{
-  assert.equal(ProjectInitDraftSchema.safeParse(agentDraft()).success,true);
-  assert.equal(ProjectInitDraftSchema.safeParse(agentDraft({agentFile:{enabled:false,filename:"AGENTS.md",focus:""}})).success,false);
-  assert.equal(ProjectInitDraftSchema.safeParse({...agentDraft(),agentFile:{enabled:true,filename:"README.md",focus:""}}).success,false);
- });
- await test("agent step: preview carries the prompt, apply writes nothing and returns it",async()=>{
-  saveProjectInitializer({draft:agentDraft()});const {p,r}=await agentRun();
-  assert.equal(p.actions.length,0);assert.equal(p.agentFile?.filename,"AGENTS.md");assert.equal(p.agentFile?.exists,false);assert.equal(p.agentFile?.shadowed,false);
-  assert.match(p.agentFile!.prompt,/创建 `AGENTS.md`/);assert.match(p.agentFile!.prompt,/重点写测试命令/);assert.match(p.agentFile!.prompt,/Claude、Codex、Pi/);
-  assert.equal(r.agentPrompt,p.agentFile!.prompt);assert.equal(r.agentFilename,"AGENTS.md");assert.deepEqual(await readdir(root),[]);
-  assert.equal(listProjectInitializers().templates[0].agentFile,"AGENTS.md");
- });
- await test("existing guide file switches the prompt to improve, never overwritten by apply",async()=>{
-  await writeFile(join(root,"AGENTS.md"),"# mine");saveProjectInitializer({draft:agentDraft()});const {p}=await agentRun();
-  assert.equal(p.agentFile?.exists,true);assert.match(p.agentFile!.prompt,/改进已有的/);assert.equal(await readFile(join(root,"AGENTS.md"),"utf8"),"# mine");
- });
- await test("a template seed file with the same name counts as existing; scaffold is listed",async()=>{
-  saveProjectInitializer({draft:agentDraft({directories:["src"],files:[{path:"AGENTS.md",content:"# seed"}]})});const {p}=await agentRun();
-  assert.equal(p.agentFile?.exists,true);assert.match(p.agentFile!.prompt,/- src/);assert.match(p.agentFile!.prompt,/- AGENTS.md/);
- });
- await test("CLAUDE.md is flagged as shadowed when AGENTS.md exists",async()=>{
-  await writeFile(join(root,"AGENTS.md"),"# a");saveProjectInitializer({draft:agentDraft({agentFile:{enabled:true,filename:"CLAUDE.md",focus:""}})});
-  const p=await previewProjectInitializer({sessionId:"s1",command:"init-代码"});assert.equal(p.agentFile?.shadowed,true);assert.match(p.agentFile!.prompt,/CLAUDE.md/);
- });
- await test("guide file appearing after preview invalidates approval",async()=>{
-  saveProjectInitializer({draft:agentDraft()});const p=await previewProjectInitializer({sessionId:"s1",command:"init-代码"});await writeFile(join(root,"AGENTS.md"),"late");
-  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-代码",digest:p.digest}),/预览已改变/);
- });
- await test("guide path occupied by a directory blocks the plan",async()=>{
-  await mkdir(join(root,"AGENTS.md"));saveProjectInitializer({draft:agentDraft()});const p=await previewProjectInitializer({sessionId:"s1",command:"init-代码"});
-  assert.equal(p.agentFile?.blocked,"wrongType");await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-代码",digest:p.digest}),/阻止/);
- });
- await test("default scenario: set, list, clear, stale after delete, unknown id rejected",()=>{
-  const a=saveProjectInitializer({draft:agentDraft()});assert.equal(listProjectInitializers().defaultId,null);
-  setDefaultProjectInitializer({id:a.id});assert.equal(listProjectInitializers().defaultId,a.id);
-  setDefaultProjectInitializer({id:null});assert.equal(listProjectInitializers().defaultId,null);
-  setDefaultProjectInitializer({id:a.id});deleteProjectInitializer({id:a.id,expectedRevision:a.revision});assert.equal(listProjectInitializers().defaultId,null);
-  assert.throws(()=>setDefaultProjectInitializer({id:"00000000-0000-4000-8000-000000000000"}));assert.throws(()=>setDefaultProjectInitializer({id:"nope"}));
- });
- await test("untouched old research template is upgraded in place; edited or disabled copies are left alone",()=>{
-  const shipped=SHIPPED_INITIALIZERS[0];const next=ProjectInitDraftSchema.parse(shipped.draft);const old={...next};delete old.agentFile;
-  settings.set("projectInit.template."+shipped.id,JSON.stringify(old));settings.set("projectInit.seededShipped",JSON.stringify(SHIPPED_INITIALIZERS.map(s=>s.id)));
-  ensureShippedInitializersSeeded();assert.equal(getProjectInitializer({id:shipped.id}).agentFile?.enabled,true);
-  ensureShippedInitializersSeeded();assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(next),"idempotent");
-  const edited={...old,description:"我改过"};settings.set("projectInit.template."+shipped.id,JSON.stringify(edited));ensureShippedInitializersSeeded();
-  assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(edited));
-  const off={...next,agentFile:{...next.agentFile!,enabled:false}};settings.set("projectInit.template."+shipped.id,JSON.stringify(off));ensureShippedInitializersSeeded();
-  assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(off));
- });
- // 老安装里那份「逐字原版」**不等于**「新版去掉 agentFile」时的升级。
- // 610403b8 统一「资料库」叫法时顺手改了 RESEARCH 的 references/README.md 一句话,于是
- // 首发(4cf6f00c)那份原版再也不逐字相等 —— `upgradeUntouchedShipped` 认不出来,老用户
- // 那份没改过的模板就永远补不上 agentFile。用 legacyPristineRevisions 认回它。
- // 这里直接用**当时存进库的字符串**(与首发出厂正文逐字相同)做输入,不靠「新版改字还原」。
- await test("a shipped template whose published body later changed still upgrades (legacy pristine revision)",()=>{
-  const shipped=SHIPPED_INITIALIZERS[0];
-  assert.ok(shipped.legacyPristineRevisions?.length, "RESEARCH 必须记着历次发过的正文哈希");
-  const next=ProjectInitDraftSchema.parse(shipped.draft);const old={...next};delete old.agentFile;
-  // 首发 4cf6f00c 的正文:与当前版本的唯一差别是那句参考文献说明(「主文献库文件」)。
-  const legacyStored=JSON.stringify(old).split("主参考文献文件固定叫").join("主文献库文件固定叫");
-  assert.notEqual(legacyStored,JSON.stringify(old),"前提:老版本与当前版正文确实不同");
-  assert.ok(shipped.legacyPristineRevisions!.includes(sha256(legacyStored)),"前提下:那个哈希就记在 legacyPristineRevisions 里");
-  settings.set("projectInit.template."+shipped.id,legacyStored);settings.set("projectInit.seededShipped",JSON.stringify(SHIPPED_INITIALIZERS.map(s=>s.id)));
-  ensureShippedInitializersSeeded();
-  assert.equal(getProjectInitializer({id:shipped.id}).agentFile?.enabled,true,"★ 老安装那份没改过的模板补上了 agentFile");
-  ensureShippedInitializersSeeded();assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(next),"升级后与新版逐字相等、幂等");
- });
-
- await test("every shipped scenario previews and applies cleanly on an empty project",async()=>{
-  ensureShippedInitializersSeeded();
-  let thesisRoot="";
-  for(const s of SHIPPED_INITIALIZERS){
-   // 每个场景一个空项目目录:研究项目与论文写作都有 notes/、references/,同一目录里第二个会是「跳过」。
-   const dir=join(base,"scenario-"+s.id);await mkdir(dir);projects.set("p1",{id:"p1",name:"Project one",path:dir});if(s.draft.name==="论文写作")thesisRoot=dir;
-   const command="init-"+s.draft.name;const p=await previewProjectInitializer({sessionId:"s1",command});
-   assert.ok(p.actions.every(a=>a.status==="create"),s.draft.name);assert.equal(p.agentFile?.filename,"AGENTS.md",s.draft.name);
-   const r=await applyProjectInitializer({sessionId:"s1",command,digest:p.digest});assert.ok(r.actions.every(a=>a.status==="created"),s.draft.name);assert.ok(r.agentPrompt,s.draft.name);
-  }
-  assert.match(await readFile(join(thesisRoot,"manuscript/README.md"),"utf8"),/main.tex/);assert.match(readMemoryFile("projects/p1/rules/写作约定.md").content,/不编造文献/);
- });
  // 事件名**只有一份**:设置页改了模板要通知对话里的 `/init` 选择框刷新。
  // 它曾经在 `useProjectInitializer.tsx` 与 `ProjectInitManager.tsx` 各写了一份字面量
  // (前者刻意不 import 后者,免得把设置编辑器拉进每个对话),于是**改一处漏一处就静默不刷新**。

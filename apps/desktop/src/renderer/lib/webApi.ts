@@ -909,6 +909,9 @@ export function createWebApi(): Api {
       preview: async () => webUnsupported("projectInit.preview"),
       apply: async () => webUnsupported("projectInit.apply"),
       setDefault: async () => webUnsupported("projectInit.setDefault"),
+      // 【MC-006】出厂预设文件在桌面安装包里 —— 手机端没有那条通道,显式不可用。
+      listPresets: async () => webUnsupported("projectInit.listPresets"),
+      importPreset: async () => webUnsupported("projectInit.importPreset"),
     } satisfies Api["projectInit"],
     // Scene planning/preflight is desktop-only in v1 (SceneSpec compilation and the
     // host capability inventory live in the main process). Reject explicitly.

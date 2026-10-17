@@ -19,7 +19,6 @@ import { MEMORY_PROJECT_ID } from "@main/memory/paths.js";
 import { saveMemoryFile } from "@main/memory/store.js";
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
 import { errText } from "@main/lib/ipcError.js";
-import { SHIPPED_INITIALIZERS } from "./shipped.js";
 const PREFIX = "projectInit.template.";
 const MAX_TEMPLATES = 200;
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -60,52 +59,19 @@ export function setDefaultProjectInitializer(raw: { id: string | null }): { ok: 
   SettingRepo.set(DEFAULT_KEY, id);
   return { ok: true };
 }
-const SEEDED_KEY = "projectInit.seededShipped";
-/** 出厂模板只播种一次(见 `shipped.ts` 文件头):播过的 id 记下来,用户删了不复活;
- *  命令名与用户已有模板冲突时不播,同样记下。启动时调一次(`main/index.ts`)——
- *  不放进 `listProjectInitializers`,那是纯读取,不该有副作用。 */
-export function ensureShippedInitializersSeeded(): void {
-  upgradeUntouchedShipped();
-  let seeded: string[] = [];
-  try {
-    const parsed: unknown = JSON.parse(SettingRepo.get(SEEDED_KEY) ?? "[]");
-    if (Array.isArray(parsed)) seeded = parsed.filter((v): v is string => typeof v === "string");
-  } catch { /* 清单坏了就当空的;模板本身已存在时下面照样跳过,不会重复。 */ }
-  const pending = SHIPPED_INITIALIZERS.filter(s => !seeded.includes(s.id));
-  if (!pending.length) return;
-  const names = new Set(SettingRepo.keysWithPrefix(PREFIX).map(key => {
-    try { return initNameKey(stored(key.slice(PREFIX.length)).name); } catch { return ""; }
-  }));
-  for (const shipped of pending) {
-    const draft = ProjectInitDraftSchema.parse(shipped.draft);
-    if (SettingRepo.get(PREFIX + shipped.id) === null && !names.has(initNameKey(draft.name))) {
-      SettingRepo.set(PREFIX + shipped.id, JSON.stringify(draft));
-      names.add(initNameKey(draft.name));
-    }
-    seeded.push(shipped.id);
-  }
-  SettingRepo.set(SEEDED_KEY, JSON.stringify(seeded));
-}
-/** 出厂模板后来补了「AI 生成说明文件」(2026-10)。用户**从没改过**的那份 —— 存的正好是旧版
- *  逐字内容(= 新版去掉 agentFile)—— 原地升级成新版;改过一个字、或自己关掉过 AI 生成的都不动。
- *  逐字比较,所以只适用于「新版 = 旧版 + agentFile」;升级后不再相等,天然幂等。
+/* ── 【MC-006】出厂模板不再播种 ─────────────────────────────────────────
  *
- *  后来一种情况让「逐字相等」失效:出厂正文本身被改过(`610403b8` 统一「资料库」叫法时顺手
- *  改了 RESEARCH 的 references/README.md 一句话)。那样老安装里那份**原版**就不等于「新版
- *  去掉 agentFile」了——用 `legacyPristineRevisions`(历次发过的正文哈希)把它认回来。 */
-function upgradeUntouchedShipped(): void {
-  for (const shipped of SHIPPED_INITIALIZERS) {
-    if (!shipped.upgradeAddsAgentFile) continue;
-    const raw = SettingRepo.get(PREFIX + shipped.id);
-    if (raw === null) continue;
-    const next = ProjectInitDraftSchema.parse(shipped.draft);
-    const previous = { ...next };
-    delete previous.agentFile;
-    const pristine = raw === JSON.stringify(previous)
-      || (shipped.legacyPristineRevisions ?? []).includes(hash(raw));
-    if (pristine) SettingRepo.set(PREFIX + shipped.id, JSON.stringify(next));
-  }
-}
+ * 从前这里把 `shipped.ts` 的三份模板(研究项目/代码项目/论文写作)按固定 UUID
+ * **自动播种**进设置表 —— 那是"特定场景硬编码进本体":做通用软件开发或数据分析的
+ * 用户装完就看到一份 `notes/references/experiments` 的研究骨架与引用核对约定。
+ *
+ * 现在它们住在 `resources/presets/project-init.json`(与出厂工作流同一条
+ * extraResources 分发),由用户在「记忆与上下文 → 初始化」里**按需导入**
+ * (见 `projectInit/presets.ts`)。启动流程不再有任何"悄悄写模板"的动作。
+ *
+ * 老安装不受影响:已经播进设置表的那几行是普通模板,照旧可改可删。`shipped.ts`
+ * 已删除 —— 它的正文逐字搬进了预设文件,以后**只改那份 JSON**。
+ */
 export function getProjectInitializer(input: { id: string }): ProjectInitTemplate {
   return stored(ProjectInitIdSchema.parse(input).id);
 }

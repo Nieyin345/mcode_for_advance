@@ -33,7 +33,6 @@ import { DurableOperationLedger } from "@main/store/operationLedger.js";
 // 启动装配序列(electron-free 的纯函数,见文件头)—— 抽取自本文件原来那段内联装配。
 import { assembleStartup } from "@main/startup/assembleStartup.js";
 import { initUpdater } from "@main/updater.js";
-import { ensureShippedInitializersSeeded } from "@main/projectInit/service.js";
 import { initAutoArchiver } from "@main/session/AutoArchiver.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { hookRunner } from "@main/hooks/HookRunner.js";
@@ -177,12 +176,6 @@ app.whenReady().then(async () => {
     // anymore; SettingRepo has no delete, so overwrite with an empty map).
     if (SettingRepo.get("browser.credentials")) {
       SettingRepo.set("browser.credentials", "{}");
-    }
-    // 出厂的项目初始化模板(「研究项目」)只播种一次,删了不复活(见 projectInit/shipped.ts)。
-    try {
-      ensureShippedInitializersSeeded();
-    } catch (err) {
-      log.warn(`seed shipped project initializers failed: ${String(err)}`);
     }
     // **启动装配序列** —— 这一段(视觉中继 / 操作账本 / 三个落盘 store / 审批端口 /
     // 场景运行期 / 扩展桥令牌持久化)此前逐条内联在这里。抽成 `assembleStartup()`

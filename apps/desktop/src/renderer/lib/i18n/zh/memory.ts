@@ -88,6 +88,17 @@ export const zh = {
   "init.agentSkipped": "有项目创建失败，没有发出生成说明文件的请求。处理后可以再执行一次。",
   "init.noAttachments": "/init 不接受技能或附件；补充要求可以直接写在 /init 后面，或在预览窗口里填写。",
   "init.promptCard": "初始化提示词",
+  // 【MC-006】出厂预设:随应用发行、按需导入(不再自动播种)
+  "init.presetsButton": "出厂预设",
+  "init.presetsTitle": "导入出厂初始化模板",
+  "init.presetsDesc": "随 Mcode 一起发布的初始化方案。导入**总是新建**一条——名字重了会自动加后缀；导入后就是普通模板，可改可删。",
+  "init.presetsLoadFailed": "出厂预设列表读不出来：{error}",
+  "init.presetsAbsent": "这个安装里没有带出厂初始化预设。如果你期望它们存在，可能是安装包漏了 presets 目录。",
+  "init.presetsCorrupt": "出厂预设文件在，但读不出来。应用其余部分不受影响；请把这个情况报给我们。",
+  "init.presetsEmpty": "这个版本没有出厂初始化预设。",
+  "init.presetsProblems": "有 {n} 条预设读不出来",
+  "init.presetImport": "导入",
+  "init.presetAlreadyInLibrary": "库里已有同名",
 
   "memory.assistant.title": "记忆与交接",
   "memory.assistant.scope": "只整理当前对话。长期记忆需审批；临时交接不写入记忆库。后台任务会产生正常模型用量。",

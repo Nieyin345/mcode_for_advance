@@ -35,6 +35,7 @@ import { loadNodeTypes } from "./nodeTypes.js";
 import { workflowSaveIsStale, workflowSaveVersion } from "./workflowSaveVersion.js";
 import { clearWorkflowReview, requireWorkflowReview, workflowReviewError, type WorkflowOrigin } from "./workflowTrust.js";
 import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
+import { materializePresetScriptsFor } from "@main/workflows/presetScripts.js";
 
 function summarize(doc: WorkflowDoc, pinned: boolean, shippedUpdate = false): WorkflowListEntry {
   return {
@@ -537,7 +538,7 @@ export function restoreWorkflowDefault(id: string): { ok: boolean; error?: strin
 
 /** 导入失败的形状。**整份拒绝** —— 过不了闸门的图不写库,库里一个字节都没变。 */
 export type WorkflowImportOutcome =
-  | { ok: true; id: string; name: string }
+  | { ok: true; id: string; name: string; /** 【MC-006】随包脚本缺失时的提醒(不拦导入)。 */ warnings?: string[] }
   | { ok: false; errors: string[]; warnings: string[] };
 
 /**
@@ -608,5 +609,10 @@ export async function importWorkflowInto(
     expectedRevision: previous === null ? null : workflowSaveVersion(previous),
   });
   if (!res.ok) return { ok: false, errors: [res.error], warnings: [] };
-  return { ok: true, id, name };
+  // 【MC-006】这份图引用了随预设携带的脚本(如引用核对)→ 现在才落盘到数据根。
+  // 落盘规则与启动 seed 同一条(没改过的换新版、改过的不动);找不到随包脚本只记警告,
+  // 不拦导入(缺一个可选脚本不该让整份工作流进不来),但警告要随结果带回去。
+  const { missing } = materializePresetScriptsFor(text);
+  const scriptWarnings = missing.map((name) => `这份工作流引用的脚本 \`${name}\` 不在当前安装的随包预设里 —— 那一步会找不到文件`);
+  return { ok: true, id, name, ...(scriptWarnings.length > 0 ? { warnings: scriptWarnings } : {}) };
 }

@@ -202,6 +202,9 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   // `saveWorkflow` 拒绝)全部发生在任何落库**之前** → `refusal`(与 import 同一条
   // 闸门,理由同上)。`workflow.listPresets` 只读、无 ok 信封,不登记。
   ["workflow.importPreset", { falseMeans: "refusal" }],
+  // 【MC-006】出厂初始化预设导入:ok:false(预设里没有这一条 / 预设文件坏 / schema 拒绝)
+  // 全部发生在 `SettingRepo.set` **之前** → `refusal`。`projectInit.listPresets` 只读,不登记。
+  ["projectInit.importPreset", { falseMeans: "refusal" }],
   ["workflow.pinDefault", { falseMeans: "refusal" }],
   ["workflow.restoreDefault", { falseMeans: "refusal" }],
   ["workflow.retry", { falseMeans: "refusal" }],

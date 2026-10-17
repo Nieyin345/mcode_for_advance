@@ -6,7 +6,7 @@
  *   README.md            这套东西是什么、怎么改
  *   scripts/
  *     library.py         查库(只读)
- *     check_citations.py 引用核对(只读)
+ *     (其余脚本按需随工作流导入 —— 见 `presetScripts.ts`)
  * ```
  *
  * ## 为什么脚本放在数据根,而不是应用目录
@@ -33,7 +33,7 @@
 import { join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
-import { LIBRARY_PY, CHECK_CITATIONS_PY } from "./assets.js";
+import { LIBRARY_PY } from "./assets.js";
 import { seedShippedFiles, shippedHashOf, type SeedReport, type ShippedFile } from "./shippedFiles.js";
 
 /** 比对用的哈希 —— 唯一实现在 `./shippedFiles.js`,这里再导出供既有调用方(`seed-smoke` 等)复用。 */
@@ -51,13 +51,13 @@ export function scriptsDir(): string {
 }
 
 /** 脚本的绝对路径 —— 提示词里要逐个点名,所以在这里集中给出。 */
-export function scriptPath(name: "library" | "check_citations"): string {
+export function scriptPath(name: "library"): string {
   return join(scriptsDir(), `${name}.py`);
 }
 
 const README = `# 流程脚本
 
-模型在执行工作模式(文献精读 / 文献写作 / 文献评审)的流程时用的脚本。它们都**只读**。
+工作流按需调用的只读脚本(查库等)。它们都**只读**。
 
 ## 为什么是只读的
 
@@ -82,13 +82,10 @@ Mcode 把整个数据库放在内存里,任何一次变更都会把 \`mcode.db\`
 设置里的屏蔽(文档管理)在这里照样生效:被屏蔽的文件类型不列(屏蔽 pdf 时,转录过的
 只给转录);一条的文件全被屏蔽、或它所在的分类被屏蔽,整条不出现,输出顶上会说挡掉了几条。
 
-### check_citations.py —— 引用核对
+### 其余脚本(按需导入)
 
-    python check_citations.py refs.bib
-    python check_citations.py refs.bib --manuscript 稿件.tex
-
-把 .bib 里每一条拿到库里对,分成三档:**库里有** / **库里没有但标题很像** /
-**库里没有也对不上**(仅表示本地未核实,不能断定是编造;外部核实后再引用)。
+引用核对(\`check_citations.py\`)这类**只属于某类工作流**的脚本不再对每个安装落盘 ——
+导入用到它的工作流时才会写进 \`scripts/\`。用法见导入后的工作流说明。
 
 ## 改这些脚本
 
@@ -117,7 +114,9 @@ export const LEGACY_SHIPPED_SHA256: Readonly<Record<string, readonly string[]>> 
     "a925405a3176ff146ebd5a8e579fe3c875eca65a33d61eb73e4e09a80609547c", // bcd3a2e
     "cd41100e699c880336ab615649ed6ac9d913c7f9fef0ccb7176fc9f887fb76e3", // 344aad1
   ],
-  "scripts/check_citations.py": ["e0fbb2971c386aed7faf5cc0a79cadba0c12d2534765ca94c5a1b50835324ee2"],
+  // [MC-006] `scripts/check_citations.py` 的历次哈希已删 —— 它不再随启动落盘。
+  // 老用户磁盘上残留的那一份不会被本流程触碰(seedShippedFiles 只动清单里的文件),
+  // 用户随时可以手动删除;需要它时导入「文献写作」预设会重新落一份。
   // `scripts/mineru_transcribe.py` 的历次哈希**已删**（MC-008，2026-10-17）：这个文件
   // 不再落盘（见 `ensureWorkflows` 里那段注释），历史哈希没有可消费的落点。老用户
   // 磁盘上残留的那一份不会被本流程触碰（`seedShippedFiles` 只动清单里的文件），它本来
@@ -135,7 +134,12 @@ export function ensureWorkflows(): SeedReport {
   const files: ShippedFile[] = [
     { rel: "README.md", body: README },
     { rel: "scripts/library.py", body: LIBRARY_PY },
-    { rel: "scripts/check_citations.py", body: CHECK_CITATIONS_PY },
+    // 【MC-006】`check_citations.py` **不在这里** —— 它是引用核对脚本,只有"写作"类
+    // 工作流用得上;从前对**每个**用户落盘(连做通用软件开发的人都有一份)。现在它
+    // 随预设走(`resources/presets/scripts/check_citations.py`,由
+    // `scripts/preset-scripts-sync --write` 从 `assets.ts` 生成),在用户导入
+    // 引用了它的工作流那一刻才落盘(见 `main/orchestration/library.ts` 的
+    // `importWorkflowInto` 与 `main/workflows/presetScripts.ts`)。
     // ⚠️ **`mineru_transcribe.py` / `lit_import.py` 不在这里**（MC-008，2026-10-17）。
     //
     // 从前这里还落一份 `MINERU_PY`，注释写着「内置自动化『下载完自动转 Markdown』那一步

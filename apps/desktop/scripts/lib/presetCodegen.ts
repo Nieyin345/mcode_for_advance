@@ -37,7 +37,7 @@
  *   「生成结果 == 磁盘文件」是一条可断言的等式，而不是格式之争。
  */
 import { join } from "node:path";
-import { LIT_IMPORT_PY, MINERU_PY } from "@main/workflows/assets.js";
+import { CHECK_CITATIONS_PY, LIT_IMPORT_PY, MINERU_PY } from "@main/workflows/assets.js";
 
 /** 预置文件相对 `apps/desktop` 的路径。 */
 export const PRESET_RELATIVE_PATH = "resources/presets/workflows.json";
@@ -61,6 +61,26 @@ export interface PresetScriptTarget {
 export const PRESET_SCRIPT_TARGETS: readonly PresetScriptTarget[] = [
   { workflowId: "wf_auto_convert", nodeId: "auto-convert-code", constantName: "MINERU_PY", body: MINERU_PY },
   { workflowId: "wf_auto_download", nodeId: "auto-download-collect", constantName: "LIT_IMPORT_PY", body: LIT_IMPORT_PY },
+];
+
+/**
+ * 【MC-006】随预设**作为文件**携带的脚本 —— 与上表不同,它们不是内联进某个节点的
+ * `params.code`(那些是"这一步就跑这段 Python"),而是写进数据根的 `workflows/scripts/`
+ * 供**任何工作流**按路径调用。权威正文仍只有 `assets.ts` 一处;这里的 `body` 只用于
+ * 生成 `resources/presets/scripts/<name>`(构建期拷贝,见 electron-builder 的
+ * extraResources 通配),再由 `main/workflows/presetScripts.ts` 在用户导入该工作流的
+ * 那一刻落盘 —— 不导入就不落盘(学术脚本不再对每个用户出现)。
+ */
+export interface PresetBundledScript {
+  /** `assets.ts` 的常量名 —— 只在生成器内部用。 */
+  readonly constantName: "CHECK_CITATIONS_PY";
+  /** 生成到 `resources/presets/scripts/` 下的文件名。 */
+  readonly fileName: string;
+  readonly body: string;
+}
+
+export const PRESET_BUNDLED_SCRIPTS: readonly PresetBundledScript[] = [
+  { constantName: "CHECK_CITATIONS_PY", fileName: "check_citations.py", body: CHECK_CITATIONS_PY },
 ];
 
 export interface AppliedPresetScript {

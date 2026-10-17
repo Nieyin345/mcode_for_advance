@@ -16,7 +16,9 @@
  * 判据与序列化都在 `scripts/lib/presetCodegen.ts`（冒烟与这里共用同一份实现）。
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { generatePresetText, firstDiff, presetFile, targetKey } from "../lib/presetCodegen.js";
+import { generatePresetText, firstDiff, presetFile, targetKey, PRESET_BUNDLED_SCRIPTS } from "../lib/presetCodegen.js";
+import { dirname, join } from "node:path";
+import { mkdirSync } from "node:fs";
 
 const MODE_CHECK = "--check";
 const MODE_WRITE = "--write";
@@ -49,8 +51,48 @@ try {
   process.exit(1);
 }
 
+/**
+ * 【MC-006】随预设携带的脚本文件(如 `check_citations.py`):生成到
+ * `resources/presets/scripts/<name>`,与 `assets.ts` 逐字节一致。
+ *
+ * 它们不是内联正文,而是**文件** —— 用户导入用到它的工作流时才落盘到数据根。
+ * 手改 `resources/presets/scripts/` 下的文件同样会被 `--check` 打红,与 JSON 那条
+ * 口径一致(权威源只有 `assets.ts`)。
+ */
+const presetDir = dirname(presetFile());
+function bundledScriptPath(fileName: string): string { return join(presetDir, "scripts", fileName); }
+function checkBundled(): string[] {
+  const drift: string[] = [];
+  for (const script of PRESET_BUNDLED_SCRIPTS) {
+    const target = bundledScriptPath(script.fileName);
+    let actual: string | null = null;
+    try { actual = readFileSync(target, "utf8"); } catch { /* missing counts as drift */ }
+    if (actual !== script.body) drift.push(script.fileName);
+  }
+  return drift;
+}
+function writeBundled(): string[] {
+  const written: string[] = [];
+  for (const script of PRESET_BUNDLED_SCRIPTS) {
+    const target = bundledScriptPath(script.fileName);
+    let actual: string | null = null;
+    try { actual = readFileSync(target, "utf8"); } catch { /* missing */ }
+    if (actual === script.body) continue;
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, script.body, "utf8");
+    written.push(script.fileName);
+  }
+  return written;
+}
+
 const drifted = applied.filter((a) => a.changed);
+const bundledDrift = checkBundled();
 if (mode === MODE_CHECK) {
+  if (bundledDrift.length > 0) {
+    console.error(`preset-scripts-sync: resources/presets/scripts/ 与 assets.ts 不一致:${bundledDrift.join("、")}`);
+    console.error("  跑 `bash scripts/preset-scripts-sync/run.sh --write` 重新生成,不要手改。");
+    process.exit(1);
+  }
   if (expected === source) {
     console.log(
       `preset-scripts-sync: 预设里的 Python 正文与 assets.ts 一致（${applied.map((a) => `${targetKey(a)}=${a.constantName}`).join("、")}）`,
@@ -65,10 +107,17 @@ if (mode === MODE_CHECK) {
 }
 
 if (expected === source) {
-  console.log("preset-scripts-sync: 已经是最新，未改文件。");
+  const written = writeBundled();
+  console.log(written.length > 0
+    ? `preset-scripts-sync: 已重写 resources/presets/scripts/${written.join("、")}`
+    : "preset-scripts-sync: 已经是最新，未改文件。");
   process.exit(0);
 }
 writeFileSync(file, expected, "utf8");
+{
+  const written = writeBundled();
+  if (written.length > 0) console.log(`preset-scripts-sync: 已重写 resources/presets/scripts/${written.join("、")}`);
+}
 console.log(
   `preset-scripts-sync: 已写回 ${file}（更新了 ${drifted.map((a) => targetKey(a)).join("、") || "仅格式"}）`,
 );

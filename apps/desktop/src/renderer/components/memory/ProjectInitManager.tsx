@@ -4,7 +4,7 @@ import { MEMORY_CATEGORIES } from "@contracts/memory";
 import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, ErrorNote, Input } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, Dialog, EmptyState, ErrorNote, Input, Spinner } from "@renderer/components/ui/index.js";
 export const INIT_CHANGED = PROJECT_INIT_CHANGED_EVENT;
 type Draft = { draft: ProjectInitDraft; id?: string; revision?: string; baseline: string };
 // 新场景默认带上「AI 生成说明文件」:这是 /init 最常用的那一步。
@@ -30,6 +30,8 @@ export function ProjectInitManager() {
  const selected=last;const entry=kept.get(selected)??empty();
  const pending=mutationPending;const error=lastError;const saved=lastSaved;
  const [confirmDelete,setConfirmDelete]=useState(false);const [confirmReload,setConfirmReload]=useState(false);
+ // 【MC-006】出厂预设对话框。导入成功后刷新列表并选中新模板 —— 与用户手建一条同一个落点。
+ const [presetOpen,setPresetOpen]=useState(false);const [presetBusy,setPresetBusy]=useState<string|null>(null);const [presetError,setPresetError]=useState<string|null>(null);
  const list=useRpc(()=>api.projectInit.list(),[],{enabled:desktop,toastOnError:false});
  useEffect(()=>{if(!desktop)return;const refresh=()=>void list.refetch();window.addEventListener(INIT_CHANGED,refresh);return()=>window.removeEventListener(INIT_CHANGED,refresh);},[desktop,list.refetch]);
  const read=useRpc(async()=>({key:selected,value:await api.projectInit.get({id:selected})}),[selected],{enabled:desktop&&selected!=="new"&&!kept.has(selected),toastOnError:false});
@@ -81,6 +83,8 @@ export function ProjectInitManager() {
     {list.data?.templates.map(item=><option key={item.id} value={item.id}>/init-{item.name}{item.id===defaultId?` · ${t("init.default")}`:""}{kept.has(item.id)&&kept.get(item.id)!.baseline!==JSON.stringify(kept.get(item.id)!.draft)?" *":""}</option>)}
    </select>
    <Button size="sm" disabled={pending} onClick={()=>{choose("new");}}>{t("init.new")}</Button>
+   {/* 【MC-006】出厂预设入口。模板不再自动播种 —— 这是用户拿到「研究项目」等方案的唯一正门。 */}
+   <Button size="sm" variant="ghost" disabled={pending} onClick={()=>{setPresetError(null);setPresetOpen(true);}}>{t("init.presetsButton")}</Button>
    <Button size="sm" variant="ghost" disabled={pending} onClick={()=>void list.refetch()}>{t("memory.assistant.refresh")}</Button>
   </div>
   {(error||list.error||read.error)&&<ErrorNote>{error??list.error?.message??read.error?.message}</ErrorNote>}
@@ -135,5 +139,76 @@ export function ProjectInitManager() {
    if(selected!=="new")void read.refetch();
   }}/>
   <ConfirmDialog open={confirmDelete} danger title={t("init.deleteTitle")} description={t("init.deleteHint")} confirmText={t("common.delete")} onOpenChange={open=>{if(!pending)setConfirmDelete(open);}} onConfirm={()=>void remove()}/>
+  <InitPresetDialog
+   open={presetOpen}
+   onOpenChange={open=>{if(presetBusy===null)setPresetOpen(open);}}
+   busyId={presetBusy}
+   error={presetError}
+   onError={setPresetError}
+   onImported={async(id)=>{
+    // 与手建一条同一个落点:清掉草稿袋、刷新列表、选中新模板(它的 draft 由 read 兜底拉)。
+    // 不塞草稿袋:清掉它、切过去,`read` effect 会用 `projectInit.get` 拉回真正存下的那份。
+    kept.delete(id);choose(id);await list.refetch();setPresetOpen(false);
+   }}
+   onBusy={setPresetBusy}
+  />
  </div>;
+}
+
+/**
+ * 【MC-006】出厂初始化预设的导入对话框。
+ *
+ * 只做「列出 → 选一份 → 让主进程导入」;路径解析、schema 校验、落库全在主进程
+ * (`projectInit/presets.ts` → `saveProjectInitializer`),这里不另写一份。
+ * 三态(absent / corrupt / ok)分别措辞 —— 「这个安装没带」与「带了但坏了」不是一回事。
+ */
+function InitPresetDialog({open,onOpenChange,busyId,error,onError,onImported,onBusy}:{
+ open:boolean;onOpenChange:(o:boolean)=>void;busyId:string|null;error:string|null;onError:(e:string|null)=>void;
+ onImported:(id:string)=>void|Promise<void>;onBusy:(id:string|null)=>void;
+}){
+ const {t}=useI18n();
+ const list=useRpc(()=>api.projectInit.listPresets(),[open],{enabled:open,toastOnError:false});
+ const importOne=async(id:string)=>{
+  onBusy(id);onError(null);
+  try{
+   const res=await api.projectInit.importPreset({id});
+   if(!res.ok){onError(res.error??t("settings.workflows.unknownError"));return;}
+   await onImported(res.id!);
+  }catch(e){onError(t("settings.workflows.actionFailed",{error:String(e)}));}
+  finally{onBusy(null);}
+ };
+ const data=list.data;const presets=data?.presets??[];const problems=data?.problems??[];
+ const health=data?.health;
+ return <Dialog.Root open={open} onOpenChange={o=>{if(!o&&busyId===null)onOpenChange(false);}}>
+  <Dialog.Portal>
+   <Dialog.Backdrop/>
+   <Dialog.Popup className="w-[460px] max-w-[92vw] p-4">
+    <Dialog.Title className="text-sm font-semibold text-content">{t("init.presetsTitle")}</Dialog.Title>
+    <Dialog.Description className="mb-3 text-xs leading-relaxed text-content-muted">{t("init.presetsDesc")}</Dialog.Description>
+    <div className="max-h-[50vh] min-h-[80px] overflow-y-auto rounded-md border border-edge">
+     {list.loading&&<div className="flex items-center justify-center gap-2 py-6 text-[0.7857em] text-content-subtle"><Spinner size="xs"/>{t("common.loading")}</div>}
+     {!list.loading&&list.error!==null&&<div className="p-3"><ErrorNote>{t("init.presetsLoadFailed",{error:list.error.message})}</ErrorNote><Button variant="secondary" size="sm" className="mt-2" onClick={()=>void list.refetch()}>{t("common.retry")}</Button></div>}
+     {!list.loading&&list.error===null&&health==="absent"&&<p className="p-3 text-[0.7857em] leading-relaxed text-content-muted">{t("init.presetsAbsent")}{data?.reason?<span className="mt-1 block break-all text-content-subtle">{data.reason}</span>:null}</p>}
+     {!list.loading&&list.error===null&&health==="corrupt"&&<p className="p-3 text-[0.7857em] leading-relaxed text-warning">{t("init.presetsCorrupt")}{data?.reason?<span className="mt-1 block break-all text-content-subtle">{data.reason}</span>:null}</p>}
+     {!list.loading&&list.error===null&&health==="ok"&&presets.length===0&&<EmptyState title={t("init.presetsEmpty")}/>}
+     {!list.loading&&list.error===null&&presets.map(p=><div key={p.id} className="flex items-center gap-2 border-b border-edge/60 px-3 py-2 last:border-b-0">
+      <div className="min-w-0 flex-1">
+       <div className="flex items-center gap-1.5">
+        <span className="truncate text-[0.8571em] font-medium text-content">{p.name}</span>
+        {p.agentFile&&<span className="shrink-0 rounded bg-surface px-1 text-[0.7143em] text-content-subtle">{p.agentFile}</span>}
+        {p.sameNameExists&&<span className="shrink-0 text-[0.7143em] text-content-subtle">{t("init.presetAlreadyInLibrary")}</span>}
+       </div>
+       {p.description&&<div className="mt-0.5 line-clamp-2 text-[0.7857em] text-content-subtle">{p.description}</div>}
+      </div>
+      <Button variant="secondary" size="sm" disabled={busyId!==null} onClick={()=>void importOne(p.id)} className="shrink-0 gap-1">
+       {busyId===p.id?<Spinner size="xs"/>:null}{t("init.presetImport")}
+      </Button>
+     </div>)}
+    </div>
+    {problems.length>0&&<p className="mt-2 break-words text-[0.7143em] leading-relaxed text-warning">{t("init.presetsProblems",{n:problems.length})}:{problems.slice(0,3).join("; ")}</p>}
+    {error!==null&&<ErrorNote className="mt-2">{error}</ErrorNote>}
+    <div className="mt-3 flex justify-end"><Button variant="ghost" size="sm" disabled={busyId!==null} onClick={()=>onOpenChange(false)}>{t("common.cancel")}</Button></div>
+   </Dialog.Popup>
+  </Dialog.Portal>
+ </Dialog.Root>;
 }

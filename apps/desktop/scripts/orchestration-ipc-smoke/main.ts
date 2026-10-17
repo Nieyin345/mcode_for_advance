@@ -2147,6 +2147,59 @@ console.log("\n出厂预设");
   }
 }
 
+/* ──────────────── 23. ★ MC-006:学术脚本按需落盘,不再对每个用户播种 ──────────────── */
+
+console.log("\n随预设携带的脚本");
+
+{
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { scriptsDir } = await import("@main/workflows/seed.js");
+  const { materializePresetScriptsFor, PRESET_BUNDLED_SCRIPTS } = await import(
+    "@main/workflows/presetScripts.js"
+  );
+  const scriptFile = PRESET_BUNDLED_SCRIPTS.find((s) => s.fileName === "check_citations.py")!;
+  check("清单里记着 check_citations.py", scriptFile !== undefined);
+
+  // 0) 启动 seed 已经**不再**写它(前面 §22 之前 registerWorkflowHandlers 已跑过 ensureWorkflows)。
+  const shipped = join(scriptsDir(), scriptFile.fileName);
+  eq("启动落盘之后 scripts/ 里没有 check_citations.py", existsSync(shipped), false);
+
+  // 1) 引用它的工作流导入 → 现在才落盘,内容与随包文件逐字节一致。
+  const sample = {
+    ...goodDoc({ id: "wf_uses_check_citations", name: "引用核对用户" }),
+    prompt: "",
+    nodes: [
+      { id: "main", type: "mcode.main", title: "入口", params: { instruction: "核对引用" }, position: { x: 0, y: 0 } },
+    ],
+    edges: [],
+  };
+  // 把脚本名写进图里(真实形态是 agent 节点的 instruction 提到它)。
+  (sample.nodes[0] as { params: Record<string, unknown> }).params.instruction =
+    "必要时运行 check_citations.py refs.bib";
+  const res = obj(await callAsync(IPC.WORKFLOW_IMPORT, { text: JSON.stringify(sample) }));
+  eq("导入一份引用 check_citations.py 的工作流 → ok", res.ok, true);
+  check("现在 scripts/ 里有了它", existsSync(shipped), shipped);
+  const repoPreset = join(process.cwd(), "resources", "presets", "scripts", "check_citations.py");
+  eq(
+    "落下来的那份与 resources/presets/scripts/ 逐字节一致",
+    readFileSync(shipped, "utf8"),
+    readFileSync(repoPreset, "utf8"),
+  );
+
+  // 2) **不引用**它的工作流导入 → 不落盘(已经是它存在了,先删掉再验)。
+  rmSync(shipped, { force: true });
+  const plain = obj(await callAsync(IPC.WORKFLOW_IMPORT, { text: JSON.stringify({ ...goodDoc({ id: "wf_no_script", name: "不用脚本" }) }) }));
+  eq("导入一份不引用它的工作流 → ok", plain.ok, true);
+  eq("★ 不引用就不落盘(学术脚本不再对每个用户出现)", existsSync(shipped), false);
+
+  // 3) 用户改过的脚本不会被一次导入覆盖(与 seed 同一规则)。
+  materializePresetScriptsFor("check_citations.py");
+  writeFileSync(shipped, "# 我的版本\n", "utf8");
+  materializePresetScriptsFor("check_citations.py");
+  eq("用户改过的脚本不被覆盖", readFileSync(shipped, "utf8"), "# 我的版本\n");
+  rmSync(shipped, { force: true });
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 console.log(`\norchestration-ipc-smoke: ${checks - failures}/${checks} 通过`);

@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "note": "出厂项目初始化模板 —— 不自动播种;用户在「记忆与上下文 → 初始化」里按需导入。与 resources/presets/workflows.json 同一套 extraResources 分发。",
+  "templates": [
+    {
+      "id": "7a3c5e0b-2f4d-4b8a-9c1e-6d0f3a8b5c21",
+      "draft": {
+        "name": "研究项目",
+        "description": "研究 / 论文类项目的标准骨架:建好 notes、references、data、code、experiments、results、drafts、archive 等目录,每个目录附一份 README 说明用途;并写入两条置顶项目记忆(目录约定、项目概况),让助手在这个项目里始终按同一套结构存放文件。",
+        "directories": [
+          "notes",
+          "references",
+          "data/raw",
+          "data/processed",
+          "code",
+          "experiments",
+          "results/figures",
+          "results/tables",
+          "drafts",
+          "archive"
+        ],
+        "files": [
+          {
+            "path": "notes/README.md",
+            "content": "# notes — 笔记\n\n阅读笔记、想法、讨论与会议记录。\n\n- 一篇文献一份笔记,文件名用 `作者-年份-关键词.md`(如 `smith-2023-attention.md`)。\n- 会议 / 讨论记录用 `YYYY-MM-DD-主题.md`。\n- 零散想法先记在 `ideas.md`,成形后再拆出去。\n"
+          },
+          {
+            "path": "references/README.md",
+            "content": "# references — 参考文献\n\n引用管理相关的文件:BibTeX(`.bib`)、引用样式(`.csl`)、文献清单。\n\n- PDF 原文建议导入资料库统一管理;这里只放写作时直接要用的引用数据。\n- 主参考文献文件固定叫 `references.bib`,写作时从这里引用。\n"
+          },
+          {
+            "path": "data/README.md",
+            "content": "# data — 数据\n\n- `raw/`:**原始数据,只读**。拿到后不再修改;在下面记录来源、获取日期与许可。\n- `processed/`:清洗 / 转换后的数据,必须能由 `code/` 里的脚本从 `raw/` 重新生成。\n\n大文件不要提交进版本库;在这里写清楚从哪里下载即可。\n\n## 数据来源\n\n| 文件 | 来源 | 获取日期 | 许可 |\n|---|---|---|---|\n"
+          },
+          {
+            "path": "code/README.md",
+            "content": "# code — 代码\n\n数据处理、分析与实验脚本。\n\n- 脚本从项目根目录运行,路径一律写相对路径(`data/raw/...`)。\n- 依赖写进 `requirements.txt` / `environment.yml` 等,放在这个目录或项目根目录。\n- 可复用的函数抽到模块里,一次性的探索放 `scratch/`。\n"
+          },
+          {
+            "path": "experiments/README.md",
+            "content": "# experiments — 实验记录\n\n每次实验一个子目录,命名 `YYYY-MM-DD-简述`(如 `2026-10-01-baseline`),里面放:\n\n- `config`:这次用的参数 / 配置;\n- `log`:运行日志;\n- `README.md`:目的、做法、结论,以及和上一次相比改了什么。\n\n失败的实验也保留并写明原因 —— 它们同样是结果。\n"
+          },
+          {
+            "path": "results/README.md",
+            "content": "# results — 结果\n\n可以直接进论文 / 报告的产出。\n\n- `figures/`:图(建议同时保存矢量格式 `.pdf` / `.svg` 与 `.png`)。\n- `tables/`:表(`.csv` / `.tex` / `.md`)。\n\n每个产出都应能追溯到生成它的脚本或实验目录;在文件名或旁边的说明里注明。\n"
+          },
+          {
+            "path": "drafts/README.md",
+            "content": "# drafts — 草稿\n\n论文、报告、幻灯片的草稿。\n\n- 主稿固定一个文件,重大修改前另存 `v1`、`v2`……或依赖版本库。\n- 审稿意见与回复放 `review/`。\n"
+          },
+          {
+            "path": "archive/README.md",
+            "content": "# archive — 归档\n\n不再使用但暂时不想删的材料:废弃的草稿、旧版本数据、放弃的思路。\n\n移进来时在文件名或这里记一笔原因和日期,别让它变成第二个杂物间。\n"
+          }
+        ],
+        "memories": [
+          {
+            "category": "rules",
+            "filename": "项目目录约定.md",
+            "title": "项目目录约定",
+            "pinned": true,
+            "content": "本项目按以下目录组织,新建或移动文件时照此存放(每个目录里有 README 详细说明):\n\n- notes/ — 阅读笔记、想法、会议记录\n- references/ — BibTeX 等引用数据\n- data/raw/ — 原始数据,**只读,不得修改**\n- data/processed/ — 由脚本从 raw 生成的数据\n- code/ — 数据处理、分析与实验脚本\n- experiments/ — 每次实验一个子目录(YYYY-MM-DD-简述),含配置、日志与结论\n- results/figures/、results/tables/ — 可直接进论文的图表\n- drafts/ — 论文 / 报告草稿\n- archive/ — 废弃但保留的材料\n\n规则:\n1. 不修改 data/raw/ 里的任何文件。\n2. 生成的数据、图表必须能由 code/ 里的脚本复现;脚本用项目根目录的相对路径。\n3. 不确定文件该放哪时,先问用户,不要在项目根目录随手新建文件。"
+          },
+          {
+            "category": "project",
+            "filename": "项目概况.md",
+            "title": "项目概况",
+            "pinned": true,
+            "content": "(待补充 —— 了解到以下信息后,与用户确认并更新这条记忆)\n\n- 研究问题:\n- 目标产出(论文 / 报告 / 毕业论文 / 其他):\n- 关键时间节点:\n- 当前进度:\n- 主要方法与数据:"
+          }
+        ],
+        "agentFile": {
+          "enabled": true,
+          "filename": "AGENTS.md",
+          "focus": "这是研究 / 论文类项目。说明文件重点写:\n- 研究问题与目标产出(论文 / 报告 / 毕业论文);信息不足时留「待补充」,不要猜;\n- 各目录的用途与存放规则:data/raw 只读;生成的数据和图表必须能由 code/ 里的脚本复现;\n- 实验怎么组织(experiments/ 下一次一个目录)、怎么复现一次实验;\n- 写作约定:主稿在哪、引用数据(references/references.bib)、图表格式。"
+        }
+      },
+      "upgradeAddsAgentFile": true
+    },
+    {
+      "id": "3e8d1f52-6b7a-4c3e-9f20-8a1d5c7b4e63",
+      "draft": {
+        "name": "代码项目",
+        "description": "相当于 Claude Code / Codex 的 /init:不建任何目录,只让 AI 分析现有代码库,生成(已有则改进)AGENTS.md ——常用命令、整体架构、代码与提交约定。适合已经有代码的仓库。",
+        "directories": [],
+        "files": [],
+        "memories": [],
+        "agentFile": {
+          "enabled": true,
+          "filename": "AGENTS.md",
+          "focus": "这是软件 / 代码仓库。参照 Claude Code 与 Codex 的 /init,重点写:\n- 构建、运行、测试、代码检查的命令,特别是怎么只跑单个测试;\n- 需要读多个文件才能看懂的整体架构:模块划分、入口、数据流、关键抽象;\n- 代码风格与命名约定,用到的格式化 / lint 工具;\n- 测试框架、测试文件放在哪、怎么命名;\n- 从 git 历史总结出的提交信息写法;\n- 生成的代码、锁文件等不该手动修改的位置。"
+        }
+      }
+    },
+    {
+      "id": "c51a9e07-2d84-4f6b-b3a9-0e7c62d58f14",
+      "draft": {
+        "name": "论文写作",
+        "description": "论文 / 学位论文写作项目:建好 manuscript(主稿与分章)、figures、references、reviews、submissions、notes 目录,每个目录附 README;写入一条置顶的写作约定;再让 AI 生成 AGENTS.md(目标期刊、编译方式、引用与图表规范)。",
+        "directories": [
+          "manuscript/sections",
+          "figures",
+          "references",
+          "reviews",
+          "submissions",
+          "notes"
+        ],
+        "files": [
+          {
+            "path": "manuscript/README.md",
+            "content": "# manuscript — 主稿\n\n论文主稿与分章文件。\n\n- 主文件固定一个:LaTeX 用 `main.tex`,Word 用 `main.docx`。\n- 分章放 `sections/`,文件名带序号(如 `01-introduction.tex`),主文件里按顺序引入。\n- 大改之前打个版本(依赖版本库,或在 `submissions/` 留定稿快照),不要在文件名里堆 `final-final`。\n"
+          },
+          {
+            "path": "figures/README.md",
+            "content": "# figures — 图\n\n论文里用到的图。\n\n- 每张图都要能重新生成:保留生成脚本或源文件(`.py` / `.drawio` / `.svg`),和导出的图放在一起。\n- 导出优先矢量格式(`.pdf` / `.svg`);位图至少 300 dpi。\n- 文件名与正文里的引用标签一致(如 `fig-system-model.pdf` ↔ `\\label{fig:system-model}`)。\n"
+          },
+          {
+            "path": "references/README.md",
+            "content": "# references — 参考文献\n\n- 参考文献文件固定叫 `references.bib`,正文只引用这里有的条目。\n- 引用样式文件(`.bst` / `.csl`)也放这里。\n- PDF 原文建议导入资料库统一管理,这里只放写作直接要用的引用数据。\n"
+          },
+          {
+            "path": "reviews/README.md",
+            "content": "# reviews — 意见与回复\n\n导师意见、审稿意见与逐条回复。\n\n- 每一轮一个文件:`YYYY-MM-DD-来源.md`(如 `2026-10-01-reviewer2.md`)。\n- 回复逐条对应原意见,写明改了哪里(章节 / 页码)。\n"
+          },
+          {
+            "path": "submissions/README.md",
+            "content": "# submissions — 提交快照\n\n每次投稿 / 提交的定稿快照,**只读**。\n\n- 一次一个子目录:`YYYY-MM-DD-去向`(如 `2026-10-01-IEEE-TCOM`),放当时提交的 PDF 与源文件。\n- 之后的修改一律在 `manuscript/` 里做,不回头改快照。\n"
+          },
+          {
+            "path": "notes/README.md",
+            "content": "# notes — 写作笔记\n\n提纲、思路、待办与讨论记录。\n\n- 总提纲放 `outline.md`,随写作推进更新。\n- 讨论 / 组会记录用 `YYYY-MM-DD-主题.md`。\n"
+          }
+        ],
+        "memories": [
+          {
+            "category": "rules",
+            "filename": "写作约定.md",
+            "title": "论文写作约定",
+            "pinned": true,
+            "content": "本项目是论文写作项目,文件按以下目录存放(每个目录里有 README 详细说明):\n\n- manuscript/ — 主稿(main.tex 或 main.docx)与 sections/ 分章\n- figures/ — 图及其生成脚本 / 源文件\n- references/ — references.bib 与引用样式\n- reviews/ — 导师 / 审稿意见与逐条回复\n- submissions/ — 每次提交的定稿快照,只读\n- notes/ — 提纲与写作笔记\n\n规则:\n1. 只引用 references/references.bib 里已有的文献;**不编造文献、不编造数据**。缺引用时告诉用户,而不是自己补一条。\n2. 不修改 submissions/ 里的任何文件。\n3. 改正文时保持术语、符号和时态前后一致;大段改写前先说明打算怎么改。"
+          }
+        ],
+        "agentFile": {
+          "enabled": true,
+          "filename": "AGENTS.md",
+          "focus": "这是论文 / 学位论文写作项目。说明文件重点写:\n- 目标期刊 / 会议或学位要求(字数、格式模板);不知道就留「待补充」;\n- 主稿格式与编译方式:LaTeX 用什么引擎、怎么编译(如 latexmk -xelatex main.tex);Word 主文件在哪;\n- 章节结构与各章对应的文件;\n- 引用规范:引用样式、bib 文件位置、不编造文献;\n- 图表规范:放哪、格式、怎么重新生成;\n- 审稿意见的处理流程(reviews/ 与 submissions/ 的用法)。"
+        }
+      }
+    }
+  ]
+}
