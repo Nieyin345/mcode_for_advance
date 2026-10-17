@@ -36,9 +36,10 @@
  * 调度器的变量解析展开后再交宿主做真实路径校验 —— 这里不把它当成本地文件处理。
  */
 import { useState } from "react";
-import { ModuleWorkflowCallSchema, type ModuleWorkflowGrantCandidate, type ModuleWorkflowTarget } from "@contracts/moduleCapability";
+import { ModuleWorkflowCallSchema, sameWorkflowGrantPath, type ModuleWorkflowGrantCandidate, type ModuleWorkflowTarget } from "@contracts/moduleCapability";
 import type { NodeParamSpec } from "@contracts/nodeType";
 import { api } from "@renderer/lib/api.js";
+import { isMac, isWindows } from "@renderer/lib/platform.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ErrorNote, LoadingNote, Select } from "@renderer/components/ui/index.js";
@@ -213,14 +214,19 @@ export function ModuleCapabilityFields({
             </div>
           )}
           {grantCandidates.map((candidate) => {
-            const grantedPaths = new Set(candidate.grants.map((grant) => grant.projectPath));
+            // 【MC-036】按归一后的字面位置比对(与宿主同一判据):授权记录里存的是签发时
+            // 的写法,与项目行里的 `project.path` 不保证逐字节相同;裸 `has(projectPath)`
+            // 会让已授权的工作区仍显示「授权」按钮。
+            const caseInsensitive = isWindows || isMac;
+            const isGranted = (projectPath: string): boolean =>
+              candidate.grants.some((grant) => sameWorkflowGrantPath(grant.projectPath, projectPath, caseInsensitive));
             const candidateLabel = catalog.data ? workflowTargetLabel(catalog.data, candidate, locale) : `${candidate.moduleId} / ${candidate.contributionId}`;
             return (
               <div key={targetKey(candidate.moduleId, candidate.contributionId)} data-testid="module-grant-candidate" className="flex flex-col gap-1">
                 <span className="text-[0.7143em] font-medium text-content">{candidateLabel}</span>
                 {projectPaths.length === 0 && <span className="text-[0.7143em] text-content-subtle">{t("settings.workflows.moduleGrantNoWorkspace")}</span>}
                 {projectPaths.map((projectPath) => {
-                  const granted = grantedPaths.has(projectPath);
+                  const granted = isGranted(projectPath);
                   const busy = grantBusy === `${targetKey(candidate.moduleId, candidate.contributionId)}|${projectPath}|${granted ? "revoke" : "issue"}`;
                   return (
                     <div key={projectPath} className="flex items-center justify-between gap-2">

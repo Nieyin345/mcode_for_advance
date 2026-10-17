@@ -7,12 +7,16 @@ import {
 } from "@contracts/modules";
 import {
   ModuleCapabilityDescriptorSchema, ModuleWorkflowGrantSchema, classifyModuleWorkflowGrants,
-  moduleWorkflowGrantKey, serializeModuleWorkflowGrants,
+  moduleWorkflowGrantKey, sameWorkflowGrantPath, serializeModuleWorkflowGrants,
   type ModuleCapabilityDescriptor, type ModuleWorkflowTarget,
   type ModuleWorkflowGrant, type ModuleWorkflowGrantArchive, type ModuleWorkflowGrantCandidate,
   type ModuleWorkflowGrantRequest,
 } from "@contracts/moduleCapability";
 import { createIsolatedActionRun } from "./isolatedActionRunner.js";
+
+/** Windows/macOS 的文件系统大小写不敏感 —— 授权路径比对与幂等键据此折叠大小写
+ *  (与 `lib/pathGuard.samePath` 同一平台判据;[MC-036])。 */
+const CASE_INSENSITIVE_PATHS = process.platform === "win32" || process.platform === "darwin";
 
 export interface CapabilityContext { signal: AbortSignal; progress(value: number): void; }
 export interface Capability<I> {
@@ -263,7 +267,10 @@ export class ModuleHost {
       && grant.moduleVersion === module.version
       && grant.contributionId === contributionId
       && grant.capabilityId === target.capabilityId
-      && (projectPath === undefined || grant.projectPath === projectPath));
+      // 【MC-036】工作区按归一后的字面位置比对(契约包 `sameWorkflowGrantPath`):
+      // 授权时的写法与本次运行的 `context.cwd` 不保证逐字节相同,裸 `===` 会让合法
+      // 授权假失配(fail-closed 但不可用)。大小写折叠按平台给(Windows/macOS)。
+      && (projectPath === undefined || sameWorkflowGrantPath(grant.projectPath, projectPath, CASE_INSENSITIVE_PATHS)));
     return hit ? target : undefined;
   }
   /** 【MC-036】目录里给授权面板的候选人:用户模块的只读贡献 + 已有授权的工作区。
@@ -357,8 +364,10 @@ export class ModuleHost {
         contributionId: input.contributionId, capabilityId: target.capabilityId,
         projectPath: input.projectPath, grantedAt: Date.now(),
       };
-      const key = moduleWorkflowGrantKey(grant);
-      const next = (archive.state === "valid" ? archive.grants : []).filter(existing => moduleWorkflowGrantKey(existing) !== key);
+      // 【MC-036】幂等键的**工作区**那一段也归一:同一目录换个写法
+      // (`D:\proj` / `d:\proj\` / `D:\proj\.`)是**一条**授权(刷新),不是三条。
+      const key = moduleWorkflowGrantKey(input, CASE_INSENSITIVE_PATHS);
+      const next = (archive.state === "valid" ? archive.grants : []).filter(existing => moduleWorkflowGrantKey(existing, CASE_INSENSITIVE_PATHS) !== key);
       next.push(grant);
       await this.writeGrantsOrRefuse(next);
       return grant;
@@ -373,8 +382,8 @@ export class ModuleHost {
         throw Error(`工作流授权表损坏(${archive.reason}),无法安全撤销;修复请删除或改正文件「ui-modules/workflow-grants.json」后重启。`);
       }
       if (archive.state === "absent") return { revoked: false };
-      const key = moduleWorkflowGrantKey(input);
-      const next = archive.grants.filter(existing => moduleWorkflowGrantKey(existing) !== key);
+      const key = moduleWorkflowGrantKey(input, CASE_INSENSITIVE_PATHS);
+      const next = archive.grants.filter(existing => moduleWorkflowGrantKey(existing, CASE_INSENSITIVE_PATHS) !== key);
       if (next.length === archive.grants.length) return { revoked: false };
       await this.writeGrantsOrRefuse(next);
       return { revoked: true };

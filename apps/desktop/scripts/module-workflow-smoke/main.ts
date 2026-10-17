@@ -247,6 +247,36 @@ await check("授权表损坏时 fail-closed + 显式诊断,且拒绝改写", asy
   // 修复后立即恢复(读侧不缓存)。
   assert.equal((await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })))).status, "success");
 });
+await check("MC-036:工作区按归一位置授权/撤销(不同写法不制造假失配、不攒重复授权)", async () => {
+  // 撤销基线授权,从"未授权"开始(上面的用例恢复过一份 fixtureGrant)。
+  await host.revokeWorkflowGrant(fixtureGrant);
+  assert.ok(!host.catalog().workflowTargets?.some(target => target.moduleId === "user.workflow-fixture"));
+  const variants = [workspace + "/", workspace + "/.", workspace + "//"];
+  const grantsOf = () => host.catalog().workflowGrantCandidates
+    ?.find(item => item.moduleId === "user.workflow-fixture" && item.contributionId === "inspect")?.grants ?? [];
+  // ① 授权时是"带尾随分隔符"的写法,运行时 cwd 是项目行里的原样写法 —— 必须命中。
+  //    裸 `grant.projectPath === context.cwd` 会在这里假失配(fail-closed 但不可用)。
+  await host.issueWorkflowGrant({ ...fixtureGrant, projectPath: variants[0]! });
+  const outcome = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })));
+  assert.equal(outcome.status, "success", outcome.error);
+  // ② 同一目录的三种写法只应是一条授权(幂等键归一),不是三条。
+  for (const variant of variants.slice(1)) await host.issueWorkflowGrant({ ...fixtureGrant, projectPath: variant });
+  assert.equal(grantsOf().length, 1, JSON.stringify(grantsOf()));
+  // ③ 撤销时用又一种写法,同样命中同一条 —— 撤销后执行立刻失败闭合。
+  const revoked = await host.revokeWorkflowGrant({ ...fixtureGrant, projectPath: variants[1]! });
+  assert.equal(revoked.revoked, true);
+  assert.equal(grantsOf().length, 0, JSON.stringify(grantsOf()));
+  const closed = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })));
+  assert.equal(closed.status, "failed");
+  assert.match(closed.error ?? "", /需要宿主核验的工作流授权/);
+  // ④ 归一不能把**不同位置**揉成一个:另一个工作区是独立的一条授权。
+  await host.issueWorkflowGrant(fixtureGrant);
+  await host.issueWorkflowGrant({ ...fixtureGrant, projectPath: evidenceDir });
+  assert.equal(grantsOf().length, 2, JSON.stringify(grantsOf()));
+  await host.revokeWorkflowGrant({ ...fixtureGrant, projectPath: evidenceDir });
+  // 复原:基线授权(执行路径上面的用例已恢复)。
+  assert.equal((await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })))).status, "success");
+});
 await check("未知贡献失败而不是落到模型", async () => {
   const outcome = await runner.execute(contextFor(inputFor({ ...node.params, contributionId: "missing" })));
   assert.equal(outcome.status, "failed");

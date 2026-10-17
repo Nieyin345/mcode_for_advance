@@ -55,7 +55,7 @@ const corruptGrantCatalog=ModuleCatalogSchema.parse({
 });
 /** 【MC-036】授权替身的状态:签发 / 撤销改它,`catalog` 从它派生 —— 组件签发后会
  *  `refetch()` 重读目录,所以替身必须"记住"刚刚发生的授权,否则面板永远画不出已授权态。 */
-const grantedState={on:false};
+const grantedState={on:false,projectsVariant:false};
 const grantedCatalog=():unknown=>grantedState.on
   ? ModuleCatalogSchema.parse({
       ...grantCatalog,
@@ -68,11 +68,13 @@ let mode:Mode="hold";const held:Call[]=[];
 interface Call {id:number;name:string;input:unknown}
 const catalog=():unknown=>{if(mode==="fail")throw Error("catalog unavailable (fixture)");if(mode==="empty")return {modules:[],capabilities:[]};if(mode==="legacy")return structuredClone(legacy);if(mode==="rich")return structuredClone(rich);if(mode==="grants")return structuredClone(grantedCatalog());if(mode==="grants-corrupt")return structuredClone(corruptGrantCatalog);return host.catalog();};
 const projectRoot=join(root,"project");
+/** 项目行里显示的路径 —— 与授权记录里的写法**故意不同**(见 grants 用例)。 */
+const projectVariantRoot=projectRoot+"/./";
 const handlers:Record<string,(input:unknown)=>unknown>={
   catalog,tasks:()=>[],
   // 【MC-036】授权写入口的**替身**:把变更记下来并翻动 grantedState;组件随后 refetch
   // 重读 catalog 时拿到的新目录就带上了(或撤掉了)这一条授权。
-  "project.list":()=>({projects:[{id:"p1",name:"Fixture project",path:projectRoot,archived:false,sortOrder:0,pinnedAt:null}]}),
+  "project.list":()=>({projects:[{id:"p1",name:"Fixture project",path:grantedState.projectsVariant?projectVariantRoot:projectRoot,archived:false,sortOrder:0,pinnedAt:null}]}),
   issueWorkflowGrant:(input:unknown)=>{issues.push(input as never);grantedState.on=true;return structuredClone(grantedCatalog());},
   revokeWorkflowGrant:(input:unknown)=>{revokes.push(input as never);grantedState.on=false;return structuredClone(grantedCatalog());},
 };
@@ -189,6 +191,17 @@ await withAuditPage(dir,async(page:Page)=>{
   await click("撤销授权");await page.waitFor("document.querySelector('[data-testid=module-grant-issue]')");
   assert.deepEqual(revokes.at(-1),{moduleId:"user.file-report",moduleVersion:"2.0.0",contributionId:"inspect",capabilityId:"core.file.inspect",projectPath:projectRoot});
   pass("revoking sends the same identity and returns to the ungranted state");
+  // 【MC-036】授权记录的工作区**写法**与项目行的写法不同(带尾随分隔符、`.` 段)时,
+  // 面板必须按同一归一判据认出"已授权" —— 裸逐字节比较会画出「授权」按钮,
+  // 用户再点一次、宿主按归一键把它当成同一条刷新,界面却始终显示未授权。
+  grantedState.on = true;          // 目录回到"已授权"态(上一行刚撤销过)
+  grantedState.projectsVariant = true;
+  await inspector("doc=blank","grants");
+  await page.waitFor("document.querySelector('[data-testid=module-grant-revoke]')");
+  assert.equal(await page.eval("!!document.querySelector('[data-testid=module-grant-issue]')"),false);
+  pass("grant panel matches a granted workspace written differently (trailing separator / dot segment)");
+  grantedState.on = false;
+  grantedState.projectsVariant = false;
   await inspector("doc=blank","grants-corrupt");await page.waitFor("document.querySelector('[data-testid=module-grant-corrupt]')");
   assert.match(await text("[data-testid=module-grant-corrupt]"),/损坏/);
   assert.equal(await page.eval("document.querySelector('[data-testid=module-grant-issue]').disabled===true"),true);

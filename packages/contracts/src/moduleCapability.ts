@@ -279,12 +279,54 @@ export function serializeModuleWorkflowGrants(grants: readonly ModuleWorkflowGra
   return JSON.stringify({ version: MODULE_WORKFLOW_GRANT_FILE_VERSION, grants }, null, 2) + "\n";
 }
 
+/**
+ * 【MC-036】工作区路径的**字面归一**:分隔符统一成 `/`、去掉多余的 `/`、解析 `.` 与
+ * `..`(词法层,不碰文件系统)、去掉尾随 `/`;**不做 realpath** —— 符号链接两边写法不同
+ * 就算不同。`caseInsensitive` 由调用方按平台给(契约包不读 `process`/`navigator`)。
+ *
+ * 为什么放在契约包里而不是复用 `lib/pathGuard.samePath`:那个模块 import 了
+ * `store/repositories` → `db` → `electron`,主进程的 `ModuleHost` 是传输无关的纯宿主,
+ * 渲染端的授权面板也 import 本文件 —— 两边都需要**同一份**判据,只有这里能同时被
+ * 两边消费。词法归一对项目/工作区这类**绝对路径**是充分的:授权比对要的是"用户指的是
+ * 不是同一个目录",物理同一性(symlink/junction)由真正的资源闸另判。
+ */
+export function normalizeWorkflowGrantPath(projectPath: string, caseInsensitive: boolean): string {
+  const unified = projectPath.replace(/\\/g, "/");
+  // 保留 Windows 盘符前缀(`C:`);其余按段做词法解析。
+  const drive = /^[A-Za-z]:/.exec(unified)?.[0] ?? "";
+  const rest = drive ? unified.slice(drive.length) : unified;
+  const absolute = rest.startsWith("/");
+  const out: string[] = [];
+  for (const segment of rest.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (out.length > 0 && out[out.length - 1] !== "..") out.pop();
+      else if (!absolute) out.push("..");
+      continue;
+    }
+    out.push(segment);
+  }
+  const joined = `${drive}${absolute ? "/" : ""}${out.join("/")}`;
+  return caseInsensitive ? joined.toLowerCase() : joined;
+}
+
+/** 两条授权路径是否指向**同一个字面位置**(见 {@link normalizeWorkflowGrantPath})。 */
+export function sameWorkflowGrantPath(a: string, b: string, caseInsensitive: boolean): boolean {
+  return normalizeWorkflowGrantPath(a, caseInsensitive) === normalizeWorkflowGrantPath(b, caseInsensitive);
+}
+
 /** 一条授权的**幂等键** —— 同一 (模块, 版本, 贡献, 能力, 工作区) 只应存在一份记录：
- * 重复授权是幂等的（刷新 `grantedAt`），不会在表里攒出一串覆盖同一目标的重复行。 */
+ * 重复授权是幂等的（刷新 `grantedAt`），不会在表里攒出一串覆盖同一目标的重复行。
+ *
+ * 【MC-036】工作区那段按 {@link normalizeWorkflowGrantPath} 归一,避免同一目录换个写法
+ * (`D:\proj` / `d:\proj\` / `D:\proj\.`)在表里攒成多条。不带平台参数时按**大小写
+ * 敏感**归一(调用方需要折叠大小写时传第四参)。
+ */
 export function moduleWorkflowGrantKey(
   grant: Pick<ModuleWorkflowGrant, "moduleId" | "moduleVersion" | "contributionId" | "capabilityId" | "projectPath">,
+  caseInsensitive = false,
 ): string {
-  return JSON.stringify([grant.moduleId, grant.moduleVersion, grant.contributionId, grant.capabilityId, grant.projectPath]);
+  return JSON.stringify([grant.moduleId, grant.moduleVersion, grant.contributionId, grant.capabilityId, normalizeWorkflowGrantPath(grant.projectPath, caseInsensitive)]);
 }
 
 /** 一次授权变更的输入（不含 `grantedAt`，由签发时刻补）。 */
