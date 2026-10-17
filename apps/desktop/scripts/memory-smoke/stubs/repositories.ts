@@ -15,9 +15,20 @@
  * ⚠️ **绝不能让真的那个被 import 进来**:真的 `SettingRepo.set` 内部就是 `persist()`,
  * 一次写入就够整份重写用户的 `mcode.db`。给桩是**安全前提**,不只是省事。
  *
- * (与 `mcode-admin-smoke/stubs/repositories.ts` 是同一份形状的收窄版 —— 那一份还带
- *  一个内存版 `WorkflowRepo`,这一套用不着。)
+ * ## 【MC-041 收尾】`WorkflowRepo` 是后来被迫进来的,不是这一套想验的东西
+ *
+ * `appControl/tools.ts` 在 MC-041 里加了一句 `import { getWorkflow } from
+ * "@main/orchestration/library.js"`(派生工具描述要用工作流声明),于是**任何**打到
+ * `appControl/tools` 的 bundle(app-control-smoke、本套件……)都会把 `library.ts`
+ * 整份拉进来 —— 而它顶层 `import { SettingRepo, WorkflowRepo }`。这与 `SettingRepo`
+ * 当年"被迫进来"是同一件事的又一次发生:本套件与 tools.ts 都不碰 WorkflowRepo 的
+ * 内容,给一个内存空表即可(读不到 = 没有自建工作流,正是这台无头机器的事实)。
+ *
+ * 形状照抄 `mcode-admin-smoke/stubs/repositories.ts` 的 `WorkflowRepo`(那一份被
+ * `library.ts` 的 save/list 验过),只保留 `library.ts` 真正会调的四个方法。
  */
+import type { WorkflowDoc } from "@contracts/workflow";
+
 export const SettingRepo = {
   get(_key: string): string | null {
     return null;
@@ -50,3 +61,42 @@ export const ProjectRepo = { list() { return [
   { id: "p_memory", name: "Memory test", path: "/isolated" },
   { id: "p_other", name: "Other project", path: "/isolated-other" },
 ]; } };
+
+// ── 【MC-041 收尾】`library.ts` 顶层要的内存空表(见文件头注释)。──
+export interface WorkflowRow {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  builtin: boolean;
+  doc: WorkflowDoc;
+  updatedAt: number;
+}
+
+const workflowRows = new Map<string, WorkflowRow>();
+
+/** 读不到 = 这台无头机器没有自建工作流;本套件的断言不落在这张表上。 */
+export const WorkflowRepo = {
+  list(): WorkflowRow[] {
+    return [...workflowRows.values()];
+  },
+  get(id: string): WorkflowRow | null {
+    return workflowRows.get(id) ?? null;
+  },
+  save(doc: WorkflowDoc): void {
+    const existing = workflowRows.get(doc.id);
+    workflowRows.set(doc.id, {
+      id: doc.id,
+      name: doc.name,
+      description: doc.description ?? null,
+      icon: doc.icon ?? null,
+      // 与真表一致:对内置 id 写的这一行就是"覆盖内置"。
+      builtin: existing?.builtin ?? false,
+      doc,
+      updatedAt: doc.updatedAt,
+    });
+  },
+  remove(id: string): void {
+    workflowRows.delete(id);
+  },
+};

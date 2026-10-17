@@ -240,16 +240,22 @@ export function describeWorkflowToolParams(workflowId: string): string {
  * ⚠️ **无头套件里 DB 可能还没就绪**(`app-control-smoke` 不 initDb —— 它验的是
  * 目录/权限那些纯面)。那时 `listWorkflows()` 会抛 —— 目录**不该因此整个炸掉**:
  * DB 不可用 = 我们此刻证明不了"派生工具指向现存工作流",那就不把它们并列进目录
- * (保守方向),而不是把 `app_api_list` 变成错误。 */
+ * (保守方向),而不是把 `app_api_list` 变成错误。
+ *
+ * 【MC-041 修复 · custom-ui-refresh-smoke 红例】容错的 try 必须包住**整条链**,
+ * 不只 `listWorkflows()`:`publishedWorkflowTools()` → `classifyPublished()` →
+ * `SettingRepo.get` 在 DB 未就绪时**同样抛**。从前它在 try 之外 —— 于是
+ * `app_api_list` 整个变成 `失败:getDb() called before initDb() resolved`,
+ * 连与派生工具毫无关系的 `setting.set` 都查不到(一个"发布表读取"的故障把通用
+ * 目录打瘫)。判据来源就是一个真红:custom-ui-refresh-smoke 的第一条断言。 */
 export function publishedToolsWithDocs(): Array<{ workflowId: string; tool: PublishedWorkflowTool; name: string; docName: string }> {
-  const { tools } = publishedWorkflowTools();
-  let known: Set<string>;
   try {
-    known = new Set(listWorkflows().map((w) => w.id));
+    const { tools } = publishedWorkflowTools();
+    const known = new Set(listWorkflows().map((w) => w.id));
+    return tools
+      .filter((t) => known.has(t.workflowId))
+      .map((t) => ({ ...t, name: t.tool.name, docName: getWorkflow(t.workflowId)?.name ?? t.workflowId }));
   } catch {
     return [];
   }
-  return tools
-    .filter((t) => known.has(t.workflowId))
-    .map((t) => ({ ...t, name: t.tool.name, docName: getWorkflow(t.workflowId)?.name ?? t.workflowId }));
 }
