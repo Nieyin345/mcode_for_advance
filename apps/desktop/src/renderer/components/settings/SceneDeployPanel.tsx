@@ -60,6 +60,7 @@ import type {
   ScenePreflightWire,
 } from "@contracts/ipc";
 import { PanelHeader } from "./PanelHeader.js";
+import { PlanApprovalBar } from "./PlanApprovalBar.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import {
   buildSceneApplyInput,
@@ -251,26 +252,32 @@ export function SceneDeployPanel() {
         />
       </Field>
 
-      <div className="mb-3 flex items-center gap-2">
-        <Button variant="secondary" size="sm" disabled={!canPreview(state)} onClick={preview} className="gap-1">
+      <PlanApprovalBar
+        testId="scene-deploy-approval-bar"
+        canApprove={canApprove(state)}
+        canRun={canDeploy(state) && grantActive}
+        grant={state.grant}
+        busyApprove={busy === "approve"}
+        busyRun={busy === "apply" || busy === "resume"}
+        approveLabel={t("sceneDeploy.approve")}
+        approvingLabel={t("sceneDeploy.approving")}
+        runLabel={t("sceneDeploy.deploy")}
+        runningLabel={t("sceneDeploy.deploying")}
+        grantActiveLabel={t("sceneDeploy.stage.approved", { expiresAt: grantExpiresText })}
+        grantExpiredLabel={t("sceneDeploy.stage.approvedExpired")}
+        resetLabel={t("sceneDeploy.reset")}
+        onApprove={() => void approve()}
+        onRun={() => void apply()}
+        onReset={() => {
+          setPreviewRequest(null);
+          setPreviewError(null);
+          dispatch({ type: "reset" });
+        }}
+      >
+        {/* 预览与「续跑」是场景面板特有的动作 —— 插在批准钮之前（顺序即语义）。 */}
+        <Button variant="secondary" size="sm" disabled={!canPreview(state) || busy !== null} onClick={preview} className="gap-1">
           <IconRefresh size={12} />
           {t("sceneDeploy.preview")}
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={!canApprove(state) || busy !== null}
-          onClick={() => void approve()}
-        >
-          {busy === "approve" ? t("sceneDeploy.approving") : t("sceneDeploy.approve")}
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={!canDeploy(state) || !grantActive || busy !== null}
-          onClick={() => void apply()}
-        >
-          {busy === "apply" ? t("sceneDeploy.deploying") : t("sceneDeploy.deploy")}
         </Button>
         {/* 【MC-002】部署中断(partial/failed)后才出现 —— 跳过已完成的步骤接着跑。 */}
         {canResume(state) ? (
@@ -278,19 +285,7 @@ export function SceneDeployPanel() {
             {busy === "resume" ? t("sceneDeploy.resuming") : t("sceneDeploy.resume")}
           </Button>
         ) : null}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="ml-auto"
-          onClick={() => {
-            setPreviewRequest(null);
-            setPreviewError(null);
-            dispatch({ type: "reset" });
-          }}
-        >
-          {t("sceneDeploy.reset")}
-        </Button>
-      </div>
+      </PlanApprovalBar>
 
       {/* 输入侧的即时错误(空 / JSON 坏)—— 与「声明不合法」分开报。 */}
       {previewError !== null && (

@@ -240,6 +240,9 @@ section("8. 面板真的接上入口 + 挂进设置页(只声明不接线 = 用�
   check("★ 面板调 unattendedPlans.resume / abandon(跨重启治理动作)", /await api\.unattendedPlans\.resume\(/.test(panel) && /await api\.unattendedPlans\.abandon\(/.test(panel));
   check("★ 面板用状态机(dispatch + canApproveUnattended/canRunUnattended 门控)", panel.includes("unattendedPlanReducer") && panel.includes("canApproveUnattended(") && panel.includes("canRunUnattended("));
   check("★ 面板用两个 build…Input 构造入参", panel.includes("buildUnattendedApproveInput(") && panel.includes("buildUnattendedRunInput("));
+  // 【MC-001 系统性修复第 3 条】与场景部署共用同一个动作栏组件。
+  check("★ 无人值守面板用共享 PlanApprovalBar(不另写一份)", /<PlanApprovalBar[\s/>]/.test(panel) && panel.includes("unattended-plan-approval-bar"));
+  check("★ 无人值守面板的门控仍由自己给(共享组件只做展示)", panel.includes("canApproveUnattended(state)") && panel.includes("canRunUnattended(state)"));
 
   const governance = readFileSync(join(process.cwd(), "src/renderer/components/settings/GovernancePanel.tsx"), "utf8");
   // ⚠️ 判据必须落在**渲染调用**上,不是"文件里出现过这个名字" —— 后者在把渲染注释/短路掉

@@ -39,6 +39,7 @@ import type {
 import { cn } from "@renderer/lib/cn.js";
 import { Badge, Button, EmptyState, ErrorNote, Field, Input, Select } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
+import { PlanApprovalBar } from "./PlanApprovalBar.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import {
@@ -183,7 +184,6 @@ export function UnattendedPlanPanel(): React.JSX.Element {
     }
   }, []);
 
-  const grantActive = state.grant !== null && Date.now() < state.grant.expiresAt;
   const runReport = state.run !== null && state.run.ok ? state.run.report : null;
 
   return (
@@ -289,28 +289,27 @@ export function UnattendedPlanPanel(): React.JSX.Element {
         </ul>
       ) : null}
 
-      <div className="mb-4 flex items-center gap-2">
-        <Button variant="primary" size="sm" disabled={!canApproveUnattended(state) || busy !== null} onClick={() => void approve()}>
-          {busy === "approve" ? t("unattended.approving") : t("unattended.approve")}
-        </Button>
-        <Button variant="primary" size="sm" disabled={!canRunUnattended(state) || busy !== null} onClick={() => void run()}>
-          {busy === "run" ? t("unattended.running") : t("unattended.run")}
-        </Button>
-        {state.grant !== null ? (
-          <Badge variant={grantActive ? "success" : "warning"}>{grantActive ? t("unattended.grantActive") : t("unattended.grantExpired")}</Badge>
-        ) : null}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="ml-auto"
-          onClick={() => {
-            setActionError(null);
-            dispatch({ type: "reset" });
-          }}
-        >
-          {t("unattended.reset")}
-        </Button>
-      </div>
+      <PlanApprovalBar
+        testId="unattended-plan-approval-bar"
+        canApprove={canApproveUnattended(state)}
+        canRun={canRunUnattended(state)}
+        grant={state.grant}
+        busyApprove={busy === "approve"}
+        busyRun={busy === "run"}
+        approveLabel={t("unattended.approve")}
+        approvingLabel={t("unattended.approving")}
+        runLabel={t("unattended.run")}
+        runningLabel={t("unattended.running")}
+        grantActiveLabel={t("unattended.grantActive")}
+        grantExpiredLabel={t("unattended.grantExpired")}
+        resetLabel={t("unattended.reset")}
+        onApprove={() => void approve()}
+        onRun={() => void run()}
+        onReset={() => {
+          setActionError(null);
+          dispatch({ type: "reset" });
+        }}
+      />
 
       {state.approvalError !== null ? (
         <ErrorNote tone="warning" icon={IconAlertTriangle} className="mb-3">

@@ -340,6 +340,10 @@ section("9. 面板真的接上四条入口 + 挂进设置页(只声明不接线 
   check("★ 面板调 scene.apply(显式 await,写操作)", /await api\.scene\.apply\(/.test(panel), panel.match(/scene\.apply\([^\n]*/)?.[0]);
   check("★ 面板用状态机(dispatch + canApprove/canDeploy 门控)", panel.includes("sceneDeployReducer") && panel.includes("canApprove(") && panel.includes("canDeploy("));
   check("★ 面板用 buildSceneApprovalInput / buildSceneApplyInput 构造入参", panel.includes("buildSceneApprovalInput(") && panel.includes("buildSceneApplyInput("));
+  // 【MC-001 系统性修复第 3 条】场景与无人值守共用**同一个**「预览 → 批准 → 执行」动作栏,
+  // 不再各写一份。判据落在 `PlanApprovalBar` 真的被渲染 + 两族面板各自传给它的 testId 上。
+  check("★ 场景面板用共享 PlanApprovalBar 渲染批准/执行动作栏(不另写一份)", /<PlanApprovalBar[\s/>]/.test(panel) && panel.includes("scene-deploy-approval-bar"));
+  check("★ 场景面板的门控与执行仍由自己给(共享组件只做展示)", panel.includes("canApprove(state)") && panel.includes("canDeploy(state)"));
 
   const settingsPage = readFileSync(join(process.cwd(), "src/renderer/components/settings/SettingsPage.tsx"), "utf8");
   // 【MC-001】面板自 MC-001 起经 `GovernancePanel`(场景部署 + 无人值守两半的子页签壳)
