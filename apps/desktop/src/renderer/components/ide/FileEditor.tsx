@@ -1664,9 +1664,15 @@ function GotoActivityPill() {
  *  现在交给 `ChunkedMarkdown`：按空行切段、滚到附近才渲染下一段。容器仍然**是
  *  这个 `scrollRef`**（滚动记忆挂它上面），所以给的是 `scroll="parent"` —— 让它
  *  在这儿挂哨兵，而不是自己再套一层（那层不滚，哨兵就永远不触发）。 */
-function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; projectPath: string }) {
+/** 导出给无头套件：预览面板的读失败/重试是用户可见合同，挂真组件比复刻逻辑可靠。 */
+export function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; projectPath: string }) {
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null); // null = loading
+  /** 【ARC-007】读取失败的原文 —— 从前 `catch { setContent("") }` 把 IO 失败画成
+   *  **一个空文档**（"degrade to empty"）。只在主进程真的回了空串时才是空文档；
+   *  读失败是另一件事，必须显式说出来并给重试（与源码编辑器 UI-019 同一条纪律）。 */
+  const [readError, setReadError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
   // The preview pane is a plain scroll container that unmounts on every file
   // switch (and re-mounts its body on every content read), so without this a
   // long README the user had scrolled re-opened at the top. Monaco's own
@@ -1675,19 +1681,40 @@ function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; proj
   useEffect(() => {
     let cancelled = false;
     setContent(null);
+    setReadError(null);
     textFileWrites.waitForPending(filePath)
       .then(() => api.file.readFile({ filePath }))
       .then(({ content }) => {
         if (!cancelled) setContent(content);
       })
-      .catch(() => {
-        if (!cancelled) setContent(""); // degrade to empty
+      .catch((err: unknown) => {
+        if (!cancelled) setReadError(err instanceof Error ? err.message : String(err));
       });
     return () => {
       cancelled = true;
     };
-  }, [filePath]);
+  }, [filePath, retryNonce]);
 
+  if (readError !== null) {
+    return (
+      <div className="flex h-full items-center justify-center px-4">
+        <div className="flex max-w-md flex-col items-center gap-2 text-center">
+          <div className="flex items-center gap-1.5 text-[12px] text-content">
+            <IconAlertTriangle size={13} className="shrink-0 text-warning" />
+            {t("ide.editor.readFailed")}
+          </div>
+          <div className="break-all text-[11px] text-content-subtle">{readError}</div>
+          <button
+            type="button"
+            onClick={() => setRetryNonce((n) => n + 1)}
+            className="rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors hover:bg-surface-hover"
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (content === null) {
     return (
       <div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-content-subtle">
