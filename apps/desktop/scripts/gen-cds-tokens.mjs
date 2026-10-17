@@ -37,6 +37,33 @@ const outPath = join(desktop, "src", "renderer", "tokens.cds.css");
  *  用 var() 的不取 —— 那些是语义层，Mcode 有自己的语义名）。 */
 const RAMP_PREFIXES = ["--cds-gray-", "--cds-orange-"];
 
+/** 几何/阴影类 token：上游给的是 px/rem/阴影串，Mcode 直接消费(不去三元组化)。
+ *  只取**与主题无关**的那些；明暗分叉的语义 token 留在 styles.css。 */
+const GEOMETRY_KEYS = [
+  "--radius-xs", "--radius-sm", "--radius-md", "--radius-lg",
+  "--radius-xl", "--radius-2xl", "--radius-3xl",
+  "--cds-panel-radius", "--cds-radius-composer",
+  "--cds-message-bubble-radius", "--cds-message-bubble-radius-meeting",
+  "--cds-radius-pill",
+  "--cds-shadow-sm", "--cds-shadow-md", "--cds-shadow-lg", "--cds-shadow-popover",
+  "--cds-shadow-composer", "--cds-shadow-composer-hover", "--cds-shadow-composer-focus",
+  "--cds-ring-hairline", "--cds-ring-inner", "--cds-ring-outer",
+];
+
+function parseGeometry(css) {
+  const out = new Map();
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // 多行值(阴影串跨行):按 `key:` 起、到匹配的分号止。
+  for (const key of GEOMETRY_KEYS) {
+    const re = new RegExp(`^\\s*${escapeRe(key)}\\s*:([\\s\\S]*?);`, "m");
+    const m = re.exec(css);
+    if (!m) continue;
+    const value = m[1].replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
+    if (value.length > 0 && value.length < 400) out.set(key, value);
+  }
+  return out;
+}
+
 function parseRamps(css) {
   const ramp = new Map();
   for (const line of css.split("\n")) {
@@ -66,6 +93,7 @@ if (!existsSync(upstreamPath)) {
 }
 const upstream = readFileSync(upstreamPath, "utf8");
 const ramps = parseRamps(upstream);
+const geometry = parseGeometry(upstream);
 if (ramps.size < 60) {
   console.error(`只解析到 ${ramps.size} 个色阶，少于预期（>=60）—— 上游格式可能变了。`);
   process.exit(1);
@@ -86,6 +114,27 @@ for (const [name, hex] of [...ramps].sort(([a], [b]) => (a < b ? -1 : 1))) {
   lines.push(`  ${mname}: ${hexToTriplet(hex)}; /* ${hex} */`);
 }
 lines.push("}", "");
+lines.push("/* 几何 / 阴影(与主题无关;值直接来自上游,不转三元组)。 */", ":root {");
+/** 上游几何值里引用的语义变量 → Mcode 的语义名（Mcode 不定义 --cds-*）。
+ *  未映射的 var 会让整条阴影静默失效，所以这里必须逐条对齐。 */
+const VAR_MAP = {
+  "--cds-border": "var(--edge)",
+  "--cds-border-strong": "var(--input-edge)",
+  "--cds-shadow-color": "rgba(0, 0, 0, 0.08)",
+  "--cds-rem-scale": "1",
+  "--cds-radius": "8px",
+};
+function remapVars(value) {
+  return value.replace(/var\((--cds-[a-z-]+)(?:,\s*([^)]*))?\)/g, (_m, name, fallback) => {
+    const mapped = VAR_MAP[name];
+    if (mapped !== undefined) return mapped;
+    return fallback !== undefined ? fallback : "initial";
+  });
+}
+for (const [name, value] of [...geometry].sort(([a], [b]) => (a < b ? -1 : 1))) {
+  lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${remapVars(value)};`);
+}
+lines.push("}", "");
 
 const output = lines.join("\n");
 if (process.argv.includes("--check")) {
@@ -98,8 +147,8 @@ if (process.argv.includes("--check")) {
     console.error("tokens.cds.css 与上游不一致 —— 重跑 node scripts/gen-cds-tokens.mjs");
     process.exit(1);
   }
-  console.log(`tokens.cds.css 与上游一致(${ramps.size} 个色阶)。`);
+  console.log(`tokens.cds.css 与上游一致(${ramps.size} 个色阶 + ${geometry.size} 个几何/阴影)。`);
 } else {
   writeFileSync(outPath, output, "utf8");
-  console.log(`wrote ${ramps.size} ramps → ${outPath}`);
+  console.log(`wrote ${ramps.size} ramps + ${geometry.size} geometry tokens → ${outPath}`);
 }

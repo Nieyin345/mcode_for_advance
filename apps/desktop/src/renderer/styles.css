@@ -857,6 +857,17 @@ body {
 
   /* 焦点环三层：内 1px 背景色（任何底色上都读得出来）+ 1px 强调色 +
    * 6px 光晕。危险操作用同一形状、只换颜色 —— 用户不用重新学（报告 §3.6）。 */
+  /* 【ARC-005 V0】几何/阴影别名 —— 消费 open-claude-ui 生成物（tokens.cds.css）。
+   * 只加别名，不改组件；组件逐个迁移时直接用这些名字。 */
+  --radius-panel: var(--m-panel-radius);          /* 10px 面板/卡片 */
+  --radius-composer: var(--m-radius-composer);    /* 20px 输入框外框 */
+  --radius-bubble: var(--m-message-bubble-radius);/* 消息气泡 */
+  --radius-pill: var(--m-radius-pill);
+  --shadow-card: var(--m-shadow-sm);
+  --shadow-popover: var(--m-shadow-popover);
+  --shadow-composer: var(--m-shadow-composer);
+  --hairline: var(--m-ring-hairline);
+
   --focus-ring:
     inset 0 0 0 1px rgb(var(--surface)),
     0 0 0 1px rgb(var(--accent)),

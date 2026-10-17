@@ -131,6 +131,16 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
     checkMsg = (e as { stderr?: string }).stderr ?? String(e);
   }
   check("★ tokens.cds.css 与上游 open-claude-ui 一致", checkOk, checkMsg.slice(0, 300));
+  // 几何/阴影:生成物不得残留上游变量名(--cds-*),否则整条阴影静默失效。
+  const geomTokens = read("src/renderer/tokens.cds.css");
+  check("★ 几何 token 不含未解析的上游变量(--cds-*)", !/var\(--cds-/.test(geomTokens), geomTokens.match(/var\(--cds-[^)]*/g));
+  for (const t of ["--m-panel-radius", "--m-radius-composer", "--m-message-bubble-radius", "--m-shadow-composer"]) {
+    check("几何 token " + t + " 已生成", geomTokens.includes(t + ":"));
+  }
+  const cssAliases = read("src/renderer/styles.css");
+  for (const a of ["--radius-panel:", "--radius-composer:", "--radius-bubble:", "--shadow-composer:", "--hairline:"]) {
+    check("样式别名 " + a.replace(":", "") + " 已接", cssAliases.includes(a));
+  }
 
   const tokens = read("src/renderer/tokens.cds.css");
   const rampCount = (tokens.match(/^  --m-/gm) ?? []).length;

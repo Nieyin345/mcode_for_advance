@@ -77,3 +77,29 @@
   --m-orange-90: 247 220 209; /* #f7dcd1 */
   --m-orange-900: 11 11 11; /* #0b0b0b */
 }
+
+/* 几何 / 阴影(与主题无关;值直接来自上游,不转三元组)。 */
+:root {
+  --m-message-bubble-radius: calc(8px + calc(.25rem * 1));
+  --m-message-bubble-radius-meeting: 4px;
+  --m-panel-radius: 10px;
+  --m-radius-composer: 20px;
+  --m-radius-pill: 9999px;
+  --m-ring-hairline: 1px;
+  --m-ring-inner: 0px;
+  --m-ring-outer: 1px;
+  --m-shadow-composer: 0 4px 20px rgba(0, 0, 0, 0.035), inset 0 0 0 1px var(--edge);
+  --m-shadow-composer-focus: 0 4px 24px rgba(0, 0, 0, 0.08), inset 0 0 0 1px var(--input-edge), 0 0 0 1px var(--input-edge);
+  --m-shadow-composer-hover: 0 4px 24px rgba(0, 0, 0, 0.06), inset 0 0 0 1px var(--input-edge);
+  --m-shadow-lg: 0 4px 8px 0 rgba(0, 0, 0, 0.06), 0 12px 28px -2px rgba(0, 0, 0, 0.08);
+  --m-shadow-md: 0 2px 4px 0 rgba(0, 0, 0, 0.05), 0 6px 16px 0 rgba(0, 0, 0, 0.08);
+  --m-shadow-popover: inset 0 0 0 initial initial, 0 0 0 initial initial, 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
+  --m-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05), 0 2px 8px 0 rgba(0, 0, 0, 0.08);
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.5rem;
+  --radius-lg: .5rem;
+  --radius-md: .375rem;
+  --radius-sm: .25rem;
+  --radius-xl: .75rem;
+  --radius-xs: .125rem;
+}
