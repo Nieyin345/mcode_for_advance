@@ -47,6 +47,7 @@ export function SkillNodesView({
   hint,
   empty,
   icon: RowIcon = IconSparkles,
+  selectedRef = null,
 }: {
   /** The inventory to report on (skills by default; MCP servers / plugins
    *  reuse the view with their own `paramKey`). */
@@ -62,6 +63,9 @@ export function SkillNodesView({
   onJumpToWorkflow: (workflowId: string) => void;
   /** 跳到代理档案那一页。 */
   onJumpToProfile: (profileId: string) => void;
+  /** 当前选中/正在看的那一处引用 —— 命中它的行加 `aria-current` 与高亮。
+   *  可省略;省略时与从前完全一样(不亮任何一行)。 */
+  selectedRef?: { kind: "workflow" | "profile"; refId: string } | null;
 }) {
   const { t } = useI18n();
   const [usage, setUsage] = useState<Map<string, ReferenceUse[]> | null>(null);
@@ -154,7 +158,12 @@ export function SkillNodesView({
       <div className="min-h-0 flex-1 overflow-auto rounded-md border border-edge bg-surface/40">
         {used.length === 0 && unused.length === 0 && (
           <div className="px-4 py-8 text-center text-[0.8571em] text-content-subtle">
-            {empty ?? t("settings.skills.nodesEmpty")}
+            {/* 【MC-050 同类】一个名字都没有、又有工作流没读回来 —— 此刻说
+                "没有节点用到"是**断言不了**的:那份没读回来的工作流可能引用了
+                任何名字。改成说清"目录不完整"。 */}
+            {unread.length > 0
+              ? t("settings.skills.nodesEmptyIncomplete")
+              : (empty ?? t("settings.skills.nodesEmpty"))}
           </div>
         )}
 
@@ -172,34 +181,40 @@ export function SkillNodesView({
             </div>
             {/* 引用列表 —— 点一行跳到那儿去改 */}
             <div className="pb-1.5 pl-9 pr-3">
-              {row.uses.map((u, i) => (
-                <button
-                  key={`${u.kind}:${u.refId}:${u.nodeTitle ?? ""}:${i}`}
-                  type="button"
-                  onClick={() =>
-                    u.kind === "workflow" ? onJumpToWorkflow(u.refId) : onJumpToProfile(u.refId)
-                  }
-                  className={cn(
-                    "flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition-colors",
-                    "hover:bg-surface-hover/60",
-                  )}
-                >
-                  {u.kind === "workflow" ? (
-                    <IconArrowsSplit size={12} className="shrink-0 text-content-subtle" />
-                  ) : (
-                    <IconRobotFace size={12} className="shrink-0 text-content-subtle" />
-                  )}
-                  <span className="truncate text-[0.7857em] text-content-muted">
-                    {u.label}
-                    {u.nodeTitle && <span className="text-content-subtle"> · {u.nodeTitle}</span>}
-                  </span>
-                  <span className="ml-auto shrink-0 text-[0.7143em] text-content-subtle">
-                    {u.kind === "workflow"
-                      ? t("settings.skills.nodesFromWorkflow")
-                      : t("settings.skills.nodesFromProfile")}
-                  </span>
-                </button>
-              ))}
+              {row.uses.map((u, i) => {
+                const selected =
+                  selectedRef !== null && selectedRef.kind === u.kind && selectedRef.refId === u.refId;
+                return (
+                  <button
+                    key={`${u.kind}:${u.refId}:${u.nodeTitle ?? ""}:${i}`}
+                    type="button"
+                    aria-current={selected ? "true" : undefined}
+                    onClick={() =>
+                      u.kind === "workflow" ? onJumpToWorkflow(u.refId) : onJumpToProfile(u.refId)
+                    }
+                    className={cn(
+                      "flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition-colors",
+                      "hover:bg-surface-hover/60",
+                      selected && "bg-accent/15",
+                    )}
+                  >
+                    {u.kind === "workflow" ? (
+                      <IconArrowsSplit size={12} className="shrink-0 text-content-subtle" />
+                    ) : (
+                      <IconRobotFace size={12} className="shrink-0 text-content-subtle" />
+                    )}
+                    <span className="truncate text-[0.7857em] text-content-muted">
+                      {u.label}
+                      {u.nodeTitle && <span className="text-content-subtle"> · {u.nodeTitle}</span>}
+                    </span>
+                    <span className="ml-auto shrink-0 text-[0.7143em] text-content-subtle">
+                      {u.kind === "workflow"
+                        ? t("settings.skills.nodesFromWorkflow")
+                        : t("settings.skills.nodesFromProfile")}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         ))}

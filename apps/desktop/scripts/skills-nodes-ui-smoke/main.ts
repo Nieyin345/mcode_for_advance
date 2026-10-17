@@ -40,12 +40,16 @@ function check(name: string, cond: boolean, detail?: unknown): void {
   }
 }
 
-function mountView(): void {
+function mountView(extra: {
+  skills?: Array<{ name: string; description?: string }>;
+  selectedRef?: { kind: "workflow" | "profile"; refId: string } | null;
+} = {}): void {
   __mount(() =>
     SkillNodesView({
-      skills: [{ name: "alive-skill" }, { name: "orphan-skill" }],
+      skills: extra.skills ?? [{ name: "alive-skill" }, { name: "orphan-skill" }],
       onJumpToWorkflow: () => {},
       onJumpToProfile: () => {},
+      ...(extra.selectedRef !== undefined ? { selectedRef: extra.selectedRef } : {}),
     } as never),
   );
 }
@@ -53,6 +57,26 @@ function mountView(): void {
 /** 渲染树里所有文本拼成一条 —— 判据立在用户看到的那行字上。 */
 function allText(): string {
   return __text();
+}
+
+/** 一个元素子树里的全部文本 —— 用来认出"高亮的是哪一行"。 */
+function nodeText(n: { props: Record<string, unknown> }): string {
+  const parts: string[] = [];
+  const walk = (x: unknown): void => {
+    if (x === null || x === undefined || typeof x === "boolean") return;
+    if (typeof x === "string" || typeof x === "number") return void parts.push(String(x));
+    if (Array.isArray(x)) return void x.forEach(walk);
+    if (typeof x === "object") walk((x as { props?: { children?: unknown } }).props?.children);
+  };
+  walk(n.props.children);
+  return parts.join(" ");
+}
+
+/** 带 `aria-current="true"` 的行(引用行是 <button>)。 */
+function currentRows(): Array<{ text: string; className: string }> {
+  return __nodes()
+    .filter((n) => n.type === "button" && n.props["aria-current"] === "true")
+    .map((n) => ({ text: nodeText(n), className: String(n.props.className ?? "") }));
 }
 
 // 第 1 趟:两份工作流,一份好一份读失败。
@@ -115,6 +139,68 @@ check("★ 没有「没读回来」的警告", !textHealthy.includes("没读回�
 check("没有「不完整」措辞", !textHealthy.includes("不完整"), textHealthy);
 check("两个技能都进了「被使用」", textHealthy.includes("被 1 处使用") && textHealthy.includes("alive-skill") && textHealthy.includes("orphan-skill"), textHealthy);
 check("没有「没有被任何节点用到」段(两个都有引用)", !textHealthy.includes("没有被任何节点用到"), textHealthy);
+
+// 第 3 趟:选中高亮 —— 工作流一行、档案一行,选谁只亮谁;省略 selectedRef 时一行都不亮。
+__setScenario({
+  profiles: [{ id: "p_1", name: "档案甲", params: { skills: ["orphan-skill"] } }],
+  list: [{ id: "wf_ok", name: "好的工作流" }],
+  gets: {
+    wf_ok: {
+      workflow: {
+        id: "wf_ok", name: "好的工作流", kind: "graph", builtin: false, prompt: "", edges: [], updatedAt: 0,
+        nodes: [{ id: "n1", type: "mcode.agent", title: "评审", params: { skills: ["alive-skill"] }, position: { x: 0, y: 0 } }],
+      },
+    },
+  },
+});
+
+console.log("\n选中高亮(selectedRef)");
+mountView({ selectedRef: { kind: "workflow", refId: "wf_ok" } });
+await __flush();
+const selWorkflow = currentRows();
+check("★ 命中工作流 → 恰好一行 aria-current", selWorkflow.length === 1, selWorkflow);
+check(
+  "★ 亮的正是那份工作流的引用行",
+  selWorkflow[0]?.text.includes("好的工作流") === true && selWorkflow[0]?.text.includes("档案甲") === false,
+  selWorkflow,
+);
+check("★ 选中行带区分样式 bg-accent/15", selWorkflow[0]?.className.includes("bg-accent/15") === true, selWorkflow);
+
+mountView({ selectedRef: { kind: "profile", refId: "p_1" } });
+await __flush();
+const selProfile = currentRows();
+check("★ 命中档案 → 恰好一行 aria-current", selProfile.length === 1, selProfile);
+check("★ 亮的是档案那一行", selProfile[0]?.text.includes("档案甲") === true, selProfile);
+
+mountView();
+await __flush();
+check("★ 省略 selectedRef → 零行 aria-current(默认行为不变)", currentRows().length === 0, currentRows());
+
+mountView({ selectedRef: { kind: "workflow", refId: "wf_missing" } });
+await __flush();
+check("refId 不匹配 → 零行 aria-current", currentRows().length === 0, currentRows());
+
+// 第 4 趟:目录里一个技能都没有 —— 读不回来时必须说"目录不完整",不能冒充
+// "没有任何节点用到技能";全部读回来时才是普通空态。
+__setScenario({
+  profiles: [],
+  list: [{ id: "wf_bad", name: "坏的工作流" }],
+  gets: { wf_bad: { error: "存档损坏 wf_bad.payload" } },
+});
+mountView({ skills: [] });
+await __flush();
+const textEmptyBroken = allText();
+
+console.log("\n目录为空 + 读不回来");
+check("★ 不冒充「还没有任何节点用到技能」", !textEmptyBroken.includes("还没有任何节点用到技能"), textEmptyBroken);
+check("★ 明说目录不完整、别据此判断", textEmptyBroken.includes("别据此说「没有节点用到」"), textEmptyBroken);
+
+__setScenario({ profiles: [], list: [], gets: {} });
+mountView({ skills: [] });
+await __flush();
+const textEmptyHealthy = allText();
+check("★ 全部读回来时照常显示普通空态", textEmptyHealthy.includes("还没有任何节点用到技能"), textEmptyHealthy);
+check("全部读回来时没有「不完整」措辞", !textEmptyHealthy.includes("别据此说「没有节点用到」"), textEmptyHealthy);
 
 console.log(`\nskills-nodes-ui-smoke: ${total - failures}/${total} 通过`);
 if (failures > 0) process.exit(1);
