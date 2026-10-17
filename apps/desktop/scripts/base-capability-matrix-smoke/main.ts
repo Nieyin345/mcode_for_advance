@@ -201,5 +201,74 @@ for (const engine of engines) {
   check("★ 矩阵组件消费 excludedByEngine 并渲染 disabledByPolicy", matrixSrc2.includes("excludedByEngine?.[engine]") && matrixSrc2.includes("disabledByPolicy"));
 }
 
+/* ── 8. 【ARC-003 验收】提示词宣称的每个工具名,都必须在该回合的有效清单里 ── */
+{
+  // 台账原文:「assembledPrompt 所宣称的每一"可调用工具名"都存在于该回合可见清单」。
+  // 这里把三段真实渲染器接起来验同一件事:
+  //   ① 清单来自 `buildEngineToolInventory`(各 provider 同一份装配来源);
+  //   ② 提示词来自 `fileArchitecturePrompt` / `claudePlanModeNudge`(真实纯函数);
+  //   ③ 判据是**集合包含**:提示词点名了清单里没有的名字 = 广告了不存在的工具。
+  const { buildEngineToolInventory } = await import("@main/orchestration/effectiveToolInventory.js");
+  const { claudePlanModeNudge, fileArchitecturePrompt: renderArch } = await import("@main/lib/systemPrompt.js");
+  const inventoryNames = (engine: "claude" | "pi" | "codex", excluded: string[] = []): Set<string> =>
+    new Set(buildEngineToolInventory(engine, { browserEnabled: true, excluded }).tools.map((t) => t.name));
+
+  // ① Claude:读工具 + 计划模式那段点名的四件,全部在清单里。
+  {
+    const names = inventoryNames("claude");
+    const read = readToolNameForTurn("claude", []);
+    check("★ Claude 提示词点名的读工具在有效清单里", read !== null && names.has(read), { read });
+    const nudge = claudePlanModeNudge([]);
+    const advertised = ["Read", "Grep", "Glob", "WebSearch"].filter((n) => nudge.includes(n));
+    check("计划模式 nudge 确实点了名(防空过)", advertised.length === 4, advertised);
+    check("★ Claude 计划模式点名的每个工具都在有效清单里", advertised.every((n) => names.has(n)), advertised.filter((n) => !names.has(n)));
+  }
+
+  // ② Pi:读工具是小写 `read`,且清单里**没有** Claude 的大写 `Read` —— 提示词不许点名后者。
+  {
+    const names = inventoryNames("pi");
+    const read = readToolNameForTurn("pi", []);
+    check("★ Pi 提示词点名的读工具在有效清单里", read !== null && names.has(read), { read });
+    check("Pi 清单里没有 Claude 的大写 Read(夹具前提)", !names.has("Read"));
+  }
+
+  // ③ Codex:没有独立读工具 → 提示词不点名;若点名了就必须在清单里(这里是空集断言)。
+  {
+    const names = inventoryNames("codex");
+    check("★ Codex 读工具名为 null 且提示词不点名任何特定读工具", readToolNameForTurn("codex", []) === null && !names.has("Read") && !names.has("read"));
+  }
+
+  // ④ 禁用后:提示词不再点名,且清单里也真的没有它(两层一致,不是各说各话)。
+  {
+    const names = inventoryNames("claude", ["Read"]);
+    const read = readToolNameForTurn("claude", ["Read"]);
+    check("★ Claude 禁用 Read 后:提示词不点名且清单里也没有", read === null && !names.has("Read"), { read, listed: names.has("Read") });
+    const nudge = claudePlanModeNudge(["WebSearch"]);
+    // 清单也要按**同一张排除表**装配(不能拿"禁了 Read"的清单去要求 Read 在场)。
+    const namesNoSearch = inventoryNames("claude", ["WebSearch"]);
+    check(
+      "★ 禁用 WebSearch 后 nudge 不再点名它且其余仍在清单",
+      !nudge.includes("WebSearch") && !namesNoSearch.has("WebSearch") && ["Read", "Grep", "Glob"].every((n) => namesNoSearch.has(n)),
+      { nudge, listed: [...namesNoSearch].filter((n) => /^(Read|Grep|Glob|WebSearch)$/.test(n)) },
+    );
+  }
+
+  // ⑤ 浏览器开关:关掉时 browser_* 不在清单里 —— 提示词/文档若宣称浏览器能力,
+  //    依据必须是开关后的清单,不是静态表。这里钉清单本身的开关语义(ARC-003 第 3 条)。
+  {
+    const off = new Set(buildEngineToolInventory("claude", { browserEnabled: false }).tools.map((t) => t.name));
+    const on = inventoryNames("claude");
+    const browserNames = [...on].filter((n) => n.includes("browser_"));
+    check("浏览器关时清单里没有任何 browser_* 工具", browserNames.length > 0 && browserNames.every((n) => !off.has(n)), browserNames.filter((n) => off.has(n)));
+  }
+
+  // ⑥ 渲染面不变:提示词里点名读工具的那句话,引擎换掉时名字跟着换(同一渲染器,不是两份)。
+  {
+    const claudePrompt = renderArch("C:\f", "C:\f\s", "claude");
+    const piPrompt = renderArch("C:\f", "C:\f\s", "pi");
+    check("★ 同一渲染器按引擎给出不同读工具名", claudePrompt.includes("先 Read 它") && piPrompt.includes("先 read 它") && !piPrompt.includes("先 Read 它"));
+  }
+}
+
 console.log(`\nbase-capability-matrix-smoke: ${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;
