@@ -12,3 +12,6 @@ export const minimizePolicy = () => ({});
 // 故障恢复,策略文件不参与 —— 桩返回不设限空表即可(与上面 excludedToolsForEngine 同义)。
 export const resolveEngineExcludedToolsForProvider = () => [];
 export const resolveEngineExcludedToolsForProviderFile = () => [];
+// 【MC-042】`ipc/engineTools.ts` 的 set 入口 import 了它（静默剔除 → 显式拒绝）。
+// 本套不测策略判定，桩按"总是合法、什么都不禁"回——与本文件其余桩同义（不设限）。
+export const validateEngineToolPolicy = () => ({ ok: true as const, policy: {} });

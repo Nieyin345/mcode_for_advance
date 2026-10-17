@@ -6,7 +6,8 @@
  * 一份统一实现上（例如关掉原生 Read，强制走统一的文档读取工具）。
  *
  * 存储与语义见 `apps/desktop/src/main/lib/engineToolPolicy.ts`：缺省 = 不禁用；
- * 只持久化非空的 exclude。
+ * 只持久化非空的 exclude。文件读取用**严格 Schema**（MC-042）：坏 JSON / 错形一律判
+ * INVALID，绝不静默过滤成「不禁用」（那会把用户的限制读没）。
  */
 import { z } from "zod";
 
@@ -51,7 +52,8 @@ export type EngineToolsGetInput = z.infer<typeof EngineToolsGetInputSchema>;
 /** 写入某个引擎的禁用列表（全量替换该引擎的 exclude）。 */
 export const EngineToolsSetInputSchema = z.object({
   engine: z.enum(ENGINE_TOOL_ENGINE_IDS),
-  /** 工具名列表；空数组 = 该引擎不设限。非法名由主进程逐项剔除。 */
+  /** 工具名列表；空数组 = 该引擎不设限。非法名（非字符串/字符集不合法）**显式拒绝**
+   *  整个保存（MC-042：静默剔除会让用户以为禁用了、实际没有）。 */
   exclude: z.array(z.string()),
 });
 export type EngineToolsSetInput = z.infer<typeof EngineToolsSetInputSchema>;

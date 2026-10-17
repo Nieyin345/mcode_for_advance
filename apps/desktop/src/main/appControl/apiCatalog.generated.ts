@@ -600,8 +600,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "engineTools.set",
   "channel": "engineTools:set",
   "doc": "Replace the exclusion list for one engine. Claude → `disallowedTools`, Pi → `excludeTools`; Codex accepts the write but reports `supported:false`. Takes effect on the next turn.",
-  "input": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名由主进程逐项剔除。; engine: 'claude' | 'codex' | 'pi' }",
-  "inputFull": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名由主进程逐项剔除。; engine: 'claude' | 'codex' | 'pi' }",
+  "input": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名（非字符串/字符集不合法）**显式拒绝** 整个保存（MC-042：静默剔除会让用户以为禁用了、实际没有）。; engine: 'claude' | 'codex' | 'pi' }",
+  "inputFull": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名（非字符串/字符集不合法）**显式拒绝** 整个保存（MC-042：静默剔除会让用户以为禁用了、实际没有）。; engine: 'claude' | 'codex' | 'pi' }",
   "output": "{ ok: boolean; error?: string | undefined; snapshot?: EngineToolsSnapshot | undefined }"
  },
  {

@@ -2,18 +2,24 @@
  * 「按引擎禁用内置工具」策略的回归 —— 纯模块（`lib/engineToolPolicy.ts`），不起 Electron。
  *
  * 钉住三件事：
- *  1. **读容错**：坏 JSON / 非法条目一律按"不禁用"处理（一份坏配置绝不能把某引擎的
- *     工具砍没了）。
+ *  1. **读取判别（MC-071 + MC-042 严格 Schema）**：坏 JSON / 错形（`exclude` 非字符串
+ *     数组、引擎表非对象、数组内坏项、未知键、缺 `exclude`）一律判 INVALID ——
+ *     **绝不**静默过滤后仍判 VALID（那会把「想禁用 Bash」读成「不禁用」，fail-open）；
+ *     合法数组仍去重、排序；明确空数组合法。
  *  2. **最小持久化**：只写非空 exclude；空条目整条删掉（缺省 = 不禁用）。
  *  3. **接线**：Claude 走 `disallowedTools`、Pi 走 `excludeTools`，且都从这份策略读。
  *
  * 外加 agent 只读桥的两块 —— 桥只桥只读的（读），以及 cwd 登记表删会话真的摘掉（第 8 节）。
  * 后者是**行为**断言（真的注册、真的删、真的看它查不到），不是"源码里有没有那一行"。
  *
+ * 第 9 节【MC-042】用 `fakeIpc` 真驱动 `ipc/engineTools.ts` 的两个 handler（默认路径），
+ * 所以 run.sh 把 `HOME` / `USERPROFILE` 指到隔离临时目录；main.ts 开头**校验**没指到就
+ * 拒绝运行（照 `pi-models-store-smoke` 的先例——将就默认值 = 拿用户真 `~/.mcode` 当场地）。
+ *
  * 用临时文件测读写，不碰 `~/.mcode`。
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   defaultEngineToolPolicyPath,
@@ -25,8 +31,22 @@ import {
   resolveEngineExcludedToolsForProviderFile,
   writeEngineToolPolicyFile,
 } from "@main/lib/engineToolPolicy.js";
+import { registerEngineToolHandlers } from "@main/ipc/engineTools.js";
 import { agentEngineCwdFor, registerAgentEngineSession } from "@main/mcp/agentEngineCwd.js";
 import { disposeAgentSession } from "@main/mcp/agentSessionCleanup.js";
+
+/* ── 0. 用户根隔离校验（第 9 节走默认路径，必须先证明没指到真 ~/.mcode）──────────
+ * `defaultEngineToolPolicyPath()` 拼 `homedir()`；Windows 读 `USERPROFILE`、其余平台读
+ * `HOME`（`os.homedir()` 调用时求值）。run.sh 给 `MCODE_SMOKE_HOME` 并导出这两个变量；
+ * 这里**没指到就抛**，不下探"默认值"。 */
+const SMOKE_HOME = process.env.MCODE_SMOKE_HOME;
+if (!SMOKE_HOME) {
+  throw new Error("MCODE_SMOKE_HOME 没设 —— 第 9 节会走默认策略路径,必须把用户根指到隔离临时目录");
+}
+const normPath = (p: string): string => p.replace(/\\/g, "/").replace(/\/+$/, "");
+if (normPath(homedir()) !== normPath(SMOKE_HOME)) {
+  throw new Error(`homedir() 没有指到隔离目录(${homedir()} != ${SMOKE_HOME}),拒绝运行 —— 否则会碰用户真 ~/.mcode`);
+}
 
 let failures = 0;
 let total = 0;
@@ -46,18 +66,93 @@ const dir = mkdtempSync(join(tmpdir(), "mcode-engine-tools-"));
 const file = join(dir, "engine-tools.json");
 
 try {
-  /* ── 1. 读容错 ─────────────────────────────────────────────────────────── */
+  /* ── 1. 读取判别（MC-071 + MC-042 严格 Schema）────────────────────────────
+   *
+   * 【MC-042】判据从前是"坏配置读成空 = 不禁用"（容错）。那正是 fail-open 本体：
+   * `{"claude":{"exclude":"Bash"}}` 会被读成 `{}`（想禁用 Bash → 不禁用），
+   * 而且顶层仍判成功 —— last-good 恢复、拒绝执行、UI 告警三条防线全被绕过。
+   * 现在错形一律 INVALID（低层读法返回的 policy 是"实际生效值"，空是兜底值；
+   * 判别看 detailed 的 status）。 */
   eq("缺文件 → 空策略（都不设限）", readEngineToolPolicyFile(join(dir, "nope.json")), {});
+
   writeFileSync(file, "{ this is not json");
-  eq("坏 JSON → 空策略", readEngineToolPolicyFile(file), {});
-  writeFileSync(file, JSON.stringify({ claude: { exclude: "not-an-array" }, pi: ["nope"], codex: 5 }));
-  eq("非法条目逐引擎丢弃", readEngineToolPolicyFile(file), {});
-  writeFileSync(file, JSON.stringify({ claude: { exclude: ["Bash", "Bash", "  ", 7, "Read"] } }));
+  const badJson = readEngineToolPolicyDetailed(file);
+  check("★ 坏 JSON → INVALID（不是静默空策略）", badJson.status === "INVALID", badJson);
+
+  // ★ MC-042 核心反例：错形不得再被容错过滤成「VALID + 空」。
+  writeFileSync(file, JSON.stringify({ claude: { exclude: "Bash" } }));
+  const wrongType = readEngineToolPolicyDetailed(file);
+  check(
+    "★ MC-042:exclude 是字符串（不是数组）→ INVALID，不再读成「不禁用」",
+    wrongType.status === "INVALID" && typeof wrongType.error === "string" && wrongType.error.includes("claude.exclude"),
+    wrongType,
+  );
+  eq("★ MC-042:错形时实际生效值为空兜底（不是把别的引擎砍掉）", wrongType.policy, {});
+
+  writeFileSync(file, JSON.stringify({ claude: { exclude: null } }));
+  check(
+    "★ MC-042:exclude 是 null → INVALID",
+    readEngineToolPolicyDetailed(file).status === "INVALID",
+    readEngineToolPolicyDetailed(file),
+  );
+  writeFileSync(file, JSON.stringify({ pi: ["nope"], codex: 5 }));
+  const wrongEngine = readEngineToolPolicyDetailed(file);
+  check(
+    "★ MC-042:引擎表非对象 → INVALID（不再逐引擎丢弃后判 VALID）",
+    wrongEngine.status === "INVALID",
+    wrongEngine,
+  );
+  writeFileSync(file, JSON.stringify({ claude: { exclude: ["Bash", 7, "Read"] } }));
+  const badItem = readEngineToolPolicyDetailed(file);
+  check(
+    "★ MC-042:数组内混入非字符串项 → INVALID（不再逐项剔掉后判 VALID）",
+    badItem.status === "INVALID" && badItem.error!.includes("exclude[1]"),
+    badItem,
+  );
+  writeFileSync(file, JSON.stringify({ claude: { exclude: ["  "] } }));
+  check(
+    "★ MC-042:数组内只有空白名 → INVALID（合法名判据与写入同源）",
+    readEngineToolPolicyDetailed(file).status === "INVALID",
+    readEngineToolPolicyDetailed(file),
+  );
+  writeFileSync(file, JSON.stringify({ claud: { exclude: ["Bash"] } }));
+  const typoKey = readEngineToolPolicyDetailed(file);
+  check(
+    "★ MC-042:引擎键写错（claud）→ INVALID（不静默忽略，否则用户以为设了限制）",
+    typoKey.status === "INVALID" && typoKey.error!.includes("claud"),
+    typoKey,
+  );
+  writeFileSync(file, JSON.stringify({ claude: {} }));
+  check(
+    "★ MC-042:引擎对象缺 exclude 字段 → INVALID（明确空要写 []）",
+    readEngineToolPolicyDetailed(file).status === "INVALID",
+    readEngineToolPolicyDetailed(file),
+  );
+  writeFileSync(file, JSON.stringify({ claude: { exclude: ["Bash"], nope: 1 } }));
+  check(
+    "★ MC-042:引擎对象含未知字段 → INVALID（不静默保留不理解的东西）",
+    readEngineToolPolicyDetailed(file).status === "INVALID",
+    readEngineToolPolicyDetailed(file),
+  );
+
+  // 合法形态照常：数组内容去重、排序；明确空数组合法（VALID，不误伤）。
+  writeFileSync(file, JSON.stringify({ claude: { exclude: ["Bash", "Bash", "Read"] } }));
+  const good = readEngineToolPolicyDetailed(file);
+  check("合法配置 → VALID", good.status === "VALID", good);
   eq(
-    "读入时去重、剔非法名、排序",
-    readEngineToolPolicyFile(file),
+    "读入时去重、排序（合法输入不受严格化影响）",
+    good.policy,
     { claude: { exclude: ["Bash", "Read"] } },
   );
+  writeFileSync(file, JSON.stringify({ claude: { exclude: [] } }));
+  const explicitEmpty = readEngineToolPolicyDetailed(file);
+  check(
+    "★ 明确空数组（用户主动全启用）→ VALID，不误伤",
+    explicitEmpty.status === "VALID" && JSON.stringify(explicitEmpty.policy) === JSON.stringify({}),
+    explicitEmpty,
+  );
+  writeFileSync(file, JSON.stringify({}));
+  check("空配置对象 → VALID（都不设限）", readEngineToolPolicyDetailed(file).status === "VALID", readEngineToolPolicyDetailed(file));
 
   /* ── 2. 最小持久化 ────────────────────────────────────────────────────── */
   writeEngineToolPolicyFile(file, { claude: { exclude: ["Bash"] }, pi: { exclude: [] } });
@@ -299,6 +394,179 @@ try {
   disposeAgentSession("conv-a");
   eq("按会话释放，不波及别的会话", agentEngineCwdFor("conv-b"), "/tmp/b");
   disposeAgentSession("conv-b");
+
+  /* ── 9.【MC-042】**行为**测执行路径:错形不再被容错过滤,无恢复时拒绝执行 ──────────
+   *
+   * 台账红例:`{"claude":{"exclude":"Bash"}}`(想禁用 Bash 的配置被改错形)经真实
+   * `readEngineToolPolicyDetailed` 返回 `status:"VALID"` → resolver 返回 `[]` →
+   * Provider 拿 `disallowedTools: undefined` 起轮 —— 限制被**静默解除**。
+   * 本段是**端到端**复现(真 resolver,显式路径版与默认路径版各一),断言:
+   *   - 错形 → INVALID,不再 VALID;
+   *   - 无备份 → resolver **抛错拒绝**(`[]` 变拒绝,这正是红例的那个方向);
+   *   - 有备份 → 恢复原限制继续(禁用 Bash 还在,不回归);
+   *   - 从没设过 / 明确空数组 → 照常不设限(不误伤)。
+   */
+  {
+    const f = join(dir, "mc042-resolver.json");
+    rmSync(f, { force: true }); rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+
+    // ① ★ 台账红例的当前形态:错形 + 无备份。旧代码:VALID + []。现在:INVALID + 拒绝。
+    writeFileSync(f, JSON.stringify({ claude: { exclude: "Bash" } }));
+    const wrongShape = readEngineToolPolicyDetailed(f);
+    check(
+      "★ ① 错形配置(想禁 Bash)→ INVALID(不再被容错过滤成 VALID)",
+      wrongShape.status === "INVALID" && wrongShape.error!.includes("claude.exclude"),
+      wrongShape,
+    );
+    const hitWall = (() => { try { return { threw: false as const, v: resolveEngineExcludedToolsForProviderFile(f, "claude") }; } catch (e) { return { threw: true as const, msg: e instanceof Error ? e.message : String(e) }; } })();
+    check(
+      "★ ① 错形且无备份 → resolver 拒绝执行(不再静默返回空排除表)",
+      hitWall.threw === true && String(hitWall.msg).includes("POLICY_RECOVERY_REQUIRED"),
+      hitWall,
+    );
+
+    // ② 有 last-good(写着禁用 Bash)→ 错形后按恢复值继续:限制不丢。
+    rmSync(f, { force: true }); rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+    writeEngineToolPolicyFile(f, { claude: { exclude: ["Bash"] } });
+    writeFileSync(f, JSON.stringify({ claude: { exclude: "Bash" } }));
+    const recovered = resolveEngineExcludedToolsForProviderFile(f, "claude");
+    check(
+      "★ ② 错形但有备份 → 恢复原限制继续(Bash 仍被禁用,不静默放开)",
+      JSON.stringify(recovered) === JSON.stringify(["Bash"]),
+      recovered,
+    );
+
+    // ③ 明确空数组(用户主动全启用)→ resolver 不误伤,照常不设限。
+    rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+    writeFileSync(f, JSON.stringify({ claude: { exclude: [] } }));
+    const explicitOpen = (() => { try { return { ok: true as const, v: resolveEngineExcludedToolsForProviderFile(f, "pi") }; } catch (e) { return { ok: false as const, e: String(e) }; } })();
+    check("③ 明确空数组 → 不设限、不抛错(用户主动全启用不误伤)", explicitOpen.ok === true && explicitOpen.v.length === 0, explicitOpen);
+
+    // ③b 主文件与 last-good **同时**损坏(验收条件里的组合)→ 仍 INVALID 且拒绝执行。
+    rmSync(f, { force: true }); rmSync(lastGoodEngineToolPolicyPath(f), { force: true });
+    writeFileSync(f, "{ 主文件也坏了");
+    writeFileSync(lastGoodEngineToolPolicyPath(f), "{ 备份也坏了");
+    const bothBroken = readEngineToolPolicyDetailed(f);
+    check(
+      "★ ③b 主文件与 last-good 同时损坏 → INVALID 且 recovered=false(不误报恢复)",
+      bothBroken.status === "INVALID" && bothBroken.recovered === false,
+      bothBroken,
+    );
+    const bothRefused = (() => { try { resolveEngineExcludedToolsForProviderFile(f, "claude"); return { threw: false as const }; } catch (e) { return { threw: true as const, msg: e instanceof Error ? e.message : String(e) }; } })();
+    check("★ ③b 双损坏 → resolver 拒绝执行(不静默返回空排除表)", bothRefused.threw === true, bothRefused);
+
+    // ④ 覆写损坏原件前先把原始字节备份成 .corrupt-<时间戳>.bak,不静默销毁。
+    const f2 = join(dir, "mc042-preserve.json");
+    rmSync(f2, { force: true }); rmSync(lastGoodEngineToolPolicyPath(f2), { force: true });
+    const brokenBytes = JSON.stringify({ claude: { exclude: "Bash", handwritten: true } });
+    writeFileSync(f2, brokenBytes);
+    writeEngineToolPolicyFile(f2, { claude: { exclude: ["Read"] } });
+    const backups = readdirSync(dir).filter((n) => n.startsWith("mc042-preserve.json.corrupt-") && n.endsWith(".bak"));
+    check(
+      "★ ④ 覆写损坏原件前留了 .corrupt-<时间戳>.bak 备份",
+      backups.length === 1 && readFileSync(join(dir, backups[0]), "utf-8") === brokenBytes,
+      { backups },
+    );
+    const afterFix = readEngineToolPolicyDetailed(f2);
+    check(
+      "★ ④ 显式保存后配置恢复 VALID(保存是 resolver 拒绝语指向的恢复路径)",
+      afterFix.status === "VALID" && JSON.stringify(afterFix.policy) === JSON.stringify({ claude: { exclude: ["Read"] } }),
+      afterFix,
+    );
+    // 正常文件覆写**不**堆备份垃圾(last-good 另算,文件名不同不会命中)。
+    writeEngineToolPolicyFile(f2, { claude: { exclude: ["Bash"] } });
+    const backupsAfterClean = readdirSync(dir).filter((n) => n.startsWith("mc042-preserve.json.corrupt-"));
+    check("④ 正常文件覆写不产生新的 .corrupt 备份", backupsAfterClean.length === 1, { backupsAfterClean });
+  }
+
+  /* ── 10.【MC-042】**行为**测 IPC handler(默认路径)─────────────────────────
+   *
+   * 第 5 节钉的是"Provider 源码里有那行调用";这里用 fakeIpc 真跑
+   * `registerEngineToolHandlers` 的两个 handler(它们走 `defaultEngineToolPolicyPath()`,
+   * 即本套隔离 HOME 下的 `~/.mcode/engine-tools.json`)——断言用户/Agent 真正看到的
+   * 行为:`engineTools.set` 非法名显式拒绝(不再静默剔除)、保存后生效、
+   * `engineTools.get` 把损坏状态讲出来(而不是假装"没限制")。 */
+  {
+    const policyFile = defaultEngineToolPolicyPath();
+    rmSync(policyFile, { force: true });
+    rmSync(lastGoodEngineToolPolicyPath(policyFile), { force: true });
+
+    const handlers = new Map<string, (evt: unknown, raw: unknown) => Promise<unknown>>();
+    const fakeIpc = { handle: (ch: string, fn: never) => handlers.set(ch, fn) } as never;
+    registerEngineToolHandlers(fakeIpc);
+    const call = (ch: string, raw: unknown): Promise<unknown> => handlers.get(ch)!(null, raw);
+
+    check("fakeIpc 注册了 engineTools.get / set", handlers.has("engineTools:get") && handlers.has("engineTools:set"), [...handlers.keys()]);
+
+    // 从没设过 → 面板显示"不设限"且无告警,设置页能正常用。
+    const fresh = (await call("engineTools:get", {})) as { status?: string; engines: Record<string, { exclude: string[] }> };
+    check(
+      "① 从没设过 → get 返回 MISSING 且无 warning(正常首启不误伤)",
+      fresh.status === "MISSING" && JSON.stringify(fresh.engines.claude.exclude) === JSON.stringify([]),
+      fresh,
+    );
+
+    // 正常保存 → ok,且下一轮真的禁。
+    const saved = (await call("engineTools:set", { engine: "claude", exclude: ["Bash"] })) as { ok: boolean; snapshot?: { engines: Record<string, { exclude: string[] }> } };
+    check(
+      "② set 保存合法列表 → ok 且快照回读一致",
+      saved.ok === true && JSON.stringify(saved.snapshot?.engines.claude.exclude) === JSON.stringify(["Bash"]),
+      saved,
+    );
+    check(
+      "② 保存后执行路径真的禁用 Bash(同一份默认路径)",
+      JSON.stringify(resolveEngineExcludedToolsForProviderFile(policyFile, "claude")) === JSON.stringify(["Bash"]),
+      { read: readEngineToolPolicyDetailed(policyFile) },
+    );
+
+    // ★ 非法名 → 显式拒绝整个保存(不再静默剔除)。判据立在**用户看到的那行字**上。
+    const beforeBad = readFileSync(policyFile, "utf-8");
+    const badSave = (await call("engineTools:set", { engine: "claude", exclude: ["Bash", "has space", "Read"] })) as { ok: boolean; error?: string };
+    check(
+      "★ ③ 非法名 → 整个保存显式拒绝(不再静默剔掉后报成功)",
+      badSave.ok === false && typeof badSave.error === "string" && badSave.error.includes("工具名不合法"),
+      badSave,
+    );
+    check("★ ③ 被拒后盘上字节一个都没变", readFileSync(policyFile, "utf-8") === beforeBad);
+    check(
+      "★ ③ 被拒后 Bash 的禁用照旧(拒绝不是「清空」)",
+      JSON.stringify(resolveEngineExcludedToolsForProviderFile(policyFile, "claude")) === JSON.stringify(["Bash"]),
+      { read: readEngineToolPolicyDetailed(policyFile) },
+    );
+
+    // ★ 文件错形 + **无 last-good** → get 显式告警;执行路径此时拒绝起轮。
+    // (先删 last-good,把场景钉在"旧版/迁移用户旧限制丢失"的那条红例上;有备份的
+    // 恢复路径在第 9 节②已测。)
+    rmSync(lastGoodEngineToolPolicyPath(policyFile), { force: true });
+    writeFileSync(policyFile, JSON.stringify({ claude: { exclude: "Bash" } }));
+    const corruptView = (await call("engineTools:get", {})) as { status?: string; recovered?: boolean; warning?: string };
+    check(
+      "★ ④ 错形文件 → get 返回 INVALID + 可读告警(面板能讲清)",
+      corruptView.status === "INVALID" && corruptView.recovered !== true &&
+        typeof corruptView.warning === "string" && corruptView.warning.includes("损坏"),
+      corruptView,
+    );
+    const providerRefusal = (() => { try { return { threw: false as const, v: resolveEngineExcludedToolsForProviderFile(policyFile, "claude") }; } catch (e) { return { threw: true as const, msg: e instanceof Error ? e.message : String(e) }; } })();
+    check(
+      "★ ④ 错形 + 无备份 → 执行路径拒绝(与 get 的告警一致,不是「按不设限跑」)",
+      providerRefusal.threw === true,
+      providerRefusal,
+    );
+
+    // ⑤ 经 IPC 显式重存(用户在设置页的动作)→ 恢复 VALID,且损坏原件留了备份。
+    const repair = (await call("engineTools:set", { engine: "claude", exclude: ["Bash"] })) as { ok: boolean; snapshot?: { status?: string } };
+    check(
+      "★ ⑤ 用户重存 → 恢复 ok/VALID(拒绝语指向的恢复路径走得通)",
+      repair.ok === true && repair.snapshot?.status === "VALID",
+      repair,
+    );
+    const ipcBackups = readdirSync(join(SMOKE_HOME, ".mcode")).filter((n) => n.startsWith("engine-tools.json.corrupt-") && n.endsWith(".bak"));
+    check(
+      "★ ⑤ 重存前损坏原件已备份成 .corrupt-<时间戳>.bak(不静默销毁)",
+      ipcBackups.length === 1 && readFileSync(join(SMOKE_HOME, ".mcode", ipcBackups[0]), "utf-8").includes('"exclude":"Bash"'),
+      { ipcBackups, content: readFileSync(join(SMOKE_HOME, ".mcode", ipcBackups[0]), "utf-8") },
+    );
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

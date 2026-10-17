@@ -26,10 +26,14 @@
  *
  *     { "claude": { "exclude": ["Bash"] }, "pi": { "exclude": ["bash", "grep"] } }
  *
- * - **缺省 = 不禁用**：没有引擎键、或 exclude 为空，都表示该引擎不设限（保持原生全量）。
+ * - **缺省 = 不禁用**：没有引擎键、或 exclude 是**合法空数组**，都表示该引擎不设限
+ *   （保持原生全量）。"没设过"与"明确全启用"都合法且各有其事实（见 MC-071）。
  * - 只持久化**非空**的 exclude；空条目直接删掉，文件里只留用户真实的限制。
- * - 读文件容错：坏 JSON / 非法条目一律按"不禁用"处理 —— 一份坏配置**绝不能**把某个
- *   引擎的工具砍没了。
+ * - 读文件用**严格版本化 Schema**（MC-042）：顶层对象、引擎键闭集、exclude 必须是
+ *   合法工具名的字符串数组。坏 JSON / 形状不对 / 非法条目一律判 INVALID ——
+ *   **绝不**静默过滤后仍判 VALID（把"想禁用 Bash"读成"不禁用"正是 fail-open）。
+ *   INVALID 的处理见 {@link readEngineToolPolicyDetailed}：有 last-good 按恢复值
+ *   继续；无备份时执行路径拒绝本轮（{@link resolveEngineExcludedToolsForProvider}）。
  *
  * ## 纯核
  *
@@ -37,7 +41,7 @@
  * 去 import `appContext`（那条链会拖进 electron，无头 smoke 就进不来了）。
  * 文件路径只从 `defaultEngineToolPolicyPath()`（只用 `os.homedir`）来。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -64,7 +68,7 @@ export interface EngineToolPolicyRead {
   status: EngineToolPolicyStatus;
   /** 实际应生效的策略。INVALID 时会尽量回退到「最后一份确认过的策略」。 */
   policy: EngineToolPolicy;
-  /** INVALID 且成功从 last-good 恢复出非空排除时为 true。 */
+  /** INVALID 且成功从 last-good 备份恢复时为 true（备份可以是空策略 = 用户明确全启用，见 MC-071 残余 E1）。 */
   recovered: boolean;
   /** 供 UI 显示的损坏原因(INVALID 时)。 */
   error?: string;
@@ -103,16 +107,91 @@ function minimizePolicy(policy: EngineToolPolicy): EngineToolPolicy | null {
 }
 
 /**
- * 从**显式文件路径**读策略（纯核）。任何 IO/解析问题 → 空策略（即哪个引擎都不设限）。
- * 逐引擎丢弃非法条目：exclude 不是数组就当没有；数组里的非法名逐项剔除。
+ * 从**显式文件路径**读策略（纯核）—— 返回**实际应生效的值**（INVALID 时含 last-good
+ * 恢复；无恢复时按空策略，即"不设限"的兜底**值**，但那不是把它判成 VALID）。
  *
- * ⚠️ 【MC-071】这是**低层**读法,分不清 MISSING / INVALID;要区分三者(并对损坏配置做
- * 保守恢复)用 {@link readEngineToolPolicyDetailed}。需要"实际生效策略"的调用方也应走那条。
+ * ⚠️ 【MC-071/MC-042】这是**低层**读法，分不清 MISSING / INVALID；要区分三者（并对损坏
+ * 配置做保守恢复与显式告警）用 {@link readEngineToolPolicyDetailed}；**执行路径**用
+ * {@link resolveEngineExcludedToolsForProviderFile}（它在 INVALID 且无恢复时**拒绝执行**）。
+ * 【MC-042】解析用严格 Schema（{@link validateEngineToolPolicy}）：错形（`exclude` 非数组、
+ * 引擎表非对象、数组内坏项、未知键、缺 `exclude` 字段）**不再**被静默过滤成空后仍判 VALID。
  */
 export function readEngineToolPolicyFile(file: string): EngineToolPolicy {
   return readEngineToolPolicyDetailed(file).policy;
 }
 
+/** 给诊断用的 JSON 值类型描述 —— 只报类型（数组 / null / string / …），不把文件内容
+ *  抄进错误消息与 UI。 */
+function describeJsonValue(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "数组";
+  return typeof v;
+}
+
+/**
+ * 【MC-042】策略文件的**唯一一份严格 Schema** —— 读判别、last-good 恢复、写回自检共用
+ * 它（同一份判据，不各写一套）。
+ *
+ * 为什么必须严格：这份文件表达的是**限制**。「`exclude` 不是数组就当没有」之类的容错
+ * 过滤会把「用户想禁用 Bash」静默读成「不禁用」—— fail-open，而且因为顶层仍判成功，
+ * last-good 恢复、`POLICY_RECOVERY_REQUIRED` 拒绝、UI 告警三条防线全部被绕过。
+ * 所以对每一类错形（引擎表非对象 / `exclude` 非数组 / 数组含非字符串或非法名 / 未知键 /
+ * 缺 `exclude` 字段）一律返回 `ok:false` + 可读诊断，**绝不**先过滤再判成功。
+ *
+ * 合法的三种形态（与读三态配套，见 {@link readEngineToolPolicyDetailed}）：
+ *   - 引擎键缺席         = 该引擎没配置过（不设限）；
+ *   - `"exclude": []`    = 明确配置空排除（不设限，但同样合法、不误伤）；
+ *   - `"exclude": [名…]` = 受限。合法名的去重/排序仍照做（集合语义不变，不丢限制）。
+ */
+export function validateEngineToolPolicy(
+  parsed: unknown,
+): { ok: true; policy: EngineToolPolicy } | { ok: false; error: string } {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: "配置顶层必须是一个对象" };
+  }
+  const record = parsed as Record<string, unknown>;
+  // 引擎键**闭集**。写错键名（如 `"claud"`）若被忽略，用户以为设了限制、实际什么都没设
+  // —— 与「坏 exclude 被读成空」是同一族 fail-open，故一并判 INVALID。
+  const unknownKeys = Object.keys(record).filter((k) => !(ENGINE_TOOL_ENGINES as readonly string[]).includes(k));
+  if (unknownKeys.length > 0) {
+    return { ok: false, error: `出现未知的引擎键:${unknownKeys.join("、")}(只支持 ${ENGINE_TOOL_ENGINES.join(" / ")})` };
+  }
+  const out: EngineToolPolicy = {};
+  for (const engine of ENGINE_TOOL_ENGINES) {
+    if (!(engine in record)) continue;
+    const entry = record[engine];
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return { ok: false, error: `${engine} 的配置必须是一个对象(实际:${describeJsonValue(entry)})` };
+    }
+    const extraKeys = Object.keys(entry).filter((k) => k !== "exclude");
+    if (extraKeys.length > 0) {
+      return { ok: false, error: `${engine} 出现未知字段:${extraKeys.join("、")}(只支持 exclude)` };
+    }
+    if (!("exclude" in entry)) {
+      return { ok: false, error: `${engine} 缺少 exclude 数组(没设置过就别写这个引擎键;明确全启用写 "exclude": [])` };
+    }
+    const rawExclude = (entry as { exclude: unknown }).exclude;
+    if (!Array.isArray(rawExclude)) {
+      return { ok: false, error: `${engine}.exclude 必须是字符串数组(实际:${describeJsonValue(rawExclude)})` };
+    }
+    // 先**逐项**校验（错在哪一项要点名报出）。全项通过后才用唯一的归一化实现
+    // `normalizeExclude` 收集 —— 不另抄一份去重/排序规则（硬规矩 2）。
+    for (let i = 0; i < rawExclude.length; i += 1) {
+      const item = rawExclude[i];
+      if (typeof item !== "string") {
+        return { ok: false, error: `${engine}.exclude[${i}] 不是字符串(实际:${describeJsonValue(item)})` };
+      }
+      if (!TOOL_NAME_RE.test(item.trim())) {
+        return { ok: false, error: `${engine}.exclude[${i}] 不是合法的工具名:${JSON.stringify(item)}` };
+      }
+    }
+    const exclude = normalizeExclude(rawExclude);
+    if (exclude.length > 0) out[engine] = { exclude };
+  }
+  return { ok: true, policy: out };
+}
+
+/** JSON 文本 → 严格 Schema。读路径的唯一入口（解析与判别合一）。 */
 function parsePolicyText(raw: string): { ok: true; policy: EngineToolPolicy } | { ok: false; error: string } {
   let parsed: unknown;
   try {
@@ -120,17 +199,7 @@ function parsePolicyText(raw: string): { ok: true; policy: EngineToolPolicy } | 
   } catch (err) {
     return { ok: false, error: `JSON 解析失败:${err instanceof Error ? err.message : String(err)}` };
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { ok: false, error: "配置不是对象" };
-  }
-  const out: EngineToolPolicy = {};
-  for (const engine of ENGINE_TOOL_ENGINES) {
-    const entry = (parsed as Record<string, unknown>)[engine];
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
-    const exclude = normalizeExclude((entry as { exclude?: unknown }).exclude);
-    if (exclude.length > 0) out[engine] = { exclude };
-  }
-  return { ok: true, policy: out };
+  return validateEngineToolPolicy(parsed);
 }
 
 /** 与策略文件同目录的「最后一份确认过的策略」备份路径。 */
@@ -272,15 +341,53 @@ function atomicWriteJson(file: string, data: unknown): void {
   }
 }
 
+/**
+ * 【MC-042】覆写前保全：当前文件**读不懂**（JSON 坏 / 形状错）时，先把原始字节备份成
+ * `<文件>.corrupt-<时间戳>.bak` 再写 —— 与 `hooks.json` 的「备份并重建」同一条纪律：
+ * 显式保存可以把配置修好，但**绝不静默销毁**读不懂的原始字节（那份字节里很可能就是
+ * 用户手写的、本应用解析不了但人可以读回来的限制）。备份不成功就拒绝写入。
+ *
+ * 正常文件（VALID）与空文件（没有可保全的字节）直接放行；不存在/读不出来的情况把
+ * 写入错误交给 {@link atomicWriteJson} 照常报出。
+ */
+function preserveCorruptOriginalBeforeOverwrite(file: string): void {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf-8");
+  } catch {
+    return; // 不存在或读不出：没有可保全的成功读取的字节。
+  }
+  if (raw.trim() === "") return; // 空文件：没有内容可保全(空文件若因 last-good 判 INVALID,其"内容"也为空)。
+  if (parsePolicyText(raw).ok) return; // 当前是 VALID：正常覆写，不堆备份垃圾。
+  const backupPath = `${file}.corrupt-${Date.now()}.bak`;
+  try {
+    copyFileSync(file, backupPath);
+  } catch (err) {
+    throw new Error(
+      `工具禁用配置已损坏,且无法把原始字节备份到 ${backupPath}:${err instanceof Error ? err.message : String(err)}` +
+        ` —— 已拒绝覆盖,以免静默销毁读不懂的原始内容。`,
+    );
+  }
+}
+
 /** 写策略到显式路径（最小形态：只留非空 exclude）。 */
 export function writeEngineToolPolicyFile(file: string, policy: EngineToolPolicy): void {
   const minimal = minimizePolicy(policy);
-  atomicWriteJson(file, minimal ?? {});
+  const value = minimal ?? {};
+  // 【MC-042】写前自检：**同一份严格 Schema** 也判写侧 —— 写不出一份读得懂的文件
+  // （例如将来 minimizePolicy 变更引入未知形状），宁可当场抛错，也不让盘上出现
+  // 一份"写成功、读却是 INVALID"的静默漂移。
+  const check = validateEngineToolPolicy(value);
+  if (!check.ok) throw new Error(`拒绝写入读不懂的工具禁用策略:${check.error}`);
+  // 【MC-042】覆写前保全损坏原件（见上）。用户从设置页显式保存是既定恢复路径
+  // （POLICY_RECOVERY_REQUIRED 的拒绝语就指向它），保存允许、但原始字节先备份。
+  preserveCorruptOriginalBeforeOverwrite(file);
+  atomicWriteJson(file, value);
   // 【MC-071 / 残余 E1】每次成功写入后刷新「最后一份确认过的策略」备份 —— **包括用户明确
   // 全启用(空策略)那一次**。从前只在 `minimal` 非空时刷新,于是「先有限制 → 用户明确全开
   // → 主文件又损坏」会从更旧的**非空**备份错误恢复出用户早已放开的旧限制。空配置也是
   // 一次合法提交,必须成为新的 last-good。
-  atomicWriteJson(lastGoodEngineToolPolicyPath(file), minimal ?? {});
+  atomicWriteJson(lastGoodEngineToolPolicyPath(file), value);
 }
 
 /** 写策略到默认路径。 */
