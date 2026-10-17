@@ -60,3 +60,8 @@ apps/desktop/build/pi-runtime-dist/
 
 # 本地审查台账与审查规范（不进入版本控制）
 /audit-ledgers/
+
+# 双锁文件防再生:唯一安装器是 pnpm(见 package.json 的 packageManager)。
+# 根 package-lock.json 是历史遗留的第二套安装输入(约束已与 pnpm-lock 分叉),
+# 已删除;若被 npm 命令意外重新生成,不入版本控制(2026-10-17,MC-038)。
+/package-lock.json
