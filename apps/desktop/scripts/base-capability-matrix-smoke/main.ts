@@ -36,7 +36,7 @@ import { ENGINE_TOOL_ENGINE_IDS, type EngineToolEngineId } from "@contracts/ipc/
 import { KNOWN_BUILTIN_TOOLS } from "@main/ipc/engineTools.js";
 import { BROWSER_TOOL_SPECS } from "@main/browser/agentBrowserTools.js";
 import { agentToolDescriptors } from "@main/mcp/agentEngineBridge.js";
-import { baseCapabilityRow as rowFromData } from "@renderer/components/settings/engineCapabilityData.js";
+import { baseCapabilityRow as rowFromData, baseCapabilityCellState } from "@renderer/components/settings/engineCapabilityData.js";
 import { BASE_TOOL_CAPABILITY_VIEW } from "@renderer/components/settings/engineCapabilityData.js";
 import { readToolNameForTurn } from "@main/lib/systemPrompt.js";
 
@@ -180,6 +180,25 @@ for (const engine of engines) {
         BASE_TOOL_CAPABILITIES.some((r) => engines.some((e) => r.engines[e].implementation === k)),
       ),
   );
+}
+
+/* ── 7. 【ARC-003 第 4 条】运行期叠加:用户按名禁用的工具在矩阵上必须显式标出 ── */
+{
+  const readCell = rowFromData("file.read")!.engines.claude;
+  const on = baseCapabilityCellState(readCell, []);
+  check("未禁用 → 不标 disabledByPolicy", on.disabledByPolicy === false && on.toolName === "Read", on);
+  const off = baseCapabilityCellState(readCell, ["Read"]);
+  check("★ Claude 禁用 Read → 该格标 disabledByPolicy(静态声明不冒充可用)", off.disabledByPolicy === true && off.toolName === "Read", off);
+  check("禁用无关工具不影响该格", baseCapabilityCellState(readCell, ["Bash"]).disabledByPolicy === false);
+  check("★ 大小写不同不命中(工具名逐字比对)", baseCapabilityCellState(readCell, ["read"]).disabledByPolicy === false);
+  const docCell = rowFromData("document.read")!.engines.claude;
+  check("宿主桥格不被引擎排除表误标", baseCapabilityCellState(docCell, [docCell.toolName ?? ""]).disabledByPolicy === false);
+  const codexShell = rowFromData("shell.run")!.engines.codex;
+  check("none 格不被误标", baseCapabilityCellState(codexShell, ["whatever"]).disabledByPolicy === false);
+  const panelSrc = read("src/renderer/components/settings/EngineToolsPanel.tsx");
+  check("★ EngineToolsPanel 把三引擎排除表传给矩阵", /<EngineCapabilityMatrix[\s\S]{0,400}?excludedByEngine/.test(panelSrc));
+  const matrixSrc2 = read("src/renderer/components/settings/EngineCapabilityMatrix.tsx");
+  check("★ 矩阵组件消费 excludedByEngine 并渲染 disabledByPolicy", matrixSrc2.includes("excludedByEngine?.[engine]") && matrixSrc2.includes("disabledByPolicy"));
 }
 
 console.log(`\nbase-capability-matrix-smoke: ${checks - failures}/${checks} 通过`);

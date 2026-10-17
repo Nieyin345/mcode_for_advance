@@ -2062,6 +2062,7 @@ export const en = {
   "settings.engineMatrix.base.impl.native": "native",
   "settings.engineMatrix.base.impl.bridge": "bridge",
   "settings.engineMatrix.base.impl.none": "none",
+  "settings.engineMatrix.base.disabledByPolicy": "Disabled by policy",
   "settings.engineMatrix.base.fileRead": "Read file",
   "settings.engineMatrix.base.fileWrite": "Write file",
   "settings.engineMatrix.base.fileEdit": "Edit file",

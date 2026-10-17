@@ -13,9 +13,11 @@
  * 数据出自纯模块 `engineCapabilityData.ts`，`engine-capability-matrix-smoke` 会把它
  * 与各真实来源对账防漂移。品牌名（Claude / Codex / Pi）不本地化。
  */
-import { ENGINE_CAPABILITY_ENGINES, ENGINE_CAPABILITY_MATRIX, supportsCapability, BASE_TOOL_CAPABILITY_VIEW, baseCapabilityCell } from "./engineCapabilityData.js";
+import { ENGINE_CAPABILITY_ENGINES, ENGINE_CAPABILITY_MATRIX, supportsCapability, BASE_TOOL_CAPABILITY_VIEW, baseCapabilityCell, baseCapabilityCellState } from "./engineCapabilityData.js";
+import type { EngineToolEngineId } from "@contracts/ipc/engineTools";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
+import { cn } from "@renderer/lib/cn.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { IconCheck, IconMinus } from "@renderer/lib/icons.js";
 
@@ -24,27 +26,32 @@ const ENGINE_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex",
 
 /** 【ARC-003】基础能力格的形态标记 —— 名字原样展示（模型看到的就是它），
  *  形态只用词条前缀/颜色区分：原生与宿主桥都是能用，`无` 是灰的。 */
-function BaseCapabilityCell({ impl, toolName, note, t }: {
+function BaseCapabilityCell({ impl, toolName, note, disabledByPolicy, t }: {
   impl: "native" | "bridge" | "none";
   toolName: string | null;
   note?: string;
+  /** 【ARC-003 第 4 条】该格的工具在本机策略里被用户按名禁用了。 */
+  disabledByPolicy?: boolean;
   t: (key: MessageId) => string;
 }) {
   const implLabel = t(`settings.engineMatrix.base.impl.${impl}` as MessageId);
   return (
-    <div className="text-center">
+    <div className="text-center" data-disabled-by-policy={disabledByPolicy ? "true" : undefined}>
       <div className="text-[0.857em] text-content-subtle">{implLabel}</div>
       {toolName ? (
-        <code className="mt-0.5 inline-block break-all font-mono text-[0.857em] text-content">{toolName}</code>
+        <code className={cn("mt-0.5 inline-block break-all font-mono text-[0.857em]", disabledByPolicy ? "text-content-subtle line-through" : "text-content")}>{toolName}</code>
       ) : (
         <div className="mt-0.5 text-[0.857em] text-content-subtle/60">—</div>
+      )}
+      {disabledByPolicy && (
+        <div className="mt-0.5 text-[0.786em] text-danger">{t("settings.engineMatrix.base.disabledByPolicy" as MessageId)}</div>
       )}
       {note && <div className="mt-0.5 text-[0.786em] text-content-subtle">{note}</div>}
     </div>
   );
 }
 
-export function EngineCapabilityMatrix() {
+export function EngineCapabilityMatrix({ excludedByEngine }: { excludedByEngine?: Partial<Record<EngineToolEngineId, readonly string[]>> } = {}) {
   const { t } = useI18n();
   return (
     <SettingsSection title={t("settings.engineMatrix.title")} desc={t("settings.engineMatrix.desc")}>
@@ -116,10 +123,12 @@ export function EngineCapabilityMatrix() {
                 <tr key={row.source.id} className="border-t border-edge align-top">
                   <td className="py-2 pr-3 text-content">{t(row.labelKey)}</td>
                   {ENGINE_CAPABILITY_ENGINES.map((engine) => {
-                    const cell = baseCapabilityCell(row.source, engine);
+                    // 【ARC-003 第 4 条】静态声明 + 本机策略(用户按名禁用的内置工具)。
+                    // 未传入策略(加载中/读取失败)时按"未禁用"显示 —— 静态声明本身仍是真的。
+                    const cell = baseCapabilityCellState(baseCapabilityCell(row.source, engine), excludedByEngine?.[engine] ?? []);
                     return (
                       <td key={engine} className="py-2 text-center">
-                        <BaseCapabilityCell impl={cell.implementation} toolName={cell.toolName} note={cell.note} t={t} />
+                        <BaseCapabilityCell impl={cell.impl} toolName={cell.toolName} note={cell.note} disabledByPolicy={cell.disabledByPolicy} t={t} />
                       </td>
                     );
                   })}

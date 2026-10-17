@@ -142,3 +142,28 @@ export function baseCapabilityCell(
 export function baseCapabilityRow(id: BaseToolCapabilityRow["id"]): BaseToolCapabilityRow | undefined {
   return BASE_TOOL_CAPABILITIES.find((r) => r.id === id);
 }
+
+/**
+ * 【ARC-003 第 4 条】把**本机当前策略**叠加到契约的静态声明上。
+ *
+ * 契约表那句 available 是"**引擎具备**这项能力"，不是"本回合一定可用"（见契约文件头）。
+ * 用户可以在下面对应的引擎卡片里按名禁用内置工具 —— 那一层是**运行时事实**，矩阵
+ * 必须如实显示，否则用户会看到"原生 Read"同时看到"Read 已禁用"两张互相打脸的说明。
+ *
+ * 判据：该格是 `native` 且它的工具名出现在该引擎的排除表里 → `disabledByPolicy`。
+ * 宿主桥（`bridge`）不受引擎工具的按名禁用影响（那是引擎侧清单），`none` 也没有可禁的。
+ * 大小写按引擎的真实工具名逐字比对（不许折叠 —— 工具名就是标识符）。
+ */
+export function baseCapabilityCellState(
+  cell: BaseToolCapabilityRow["engines"][EngineToolEngineId],
+  excluded: readonly string[],
+): { impl: "native" | "bridge" | "none"; toolName: string | null; note?: string; disabledByPolicy: boolean } {
+  const disabledByPolicy =
+    cell.implementation === "native" && cell.toolName !== null && excluded.includes(cell.toolName);
+  return {
+    impl: cell.implementation,
+    toolName: cell.toolName,
+    ...(cell.note !== undefined ? { note: cell.note } : {}),
+    disabledByPolicy,
+  };
+}

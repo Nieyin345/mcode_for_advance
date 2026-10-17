@@ -202,7 +202,16 @@ export function EngineToolsPanel() {
           {/* 「能力 × 引擎」矩阵 —— 只读说明，静态数据、不依赖 RPC，所以放在最上面
               （加载引擎卡片时也一直看得见）。它把散在技能/MCP/插件各页的引擎能力面
               汇到一处（见 engineCapabilityData.ts）。 */}
-          <EngineCapabilityMatrix />
+          {/* 【ARC-003 第 4 条】把本机策略叠加进基础能力矩阵:用户在下面对应卡片里按名
+              禁用的内置工具,矩阵那一格必须如实显示「已被用户禁用」—— 静态声明与运行时
+              事实同时可见,而不是两张互相打脸的说明。 */}
+          <EngineCapabilityMatrix
+            excludedByEngine={snap ? {
+              claude: snap.engines.claude.exclude,
+              pi: snap.engines.pi.exclude,
+              codex: snap.engines.codex.exclude,
+            } : undefined}
+          />
           {rpc.error && <ErrorNote>{rpc.error.message}</ErrorNote>}
           {/* 【MC-071】策略文件损坏时**显式告警**,不把 fail-open 当用户主动启用。
               主进程已据 last-good 保守恢复(或无备份时按不设限),这里把那一事实讲出来。 */}

@@ -2052,6 +2052,8 @@ export const zh = {
   "settings.engineMatrix.base.impl.native": "原生",
   "settings.engineMatrix.base.impl.bridge": "宿主桥",
   "settings.engineMatrix.base.impl.none": "无",
+  // 【ARC-003】运行期叠加：契约表说"引擎具备"，这里说"本机当前这一项被用户禁用了"。
+  "settings.engineMatrix.base.disabledByPolicy": "已被用户禁用",
   "settings.engineMatrix.base.fileRead": "读文件",
   "settings.engineMatrix.base.fileWrite": "写文件",
   "settings.engineMatrix.base.fileEdit": "编辑文件",
