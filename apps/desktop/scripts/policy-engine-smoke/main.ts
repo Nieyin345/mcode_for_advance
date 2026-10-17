@@ -694,6 +694,55 @@ const memBlob = (): BlobIO & { peek: () => string | null } => {
   eq("★ MC-016:撞名被拒后原授权一字未动", s3.get("same", 1_500)?.allowedActions[0], "file.write");
 }
 
+/* ══ 16b-2. ★ MC-016 验收条件「并发两个实例」:跨实例写入不静默覆盖 ══
+ *
+ * 16b 的占用守卫只在**同一个 `GrantStore` 实例**里看得见。验收条件点名的另一面是两个
+ * 实例(多开 / 两个进程)各自载入同一份 grants.json 后签发 —— 后写的那份会把先写那份
+ * **整份盖掉**,而两边都以为成功。修法在 `fileGrantPersist.save`:写前重读磁盘、比较
+ * 基线 id 集合;发现第三方写入时,撞名的本次新 id 一律拒写(《碰撞必须拒绝并保留旧记录》),
+ * 不撞名则把对方的授权并进候选全量再写(不丢别人的)。 */
+{
+  // 两个 `fileGrantPersist` 适配器共享同一份 blob = 两个进程共享同一个 grants.json。
+  const blob = memBlob();
+  const persistA = fileGrantPersist(blob);
+  const a = new GrantStore({ persist: persistA, newId: (n) => `a-${n}` });
+  a.issueGrant(decision({ allowedActions: ["a"] }), USER, 1_000); // A 写入 a-1
+
+  // B 在 A 之后才载入(拿到 a-1 的基线),再签 b-1 → 写到磁盘上两条都在。
+  const persistB = fileGrantPersist(blob);
+  const b = new GrantStore({ persist: persistB, newId: (n) => `b-${n}` });
+  b.issueGrant(decision({ allowedActions: ["b"] }), USER, 1_000);
+  eq("★ MC-016 并发实例:后载入的实例写入时并上先写的授权(不整份覆盖)", parseGrants(blob.peek()).map((g) => g.grantId).sort().join(","), "a-1,b-1");
+
+  // 现在 A 的内存基线还是只有 a-1,B 又写了 b-1 —— A 再签发必须看见 b-1 并保留它。
+  a.issueGrant(decision({ allowedActions: ["a"] }), USER, 1_000); // a-2
+  eq(
+    "★ MC-016 并发实例:旧基线实例再写时也保留对方授权(两个方向都不静默覆盖)",
+    parseGrants(blob.peek()).map((g) => g.grantId).sort().join(","),
+    "a-1,a-2,b-1",
+  );
+
+  // 撞名:第三个实例用**同一个 id 生成器**,在 A 的基线之外拿到 a-1 → 拒写,旧记录一字未动。
+  const persistC = fileGrantPersist(blob);
+  const c = new GrantStore({ persist: persistC, newId: () => "c-1" });
+  // 模拟“另一个实例抢先写了 c-1”。
+  const stranger = new GrantStore({
+    persist: fileGrantPersist(blob),
+    newId: () => "c-1",
+  });
+  stranger.issueGrant(decision({ allowedActions: ["other"] }), USER, 1_000);
+  const before = blob.peek();
+  let crossThrew = false;
+  try {
+    c.issueGrant(decision({ allowedActions: ["mine"] }), USER, 1_000);
+  } catch (e) {
+    crossThrew = (e as Error).message.includes("授权写入冲突");
+  }
+  eq("★ MC-016 并发实例:与第三方已写 id 撞名 → 拒写(不覆盖)", crossThrew, true);
+  eq("★ MC-016 并发实例:拒写后磁盘逐字未动", blob.peek(), before);
+  eq("★ MC-016 并发实例:拒写后另一实例那枚授权的所有者内容仍在", parseGrants(blob.peek()).find((g) => g.grantId === "c-1")?.allowedActions[0], "other");
+}
+
 /* ══ 16c. ★ MC-017:落盘失败 → 内存与磁盘不分裂 ══
  *
  * 旧行为:三个 mutation 都「先改内存、后 flush」,`save` 抛错时留下一份「内存里有、磁盘上

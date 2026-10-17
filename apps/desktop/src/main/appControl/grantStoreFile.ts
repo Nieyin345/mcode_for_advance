@@ -187,10 +187,77 @@ export function parseGrants(json: string | null): Grant[] {
   return filterShapesOrWarn(env.grants, isGrantShape, "grants.json");
 }
 
-/** 把一份 `BlobIO` 适配成 `GrantStore` 认的窄持久化接口。 */
-export function fileGrantPersist(blob: BlobIO): GrantStorePersist {
+/**
+ * **跨实例写入的乐观并发约束**(MC-016 验收条件「并发两个实例」)。
+ *
+ * ## 它挡的是什么
+ *
+ * `GrantStore` 的 `commit` 是「把**本实例内存里的全量**写出去」。两个进程(或多开一份)
+ * 各自载入同一份 `grants.json` 后各签一枚授权,后写的那份会把先写那份的授权**整份盖掉**
+ * —— 而两个实例各自的内存里都认为"签发成功"。同进程内的 `assertGrantIdFree` 看不见
+ * 另一个实例的写入,所以那条守卫对跨实例无效。
+ *
+ * ## 怎么挡(不引入锁文件)
+ *
+ * 用**内容比较 + 重读合并**:写之前先重读磁盘;若磁盘上的授权集合与本实例**上次载入/写入**
+ * 时的基线不同(多了别的实例写的),说明有第三方写入 —— 此时:
+ *   - 本次写入的每一条**新授权** id 在磁盘上已存在 → 冲突,拒写(调用方拿到
+ *     `GrantStoreError`,与同进程撞名同一形状);
+ *   - 否则把磁盘上多出来的授权**并进**候选全量再写 —— 不丢别人的授权,也不静默覆盖。
+ *
+ * 退一步说:这是**文件系统层的最后写赢**,不可能是强一致(没有跨进程锁)。但它把
+ * 「静默覆盖别人的授权」变成「显式冲突 / 合并保留」,正是 MC-016 要求的
+ * 「碰撞必须拒绝并保留旧记录」。进程内并发仍由 `commit` 的同步临界区保证。
+ *
+ * ## 为什么基线是「上次读到的全量」
+ *
+ * 每个 `BlobIO` 适配器持有一份 `baseline`(`load` 时更新、`save` 成功后更新)。比较的是
+ * **id 集合**而不是字节:字节会因键序 / 缩进不同而假冲突(id 集合相同即视为同一份)。
+ */
+export interface FileGrantPersist extends GrantStorePersist {
+  /** 最近一次成功 load / save 时的授权 id 集合(冲突判据的基线;测试可读)。 */
+  baselineIds(): readonly string[];
+}
+
+export function fileGrantPersist(blob: BlobIO): FileGrantPersist {
+  let baseline = new Set<string>();
+  const remember = (grants: readonly Grant[]): void => {
+    baseline = new Set(grants.map((g) => g.grantId));
+  };
   return {
-    load: () => parseGrants(blob.read()),
-    save: (grants) => blob.write(serializeGrants(grants)),
+    load: () => {
+      const grants = parseGrants(blob.read());
+      remember(grants);
+      return grants;
+    },
+    save: (grants) => {
+      // ① 重读磁盘:看有没有**别的实例**在我们上次读写之后写过。
+      const onDisk = parseGrants(blob.read());
+      const onDiskIds = new Set(onDisk.map((g) => g.grantId));
+      const incomingIds = new Set(grants.map((g) => g.grantId));
+      const foreign = [...onDiskIds].filter((id) => !baseline.has(id));
+      if (foreign.length > 0) {
+        // ② 有第三方写入:本次**新增**的 id 若与它撞名 → 拒(不覆盖别人的授权)。
+        const collisions = [...incomingIds].filter((id) => !baseline.has(id) && onDiskIds.has(id));
+        if (collisions.length > 0) {
+          throw new Error(
+            `授权写入冲突:${collisions.join("、")} 已被另一个实例写入(磁盘上已有,本实例基线里没有)。` +
+              "拒绝覆盖 —— 重新读取授权后再签发。",
+          );
+        }
+        // ③ 没有撞名:把磁盘上多出来的授权**并进**候选全量再写(不丢别人的)。
+        const merged = new Map<string, Grant>();
+        for (const g of onDisk) merged.set(g.grantId, g);
+        for (const g of grants) merged.set(g.grantId, g);
+        const all = [...merged.values()];
+        blob.write(serializeGrants(all));
+        remember(all);
+        return;
+      }
+      blob.write(serializeGrants(grants));
+      remember(grants);
+    },
+    /** 冲突判据的基线(测试与诊断可读;生产不消费)。 */
+    baselineIds: () => [...baseline],
   };
 }
