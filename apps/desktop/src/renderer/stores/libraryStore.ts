@@ -26,6 +26,21 @@ import { api } from "@renderer/lib/api.js";
 /** 左栏一次最多列多少篇。展开是浏览,不是检索 —— 再多就该去右栏搜了。 */
 const TREE_PAGE = 200;
 
+/**
+ * 【MC-050】「全部显示」视图该画什么 —— 纯函数,判据立在**用户看到的差别**上:
+ *
+ *   - `loading`:还没加载过、也没失败过 → `…`;
+ *   - `error`  :从未加载成功过、最近一次失败了 → 显式报错 + 重试(从前这里也是 `…`,
+ *                失败与加载中长得一模一样,而且会**永远**停在那里);
+ *   - `stale`  :之前加载成功过、最近一次刷新失败 → 保留旧列表,但标一行「可能过期」
+ *                (旧快照当 fallback 可以,静默当新数据不行 —— 硬规矩 3);
+ *   - `ready`  :正常。
+ */
+export function showAllListState(items: LibraryItem[] | null, error: string | null): "loading" | "error" | "stale" | "ready" {
+  if (items === null) return error !== null ? "error" : "loading";
+  return error !== null ? "stale" : "ready";
+}
+
 // IPC can return out of order (e.g. an import refresh overtakes an expanded tree
 // request). A later request/mutation owns the cache; older responses must not
 // paint a previously selected item or a deleted collection back into the UI.

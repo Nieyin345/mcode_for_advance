@@ -48,7 +48,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { useLibraryStore } from "@renderer/stores/libraryStore.js";
+import { useLibraryStore, showAllListState } from "@renderer/stores/libraryStore.js";
 import { useFileViewStore, basenameOf } from "@renderer/stores/fileViewStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { previewLibraryItem } from "@renderer/lib/libraryPreview.js";
@@ -207,6 +207,9 @@ export function LibrarySection({
   const itemsError = useLibraryStore((s) => s.itemsError);
   const allItems = useLibraryStore((s) => s.allItems);
   const allItemsTotal = useLibraryStore((s) => s.allItemsTotal);
+  // 【MC-050】全库口径(`loadAllItems`)的最近一次失败原因 —— 从前 store 记了它、
+  // 界面从不读:「全部」视图在加载失败时永久显示 `…`(与「加载中」分不清)。
+  const allItemsError = useLibraryStore((s) => s.allItemsError);
   const loadAllItems = useLibraryStore((s) => s.loadAllItems);
   const loadEveryCollectionItems = useLibraryStore((s) => s.loadEveryCollectionItems);
   const refreshItems = useLibraryStore((s) => s.refreshItems);
@@ -1242,18 +1245,44 @@ export function LibrarySection({
    */
   const renderShowAllList = () => {
     const items = allItems;
+    // 【MC-050】全库加载失败:不能继续显示 `…`(那是「加载中」的样子,会永远停在那里)。
+    // 与分类行同一套处理:从未加载过 → 显式报错 + 重试;已加载过 → 保留旧列表并标
+    // 「可能是过期内容」(旧快照当 stale fallback,但必须可见 —— 硬规矩 3)。
+    // 判据抽在 `showAllListState`(纯函数、有无头断言),这里只按它画。
+    const state = showAllListState(items, allItemsError);
+    if (state === "error") {
+      return (
+        <div className="flex items-center gap-2 px-2 py-1 text-[0.85em]">
+          <span className="min-w-0 flex-1 truncate text-danger" title={allItemsError ?? ""}>
+            {t("library.loadFailed", { error: allItemsError ?? "" })}
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted hover:bg-surface-hover"
+            onClick={() => void loadAllItems()}
+          >
+            {t("library.retry")}
+          </button>
+        </div>
+      );
+    }
     // ⚠️ **取的是前 200 条,超了要说出来。** 孤儿条目(不属于任何分类)只在"全部"里
     // 看得见,静默截断会让更旧的那些在左栏里彻底消失 —— 仓规:少列了东西要显式写一句。
     const hidden = items === null ? 0 : Math.max(0, allItemsTotal - items.length);
     return (
       <>
+        {state === "stale" && (
+          <HintRow>
+            {t("library.loadFailedStale", { error: allItemsError ?? "" })}
+          </HintRow>
+        )}
         <ul className="space-y-0.5">
-          {items === null ? (
+          {state === "loading" ? (
             <HintRow>…</HintRow>
-          ) : items.length === 0 ? (
+          ) : items !== null && items.length === 0 ? (
             <HintRow>{t("library.list.empty")}</HintRow>
           ) : (
-            items.map((item) => renderItemRow(item, null))
+            (items ?? []).map((item) => renderItemRow(item, null))
           )}
         </ul>
         {hidden > 0 && (

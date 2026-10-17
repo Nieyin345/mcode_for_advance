@@ -949,6 +949,23 @@ section("18. 插件 hook 授权:面板入参构造 + 面板真的接上了签发
   );
 }
 
+/* ── 【MC-050】资料库「全部显示」:加载中 / 读失败 / 过期旧内容必须分得开 ── */
+
+console.log("\n【MC-050】全部显示视图的四态");
+{
+  const { showAllListState } = await import("../../src/renderer/stores/libraryStore.js");
+  eq("从未加载过、无错误 → loading(…)", showAllListState(null, null), "loading");
+  eq("★ 从未加载过、失败过 → error(显式报错,不是永远 …)", showAllListState(null, "IPC 读失败"), "error");
+  eq("★ 加载过、刷新失败 → stale(保留旧列表但标注过期)", showAllListState([], "IPC 读失败"), "stale");
+  eq("加载过、无错误 → ready", showAllListState([], null), "ready");
+  // 判据:同为"没有条目"的两种身份(空库 / 读失败)必须给出不同状态。
+  check(
+    "★★ 同为 0 条的空库与读失败状态不同(用户能看出差别)",
+    showAllListState([], null) !== showAllListState(null, "x"),
+    { emptyLibrary: showAllListState([], null), failed: showAllListState(null, "x") },
+  );
+}
+
 /* ── 【MC-048】守望面板:读失败与"没有模板"必须分得开 ── */
 
 console.log("\n【MC-048】守望面板读口:空表 vs 读失败");
