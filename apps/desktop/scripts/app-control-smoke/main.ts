@@ -39,7 +39,7 @@ import {
   findHostTrustGrant,
   listHostTrustGrants,
 } from "@main/mcp/agentRemoteSsh.js";
-import { __clearSettings, __dumpSettings } from "./stubs/repositories.js";
+import { __clearSettings, __dumpSettings, SettingRepo } from "./stubs/repositories.js";
 import { __setSendToRendererThrows } from "./stubs/window.js";
 import {
   ACTIONS_BY_SLOT,
@@ -635,6 +635,87 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
 
   const desc = await invokeAppTool("app_api_describe", { method: "session.rename" }, "me", ctx);
   check("app_api_describe 有参数格式", textOf(desc).includes("参数:") && textOf(desc).includes("title"), textOf(desc));
+}
+
+/* ── 【ARC-002】用户派生工具的控制目录闭环：检索 → help → 结构化执行 ──
+ *
+ * ARC-002 的验收场景原话：「Agent 只用轻量控制入口搜到相关操作 → 按需读 help/guide →
+ * 生成并校验工作流 → 用户批准后发布 → 之后可搜名字、传参运行、查看结果、撤销」。
+ *
+ * `published-tools-smoke` 已逐段钉住发布/检索/help/校验/撤销的**纯函数**行为；
+ * 这一段补的是**经 app_* 工具入口的那条路** —— agent 实际走的就是它：
+ *   ① `app_api_list({query})` 检索到 `workflow.run.<名字>`（与静态目录同一份索引）；
+ *   ② `app_api_describe` 返回该派生工具的参数 schema；
+ *   ③ `app_workflow_run` 在校验参数**之后**才往下走（缺必填 → 执行前拒绝，
+ *      连触发器查询都没发生）。
+ *
+ * ⚠️ 这两处替身是本段**故意**的：本套没有真 SQLite（`WorkflowRepo` 原样转发真模块），
+ * 而 `publishedTools` 经 `getWorkflow` 读库。所以 `workflow:get` 由本段注册成"返回
+ * 一份内存里的文档"，发布记录走**真** `publishedTools` + 内存 `SettingRepo` ——
+ * 判据仍立在**真实的工具入口代码**上（`app_api_list` / `app_api_describe` /
+ * `app_workflow_run` 的 handler 一行都没替身）。
+ */
+console.log("\n§ARC-002 用户派生工具：检索 → help → 结构化执行");
+{
+  __clearSettings();
+  // 真库:本段要"发布 → 检索 → help → 结构化执行"的完整链路,而发布读的
+  // `getWorkflow` 走真 WorkflowRepo(`repositories` 桩只换了 SettingRepo,WorkflowRepo
+  // 原样转发真模块)。数据根由 run.sh 的 mktemp 提供。
+  const { initDb } = await import("@main/store/db.js");
+  const lib = await import("@main/orchestration/library.js");
+  const pt = await import("@main/orchestration/publishedTools.js");
+  await initDb();
+  const doc = {
+    id: "wf_arc002_tool",
+    name: "文献整理",
+    builtin: false,
+    updatedAt: Date.now(),
+    prompt: "整理这篇文献。",
+    inputSchema: {
+      type: "object",
+      required: ["paperId"],
+      properties: {
+        paperId: { type: "string", description: "文献条目 id" },
+        depth: { type: "integer", description: "整理深度" },
+      },
+    },
+    nodes: [],
+    edges: [],
+  };
+  const saved = await lib.saveWorkflow(doc as never, { expectedRevision: null } as never);
+  check("守卫：工作流真的存进了库", (saved as { ok?: boolean }).ok !== false && lib.getWorkflow(doc.id) !== null, saved);
+  const pub = pt.publishWorkflowTool({ workflowId: doc.id, name: "文献整理", description: "把一篇文献做结构化整理" });
+  check("守卫：发布成功", pub.ok === true, pub);
+
+  const { ctx } = ctxWith();
+
+  // ① 轻量检索
+  const listText = textOf(await invokeAppTool("app_api_list", { query: "文献整理" }, "me", ctx));
+  check("★ ARC-002：app_api_list 按名字检索到派生工具", listText.includes("workflow.run.文献整理"), listText.slice(0, 300));
+  check("★ ARC-002：检索结果带上调用方式（app_workflow_run）", listText.includes("app_workflow_run"), listText.slice(0, 400));
+
+  // ② help:参数 schema 来自工作流 inputSchema
+  const paramsText = pt.describeWorkflowToolParams(doc.id);
+  check("★ ARC-002：help 的必填参数不带 ?", paramsText.includes("paperId:") && !paramsText.includes("paperId?:"), paramsText);
+  check("★ ARC-002：可选参数带 ? 且说明带出", paramsText.includes("depth?:") && paramsText.includes("整理深度"), paramsText);
+  const helpText = textOf(await invokeAppTool("app_api_describe", { method: "workflow.run.文献整理" }, "me", ctx));
+  check("★ ARC-002：app_api_describe 认得已发布的派生工具（不是「没有这个方法」）", !helpText.includes("没有这个方法"), helpText.slice(0, 300));
+
+  // ③ 结构化执行:缺必填 → **执行前**拒,连 `automation.statusAll` 都没问。
+  let statusAllAsked = 0;
+  recordRpcHandler("automation:statusAll", async () => { statusAllAsked += 1; return []; });
+  const bad = await invokeAppTool("app_workflow_run", { workflow_id: doc.id, params: {} }, "me", ctx);
+  check(
+    "★ ARC-002：缺必填参数 → 执行前拒绝（REJECTED，点名 paperId）",
+    opResultOf(bad)?.resultKind === "REJECTED" && textOf(bad).includes("paperId"),
+    { op: opResultOf(bad), text: textOf(bad).slice(0, 300) },
+  );
+  check("★ ARC-002：坏参时连触发器都没查过（一步都没往下走）", statusAllAsked === 0, statusAllAsked);
+
+  // ④ 撤销后检索不到
+  pt.unpublishWorkflowTool(doc.id);
+  const after = textOf(await invokeAppTool("app_api_list", { query: "文献整理" }, "me", ctx));
+  check("★ ARC-002：撤销后检索不到", !after.includes("workflow.run.文献整理"), after.slice(0, 200));
 }
 
 /* ── 自定义面板/扩展的对外接口(app_panel_api_list)──

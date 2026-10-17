@@ -9,6 +9,10 @@ cd "$(dirname "$0")/../.."
 # `ERR_MODULE_NOT_FOUND: Cannot find package 'ssh2'`)。`agent-mail-smoke` / `mcode-admin-smoke`
 # 同一个位置。`.tmp/` 已在 .gitignore 里。
 mkdir -p ./.tmp/app-control-smoke
+# 【ARC-002】这一段现在要真 DB(发布派生工具 → 检索 → help → 结构化执行)。
+# 数据根指向 mktemp 副本 —— sql.js 的 persist() 会重写整个 mcode.db,指错就是毁用户数据。
+DATA=$(mktemp -d /tmp/mcode-app-control-data.XXXXXX)
+trap 'rm -rf "$DATA"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # ⚠️ `--alias:@main/claude/RuntimeManager.js` 是**必需的**,不是保险。【MC-059】之后
@@ -31,7 +35,8 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/claude/RuntimeManager.js=./scripts/app-control-smoke/stubs/runtimeManager.ts \
   --alias:@main/store/repositories.js=./scripts/app-control-smoke/stubs/repositories.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
   --outfile=./.tmp/app-control-smoke/smoke.mjs --log-level=error
 
-node ./.tmp/app-control-smoke/smoke.mjs
+MCODE_SMOKE_DATA_ROOT="$DATA" node ./.tmp/app-control-smoke/smoke.mjs

@@ -53,7 +53,7 @@ import {
   type OperationResult,
   type OperationWarning,
 } from "@contracts/appControl";
-import { fail, image, text, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js";
+import { fail, image, text, textBlocksOf, type McpToolSpec, type ToolResult } from "@main/mcp/sdk.js";
 import { API_CATALOG, type ApiCatalogEntry } from "./apiCatalog.generated.js";
 import { decodeDomainOutcome, resolveOperationOutcome, resultKindOfOutcome, resultKindOfOperationOutcome, opExtraFromOutcome, sideEffectClassOf, thrownResultKind } from "./commandOutcome.js";
 import {
@@ -1046,6 +1046,7 @@ export function appMcpTools(): McpToolSpec[] {
         );
         // 【MC-041】动态实例(用户发布的派生工具)并入同一份索引 —— 查询与目录
         // 走的就是这条路,没有第二套。纯派生工具命中且静态目录为空时,直接回它。
+        let derivedHeader = "";
         if (!args.domain) {
           const published = publishedToolsWithDocs();
           const hits = published.filter(
@@ -1056,7 +1057,7 @@ export function appMcpTools(): McpToolSpec[] {
                 publishedToolMethodName(p.tool).toLowerCase().includes(q) ||
                 (p.tool.description ?? "").toLowerCase().includes(q)),
           );
-          if (hits.length > 0 && picked.length === 0) {
+          if (hits.length > 0) {
             const lines = hits.map(
               (p) =>
                 `- ${publishedToolMethodName(p.tool)} [需批准] — 用户发布的工作流「${p.docName}」${p.tool.description ? `:${p.tool.description}` : ""}` +
@@ -1067,9 +1068,13 @@ export function appMcpTools(): McpToolSpec[] {
                   })()
                 }`,
             );
-            return text(
+            const header = text(
               `匹配「${args.query!.trim()}」的用户派生工具(共 ${hits.length} 个;这些是工作流发布出来的,不在静态 RPC 目录里):\n${lines.join("\n")}`,
             );
+            // 静态结果为空:照旧只回派生工具(格式不变)。
+            if (picked.length === 0) return header;
+            // 静态也命中:两段**一起**返回 —— 派生工具不能被任务词命中吞掉。
+            derivedHeader = textBlocksOf(header).join("");
           }
         }
         if (picked.length === 0) return text("没有匹配的方法。不带参数调用一次看全部功能域。");
@@ -1080,7 +1085,8 @@ export function appMcpTools(): McpToolSpec[] {
         // 免得 agent 以为每个都是精确匹配。
         const hitDomains = [...taskDomains].filter((d) => all.some((e) => domainOf(e.method) === d));
         const viaTasks = q && hitDomains.length > 0 ? `(「${args.query!.trim()}」按任务词命中功能域:${hitDomains.join(" / ")},下面是这些域的全部方法)` : "";
-        return text(`${picked.length} 个方法${viaTasks}:\n${lines.join("\n")}`);
+        const staticSection = `${picked.length} 个方法${viaTasks}:\n${lines.join("\n")}`;
+        return text(derivedHeader ? `${derivedHeader}\n\n${staticSection}` : staticSection);
       },
     },
     {

@@ -220,7 +220,15 @@ export function publishedToolMethodName(tool: PublishedWorkflowTool): string {
 
 /** 生成派生工具的参数说明文本(与目录里 input/output 同一面孔)。 */
 export function describeWorkflowToolParams(workflowId: string): string {
-  const doc = getWorkflow(workflowId);
+  // 【ARC-002】DB 未就绪(无头套件 / 启动早期)**不该让"看参数"变成一次崩溃**:
+  // 与 `publishedToolsWithDocs` 的 try 包住整条链同一条纪律 —— 读不到文档时退回
+  // "没有声明输入"那句话,参数校验仍在 `app_workflow_run` 里按真实 doc 做。
+  let doc: ReturnType<typeof getWorkflow> = null;
+  try {
+    doc = getWorkflow(workflowId);
+  } catch {
+    doc = null;
+  }
   const schema = doc?.inputSchema;
   if (!schema || typeof schema.properties !== "object" || schema.properties === null) {
     return "(没有声明输入;params 可省略)";
