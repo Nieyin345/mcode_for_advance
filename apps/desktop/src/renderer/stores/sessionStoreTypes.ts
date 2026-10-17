@@ -19,7 +19,7 @@
  * 所以从 `@renderer/stores/sessionStore.js` import 类型的那 144 个文件一行不用改。
  */
 
-import { Accelerator, AutoArchiveConfig, BrowserDevicePreset, BrowserOrientation, ChatDensity, CustomCommand, ReduceMotion, DisplayMode, FileViewMode, GestureSequence, GestureSettings, GitDiffOpenMode, GitWorktreeInfo, IdeEditorMode, LeftBarMode, LspLanguageState, PickedElement, ProjectGroupsMeta, ProjectView, ProviderHealthStatusCode, ProviderInfo, RightPanelTab, RuntimeAgentState, RuntimeProgressPayload, ShortcutBindings, SkillInfo, VoiceEngine } from "@contracts/ipc";
+import { Accelerator, AutoArchiveConfig, BrowserDevicePreset, BrowserOrientation, ChatDensity, CustomCommand, ReduceMotion, DisplayMode, FileViewMode, GestureSequence, GestureSettings, GitDiffOpenMode, GitWorktreeInfo, IdeEditorMode, LeftBarMode, LspLanguageState, PickedElement, ProjectGroupsMeta, ProjectView, ProviderHealthStatusCode, ProviderInfo, RightPanelTab, RuntimeAgentState, RuntimeProgressPayload, ShellPreference, ShortcutBindings, SkillInfo, VoiceEngine } from "@contracts/ipc";
 import { ApprovalRequestEvent, AskUserQuestionItem, ContextSnapshot, EffortLevel, EngineCommandInfo, NodeArtifact, NodeExecutionRecord, PermissionMode, PlanApprovalRequestEvent, PlanUpdateEvent, RuntimeEvent, SubagentSnapshot, TranscriptBlock, TurnUsageRecord, WorkflowChoiceOption, WorkflowNodeResultEvent } from "@contracts/runtime";
 import { AttachmentKind, ContentTag } from "@renderer/lib/contentTag.js";
 import { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
@@ -597,6 +597,11 @@ export interface SessionState {
   /** 【ARC-005 M1】减弱动效偏好("system" | "on" | "off")。持久化在
    *  `ui.reduceMotion`;应用到 `<html data-reduce-motion>`(appearance.ts)。 */
   reduceMotion: ReduceMotion;
+  /** 【ARC-005 V1】界面外壳偏好("classic" 默认 | "workspace")。持久化在
+   *  `ui.shell`(设备本地键);App 据此在 `ClassicShell` 与未来的
+   *  `WorkspaceShell` 之间选择。**任何取值都不卸载工作区子树** —— 壳只重新
+   *  摆放同一棵已挂载的子树。 */
+  shellPref: ShellPreference;
   /** How the left bar renders projects. `"flat"` (default) is a plain list;
    *  `"grouped"` clusters them under collapsible headers keyed by
    *  `Project.group`. Persisted in the `settings` table. */
@@ -1660,6 +1665,9 @@ export interface SessionState {
   setChatDensity: (mode: ChatDensity) => Promise<void>;
   /** 【ARC-005 M1】减弱动效偏好;写 `ui.reduceMotion` 并由 appearance 应用到 <html>。 */
   setReduceMotion: (mode: ReduceMotion) => Promise<void>;
+  /** 【ARC-005 V1】切换界面外壳偏好;写 `ui.shell`(设备本地键)。同一
+   *  immediate-flip + fire-and-forget-persist 流水线。 */
+  setShellPref: (pref: ShellPreference) => Promise<void>;
   /** Toggle the left-bar project view between flat and grouped. Persists
    *  to the `settings` table so the choice survives restart. */
   setProjectView: (mode: ProjectView) => Promise<void>;

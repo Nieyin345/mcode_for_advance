@@ -266,6 +266,26 @@ export const ChatDensitySchema = z.enum(["compact", "comfortable", "cozy"]);
 export type ChatDensity = z.infer<typeof ChatDensitySchema>;
 
 /**
+ * 【ARC-005 V1】界面外壳偏好("双壳"过渡期的开关)。
+ *   - `"classic"`(默认):现有的经典工作区外壳 —— App 直接渲染 `ClassicShell`
+ *     (左栏 + Titlebar + ThreePaneLayout + 底部终端),行为与引入本偏好前逐字节一致。
+ *   - `"workspace"`:会话优先的 `WorkspaceShell`(尚未实装;V1 只铺偏好与 ClassicShell
+ *     的抽离,渲染端仍按 classic 落地)。
+ *
+ * 与 `ui.themeStyle` 同一条流水线:首屏 `init()` 的 getMany 批量读、`setShellPref`
+ * 即时翻转 + fire-and-forget 落库。**必须**进 `DEVICE_LOCAL_SETTING_KEYS` —— 外壳
+ * 形态跟屏幕走(手机会话流壳不该被桌面选择覆盖),见 `@contracts/ipc/settingsSync`。
+ *
+ * 硬约束:无论取值如何,**工作区子树不许卸载**(终端 PTY / Monaco / 草稿保活)——
+ * 壳切换只能是同一棵已挂载子树的重新摆放,不是三元切换。
+ */
+export const UI_SHELL_SETTING_KEY = "ui.shell";
+
+/** zod schema + TS union for the shell preference. */
+export const ShellPreferenceSchema = z.enum(["classic", "workspace"]);
+export type ShellPreference = z.infer<typeof ShellPreferenceSchema>;
+
+/**
  * Setting key under which the user's preferred left-bar project view is
  * persisted. `"flat"` (default) renders projects as a flat list; `"grouped"`
  * clusters them under collapsible headers keyed by `Project.group`. Mirrors

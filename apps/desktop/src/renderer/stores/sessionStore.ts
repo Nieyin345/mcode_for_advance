@@ -38,7 +38,7 @@ import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 import { DEFAULT_GESTURE_SETTINGS } from "@renderer/lib/gestures.js";
 import { DEFAULT_EDITOR_THEME_CHOICE, parseEditorThemeChoice, type EditorThemeChoice, type EditorThemeId } from "@renderer/lib/editorThemes.js";
-import { DISPLAY_MODE_SETTING_KEY, TAB_BAR_MULTI_ROW_SETTING_KEY, LEFTBAR_MODE_SETTING_KEY, THEME_STYLE_SETTING_KEY, UI_LOCALE_SETTING_KEY, DEFAULT_PROVIDER_ID, UI_CHAT_FONT_SIZE_SETTING_KEY, UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY, UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY, WORKFLOW_MAX_PARALLEL_SETTING_KEY, UI_USER_MSG_COLOR_SETTING_KEY, UI_ACCENT_COLOR_SETTING_KEY, UI_RIGHT_PANEL_TAB_SETTING_KEY, UI_VOICE_LANG_SETTING_KEY, UI_VOICE_ENGINE_SETTING_KEY, UI_VOICE_MIC_PERMISSION_SETTING_KEY, UI_VOICE_MODEL_DIR_SETTING_KEY, UI_IDE_OPEN_FILES_SETTING_KEY, UI_IDE_ACTIVE_FILE_SETTING_KEY, UI_IDE_EXPANDED_DIRS_SETTING_KEY, UI_IDE_EDITOR_MODE_SETTING_KEY, UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, UI_COMMIT_GEN_MODEL_SETTING_KEY, UI_COMMIT_GEN_PROMPT_SETTING_KEY, UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, UI_COMPOSER_MODEL_SETTING_KEY, UI_TITLE_GEN_ENABLED_SETTING_KEY, UI_TITLE_GEN_MODEL_SETTING_KEY, UI_VISION_RELAY_MODEL_SETTING_KEY, AGENT_OUTPUT_STYLE_SETTING_KEY, UI_GIT_COLLAPSED_REPOS_SETTING_KEY, UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, UI_PANE_WIDTHS_SETTING_KEY, UI_PROJECT_VIEW_SETTING_KEY, UI_PROJECT_GROUPS_SETTING_KEY, UI_LAST_PROJECT_SETTING_KEY, UI_LAST_SESSION_SETTING_KEY, UI_STREAM_SCOPE_SETTING_KEY, UI_SHORTCUTS_SETTING_KEY, UI_GESTURES_SETTING_KEY, UI_CHAT_DENSITY_SETTING_KEY, UI_REDUCE_MOTION_SETTING_KEY, UI_EDITOR_THEME_SETTING_KEY, AUTO_ARCHIVE_SETTING_KEY, DEFAULT_AUTO_ARCHIVE_CONFIG, parseAutoArchiveConfig, SESSION_WORKTREE_DEFAULT_SETTING_KEY, WORKTREE_NAMES_SETTING_KEY, PROJECT_COLORS_SETTING_KEY, ShortcutBindingsSchema, GestureSettingsSchema, RightPanelTabSchema, type AutoArchiveConfig, type DisplayMode, type LeftBarMode, type Locale, type VoiceEngine, type GestureSettings, type GestureSequence, type ChatDensity, type ReduceMotion, type ProjectView, type GitWorktreeInfo, type ProjectGroupsMeta, type RightPanelTab, type IdeEditorMode, type GitDiffOpenMode, type FileViewMode, type CustomCommand, type SkillInfo, type ProviderInfo, type ProviderHealthCheckResult, type ProviderHealthStatusCode, type ShortcutBindings, type Accelerator, type LspLanguageState, type LspStateChangedPayload, type RuntimeAgentState, type RuntimeProgressPayload, type PickedElement, type BrowserDevicePreset, type BrowserOrientation } from "@contracts/ipc";
+import { DISPLAY_MODE_SETTING_KEY, TAB_BAR_MULTI_ROW_SETTING_KEY, LEFTBAR_MODE_SETTING_KEY, THEME_STYLE_SETTING_KEY, UI_LOCALE_SETTING_KEY, DEFAULT_PROVIDER_ID, UI_CHAT_FONT_SIZE_SETTING_KEY, UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY, UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY, WORKFLOW_MAX_PARALLEL_SETTING_KEY, UI_USER_MSG_COLOR_SETTING_KEY, UI_ACCENT_COLOR_SETTING_KEY, UI_RIGHT_PANEL_TAB_SETTING_KEY, UI_VOICE_LANG_SETTING_KEY, UI_VOICE_ENGINE_SETTING_KEY, UI_VOICE_MIC_PERMISSION_SETTING_KEY, UI_VOICE_MODEL_DIR_SETTING_KEY, UI_IDE_OPEN_FILES_SETTING_KEY, UI_IDE_ACTIVE_FILE_SETTING_KEY, UI_IDE_EXPANDED_DIRS_SETTING_KEY, UI_IDE_EDITOR_MODE_SETTING_KEY, UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, UI_COMMIT_GEN_MODEL_SETTING_KEY, UI_COMMIT_GEN_PROMPT_SETTING_KEY, UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, UI_COMPOSER_MODEL_SETTING_KEY, UI_TITLE_GEN_ENABLED_SETTING_KEY, UI_TITLE_GEN_MODEL_SETTING_KEY, UI_VISION_RELAY_MODEL_SETTING_KEY, AGENT_OUTPUT_STYLE_SETTING_KEY, UI_GIT_COLLAPSED_REPOS_SETTING_KEY, UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, UI_PANE_WIDTHS_SETTING_KEY, UI_PROJECT_VIEW_SETTING_KEY, UI_PROJECT_GROUPS_SETTING_KEY, UI_LAST_PROJECT_SETTING_KEY, UI_LAST_SESSION_SETTING_KEY, UI_STREAM_SCOPE_SETTING_KEY, UI_SHORTCUTS_SETTING_KEY, UI_GESTURES_SETTING_KEY, UI_CHAT_DENSITY_SETTING_KEY, UI_REDUCE_MOTION_SETTING_KEY, UI_SHELL_SETTING_KEY, UI_EDITOR_THEME_SETTING_KEY, AUTO_ARCHIVE_SETTING_KEY, DEFAULT_AUTO_ARCHIVE_CONFIG, parseAutoArchiveConfig, SESSION_WORKTREE_DEFAULT_SETTING_KEY, WORKTREE_NAMES_SETTING_KEY, PROJECT_COLORS_SETTING_KEY, ShortcutBindingsSchema, GestureSettingsSchema, RightPanelTabSchema, type AutoArchiveConfig, type DisplayMode, type LeftBarMode, type Locale, type VoiceEngine, type GestureSettings, type GestureSequence, type ChatDensity, type ReduceMotion, type ShellPreference, type ProjectView, type GitWorktreeInfo, type ProjectGroupsMeta, type RightPanelTab, type IdeEditorMode, type GitDiffOpenMode, type FileViewMode, type CustomCommand, type SkillInfo, type ProviderInfo, type ProviderHealthCheckResult, type ProviderHealthStatusCode, type ShortcutBindings, type Accelerator, type LspLanguageState, type LspStateChangedPayload, type RuntimeAgentState, type RuntimeProgressPayload, type PickedElement, type BrowserDevicePreset, type BrowserOrientation } from "@contracts/ipc";
 import type { ThemeStyle } from "@contracts/theme";
 
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
@@ -648,6 +648,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // "comfortable" so existing users see no change until they opt in.
   chatDensity: "comfortable",
   reduceMotion: "system",
+  // 【ARC-005 V1】界面外壳偏好。默认 "classic" = 现有外观,init() 从
+  // `ui.shell`(设备本地键)覆盖;任何取值都不卸载工作区子树(见 ClassicShell)。
+  shellPref: "classic",
   // Persisted in `settings` table; init() overwrites from the DB. Default
   // "flat" so existing users see no change until they opt into grouping.
   // ─────────────── A 会话与项目骨架 ───────────────
@@ -896,6 +899,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           THEME_STYLE_SETTING_KEY,
           UI_LOCALE_SETTING_KEY,
           UI_CHAT_DENSITY_SETTING_KEY,
+          UI_SHELL_SETTING_KEY,
           UI_PROJECT_VIEW_SETTING_KEY,
           UI_PROJECT_GROUPS_SETTING_KEY,
           UI_LAST_PROJECT_SETTING_KEY,
@@ -1025,6 +1029,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("apply(chatDensity) failed:", err);
+    }
+
+    // 【ARC-005 V1】界面外壳偏好("classic" 默认 | "workspace")。与 chatDensity
+    // 同一条首屏流水线;任何取值都不卸载工作区子树,所以这里只写 store。
+    try {
+      const value = fp[UI_SHELL_SETTING_KEY];
+      if (value === "classic" || value === "workspace") {
+        set({ shellPref: value });
+      }
+    } catch (err) {
+      console.error("apply(shellPref) failed:", err);
     }
 
     // projectView determines whether the left bar renders projects as a flat
@@ -4758,6 +4773,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: UI_CHAT_DENSITY_SETTING_KEY, value: mode });
     } catch (err) {
       console.error("setting.set(chatDensity) failed:", err);
+      reportSettingSaveFailed(err);
+    }
+  },
+
+  /** 【ARC-005 V1】切换界面外壳偏好。Same immediate-flip + fire-and-forget-persist
+   *  pattern as setDisplayMode;App 订阅 `shellPref` 决定渲染 ClassicShell 还是
+   *  (未来的)WorkspaceShell。写的是设备本地键 `ui.shell`(见 settingsSync)。 */
+  setShellPref: async (pref) => {
+    set({ shellPref: pref });
+    try {
+      await api.setting.set({ key: UI_SHELL_SETTING_KEY, value: pref });
+    } catch (err) {
+      console.error("setting.set(shellPref) failed:", err);
       reportSettingSaveFailed(err);
     }
   },
