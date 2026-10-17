@@ -1,4 +1,5 @@
 export * from "./runtime.js";
+export * from "./documentKind.js";
 export * from "./session.js";
 export * from "./ipc.js";
 export * from "./provider.js";

@@ -65,3 +65,6 @@ apps/desktop/build/pi-runtime-dist/
 # 根 package-lock.json 是历史遗留的第二套安装输入(约束已与 pnpm-lock 分叉),
 # 已删除;若被 npm 命令意外重新生成,不入版本控制(2026-10-17,MC-038)。
 /package-lock.json
+
+# GenOffice 开源文档内核(vendor 快照,固定 commit 1f306a2;见 docs/planning/genoffice-integration-frontend-redesign.md)
+/genoffice/

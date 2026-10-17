@@ -21,6 +21,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryItem } from "@contracts/library";
 import { isOnlyOfficeSupportedPath, type LibraryFileContent } from "@contracts/ipc";
+import { documentExtension, documentKindOf } from "@contracts/documentKind";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { joinPath } from "@renderer/lib/path.js";
 import { api } from "@renderer/lib/api.js";
@@ -36,12 +37,8 @@ import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorP
 // >1MB) loads only when a PDF is actually shown (see PdfPreview.tsx).
 import { PdfPreview } from "./PdfPreview.js";
 
-/** 取路径的扩展名(斜杠两种都认;无扩展名返回空串)。 */
-function extOf(path: string): string {
-  const base = path.split(/[\\/]/).pop() ?? "";
-  const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
-}
+/** 【ARC-007】扩展名解析的唯一实现已收进 `@contracts/documentKind`。 */
+const extOf = documentExtension;
 
 /** base64 → 字节。预览体积上限在主进程挡着,这里的 for 循环最多几十毫秒,够用。 */
 function base64ToBytes(base64: string): Uint8Array {
@@ -305,7 +302,7 @@ export function FilePreview({
           <div className="p-4 text-[0.8571em] text-content-muted">{t("templates.preview.emptyFile")}</div>
         );
       }
-      if (ext === "md" || ext === "markdown") {
+      if (documentKindOf(viewing) === "markdown") {
         return (
           <div className="h-full overflow-y-auto">
             <Suspense fallback={<div className="p-4"><IconLoader2 size={14} className="animate-spin" /></div>}>
@@ -329,7 +326,7 @@ export function FilePreview({
         </div>
       );
     }
-    if (content.mime === "application/pdf" || ext === "pdf") {
+    if (content.mime === "application/pdf" || documentKindOf(viewing) === "pdf") {
       const bytes = base64ToBytes(content.base64);
       // 字节直接喂给阅读器,不再走一次 readPdf(那条路只认条目的 pdfPath)。
       // 目录条目的 entryPath 是目录本身；读的是 relPath 指向的子 PDF，

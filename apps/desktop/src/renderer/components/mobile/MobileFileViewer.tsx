@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
+import { documentExtension, documentKindOf } from "@contracts/documentKind";
 import { Markdown } from "@renderer/components/chat/Markdown.js";
 import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -32,15 +33,10 @@ export const LANG_BY_EXT: Record<string, string> = {
 /** Image extensions rendered inline via the binary-read path. */
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"]);
 
-/** Markdown extensions that default to the rendered preview view (mirrors
- *  the desktop editor's isMarkdown gate). */
-const MARKDOWN_EXT = new Set(["md", "markdown"]);
-
-export function extOf(name: string): string {
-  const i = name.lastIndexOf(".");
-  if (i <= 0) return "";
-  return name.slice(i + 1).toLowerCase();
-}
+/** 【ARC-007】Markdown 判据与扩展名解析收进 `@contracts/documentKind`
+ *  （此前这里的 `MARKDOWN_EXT` 与桌面编辑器各写一份）。 */
+export const extOf = documentExtension;
+const isMarkdownName = (name: string): boolean => documentKindOf(name) === "markdown";
 
 /** Full-screen read-only file viewer with its own header (used by the
  *  MobileFilesScreen browser). */
@@ -85,7 +81,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
   const [failed, setFailed] = useState(false);
   const [sourceView, setSourceView] = useState(false);
   const ext = extOf(name);
-  const isMd = MARKDOWN_EXT.has(ext);
+  const isMd = isMarkdownName(name);
   const isOffice = isOnlyOfficeSupportedPath(path);
   // The overlay unmounts when the user taps 返回, so without a remembered
   // offset tapping the same file again landed back at the top. Rendered

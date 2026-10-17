@@ -38,8 +38,9 @@ import {
   IconFolder,
   IconLoader2,
 } from "@renderer/lib/icons.js";
-import { extOf, type FileViewTarget, setFileOpenGuard, saveCurrentPreview } from "@renderer/stores/fileViewStore.js";
+import { type FileViewTarget, setFileOpenGuard, saveCurrentPreview } from "@renderer/stores/fileViewStore.js";
 import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
+import { documentKindOf } from "@contracts/documentKind";
 import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { Button } from "@renderer/components/ui/button.js";
@@ -247,7 +248,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     }
   }, [target]);
 
-  const ext = extOf(name);
+  // 【ARC-007】种类判据走 `documentKindOf`（扩展名解析已不再在本文件使用）。
 
   // ── 顶栏:文件名 + 出口。**一直在** —— 加载中/失败时用户也要知道在看哪个文件,
   //    以及能从这里出去。
@@ -355,7 +356,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       // md 走聊天那套渲染(标题/表格/代码块都在);其余原样等宽摆出来。
       // ⚠️ 不把 .tex / .cls 之类也塞进 Markdown 渲染:`#` 在 LaTeX 里是宏参数,
       //    重排之后那份源码就没法读了。
-      if (ext === "md" || ext === "markdown") {
+      if (documentKindOf(name) === "markdown") {
         return (
           // ⚠️ **滚动容器交给 `ChunkedMarkdown` 自己**（`scroll="self"` 是默认值）。
           //    这一层只给尺寸（`min-h-0 flex-1`），**不能**再写 `overflow-y-auto` ——
@@ -396,7 +397,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         </div>
       );
     }
-    if (mime === "application/pdf" || ext === "pdf") {
+    if (mime === "application/pdf" || documentKindOf(name) === "pdf") {
       return (
         <PdfPreview
           item={itemOf(target)}

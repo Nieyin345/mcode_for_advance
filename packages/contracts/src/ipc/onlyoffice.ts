@@ -86,6 +86,18 @@ export const ONLYOFFICE_VIEW_ONLY: Readonly<Record<string, "word" | "cell" | "sl
   ppsx: "slide",
 };
 
+/**
+ * 【ARC-007】文档种类的**唯一判据**在本文件之上层（`@contracts/documentKind`）。
+ * 这三条 DS 判据保留原签名（既有调用方不改），但内部改走 `documentKindOf` ——
+ * 从前它们各自 `lastIndexOf(".")` 一遍，与 `fileEditorKinds` / 资料库 / 移动端
+ * 的扩展名解析是四份并行实现。现在扩展名解析只有 `documentExtension` 一份。
+ *
+ * ⚠️ 依赖方向：本文件（叶子）不 import `documentKind`（那会形成 `documentKind` →
+ * 本文件的循环）。所以这三条**保留自己的字符串判断**，而 `documentKind.ts` 里的
+ * `OFFICE_EDITABLE` / `OFFICE_VIEW_ONLY` 与它们是**两份表** —— 由
+ * `document-router-smoke` 逐项对账，漂了即红（见该套件的「表对账」段）。
+ */
+
 /** 路径是否是 DS 能编辑的 Office 文档（按扩展名，大小写不敏感）。 */
 export function isOnlyOfficeEditablePath(filePath: string): boolean {
   const dot = filePath.lastIndexOf(".");

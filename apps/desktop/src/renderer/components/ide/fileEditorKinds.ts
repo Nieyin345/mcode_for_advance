@@ -11,7 +11,7 @@
  *
  * **纯搬迁，函数体逐字节一致。**
  */
-import { extname } from "@renderer/lib/path.js";
+import { documentKindOf } from "@contracts/documentKind";
 
 /** `.md` / `.markdown` —— 决定编辑器默认进预览还是源码模式。 */
 /** True for `.pdf` —— 默认走预览、渲染分支走 `PdfPreviewPane`。
@@ -20,35 +20,20 @@ import { extname } from "@renderer/lib/path.js";
  *  必须认**同一个**判据,不然会出现"默认进了预览、预览分支却不认它、掉进 markdown
  *  那一支"。 */
 export function isPdfFile(filePath: string): boolean {
-  return extname(filePath) === ".pdf";
+  // 【ARC-007】判据收口到 `@contracts/documentKind` —— 与资料库/移动端同一份。
+  return documentKindOf(filePath) === "pdf";
 }
 
 /** True for `.md` / `.markdown` files - gates Milkdown/source and adapts legacy preview preferences. */
 export function isMarkdown(filePath: string): boolean {
-  const ext = extname(filePath);
-  return ext === ".md" || ext === ".markdown";
+  return documentKindOf(filePath) === "markdown";
 }
 
 /** True for image files the editor can preview via the `app-resource://`
  *  protocol (binary files served from the main process). SVG is text but also
  *  renders as an image, so it's included. */
 export function isImage(filePath: string): boolean {
-  switch (extname(filePath)) {
-    case ".png":
-    case ".jpg":
-    case ".jpeg":
-    case ".gif":
-    case ".bmp":
-    case ".ico":
-    case ".webp":
-    case ".svg":
-    case ".tif":
-    case ".tiff":
-    case ".avif":
-      return true;
-    default:
-      return false;
-  }
+  return documentKindOf(filePath) === "image";
 }
 
 /** True for binary file types the editor can neither edit (Monaco is text-only)
@@ -56,56 +41,15 @@ export function isImage(filePath: string): boolean {
  *  "can't preview" pane instead of garbled Monaco content. Covers Office docs,
  *  archives, binaries, audio/video, and databases. */
 export function isUnsupported(filePath: string): boolean {
-  switch (extname(filePath)) {
-    // Archives
-    case ".zip":
-    case ".gz":
-    case ".tar":
-    case ".tgz":
-    case ".rar":
-    case ".7z":
-    case ".bz2":
-    case ".xz":
-    // Binaries / compiled
-    case ".exe":
-    case ".dll":
-    case ".so":
-    case ".dylib":
-    case ".bin":
-    case ".class":
-    case ".jar":
-    case ".wasm":
-    // Audio / video
-    case ".mp3":
-    case ".mp4":
-    case ".webm":
-    case ".avi":
-    case ".mov":
-    case ".ogg":
-    case ".flac":
-    case ".wav":
-    case ".m4a":
-    // Databases
-    case ".db":
-    case ".sqlite":
-    case ".sqlite3":
-    // Fonts
-    case ".woff":
-    case ".woff2":
-    case ".ttf":
-    case ".otf":
-    case ".eot":
-      return true;
-    // ⚠️ **`.pdf` 从这条里拿掉了（2026-09-21）。** 这里从前写着
-    // "PDF (no built-in viewer; could add one later)" 并 `return true` —— 而那句
-    // 注释早就不成立了：`PdfPreview`（pdf.js 官方 viewer 组件）一直在，
-    // `FileViewer` 也真的在用。于是**双击一个 pdf**（走 `openFileInIde` → 这个
-    // 编辑器）会被当成"不支持的类型"退回纯文本,屏幕上是一屏 PDF 原始字节的乱码 ——
-    // 用户的原话是「项目文件打开就是这个效果」。现在它归 `PdfPreviewPane` 管。
-    default:
-      return false;
-  }
+  // 【ARC-007】集合收进契约包（`UNSUPPORTED`），本函数只做翻译。
+  return documentKindOf(filePath) === "unsupported";
 }
+
+/**
+ * 历史上这里是 24 行 switch 的二进制扩展名表（压缩包/可执行/音视频/字体/数据库）——
+ * 【ARC-007】集合已收进 `@contracts/documentKind` 的 `UNSUPPORTED`，本文件只留翻译。
+ * 那条「`.pdf` 从这张表里拿掉（2026-09-21）」的决定也随集合迁移，见该文件注释。
+ */
 
 /** Map a file extension to a Monaco language id. Covers the common cases;
  *  unknown extensions fall back to plaintext (Monaco's default). */
