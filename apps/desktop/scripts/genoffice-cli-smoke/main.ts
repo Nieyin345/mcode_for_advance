@@ -143,6 +143,16 @@ if (cliPath === null) {
       check("坏 pptx 的 read → failed(不是 unavailable)", slides.ok === false && slides.kind === "failed", slides);
       const sheet = await sheetRead(ports, join(root, "sample.xlsx"));
       void sheet;
+      // 【ARC-007】格式矩阵:md 没有结构读路由(如实拒绝),html 需应用渲染器(unavailable)。
+      const notesMd = join(root, "notes.md");
+      writeFileSync(notesMd, "# n\n");
+      const { readByKind } = await import("../../src/main/ipc/document.js");
+      const mdRead = await readByKind(ports, notesMd, {});
+      check("md 结构读 → refused(指向文件通道,不假装)", mdRead.ok === false && mdRead.kind === "refused", mdRead);
+      const html = join(root, "page.html");
+      writeFileSync(html, "<h1>x</h1>");
+      const htmlRead = await readByKind(ports, html, {});
+      check("html → unavailable(需要应用渲染器)", htmlRead.ok === false && htmlRead.kind === "unavailable", htmlRead);
     }
 
     /* ── 5. IPC 层:handler 注册与契约/接线一致 ── */

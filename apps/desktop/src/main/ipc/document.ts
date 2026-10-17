@@ -88,12 +88,26 @@ function toWire(result: GenofficeResult): DocumentIpcResult {
 }
 
 /** 按 `documentKindOf` 选读口（docx / pptx / xlsx）。 */
-async function readByKind(
+export async function readByKind(
   p: { cliPath: string; withinWorkspace(q: string): boolean },
   filePath: string,
   options: { full?: boolean; range?: string },
 ): Promise<GenofficeResult> {
   const kind = documentKindOf(filePath);
+  // 【ARC-007】markdown 没有"结构化 read"路由（CLI 的 md 能力是转换，不是读块）。
+  // 如实拒绝并指向文件读取通道 —— 不假装 convert 往返等于结构读。
+  if (kind === "markdown") {
+    return {
+      ok: false, kind: "refused", envelope: null,
+      reason: "Markdown 请走文件读取通道（file.readFile）或编辑器；GenOffice CLI 对 md 只提供转换（→docx/html），没有块结构读。",
+    };
+  }
+  if (kind === "html") {
+    return {
+      ok: false, kind: "unavailable", envelope: null,
+      reason: "HTML 编辑/转换需要 GenOffice 应用渲染器（GENOFFICE_APP_BIN）；只读展示请走浏览器预览。",
+    };
+  }
   if (kind === "office") {
     const ext = filePath.slice(filePath.lastIndexOf(".") + 1).toLowerCase();
     if (ext === "pptx" || ext === "pptm" || ext === "potx" || ext === "odp") return slidesRead(p, filePath);
