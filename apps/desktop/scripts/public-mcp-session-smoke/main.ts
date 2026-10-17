@@ -244,6 +244,169 @@ equal("disable returns no listening port", disabledStatus.port, 0);
   settingsStore.set("publicMcp.retentionAudit", "");
 }
 
+/* ── ★ 复核(2026-10-17):`evicted` 的界与清理路径 —— 忙 owner 转闲后到底谁删条目? ──
+ *
+ * **被复核的怀疑**(不照单全收):「`evicted` 只在 owner 仍忙时才被处理;忙 owner 后来
+ * 闲下来、资源释放后,**没有任何路径**删它的条目 → 持续 `initialize` churn 下
+ * `evicted` 无界增长(内存泄漏),而 `issued` 有上限」。
+ *
+ * 读源码后该怀疑**不成立**,逐条对应:
+ *  - 忙 owner 的条目被**保留**是 MC-034 的有意行为:淘汰集容量裁剪跳过仍忙的
+ *    (`publicClientSessions.ts:90-94`);
+ *  - 转闲后,**每次 `initialize` 都会跑**的 `pruneOrphanedOwners` 在同一分支里
+ *    `owners.delete` + `evicted.delete`(`publicClientSessions.ts:510-514`,
+ *    调用点 `mcpEndpoint.ts:356`)—— 条目会被删,不是「只涨不落」;
+ *  - 不在归属表里的(合成会话已被删的)空闲条目由签发时的容量裁剪兜底(同 :90-94);
+ *  - 全部仍忙时确实**没有**裁剪路径 —— 这是有意的;此时超上限的部分恰好等于
+ *    「仍忙的 owner 数」,它们转闲后的下一次签发就把它裁回上限。
+ *
+ * 本段把上面几条钉成断言。`evicted` 是模块私有 Map,这里只用**既有**可观察面证明
+ * 条目去留,不为此加测试后门:
+ *  - `pruneOrphanedOwners().keptBusyDetails[].credentialId`(归属表里的 owner);
+ *  - `releaseOwnerResources` 的 `released` 审计事件里的 `credentialId` —— 读的就是
+ *    `evicted.get(ownerId) ?? null`(publicClientSessions.ts:340),条目没了就是 null。
+ *
+ * 本段用**局部收集器**而不是逐条 throw:一次运行报出所有红断言(变异验证时能同时
+ * 看到「哪几条红了」),最后统一失败。
+ */
+{
+  const {
+    issueClientSession,
+    rememberSyntheticOwner,
+    forgetSyntheticSession,
+    pruneOrphanedOwners,
+    releaseOwnerResources,
+    registerOwnerWorkProbe,
+    registerOwnerResourceReleaser,
+    registerRetentionAuditSink,
+    __setMaxIssuedForTest,
+    __resetPublicClientSessions,
+  } = await import("../../src/main/providers/bridge/publicClientSessions.js");
+
+  /** 局部收集器:`equal` 会在第一条就 throw,这里要一次看全。 */
+  const failures: string[] = [];
+  const verify = (label: string, actual: unknown, expected: unknown): void => {
+    if (actual === expected) { console.log(`  ✓ ${label}`); return; }
+    const msg = `${label}: expected ${String(expected)}, got ${String(actual)}`;
+    console.log(`  ✗ ${msg}`);
+    failures.push(msg);
+  };
+
+  __resetPublicClientSessions();
+  __setMaxIssuedForTest(2);
+
+  /* ① 生产路径:忙 owner 被淘汰 → 转闲 → 每次 initialize 都会跑的 prune 把条目删掉。 */
+  {
+    let busyNow = new Set<string>();
+    const offProbe = registerOwnerWorkProbe((id) => busyNow.has(id));
+    const released: Array<string | null> = [];
+    const offSink = registerRetentionAuditSink((e) => { if (e.kind === "released") released.push(e.credentialId); });
+    const offReleaser = registerOwnerResourceReleaser(() => {});
+
+    const busy = issueClientSession("cred-idle-later");
+    rememberSyntheticOwner("sess_idle_later", busy);
+    busyNow = new Set([busy]);
+    for (let i = 0; i < 5; i += 1) issueClientSession(`cred-churn-${i}`);
+    // 仍忙:prune(initialize 路径)保留它,且**凭据仍可溯源**(MC-034 的既有保证)。
+    const kept = pruneOrphanedOwners().keptBusyDetails.find((k) => k.ownerId === busy);
+    verify("★ 复核①:忙 owner 被淘汰后凭据仍在(MC-034 的保证不变)", kept?.credentialId, "cred-idle-later");
+
+    // 资源全部结束(转闲)→ 下一次 initialize 的 prune 收掉归属与 evicted 条目。
+    busyNow = new Set();
+    const pruned = pruneOrphanedOwners();
+    verify("★ 复核①:忙 owner 转闲后被回收(不是永远保留)", pruned.pruned.includes(busy), true);
+    // 直接读 evicted 的去留:释放审计的 credentialId 读的就是 evicted.get(...)。
+    // 若是「没有任何路径删条目」,这里读到的仍是 "cred-idle-later"。
+    releaseOwnerResources(busy);
+    verify(
+      "★ 复核①:evicted 条目已被 prune 删除(释放审计读回 null,不是原凭据)",
+      released.at(-1),
+      null,
+    );
+
+    offProbe();
+    offSink();
+    offReleaser();
+    __resetPublicClientSessions();
+  }
+
+  /* ② 容量路径:不在归属表里的空闲条目(合成会话已删)由签发时的容量裁剪收掉;
+   *    全部仍忙时没有裁剪路径(有意),超上限部分 = 仍忙 owner 数。 */
+  {
+    const busyAll = new Set<string>();
+    const offProbe = registerOwnerWorkProbe((id) => busyAll.has(id));
+    const released: Array<string | null> = [];
+    const offSink = registerRetentionAuditSink((e) => { if (e.kind === "released") released.push(e.credentialId); });
+    const offReleaser = registerOwnerResourceReleaser(() => {});
+
+    const issued: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const o = issueClientSession(`cred-${i}`);
+      issued.push(o);
+      busyAll.add(o);
+      rememberSyntheticOwner("sess_evict_bound", o);
+    }
+    // 全忙:容量裁剪无人可裁 → 超出上限的淘汰条目全部保留(每条都能溯源)。
+    const details = pruneOrphanedOwners().keptBusyDetails;
+    verify("★ 复核②:全忙时保留的条目数 = 淘汰数(超过签发上限,有意)", details.length, 4);
+    verify("★ 复核②:…且每条都带着原凭据(没有因容量被顶掉)", details.every((d) => d.credentialId !== null), true);
+
+    // 合成会话被删 → 这些 owner 不再出现在归属表里;prune 再也管不到它们的 evicted 条目。
+    forgetSyntheticSession("sess_evict_bound");
+    // 资源全部结束,再签发一次(生产里就是一次 initialize):容量裁剪把空闲条目裁回上限。
+    busyAll.clear();
+    issueClientSession("cred-next");
+
+    // owner[0] 是最早的淘汰条目,应已被容量裁剪删掉;owner[3] 是容量内的,应仍在。
+    releaseOwnerResources(issued[0]!);
+    verify("★ 复核②:空闲的旧淘汰条目被容量裁剪删掉(审计读回 null)", released.at(-1), null);
+    releaseOwnerResources(issued[3]!);
+    verify("★ 复核②:容量内的淘汰条目仍在(带原凭据)", released.at(-1), "cred-3");
+
+    offProbe();
+    offSink();
+    offReleaser();
+    __resetPublicClientSessions();
+  }
+
+  /* ③ 持续 churn:忙→闲 循环多轮,每一轮的条目都被下一次 initialize 的 prune 收掉 ——
+   *    没有任何一轮的凭据映射残留(这就是「有界」的可观察证明:条目不是只涨不落)。 */
+  {
+    let busyNow = new Set<string>();
+    const offProbe = registerOwnerWorkProbe((id) => busyNow.has(id));
+    const released: Array<string | null> = [];
+    const offSink = registerRetentionAuditSink((e) => { if (e.kind === "released") released.push(e.credentialId); });
+    const offReleaser = registerOwnerResourceReleaser(() => {});
+    const stale: Array<string | null> = [];
+
+    for (let cycle = 0; cycle < 8; cycle += 1) {
+      const owner = issueClientSession(`cred-cycle-${cycle}`);
+      rememberSyntheticOwner(`sess_cycle_${cycle}`, owner);
+      busyNow = new Set([owner]);
+      for (let i = 0; i < 4; i += 1) issueClientSession(`cred-cycle-${cycle}-churn-${i}`); // 顶掉 owner
+      pruneOrphanedOwners(); // 仍忙 → 受控保留
+      busyNow = new Set(); // 资源结束
+      pruneOrphanedOwners(); // 下一次 initialize → 回收归属与 evicted 条目
+      const before = released.length;
+      releaseOwnerResources(owner);
+      // ⚠️ 不用 `?? null` 吞掉「没发事件」:没发审计与「发了但凭据为 null」是两件事,
+      //    前者说明释放路径根本没跑(空转),必须红。
+      stale.push(released.length === before + 1 ? (released.at(-1) ?? null) : "__no_audit_event__");
+      forgetSyntheticSession(`sess_cycle_${cycle}`);
+    }
+    verify("★ 复核③:8 轮忙→闲 churn 后没有任何残留的凭据映射(条目不是只涨不落)", stale.every((c) => c === null), true);
+
+    offProbe();
+    offSink();
+    offReleaser();
+    __resetPublicClientSessions();
+  }
+
+  __setMaxIssuedForTest(null);
+
+  if (failures.length > 0) throw new Error(`复核断言失败(${failures.length} 条):\n${failures.join("\n")}`);
+}
+
 /* ── ★ MC-034:忙 owner 的凭据映射不能被**淘汰集的容量**顶掉 ──
  *
  * 上面那段刻意只 churn 3 次,好让 orphan 留在有界的 `evicted`(上限 3)里。可真实场景是
