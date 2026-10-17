@@ -65,6 +65,7 @@ import { MCP_WORKFLOW_SERVER } from "@contracts/ipc/mcp";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { parseIncomingMail, readOutgoingMail, isAgentMailTool } from "@renderer/lib/agentMail.js";
 import { providerRegistry, ProviderRegistry } from "@main/providers/registry.js";
+import { defaultProviderId } from "@main/providers/defaultProvider.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import type { BridgeHandle } from "@main/providers/bridge/bridgeServer.js";
@@ -1773,7 +1774,8 @@ console.log("\n⑱【MC-013】注册表死接口面已删,活着的入口语义�
    * 这里要做的是「同一个真相」而不是「两个恰好相等的值」:断言 getter 的返回值
    * **逐字等于契约常量**,并且它**不随注册顺序变化**。注册顺序的变异用一个
    * 独立的临时注册表复现(不污染真表)——同一个 id 在表里注册多少次,结果都一样。 */
-  eq("★ getDefaultProviderId() 与契约常量逐字一致(唯一真相)", providerRegistry.getDefaultProviderId(), DEFAULT_PROVIDER_ID);
+  eq("★ 注册表对象上不再有 getDefaultProviderId(第二读法已删)", (providerRegistry as unknown as Record<string, unknown>).getDefaultProviderId, undefined);
+  eq("★ defaultProviderId() 与契约常量逐字一致(唯一出口)", defaultProviderId(), DEFAULT_PROVIDER_ID);
 
   /* ── 两种注册顺序的变异测试（台账要求的「两注册顺序反例」）────────────────
    *
@@ -1802,13 +1804,20 @@ console.log("\n⑱【MC-013】注册表死接口面已删,活着的入口语义�
     forward.list()[0]!.id !== backward.list()[0]!.id,
     { forwardFirst: forward.list()[0]!.id, backwardFirst: backward.list()[0]!.id },
   );
-  eq("★ 顺序 A(zzz 先注册):默认引擎仍是常量", forward.getDefaultProviderId(), DEFAULT_PROVIDER_ID);
-  eq("★ 顺序 B(aaa 先注册):默认引擎仍是常量", backward.getDefaultProviderId(), DEFAULT_PROVIDER_ID);
+  // 注册顺序不再是"默认引擎"的输入:两个相反顺序的注册表上都没有任何默认解析口
+  // (`default` getter 与 getDefaultProviderId 都已删除),唯一出口仍是常量函数。
+  check(
+    "★ 相反注册顺序的两个注册表都不提供默认引擎解析口(顺序不再是输入)",
+    !("default" in forward) && !("getDefaultProviderId" in forward) && !("default" in backward) && !("getDefaultProviderId" in backward),
+    { forward: Object.getOwnPropertyNames(Object.getPrototypeOf(forward)), backward: Object.getOwnPropertyNames(Object.getPrototypeOf(backward)) },
+  );
+  eq("★ 且唯一出口不依赖注册表实例(顺序 A 下仍是常量)", defaultProviderId(), DEFAULT_PROVIDER_ID);
+  eq("★ 顺序 B 下同样是常量", backward === forward ? DEFAULT_PROVIDER_ID : defaultProviderId(), DEFAULT_PROVIDER_ID);
   // 默认引擎没注册时也**不回退**到任何在册引擎(否则就是第二份事实)。
   check(
     "★ 默认引擎未注册时不回退到在册引擎(不静默换引擎)",
-    forward.getDefaultProviderId() === DEFAULT_PROVIDER_ID && forward.get(forward.getDefaultProviderId()) === undefined,
-    forward.getDefaultProviderId(),
+    defaultProviderId() === DEFAULT_PROVIDER_ID && forward.get(defaultProviderId()) === undefined,
+    defaultProviderId(),
   );
 }
 

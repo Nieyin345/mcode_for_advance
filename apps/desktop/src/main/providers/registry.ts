@@ -10,7 +10,6 @@
  * 注册顺序只影响 `list()` 的展示顺序，与默认引擎无关。
  */
 import type { AgentProvider } from "@contracts/provider";
-import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import { ClaudeAgentSdkProvider } from "./claude-sdk/ClaudeAgentSdkProvider.js";
 import { PiAgentSdkProvider } from "./pi-sdk/PiAgentSdkProvider.js";
 import { CodexAgentSdkProvider } from "./codex-sdk/CodexAgentSdkProvider.js";
@@ -79,9 +78,13 @@ export class ProviderRegistry {
    * 引擎 —— 选择引擎失败必须由下游变成可见的结构化失败（见 {@link getRequired}），
    * 不能在这里悄悄换一个。
    */
-  getDefaultProviderId(): string {
-    return DEFAULT_PROVIDER_ID;
-  }
+  /**
+   * 【MC-013 复核补漏】**已删除**。它曾在这里返回默认引擎 id,而生产侧十个消费点
+   * 各自 import 契约常量 —— 同一个问题("默认引擎是谁")有两套读法,只是值恰好相等。
+   * 现在唯一出口是 `providers/defaultProvider.ts` 的 `defaultProviderId()`,生产
+   * 会话创建、委托、自动化、公网 MCP 全部走它;测试要判"默认引擎与注册顺序无关"
+   * 也走同一函数(而不是这个类的方法)。
+   */
 }
 
 export const providerRegistry = new ProviderRegistry();

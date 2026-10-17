@@ -47,7 +47,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
 import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, addToFileBacklog, capOldest, classifyFileChange, reconcileFileChangeKind, shouldIgnoreWatchPath, isWithinWatchRoot, type FileChange, type FileChangeKind, type HookEvent } from "@contracts/hook";
-import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
+import { defaultProviderId } from "@main/providers/defaultProvider.js";
 import {
   NODE_COMMAND_PARAM_KEY,
   NODE_MODEL_PARAM_KEY,
@@ -2293,7 +2293,7 @@ class AutomationRunner {
       ? rawConfiguredModel.trim() : undefined;
     // Origin conversations win for watch-style runs. Truly unattended runs use
     // the trigger's explicit host engine/model, then the application default.
-    const desiredProviderId = origin?.providerId ?? configuredProviderId ?? DEFAULT_PROVIDER_ID;
+    const desiredProviderId = origin?.providerId ?? configuredProviderId ?? defaultProviderId();
     const desiredModel = origin?.model ?? configuredModel ?? "default";
     const existing = SessionRepo.findAutomationByWorkflow(trigger.workflowId, projectId);
     if (existing !== undefined) {

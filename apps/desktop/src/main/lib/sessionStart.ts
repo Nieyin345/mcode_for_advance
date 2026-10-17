@@ -1,6 +1,7 @@
 import { replaceBackflowSource } from "@main/lib/pendingBackflow.js";
 import type { Session } from "@contracts/session";
-import { DEFAULT_PROVIDER_ID, type StartSessionInput } from "@contracts/ipc";
+import type { StartSessionInput } from "@contracts/ipc";
+import { defaultProviderId } from "@main/providers/defaultProvider.js";
 import { uid } from "@main/utils.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
@@ -199,7 +200,7 @@ export function createOrReuseSession(
     // 的 schema 带 `.default("default")`,到了这里**永远有值** —— 分不清"没给"与"就要默认",
     // 硬继承会把界面上显式选的「默认」也覆盖成父会话的非默认值(那是回归,不是修复)。
     const parent = input.parentSessionId ? SessionRepo.get(input.parentSessionId) : undefined;
-    const effProviderId = input.providerId ?? parent?.providerId ?? DEFAULT_PROVIDER_ID;
+    const effProviderId = input.providerId ?? parent?.providerId ?? defaultProviderId();
     const effModel = input.model ?? parent?.model ?? "default";
     const effCustomModelId = input.customModelId !== undefined ? input.customModelId : (parent?.customModelId ?? null);
     // 「新建子对话 → 档案 / 档案+记忆」:建会话那一刻把档案抄成一份快照(见
@@ -343,7 +344,7 @@ export function createOrReuseSession(
   const session: Session = {
     id: uid("sess_"),
     projectId: input.projectId,
-    providerId: input.providerId ?? DEFAULT_PROVIDER_ID,
+    providerId: input.providerId ?? defaultProviderId(),
     claudeSessionId: null, // captured from system/init once the first turn runs
     kind: "chat",
     parentSessionId: null,

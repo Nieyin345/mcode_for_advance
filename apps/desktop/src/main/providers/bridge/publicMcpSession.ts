@@ -34,7 +34,7 @@
  * 那两样都会把 electron 拉进 smoke。分开之后:协议那半测得到,建会话这半在真机跑一次。
  */
 import type { Session } from "@contracts/session";
-import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
+import { defaultProviderId } from "@main/providers/defaultProvider.js";
 import {
   PUBLIC_MCP_ENABLED_SETTING_KEY,
   PUBLIC_MCP_SECRET_SETTING_KEY,
@@ -818,7 +818,7 @@ function createSyntheticSession(projectId: string, title: string): string {
   const session: Session = {
     id: uid("sess_"),
     projectId,
-    providerId: DEFAULT_PROVIDER_ID,
+    providerId: defaultProviderId(),
     claudeSessionId: null,
     kind: "chat",
     parentSessionId: null,

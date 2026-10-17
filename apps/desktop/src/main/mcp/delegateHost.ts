@@ -19,7 +19,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { ProjectRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
 import { publicMcpProjectBinding, publicMcpProjectId, publicMcpProjectIdForSession } from "@main/providers/bridge/publicMcpSession.js";
 import { uid } from "@main/utils.js";
-import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
+import { defaultProviderId } from "@main/providers/defaultProvider.js";
 import { log } from "@main/lib/logger.js";
 
 /** 会话标题。**用户要在左栏里一眼认出这是外面的 AI 在支使本机**,所以写得直白。 */
@@ -90,7 +90,7 @@ async function ensureDelegateSession(callerSessionId: string | null): Promise<{ 
   const session: Session = {
     id: uid("sess_"),
     projectId,
-    providerId: DEFAULT_PROVIDER_ID,
+    providerId: defaultProviderId(),
     claudeSessionId: null,
     kind: "chat",
     parentSessionId: null,
