@@ -2270,6 +2270,30 @@ console.log("\n19d. 【MC-059】无人值守任务计划 —— 计划级授权�
   }
 
   // ── 摘要:改计划内容 → 摘要变(「批准的是这一份计划吗」可核对)。 ──
+  // 【MC-001 复核补漏】兑现这句「可核对」:授权钉的是**计划正文摘要**,执行端交来的
+  // 正文摘要不同 → `evaluate` 判 `scenePlan` 被改 → 拒绝,不再拿同一枚授权跑别的正文。
+  fresh(); freshStore19d(); mkProject("p_utp_bodybind", UTP_DIR); headless();
+  {
+    const plan = mkPlan("p_utp_bodybind");
+    const issued = issueUnattendedTaskPlan(plan, Date.now());
+    eq("★ MC-001:签发时把计划摘要钉进 scopedCore.scenePlan", issued.scopedCore.scenePlan, unattendedPlanDigest(plan));
+    // 同一份正文 → 放行(正控)。
+    const okRun = await executeUnattendedPlan(plan, issued, "me");
+    eq("MC-001 正控:同一份计划正文 → 全部跑完", okRun.stoppedAt, null);
+
+    // 换一份正文(标题不同 = 用户没批过的那份)→ 第一条即被拒。
+    const tampered: UnattendedTaskPlan = {
+      ...plan,
+      operations: plan.operations.map((op) => ({ ...op, title: `${op.title ?? ""}(被换过)` })),
+    };
+    const beforeCount = SessionRepo.listByProject("p_utp_bodybind").length;
+    const badRun = await executeUnattendedPlan(tampered, issued, "me");
+    eq("★ MC-001:正文被换 → 第一条就停(不拿旧授权跑新正文)", badRun.stoppedAt, "op1");
+    eq("★ MC-001:停下原因是 grant_refused(计划摘要不符)", badRun.stopCode, "grant_refused");
+    eq("★ MC-001:被拒时一条会话都没多建", SessionRepo.listByProject("p_utp_bodybind").length, beforeCount);
+  }
+
+
   {
     const a = mkPlan("p_utp_digest");
     const b = mkPlan("p_utp_digest", { maxCount: 3 });

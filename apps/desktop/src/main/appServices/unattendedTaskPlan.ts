@@ -209,6 +209,12 @@ export function issueUnattendedTaskPlan(plan: UnattendedTaskPlan, now: number): 
   }
   const sceneId = plan.sceneId ?? `unattended.${plan.planId}`;
   const allowedActions = [...new Set(plan.operations.map((op) => op.method))];
+  // ★ MC-001 复核补漏:**授权绑的是这份计划正文**(`planDigest`),不只是项目 scope + 次数上限。
+  //   从前 `scopedCore` 只有 `{projectPath}`,同一枚授权下执行端可以拿**另一份** operations
+  //   正文去跑(只要还在同一项目、次数没超)—— 「批准的是这一份计划」没有落到可判定的数据上。
+  //   现在把计划摘要钉进 `scopedCore.scenePlan`,执行端用**同一份** digest 重建意图交
+  //   `evaluate` 核对;正文被换 → 核心意图不符 → 拒绝。
+  const planDigest = unattendedPlanDigest(plan);
   const grant = getGrantStore().issueGrant(
     {
       verdict: "allow",
@@ -216,7 +222,7 @@ export function issueUnattendedTaskPlan(plan: UnattendedTaskPlan, now: number): 
       compatibilityLevel: "write",
       sceneId,
       allowedActions,
-      scopedCore,
+      scopedCore: { ...scopedCore, scenePlan: planDigest },
       configHash: "",
       ttlMs: plan.ttlMs,
       maxCount: plan.maxCount,
@@ -229,7 +235,8 @@ export function issueUnattendedTaskPlan(plan: UnattendedTaskPlan, now: number): 
     sceneId,
     grantId: grant.grantId,
     projectId: plan.projectId,
-    scopedCore,
+    // 返回**实际签发进授权**的那份核心意图(含计划摘要),执行端据此把摘要带进意图。
+    scopedCore: grant.scopedCore,
     allowedActions,
     maxCount: plan.maxCount,
     expiresAt: grant.expiresAt,
@@ -358,6 +365,13 @@ export async function executeUnattendedPlan(
           operationId: op.operationId,
           scope: plan.projectId,
           permissionGrant: issued.grantId,
+          // 【MC-001】把**这一刻实际要执行的这份计划**的摘要带进意图 —— `evaluate` 拿它与
+          // 授权钉住的 `scopedCore.scenePlan`(批准时那份正文的摘要)比较:
+          //   - 正文一致 → 摘要相等 → 放行;
+          //   - 调用方递来另一份 operations / 标题 / maxCount → 摘要不同 → `invalidationsFor`
+          //     判 `scenePlan` 被改 → **拒绝**(不会再拿同一枚授权去跑用户没批过的正文)。
+          // 摘要由宿主从 plan 现算,不采信调用方给的任何摘要字段。
+          coreScenePlan: unattendedPlanDigest(plan),
           ...(op.expectedRevision ? { expectedRevision: op.expectedRevision } : {}),
         },
       );

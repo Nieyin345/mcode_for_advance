@@ -137,6 +137,16 @@ export interface ActionContext {
    */
   expectedRevision?: string;
   /**
+   * **计划摘要**(MC-001 复核补漏)—— 可选的 `CoreIntent.scenePlan` 覆盖值。
+   *
+   * 无人值守计划的授权绑的是**这份计划正文**的摘要(`unattendedPlanDigest`),而建会话的
+   * 普通核心意图只有 `{projectPath}` —— 若不给这一项,`evaluate` 的 `invalidationsFor`
+   * 会看到「批准时 core 有 scenePlan、执行时 wanted 没有」→ 判核心意图被改 → 拒绝所有
+   * 计划内建会话。计划执行端(且**只有**它)带上批准时的摘要,判据就回到「执行的是不是
+   * 同一份计划」上。普通调用方(桌面/手机/直接建会话)不带 —— 行为不变。
+   */
+  coreScenePlan?: string;
+  /**
    * **计划级授权句柄**(ARC-001 步④)—— 一枚 `Grant.grantId`。**宿主核对,不是模型自报**:
    * 本命令**不采信**这个字符串本身是授权,而是从**目标项目**解析出「建会话」动作的权威资源
    * 身份(见 {@link SESSION_CREATE_METHOD} + {@link sessionCreateCore}),拿它去
@@ -203,10 +213,13 @@ export class SessionGrantRefusedError extends Error {
  * @returns 覆盖这次动作、且有效的授权 grantId;调用方**没带** grantId 时返回 `null`(不启用)。
  * @throws  {@link SessionGrantRefusedError} —— 带了 grantId 却核不过(核不到 / 失效 / 不覆盖)。
  */
-function resolvePermissionGrant(projectId: string, grantId: string | undefined): string | null {
+function resolvePermissionGrant(projectId: string, grantId: string | undefined, coreScenePlan?: string): string | null {
   if (grantId === undefined) return null;
   const store = getGrantStore();
-  const core = sessionCreateCore(projectId);
+  const base = sessionCreateCore(projectId);
+  // 【MC-001】计划执行端带批准时的计划摘要 → 意图的 core 与授权钉住的那份**同一形状**;
+  // 摘要不符(正文被换)→ invalidationsFor 判 scenePlan 被改 → 拒绝。
+  const core = coreScenePlan !== undefined ? { ...base, scenePlan: coreScenePlan } : base;
   const intent = { method: SESSION_CREATE_METHOD, core };
   // 调用方带来的是**具体某一枚** grantId,故按 id 取回(`get`)—— 它对"不存在 / 已撤销 /
   // 已过期"一律回 null:调用方指名要跑在授权 X 之下、X 却不可用 → 没有授权可交 evaluate
@@ -295,7 +308,7 @@ export async function createSessionAndSend(
   // 拿目标项目的权威资源身份去 `getGrantStore()` 取回授权、交唯一判定核 `evaluate` 核对:
   // 覆盖了才继续(记为 lastPermissionGrant),核不到 / 失效 / 不覆盖**一律拒绝**
   // (抛 `SessionGrantRefusedError`,什么都不建/不发)。缺席 = 不启用,既有调用方不受影响。
-  const grantId = resolvePermissionGrant(args.input.projectId, action.permissionGrant);
+  const grantId = resolvePermissionGrant(args.input.projectId, action.permissionGrant, action.coreScenePlan);
   // 【MC-021】**派发前原子领取**一次额度(在建任何一行之前)—— 检查(有效 / 未用尽 / 未超
   // 预算)与 `usedCount` +1 在 `claimUse` 的同一同步临界区内完成、并同步落盘。领取失败
   // (核过后被并发用尽 / 撤销 / 过期 / 落盘失败)→ 与核不过同取向:**拒绝,什么都不建**。
