@@ -591,6 +591,78 @@ console.log("\nMC-052:导入设置不能夹带 SSH 主机授信(knownHosts / hos
   eq("普通偏好照常导入", SettingRepo.get("ui.locale"), "en");
 }
 
+/* ══════════ 【MC-026】Agent 可编排的两条入口(不弹对话框) ══════════
+ *
+ * 台账:只有 `exportToFile` / `importFromFile`,且都强依赖系统对话框 —— Agent 即便
+ * 拿到用户事先批准也够不到。修复后两条显式路径/文本入口与界面**共用同一份服务核**
+ * (`exportSettingsToPath` / `importSettingsFromText`),清洗/备份/事务/广播一份都不少。
+ *
+ * 判据:①两条 handler 真注册;②导出的档与界面导出**逐字段同形**(不含密钥/授信);
+ *      ③导入走同一份解析与备份;④危险档(夹带密钥/授信)同样被清;⑤超限拒绝。
+ */
+{
+  const EXPORTER = handlers.get(IPC.SETTING_EXPORT_TO_PATH);
+  const IMPORTER_TEXT = handlers.get(IPC.SETTING_IMPORT_FROM_TEXT);
+  check("★ MC-026:setting:exportToPath 已注册", typeof EXPORTER === "function");
+  check("★ MC-026:setting:importFromText 已注册", typeof IMPORTER_TEXT === "function");
+
+  // ① 导出到显式路径 —— 与界面导出同一份清洗。
+  {
+    SettingRepo.set("ui.locale", "zh");
+    SettingRepo.set("customModelKeys", JSON.stringify({ openai: "sk-SECRET-MUST-NOT-LEAK" }));
+    const out = join(WORK, "agent-export.json");
+    const res = (await EXPORTER!(null, { path: out })) as { ok: boolean; path?: string; count?: number; scrubbed?: number; error?: string };
+    check("★ MC-026:导出到显式路径成功", res.ok === true && res.path === out, res);
+    const doc = JSON.parse(readFileSync(out, "utf8")) as { format: string; settings: Record<string, string> };
+    eq("★ 导出档带 format 标记(与界面导出同形)", doc.format, "mcode-settings");
+    eq("★ 普通偏好照常导出", doc.settings["ui.locale"], "zh");
+    check("★ 密钥键没有被导出(共用同一份清洗核)", !JSON.stringify(doc).includes("sk-SECRET-MUST-NOT-LEAK"), Object.keys(doc.settings));
+  }
+
+  // ② 从文本导入 —— 与界面导入同一份解析/备份/事务;危险档同样被清。
+  {
+    clearBackups();
+    SettingRepo.set("ui.locale", "zh");
+    // ⚠️ 夹具:授信键在**更早的测试段**里已被写过(`["fp"]`),先清掉再验"没被导入写入"。
+    const { SettingRepo: SR } = await import("@main/store/repositories.js");
+    SR.delete("mcp.projectTrust");
+    SettingRepo.set("customModelKeys", JSON.stringify({ openai: "sk-SECRET-MUST-NOT-LEAK" }));
+    const text = JSON.stringify({
+      format: "mcode-settings",
+      version: 1,
+      settings: {
+        "ui.locale": "en",
+        "mcp.projectTrust": JSON.stringify({ "repo/x": "trusted" }),
+        "customModelKeys": JSON.stringify({ openai: "sk-INJECTED" }),
+      },
+    });
+    const res = (await IMPORTER_TEXT!(null, { text })) as ImportResult;
+    eq("★ MC-026:从文本导入成功", res.ok, true);
+    eq("★ 普通偏好被写入", SettingRepo.get("ui.locale"), "en");
+    eq("★ 授信键没有落库(与界面导入同一份清洗)", SettingRepo.get("mcp.projectTrust"), null);
+    eq("★ 密钥键没有落库", SettingRepo.get("customModelKeys"), JSON.stringify({ openai: "sk-SECRET-MUST-NOT-LEAK" }));
+    check("★ 与界面导入一样先备份(返回 backupPath)", typeof res.backupPath === "string" && existsSync(res.backupPath), res);
+  }
+
+  // ③ restore 模式与界面同源(删掉档里没有的可迁移键)。
+  {
+    SettingRepo.set("ui.locale", "zh");
+    SettingRepo.set("ui.accent", "blue");
+    const text = JSON.stringify({ format: "mcode-settings", version: 1, settings: { "ui.locale": "en" } });
+    const res = (await IMPORTER_TEXT!(null, { text, mode: "restore" })) as ImportResult;
+    check("★ MC-026:restore 模式删掉档里没有的可迁移键", res.ok === true && (res.deleted ?? 0) >= 1, res);
+    eq("…被删的键真的没了", SettingRepo.get("ui.accent"), null);
+  }
+
+  // ④ 超限 / 坏格式显式拒绝(不静默)。
+  {
+    const bad = (await IMPORTER_TEXT!(null, { text: "{not json" })) as ImportResult;
+    check("★ MC-026:坏格式显式拒绝", bad.ok === false && typeof bad.error === "string", bad);
+    const missing = (await EXPORTER!(null, {})) as { ok: boolean; error?: string };
+    check("MC-026:缺 path 显式拒绝(契约校验)", missing.ok === false && typeof missing.error === "string", missing);
+  }
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

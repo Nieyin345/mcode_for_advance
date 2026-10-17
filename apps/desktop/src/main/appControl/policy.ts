@@ -35,6 +35,12 @@ const BLOCKED: Record<string, string> = {
   // `app_api_call` 与自定义面板的 `mcode.api.call` 都够不到;真正够得到的只有桌面渲染端。
   "hooks.issueHostHookGrant": "插件 hook 的执行授权只能由用户本人在插件面板签发",
   "hooks.revokeHostHookGrant": "插件 hook 授权只能由用户本人撤销",
+  // 【MC-036】用户模块的**工作流运行授权**(自动运行权)的签发 / 撤销 = 同一件「用户点头」
+  // 的事:agent 任何理由都不该把"这个模块菜单能调"自行升成"这个模块可以自动跑",故
+  // 与 hostHookGrant / workflow.approve 一样钉 **blocked**(不是"每次弹卡"),让
+  // `app_api_call` 与 `mcp.api.call` 都够不到;真正够得到的只有桌面设置页。
+  "modules.issueWorkflowGrant": "用户模块的工作流运行授权只能由用户在模块设置里授权",
+  "modules.revokeWorkflowGrant": "用户模块的工作流运行授权只能由用户本人撤销",
   "customModel.getToken": "API Key / 令牌不给模型",
   "piModels.getApiKey": "API Key 不给模型",
   "codexModels.getApiKey": "API Key 不给模型",
@@ -67,6 +73,10 @@ const BLOCKED: Record<string, string> = {
   "file.pickImages": "会弹系统对话框等用户操作",
   "setting.exportToFile": "会弹系统保存框等用户操作;导出设置请让用户在 设置 → 通用 里点「导出设置」",
   "setting.importFromFile": "会弹系统打开框并整批改写设置;只能由用户本人在设置页操作",
+  // 【MC-026】Agent 可编排的等价入口(**不弹对话框**)。两条都是 danger:导入会整批改写
+  // 设置、导出会把整套偏好写到指定路径 —— 每次都要用户在审批卡上本人点头;清洗与
+  // 备份走与界面完全相同的那一份服务(`exportSettingsToPath` / `importSettingsFromText`)。
+  // (这两条不放进 BLOCKED:blocked 是"谁都够不到",而这里要的是"够得到但每次都批"。)
   "customUi.stagePanel": "自定义面板的界面内部接口;要建面板请改设置 customUi.config.v1",
   "customUi.panelAsk": "自定义面板内部接口;要问模型请直接发消息",
   // ⚠️ **绝不能开给 agent。** 这条是面板的通用调用口,它带一个 `approved` 位 —— 面板
@@ -123,6 +133,10 @@ const DANGER: Record<string, string> = {
   "mcp.projectSave": "新增/修改项目 MCP 服务器(写 <项目>/.mcp.json,会在本机启动进程或连外部服务)",
   "mcp.projectRemove": "删除项目 MCP 服务器",
   "mcp.projectTrust": "信任/取消信任项目 MCP 服务器(信任后会被引擎启动)",
+  // 【MC-026】Agent 可编排的设置迁移:导入会**整批改写**设置(审批必须每次本人点头),
+  // 导出会把整套偏好写到调用方指定的路径(含公开元数据,密钥已由清洗核排除)。
+  "setting.exportToPath": "把整套设置(已脱敏)写到指定路径",
+  "setting.importFromText": "整批改写设置(导入前自动备份,可回退)",
   "mcp.projectCopy": "把总库 MCP 服务器复制进项目文件(连同其中的环境变量/请求头)",
   "mcp.authorize": "MCP 服务器 OAuth 授权",
   "mcp.unauthorize": "撤销 MCP 服务器授权",

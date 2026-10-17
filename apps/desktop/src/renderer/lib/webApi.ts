@@ -767,6 +767,10 @@ const setting: Api["setting"] = {
   // 设置导入 / 导出要弹电脑上的文件对话框,手机端不提供(设置页里那张卡片也不显示)。
   exportToFile: () => Promise.resolve({ ok: false as const, error: translate(uiLocale(), "lib.web.unavailable", { name: "setting.exportToFile" }) }),
   importFromFile: () => Promise.resolve({ ok: false as const, error: translate(uiLocale(), "lib.web.unavailable", { name: "setting.importFromFile" }) }),
+  // 【MC-026】这两条是 Agent 经 app_api_call 走的;手机端没有 preload 的 rpc 主进程通道,
+  // 按同一惯例显式不可用(不是静默失败)。
+  exportToPath: () => Promise.resolve({ ok: false as const, error: translate(uiLocale(), "lib.web.unavailable", { name: "setting.exportToPath" }) }),
+  importFromText: () => Promise.resolve({ ok: false as const, error: translate(uiLocale(), "lib.web.unavailable", { name: "setting.importFromText" }) }),
 };
 
 /** Voice input requires the desktop main-process ASR engine; the mobile/web
@@ -930,6 +934,10 @@ export function createWebApi(): Api {
       task: async () => webUnsupported("modules.task"),
       cancel: async () => webUnsupported("modules.cancel"),
       tasks: async () => webUnsupported("modules.tasks"),
+      // 【MC-036】授权签发 / 撤销是**坐在那台机器前的真人**的动作(只经桌面设置页),
+      // 网页壳明确 unsupported,不是忘了接(与整个 modules 面同一取舍)。
+      issueWorkflowGrant: async () => webUnsupported("modules.issueWorkflowGrant"),
+      revokeWorkflowGrant: async () => webUnsupported("modules.revokeWorkflowGrant"),
     } satisfies Api["modules"],
     project,
     session,

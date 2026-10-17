@@ -1072,3 +1072,25 @@ export type SettingImportFileInput = { mode?: "merge" | "restore" };
 export type SettingImportFileResult =
   | { ok: true; count: number; skipped: number; deleted?: number; backupPath?: string }
   | { ok: false; canceled?: boolean; error?: string };
+
+/* ── 【MC-026】Agent 可编排的设置迁移(显式路径 / 直接内容) ──
+ *
+ * 从前只有两条**绑系统对话框**的 RPC,Agent 即便拿到用户事先批准也够不到 —— 它没法
+ * 操控 save/open dialog。这两条给 Agent 等价入口,但**不绕过任何一处清洗**:
+ * 导出走同一个 `buildSettingsExport`(密钥/授信照旧绝不外泄),导入走同一个
+ * `parseSettingsImport` + 导入前备份 + 整批事务。审批由宿主在 `app_api_call` 的
+ * danger 卡上做(见 policy),不在参数里。
+ */
+export const SettingExportToPathSchema = z.object({
+  /** 绝对路径。必须是 .json;父目录必须存在(不替调用方递归建目录 —— 打错路径要显式报)。 */
+  path: z.string().min(1),
+});
+export type SettingExportToPathInput = z.infer<typeof SettingExportToPathSchema>;
+
+export const SettingImportFromTextSchema = z.object({
+  /** 导出档的 JSON 文本(与 `setting.exportToPath` 写出的格式相同)。 */
+  text: z.string().min(1),
+  /** 与界面导入相同的两种模式(见上)。 */
+  mode: z.enum(["merge", "restore"]).optional(),
+});
+export type SettingImportFromTextInput = z.infer<typeof SettingImportFromTextSchema>;

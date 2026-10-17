@@ -126,6 +126,11 @@ const api = {
       ipcRenderer.invoke(IPC.SETTING_EXPORT_FILE)) as RpcMap["setting.exportToFile"],
     importFromFile: (() =>
       ipcRenderer.invoke(IPC.SETTING_IMPORT_FILE)) as RpcMap["setting.importFromFile"],
+    // 【MC-026】Agent 可编排的设置迁移(不弹系统对话框;清洗/备份/事务与上面两条同一份)。
+    exportToPath: ((input) =>
+      ipcRenderer.invoke(IPC.SETTING_EXPORT_TO_PATH, input)) as RpcMap["setting.exportToPath"],
+    importFromText: ((input) =>
+      ipcRenderer.invoke(IPC.SETTING_IMPORT_FROM_TEXT, input)) as RpcMap["setting.importFromText"],
   },
   /** Speech-to-text (voice input) — drives sherpa-onnx ASR in main. The
    *  renderer streams 16 kHz mono PCM via `feed`; live results arrive on

@@ -60,7 +60,7 @@ import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.
 import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, FullTextMatch, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { EngineToolsGetInput, EngineToolsSetInput, EngineToolsSnapshot } from "./engineTools.js";
-import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, SettingImportFileInput, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
+import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, SettingImportFileInput, SettingExportToPathInput, SettingImportFromTextInput, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, StopTaskInput, ReadTaskOutputInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, ShellOpenResult, ApprovalReceipt, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
@@ -278,6 +278,12 @@ export interface RpcMap {
   "setting.exportToFile": () => Promise<SettingExportFileResult>;
   /** 从 JSON 文件导入设置(主进程弹打开框;先备份当前设置)。 */
   "setting.importFromFile": (input?: SettingImportFileInput) => Promise<SettingImportFileResult>;
+  /** 【MC-026】导出到**显式路径**(Agent 可编排;不弹系统保存框)。清洗与界面导出同一份;
+   *  审批走宿主的 danger 卡。 */
+  "setting.exportToPath": (input: SettingExportToPathInput) => Promise<SettingExportFileResult>;
+  /** 【MC-026】从**JSON 文本**导入(Agent 可编排;不弹系统打开框)。解析/清洗/导入前备份/
+   *  整批事务与界面导入同一份。 */
+  "setting.importFromText": (input: SettingImportFromTextInput) => Promise<SettingImportFileResult>;
   // Voice input
   /** 起一次语音识别会话:`sessionId` 是**渲染端自个儿的一次听写令牌**(不是聊天会话 id),引擎会按 `lang` 建解码器、按需懒惰下模型。 */
   "voice.start": (input: VoiceStartInput) => Promise<void>;
@@ -1561,6 +1567,8 @@ export const IPC = {
   SETTING_GET_MANY: "setting:getMany",
   SETTING_EXPORT_FILE: "setting:exportToFile",
   SETTING_IMPORT_FILE: "setting:importFromFile",
+  SETTING_EXPORT_TO_PATH: "setting:exportToPath",
+  SETTING_IMPORT_FROM_TEXT: "setting:importFromText",
   // 文献库 —— 条目
   LIBRARY_LIST: "library:list",
   LIBRARY_GET: "library:get",

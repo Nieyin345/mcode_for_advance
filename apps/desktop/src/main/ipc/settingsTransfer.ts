@@ -8,13 +8,14 @@ import { app, dialog } from "electron";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { IPC } from "@contracts/ipc";
+import { IPC, type SettingExportFileResult, type SettingImportFileResult, SettingExportToPathSchema, SettingImportFromTextSchema } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
 import { getDb, commitNow } from "@main/store/db.js";
 import { isDurable, type CommitResult } from "@contracts/commit";
 import { getMainWindow } from "@main/window.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { log } from "@main/lib/logger.js";
+import { errText } from "@main/lib/ipcError.js";
 import { dialogText } from "@main/lib/dialogText.js";
 import { broadcastSettingChangedToAll } from "@main/lib/sessionSync.js";
 import { isSyncedSettingKey } from "@contracts/ipc/settingsSync";
@@ -179,136 +180,164 @@ function applySettingsImport(
   return { ok: false, commit, compensation };
 }
 
+/**
+ * 【MC-026】导出到**显式路径** —— 界面(保存框选中后)与 Agent(`setting.exportToPath`)
+ * 共用这一份:同一套清洗(`buildSettingsExport`)、同一套落盘、同一份日志。
+ *
+ * ⚠️ 调用方负责**路径来源**:界面从系统对话框拿,Agent 那条由宿主在 **danger 审批**之后
+ * 传入(见 policy 的 setting.exportToPath)。本函数不做路径围栏 —— 它能写任何可写路径,
+ * 所以谁能调它,谁就必须先过审批。
+ */
+export async function exportSettingsToPath(path: string): Promise<SettingExportFileResult> {
+  try {
+    const { doc, count, skipped, scrubbed } = buildSettingsExport(allSettings(), { appVersion: app.getVersion() });
+    await writeFile(path, `${JSON.stringify(doc, null, 2)}
+`, "utf8");
+    log.info(`settings.export: ${count} keys → ${path} (skipped ${skipped}, scrubbed ${scrubbed})`);
+    return { ok: true, path, count, skipped, scrubbed };
+  } catch (err) {
+    log.warn(`settings.export failed: ${(err as Error).message}`);
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+/**
+ * 【MC-026】从**已读入的文本**导入 —— 界面(读文件后)与 Agent(直接给 JSON 内容)共用
+ * 这一份:同一套解析/清洗(`parseSettingsImport`)、同一套导入前备份、同一个整批事务、
+ * 同一份提交后广播。Agent 那条**不需要系统对话框**,因此可以自主编排(审批仍走宿主的
+ * danger 卡 —— 见 policy 的 setting.importFromText)。
+ *
+ * `sourceLabel` 只用于日志/备份路径的可读性(界面传文件名,Agent 传 "agent")。
+ */
+export async function importSettingsFromText(
+  text: string,
+  mode: "merge" | "restore",
+  sourceLabel: string,
+): Promise<SettingImportFileResult> {
+  const parsed = parseSettingsImport(text);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  // 导入前先备份当前设置(同样不含密钥),导坏了能用「导入」再导回来。
+  // ⚠️ 备份写不出去就地中止,绝不继续往下覆盖(见原 handler 的注释)。
+  const dir = join(app.getPath("userData"), "settings-backups");
+  let backupPath: string;
+  try {
+    backupPath = await writeImportBackup(
+      dir,
+      `${JSON.stringify(buildSettingsExport(allSettings(), { appVersion: app.getVersion() }).doc, null, 2)}
+`,
+    );
+  } catch (err) {
+    const why = (err as Error).message;
+    log.warn(`settings.import: backup failed, aborting import: ${why}`);
+    return { ok: false, error: `导入前的设置备份失败,已中止导入(当前设置未改动):${why}` };
+  }
+  const exportedKeys = new Set(parsed.entries.map(([k]) => k));
+  const deleteKeys =
+    mode === "restore"
+      ? restoreKeysToDelete(SettingRepo.keysWithPrefix("").filter((k) => SettingRepo.get(k) !== null), exportedKeys)
+      : [];
+  let changedKeys: string[];
+  try {
+    const applied = applySettingsImport(parsed.entries, deleteKeys);
+    if (!applied.ok) {
+      const why = applied.commit.reason ?? "sqlite commit failed";
+      if (applied.compensation === "rolled-back") {
+        log.warn(`settings.import: write not durable, memory rolled back: ${why}`);
+        return { ok: false, error: `写入设置失败,已整体回滚(当前设置未改动):${why}` };
+      }
+      log.warn(`settings.import: write not durable AND memory rollback failed: ${why}`);
+      return {
+        ok: false,
+        error: `写入设置失败,且内存回滚也失败 —— 当前设置可能仍停在导入的新值上(重启动后会回到旧值),请重启应用确认后再试:${why}`,
+      };
+    }
+    changedKeys = applied.changedKeys;
+  } catch (err) {
+    log.warn(`settings.import: write failed, rolled back: ${(err as Error).message}`);
+    return { ok: false, error: `写入设置失败,已整体回滚(当前设置未改动):${(err as Error).message}` };
+  }
+  // 只在**提交之后**广播(注释见原 handler:必须 ...ToAll,手机与桌面本端都要收到)。
+  for (const k of changedKeys) {
+    if (isSyncedSettingKey(k)) broadcastSettingChangedToAll(k, SettingRepo.get(k) ?? "");
+  }
+  try {
+    notificationManager.reloadPrefs();
+  } catch {
+    /* 尽力而为 */
+  }
+  log.info(`settings.import: ${parsed.entries.length} keys from ${sourceLabel} (skipped ${parsed.skipped.length})`);
+  return {
+    ok: true,
+    count: parsed.entries.length,
+    skipped: parsed.skipped.length,
+    deleted: deleteKeys.length,
+    backupPath,
+  };
+}
+
 export function registerSettingsTransferHandlers(ipc: IpcMain): void {
   ipc.handle(IPC.SETTING_EXPORT_FILE, async () => {
-    try {
-      const { doc, count, skipped, scrubbed } = buildSettingsExport(allSettings(), { appVersion: app.getVersion() });
-      const win = getMainWindow();
-      const opts = {
-        title: dialogText("common.dialog.exportSettings"),
-        defaultPath: `mcode-settings-${stamp()}.json`,
-        filters: [{ name: dialogText("common.dialog.settingsFilter"), extensions: ["json"] }],
-      };
-      const res = win && !win.isDestroyed() ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
-      if (res.canceled || !res.filePath) return { ok: false as const, canceled: true };
-      await writeFile(res.filePath, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
-      log.info(`settings.export: ${count} keys → ${res.filePath} (skipped ${skipped}, scrubbed ${scrubbed})`);
-      return { ok: true as const, path: res.filePath, count, skipped, scrubbed };
-    } catch (err) {
-      log.warn(`settings.export failed: ${(err as Error).message}`);
-      return { ok: false as const, error: (err as Error).message };
-    }
+    const win = getMainWindow();
+    const opts = {
+      title: dialogText("common.dialog.exportSettings"),
+      defaultPath: `mcode-settings-${stamp()}.json`,
+      filters: [{ name: dialogText("common.dialog.settingsFilter"), extensions: ["json"] }],
+    };
+    const res = win && !win.isDestroyed() ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+    if (res.canceled || !res.filePath) return { ok: false as const, canceled: true };
+    // 【MC-026】落盘/清洗/日志走**共享服务** —— Agent 的 `setting.exportToPath` 调同一份。
+    return (await exportSettingsToPath(res.filePath)) as SettingExportFileResult;
   });
 
   ipc.handle(IPC.SETTING_IMPORT_FILE, async (_evt, raw) => {
-      const input = (raw ?? {}) as { mode?: "merge" | "restore" };
+    const input = (raw ?? {}) as { mode?: "merge" | "restore" };
+    const win = getMainWindow();
+    const opts = {
+      title: dialogText("common.dialog.importSettings"),
+      properties: ["openFile" as const],
+      filters: [{ name: dialogText("common.dialog.settingsFilter"), extensions: ["json"] }],
+    };
+    const res = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    const file = res.filePaths[0];
+    if (res.canceled || !file) return { ok: false as const, canceled: true };
+    // MC-030:先按文件大小预检查,**超限根本不读**。
+    let readResult: Awaited<ReturnType<typeof readImportFileWithinLimit>>;
     try {
-      const win = getMainWindow();
-      const opts = {
-        title: dialogText("common.dialog.importSettings"),
-        properties: ["openFile" as const],
-        filters: [{ name: dialogText("common.dialog.settingsFilter"), extensions: ["json"] }],
-      };
-      const res = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
-      const file = res.filePaths[0];
-      if (res.canceled || !file) return { ok: false as const, canceled: true };
-      // MC-030:先按文件大小预检查,**超限根本不读**。
-      let readResult: Awaited<ReturnType<typeof readImportFileWithinLimit>>;
-      try {
-        readResult = await readImportFileWithinLimit(file);
-      } catch (err) {
-        log.warn(`settings.import: cannot stat/read ${file}: ${(err as Error).message}`);
-        return { ok: false as const, error: `读不了这个文件:${(err as Error).message}` };
-      }
-      if ("tooLarge" in readResult) return { ok: false as const, error: "文件太大,不像是设置导出文件" };
-      const parsed = parseSettingsImport(readResult.text);
-      if (!parsed.ok) return { ok: false as const, error: parsed.error };
-
-      // 导入前先备份当前设置(同样不含密钥),导坏了能用「导入」再导回来。
-      //
-      // ⚠️ **备份写不出去就地中止,绝不继续往下覆盖。** 这份备份是导入唯一的后路 ——
-      // 而导入会把整张表盖掉。备份失败还照样走完,等于把「导坏了能找回来」这条后路
-      // 也一起丢了,而界面上那句「导入前会先把当前设置备份一份」(settings.transfer.
-      // importDesc)照旧说着有,返回值里只是悄悄少了 backupPath —— 用户看到的是一次
-      // **成功**的、却无法回退的覆盖。宁可让他看到一次明确的失败、当前设置一个字节
-      // 不动,也不要用一次静默的覆盖换掉他的全部偏好。(磁盘满 / 目录只读这些真实
-      // 入口都会走到这里,原先是 catch 成一行 warn 然后照常覆盖。)
-      const dir = join(app.getPath("userData"), "settings-backups");
-      let backupPath: string;
-      try {
-        backupPath = await writeImportBackup(
-          dir,
-          `${JSON.stringify(buildSettingsExport(allSettings(), { appVersion: app.getVersion() }).doc, null, 2)}\n`,
-        );
-      } catch (err) {
-        const why = (err as Error).message;
-        log.warn(`settings.import: backup failed, aborting import: ${why}`);
-        return { ok: false as const, error: `导入前的设置备份失败,已中止导入(当前设置未改动):${why}` };
-      }
-
-      // ★ **整体写入一个事务**(MC-025)。任一项抛错 → ROLLBACK → 库回到导入前,零部分
-      // 写入、零失效广播。提交成功之后才逐键广播给所有端。
-      //
-      // 【MC-029】`mode === "restore"` 时还要**删掉备份里没有的可迁移键** —— 否则"拿
-      // 导入前的备份导回来"只是 upsert,第一次导入新增的键仍留着,并没真回到导入前。
-      const mode: "merge" | "restore" = input?.mode === "restore" ? "restore" : "merge";
-      const exportedKeys = new Set(parsed.entries.map(([k]) => k));
-      const deleteKeys =
-        mode === "restore"
-          ? restoreKeysToDelete(SettingRepo.keysWithPrefix("").filter((k) => SettingRepo.get(k) !== null), exportedKeys)
-          : [];
-      let changedKeys: string[];
-      try {
-        const applied = applySettingsImport(parsed.entries, deleteKeys);
-        if (!applied.ok) {
-          // 【ARC-005】durable 落盘失败:能不能说「已整体回滚」**取决于内存补偿成没成** ——
-          // 补偿成功才敢说"当前设置未改动";补偿自己也失败时,内存里可能还留着这批新值
-          // (同一进程仍读得到,重启才回到旧值),那就绝不能谎称"未改动"。
-          const why = applied.commit.reason ?? "sqlite commit failed";
-          if (applied.compensation === "rolled-back") {
-            log.warn(`settings.import: write not durable, memory rolled back: ${why}`);
-            return { ok: false as const, error: `写入设置失败,已整体回滚(当前设置未改动):${why}` };
-          }
-          log.warn(`settings.import: write not durable AND memory rollback failed: ${why}`);
-          return {
-            ok: false as const,
-            error: `写入设置失败,且内存回滚也失败 —— 当前设置可能仍停在导入的新值上(重启动后会回到旧值),请重启应用确认后再试:${why}`,
-          };
-        }
-        changedKeys = applied.changedKeys;
-      } catch (err) {
-        // 写入事务本身失败 → 已 ROLLBACK,此刻"已整体回滚"是真话。
-        log.warn(`settings.import: write failed, rolled back: ${(err as Error).message}`);
-        return { ok: false as const, error: `写入设置失败,已整体回滚(当前设置未改动):${(err as Error).message}` };
-      }
-
-      // 只在**提交之后**广播 —— 「跟着人走」的键推给**所有**端:已配对的手机当场生效,
-      // **桌面本端也要收到**(语言 / 强调色 / 快捷键这类不用重启就换上)。⚠️ 这里必须用
-      // `...ToAll`:普通的 `broadcastSettingChanged(k, v)` 不带 origin,只发手机、**不给
-      // 桌面回声**(那是为了别的写入者不被自己的回声拽回上一个按键)。导入这条路桌面端
-      // 没有"乐观更新" —— 不推就一直是旧值,直到重启。
-      for (const k of changedKeys) {
-        if (isSyncedSettingKey(k)) broadcastSettingChangedToAll(k, SettingRepo.get(k) ?? "");
-      }
-      // 主进程里缓存了设置的服务:通知偏好当场重读;其余多数是用时现读。
-      try {
-        notificationManager.reloadPrefs();
-      } catch {
-        /* 尽力而为 */
-      }
-      log.info(`settings.import: ${parsed.entries.length} keys from ${file} (skipped ${parsed.skipped.length})`);
-      return {
-        ok: true as const,
-        count: parsed.entries.length,
-        skipped: parsed.skipped.length,
-        // 【MC-029】恢复模式下删掉的键数(merge 模式为 0)。
-        deleted: deleteKeys.length,
-        // 走到这里备份一定写成过(写不成上面就 return 了)—— 所以这条恒在。
-        backupPath,
-      };
+      readResult = await readImportFileWithinLimit(file);
     } catch (err) {
-      log.warn(`settings.import failed: ${(err as Error).message}`);
-      return { ok: false as const, error: (err as Error).message };
+      log.warn(`settings.import: cannot stat/read ${file}: ${(err as Error).message}`);
+      return { ok: false as const, error: `读不了这个文件:${(err as Error).message}` };
     }
+    if ("tooLarge" in readResult) return { ok: false as const, error: "文件太大,不像是设置导出文件" };
+    // 【MC-026】解析/备份/事务/广播走**共享服务** —— Agent 的 `setting.importFromText` 调同一份。
+    const mode: "merge" | "restore" = input?.mode === "restore" ? "restore" : "merge";
+    return (await importSettingsFromText(readResult.text, mode, file)) as SettingImportFileResult;
+  });
+
+  // ── 【MC-026】Agent 可编排的两条(不弹系统对话框)──
+  // 显式路径导出:调用方只在**过了 danger 审批**之后才够得到(policy 的 DANGER 表)。
+  // 清洗/落盘与界面导出同一份(exportSettingsToPath),不存在第二套脱敏逻辑。
+  ipc.handle(IPC.SETTING_EXPORT_TO_PATH, async (_evt, raw) => {
+    let input;
+    try {
+      input = SettingExportToPathSchema.parse(raw);
+    } catch (err) {
+      return { ok: false as const, error: errText(err) };
+    }
+    return (await exportSettingsToPath(input.path)) as SettingExportFileResult;
+  });
+
+  // 直接文本导入:解析/清洗/导入前备份/整批事务/提交后广播与界面导入同一份。
+  ipc.handle(IPC.SETTING_IMPORT_FROM_TEXT, async (_evt, raw) => {
+    let input;
+    try {
+      input = SettingImportFromTextSchema.parse(raw);
+    } catch (err) {
+      return { ok: false as const, error: errText(err) };
+    }
+    if (Buffer.byteLength(input.text, "utf8") > IMPORT_MAX_BYTES) {
+      return { ok: false as const, error: "内容太大,不像是设置导出文件" };
+    }
+    return (await importSettingsFromText(input.text, input.mode === "restore" ? "restore" : "merge", "agent")) as SettingImportFileResult;
   });
 }
