@@ -10,6 +10,7 @@
  * live here too, as explicit `*_IDENTITY_PROMPT` variants — one per provider —
  * so each can be tuned independently without cross-contamination.
  */
+import { baseToolNameFor } from "@contracts/baseToolCapabilities";
 
 /**
  * Join independent prompt sections into one appended fragment. Both providers
@@ -117,17 +118,18 @@ export const CODEX_IDENTITY_PROMPT = [
 export type PromptEngineId = "claude" | "pi" | "codex";
 
 /**
- * 【MC-044】当轮「读文件」工具的**真实**名字,派生不出来就 null。
+ * 【MC-044】【ARC-003】当轮「读文件」工具的**真实**名字,派生不出来就 null。
  *
- * 事实源是各引擎的内置工具实装(与 `ipc/engineTools.ts` 的 `KNOWN_BUILTIN_TOOLS`
- * 同源认知):Claude = `Read`、Pi = `read`;Codex 没有同名的文件工具(读写走它
- * 自己的 shell/exec),任何点名的"读工具"都是编的。`excluded` 是当轮策略的真实
- * 排除表 —— 被禁用的工具同样不许出现在提示词里(禁用之后提示不得残留广告)。
+ * 名字**不再在本函数里硬编码** —— 唯一事实源是契约包的能力语义表
+ * `@contracts/baseToolCapabilities`(`file.read` 那一行:Claude=`Read`、Pi=`read`、
+ * Codex 无独立读工具)。本次 ARC-003 收口前这里另有一份 `if (engine === ...)`,与
+ * 那张表并存 —— 两份事实迟早漂开(改表不改这里,提示词就又开始点名不存在的工具)。
+ * `excluded` 是当轮策略的真实排除表:被禁用的工具同样不许出现在提示词里。
  */
 export function readToolNameForTurn(engine: PromptEngineId, excluded: readonly string[] = []): string | null {
-  if (engine === "claude") return excluded.includes("Read") ? null : "Read";
-  if (engine === "pi") return excluded.includes("read") ? null : "read";
-  return null; // codex:按名禁用尚未支持,也没有同名的读工具 —— 不点名
+  const name = baseToolNameFor(engine, "file.read");
+  if (name === null) return null; // Codex:没有独立的读工具 —— 不点名
+  return excluded.includes(name) ? null : name;
 }
 
 /**

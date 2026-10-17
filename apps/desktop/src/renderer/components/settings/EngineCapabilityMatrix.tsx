@@ -13,13 +13,36 @@
  * 数据出自纯模块 `engineCapabilityData.ts`，`engine-capability-matrix-smoke` 会把它
  * 与各真实来源对账防漂移。品牌名（Claude / Codex / Pi）不本地化。
  */
-import { ENGINE_CAPABILITY_ENGINES, ENGINE_CAPABILITY_MATRIX, supportsCapability } from "./engineCapabilityData.js";
+import { ENGINE_CAPABILITY_ENGINES, ENGINE_CAPABILITY_MATRIX, supportsCapability, BASE_TOOL_CAPABILITY_VIEW, baseCapabilityCell } from "./engineCapabilityData.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { IconCheck, IconMinus } from "@renderer/lib/icons.js";
 
 /** 引擎展示名（品牌名，不翻译）。 */
 const ENGINE_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex", pi: "Pi" };
+
+/** 【ARC-003】基础能力格的形态标记 —— 名字原样展示（模型看到的就是它），
+ *  形态只用词条前缀/颜色区分：原生与宿主桥都是能用，`无` 是灰的。 */
+function BaseCapabilityCell({ impl, toolName, note, t }: {
+  impl: "native" | "bridge" | "none";
+  toolName: string | null;
+  note?: string;
+  t: (key: MessageId) => string;
+}) {
+  const implLabel = t(`settings.engineMatrix.base.impl.${impl}` as MessageId);
+  return (
+    <div className="text-center">
+      <div className="text-[0.857em] text-content-subtle">{implLabel}</div>
+      {toolName ? (
+        <code className="mt-0.5 inline-block break-all font-mono text-[0.857em] text-content">{toolName}</code>
+      ) : (
+        <div className="mt-0.5 text-[0.857em] text-content-subtle/60">—</div>
+      )}
+      {note && <div className="mt-0.5 text-[0.786em] text-content-subtle">{note}</div>}
+    </div>
+  );
+}
 
 export function EngineCapabilityMatrix() {
   const { t } = useI18n();
@@ -70,6 +93,41 @@ export function EngineCapabilityMatrix() {
             ))}
           </tbody>
         </table>
+
+        {/* 【ARC-003】基础能力语义表 —— 上面的矩阵讲"引擎层面支持什么"，
+            这张讲"读写/搜索/命令/联网到底用哪个工具"。数据是契约包里的唯一一份
+            （@contracts/baseToolCapabilities），工具名由套件与真实工具表对账。 */}
+        <div className="mt-6 border-t border-edge pt-4">
+          <div className="text-content">{t("settings.engineMatrix.base.title")}</div>
+          <div className="mt-0.5 text-[0.857em] text-content-subtle">{t("settings.engineMatrix.base.desc")}</div>
+          <table className="mt-3 w-full text-[0.8571em]">
+            <thead>
+              <tr className="text-content-subtle">
+                <th className="w-1/4 pb-2 text-left font-medium" />
+                {ENGINE_CAPABILITY_ENGINES.map((engine) => (
+                  <th key={engine} className="w-1/4 pb-2 text-center font-medium">
+                    {ENGINE_LABEL[engine] ?? engine}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {BASE_TOOL_CAPABILITY_VIEW.map((row) => (
+                <tr key={row.source.id} className="border-t border-edge align-top">
+                  <td className="py-2 pr-3 text-content">{t(row.labelKey)}</td>
+                  {ENGINE_CAPABILITY_ENGINES.map((engine) => {
+                    const cell = baseCapabilityCell(row.source, engine);
+                    return (
+                      <td key={engine} className="py-2 text-center">
+                        <BaseCapabilityCell impl={cell.implementation} toolName={cell.toolName} note={cell.note} t={t} />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </SettingsSection>
   );

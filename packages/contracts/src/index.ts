@@ -24,3 +24,4 @@ export * from "./scenePreflight.js";
 export * from "./sceneProjectInit.js";
 export * from "./hostHookGrant.js";
 export * from "./commit.js";
+export * from "./baseToolCapabilities.js";

@@ -23,6 +23,8 @@
  * 擦除）。所以无头 smoke 可以直接 bundle 本文件在 node 下跑，不起浏览器、不碰 Electron。
  */
 import type { MessageId } from "@renderer/lib/i18n/core.js";
+import { BASE_TOOL_CAPABILITIES, type BaseToolCapabilityRow } from "@contracts/baseToolCapabilities";
+import type { EngineToolEngineId } from "@contracts/ipc/engineTools";
 
 /** 矩阵的列（引擎），顺序 = 界面列顺序。 */
 export const ENGINE_CAPABILITY_ENGINES = ["claude", "codex", "pi"] as const;
@@ -88,4 +90,55 @@ export const ENGINE_CAPABILITY_MATRIX: readonly CapabilityRow[] = [
  *  避免调用方各自 `row.support[engine]` 拼下标。 */
 export function supportsCapability(row: CapabilityRow, engine: MatrixEngineId): boolean {
   return row.support[engine] === true;
+}
+
+/* ── 【ARC-003】基础能力语义表（读写/搜索/命令/联网/浏览器/文档读取）───────────
+ *
+ * 上面那张矩阵回答「引擎**层面**支持什么」（技能/命令/子代理/MCP/hooks/按名禁用）；
+ * 它回答不了用户更常问的那句「这个引擎的**读文件/跑命令/上网**到底用哪个工具」。
+ * 那一层的事实声明在契约 `@contracts/baseToolCapabilities`（三家共享一份），这里只做
+ * 视图适配：
+ *   - 行：稳定能力 ID → 词条键；
+ *   - 格：`native` / `bridge` / `none` 三态（**不再是布尔**——"引擎没有原生工具但
+ *     宿主桥补上了"与"真的没有"是两件事，UI 必须分得开，这是台账要求
+ *     "展示原生/宿主桥/不支持"）。
+ */
+
+/** 一行基础能力的展示视图。 */
+export interface BaseToolCapabilityViewRow {
+  /** 词条键 `settings.engineMatrix.base.<id>`。 */
+  labelKey: MessageId;
+  /** 契约那一行（原样引用，不复制——唯一事实源仍在契约包）。 */
+  source: BaseToolCapabilityRow;
+}
+
+const BASE_CAPABILITY_LABEL_KEYS: Record<BaseToolCapabilityRow["id"], MessageId> = {
+  "file.read": "settings.engineMatrix.base.fileRead",
+  "file.write": "settings.engineMatrix.base.fileWrite",
+  "file.edit": "settings.engineMatrix.base.fileEdit",
+  "file.search": "settings.engineMatrix.base.fileSearch",
+  "shell.run": "settings.engineMatrix.base.shellRun",
+  "web.fetch": "settings.engineMatrix.base.webFetch",
+  "web.search": "settings.engineMatrix.base.webSearch",
+  "browser.navigate": "settings.engineMatrix.base.browserNavigate",
+  "document.read": "settings.engineMatrix.base.documentRead",
+};
+
+/** 基础能力表的渲染视图（与契约同一顺序、同一数据，只补词条键）。 */
+export const BASE_TOOL_CAPABILITY_VIEW: readonly BaseToolCapabilityViewRow[] = BASE_TOOL_CAPABILITIES.map((source) => ({
+  labelKey: BASE_CAPABILITY_LABEL_KEYS[source.id],
+  source,
+}));
+
+/** 某引擎在某能力上的形态 —— 给 UI 与断言用的读法（与契约字段同名同义）。 */
+export function baseCapabilityCell(
+  row: BaseToolCapabilityRow,
+  engine: MatrixEngineId,
+): BaseToolCapabilityRow["engines"][EngineToolEngineId] {
+  return row.engines[engine];
+}
+
+/** 按能力 ID 取视图行（转出契约的读法，让渲染端测试不必再 import 契约模块两次）。 */
+export function baseCapabilityRow(id: BaseToolCapabilityRow["id"]): BaseToolCapabilityRow | undefined {
+  return BASE_TOOL_CAPABILITIES.find((r) => r.id === id);
 }
