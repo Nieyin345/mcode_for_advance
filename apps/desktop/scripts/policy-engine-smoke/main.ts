@@ -568,6 +568,36 @@ const decision = (over: Partial<GrantDecision> = {}): GrantDecision => ({
   failNext = false;
   s5.claimUse(g5.grantId, 0, 1_300);
   eq("MC-021 领取正控:磁盘正常时领取真的落上", s5.get(g5.grantId, 1_400)?.usedCount, 1);
+
+  // ⑦ 【MC-021 验收条件「重启」】领取先落盘 → 进程死在派发中途，额度按**已使用**保留：
+  //    重开同一份持久层（模拟重启）后计数仍是 1（maxCount=1 已用尽），第二次领取被拒。
+  //    语义方向：多记不可少记 —— 死在派发中途时副作用可能已经发生，回滚计数会让额度
+  //    被重复用掉（正是「最多一个有副作用执行」要堵的）。
+  {
+    const box2: { grants: Grant[] | null } = { grants: null };
+    const persist2 = { load: () => box2.grants, save: (gs: Grant[]) => { box2.grants = gs; } };
+    const before = new GrantStore({ persist: persist2, newId: () => "g-restart" });
+    const g = before.issueGrant(decision({ maxCount: 1 }), USER, 1_000);
+    before.claimUse(g.grantId, 0, 1_100); // 派发前领取即落盘
+    const after = new GrantStore({ persist: persist2 }); // 模拟重启
+    eq("★ MC-021 重启:领取已落盘 → 重开后计数仍是 1(不因重启归零)", after.get(g.grantId, 1_500)?.usedCount, 1);
+    let restartClaimThrew = false;
+    try { after.claimUse(g.grantId, 0, 1_600); } catch (e) { restartClaimThrew = e instanceof GrantStoreError && (e as Error).message.includes("次数上限"); }
+    eq("★ MC-021 重启:重启后额度不会复活(第二次领取被拒)", restartClaimThrew, true);
+    // 反证方向：若领取当时**落盘失败**，它不该被记（MC-017 同一条 commit 口）——
+    // 那种情况下"没执行"是确定的，额度不该被占。
+    const box3: { grants: Grant[] | null } = { grants: null };
+    let fail3 = false;
+    const persist3 = { load: () => box3.grants, save: (gs: Grant[]) => { if (fail3) throw new Error("disk error (injected)"); box3.grants = gs; } };
+    const s6b = new GrantStore({ persist: persist3, newId: () => "g-restart-fail" });
+    const g6b = s6b.issueGrant(decision({ maxCount: 1 }), USER, 1_000);
+    fail3 = true;
+    try { s6b.claimUse(g6b.grantId, 0, 1_100); } catch { /* 预期抛 */ }
+    fail3 = false;
+    // 落盘失败的领取没有发生 —— 但 grant 是签发时就落盘的，所以重开后额度仍是 0。
+    const reopened3 = new GrantStore({ persist: persist3 });
+    eq("★ MC-021 重启:领取落盘失败 → 额度没被占(重开后仍 0)", reopened3.get(g6b.grantId, 1_500)?.usedCount, 0);
+  }
 }
 
 /* ══ 14. 可注入持久化:只认窄接口,不拉 sql.js ══ */
