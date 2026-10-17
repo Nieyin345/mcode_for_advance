@@ -853,6 +853,74 @@ body {
   --chat-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* ─────────── 【ARC-005 M1】统一动效与焦点 token ───────────
+ *
+ * 逆向报告 §2：Claude Desktop 用「5 档时长 + 3 条曲线 + 属性总闸」表达动效。
+ * mcode 此前有三套互不相干的曲线名（chat/composer/零散 transition），时长散落
+ * 在 `duration-100/150/200` 里（39+13+8 处）。这里先建立**唯一一份**词表；
+ * 旧变量保留（它们被大量组件引用），新代码只读这份。
+ *
+ * 总闸用 `data-reduce-motion` **属性**而不是媒体查询（报告 §2.1）：媒体查询
+ * 只能跟随系统，做不出"应用内单独关掉"；属性可由一个 setAttribute 切，且能
+ * 局部作用（设置页的预览区可以单独关）。
+ *
+ * 设置入口与 lib/appearance.ts 的写入在同一个提交里接上；未设置时跟随系统
+ * ——下面的 `@media (prefers-reduced-motion: reduce)` 块继续有效。
+ */
+:root {
+  --dur-fast: 60ms;      /* 按下、微反馈 */
+  --dur-snap: 120ms;     /* 揭示、状态切换 */
+  --dur-base: 200ms;     /* 默认 */
+  --dur-sheet: 300ms;    /* 面板滑入 */
+  --dur-slow: 450ms;     /* 回弹归位 */
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-snap: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-overshoot: cubic-bezier(0.34, 1.3, 0.64, 1);
+
+  /* 焦点环三层：内 1px 背景色（任何底色上都读得出来）+ 1px 强调色 +
+   * 6px 光晕。危险操作用同一形状、只换颜色 —— 用户不用重新学（报告 §3.6）。 */
+  --focus-ring:
+    inset 0 0 0 1px rgb(var(--surface)),
+    0 0 0 1px rgb(var(--accent)),
+    0 0 0 6px rgb(var(--accent) / 0.18);
+  --focus-ring-danger:
+    inset 0 0 0 1px rgb(var(--surface)),
+    0 0 0 1px rgb(var(--danger)),
+    0 0 0 6px rgb(var(--danger) / 0.18);
+}
+
+/* 统一焦点可见态：组件不再各写 `focus-visible:ring-*`。用透明 outline 占位
+ * （Windows 高对比度会把 #0000 换成系统色），可见环交给 box-shadow ——
+ * 这是报告 §3.6 那条"透明 outline 不能省"的直接落地。 */
+:where(button, [role="button"], [role="tab"], [role="menuitem"], [role="option"], a[href], input, select, textarea):focus-visible {
+  outline: 2px solid #0000;
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+:where(.danger, [data-danger]):focus-visible,
+:where(button[data-variant="danger"]):focus-visible {
+  box-shadow: var(--focus-ring-danger);
+}
+
+/* ── 【ARC-005 M1】动效总闸 —— 属性优先，媒体查询兜底 ──
+ *
+ * 1) 用户显式关（html[data-reduce-motion="true"]）：全局把动画/过渡压到近零；
+ * 2) 用户显式开（html[data-reduce-motion="false"]）：即便是系统偏好也**不**压制
+ *    —— 报告原话："用户想留动画而系统关着，或反过来"；
+ * 3) 未设置（属性缺失）：沿用既有 `@media (prefers-reduced-motion: reduce)`
+ *    的 9 个块（它们各自只针对具体动画，保留不动）。
+ *
+ * 用 `!important` 是刻意的：它要压过 Tailwind 的 `transition-*` 工具类，而这是
+ * 一个**全局开关**，不是组件样式。作用域限定在 html 属性下，误伤面为零。 */
+html[data-reduce-motion="true"] *,
+html[data-reduce-motion="true"] *::before,
+html[data-reduce-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
 /* 回合根节点：结构标记（运行段包裹与完成态共用同一根），无布局语义。 */
 .chat-turn {
   position: relative;

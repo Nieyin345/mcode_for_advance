@@ -7,7 +7,7 @@ import { Select, Input, Switch, Button } from "@renderer/components/ui/index.js"
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { IconSquare, IconStack2, IconList, IconListDetails, IconGripHorizontal, IconX } from "@renderer/lib/icons.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import type { ChatDensity, DisplayMode, AutoArchiveConfig, Locale } from "@contracts/ipc";
+import type { ReduceMotion, ChatDensity, DisplayMode, AutoArchiveConfig, Locale } from "@contracts/ipc";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { useUiPrefsStore, type ComposerSendKey } from "@renderer/lib/uiPrefs.js";
@@ -169,6 +169,10 @@ export function GeneralPanel() {
   // ── Message-stream density ──
   const chatDensity = useSessionStore((s) => s.chatDensity);
   const setChatDensity = useSessionStore((s) => s.setChatDensity);
+
+  // ── 【ARC-005 M1】Reduce motion ──
+  const reduceMotion = useSessionStore((s) => s.reduceMotion);
+  const setReduceMotion = useSessionStore((s) => s.setReduceMotion);
 
   // ── Paste-to-card threshold ──
   const pasteTagThresholdChars = useSessionStore((s) => s.pasteTagThresholdChars);
@@ -362,6 +366,56 @@ export function GeneralPanel() {
                       <Select.Item key={o.value} value={o.value}>
                         {o.icon}
                         <Select.ItemText>{t(o.labelKey)}</Select.ItemText>
+                      </Select.Item>
+                    ))}
+                  </Select.List>
+                </Select.Popup>
+              </Select.Positioner>
+            </Select.Portal>
+          </Select.Root>
+        </SettingRow>
+
+        {/* ── 【ARC-005 M1】Reduce motion ── */}
+        <SettingRow
+          title={t("settings.general.reduceMotion")}
+          desc={t("settings.general.reduceMotionDesc")}
+          htmlFor="setting-reducemotion"
+        >
+          <Select.Root
+            value={reduceMotion}
+            onValueChange={(v) => void setReduceMotion(v as ReduceMotion)}
+          >
+            <Select.Trigger id="setting-reducemotion" className="w-full">
+              <Select.Value>
+                {(val: ReduceMotion) => (
+                  <span className="flex items-center gap-1.5">
+                    <IconGripHorizontal size={14} className="text-content-muted" />
+                    {t(
+                      val === "on"
+                        ? "settings.general.reduceMotionOn"
+                        : val === "off"
+                          ? "settings.general.reduceMotionOff"
+                          : "settings.general.reduceMotionSystem",
+                    )}
+                  </span>
+                )}
+              </Select.Value>
+            </Select.Trigger>
+            <Select.Portal>
+              <Select.Positioner>
+                <Select.Popup>
+                  <Select.List>
+                    {(["system", "on", "off"] as const).map((v) => (
+                      <Select.Item key={v} value={v}>
+                        <Select.ItemText>
+                          {t(
+                            v === "on"
+                              ? "settings.general.reduceMotionOn"
+                              : v === "off"
+                                ? "settings.general.reduceMotionOff"
+                                : "settings.general.reduceMotionSystem",
+                          )}
+                        </Select.ItemText>
                       </Select.Item>
                     ))}
                   </Select.List>

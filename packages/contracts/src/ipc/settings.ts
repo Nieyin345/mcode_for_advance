@@ -242,6 +242,25 @@ export function parseAutoArchiveConfig(raw: string | null | undefined): AutoArch
  */
 export const UI_CHAT_DENSITY_SETTING_KEY = "ui.chatDensity";
 
+/**
+ * 【ARC-005 M1】减弱动效偏好。三态:
+ *   - `"system"`(默认,键不存在时同义):跟随操作系统 `prefers-reduced-motion`;
+ *   - `"on"`:强制减弱(用户想关动画、但系统没关);
+ *   - `"off"`:强制保留(用户想留动画、但系统关着 —— 报告 §2.1 的原话)。
+ *
+ * 写进 `<html data-reduce-motion="true|false">`(lib/appearance.ts);`"system"` 时
+ * **移除属性**,让 styles.css 里既有的 9 个 `@media (prefers-reduced-motion)` 块
+ * 继续生效。属性优先、媒体查询兜底 —— 媒体查询做不出"应用内单独开/关"。
+ */
+export const UI_REDUCE_MOTION_SETTING_KEY = "ui.reduceMotion";
+export const ReduceMotionSchema = z.enum(["system", "on", "off"]);
+export type ReduceMotion = z.infer<typeof ReduceMotionSchema>;
+
+/** 设置值 → `<html>` 上的属性值;`"system"` 返回 null(移除属性)。 */
+export function reduceMotionAttribute(value: ReduceMotion): "true" | "false" | null {
+  return value === "on" ? "true" : value === "off" ? "false" : null;
+}
+
 /** zod schema + TS union for the chat density preference. */
 export const ChatDensitySchema = z.enum(["compact", "comfortable", "cozy"]);
 export type ChatDensity = z.infer<typeof ChatDensitySchema>;

@@ -19,7 +19,7 @@
  * 所以从 `@renderer/stores/sessionStore.js` import 类型的那 144 个文件一行不用改。
  */
 
-import { Accelerator, AutoArchiveConfig, BrowserDevicePreset, BrowserOrientation, ChatDensity, CustomCommand, DisplayMode, FileViewMode, GestureSequence, GestureSettings, GitDiffOpenMode, GitWorktreeInfo, IdeEditorMode, LeftBarMode, LspLanguageState, PickedElement, ProjectGroupsMeta, ProjectView, ProviderHealthStatusCode, ProviderInfo, RightPanelTab, RuntimeAgentState, RuntimeProgressPayload, ShortcutBindings, SkillInfo, VoiceEngine } from "@contracts/ipc";
+import { Accelerator, AutoArchiveConfig, BrowserDevicePreset, BrowserOrientation, ChatDensity, CustomCommand, ReduceMotion, DisplayMode, FileViewMode, GestureSequence, GestureSettings, GitDiffOpenMode, GitWorktreeInfo, IdeEditorMode, LeftBarMode, LspLanguageState, PickedElement, ProjectGroupsMeta, ProjectView, ProviderHealthStatusCode, ProviderInfo, RightPanelTab, RuntimeAgentState, RuntimeProgressPayload, ShortcutBindings, SkillInfo, VoiceEngine } from "@contracts/ipc";
 import { ApprovalRequestEvent, AskUserQuestionItem, ContextSnapshot, EffortLevel, EngineCommandInfo, NodeArtifact, NodeExecutionRecord, PermissionMode, PlanApprovalRequestEvent, PlanUpdateEvent, RuntimeEvent, SubagentSnapshot, TranscriptBlock, TurnUsageRecord, WorkflowChoiceOption, WorkflowNodeResultEvent } from "@contracts/runtime";
 import { AttachmentKind, ContentTag } from "@renderer/lib/contentTag.js";
 import { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
@@ -594,6 +594,9 @@ export interface SessionState {
    *  under `ui.chatDensity`; applied to <html> as the --chat-row-gap-* /
    *  --chat-block-gap CSS vars by lib/appearance.ts. */
   chatDensity: ChatDensity;
+  /** 【ARC-005 M1】减弱动效偏好("system" | "on" | "off")。持久化在
+   *  `ui.reduceMotion`;应用到 `<html data-reduce-motion>`(appearance.ts)。 */
+  reduceMotion: ReduceMotion;
   /** How the left bar renders projects. `"flat"` (default) is a plain list;
    *  `"grouped"` clusters them under collapsible headers keyed by
    *  `Project.group`. Persisted in the `settings` table. */
@@ -1655,6 +1658,8 @@ export interface SessionState {
   /** Update the chat message-stream density. Persists to the `settings`
    *  table so the choice survives restart. */
   setChatDensity: (mode: ChatDensity) => Promise<void>;
+  /** 【ARC-005 M1】减弱动效偏好;写 `ui.reduceMotion` 并由 appearance 应用到 <html>。 */
+  setReduceMotion: (mode: ReduceMotion) => Promise<void>;
   /** Toggle the left-bar project view between flat and grouped. Persists
    *  to the `settings` table so the choice survives restart. */
   setProjectView: (mode: ProjectView) => Promise<void>;

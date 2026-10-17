@@ -95,6 +95,12 @@ export const zh = {
   "settings.general.densityCompact": "紧凑",
   "settings.general.densityComfortable": "舒适",
   "settings.general.densityCozy": "宽松",
+  "settings.general.reduceMotion": "减弱动效",
+  "settings.general.reduceMotionDesc":
+    "控制界面动画与过渡。跟随系统时使用操作系统的「减少动态效果」设置;选择「开启」会在系统未开启时也关闭动画,「关闭」则在系统开启时仍保留动画。",
+  "settings.general.reduceMotionSystem": "跟随系统",
+  "settings.general.reduceMotionOn": "开启(减少动画)",
+  "settings.general.reduceMotionOff": "关闭(保留动画)",
   "settings.general.pasteThreshold": "长文本折叠阈值",
   "settings.general.pasteThresholdDesc":
     "在输入框粘贴超过此字符数的内容时,会折叠为输入框上方的卡片而非直接插入正文({min}–{max})。",

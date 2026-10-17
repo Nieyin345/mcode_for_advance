@@ -1,7 +1,11 @@
 import { useEffect } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { applyThemeStyle } from "@renderer/lib/theme.js";
-import type { ChatDensity } from "@contracts/ipc";
+import type { ChatDensity, ReduceMotion } from "@contracts/ipc";
+// 【ARC-005 M1】设置值 → <html> 属性的纯映射拆到叶子模块:无头套件直接 import 它,
+// 不必把本文件（→ sessionStore → Monaco worker）整张图拉进 bundle。
+export { applyChatDensity, applyReduceMotion } from "./appearanceAttrs.js";
+import { applyChatDensity as applyChatDensityAttr, applyReduceMotion as applyReduceMotionAttr } from "./appearanceAttrs.js";
 
 /**
  * Runtime application of user-configurable appearance settings.
@@ -57,9 +61,8 @@ export function applyChatFontSize(px: number): void {
  *  (--chat-row-gap-assistant / --chat-row-gap-user / --chat-block-gap); this
  *  attribute is the switch. The "comfortable" default is mirrored in
  *  styles.css as the :root fallback so an unset attribute still resolves. */
-export function applyChatDensity(mode: ChatDensity): void {
-  document.documentElement.setAttribute("data-chat-density", mode);
-}
+const applyChatDensity = applyChatDensityAttr;
+const applyReduceMotion = applyReduceMotionAttr;
 
 /** Write the global side-panel + settings base font size as
  *  `--right-panel-font-size` on <html>. Despite the var's legacy name, this
@@ -109,6 +112,7 @@ export function useChatAppearance(): void {
   const userMessageColor = useSessionStore((s) => s.userMessageColor);
   const accentColor = useSessionStore((s) => s.accentColor);
   const chatDensity = useSessionStore((s) => s.chatDensity);
+  const reduceMotion = useSessionStore((s) => s.reduceMotion);
 
   useEffect(() => {
     applyChatFontSize(chatFontSize);
@@ -125,6 +129,10 @@ export function useChatAppearance(): void {
   useEffect(() => {
     applyChatDensity(chatDensity);
   }, [chatDensity]);
+
+  useEffect(() => {
+    applyReduceMotion(reduceMotion);
+  }, [reduceMotion]);
 }
 
 /**

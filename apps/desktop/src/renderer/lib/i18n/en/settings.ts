@@ -92,6 +92,12 @@ export const en = {
   "settings.general.densityCompact": "Compact",
   "settings.general.densityComfortable": "Comfortable",
   "settings.general.densityCozy": "Relaxed",
+  "settings.general.reduceMotion": "Reduce motion",
+  "settings.general.reduceMotionDesc":
+    "Controls interface animations and transitions. Follow system uses the OS reduced-motion setting; On disables animations even when the system has them on; Off keeps animations even when the system disables them.",
+  "settings.general.reduceMotionSystem": "Follow system",
+  "settings.general.reduceMotionOn": "On (reduce animation)",
+  "settings.general.reduceMotionOff": "Off (keep animation)",
   "settings.general.pasteThreshold": "Long-paste folding threshold",
   "settings.general.pasteThresholdDesc":
     "Pasting more than this many characters into the composer folds the content into a card above the input instead of inserting it inline ({min}–{max}).",
