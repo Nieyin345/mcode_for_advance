@@ -19,11 +19,13 @@ import {
   DeleteCustomModelSchema,
   TestCustomModelSchema,
   GetCustomModelTokenSchema,
+  ListEndpointModelsSchema,
 } from "@contracts/ipc";
 import type { ApiConfig, PublicMcpTunnelConfig } from "@contracts/customModel";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
+import { listEndpointModels } from "@main/lib/modelEndpoint.js";
 import {
   bridgeStatus,
   ensureStarted,
@@ -184,6 +186,25 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
     removePublicMcpProjectLink(parseProjectLink(raw)));
   ipcMain.handle(IPC.PUBLIC_MCP_REGENERATE_PROJECT_LINK_SECRET, async (_evt, raw) =>
     regeneratePublicMcpProjectLinkSecret(parseProjectLink(raw)));
+
+  // 拉模型列表 —— 与 Pi/Codex 的同名 handler 共用 `lib/modelEndpoint.listEndpointModels`
+  // (同一份路径拼接/超时/错误文案)。Claude 表单从前**没有**这个按钮:同样是"让用户
+  // 手打模型 id",同一个端点,只因为引擎不同就少了这项能力 —— 三引擎对齐的缺口。
+  ipcMain.handle(IPC.CUSTOM_MODEL_LIST_ENDPOINT_MODELS, async (_evt, raw) => {
+    let input: z.infer<typeof ListEndpointModelsSchema>;
+    try {
+      input = ListEndpointModelsSchema.parse(raw);
+    } catch (err) {
+      throw new Error(errText(err));
+    }
+    return listEndpointModels({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      authMode: input.authMode,
+      headers: input.headers,
+      anthropicVersion: input.anthropicVersion,
+    });
+  });
 
   ipcMain.handle(IPC.CUSTOM_MODEL_TEST, async (_evt, raw) => {
     // 校验错也走人话（同上面几条）：这条通道的失败会原样显示在设置页那行红字里。

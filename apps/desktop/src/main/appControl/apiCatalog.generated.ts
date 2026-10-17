@@ -464,8 +464,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "codexModels.listEndpointModels",
   "channel": "codexModels:listEndpointModels",
   "doc": "问端点要模型列表(填进 Codex 表单的下拉框)。拉不到时抛错,由界面回退到手输。",
-  "input": "{ baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined; apiKey?: string | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
-  "inputFull": "{ baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined; apiKey?: string | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
+  "input": "{ baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
+  "inputFull": "{ baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
   "output": "{ models: string[] }"
  },
  {
@@ -480,8 +480,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "codexModels.test",
   "channel": "codexModels:test",
   "doc": "同 `piModels.test`，给 Codex 表单用。",
-  "input": "{ model: string // 要探测哪个模型。; baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
-  "inputFull": "{ model: string // 要探测哪个模型。; baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
+  "input": "{ model: string // 要探测哪个模型。; baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
+  "inputFull": "{ model: string // 要探测哪个模型。; baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
   "output": "{ ok: boolean; detail?: string | undefined; error?: string | undefined }"
  },
  {
@@ -525,6 +525,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ models: CustomModelPublic[]; storeInvalid: boolean }"
  },
  {
+  "method": "customModel.listEndpointModels",
+  "channel": "customModel:listEndpointModels",
+  "doc": "问端点「你有哪些模型」(`GET /v1/models` 或 `/models`)。与 Pi/Codex 的同名 RPC 共用 `lib/modelEndpoint.listEndpointModels` —— 三个引擎表单的「从端点拉取模型」 按钮走**同一条**通道。拉不到就抛人话,界面回退手输,绝不静默返回空表。",
+  "input": "{ baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
+  "inputFull": "{ baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
+  "output": "{ models: string[] }"
+ },
+ {
   "method": "customModel.save",
   "channel": "customModel:save",
   "doc": "新建或更新一份自定义模型配置(传 `id` 且存在即更新,**token 缺省时保留旧的**)。失败时抛的话是**给人看的中文**——设置页把它原样贴在红字里。",
@@ -544,8 +552,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "customUi.panelApiCall",
   "channel": "customUi:panelApiCall",
   "doc": "自定义面板的 `mcode.api.call(method, input)`:调**任意** Mcode 主进程方法, 复用 agent `app_api_call` 的同一套权限分类(写要确认、高风险每次确认、密钥类拒绝)。 桌面专属(手机白名单不列即不暴露)。",
-  "input": "{ method: string // 方法名,如 `library.saveNote` / `session.list`(点号形式,同 `app_api_call`)。; approved?: boolean | undefined // 用户在确认框上点了头之后由**渲染端的桥**补上(面板自己发不出这个位 —— 它只能经 `handlePanelCall`,而那一层是我们写的)。只对 write/danger …; input?: unknown // 该方法的入参;无参方法省略。; panelLabel?: string | undefined // 面板的显示名 —— 只用于确认框正文(哪个面板要调什么),不参与任何判据。 }",
-  "inputFull": "{ method: string // 方法名,如 `library.saveNote` / `session.list`(点号形式,同 `app_api_call`)。; approved?: boolean | undefined // 用户在确认框上点了头之后由**渲染端的桥**补上(面板自己发不出这个位 —— 它只能经 `handlePanelCall`,而那一层是我们写的)。只对 write/danger …; input?: unknown // 该方法的入参;无参方法省略。; panelLabel?: string | undefined // 面板的显示名 —— 只用于确认框正文(哪个面板要调什么),不参与任何判据。 }",
+  "input": "{ method: string // 方法名,如 `library.saveNote` / `session.list`(点号形式,同 `app_api_call`)。; approved?: boolean | undefined // 用户在确认框上点了头之后由**渲染端的桥**补上(面板自己发不出这个位 —— 它只能经 `handlePanelCall`,而那一层是我们写的)。只对 write/danger …; input?: unknown // 该方法的入参;无参方法省略。; panelLabel?: string | undefined // 面板的显示名 —— 只用于确认框正文(哪个面板要调什么),不参与任何判据。; operationId?: string | undefined // 【MC-014】可选的幂等键 —— 与 Agent 的 `operation_id`、桌面 IPC 的 `__operationId`、手机 RPC 的 `operationId… }",
+  "inputFull": "{ method: string // 方法名,如 `library.saveNote` / `session.list`(点号形式,同 `app_api_call`)。; approved?: boolean | undefined // 用户在确认框上点了头之后由**渲染端的桥**补上(面板自己发不出这个位 —— 它只能经 `handlePanelCall`,而那一层是我们写的)。只对 write/danger …; input?: unknown // 该方法的入参;无参方法省略。; panelLabel?: string | undefined // 面板的显示名 —— 只用于确认框正文(哪个面板要调什么),不参与任何判据。; operationId?: string | undefined // 【MC-014】可选的幂等键 —— 与 Agent 的 `operation_id`、桌面 IPC 的 `__operationId`、手机 RPC 的 `operationId… }",
   "output": "{ ok: boolean; result?: unknown // 成功时的返回值(已打码)。; error?: string | undefined; needsApproval?: boolean | undefined // 需要用户确认:渲染端的桥据它弹确认框,点头后带 `approved: true` 重调。; level?: 'write' | 'danger' | undefined // 需要的档位(write = 一次确认;danger = 每次确认、不记「总是允许」)。; descripti…"
  },
  {
@@ -2048,8 +2056,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "piModels.listEndpointModels",
   "channel": "piModels:listEndpointModels",
   "doc": "问端点要模型列表（填进设置页的下拉框）。拉不到时抛错，由界面回退到手输。",
-  "input": "{ baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined; apiKey?: string | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
-  "inputFull": "{ baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined; apiKey?: string | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
+  "input": "{ baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
+  "inputFull": "{ baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined; headers?: Record<string, string> | undefined; anthropicVersion?: boolean | undefined }",
   "output": "{ models: string[] }"
  },
  {
@@ -2064,8 +2072,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "piModels.test",
   "channel": "piModels:test",
   "doc": "兼容性/连通性探测：向用户填的地址发一次最小请求，确认地址+密钥+模型名能用。 三个引擎共用同一形状（Claude 那条是 `customModel.test`，Pi/Codex 走这条）。",
-  "input": "{ model: string // 要探测哪个模型。; baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
-  "inputFull": "{ model: string // 要探测哪个模型。; baseUrl: string; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; apiKey?: string | undefined; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
+  "input": "{ model: string // 要探测哪个模型。; baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
+  "inputFull": "{ model: string // 要探测哪个模型。; baseUrl: string; apiKey?: string | undefined; authMode?: 'bearer' | 'x-api-key' | undefined // 认证头形态。缺省 = bearer（多数第三方网关）。; headers?: Record<string, string> | undefined // 额外请求头（与保存进配置的那份一致，测试才代表真回合）。; anthropicVersion?: boolean | undefined // Anthropic 风格端点要 anthropic-version 头。 }",
   "output": "{ ok: boolean; detail?: string | undefined; error?: string | undefined }"
  },
  {

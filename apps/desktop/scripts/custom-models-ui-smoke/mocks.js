@@ -45,6 +45,7 @@ window.labApi = {
     delete: async input => { record('customModel.delete', input); return { models: labCustomModels }; },
     getToken: async () => ({ token: 'sk-plain' }),
     test: async input => { record('customModel.test', input); return { ok: true, detail: 'ok' }; },
+    listEndpointModels: async input => { record('customModel.listEndpointModels', input); return { models: ['claude-pulled-a', 'claude-pulled-b'] }; },
   },
   piModels: {
     list: async () => ({ providers: labPiProviders }),

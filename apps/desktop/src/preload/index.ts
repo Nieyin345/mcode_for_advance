@@ -188,6 +188,8 @@ const api = {
    *  Keys are encrypted at rest; the renderer only ever receives a masked form. */
   customModel: {
     list: (() => ipcRenderer.invoke(IPC.CUSTOM_MODEL_LIST)) as RpcMap["customModel.list"],
+    listEndpointModels: ((input) =>
+      ipcRenderer.invoke(IPC.CUSTOM_MODEL_LIST_ENDPOINT_MODELS, input)) as RpcMap["customModel.listEndpointModels"],
     save: ((input) =>
       ipcRenderer.invoke(IPC.CUSTOM_MODEL_SAVE, input)) as RpcMap["customModel.save"],
     delete: ((input) =>

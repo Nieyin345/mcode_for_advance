@@ -560,6 +560,8 @@ const provider: Api["provider"] = {
 
 const customModel: Api["customModel"] = {
   list: () => rpc("customModel:list"),
+  // 端点探测走主进程外连,手机端不做(同 piModels.listEndpointModels)。
+  listEndpointModels: () => webUnsupported("customModel.listEndpointModels"),
   save: () => webUnsupported("customModel.save"),
   delete: () => webUnsupported("customModel.delete"),
   test: () => webUnsupported("customModel.test"),

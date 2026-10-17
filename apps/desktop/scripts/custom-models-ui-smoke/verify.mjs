@@ -152,6 +152,24 @@ await withAuditPage(dir, async page => {
     assert.equal(await page.eval(`!!document.querySelector('button[title*="测试"]')`), true, 'Codex form must offer a per-model test button');
   });
 
+  await test('pull-models-present-in-claude-too', async () => {
+    await go(); await pickProvider('Gateway A');
+    assert.equal(await hasPull(), true, 'Claude form must offer "fetch models from endpoint" (three-engine parity)');
+  });
+
+  await test('claude-pulling-models-fills-the-list-from-the-endpoint', async () => {
+    await go(); await pickProvider('Gateway A');
+    // 模型行里正好一行(夹具);点「从端点拉取模型」后应被端点返回的两条替换。
+    await clickExpr(`[...document.querySelectorAll('button')].find(e=>e.offsetParent!==null && e.textContent.includes('从端点拉取模型'))`);
+    await page.waitFor("labEvents.some(e=>e.method==='customModel.listEndpointModels')", 3000);
+    await page.sleep(150);
+    const values = await page.eval(`[...document.querySelectorAll('input')].map(i=>i.value)`);
+    assert.equal(values.includes('claude-pulled-a') && values.includes('claude-pulled-b'), true, `pulled models must appear in Claude model rows (got ${JSON.stringify(values)})`);
+    // 请求带 anthropic-version 头(Anthropic 风格端点要它才肯列)。
+    const ev = await page.eval("labEvents.find(e=>e.method==='customModel.listEndpointModels')");
+    assert.equal(ev?.input?.anthropicVersion, true, `Claude pull must request anthropic-version (got ${JSON.stringify(ev?.input)})`);
+  });
+
   await test('pulling-models-fills-the-list-from-the-endpoint', async () => {
     await go(); await openTab('Pi'); await pickProvider('pi-a');
     await clickExpr(`[...document.querySelectorAll('button')].find(e=>e.offsetParent!==null && e.textContent.includes('从端点拉取模型'))`);

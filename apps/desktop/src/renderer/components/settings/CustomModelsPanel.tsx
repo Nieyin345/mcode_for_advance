@@ -844,12 +844,19 @@ export function CustomModelsPanel() {
   /** 问端点要模型列表，填进该表单的模型行。拉不到时**明说**（抛出的错进错误条），
    *  由界面回退到手输 —— 不静默失败。 */
   const pullEndpointModels = async (
-    kind: "pi" | "codex",
+    kind: "claude" | "pi" | "codex",
     form: { baseUrl: string; apiKey: string; headers: Record<string, string> | undefined; authMode?: "bearer" | "x-api-key" },
   ): Promise<string[] | null> => {
     setError(null);
     try {
-      const call = kind === "pi" ? api.piModels.listEndpointModels : api.codexModels.listEndpointModels;
+      // 三引擎**同一条**通道；Claude 的 Anthropic 风格端点还要求 anthropic-version 头。
+      const call =
+        kind === "claude"
+          ? (input: { baseUrl: string; apiKey?: string; headers?: Record<string, string>; authMode?: "bearer" | "x-api-key" }) =>
+              api.customModel.listEndpointModels({ ...input, anthropicVersion: true })
+          : kind === "pi"
+            ? api.piModels.listEndpointModels
+            : api.codexModels.listEndpointModels;
       const { models } = await call({
         baseUrl: form.baseUrl,
         apiKey: form.apiKey || undefined,
@@ -1017,6 +1024,18 @@ export function CustomModelsPanel() {
               error={error}
               revealToken={revealToken}
               onTest={(idx) => void runClaudeTest(idx)}
+              onPullModels={async () => {
+                const models = await pullEndpointModels("claude", {
+                  baseUrl: claudeForm.baseUrl,
+                  apiKey: claudeForm.authToken,
+                  headers: endpointHeaders(claudeForm.customHeaders),
+                  authMode: claudeForm.authMode === "api_key" ? "x-api-key" : "bearer",
+                });
+                if (models) setClaudeForm({
+                  ...claudeForm,
+                  models: models.map((id) => ({ ...emptyClaudeModel(), id })),
+                });
+              }}
               onSave={() => void saveClaude()}
               onCancel={cancel}
               onDelete={claudeForm.id ? () => setPendingDelete({ kind: "claude", id: claudeForm.id! }) : undefined}
@@ -1290,6 +1309,7 @@ function ClaudeProviderForm({
   error,
   revealToken,
   onTest,
+  onPullModels,
   onSave,
   onCancel,
   onDelete,
@@ -1302,6 +1322,8 @@ function ClaudeProviderForm({
   error: string | null;
   revealToken: () => Promise<string | null>;
   onTest: (idx: number) => void;
+  /** 从端点拉模型列表（与 Pi/Codex 同一通道）。 */
+  onPullModels: () => void | Promise<void>;
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
@@ -1315,6 +1337,8 @@ function ClaudeProviderForm({
   const { t } = useI18n();
   /** 展开哪个模型行看它的思考强度映射（与 Pi 表单同一个交互）。 */
   const [thinkingOpen, setThinkingOpen] = useState<number | null>(null);
+  /** 「从端点拉取模型」的进行中状态（与 Pi/Codex 表单一致）。 */
+  const [pulling, setPulling] = useState(false);
   /** 「测试连接」用列表里第一个填了 id 的模型去探；没有就落在第 0 行（由 runClaudeTest 报错）。 */
   const firstModelIdx = form.models.findIndex((m) => m.id.trim());
   // 扩展桥配对信息：只在网页端需要。5s 轮询一次 —— "配上了"这件事发生在另一个
@@ -1479,18 +1503,35 @@ function ClaudeProviderForm({
       }
       pull={
         !isWeb ? (
-          <EndpointActionRow
-            icon={<IconPlugConnected size={12} />}
-            label={t("settings.customModels.testConnection")}
-            hint={
-              form.models.some((m) => m.id.trim())
-                ? t("settings.customModels.testConnectionHint")
-                : t("settings.customModels.testConnectionNeedModel")
-            }
-            disabled={test.status === "testing"}
-            busy={test.status === "testing"}
-            onClick={() => onTest(firstModelIdx >= 0 ? firstModelIdx : 0)}
-          />
+          <div className="space-y-1.5">
+            {/* 拉模型列表：与 Pi/Codex 同一个按钮、同一条通道。从前 Claude 没有它
+                —— 同一个端点、同一种痛点（手打模型 id），只因为引擎不同就少一项能力。 */}
+            <EndpointActionRow
+              icon={<IconDownload size={12} />}
+              label={t("settings.customModels.pullModels")}
+              hint={form.baseUrl.trim() ? t("settings.customModels.pullModelsHint") : t("settings.customModels.pullModelsNeedUrl")}
+              disabled={pulling || !form.baseUrl.trim()}
+              busy={pulling}
+              onClick={() => {
+                setPulling(true);
+                void Promise.resolve(onPullModels()).finally(() => setPulling(false));
+              }}
+            />
+            {/* 连通性测试仍走真实链路（binary + env builder）—— 这是 Claude 特有的
+                深度探测，但按钮位置与 Pi/Codex 对齐。 */}
+            <EndpointActionRow
+              icon={<IconPlugConnected size={12} />}
+              label={t("settings.customModels.testConnection")}
+              hint={
+                form.models.some((m) => m.id.trim())
+                  ? t("settings.customModels.testConnectionHint")
+                  : t("settings.customModels.testConnectionNeedModel")
+              }
+              disabled={test.status === "testing"}
+              busy={test.status === "testing"}
+              onClick={() => onTest(firstModelIdx >= 0 ? firstModelIdx : 0)}
+            />
+          </div>
         ) : undefined
       }
       models={

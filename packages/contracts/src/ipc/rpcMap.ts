@@ -332,6 +332,10 @@ export interface RpcMap {
    *  比实际少**(读不出来的一律当没有),设置页据此显示"密钥表损坏",而不是让用户以为
    *  自己的配置凭空消失了。同 `agentSsh.list` 的 `storeInvalid` 一个路子。 */
   "customModel.list": () => Promise<{ models: CustomModelPublic[]; storeInvalid: boolean }>;
+  /** 问端点「你有哪些模型」(`GET /v1/models` 或 `/models`)。与 Pi/Codex 的同名 RPC
+   *  共用 `lib/modelEndpoint.listEndpointModels` —— 三个引擎表单的「从端点拉取模型」
+   *  按钮走**同一条**通道。拉不到就抛人话,界面回退手输,绝不静默返回空表。 */
+  "customModel.listEndpointModels": (input: ListEndpointModelsInput) => Promise<{ models: string[] }>;
   /** 新建或更新一份自定义模型配置(传 `id` 且存在即更新,**token 缺省时保留旧的**)。失败时抛的话是**给人看的中文**——设置页把它原样贴在红字里。 */
   "customModel.save": (input: SaveCustomModelInput) => Promise<{ models: CustomModelPublic[] }>;
   /** 删一份自定义模型配置(连同加密 token 一起删)。id 不存在**不报错**、静默当成功(只按 id 过滤)。返回删完的脱敏清单。 */
@@ -1724,6 +1728,7 @@ export const IPC = {
   NOTIFICATION_FOCUS_SESSION: "notification:focusSession",
   // Custom models (user-defined Anthropic-compatible endpoints)
   CUSTOM_MODEL_LIST: "customModel:list",
+  CUSTOM_MODEL_LIST_ENDPOINT_MODELS: "customModel:listEndpointModels",
   CUSTOM_MODEL_SAVE: "customModel:save",
   CUSTOM_MODEL_DELETE: "customModel:delete",
   CUSTOM_MODEL_TEST: "customModel:test",
