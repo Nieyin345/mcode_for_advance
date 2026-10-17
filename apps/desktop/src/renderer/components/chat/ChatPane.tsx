@@ -3248,8 +3248,11 @@ function ChatPaneForSession({
             // accent hairline that lights up on focus-within.
             data-busy={sessionBusy ? "1" : "0"}
             className={cn(
-              "composer-card relative flex min-w-0 flex-col overflow-hidden rounded-2xl border border-edge-input bg-surface transition-all duration-200",
-              "focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgb(var(--accent)/0.12)]",
+              // 外框几何/阴影一律读语义别名（styles.css → tokens.cds.css → 上游
+              // cds-theme.css），不在组件里写 20px / 阴影字面量：数值只有生成物
+              // 一份，上游变了重跑生成器即全体跟随。
+              "composer-card relative flex min-w-0 flex-col overflow-hidden rounded-[var(--composer-radius)] border border-edge-input bg-surface shadow-[var(--composer-shadow)] transition-all duration-200",
+              "focus-within:border-accent focus-within:shadow-[var(--composer-shadow-focus)]",
               // Highlight the composer while a file-tree drag hovers over it.
               dragOver && "border-accent ring-4 ring-accent/20",
               // Hide the composer card entirely while a bottom prompt (approval /

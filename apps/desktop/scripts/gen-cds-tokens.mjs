@@ -116,10 +116,13 @@ for (const [name, hex] of [...ramps].sort(([a], [b]) => (a < b ? -1 : 1))) {
 lines.push("}", "");
 lines.push("/* 几何 / 阴影(与主题无关;值直接来自上游,不转三元组)。 */", ":root {");
 /** 上游几何值里引用的语义变量 → Mcode 的语义名（Mcode 不定义 --cds-*）。
- *  未映射的 var 会让整条阴影静默失效，所以这里必须逐条对齐。 */
+ *  未映射的 var 会让整条阴影静默失效，所以这里必须逐条对齐。
+ *  注意：Mcode 的 --edge / --input-edge 存的是 "R G B" 三元组（840 处 alpha
+ *  类依赖这种写法），裸写进 box-shadow 会展开成 "195 194 183" —— 计算值阶段
+ *  整条声明失效、阴影静默消失，所以这里必须包一层 rgb()。 */
 const VAR_MAP = {
-  "--cds-border": "var(--edge)",
-  "--cds-border-strong": "var(--input-edge)",
+  "--cds-border": "rgb(var(--edge))",
+  "--cds-border-strong": "rgb(var(--input-edge))",
   "--cds-shadow-color": "rgba(0, 0, 0, 0.08)",
   "--cds-rem-scale": "1",
   "--cds-radius": "8px",

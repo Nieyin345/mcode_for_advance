@@ -877,12 +877,16 @@ body {
   /* 【ARC-005 V0】几何/阴影别名 —— 消费 open-claude-ui 生成物（tokens.cds.css）。
    * 只加别名，不改组件；组件逐个迁移时直接用这些名字。 */
   --radius-panel: var(--m-panel-radius);          /* 10px 面板/卡片 */
-  --radius-composer: var(--m-radius-composer);    /* 20px 输入框外框 */
+  /* Composer 外框：几何与阴影的唯一真源是生成物里的上游值（gen-cds-tokens.mjs
+   * 从 open-claude-ui 的 cds-theme.css 逐条解析），这里只留语义名字。若在本文件
+   * 重写 20px / rgba，就会多出第二份会与上游漂移的数值。 */
+  --composer-radius: var(--m-radius-composer);    /* 20px 输入框外框 */
+  --composer-shadow: var(--m-shadow-composer);    /* resting 态：微扩散 + inset 发丝环 */
+  --composer-shadow-focus: var(--m-shadow-composer-focus); /* focus-within 态：双环 + 更大扩散 */
   --radius-bubble: var(--m-message-bubble-radius);/* 消息气泡 */
   --radius-pill: var(--m-radius-pill);
   --shadow-card: var(--m-shadow-sm);
   --shadow-popover: var(--m-shadow-popover);
-  --shadow-composer: var(--m-shadow-composer);
   --hairline: var(--m-ring-hairline);
 
   --focus-ring:
@@ -1716,7 +1720,8 @@ button.chat-ledger-head:hover {
   right: 0;
   top: 0;
   height: 2px;
-  border-radius: 16px 16px 0 0;
+  /* 顶边扫光跟随外框圆角：写死 16px 会在圆角换成上游 20px 后露出生硬的直角。 */
+  border-radius: var(--composer-radius) var(--composer-radius) 0 0;
   background: linear-gradient(
     90deg,
     transparent,

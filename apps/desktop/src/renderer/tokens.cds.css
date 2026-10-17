@@ -88,9 +88,9 @@
   --m-ring-hairline: 1px;
   --m-ring-inner: 0px;
   --m-ring-outer: 1px;
-  --m-shadow-composer: 0 4px 20px rgba(0, 0, 0, 0.035), inset 0 0 0 1px var(--edge);
-  --m-shadow-composer-focus: 0 4px 24px rgba(0, 0, 0, 0.08), inset 0 0 0 1px var(--input-edge), 0 0 0 1px var(--input-edge);
-  --m-shadow-composer-hover: 0 4px 24px rgba(0, 0, 0, 0.06), inset 0 0 0 1px var(--input-edge);
+  --m-shadow-composer: 0 4px 20px rgba(0, 0, 0, 0.035), inset 0 0 0 1px rgb(var(--edge));
+  --m-shadow-composer-focus: 0 4px 24px rgba(0, 0, 0, 0.08), inset 0 0 0 1px rgb(var(--input-edge)), 0 0 0 1px rgb(var(--input-edge));
+  --m-shadow-composer-hover: 0 4px 24px rgba(0, 0, 0, 0.06), inset 0 0 0 1px rgb(var(--input-edge));
   --m-shadow-lg: 0 4px 8px 0 rgba(0, 0, 0, 0.06), 0 12px 28px -2px rgba(0, 0, 0, 0.08);
   --m-shadow-md: 0 2px 4px 0 rgba(0, 0, 0, 0.05), 0 6px 16px 0 rgba(0, 0, 0, 0.08);
   --m-shadow-popover: inset 0 0 0 initial initial, 0 0 0 initial initial, 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);

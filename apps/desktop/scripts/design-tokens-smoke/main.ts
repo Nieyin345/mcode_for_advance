@@ -150,7 +150,7 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
 
   const cssAliases = read("src/renderer/styles.css");
   check("★ 真弹簧用 linear() 采样(cubic-bezier 做不出二次回弹)", /--spring-btn:\s*linear\(0,\s*0\.2459/.test(cssAliases));
-  for (const a of ["--radius-panel:", "--radius-composer:", "--radius-bubble:", "--shadow-composer:", "--hairline:"]) {
+  for (const a of ["--radius-panel:", "--composer-radius:", "--radius-bubble:", "--composer-shadow:", "--hairline:"]) {
     check("样式别名 " + a.replace(":", "") + " 已接", cssAliases.includes(a));
   }
 
@@ -181,6 +181,45 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   check("sketch 主题仍覆盖 --surface", /html\.sketch:not\(\.dark\)[\s\S]{0,400}--surface:/.test(css));
 }
 
+
+section("6. 【ARC-005】Composer 外框接上游几何/阴影 token");
+{
+  const css = read("src/renderer/styles.css");
+  // 语义别名必须**引用**生成物（tokens.cds.css 的 --m-*），不在语义层重抄数值。
+  check("★ --composer-radius 指向 var(--m-radius-composer)",
+    /--composer-radius:\s*var\(--m-radius-composer\)/.test(css));
+  check("★ --composer-shadow 指向 var(--m-shadow-composer)",
+    /--composer-shadow:\s*var\(--m-shadow-composer\)/.test(css));
+  check("★ --composer-shadow-focus 指向 var(--m-shadow-composer-focus)",
+    /--composer-shadow-focus:\s*var\(--m-shadow-composer-focus\)/.test(css));
+  // 反向正控：别名若是裸 px/hex，上游 token 更新时这里会静默漂移 —— 必须红。
+  for (const name of ["--composer-radius", "--composer-shadow", "--composer-shadow-focus"]) {
+    check(`★ ${name} 值走 var(--m-*) 而非字面量`, new RegExp(`${name}:\\s*var\\(--m-`).test(css));
+    check(`${name} 未回落为 px/hex 字面量`, !new RegExp(`${name}:\\s*(\\d|#)`).test(css));
+  }
+  // 生成物的阴影边线色必须包 rgb()：Mcode 的 --edge/--input-edge 是 "R G B"
+  // 三元组，裸写进 box-shadow 会展开成 "195 194 183"，整条声明在计算值阶段
+  // 失效、阴影静默消失 —— 这正是 gen-cds-tokens 的 VAR_MAP 修复要钉住的。
+  const tokens = read("src/renderer/tokens.cds.css");
+  const shadowDecls = tokens.split("\n").filter((l) => /--m-shadow-composer/.test(l)).join("\n");
+  check("★ Composer 阴影 token 存在(3 态)", (shadowDecls.match(/--m-shadow-composer/g) ?? []).length === 3, shadowDecls.length);
+  const bareRefs = shadowDecls.replace(/rgb\(var\(--(edge|input-edge)\)\)/g, "WRAPPED");
+  check("★ Composer 阴影引用边线色都包了 rgb()(防整条阴影静默失效)",
+    !/var\(--(edge|input-edge)\)/.test(bareRefs), bareRefs.slice(0, 300));
+
+  // 源码断言：外框 class 真的接上了别名（防"token 写了但没人用"）。
+  const pane = read("src/renderer/components/chat/ChatPane.tsx");
+  const cardCls = /"composer-card[^"]*"/.exec(pane)?.[0] ?? "";
+  check("★ composer-card 外框类名存在", cardCls.length > 0);
+  check("★ 外框圆角引用 --composer-radius", cardCls.includes("rounded-[var(--composer-radius)]"));
+  check("★ 外框 resting 阴影引用 --composer-shadow", cardCls.includes("shadow-[var(--composer-shadow)]"));
+  check("★ 外框 focus-within 阴影引用 --composer-shadow-focus",
+    /focus-within:shadow-\[var\(--composer-shadow-focus\)\]/.test(pane));
+  check("外框不再硬编码 rounded-2xl(旧 16px)", !/composer-card[^"]*rounded-2xl/.test(pane));
+  // busy 扫光条贴着顶边，圆角必须跟随外框，否则外框换 20px 后扫光露直角。
+  check("★ busy 扫光圆角跟随 --composer-radius",
+    /composer-card\[data-busy="1"\]::before[\s\S]{0,400}border-radius:\s*var\(--composer-radius\)/.test(css));
+}
 
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
