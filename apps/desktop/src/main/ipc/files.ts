@@ -23,7 +23,7 @@
  */
 import type { IpcMain } from "electron";
 import { app, clipboard, ClipboardItem, nativeImage, shell } from "electron";
-import { readFile, writeFile, readdir, mkdir, rename, copyFile, access, stat, open as openFile, rm } from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, rename, copyFile, access, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -95,28 +95,9 @@ import {
 export { fileContentVersion } from "@main/lib/fileVersion.js";
 import { fileContentVersion as currentFileVersion } from "@main/lib/fileVersion.js";
 
-/** 【MC-097】**原子替换**:写同目录随机后缀的临时文件 → `fsync` 落盘 → `rename` 覆盖目标。
- *  中断/崩溃只会留下一个可丢的临时文件,**不会**毁掉原文件(从前直接 `writeFile` 目标,
- *  写一半断电就毁原文件)。Windows 上目标被占用时 `rename` 会失败 —— 此时**不**退回"直接写"
- *  (那就退回非原子了),而是清理临时文件并如实抛错,由调用方的 catch 报 `ok:false`。
- */
-async function atomicReplaceFile(filePath: string, content: string): Promise<void> {
-  const tmp = `${filePath}.${randomUUID()}.mcode-tmp`;
-  const handle = await openFile(tmp, "w");
-  try {
-    await handle.writeFile(content, "utf-8");
-    // 把数据真正刷到介质再 rename —— 否则崩溃后可能 rename 成功而内容还在页缓存里丢。
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
-    await rename(tmp, filePath);
-  } catch (err) {
-    try { await rm(tmp, { force: true }); } catch { /* best-effort 清理 */ }
-    throw err;
-  }
-}
+/** 【MC-097】**原子替换**（【ARC-007】已抽到 `@main/lib/atomicFile`，文档视图的
+ *  保存通道与本文件共用同一份实现）。此处保留同名导入，调用点不变。 */
+import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 
 /** Shared guarded single-file utf-8 read — used by both the desktop IPC
  *  handler and the mobile RPC whitelist. Scans every persisted project AND

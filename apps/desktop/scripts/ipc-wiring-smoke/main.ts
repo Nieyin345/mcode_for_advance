@@ -823,6 +823,7 @@ const NON_API_HANDLER_CHANNELS = [
   // 里由页面请求"打开某个文档"。它不是 `window.api` 的一层,而是注入给
   // WebContentsView 的最小桥 —— 和浏览器 picker 同一个形态。
   "mcode:document-view:open-path",
+  "mcode:document-view:save",
 ];
 diff(
   "主进程每条 handle 的通道,preload 都发得出去(或属于已知的独立 preload)",
@@ -846,19 +847,25 @@ diff(
   );
 }
 
-/* 【ARC-007】文档视图 preload 的两端:它 invoke 的通道主进程必须收着。 */
+/* 【ARC-007】文档视图 preload 的两端:它 invoke 的**两条**通道主进程必须都收着。 */
 {
   const docPreload = read(join(DESKTOP, "src/main/document/documentViewPreload.ts"));
-  const invoked = [...docPreload.matchAll(/ipcRenderer\.invoke\(\s*OPEN_DOCUMENT_CHANNEL/g)].map(() => "mcode:document-view:open-path");
+  const invoked = [...docPreload.matchAll(/ipcRenderer\.invoke\(\s*(OPEN_DOCUMENT_CHANNEL|SAVE_DOCUMENT_CHANNEL)/g)]
+    .map((m) => (m[1] === "OPEN_DOCUMENT_CHANNEL" ? "mcode:document-view:open-path" : "mcode:document-view:save"));
   check(
-    "文档视图 preload 发的通道,主进程正好收着那一端",
-    invoked.length === 1 && handledChannels.has(invoked[0]),
-    { docPreloadInvokes: invoked },
+    "文档视图 preload 发的每条通道,主进程都收着那一端",
+    invoked.length === 2 && invoked.every((c) => handledChannels.has(c)),
+    { docPreloadInvokes: invoked, missing: invoked.filter((c) => !handledChannels.has(c)) },
   );
-  // 反向:这个独立 preload 绝不能再拿到 `ipcRenderer` 的**任意**通道能力。
-  check("★ 文档视图 preload 只有一个 invoke 通道(不暴露任意 IPC)",
-    (docPreload.match(/ipcRenderer\.invoke\(/g) ?? []).length === 1,
-    (docPreload.match(/ipcRenderer\.invoke\(/g) ?? []).length);
+  check(
+    "★ 两条各自只出现一次(打开/保存),没有第三条",
+    invoked.filter((c) => c === "mcode:document-view:open-path").length === 1
+      && invoked.filter((c) => c === "mcode:document-view:save").length === 1,
+    invoked,
+  );
+  // 反向:这个独立 preload 只能 invoke 这两条,不能拿到任意 IPC。
+  const invokes = (docPreload.match(/ipcRenderer\.invoke\(/g) ?? []).length;
+  check("★ 文档视图 preload 只 invoke 打开/保存两条(不暴露任意 IPC)", invokes === 2, invokes);
 }
 
 

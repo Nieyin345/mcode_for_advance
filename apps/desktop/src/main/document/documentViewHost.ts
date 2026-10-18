@@ -36,6 +36,7 @@
  */
 import { getMainWindow } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
+import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 
 /** webPreferences 的**完整**形状 —— 三项安全开关是字面量类型，改一处都过不了 typecheck。 */
@@ -110,6 +111,10 @@ function offscreenBounds(bounds: DocViewRect): DocViewRect {
 const VENDOR_MENU_COMMAND_CHANNEL = "menu:command";
 const VENDOR_OPEN_PATH_COMMAND = "open-path";
 
+/** 【ARC-007】保存通道的单次上限（256 MiB）。真实办公文档远小于它；超过基本可以
+ *  确定是页面算错或投毒，放任它会一次性把内存和磁盘撑满。 */
+const DOC_VIEW_SAVE_MAX_BYTES = 256 * 1024 * 1024;
+
 interface LiveDocumentView {
   docId: string;
   view: DocumentViewLike;
@@ -118,6 +123,12 @@ interface LiveDocumentView {
   /** 最近一次渲染端量出来的可见几何。 */
   bounds: DocViewRect;
   visible: boolean;
+  /** 【ARC-007】这个视图**当前打开的那份文档**（`openPath` 成功发送后记下）。
+   *
+   *  保存通道只认它：页面不能把内容写到"任意工作区路径"，只能写回**它自己被
+   *  打开时那份文件** —— 否则一个被投毒的编辑器页就能覆盖工作区里任意的 `.docx`。
+   *  取值为 null 表示视图里还没有文档（只有起始页），此时保存一律拒绝。 */
+  openedFilePath: string | null;
   /** 最近一次加载/渲染失败(诊断用;成功后清空)。 */
   lastFailure?: { kind: "load" | "render-gone"; reason: string; at: number };
 }
@@ -251,6 +262,7 @@ export class DocumentViewHost {
       url: checked.url,
       bounds: input.bounds,
       visible: false,
+      openedFilePath: null,
     };
 
     try {
@@ -376,8 +388,64 @@ export class DocumentViewHost {
       return { ok: false, reason: `发送打开请求失败：${err instanceof Error ? err.message : String(err)}` };
     }
     live.lastFailure = undefined;
+    live.openedFilePath = filePath;
     log.info(`document view open-path: ${docId} ${filePath}`);
     return { ok: true };
+  }
+
+  /**
+   * 【ARC-007】**保存通道** —— 页面把编辑后的字节写回它自己打开的那份文件。
+   *
+   * ## 为什么必须由宿主写，而不是让页面自己写
+   *
+   * 页面（vendor 编辑器渲染端）本来就只能通过 preload 请求写盘；我们这层
+   * preload 刻意不暴露文件系统。让宿主做这件事的代价是**宿主必须自己把围栏补齐**：
+   *
+   * 1. **只写回本视图打开过的那份路径**（`openedFilePath`）。页面不能"另存到
+   *    任意工作区文件"—— 否则一个被投毒的编辑器页就能覆盖工作区里任何 `.docx`。
+   *    路径比较用 `samePath`（词法+大小写，与 `pathGuard` 同一判据）。
+   * 2. **再验一次工作区**：`openPath` 时的围栏只对"打开"负责；保存时工作区集合
+   *    可能已经变了（项目被移除），所以每次保存都重新问 `withinWorkspace`。
+   * 3. **大小上限**：`DOC_VIEW_SAVE_MAX_BYTES`，防止页面用一条消息撑爆内存/磁盘。
+   * 4. **原子写**：先用 `atomicReplaceFile`（同目录临时文件 + rename），中途失败
+   *    不会留下半份文件。这里不重复实现 CAS —— 冲突判据属于 `document.*`
+   *    （VersionedFileStore 切片），本通道只负责"页面保存到它打开的文件"。
+   *
+   * 返回 `{ ok:true, bytes }` 让页面能显示"已保存 N 字节"；失败带人话原因。
+   */
+  async saveOpenedFile(
+    docId: string,
+    bytes: Uint8Array,
+    withinWorkspace: (p: string) => boolean,
+  ): Promise<{ ok: true; bytes: number; filePath: string } | { ok: false; reason: string }> {
+    const live = this.views.get(docId);
+    if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
+    const target = live.openedFilePath;
+    if (target === null) return { ok: false, reason: "这个视图还没有打开任何文档" };
+    if (!withinWorkspace(target)) {
+      return { ok: false, reason: `文档已不在已知工作区内：${target}` };
+    }
+    if (!(bytes instanceof Uint8Array)) {
+      return { ok: false, reason: "保存内容不是字节数组" };
+    }
+    if (bytes.byteLength === 0) {
+      return { ok: false, reason: "保存内容为空（拒绝把文档清空后落盘）" };
+    }
+    if (bytes.byteLength > DOC_VIEW_SAVE_MAX_BYTES) {
+      return {
+        ok: false,
+        reason: `保存内容过大：${bytes.byteLength} 字节（上限 ${DOC_VIEW_SAVE_MAX_BYTES}）`,
+      };
+    }
+    try {
+      // 与 `file.writeFile` 共用同一份原子替换（`@main/lib/atomicFile`）。
+      await atomicReplaceFile(target, bytes);
+    } catch (err) {
+      return { ok: false, reason: `写入失败：${err instanceof Error ? err.message : String(err)}` };
+    }
+    live.lastFailure = undefined;
+    log.info(`document view saved: ${docId} ${target} (${bytes.byteLength} bytes)`);
+    return { ok: true, bytes: bytes.byteLength, filePath: target };
   }
 
   /**

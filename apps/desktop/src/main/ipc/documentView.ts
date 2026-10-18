@@ -164,4 +164,30 @@ export function registerDocumentViewHandlers(
     }
   });
 
+  /**
+   * 【ARC-007】**视图 preload 的内部保存通道** —— 页面把编辑后的字节写回
+   * **它自己打开的那份文件**。
+   *
+   * 与 open-path 同一条纪律：不进 RpcMap（渲染端/Agent 都不该有这个入口），
+   * 身份从 `event.sender` 反查。页面只递字节，**不递路径** —— 目标路径由宿主
+   * 从 `openedFilePath` 取，页面没有"另存到别处"的表达能力。
+   *
+   * 字节在 Electron 里经结构化克隆过来是 `Uint8Array`（或 Node `Buffer`，
+   * 两者都是 Uint8Array 的子类）；其它形状一律拒绝，不尝试"猜一个转换"。
+   */
+  ipc.handle("mcode:document-view:save", async (evt: unknown, raw: unknown) => {
+    try {
+      const input = raw as { bytes?: unknown } | null;
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const docId = host.docIdForSender(sender);
+      if (docId === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
+      if (!(input?.bytes instanceof Uint8Array)) {
+        return { ok: false, reason: "保存内容不是字节数组" };
+      }
+      return await host.saveOpenedFile(docId, input.bytes, withinWorkspace);
+    } catch (err) {
+      return failed(err);
+    }
+  });
+
 }

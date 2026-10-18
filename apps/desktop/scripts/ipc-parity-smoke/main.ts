@@ -433,7 +433,7 @@ for (const m of preloadText.matchAll(/invoke\(\s*"([^"]+)"/g)) preloadInvoked.ad
  * 只放行这一个 —— 每加一条都要有对应的独立 preload 存在(见 ipc-wiring-smoke
  * 里那对两端断言),否则这里就成了静默放行的后门。
  */
-const INDEPENDENT_PRELOAD_CHANNELS = new Set(["mcode:document-view:open-path"]);
+const INDEPENDENT_PRELOAD_CHANNELS = new Set(["mcode:document-view:open-path", "mcode:document-view:save"]);
 
 const notSurfaced = [...mainChannels.keys()]
   .filter((ch) => !preloadInvoked.has(ch) && !mobileOnly.has(ch) && !pushChannels.has(ch)

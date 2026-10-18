@@ -1688,9 +1688,18 @@ console.log("\n§ARC-002 用户派生工具：检索 → help → 结构化执�
       "★ file:writeFile 真 handler 走 atomicReplaceFile(不是裸 fs.writeFile)",
       /IPC\.FILE_WRITE[\s\S]{0,3000}?atomicReplaceFile\(/.test(files),
     );
+    // 【ARC-007】实现已抽到共享叶子模块 `@main/lib/atomicFile`（文档视图保存通道
+    // 与 file.writeFile 共用同一份）；files.ts 只保留导入。两条一起钉：导入还在 +
+    // 被导入的那份实现真是「临时文件 → fsync → rename」。
+    const atomicLib = readFileSync(join(process.cwd(), "src/main/lib/atomicFile.ts"), "utf8");
+    check(
+      "★ files.ts 用共享的 atomicReplaceFile（不是本地第二份实现）",
+      /import \{ atomicReplaceFile \} from "@main\/lib\/atomicFile\.js"/.test(files)
+        && !/function atomicReplaceFile/.test(files),
+    );
     check(
       "★ atomicReplaceFile 真是原子替换(临时文件 → fsync → rename)",
-      /function atomicReplaceFile[\s\S]{0,600}?handle\.sync\(\)[\s\S]{0,200}?rename\(tmp, filePath\)/.test(files),
+      /export async function atomicReplaceFile[\s\S]{0,900}?handle\.sync\(\)[\s\S]{0,300}?rename\(tmp, filePath\)/.test(atomicLib),
     );
     check("★ file:copy 真走裸 copyFile(与下面那条「非原子」说法相符)", /await copyFile\(/.test(files));
     // 注释侧(逐行取,避免窗口误差):writeFile 那行不得再说「非原子」。

@@ -91,6 +91,8 @@ interface FakeViewLog {
   windowOpenHandlerInstalled: boolean;
   /** 【ARC-007】宿主注册的失败监听(诊断钩子)。 */
   failureListeners: Partial<Record<"did-fail-load" | "render-process-gone", (...args: unknown[]) => void>>;
+  /** 宿主经 `webContents.send` 发给页面的所有消息。 */
+  sends: Array<{ channel: string; args: unknown[] }>;
 }
 
 /** 按创建顺序记录每个假视图 —— 断言读它。 */
@@ -105,6 +107,7 @@ function makeFakeView(prefs: DocumentViewWebPreferences): DocumentViewLike {
     closed: false,
     windowOpenHandlerInstalled: false,
     failureListeners: {},
+    sends: [],
   };
   created.push(log);
   const view: DocumentViewLike = {
@@ -122,6 +125,9 @@ function makeFakeView(prefs: DocumentViewWebPreferences): DocumentViewLike {
       isDestroyed: () => log.closed,
       setWindowOpenHandler() {
         log.windowOpenHandlerInstalled = true;
+      },
+      send(channel: string, ...args: unknown[]) {
+        log.sends.push({ channel, args });
       },
       on(event: string, listener: (...args: unknown[]) => void) {
         if (event === "did-fail-load" || event === "render-process-gone") {
@@ -457,15 +463,18 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
   // 另有一条**内部通道**（视图 preload 的 open-path）：它不挂成 RPC，
   // 但主进程必须注册 —— 页面打开文档靠它。
   const internal = "mcode:document-view:open-path";
+  const internalSave = "mcode:document-view:save";
   check("视图 preload 的内部打开通道已注册", handlers.has(internal));
-  check("注册的通道就是这八条 + 一条内部通道（不多不漏）",
-    JSON.stringify([...handlers.keys()].sort()) === JSON.stringify([...channels, internal].sort()),
-    { actual: [...handlers.keys()].sort(), expected: [...channels, internal].sort() });
+  check("视图 preload 的内部保存通道已注册", handlers.has(internalSave));
+  check("注册的通道就是这八条 + 两条内部通道（不多不漏）",
+    JSON.stringify([...handlers.keys()].sort()) === JSON.stringify([...channels, internal, internalSave].sort()),
+    { actual: [...handlers.keys()].sort(), expected: [...channels, internal, internalSave].sort() });
 
   const rpc = new Set(registeredRpcChannels());
   eq("★ 八条通道全登记进 recordRpcHandler（app_api_call 看得见）", channels.filter((c) => !rpc.has(c)), []);
   // 内部通道**不该**出现在 RPC 表里 —— 那是给页面的，不是给 Agent 的。
   check("★ 内部 open-path 通道不在 RPC 表（不扩大 Agent 能力面）", !rpc.has(internal), [...rpc].filter((c) => c.includes("open-path")));
+  check("★ 内部 save 通道同样不在 RPC 表", !rpc.has(internalSave), [...rpc].filter((c) => c.includes("save")));
   eq("IPC 表里的常量与契约字符串一致", IPC.DOCUMENT_VIEW_OPEN, "documentView:open");
 
   const call = async (channel: string, raw?: unknown): Promise<{ ok?: boolean; reason?: string }> => {
@@ -637,6 +646,58 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   eq("★ docIdForSender 能反查真实视图", host.docIdForSender(live?.view.webContents), "open-1");
   eq("★ 陌生 sender 反查为 null（页面伪造不了身份）", host.docIdForSender({}), null);
   host.closeAll();
+}
+
+
+/* ══════════ 10.【ARC-007】saveOpenedFile：只写回本视图打开过的那份文件 ══════════ */
+{
+  // 真实临时目录（这一条要验磁盘事实：原子写真的落到打开的那份文件上）。
+  const { mkdtempSync, writeFileSync, readFileSync: readFileSync2, existsSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  const workspace = mkdtempSync(joinPath(tmpdir(), "mcode-dv-save-"));
+  const opened = joinPath(workspace, "opened.docx");
+  const other = joinPath(workspace, "other.docx");
+  writeFileSync(opened, "original", "utf8");
+  writeFileSync(other, "untouched", "utf8");
+
+  const win = makeFakeWindow();
+  const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
+  host.open({ docId: "save-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+
+  const deniedNoDoc = await host.saveOpenedFile("save-1", new Uint8Array([1, 2, 3]), () => true);
+  check("★ 视图还没打开任何文档时，保存被拒", deniedNoDoc.ok === false, deniedNoDoc);
+
+  eq("openPath 记下这份文档", host.openPath("save-1", opened, () => true), { ok: true });
+  const saved = await host.saveOpenedFile("save-1", new TextEncoder().encode("edited-bytes"), () => true);
+  check("★ 保存成功并回报字节数", saved.ok === true && saved.bytes === "edited-bytes".length, saved);
+  eq("★ 盘上内容真的变了", readFileSync2(opened, "utf8"), "edited-bytes");
+  eq("★ 只写了打开的那份，工作区里别的文件不动", readFileSync2(other, "utf8"), "untouched");
+
+  const empty = await host.saveOpenedFile("save-1", new Uint8Array(), () => true);
+  check("★ 空内容被拒（不能把文档清空）", empty.ok === false, empty);
+
+  const notBytes = await host.saveOpenedFile("save-1", "a string" as unknown as Uint8Array, () => true);
+  check("★ 非字节内容被拒", notBytes.ok === false, notBytes);
+
+  // 工作区集合变了（项目被移除）→ 保存也要拒，即使文件还在这里。
+  const movedOut = await host.saveOpenedFile("save-1", new TextEncoder().encode("x"), () => false);
+  check("★ 文档已不在工作区时拒绝保存", movedOut.ok === false, movedOut);
+  eq("被拒时盘上仍是上一次成功的内容", readFileSync2(opened, "utf8"), "edited-bytes");
+
+  // 页面无法指定目标：宿主只认 openedFilePath（openPath 到 other 之后才改目标）。
+  eq("改打开另一份之后目标随之改变", host.openPath("save-1", other, () => true), { ok: true });
+  const saved2 = await host.saveOpenedFile("save-1", new TextEncoder().encode("second"), () => true);
+  check("第二份保存成功", saved2.ok === true, saved2);
+  eq("第二份内容落盘", readFileSync2(other, "utf8"), "second");
+  eq("第一份不再被改动", readFileSync2(opened, "utf8"), "edited-bytes");
+
+  const missing = await host.saveOpenedFile("nope", new Uint8Array([1]), () => true);
+  check("不存在的 docId → 拒", missing.ok === false, missing);
+
+  check("前提：临时目录仍在（不是假路径）", existsSync(workspace));
+  host.closeAll();
+  await (await import("node:fs/promises")).rm(workspace, { recursive: true, force: true });
 }
 
 

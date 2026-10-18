@@ -237,6 +237,37 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
       seen.push({ channel: "preload", filePath: docPath });
     });
 
+    await check("保存通道端到端：页面经 preload 写回它打开的那份文件", async () => {
+      const view = viewWebContents("u1-doc");
+      // 页面先经宿主打开 report.docx（openPath 会记下 openedFilePath），再经
+      // preload 的 saveDocx 提交新字节；断言磁盘上**只有那份**被改。
+      const original = await readFile(docPath, "utf8");
+      assert(original === "fake docx bytes", `前置内容不符: ${original}`);
+      await view.executeJavaScript(
+        "window.desktop.saveDocx(" + JSON.stringify(docPath) + ", new TextEncoder().encode('U1-SAVED-BYTES'))",
+      );
+      await until(async () => (await readFile(docPath, "utf8")) === "U1-SAVED-BYTES", "保存落盘");
+      // 页面传的 path 被忽略 —— 即使它瞎传一个别的路径，宿主也只会写 openedFilePath。
+      // 断言等那次写真的完成（日志里 8 字节那次），不靠固定延时猜。
+      await view.executeJavaScript(
+        "window.desktop.saveDocx(" + JSON.stringify(join(outsideRoot, "secret.docx")) + ", new TextEncoder().encode('INJECTED'))",
+      );
+      await until(async () => (await readFile(docPath, "utf8")) === "INJECTED", "第二次保存也写回 openedFilePath");
+      assert((await readFile(outsidePath, "utf8")) === "outside bytes", "页面瞎传的路径绝不能被执行");
+    });
+
+    await check("保存的路径不可由页面指定（源码级：preload 不转发、handler 不读 path）", async () => {
+      const { readFileSync } = await import("node:fs");
+      const preloadSrc = readFileSync(join(process.cwd(), "src/main/document/documentViewPreload.ts"), "utf8");
+      const handlerSrc = readFileSync(join(process.cwd(), "src/main/ipc/documentView.ts"), "utf8");
+      assert(/saveDocx:[\s\S]{0,400}?void path;/.test(preloadSrc), "preload 的 saveDocx 必须显式丢弃页面路径");
+      assert(!/SAVE_DOCUMENT_CHANNEL,\s*\{\s*path/.test(preloadSrc), "preload 不得把页面路径转发给宿主");
+      const saveHandler = handlerSrc.slice(handlerSrc.indexOf('"mcode:document-view:save"'));
+      assert(saveHandler.length > 0, "找不到内部保存通道");
+      assert(!/raw\.path|input\.path|input\?\.path/.test(saveHandler), "handler 不得读取页面给的路径");
+      assert(/host\.saveOpenedFile\(docId, input\.bytes/.test(saveHandler), "handler 必须把字节交给宿主的 saveOpenedFile");
+    });
+
     await check("close 销毁真 webContents 并摘下窗口", async () => {
       const view = viewWebContents("u1-doc");
       const closed = host.close("u1-doc");

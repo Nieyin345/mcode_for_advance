@@ -954,7 +954,7 @@ console.log("\n总注册表:registerIpcHandlers");
   // 例外:宿主**自己注入的页面 preload** 用的内部通道。它刻意不进 RpcMap ——
   // 那条通道是给不受信任的文档视图页面发起的,渲染端与 Agent 都不该有入口
   // (见 `main/ipc/documentView.ts` 的说明)。它不是"漏接线",是"不该接线"。
-  const INTERNAL_PRELOAD_CHANNELS = ["mcode:document-view:open-path"];
+  const INTERNAL_PRELOAD_CHANNELS = ["mcode:document-view:open-path", "mcode:document-view:save"];
   const extra = registered.filter((c) => !table.has(c) && !INTERNAL_PRELOAD_CHANNELS.includes(c));
   same("主进程注册的每条 invoke 通道都在共享 IPC 表里(零裸 channel,M36)", extra, []);
   same(

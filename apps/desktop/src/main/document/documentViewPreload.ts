@@ -21,6 +21,9 @@
  *     宿主侧会核对路径在工作区内（与 `document.*` 同一条围栏），
  *     然后以 `menu:command("open-path", path)` 把路径交回页面（vendor 认识的形状）；
  *   - `onMenuCommand(handler)` —— 页面订阅宿主推来的打开请求（vendor 页面首帧就会调）；
+ *   - `saveDocx(path, data)` —— 把编辑后的字节写回**这个视图打开过的那份文件**。
+ *     页面传的 `path` 被忽略：目标路径由宿主从 `openedFilePath` 取，页面没有
+ *     "另存到任意工作区文件"的能力（否则一个被投毒的编辑器页就能覆盖任何 `.docx`）；
  *   - 几个页面首次渲染必需的只读默认值（语言/主题/自动保存），全部写死为安全值，
  *     不走任何 IPC。
  *
@@ -37,15 +40,16 @@
  *
  * ## 它现在**还不做**什么（如实）
  *
- *   - 只转发 `openDocxPath`：表格/演示文稿的打开入口要各自补（先做 docs）；
- *   - 没有"保存"通道：本切片只解决"打开"，保存仍走 `document.*` 或旧引擎；
+ *   - 只转发 `openDocxPath`/`saveDocx`：表格/演示文稿的打开入口要各自补（先做 docs）；
+ *   - 保存只写回本视图打开的那份文件，没有"另存为"；
  *   - 没有主题/语言的动态同步：页面用写死的默认值，Mcode 切主题不会传导过去。
  */
 import { contextBridge, ipcRenderer } from "electron";
 
-/** 页面允许请求的宿主动作 —— 只有这一条。字符串是**宿主侧监听的那一条**
+/** 页面允许请求的宿主动作 —— 只有这两条。字符串是**宿主侧监听的那两条**
  *  （`main/ipc/documentView.ts` 的内部通道），与 vendor 的 `docs:open-path` 无关。 */
 const OPEN_DOCUMENT_CHANNEL = "mcode:document-view:open-path";
+const SAVE_DOCUMENT_CHANNEL = "mcode:document-view:save";
 
 /** 【ARC-007】宿主 → 页面：vendor 页面只认 `menu:command` + `"open-path"`。
  *  见 `documentViewHost.ts` 同名常量处的说明；两边改一处而另一处不动 = 推送断链。 */
@@ -68,6 +72,19 @@ const api = {
    *  参数都影响不到这一步。 */
   openDocxPath: (path: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke(OPEN_DOCUMENT_CHANNEL, { filePath: path }),
+
+  /** 【ARC-007】**把编辑后的字节写回宿主的文件**。页面不传路径 —— 宿主只认
+   *  「这个视图打开过的那份文件」，页面没有"另存到别处"的能力。
+   *
+   *  形状与 vendor 的 `saveDocx(path, data, auto?)` 对齐（前两个参数语义相同），
+   *  但**忽略 vendor 传进来的 path**：那是页面自己的说法，不可信。 */
+  saveDocx: (path: string, data: ArrayBuffer | Uint8Array, auto?: boolean): Promise<{ ok: boolean; bytes?: number; error?: string }> => {
+    void path;
+    return ipcRenderer.invoke(SAVE_DOCUMENT_CHANNEL, {
+      bytes: data instanceof Uint8Array ? data : new Uint8Array(data),
+      auto: auto === true,
+    });
+  },
 
   /** 【ARC-007】**接收宿主推来的打开请求** —— vendor 页面首帧就订阅它。
    *
