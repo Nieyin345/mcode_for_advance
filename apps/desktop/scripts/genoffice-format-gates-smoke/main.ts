@@ -67,7 +67,7 @@
  *
  * Run: scripts/genoffice-format-gates-smoke/run.sh
  */
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -882,6 +882,57 @@ if (cliPath === null) {
         } else {
           skip("G6 xlsx revision 冲突", "外部内容样本生成失败");
         }
+      }
+
+      /* ══════════ G7 围栏先于版本哈希；非写分支异常归一 ══════════
+       * 独立审查（remote-auditor）发现的真实缺口：
+       *  1. `document.edit` 曾先对 expectedRevision 读内容 SHA256、后进围栏。对**工作区外**
+       *     的可读文件，错误 revision 会把内容摘要经冲突回包带出界外。判据落在"回包形状"
+       *     上：界外必须 refused（路由层的原样理由），绝不能是 conflict + currentRevision。
+       *  2. dryRun / 非 office / 界外分支的意外异常（EISDIR/EACCES）曾直接抛成 IPC
+       *     rejection，渲染端拿不到可展示的失败卡片。判据是"一定是 ok:false 的线格"。
+       */
+      section("G7 围栏先于版本哈希；非写分支异常归一（document.edit 真 handler）");
+      {
+        const outsideDocx = join(outside, "g7-outside.docx");
+        writeFileSync(outsideDocx, "outside-bytes-not-a-docx");
+        const outsideHash = createHash("sha256").update(readFileSync(outsideDocx)).digest("hex");
+        const fenced = await callEdit({
+          filePath: outsideDocx,
+          ops: [{ op: "insert_content", index: 0, html: "<p>x</p>" }],
+          expectedRevision: "0".repeat(64),
+        });
+        check("G7 ★ 界外 + 错误 revision → refused（不是 conflict）",
+          fenced.ok === false && fenced.kind === "refused", fenced);
+        check("G7 ★ 界外拒绝不回带任何内容摘要",
+          fenced.ok === false && fenced.currentRevision === undefined
+          && JSON.stringify(fenced).includes(outsideHash) === false, fenced);
+
+        // 非写分支（dryRun）里的意外异常必须归一成 ok:false/kind:failed。
+        // 用**工作区内**的目录冒充 docx + dryRun + expectedRevision：读版本那一步
+        // 必然抛 EISDIR（目录不能当文件读），而 dryRun 让 willWrite=false，走的正是
+        // 无租约的非写分支。旧写法这里直接变成 IPC rejection。
+        const dirAsDoc = join(root, "g7-dir.docx");
+        mkdirSync(dirAsDoc, { recursive: true });
+        let rejected: unknown = null;
+        let normalized: EditWireResult | null = null;
+        try {
+          normalized = await callEdit({
+            filePath: dirAsDoc,
+            ops: [{ op: "insert_content", index: 0, html: "<p>x</p>" }],
+            expectedRevision: "0".repeat(64),
+            dryRun: true,
+          });
+        } catch (err) {
+          rejected = err;
+        }
+        check("G7 ★ 非写分支的读取失败不变成 IPC rejection（返回线格失败）",
+          rejected === null && normalized !== null && normalized.ok === false, {
+          rejected: rejected === null ? null : String(rejected),
+          normalized,
+        });
+        check("G7 ★ 非写分支失败带非空理由（可展示给用户）",
+          normalized !== null && normalized.ok === false && String(normalized.reason ?? "").length > 0, normalized);
       }
     }
 

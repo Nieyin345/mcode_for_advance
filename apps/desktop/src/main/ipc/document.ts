@@ -204,6 +204,16 @@ export function registerDocumentHandlers(ipc: IpcMain): void {
     // "无版本编辑"绕过租约,带版本的一侧即使在锁内重算,也会被这位不持锁的写者
     // 在重算与替换之间插进来 —— 互斥就只对持锁者成立。dryRun 不写盘,不取。
     const run = async (): Promise<DocumentIpcResult> => {
+      // 【ARC-007 独立审查】围栏必须先于任何读文件字节的动作。此前先调
+      // `fileContentVersion` 再让 `editByKind` 的围栏拒绝 —— 对**工作区外**的可读
+      // 文件，版本冲突分支会把内容 SHA256 回给调用方，相当于借一条只读通道把
+      // 界外文件的摘要带出来。现在界外一律走路由层的原样拒绝理由。
+      if (!p.ports.withinWorkspace(input.filePath)) {
+        return toWire(await editByKind(p.ports, input.filePath, input.ops, {
+          ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
+          ...(input.track !== undefined ? { track: input.track } : {}),
+        }));
+      }
       if (input.expectedRevision !== undefined) {
         const current = await fileContentVersion(input.filePath);
         if (current !== input.expectedRevision) {
@@ -235,7 +245,21 @@ export function registerDocumentHandlers(ipc: IpcMain): void {
     const willWrite = input.dryRun !== true
       && documentKindOf(input.filePath) === "office"
       && p.ports.withinWorkspace(input.filePath);
-    if (!willWrite) return run();
+    if (!willWrite) {
+      // 【ARC-007 独立审查】`DocumentIpcResult` 是契约的一部分：非写分支（dryRun、
+      // 非 office、界外）也要把意外异常归一成 ok:false/kind:failed，不能让
+      // EISDIR/EACCES 之类直接变成 IPC rejection（渲染端拿到的是 Promise 拒绝，
+      // 而不是可展示的失败卡片）。租约分支的 catch 只覆盖写路径。
+      try {
+        return await run();
+      } catch (err) {
+        return {
+          ok: false,
+          kind: "failed",
+          reason: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
     try {
       return await withOsFileLease(input.filePath, run);
     } catch (err) {
