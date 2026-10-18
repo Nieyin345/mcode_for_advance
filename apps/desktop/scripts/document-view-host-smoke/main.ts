@@ -268,6 +268,10 @@ section("2. URL 闸：只放行 file:// 与本机回环，其余一律拒且不�
 // 纯函数级断言：闸本身（不经状态机），把判定锥体钉在原因文案上而不是"某处拒绝"。
 {
   eq("file: 普通路径通过", checkDocumentViewUrl("file:///C:/x/y.html").ok, true);
+  // 【ARC-006 WF-INT】第三方工作流引擎编辑器地址也是回环 http —— 与文档视图
+  // 共用同一条围栏，不需要第二条放行规则（也不需要为它开任何口子）。
+  eq("★ 引擎编辑器地址(回环 http)通过同一条围栏",
+    checkDocumentViewUrl("http://127.0.0.1:3527/").ok, true);
   eq("localhost 通过", checkDocumentViewUrl("http://localhost:1/").ok, true);
   eq("127.0.0.1 通过", checkDocumentViewUrl("https://127.0.0.1/").ok, true);
   eq("[::1] 通过", checkDocumentViewUrl("http://[::1]:9/").ok, true);
