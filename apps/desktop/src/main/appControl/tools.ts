@@ -70,7 +70,16 @@ import {
   type ChannelIdempotencyDecision,
 } from "./channelIdempotency.js";
 import { computePanelCaptureRect } from "./panelCaptureRect.js";
-import { DOMAIN_LABELS, domainsMatchingTaskWord, policyFor, type AppPolicy, type AppPolicyLevel } from "./policy.js";
+import {
+  APP_POLICY_LEVEL_LABEL,
+  DOMAIN_LABELS,
+  domainOfMethod,
+  domainsMatchingTaskWord,
+  policyFor,
+  type AppPolicy,
+  type AppPolicyLevel,
+} from "./policy.js";
+import { guideFor, guideOverview, guideTopics } from "./guide.js";
 import { APP_API_TUTORIALS, tutorialsMatchingWord } from "./appApiTutorials.js";
 import {
   describeWorkflowToolParams,
@@ -168,13 +177,7 @@ export function secretSettingRefusal(method: string, input: unknown): string | n
  * 坏存档整表拒读拒写(见 `classifyModuleWorkflowGrants`)。
  */
 
-const LEVEL_LABEL: Record<AppPolicyLevel, string> = {
-  read: "只读·自动",
-  ui: "界面·自动",
-  write: "需批准",
-  danger: "高风险·每次批准",
-  blocked: "不开放",
-};
+const LEVEL_LABEL = APP_POLICY_LEVEL_LABEL;
 
 /* ───────────────────────── 目录 ───────────────────────── */
 
@@ -184,8 +187,7 @@ export interface ApiEntry extends ApiCatalogEntry {
 }
 
 function domainOf(method: string): string {
-  const i = method.indexOf(".");
-  return i < 0 ? method : method.slice(0, i);
+  return domainOfMethod(method);
 }
 
 /** 生成清单 ∪ 实际注册了 handler 的通道(清单没跟上的新通道也能调,只是没有说明)。 */
@@ -899,7 +901,7 @@ const UI_ACTIONS = [
 ] as const;
 
 /** 只读 / 界面类工具名(引擎侧若要按名字预放行可以用;真正的闸门在 handler 里)。 */
-export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_api_tutorial", "app_ui_state", "app_panel_api_list"]);
+export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_api_tutorial", "app_guide", "app_ui_state", "app_panel_api_list"]);
 
 /* ─────────────────── 自定义面板/扩展的对外接口(给 agent 查)─────────────────── */
 
@@ -1082,6 +1084,7 @@ export function appMcpTools(): McpToolSpec[] {
               "  ② 常用动作的专用工具:app_ui / app_ui_state(界面)、app_session_new / app_session_send(别的对话)、app_workflow_run(跑工作流)—— 它们**不是** app_api_call 的方法;\n" +
               "  ③ 浏览器与电脑操作:browser_* / agent_*(开网页、读 PDF/Office、跑命令、传文件)—— 自成一组,也不在这张表里;\n" +
               "  ④ 自定义面板/扩展的 window.mcode API、挂载位动作与变量:用 app_panel_api_list 查。\n" +
+              "  ⑤ 某个域/已发布工作流工具/扩展能力**怎么用、什么权限、怎么调**:用 app_guide({topic}) 查(不带参数列全部 topic)。\n" +
               "要找**有没有**某个能力,先 app_api_list({domain}) 或按关键词搜,别凭名字猜。",
           );
         }
@@ -1244,6 +1247,77 @@ export function appMcpTools(): McpToolSpec[] {
             })
             .join("\n\n"),
         );
+      },
+    },
+    {
+      // 【ARC-002】统一教程入口 —— 「这个功能域 / 已发布工作流工具 / 扩展能力怎么用、
+      // 要什么权限、参数长什么样」。
+      //
+      // **为什么是独立工具而不是把 `app_api_describe` 扩成支持 `topic`**(二选一,台账
+      // 设计目标第 2 条叫 `guide(topic)`,这里照做):describe 的键是**方法名**,它的合同
+      // 是"参数格式 / 返回格式 / 权限档";而 guide 的键横跨三种对象 —— 功能域(如
+      // `library`)、用户发布的工作流工具(`workflow.run.<名字>`)、扩展能力
+      // (`module.<slug>.<短名>` / `core.file.inspect`)。塞进 describe 会让同一个
+      // `method` 参数既可能是方法名又可能是域/能力 id,`unknownMethodHint` 的
+      // "你是不是要找 X" 也会对着域报错 —— 两个分类混在一个合同里,调用方无从判断
+      // 自己拿到的是哪种。独立工具还能整体追加而不改 describe 的既有行为(它不是
+      // 兼容性变更的落点)。
+      //
+      // 内容**全部从权威源现场派生**(见 guide.ts 文件头):方法的目录与权限、已发布
+      // 工具、扩展能力目录三类各一条 topic,没有第二份手写清单。
+      name: "app_guide",
+      description:
+        "按主题查指南:这个功能/工作流工具/扩展能力**怎么用、要什么权限、有哪些参数**。" +
+        "不带参数列出全部 topic(功能域 / 用户发布的工作流工具 / 已装扩展能力);带 topic 返回该主题的方法清单、" +
+        "权限档(哪些会弹审批)与可复制的 app_api_call 示例。与 app_api_tutorial 的分工:教程讲「按什么顺序做一串」," +
+        "guide 讲「这个主题有什么、什么权限、怎么调」。",
+      inputSchema: {
+        topic: z
+          .string()
+          .optional()
+          .describe("主题 id:功能域名(如 library / workflow)、workflow.run.<名字>、或扩展能力 id(如 core.file.inspect)"),
+      },
+      handler: async (args: { topic?: string }) => {
+        const topic = args.topic?.trim();
+        if (!topic) {
+          const overview = await guideOverview();
+          const topics = overview.topics;
+          const domains = topics.filter((t) => t.kind === "domain");
+          const tools = topics.filter((t) => t.kind === "workflow-tool");
+          const caps = topics.filter((t) => t.kind === "extension-capability");
+          // 扩展目录取不到时**如实说**(硬规矩 3):此刻列不出已装扩展能力,不是"没有扩展"。
+          const sources = caps.length === 0 && overview.moduleCatalogError
+            ? `(扩展能力目录此刻取不到:${overview.moduleCatalogError};功能域与工作流工具不受影响)`
+            : "";
+          return text(
+            [
+              `共 ${topics.length} 个 topic(功能域 ${domains.length} / 已发布工作流工具 ${tools.length} / 扩展能力 ${caps.length}):`,
+              "",
+              "一、功能域(方法目录 + 权限档)",
+              ...domains.map((t) => `- ${t.id}:${t.summary}`),
+              "",
+              "二、用户发布的工作流工具",
+              ...(tools.length > 0 ? tools.map((t) => `- ${t.id}:${t.summary}`) : ["(还没有发布过工作流工具;发布用 app_workflow_publish)"]),
+              "",
+              "三、已装扩展能力",
+              ...(caps.length > 0
+                ? caps.map((t) => `- ${t.id}:${t.summary}`)
+                : [sources || "(没有已装的扩展能力;宿主内置能力会列在这里)"]),
+              "",
+              `下一步:app_guide({topic:"<主题 id>"}) 看该主题的权限档与示例;方法级细节用 app_api_describe。`,
+            ].join("\n"),
+          );
+        }
+        const guide = await guideFor(topic);
+        if (!guide) {
+          const topics = await guideTopics();
+          const near = nearestName(topic, topics.map((t) => t.id));
+          const all = topics.map((t) => t.id).join(" / ");
+          return fail(
+            `没有这个 topic:${topic}。${near ? `你是不是要找「${near}」?` : ""}现有 topic 共 ${topics.length} 个:${all}`,
+          );
+        }
+        return text(guide.body);
       },
     },
     {

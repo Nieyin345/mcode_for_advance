@@ -99,6 +99,17 @@ function offscreenBounds(bounds: DocViewRect): DocViewRect {
   return { x: -9999, y: -9999, width: bounds.width, height: bounds.height };
 }
 
+/**
+ * 【ARC-007】把文档交给编辑器页的**那一对常量** —— 名字来自 vendor，不是我们起的。
+ *
+ * GenOffice 编辑器渲染端只订阅 `menu:command`（`apps/docs/src/preload/index.ts` 的
+ * `onMenuCommand` 里 `ipcRenderer.on('menu:command', ...)`），收到
+ * `("open-path", path)` 才走 `openRecent(path)`（`App.tsx` 的 `case "open-path"`）。
+ * 换名字等于发到没人收的通道上：`openPath` 返回 ok、文档却不打开。
+ */
+const VENDOR_MENU_COMMAND_CHANNEL = "menu:command";
+const VENDOR_OPEN_PATH_COMMAND = "open-path";
+
 interface LiveDocumentView {
   docId: string;
   view: DocumentViewLike;
@@ -332,10 +343,16 @@ export class DocumentViewHost {
   }
 
   /**
-   * 【ARC-007】把某个文档载入**已打开的那个视图**（页面里的 `openDocxPath`）。
+   * 【ARC-007】把某个文档载入**已打开的那个视图**。
    *
    * 判据：路径必须落在已知工作区内（与 `document.*` 同一条围栏）；视图必须存在。
-   * 通过后经 `webContents.send` 把路径交给页面。
+   * 通过后把路径交给页面。
+   *
+   * ⚠️ 通道形状由 **vendor 页面**决定，不是我们自创的：编辑器渲染端只订阅
+   * `menu:command`（`genoffice/apps/docs/src/preload/index.ts` 的 `onMenuCommand`），
+   * 并在 `App.tsx` 的 `case "open-path"` 里调 `openRecent(payload)`。早先版本发的是
+   * 自定义的 `mcode:document-view:open-path` —— 页面没有订阅者，`openPath` 返回 ok
+   * 但文档永远不打开。这里发的就是 vendor 认识的那对 (channel, command, payload)。
    *
    * ⚠️ 信任模型：页面**不可信**，它只能**请求**打开某个路径；宿主拒绝时原样返回原因。
    * 没有"页面给什么就读什么"这回事。
@@ -354,7 +371,7 @@ export class DocumentViewHost {
       return { ok: false, reason: "当前视图不支持接收打开请求" };
     }
     try {
-      wc.send("mcode:document-view:open-path", filePath);
+      wc.send(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath);
     } catch (err) {
       return { ok: false, reason: `发送打开请求失败：${err instanceof Error ? err.message : String(err)}` };
     }

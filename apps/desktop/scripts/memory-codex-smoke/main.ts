@@ -950,8 +950,18 @@ console.log("\n总注册表:registerIpcHandlers");
 
   // 注册表里有、表里没有 = 裸 channel 字面量。MAINT M36 把最后一条(dialog:pickFolder)
   // 补进了共享 IPC 表,从此应为空;再出现就是新的接线债(`ipc-wiring-smoke` 同步收紧)。
-  const extra = registered.filter((c) => !table.has(c));
+  //
+  // 例外:宿主**自己注入的页面 preload** 用的内部通道。它刻意不进 RpcMap ——
+  // 那条通道是给不受信任的文档视图页面发起的,渲染端与 Agent 都不该有入口
+  // (见 `main/ipc/documentView.ts` 的说明)。它不是"漏接线",是"不该接线"。
+  const INTERNAL_PRELOAD_CHANNELS = ["mcode:document-view:open-path"];
+  const extra = registered.filter((c) => !table.has(c) && !INTERNAL_PRELOAD_CHANNELS.includes(c));
   same("主进程注册的每条 invoke 通道都在共享 IPC 表里(零裸 channel,M36)", extra, []);
+  same(
+    "唯一豁免的是文档视图 preload 的内部通道(且它确实注册了)",
+    registered.filter((c) => INTERNAL_PRELOAD_CHANNELS.includes(c)),
+    INTERNAL_PRELOAD_CHANNELS,
+  );
 
   // 每个域都注册到了:拿 memory / codex 两条已知的当锚,防止"数量对但内容整体错位"。
   check("记忆助手主页面入口真实注册", registeredChannels.has(IPC.MEMORY_ASSISTANT));

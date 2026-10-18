@@ -19,7 +19,8 @@
  *
  *   - `openDocxPath(path)` —— 请求宿主把某个文档载入**这个视图**；
  *     宿主侧会核对路径在工作区内（与 `document.*` 同一条围栏），
- *     然后以 `docs:open-path` 事件把**字节或路径**交回页面；
+ *     然后以 `menu:command("open-path", path)` 把路径交回页面（vendor 认识的形状）；
+ *   - `onMenuCommand(handler)` —— 页面订阅宿主推来的打开请求（vendor 页面首帧就会调）；
  *   - 几个页面首次渲染必需的只读默认值（语言/主题/自动保存），全部写死为安全值，
  *     不走任何 IPC。
  *
@@ -42,8 +43,14 @@
  */
 import { contextBridge, ipcRenderer } from "electron";
 
-/** 页面允许请求的宿主动作 —— 只有这一条。 */
+/** 页面允许请求的宿主动作 —— 只有这一条。字符串是**宿主侧监听的那一条**
+ *  （`main/ipc/documentView.ts` 的内部通道），与 vendor 的 `docs:open-path` 无关。 */
 const OPEN_DOCUMENT_CHANNEL = "mcode:document-view:open-path";
+
+/** 【ARC-007】宿主 → 页面：vendor 页面只认 `menu:command` + `"open-path"`。
+ *  见 `documentViewHost.ts` 同名常量处的说明；两边改一处而另一处不动 = 推送断链。 */
+const MENU_COMMAND_CHANNEL = "menu:command";
+const OPEN_PATH_COMMAND = "open-path";
 
 /** 页面首次渲染需要的只读默认值。**全部写死**，不走 IPC：
  *  它们只影响界面语言/主题，不是文档事实；走 IPC 等于给页面多一条通道。 */
@@ -57,10 +64,25 @@ const DEFAULTS = {
 const api = {
   /** 打开一个文档。宿主会先核对路径是否在已知工作区内。
    *
-   *  `docId` 从页面自己的 URL 读（宿主 open 时带上的同名 query）—— preload 与页面
-   *  同源，`location.search` 就是宿主给的那一份，页面改不了宿主对它的判断。 */
+   *  页面**不传身份**：宿主从 `event.sender` 反查是哪个视图 —— 页面改自己的 URL /
+   *  参数都影响不到这一步。 */
   openDocxPath: (path: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke(OPEN_DOCUMENT_CHANNEL, { filePath: path }),
+
+  /** 【ARC-007】**接收宿主推来的打开请求** —— vendor 页面首帧就订阅它。
+   *
+   *  早先版本缺了这一半：宿主发了 `open-path`，页面没有任何监听器，于是
+   *  `openPath` 返回 ok 而文档永远不打开。回调形态与 vendor 完全一致
+   *  `(command, payload?) => void`，返回取消函数（vendor 页面在卸载时会调）。 */
+  onMenuCommand: (handler: (command: string, payload?: string) => void): (() => void) => {
+    const listener = (_event: unknown, command: string, payload?: string): void => {
+      handler(command, payload);
+    };
+    ipcRenderer.on(MENU_COMMAND_CHANNEL, listener);
+    return () => {
+      ipcRenderer.removeListener(MENU_COMMAND_CHANNEL, listener);
+    };
+  },
 
   // ── 页面首帧会调用的只读默认值（vendor main.tsx 的 bootstrap） ──
   getLanguage: (): Promise<string> => Promise.resolve(DEFAULTS.language),

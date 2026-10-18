@@ -145,7 +145,7 @@ async function unmountPane(): Promise<void> {
   await __flush();
 }
 
-function ops(method: "open" | "bounds" | "show" | "hide" | "focus" | "close" | "list"): Array<{ input: unknown }> {
+function ops(method: "open" | "openPath" | "bounds" | "show" | "hide" | "focus" | "close" | "list"): Array<{ input: unknown }> {
   return documentViewCalls.filter((c) => c.method === method);
 }
 /** 树里**用户看得见的文本**：`__text()` 走 children；`ErrorNote` 的标题与
@@ -283,6 +283,19 @@ section("2. 组件生命周期：open / bounds / close");
     openInput.bounds,
   );
 
+  // 【ARC-007】open 成功后必须请求"把这份文档装进视图" —— 少了这一步视图里
+  // 永远只是编辑器起始页。docId 必须是同一个（宿主按 docId 找视图）。
+  {
+    const opens = ops("open");
+    const opened = opens.at(-1)?.input as { docId?: string } | undefined;
+    // openPath 在 open 的 promise resolve 之后才发 —— 多冲几轮微任务。
+    for (let i = 0; i < 8; i++) await __flush();
+    const paths = ops("openPath");
+    check("★ open 成功后发起了 openPath", paths.length > 0, paths.length);
+    eq("★ openPath 带的是同一个 docId", (paths.at(-1)?.input as { docId?: string } | undefined)?.docId, opened?.docId);
+    eq("★ openPath 带的是面板的 filePath", (paths.at(-1)?.input as { filePath?: string } | undefined)?.filePath, OFFICE_FILE);
+  }
+
   // —— ResizeObserver 驱动 bounds ——
   const beforeBounds = ops("bounds").length;
   await resizeStage({ left: 200, top: 90, width: 640, height: 480 });
@@ -363,6 +376,21 @@ section("4. open 失败：显示原因，重试真的再 open");
   }
   eq("★ 重试真的重新 open 了一次", ops("open").length, opensBefore + 1);
   check("重试成功后错误条消失", !uiText().includes("GenOffice 编辑视图打开失败"), uiText());
+  await unmountPane();
+}
+
+/* ══════════════════ 4b. openPath 被宿主拒：界面必须说原因 ══════════════════ */
+
+section("4b. openPath 被拒（工作区外/宿主拒绝）时显示原因");
+{
+  resetWorld({ available: true, path: CLI_PATH });
+  // open 成功、openPath 被围栏拒 —— 这是"页面已打开但文档装不进去"的真实形状。
+  __plan("openPath", { ok: false, reason: "文件不在已知工作区内：/etc/passwd" });
+  await mountPane(OFFICE_FILE);
+  for (let i = 0; i < 6; i++) await __flush();
+  check("前提：确实发过 openPath", ops("openPath").length > 0, ops("openPath").length);
+  const text = uiText();
+  check("★ 界面显示宿主给的拒绝原因原文", text.includes("文件不在已知工作区内"), text);
   await unmountPane();
 }
 

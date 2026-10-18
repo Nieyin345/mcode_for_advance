@@ -602,8 +602,11 @@ section("7. 三层接线：preload / rpcMap / main 注册");
 
   const ok = host.openPath("open-1", "D:/workspace/doc.docx", () => true);
   check("工作区内路径 → ok", ok.ok, ok);
-  eq("★ 发到了页面约定的内部通道", sends.at(-1)?.channel, "mcode:document-view:open-path");
-  eq("★ 路径原样交给页面", sends.at(-1)?.args[0], "D:/workspace/doc.docx");
+  // 【ARC-007】通道形状由 vendor 页面决定：它只订阅 menu:command 并处理
+  // "open-path"。发到自定义通道上 = 发了没人收（曾经就是这样）。
+  eq("★ 发到了 vendor 页面订阅的 menu:command", sends.at(-1)?.channel, "menu:command");
+  eq("★ 第一条参数是 vendor 认识的 open-path", sends.at(-1)?.args[0], "open-path");
+  eq("★ 路径作为第二条参数原样交给页面", sends.at(-1)?.args[1], "D:/workspace/doc.docx");
 
   const before = sends.length;
   const denied = host.openPath("open-1", "C:/Windows/system32/config", () => false);
@@ -612,6 +615,23 @@ section("7. 三层接线：preload / rpcMap / main 注册");
 
   check("不存在的 docId → 拒", host.openPath("nope", "D:/workspace/x.docx", () => true).ok === false);
   check("空路径 → 拒", host.openPath("open-1", "   ", () => true).ok === false);
+
+  // 【ARC-007】**推送与接收必须对得上**：宿主发的 (channel, command) 必须与
+  // preload 里订阅的那一对逐字相同。改一边不改另一边 = 静默断链（真发生过）。
+  {
+    const preloadSrc = readFileSync(join(process.cwd(), "src/main/document/documentViewPreload.ts"), "utf8");
+    const hostSrc = readFileSync(join(process.cwd(), "src/main/document/documentViewHost.ts"), "utf8");
+    const menuMatch = /MENU_COMMAND_CHANNEL\s*=\s*"([^"]+)"/.exec(preloadSrc);
+    const cmdMatch = /OPEN_PATH_COMMAND\s*=\s*"([^"]+)"/.exec(preloadSrc);
+    check("preload 声明了 menu:command 订阅", menuMatch !== null, menuMatch?.[1]);
+    check("preload 声明了 open-path 命令", cmdMatch !== null, cmdMatch?.[1]);
+    eq("★ preload 与宿主用同一个通道名", menuMatch?.[1], "menu:command");
+    eq("★ preload 与宿主用同一个命令名", cmdMatch?.[1], "open-path");
+    check("★ preload 真的订阅了 menu:command", /ipcRenderer\.on\(MENU_COMMAND_CHANNEL/.test(preloadSrc));
+    check("★ 宿主真的发到 menu:command", hostSrc.includes("wc.send(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath)"));
+    eq("★ 宿主发的通道名与 preload 订阅的一致", /VENDOR_MENU_COMMAND_CHANNEL\s*=\s*"([^"]+)"/.exec(hostSrc)?.[1], menuMatch?.[1]);
+    eq("★ 宿主发的命令名与 preload 的一致", /VENDOR_OPEN_PATH_COMMAND\s*=\s*"([^"]+)"/.exec(hostSrc)?.[1], cmdMatch?.[1]);
+  }
 
   const live = (host as unknown as { views: Map<string, { view: { webContents: unknown } }> }).views.get("open-1");
   eq("★ docIdForSender 能反查真实视图", host.docIdForSender(live?.view.webContents), "open-1");

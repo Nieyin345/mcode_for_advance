@@ -18,6 +18,23 @@
 
 export type AppPolicyLevel = "read" | "ui" | "write" | "danger" | "blocked";
 
+/** 权限档给人和模型看的标签 —— `app_api_list` / `app_api_describe` / `app_guide` 共用
+ *  **这一份**(从前只写在 `tools.ts` 里;guide 也要展示同样的档位,再抄一份就会漂)。 */
+export const APP_POLICY_LEVEL_LABEL: Record<AppPolicyLevel, string> = {
+  read: "只读·自动",
+  ui: "界面·自动",
+  write: "需批准",
+  danger: "高风险·每次批准",
+  blocked: "不开放",
+};
+
+/** 方法名 → 功能域(`a.b` 的 `a`)。与 `DOMAIN_LABELS` 的键是同一套分类 ——
+ *  目录、检索、guide 的 topic 都从这里取,不各写一份 `indexOf(".")`。 */
+export function domainOfMethod(method: string): string {
+  const i = method.indexOf(".");
+  return i < 0 ? method : method.slice(0, i);
+}
+
 /**
  * 【MC-014】**副作用档位** —— 与「谁有权调用」分开的**另一个维度**。
  *
