@@ -53,6 +53,7 @@ import { getMainWindow } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 
 /** webPreferences 的**完整**形状 —— 三项安全开关是字面量类型，改一处都过不了 typecheck。 */
@@ -109,6 +110,11 @@ export interface DocumentViewHostPorts {
   getMainWindow(): DocumentViewHostWindow | null;
   /** 视图构造器；缺省惰性取 `electron.WebContentsView`。 */
   createView?: (webPreferences: DocumentViewWebPreferences) => DocumentViewLike;
+  /** 【ARC-007】**诊断/测试接缝**：在保存租约内、版本比较通过之后、`atomicReplaceFile`
+   *  之前调用。生产不传（no-op）。存在的唯一理由是让回归网能**确定性地**把"胜者
+   *  持锁的窗口"拉长 —— 从而断言落败者在租约串行下真的没走到替换那一步；没有它，
+   *  并发断言只能靠时序碰运气。 */
+  beforeAtomicReplace?: (realPath: string) => void | Promise<void>;
 }
 
 /** 隐藏视图的落点：只挪坐标、保留宽高（与 BrowserManager.hide 同一取舍）。 */
@@ -235,6 +241,7 @@ export class DocumentViewHost {
   private readonly views = new Map<string, LiveDocumentView>();
   private readonly getWindow: () => DocumentViewHostWindow | null;
   private readonly createView: (webPreferences: DocumentViewWebPreferences) => DocumentViewLike;
+  private readonly beforeAtomicReplace: (realPath: string) => void | Promise<void>;
   /** 已经挂过 `closed` 清理钩子的那个窗口（换窗口时先摘旧的）。 */
   private cleanupWindow: DocumentViewHostWindow | null = null;
   private cleanupHandler: (() => void) | null = null;
@@ -244,6 +251,7 @@ export class DocumentViewHost {
   constructor(ports: DocumentViewHostPorts) {
     this.getWindow = ports.getMainWindow;
     this.createView = ports.createView ?? defaultCreateView;
+    this.beforeAtomicReplace = ports.beforeAtomicReplace ?? (() => undefined);
   }
 
   /**
@@ -459,8 +467,18 @@ export class DocumentViewHost {
    *    expected 由宿主记 —— 页面若能携带版本，走 `expectedRevision` 参数。
    * 5. **原子写**：先用 `atomicReplaceFile`（同目录临时文件 + rename），中途失败
    *    不会留下半份文件。
+   * 6. **比较与写入在同一份租约里（ARC-007 TOCTOU 收窄）**：第 4 步的"重算 →
+   *    比较"和第 5 步的"替换"必须是**一个临界区**。否则两个保存（另一个窗口 /
+   *    另一个 Mcode 进程 / Agent 的 `file.writeFile`）可以在"都读到旧版本"之后
+   *    各自通过比较、再先后 rename —— 最后一个静默覆盖前一个。现在整段包进
+   *    `withOsFileLease`（与 `ipc/files.ts` 的 FILE_WRITE、Excel/PDF/DOCX 编辑
+   *    **同一份**宿主级跨进程租约，`@main/lib/osFileLease`；不另起第二套锁）：
+   *    同一路径的写者被串行，先落盘者的结果让后到者重算时必然看到新版本 →
+   *    后到者按第 4 步报 conflict。代价是 `atomicReplaceFile` 的临时文件会与目标
+   *    同目录出现（它本来就是这样）；租约文件是 `${real}.mcode-lock`，释放时删除。
+   *    租约等待超时（`FILE_VERSION_CONFLICT`）按 conflict 回包，不静默覆盖。
    *
-   * 返回 `{ ok:true, bytes, revision }` 让页面能显示"已保存 N 字节"，并给下一步
+   * 返回 `{ ok:true, bytes, filePath, revision }` 让页面能显示"已保存 N 字节"，并给下一步
    * （页面携带 revision 再来）留位；失败带人话原因。冲突时额外带 `currentRevision`，
    * 页面/面板能显示"盘上现在是哪一版"。
    */
@@ -503,39 +521,70 @@ export class DocumentViewHost {
 
     // 【ARC-007】冲突判据：调用方显式给了 expectedRevision（将来页面携带版本）就用它；
     // 否则用**宿主打开时记下的**版本（页面携带不了版本时的乐观锁，见字段注释）。
+    //
+    // ⚠️ expected 必须在**取租约之前**快照下来。两个并发保存若都等到租约内才
+    // await `openedFileRevision`，后到者会读到先到者刚推进的新版本 —— 于是"基于
+    // 打开时内容"的乐观锁被自己的并发保存绕过（两边都成功，后者覆盖前者）。
+    // 先快照、后取锁：先到者落盘后，后到者在锁内重算必然看到新版本 → conflict。
     const expected =
       expectedRevision !== undefined ? expectedRevision : await live.openedFileRevision;
-    const current = await fileContentVersion(target);
-    if (current !== expected) {
-      // ⚠️ 顺序即判据：冲突检查必须在**写盘之前**，且冲突路径上一个字节都不落盘。
-      const message =
-        "文档已被别处改动（另一个窗口、Agent 或外部编辑器）—— 为避免覆盖对方刚保存的内容，本次保存未执行。请重新打开后再改。";
-      live.lastSaveConflict = {
-        expectedRevision: expected,
-        currentRevision: current,
-        message,
-        at: Date.now(),
-      };
-      log.warn(
-        `document view save conflict: ${docId} ${target} expected=${String(expected)} current=${String(current)}`,
-      );
-      return { ok: false, reason: "conflict", currentRevision: current, message };
-    }
+
+    type SaveOutcome =
+      | { ok: true; bytes: number; filePath: string; revision: string | null }
+      | { ok: false; reason: string; currentRevision?: string | null; message?: string };
 
     try {
-      // 与 `file.writeFile` 共用同一份原子替换（`@main/lib/atomicFile`）。
-      await atomicReplaceFile(target, bytes);
+      // 【ARC-007】比较 + 写入在**同一份租约**内：`withOsFileLease` 与
+      // `ipc/files.ts` 的 FILE_WRITE、Excel/PDF/DOCX 编辑共用同一份宿主级
+      // 跨进程租约（`@main/lib/osFileLease`），不另起第二套锁。此前"重算 →
+      // 比较"与 `atomicReplaceFile` 分属两步，两个保存可以都读到旧版本、都通过
+      // 比较、再先后 rename —— 后者静默覆盖前者（注释里登记的 TOCTOU）。
+      return await withOsFileLease(target, async (real): Promise<SaveOutcome> => {
+        const current = await fileContentVersion(real);
+        if (current !== expected) {
+          // ⚠️ 顺序即判据：冲突检查必须在**写盘之前**，且冲突路径上一个字节都不落盘。
+          const message =
+            "文档已被别处改动（另一个窗口、Agent 或外部编辑器）—— 为避免覆盖对方刚保存的内容，本次保存未执行。请重新打开后再改。";
+          live.lastSaveConflict = {
+            expectedRevision: expected,
+            currentRevision: current,
+            message,
+            at: Date.now(),
+          };
+          log.warn(
+            `document view save conflict: ${docId} ${target} expected=${String(expected)} current=${String(current)}`,
+          );
+          return { ok: false, reason: "conflict", currentRevision: current, message };
+        }
+
+        // 诊断/测试接缝：生产是 no-op；回归网在这里把"胜者持锁窗口"拉长以做真并发断言。
+        await this.beforeAtomicReplace(real);
+
+        // 与 `file.writeFile` 共用同一份原子替换（`@main/lib/atomicFile`）。
+        await atomicReplaceFile(real, bytes);
+        const revision = await fileContentVersion(real);
+        // 保存成功后，本视图的"打开时版本"推进到刚写下的这一版 —— 用户连续保存两次
+        // （第二次基于第一次的结果）不该被自己的上一次保存判成冲突。
+        live.openedFileRevision = Promise.resolve(revision);
+        live.lastFailure = undefined;
+        live.lastSaveConflict = undefined;
+        log.info(`document view saved: ${docId} ${target} (${bytes.byteLength} bytes)`);
+        return { ok: true, bytes: bytes.byteLength, filePath: target, revision };
+      });
     } catch (err) {
+      // 租约等待超时 = 另一个进程正持有同一路径的写租约。按 conflict 回包
+      // （不静默覆盖）—— 此时没有读过盘，不给 currentRevision（不编造版本）。
+      if (err instanceof Error && /^FILE_VERSION_CONFLICT/.test(err.message)) {
+        log.warn(`document view save lease busy: ${docId} ${target}`);
+        return {
+          ok: false,
+          reason: "conflict",
+          message:
+            "文档正被另一个进程编辑（跨进程文件租约未取得）—— 为避免并发覆盖，本次保存未执行。请稍后重试。",
+        };
+      }
       return { ok: false, reason: `写入失败：${err instanceof Error ? err.message : String(err)}` };
     }
-    const revision = await fileContentVersion(target);
-    // 保存成功后，本视图的"打开时版本"推进到刚写下的这一版 —— 用户连续保存两次
-    // （第二次基于第一次的结果）不该被自己的上一次保存判成冲突。
-    live.openedFileRevision = Promise.resolve(revision);
-    live.lastFailure = undefined;
-    live.lastSaveConflict = undefined;
-    log.info(`document view saved: ${docId} ${target} (${bytes.byteLength} bytes)`);
-    return { ok: true, bytes: bytes.byteLength, filePath: target, revision };
   }
 
   /**

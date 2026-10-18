@@ -32,4 +32,14 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
-MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/smoke.mjs"
+# 【ARC-007】跨进程租约夹具：子进程入口打进**同一份源码**
+# `src/main/lib/osFileLease.ts`（两包各自内联，但协议与实现是同一文件；租约的互斥
+# 事实在磁盘上 —— `<real>.mcode-lock` 由 O_CREAT|O_EXCL 抢占 —— 所以不要求共享
+# 模块实例，只要求同一套原语。不能用 `--external:@main/...`：那是 esbuild 别名，
+# 产物里的 specifier 在 node 运行时解析不了）。
+"$ESBUILD" scripts/document-view-host-smoke/leaseChild.ts \
+  --bundle --platform=node --format=esm \
+  --tsconfig=tsconfig.json \
+  --outfile="$OUT/leaseChild.mjs" --log-level=error
+
+MCODE_SMOKE_DATA_ROOT="$DATA" MCODE_DV_LEASE_CHILD="$OUT/leaseChild.mjs" node "$OUT/smoke.mjs"

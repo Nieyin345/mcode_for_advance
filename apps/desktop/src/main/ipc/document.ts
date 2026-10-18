@@ -27,6 +27,7 @@ import { documentKindOf } from "@contracts/documentKind";
 import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, slidesApply, sheetRead, sheetApply, convertFile, guideOps, type GenofficeResult } from "@main/document/genofficeCli.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 
 /**
  * 仓库根的**可注入解析** —— 默认惰性 `require("electron").app.getAppPath()`
@@ -192,30 +193,67 @@ export function registerDocumentHandlers(ipc: IpcMain): void {
     const input = DocumentEditSchema.parse(raw);
     if (!p.ok) return unavailable();
     // 【ARC-007】原值版本检查(与 file.writeFile 的 expectedVersion 同一算法)。
-    // 检查在**执行前**；CLI 写入后不再复核 —— 那一段是 CLI 的原子写,宿主无法插进去。
-    // 因此判据是"读到版本 → 立刻执行",窗口极小;真正的并发互斥留给后续
-    // VersionedFileStore 切片(计划 B.2),这里先把"旧草稿静默覆盖"堵住。
-    if (input.expectedRevision !== undefined) {
-      const current = await fileContentVersion(input.filePath);
-      if (current !== input.expectedRevision) {
+    // ⚠️ 比较与 CLI 执行必须在**同一份租约**内（见下）：此前是"先比对、后执行"两步，
+    // 两个编辑可以都读到旧版本、都通过比对，再由 CLI 先后写盘 —— 后者静默覆盖前者的
+    // 窗口就在这两步之间。租约与 `ipc/files.ts` 的 FILE_WRITE、文档视图保存通道
+    // **共用同一份**(`@main/lib/osFileLease`),不另起第二套锁。
+    // CLI 写入后不再复核 —— 那一段是 CLI 自己的原子写,宿主无法插进去。
+    //
+    // 不带 expectedRevision 的编辑也取租约:租约是**所有写者**之间的事实,若
+    // "无版本编辑"绕过租约,带版本的一侧即使在锁内重算,也会被这位不持锁的写者
+    // 在重算与替换之间插进来 —— 互斥就只对持锁者成立。dryRun 不写盘,不取。
+    const run = async (): Promise<DocumentIpcResult> => {
+      if (input.expectedRevision !== undefined) {
+        const current = await fileContentVersion(input.filePath);
+        if (current !== input.expectedRevision) {
+          return {
+            ok: false,
+            kind: "conflict",
+            reason: "文档已被别处改动(另一个窗口、Agent 或外部编辑器)—— 为避免覆盖对方刚保存的内容,这次编辑未执行。请重新加载后再改。",
+            currentRevision: current,
+          };
+        }
+      }
+      const result = await editByKind(p.ports, input.filePath, input.ops, {
+        ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
+        ...(input.track !== undefined ? { track: input.track } : {}),
+      });
+      // 成功时回传新版本(dryRun 不写盘,版本不变)。
+      if (result.ok && input.dryRun !== true) {
+        const wire = toWire(result);
+        return wire.ok ? { ...wire, revision: await fileContentVersion(input.filePath) } : wire;
+      }
+      return toWire(result);
+    };
+
+    // 租约会在目标旁创建 `<real>.mcode-lock`。只有 **office 格式的非 dryRun 编辑**
+    // 会真的写盘（`editByKind` 的其它分支是 refused/unavailable，不落一个字节），
+    // 也只有它们该付出锁文件的开销；工作区**外**的路径由 `editByKind` 的围栏拒绝
+    // （`requireWorkspacePath`），绝不能因为"先取锁"而在界外留下文件。其余路径
+    // 照旧走 `run()`，由路由层给出原样的拒绝理由。
+    const willWrite = input.dryRun !== true
+      && documentKindOf(input.filePath) === "office"
+      && p.ports.withinWorkspace(input.filePath);
+    if (!willWrite) return run();
+    try {
+      return await withOsFileLease(input.filePath, run);
+    } catch (err) {
+      // 租约等待超时 = 另一个进程正持有同一路径的写租约。按 conflict 回包
+      // （不静默覆盖），与比较失败的语义一致；不编造 currentRevision。
+      if (err instanceof Error && /^FILE_VERSION_CONFLICT/.test(err.message)) {
         return {
           ok: false,
           kind: "conflict",
-          reason: "文档已被别处改动(另一个窗口、Agent 或外部编辑器)—— 为避免覆盖对方刚保存的内容,这次编辑未执行。请重新加载后再改。",
-          currentRevision: current,
+          reason: "文档正被另一个进程编辑(跨进程文件租约未取得)—— 为避免并发覆盖,这次编辑未执行。请稍后重试。",
         };
       }
+      return toWire({
+        ok: false,
+        kind: "failed",
+        envelope: null,
+        reason: err instanceof Error ? err.message : String(err),
+      });
     }
-    const result = await editByKind(p.ports, input.filePath, input.ops, {
-      ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
-      ...(input.track !== undefined ? { track: input.track } : {}),
-    });
-    // 成功时回传新版本(dryRun 不写盘,版本不变)。
-    if (result.ok && input.dryRun !== true) {
-      const wire = toWire(result);
-      return wire.ok ? { ...wire, revision: await fileContentVersion(input.filePath) } : wire;
-    }
-    return toWire(result);
   });
 
   ipc.handle(IPC.DOCUMENT_CONVERT, async (_evt, raw) => {

@@ -29,6 +29,13 @@
  *     `reason:"conflict"` 且盘上保留外部内容；没改 → 保存成功且不误报；
  *     冲突经内部 IPC 通道时带页面认识的 `error`。变异验证：撤掉 sha256 比较
  *     （`current !== expected` 恒假）→ 第 11 段 9 条变红，逐字节还原后回到 200/200。
+ *  8. **保存的租约互斥（第 12/13 段，TOCTOU 收窄）**：版本比较与写入在同一份
+ *     宿主级跨进程租约内（`@main/lib/osFileLease`，与 `ipc/files.ts` 同一实现）。
+ *     第 12 段用注入的 `beforeAtomicReplace` 把胜者持锁窗口拉长，**确定性地**
+ *     制造"后到者已在等锁"的时序：两个并发保存只有一个成功、另一个 conflict，
+ *     盘上是胜者内容，后到者一次都没进临界区；第 13 段用**独立 node 子进程**
+ *     证明租约是跨进程事实：子进程持锁时保存必须**等**（不是无视锁直接写），
+ *     本进程持锁时子进程 probe 报 busy、释放后能抢到（正反两向）。
  *
  * ## 变异自检（判据承重验证）
  *
@@ -794,6 +801,210 @@ section("7. 三层接线：preload / rpcMap / main 注册");
 
   host.closeAll();
   await rm(workspace11, { recursive: true, force: true });
+}
+
+/* ══════════ 12.【ARC-007】保存的租约互斥：比较 + 写入是一个临界区 ══════════
+ *
+ * 背景：`saveOpenedFile` 从前是"重算 sha256 → 比较 → atomicReplaceFile"三步，
+ * 比较与写入之间存在 TOCTOU 窗口：两个保存（另一个窗口 / 另一个 Mcode 进程）可以
+ * 都读到旧版本、都通过比较、再先后 rename —— 后者静默覆盖前者。修复把整段包进
+ * `withOsFileLease`（宿主级跨进程租约，与 ipc/files.ts 同一份）。
+ *
+ * 判据怎么做到**确定性**：`beforeAtomicReplace` 是宿主构造参数里的诊断/测试接缝，
+ * 只在"锁内、比较通过、替换之前"调用。这里让**第一次**进入临界区的保存在此挂起，
+ * 等确定第二个保存已经发出并卡在锁上（轮到它就必须等第一个释放）再放行。于是：
+ *   - 修复在：第二个保存的 expected 快照是打开时版本（在取锁之前拍下），第一个
+ *     落盘后它进锁重算必然看到新版本 → conflict；盘上是第一个的内容；它一次都没
+ *     走到 `beforeAtomicReplace`（没进临界区）。
+ *   - 撤掉租约包裹：第二个保存的"重算 → 比较 → 写"与第一个完全交错，两个都成功，
+ *     盘上变成第二个的内容 —— 下面 5 条红。
+ */
+{
+  const { mkdtempSync, writeFileSync, readFileSync: readSync12 } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  const { createHash } = await import("node:crypto");
+  const { rm } = await import("node:fs/promises");
+  const ws12 = mkdtempSync(joinPath(tmpdir(), "mcode-dv-lease-"));
+  const doc12 = joinPath(ws12, "lease.docx");
+  writeFileSync(doc12, "lease-open", "utf8");
+  const sha12 = (s: string): string => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
+
+  // 胜者在临界区里的挂起点：第一次进入就挂住，直到测试显式放行。
+  let enteredCritical = 0;
+  let releaseWinner!: () => void;
+  const winnerGate = new Promise<void>((resolve) => { releaseWinner = resolve; });
+  const win = makeFakeWindow();
+  const host = new DocumentViewHost({
+    getMainWindow: () => win,
+    createView: makeFakeView,
+    beforeAtomicReplace: async () => {
+      enteredCritical += 1;
+      if (enteredCritical === 1) await winnerGate;
+    },
+  });
+  host.open({ docId: "lease-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+  eq("前置：openPath 成功并记下打开时版本", host.openPath("lease-1", doc12, () => true), { ok: true });
+
+  // 两个保存几乎同时发出：A 先拿到租约并挂在接缝上；B 发出后必然卡在租约上。
+  const saveA = host.saveOpenedFile("lease-1", new TextEncoder().encode("winner-A"), () => true);
+  // 等到 A 真正进入临界区（挂起在接缝上 = 租约已被 A 持有），再发 B。
+  while (enteredCritical === 0) await new Promise((r) => setTimeout(r, 5));
+  const saveB = host.saveOpenedFile("lease-1", new TextEncoder().encode("loser-B"), () => true);
+  // 给 B 足够时间走到"等锁"（修复时）或"完成整个保存"（变异时）。
+  await new Promise((r) => setTimeout(r, 300));
+  releaseWinner();
+  const [resA, resB] = await Promise.all([saveA, saveB]);
+
+  const okCount = [resA, resB].filter((r) => r.ok).length;
+  const conflictCount = [resA, resB].filter((r) => !r.ok && r.reason === "conflict").length;
+  check("★ 两个并发保存只有一个成功、另一个 conflict（不静默双写）",
+    okCount === 1 && conflictCount === 1, { resA, resB });
+  check("★ 先拿到租约的一方胜出（A 成功）", resA.ok === true, resA);
+  check("★ 落败者的 conflict 回包带盘上当前版本（胜者内容的 sha256）",
+    resB.ok === false && resB.reason === "conflict" && resB.currentRevision === sha12("winner-A"), resB);
+  eq("★★ 盘上是胜者的内容（落败者一个字节都没写进去）", readSync12(doc12, "utf8"), "winner-A");
+  eq("★ 落败者一次都没进入临界区（租约把它挡在比较之前）", enteredCritical, 1);
+  {
+    const snap = host.list().find((v) => v.docId === "lease-1");
+    eq("冲突记进快照 lastSaveConflict（面板可见）", snap?.lastSaveConflict?.currentRevision, sha12("winner-A"));
+  }
+
+  // 后续保存基于胜者版本，不被上一轮并发误伤（成功路径会清冲突并推进打开时版本）。
+  const after = await host.saveOpenedFile("lease-1", new TextEncoder().encode("after-A"), () => true);
+  check("★ 并发之后的下一次保存正常成功（打开时版本已推进到胜者内容）", after.ok === true, after);
+  eq("after 内容落盘", readSync12(doc12, "utf8"), "after-A");
+
+  // 租约释放后锁文件不该残留（否则下一次别的进程会被一把死锁挡住 60 秒）。
+  const { existsSync: exists12 } = await import("node:fs");
+  eq("★ 租约释放后没有残留锁文件", exists12(`${doc12}.mcode-lock`), false);
+
+  host.closeAll();
+  await rm(ws12, { recursive: true, force: true });
+}
+
+
+/* ══════════ 13.【ARC-007】租约是跨进程事实：独立 node 子进程持锁 ══════════
+ *
+ * 第 12 段只能证明"同一进程内两个 async 保存被串行"。这里的判据必须是**另一个
+ * OS 进程**：run.sh 把同一份 `osFileLease.ts` 内联给子进程（leaseChild.mjs），
+ * 子进程用 `hold` 抢住 `<file>.mcode-lock` 并在 stdout 报 `held`；此时宿主保存：
+ *   a) 必须**等**着 —— 子进程持锁 2.5 秒期间保存不能落盘、也不能报成功；
+ *   b) 若这段时间里盘上内容被改成了新版本（测试在子进程持锁期间直接写盘，模拟
+ *      "另一进程已写入"的最坏情况），宿主拿到锁后必须**重算**并报 conflict，
+ *      而不是拿发请求时的旧结论盲写；
+ *   c) 反向：宿主持锁时子进程 `probe` 报 busy，宿主释放后 probe 能抢到 —— 证明
+ *      两边锁的是同一个磁盘事实（不是各自进程内的 Map）。
+ */
+{
+  const { mkdtempSync, writeFileSync, readFileSync: readSync13 } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  const { spawn } = await import("node:child_process");
+  const { rm } = await import("node:fs/promises");
+  const { existsSync: exists13 } = await import("node:fs");
+  const { createHash } = await import("node:crypto");
+  const ws13 = mkdtempSync(joinPath(tmpdir(), "mcode-dv-xproc-"));
+  const doc13 = joinPath(ws13, "xproc.docx");
+  writeFileSync(doc13, "xproc-open", "utf8");
+  const sha13 = (s: string): string => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
+  const childEntry = process.env.MCODE_DV_LEASE_CHILD ?? "";
+
+  if (!exists13(childEntry)) {
+    check(`跨进程租约段需要 leaseChild 入口（run.sh 应设置 MCODE_DV_LEASE_CHILD，当前：${childEntry || "(空)"}）`, false);
+  } else {
+    const runChild = (args: string[]): { child: import("node:child_process").ChildProcess; done: Promise<string> } => {
+      const child = spawn(process.execPath, [childEntry, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+      const done = new Promise<string>((resolve, reject) => {
+        let out = "";
+        child.stdout!.on("data", (d: Buffer) => { out += d.toString("utf8"); });
+        child.once("error", reject);
+        child.once("close", () => resolve(out));
+      });
+      return { child, done };
+    };
+
+    // ── a/b：子进程持锁 2.5s，宿主保存必须等它释放 ──
+    {
+      const win = makeFakeWindow();
+      const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
+      host.open({ docId: "xproc-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+      eq("前置：openPath 成功", host.openPath("xproc-1", doc13, () => true), { ok: true });
+
+      const { child, done } = runChild(["hold", doc13, "2500"]);
+      // 等子进程报 `held`（它已持有磁盘锁）再发起保存。
+      await new Promise<void>((resolve) => {
+        child.stdout!.on("data", (d: Buffer) => {
+          if (d.toString("utf8").includes("held")) resolve();
+        });
+      });
+
+      const t0 = Date.now();
+      const saving = host.saveOpenedFile("xproc-1", new TextEncoder().encode("host-bytes"), () => true);
+      // 子进程仍在持锁期间：保存不得落盘、不得报成功（它要么在等，要么已经错误地无视锁写完）。
+      await new Promise((r) => setTimeout(r, 700));
+      eq("★ 子进程持锁期间：宿主保存没有落盘", readSync13(doc13, "utf8"), "xproc-open");
+      const result = await saving;
+      const settledEarly = Date.now() - t0 < 1500;
+      const childOut = await done;
+      check("★ 子进程确实持满并释放了锁（stderr 无异常）", childOut.includes("released"), childOut);
+      check("★ 宿主保存等到锁释放之后才拿到结论（不是立刻写）", settledEarly === false, { settledEarly });
+      // 子进程没改文件内容，但宿主 openPath 时记的 expected 仍是 "xproc-open"，
+      // 所以锁释放后保存应**成功**（盘上版本没变）—— 关键判据是它等过锁。
+      check("★ 锁释放后保存成功（盘上版本未被改动）", result.ok === true, result);
+      eq("★ 保存内容落盘", readSync13(doc13, "utf8"), "host-bytes");
+      eq("★ 子进程释放后不再有锁文件残留", exists13(`${doc13}.mcode-lock`), false);
+      host.closeAll();
+    }
+
+    // ── b2：子进程在持锁期间**改掉文件内容**，宿主保存必须 conflict（不是等待后盲写） ──
+    {
+      const docB = joinPath(ws13, "xproc-b.docx");
+      writeFileSync(docB, "b-open", "utf8");
+      const win = makeFakeWindow();
+      const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
+      host.open({ docId: "xproc-b", url: FILE_URL, bounds: BOUNDS, visible: true });
+      eq("前置：openPath 成功（b）", host.openPath("xproc-b", docB, () => true), { ok: true });
+      // 让宿主的"打开时版本"先算完（否则保存会在取锁前 await 它，语义仍对，只是时序不好看）。
+      await new Promise((r) => setTimeout(r, 50));
+
+      const { child, done } = runChild(["hold", docB, "1500"]);
+      await new Promise<void>((resolve) => {
+        child.stdout!.on("data", (d: Buffer) => {
+          if (d.toString("utf8").includes("held")) resolve();
+        });
+      });
+      // 子进程持锁期间，由测试直接改盘（模拟"另一进程在锁内写入了新版本"的最坏情况）。
+      writeFileSync(docB, "written-by-other-process", "utf8");
+      const result = await host.saveOpenedFile("xproc-b", new TextEncoder().encode("page-bytes"), () => true);
+      await done;
+      check("★ 另一进程改过盘后，宿主保存报 conflict（等锁后重算，不盲写）",
+        result.ok === false && result.reason === "conflict", result);
+      check("★ conflict 回包带盘上当前版本", result.ok === false && result.currentRevision === sha13("written-by-other-process"), result);
+      eq("★★ 盘上是另一进程的内容（宿主字节一个都没写进去）", readSync13(docB, "utf8"), "written-by-other-process");
+      host.closeAll();
+    }
+
+    // ── c：宿主持锁时子进程 probe 报 busy；释放后 probe 抢到 ──
+    {
+      const docC = joinPath(ws13, "xproc-c.docx");
+      writeFileSync(docC, "c-open", "utf8");
+      const { acquireOsFileLease } = await import("@main/lib/osFileLease.js");
+      const release = await acquireOsFileLease(`${docC}.mcode-lock`);
+      try {
+        const { done } = runChild(["probe", docC, "250"]);
+        const out = await done;
+        check("★ 宿主持锁时独立进程 probe 报 busy（锁是跨进程的）", out.trim() === "busy", out.trim());
+      } finally {
+        await release();
+      }
+      const { done: done2 } = runChild(["probe", docC, "250"]);
+      const out2 = await done2;
+      check("★ 宿主释放后独立进程 probe 能抢到（正控：不是 probe 永远 busy）", out2.trim() === "acquired", out2.trim());
+    }
+  }
+
+  await rm(ws13, { recursive: true, force: true });
 }
 
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);
