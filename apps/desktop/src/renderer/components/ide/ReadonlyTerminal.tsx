@@ -38,7 +38,7 @@ export function ReadonlyTerminal({ text }: { text: string }) {
       lineHeight: 1.15,
       scrollback: 5000,
       convertEol: false,
-      theme: buildTheme(document.documentElement.classList.contains("dark")),
+      theme: buildTheme(),
       allowProposedApi: false,
     });
     const fit = new FitAddon();
@@ -80,9 +80,11 @@ export function ReadonlyTerminal({ text }: { text: string }) {
     writtenRef.current = text;
   }, [text]);
 
+  // 主题变化：buildTheme() 现读 <html> 的计算值，`dark` 只作重读触发
+  // （同 TerminalView 的理由，见 lib/terminalTheme.ts）。
   useEffect(() => {
     const term = termRef.current;
-    if (term) term.options.theme = buildTheme(dark);
+    if (term) term.options.theme = buildTheme();
   }, [dark]);
 
   useEffect(() => {

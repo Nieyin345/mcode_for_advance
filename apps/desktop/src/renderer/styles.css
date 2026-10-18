@@ -193,6 +193,42 @@ div:has(> [role="menu"]) {
   --git-lane-3: 225 29 72; /* rose-600 */
   --git-lane-4: 5 150 105; /* emerald-600 */
 
+  /* 【ARC-005】终端（xterm）主题。xterm 用 canvas 画字，CSS 规则管不到它，
+   * 只能把颜色喂进 `ITheme` 对象。此前 TerminalView.buildTheme() 里是两套
+   * 硬编码 hex（44 处色值），主题切换时不会跟随语义 token。
+   * 这里把「跟随语义」的部分暴露成 R G B 三元组，由 lib/terminalTheme.ts 的
+   * 纯函数（浏览器侧经 getComputedStyle）拼成 xterm 接受的 `rgb(r, g, b)`：
+   *   - 背景/前景/光标/选区/光标字色 → 语义 token（--surface/--content/--accent…）
+   *   - 上下文行（ANSI white/brightBlack）→ --content-muted
+   *   - ANSI 基本色是**终端协议色**（红必须是红），不跟随品牌色，沿用现有
+   *     终端调色板的 Tailwind 色阶；这里只做集中定义，来源见各注释。
+   * 逆向报告无终端实测色值（矩阵只记「待测」）——**值来自现有终端主题，
+   * 待真机对照**深色十六色在 --surface 上的观感。 */
+  --terminal-bg: var(--surface);
+  --terminal-fg: var(--content);
+  --terminal-cursor: var(--accent);
+  --terminal-cursor-accent: var(--surface);
+  --terminal-selection-bg: var(--surface-hover);
+  --terminal-selection-fg: var(--content);
+  /* ANSI 16 色 — 现有 buildTheme(light) 的 hex 原样收成三元组（终端协议色，
+   * 不随品牌色）。black/white 走语义；其余为 Tailwind 500/600 档。 */
+  --terminal-black: 24 24 27; /* zinc-900 — 原 #18181b */
+  --terminal-red: 220 38 38; /* red-600 — 原 #dc2626 */
+  --terminal-green: 5 150 105; /* emerald-600 — 原 #059669 */
+  --terminal-yellow: 217 119 6; /* amber-600 — 原 #d97706 */
+  --terminal-blue: 37 99 235; /* blue-600 — 原 #2563eb */
+  --terminal-magenta: 124 58 237; /* violet-600 — 原 #7c3aed */
+  --terminal-cyan: 8 145 178; /* cyan-600 — 原 #0891b2 */
+  --terminal-white: 228 228 231; /* zinc-200 — 原 #e4e4e7 */
+  --terminal-bright-black: 113 113 122; /* zinc-500 — 原 #71717a */
+  --terminal-bright-red: 239 68 68; /* red-500 — 原 #ef4444 */
+  --terminal-bright-green: 16 185 129; /* emerald-500 — 原 #10b981 */
+  --terminal-bright-yellow: 245 158 11; /* amber-500 — 原 #f59e0b */
+  --terminal-bright-blue: 59 130 246; /* blue-500 — 原 #3b82f6 */
+  --terminal-bright-magenta: 139 92 246; /* violet-500 — 原 #8b5cf6 */
+  --terminal-bright-cyan: 6 182 212; /* cyan-500 — 原 #06b6d4 */
+  --terminal-bright-white: 250 250 250; /* zinc-50 — 原 #fafafa */
+
   /* Chat appearance — user-configurable. Overridden at runtime by
    * lib/appearance.ts (setProperty on <html>) when the user changes them
    * in Settings. These are the theme defaults (= current hardcoded look):
@@ -288,6 +324,33 @@ div:has(> [role="menu"]) {
   --git-lane-2: 251 191 36; /* amber-400 */
   --git-lane-3: 251 113 133; /* rose-400 */
   --git-lane-4: 52 211 153; /* emerald-400 */
+
+  /* 【ARC-005】终端（xterm）主题 — 暗色对应。语义五项引用暗色语义 token
+   * （背景/前景/光标/选区随 .dark 自动换），ANSI 十六色沿用现有暗色终端
+   * 调色板（300/400 档在深底上更亮）。见 :root 同名注释；值来自现有终端
+   * 主题，待真机对照。 */
+  --terminal-bg: var(--surface);
+  --terminal-fg: var(--content);
+  --terminal-cursor: var(--accent-strong); /* 暗色 accent 即 emerald-500 */
+  --terminal-cursor-accent: var(--surface);
+  --terminal-selection-bg: var(--surface-hover);
+  --terminal-selection-fg: var(--content);
+  --terminal-black: 24 24 27; /* zinc-900 — 原 #18181b */
+  --terminal-red: 248 113 113; /* red-400 — 原 #f87171 */
+  --terminal-green: 52 211 153; /* emerald-400 — 原 #34d399 */
+  --terminal-yellow: 251 191 36; /* amber-400 — 原 #fbbf24 */
+  --terminal-blue: 96 165 250; /* blue-400 — 原 #60a5fa */
+  --terminal-magenta: 167 139 250; /* violet-400 — 原 #a78bfa */
+  --terminal-cyan: 34 211 238; /* cyan-400 — 原 #22d3ee */
+  --terminal-white: 228 228 231; /* zinc-200 — 原 #e4e4e7 */
+  --terminal-bright-black: 82 82 91; /* zinc-600 — 原 #52525b */
+  --terminal-bright-red: 252 165 165; /* red-300 — 原 #fca5a5 */
+  --terminal-bright-green: 110 231 183; /* emerald-300 — 原 #6ee7b7 */
+  --terminal-bright-yellow: 252 211 77; /* amber-300 — 原 #fcd34d */
+  --terminal-bright-blue: 147 197 253; /* blue-300 — 原 #93c5fd */
+  --terminal-bright-magenta: 196 181 253; /* violet-300 — 原 #c4b5fd */
+  --terminal-bright-cyan: 103 232 249; /* cyan-300 — 原 #67e8f9 */
+  --terminal-bright-white: 250 250 250; /* zinc-50 — 原 #fafafa */
 
   /* Chat appearance defaults for dark mode (neutral gray, one shade
    * brighter than the light default for readable contrast on zinc-900).
@@ -2571,6 +2634,15 @@ html.sketch.dark body::after {
 .monaco-editor .mcode-diff-revert-glyph:hover::before {
   color: rgb(var(--accent));
   opacity: 1;
+}
+
+/* 【ARC-005】终端（xterm）宿主的 CSS 侧：xterm canvas 的背景由 ITheme 喂
+ * （lib/terminalTheme.ts ← --terminal-* token），但 sketch 主题给宿主垫的
+ * 内衬底色走这里的 --surface-muted，两者同源，不会有「画布一块、内衬一块」
+ * 的拼色。终端宿主的底色与前景同步自 --terminal-bg/--terminal-fg。 */
+.xterm .xterm-viewport {
+  background-color: rgb(var(--terminal-bg)) !important;
+  color: rgb(var(--terminal-fg));
 }
 
 /* 【ARC-005】Diff 行色的消费端（chat/DiffView.tsx 与 mobile/PatchView.tsx 共用）。

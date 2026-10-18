@@ -539,5 +539,97 @@ section("12. 【ARC-005】Diff 行色 token 化 + 高对比形状");
     /\.diff-del\s*\{[\s\S]{0,80}?outline-style:\s*dashed/.test(fcBlock2));
 }
 
+section("13. 【ARC-005】终端主题接语义 token");
+{
+  const css = read("src/renderer/styles.css");
+  const noComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const rootAt = noComments.indexOf(":root {");
+  const darkAt3 = noComments.indexOf(".dark {");
+  const rootBlock = rootAt >= 0 ? noComments.slice(rootAt, noComments.indexOf("}", rootAt)) : "";
+  const darkBlock = darkAt3 >= 0 ? noComments.slice(darkAt3, noComments.indexOf("}", darkAt3)) : "";
+  const TERM_TOKENS = [
+    "--terminal-bg", "--terminal-fg", "--terminal-cursor", "--terminal-cursor-accent",
+    "--terminal-selection-bg", "--terminal-selection-fg",
+    "--terminal-black", "--terminal-red", "--terminal-green", "--terminal-yellow",
+    "--terminal-blue", "--terminal-magenta", "--terminal-cyan", "--terminal-white",
+    "--terminal-bright-black", "--terminal-bright-red", "--terminal-bright-green",
+    "--terminal-bright-yellow", "--terminal-bright-blue", "--terminal-bright-magenta",
+    "--terminal-bright-cyan", "--terminal-bright-white",
+  ];
+  // ★ 22 个终端 token 浅/深两套都有真实定义（剥注释后判规则本体）。
+  const missingLight = TERM_TOKENS.filter((t) => !new RegExp(`${t}:\\s*[^;]+;`).test(rootBlock));
+  const missingDark = TERM_TOKENS.filter((t) => !new RegExp(`${t}:\\s*[^;]+;`).test(darkBlock));
+  check("★ 终端 token 浅色 22 个全定义", missingLight.length === 0, missingLight);
+  check("★ 终端 token 深色 22 个全定义", missingDark.length === 0, missingDark);
+  // ★ 语义项必须**引用**语义 token（不是字面量）—— 背景/前景/光标/选区。
+  for (const [tok, ref] of [
+    ["--terminal-bg", "--surface"],
+    ["--terminal-fg", "--content"],
+    ["--terminal-cursor", "--accent"],
+    ["--terminal-selection-bg", "--surface-hover"],
+    ["--terminal-selection-fg", "--content"],
+    ["--terminal-cursor-accent", "--surface"],
+  ] as const) {
+    check(`★ ${tok} 引用 var(${ref})`, new RegExp(`${tok}:\\s*var\\(${ref.replace(/[()]/g, "\\$&")}\\)`).test(rootBlock));
+  }
+  // ★ 构建器是纯函数且**不持有字面量颜色**（源码级，剥注释）。
+  const theme = read("src/renderer/lib/terminalTheme.ts");
+  const themeNoComments = theme.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  check("★ terminalTheme.ts 无硬编码颜色(hex/rgb 字面量)",
+    !/#[0-9a-fA-F]{3,8}\b/.test(themeNoComments) && !/\brgba?\(\s*\d/.test(themeNoComments),
+    themeNoComments.match(/#[0-9a-fA-F]{3,8}|\brgba?\(/g));
+  check("★ 主题构建纯函数 buildThemeFromVars 导出", /export function buildThemeFromVars\s*\(/.test(themeNoComments));
+  check("★ 三元组→rgb 转换存在且拒绝非法值",
+    /export function tripletToXtermColor/.test(themeNoComments) && /parts\.length !== 3/.test(themeNoComments));
+
+  // ★ 消费端：两个 xterm 组件经 buildTheme() 读 token，不再有 hex 字面量。
+  for (const file of ["src/renderer/components/ide/TerminalView.tsx", "src/renderer/components/ide/ReadonlyTerminal.tsx"]) {
+    const src = read(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    const hex = src.match(/#[0-9a-fA-F]{3,8}\b/g);
+    check(`★ ${file.split("/").pop()} 无硬编码 hex`, hex === null, hex);
+    check(`★ ${file.split("/").pop()} 主题经 buildTheme() 构建`, /buildTheme\(\)/.test(src));
+  }
+
+  // ★ 主题变化会重建：`[dark]` effect 调 buildTheme()（现读计算值），
+  // 两个组件都必须有这条。source 级断言 —— 改回「构造时读一次、之后不更新」
+  // 会红。
+  const tv = read("src/renderer/components/ide/TerminalView.tsx");
+  check("★ TerminalView 在 [dark] 变化时重建主题",
+    /useEffect\(\(\) => \{[\s\S]{0,200}?options\.theme = buildTheme\(\)[\s\S]{0,80}?\}, \[dark\]\)/.test(tv));
+  const rt = read("src/renderer/components/ide/ReadonlyTerminal.tsx");
+  check("★ ReadonlyTerminal 在 [dark] 变化时重建主题",
+    /useEffect\(\(\) => \{[\s\S]{0,200}?options\.theme = buildTheme\(\)[\s\S]{0,80}?\}, \[dark\]\)/.test(rt));
+  // ★ 运行期真的走计算值（token 解析），不是按 dark 分支的两套常量。
+  check("★ buildTheme 走 buildTerminalTheme()(getComputedStyle 现读)",
+    /buildTerminalTheme\(\)/.test(tv) && /getComputedStyle\(document\.documentElement\)/.test(themeNoComments));
+  // ★ xterm 视口 CSS 背景/前景也接同一组 token（画布与宿主底色同源）。
+  check("★ .xterm-viewport 背景/前景走 --terminal-bg/--terminal-fg",
+    /\.xterm \.xterm-viewport\s*\{[\s\S]{0,160}?background-color:\s*rgb\(var\(--terminal-bg\)\)[\s\S]{0,80}?color:\s*rgb\(var\(--terminal-fg\)\)/.test(noComments));
+
+  // ★ 纯函数级：给定假 token 值时真的产出 xterm 格式；缺 token 时省略而非编造。
+  const { buildThemeFromVars, tripletToXtermColor } = await import("../../src/renderer/lib/terminalTheme.js");
+  eq("triplet → rgb()", tripletToXtermColor(" 5 150 105 "), "rgb(5, 150, 105)");
+  eq("非法三元组(两段) → null", tripletToXtermColor("5 150"), null);
+  eq("越界 → null", tripletToXtermColor("5 300 105"), null);
+  eq("hex → null(不猜)", tripletToXtermColor("#059669"), null);
+  const fakeDark = new Map<string, string>([
+    ["--terminal-bg", "21 21 21"],
+    ["--terminal-fg", "249 249 247"],
+    ["--terminal-cursor", "16 185 129"],
+    ["--terminal-red", "248 113 113"],
+  ]);
+  const built = buildThemeFromVars((t) => fakeDark.get(t));
+  eq("buildThemeFromVars: background", built.background, "rgb(21, 21, 21)");
+  eq("buildThemeFromVars: red", built.red, "rgb(248, 113, 113)");
+  eq("buildThemeFromVars: 缺失 token 省略", built.green, undefined);
+  const fakeLight = new Map<string, string>([
+    ["--terminal-bg", "252 252 251"],
+    ["--terminal-fg", "21 21 21"],
+    ["--terminal-cursor", "5 150 105"],
+  ]);
+  const builtLight = buildThemeFromVars((t) => fakeLight.get(t));
+  check("★ 同一构建器能产出浅/深两套不同值", builtLight.background !== built.background && builtLight.cursor !== built.cursor);
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

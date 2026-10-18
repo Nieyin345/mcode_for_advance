@@ -7,6 +7,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { monoFontStack, useUiPrefsStore } from "@renderer/lib/uiPrefs.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { buildTerminalTheme } from "@renderer/lib/terminalTheme.js";
 import type { ITheme } from "@xterm/xterm";
 
 export type TerminalSessionStatus = "starting" | "running" | "exited" | "error";
@@ -32,58 +33,16 @@ interface Props {
   className?: string;
 }
 
-/** Zinc/emerald mirrors of styles.css tokens — xterm needs explicit hex. */
-export function buildTheme(dark: boolean): ITheme {
-  if (dark) {
-    return {
-      background: "#18181b", // surface zinc-900 (matches --surface)
-      foreground: "#e7e8ec", // content (--content)
-      cursor: "#10b981", // accent emerald-500
-      cursorAccent: "#18181b",
-      selectionBackground: "#2c2d33", // surface-hover
-      selectionForeground: "#e7e8ec",
-      black: "#18181b",
-      red: "#f87171",
-      green: "#34d399",
-      yellow: "#fbbf24",
-      blue: "#60a5fa",
-      magenta: "#a78bfa",
-      cyan: "#22d3ee",
-      white: "#e4e4e7",
-      brightBlack: "#52525b",
-      brightRed: "#fca5a5",
-      brightGreen: "#6ee7b7",
-      brightYellow: "#fcd34d",
-      brightBlue: "#93c5fd",
-      brightMagenta: "#c4b5fd",
-      brightCyan: "#67e8f9",
-      brightWhite: "#fafafa",
-    };
-  }
-  return {
-    background: "#ffffff", // surface white
-    foreground: "#18181b", // content zinc-900
-    cursor: "#059669", // accent emerald-600
-    cursorAccent: "#ffffff",
-    selectionBackground: "#d4d4d8",
-    selectionForeground: "#18181b",
-    black: "#18181b",
-    red: "#dc2626",
-    green: "#059669",
-    yellow: "#d97706",
-    blue: "#2563eb",
-    magenta: "#7c3aed",
-    cyan: "#0891b2",
-    white: "#e4e4e7",
-    brightBlack: "#71717a",
-    brightRed: "#ef4444",
-    brightGreen: "#10b981",
-    brightYellow: "#f59e0b",
-    brightBlue: "#3b82f6",
-    brightMagenta: "#8b5cf6",
-    brightCyan: "#06b6d4",
-    brightWhite: "#fafafa",
-  };
+/**
+ * 【ARC-005】主题改为读 styles.css 的 --terminal-* token（见
+ * lib/terminalTheme.ts）。保留本函数名给既有调用点，但不再持有任何字面量
+ * 颜色：每次调用都从 <html> 的当前计算值重建，浅/深/sketch/品牌色切换后
+ * 下一次重建即生效。断言在 design-tokens-smoke §13。
+ *
+ * 参数 `dark` 仅作兼容保留：颜色已由计算值决定，不按此参数分支。
+ */
+export function buildTheme(_dark?: boolean): ITheme {
+  return buildTerminalTheme();
 }
 
 export function useIsDark(): boolean {
@@ -286,7 +245,7 @@ export function TerminalView({
       fontFamily: monoFontStack(useUiPrefsStore.getState().fontMono),
       lineHeight: 1.2,
       scrollback: 5000,
-      theme: buildTheme(document.documentElement.classList.contains("dark")),
+      theme: buildTheme(),
       allowProposedApi: false,
     });
     const fit = new FitAddon();
@@ -518,9 +477,11 @@ export function TerminalView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey, projectPath, spawnGen]);
 
-  // Theme updates.
+  // Theme updates. buildTheme() 每次现读 <html> 的计算值（lib/terminalTheme），
+  // `dark` 只是「该重读了」的触发信号：浅/深、sketch、运行期品牌色变化都会
+  // 让下一个 150ms 后的重建取到新 token。
   useEffect(() => {
-    termRef.current?.options && (termRef.current.options.theme = buildTheme(dark));
+    if (termRef.current?.options) termRef.current.options.theme = buildTheme();
   }, [dark]);
 
   // ResizeObserver + active visibility → fit + pty.resize.
