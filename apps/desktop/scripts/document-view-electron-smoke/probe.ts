@@ -21,7 +21,8 @@
  *
  * ## 安全边界（与套件外一致）
  *
- * - 不联网：页面是 `file://` 本地临时文件，CSP 里 `connect-src 'none'`；
+ * - 不联网：页面是 `file://` 本地临时文件，CSP 只放行 handoff scheme
+ *   （`connect-src genoffice-docx-media:`，与真 vendor 页一致），其余 connect 全禁；
  * - 不碰用户数据根：electron-host.cjs 把 app 的所有路径重指到 `MCODE_DV_DIR`；
  * - 不加载 genoffice 真实编辑器（那会引入它自己的 preload 依赖与 AI 面板）——
  *   本套验的是**宿主 ⇄ 页面**这一层；编辑器页本身由 `document-view-renderer-smoke`
@@ -33,6 +34,15 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { DocumentViewHost } from "@main/document/documentViewHost.js";
+import {
+  initDocumentHandoffProtocol,
+  registerDocumentHandoffSchemePrivileged,
+} from "@main/document/documentViewHandoff.js";
+
+// electron-host.cjs 必须在 app ready **之前**注册 scheme 特权，但同一个 bundle
+// 只能被 require 一次 —— 探针在这里重新导出，让启动器从同一份模块实例里拿到
+// 同一个函数（否则 handoff URL 的协议处理器与特权注册分属两份模块状态）。
+export { registerDocumentHandoffSchemePrivileged };
 import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
 import { IPC } from "@contracts/ipc";
 
@@ -46,7 +56,7 @@ interface Check {
  *  记下 bridge 是否存在、订阅 menu:command、把收到的命令写进 DOM 供探针读回。 */
 const PAGE_HTML = `<!doctype html>
 <html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src genoffice-docx-media:">
 <title>document view u1 page</title></head>
 <body data-bridge="unknown">
 <script>
@@ -63,8 +73,30 @@ const PAGE_HTML = `<!doctype html>
     document.body.dataset.menu = 'subscribe-failed:' + String(err);
   }
   // 页面侧上送一个"请打开这条路"的请求（身份由宿主从 event.sender 反查）。
+  // 【ARC-007 P0】新协议是**单向两条**：页面 openDocxPath 只**拉取**宿主已准备的
+  // 一次性响应（read-opened），不再反向 invoke open-path。所以这里要同时记录
+  // 拉取回包里的 path/name/hash 以及 dataUrl 是否被页面真的取到（fetch 一次即焚）。
   window.__requestOpen = (p) => bridge.openDocxPath(p).then(
-    (r) => { document.body.dataset.openReply = JSON.stringify(r); return r; },
+    async (r) => {
+      const summary = r === null ? null : { path: r.path, name: r.name, hash: r.hash, hasDataUrl: typeof r.dataUrl === 'string' };
+      if (r && typeof r.dataUrl === 'string') {
+        try {
+          const res = await fetch(r.dataUrl);
+          const buf = new Uint8Array(await res.arrayBuffer());
+          summary.bytes = buf.length;
+          summary.pk = buf[0] === 0x50 && buf[1] === 0x4b;
+          const again = await fetch(r.dataUrl).catch(() => null);
+          summary.secondFetchStatus = again === null ? 'threw' : again.status;
+        } catch (e) {
+          summary.fetchError = String(e);
+        }
+        // vendor 成功路径的唯一必经调用：显示完成后读最近文件。preload 借此
+        // 向宿主回执 open-committed，宿主才提交打开会话（与真页面同一条链）。
+        try { await bridge.getRecentFiles(); } catch (e) { summary.recentError = String(e); }
+      }
+      document.body.dataset.openReply = JSON.stringify(summary);
+      return summary;
+    },
     (e) => { document.body.dataset.openReply = 'rejected:' + String(e); },
   );
   // saveDocx 的回包写进 DOM —— 冲突断言要看页面**真的收到**什么，而不是探针自己调宿主。
@@ -90,7 +122,10 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
   await mkdir(viewsRoot, { recursive: true });
   await mkdir(outsideRoot, { recursive: true });
   await writeFile(pagePath, PAGE_HTML, "utf8");
-  await writeFile(docPath, "fake docx bytes", "utf8");
+  // 最小 PK 夹具：宿主 readOpened 会做 docx 魔数预检（"PK"），非 zip 会按
+  // 「坏档」拒绝 —— 那是产品行为，夹具必须过得了这道门才能验后面的链路。
+  const DOCX_FIXTURE = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("fake docx bytes", "utf8")]);
+  await writeFile(docPath, DOCX_FIXTURE);
   await writeFile(outsidePath, "outside bytes", "utf8");
 
   async function check(name: string, fn: () => Promise<void> | void): Promise<void> {
@@ -138,6 +173,10 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
   try {
     await check("真 Electron 窗口就绪", () => {
       assert(win !== undefined && !win.isDestroyed(), "窗口不存在");
+      // 【ARC-007 P0】handoff 协议在 electron-host 里已于 ready 之前注册特权；
+      // 这里接上请求处理器（ready 之后才能 handle）。页面 fetch 一次性字节
+      // 走的就是这条协议 —— 不接 = 页面拿到 URL 但 fetch 失败。
+      initDocumentHandoffProtocol();
     });
 
     await check("URL 围栏在真 Electron 下仍然先拒后建", () => {
@@ -226,19 +265,40 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
       assert(snap.bounds.x !== -9999, `show 后坐标未恢复: ${JSON.stringify(snap.bounds)}`);
     });
 
-    await check("页面经 openDocxPath 上送，宿主从 event.sender 反查身份并转发", async () => {
+    await check("页面经 openDocxPath 上送，宿主从 event.sender 反查身份并拉取一次性字节", async () => {
       const view = viewWebContents("u1-doc");
-      // 清掉上一次标记，让页面自己经 preload 的 openDocxPath → 真 IPC → 真 handler
-      // → host.docIdForSender(event.sender) → openPath → menu:command 回到页面。
-      // 这是**完整的用户路径**：没有任何一步是探针替它走的。
-      await view.executeJavaScript("document.body.dataset.menu = ''; document.body.dataset.openReply = ''");
+      // 【ARC-007 P0】新协议是**单向两条**：上一次 openPath 已推过一次
+      // `menu:command("open-path")` 并登记了 pendingOpen；页面 `openDocxPath` 只
+      // **拉取**（read-opened）宿主已准备的一次性响应，不再反向触发 open-path。
+      // 因此这里不要求页面再收到一次回推 —— 回推已在上一节断言过。
+      await view.executeJavaScript("document.body.dataset.openReply = ''");
       await view.executeJavaScript("window.__requestOpen(" + JSON.stringify(docPath) + ")");
       await until(async () => {
-        const mark = (await view.executeJavaScript("document.body.dataset.menu")) as string;
-        return mark === `open-path|${docPath}`;
-      }, "页面上送后收到回推（链路闭环）");
-      const reply = (await view.executeJavaScript("document.body.dataset.openReply")) as string;
-      assert(reply.includes('"ok":true'), `openDocxPath 的回包不是 ok: ${reply}`);
+        const mark = (await view.executeJavaScript("document.body.dataset.openReply")) as string;
+        return mark.length > 0 && mark !== "rejected:undefined";
+      }, "页面拿到 read-opened 回包（链路闭环）");
+      const reply = JSON.parse(
+        (await view.executeJavaScript("document.body.dataset.openReply")) as string,
+      ) as {
+        path?: string; name?: string; hash?: string; hasDataUrl?: boolean;
+        bytes?: number; pk?: boolean; secondFetchStatus?: number | string;
+      };
+      assert(reply.path === docPath, `回包 path 应为宿主准备的路径: ${JSON.stringify(reply)}`);
+      assert(reply.name === "report.docx", `回包 name 应为文件名: ${JSON.stringify(reply)}`);
+      assert(typeof reply.hash === "string" && reply.hash.length === 64, `回包应带 sha256: ${JSON.stringify(reply)}`);
+      assert(reply.hasDataUrl === true, `回包应带一次性 dataUrl: ${JSON.stringify(reply)}`);
+      // 页面真的 fetch 到了字节，而且**取一次即焚**：第二次 fetch 必须失败。
+      assert(reply.bytes === DOCX_FIXTURE.length, `handoff 字节数不符: ${JSON.stringify(reply)}`);
+      assert(reply.pk === true, `夹具带 PK 魔数，回包应体现 zip 头: ${JSON.stringify(reply)}`);
+      assert(reply.secondFetchStatus === "threw" || (typeof reply.secondFetchStatus === "number" && reply.secondFetchStatus >= 400),
+        `一次性响应第二次 fetch 应失败: ${JSON.stringify(reply)}`);
+      // 回执由 preload 的 getRecentFiles 触发（vendor 成功路径唯一必经调用），
+      // 上面那次 openDocxPath 之后页面会调它 —— 等会话提交。
+      // 会话表是"打开已提交"的唯一真值（快照不含 openedFilePath）。页面上面
+      // 经 preload 的 getRecentFiles 回执后宿主才提交 —— 等它出现。
+      await until(() => host.sessionFor("u1-doc")?.filePath === docPath, "打开会话提交");
+      const session = host.sessionFor("u1-doc");
+      assert(session !== null && session.filePath === docPath, `会话未指向打开的文档: ${JSON.stringify(session?.filePath)}`);
       seen.push({ channel: "preload", filePath: docPath });
     });
 
@@ -246,8 +306,8 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
       const view = viewWebContents("u1-doc");
       // 页面先经宿主打开 report.docx（openPath 会记下 openedFilePath），再经
       // preload 的 saveDocx 提交新字节；断言磁盘上**只有那份**被改。
-      const original = await readFile(docPath, "utf8");
-      assert(original === "fake docx bytes", `前置内容不符: ${original}`);
+      const original = await readFile(docPath);
+      assert(original.equals(DOCX_FIXTURE), `前置内容不符: ${original.toString("latin1")}`);
       await view.executeJavaScript(
         "window.desktop.saveDocx(" + JSON.stringify(docPath) + ", new TextEncoder().encode('U1-SAVED-BYTES'))",
       );
@@ -265,8 +325,11 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
       const view = viewWebContents("u1-doc");
       // 前置：上一段保存后 openedFileRevision 已推进到 "INJECTED"。
       assert((await readFile(docPath, "utf8")) === "INJECTED", "前置内容不符");
-      // 模拟"别处改了文件"（另一窗口 / Agent / 外部编辑器）。
-      await writeFile(docPath, "OUTSIDE-EDIT", "utf8");
+      // 模拟"别处改了文件"（另一窗口 / Agent / 外部编辑器）。内容必须是**合法
+      // docx 头**：后续"重新打开"要过 readOpened 的 PK 魔数预检，纯文本会被按
+      // 坏档拒绝 —— 那是产品判据，不是夹具可以绕开的。
+      const OUTSIDE_EDIT_BYTES = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("OUTSIDE-EDIT", "utf8")]);
+      await writeFile(docPath, OUTSIDE_EDIT_BYTES);
       await view.executeJavaScript("document.body.dataset.saveReply = ''");
       await view.executeJavaScript("window.__requestSave('PAGE-SHOULD-NOT-LAND')");
       await until(async () => {
@@ -280,11 +343,26 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
       assert(reply.reason === "conflict", `reason 应为 conflict: ${JSON.stringify(reply)}`);
       assert(typeof reply.error === "string" && reply.error.length > 0, `冲突原因应可显示: ${JSON.stringify(reply)}`);
       assert(typeof reply.currentRevision === "string" && reply.currentRevision.length === 64, `应回传盘上 sha256: ${JSON.stringify(reply)}`);
-      assert((await readFile(docPath, "utf8")) === "OUTSIDE-EDIT", "冲突时盘上必须是外部内容");
+      assert((await readFile(docPath)).equals(OUTSIDE_EDIT_BYTES), "冲突时盘上必须是外部内容");
+      // 冲突回包里就是盘上当前版本（外部内容的 sha256）—— 后面"版本推进"以它为准。
+      const replyCurrentRevision = reply.currentRevision;
       const snap = host.list().find((v) => v.docId === "u1-doc");
       assert(snap?.lastSaveConflict !== undefined, "宿主快照应记录 lastSaveConflict（面板第二条可见路径）");
-      // 恢复基线：外部改动落定 + openPath 重新记版本，让后续断言（含收尾）看到干净状态。
+      // 恢复基线：外部改动落定 → **走完整打开链**重新记版本（新协议下 openPath
+      // 只登记待打开；页面 readOpened 拉取 + getRecentFiles 回执后才提交会话并
+      // 刷新权威 revision）。只调 openPath 而不重拉，会话版本仍停在旧值 —— 那正是
+      // 乐观锁该拦的情况，不是产品缺陷。
       assert(host.openPath("u1-doc", docPath, withinWorkspace).ok, "重新 openPath 失败");
+      const reopenReply = await view.executeJavaScript(
+        "window.__requestOpen(" + JSON.stringify(docPath) + ")",
+      ) as { path?: string } | null;
+      assert(reopenReply?.path === docPath, `重新打开应拿到字节: ${JSON.stringify(reopenReply)}`);
+      // 重新打开后会话的权威版本必须**等于盘上当前内容**（即冲突回包里的
+      // currentRevision）—— 这证明乐观锁基线真的刷新了，之后的保存才不会误判。
+      await until(async () => {
+        const rev = await host.sessionFor("u1-doc")?.revision;
+        return rev === replyCurrentRevision;
+      }, "会话权威版本推进到外部内容");
       const okSave = await view.executeJavaScript("window.__requestSave('AFTER-REOPEN')");
       assert((okSave as { ok: boolean }).ok === true, `重新打开后的保存应成功: ${JSON.stringify(okSave)}`);
       await until(async () => (await readFile(docPath, "utf8")) === "AFTER-REOPEN", "重新打开后的保存落盘");
@@ -325,7 +403,8 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
     await check("全程没有页面未捕获异常、没有远程请求", async () => {
       assert(host.list().length === 0, "收尾时仍有视图");
       const pageSource = await readFile(pagePath, "utf8");
-      assert(pageSource.includes("connect-src 'none'"), "测试页 CSP 应禁网");
+      assert(pageSource.includes("connect-src genoffice-docx-media:"), "测试页 CSP 只应放行 handoff scheme");
+      assert(!/https?:/.test(pageSource.split("Content-Security-Policy")[1]?.split(">")[0] ?? ""), "测试页 CSP 不应放行任何 http(s) 目标");
     });
   } finally {
     try { host.dispose(); } catch { /* 已释放 */ }

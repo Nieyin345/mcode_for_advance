@@ -17,6 +17,14 @@ mkdirSync(join(dir, 'data'), { recursive: true });
 writeFileSync(join(dir, 'userData/data-root.json'), JSON.stringify({ root: join(dir, 'data') }));
 
 app.on('window-all-closed', () => {});
+// 【ARC-007 P0】一次性字节 handoff 的 scheme 特权**必须在 ready 之前**注册
+// （Electron 硬性要求）。探针进程与生产主进程走同一个模块的同一入口 —— 这里
+// 直接 require 打包后的 probe.cjs 会把模块实例分叉，所以由探针在 ready 后
+// 调用 initDocumentHandoffProtocol；特权注册只能在这里做。
+{
+  const { registerDocumentHandoffSchemePrivileged } = require(join(dir, 'probe.cjs'));
+  registerDocumentHandoffSchemePrivileged();
+}
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-background-networking');
 app.commandLine.appendSwitch('disable-component-update');
