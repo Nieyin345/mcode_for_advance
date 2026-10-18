@@ -111,8 +111,16 @@ export function SceneDeployPanel() {
   const [previewError, setPreviewError] = useState<MessageId | null>(null);
   const [previewErrorParam, setPreviewErrorParam] = useState<string>("");
   const [busy, setBusy] = useState<"approve" | "apply" | "resume" | null>(null);
-  /** 【MC-002】重启后发现未完成部署:场景 id 从当前文本解析(与预览同一份 parse);
-   *  有合法 sceneId 时才查询。读失败**显式报出**(不伪装成"没有记录")。 */
+  /** 【MC-002】重启后发现未完成部署。
+   *
+   *  第十七轮复核点破了旧实现:它只在输入框里**已有合法 sceneId** 时才查询 —— 而
+   *  崩溃/重启后用户手里既没有 deploymentId、也没有 sceneId(粘贴的 spec 随进程
+   *  消失),于是盘上那份 partial/failed 永远列不出来。
+   *
+   *  现在两种模式:
+   *   - 输入框解析出 sceneId → 按该场景列(用户正在看某个具体声明);
+   *   - 解析不出 → **跨场景列可续跑的记录**(从零发现),`resumableOnly` 由主进程过滤。
+   *  两种模式都显式报读失败,不伪装成"没有记录"。 */
   const [unfinishedRefresh, setUnfinishedRefresh] = useState(0);
   const sceneIdForList = useMemo(() => {
     const parsed = parseSceneSpecText(state.specText);
@@ -125,9 +133,12 @@ export function SceneDeployPanel() {
     loading: unfinishedLoading,
     error: unfinishedError,
   } = useRpc(
-    () => api.scene.listDeployments({ sceneId: sceneIdForList! }),
+    () =>
+      sceneIdForList !== null
+        ? api.scene.listDeployments({ sceneId: sceneIdForList })
+        : api.scene.listDeployments({ resumableOnly: true }),
     [sceneIdForList, unfinishedRefresh],
-    { enabled: sceneIdForList !== null, toastOnError: false },
+    { toastOnError: false },
   );
 
   // ── 读:能力预检(参数化,门控在「预览」这次点击上;不在每次击键时发) ──

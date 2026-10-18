@@ -284,6 +284,47 @@ export interface SceneDeploymentListEntry {
  * 投影住在 store 层而不是 IPC handler 里:同一份判据要让无头套件针对**真数据库**验证,
  * handler 也就只剩"解析入参 + 包装 ok/error"这一层(不复制判据)。
  */
+/**
+ * 【MC-002】**重启后发现未完成部署** —— 不依赖调用方提供 sceneId。
+ *
+ * 为什么需要这条:面板以内存空 state 起步,崩溃后既没有 `deploymentId` 也没有
+ * `sceneId`(粘贴的 spec 文本随进程消失)。按 sceneId 查的 `listDeploymentEntries`
+ * 在这种时候永远查不到东西 —— 用户看不到盘上那份 partial/failed。
+ *
+ * 与按场景的版本共用同一份 `decodeDeployment` 判据与 `resumable` 推导:
+ * `resumable` 只在**状态上还有没跑完的步骤 且 存档读得回来**时为真;
+ * 它**不是授权**,真正续跑仍要重新预览 + 批准。
+ */
+export function listRecentDeploymentEntries(limit: number, options: { resumableOnly?: boolean } = {}): Array<{
+  deploymentId: string;
+  sceneId: string;
+  status: SceneDeploymentStatus;
+  createdAt: number;
+  updatedAt: number;
+  deployment: SceneDeployment | null;
+  resumable: boolean;
+}> {
+  let rows;
+  try {
+    rows = SceneDeploymentRepo.listRecent(limit, options);
+  } catch (err) {
+    log.warn(`scene deployment recent list failed: ${(err as Error).message}`);
+    return [];
+  }
+  return rows.map((row) => {
+    const deployment = decodeDeployment(row.payload);
+    return {
+      deploymentId: row.deploymentId,
+      sceneId: row.sceneId,
+      status: (deployment?.status ?? row.status) as SceneDeploymentStatus,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      deployment,
+      resumable: deployment !== null && (deployment.status === "partial" || deployment.status === "failed"),
+    };
+  });
+}
+
 export function listDeploymentEntries(sceneId: string, limit: number): Array<{
   deploymentId: string;
   sceneId: string;

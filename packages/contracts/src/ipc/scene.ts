@@ -203,7 +203,14 @@ export type SceneDeploymentListIpcResult =
 
 /** 只读列表入参:按场景 id 查(与部署记录里的 `sceneId` 同一字段)。 */
 export const SceneDeploymentListInputSchema = z.object({
-  sceneId: z.string().min(1).max(200),
+  /** 【MC-002】**省略 = 跨场景列最近的部署**。
+   *
+   *  为什么允许省略:崩溃/重启后渲染端既没有 `deploymentId`,也**没有 sceneId**
+   *  —— 粘贴的 spec 文本已随进程消失。按 sceneId 查的入口在这种时候永远查不到
+   *  盘上那份 partial/failed(第十七轮复核红例)。跨场景列表是"从零发现"的唯一路。 */
+  sceneId: z.string().min(1).max(200).optional(),
+  /** 只看还能续跑的(状态 partial/failed 且存档读得回来)。默认 false。 */
+  resumableOnly: z.boolean().optional(),
   /** 最多列多少条(宿主有上限;默认 20)。 */
   limit: z.number().int().positive().max(100).optional(),
 });

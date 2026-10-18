@@ -48,6 +48,7 @@ import {
   loadDeployment,
   listDeploymentsByScene,
   listDeploymentEntries,
+  listRecentDeploymentEntries,
 } from "@main/appServices/sceneDeploymentStore.js";
 import { dataRoot, DATA_DB_FILENAME } from "../run-store-smoke/stubs/dataRoot.js";
 
@@ -320,6 +321,22 @@ if (MODE === "write") {
     const broken = listDeploymentEntries(SCENE, 50).find((e) => e.deploymentId === "dep_broken_resume");
     check("★ 坏存档行仍列出,但 resumable=false(不假装能续跑)", broken !== undefined && broken.resumable === false && broken.deployment === null);
     SceneDeploymentRepo.remove("dep_broken_resume");
+
+    // 【MC-002 第十七轮】崩溃后**从零发现**:用户手里没有 sceneId(粘贴的 spec 随
+    // 进程消失),只有跨场景列表能找回盘上的 partial/failed。
+    const recentAll = listRecentDeploymentEntries(50);
+    check("★ 跨场景列表能列出盘上的记录(不依赖调用方给 sceneId)",
+      recentAll.some((e) => e.deploymentId === "dep_snap"), recentAll.map((e) => e.deploymentId));
+    const recentResumable = listRecentDeploymentEntries(50, { resumableOnly: true });
+    check("★ 只取可续跑的:partial 在", recentResumable.some((e) => e.deploymentId === "dep_snap"));
+    check("★ 只取可续跑的:active 不在", !recentResumable.some((e) => e.deploymentId === DEP_A));
+    check("★ 跨场景项的投影形状与按场景一致(带 snapshot/resumable)",
+      recentAll.find((e) => e.deploymentId === "dep_snap")?.deployment?.specSnapshot !== undefined,
+      recentAll.find((e) => e.deploymentId === "dep_snap"));
+    // 排序:新的在前(updated_at DESC)。dep_snap 是后写的,应排在旧记录之前。
+    const idxSnap = recentAll.findIndex((e) => e.deploymentId === "dep_snap");
+    const idxOld = recentAll.findIndex((e) => e.deploymentId === DEP_A);
+    check("★ 跨场景按最近更新排序(新的在前)", idxSnap >= 0 && (idxOld < 0 || idxSnap < idxOld), { idxSnap, idxOld });
   }
 
   console.log(`\n[write 阶段] 通过 ${total - failures}/${total}`);

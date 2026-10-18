@@ -380,6 +380,12 @@ section("9. 面板真的接上四条入口 + 挂进设置页(只声明不接线 
   check("★ 面板用 buildSceneApprovalInput / buildSceneApplyInput 构造入参", panel.includes("buildSceneApprovalInput(") && panel.includes("buildSceneApplyInput("));
   // 【MC-002】重启后发现未完成部署:列表读通道真的接上(且是读 → useRpc),恢复动作真的存在。
   check("★ 面板经 useRpc 调 scene.listDeployments(重启后发现入口)", panel.includes("api.scene.listDeployments(") && panel.includes("useRpc("));
+  // 【MC-002 第十七轮】崩溃后**从零发现**:面板不能只在"输入框已有 sceneId"时才查 ——
+  // 那时用户手里什么都没有。无 sceneId 时必须走跨场景的 resumableOnly 查询。
+  check("★ 无 sceneId 时跨场景列出可续跑记录(从零发现)",
+    panel.includes("api.scene.listDeployments({ resumableOnly: true })"), panel.match(/resumableOnly[^)]*/)?.[0]);
+  check("★ 列表查询不再以 sceneId 为前提(旧实现的 enabled 门控已移除)",
+    !panel.includes("enabled: sceneIdForList !== null"));
   check("★ 面板把记录恢复成输入(restoreFromDeployment + restored 动作)", panel.includes("restoreFromDeployment(") && panel.includes('type: "restored"'));
   // 【MC-001 系统性修复第 3 条】场景与无人值守共用**同一个**「预览 → 批准 → 执行」动作栏,
   // 不再各写一份。判据落在 `PlanApprovalBar` 真的被渲染 + 两族面板各自传给它的 testId 上。

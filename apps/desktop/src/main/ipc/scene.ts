@@ -1,7 +1,7 @@
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
 import { SceneApplyInputSchema, SceneApprovalInputSchema, SceneDeploymentListInputSchema, SceneResumeInputSchema } from "@contracts/ipc/scene.js";
-import { listDeploymentEntries } from "@main/appServices/sceneDeploymentStore.js";
+import { listDeploymentEntries, listRecentDeploymentEntries } from "@main/appServices/sceneDeploymentStore.js";
 import { planScene } from "@main/appServices/scenePlanning.js";
 import { preflightScene } from "@main/appServices/scenePreflight.js";
 import { approveSceneDeployment, applySceneWithGrant, resumeSceneWithGrant } from "@main/appServices/sceneDeploy.js";
@@ -46,6 +46,15 @@ export function registerSceneHandlers(ipc: IpcMain): void {
     const input = SceneDeploymentListInputSchema.parse(raw ?? {});
     try {
       // 投影判据在 store 层(`listDeploymentEntries`,与无头套件共用同一份)。
+      // 【MC-002】省略 sceneId = 跨场景列最近记录(崩溃后从零发现)。
+      if (input.sceneId === undefined) {
+        return {
+          ok: true,
+          deployments: listRecentDeploymentEntries(input.limit ?? 20, {
+            ...(input.resumableOnly !== undefined ? { resumableOnly: input.resumableOnly } : {}),
+          }),
+        };
+      }
       return { ok: true, deployments: listDeploymentEntries(input.sceneId, input.limit ?? 20) };
     } catch (error) {
       // 库读不动是真故障(不是"没有记录")—— 显式报出来,不伪装成空列表。

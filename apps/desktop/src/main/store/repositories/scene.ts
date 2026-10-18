@@ -124,6 +124,28 @@ export const SceneDeploymentRepo = {
     return out;
   },
 
+  /** 【MC-002】**跨场景**列出最近的部署,新的在前。
+   *
+   *  为什么需要它:一次部署的 `deploymentId` 只活在渲染端内存里;进程崩溃/重启后
+   *  用户没有任何上下文能"按 sceneId 查" —— 他连 sceneId 都没有(粘贴的 spec 文本
+   *  已随进程消失)。要发现盘上的 partial/failed,只能**不带场景条件**列最近的记录。
+   *
+   *  `resumableOnly` 在 SQL 层先按 status 收一遍(走 idx 的 scene_id 索引之外,
+   *  靠 updated_at 排序 + LIMIT;记录量小,不额外建索引)。 */
+  listRecent(limit: number, options: { resumableOnly?: boolean } = {}): SceneDeploymentRow[] {
+    const where = options.resumableOnly === true ? "WHERE status IN ('partial','failed')" : "";
+    const stmt = getDb().prepare(
+      `SELECT * FROM scene_deployments
+        ${where}
+        ORDER BY updated_at DESC, deployment_id DESC LIMIT ?`,
+    );
+    stmt.bind([v(limit)]);
+    const out: SceneDeploymentRow[] = [];
+    while (stmt.step()) out.push(rowToSceneDeployment(stmt.getAsObject() as unknown as SceneDeploymentDbRow));
+    stmt.free();
+    return out;
+  },
+
   /** 删一条(没有也不算错)—— 回滚这次新建的行 / 人工清理用。 */
   remove(deploymentId: string): void {
     getDb().run("DELETE FROM scene_deployments WHERE deployment_id = ?", [v(deploymentId)]);
