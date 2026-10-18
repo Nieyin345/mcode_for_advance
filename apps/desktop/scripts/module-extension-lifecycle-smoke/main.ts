@@ -91,6 +91,128 @@ const WRITE_SOURCE = `({
   },
 })`;
 
+/**
+ * 【MC-035 原型绕过】对抗性验证确认的五条**纯 JS 绕行路径**,每条只碰一个入口,
+ * 不经过已经被拦的 http.request / net.connect:
+ *   1. `new net.Socket().connect(...)` —— 原型方法;
+ *   2. `tls.connect(...)` —— 守卫从前完全没提 node:tls;
+ *   3. `https.globalAgent.createConnection(...)` —— 直接拿一条 TLS 套接字;
+ *   4. `new dgram.Socket({ type }).send(...)` —— 原型方法(默认 lookup 被拦是偶然);
+ *   5. `new dns.promises.Resolver().resolve4(...)` —— promises 命名空间与 Resolver 原型。
+ *
+ * 端口经资源旁的 `.probe-port` 文件传入(环境的宿主变量被刻意剥离,见 permissionedEnv)。
+ * 每条都返回 `{ connected: true }` / `{ resolved: [...] }` 或 `{ error }` / `{ sync }`,
+ * **扩展不把错误当失败抛出** —— 断言判的是结果里有没有被守卫点名的原因。
+ */
+const BYPASS_SOURCES = {
+  netProto: `({
+    probe: async (resource) => {
+      const fs = require("node:fs");
+      const net = require("node:net");
+      const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
+      return await new Promise((resolve) => {
+        try {
+          const s = new net.Socket();
+          s.on("error", (e) => resolve({ error: String((e && e.message) || e) }));
+          s.connect(port, "127.0.0.1", () => { s.destroy(); resolve({ connected: true }); });
+          setTimeout(() => { try { s.destroy(); } catch {} resolve({ timeout: true }); }, 3000);
+        } catch (e) { resolve({ sync: String((e && e.message) || e) }); }
+      });
+    },
+  })`,
+  tlsConnect: `({
+    probe: async (resource) => {
+      const fs = require("node:fs");
+      const tls = require("node:tls");
+      const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
+      return await new Promise((resolve) => {
+        try {
+          const s = tls.connect({ host: "127.0.0.1", port, rejectUnauthorized: false }, () => { s.destroy(); resolve({ connected: true }); });
+          s.on("error", (e) => resolve({ error: String((e && e.message) || e) }));
+          setTimeout(() => { try { s.destroy(); } catch {} resolve({ timeout: true }); }, 3000);
+        } catch (e) { resolve({ sync: String((e && e.message) || e) }); }
+      });
+    },
+  })`,
+  httpsAgentConn: `({
+    probe: async (resource) => {
+      const fs = require("node:fs");
+      const https = require("node:https");
+      const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
+      return await new Promise((resolve) => {
+        try {
+          const s = https.globalAgent.createConnection({ host: "127.0.0.1", port, rejectUnauthorized: false });
+          s.on("connect", () => { s.destroy(); resolve({ connected: true }); });
+          s.on("error", (e) => resolve({ error: String((e && e.message) || e) }));
+          setTimeout(() => { try { s.destroy(); } catch {} resolve({ timeout: true }); }, 3000);
+        } catch (e) { resolve({ sync: String((e && e.message) || e) }); }
+      });
+    },
+  })`,
+  dgramSend: `({
+    probe: async (resource) => {
+      const fs = require("node:fs");
+      const dgram = require("node:dgram");
+      const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
+      return await new Promise((resolve) => {
+        try {
+          // ⚠️ 自定义 lookup 经**构造选项**传入(new dgram.Socket({ type, lookup }))。
+          // 若走默认 lookup,未声明网络时会被 **dns.lookup 那条**拦住 —— 那是偶然
+          // (默认 lookup 从 dns 模块取),测不到 dgram 原型自己有没有被替换。
+          // 变异验证证实过:只撤 Socket.prototype.send 替换时,默认 lookup 版本仍绿。
+          const lookup = (_host, _opts, cb) => cb(null, "127.0.0.1", 4);
+          const s = new dgram.Socket({ type: "udp4", lookup });
+          s.on("error", (e) => resolve({ error: String((e && e.message) || e) }));
+          s.send(Buffer.from("ping"), port, "127.0.0.1", (err) => { try { s.close(); } catch {} resolve(err ? { error: String(err.message) } : { connected: true }); });
+          setTimeout(() => { try { s.close(); } catch {} resolve({ timeout: true }); }, 3000);
+        } catch (e) { resolve({ sync: String((e && e.message) || e) }); }
+      });
+    },
+  })`,
+  dnsPromisesResolver: `({
+    probe: async (resource) => {
+      const fs = require("node:fs");
+      const dns = require("node:dns");
+      const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
+      try {
+        const resolver = new dns.promises.Resolver();
+        resolver.setServers(["127.0.0.1:" + port]);
+        return { resolved: await resolver.resolve4("probe.test") };
+      } catch (e) { return { error: String((e && e.message) || e) }; }
+    },
+  })`,
+  // promises 命名空间的**直接**查询函数(不经过 Resolver 实例)—— 守卫从前只替换了
+  // dns 模块对象上的函数,这个命名空间整片是敞开的。
+  dnsPromisesNamespace: `({
+    probe: async (resource) => {
+      const fs = require("node:fs");
+      const dns = require("node:dns");
+      const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
+      try {
+        dns.promises.setServers(["127.0.0.1:" + port]);
+        return { resolved: await dns.promises.resolve4("probe.test") };
+      } catch (e) { return { error: String((e && e.message) || e) }; }
+    },
+  })`,
+  // 回调式 `new dns.Resolver()` —— 与 promises 那个是**两个不同的类**,原型各一份。
+  dnsCallbackResolver: `({
+    probe: async (resource) => {
+      const fs = require("node:fs");
+      const dns = require("node:dns");
+      const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
+      return await new Promise((resolve) => {
+        try {
+          const resolver = new dns.Resolver();
+          resolver.setServers(["127.0.0.1:" + port]);
+          resolver.resolve4("probe.test", (err, addrs) => resolve(err ? { error: String(err.message) } : { resolved: addrs }));
+          setTimeout(() => resolve({ timeout: true }), 3000);
+        } catch (e) { resolve({ sync: String((e && e.message) || e) }); }
+      });
+    },
+  })`,
+} as const;
+
+
 function manifestOf(overrides: Record<string, unknown> = {}) {
   return {
     apiVersion: 1, id: "user.lifecycle", version: "1.0.0",
@@ -280,6 +402,169 @@ try {
     } finally {
       probe.close();
       delete process.env.PROBE_PORT;
+    }
+  }
+  // ── 6f.【MC-035 原型绕过】对抗性验证确认的五条纯 JS 绕行路径 ─────────────
+  // 上面的 6d 只覆盖 `http.request`(模块对象上的导出函数)。下面每条都**不碰**那个
+  // 入口:原型方法 / 未覆盖的模块(tls)/ globalAgent 的直接套接字 / dgram 原型 /
+  // dns.promises.Resolver 原型。每条跑两遍:
+  //   - 未声明网络 → 该路径必须失败,且错误里点名 `network_access_denied`;
+  //   - allowNetwork=true → 同一路径必须成功(正控,证明不是一刀切)。
+  // 本机真实服务端:netserver/tlsserver/udp/dns 都由宿主进程起;扩展进程只拿到端口。
+  {
+    const { createServer: createTcpServer } = await import("node:net");
+    const { createServer: createTlsServer } = await import("node:tls");
+    const { createSocket: createUdpSocket } = await import("node:dgram");
+    // 证书只用于本机回环握手,`rejectUnauthorized: false` —— 与安全无关,是测试夹具。
+    const tlsKey = [
+      "-----BEGIN PRIVATE KEY-----",
+      "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCtW3zh0CtZuKRh",
+      "XVzOCYyjrVSkrhMcLfIsfM2i2YthPFLg0Y17jieKWWUTjEfMMoTjpRabfJjEpqAn",
+      "rU8PhoZo8N0hvtzrgnVBPtPrHGIGtKU0Bb+m7KDBa4vmFOZ8VRhcrVY7p/Lf/1VG",
+      "2uN5LzQAbFdU6yicj3Mb2zv4nFo0umaOQhm7WhoQDXlgmJjJbRmQFfR1IgqD7X+I",
+      "UZXw9DsqpmKc/t4o5Mf85qAsmRm6MdFfculH/oVG2yYXAefT0VeGDe/4OpcBqfV9",
+      "E9CREeZ2eAtDh5MkxQSPI+33JfbhuED1oYuMZjCYKOHAE0pPz+zdqJEVA2jCdqcT",
+      "HQ4qDe1HAgMBAAECggEAEe+kohskVmobh9SzD2uULjMheNBnOxkoifXNCOEH4g2Y",
+      "aEOw0cHJfC+iR5LSCDc0jKETZQ76d2OOBSI8oIHt/NmUPN4/LpbBhE34exuQANrx",
+      "OiAGI5fZTL8l1a5VPTPzYKixLVxDwsKWPiMo5JbqWHOH2EoPBPPKmG08bTfawBha",
+      "gDSpQVg8mZUdTCp0BIjCvX417sKlTvIzPBsm+OjcTbRQtSwfdG3CcU7U8627bg5Z",
+      "qzBu7etGdsJZaLGuj9XUEa2csl2TmOCWofPb9jihFNADijZNwoSfPNW43nb7pmGn",
+      "ZXEUdjdB8yG2uld1tCS9Q98FVMpKMGEi4LUzte4o0QKBgQDuZRWAIIQ4cNrC2Bq2",
+      "ucmOmlm3Ywrc5LnfrT0KxwIwj7z9DsmU387sJBlMBwCbyqB4WY4L6LZWEPTmSkJm",
+      "Grcm4b86KJuFUN60d/LEnzwLjVYAmsoAz9wMdofv7XOlvcGGKCW7eAx84g/hxjqd",
+      "3yrz7CenQXWAviRL5c3+edQdewKBgQC6KNp98XaXYN0g2gAUFg2IwrSvJyksAFMU",
+      "YSTjZ/g82PTiNvbRGuDk6wB9Goup9ybw6e094mH4AybnUH6yq8XZrKAepKv1FK9i",
+      "czPNHkmpX3BoDhRILRo8Ob8j6Tu9F3sUcMqMBbZYVLqrZ21/7hKvEp2v6xO4pcj1",
+      "S9yZbIy3pQKBgQDSf5c4h324iI3htggAiJQcwtWtRFr3KU+m3cUkmwyn7IOnv0Ln",
+      "naeMg2OC6jvzVDvViN4QTe+Sl25nWfK/TZ+jSXoc1HZehUXgfHl0fFX8rVPfPM5Z",
+      "YTCgIJlvlW+kTaVv3EtU+W+tZb84UFy5wbCfqUpqOTaT81EBY2084j4VuQKBgQC2",
+      "rsqjVyayrPqzd1smWvHTKIdZbwunQ3ZEBITHqMrhI2NE7v1M/Jx/6OHk4vz1wTV0",
+      "q4sF9LeBQ86Upth+i7SvxQioqZ6Z9j+aVEUcYEGXNbJAWriqj6A0Q9L/8ayPBpDg",
+      "4ULTH/PuQM+izu+U4FNzfMhDz2PeCsrndRe5c92vhQKBgBwKWN0jJ8oVk2scz1Fc",
+      "Bp6a+k1DQX4b9brA+PyyexkzUaNub6g4J1nsTuNYaqETCjIdDv3vWzfklR/XGQvj",
+      "F4Apiw4RsjmoKKD/A3rZSHxvb1SnpJuQIxGFhwRpKlRyKI7MGaaS2MwcDoG/3wtb",
+      "b7hw+ACa8tPmYtjiJ3iii5Mv",
+      "-----END PRIVATE KEY-----",
+    ].join("\n");
+    const tlsCert = [
+      "-----BEGIN CERTIFICATE-----",
+      "MIIDGjCCAgKgAwIBAgIUJl/z/BzNfuImDtcyyd+me97c8YkwDQYJKoZIhvcNAQEL",
+      "BQAwFDESMBAGA1UEAwwJMTI3LjAuMC4xMB4XDTI2MTAxODEzMzYwMVoXDTM2MTAx",
+      "NTEzMzYwMVowFDESMBAGA1UEAwwJMTI3LjAuMC4xMIIBIjANBgkqhkiG9w0BAQEF",
+      "AAOCAQ8AMIIBCgKCAQEArVt84dArWbikYV1czgmMo61UpK4THC3yLHzNotmLYTxS",
+      "4NGNe44nilllE4xHzDKE46UWm3yYxKagJ61PD4aGaPDdIb7c64J1QT7T6xxiBrSl",
+      "NAW/puygwWuL5hTmfFUYXK1WO6fy3/9VRtrjeS80AGxXVOsonI9zG9s7+JxaNLpm",
+      "jkIZu1oaEA15YJiYyW0ZkBX0dSIKg+1/iFGV8PQ7KqZinP7eKOTH/OagLJkZujHR",
+      "X3LpR/6FRtsmFwHn09FXhg3v+DqXAan1fRPQkRHmdngLQ4eTJMUEjyPt9yX24bhA",
+      "9aGLjGYwmCjhwBNKT8/s3aiRFQNownanEx0OKg3tRwIDAQABo2QwYjAdBgNVHQ4E",
+      "FgQUHkOdin1XVwPFIvUAM66UzXIfRs4wHwYDVR0jBBgwFoAUHkOdin1XVwPFIvUA",
+      "M66UzXIfRs4wDwYDVR0TAQH/BAUwAwEB/zAPBgNVHREECDAGhwR/AAABMA0GCSqG",
+      "SIb3DQEBCwUAA4IBAQA0LmkpggYtL/wnYrKqZbmL9cSGTvD2eN5zAISrVURViOjp",
+      "syNEQT3Edze8GInkaxz80JOwxjwE2MKmj7bzYG3V9QbOZVnmy48mtp0PpTFC4P1i",
+      "+iiap4wv0VwhNMwYYPjtEOWGUuL8IOAbo695fQKgEaawEfB2Nd1luXOiFqHmqc7O",
+      "+82TmECcGD5eel+pTx+7jodhMPWOgwRwRaSigeL1hmcr2PEkncivp8CTi8udab2F",
+      "/rKJq+MrS/Y7StzqHjNFXCLr0XeFHhc2dNkFJlbo4WylTk2yLkESwobeW+K+HQQq",
+      "p2inlnZ4ckM0sVPxewi2TyeRA3TGJ1dGU9PmM1TK",
+      "-----END CERTIFICATE-----",
+    ].join("\n");
+
+    const tcpServer = createTcpServer((socket) => { socket.on("error", () => {}); socket.end("ok"); });
+    await new Promise<void>((resolve) => tcpServer.listen(0, "127.0.0.1", () => resolve()));
+    const tcpAddress = tcpServer.address();
+    const tcpPort = typeof tcpAddress === "object" && tcpAddress !== null ? tcpAddress.port : 0;
+
+    const tlsServer = createTlsServer({ key: tlsKey, cert: tlsCert }, (socket) => { socket.on("error", () => {}); socket.end("ok"); });
+    await new Promise<void>((resolve) => tlsServer.listen(0, "127.0.0.1", () => resolve()));
+    const tlsAddress = tlsServer.address();
+    const tlsPort = typeof tlsAddress === "object" && tlsAddress !== null ? tlsAddress.port : 0;
+
+    let udpReceived = 0;
+    const udpServer = createUdpSocket("udp4");
+    udpServer.on("message", () => { udpReceived++; });
+    await new Promise<void>((resolve) => udpServer.bind(0, "127.0.0.1", () => resolve()));
+    const udpAddress = udpServer.address();
+    const udpPort = typeof udpAddress === "object" && udpAddress !== null ? udpAddress.port : 0;
+
+    // 最小 DNS 服务器:只回答 A 记录 127.0.0.1。Resolver 直接与它对话 → 路径真实成立。
+    const dnsServer = createUdpSocket("udp4");
+    dnsServer.on("message", (message: Buffer, remote: { port: number; address: string }) => {
+      let end = 12;
+      while (message[end] !== 0) end += message[end]! + 1;
+      const question = message.subarray(12, end + 5);
+      const header = Buffer.alloc(12);
+      message.copy(header, 0, 0, 2);
+      header.writeUInt16BE(0x8180, 2); // 响应 + 一个 A 回答
+      header.writeUInt16BE(1, 4);
+      header.writeUInt16BE(1, 6);
+      const answer = Buffer.from([0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 127, 0, 0, 1]);
+      dnsServer.send(Buffer.concat([header, question, answer]), remote.port, remote.address);
+    });
+    await new Promise<void>((resolve) => dnsServer.bind(0, "127.0.0.1", () => resolve()));
+    const dnsAddress = dnsServer.address();
+    const dnsPort = typeof dnsAddress === "object" && dnsAddress !== null ? dnsAddress.port : 0;
+
+    /** 每条路径:端口内联进源码(执行体只被放行 target 一个文件,读不了旁路探针),
+     *  同一源码分别以 allowNetwork=false/true 执行。 */
+    const runBypass = async (key: keyof typeof BYPASS_SOURCES, port: number, allowNetwork: boolean): Promise<string> => {
+      const source = BYPASS_SOURCES[key].replace(
+        'Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim())',
+        String(port),
+      );
+      const reply = await runPermissionedProcess({
+        source, capability: "probe", allowWrite: false, allowNetwork,
+        timeoutMs: 10_000,
+        resource: { projectPath: root, path: target },
+        signal: new AbortController().signal,
+      });
+      return JSON.stringify(reply);
+    };
+    /** 先断"没有成功证据",再断"错误里点名了守卫";两项都过才算拦住了。 */
+    const assertBypassBlocked = (name: string, outcome: string): void => {
+      check("★ " + name + "未声明网络时出站失败", !outcome.includes('"connected":true') && !outcome.includes('"resolved":['), { outcome });
+      check("★ " + name + "的失败点名 network_access_denied", outcome.includes("network_access_denied"), { outcome });
+    };
+    const assertBypassAllowed = (name: string, outcome: string): void => {
+      check("★ allowNetwork=true 时" + name + "成功(守卫不是一刀切)",
+        outcome.includes('"connected":true') || outcome.includes('"resolved":["127.0.0.1"]'), { outcome });
+    };
+
+    try {
+      const netDenied = await runBypass("netProto", tcpPort, false);
+      assertBypassBlocked("new net.Socket().connect 原型路径", netDenied);
+      assertBypassAllowed("new net.Socket().connect 原型路径", await runBypass("netProto", tcpPort, true));
+
+      const tlsDenied = await runBypass("tlsConnect", tlsPort, false);
+      assertBypassBlocked("tls.connect 路径", tlsDenied);
+      assertBypassAllowed("tls.connect 路径", await runBypass("tlsConnect", tlsPort, true));
+
+      const agentDenied = await runBypass("httpsAgentConn", tlsPort, false);
+      assertBypassBlocked("https.globalAgent.createConnection 路径", agentDenied);
+      assertBypassAllowed("https.globalAgent.createConnection 路径", await runBypass("httpsAgentConn", tlsPort, true));
+
+      const udpBefore = udpReceived;
+      const dgramDenied = await runBypass("dgramSend", udpPort, false);
+      assertBypassBlocked("new dgram.Socket().send 路径", dgramDenied);
+      eq("★ 未声明网络的 UDP send 包没有到达服务端", udpReceived, udpBefore);
+      const dgramAllowed = await runBypass("dgramSend", udpPort, true);
+      assertBypassAllowed("new dgram.Socket().send 路径", dgramAllowed);
+      eq("★ allowNetwork=true 时 UDP 包真的到达了服务端", udpReceived, udpBefore + 1);
+
+      const dnsDenied = await runBypass("dnsPromisesResolver", dnsPort, false);
+      assertBypassBlocked("dns.promises.Resolver 路径", dnsDenied);
+      assertBypassAllowed("dns.promises.Resolver 路径", await runBypass("dnsPromisesResolver", dnsPort, true));
+
+      const dnsNsDenied = await runBypass("dnsPromisesNamespace", dnsPort, false);
+      assertBypassBlocked("dns.promises 命名空间直调路径", dnsNsDenied);
+      assertBypassAllowed("dns.promises 命名空间直调路径", await runBypass("dnsPromisesNamespace", dnsPort, true));
+
+      const dnsCbDenied = await runBypass("dnsCallbackResolver", dnsPort, false);
+      assertBypassBlocked("new dns.Resolver() 回调路径", dnsCbDenied);
+      assertBypassAllowed("new dns.Resolver() 回调路径", await runBypass("dnsCallbackResolver", dnsPort, true));
+    } finally {
+      tcpServer.close();
+      tlsServer.close();
+      udpServer.close();
+      dnsServer.close();
     }
   }
   eq("越界写没有改到界外文件", (await readFile(secret, "utf8")), "top secret\n");

@@ -87,10 +87,19 @@ export interface PermissionedProcessOptions {
  *
  * 把 Node 的对外网络入口替换成抛错函数。替换发生在工厂源码 `eval` 之前,扩展拿到的
  * 就是被替换过的模块对象:
- *   - `http` / `https` / `http2` 的 `request` / `get` / `connect`;
- *   - `net` 的 `connect` / `createConnection`;
- *   - `dns` 的查询函数(否则可先解析到 IP 再走其它路径);
- *   - 全局 `fetch` / `WebSocket` / `EventSource`。
+ *   - `http` / `https` / `http2` 的 `request` / `get` / `connect`,以及 `Agent.prototype`
+ *     的 `createConnection` / `createSocket` 与 `globalAgent.createConnection`(直接拿一条
+ *     出站套接字,不经过 `request`);
+ *   - `net` 的 `connect` / `createConnection`,**`Socket.prototype.connect`**(原型方法,
+ *     模块导出替换管不到),以及内部符号键上的同一实现;
+ *   - `tls` 的 `connect` / `createConnection` 与 `TLSSocket.prototype.connect`;
+ *   - `dgram` 的 `createSocket` 与 `Socket.prototype` 的 `send` / `sendto` / `connect`
+ *     (默认 lookup 被 dns 那条拦住是偶然 —— 调用方可传自定义 lookup);
+ *   - `dns` 的查询函数、`dns.promises` 命名空间、`dns.Resolver.prototype` 与
+ *     `dns.promises.Resolver.prototype` 的 resolve* / reverse;
+ *   - 全局 `fetch` / `WebSocket` / `EventSource`;
+ *   - 最后 `syncBuiltinESMExports()`,让 `import("node:net")` 的具名导出与 require
+ *     拿到同一份替换。
  *
  * ## 它不是什么(如实)
  *
@@ -105,29 +114,121 @@ const NETWORK_GUARD = String.raw`
 (function installNetworkGuard(){
   try {
     const deny = (what) => function(){ throw new Error("network_access_denied: 扩展未声明网络权限(" + what + ")"); };
+    // 【MC-035】原型方法替换的**通用形状**:own-property 优先(不覆盖继承来的实现);
+    // 属性不存在时跳过。prototype 本身可能不可写(极少),逐项在 try/catch 里吞掉 ——
+    // 拦截装不上不应让扩展进程起不来,但已装上的部分照样生效。
+    const wrapOwn = (proto, key, what) => {
+      try {
+        if (proto && typeof proto[key] === "function") proto[key] = deny(what);
+      } catch (e) {}
+    };
+    const wrapAll = (obj, keys, prefix) => {
+      for (const key of keys) {
+        try {
+          if (obj && typeof obj[key] === "function") obj[key] = deny(prefix + key);
+        } catch (e) {}
+      }
+    };
     for (const name of ["http","https","http2"]) {
       try {
         const mod = require("node:" + name);
-        for (const key of ["request","get","connect"]) {
-          if (typeof mod[key] === "function") mod[key] = deny(name + "." + key);
+        wrapAll(mod, ["request","get","connect"], name + ".");
+        // 【MC-035】Agent 的 createConnection 是**原型方法** —— 扩展可以绕过被替换的
+        // request,直接 globalAgent.createConnection({ host, port }) 拿到一条出站套接字。
+        // --permission 不管网络,这条纯 JS 路径曾端到端成功过。
+        if (mod.Agent && mod.Agent.prototype) {
+          wrapOwn(mod.Agent.prototype, "createConnection", name + ".Agent.prototype.createConnection");
+          wrapOwn(mod.Agent.prototype, "createSocket", name + ".Agent.prototype.createSocket");
         }
+        // globalAgent 的 createConnection 钉成自有属性(防御性:部分版本在构造时绑定,
+        // 不查原型;直接钉住那个对象更稳)。
+        try {
+          if (mod.globalAgent && typeof mod.globalAgent.createConnection === "function") {
+            mod.globalAgent.createConnection = deny(name + ".globalAgent.createConnection");
+          }
+        } catch (e) {}
       } catch (e) { /* 模块不在(老版本) — 忽略 */ }
     }
     try {
       const net = require("node:net");
-      for (const key of ["connect","createConnection"]) {
-        if (typeof net[key] === "function") net[key] = deny("net." + key);
-      }
+      wrapAll(net, ["connect","createConnection"], "net.");
+      // 【MC-035】new net.Socket().connect(...) 不走模块导出,走**原型方法**。
+      // net.connect 是另一份实现(不是原型那个函数),两处都替换。
+      wrapOwn(net.Socket && net.Socket.prototype, "connect", "net.Socket.prototype.connect");
+      // net 内部连接实现的符号键(运行时私有,拿不到就跳过;它挡的是
+      // tls.connect 内部对同一实现的直接调用)。
+      try {
+        const internalKey = Symbol.for("nodejs.internal.net.Socket.prototype.connect");
+        if (typeof net.Socket.prototype[internalKey] === "function") {
+          net.Socket.prototype[internalKey] = deny("net.Socket(内部 connect)");
+        }
+      } catch (e) {}
+    } catch (e) {}
+    try {
+      const tls = require("node:tls");
+      // 【MC-035】tls.connect 与 TLSSocket 的原型方法。守卫从前完全没提 node:tls ——
+      // 扩展可以 require("node:tls").connect 直接建 TLS 连接外传。实测
+      // TLSSocket.prototype 上**没有自有** connect(继承自 net 的同一函数),但显式补一个
+      // 自有替换作为纵深:依赖别的替换被改动时不至于一起失效。
+      wrapAll(tls, ["connect","createConnection"], "tls.");
+      wrapOwn(tls.TLSSocket && tls.TLSSocket.prototype, "connect", "tls.TLSSocket.prototype.connect");
+    } catch (e) {}
+    try {
+      const dgram = require("node:dgram");
+      // 【MC-035】dgram:createSocket 从模块导出拦;new dgram.Socket + send/sendto 走
+      // 原型方法。默认 lookup 被 dns 那条挡住是**偶然** —— 调用方可传自定义 lookup,
+      // 因此 send/sendto 本身必须拦。
+      wrapAll(dgram, ["createSocket"], "dgram.");
+      wrapOwn(dgram.Socket && dgram.Socket.prototype, "send", "dgram.Socket.prototype.send");
+      wrapOwn(dgram.Socket && dgram.Socket.prototype, "sendto", "dgram.Socket.prototype.sendto");
+      wrapOwn(dgram.Socket && dgram.Socket.prototype, "connect", "dgram.Socket.prototype.connect");
     } catch (e) {}
     try {
       const dns = require("node:dns");
-      for (const key of ["lookup","resolve","resolve4","resolve6","resolveAny"]) {
-        if (typeof dns[key] === "function") dns[key] = deny("dns." + key);
+      const DNS_QUERIES = [
+        "lookup","lookupService","resolve","resolve4","resolve6","resolveAny","resolveCaa",
+        "resolveCname","resolveMx","resolveNaptr","resolveNs","resolvePtr","resolveSoa",
+        "resolveSrv","resolveTxt","reverse",
+      ];
+      wrapAll(dns, DNS_QUERIES, "dns.");
+      // 【MC-035】promises 命名空间是**另一个对象**(getter 返回),原型上的 resolve* 也
+      // 各是一份。从前只替换了 dns 模块对象上的 5 个函数,dns.promises.resolve4 与
+      // new dns.promises.Resolver() / new dns.Resolver() 全是敞开的。
+      // setServers 不发起查询,不拦(拦它会让"只配了服务器就算被挡"的假绿出现)。
+      try {
+        const promisesNs = dns.promises;
+        if (promisesNs && typeof promisesNs === "object") {
+          wrapAll(promisesNs, DNS_QUERIES, "dns.promises.");
+          const PromiseResolver = promisesNs.Resolver;
+          if (PromiseResolver && PromiseResolver.prototype) {
+            const PromiseResolverProto = PromiseResolver.prototype;
+            // 原型上的 resolve* / reverse(以及部分版本里的 resolve*Promise —— 正则一并覆盖)。
+            for (const key of Object.getOwnPropertyNames(PromiseResolverProto)) {
+              if (key === "constructor") continue;
+              if (/^(resolve|reverse)/.test(key)) {
+                wrapOwn(PromiseResolverProto, key, "dns.promises.Resolver.prototype." + key);
+              }
+            }
+          }
+        }
+      } catch (e) {}
+      const Resolver = dns.Resolver;
+      if (Resolver && Resolver.prototype) {
+        for (const key of Object.getOwnPropertyNames(Resolver.prototype)) {
+          if (key === "constructor") continue;
+          if (/^(resolve|reverse)/.test(key)) {
+            wrapOwn(Resolver.prototype, key, "dns.Resolver.prototype." + key);
+          }
+        }
       }
     } catch (e) {}
     for (const key of ["fetch","WebSocket","EventSource"]) {
       if (typeof globalThis[key] === "function") globalThis[key] = deny(key);
     }
+    // 【MC-035】require("node:net") 与 import("node:net") 走同一个模块对象(实测),
+    // 但 ESM 的**具名导出**是静态 facade —— 这里同步一次,让动态 import 也拿到替换后的
+    // 函数(不依赖扩展是否拿到同步前的 facade)。
+    try { require("node:module").syncBuiltinESMExports(); } catch (e) {}
   } catch (e) { /* 拦截本身失败不应让扩展崩溃 — 调用方仍会得到结果 */ }
 })();
 `;
