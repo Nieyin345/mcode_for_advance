@@ -8,7 +8,7 @@
  *   - 「保存失败保留输入」= 真点保存(注入失败)后输入框 value 仍是用户输入。
  * 全部判据都来自**真 DOM**,不是组件内部状态。
  */
-import { BrowserWindow } from "electron";
+import { BrowserWindow, ipcMain, nativeTheme } from "electron";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -49,9 +49,44 @@ export async function runSettingsPanelsProbe(dir: string): Promise<void> {
     width: 1500,
     height: 950,
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: false,
+      preload: join(dir, "bridge.cjs"),
+    },
   });
   const wc = win.webContents;
+  /**
+   * 真 `theme:get` / `theme:set` —— 与生产 `main/ipc/theme.ts` 同一条语义(本套件不
+   * 起真 DB,所以持久化用一个内存变量替代):set 把偏好写进 `nativeTheme.themeSource`,
+   * Chromium 的 `prefers-color-scheme` 随之翻转;渲染端 `useTheme` 通过 `theme.changed`
+   * 推送收到 effective 并切 `<html>.dark`。再包一层工装:让 `?case=` 指定的那一次
+   * `theme.set` **落盘失败**(拒绝 + 不碰 nativeTheme),断言"失败后控件回到真实值"。
+   */
+  let themePreference: "dark" | "light" | "system" = "light";
+  let themeSetFailures = 0;
+  /** `theme-set-fail` 场景下由页面加载时设置:让下一次 `theme:set` 失败。 */
+  wc.on("did-finish-load", () => {
+    const caseName = new URL(wc.getURL()).searchParams.get("case");
+    if (caseName === "theme-set-fail") themeSetFailures = 1;
+  });
+  const effectiveTheme = () => (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  ipcMain.handle("theme:get", () => ({ theme: themePreference, effective: effectiveTheme() }));
+  ipcMain.handle("theme:set", (_e, raw: { theme?: unknown }) => {
+    if (themeSetFailures > 0) {
+      themeSetFailures -= 1;
+      throw new Error("AUDIT_E2E_THEME_SET_FAILED");
+    }
+    const next = raw?.theme;
+    if (next !== "dark" && next !== "light" && next !== "system") throw new Error("invalid theme");
+    themePreference = next;
+    nativeTheme.themeSource = next;
+    const result = { theme: themePreference, effective: effectiveTheme() };
+    wc.send("theme:changed", { channel: "theme:changed", ...result });
+    return result;
+  });
   /** 页面 console / 未捕获异常 —— 面板整树炸掉时 body 会是空的,单看 innerText
    *  分不清"没渲染"与"渲染时抛错"。这两份诊断随失败信息一起报出来。 */
   const consoleLog: string[] = [];
@@ -272,11 +307,177 @@ export async function runSettingsPanelsProbe(dir: string): Promise<void> {
       assert(value === "用户改过的自动化名", `保存失败后输入被回弹:${JSON.stringify(value)}`);
     });
 
+    /* ═══ 外观 / 语言 / 文本大小:即时生效 + 保存失败回退 ═══ */
+
+    // 读 `<html>` 的真实状态:类、属性、以及**计算值**(不是内联字符串)。
+    const htmlState = (): Promise<{ dark: boolean; lang: string; surface: string; bodyFont: number }> =>
+      js(`(() => {
+        const root = document.documentElement;
+        const body = document.querySelector('main');
+        return {
+          dark: root.classList.contains('dark'),
+          lang: root.lang,
+          surface: getComputedStyle(root).getPropertyValue('--surface').trim(),
+          bodyFont: body ? parseFloat(getComputedStyle(body).fontSize) : -1,
+        };
+      })()`);
+
+    /** 选中一个 Base UI Select 的选项:点 trigger → 等 listbox → 点目标项。 */
+    const pickSelect = async (triggerSelector: string, optionText: string): Promise<void> => {
+      await js<void>(`(() => {
+        const trigger = document.querySelector(${JSON.stringify(triggerSelector)});
+        if (!trigger) throw new Error('找不到下拉框: ' + ${JSON.stringify(triggerSelector)});
+        trigger.click();
+      })()`);
+      await until(
+        "下拉选项出现:" + optionText,
+        `[...document.querySelectorAll('[role="option"]')].some((o) => (o.textContent || '').includes(${JSON.stringify(optionText)}))`,
+      );
+      await js<void>(`(() => {
+        const item = [...document.querySelectorAll('[role="option"]')]
+          .find((o) => (o.textContent || '').includes(${JSON.stringify(optionText)}));
+        if (!item) throw new Error('找不到选项: ' + ${JSON.stringify(optionText)});
+        item.click();
+      })()`);
+    };
+
+    await check("★ 主题:切到深色 → <html>.dark 真的加上,且 surface token 的计算值随主题变化", async () => {
+      await open("appearance", "healthy", `document.body.innerText.includes('界面主题')`);
+      const before = await htmlState();
+      // 健康路径防空过:初始必须是浅色(否则下面的翻转断言两边同值)。
+      assert(before.dark === false, "初始不是浅色:" + JSON.stringify(before));
+      await pickSelect("#setting-theme", "深色");
+      await until("html.dark 出现", `document.documentElement.classList.contains('dark')`);
+      const after = await htmlState();
+      assert(after.dark === true, "切深色后 html 没有 .dark");
+      assert(after.surface !== before.surface, `surface token 计算值没变:${before.surface} → ${after.surface}`);
+      // 深色下 --surface 应解析成暗色（#151515 → "21 21 21"）。
+      assert(after.surface.replace(/\s+/g, " ") === "21 21 21", "深色 surface 不是 21 21 21:" + after.surface);
+    });
+    await check("★ 主题:切回浅色 → .dark 移除、surface 恢复", async () => {
+      await pickSelect("#setting-theme", "浅色");
+      await until("html.dark 移除", `!document.documentElement.classList.contains('dark')`);
+      const state = await htmlState();
+      assert(state.surface.replace(/\s+/g, " ") === "252 252 251", "浅色 surface 不是 252 252 251:" + state.surface);
+    });
+    await check("★ 主题:保存失败 → 错误 toast 可见,且控件回到真实值(不回弹成看起来成功)", async () => {
+      // theme-set-fail:页面加载后主进程让下一次 theme:set 失败。控件值只看
+      // `useTheme().theme`(来自 theme.get/changed),失败时不会变 —— 这条断言同时钉
+      // "错误可见"与"没有假成功"。
+      await open("appearance", "theme-set-fail", `document.body.innerText.includes('界面主题')`);
+      const before = await htmlState();
+      await pickSelect("#setting-theme", "深色");
+      await until("主题失败 toast 出现", `document.body.innerText.includes('切换主题失败')`);
+      const text = await bodyText();
+      assert(text.includes("AUDIT_E2E_THEME_SET_FAILED"), "toast 里没有注入原因:" + text.slice(0, 400));
+      const after = await htmlState();
+      assert(after.dark === before.dark, `失败后主题被假切换:${before.dark} → ${after.dark}`);
+      const triggerText = await js<string>(`document.querySelector('#setting-theme')?.textContent ?? ''`);
+      assert(triggerText.includes("浅色"), "失败后下拉控件没有停在真实值(浅色):" + triggerText);
+    });
+    await check("★ 语言:切到 English → 界面文案真的换成英文(稳定 key:界面语言 → Interface language),且 <html lang> 变化", async () => {
+      await open("general", "healthy", `document.body.innerText.includes('界面语言')`);
+      await pickSelect("#setting-locale", "English");
+      await until("英文文案出现", `document.body.innerText.includes('Interface language')`);
+      const text = await bodyText();
+      assert(!text.includes("界面语言"), "旧语言文案仍在:" + text.slice(0, 300));
+      const lang = await js<string>("document.documentElement.lang");
+      assert(lang === "en", "<html lang> 没有变成 en:" + lang);
+    });
+    await check("★ 语言:切回中文 → 文案与 <html lang> 一起恢复", async () => {
+      await pickSelect("#setting-locale", "简体中文");
+      await until("中文文案回来", `document.body.innerText.includes('界面语言')`);
+      const lang = await js<string>("document.documentElement.lang");
+      assert(lang === "zh-CN", "<html lang> 没有回到 zh-CN:" + lang);
+    });
+    await check("★ 语言:保存失败 → 错误可见,界面语言回到真实值(不回弹成看起来成功)", async () => {
+      await open("general", "locale-save-fail", `document.body.innerText.includes('界面语言')`);
+      await pickSelect("#setting-locale", "English");
+      await until("设置保存失败 toast 出现", `document.body.innerText.includes('设置没能保存') || document.body.innerText.includes("Couldn't save the setting")`);
+      const text = await bodyText();
+      assert(text.includes("AUDIT_E2E_LOCALE_SAVE"), "toast 里没有注入原因:" + text.slice(0, 400));
+      // 【回退】store 与 <html lang> 都要回到失败前的中文 —— 这条会红在旧实现上。
+      await until("界面语言回退到中文", `document.body.innerText.includes('界面语言')`);
+      const lang = await js<string>("document.documentElement.lang");
+      assert(lang === "zh-CN", "失败后 <html lang> 没回退:" + lang);
+    });
+    // FontSizeStepper 的容器 id 就是 SettingRow 的 htmlFor(#setting-fontsize /
+    // #setting-sidepanel-fontsize,见 AppearancePanel)—— 比按文案猜最内层稳定。
+    const clickStepper = async (title: string, scopeId: string): Promise<void> => {
+      const result = await js<string>(`(() => {
+        const scope = document.querySelector(${JSON.stringify(scopeId)});
+        if (!scope) return 'no-scope';
+        const buttons = [...scope.querySelectorAll('button')]
+          .filter((b) => b.getAttribute('title') === ${JSON.stringify(title)} && !b.disabled);
+        if (!buttons.length) return 'no-button:' + [...scope.querySelectorAll('button')].map((b) => b.getAttribute('title')).join(',');
+        buttons[0].click();
+        return 'ok';
+      })()`);
+      assert(result === "ok", `步进按钮(${title}, ${scopeId})不可用:` + result);
+    };
+
+    await check("★ 文本大小:改聊天字号 → --chat-font-size 真的变、正文计算字号变化;再改回来", async () => {
+      await open("appearance", "healthy", `document.body.innerText.includes('字号')`);
+      const chatFont = (): Promise<number> =>
+        js<number>(`parseFloat(getComputedStyle(document.querySelector('[data-testid="chat-font-probe"]')).fontSize)`);
+      const before = await chatFont();
+      const beforeVar = await js<string>(`document.documentElement.style.getPropertyValue('--chat-font-size')`);
+      await clickStepper("增大", "#setting-fontsize");
+      await until("聊天字号变量写入", `document.documentElement.style.getPropertyValue('--chat-font-size') !== ''`);
+      const after = await chatFont();
+      const afterVar = await js<string>(`document.documentElement.style.getPropertyValue('--chat-font-size')`);
+      assert(beforeVar === "", "初始不该有内联 --chat-font-size:" + beforeVar);
+      assert(afterVar === "15px", "--chat-font-size 不是 15px:" + afterVar);
+      assert(after === before + 1, `聊天正文计算字号没 +1px:${before} → ${after}`);
+      // 改回 14px:内联变量应被移除(样式表默认重新生效)。
+      await clickStepper("减小", "#setting-fontsize");
+      await until("内联字号移除", `document.documentElement.style.getPropertyValue('--chat-font-size') === ''`);
+      const restored = await chatFont();
+      assert(restored === before, `改回后计算字号没恢复:${before} → ${restored}`);
+    });
+    await check("★ 文本大小:改全局字号 → --right-panel-font-size 与设置页正文计算字号一起变;再改回来", async () => {
+      const panelFont = (): Promise<number> =>
+        js<number>(`parseFloat(getComputedStyle(document.querySelector('main')).fontSize)`);
+      const before = await panelFont();
+      await clickStepper("增大", "#setting-sidepanel-fontsize");
+      await until("全局字号变量写入", `document.documentElement.style.getPropertyValue('--right-panel-font-size') !== ''`);
+      const after = await panelFont();
+      const afterVar = await js<string>(`document.documentElement.style.getPropertyValue('--right-panel-font-size')`);
+      assert(afterVar === "15px", "--right-panel-font-size 不是 15px:" + afterVar);
+      assert(after === before + 1, `设置页正文计算字号没 +1px:${before} → ${after}`);
+      await clickStepper("减小", "#setting-sidepanel-fontsize");
+      await until("全局字号变量移除", `document.documentElement.style.getPropertyValue('--right-panel-font-size') === ''`);
+      assert((await panelFont()) === before, "改回后设置页正文计算字号没恢复");
+    });
+    await check("★ 文本大小:保存失败 → 可见错误,字号回到真实值(不回弹成看起来成功)", async () => {
+      await open("appearance", "chatfont-save-fail", `document.body.innerText.includes('字号')`);
+      const probeFont = (): Promise<number> =>
+        js<number>(`parseFloat(getComputedStyle(document.querySelector('[data-testid="chat-font-probe"]')).fontSize)`);
+      const before = await probeFont();
+      await clickStepper("增大", "#setting-fontsize");
+      await until("保存失败错误可见", `document.body.innerText.includes('设置没能保存') || document.body.innerText.includes("Couldn't save the setting")`);
+      assert((await bodyText()).includes("AUDIT_E2E_CHAT_FONT_SAVE"), "错误里没有注入原因");
+      // 【回退】字号必须回到 14px、内联变量被移除 —— 旧实现会把 15px 留在界面上。
+      await until("字号回退到原值", `document.documentElement.style.getPropertyValue('--chat-font-size') === ''`);
+      assert((await probeFont()) === before, `失败后字号没有回退:${before} → ${await probeFont()}`);
+    });
+    await check("★ 全局字号:保存失败 → 错误可见,设置页正文字号回到真实值", async () => {
+      await open("appearance", "panel-font-save-fail", `document.body.innerText.includes('字号')`);
+      const panelFont = (): Promise<number> =>
+        js<number>(`parseFloat(getComputedStyle(document.querySelector('main')).fontSize)`);
+      const before = await panelFont();
+      await clickStepper("增大", "#setting-sidepanel-fontsize");
+      await until("保存失败错误可见", `document.body.innerText.includes('设置没能保存') || document.body.innerText.includes("Couldn't save the setting")`);
+      assert((await bodyText()).includes("AUDIT_E2E_PANEL_FONT_SAVE"), "错误里没有注入原因");
+      await until("全局字号回退", `document.documentElement.style.getPropertyValue('--right-panel-font-size') === ''`);
+      assert((await panelFont()) === before, `失败后全局字号没有回退:${before} → ${await panelFont()}`);
+    });
+
     /* ═══ 渲染端全程无未捕获异常(整树卸载探针) ═══ */
     await check("★ 全程无渲染端未捕获异常(最后一页仍完整)", async () => {
       const errors = await rendererErrors();
       assert(errors.length === 0, "渲染端未捕获异常:" + errors.join("\n").slice(0, 800));
-      assert((await bodyText()).includes("每日整理"), "页面在最后一次断言后不完整");
+      assert((await bodyText()).includes("字号"), "页面在最后一次断言后不完整:" + (await bodyText()).slice(0, 300));
     });
   } finally {
     win?.destroy();

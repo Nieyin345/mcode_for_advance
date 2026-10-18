@@ -4728,15 +4728,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   /** Update the UI language. Same immediate-flip + fire-and-forget-persist
    *  pattern as setDisplayMode. Also mirrors the choice onto
-   *  <html lang> so assistive tech + font selection follow the UI language. */
+   *  <html lang> so assistive tech + font selection follow the UI language.
+   *
+   *  【MC-026 复核·外观即时生效】落盘失败要**把界面语言退回去**：从前失败只弹
+   *  toast，整页文案已经换成新语言、用户以为改好了，重启才静默弹回 —— 与字号
+   *  那两个 setter 同一条"看起来成功"的失败。只回滚自己那次写的值。 */
   // ─────────────── K 设置镜像（落库偏好） ───────────────
   setLocale: async (locale) => {
+    const previous = get().locale;
     set({ locale });
     document.documentElement.lang = locale === "en" ? "en" : "zh-CN";
     try {
       await api.setting.set({ key: UI_LOCALE_SETTING_KEY, value: locale });
     } catch (err) {
       console.error("setting.set(locale) failed:", err);
+      if (get().locale === locale) {
+        set({ locale: previous });
+        document.documentElement.lang = previous === "en" ? "en" : "zh-CN";
+      }
       reportSettingSaveFailed(err);
     }
   },
@@ -4959,6 +4968,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // ─────────────── K 设置镜像（落库偏好） ───────────────
   setChatFontSize: async (px) => {
     const clamped = clampFontSize(px);
+    // 【MC-026 复核·外观即时生效】乐观改 + 落盘；**落盘失败要把界面退回真实值**。
+    // 从前失败只弹 toast：字号已经按新值渲染，用户以为改好了，重启才静默弹回 ——
+    // 正是"看起来成功"的那种失败。回滚只回**自己那次**写的值（若另一次更新的
+    // 写入已经落地，别把新值也一起冲掉）。
+    const previous = get().chatFontSize;
     set({ chatFontSize: clamped });
     try {
       await api.setting.set({
@@ -4967,13 +4981,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(chatFontSize) failed:", err);
-      reportSettingSaveFailed(err);
+      if (get().chatFontSize === clamped) set({ chatFontSize: previous });
       reportSettingSaveFailed(err);
     }
   },
 
   setRightPanelFontSize: async (px) => {
     const clamped = clampRightPanelFontSize(px);
+    // 同 setChatFontSize：失败回滚到这次写入前的值（不覆盖更新的成功写入）。
+    const previous = get().rightPanelFontSize;
     set({ rightPanelFontSize: clamped });
     try {
       await api.setting.set({
@@ -4982,7 +4998,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(rightPanelFontSize) failed:", err);
-      reportSettingSaveFailed(err);
+      if (get().rightPanelFontSize === clamped) set({ rightPanelFontSize: previous });
       reportSettingSaveFailed(err);
     }
   },

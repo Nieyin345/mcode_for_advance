@@ -99,6 +99,7 @@ if (css.status !== undefined && css.status !== 0) throw Error("tailwind failed")
 // 夹具:节点类型目录(内置清单,生成物随套件提交,不读用户环境)。
 copyFileSync(join(suite, "catalog.generated.json"), join(dir, "catalog.generated.json"));
 copyFileSync(join(suite, "api-stub.js"), join(dir, "api-stub.js"));
+copyFileSync(join(suite, "bridge.cjs"), join(dir, "bridge.cjs"));
 copyFileSync(join(suite, "electron-host.cjs"), join(dir, "electron-host.cjs"));
 
 writeFileSync(
