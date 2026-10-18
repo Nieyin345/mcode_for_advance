@@ -21,10 +21,16 @@
  * {@link pairWithCode}) and lives in localStorage. A 401 anywhere clears it so
  * the pairing gate re-appears instead of looping on dead credentials.
  *
- * Desktop-only surface (terminal / browser / lsp / shell / dialogs / app
- * updates / secrets management) is intentionally ABSENT: the proxy fallback
- * turns any such call into a clear "not available in web mode" error, and the
- * mobile shell hides the UI that would call it.
+ * Desktop-only surface (terminal / browser / shell / dialogs / app updates /
+ * secrets management) is intentionally unsupported: it is either answered by
+ * `webUnsupported` (an explicit, localised error) or — for namespaces the
+ * mobile shell never mounts — absent, in which case the proxy fallback turns
+ * any call into the same clear "not available in web mode" error. Namespaces
+ * that ARE reachable from the shared component tree (see the `automation` …
+ * `usage` block below) are spelled out method-by-method on purpose: the
+ * proxy only catches *unlisted names*, so one missing method inside a listed
+ * object would surface as a bare `undefined is not a function` — and React 19
+ * unmounts the whole tree when a shared effect hits that.
  */
 import type { Api } from "../../preload/index.js";
 import { IPC } from "@contracts/ipc";
@@ -503,24 +509,27 @@ async function writeImageWeb(input: { dataUrl: string }): Promise<{ ok: boolean;
 
 const claude: Api["claude"] = {
   startSession: (input) => rpc("claude:startSession", input),
-  listSideChats: (input) => rpc("claude:listSideChats", input),
+  // 侧聊列表要读电脑端那一轮运行的内存状态;手机端没有侧聊面板(`SideChatPanel`
+  // 只挂在桌面工作流看板上),服务端的白名单也没有这条 handler → 显式不可用,
+  // 而不是发一条注定 404 的 RPC。调用方(sessionStore.hydrateSideChats)有 try/catch。
+  listSideChats: () => webUnsupported("claude.listSideChats"),
   sendTurn: (input) => rpc("claude:sendTurn", input),
   interrupt: (input) => rpc("claude:interrupt", input),
-  // 手机上不支持插话(那一轮跑在桌面端,手机这边没有"正在跑的那一轮"这个概念)。
-  // 留着它是为了满足 `Api["claude"]` 的完整性 —— 调用方按 memory 里那条规矩包了
-  // try/catch,失败会退回普通的发送。
-  inject: (input) => rpc("claude:inject", input),
-  // 同理：停一个子代理要靠"正在跑的那一轮"的句柄，手机上够不到。留着它满足
-  // `Api["claude"]` 的完整性 —— 任务列表页在手机端也能打开，那一行只是停不了。
-  stopTask: (input) => rpc("claude:stopTask", input),
-  // 同理：bash 任务的输出文件在**桌面端那台机器**上，手机读不到。
-  readTaskOutput: (input) => rpc("claude:readTaskOutput", input),
+  // 手机上不支持插话(那一轮跑在桌面端,手机这边没有"正在跑的那一轮"这个概念),
+  // 服务端白名单同样没有这条 handler。显式不可用 —— 调用方(sessionStore.injectPrompt)
+  // 按那条规矩包了 try/catch,失败会退回普通的发送。
+  inject: () => webUnsupported("claude.inject"),
+  // 同理：停一个子代理要靠"正在跑的那一轮"的句柄，手机上够不到，白名单也没有这条。
+  // 任务列表页在手机端也能打开，那一行只是停不了(调用方 catch 后会 toast)。
+  stopTask: () => webUnsupported("claude.stopTask"),
+  // 同理：bash 任务的输出文件在**桌面端那台机器**上，手机读不到，白名单也没有这条。
+  readTaskOutput: () => webUnsupported("claude.readTaskOutput"),
   approve: (input) => rpc("claude:approve", input),
   respondQuestion: (input) => rpc("claude:respondQuestion", input),
   respondPlanApproval: (input) => rpc("claude:respondPlanApproval", input),
   rewindTurn: (input) => rpc("claude:rewindTurn", input),
-  // 手机端没有设置页的子代理编辑器 —— 与 rewindTurn 同理,仅为满足类型完整性。
-  saveSubagents: (input) => rpc("claude:saveSubagents", input),
+  // 手机端没有设置页的子代理编辑器，服务端白名单也没有这条 —— 显式不可用。
+  saveSubagents: () => webUnsupported("claude.saveSubagents"),
 };
 
 const project: Api["project"] = {
@@ -546,15 +555,16 @@ const session: Api["session"] = {
   delete: (input) => rpc("session:delete", input),
   archive: (input) => rpc("session:archive", input),
   rename: (input) => rpc("session:rename", input),
-  // 手机端**没有**分叉这个入口(AppMobile 的会话列表里不放它),所以这条在手机上
-  // 只会以"服务端不认识这个方法"失败。留着它是为了满足 `Api["session"]` 的完整性 ——
-  // 调用方仍然必须按 memory 里那条规矩把 RPC 包在 try/catch 里(抛出去会让 React 19
-  // 把整棵树卸掉)。
-  fork: (input) => rpc("session:fork", input),
+  // 手机端**没有**分叉这个入口(AppMobile 的会话列表里不放它),服务端白名单也没有
+  // `session:fork` —— 显式不可用(而不是发一条注定 "unknown method" 的 RPC)。
+  // 调用方(sessionStore.forkSession)把 RPC 包在 try/catch 里并 toast 原因。
+  fork: () => webUnsupported("session.fork"),
   pin: (input) => rpc("session:pin", input),
   updateBookmarks: (input) => rpc("session:updateBookmarks", input),
   listPinned: () => rpc("session:listPinned"),
-  listAll: (input) => rpc("session:listAll", input),
+  // `listAll` 是桌面「流式侧栏」(StreamSidebar)的分页源,手机壳不挂它,服务端白名单
+  // 也没有这条 —— 显式不可用。手机侧的会话列表走 project:sessions / session:search。
+  listAll: () => webUnsupported("session.listAll"),
   listNodes: (input) => rpc("session:listNodes", input),
   hasNodes: (input) => rpc("session:hasNodes", input),
 };
@@ -742,7 +752,10 @@ const git: Api["git"] = {
   push: (input) => rpc("git:push", input),
   pull: (input) => rpc("git:pull", input),
   diff: (input) => rpc("git:diff", input),
-  fileBlob: (input) => rpc("git:fileBlob", input),
+  // 手机端白名单没有 `git:fileBlob`(桌面 GitRepoCard 用它拼整文件 diff;手机 Git 屏
+  // 只走 `git:diff` 的 patch)。显式不可用 —— 唯一调用方在打开整文件 diff 失败时会
+  // 回退成普通编辑器打开,不会静默装成"文件没有改动"。
+  fileBlob: () => webUnsupported("git.fileBlob"),
   discard: () => webUnsupported("git.discard"),
   generateCommitMessage: (input) => rpc("git:generateCommitMessage", input),
   cancelGenerateCommitMessage: (input) => rpc("git:cancelGenerateCommitMessage", input),
@@ -874,6 +887,189 @@ const workflowEngine: Api["workflowEngine"] = {
   stop: () => webUnsupported("workflowEngine.stop"),
   status: () => webUnsupported("workflowEngine.status"),
   list: () => webUnsupported("workflowEngine.list"),
+};
+
+/* ─────────── namespaces reachable from the shared tree but desktop-only ───────────
+ *
+ * 下面这几个命名空间**会被手机壳实际加载的共用组件调到**(消息列表的「⋯」菜单、
+ * 输入框的「+」菜单、`useRefOptions`、`notifPrefsCache`、`EmptyThreadWelcome` 等),
+ * 而从前它们整个不在 `base` 里 —— 访问落在 Proxy 兜底上。Proxy 是**同步抛**:
+ * 对 `await api.x.y()` 风格(调用方包了 try/catch)没问题,但对
+ * `api.x.y().then(...).catch(...)` 风格**接不住** —— `.catch` 还没挂上,异常已经
+ * 从 effect / 事件处理器里逃出去(LibraryPicker 的 `loadItems` 就是这种写法,
+ * React 19 下会卸掉整棵树)。所以这里一律用 **async 桩**:返回 rejected Promise,
+ * `.catch` 与 `await` 两种风格都能接住;错误仍带
+ * `WEB_UNSUPPORTED_MARKER` + 本地化原因,调用方能把"平台不支持"与"真失败"分开。
+ * **少列一个方法就是一次 `undefined is not a function`**(见文件头那条规矩)。
+ *
+ * 取舍:手机壳不挂它们的面板(文献库 / 记忆 / 插件 / 计划任务 / 监控),主进程
+ * 手机 RPC 白名单也**没有**这些 handler —— 所以全部是桩,不是"还没接"。 */
+
+/** 自动化(触发器跑一次 / 运行史 / 会话 / 守望)。`watch` 那一组是输入框守望面板的,
+ *  桌面专属(`ComposerToolbar` 用 `isElectron` 门控);`runAutomation` 的宿主
+ *  (自定义 UI 右键项)也在桌面。手机端没有 "automation:*" 白名单 handler。 */
+const automation: Api["automation"] = {
+  run: () => webUnsupported("automation.run"),
+  runs: () => webUnsupported("automation.runs"),
+  sessions: () => webUnsupported("automation.sessions"),
+  watch: () => webUnsupported("automation.watch"),
+  watchStatus: () => webUnsupported("automation.watchStatus"),
+  watchTemplates: () => webUnsupported("automation.watchTemplates"),
+  saveWatchTemplates: () => webUnsupported("automation.saveWatchTemplates"),
+  rebuildWatchTemplates: () => webUnsupported("automation.rebuildWatchTemplates"),
+  statusAll: () => webUnsupported("automation.statusAll"),
+};
+
+/** Codex 自定义端点模型。设置页专属(手机不挂设置页),白名单也没有 —— 桩。
+ *  注意 **不能**用空列表假装"没有模型":模型下拉会据此把 codex 的候选清空。 */
+const codexModels: Api["codexModels"] = {
+  list: () => webUnsupported("codexModels.list"),
+  save: () => webUnsupported("codexModels.save"),
+  delete: () => webUnsupported("codexModels.delete"),
+  test: () => webUnsupported("codexModels.test"),
+  listEndpointModels: () => webUnsupported("codexModels.listEndpointModels"),
+  getApiKey: () => webUnsupported("codexModels.getApiKey"),
+};
+
+/** 自定义 UI 的宿主入口。手机壳不挂自定义面板 / 自定义右键项,白名单没有 —— 桩。 */
+const customUi: Api["customUi"] = {
+  runAutomation: () => webUnsupported("customUi.runAutomation"),
+  stagePanel: () => webUnsupported("customUi.stagePanel"),
+  panelAsk: () => webUnsupported("customUi.panelAsk"),
+  panelApiCall: () => webUnsupported("customUi.panelApiCall"),
+};
+
+/** 文献库。手机壳的输入框「+」菜单里有「文献库」入口(`LibraryPicker` / `attachToChat`
+ *  是共用组件),但主进程手机 RPC 白名单**没有** `library:*`。从前它整个落 Proxy:
+ *  `LibraryPicker.loadItems` 那种 `api.library.list(...).then(...).catch(...)` 会在
+ *  `.catch` 挂上之前同步抛出、逃进 effect。这里改成 **async 桩**(rejected Promise),
+ *  选中一篇只会得到一条说得清的"移动端不可用",不会带崩整棵树。
+ *  `on.libraryChanged` 仍是空实现(手机没有库面板要刷新)。 */
+const library: Api["library"] = {
+  groupsGet: async () => webUnsupported("library.groupsGet"),
+  groupsSave: async () => webUnsupported("library.groupsSave"),
+  suppressGet: async () => webUnsupported("library.suppressGet"),
+  suppressSave: async () => webUnsupported("library.suppressSave"),
+  linksOf: async () => webUnsupported("library.linksOf"),
+  linkCounts: async () => webUnsupported("library.linkCounts"),
+  linkAdd: async () => webUnsupported("library.linkAdd"),
+  linkRemove: async () => webUnsupported("library.linkRemove"),
+  importGeneric: async () => webUnsupported("library.importGeneric"),
+  readFile: async () => webUnsupported("library.readFile"),
+  list: async () => webUnsupported("library.list"),
+  get: async () => webUnsupported("library.get"),
+  addItems: async () => webUnsupported("library.addItems"),
+  deleteItems: async () => webUnsupported("library.deleteItems"),
+  restoreItems: async () => webUnsupported("library.restoreItems"),
+  deletePreview: async () => webUnsupported("library.deletePreview"),
+  importFiles: async () => webUnsupported("library.importFiles"),
+  convert: async () => webUnsupported("library.convert"),
+  revealFile: async () => webUnsupported("library.revealFile"),
+  openFile: async () => webUnsupported("library.openFile"),
+  entryPath: async () => webUnsupported("library.entryPath"),
+  readAsset: async () => webUnsupported("library.readAsset"),
+  readHighlights: async () => webUnsupported("library.readHighlights"),
+  saveHighlights: async () => webUnsupported("library.saveHighlights"),
+  writeHighlights: async () => webUnsupported("library.writeHighlights"),
+  readOriginalPdf: async () => webUnsupported("library.readOriginalPdf"),
+  readMarkdown: async () => webUnsupported("library.readMarkdown"),
+  readPdf: async () => webUnsupported("library.readPdf"),
+  renameItem: async () => webUnsupported("library.renameItem"),
+  listNotes: async () => webUnsupported("library.listNotes"),
+  saveNote: async () => webUnsupported("library.saveNote"),
+  deleteNote: async () => webUnsupported("library.deleteNote"),
+  createNote: async () => webUnsupported("library.createNote"),
+  writeNote: async () => webUnsupported("library.writeNote"),
+  adoptMarkdown: async () => webUnsupported("library.adoptMarkdown"),
+  importNotes: async () => webUnsupported("library.importNotes"),
+  conversionStats: async () => webUnsupported("library.conversionStats"),
+  conversionReport: async () => webUnsupported("library.conversionReport"),
+  fullTextSearch: async () => webUnsupported("library.fullTextSearch"),
+  itemManifest: async () => webUnsupported("library.itemManifest"),
+  manifest: async () => webUnsupported("library.manifest"),
+  attachToChat: async () => webUnsupported("library.attachToChat"),
+  listCollections: async () => webUnsupported("library.listCollections"),
+  createCollection: async () => webUnsupported("library.createCollection"),
+  renameCollection: async () => webUnsupported("library.renameCollection"),
+  deleteCollection: async () => webUnsupported("library.deleteCollection"),
+  moveCollection: async () => webUnsupported("library.moveCollection"),
+  assignCollection: async () => webUnsupported("library.assignCollection"),
+};
+
+/** 语言服务器。手机没有编辑器 / Monaco,sessionStore.initDeferred 已按
+ *  `isElectron` 跳过读取;仍然显式列出(共用 store 的其他分支可能碰到)。 */
+const lsp: Api["lsp"] = {
+  list: () => webUnsupported("lsp.list"),
+  install: () => webUnsupported("lsp.install"),
+  installFromFile: () => webUnsupported("lsp.installFromFile"),
+  uninstall: () => webUnsupported("lsp.uninstall"),
+  toggle: () => webUnsupported("lsp.toggle"),
+  setPath: () => webUnsupported("lsp.setPath"),
+  healthCheck: () => webUnsupported("lsp.healthCheck"),
+  prewarm: () => webUnsupported("lsp.prewarm"),
+  restart: () => webUnsupported("lsp.restart"),
+  openDocument: () => webUnsupported("lsp.openDocument"),
+  closeDocument: () => webUnsupported("lsp.closeDocument"),
+  didChange: () => webUnsupported("lsp.didChange"),
+  didSave: () => webUnsupported("lsp.didSave"),
+  request: () => webUnsupported("lsp.request"),
+};
+
+/** 记忆助手按钮。`ComposerToolbar` 用 `isElectron` 门控,手机不挂;白名单没有 —— 桩。 */
+const memory: Api["memory"] = {
+  assistant: () => webUnsupported("memory.assistant"),
+  manage: () => webUnsupported("memory.manage"),
+  list: () => webUnsupported("memory.list"),
+  read: () => webUnsupported("memory.read"),
+  save: () => webUnsupported("memory.save"),
+  delete: () => webUnsupported("memory.delete"),
+  categories: () => webUnsupported("memory.categories"),
+  review: () => webUnsupported("memory.review"),
+  reviewDelete: () => webUnsupported("memory.reviewDelete"),
+};
+
+/** 系统通知偏好。**这一条不是空实现能糊过去的**:`notifPrefsCache` 在
+ *  `inAppToastAllowed()` 里首次调用时拉一次,失败就退回默认(照常弹提示)。
+ *  主进程白名单没有 `notification:*`(那是那台电脑的系统通知),所以显式不可用,
+ *  调用方 catch 后按默认走。`on.notificationFocusSession` 仍是空实现。
+ *  形状用 async:`prime()` 是 `getPrefs().then(...)` 的写法,同步抛会让它外层的
+ *  try 以外什么都接不住。 */
+const notification: Api["notification"] = {
+  getPrefs: async () => webUnsupported("notification.getPrefs"),
+  setPrefs: async () => webUnsupported("notification.setPrefs"),
+  focusSession: async () => webUnsupported("notification.focusSession"),
+};
+
+/** 插件(设置页)。`useRefOptions` 的 `plugins` 候选来源会读它(NOT mounted in the
+ *  mobile shell's visible tree, but reachable via the shared hook);白名单没有 —— 桩。 */
+const plugins: Api["plugins"] = {
+  list: () => webUnsupported("plugins.list"),
+  installLocal: () => webUnsupported("plugins.installLocal"),
+  installGit: () => webUnsupported("plugins.installGit"),
+  installMarketplace: () => webUnsupported("plugins.installMarketplace"),
+  setEnabled: () => webUnsupported("plugins.setEnabled"),
+  enginesSet: () => webUnsupported("plugins.enginesSet"),
+  projectList: () => webUnsupported("plugins.projectList"),
+  projectSet: () => webUnsupported("plugins.projectSet"),
+  remove: () => webUnsupported("plugins.remove"),
+  marketplaceList: () => webUnsupported("plugins.marketplaceList"),
+  marketplaceAdd: () => webUnsupported("plugins.marketplaceAdd"),
+  marketplaceRemove: () => webUnsupported("plugins.marketplaceRemove"),
+  marketplaceRefresh: () => webUnsupported("plugins.marketplaceRefresh"),
+};
+
+/** Agent runtime 安装。手机不安装 runtime;`initDeferred` 已按 `isElectron` 跳过。 */
+const runtimes: Api["runtimes"] = {
+  list: () => webUnsupported("runtimes.list"),
+  install: () => webUnsupported("runtimes.install"),
+  installLocal: () => webUnsupported("runtimes.installLocal"),
+  remove: () => webUnsupported("runtimes.remove"),
+};
+
+/** 用量统计。`EmptyThreadWelcome` 的「今日用量」用 `useRpc(..., DESKTOP_QUIET)` ——
+ *  `enabled: isElectron` 在手机上是 false,不会真调;这里仍显式列出,堵住其他分支。 */
+const usage: Api["usage"] = {
+  stats: () => webUnsupported("usage.stats"),
 };
 
 const shell: Api["shell"] = {
@@ -1032,6 +1228,16 @@ export function createWebApi(): Api {
     piModels,
     workflow,
     skills,
+    automation,
+    codexModels,
+    customUi,
+    library,
+    lsp,
+    memory,
+    notification,
+    plugins,
+    runtimes,
+    usage,
     file,
     git,
     claude,
@@ -1044,6 +1250,16 @@ export function createWebApi(): Api {
     clipboardFile,
     /** 手机端没有本地文件系统,也就没有拖放 —— 返回空串,调用方按"拿不到路径"处理。 */
     getPathForFile: (): string => "",
+    // 原生目录 / 文件对话框是**那台电脑上的 OS 窗口**,手机浏览器没有这一层。
+    // 两个都是共用组件的入口(`+ → 添加项目外的文件` 的 `FileMentionPicker`,
+    // sessionStore.addProjectFromFolder),所以显式桩(而不是靠 Proxy 兜底):
+    // async 形状让 `await` / `.catch` 两种写法都接得住,原因文本可读。
+    pickFolder: async () => {
+      webUnsupported("pickFolder");
+    },
+    pickFiles: async () => {
+      webUnsupported("pickFiles");
+    },
     on,
   };
 
