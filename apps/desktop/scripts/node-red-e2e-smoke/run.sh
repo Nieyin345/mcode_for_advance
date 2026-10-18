@@ -16,12 +16,17 @@ trap 'rm -rf "$OUT"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # registry.ts / runtimeSupervisor.ts 的 import 链会拖进 dataRoot（electron app.getPath）
-# 与 logger（electron 日志目录）；无头里换桩。桩未设 MCODE_SMOKE_DATA_ROOT 即抛，
-# 这里把它指向 node-red 的安装根 —— 生产注册表的 launchSpec 只写 bootstrap.cjs 与
-# .engine-secret 到 <dataRoot>/workflow-engines/node-red/，与 main.ts 的前置检查同一位置。
+# 与 logger（electron 日志目录）；无头里换桩。dataRoot 桩把 MCODE_SMOKE_DATA_ROOT 当
+# 数据根本身，所以这里必须给它**本套私有的**临时目录 —— 从前指向 node-red 安装根
+# （`.tmp/nr-e2e`），与另一份全量跑 / mcode-node-pack-smoke 同目录并行时互相踩：
+# flows.json 被对方清掉、信任标记被改写、Node-RED flush 时目录消失 → 未捕获退出
+# （实测并行 78/80 + EADDRNOTAVAIL）。main.ts 在私有数据根里给 node_modules 建
+# junction 指回共享安装树，不动也不复制那 106MB。
 E2E_ROOT="${MCODE_NR_E2E_ROOT:-$PWD/.tmp/nr-e2e}"
 mkdir -p "$E2E_ROOT"
-export MCODE_SMOKE_DATA_ROOT="$E2E_ROOT"
+DATA=$(mktemp -d "${TMPDIR:-/tmp}/mcode-nr-e2e-data.XXXXXX")
+trap 'rm -rf "$OUT" "$DATA"' EXIT
+export MCODE_SMOKE_DATA_ROOT="$DATA"
 export MCODE_NR_E2E_ROOT="$E2E_ROOT"
 
 "$ESBUILD" scripts/node-red-e2e-smoke/main.ts \

@@ -51,7 +51,7 @@
  * Run: bash scripts/node-red-e2e-smoke/run.sh
  */
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { connect } from "node:net";
 import { join } from "node:path";
@@ -95,8 +95,37 @@ function appDir(): string {
 }
 const APP = appDir();
 const NR_ROOT = process.env.MCODE_NR_E2E_ROOT ?? join(APP, ".tmp", "nr-e2e");
-const INSTALLED = join(NR_ROOT, "workflow-engines", NODE_RED_ENGINE_ID);
-const NODE_RED_PKG = join(INSTALLED, "node_modules", "node-red", "package.json");
+/** 共享安装树：node-red 的 106MB 依赖装在这里（gitignored，可被 MCODE_NR_E2E_ROOT 覆盖）。 */
+const SHARED_ENGINE_DIR = join(NR_ROOT, "workflow-engines", NODE_RED_ENGINE_ID);
+const SHARED_NODE_MODULES = join(SHARED_ENGINE_DIR, "node_modules");
+const NODE_RED_PKG = join(SHARED_NODE_MODULES, "node-red", "package.json");
+
+/**
+ * 【并行隔离】数据目录 = 本套**私有**目录，`node_modules` 用 junction 指回共享安装树。
+ *
+ * 从前 `INSTALLED`（共享安装树本身）同时充当 dataDir：另一份全量跑（或
+ * `mcode-node-pack-smoke`）在同目录写/清 `flows.json`、`engine-trust.json`、
+ * `.config.runtime.json` 时，本套会看到「刚部署的 flow 没了」「信任标记被改写」，
+ * 甚至 Node-RED 自己 flush `.config.runtime.json` 时目录被清 → 未捕获异常退出
+ * （实测：并行时 78/80，且 Gate C 20s 就绪超时后 EADDRNOTAVAIL）。与 node-pack
+ * 同一模式：可变状态全落私有目录，106MB 依赖共享。
+ *
+ * junction 不可用 → 回退整树复制（慢、占盘，但绝不回退成共享目录）。
+ */
+const PRIVATE_DATA_ROOT = process.env.MCODE_SMOKE_DATA_ROOT ?? "";
+const PRIVATE_ENGINE_DIR = PRIVATE_DATA_ROOT === "" ? "" : join(PRIVATE_DATA_ROOT, "workflow-engines", NODE_RED_ENGINE_ID);
+if (PRIVATE_ENGINE_DIR !== "" && existsSync(SHARED_NODE_MODULES)) {
+  mkdirSync(PRIVATE_ENGINE_DIR, { recursive: true });
+  const linkPath = join(PRIVATE_ENGINE_DIR, "node_modules");
+  if (!existsSync(linkPath)) {
+    try {
+      symlinkSync(SHARED_NODE_MODULES, linkPath, "junction");
+    } catch {
+      cpSync(SHARED_NODE_MODULES, linkPath, { recursive: true });
+    }
+  }
+}
+const INSTALLED = PRIVATE_ENGINE_DIR === "" ? SHARED_ENGINE_DIR : PRIVATE_ENGINE_DIR;
 
 /** 未安装 → 显式 SKIP（带原因）且 0 退出。全量套件在无网机器上不能红。 */
 if (!existsSync(NODE_RED_PKG)) {
@@ -709,6 +738,10 @@ try {
   }, 15_000);
   check("★ 部署后 HTTP-in 真的注册并应答（200）", registered === true);
 
+  // —— B3. 真进程 running 的代次由宿主生成（非 Agent 自报、非端口）。
+  const runEpoch = runtimeB!.status().instanceEpoch;
+  check("★ 真 EngineRuntime running 含非空宿主启动实例代次",
+    typeof runEpoch === "string" && runEpoch.length >= 32, { present: !!runEpoch });
   // —— B3. 生产执行器发请求，返回值回灌 ——
   const payload = { hello: "world", n: 42, nested: { ok: true }, marker: nonce };
   const out = await exec.execute(execContext("/api/echo", "POST", JSON.stringify(payload), { "x-nr-e2e-nonce": nonce }));
@@ -731,6 +764,26 @@ try {
   const otherPort = portB === 65_535 ? portB - 1 : portB + 1;
   const wrongPort = checkEngineRequestUrl(`http://127.0.0.1:${otherPort}/x`, portB);
   check("★ 别的本地端口也被围栏拒绝", wrongPort.ok === false && wrongPort.reason.includes(String(otherPort)), wrongPort);
+
+  // —— B4'. 真进程主动跨权限域对抗（不是仅在纯函数里检查 URL） ——
+  const beforeBlocked = await fetchOn(portB, "/flows", {
+    method: "GET", headers: { ...authHeadersB, "Node-RED-API-Version": "v2" },
+  });
+  check("★ 控制面基线流图可被宿主合法读出", beforeBlocked.status === 200);
+  const blockedTargets = ["/flows", "/settings", "/api/../flows", "/api/%2e%2e/settings"];
+  for (const target of blockedTargets) {
+    const bad = await exec.execute(execContext(target, "POST", '{"flows":[]}'));
+    check("★ 真引擎运行时：普通执行器拒发管理面路径 " + target,
+      bad.status === "failed" && bad.retryable === false && bad.outputs === undefined,
+      { status: bad.status, error: bad.error });
+  }
+  const afterBlocked = await fetchOn(portB, "/flows", {
+    method: "GET", headers: { ...authHeadersB, "Node-RED-API-Version": "v2" },
+  });
+  check("★ 跨权限域被拒后真实 Node-RED 已部署流图字节不变",
+    beforeBlocked.status === 200 && afterBlocked.status === 200
+    && beforeBlocked.text === afterBlocked.text,
+    { before: beforeBlocked.status, after: afterBlocked.status });
 
   // —— B5. HTTP 错误的分类：404 不可重试 ——
   const missing = await exec.execute(execContext("/api/definitely-not-deployed", "POST", "{}"));
@@ -757,6 +810,8 @@ try {
   const stopped = await runtimeB.stop(1_000);
   evidence("stop status", stopped);
   check("★ stop 后状态 stopped、端口清空", stopped.state === "stopped" && stopped.port === null, stopped);
+  check("★ 真 EngineRuntime stop 会废弃本轮代次（端口复用仍不相同）",
+    typeof stopped.instanceEpoch === "string" && stopped.instanceEpoch !== runEpoch);
   const stoppedOut = await exec.execute(execContext("/api/echo", "POST", "{}"));
   evidence("stopped classification", { status: stoppedOut.status, retryable: stoppedOut.retryable, error: stoppedOut.error });
   check("★ stopped 分类：执行器明确说「尚未运行 —— 请先…启动」且不可重试",
