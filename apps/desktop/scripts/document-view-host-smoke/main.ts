@@ -36,6 +36,12 @@
  *     盘上是胜者内容，后到者一次都没进临界区；第 13 段用**独立 node 子进程**
  *     证明租约是跨进程事实：子进程持锁时保存必须**等**（不是无视锁直接写），
  *     本进程持锁时子进程 probe 报 busy、释放后能抢到（正反两向）。
+ *  9. **打开会话表（第 14 段，DocumentSessionRegistry）**：一条物理路径在任一时刻
+ *     只有一个权威会话（归一化走 `physicalPath`：大小写 / `..` / junction 别名
+ *     命中同一条）；第二个 docId 打开同一路径被**显式拒绝**并点名持有者；
+ *     close/closeAll 摘会话；发送失败回滚登记；保存先过持有者校验、expected 读
+ *     会话表里的权威 revision。变异：`physicalPath(filePath)` → 裸字符串 /
+ *     `path.resolve` 两次都让 14c 的三条归一化断言真红，cmp 还原后复绿。
  *
  * ## 变异自检（判据承重验证）
  *
@@ -69,6 +75,7 @@ import {
   type DocumentViewWebPreferences,
 } from "@main/document/documentViewHost.js";
 import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
+import { physicalPath } from "@main/lib/realPathWithin.js";
 import {
   clearRpcHandlers,
   registeredRpcChannels,
@@ -849,7 +856,13 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   // 两个保存几乎同时发出：A 先拿到租约并挂在接缝上；B 发出后必然卡在租约上。
   const saveA = host.saveOpenedFile("lease-1", new TextEncoder().encode("winner-A"), () => true);
   // 等到 A 真正进入临界区（挂起在接缝上 = 租约已被 A 持有），再发 B。
-  while (enteredCritical === 0) await new Promise((r) => setTimeout(r, 5));
+  // **有界等待**：若修复被撤掉（如会话持有者校验先拒了保存），临界区永远进不去 ——
+  // 无界自旋会让整套挂死而不是报红。超时后照常走完，断言在下面如实变红。
+  {
+    const deadline = Date.now() + 3000;
+    while (enteredCritical === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+  }
+  check("前置：胜者已进入保存临界区", enteredCritical > 0, { enteredCritical });
   const saveB = host.saveOpenedFile("lease-1", new TextEncoder().encode("loser-B"), () => true);
   // 给 B 足够时间走到"等锁"（修复时）或"完成整个保存"（变异时）。
   await new Promise((r) => setTimeout(r, 300));
@@ -1005,6 +1018,197 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   }
 
   await rm(ws13, { recursive: true, force: true });
+}
+
+/* ══════════ 14.【ARC-007 DocumentSessionRegistry】打开会话表：一条物理路径一个持有者 ══════════
+ *
+ * 判据（见 `documentViewHost.ts` 文件头「打开会话表」）：
+ *  - 同一路径第二次 openPath（另一个 docId）→ 显式拒绝并点名持有者；
+ *  - 不同路径 → 各自独立的 docId / 会话，互不影响；
+ *  - close 之后同一路径可重开，且会话 revision 是**当下**盘上的版本；
+ *  - 路径归一化：大小写、`..`、混合分隔符、经 junction 的别名命中同一条会话。
+ *
+ * （切片原本作为第 12 段交付；合入时租约切片的第 12/13 段已在 HEAD，故顺延为第 14 段，
+ *  两节的断言都保留。）
+ *
+ * 变异验证（手工）：把 `claimOpenedPath` 的 `physicalPath(filePath)` 改成
+ * `filePath`（纯字符串比较）→ 本节 14c 的归一化断言真红。
+ */
+{
+  const { mkdtempSync, writeFileSync, readFileSync: readSync14, rmSync, symlinkSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath14, dirname, basename } = await import("node:path");
+  const { createHash: createHash14 } = await import("node:crypto");
+  const sha14 = (s: string): string => createHash14("sha256").update(Buffer.from(s, "utf8")).digest("hex");
+
+  const ws14 = mkdtempSync(joinPath14(tmpdir(), "mcode-dv-sessions-"));
+  const a = joinPath14(ws14, "alpha.docx");
+  const b = joinPath14(ws14, "beta.docx");
+  writeFileSync(a, "alpha-v1", "utf8");
+  writeFileSync(b, "beta-v1", "utf8");
+
+  const win14 = makeFakeWindow();
+  /** true 时新视图**接受** send；false 时 send 抛（验证回滚）。 */
+  let sendWorks = true;
+  /** 假视图 → 它收到的 send 记录（makeFakeView 的内部 log 不对外暴露，这里另记一份）。 */
+  const sendLogs = new Map<object, Array<{ channel: string; args: unknown[] }>>();
+  const host14 = new DocumentViewHost({
+    getMainWindow: () => win14,
+    createView: (prefs) => {
+      const v = makeFakeView(prefs);
+      const log: Array<{ channel: string; args: unknown[] }> = [];
+      sendLogs.set(v, log);
+      (v.webContents as { send?: (c: string, ...args: unknown[]) => void }).send = (c, ...args) => {
+        if (!sendWorks) throw new Error("send failed (test injection)");
+        log.push({ channel: c, args });
+      };
+      return v;
+    },
+  });
+  const menuSendsOf = (docId: string): Array<{ channel: string; args: unknown[] }> => {
+    const v = (host14 as unknown as { views: Map<string, { view: DocumentViewLike }> }).views.get(docId)?.view;
+    if (v === undefined) return [];
+    return (sendLogs.get(v as object) ?? []).filter((m) => m.channel === "menu:command");
+  };
+  const openView = (docId: string): void => {
+    const r = host14.open({ docId, url: FILE_URL, bounds: BOUNDS, visible: true });
+    if (!r.ok) throw new Error(`test setup: open ${docId} failed: ${r.reason}`);
+  };
+
+  openView("s-a");
+  openView("s-b");
+
+  // ── 14a. 同一路径两个 docId → 第二个被显式拒绝，且点名持有者 ──
+  eq("第一个 docId 打开 alpha 成功", host14.openPath("s-a", a, () => true), { ok: true });
+  eq("持有者收到了一次打开请求", menuSendsOf("s-a").length, 1);
+  const second = host14.openPath("s-b", a, () => true);
+  check(
+    "★ 同一路径第二次 openPath（另一个 docId）被显式拒绝",
+    second.ok === false && second.reason.includes("已在另一个视图打开"),
+    second,
+  );
+  check("★ 拒绝文案点名持有者 docId", second.ok === false && second.reason.includes("s-a"), second);
+  eq("★ 被拒的 docId 没有登记会话", host14.sessionFor("s-b"), null);
+  eq("★ 被拒时没有向它的页面发打开请求", menuSendsOf("s-b").length, 0);
+  check(
+    "★ 被拒的视图不能保存 alpha（打开记录没有落到它头上）",
+    (await host14.saveOpenedFile("s-b", new TextEncoder().encode("hijack"), () => true)).ok === false,
+  );
+  eq("★ alpha 仍是原内容（被拒路径一个字节都没写）", readSync14(a, "utf8"), "alpha-v1");
+
+  // ── 14b. 两个不同路径 → 两个 docId 互不影响 ──
+  eq("另一个 docId 打开 beta 成功", host14.openPath("s-b", b, () => true), { ok: true });
+  eq("alpha 仍由 s-a 持有", host14.sessionFor("s-a")?.filePath, a);
+  eq("beta 由 s-b 持有", host14.sessionFor("s-b")?.filePath, b);
+  check(
+    "★ 两个会话的归一化键不同（不同文件不互相阻塞）",
+    host14.sessionFor("s-a")!.key !== host14.sessionFor("s-b")!.key,
+  );
+  const saveA14 = await host14.saveOpenedFile("s-a", new TextEncoder().encode("alpha-v2"), () => true);
+  const saveB14 = await host14.saveOpenedFile("s-b", new TextEncoder().encode("beta-v2"), () => true);
+  check("★ 两份文件各自保存成功", saveA14.ok === true && saveB14.ok === true, { saveA14, saveB14 });
+  eq("alpha 落盘", readSync14(a, "utf8"), "alpha-v2");
+  eq("beta 落盘", readSync14(b, "utf8"), "beta-v2");
+
+  // ── 14c. 路径归一化：大小写 / `..` / 混合分隔符 / junction 别名 ──
+  eq("关闭 s-a", host14.close("s-a"), { ok: true });
+  eq("关闭后会话被摘掉", host14.sessionFor("s-a"), null);
+  openView("s-a2");
+  {
+    // Windows：大写盘符/目录 + 反斜杠 + `..` 段；POSIX：多余的 `.` 段。
+    const caseVariant =
+      process.platform === "win32"
+        ? `${ws14.toUpperCase()}\\..\\${basename(ws14)}\\alpha.docx`
+        : `${dirname(ws14)}/${basename(ws14)}/./alpha.docx`;
+    const reopened = host14.openPath("s-a2", caseVariant, () => true);
+    check(`★ 大小写/.. 的另一种写法能打开（${caseVariant}）`, reopened.ok === true, reopened);
+    eq(
+      "★★ 不同写法命中同一条会话键（归一化后与 physicalPath 一致）",
+      host14.sessionFor("s-a2")?.key,
+      physicalPath(a),
+    );
+  }
+  // 用原路径再开一次：已被 s-a2 持有 → 拒绝（证明两种写法确实并成了一条）。
+  openView("s-a3");
+  {
+    const again = host14.openPath("s-a3", a, () => true);
+    check(
+      "★ 归一化后的原路径再开被拒（同一文件的不同写法互相可见）",
+      again.ok === false && again.reason.includes("已在另一个视图打开"),
+      again,
+    );
+  }
+  // junction / symlink 别名：`physicalPath` 跟真实目的地。创建失败时显式跳过。
+  {
+    const aliasDir = joinPath14(ws14, "alias-dir");
+    let aliasReady = false;
+    try {
+      symlinkSync(ws14, aliasDir, process.platform === "win32" ? "junction" : "dir");
+      aliasReady = true;
+    } catch (err) {
+      console.log(`  skip 别名断言（无法创建 junction/symlink）：${(err as Error).message}`);
+    }
+    if (aliasReady) {
+      openView("s-a4");
+      const res = host14.openPath("s-a4", joinPath14(aliasDir, "alpha.docx"), () => true);
+      check(
+        "★ 经 junction/symlink 的别名打开同一文件被拒（物理路径归一）",
+        res.ok === false && res.reason.includes("已在另一个视图打开"),
+        res,
+      );
+    }
+  }
+
+  // ── 14d. 关闭后同一路径可重新打开且 revision 是新的 ──
+  eq("关闭 s-a2", host14.close("s-a2"), { ok: true });
+  writeFileSync(a, "alpha-v3", "utf8");
+  openView("s-a5");
+  eq("关闭后同一路径可重新打开", host14.openPath("s-a5", a, () => true), { ok: true });
+  eq(
+    "★★ 重开后的会话 revision 是当下盘上的版本（不是关闭前记的那个）",
+    await host14.sessionFor("s-a5")!.revision,
+    sha14("alpha-v3"),
+  );
+  // 保存走的是会话表里的权威 revision：重开后的保存不应被关闭前的旧版本误判为冲突。
+  check(
+    "★ 重开后的保存成功（权威 revision 是重开时算的）",
+    (await host14.saveOpenedFile("s-a5", new TextEncoder().encode("alpha-v4"), () => true)).ok === true,
+  );
+  eq("alpha-v4 落盘", readSync14(a, "utf8"), "alpha-v4");
+
+  // ── 14e. 发送失败必须回滚登记（否则路径被一个没打开文档的视图占住） ──
+  openView("s-a6");
+  {
+    sendWorks = false;
+    const failed = host14.openPath("s-a6", joinPath14(ws14, "gamma.docx"), () => true);
+    sendWorks = true;
+    check("★ send 抛错时 openPath 回包失败", failed.ok === false, failed);
+    eq("★ 发送失败后没有留下会话（路径未被占住）", host14.sessionFor("s-a6"), null);
+  }
+
+  // ── 14f. 同一 docId 换文件：已被别人持有的路径 → 拒绝且不产生状态 ──
+  {
+    const swap = host14.openPath("s-a6", b, () => true);
+    check(
+      "★ 换到一条已被别人持有的路径被拒（持有者不受影响）",
+      swap.ok === false && swap.reason.includes("已在另一个视图打开"),
+      swap,
+    );
+    eq("s-a6 仍未持有任何会话（拒绝不产生状态）", host14.sessionFor("s-a6"), null);
+    eq("beta 的持有者仍是 s-b", host14.sessionFor("s-b")?.filePath, b);
+  }
+
+  // ── 14g. close 之后会话表干净：所有会话都被摘掉，reopen 不再被旧状态阻塞 ──
+  for (const id of ["s-b", "s-a3", "s-a4", "s-a5", "s-a6"]) eq(`关闭 ${id}`, host14.close(id), { ok: true });
+  eq("关闭全部后 alpha 的会话没了", host14.sessionFor("s-a5"), null);
+  eq("关闭全部后 beta 的会话没了", host14.sessionFor("s-b"), null);
+  openView("s-c");
+  eq("全部关闭后重新打开 alpha 成功", host14.openPath("s-c", a, () => true), { ok: true });
+  host14.closeAll();
+  eq("closeAll 把会话表也清空", host14.sessionFor("s-c"), null);
+
+  host14.dispose();
+  rmSync(ws14, { recursive: true, force: true });
 }
 
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);

@@ -16,6 +16,38 @@
  *   - 主窗口 `closed` 时销毁全部视图（窗口没了，子视图就是孤儿）；
  *   - `dispose()` 幂等，供退出路径与测试调用。
  *
+ * ## 打开会话表（【ARC-007】DocumentSessionRegistry 的宿主切片）
+ *
+ * 视图按 `docId` 管；**文档会话按物理路径管**。同一份文件被两个 docId 打开时，
+ * 两个视图各自记一份"打开时 revision"——保存时谁后写谁赢，乐观锁只防外部改动、
+ * 不防两个视图互相覆盖。这一层把「一条物理路径在任一时刻只有一个权威会话」变成
+ * 判据：
+ *
+ *   - 路径先过 `physicalPath` 归一（resolve `.`/`..`/分隔符 + 跟 symlink/junction +
+ *     Windows/macOS 折叠大小写）。所以 `D:\WS\a.docx`、`d:/ws/../ws/a.docx`、
+ *     经 junction 的别名**命中同一条会话** —— 按字符串比较会让它们各开各的。
+ *   - 同一路径的第二次 `openPath`（另一个 docId）→ **显式拒绝**并点名已在哪个
+ *     视图打开。**选拒绝、不选复用 docId**：`openPath(docId, …)` 的契约是"把文档
+ *     载入**这个**已存在的视图"（`ipc/documentView.ts` 的 RPC 与视图 preload 的
+ *     内部通道都按 docId 定向），把请求偷偷改投到另一个 docId 会让调用方以为
+ *     自己那个视图里打开了文档 —— 之后它的 bounds/save 全落在错误的视图上。
+ *     渲染端每个面板用 `stableDocId(filePath)` 生成 docId，同一面板重渲染不会
+ *     触发拒绝；两个面板开同一文件才会 —— 那正是要显式告诉用户的情形。
+ *   - 同一 docId 对同一路径重复 `openPath` = 刷新（页面重新载入），重记 revision。
+ *   - `close` / `closeAll` / `dispose` 摘会话；之后同一路径可重新打开，revision
+ *     取**当下**盘上的版本（`openPath` 时重算）。
+ *   - 保存：会话表里记住每个 docId 的**权威路径原文**。`saveOpenedFile` 先确认
+ *     该 docId 仍是这条路径的唯一持有者，再把「重算盘上版本 → 比较 → 原子写」
+ *     放进同一份 `withOsFileLease` 临界区（租约以归一化路径为键，与 FILE_WRITE /
+ *     Excel/PDF/DOCX 编辑同一份锁）。本切片不允许两个视图持同一路径，所以"比较
+ *     权威 revision 而不是各自打开时的"在行为上等价于现有乐观锁；将来若要放开
+ *     多视图，把 `claim` 改成共享计数、`saveOpenedFile` 的 expected 改读会话表
+ *     里的 `revision` 字段即可 —— 拒绝点只有 `claim` 一处。
+ *
+ * 会话记录：`docId`、路径原文、归一化键、打开时 revision（Promise，理由见
+ * `LiveDocumentView.openedFileRevision`）、打开者 `webContents`（`sender`，身份
+ * 反查用）。
+ *
  * ## 安全判据（台账 ARC-007「CSP 自限、离线自足」）
  *
  * **URL 白名单是 fail-closed 的**：只放行 `file://`（repo 内 GenOffice 快照的编辑器页）
@@ -54,6 +86,12 @@ import { log } from "@main/lib/logger.js";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
+// 【ARC-007 DocumentSessionRegistry】路径归一化的**唯一一份**实现。`physicalPath`
+// 会 resolve（吃掉 `.`/`..`/多余分隔符）、跟随 symlink/junction 到真实目的地、
+// 并在 Windows/macOS 上折叠大小写 —— 与 `pathGuard.samePath` 同一套判据的物理版。
+// 本模块不能 import `pathGuard`（它会拉进 repositories → db → electron），
+// `realPathWithin` 就是为这种场景拆出来的零依赖叶子（已经给了 fileSnapshot 用）。
+import { physicalPath } from "@main/lib/realPathWithin.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 
 /** webPreferences 的**完整**形状 —— 三项安全开关是字面量类型，改一处都过不了 typecheck。 */
@@ -182,6 +220,39 @@ interface LiveDocumentView {
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 /**
+ * 【ARC-007 DocumentSessionRegistry】一条**打开会话** —— 物理路径 → 唯一的 docId。
+ *
+ * `key` 是 `physicalPath` 的归一化结果（小写、resolve 过、跟过链接），**只**作
+ * Map 的键；`filePath` 保留调用方给的原文（页面收到的是它，保存也写回它，避免
+ * 我们悄悄改掉大小写/链接形态）。
+ *
+ * `sender` 是打开这个会话的 `webContents`（`openPath` 时从视图上取）。它让
+ * 「谁开的」可反查 —— `docIdForSender` 回答"这条消息来自哪个 docId"，本表回答
+ * "这份文件被谁开着"。同一对象在 `LiveDocumentView.view.webContents` 里也有，
+ * 这里存一份引用是**登记**，不是第二份真值。
+ */
+interface DocumentSession {
+  docId: string;
+  /** 调用方给的路径原文（blank-trim 后）。 */
+  filePath: string;
+  /** `physicalPath` 归一化键（Windows/macOS 折叠大小写）。 */
+  key: string;
+  /** 打开时的内容版本（`fileContentVersion`；文件不存在为 null）。保存冲突判据
+   *  的**权威**来源 —— 与 `LiveDocumentView.openedFileRevision` 是同一个 Promise
+   *  对象（不是各算一份），会话表只是把它和路径绑在一起。 */
+  revision: Promise<string | null>;
+  /** 打开者（视图的 webContents）。 */
+  sender: unknown;
+  openedAt: number;
+}
+
+/** `claimOpenedPath` 的判定结果。`refresh` = 同一 docId 重开同一路径（允许）。 */
+type ClaimResult =
+  | { ok: true; session: DocumentSession; refresh: boolean; previous: DocumentSession | null }
+  | { ok: false; reason: string };
+
+
+/**
  * 文档视图的 URL 闸。**fail-closed**：解析不了、协议不在白名单、回环域名带伪装后缀
  * （`localhost.evil.com` 这类）一律拒绝并给出原因。
  *
@@ -239,6 +310,14 @@ function resolveViewPreload(): string | undefined {
 
 export class DocumentViewHost {
   private readonly views = new Map<string, LiveDocumentView>();
+  /**
+   * 【ARC-007 DocumentSessionRegistry】打开会话表：归一化物理路径 → 会话。
+   * 本切片保证一条路径至多一个持有者（见文件头「打开会话表」）；`docId → key`
+   * 的反查放在 `live.openedFilePath` 之外的 `sessionKeyByDocId`，因为保存要拿
+   * 归一化键去抢租约。
+   */
+  private readonly sessions = new Map<string, DocumentSession>();
+  private readonly sessionKeyByDocId = new Map<string, string>();
   private readonly getWindow: () => DocumentViewHostWindow | null;
   private readonly createView: (webPreferences: DocumentViewWebPreferences) => DocumentViewLike;
   private readonly beforeAtomicReplace: (realPath: string) => void | Promise<void>;
@@ -397,9 +476,17 @@ export class DocumentViewHost {
   /** 销毁一个视图。不存在 = 已经关了，幂等成功（与 BrowserManager.close 同）。 */
   close(docId: string): DocViewResult {
     const live = this.views.get(docId);
-    if (!live) return { ok: true };
+    if (!live) {
+      // 【ARC-007 DocumentSessionRegistry】视图已经不在了，会话也必须摘 —— 否则
+      // 这条路径会被一个不存在的视图永久占住，别的视图再打开同一文件会被误拒。
+      // （正常路径上 close 与 releaseSession 成对；这一句兜住"视图先被窗口清理
+      // 销毁、close 后到"的迟到调用。）
+      this.releaseSession(docId);
+      return { ok: true };
+    }
     this.detachAndDestroy(live);
     this.views.delete(docId);
+    this.releaseSession(docId);
     return { ok: true };
   }
 
@@ -431,18 +518,112 @@ export class DocumentViewHost {
     if (typeof wc.send !== "function") {
       return { ok: false, reason: "当前视图不支持接收打开请求" };
     }
+    // 【ARC-007 DocumentSessionRegistry】**先登记会话，再发打开请求**。
+    // 判定放在发送之前：被拒的 openPath 不能留下任何"路径已占用"的痕迹，
+    // 也不能把一份注定失败的打开请求发给页面。发送失败时回滚登记（见下）。
+    const claim = this.claimOpenedPath(docId, filePath, wc);
+    if (!claim.ok) return { ok: false, reason: claim.reason };
     try {
       wc.send(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath);
     } catch (err) {
+      // 登记了但没发出去：会话要回到发送前的状态 —— 否则一条实际没打开的路径
+      // 会被占住，别的视图再打开同一文件会被误拒；若是"同一视图换文件"失败，
+      // 也不能把旧文件的会话弄丢（视图里还在编辑它）。
+      if (claim.previous !== null) {
+        this.sessions.set(claim.previous.key, claim.previous);
+        this.sessionKeyByDocId.set(docId, claim.previous.key);
+      } else {
+        this.releaseSession(docId);
+      }
       return { ok: false, reason: `发送打开请求失败：${err instanceof Error ? err.message : String(err)}` };
     }
     live.lastFailure = undefined;
-    live.openedFilePath = filePath;
+    live.openedFilePath = claim.session.filePath;
     // 【ARC-007】记下**打开时**的内容版本（异步读盘算 sha256；保存通道会 await
-    // 同一个 Promise，见 `openedFileRevision` 字段的说明）。
-    live.openedFileRevision = fileContentVersion(filePath);
+    // 同一个 Promise，见 `openedFileRevision` 字段的说明）。会话表持有同一个
+    // Promise —— 单视图下两份是同一对象，不是各算一份。
+    live.openedFileRevision = claim.session.revision;
     log.info(`document view open-path: ${docId} ${filePath}`);
     return { ok: true };
+  }
+
+  /**
+   * 【ARC-007 DocumentSessionRegistry】登记「docId 打开 filePath」这条会话。
+   *
+   * 判据（见文件头「打开会话表」）：
+   *  - 路径先 `physicalPath` 归一（resolve + 跟链接 + 折叠大小写）；归一失败
+   *    （断裂链接等）**fail-closed** 拒绝，不退回字符串比较 —— 那等于让同一
+   *    文件换一种写法就能绕过独占。
+   *  - 同一归一化键已被**另一个** docId 持有 → 拒绝并点名持有者。
+   *  - 同一 docId 重开同一路径 = 刷新：重算 revision、更新 sender/时间。
+   *  - 同一 docId 换到**另一个**路径 → 先摘旧会话再登记新会话（视图切换文件）。
+   */
+  private claimOpenedPath(docId: string, filePath: string, sender: unknown): ClaimResult {
+    const key = physicalPath(filePath);
+    if (key === null) {
+      return { ok: false, reason: `无法解析文件路径（断裂链接或不可访问），拒绝打开：${filePath}` };
+    }
+    const existing = this.sessions.get(key);
+    if (existing !== undefined && existing.docId !== docId) {
+      return {
+        ok: false,
+        reason: `该文件已在另一个视图打开（docId=${existing.docId}）：${existing.filePath}。同一文件同时只允许一个视图持有；请先关闭那个视图或切回它。`,
+      };
+    }
+    const previousKey = this.sessionKeyByDocId.get(docId);
+    const previous =
+      previousKey !== undefined && previousKey !== key ? (this.sessions.get(previousKey) ?? null) : null;
+    if (previousKey !== undefined && previousKey !== key) this.releaseSession(docId);
+    const session: DocumentSession = {
+      docId,
+      filePath,
+      key,
+      revision: fileContentVersion(filePath),
+      sender,
+      openedAt: Date.now(),
+    };
+    this.sessions.set(key, session);
+    this.sessionKeyByDocId.set(docId, key);
+    return { ok: true, session, refresh: previousKey === key, previous };
+  }
+
+  /** 摘掉 docId 的会话（close / 切换文件 / 发送失败回滚共用这一条路径）。 */
+  private releaseSession(docId: string): void {
+    const key = this.sessionKeyByDocId.get(docId);
+    if (key === undefined) return;
+    this.sessionKeyByDocId.delete(docId);
+    const session = this.sessions.get(key);
+    if (session !== undefined && session.docId === docId) this.sessions.delete(key);
+  }
+
+  /** 【ARC-007】内部反查：docId → 完整会话记录（含权威 revision / sender）。 */
+  private sessionOf(docId: string): DocumentSession | null {
+    const key = this.sessionKeyByDocId.get(docId);
+    if (key === undefined) return null;
+    const session = this.sessions.get(key);
+    if (session === undefined || session.docId !== docId) return null;
+    return session;
+  }
+
+  /** 【ARC-007】只读诊断：这条 docId 当前持有哪条会话（无则 null）。
+   *  `revision` 是会话表里的**权威打开版本**（保存冲突判据的来源）；套件 await
+   *  它来断言"关闭后重开拿到的是新版本"。不把 webContents 暴露出去。 */
+  sessionFor(docId: string): {
+    docId: string;
+    filePath: string;
+    key: string;
+    revision: Promise<string | null>;
+    openedAt: number;
+  } | null {
+    const session = this.sessionOf(docId);
+    if (session === null) return null;
+    return {
+      docId: session.docId,
+      filePath: session.filePath,
+      key: session.key,
+      revision: session.revision,
+      openedAt: session.openedAt,
+    };
   }
 
   /**
@@ -503,6 +684,22 @@ export class DocumentViewHost {
     if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
     const target = live.openedFilePath;
     if (target === null) return { ok: false, reason: "这个视图还没有打开任何文档" };
+    // 【ARC-007 DocumentSessionRegistry】**持有者校验**：会话表是"谁开着这份文件"
+    // 的唯一真值。视图的 openedFilePath 与会话由 openPath 一起写、一起摘，正常
+    // 路径上不会不一致；这里仍然每保存一次都核对（fail-closed），因为保存是唯一
+    // 会写盘的操作 —— 状态一旦漂移，宁可不写也不能写到一条已被别的视图接管的路径上。
+    // 校验在**取租约之前**做（与会话表同为进程内状态，早拒少抢一次锁）；真正
+    // 防并发覆盖的是租约内的重算比较。将来放开多视图时，把这里从"必须唯一持有"
+    // 改成"必须仍是共享持有者之一"，并把 expected 的默认值改读会话表里的权威
+    // revision（见文件头）。
+    const session = this.sessionOf(docId);
+    const targetKey = physicalPath(target);
+    if (session === null || targetKey === null || session.key !== targetKey) {
+      return {
+        ok: false,
+        reason: "保存目标与打开会话不一致（视图的打开记录已失效或被别的视图接管），拒绝保存",
+      };
+    }
     if (!withinWorkspace(target)) {
       return { ok: false, reason: `文档已不在已知工作区内：${target}` };
     }
@@ -520,14 +717,16 @@ export class DocumentViewHost {
     }
 
     // 【ARC-007】冲突判据：调用方显式给了 expectedRevision（将来页面携带版本）就用它；
-    // 否则用**宿主打开时记下的**版本（页面携带不了版本时的乐观锁，见字段注释）。
+    // 否则用**打开会话表里记下的权威版本**（页面携带不了版本时的乐观锁，见字段注释）。
+    // 会话的 revision 与 live.openedFileRevision 在 openPath / 保存成功时一起推进 ——
+    // 单视图切片里是同一个 Promise 对象；取会话表这一份是为了让"权威版本只有一个
+    // 存放处"，将来多视图共享会话时不必再改这里的选择。
     //
     // ⚠️ expected 必须在**取租约之前**快照下来。两个并发保存若都等到租约内才
-    // await `openedFileRevision`，后到者会读到先到者刚推进的新版本 —— 于是"基于
-    // 打开时内容"的乐观锁被自己的并发保存绕过（两边都成功，后者覆盖前者）。
+    // await，后到者会读到先到者刚推进的新版本 —— 于是"基于打开时内容"的乐观锁被
+    // 自己的并发保存绕过（两边都成功，后者覆盖前者）。
     // 先快照、后取锁：先到者落盘后，后到者在锁内重算必然看到新版本 → conflict。
-    const expected =
-      expectedRevision !== undefined ? expectedRevision : await live.openedFileRevision;
+    const expected = expectedRevision !== undefined ? expectedRevision : await session.revision;
 
     type SaveOutcome =
       | { ok: true; bytes: number; filePath: string; revision: string | null }
@@ -564,8 +763,11 @@ export class DocumentViewHost {
         await atomicReplaceFile(real, bytes);
         const revision = await fileContentVersion(real);
         // 保存成功后，本视图的"打开时版本"推进到刚写下的这一版 —— 用户连续保存两次
-        // （第二次基于第一次的结果）不该被自己的上一次保存判成冲突。
-        live.openedFileRevision = Promise.resolve(revision);
+        // （第二次基于第一次的结果）不该被自己的上一次保存判成冲突。会话表里的
+        // 权威 revision 必须**一起**推进（两个字段同一个 Promise 对象，见 openPath）。
+        const advanced = Promise.resolve(revision);
+        live.openedFileRevision = advanced;
+        session.revision = advanced;
         live.lastFailure = undefined;
         live.lastSaveConflict = undefined;
         log.info(`document view saved: ${docId} ${target} (${bytes.byteLength} bytes)`);
@@ -617,7 +819,15 @@ export class DocumentViewHost {
     for (const [docId, live] of [...this.views]) {
       this.detachAndDestroy(live);
       this.views.delete(docId);
+      // 【ARC-007 DocumentSessionRegistry】closeAll 是窗口级/退出级清理，会话
+      // 必须与视图同生共死 —— 只清 views 不清 sessions 会让"主窗口关了、文件
+      // 会话还在"残留到下一次 open。
+      this.releaseSession(docId);
     }
+    // 兜底：理论上 views 与 sessionKeyByDocId 一一对应；若有只登记未建视图的会话
+    // （不存在于当前代码路径），也会在这里被清空，不让它跨生命周期存活。
+    this.sessions.clear();
+    this.sessionKeyByDocId.clear();
   }
 
   /** 退出路径的显式清理：关全部视图、摘窗口钩子，并拒绝之后的 open。 */
