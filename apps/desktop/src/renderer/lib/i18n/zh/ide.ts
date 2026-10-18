@@ -82,6 +82,9 @@ export const zh = {
   "ide.editor.togglePreview": "预览",
   "ide.editor.toggleEdit": "编辑",
   "ide.editor.toggleSource": "源码",
+  /* 【ARC-005】HTML 本地预览入口（走浏览器面板） */
+  "ide.editor.previewHtml": "浏览器预览",
+  "ide.editor.previewHtmlHint": "在应用内浏览器中预览这个 HTML 文件（仅限工作区内）",
 
   /* ── file viewer (mobile read-only viewer) ── */
   "ide.viewer.mdPreview": "预览",

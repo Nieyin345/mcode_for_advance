@@ -74,6 +74,9 @@ export const en = {
   "ide.editor.togglePreview": "Preview",
   "ide.editor.toggleEdit": "Edit",
   "ide.editor.toggleSource": "Source",
+  /* 【ARC-005】HTML local preview entry (browser panel) */
+  "ide.editor.previewHtml": "Browser preview",
+  "ide.editor.previewHtmlHint": "Preview this HTML file in the in-app browser (workspace files only)",
 
   /* ── file viewer (mobile read-only viewer) ── */
   "ide.viewer.mdPreview": "Preview",

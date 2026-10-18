@@ -12,6 +12,49 @@
  * **纯搬迁，函数体逐字节一致。**
  */
 import { documentKindOf } from "@contracts/documentKind";
+import { isPathWithin, resolveRelativePath } from "@renderer/lib/path.js";
+
+/* ── 【ARC-005】HTML 本地预览入口的接受判据 ──
+ *
+ * 参考矩阵「能立即做 4」：文件树右键已有「在浏览器中打开」，但编辑器/预览面
+ * 没有入口。这里只回答「这个文件现在能不能交给浏览器面板预览」，不做 I/O。
+ *
+ * 为什么复用浏览器面板而不是新开视图：Mcode 的本地网页预览已有唯一通路
+ * `sessionStore.openUrlInBrowser` → 右栏 BrowserPanel → BrowserManager 的
+ * WebContentsView。新建「预览专用视图」会多一份创建/销毁/边界/遮挡生命周期，
+ * 与现有面板重复。本切片只补入口 + 围栏，加载仍走既有通路。
+ *
+ * 安全边界（不新增特权）：① 只接受项目根内的路径（`isPathWithin`，与主进程
+ * `pathGuard.pathWithin` 同一判据的渲染端镜像）；② 只接受
+ * `documentKindOf === "html"`；③ 页面在浏览器面板里加载，沿用该面板既有的
+ * 加载/导航策略，不注入脚本、不放开权限。 */
+
+export type HtmlPreviewRejection = "not-html" | "outside-workspace";
+export type HtmlPreviewDecision = { ok: true } | { ok: false; reason: HtmlPreviewRejection };
+
+/**
+ * 这个文件能否用浏览器面板预览。顺序刻意是「种类 → 围栏」：非 html 的文件
+ * 不管在不在工作区里都不该进这个入口（防空过 —— 把 `.pdf` 送进浏览器面板会
+ * 绕过 `PdfPreview` 的读取与报错）。
+ */
+export function htmlPreviewDecision(filePath: string, projectPath: string): HtmlPreviewDecision {
+  if (documentKindOf(filePath) !== "html") return { ok: false, reason: "not-html" };
+  // 先折叠 `.` / `..`（`isPathWithin` 是**词法**段比较，不做规范化）—— 否则
+  // `proj/../other/x.html` 会以 `proj` 前缀混过去。绝对路径在 resolveRelativePath
+  // 里原地规范化，不会被 baseDir 拼接。
+  if (!projectPath) return { ok: false, reason: "outside-workspace" };
+  const normFile = resolveRelativePath("", filePath);
+  if (!isPathWithin(projectPath, normFile)) {
+    return { ok: false, reason: "outside-workspace" };
+  }
+  return { ok: true };
+}
+
+/** 便捷判据：入口按钮是否显示。 */
+export function canPreviewHtml(filePath: string, projectPath: string): boolean {
+  return htmlPreviewDecision(filePath, projectPath).ok;
+}
+
 
 /** `.md` / `.markdown` —— 决定编辑器默认进预览还是源码模式。 */
 /** True for `.pdf` —— 默认走预览、渲染分支走 `PdfPreviewPane`。

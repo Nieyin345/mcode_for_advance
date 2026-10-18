@@ -707,5 +707,63 @@ section("14. 【ARC-005】圆角 role 档（btn-xs/btn-md/dialog/code/card）");
   check("★ sketch role 重指在 --sk-r-* 定义之后", skDefAt >= 0 && sketchAt > skDefAt);
 }
 
+
+section("15. 【ARC-005】HTML 本地预览入口（工作区围栏 + 复用浏览器面板）");
+{
+  const { htmlPreviewDecision, canPreviewHtml } = await import(
+    "../../src/renderer/components/ide/fileEditorKinds.js"
+  );
+  const PROJ = "D:/work/proj";
+  const posixProj = "/home/u/proj";
+  /** 对象结果按内容比（本套的 eq 是 Object.is，比不了新对象）。 */
+  const same = (name: string, actual: unknown, expected: unknown): void =>
+    check(name, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
+
+  // ★ 工作区内 html 被接受（Windows / POSIX 两种拼写、大小写、反斜杠）。
+  same("★ 工作区内 .html → 接受", htmlPreviewDecision(PROJ + "/docs/page.html", PROJ), { ok: true });
+  same("★ 工作区内 .htm → 接受", htmlPreviewDecision(PROJ + "/a.htm", PROJ), { ok: true });
+  same("★ 扩展名大写 → 接受", htmlPreviewDecision(PROJ + "/PAGE.HTML", PROJ), { ok: true });
+  same("★ Windows 反斜杠路径 → 接受", htmlPreviewDecision(String.raw`D:\work\proj\docs\p.html`, PROJ), { ok: true });
+  same("★ 盘符大小写不同（Windows 语义）→ 接受", htmlPreviewDecision("d:/work/proj/x.html", PROJ), { ok: true });
+  same("★ POSIX 工作区内 → 接受", htmlPreviewDecision(posixProj + "/site/index.html", posixProj), { ok: true });
+  check("★ canPreviewHtml 与 decision 同判据", canPreviewHtml(PROJ + "/x.html", PROJ) === true);
+
+  // ★ 工作区外路径被拒 —— 系统目录、前缀相同的兄弟目录、上跳目录都不能借道。
+  same("★ 工作区外（系统目录）→ 拒绝",
+    htmlPreviewDecision(process.platform === "win32" ? "C:/Windows/help.html" : "/etc/index.html", PROJ),
+    { ok: false, reason: "outside-workspace" });
+  same("★ 前缀相同的兄弟目录 → 拒绝（段比较，不是字符串前缀）",
+    htmlPreviewDecision("D:/work/proj-evil/x.html", PROJ), { ok: false, reason: "outside-workspace" });
+  same("★ 上跳目录 → 拒绝",
+    htmlPreviewDecision(PROJ + "/../other/x.html", PROJ), { ok: false, reason: "outside-workspace" });
+  same("★ 空 projectPath → 拒绝（不放开围栏）", htmlPreviewDecision(PROJ + "/x.html", ""),
+    { ok: false, reason: "outside-workspace" });
+
+  // ★ 非 html 不误入该入口（防空过）—— 即便在工作区内也拒绝。
+  for (const p of ["a.pdf", "a.md", "a.png", "a.tsx", "a.html.txt", "a.docx"]) {
+    same(`★ 工作区内 ${p} → 不进 HTML 预览`, htmlPreviewDecision(PROJ + "/" + p, PROJ),
+      { ok: false, reason: "not-html" });
+  }
+  // 判据顺序：种类围栏先判 —— 工作区外的 .pdf 报 not-html 而不是 outside-workspace，
+  // 证明两道围栏都在、且不会互相吞掉。
+  same("★ 工作区外的 .pdf 仍是 not-html（种类围栏先判）",
+    htmlPreviewDecision("/etc/a.pdf", PROJ), { ok: false, reason: "not-html" });
+
+  // ★ 源码级接线：FileEditor 真的用这个判据画按钮、真的走浏览器面板通路。
+  const fe = read("src/renderer/components/ide/FileEditor.tsx");
+  const feCode = fe.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  check("★ FileEditor 引入 canPreviewHtml", /\bcanPreviewHtml\b/.test(feCode));
+  check("★ FileEditor 预览动作走 openUrlInBrowser", /openUrlInBrowser\(localPathToFileUrl\(/.test(feCode));
+  check("★ 按钮仅在 canPreviewHtml 时渲染", /\{canPreviewHtml && \(/.test(feCode));
+  // 反向正控：不许为预览新开浏览器视图（会多一份 WebContentsView 生命周期）。
+  check("★ 预览入口不新开 WebContentsView（无 browser.create）", !/api\.browser\.create\b/.test(feCode));
+  // i18n 两套都有入口文案（zh 是 MessageId 源，缺 key typecheck 会红；这里再钉一次）。
+  for (const loc of ["zh", "en"]) {
+    const dict = read(`src/renderer/lib/i18n/${loc}/ide.ts`);
+    check(`i18n ${loc} 有 ide.editor.previewHtml`, dict.includes('"ide.editor.previewHtml"'));
+    check(`i18n ${loc} 有 ide.editor.previewHtmlHint`, dict.includes('"ide.editor.previewHtmlHint"'));
+  }
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
