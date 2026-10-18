@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import {
-  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, ResultSchema, missingCapabilityPermission, actionInvocationRefusal, moduleRefusal, moduleRefusalError,
+  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, ResultSchema, missingCapabilityPermission, actionInvocationRefusal, declaresNetwork, moduleRefusal, moduleRefusalError,
   extensionCapabilityShortName, extensionCapabilityAssignment, MODULE_CAPABILITY_PREFIX,
   type ModuleManifest, type ModuleInvoke, type ModuleResource, type ModuleResult, type ModuleTask,
   type ModuleReply, type ModuleCatalog, type ModuleTaskRef,
@@ -275,7 +275,9 @@ export class ModuleHost {
             // 【MC-035】网络是**显式**权限:清单声明 `network` 才放行。未声明时
             // 引导脚本会在扩展代码求值前把 http/net/dns/fetch 换成抛错函数 ——
             // 默认拒绝,而不是"Node 权限模型不管网络"的静默放行。
-            allowNetwork: manifest.permissions.includes("network"),
+            // 【ARC-006 Gate E】与可执行体清单共用同一份判据（declaresNetwork），
+            // 不在两处各写一遍 includes("network")。
+            allowNetwork: declaresNetwork(manifest.permissions),
             timeoutMs,
             signal: context.signal,
           });
@@ -606,7 +608,7 @@ export class ModuleHost {
     // 为什么:声明只回答"这个扩展有没有资格联网";装上之后它每次调用都出网,用户
     // 再没有"这一次要不要"的选择。台账要求的是"真人授予/撤销"。action 已经被下面的
     // 逐次审批覆盖(它本来就每次问),这里补的是 query/只读能力。
-    if (definition.kind !== "action" && module.permissions.includes("network")) {
+    if (definition.kind !== "action" && declaresNetwork(module.permissions)) {
       if (this.options.requestApproval === undefined) {
         throw moduleRefusalError("approval_unavailable", "这个扩展声明了网络权限,但当前没有审批通道 —— 不会在未经用户同意的情况下联网。");
       }
@@ -628,7 +630,7 @@ export class ModuleHost {
           moduleId: module.id, contributionId: contribution.id, capabilityId: definition.id,
           resource: structuredClone(resource), scope: "write",
           // action 若同时声明 network,审批卡应当同时说明"会联网"(一次批准覆盖两件事)。
-          ...(module.permissions.includes("network") ? {} : {}),
+          ...(declaresNetwork(module.permissions) ? {} : {}),
         });
       } catch (error) {
         // 审批端口拒绝(resolve=批准,reject=拒绝)。已经带拒绝标记的原样抛(不重复包);

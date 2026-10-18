@@ -173,6 +173,20 @@ export function missingCapabilityPermission(
   return undefined;
 }
 
+/**
+ * 【ARC-006 Gate E】**网络放行判据的唯一一份**。
+ *
+ * `ModuleHost` 执行扩展时把 `allowNetwork` 交给受控进程（`permissionedProcessRunner`
+ * 的 `NETWORK_GUARD` 据此决定是否替换 http/net/dns/fetch），而**可执行体清单**
+ * （`workflowEngines/engineNodeRegistry.ts`）在安装时也要把「能力声明里的 network」
+ * 记进审核记录。两处若各写一遍 `includes("network")`，迟早一边放行、一边拒绝。
+ *
+ * 判据只有这一句：清单/声明里出现 `network` 才放行；没有 = 默认拒。
+ */
+export function declaresNetwork(permissions: readonly string[]): boolean {
+  return permissions.includes("network");
+}
+
 /** 【MC-060】**执行**一个能力前的放行判定 —— 与 `missingCapabilityPermission`(准入)分开的
  *  那一层。准入问的是「这份清单/元数据能不能**挂**这个能力」;本函数问的是「**这一次执行**
  *  放不放行」。两份判定各管一段,不合成一个真相。
