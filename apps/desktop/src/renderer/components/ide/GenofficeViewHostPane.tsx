@@ -161,6 +161,10 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
   // 读能力报告走 useRpc（硬规矩 7）；本组件只用它拿 CLI 路径推仓库根。
   const caps = useRpc(() => api.document.capabilities(), [], { toastOnError: false });
   const [openError, setOpenError] = useState<string | null>(null);
+  /** 【ARC-007】页面**加载/渲染失败**的诊断（与 openError 是两回事：open 成功了、
+   *  页面却崩了）。vendor 编辑器页依赖 preload 桥，而本宿主刻意不给 preload ——
+   *  没有这条，用户只看到一片空白，分不清"没加载"与"加载了但崩了"。 */
+  const [pageFailure, setPageFailure] = useState<{ kind: string; reason: string } | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const stageRef = useRef<HTMLDivElement | null>(null);
 
@@ -260,6 +264,30 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId, url, retryNonce]);
 
+  // 【ARC-007】轮询宿主快照里的 lastFailure。为什么是轮询而不是事件:
+  // 宿主当前只有 list() 一条读口(没有推送通道),而这条诊断的价值是"出问题时
+  // 看得见"——2 秒一次、只在面板挂载且视图已打开时跑,开销可忽略。
+  useEffect(() => {
+    if (url === null) return;
+    let cancelled = false;
+    const tick = (): void => {
+      void api.documentView.list().then(
+        (result) => {
+          if (cancelled) return;
+          const mine = result.views.find((v) => v.docId === docId);
+          setPageFailure(mine?.lastFailure ?? null);
+        },
+        () => { /* 读不到快照不该刷错误条 */ },
+      );
+    };
+    tick();
+    const timer = setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [docId, url, retryNonce]);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {caps.loading && <LoadingNote label={t("common.loading")} />}
@@ -279,6 +307,27 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
                 {caps.data.cli.path ?? t("ide.genoffice.cliMissing")}
               </div>
             )}
+          </ErrorNote>
+        </div>
+      )}
+      {pageFailure !== null && (
+        <div className="p-3">
+          <ErrorNote
+            title={t("ide.genoffice.viewHostPageFailed")}
+            action={
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setPageFailure(null);
+                  setRetryNonce((n) => n + 1);
+                }}
+              >
+                {t("common.retry")}
+              </Button>
+            }
+          >
+            <div className="break-words">{pageFailure.reason}</div>
           </ErrorNote>
         </div>
       )}

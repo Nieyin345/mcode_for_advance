@@ -422,6 +422,7 @@ export const en = {
   "ide.genoffice.blocks": "blocks",
   "ide.genoffice.slides": "slides",
   "ide.genoffice.sheets": "sheets",
+  "ide.genoffice.viewHostPageFailed": "Editor page failed to load",
   "ide.genoffice.viewHost": "Editor view",
   "ide.genoffice.viewHostHint": "Open the GenOffice editor page in a controlled window (requires the GenOffice editor page to be built)",
   "ide.genoffice.viewHostOpenFailed": "Failed to open the GenOffice editor view",

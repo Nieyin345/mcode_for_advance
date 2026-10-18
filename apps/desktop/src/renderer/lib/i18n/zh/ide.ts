@@ -439,6 +439,7 @@ export const zh = {
   "ide.genoffice.blocks": "个块",
   "ide.genoffice.slides": "页幻灯片",
   "ide.genoffice.sheets": "张工作表",
+  "ide.genoffice.viewHostPageFailed": "编辑器页加载失败",
   "ide.genoffice.viewHost": "编辑视图",
   "ide.genoffice.viewHostHint": "在受控窗口里打开 GenOffice 编辑器页面（需要 GenOffice 编辑器页已构建）",
   "ide.genoffice.viewHostOpenFailed": "GenOffice 编辑视图打开失败",

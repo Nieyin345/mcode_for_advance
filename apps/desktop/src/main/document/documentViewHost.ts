@@ -52,6 +52,14 @@ export interface DocumentViewWebContentsLike {
   close(): void;
   isDestroyed?(): boolean;
   setWindowOpenHandler?(handler: (details: { url: string }) => { action: "deny" }): void;
+  /** 【ARC-007】加载失败/渲染进程崩溃的**诊断钩子**。
+   *
+   *  为什么必须有:vendor 编辑器页依赖 preload 桥(`window.desktop.*`),而本宿主
+   *  刻意不给 preload(见文件头)。页面在 `App` 的 effect 里会抛
+   *  `Cannot read properties of undefined` —— 没有这两个钩子时,外层只看到一片空白,
+   *  完全不知道"是没加载还是加载了但崩了"。有了钩子,`list()` 能如实报出失败原因。 */
+  on?(event: "did-fail-load", listener: (...args: unknown[]) => void): unknown;
+  on?(event: "render-process-gone", listener: (...args: unknown[]) => void): unknown;
 }
 
 export interface DocumentViewLike {
@@ -94,6 +102,8 @@ interface LiveDocumentView {
   /** 最近一次渲染端量出来的可见几何。 */
   bounds: DocViewRect;
   visible: boolean;
+  /** 最近一次加载/渲染失败(诊断用;成功后清空)。 */
+  lastFailure?: { kind: "load" | "render-gone"; reason: string; at: number };
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -226,6 +236,8 @@ export class DocumentViewHost {
       return { ok: false, reason: `挂载文档视图失败：${msg}` };
     }
 
+    // 【ARC-007】诊断钩子要在导航**之前**装上，否则首帧的失败会漏掉。
+    this.watchFailures(live);
     this.views.set(input.docId, live);
     this.navigate(live);
     if (input.visible) {
@@ -328,7 +340,33 @@ export class DocumentViewHost {
       url: live.url,
       visible: live.visible,
       bounds: { ...live.bounds },
+      ...(live.lastFailure !== undefined ? { lastFailure: { ...live.lastFailure } } : {}),
     }));
+  }
+
+  /** 【ARC-007】把 webContents 的失败事件记到视图上（成功后清空）。
+   *  两个事件都只记诊断、不改状态 —— 视图仍然"在"，只是页面没起来。 */
+  private watchFailures(live: LiveDocumentView): void {
+    const wc = live.view.webContents;
+    wc.on?.("did-fail-load", (...args: unknown[]) => {
+      // Electron 签名:(event, errorCode, errorDescription, validatedURL, isMainFrame)
+      const code = typeof args[1] === "number" ? args[1] : null;
+      const desc = typeof args[2] === "string" ? args[2] : "unknown";
+      // -3 = ERR_ABORTED(被新导航取代),不是真失败。
+      if (code === -3) return;
+      live.lastFailure = {
+        kind: "load",
+        reason: `页面加载失败(${String(code ?? "?")}): ${desc}`,
+        at: Date.now(),
+      };
+      log.warn(`document view load failed: ${live.docId} ${live.lastFailure.reason}`);
+    });
+    wc.on?.("render-process-gone", (...args: unknown[]) => {
+      const details = args[1] as { reason?: unknown } | undefined;
+      const reason = typeof details?.reason === "string" ? details.reason : "unknown";
+      live.lastFailure = { kind: "render-gone", reason: `渲染进程退出: ${reason}`, at: Date.now() };
+      log.warn(`document view renderer gone: ${live.docId} ${reason}`);
+    });
   }
 
   private navigate(live: LiveDocumentView): void {

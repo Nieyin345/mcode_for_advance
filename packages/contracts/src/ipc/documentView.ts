@@ -89,6 +89,12 @@ export interface DocViewSnapshot {
   url: string;
   visible: boolean;
   bounds: DocViewRect;
+  /** 【ARC-007】最近一次加载/渲染失败（成功后清空）。
+   *
+   *  为什么要有:vendor 编辑器页依赖 preload 桥（`window.desktop.*`），而本宿主
+   *  刻意不给 preload。页面加载后会抛错、或渲染进程直接退出 —— 没有这个字段时
+   *  外层只看到空白，分不清"没加载"和"加载了但崩了"。 */
+  lastFailure?: { kind: "load" | "render-gone"; reason: string; at: number };
 }
 
 /**

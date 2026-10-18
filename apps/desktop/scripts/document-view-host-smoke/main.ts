@@ -88,6 +88,8 @@ interface FakeViewLog {
   focused: number;
   closed: boolean;
   windowOpenHandlerInstalled: boolean;
+  /** 【ARC-007】宿主注册的失败监听(诊断钩子)。 */
+  failureListeners: Partial<Record<"did-fail-load" | "render-process-gone", (...args: unknown[]) => void>>;
 }
 
 /** 按创建顺序记录每个假视图 —— 断言读它。 */
@@ -101,6 +103,7 @@ function makeFakeView(prefs: DocumentViewWebPreferences): DocumentViewLike {
     focused: 0,
     closed: false,
     windowOpenHandlerInstalled: false,
+    failureListeners: {},
   };
   created.push(log);
   const view: DocumentViewLike = {
@@ -118,6 +121,12 @@ function makeFakeView(prefs: DocumentViewWebPreferences): DocumentViewLike {
       isDestroyed: () => log.closed,
       setWindowOpenHandler() {
         log.windowOpenHandlerInstalled = true;
+      },
+      on(event: string, listener: (...args: unknown[]) => void) {
+        if (event === "did-fail-load" || event === "render-process-gone") {
+          log.failureListeners[event] = listener;
+        }
+        return this;
       },
     },
     setBounds(b) {
@@ -531,6 +540,41 @@ section("7. 三层接线：preload / rpcMap / main 注册");
 }
 
 /* ────────────────────── 收尾 ────────────────────── */
+
+/* ══════════ 8.【ARC-007】加载失败是可诊断的 ══════════
+ * vendor 编辑器页依赖 preload 桥(window.desktop.*),而本宿主刻意不给 preload。
+ * 没有失败钩子时外层只看到空白,分不清"没加载"与"加载了但崩了"。 */
+{
+  const win = makeFakeWindow();
+  const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
+  const okOpen = host.open({
+    docId: "diag-1", url: "file:///D:/repo/genoffice/apps/docs/out/renderer/index.html",
+    bounds: { x: 0, y: 0, width: 800, height: 600 }, visible: true,
+  });
+  check("前置:视图打开成功", okOpen.ok, okOpen);
+  // ⚠️ 用**最后创建**的那个视图:created 是全局累积的,前几段测试已经往里塞过。
+  const diagView = created[created.length - 1]!;
+  check("前置:本段确实新建了一个视图", diagView !== undefined);
+  eq("★ 宿主在 webContents 上装了 did-fail-load 钩子",
+    typeof diagView.failureListeners["did-fail-load"], "function");
+  eq("★ 宿主在 webContents 上装了 render-process-gone 钩子",
+    typeof diagView.failureListeners["render-process-gone"], "function");
+  diagView.failureListeners["did-fail-load"]?.({}, -105, "NAME_NOT_RESOLVED", "file:///x", true);
+  const snap = host.list().find((v) => v.docId === "diag-1");
+  eq("★ 加载失败被记进快照(外层能知道为什么白屏)", snap?.lastFailure?.kind, "load");
+  check("★ 失败原因带错误码与描述",
+    (snap?.lastFailure?.reason ?? "").includes("-105") && (snap?.lastFailure?.reason ?? "").includes("NAME_NOT_RESOLVED"),
+    snap?.lastFailure?.reason);
+  diagView.failureListeners["did-fail-load"]?.({}, -3, "ERR_ABORTED", "file:///y", true);
+  check("★ ERR_ABORTED(-3) 不算失败(不误报)",
+    host.list().find((v) => v.docId === "diag-1")?.lastFailure?.reason?.includes("-105") === true,
+    host.list().find((v) => v.docId === "diag-1")?.lastFailure);
+  diagView.failureListeners["render-process-gone"]?.({}, { reason: "crashed" });
+  eq("★ 渲染进程退出被记成 render-gone",
+    host.list().find((v) => v.docId === "diag-1")?.lastFailure?.kind, "render-gone");
+  host.closeAll();
+}
+
 
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
