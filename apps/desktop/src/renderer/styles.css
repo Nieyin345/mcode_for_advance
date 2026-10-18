@@ -166,6 +166,22 @@ div:has(> [role="menu"]) {
    * Consumed via text-success in MessageBlocks / TurnFilesCard / git panels. */
   --success: 4 120 87; /* emerald-700 */
 
+  /* 【ARC-005】Diff 行色（消息内 DiffView / 移动端 PatchView）。此前是组件里
+   * 硬编码的 Tailwind 类（`bg-red-500/15 text-red-600 dark:text-red-400` 及其
+   * green 镜像），不随 token 体系走、暗色变体写死在 class 串里。这里收成五个
+   * token，语义与 --danger/--success 分开：diff 行是「增/删」语义，不是危险/
+   * 成功，且**刻意不跟随品牌色**（同 --success 的理由）。
+   * 值就是组件里正在用的 Tailwind 色阶（green-500 / red-500 作行底，文字
+   * green-600 / red-600，暗色文字 green-400 / red-400 在 .dark 覆盖），
+   * 行底的 15% 透明度在消费端（styles.css 的 .diff-add/.diff-del）施加。
+   * 逆向报告没有实测 diff 色值（只记了「报告未给出 diff 色值」），
+   * **值来自现有组件，待真机对照**。 */
+  --diff-add-bg: 34 197 94; /* green-500 — 现有 bg-green-500/15 的底色 */
+  --diff-add-text: 22 163 74; /* green-600 — 现有插入行文字 */
+  --diff-del-bg: 239 68 68; /* red-500 — 现有 bg-red-500/15 的底色 */
+  --diff-del-text: 220 38 38; /* red-600 — 现有删除行文字 */
+  --diff-context: var(--content-muted); /* 现有上下文行文字 */
+
   /* Git history graph lane colors (GitHistoryView commit gutter). Fixed
    * palette on purpose — NOT the semantic tokens: lane rails are identity
    * colors ("which branch is this"), so borrowing --danger/--success would
@@ -253,6 +269,17 @@ div:has(> [role="menu"]) {
   /* Fixed git "additions" green — dark counterpart of :root's --success
    * (mirrors the default dark accent, emerald-500). See :root for rationale. */
   --success: 16 185 129; /* emerald-500 */
+
+  /* 【ARC-005】Diff 行色 — :root 的暗色对应，五个 token 两套都显式定义
+   * （消费端只读 var()，不依赖跨作用域继承）。原组件在暗色下把文字提到
+   * red-400 / green-400（600 在近黑底上读不清），行底两套都是 500 档的
+   * 15%；上下文行文字随 --content-muted 自动变亮。
+   * 值来自现有组件，待真机对照（见 :root 同名注释）。 */
+  --diff-add-bg: 34 197 94; /* green-500 — 与亮色同（原组件暗色也是 /15） */
+  --diff-add-text: 74 222 128; /* green-400 — 暗色插入行文字 */
+  --diff-del-bg: 239 68 68; /* red-500 — 与亮色同（原组件暗色也是 /15） */
+  --diff-del-text: 248 113 113; /* red-400 — 暗色删除行文字 */
+  --diff-context: var(--content-muted); /* 暗色上下文行文字 */
 
   /* Git graph lanes — dark counterparts of :root's palette (400 shades for
    * contrast on the slate surface). See :root for rationale. */
@@ -2546,6 +2573,23 @@ html.sketch.dark body::after {
   opacity: 1;
 }
 
+/* 【ARC-005】Diff 行色的消费端（chat/DiffView.tsx 与 mobile/PatchView.tsx 共用）。
+ * 替换原先写死在组件 class 串里的 `bg-red-500/15 text-red-600 dark:text-red-400`
+ * （green 同构）：行底 = --diff-*-bg 的 15%（原 /15 的观感），文字 = --diff-*-text
+ * （暗色档在 .dark 覆盖），上下文行沿用 --content-muted 的语义但收进 token。
+ * 只承载颜色，行高/行号栏/前缀符号仍由组件布局类负责。 */
+.diff-add {
+  background: rgb(var(--diff-add-bg) / 0.15);
+  color: rgb(var(--diff-add-text));
+}
+.diff-del {
+  background: rgb(var(--diff-del-bg) / 0.15);
+  color: rgb(var(--diff-del-text));
+}
+.diff-context {
+  color: rgb(var(--diff-context));
+}
+
 /* ───────────── Windows 强制高对比（forced-colors）─────────────
  *
  * 高对比模式下 UA 会把作者颜色强制成系统色，并且**丢弃 box-shadow**。
@@ -2613,5 +2657,18 @@ html.sketch.dark body::after {
   .composer-lvlbars > span,
   .composer-lvlbars > span.on {
     background: CanvasText;
+  }
+
+  /* Diff 增删行（.diff-add / .diff-del）：高对比下背景被强制成 Canvas，
+   * 增/删就只剩行首的 +/- 字形一个信号。这里补**不依赖颜色**的可辨形状：
+   * 增行实线内描边、删行虚线内描边（负 offset 不改变布局，同用户气泡的
+   * 做法）。两者形状不同，灰度打印/色觉障碍下也能区分。 */
+  .diff-add,
+  .diff-del {
+    outline: 2px solid CanvasText;
+    outline-offset: -2px;
+  }
+  .diff-del {
+    outline-style: dashed;
   }
 }

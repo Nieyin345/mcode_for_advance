@@ -488,5 +488,56 @@ section("11. 【ARC-005】reduce-motion 总闸覆盖动效词表本身");
   check("★ 总闸压 transition-delay", /transition-delay:\s*0ms\s*!important/.test(childRule));
 }
 
+section("12. 【ARC-005】Diff 行色 token 化 + 高对比形状");
+{
+  const css = read("src/renderer/styles.css");
+  const noComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const DIFF_TOKENS = ["--diff-add-bg", "--diff-add-text", "--diff-del-bg", "--diff-del-text", "--diff-context"];
+
+  // ★ 五个 token 在浅/深两套都有**定义**（声明本体,不是注释）。
+  // 取 :root 与 .dark 两个块的真实文本:按块起始定位,截到下一个顶层 `}`。
+  const rootAt = noComments.indexOf(":root {");
+  const darkAt2 = noComments.indexOf(".dark {");
+  check("★ :root 与 .dark 块都存在", rootAt >= 0 && darkAt2 > rootAt);
+  const rootBlock = rootAt >= 0 ? noComments.slice(rootAt, noComments.indexOf("}", rootAt)) : "";
+  const darkBlock = darkAt2 >= 0 ? noComments.slice(darkAt2, noComments.indexOf("}", darkAt2)) : "";
+  for (const token of DIFF_TOKENS) {
+    check(`★ 亮色定义 ${token}`, new RegExp(`${token}:\\s*[^;]+;`).test(rootBlock));
+    check(`★ 暗色定义 ${token}`, new RegExp(`${token}:\\s*[^;]+;`).test(darkBlock));
+  }
+  // 反向正控:仅注释里写 token 不算（上面已在剥注释文本上判,这里再钉原文
+  // 的活声明次数 —— 两套各一次,合计 >= 10 次真实声明）。
+  const liveDecls = (noComments.match(/--diff-(add|del|context)[a-z-]*\s*:/g) ?? []).length;
+  check("★ --diff-* 真实声明 >= 10 处（两套 × 五个）", liveDecls >= 10, liveDecls);
+
+  // ★ 消费端真的接到 token 上（不做"token 写了没人用"的假绿）。
+  check("★ .diff-add 行底走 --diff-add-bg", /\.diff-add\s*\{[^}]*background:\s*rgb\(var\(--diff-add-bg\)/.test(noComments));
+  check("★ .diff-add 文字走 --diff-add-text", /\.diff-add\s*\{[^}]*color:\s*rgb\(var\(--diff-add-text\)\)/.test(noComments));
+  check("★ .diff-del 行底走 --diff-del-bg", /\.diff-del\s*\{[^}]*background:\s*rgb\(var\(--diff-del-bg\)/.test(noComments));
+  check("★ .diff-del 文字走 --diff-del-text", /\.diff-del\s*\{[^}]*color:\s*rgb\(var\(--diff-del-text\)\)/.test(noComments));
+  check("★ .diff-context 文字走 --diff-context", /\.diff-context\s*\{[^}]*color:\s*rgb\(var\(--diff-context\)\)/.test(noComments));
+
+  // ★ 被替换的组件不再出现硬编码的增删颜色（源码级,排除注释）。
+  // 旧类串:`bg-red-500/15` / `text-red-600 dark:text-red-400` / green 同构。
+  // 只核两个 Diff 渲染组件 —— 其它面板（错误提示、浏览器浮条）的红绿不是
+  // diff 语义,不在本切片范围。
+  const stripComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  for (const file of ["src/renderer/components/chat/DiffView.tsx", "src/renderer/components/mobile/PatchView.tsx"]) {
+    const src = stripComments(read(file));
+    const hardcoded = src.match(/bg-(red|green)-(400|500)\/\d+|text-(red|green)-(400|500|600)(?![\w-])|dark:text-(red|green)-/g);
+    check(`★ ${file.split("/").pop()} 不再硬编码增删颜色`, hardcoded === null, hardcoded);
+    check(`★ ${file.split("/").pop()} 行色接了 diff-* 类`, /\bdiff-(add|del|context)\b/.test(src));
+  }
+
+  // ★ forced-colors 块含 diff 规则,且增删形状**不只靠颜色**区分：增行实线、
+  // 删行虚线（outline-style: dashed 是形状差,不是色差）。
+  const fcAt2 = noComments.indexOf("@media (forced-colors: active)");
+  const fcBlock2 = fcAt2 >= 0 ? noComments.slice(fcAt2) : "";
+  check("★ forced-colors 块含 .diff-add/.diff-del 规则",
+    /\.diff-add,[\s\S]{0,80}?\.diff-del\s*\{[\s\S]{0,160}?outline:\s*2px solid CanvasText/.test(fcBlock2));
+  check("★ 高对比下删行用虚线形状（不靠颜色区分增删）",
+    /\.diff-del\s*\{[\s\S]{0,80}?outline-style:\s*dashed/.test(fcBlock2));
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

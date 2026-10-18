@@ -71,13 +71,15 @@ export function PatchRows({ rows }: { rows: PatchRow[] }) {
             key={i}
             className={cn(
               "flex items-start whitespace-pre",
-              // Fixed red/green diff colors (same convention as the desktop
-              // DiffView): stable in both themes, independent of the accent hue.
+              // 【ARC-005】Diff 行色走 --diff-* token（同桌面 DiffView）：
+              // 原先硬编码 `bg-red-500/15 text-red-600 dark:text-red-400`
+              // （green 同构），暗色变体写死在 class 串里。token 值仍取自
+              // 这些 Tailwind 色阶。
               r.kind === "del"
-                ? "bg-red-500/15 text-red-600 dark:text-red-400"
+                ? "diff-del"
                 : r.kind === "add"
-                  ? "bg-green-500/15 text-green-600 dark:text-green-400"
-                  : "text-content-muted",
+                  ? "diff-add"
+                  : "diff-context",
             )}
           >
             <span className="w-9 shrink-0 select-none pr-1 text-right text-content-subtle">

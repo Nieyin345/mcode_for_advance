@@ -40,18 +40,13 @@ export function DiffView({
   return (
     <div className={cn("overflow-auto rounded bg-surface-muted/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]", scrollClassName)}>
       {rows.map((d, i) => {
-        // Fixed red/green diff colors that don't shift with the theme - the
-        // accent/danger tokens change between light/dark (and track the
-        // accent hue), but diff added/removed lines read best as stable,
-        // conventional red vs green in both themes. The 600 shade is used in
-        // light mode; dark mode lifts to 400 so the +/- lines stay bright and
-        // readable on the deep background (600 reads too dim on near-black).
+        // 【ARC-005】Diff 行色走 --diff-* token（styles.css 的 .diff-add /
+        // .diff-del / .diff-context）：原先这里硬编码 `bg-red-500/15
+        // text-red-600 dark:text-red-400`（green 同构），暗色变体写死在 class
+        // 串里、不随 token 体系走。token 值仍取自这些 Tailwind 色阶，只是
+        // 收进浅/深两套定义（含 forced-colors 的形状区分）。
         const opBg =
-          d.op === "delete"
-            ? "bg-red-500/15 text-red-600 dark:text-red-400"
-            : d.op === "insert"
-            ? "bg-green-500/15 text-green-600 dark:text-green-400"
-            : "text-content-muted";
+          d.op === "delete" ? "diff-del" : d.op === "insert" ? "diff-add" : "diff-context";
         return (
           <div key={i} className={cn("flex items-start whitespace-pre", opBg)}>
             <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right text-content-subtle">
