@@ -102,7 +102,36 @@ await withAuditPage(here,async page=>{
   await page.eval('__ui.button("重试").click()');await page.sleep(180);check(which+' can recover',!await page.eval('document.body.innerText.includes("读取失败")'));
  });
  await test('canvas-editing-layout',async()=>{
-  await open();await page.eval('document.querySelector("div.group.absolute[title]").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');await page.sleep(80);
+  // 【设置页可访问性】工作流库的行是真实的 <button>(不是裸 div):Tab 到得了,
+  // Enter/Space 走浏览器原生激活。"当前打开的是哪一个"不靠那根颜色竖条 ——
+  // 行上有 aria-current="true",且无障碍名里说出来(读屏用户拿不到颜色)。
+  // 判据全在真实 DOM 上:元素角色/属性、AX 树里的名字。
+  await open();
+  const rowInfo=await page.eval(`(()=>{const nav=document.querySelector('[id$="-panel-library"] nav');const rows=[...nav.querySelectorAll('button')];const active=rows.filter(b=>b.getAttribute('aria-current')==='true');return {count:rows.length,active:active.length,activeText:active[0]?.textContent??'',tag:rows[0]?.tagName??''};})()`);
+  check('row: library rows are real buttons',rowInfo.tag==='BUTTON'&&rowInfo.count>=2,rowInfo);
+  check('row: exactly one row is aria-current',rowInfo.active===1,rowInfo);
+  check('row: the current row says so in words',rowInfo.activeText.includes('当前打开'),rowInfo.activeText);
+  {
+    // 键盘:真实 Tab 顺序里够得着那些行,焦点落在行上按 Enter 能切换工作流。
+    // 注意:CDP 合成的 Enter 不触发浏览器的**默认**按钮激活(它只派发 keydown 事件),
+    // 所以这里分两步断言 —— ①行真的在 Tab 序列里;②在当前焦点上按 Enter 再走
+    // 按钮原生的 click() 确实切过去了。这两步合起来就是"不用鼠标也能切换"的可用路径;
+    // 万一有人把行换回裸 div,第①步就红(div 没有 tabIndex 不进 Tab 序列)。
+    const tabbable=await page.eval(`(()=>{const nav=document.querySelector('[id$="-panel-library"] nav');const rows=[...nav.querySelectorAll('button')];return rows.length>0&&rows.every(b=>b.tabIndex>=0);})()`);
+    check('row: every library row is in the Tab order',tabbable===true,tabbable);
+    const switched=await page.eval(`(async()=>{const nav=document.querySelector('[id$="-panel-library"] nav');const rows=[...nav.querySelectorAll('button')];const target=rows.find(b=>b.getAttribute('aria-current')!=='true');if(!target)return {ok:false,why:'no other row'};const name=target.textContent;target.focus();const focused=document.activeElement===target;target.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));target.click();await new Promise(r=>setTimeout(r,400));const now=[...nav.querySelectorAll('button')].find(b=>b.getAttribute('aria-current')==='true');return {ok:focused&&now!==undefined&&now.textContent.includes(name.split('·')[0].trim().slice(0,3)),focused,name,now:now?.textContent??''};})()`);
+    check('row: Enter on the focused row switches workflows',switched.ok===true,switched);
+  }
+  {
+    // 读屏可读性用无障碍名验证(CDP 的 full AX tree 在 Chrome 里**不**把
+    // aria-current 映射成 properties 条目,别再按协议猜它;DOM 上的 aria-current
+    // 由上面那条单独钉住)。这里证明的是:无障碍名里真的带着「当前打开」——
+    // 即读屏用户不靠颜色也能听出当前是哪一行。
+    const ax=await page.send('Accessibility.getFullAXTree');
+    const named=ax.nodes.filter(n=>!n.ignored&&n.role?.value==='button'&&(n.name?.value??'').includes('当前打开'));
+    check('row: AX name of the active row carries the spoken state',named.length===1,named.map(n=>n.name?.value));
+  }
+  await page.eval('document.querySelector("div.group.absolute[title]").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');await page.sleep(80);
   check('keyboard can select a node',await page.eval('document.querySelector("div.group.absolute[aria-pressed=true]")!==null'));
   await page.eval('__ui.clearNode()');await page.sleep(80);
   const overlap=await page.eval(`(()=>{const a=[...document.querySelectorAll('svg text')].map(e=>e.getBoundingClientRect());let n=0;for(let i=0;i<a.length;i++)for(let j=i+1;j<a.length;j++)if(Math.min(a[i].right,a[j].right)>Math.max(a[i].left,a[j].left)&&Math.min(a[i].bottom,a[j].bottom)>Math.max(a[i].top,a[j].top))n++;return n})()`);
