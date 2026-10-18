@@ -26,6 +26,7 @@ import {
   THEME_STYLE_SETTING_KEY,
   TURN_BUDGET_SETTING_KEY,
   workflowIdFromInput,
+  isWorkflowReviewSettingKey,
   ClaudeSubagentsSaveSchema,
   ProviderHealthCheckSchema,
   ProviderCommandsSchema,
@@ -635,6 +636,17 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.SETTING_SET, (_evt, raw) => {
     const input = SetSettingSchema.parse(raw);
+    // 【ARC-006 创建≠执行授权】**执行授权标记不走通用设置写。**
+    // `workflow.review.v1.<id>` 是"这条自动化 / 外来工作流能不能无人值守执行"的
+    // 唯一事实,它的签发只属于用户在工作流页面上对**当前存盘版本**的一次点击
+    // (`workflow.approve` 对 Agent 是 blocked)。放行 `setting.set` 等于给 Agent
+    // (经 `app_api_call`,该档是每次审批的写)与自定义面板开第二条签字路 ——
+    // 模型可以先把值读出来再原样写回,批准就变成了"点一次设置写入"。
+    // fail-closed:抛错(渲染端正常路径从不写这一族;手机的 `setting:set` 另有
+    // 白名单,同样够不到它)。
+    if (isWorkflowReviewSettingKey(input.key)) {
+      throw new Error("工作流审批记录不能被通用设置写入改写;请在 设置 → 工作流/自动化 里审查当前版本并明确启用");
+    }
     if (input.key === CUSTOM_UI_SETTING_KEY) validateCustomUiWrite(input.value);
     // 【MC-083 残余】轮预算这条键:主值 + `.last-good` 备份必须**同一次事务**里一起落盘。
     // 从前 last-good 只在**下一次** sendTurn 读到合法主值时补刷 —— 用户把额度从 A 改成 B

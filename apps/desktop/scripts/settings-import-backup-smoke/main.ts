@@ -78,6 +78,9 @@ const { isTransferableSettingKey } = await import("@main/settings/settingsTransf
 // 没有这两个只属于桩的导出)。拿来断言"导入失败时没有任何客户端看到半套值"。
 const windowStub = (await import("@main/window.js")) as unknown as typeof import("../projects-ipc-smoke/stubs/window.js");
 const { resetSent, eventsOfType } = windowStub;
+// 【ARC-006】真实标记的写入 / 清除方 —— 用它建夹具,让迁移判据必须认得**真的**那一族键
+// (不在测试里手写字面量)。
+const { requireWorkflowReview, clearWorkflowReview } = await import("@main/orchestration/workflowTrust.js");
 
 /** `getMainWindow()`(window 桩)返回 null —— 走的是不带 win 的那条 dialog 路径。 */
 
@@ -428,11 +431,53 @@ console.log("\nMC-029:恢复**不得**误删敏感/本机键(它们本就不在�
   // 摆一个密钥类键与一个授信类键:它们不会被导出,恢复时绝不能因"备份里没有"而被删。
   SettingRepo.set("customModelKeys", JSON.stringify({ k: "secret" }));
   SettingRepo.set("mcp.projectTrust", JSON.stringify(["fp"]));
+  // 【ARC-006 创建≠执行授权】工作流执行授权标记同属"安全授信"这一类:
+  // ① 恢复(restore)绝不能因为"备份里没有"就把它删掉;
+  // ② 一份被诱导导入的"设置备份"也绝不能替用户**写**上它(否则导入 = 预先批准某条
+  //    外来自动化,与 knownHosts / projectTrust 是同一个洞)。
+  // 键名不写死字面量:经**真实写入方** `requireWorkflowReview` 建出标记,再读回它的键名
+  // —— 迁移判据认的前缀若与真实标记漂开,下面几条会直接红(而不是夹具自己写死一个键
+  // 恰好被挡住)。
+  const REVIEW_WF = "wf_import_forge_probe";
+  const REVIEW_KEY_BASE = `workflow.review.v1.${REVIEW_WF}`;
+  requireWorkflowReview(REVIEW_WF, "import");
+  check("夹具:真实审批标记已写入", SettingRepo.get(REVIEW_KEY_BASE) !== null, SettingRepo.get(REVIEW_KEY_BASE));
+  const REVIEW_KEY = REVIEW_KEY_BASE;
+  const REVIEW_VALUE = JSON.stringify({ origin: "import", approvedRevision: "f".repeat(64), reviewedAt: 1 });
+  clearWorkflowReview(REVIEW_WF);
+  SettingRepo.set(REVIEW_KEY, REVIEW_VALUE);
   resetDialog(); pushOpenResult({ canceled: false, filePaths: [f] });
   const res = (await IMPORTER!(null, { mode: "restore" })) as ImportResult;
   eq("恢复成功", res.ok, true);
   eq("★ 密钥键未被误删", typeof SettingRepo.get("customModelKeys"), "string");
   eq("★ 授信键未被误删", typeof SettingRepo.get("mcp.projectTrust"), "string");
+  eq("★ ARC-006:执行授权标记未被「完整恢复」误删", SettingRepo.get(REVIEW_KEY), REVIEW_VALUE);
+
+  // 导入侧:文件里夹带一条**伪造的已批准记录**,必须整条进 skipped、绝不落库/覆盖。
+  const forgedFile = join(WORK, "import-with-review-marker.json");
+  const forged = JSON.stringify({ origin: "import", approvedRevision: "a".repeat(64), reviewedAt: 2 });
+  writeFileSync(forgedFile, `${JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: new Date().toISOString(),
+    settings: { "ui.locale": "en", [REVIEW_KEY]: forged, "workflow.review.v1.wf_never_seen": forged },
+  }, null, 2)}\n`, "utf8");
+  resetDialog(); pushOpenResult({ canceled: false, filePaths: [forgedFile] });
+  const imported = (await IMPORTER!(null, { mode: "merge" })) as ImportResult;
+  eq("★ ARC-006:夹带执行授权标记的导入仍成功(被挡下的键不影响整体)", imported.ok, true);
+  eq("★ ARC-006:只有普通偏好被写入", imported.count, 1);
+  eq("★ ARC-006:夹带的伪造审批**没有覆盖**本机已有记录", SettingRepo.get(REVIEW_KEY), REVIEW_VALUE);
+  eq("★ ARC-006:本机从未见过的伪造审批键**没有落库**", SettingRepo.get("workflow.review.v1.wf_never_seen"), null);
+  eq("★ ARC-006:两条标记键都进了 skipped(不是被静默忽略)", imported.skipped, 2);
+  // 导出侧同一份判据(与导入共用 `isTransferableSettingKey`):真实标记键不得随导出档走。
+  check(
+    "★ ARC-006:真实审批标记键不可导出",
+    isTransferableSettingKey(REVIEW_KEY) === false,
+    { key: REVIEW_KEY },
+  );
+  check(
+    "正控:工作流显示偏好同前缀族外,仍可迁移",
+    isTransferableSettingKey(`workflow.nodePrefs.${REVIEW_WF}`) === true,
+  );
+  SettingRepo.delete(REVIEW_KEY);
 }
 
 /* ──────────────── MC-025:durable 落盘失败不得被当成导入成功 ──────────────── */

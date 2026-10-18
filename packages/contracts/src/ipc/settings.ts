@@ -689,6 +689,42 @@ export const UI_COMPOSER_MODEL_SETTING_KEY = "ui.composerModel";
 export const WORKFLOW_NODE_PREFS_SETTING_PREFIX = "workflow.nodePrefs.";
 
 /**
+ * **执行授权标记** —— 键是**前缀 + workflowId**(`workflow.review.v1.<id>`),值是
+ * JSON `{ origin, approvedRevision, reviewedAt? }`。写入方只有一处:
+ * `main/orchestration/workflowTrust.ts` 的 `approveWorkflowRevision`(以及"作废"那几条)。
+ *
+ * ## 为什么这个前缀必须被点名
+ *
+ * 它是"自动化/导入/AI 改过的工作流能不能**无人值守执行**"这件事的**唯一事实**。
+ * 与它同前缀的 `workflow.nodePrefs.<id>` 是用户可以随手改的显示偏好,而这一族不是:
+ *
+ *  - **设置导入 / 导出**:导出档会被用户拿去分享 / 搬机器 / 导入别人的备份。
+ *    `workflow.review.v1.*` 一旦跟着走,导入一份"设置备份"就等于替用户**预先批准**
+ *    了某条外来自动化 —— 与 `agentSsh.knownHosts` / `mcp.projectTrust` 同一类问题
+ *    (设置导入不得夹带安全授信)。反过来导出它也没有意义:审查记录绑的是本机的
+ *    工作流行,换台机器 id 对不上。
+ *  - **通用设置写**:`setting.set` 是"改偏好"的通道(对 Agent 是每次审批的写档)。
+ *    它不该成为第二条签发执行授权的路 —— 批准只能来自用户在工作流页面上对**当前
+ *    存盘版本**的那一次点击(`workflow.approve` 对 Agent 是 blocked)。
+ *
+ * 消费方:`main/settings/settingsTransfer.ts`(不可迁移前缀)与 `main/ipc/claude.ts`
+ * (通用写通道拒绝这一族)。判据只有这一份常量,别在两处各写一遍字面量。
+ */
+export const WORKFLOW_REVIEW_SETTING_PREFIX = "workflow.review.v1.";
+
+/**
+ * 这个设置键是不是**工作流执行授权事实**(审查 / 批准记录)?
+ *
+ * 为什么要有这个函数而不是各处 `startsWith`:它是"创建 ≠ 执行授权"这条纪律在
+ * **设置通道**上的唯一判据 —— 设置导入 / 导出与通用 `setting.set` 都必须认出
+ * 同一族键,不能一处按前缀、一处按整键、另一处漏掉(判据漂开过一次,见
+ * `@main/lib/secretKeys` 文件头记的同类教训)。
+ */
+export function isWorkflowReviewSettingKey(key: string): boolean {
+  return key.startsWith(WORKFLOW_REVIEW_SETTING_PREFIX);
+}
+
+/**
  * Setting key under which the custom-model id used for git-commit-message
  * generation is persisted. Value is a config id from CustomModelStore, or
  * empty/null for "use built-in model". Shared between main (the generator

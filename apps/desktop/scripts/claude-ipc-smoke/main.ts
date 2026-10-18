@@ -35,7 +35,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
 
-import { IPC, THEME_STYLE_SETTING_KEY, TURN_BUDGET_SETTING_KEY } from "@contracts/ipc";
+import { IPC, THEME_STYLE_SETTING_KEY, TURN_BUDGET_SETTING_KEY, WORKFLOW_REVIEW_SETTING_PREFIX } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import type { ProviderContext } from "@contracts/provider";
 import { initDb } from "@main/store/db.js";
@@ -1068,6 +1068,38 @@ console.log("\n13. 设置读写 + 主题那条特殊分支");
   resetTitleBarPaints();
   await call(IPC.SETTING_SET, { key: "随便一个别的键", value: "1" });
   eq("别的键不碰标题栏", titleBarOverlayPaints, 0);
+}
+
+/* ─────── 13a2. 【ARC-006 创建≠执行授权】通用设置写不能改写执行授权标记 ───────
+ *
+ * `workflow.review.v1.<id>` 是"这条自动化 / 外来工作流能不能无人值守执行"的
+ * 唯一事实。`app_api_call` 里的 `setting.set` 是**每次审批的写档**且可被 Agent 调用,
+ * 而真正的签发口 `workflow.approve` 对 Agent 是 blocked —— 若通用设置写放行这一族,
+ * 审批就退化成"点一次设置写入"(模型还能先把原值读出来再原样写回)。这里钉住:
+ * 写它必须**抛错且不落库**,而同一前缀族之外/同族显示偏好照常能写。 */
+{
+  // 键名经**真实写入方**建出(不手写字面量):通用设置写的拒绝判据必须认得真的那一族键,
+  // 两道判据若漂开(改前缀只改一处),下面第一条会红。
+  const { requireWorkflowReview } = await import("@main/orchestration/workflowTrust.js");
+  const probeWf = "wf_setting_probe";
+  requireWorkflowReview(probeWf, "ai");
+  const REVIEW_KEY = `${WORKFLOW_REVIEW_SETTING_PREFIX}${probeWf}`;
+  const fixtureValue = (await call<{ value: unknown }>(IPC.SETTING_GET, { key: REVIEW_KEY })).value;
+  check("夹具:真实审批标记已写入", fixtureValue !== null);
+  const threw = await catching(IPC.SETTING_SET, {
+    key: REVIEW_KEY,
+    value: JSON.stringify({ origin: "ai", approvedRevision: "c".repeat(64) }),
+  });
+  check("★ ARC-006:setting.set 写执行授权标记被拒(抛出可读原因)", threw.length > 0, threw);
+  check("拒绝原因说清该走哪条路", threw.includes("审查"), threw);
+  const got = await call<{ value: unknown }>(IPC.SETTING_GET, { key: REVIEW_KEY });
+  eq("★ ARC-006:被拒的写没有改到标记(仍是原值)", got.value, fixtureValue);
+  // 正控:同前缀族之外的普通偏好照常写(判据只到 `workflow.review.v1.` 为止)。
+  const prefKey = "workflow.nodePrefs.wf_setting_probe";
+  const prefThrew = await catching(IPC.SETTING_SET, { key: prefKey, value: JSON.stringify({ scope: "all" }) });
+  eq("正控:工作流显示偏好照常可写", prefThrew, "");
+  const pref = await call<{ value: unknown }>(IPC.SETTING_GET, { key: prefKey });
+  eq("正控:显示偏好确实落库", pref.value, JSON.stringify({ scope: "all" }));
 }
 
 /* ─────── 13b. 【MC-083 残余】轮预算保存时主键+last-good 同事务落盘 ─────── */

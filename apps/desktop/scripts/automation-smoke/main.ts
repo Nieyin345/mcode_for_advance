@@ -2741,6 +2741,63 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     runner.dispose();
   }
 
+  /* ── ③b 批准后被**同图重存**（revision 不变，但审批被撤销）—— 已在闸门里的
+   *      事件触发批次必须在派发那一刻重新问一次授权，不能按"挂载时批准过"放行。
+   *
+   * 这一条钉的是与 ③ 不同的缺口面:③ 改的是**内容**(revision 变了);这里内容一字
+   * 不改、revision 不变,变的只有"用户是否还批准这一版"。`fire()` 的设计是两道独立
+   * 判定(先 `workflowReviewError`,再 revision 比较),所以撤销审批必须由**第一道**
+   * 拦住 —— 只靠 revision 比较的话,守卫会把"同图重存"当成上一轮同一份,直接派发。 */
+  {
+    resetRuns();
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    const wf = nextId();
+    const nodeId = "t_revoked_between_arm_and_fire";
+    const params = {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "event",
+      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded",
+      // 0 窗口同上一条 stale-revision 用例:事件同步攒进 pending,定时器要等当前
+      // 同步块跑完才执行 —— 撤销审批发生在这中间,派发那一刻必须重新问一次。
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+      task: "审批撤销后不该再有人被叫起来",
+    };
+    makeAutomation({ workflowId: wf, nodeId, params });
+    requireWorkflowReview(wf, "ai");
+    const approvedDoc = getWorkflow(wf)!;
+    check("夹具:批准当前版本", approveWorkflowRevision(approvedDoc, workflowRevision(approvedDoc)).ok);
+    const runner = await startRunner();
+    try {
+      const emit = (): void => runtimeManager.emit({
+        type: "library.item.downloaded",
+        sessionId: "revoke-between-arm-source",
+        itemId: "revoke-between-arm-item",
+        title: "撤销审批前下载的条目",
+        pdfPath: "papers/revoke-between-arm.pdf",
+      } as unknown as RuntimeEvent);
+      emit();
+      eq("夹具:事件已攒进合并窗口(触发器是挂着的)", runner.pendingFires.has(`${wf}:${nodeId}`), true);
+
+      // 审批被撤销(相当于"同 id 又进了待审状态"),但**图本身一个字没改**。
+      // 不走 saveWorkflow 也行 —— 标记写入方就是 `requireWorkflowReview`。
+      requireWorkflowReview(wf, "ai");
+      await sleep(50);
+      eq("★ 已挂载的事件触发在审批撤销后不派发", runsOfNode(nodeId).length, 0);
+      check(
+        "撤销原因对用户可见(不是静默丢弃)",
+        runner.statusOf(wf)[0]?.lastError?.includes("尚未审查") === true,
+        runner.statusOf(wf),
+      );
+
+      // 正控:重新批准**同一份图**后,新的触发照常放行(证明挡的是审批而不是整条流)。
+      const again = getWorkflow(wf)!;
+      check("正控:重新批准同一版本", approveWorkflowRevision(again, workflowRevision(again)).ok);
+      await runner.reloadAll();
+      emit();
+      await sleep(60);
+      eq("正控:重新批准后事件触发照常运行", runsOfNode(nodeId).length, 1);
+    } finally { runner.dispose(); }
+  }
+
 
   /* ── 生命周期回归:关闭不是暂存,换项目不能复用旧项目的事件 ── */
   {
