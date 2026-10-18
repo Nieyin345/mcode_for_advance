@@ -93,8 +93,10 @@ import { withOsFileLease } from "@main/lib/osFileLease.js";
 // `realPathWithin` 就是为这种场景拆出来的零依赖叶子（已经给了 fileSnapshot 用）。
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import { existsSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { issueDocumentHandoff } from "./documentViewHandoff.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 import type { EditorCredentialPort } from "./documentViewCredentialBroker.js";
 
@@ -164,6 +166,11 @@ export interface DocumentViewHostPorts {
    *  省略 = 不支持引擎编辑器凭据（`workflowEngineId` 的 open 被显式拒绝，fail-closed），
    *  因为带着这个标记却没有注入器，页面只会拿到 401 —— 与其静默降级，不如说清原因。 */
   editorCredentials?: EditorCredentialPort;
+  /** 【ARC-007 P0】**脏替换确认端口**：页面有未保存修改时，`openPath` 前由
+   *  `confirmDocumentReplace` 调用。生产传 `dialog.showMessageBox` 的真人确认
+   *  （`ipc/index.ts` 装配）；无头套件注入自动应答。省略 = fail-closed（脏时拒绝
+   *  替换），绝不替用户点"放弃"。 */
+  confirmDirty?: (input: { docId: string; filePath: string | null }) => Promise<boolean>;
 }
 
 /** 隐藏视图的落点：只挪坐标、保留宽高（与 BrowserManager.hide 同一取舍）。 */
@@ -185,6 +192,15 @@ const VENDOR_OPEN_PATH_COMMAND = "open-path";
 /** 【ARC-007】保存通道的单次上限（256 MiB）。真实办公文档远小于它；超过基本可以
  *  确定是页面算错或投毒，放任它会一次性把内存和磁盘撑满。 */
 const DOC_VIEW_SAVE_MAX_BYTES = 256 * 1024 * 1024;
+
+/**
+ * 【ARC-007 P0】坏档预检：docx 是 zip，前两字节必须是 `PK`。
+ * 页面解析坏文件会抛错并停在"Opening…"；宿主提前拒能给出可读原因，
+ * 也避免把无意义字节 issue 成 handoff。不带宏/加密容器判断（加密 docx 仍是 PK）。
+ */
+function isLikelyDocx(bytes: Uint8Array): boolean {
+  return bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+}
 
 /** Windows 保留设备名（大小写不敏感）。页面给的名字落在这些词上时一律改写。 */
 const WINDOWS_RESERVED_BASENAMES = new Set([
@@ -272,6 +288,13 @@ interface LiveDocumentView {
   /** 【ARC-006 Gate A 缺口】这个视图加载的是哪个工作流引擎的编辑器页
    *  （`open` 时由 `workflowEngineId` 记下）。换引擎/换回普通文档视图时要摘旧凭据绑定。 */
   workflowEngineId: string | null;
+  /** 【ARC-007 P0】**待打开请求**：`openPath` 准备的路径，等页面经 `readOpened`
+   *  拉取一次性字节响应；页面回执（`settlePendingOpen`）后才登记会话。
+   *  失败/拒绝不占会话、不改 CAS 基准。 */
+  pendingOpen: { docId: string; filePath: string; requestedAt: number } | null;
+  /** 【ARC-007 P0】页面经 `reportCloseCheck` 上报的脏标记（vendor 每次编辑/保存
+   *  后都报）。`confirmDocumentReplace` 的真实来源。 */
+  pageDirty: boolean;
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -378,6 +401,8 @@ export class DocumentViewHost {
   private readonly getWindow: () => DocumentViewHostWindow | null;
   private readonly createView: (webPreferences: DocumentViewWebPreferences) => DocumentViewLike;
   private readonly beforeAtomicReplace: (realPath: string) => void | Promise<void>;
+  /** 【ARC-007 P0】脏替换确认端口（见 `DocumentViewHostPorts.confirmDirty`）。 */
+  private confirmDirty: ((input: { docId: string; filePath: string | null }) => Promise<boolean>) | null;
   /** 【ARC-006 Gate A 缺口】引擎编辑器页的凭据注入（可缺省；缺省时带
    *  `workflowEngineId` 的 open 显式拒绝 —— 见 `DocumentViewHostPorts.editorCredentials`）。
    *  生产单例在模块加载时就构造好了，而注入器依赖注册表/Electron session（装配在
@@ -393,6 +418,7 @@ export class DocumentViewHost {
     this.getWindow = ports.getMainWindow;
     this.createView = ports.createView ?? defaultCreateView;
     this.beforeAtomicReplace = ports.beforeAtomicReplace ?? (() => undefined);
+    this.confirmDirty = ports.confirmDirty ?? null;
     this.editorCredentials = ports.editorCredentials ?? null;
   }
 
@@ -486,6 +512,8 @@ export class DocumentViewHost {
       openedFilePath: null,
       openedFileRevision: null,
       workflowEngineId: engineId,
+      pendingOpen: null,
+      pageDirty: false,
     };
 
     try {
@@ -647,37 +675,188 @@ export class DocumentViewHost {
     if (!withinWorkspace(filePath)) {
       return { ok: false, reason: `文件不在已知工作区内：${filePath}` };
     }
-    const wc = live.view.webContents;
-    if (typeof wc.send !== "function") {
+    if (typeof live.view.webContents.send !== "function") {
       return { ok: false, reason: "当前视图不支持接收打开请求" };
     }
-    // 【ARC-007 DocumentSessionRegistry】**先登记会话，再发打开请求**。
-    // 判定放在发送之前：被拒的 openPath 不能留下任何"路径已占用"的痕迹，
-    // 也不能把一份注定失败的打开请求发给页面。发送失败时回滚登记（见下）。
-    const claim = this.claimOpenedPath(docId, filePath, wc);
-    if (!claim.ok) return { ok: false, reason: claim.reason };
-    try {
-      wc.send(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath);
-    } catch (err) {
-      // 登记了但没发出去：会话要回到发送前的状态 —— 否则一条实际没打开的路径
-      // 会被占住，别的视图再打开同一文件会被误拒；若是"同一视图换文件"失败，
-      // 也不能把旧文件的会话弄丢（视图里还在编辑它）。
-      if (claim.previous !== null) {
-        this.sessions.set(claim.previous.key, claim.previous);
-        this.sessionKeyByDocId.set(docId, claim.previous.key);
-      } else {
-        this.releaseSession(docId);
-      }
-      return { ok: false, reason: `发送打开请求失败：${err instanceof Error ? err.message : String(err)}` };
+    // 【ARC-007 P0】**一条单向通知 + 一条单向拉取**，不再有回环。
+    //
+    // 旧实现：`openPath` 推 `menu:command("open-path")` → 页面 `openRecent` →
+    // preload 的 `openDocxPath` **再次 invoke `open-path`** → 宿主再推 —— 环形，
+    // 且页面拿到的是 `{ok:true}` 而非 `OpenDocxResult`（`commit=0`，台账 E1）。
+    //
+    // 现在：
+    //   1. 宿主记住「待打开」请求（本方法），并推**一次** `menu:command` 通知
+    //      页面"去打开这条路径"（vendor 认识的形状，页面据此走 `openRecent`）；
+    //   2. preload 的 `openDocxPath` 调用 `readOpened` **只拉取**宿主已准备好的
+    //      一次性字节响应（`documentViewHandoff`）—— 它不再 invoke `open-path`，
+    //      所以不会回到第 1 步。页面每收到一次通知才有一次拉取，单向。
+    // 本次调用只做**准备**：登记待开请求 + 围栏校验 + 发通知；会话在页面回执
+    // （`open-committed`，vendor 成功路径上的 `getRecentFiles` 时）后才提交，
+    // 失败/拒绝不占会话、不改 CAS 基准（见 `settlePendingOpen`）。
+    // 【ARC-007 P0】准备阶段的**只读预检**：路径已被另一个 docId 持有时直接拒，
+    // 不发通知、不登记（真正的登记仍在回执后的 `claimOpenedPath`，那里会再核对
+    // 一次 —— 预检只是让"注定失败的打开"连通知都不发）。
+    const key = physicalPath(filePath);
+    if (key === null) {
+      return { ok: false, reason: `无法解析文件路径（断裂链接或不可访问），拒绝打开：${filePath}` };
     }
+    const holder = this.sessions.get(key);
+    if (holder !== undefined && holder.docId !== docId) {
+      return {
+        ok: false,
+        reason: `该文件已在另一个视图打开（docId=${holder.docId}）：${holder.filePath}。同一文件同时只允许一个视图持有；请先关闭那个视图或切回它。`,
+      };
+    }
+    live.pendingOpen = { docId, filePath, requestedAt: Date.now() };
+    try {
+      live.view.webContents.send?.(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath);
+    } catch (err) {
+      live.pendingOpen = null;
+      return { ok: false, reason: `发送打开通知失败：${err instanceof Error ? err.message : String(err)}` };
+    }
+    log.info(`document view open-path: prepared ${docId} ${filePath}`);
+    return { ok: true };
+  }
+
+  /**
+   * 【ARC-007 P0】**页面拉取已准备好的打开响应** —— vendor `openDocxPath` 的宿主对端。
+   *
+   * 返回与 vendor `OpenDocxResult`（`apps/docs/src/shared/ipc.ts:1-22`）同形状的
+   * 对象：`{ path, name, dataUrl, hash }`。`dataUrl` 是一次性 handoff URL
+   * （`documentViewHandoff.issueDocumentHandoff`），页面 fetch 一次即焚；
+   * 宿主在 issue 时已确认路径在工作区内、字节可读、sha256 已算。
+   *
+   * **不提交会话**：只有页面回执（成功解析并显示）后 `settlePendingOpen(true)`
+   * 才登记。失败/读盘错/坏档 → `ok:false`，待打开请求保留（可重试）但**不占**
+   * 任何文件会话。
+   */
+  async readOpened(
+    docId: string,
+    withinWorkspace: (p: string) => boolean,
+  ): Promise<
+    | { ok: true; result: { path: string; name: string; dataUrl: string; hash: string } }
+    | { ok: false; reason: string }
+  > {
+    const live = this.views.get(docId);
+    if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
+    const pending = live.pendingOpen;
+    if (pending === null) return { ok: false, reason: "没有待打开的文档（openPath 尚未请求）" };
+    if (!withinWorkspace(pending.filePath)) {
+      return { ok: false, reason: `文件已不在已知工作区内：${pending.filePath}` };
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(pending.filePath);
+    } catch (err) {
+      return { ok: false, reason: `无法读取文档：${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (bytes.length === 0) return { ok: false, reason: "文档为空（拒绝把空文件交给页面）" };
+    if (bytes.length > DOC_VIEW_SAVE_MAX_BYTES) {
+      return { ok: false, reason: `文档过大：${bytes.length} 字节（上限 ${DOC_VIEW_SAVE_MAX_BYTES}）` };
+    }
+    // 坏档（不是 docx/zip）在页面解析时才会炸 —— 这里先做魔数检查，把
+    // "打开了一个坏文件却显示空白页"变成一条可读的拒绝。
+    if (!isLikelyDocx(bytes)) {
+      return { ok: false, reason: `不是可读的 docx（魔数 ${bytes.subarray(0, 2).toString("latin1")}）` };
+    }
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const dataUrl = issueDocumentHandoff(bytes, {
+      docId,
+      filePath: pending.filePath,
+      sha256: hash,
+    });
+    return {
+      ok: true,
+      result: {
+        path: pending.filePath,
+        name: basename(pending.filePath),
+        dataUrl,
+        hash,
+      },
+    };
+  }
+
+  /**
+   * 【ARC-007 P0】**页面回执 / 放弃** —— 提交或丢弃待打开请求。
+   *
+   * vendor 页面在成功打开后会调 `getRecentFiles()`（`file-actions.ts:149`，
+   * 成功路径上唯一必经的调用）；preload 把它转成 `openPathCommitted` 回执。
+   * `accepted=true` 时才 `claimOpenedPath` 登记会话（打开失败、页面拒绝替换、
+   * 解析失败都不会走到这里）；`accepted=false` 只丢弃待开请求，**不改变**现有
+   * 会话与 CAS 基准。
+   */
+  settlePendingOpen(docId: string, accepted: boolean, withinWorkspace: (p: string) => boolean): DocViewResult {
+    const live = this.views.get(docId);
+    if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
+    const pending = live.pendingOpen;
+    if (pending === null) {
+      // 幂等：没有待开请求时 accepted 回执是 no-op（页面可能重放回执）。
+      return accepted ? { ok: true } : { ok: false, reason: "没有待打开的文档" };
+    }
+    if (!accepted) {
+      live.pendingOpen = null;
+      log.info(`document view open-path: rejected by page ${docId} ${pending.filePath}`);
+      return { ok: true };
+    }
+    if (!withinWorkspace(pending.filePath)) {
+      live.pendingOpen = null;
+      return { ok: false, reason: `文件已不在已知工作区内：${pending.filePath}` };
+    }
+    const claim = this.claimOpenedPath(docId, pending.filePath, live.view.webContents);
+    if (!claim.ok) return { ok: false, reason: claim.reason };
+    live.pendingOpen = null;
     live.lastFailure = undefined;
     live.openedFilePath = claim.session.filePath;
-    // 【ARC-007】记下**打开时**的内容版本（异步读盘算 sha256；保存通道会 await
-    // 同一个 Promise，见 `openedFileRevision` 字段的说明）。会话表持有同一个
-    // Promise —— 单视图下两份是同一对象，不是各算一份。
     live.openedFileRevision = claim.session.revision;
-    log.info(`document view open-path: ${docId} ${filePath}`);
+    log.info(`document view open-path: committed ${docId} ${pending.filePath}`);
     return { ok: true };
+  }
+
+  /**
+   * 【ARC-007 P0】**页面替换守卫** —— vendor `confirmDocumentReplace()` 的宿主对端。
+   *
+   * 判据是**真实 dirty state**：preload 维护页面经 `reportCloseCheck` 上报的
+   * 脏标记（vendor 页面在每次编辑/保存后都会上报，见 `App.tsx:5337-5346`），
+   * 宿主在这里只读它，不猜。
+   *
+   * - 不脏 → `true`（直接允许替换）；
+   * - 脏且提供了 `confirmDirty`（生产是 `dialog.showMessageBox` 的真人确认；
+   *   套件注入自动应答）→ 用它的结果；
+   * - 脏且**没有**确认端口 → `false`（fail-closed：宁可不让页面静默丢掉未保存
+   *   修改，也不替用户点"放弃"）。
+   */
+  async confirmDocumentReplace(docId: string): Promise<boolean> {
+    const live = this.views.get(docId);
+    if (!live) return false;
+    if (!live.pageDirty) return true;
+    if (this.confirmDirty === null) return false;
+    return this.confirmDirty({ docId, filePath: live.openedFilePath ?? live.pendingOpen?.filePath ?? null });
+  }
+
+  /**
+   * 【ARC-007 P0】装配期注入脏替换确认（生产是 `dialog.showMessageBox` 的真人
+   * 确认，见 `ipc/index.ts`）。只在装配期调用一次；无头套件可注入自动应答。
+   */
+  setConfirmDirty(
+    fn: ((input: { docId: string; filePath: string | null }) => Promise<boolean>) | null,
+  ): void {
+    this.confirmDirty = fn;
+  }
+
+  /**
+   * 【ARC-007 P0】页面上报 dirty（vendor `reportCloseCheck` 的形状：
+   * `{ dirty, autoSave, filePath }`）。只记 `dirty`；`autoSave`/`filePath` 是
+   * vendor 的关闭守卫用的，Mcode 的替换守卫不据此做任何决定（保持最小）。
+   */
+  reportPageDirty(docId: string, dirty: boolean): void {
+    const live = this.views.get(docId);
+    if (!live) return;
+    live.pageDirty = dirty === true;
+  }
+
+  /** 【ARC-007 P0】只读诊断：这个视图当前的待打开请求（没有则 null）。 */
+  pendingOpenFor(docId: string): { docId: string; filePath: string; requestedAt: number } | null {
+    return this.views.get(docId)?.pendingOpen ?? null;
   }
 
   /**

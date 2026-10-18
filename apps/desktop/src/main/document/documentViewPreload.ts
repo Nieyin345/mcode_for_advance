@@ -142,13 +142,69 @@ const noopUnsubscribe = (): (() => void) => () => {};
 const invokeSave = (payload: Record<string, unknown>): Promise<Record<string, unknown>> =>
   ipcRenderer.invoke(SAVE_DOCUMENT_CHANNEL, payload) as Promise<Record<string, unknown>>;
 
+/** 【ARC-007】slides 编辑通道（A 方案第一步）。与打开/保存同一纪律：页面**不传
+ *  identity** —— 宿主从 `event.sender` 反查 docId，再转发给 vendor 执行器。
+ *  两个 channel 都是**内部通道**（不进 `RpcMap` 的 renderer 面，Agent 够不到），
+ *  理由与 `mcode:document-view:save` 相同：只能被我们注入的 preload 调用。 */
+const SLIDES_ADD_SLIDE_CHANNEL = "mcode:document-view:slides-add-slide";
+const SLIDES_EDIT_TEXT_CHANNEL = "mcode:document-view:slides-edit-text";
+/** 【ARC-007 P0】打开链：页面 `openDocxPath` 改为**拉取**宿主已准备好的打开响应，
+ *  不再反向触发 `open-path`（消除台账 E1 的 rpcCalls=2 回环）。 */
+const READ_OPENED_CHANNEL = "mcode:document-view:read-opened";
+/** 【ARC-007 P0】页面回执（成功显示后才提交会话）。 */
+const OPEN_COMMITTED_CHANNEL = "mcode:document-view:open-committed";
+/** 【ARC-007 P0】替换守卫（vendor `confirmDocumentReplace()` 的宿主对端）。 */
+const CONFIRM_REPLACE_CHANNEL = "mcode:document-view:confirm-replace";
+/** 【ARC-007 P0】dirty 上报（vendor `reportCloseCheck` 的对端，send 单向）。 */
+const CLOSE_CHECK_RESULT_CHANNEL = "mcode:document-view:close-check-result";
+
 const api = {
-  /** 打开一个文档。宿主会先核对路径是否在已知工作区内。
+  /** 【ARC-007 P0】**取回宿主已准备好的打开响应** —— vendor `openDocxPath`
+   *  （`shared/ipc.ts:22`）的对端，返回 vendor `OpenDocxResult`
+   *  （`{ path, name, dataUrl, hash }` 或 null）。
    *
-   *  页面**不传身份**：宿主从 `event.sender` 反查是哪个视图 —— 页面改自己的 URL /
-   *  参数都影响不到这一步。 */
-  openDocxPath: (path: string): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke(OPEN_DOCUMENT_CHANNEL, { filePath: path }),
+   *  ⚠️ 与旧实现的差别：这里**不再** invoke `mcode:document-view:open-path`
+   *  （那条通道由宿主侧 `documentView.openPath` 显式准备，页面不触发）。旧实现
+   *  把 `open-path` 又发回页面，既产生第二条打开请求（回环），又让 vendor 拿到
+   *  `{ok:true}` 而不是它要的 `OpenDocxResult`（`commit=0`）。现在页面只**拉取**，
+   *  宿主只**回答**：两条单向链。
+   *
+   *  页面传来的 `path` 只用于一致性提示：宿主以自己准备的那条路径为准
+   *  （`readOpened` 读的是 `pendingOpen`），页面给什么路径都改不了落点。 */
+  openDocxPath: (path: string): Promise<unknown> => {
+    void path;
+    // vendor 期望**直接**拿到 `OpenDocxResult`（path/name/dataUrl/hash）或
+    // null —— 不是宿主的 `{ok,result}` 信封。失败（ok:false）必须回 null，
+    // 让 vendor 的 `commitOpenedFile` 走它的失败路径（停在新文档/报错），
+    // 而不是拿一个没有 dataUrl 的对象去 fetch。
+    return (ipcRenderer.invoke(READ_OPENED_CHANNEL, {}) as Promise<{
+      ok?: boolean;
+      result?: unknown;
+    }>).then((reply) => (reply && reply.ok === true ? reply.result : null));
+  },
+
+  /** 【ARC-007 P0】vendor `confirmDocumentReplace(): Promise<boolean>`
+   *  （`shared/ipc.ts:2` 区域，`App.tsx:2188/2205` 调用）的对端。
+   *  真实来源是页面自己的 dirty 上报（`reportCloseCheck`）；宿主据此与真人确认
+   *  决定是否允许替换。拒绝 → 页面保持当前文档。 */
+  confirmDocumentReplace: (): Promise<boolean> => ipcRenderer.invoke(CONFIRM_REPLACE_CHANNEL),
+
+  /** 【ARC-007 P0】vendor `onCloseCheck(handler)`（preload:253）的对端。
+   *  vendor 页面订阅它来回答"现在脏不脏"；Mcode 的查询经 `close-check` 推送，
+   *  页面用 `reportCloseCheck` 回答。这里保持 vendor 完全相同的形状。 */
+  onCloseCheck: (handler: () => void): (() => void) => {
+    const listener = (): void => handler();
+    ipcRenderer.on("mcode:document-view:close-check", listener);
+    return () => {
+      ipcRenderer.removeListener("mcode:document-view:close-check", listener);
+    };
+  },
+
+  /** 【ARC-007 P0】vendor `reportCloseCheck(state)`（preload:263）的对端 ——
+   *  单向上报（send），宿主只记 `dirty`。 */
+  reportCloseCheck: (state: { dirty?: unknown }): void => {
+    ipcRenderer.send(CLOSE_CHECK_RESULT_CHANNEL, { dirty: state?.dirty === true });
+  },
 
   /** 【ARC-007】**把编辑后的字节写回宿主的文件**。页面不传路径 —— 宿主只认
    *  「这个视图打开过的那份文件」，页面没有"另存到别处"的能力。
@@ -242,9 +298,15 @@ const api = {
   //    签名逐字取自 vendor `apps/docs/src/shared/ipc.ts` 的 `DesktopApi` 与
   //    `apps/docs/src/preload/index.ts` 的实现。
 
-  /** vendor: `getRecentFiles(): Promise<string[]>`（shared/ipc.ts:491）。
-   *  返回空表：Mcode 不维护 vendor 的最近文件列表。 */
-  getRecentFiles: (): Promise<string[]> => Promise.resolve([]),
+  /** vendor: `getRecentFiles(): Promise<string[]>`（shared/ipc.ts:491）——
+   *  同时是【ARC-007 P0】的**成功回执点**：vendor 页面只有在文档成功打开并
+   *  显示后才调它（`file-actions.ts:149`，失败路径不调）。preload 借这次调用
+   *  向宿主回执 `openPathCommitted`，宿主据此提交打开会话（成功标记后置）。
+   *  返回值仍是空表（Mcode 不维护 vendor 的最近文件列表）。 */
+  getRecentFiles: (): Promise<string[]> => {
+    void ipcRenderer.invoke(OPEN_COMMITTED_CHANNEL, { accepted: true });
+    return Promise.resolve([]);
+  },
 
   /** vendor: `getAiSettings(): Promise<AiSettings>`（shared/ipc.ts:495）。
    *  返回"AI 未配置"常量：Mcode 的 AI 由三引擎驱动，本视图不接 vendor AI 后端。 */
@@ -341,6 +403,9 @@ const api = {
 const slidesApi = {
   // ── 与 docs 共用同一组宿主通道 ──
   openDocxPath: api.openDocxPath,
+  confirmDocumentReplace: api.confirmDocumentReplace,
+  onCloseCheck: api.onCloseCheck,
+  reportCloseCheck: api.reportCloseCheck,
   saveDocx: api.saveDocx,
   saveDocxNew: api.saveDocxNew,
   onMenuCommand: api.onMenuCommand,
@@ -377,6 +442,51 @@ const slidesApi = {
     });
   },
 
+  /** 【ARC-007】slides 编辑（A 方案第一步）—— vendor `addBlankSlide(op)`
+   *  （preload:240 / shared/ipc.ts:1477）与 `editText(op)`（preload:183 /
+   *  shared/ipc.ts:199）的**宿主重接**版本。
+   *
+   *  页面不传 identity：`docId` 由宿主从 `event.sender` 反查（与打开/保存同一
+   *  纪律）。宿主只接受这两个操作，其余编辑继续是诚实桩。vendor 主进程未装配时
+   *  宿主回 `{ ok:false, error }` 并点名原因 —— **不假装成功**。
+   *
+   *  `sourceIndex`/`fitWidthPx` 等 vendor 参数由宿主固定（当前页之后插入、
+   *  FIT_WIDTH=1280），页面给的值不参与决策；`slideIndex`/`elementId`/`text`
+   *  原样转发给 vendor 执行器。 */
+  addBlankSlide: (op: { sourceIndex?: number; fitWidthPx?: number }): Promise<{
+    slides?: unknown[];
+    index?: number;
+    ok?: boolean;
+    error?: string;
+  }> => {
+    void op;
+    return ipcRenderer.invoke(SLIDES_ADD_SLIDE_CHANNEL, {}) as Promise<{
+      slides?: unknown[];
+      index?: number;
+      ok?: boolean;
+      error?: string;
+    }>;
+  },
+  editText: (op: { slideIndex: number; sourceId: string; paragraphs?: unknown[] }): Promise<{
+    ok?: boolean;
+    error?: string;
+  }> => {
+    // vendor 的 `EditParagraph[]` 在本宿主只接受单 run 纯文本（见契约
+    // `DocViewSlidesEditTextSchema.text`）；段落结构不转发。
+    const paragraphs = Array.isArray(op?.paragraphs) ? op.paragraphs : [];
+    const text = paragraphs
+      .map((paragraph) => {
+        const runs = (paragraph as { runs?: Array<{ text?: unknown }> }).runs;
+        return Array.isArray(runs) ? runs.map((run) => String(run?.text ?? "")).join("") : "";
+      })
+      .join("\n");
+    return ipcRenderer.invoke(SLIDES_EDIT_TEXT_CHANNEL, {
+      slideIndex: op?.slideIndex,
+      elementId: op?.sourceId,
+      text,
+    }) as Promise<{ ok?: boolean; error?: string }>;
+  },
+
   // ── 空订阅 / 空数据（见上方注释的真实来源） ──
   onFontsChanged: noopUnsubscribe,
   onOpened: noopUnsubscribe,
@@ -385,12 +495,10 @@ const slidesApi = {
   onAiPanelPrefsChanged: noopUnsubscribe,
   onAutoSaveDefaultChanged: noopUnsubscribe,
   onChromePressed: noopUnsubscribe,
-  onCloseCheck: noopUnsubscribe,
   onCloseSaveRequest: noopUnsubscribe,
   onDeckChanged: noopUnsubscribe,
   onContextMenuRequest: noopUnsubscribe,
   armContextMenu: (): void => {},
-  reportCloseCheck: (): void => {},
   reportCloseSaveResult: (): void => {},
   reportViewMenuState: (): void => {},
   setShowFullScreen: (): Promise<void> => Promise.resolve(),
@@ -406,7 +514,7 @@ const slidesApi = {
   getAiPanelPrefs: (): Promise<unknown> => Promise.resolve({}),
   setAiPanelPrefs: (): Promise<unknown> => Promise.resolve({}),
   aiGskStatus: (): Promise<{ loggedIn: boolean }> => Promise.resolve({ loggedIn: false }),
-  confirmDocumentReplace: (): Promise<boolean> => Promise.resolve(false),
+
   getTransition: (): Promise<string> => Promise.resolve("none"),
   getAnimations: (): Promise<unknown[]> => Promise.resolve([]),
   getNotes: (): Promise<string> => Promise.resolve(""),

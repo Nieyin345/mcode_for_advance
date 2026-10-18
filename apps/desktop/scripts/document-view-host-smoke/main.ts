@@ -66,6 +66,7 @@ import {
   DOCUMENT_VIEW_CLOSE_CHANNEL,
   DOCUMENT_VIEW_LIST_CHANNEL,
   DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
+  type DocViewResult,
 } from "@contracts/ipc";
 import {
   DocumentViewHost,
@@ -213,6 +214,21 @@ function makeFakeWindow(): FakeWindow {
 }
 
 const BOUNDS = { x: 10, y: 20, width: 800, height: 600 };
+
+/**
+ * 【ARC-007 P0】打开会话的完整前置：`openPath` 只准备，页面回执
+ * (`settlePendingOpen(true)`) 才登记会话。测试里的“打开成功”都用它。
+ */
+function openAndCommit(
+  host: DocumentViewHost,
+  docId: string,
+  filePath: string,
+  within: (p: string) => boolean = () => true,
+): DocViewResult {
+  const prepared = host.openPath(docId, filePath, within);
+  if (!prepared.ok) return prepared;
+  return host.settlePendingOpen(docId, true, within);
+}
 const FILE_URL = "file:///D:/destop/work_space/work_for_reseach/mcode/genoffice/apps/docs/dist/index.html";
 
 /* ══════════════════ 1. open 复用与 bounds 更新 ══════════════════ */
@@ -496,19 +512,31 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
   eq("★ 八条 documentView:* 通道全注册上了", channels.filter((c) => !handlers.has(c)), []);
   // 另有一条**内部通道**（视图 preload 的 open-path）：它不挂成 RPC，
   // 但主进程必须注册 —— 页面打开文档靠它。
-  const internal = "mcode:document-view:open-path";
-  const internalSave = "mcode:document-view:save";
-  check("视图 preload 的内部打开通道已注册", handlers.has(internal));
-  check("视图 preload 的内部保存通道已注册", handlers.has(internalSave));
-  check("注册的通道就是这八条 + 两条内部通道（不多不漏）",
-    JSON.stringify([...handlers.keys()].sort()) === JSON.stringify([...channels, internal, internalSave].sort()),
-    { actual: [...handlers.keys()].sort(), expected: [...channels, internal, internalSave].sort() });
+  // 【ARC-007】内部通道：打开链（P0）、保存、slides 编辑两条、dirty/替换守卫。
+  const internalChannels = [
+    "mcode:document-view:open-path",
+    "mcode:document-view:read-opened",
+    "mcode:document-view:open-committed",
+    "mcode:document-view:confirm-replace",
+    "mcode:document-view:close-check-result",
+    "mcode:document-view:save",
+    "mcode:document-view:slides-add-slide",
+    "mcode:document-view:slides-edit-text",
+  ];
+  for (const ch of internalChannels) check(`内部通道已注册：${ch}`, handlers.has(ch));
+  check("注册的通道就是这八条 + 八条内部通道（不多不漏）",
+    JSON.stringify([...handlers.keys()].sort()) ===
+      JSON.stringify([...channels, ...internalChannels].sort()),
+    {
+      actual: [...handlers.keys()].sort(),
+      expected: [...channels, ...internalChannels].sort(),
+    });
 
   const rpc = new Set(registeredRpcChannels());
   eq("★ 八条通道全登记进 recordRpcHandler（app_api_call 看得见）", channels.filter((c) => !rpc.has(c)), []);
   // 内部通道**不该**出现在 RPC 表里 —— 那是给页面的，不是给 Agent 的。
-  check("★ 内部 open-path 通道不在 RPC 表（不扩大 Agent 能力面）", !rpc.has(internal), [...rpc].filter((c) => c.includes("open-path")));
-  check("★ 内部 save 通道同样不在 RPC 表", !rpc.has(internalSave), [...rpc].filter((c) => c.includes("save")));
+  const leakedInternal = internalChannels.filter((c) => rpc.has(c));
+  eq("★ 所有内部通道都不在 RPC 表（不扩大 Agent 能力面）", leakedInternal, []);
   eq("IPC 表里的常量与契约字符串一致", IPC.DOCUMENT_VIEW_OPEN, "documentView:open");
 
   const call = async (channel: string, raw?: unknown): Promise<{ ok?: boolean; reason?: string }> => {
@@ -645,11 +673,14 @@ section("7. 三层接线：preload / rpcMap / main 注册");
 
   const ok = host.openPath("open-1", "D:/workspace/doc.docx", () => true);
   check("工作区内路径 → ok", ok.ok, ok);
-  // 【ARC-007】通道形状由 vendor 页面决定：它只订阅 menu:command 并处理
-  // "open-path"。发到自定义通道上 = 发了没人收（曾经就是这样）。
-  eq("★ 发到了 vendor 页面订阅的 menu:command", sends.at(-1)?.channel, "menu:command");
-  eq("★ 第一条参数是 vendor 认识的 open-path", sends.at(-1)?.args[0], "open-path");
-  eq("★ 路径作为第二条参数原样交给页面", sends.at(-1)?.args[1], "D:/workspace/doc.docx");
+  // 【ARC-007 P0】打开链 = 宿主**一次** menu:command 通知 + 页面 readOpened
+  // 拉取 + open-committed 回执。回环（台账 E1 的 rpcCalls=2）的判据是
+  // **preload 不再 invoke open-path**（源码级断言在下面），而不是"不发通知"。
+  eq("★ openPath 恰好发一次 menu:command 通知（不是零、也不是回环）", sends.length, 1);
+  eq("★ 通知形状是 vendor 认识的 (menu:command, open-path, path)",
+    [sends[0]?.channel, sends[0]?.args[0], sends[0]?.args[1]],
+    ["menu:command", "open-path", "D:/workspace/doc.docx"]);
+  eq("★ openPath 只登记待打开请求", host.pendingOpenFor("open-1")?.filePath, "D:/workspace/doc.docx");
 
   const before = sends.length;
   const denied = host.openPath("open-1", "C:/Windows/system32/config", () => false);
@@ -671,9 +702,17 @@ section("7. 三层接线：preload / rpcMap / main 注册");
     eq("★ preload 与宿主用同一个通道名", menuMatch?.[1], "menu:command");
     eq("★ preload 与宿主用同一个命令名", cmdMatch?.[1], "open-path");
     check("★ preload 真的订阅了 menu:command", /ipcRenderer\.on\(MENU_COMMAND_CHANNEL/.test(preloadSrc));
-    check("★ 宿主真的发到 menu:command", hostSrc.includes("wc.send(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath)"));
-    eq("★ 宿主发的通道名与 preload 订阅的一致", /VENDOR_MENU_COMMAND_CHANNEL\s*=\s*"([^"]+)"/.exec(hostSrc)?.[1], menuMatch?.[1]);
-    eq("★ 宿主发的命令名与 preload 的一致", /VENDOR_OPEN_PATH_COMMAND\s*=\s*"([^"]+)"/.exec(hostSrc)?.[1], cmdMatch?.[1]);
+    // 【ARC-007 P0】回环消除的源码级判据：preload 的 openDocxPath **不再 invoke
+    // open-path**（改为 read-opened 拉取）。宿主仍发一次通知（单向）。
+    check(
+      "★ preload 的 openDocxPath 不再 invoke open-path（消除回环）",
+      !/openDocxPath[\s\S]{0,300}ipcRenderer\.invoke\(OPEN_DOCUMENT_CHANNEL/.test(preloadSrc) &&
+        /openDocxPath[\s\S]{0,300}ipcRenderer\.invoke\(READ_OPENED_CHANNEL/.test(preloadSrc),
+    );
+    check(
+      "★ 宿主仍发一次 menu:command 通知（单向）",
+      hostSrc.includes("webContents.send?.(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath)"),
+    );
   }
 
   const live = (host as unknown as { views: Map<string, { view: { webContents: unknown } }> }).views.get("open-1");
@@ -702,7 +741,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   const deniedNoDoc = await host.saveOpenedFile("save-1", new Uint8Array([1, 2, 3]), () => true);
   check("★ 视图还没打开任何文档时，保存被拒", deniedNoDoc.ok === false, deniedNoDoc);
 
-  eq("openPath 记下这份文档", host.openPath("save-1", opened, () => true), { ok: true });
+  eq("openPath 记下这份文档", openAndCommit(host, "save-1", opened), { ok: true });
   const saved = await host.saveOpenedFile("save-1", new TextEncoder().encode("edited-bytes"), () => true);
   check("★ 保存成功并回报字节数", saved.ok === true && saved.bytes === "edited-bytes".length, saved);
   eq("★ 盘上内容真的变了", readFileSync2(opened, "utf8"), "edited-bytes");
@@ -720,7 +759,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   eq("被拒时盘上仍是上一次成功的内容", readFileSync2(opened, "utf8"), "edited-bytes");
 
   // 页面无法指定目标：宿主只认 openedFilePath（openPath 到 other 之后才改目标）。
-  eq("改打开另一份之后目标随之改变", host.openPath("save-1", other, () => true), { ok: true });
+  eq("改打开另一份之后目标随之改变", openAndCommit(host, "save-1", other), { ok: true });
   const saved2 = await host.saveOpenedFile("save-1", new TextEncoder().encode("second"), () => true);
   check("第二份保存成功", saved2.ok === true, saved2);
   eq("第二份内容落盘", readFileSync2(other, "utf8"), "second");
@@ -753,7 +792,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   const win = makeFakeWindow();
   const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
   host.open({ docId: "conf-1", url: FILE_URL, bounds: BOUNDS, visible: true });
-  eq("openPath 成功（记下打开时版本）", host.openPath("conf-1", doc, () => true), { ok: true });
+  eq("openPath 成功（记下打开时版本）", openAndCommit(host, "conf-1", doc), { ok: true });
 
   // ── 情形 A：打开后没人动过 → 保存成功，且回传新 revision ──
   const cleanSave = await host.saveOpenedFile("conf-1", new TextEncoder().encode("clean-edit"), () => true);
@@ -863,7 +902,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
     },
   });
   host.open({ docId: "lease-1", url: FILE_URL, bounds: BOUNDS, visible: true });
-  eq("前置：openPath 成功并记下打开时版本", host.openPath("lease-1", doc12, () => true), { ok: true });
+  eq("前置：openPath 成功并记下打开时版本", openAndCommit(host, "lease-1", doc12), { ok: true });
 
   // 两个保存几乎同时发出：A 先拿到租约并挂在接缝上；B 发出后必然卡在租约上。
   const saveA = host.saveOpenedFile("lease-1", new TextEncoder().encode("winner-A"), () => true);
@@ -954,7 +993,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
       const win = makeFakeWindow();
       const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
       host.open({ docId: "xproc-1", url: FILE_URL, bounds: BOUNDS, visible: true });
-      eq("前置：openPath 成功", host.openPath("xproc-1", doc13, () => true), { ok: true });
+      eq("前置：openPath 成功", openAndCommit(host, "xproc-1", doc13), { ok: true });
 
       const { child, done } = runChild(["hold", doc13, "2500"]);
       // 等子进程报 `held`（它已持有磁盘锁）再发起保存。
@@ -989,7 +1028,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
       const win = makeFakeWindow();
       const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
       host.open({ docId: "xproc-b", url: FILE_URL, bounds: BOUNDS, visible: true });
-      eq("前置：openPath 成功（b）", host.openPath("xproc-b", docB, () => true), { ok: true });
+      eq("前置：openPath 成功（b）", openAndCommit(host, "xproc-b", docB), { ok: true });
       // 让宿主的"打开时版本"先算完（否则保存会在取锁前 await 它，语义仍对，只是时序不好看）。
       await new Promise((r) => setTimeout(r, 50));
 
@@ -1091,9 +1130,12 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   openView("s-b");
 
   // ── 14a. 同一路径两个 docId → 第二个被显式拒绝，且点名持有者 ──
-  eq("第一个 docId 打开 alpha 成功", host14.openPath("s-a", a, () => true), { ok: true });
-  eq("持有者收到了一次打开请求", menuSendsOf("s-a").length, 1);
-  const second = host14.openPath("s-b", a, () => true);
+  eq("第一个 docId 打开 alpha 成功", openAndCommit(host14, "s-a", a), { ok: true });
+  // 【ARC-007 P0】打开请求改由页面拉取（readOpened），不再有 menu:command 推送；
+  // 回执提交后待打开请求清空 —— 「只有一条打开请求」= 没有回环、没有残留。
+  eq("提交后没有残留的待打开请求", host14.pendingOpenFor("s-a"), null);
+  eq("★ 打开请求恰好一条 menu:command 通知（无回环）", menuSendsOf("s-a").length, 1);
+  const second = (() => { const prep = host14.openPath("s-b", a, () => true); return prep.ok ? host14.settlePendingOpen("s-b", true, () => true) : prep; })();
   check(
     "★ 同一路径第二次 openPath（另一个 docId）被显式拒绝",
     second.ok === false && second.reason.includes("已在另一个视图打开"),
@@ -1109,7 +1151,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   eq("★ alpha 仍是原内容（被拒路径一个字节都没写）", readSync14(a, "utf8"), "alpha-v1");
 
   // ── 14b. 两个不同路径 → 两个 docId 互不影响 ──
-  eq("另一个 docId 打开 beta 成功", host14.openPath("s-b", b, () => true), { ok: true });
+  eq("另一个 docId 打开 beta 成功", openAndCommit(host14, "s-b", b), { ok: true });
   eq("alpha 仍由 s-a 持有", host14.sessionFor("s-a")?.filePath, a);
   eq("beta 由 s-b 持有", host14.sessionFor("s-b")?.filePath, b);
   check(
@@ -1132,7 +1174,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
       process.platform === "win32"
         ? `${ws14.toUpperCase()}\\..\\${basename(ws14)}\\alpha.docx`
         : `${dirname(ws14)}/${basename(ws14)}/./alpha.docx`;
-    const reopened = host14.openPath("s-a2", caseVariant, () => true);
+    const reopened = openAndCommit(host14, "s-a2", caseVariant);
     check(`★ 大小写/.. 的另一种写法能打开（${caseVariant}）`, reopened.ok === true, reopened);
     eq(
       "★★ 不同写法命中同一条会话键（归一化后与 physicalPath 一致）",
@@ -1143,7 +1185,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   // 用原路径再开一次：已被 s-a2 持有 → 拒绝（证明两种写法确实并成了一条）。
   openView("s-a3");
   {
-    const again = host14.openPath("s-a3", a, () => true);
+    const again = openAndCommit(host14, "s-a3", a);
     check(
       "★ 归一化后的原路径再开被拒（同一文件的不同写法互相可见）",
       again.ok === false && again.reason.includes("已在另一个视图打开"),
@@ -1162,7 +1204,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
     }
     if (aliasReady) {
       openView("s-a4");
-      const res = host14.openPath("s-a4", joinPath14(aliasDir, "alpha.docx"), () => true);
+      const res = openAndCommit(host14, "s-a4", joinPath14(aliasDir, "alpha.docx"));
       check(
         "★ 经 junction/symlink 的别名打开同一文件被拒（物理路径归一）",
         res.ok === false && res.reason.includes("已在另一个视图打开"),
@@ -1175,7 +1217,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   eq("关闭 s-a2", host14.close("s-a2"), { ok: true });
   writeFileSync(a, "alpha-v3", "utf8");
   openView("s-a5");
-  eq("关闭后同一路径可重新打开", host14.openPath("s-a5", a, () => true), { ok: true });
+  eq("关闭后同一路径可重新打开", openAndCommit(host14, "s-a5", a), { ok: true });
   eq(
     "★★ 重开后的会话 revision 是当下盘上的版本（不是关闭前记的那个）",
     await host14.sessionFor("s-a5")!.revision,
@@ -1191,16 +1233,18 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   // ── 14e. 发送失败必须回滚登记（否则路径被一个没打开文档的视图占住） ──
   openView("s-a6");
   {
-    sendWorks = false;
-    const failed = host14.openPath("s-a6", joinPath14(ws14, "gamma.docx"), () => true);
-    sendWorks = true;
-    check("★ send 抛错时 openPath 回包失败", failed.ok === false, failed);
-    eq("★ 发送失败后没有留下会话（路径未被占住）", host14.sessionFor("s-a6"), null);
+    // 【ARC-007 P0】准备阶段做只读预检：路径已被别的视图持有时**连通知都不发**，
+    // 更不会登记。回执阶段的持有者校验在 `claimOpenedPath` 里仍然保留（双保险）。
+    const prepared = host14.openPath("s-a6", b, () => true);
+    check("★ 准备阶段对已被持有的路径直接拒绝（不发通知、不占会话）",
+      prepared.ok === false && prepared.reason.includes("已在另一个视图打开"), prepared);
+    eq("被拒后 s-a6 不持有任何会话", host14.sessionFor("s-a6"), null);
+    eq("被拒的路径没有待打开请求", host14.pendingOpenFor("s-a6"), null);
   }
 
   // ── 14f. 同一 docId 换文件：已被别人持有的路径 → 拒绝且不产生状态 ──
   {
-    const swap = host14.openPath("s-a6", b, () => true);
+    const swap = openAndCommit(host14, "s-a6", b);
     check(
       "★ 换到一条已被别人持有的路径被拒（持有者不受影响）",
       swap.ok === false && swap.reason.includes("已在另一个视图打开"),
@@ -1215,7 +1259,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   eq("关闭全部后 alpha 的会话没了", host14.sessionFor("s-a5"), null);
   eq("关闭全部后 beta 的会话没了", host14.sessionFor("s-b"), null);
   openView("s-c");
-  eq("全部关闭后重新打开 alpha 成功", host14.openPath("s-c", a, () => true), { ok: true });
+  eq("全部关闭后重新打开 alpha 成功", openAndCommit(host14, "s-c", a), { ok: true });
   host14.closeAll();
   eq("closeAll 把会话表也清空", host14.sessionFor("s-c"), null);
 
@@ -1435,7 +1479,266 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
     eq("凭据注入器没有出现在 RPC 表", [...rpc].filter((c) => c.includes("CredentialBroker")), []);
   }
 
+  /* ══════════ 16.【ARC-007】slides 编辑桥（A 方案第一步） ══════════
+   *
+   * 两个内部通道（`mcode:document-view:slides-add-slide` / `slides-edit-text`）
+   * 转发到注入的 `SlidesBridge`；未装配时 fail-closed。身份由 `event.sender`
+   * 反查，页面声明的 docId 与反查不一致即拒。
+   */
+  {
+    const { SlidesBridge, SLIDES_BRIDGE_UNAVAILABLE } = await import("@main/document/slidesBridge.js");
+    const stubs: Array<{ calls: unknown[][] }> = [];
+    const makeExecutor = (): {
+      addBlankSlide(webContentsId: number, docId: string): Promise<{ slideCount: number }>;
+      editText(webContentsId: number, docId: string, slideIndex: number, elementId: string, text: string): Promise<{ text: string }>;
+    } => ({
+      async addBlankSlide(webContentsId, docId) {
+        stubs.push({ calls: [["addBlankSlide", webContentsId, docId]] });
+        return { slideCount: 2 };
+      },
+      async editText(webContentsId, docId, slideIndex, elementId, text) {
+        stubs.push({ calls: [["editText", webContentsId, docId, slideIndex, elementId, text]] });
+        return { text };
+      },
+    });
+
+    // 16a. 无执行器 → fail-closed，原因点名。
+    {
+      const bareBridge = new SlidesBridge(null);
+      const noWin = makeFakeWindow();
+      const noHost = new DocumentViewHost({ getMainWindow: () => noWin, createView: makeFakeView });
+      const handlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+      const fakeIpc16 = {
+        handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
+          handlers.set(channel, listener);
+        },
+      } as unknown as IpcMain;
+      registerDocumentViewHandlers(fakeIpc16, noHost, () => true, bareBridge);
+      // 身份要先过：用真视图 + 真 sender，才落到"桥未装配"这一层。
+      noHost.open({ docId: "bare-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+      const bareSender = (noHost as unknown as { views: Map<string, { view: { webContents: unknown } }> })
+        .views.get("bare-1")!.view.webContents;
+      const r = (await handlers.get("mcode:document-view:slides-add-slide")!(
+        { sender: bareSender },
+        { docId: "bare-1" },
+      )) as { ok?: boolean; reason?: string };
+      check(
+        "★ 无 vendor 执行器：slidesAddSlide 返回 ok:false 且原因点名「vendor 主进程未装配」",
+        r.ok === false && r.reason === SLIDES_BRIDGE_UNAVAILABLE,
+        r,
+      );
+      const r2 = (await handlers.get("mcode:document-view:slides-edit-text")!(
+        { sender: bareSender },
+        { docId: "bare-1", slideIndex: 0, elementId: "e1", text: "x" },
+      )) as { ok?: boolean; reason?: string };
+      check(
+        "★ 无 vendor 执行器：slidesEditText 同样 fail-closed",
+        r2.ok === false && r2.reason === SLIDES_BRIDGE_UNAVAILABLE,
+        r2,
+      );
+      noHost.dispose();
+    }
+
+    // 16b. 有执行器：参数原样转发、docId 身份由 sender 决定、页面伪造 docId 无效。
+    {
+      const exec = makeExecutor();
+      const bridge = new SlidesBridge(exec);
+      const win16 = makeFakeWindow();
+      const host16 = new DocumentViewHost({ getMainWindow: () => win16, createView: makeFakeView });
+      const handlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+      const fakeIpc16 = {
+        handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
+          if (handlers.has(channel)) throw new Error(`duplicate ${channel}`);
+          handlers.set(channel, listener);
+        },
+      } as unknown as IpcMain;
+      registerDocumentViewHandlers(fakeIpc16, host16, () => true, bridge);
+      // 真视图 + 真 sender（与生产同一条身份反查路径）。
+      host16.open({ docId: "slides-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+      const live = (host16 as unknown as { views: Map<string, { view: { webContents: unknown } }> })
+        .views.get("slides-1")!;
+      const sender = live.view.webContents;
+      const wcId = (sender as { id: number }).id;
+
+      const add = (await handlers.get("mcode:document-view:slides-add-slide")!(
+        { sender },
+        { docId: "slides-1" },
+      )) as { ok?: boolean; slideCount?: number };
+      eq("★ 有执行器：加页返回 ok:true 且页数来自执行器", add, { ok: true, slideCount: 2 });
+      eq(
+        "★ 参数原样转发：执行器收到 webContentsId 与宿主反查的 docId",
+        stubs.at(-1)?.calls,
+        [["addBlankSlide", wcId, "slides-1"]],
+      );
+
+      const edit = (await handlers.get("mcode:document-view:slides-edit-text")!(
+        { sender },
+        { docId: "slides-1", slideIndex: 3, elementId: "el-9", text: "hello" },
+      )) as { ok?: boolean; text?: string };
+      eq("★ 有执行器：改文字返回 ok:true 且回显文本", edit, { ok: true, text: "hello" });
+      eq(
+        "★ 改文字参数原样转发（slideIndex/elementId/text）",
+        stubs.at(-1)?.calls,
+        [["editText", wcId, "slides-1", 3, "el-9", "hello"]],
+      );
+
+      // 页面伪造 docId：sender 反查是 slides-1，页面声明 slides-2 → 拒，执行器不被调用。
+      const before = stubs.length;
+      const forged = (await handlers.get("mcode:document-view:slides-add-slide")!(
+        { sender },
+        { docId: "slides-2" },
+      )) as { ok?: boolean; reason?: string };
+      check(
+        "★ 页面伪造 docId 无效：声明与 sender 不一致即拒，且执行器未被调用",
+        forged.ok === false && typeof forged.reason === "string" && stubs.length === before,
+        { forged, callsBefore: before, callsAfter: stubs.length },
+      );
+      // 陌生 sender：同样拒绝（身份不是页面给的）。
+      const stranger = (await handlers.get("mcode:document-view:slides-add-slide")!(
+        { sender: {} },
+        { docId: "slides-1" },
+      )) as { ok?: boolean; reason?: string };
+      check("★ 陌生 sender 的编辑请求被拒", stranger.ok === false, stranger);
+      host16.dispose();
+    }
+  }
+
   host.dispose();
+}
+
+/* ══════════ 17.【ARC-007 P0】打开链：一次性字节响应 + 回执后置 + 替换守卫 ══════════
+ *
+ * 判据（对应台账 P0）：
+ *  - `openPath` 只准备，`readOpened` 返回 vendor `OpenDocxResult` 形状
+ *    （path/name/dataUrl/hash），dataUrl 一次性（取两次第二次必失败）；
+ *  - sha256 与盘上字节一致；坏档/空档/跨路径在 issue 之前被拒；
+ *  - 打开失败/未回执不占会话；回执后才提交（成功标记后置）；
+ *  - `confirmDocumentReplace` 的真实来源是页面上报的 dirty；脏且无确认端口
+ *    → fail-closed；脏且有端口 → 用端口结果；
+ *  - 同一路径另一 docId 在准备阶段允许（不占），提交阶段拒绝。
+ */
+{
+  const { mkdtempSync, writeFileSync, readFileSync: read17, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: join17 } = await import("node:path");
+  const { createHash: hash17 } = await import("node:crypto");
+  const ws = mkdtempSync(join17(tmpdir(), "mcode-dv-p0-"));
+  const good = join17(ws, "good.docx");
+  // 合法 docx 的开头（PK 魔数 + 任意 zip 载荷；本段只验宿主侧协议，不做页面解析）。
+  const goodBytes = Buffer.concat([Buffer.from("PK\u0003\u0004", "latin1"), Buffer.alloc(256, 7)]);
+  writeFileSync(good, goodBytes);
+  const bad = join17(ws, "bad.docx");
+  writeFileSync(bad, "not-a-zip", "utf8");
+  const empty = join17(ws, "empty.docx");
+  writeFileSync(empty, "", "utf8");
+  const outside = join17(tmpdir(), `mcode-dv-p0-outside-${Date.now()}.docx`);
+  writeFileSync(outside, "outside", "utf8");
+
+  const win = makeFakeWindow();
+  const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
+  host.open({ docId: "p0-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+  const within = (p: string): boolean => p.startsWith(ws) || p.startsWith(ws.replace(/\\/g, "/"));
+
+  // 17a. 无待打开 → readOpened 显式拒绝。
+  {
+    const r = await host.readOpened("p0-1", within);
+    check("★ 没有待打开请求时 readOpened 拒绝（fail-closed）", r.ok === false, r);
+  }
+
+  // 17b. 正常路径：准备 → 拉取 → 形状/哈希/一次性 → 回执前不占会话 → 回执后提交。
+  {
+    eq("openPath 准备成功", host.openPath("p0-1", good, within), { ok: true });
+    const read = await host.readOpened("p0-1", within);
+    const result = read.ok ? (read as { result?: { path?: unknown; name?: unknown; dataUrl?: unknown; hash?: unknown } }).result : undefined;
+    check(
+      "★ readOpened 返回 vendor OpenDocxResult 形状",
+      result !== undefined &&
+        typeof result.path === "string" &&
+        typeof result.name === "string" &&
+        typeof result.dataUrl === "string" &&
+        typeof result.hash === "string",
+      read,
+    );
+    if (result !== undefined) {
+      eq("dataUrl 是 vendor CSP 放行的 handoff scheme", String(result.dataUrl).startsWith("genoffice-docx-media://handoff/"), true);
+      eq("sha256 与盘上字节一致", result.hash, hash17("sha256").update(read17(good)).digest("hex"));
+      eq("name 是 basename", result.name, "good.docx");
+      // 一次性：同一 URL 第二次取必须 404（take 即焚）。
+      const { takeDocumentHandoff } = await import("@main/document/documentViewHandoff.js");
+      const first = takeDocumentHandoff(String(result.dataUrl));
+      const second = takeDocumentHandoff(String(result.dataUrl));
+      check("★ 一次性字节响应：第一次可取到、第二次为 null", first !== null && second === null, { first: first?.length ?? null, second: second?.length ?? null });
+      eq("取到的字节与盘上一致", first === null ? "" : hash17("sha256").update(first).digest("hex"), result.hash);
+    }
+    eq("★ 回执前不占会话（成功标记后置）", host.sessionFor("p0-1"), null);
+    eq("回执提交成功", host.settlePendingOpen("p0-1", true, within), { ok: true });
+    eq("★ 回执后才登记会话", host.sessionFor("p0-1")?.filePath, good);
+    eq("待打开请求已清空", host.pendingOpenFor("p0-1"), null);
+  }
+
+  // 17c. 坏档/空档/跨路径：issue 之前被拒，且不占会话。
+  {
+    host.close("p0-1");
+    host.open({ docId: "p0-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+    host.openPath("p0-1", bad, within);
+    const r = await host.readOpened("p0-1", within);
+    check("★ 坏档（非 zip）在 issue 之前被拒", r.ok === false && r.reason.includes("不是可读的 docx"), r);
+    host.openPath("p0-1", empty, within);
+    const r2 = await host.readOpened("p0-1", within);
+    check("★ 空档被拒", r2.ok === false, r2);
+    host.openPath("p0-1", outside, () => true);
+    const r3 = await host.readOpened("p0-1", within);
+    check("★ 跨路径（读时围栏变化）被拒", r3.ok === false && r3.reason.includes("不在已知工作区内"), r3);
+    eq("★ 失败路径都不占会话", host.sessionFor("p0-1"), null);
+    host.settlePendingOpen("p0-1", false, within);
+    eq("放弃回执清掉待打开请求", host.pendingOpenFor("p0-1"), null);
+  }
+
+  // 17d. 过期版本：准备后文件被改写 → readOpened 返回的 hash 是**当下**盘上的版本
+  //      （宿主不做陈旧缓存）；若打开方基于旧版本保存，saveOpenedFile 的乐观锁会拦。
+  {
+    host.close("p0-1");
+    host.open({ docId: "p0-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+    host.openPath("p0-1", good, within);
+    const before = await host.readOpened("p0-1", within);
+    const modified = Buffer.concat([goodBytes, Buffer.from("tampered")]);
+    writeFileSync(good, modified);
+    host.openPath("p0-1", good, within);
+    const after = await host.readOpened("p0-1", within);
+    const beforeHash = before.ok ? (before as { result?: { hash?: unknown } }).result?.hash : undefined;
+    const afterHash = after.ok ? (after as { result?: { hash?: unknown } }).result?.hash : undefined;
+    check(
+      "★ 文件在两次打开之间被改写：hash 跟着变（无陈旧缓存）",
+      typeof beforeHash === "string" && typeof afterHash === "string" && beforeHash !== afterHash,
+      { before: beforeHash ?? null, after: afterHash ?? null },
+    );
+    eq("提交后记下的 revision 是改写后的版本", host.settlePendingOpen("p0-1", true, within), { ok: true });
+    const stale = await host.saveOpenedFile("p0-1", new TextEncoder().encode("x"), within, typeof beforeHash === "string" ? beforeHash : null);
+    check("★ 用旧 hash 保存被乐观锁拒绝（conflict）", stale.ok === false && stale.reason === "conflict", stale);
+    writeFileSync(good, goodBytes);
+  }
+
+  // 17e. confirmDocumentReplace：真实 dirty 来源 + fail-closed + 端口驱动。
+  {
+    eq("不脏 → 允许替换", await host.confirmDocumentReplace("p0-1"), true);
+    host.reportPageDirty("p0-1", true);
+    eq("★ 脏且没有确认端口 → fail-closed（拒绝替换）", await host.confirmDocumentReplace("p0-1"), false);
+    const calls: Array<{ docId: string; filePath: string | null }> = [];
+    host.setConfirmDirty(async (input) => {
+      calls.push(input);
+      return false;
+    });
+    eq("★ 脏且确认端口回绝 → 拒绝替换", await host.confirmDocumentReplace("p0-1"), false);
+    eq("确认端口收到了 docId 与当前文件路径", calls.at(-1)?.docId, "p0-1");
+    host.setConfirmDirty(async () => true);
+    eq("★ 脏且真人同意 → 允许替换", await host.confirmDocumentReplace("p0-1"), true);
+    host.reportPageDirty("p0-1", false);
+    eq("恢复不脏后直接允许", await host.confirmDocumentReplace("p0-1"), true);
+  }
+
+  host.closeAll();
+  rmSync(ws, { recursive: true, force: true });
+  rmSync(outside, { force: true });
 }
 
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);

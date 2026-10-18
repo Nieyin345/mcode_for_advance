@@ -41,15 +41,25 @@ import {
   DocViewOpenPathSchema,
   DocViewDocIdSchema,
   DocViewOpenSchema,
+  DocViewSlidesAddSlideSchema,
+  DocViewSlidesEditTextSchema,
   type DocViewListResult,
   type DocViewResult,
+  type DocViewSlidesResult,
 } from "@contracts/ipc";
 import { recordRpcHandler } from "@main/appControl/registry.js";
 import { errText } from "@main/lib/ipcError.js";
 import type { DocumentViewHost } from "@main/document/documentViewHost.js";
+import type { SlidesBridge } from "@main/document/slidesBridge.js";
+import { slidesBridge as productionSlidesBridge } from "@main/document/slidesBridge.js";
 
 /** zod/业务错误 → 线上的人话结果。 */
 function failed(err: unknown): DocViewResult {
+  return { ok: false, reason: errText(err) };
+}
+
+/** slides 编辑通道的失败包装（同一取向：失败永远落在 `{ok:false, reason}`）。 */
+function slidesFailed(err: unknown): DocViewSlidesResult {
   return { ok: false, reason: errText(err) };
 }
 
@@ -58,7 +68,94 @@ export function registerDocumentViewHandlers(
   host: DocumentViewHost,
   /** 【ARC-007】路径围栏判据（生产传 `findContainingWorkspaceRoot` 那一份）。 */
   withinWorkspace: (p: string) => boolean,
+  /** 【ARC-007】slides 编辑桥（A 方案第一步）。省略 = 生产单例（默认未装配，
+   *  所有调用 fail-closed）；无头套件注入假执行器验证转发与身份。 */
+  slides: SlidesBridge = productionSlidesBridge,
 ): void {
+  /**
+   * 【ARC-007 P0】**页面拉取已准备好的打开响应** —— vendor `openDocxPath` 的
+   * 宿主对端。返回与 vendor `OpenDocxResult` 同形状的对象（含一次性
+   * `dataUrl` 与 sha256）。**不提交会话**：见 `settlePendingOpen`。
+   */
+  const onReadOpened = async (evt: unknown, raw: unknown) => {
+    try {
+      const input = raw as { docId?: unknown } | null;
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const resolved = host.docIdForSender(sender);
+      if (resolved === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
+      if (typeof input?.docId === "string" && input.docId !== "" && input.docId !== resolved) {
+        return {
+          ok: false,
+          reason: `docId 与发送方不一致（声明 ${input.docId}，实际 ${resolved}）—— 拒绝操作`,
+        };
+      }
+      return await host.readOpened(resolved, withinWorkspace);
+    } catch (err) {
+      return { ok: false, reason: errText(err) };
+    }
+  };
+  // 内部通道（与 open-path/save 同形态；字面量注册的原因见下）。
+  ipc.handle("mcode:document-view:read-opened", onReadOpened);
+
+  /**
+   * 【ARC-007 P0】**页面回执**：vendor 页面成功打开后会调 `getRecentFiles()`
+   * （成功路径唯一必经调用）；preload 在此回执 `openPathCommitted`。只有回执才
+   * 把待开请求提交成会话（`settlePendingOpen(true)`）—— 失败的打开不占会话、
+   * 不改 CAS 基准。
+   */
+  const onOpenCommitted = async (evt: unknown, raw: unknown) => {
+    try {
+      const input = raw as { docId?: unknown; accepted?: unknown } | null;
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const resolved = host.docIdForSender(sender);
+      if (resolved === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
+      if (typeof input?.docId === "string" && input.docId !== "" && input.docId !== resolved) {
+        return {
+          ok: false,
+          reason: `docId 与发送方不一致（声明 ${input.docId}，实际 ${resolved}）—— 拒绝操作`,
+        };
+      }
+      return host.settlePendingOpen(resolved, input?.accepted !== false, withinWorkspace);
+    } catch (err) {
+      return { ok: false, reason: errText(err) };
+    }
+  };
+  ipc.handle("mcode:document-view:open-committed", onOpenCommitted);
+
+  /**
+   * 【ARC-007 P0】**页面替换守卫**：vendor `confirmDocumentReplace()` 的宿主对端。
+   * 真实 dirty 来自页面经 `reportCloseCheck` 的上报（`close-check-result` 通道）。
+   * 生产在装配期注入 `confirmDirty`（真人确认）；未注入时脏状态 fail-closed。
+   */
+  const onConfirmReplace = async (evt: unknown) => {
+    try {
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const resolved = host.docIdForSender(sender);
+      if (resolved === null) return false;
+      return await host.confirmDocumentReplace(resolved);
+    } catch {
+      return false;
+    }
+  };
+  ipc.handle("mcode:document-view:confirm-replace", onConfirmReplace);
+
+  /**
+   * 【ARC-007 P0】页面上报 dirty —— vendor `reportCloseCheck`（preload:263）的
+   * 对端。形状与 vendor 一致：`{ dirty, autoSave?, filePath? }`；只取 `dirty`。
+   */
+  const onCloseCheckResult = (evt: unknown, raw: unknown): void => {
+    try {
+      const input = raw as { dirty?: unknown } | null;
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const resolved = host.docIdForSender(sender);
+      if (resolved === null) return;
+      host.reportPageDirty(resolved, input?.dirty === true);
+    } catch {
+      /* 上报是 best-effort；坏形状忽略 */
+    }
+  };
+  ipc.handle("mcode:document-view:close-check-result", onCloseCheckResult);
+
   // IpcMain.handle 的监听器形参带类型化的 event；本模块的 handler 全都不读它，
   // 按 `(event: unknown, raw: unknown)` 声明即可结构兼容 recordRpcHandler。
   const onOpen = async (_evt: unknown, raw: unknown): Promise<DocViewResult> => {
@@ -137,6 +234,69 @@ export function registerDocumentViewHandlers(
   const onList = (): DocViewListResult => ({ views: host.list() });
   recordRpcHandler(IPC.DOCUMENT_VIEW_LIST, onList);
   ipc.handle(IPC.DOCUMENT_VIEW_LIST, onList);
+
+  /**
+   * 【ARC-007】slides 编辑（A 方案第一步）：`documentView.slidesAddSlide`。
+   *
+   * **身份**：与 open/save 同一条纪律 —— 页面声明的 `docId` 必须与宿主从
+   * `event.sender` 反查的结果**一致**；不一致直接拒（不拿 sender 的结果悄悄
+   * 顶替，否则调用方以为自己操作的是 A 视图，实际改了 B）。
+   *
+   * **执行**：经注入的 `SlidesBridge` 转发到 vendor 主进程同一份 handler
+   * （`slides:add-blank-slide`）。桥未装配 = `ok:false` + 点名原因，绝不假装成功。
+   */
+  const onSlidesAddSlide = async (evt: unknown, raw: unknown): Promise<DocViewSlidesResult> => {
+    try {
+      const input = DocViewSlidesAddSlideSchema.parse(raw);
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const resolved = host.docIdForSender(sender);
+      if (resolved === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
+      if (resolved !== input.docId) {
+        return {
+          ok: false,
+          reason: `docId 与发送方不一致（声明 ${input.docId}，实际 ${resolved}）—— 拒绝操作`,
+        };
+      }
+      const wc = host.webContentsOf(resolved) as unknown as { id?: unknown } | null;
+      const webContentsId = wc && typeof wc.id === "number" ? wc.id : null;
+      if (webContentsId === null) {
+        return { ok: false, reason: "当前视图没有 webContents id，无法定位 slides 会话" };
+      }
+      return await slides.addSlide(webContentsId, resolved);
+    } catch (err) {
+      return slidesFailed(err);
+    }
+  };
+  // 内部通道（与 `mcode:document-view:save` 同形态，字面量注册——ipc-parity 的
+  // 解析器只认 `IPC.*` 与从契约模块 import 的常量）。字符串与契约
+  // `DOCUMENT_VIEW_SLIDES_ADD_SLIDE_CHANNEL` 必须一致（documentView 契约文件是
+  // 唯一形状来源；两边漂移由 ipc-wiring 的内部通道断言发现）。
+  ipc.handle("mcode:document-view:slides-add-slide", onSlidesAddSlide);
+
+  /** 【ARC-007】slides 编辑：`documentView.slidesEditText`。身份/执行同上。 */
+  const onSlidesEditText = async (evt: unknown, raw: unknown): Promise<DocViewSlidesResult> => {
+    try {
+      const input = DocViewSlidesEditTextSchema.parse(raw);
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const resolved = host.docIdForSender(sender);
+      if (resolved === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
+      if (resolved !== input.docId) {
+        return {
+          ok: false,
+          reason: `docId 与发送方不一致（声明 ${input.docId}，实际 ${resolved}）—— 拒绝操作`,
+        };
+      }
+      const wc = host.webContentsOf(resolved) as unknown as { id?: unknown } | null;
+      const webContentsId = wc && typeof wc.id === "number" ? wc.id : null;
+      if (webContentsId === null) {
+        return { ok: false, reason: "当前视图没有 webContents id，无法定位 slides 会话" };
+      }
+      return await slides.editText(webContentsId, resolved, input.slideIndex, input.elementId, input.text);
+    } catch (err) {
+      return slidesFailed(err);
+    }
+  };
+  ipc.handle("mcode:document-view:slides-edit-text", onSlidesEditText);
 
   /**
    * 【ARC-007】**视图 preload 的内部通道** —— 页面请求打开某个文档。

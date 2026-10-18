@@ -549,6 +549,15 @@ function scanMainHandlers(globals: Map<string, string>): HandlerScan {
       const isIpc = DIRECT_RECEIVERS.has(receiver) || ipcParams.has(receiver);
 
       if (!isIpc) {
+        /**
+         * 【ARC-007】独立视图 preload 的 `ipcRenderer.on(...)` 是**渲染端订阅**，
+         * 不是主进程注册站点 —— 它不属于本扫描器的「主进程 handler」集合。
+         * 只豁免这一种接收者名字（`ipcRenderer`），且仅当文件就是那份独立
+         * preload；其它未知接收者照旧报告。
+         */
+        if (receiver === "ipcRenderer" && rel.endsWith("document/documentViewPreload.ts")) {
+          continue;
+        }
         // 只在"实参长得像 IPC 通道"时才抱怨:别的东西(`req.on("error")`)是绝大多数。
         if (/^\s*(IPC\.|"[a-z][a-zA-Z0-9_]*:[^"]*")/.test(` ${src.slice(open + 1, open + 40)}`)) {
           otherReceivers.push({ file: rel, line, receiver, raw });
@@ -824,6 +833,14 @@ const NON_API_HANDLER_CHANNELS = [
   // WebContentsView 的最小桥 —— 和浏览器 picker 同一个形态。
   "mcode:document-view:open-path",
   "mcode:document-view:save",
+  // 【ARC-007】slides 编辑（A 方案第一步）：同样是独立 preload 的内部通道。
+  "mcode:document-view:slides-add-slide",
+  "mcode:document-view:slides-edit-text",
+  // 【ARC-007 P0】打开链（拉取/回执/替换守卫/dirty 上报）。
+  "mcode:document-view:read-opened",
+  "mcode:document-view:open-committed",
+  "mcode:document-view:confirm-replace",
+  "mcode:document-view:close-check-result",
 ];
 diff(
   "主进程每条 handle 的通道,preload 都发得出去(或属于已知的独立 preload)",
@@ -850,22 +867,71 @@ diff(
 /* 【ARC-007】文档视图 preload 的两端:它 invoke 的**两条**通道主进程必须都收着。 */
 {
   const docPreload = read(join(DESKTOP, "src/main/document/documentViewPreload.ts"));
-  const invoked = [...docPreload.matchAll(/ipcRenderer\.invoke\(\s*(OPEN_DOCUMENT_CHANNEL|SAVE_DOCUMENT_CHANNEL)/g)]
-    .map((m) => (m[1] === "OPEN_DOCUMENT_CHANNEL" ? "mcode:document-view:open-path" : "mcode:document-view:save"));
+  /**
+   * 【ARC-007 P0 复审】白名单，不写死条数：
+   *  1. 每条 invoke 的 channel 必须是本文件声明的字符串常量；
+   *  2. 实际用的集合 ⊆ 白名单；
+   *  3. 白名单每条都至少出现一次（防空过）；
+   *  4. on 只允许 menu:command / close-check（见 vendor-page 套件同一套判据）。
+   * 白名单本身是**通道级授权**：全部是独立视图 preload 的内部通道。
+   */
+  const ALLOWED_INVOKE_CHANNELS = new Set([
+    // P0 起 `open-path` **不再**由 preload invoke（回环的根源）；打开链是
+    // read-opened 拉取 + open-committed 回执。
+    "mcode:document-view:save",
+    "mcode:document-view:read-opened",
+    "mcode:document-view:open-committed",
+    "mcode:document-view:confirm-replace",
+    "mcode:document-view:slides-add-slide",
+    "mcode:document-view:slides-edit-text",
+  ]);
+  const constants = new Map<string, string>();
+  for (const m of docPreload.matchAll(/(?:^|\n)\s*const\s+([A-Z][A-Z0-9_]*)\s*=\s*"([^"]+)"/g)) {
+    constants.set(m[1], m[2]);
+  }
+  const invokeArgs = [...docPreload.matchAll(/ipcRenderer\.invoke\(\s*([^,)]+)/g)].map((m) => m[1].trim());
+  const unresolvedArgs = invokeArgs.filter((a) => !/^[A-Z][A-Z0-9_]*$/.test(a) || !constants.has(a));
+  const invoked = invokeArgs
+    .map((a) => constants.get(a))
+    .filter((c): c is string => typeof c === "string");
+  check(
+    "★ 文档视图 preload 的 invoke 通道全部来自本文件字符串常量",
+    unresolvedArgs.length === 0,
+    unresolvedArgs,
+  );
   check(
     "文档视图 preload 发的每条通道,主进程都收着那一端",
-    invoked.length === 2 && invoked.every((c) => handledChannels.has(c)),
+    invoked.length > 0 && invoked.every((c) => handledChannels.has(c)),
     { docPreloadInvokes: invoked, missing: invoked.filter((c) => !handledChannels.has(c)) },
   );
   check(
-    "★ 两条各自只出现一次(打开/保存),没有第三条",
-    invoked.filter((c) => c === "mcode:document-view:open-path").length === 1
-      && invoked.filter((c) => c === "mcode:document-view:save").length === 1,
-    invoked,
+    "★ invoke 集合 ⊆ 白名单（白名单外的新调用必红）",
+    invoked.filter((c) => !ALLOWED_INVOKE_CHANNELS.has(c)).length === 0,
+    invoked.filter((c) => !ALLOWED_INVOKE_CHANNELS.has(c)),
   );
-  // 反向:这个独立 preload 只能 invoke 这两条,不能拿到任意 IPC。
-  const invokes = (docPreload.match(/ipcRenderer\.invoke\(/g) ?? []).length;
-  check("★ 文档视图 preload 只 invoke 打开/保存两条(不暴露任意 IPC)", invokes === 2, invokes);
+  check(
+    "★ 白名单每条都在 preload 里出现（删实现必红，防空过）",
+    [...ALLOWED_INVOKE_CHANNELS].filter((c) => !invoked.includes(c)).length === 0,
+    [...ALLOWED_INVOKE_CHANNELS].filter((c) => !invoked.includes(c)),
+  );
+  // 单向上报（send）：dirty 回执不进 invoke 集合，但要显式授权并验存在。
+  const sendArgs = [...docPreload.matchAll(/ipcRenderer\.send\(\s*([^,)]+)/g)].map((m) => m[1].trim());
+  const ALLOWED_SEND = new Set(["mcode:document-view:close-check-result"]);
+  const sendResolved = sendArgs.map((a) => constants.get(a) ?? a.replace(/^"|"$/g, ""));
+  check(
+    "★ preload 的 send 集合 ⊆ {close-check-result} 且它在（单向 dirty 上报）",
+    sendResolved.every((c) => ALLOWED_SEND.has(c)) && [...ALLOWED_SEND].every((c) => sendResolved.includes(c)),
+    sendResolved,
+  );
+  const onArgs = [...docPreload.matchAll(/ipcRenderer\.on\(\s*([^,)]+)/g)].map((m) => m[1].trim());
+  const ALLOWED_ON = new Set(["menu:command", "mcode:document-view:close-check"]);
+  const onResolved = onArgs.map((a) => constants.get(a) ?? a.replace(/^"|"$/g, ""));
+  check(
+    "★ preload 的订阅集合 ⊆ {menu:command, close-check} 且两条都在",
+    onResolved.filter((c) => !ALLOWED_ON.has(c)).length === 0 &&
+      [...ALLOWED_ON].every((c) => onResolved.includes(c)),
+    onResolved,
+  );
 }
 
 

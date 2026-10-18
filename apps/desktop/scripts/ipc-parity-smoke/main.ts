@@ -433,7 +433,23 @@ for (const m of preloadText.matchAll(/invoke\(\s*"([^"]+)"/g)) preloadInvoked.ad
  * 只放行这一个 —— 每加一条都要有对应的独立 preload 存在(见 ipc-wiring-smoke
  * 里那对两端断言),否则这里就成了静默放行的后门。
  */
-const INDEPENDENT_PRELOAD_CHANNELS = new Set(["mcode:document-view:open-path", "mcode:document-view:save"]);
+const INDEPENDENT_PRELOAD_CHANNELS = new Set([
+  "mcode:document-view:open-path",
+  "mcode:document-view:save",
+  // 【ARC-007】slides 编辑（A 方案第一步）：同样是独立视图 preload 的内部通道。
+  "mcode:document-view:slides-add-slide",
+  "mcode:document-view:slides-edit-text",
+  // 【ARC-007 P0】打开链：页面拉取/回执/替换守卫/dirty 上报 —— 全部由独立视图
+  // preload 直达，不进 `window.api` 面（渲染端/Agent 没有入口）。
+  "mcode:document-view:read-opened",
+  "mcode:document-view:open-committed",
+  "mcode:document-view:confirm-replace",
+  "mcode:document-view:close-check-result",
+  // 【ARC-007 P0】一次性字节响应走的是**自定义协议**（`protocol.handle`），
+  // 不是 ipcMain.handle；解析器把 `.handle("genoffice-docx-media")` 收成渠道，
+  // 但它没有 preload 调用方 —— 属于协议 handler，显式豁免并在此点名。
+  "genoffice-docx-media",
+]);
 
 const notSurfaced = [...mainChannels.keys()]
   .filter((ch) => !preloadInvoked.has(ch) && !mobileOnly.has(ch) && !pushChannels.has(ch)
