@@ -10,10 +10,15 @@
  *     属性总闸规则,且**未设置时**仍保留既有的 `prefers-reduced-motion` 块;
  *  4. 设置流水线接齐:契约键 → store 默认值/设置器 → appearance → 设置面板
  *     (源码断言,防"写了但没接");
- *  5. i18n zh/en 两套键都存在。
+ *  5. i18n zh/en 两套键都存在;
+ *  9. **动效 token 的消费侧**:四张共享浮层(Select/Tooltip/InfoHint/Dialog)
+ *     必须经 `duration-[var(--dur-*)]` / `ease-[var(--ease-*)]` 消费词表,
+ *     且用仓库真 tailwind.config.js 真编译一遍,证明类名真的产出 CSS 声明
+ *     （类存在 ≠ CSS 存在）,同时反向证明这四个文件不再产出裸毫秒规则。
  *
  * 变异验证:撤掉 `applyReduceMotion` 的属性写入 → 2 红;把 styles.css 的总闸
- * 改成只在媒体查询里 → 3 红。
+ * 改成只在媒体查询里 → 3 红。把 select.tsx 的 token 类改回 `duration-100`
+ * → 第 9 节红(源码断言 + 真编译反向正控)。
  *
  * Run: scripts/design-tokens-smoke/run.sh
  */
@@ -346,6 +351,84 @@ section("8. 【ARC-005】forced-colors 高对比层");
   const lastDot = rawAt >= 0 ? css.lastIndexOf(".chat-ledger-dot {", rawAt) : -1;
   check("★ forced-colors 块在被覆盖规则之后（源序前提）",
     rawAt >= 0 && lastBubble >= 0 && lastDot >= 0 && lastBubble < rawAt && lastDot < rawAt);
+}
+
+section("9. 【ARC-005】动效 token 的消费侧:四张共享浮层 + 真编译");
+{
+  // 改前事实(本片取证):styles.css 定义了 --dur-* / --ease-* 词表,但全渲染端
+  // `var(--dur` 出现 **0 次** —— token 只写不读。本节的判据分两层:
+  //   ① 源码层:四张共享浮层(每页都用)的揭示/弹窗过渡必须引用词表变量;
+  //   ② 编译层:用仓库**真** tailwind.config.js 真编译这四个文件,证明那些
+  //      任意值类真的产出 transition-duration/timing-function 声明 ——
+  //      "class 写在字符串里" ≠ "CSS 里有这条规则"(Tailwind 只产出它认识的类)。
+  // 反向正控:同一份编译产物里,这四个文件不得再产出裸毫秒规则;源码里也不得
+  // 再有 duration-<数字>。任何一条被改回裸毫秒,本节点红。
+  const primitives: { file: string; must: string[] }[] = [
+    { file: "src/renderer/components/ui/select.tsx",
+      must: ["duration-[var(--dur-snap)]", "ease-[var(--ease-out)]"] },
+    { file: "src/renderer/components/ui/tooltip.tsx",
+      must: ["duration-[var(--dur-snap)]", "ease-[var(--ease-out)]"] },
+    { file: "src/renderer/components/ui/info-hint.tsx",
+      must: ["duration-[var(--dur-snap)]", "ease-[var(--ease-out)]"] },
+    { file: "src/renderer/components/ui/dialog.tsx",
+      must: ["duration-[var(--dur-base)]", "ease-[var(--ease-pop)]"] },
+  ];
+  for (const { file, must } of primitives) {
+    const src = read(file);
+    for (const cls of must) {
+      check(`★ ${file.split("/").pop()} 引用 ${cls}`, src.includes(cls));
+    }
+    // 反向正控:该文件不得再出现裸毫秒时长类。用 "duration-" 后紧跟数字判定,
+    // 不误伤 duration-[var(--dur-*)];注释里也不许写(会误导后人 + 被 Tailwind
+    // 全文扫描后产出无用规则)。
+    const bare = src.match(/duration-[0-9]+/g);
+    check(`★ ${file.split("/").pop()} 不再有裸毫秒时长类`, bare === null, bare);
+  }
+
+  // 真编译:用 postcss + tailwindcss(仓库安装版本)对这四份源码跑一次
+  // utilities 生成。content 用 raw 注入 —— 与 UI 套件编译 styles.css 的机制
+  // 同源,但只看这四份文件的产出,足够回答"类名真的会变成声明吗"。
+  const { createRequire } = await import("node:module");
+  const { pathToFileURL } = await import("node:url");
+  const require = createRequire(join(root, "package.json"));
+  const postcss = require("postcss") as {
+    (plugins: unknown[]): { process: (css: string, opts: { from: undefined }) => Promise<{ css: string }> };
+  };
+  const tailwind = require("tailwindcss") as (cfg: unknown) => unknown;
+  // Windows 上绝对路径必须先转 file:// URL,直接 import("D:\\…") 会因 scheme
+  // 不被 ESM loader 接受而崩(ERR_UNSUPPORTED_ESM_URL_SCHEME)。
+  const cfg = (await import(pathToFileURL(join(root, "tailwind.config.js")).href)).default as Record<string, unknown>;
+  const raw = primitives.map(({ file }) => read(file)).join("\n");
+  const compiled = (
+    await postcss([tailwind({ ...cfg, content: [{ raw, extension: "tsx" }] })]).process(
+      "@tailwind utilities;",
+      { from: undefined },
+    )
+  ).css;
+
+  // Tailwind 任意值类在产物里的选择器形态:.duration-\[var\(--dur-snap\)\]
+  // —— `[` `(` `)` `]` 在 CSS 里各带一个反斜杠,按同一规则拼出字面选择器,
+  // 不做正则转义(两级转义叠在一起曾让这条断言永远假红)。
+  const selectorFor = (cls: string): string =>
+    "." + cls.replace(/[[\]()]/g, (ch) => "\\" + ch);
+  for (const { must } of primitives) {
+    for (const cls of must) {
+      check(`★ 真编译产出 .${cls}`, compiled.includes(selectorFor(cls) + " {"));
+    }
+  }
+  // 值真的指到词表(不是被 Tailwind 截成别的值)。
+  check(
+    "★ 编译产物的 duration 声明指向 var(--dur-*)",
+    /transition-duration:\s*var\(--dur-(snap|base)\)/.test(compiled),
+  );
+  check(
+    "★ 编译产物的 timing-function 指向 var(--ease-*)",
+    /transition-timing-function:\s*var\(--ease-(out|pop)\)/.test(compiled),
+  );
+  // 反向正控:同一份产物里不得出现裸毫秒规则(证明上面的正向断言不是"两个
+  // 类都在"造成的假绿)。
+  const bareRules = compiled.match(/^\.duration-[0-9]+/gm);
+  check("★ 四文件编译产物不再含裸毫秒规则", bareRules === null, bareRules);
 }
 
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);

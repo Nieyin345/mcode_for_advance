@@ -109,7 +109,10 @@ function SelectPopup({ className, ...props }: SelectPopupProps) {
       className={cn(
         "origin-top rounded-md border border-edge bg-surface py-1 shadow-lg",
         "data-[ending-style]:scale-y-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-y-95 data-[starting-style]:opacity-0",
-        "transition-[transform,opacity] duration-100",
+        // 【ARC-005】浮层揭示走动效词表（styles.css）：--dur-snap = 120ms「揭示」档，
+        // --ease-out = 标准出场曲线。不写裸毫秒类 —— 词表外的时长会在统一改
+        // token 时静默掉队（Tailwind 会扫描全文，注释里也别写旧类名）。
+        "transition-[transform,opacity] duration-[var(--dur-snap)] ease-[var(--ease-out)]",
         className,
       )}
       {...props}

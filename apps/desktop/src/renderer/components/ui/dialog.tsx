@@ -79,7 +79,10 @@ function DialogPopup({ className, ...props }: DialogPopupProps) {
         "fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2",
         "rounded-lg border border-edge bg-surface shadow-2xl",
         "data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
-        "transition-[transform,opacity] duration-150",
+        // 【ARC-005】弹窗进出场读动效词表：--dur-base = 200ms「默认」档，
+        // --ease-pop = 上游取证的回弹曲线（弹窗档）。旧值 150ms 是词表外的裸毫秒。
+        // 退场因 data-[ending-style] 同样生效。
+        "transition-[transform,opacity] duration-[var(--dur-base)] ease-[var(--ease-pop)]",
         className,
       )}
       {...props}

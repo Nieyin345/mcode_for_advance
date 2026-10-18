@@ -88,7 +88,9 @@ function TooltipPopup({ className, ...props }: TooltipPopupProps) {
         "max-w-xs rounded-md border border-edge bg-surface px-2.5 py-2 text-[11px] text-content shadow-lg",
         "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
         "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
-        "origin-[var(--transform-origin)] transition-[transform,opacity] duration-100",
+        // 【ARC-005】揭示时长/曲线读动效词表（--dur-snap「揭示」档 + --ease-out），
+        // 不写裸毫秒类（Tailwind 扫描全文，注释里也别写旧类名）。
+        "origin-[var(--transform-origin)] transition-[transform,opacity] duration-[var(--dur-snap)] ease-[var(--ease-out)]",
         className,
       )}
       {...props}

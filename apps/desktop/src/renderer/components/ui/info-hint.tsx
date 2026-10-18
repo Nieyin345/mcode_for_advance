@@ -65,7 +65,8 @@ export function InfoHint({ children, size = 13, side = "top", className, label }
               "text-[12px] leading-relaxed text-content-muted shadow-lg",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
-              "origin-[var(--transform-origin)] transition-[transform,opacity] duration-100",
+              // 【ARC-005】同 Tooltip.Popup：揭示时序读动效词表。
+              "origin-[var(--transform-origin)] transition-[transform,opacity] duration-[var(--dur-snap)] ease-[var(--ease-out)]",
             )}
           >
             {typeof children === "string" ? renderInline(children) : children}
