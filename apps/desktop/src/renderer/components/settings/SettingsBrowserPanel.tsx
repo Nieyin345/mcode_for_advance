@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -210,31 +210,33 @@ export function PersistLoginRow() {
   const s = useSettingValue(BROWSER_PERSIST_LOGIN_SETTING_KEY);
   const [error, setError] = useState<string | null>(null);
   const [vault, setVault] = useState<BrowserVaultStatus | null>(null);
+  /** 读保管库状态失败的原因。从前 catch 静默吞掉 —— vault 停在 null,
+   *  「加密不可用 → 不会保存 Cookie」那条警告也就无从核实(硬规矩 3)。 */
+  const [vaultError, setVaultError] = useState<string | null>(null);
   const enabled = s.ready ? s.value !== "0" : true;
+
+  const loadVault = useCallback(async (): Promise<void> => {
+    try {
+      setVault(await api.browser.vaultStatus());
+      setVaultError(null);
+    } catch (err) {
+      // 状态读不到不阻塞这一行 —— 主区功能(开关)照常可用;但必须说出来:
+      // 读不到就无法确认"加密不可用、本次不保存 Cookie"这条警告是否成立。
+      setVaultError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
 
   useEffect(() => {
     if (!s.ready) return;
-    void (async () => {
-      try {
-        setVault(await api.browser.vaultStatus());
-      } catch {
-        // 状态读不到不阻塞这一行 —— 主区功能(开关)照常可用。
-      }
-    })();
-  }, [s.ready]);
+    void loadVault();
+  }, [s.ready, loadVault]);
 
   const toggle = async (checked: boolean) => {
     setError(null);
     // 写失败时 hook 的值不动(未落盘的值不发布)—— 开关从 `s.value` 派生,自动回弹。
     const ok = await s.save(checked ? "1" : "0");
     if (!ok && s.error === null) setError(t("settings.saveFailed"));
-    if (ok) {
-      try {
-        setVault(await api.browser.vaultStatus());
-      } catch {
-        /* 状态刷新失败不影响开关本身 */
-      }
-    }
+    if (ok) void loadVault();
   };
 
   return (
@@ -249,6 +251,21 @@ export function PersistLoginRow() {
             <div className="mt-1 rounded border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] leading-relaxed text-warning">
               {t("settings.browser.vaultEncryptionUnavailable")}
             </div>
+          )}
+          {/* 保管库状态读不到 → 说清楚(上面那条警告是否成立未知),带重试。
+              复用通用的「读取失败 + 原因」形态,不新增文案(这一行同时至多只有
+              一条读错误,两种读互斥:设置没读成功时保管库状态根本不发请求)。 */}
+          {vaultError !== null && (
+            <ErrorNote title={t("settings.loadFailed")} className="mt-1">
+              {vaultError}
+              <button
+                type="button"
+                onClick={() => void loadVault()}
+                className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
+              >
+                {t("common.retry")}
+              </button>
+            </ErrorNote>
           )}
           {vault?.plaintextErased && (
             <div className="mt-1 text-[11px] leading-relaxed text-content-subtle">

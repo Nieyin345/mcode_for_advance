@@ -261,5 +261,28 @@ console.log("\n【MC-047】登录开关:读成功 → 可切换");
   check("读取到 1 → checked=true", sw?.props.checked === true, sw?.props.checked);
 }
 
+/* ───────────── ⑩ 登录开关:保管库状态读失败显式 + 重试重发 ───────────── */
+
+console.log("\n【M25】登录开关:凭据保管库状态读失败 → 错误行 + 重试,开关照常可用");
+{
+  stub.resetApiStub();
+  stub.seedSetting(BROWSER_PERSIST_LOGIN_SETTING_KEY, "1");
+  stub.failNextVaultStatus("AUDIT_FAKE_VAULT_REJECTION");
+  __mount(() => PersistLoginRow());
+  await __flush();
+  check("★ 保管库状态读失败时出现错误行(不再静默)", hasErrorRow(), hasErrorRow());
+  check("★ 保管库状态读失败时给出「重试」入口", hasRetryButton(), hasRetryButton());
+  const sw = deepNodes().find((n) => isSwitchNode(n));
+  check("★ 保管库状态读失败不阻塞开关(设置本身已读成功即可用)", sw?.props.disabled === false, sw?.props.disabled);
+  // 点「重试」真的重发 browser.vaultStatus:计数 +1、错误行消失。
+  const before = stub.vaultStatusCalls();
+  const retry = buttonByText("重试");
+  (retry?.props.onClick as (() => void) | undefined)?.();
+  await __flush();
+  check("★ 点「重试」确实重发了 browser.vaultStatus",
+    stub.vaultStatusCalls() === before + 1, { before, after: stub.vaultStatusCalls() });
+  check("★ 重试成功后保管库错误行消失", !hasErrorRow(), hasErrorRow());
+}
+
 console.log(`\nsettings-form-lifecycle-smoke:${checks - failures}/${checks} 通过`);
 process.exit(failures === 0 ? 0 : 1);

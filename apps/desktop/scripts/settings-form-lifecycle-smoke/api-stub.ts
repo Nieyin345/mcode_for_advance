@@ -14,6 +14,8 @@ const gets: string[] = [];
 const sets: Array<{ key: string; value: string }> = [];
 const failGetKeys = new Map<string, string>();
 const failSetKeys = new Map<string, string>();
+const vaultFailures: string[] = [];
+let vaultCalls = 0;
 
 export function seedSetting(key: string, value: string): void {
   values.set(key, value);
@@ -23,6 +25,13 @@ export function failNextGetFor(key: string, message: string): void {
 }
 export function failNextSetFor(key: string, message: string): void {
   failSetKeys.set(key, message);
+}
+/** 下一次 `browser.vaultStatus()` 失败(之后恢复成功)。 */
+export function failNextVaultStatus(message: string): void {
+  vaultFailures.push(message);
+}
+export function vaultStatusCalls(): number {
+  return vaultCalls;
 }
 export function getCalls(): string[] {
   return [...gets];
@@ -39,6 +48,8 @@ export function resetApiStub(): void {
   sets.length = 0;
   failGetKeys.clear();
   failSetKeys.clear();
+  vaultFailures.length = 0;
+  vaultCalls = 0;
 }
 
 export const api = {
@@ -64,6 +75,20 @@ export const api = {
     },
   },
   pickFolder: (): Promise<{ path: string }> => Promise.resolve({ path: "" }),
+  browser: {
+    vaultStatus(): Promise<unknown> {
+      vaultCalls += 1;
+      const failure = vaultFailures.shift();
+      if (failure !== undefined) return Promise.reject(new Error(failure));
+      return Promise.resolve({
+        encryptionAvailable: true,
+        persistLogin: true,
+        savedCount: 0,
+        plaintextErased: false,
+        lastError: null,
+      });
+    },
+  },
 };
 
 /** 递归空壳:`api.browser.vaultStatus()` / `api.whatever.deep.call()` 都能解析并
@@ -82,6 +107,7 @@ export default new Proxy({} as Record<string, unknown>, {
   get(_t, prop) {
     if (prop === "setting") return api.setting;
     if (prop === "pickFolder") return api.pickFolder;
+    if (prop === "browser") return api.browser;
     if (typeof prop !== "string") return undefined;
     return shell(prop);
   },

@@ -386,7 +386,18 @@ export function HooksPanel() {
       {(problems.length > 0 || listError !== null || fileHealth === "corrupt" || fileHealth === "read_error" || rebuildBackup !== null) && (
         <ErrorNote tone={fileHealth === "corrupt" || fileHealth === "read_error" ? "danger" : "warning"} icon={IconAlertTriangle} className="mb-3">
           {listError !== null ? (
-            <div>{t("settings.hooks.loadFailed", { error: listError })}</div>
+            /* 读失败必须有**重试**入口:从前只有一句横幅,想再读一次只能去保存/
+               切换别的钩子,借那些操作间接重拉 —— 用户看不出"再试一次"这条路径。 */
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">{t("settings.hooks.loadFailed", { error: listError })}</div>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="shrink-0 rounded border border-current px-2 py-0.5 hover:bg-surface-hover/60"
+              >
+                {t("common.retry")}
+              </button>
+            </div>
           ) : null}
           {/* 【MC-051】整份文件损坏:普通保存会被拒(保住原字节),必须显式重建。 */}
           {(fileHealth === "corrupt" || fileHealth === "read_error") && (
@@ -422,7 +433,9 @@ export function HooksPanel() {
           title={t("settings.hooks.listTitle")}
           count={hooks?.length}
           loading={hooks === null}
-          isEmpty={!hooks || hooks.length === 0}
+          // 读失败 ≠ 一条都没有(`catch` 里 hooks 落成 `[]`):横幅已经说了原因,
+          // 下面再画「还没有钩子。」就是替一次读取失败撒谎(与记录栏同一判据)。
+          isEmpty={(!hooks || hooks.length === 0) && listError === null}
           empty={t("settings.hooks.listEmpty")}
         >
           {hooks?.map((hook) => (

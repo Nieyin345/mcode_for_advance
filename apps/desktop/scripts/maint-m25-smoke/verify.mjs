@@ -416,6 +416,10 @@ await withAuditPage(dir,async(page)=>{
     window.labApi.hooks = {
       list: async () => {
         window.labCalls.push(['hooks.list']);
+        if (window.labMode.hooksList === 'reject') throw new Error('mock-hooks-list-rejected');
+        if (window.labMode.hooksList === 'one') return {hooks:[{
+          id:'h1',name:'自动格式化',event:'turn.files',command:'prettier --check .',enabled:true,
+        }],problems:[],fileHealth:'valid'};
         return {hooks:[],problems:[],fileHealth:'valid'};
       },
       runs: async () => {
@@ -429,6 +433,7 @@ await withAuditPage(dir,async(page)=>{
       },
     };
     window.labMode.hooksRuns = 'empty';
+    window.labMode.hooksList = 'empty';
   })()`);
 
   // I0 基线:读成功且真的没有记录 → 两栏各自的空态、无错误横幅。
@@ -471,6 +476,52 @@ await withAuditPage(dir,async(page)=>{
   check('I2b 重试确实重新发了 hooks.runs 请求',
     (await page.eval(`window.labCalls.filter(c=>c[0]==='hooks.runs').length`))>=3,
     {calls:await page.eval(`window.labCalls.filter(c=>c[0]==='hooks.runs')`)});
+
+  /* ───────────── J. HooksPanel:hooks.list 读失败要有「重试」 ───────────── */
+  // `hooks.list` 失败已有 `listError` 横幅(不重做),但没有重试入口 —— 用户只能去
+  // 保存/开关别的东西,借那些操作顺带重拉。判据:失败态横幅里有「重试」;点它真的
+  // 重新发 `hooks.list`,恢复后钩子行回来、横幅消失。
+  //
+  // 只断言真实钩子行而不是空态文案 —— 修复前挂载本来就会把空态画出来,只看
+  // "空态消失"会假绿。重试钮按**所在横幅**定位(`hooks.list` 的失败横幅是
+  // warning 色 → `role=status`),不点页头/记录栏的其它按钮;本段 runs 恒为成功,
+  // 记录栏不会有自己的重试钮混进来。
+  await page.eval(`window.labUnhandled.length=0;window.labMode.hooksList='reject';`);
+  await page.eval(`window.__mount('hooks');`);
+  await page.waitFor(`document.getElementById('root').textContent.includes('钩子读不出来')`,5000).catch(()=>{});
+  await sleep(300);
+  const hlFail = await page.eval(`document.getElementById('root').textContent`);
+  check('J1 ★ hooks.list 读取失败:错误标题与原因对用户可见',
+    hlFail.includes('钩子读不出来') && hlFail.includes('mock-hooks-list-rejected'),
+    {text:hlFail});
+  check('J1b ★ hooks.list 读取失败:不伪装成「还没有钩子。」(空表)',
+    !hlFail.includes('还没有钩子。'), {text:hlFail});
+  check('J2 ★ hooks.list 读取失败时给出「重试」钮(与错误横幅同处)',
+    await page.eval(`(()=>{
+      const note=[...document.querySelectorAll('#root [role=alert],#root [role=status]')].find(n=>n.textContent.includes('钩子读不出来'));
+      return !!note && [...note.querySelectorAll('button')].some(b=>b.textContent.trim()==='重试');
+    })()`));
+  check('J3 hooks.list 读取失败不落成未处理 promise 拒绝',
+    (await page.eval('window.labUnhandled.length'))===0,
+    {unhandled:await page.eval('window.labUnhandled')});
+
+  // J4 点「重试」真的重发 hooks.list → 钩子行回来、错误横幅消失。
+  // 计数要在点击**前**取:前面 I/J 段已挂载过几次,绝对值 >=3 在没点重试时也成立。
+  const hlCallsBefore = await page.eval(`window.labCalls.filter(c=>c[0]==='hooks.list').length`);
+  await page.eval(`window.labMode.hooksList='one';`);
+  await page.eval(`(()=>{
+    const note=[...document.querySelectorAll('#root [role=alert],#root [role=status]')].find(n=>n.textContent.includes('钩子读不出来'));
+    const btn=note&&[...note.querySelectorAll('button')].find(b=>b.textContent.trim()==='重试');
+    if(btn)btn.click();
+  })()`);
+  await sleep(450);
+  const hlOk = await page.eval(`document.getElementById('root').textContent`);
+  check('J4a ★ 点「重试」后钩子列表读到、错误横幅消失',
+    hlOk.includes('自动格式化') && !hlOk.includes('钩子读不出来'), {text:hlOk});
+  check('J4b 重试确实重新发了 hooks.list 请求',
+    (await page.eval(`window.labCalls.filter(c=>c[0]==='hooks.list').length`))>hlCallsBefore,
+    {before:hlCallsBefore,calls:await page.eval(`window.labCalls.filter(c=>c[0]==='hooks.list')`)});
+  await page.eval(`window.labMode.hooksList='empty';`);
 
   /* ───────────── C. GeneralPanel:阈值输入的草稿保持 ───────────── */
   await page.eval(`window.__mount('general')`);
