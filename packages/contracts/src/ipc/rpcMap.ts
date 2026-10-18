@@ -1,6 +1,16 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
 import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult, SceneResumeInput, SceneResumeIpcResult, SceneDeploymentListInput, SceneDeploymentListIpcResult } from "./scene.js";
 import type { DocumentReadInput, DocumentEditInput, DocumentConvertInput, DocumentIpcResult, DocumentCapabilities } from "./document.js";
+import {
+  DOCUMENT_VIEW_OPEN_CHANNEL,
+  DOCUMENT_VIEW_BOUNDS_CHANNEL,
+  DOCUMENT_VIEW_SHOW_CHANNEL,
+  DOCUMENT_VIEW_HIDE_CHANNEL,
+  DOCUMENT_VIEW_FOCUS_CHANNEL,
+  DOCUMENT_VIEW_CLOSE_CHANNEL,
+  DOCUMENT_VIEW_LIST_CHANNEL,
+} from "./documentView.js";
+import type { DocViewOpenInput, DocViewBoundsInput, DocViewCloseInput, DocViewResult, DocViewListResult } from "./documentView.js";
 import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult, UnattendedListIpcResult, UnattendedResumeInput, UnattendedAbandonInput, UnattendedAbandonIpcResult } from "./unattended.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
@@ -76,7 +86,7 @@ import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, Skil
   SkillsProjectOverviewInput, SkillsProjectOverviewResult,
   ProviderInfo, OutputStyleListInput, OutputStyleEntry,
   SkillMarketState, SkillsMarketListInput, SkillsMarketAddInput, SkillsMarketNameInput, SkillsMarketInstallInput, SkillsMarketInstallResult } from "./skills.js";
-import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult, McpMarketSource, McpMarketSourcesInput, McpMarketSourceAddInput, McpMarketSourceRemoveInput, McpMarketSearchInput, McpMarketSearchResult } from "./mcp.js";
+import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpGenofficeInstallInput, McpGenofficeInstallResult, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult, McpMarketSource, McpMarketSourcesInput, McpMarketSourceAddInput, McpMarketSourceRemoveInput, McpMarketSearchInput, McpMarketSearchResult } from "./mcp.js";
 import type { AgentSshListInput, AgentSshPendingHost, AgentSshTrustedHost, AgentSshApproveInput, AgentSshHostPortInput } from "./agentSsh.js";
 import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
@@ -714,6 +724,11 @@ export interface RpcMap {
   "mcp.unauthorize": (input: McpUnauthorizeInput) => Promise<{ ok: boolean; error?: string }>;
   /** Add a user-scope server (writes into ~/.mcode/.claude.json). */
   "mcp.save": (input: McpSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Install the bundled GenOffice document tool as a user-scope stdio MCP
+   *  server. The workspace-root fence (`GENOFFICE_ALLOWED_ROOTS`) is computed
+   *  from every known root at call time; an empty root set is refused (unset
+   *  fence = unrestricted). Re-run with `replace` to refresh the snapshot. */
+  "mcp.genofficeInstall": (input: McpGenofficeInstallInput) => Promise<McpGenofficeInstallResult>;
   /** Remove a user-scope server (from both the config file and the stash). */
   "mcp.remove": (input: McpRemoveInput) => Promise<{ ok: boolean; error?: string }>;
   /** Scan the local Claude CLI config (~/.claude.json) for servers available
@@ -1101,6 +1116,20 @@ export interface RpcMap {
   "document.convert": (input: DocumentConvertInput) => Promise<DocumentIpcResult>;
   /** 【ARC-007】报告本机文档能力(CLI 在不在、哪些路由需要 headless 宿主/原生 sidecar)。 */
   "document.capabilities": () => Promise<DocumentCapabilities>;
+  /** 【ARC-007】受控文档视图宿主的打开/复用:一个 docId 一个 WebContentsView。URL 只放行 `file://` 与本机回环(主进程复核,fail-closed);同 docId 重复 open 复用视图并更新 url/bounds。 */
+  "documentView.open": (input: DocViewOpenInput) => Promise<DocViewResult>;
+  /** 【ARC-007】只改文档视图几何(窗口像素矩形)。视图隐藏时记住新几何,show 时恢复。 */
+  "documentView.bounds": (input: DocViewBoundsInput) => Promise<DocViewResult>;
+  /** 【ARC-007】显示文档视图:重新挂到窗口并恢复最后几何。已可见时幂等。 */
+  "documentView.show": (input: DocViewCloseInput) => Promise<DocViewResult>;
+  /** 【ARC-007】隐藏文档视图(移出屏幕、**不销毁** —— 切标签保住编辑状态)。 */
+  "documentView.hide": (input: DocViewCloseInput) => Promise<DocViewResult>;
+  /** 【ARC-007】把键盘焦点交给文档视图的页面。 */
+  "documentView.focus": (input: DocViewCloseInput) => Promise<DocViewResult>;
+  /** 【ARC-007】销毁文档视图。不存在时幂等成功。 */
+  "documentView.close": (input: DocViewCloseInput) => Promise<DocViewResult>;
+  /** 【ARC-007】文档视图状态快照(诊断用,只读;不含 webContents 句柄)。 */
+  "documentView.list": () => Promise<DocViewListResult>;
   /** 【MC-059】**用户签发无人值守任务计划的计划级授权** —— 用户在无人值守计划预览页点「批准」的落点。宿主把一份有界操作序列(`session.create`)铸成一枚绑定目标项目权威路径、签发主体(**写死为 user**)、有效期、次数上限的计划级授权。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(批准主体必须是用户本人);手机端 `webApi.ts` 显式 unsupported。 */
   "unattended.approve": (input: UnattendedApproveInput) => Promise<UnattendedApproveResult>;
   /** 【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。 */
@@ -1921,6 +1950,8 @@ export const IPC = {
   MCP_AUTHORIZE: "mcp:authorize",
   MCP_UNAUTHORIZE: "mcp:unauthorize",
   MCP_SAVE: "mcp:save",
+  // 一键安装随仓库快照的 GenOffice 文档工具(设置 → MCP 的「安装」卡片)。
+  MCP_GENOFFICE_INSTALL: "mcp:genofficeInstall",
   MCP_REMOVE: "mcp:remove",
   MCP_SCAN_IMPORT: "mcp:scanImport",
   MCP_IMPORT: "mcp:import",
@@ -2052,6 +2083,15 @@ export const IPC = {
   DOCUMENT_EDIT: "document:edit",
   DOCUMENT_CONVERT: "document:convert",
   DOCUMENT_CAPABILITIES: "document:capabilities",
+  // 【ARC-007】受控文档视图宿主(WebContentsView)。渠道字符串本体钉在
+  // `./documentView.js` 的 `DOCUMENT_VIEW_*_CHANNEL` 常量上,这里只取值。
+  DOCUMENT_VIEW_OPEN: DOCUMENT_VIEW_OPEN_CHANNEL,
+  DOCUMENT_VIEW_BOUNDS: DOCUMENT_VIEW_BOUNDS_CHANNEL,
+  DOCUMENT_VIEW_SHOW: DOCUMENT_VIEW_SHOW_CHANNEL,
+  DOCUMENT_VIEW_HIDE: DOCUMENT_VIEW_HIDE_CHANNEL,
+  DOCUMENT_VIEW_FOCUS: DOCUMENT_VIEW_FOCUS_CHANNEL,
+  DOCUMENT_VIEW_CLOSE: DOCUMENT_VIEW_CLOSE_CHANNEL,
+  DOCUMENT_VIEW_LIST: DOCUMENT_VIEW_LIST_CHANNEL,
   UNATTENDED_APPROVE: "unattended:approve",
   UNATTENDED_RUN: "unattended:run",
   UNATTENDED_PLANS_LIST: "unattendedPlans:list",

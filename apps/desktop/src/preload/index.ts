@@ -713,6 +713,8 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_UNAUTHORIZE, input)) as RpcMap["mcp.unauthorize"],
     save: ((input) =>
       ipcRenderer.invoke(IPC.MCP_SAVE, input)) as RpcMap["mcp.save"],
+    genofficeInstall: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_GENOFFICE_INSTALL, input)) as RpcMap["mcp.genofficeInstall"],
     remove: ((input) =>
       ipcRenderer.invoke(IPC.MCP_REMOVE, input)) as RpcMap["mcp.remove"],
     scanImport: ((input) =>
@@ -1019,6 +1021,17 @@ const api = {
     edit: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_EDIT, input)) as RpcMap["document.edit"],
     convert: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_CONVERT, input)) as RpcMap["document.convert"],
     capabilities: (() => ipcRenderer.invoke(IPC.DOCUMENT_CAPABILITIES)) as RpcMap["document.capabilities"],
+  },
+  // 【ARC-007】受控文档视图宿主(GenOffice 编辑器页的 WebContentsView)。
+  // 渲染端只拿 docId 与像素 bounds；URL 白名单、安全开关、生命周期全在主进程。
+  documentView: {
+    open: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_OPEN, input)) as RpcMap["documentView.open"],
+    bounds: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_BOUNDS, input)) as RpcMap["documentView.bounds"],
+    show: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_SHOW, input)) as RpcMap["documentView.show"],
+    hide: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_HIDE, input)) as RpcMap["documentView.hide"],
+    focus: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_FOCUS, input)) as RpcMap["documentView.focus"],
+    close: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_CLOSE, input)) as RpcMap["documentView.close"],
+    list: (() => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_LIST)) as RpcMap["documentView.list"],
   },
   unattended: {
     // 无人值守任务计划:用户签发计划级授权 + 正式执行。**只有桌面渲染端**够得到

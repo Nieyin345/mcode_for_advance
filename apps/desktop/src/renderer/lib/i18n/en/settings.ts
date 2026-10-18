@@ -681,6 +681,13 @@ export const en = {
   "settings.mcp.managedFileNote": "Note: Mcode owns the mcpServers object in ~/.mcode/.claude.json (every change rewrites that key from the enable + per-engine state below). Add and remove servers here; a server hand-added to that object in the file will be overwritten on the next materialization.",
   "settings.mcp.userEmpty1": "No user-level servers.",
   "settings.mcp.userEmpty2": "Use \"Add\" or \"Import from Claude CLI\" below.",
+  // ── GenOffice document tool (one-click install) ──
+  "settings.mcp.genofficeTitle": "GenOffice document tool",
+  "settings.mcp.genofficeInstallDesc": "Installs the GenOffice document capability built from the repo snapshot as an MCP server (structured read/write for Word / PPT / Excel). The path fence is generated from the workspace roots at the moment you click; projects created later need another \"Reinstall\" to be included.",
+  "settings.mcp.genofficeInstall": "Install GenOffice document tool",
+  "settings.mcp.genofficeReinstall": "Reinstall (refresh workspace roots)",
+  "settings.mcp.genofficeInstallSuccess": "Installed \"{name}\": the fence covers {n} workspace roots; effective from the next turn.",
+  "settings.mcp.genofficeInstallFailed": "Install failed: {reason}",
   "settings.mcp.toggleOn": "Enable {name}",
   "settings.mcp.toggleOff": "Disable {name}",
   "settings.mcp.engines": "Engines",

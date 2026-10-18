@@ -1,0 +1,101 @@
+/**
+ * 【ARC-007】**受控文档视图宿主（WebContentsView）** 的 IPC 契约。
+ *
+ * ## 它是什么
+ *
+ * GenOffice 的编辑器页面（Docs/Sheets/Slides/Markdown/PDF）在 Mcode 里不是 React 组件，
+ * 而是一个叠在主窗口上的 OS 级视图（与浏览器面板同一种载体，语义不同）。渲染端只拿
+ * 一个 `docId`，量好占位矩形后把像素 bounds 发下来；视图的创建/定位/显隐/销毁全在主进程
+ * （`main/document/documentViewHost.ts`）。这一份是那条边界的**唯一**形状来源。
+ *
+ * ## 为什么 URL 校验写进契约注释（真正的闸在主进程）
+ *
+ * 台账 ARC-007 的判据是「CSP 自限、离线自足」：文档视图**不加载远程内容**。这里的
+ * schema 只保证"字段类型对"，**不**做 URL 白名单 —— 白名单必须由主进程逐次复核，
+ * 因为渲染端/Agent 递进来的字符串一律不可信（与路径围栏同一条纪律）。主进程只放行
+ * `file://`（repo 内 GenOffice 快照的编辑器页）与本机回环 `http(s)://127.0.0.1|localhost`，
+ * 其余一律 fail-closed。
+ *
+ * ## bounds 为什么钉成整数并封顶
+ *
+ * 这些数字直接进 `WebContentsView.setBounds()`，是 OS 层的像素矩形。小数会让
+ * Electron 的 DIP 换算出现半像素抖动；负数/0 尺寸是一个不可见的视图（用户以为
+ * "打开失败了"）；超大值是渲染端算错时最可能的形状，放任它会分配一块巨大的合成面。
+ * 16384 对 8K 屏也绰绰有余，超过它基本可以确定是 bug 而不是真实布局。
+ */
+import { z } from "zod";
+
+/* ── 通道常量 ──
+ * 字符串本体钉在这里（与 `_CHANNEL` 系列同一种写法），IPC 表只引用、不重写第二份 ——
+ * 改一处而另一处静默漂移是这套表最典型的坏法。 */
+export const DOCUMENT_VIEW_OPEN_CHANNEL = "documentView:open";
+export const DOCUMENT_VIEW_BOUNDS_CHANNEL = "documentView:bounds";
+export const DOCUMENT_VIEW_SHOW_CHANNEL = "documentView:show";
+export const DOCUMENT_VIEW_HIDE_CHANNEL = "documentView:hide";
+export const DOCUMENT_VIEW_FOCUS_CHANNEL = "documentView:focus";
+export const DOCUMENT_VIEW_CLOSE_CHANNEL = "documentView:close";
+export const DOCUMENT_VIEW_LIST_CHANNEL = "documentView:list";
+
+/** `docId` 由宿主（未来的 DocumentSessionRegistry）分配；这里只限形状，不猜来源。 */
+const DocIdSchema = z.string().min(1).max(200);
+
+/** 窗口坐标系（DIP）里的像素矩形，与 `BrowserRect` 同一空间。 */
+export const DocViewRectSchema = z.object({
+  x: z.number().int().min(0).max(16384),
+  y: z.number().int().min(0).max(16384),
+  width: z.number().int().min(1).max(16384),
+  height: z.number().int().min(1).max(16384),
+});
+export type DocViewRect = z.infer<typeof DocViewRectSchema>;
+
+/**
+ * `documentView:open` 的入参。
+ *
+ * `visible=false` 也合法（提前建好视图、等面板真正展开再 show）—— 隐藏视图保活是
+ * 文档面板切标签时不丢编辑状态的机制，不是可选优化。
+ */
+export const DocViewOpenSchema = z.object({
+  docId: DocIdSchema,
+  /** `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。 */
+  url: z.string().min(1).max(4096),
+  bounds: DocViewRectSchema,
+  visible: z.boolean(),
+});
+export type DocViewOpenInput = z.infer<typeof DocViewOpenSchema>;
+
+/** `documentView:bounds` 的入参：只改几何，不动 URL/可见性。 */
+export const DocViewBoundsSchema = z.object({
+  docId: DocIdSchema,
+  bounds: DocViewRectSchema,
+});
+export type DocViewBoundsInput = z.infer<typeof DocViewBoundsSchema>;
+
+/** 只带 `docId` 的输入：show / hide / focus / close 四者同形，各写一份没有信息量。 */
+export const DocViewDocIdSchema = z.object({ docId: DocIdSchema });
+/** `close` 的契约名（任务书点名的 schema）；与 show/hide/focus 用的是同一份形状。 */
+export const DocViewCloseSchema = DocViewDocIdSchema;
+export type DocViewCloseInput = z.infer<typeof DocViewCloseSchema>;
+
+/**
+ * 一次视图操作的结果。`reason` 是**给人/模型看的句子**（拒绝 URL、主窗口未就绪、
+ * docId 不存在……），不是异常原文 —— 与 browser 域的 `{ok,error}` 同一条取向。
+ */
+export type DocViewResult = { ok: true } | { ok: false; reason: string };
+
+/** `documentView:list` 的一条状态快照（只读、诊断用；不含 webContents id 等内部句柄）。 */
+export interface DocViewSnapshot {
+  docId: string;
+  /** 最近一次成功 open 的 URL（可能已经 await 过导航）。 */
+  url: string;
+  visible: boolean;
+  bounds: DocViewRect;
+}
+
+/**
+ * `documentView:list` 的返回。包一层对象而不是裸数组：`app_api_describe` 的清单
+ * 对裸数组类型会摊成 `length/toString/...` 的数组原型字段（实测），agent 读不出
+ * "这里面有什么" —— 包成具名字段后清单里直接可见 `views: DocViewSnapshot[]`。
+ */
+export interface DocViewListResult {
+  views: DocViewSnapshot[];
+}

@@ -610,15 +610,15 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【ARC-007】格式转换(输出路径同样过围栏)。",
   "input": "{ to: string; inputPath: string; outputPath: string // 输出路径；必须同样落在已知工作区内。; force?: boolean | undefined }",
   "inputFull": "{ to: string; inputPath: string; outputPath: string // 输出路径；必须同样落在已知工作区内。; force?: boolean | undefined }",
-  "output": "{ ok: true; command: string; summary: string | null; detail: unknown } | { ok: false; kind: 'failed' | 'unavailable' | 'refused'; reason: string; code?: string | number | undefined }"
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'failed' | 'unavailable' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
  },
  {
   "method": "document.edit",
   "channel": "document:edit",
   "doc": "【ARC-007】按 GenOffice ops 编辑并保存。`dryRun` 只演练。路径同样过工作区围栏。",
-  "input": "{ filePath: string; ops: unknown[] // GenOffice 的 ops 数组（形状由 CLI 校验；CAS 见计划 B.2）。; dryRun?: boolean | undefined // 只演练不写盘。; track?: boolean | undefined // docx：把内容编辑记成修订。 }",
-  "inputFull": "{ filePath: string; ops: unknown[] // GenOffice 的 ops 数组（形状由 CLI 校验；CAS 见计划 B.2）。; dryRun?: boolean | undefined // 只演练不写盘。; track?: boolean | undefined // docx：把内容编辑记成修订。 }",
-  "output": "{ ok: true; command: string; summary: string | null; detail: unknown } | { ok: false; kind: 'failed' | 'unavailable' | 'refused'; reason: string; code?: string | number | undefined }"
+  "input": "{ filePath: string; ops: unknown[] // GenOffice 的 ops 数组（形状由 CLI 校验）。; expectedRevision?: string | undefined // 【ARC-007】**原值版本检查** —— 与 `file.writeFile` 的 `expectedVersion` 同一算法 （原始字节的 sha256，见 `fileC…; dryRun?: boolean | undefined // 只演练不写盘。; track?: boolean | undefined // docx：把内容编辑记成修订。 }",
+  "inputFull": "{ filePath: string; ops: unknown[] // GenOffice 的 ops 数组（形状由 CLI 校验）。; expectedRevision?: string | undefined // 【ARC-007】**原值版本检查** —— 与 `file.writeFile` 的 `expectedVersion` 同一算法 （原始字节的 sha256，见 `fileC…; dryRun?: boolean | undefined // 只演练不写盘。; track?: boolean | undefined // docx：把内容编辑记成修订。 }",
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'failed' | 'unavailable' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
  },
  {
   "method": "document.read",
@@ -626,7 +626,63 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【ARC-007】读文档结构(docx 块 / pptx 页 / xlsx 表)。**只读**,路径必须落在已知工作区内。",
   "input": "{ filePath: string // 绝对路径；必须落在某个已知工作区根内（主进程复核，不采信调用方）。; full?: boolean | undefined // 仅 docx 有效：返回全文而非预览。; range?: string | undefined // 仅 docx 有效：块索引范围（CLI 语法 `a-b`）。 }",
   "inputFull": "{ filePath: string // 绝对路径；必须落在某个已知工作区根内（主进程复核，不采信调用方）。; full?: boolean | undefined // 仅 docx 有效：返回全文而非预览。; range?: string | undefined // 仅 docx 有效：块索引范围（CLI 语法 `a-b`）。 }",
-  "output": "{ ok: true; command: string; summary: string | null; detail: unknown } | { ok: false; kind: 'failed' | 'unavailable' | 'refused'; reason: string; code?: string | number | undefined }"
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'failed' | 'unavailable' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
+ },
+ {
+  "method": "documentView.bounds",
+  "channel": "documentView:bounds",
+  "doc": "【ARC-007】只改文档视图几何(窗口像素矩形)。视图隐藏时记住新几何,show 时恢复。",
+  "input": "{ docId: string; bounds: { x: number; y: number; width: number; height: number; } }",
+  "inputFull": "{ docId: string; bounds: { x: number; y: number; width: number; height: number; } }",
+  "output": "{ ok: true } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.close",
+  "channel": "documentView:close",
+  "doc": "【ARC-007】销毁文档视图。不存在时幂等成功。",
+  "input": "{ docId: string }",
+  "inputFull": "{ docId: string }",
+  "output": "{ ok: true } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.focus",
+  "channel": "documentView:focus",
+  "doc": "【ARC-007】把键盘焦点交给文档视图的页面。",
+  "input": "{ docId: string }",
+  "inputFull": "{ docId: string }",
+  "output": "{ ok: true } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.hide",
+  "channel": "documentView:hide",
+  "doc": "【ARC-007】隐藏文档视图(移出屏幕、**不销毁** —— 切标签保住编辑状态)。",
+  "input": "{ docId: string }",
+  "inputFull": "{ docId: string }",
+  "output": "{ ok: true } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.list",
+  "channel": "documentView:list",
+  "doc": "【ARC-007】文档视图状态快照(诊断用,只读;不含 webContents 句柄)。",
+  "input": "(无参数)",
+  "inputFull": "(无参数)",
+  "output": "{ views: DocViewSnapshot[] }"
+ },
+ {
+  "method": "documentView.open",
+  "channel": "documentView:open",
+  "doc": "【ARC-007】受控文档视图宿主的打开/复用:一个 docId 一个 WebContentsView。URL 只放行 `file://` 与本机回环(主进程复核,fail-closed);同 docId 重复 open 复用视图并更新 url/bounds。",
+  "input": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean }",
+  "inputFull": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean }",
+  "output": "{ ok: true } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.show",
+  "channel": "documentView:show",
+  "doc": "【ARC-007】显示文档视图:重新挂到窗口并恢复最后几何。已可见时幂等。",
+  "input": "{ docId: string }",
+  "inputFull": "{ docId: string }",
+  "output": "{ ok: true } | { ok: false; reason: string }"
  },
  {
   "method": "engineTools.get",
@@ -1563,6 +1619,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "{ name: string; claude: boolean; codex: boolean }",
   "inputFull": "{ name: string; claude: boolean; codex: boolean }",
   "output": "{ ok: boolean; error?: string | undefined; perEngine?: McpEngineState | undefined }"
+ },
+ {
+  "method": "mcp.genofficeInstall",
+  "channel": "mcp:genofficeInstall",
+  "doc": "Install the bundled GenOffice document tool as a user-scope stdio MCP server. The workspace-root fence (`GENOFFICE_ALLOWED_ROOTS`) is computed from every known root at call time; an empty root set is refused (unset fence = unrestricted). Re-run with `replace`…",
+  "input": "{ replace?: boolean | undefined // Overwrite an existing entry of the same name — re-running the install is how the fence's … }",
+  "inputFull": "{ replace?: boolean | undefined // Overwrite an existing entry of the same name — re-running the install is how the fence's … }",
+  "output": "{ ok: true; name: string; roots: string[]; materialized: boolean } | { ok: false; reason: string }"
  },
  {
   "method": "mcp.import",

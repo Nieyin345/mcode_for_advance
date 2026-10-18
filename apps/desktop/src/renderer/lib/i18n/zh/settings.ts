@@ -688,6 +688,13 @@ export const zh = {
   "settings.mcp.managedFileNote": "注意:~/.mcode/.claude.json 里的 mcpServers 由 Mcode 整体管理(每次改动会按下表的启用与引擎分配重写这一格)。请在本页增删;直接手改文件里的 mcpServers 会被下次物化覆盖。",
   "settings.mcp.userEmpty1": "暂无用户级 server。",
   "settings.mcp.userEmpty2": "点击下方「新增」或「从 Claude CLI 导入」。",
+  // ── GenOffice 文档工具(一键安装) ──
+  "settings.mcp.genofficeTitle": "GenOffice 文档工具",
+  "settings.mcp.genofficeInstallDesc": "把随仓库快照构建的 GenOffice 文档能力装成一个 MCP 服务器(Word / PPT / Excel 的结构化读写)。路径围栏按点击那一刻的工作区根生成;之后新建的项目要再点一次「重新安装」才会纳入。",
+  "settings.mcp.genofficeInstall": "安装 GenOffice 文档工具",
+  "settings.mcp.genofficeReinstall": "重新安装(刷新工作区根)",
+  "settings.mcp.genofficeInstallSuccess": "已安装「{name}」:围栏包含 {n} 个工作区根,下一轮对话起生效。",
+  "settings.mcp.genofficeInstallFailed": "安装失败:{reason}",
   "settings.mcp.toggleOn": "开启 {name}",
   "settings.mcp.toggleOff": "关闭 {name}",
   "settings.mcp.engines": "可用引擎",

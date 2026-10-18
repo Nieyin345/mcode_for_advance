@@ -246,6 +246,28 @@ export const McpSaveSchema = z.object({
 });
 export type McpSaveInput = z.infer<typeof McpSaveSchema>;
 
+/** Install the bundled GenOffice headless document tool as a user-scope MCP
+ *  server. Main resolves the CLI snapshot path, computes the workspace-root
+ *  fence NOW (the MCP child has no access to Mcode's pathGuard), builds the
+ *  entry via `buildGenofficeMcpConfig` and writes it through the same
+ *  truth-layer save path as `mcp.save` (both engine views re-materialize).
+ *  Empty root set is refused — an absent `GENOFFICE_ALLOWED_ROOTS` means
+ *  "unrestricted" to GenOffice, i.e. a config without a fence. */
+export const McpGenofficeInstallSchema = z.object({
+  /** Overwrite an existing entry of the same name — re-running the install is
+   *  how the fence's root snapshot gets refreshed after projects/worktrees
+   *  change. Absent = a duplicate name is rejected. */
+  replace: z.boolean().optional(),
+});
+export type McpGenofficeInstallInput = z.infer<typeof McpGenofficeInstallSchema>;
+
+/** `roots` is the snapshot that went into `GENOFFICE_ALLOWED_ROOTS`;
+ *  `materialized: true` means both engine views were re-derived as part of
+ *  the save (the shared save path either succeeds fully or rolls back). */
+export type McpGenofficeInstallResult =
+  | { ok: true; name: string; roots: string[]; materialized: boolean }
+  | { ok: false; reason: string };
+
 /** Remove a user-scope server — from both the config file and the disabled
  *  stash (whichever holds it). Project/builtin entries have no delete. */
 export const McpRemoveSchema = z.object({

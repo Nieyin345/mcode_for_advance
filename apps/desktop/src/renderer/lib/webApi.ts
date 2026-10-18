@@ -608,6 +608,33 @@ const agentSsh: Api["agentSsh"] = {
   revokeHost: () => webUnsupported("agentSsh.revokeHost"),
 };
 
+/** MCP 管理整面都是桌面端的事(它改的是 PC 上那个进程的 ~/.mcode 配置与引擎视图;
+ *  手机端也没有「设置 → MCP」面板)。从前这个命名空间**整个不列**,靠 proxy 兜底;
+ *  现在显式列出所有方法 —— 新增的「安装 GenOffice 文档工具」尤其不能悄悄在手机上
+ *  可用:它会在那台电脑上写一条会拉起本地进程的 MCP 条目。
+ *  ⚠️ 少列一个方法 = 一次 `undefined is not a function`(见文件头那条 React 19 规矩)。 */
+const mcp: Api["mcp"] = {
+  list: () => webUnsupported("mcp.list"),
+  toggle: () => webUnsupported("mcp.toggle"),
+  enginesSet: () => webUnsupported("mcp.enginesSet"),
+  authorize: () => webUnsupported("mcp.authorize"),
+  unauthorize: () => webUnsupported("mcp.unauthorize"),
+  save: () => webUnsupported("mcp.save"),
+  genofficeInstall: () => webUnsupported("mcp.genofficeInstall"),
+  remove: () => webUnsupported("mcp.remove"),
+  scanImport: () => webUnsupported("mcp.scanImport"),
+  import: () => webUnsupported("mcp.import"),
+  projectList: () => webUnsupported("mcp.projectList"),
+  projectSave: () => webUnsupported("mcp.projectSave"),
+  projectRemove: () => webUnsupported("mcp.projectRemove"),
+  projectTrust: () => webUnsupported("mcp.projectTrust"),
+  projectCopy: () => webUnsupported("mcp.projectCopy"),
+  marketSources: () => webUnsupported("mcp.marketSources"),
+  marketSourceAdd: () => webUnsupported("mcp.marketSourceAdd"),
+  marketSourceRemove: () => webUnsupported("mcp.marketSourceRemove"),
+  marketSearch: () => webUnsupported("mcp.marketSearch"),
+};
+
 const piModels: Api["piModels"] = {
   list: () => webUnsupported("piModels.list"),
   save: () => webUnsupported("piModels.save"),
@@ -973,6 +1000,7 @@ export function createWebApi(): Api {
     webBridge,
     publicMcp,
     agentSsh,
+    mcp,
     piModels,
     workflow,
     skills,

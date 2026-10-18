@@ -55,6 +55,13 @@ function repoRoot(): string {
   return process.cwd();
 }
 
+/** **仓库根的唯一解析出口**。`ipc/mcp.ts` 的 GenOffice MCP 安装入口也要拿它
+ *  （`resolveGenofficeCliPath` 需要仓库根），不能再抄一份 `getAppPath` 解析 ——
+ *  两份一旦分家，安装出来的条目与 `document.*` 会指向不同的 CLI 快照。 */
+export function documentRepoRoot(): string {
+  return repoRoot();
+}
+
 /** 每次现解析（快照可能被替换）；结果不缓存，避免"装好了还要重启"。 */
 function ports(): { ok: true; ports: { cliPath: string; withinWorkspace(p: string): boolean } } | { ok: false } {
   const cliPath = resolveGenofficeCliPath(repoRoot());

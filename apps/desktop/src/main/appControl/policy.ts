@@ -77,6 +77,15 @@ const BLOCKED: Record<string, string> = {
   "browser.show": "界面内部接口;打开浏览器面板请用 app_ui",
   "browser.hide": "界面内部接口;关闭浏览器面板请用 app_ui",
   "browser.authRespond": "网站登录凭据只能由用户本人填写",
+  // 【ARC-007】文档视图是界面布局内部接口(与 browser.show/hide/setBounds 同档):
+  // 视图的开关/几何/焦点由渲染端按用户操作驱动。文档**内容**操作走 document.* ——
+  // 那是受围栏的 CLI 能力;视图本身不给 agent 摆布(否则它能弹出/隐藏用户的面板)。
+  "documentView.open": "界面布局内部接口;读写文档内容请用 document.read / document.edit",
+  "documentView.bounds": "界面布局内部接口;读写文档内容请用 document.read / document.edit",
+  "documentView.show": "界面布局内部接口;文档视图由用户打开",
+  "documentView.hide": "界面布局内部接口;文档视图由用户关闭",
+  "documentView.focus": "界面布局内部接口;文档视图由用户操作",
+  "documentView.close": "界面布局内部接口;文档视图由用户关闭",
   "lsp.openDocument": "编辑器内部接口",
   "lsp.closeDocument": "编辑器内部接口",
   "lsp.didChange": "编辑器内部接口",
@@ -152,6 +161,10 @@ const DANGER: Record<string, string> = {
   "plugins.marketplaceRemove": "移除插件市场源",
   "plugins.marketplaceRefresh": "刷新插件市场(会联网拉取)",
   "mcp.save": "新增/修改 MCP 服务器(会在本机启动进程或连外部服务)",
+  // 【ARC-007】GenOffice 安装入口 = 往真相层写一条会在本机拉起 `genoffice mcp`
+  // 进程的 stdio 条目(围栏是此刻的工作区根快照)。与 `mcp.save` 同档 ——
+  // 用户点的那一下与「新增 MCP server」是同一件事,只是配置由 Mcode 自己生成。
+  "mcp.genofficeInstall": "安装 GenOffice 文档工具 MCP 服务器(会在本机启动进程)",
   "mcp.remove": "删除 MCP 服务器",
   "mcp.toggle": "启用/停用 MCP 服务器",
   "mcp.enginesSet": "改 MCP 服务器对各引擎的可见性",
@@ -477,6 +490,8 @@ export const DOMAIN_LABELS: Record<string, string> = {
   scene: "场景:校验候选声明、编译变更计划、部署前能力预检(只读,不执行)",
   // 【ARC-007】文档能力(GenOffice CLI 适配层):结构化读、按 ops 编辑、格式转换、能力诊断。
   document: "文档:读取结构(Word/PPT/Excel)、按操作编辑保存、格式转换、本机能力诊断",
+  // 【ARC-007】受控文档视图宿主(界面层,与 browser 面板同档):视图的开关/几何/焦点。
+  documentView: "文档视图宿主(界面层):打开/定位/显示/隐藏/聚焦/关闭编辑器视图、状态诊断",
   // 【MC-059】无人值守计划:用户签发计划级授权 + 有界执行(appServices/unattendedTaskPlan)。
   // 两条都在 BLOCKED 档(agent 够不到,见上),这里只给 `app_api_list` 一个域标签。
   unattended: "无人值守任务计划:用户签发计划级授权、有界执行(建会话)",
@@ -551,6 +566,7 @@ export const DOMAIN_TASK_ALIASES: Record<string, readonly string[]> = {
   projectInit: ["项目模板", "初始化模板", "脚手架", "template", "scaffold"],
   scene: ["场景", "部署", "预检", "scene", "deploy", "preflight"],
   document: ["文档", "编辑文档", "word", "docx", "ppt", "pptx", "excel", "xlsx", "pdf", "转换格式", "document", "convert"],
+  documentView: ["文档视图", "编辑器视图", "文档窗口", "document view", "editor view"],
   unattended: ["无人值守", "计划授权", "自动执行计划"],
   unattendedPlans: ["未完成的计划", "续跑", "计划恢复"],
   skills: ["技能", "skill", "技能库"],

@@ -23,6 +23,11 @@
  *     command/args/env（源码级）。
  *  4. **fail-closed**：allowedRoots 为空 / 相对路径 / CLI 路径非绝对 → 拒绝生成
  *     配置（GenOffice 对未设置围栏的语义是**不限制**，见文件头）。
+ *  5. **安装入口接线（§2b）**：真 `ipc/mcp.ts` 的 `mcp.genofficeInstall` handler，
+ *     在真 sql.js 库上跑。钉三件事：CLI 缺失 → ok:false 且**不写库**；有根 →
+ *     真相层与 claude 派生视图都拿到带围栏 env 的条目；空根 → 拒绝且不写库。
+ *     两项输入（CLI 路径 / 根集合）经 `configureGenofficeInstallPorts` 注入 ——
+ *     与 `document.ts` 的 `configureDocumentRepoRoot` 同一手法，生产默认不经过它。
  *
  * ⚠️ 需要本机已构建 `genoffice/packages/cli/dist/genoffice.cjs`。bundle 不存在时
  * **实机段显式 SKIP 并打印原因**（配置面断言照跑，不静默跳过）。
@@ -30,10 +35,11 @@
  * Run: scripts/genoffice-mcp-smoke/run.sh
  */
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
+  IPC,
   McpServerConfigSchema,
   McpSaveSchema,
   MCP_MANAGEMENT_SETTING_KEY,
@@ -138,6 +144,132 @@ if (config) {
   const codexSrc = readFileSync(join(repoRoot, "apps/desktop/src/main/lib/codexModelsStore.ts"), "utf8");
   check("codex 物化点生成 [mcp_servers.*] 表", codexSrc.includes("[mcp_servers."));
   check("codex 物化点输出 env 表（围栏随条目进 config.toml）", codexSrc.includes("env = {"));
+}
+
+/* ── 2b. 安装入口 handler（真 ipc/mcp.ts + 真 sql.js 库） ──
+ *
+ * 用户点「安装 GenOffice 文档工具」时真正执行的就是这里注册的 handler。这一节
+ * 不测 handler 的写法，测它的**结果**：失败时库有没有被动过、成功时真相层与
+ * 两个引擎视图里的条目长什么样。
+ *
+ * 安全前提（与 mcp-ipc-smoke §0 同一条）：HOME 必须已被 run.sh 换成临时目录，
+ * 否则 `registerMcpHandlers` 的启动物化会拿空配置覆盖用户真实的 ~/.mcode。
+ * 两项输入经 `configureGenofficeInstallPorts` 注入：假 CLI 文件 + 固定根集合，
+ * 生产路径（仓库真实 CLI / pathGuard）不经过这个覆盖。 */
+section("2b. 安装入口（mcp.genofficeInstall handler，真库）");
+{
+  const { MCODE_CONFIG_DIR } = await import("@main/providers/claude-sdk/customEnv.js");
+  const fakeHome = homedir();
+  check(
+    "★ 安全前提:HOME 已是临时目录(物化会写 ~/.mcode)",
+    /mcode-genoffice-mcp-smoke-home/.test(fakeHome) && MCODE_CONFIG_DIR === join(fakeHome, ".mcode"),
+    { fakeHome, MCODE_CONFIG_DIR },
+  );
+  check(
+    "★ 安全前提:数据根是 run.sh 给的临时目录",
+    (process.env.MCODE_SMOKE_DATA_ROOT ?? "").includes("mcode-genoffice-mcp-smoke-data"),
+    process.env.MCODE_SMOKE_DATA_ROOT,
+  );
+
+  const { initDb } = await import("@main/store/db.js");
+  const mcpConfig = await import("@main/lib/mcpConfig.js");
+  const { registerMcpHandlers, configureGenofficeInstallPorts } = await import("@main/ipc/mcp.js");
+  await initDb();
+
+  const handlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+  registerMcpHandlers({
+    handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
+      handlers.set(channel, listener);
+    },
+  } as never);
+  await mcpConfig.ensureMcpTruthMigrated();
+
+  const install = (raw?: unknown): Promise<{ ok: boolean; reason?: string; name?: string; roots?: string[]; materialized?: boolean }> => {
+    const fn = handlers.get(IPC.MCP_GENOFFICE_INSTALL);
+    if (!fn) throw new Error(`registerMcpHandlers 没有注册 ${IPC.MCP_GENOFFICE_INSTALL}`);
+    return Promise.resolve(fn(null, raw)) as Promise<{ ok: boolean; reason?: string; name?: string; roots?: string[]; materialized?: boolean }>;
+  };
+
+  /** 真相层里现在有没有 genoffice(以及它当前的围栏 env)。 */
+  const truthEntry = async (): Promise<McpServerConfig | undefined> =>
+    (await mcpConfig.getMcpTruth()).userServers?.[GENOFFICE_MCP_SERVER_NAME];
+  const fenceOf = (cfg: McpServerConfig | undefined): string =>
+    cfg && cfg.type !== "http" && cfg.type !== "sse" ? (cfg.env?.[GENOFFICE_ALLOWED_ROOTS_ENV] ?? "") : "";
+  /** 真 claude 派生视图(落盘的那份 .claude.json)。 */
+  const claudeViewNames = async (): Promise<string[]> =>
+    Object.keys(mcpConfig.mcpServersOf(await mcpConfig.readUserClaudeJson()));
+  /** 真 codex 视图(落盘的 config.toml)。 */
+  const codexToml = (): string => {
+    const p = join(fakeHome, ".mcode", "codex", "config.toml");
+    return existsSync(p) ? readFileSync(p, "utf8") : "";
+  };
+
+  // 另一个「工作区」—— 只用于验证 replace 会刷新围栏快照。
+  const work2 = mkdtempSync(join(tmpdir(), "mcode-genoffice-mcp-work2-"));
+  try {
+    // ① CLI 缺失:ok:false 且**不写库**。
+    configureGenofficeInstallPorts({ resolveCliPath: () => null, listRoots: () => [work] });
+    const noCli = await install({});
+    check("★ CLI 缺失 → ok:false(不抛)", noCli.ok === false, noCli);
+    check("CLI 缺失的 reason 说清了「CLI 未构建」", (noCli.reason ?? "").includes("CLI 未构建"), noCli.reason);
+    check("★ CLI 缺失时没有写库(真相层仍无 genoffice)", (await truthEntry()) === undefined, await truthEntry());
+
+    // ② 空根集合:拒绝,因为空围栏 = GenOffice 不设防。
+    configureGenofficeInstallPorts({ resolveCliPath: () => fakeCli, listRoots: () => [] });
+    const emptyRoots = await install({});
+    check("★ 空根集合 → ok:false(空围栏 = 不设防)", emptyRoots.ok === false, emptyRoots);
+    check("空根拒绝的 reason 点明「空围栏等于不设防」", (emptyRoots.reason ?? "").includes("空围栏"), emptyRoots.reason);
+    check("★ 空根拒绝时没有写库", (await truthEntry()) === undefined, await truthEntry());
+
+    // ③ 正常安装:真相层 + claude 视图 + codex 视图都拿到带围栏的条目。
+    configureGenofficeInstallPorts({ resolveCliPath: () => fakeCli, listRoots: () => [work] });
+    const installed = await install({});
+    check("★ 有 CLI + 有根 → ok:true", installed.ok === true, installed);
+    eq("返回条目名 genoffice", installed.name, GENOFFICE_MCP_SERVER_NAME);
+    check("返回的围栏根就是注入的那一组", JSON.stringify(installed.roots) === JSON.stringify([work]), installed.roots);
+    check("返回值声明两个引擎视图已物化", installed.materialized === true, installed.materialized);
+
+    const stored = await truthEntry();
+    check("★ 真相层 userServers 里出现了 genoffice", stored !== undefined, stored);
+    if (stored && stored.type !== "http" && stored.type !== "sse") {
+      eq("条目 command 是当前解释器(Electron-as-Node)", stored.command, process.execPath);
+      check("条目 args = [CLI 路径, 'mcp']", JSON.stringify(stored.args) === JSON.stringify([fakeCli, "mcp"]), stored.args);
+      check(
+        "★ 条目 env 带 GENOFFICE_ALLOWED_ROOTS 且含注入的工作区根",
+        fenceOf(stored).split(";").join(":").includes(work),
+        stored.env,
+      );
+    } else {
+      check("条目是 stdio", false, stored);
+    }
+
+    check("★ claude 派生视图(.claude.json)也拿到了 genoffice", (await claudeViewNames()).includes(GENOFFICE_MCP_SERVER_NAME), await claudeViewNames());
+    const toml = codexToml();
+    check("★ codex 派生视图(config.toml)有 [mcp_servers.genoffice]", toml.includes("[mcp_servers.genoffice]"), toml.slice(0, 400));
+    check("codex 物化里带着围栏 env", toml.includes(GENOFFICE_ALLOWED_ROOTS_ENV), toml.slice(0, 800));
+
+    // 面板看到的就是这一行(MCP_LIST 是列表接口,行由真相层派生)。
+    const listFn = handlers.get(IPC.MCP_LIST);
+    const listed = (await Promise.resolve(listFn!(null, {}))) as { servers: Array<{ name: string; scope: string; kind: string; enabled: boolean }> };
+    const row = listed.servers.find((s) => s.name === GENOFFICE_MCP_SERVER_NAME);
+    check("★ 面板列表里出现 genoffice(scope=user, stdio, enabled)", row !== undefined && row.scope === "user" && row.kind === "stdio" && row.enabled, row);
+
+    // ④ 重复名:不带 replace 拒绝,且**不**用新根覆盖旧围栏(否则用户以为没装成、实际已经改了围栏)。
+    configureGenofficeInstallPorts({ resolveCliPath: () => fakeCli, listRoots: () => [work2] });
+    const duplicate = await install({});
+    check("★ 已存在且未传 replace → ok:false", duplicate.ok === false, duplicate);
+    check("重复名的 reason 提示传 replace", (duplicate.reason ?? "").includes("replace"), duplicate.reason);
+    check("★ 重复名拒绝后旧围栏未被改写", fenceOf(await truthEntry()).includes(work) && !fenceOf(await truthEntry()).includes(work2), fenceOf(await truthEntry()));
+
+    // ⑤ replace = 刷新围栏快照:新根进、旧根出(整条替换,不是 merge)。
+    const replaced = await install({ replace: true });
+    check("★ replace:true → ok:true", replaced.ok === true, replaced);
+    const refreshed = fenceOf(await truthEntry());
+    check("★ 重装后围栏是新根集合(旧根已被替换掉)", refreshed.includes(work2) && !refreshed.includes(work), refreshed);
+  } finally {
+    configureGenofficeInstallPorts(null);
+    try { rmSync(work2, { recursive: true, force: true }); } catch { /* Windows 句柄 */ }
+  }
 }
 
 /* ── 3. 实机：stdio MCP server ── */

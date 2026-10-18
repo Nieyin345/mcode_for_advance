@@ -23,6 +23,7 @@ import {
   McpToggleSchema,
   McpEnginesSetSchema,
   McpSaveSchema,
+  McpGenofficeInstallSchema,
   McpRemoveSchema,
   McpScanImportSchema,
   McpImportSchema,
@@ -86,6 +87,10 @@ import {
   setMcpEnginesEntry,
   mcpEngineEnabled,
 } from "@main/lib/mcpEngines.js";
+import { listKnownWorkspaceRoots } from "@main/lib/pathGuard.js";
+import { resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
+import { documentRepoRoot } from "@main/ipc/document.js";
+import { buildGenofficeMcpConfig, GENOFFICE_MCP_SERVER_NAME } from "@main/mcp/genofficeMcp.js";
 
 /** Description line for the built-in browser server row. */
 const BUILTIN_DETAIL = "browser_navigate / browser_snapshot / browser_click 等应用内浏览器工具";
@@ -135,6 +140,63 @@ function serializeMcpMutation<T>(operation: () => Promise<T>): Promise<T> {
   const run = mcpMutationTail.then(operation, operation);
   mcpMutationTail = run.then(() => undefined, () => undefined);
   return run;
+}
+
+/* ── GenOffice MCP 一键安装 ──
+ *
+ * 入口是**用户在设置面板里点出来的**,不是自动挂载:这条配置会让引擎在每次
+ * 会话里拉起一个本地进程(`genoffice mcp`),等于替用户装了一个常驻工具面 ——
+ * 与「新增 MCP server」同属 danger 档(见 appControl/policy.ts)。所以它不随
+ * 启动预置,也不给 agent 开;人点了才写。
+ *
+ * 写入走与 `MCP_SAVE` 完全相同的三步(读真相层 → 写真相层 → 物化两个引擎视图,
+ * 物化失败回滚真相层) —— 不另开一套。`materializeMcpViewsOrRollback` 只回滚
+ * 真相层;下面的入口负责把它接到同一个串行队列里,避免与面板上的其它 MCP 操作
+ * 交错丢更新。 */
+
+/** 解析两项输入:CLI 快照路径与**此刻**的围栏根集合。可注入 —— 无头套件要能
+ *  用一个假 CLI 文件与固定根集合驱动真 handler(与 `ipc/document.ts` 的
+ *  `configureDocumentRepoRoot`、`genofficeCli` 的 `GenofficePorts` 同一手法:
+ *  生产永远走默认,测试不另抄一套 handler 逻辑)。 */
+export interface GenofficeInstallPorts {
+  /** 解析不到返回 null(handler 据此回 ok:false,不抛)。 */
+  resolveCliPath(): string | null;
+  /** 围栏根(绝对路径);空数组 = 拒绝安装。 */
+  listRoots(): string[];
+}
+
+let genofficeInstallPortsOverride: GenofficeInstallPorts | null = null;
+
+/** 测试/装配用:覆盖 GenOffice 安装入口的两项输入(传 null 复位)。 */
+export function configureGenofficeInstallPorts(ports: GenofficeInstallPorts | null): void {
+  genofficeInstallPortsOverride = ports;
+}
+
+/** 解析 CLI 与围栏根,失败一律 ok:false(不抛,不写库)。 */
+function resolveGenofficeInstallPrereq():
+  | { ok: true; cliPath: string; roots: string[] }
+  | { ok: false; reason: string } {
+  const ports = genofficeInstallPortsOverride ?? {
+    resolveCliPath: () => resolveGenofficeCliPath(documentRepoRoot()),
+    listRoots: () => listKnownWorkspaceRoots(),
+  };
+  const cliPath = ports.resolveCliPath();
+  if (cliPath === null) {
+    return {
+      ok: false,
+      reason: "GenOffice CLI 未构建:先在仓库的 genoffice/ 下构建 CLI(genoffice/packages/cli/dist/genoffice.cjs),再回来点安装。",
+    };
+  }
+  // 围栏必须是**此刻**的已知根快照。空集合 = GenOffice 侧不设防(未设置该环境
+  // 变量等价于不限制),所以宁可拒绝也不写出一条没有围栏的配置。
+  const roots = ports.listRoots();
+  if (roots.length === 0) {
+    return {
+      ok: false,
+      reason: "还没有任何工作区根(项目 / 会话工作树 / 文献库),GenOffice 的路径围栏会是空的 —— 空围栏等于不设防,已拒绝。请先打开一个项目再安装。",
+    };
+  }
+  return { ok: true, cliPath, roots };
 }
 
 /** A truth/matrix mutation is not complete until the engine views agree with
@@ -849,6 +911,40 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       return { ok: true };
     } catch (err) {
       return { ok: false, error: fsErrorMessage(err) };
+    }
+  }));
+
+  // ── Install the bundled GenOffice document tool as a user-scope server ──
+  // 与 MCP_SAVE 同一条写入链(真相层 + 物化 + 回滚),只是配置由
+  // `buildGenofficeMcpConfig` 这个唯一生成点产出 —— 围栏环境变量不会漏。
+  // 同名存在且未传 replace 时按"已安装"拒绝(照 MCP_SAVE 的重复名语义);
+  // 传 replace 则整条覆盖 —— 那是用户刷新根快照的方式。
+  ipcMain.handle(IPC.MCP_GENOFFICE_INSTALL, (_evt, raw) => serializeMcpMutation(async () => {
+    // 无参方法:`app_api_call` 省略 input 时 raw 是 undefined(同 MCP_LIST)。
+    const input = McpGenofficeInstallSchema.parse(raw ?? {});
+    const prereq = resolveGenofficeInstallPrereq();
+    if (!prereq.ok) return { ok: false, reason: prereq.reason };
+    const built = buildGenofficeMcpConfig({ cliPath: prereq.cliPath, allowedRoots: prereq.roots });
+    if (!built.ok) return { ok: false, reason: built.reason };
+    try {
+      const state = await getMcpTruth();
+      const previous = structuredClone(state);
+      const userServers = state.userServers ?? {};
+      const inTruth = GENOFFICE_MCP_SERVER_NAME in userServers;
+      const inStash = Boolean(state.userDisabled?.[GENOFFICE_MCP_SERVER_NAME]);
+      if (!input.replace && (inTruth || inStash)) {
+        return { ok: false, reason: `「${GENOFFICE_MCP_SERVER_NAME}」已存在:传 replace 可覆盖并刷新围栏根快照。` };
+      }
+      // 整条替换而不 merge 旧 env:这里的 env 是围栏,**必须**是本次现算的
+      // 根集合。沿用旧值等于让用户以为"重装 = 刷新根",实际还停在旧快照。
+      userServers[GENOFFICE_MCP_SERVER_NAME] = built.config;
+      if (inStash && state.userDisabled) delete state.userDisabled[GENOFFICE_MCP_SERVER_NAME];
+      state.userServers = userServers;
+      saveMcpManagement(state);
+      await materializeMcpViewsOrRollback(() => saveMcpManagement(previous));
+      return { ok: true, name: GENOFFICE_MCP_SERVER_NAME, roots: prereq.roots, materialized: true };
+    } catch (err) {
+      return { ok: false, reason: fsErrorMessage(err) };
     }
   }));
 

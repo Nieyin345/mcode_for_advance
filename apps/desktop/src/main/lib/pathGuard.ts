@@ -7,7 +7,7 @@
  * case-insensitive so a lowercased drive letter from Monaco/LSP (`d:\foo`)
  * still matches a project stored with an uppercase letter (`D:\foo`).
  */
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { platform } from "node:os";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -110,4 +110,31 @@ export function findContainingWorkspaceRoot(absPath: string): string | null {
   const wt = SessionRepo.listWorktreeRoots().find((r) => pathWithin(r, absPath));
   if (wt) return wt;
   return userDocRootsForGuard().find((r) => pathWithin(r, absPath)) ?? null;
+}
+
+/**
+ * **所有已知工作区根的并集** —— 与 `isKnownWorkspaceRoot` /
+ * `findContainingWorkspaceRoot` 同一条判据(项目 ∪ 会话工作树 ∪ 文献库/模版库),
+ * 只是返回整个集合而不是判定单个路径。
+ *
+ * 为什么需要它:GenOffice 的 MCP 子进程里**没有** Mcode 的这层守卫
+ * (`findContainingWorkspaceRoot`),围栏只能作为环境变量快照交给它
+ * (见 `mcp/genofficeMcp.ts`)。若这里另写一套根判定,"装的时候允许的目录"
+ * 与"编辑器里允许的目录"就会分家 —— 那正是第二条旁路。
+ *
+ * 去重按 `samePath`(Windows/macOS 大小写不敏感),顺序与包含判定的优先级一致:
+ * 项目根在前,工作树其次,文献库/模版库最后。相对路径直接丢弃:围栏需要能与
+ * 绝对路径比较的根,一条相对路径在 GenOffice 侧只会永远不命中(fail-closed)。
+ */
+export function listKnownWorkspaceRoots(): string[] {
+  const out: string[] = [];
+  const add = (p: string | null | undefined): void => {
+    if (typeof p !== "string" || p.trim() === "" || !isAbsolute(p)) return;
+    if (out.some((r) => samePath(r, p))) return;
+    out.push(p);
+  };
+  for (const p of ProjectRepo.listPaths()) add(p);
+  for (const p of SessionRepo.listWorktreeRoots()) add(p);
+  for (const p of userDocRootsForGuard()) add(p);
+  return out;
 }

@@ -38,9 +38,11 @@ import {
   IconLockOpen,
   IconPencil,
   IconServer,
+  IconFileText,
 } from "@renderer/lib/icons.js";
 import { NODE_MCP_PARAM_KEY } from "@contracts/nodeType";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { ScopeTabs, useManagedProject } from "./ScopeTabs.js";
 import { McpMarketView } from "./McpMarketView.js";
 // 两个对话框从 `McpPanelParts.tsx` 拆出（纯搬迁，见那边文件头）。
@@ -271,6 +273,9 @@ export function McpPanel() {
   //    "只有总库可勾选复制"、插件页"只有已装的可勾"是同一条规矩。
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
+  // GenOffice 一键安装:null = 空闲;安装是短动作(解析路径 + 写真相层 + 物化),
+  // 但围栏根多时物化两个引擎视图要写两三个文件,给个行内 spinner。
+  const [genofficeBusy, setGenofficeBusy] = useState(false);
 
   /** `load` 的序号守卫 —— 它在挂载/每次 toggle/authorize/import 后都会并发触发,
    *  旧回包(成功或失败)不能盖掉更新的那次。 */
@@ -463,11 +468,40 @@ export function McpPanel() {
     }
   };
 
+  /** 一键安装随仓库快照的 GenOffice 文档工具(见 ipc/mcp.ts 的
+   *  MCP_GENOFFICE_INSTALL)。入口是用户点出来的而不是随启动预置:这条配置会让
+   *  引擎每轮拉起一个本地进程,与「新增 MCP server」同一件事。
+   *  已存在时传 replace —— 重装就是**刷新围栏根快照**的方式(新项目/工作树
+   *  不进旧快照,见 genofficeMcp.ts 文件头「围栏是快照」)。 */
+  const installGenoffice = async () => {
+    setError(null);
+    setGenofficeBusy(true);
+    try {
+      const res = await api.mcp.genofficeInstall({ replace: true });
+      // 先重拉(成功会清旧横幅),再把这次失败挂上去 —— 同 toggle 的顺序讲究。
+      await load();
+      if (!res.ok) {
+        setError(t("settings.mcp.genofficeInstallFailed", { reason: res.reason }));
+        return;
+      }
+      useToastStore.getState().push({
+        kind: "info",
+        title: t("settings.mcp.genofficeInstallSuccess", { name: res.name, n: res.roots.length }),
+      });
+    } catch (err) {
+      setError(t("settings.mcp.genofficeInstallFailed", { reason: (err as Error).message }));
+    } finally {
+      setGenofficeBusy(false);
+    }
+  };
+
   const q = query.trim().toLowerCase();
   const matches = (s: McpServerEntry): boolean =>
     !q || s.name.toLowerCase().includes(q) || s.detail.toLowerCase().includes(q);
   const allUserServers = servers.filter((s) => s.scope === "user");
   const userServerNames = new Set(allUserServers.map((s) => s.name));
+  // 安装卡片的文案随「已装 / 未装」切换:已装时按钮是「重新安装(刷新工作区根)」。
+  const genofficeInstalled = userServerNames.has("genoffice");
   const userServers = allUserServers.filter(matches);
   const pluginServers = servers.filter((s) => s.scope === "plugin" && matches(s));
   const builtin = servers.find((s) => s.scope === "builtin");
@@ -572,6 +606,34 @@ export function McpPanel() {
       )}
 
       <div className={cn("space-y-4", view === "library" ? "" : "hidden")}>
+      {/* ───────── GenOffice 文档工具(一键安装) ─────────
+          为什么是一个**显眼的按钮卡片**而不是藏在「新增」对话框里:这条条目
+          不能靠用户手拼 —— 它必须带 `GENOFFICE_ALLOWED_ROOTS` 围栏,而根集合
+          只有主进程算得准(pathGuard 同一批判据)。把生成点留在主进程、把入口
+          放在面板最上面,用户点一下得到的就是带围栏的那一份。 */}
+      <SettingsSection title={t("settings.mcp.genofficeTitle")} icon={IconFileText}>
+        <SettingRow
+          title={
+            <span className="flex items-center gap-1.5">
+              <span className="font-mono">genoffice</span>
+              <KindBadge kind="stdio" />
+            </span>
+          }
+          desc={t("settings.mcp.genofficeInstallDesc")}
+          descMode="inline"
+        >
+          <Button
+            variant="secondary"
+            size="sm"
+            className="gap-1"
+            disabled={genofficeBusy}
+            onClick={() => void installGenoffice()}
+          >
+            {genofficeBusy ? <IconLoader2 size={12} className="animate-spin" /> : <IconDownload size={12} />}
+            {t(genofficeInstalled ? "settings.mcp.genofficeReinstall" : "settings.mcp.genofficeInstall")}
+          </Button>
+        </SettingRow>
+      </SettingsSection>
       {/* 勾选批量条：勾了用户级服务器才出现。 */}
       {checked.size > 0 && (
         <div

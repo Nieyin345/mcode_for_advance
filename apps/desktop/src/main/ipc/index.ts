@@ -1,6 +1,8 @@
 import { registerProjectInitHandlers } from "./projectInit.js";
 import { registerSceneHandlers } from "./scene.js";
 import { registerDocumentHandlers } from "./document.js";
+import { registerDocumentViewHandlers } from "./documentView.js";
+import { documentViewHost } from "@main/document/documentViewHost.js";
 import { registerUnattendedHandlers } from "./unattended.js";
 import { registerModuleHandlers } from "./modules.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
@@ -114,6 +116,10 @@ export function registerIpcHandlers(): void {
   registerProjectInitHandlers(ipc);
   registerSceneHandlers(ipc);
   registerDocumentHandlers(ipc);
+  // 【ARC-007】受控文档视图宿主(GenOffice 编辑器页的 WebContentsView)。
+  // 与 `document.*` 区别:那条是 CLI 读写能力,这条是**视图生命周期**;
+  // 宿主单例由 `main/index.ts` 的退出路径 `dispose()`。
+  registerDocumentViewHandlers(ipc, documentViewHost);
   registerUnattendedHandlers(ipc);
   registerMemoryAssistantHandlers(ipc);
   registerMonitoringHandlers(ipc);

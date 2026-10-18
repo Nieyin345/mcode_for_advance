@@ -21,6 +21,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
+import { documentViewHost } from "@main/document/documentViewHost.js";
 import { startMobileServer, stopMobileServer, getMobileServer } from "@main/mobile/MobileHttpServer.js";
 import { autoStartMobileTunnel, disposeMobileTunnel } from "@main/mobile/mobileTunnel.js";
 import { initAgentDelegate } from "@main/mcp/delegateHost.js";
@@ -463,6 +464,8 @@ app.on("before-quit", (event) => {
   disposeAllAgentResources();
   lspManager.disposeAll();
   BrowserManager.disposeAll();
+  // 【ARC-007】文档视图是主窗口的子面,退出前显式销毁(主窗口 closed 钩子之外的第二道)。
+  documentViewHost.dispose();
   relayManager.disposeAll();
   // 关掉定时针、目录监听、事件订阅 —— 它们都挂在事件流 / 文件系统上,不关的话
   // 退出过程中还可能起一次运行(而那时数据库已经在关了,见下面 `closeDb`)。
