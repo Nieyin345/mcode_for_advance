@@ -1416,6 +1416,17 @@ export const zh = {
   "settings.workflows.engine.noneBody": "主进程的引擎注册表是空的——这通常意味着当前构建没有装配第三方引擎。",
   "settings.workflows.engine.footnote":
     "引擎是独立进程：关掉这个视图不会停掉它，停止要按上面的「停止」。编辑器里画的流不会自动执行（deploy 仍由你在引擎里点）。",
+  // ── ARC-006 桥 2：让引擎回调 Mcode（stdio server 尚未实现，见 EngineCallbackSection）──
+  "settings.workflows.engine.callbackTitle": "让引擎回调 Mcode（可选）",
+  "settings.workflows.engine.callbackSoon": "尚未可用",
+  "settings.workflows.engine.callbackBody":
+    "现在还不能用：供外部引擎回调 Mcode 的 stdio MCP server（mcode-host-mcp）还没有实现，这里是给它预留的位置。实现后，这里会换成可直接复制的真实命令，填进引擎自己的 MCP 客户端（例如 Node-RED 的 MCP 节点）即可。",
+  "settings.workflows.engine.callbackShapeLabel":
+    "将来会以这种形状提供 —— 下面是占位值，现在配进引擎也连不上，不要当作可用配置复制使用。",
+  "settings.workflows.engine.callbackShape":
+    '{\n  "type": "stdio",\n  "command": "<Mcode 可执行文件路径>",\n  "args": ["<mcode-host-mcp 启动参数>"],\n  "env": { "<环境变量>": "<值>" }\n}',
+  "settings.workflows.engine.callbackParity":
+    "能力面与 Agent 完全一致（同一份工具表，不多一个方法）；危险操作仍然弹审批卡，引擎不能替你点。",
   // 读屏用户听不到"左边那根强调色竖条",行的选中态用一句话说。可见文本不变,
   // 只有 `aria-current` 与按钮的无障碍名多这一句(见 WorkflowListRow)。
   "settings.workflows.listRowCurrent": "当前打开",

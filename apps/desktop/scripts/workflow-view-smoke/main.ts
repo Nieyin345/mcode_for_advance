@@ -108,6 +108,7 @@ import { BranchChoiceCard } from "@renderer/components/chat/BranchChoiceCard.js"
 import { BRANCH_STOP_CHOICE } from "@contracts/nodeType";import type { RuntimeEvent } from "@contracts/runtime";import {  __applyWorkflowLiveEvent,  __resetWorkflowLive,  __workflowLiveSnapshot,  dismissSettled,} from "@renderer/lib/workflowLive.js";import type {  LiveNode,  WorkflowLiveSnapshot,} from "@renderer/lib/workflowLive.js";
 import { WorkflowsPanel } from "@renderer/components/settings/workflows/WorkflowsPanel.js";
 import {
+  EngineCallbackSection,
   EngineRow,
   canOpenEditor,
   engineDocId,
@@ -2376,6 +2377,46 @@ console.log("\nEngineRow(SSR:每种状态用户看到什么)");
   check("英文界面:徽标跟着换", en.includes(">Stopped</span>"), en);
 }
 
+
+console.log("\nEngineCallbackSection(桥 2 预留位:如实说「还不能用」)");
+// 这块的失败模式不是"画错",而是**画得太像可用配置**:给一份填好的 command/args/env
+// 加复制按钮,用户会把它填进 Node-RED,然后排查一个不存在的故障。所以断言分成三组:
+//   1. 必须明说"现在还不能用"(文案键,不是碰巧渲染出这几个字);
+//   2. 形状里只能有尖括号占位,不能出现看起来可执行的真值(路径 / 参数 / 端口 / 令牌);
+//   3. 不能有复制按钮 —— 复制按钮本身就是"这是一份可用配置"的暗示。
+{
+  const markup = (locale: "zh" | "en"): string =>
+    withLocale(locale, () => html(createElement(EngineCallbackSection)));
+
+  const zh = markup("zh");
+  check("回调块:标注为预留(未实现)状态", zh.includes('data-engine-callback="pending"'), zh);
+  check("回调块:标题是「让引擎回调 Mcode（可选）」", zh.includes("让引擎回调 Mcode（可选）"), zh);
+  check("回调块:明说现在还不能用", zh.includes("现在还不能用"), zh);
+  check("回调块:点出 mcode-host-mcp 尚未实现", zh.includes("mcode-host-mcp"), zh);
+  check("回调块:形状是 stdio/command/args/env 占位", zh.includes("&quot;type&quot;: &quot;stdio&quot;") && zh.includes("&quot;command&quot;") && zh.includes("&quot;args&quot;") && zh.includes("&quot;env&quot;"), zh);
+  // 形状里的每个值都必须是 `<...>` 占位 —— 出现一个像真路径的字符串就等于教用户去配。
+  // SSR 会把 `"` 转义成 `&quot;`、`<` 转义成 `&lt;`,所以先还原实体再判。
+  const unescape = (s: string): string =>
+    s.replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const shape = unescape(
+    /<pre[^>]*data-engine-callback-shape=""[^>]*>([\s\S]*?)<\/pre>/.exec(zh)?.[1] ?? "",
+  );
+  check("回调块:形状确实渲染出来了(否则下面两条是空过)", shape.length > 0, zh);
+  // `"stdio"` 是协议常量(形状的一部分),不是伪造的值;其余每个字符串都必须是
+  // `<...>` 占位 —— 出现一个像真路径/真参数的真值就等于教用户去配。
+  const quotedValues = [...shape.matchAll(/:\s*"([^"]*)"/g)].map((m) => m[1]);
+  check("回调块:形状里的字符串值只有协议常量与尖括号占位", quotedValues.length > 0 && quotedValues.every((v) => v === "stdio" || /^<.+>$/.test(v)), quotedValues);
+  check("回调块:形状里没有像可执行文件路径的真值", !/:\s*"[A-Za-z]:[\\/]/.test(shape), shape);
+  check("回调块:没有复制按钮(不暗示可用)", !/<button/.test(zh), zh);
+  check("回调块:写明能力面与 Agent 完全一致", zh.includes("能力面与 Agent 完全一致"), zh);
+  check("回调块:写明危险操作仍弹审批卡", zh.includes("危险操作仍然弹审批卡"), zh);
+
+  const en = markup("en");
+  check("回调块英文:标注为预留", en.includes('data-engine-callback="pending"'));
+  check("回调块英文:明说还不能用", en.includes("Not usable yet"), en);
+  check("回调块英文:写明能力面一致", en.includes("capability surface is exactly the Agent"), en);
+  check("回调块英文:没有留下中文", !/[一-鿿]/.test(en), en);
+}
 
 console.log("\nWorkflowsPanel(自动化:同一块面板的另一种用法)");
 const autoPanel = withLocale("zh", () => html(createElement(WorkflowsPanel, { purpose: "automation" })));

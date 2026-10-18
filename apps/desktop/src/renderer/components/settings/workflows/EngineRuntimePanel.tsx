@@ -405,6 +405,59 @@ export function EngineRow({
   );
 }
 
+/**
+ * 【ARC-006 桥 2】「让引擎回调 Mcode（可选）」—— 一个**如实标注为未实现**的预留位。
+ *
+ * ## 为什么画的是占位而不是可复制的配置
+ *
+ * 方案文档（`docs/planning/arc-006-wf-integration.md` 桥 2 段，2026-10-18 修订）的结论是
+ * 走一个 stdio MCP server（`mcode-host-mcp`），而它**尚未实现**。此刻给出一份"看起来能用"
+ * 的命令/args/env，等于教用户把它填进 Node-RED —— 用户会得到一个连不上的条目，然后来查
+ * 一个根本不存在的故障。所以这里只画**形状**（字段名 + 尖括号占位值），明确写"现在还不能
+ * 用"，并且**不提供复制按钮**：复制按钮本身就是"这是一份可用配置"的暗示。
+ *
+ * ## 为什么先说"能力面与 Agent 完全一致"
+ *
+ * 这是设计约束里最容易被误解的一条：既然引擎能回调 Mcode，用户会担心它是不是拿到了一张
+ * 更大的权限表。事实相反 —— 实现将复用同一份 `appMcpTools()`，审批仍弹在 Mcode 窗口里
+ * （引擎没有回合，不能替用户点）。这句话现在就要写上，因为它约束的是将来的实现，不是
+ * 将来的文案。
+ *
+ * 等 server 落地后，本组件应该改成渲染真实的 command/args/env（届时再给复制按钮），
+ * 文案键沿用 `callbackShape*`，不必改布局。
+ */
+export function EngineCallbackSection() {
+  const { t } = useI18n();
+  return (
+    <section
+      className="rounded-lg border border-dashed border-edge bg-surface-muted/40 p-3 text-[0.7857em]"
+      data-engine-callback="pending"
+      aria-labelledby="engine-callback-title"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <h4 id="engine-callback-title" className="font-semibold text-content">
+          {t("settings.workflows.engine.callbackTitle")}
+        </h4>
+        <Badge variant="warning">{t("settings.workflows.engine.callbackSoon")}</Badge>
+      </div>
+      <p className="mt-1 leading-relaxed text-content-muted">
+        {t("settings.workflows.engine.callbackBody")}
+      </p>
+      <div className="mt-2 text-content-subtle">{t("settings.workflows.engine.callbackShapeLabel")}</div>
+      {/* 占位形状：没有复制按钮，`<...>` 里是字段说明而不是值。 */}
+      <pre
+        className="mt-1 overflow-auto whitespace-pre rounded bg-surface-muted px-2 py-1.5 font-mono text-[0.9em] text-content-muted"
+        data-engine-callback-shape=""
+      >
+        {t("settings.workflows.engine.callbackShape")}
+      </pre>
+      <p className="mt-2 leading-relaxed text-content-muted">
+        {t("settings.workflows.engine.callbackParity")}
+      </p>
+    </section>
+  );
+}
+
 export function EngineRuntimePanel({ active: activeTab = true }: { active?: boolean }) {
   const { t } = useI18n();
   const listRead = useRpc(() => api.workflowEngine.list(), []);
@@ -475,6 +528,9 @@ export function EngineRuntimePanel({ active: activeTab = true }: { active?: bool
           onChanged={listRead.refetch}
         />
       )}
+      {/* 回调通道的预留位（桥 2）。放在引擎行下面而不是列表之上：它描述的是
+          "引擎能对 Mcode 做什么"，是引擎配置的一部分，不是操作入口。 */}
+      <EngineCallbackSection />
       <div className="text-[0.7143em] text-content-subtle">
         {t("settings.workflows.engine.footnote")}
       </div>

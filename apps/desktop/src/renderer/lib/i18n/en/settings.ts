@@ -1416,6 +1416,17 @@ export const en = {
   "settings.workflows.engine.noneBody": "The main-process engine registry is empty — this build usually has no third-party engines wired up.",
   "settings.workflows.engine.footnote":
     "The engine is a standalone process: closing this view does not stop it — use Stop above. Flows you draw in its editor do not run by themselves (deploy is still your click inside the engine).",
+  // ── ARC-006 bridge 2: let the engine call back into Mcode (stdio server not implemented yet, see EngineCallbackSection) ──
+  "settings.workflows.engine.callbackTitle": "Let the engine call back into Mcode (optional)",
+  "settings.workflows.engine.callbackSoon": "Not available yet",
+  "settings.workflows.engine.callbackBody":
+    "Not usable yet: the stdio MCP server (mcode-host-mcp) that lets an external engine call back into Mcode has not been implemented; this is its reserved spot. Once it lands, this block will show the real command to copy into the engine's own MCP client (for example a Node-RED MCP node).",
+  "settings.workflows.engine.callbackShapeLabel":
+    "This is the shape it will take — the values below are placeholders. Configuring them today will not connect; do not treat this as a working config.",
+  "settings.workflows.engine.callbackShape":
+    '{\n  "type": "stdio",\n  "command": "<Mcode executable path>",\n  "args": ["<mcode-host-mcp launch arguments>"],\n  "env": { "<env var>": "<value>" }\n}',
+  "settings.workflows.engine.callbackParity":
+    "The capability surface is exactly the Agent's (the same tool table, not one method more); dangerous operations still raise an approval card — the engine cannot click it for you.",
   // Screen readers cannot see the accent bar on the active row — say it in words.
   // Visible text is unchanged; only the row's accessible name gains this (see WorkflowListRow).
   "settings.workflows.listRowCurrent": "Currently open",
