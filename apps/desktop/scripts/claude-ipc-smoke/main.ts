@@ -35,7 +35,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
 
-import { IPC, THEME_STYLE_SETTING_KEY, TURN_BUDGET_SETTING_KEY, WORKFLOW_REVIEW_SETTING_PREFIX } from "@contracts/ipc";
+import {
+  IPC,
+  THEME_STYLE_SETTING_KEY,
+  TURN_BUDGET_SETTING_KEY,
+  WORKFLOW_PINNED_DEFAULTS_SETTING_KEY,
+  WORKFLOW_REVIEW_SETTING_PREFIX,
+} from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import type { ProviderContext } from "@contracts/provider";
 import { initDb } from "@main/store/db.js";
@@ -1100,6 +1106,23 @@ console.log("\n13. 设置读写 + 主题那条特殊分支");
   eq("正控:工作流显示偏好照常可写", prefThrew, "");
   const pref = await call<{ value: unknown }>(IPC.SETTING_GET, { key: prefKey });
   eq("正控:显示偏好确实落库", pref.value, JSON.stringify({ scope: "all" }));
+
+  // 【ARC-006 残余】**「恢复默认」快照**(`workflow.pinnedDefaults`)同一档。
+  // `restoreWorkflowDefault` 把快照**直接落库、不再过审**,它的信任前提是"只由
+  // pinWorkflowDefault 写入"。放行通用设置写 = 给 Agent 一条"先种快照、再点一次
+  // 恢复默认"的免审执行路 —— 与审查记录族是同一个洞,只是绕一层。
+  // 键名同样不写字面量:走 contracts 的共享常量,判据漂开时这里会红。
+  const pinnedThrew = await catching(IPC.SETTING_SET, {
+    key: WORKFLOW_PINNED_DEFAULTS_SETTING_KEY,
+    value: JSON.stringify({ wf_forged: { id: "wf_forged", name: "伪造快照", nodes: [], edges: [], builtin: false, updatedAt: 0 } }),
+  });
+  check("★ ARC-006 残余:setting.set 写「恢复默认」快照被拒(抛出可读原因)", pinnedThrew.length > 0, pinnedThrew);
+  check("拒绝原因说清该走哪条路", pinnedThrew.includes("审查"), pinnedThrew);
+  eq(
+    "★ ARC-006 残余:被拒的快照没有落库",
+    (await call<{ value: unknown }>(IPC.SETTING_GET, { key: WORKFLOW_PINNED_DEFAULTS_SETTING_KEY })).value,
+    null,
+  );
 }
 
 /* ─────── 13b. 【MC-083 残余】轮预算保存时主键+last-good 同事务落盘 ─────── */

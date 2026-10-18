@@ -25,6 +25,7 @@
 import { createHash } from "node:crypto";
 import type { WorkflowDoc, WorkflowListEntry } from "@contracts/workflow";
 import { makeWorkflowId, uniqueWorkflowName } from "@contracts/workflow";
+import { WORKFLOW_PINNED_DEFAULTS_SETTING_KEY } from "@contracts/ipc";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/nodeType";
 import { SettingRepo, WorkflowRepo } from "@main/store/repositories.js";
@@ -440,8 +441,13 @@ export function removeWorkflow(id: string): { ok: boolean; wasBuiltin: boolean }
 
 /** 自定默认的存储键:值是 `Record<内置工作流 id, WorkflowDoc>` 的 JSON。
  *  存**设置表**而不是 workflows 表 —— 它不是一份"生效的"工作流,只是「恢复默认」
- *  的回落目标;放 workflows 表会被 listWorkflows 当成覆盖行列出来。 */
-const WORKFLOW_PINNED_DEFAULTS_KEY = "workflow.pinnedDefaults";
+ *  的回落目标;放 workflows 表会被 listWorkflows 当成覆盖行列出来。
+ *
+ *  键名常量住在 `@contracts/ipc/settings`(`WORKFLOW_PINNED_DEFAULTS_SETTING_KEY`)——
+ *  设置导入 / 导出与通用 `setting.set` 的**拒绝判据**也要认它(恢复时会**不过审直接
+ *  落库**,与 `workflow.review.v1.*` 同属执行信任事实,见那边的注释)。这里直接引用,
+ *  不再各写一遍字面量。 */
+const WORKFLOW_PINNED_DEFAULTS_KEY = WORKFLOW_PINNED_DEFAULTS_SETTING_KEY;
 
 /**
  * 自定默认表的读出结果 —— **三态,不是 `Record`。

@@ -21,7 +21,7 @@
  */
 
 import { CUSTOM_UI_SETTING_KEY } from "@contracts/customUi";
-import { isWorkflowReviewSettingKey } from "@contracts/ipc";
+import { isWorkflowExecutionTrustSettingKey } from "@contracts/ipc";
 import { validateCustomUiWrite } from "@main/customUi/configValidation.js";
 // 【MC-004】密钥键判据(通用词 + 结构形状 + 显式名单)收进了 `@main/lib/secretKeys`
 // 的**唯一一份** `isSecretSettingKey` —— 从前这里(`SECRET_KEY_RE` / `SECRET_STORE_KEY_RE`)
@@ -156,13 +156,15 @@ export function isTransferableSettingKey(key: string): boolean {
   // 【MC-031 / MC-052】安全授信一律不可迁移 —— 单列一类,不是再往排除表里加一条。
   if (SECURITY_GRANT_KEYS.has(key)) return false;
   if (SECURITY_GRANT_PREFIXES.some((p) => key.startsWith(p))) return false;
-  // 【ARC-006 创建≠执行授权】**工作流执行授权标记**(`workflow.review.v1.<id>`)同属
-  // "安全授信":它是"这条自动化 / 外来工作流能不能无人值守执行"的唯一事实。导出档
-  // 是用户拿去分享 / 搬机器的 —— 让它跟着走,导入一份"设置备份"就等于替用户预先
-  // 批准了某条外来自动化。判据走 `@contracts/ipc` 的共享谓词,与通用 `setting.set`
-  // 的拒绝是同一份(别在这里另写 `startsWith`)。注意前缀只到 `review.v1.`:
-  // `workflow.nodePrefs.<id>`(显示偏好)仍要可迁移。
-  if (isWorkflowReviewSettingKey(key)) return false;
+  // 【ARC-006 创建≠执行授权】**工作流执行信任事实**同属"安全授信":审批记录
+  // (`workflow.review.v1.<id>`)是"这条自动化 / 外来工作流能不能无人值守执行"的唯一
+  // 事实;「恢复默认」快照(`workflow.pinnedDefaults`)是**不过审直接落库**的完整文档
+  // —— 它的信任前提正是"只由 pinWorkflowDefault 写入、而钉之前已过审"。导出档是用户
+  // 拿去分享 / 搬机器的 —— 让它跟着走,导入一份"设置备份"就等于替用户预先批准了某条
+  // 外来自动化(或种下一份未经当前审批、恢复后即可执行的文档)。判据走 `@contracts/ipc`
+  // 的共享谓词,与通用 `setting.set` 的拒绝是同一份(别在这里另写 `startsWith`/整键比较)。
+  // 注意前缀只到 `review.v1.`:`workflow.nodePrefs.<id>`(显示偏好)仍要可迁移。
+  if (isWorkflowExecutionTrustSettingKey(key)) return false;
   if (EXCLUDED_KEYS.has(key)) return false;
   return !EXCLUDED_PREFIXES.some((p) => key.startsWith(p));
 }

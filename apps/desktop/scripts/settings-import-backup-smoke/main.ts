@@ -66,7 +66,7 @@ const WORK = mkdtempSync(join(tmpdir(), "mcode-settings-import-work-"));
 process.env.MCODE_SMOKE_DATA_ROOT = DATA;
 setUserData(USER_DATA);
 
-const { IPC } = await import("@contracts/ipc");
+const { IPC, WORKFLOW_PINNED_DEFAULTS_SETTING_KEY } = await import("@contracts/ipc");
 const { registerSettingsTransferHandlers } = await import("@main/ipc/settingsTransfer.js");
 const { initDb, getDb } = await import("@main/store/db.js");
 const { SettingRepo } = await import("@main/store/repositories.js");
@@ -478,6 +478,79 @@ console.log("\nMC-029:恢复**不得**误删敏感/本机键(它们本就不在�
     isTransferableSettingKey(`workflow.nodePrefs.${REVIEW_WF}`) === true,
   );
   SettingRepo.delete(REVIEW_KEY);
+}
+
+/* ──────────────── 【ARC-006 残余】「恢复默认」快照(workflow.pinnedDefaults)也不得随设置迁移 ────────────────
+ *
+ * 上一片修掉了 `workflow.review.v1.<id>` 族(审查记录)。同一条信任链上还有一份:
+ * 「设为默认」(pinWorkflowDefault)钉下的**完整工作流快照**,存在设置表
+ * `workflow.pinnedDefaults`。用户点「恢复默认」时,它被**直接写回 workflows 表 ——
+ * 不再过审、不跑存盘校验**(见 `restoreWorkflowDefault`)。
+ *
+ * 它的信任前提是"快照只可能由 pinWorkflowDefault 写进来,而钉之前必须过审"
+ * (`pinWorkflowDefault` 对 `workflowReviewError(doc) !== null` 的文档直接拒绝)。
+ * 设置导入 / 导出一旦能带这个键,前提就断了:一份被诱导导入的"设置备份"可以替用户
+ * 种下一份**未经当前审批**的文档,之后用户(或 Agent 经 `workflow.restoreDefault`)
+ * 点一次恢复,它就成了一条没有 review 标记、被当成"本机旧文档"直接放行的可执行
+ * 工作流 —— 与审查记录族同一个洞,只是绕一层。
+ *
+ * 判据与审查记录族共用一份(`isWorkflowExecutionTrustSettingKey`),这里钉四处:
+ * 纯判据 / 完整恢复不误删 / 导入不夹带 / 导出不携带。 */
+
+console.log("\nARC-006 残余:「恢复默认」快照不可迁移,也不得被完整恢复误删");
+{
+  const PINNED_KEY = WORKFLOW_PINNED_DEFAULTS_SETTING_KEY;
+  // 一份"看起来像快照表"的值。这里验的是**键**的迁移判据,不是快照内容 —— 伪造者
+  // 要的正是让这个值原样落库,恢复时原样写回。
+  const localSnapshot = JSON.stringify({
+    wf_pinned_local: { id: "wf_pinned_local", name: "本机钉过的", nodes: [], edges: [], builtin: false, updatedAt: 0 },
+  });
+  const forgedSnapshot = JSON.stringify({
+    wf_pinned_evil: { id: "wf_pinned_evil", name: "夹带来的", nodes: [], edges: [], builtin: false, updatedAt: 0 },
+  });
+
+  // ① 纯判据 —— 与审查记录族同一档(不可迁移)。
+  eq("★ ARC-006 残余:workflow.pinnedDefaults 不可迁移", isTransferableSettingKey(PINNED_KEY), false);
+
+  // ② 完整恢复:它不在备份里,但**不可迁移** → 绝不能因"备份里没有"被删掉。
+  SettingRepo.set(PINNED_KEY, localSnapshot);
+  const restoreFile = join(WORK, "restore-keeps-pinned.json");
+  writeFileSync(restoreFile, `${JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: new Date().toISOString(),
+    settings: { "ui.locale": "A" },
+  }, null, 2)}\n`, "utf8");
+  clearBackups();
+  resetDialog(); pushOpenResult({ canceled: false, filePaths: [restoreFile] });
+  const restored = (await IMPORTER!(null, { mode: "restore" })) as ImportResult;
+  eq("恢复成功", restored.ok, true);
+  eq("★ ARC-006 残余:「恢复默认」快照未被完整恢复误删", SettingRepo.get(PINNED_KEY), localSnapshot);
+
+  // ③ 导入夹带:伪造快照整条进 skipped,既不落库也不覆盖本机已有快照。
+  const forgedFile = join(WORK, "import-with-pinned-defaults.json");
+  writeFileSync(forgedFile, `${JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: new Date().toISOString(),
+    settings: { "ui.locale": "en", [PINNED_KEY]: forgedSnapshot },
+  }, null, 2)}\n`, "utf8");
+  resetDialog(); pushOpenResult({ canceled: false, filePaths: [forgedFile] });
+  const imported = (await IMPORTER!(null, { mode: "merge" })) as ImportResult;
+  eq("夹带的导入仍成功(被挡下的键不影响整体)", imported.ok, true);
+  eq("★ 只有普通偏好被写入", imported.count, 1);
+  eq("★ 快照键进了 skipped(不是被静默忽略)", imported.skipped, 1);
+  eq("★ 夹带的伪造快照**没有覆盖**本机已有快照", SettingRepo.get(PINNED_KEY), localSnapshot);
+
+  // ④ 导出侧同一份判据:库里有快照,导出档里也不许出现它 —— 否则一份"设置备份"
+  //    就成了快照的分发渠道(值里还带着用户自己的工作流正文)。
+  const EXPORTER = handlers.get(IPC.SETTING_EXPORT_TO_PATH);
+  check("夹具:导出 handler 已注册", typeof EXPORTER === "function");
+  const out = join(WORK, "export-with-pinned.json");
+  const exported = (await EXPORTER!(null, { path: out })) as { ok: boolean; path?: string; error?: string };
+  check("导出成功", exported.ok === true, exported);
+  const doc = JSON.parse(readFileSync(out, "utf8")) as { settings: Record<string, string> };
+  eq("★ ARC-006 残余:导出档不含「恢复默认」快照键", PINNED_KEY in doc.settings, false);
+  eq("正控:普通偏好照常导出", doc.settings["ui.locale"], "en");
+
+  // 收尾:把快照键清掉,别影响后面的场景(它们各自会重新摆自己需要的键)。
+  SettingRepo.delete(PINNED_KEY);
 }
 
 /* ──────────────── MC-025:durable 落盘失败不得被当成导入成功 ──────────────── */

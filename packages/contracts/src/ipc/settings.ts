@@ -725,6 +725,41 @@ export function isWorkflowReviewSettingKey(key: string): boolean {
 }
 
 /**
+ * **「恢复默认」快照**的设置键 —— 值是 `Record<workflowId, WorkflowDoc>` 的 JSON。
+ * 写入方只有 `main/orchestration/library.ts` 的 `pinWorkflowDefault`(钉之前必须过
+ * 审阅闸:`workflowReviewError(doc) !== null` 直接拒绝)与 `removeWorkflow`(随删除清掉)。
+ *
+ * ## 为什么它和审批记录同一档
+ *
+ * 它**不是偏好**,是"恢复默认"这一刻要写回 `workflows` 表的**完整工作流文档**:
+ *
+ *  - `restoreWorkflowDefault` 把快照**直接落库、不再过审、不跑存盘校验**。它的信任
+ *    前提是"快照只可能由 `pinWorkflowDefault` 写进来,而钉的时候已经审过"。设置导入 /
+ *    导出一旦能带这个键,这个前提就断了 —— 一份被诱导导入的"设置备份"可以种下一份
+ *    未经审批的文档,用户点一次「恢复默认」(或 Agent 经 `workflow.restoreDefault`)
+ *    它就变成可执行工作流;而它没有 `workflow.review.v1.<id>` 标记,会被当成
+ *    "本机旧文档"直接放行。
+ *  - 反过来导出它也没有意义:键按本机 workflowId 存,换台机器 id 对不上;值里还带着
+ *    用户的工作流正文,而设置导出档正是用户拿去**分享 / 搬机器**的那个 JSON。
+ *
+ * 所以迁移判据(导入 / 导出 / 完整恢复的删除)与通用 `setting.set` 都必须认出它 ——
+ * 判据见 {@link isWorkflowExecutionTrustSettingKey},别在两处各写一遍字面量。
+ */
+export const WORKFLOW_PINNED_DEFAULTS_SETTING_KEY = "workflow.pinnedDefaults";
+
+/**
+ * 这个设置键是不是**工作流执行信任事实** —— 审查 / 批准记录,或「恢复默认」快照?
+ *
+ * 两者殊途同归:都决定"一条工作流能不能不过用户当前确认就执行"。签发口只有用户本人
+ * 在工作流页面上的操作(`workflow.approve` / `pinDefault`,对 Agent 都是 blocked),
+ * 所以设置导入 / 导出与通用 `setting.set` 必须用**同一判据**把这一族全部挡下 ——
+ * 不能一处按前缀、一处按整键、另一处漏掉。
+ */
+export function isWorkflowExecutionTrustSettingKey(key: string): boolean {
+  return isWorkflowReviewSettingKey(key) || key === WORKFLOW_PINNED_DEFAULTS_SETTING_KEY;
+}
+
+/**
  * Setting key under which the custom-model id used for git-commit-message
  * generation is persisted. Value is a config id from CustomModelStore, or
  * empty/null for "use built-in model". Shared between main (the generator
