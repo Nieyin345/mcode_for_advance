@@ -381,6 +381,15 @@ export class DocumentViewHost {
   }
 
   /**
+   * 【ARC-007】取某个视图的 webContents 句柄。生产只给**主进程内部**用
+   * （当前唯一调用方是真 Electron U1 探针与内部通道的身份反查）；渲染端拿不到
+   * 它（不在 RpcMap 里）。
+   */
+  webContentsOf(docId: string): DocumentViewWebContentsLike | null {
+    return this.views.get(docId)?.view.webContents ?? null;
+  }
+
+  /**
    * 【ARC-007】把一条 IPC 的 `event.sender` 映射回 docId。**身份由宿主决定**，
    * 页面说了不算 —— 页面改自己的 URL/参数都影响不到这一步。
    *
