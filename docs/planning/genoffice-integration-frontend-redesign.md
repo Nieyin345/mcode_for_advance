@@ -182,8 +182,7 @@ xlsx-gateway / markdown 转换）不 import Electron。
 - 编辑器工具已有干净协议：shell 推 `docs:mcp-command`，renderer 用同一
   `executeTool` 执行并回 `docs:mcp-result`（`shell/src/main/mcp/docs-bridge.ts`）。
 
-**结论**：保留 AI 管线/工具协议、去掉聊天 UI 是**构建与配置层面的排除**，不是架构改造：
-不注册 `ai:*`、不打包 `AiPanel`、不启用 Genspark/analytics；编辑动作走既有 MCP 命令桥。
+**结论（2026-10-18 已被用户需求推翻 —— 见下）**：原方案是「保留 AI 管线/工具协议、去掉聊天 UI」的构建层排除。**这条不再成立**：用户实际试用了 GenOffice 官方软件后明确要求「genoffice 和 ai 的交互方式我要**完全的保留下来**」—— 选中元素 → 弹输入框 → 输入 → 确认 → 记录出现在侧边栏聊天对话；并明确「比我之前的 mcode 的 ai 交互编辑好太多了」。因此 `AiPanel` 与它的选择→弹框→侧栏会话交互**要保留**；需要重新裁决的是后端（vendor 的 ai-provider vs Mcode 三引擎）与权限/审批的接法，而不是「去掉聊天 UI」。测绘与三种落法见 `docs/planning/genoffice-ai-interaction.md`。
 
 **CLI 能力与限制**：`convert/create/read/apply/render/info/merge/pdf/sheet/slides/...`；
 单文件 esbuild CJS bundle（externals 仅 electron/jsdom/mermaid），可在
