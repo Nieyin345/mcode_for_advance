@@ -39,9 +39,11 @@
  * `flows.json` / `flows_cred.json` / `.config.runtime.json` 等是**用户数据**，
  * 本模块不读、不写、不备份、不删除 —— 有断言钉住。
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  constants,
   copyFileSync,
+  lstatSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -101,14 +103,31 @@ export function buildManifest(engineId: string, content: string): BootstrapManif
   };
 }
 
-/** 读清单。缺失 / 坏 JSON / 形状不符 → null（调用方按「没有清单」处理）。 */
-export function readManifest(path: string): BootstrapManifest | null {
-  let raw: string;
+/**
+ * 受管脚本/清单只允许原生普通文件。文件型 symlink 即使当前指向正确字节，
+ * 也可能把备份读口引向 dataDir 外部；目录/特殊文件不能被误判为首次安装。
+ * lstat 与后续读取仍有 TOCTOU：这不是跨进程锁或 OS 沙箱。
+ */
+function managedFileExists(path: string): boolean {
   try {
-    raw = readFileSync(path, "utf8");
-  } catch {
-    return null;
+    const info = lstatSync(path);
+    // isFile() also returns true for NTFS/POSIX hardlinks. With nlink>1
+    // the managed file is shared with an external path even without symlinks:
+    // never trust/copy it into backup or mark a linked manifest unchanged.
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+      throw new Error("受管引导文件必须是独立普通文件（拒绝软/硬链接及特殊文件）：" + path);
+    }
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
   }
+}
+
+/** 读清单：仅真正不存在 / 坏 JSON / 形状不符返回 null；其他读取异常必须拒绝更新。 */
+export function readManifest(path: string): BootstrapManifest | null {
+  if (!managedFileExists(path)) return null;
+  const raw = readFileSync(path, "utf8");
   try {
     const value: unknown = JSON.parse(raw);
     if (typeof value !== "object" || value === null) return null;
@@ -129,11 +148,15 @@ export function readManifest(path: string): BootstrapManifest | null {
   }
 }
 
-/** 同目录原子写：先写 `<path>.tmp`，再 rename 覆盖；Windows 上 rename 覆盖文件可行。 */
+/**
+ * 同目录原子写。每次写入使用自己的 staging 文件并独占创建，不能使用固定
+ * `<path>.tmp`：两个并行引擎启动/上次崩溃留下的 staging 会被互相覆盖，
+ * 甚至在 rename 时交错提交错误版本。失败后只清理本次创建的文件。
+ */
 function atomicWrite(path: string, content: string): void {
-  const staging = `${path}.tmp`;
-  writeFileSync(staging, content, "utf8");
+  const staging = `${path}.tmp-${randomUUID()}`;
   try {
+    writeFileSync(staging, content, { encoding: "utf8", flag: "wx" });
     renameSync(staging, path);
   } catch (err) {
     try {
@@ -164,12 +187,17 @@ export function ensureEngineBootstrap(opts: {
 
   let currentBytes: Buffer | null = null;
   try {
-    currentBytes = readFileSync(bootstrapPath);
-  } catch {
-    currentBytes = null;
+    if (managedFileExists(bootstrapPath)) currentBytes = readFileSync(bootstrapPath);
+  } catch (err) {
+    return { ok: false, action: null, backupPath: null, reason: "引导脚本读取失败：" + String(err) };
   }
 
-  const manifest = readManifest(manifestPath);
+  let manifest: BootstrapManifest | null;
+  try {
+    manifest = readManifest(manifestPath);
+  } catch (err) {
+    return { ok: false, action: null, backupPath: null, reason: "引导清单读取失败：" + String(err) };
+  }
   const manifestMatches = manifest !== null
     && manifest.engineId === opts.engineId
     && manifest.bootstrap.version === BOOTSTRAP_VERSION
@@ -208,9 +236,11 @@ export function ensureEngineBootstrap(opts: {
   try {
     if (currentBytes !== null) {
       const stamp = (opts.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
-      backupPath = `${bootstrapPath}.bak-${stamp}`;
-      // 用字节级复制，备份内容与旧文件逐字节一致（不做 utf8 往返）。
-      copyFileSync(bootstrapPath, backupPath);
+      // 同一毫秒可发生多次升级/恢复。旧的仅时间戳文件名会覆盖先前
+      // 的原始备份，违背每次升级都可逆。UUID + COPYFILE_EXCL 双重防撞。
+      backupPath = `${bootstrapPath}.bak-${stamp}-${randomUUID()}`;
+      // 用字节级复制，且绝不覆盖已有历史备份。
+      copyFileSync(bootstrapPath, backupPath, constants.COPYFILE_EXCL);
     }
     atomicWrite(bootstrapPath, opts.content);
     atomicWrite(manifestPath, expectedManifestText);

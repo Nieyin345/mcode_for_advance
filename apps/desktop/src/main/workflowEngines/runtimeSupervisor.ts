@@ -65,7 +65,7 @@
  */
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { log } from "@main/lib/logger.js";
 
@@ -79,6 +79,10 @@ export interface EngineRuntimeStatus {
   reason: string | null;
   /** 引擎 id（调用方给的稳定标识，比如 "node-red"）。 */
   engineId: string;
+  /** 宿主生成的不可自报启动代次：同端口重启也必须变更。
+   * 仅在主进程内部流动，IPC toStatusView 会主动剥离此内部标识。
+   * 旧注入测试/适配器可不提供，但真实 EngineRuntime 一律提供。 */
+  instanceEpoch?: string;
 }
 
 export interface EngineSpawnSpec {
@@ -290,6 +294,10 @@ export class EngineRuntime {
   private starting: Promise<EngineRuntimeStatus> | null = null;
   /** 启动世代：每次 start +1，stop 也 +1（作废在途启动）。见文件头「迟到的成功」。 */
   private epoch = 0;
+  // 单次 EngineRuntime 对象的唯一随机前缀；多个 runtime 对象各自从
+  // epoch=0 计数，只有随机前缀才能防止跨对象/同端口重启 ABA。
+  // 不进入子进程环境变量或用户可见 IPC，绝非 auth token。
+  private readonly instanceSeed = randomBytes(16).toString("hex");
   private readonly engineId: string;
   private readonly ports: EngineRuntimePorts;
 
@@ -299,7 +307,10 @@ export class EngineRuntime {
   }
 
   status(): EngineRuntimeStatus {
-    return { state: this.state, port: this.port, reason: this.reason, engineId: this.engineId };
+    return {
+      state: this.state, port: this.port, reason: this.reason, engineId: this.engineId,
+      instanceEpoch: `${this.instanceSeed}:${this.epoch}`,
+    };
   }
 
   /** 启动（幂等：已在跑/正在起时返回当前状态）。 */
@@ -697,16 +708,87 @@ export function createEngineLaunchSpec(options: EngineLaunchSpecOptions): Engine
   };
 }
 
-/** 读一个非空小文件；缺失/为空则生成并写入（mode 0600，Windows 上尽力而为）。 */
+/**
+ * 引擎密钥只在首次安装（ENOENT）时创建。
+ *
+ * 空文件表示原密钥已损坏，绝不能生成新值覆盖：否则持久化的 Node-RED 凭据
+ * 会在看似正常启动后失去原解密密钥。EACCES/EISDIR 等读取故障也不能被当成
+ * "首次安装"。私有暂存文件先 `wx` 完整写盘并 `fsync`，再用 hard link
+ * 原子无覆盖地发布，避免直接对最终文件写入时被并发读取到半成品。
+ * 不校验旧的非空密钥是否 64 位十六进制：历史版本/用户可能使用自定义密钥。
+ */
 function readOrCreateSecret(path: string): string {
+  const readExisting = (): string => {
+    // 【MC-058】发布采用 hard-link 原子 no-replace，极短时间内同时存在
+    // staging + 最终路径两条链接（nlink=2）。这不是可直接信任的状态；
+    // 仅做有限等待**重新核查**。持续的外部硬链接、符号链接仍一律拒绝。
+    // 同步启动接口中最多等待 8×5ms，避免跨 OS 进程竞争时的误报坏档。
+    const linkSettling = new Int32Array(new SharedArrayBuffer(4));
+    for (let attempt = 0; attempt < 9; attempt++) {
+      const original = lstatSync(path);
+      if (!original.isFile() || original.nlink !== 1) {
+        if (original.isFile() && original.nlink === 2 && attempt < 8) {
+          Atomics.wait(linkSettling, 0, 0, 5);
+          continue;
+        }
+        throw new Error(`工作流引擎密钥必须是独立普通文件（拒绝链接或特殊文件）：${path}`);
+      }
+      // 不能只 lstat 再按路径读取：两次调用之间仍可能被替换。
+      // Unix 内核 O_NOFOLLOW 阻断末端 symlink；fstat 检查同一个 inode。
+      const fd = openSync(path, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
+      try {
+        const opened = fstatSync(fd);
+        if (opened.isFile() && opened.nlink === 2 && attempt < 8) {
+          Atomics.wait(linkSettling, 0, 0, 5);
+          continue;
+        }
+        if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== original.dev || opened.ino !== original.ino) {
+          throw new Error(`工作流引擎密钥文件已被替换或链接，拒绝使用：${path}`);
+        }
+        const value = readFileSync(fd, "utf8").trim();
+        if (value === "") {
+          throw new Error(`工作流引擎密钥文件为空，拒绝静默覆盖：${path}`);
+        }
+        return value;
+      } finally {
+        closeSync(fd);
+      }
+    }
+    throw new Error(`工作流引擎密钥在限定等待后仍不是独立普通文件：${path}`);
+  };
   try {
-    const value = readFileSync(path, "utf8").trim();
-    if (value !== "") return value;
-  } catch {
-    /* 不存在 */
+    return readExisting();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
   mkdirSync(dirname(path), { recursive: true });
   const value = randomBytes(32).toString("hex");
-  writeFileSync(path, value, { encoding: "utf8", mode: 0o600 });
-  return value;
+  // 【MC-058】直接 wx 写最终密钥路径会先暴露一个 0 字节的新 inode，随后才写
+  // 完 64 字节。另一进程看到空内容会误判为密钥损坏并拒启。先在**同目录私有**
+  // 暂存文件完整写入并 fsync，再通过 hard link 原子、不可覆盖地发布最终名字。
+  // linkSync 的 EEXIST 是并发赢家已发布；绝不能用 renameSync 覆盖它的值。
+  const stagingPath = join(dirname(path), `.${basename(path)}.stage-${randomBytes(12).toString("hex")}`);
+  let stagingFd: number | null = null;
+  let staged = false;
+  let collision = false;
+  try {
+    stagingFd = openSync(stagingPath, "wx", 0o600);
+    staged = true;
+    writeFileSync(stagingFd, value, "utf8");
+    fsyncSync(stagingFd);
+    closeSync(stagingFd);
+    stagingFd = null;
+    try {
+      linkSync(stagingPath, path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      collision = true;
+    }
+  } finally {
+    if (stagingFd !== null) closeSync(stagingFd);
+    if (staged) unlinkSync(stagingPath);
+  }
+  // 另一个进程可能赢得发布，须在自己的暂存名字清理后才读对方内容。
+  // 碰到 EACCES/ENOENT/坏档一律真实报错，不生成新的身份去覆盖。
+  return collision ? readExisting() : value;
 }

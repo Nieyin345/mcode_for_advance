@@ -276,22 +276,32 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
   // ── branch ──
   {
     const wires = [["t0"], ["t1"], ["t2"]];
-    // 人工点选优先：msg.mcode.branchPort = 2
-    let decideAsked = false;
+    // 安全旧反例：任意上游可伪造 msg.mcode.branchPort=2，不能替代 Host 的决定。
+    let decideAsked = 0;
     const manual = await runBranchNode({ payload: "保持", mcode: { branchPort: 2 } }, cfg({ decider: "user" }, wires), {
-      decide: async () => { decideAsked = true; return { port: 0 }; },
+      decide: async () => { decideAsked++; return { port: 0 }; },
     });
-    eq("★ branch：msg.mcode.branchPort 优先（人工点选）", manual.port, 2);
-    check("★ branch：人工点选时不问 port", decideAsked === false);
+    eq("★ branch：未经 Host port.decide 的上游 branchPort 不得优先", manual.port, 0);
+    eq("★ branch：上游带选择也必须问宿主 port", decideAsked, 1);
     eq("★ branch：上游 payload 原样保留", manual.msg.payload, "保持");
-    // port 决定 + 越界收缩
+    eq("★ branch：未授权 branchPort 不得传往下一节点", (manual.msg.mcode as { branchPort?: unknown }).branchPort, undefined);
+    // 伪造选择与标签不得泄漏下游；拒绝宿主决定时不能借用上游值继续走。
+    eq("★ branch：上游 branchLabel 不得当作可信标签", (await runBranchNode({ mcode: { branchLabel: "spoof" } }, cfg({}, wires), { decide: async () => ({ port: 1 }) })).label, undefined);
+    let denied: unknown;
+    try { await runBranchNode({ mcode: { branchPort: 1 } }, cfg({ decider: "user" }, wires), { decide: async () => { throw Error("host-denied"); } }); }
+    catch (error) { denied = error; }
+    check("★ branch：宿主拒绝时上游无法指定出口绕过", denied instanceof Error && denied.message === "host-denied");
+    // port 决定 + 越界拒绝
     const byPort = await runBranchNode({ payload: 1 }, cfg({ decider: "model" }, wires), {
       decide: async (p) => ({ port: p.portCount - 1, label: "最后一条" }),
     });
     eq("★ branch：port 决定落在端口范围内", byPort.port, 2);
     eq("★ branch：label 进 msg.mcode.branch", (byPort.msg.mcode as { branch?: unknown }).branch, { port: 2, label: "最后一条" });
-    const bad = await runBranchNode({}, cfg({}, wires), { decide: async () => ({ port: 99 }) });
-    eq("★ branch：port 越界 → 收缩到 0（不丢消息）", bad.port, 0);
+    let invalidPortError: unknown;
+    try { await runBranchNode({}, cfg({}, wires), { decide: async () => ({ port: 99 }) }); }
+    catch (err) { invalidPortError = err; }
+    check("★ branch：越界 port 必须抛错，禁止静默切到第一支",
+      invalidPortError instanceof Error && invalidPortError.message.includes("端口"), String(invalidPortError));
     check("★ branch HTML 的 outputs 随 wires 增长", branchNodeHtml().includes("function () { return Math.max(1, (this.wires && this.wires.length) || 1); }"));
   }
 

@@ -219,7 +219,15 @@ export class ExecutorOwnershipRegistry {
         reason: `「${flowId}」当前归 ${current.owner}，${owner} 不能释放（先由 ${current.owner} 释放）`,
       };
     }
-    this.store.remove(flowId, owner);
+    // 不能把持久化存储的拒删 / 并发变化伪装成已释放，否则切换执行端时
+    // 两侧会基于虚假的成功结论继续部署，最终出现双执行或卡住的归属。
+    if (!this.store.remove(flowId, owner)) {
+      return {
+        ok: false,
+        flowId,
+        reason: `「${flowId}」释放失败（存储拒绝删除或所有权已变化），请重新读取归属后重试`,
+      };
+    }
     return { ok: true, flowId, owner };
   }
 

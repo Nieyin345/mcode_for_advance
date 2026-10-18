@@ -148,6 +148,7 @@ import {
   newDecoder,
   processResultStructured,
   readRichDocument,
+  renderPdfPage,
   readTextRange,
   readUrlText,
   remoteJobStatusStructured,
@@ -182,6 +183,7 @@ export const AGENT_READONLY_TOOLS = new Set([
   "agent_read_file",
   "agent_read_files",
   "agent_read_document",
+  "agent_render_pdf_page",
   "agent_read_image",
   "agent_read_docx_xml",
   "agent_read_url",
@@ -522,13 +524,19 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_read_document",
       description:
-        "读取 PDF / DOCX / XLSX / PPTX 为模型可直接使用的文本。PDF 走内置 pdfjs；DOCX 优先 pandoc；" +
-        "Excel/PowerPoint 使用本机 Python 文档工具链。Excel 支持 sheet/range，输出有硬上限。",
+        "读取 PDF / DOCX / XLSX / PPTX。默认 reader=auto 优先复用 GenOffice 原生 CLI 文档工具；仅其不可用或参数不兼容时使用历史只读解析器。reader=genoffice 禁止静默回退；reader=native 显式使用旧实现。" +
+        "Excel/PowerPoint 使用本机 Python 文档工具链。PDF 传 pdf_mode=layout 可查看真实书签、逐页文字坐标、图像绘制指令；配合 agent_render_pdf_page 查看图表与扫描页。布局仅近似、不做 OCR。",
       inputSchema: {
         path: z.string().min(1).describe("文档路径"),
         sheet: z.string().optional().describe("Excel 工作表名；省略取第一张"),
         range: z.string().optional().describe("Excel 范围，如 A1:D50；省略从左上角读取"),
-        max_pages: z.number().int().min(1).max(500).optional().describe("PDF 最多解析页数，默认 200"),
+        max_pages: z.number().int().min(1).max(500).optional().describe("PDF 最多解析页数；文本模式默认 200，layout 模式默认 10"),
+        page_start: z.number().int().min(1).optional().describe("PDF 起始页(从 1 开始)，文本与布局模式均可配合 max_pages 分页"),
+        reader: z.enum(["auto", "genoffice", "native"]).optional().describe("读取引擎：auto=GenOffice 优先、不可用才用历史读取(默认)；genoffice=仅 GenOffice/失败如实返回；native=强制历史解析器"),
+        pdf_mode: z.enum(["text", "layout"]).optional().describe("PDF：text=按页文本(默认)；layout=本地 pdfjs 的布局线索(GenOffice PDFium 不提供 x/y 坐标，需要 reader=native)"),
+        docx_mode: z.enum(["text", "structure"]).optional().describe("DOCX：text=原有 Markdown/纯文本(默认)；structure=OOXML 原始段落 styleId 与表格单元格"),
+        block_start: z.number().int().min(1).optional().describe("DOCX structure 模式起始 Block 编号，从 1 开始"),
+        max_blocks: z.number().int().min(1).max(100).optional().describe("DOCX structure 每次最多读取的顶层结构块，默认 30、最多 100"),
         max_slides: z.number().int().min(1).max(1000).optional().describe("PPTX 最多解析页数，默认 200"),
         max_rows: z.number().int().min(1).max(1000).optional().describe("Excel 最多返回行数，默认 200"),
         max_cols: z.number().int().min(1).max(200).optional().describe("Excel 最多返回列数，默认 50"),
@@ -539,6 +547,12 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         sheet?: string;
         range?: string;
         max_pages?: number;
+        page_start?: number;
+        pdf_mode?: "text" | "layout";
+        reader?: "auto" | "native" | "genoffice";
+        docx_mode?: "text" | "structure";
+        block_start?: number;
+        max_blocks?: number;
         max_slides?: number;
         max_rows?: number;
         max_cols?: number;
@@ -549,11 +563,41 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           sheet: args.sheet,
           range: args.range,
           maxPages: args.max_pages,
+          pageStart: args.page_start,
+          pdfMode: args.pdf_mode,
+          reader: args.reader,
+          docxMode: args.docx_mode,
+          blockStart: args.block_start,
+          maxBlocks: args.max_blocks,
           maxSlides: args.max_slides,
           maxRows: args.max_rows,
           maxCols: args.max_cols,
           maxChars: args.max_chars,
         })),
+    },
+
+    {
+      name: "agent_render_pdf_page",
+      description:
+        "通过 GenOffice 自带 PDFium 渲染 PDF 页面 PNG（优先）并返回 MCP image block；GenOffice 不可用时兼容使用本机 PyMuPDF JPEG。" +
+        "页码从 1 开始；输出 ≤6 MiB / 最大边 ≤2000px，不执行 OCR；PNG 仅写入系统临时目录并在本次调用后删除，不更改用户 PDF。" +
+        "可用 renderer=genoffice/native 显式选择；无视觉输入的客户端不能看到页面内容。",
+      inputSchema: {
+        path: z.string().min(1).describe("PDF 文件路径"),
+        page: z.number().int().min(1).describe("页码，从 1 开始"),
+        max_dimension: z.number().int().min(400).max(2000).optional().describe("最大边像素，默认 1400"),
+        renderer: z.enum(["auto", "genoffice", "native"]).optional().describe("渲染引擎：auto=GenOffice PDFium 优先(默认)，genoffice=不回退，native=仅 Python PyMuPDF"),
+      },
+      handler: async (args: { path: string; page: number; max_dimension?: number; renderer?: "auto" | "genoffice" | "native" }, ctx) => {
+        try {
+          const abs = pOfRead(ctx, args.path, "read");
+          const rendered = await renderPdfPage({ abs, page: args.page, maxDimension: args.max_dimension, renderer: args.renderer });
+          return image(rendered.base64, rendered.mime,
+            `[PDF 第 ${args.page}${rendered.pageCount === null ? "" : "/" + rendered.pageCount} 页；${rendered.width}×${rendered.height}px；${rendered.mime}] 实际页面图像；未执行 OCR；无视觉输入则不能凭尺寸猜测内容。`);
+        } catch (error) {
+          return fail(error instanceof Error ? error.message : String(error));
+        }
+      },
     },
 
     {

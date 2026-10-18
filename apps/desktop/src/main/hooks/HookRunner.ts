@@ -113,7 +113,7 @@ function effectiveSpec(spec: HookSpec, policy: DeliveryPolicy): HookSpec {
 class HookRunner {
   private started = false;
   /** 缓存的钩子定义 + 它对应的文件时间戳(`null` = 文件当时不存在)。 */
-  private cache: { hooks: HookSpec[]; stamp: number | null } = { hooks: [], stamp: null };
+  private cache: { hooks: HookSpec[]; stamp: string | null } = { hooks: [], stamp: null };
   /** 每条钩子**正在跑**的进程数。见文件头第 2 条不变量与 `deliveryPolicy.maxConcurrency`。 */
   private inFlight = new Map<string, number>();
   /** 【ARC-007】`COALESCE` 策略下**攒着待跑**的那一批(每条钩子至多一格)。 */
@@ -617,9 +617,15 @@ class HookRunner {
   /** 最近的钩子定义。见文件头"每次事件都重新看一遍文件"。 */
   private hooksNow(): HookSpec[] {
     const file = hooksFilePath();
-    let stamp: number | null = null;
+    let stamp: string | null = null;
     try {
-      stamp = statSync(file).mtimeMs;
+      const stat = statSync(file);
+      // hooks.json is published by atomic rename. Two different documents can
+      // have identical mtime (coarse FS clocks, copied timestamps or rapid
+      // updates), including the same byte length. Include file identity and
+      // change time so the new inode is never mistaken for the old contents.
+      // Reading/hash-parsing the whole file on every SDK event is unnecessary.
+      stamp = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`;
     } catch {
       stamp = null; // 文件不在 = 一条钩子都没有(正常状态)
     }

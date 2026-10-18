@@ -142,8 +142,9 @@ export interface McodeBranchPort {
 /**
  * 一次分支执行：返回**目标端口号**与要发往下游的 msg。
  *
- * 决定顺序：`msg.mcode.branchPort`（人工点选/上游显式指定，整数且落在端口范围内）
- * 优先；否则问 port。端口号按 `config.wires.length` 收缩（越界取 0）。
+ * 只能经受信 Host 的 `port.decide` 选择目标出口。上游的 `msg.mcode.branchPort`
+ * 可由任意 Node-RED 节点构造，**不是**用户批准，不能跳过 Host 判定。
+ * 无效结果必须失败并交 Node-RED Catch，禁止静默转入第 0 出口。
  */
 export async function runBranchNode(
   inputMsg: Record<string, unknown>,
@@ -152,20 +153,13 @@ export async function runBranchNode(
 ): Promise<{ msg: Record<string, unknown>; port: number; label?: string }> {
   const base = basePayload(inputMsg, config);
   const portCount = Math.max(1, config.wires?.length ?? 1);
-  const incoming = (inputMsg["mcode"] !== null && typeof inputMsg["mcode"] === "object"
-    ? inputMsg["mcode"]
-    : {}) as Record<string, unknown>;
-  let chosen: { port: number; label?: string };
-  const manual = incoming["branchPort"];
-  if (typeof manual === "number" && Number.isInteger(manual) && manual >= 0 && manual < portCount) {
-    chosen = { port: manual, ...(typeof incoming["branchLabel"] === "string" ? { label: incoming["branchLabel"] } : {}) };
-  } else {
-    chosen = await port.decide({
-      ...base,
-      portCount,
-      decider: typeof base.params["decider"] === "string" ? (base.params["decider"] as string) : "user",
-    });
-    if (!Number.isInteger(chosen.port) || chosen.port < 0 || chosen.port >= portCount) chosen = { port: 0 };
+  const chosen = await port.decide({
+    ...base,
+    portCount,
+    decider: typeof base.params["decider"] === "string" ? (base.params["decider"] as string) : "user",
+  });
+  if (!chosen || typeof chosen !== "object" || !Number.isInteger(chosen.port) || chosen.port < 0 || chosen.port >= portCount) {
+    throw new Error("分支端口无效，拒绝执行");
   }
   const msg = outputMsg(
     inputMsg,
@@ -175,6 +169,8 @@ export async function runBranchNode(
   );
   // branch 不该把上游 payload 清成空产出：把上游 payload 原样放回。
   msg["payload"] = inputMsg["payload"] ?? null;
+  delete (msg["mcode"] as Record<string, unknown>)["branchPort"];
+  delete (msg["mcode"] as Record<string, unknown>)["branchLabel"];
   return { msg, port: chosen.port, ...(chosen.label !== undefined ? { label: chosen.label } : {}) };
 }
 

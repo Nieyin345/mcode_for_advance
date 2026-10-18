@@ -1,6 +1,6 @@
 /**
  * 【ARC-006 Gate C】**迁移前的无损备份**：把原始 WorkflowDoc 的字节写进
- * `<数据根>/workflow-migrations/<id>-<时间戳>.json`。
+ * `<数据根>/workflow-migrations/<safe-id>-<id-hash>-<时间戳>-<nonce>.json`。
  *
  * ## 三条纪律
  *
@@ -14,9 +14,10 @@
  *
  * ## 文件名
  *
- * `<sanitized-id>-<ISO 时间戳>.json`：`:` / `.` 在 Windows 文件名里非法或易被误读，
- * 统一折成 `-`（时间戳精确到毫秒且带 `Z`，同一毫秒内同一 id 不会撞 —— 真撞了
- * `atomicReplaceFile` 会覆盖，而两份同一毫秒的备份本来就等价）。
+ * `<sanitized-id>-<id-hash>-<ISO 时间戳>-<nonce>.json`：`:` / `.` 折成 `-`；
+ * 原 ID 哈希区分 `a/b` 与 `a:b` 等折叠碰撞；随机 UUID 使同一 id、同一毫秒、
+ * 不同原文的连续迁移产生独立备份，绝不覆盖以前的可抢救字节。
+ * 文件名前缀限制为 48 字符，避免超长 ID 触发 Windows 文件名长度限制。
  *
  * ## 它不做什么
  *
@@ -24,7 +25,7 @@
  * 切片的事，本切片只保证"迁移之前，原文一定有一份可读的字节"。
  */
 import { mkdir } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 
@@ -40,11 +41,12 @@ export interface WorkflowMigrationBackup {
   sha256: string;
 }
 
-/** 把 id 折成安全的文件名片段（保留字母数字、`-`、`_`，其余折 `-`）。 */
+/** 按原始 id + 备份事件生成不可覆盖的安全文件名（不是仅按毫秒作唯一键）。 */
 export function backupFileName(id: string, at: Date): string {
-  const safe = id.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "workflow";
+  const safe = (id.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "workflow").slice(0, 48);
+  const idHash = createHash("sha256").update(id, "utf8").digest("hex").slice(0, 12);
   const stamp = at.toISOString().replace(/[:.]/g, "-");
-  return `${safe}-${stamp}.json`;
+  return `${safe}-${idHash}-${stamp}-${randomUUID()}.json`;
 }
 
 /**

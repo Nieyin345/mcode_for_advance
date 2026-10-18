@@ -150,6 +150,7 @@ const EXCLUDED_PREFIXES = [
   "automation.missedSweptTo",
   "automation.triggerClaims",
   "automation.droppedUndelivered",
+  "automation.pendingBatches",
   "automation.selfTriggerCount.",
   "automation.selfTriggerAt.",
   // ── 【MC-026 复核】出厂内容的**本机记账**,不是偏好 ─────────────────────────

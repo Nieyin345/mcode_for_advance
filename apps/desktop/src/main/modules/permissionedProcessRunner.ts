@@ -46,6 +46,7 @@
  * 可以给出"这个扩展试图越界"的明确诊断,而不是一句笼统的失败。
  */
 import { spawnRun } from "@main/lib/spawnRun.js";
+import { randomBytes } from "node:crypto";
 import type { ModuleResult } from "@contracts/modules";
 import { ISOLATION_FAILURE_CODES, ISOLATION_FAILURE_MARKER } from "./isolatedActionRunner.js";
 
@@ -113,7 +114,12 @@ export interface PermissionedProcessOptions {
 const NETWORK_GUARD = String.raw`
 (function installNetworkGuard(){
   try {
-    const deny = (what) => function(){ throw new Error("network_access_denied: 扩展未声明网络权限(" + what + ")"); };
+    const DENY_MARKER = Symbol("mcode-network-denied");
+    const deny = (what) => {
+      const blocked = function(){ throw new Error("network_access_denied: 扩展未声明网络权限(" + what + ")"); };
+      Object.defineProperty(blocked, DENY_MARKER, { value: true });
+      return blocked;
+    };
     // 【MC-035】原型方法替换的**通用形状**:own-property 优先(不覆盖继承来的实现);
     // 属性不存在时跳过。prototype 本身可能不可写(极少),逐项在 try/catch 里吞掉 ——
     // 拦截装不上不应让扩展进程起不来,但已装上的部分照样生效。
@@ -228,28 +234,51 @@ const NETWORK_GUARD = String.raw`
     // 【MC-035】require("node:net") 与 import("node:net") 走同一个模块对象(实测),
     // 但 ESM 的**具名导出**是静态 facade —— 这里同步一次,让动态 import 也拿到替换后的
     // 函数(不依赖扩展是否拿到同步前的 facade)。
-    try { require("node:module").syncBuiltinESMExports(); } catch (e) {}
-  } catch (e) { /* 拦截本身失败不应让扩展崩溃 — 调用方仍会得到结果 */ }
+    // 【MC-035】旧版把守卫初始化错误全部吞掉：部分网络入口未能覆盖也继续
+    // 执行不可信工厂。这些核心入口若拦截失败，应直接终止子进程而不是 fail-open。
+    require("node:module").syncBuiltinESMExports();
+    const requireDenied = (obj, key, source) => {
+      if (!obj || typeof obj[key] !== "function" || obj[key][DENY_MARKER] !== true) {
+        throw new Error("network_guard_setup_failed: " + source + "." + key);
+      }
+    };
+    requireDenied(require("node:http"), "request", "http");
+    requireDenied(require("node:https"), "request", "https");
+    requireDenied(require("node:net"), "connect", "net");
+    requireDenied(require("node:net").Socket.prototype, "connect", "net.Socket.prototype");
+    requireDenied(require("node:tls"), "connect", "tls");
+    requireDenied(require("node:dgram"), "createSocket", "dgram");
+    requireDenied(require("node:dns"), "lookup", "dns");
+    if (typeof globalThis.fetch === "function") requireDenied(globalThis, "fetch", "globalThis");
+  } catch (e) {
+    throw new Error("network_guard_setup_failed: " + String(e && e.message || e));
+  }
 })();
 `;
 
+/** MC-035 临时协议硬化的真实边界：
+ * 每次调用的 proof + 间接 eval + 捕获原 stdout.write，只针对已复现的
+ * 「单行伪造、拿到局部 p、覆盖 write」进行防护；不构成不可信任意 JS 的认证通道。
+ * 子进程里更深层的 stream 原型修改/内部 write hook、OS 网络出站仍无强隔离保证。
+ * 完整闭环仍须采用可信独立监督层/OS 沙箱，并进行适用系统的真 U1 对抗验证。
+ */
 const BOOTSTRAP = [
   '"use strict";',
   'const MAX=8*1024*1024;',
   'let raw="";process.stdin.setEncoding("utf8");',
   'process.stdin.on("data",c=>{raw+=c;if(raw.length>MAX){process.stdout.write("@@mcode:ext-result "+JSON.stringify({ok:false,code:"input",message:"payload too large"})+"\\n");process.exit(0);}});',
   'process.stdin.on("end",()=>{ let p; try{p=JSON.parse(raw);}catch(e){process.stdout.write("@@mcode:ext-result "+JSON.stringify({ok:false,code:"input",message:String(e&&e.message||e)})+"\\n");return;}',
-  '  (async()=>{ try{',
-  '    const factory=eval("("+p.source+")");',
+  '  (async()=>{ const protocolWrite=process.stdout.write.bind(process.stdout); try{',
+  '    const factory=(0,eval)("("+p.source+")");',
   '    if(!factory||typeof factory!=="object")throw Error("扩展程序工厂没有求出对象");',
   '    const fn=factory[p.capability];',
   '    if(typeof fn!=="function")throw Error("扩展程序没有声明能力 "+p.capability);',
   '    const result=await fn(p.resource);',
-  '    process.stdout.write("@@mcode:ext-result "+JSON.stringify({ok:true,result})+"\\n");',
+  '    protocolWrite("@@mcode:ext-result "+JSON.stringify({ok:true,result,proof:p.proof})+"\\n");',
   '  }catch(e){',
   '    const message=String(e&&e.message||e);',
   '    const denied=/ERR_ACCESS_DENIED|Access to this API has been restricted|ERR_ACCESS_PERMISSION|permission/i.test(message);',
-  '    process.stdout.write("@@mcode:ext-result "+JSON.stringify({ok:false,code:denied?"denied":"failed",message})+"\\n");',
+  '    protocolWrite("@@mcode:ext-result "+JSON.stringify({ok:false,code:denied?"denied":"failed",message,proof:p.proof})+"\\n");',
   '  }})();',
   '});',
 ].join("\n");
@@ -277,15 +306,15 @@ const VERIFY_BOOTSTRAP = [
   '"use strict";',
   'const MAX=8*1024*1024;let raw="";process.stdin.setEncoding("utf8");',
   'process.stdin.on("data",c=>{raw+=c;if(raw.length>MAX){process.stdout.write("@@mcode:ext-verify "+JSON.stringify({ok:false,message:"payload too large"})+"\\n");process.exit(0);}});',
-  'process.stdin.on("end",()=>{ let p; try{p=JSON.parse(raw);}catch(e){process.stdout.write("@@mcode:ext-verify "+JSON.stringify({ok:false,message:String(e&&e.message||e)})+"\\n");return;}',
-  '  (async()=>{ try{',
-  '    const factory=eval("("+p.source+")");',
+  'process.stdin.on("end",()=>{ let p; try{p=JSON.parse(raw);}catch(e){process.stdout.write("@@mcode:ext-verify "+JSON.stringify({ok:false,message:String(e&&e.message||e),proof:p && p.proof})+"\\n");return;}',
+  '  (async()=>{ const protocolWrite=process.stdout.write.bind(process.stdout); try{',
+  '    const factory=(0,eval)("("+p.source+")");',
   '    if(!factory||typeof factory!=="object"||Array.isArray(factory))throw Error("扩展程序工厂没有求出对象");',
   '    const declared=Object.keys(factory);',
   '    if(declared.length>12)throw Error("扩展程序声明的能力过多");',
   '    for(const name of p.capabilities) if(typeof factory[name]!=="function")throw Error("扩展程序没有声明能力 "+name);',
-  '    process.stdout.write("@@mcode:ext-verify "+JSON.stringify({ok:true,declared})+"\\n");',
-  '  }catch(e){ process.stdout.write("@@mcode:ext-verify "+JSON.stringify({ok:false,message:String(e&&e.message||e)})+"\\n"); }})();',
+  '    protocolWrite("@@mcode:ext-verify "+JSON.stringify({ok:true,declared,proof:p.proof})+"\\n");',
+  '  }catch(e){ protocolWrite("@@mcode:ext-verify "+JSON.stringify({ok:false,message:String(e&&e.message||e),proof:p && p.proof})+"\\n"); }})();',
   '});',
 ].join("\n");
 
@@ -304,28 +333,38 @@ export async function verifyPermissionedProgram(
   capabilities: readonly string[],
   timeoutMs = 10_000,
 ): Promise<ProgramVerification> {
+  // 每次核验用独立随机关联值；阻断仅伪造一条 stdout 结果并 exit(0) 的旧反例。
+  // 扩展与引导程序仍同进程，关联值不代表 OS 沙箱或强隔离认证。
+  const proof = randomBytes(32).toString("hex");
   const result = await spawnRun({
     command: process.execPath,
-    args: ["--permission", "-e", VERIFY_BOOTSTRAP],
+    // 【MC-035】安装核验本身会求值不受信工厂；此时尚无逐次网络批准。
+    // 与正式执行共用同一网络防护，不允许工厂借核验期先行外传。
+    args: ["--permission", "-e", NETWORK_GUARD + VERIFY_BOOTSTRAP],
     env: permissionedEnv(),
-    stdin: JSON.stringify({ source, capabilities }),
+    stdin: JSON.stringify({ source, capabilities, proof }),
     timeoutMs,
     signal: new AbortController().signal,
     limitBytes: 64 * 1024,
   });
   if (result.spawnError) return { ok: false, reason: "核验进程启动失败:" + result.spawnError.message };
   if (result.killedBy.timeout) return { ok: false, reason: "核验进程超时(可能不是可求值的工厂)" };
-  const lines = result.stdout.split("\n");
-  let reply: VerifyReply | null = null;
-  for (let index = lines.length - 1; index >= 0 && reply === null; index--) {
-    const line = lines[index]!;
-    if (!line.startsWith("@@mcode:ext-verify ")) continue;
-    try {
-      const value = JSON.parse(line.slice("@@mcode:ext-verify ".length)) as unknown;
-      reply = value && typeof value === "object" ? (value as VerifyReply) : null;
-    } catch { reply = null; }
+  // 【MC-035】安装期未受信代码也能打印协议行；失败退出或协议被截断不得判成功。
+  if (result.code !== 0 || result.stdoutTruncated || result.stdoutLineTruncated) {
+    return { ok: false, reason: "核验进程异常退出或输出截断(exit=" + String(result.code) + ")" };
   }
+  // 不受信工厂也能打印 @@mcode 前缀；有多条结果行即协议污染，绝不选最后一条。
+  const replyLines = result.stdout.split("\n").filter((line) => line.startsWith("@@mcode:ext-verify "));
+  if (replyLines.length !== 1) {
+    return { ok: false, reason: "核验结果协议数量异常(" + replyLines.length + ")，拒绝不可信输出" };
+  }
+  let reply: VerifyReply | null = null;
+  try {
+    const value = JSON.parse(replyLines[0]!.slice("@@mcode:ext-verify ".length)) as unknown;
+    reply = value && typeof value === "object" ? (value as VerifyReply) : null;
+  } catch { reply = null; }
   if (!reply) return { ok: false, reason: "核验进程没有返回可识别结果(退出码 " + String(result.code) + ")" };
+  if (reply.proof !== proof) return { ok: false, reason: "核验协议关联值不匹配" };
   if (reply.ok !== true) {
     return { ok: false, reason: typeof reply.message === "string" ? reply.message : "程序核验失败" };
   }
@@ -344,8 +383,8 @@ export function permissionedEnv(): NodeJS.ProcessEnv {
   };
 }
 
-interface BootReply { ok?: unknown; result?: unknown; code?: unknown; message?: unknown }
-interface VerifyReply { ok?: unknown; declared?: unknown; message?: unknown }
+interface BootReply { ok?: unknown; result?: unknown; code?: unknown; message?: unknown; proof?: unknown }
+interface VerifyReply { ok?: unknown; declared?: unknown; message?: unknown; proof?: unknown }
 
 /** 隔离失败码全集(含 `isolated_denied`) —— 供 IPC/执行器的结果分类共用。 */
 export const PERMISSIONED_FAILURE_CODES = [...ISOLATION_FAILURE_CODES, "isolated_denied"] as const;
@@ -379,7 +418,9 @@ function parseReply(line: string): BootReply | null {
 export async function runPermissionedProcess(
   options: PermissionedProcessOptions,
 ): Promise<ModuleResult> {
+  const proof = randomBytes(32).toString("hex");
   const payload = JSON.stringify({
+    proof,
     source: options.source,
     capability: options.capability,
     resource: options.resource,
@@ -404,18 +445,30 @@ export async function runPermissionedProcess(
   if (result.killedBy.timeout) {
     throw failure("isolated_timeout", "扩展执行超时(" + options.timeoutMs + " 毫秒),已终止。");
   }
-  // 协议行优先从 stdout 尾部往回找(扩展自己的日志可能在前);一次调用只应有一条。
-  const lines = result.stdout.split("\n");
-  let reply: BootReply | null = null;
-  for (let index = lines.length - 1; index >= 0 && reply === null; index--) {
-    reply = parseReply(lines[index]!);
+  // 【MC-035】扩展源码可直接向 stdout 伪造 @@mcode:ext-result 协议行。
+  // 非零退出/被信号终止、输出截断时绝不能从那一行宣称执行成功。
+  if (result.code !== 0 || result.stdoutTruncated || result.stdoutLineTruncated) {
+    throw failure(
+      "isolated_crash",
+      "扩展执行进程异常退出或协议输出截断(exit=" + String(result.code) + ")。",
+    );
   }
+  // 【MC-035】多个协议前缀说明扩展自己伪造/重放了返回行。
+  // 禁止「选最后一条」，必须恰好一条并由宿主按原始退出状态核验。
+  const protocolLines = result.stdout.split("\n").filter((line) => line.startsWith("@@mcode:ext-result "));
+  if (protocolLines.length !== 1) {
+    throw failure("isolated_crash", "扩展执行结果协议数量异常(" + protocolLines.length + ")，拒绝不可信输出。");
+  }
+  const reply: BootReply | null = parseReply(protocolLines[0]!);
   if (!reply) {
     const tail = (result.stderr || result.stdout).trim().split("\n").slice(-4).join("\n");
     throw failure(
       "isolated_crash",
       "扩展执行进程在返回结果前退出(退出码 " + String(result.code) + ")。" + (tail ? "输出:" + tail : ""),
     );
+  }
+  if (reply.proof !== proof) {
+    throw failure("isolated_crash", "执行协议关联值不匹配。");
   }
   if (reply.ok === true) {
     if (reply.result === null || typeof reply.result !== "object" || Array.isArray(reply.result)) {

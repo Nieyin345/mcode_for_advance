@@ -100,11 +100,17 @@ export type EngineNodeInstallOutcome =
   | { ok: true; entry: EngineNodeRecord; approval: "granted" }
   | { ok: false; reason: string; code: "invalid" | "approval_denied" | "approval_unavailable" | "duplicate" | "install_failed" };
 
-/** 当前同名包的哈希（用于判定 intent 与把「同名不同哈希」提前说清）。 */
-async function existingHash(registry: EngineNodeRegistry, name: string): Promise<string | null> {
+/** 当前同名包的哈希。坏清单必须保留诊断，不能伪装成"从未安装"。 */
+async function existingHash(registry: EngineNodeRegistry, name: string): Promise<
+  { ok: true; hash: string | null } | { ok: false; reason: string }
+> {
   const state = await registry.readState();
-  if (state.kind !== "ok") return null;
-  return state.entries.find((entry) => entry.name === name)?.sha256 ?? null;
+  if (state.kind === "corrupt") {
+    return { ok: false, reason: `可执行体清单已损坏，拒绝安装：${state.reason}` };
+  }
+  return { ok: true, hash: state.kind === "ok"
+    ? (state.entries.find((entry) => entry.name === name)?.sha256 ?? null)
+    : null };
 }
 
 /**
@@ -128,7 +134,11 @@ export async function installEngineNode(options: {
 }): Promise<EngineNodeInstallOutcome> {
   const { registry, sourceDir, meta } = options;
   // ⚠️ 先算 intent 再审批：卡片要说清"这是升级/换执行体"还是"首次安装"。
-  const priorHash = await existingHash(registry, meta.name);
+  const prior = await existingHash(registry, meta.name);
+  // 根本读不懂原来的安装账，就不能问用户批准一次注定失败的写入。
+  // 特别不能让“批准成功”把损坏清单当空表、随后覆盖或删除旧包体。
+  if (!prior.ok) return { ok: false, code: "invalid", reason: prior.reason };
+  const priorHash = prior.hash;
   const intent: "install" | "upgrade" = priorHash !== null && priorHash !== meta.sha256 ? "upgrade" : "install";
 
   // 同名不同哈希：**显式拒绝**，不在这里静默替换。调用方要升级 → 先 uninstall，

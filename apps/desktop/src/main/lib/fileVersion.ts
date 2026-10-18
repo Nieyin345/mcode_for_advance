@@ -12,13 +12,17 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 
-/** 文件当前内容的稳定版本哈希(缓存无关,直接读当前字节)。文件不存在
- *  时返回 `null`(与"内容为空串"区分:新建 vs 空文件是两种不同的事实)。 */
+/** 文件当前内容的稳定版本哈希(缓存无关,直接读当前字节)。
+ *  只有真实 ENOENT 才返回 `null`(新建 vs 空文件是两种不同事实)。
+ *  EACCES/EISDIR/EPERM 等已存在但读不了的情况必须抛给上层显式失败：
+ *  不能把「读错」伪装成「不存在」，让带 expectedRevision=null 的写入
+ *  误把不可信的版本检查当成成功。此规则供文档编辑与文档视图共用。 */
 export async function fileContentVersion(filePath: string): Promise<string | null> {
   try {
     const buf = await readFile(filePath);
     return createHash("sha256").update(buf).digest("hex");
-  } catch {
-    return null; // 不存在 / 读不了 —— 当作"没有可匹配的版本"。
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err; // 读失败不等于不存在：上层失败关闭并保留原字节。
   }
 }

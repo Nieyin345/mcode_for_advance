@@ -74,6 +74,21 @@ export const NODE_RED_ENGINE_ID = "node-red";
 
 /** 回环判据 —— 与 `checkDocumentViewUrl` 同一份取向（只放行本机回环）。 */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+// 与 nodeTypes.ts 的画布 select 保持相同方法集合，不允许调用者把
+// CONNECT/TRACE 或带 CRLF 的非标准方法直接交给可替换的 HTTP 适配器。
+const HTTP_IN_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+
+/** 同端口 ≠ 同进程：真实 EngineRuntime.status 总带宿主生成的 epoch。
+ * 旧注入型状态口如果双方都缺 epoch，兼容既有假 SDK/历史测试，不能把
+ * 那条 fallback 称为实例身份保证；单边有 epoch 却缺对侧必须拒绝。 */
+function sameRunningEngine(initial: EngineRuntimeStatus, current: EngineRuntimeStatus): boolean {
+  if (current.state !== "running" || current.port !== initial.port
+      || current.engineId !== initial.engineId) return false;
+  const before = initial.instanceEpoch;
+  const after = current.instanceEpoch;
+  if (before === undefined && after === undefined) return true;
+  return typeof before === "string" && before.length > 0 && before === after;
+}
 
 /**
  * 校验并规范化节点给的 URL：host 必须回环、端口必须等于宿主给的那个。
@@ -95,12 +110,27 @@ export function checkEngineRequestUrl(
   if (!LOOPBACK_HOSTS.has(parsed.hostname)) {
     return { ok: false, reason: `工作流引擎节点只访问本机回环，拒绝远程地址：${parsed.hostname}` };
   }
+  // URL userinfo 会隐式产生 Basic Auth；fragment 实际不随 HTTP 发送，二者都
+  // 不应成为代理发往受监管引擎的隐式参数。
+  if (parsed.username !== "" || parsed.password !== "") {
+    return { ok: false, reason: "工作流引擎节点不允许在 URL 中携带用户凭据" };
+  }
+  if (parsed.hash !== "") {
+    return { ok: false, reason: "工作流引擎节点不允许 URL fragment（片段不会发送给引擎）" };
+  }
   const port = parsed.port === "" ? (parsed.protocol === "https:" ? 443 : 80) : Number(parsed.port);
   if (port !== runtimePort) {
     return {
       ok: false,
       reason: `工作流引擎节点只能访问本引擎的端口（${runtimePort}），拒绝 ${port}`,
     };
+  }
+  // 同一端口不意味着同一权限域。生产 Node-RED 将 httpAdminRoot 挂在
+  // "/"，HTTP-in 数据面挂在 "/api"；普通 workflow 执行器绝不能
+  // 仅凭回环同端口就访问 /flows、/settings 或 /nodes 等管理 API。
+  // 使用 URL 规范化后的 pathname，以拒绝 /api/../flows 和 %2e%2e 等穿越。
+  if (!parsed.pathname.startsWith("/api/")) {
+    return { ok: false, reason: "工作流节点仅允许访问 Node-RED HTTP-in 数据面 /api/，拒绝管理 API 或其他路径" };
   }
   return { ok: true, url: parsed.toString() };
 }
@@ -125,6 +155,14 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
       outputKinds: ["json", "text"],
     },
     async execute(context: ExecutionContext): Promise<NodeOutcome> {
+      // AbortSignal 的 abort 事件不会为晚注册的监听器重播；必须先读状态。
+      if (context.input.signal.aborted) {
+        return { status: "cancelled", summary: "", error: "已取消", retryable: false };
+      }
+      // 错误配置不能把响应限制静默取消，尤其在自定义 fetch 忽略限额时。
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+        return { status: "failed", summary: "", error: "工作流引擎响应字节上限配置无效", retryable: false };
+      }
       const status = ports.engine.status();
       if (status.state !== "running" || status.port === null) {
         return {
@@ -155,30 +193,76 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
       if (!checked.ok) {
         return { status: "failed", summary: "", error: checked.reason, retryable: false };
       }
+      const method = (spec.method || "POST").toUpperCase();
+      if (!HTTP_IN_METHODS.has(method)) {
+        return {
+          status: "failed", summary: "",
+          error: "HTTP-in 请求方法不在允许范围（GET/POST/PUT/PATCH/DELETE）",
+          retryable: false,
+        };
+      }
       const controller = new AbortController();
       const onAbort = (): void => controller.abort();
       context.input.signal.addEventListener("abort", onAbort, { once: true });
       try {
+        // 在读取参数与监听器安装之间仍可能被取消，不能漏过这一窗口。
+        if (context.input.signal.aborted) {
+          controller.abort();
+          return { status: "cancelled", summary: "", error: "已取消", retryable: false };
+        }
         const res = await ports.fetch({
           url: checked.url,
-          method: (spec.method || "POST").toUpperCase(),
+          method,
           headers: { "content-type": "application/json", ...(spec.headers ?? {}) },
           body: spec.body ?? null,
           signal: controller.signal,
         });
-        const ok = res.status >= 200 && res.status < 300;
-        let parsed: unknown = res.text;
-        try {
-          parsed = JSON.parse(res.text);
-        } catch {
-          /* 不是 JSON 就按文本交付 */
+        // 一些注入的 fetch 实现会忽略 signal，晚到的成功响应也不能覆盖取消态。
+        if (context.input.signal.aborted) {
+          return { status: "cancelled", summary: "", error: "已取消", retryable: false };
         }
-        const summaryLine = `Node-RED ${res.status}${res.truncated ? "（响应已截断）" : ""}`;
+        // 自定义 fetch 可能在引擎已 stop/crash/换端口后才返回上一代的 200。
+        // 这不是本次仍可执行的工作流结果，不能交给下游；不自动换引擎重试。
+        const current = ports.engine.status();
+        if (!sameRunningEngine(status, current)) {
+          return {
+            status: "failed", summary: "",
+            error: "工作流引擎在请求期间已停止或端口切换，拒绝使用过期响应",
+            retryable: false,
+          };
+        }
+        // 注入的 fetch 可能没有按限制读取；这里是 Agent 最终输出前的最后一道闸。
+        const responseBytes = Buffer.from(res.text, "utf8");
+        const overLimit = responseBytes.byteLength > maxBytes;
+        let safeText = res.text;
+        if (overLimit) {
+          // 在 UTF-8 码点边界截断，避免因为半个中文字符产生 U+FFFD 并超出字节限额。
+          const decoder = new TextDecoder("utf-8", { fatal: true });
+          let end = maxBytes;
+          while (end > 0) {
+            try {
+              safeText = decoder.decode(responseBytes.subarray(0, end));
+              break;
+            } catch {
+              end--;
+            }
+          }
+          if (end === 0) safeText = "";
+        }
+        const truncated = res.truncated || overLimit;
+        const ok = res.status >= 200 && res.status < 300;
+        let parsed: unknown = safeText;
+        try {
+          parsed = JSON.parse(safeText);
+        } catch {
+          /* 截断或非 JSON 就按文本交付 */
+        }
+        const summaryLine = `Node-RED ${res.status}${truncated ? "（响应已截断）" : ""}`;
         if (!ok) {
           return {
             status: "failed",
             summary: summaryLine,
-            error: `引擎返回 HTTP ${res.status}${res.truncated ? "（响应已截断）" : ""}`,
+            error: `引擎返回 HTTP ${res.status}${truncated ? "（响应已截断）" : ""}`,
             // 5xx 可能是引擎内部瞬时故障；4xx 是请求本身的问题。
             retryable: res.status >= 500,
           };
@@ -186,17 +270,28 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
         return {
           status: "success",
           summary: summaryLine,
-          outputs: { status: res.status, body: parsed, truncated: res.truncated },
+          outputs: { status: res.status, body: parsed, truncated },
         };
       } catch (err) {
         const aborted = context.input.signal.aborted;
+        // 失效引擎抛出的传输错误并非同一实例的瞬时 HTTP 5xx；
+        // 让调度器自动重试可能错误命中新启动/切换项目后的另一个引擎。
+        let sameEngine = false;
+        try {
+          const current = ports.engine.status();
+          sameEngine = sameRunningEngine(status, current);
+        } catch {
+          // 状态本身不可读时也拒绝自动重试。
+        }
         return {
           status: aborted ? "cancelled" : "failed",
           summary: "",
           error: aborted
             ? "已取消"
-            : `请求工作流引擎失败：${err instanceof Error ? err.message : String(err)}`,
-          retryable: !aborted,
+            : sameEngine
+              ? `请求工作流引擎失败：${err instanceof Error ? err.message : String(err)}`
+              : "工作流引擎请求期间已停止、切换或状态不可读，拒绝自动重试",
+          retryable: !aborted && sameEngine,
         };
       } finally {
         context.input.signal.removeEventListener("abort", onAbort);
@@ -263,5 +358,23 @@ export async function defaultNodeRedFetch(
     merged.set(chunk.subarray(0, take), offset);
     offset += take;
   }
-  return { status: res.status, text: new TextDecoder().decode(merged), truncated };
+  // 字节上限可能正好截在多字节字符中间；TextDecoder 的默认
+  // 替换符 U+FFFD 会把未收到的字节误表达成服务端内容。
+  // 只在我们主动截断时丢弃末尾不完整码点；原本非法的响应字节仍
+  // 交给 TextDecoder 按标准替换，不悄悄丢掉整个消息。
+  let validLength = merged.byteLength;
+  if (truncated && validLength > 0) {
+    let leadIndex = validLength - 1;
+    while (leadIndex >= 0 && (merged[leadIndex]! & 0xc0) === 0x80) leadIndex--;
+    if (leadIndex < 0) {
+      validLength = 0;
+    } else {
+      const lead = merged[leadIndex]!;
+      const width = lead >= 0xf0 && lead <= 0xf4 ? 4
+        : lead >= 0xe0 && lead <= 0xef ? 3
+        : lead >= 0xc2 && lead <= 0xdf ? 2 : 1;
+      if (validLength - leadIndex < width) validLength = leadIndex;
+    }
+  }
+  return { status: res.status, text: new TextDecoder().decode(merged.subarray(0, validLength)), truncated };
 }

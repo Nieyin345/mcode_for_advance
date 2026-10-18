@@ -103,11 +103,16 @@ export const SceneDeploymentRepo = {
   /** 一条部署。没有返回 null。 */
   get(deploymentId: string): SceneDeploymentRow | null {
     const stmt = getDb().prepare("SELECT * FROM scene_deployments WHERE deployment_id = ?");
-    stmt.bind([v(deploymentId)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as SceneDeploymentDbRow) : null;
-    stmt.free();
-    return row ? rowToSceneDeployment(row) : null;
+    // 发现链上的 I/O 异常必须上抛给 IPC 形成明确错误；即使 bind/step/解码失败，
+    // statement 也应释放，否则一次坏库重试会不断残留 SQL 资源。
+    try {
+      stmt.bind([v(deploymentId)]);
+      const found = stmt.step();
+      const row = found ? (stmt.getAsObject() as unknown as SceneDeploymentDbRow) : null;
+      return row ? rowToSceneDeployment(row) : null;
+    } finally {
+      stmt.free();
+    }
   },
 
   /** 某个场景的全部部署,新的在前(重试是同一个 id 的覆盖,所以这里每个 id 只出现一次)。 */
@@ -117,11 +122,14 @@ export const SceneDeploymentRepo = {
         WHERE scene_id = ?
         ORDER BY updated_at DESC, deployment_id DESC LIMIT ?`,
     );
-    stmt.bind([v(sceneId), v(limit)]);
-    const out: SceneDeploymentRow[] = [];
-    while (stmt.step()) out.push(rowToSceneDeployment(stmt.getAsObject() as unknown as SceneDeploymentDbRow));
-    stmt.free();
-    return out;
+    try {
+      stmt.bind([v(sceneId), v(limit)]);
+      const out: SceneDeploymentRow[] = [];
+      while (stmt.step()) out.push(rowToSceneDeployment(stmt.getAsObject() as unknown as SceneDeploymentDbRow));
+      return out;
+    } finally {
+      stmt.free();
+    }
   },
 
   /** 【MC-002】**跨场景**列出最近的部署,新的在前。
@@ -139,11 +147,14 @@ export const SceneDeploymentRepo = {
         ${where}
         ORDER BY updated_at DESC, deployment_id DESC LIMIT ?`,
     );
-    stmt.bind([v(limit)]);
-    const out: SceneDeploymentRow[] = [];
-    while (stmt.step()) out.push(rowToSceneDeployment(stmt.getAsObject() as unknown as SceneDeploymentDbRow));
-    stmt.free();
-    return out;
+    try {
+      stmt.bind([v(limit)]);
+      const out: SceneDeploymentRow[] = [];
+      while (stmt.step()) out.push(rowToSceneDeployment(stmt.getAsObject() as unknown as SceneDeploymentDbRow));
+      return out;
+    } finally {
+      stmt.free();
+    }
   },
 
   /** 删一条(没有也不算错)—— 回滚这次新建的行 / 人工清理用。 */

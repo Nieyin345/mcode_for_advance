@@ -37,6 +37,7 @@ import { log } from "@main/lib/logger.js";
  * 挑它们的理由：
  *   - `agent_read_document`：统一读 PDF / DOCX / XLSX / PPTX（PDF 走 pdfjs，Office 走
  *     pandoc/Python），是三家原生 Read 都缺的那一块；
+ *   - `agent_render_pdf_page`：使用本机可选 PyMuPDF 渲染指定 PDF 页为真实 image block；
  *   - `agent_read_image`：统一读图片（原生各家视模型而定）；
  *   - `agent_context`：一次问清"当前项目 / 资料库有哪些条目"，省去模型用 bash 猜。
  *
@@ -44,6 +45,7 @@ import { log } from "@main/lib/logger.js";
  */
 export const AGENT_ENGINE_READONLY: readonly string[] = [
   "agent_read_document",
+  "agent_render_pdf_page",
   "agent_read_image",
   "agent_context",
 ];

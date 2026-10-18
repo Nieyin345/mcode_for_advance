@@ -62,6 +62,9 @@ export interface WorkflowEngineHandlerPorts {
   registry: WorkflowEngineRegistry;
   /** 取某个引擎的启动参数；未配置返回 null。 */
   launchSpec(engineId: string): WorkflowEngineLaunchSpec | null;
+  /** 【ARC-006 Gate E】启动前验证可执行节点清单、处理可信的崩溃备份并恢复撤权。
+   *  抛错必须阻断 spawn；纯状态机测试可不装配。 */
+  beforeStart?(engineId: string): Promise<void>;
   /** 【ARC-006 Gate E】节点包清单（`engineNodeRegistry.ts` 的实例）。缺省 = 不提供
    *  安装面（`nodesList` 回空 + `nodeInstall` 显式拒绝，fail-closed）。 */
   nodes?: {
@@ -99,6 +102,9 @@ export function registerWorkflowEngineHandlers(ipc: IpcMain, ports: WorkflowEngi
       const input = WorkflowEngineStartSchema.parse(raw);
       const runtime = ports.registry.get(input.engineId);
       if (runtime === null) return failed(`未知工作流引擎：${input.engineId}`, null);
+      // 清单/备份存在争议时绝不能先执行第三方 Node-RED 代码再报错。
+      status = toStatusView(runtime.status());
+      if (status.state !== "running") await ports.beforeStart?.(input.engineId);
       const spec = ports.launchSpec(input.engineId);
       if (spec === null) return failed(`引擎 ${input.engineId} 没有配置启动命令`, toStatusView(runtime.status()));
       const result = await runtime.start({
@@ -176,7 +182,17 @@ export function registerWorkflowEngineHandlers(ipc: IpcMain, ports: WorkflowEngi
   ipc.handle(IPC.WORKFLOW_ENGINE_NODES_LIST, onNodesList);
 
   const senderIdOf = (evt: unknown): number | null => {
-    const id = (evt as { sender?: { id?: unknown } } | null)?.sender?.id;
+    const event = evt as {
+      sender?: { id?: unknown; mainFrame?: unknown };
+      senderFrame?: unknown;
+    } | null;
+    // MC-057：id 只标识 WebContents，不标识其中哪个 frame。
+    // 子 frame 与主窗口共享 sender.id；即使拿到了 requestId，也不能代答真人审批。
+    // 缺 frame 证据（Agent/合成 IPC/销毁中的 frame）必须 fail-closed。
+    if (event?.senderFrame == null || event.sender?.mainFrame == null || event.senderFrame !== event.sender.mainFrame) {
+      return null;
+    }
+    const id = event.sender.id;
     return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : null;
   };
   const onNodeInstall = async (evt: unknown, raw: unknown): Promise<WorkflowEngineNodeInstallResult> => {

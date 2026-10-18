@@ -125,17 +125,30 @@ function looksLikeFlow(value: unknown): value is NodeRedFlow {
     && typeof (n as Record<string, unknown>)["type"] === "string");
 }
 
+/** 已落盘 flow 的 docId 是其身份，不能只用 nodes[] 判定可执行。 */
+function storedDocId(flow: NodeRedFlow): string | null {
+  const meta: unknown = (flow as { "x-mcode"?: unknown })["x-mcode"];
+  if (meta === null || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const docId: unknown = (meta as Record<string, unknown>)["docId"];
+  return typeof docId === "string" ? docId : null;
+}
+
 /* ── 进程内串行队列：同一文件路径的"读-比-写"是一个临界区 ── */
 const writeChains = new Map<string, Promise<unknown>>();
+
+/** 只读诊断：当前正在串行处理的不同 flow 数量（完成后必须归零）。 */
+export function pendingFlowSaveQueues(): number { return writeChains.size; }
 
 function serialize<T>(key: string, task: () => Promise<T>): Promise<T> {
   const previous = writeChains.get(key) ?? Promise.resolve();
   const next = previous.then(task, task);
   // 链尾只保留"完成"信号；失败不能卡住后来的任务。
-  writeChains.set(key, next.catch(() => undefined));
-  void next.finally(() => {
-    if (writeChains.get(key) === next) writeChains.delete(key);
-  }).catch(() => undefined);
+  // Map 里放的是 settled，不是 next；清理也必须比对同一份 Promise。
+  const settled = next.then(() => undefined, () => undefined);
+  writeChains.set(key, settled);
+  void settled.then(() => {
+    if (writeChains.get(key) === settled) writeChains.delete(key);
+  });
   return next;
 }
 
@@ -216,6 +229,11 @@ export class NodeRedFlowStorage {
     if (!looksLikeFlow(parsed)) {
       return { ok: false, kind: "corrupt", reason: "形状不是 Node-RED flow（缺 nodes[] 或节点缺 id/type）" };
     }
+    const docId = storedDocId(parsed);
+    if (docId !== valid.id) {
+      return { ok: false, kind: "corrupt",
+        reason: `磁盘 flow 的 x-mcode.docId（${JSON.stringify(docId)}）与请求 flowId（${valid.id}）不一致；拒绝错绑身份` };
+    }
     return { ok: true, flow: parsed, revision: flowRevision(parsed) };
   }
 
@@ -230,6 +248,15 @@ export class NodeRedFlowStorage {
   ): Promise<SaveFlowResult> {
     const valid = validateFlowId(flowId);
     if (!valid.ok) return Promise.resolve({ ok: false, kind: "invalid-flow-id", reason: valid.reason });
+    // TypeScript 边界不能代替运行时校验：未知 IPC / 插件输入不得写出不可读的 flow。
+    if (!looksLikeFlow(flow)) {
+      return Promise.resolve({ ok: false, kind: "corrupt", reason: "待保存 flow 形状非法（缺 nodes[] 或节点缺 id/type）" });
+    }
+    const suppliedMeta: unknown = (flow as { "x-mcode"?: unknown })["x-mcode"];
+    if (suppliedMeta !== undefined && suppliedMeta !== null &&
+        (typeof suppliedMeta !== "object" || Array.isArray(suppliedMeta))) {
+      return Promise.resolve({ ok: false, kind: "corrupt", reason: "x-mcode 元数据必须是对象" });
+    }
     let file: string;
     try {
       file = this.filePathOf(projectId, valid.id);
@@ -330,7 +357,15 @@ export class NodeRedFlowStorage {
     if (!loaded.ok) {
       return { ok: false, kind: loaded.kind, reason: loaded.reason, currentRevision: null };
     }
-    const trust: FlowExecutableResult = flowExecutableUnderTrust(loaded.revision, readTrust(flowId));
+    let rawTrust: string | null | undefined;
+    try {
+      rawTrust = readTrust(flowId);
+    } catch (err) {
+      return { ok: false, kind: "io-error",
+        reason: `审批记录读取失败，拒绝执行：${err instanceof Error ? err.message : String(err)}`,
+        currentRevision: loaded.revision };
+    }
+    const trust: FlowExecutableResult = flowExecutableUnderTrust(loaded.revision, rawTrust);
     if (!trust.ok) {
       return {
         ok: false,
@@ -367,14 +402,19 @@ export class NodeRedFlowStorage {
       } catch (err) {
         reason = err instanceof Error ? err.message : String(err);
       }
-      const corrupt = reason !== undefined || !looksLikeFlow(parsed);
-      const docId = !corrupt && typeof (parsed as { "x-mcode"?: { docId?: unknown } })["x-mcode"]?.docId === "string"
-        ? ((parsed as { "x-mcode": { docId: string } })["x-mcode"].docId)
-        : null;
+      const wellFormed = reason === undefined && looksLikeFlow(parsed);
+      const docId = wellFormed ? storedDocId(parsed as NodeRedFlow) : null;
+      // 不可信文档可伪造 docId，必须核对该身份映射出的文件名恰是实际路径。
+      const identityValid = docId !== null && validateFlowId(docId).ok
+        && `${safeFlowFileName(docId)}.json` === name;
+      const corrupt = !wellFormed || !identityValid;
+      if (reason === undefined && !wellFormed) {
+        reason = "磁盘 flow 形状非法（缺 nodes[] 或节点缺 id/type），需人工恢复";
+      } else if (reason === undefined && !identityValid) {
+        reason = `磁盘文件名与 x-mcode.docId 不匹配（声明：${JSON.stringify(docId)}），需人工恢复`;
+      }
       entries.push({
-        // 清单里没有原始 flowId（文件名是折叠过的）——docId 就是 flowId（保存时强制一致）；
-        // 坏档没有 docId，回退到文件名供诊断。
-        flowId: docId ?? name.replace(/\.json$/, ""),
+        flowId: corrupt ? name.replace(/\.json$/, "") : docId!,
         revision: corrupt ? null : flowRevision(parsed),
         docId,
         corrupt,

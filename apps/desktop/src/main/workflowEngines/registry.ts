@@ -209,6 +209,11 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
 
   /** 引擎自己的目录（也放引导脚本）。**默认项目 = 旧单例目录**（兼容，只读语义不变）。 */
   dataDirOf(engineId: string): string {
+    // 公开的存储入口也必须遵守注册表白名单：不能让任意 engineId 在 dataRoot 下
+    // 创建目录，更不能让带路径分隔符的输入参与 join。校验必须先于任何写盘。
+    if (!(ENGINE_IDS as readonly string[]).includes(engineId)) {
+      throw new Error(`未知工作流引擎：${engineId}`);
+    }
     const cached = this.dataDirs.get(engineId);
     if (cached !== undefined) return cached;
     const dir = join(dataRoot(), "workflow-engines", engineId);
@@ -235,8 +240,13 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     if (!(ENGINE_IDS as readonly string[]).includes(engineId)) {
       throw new Error(`未知工作流引擎：${engineId}`);
     }
-    const result = resolveProjectFlowDir(this.dataDirOf(engineId), projectId);
+    // 先做纯身份判定、后建目录。旧写法提前调用 dataDirOf()，即使 projectId
+    // 无效也会把默认单例目录创建出来，违反“非法输入无副作用”的资源边界。
+    const engineDir = join(dataRoot(), "workflow-engines", engineId);
+    const result = resolveProjectFlowDir(engineDir, projectId);
     if (!result.ok) throw new Error(`非法 projectId：${result.reason}`);
+    // 默认项目保留 dataDirOf 的缓存和旧单例目录语义。
+    if (result.legacy) return this.dataDirOf(engineId);
     mkdirSync(result.dir, { recursive: true });
     return result.dir;
   }

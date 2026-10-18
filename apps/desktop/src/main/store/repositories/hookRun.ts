@@ -6,6 +6,7 @@
  */
 import { getDb, persist } from "../db.js";
 import { v } from "../sessionSchema.js";
+import { withStatement } from "./withStatement.js";
 
 /* ───────────────────── 插件 hook 执行审计(MC-061)───────────────────── */
 
@@ -191,11 +192,12 @@ export const HookRunRepo = {
   /** 一条执行审计行。没有返回 null。 */
   get(runId: string): HookRunRow | null {
     const stmt = getDb().prepare("SELECT * FROM hook_runs WHERE run_id = ?");
-    stmt.bind([v(runId)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as HookRunDbRow) : null;
-    stmt.free();
-    return row ? rowToHookRun(row) : null;
+    return withStatement(stmt, (query) => {
+      query.bind([v(runId)]);
+      const found = query.step();
+      const row = found ? (query.getAsObject() as unknown as HookRunDbRow) : null;
+      return row ? rowToHookRun(row) : null;
+    });
   },
 
   /** 某条 hook 的执行历史,**两种来源都含**(MC-010 起),新的在前 ——
@@ -206,11 +208,12 @@ export const HookRunRepo = {
         WHERE hook_id = ?
         ORDER BY started_at DESC, run_id DESC LIMIT ?`,
     );
-    stmt.bind([v(hookId), v(limit)]);
-    const out: HookRunRow[] = [];
-    while (stmt.step()) out.push(rowToHookRun(stmt.getAsObject() as unknown as HookRunDbRow));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(hookId), v(limit)]);
+      const out: HookRunRow[] = [];
+      while (query.step()) out.push(rowToHookRun(query.getAsObject() as unknown as HookRunDbRow));
+      return out;
+    });
   },
 
   /** 全部执行审计行,新的在前。 */
@@ -218,11 +221,12 @@ export const HookRunRepo = {
     const stmt = getDb().prepare(
       "SELECT * FROM hook_runs ORDER BY started_at DESC, run_id DESC LIMIT ?",
     );
-    stmt.bind([v(limit)]);
-    const out: HookRunRow[] = [];
-    while (stmt.step()) out.push(rowToHookRun(stmt.getAsObject() as unknown as HookRunDbRow));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(limit)]);
+      const out: HookRunRow[] = [];
+      while (query.step()) out.push(rowToHookRun(query.getAsObject() as unknown as HookRunDbRow));
+      return out;
+    });
   },
 
   /** 删一条(没有也不算错)—— 回滚 / 人工清理用。 */

@@ -113,6 +113,23 @@ export class NodeInstallApprovalBridge {
     return true;
   }
 
+  /**
+   * 【MC-057】主窗口导航、重载、崩溃/销毁：撤销它此前的所有未决审批。
+   * webContents.id 可能不变，但新 document 绝不能代答旧 document 的 requestId。
+   * 只撤本窗口；其他窗口的合法 pending 不受影响。
+   */
+  cancelForSender(senderId: number): number {
+    let cancelled = 0;
+    for (const [requestId, pending] of [...this.pending]) {
+      if (pending.expectedSenderId !== senderId) continue;
+      clearTimeout(pending.timer);
+      this.pending.delete(requestId);
+      pending.resolve(false);
+      cancelled++;
+    }
+    return cancelled;
+  }
+
   /** 测试/退出用：把未决请求全部按拒绝兑现（不留下永远挂着的 Promise）。 */
   dispose(): void {
     for (const [requestId, pending] of [...this.pending]) {

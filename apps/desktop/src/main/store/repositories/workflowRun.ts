@@ -7,6 +7,7 @@
 import type { WorkflowDoc } from "@contracts/workflow";
 import { getDb, persist } from "../db.js";
 import { v } from "../sessionSchema.js";
+import { withStatement } from "./withStatement.js";
 
 /* ────────────────────────── 工作流的运行(续跑) ────────────────────────── */
 
@@ -100,11 +101,12 @@ export const WorkflowRunRepo = {
   /** 某个对话里的一条运行。没有返回 null。 */
   get(id: string): WorkflowRunRow | null {
     const stmt = getDb().prepare("SELECT * FROM workflow_runs WHERE id = ?");
-    stmt.bind([v(id)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as WorkflowRunDbRow) : null;
-    stmt.free();
-    return row ? rowToWorkflowRun(row) : null;
+    return withStatement(stmt, (query) => {
+      query.bind([v(id)]);
+      const found = query.step();
+      const row = found ? (query.getAsObject() as unknown as WorkflowRunDbRow) : null;
+      return row ? rowToWorkflowRun(row) : null;
+    });
   },
 
   /** 自动化历史跨项目会话汇总，先过滤、排序，再应用全局 limit。
@@ -116,11 +118,12 @@ export const WorkflowRunRepo = {
        WHERE r.workflow_id = ? AND s.kind = 'automation' AND s.composer_mode = ?
        ORDER BY r.updated_at DESC, r.id DESC LIMIT ?`,
     );
-    stmt.bind([v(workflowId), v(workflowId), v(limit)]);
-    const out: WorkflowRunRow[] = [];
-    while (stmt.step()) out.push(rowToWorkflowRun(stmt.getAsObject() as unknown as WorkflowRunDbRow));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(workflowId), v(workflowId), v(limit)]);
+      const out: WorkflowRunRow[] = [];
+      while (query.step()) out.push(rowToWorkflowRun(query.getAsObject() as unknown as WorkflowRunDbRow));
+      return out;
+    });
   },
 
   /**
@@ -137,13 +140,14 @@ export const WorkflowRunRepo = {
         WHERE session_id = ?
         ORDER BY updated_at DESC, id DESC LIMIT ?`,
     );
-    stmt.bind([v(sessionId), v(limit)]);
-    const out: WorkflowRunRow[] = [];
-    while (stmt.step()) {
-      out.push(rowToWorkflowRun(stmt.getAsObject() as unknown as WorkflowRunDbRow));
-    }
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(sessionId), v(limit)]);
+      const out: WorkflowRunRow[] = [];
+      while (query.step()) {
+        out.push(rowToWorkflowRun(query.getAsObject() as unknown as WorkflowRunDbRow));
+      }
+      return out;
+    });
   },
 
   /**
@@ -172,13 +176,14 @@ export const WorkflowRunRepo = {
         WHERE session_id = ? AND status = 'interrupted'
         ORDER BY updated_at DESC`,
     );
-    stmt.bind([v(sessionId)]);
-    const rows: WorkflowRunRow[] = [];
-    while (stmt.step()) {
-      rows.push(rowToWorkflowRun(stmt.getAsObject() as unknown as WorkflowRunDbRow));
-    }
-    stmt.free();
-    return rows.find((r) => r.awaiting.includes(nodeId)) ?? null;
+    return withStatement(stmt, (query) => {
+      query.bind([v(sessionId)]);
+      const rows: WorkflowRunRow[] = [];
+      while (query.step()) {
+        rows.push(rowToWorkflowRun(query.getAsObject() as unknown as WorkflowRunDbRow));
+      }
+      return rows.find((r) => r.awaiting.includes(nodeId)) ?? null;
+    });
   },
 
   /** 一个对话只留最近 `keep` 次运行。**开跑时清一次** —— 运行行会一直堆下去,而

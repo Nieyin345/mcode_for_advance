@@ -14,7 +14,7 @@
 
 import { createReadStream, promises as fs } from "node:fs";
 import { createInterface as createReadlineInterface } from "node:readline";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
@@ -25,7 +25,8 @@ import { type AgentSearchReadResult } from "./agentSearchSessions.js";
 import { type RemoteConnectionInfo, type RemoteJobStatus } from "./agentRemoteSsh.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 import { z } from "zod";
-import { extractPdfText } from "@main/library/pdfText.js";
+import { extractPdfText, extractPdfLayout } from "@main/library/pdfText.js";
+import { docsRead, pdfRead, pdfRender, sheetRead, slidesRead, resolveGenofficeCliPath, type GenofficeResult } from "@main/document/genofficeCli.js";
 import { killTree } from "@main/lib/spawnRun.js";
 import { extractBashWriteTargets, expandTilde } from "@main/providers/pi-sdk/bashWriteGuard.js";
 import { fail, structured as structuredResult } from "./sdk.js";
@@ -589,6 +590,132 @@ export function findPythonExecutable(): Promise<string | null> {
   return pythonExecutablePromise;
 }
 
+/** Resolve the same bundled CLI as document.read / GenOffice MCP install. */
+async function findBundledGenofficeCli(): Promise<string | null> {
+  const { documentRepoRoot } = await import("@main/ipc/document.js");
+  const root = documentRepoRoot();
+  return resolveGenofficeCliPath(root) ?? resolveGenofficeCliPath(path.resolve(root, "../.."));
+}
+
+/** Vendor PDFium page renderer; temp output is deleted before returning. */
+async function renderWithGenoffice(input: {
+  abs: string; page: number; maxDimension: number; renderer?: "auto" | "native" | "genoffice";
+}): Promise<{ base64: string; mime: "image/png"; pageCount: null; width: number; height: number } | null> {
+  const cliPath = await findBundledGenofficeCli();
+  if (!cliPath) {
+    if (input.renderer === "genoffice") throw new Error("GenOffice CLI 未构建/安装，无法使用其 PDFium 渲染；请选择 renderer=native");
+    return null;
+  }
+  const tmp = await fs.mkdtemp(path.join(tmpdir(), "mcode-pdf-render-"));
+  try {
+    const checkedInput = path.resolve(input.abs);
+    const ports = { cliPath, withinWorkspace: (p: string) => {
+      const candidate = path.resolve(p);
+      const rel = path.relative(tmp, candidate);
+      return candidate === checkedInput || (rel !== "" && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel)) || candidate === tmp;
+    } };
+    const details = await pdfRead(ports, input.abs, { page: input.page, maxChars: 1 });
+    if (!details.ok) throw new Error(`GenOffice 读取 PDF 页面尺寸失败: ${details.reason}`);
+    const pages = (details.envelope.detail as { pages_read?: Array<{ page?: number; width_pt?: number; height_pt?: number }> } | null)?.pages_read;
+    const geometry = pages?.find(entry => entry.page === input.page);
+    const widthPt = geometry?.width_pt ?? 0;
+    const heightPt = geometry?.height_pt ?? 0;
+    if (!Number.isFinite(widthPt) || !Number.isFinite(heightPt) || widthPt <= 0 || heightPt <= 0) throw new Error("GenOffice PDFium 未返回有效页面尺寸");
+    const scale = Math.min(1, (input.maxDimension - 2) / Math.max(widthPt, heightPt));
+    const result = await pdfRender(ports, input.abs, tmp, input.page, scale);
+    if (!result.ok) {
+      if (result.kind === "unavailable" && input.renderer !== "genoffice") return null;
+      throw new Error(`GenOffice PDFium 渲染 ${result.kind}: ${result.reason}`);
+    }
+    const files = (result.envelope.detail as { files?: Array<{ page?: number; path?: string; width?: number; height?: number }> } | null)?.files;
+    const rendered = files?.find(f => f.page === input.page && typeof f.path === "string");
+    if (!rendered?.path) throw new Error("GenOffice 没有返回所请求页的 PNG 文件");
+    // Even if the vendor returns an unexpected path or symlink, never read
+    // outside the unique temp directory created by this call.
+    const real = await fs.realpath(rendered.path);
+    const rel = path.relative(tmp, real);
+    if (!rel || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
+      throw new Error("GenOffice 渲染结果越过临时目录围栏");
+    }
+    const st = await fs.stat(real);
+    if (!st.isFile() || st.size > 6 * 1024 * 1024) {
+      if (input.renderer !== "genoffice") return null;
+      throw new Error("GenOffice PDFium PNG 超过 6MiB，减小 max_dimension 或选择 renderer=native");
+    }
+    const bytes = await fs.readFile(real);
+    if (bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
+      throw new Error("GenOffice 返回的不是合法 PNG 头");
+    }
+    const width = bytes.readUInt32BE(16);
+    const height = bytes.readUInt32BE(20);
+    if (width < 1 || height < 1 || Math.max(width, height) > input.maxDimension) {
+      if (input.renderer !== "genoffice") return null;
+      throw new Error(`GenOffice 输出尺寸 ${width}×${height} 超过 ${input.maxDimension}px；请选择 renderer=native`);
+    }
+    return { base64: bytes.toString("base64"), mime: "image/png", pageCount: null, width, height };
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/** Render a PDF page using GenOffice PDFium when available, or optional PyMuPDF compatibility. */
+export async function renderPdfPage(input: { abs: string; page: number; maxDimension?: number; renderer?: "auto" | "native" | "genoffice" }): Promise<{
+  base64: string; mime: "image/jpeg" | "image/png"; pageCount: number | null; width: number; height: number;
+}> {
+  if (!Number.isInteger(input.page) || input.page < 1) throw new Error("page 必须是从 1 开始的整数");
+  const maxDimension = Math.max(400, Math.min(input.maxDimension ?? 1400, 2000));
+  if (!documentReadGate.tryAcquire()) {
+    throw new Error(`同时进行的文档读取/渲染已达上限 ${MAX_CONCURRENT_DOCUMENT_READS}`);
+  }
+  try {
+    if (path.extname(input.abs).toLowerCase() !== ".pdf") throw new Error("仅支持 PDF 文件");
+    const st = await fs.stat(input.abs);
+    if (!st.isFile()) throw new Error("PDF 页面渲染输入不是普通文件");
+    if (st.size > DOCUMENT_READ_BUDGET.maxRawBytes) {
+      throw new Error(`PDF 页面渲染输入 ${st.size} 字节,超过原始输入上限 ${DOCUMENT_READ_BUDGET.maxRawBytes}(与文档读取共用 ReadBudget)`);
+    }
+    if (input.renderer !== "native") {
+      const vendorImage = await renderWithGenoffice({ ...input, maxDimension });
+      if (vendorImage !== null) return vendorImage;
+    }
+    const py = await findPythonExecutable();
+    if (!py) throw new Error("PDF 页面渲染需要本机 Python + PyMuPDF；Python 不可用");
+    const script = [
+      "import sys,json,base64",
+      "try:",
+      " import pymupdf as fitz",
+      "except ImportError:",
+      " print(json.dumps({'error':'缺少 PyMuPDF (pymupdf)。请在本机 Python 环境安装 pymupdf；未渲染任何页面'}));sys.exit(2)",
+      "p=sys.argv[1];num=int(sys.argv[2]);mx=int(sys.argv[3])",
+      "doc=fitz.open(p)",
+      "try:",
+      " if doc.needs_pass: raise ValueError('PDF 已加密，需要密码')",
+      " if num<1 or num>len(doc): raise ValueError(f'请求第 {num} 页，但文档共 {len(doc)} 页')",
+      " page=doc[num-1]",
+      " bound=page.rect",
+      " if bound.width<=0 or bound.height<=0: raise ValueError('页面尺寸无效')",
+      " scale=min(mx/float(max(bound.width,bound.height)),2.0)",
+      " pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False,colorspace=fitz.csRGB)",
+      " blob=pix.tobytes('jpeg',jpg_quality=80)",
+      " if len(blob)>6*1024*1024: raise ValueError('渲染结果超过 6MiB，减小 max_dimension 再试')",
+      " print(json.dumps({'base64':base64.b64encode(blob).decode('ascii'),'pageCount':len(doc),'width':pix.width,'height':pix.height}))",
+      "finally:",
+      " doc.close()",
+    ].join("\n");
+    const out = await runCaptured(py, ["-c", script, input.abs, String(input.page), String(maxDimension)],
+      30000, PYTHON_DOCUMENT_ENV, 9 * 1024 * 1024);
+    if (out.code !== 0) throw new Error(`PDF 页面渲染失败: ${out.stdout.trim() || out.stderr.trim() || `exit ${out.code}`}`);
+    const parsed = JSON.parse(out.stdout) as { base64?: string; pageCount?: number; width?: number; height?: number; error?: string };
+    if (parsed.error || !parsed.base64 || !parsed.pageCount || !parsed.width || !parsed.height) {
+      throw new Error(parsed.error ?? "PDF 页面渲染输出无效");
+    }
+    if (Buffer.byteLength(parsed.base64, "ascii") > 8 * 1024 * 1024) throw new Error("渲染图像超过输出预算");
+    return { base64: parsed.base64, mime: "image/jpeg", pageCount: parsed.pageCount, width: parsed.width, height: parsed.height };
+  } finally {
+    documentReadGate.release();
+  }
+}
+
 export const MAX_DOCUMENT_OUTPUT_CHARS = 100_000;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -607,11 +734,184 @@ export function capDocumentOutput(textValue: string, label: string, maxChars = M
 // or change the encoding of arbitrary shell commands.
 export const PYTHON_DOCUMENT_ENV = { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" };
 
+/**
+ * Read the actual WordprocessingML body structure rather than guessing headings
+ * from plain text. The shared readRichDocument gate validates OOXML zip inflation.
+ */
+async function docxStructureText(abs: string, start: number, maxBlocks: number, maxChars: number): Promise<string> {
+  const py = await findPythonExecutable();
+  if (!py) throw new Error("DOCX 结构读取需要本机 Python（使用内置 zipfile/XML）");
+  const script = [
+    "import sys,zipfile,xml.etree.ElementTree as ET,json",
+    "f,start,limit=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])",
+    "w='{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'",
+    "with zipfile.ZipFile(f) as z: root=ET.fromstring(z.read('word/document.xml'))",
+    "body=root.find(w+'body')",
+    "if body is None: raise ValueError('缺少 Word body')",
+    "blocks=[c for c in body if c.tag in (w+'p',w+'tbl')]",
+    "if not blocks: print(json.dumps({'total':0,'entries':[]},ensure_ascii=False));sys.exit(0)",
+    "if start>len(blocks): raise ValueError(f'block_start={start} 超过文档结构总数 {len(blocks)}')",
+    "def txt(e): return ''.join(t.text or '' for t in e.iter(w+'t'))",
+    "entries=[]",
+    "for n,node in enumerate(blocks[start-1:start-1+limit],start):",
+    " if node.tag==w+'p':",
+    "  prop=node.find(w+'pPr')",
+    "  style=prop.find(w+'pStyle') if prop is not None else None",
+    "  entries.append({'n':n,'kind':'paragraph','style':style.get(w+'val') if style is not None else 'Normal','text':txt(node)})",
+    " elif node.tag==w+'tbl':",
+    "  rows=node.findall(w+'tr')",
+    "  columns=max((len(row.findall(w+'tc')) for row in rows),default=0)",
+    "  cells=[[txt(cell) for cell in row.findall(w+'tc')[:30]] for row in rows[:100]]",
+    "  entries.append({'n':n,'kind':'table','rows':len(rows),'cols':columns,'cells':cells,'clipped':len(rows)>100 or columns>30})",
+    "print(json.dumps({'total':len(blocks),'entries':entries},ensure_ascii=False))",
+  ].join("\n");
+  const out = await runCaptured(py, ["-c", script, abs, String(start), String(maxBlocks)],
+    DOCUMENT_READ_BUDGET.maxTimeMs, PYTHON_DOCUMENT_ENV, DOCUMENT_READ_BUDGET.maxChildOutputBytes);
+  if (out.code !== 0) throw new Error(`DOCX 结构解析失败: ${out.stderr.trim() || out.stdout.trim() || `exit ${out.code}`}`);
+  const parsed = JSON.parse(out.stdout) as {
+    total: number;
+    entries: Array<{ n: number; kind: "paragraph" | "table"; style?: string; text?: string;
+      rows?: number; cols?: number; cells?: string[][]; clipped?: boolean }>;
+  };
+  const end = start + parsed.entries.length - 1;
+  const lines = [`[DOCX XML 结构] ${parsed.total} 个顶层段落/表格；本次读取 ${parsed.entries.length} 个，索引 ${start}–${Math.max(start, end)}`];
+  for (const entry of parsed.entries) {
+    if (entry.kind === "paragraph") {
+      lines.push(`\n## Block ${entry.n} PARAGRAPH style=${entry.style || "Normal"}\n${entry.text || "(空段落)"}`);
+    } else {
+      lines.push(`\n## Block ${entry.n} TABLE ${entry.rows}×${entry.cols} (${entry.rows}行×${entry.cols}列)`);
+      for (const [i, cells] of (entry.cells ?? []).entries()) {
+        lines.push(`row ${i + 1}: ${cells.map((v, j) => `[c${j + 1}]${v}`).join(" | ")}`);
+      }
+      if (entry.clipped) lines.push("[表格仅显示前 100 行、每行前 30 列；其余单元格未读取]");
+    }
+  }
+  if (end < parsed.total) lines.push(`\n[结构仅部分读取；next_block_start=${end + 1}；可传 block_start 翻页]`);
+  if (start > 1) lines.push("[此前的块未读取]");
+  lines.push("[样式为 OOXML 原始 styleId，不代表已计算字体/页面布局；图片、批注、页眉页脚及嵌套表格不保证复原]");
+  return capDocumentOutput(lines.join("\n"), "DOCX 结构", maxChars);
+}
+
+/**
+ * GenOffice owns Office/PDF parsing. This is a routing adapter, never a second
+ * parser: the existing CLI wrappers provide the real implementation and
+ * fail-closed path checks. The historical readers remain an explicit compat
+ * path for systems without the vendor runtime or unsupported legacy options.
+ */
+async function readViaGenoffice(input: {
+  abs: string; reader?: "auto" | "native" | "genoffice";
+  pdfMode?: "text" | "layout"; pageStart?: number; maxPages?: number;
+  docxMode?: "text" | "structure"; blockStart?: number; maxBlocks?: number;
+  sheet?: string; range?: string; maxSlides?: number;
+  maxRows?: number; maxCols?: number; maxChars?: number;
+}, maxChars: number): Promise<string | null> {
+  const ext = path.extname(input.abs).toLowerCase();
+  const exact = input.reader === "genoffice";
+  if (input.pdfMode === "layout" && ext === ".pdf") {
+    if (exact) throw new Error("GenOffice pdf_read 仅返回文本层/页面尺寸，不提供 x/y 排版坐标；请用 reader=native + pdf_mode=layout");
+    return null;
+  }
+  // GenOffice sheet/slides CLI read has different filtering contracts; do not
+  // silently ignore legacy options by passing them to an unrelated command.
+  const legacyOptions = (([".xlsx", ".xlsm", ".xltx"].includes(ext))
+    && (input.sheet !== undefined || input.range !== undefined
+        || input.maxRows !== undefined || input.maxCols !== undefined))
+    || (([".pptx", ".potx"].includes(ext)) && input.maxSlides !== undefined);
+  if (legacyOptions) {
+    if (exact) throw new Error("该筛选参数暂不能安全映射到 GenOffice read；请使用 reader=native，或直接使用 GenOffice 的 sheet_read/slides_read 工具");
+    return null;
+  }
+  const supported = [".docx", ".dotx", ".pptx", ".potx", ".xlsx", ".xlsm", ".xltx", ".pdf"].includes(ext);
+  if (!supported) return null;
+  // documentRepoRoot is also used by document.read / MCP installation. Do not
+  // invent a different CLI bundle location for the public tool.
+  const cliPath = await findBundledGenofficeCli();
+  if (!cliPath) {
+    if (exact) throw new Error("GenOffice CLI 未构建/未安装；请构建 genoffice/packages/cli，或改用 reader=native");
+    return null;
+  }
+  const allowedPath = path.resolve(input.abs);
+  // Public tool pOfRead checks the selected project's symlink fence before
+  // this point. Limit the vendor CLI to only that checked single file here.
+  const ports = { cliPath, withinWorkspace: (p: string) => path.resolve(p) === allowedPath };
+  let result: GenofficeResult;
+  if (ext === ".pdf") {
+    const start = input.pageStart ?? 1;
+    const count = input.maxPages;
+    if (count === undefined && input.pageStart === undefined) {
+      // GenOffice itself defaults to a bounded first-page window and reports
+      // the continuation cursor.
+      result = await pdfRead(ports, input.abs, { maxChars: 4000 });
+    } else if (count === 1) {
+      result = await pdfRead(ports, input.abs, { page: start, maxChars: 4000 });
+    } else {
+      // Vendor --range rejects an end that exceeds the real page count.
+      // Probe its own bounded first window for the authoritative count, then
+      // clamp the requested range. No duplicate PDF parser or metadata probe.
+      const probe = await pdfRead(ports, input.abs, { maxChars: 4000 });
+      if (!probe.ok) {
+        result = probe;
+      } else {
+        const total = (probe.envelope.detail as { pages?: unknown } | null)?.pages;
+        if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 0) {
+          throw new Error("GenOffice pdf_read 未返回可信页数，拒绝猜测翻页区间");
+        }
+        if (start < 1 || start > total) {
+          throw new Error(`GenOffice PDF 页码 ${start} 超出范围 1–${total}`);
+        }
+        const end = Math.min(total, start + (count ?? 20) - 1);
+        result = await pdfRead(ports, input.abs,
+          start === end ? { page: start, maxChars: 4000 }
+          : { range: `${start}-${end}`, maxChars: 4000 });
+      }
+    }
+  } else if (ext === ".docx" || ext === ".dotx") {
+    result = await docsRead(ports, input.abs, { full: true });
+  } else if (ext === ".pptx" || ext === ".potx") {
+    result = await slidesRead(ports, input.abs);
+  } else {
+    result = await sheetRead(ports, input.abs);
+  }
+  if (!result.ok) {
+    if (result.kind === "unavailable" && !exact) return null;
+    throw new Error(`GenOffice ${result.kind}: ${result.reason}`);
+  }
+  let detail = result.envelope.detail;
+  if ((ext === ".docx" || ext === ".dotx") && input.docxMode === "structure"
+      && detail && typeof detail === "object") {
+    const d = detail as { blocks?: number; items?: unknown[] };
+    if (Array.isArray(d.items)) {
+      const from = (input.blockStart ?? 1) - 1;
+      if (from >= (d.blocks ?? d.items.length)) throw new Error(`block_start=${from + 1} 超过 GenOffice 结构块数量 ${d.blocks ?? d.items.length}`);
+      const limit = input.maxBlocks ?? 30;
+      detail = {
+        ...d,
+        items: d.items.slice(from, from + limit),
+        requested_blocks: [from, from + Math.min(limit, d.items.length - from) - 1],
+        ...(from + limit < d.items.length ? { next_block_start: from + limit + 1, truncated: true } : {}),
+        units: "GenOffice 原生索引从 0 开始；public block_start 从 1 开始",
+      };
+    }
+  }
+  const engine = ext === ".pdf" ? "GenOffice/PDFium" : "GenOffice/Office";
+  const pages = (detail && typeof detail === "object" && "pages" in detail) ? (detail as { pages?: unknown }).pages : null;
+  const legacyPdfHeader = ext === ".pdf" && typeof pages === "number" ? `[PDF ${pages} 页] ` : "";
+  return capDocumentOutput(
+    `${legacyPdfHeader}[${engine}] ${result.envelope.summary ?? ""}\n${JSON.stringify(detail ?? {}, null, 2)}`,
+    "GenOffice 文档", maxChars);
+}
+
 export async function readRichDocumentRaw(input: {
   abs: string;
   sheet?: string;
   range?: string;
   maxPages?: number;
+  pageStart?: number;
+  pdfMode?: "text" | "layout";
+  reader?: "auto" | "native" | "genoffice";
+  docxMode?: "text" | "structure";
+  blockStart?: number;
+  maxBlocks?: number;
   maxSlides?: number;
   maxRows?: number;
   maxCols?: number;
@@ -619,17 +919,30 @@ export async function readRichDocumentRaw(input: {
 }): Promise<string> {
   const ext = path.extname(input.abs).toLowerCase();
   const maxChars = Math.max(100, Math.min(input.maxChars ?? MAX_DOCUMENT_OUTPUT_CHARS, 300_000));
+  if (input.reader !== "native") {
+    const viaGenoffice = await readViaGenoffice(input, maxChars);
+    if (viaGenoffice !== null) return viaGenoffice;
+    if (input.reader === "genoffice") throw new Error(`GenOffice 对 ${ext} 没有匹配的只读路由；请使用 reader=native 或 GenOffice 原生工具`);
+  }
   if (ext === ".pdf") {
-    const out = await extractPdfText(input.abs, Math.max(1, Math.min(input.maxPages ?? 200, 500)));
+    if (input.pdfMode === "layout") {
+      const layout = await extractPdfLayout(input.abs, input.pageStart ?? 1, input.maxPages ?? 10);
+      if (!layout.ok) throw new Error(layout.error);
+      return capDocumentOutput(layout.text, "PDF 布局", maxChars);
+    }
+    const out = await extractPdfText(input.abs, Math.max(1, Math.min(input.maxPages ?? 200, 500)), input.pageStart ?? 1);
     if (!out.ok) throw new Error(out.error);
     const notes = [
-      out.truncated ? "按 max_pages 截断,其余页未读取" : "",
+      out.truncated ? "只读取请求页段,其余页未读取(按 page_start/max_pages 翻页)" : "",
       out.failedPages.length ? `解析失败页: ${out.failedPages.join(", ")}` : "",
     ].filter(Boolean);
     return capDocumentOutput(`[PDF ${out.pageCount} 页] [成功读取 ${out.pagesRead} 页${notes.length ? "; " + notes.join("; ") : ""}]\n${out.text || "(没有可抽取的文本层; 未执行 OCR)"}`, "PDF 文本", maxChars);
   }
 
   if (ext === ".docx" || ext === ".dotx") {
+    if (input.docxMode === "structure") {
+      return docxStructureText(input.abs, input.blockStart ?? 1, input.maxBlocks ?? 30, maxChars);
+    }
     try {
       const out = await runCaptured("pandoc", [input.abs, "-t", "gfm"], DOCUMENT_READ_BUDGET.maxTimeMs, undefined, DOCUMENT_READ_BUDGET.maxChildOutputBytes);
       if (out.code === 0) return capDocumentOutput(out.stdout.trim() || "(文档没有可抽取文本)", "DOCX 文本", maxChars);
@@ -761,6 +1074,12 @@ export async function readRichDocument(input: {
   sheet?: string;
   range?: string;
   maxPages?: number;
+  pageStart?: number;
+  pdfMode?: "text" | "layout";
+  reader?: "auto" | "native" | "genoffice";
+  docxMode?: "text" | "structure";
+  blockStart?: number;
+  maxBlocks?: number;
   maxSlides?: number;
   maxRows?: number;
   maxCols?: number;
@@ -776,8 +1095,19 @@ export async function readRichDocument(input: {
     // 累加各成员声明的解压后大小,超 `maxDecompressedBytes` 就在**交给任何解析器/pandoc 之前**拒绝
     // —— 一条 Excel / DOCX(pandoc 或 Python) / PPTX 路径共用这一个点,不各写各的 Python 判据。
     // 放在闸门**之内**:中央目录扫描会把整个容器读进内存,故它本身也受并发上界约束。
+    const ext = path.extname(input.abs).toLowerCase();
+    // PDFium/pdfjs can eagerly parse file structures before output truncation;
+    // apply the SAME raw-file budget before either backend spawns or reads.
+    // max_chars is an output budget, never a substitute for an input bound.
+    if (ext === ".pdf") {
+      const pdfStat = await fs.stat(input.abs);
+      if (!pdfStat.isFile()) throw new Error("PDF 输入不是普通文件");
+      if (pdfStat.size > DOCUMENT_READ_BUDGET.maxRawBytes) {
+        throw new Error(`PDF 文件 ${pdfStat.size} 字节,超过原始输入上限 ${DOCUMENT_READ_BUDGET.maxRawBytes}(这是读取预算,不是 PDF 内容损坏)`);
+      }
+    }
     const OOXML_EXTS = new Set([".xlsx", ".xlsm", ".xltx", ".docx", ".dotx", ".pptx", ".potx"]);
-    if (OOXML_EXTS.has(path.extname(input.abs).toLowerCase())) {
+    if (OOXML_EXTS.has(ext)) {
       // 先按**磁盘原始大小**快速拒绝(声明式,与 URL 的 Content-Length 快拒同一思想):超 maxRawBytes
       // 的容器连读进内存做中央目录扫描都不做。
       const st = await fs.stat(input.abs).catch(() => null);
