@@ -133,5 +133,26 @@ const spec = { [NODE_RED_PATH_PARAM]: "/api/flow", [NODE_RED_METHOD_PARAM]: "POS
   check("原因点名缺什么", (out.error ?? "").includes("enginePath"), out.error);
 }
 
+{
+  // 【调度器的变量展开】宿主 builder 塑好的 `input.engineRequest` 优先于
+  // `node.params` 的存盘原值 —— 否则 `engineBody` 里写的 `{{上游.字段}}` 永远
+  // 发不到引擎（解算只发生在递进 buildInput 的那份参数上）。
+  const seen: NodeRedFetchRequest[] = [];
+  const exec = nodeRedExecutor({
+    engine: { status: () => running },
+    fetch: async (req) => {
+      seen.push(req);
+      return { status: 200, text: "{}", truncated: false };
+    },
+  });
+  const context = ctx({ [NODE_RED_PATH_PARAM]: "/stale", [NODE_RED_BODY_PARAM]: "存盘原值" });
+  (context.input as { engineRequest?: unknown }).engineRequest =
+    { path: "/api/flow", method: "POST", body: '{"q":"已替换"}' };
+  const out = await exec.execute(context);
+  eq("★ builder 产物优先时照常成功", out.status, "success");
+  eq("★ 请求路径取 input.engineRequest 而非 node.params", seen[0]?.url, `http://127.0.0.1:${PORT}/api/flow`);
+  eq("★ 请求体取解算后的值", seen[0]?.body, '{"q":"已替换"}');
+}
+
 console.log(`\nworkflow-engine-bridge-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

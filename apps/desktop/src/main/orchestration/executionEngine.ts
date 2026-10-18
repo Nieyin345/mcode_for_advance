@@ -11,7 +11,48 @@ import { CommandExecutor } from "./commandExecutor.js";
 import { NodeExecutorRegistry, type NodeExecutor } from "./executorRegistry.js";
 import type { ExecutionContext, ExecutionMetadata } from "./executionContext.js";
 import { ModuleCapabilityExecutor, type WorkflowModuleHostPort } from "./moduleCapabilityExecutor.js";
+import {
+  NODE_RED_ENGINE_ID,
+  NODE_RED_RUNNER_KIND,
+  defaultNodeRedFetch,
+  nodeRedExecutor,
+  readRequestSpec,
+} from "./nodeRedExecutor.js";
 import { buildNodeInput, nodeInputBuilderRegistry } from "./nodeInputBuilders.js";
+import type { EngineRuntimeStatus } from "@main/workflowEngines/runtimeSupervisor.js";
+
+/** 【ARC-006 桥 1】`node-red` 节点的**输入构造** —— 让"变量展开后的三个扁平参数"
+ *  真正到达执行器。
+ *
+ *  调度器的顺序是固定的：`expandParams`（`{{...}}` 解算）→ `buildNodeInput` →
+ *  `ExecutionEngine.execute` → 执行器。`nodeRedExecutor` 从 `context.node.params` 读
+ *  参数（那是**存盘原值**，没见过模板解算），而变量展开只发生在递进 buildInput 的那份
+ *  `params` 上。没有这个 builder，`engineBody` 里写 `{{上游.字段}}` 会原样发出去 ——
+ *  而调度器又**先跑 buildInput 再派发**：没有专用 builder 时它会落进默认模型轮构造并
+ *  抛「提示词节点必须有指令」，节点在"变量展开"这一步就失败了，根本到不了执行器。
+ *
+ *  所以这里按其它"不起模型"的执行器（code / command）同一个接缝注册：把解算后的
+ *  请求形状放进 `NodeRunInput.engineRequest`（宿主 → 执行器，不进清单），执行器优先读它。
+ *  注册在模块加载时**无条件**发生 —— builder 只塑形、不派发：执行器缺席时调度器
+ *  早在 `isNodeRunnable` 那道闸就拒绝了，走不到这里；按次注册反而会在
+ *  `createBuiltinExecutionEngine`（每次运行一个实例）第二次调用时撞上重复注册。 */
+nodeInputBuilderRegistry.register({
+  kind: NODE_RED_RUNNER_KIND,
+  build: ({ params, base }) => {
+    const spec = readRequestSpec(params);
+    return {
+      ...base,
+      prompt: "",
+      skills: [],
+      mcpServerNames: [],
+      pluginNames: [],
+      returnMode: "none",
+      // `readRequestSpec` 对缺失路径返回 null；执行器自己要报那句明确错误，
+      // 这里不抢先失败 —— 一份缺参数的节点在注册表里有执行器时，错误该由它说。
+      ...(spec !== null ? { engineRequest: spec } : {}),
+    };
+  },
+});
 
 // The existing builder seam receives params/base, not trusted run identity. Bind
 // that identity around synchronous input construction; never put it in params or
@@ -70,6 +111,38 @@ function moduleExecutor(): NodeExecutor {
 
 export type { ExecutionContext, ExecutionMetadata, ExecutionProgress } from "./executionContext.js";
 export type { NodeExecutor } from "./executorRegistry.js";
+
+/** 【ARC-006 WF-INT · 桥 1】「引擎可用吗」的**注入点**。
+ *
+ *  `node-red` 是可选能力：没装/没起时它的 kind **不能**进执行器注册表（否则清单里
+ *  出现一个永远跑不了的 kind）。而 `executionEngine.ts` 不能直接 import 生产注册表
+ *  单例 —— `registry.ts` 会拖进 `dataRoot`（electron 的 `app.getPath`），而本模块被
+ *  每一套无头 smoke 打包（`module-workflow-smoke` 用 AST 提取 `createBuiltinExecutionEngine`
+ *  的注册表达式并在纯 node 里执行它）。所以判据做成**注入**：
+ *
+ *  - 生产在装配处（`main/index.ts`）调 `setWorkflowEngineStatusPort(() => workflowEngineRegistry.statusOf(id))`；
+ *  - 套件注入假引擎状态（见 `execution-engine-smoke` §引擎执行器），不碰磁盘。
+ *
+ *  返回 `null` = **未知**（端口还没装、或引擎没注册）—— 与"未运行"同样处理：
+ *  **fail-closed，不注册**。注册树在引擎第一次 running 之后出现，之后即使引擎停了
+ *  也**不撤掉**（见 `createBuiltinExecutionEngine`）：撤掉会让一个正在跑的图在重启
+ *  节点时从"引擎未运行"变成"没有执行器"，而前者才是用户能照着做的错误。
+ */
+export type WorkflowEngineStatusPort = (engineId: string) => EngineRuntimeStatus | null;
+
+let workflowEngineStatusPort: WorkflowEngineStatusPort | null = null;
+
+/** 装配引擎状态查询口（幂等；生产只在 `main/index.ts` 顶层调一次）。 */
+export function setWorkflowEngineStatusPort(port: WorkflowEngineStatusPort | null): void {
+  workflowEngineStatusPort = port;
+}
+
+/** 引擎此刻**可用**（running 且有端口）—— 读注入口；没装口一律不可用。 */
+function workflowEngineUsable(engineId: string): boolean {
+  if (workflowEngineStatusPort === null) return false;
+  const status = workflowEngineStatusPort(engineId);
+  return status !== null && status.state === "running" && status.port !== null;
+}
 
 export class ExecutionEngine {
   /** 兜底执行器:`execute` 必备,`start`/`settle` 可选(与 NodeExecutor 同一套钩子)。 */
@@ -172,12 +245,33 @@ export class ExecutionEngine {
   }
 }
 
-/** Both the shared engine and runner's run-scoped engine use this registration. */
+/** Both the shared engine and runner's run-scoped engine use this registration.
+ *
+ *  【ARC-006 桥 1】第三方引擎（Node-RED）是**可选能力**：只有引擎此刻可用（注入的
+ *  状态口说 running）才注册它的执行器。不可用时**不注册**，且 `node-red` **不在**
+ *  `IMPLEMENTED_RUNNER_KINDS` 里 —— 于是 `isNodeRunnable` 对 `mcode.node-red` 为
+ *  false，画布/检查器照常标"跑不了"，调度器也在 `isNodeRunnable` 那道闸明确拒绝，
+ *  不会掉进模型兜底（那不是 fail-open，是**没有**执行器 —— 见 `ExecutionEngine.execute`
+ *  的未知 kind 分支）。注册一次即保留：引擎随后停掉时，节点拿到的是代码里那句
+ *  "引擎尚未运行 —— 请先启动它"（可照着做），而不是"没有能执行这种节点的执行器"。 */
 export function createBuiltinExecutionEngine(): ExecutionEngine {
-  return new ExecutionEngine()
+  const engine = new ExecutionEngine()
     .register(new CommandExecutor())
     .register(new CodeExecutor())
     .register(moduleExecutor());
+  if (workflowEngineUsable(NODE_RED_ENGINE_ID)) {
+    engine.register(nodeRedExecutor({
+      // 惰性读取：start() 那一刻引擎可能已被用户停掉，执行器要报"未运行"而不是
+      // 拿装配期的旧快照继续发请求。
+      engine: {
+        status: () =>
+          workflowEngineStatusPort?.(NODE_RED_ENGINE_ID)
+          ?? { engineId: NODE_RED_ENGINE_ID, state: "stopped", port: null, reason: null },
+      },
+      fetch: (request) => defaultNodeRedFetch(request),
+    }));
+  }
+  return engine;
 }
 
 export const executionEngine = createBuiltinExecutionEngine();

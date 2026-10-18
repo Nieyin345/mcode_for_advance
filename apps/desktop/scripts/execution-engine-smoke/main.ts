@@ -1,4 +1,4 @@
-import { ExecutionEngine, type ExecutionContext, type NodeExecutor } from "../../src/main/orchestration/executionEngine.js";
+import { ExecutionEngine, createBuiltinExecutionEngine, type ExecutionContext, type NodeExecutor } from "../../src/main/orchestration/executionEngine.js";
 import type { NodeOutcome } from "@contracts/nodeType";
 
 const checks: string[] = [];
@@ -177,6 +177,183 @@ ok(exact.summary === "exact", "registered kind wins over fallback");
   ok(failEscaped === undefined, "★ execute 抛错 + settle 抛错都不逃出引擎");
   ok(failOut?.status === "failed" && /boom/.test(failOut.error ?? ""), "★ 业务失败的根因保留");
   ok(failSettle.length === 1 && failSettle[0] === "failed", `★ 失败路径 settle 也只调一次且带失败结果(实际 ${JSON.stringify(failSettle)})`);
+}
+
+// —— 【ARC-006 桥 1】第三方引擎执行器:只在引擎可用时注册 ——
+// 三个判据来自同一句需求:"清单里不出现永远跑不了的 kind"。
+//   1. 没装/没起来 → 注册表不含 node-red;
+//   2. 起来了 → 含,且状态是**派发时现读**(注册后引擎停掉,节点报"去启动引擎");
+//   3. 静态白名单(IMPLEMENTED_RUNNER_KINDS / isNodeRunnable)永远不含 node-red ——
+//      它是可选能力,清单/画布据此标"跑不了"。
+{
+  const { setWorkflowEngineStatusPort, NODE_RED_ENGINE_ID_FOR_TEST, nodeRedKind } = await (async () => {
+    const mod = await import("../../src/main/orchestration/executionEngine.js");
+    const red = await import("../../src/main/orchestration/nodeRedExecutor.js");
+    return {
+      setWorkflowEngineStatusPort: mod.setWorkflowEngineStatusPort,
+      NODE_RED_ENGINE_ID_FOR_TEST: red.NODE_RED_ENGINE_ID,
+      nodeRedKind: red.NODE_RED_RUNNER_KIND,
+    };
+  })();
+  const status = (state: "stopped" | "starting" | "running" | "failed", port: number | null) =>
+    ({ engineId: NODE_RED_ENGINE_ID_FOR_TEST, state, port, reason: state === "failed" ? "boom" : null });
+
+  try {
+    // 1a. 状态口没装(装配前 / 无头环境)—— fail-closed,不注册。
+    setWorkflowEngineStatusPort(null);
+    ok(!createBuiltinExecutionEngine().has(nodeRedKind), "★ 引擎状态口未装时注册表不含 node-red(不出现永远跑不了的 kind)");
+
+    // 1b. 装了但引擎没起来 —— 同样不注册。
+    setWorkflowEngineStatusPort(() => status("stopped", null));
+    ok(!createBuiltinExecutionEngine().has(nodeRedKind), "★ 引擎 stopped 时注册表不含 node-red");
+    setWorkflowEngineStatusPort(() => status("starting", 3527));
+    ok(!createBuiltinExecutionEngine().has(nodeRedKind), "★ 引擎 starting 时注册表不含 node-red(端口有了也不算可用)");
+    setWorkflowEngineStatusPort(() => status("failed", null));
+    ok(!createBuiltinExecutionEngine().has(nodeRedKind), "★ 引擎 failed 时注册表不含 node-red");
+    // running 但端口为 null —— "可用"必须**同时**要求 running 与端口(执行器要靠端口拼 URL)。
+    setWorkflowEngineStatusPort(() => status("running", null));
+    ok(!createBuiltinExecutionEngine().has(nodeRedKind), "★ running 但端口为 null 时也不含 node-red");
+    setWorkflowEngineStatusPort(() => null);
+    ok(!createBuiltinExecutionEngine().has(nodeRedKind), "未知引擎 id(状态口回 null)时不含 node-red");
+
+    // 2a. 引擎 running 且有端口 → 注册。
+    let live: { state: "running" | "stopped"; port: number | null } = { state: "running", port: 3527 };
+    setWorkflowEngineStatusPort(() => ({ engineId: NODE_RED_ENGINE_ID_FOR_TEST, ...live, reason: null }));
+    const engine = createBuiltinExecutionEngine();
+    ok(engine.has(nodeRedKind), "★ 引擎 running 时注册表含 node-red");
+    // 原有内置执行器一个不少(条件注册不能顶掉它们)。
+    ok(engine.has("command") && engine.has("code") && engine.has("module-capability"), "★ 引擎可用时原有的 command/code/module-capability 仍在");
+
+    // 2b. 注册之后引擎停掉:执行节点**现读**状态,报的是"去启动引擎"而不是
+    // "没有能执行这种节点的执行器" —— 后者会让用户以为图配错了。
+    live = { state: "stopped", port: null };
+    const redCtx = context(nodeRedKind);
+    (redCtx.node as { params: Record<string, unknown> }).params = { enginePath: "/api/flow" };
+    (redCtx.input as { engineRequest?: unknown }).engineRequest = { path: "/api/flow", method: "POST", body: null };
+    const redOut = await engine.execute(redCtx);
+    ok(redOut.status === "failed", "★ 注册后引擎停掉 → 节点 failed(不是掉进模型兜底)");
+    ok(redOut.retryable === false, "★ 引擎未运行不可重试(重跑同一输入不会变)");
+    ok(/启动/.test(redOut.error ?? ""), `★ 原因说清要启动引擎(实际 ${redOut.error ?? ""})`);
+
+    // 2c. 反方向:引擎此刻 running → **真的发到回环端口并成功**。起一个真 HTTP
+    // 服务(端口由 OS 给),证明执行器读的是**执行时**的状态口,而不是注册那一刻
+    // 的快照 —— 拍快照会让引擎在注册之后才起来的节点永远失败。
+    {
+      const { createServer } = await import("node:http");
+      const server = createServer((req, res) => {
+        let body = "";
+        req.on("data", (c) => { body += c; });
+        req.on("end", () => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ path: req.url, method: req.method, body }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      const realPort = typeof address === "object" && address !== null ? address.port : 0;
+      try {
+        setWorkflowEngineStatusPort(() => ({ engineId: NODE_RED_ENGINE_ID_FOR_TEST, state: "running", port: realPort, reason: null }));
+        const liveEngine = createBuiltinExecutionEngine();
+        const liveCtx = context(nodeRedKind);
+        (liveCtx.node as { params: Record<string, unknown> }).params = { enginePath: "/api/flow" };
+        (liveCtx.input as { engineRequest?: unknown }).engineRequest = { path: "/api/flow", method: "POST", body: '{"a":1}' };
+        const liveOut = await liveEngine.execute(liveCtx);
+        ok(realPort > 0, "前置:真回环服务拿到了端口");
+        ok(liveOut.status === "success", `★ 注册后引擎 running → 经真 HTTP 成功(实际 ${liveOut.status}${liveOut.error ? " — " + liveOut.error : ""})`);
+        ok((liveOut.outputs?.status as number) === 200, "★ 响应状态进入 outputs");
+        ok((liveOut.outputs?.body as { path?: string } | undefined)?.path === "/api/flow", "★ 引擎真的收到了请求路径");
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
+
+    // 3. 静态层:node-red **不在** IMPLEMENTED_RUNNER_KINDS,isNodeRunnable 恒 false。
+    const { IMPLEMENTED_RUNNER_KINDS, isRunnerImplemented, isNodeRunnable, renderNodeTypeCatalog } =
+      await import("@contracts/nodeType");
+    ok(!(IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(nodeRedKind),
+      "★ node-red 不在 IMPLEMENTED_RUNNER_KINDS(它是可选能力,不是静态可跑)");
+    ok(!isRunnerImplemented(nodeRedKind as never), "★ isRunnerImplemented(node-red) 保持 false");
+    // 一份声明 node-red 的清单(形状借用内置清单;眼下契约还不认这个 kind,所以
+    // 用对象字面量而不是过 schema —— 这条钉的是**判据**,不是某份具体清单)。
+    const redManifest = {
+      id: "mcode.node-red", manifestVersion: 1, name: "Node-RED 引擎", runner: { kind: nodeRedKind },
+      capability: "read", params: [],
+    } as unknown as import("@contracts/nodeType").NodeTypeManifest;
+    ok(!isNodeRunnable(redManifest), "★ 清单声明 node-red 时 isNodeRunnable 为 false(画布/检查器据此标跑不了)");
+    const catalogText = renderNodeTypeCatalog([{ id: redManifest.id, source: "plugin", from: "test", manifest: redManifest }]);
+    ok(catalogText.includes("跑不了"), `★ 节点目录如实标出该类型跑不了(实际:${catalogText.split("\n").pop()})`);
+
+    // 界面那条路:卡片/类型页的"跑不了"徽标必须读**同一个** isNodeRunnable ——
+    // 本切片不允许改渲染端,所以钉判据来源(而不是另写一份 kind 名单):只要两边
+    // 读同一份答案,isNodeRunnable=false 的类型在界面上就会被标出来。
+    {
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const card = readFileSync(join(process.cwd(), "src/renderer/components/settings/workflows/WorkflowNodeCard.tsx"), "utf8");
+      const types = readFileSync(join(process.cwd(), "src/renderer/components/settings/workflows/NodeTypesView.tsx"), "utf8");
+      ok(/deadRunner\s*=\s*entry\s*\?\s*!isNodeRunnable\(entry\.manifest\)/.test(card) &&
+        /const runnable = isNodeRunnable\(m\)/.test(types),
+      "★ 画布卡片与节点类型页的「跑不了」都读 isNodeRunnable(与调度器同一份答案)");
+    }
+  } finally {
+    setWorkflowEngineStatusPort(null);
+  }
+
+  // 4. 生产装配确实把状态口接上了 —— 否则条件注册永远不会发生(功能静默缺席)。
+  {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const bootstrap = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8");
+    ok(/setWorkflowEngineStatusPort\(\(engineId\)\s*=>\s*workflowEngineRegistry\.statusOf\(engineId\)\)/.test(bootstrap),
+      "★ main/index.ts 装配时把引擎状态查询口接上(否则 node-red 执行器永远不会注册)");
+  }
+
+  // 5. **变量展开要作用到 engineBody**:调度器把解算后的参数交给 buildInput,而
+  //    执行器读的是 `input.engineRequest`(存盘原值 `node.params` 只做回落)。
+  //    没有这个 builder 时,node-red 节点会先落进默认模型轮构造、在"指令必填"处炸,
+  //    根本走不到执行器;而且即便走到了,`engineBody` 里的 `{{上游.字段}}` 也不会生效。
+  {
+    const { buildNodeInput } = await import("../../src/main/orchestration/nodeInputBuilders.js");
+    const { nodeRedExecutor } = await import("../../src/main/orchestration/nodeRedExecutor.js");
+    const redManifest = {
+      id: "mcode.node-red", manifestVersion: 1, name: "Node-RED 引擎", runner: { kind: nodeRedKind },
+      capability: "read", params: [],
+    } as unknown as import("@contracts/nodeType").NodeTypeManifest;
+    const scope = {
+      userPrompt: "", upstream: "", upstreamArtifacts: [], upstreamOutputs: {},
+      nodeId: "n1", plan: { steps: [] } as never, root: false, terminal: true,
+      contextLines: () => [],
+    };
+    // 调度器交来的 params 是 `expandParams` 解算**之后**的(见 scheduler.executeOne)。
+    const expanded = {
+      enginePath: "/api/flow",
+      engineMethod: "POST",
+      engineBody: '{"q":"已替换的上游值"}',
+    };
+    const built = buildNodeInput(expanded, redManifest, scope as never, new AbortController().signal);
+    ok(built.engineRequest?.body === expanded.engineBody,
+      `★ 解算后的 engineBody 进入 input.engineRequest(实际 ${JSON.stringify(built.engineRequest?.body)})`);
+    ok(built.prompt === "" && built.returnMode === "none",
+      "★ node-red 节点不走模型轮构造(不产生提示词、不回主对话)");
+
+    // 执行器**优先**读 engineRequest,不被存盘原值覆盖。
+    let sent: { url: string; body: string | null } | null = null;
+    const exec = nodeRedExecutor({
+      engine: { status: () => ({ engineId: NODE_RED_ENGINE_ID_FOR_TEST, state: "running", port: 3527, reason: null }) },
+      fetch: async (req) => {
+        sent = { url: req.url, body: req.body };
+        return { status: 200, text: "{}", truncated: false };
+      },
+    });
+    const out = await exec.execute({
+      node: { params: { enginePath: "/stale", engineBody: "存盘原值" } },
+      input: { ...built, signal: new AbortController().signal },
+    } as never);
+    ok(out.status === "success", `★ 执行器带 builder 产物运行时成功(实际 ${out.status})`);
+    ok(sent !== null && (sent as { url: string }).url.endsWith("/api/flow") &&
+      (sent as { body: string | null }).body === expanded.engineBody,
+    `★ 请求使用解算后的值而不是 node.params 的存盘原值(实际 ${JSON.stringify(sent)})`);
+  }
 }
 
 console.log(`PASS: ${checks.length} checks`);

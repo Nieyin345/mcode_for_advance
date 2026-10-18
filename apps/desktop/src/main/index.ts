@@ -40,6 +40,8 @@ import { hookRunner } from "@main/hooks/HookRunner.js";
 import { enabledPluginHookDeclarations } from "@main/plugins/pluginManager.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { hasActiveRun } from "@main/orchestration/runner.js";
+import { setWorkflowEngineStatusPort } from "@main/orchestration/executionEngine.js";
+import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
 import { is } from "@main/utils.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { preloadClaudeSdk } from "@main/providers/claude-sdk/ClaudeAgentSdkProvider.js";
@@ -68,6 +70,11 @@ registerPanelSchemePrivileged();
 configureLibraryEvents({ emitExternal: (event) => runtimeManager.emitExternal(event) });
 // code 节点「收进库 / 挂回 Markdown」的写库能力(理由见 adoptFromCode.ts 的 `CodeNodeLibraryHost`)。
 configureCodeNodeLibraryHost({ importAnyFiles, adoptMarkdownFile, notifyLibraryChanged });
+// 【ARC-006 桥 1】第三方引擎(Node-RED)执行器是**可选能力**:只有引擎 running 时才
+// 进执行器注册表(见 `orchestration/executionEngine.ts` 的 `setWorkflowEngineStatusPort`)。
+// 这里注入的是**只读状态查询**,不 import 执行器链 —— 注册表本身已在 IPC 装配里被 import,
+// 不新增 electron 之外的依赖;查询不建运行时实例(见 `registry.statusOf`)。
+setWorkflowEngineStatusPort((engineId) => workflowEngineRegistry.statusOf(engineId));
 
 // App identity for OS-level surfaces (desktop notifications, taskbar grouping,
 // Windows AUMID). setName("Mcode") makes the system notification card title

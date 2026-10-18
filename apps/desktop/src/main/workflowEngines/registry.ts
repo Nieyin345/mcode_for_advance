@@ -32,7 +32,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
-import { EngineRuntime, defaultEngineRuntimePorts, type EngineRuntime as EngineRuntimeType } from "./runtimeSupervisor.js";
+import { EngineRuntime, defaultEngineRuntimePorts, type EngineRuntime as EngineRuntimeType, type EngineRuntimeStatus } from "./runtimeSupervisor.js";
 import type { WorkflowEngineLaunchSpec, WorkflowEngineRegistry } from "@main/ipc/workflowEngine.js";
 
 /** 引导脚本：与 NR0 实测的那份同形。 */
@@ -83,6 +83,16 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
       this.runtimes.set(engineId, runtime);
     }
     return runtime;
+  }
+
+  /** 引擎此刻的状态（只读；未注册 / 从未取值时为 `null`）。
+   *
+   *  **不创建实例** —— 与 {@link get} 不同：这是给执行器注册表那条路用的
+   *  （`executionEngine.ts` 的 `setWorkflowEngineStatusPort`），装配期只许问
+   *  「装没装、跑没跑」，不许因为一句查询就记下一个运行时。 */
+  statusOf(engineId: string): EngineRuntimeStatus | null {
+    if (!(ENGINE_IDS as readonly string[]).includes(engineId)) return null;
+    return this.runtimes.get(engineId)?.status() ?? null;
   }
 
   /** 引擎自己的目录（也放引导脚本）。 */

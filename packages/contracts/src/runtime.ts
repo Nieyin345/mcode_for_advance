@@ -68,6 +68,23 @@ export interface NodeRunInput {
     input?: unknown;
     timeoutMs: number;
   };
+  /**
+   * 【ARC-006 桥 1】一次**工作流引擎请求**，形状与 `nodeRedExecutor` 的
+   * `readRequestSpec` 一致（path / method / body 三个扁平节点参数解算后的产物）。
+   *
+   * 由宿主侧的专用 input builder 填（见 `orchestration/executionEngine.ts`）——因为它
+   * 拿得到**变量展开后**的参数，而执行器手上的 `node.params` 是存盘原值。执行器优先读
+   * 这里，读不到才回落到原参数（手工构造上下文的套件走的是后者）。
+   *
+   * 与 `command` / `code` / `moduleCall` 同一性质：宿主 → 执行器的单次派发载荷，
+   * **不是**节点清单里的参数格；不序列化进 `WorkflowDataContext`。
+   */
+  engineRequest?: {
+    path: string;
+    method: string;
+    headers?: Record<string, string>;
+    body?: string | null;
+  };
 }
 
 /**

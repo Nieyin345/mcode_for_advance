@@ -213,7 +213,6 @@ const OPTS = {
 }
 
 console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过`);
-if (failures > 0) process.exitCode = 1;
 
 /* ══════════ 7. IPC 层：fakeIpc 调真 handler ══════════ */
 {
@@ -272,3 +271,43 @@ if (failures > 0) process.exitCode = 1;
 }
 
 console.log(`\nworkflow-engine-runtime-smoke(含IPC):${total - failures}/${total} 通过`);
+
+/* ══════════ 8. 生产注册表：statusOf 只读、不建运行时 ══════════ */
+// 【ARC-006 桥 1】执行器的条件注册经 `executionEngine.setWorkflowEngineStatusPort`
+// 查询生产注册表（`main/index.ts` 装配）。那条查询发生在**启动装配期**，所以它
+// 绝不能顺手建出一个运行时（那会让"从未启动"的引擎看起来像已存在）。
+{
+  const { ProductionWorkflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
+  const registry = new ProductionWorkflowEngineRegistry();
+  eq("★ 未取过运行时 → statusOf 回 null(不因一句查询而建实例)", registry.statusOf("node-red"), null);
+  eq("未知引擎 id 的 statusOf 也回 null", registry.statusOf("other-engine"), null);
+
+  const created = registry.get("node-red");
+  eq("get 之后 statusOf 反映真实状态(stopped)", registry.statusOf("node-red")?.state, "stopped");
+  eq("statusOf 与 runtime.status() 是同一份事实", registry.statusOf("node-red")?.engineId, created?.status().engineId);
+}
+
+
+/* ══════════ 9. 生产端口分配：真起一个可拨通的回环端口 ══════════ */
+{
+  const { defaultEngineRuntimePorts } = await import("@main/workflowEngines/runtimeSupervisor.js");
+  const { isBlockedPort } = await import("@main/lib/loopbackPort.js");
+  // 真缺陷回归：`listenOnDialablePort` 返回 Promise<number>，早先被误当 err-first
+  // 回调解构，生产每次 start 都会以「分配端口失败」进 failed（真 Electron U1 抓到）。
+  // 用 catch 包住：分配失败要给一条**可读的 FAIL**，而不是让未捕获异常把整套崩掉
+  // （变异验证时实测：错误解构会把端口号当 err 抛出，套件直接 terminate）。
+  let port: number | null = null;
+  let portError: string | null = null;
+  try {
+    port = await defaultEngineRuntimePorts.allocatePort();
+  } catch (err) {
+    portError = err instanceof Error ? err.message : String(err);
+  }
+  check("★ 生产端口分配真的返回一个端口号", port !== null && Number.isInteger(port) && port > 0, { port, portError });
+  check("★ 分配失败时给出可读原因（不是未捕获异常）", portError === null || /端口/.test(portError), portError);
+  check("★ 分配到的不是 fetch 黑名单端口", port !== null && !isBlockedPort(port), port);
+}
+console.log(`\nworkflow-engine-runtime-smoke(含注册表):${total - failures}/${total} 通过`);
+// 退出码只在这里定一次 —— 前面 §7/§8 的失败同样要红(从前 exitCode=1 设在 §7 之前,
+// §7/§8 里的 FAIL 会被仍为 0 的退出码盖过去:变异验证时实测「套件绿着而断言红着」)。
+if (failures > 0) process.exitCode = 1;

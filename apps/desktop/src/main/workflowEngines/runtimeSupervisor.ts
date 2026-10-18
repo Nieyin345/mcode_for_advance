@@ -102,20 +102,26 @@ const DEFAULT_STOP_GRACE_MS = 5_000;
 /** 生产默认端口分配：`listen(0)` 重抽直到不是 fetch 黑名单端口。 */
 async function defaultAllocatePort(): Promise<number> {
   const { listenOnDialablePort } = await import("@main/lib/loopbackPort.js");
-  // `listenOnDialablePort` 的契约是"给你一个 server 并回调"，这里只需要端口号，
-  // 所以起一个空 http server、拿端口、立刻关掉 —— 端口是"可拨通"的判据不变，
-  // 只是把绑定让给引擎自己。竞态窗口极小（同一进程内随即复用）。
+  // `listenOnDialablePort(server)` **返回 Promise<number>**（不是 err-first 回调）——
+  // 早先这里把可选的 `onBind(port, attempt)` 误当 `(err, port)` 解构，生产路径每次
+  // start 都会以「分配端口失败：<端口号>」进 failed。真 Electron U1 抓到的。
+  //
+  // 这里只需要端口号：起一个空 http server、拿到一个可拨通的端口、立刻关掉，
+  // 把绑定让给引擎自己。竞态窗口极小（同一进程内随即复用）。
   const { createServer } = await import("node:http");
   const server = createServer();
-  return new Promise<number>((resolve, reject) => {
-    listenOnDialablePort(server, (err, port) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      server.close(() => resolve(port));
-    });
-  });
+  try {
+    const port = await listenOnDialablePort(server);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    return port;
+  } catch (err) {
+    try {
+      server.close();
+    } catch {
+      /* 没起来 */
+    }
+    throw err;
+  }
 }
 
 /** 生产默认就绪探测：HTTP GET `/` 拿到任意响应（含 3xx/4xx）即视为在监听。 */

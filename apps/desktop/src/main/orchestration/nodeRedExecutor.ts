@@ -20,8 +20,9 @@
  * ## 为什么这个执行器不注册成内置 kind
  *
  * 它是**可选能力**：Node-RED 没装时注册它会让清单里出现一个永远跑不了的 kind。
- * 生产装配在"引擎可用"时才把执行器挂进 `ExecutionEngine`（见 `createWorkflowEngineExecutor`），
- * 这与 `module-capability` 的 fail-closed 是同一种取向。
+ * 生产装配在"引擎可用"时才把执行器挂进 `ExecutionEngine`（见 `executionEngine.ts` 的
+ * `setWorkflowEngineStatusPort` 与 `createBuiltinExecutionEngine`），这与
+ * `module-capability` 的 fail-closed 是同一种取向。
  */
 import type { NodeOutcome } from "@contracts/nodeType";
 import type { ExecutionContext } from "./executionContext.js";
@@ -55,6 +56,14 @@ export interface NodeRedExecutorPorts {
 }
 
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024;
+
+/** 这种节点的 `runner.kind` —— 与清单 `mcode.node-red` 的 runner 一致。
+ *  **不进** `IMPLEMENTED_RUNNER_KINDS`：那是"静态、永远可跑"的白名单，而这个 kind
+ *  依赖本机装没装 Node-RED（见文件头）。 */
+export const NODE_RED_RUNNER_KIND = "node-red";
+
+/** 宿主监管的引擎 id（与 `workflowEngines/registry.ts` 的注册 id 一致）。 */
+export const NODE_RED_ENGINE_ID = "node-red";
 
 /** 回环判据 —— 与 `checkDocumentViewUrl` 同一份取向（只放行本机回环）。 */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -101,7 +110,7 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
   const maxBytes = ports.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
 
   return {
-    kind: "node-red",
+    kind: NODE_RED_RUNNER_KIND,
     capabilities: {
       supportsCancellation: true,
       supportsArtifacts: false,
@@ -123,7 +132,10 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
       }
       // 参数是**三个扁平键**（与清单 `mcode.node-red` 的格子一一对应）：
       // 画布上用户填的就是 path/method/body，不存在一个嵌套的 "engineRequest" 对象。
-      const spec = readRequestSpec(context.node.params);
+      // 优先读宿主专用 builder 塑好的 `input.engineRequest` —— 那份经过调度器的
+      // 模板解算（`{{上游.字段}}` 在 `engineBody` 里也能用）；执行器手上的
+      // `node.params` 是**存盘原值**，只在直接构造上下文的套件里才作为回落来源。
+      const spec = context.input.engineRequest ?? readRequestSpec(context.node.params);
       if (spec === null) {
         return {
           status: "failed",
