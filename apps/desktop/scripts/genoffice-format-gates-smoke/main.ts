@@ -322,6 +322,36 @@ if (cliPath === null) {
       }
     }
 
+    /* ── G2 md：Markdown 往返（纯 Node，实测可无损）──────────────────────────
+     * 台账 ARC-007 要求逐格式过门。Markdown 之前只在 G3 里验了"没有结构读路由",
+     * 没验**往返**。实测 `convert md→docx` 与 `convert docx→md` 都是纯 Node,
+     * 且标题/粗体/列表能原样回来 —— 这条路真实可用,值得钉住。 */
+    section("G2md Markdown 往返（md → docx → md）");
+    {
+      const mdIn = join(root, "roundtrip.md");
+      const docxMid = join(root, "roundtrip.docx");
+      const mdBack = join(root, "roundtrip-back.md");
+      writeFileSync(mdIn, ["# Title", "", "Hello **world**.", "", "- a", "- b", ""].join(String.fromCharCode(10)), "utf8");
+      const fwd = await convertFile(ports, mdIn, "docx", docxMid);
+      eq("md → docx 成功", fwd.ok, true);
+      check("中间产物 docx 存在", existsSync(docxMid));
+      if (fwd.ok) {
+        const back = await convertFile(ports, docxMid, "md", mdBack);
+        eq("docx → md 成功", back.ok, true);
+        if (back.ok) {
+          const text = readFileSync(mdBack, "utf8");
+          check("★ 往返后标题仍在", text.includes("# Title"), text.slice(0, 80));
+          check("★ 往返后粗体标记仍在", text.includes("**world**"), text.slice(0, 160));
+          check("★ 往返后列表项仍在", text.includes("- a") && text.includes("- b"), text.slice(0, 200));
+        }
+      }
+      // 反向:输入文件在工作区外 → 转换必须先拒(围栏也适用于 md 输入)。
+      const outsideMd = join(outside, "nope.md");
+      writeFileSync(outsideMd, "# x" + String.fromCharCode(10), "utf8");
+      const refused = await convertFile(ports, outsideMd, "docx", join(root, "nope.docx"));
+      check("★ md 输入在工作区外 → refused", refused.ok === false && refused.kind === "refused", refused);
+    }
+
     /* ══════════ G3 格式路由拒绝面 ══════════
      * `readByKind` 的每种拒绝必须与 `documentKindOf` 一致，且理由文本非空。 */
     section("G3 格式路由拒绝面（行为 == documentKindOf，理由非空）");
