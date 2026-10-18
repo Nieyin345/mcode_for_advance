@@ -50,6 +50,45 @@
  *     （见 `GenofficeViewHostPane.tsx` 文件头与 `viewHostUnsupported*` 文案）。
  *   - 保存只写回本视图打开的那份文件，没有"另存为"；
  *   - 没有主题/语言的动态同步：页面用写死的默认值，Mcode 切主题不会传导过去。
+ *
+ * ## 首帧必需的"诚实的桩"（【ARC-007】真机实测补齐）
+ *
+ * 真实 `genoffice/apps/docs/out/renderer/index.html` 在只有上面那些键的桥上
+ * **整树卸载（白屏）**：vendor `App.tsx` 的挂载 effect 直接调这些方法，缺一个就
+ * 抛 `TypeError`；React 19 没有错误边界，`#root` 被清空。逐级补齐后页面完整挂载
+ * （真 Electron 实测：`#root` 有子树、`.ProseMirror`/`.ribbon`/`.doc-page` 都在、
+ * 零未捕获异常），证据与探针在 `apps/desktop/.tmp/genoffice-real-page/`。
+ *
+ * 每个桩只回答页面首帧会问的问题，**不放大能力面**：
+ *
+ *   - `getRecentFiles` → `[]`：Mcode 不维护 vendor 的"最近文件"列表（Mcode 自己的
+ *     最近文件是另一套存储）；空表 = 起始页没有最近项。
+ *   - `getAiSettings` → "AI 未配置"常量：provider 固定 `genspark`（vendor
+ *     `defaultAiSettings()` 的默认值，`packages/ai-provider/src/providers.ts:435`；
+ *     `activeProvider()` 对 genspark 直返，同文件 `:472`），providers 空表。
+ *     Mcode 的 AI 由三引擎驱动，不复刻 vendor 的 provider 目录；渲染端所有 provider
+ *     访问都是可选索引（`ai-model-picker-options.ts:58,80,98`），空表下模型选择器
+ *     为空、AI 面板显示"未配置"——这正是本宿主的真实状态。
+ *   - `onRenamedDocx` / `onOpenDocx` → 空订阅：Mcode 没有"外部重命名/系统打开"的
+ *     推送源；打开走 `menu:command("open-path", path)`（宿主已有对端），将来若接入
+ *     系统级打开也复用这条通道，不另造推送。
+ *   - `consumePendingOpenDocx` / `consumeAiDocContent` / `consumeHeadlessExport`
+ *     → `null`：本宿主没有排队项 / AI 生成内容 / 无头导出任务。
+ *   - `consumeNewBlankDoc` → `false`（vendor 签名是 `Promise<boolean>`，不是
+ *     null）：本视图不是 vendor 主进程创建的"新建空白"标签页。
+ *   - `onZoteroRequest` → 空订阅：Mcode 不接 Zotero 桥；页面里该 effect 只负责
+ *     注册，不注册也不会触发任何文档事实。
+ *   - `docPasswordIntentRevision` / `discardDocPasswordIntents` → `0` / `{ok:true}`：
+ *     Mcode 的文档视图不做密码/加密（没有"保存前设密码"的意图队列）。这两个**不是
+ *     白屏炸点**，但缺了会让首帧的"新建空白文档"在 `file-actions.ts:918` 的
+ *     `discardStalePasswordIntents()` 处同步抛错、`newFileImpl` 余下的 section/
+ *     页面设置初始化全部跳过，状态栏留下"新建失败"。
+ *
+ * **明确不补**（vendor 首帧用可选链/特性检测降级，或只属于用户主动操作）：
+ * `openDocx`（文件对话框）、`getSystemLocale`、`getAiPanelPrefs`、`getAuthorName`、
+ * `aiGskStatus`、`setAiSettings`、`onAiSettingsChanged`、`openAiModelSettings`、
+ * 知识库/附件/密码/打印/导出/AI 流式通道——这些都不在首帧路径上，补了等于扩大
+ * 页面能触及的能力面。
  */
 import { contextBridge, ipcRenderer } from "electron";
 
@@ -71,6 +110,24 @@ const DEFAULTS = {
   documentTheme: "follow" as const,
   autoSave: true,
 } as const;
+
+/** 【ARC-007】"AI 未配置"的诚实形状 —— 见文件头「首帧必需的桩」。
+ *
+ *  形状来源（vendor 源码，非猜测）：
+ *   - `AiSettings` 必填 `provider` + `providers`（`packages/ai-provider/src/types.ts:243`）；
+ *   - `defaultAiSettings()` 的默认 provider 是 `genspark`（`providers.ts:435`）；
+ *   - `activeProvider()` 对 genspark 直返（`providers.ts:472`），渲染端不会去
+ *     索引一个不存在的 provider 配置；
+ *   - 渲染端对 `providers` 的读取全部是可选索引（`packages/ui/src/ai-model-picker-options.ts:58,80,98`）。
+ *  空表 = 每个 BYOK provider 都"没有键"，模型选择器因此为空 —— 与 Mcode 不提供
+ *  vendor AI 凭据的事实一致。 */
+const UNCONFIGURED_AI_SETTINGS = Object.freeze({
+  provider: "genspark",
+  providers: Object.freeze({}),
+} as const);
+
+/** 空订阅的返回形状与 vendor 一致：`() => void`（vendor 页面在卸载时调用）。 */
+const noopUnsubscribe = (): (() => void) => () => {};
 
 const api = {
   /** 打开一个文档。宿主会先核对路径是否在已知工作区内。
@@ -133,10 +190,74 @@ const api = {
   onDocumentThemeChanged: (): (() => void) => () => {},
   armContextMenu: (): void => {},
 
+  // ── 首帧必需的桩（【ARC-007】真机实测；逐条理由见文件头"诚实的桩"） ──
+  //    签名逐字取自 vendor `apps/docs/src/shared/ipc.ts` 的 `DesktopApi` 与
+  //    `apps/docs/src/preload/index.ts` 的实现。
+
+  /** vendor: `getRecentFiles(): Promise<string[]>`（shared/ipc.ts:491）。
+   *  返回空表：Mcode 不维护 vendor 的最近文件列表。 */
+  getRecentFiles: (): Promise<string[]> => Promise.resolve([]),
+
+  /** vendor: `getAiSettings(): Promise<AiSettings>`（shared/ipc.ts:495）。
+   *  返回"AI 未配置"常量：Mcode 的 AI 由三引擎驱动，本视图不接 vendor AI 后端。 */
+  getAiSettings: (): Promise<{ provider: string; providers: Record<string, never> }> =>
+    Promise.resolve(UNCONFIGURED_AI_SETTINGS),
+
+  /** vendor: `onRenamedDocx(handler: (paths: { oldPath; newPath }) => void): () => void`
+   *  （shared/ipc.ts:413）。空订阅：Mcode 无外部重命名推送源；将来经宿主事件
+   *  转成同形状回调时，替换这里即可。 */
+  onRenamedDocx: (_handler: (paths: { oldPath: string; newPath: string }) => void): (() => void) => {
+    void _handler;
+    return noopUnsubscribe();
+  },
+
+  /** vendor: `onOpenDocx(handler: (result: Exclude<OpenDocxResult, null>) => void): () => void`
+   *  （shared/ipc.ts:411）。空订阅：本宿主的打开请求走 `menu:command("open-path")`，
+   *  页面已经通过 `onMenuCommand` 收到；这里不另开一条推送。 */
+  onOpenDocx: (_handler: (result: { path: string; name: string }) => void): (() => void) => {
+    void _handler;
+    return noopUnsubscribe();
+  },
+
+  /** vendor: `consumePendingOpenDocx(): Promise<OpenDocxResult>`（shared/ipc.ts:399）。
+   *  没有排队项 —— 打开由 `menu:command` 送达。 */
+  consumePendingOpenDocx: (): Promise<null> => Promise.resolve(null),
+
+  /** vendor: `consumeNewBlankDoc(): Promise<boolean>`（shared/ipc.ts:401）。
+   *  本视图不是 vendor 主进程创建的"新建空白"标签页，回 false。 */
+  consumeNewBlankDoc: (): Promise<boolean> => Promise.resolve(false),
+
+  /** vendor: `consumeAiDocContent(): Promise<AiDocContent | null>`（shared/ipc.ts:405）。
+   *  没有 AI 生成的内容排队 —— Mcode 的 AI 写入走自己的文档服务。 */
+  consumeAiDocContent: (): Promise<null> => Promise.resolve(null),
+
+  /** vendor: `consumeHeadlessExport(): Promise<HeadlessExportTarget | null>`
+   *  （shared/ipc.ts:407）。本宿主没有无头导出任务。 */
+  consumeHeadlessExport: (): Promise<null> => Promise.resolve(null),
+
+  /** vendor: `onZoteroRequest(handler: (request: ZoteroRendererRequest) => void): () => void`
+   *  （shared/ipc.ts:382）。空订阅：Mcode 不接 Zotero 桥。 */
+  onZoteroRequest: (_handler: (request: { requestId: string; command: string; args: unknown[] }) => void): (() => void) => {
+    void _handler;
+    return noopUnsubscribe();
+  },
+
+  /** vendor: `docPasswordIntentRevision(): Promise<number>`（shared/ipc.ts:395）。
+   *  0 = 没有任何密码意图。缺失会让新建空白文档在 `file-actions.ts:921` 同步抛错。 */
+  docPasswordIntentRevision: (): Promise<number> => Promise.resolve(0),
+
+  /** vendor: `discardDocPasswordIntents(throughRevision: number): Promise<{ ok: boolean }>`
+   *  （shared/ipc.ts:397）。没有意图可丢，回 ok。 */
+  discardDocPasswordIntents: (_throughRevision: number): Promise<{ ok: boolean }> => {
+    void _throughRevision;
+    return Promise.resolve({ ok: true });
+  },
+
   /** 【安全】**明确不提供**的能力（页面里的特性检测会据此降级）：
-   *  - 文件对话框（openDocx / saveDocx / pickAttachments）
-   *  - 密码与加密
-   *  - AI 设置 / 知识库 / 附件 / 模型
+   *  - 文件对话框（openDocx / saveDocxAs / pickImage / pickAttachments）
+   *  - 密码与加密（openDocxDecrypt / setDocPassword）
+   *  - AI 设置写入 / 流式 / 搜索 / 图像（setAiSettings / aiStream / aiGskStatus / …）
+   *  - 知识库 / 附件 / 打印 / 导出
    *  - 任意 IPC / 剪贴板 / 系统对话框
    *
    *  这里不写 `undefined` —— 对象上没有这些键，`typeof window.desktop.X` 即为

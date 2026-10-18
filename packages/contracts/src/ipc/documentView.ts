@@ -58,6 +58,18 @@ export type DocViewRect = z.infer<typeof DocViewRectSchema>;
  *
  * `visible=false` 也合法（提前建好视图、等面板真正展开再 show）—— 隐藏视图保活是
  * 文档面板切标签时不丢编辑状态的机制，不是可选优化。
+ *
+ * ## `workflowEngineId`：编辑器页的凭据由**宿主注入**，令牌不出主进程
+ *
+ * 【ARC-006 Gate A 缺口】第三方工作流引擎（Node-RED）的编辑器页走 Admin API 时会
+ * 要求 `Authorization: Bearer <宿主令牌>`；把令牌拼进 `url`（`?access_token=`）等于
+ * 让令牌进入 `workflowEngine.list/status` 这类 Agent 可读的快照，**不行**。
+ * 这里的字段只表达「这个视图加载的是该引擎的编辑器页」；真正的令牌由主进程从
+ * 引擎数据目录读取，经 `session.webRequest.onBeforeSendHeaders` 按
+ * `webContentsId + 回环 origin` 注入 —— 令牌不经过渲染端、不进 URL、不进快照、
+ * 不落日志。绑定与过期判据在 `main/document/documentViewCredentialBroker.ts`。
+ *
+ * 省略该字段 = 普通文档视图（GenOffice 页），宿主不注入任何凭据。
  */
 export const DocViewOpenSchema = z.object({
   docId: DocIdSchema,
@@ -65,6 +77,8 @@ export const DocViewOpenSchema = z.object({
   url: z.string().min(1).max(4096),
   bounds: DocViewRectSchema,
   visible: z.boolean(),
+  /** 工作流引擎 id（`[a-z][a-z0-9-]*`，与 `workflowEngine.*` 同一套形状）。 */
+  workflowEngineId: z.string().min(1).max(64).regex(/^[a-z][a-z0-9-]*$/).optional(),
 });
 export type DocViewOpenInput = z.infer<typeof DocViewOpenSchema>;
 
