@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { TextDecoder } from "node:util";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
+import { writeConflictCopy } from "@main/lib/conflictCopy.js";
 
 /** Shared across tool hosts: concurrent edits to one real path must not lose updates. */
 const writes = new Map<string, Promise<unknown>>();
@@ -49,17 +50,76 @@ export async function withAgentTextFileLease<T>(file: string, action: (real: str
  */
 export const withDocFileLock = withTextFileLock;
 
-/** Optimistic external-edit check, not an OS-wide transaction with arbitrary editors. */
+/** Optimistic external-edit check, not an OS-wide transaction with arbitrary editors.
+ *
+ * 【MC-024】**CAS 拒绝不丢本次正文**：与桌面 `file.writeFile` 同一判据 —— 校验失败时
+ * 把 `content`（本次原本要提交的完整新内容）另存为同目录冲突副本（共享
+ * `@main/lib/conflictCopy.ts` 那一份），并把副本路径写进错误消息（工具回包原样转给
+ * 模型）。原文件保持盘上（别人的）内容不动。副本写失败不改变冲突结论 —— 仍报版本
+ * 冲突，只是消息里没有路径（**不谎报**）。 */
 export async function replaceTextFile(file: string, content: string, original: Buffer): Promise<void> {
   const stat = await fs.stat(file);
   const temp = `${file}.mcode-edit-${randomUUID()}`;
   try {
     await fs.writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: stat.mode });
     if (textFileHash(await fs.readFile(file)) !== textFileHash(original)) {
-      throw new Error("文件已被其他操作修改；本次未覆盖，请重新读取后重试 / File changed; reread before retrying");
+      const conflictPath = await writeConflictCopy(file, content).catch(() => null);
+      const saved = conflictPath
+        ? `；本次要写入的内容已另存为冲突副本:${conflictPath} / This attempt was saved to a conflict copy`
+        : "";
+      throw new Error(`文件已被其他操作修改；本次未覆盖，请重新读取后重试 / File changed; reread before retrying${saved}`);
     }
     await fs.rename(temp, file);
   } finally { await fs.unlink(temp).catch(() => undefined); }
+}
+
+export interface TextEdit {
+  old_string: string;
+  new_string: string;
+  replace_all?: boolean;
+}
+
+/** 把一组精确替换应用到 `content` 上（LF/CRLF 自动适配，逐条顺序应用）。
+ *
+ * 【MC-024】抽成纯函数是为了让**冲突副本**与正常提交用同一份「本次要写入的内容」
+ * 计算：`agent_edit_file` 的 `expected_sha256` 校验失败时，要把模型这次的编辑应用到
+ * 当前磁盘内容上生成副本 —— 与正常路径各写一份替换逻辑必然漂移。
+ *
+ * 任何一处对不上就**整次抛错**（调用方据此不写入任何改动），错误文案带上第几处
+ * edit 与"这次没有写入任何改动"。
+ */
+export function applyTextEdits(
+  content: string,
+  edits: TextEdit[],
+): { content: string; touched: number[]; replaced: number } {
+  const crlf = content.includes("\r\n");
+  const touched: number[] = [];
+  let replaced = 0;
+  edits.forEach((edit, k) => {
+    const which = edits.length > 1 ? `第 ${k + 1} 处 edit:` : "";
+    let oldStr = edit.old_string;
+    let newStr = edit.new_string;
+    // Normalize replacement line endings even when old_string is a single line.
+    const newline = crlf ? "\r\n" : "\n";
+    if (!content.includes(oldStr)) oldStr = oldStr.replace(/\r?\n/g, newline);
+    newStr = newStr.replace(/\r?\n/g, newline);
+    const first = content.indexOf(oldStr);
+    if (first < 0) {
+      throw new Error(`${which}没找到 old_string —— 内容必须逐字一致(含空格缩进),先用 agent_read_file 确认原文;这次没有写入任何改动`);
+    }
+    const count = content.split(oldStr).length - 1;
+    if (count > 1 && !edit.replace_all) {
+      throw new Error(
+        `${which}old_string 在文件里出现 ${count} 次;请扩大上下文让匹配唯一,或传 replace_all=true;这次没有写入任何改动`,
+      );
+    }
+    touched.push(content.slice(0, first).split("\n").length);
+    content = edit.replace_all
+      ? content.split(oldStr).join(newStr)
+      : content.slice(0, first) + newStr + content.slice(first + oldStr.length);
+    replaced += edit.replace_all ? count : 1;
+  });
+  return { content, touched, replaced };
 }
 
 export interface TextPageOptions {

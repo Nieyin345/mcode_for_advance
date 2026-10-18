@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, readdirSync, chmodSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { tmpdir, platform } from "node:os";
 import path from "node:path";
@@ -31,7 +32,8 @@ async function call(name: string, args: Record<string, unknown>, other = false):
   const tool = (other ? anotherHost : tools).find(t => t.name === name)!;
   return tool.handler(z.object(tool.inputSchema).parse(args), { sessionId: "text-smoke" });
 }
-const body = (r: ToolResult): string => r.content.filter(c => c.type === "text").map(c => c.text).join("\n");
+function body(r: ToolResult): string { return r.content.filter(c => c.type === "text").map(c => c.text).join("\n"); }
+const textHashOf = (buf: Buffer): string => createHash("sha256").update(buf).digest("hex");
 let checks = 0;
 function check(name: string, value: unknown, detail?: unknown): void {
   assert.ok(value, detail === undefined ? name : `${name} — ${JSON.stringify(detail)}`);
@@ -70,6 +72,88 @@ try {
   check("fresh version permits edit", !edit.isError);
   const stale = await call("agent_edit_file", { path: "long.txt", old_string: "changed", new_string: "wrong", expected_sha256: hash });
   check("stale version fails without write", stale.isError && readFileSync(path.join(root, "long.txt"), "utf8").includes("changed"));
+  // ══════════ 【MC-024】Agent 侧 CAS 冲突 → 本次内容落成冲突副本 ══════════
+  // 与桌面 `file.writeFile` 同一判据(那半边已在 maint-m07-smoke 验过):外部改动后带旧
+  // `expected_sha256` 写入必须**拒绝且原文件不动**,但模型这次要写的内容不能随请求
+  // 对象丢掉 —— 落成同目录 `<stem>.conflict-<ISO 时间戳><ext>`,路径原样回在工具结果里。
+  // 这里走真实的 `agent_write_file` / `agent_edit_file` 工具入口,断言钉在回包文本上。
+  {
+    const dir = path.join(root, "mc024");
+    mkdirSync(dir, { recursive: true });
+    const conflictOf = (file: string): string[] => readdirSync(dir).filter((n) => n.startsWith(path.basename(file, path.extname(file)) + ".conflict-") && n.endsWith(path.extname(file)));
+    // ① agent_write_file(整文件覆盖):外部改动后旧哈希写入。
+    const w = path.join(dir, "agent-write.txt");
+    writeFileSync(w, "EXTERNAL-AFTER\n", "utf8");
+    const staleHash = "0".repeat(64);
+    const wrote = await call("agent_write_file", { path: "mc024/agent-write.txt", content: "AGENT-ATTEMPTED-CONTENT\n", expected_sha256: staleHash });
+    check("★ MC-024:agent_write_file 旧 expected_sha256 → 拒绝(isError)", wrote.isError === true, wrote);
+    check("★ MC-024:agent_write_file 冲突时原文件仍是外部内容(没被覆盖)", readFileSync(w, "utf8"), "EXTERNAL-AFTER\n");
+    check("★ MC-024:agent_write_file 回包点名冲突(File version changed / 文件版本已变化)", /文件版本已变化|File version changed/.test(body(wrote)), body(wrote));
+    const wCopies = conflictOf(w);
+    check("★ MC-024:agent_write_file 冲突副本落盘(同目录一份)", wCopies.length === 1, wCopies);
+    check(
+      "★ MC-024:agent_write_file 副本内容 = Agent 这次要写的内容",
+      wCopies.length === 1 ? readFileSync(path.join(dir, wCopies[0]), "utf8") : null,
+      "AGENT-ATTEMPTED-CONTENT\n",
+    );
+    check("★ MC-024:agent_write_file 回包带副本路径且路径真实可读", wCopies.length === 1 && body(wrote).includes(path.join(dir, wCopies[0])), body(wrote));
+    // ①b append 形态:副本 = 盘上当前内容 + 这次要追加的段(保住"追加"的意图)。
+    writeFileSync(w, "EXTERNAL-AFTER\n", "utf8");
+    const appended = await call("agent_write_file", { path: "mc024/agent-write.txt", content: "APPENDED-PART\n", append: true, expected_sha256: staleHash });
+    const aCopies = conflictOf(w);
+    check("★ MC-024:agent_write_file(append) 冲突副本 = 当前内容 + 追加段", aCopies.length === 2 && aCopies.some((n) => readFileSync(path.join(dir, n), "utf8") === "EXTERNAL-AFTER\nAPPENDED-PART\n"), aCopies);
+    check("★ MC-024:agent_write_file(append) 原文件未动", readFileSync(w, "utf8"), "EXTERNAL-AFTER\n");
+    // ② agent_edit_file(工具层 expected_sha256 校验):外部改动后旧哈希编辑。
+    const e = path.join(dir, "agent-edit.txt");
+    writeFileSync(e, "EXTERNAL-AFTER\n", "utf8");
+    const edited = await call("agent_edit_file", { path: "mc024/agent-edit.txt", old_string: "EXTERNAL-AFTER", new_string: "AGENT-EDIT-RESULT", expected_sha256: staleHash });
+    check("★ MC-024:agent_edit_file 旧 expected_sha256 → 拒绝(isError)", edited.isError === true, edited);
+    check("★ MC-024:agent_edit_file 冲突时原文件不动", readFileSync(e, "utf8"), "EXTERNAL-AFTER\n");
+    const eCopies = conflictOf(e);
+    check("★ MC-024:agent_edit_file 冲突副本落盘(同目录一份)", eCopies.length === 1, eCopies);
+    check(
+      "★ MC-024:agent_edit_file 副本内容 = 这次编辑本该写出的完整结果",
+      eCopies.length === 1 ? readFileSync(path.join(dir, eCopies[0]), "utf8") : null,
+      "AGENT-EDIT-RESULT\n",
+    );
+    check("★ MC-024:agent_edit_file 回包带副本路径且路径真实可读", eCopies.length === 1 && body(edited).includes(path.join(dir, eCopies[0])), body(edited));
+    // ③ 健康路径(防空过):带**当前**哈希 → 照常写入,且不产生新副本。
+    const wHash = textHashOf(readFileSync(w));
+    const healthy = await call("agent_write_file", { path: "mc024/agent-write.txt", content: "HEALTHY-WRITE\n", expected_sha256: wHash });
+    check("★ MC-024:健康路径(当前哈希)照常写入", !healthy.isError && readFileSync(w, "utf8") === "HEALTHY-WRITE\n", body(healthy));
+    check("★ MC-024:健康路径不产生冲突副本", conflictOf(w).length === 2, conflictOf(w));
+    const eHash = textHashOf(readFileSync(e));
+    const healthyEdit = await call("agent_edit_file", { path: "mc024/agent-edit.txt", old_string: "EXTERNAL-AFTER", new_string: "HEALTHY-EDIT", expected_sha256: eHash });
+    check("★ MC-024:agent_edit_file 健康路径照常写入", !healthyEdit.isError && readFileSync(e, "utf8") === "HEALTHY-EDIT\n", body(healthyEdit));
+    check("★ MC-024:agent_edit_file 健康路径不产生冲突副本", conflictOf(e).length === 1, conflictOf(e));
+    // ④ `replaceTextFile` 的**提交点** CAS(第二道):外部编辑器无视租约,在 handler 读完
+    //    之后、rename 之前又改了一次 —— 此时工具层 expected_sha256 已通过,只有提交前
+    //    的重读哈希能拦住。直接以"handler 读到的旧内容"调用共享函数,钉住这一分支的
+    //    副本语义(它经 agentTools 的处理器间接被模型触达)。
+    {
+      const { replaceTextFile } = await import("@main/mcp/agentTextFiles.js");
+      const r = path.join(dir, "replace-cas.txt");
+      writeFileSync(r, "DISK-AFTER-RACE\n", "utf8");
+      const attemptedContent = "HANDLER-COMPUTED-RESULT\n";
+      let replaceErr: Error | null = null;
+      try { await replaceTextFile(r, attemptedContent, Buffer.from("WHAT-HANDLER-READ\n", "utf8")); }
+      catch (err) { replaceErr = err as Error; }
+      check("★ MC-024:replaceTextFile 提交点 CAS 冲突 → 拒绝", replaceErr !== null, replaceErr?.message);
+      check("★ MC-024:replaceTextFile 冲突时原文件不动", readFileSync(r, "utf8"), "DISK-AFTER-RACE\n");
+      const rCopies = conflictOf(r);
+      check("★ MC-024:replaceTextFile 冲突副本落盘(同目录一份)", rCopies.length === 1, rCopies);
+      check(
+        "★ MC-024:replaceTextFile 副本内容 = 这次要提交的完整新内容",
+        rCopies.length === 1 ? readFileSync(path.join(dir, rCopies[0]), "utf8") : null,
+        attemptedContent,
+      );
+      check(
+        "★ MC-024:replaceTextFile 错误消息带副本路径(工具回包原样转给模型)",
+        rCopies.length === 1 && String(replaceErr?.message).includes(path.join(dir, rCopies[0])),
+        replaceErr?.message,
+      );
+    }
+  }
   const staleRead = await call("agent_read_file", { path: "long.txt", expected_sha256: hash });
   check("stale continuation fails", staleRead.isError);
   writeFileSync(path.join(root, "budget.txt"), Array.from({ length: 1000 }, () => "x".repeat(1000)).join("\n"));

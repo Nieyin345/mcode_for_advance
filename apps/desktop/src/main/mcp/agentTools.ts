@@ -49,9 +49,11 @@ import {
   withTextFileLock,
   withAgentTextFileLease,
   replaceTextFile,
+  applyTextEdits,
   textFileHash,
   grepMatchPreview,
 } from "./agentTextFiles.js";
+import { writeConflictCopy } from "@main/lib/conflictCopy.js";
 import {
   pathWithin as realPathWithin,
 } from "@main/lib/realPathWithin.js";
@@ -688,20 +690,41 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_write_file",
       description:
         "把 UTF-8 文本写入本地文件(整体覆盖;append=true 则追加到末尾)。" +
-        "父目录不存在会自动创建。改已有文件优先用 agent_edit_file(只动需要改的那几处)。",
+        "父目录不存在会自动创建。改已有文件优先用 agent_edit_file(只动需要改的那几处)。" +
+        "可带读取时的 expected_sha256 做乐观并发校验:文件已被别人改过则拒绝覆盖,本次内容另存为同目录冲突副本。",
       inputSchema: {
         path: z.string().min(1).describe("目标文件路径"),
         content: z.string().describe("要写入的完整内容"),
         append: z.boolean().optional().describe("true = 追加到文件末尾而不是覆盖,默认覆盖"),
+        expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional().describe("上次读取的 sha256；变化则不写入"),
       },
-      handler: (args: { path: string; content: string; append?: boolean }, ctx) =>
+      handler: (args: { path: string; content: string; append?: boolean; expected_sha256?: string }, ctx) =>
         attempt(async () => {
           const abs = pOf(ctx, args.path);
           await fs.mkdir(path.dirname(abs), { recursive: true });
           // 【MC-024】写整文件也要跨进程互斥(从前只有进程内 Map;另一个 Mcode 实例
           // 或外部编辑器并发写同一路径会丢更新)。
-          await withAgentTextFileLease(abs, (real) => fs.writeFile(real, args.content, { flag: args.append ? "a" : "w" }));
-          return `已${args.append ? "追加" : "写入"} ${abs}(${args.content.length} 字符)`;
+          return withAgentTextFileLease(abs, async (real) => {
+            // 【MC-024】与桌面 `file.writeFile` 的 `expectedVersion` 同一判据:给了上次
+            // 读取的哈希就在**租约内**重读比对;不一致(或文件已不存在)则拒绝覆盖,
+            // 并把**本次要写的内容**另存为同目录冲突副本(共享 `@main/lib/conflictCopy.ts`)。
+            // 副本内容 = 这次尝试本该让文件变成的样子:覆盖 = content 原文;追加 = 盘上
+            // 当前内容 + content(保住"追加这段"的意图)。副本写失败不改变冲突结论,
+            // 只是错误消息里没有路径(不谎报)。
+            if (args.expected_sha256) {
+              const current = await fs.readFile(real).catch(() => null);
+              if (!current || textFileHash(current) !== args.expected_sha256.toLowerCase()) {
+                const intended = args.append && current ? Buffer.concat([current, Buffer.from(args.content, "utf8")]).toString("utf8") : args.content;
+                const conflictPath = await writeConflictCopy(real, intended).catch(() => null);
+                const saved = conflictPath
+                  ? `；本次要写入的内容已另存为冲突副本:${conflictPath} / This attempt was saved to a conflict copy`
+                  : "";
+                throw new Error(`文件版本已变化，本次不写入；请重新读取 / File version changed${saved}`);
+              }
+            }
+            await fs.writeFile(real, args.content, { flag: args.append ? "a" : "w" });
+            return `已${args.append ? "追加" : "写入"} ${abs}(${args.content.length} 字符)`;
+          });
         }),
     },
 
@@ -896,36 +919,30 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           const st = await fs.stat(abs).catch(() => null);
           if (!st || !st.isFile()) throw new Error(`文件不存在:${abs}`);
           const buf = await fs.readFile(abs);
-          if (args.expected_sha256 && textFileHash(buf) !== args.expected_sha256.toLowerCase()) throw new Error("文件版本已变化，本次不写入；请重新读取 / File version changed");
+          if (args.expected_sha256 && textFileHash(buf) !== args.expected_sha256.toLowerCase()) {
+            // 【MC-024】同一判据的第二处(桌面 FILE_WRITE 是第一处):拒绝覆盖,但**本次
+            // 要写的内容不能随请求对象丢掉**。把模型这次的编辑应用到**当前盘上内容**
+            // (那是它本来会写出的完整新文件)另存为同目录冲突副本,路径原样写进错误消息
+            // —— attempt() 会把它转成 isError 回包,模型/用户都看得到。
+            // 盘上内容已非文本、或 old_string 在新内容里已对不上时无从重放,则不产出
+            // 副本、也不谎报路径(与 ipc/files.ts 的副本失败语义一致)。
+            const current = buf.toString("utf-8");
+            const conflictPath = isBinary(buf)
+              ? null
+              : await (async () => {
+                  try { return await writeConflictCopy(abs, applyTextEdits(current, edits).content); }
+                  catch { return null; }
+                })();
+            const saved = conflictPath
+              ? `；本次要写入的内容已另存为冲突副本:${conflictPath} / This attempt was saved to a conflict copy`
+              : "";
+            throw new Error(`文件版本已变化，本次不写入；请重新读取 / File version changed${saved}`);
+          }
           if (isBinary(buf)) throw new Error(`看起来是二进制文件,改不了:${abs}`);
-          let content = buf.toString("utf-8");
-          const crlf = content.includes("\r\n");
-          const touched: number[] = [];
-          let replaced = 0;
-          edits.forEach((edit, k) => {
-            const which = edits.length > 1 ? `第 ${k + 1} 处 edit:` : "";
-            let oldStr = edit.old_string;
-            let newStr = edit.new_string;
-            // Normalize replacement line endings even when old_string is a single line.
-            const newline = crlf ? "\r\n" : "\n";
-            if (!content.includes(oldStr)) oldStr = oldStr.replace(/\r?\n/g, newline);
-            newStr = newStr.replace(/\r?\n/g, newline);
-            const first = content.indexOf(oldStr);
-            if (first < 0) {
-              throw new Error(`${which}没找到 old_string —— 内容必须逐字一致(含空格缩进),先用 agent_read_file 确认原文;这次没有写入任何改动`);
-            }
-            const count = content.split(oldStr).length - 1;
-            if (count > 1 && !edit.replace_all) {
-              throw new Error(
-                `${which}old_string 在文件里出现 ${count} 次;请扩大上下文让匹配唯一,或传 replace_all=true;这次没有写入任何改动`,
-              );
-            }
-            touched.push(content.slice(0, first).split("\n").length);
-            content = edit.replace_all
-              ? content.split(oldStr).join(newStr)
-              : content.slice(0, first) + newStr + content.slice(first + oldStr.length);
-            replaced += edit.replace_all ? count : 1;
-          });
+          const result = applyTextEdits(buf.toString("utf-8"), edits);
+          const content = result.content;
+          const touched = result.touched;
+          const replaced = result.replaced;
           await replaceTextFile(abs, content, buf);
           const lines = [...new Set(touched)].sort((x, y) => x - y).join("、");
           return `已修改 ${abs}:替换 ${replaced} 处(起始于第 ${lines} 行)`;

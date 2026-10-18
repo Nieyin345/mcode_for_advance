@@ -26,7 +26,7 @@ import { app, clipboard, ClipboardItem, nativeImage, shell } from "electron";
 import { readFile, writeFile, readdir, mkdir, rename, copyFile, access, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   IPC,
   FileReadSchema,
@@ -99,39 +99,11 @@ import { fileContentVersion as currentFileVersion } from "@main/lib/fileVersion.
  *  保存通道与本文件共用同一份实现）。此处保留同名导入，调用点不变。 */
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 
-/** 【MC-024】**冲突副本的路径**：`src/app.ts` → `src/app.conflict-2026-10-18T12-34-56-789Z.ts`。
- *
- *  - 扩展名留在最后，编辑器/语法高亮仍按源文件类型识别；
- *  - ISO 时间戳里的 `:` 和 `.` 换成 `-`（Windows 文件名不允许 `:`），保留 `T`/`Z` 的
- *    ISO 形状，排序即时间序；
- *  - 与 `atomicReplaceFile` 的临时文件模式（`.mcode-tmp`）不重叠 —— 那是"写到一半的
- *    垃圾"，这是"用户这次想写、但被别人抢先"的正文，两者别混。
- *
- *  首次冲突时给时间戳名；同一毫秒内同一路径再次冲突（或第三方已占了同名文件）时，
- *  依次派生 `-2`、`-3` —— 前一次的副本不能被后一次覆盖掉。 */
-export function conflictCopyPathFor(filePath: string, attempt = 1): string {
-  const ext = extname(filePath);
-  const stem = basename(filePath, ext);
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const suffix = attempt === 1 ? "" : `-${attempt}`;
-  return join(dirname(filePath), `${stem}.conflict-${stamp}${suffix}${ext}`);
-}
-
-/** 把**本次尝试写入的内容**另存为冲突副本（原子写），返回落盘路径。
- *  只在 FILE_WRITE 的 CAS 冲突分支里调用；不碰原文件。 */
-async function writeConflictCopy(filePath: string, content: string): Promise<string> {
-  for (let attempt = 1; ; attempt++) {
-    const target = conflictCopyPathFor(filePath, attempt);
-    try {
-      await access(target);
-      continue; // 名字已被占（同毫秒第二次冲突 / 第三方文件）→ 派生下一个
-    } catch {
-      // ENOENT = 名字可用。其它错误交给下面的原子写如实抛。
-    }
-    await atomicReplaceFile(target, content);
-    return target;
-  }
-}
+/** 【MC-024】**冲突副本**的唯一实现在 `@main/lib/conflictCopy`（叶子模块 ——
+ *  Agent 文本编辑的 CAS 分支也共用同一份；见该文件头）。此处重导出保持既有
+ *  调用方不变。 */
+export { conflictCopyPathFor, writeConflictCopy } from "@main/lib/conflictCopy.js";
+import { writeConflictCopy } from "@main/lib/conflictCopy.js";
 
 /** Shared guarded single-file utf-8 read — used by both the desktop IPC
  *  handler and the mobile RPC whitelist. Scans every persisted project AND
