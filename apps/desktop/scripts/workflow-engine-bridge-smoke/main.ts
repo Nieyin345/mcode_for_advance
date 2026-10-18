@@ -9,7 +9,7 @@
  *
  * Run: bash scripts/workflow-engine-bridge-smoke/run.sh
  */
-import { checkEngineRequestUrl, nodeRedExecutor, NODE_RED_REQUEST_PARAM, type NodeRedFetchRequest } from "@main/orchestration/nodeRedExecutor.js";
+import { checkEngineRequestUrl, nodeRedExecutor, NODE_RED_PATH_PARAM, NODE_RED_METHOD_PARAM, NODE_RED_BODY_PARAM, type NodeRedFetchRequest } from "@main/orchestration/nodeRedExecutor.js";
 import type { EngineRuntimeStatus } from "@main/workflowEngines/runtimeSupervisor.js";
 
 let failures = 0;
@@ -52,7 +52,7 @@ function ctx(params: Record<string, unknown>, signal?: AbortSignal) {
     input: { signal: signal ?? new AbortController().signal },
   } as unknown as Parameters<ReturnType<typeof nodeRedExecutor>["execute"]>[0];
 }
-const spec = { path: "/api/flow", method: "POST", body: '{"a":1}' };
+const spec = { [NODE_RED_PATH_PARAM]: "/api/flow", [NODE_RED_METHOD_PARAM]: "POST", [NODE_RED_BODY_PARAM]: '{"a":1}' };
 
 {
   // 引擎未运行 → 不可重试
@@ -62,7 +62,7 @@ const spec = { path: "/api/flow", method: "POST", body: '{"a":1}' };
       throw new Error("不该发请求");
     },
   });
-  const out = await exec.execute(ctx({ [NODE_RED_REQUEST_PARAM]: spec }));
+  const out = await exec.execute(ctx(spec));
   eq("★ 引擎未运行 → failed", out.status, "failed");
   eq("★ 且不可重试（提示用户去启动）", out.retryable, false);
   check("原因说清要启动引擎", (out.error ?? "").includes("启动"), out.error);
@@ -78,7 +78,7 @@ const spec = { path: "/api/flow", method: "POST", body: '{"a":1}' };
       return { status: 200, text: '{"ok":true}', truncated: false };
     },
   });
-  const out = await exec.execute(ctx({ [NODE_RED_REQUEST_PARAM]: spec }));
+  const out = await exec.execute(ctx(spec));
   eq("★ 2xx → success", out.status, "success");
   eq("outputs 带状态与解析后的 body", out.outputs, { status: 200, body: { ok: true }, truncated: false });
   eq("请求发到回环同端口", seen[0]?.url, `http://127.0.0.1:${PORT}/api/flow`);
@@ -92,10 +92,10 @@ const spec = { path: "/api/flow", method: "POST", body: '{"a":1}' };
       engine: { status: () => running },
       fetch: async () => ({ status, text: "err", truncated: false }),
     });
-  const bad = await mk(400).execute(ctx({ [NODE_RED_REQUEST_PARAM]: spec }));
+  const bad = await mk(400).execute(ctx(spec));
   eq("★ 4xx → failed", bad.status, "failed");
   eq("★ 4xx 不可重试", bad.retryable, false);
-  const server = await mk(503).execute(ctx({ [NODE_RED_REQUEST_PARAM]: spec }));
+  const server = await mk(503).execute(ctx(spec));
   eq("★ 5xx → failed", server.status, "failed");
   eq("★ 5xx 可重试（引擎内部瞬时故障）", server.retryable, true);
 }
@@ -110,7 +110,7 @@ const spec = { path: "/api/flow", method: "POST", body: '{"a":1}' };
       throw new Error("aborted");
     },
   });
-  const out = await exec.execute(ctx({ [NODE_RED_REQUEST_PARAM]: spec }, controller.signal));
+  const out = await exec.execute(ctx(spec, controller.signal));
   eq("★ 取消 → cancelled", out.status, "cancelled");
 }
 
@@ -120,7 +120,7 @@ const spec = { path: "/api/flow", method: "POST", body: '{"a":1}' };
     engine: { status: () => running },
     fetch: async () => ({ status: 200, text: "x".repeat(10), truncated: true }),
   });
-  const out = await exec.execute(ctx({ [NODE_RED_REQUEST_PARAM]: spec }));
+  const out = await exec.execute(ctx(spec));
   eq("★ 截断照常成功但标注", out.outputs?.truncated, true);
   check("summary 明说已截断", (out.summary ?? "").includes("截断"), out.summary);
 }
@@ -130,7 +130,7 @@ const spec = { path: "/api/flow", method: "POST", body: '{"a":1}' };
   const exec = nodeRedExecutor({ engine: { status: () => running }, fetch: async () => ({ status: 200, text: "", truncated: false }) });
   const out = await exec.execute(ctx({}));
   eq("★ 缺参数 → failed", out.status, "failed");
-  check("原因点名缺什么", (out.error ?? "").includes("引擎请求"), out.error);
+  check("原因点名缺什么", (out.error ?? "").includes("enginePath"), out.error);
 }
 
 console.log(`\nworkflow-engine-bridge-smoke:${total - failures}/${total} 通过`);

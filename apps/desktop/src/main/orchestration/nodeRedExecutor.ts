@@ -121,12 +121,14 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
           retryable: false,
         };
       }
-      const spec = context.node.params[NODE_RED_REQUEST_PARAM] as NodeRedRequestSpec | undefined;
-      if (spec === undefined || typeof spec !== "object" || typeof spec.path !== "string") {
+      // 参数是**三个扁平键**（与清单 `mcode.node-red` 的格子一一对应）：
+      // 画布上用户填的就是 path/method/body，不存在一个嵌套的 "engineRequest" 对象。
+      const spec = readRequestSpec(context.node.params);
+      if (spec === null) {
         return {
           status: "failed",
           summary: "",
-          error: "节点缺少「引擎请求」参数（path / method）",
+          error: "节点缺少「路径」参数（enginePath）",
           retryable: false,
         };
       }
@@ -184,8 +186,23 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
   };
 }
 
-/** 节点参数键 —— 与清单里的那一格一致。 */
-export const NODE_RED_REQUEST_PARAM = "engineRequest";
+/** 节点参数键 —— 与清单 `mcode.node-red` 的三格一一对应。 */
+export const NODE_RED_PATH_PARAM = "enginePath";
+export const NODE_RED_METHOD_PARAM = "engineMethod";
+export const NODE_RED_BODY_PARAM = "engineBody";
+
+/** 从节点参数读一次请求形状；路径缺失返回 null（执行器报明确错误）。 */
+export function readRequestSpec(params: Record<string, unknown>): NodeRedRequestSpec | null {
+  const path = params[NODE_RED_PATH_PARAM];
+  if (typeof path !== "string" || path.trim() === "") return null;
+  const method = params[NODE_RED_METHOD_PARAM];
+  const body = params[NODE_RED_BODY_PARAM];
+  return {
+    path,
+    method: typeof method === "string" && method !== "" ? method : "POST",
+    body: typeof body === "string" ? body : null,
+  };
+}
 
 /** 生产 fetch 实现：真发 HTTP，带响应上限。 */
 export async function defaultNodeRedFetch(
