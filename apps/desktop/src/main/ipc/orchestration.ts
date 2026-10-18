@@ -49,6 +49,7 @@ import { CustomUiRunAutomationSchema } from "@contracts/customUi";
 import { runCustomUiAutomation } from "@main/customUi/runAutomation.js";
 import { log } from "@main/lib/logger.js";
 import { dialogText } from "@main/lib/dialogText.js";
+import { mergeUnknownWorkflowFields } from "@contracts/workflow";
 import {
   getWorkflow,
   importWorkflowInto,
@@ -135,7 +136,14 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.WORKFLOW_SAVE, async (_evt, raw) => {
     const input = WorkflowSaveSchema.parse(raw);
-    const res = await saveWorkflow(input.workflow, { expectedRevision: input.expectedRevision ?? null });
+    // 【WF-05 字段保真】`WorkflowSaveSchema` 走的是 `WorkflowDocSchema`,它对契约外的
+    // 键默认 **strip** —— 渲染端从 `workflow.get` 拿到的那份文档里如果带着这一版还不
+    // 认识的字段(更新版本写出的档案、第三方节点自附的元数据),一次普通保存就会把它们
+    // 悄悄抹掉,而用户什么都没做。保存是**改写已有行**,不是从零重建:把入参原文里契约
+    // 不认识的键按身份贴回去再交给 `saveWorkflow`(存储层整份 JSON.stringify,贴回来
+    // 的字段原样落盘)。校验不受影响 —— 未知键本来就不参与 `validateWorkflowDoc`。
+    const workflow = mergeUnknownWorkflowFields(input.workflow, (raw as { workflow?: unknown } | null)?.workflow);
+    const res = await saveWorkflow(workflow, { expectedRevision: input.expectedRevision ?? null });
     // 存成功了才广播。**用户这条路上其实不靠它**(渲染端自己会在 RPC 返回后重拉列表),
     // 广播在这里是为了另一半:AI 走 MCP 时改的是同一个落点,而界面上可能还开着另一个
     // 面板/窗口。两边都发才谈得上"谁改了另一边都知道"(同 `library/broadcast.ts`)。

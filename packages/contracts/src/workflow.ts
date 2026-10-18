@@ -309,6 +309,13 @@ export const WorkflowDocSchema = z.object({
    * **可选是刻意的**:老文档没有它,解析出来就是 undefined,行为与从前完全一致 ——
    * 不需要迁移(同 `trigger` 那条的取舍)。它标记的是"这份序列化文件按哪套形状读",
    * 不是"这份文档是哪一版生成的" —— 所以运行时语义从不看它,只有 import/export 看。
+   *
+   * ⚠️ **它只管"读得懂不懂",不负责"读不懂的字段去哪"。** zod 对契约外的键默认是
+   * **静默剥掉**的 —— 导入和解码都走 `WorkflowDocSchema`,两边各剥一次就等于档案一进
+   * 一出就瘦身。保住未知字段是**门帘那一层**的责任:导入拒绝时原文件不动,导入/保存
+   * 成功时由 `mergeUnknownWorkflowFields` 把它们原样贴回去(见 `@contracts/workflow`
+   * 文件底部那条纪律)。别把 `.passthrough()` 加到这张 schema 上:它会给推断类型带上
+   * 索引签名,`Omit<WorkflowNode, …>` 这类既有用法会整体退化成 `unknown`。
    */
   schemaVersion: z.string().optional(),
   /**
@@ -1014,4 +1021,123 @@ export function upstreamClosure(deps: Map<string, string[]>, nodeId: string): Se
     stack.push(...(deps.get(id) ?? []));
   }
   return seen;
+}
+
+/* ── 契约外字段的保真(WF-05 的一条硬纪律) ── */
+
+/**
+ * `WorkflowDocSchema` 认识的键 —— 文档级与节点/边级各一份。**从 schema 现取**,不手抄;
+ * 加了字段这里自动跟上(schema 一改它就不是"手抄清单"了)。
+ */
+const DOC_KEYS: ReadonlySet<string> = new Set(Object.keys(WorkflowDocSchema.shape));
+const NODE_KEYS: ReadonlySet<string> = new Set(Object.keys(WorkflowNodeSchema.shape));
+const EDGE_KEYS: ReadonlySet<string> = new Set(Object.keys(WorkflowEdgeSchema.shape));
+const POSITION_KEYS: ReadonlySet<string> = new Set(Object.keys(WorkflowPositionSchema.shape));
+
+function unknownKeysOf(value: unknown, known: ReadonlySet<string>): Record<string, unknown> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, unknown> = {};
+  let any = false;
+  for (const [key, v] of Object.entries(value)) {
+    // `__proto__` 不往普通对象上贴:JSON.parse 会把它当自有键给出来,而 `target[key] = v`
+    // 对它是**改原型**而不是加字段 —— 一份分享来的档案不该有这种能力。
+    if (known.has(key) || key === "__proto__" || v === undefined) continue;
+    out[key] = v;
+    any = true;
+  }
+  return any ? out : null;
+}
+
+/**
+ * **把 zod 静默剥掉的契约外字段原样贴回去。**
+ *
+ * ## 为什么需要这一步(而不是给 schema 加 `.passthrough()`)
+ *
+ * `WorkflowDocSchema` 的默认行为是 **strip**:契约外的键在 `safeParse` 之后就不在了。
+ * 这件事本身对今天的执行语义没有影响 —— 但档案是要**分享、导出、升级后再打开**的:
+ *
+ *  - 一份更新的版本写出的档案(带着这一版还不认识的节点参数 / 文档字段)导进来再导出,
+ *    那些字段**一进一出就没了** —— 而磁盘上原文件在导入失败时确实不动,导入成功之后
+ *    库里的那一份与用户手里那张档案已经不是同一份;
+ *  - 反过来,用户在本机保存一次旧文档,渲染端那份 `working` 来自 `workflow.get`,
+ *    而 `get` 读的是**已经 strip 过**的行 —— 契约外字段从进来那一刻起就没有代言人。
+ *
+ * `.passthrough()` 能保住字段,但会给推断类型加上索引签名,而 `Omit<WorkflowNode, …>`
+ * 这类既有用法(检查器回写、`builtins.ts` 的节点构造)会把 `id`/`type`/`params` 一并
+ * 退化成 `unknown` —— 那等于拿全仓的字段类型安全换字段保真。所以保真收在**门帘**这一层:
+ * 解码仍然 strip(执行侧看到的永远是契约认识的字段),**成功**之后把原文里契约不认识的
+ * 键贴回去,再落库。
+ *
+ * ## 判据(三条,都是"不替用户做主"的同一方向)
+ *
+ *  - **文档级、节点级、边级**各贴各的;节点里 `position` 的未知坐标分量也贴(同一条)。
+ *  - **能对上身份才贴**:节点按 `id`、边按 `id` 对上**解析后**的那一份;对不上的(解析时
+ *    被丢弃/合并掉的)不贴 —— 贴到一个不存在的对象上没有意义。
+ *  - 同名的**已知**键永不覆盖:剥出来的那一份是"原文里契约不认识的东西",契约认识的
+ *    键以解析结果(可能已规范化)为准。
+ *
+ * 不修改入参;两层都深拷到"引用共享但对象新造"的粒度(未知子树整体原样带过去,不做
+ * 逐层重写 —— 那是档案作者的数据,不是我们的形状)。
+ */
+export function mergeUnknownWorkflowFields(doc: WorkflowDoc, raw: unknown): WorkflowDoc {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return doc;
+  const source = raw as Record<string, unknown>;
+  const unknownNodes = new Map<string, { node: Record<string, unknown>; position: Record<string, unknown> | null }>();
+  for (const node of Array.isArray(source.nodes) ? source.nodes : []) {
+    if (node === null || typeof node !== "object") continue;
+    const entry = node as Record<string, unknown>;
+    const id = entry.id;
+    if (typeof id !== "string") continue;
+    const extra = unknownKeysOf(entry, NODE_KEYS);
+    const positionExtra = unknownKeysOf(entry.position, POSITION_KEYS);
+    if (extra === null && positionExtra === null) continue;
+    unknownNodes.set(id, { node: extra ?? {}, position: positionExtra });
+  }
+  const unknownEdges = new Map<string, Record<string, unknown>>();
+  for (const edge of Array.isArray(source.edges) ? source.edges : []) {
+    if (edge === null || typeof edge !== "object") continue;
+    const entry = edge as Record<string, unknown>;
+    const id = entry.id;
+    if (typeof id !== "string") continue;
+    const extra = unknownKeysOf(entry, EDGE_KEYS);
+    if (extra !== null) unknownEdges.set(id, extra);
+  }
+  const nodes = doc.nodes.map((node) => {
+    const kept = unknownNodes.get(node.id);
+    if (kept === undefined) return node;
+    const merged: WorkflowNode = { ...node, ...kept.node };
+    // 坐标里契约不认识的分量也贴(从**解析后的**坐标出发,不从原文整段搬 —— 原文里
+    // 若混着 `__proto__` 这类自有键,整段搬会把它们带回来)。
+    if (kept.position !== null) merged.position = { ...node.position, ...kept.position };
+    return merged;
+  });
+  const edges = doc.edges.map((edge) => {
+    const extra = unknownEdges.get(edge.id);
+    return extra === undefined ? edge : { ...edge, ...extra };
+  });
+  const docExtra = unknownKeysOf(source, DOC_KEYS);
+  return { ...doc, ...(docExtra ?? {}), nodes, edges };
+}
+
+/**
+ * 有没有契约外的字段 —— 给"未知字段必须说出来"那条纪律用(导入成功时带一句 warning,
+ * 不是拦)。判据只数**贴得回去的**那几处,与 {@link mergeUnknownWorkflowFields} 同源。
+ */
+export function unknownWorkflowFieldPaths(doc: WorkflowDoc): string[] {
+  const paths: string[] = [];
+  for (const key of Object.keys(doc)) if (!DOC_KEYS.has(key)) paths.push(key);
+  doc.nodes.forEach((node, index) => {
+    for (const key of Object.keys(node)) {
+      if (!NODE_KEYS.has(key) && key !== "__proto__") paths.push(`nodes[${index}].${key}`);
+    }
+    for (const key of Object.keys(node.position ?? {})) {
+      if (!POSITION_KEYS.has(key) && key !== "__proto__") paths.push(`nodes[${index}].position.${key}`);
+    }
+  });
+  doc.edges.forEach((edge, index) => {
+    for (const key of Object.keys(edge)) {
+      if (!EDGE_KEYS.has(key) && key !== "__proto__") paths.push(`edges[${index}].${key}`);
+    }
+  });
+  return paths;
 }

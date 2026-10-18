@@ -966,5 +966,79 @@ check(
 );
 check("导入成功时补上 schemaVersion", roundtrip.ok && roundtrip.doc.schemaVersion === WORKFLOW_SCHEMA_VERSION, roundtrip.ok ? roundtrip.doc.schemaVersion : roundtrip.report);
 
+/* ── 5b. 契约外字段的保真(WF-05 迁移纪律,2026-10-18) ──
+ *
+ * `WorkflowDocSchema` 对契约外的键默认 **strip**。执行侧这没问题(未知字段本来就不
+ * 参与判定),但档案要分享、导出、在更新的版本里再打开 —— 一份带未知字段的档案导进来
+ * 再导出,字段没了,而且一声不响。这一段的判据:**未知字段按身份原样保留、并且说出来**;
+ * 拒绝时(版本不认识)原文件字节根本不动,那一条由"导入是纯函数"天然成立。
+ */
+const futureArchive = JSON.parse(
+  exportWorkflowDoc(
+    doc([node("A", "mcode.main", SAY), node("B", "mcode.agent", SAY)], [edge("e1", "A", "B")]),
+  ),
+) as Record<string, unknown>;
+futureArchive.futureDocField = { keep: true };               // 文档级未知字段(未来版本加的)
+const futureNodes = futureArchive.nodes as Array<Record<string, unknown>>;
+futureNodes[1].futureNodeField = ["keep"];                    // 节点级
+futureNodes[1].position = { ...(futureNodes[1].position as Record<string, unknown>), depth: 3 }; // 坐标里多一个分量
+(futureArchive.edges as Record<string, unknown>[])[0].futureEdgeField = "e"; // 边级
+const importedFuture = importWorkflowDoc(JSON.stringify(futureArchive), OPTS);
+check(
+  "未知文档字段:导入后原样保留",
+  importedFuture.ok && (importedFuture.doc as unknown as Record<string, unknown>).futureDocField !== undefined &&
+    JSON.stringify((importedFuture.doc as unknown as Record<string, unknown>).futureDocField) === JSON.stringify({ keep: true }),
+  importedFuture.ok ? importedFuture.doc : importedFuture.report,
+);
+check(
+  "未知节点字段与坐标分量:按节点 id 原样保留",
+  importedFuture.ok &&
+    JSON.stringify((importedFuture.doc.nodes.find((n) => n.id === "B") as unknown as Record<string, unknown>)?.futureNodeField) === JSON.stringify(["keep"]) &&
+    (importedFuture.doc.nodes.find((n) => n.id === "B")?.position as unknown as Record<string, unknown>)?.depth === 3,
+  importedFuture.ok ? importedFuture.doc.nodes : importedFuture.report,
+);
+check(
+  "未知边字段:按边 id 原样保留",
+  importedFuture.ok &&
+    (importedFuture.doc.edges[0] as unknown as Record<string, unknown>).futureEdgeField === "e",
+  importedFuture.ok ? importedFuture.doc.edges : importedFuture.report,
+);
+check(
+  "保留的未知字段带一条 warning 说出来(不静默)",
+  importedFuture.ok && importedFuture.warnings.some((w) => w.code === "schema.unknown-field"),
+  importedFuture.ok ? importedFuture.warnings : importedFuture.report,
+);
+// 已知字段以**解析结果**为准:原文里塞一个与已知键同名但值坏掉的东西,不能借"保真"
+// 绕回契约校验(比如把 `name` 塞成 undefined 之外的怪值 —— zod 已拒;这里验的是
+// 未知字段保真不会改写已知键)。
+check(
+  "已知键不被未知字段覆盖(name 仍是原文的规范值)",
+  importedFuture.ok && importedFuture.doc.name === JSON.parse(JSON.stringify(futureArchive)).name,
+  importedFuture.ok ? importedFuture.doc.name : importedFuture.report,
+);
+// 往返:导入后的文档再导出,**未知字段还在** —— 这是"一进一出就瘦一圈"那条反例的正面。
+const reexported = importedFuture.ok ? (JSON.parse(exportWorkflowDoc(importedFuture.doc)) as Record<string, unknown>) : {};
+check(
+  "导入→导出往返:未知字段仍在(不再一进一出就丢)",
+  importedFuture.ok && reexported.futureDocField !== undefined &&
+    ((reexported.nodes as Record<string, unknown>[])[1].futureNodeField as unknown[] | undefined)?.length === 1,
+  importedFuture.ok ? reexported : importedFuture.report,
+);
+// 负面:没有未知字段的档案,不该凭空多一条 warning(否则"未知字段"这条提醒会被淹没)。
+check(
+  "干净档案不带 schema.unknown-field 提醒(不误报)",
+  !roundtrip.ok || !(roundtrip.warnings ?? []).some((w) => w.code === "schema.unknown-field"),
+  roundtrip.ok ? roundtrip.warnings : roundtrip.report,
+);
+
+// 版本不认识 → 拒绝(既有断言),并验证**拒绝不是靠改字节**:导出不改写已知的版本号。
+const foreignVersionDoc = { ...validDoc, schemaVersion: "999" };
+const exportedForeign = JSON.parse(exportWorkflowDoc(foreignVersionDoc as WorkflowDoc)) as Record<string, unknown>;
+check(
+  "导出不改写已有的 schemaVersion(没有资格替档案改标)",
+  exportedForeign.schemaVersion === "999",
+  exportedForeign.schemaVersion,
+);
+
 console.log(`\nPASS: ${total - failures}/${total} checks`);
 if (failures > 0) process.exitCode = 1;

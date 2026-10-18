@@ -53,6 +53,8 @@ import {
   normalizeWorkflow,
   workflowMcpTools,
 } from "@main/mcp/mcodeServer.js";
+import { WORKFLOW_IN, NODE_IN, EDGE_IN } from "@main/mcp/mcodeWorkflowSchema.js";
+import { z } from "zod";
 import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 import {
   buildMemoryMcpServer,
@@ -621,6 +623,110 @@ async function main(): Promise<void> {
   const four = await saveWorkflow(fromModel.doc);
   check("四步的图存得下", four.ok, four);
   check("那四步的图没被补过什么", fromModel.notes.length === 0, fromModel.notes);
+
+  // 【WF-05 字段保真】AI 的改法固定是「workflow_get 拿整份 → 改几处 → workflow_save
+  // 整份存回」。它拿到的那份里可能带着这一版还不认识的字段(更新版本写出的档案、第三方
+  // 节点自附的元数据)—— 归一层从前按已知字段重建,未知字段在重建时就被丢了。这一条
+  // 立在**归一化产物**上:未知字段(文档/节点/边)按 id 贴回,已知字段以模型给的为准。
+  console.log("\n归一化 · 未知字段不丢(AI 整份存回那条路)");
+  const futureCarry = await ok({
+    name: "带未知字段的图",
+    futureDocField: { keep: true },
+    nodes: [
+      { id: "n1", type: "mcode.main", title: "入口", params: { instruction: "拆" }, futureNodeField: "kept" },
+      { id: "n2", type: "mcode.agent", title: "一步", params: { instruction: "做" }, position: { x: 1, y: 2, depth: 9 } },
+    ],
+    edges: [{ id: "e_future_carry", from: "n1", to: "n2", futureEdgeField: [7] }],
+  });
+  check(
+    "未知文档字段在归一化后还在",
+    JSON.stringify(futureCarry.doc.futureDocField) === JSON.stringify({ keep: true }),
+    futureCarry.doc.futureDocField,
+  );
+  check(
+    "未知节点字段与坐标分量在归一化后还在",
+    futureCarry.doc.nodes.find((n: any) => n.id === "n1")?.futureNodeField === "kept" &&
+      futureCarry.doc.nodes.find((n: any) => n.id === "n2")?.position?.depth === 9,
+    futureCarry.doc.nodes,
+  );
+  check(
+    "未知边字段在归一化后还在",
+    JSON.stringify(futureCarry.doc.edges[0]?.futureEdgeField) === JSON.stringify([7]),
+    futureCarry.doc.edges,
+  );
+  check(
+    "已知字段仍以模型给的为准(名字没有被原文里的同名怪值劫持)",
+    futureCarry.doc.name === "带未知字段的图",
+    futureCarry.doc.name,
+  );
+  // 边 id:`workflow_get → workflow_save` 整份存回要保住边身份,**前提是归一化沿用
+  // 模型带回来的 id**。给了就沿用;不给才生成(新图的老行为不变)。
+  const edgeIdKept = await ok({
+    name: "边 id 沿用",
+    nodes: [
+      { id: "n1", type: "mcode.main", params: { instruction: "拆" } },
+      { id: "n2", type: "mcode.agent", params: { instruction: "做" } },
+    ],
+    edges: [{ id: "e_get_from_storage", from: "n1", to: "n2" }],
+  });
+  check(
+    "模型带回来的边 id 被沿用(整份存回不换身份)",
+    edgeIdKept.doc.edges[0]?.id === "e_get_from_storage",
+    edgeIdKept.doc.edges,
+  );
+  const edgeIdGenerated = await ok({
+    name: "边 id 生成",
+    nodes: [
+      { id: "n1", type: "mcode.main", params: { instruction: "拆" } },
+      { id: "n2", type: "mcode.agent", params: { instruction: "做" } },
+    ],
+    edges: [{ from: "n1", to: "n2" }],
+  });
+  check(
+    "没给边 id 仍自动生成(新图行为不变)",
+    typeof edgeIdGenerated.doc.edges[0]?.id === "string" && edgeIdGenerated.doc.edges[0].id.startsWith("e_"),
+    edgeIdGenerated.doc.edges,
+  );
+  // 三门之上还有**第四道**:模型经 SDK 调 workflow_save 之前,`WORKFLOW_IN` 会按
+  // `z.object(inputSchema).parse(...)` 校验一遍。默认 strip 的话,未知字段在这一层就被
+  // 剥掉,`normalizeWorkflow` 根本见不到它们 —— 上面的贴回逻辑再对也救不回来。这三张
+  // 入参 schema 必须 **passthrough**;直接对 schema 断言,因为这条 handler 的直调
+  // 绕过了 SDK 的入参校验层。
+  const passthroughProbe = z.object({ workflow: WORKFLOW_IN }).parse({
+    workflow: {
+      name: "经 SDK 进来的",
+      futureDocField: 1,
+      nodes: [{ type: "mcode.main", futureNodeField: 2, position: { x: 0, y: 0, depth: 3 } }],
+      edges: [{ id: "e1", from: "a", to: "b", futureEdgeField: 4 }],
+    },
+  });
+  const probeWorkflow = passthroughProbe.workflow as Record<string, any>;
+  check(
+    "★ MCP 入参层不 strip 未知字段(WORKFLOW_IN / NODE_IN / EDGE_IN 都是 passthrough)",
+    probeWorkflow.futureDocField === 1 &&
+      probeWorkflow.nodes[0]?.futureNodeField === 2 &&
+      probeWorkflow.nodes[0]?.position?.depth === 3 &&
+      probeWorkflow.edges[0]?.futureEdgeField === 4,
+    probeWorkflow,
+  );
+  check(
+    "三张 schema 的 ._def.unknownKeys 都是 passthrough(直接钉住 strip 行为本身)",
+    [WORKFLOW_IN, NODE_IN, EDGE_IN].every(
+      (schema) => (schema as unknown as { _def?: { unknownKeys?: string } })._def?.unknownKeys === "passthrough",
+    ),
+    [WORKFLOW_IN, NODE_IN, EDGE_IN].map(
+      (schema) => (schema as unknown as { _def?: { unknownKeys?: string } })._def?.unknownKeys,
+    ),
+  );
+  const carriedSave = await saveWorkflow(futureCarry.doc);
+  check("带未知字段的图也能存下", carriedSave.ok, carriedSave);
+  const carriedBack = getWorkflow(futureCarry.doc.id);
+  check(
+    "存进库再读回,未知字段仍在",
+    JSON.stringify((carriedBack as unknown as Record<string, unknown> | null)?.futureDocField) ===
+      JSON.stringify({ keep: true }),
+    carriedBack,
+  );
 
   console.log("\n岔路口:选项住在出边上 —— 跨层也不能掉");
   // 分支节点的选项**就是它的出边**,名字和说明挂在边上的 `label` / `note`

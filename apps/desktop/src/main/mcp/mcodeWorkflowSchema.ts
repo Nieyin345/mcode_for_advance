@@ -16,6 +16,7 @@ import {
   makeEdgeId,
   makeNodeId,
   makeWorkflowId,
+  mergeUnknownWorkflowFields,
   topoLayers,
   type WorkflowDoc,
   type WorkflowEdge,
@@ -31,8 +32,18 @@ import {
 import { NODE_AGENT_TYPE_ID, loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { isBuiltinWorkflowId } from "@main/orchestration/builtins.js";
 
-export const POSITION_IN = z.object({ x: z.number(), y: z.number() });
+export const POSITION_IN = z.object({ x: z.number(), y: z.number() }).passthrough();
 
+/**
+ * ⚠️ **三张入参 schema 都带 `.passthrough()`(WF-05 字段保真)。** 模型改一份已有工作流
+ * 的固定姿势是「`workflow_get` 拿到整份 JSON → 改几处 → `workflow_save` 整份存回」,
+ * 而它拿到的那份里可能带着这一版还不认识的字段(更新版本写出的档案、第三方节点自附的
+ * 元数据)。若入参 schema 默认 strip,那些字段在 `normalizeWorkflow` 见到 `raw` 之前就
+ * 没了 —— 一次 AI 编辑就把用户的未知字段抹掉,而且一声不响。`normalizeWorkflow` 收尾
+ * 用 `mergeUnknownWorkflowFields` 按 id 贴回,前提正是这里不先 strip。
+ * (这三张只做 MCP 入参校验,不参与 `WorkflowDoc` 的推断类型,所以 passthrough 的索引
+ * 签名不会外溢到 `Omit<WorkflowNode, …>` 那些用法上。)
+ */
 export const NODE_IN = z.object({
   id: z
     .string()
@@ -54,9 +65,16 @@ export const NODE_IN = z.object({
     .optional()
     .describe("覆盖类型的默认能力(read / write / exec / net)。**不确定就省略**,用类型的默认值"),
   position: POSITION_IN.optional().describe("画布坐标。**一般不用写** —— 不写代码会按依赖自动排"),
-});
+}).passthrough();
 
 export const EDGE_IN = z.object({
+  id: z
+    .string()
+    .optional()
+    .describe(
+      "改一份**已有的**工作流时,把 `workflow_get` 看到的边 id 原样带回来(留空则自动生成)。" +
+        "带回来才能让「整份拿、整份存回」保住这条边的身份与该版本不认识的字段",
+    ),
   from: z.string().describe("上游节点的 id"),
   to: z.string().describe("下游节点的 id"),
   // 下面这两样**只有 `from` 是分支节点时才写得有意义**(见 `@contracts/workflow` 的
@@ -74,7 +92,7 @@ export const EDGE_IN = z.object({
     .describe(
       "**分支节点专用** —— 选了这条之后给下一步的一句说明,会拼进它的提示词。对这条路上的每一步都成立,和用户点的时候临时写的那句并存",
     ),
-});
+}).passthrough();
 
 export const WORKFLOW_IN = z.object({
   id: z
@@ -101,7 +119,7 @@ export const WORKFLOW_IN = z.object({
     .optional()
     .describe("图上的步骤。**一个节点都没有 = 一份提示词型工作流**(流程写在 prompt 里)"),
   edges: z.array(EDGE_IN).optional().describe("步骤之间的依赖:`from` 做完 `to` 才能开始"),
-});
+}).passthrough();
 
 export const MANIFEST_IN = z.object({
   id: z.string().describe("类型 id,形如 `作者.名字`(小写,连字符分词)。`mcode.` 是内置的保留前缀,不能用"),
@@ -340,8 +358,13 @@ export async function normalizeWorkflow(raw: Obj): Promise<NormalizeResult> {
     // 没有名字的按钮(全回落成"通向某某"),而模型明明写对了。
     const label = str(e.label).trim();
     const note = str(e.note).trim();
+    // 【WF-05】给了 id 就沿用(`workflow_get` 带回来的那一条),没给才生成。沿用 id
+    // 是"整份拿、整份存回"能保住边级未知字段的前提:`normalizeWorkflow` 收尾按边 id
+    // 贴回未知字段,而新建时这些边本来就没有旧身份可言。id 只要求非空、图内不重 ——
+    // 与 `WorkflowEdgeSchema` 同一条(min(1)),这里先挡一道,重复的交给 schema 说。
+    const wantedId = str(e.id);
     edges.push({
-      id: makeEdgeId(),
+      id: wantedId.length > 0 ? wantedId : makeEdgeId(),
       from,
       to,
       ...(label.length > 0 ? { label } : {}),
@@ -376,7 +399,11 @@ export async function normalizeWorkflow(raw: Obj): Promise<NormalizeResult> {
     const where = first && first.path.length > 0 ? `${first.path.join(".")}:` : "";
     return { ok: false, error: `格式不对(${where}${first?.message ?? "没通过校验"})` };
   }
-  return { ok: true, doc: parsed.data, notes };
+  // 【WF-05 字段保真】AI 的改法是"workflow_get → 改 → workflow_save 整份存回":它拿到
+  // 的那份 JSON 里可能带着这一版还不认识的字段(更新版本写出的档案、第三方节点自附的
+  // 元数据),而上面这份 `candidate` 是**按已知字段重建**的 —— 不贴回去,一次 AI 编辑就
+  // 把未知字段抹掉。按 id 贴回(文档/节点/边),与导入、IPC 保存走同一份判据。
+  return { ok: true, doc: mergeUnknownWorkflowFields(parsed.data, raw), notes };
 }
 
 /** 用节点名把图排成"第1层 → 第2层"的一行 —— 让模型自己看一眼图是不是它想的那样。 */

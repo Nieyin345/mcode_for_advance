@@ -843,6 +843,70 @@ resetSent();
   check("读回来那一份还在(没有因为认不出类型就丢掉)", got.workflow !== null, got);
 }
 
+/* ──────────────── 7b. ★ 契约外字段:保存不静默抹掉(WF-05,2026-10-18) ────────────────
+ *
+ * `WORKFLOW_SAVE` 的入参走 `WorkflowSaveSchema` → `WorkflowDocSchema`,而 zod 对契约外
+ * 的键默认 **strip**。保存是**改写已有行**:渲染端从 `workflow.get` 拿到的文档里若带着
+ * 这一版还不认识的字段(更新版本写出的档案、第三方节点自附的元数据),旧实现一次普通
+ * 保存就把它们悄悄抹掉 —— 用户什么都没做,数据没了。判据立在**盘上那一行**上:
+ * 未知字段(文档/节点/边/坐标各一层)存一次再读回来必须还在,已知字段以入参为准。
+ */
+{
+  resetSent();
+  const futureDoc = {
+    ...goodDoc({ id: "wf_future", name: "未来版本档案" }),
+    futureDocField: { keep: true },
+    nodes: goodDoc().nodes.map((n, i) => i === 1
+      ? { ...n, futureNodeField: "kept", position: { ...n.position, depth: 7 } }
+      : n),
+    edges: goodDoc().edges.map((e) => ({ ...e, futureEdgeField: [1, 2] })),
+  } as unknown as WorkflowDoc;
+  const saved = obj(await callAsync(IPC.WORKFLOW_SAVE, { workflow: futureDoc }));
+  eq("带未知字段的文档照样存得下去", saved.ok, true);
+  const afterSave = obj(await callAsync(IPC.WORKFLOW_GET, { id: "wf_future" }));
+  const stored = obj(afterSave.workflow);
+  check(
+    "★ 保存后盘上的文档仍带未知文档字段(没有被 zod strip 掉)",
+    JSON.stringify((stored as unknown as Record<string, unknown>).futureDocField) === JSON.stringify({ keep: true }),
+    stored,
+  );
+  const storedNode = (stored.nodes as Array<Record<string, unknown>>).find((n) => n.id === "n2");
+  check(
+    "★ 节点级未知字段与坐标未知分量也还在",
+    storedNode?.futureNodeField === "kept" &&
+      (storedNode.position as Record<string, unknown>).depth === 7,
+    storedNode,
+  );
+  check(
+    "★ 边级未知字段也还在",
+    JSON.stringify((stored.edges as Array<Record<string, unknown>>)[0]?.futureEdgeField) === JSON.stringify([1, 2]),
+    stored.edges,
+  );
+  // 已知字段以**入参**为准:在带未知字段的同一份里改个名字,不能因为保真把旧名带回来。
+  // 覆盖已有行要带 CAS 版本(界面从 `workflow.get` 的 revision 拿,这里同一条路)。
+  const revision = String(afterSave.revision);
+  const renamed = obj(await callAsync(IPC.WORKFLOW_SAVE, {
+    workflow: { ...futureDoc, name: "改名了" } as unknown as WorkflowDoc,
+    expectedRevision: revision,
+  }));
+  eq("同一份再存一次(改名)", renamed.ok, true);
+  const afterRename = obj(obj(await callAsync(IPC.WORKFLOW_GET, { id: "wf_future" })).workflow);
+  eq("已知字段以入参为准(名字改了)", afterRename.name, "改名了");
+  check(
+    "未知字段跨第二次保存仍在",
+    JSON.stringify((afterRename as unknown as Record<string, unknown>).futureDocField) === JSON.stringify({ keep: true }),
+    afterRename.futureDocField,
+  );
+  // 负面:干净文档保存后不该凭空长出未知字段(保真不是"把原文整个贴回去")。
+  await callAsync(IPC.WORKFLOW_SAVE, { workflow: goodDoc({ id: "wf_clean", name: "干净档案" }) });
+  const clean = obj(obj(await callAsync(IPC.WORKFLOW_GET, { id: "wf_clean" })).workflow);
+  check(
+    "干净文档保存后不凭空多出字段(与契约键集合一致)",
+    Object.keys(clean).sort().join(",") === Object.keys(goodDoc()).sort().join(","),
+    Object.keys(clean),
+  );
+}
+
 /* ──────────────── 8. 删 / 恢复默认 ──────────────── */
 
 console.log("\n删一份工作流");

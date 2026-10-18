@@ -40,6 +40,8 @@ import {
   ungatedCycleNodes,
   edgeOptionNameOf,
   isLoopGateNode,
+  mergeUnknownWorkflowFields,
+  unknownWorkflowFieldPaths,
   upstreamClosure,
   workflowNodeRefName,
   type WorkflowDoc,
@@ -662,9 +664,14 @@ export function validateWorkflowDoc(
 /**
  * 导出一份文档为 JSON 文本:**总是带上 `schemaVersion`**。缩进两格 —— 导出的东西是
  * 给人读、给人 diff 的,一行超长 JSON 是反这份用途的。
+ *
+ * ⚠️ **已有的版本号不覆盖成现值。** 从前这里写死 `{ ...doc, schemaVersion: 当前 }` ——
+ * 一份从库里读出来的、标着别的版本的文档(外部改库 / 未来版本留下的行)会被**改标**成
+ * "这是当前这一套形状",而它并不是。版本字段的意义是"这份文件按哪套形状写",导出这
+ * 一步没有资格改这个问题的答案:有就原样带,没有才补现值。
  */
 export function exportWorkflowDoc(doc: WorkflowDoc): string {
-  return `${JSON.stringify({ ...doc, schemaVersion: WORKFLOW_SCHEMA_VERSION }, null, 2)}\n`;
+  return `${JSON.stringify({ ...doc, schemaVersion: doc.schemaVersion ?? WORKFLOW_SCHEMA_VERSION }, null, 2)}\n`;
 }
 
 export type WorkflowImportResult =
@@ -683,6 +690,14 @@ export type WorkflowImportResult =
  * 注意通过与否取决于 `opts`:默认档位下,用了这台机器没装的节点类型的文档**进不来**
  * (error);调用方想要"先收下、缺的以后装"的宽松语义,传
  * `{ unknownTypeSeverity: "warning" }`。
+ *
+ * ## 契约外的字段:**贴回去,并带一条 warning 说出来**(WF-05)
+ *
+ * 这里从前只做 zod 的 strip —— 一份更新的档案(带着这一版还不认识的节点参数/文档字段)
+ * 导进来,未知字段在库里就没有了:导入→导出一次往返,用户的档案瘦一圈,而且一声不响。
+ * 现在走 {@link mergeUnknownWorkflowFields} 把原文里契约不认识的键按身份(id)贴回
+ * 规范化后的文档,并在 `warnings` 里逐条点名(不拦导入:字段未知不等于文档不能用)。
+ * 拒绝时原文件本来就不动 —— 这条纪律只负责成功路径不丢字段。
  *
  * ## 成功时**也**把 `warnings` 带回去(2026-09-20)
  *
@@ -748,5 +763,20 @@ export function importWorkflowDoc(text: string, opts: WorkflowValidationOptions 
 
   const report = validateWorkflowDoc(doc, opts);
   if (!report.ok) return { ok: false, report };
-  return { ok: true, doc: { ...doc, schemaVersion: WORKFLOW_SCHEMA_VERSION }, warnings: report.warnings };
+  // 契约外的键:zod 在上面 strip 过,这里按 id 贴回去(文档/节点/边各一层)。
+  const merged: WorkflowDoc = mergeUnknownWorkflowFields(
+    { ...doc, schemaVersion: WORKFLOW_SCHEMA_VERSION },
+    parsed,
+  );
+  // 贴回来了什么,就点名说出来 —— 用户手里的档案与库里的那一份"哪里不一样",不该
+  // 只能靠对比文件才发现。warning 不拦导入(未知字段不等于文档不能用)。
+  const unknownPaths = unknownWorkflowFieldPaths(merged);
+  const unknownWarnings: WorkflowValidationIssue[] = unknownPaths.length === 0 ? [] : [{
+    code: "schema.unknown-field",
+    message:
+      `这份档案带着这一版不认识的字段(${unknownPaths.slice(0, 5).join("、")}` +
+      `${unknownPaths.length > 5 ? ` 等 ${unknownPaths.length} 处` : ""})—— ` +
+      "已原样保留,不会被这一版使用;升级到认识它们的版本后会自动生效",
+  }];
+  return { ok: true, doc: merged, warnings: [...report.warnings, ...unknownWarnings] };
 }
