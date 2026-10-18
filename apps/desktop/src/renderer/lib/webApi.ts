@@ -650,7 +650,8 @@ const piModels: Api["piModels"] = {
   save: () => webUnsupported("piModels.save"),
   delete: () => webUnsupported("piModels.delete"),
   listAvailable: () => rpc("piModels:listAvailable"),
-  // 端点探测走主进程外连，手机端不做（设置页在手机上不可达，见 MOBILE_UNREACHABLE_ROUTES）。
+  // 端点探测走主进程外连，手机端不做（设置页在手机上不可达；同类桩的清单见
+  // `scripts/ipc-wiring-smoke/main.ts` 的 DESKTOP_ONLY_STUBS）。
   test: () => webUnsupported("piModels.test"),
   listEndpointModels: () => webUnsupported("piModels.listEndpointModels"),
   getApiKey: () => webUnsupported("piModels.getApiKey"),

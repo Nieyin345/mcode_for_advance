@@ -905,15 +905,17 @@ diff(
  *   > 白名单(`mobileRpc.ts` + `mobileGitRpc.ts` 的 key)里必须有。
  *
  * 这正是那个已经踩过的坑的形状:共用组件调一个 RPC → webApi 有这一项 → 白名单没有 →
- * 服务端 404 → 前端同步抛 → React 19 整棵卸载。
+ * 服务端 404 → 前端同步抛 → React 19 整棵卸载。**今天这条是严格的:零豁免。**
  *
- * **做不到的(不硬凑)**:webApi 里 `webUnsupported(...)` 的 59 项**没法自动断言**。
- * 那个函数抛的是"桌面端专属,手机上不可用",而它是对还是错取决于**共用组件会不会在
- * 手机端调到它** —— 那是一个可达性问题(哪个组件挂在 `AppMobile` 那棵树上),不是
- * 文本形状能回答的。今天它是**刻意**的:源码里写着几条注释解释了为什么某些路由留着
- * 只为满足 `Api[...]` 的类型完整性(`session.fork` / `claude.inject` / `listSideChats` /
- * `saveSubagents` / `git.fileBlob`),而这些路由的调用点都在手机端不挂载的组件里
- * (IDE 的 Git 面板、设置页的子代理编辑器、桌面左栏)。所以下面**只报不判**。
+ * 从前这里挂着一张「路由了、白名单没服务、但手机端跑不到」的豁免名单(8 条)。
+ * `701c87e6` 把那 8 条从 `rpc(...)` 改成了**显式 `webUnsupported(...)` 桩** ——
+ * 那比豁免更诚实:同样够不到服务端,但报的是本地化的"桌面端专属",而不是一条
+ * 注定 404 的 RPC。所以豁免机制整个撤掉;那 8 条移到下面的 `DESKTOP_ONLY_STUBS`,
+ * 由反查钉住它们**没有重新变回路由**。
+ *
+ * **做不到的(不硬凑)**:webApi 里其余 `webUnsupported(...)` 桩**没法按可达性自动
+ * 断言** —— 它是对还是错取决于**共用组件会不会在手机端调到它**(哪个组件挂在
+ * `AppMobile` 那棵树上),不是文本形状能回答的。所以只对手工核过的 8 条做反查。
  *
  * 另外两条小的、确实能判的:
  *   - `on` 那 22 个推送订阅的键,webApi 必须**逐个列全**(源码注释写着:少一个键连类型
@@ -935,34 +937,42 @@ for (const path of [MOBILE_RPC, MOBILE_GIT_RPC]) {
 }
 
 /**
- * 六条**服务端不认、但手机端跑不到**的路由。这是本套最需要解释的一处,别一眼看成漏。
- *
- * `webApi.ts` 是个**全量手写**的 `Api` 形状(`const claude: Api["claude"] = {…}`),
- * 所以共用组件里**每加一个 RPC 都要在这里补一项** —— 补不上就会同步抛、React 19 整棵卸载。
- * 这个坑是真的,而这一条断言就是为它写的。下面六条是它今天唯一的缺口,
- * 每条都**核过"调用点在哪棵树上"**:
+ * 这 8 条**服务端不认、但手机端跑不到**的路由,`701c87e6` 之后在 `webApi` 里是
+ * **显式 `webUnsupported(...)` 桩**、不再是 `rpc(...)` 路由。每条都核过"调用点
+ * 在哪棵树上"(2026-10-19 复核,依据仍成立):
  *
  *   - `session:listAll` —— 调用方只有 `sessionStore.loadStreamSessions`,
- *     而它只在 `components/layout/StreamSidebar.tsx` 里被调;`AppMobile` 不挂 StreamSidebar。
+ *     而它只在 `components/layout/StreamSidebar.tsx` 里被调;`AppMobile` 不挂 StreamSidebar
+ *     (`ClassicShell.tsx` 才挂它)。
  *   - `claude:listSideChats` —— 调用方是 `sessionStore.hydrateSideChats`,
- *     而手机端**明确没有**侧聊(`SessionTabs` 里的 `sideChatsByParent` 是桌面左栏的东西)。
- *   - `session:fork` / `claude:inject` / `claude:saveSubagents` —— `webApi.ts` 自己的
- *     注释就写着它们是"仅为满足 `Api[...]` 的类型完整性"而留的(手机上没有那几个入口)。
- *   - `claude:stopTask` / `claude:readTaskOutput` —— 同上一类（2026-10-10 / 10-11 加）：
- *     停一个子代理、读一个 bash 任务的输出，都要靠"正在跑的那一轮"的句柄或**桌面端那台
- *     机器上的文件**。唯一的调用方是 `ide/TaskListPanel`，而**手机壳不挂它**
- *     （它的右栏没有 `tasks` 页 —— 已核：`AppMobile` 与 `components/mobile/` 下只有一句
- *     提到它名字的注释）。
- *   - `git:fileBlob` —— 调用方是 `components/ide/GitRepoCard.tsx`;手机端那个 Git 屏
+ *     只有 `chat/SideChatPanel.tsx` 调;面板只经 `layout/RightPanel.tsx` 的
+ *     `WorkflowBoardPanel` 挂载,而 RightPanel 只被 `shell/ClassicShell.tsx` 引用,
+ *     `AppMobile` 不挂它。
+ *   - `claude:inject` —— 调用方 `sessionStore.injectPrompt`(ChatPane 的插话入口),
+ *     手机上的 `ChatPane` 会调到,但 `injectPrompt` 自己 catch 后返回 false、
+ *     **兜回普通发送**(见其注释),桩的同步抛不会逃出事件处理器。
+ *   - `session:fork` —— 调用方只有 `layout/LeftBar.tsx` 与 `layout/StreamSidebar.tsx`;
+ *     两者都只在 `ClassicShell` 里挂,`AppMobile` 不挂。`forkSession` 另有 catch+toast。
+ *   - `claude:saveSubagents` —— 唯一渲染端调用点是桌面设置页的子代理编辑器
+ *     (preload 之外无其他 renderer 引用);手机设置表里没有它。
+ *   - `claude:stopTask` / `claude:readTaskOutput` —— 停一个子代理、读一个 bash 任务的
+ *     输出,都要靠"正在跑的那一轮"的句柄或**桌面端那台机器上的文件**。调用点是
+ *     `ide/TaskListPanel.tsx`(`SubagentTranscript` / 停止菜单)与
+ *     `sessionStore.stopSubagent`;TaskListPanel 只挂在 `layout/RightPanel.tsx` 的
+ *     `tasks` 页,`AppMobile` 不挂 RightPanel(已核:`AppMobile` 与 `components/mobile/`
+ *     下只有一句提到它名字的注释)。`stopSubagent` 与 `readTaskOutput` 的调用方都 catch。
+ *   - `git:fileBlob` —— 调用方是 `components/ide/GitRepoCardParts.tsx`(GitRepoCard 的
+ *     整文件 diff),只经 `layout/RightPanel.tsx` 的 Git 页挂载;手机端那个 Git 屏
  *     (`components/mobile/MobileGitScreen.tsx`)只调 discoverRepos/status/stage/unstage/
  *     commit/push/pull/listBranches/checkout/generateCommitMessage/cancelGenerateCommitMessage
- *     —— **文件内容对比在手机上不存在**,所以 `fileBlob` 到不了。
+ *     —— **文件内容对比在手机上不存在**,所以 `fileBlob` 到不了。调用点失败会回退
+ *     普通编辑器打开(catch)。
  *
- * ⚠️ 也就是说这张名单是**手工核出来的**,不是自动推出来的。所以下面配了一条**反查**:
- * 名单里每一条仍然必须真是"`webApi` 路由了、白名单没服务"的那个状态;一旦有人把某条
- * 服务端补上(或者把路由删掉),这条会红 —— 那份名单不会静静地过期成一句谎话。
+ * ⚠️ 这张名单是**手工核出来的**,不是自动推出来的。所以下面配了一条**反查**:
+ * 名单里每一条今天必须**仍是显式桩**、且**不再被 `rpc(...)` 路由**;谁把它改回路由
+ * (或把桩删掉),这条会红 —— 那份名单不会静静地过期成一句谎话。
  */
-const MOBILE_UNREACHABLE_ROUTES = new Set([
+const DESKTOP_ONLY_STUBS = [
   "claude:inject",
   "claude:listSideChats",
   "claude:saveSubagents",
@@ -971,28 +981,42 @@ const MOBILE_UNREACHABLE_ROUTES = new Set([
   "git:fileBlob",
   "session:fork",
   "session:listAll",
-]);
+];
 
 diff(
-  "webApi 路由到的每个通道,移动白名单里都有(或属于已核过「手机端跑不到」的那几条)",
+  "webApi 路由到的每个通道,移动白名单里都有(零豁免)",
   webRouted,
-  [...mobileServed, ...MOBILE_UNREACHABLE_ROUTES],
+  mobileServed,
   "webApi",
   "mobileRpc",
 );
 
 /**
- * 反查上一行的豁免名单没过期:上面那六条必须**仍然**是"webApi 有、白名单没有"。
- * 谁把它们补上了服务端(或删了路由),这一条就红 —— 提醒把名单里那一条删掉,
- * 而不是让它继续豁免一条其实已经接好的路由。
+ * 反查:上面那 8 条必须**仍然**是"显式桩、不是路由、白名单也没服务"。
+ *   - 变回 `rpc(...)` 路由 ⇒ 上面那条 diff 立刻红(白名单没它),这里也红;
+ *   - 删了桩、连 `Api` 形状都不再提 ⇒ `stubDeclared` 为 false,这里红;
+ *   - 白名单补上了服务端 ⇒ 桩就该删掉(`webUnsupported` 与 handler 二选一),这里红。
+ * 三种都是"名单过期",提醒改为当前真相,而不是让名单继续豁免一条其实已经接好的路由。
  */
-const staleExemptions = [...MOBILE_UNREACHABLE_ROUTES].filter(
-  (c) => !webRouted.has(c) || mobileServed.has(c),
+const stubDeclared = new Set(
+  // 桩名是 `ns.method`(第一个点之后都是方法名),通道名是 `ns:method`。
+  [...webApiSrc.matchAll(/webUnsupported\(\s*"([^"]+)"\)/g)].map((m) => {
+    const i = m[1].indexOf(".");
+    return i < 0 ? m[1] : `${m[1].slice(0, i)}:${m[1].slice(i + 1)}`;
+  }),
+);
+const staleStubs = DESKTOP_ONLY_STUBS.filter(
+  (c) => webRouted.has(c) || mobileServed.has(c) || !stubDeclared.has(c),
 );
 check(
-  "「手机端跑不到」那六条豁免没有过期(仍是「路由了、白名单没服务」的状态)",
-  staleExemptions.length === 0,
-  staleExemptions,
+  "★ 8 条「手机端跑不到」的桌面专属路由仍是显式桩(rpc 无、白名单无、webUnsupported 有)",
+  staleStubs.length === 0,
+  {
+    stale: staleStubs,
+    stillRouted: staleStubs.filter((c) => webRouted.has(c)),
+    nowServed: staleStubs.filter((c) => mobileServed.has(c)),
+    stubMissing: staleStubs.filter((c) => !stubDeclared.has(c)),
+  },
 );
 
 /** `claude:healthCheck` 是**两处都刻意**不走 `IPC` 表的裸通道(见检查 1 的 B 类),单独认。 */
