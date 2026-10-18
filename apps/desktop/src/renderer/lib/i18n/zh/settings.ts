@@ -336,6 +336,7 @@ export const zh = {
     "把这两项填进浏览器扩展,扩展连上后这里会变成「已连接」。重新生成会让已装好的扩展失效,需要重新填一次。",
   "settings.customModels.publicMcpTitle": "公网 MCP 端点",
   "settings.remoteControl.title": "远程控制",
+  "settings.remoteControl.loadFailed": "远程控制状态读取失败",
   "settings.remoteControl.desc":
     "让互联网上的 AI(比如 ChatGPT 的 Connector)操作这台电脑:读写文件、跑命令、查资料库。",
   "settings.remoteControl.warning":
@@ -1076,6 +1077,7 @@ export const zh = {
   "settings.skills.presetApply": "用这套复制到项目",
   "settings.skills.presetCount": "{n} 个技能",
   "settings.skills.overview": "跨项目总览",
+  "settings.skills.overviewLoadFailed": "跨项目总览读取失败",
   "settings.skills.overviewHint": "每个项目各装了哪些技能。这里只读 —— 要改还是去「项目」那一栏。",
   "settings.skills.overviewEmpty": "还没有项目。",
   "settings.skills.overviewNoSkillDir": "(这个项目还没放过技能)",

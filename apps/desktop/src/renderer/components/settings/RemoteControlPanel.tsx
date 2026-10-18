@@ -19,12 +19,21 @@
  * 文件头）。所以：警告不折叠、不藏 tooltip；沙箱目录必须让用户**明确选**（默认不是
  * "第一个项目"这种猜的）；密钥可一键换掉；总开关可关闭端点。
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PublicMcpStatus, PublicMcpTunnelConfig } from "@contracts/customModel";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, HintLabel, InfoHint, Input, Select, Switch } from "@renderer/components/ui/index.js";
+import {
+  Button,
+  ErrorNote,
+  HintLabel,
+  InfoHint,
+  Input,
+  LoadingNote,
+  Select,
+  Switch,
+} from "@renderer/components/ui/index.js";
 import {
   IconCopy,
   IconCheck,
@@ -315,26 +324,45 @@ function ProjectLinksCard({
 export function RemoteControlPanel({ onError }: { onError: (msg: string) => void }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<PublicMcpStatus | null>(null);
+  /** `status()` 读失败的原因。从前这是一个空 catch,`status` 停在 null,开关按
+   *  `?? false` 画成"关" —— 用户以为远程控制是关的,**实际可能正开着**。
+   *  状态未知就必须说"未知",不能画成"关"(硬规矩 3)。 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const statusEpoch = useRef(0);
   const actionPending = useRef(false);
+  const mounted = useRef(true);
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    const epoch = statusEpoch.current;
-    api.publicMcp
-      .status()
-      .then((s) => {
-        if (alive && epoch === statusEpoch.current) setStatus(s);
-      })
-      .catch(() => {
-        /* 主进程还没就绪 —— 下次进来再看 */
-      });
+    mounted.current = true;
     return () => {
-      alive = false;
+      mounted.current = false;
     };
   }, []);
+
+  const load = useCallback(() => {
+    const epoch = statusEpoch.current;
+    return api.publicMcp
+      .status()
+      .then((s) => {
+        if (mounted.current && epoch === statusEpoch.current) {
+          setStatus(s);
+          setLoadError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        // 没有快照 = 状态未知。整块面板切成错误横幅(不画开关),原因原样给用户,
+        // 重试由横幅上的按钮发起 —— 一个假"关"开关比不画更危险。
+        if (mounted.current && epoch === statusEpoch.current) {
+          setLoadError(err instanceof Error ? err.message : String(err));
+        }
+      });
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   // 起隧道是异步的（cloudflared 要先跑一段连通性预检），点完那一刻还没好，得轮询等。
   // `reconnecting` 同理:隧道掉线后在自动重连,不轮询的话按钮会一直转圈到重开页面。
@@ -360,9 +388,13 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
     setBusy(true);
     try {
       setStatus(await fn());
+      setLoadError(null);
     } catch (err) {
       onError((err as Error).message);
-      try { setStatus(await api.publicMcp.status()); } catch { /* Keep the original operation error. */ }
+      try {
+        setStatus(await api.publicMcp.status());
+        setLoadError(null);
+      } catch { /* Keep the original operation error. */ }
     } finally {
       actionPending.current = false;
       setBusy(false);
@@ -381,6 +413,44 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
   const tunnelCmd = status?.port
     ? `cloudflared tunnel --url http://127.0.0.1:${status.port}`
     : "";
+
+  // 状态读失败 —— **必须说成"未知",不能画成"关"**(见 `loadError` 注释)。
+  // 沙箱选择 / 开关 / 隧道这些全都依赖 status;没有快照时整块不画,
+  // 只留错误横幅 + 重试 —— 否则一个假"关"开关比不画更危险。
+  if (loadError !== null) {
+    return (
+      <div className="flex h-full flex-col gap-2.5 overflow-y-auto">
+        <div>
+          <h2 className="flex items-center gap-1.5 text-[0.9286em] font-medium text-content">
+            {t("settings.remoteControl.title")}
+            <InfoHint>{t("settings.remoteControl.desc")}</InfoHint>
+          </h2>
+        </div>
+        <p className="flex items-start gap-1.5 rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7143em] leading-relaxed text-danger">
+          <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>{t("settings.remoteControl.warning")}</span>
+        </p>
+        <ErrorNote
+          title={t("settings.remoteControl.loadFailed")}
+          action={
+            <Button size="sm" variant="ghost" onClick={() => void load()}>
+              {t("common.retry")}
+            </Button>
+          }
+        >
+          {loadError}
+        </ErrorNote>
+      </div>
+    );
+  }
+
+  if (status === null) {
+    return (
+      <div className="flex h-full flex-col gap-2.5 overflow-y-auto">
+        <LoadingNote label={t("common.loading")} />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col gap-2.5 overflow-y-auto">

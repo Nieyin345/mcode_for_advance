@@ -25,11 +25,15 @@ import type { SkillsProjectOverviewResult } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { Button, ErrorNote } from "@renderer/components/ui/index.js";
 import { IconAlertTriangle, IconFolderOpen, IconLoader2, IconSparkles } from "@renderer/lib/icons.js";
 
 export function SkillProjectOverview({ refreshKey }: { refreshKey: number }) {
   const { t } = useI18n();
   const [data, setData] = useState<SkillsProjectOverviewResult | null>(null);
+  /** 读失败的原因。从前 catch → `{rows:[],problems:[]}`,界面画成「还没有项目。」——
+   *  用户以为真的没有项目,实际是一次读取失败(硬规矩 3:坏东西显式报出来)。 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
@@ -37,8 +41,11 @@ export function SkillProjectOverview({ refreshKey }: { refreshKey: number }) {
     try {
       const res = await api.skills.projectOverview({});
       setData(res);
-    } catch {
-      setData({ rows: [], problems: [] });
+      setLoadError(null);
+    } catch (err: unknown) {
+      // 保留上一次成功的表(一次瞬时失败不该把它抹掉);没有表 = 状态未知,
+      // 由下面的错误横幅替代空态。
+      setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -50,7 +57,18 @@ export function SkillProjectOverview({ refreshKey }: { refreshKey: number }) {
   }, [load, refreshKey]);
 
   if (data === null) {
-    return (
+    return loadError !== null ? (
+      <ErrorNote
+        title={t("settings.skills.overviewLoadFailed")}
+        action={
+          <Button size="sm" variant="ghost" onClick={() => void load()}>
+            {t("common.retry")}
+          </Button>
+        }
+      >
+        {loadError}
+      </ErrorNote>
+    ) : (
       <div className="flex items-center gap-2 px-2 py-3 text-[0.8571em] text-content-subtle">
         <IconLoader2 size={13} className="animate-spin" />
         {t("common.loading")}
@@ -81,6 +99,22 @@ export function SkillProjectOverview({ refreshKey }: { refreshKey: number }) {
           </button>
         </div>
       </div>
+
+      {/* 刷新失败但旧表还在:横幅说原因,表保持可读(重试就是右上角「重新扫描」)。 */}
+      {loadError !== null && (
+        <div className="px-3 pt-2">
+          <ErrorNote
+            title={t("settings.skills.overviewLoadFailed")}
+            action={
+              <Button size="sm" variant="ghost" onClick={() => void load()}>
+                {t("common.retry")}
+              </Button>
+            }
+          >
+            {loadError}
+          </ErrorNote>
+        </div>
+      )}
 
       <p className="px-3 pt-2 text-[0.7857em] leading-relaxed text-content-subtle">
         {t("settings.skills.overviewHint")}

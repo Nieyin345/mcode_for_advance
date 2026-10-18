@@ -241,6 +241,123 @@ await withAuditPage(dir,async(page)=>{
     (await page.eval(`window.labCalls.filter(c=>c[0]==='lsp.list').length`))>=3,
     {calls:await page.eval(`window.labCalls.filter(c=>c[0]==='lsp.list')`)});
 
+  /* ───────────── F. RemoteControlPanel:status 读失败不得伪装成「已关闭」 ───────────── */
+  // 这里失败的不是"列表空不空",而是**状态本身未知**。从前 catch 静默吞掉,
+  // status 停在 null,开关按 `?? false` 画成"关" —— 用户以为远程控制是关的,
+  // 实际可能正开着。判据:错误标题+原因可见;「已关闭/已开放」一个都不许出现;
+  // 开关本体也不许以"关"的位置出现(未知不是关);重试后真实状态回来。
+  await page.eval(`(()=>{
+    const st=(enabled)=>({
+      enabled, port:enabled?17331:0, secret:enabled?'s3cret':'' , sessionId:null,
+      tunnelUrl:null, tunnelPhase:'stopped', tunnelError:null,
+      sandboxRoot:null, sandboxProjectId:null, sandboxProjectMissing:false, sandboxProjectMissingId:null,
+      availableProjects:[], tunnelMode:'quick', tunnelHostname:'', mobileHostname:'',
+      tokenHint:'', fixedPort:0, mobilePort:0, agentDelegate:false, projectLinks:[],
+    });
+    window.labApi.publicMcp = {
+      status: async () => {
+        window.labCalls.push(['publicMcp.status']);
+        if (window.labMode.publicMcpStatus === 'reject') throw new Error('mock-publicMcp-status-rejected');
+        return st(window.labMode.publicMcpEnabled === 'on');
+      },
+    };
+    window.labMode.publicMcpStatus = 'ok';
+    window.labMode.publicMcpEnabled = 'off';
+  })()`);
+
+  // F0 基线:读成功且真的是关 → 徽标「已关闭」、开关 aria-checked=false。
+  await page.eval(`window.__mount('remote');`);
+  await page.waitFor(`document.getElementById('root').textContent.includes('已关闭')`,5000).catch(()=>{});
+  const rcText0 = await page.eval(`document.getElementById('root').textContent`);
+  const rcAria0 = await page.eval(`document.querySelector('#root [role=switch]')?.getAttribute('aria-checked')`);
+  check('F0 基线:状态读成功(真关闭)时徽标「已关闭」、开关 aria-checked=false',
+    rcText0.includes('已关闭') && rcAria0==='false', {text:rcText0, aria:rcAria0});
+
+  // F1 status 拒绝(初始读,status 停在 null —— 正是"未知被画成关"的原现场)。
+  await page.eval(`window.labUnhandled.length=0;window.labMode.publicMcpStatus='reject';`);
+  await page.eval(`window.__mount('remote');`);
+  await sleep(450);
+  const rcFail = await page.eval(`document.getElementById('root').textContent`);
+  const rcSwitchFail = await page.eval(`document.querySelectorAll('#root [role=switch]').length`);
+  check('F1a ★ 远程控制状态读取失败:错误标题与原因对用户可见',
+    rcFail.includes('远程控制状态读取失败') && rcFail.includes('mock-publicMcp-status-rejected'),
+    {text:rcFail});
+  check('F1b ★ 远程控制状态读取失败:不显示成「已关闭」(未知不等于关)',
+    !rcFail.includes('已关闭') && !rcFail.includes('已开放') && rcSwitchFail===0,
+    {text:rcFail, switches:rcSwitchFail});
+  check('F1c ★ 远程控制状态读取失败时给出「重试」钮',
+    await page.eval(`[...document.querySelectorAll('#root button')].some(b=>b.textContent.trim()==='重试')`));
+  check('F1d 远程控制状态读取失败不落成未处理 promise 拒绝',
+    (await page.eval('window.labUnhandled.length'))===0,
+    {unhandled:await page.eval('window.labUnhandled')});
+
+  // F2 点「重试」真的重新发请求:恢复成功(且真的开着)→ 徽标「已开放」、开关打开。
+  await page.eval(`window.labMode.publicMcpStatus='ok';window.labMode.publicMcpEnabled='on';`);
+  await page.eval(`(()=>{const btn=[...document.querySelectorAll('#root button')].find(b=>b.textContent.trim()==='重试');if(btn)btn.click();})()`);
+  await sleep(450);
+  const rcOk = await page.eval(`document.getElementById('root').textContent`);
+  const rcAriaOk = await page.eval(`document.querySelector('#root [role=switch]')?.getAttribute('aria-checked')`);
+  check('F2a ★ 点「重试」后真实状态读到:「已开放」出现、错误横幅消失',
+    rcOk.includes('已开放') && !rcOk.includes('远程控制状态读取失败') && rcAriaOk==='true',
+    {text:rcOk, aria:rcAriaOk});
+  check('F2b 重试确实重新发了 publicMcp.status 请求',
+    (await page.eval(`window.labCalls.filter(c=>c[0]==='publicMcp.status').length`))>=3,
+    {calls:await page.eval(`window.labCalls.filter(c=>c[0]==='publicMcp.status')`)});
+
+  /* ───────────── G. SkillProjectOverview:读失败不得伪装成「还没有项目」 ───────────── */
+  // 从前 catch → `setData({rows:[],problems:[]})`,界面画成"还没有项目。" ——
+  // 用户以为真的没有项目,实际是一次读取失败。判据:错误标题+原因+重试可见,
+  // 空态文案不出现;重试后项目行回来。
+  await page.eval(`(()=>{
+    window.labApi.skills = {
+      projectOverview: async () => {
+        window.labCalls.push(['skills.projectOverview']);
+        if (window.labMode.projectOverview === 'reject') throw new Error('mock-projectOverview-rejected');
+        return {
+          rows:[{projectId:'p1',projectName:'Project Alpha',path:'D:/projects/alpha',skills:['paper-writing'],missing:false}],
+          problems:[],
+        };
+      },
+    };
+    window.labMode.projectOverview = 'ok';
+  })()`);
+
+  // G0 基线:读成功 → 项目行 + 技能名渲染,无错误横幅、无空态。
+  await page.eval(`window.__mount('overview');`);
+  await page.waitFor(`document.getElementById('root').textContent.includes('Project Alpha')`,5000).catch(()=>{});
+  const ovText0 = await page.eval(`document.getElementById('root').textContent`);
+  check('G0 基线:总览读成功时项目行渲染、无错误横幅、无空态',
+    ovText0.includes('Project Alpha') && ovText0.includes('paper-writing')
+      && !ovText0.includes('跨项目总览读取失败') && !ovText0.includes('还没有项目。'),
+    {text:ovText0});
+
+  // G1 初始读拒绝(rows 从未到过手 —— 正是"空表伪装"的原现场)。
+  await page.eval(`window.labUnhandled.length=0;window.labMode.projectOverview='reject';`);
+  await page.eval(`window.__mount('overview');`);
+  await sleep(450);
+  const ovFail = await page.eval(`document.getElementById('root').textContent`);
+  check('G1a ★ 跨项目总览读取失败:错误标题与原因对用户可见',
+    ovFail.includes('跨项目总览读取失败') && ovFail.includes('mock-projectOverview-rejected'),
+    {text:ovFail});
+  check('G1b ★ 跨项目总览读取失败:不伪装成「还没有项目。」(空表)',
+    !ovFail.includes('还没有项目。') && !ovFail.includes('Project Alpha'), {text:ovFail});
+  check('G1c ★ 跨项目总览读取失败时给出「重试」钮',
+    await page.eval(`[...document.querySelectorAll('#root button')].some(b=>b.textContent.trim()==='重试')`));
+  check('G1d 跨项目总览读取失败不落成未处理 promise 拒绝',
+    (await page.eval('window.labUnhandled.length'))===0,
+    {unhandled:await page.eval('window.labUnhandled')});
+
+  // G2 重试 → 项目行回来、横幅消失。
+  await page.eval(`window.labMode.projectOverview='ok';`);
+  await page.eval(`(()=>{const btn=[...document.querySelectorAll('#root button')].find(b=>b.textContent.trim()==='重试');if(btn)btn.click();})()`);
+  await sleep(450);
+  const ovOk = await page.eval(`document.getElementById('root').textContent`);
+  check('G2a ★ 点「重试」后总览读到、错误横幅消失',
+    ovOk.includes('Project Alpha') && !ovOk.includes('跨项目总览读取失败'), {text:ovOk});
+  check('G2b 重试确实重新发了 skills.projectOverview 请求',
+    (await page.eval(`window.labCalls.filter(c=>c[0]==='skills.projectOverview').length`))>=3,
+    {calls:await page.eval(`window.labCalls.filter(c=>c[0]==='skills.projectOverview')`)});
+
   /* ───────────── C. GeneralPanel:阈值输入的草稿保持 ───────────── */
   await page.eval(`window.__mount('general')`);
   await page.waitFor(`document.getElementById('setting-paste-threshold')`);

@@ -5,6 +5,8 @@ import {RuntimesPanel} from '@renderer/components/settings/RuntimesPanel.js';
 import {DataRootPanel} from '@renderer/components/settings/DataRootPanel.js';
 import {VoicePanel} from '@renderer/components/settings/VoicePanel.js';
 import {LspLanguagesPanel} from '@renderer/components/settings/LspLanguagesPanel.js';
+import {RemoteControlPanel} from '@renderer/components/settings/RemoteControlPanel.js';
+import {SkillProjectOverview} from '@renderer/components/settings/SkillProjectOverview.js';
 import {useSessionStore} from '@renderer/stores/sessionStore.js';
 
 window.labStore=useSessionStore;
@@ -33,7 +35,7 @@ let root=null;
 window.__mount=(name)=>{
   if(root)root.unmount();
   root=createRoot(host);
-  root.render(name==='general'?<GeneralPanel/>:name==='dataroot'?<DataRootPanel/>:name==='voice'?<VoicePanel/>:name==='lsp'?<LspLanguagesPanel/>:<RuntimesPanel/>);
+  root.render(name==='general'?<GeneralPanel/>:name==='dataroot'?<DataRootPanel/>:name==='voice'?<VoicePanel/>:name==='lsp'?<LspLanguagesPanel/>:name==='remote'?<RemoteControlPanel onError={(msg)=>{window.labRcErrors=(window.labRcErrors||[]).concat(msg);}}/>:name==='overview'?<SkillProjectOverview refreshKey={0}/>:<RuntimesPanel/>);
 };
 window.__mount('runtimes');
 window.__ready=true;

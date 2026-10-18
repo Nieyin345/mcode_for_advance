@@ -331,6 +331,7 @@ export const en = {
     "Paste both values into the browser extension; once it connects this badge turns into \"Connected\". Regenerating invalidates an already-installed extension — you'll have to re-enter the token.",
   "settings.customModels.publicMcpTitle": "Public MCP endpoint",
   "settings.remoteControl.title": "Remote control",
+  "settings.remoteControl.loadFailed": "Failed to read remote-control status",
   "settings.remoteControl.desc":
     "Let an AI on the internet (e.g. a ChatGPT connector) work on this computer: read/write files, run commands, search your library.",
   "settings.remoteControl.warning":
@@ -1072,6 +1073,7 @@ export const en = {
   "settings.skills.presetApply": "Copy these to project",
   "settings.skills.presetCount": "{n} skills",
   "settings.skills.overview": "Across projects",
+  "settings.skills.overviewLoadFailed": "Failed to read the across-projects overview",
   "settings.skills.overviewHint": "What each project has installed. Read-only here — edit under the Project tab.",
   "settings.skills.overviewEmpty": "No projects yet.",
   "settings.skills.overviewNoSkillDir": "(no skills folder in this project)",
