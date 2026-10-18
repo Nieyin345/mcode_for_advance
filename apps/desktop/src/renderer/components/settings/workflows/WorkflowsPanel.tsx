@@ -8,13 +8,15 @@
  * 能读、能改、能画的东西 —— 这正是整个功能存在的理由(见方案:模型拿到技能之后仍然
  * 在"一步步试",根因是流程没有固化)。
  *
- * ## 三个页签,一个 section
+ * ## 四个页签,一个 section
  *
  * - **工作流库**:六个内置 + 用户自建的。选中一个,中间是**画布**(加节点、拖动、
  *   连依赖),右边是检查器(选中节点就配那个节点,没选就配工作流本体)。
  * - **节点类型**:节点引用什么类型、每种类型要什么参数、哪些清单读不进来。
  * - **代理档案**:存下来的那几份配置**,按节点类型分成组** —— 每个类型一组、每组下面
  *   是那个类型的档案,点开就能改(见 `AgentProfilesView` 的新文件头)。
+ * - **第三方引擎**(ARC-006 NR2):外部工作流引擎(如 Node-RED)的进程起停与它
+ *   自己的编辑器(见 `EngineRuntimePanel`)。
  *
  * 它们合成一个页签而不是三个设置项:节点类型是**工作流的底座**(没有类型就没有
  * 节点),档案是"某个类型的一组参数"(没有类型就没有档案)—— 三者是同一条线上的
@@ -61,15 +63,19 @@ import { PanelHeader } from "../PanelHeader.js";
 import { WorkflowLibraryView } from "./WorkflowLibraryView.js";
 import { NodeTypesView } from "./NodeTypesView.js";
 import { AgentProfilesView } from "./AgentProfilesView.js";
+import { EngineRuntimePanel } from "./EngineRuntimePanel.js";
 import type { WorkflowPurpose } from "./workflowView.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
-type WorkflowsView = "library" | "nodeTypes" | "profiles";
+type WorkflowsView = "library" | "nodeTypes" | "profiles" | "engines";
 
 const VIEWS: ReadonlyArray<{ id: WorkflowsView; labelKey: MessageId }> = [
   { id: "library", labelKey: "settings.workflows.tabLibrary" },
   { id: "nodeTypes", labelKey: "settings.workflows.tabNodeTypes" },
   { id: "profiles", labelKey: "settings.workflows.tabProfiles" },
+  // 【ARC-006 NR2】第三方引擎。它和节点类型 / 代理档案同一层：工作流库那一边画的是
+  // Mcode 自己的图，这一页管的是**外部引擎**的进程与它自己的编辑器。
+  { id: "engines", labelKey: "settings.workflows.tabEngines" },
 ];
 
 export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
@@ -239,6 +245,18 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
               onSave={saveProfile}
               onRemove={removeProfile}
             />}
+          </div>
+          {/* 【ARC-006 NR2】第三方引擎页。与另外两页同一套隐藏方式（hidden 类），
+              但多传一个 `active`：引擎运行时是 OS 级原生视图，不认 CSS 的
+              display:none，切走时必须让行自己 hide 掉它，否则它会浮在这里盖住
+              别的页签。 */}
+          <div
+            id={panelId(prefix, "engines")}
+            role="tabpanel"
+            aria-labelledby={tabId(prefix, "engines")}
+            className={cn("min-h-0 flex-1 flex-col", view === "engines" ? "flex" : "hidden")}
+          >
+            <EngineRuntimePanel active={view === "engines"} />
           </div>
         </>
       )}

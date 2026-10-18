@@ -58,6 +58,7 @@ export const zh = {
   "settings.voice.sectionModelsDesc":
     "识别模型完全在本地运行(Apache-2.0 开源),首次使用前需下载;下载完成后选择一个作为默认。",
   "settings.voice.loading": "正在加载模型列表…",
+  "settings.voice.loadFailed": "模型列表加载失败",
   "settings.voice.noModelSelected":
     "尚未选择模型——下载完成后点击「使用」启用(首次下载会自动启用)。",
   "settings.voice.modelDownload": "下载",
@@ -1361,6 +1362,7 @@ export const zh = {
   "settings.dataRoot.desc":
     "聊天记录、资料库和旧模版目录都在这一个目录下面 —— 整个目录拷走就是一次完整备份。",
   "settings.dataRoot.currentPath": "当前位置",
+  "settings.dataRoot.loadFailed": "数据根读取失败",
   "settings.dataRoot.treeTitle": "目录结构",
   "settings.dataRoot.tree.db": "聊天记录 · 全部设置",
   "settings.dataRoot.tree.library": "资料库",
@@ -1384,6 +1386,32 @@ export const zh = {
   // `composer.mode.*`(与输入框那个选择器同源,见 lib/workflowLabels.tsx)。
   "settings.workflows.tabLibrary": "工作流库",
   "settings.workflows.tabNodeTypes": "节点类型",
+
+  // ── 第三方工作流引擎（ARC-006 NR2，页签 + EngineRuntimePanel）──
+  "settings.workflows.tabEngines": "第三方引擎",
+  "settings.workflows.engine.start": "启动",
+  "settings.workflows.engine.stop": "停止",
+  "settings.workflows.engine.refreshStatus": "刷新状态",
+  "settings.workflows.engine.stateStopped": "未启动",
+  "settings.workflows.engine.stateStarting": "启动中",
+  "settings.workflows.engine.stateRunning": "运行中",
+  "settings.workflows.engine.stateFailed": "启动失败",
+  "settings.workflows.engine.loopbackPort": "仅监听 127.0.0.1:{port}",
+  "settings.workflows.engine.notRunning": "引擎当前没有在运行",
+  "settings.workflows.engine.startFailed": "引擎没能启动",
+  "settings.workflows.engine.stopFailed": "引擎没能停下",
+  "settings.workflows.engine.installTitle": "这台机器上还没装这个引擎",
+  "settings.workflows.engine.installBody":
+    "第三方引擎是可选的独立进程，不随 Mcode 一起安装。把它装到下面的目录（该目录下需要有 node_modules/node-red），回来再按一次「启动」即可。装好后引擎只监听本机回环地址，Mcode 不继承你的 API 密钥给它。",
+  "settings.workflows.engine.installPath": "<数据目录>/workflow-engines/node-red/",
+  "settings.workflows.engine.waitingReady": "引擎正在启动，就绪后编辑器会出现在这里…",
+  "settings.workflows.engine.editorHint": "启动引擎后，它的编辑器会嵌入这里。",
+  "settings.workflows.engine.viewOpenFailed": "编辑器视图没能打开",
+  "settings.workflows.engine.viewStageTooSmall": "面板没有可用的显示区域（宽或高为 0），视图未打开",
+  "settings.workflows.engine.noneTitle": "没有可用的第三方引擎",
+  "settings.workflows.engine.noneBody": "主进程的引擎注册表是空的——这通常意味着当前构建没有装配第三方引擎。",
+  "settings.workflows.engine.footnote":
+    "引擎是独立进程：关掉这个视图不会停掉它，停止要按上面的「停止」。编辑器里画的流不会自动执行（deploy 仍由你在引擎里点）。",
   // 读屏用户听不到"左边那根强调色竖条",行的选中态用一句话说。可见文本不变,
   // 只有 `aria-current` 与按钮的无障碍名多这一句(见 WorkflowListRow)。
   "settings.workflows.listRowCurrent": "当前打开",

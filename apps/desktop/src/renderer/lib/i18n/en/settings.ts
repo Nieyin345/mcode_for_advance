@@ -55,6 +55,7 @@ export const en = {
   "settings.voice.sectionModelsDesc":
     "Recognition runs fully on-device (Apache-2.0 open source). Download a model before first use, then pick one as the default.",
   "settings.voice.loading": "Loading model list…",
+  "settings.voice.loadFailed": "Failed to load the model list",
   "settings.voice.noModelSelected":
     "No model selected yet — click “Use” after a download finishes (the first download is selected automatically).",
   "settings.voice.modelDownload": "Download",
@@ -1358,6 +1359,7 @@ export const en = {
   "settings.dataRoot.desc":
     "Chat history, the library, and legacy templates all live under this one folder — copying it is a complete backup.",
   "settings.dataRoot.currentPath": "Current location",
+  "settings.dataRoot.loadFailed": "Failed to read the data root",
   "settings.dataRoot.treeTitle": "Folder layout",
   "settings.dataRoot.tree.db": "chat history · all settings",
   "settings.dataRoot.tree.library": "library",
@@ -1384,6 +1386,32 @@ export const en = {
   // `composer.mode.*`, shared with the composer dropdown (see lib/workflowLabels.tsx).
   "settings.workflows.tabLibrary": "Library",
   "settings.workflows.tabNodeTypes": "Node types",
+
+  // ── Third-party workflow engines (ARC-006 NR2, tab + EngineRuntimePanel) ──
+  "settings.workflows.tabEngines": "Third-party engines",
+  "settings.workflows.engine.start": "Start",
+  "settings.workflows.engine.stop": "Stop",
+  "settings.workflows.engine.refreshStatus": "Refresh status",
+  "settings.workflows.engine.stateStopped": "Stopped",
+  "settings.workflows.engine.stateStarting": "Starting",
+  "settings.workflows.engine.stateRunning": "Running",
+  "settings.workflows.engine.stateFailed": "Failed",
+  "settings.workflows.engine.loopbackPort": "Listening on 127.0.0.1:{port} only",
+  "settings.workflows.engine.notRunning": "The engine is not running",
+  "settings.workflows.engine.startFailed": "The engine did not start",
+  "settings.workflows.engine.stopFailed": "The engine did not stop",
+  "settings.workflows.engine.installTitle": "This engine is not installed on this machine",
+  "settings.workflows.engine.installBody":
+    "Third-party engines are optional standalone processes and do not ship with Mcode. Install it into the folder below (it must contain node_modules/node-red), come back and press Start again. Once installed it listens on the loopback address only, and Mcode does not pass it your API keys.",
+  "settings.workflows.engine.installPath": "<data folder>/workflow-engines/node-red/",
+  "settings.workflows.engine.waitingReady": "The engine is starting — its editor will appear here once it is ready…",
+  "settings.workflows.engine.editorHint": "Start the engine and its editor will be embedded here.",
+  "settings.workflows.engine.viewOpenFailed": "The editor view could not be opened",
+  "settings.workflows.engine.viewStageTooSmall": "The panel has no usable display area (zero width or height); the view was not opened",
+  "settings.workflows.engine.noneTitle": "No third-party engines available",
+  "settings.workflows.engine.noneBody": "The main-process engine registry is empty — this build usually has no third-party engines wired up.",
+  "settings.workflows.engine.footnote":
+    "The engine is a standalone process: closing this view does not stop it — use Stop above. Flows you draw in its editor do not run by themselves (deploy is still your click inside the engine).",
   // Screen readers cannot see the accent bar on the active row — say it in words.
   // Visible text is unchanged; only the row's accessible name gains this (see WorkflowListRow).
   "settings.workflows.listRowCurrent": "Currently open",

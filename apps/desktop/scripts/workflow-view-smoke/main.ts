@@ -108,6 +108,14 @@ import { BranchChoiceCard } from "@renderer/components/chat/BranchChoiceCard.js"
 import { BRANCH_STOP_CHOICE } from "@contracts/nodeType";import type { RuntimeEvent } from "@contracts/runtime";import {  __applyWorkflowLiveEvent,  __resetWorkflowLive,  __workflowLiveSnapshot,  dismissSettled,} from "@renderer/lib/workflowLive.js";import type {  LiveNode,  WorkflowLiveSnapshot,} from "@renderer/lib/workflowLive.js";
 import { WorkflowsPanel } from "@renderer/components/settings/workflows/WorkflowsPanel.js";
 import {
+  EngineRow,
+  canOpenEditor,
+  engineDocId,
+  engineStateBadge,
+  needsInstallHint,
+} from "@renderer/components/settings/workflows/EngineRuntimePanel.js";
+import type { WorkflowEngineStatusView } from "@contracts/ipc";
+import {
   __releaseWorkflowLiveIfIdle,
   __startWorkflowLiveWith,
   boardWorkflowIdOf,
@@ -1990,6 +1998,19 @@ const editedRow = renderRow(entryOf(BUILTIN, true), true, "zh");
 check("行:选中了有竖条", editedRow.includes(ACCENT_BAR));
 check("行:改过了有「已修改」", editedRow.includes("已修改"));
 check("行:英文界面也显示数据名(用户拍板的代价)", renderRow(entryOf(BUILTIN), false, "en").includes("文献精读"));
+// 选中态**不只是**一根颜色竖条 —— 读屏拿不到颜色。行本身是 <button>(Tab 到得了、
+// Enter/Space 原生触发),另外两件事必须有:① `aria-current="true"` 标出"当前打开
+// 的是哪一个";② 无障碍名里带一句「当前打开」,不靠视觉。未选中的行两者都不加 ——
+// "每一行都说自己是当前的"等于什么都没说。
+check("行:当前打开的那一行有 aria-current", plainRow.includes('aria-current="true"') === false && editedRow.includes('aria-current="true"'));
+check("行:当前打开的那一行无障碍名说出来", editedRow.includes("当前打开"));
+check("行:没选中的行两者都没有", !plainRow.includes('aria-current="true"') && !plainRow.includes("当前打开"));
+// 竖条对读屏是装饰:加了 aria-current 之后它不该再作为独立节点被念一遍。
+check("行:选中竖条是 aria-hidden 装饰", editedRow.includes("aria-hidden"));
+check(
+  "行:英文界面同一句跟着换",
+  renderRow(entryOf(BUILTIN, true), true, "en").includes("Currently open"),
+);
 
 function renderCard(
   target: WorkflowNode,
@@ -2237,6 +2258,125 @@ check(
 );
 check("工作流那边有三个页签(库 / 类型 / 档案)", panelHtml.includes('id="workflows-tab-profiles"'));
 
+/* ────────────────────── 第三方工作流引擎（ARC-006 NR2）────────────────────── */
+
+console.log("\n第三方引擎页签");
+// 【ARC-006 NR2】第四个页签,与节点类型 / 代理档案同一套隐藏方式(hidden 类)。
+// 漏成 hidden 属性的话,引擎页会和库页一起显示,而且引擎页里的原生视图占位区
+// 会被量成一个错误的矩形。
+check("第三方引擎是第四个页签", panelHtml.includes('id="workflows-tab-engines"'));
+check(
+  "第三方引擎那一块默认带 hidden 类",
+  panelClass("workflows-panel-engines").split(" ").includes("hidden"),
+  panelClass("workflows-panel-engines"),
+);
+check(
+  "英文界面页签名跟着换",
+  withLocale("en", () => html(createElement(WorkflowsPanel, { purpose: "workflow" }))).includes("Third-party engines"),
+);
+
+console.log("\nEngineRuntimePanel(纯判据)");
+// 这几条钉的是**分派**,不是画法:它们决定"哪一档状态该说什么话、按钮该怎么摆",
+// 错了的现象是"看着有点怪",而 SSR 画不出点击之后的转移,只能把判据拆出来测。
+{
+  const status = (over: Partial<WorkflowEngineStatusView> = {}): WorkflowEngineStatusView => ({
+    engineId: "node-red",
+    state: "stopped",
+    port: null,
+    reason: null,
+    editorUrl: null,
+    ...over,
+  });
+
+  // docId 必须只由 engineId 推出(宿主对同 docId 的 open 是复用语义;掺随机数
+  // 每次重渲染都会新建一个原生视图,旧的那个没人关)。前缀刻意与 GenOffice 的
+  // `genoffice-view-` 不同 —— 两侧撞 docId 等于互相关掉对方的视图。
+  eq("docId 只由 engineId 推出", engineDocId("node-red"), "workflow-engine-node-red");
+  check("docId 不会撞上 GenOffice 的", !engineDocId("node-red").startsWith("genoffice-view-"));
+  eq("docId 稳定(两次调用逐字相同)", engineDocId("node-red"), engineDocId("node-red"));
+
+  // 四档状态各自的徽标档位。`starting` 不是错误(中性偏强调),`failed` 才是 danger
+  // —— 把 starting 画成 danger 会让"正在启动"看起来像"已经挂了"。
+  eq("stopped → neutral", engineStateBadge("stopped").tone, "neutral");
+  eq("starting → accent(不是 danger)", engineStateBadge("starting").tone, "accent");
+  eq("running → success", engineStateBadge("running").tone, "success");
+  eq("failed → danger", engineStateBadge("failed").tone, "danger");
+  eq("四种状态的文案键互不相同", new Set([
+    engineStateBadge("stopped").key,
+    engineStateBadge("starting").key,
+    engineStateBadge("running").key,
+    engineStateBadge("failed").key,
+  ]).size, 4);
+
+  // 编辑器能不能开,只看 editorUrl(主进程只在 running 且有端口时给)——
+  // 不再二次判 state,否则就是两个真相。
+  check("running + URL → 能开", canOpenEditor(status({ state: "running", port: 1880, editorUrl: "http://127.0.0.1:1880/" })));
+  check("running 但没 URL → 不开(不猜端口)", !canOpenEditor(status({ state: "running" })));
+  check("stopped → 不开", !canOpenEditor(status()));
+
+  // 安装指引只在**启动失败 + 停在 stopped + 没有失败原因**时给 —— 那恰好是主进程
+  // "没有配置启动命令"(未安装)的形状。就绪超时/崩溃都带 reason,给"去装一个"的
+  // 指引是往错方向指。
+  check("未安装(启动失败、stopped、无 reason)→ 给安装指引", needsInstallHint(status(), true));
+  check("没点过启动 → 不给指引(不催一个没发生的事)", !needsInstallHint(status(), false));
+  check("就绪超时(有 reason)→ 不给安装指引", !needsInstallHint(status({ state: "stopped", reason: "引擎在 30000ms 内没有就绪" }), true));
+  check("进程崩溃(failed)→ 不给安装指引", !needsInstallHint(status({ state: "failed", reason: "引擎进程意外退出" }), true));
+  check("已经 running → 不给安装指引", !needsInstallHint(status({ state: "running", port: 1880, editorUrl: "http://127.0.0.1:1880/" }), true));
+}
+
+console.log("\nEngineRow(SSR:每种状态用户看到什么)");
+// SSR 不跑 effects,所以这里画的是**首帧**:它恰好是用户最常盯着的那个瞬间
+// (stopped / failed / starting),也正是"面板不能空白"这条要求落地的位置。
+{
+  const status = (over: Partial<WorkflowEngineStatusView> = {}): WorkflowEngineStatusView => ({
+    engineId: "node-red",
+    state: "stopped",
+    port: null,
+    reason: null,
+    editorUrl: null,
+    ...over,
+  });
+  const renderRow = (s: WorkflowEngineStatusView, locale: "zh" | "en" = "zh", active = true): string =>
+    withLocale(locale, () => html(createElement(EngineRow, { status: s, active, onChanged: async () => {} })));
+
+  const stopped = renderRow(status());
+  // 用精确的 `>启动</button>` 匹配(button()),不用 buttonContaining —— 后者按
+  // `indexOf(label)` 找,而徽标里的「未启动」先于按钮出现,会把锚点截在徽标上。
+  check("未启动:有「启动」按钮", button(stopped, "启动").found, stopped);
+  check("未启动:没有「停止」按钮", !button(stopped, "停止").found);
+  // 「不能空白」的落点:非 running 时占位区里有一句**说清为什么**的话。
+  check("未启动:占位区不是空白(有解释)", stopped.includes("启动引擎后"), stopped);
+  check("未启动:不渲染原生视图占位区", !stopped.includes("data-engine-view-stage"));
+  check("状态徽标写明「未启动」", stopped.includes(">未启动</span>"), stopped);
+
+  const running = renderRow(status({ state: "running", port: 1880, editorUrl: "http://127.0.0.1:1880/" }));
+  check("running:有「停止」按钮", button(running, "停止").found);
+  check("running:没有「启动」按钮", !button(running, "启动").found);
+  check("running:渲染原生视图占位区", running.includes("data-engine-view-stage"));
+  check("running:徽标是「运行中」", running.includes(">运行中</span>"), running);
+  // 端口写出来,且写明只有回环 —— 用户排查"为什么别的机器访问不到"时的答案。
+  check("running:把回环端口写给用户看", running.includes("127.0.0.1:1880"), running);
+
+  const starting = renderRow(status({ state: "starting", port: 1880 }));
+  check("starting:启动按钮禁用(不能叠一次启动)", button(starting, "启动").disabled === true, starting);
+  check("starting:说清还在启动", starting.includes("正在启动"), starting);
+
+  const failed = renderRow(status({ state: "failed", reason: "引擎进程意外退出（code=1 signal=-）" }));
+  check("failed:主进程给的原因原样摆出来", failed.includes("引擎进程意外退出"), failed);
+  check("failed:徽标是「启动失败」", failed.includes(">启动失败</span>"), failed);
+
+  // 安装指引**在首帧不给**:`needsInstallHint` 依赖"这次启动失败"这个交互事实,
+  // 而首帧没有它 —— 给出一句"还没装"会把"以为没装"当成"确定没装"(安装路径
+  // 只有 launchSpec 知道)。这条同时钉住"guidance 不随 SSR 假绿"。
+  check("首帧不冒充「没装」(安装指引要等一次真实启动失败)", !failed.includes("还没装"), failed);
+
+  // 英文界面:同一档状态换一句话,不是留着中文。
+  const en = renderRow(status(), "en");
+  check("英文界面:按钮跟着换", button(en, "Start").found, en);
+  check("英文界面:徽标跟着换", en.includes(">Stopped</span>"), en);
+}
+
+
 console.log("\nWorkflowsPanel(自动化:同一块面板的另一种用法)");
 const autoPanel = withLocale("zh", () => html(createElement(WorkflowsPanel, { purpose: "automation" })));
 check("自动化面板:标题换了", autoPanel.includes("自动化"));
@@ -2244,6 +2384,8 @@ check("自动化面板:页签只剩「库」", !autoPanel.includes('id="automati
 check("自动化面板:节点类型那块整块不渲染", !autoPanel.includes('id="automation-panel-nodeTypes"'));
 // 档案那一页同样不渲染:自动化那一页根本画不出能套档案的节点(它的起点是触发器)。
 check("自动化面板:代理档案那块整块不渲染", !autoPanel.includes('id="automation-panel-profiles"'));
+// 引擎页也一样 —— 第三方引擎的编辑器是"工作流"这件事的延伸,不是触发器。
+check("自动化面板:第三方引擎那块整块不渲染", !autoPanel.includes('id="automation-panel-engines"'));
 // id 带前缀 —— 两个用途的面板各自挂在自己的设置页上,id 撞了就是同一份 DOM id 出现
 // 两次(按 id 找元素的地方会被第一个截胡)。
 check("自动化面板:库那块挂在 automation- 前缀下", autoPanel.includes('id="automation-panel-library"'));

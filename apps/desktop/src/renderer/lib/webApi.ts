@@ -865,6 +865,17 @@ const documentView: Api["documentView"] = {
   list: () => webUnsupported("documentView.list"),
 };
 
+/** 【ARC-006 NR2】第三方工作流引擎也是**那台桌面机器上的独立进程**:手机端
+ *  既没有本机进程可起停,也没有 WebContentsView 可嵌。显式列出整个命名空间 ——
+ *  与 `documentView` 同一条规矩(漏列的方法在共用组件里会变成 undefined 调用,
+ *  React 19 下整棵卸载)。 */
+const workflowEngine: Api["workflowEngine"] = {
+  start: () => webUnsupported("workflowEngine.start"),
+  stop: () => webUnsupported("workflowEngine.stop"),
+  status: () => webUnsupported("workflowEngine.status"),
+  list: () => webUnsupported("workflowEngine.list"),
+};
+
 const shell: Api["shell"] = {
   // No OS shell surface in a phone browser — resolve as no-ops so any
   // "open folder"-style call from shared UI degrades silently.
@@ -1011,6 +1022,7 @@ export function createWebApi(): Api {
     project,
     session,
     documentView,
+    workflowEngine,
     provider,
     customModel,
     webBridge,
