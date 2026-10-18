@@ -27,6 +27,9 @@ const KIND_BADGE: Record<CapabilityKind, "neutral" | "accent" | "warning"> = {
 const PERMISSION_LABEL: Record<Permission, MessageId> = {
   "resource.read": "ide.modules.permissionResourceRead",
   "resource.write": "ide.modules.permissionResourceWrite",
+  // 【MC-035】网络是显式权限 —— 用户必须在安装/查看能力时看到"这个扩展要联网",
+  // 而不是等它悄悄出站。没有这一条,`t(undefined)` 会渲染成空串。
+  "network": "ide.modules.permissionNetwork",
 };
 
 export function formatBytes(bytes: number): string {

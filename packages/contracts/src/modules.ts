@@ -67,6 +67,20 @@ export function extensionCapabilityAssignment(moduleId: string, shortName: strin
   return MODULE_CAPABILITY_PREFIX + slug + "." + shortName;
 }
 
+/**
+ * 【MC-035】模块权限枚举的**唯一一份**。
+ *
+ * 从前 `modules.ts`（清单）与 `moduleCapability.ts`（能力元数据）各写了一遍同样的
+ * `z.enum([...])`。加 `network` 时立刻分叉 —— 清单接受了、元数据 schema 没接，
+ * 表现是能力目录面板拿到一个没有标签的权限。现在两处都从这里取。
+ */
+export const ModulePermissionListSchema = z
+  .array(z.enum(["resource.read", "resource.write", "network"]))
+  .min(1)
+  .max(3)
+  .refine((p) => new Set(p).size === p.length, "Duplicate permission");
+export type ModulePermission = z.infer<typeof ModulePermissionListSchema>[number];
+
 export const ModuleManifestSchema = z.object({
   apiVersion: z.literal(1),
   id: Id,
@@ -80,8 +94,7 @@ export const ModuleManifestSchema = z.object({
   /** 【MC-035】`network` 是**显式**声明:没有它就默认不能出网(见
    *  `permissionedProcessRunner` 的网络拦截)。写上它只是「请求」—— 宿主仍会在
    *  执行前把网络能力作为一次待批准项交给用户(与 `resource.write` 同一纪律)。 */
-  permissions: z.array(z.enum(["resource.read", "resource.write", "network"])).min(1).max(3)
-    .refine((p) => new Set(p).size === p.length, "Duplicate permission"),
+  permissions: ModulePermissionListSchema,
   contributions: z.array(z.object({
     id: LocalId,
     slot: z.literal("files.context"),

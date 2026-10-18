@@ -484,6 +484,7 @@ export const zh = {
   "ide.modules.permissions": "权限：",
   "ide.modules.permissionResourceRead": "只读，读取调用时指定的工作区文件",
   "ide.modules.permissionResourceWrite": "可写，会修改工作区文件（模块须显式声明，执行仍经宿主授权）",
+  "ide.modules.permissionNetwork": "联网，可向外部地址发起网络请求（模块须显式声明；未声明的扩展默认不能出网）",
   "ide.modules.permissionsNone": "不需要资源权限",
   "ide.modules.cancellable": "支持取消",
   "ide.modules.notCancellable": "不支持取消",

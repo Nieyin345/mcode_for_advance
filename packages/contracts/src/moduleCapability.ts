@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { LocalizedTextSchema, ModuleInvokeSchema, ModuleManifestSchema } from "./modules.js";
+import { LocalizedTextSchema, ModuleInvokeSchema, ModuleManifestSchema, ModulePermissionListSchema } from "./modules.js";
 
 /** Discovery only: this bounded subset is NOT a runtime JSON Schema engine.
  * Runtime input/output Zod checks and host authorization remain authoritative. */
@@ -164,8 +164,7 @@ export const ModuleCapabilityMetadataSchema = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+$/).max(40),
   title: LocalizedTextSchema,
   description: DescriptionSchema,
-  permissions: z.array(z.enum(["resource.read", "resource.write"])).min(1).max(2)
-    .refine((p) => new Set(p).size === p.length, "Duplicate permission"),
+  permissions: ModulePermissionListSchema,
   inputSchema: JsonSchemaDocumentSchema,
   outputSchema: JsonSchemaDocumentSchema,
   supportsCancellation: z.boolean(),
