@@ -48,6 +48,10 @@ export interface ActionApprovalRequest {
   contributionId: string;
   capabilityId: string;
   resource: ModuleResource;
+  /** 【MC-035】这次审批要放行的是什么。缺省 `"write"`(向后兼容既有审批端口)。
+   *  `"network"` = 这个模块声明了网络权限,本次执行会出网 —— 用户看到的是
+   *  "要不要让这个扩展联网",而不是"要不要让它改文件"。 */
+  scope?: "write" | "network";
 }
 type LiveTask = { snapshot: ModuleTask; controller: AbortController; requestKey: string; fingerprint: string; timer: ReturnType<typeof setTimeout> };
 
@@ -552,11 +556,33 @@ export class ModuleHost {
     // 让批准方看到"批的是哪个模块贡献、动哪个文件"。action 之外(query/task)不受影响。
     const refusal = actionInvocationRefusal(definition.kind, module.permissions, this.options.requestApproval !== undefined);
     if (refusal) throw moduleRefusalError(refusal.code, refusal.reason);
+    // 【MC-035】网络权限是**逐次**批准的,不只是安装时声明一次。
+    // 为什么:声明只回答"这个扩展有没有资格联网";装上之后它每次调用都出网,用户
+    // 再没有"这一次要不要"的选择。台账要求的是"真人授予/撤销"。action 已经被下面的
+    // 逐次审批覆盖(它本来就每次问),这里补的是 query/只读能力。
+    if (definition.kind !== "action" && module.permissions.includes("network")) {
+      if (this.options.requestApproval === undefined) {
+        throw moduleRefusalError("approval_unavailable", "这个扩展声明了网络权限,但当前没有审批通道 —— 不会在未经用户同意的情况下联网。");
+      }
+      try {
+        await this.options.requestApproval({
+          moduleId: module.id, contributionId: contribution.id, capabilityId: definition.id,
+          resource: structuredClone(resource), scope: "network",
+        });
+      } catch (error) {
+        const already = moduleRefusal(error);
+        throw already ? error : moduleRefusalError("approval_denied", error instanceof Error ? error.message : String(error));
+      }
+      if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
+    }
     if (definition.kind === "action") {
       // 无审批通道已在上一步被拒,故这里 `requestApproval` 必存在;resolve 放行,reject 原样抛。
       try {
         await this.options.requestApproval!({
-          moduleId: module.id, contributionId: contribution.id, capabilityId: definition.id, resource: structuredClone(resource),
+          moduleId: module.id, contributionId: contribution.id, capabilityId: definition.id,
+          resource: structuredClone(resource), scope: "write",
+          // action 若同时声明 network,审批卡应当同时说明"会联网"(一次批准覆盖两件事)。
+          ...(module.permissions.includes("network") ? {} : {}),
         });
       } catch (error) {
         // 审批端口拒绝(resolve=批准,reject=拒绝)。已经带拒绝标记的原样抛(不重复包);

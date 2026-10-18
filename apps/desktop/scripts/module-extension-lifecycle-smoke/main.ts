@@ -319,6 +319,57 @@ try {
     console.log("  skip 链接夹具(当前环境不允许创建链接)");
   }
 
+  // ── 6e.【MC-035】网络是**逐次**批准:声明 network 的 query 能力每次执行都要过审批 ──
+  // 安装时声明只回答"有没有资格联网";装上之后每次调用都出网,用户再没有"这一次
+  // 要不要"的选择。action 已被逐次审批覆盖,这里验的是 query/只读能力。
+  {
+    const netManifest = manifestOf({ permissions: ["resource.read", "network"] });
+    // 无审批通道 → fail-closed(绝不默认放行联网)。
+    const noGate = makeHost({ approve: "none", persist: async () => {} });
+    await noGate.install(netManifest);
+    await rejects("★ 声明 network 的只读能力在无审批通道时被拒(fail-closed)",
+      noGate.invoke({ moduleId: "user.lifecycle", contributionId: "convert", resource: { projectPath: root, path: target }, requestId: "net-1" }),
+      /审批通道/);
+    eq("★ 被拒后扩展没有执行(返回值不是 result)",
+      (await noGate.invoke({ moduleId: "user.lifecycle", contributionId: "convert", resource: { projectPath: root, path: target }, requestId: "net-2" }).then(() => "ran", () => "denied")),
+      "denied");
+    // 用户拒绝 → 拒。
+    const deniedGate = makeHost({ approve: "deny", persist: async () => {} });
+    await deniedGate.install(netManifest);
+    await rejects("★ 声明 network 的能力在用户拒绝时被拒",
+      deniedGate.invoke({ moduleId: "user.lifecycle", contributionId: "convert", resource: { projectPath: root, path: target }, requestId: "net-3" }),
+      /拒绝/);
+    // 用户批准 → 执行,且审批请求带 scope:"network"(审批卡知道自己在批什么)。
+    const seen: string[] = [];
+    const allowedGate = new ModuleHost({
+      authorize: async (r) => { await resolveModuleResource(r, (p: string) => p === root); },
+      resolveResource: async (r) => resolveModuleResource(r, (p: string) => p === root),
+      verifyProgram: async (source, capabilities, timeoutMs) => verifyPermissionedProgram(source, capabilities, timeoutMs ?? 10_000),
+      requestApproval: async (req) => { seen.push(String(req.scope ?? "write")); },
+      persist: async () => {},
+    });
+    for (const capability of fileCapabilities((candidate: string) => candidate === root)) allowedGate.register(capability);
+    await allowedGate.install(netManifest);
+    const ran = await allowedGate.invoke({ moduleId: "user.lifecycle", contributionId: "convert", resource: { projectPath: root, path: target }, requestId: "net-4" })
+      .then((v) => v.type, () => "denied");
+    eq("★ 批准后只读能力正常执行", ran, "result");
+    check("★ 审批请求标了 scope=network(审批卡知道在批联网)",
+      seen.length === 1 && seen[0] === "network", seen);
+    // 对照:没有 network 权限的同一能力**不**触发审批(不能变成"每次调用都弹卡")。
+    const plainSeen: string[] = [];
+    const plainHost = new ModuleHost({
+      authorize: async (r) => { await resolveModuleResource(r, (p: string) => p === root); },
+      resolveResource: async (r) => resolveModuleResource(r, (p: string) => p === root),
+      verifyProgram: async (source, capabilities, timeoutMs) => verifyPermissionedProgram(source, capabilities, timeoutMs ?? 10_000),
+      requestApproval: async (req) => { plainSeen.push(String(req.scope ?? "write")); },
+      persist: async () => {},
+    });
+    for (const capability of fileCapabilities((candidate: string) => candidate === root)) plainHost.register(capability);
+    await plainHost.install(manifestOf());
+    await plainHost.invoke({ moduleId: "user.lifecycle", contributionId: "convert", resource: { projectPath: root, path: target }, requestId: "net-5" });
+    eq("★ 没有 network 权限的只读能力不弹审批(不误伤普通读)", plainSeen.length, 0);
+  }
+
   // ── 7. 卸载:能力撤销、再调用失败、磁盘清单移除 ───────────────────────
   await allowed.remove("user.lifecycle");
   eq("卸载后模块从目录消失", allowed.catalog().modules.length, 0);
