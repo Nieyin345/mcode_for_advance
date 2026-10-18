@@ -363,6 +363,135 @@ try {
   console.log("\n8. sha256 计算出口");
   eq("sha256OfBytes 是 64 位小写 hex", /^[0-9a-f]{64}$/.test(sha256OfBytes(Buffer.from("tarball-bytes"))), true);
   eq("与 node:crypto 结果一致", sha256OfBytes(Buffer.from("tarball-bytes")), SHA);
+
+  /* ══════════ 9. 安装路由：审批是硬前置 ══════════ */
+  console.log("\n9. installEngineNode（审批硬前置 / 防自授权 / 升级重批）");
+  {
+    const { installEngineNode, describeEngineNodeInstall } = await import("@main/workflowEngines/engineNodeInstallRoute.js");
+
+    // 一个真实目录包（内容固定 → 稳定哈希可预期）。
+    const dirMetaBase = async (name: string, over: Record<string, unknown> = {}) => {
+      const sourceDir = join(temp, `route-src-${name}`);
+      await mkdir(join(sourceDir, "nodes"), { recursive: true });
+      await writeFile(join(sourceDir, "package.json"), `{"name":"${name}"}`, "utf8");
+      await writeFile(join(sourceDir, "nodes", "hello.js"), `module.exports = function(RED){}; // ${name}`, "utf8");
+      const { stableDirectoryHash } = await import("@main/workflowEngines/engineNodeRegistry.js");
+      const files = [
+        { path: "package.json", bytes: new Uint8Array(await readFile(join(sourceDir, "package.json"))) },
+        { path: "nodes/hello.js", bytes: new Uint8Array(await readFile(join(sourceDir, "nodes", "hello.js"))) },
+      ];
+      return {
+        sourceDir,
+        meta: {
+          name, version: "1.0.0", source: `local://${sourceDir}`,
+          sha256: stableDirectoryHash(files)!, license: "Apache-2.0",
+          capabilities: ["resource.read", "network"], ...over,
+        },
+      };
+    };
+
+    // ── 9a. 审批端口缺失 → fail-closed、零落盘 ──
+    {
+      const dataDir = join(temp, "route-noapproval");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const { sourceDir, meta } = await dirMetaBase("node-red-contrib-sponsored-1");
+      const result = await installEngineNode({ registry, sourceDir, meta });
+      check("★ 审批端口缺失 → fail-closed（approval_unavailable）",
+        result.ok === false && result.code === "approval_unavailable", result);
+      check("★ 审批缺失时包体零落盘", !existsSync(registry.packagePath(meta.name)));
+      eq("★ 审批缺失时清单无记录", (await registry.readState()).kind, "absent");
+    }
+
+    // ── 9b. 调用方伪造 approvedByUser=true（塞进 meta）→ 审批端口拒绝 → 安装被拒 ──
+    {
+      const dataDir = join(temp, "route-forged");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const { sourceDir, meta } = await dirMetaBase("node-red-contrib-sponsored-2");
+      // 调用方尽力伪造：多余字段塞不进类型，但运行时对象可以带 —— 路由必须无视它。
+      const forged = { ...meta, approvedByUser: true } as typeof meta;
+      let asked = 0;
+      const result = await installEngineNode({
+        registry, sourceDir, meta: forged,
+        approval: async () => { asked += 1; return false; },
+      });
+      check("★ 调用方伪造 approvedByUser=true 但审批端口拒绝 → 安装被拒",
+        result.ok === false && result.code === "approval_denied", result);
+      eq("★ 伪造场景下审批端口真的被问了 1 次（不是直接放行）", asked, 1);
+      check("★ 被拒时包体零落盘", !existsSync(registry.packagePath(meta.name)));
+      eq("★ 被拒时清单无记录", (await registry.readState()).kind, "absent");
+    }
+
+    // ── 9c. 审批卡内容：可执行+能力+network+许可+来源 ──
+    {
+      const { meta } = await dirMetaBase("node-red-contrib-card");
+      const card = describeEngineNodeInstall(meta, "install");
+      eq("★ 审批卡带包名/版本", [card.name, card.version], [meta.name, "1.0.0"]);
+      eq("★ 审批卡带许可与来源", [card.license, card.source], ["Apache-2.0", meta.source]);
+      eq("★ 审批卡带能力声明", card.capabilities, ["resource.read", "network"]);
+      eq("★ 声明了 network → 卡片标记 network=true（与 allowNetwork 同一判据）", card.network, true);
+      check("★ 首次安装 intent=install", card.intent === "install");
+    }
+
+    // ── 9d. 审批通过 → 安装成功、清单记 approvedByUser=true ──
+    {
+      const dataDir = join(temp, "route-approved");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const { sourceDir, meta } = await dirMetaBase("node-red-contrib-sponsored-3");
+      let asked = 0;
+      const result = await installEngineNode({
+        registry, sourceDir, meta, approval: async () => { asked += 1; return true; },
+      });
+      check("★ 审批通过 → 安装成功", result.ok, result);
+      eq("★ 审批端口恰好被问 1 次", asked, 1);
+      check("★ 包体真的落盘", existsSync(join(registry.packagePath(meta.name), "nodes", "hello.js")));
+      const state = await registry.readState();
+      const entry = state.kind === "ok" ? state.entries.find((e) => e.name === meta.name) : undefined;
+      eq("★ 清单记录 approvedByUser=true（由审批端口点头后写入）", entry?.approvedByUser, true);
+      eq("★ 清单记录的哈希是目录稳定哈希", entry?.sha256, meta.sha256);
+    }
+
+    // ── 9e. 同名不同哈希（升级）→ 拒绝；显式卸载后重装 → **再问一次审批** ──
+    {
+      const dataDir = join(temp, "route-upgrade");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const first = await dirMetaBase("node-red-contrib-sponsored-4");
+      /** **共享计数器**：首装 / 被拒升级 / 卸载后重装 三次都记在这里 ——
+       *  能直接断言"升级后总数从 1 变 2"，而不是拿两个独立计数器各说各话。 */
+      let asked = 0;
+      const approve = async (): Promise<boolean> => { asked += 1; return true; };
+      const firstResult = await installEngineNode({
+        registry, sourceDir: first.sourceDir, meta: first.meta, approval: approve,
+      });
+      check("前置：首装成功", firstResult.ok, firstResult);
+      eq("前置：审批被问 1 次", asked, 1);
+
+      // 同名不同内容 → 换一个哈希。
+      const second = await dirMetaBase("node-red-contrib-sponsored-4");
+      await writeFile(join(second.sourceDir, "nodes", "hello.js"), "module.exports = function(RED){/*v2*/};", "utf8");
+      const { stableDirectoryHash } = await import("@main/workflowEngines/engineNodeRegistry.js");
+      const v2Hash = stableDirectoryHash([
+        { path: "package.json", bytes: new Uint8Array(await readFile(join(second.sourceDir, "package.json"))) },
+        { path: "nodes/hello.js", bytes: new Uint8Array(await readFile(join(second.sourceDir, "nodes", "hello.js"))) },
+      ])!;
+      const upgrade = await installEngineNode({
+        registry, sourceDir: second.sourceDir, meta: { ...second.meta, sha256: v2Hash }, approval: approve,
+      });
+      check("★ 同名不同哈希直接重装 → 被拒（duplicate，升级必须显式卸载）",
+        upgrade.ok === false && upgrade.code === "duplicate", upgrade);
+      eq("★ 被拒的升级**没有**触发审批（不给「静默换执行体」留口子）", asked, 1);
+
+      // 显式卸载 → 重装新版：审批必须**再问一次**（不继承旧批准）。
+      await registry.uninstall("node-red-contrib-sponsored-4");
+      const reinstalled = await installEngineNode({
+        registry, sourceDir: second.sourceDir, meta: { ...second.meta, version: "2.0.0", sha256: v2Hash }, approval: approve,
+      });
+      check("★ 卸载后重装新版成功", reinstalled.ok, reinstalled);
+      eq("★ 升级（卸载→重装）要求**再次审批**：审批端口累计被问 2 次（首装 1 + 新版 1）", asked, 2);
+      const state = await registry.readState();
+      eq("★ 重装后清单版本是 2.0.0",
+        state.kind === "ok" ? state.entries.find((e) => e.name === "node-red-contrib-sponsored-4")?.version : null, "2.0.0");
+    }
+  }
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
