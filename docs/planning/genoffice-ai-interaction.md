@@ -315,3 +315,190 @@ vendor 的 AI 交互**不是纯渲染端功能**：它依赖 vendor 的 Electron
 ## 8. 附：一句话给实施者的摘要
 
 用户要保留的是 **「浮动 Ask AI chip → 锚定输入框 → 队列行进入侧栏 → 批量提交成聊天记录」** 这一整套交互（docs/markdown/html/slides 同构，sheets/pdf 为立即发送变体）。它今天的后端是 vendor 自己的 `AgentLoop + ai-provider + project-store`，全部长在 vendor 主进程与完整 preload 上；Mcode 现有 `DocumentViewHost + 最小 preload` 一项都没接，而且按源码连页面首帧都可能过不了。**推荐 C**：UI 与消息模型原样保留，模型流与聊天存储换成 Mcode 的 Host RPC/文档会话，文档编辑仍由活编辑器工具执行器完成（保留快照/撤销语义），落盘与外部副作用过 Mcode 审批与围栏；A 仅作短期保真验证，B 仅在「三引擎唯一 Agent」被解释为绝对禁令时采用，代价是交互从「保留」降级为「等价复刻」。
+
+---
+
+## 9. slides 编辑接法的实证与决策（2026-10-19）
+
+> 本节是**架构决策的证据**，不是新方案。前提事实（真机验证，见
+> `apps/desktop/scripts/slides-edit-smoke/` 12/12 与
+> `apps/desktop/scripts/document-view-vendor-page-smoke/` 9/9）：
+>
+> 1. **最小 preload 能挂载 slides 页，但不能编辑**：编辑操作（加页、加元素、
+>    改文字、保存、撤销……）全部经 `window.slidesApi` 的契约方法打到 vendor
+>    主进程的 **session 表**（`genoffice/apps/slides/src/main/session-state.ts:50`，
+>    按 `webContents.id` 索引），渲染端的 React `slides[]` 只是渲染树。生产桥
+>    目前补齐了首帧必需的 15 个桩，编辑方法一个都没有。
+> 2. **同一份 vendor 主进程在 Mcode 的 Electron 44 里能跑**：探针直接
+>    `require("slides-main.ts")` + `registerSlidesIpc()`，加页/加文本框/改文字/
+>    保存/重开全链路 12/12 通过（`slides-edit-smoke`）。真 pptx zip 往返成立。
+
+### 9.1 「受控全量桥」（B 方案）的量化代价
+
+vendor slides preload（`genoffice/apps/slides/src/preload/index.ts`，510 行）
+暴露 **3 个命名空间、208 个方法**（`slidesApi` 198 + `desktop` filesApi 6 +
+`projectApi` 4）：
+
+| 命名空间 | 方法数 | 说明 |
+|---|---|---|
+| `window.slidesApi` | 198 | 编辑器全量面（编辑/保存/导出/放映/AI/附件/字体） |
+| `window.desktop`（filesApi） | 6 | 附件桥：`pickAttachments`/`addAttachmentPaths`/`addPastedImage`/`readAttachment`/`readAttachmentImage`/`getPathForFile` |
+| `window.projectApi` | 4 | 聊天存储：`resolveChat`/`appendChat`/`loadChat`/`rebindChat` |
+
+`slidesApi` 的 198 个方法按方法名 + 主进程 handler 实读分类（脚本统计）：
+
+- **订阅**：17 个（`on*`）；
+- **只读 getter**：25 个（`get*`/`has*`/`is*`/`list*`/`resolve*`/`load*`/`read*`）；
+- **危险面**（文件/导出/剪贴板/字体/AI/生成）：49 个；
+- **编辑/事务/放映/其他**：107 个。
+
+**会越过 Mcode 最小桥原则的项**（对照 `apps/desktop/src/main/document/documentViewPreload.ts`
+现有纪律：不暴露 `ipcRenderer`、文件对话框、任意路径读写、AI、知识库、附件）：
+
+| 类别 | 通道/方法 | vendor 位置 | 越界原因 |
+|---|---|---|---|
+| 文件对话框 | `slides:open`、`slides:pick-picture-file`、`slides:insert-image`、`slides:insert-model3d`、`slides:replace-picture-bytes`、`slides:edit-background`、`slides:edit-image-fill`、`slides:pick-export-dir`、`slides:pick-export-pdf-path`、`slides:save-as`、`slides:font-install-local` | `slides-main.ts:1444,2549,2567,4032,3842,2403,2492,4639,4669,4607,1404` | 页面可弹系统对话框并读写用户选择的**任意路径**，绕过工作区围栏 |
+| 任意路径读 | `slides:files-read`、`slides:files-read-image` | `attachments-ipc.ts:179,210` | 入参是 `filePath: string`，**没有任何围栏**——页面可读进程权限内任意文件（含文本抽取/图片 base64） |
+| 任意路径写/落盘 | `slides:save`（未命名落 `documents/GenOffice`）、`slides:save-as`、`slides:export-images`/`slides:export-pdf`（路径由页面传） | `slides-main.ts:4574,4607,4651,4699` | 落点不受 Mcode 文档会话/工作区约束；`slides:save` 直接写 `session.path` |
+| AI 后端 | `ai:stream`、`ai:stream-cancel`、`ai:web-search`、`ai:image-search`、`ai:generate-image`、`ai:analyze-media`、`ai:insert-image-url`、`ai:replace-picture-url`、`ai:save-sidecar`、`ai:save-style-template`、`ai:gsk-login`、`ai:gsk-status` | `ai-ipc.ts:172,306,407,...` | 第二套模型/凭据/网络出口；与 ARC-007「不引入 GenOffice 第二套存储/权限」及 Mcode 三引擎唯一 Agent 正面冲突 |
+| 聊天存储 | `project:resolveChat`/`appendChat`/`loadChat`/`rebindChat` | `slides-main.ts:4835-4900` | 第二套聊天持久化（vendor `project-store`），绕过 Mcode 会话库 |
+| 剪贴板 | `slides:native-clipboard`、`slides:copy-elements-image`、`slides:copy-slides`/`paste-slide`（写系统剪贴板） | `slides-main.ts:4510,3610,2694` | 页面可读/写系统剪贴板 |
+| 麦克风 | `slides:microphone-access` | `slides-main.ts:4271` | 触发系统麦克风权限（放映录制用） |
+| 打开排队的系统路径 | `slides:consume-pending-open`、`slides:open-path` | `slides-main.ts:1458,1464` | 路径来自主进程排队（安全）或页面（**不安全**，`open-path` 无围栏） |
+
+**另需注意（非安全，但架构）**：`slides:font-download`/`slides:font-install-local`
+会向 vendor 的字体仓写文件并联网；`slides:cloud-page-generate`/`local-page-generate`
+会调 vendor 的云端/本地生成管线。
+
+**结论**：B 方案若要成立，主进程侧必须**逐通道拦截**上表全部项（去重后 **42 个
+channel**），并给 `attachments-ipc.ts` 的两个读通道补工作区围栏——这等于在 Mcode
+里重建一层 vendor 主进程的准入控制。拦截层必须放在 `registerSlidesIpc()` **之后**
+用 `ipcMain.removeHandler` + 替换实现（vendor 是先注册），实现点：
+`apps/desktop/src/main/ipc/` 新增 `slidesBridgeGuard.ts`，在
+`documentViewHost` 装配 slides 视图时调用。注意：替换 `slides:save` 意味着
+**放弃 vendor 的 session/撤销/恢复副本语义**，或给 vendor 的 `savePptxToFile`
+加路径参数——后者要改 vendor 源码，超出「不碰 vendor」的边界。
+
+### 9.2 两条可实施的接法
+
+#### A：宿主重接（推荐）
+
+把**编辑操作**经 Mcode 自己的 typed 通道转发到 vendor 主进程 handler；
+vendor 主进程仍以「不可见会话宿主」形式运行（`registerSlidesIpc()` 一份），
+但渲染端只拿到 Mcode 白名单方法。
+
+需要新增的契约方法（`packages/contracts/src/ipc/documentView.ts` 的
+`DOCUMENT_VIEW_*` 家族，按域拆 `slidesView.ts`）：
+
+| 方法 | 对应 vendor channel | 围栏/审批落点 |
+|---|---|---|
+| `documentView.slidesNewBlank` | `slides:new-blank` | 无路径；只建会话 |
+| `documentView.slidesAddSlide` | `slides:add-blank-slide` | 无路径 |
+| `documentView.slidesAddElement` | `slides:add-element` | 无路径 |
+| `documentView.slidesEditText` | `slides:edit-text` | 无路径 |
+| `documentView.slidesEditOp`（通用编辑事务） | `slides:apply-txn`/`apply-edit-script` | 无路径；事务内不允许 `insertImageFromPath` 类 ops（白名单校验） |
+| `documentView.slidesUndo`/`Redo` | `slides:undo`/`redo` | 无路径 |
+| `documentView.slidesSave` | `slides:save` | **宿主决定路径**：复用 `DocumentViewHost.openedFilePath` / 会话表（与 docs 的 `saveNewFile` 同一判据），页面不传路径 |
+| `documentView.slidesOpen` | `slides:open-path` | `withinWorkspace(filePath)`，与 docs 的 `openPath` 同一围栏与身份反查（`docIdForSender`） |
+| `documentView.slidesHistory` | `slides:history-changed` 推送 | 只读订阅 |
+
+实现落点：
+
+1. `packages/contracts/src/ipc/documentView.ts`（或新 `slidesView.ts`）加 schema；
+2. `apps/desktop/src/main/ipc/documentView.ts` 加 handler，统一
+   `recordRpcHandler`（`app_api_call` 与面板走同一函数）；
+3. `apps/desktop/src/main/document/documentViewPreload.ts` 的 `slidesApi` 命名空间
+   只保留上表方法（rest 全部不暴露），并把 `slides:save` 改为经 Mcode
+   `mcode:document-view:slides-save` 内部通道；
+4. vendor 主进程的 `registerSlidesIpc()` 由 Mcode 主进程持有（探针已验证可跑）；
+   `attachments-ipc.ts`、`ai-ipc.ts`、`project-store` 不注册。
+
+**代价**：约 8 个契约方法 + 一次 schema 往返；vendor 主进程仍被加载。
+**收益**：每一条编辑都在 Mcode 的 typed 通道上，路径/审批/审计只有一套。
+
+#### B：受控全量桥（不推荐作终态）
+
+接受 vendor 全量 preload，但在主进程侧对危险通道做拦截：
+
+- `slidesBridgeGuard.ts` 在 `registerSlidesIpc()` 之后 replace 以下 channel：
+  - 文件对话框类（9 个）→ 统一回 `null`/拒绝（改动功能：插入图片等降级）；
+  - `slides:files-read`/`files-read-image` → 加 `findContainingWorkspaceRoot` 围栏；
+  - `slides:save`/`save-as` → 改经宿主会话路径；
+  - `ai:*`（8 个）→ 不注册或回「未配置」；
+  - `project:*`（4 个）→ 不注册；
+  - 剪贴板写（3 个）→ 保留读、禁写；
+  - 麦克风 → 回 false。
+- 保留编辑/事务/撤销/放映/字体通道原样（它们不碰路径与外部副作用）。
+
+**代价**：42 个 channel 的拦截清单要长期跟随 vendor 更新；`slides:save`
+被替换后 vendor 的恢复副本/撤销语义要么丢弃、要么改 vendor 源码。
+**收益**：改动最小、编辑功能最全。
+
+#### 推荐：A
+
+理由：
+
+1. **用户「完全保留 AI 交互」的要求由 UI 与编辑链路满足，不由 preload 形状满足**：
+   A 保留了 `AiPanel`/popover/队列（渲染端不动），只是把**模型与存储**换成
+   Mcode 的（与第 4 节 C 方案一致）；编辑操作经 typed 通道仍调用同一份 vendor
+   执行器，交互与结果一致。
+2. **围栏只有一套**：A 的每一条路径都过 `withinWorkspace` + 身份反查；B 需要
+   在 42 个 channel 上重建准入，任何一条漏拦就是绕过（`attachments-ipc.ts`
+   的两个读通道今天就无围栏，是现成反例）。
+3. **Electron 44 兼容垫片只写一次**：见 9.3——A 只需要在 Mcode 的
+   `slides:save`/剪贴板替换层写一份垫片；B 需要在每个保留的 vendor 通道上处理
+   43→44 的 API 差异。
+
+### 9.3 Electron 44 的 `slides:clipboard-probe` 接入要求（必须）
+
+**事实**：Mcode 的 Electron 是 **44.4.5**；vendor slides 主进程是按 Electron 43
+写的。`electron.d.ts`（44.4.5）的 `Clipboard` 接口只有
+`clear/has/read/readText/write/writeText/selection`（`:6985-7029`）；
+`availableFormats`、`readImage`、`readBuffer`、`writeBuffer`、`readHTML`、
+`writeHTML` **全部不存在**。
+
+受影响 vendor 代码（`genoffice/apps/slides/src/main/slides-main.ts`）：
+
+- `:3580-3585` `slides:clipboard-probe` → `clipboard.availableFormats()` **抛错**；
+- `:3568-3577` `slides:clipboard-external` → `clipboard.readImage()` **抛错**；
+- `:3560-3566` `clipboardMarker()` → `clipboard.readBuffer()` **抛错**（被 try/catch
+  吞掉，退化为"永远没有内部标记"）；
+- `:2694` `clipboard.writeBuffer(...)` 与 `:3605` 同 → **抛错**（复制幻灯片失败）；
+- `:4510` `slides:native-clipboard`（cut/copy/paste）走 `webContents.cut()` 等，
+  不受影响。
+
+**接入层要求**（写在这里作为 A/B 共同前提）：
+
+1. **位置**：任何注册 vendor slides 主进程 IPC 的地方（A 的
+   `documentViewHost` slides 装配，或 B 的 `slidesBridgeGuard.ts`），必须在
+   `registerSlidesIpc()` 之后、窗口创建之前，**替换**上述 4 个 channel：
+   - `slides:clipboard-probe` → 用 `await clipboard.readText()`（44 的异步 API）
+     判断非空文本；图片格式探测需用 `await clipboard.read()` 检查
+     `ClipboardItem`（44 的 API）；
+   - `slides:clipboard-external` → 同上，图片分支用 `read()` 的 `ClipboardItem`；
+   - `clipboardMarker` 的内部标记：44 没有自定义格式的同步读写，需改为
+     进程内标志（Mcode 的 `slideClipboard`/`elementClipboard` 本来就是进程内
+     变量，读 marker 可以完全去掉，只在 `slides:has-slide-clipboard` 用进程内
+     状态回答）；
+   - `slides:copy-elements-image`/`copy-slides` 的 `writeBuffer` 写 marker →
+     去掉（同上）。
+2. **语义**：垫片必须**只改传输层**，不改编辑语义——`clipboard-probe` 仍回答
+   「有没有可粘贴内容」，`clipboard-external` 仍回答「外部剪贴板是什么类型」。
+3. **验证**：`apps/desktop/scripts/slides-edit-smoke/probe.ts` 里已有一份探针级
+   垫片（`clipboardCompatGap` 字段记录了原因）；接入层应把同一语义移入生产，
+   并在套件里去掉探针替换（让测试覆盖生产垫片）。
+4. **回归**：加一条源码级断言——`apps/desktop/src/main/ipc/slidesBridgeGuard.ts`
+   存在且包含 `slides:clipboard-probe` 的替换注册；`slides-edit-smoke` 的
+   「零未捕获异常」断言即覆盖运行时。
+
+---
+
+## 10. 附：一句话给实施者的摘要（2026-10-19 增补）
+
+slides 的编辑**必须**有 vendor 主进程会话（探针已验证可跑），最小 preload
+只能挂载不能编辑。两条接法里**推荐 A（宿主重接）**：契约只加约 8 个
+`documentView.slides*` 方法，保存路径由宿主从 `openedFilePath` 决定，其余
+危险通道（对话框/任意路径读写/AI/附件/聊天存储/剪贴板写/麦克风）一律不注册；
+B（受控全量桥）需要在 42 个 channel 上长期维护拦截清单，且
+`attachments-ipc.ts` 今天就没有路径围栏。无论 A/B，Electron 44 的剪贴板 API
+差异必须先垫片（见 9.3），否则复制幻灯片/粘贴探测会抛错。
