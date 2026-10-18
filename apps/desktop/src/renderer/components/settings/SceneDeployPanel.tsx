@@ -226,7 +226,7 @@ export function SceneDeployPanel() {
     }
     setPreviewError(null);
     setPreviewRequest(null);
-    dispatch({ type: "restored", text: restored.specText, deploymentId: entry.deploymentId });
+    dispatch({ type: "restored", text: restored.specText, deploymentId: entry.deploymentId, resumable: entry.resumable });
   }, [t]);
 
   /** 【MC-002】续跑(写):与部署同一条路,只是主进程按 `scene.resume` 跳过盘上已 done 的步骤。 */
@@ -281,55 +281,60 @@ export function SceneDeployPanel() {
         {t("sceneDeploy.specHint")}
       </p>
 
-      {/* ───────── 【MC-002】未完成的部署(重启后仍可发现) ───────── */}
-      {sceneIdForList !== null && (
-        <section className="mb-3 rounded border border-edge bg-surface/50 p-2.5" data-testid="scene-unfinished">
-          <div className="mb-1.5 flex items-center gap-1.5 text-[0.8571em] font-medium text-content">
-            <IconListCheck size={14} className="text-accent" />
-            {t("sceneDeploy.unfinishedTitle")}
-            <Button variant="ghost" size="sm" disabled={unfinishedLoading} onClick={() => setUnfinishedRefresh((n) => n + 1)} className="ml-auto gap-1">
-              <IconRefresh size={12} />
-              {t("sceneDeploy.unfinishedRetry")}
-            </Button>
+      {/* ───────── 【MC-002】未完成的部署(重启后仍可发现) ─────────
+          真 Electron 路径验收暴露的断点:这一段从前整段挂在 `sceneIdForList !== null` 下。
+          查询在无 sceneId 时确实走跨场景(见上面的 useRpc),但**区块不渲染** —— 而崩溃
+          重启后的真实起点恰恰是空输入框(`sceneIdForList === null`),用户依然看不到盘上
+          那份 partial/failed。列表本来就是 `resumableOnly` / 按场景的只读查询,两种模式
+          都该显示;只有「暂无记录」的空态文案随模式换一句(按场景查说「这个场景」)。 */}
+      <section className="mb-3 rounded border border-edge bg-surface/50 p-2.5" data-testid="scene-unfinished">
+        <div className="mb-1.5 flex items-center gap-1.5 text-[0.8571em] font-medium text-content">
+          <IconListCheck size={14} className="text-accent" />
+          {t("sceneDeploy.unfinishedTitle")}
+          <Button variant="ghost" size="sm" disabled={unfinishedLoading} onClick={() => setUnfinishedRefresh((n) => n + 1)} className="ml-auto gap-1">
+            <IconRefresh size={12} />
+            {t("sceneDeploy.unfinishedRetry")}
+          </Button>
+        </div>
+        {unfinishedError !== null ? (
+          <ErrorNote tone="danger" icon={IconAlertTriangle}>
+            {t("sceneDeploy.unfinishedLoadError", { reason: unfinishedError.message })}
+          </ErrorNote>
+        ) : unfinished?.ok === false ? (
+          <ErrorNote tone="danger" icon={IconAlertTriangle}>
+            {t("sceneDeploy.unfinishedLoadError", { reason: unfinished.reason })}
+          </ErrorNote>
+        ) : unfinished?.ok === true && unfinished.deployments.length === 0 ? (
+          <div className="text-[0.7857em] text-content-subtle">
+            {sceneIdForList !== null ? t("sceneDeploy.unfinishedEmpty") : t("sceneDeploy.unfinishedEmptyAny")}
           </div>
-          {unfinishedError !== null ? (
-            <ErrorNote tone="danger" icon={IconAlertTriangle}>
-              {t("sceneDeploy.unfinishedLoadError", { reason: unfinishedError.message })}
-            </ErrorNote>
-          ) : unfinished?.ok === false ? (
-            <ErrorNote tone="danger" icon={IconAlertTriangle}>
-              {t("sceneDeploy.unfinishedLoadError", { reason: unfinished.reason })}
-            </ErrorNote>
-          ) : unfinished?.ok === true && unfinished.deployments.length === 0 ? (
-            <div className="text-[0.7857em] text-content-subtle">{t("sceneDeploy.unfinishedEmpty")}</div>
-          ) : unfinished?.ok === true ? (
-            <ul className="space-y-1">
-              {unfinished.deployments.map((entry) => (
-                <li key={entry.deploymentId} className="flex items-center gap-2 rounded border border-edge bg-surface px-2 py-1.5 text-[0.7857em]">
-                  <Badge variant={entry.resumable ? "warning" : "neutral"}>
-                    {entry.resumable ? t("sceneDeploy.unfinishedResumable") : t("sceneDeploy.unfinishedNotResumable")}
-                  </Badge>
-                  <span className="min-w-0 flex-1 truncate font-mono text-content-subtle" title={entry.deploymentId}>
-                    {entry.deploymentId}
-                  </span>
-                  <span className="text-content-subtle">
-                    {t("sceneDeploy.unfinishedRowMeta", {
-                      status: t(`sceneDeploy.deployStatus.${entry.status}`),
-                      updatedAt: new Date(entry.updatedAt).toLocaleString(),
-                    })}
-                  </span>
-                  <Button variant="secondary" size="sm" disabled={busy !== null || entry.deployment === null} onClick={() => restoreRecord(entry)}>
-                    {t("sceneDeploy.unfinishedRestore")}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <Spinner label={t("common.loading")} />
-          )}
-          <p className="mt-1.5 text-[0.7143em] leading-relaxed text-content-subtle">{t("sceneDeploy.unfinishedHint")}</p>
-        </section>
-      )}
+        ) : unfinished?.ok === true ? (
+          <ul className="space-y-1">
+            {unfinished.deployments.map((entry) => (
+              <li key={entry.deploymentId} className="flex items-center gap-2 rounded border border-edge bg-surface px-2 py-1.5 text-[0.7857em]">
+                <Badge variant={entry.resumable ? "warning" : "neutral"}>
+                  {entry.resumable ? t("sceneDeploy.unfinishedResumable") : t("sceneDeploy.unfinishedNotResumable")}
+                </Badge>
+                <span className="min-w-0 flex-1 truncate font-mono text-content-subtle" title={entry.deploymentId}>
+                  {entry.deploymentId}
+                </span>
+                <span className="text-content-subtle">
+                  {t("sceneDeploy.unfinishedRowMeta", {
+                    status: t(`sceneDeploy.deployStatus.${entry.status}`),
+                    updatedAt: new Date(entry.updatedAt).toLocaleString(),
+                  })}
+                </span>
+                <Button variant="secondary" size="sm" disabled={busy !== null || entry.deployment === null} onClick={() => restoreRecord(entry)}>
+                  {t("sceneDeploy.unfinishedRestore")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <Spinner label={t("common.loading")} />
+        )}
+        <p className="mt-1.5 text-[0.7143em] leading-relaxed text-content-subtle">{t("sceneDeploy.unfinishedHint")}</p>
+      </section>
 
       {/* ───────── 声明输入 ───────── */}
       <Field className="mb-3" label={t("sceneDeploy.specLabel")}>
