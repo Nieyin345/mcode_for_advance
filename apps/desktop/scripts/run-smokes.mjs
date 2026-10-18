@@ -181,7 +181,7 @@ async function runPool(items, jobs, runner) {
   return results;
 }
 
-/** 清理 `.tmp` 里的**残留构建目录**(`<名字>-<6位随机>`),只留最近 `keepRecent` 个。
+/** 清理 `.tmp` 里已确认属于 smoke 的**过期构建目录**(`<suite-base>-<6位随机>`)，只留最近 `keepRecent` 个。
  *
  *  ## 为什么需要它
  *
@@ -193,26 +193,36 @@ async function runPool(items, jobs, runner) {
  *  ## 策略
  *
  * 保留**最近 `keepRecent` 个**(按 mtime)——刚跑完/刚失败的那些正好留着可查,更老的删掉。
- * **只删** `.tmp` 顶层的构建目录,不碰缓存(`esbuild-path`/`tw-cache`/`*.tsbuildinfo`)
- * 与 `smoke-runs`(日志)。删不掉的(Chrome 还占着 profile)跳过,不算错。
+ * **只删** 当前已注册的 smoke 套件对应的构建目录；其他 AI 或用户创建的
+ * `<任意名字>-<6位随机>` 文件夹不能仅靠名字形状被删。为防多个对话同时运行 smoke
+ * （并且构建目录在任务进行时已被创建），不足 1 小时的目录一律保护；
+ * 无法确认属于套件的旧目录宁可留下，不在无身份依据下删别人资产。
+ * 不碰缓存(`esbuild-path`/`tw-cache`/`*.tsbuildinfo`)与 `smoke-runs` 日志。
+ * 删不掉的(Chrome 还占着 profile)跳过,不算错。
  */
 function pruneBuildDirs(appDir, keepRecent = 6) {
   const tmp = join(appDir, ".tmp");
   if (!existsSync(tmp)) return { removed: 0 };
-  const KEEP = new Set(["smoke-runs", "tw-cache", "flow-preview", "md-preview"]);
+  const knownPrefixes = new Set(discoverSuites(appDir).map((suite) => suite.slice(0, -"-smoke".length)));
+  // 与 runOne 默认 4 分钟超时隔离开；并行 Agent 的近期构建绝不能被其它跑测清理。
+  const staleBefore = Date.now() - 60 * 60 * 1000;
   let entries;
   try { entries = readdirSync(tmp, { withFileTypes: true }); } catch { return { removed: 0 }; }
   const candidates = [];
   for (const e of entries) {
-    if (!e.isDirectory() || KEEP.has(e.name)) continue;
-    // 构建目录的形状:`<套件名>-<6位随机>`(mkdtemp 后缀)。排除其它普通目录。
-    if (!/-[A-Za-z0-9]{6}$/.test(e.name)) continue;
-    try { candidates.push({ name: e.name, mtime: statSync(join(tmp, e.name)).mtimeMs }); }
-    catch { /* ignore */ }
+    if (!e.isDirectory()) continue;
+    // 必须同时符合套件前缀 + mkdtemp 的六位后缀；未知来源默认不删。
+    const match = /^(.+)-[A-Za-z0-9]{6}$/.exec(e.name);
+    if (!match || !knownPrefixes.has(match[1])) continue;
+    try {
+      const mtime = statSync(join(tmp, e.name)).mtimeMs;
+      candidates.push({ name: e.name, mtime, eligible: mtime < staleBefore });
+    } catch { /* ignore */ }
   }
   candidates.sort((a, b) => b.mtime - a.mtime);
   let removed = 0;
   for (const c of candidates.slice(keepRecent)) {
+    if (!c.eligible) continue;
     try { rmSync(join(tmp, c.name), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 }); removed++; }
     catch { /* Chrome 可能还占着 profile —— 跳过,下次再清 */ }
   }

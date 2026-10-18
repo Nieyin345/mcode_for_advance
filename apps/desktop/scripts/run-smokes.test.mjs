@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -83,6 +83,53 @@ test("successful runs return zero and never overwrite prior logs", async (t) => 
   assert.equal(await runSuites(["--all"], f.options), 0);
   assert.equal(await runSuites(["--all"], f.options), 0);
   assert.equal(readdirSync(join(f.root, ".tmp", "smoke-runs")).length, 2);
+});
+
+test("cleanup only prunes old known smoke build dirs, never other agents or fresh runs", async (t) => {
+  const f = fixture(t, { "a-smoke": "process.exit(0)" });
+  const tmp = join(f.root, ".tmp");
+  mkdirSync(tmp);
+  const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const foreign = [];
+  for (let i = 0; i < 9; i++) {
+    const path = join(tmp, `other-agent-${String(i).padStart(6, "0")}`);
+    mkdirSync(path);
+    writeFileSync(join(path, "preserve.txt"), "other AI owns this");
+    utimesSync(path, old, old);
+    foreign.push(path);
+  }
+  const oldKnown = [];
+  for (let i = 0; i < 9; i++) {
+    const path = join(tmp, `a-${String(i).padStart(6, "0")}`);
+    mkdirSync(path);
+    const older = new Date(old.getTime() - (i + 1) * 60_000);
+    utimesSync(path, older, older);
+    oldKnown.push(path);
+  }
+  const knownFresh = join(tmp, "a-bbb222");
+  mkdirSync(knownFresh);
+
+  assert.equal(await runSuites(["a-smoke"], f.options), 0);
+  assert.ok(oldKnown.some((path) => !existsSync(path)), "stale known smoke builds should be pruned");
+  assert.ok(existsSync(knownFresh), "current in-flight build must never be pruned");
+  for (const path of foreign) {
+    assert.equal(readFileSync(join(path, "preserve.txt"), "utf8"), "other AI owns this",
+      `cleanup touched unrelated shared build: ${path}`);
+  }
+});
+
+test("another running smoke keeps all fresh build directories even beyond retention", async (t) => {
+  const f = fixture(t, { "a-smoke": "process.exit(0)" });
+  const tmp = join(f.root, ".tmp");
+  mkdirSync(tmp);
+  for (let i = 0; i < 10; i++) {
+    mkdirSync(join(tmp, `a-${String(i).padStart(6, "0")}`));
+  }
+  assert.equal(await runSuites(["a-smoke"], f.options), 0);
+  for (let i = 0; i < 10; i++) {
+    assert.ok(existsSync(join(tmp, `a-${String(i).padStart(6, "0")}`)),
+      "do not prune another still-running worker's build");
+  }
 });
 
 test("a spawn error fails instead of reporting a passing suite", async (t) => {
