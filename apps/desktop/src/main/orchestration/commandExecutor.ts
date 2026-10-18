@@ -1,8 +1,28 @@
-import type { NodeOutcome } from "@contracts/nodeType";
+import type { NodeOutcome, NodeParamBinding, NodeTypeManifest } from "@contracts/nodeType";
 import { runCommandNode } from "./commandRunner.js";
 import { runEntryScript } from "./entryRunner.js";
 import type { ExecutionContext } from "./executionContext.js";
 import type { NodeExecutor } from "./executorRegistry.js";
+
+/**
+ * 清单声明了 `bind` 的参数按**声明顺序**排好 —— 位置参数(`flag` 省略)的追加顺序
+ * 由它决定。值来自执行器拿到的 `input.command.boundParams`(解算后的那一份),不是
+ * 存盘原值 —— 见 `nodeInputBuilders.ts` 的 `boundParamsOf`。
+ *
+ * 没声明 bind 的参数一个都不收:混进来等于凭空多一个 argv/env。
+ */
+function bindingsOf(
+  manifest: NodeTypeManifest,
+  boundParams: Record<string, unknown> | undefined,
+): Array<{ binding: NodeParamBinding; value: unknown }> {
+  const out: Array<{ binding: NodeParamBinding; value: unknown }> = [];
+  for (const spec of manifest.params) {
+    if (spec.bind === undefined) continue;
+    if (boundParams === undefined || !(spec.key in boundParams)) continue;
+    out.push({ binding: spec.bind, value: boundParams[spec.key] });
+  }
+  return out;
+}
 
 /**
  * 内置执行器:命令节点。
@@ -27,6 +47,7 @@ export class CommandExecutor implements NodeExecutor {
     // **清单自带脚本那一支。** 判据只看 `entry` 在不在 —— 它在就说明命令不是用户
     // 在图里写的,而是插件随包发的,解析基准也随之改成清单目录。
     const entry = manifest.runner.kind === "command" ? manifest.runner.entry : undefined;
+    const bindings = bindingsOf(manifest, input.command?.boundParams);
     if (entry !== undefined) {
       return runEntryScript({
         script: entry,
@@ -37,11 +58,27 @@ export class CommandExecutor implements NodeExecutor {
         ...(manifest.runner.kind === "command" && manifest.runner.args !== undefined
           ? { args: manifest.runner.args }
           : {}),
+        ...(bindings.length > 0 ? { bindings } : {}),
         ...(input.command?.input !== undefined ? { input: input.command.input } : {}),
         timeoutMs: input.command?.timeoutMs ?? 0,
         cwd,
         signal: input.signal,
         ...(emitProgress !== undefined ? { onProgress: emitProgress } : {}),
+      });
+    }
+
+    // **命令来自参数的那种形状没有 argv 数组可绑。** 它的命令是一整条 shell 文本
+    // (用户画图时自己拼的),`bind` 在这里没有落点 —— 而**静默忽略**正是这类通道最
+    // 坏的失败方式:插件作者按 README 在清单里写了 `bind`,运行时一声不吭地把值扔掉,
+    // 脚本拿到空参数,表现为"插件坏了"。所以显式拒绝,并说清该往哪边改。
+    if (manifest.params.some((p) => p.bind !== undefined)) {
+      return Promise.resolve({
+        status: "failed",
+        summary: "",
+        error:
+          "这个节点类型给参数声明了 bind,但它的命令写在节点参数里(没有 runner.entry)。" +
+          "bind 只对清单自带脚本的 command 节点生效 —— 把命令做成 entry 脚本," +
+          "或者在命令文本里用变量语法取值。",
       });
     }
 

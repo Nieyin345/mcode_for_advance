@@ -38,6 +38,7 @@ import {
   NODE_STDOUT_PROTOCOL_PREFIX,
   type NodeArtifact,
   type NodeOutcome,
+  type NodeParamBinding,
 } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
 import { spawnRun, type SpawnFn } from "@main/lib/spawnRun.js";
@@ -139,11 +140,66 @@ export interface EntryRunArgs {
   interpreter?: string;
   args?: string[];
   input?: unknown;
+  /**
+   * 清单里声明了 `bind` 的参数(**解算后**的值,键 = 参数 key)+ 它们各自的绑定声明。
+   * 由 `commandExecutor` 从 `NodeRunInput.command.boundParams` 与 `manifest.params` 两处
+   * 拼好递进来 —— 这一层不认识清单,只认识"怎么把它们拼成 argv/env/stdin"。
+   *
+   * 没传 = 这个节点没有声明任何 bind,行为与从前一字不差。
+   */
+  bindings?: ReadonlyArray<{ binding: NodeParamBinding; value: unknown }>;
   timeoutMs: number;
   /** 工作流的工作目录。脚本的 `cwd` 另算(见下)。 */
   cwd?: string;
   signal: AbortSignal;
   onProgress?: (progress: { percent?: number; message?: string }) => void;
+}
+
+/** 绑定值 → 交给脚本的一个字符串。数字/布尔原样转文本,对象/数组按 JSON(与 stdin 同一种读法)。 */
+function boundTextOf(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * 把 `bind` 声明拼成 argv / env / stdin 三样东西。
+ *
+ * 语义逐条来自 `NodeParamBindingSchema` 的文档(契约是唯一出处,这里不发明第二种读法):
+ *  - `arg` + `flag` → 追加 `flag <值>` **两个**独立参数;`flag` 省略 = 位置参数;
+ *  - `env` → `NAME=<值>`,叠在**继承来的环境**之上(给的就是完整一份 —— 见
+ *    `spawnRun` 的 `env` 注释:该不该继承是调用方的语义,脚本作者预期的是自己那台
+ *    机器上的 PATH / HOME,不是一张白纸);
+ *  - `stdin` → 值写成 stdin 文本;**最多一个**(清单校验已挡,这里兜第二道)。
+ *
+ * 顺序 = `bindings` 数组的顺序。调用方按**清单 params 的声明顺序**排好再传进来 ——
+ * 契约写明位置参数"按 params 数组顺序追加",两处必须读同一份顺序。
+ *
+ * **缺席 = 不送**:可选参数没填时调用方根本不把这一项放进 `bindings`(见
+ * `commandExecutor.bindingsOf`)—— 给一个没人填的 `--flag` 塞个空串,脚本分不清
+ * "用户留空"和"用户没写",而后者才是缺席的语义。
+ *
+ * 越界的值让脚本看到,不是让这一步静默跳过:声明了绑定却没有值(必填没填)由
+ * `validateNodeParams` 在派发前拦下,走不到这里;真带着空值来到这儿,空串照样是一个
+ * 参数 —— 那正是"绑了但没填"最诚实的表现。
+ */
+export function buildBoundInvocation(
+  bindings: ReadonlyArray<{ binding: NodeParamBinding; value: unknown }>,
+): { args: string[]; env: Record<string, string>; stdin?: string } {
+  const args: string[] = [];
+  const env: Record<string, string> = {};
+  let stdin: string | undefined;
+  for (const { binding, value } of bindings) {
+    if (binding.kind === "arg") {
+      if (binding.flag !== undefined) args.push(binding.flag);
+      args.push(boundTextOf(value));
+    } else if (binding.kind === "env") {
+      env[binding.name] = boundTextOf(value);
+    } else {
+      stdin = boundTextOf(value);
+    }
+  }
+  return { args, env, ...(stdin !== undefined ? { stdin } : {}) };
 }
 
 /**
@@ -157,7 +213,7 @@ export async function runEntryScript(
   args: EntryRunArgs,
   deps?: { spawn?: SpawnFn },
 ): Promise<NodeOutcome> {
-  const { script, manifestDir, interpreter, args: extraArgs, input, timeoutMs, signal, onProgress } = args;
+  const { script, manifestDir, interpreter, args: extraArgs, input, bindings, timeoutMs, signal, onProgress } = args;
 
   if (signal.aborted) return { status: "cancelled", summary: "" };
 
@@ -173,9 +229,14 @@ export async function runEntryScript(
     return { status: "failed", summary: "", error: `这一步的脚本不在:${abs}` };
   }
 
+  // `bind` 拼出来的参数排在**固定参数之后**(`runner.args` 是清单写死的,绑定值按
+  // 声明顺序追加在后面 —— 与契约"位置参数按 params 数组顺序追加"一致)。
+  const bound = buildBoundInvocation(bindings ?? []);
   // `interpreter` 给了就 `python <脚本> <参数…>`,没给就直接执行脚本本身(需要可执行位)。
   const file = interpreter ?? abs;
-  const argv = interpreter !== undefined ? [abs, ...(extraArgs ?? [])] : (extraArgs ?? []);
+  const argv = interpreter !== undefined
+    ? [abs, ...(extraArgs ?? []), ...bound.args]
+    : [...(extraArgs ?? []), ...bound.args];
 
   const protocolState: { result?: ProtocolResult } = {};
   const run = await spawnRun({
@@ -185,7 +246,16 @@ export async function runEntryScript(
     // **脚本的工作目录是清单目录** —— 见上面那段。脚本要碰工作流的文件就靠 `args`
     // 传绝对路径进来。
     ...(manifestDir !== undefined ? { cwd: resolve(manifestDir) } : {}),
-    ...(input !== undefined ? { stdin: JSON.stringify(input ?? null) + "\n" } : {}),
+    // `env` 只在真有绑定变量时给 —— 不给时 spawnRun 走"继承父进程",与从前一字不差。
+    ...(Object.keys(bound.env).length > 0 ? { env: { ...process.env, ...bound.env } } : {}),
+    // **`stdin` 绑定的参数优先于 `input` 的 JSON。** 一个节点只有一个 stdin
+    // (清单校验挡了两个),而 `bind: stdin` 是作者对"这个参数怎么送"的明确声明 ——
+    // `input`(上游 JSON)只是命令节点一直以来的默认载荷。两者同时在场时按声明的来。
+    ...(bound.stdin !== undefined
+      ? { stdin: bound.stdin }
+      : input !== undefined
+        ? { stdin: JSON.stringify(input ?? null) + "\n" }
+        : {}),
     timeoutMs,
     signal,
     limitBytes: COMMAND_OUTPUT_TAIL_CHARS,

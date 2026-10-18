@@ -114,7 +114,7 @@ const codeInputBuilder: NodeInputBuilder = {
 
 const commandInputBuilder: NodeInputBuilder = {
   kind: "command",
-  build: ({ params, base }) => ({
+  build: ({ params, base, manifest }) => ({
     ...base,
     prompt: "",
     skills: [],
@@ -124,12 +124,41 @@ const commandInputBuilder: NodeInputBuilder = {
     command: {
       command: commandOf(params),
       timeoutMs: commandTimeoutOf(params),
+      // **`bind` 的值在这里过一手。** 变量展开只发生在调度器交进来的 `params` 上,
+      // 而执行器(以及它拼的 argv/env/stdin)读不到那份 —— 把解算后的绑定值随
+      // `NodeRunInput` 递过去,执行器才不必回头读存盘原值(那上面还是 `{{...}}` 模板)。
+      // 只收**清单真的声明了 bind 的**参数:一张未声明的键混进 argv 等于凭空多一个参数。
+      ...boundParamsOf(params, manifest),
       ...(base.data.userInput.trim() || "trigger" in base.data || base.data.upstreamText.trim() || base.data.upstreamArtifacts.length > 0 || Object.keys(base.data.upstreamOutputs).length > 0
         ? { input: base.data }
         : {}),
     },
   }),
 };
+
+/** 清单里声明了 `bind` 的参数,取它们**解算后**的值(键 = 参数 key)。
+ *
+ * **空值按"没填"处理,不送** —— 与 `validateNodeParams` 同一口径(`undefined` /
+ * `null` / `""` 都是没填)。否则一个被清空的**可选**文本参数会变成 `--flag ""`,
+ * 脚本分不清"用户留空"和"用户没写",而后者才是缺席的语义。`false` / `0` 是**填了**,
+ * 照常送。 */
+function boundParamsOf(
+  params: Record<string, unknown>,
+  manifest: NodeTypeManifest,
+): { boundParams?: Record<string, unknown> } {
+  const bound: Record<string, unknown> = {};
+  let any = false;
+  for (const spec of manifest.params) {
+    if (spec.bind === undefined) continue;
+    if (!(spec.key in params)) continue;
+    const value = params[spec.key];
+    if (value === undefined || value === null || value === "") continue;
+    bound[spec.key] = value;
+    any = true;
+  }
+  // 没声明任何绑定 → 字段不出现(与 `input` / `engineRequest` 同一条"缺席 = 没有"的读法)。
+  return any ? { boundParams: bound } : {};
+}
 
 export const nodeInputBuilderRegistry = new NodeInputBuilderRegistry()
   .register(codeInputBuilder)

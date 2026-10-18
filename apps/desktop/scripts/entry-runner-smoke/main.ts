@@ -147,10 +147,12 @@ eq(
 console.log("\n命令行拼法");
 
 /**
- * 够 `spawnRun` 用的假 child —— 三个事件源 + pid + 两个发事件的闸。
+ * 够 `spawnRun` 用的假 child —— 三个事件源 + pid + 两个发事件的闸 + stdin 记录。
  * 写法与 `command-runner-smoke` 逐字同一个形状(那边也是为同一条缝造的)。
+ * `stdin.end` 收下的东西记进调用方给的 sink —— `bind: stdin` 与 `input` JSON 都从
+ * 这里过,断言看的是**真的交给了 stdin 的那份文本**。
  */
-function fakeChild(): ChildProcess & {
+function fakeChild(stdinSink: string[]): ChildProcess & {
   emitExit: (code: number | null, signal: NodeJS.Signals | null) => void;
 } {
   const ee = new EventEmitter() as unknown as ChildProcess & {
@@ -159,6 +161,7 @@ function fakeChild(): ChildProcess & {
   (ee as { pid?: number }).pid = 4242;
   (ee as { stdout?: EventEmitter }).stdout = new EventEmitter();
   (ee as { stderr?: EventEmitter }).stderr = new EventEmitter();
+  (ee as { stdin?: unknown }).stdin = { end: (chunk: string) => { stdinSink.push(String(chunk)); } };
   (ee as { kill?: () => void }).kill = () => {};
   ee.emitExit = (code, signal) => {
     ee.emit("exit", code, signal);
@@ -171,13 +174,20 @@ function fakeChild(): ChildProcess & {
  * ⚠️ **签名是 Node 的三参数形**(`command, args, options`)—— 非 shell 那条路才对
  * `args` 有真值,而这一支**永远走非 shell**(见 `entryRunner.ts` 头注)。 */
 function recordingSpawn(scripted: { stdout?: string; code?: number }): {
-  calls: Array<{ command: string; args: string[]; cwd?: string }>;
+  calls: Array<{ command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv; stdin: string[] }>;
   spawn: SpawnFn;
 } {
-  const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
-  const spawn = ((command: string, args: string[], options: { cwd?: string }) => {
-    const child = fakeChild();
-    calls.push({ command, args, ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}) });
+  const calls: Array<{ command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv; stdin: string[] }> = [];
+  const spawn = ((command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+    const stdin: string[] = [];
+    const child = fakeChild(stdin);
+    calls.push({
+      command,
+      args,
+      ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(options?.env !== undefined ? { env: options.env } : {}),
+      stdin,
+    });
     // 微任务里才发 —— `spawnRun` 的同步段(spawn → 挂监听 → 等 exit)要先跑完。
     queueMicrotask(() => {
       if (scripted.stdout) (child as unknown as { stdout: EventEmitter }).stdout.emit("data", Buffer.from(scripted.stdout, "utf8"));
@@ -365,6 +375,117 @@ console.log("\n协议与失败");
   );
   eq("★ 进程起不来 → 失败", out.status, "failed");
   check("错误里带上底层原因", (out.error ?? "").includes("ENOENT"), out.error);
+}
+
+/* ──────────────── 4. bind:参数怎么送到脚本手上 ──────────────── */
+
+console.log("\nbind · argv / env / stdin");
+
+{
+  // ★ `arg`(带 flag)、位置参数、`env`、`stdin` 四种声明一次走完。契约(见
+  //   `NodeParamBindingSchema`)是唯一语义出处:带 flag 的追加 `flag 值` 两个参数,
+  //   不带 flag 的按**声明顺序**做位置参数,env 名原样,stdin 拿到值本身。
+  const fake = recordingSpawn({ stdout: "ok\n", code: 0 });
+  const out = await runEntryScript(
+    {
+      script: "./count.py",
+      manifestDir: PLUGIN,
+      interpreter: "python",
+      args: ["--fixed", "yes"],
+      timeoutMs: 0,
+      signal: new AbortController().signal,
+      bindings: [
+        { binding: { kind: "arg", flag: "--input" }, value: "带空格 的\"值\";$(rm -rf /)" },
+        { binding: { kind: "arg" }, value: "pos-1" },
+        { binding: { kind: "arg", flag: "--n" }, value: 42 },
+        { binding: { kind: "env", name: "INPUT_FILE" }, value: "a b.txt" },
+        { binding: { kind: "stdin" }, value: "payload line\n" },
+      ],
+    },
+    { spawn: fake.spawn },
+  );
+  eq("★ bind 节点跑通", out.status, "success");
+  check(
+    "★ flag 追加两个独立参数;位置参数按声明顺序;排在 runner.args 之后",
+    JSON.stringify(fake.calls[0]?.args) === JSON.stringify([
+      join(PLUGIN, "count.py"), "--fixed", "yes",
+      "--input", "带空格 的\"值\";$(rm -rf /)", "pos-1", "--n", "42",
+    ]),
+    fake.calls[0]?.args,
+  );
+  // ★ 值**不进 shell 解析**:引号、分号、`$()` 原样是一个 argv 元素,脚本收到的就是它。
+  check(
+    "★ 带引号/分号/命令替换的值原样是一个 argv 元素(不经 shell)",
+    fake.calls[0]?.args.includes("带空格 的\"值\";$(rm -rf /)") === true,
+    fake.calls[0]?.args,
+  );
+  eq("★ env 绑定按声明写进环境变量", fake.calls[0]?.env?.INPUT_FILE, "a b.txt");
+  check(
+    "★ env 是叠加在继承环境之上的(脚本照常看得到 PATH)",
+    fake.calls[0]?.env?.PATH === process.env.PATH || fake.calls[0]?.env?.Path !== undefined,
+    { PATH: fake.calls[0]?.env?.PATH, Path: fake.calls[0]?.env?.Path },
+  );
+  eq("★ stdin 绑定写到进程的 stdin", fake.calls[0]?.stdin[0], "payload line\n");
+}
+
+{
+  // ★ 没声明 bind 的节点:不传 env(继承父进程)、stdin 仍走 input 的 JSON ——
+  //   也就是**这个字段存在之前**的行为一字不差。
+  const fake = recordingSpawn({ stdout: "ok\n", code: 0 });
+  await runEntryScript(
+    {
+      script: "./count.py",
+      manifestDir: PLUGIN,
+      input: { a: 1 },
+      timeoutMs: 0,
+      signal: new AbortController().signal,
+    },
+    { spawn: fake.spawn },
+  );
+  eq("没声明 bind → 不给 env(继承父进程)", fake.calls[0]?.env, undefined);
+  eq("没声明 bind → stdin 仍是 input 的 JSON", fake.calls[0]?.stdin[0], '{"a":1}\n');
+}
+
+{
+  // ★ `stdin` 绑定与 `input` 同时在场:按**声明**来 —— 作者明确说了这个参数走 stdin,
+  //   而 input 只是命令节点的默认载荷。两个都写只会有一个生效,静默选错的那个更坏。
+  const fake = recordingSpawn({ stdout: "ok\n", code: 0 });
+  await runEntryScript(
+    {
+      script: "./count.py",
+      manifestDir: PLUGIN,
+      input: { upstream: true },
+      timeoutMs: 0,
+      signal: new AbortController().signal,
+      bindings: [{ binding: { kind: "stdin" }, value: "bound-text" }],
+    },
+    { spawn: fake.spawn },
+  );
+  eq("★ stdin 绑定盖过 input 的 JSON(声明优先)", fake.calls[0]?.stdin[0], "bound-text");
+}
+
+{
+  // ★ 非字符串值转文本:数字/布尔按字面,对象按 JSON —— 与 stdin 的 JSON 读法一致。
+  const fake = recordingSpawn({ stdout: "ok\n", code: 0 });
+  await runEntryScript(
+    {
+      script: "./count.py",
+      manifestDir: PLUGIN,
+      timeoutMs: 0,
+      signal: new AbortController().signal,
+      bindings: [
+        { binding: { kind: "arg", flag: "--flag" }, value: true },
+        { binding: { kind: "arg" }, value: { k: "v" } },
+      ],
+    },
+    { spawn: fake.spawn },
+  );
+  check(
+    "★ 布尔与对象值转成文本进 argv",
+    // 没给 interpreter → 脚本本身是命令,argv 里只有绑定参数(见上面「直接执行脚本本身」)。
+    JSON.stringify(fake.calls[0]?.args) === JSON.stringify(["--flag", "true", '{"k":"v"}']),
+    fake.calls[0]?.args,
+  );
 }
 
 try {

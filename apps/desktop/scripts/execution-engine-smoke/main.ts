@@ -356,4 +356,153 @@ ok(exact.summary === "exact", "registered kind wins over fallback");
   }
 }
 
+// —— `NodeParamSpec.bind` 的消费点与显式拒绝 ——
+// 上一片实测确认:bind 在契约里完整声明、README 教给插件作者,但主进程没有任何消费点。
+// 现在两条路各自钉住:
+//   1. **清单自带脚本**(runner.entry):commandExecutor 把 boundParams 按清单声明顺序
+//      拼成 bindings 交给 entryRunner。这里起一个**真的 node 子进程**把 argv/env/stdin
+//      原样打回来 —— 断言看的是"脚本真的收到了什么",不是中间对象(中间那一层在
+//      entry-runner-smoke 里用假 spawn 钉过,两层各管一件事)。
+//   2. **命令写在参数里**(entry 缺省):没有 argv 数组可绑 —— 声明了 bind 就必须
+//      **明确失败**,不能静默忽略(否则插件作者按文档写的 bind 会一声不吭地被扔掉)。
+{
+  const { CommandExecutor } = await import("../../src/main/orchestration/commandExecutor.js");
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const pluginDir = mkdtempSync(join(tmpdir(), "mcode-bind-smoke-"));
+  mkdirSync(pluginDir, { recursive: true });
+  // 脚本把**它自己收到的**三样东西打回来:argv(去掉 node 与脚本路径)、环境变量、stdin。
+  writeFileSync(
+    join(pluginDir, "bound.mjs"),
+    [
+      'let stdin = "";',
+      'process.stdin.on("data", (c) => { stdin += c; });',
+      'process.stdin.on("end", () => {',
+      '  console.log(JSON.stringify({ argv: process.argv.slice(2), token: process.env.MCODE_TOKEN ?? null, stdin }));',
+      "});",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  try {
+    const scriptManifest = {
+      id: "testorg.bound-script",
+      manifestVersion: 1,
+      name: "Bound script",
+      runner: { kind: "command", entry: "./bound.mjs", interpreter: "node" },
+      capability: "read",
+      params: [
+        { key: "input", kind: "file", label: "输入文件", bind: { kind: "arg", flag: "--input" } },
+        { key: "count", kind: "number", label: "条数", bind: { kind: "arg" } },
+        { key: "token", kind: "text", label: "令牌", bind: { kind: "env", name: "MCODE_TOKEN" } },
+        { key: "payload", kind: "longtext", label: "载荷", bind: { kind: "stdin" } },
+        // 没声明 bind 的参数:值不进 argv/env —— 断言它**没有**混进来。
+        { key: "note", kind: "text", label: "备注" },
+        // 绑了但清空的可选参数:按"没填"处理,不发 `--opt ""`(与 validateNodeParams 同口径)。
+        { key: "optional", kind: "text", label: "可选", bind: { kind: "arg", flag: "--opt" } },
+      ],
+    } as import("@contracts/nodeType").NodeTypeManifest;
+    const scriptCtx = context("command");
+    scriptCtx.manifest = scriptManifest;
+    scriptCtx.manifestDir = pluginDir;
+    (scriptCtx.input as { command?: unknown }).command = {
+      command: "",
+      timeoutMs: 0,
+      // 解算后的绑定值(调度器的 `{{...}}` 从这里过) —— 键 = 参数 key。
+      boundParams: { input: "a b.txt", count: 3, token: "s3cret", payload: "line1", note: "未声明" },
+    };
+    const scriptOut = await new CommandExecutor().execute(scriptCtx);
+    ok(scriptOut.status === "success", `★ 带 bind 的 entry 脚本跑通(实际 ${scriptOut.status}${scriptOut.error ? " — " + scriptOut.error : ""})`);
+    let seen: { argv?: string[]; token?: string | null; stdin?: string } = {};
+    try {
+      seen = JSON.parse(String((scriptOut.outputs as { stdout?: string })?.stdout ?? ""));
+    } catch {
+      /* 下面三条会带着原始输出一起红,比这里再抛一句更有用 */
+    }
+    ok(
+      JSON.stringify(seen.argv) === JSON.stringify(["--input", "a b.txt", "3"]),
+      `★ arg 绑定按清单声明顺序拼成独立参数、未声明 bind 的参数不进 argv(实际 ${JSON.stringify(seen.argv)} — 原始输出 ${JSON.stringify((scriptOut.outputs as { stdout?: string })?.stdout)})`,
+    );
+    ok(seen.token === "s3cret", `★ env 绑定真的进了子进程的环境(实际 ${JSON.stringify(seen.token)})`);
+    ok(seen.stdin === "line1", `★ stdin 绑定真的写进了子进程的 stdin(实际 ${JSON.stringify(seen.stdin)})`);
+
+    // ★ 值从**输入构造那一层**来:调度器解算后的参数进 `commandInputBuilder`,只有
+    //   清单**声明了 bind** 的参数进 `input.command.boundParams`。执行器读它,而不是
+    //   回头读 `node.params`(那上面还是 `{{...}}` 存盘原值)。
+    const { buildNodeInput } = await import("../../src/main/orchestration/nodeInputBuilders.js");
+    const builtScope = {
+      userPrompt: "", upstream: "", upstreamArtifacts: [], upstreamOutputs: {},
+      nodeId: "n1", plan: { steps: [] } as never, root: false, terminal: true,
+      contextLines: () => [],
+    };
+    const built = buildNodeInput(
+      // 解算后的值(`{{...}}` 已经换掉了);`optional` 是绑了但被清空的可选参数。
+      { command: "", input: "a b.txt", count: 3, token: "s3cret", payload: "line1", note: "未声明", optional: "" },
+      scriptManifest,
+      builtScope as never,
+      new AbortController().signal,
+    );
+    ok(
+      JSON.stringify(built.command?.boundParams) === JSON.stringify({ input: "a b.txt", count: 3, token: "s3cret", payload: "line1" }),
+      `★ 解算后的绑定值进入 input.command.boundParams,未声明 bind 的参数不混进来(实际 ${JSON.stringify(built.command?.boundParams)})`,
+    );
+    ok(
+      !("optional" in (built.command?.boundParams ?? {})),
+      `★ 绑了但清空的可选参数按"没填"处理(不发 --opt "";实际 ${JSON.stringify(built.command?.boundParams)})`,
+    );
+
+    // ★ 命令写在参数里 + 清单声明了 bind = 明确失败,**不是**静默忽略。
+    const paramManifest = {
+      id: "testorg.bound-shell",
+      manifestVersion: 1,
+      name: "Bound shell",
+      runner: { kind: "command" },
+      capability: "exec",
+      params: [
+        { key: "command", kind: "text", label: "命令", required: true },
+        { key: "input", kind: "file", label: "输入文件", bind: { kind: "arg", flag: "--input" } },
+      ],
+    } as import("@contracts/nodeType").NodeTypeManifest;
+    const paramCtx = context("command");
+    paramCtx.manifest = paramManifest;
+    // 命令是一条**存在不了**的二进制:真去 spawn 的话错误会说"命令起不来";
+    // 拿到 bind 那句 = 在起进程之前就被拒了。
+    (paramCtx.input as { command?: unknown }).command = {
+      command: "mcode-no-such-binary-for-bind-smoke",
+      timeoutMs: 0,
+      boundParams: { input: "a.txt" },
+    };
+    const paramOut = await new CommandExecutor().execute(paramCtx);
+    ok(paramOut.status === "failed", `★ 壳命令 + bind → 明确失败(实际 ${paramOut.status})`);
+    ok(/bind/.test(paramOut.error ?? "") && /entry/.test(paramOut.error ?? ""), `★ 错误说清 bind 只对 entry 脚本生效(实际 ${paramOut.error ?? ""})`);
+    ok(!/起不来/.test(paramOut.error ?? ""), "★ 明确失败发生在起进程之前(不是跑了再把值扔掉)");
+
+    // ★ 对照:同一形状的清单**没声明 bind** → 照常落到命令执行那条路(拒绝只针对
+    //   "声明了但落不了地")。shell 起不来不存在的命令时退出码非零 —— 而命令节点的
+    //   规矩是**非零不算失败**,所以这里断言的是"跑完了、给了退出码",反证 bind 那道
+    //   闸没有误伤普通命令节点(它要是在闸上被拦,状态会是 failed 且错误提 bind)。
+    const plainManifest = {
+      ...paramManifest,
+      id: "testorg.plain-shell",
+      params: paramManifest.params.filter((p) => p.bind === undefined),
+    } as import("@contracts/nodeType").NodeTypeManifest;
+    const plainCtx = context("command");
+    plainCtx.manifest = plainManifest;
+    (plainCtx.input as { command?: unknown }).command = { command: "mcode-no-such-binary-for-bind-smoke", timeoutMs: 0 };
+    const plainOut = await new CommandExecutor().execute(plainCtx);
+    ok(
+      plainOut.status === "success" && typeof (plainOut.outputs as { exitCode?: unknown })?.exitCode === "number" && !(plainOut.error ?? "").includes("bind"),
+      `★ 没声明 bind 的壳命令照常走命令执行那条路(实际 ${plainOut.status} — ${plainOut.error ?? JSON.stringify(plainOut.outputs)})`,
+    );
+  } finally {
+    try {
+      rmSync(pluginDir, { recursive: true, force: true });
+    } catch {
+      /* 清理失败不影响结论 */
+    }
+  }
+}
+
 console.log(`PASS: ${checks.length} checks`);

@@ -1040,5 +1040,86 @@ check(
   exportedForeign.schemaVersion,
 );
 
+/* ── 4j · `NodeParamSpec.bind`:解算后的值真的到了执行器手上 ──
+
+   这条钉的是**端到端**的那一段:真调度器 + 默认 `buildNodeInput`(不传 `buildInput`
+   端口)。`{{...}}` 的解算只发生在调度器里,而执行器要拿到的是**解算后**的绑定值 ——
+   中间断在哪儿都表现为"脚本收到一个没人认识的 `{{...}}`"。 */
+
+{
+  const boundManifest: NodeTypeManifest = {
+    id: "smoke.bound-entry",
+    manifestVersion: 1,
+    name: "Bound entry",
+    runner: { kind: "command", entry: "./count.py", interpreter: "python" },
+    capability: "read",
+    params: [
+      { key: "input", kind: "text", label: "输入", bind: { kind: "arg", flag: "--input" } },
+      { key: "payload", kind: "longtext", label: "载荷", bind: { kind: "stdin" } },
+      { key: "untouched", kind: "text", label: "不绑定" },
+    ],
+  };
+  const producer: NodeTypeManifest = agentManifest("smoke.producer");
+  const boundTypes = new Map<string, NodeTypeManifest>([
+    [producer.id, producer],
+    [boundManifest.id, boundManifest],
+  ]);
+  const boundDoc = doc(
+    [
+      node("P", producer.id, { instruction: "产出年份", outputVars: [{ name: "年份", example: "2024" }] }),
+      node("B", boundManifest.id, {
+        input: "报告-{{P.年份}}.txt",
+        payload: "正文 {{P.年份}}",
+        untouched: "不该出现在绑定里",
+      }),
+    ],
+    [edge("e_bound", "P", "B")],
+  );
+  const seenInputs: Array<{ command?: { boundParams?: Record<string, unknown>; input?: unknown } }> = [];
+  const boundPorts: RunPorts = {
+    async manifestOf(type) {
+      return boundTypes.get(type);
+    },
+    async manifestDirOf() {
+      return undefined;
+    },
+    async execute(n, _m, input) {
+      seenInputs.push(input);
+      return n.id === "P"
+        ? { status: "success", summary: "已产出", outputs: { 年份: "2024" } }
+        : { status: "success", summary: "好" };
+    },
+    contextLines: () => [],
+    choose: () => {
+      throw new Error("冒烟夹具:这张图里不该有分支节点");
+    },
+    report: () => {},
+  };
+  const boundRun = await runWorkflow({
+    doc: boundDoc,
+    prompt: "开始",
+    ports: boundPorts,
+    signal: new AbortController().signal,
+  });
+  const boundInput = seenInputs.find((i) => i.command !== undefined);
+  check(
+    "4j-1 带 bind 的节点跑通(前置)",
+    boundRun.status === "success",
+    boundRun.status,
+  );
+  check(
+    "4j-2 ★ `{{上游.变量}}` 在绑定值里解算了(执行器拿到的不是模板原文)",
+    boundInput?.command?.boundParams?.input === "报告-2024.txt" &&
+      boundInput?.command?.boundParams?.payload === "正文 2024",
+    boundInput?.command?.boundParams,
+  );
+  check(
+    "4j-3 ★ 只有清单声明了 bind 的参数进入绑定表",
+    boundInput?.command?.boundParams !== undefined &&
+      !("untouched" in boundInput.command.boundParams),
+    boundInput?.command?.boundParams,
+  );
+}
+
 console.log(`\nPASS: ${total - failures}/${total} checks`);
 if (failures > 0) process.exitCode = 1;

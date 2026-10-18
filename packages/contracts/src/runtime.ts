@@ -61,7 +61,22 @@ export interface NodeRunInput {
    * cwd comes from WorkflowExecutionContext, never from these parameters.
    * Preserve requestId on transport retries; replace it for an explicit rerun. */
   moduleCall?: ModuleWorkflowExecutionInput;
-  command?: { command: string; timeoutMs: number; input?: unknown };
+  command?: {
+    command: string;
+    timeoutMs: number;
+    input?: unknown;
+    /**
+     * 清单里声明了 `bind` 的那些参数的**解算后**值(键是参数 key,见
+     * `@contracts/nodeType` 的 `NodeParamBindingSchema`)。**由宿主侧的输入构造填**
+     * (见 `orchestration/nodeInputBuilders.ts`),和 `engineRequest` 同一条理由:变量
+     * 展开发生在调度器,而执行器手上的 `node.params` 是存盘原值 —— 把 `{{...}}`
+     * 原样交给脚本等于给了一句没人认识的文本。清单没声明任何 bind 时不出现这个字段。
+     *
+     * 只有**清单自带脚本**(`runner.entry`)的命令节点会消费它;命令写在参数里的那种
+     * 没有参数数组可绑,节点会明确失败(见 `commandExecutor.ts`)。
+     */
+    boundParams?: Record<string, unknown>;
+  };
   code?: {
     code: string;
     language: "python" | "node" | "shell" | "powershell";
