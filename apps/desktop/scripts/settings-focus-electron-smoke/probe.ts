@@ -87,7 +87,14 @@ export async function runSettingsFocusProbe(dir: string): Promise<void> {
   win = new BrowserWindow({
     width: 1280,
     height: 860,
-    show: false,
+    // 真实焦点事件需要窗口真的"有焦点"：隐藏窗口里 document.hasFocus()=false，
+    // 浏览器不派发 focus/focusin —— base-ui 的 FocusGuard 回弹（依赖 React 合成
+    // onFocus）因此不可观测。用 opacity:0 + 屏幕外位置：窗口存在、可聚焦、
+    // 用户看不见，判据仍只读 DOM。
+    show: true,
+    opacity: 0,
+    x: -10000,
+    y: -10000,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -97,11 +104,19 @@ export async function runSettingsFocusProbe(dir: string): Promise<void> {
     },
   });
   const wc = win.webContents;
+  win.focus();
 
   const js = async <T = unknown>(expression: string): Promise<T> =>
     (await wc.executeJavaScript(expression, true)) as T;
 
   await wc.loadFile(join(dir, "page.html"));
+  // 可观测性自检：隐藏窗口里 rAF 若被暂停，base-ui 的 FocusGuard 恢复（enqueueFocus
+  // 走 rAF）就永远不会执行 —— 那不是产品缺陷，是观测环境问题。探针先测一下。
+  const rafWorks = await wc.executeJavaScript(
+    "new Promise((r) => { const t = setTimeout(() => r(false), 1500); requestAnimationFrame(() => { clearTimeout(t); r(true); }); })",
+    true,
+  );
+  console.log("RAF AVAILABLE: " + String(rafWorks));
   await until(() => js<boolean>("window.__mounted === true"), "app mounted");
   await until(
     () => js<boolean>("document.querySelector('[data-testid=workspace-main]') !== null"),
@@ -316,6 +331,128 @@ export async function runSettingsFocusProbe(dir: string): Promise<void> {
     assert(restored === true, "focus was not restored after Escape close");
   });
 
+  // ══════════ 嵌套弹窗（base-ui Portal）的焦点让位 ══════════
+  //
+  // 场景：设置页「扩展」面板（CustomUiPanel）里有一条真实自定义项，点它的
+  // 「删除」→ 真 ConfirmDialog（components/ui/confirm-dialog.tsx → Dialog.Portal，
+  // 与设置层是**两个**顶层）。useFocusTrap 的契约：焦点在别的顶层里时让位
+  // （"activeElement 不在本层（或 body）"即不劫持），关闭后 base-ui 自己把焦点
+  // 还给触发它的按钮。
+  //
+  // 为什么走真实设置面板而不是手搭一个 Dialog：设置页里真实存在的嵌套弹窗就是
+  // CustomUiPanel 的删除确认（grep 见报告）。
+
+  await check("★ 嵌套：设置页「扩展」面板渲染出真实自定义项与删除按钮", async () => {
+    await js(`window.__store.getState().setSettingsOpen(true, "custom-ui")`);
+    await until(() => js<boolean>('document.querySelector(".settings-root") !== null'), "settings open");
+    await until(
+      () => js<boolean>('[...document.querySelectorAll("[data-testid=custom-ui-row]")].some((r) => r.textContent.includes("焦点探针项"))'),
+      "custom UI row",
+    );
+    const hasDelete = await js<boolean>(`(() => {
+      const row = [...document.querySelectorAll("[data-testid=custom-ui-row]")].find((r) => r.textContent.includes("焦点探针项"));
+      if (!row) return false;
+      const btn = [...row.querySelectorAll("button")].find((b) => b.title === "删除");
+      if (!btn) return false;
+      btn.setAttribute("data-sfe-delete", "");
+      return true;
+    })()`);
+    assert(hasDelete, "seeded custom UI row has no delete button");
+  });
+
+  await check("★ 嵌套：焦点移入删除按钮（触发前锚点）", async () => {
+    await js('document.querySelector("[data-sfe-delete]").focus()');
+    const focused = await js<boolean>('document.activeElement === document.querySelector("[data-sfe-delete]")');
+    assert(focused, "delete button did not take focus");
+  });
+
+  await check("★ 嵌套弹窗打开时焦点在弹窗内（不是设置层、不是后台）", async () => {
+    await js('document.querySelector("[data-sfe-delete]").click()');
+    await until(() => js<boolean>('document.querySelector("[role=dialog]") !== null'), "nested dialog opened");
+    // base-ui 在弹窗**焦点落位**后才算打开完成；等 activeElement 进弹窗（有超时，
+    // 不伪造成功 —— 真不进就红）。
+    await until(
+      () => js<boolean>('(() => { const d = document.querySelector("[role=dialog]"); const a = document.activeElement; return !!(d && a && d.contains(a)); })()'),
+      "focus entered nested dialog",
+      5000,
+    ).catch(() => undefined);
+    await delay(200);
+    const f = await js<{ inDialog: boolean; inSettingsRoot: boolean; inInert: boolean; tag: string | null }>(`(() => {
+      const a = document.activeElement;
+      const dlg = document.querySelector("[role=dialog]");
+      const root = document.querySelector(".settings-root");
+      return {
+        inDialog: !!(dlg && a && dlg.contains(a)),
+        inSettingsRoot: !!(root && a && root.contains(a)),
+        inInert: !!(a && a.closest && a.closest("[inert]")),
+        tag: a ? a.tagName : null,
+      };
+    })()`);
+    if (!f.inDialog) {
+      console.log("DIAG dialog: " + await js<string>(`(() => {
+        const dlg = document.querySelector("[role=dialog]");
+        const a = document.activeElement;
+        return JSON.stringify({
+          dialogOuter: dlg ? dlg.outerHTML.slice(0, 300) : null,
+          active: a ? a.outerHTML.slice(0, 200) : null,
+          activeIsDelete: a === document.querySelector("[data-sfe-delete]"),
+          dialogCount: document.querySelectorAll("[role=dialog]").length,
+          popups: document.querySelectorAll("[data-base-ui-portal]").length,
+        });
+      })()`));
+    }
+    assert(f.inDialog, "focus is not inside the nested dialog: " + JSON.stringify(f));
+    assert(f.tag !== "BODY", "focus fell to BODY: " + JSON.stringify(f));
+    assert(!f.inInert, "focus fell into the inert workspace: " + JSON.stringify(f));
+  });
+
+  await check("★ 嵌套弹窗内 Tab 不逃回设置层/后台（连续五次都在弹窗内）", async () => {
+    const trail: Array<{ step: number; inDialog: boolean; inInert: boolean }> = [];
+    for (let i = 0; i < 5; i++) {
+      await pressTab(false);
+      const f = await js<{ inDialog: boolean; inInert: boolean }>(`(() => {
+        const a = document.activeElement;
+        const dlg = document.querySelector("[role=dialog]");
+        return { inDialog: !!(dlg && a && dlg.contains(a)), inInert: !!(a && a.closest && a.closest("[inert]")) };
+      })()`);
+      const where = await js<string>(`(() => {
+        const a = document.activeElement;
+        return JSON.stringify({ tag: a ? a.tagName : null, text: a ? (a.textContent || "").slice(0, 20) : null, cls: a ? String(a.className).slice(0, 40) : null, inSettings: !!(a && a.closest && a.closest(".settings-root")), inBody: a === document.body });
+      })()`);
+      trail.push({ step: i + 1, inDialog: f.inDialog, inInert: f.inInert });
+      console.log("TRAIL " + (i + 1) + " " + where);
+    }
+    assert(trail.every((t) => t.inDialog && !t.inInert), JSON.stringify(trail));
+  });
+
+  await check("★ 嵌套：Escape 关闭弹窗后焦点回到触发它的删除按钮", async () => {
+    wc.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+    wc.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+    await until(() => js<boolean>('document.querySelector("[role=dialog]") === null'), "nested dialog closed");
+    await delay(350);
+    const back = await js<boolean>('document.activeElement === document.querySelector("[data-sfe-delete]")');
+    assert(back, "focus did not return to the delete button");
+    // 设置层仍在、后台仍 inert —— 关闭的只是嵌套层。
+    const still = await js<{ settings: boolean; inert: boolean }>(`(() => {
+      const root = document.querySelector(".settings-root");
+      const w = document.querySelector("[data-testid=workspace-main]");
+      return { settings: !!root, inert: w ? !!w.closest("[inert]") : false };
+    })()`);
+    assert(still.settings && still.inert, JSON.stringify(still));
+  });
+
+  await check("★ 嵌套：全程焦点没有落进后台工作区", async () => {
+    const f = await focusWhere();
+    assert(!f.inInert, JSON.stringify(f));
+    // 再验一次 Tab 也不进后台（此刻回到设置层）。
+    await pressTab(false);
+    const after = await js<boolean>(`(() => {
+      const a = document.activeElement;
+      return !!(a && !(a.closest && a.closest("[inert]")));
+    })()`);
+    assert(after, "a Tab left focus inside the inert workspace");
+  });
+
   win.destroy();
   win = undefined;
-undefined}
+}

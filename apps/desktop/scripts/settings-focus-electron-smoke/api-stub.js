@@ -17,7 +17,18 @@
   }
   var fixed = {
     setting: {
-      get: function () { return Promise.resolve({ value: null }); },
+      get: function (input) {
+        // MC-046 嵌套弹窗夹具：给设置页一份带一条自定义项的配置，
+        // 让 CustomUiPanel 真的渲染出「删除」按钮（触发 ConfirmDialog）。
+        if (input && input.key === "customUi.config.v1") {
+          return Promise.resolve({ value: JSON.stringify({
+            version: 1,
+            items: [{ id: "sfe-probe", slot: "library.item", label: { zh: "焦点探针项" }, action: { type: "copy", template: "x" } }],
+            layout: {},
+          }) });
+        }
+        return Promise.resolve({ value: null });
+      },
       getMany: function () { return Promise.resolve({}); },
       set: function () { return Promise.resolve({ ok: true }); },
     },
