@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, readdirSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, readdirSync, chmodSync, openSync, writeSync, ftruncateSync, closeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { tmpdir, platform } from "node:os";
@@ -386,6 +386,51 @@ try {
     } finally {
       for (const r of restoreFns.reverse()) r();
       rmSync(fileFault, { recursive: true, force: true });
+    }
+  }
+  // ★ 【MC-027 补强】起点本身不可读 / 不存在时,`agent_glob` 从前落进 `emptyWalk()` ——
+  //   回 `count: 0, partial: false` 的「完整无命中」,模型据此断言"不存在"。起点根本没搜过,
+  //   必须显式报错(与 agent_grep 的「路径不存在」同口径),不能伪装成完整空结果。
+  {
+    const clean = mkdtempSync(path.join(tmpdir(), "mcode-text-glob-start-"));
+    try {
+      // ① 健康路径(防空过):真实存在的空目录 → 仍是「完整无命中」,不是错误。
+      const emptyDir = path.join(clean, "empty");
+      mkdirSync(emptyDir);
+      const healthy = await call("agent_glob", { path: emptyDir, pattern: "**/*.txt" });
+      check("★ agent_glob 真实空目录仍是完整无命中(count=0, partial=false, 不是 isError)", !healthy.isError && healthy.structuredContent?.count === 0 && healthy.structuredContent?.partial === false, { text: body(healthy), structured: healthy.structuredContent });
+      // ② 起点不存在 → isError + 人话,不能是 count=0 的假完整。
+      const missing = path.join(clean, "no-such-dir-027");
+      const gone = await call("agent_glob", { path: missing, pattern: "**/*.txt" });
+      check("★ agent_glob 起点不存在 → isError(不是 count=0 假完整)", gone.isError === true && gone.structuredContent?.count !== 0, { text: body(gone), structured: gone.structuredContent });
+      check("★ agent_glob 起点不存在的报错是人话「路径不存在」", body(gone).includes("路径不存在"), body(gone));
+      // ③ 起点是个文件(不是目录)→ 同样什么都没搜,不能回「完整无命中」。
+      const aFile = path.join(clean, "plain.txt");
+      writeFileSync(aFile, "hello\n");
+      const notDir = await call("agent_glob", { path: aFile, pattern: "**/*.txt" });
+      check("★ agent_glob 起点是文件 → isError(不是 count=0 假完整)", notDir.isError === true && body(notDir).includes("不是目录"), { text: body(notDir), structured: notDir.structuredContent });
+    } finally {
+      rmSync(clean, { recursive: true, force: true });
+    }
+  }
+  // ★ 【MC-027 补强】agent_grep 对**超过单文件大小上限**的文件从前静默 `continue` ——
+  //   那个文件确实没搜过,却仍报「0 命中 / 完整」。现在登记为漏搜(partial=true 并点名)。
+  {
+    const big = mkdtempSync(path.join(tmpdir(), "mcode-text-grep-big-"));
+    try {
+      const bigFile = path.join(big, "big.txt");
+      // 写 9MiB(> MAX_GREP_FILE_BYTES = 8MiB),稀疏写入省时;命中词放在里面也不能被找到。
+      writeFileSync(bigFile, "");
+      const fd = openSync(bigFile, "r+");
+      try { writeSync(fd, "NEEDLE_027", 0, "utf8"); ftruncateSync(fd, 9 * 1024 * 1024); } finally { closeSync(fd); }
+      writeFileSync(path.join(big, "small.txt"), "NEEDLE_027\n");
+      const g = await call("agent_grep", { path: big, pattern: "NEEDLE_027", literal: true });
+      check("★ 正常文件照旧被 grep 到(防空过)", body(g).includes("small.txt"), body(g));
+      check("★ 超过大小上限的文件使 grep 标为不完整(partial=true)", g.structuredContent?.partial === true, g.structuredContent);
+      check("★ 超限文件被如实登记并点名 big.txt", ((g.structuredContent?.skipped_paths as string[]) ?? []).some((p) => p.includes("big.txt")), g.structuredContent);
+      check("★ 超限登记给出预算原因(不是简单静默跳过)", ((g.structuredContent?.skipped_paths as string[]) ?? []).some((p) => p.includes("big.txt") && p.includes("大小上限")), g.structuredContent);
+    } finally {
+      rmSync(big, { recursive: true, force: true });
     }
   }
   // ★ 【MC-027】完整无命中:同一棵树没有故障时,partial 必须是 false —— 与"不完整无命中"

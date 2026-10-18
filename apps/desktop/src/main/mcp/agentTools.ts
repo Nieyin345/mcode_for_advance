@@ -159,7 +159,6 @@ import {
 import {
   WalkResult,
   createWalkSkips,
-  emptyWalk,
   escapeRegExp,
   globToRegExp,
   globWantsHidden,
@@ -1099,17 +1098,26 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           const { prefix, rest } = splitGlobPrefix(args.pattern);
           const startRel = prefix ? path.join(args.path ?? ".", prefix) : (args.path ?? ".");
           const base = pOfRead(ctx, startRel, "list");
-          const st = await fs.stat(base).catch(() => null);
+          // 【MC-027】起点 stat 失败(EACCES/EPERM/ENOENT…)从前落进 `emptyWalk()` —— 回一个
+          // `count: 0, partial: false` 的「完整无命中」,模型据此断言"不存在"。起点根本
+          // 没搜过,不能算完整;与 agent_grep 的「路径不存在」同一条口径显式报错。
+          const st = await fs.stat(base).catch((err: unknown) => err as NodeJS.ErrnoException);
+          if (st instanceof Error) {
+            throw new Error(
+              st.code === "ENOENT"
+                ? `路径不存在:${base}`
+                : `搜索起点不可读:${base}(${walkErrnoText(st)})`,
+            );
+          }
+          // 起点不是目录(比如误传了一个文件):同样什么都没搜,不能报「完整无命中」。
+          if (!st.isDirectory()) throw new Error(`搜索起点不是目录:${base}`);
           const re = globToRegExp(rest);
-          const found =
-            st?.isDirectory()
-              ? await walkFiles(base, {
-                canRead: canRead(ctx),
-                  relFilter: re,
-                  includeHidden: args.include_hidden ?? globWantsHidden(args.pattern),
-                  maxHits: 2000,
-                })
-              : emptyWalk();
+          const found = await walkFiles(base, {
+            canRead: canRead(ctx),
+            relFilter: re,
+            includeHidden: args.include_hidden ?? globWantsHidden(args.pattern),
+            maxHits: 2000,
+          });
           const rels = found.hits.map((h) => shownPath(ctx, h.abs));
           if (rels.length === 0) {
             const hint = !args.pattern.includes("/") && !args.pattern.includes("**")
@@ -1202,7 +1210,13 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           for (const t of walked.hits) {
             if (lines.length >= cap) break;
             const size = (await fs.stat(t.abs).catch(() => null))?.size ?? 0;
-            if (size > MAX_GREP_FILE_BYTES) continue;
+            if (size > MAX_GREP_FILE_BYTES) {
+              // 【MC-027】超过单文件大小上限是**主动预算**决策,但这个文件确实没搜过 ——
+              // 从前静默 `continue`,「0 命中」照样报成完整。现在登记为漏搜,与 readFile
+              // 失败同一条口径(同族 `agent_search_*` 的 budgetExhausted)。
+              skips.record(t.abs, `超过单文件大小上限(${MAX_GREP_FILE_BYTES} 字节)`);
+              continue;
+            }
             let buf: Buffer | null = null;
             try {
               buf = await fs.readFile(t.abs);
