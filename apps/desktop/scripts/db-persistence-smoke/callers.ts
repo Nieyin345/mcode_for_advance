@@ -61,6 +61,9 @@ function quitFixture(failAt: "flush" | "close" | null, options: {
       if (options.officeFailure) throw new Error("injected Office save failure");
     },
     showOnlyOfficeSaveError: record("office-alert"),
+    // 【ARC-007】受控文档视图宿主的退出清理。夹具要跟着生产的 before-quit 走:
+    // 少一个 deps 符号,夹具会在运行时抛 ReferenceError(而不是漏测)。
+    documentViewHost: { dispose: record("document-views") },
     log: { warn: record("warn") },
     BrowserWindow: { getAllWindows: () => [{ isEnabled: () => true, isDestroyed: () => false,
       setEnabled: (enabled: boolean) => trace.push(enabled ? "enable-window" : "disable-window") }] },
@@ -148,6 +151,11 @@ async function main(): Promise<void> {
   check("successful quit saves before teardown and closes last", !success.prevented() && success.trace[0] === "flush" && success.trace.at(-1) === "close");
   check("successful quit includes the current OnlyOffice cleanup", success.trace.includes("onlyoffice"));
   check("successful quit stops agent background processes", success.trace.includes("agent-processes"));
+  // 【ARC-007】文档视图(WebContentsView)也必须在退出路径上被销毁 —— Native 视图
+  // 不挂在 DOM 上,窗口关掉后不 dispose 会留下孤儿视图(下次启动可能拿到死句柄)。
+  check("successful quit disposes document views", success.trace.includes("document-views"));
+  // 失败退出**不**销毁文档视图:用户可能还要继续编辑,那时视图仍要用。
+  check("a failed quit keeps document views alive", !blocked.trace.includes("document-views"));
   const officeFailure = quitFixture(null, { cookiesFlushed: false, officeFailure: true });
   officeFailure.callback(officeFailure.event);
   await tick(); await tick();
