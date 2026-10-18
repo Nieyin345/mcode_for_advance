@@ -59,13 +59,19 @@
  * Mcode 的 `workflow.approve`（工作流审查 + 真人点头）属于 MERGE-1 的存储合并，
  * 这里不新造第二套授权入口 —— `launchSpec` 只**读**标记，不提供写 API。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
 import { ensureEngineBootstrap } from "./bootstrapManifest.js";
-import { EngineRuntime, defaultEngineRuntimePorts, type EngineRuntime as EngineRuntimeType, type EngineRuntimeStatus } from "./runtimeSupervisor.js";
+import {
+  EngineRuntime,
+  createEngineLaunchSpec,
+  defaultEngineRuntimePorts,
+  NODE_RED_MIN_NODE,
+  type EngineRuntime as EngineRuntimeType,
+  type EngineRuntimeStatus,
+} from "./runtimeSupervisor.js";
 import type { WorkflowEngineLaunchSpec, WorkflowEngineRegistry } from "@main/ipc/workflowEngine.js";
 
 /** 引导脚本：官方 embedding 形状 + 宿主令牌认证 + 默认 safeMode（见文件头）。 */
@@ -153,19 +159,6 @@ function writeEngineBootstrap(engineId: string, dataDir: string): boolean {
   return true;
 }
 
-/** 读一个小文件；不存在则生成并写入（mode 0600，Windows 上尽力而为）。 */
-function readOrCreateFile(path: string, generate: () => string): string {
-  try {
-    const value = readFileSync(path, "utf8").trim();
-    if (value !== "") return value;
-  } catch {
-    /* 不存在 */
-  }
-  const value = generate();
-  writeFileSync(path, value, { encoding: "utf8", mode: 0o600 });
-  return value;
-}
-
 /**
  * 持久化 flow 是否已被宿主标记为可信（Gate A 的「未审批 flow 重启后不得自动执行」）。
  *
@@ -239,23 +232,32 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
       log.error(`[workflow-engine:${engineId}] 引导脚本未能升级/恢复，拒绝启动引擎（不会执行旧脚本）`);
       return null;
     }
-    // 凭据密钥：每个数据目录一个。不写进 flows.json / creds，也不进日志。
-    const secret = readOrCreateFile(join(dir, ".engine-secret"), () => randomBytes(32).toString("hex"));
-    // 控制面令牌（Gate A）：与凭据密钥分开一个文件 —— 前者解 creds，后者只认证
-    // Admin API；轮换一个不该牵连另一个。
-    const adminToken = readOrCreateFile(join(dir, ".engine-admin-token"), () => randomBytes(32).toString("hex"));
-    return {
-      command: process.execPath,
-      // argv: node bootstrap.cjs <port> <userDir>
-      args: (port, userDir) => [bootstrapPath, String(port), userDir],
-      dataDir: dir,
-      env: {
-        NODE_RED_CREDENTIAL_SECRET: secret,
-        MCODE_ENGINE_ADMIN_TOKEN: adminToken,
-        // 只有宿主写下的可信标记才让持久化 flow 进入 runtime（见 isFlowTrusted）。
-        MCODE_ENGINE_TRUSTED: isFlowTrusted(dir) ? "1" : "0",
-      },
-    };
+    // 【P1-4】启动参数由**唯一**的共享生成器收口（Electron-as-Node 模式、打包路径、
+    // Node 版本要求、宿主身份）。此前这里自己拼 env、不给 ELECTRON_RUN_AS_NODE，
+    // 而真 Electron 套件在自己的 launchSpec 里补 —— 生产与测试因此漂移。
+    // 路径解析失败（拿不到 app 路径 / 版本不满足）→ 返回 null 并带原因，
+    // 与"未安装"同一条失败面，不静默猜。
+    try {
+      return createEngineLaunchSpec({
+        engineId,
+        dataDir: dir,
+        // 引导脚本由 P1-5 的清单校验写进数据目录；盘上已存在 → 生成器直接采用。
+        entryFile: bootstrapPath,
+        installPackage: "node-red",
+        minNodeVersion: NODE_RED_MIN_NODE,
+        adminTokenFile: join(dir, ".engine-admin-token"),
+        secretFile: dir,
+        env: {
+          // 只有宿主写下的可信标记才让持久化 flow 进入 runtime（见 isFlowTrusted）。
+          MCODE_ENGINE_TRUSTED: isFlowTrusted(dir) ? "1" : "0",
+        },
+      });
+    } catch (err) {
+      log.error(
+        `[workflow-engine:${engineId}] 启动参数生成失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   }
 
   /** 退出路径：停掉所有引擎，不留孤儿进程。 */

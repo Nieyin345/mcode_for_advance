@@ -245,9 +245,12 @@ var paintShapes = function (shapes, scale) {
 
 **根因**：「JS 加载完才加 `.dark`」与「body 已经画了」之间有窗口期。
 **修法**：把同样的值**再写一份**在 `@media (prefers-color-scheme: dark)` 里，
-让 CSS 自己解析，不等 JS。mcode 现在用的是 [`index.html`](../apps/desktop/src/renderer/index.html)
-的 `initFoucGuard()`（一个外部 ESM 模块）+ 随后 `useTheme()` 修正——
-**同样是两段式，同样有一段窗口期**。这份可以对照着看，但 mcode 是**单窗口本地应用**，
+让 CSS 自己解析，不等 JS。mcode 现在用的是 [`lib/theme.ts`](../../apps/desktop/src/renderer/lib/theme.ts)
+里的 `initFoucGuard()`（由 `main.tsx` 在 React 挂载前同步调用；`index.html` 里只有一段
+指向它的注释）+ 随后 `useTheme()` 修正——
+**同样是两段式，同样有一段窗口期**。
+（2026-10-18 核对：原链接 `../apps/...` 从 `docs/design/` 少一层 `../`，且 `initFoucGuard()`
+不在 `index.html`，实际在 `lib/theme.ts`。）这份可以对照着看，但 mcode 是**单窗口本地应用**，
 首帧本来就短，我倾向**不动**它，除非真观察到闪。**这条列为「知道有这回事」，不是待办。**
 
 ### 3.3 主窗口用 `.dark` 类名（老派）+ CDS 用 `data-mode`（新派）并存
@@ -363,7 +366,9 @@ box-shadow: var(--cds-focus-shadow);
 @media (not (forced-colors:active)) { … }
 ```
 
-现代 CSS 里最容易漏的适配。**mcode 的 `styles.css` 里一处都没有**（下面 §5 有清单）。
+现代 CSS 里最容易漏的适配。~~**mcode 的 `styles.css` 里一处都没有**~~（下面 §5 有清单）。
+**2026-10-18 核对**：现已有 1 个 `@media (forced-colors: active)` 适配块
+（`styles.css:2571`，覆盖焦点环、状态形状与用户气泡边界）。
 
 ---
 
@@ -389,7 +394,9 @@ box-shadow: var(--cds-focus-shadow);
 
 **为了不给一个 18px 图标再拉一个组件框架，宁可把 SVG 路径内联，并注明同步源。**
 取舍很清楚：**「少一个运行时」比「少一份重复」重要**。
-mcode 有 `brand-logo.png` 与 `components/` 下的图标集，同类取舍可以参考这句。
+mcode 有 [`brand-logo.png`](../../apps/desktop/src/renderer/brand-logo.png) 与
+[`lib/icons.tsx`](../../apps/desktop/src/renderer/lib/icons.tsx)（Tabler 图标封装，`components/` 下没有
+`Icons.tsx` —— 2026-10-18 核对），同类取舍可以参考这句。
 
 ### 4.2 `local_exec_consent`：安全界面不跑任何可被影响的栈
 
@@ -430,8 +437,9 @@ mcode 有 `brand-logo.png` 与 `components/` 下的图标集，同类取舍可�
   `display` 的地方都要补一条 `[hidden] { display:none }`。
 - 后者：**两个按钮初始 disabled，主进程过一段时间才由页面解锁** ——
   防「弹窗一出现用户就条件反射按回车」。这个模式 mcode 的
-  [`confirm-dialog.tsx`](../apps/desktop/src/renderer/components/ui/confirm-dialog.tsx)
+  [`confirm-dialog.tsx`](../../apps/desktop/src/renderer/components/ui/confirm-dialog.tsx)
   和审批卡片都值得对照。
+  （2026-10-18 核对：原链接少一层 `../`；链接已修正。）
 
 ### 4.3 五套小窗共用一个 `window-shared.css`，主窗口不 import 它
 
@@ -452,25 +460,32 @@ mcode 有 `brand-logo.png` 与 `components/` 下的图标集，同类取舍可�
 
 ### 5.1 现状（静态计数，非运行实测）
 
+> **2026-10-18 核对**：下表「mcode」列已按当前源码更新（ARC-005 V0 迁移后的值）；
+> 上游「Claude 桌面端」列的计数保持本次逆向时的读数不变。
+
 | 机制 | mcode | Claude 桌面端 |
 |---|---|---|
-| 设计 token 层数 | **1 层**（`styles.css` 里 `--surface/--content/--edge/--accent/--danger/--warning/--info/--success`，`"R G B"` 三元组） | **3 层**（385 色阶 → 角色 → 语义） |
+| 设计 token 层数 | **3 层**（`tokens.cds.css` 原始色阶 → `styles.css` 语义层 → Tailwind 别名；`"R G B"` 三元组） | **3 层**（385 色阶 → 角色 → 语义） |
 | 主题切换 | `.dark` 类名（`darkMode:"class"`） | `data-mode="light\|dark\|system"` + 可嵌套 `cds-dark-scope` |
-| 尺寸档位 | 无（组件各自写死） | `data-size` + `data-text-size` + `--cds-rem-scale` |
-| 动效 token | 无统一时长/曲线 | 5 档时长 + 3 条曲线 + `linear()` 弹簧 |
-| 减弱动效 | **`data-reduce-motion` 0 处**；`prefers-reduced-motion` 3 个文件 | 属性总闸 70 处 |
+| 尺寸档位 | 部分（`--chat-font-size`/`--right-panel-font-size` 可调 + `--chat-fs-*` 派生；无 `data-size` 档位） | `data-size` + `data-text-size` + `--cds-rem-scale` |
+| 动效 token | 5 档时长 + 10 条曲线 + `--spring-btn`（`styles.css:852-873`） | 5 档时长 + 3 条曲线 + `linear()` 弹簧 |
+| 减弱动效 | `html[data-reduce-motion]` 属性总闸已接（`styles.css:929-957`）；`prefers-reduced-motion` 9 个媒体块（`styles.css`）+ 2 个 TSX 的 `matchMedia` 调用 | 属性总闸 70 处 |
 | `@property` | **0 处** | 90 处 |
 | `view-transition` | **0 处** | 21 处 |
-| `mask-image` | **0 处** | 有 |
-| `:has()` | 1 个文件 | 48 条规则 |
-| `color-mix()` | 1 个文件 | 112 处 |
-| `forced-colors` 高对比 | **0 处** | 6 处 |
-| 焦点环 | 各处自行 `focus-visible:` 类 | 统一 `--cds-focus-shadow`（含 danger 变体） |
-| 骨架屏 | `components/ui/` 有 `empty-state/error-note/spinner/kbd/badge/switch/tooltip…`；**有 Skeleton 约定但无「按上次布局画轮廓」** | 轮廓式骨架 + 可拖动骨架条 |
+| `mask-image` | 1 处（`ActivityCluster.tsx:181-182` 的 radial-gradient 环） | 有 |
+| `:has()` | 1 个文件（`styles.css` 4 条） | 48 条规则 |
+| `color-mix()` | 1 个文件（`styles.css` 2 处） | 112 处 |
+| `forced-colors` 高对比 | 1 个 `@media (forced-colors: active)` 块（`styles.css:2571`） | 6 处 |
+| 焦点环 | 统一 `--focus-ring` 三层 token（`styles.css:902-927`，含 danger 变体） | 统一 `--cds-focus-shadow`（含 danger 变体） |
+| 骨架屏 | `components/ui/spinner.tsx` 有 `Skeleton`；**有约定但无「按上次布局画轮廓」** | 轮廓式骨架 + 可拖动骨架条 |
 | 窗口数 | 2 个 HTML 入口（`index.html` 主窗 + `pair.html` 手机配对页） | 6 个，各带独立 shell |
-| 首帧防闪 | `initFoucGuard()`（外部 ESM）+ `useTheme()` 两段式 | CSS `@media` 一次解析 + JS 只做后续 |
+| 首帧防闪 | `initFoucGuard()`（`lib/theme.ts`，`main.tsx` 同步调用）+ `useTheme()` 两段式 | CSS `@media` 一次解析 + JS 只做后续 |
 
 ### 5.2 缺口清单（按「值不值得做」排序）
+
+> **2026-10-18 核对（状态回填）**：A 档 1（`data-reduce-motion` 总闸）、2（统一焦点环）、
+> 3（动效时长/曲线 token）已落地（`styles.css:838-957`）；A 档 5 的审批卡输入保护、
+> B 档各项、C 档各项仍未做。清单文字保留原文作为当时的判断记录。
 
 **A 档 · 成本低、各面板都受益，建议先做**
 

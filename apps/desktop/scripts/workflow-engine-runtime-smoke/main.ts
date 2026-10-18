@@ -511,6 +511,332 @@ console.log("\n10. 引导脚本版本与完整性（bootstrap.manifest.json）")
   console.log(`\nworkflow-engine-runtime-smoke(含引导完整性):${total - failures}/${total} 通过`);
 }
 
+/* ══════════ 11. 就绪探针的身份判据（ARC-006 Gate B / P1-3） ══════════ */
+// 这条套件用**真 HTTP 服务**（真端口、真 fetch）验生产 `defaultProbe`：
+//   无关 404 服务、别人的 200、缺身份、错令牌、真 Node-RED 形状、挂起探测、迟到成功。
+// 判据来自真 Node-RED 5.0.8 实测：GET /settings 无令牌 → 401，带宿主令牌 → 200
+// 且 body 含 version / httpNodeRoot。
+console.log("\n11. 就绪探针：宿主身份 + Node-RED 语义 + 超时/stop 竞态");
+{
+  const http = await import("node:http");
+  const { defaultEngineRuntimePorts, bindProbeIdentity } = await import("@main/workflowEngines/runtimeSupervisor.js");
+  const TOKEN = "host-issued-token-0123456789abcdef";
+  const OTHER_TOKEN = "some-other-service-token-abcdef0123456789";
+
+  /** 起一个真回环 HTTP 服务；返回端口与关闭函数（close 会先断开挂着的连接）。 */
+  async function serve(handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void): Promise<{ port: number; close(): Promise<void> }> {
+    const sockets = new Set<import("node:net").Socket>();
+    const server = http.createServer(handler);
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
+    });
+    return {
+      port,
+      close: () => new Promise<void>((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => resolve());
+      }),
+    };
+  }
+  const noop = (): void => {};
+  const probe = defaultEngineRuntimePorts.probe;
+  const ctx = { identity: { adminToken: TOKEN }, timeoutMs: 2_000 };
+
+  // ★ 无关 404 服务：什么都回 404 —— 旧判据（status > 0）会把这里判成就绪。
+  {
+    const svc = await serve((_req, res) => {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not node-red");
+    });
+    const r = await probe(svc.port, new AbortController().signal, ctx);
+    check("★【P1-3】无关 404 服务 → 不就绪", r === false, { port: svc.port, result: r });
+    await svc.close();
+  }
+
+  // ★ 别人家的 200：`/settings` 匿名 200 且形状"像" Node-RED —— 没有宿主身份，不能算。
+  {
+    const foreignSettings = JSON.stringify({ version: "9.9.9", httpNodeRoot: "/api", stranger: true });
+    const svc = await serve((req, res) => {
+      if (req.url === "/settings") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(foreignSettings);
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<title>someone else's app</title>");
+    });
+    const r = await probe(svc.port, new AbortController().signal, ctx);
+    check("★【P1-3】别人的 200（无宿主身份）→ 不就绪", r === false, { result: r });
+    // 反向对照：换成**别人家的令牌**鉴别 —— 仍必须是 401 才答话；若对方不校验令牌
+    // 直接 200，说明它不认识我们的身份，同样不就绪。
+    const wrong = bindProbeIdentity(probe, { adminToken: OTHER_TOKEN });
+    const rWrong = await wrong(svc.port, new AbortController().signal, { timeoutMs: 2_000 });
+    check("★【P1-3】别人的令牌 → 不就绪（身份不是「谁回 200 谁算」）", rWrong === false, { result: rWrong });
+    await svc.close();
+  }
+
+  // ★ 真 Node-RED 形状：匿名 /settings 401、带宿主令牌 200 + version/httpNodeRoot。
+  {
+    const svc = await serve((req, res) => {
+      const auth = req.headers.authorization ?? "";
+      if (req.url === "/settings" && auth !== `Bearer ${TOKEN}`) {
+        res.writeHead(401, { "content-type": "text/plain" });
+        res.end("Unauthorized");
+        return;
+      }
+      if (req.url === "/settings") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ httpNodeRoot: "/api", version: "5.0.8", user: { username: "mcode-host", permissions: "*" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<title>Node-RED</title>");
+    });
+    const r = await probe(svc.port, new AbortController().signal, ctx);
+    check("★【P1-3】真 Node-RED 形状（带 secret 的 settings 响应）→ 就绪", r === true, { result: r });
+
+    // 边界：401 后带令牌回 200，但形状不是 Node-RED（缺 version/httpNodeRoot）→ 不就绪。
+    const svcShape = await serve((req, res) => {
+      if ((req.headers.authorization ?? "") !== `Bearer ${TOKEN}`) {
+        res.writeHead(401);
+        res.end("Unauthorized");
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const rShape = await probe(svcShape.port, new AbortController().signal, ctx);
+    check("★【P1-3】200 但不是 Node-RED settings 形状 → 不就绪", rShape === false, { result: rShape });
+    await svcShape.close();
+    await svc.close();
+  }
+
+  // ★ 缺身份：连真 Node-RED 形状也不认（fail-closed，绝不把匿名 200 当引擎）。
+  {
+    const svc = await serve((req, res) => {
+      if (req.url === "/settings") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ httpNodeRoot: "/api", version: "5.0.8" }));
+        return;
+      }
+      res.writeHead(200);
+      res.end();
+    });
+    const r = await probe(svc.port, new AbortController().signal, { timeoutMs: 2_000 });
+    check("★【P1-3】探针没有宿主身份 → 一律不就绪（fail-closed）", r === false, { result: r });
+    await svc.close();
+  }
+
+  // ★ 探针挂起时 readyTimeoutMs 生效：服务接受连接但永不响应；探针带超时预算。
+  {
+    const hanging = await serve(() => {
+      /* 永不响应：连接挂着，模拟"端口在听但服务挂死" */
+    });
+    const started = Date.now();
+    const r = await probe(hanging.port, new AbortController().signal, { ...ctx, timeoutMs: 400 });
+    const elapsed = Date.now() - started;
+    check("★【P1-3】探测挂住时受 timeoutMs 约束、返回 false（不是永远 pending）", r === false && elapsed < 3_000, { result: r, elapsed });
+    await hanging.close();
+
+    // startInner 把 deadline 剩余预算传给探针：readyTimeoutMs=800 时必须真的在
+    // 有限时间内进 failed，且进程被收掉 —— 旧代码 fetch 无超时会挂到宿主超时。
+    const runtimeHang = new EngineRuntime("node-red", makePorts({
+      spawn: () => makeFakeChild(),
+      probe: (port, signal, context) => probe(port, signal, context),
+      allocatePort: async () => hanging.port,
+    }));
+    const hangStart = Date.now();
+    const statusHang = await runtimeHang.start({ ...OPTS, readyTimeoutMs: 800 });
+    const hangElapsed = Date.now() - hangStart;
+    check("★【P1-3】探针挂起时 readyTimeoutMs 真的生效（有限时间内 failed）",
+      statusHang.state === "failed" && hangElapsed < 10_000, { state: statusHang.state, hangElapsed, reason: statusHang.reason });
+  }
+
+  // ★ stop 之后迟到的 probe 成功不复活。
+  {
+    const gate: { resolve: ((ok: boolean) => void) | null } = { resolve: null };
+    const fake = makeFakeChild({ ignoreSigterm: true });
+    const ports = makePorts({
+      spawn: () => fake,
+      // 第一次探测挂起，等 stop 之后再返回 true —— 正是"迟到的成功"。
+      probe: () => new Promise<boolean>((resolve) => {
+        gate.resolve = resolve;
+      }),
+    });
+    const runtime = new EngineRuntime("node-red", ports);
+    const startPromise = runtime.start({ ...OPTS, readyTimeoutMs: 60_000 });
+    // 等探测真的被调用（startInner 在 allocatePort（有 await）之后才探测）。
+    await new Promise((r) => setTimeout(r, 50));
+    await runtime.stop(100);
+    gate.resolve?.(true);
+    const statusAfterStop = await startPromise;
+    eq("★【P1-3】stop 之后迟到的 probe 成功不把状态改回 running", statusAfterStop.state, "stopped");
+    eq("★【P1-3】stop 之后 status() 仍是 stopped", runtime.status().state, "stopped");
+    check("★【P1-3】迟到的成功也没有把端口/进程重新挂上", runtime.status().port === null);
+  }
+}
+console.log(`\nworkflow-engine-runtime-smoke(含探针身份):${total - failures}/${total} 通过`);
+
+/* ══════════ 12. 共享 launch spec（ARC-006 Gate B / P1-4） ══════════ */
+// 生产与真 Electron 套件必须用**同一份**启动参数生成器：Electron-as-Node 模式、
+// 打包路径、Node 版本要求都在这里，测试不许再自己补只存在于测试的配置。
+console.log("\n12. 共享 launch spec 生成器（createEngineLaunchSpec）");
+{
+  const { createEngineLaunchSpec, resolveEngineEntry, NODE_RED_MIN_NODE, compareNodeVersions } =
+    await import("@main/workflowEngines/runtimeSupervisor.js");
+  const dir = mkdtempSync(join(tmpdir(), "mcode-launchspec-"));
+  mkdirSync(join(dir, "node_modules", "node-red"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", "node-red", "package.json"), JSON.stringify({ name: "node-red", version: "5.0.8" }), "utf8");
+  const bootstrap = join(dir, "bootstrap.cjs");
+  writeFileSync(bootstrap, "// bootstrap fixture\n", "utf8");
+
+  /** 模拟 Electron 宿主：execPath 是 electron 二进制、内嵌 Node 版本单独给。 */
+  const electronEnv = (overrides: Partial<import("@main/workflowEngines/runtimeSupervisor.js").EngineLaunchEnvironment> = {}) => ({
+    execPath: "C:\\apps\\Mcode\\electron.exe",
+    nodeVersion: "22.0.0", // 宿主 node 版本故意低于要求 —— 判据必须看 Electron 内嵌版本
+    isElectron: true,
+    electronNodeVersion: "24.21.0",
+    getAppPath: () => null,
+    ...overrides,
+  });
+
+  // ★ Electron 二进制 → env 必须含 ELECTRON_RUN_AS_NODE=1，版本按内嵌 Node 判。
+  {
+    const spec = createEngineLaunchSpec({
+      engineId: "node-red",
+      dataDir: dir,
+      entryFile: bootstrap,
+      installPackage: "node-red",
+      minNodeVersion: NODE_RED_MIN_NODE,
+      adminTokenFile: join(dir, ".engine-admin-token"),
+      environment: electronEnv(),
+    });
+    eq("★【P1-4】生产 launchSpec（Electron 二进制）env 含 ELECTRON_RUN_AS_NODE=1", spec.env?.ELECTRON_RUN_AS_NODE, "1");
+    check("★【P1-4】命令就是 Electron 二进制", spec.command === "C:\\apps\\Mcode\\electron.exe", spec.command);
+    check("★【P1-4】版本按 Electron 内嵌 Node 判定（宿主 node 低于要求也放行）", spec.env?.ELECTRON_RUN_AS_NODE === "1");
+    check("★【P1-4】宿主签发了身份并同时进 env 与 probeIdentity",
+      typeof spec.env?.MCODE_ENGINE_ADMIN_TOKEN === "string"
+      && spec.env.MCODE_ENGINE_ADMIN_TOKEN === spec.probeIdentity?.adminToken
+      && (spec.env.MCODE_ENGINE_ADMIN_TOKEN ?? "").length === 64,
+      { envToken: spec.env?.MCODE_ENGINE_ADMIN_TOKEN?.slice(0, 6), identity: spec.probeIdentity?.adminToken?.slice(0, 6) });
+    check("★【P1-4】凭据密钥进 env", /^[0-9a-f]{64}$/.test(spec.env?.NODE_RED_CREDENTIAL_SECRET ?? ""), spec.env?.NODE_RED_CREDENTIAL_SECRET?.slice(0, 6));
+
+    // 版本不满足 → 抛错并点名两个版本（不静默启动一个注定失败的引擎）。
+    let versionError: string | null = null;
+    try {
+      createEngineLaunchSpec({
+        engineId: "node-red",
+        dataDir: dir,
+        entryFile: bootstrap,
+        installPackage: "node-red",
+        minNodeVersion: NODE_RED_MIN_NODE,
+        environment: electronEnv({ electronNodeVersion: "22.8.0" }),
+      });
+    } catch (err) {
+      versionError = err instanceof Error ? err.message : String(err);
+    }
+    check("★【P1-4】Electron 内嵌 Node 低于引擎要求 → 抛错并点名版本",
+      versionError !== null && versionError.includes("22.9.0") && versionError.includes("22.8.0"), versionError);
+  }
+
+  // 纯 node 宿主：不给 Electron-as-Node（避免把普通 node 当成 electron）。
+  {
+    const spec = createEngineLaunchSpec({
+      engineId: "node-red",
+      dataDir: dir,
+      entryFile: bootstrap,
+      installPackage: "node-red",
+      minNodeVersion: NODE_RED_MIN_NODE,
+      environment: { execPath: "C:\\node\\node.exe", nodeVersion: "24.0.0", isElectron: false, getAppPath: () => null },
+    });
+    check("★【P1-4】纯 node 宿主不注入 ELECTRON_RUN_AS_NODE", !("ELECTRON_RUN_AS_NODE" in (spec.env ?? {})), Object.keys(spec.env ?? {}));
+    check("★【P1-4】没有 adminTokenFile 时不给 probeIdentity", spec.probeIdentity === undefined);
+  }
+
+  // ★ 打包路径：app.asar → app.asar.unpacked；拿不到 app 路径 → 抛错（不静默猜）。
+  {
+    // 造一个真实的打包布局：<resources>/app.asar（文件）+ <resources>/app.asar.unpacked/...
+    const resourcesDir = mkdtempSync(join(tmpdir(), "mcode-resources-"));
+    const rel = join("resources", "engine-bootstrap", "node-red.cjs");
+    mkdirSync(join(resourcesDir, "app.asar.unpacked", "resources", "engine-bootstrap"), { recursive: true });
+    writeFileSync(join(resourcesDir, "app.asar.unpacked", rel), "// packaged\n", "utf8");
+    writeFileSync(join(resourcesDir, "app.asar"), "PK asar blob", "utf8");
+    const appAsar = join(resourcesDir, "app.asar");
+
+    const resolved = resolveEngineEntry({
+      entryFile: rel,
+      dataDir: mkdtempSync(join(tmpdir(), "mcode-empty-data-")),
+      appRelativeEntry: rel,
+      getAppPath: () => appAsar,
+    });
+    check("★【P1-4】app.asar → app.asar.unpacked 解析（asar 内路径不能直接 spawn）",
+      resolved === join(resourcesDir, "app.asar.unpacked", rel) && existsSync(resolved), resolved);
+
+    // 开发态（app 路径就是包根）：直接 join。
+    const devRoot = mkdtempSync(join(tmpdir(), "mcode-devroot-"));
+    mkdirSync(join(devRoot, "resources", "engine-bootstrap"), { recursive: true });
+    writeFileSync(join(devRoot, rel), "// dev\n", "utf8");
+    const resolvedDev = resolveEngineEntry({
+      entryFile: rel,
+      dataDir: mkdtempSync(join(tmpdir(), "mcode-empty-data-")),
+      appRelativeEntry: rel,
+      getAppPath: () => devRoot,
+    });
+    check("★【P1-4】开发态入口按 app 根解析", resolvedDev === join(devRoot, rel) && existsSync(resolvedDev), resolvedDev);
+
+    let noAppError: string | null = null;
+    try {
+      createEngineLaunchSpec({
+        engineId: "node-red",
+        dataDir: dir,
+        entryFile: rel, // 不在 dataDir 里、不在 app 路径里 → 必须抛
+        installPackage: "node-red",
+        minNodeVersion: NODE_RED_MIN_NODE,
+        environment: { execPath: "C:\\node\\node.exe", nodeVersion: "24.0.0", isElectron: false, getAppPath: () => null },
+      });
+    } catch (err) {
+      noAppError = err instanceof Error ? err.message : String(err);
+    }
+    check("★【P1-4】拿不到 app 路径且入口不存在 → 明确抛错（不静默回落到 cwd）",
+      noAppError !== null && noAppError.includes("app 路径"), noAppError);
+
+    let missingError: string | null = null;
+    try {
+      resolveEngineEntry({
+        entryFile: rel,
+        dataDir: mkdtempSync(join(tmpdir(), "mcode-empty-data-")),
+        appRelativeEntry: rel,
+        getAppPath: () => devRoot,
+      });
+      // devRoot 里有这个文件；删掉再看缺失分支
+      rmSync(join(devRoot, rel), { force: true });
+      resolveEngineEntry({
+        entryFile: rel,
+        dataDir: mkdtempSync(join(tmpdir(), "mcode-empty-data-")),
+        appRelativeEntry: rel,
+        getAppPath: () => devRoot,
+      });
+    } catch (err) {
+      missingError = err instanceof Error ? err.message : String(err);
+    }
+    check("★【P1-4】开发态解析到不存在的入口 → 明确抛错并点名路径",
+      missingError !== null && missingError.includes("不存在"), missingError);
+  }
+
+  // 版本比较的小边界（避免 "22.10" 被当成小于 "22.9"）。
+  {
+    check("版本比较：22.10.0 > 22.9.0", compareNodeVersions("22.10.0", "22.9.0") > 0);
+    check("版本比较：22.9.0 == 22.9.0", compareNodeVersions("22.9.0", "22.9.0") === 0);
+    check("版本比较：22.8.9 < 22.9.0", compareNodeVersions("22.8.9", "22.9.0") < 0);
+  }
+}
+console.log(`\nworkflow-engine-runtime-smoke(含 launch spec):${total - failures}/${total} 通过`);
+
 // 退出码只在这里定一次 —— 前面 §7/§8 的失败同样要红(从前 exitCode=1 设在 §7 之前,
 // §7/§8 里的 FAIL 会被仍为 0 的退出码盖过去:变异验证时实测「套件绿着而断言红着」)。
 if (failures > 0) process.exitCode = 1;

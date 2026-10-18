@@ -27,14 +27,46 @@
  *   `<dataRoot>/workflow-engines/<id>/`，不碰用户项目。
  * - **地址不外泄**：`status()` 只回端口与就绪态；不把完整命令/凭据放进快照。
  *
+ * ## 就绪判据（ARC-006 Gate B / P1-3）
+ *
+ * 「端口上有个会说话的服务」**不等于**「我们的引擎起来了」：无关的 404 服务、
+ * 别人的 200 页面、抢占端口的路人进程都会让 `status > 0` 的旧判据误判 running。
+ * 现在的生产探针（{@link defaultProbe}）要求两件事：
+ *   1. **宿主签发的控制面身份**：`GET /settings` 不带令牌必须回 401 —— 证明对方
+ *      认的是本宿主写进引擎数据目录的 `.engine-admin-token`（与凭据密钥分开）；
+ *      没配置身份时**一律不就绪**（fail-closed），绝不把"谁都能访问的 200"当引擎。
+ *   2. **真实 Node-RED 语义**：带 `Authorization: Bearer <token>` 后必须 200，
+ *      且响应是 Node-RED settings 形状（`version` + `httpNodeRoot` 均为字符串）。
+ *
+ * 探针自身带 `AbortSignal.timeout`，并由 `startInner` 把它绑定到 `readyTimeoutMs`
+ * 的剩余预算（见 `EngineProbeContext.timeoutMs`）—— 探测挂住时，就绪超时**真的**
+ * 会生效（此前 fetch 无超时，deadline 形同虚设；真 Node-RED 实测抓到）。
+ *
+ * ## stop 之后迟到的成功不复活（同批 P1-3）
+ *
+ * 每次 `start` 领一个单调 `epoch`，`stop()` 立刻作废它。启动循环在每个 `await`
+ * 之后复核 epoch：stop 期间迟到的探针成功只返回当前（stopped）状态，不会把实例
+ * 改回 running，也不会在超时路径上误杀一个已由 stop 收掉的进程。
+ *
+ * ## 启动参数生成（ARC-006 Gate B / P1-4）
+ *
+ * {@link createEngineLaunchSpec} 是**唯一**的启动参数来源：命令、入口脚本、宿主
+ * 签发身份（`.engine-secret` / `.engine-admin-token`）、Electron-as-Node 模式、
+ * 打包路径解析与最低 Node 版本要求都收在这里。生产注册表与真 Electron 套件都调
+ * 它 —— 测试不再自己补 `ELECTRON_RUN_AS_NODE=1` 这类只存在于测试里的配置。
+ *
  * ## 可测性
  *
  * 进程与就绪探测都是注入的（`ports.spawn` / `ports.probe`），所以无头套件可以：
  *   - 用假进程验状态机（starting → running → stopped / failed）；
  *   - 用真 HTTP 服务验探活在真端口上的行为。
- * 生产默认实现不 import electron，可在纯 node 里加载。
+ * 生产默认实现不 import electron（打包路径用惰性 require / 可注入的 getAppPath），
+ * 可在纯 node 里加载。
  */
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { log } from "@main/lib/logger.js";
 
 export type EngineRuntimeState = "stopped" | "starting" | "running" | "failed";
@@ -57,6 +89,39 @@ export interface EngineSpawnSpec {
   env: NodeJS.ProcessEnv;
 }
 
+/**
+ * 探针上下文 —— 引擎身份与本次探测的时间预算。
+ *
+ * `identity.adminToken` 是宿主签发、同时写进引擎数据目录 `.engine-admin-token`
+ * 与子进程 env 的控制面令牌。没有它，生产探针无法区分「我们的引擎」和「端口上
+ * 的任意一个 HTTP 服务」，因此按 fail-closed 处理（见 {@link defaultProbe}）。
+ * `timeoutMs` 是**本次探测**可用的时间（已按 `readyTimeoutMs` 的剩余 deadline
+ * 收窄）—— 探针必须用它构造自己的 `AbortSignal.timeout`，否则挂住的探测会让
+ * 就绪超时失效。
+ */
+export interface EngineProbeContext {
+  identity?: { adminToken: string };
+  timeoutMs?: number;
+}
+
+/** 生产探针单次请求的超时上限（同时受 readyTimeoutMs 剩余预算约束）。 */
+const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * 实际执行就绪探测的函数。`EngineRuntimePorts.probe` 是它的**绑定形态**：
+ *
+ *   - 旧签字 `probe(port, signal)` 仍被接受（套件/历史调用），但那样的探针没有
+ *     宿主身份与超时预算，只能由调用方自己保证；
+ *   - 新签字 `probe(port, signal, context)` 额外拿到身份与剩余时间。
+ *
+ * 生产注册表用 `boundProbe` 把身份绑在端口实现里，不留"忘了传上下文"的口子。
+ */
+export type EngineProbe = (
+  port: number,
+  signal: AbortSignal,
+  context?: EngineProbeContext,
+) => Promise<boolean>;
+
 /** 最小子进程面 —— 只为可注入。 */
 export interface EngineChildProcess {
   pid?: number;
@@ -71,8 +136,8 @@ export interface EngineChildProcess {
 export interface EngineRuntimePorts {
   /** 起一个进程。 */
   spawn(spec: EngineSpawnSpec): EngineChildProcess;
-  /** 就绪探测：返回 true = 引擎已经在监听且能应答。 */
-  probe(port: number, signal: AbortSignal): Promise<boolean>;
+  /** 就绪探测：返回 true = 引擎已经在监听、且**确实是本宿主的引擎**。 */
+  probe: EngineProbe;
   /** 分配一个可拨通的回环端口（默认用 `loopbackPort`）。 */
   allocatePort(): Promise<number>;
   /** 当前时间（毫秒）。 */
@@ -90,6 +155,8 @@ export interface EngineStartOptions {
   args: (port: number, dataDir: string) => string[];
   /** 额外环境变量（会在宿主白名单基础上合并）。 */
   env?: NodeJS.ProcessEnv;
+  /** 宿主签发的控制面身份（探针据此确认「这是我们自己的引擎」）。 */
+  probeIdentity?: { adminToken: string };
   /** 就绪探测的总超时。 */
   readyTimeoutMs?: number;
   /** stop 时等 SIGTERM 的宽限；超时再强杀。 */
@@ -124,15 +191,66 @@ async function defaultAllocatePort(): Promise<number> {
   }
 }
 
-/** 生产默认就绪探测：HTTP GET `/` 拿到任意响应（含 3xx/4xx）即视为在监听。 */
-async function defaultProbe(port: number, signal: AbortSignal): Promise<boolean> {
+/**
+ * 生产默认就绪探测：**宿主身份 + 真实 Node-RED 语义**（见文件头「就绪判据」）。
+ *
+ * 判据（全部满足才算就绪）：
+ *   1. 上下文里有宿主签发的 `adminToken`；没有 → false（fail-closed，绝不把匿名
+ *      200 当引擎）；
+ *   2. `GET /settings` **不带令牌**必须回 401 —— 说明对方有控制面认证，且认的是
+ *      我们写进数据目录的那一个令牌（别人的 200 / 无关 404 都过不了这一关）；
+ *   3. 带 `Authorization: Bearer <token>` 再取 `/settings`，必须 200，且是
+ *      Node-RED settings 形状：JSON 对象、`version` 与 `httpNodeRoot` 都是字符串
+ *      （`runtime.settings.version` 由 Node-RED 5.x 在 `runtime.init` 时按包版本
+ *      写入；`httpNodeRoot` 是 settings 固定字段）。
+ *
+ * 超时：每次请求都用 `AbortSignal.any([调用方 signal, AbortSignal.timeout(...)])`，
+ * 预算取 `context.timeoutMs`（`startInner` 按 deadline 剩余时间收窄）与单次上限
+ * 的较小值。探测挂住时 abort 会真的打断请求 —— 就绪超时因此生效。
+ */
+async function defaultProbe(
+  port: number,
+  signal: AbortSignal,
+  context: EngineProbeContext = {},
+): Promise<boolean> {
+  const adminToken = context.identity?.adminToken ?? "";
+  if (adminToken === "") return false; // 没有宿主身份 → 无法证明是我们的引擎
+  const budget = Math.max(
+    1,
+    Math.min(context.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS),
+  );
+  const url = `http://127.0.0.1:${port}/settings`;
+  const fetchOnce = async (headers: Record<string, string>): Promise<Response> =>
+    fetch(url, {
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(budget)]),
+    });
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/`, { signal, redirect: "manual" });
-    // 任何 HTTP 应答都说明端口上有一个会说话的服务 —— 具体状态码由引擎自己决定。
-    return res.status > 0;
+    // 1) 无令牌：必须被拒（401）。200/404/重定向都说明不是"带宿主认证的 Node-RED"。
+    const anonymous = await fetchOnce({});
+    if (anonymous.status !== 401) return false;
+    // 2) 带令牌：200 + Node-RED settings 形状。
+    const authorized = await fetchOnce({ authorization: `Bearer ${adminToken}` });
+    if (authorized.status !== 200) return false;
+    const body = (await authorized.json()) as unknown;
+    if (typeof body !== "object" || body === null) return false;
+    const settings = body as { version?: unknown; httpNodeRoot?: unknown };
+    return typeof settings.version === "string" && typeof settings.httpNodeRoot === "string";
   } catch {
     return false;
   }
+}
+
+/**
+ * 把身份绑定进探针端口 —— 生产注册表用这条路径，`probe(port, signal)` 的旧签字
+ * 仍然成立，但身份不会因为调用方忘了传上下文而丢失。
+ */
+export function bindProbeIdentity(
+  probe: EngineProbe,
+  identity: { adminToken: string },
+): EngineProbe {
+  return (port, signal, context) => probe(port, signal, { ...context, identity });
 }
 
 /** 把 child_process 包成可注入的最小面。 */
@@ -170,6 +288,8 @@ export class EngineRuntime {
   private reason: string | null = null;
   private child: EngineChildProcess | null = null;
   private starting: Promise<EngineRuntimeStatus> | null = null;
+  /** 启动世代：每次 start +1，stop 也 +1（作废在途启动）。见文件头「迟到的成功」。 */
+  private epoch = 0;
   private readonly engineId: string;
   private readonly ports: EngineRuntimePorts;
 
@@ -186,22 +306,32 @@ export class EngineRuntime {
   async start(options: EngineStartOptions): Promise<EngineRuntimeStatus> {
     if (this.state === "running") return this.status();
     if (this.starting !== null) return this.starting;
-    this.starting = this.startInner(options).finally(() => {
-      this.starting = null;
+    const epoch = ++this.epoch;
+    this.starting = this.startInner(options, epoch).finally(() => {
+      // 只有这一世代还当前时才清 —— stop 之后新 start 的 promise 不能被旧 finally 抹掉。
+      if (this.epoch === epoch) this.starting = null;
     });
     return this.starting;
   }
 
-  private async startInner(options: EngineStartOptions): Promise<EngineRuntimeStatus> {
+  private async startInner(options: EngineStartOptions, epoch: number): Promise<EngineRuntimeStatus> {
     this.state = "starting";
     this.reason = null;
     let port: number;
     try {
       port = await this.ports.allocatePort();
     } catch (err) {
+      if (this.epoch !== epoch) return this.status();
       return this.fail(`分配端口失败：${err instanceof Error ? err.message : String(err)}`);
     }
+    if (this.epoch !== epoch) return this.status(); // stop 在分配端口期间发生
     this.port = port;
+    // 探针身份 = 注进引擎的那个控制面令牌（`.engine-admin-token` 的内容）。它的
+    // 单一事实来源就是 env：注册表读文件、写 env，探针按同一个值去握手。
+    const probeIdentity = options.probeIdentity
+      ?? (typeof options.env?.MCODE_ENGINE_ADMIN_TOKEN === "string" && options.env.MCODE_ENGINE_ADMIN_TOKEN !== ""
+        ? { adminToken: options.env.MCODE_ENGINE_ADMIN_TOKEN }
+        : undefined);
     const spec: EngineSpawnSpec = {
       command: options.command,
       args: options.args(port, options.dataDir),
@@ -219,7 +349,17 @@ export class EngineRuntime {
     try {
       child = this.ports.spawn(spec);
     } catch (err) {
+      if (this.epoch !== epoch) return this.status();
       return this.fail(`启动引擎进程失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (this.epoch !== epoch) {
+      // stop 抢在 spawn 之前发生：别把这个进程留成孤儿。
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* 已经死了 */
+      }
+      return this.status();
     }
     this.child = child;
     let exited = false;
@@ -239,26 +379,39 @@ export class EngineRuntime {
       this.fail(`引擎进程错误：${err.message}`);
     });
 
-    const deadline = this.ports.now() + (options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS);
+    const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+    const deadline = this.ports.now() + readyTimeoutMs;
     while (this.ports.now() < deadline) {
       if (exited) return this.status();
+      // 剩余预算传给探针：探针据此构造自己的 AbortSignal.timeout。没有这一条，
+      // 挂住的探测会让就绪超时形同虚设（真 Node-RED 实测：30s deadline 25s 未返回）。
+      const remaining = Math.max(1, deadline - this.ports.now());
       const controller = new AbortController();
-      const ok = await this.ports.probe(port, controller.signal).catch(() => false);
+      const ok = await this.ports
+        .probe(port, controller.signal, { identity: probeIdentity, timeoutMs: remaining })
+        .catch(() => false);
       controller.abort();
+      // stop 在探测期间发生 → 迟到的成功不得把状态改回 running（也不得误杀已停进程）。
+      if (this.epoch !== epoch) return this.status();
       if (ok) {
         this.state = "running";
         log.info(`[workflow-engine:${this.engineId}] ready on 127.0.0.1:${port}`);
         return this.status();
       }
       await this.ports.sleep(200);
+      if (this.epoch !== epoch) return this.status();
     }
+    if (this.epoch !== epoch) return this.status();
     // 超时：把进程收掉再报失败（留着会变成一个没人管的监听端口）。
     this.terminateChild();
-    return this.fail(`引擎在 ${options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS}ms 内没有就绪`);
+    return this.fail(`引擎在 ${readyTimeoutMs}ms 内没有就绪`);
   }
 
   /** 停止（幂等）。先 SIGTERM，宽限期后强杀。 */
   async stop(graceMs = DEFAULT_STOP_GRACE_MS): Promise<EngineRuntimeStatus> {
+    // 作废所有在途启动：迟到的探针成功/失败都不能再把状态改回去（见文件头）。
+    this.epoch += 1;
+    this.starting = null;
     const child = this.child;
     if (child === null) {
       this.state = "stopped";
@@ -339,3 +492,221 @@ export const defaultEngineRuntimePorts: EngineRuntimePorts = {
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+
+/* ══════════════ 共享启动参数生成（ARC-006 Gate B / P1-4） ══════════════ */
+
+/**
+ * `WorkflowEngineLaunchSpec` 在 runtimeSupervisor 这一侧的镜像。
+ *
+ * 刻意不 import `@main/ipc/workflowEngine.js`：注册表与真 Electron 套件都要用
+ * 这个生成器，而 ipc 模块会拖进 `electron` 的 IpcMain 类型依赖。结构相同即可
+ * 赋值（TypeScript 结构化类型），字段语义见那边。
+ */
+export interface EngineLaunchSpec {
+  command: string;
+  args: (port: number, dataDir: string) => string[];
+  dataDir: string;
+  env?: NodeJS.ProcessEnv;
+  /** 宿主签发的控制面身份 —— 探针据此确认「这是我们自己的引擎」。 */
+  probeIdentity?: { adminToken: string };
+}
+
+/**
+ * Node-RED 5.x 自己的最低运行时要求（`packages/node_modules/node-red/package.json`
+ * 的 `engines.node` 为 `>=22.9`；`lib/red.js` 的 checkVersion 也以 `>=22.9.0` 为准）。
+ * 启动前用**引擎实际会用的**那个 Node 版本核对，而不是宿主进程的 `process.version`
+ * （Electron-as-Node 下两者不同：Electron 44 内嵌的是 Node 24）。
+ */
+export const NODE_RED_MIN_NODE = "22.9.0";
+
+/** 数字版本比较（`22.9.0` vs `22.10.1`）；不处理 prerelease —— 引擎要求里没有。 */
+export function compareNodeVersions(a: string, b: string): number {
+  const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+/** `app.getAppPath()` 的惰性解析：无 electron（无头/纯 node）时返回 null，**不猜 cwd**。 */
+function defaultGetAppPath(): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const electron = require("electron") as { app?: { getAppPath?: () => string } };
+    const appPath = electron.app?.getAppPath?.();
+    return typeof appPath === "string" && appPath.length > 0 ? appPath : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `process.versions.electron` 的可注入读取面（套件在纯 node 里模拟 Electron 宿主）。 */
+export interface EngineLaunchEnvironment {
+  /** 当前进程的执行文件（生产是 electron.exe / node）。 */
+  execPath: string;
+  /** 当前进程内嵌的 Node 版本（默认 `process.versions.node`）。 */
+  nodeVersion: string;
+  /** 当前进程是否 Electron 运行时（默认看 `process.versions.electron`）。 */
+  isElectron: boolean;
+  /** Electron 的 `app.getAppPath()`（默认惰性 require；无 electron 时 null）。 */
+  getAppPath(): string | null;
+  /** Electron 下内嵌 Node 的版本（默认用当前进程的 —— 同一二进制的同一运行时）。 */
+  electronNodeVersion?: string;
+}
+
+function defaultLaunchEnvironment(): EngineLaunchEnvironment {
+  return {
+    execPath: process.execPath,
+    nodeVersion: process.versions.node,
+    isElectron: typeof process.versions.electron === "string",
+    getAppPath: defaultGetAppPath,
+  };
+}
+
+/**
+ * 解析引擎引导脚本的真实路径 —— 开发态与打包态**只有一个**出口。
+ *
+ *   - 参数里的绝对路径直接采用（调用方已解析好，比如套件/测试）；
+ *   - `<dataDir>/<file>` 存在则用它（**包括** `node_modules` 里的实现包）；
+ *   - 都不存在时用 app 路径解析（`app.getAppPath()`）：
+ *       · app 路径是 `.../app.asar` → 用 `.../app.asar.unpacked/<rel>`（asar 里的
+ *         文件不是普通磁盘路径，`node <asar>/x.cjs` 起不来；打包配置需要把引导
+ *         资产放进 `asarUnpack`）；
+ *       · 开发态（`apps/desktop`）→ `<appPath>/<rel>`；
+ *   - **拿不到 app 路径（无 electron / 未就绪）→ 抛错**。不静默回落到 cwd：
+ *     那样会"看起来启动成功"却跑的是另一个目录里的脚本。
+ *
+ * `rel` 必须是仓库/包相对路径（如 `resources/engine-bootstrap/node-red.cjs`）；
+ * 绝对路径只接受参数本身。
+ */
+export function resolveEngineEntry(options: {
+  entryFile: string;
+  dataDir: string;
+  /** 相对 app 根（`app.getAppPath()`）的路径。 */
+  appRelativeEntry?: string;
+  getAppPath?: () => string | null;
+}): string {
+  if (isAbsolute(options.entryFile)) return options.entryFile;
+  const inDataDir = join(options.dataDir, options.entryFile);
+  if (existsSync(inDataDir)) return inDataDir;
+  const appRelative = options.appRelativeEntry ?? options.entryFile;
+  const appPath = (options.getAppPath ?? defaultGetAppPath)();
+  if (appPath === null || appPath === "") {
+    throw new Error(
+      `无法解析引擎入口 ${appRelative}：拿不到 app 路径（无 electron 宿主），且 ${inDataDir} 不存在`,
+    );
+  }
+  const resolved = appPath.includes("app.asar")
+    ? join(appPath.replace("app.asar", "app.asar.unpacked"), appRelative)
+    : join(appPath, appRelative);
+  if (!existsSync(resolved)) {
+    throw new Error(`无法解析引擎入口：${resolved} 不存在（app 路径 ${appPath}）`);
+  }
+  return resolved;
+}
+
+/** {@link createEngineLaunchSpec} 的可注入依赖（套件/注册表用）。 */
+export interface EngineLaunchSpecOptions {
+  engineId: string;
+  /** 引擎数据目录（已由宿主创建）。 */
+  dataDir: string;
+  /** 引导脚本：绝对路径，或相对 dataDir / app 根的文件名。 */
+  entryFile: string;
+  /** `entryFile` 是相对路径时，它在 app 根下的位置（默认同 `entryFile`）。 */
+  appRelativeEntry?: string;
+  /** 引擎实现包（`<dataDir>/node_modules/<installPackage>` 必须存在）。 */
+  installPackage: string;
+  /** 该引擎要求的最低 Node 版本（`22.9.0`）。 */
+  minNodeVersion: string;
+  /** 额外环境变量（宿主白名单 env 之外，引擎自己的配置）。 */
+  env?: NodeJS.ProcessEnv;
+  /** 控制面令牌文件的绝对路径；内容会被读进 env.MCODE_ENGINE_ADMIN_TOKEN 与探针身份。 */
+  adminTokenFile?: string;
+  /** 缺省时读取/生成 `.engine-secret` 的目录（默认 `dataDir` 本身）。 */
+  secretFile?: string;
+  environment?: EngineLaunchEnvironment;
+}
+
+/**
+ * **唯一**的生产启动参数生成器（ARC-006 Gate B / P1-4）。
+ *
+ * 收口的四件事：
+ *   1. **Electron-as-Node**：`process.execPath` 在 Electron 宿主里是 electron.exe，
+ *      不加 `ELECTRON_RUN_AS_NODE=1` 会起一个 GUI 进程而不是 Node —— 生产与
+ *      真 Electron 套件从此走同一个判断（按命令是不是 Electron 二进制，而不是
+ *      按"测试要不要补"）；
+ *   2. **打包路径**：入口解析只走 {@link resolveEngineEntry}；拿不到 app 路径时
+ *      抛错而不是静默猜；
+ *   3. **版本要求**：用引擎**实际会用的** Node 版本（Electron 内嵌版本）核对
+ *      `minNodeVersion`，不满足直接抛错（错误信息点名两个版本）；
+ *   4. **宿主身份**：`.engine-secret`（凭据解密）与 `.engine-admin-token`（控制面
+ *      认证）在这里生成/读取，并同时进入 env 与 `probeIdentity` —— 探针不再依赖
+ *      调用方记得传。
+ *
+ * 命令是 Electron 二进制时还会带 `ELECTRON_NO_ATTACH_CONSOLE=1`：Node 语义下
+ * 这个变量避免子进程在 Windows 上抢占父进程控制台（与 `genofficeCli` 同一取向）。
+ */
+export function createEngineLaunchSpec(options: EngineLaunchSpecOptions): EngineLaunchSpec {
+  const environment = options.environment ?? defaultLaunchEnvironment();
+  const packageJson = join(options.dataDir, "node_modules", options.installPackage, "package.json");
+  if (!existsSync(packageJson)) {
+    throw new Error(`引擎 ${options.engineId} 未安装：找不到 ${packageJson}`);
+  }
+  const entry = resolveEngineEntry({
+    entryFile: options.entryFile,
+    dataDir: options.dataDir,
+    ...(options.appRelativeEntry !== undefined ? { appRelativeEntry: options.appRelativeEntry } : {}),
+    ...(environment.getAppPath !== undefined ? { getAppPath: environment.getAppPath } : {}),
+  });
+  // 版本要求按引擎实际会用到的 Node：Electron 宿主里是内嵌 Node，不是宿主的 node。
+  const runtimeNode = environment.isElectron
+    ? (environment.electronNodeVersion ?? environment.nodeVersion)
+    : environment.nodeVersion;
+  if (compareNodeVersions(runtimeNode, options.minNodeVersion) < 0) {
+    throw new Error(
+      `引擎 ${options.engineId} 要求 Node >= ${options.minNodeVersion}，当前引擎运行时是 ${runtimeNode}`,
+    );
+  }
+  // 凭据密钥：每个数据目录一个。不写进 flows.json / creds，也不进日志。
+  const secret = readOrCreateSecret(join(options.secretFile ?? options.dataDir, ".engine-secret"));
+  const env: NodeJS.ProcessEnv = {
+    ...(options.env ?? {}),
+    NODE_RED_CREDENTIAL_SECRET: secret,
+  };
+  let probeIdentity: EngineLaunchSpec["probeIdentity"];
+  if (options.adminTokenFile !== undefined) {
+    const adminToken = readOrCreateSecret(options.adminTokenFile);
+    env.MCODE_ENGINE_ADMIN_TOKEN = adminToken;
+    probeIdentity = { adminToken };
+  }
+  const commandIsElectron = environment.isElectron
+    || /^electron(\.exe)?$/i.test(basename(environment.execPath));
+  if (commandIsElectron) {
+    // Electron 二进制必须在 Node 语义下跑：否则它开的是一个 GUI app。
+    env.ELECTRON_RUN_AS_NODE = "1";
+    env.ELECTRON_NO_ATTACH_CONSOLE = "1";
+  }
+  return {
+    command: environment.execPath,
+    args: (port, dataDir) => [entry, String(port), dataDir],
+    dataDir: options.dataDir,
+    env,
+    ...(probeIdentity !== undefined ? { probeIdentity } : {}),
+  };
+}
+
+/** 读一个非空小文件；缺失/为空则生成并写入（mode 0600，Windows 上尽力而为）。 */
+function readOrCreateSecret(path: string): string {
+  try {
+    const value = readFileSync(path, "utf8").trim();
+    if (value !== "") return value;
+  } catch {
+    /* 不存在 */
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const value = randomBytes(32).toString("hex");
+  writeFileSync(path, value, { encoding: "utf8", mode: 0o600 });
+  return value;
+}
