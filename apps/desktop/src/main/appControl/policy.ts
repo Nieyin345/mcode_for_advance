@@ -509,6 +509,7 @@ export const DOMAIN_LABELS: Record<string, string> = {
   document: "文档:读取结构(Word/PPT/Excel)、按操作编辑保存、格式转换、本机能力诊断",
   // 【ARC-007】受控文档视图宿主(界面层,与 browser 面板同档):视图的开关/几何/焦点。
   documentView: "文档视图宿主(界面层):打开/定位/显示/隐藏/聚焦/关闭编辑器视图、状态诊断",
+  workflowEngine: "第三方工作流引擎:启动/停止/状态(独立子进程,只绑回环)",
   // 【MC-059】无人值守计划:用户签发计划级授权 + 有界执行(appServices/unattendedTaskPlan)。
   // 两条都在 BLOCKED 档(agent 够不到,见上),这里只给 `app_api_list` 一个域标签。
   unattended: "无人值守任务计划:用户签发计划级授权、有界执行(建会话)",

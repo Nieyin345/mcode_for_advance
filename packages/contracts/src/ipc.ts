@@ -174,6 +174,7 @@ export * from "./ipc/scene.js";
 export * from "./ipc/document.js";
 // 【ARC-007】受控文档视图宿主(WebContentsView):open/bounds/show/hide/focus/close/list。
 export * from "./ipc/documentView.js";
+export * from "./ipc/workflowEngine.js";
 // 无人值守任务计划的审批入口契约(MC-059;approve/run 钉 blocked,只给桌面渲染端)。
 export * from "./ipc/unattended.js";
 // 主机 hook 授权签发/撤销的用户入口契约(MC-061;issue/revoke 钉 blocked,只给桌面渲染端)。

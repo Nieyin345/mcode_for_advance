@@ -1034,6 +1034,12 @@ const api = {
     close: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_CLOSE, input)) as RpcMap["documentView.close"],
     list: (() => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_LIST)) as RpcMap["documentView.list"],
   },
+  workflowEngine: {
+    start: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_START, input)) as RpcMap["workflowEngine.start"],
+    stop: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_STOP, input)) as RpcMap["workflowEngine.stop"],
+    status: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_STATUS, input)) as RpcMap["workflowEngine.status"],
+    list: (() => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_LIST)) as RpcMap["workflowEngine.list"],
+  },
   unattended: {
     // 无人值守任务计划:用户签发计划级授权 + 正式执行。**只有桌面渲染端**够得到
     // (agent 侧 policy.ts 判 blocked,mobile 的 webApi 里显式 unsupported)—— 批准一份会

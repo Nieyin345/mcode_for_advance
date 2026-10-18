@@ -12,6 +12,19 @@ import {
   DOCUMENT_VIEW_LIST_CHANNEL,
 } from "./documentView.js";
 import type { DocViewOpenInput, DocViewOpenPathInput, DocViewBoundsInput, DocViewCloseInput, DocViewResult, DocViewListResult } from "./documentView.js";
+import {
+  WORKFLOW_ENGINE_START_CHANNEL,
+  WORKFLOW_ENGINE_STOP_CHANNEL,
+  WORKFLOW_ENGINE_STATUS_CHANNEL,
+  WORKFLOW_ENGINE_LIST_CHANNEL,
+} from "./workflowEngine.js";
+import type {
+  WorkflowEngineStartInput,
+  WorkflowEngineStopInput,
+  WorkflowEngineStatusInput,
+  WorkflowEngineResult,
+  WorkflowEngineListResult,
+} from "./workflowEngine.js";
 import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult, UnattendedListIpcResult, UnattendedResumeInput, UnattendedAbandonInput, UnattendedAbandonIpcResult } from "./unattended.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
@@ -1133,6 +1146,14 @@ export interface RpcMap {
   "documentView.close": (input: DocViewCloseInput) => Promise<DocViewResult>;
   /** 【ARC-007】文档视图状态快照(诊断用,只读;不含 webContents 句柄)。 */
   "documentView.list": () => Promise<DocViewListResult>;
+  /** 【ARC-006 WF-INT】启动一个第三方工作流引擎(独立子进程,只绑 127.0.0.1;数据目录与端口由宿主给)。 */
+  "workflowEngine.start": (input: WorkflowEngineStartInput) => Promise<WorkflowEngineResult>;
+  /** 【ARC-006 WF-INT】停止引擎(SIGTERM → 宽限 → SIGKILL;幂等)。 */
+  "workflowEngine.stop": (input: WorkflowEngineStopInput) => Promise<WorkflowEngineResult>;
+  /** 【ARC-006 WF-INT】查询单个引擎的运行状态(含编辑器地址;不含命令/凭据)。 */
+  "workflowEngine.status": (input: WorkflowEngineStatusInput) => Promise<WorkflowEngineResult>;
+  /** 【ARC-006 WF-INT】列出所有已知引擎的状态。 */
+  "workflowEngine.list": () => Promise<WorkflowEngineListResult>;
   /** 【MC-059】**用户签发无人值守任务计划的计划级授权** —— 用户在无人值守计划预览页点「批准」的落点。宿主把一份有界操作序列(`session.create`)铸成一枚绑定目标项目权威路径、签发主体(**写死为 user**)、有效期、次数上限的计划级授权。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(批准主体必须是用户本人);手机端 `webApi.ts` 显式 unsupported。 */
   "unattended.approve": (input: UnattendedApproveInput) => Promise<UnattendedApproveResult>;
   /** 【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。 */
@@ -2090,6 +2111,10 @@ export const IPC = {
   // `./documentView.js` 的 `DOCUMENT_VIEW_*_CHANNEL` 常量上,这里只取值。
   DOCUMENT_VIEW_OPEN: DOCUMENT_VIEW_OPEN_CHANNEL,
   DOCUMENT_VIEW_OPEN_PATH: DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
+  WORKFLOW_ENGINE_START: WORKFLOW_ENGINE_START_CHANNEL,
+  WORKFLOW_ENGINE_STOP: WORKFLOW_ENGINE_STOP_CHANNEL,
+  WORKFLOW_ENGINE_STATUS: WORKFLOW_ENGINE_STATUS_CHANNEL,
+  WORKFLOW_ENGINE_LIST: WORKFLOW_ENGINE_LIST_CHANNEL,
   DOCUMENT_VIEW_BOUNDS: DOCUMENT_VIEW_BOUNDS_CHANNEL,
   DOCUMENT_VIEW_SHOW: DOCUMENT_VIEW_SHOW_CHANNEL,
   DOCUMENT_VIEW_HIDE: DOCUMENT_VIEW_HIDE_CHANNEL,

@@ -214,3 +214,61 @@ const OPTS = {
 
 console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
+
+/* ══════════ 7. IPC 层：fakeIpc 调真 handler ══════════ */
+{
+  const { registerWorkflowEngineHandlers, toStatusView } = await import("@main/ipc/workflowEngine.js");
+  const { clearRpcHandlers, registeredRpcChannels } = await import("@main/appControl/registry.js");
+  const { IPC } = await import("@contracts/ipc");
+  clearRpcHandlers();
+
+  const ports = makePorts();
+  const runtime = new EngineRuntime("node-red", ports);
+  const handlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+  const fakeIpc = {
+    handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
+      if (handlers.has(channel)) throw new Error(`重复注册 ${channel}`);
+      handlers.set(channel, listener);
+    },
+  } as unknown as Parameters<typeof registerWorkflowEngineHandlers>[0];
+  registerWorkflowEngineHandlers(fakeIpc, {
+    registry: { get: (id) => (id === "node-red" ? runtime : null), ids: () => ["node-red"] },
+    launchSpec: (id) =>
+      id === "node-red"
+        ? { command: "node", args: () => ["bootstrap.cjs"], dataDir: "/tmp/engine" }
+        : null,
+  });
+  const call = async (channel: string, raw?: unknown): Promise<unknown> =>
+    (await handlers.get(channel)!(null, raw));
+
+  eq("★ 四条 workflowEngine 通道全注册", [...handlers.keys()].sort(), [
+    IPC.WORKFLOW_ENGINE_LIST, IPC.WORKFLOW_ENGINE_START, IPC.WORKFLOW_ENGINE_STATUS, IPC.WORKFLOW_ENGINE_STOP,
+  ].sort());
+  const rpc = new Set(registeredRpcChannels());
+  eq("每条都进 recordRpcHandler（Agent 也够得到同一个函数）",
+    [IPC.WORKFLOW_ENGINE_START, IPC.WORKFLOW_ENGINE_STOP, IPC.WORKFLOW_ENGINE_STATUS, IPC.WORKFLOW_ENGINE_LIST].filter((c) => !rpc.has(c)), []);
+
+  const started = (await call(IPC.WORKFLOW_ENGINE_START, { engineId: "node-red" })) as { ok: boolean; status?: { state: string; editorUrl: string | null } };
+  eq("handler start → ok", started.ok, true);
+  eq("start 后状态 running", started.status?.state, "running");
+  eq("★ editorUrl 是回环地址", started.status?.editorUrl, "http://127.0.0.1:3527/");
+
+  const bad = (await call(IPC.WORKFLOW_ENGINE_START, { engineId: "Not Valid" })) as { ok: boolean; reason: string };
+  check("★ 非法 engineId 被 zod 拒", bad.ok === false && typeof bad.reason === "string", bad);
+
+  const unknown = (await call(IPC.WORKFLOW_ENGINE_START, { engineId: "unknown-engine" })) as { ok: boolean; reason: string };
+  check("★ 未注册的引擎显式拒绝", unknown.ok === false && unknown.reason.includes("未知工作流引擎"), unknown);
+
+  const listed = (await call(IPC.WORKFLOW_ENGINE_LIST)) as { engines: Array<{ engineId: string }> };
+  eq("list 列出已注册引擎", listed.engines.map((e) => e.engineId), ["node-red"]);
+
+  const stopped = (await call(IPC.WORKFLOW_ENGINE_STOP, { engineId: "node-red" })) as { ok: boolean; status?: { state: string } };
+  eq("handler stop → stopped", stopped.status?.state, "stopped");
+
+  // 状态视图：非 running 时没有 editorUrl。
+  const view = toStatusView(runtime.status());
+  eq("★ 未运行时 editorUrl 为 null", view.editorUrl, null);
+  eq("★ 状态视图不含命令/凭据字段", Object.keys(view).sort(), ["editorUrl", "engineId", "port", "reason", "state"]);
+}
+
+console.log(`\nworkflow-engine-runtime-smoke(含IPC):${total - failures}/${total} 通过`);

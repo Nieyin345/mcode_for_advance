@@ -2,6 +2,8 @@ import { registerProjectInitHandlers } from "./projectInit.js";
 import { registerSceneHandlers } from "./scene.js";
 import { registerDocumentHandlers } from "./document.js";
 import { registerDocumentViewHandlers } from "./documentView.js";
+import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
+import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { registerUnattendedHandlers } from "./unattended.js";
@@ -122,6 +124,12 @@ export function registerIpcHandlers(): void {
   // 宿主单例由 `main/index.ts` 的退出路径 `dispose()`。
   // 【ARC-007】路径围栏用与 `document.*` / file IPC 同一份判据（README 硬规矩 2）。
   registerDocumentViewHandlers(ipc, documentViewHost, (p) => findContainingWorkspaceRoot(p) !== null);
+  // 【ARC-006 WF-INT】第三方工作流引擎的起停/状态。引擎是**独立子进程**，
+  // 只绑 127.0.0.1；数据目录与启动命令由注册表给（node-red 未安装时显式失败）。
+  registerWorkflowEngineHandlers(ipc, {
+    registry: workflowEngineRegistry,
+    launchSpec: (engineId) => workflowEngineRegistry.launchSpec(engineId),
+  });
   registerUnattendedHandlers(ipc);
   registerMemoryAssistantHandlers(ipc);
   registerMonitoringHandlers(ipc);

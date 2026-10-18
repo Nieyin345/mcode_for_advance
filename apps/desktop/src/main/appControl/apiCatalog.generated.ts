@@ -3451,5 +3451,37 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "{ profile: { params: Record<string, unknown>; type: string; id: string; version: 1; createdAt: number; name: string; updatedAt: number; description?: string | undefined; } }",
   "inputFull": "{ profile: { params: Record<string, unknown>; type: string; id: string; version: 1; createdAt: number; name: string; updatedAt: number; description?: string | undefined; } }",
   "output": "{ ok: boolean; error?: string | undefined }"
+ },
+ {
+  "method": "workflowEngine.list",
+  "channel": "workflowEngine:list",
+  "doc": "【ARC-006 WF-INT】列出所有已知引擎的状态。",
+  "input": "(无参数)",
+  "inputFull": "(无参数)",
+  "output": "{ engines: WorkflowEngineStatusView[] }"
+ },
+ {
+  "method": "workflowEngine.start",
+  "channel": "workflowEngine:start",
+  "doc": "【ARC-006 WF-INT】启动一个第三方工作流引擎(独立子进程,只绑 127.0.0.1;数据目录与端口由宿主给)。",
+  "input": "{ engineId: string }",
+  "inputFull": "{ engineId: string }",
+  "output": "{ ok: true; status: WorkflowEngineStatusView } | { ok: false; reason: string; status: WorkflowEngineStatusView | null }"
+ },
+ {
+  "method": "workflowEngine.status",
+  "channel": "workflowEngine:status",
+  "doc": "【ARC-006 WF-INT】查询单个引擎的运行状态(含编辑器地址;不含命令/凭据)。",
+  "input": "{ engineId: string }",
+  "inputFull": "{ engineId: string }",
+  "output": "{ ok: true; status: WorkflowEngineStatusView } | { ok: false; reason: string; status: WorkflowEngineStatusView | null }"
+ },
+ {
+  "method": "workflowEngine.stop",
+  "channel": "workflowEngine:stop",
+  "doc": "【ARC-006 WF-INT】停止引擎(SIGTERM → 宽限 → SIGKILL;幂等)。",
+  "input": "{ engineId: string }",
+  "inputFull": "{ engineId: string }",
+  "output": "{ ok: true; status: WorkflowEngineStatusView } | { ok: false; reason: string; status: WorkflowEngineStatusView | null }"
  }
 ];
