@@ -58,11 +58,15 @@ export function SkillPresetsView({
   const [editing, setEditing] = useState<SkillPreset | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [pendingDelete, setPendingDelete] = useState<SkillPreset | null>(null);
+  /** 【MC-053 同族】清单文件损坏的原因。读侧仍给空表(页面可打开),但空态与
+   *  「文件坏了」必须分开说 —— 否则用户会照着空表重建,覆盖掉原文件。 */
+  const [storeCorrupt, setStoreCorrupt] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     try {
       const res = await api.skills.presetsList();
       setPresets(res.presets);
+      setStoreCorrupt(res.corrupt?.reason ?? null);
       setLoadError(null);
     } catch (err: unknown) {
       // 保留上一次成功的表(一次瞬时失败不该把它抹掉);没有表 = 状态未知,
@@ -138,7 +142,17 @@ export function SkillPresetsView({
         </div>
       )}
 
-      {presets.length === 0 && !editing && loadError === null && (
+      {/* 【MC-053 同族】文件损坏:读得出来但读不懂。保存/删除会被主进程拒绝
+          (不会拿空表当基准把原文件覆盖掉),这里把原因和恢复办法说清楚。 */}
+      {storeCorrupt !== null && (
+        <div className="px-3 pt-2">
+          <ErrorNote tone="warning" title={t("settings.skills.presetsCorrupt")}>
+            {storeCorrupt}
+          </ErrorNote>
+        </div>
+      )}
+
+      {presets.length === 0 && !editing && loadError === null && storeCorrupt === null && (
         <div className="px-3 py-4 text-center text-[0.8571em] text-content-subtle">
           {t("settings.skills.presetEmpty")}
         </div>

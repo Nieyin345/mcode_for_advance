@@ -387,6 +387,8 @@ export function ImportSkillsDialog({
     skipped: string[];
     errors: Array<{ name: string; error: string }>;
     bundleLabel?: string;
+    /** 【MC-053 同族】导入包清单损坏 → 导入成功但清单未被改写。 */
+    corrupt?: string;
   } | null>(null);
 
   // Scan external sources whenever the dialog opens or the local folder changes.
@@ -574,6 +576,7 @@ export function ImportSkillsDialog({
         skipped: res.skipped,
         errors: res.errors,
         bundleLabel: res.bundleLabel,
+        ...(res.corrupt !== undefined ? { corrupt: res.corrupt } : {}),
       });
       setGhUrl("");
       onImported();
@@ -726,6 +729,11 @@ export function ImportSkillsDialog({
                         n: ghResult.errors.length,
                         list: ghResult.errors.map((e) => `${e.name}(${e.error})`).join("; "),
                       })}
+                    </p>
+                  )}
+                  {ghResult.corrupt !== undefined && (
+                    <p className="text-warning">
+                      {t("settings.skills.bundlesCorrupt")}:{ghResult.corrupt}
                     </p>
                   )}
                 </div>

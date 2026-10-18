@@ -648,16 +648,18 @@ export interface RpcMap {
     input: SkillsCopyToProjectInput,
   ) => Promise<SkillsCopyToProjectResult>;
   /** **一套技能预设** —— "这类项目默认装这几个"。改整个数组（整份给过来，
-   *  局部更新在这里没有意义，同 `workflow.agentProfiles` 的取舍）。 */
-  "skills.presetsList": () => Promise<{ presets: SkillPreset[] }>;
-  /** 存一套预设（新建或覆盖同 id 的）。 */
+   *  局部更新在这里没有意义，同 `workflow.agentProfiles` 的取舍）。
+   *  【MC-053 同族】清单文件损坏时仍给空表（页面可打开），但带 `corrupt` 诊断 ——
+   *  保存/删除在损坏时被拒（不会拿空表当写回基准抹掉已有预设）。 */
+  "skills.presetsList": () => Promise<{ presets: SkillPreset[]; corrupt?: { reason: string } }>;
+  /** 存一套预设（新建或覆盖同 id 的）。清单损坏 → `ok:false` + `corrupt:true`，原文件不动。 */
   "skills.presetsSave": (
     input: SkillsPresetSaveInput,
-  ) => Promise<{ ok: boolean; error?: string }>;
-  /** 删一套预设。 */
+  ) => Promise<{ ok: boolean; error?: string; corrupt?: boolean }>;
+  /** 删一套预设。清单损坏 → `ok:false` + `corrupt:true`，原文件不动。 */
   "skills.presetsDelete": (
     input: SkillsPresetDeleteInput,
-  ) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<{ ok: boolean; error?: string; corrupt?: boolean }>;
   /** **跨项目总览** —— 每个项目各装了哪些技能。`projectIds` 省略 = 全部项目。 */
   "skills.projectOverview": (
     input: SkillsProjectOverviewInput,
@@ -668,8 +670,11 @@ export interface RpcMap {
     input: SkillsEnginesSetInput,
   ) => Promise<{ ok: boolean; error?: string; perEngine?: SkillEngineState }>;
   /** Read the bundle manifest (import groups of the universal library).
-   *  Missing / unparsable manifest → empty list. */
-  "skills.bundles": (input: SkillsBundlesInput) => Promise<{ bundles: SkillBundle[] }>;
+   *  Missing manifest → empty list; a corrupt one still lists empty but carries
+   *  `corrupt` (and import/market-install refuse to rewrite it, MC-053 family). */
+  "skills.bundles": (
+    input: SkillsBundlesInput,
+  ) => Promise<{ bundles: SkillBundle[]; corrupt?: { reason: string } }>;
   /** Set the per-engine availability for many skills at once (group-level
    *  switch). Returns per-name resolved state (or ok:false + error). */
   "skills.enginesSetBulk": (
@@ -707,7 +712,8 @@ export interface RpcMap {
   "skills.marketRemove": (input: SkillsMarketNameInput) => Promise<{ ok: boolean; error?: string; corrupt?: boolean }>;
   /** Re-fetch one market's catalog (network). */
   "skills.marketRefresh": (input: SkillsMarketNameInput) => Promise<{ ok: boolean; error?: string; corrupt?: boolean }>;
-  /** Copy market skills into the universal library (existing names skipped). */
+  /** Copy market skills into the universal library (existing names skipped).
+   *  【MC-053 同族】导入包清单损坏时安装照常成功，但结果带 `corrupt` —— 清单未被改写。 */
   "skills.marketInstall": (input: SkillsMarketInstallInput) => Promise<SkillsMarketInstallResult>;
   // MCP management (settings panel)
   /** List all MCP servers across the three sources (user config file, project

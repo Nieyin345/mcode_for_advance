@@ -363,6 +363,8 @@ export function SkillsPanel() {
   );
   const listLoading = library.loading;
   const bundles = bundleQuery.data?.bundles ?? EMPTY_BUNDLES;
+  /** 【MC-053 同族】导入包清单读不懂(导入/市场安装会拒绝改写它)。 */
+  const bundlesCorrupt = bundleQuery.data?.corrupt?.reason ?? null;
   const projectQuery = useRpc(async () => {
     const result = await api.skills.list({ projectPath });
     return { projectPath, skills: result.skills.filter((skill) => skill.source === "project") };
@@ -952,6 +954,11 @@ export function SkillsPanel() {
       {bundleQuery.error && (
         <ErrorNote className="mb-3" action={<Button variant="ghost" onClick={() => void bundleQuery.refetch()}>{t("common.retry")}</Button>}>
           {bundleQuery.error.message}
+        </ErrorNote>
+      )}
+      {bundlesCorrupt !== null && (
+        <ErrorNote tone="warning" className="mb-3" title={t("settings.skills.bundlesCorrupt")}>
+          {bundlesCorrupt}
         </ErrorNote>
       )}
       {error && (selected === null || (view !== "library" && !(selected.kind === "skill" && selected.source === "project"))) && (

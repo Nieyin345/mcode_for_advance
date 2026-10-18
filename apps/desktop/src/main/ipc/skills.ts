@@ -61,6 +61,11 @@ import {
 import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource, SkillEngineState, SkillBundle, SkillsImportGithubResult, SkillsCopyToProjectResult, SkillPreset, ProjectSkillRow, SkillsProjectOverviewResult } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
 import {
+  classifyMarketRegistry,
+  marketRegistryCorruptMessage,
+  type MarketRegistryRead,
+} from "@main/lib/marketRegistry.js";
+import {
   addSkillMarket,
   installSkillsFromMarket,
   listSkillMarkets,
@@ -644,26 +649,54 @@ function resolveSkillRootForRequest(source: SkillSource, projectPath?: string): 
  *  dot-prefixed like `.mcode-engines.json` so skill scanning skips it. */
 const BUNDLES_FILE = ".bundles.json";
 
-/** Read the import-bundle manifest (`.bundles.json`): which source directory
- *  each skill was imported from. Purely a display/management concern — a
- *  missing file (nobody imported anything), a bad JSON or a wrong shape all
- *  degrade to an empty list, never an error. Individual entries that don't
- *  match the shape are dropped rather than failing the whole table. */
-async function readBundlesManifest(root: string): Promise<SkillBundle[]> {
+/** 逐个 bundle 的形状校验 —— 个别坏行丢弃(它们只是分组展示信息),不算整份损坏。 */
+function parseBundleEntries(value: unknown): SkillBundle[] | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const bundles = (value as { bundles?: unknown }).bundles;
+  if (!Array.isArray(bundles)) return null;
+  return bundles.filter(
+    (b): b is SkillBundle =>
+      !!b &&
+      typeof (b as SkillBundle).id === "string" &&
+      typeof (b as SkillBundle).label === "string" &&
+      Array.isArray((b as SkillBundle).skills),
+  );
+}
+
+/**
+ * 【MC-053 同族】导入包清单的三态读 —— 坏文件**不许**被当成空表。
+ *
+ * 从前 `readBundlesManifest` 把「文件不存在」「JSON 坏了」「形状不对」全塌成
+ * `[]`。对**读**侧那是无害的降级(分组只是展示);真正的问题是写侧:
+ * `upsertGithubBundle` 一次导入就是"读旧表 → 追加 → 整份写回",而它读坏表同样
+ * 得到 `[]` —— 下一次 GitHub 导入/市场安装会把用户之前所有导入包记录**静默抹掉**。
+ * 与 MC-037(市场来源)、MC-053(出厂工作流播种名单)同一条纪律:损坏可见、写侧
+ * 拒绝覆盖;分类核复用 `lib/marketRegistry.ts` 那一份,不另写。
+ *
+ * ENOENT 之外**读不动**(EACCES 等)同样判 `corrupt` —— 读不出来时绝不能假装没有。
+ */
+async function readBundlesState(root: string): Promise<MarketRegistryRead<SkillBundle>> {
+  let raw: string | null;
   try {
-    const raw = await fs.readFile(path.join(root, BUNDLES_FILE), "utf8");
-    const parsed = JSON.parse(raw) as { bundles?: unknown };
-    if (!Array.isArray(parsed.bundles)) return [];
-    return parsed.bundles.filter(
-      (b): b is SkillBundle =>
-        !!b &&
-        typeof (b as SkillBundle).id === "string" &&
-        typeof (b as SkillBundle).label === "string" &&
-        Array.isArray((b as SkillBundle).skills),
-    );
-  } catch {
-    return [];
+    raw = await fs.readFile(path.join(root, BUNDLES_FILE), "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { kind: "absent" };
+    return { kind: "corrupt", reason: `读取失败(${code ?? (err as Error).message})` };
   }
+  return classifyMarketRegistry(raw, parseBundleEntries, "技能导入包", "导入包清单缺少 `bundles` 数组");
+}
+
+/** 读侧降级出口:损坏 → 空表(分组展示照常,面板另有 corrupt 诊断)。 */
+async function readBundlesManifest(root: string): Promise<SkillBundle[]> {
+  const state = await readBundlesState(root);
+  return state.kind === "ok" ? state.records : [];
+}
+
+/** 给 `skills.bundles` 附的损坏诊断。有值 = 盘上的清单读不懂,写侧会拒绝覆盖。 */
+export async function skillBundlesCorrupt(): Promise<{ reason: string } | null> {
+  const state = await readBundlesState(resolveSkillRoot());
+  return state.kind === "corrupt" ? { reason: state.reason } : null;
 }
 
 /* ── GitHub package import ──
@@ -731,23 +764,28 @@ async function findGithubSkillDirs(dir: string, out: string[]): Promise<void> {
 
 /** Merge the imported skills into the bundle manifest (create the bundle when
  *  first seen; merge names when re-importing an updated repo). Best-effort:
- *  a manifest write failure must not fail an otherwise successful import. */
-async function upsertGithubBundle(
+ *  a manifest write failure must not fail an otherwise successful import.
+ *
+ *  【MC-053 同族】读旧表**必须先三态分类**:坏表时不能拿 `[]` 当写回基准
+ *  (那会把历史导入包整份抹掉)。损坏 → 只记日志、一个字节不动;返回值里的
+ *  `corrupt` 由调用方随导入结果带回去(导入本身照常成功,技能文件已经落盘)。 */
+export async function upsertGithubBundle(
   root: string,
   bundleId: string,
   label: string,
   source: string,
   importedNames: string[],
-): Promise<void> {
+): Promise<{ corrupt?: string }> {
   try {
-    const file = path.join(root, BUNDLES_FILE);
-    let bundles: SkillBundle[] = [];
-    try {
-      const parsed = JSON.parse(await fs.readFile(file, "utf8")) as { bundles?: SkillBundle[] };
-      if (Array.isArray(parsed.bundles)) bundles = parsed.bundles;
-    } catch {
-      // no manifest yet — start a fresh one
+    const state = await readBundlesState(root);
+    if (state.kind === "corrupt") {
+      log.warn(
+        `[skills] 导入包清单损坏(${state.reason})—— 这次没有改写它,以免抹掉历史导入包记录;` +
+          `技能文件已照常导入。修复或删除 ${path.join(root, BUNDLES_FILE)} 后,下次导入会重建清单。`,
+      );
+      return { corrupt: state.reason };
     }
+    const bundles: SkillBundle[] = state.kind === "ok" ? state.records : [];
     let b = bundles.find((x) => x.id === bundleId);
     if (!b) {
       b = { id: bundleId, label, skills: [], source };
@@ -759,9 +797,11 @@ async function upsertGithubBundle(
     const names = new Set(b.skills);
     for (const n of importedNames) names.add(n);
     b.skills = [...names].sort();
-    await fs.writeFile(file, JSON.stringify({ version: 1, bundles }, null, 2) + "\n", "utf8");
+    await fs.writeFile(path.join(root, BUNDLES_FILE), JSON.stringify({ version: 1, bundles }, null, 2) + "\n", "utf8");
+    return {};
   } catch (err) {
     log.warn(`bundle manifest update failed: ${(err as Error).message}`);
+    return {};
   }
 }
 
@@ -850,10 +890,11 @@ async function importGithubPackage(input: { url: string }): Promise<SkillsImport
 
     const bundleId = `${owner}--${repo}`;
     const bundleLabel = `${owner}/${repo}`;
-    await upsertGithubBundle(root, bundleId, bundleLabel, httpsUrl, imported);
+    // 【MC-053 同族】清单坏了不改写它,但要把原因随结果带回去(导入本身照常成功)。
+    const bundleWrite = await upsertGithubBundle(root, bundleId, bundleLabel, httpsUrl, imported);
 
     log.info(`[skills] GitHub import ${bundleLabel}: ${imported.length} imported, ${skipped.length} skipped`);
-    return { ok: true, imported, skipped, errors, bundleId, bundleLabel };
+    return { ok: true, imported, skipped, errors, bundleId, bundleLabel, ...(bundleWrite.corrupt !== undefined ? { corrupt: bundleWrite.corrupt } : {}) };
   } finally {
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
@@ -909,7 +950,10 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
     // 同 SKILLS_LIST:`app_api_call` 无参方法省略 input → `raw` 是 `undefined`,
     // `z.object({}).parse(undefined)` 会抛。
     SkillsBundlesSchema.parse(raw ?? {});
-    return { bundles: await readBundlesManifest(resolveSkillRoot()) };
+    // 【MC-053 同族】坏清单照常给空表(分组展示降级),但如实附损坏诊断;
+    // 写侧(导入/市场安装)见到损坏会拒绝整表回写,不会抹掉历史导入包。
+    const corrupt = await skillBundlesCorrupt();
+    return { bundles: await readBundlesManifest(resolveSkillRoot()), ...(corrupt ? { corrupt } : {}) };
   });
 
   // ── Set the per-engine availability for MANY skills at once ──
@@ -1103,23 +1147,53 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   /** 预设清单文件 —— dot-prefix,所以技能扫描会跳过它(同 `.bundles.json`)。 */
 const PRESETS_FILE = ".skill-presets.json";
 
-/** 读预设。**坏文件降级成空表,不抛** —— 同 `readBundlesManifest` 的取舍:
- *  预设是附加能力,它坏了不该让技能页打不开。 */
-async function readPresets(root: string): Promise<SkillPreset[]> {
+/** 逐个预设的形状校验 —— 个别坏行丢弃不算整份损坏(坏行隔离,不阻塞整表)。 */
+function parsePresetEntries(value: unknown): SkillPreset[] | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const presets = (value as { presets?: unknown }).presets;
+  if (!Array.isArray(presets)) return null;
+  return presets.filter(
+    (p): p is SkillPreset =>
+      !!p &&
+      typeof (p as SkillPreset).id === "string" &&
+      typeof (p as SkillPreset).name === "string" &&
+      Array.isArray((p as SkillPreset).skills),
+  );
+}
+
+/**
+ * 【MC-053 同族】技能预设清单的三态读 —— 与出厂工作流播种名单同一条协议。
+ *
+ * 从前 `readPresets` 把「文件不存在」「JSON 坏了」「形状不对」全塌成 `[]`。读侧
+ * 降级本身无害;致命的是 `skills.presetsSave` / `presetsDelete` 是**读-改-写**:
+ * 损坏时它们拿这个 `[]` 当旧清单,`presets.map/filter` 之后整份写回 —— 用户存过的
+ * 所有预设在下一次保存/删除那一刻**静默消失**。分类核复用
+ * `lib/marketRegistry.ts` 的那一份(与 MC-037 / MC-053 共用),不另写。
+ *
+ * ENOENT 之外读不动(EACCES 等)同样判 `corrupt`:读不出来时绝不能假装"没有预设"。
+ */
+async function readPresetsState(root: string): Promise<MarketRegistryRead<SkillPreset>> {
+  let raw: string | null;
   try {
-    const raw = await fs.readFile(path.join(root, PRESETS_FILE), "utf8");
-    const parsed = JSON.parse(raw) as { presets?: unknown };
-    if (!Array.isArray(parsed.presets)) return [];
-    return parsed.presets.filter(
-      (p): p is SkillPreset =>
-        !!p &&
-        typeof (p as SkillPreset).id === "string" &&
-        typeof (p as SkillPreset).name === "string" &&
-        Array.isArray((p as SkillPreset).skills),
-    );
-  } catch {
-    return [];
+    raw = await fs.readFile(path.join(root, PRESETS_FILE), "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { kind: "absent" };
+    return { kind: "corrupt", reason: `读取失败(${code ?? (err as Error).message})` };
   }
+  return classifyMarketRegistry(raw, parsePresetEntries, "技能预设", "技能预设清单缺少 `presets` 数组");
+}
+
+/** 读侧降级出口:损坏 → 空表(技能页照常打开),但写侧必须走 readPresetsState 拒绝。 */
+async function readPresets(root: string): Promise<SkillPreset[]> {
+  const state = await readPresetsState(root);
+  return state.kind === "ok" ? state.records : [];
+}
+
+/** 给 `skills.presetsList` 附的损坏诊断 —— 有值 = 盘上的清单读不懂,写侧会拒绝覆盖。 */
+async function skillPresetsCorrupt(): Promise<{ reason: string } | null> {
+  const state = await readPresetsState(resolveSkillRoot());
+  return state.kind === "corrupt" ? { reason: state.reason } : null;
 }
 
 async function writePresets(root: string, presets: SkillPreset[]): Promise<void> {
@@ -1161,14 +1235,23 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
    * 不属于任何一个项目 —— 放项目里就变成"每个项目一套预设"，那正是要消除的重复。
    */
   ipcMain.handle(IPC.SKILLS_PRESETS_LIST, async () => {
-    return { presets: await readPresets(resolveSkillRoot()) };
+    // 【MC-053 同族】坏清单照常给空表(页面还能打开),但**如实附上损坏诊断** ——
+    // 界面的空态与「读不懂」必须分开说,否则用户会照着空表重建、覆盖掉原文件。
+    const corrupt = await skillPresetsCorrupt();
+    return { presets: await readPresets(resolveSkillRoot()), ...(corrupt ? { corrupt } : {}) };
   });
 
   ipcMain.handle(IPC.SKILLS_PRESETS_SAVE, async (_evt, raw) => {
     const input = SkillsPresetSaveSchema.parse(raw);
     try {
       const root = resolveSkillRoot();
-      const presets = await readPresets(root);
+      // 【MC-053 同族】读-改-写前先三态分类:坏清单不许当空表基准(那么写回会把
+      // 用户已有的预设整份抹掉)。损坏 → 拒绝、盘上原字节一个不动。
+      const state = await readPresetsState(root);
+      if (state.kind === "corrupt") {
+        return { ok: false, error: marketRegistryCorruptMessage("技能预设", state.reason), corrupt: true };
+      }
+      const presets = state.kind === "ok" ? state.records : [];
       const now = Date.now();
       const existing = presets.find((p) => p.id === input.preset.id);
       const next: SkillPreset = {
@@ -1194,10 +1277,14 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
     const input = SkillsPresetDeleteSchema.parse(raw);
     try {
       const root = resolveSkillRoot();
-      const presets = await readPresets(root);
+      // 【MC-053 同族】同 SAVE:坏清单不拿空表判"不存在",更不据此整表写回。
+      const state = await readPresetsState(root);
+      if (state.kind === "corrupt") {
+        return { ok: false, error: marketRegistryCorruptMessage("技能预设", state.reason), corrupt: true };
+      }
       await writePresets(
         root,
-        presets.filter((p) => p.id !== input.id),
+        (state.kind === "ok" ? state.records : []).filter((p) => p.id !== input.id),
       );
       return { ok: true };
     } catch (err) {
@@ -1410,7 +1497,9 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
     const res = await installSkillsFromMarket(input.market, input.names, marketProgressFor(evt, input.requestId));
     const bundle = skillMarketBundle(input.market);
     if (bundle && res.imported.length > 0) {
-      await upsertGithubBundle(resolveSkillRoot(), bundle.id, bundle.label, bundle.source, res.imported);
+      // 【MC-053 同族】清单坏 → 不改写,原因随结果带回去(安装本身照常成功)。
+      const bundleWrite = await upsertGithubBundle(resolveSkillRoot(), bundle.id, bundle.label, bundle.source, res.imported);
+      if (bundleWrite.corrupt !== undefined) return { ...res, corrupt: bundleWrite.corrupt };
     }
     if (res.imported.length > 0) log.info(`[skills] market ${input.market}: ${res.imported.length} installed`);
     return res;

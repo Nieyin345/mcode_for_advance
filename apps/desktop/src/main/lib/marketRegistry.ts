@@ -34,11 +34,15 @@ export type MarketRegistryRead<T> =
  * @param parse 顶层形状合法时逐条校验:返回通过校验的记录(个别坏行丢弃)。
  *              顶层不是数组时返回 `null`(= 损坏)。
  * @param label 出错信息里的可读名字(如 "技能市场")。
+ * @param shapeError 顶层形状不对时的原因措辞(默认「…记录顶层不是数组」)。
+ *              容器形态不同的名单(如技能预设 `{ presets: [...] }`、导入包
+ *              `{ bundles: [...] }`)传自己的说法,分类判据仍只有这一份。
  */
 export function classifyMarketRegistry<T>(
   raw: string | null,
   parse: (value: unknown) => T[] | null,
   label: string,
+  shapeError = `${label}记录顶层不是数组`,
 ): MarketRegistryRead<T> {
   if (raw === null || raw.trim() === "") return { kind: "absent" };
   let value: unknown;
@@ -48,7 +52,7 @@ export function classifyMarketRegistry<T>(
     return { kind: "corrupt", reason: `${label}记录不是合法 JSON` };
   }
   const records = parse(value);
-  if (records === null) return { kind: "corrupt", reason: `${label}记录顶层不是数组` };
+  if (records === null) return { kind: "corrupt", reason: shapeError };
   return { kind: "ok", records };
 }
 

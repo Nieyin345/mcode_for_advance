@@ -1069,6 +1069,8 @@ export const en = {
   "settings.skills.presetSkills": "Skills in this preset",
   "settings.skills.presetEmpty": "No presets yet.",
   "settings.skills.presetsLoadFailed": "Failed to read presets",
+  "settings.skills.presetsCorrupt": "Presets file is corrupt — saving is disabled",
+  "settings.skills.bundlesCorrupt": "Bundle manifest is corrupt — new imports will not overwrite it",
   "settings.skills.presetSave": "Save",
   "settings.skills.presetCancel": "Cancel",
   "settings.skills.presetDelete": "Delete preset",

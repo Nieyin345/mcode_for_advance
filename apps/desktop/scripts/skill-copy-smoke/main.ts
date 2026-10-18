@@ -240,6 +240,179 @@ console.log("\n技能预设");
   eq("删完是空的", list3.presets.length, 0);
 }
 
+console.log("\n【MC-053 同族】预设/导入包清单损坏:不静默当空,写侧拒绝覆盖");
+
+/* 台账红例的同一形态(出厂工作流播种名单 → 技能预设/导入包清单):
+ * 清单被截断成半截 JSON 之后,旧的读法把它塌成 `[]`;而 `presetsSave/Delete` 与
+ * `upsertGithubBundle` 都是「读旧表 → 改 → 整份写回」—— 下一次保存/导入就会拿
+ * 空表当基准,把用户已有的预设/导入包记录**静默抹掉**。
+ *
+ * 判据立在盘上的字节与返回结果上:坏清单 ①读侧如实报 corrupt ②写侧拒绝且原字节
+ * 一个不动 ③修好后一切恢复。不钉实现(不查"调没调 classify")。 */
+{
+  const PRESETS_FILE = join(SKILLS_ROOT, ".skill-presets.json");
+  const BUNDLES_FILE = join(SKILLS_ROOT, ".bundles.json");
+  const corruptJson = "{\"presets\":["; // 半截写入的典型形状
+  const healthyPreset = (id: string, name: string): string =>
+    JSON.stringify({ presets: [{ id, name, skills: ["alpha"], createdAt: 1, updatedAt: 1 }] });
+
+  // ── ① 缺失 → 正常新建(防"一律拒绝"的过度保守) ──
+  rmSync(PRESETS_FILE, { force: true });
+  const fresh = (await call(IPC.SKILLS_PRESETS_SAVE, {
+    preset: { id: "sp_fresh", name: "新装", skills: ["alpha"] },
+  })) as { ok: boolean };
+  check("清单缺失(真新用户)→ 照常新建", fresh.ok);
+  const freshList = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: Array<{ id: string }>; corrupt?: { reason: string } };
+  eq("新建的读得回来", freshList.presets.map((p) => p.id).join(","), "sp_fresh");
+  check("健康清单不带 corrupt 诊断", freshList.corrupt === undefined, freshList.corrupt);
+
+  // ── ② 合法清单 → 只补/改那一条,现有行不动 ──
+  writeFileSync(PRESETS_FILE, healthyPreset("sp_keep", "要保留的"), "utf8");
+  const keep = (await call(IPC.SKILLS_PRESETS_SAVE, {
+    preset: { id: "sp_add", name: "新增的", skills: ["beta"] },
+  })) as { ok: boolean };
+  check("合法清单下保存 ok", keep.ok);
+  const both = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: Array<{ id: string; name?: string }> };
+  check(
+    "★ 合法清单:现有行原样保留、新行追加(不是整表重建)",
+    both.presets.length === 2 &&
+      both.presets.some((p) => p.id === "sp_keep" && p.name === "要保留的") &&
+      both.presets.some((p) => p.id === "sp_add"),
+    both.presets,
+  );
+
+  // ── ③ 坏清单(台账原例形状) ──
+  writeFileSync(PRESETS_FILE, corruptJson, "utf8");
+
+  // 读侧:空表照给(页面可打开),但**必须**带 corrupt 诊断,不能谎报"还没有预设"。
+  const corruptList = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: unknown[]; corrupt?: { reason: string } };
+  eq("★ 坏清单:读列表不挂(空表降级)", corruptList.presets.length, 0);
+  check("★ 坏清单:列表如实带 corrupt 诊断(不是静默当空)", typeof corruptList.corrupt?.reason === "string" && corruptList.corrupt.reason.length > 0, corruptList.corrupt);
+  check(
+    "诊断原因能给人看(合法 JSON / presets 数组)",
+    /合法 JSON|presets/.test(corruptList.corrupt?.reason ?? ""),
+    corruptList.corrupt,
+  );
+
+  // 写侧:保存被拒、带 corrupt 标记、**盘上原字节一个不动**。
+  const rejectedSave = (await call(IPC.SKILLS_PRESETS_SAVE, {
+    preset: { id: "sp_overwrite", name: "不许写", skills: ["alpha"] },
+  })) as { ok: boolean; error?: string; corrupt?: boolean };
+  check("★ 坏清单:保存被拒(不拿空表当写回基准)", rejectedSave.ok === false, rejectedSave);
+  check("拒绝带 corrupt 标记(界面据此分口径)", rejectedSave.corrupt === true, rejectedSave);
+  check("拒绝语说清是记录损坏、且原文件未动", /损坏/.test(rejectedSave.error ?? "") && /未动|拒绝写入|修复/.test(rejectedSave.error ?? ""), rejectedSave.error);
+  eq("★ 坏清单:预定清单字节一个不动", readFileSync(PRESETS_FILE, "utf8"), corruptJson);
+  // 删除同一条闸:不许拿空表判"不存在"再整表写回。
+  const rejectedDelete = (await call(IPC.SKILLS_PRESETS_DELETE, { id: "sp_keep" })) as { ok: boolean; corrupt?: boolean };
+  check("★ 坏清单:删除同样被拒(corrupt)", rejectedDelete.ok === false && rejectedDelete.corrupt === true, rejectedDelete);
+  eq("★ 坏清单:删除也没动字节", readFileSync(PRESETS_FILE, "utf8"), corruptJson);
+
+  // 修复之后一切恢复:原预设还在,新建照常。
+  writeFileSync(PRESETS_FILE, healthyPreset("sp_keep", "要保留的"), "utf8");
+  const healed = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: Array<{ id: string }>; corrupt?: unknown };
+  check("修复后不再报损坏,原预设读得回来", healed.corrupt === undefined && healed.presets.some((p) => p.id === "sp_keep"), healed);
+  const healedSave = (await call(IPC.SKILLS_PRESETS_SAVE, {
+    preset: { id: "sp_add2", name: "修复后新建", skills: ["alpha"] },
+  })) as { ok: boolean };
+  check("修复后保存照常", healedSave.ok);
+  const healedList = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: Array<{ id: string }> };
+  check(
+    "★ 修复后:原预设仍在、新预设已加(没有被修好后的第一次写覆盖)",
+    healedList.presets.some((p) => p.id === "sp_keep") && healedList.presets.some((p) => p.id === "sp_add2"),
+    healedList.presets,
+  );
+  rmSync(PRESETS_FILE, { force: true });
+
+  // ── ④ 导入包清单(.bundles.json):同一条协议 ──
+  rmSync(BUNDLES_FILE, { force: true });
+  const bundlesMissing = (await call(IPC.SKILLS_BUNDLES, {})) as { bundles: unknown[]; corrupt?: unknown };
+  check("导入包清单缺失:空表、无诊断(真·新装)", bundlesMissing.bundles.length === 0 && bundlesMissing.corrupt === undefined, bundlesMissing);
+
+  const healthyBundles = JSON.stringify({
+    version: 1,
+    bundles: [{ id: "keep--repo", label: "keep/repo", skills: ["alpha"] }],
+  });
+  writeFileSync(BUNDLES_FILE, healthyBundles, "utf8");
+  const bundlesHealthy = (await call(IPC.SKILLS_BUNDLES, {})) as { bundles: Array<{ id: string }>; corrupt?: unknown };
+  check("健康清单:原样列出、无诊断", bundlesHealthy.bundles.some((b) => b.id === "keep--repo") && bundlesHealthy.corrupt === undefined, bundlesHealthy);
+
+  writeFileSync(BUNDLES_FILE, "{\"bundles\":[", "utf8");
+  const bundlesCorrupt = (await call(IPC.SKILLS_BUNDLES, {})) as { bundles: unknown[]; corrupt?: { reason: string } };
+  check("★ 坏清单:列表降级为空但带 corrupt 诊断", bundlesCorrupt.bundles.length === 0 && typeof bundlesCorrupt.corrupt?.reason === "string", bundlesCorrupt);
+  eq("★ 坏清单:读列表不改写字节", readFileSync(BUNDLES_FILE, "utf8"), "{\"bundles\":[");
+
+  // ★ 承重的一侧:写口(`upsertGithubBundle`,导入/市场安装共用)不许拿空表当基准
+  //   整份写回 —— 那会把用户历史导入包记录抹掉(台账红例的同形)。
+  const { upsertGithubBundle } = await import("@main/ipc/skills.js");
+  const upsertCorrupt = await upsertGithubBundle(SKILLS_ROOT, "new--repo", "new/repo", "https://github.com/new/repo", ["beta"]);
+  check("★ 坏清单:写口报告 corrupt(不回写成空表)", typeof upsertCorrupt.corrupt === "string", upsertCorrupt);
+  eq("★ 坏清单:写口没动一个字节", readFileSync(BUNDLES_FILE, "utf8"), "{\"bundles\":[");
+
+  writeFileSync(BUNDLES_FILE, healthyBundles, "utf8");
+  const upsertHealthy = await upsertGithubBundle(SKILLS_ROOT, "new--repo", "new/repo", "https://github.com/new/repo", ["beta"]);
+  check("健康清单:写口无 corrupt", upsertHealthy.corrupt === undefined, upsertHealthy);
+  const merged = JSON.parse(readFileSync(BUNDLES_FILE, "utf8")) as { bundles: Array<{ id: string; skills: string[] }> };
+  check(
+    "★ 健康清单:写口只追加/合并那一条,现有行不动",
+    merged.bundles.some((b) => b.id === "keep--repo" && b.skills.join(",") === "alpha") &&
+      merged.bundles.some((b) => b.id === "new--repo" && b.skills.join(",") === "beta"),
+    merged.bundles,
+  );
+  rmSync(BUNDLES_FILE, { force: true });
+}
+
+console.log("\n【MC-053 同族·加固】坏档不误伤无关读写,且诊断跨读稳定");
+
+{
+  const PRESETS_FILE = join(SKILLS_ROOT, ".skill-presets.json");
+  const corruptJson = `{"presets":[\n  {"id":"sp_half","name":"半截","skills":["a"]`;
+  // ── ① 坏档期间**读其它东西**照常(坏的是预设,不是技能库) ──
+  writeFileSync(PRESETS_FILE, corruptJson, "utf8");
+  const listed = (await call(IPC.SKILLS_LIST, {})) as { skills: Array<{ name: string }> };
+  check("★ 坏预设档不影响技能列表(坏的是预设,不是技能库)", Array.isArray(listed.skills), listed);
+  const first = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: unknown[]; corrupt?: { reason: string } };
+  const second = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: unknown[]; corrupt?: { reason: string } };
+  check(
+    "★ 连读两次坏档:诊断一致(不因读次数漂移)",
+    typeof first.corrupt?.reason === "string" && first.corrupt.reason === second.corrupt?.reason,
+    { first: first.corrupt, second: second.corrupt },
+  );
+
+  // ── ② 不同坏形状都判 corrupt(不是"空表"),且保存一律拒写、字节不动 ──
+  for (const [label, raw] of [
+    ["顶层是对象但缺 presets", `{"other":[]}`],
+    ["顶层是数组(错容器)", `[]`],
+    ["合法 JSON 但 null", `null`],
+  ] as const) {
+    writeFileSync(PRESETS_FILE, raw, "utf8");
+    const r = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: unknown[]; corrupt?: { reason: string } };
+    check(`★ 坏档形状「${label}」:读侧带 corrupt 诊断`, r.presets.length === 0 && typeof r.corrupt?.reason === "string", r);
+    const save = (await call(IPC.SKILLS_PRESETS_SAVE, { preset: { id: "sp_x", name: "x", skills: ["a"] } })) as { ok: boolean; corrupt?: boolean };
+    check(`★ 坏档形状「${label}」:保存被拒且字节未动`, save.ok === false && save.corrupt === true && readFileSync(PRESETS_FILE, "utf8") === raw, save);
+  }
+
+  // ── ③ 空文件(= 从未写过)与坏档分开:空文件是 absent,保存照常 ──
+  writeFileSync(PRESETS_FILE, "", "utf8");
+  const emptySave = (await call(IPC.SKILLS_PRESETS_SAVE, { preset: { id: "sp_empty", name: "空档新建", skills: ["a"] } })) as { ok: boolean };
+  check("空文件按『从未写过』处理:保存照常(不把 absent 误判成损坏)", emptySave.ok === true, emptySave);
+
+  // ── ④ 导入包清单:坏档 → 诊断可见;预设与导入包互不牵连 ──
+  const BUNDLES_FILE = join(SKILLS_ROOT, ".bundles.json");
+  const prevBundles = existsSync(BUNDLES_FILE) ? readFileSync(BUNDLES_FILE, "utf8") : null;
+  writeFileSync(BUNDLES_FILE, "not json at all", "utf8");
+  const b = (await call(IPC.SKILLS_BUNDLES, {})) as { bundles: unknown[]; corrupt?: { reason: string } };
+  check("★ 导入包坏档:诊断可见、读不挂", b.bundles.length === 0 && typeof b.corrupt?.reason === "string", b);
+  const presetStillOk = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: Array<{ id: string }>; corrupt?: unknown };
+  check(
+    "★ 导入包坏档不影响预设读(两类清单互不牵连)",
+    presetStillOk.corrupt === undefined && presetStillOk.presets.some((p) => p.id === "sp_empty"),
+    presetStillOk,
+  );
+  if (prevBundles === null) rmSync(BUNDLES_FILE, { force: true });
+  else writeFileSync(BUNDLES_FILE, prevBundles, "utf8");
+  rmSync(PRESETS_FILE, { force: true });
+}
+
 console.log("\n跨项目总览");
 
 {

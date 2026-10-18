@@ -449,6 +449,9 @@ export interface SkillsImportGithubResult {
   bundleId?: string;
   /** The bundle label (owner/repo). */
   bundleLabel?: string;
+  /** 【MC-053 同族】导入包清单读不懂时的原因。有值 = 这次**没有**改写清单
+   *  (技能文件已照常导入);否则会把用户历史导入包整份抹掉。 */
+  corrupt?: string;
 }
 
 /* ── Output style (settings panel) ──
@@ -550,4 +553,7 @@ export interface SkillsMarketInstallResult {
   imported: string[];
   skipped: string[];
   errors: Array<{ name: string; error: string }>;
+  /** 【MC-053 同族】导入包清单读不懂时的原因。有值 = 安装照常成功,但这次**没有**
+   *  改写清单(否则会把用户历史导入包整份抹掉)。 */
+  corrupt?: string;
 }

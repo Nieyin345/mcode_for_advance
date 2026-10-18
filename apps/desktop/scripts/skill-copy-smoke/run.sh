@@ -5,6 +5,9 @@
 # 覆盖:落点正确(<项目>/.claude/skills/<名字>/)、整目录带附属文件、**同名不覆盖**
 # (不可逆的那一侧)、三种下场(copied/skipped/failed)分别回报、相对路径被拒。
 #
+# 【MC-053 同族】另含 `.skill-presets.json` / `.bundles.json` 的三态:坏清单不静默
+# 当空、写侧拒绝覆盖(原字节不动)、清单缺失照常工作、健康清单只补不动。
+#
 # ⚠️ **HOME/USERPROFILE 必须重定向。** `defaultSkillsRoot()` 拼的是
 # `homedir()/.mcode/skills`,而这套脚本会**真往盘上写** —— 指到真家目录就是拿测试
 # 数据往用户的技能库里灌。Node 的 `os.homedir()` 在 POSIX 上认 HOME、在 win32 上

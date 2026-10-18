@@ -1073,6 +1073,8 @@ export const zh = {
   "settings.skills.presetSkills": "这套包含的技能",
   "settings.skills.presetEmpty": "还没有预设。",
   "settings.skills.presetsLoadFailed": "预设读取失败",
+  "settings.skills.presetsCorrupt": "预设文件损坏，保存已停用",
+  "settings.skills.bundlesCorrupt": "导入包清单损坏，新导入不会改写它",
   "settings.skills.presetSave": "保存",
   "settings.skills.presetCancel": "取消",
   "settings.skills.presetDelete": "删除预设",
