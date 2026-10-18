@@ -59,9 +59,9 @@ import {
   readMemoryFile,
   saveMemoryFile,
 } from "@main/memory/store.js";
-import { BODY_CAP, searchMemory } from "@main/memory/retrieval.js";
+import { BODY_CAP, MAX_DIAGNOSTIC_PATHS, memoryUnreadableReport, searchMemory, unreadableDisclosure } from "@main/memory/retrieval.js";
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
-import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolSpec } from "./sdk.js";
+import { fail, loadCreateMcpServer, structured, text, toSdkTools, type McpToolSpec } from "./sdk.js";
 
 /** MCP server 名。SDK 把工具暴露成 `mcp__<这个名字>__<工具名>`。 */
 export const MEMORY_MCP_SERVER = MCP_MEMORY_SERVER;
@@ -125,6 +125,39 @@ function pathFor(category: MemoryCategory, title: string): string {
 }
 
 /**
+ * 【MC-031 同族缺口】两个读口共用的漏读诊断 —— **结构化字段,不拼进正文**。
+ *
+ * 从前 `memory_list` / `memory_search` 不传 `onUnreadable`:读不出来的条目被
+ * `listMemoryFiles` 悄悄丢掉,工具却照常回「这一类还是空的」/「没有一条对得上」——
+ * 模型无法区分**真的没有**与**有但读不出来**,于是可能重复写入或误判"从没记过"。
+ *
+ * 口径与注入那一路**同一份**(`memoryUnreadableReport` / `unreadableDisclosure`,
+ * `@main/memory/retrieval.js`):目录与文件分开计数、按项目可见性过滤、最多点名 8 条。
+ * 结构投影给网页端/严格客户端按字段读;文本里只加一句,让 SDK 那条路的模型也看得见。
+ * 健康的库 `total === 0` → 文本**一个字都不加**(不误报)。
+ */
+function unreadableResult(
+  textBody: string,
+  collected: readonly string[],
+  projectId: string,
+): { text: string; structured?: Record<string, unknown> } {
+  const report = memoryUnreadableReport(collected, projectId);
+  // 判据用**本项目可见**的计数,不是 `total`:整棵树里只有别项目的坏条时,本项目这一侧
+  // 什么都没漏 —— 此时若按 `total` 输出一个空 `unreadable` 字段,等于告诉 agent
+  // "有东西不可读,但不告诉你是什么"(与 MC-092 的口径冲突)。健康/仅别项目坏 → 一个字都不加。
+  if (report.dirs.length + report.files.length === 0) return { text: textBody };
+  const disclosure = unreadableDisclosure(report);
+  const structured = {
+    unreadable: {
+      directories: report.dirs.length,
+      files: report.files.length,
+      paths: [...report.dirs, ...report.files].slice(0, MAX_DIAGNOSTIC_PATHS),
+    },
+  };
+  return { text: disclosure ? `${textBody}\n\n⚠️ ${disclosure}` : textBody, structured };
+}
+
+/**
  * 工具表。读 / 写分两段,与 `mcodeServer` 同一个形状。
  */
 function rawMemoryMcpTools(): McpToolSpec[] {
@@ -134,7 +167,9 @@ function rawMemoryMcpTools(): McpToolSpec[] {
       name: "memory_list",
       description:
         "列出记忆库里已有的记录(标题 + 路径 + 最后更新时间),按类目分组。" +
-        "**记东西之前先看一眼这里** —— 一条记忆该更新就用同一个路径覆盖,而不是再写一条新的。",
+        "**记东西之前先看一眼这里** —— 一条记忆该更新就用同一个路径覆盖,而不是再写一条新的。" +
+        "结果里的 `unreadable` 字段(以及正文里的 ⚠️)表示磁盘上有读不出来的记忆/目录;那一部分**没被列出来**," +
+        "不等于不存在。",
       inputSchema: {
         category: z
           .enum(MEMORY_CATEGORIES)
@@ -143,13 +178,17 @@ function rawMemoryMcpTools(): McpToolSpec[] {
       },
       handler: (args: { category?: MemoryCategory }, ctx) => {
         const projectId = memoryProjectForSession(ctx.sessionId);
-        const metas = listMemoryFiles(args.category === undefined ? undefined : { category: args.category }).filter(meta => visibleMemory(meta.path, projectId));
+        const unreadable: string[] = [];
+        const metas = listMemoryFiles({
+          ...(args.category === undefined ? {} : { category: args.category }),
+          onUnreadable: (p) => unreadable.push(p),
+        }).filter(meta => visibleMemory(meta.path, projectId));
+        const empty = args.category
+          ? `「${MEMORY_CATEGORY_LABELS[args.category]}」这一类还是空的。`
+          : "记忆库还是空的 —— 用户还没让你记过任何东西。";
         if (metas.length === 0) {
-          return text(
-            args.category
-              ? `「${MEMORY_CATEGORY_LABELS[args.category]}」这一类还是空的。`
-              : "记忆库还是空的 —— 用户还没让你记过任何东西。",
-          );
+          const projected = unreadableResult(empty, unreadable, projectId);
+          return projected.structured ? structured(projected.text, projected.structured) : text(projected.text);
         }
         const out: string[] = [];
         for (const category of MEMORY_CATEGORIES) {
@@ -161,7 +200,9 @@ function rawMemoryMcpTools(): McpToolSpec[] {
           }
           out.push("");
         }
-        return text(`共 ${metas.length} 条:\n\n${out.join("\n").trimEnd()}`);
+        const projected = unreadableResult(
+          `共 ${metas.length} 条:\n\n${out.join("\n").trimEnd()}`, unreadable, projectId);
+        return projected.structured ? structured(projected.text, projected.structured) : text(projected.text);
       },
     },
     {
@@ -169,7 +210,9 @@ function rawMemoryMcpTools(): McpToolSpec[] {
       description:
         "**按相关度**在记忆库里找 —— 不是按时间。想确认「这件事以前记过没有」就用它:" +
         "命中会带正文片段和分数,分数高的更该看。" +
-        "⚠️ 空查询会退回「按时间列最近几条」;一条都没命中就照实说没找到,别拿不相关的凑数。",
+        "⚠️ 空查询会退回「按时间列最近几条」;一条都没命中就照实说没找到,别拿不相关的凑数。" +
+        "结果里的 `unreadable` 字段(以及正文里的 ⚠️)表示有记忆/目录读不出来、**没参与本次检索** ——" +
+        "「没命中」与「读不出来」是两件事。",
       inputSchema: {
         query: z.string().describe("要找什么。中文按双字切词,所以「引用格式」这种短语比单字好"),
         category: z
@@ -179,17 +222,21 @@ function rawMemoryMcpTools(): McpToolSpec[] {
         limit: z.number().int().min(1).max(50).optional().describe("最多几条,默认 12"),
       },
       handler: (args: { query: string; category?: MemoryCategory; limit?: number }, ctx) => {
+        const projectId = memoryProjectForSession(ctx.sessionId);
+        const unreadable: string[] = [];
         const hits = searchMemory(args.query, {
-          projectId: memoryProjectForSession(ctx.sessionId),
+          projectId,
           ...(args.limit === undefined ? {} : { limit: args.limit }),
           ...(args.category === undefined ? {} : { category: args.category }),
+          onUnreadable: (p) => unreadable.push(p),
         });
         if (hits.length === 0) {
-          return text(
+          const body =
             args.query.trim().length === 0
               ? "记忆库是空的(或这一类是空的)。"
-              : `没有一条记忆和「${args.query}」对得上 —— 本次检索未命中，不代表从未记录。`,
-          );
+              : `没有一条记忆和「${args.query}」对得上 —— 本次检索未命中，不代表从未记录。`;
+          const projected = unreadableResult(body, unreadable, projectId);
+          return projected.structured ? structured(projected.text, projected.structured) : text(projected.text);
         }
         const lines = hits.map(
           (h) =>
@@ -199,7 +246,9 @@ function rawMemoryMcpTools(): McpToolSpec[] {
               .map((l) => `  ${l}`)
               .join("\n"),
         );
-        return text(`找到 ${hits.length} 条:\n\n${lines.join("\n")}`);
+        const projected = unreadableResult(
+          `找到 ${hits.length} 条:\n\n${lines.join("\n")}`, unreadable, projectId);
+        return projected.structured ? structured(projected.text, projected.structured) : text(projected.text);
       },
     },
     {

@@ -172,12 +172,21 @@ const TITLE_WEIGHT = 3;
  */
 export function searchMemory(
   query: string,
-  opts: { limit?: number; category?: string; projectId?: string } = {},
+  opts: {
+    limit?: number;
+    category?: string;
+    projectId?: string;
+    /** 【MC-031】列表/读取阶段读不出来的路径(文件或目录)。与注入那条路共用一份收集口径;
+     *  给了才上报,不给保持旧签名(只返回命中)。 */
+    onUnreadable?: (path: string) => void;
+  } = {},
 ): MemorySearchHit[] {
   const limit = opts.limit ?? DEFAULT_LIMIT;
   if (limit <= 0) return [];
-  const metas = listMemoryFiles(opts.category === undefined ? undefined : { category: opts.category })
-    .filter(meta => opts.projectId === undefined || visibleMemory(meta.path, opts.projectId));
+  const metas = listMemoryFiles({
+    ...(opts.category === undefined ? {} : { category: opts.category }),
+    ...(opts.onUnreadable ? { onUnreadable: opts.onUnreadable } : {}),
+  }).filter(meta => opts.projectId === undefined || visibleMemory(meta.path, opts.projectId));
   const terms = queryTerms(query);
 
   // 查询为空:按时间取最近若干条。先读、再占 limit —— 空正文或列表/磁盘竞态读不到的
@@ -185,7 +194,7 @@ export function searchMemory(
   if (terms.length === 0) {
     const recent: MemorySearchHit[] = [];
     for (const meta of metas.sort((a, b) => b.updatedAt - a.updatedAt)) {
-      const candidate = readCandidate(meta);
+      const candidate = readCandidate(meta, [], opts.onUnreadable);
       if (!candidate) continue;
       recent.push(candidate.hit);
       if (recent.length >= limit) break;
@@ -195,7 +204,7 @@ export function searchMemory(
 
   const scored: MemorySearchHit[] = [];
   for (const meta of metas) {
-    const candidate = readCandidate(meta, terms);
+    const candidate = readCandidate(meta, terms, opts.onUnreadable);
     if (!candidate) continue;
     const hay = candidate.searchBody.toLowerCase();
     const title = meta.title.toLowerCase();
@@ -217,13 +226,19 @@ interface MemorySearchCandidate {
   searchBody: string;
 }
 
-function readCandidate(meta: MemoryFileMeta, terms: readonly string[] = []): MemorySearchCandidate | null {
+function readCandidate(
+  meta: MemoryFileMeta,
+  terms: readonly string[] = [],
+  onUnreadable?: (path: string) => void,
+): MemorySearchCandidate | null {
   try {
     // 【MC-093 读侧】检索正文也先遮蔽再评分/预览 —— 历史/人工编辑的旧记录可能含密钥。
     const searchBody = redactSecrets(readMemoryFile(meta.path).content.trim());
     if (searchBody.length === 0) return null;
     return { hit: { meta, body: bodyPreview(searchBody, terms), score: 0 }, searchBody };
   } catch {
+    // 【MC-031】列表到读取之间读不动的(TOCTOU/权限)也如实上报;空正文**不**算漏读。
+    onUnreadable?.(meta.path);
     return null;
   }
 }
@@ -273,6 +288,48 @@ function countOccurrencesUpTo(hay: string, needle: string, cap: number): number 
   return count;
 }
 
+/** 【MC-031】漏读诊断的结构化口径 —— 注入披露句、MCP 工具结果、调用方日志**同一份**。
+ *
+ * 收集阶段只负责把路径丢进一个数组(store 的 `onUnreadable` / 读取 catch);这里是唯一的
+ * 「哪些算本项目可见的漏读、目录与文件各几条、点名哪几条」的判据:
+ * - 可见谓词用 `visibleMemoryDiagnostic`(文件走 `visibleMemory`、目录走 `visibleMemoryDir`);
+ * - 目录与文件**分开计数**(一个整类目录被链接替换 ≠ 一条文件读不动,数量语义不同);
+ * - 点名最多 `MAX_DIAGNOSTIC_PATHS` 条(路径是受信元数据,正文绝不进来)。
+ */
+export const MAX_DIAGNOSTIC_PATHS = 8;
+
+export interface MemoryUnreadableReport {
+  /** 去重、按作用域过滤后的目录路径(如 `projects/A/rules`)。 */
+  dirs: string[];
+  /** 去重、按作用域过滤后的文件路径(如 `projects/A/rules/x.md`)。 */
+  files: string[];
+  /** 磁盘上的全集,含被过滤掉的别项目路径 —— 仅用于调用方日志/测试,别直接摆给模型。 */
+  total: number;
+}
+
+export function memoryUnreadableReport(
+  collected: readonly string[],
+  projectId: string | undefined,
+): MemoryUnreadableReport {
+  const all = [...new Set(collected)];
+  const visible = projectId === undefined ? all : all.filter(p => visibleMemoryDiagnostic(p, projectId));
+  return {
+    dirs: visible.filter(p => memoryAddress(p) === null),
+    files: visible.filter(p => memoryAddress(p) !== null),
+    total: all.length,
+  };
+}
+
+/** 诊断的一句话(给人/给模型的文本投影);计数为 0 时返回空串 —— 不误报。 */
+export function unreadableDisclosure(report: MemoryUnreadableReport): string {
+  const sentence = (count: number, what: string, paths: string[]): string =>
+    `${count} ${what}读不出来,本轮未注入(${paths.slice(0, MAX_DIAGNOSTIC_PATHS).join("、")}${paths.length > MAX_DIAGNOSTIC_PATHS ? " …" : ""})；`;
+  return [
+    ...(report.dirs.length ? [sentence(report.dirs.length, "个记忆目录", report.dirs)] : []),
+    ...(report.files.length ? [sentence(report.files.length, "条记忆", report.files)] : []),
+  ].join("");
+}
+
 /** Host-scoped retrieval: legacy/unclassified records never enter an engine implicitly.
  *
  * ★ **MC-031:读不出来的记忆必须如实披露,不能静默丢。** 从前 `listMemoryFiles()` 不传
@@ -294,7 +351,7 @@ export function scopedMemorySnapshot(
   const unreadable: string[] = [];
   const all = listMemoryFiles({ onUnreadable: (p) => unreadable.push(p) })
     .filter(meta => visibleMemory(meta.path, projectId));
-  const relevant = searchMemory(query, { projectId, limit: 8 });
+  const relevant = searchMemory(query, { projectId, limit: 8, onUnreadable: (p) => unreadable.push(p) });
   const terms = queryTerms(query);
   const ordered = [...all.filter(m => m.pinned).slice(0, 4), ...relevant.map(h => h.meta),
     ...all.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 2)];
@@ -312,18 +369,12 @@ export function scopedMemorySnapshot(
   }
   // 只保留**本项目可见**的不可读路径(列表阶段扫的是整棵树,别项目的坏条不该出现在本项目注入里),
   // 去重后逐条上报给调用方(落日志/UI),再拼一句进返回值让模型也知道"这一轮少了东西"。
-  // 谓词用**诊断版**:列表阶段也会报目录(类目目录被链接替换/整目录读不动),那些路径
-  // 不是文件地址,拿文件版判会被整批静默丢掉 —— 正是本条要消灭的「漏读扮完整」。
-  const missing = [...new Set(unreadable)].filter(p => visibleMemoryDiagnostic(p, projectId));
-  for (const p of missing) onUnreadable?.(p);
-  const missingFiles = missing.filter(p => memoryAddress(p) !== null);
-  const missingDirs = missing.filter(p => memoryAddress(p) === null);
-  const sentence = (count: number, what: string, paths: string[]): string =>
-    `${count} ${what}读不出来,本轮未注入(${paths.slice(0, 8).join("、")}${paths.length > 8 ? " …" : ""})；`;
-  const disclosure = [
-    ...(missingDirs.length ? [sentence(missingDirs.length, "个记忆目录", missingDirs)] : []),
-    ...(missingFiles.length ? [sentence(missingFiles.length, "条记忆", missingFiles)] : []),
-  ].join("");
+  // 过滤/分列/点名口径收在 `memoryUnreadableReport` 一份里(与 MCP 工具结果共用);
+  // 谓词是诊断版:目录级漏读(类目目录被链接替换/整目录读不动)也必须留下。
+  const report = memoryUnreadableReport(unreadable, projectId);
+  for (const p of [...report.dirs, ...report.files]) onUnreadable?.(p);
+  const disclosure = unreadableDisclosure(report);
+  if (!blocks.length && !disclosure) return "";
   if (!blocks.length && !disclosure) return "";
   const head = `${disclosure}范围：本项目 + 显式全局；选中 ${blocks.length}/${all.length} 条；正文受长度预算限制。`;
   return blocks.length ? `${head}\n${blocks.join("\n\n")}` : head;

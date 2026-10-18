@@ -94,8 +94,17 @@ export function buildMemoryReview(
  * 【MC-092】`visible` 是宿主(带 agent 作用域时)传进来的「当前可见集合」判据:给了谓词就在
  * **进入扫描之前**把不可见的条目滤掉 —— 这样 `staleTotal` / `totalFiles` / duplicates 的配对
  * 与最终列出的条目**同出一份可见集合**,不会出现"计数里带着别项目、列表里却没有"的错位。
- * `undefined` = 桌面用户(扫全部)。 */
-export function reviewMemoryFiles(visible?: (path: string) => boolean): MemoryReviewResult {
+ * `undefined` = 桌面用户(扫全部)。
+ *
+ * 【MC-031 同族】`visible` 只判**文件**地址(调用方给的是 `visibleMemory`)。诊断清单里
+ * 还有**目录**(`listMemoryFiles` 的 onUnreadable 会报类目/项目目录被链接替换、整目录
+ * 读不动)—— 拿文件版谓词滤目录会把它们整批丢掉,agent 于是看不到"这一整类没扫到"。
+ * `visibleDiagnostic` 是同一作用域派生的**诊断版**谓词(文件仍走 `visibleMemory`,目录走
+ * `visibleMemoryDir`);只用于诊断清单,扫描过滤仍只用 `visible` 那一份。 */
+export function reviewMemoryFiles(
+  visible?: (path: string) => boolean,
+  visibleDiagnostic?: (path: string) => boolean,
+): MemoryReviewResult {
   const omitted: string[] = [];
   const all = listMemoryFiles({ onUnreadable: (path) => omitted.push(path) });
   const metas = visible === undefined ? all : all.filter((meta) => visible(meta.path));
@@ -106,7 +115,9 @@ export function reviewMemoryFiles(visible?: (path: string) => boolean): MemoryRe
   // 名字**漏给 agent(它能读到的清单里没有该项目,诊断里却点名了它的路径)。`report.unreadable`
   // 已出自过滤后的 metas,但整条清单统一走谓词才是「一份判据」;桌面用户(无谓词)照旧看全部。
   const diagnostics = [...new Set([...omitted, ...report.unreadable])];
-  const unreadable = visible === undefined ? diagnostics : diagnostics.filter((path) => visible(path));
+  const unreadable = visible === undefined
+    ? diagnostics
+    : diagnostics.filter((path) => visible(path) || (visibleDiagnostic?.(path) ?? false));
   return { ...report, unreadable };
 }
 

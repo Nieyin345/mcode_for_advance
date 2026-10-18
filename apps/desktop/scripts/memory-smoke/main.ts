@@ -32,7 +32,7 @@ import { z } from "zod";
  *
  * Run: scripts/memory-smoke/run.sh
  */
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync, lstatSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MEMORY_CATEGORIES, MEMORY_PARAM_KEY } from "@contracts/memory";
@@ -777,6 +777,90 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
     const goneText = gone.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
     check("★ 幂等删除报的是中文成功句,不是原始 ENOENT 英文", goneText.includes("已删掉") && !/ENOENT/.test(goneText), goneText);
   }
+
+  /* ── 【MC-031 同族】MCP 读口(`memory_list` / `memory_search`)的漏读诊断 ──
+   *
+   * 从前两个读口不传 `onUnreadable`:`listMemoryFiles` 把读不出来的条目静静丢掉,工具却
+   * 照常回「这一类还是空的」/「没有一条对得上」—— 模型无法区分**真的没有**与**有但读不出来**。
+   * 现在:结构化字段 `unreadable {directories, files, paths}` + 正文一句 ⚠️;零命中时
+   * 两种事实同时说清。夹具用**真 junction**(`symlinkSync` + `lstat` 自证)造目录级漏读,
+   * 并**前置断言**:同一个数据根里放一条**可读**记忆 —— 否则"零命中"可能只是因为库是空的,
+   * 断言会空过。 */
+  {
+    const { symlinkSync, unlinkSync, lstatSync, existsSync, renameSync } = await import("node:fs");
+    const outside = join(dirname(memoryRoot()), "mc031-mcp-outside");
+    mkdirSync(outside, { recursive: true });
+    /** 把真实存在的目录**改名让位**,再用 junction 顶上 —— Windows 的 junction 不允许
+     *  链接路径已存在。返回还原函数:拆 junction、把原目录改回来(一条都不丢,后续块不受污染)。 */
+    const replaceDirWithJunction = (at: string): (() => void) | null => {
+      const aside = `${at}.mc031-aside`;
+      let hadReal = false;
+      try {
+        if (existsSync(at)) { renameSync(at, aside); hadReal = true; }
+        mkdirSync(dirname(at), { recursive: true });
+        symlinkSync(outside, at, process.platform === "win32" ? "junction" : "dir");
+        if (!lstatSync(at).isSymbolicLink()) throw new Error("不是链接");
+      } catch {
+        try { if (lstatSync(at).isSymbolicLink()) unlinkSync(at); } catch { /* 尽力 */ }
+        if (hadReal) { try { renameSync(aside, at); } catch { /* 尽力 */ } }
+        return null;
+      }
+      return () => {
+        try { unlinkSync(at); } catch { /* 尽力 */ }
+        if (hadReal) { try { renameSync(aside, at); } catch { /* 尽力 */ } }
+      };
+    };
+    const structuredOf = (r: { structuredContent?: Record<string, unknown> }): Record<string, unknown> | undefined =>
+      r.structuredContent;
+
+    // 健康基线(防空过正控):库里有可读记录时两个读口**都不**出现 unreadable 字段。
+    saveMemoryFile({ path: "projects/p_memory/rules/mcp-healthy.md", content: "HEALTHY_MCP_BODY 可读记录。" });
+    const healthyList = await invoke("memory_list", {});
+    const healthySearch = await invoke("memory_search", { query: "HEALTHY_MCP_BODY" });
+    check("★ MC-031 MCP:健康库 memory_list 不带 unreadable 诊断(不误报)", structuredOf(healthyList) === undefined, structuredOf(healthyList));
+    check("★ MC-031 MCP:健康库 memory_search 不带 unreadable 诊断(不误报)", structuredOf(healthySearch) === undefined, structuredOf(healthySearch));
+    check("★ MC-031 MCP:健康库检索真的命中(证明上面两条不是因为空库)", textOf(healthySearch).includes("HEALTHY_MCP_BODY"));
+
+    // ① 本项目 rules 目录整体读不出来:零命中检索、列表两个读口都要说清「漏了」。
+    const restoreSelf = replaceDirWithJunction(join(memoryRoot(), "projects", "p_memory", "rules"));
+    if (!restoreSelf) {
+      console.log("  (跳过:本环境造不出目录链接夹具)");
+    } else {
+      try {
+        // ① 零命中 + 本项目目录读不出来 → 两种事实同时说清,不再只回「没有一条对得上」。
+        const missSearch = await invoke("memory_search", { query: "绝对不存在的关键词_qzx" });
+        const missText = missSearch.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+        check("★ MC-031 MCP:零命中时正文**同时**说「未命中」与「读不出来」",
+          missText.includes("没有一条记忆") && missText.includes("读不出来"), missText.slice(0, 300));
+        const missDiag = (missSearch.structuredContent as { unreadable?: { directories?: number; files?: number; paths?: string[] } } | undefined)?.unreadable;
+        check("★ MC-031 MCP:零命中时结构化字段带 unreadable(目录计数)", (missDiag?.directories ?? 0) >= 1, missDiag);
+        check("★ MC-031 MCP:诊断点名的目录就是本项目读不出来的那个",
+          (missDiag?.paths ?? []).includes("projects/p_memory/rules"), missDiag);
+
+        // ② memory_list 同理:整类目录读不出来时也带结构化诊断 + 正文 ⚠️。
+        const missList = await invoke("memory_list", {});
+        const missListDiag = (missList.structuredContent as { unreadable?: { directories?: number } } | undefined)?.unreadable;
+        check("★ MC-031 MCP:memory_list 在整类目录读不出来时带结构化 unreadable", (missListDiag?.directories ?? 0) >= 1, missListDiag);
+        const missListText = missList.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+        check("★ MC-031 MCP:memory_list 的正文里有 ⚠️ 披露(模型看得见)", missListText.includes("⚠️") && missListText.includes("读不出来"), missListText.slice(0, 300));
+      } finally { restoreSelf(); }
+
+      // ③ 作用域:别的项目整个目录读不出来时,本项目读口的诊断**不泄露**它的名字。
+      const restoreOther = replaceDirWithJunction(join(memoryRoot(), "projects", "p_other"));
+      if (!restoreOther) {
+        console.log("  (跳过:本环境造不出项目级目录链接夹具)");
+      } else {
+        try {
+          const scoped = await invoke("memory_search", { query: "HEALTHY_MCP_BODY" });
+          const scopedDiag = (scoped.structuredContent as { unreadable?: { paths?: string[] } } | undefined)?.unreadable;
+          check("★ MC-031 MCP:别项目目录漏读不出现在本项目诊断里", !(scopedDiag?.paths ?? []).some((p) => p.includes("p_other")), scopedDiag);
+          const scopedText = scoped.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+          check("★ MC-031 MCP:别项目的存在与名字也不借正文泄露", !scopedText.includes("p_other"), scopedText.slice(0, 300));
+        } finally { restoreOther(); }
+      }
+    }
+    rmSync(join(memoryRoot(), "projects", "p_memory", "rules", "mcp-healthy.md"), { force: true });
+  }
 }
 
 /* Scope, recovery, preview-confirm import and the real neutral engine dispatcher. */
@@ -1201,6 +1285,42 @@ console.log("\n分层工作流复用与记忆注入所有权");
       const revDiag = (call("memory:review", {}) as { unreadable: string[] }).unreadable;
       check("★ MC-092:agent review 诊断不含**别的项目**的不可读路径", !revDiag.includes(blockedOther), revDiag);
       check("★ MC-092:agent review 诊断仍含**本项目**的不可读路径(正控)", revDiag.includes(blockedSelf), revDiag);
+      // 【MC-031 同族】诊断过滤从前只调文件版 `visibleMemory` —— 目录级漏读(整类目录
+      //   被链接替换/读不动)没有 `.md` 文件地址,被整批丢掉,agent 看不到「这一整类没扫到」。
+      //   现在诊断那条走 `visibleMemoryDiagnostic`(文件仍走文件版,目录走目录版)。夹具:
+      //   本项目与别的项目各把一个**空类目目录**(experiences)换成 junction —— store 上报的
+      //   路径是 `projects/<id>/experiences`(不带 `.md`,文件版谓词一律 false)。本项目那条
+      //   agent 必须看到(正控);别项目那条必须仍被挡住(不泄露)。
+      {
+        const outsideDir = join(dirname(memoryRoot()), "mc031-review-outside");
+        mkdirSync(outsideDir, { recursive: true });
+        const makeJunction = (rel: string): boolean => {
+          const at = join(memoryRoot(), ...rel.split("/"));
+          try {
+            mkdirSync(dirname(at), { recursive: true });
+            symlinkSync(outsideDir, at, process.platform === "win32" ? "junction" : "dir");
+            return lstatSync(at).isSymbolicLink();
+          } catch { return false; }
+        };
+        const selfJ = makeJunction("projects/p_memory/experiences");
+        const otherJ = makeJunction("projects/p_other/experiences");
+        if (!selfJ || !otherJ) {
+          console.log("  (跳过:本环境造不出目录链接夹具)");
+        } else {
+          const dirSelf = "projects/p_memory/experiences";
+          const dirOther = "projects/p_other/experiences";
+          const revDirDiag = (call("memory:review", {}) as { unreadable: string[] }).unreadable;
+          check("★ MC-031:agent review 诊断含**本项目**的目录级漏读(正控)",
+            revDirDiag.includes(dirSelf), revDirDiag);
+          check("★ MC-031:agent review 诊断不含**别的项目**的目录级漏读",
+            !revDirDiag.includes(dirOther), revDirDiag);
+        }
+        for (const rel of ["projects/p_memory/experiences", "projects/p_other/experiences"]) {
+          const at = join(memoryRoot(), ...rel.split("/"));
+          try { if (lstatSync(at).isSymbolicLink()) unlinkSync(at); } catch { /* 清理尽力而为 */ }
+        }
+        rmSync(outsideDir, { recursive: true, force: true });
+      }
       // reviewDelete —— 带**正确指纹**删别的项目也被拒(与 memory:delete 同一道闸)。
       const rd = call("memory:reviewDelete", { path: crossPath, digest: crossDigest }) as { ok: boolean };
       check("★ MC-092:agent reviewDelete 别的项目被拒(指纹正确也拒)", rd.ok === false, rd);

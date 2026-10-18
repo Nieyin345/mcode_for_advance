@@ -44,7 +44,7 @@ import {
   MemorySaveSchema,
 } from "@contracts/memory";
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
-import { memoryAddress, visibleMemory } from "@main/memory/paths.js";
+import { memoryAddress, visibleMemory, visibleMemoryDiagnostic } from "@main/memory/paths.js";
 import { currentAgentMemoryProjectId } from "@main/memory/agentScope.js";
 import { deleteReviewedMemory, reviewMemoryFiles } from "@main/memory/review.js";
 import {
@@ -66,9 +66,16 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
   // 有作用域 → 只认本项目 + 全局。读写删按**路径**判;`manage`/`review` 这类**列表型**出口把
   // 它当谓词**传进领域函数**,在构建列表**之前**就滤掉不可见项(计数才不撒谎 —— 出参的
   // totalFiles / history 才和列出来的条目对得上)。
+  // `agentVisibleDiagnostic` 是同一作用域的**诊断版**:文件走 `visibleMemory`、目录走
+  // `visibleMemoryDir` —— review 的 `unreadable` 清单里有目录级漏读(整类目录读不动/被链接
+  // 替换),拿文件版判会把它们整批丢掉,agent 就看不到「这一整类没扫到」。
   const agentVisible = (): ((path: string) => boolean) | undefined => {
     const scope = currentAgentMemoryProjectId();
     return scope === undefined ? undefined : (path) => visibleMemory(path, scope);
+  };
+  const agentVisibleDiagnostic = (): ((path: string) => boolean) | undefined => {
+    const scope = currentAgentMemoryProjectId();
+    return scope === undefined ? undefined : (path) => visibleMemoryDiagnostic(path, scope);
   };
   const enforceAgentScope = (path: string): void => {
     const visible = agentVisible();
@@ -160,7 +167,7 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
   // 【MC-092】agent 作用域下只扫描**本项目 + 全局**的记忆(桌面用户扫全部)——把「可见」谓词
   // 传进领域函数,在**构建扫描结果之前**滤掉不可见项:这样 staleTotal / totalFiles 这些
   // 计数与列出来的条目同出一份可见集合,不会出现"计数里带着别项目、列表里却没有"的错位。
-  ipcMain.handle(MEMORY_REVIEW_CHANNEL, () => reviewMemoryFiles(agentVisible()));
+  ipcMain.handle(MEMORY_REVIEW_CHANNEL, () => reviewMemoryFiles(agentVisible(), agentVisibleDiagnostic()));
 
   // 永不按建议自动删：UI 必须勾选 + 二次确认，并交回扫描时的完整内容指纹。
   ipcMain.handle(MEMORY_REVIEW_DELETE_CHANNEL, (_evt, raw) => {
