@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-18T09:37:10Z",
+  "updated_at": "2026-10-18T10:29:18Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -77,9 +77,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "2e234c7d0bbb80ce4c2a1562cefc4732afbfafd8174c16d74d0824cd1c1fc7e6",
-      "size": 1196112,
-      "normalized_sha256": "2e234c7d0bbb80ce4c2a1562cefc4732afbfafd8174c16d74d0824cd1c1fc7e6"
+      "sha256": "5b9805360e45e31b1ecd679fd6dcd864f612b27d189c71327f27157b3d374e4a",
+      "size": 1195533,
+      "normalized_sha256": "5b9805360e45e31b1ecd679fd6dcd864f612b27d189c71327f27157b3d374e4a"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -4025,9 +4025,9 @@
     },
     "apps/desktop/scripts/mcode-admin-smoke/main.ts": {
       "role": "index",
-      "sha256": "9dc96a3bb2b1a1172f043d2944a7c4b74b3894e07f2dd1c69762ba8d11ba5db3",
-      "size": 83753,
-      "normalized_sha256": "9dc96a3bb2b1a1172f043d2944a7c4b74b3894e07f2dd1c69762ba8d11ba5db3"
+      "sha256": "ee3113e3a389de8d5f9cd2d2c27cdd4c23819a27806c4a29ddeff95b8184ed33",
+      "size": 88833,
+      "normalized_sha256": "ee3113e3a389de8d5f9cd2d2c27cdd4c23819a27806c4a29ddeff95b8184ed33"
     },
     "apps/desktop/scripts/mcode-admin-smoke/run.sh": {
       "role": "index",
@@ -5393,9 +5393,9 @@
     },
     "apps/desktop/scripts/orchestration-ipc-smoke/main.ts": {
       "role": "index",
-      "sha256": "0cf9056ea3eea83d3be15499ca1607a3af02b0faa77ac7eef7280453f1d29720",
-      "size": 115010,
-      "normalized_sha256": "0cf9056ea3eea83d3be15499ca1607a3af02b0faa77ac7eef7280453f1d29720"
+      "sha256": "8c84ea606efb86470d50cd03ff3329ee556594d0204bb5e653570824a45f6f2c",
+      "size": 118526,
+      "normalized_sha256": "8c84ea606efb86470d50cd03ff3329ee556594d0204bb5e653570824a45f6f2c"
     },
     "apps/desktop/scripts/orchestration-ipc-smoke/run.sh": {
       "role": "index",
@@ -8049,6 +8049,18 @@
       "size": 686,
       "normalized_sha256": "4ca58e280c2ef6a381a688582feab8792f77c67b4fad83fa82504d3dc619e37a"
     },
+    "apps/desktop/scripts/workflow-extension-seams-smoke/main.ts": {
+      "role": "index",
+      "sha256": "f0a9ac20390baa9ebf5fb9ab8883278367ae10fad7bf5a159e094cc060f7bfda",
+      "size": 6594,
+      "normalized_sha256": "f0a9ac20390baa9ebf5fb9ab8883278367ae10fad7bf5a159e094cc060f7bfda"
+    },
+    "apps/desktop/scripts/workflow-extension-seams-smoke/run.sh": {
+      "role": "index",
+      "sha256": "a7bd3e41b3524315e0381005eb9318516b203e59cf35513c9d01c28e6bc21f01",
+      "size": 705,
+      "normalized_sha256": "a7bd3e41b3524315e0381005eb9318516b203e59cf35513c9d01c28e6bc21f01"
+    },
     "apps/desktop/scripts/workflow-live-smoke/main.ts": {
       "role": "index",
       "sha256": "84738cac49edd9a24dda4039c07b9625dc4e26ebe16b1d4c400be3e1c5818fef",
@@ -8153,9 +8165,9 @@
     },
     "apps/desktop/scripts/workflow-validation-smoke/main.ts": {
       "role": "index",
-      "sha256": "36ae499c4beb2d4d341251d3495b5506b85234fb21ca3ac80fba925d69708b71",
-      "size": 46152,
-      "normalized_sha256": "36ae499c4beb2d4d341251d3495b5506b85234fb21ca3ac80fba925d69708b71"
+      "sha256": "4418abba4441773421f05f348bd65de6458331fb820a5722210b26e985016495",
+      "size": 50621,
+      "normalized_sha256": "4418abba4441773421f05f348bd65de6458331fb820a5722210b26e985016495"
     },
     "apps/desktop/scripts/workflow-validation-smoke/run.sh": {
       "role": "index",
@@ -8753,9 +8765,9 @@
     },
     "apps/desktop/src/main/ipc/orchestration.ts": {
       "role": "index",
-      "sha256": "b7ac59aabfc1003c498527eb69635d238217dbc7e0577c9726f1cb90937a8657",
-      "size": 36596,
-      "normalized_sha256": "b7ac59aabfc1003c498527eb69635d238217dbc7e0577c9726f1cb90937a8657"
+      "sha256": "1f17c581303892b1335e9d387180a58a6bfc2112ff7907d1315614d93ef7b492",
+      "size": 38156,
+      "normalized_sha256": "1094de7372cf819d3afbb98279447b55b2a785ae0fe0390cb4a0a6df34cedc85"
     },
     "apps/desktop/src/main/ipc/outputStyle.ts": {
       "role": "index",
@@ -9581,9 +9593,9 @@
     },
     "apps/desktop/src/main/mcp/mcodeWorkflowSchema.ts": {
       "role": "index",
-      "sha256": "268e5232edbc44bedfa758fb777c7a1d3f7419b644292739041ef9a5575d807f",
-      "size": 18811,
-      "normalized_sha256": "268e5232edbc44bedfa758fb777c7a1d3f7419b644292739041ef9a5575d807f"
+      "sha256": "824f0317b5d68209f8da1be91c357a5930030b2e693c5bb06d0560fb8017e9e6",
+      "size": 21431,
+      "normalized_sha256": "5e56a97e7f593daa337c7ccfd8301c043cd4d06f14658c338eb6571b97ecf9ce"
     },
     "apps/desktop/src/main/mcp/memoryServer.ts": {
       "role": "index",
@@ -10169,9 +10181,9 @@
     },
     "apps/desktop/src/main/orchestration/workflowValidation.ts": {
       "role": "index",
-      "sha256": "0b5ddeb81ef0b1ebce4e55c4e2cce74b7b42426e5f6a3c9c4857851378d639a0",
-      "size": 39645,
-      "normalized_sha256": "0b5ddeb81ef0b1ebce4e55c4e2cce74b7b42426e5f6a3c9c4857851378d639a0"
+      "sha256": "e12505a8e76caf817ab92bf44beceb9d4dde717834fba9e7ac8827a6bc7ab509",
+      "size": 42492,
+      "normalized_sha256": "a417c2a19bf9e76e5775154a684b01b311dce6d771276bbd60efbe621c90f983"
     },
     "apps/desktop/src/main/plugins/pluginManager.ts": {
       "role": "index",
@@ -15375,9 +15387,9 @@
     },
     "packages/contracts/src/workflow.ts": {
       "role": "index",
-      "sha256": "87c5322ee804320a74877dfc0a89b6574f857f626219e2b1060290ae6efa19ff",
-      "size": 51094,
-      "normalized_sha256": "87c5322ee804320a74877dfc0a89b6574f857f626219e2b1060290ae6efa19ff"
+      "sha256": "c3891a017ae42af3b3a74432756f386bb678ea5a0c0fb3016ae4eef7af49a2d7",
+      "size": 58217,
+      "normalized_sha256": "c3891a017ae42af3b3a74432756f386bb678ea5a0c0fb3016ae4eef7af49a2d7"
     },
     "packages/contracts/tsconfig.json": {
       "role": "index",
