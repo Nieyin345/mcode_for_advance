@@ -19,7 +19,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, Switch } from "@renderer/components/ui/index.js";
+import { Button, Switch, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import type { LspLanguageId, LspLanguageState } from "@contracts/ipc";
@@ -86,6 +86,7 @@ const LANG_META: Record<
 export function LspLanguagesPanel() {
   const { t } = useI18n();
   const lspLanguages = useSessionStore((s) => s.lspLanguages);
+  const lspLoadError = useSessionStore((s) => s.lspLoadError);
   const reloadLspLanguages = useSessionStore((s) => s.reloadLspLanguages);
 
   // Poll for install progress while any language is installing.
@@ -111,11 +112,24 @@ export function LspLanguagesPanel() {
       <PanelHeader title={t("settings.lsp.title")} icon={IconCode} />
 
       <SettingsSection title={t("settings.lsp.section")}>
-        {lspLanguages.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 px-4 py-8 text-[0.85em] text-content-subtle">
-            <IconLoader2 size={14} className="animate-spin" />
-            {t("settings.lsp.loading")}
+        {/* 读失败要说出来。从前 `api.lsp.list` 失败只 console.error,列表保持空,
+            面板就永远转「加载 LSP 状态…」—— 用户分不清"在读"与"坏了"(硬规矩 3)。 */}
+        {lspLoadError !== null && (
+          <div className="px-4 py-3">
+            <ErrorNote
+              title={t("settings.lsp.loadFailed")}
+              action={
+                <Button size="sm" variant="ghost" onClick={() => void reloadLspLanguages()}>
+                  {t("common.retry")}
+                </Button>
+              }
+            >
+              {lspLoadError}
+            </ErrorNote>
           </div>
+        )}
+        {lspLanguages.length === 0 && lspLoadError === null ? (
+          <LoadingNote label={t("settings.lsp.loading")} />
         ) : (
           lspLanguages.map((lang) => (
             <LanguageRow key={lang.language} state={lang} onReload={reloadLspLanguages} />

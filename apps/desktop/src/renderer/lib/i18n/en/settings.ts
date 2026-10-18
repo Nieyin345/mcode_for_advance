@@ -537,6 +537,7 @@ export const en = {
   "settings.lsp.title": "LSP",
   "settings.lsp.desc": "Enable go-to-definition, find references and hover info in the editor. \"Install\" runs the machine's package manager (npm / pip / go / brew) to install the server globally; flip the toggle on once installed.",
   "settings.lsp.loading": "Loading language server status…",
+  "settings.lsp.loadFailed": "Failed to load language server status",
   "settings.lsp.hintJava": "jdtls (matched to your JDK version)",
   "settings.lsp.dlHintTs": "Download the executable for your platform, extract it, then install from that file",
   "settings.lsp.dlHintPy": "Download the binary package for your platform, extract it, then install from the executable",

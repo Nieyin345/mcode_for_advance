@@ -1329,6 +1329,10 @@ export interface SessionState {
    *  Empty array until first load completes. Not persisted (re-fetched each
    *  startup from the main process). */
   lspLanguages: LspLanguageState[];
+  /** 最近一次 `reloadLspLanguages` 失败的原因;null = 无错误(可能仍在加载)。
+   *  从前失败只 `console.error`,面板见 `lspLanguages.length === 0` 就永远
+   *  转「加载 LSP 状态…」—— 用户分不清"在读"与"坏了"(硬规矩 3)。 */
+  lspLoadError: string | null;
 
   /** Agent runtime states (claude/codex/pi download-on-demand), hydrated
    *  lazily when the settings panel mounts. Empty until first load. Not
@@ -1770,9 +1774,10 @@ export interface SessionState {
   setCustomModel: (id: string | null, model?: string) => void;
   reloadCustomModels: () => Promise<void>;
   /** Re-fetch language server states from main. Called on init and after any
-   *  lsp mutation (install/toggle/setPath). Best-effort; failures are logged
-   *  and leave the existing state. Also re-applies the TS-Worker diagnostic
-   *  suppression when the typescript server is enabled. */
+   *  lsp mutation (install/toggle/setPath). Failures keep the existing list
+   *  and surface through `lspLoadError` (the panel shows a retry banner).
+   *  Also re-applies the TS-Worker diagnostic suppression when the typescript
+   *  server is enabled. */
   reloadLspLanguages: () => Promise<void>;
   /** Kick off the active project's Java server in the background
    *  (LspManager.prewarm): the one-time Maven/Gradle import then runs while

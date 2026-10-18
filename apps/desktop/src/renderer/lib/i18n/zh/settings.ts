@@ -544,6 +544,7 @@ export const zh = {
   "settings.lsp.title": "LSP",
   "settings.lsp.desc": "为编辑器启用跳转定义、查找引用、悬停信息。点击\"安装\"会通过本机的包管理器(npm / pip / go / brew)全局安装对应 server。安装后打开开关即启用。",
   "settings.lsp.loading": "加载 LSP 状态…",
+  "settings.lsp.loadFailed": "LSP 状态加载失败",
   "settings.lsp.hintJava": "jdtls(自动匹配 JDK 版本)",
   "settings.lsp.dlHintTs": "下载对应平台的可执行文件,解压后选择该文件安装",
   "settings.lsp.dlHintPy": "下载对应平台的二进制包,解压后选择可执行文件安装",

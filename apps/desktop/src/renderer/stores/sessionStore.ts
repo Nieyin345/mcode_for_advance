@@ -860,6 +860,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   navBackByProject: {},
   navForwardByProject: {},
   lspLanguages: [] as LspLanguageState[],
+  lspLoadError: null as string | null,
   // ─────────────── L 引擎与模型 ───────────────
   runtimes: [] as RuntimeAgentState[],
   // ─────────────── F 编辑器 / IDE ───────────────
@@ -5593,7 +5594,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   reloadLspLanguages: async () => {
     try {
       const { languages } = await api.lsp.list();
-      set({ lspLanguages: languages });
+      // 清错误与写列表放在同一次 set 里:成功即恢复,面板的「加载失败」横幅随
+      // 之消失(重试路径就靠这一句)。
+      set({ lspLanguages: languages, lspLoadError: null });
       // Java just enabled (or hydration finished with it enabled) → start
       // the import now rather than at the first openDocument.
       get().prewarmJavaLspForActiveProject();
@@ -5612,7 +5615,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // on next reload once monacoSetup is loaded.
       }
     } catch (err) {
+      // **失败要说出来。** 从前这里只 console.error:面板空列表 → 永远转
+      // 「加载 LSP 状态…」,用户分不清"在读"与"坏了"。错误进 store,面板渲染
+      // 错误横幅 + 重试;上一次成功的列表保留(一次瞬时失败不抹掉它)。
       console.error("reloadLspLanguages failed:", err);
+      set({ lspLoadError: err instanceof Error ? err.message : String(err) });
     }
   },
 

@@ -183,6 +183,64 @@ await withAuditPage(dir,async(page)=>{
     vOk.includes('Zipformer 中文') && !vOk.includes('模型列表加载失败'),
     {text:vOk});
 
+  /* ───────────── E. LspLanguagesPanel:读失败不再永远转「加载 LSP 状态…」 ───────────── */
+  // 与 D 段同一判据形态:`api.lsp.list` 拒绝 → 错误标题+原因+重试可见,
+  // 加载态消失;重试恢复后列表回来、横幅消失。失败注入经页内 mock 的
+  // `labApi.lsp` 赋值(不改共享 mocks.js)。
+  await page.eval(`(()=>{
+    window.labApi.lsp = {
+      list: async () => {
+        window.labCalls.push(['lsp.list']);
+        if (window.labMode.lspList === 'reject') throw new Error('mock-lsp-list-rejected');
+        return {languages:[{
+          language:'typescript', enabled:true, installed:true,
+          serverPath:'D:/bin/typescript-language-server',
+          running:false, installing:false, installLog:'', lastError:'',
+        }]};
+      },
+    };
+    window.labMode.lspList = 'ok';
+    window.labStore.setState({lspLanguages:[], lspLoadError:null});
+  })()`);
+
+  // E0 基线:读成功 → 语言行渲染,无错误横幅、无加载态。
+  await page.eval(`window.__mount('lsp');`);
+  await page.eval(`window.labStore.getState().reloadLspLanguages()`);
+  await sleep(450);
+  const lText0 = await page.eval(`document.getElementById('root').textContent`);
+  check('E0 基线:LSP 读成功时语言行渲染、无错误横幅',
+    lText0.includes('TypeScript / JavaScript') && !lText0.includes('LSP 状态加载失败') && !lText0.includes('加载 LSP 状态'),
+    {text:lText0});
+
+  // E1 读失败(列表为空,正是"永远转圈"的原现场)——错误标题与原因可见,
+  // 加载占位消失,且不落成未处理 promise 拒绝。
+  await page.eval(`window.labUnhandled.length=0;window.labMode.lspList='reject';window.labStore.setState({lspLanguages:[],lspLoadError:null});`);
+  await page.eval(`window.labStore.getState().reloadLspLanguages()`);
+  await sleep(450);
+  const lFail = await page.eval(`document.getElementById('root').textContent`);
+  check('E1a ★ LSP 读取失败:错误标题与原因对用户可见',
+    lFail.includes('LSP 状态加载失败') && lFail.includes('mock-lsp-list-rejected'),
+    {text:lFail});
+  check('E1b ★ LSP 读取失败:不再永远停在「加载 LSP 状态…」',
+    !lFail.includes('加载 LSP 状态'), {text:lFail});
+  check('E1c LSP 读取失败不落成未处理 promise 拒绝',
+    (await page.eval('window.labUnhandled.length'))===0,
+    {unhandled:await page.eval('window.labUnhandled')});
+  check('E1d ★ LSP 读取失败时给出「重试」钮',
+    await page.eval(`[...document.querySelectorAll('#root button')].some(b=>b.textContent.trim()==='重试')`));
+
+  // E2 点「重试」真的重新发请求:恢复成功态后点重试 → 列表回来、横幅消失。
+  await page.eval(`window.labMode.lspList='ok';`);
+  await page.eval(`(()=>{const btn=[...document.querySelectorAll('#root button')].find(b=>b.textContent.trim()==='重试');if(btn)btn.click();})()`);
+  await sleep(450);
+  const lOk = await page.eval(`document.getElementById('root').textContent`);
+  check('E2a ★ 点「重试」后 LSP 列表读到、错误横幅消失',
+    lOk.includes('TypeScript / JavaScript') && !lOk.includes('LSP 状态加载失败') && !lOk.includes('加载 LSP 状态'),
+    {text:lOk});
+  check('E2b 重试确实重新发了 lsp.list 请求',
+    (await page.eval(`window.labCalls.filter(c=>c[0]==='lsp.list').length`))>=3,
+    {calls:await page.eval(`window.labCalls.filter(c=>c[0]==='lsp.list')`)});
+
   /* ───────────── C. GeneralPanel:阈值输入的草稿保持 ───────────── */
   await page.eval(`window.__mount('general')`);
   await page.waitFor(`document.getElementById('setting-paste-threshold')`);

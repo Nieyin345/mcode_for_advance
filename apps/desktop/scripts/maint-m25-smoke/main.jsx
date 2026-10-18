@@ -4,6 +4,7 @@ import {GeneralPanel} from '@renderer/components/settings/GeneralPanel.js';
 import {RuntimesPanel} from '@renderer/components/settings/RuntimesPanel.js';
 import {DataRootPanel} from '@renderer/components/settings/DataRootPanel.js';
 import {VoicePanel} from '@renderer/components/settings/VoicePanel.js';
+import {LspLanguagesPanel} from '@renderer/components/settings/LspLanguagesPanel.js';
 import {useSessionStore} from '@renderer/stores/sessionStore.js';
 
 window.labStore=useSessionStore;
@@ -32,7 +33,7 @@ let root=null;
 window.__mount=(name)=>{
   if(root)root.unmount();
   root=createRoot(host);
-  root.render(name==='general'?<GeneralPanel/>:name==='dataroot'?<DataRootPanel/>:name==='voice'?<VoicePanel/>:<RuntimesPanel/>);
+  root.render(name==='general'?<GeneralPanel/>:name==='dataroot'?<DataRootPanel/>:name==='voice'?<VoicePanel/>:name==='lsp'?<LspLanguagesPanel/>:<RuntimesPanel/>);
 };
 window.__mount('runtimes');
 window.__ready=true;
