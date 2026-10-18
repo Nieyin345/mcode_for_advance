@@ -7,7 +7,10 @@ import { SerializedFileWrites } from "./serializedFileWrites.js";
  * 拒绝写入,把磁盘上的新内容带回去让界面问用户:载入新版本,还是用自己的覆盖。
  */
 export class FileConflictError extends Error {
-  constructor(readonly disk: string) {
+  /** 【MC-024】主进程把**这次要写的内容**另存到的冲突副本（同目录
+   *  `<name>.conflict-<时间戳><ext>`）。界面据此告诉用户"你的版本没丢，在这里"。
+   *  缺省 = 副本没能落盘（写副本失败），此时只有冲突事实可报。 */
+  constructor(readonly disk: string, readonly conflictPath?: string) {
     super("文件已被外部修改");
     this.name = "FileConflictError";
   }
@@ -60,10 +63,12 @@ export const textFileWrites = new SerializedFileWrites(async (filePath, content,
   });
   if (!result.ok) {
     // 【MC-097】主进程 CAS 冲突:磁盘在这次读之后又被改过。抛同一种冲突错,界面照旧问用户。
+    // 【MC-024】主进程已把这次的内容另存为冲突副本；路径随错误带上去,让界面能说清楚
+    // "你的版本在哪儿",而不是只报"被外部修改"、让用户以为刚打的字没了。
     if ((result as { conflict?: boolean }).conflict) {
       let disk = "";
       try { disk = (await api.file.readFile({ filePath })).content; } catch { /* 读不到就给空 */ }
-      throw new FileConflictError(disk);
+      throw new FileConflictError(disk, (result as { conflictPath?: string }).conflictPath);
     }
     throw new Error("文件写入失败");
   }

@@ -135,6 +135,7 @@ export const zh = {
   "ide.editor.overwriteDiskHint": "把这里的内容写回磁盘，替换掉外部（例如 AI）刚做的修改",
   "ide.editor.externalChangedPaused": "文件已被外部修改，自动保存已暂停",
   "ide.editor.externalChangedNotSaved": "文件已被外部修改，你的改动没有保存",
+  "ide.editor.savedToConflictCopy": "你的版本已另存为 {name}",
 
   /* ── search dialog ── */
   "ide.search.modeNameHint": "当前:文件名搜索 - 点击切到内容搜索",

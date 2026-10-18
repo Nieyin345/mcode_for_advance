@@ -127,6 +127,7 @@ export const en = {
   "ide.editor.overwriteDiskHint": "Write this content to disk, replacing the external (e.g. AI) changes",
   "ide.editor.externalChangedPaused": "File changed on disk; autosave paused",
   "ide.editor.externalChangedNotSaved": "File changed on disk; your edits were not saved",
+  "ide.editor.savedToConflictCopy": "Your version was saved as {name}",
 
   /* ── search dialog ── */
   "ide.search.modeNameHint": "Current: file name search — click to switch to content search",

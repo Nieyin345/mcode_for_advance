@@ -26,7 +26,7 @@ import { app, clipboard, ClipboardItem, nativeImage, shell } from "electron";
 import { readFile, writeFile, readdir, mkdir, rename, copyFile, access, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import {
   IPC,
   FileReadSchema,
@@ -98,6 +98,40 @@ import { fileContentVersion as currentFileVersion } from "@main/lib/fileVersion.
 /** 【MC-097】**原子替换**（【ARC-007】已抽到 `@main/lib/atomicFile`，文档视图的
  *  保存通道与本文件共用同一份实现）。此处保留同名导入，调用点不变。 */
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
+
+/** 【MC-024】**冲突副本的路径**：`src/app.ts` → `src/app.conflict-2026-10-18T12-34-56-789Z.ts`。
+ *
+ *  - 扩展名留在最后，编辑器/语法高亮仍按源文件类型识别；
+ *  - ISO 时间戳里的 `:` 和 `.` 换成 `-`（Windows 文件名不允许 `:`），保留 `T`/`Z` 的
+ *    ISO 形状，排序即时间序；
+ *  - 与 `atomicReplaceFile` 的临时文件模式（`.mcode-tmp`）不重叠 —— 那是"写到一半的
+ *    垃圾"，这是"用户这次想写、但被别人抢先"的正文，两者别混。
+ *
+ *  首次冲突时给时间戳名；同一毫秒内同一路径再次冲突（或第三方已占了同名文件）时，
+ *  依次派生 `-2`、`-3` —— 前一次的副本不能被后一次覆盖掉。 */
+export function conflictCopyPathFor(filePath: string, attempt = 1): string {
+  const ext = extname(filePath);
+  const stem = basename(filePath, ext);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const suffix = attempt === 1 ? "" : `-${attempt}`;
+  return join(dirname(filePath), `${stem}.conflict-${stamp}${suffix}${ext}`);
+}
+
+/** 把**本次尝试写入的内容**另存为冲突副本（原子写），返回落盘路径。
+ *  只在 FILE_WRITE 的 CAS 冲突分支里调用；不碰原文件。 */
+async function writeConflictCopy(filePath: string, content: string): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const target = conflictCopyPathFor(filePath, attempt);
+    try {
+      await access(target);
+      continue; // 名字已被占（同毫秒第二次冲突 / 第三方文件）→ 派生下一个
+    } catch {
+      // ENOENT = 名字可用。其它错误交给下面的原子写如实抛。
+    }
+    await atomicReplaceFile(target, content);
+    return target;
+  }
+}
 
 /** Shared guarded single-file utf-8 read — used by both the desktop IPC
  *  handler and the mobile RPC whitelist. Scans every persisted project AND
@@ -553,7 +587,17 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
           const current = await currentFileVersion(input.filePath);
           if (current !== input.expectedVersion) {
             log.warn(`file.writeFile conflict — ${input.filePath} 已被改动(期望 ${input.expectedVersion},现为 ${current ?? "不存在"})`);
-            return { ok: false, conflict: true } as const;
+            // 【MC-024】**不丢用户这次的正文**：原文件保持盘上（别人的）内容不动，
+            // 把这次尝试写入的内容另存为同目录冲突副本，并把路径回给调用方。
+            // 写副本失败不改变冲突本身的结论 —— 仍报 conflict，但不谎报副本路径。
+            try {
+              const conflictPath = await writeConflictCopy(input.filePath, input.content);
+              log.warn(`file.writeFile conflict copy saved: ${conflictPath}`);
+              return { ok: false, conflict: true, conflictPath } as const;
+            } catch (copyErr) {
+              log.error(`file.writeFile conflict copy failed for ${input.filePath}: ${(copyErr as Error).message}`);
+              return { ok: false, conflict: true } as const;
+            }
           }
         }
         // 【MC-097】**原子替换**:先写同目录临时文件并 fsync,再 rename 覆盖 —— 中断/崩溃不会

@@ -178,6 +178,8 @@ export const FileWriteSchema = z.object({
    * 【MC-097】可选**乐观并发条件**:调用方读到的那一版内容的哈希(见 `file:readFile` 回传的
    * `version`)。给了它,主进程在**最终提交点**重读当前内容比对该哈希,不一致就**拒绝写入**
    * (另一个 Agent / 进程在这两条 IPC 之间改过),返回 `{ ok:false, conflict:true }`。
+   * 【MC-024】拒绝写的同时,本次 `content` 会另存为同目录 `<name>.conflict-<ISO 时间戳><ext>`,
+   * 路径回在 `conflictPath` —— 原文件不动,这次的内容也不丢。
    * 缺省 = 不检查(向后兼容旧调用方:普通新建/覆盖仍直接写)。
    */
   expectedVersion: z.string().optional(),

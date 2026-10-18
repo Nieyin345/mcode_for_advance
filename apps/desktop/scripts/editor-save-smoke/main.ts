@@ -129,6 +129,51 @@ disk.delete("gone.md");
 await textFileWrites.enqueue("gone.md", "recreated", "old");
 eq("文件被删 → 照常写回", disk.get("gone.md"), "recreated");
 
+/* ── 【MC-024】主进程 CAS 冲突时把本次正文另存为冲突副本 → 路径必须到达界面层 ──
+ *
+ * 主进程拒绝写的同时会回 `conflictPath`（`<name>.conflict-<时间戳><ext>`）。若渲染端
+ * 在 `markdownFileWrites` 里把它丢掉，用户只看到"文件已被外部修改"，不知道自己刚打的
+ * 内容其实已经存到旁边了 —— 等于修复在主进程完成、在 UI 断链。 */
+console.log("\n【MC-024】冲突副本路径从 IPC 回包传到 FileConflictError");
+{
+  disk.set("cc.md", "external version");
+  const copyPath = "/proj/cc.conflict-2026-10-18T12-34-56-789Z.md";
+  // 渲染端预检读到的内容是调用方以为的磁盘内容（`expected`）；冲突发生在**主进程提交点**
+  // （读之后又被改过）—— 正是 MC-097/MC-024 要覆盖的窗口。
+  setReadHandler(async () => ({ content: "external version" }));
+  setWriteHandler(async () => ({ ok: false, conflict: true, conflictPath: copyPath }));
+  let ccErr: unknown = null;
+  await textFileWrites.enqueue("cc.md", "my attempted content", "external version").catch((e: unknown) => { ccErr = e; });
+  check("★ 冲突仍抛 FileConflictError", ccErr instanceof FileConflictError);
+  eq("★ 主进程回的 conflictPath 原样带到错误上", (ccErr as FileConflictError | null)?.conflictPath, copyPath);
+  eq("★ 磁盘上的外部内容仍带回给界面", (ccErr as FileConflictError | null)?.disk, "external version");
+
+  // 回包没有 conflictPath（副本写失败）→ 错误上也不编造路径。
+  setWriteHandler(async () => ({ ok: false, conflict: true }));
+  let noCopyErr: unknown = null;
+  await textFileWrites.enqueue("cc.md", "my attempted content 2", "external version").catch((e: unknown) => { noCopyErr = e; });
+  eq("★ 没有 conflictPath 时不编造路径", (noCopyErr as FileConflictError | null)?.conflictPath, undefined);
+
+  // 两个编辑器界面的冲突横幅都把这个路径画出来（否则用户拿不到"副本在哪"）。
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/ide/FileEditor.tsx"), "utf8");
+  check("★ 编辑器冲突横幅渲染 savedToConflictCopy", /ide\.editor\.savedToConflictCopy/.test(src), null);
+  check(
+    "★ 两处冲突横幅都从 FileConflictError 取 conflictPath",
+    ((src.match(/setConflictCopyPath\(err\.conflictPath \?\? null\)/g) ?? []).length
+      + (src.match(/setReviewConflictCopy\(err\.conflictPath \?\? null\)/g) ?? []).length) === 2,
+    null,
+  );
+  // 恢复健康的写/读桩 —— 后面的用例还要正常写盘（读桩恢复成从 disk 映射读）。
+  setReadHandler(async ({ filePath }) => {
+    const content = disk.get(filePath);
+    if (content === undefined) throw new Error("ENOENT");
+    return { content };
+  });
+  setWriteHandler(async ({ filePath, content }) => { disk.set(filePath, content); return { ok: true }; });
+}
+
 /* ── 「本进程上次写下的内容」那张表必须有上限 ──
  *
  * `markdownFileWrites` 里按路径记了一份"进程里最后一次成功写下的正文"(`lastWritten`),

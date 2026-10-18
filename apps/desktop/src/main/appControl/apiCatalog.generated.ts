@@ -839,10 +839,10 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "file.writeFile",
   "channel": "file:writeFile",
-  "doc": "【MC-097】`conflict:true` = 带 `expectedVersion` 的 CAS 冲突(磁盘已被改动,未写)。",
+  "doc": "【MC-097】`conflict:true` = 带 `expectedVersion` 的 CAS 冲突(磁盘已被改动,未写)。 【MC-024】冲突时本次 `content` **不丢**:另存为同目录 `<name>.conflict-<ISO 时间戳><ext>` 并把落盘路径回在 `conflictPath`(副本写入失败时缺省 —— 此时回包仍是冲突,只是没有副本)。",
   "input": "{ content: string; filePath: string // Absolute or cwd-relative path.; expectedVersion?: string | undefined // 【MC-097】可选**乐观并发条件**:调用方读到的那一版内容的哈希(见 `file:readFile` 回传的 `version`)。给了它,主进程在**最终提交点**重读当… }",
   "inputFull": "{ content: string; filePath: string // Absolute or cwd-relative path.; expectedVersion?: string | undefined // 【MC-097】可选**乐观并发条件**:调用方读到的那一版内容的哈希(见 `file:readFile` 回传的 `version`)。给了它,主进程在**最终提交点**重读当… }",
-  "output": "{ ok: boolean; conflict?: boolean | undefined }"
+  "output": "{ ok: boolean; conflict?: boolean | undefined; conflictPath?: string | undefined }"
  },
  {
   "method": "git.cancelGenerateCommitMessage",

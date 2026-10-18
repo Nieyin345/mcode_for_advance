@@ -30,7 +30,7 @@
  *
  * Run: scripts/maint-m07-smoke/run.sh
  */
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { tmpdir, hostname } from "node:os";
 import { join, dirname, basename, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -74,10 +74,22 @@ registerFileHandlers({
     handlers.set(channel, fn);
   },
 } as never);
-async function call(channel: string, payload: unknown): Promise<{ ok?: boolean; conflict?: boolean }> {
+async function call(channel: string, payload: unknown): Promise<{ ok?: boolean; conflict?: boolean; conflictPath?: string }> {
   const fn = handlers.get(channel);
   if (!fn) throw new Error(`handler not registered: ${channel}`);
-  return (await fn(null, payload)) as { ok?: boolean; conflict?: boolean };
+  return (await fn(null, payload)) as { ok?: boolean; conflict?: boolean; conflictPath?: string };
+}
+
+/** 【MC-024】删掉某文件派生出的冲突副本（`<stem>.conflict-*<ext>`）——
+ *  本套件里每个 CAS 冲突都会留一份副本，不清掉会污染后面「src 只有 1 条」类断言。 */
+function rmConflictCopies(filePath: string): void {
+  const dir = join(filePath, "..");
+  const name = basename(filePath);
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  for (const n of readdirSync(dir)) {
+    if (n.startsWith(`${stem}.conflict-`)) rmSync(join(dir, n), { force: true });
+  }
 }
 
 /** 锁文件是 `${real}.mcode-lock`(见 lib/osFileLease.ts)—— realpath 解析,文件不存在时
@@ -344,6 +356,8 @@ try {
     for (const n of e1Files) {
       const p = join(projectRoot, "src", n);
       rmSync(p, { force: true });
+      // 【MC-024】CAS 冲突现在会留一份冲突副本 —— 一并清掉。
+      rmConflictCopies(p);
       // 兜底:任何一例若留下锁文件,一并清掉(下一段断言依赖磁盘干净)。
       rmSync(mkLockPath(p), { force: true });
     }
@@ -381,7 +395,83 @@ try {
     check("新建文件成功", newWrite.ok && readFileSync(newPath, "utf-8") === "new\n", true);
     // 清理:这两份文件不能影响后面「listDir 列得出 src 只有 1 条」那类断言。
     rmSync(casPath, { force: true });
+    rmConflictCopies(casPath);
     rmSync(newPath, { force: true });
+  }
+
+  /* ── 1c2. 【MC-024】CAS 冲突不再丢用户这次的正文:另存冲突副本,原文件不动 ──
+   * 从前冲突只回 `{ok:false, conflict:true}` —— 渲染端拿去问"重载还是覆盖",但**这次写的内容
+   * 只活在内存里**,面板一关/一重载就没了。修复:拒绝写的同时把本次 content 原子写到同目录
+   * `<basename>.conflict-<ISO 时间戳><ext>`,回包带 `conflictPath`。
+   * 判据:① 原文件仍是外部内容;② 副本落盘且内容 = **本次尝试写入的**内容;③ 回包带路径且
+   * 该路径真的可读;④ 健康路径照常写、不产生副本(防空过);⑤ 副本写失败时仍是冲突、不谎报路径。 */
+  console.log("\n【MC-024】CAS 冲突 → 冲突副本落盘,原文件不动,路径回包");
+  {
+    const p = join(projectRoot, "src", "mc024-conflict.ts");
+    writeFileSync(p, "EXTERNAL-BEFORE\n", "utf-8");
+    const v0 = (await readFileGuarded(p)).version;
+    // 外部改动(模拟另一个 Agent / 编辑器):盘上变成外部内容,v0 过期。
+    writeFileSync(p, "EXTERNAL-AFTER\n", "utf-8");
+    const attempted = "USER-ATTEMPTED-CONTENT-MUST-NOT-VANISH\n";
+    const res = await call(IPC.FILE_WRITE, { filePath: p, content: attempted, expectedVersion: v0 });
+    check("★ MC-024:外部改动后带旧 revision 写入 → 拒绝且标记 conflict", res.ok === false && res.conflict === true, true);
+    check("★ MC-024:原文件仍是外部内容(没被这次尝试覆盖)", readFileSync(p, "utf-8"), "EXTERNAL-AFTER\n");
+    check("★ MC-024:回包带回冲突副本路径", typeof res.conflictPath === "string" && res.conflictPath.length > 0, true);
+    const copyPath = res.conflictPath ?? "";
+    check("★ MC-024:副本真的落盘(回包路径可读)", copyPath !== "" && existsSync(copyPath), true);
+    // 副本不存在时不能 readFileSync("") 抛错把整套件打断 —— 后面的断言要各自可读。
+    check(
+      "★ MC-024:副本内容 = 本次尝试写入的内容(一个字不丢)",
+      copyPath !== "" && existsSync(copyPath) ? readFileSync(copyPath, "utf-8") : null,
+      attempted,
+    );
+    // 命名:同目录、保留扩展名、带 `.conflict-<时间戳>`;且不与原子写的临时模式(.mcode-tmp)混淆。
+    check("★ MC-024:副本与原文件同目录", copyPath !== "" && dirname(copyPath) === dirname(p), true);
+    check(
+      "★ MC-024:副本名 = <stem>.conflict-<ISO 时间戳><ext>",
+      copyPath !== "" && /^mc024-conflict\.conflict-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.ts$/.test(basename(copyPath)),
+      true,
+    );
+    check("★ MC-024:副本名不含 .mcode-tmp(不撞原子写临时文件模式)", copyPath !== "" && !copyPath.includes(".mcode-tmp"), true);
+    check("★ MC-024:目录里没有 .mcode-tmp 残留", readdirSync(join(projectRoot, "src")).some((n) => n.includes(".mcode-tmp")), false);
+
+    // ④ 健康路径(防空过):用**当前**版本重试 → 照常写入成功,且不产生第二份副本。
+    const copiesBefore = readdirSync(join(projectRoot, "src")).filter((n) => n.includes(".conflict-")).length;
+    const v1 = (await readFileGuarded(p)).version;
+    const retry = await call(IPC.FILE_WRITE, { filePath: p, content: attempted, expectedVersion: v1 });
+    check("★ MC-024:健康路径照常写入(当前版本重试成功)", retry.ok, true);
+    check("★ MC-024:健康路径写入的内容真的落盘", readFileSync(p, "utf-8"), attempted);
+    check("★ MC-024:健康路径不产生冲突副本", readdirSync(join(projectRoot, "src")).filter((n) => n.includes(".conflict-")).length, copiesBefore);
+
+    // ⑤ 副本自身写失败(rename 崩溃)→ 冲突结论不变,但**不谎报** conflictPath;
+    //    原文件仍不动、副本不留半截、临时文件不残留。
+    {
+      const p2 = join(projectRoot, "src", "mc024-copy-fails.ts");
+      writeFileSync(p2, "EXTERNAL-2\n", "utf-8");
+      const stale2 = (await readFileGuarded(p2)).version;
+      writeFileSync(p2, "EXTERNAL-2-CHANGED\n", "utf-8");
+      setFsFault({ failRename: (target) => basename(target).includes(".conflict-") });
+      let failedCopy: { ok?: boolean; conflict?: boolean; conflictPath?: string };
+      try {
+        failedCopy = await call(IPC.FILE_WRITE, { filePath: p2, content: "MUST-NOT-LAND\n", expectedVersion: stale2 });
+      } finally {
+        setFsFault(null);
+      }
+      check("★ MC-024:副本写失败 → 仍如实报冲突", failedCopy.ok === false && failedCopy.conflict === true, true);
+      check("★ MC-024:副本写失败 → 不谎报 conflictPath", failedCopy.conflictPath, undefined);
+      check("★ MC-024:副本写失败 → 原文件仍是外部内容", readFileSync(p2, "utf-8"), "EXTERNAL-2-CHANGED\n");
+      check(
+        "★ MC-024:副本写失败 → 不留下半截副本/临时残留",
+        readdirSync(join(projectRoot, "src")).filter((n) => n.startsWith("mc024-copy-fails.conflict-") || (n.startsWith("mc024-copy-fails") && n.includes(".mcode-tmp"))).length,
+        0,
+      );
+      rmSync(p2, { force: true });
+    }
+
+    // 清理本段产物。
+    rmSync(p, { force: true });
+    if (copyPath) rmSync(copyPath, { force: true });
+    rmSync(lockPathFor(p), { force: true });
   }
 
   /* ── 1d. 【MC-097】同路径跨进程写锁:并发写同一路径必须**串行**(互斥,不只是 CAS) ──
@@ -417,6 +507,7 @@ try {
       true,
     );
     rmSync(racePath, { force: true });
+    rmConflictCopies(racePath);
 
     // ② 不同路径并发写 → 两发都必须成功(锁是按路径的,不同路径不互相阻塞)。
     const diffA = join(projectRoot, "src", "diff-a.ts");
@@ -458,6 +549,7 @@ try {
       true,
     );
     rmSync(crossPath, { force: true });
+    rmConflictCopies(crossPath);
   }
 
   /* ── 1e. 【MC-097】真·另一个 OS 进程对**同一把租约**的互斥 —— 以及**真进程被杀**后的恢复 ────

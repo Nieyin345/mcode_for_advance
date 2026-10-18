@@ -843,6 +843,9 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
   // Set when the freshness check finds the DISPLAYED file changed on disk
   // while its model holds unsaved edits — the user decides (reload or keep).
   const [externalChange, setExternalChange] = useState(false);
+  /** 【MC-024】最近一次 CAS 冲突时，主进程把这次内容另存到的副本路径。
+   *  横幅上如实告诉用户"你的版本没丢、在哪儿"；下次成功保存/重载时清掉。 */
+  const [conflictCopyPath, setConflictCopyPath] = useState<string | null>(null);
   /**
    * 【UI-019】首次读取**失败**且无缓存时,记下失败的文件与原因 —— 从前这份失败被
    * `createAndShow(path, "")` 伪造成一个"看起来真空的空文件",用户既分不清是"失败"
@@ -1241,6 +1244,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
         if (seq === saveSeqRef.current && !disposedRef.current) {
           setSaveState("idle");
           setExternalChange(true);
+          setConflictCopyPath(err.conflictPath ?? null);
         }
         return;
       }
@@ -1280,6 +1284,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
   // held unsaved edits — the user explicitly chose to discard them.
   const reloadFromDisk = useCallback(() => {
     setExternalChange(false);
+    setConflictCopyPath(null);
     const ctx = readyCtxRef.current;
     if (!ctx) return;
     void api.file
@@ -1587,6 +1592,11 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
         <div className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-md border border-edge bg-surface px-2.5 py-1 text-[11px] shadow-sm">
           <IconAlertTriangle size={12} className="shrink-0 text-content-muted" />
           <span className="text-content-muted">{t("ide.editor.externalChanged")}</span>
+          {conflictCopyPath && (
+            <span className="max-w-72 truncate text-content-muted" title={conflictCopyPath}>
+              {t("ide.editor.savedToConflictCopy", { name: basename(conflictCopyPath) })}
+            </span>
+          )}
           <button
             type="button"
             onClick={reloadFromDisk}
@@ -2078,6 +2088,8 @@ export function DiffPane({
   const [reviewDirty, setReviewDirty] = useState(false);
   const [reviewSaving, setReviewSaving] = useState(false);
   const [reviewConflict, setReviewConflict] = useState(false);
+  /** 【MC-024】冲突时主进程另存的副本路径(同 FileEditor 的 externalChange 横幅)。 */
+  const [reviewConflictCopy, setReviewConflictCopy] = useState<string | null>(null);
   const [changeCount, setChangeCount] = useState(0);
   const [reloadNonce, setReloadNonce] = useState(0);
   /** 每处修改的 ↶ 画在哪一行 → 对应哪一处修改(随 onDidUpdateDiff 重算)。 */
@@ -2233,10 +2245,12 @@ export function DiffPane({
         await textFileWrites.enqueue(filePath, value, force ? undefined : (diskRef.current ?? undefined));
         diskRef.current = value;
         setReviewConflict(false);
+        setReviewConflictCopy(null);
         setReviewDirty(model.isDisposed() ? false : model.getValue() !== value);
       } catch (err) {
         if (err instanceof FileConflictError) {
           setReviewConflict(true);
+          setReviewConflictCopy(err.conflictPath ?? null);
         } else {
           useToastStore.getState().push({
             kind: "error",
@@ -2455,6 +2469,11 @@ export function DiffPane({
             <>
               <IconAlertTriangle size={12} className="shrink-0 text-content-muted" />
               <span className="px-1 text-content-muted">{t("ide.editor.externalChanged")}</span>
+              {reviewConflictCopy && (
+                <span className="max-w-72 truncate px-1 text-content-muted" title={reviewConflictCopy}>
+                  {t("ide.editor.savedToConflictCopy", { name: basename(reviewConflictCopy) })}
+                </span>
+              )}
               <button type="button" onClick={() => setReloadNonce((n) => n + 1)} title={t("ide.editor.reloadFromDiskHint")}
                 className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover">
                 {t("ide.editor.reloadFromDisk")}
