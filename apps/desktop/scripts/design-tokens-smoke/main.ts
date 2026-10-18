@@ -229,5 +229,65 @@ section("6. 【ARC-005】Composer 外框接上游几何/阴影 token");
     /composer-card\[data-busy="1"\]::before[\s\S]{0,400}border-radius:\s*var\(--composer-radius\)/.test(css));
 }
 
+section("7. 【ARC-005】工具调用卡接 CDS 几何/表面 token");
+{
+  const css = read("src/renderer/styles.css");
+  const blocks = read("src/renderer/components/chat/MessageBlocks.tsx");
+  const tokens = read("src/renderer/tokens.cds.css");
+
+  // 语义别名：控件档圆角必须**引用**生成物里的上游值（--radius-sm 是上游
+  // 原样键名，生成器只改写 --cds-* 前缀，所以不是 --m-radius-sm）。
+  check("★ --radius-control 指向 var(--radius-sm)", /--radius-control:\s*var\(--radius-sm\)/.test(css));
+  // 反向正控：别名若写成 px/rem 字面量，上游 4px 改动时这里会静默漂移。
+  check("★ --radius-control 不是字面量", !/--radius-control:\s*[\d.]/.test(css));
+  check("★ 生成物里 --radius-sm 是上游 4px(.25rem)", /--radius-sm:\s*\.25rem;/.test(tokens));
+  check("★ --hairline 指向 var(--m-ring-hairline)", /--hairline:\s*var\(--m-ring-hairline\)/.test(css));
+
+  // 源码断言：四个工具卡头部共享同一个几何常量，且真的接到 token 上。
+  check("★ MessageBlocks 有共享工具行常量 TOOL_ROW_CLS", /const TOOL_ROW_CLS\s*=/.test(blocks));
+  check("★ TOOL_ROW_CLS 圆角引用 --radius-control",
+    /TOOL_ROW_CLS\s*=\s*\n?\s*"[^"]*rounded-\[var\(--radius-control\)\]/.test(blocks));
+  check("★ TOOL_ROW_CLS 背景走既有 surface-muted", /TOOL_ROW_CLS[\s\S]{0,300}hover:bg-surface-muted\/50/.test(blocks));
+  check("★ TOOL_ROW_CLS 被四处工具卡引用(批量组+Edit+Write+通用)",
+    (blocks.match(/className=\{TOOL_ROW_CLS\}/g) ?? []).length === 4,
+    (blocks.match(/className=\{TOOL_ROW_CLS\}/g) ?? []).length);
+  // 反向正控：旧字面量圆角不能再出现在工具行里（6px 散装 rounded-md）。
+  // 精确到旧的两个完整类串：BatchToolGroup 是 hover /40，Edit/Write/Generic 是
+  // hover /50。思考折叠行（Collapsible）的类串里多一个 text-content-muted，
+  // 不在本切片范围，不会被这两条误伤。
+  check("★ 工具行不再硬编码 rounded-md(旧 6px, hover /50 三处)",
+    !blocks.includes('"flex w-full items-center gap-2 rounded-md py-1.5 text-left hover:bg-surface-muted/50"'));
+  check("★ 工具行不再硬编码 rounded-md(旧 6px, 批量组 hover /40)",
+    !blocks.includes('"flex w-full items-center gap-2 rounded-md py-1.5 text-left hover:bg-surface-muted/40"'));
+
+  // 展开体的发丝边宽度走 --hairline（1px），颜色仍走 --edge。
+  check("★ 工具展开体有共享发丝边常量 TOOL_BODY_RULE_CLS", /const TOOL_BODY_RULE_CLS\s*=/.test(blocks));
+  check("★ 展开体左边发丝宽度引用 --hairline",
+    /TOOL_BODY_RULE_CLS\s*=\s*"[^"]*border-l-\[length:var\(--hairline\)\]/.test(blocks));
+  check("★ 展开体发丝边仍用 --edge 色", /TOOL_BODY_RULE_CLS\s*=\s*"[^"]*border-edge/.test(blocks));
+  // 反向正控：旧写法 `border-l border-edge`（Tailwind 隐式 1px）不能再出现在
+  // 工具卡展开体里。思考折叠行（Collapsible 的 max-h-80 overflow-y-auto
+  // border-l border-edge py-2 pl-2）不在这三处之列，本切片的反向断言只钉
+  // 工具卡的两个旧类串。
+  check("★ 展开体不再用隐式 border(旧 space-y-2 border-l border-edge)",
+    !blocks.includes('"space-y-2 border-l border-edge py-2 pl-2"'));
+  check("★ 展开体不再用隐式 border(旧 批量组 overflow 行)",
+    !blocks.includes('"max-h-80 space-y-1.5 overflow-y-auto border-l border-edge py-1 pl-2"'));
+  check("★ TOOL_BODY_RULE_CLS 被四张卡引用(批量组+Edit+Write+通用)",
+    (blocks.match(/TOOL_BODY_RULE_CLS\)\}/g) ?? []).length === 4,
+    (blocks.match(/TOOL_BODY_RULE_CLS\)\}/g) ?? []).length);
+
+  // 状态胶囊几何：运行态呼吸灯对齐上游 StatusIndicators 的 6px 标准状态灯。
+  check("★ .chat-ledger-dot 直径 6px(上游 .status-dot)", /\.chat-ledger-dot\s*\{[^}]*width:\s*6px;[^}]*height:\s*6px;/.test(css));
+  // 反向正控：旧 7px 必须消失（否则尺寸断言会因两处并存而假绿）。
+  check("★ .chat-ledger-dot 不再是旧的 7px", !/\.chat-ledger-dot\s*\{[^}]*width:\s*7px;/.test(css));
+  // 灯→标签间距对齐参考的 gap-2(8px)：行内 gap 6px + 2px margin。
+  check("★ 状态灯与标签间距对齐 gap-2(8px)", /\.chat-ledger-head \.chat-ledger-dot\s*\{[^}]*margin-right:\s*2px;/.test(css));
+
+  // 暗色观感：背景与发丝边都走既有语义 token（其暗色值在 styles.css 的 .dark
+  // 里指到 --m-gray-800/--m-gray-750），本切片没有新增暗色专用字面量。
+  check("★ 工具行背景不新增暗色字面量(dark:bg-*)", !/TOOL_ROW_CLS[\s\S]{0,300}dark:bg-/.test(blocks));
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

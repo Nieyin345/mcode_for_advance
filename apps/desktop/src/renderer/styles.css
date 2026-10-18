@@ -877,6 +877,16 @@ body {
   /* 【ARC-005 V0】几何/阴影别名 —— 消费 open-claude-ui 生成物（tokens.cds.css）。
    * 只加别名，不改组件；组件逐个迁移时直接用这些名字。 */
   --radius-panel: var(--m-panel-radius);          /* 10px 面板/卡片 */
+  /* 【ARC-005】控件档圆角：工具卡/折叠行这类**流内紧凑控件**用它，而不是面板档。
+   * 上游 open-claude-ui 的 cds-theme.css 把 `--radius-sm` 定为 .25rem（4px），
+   * 参考实现里同类紧凑控件用的就是 Tailwind `rounded`（=4px）：ThinkingAccordion
+   * 的复制按钮、McpToolDecisionCard 的行内控件。Mcode 的工具行是流内的一行、
+   * 不是独立面板，所以取控件档（--radius-panel=10px 留给真正的卡片/面板，
+   * 如 ThinkingAccordion 的 rounded-xl / McpToolDecisionCard 的 rounded-2xl）。
+   * 注意生成物里的键名是 `--radius-sm` 而不是 `--m-radius-sm`：gen-cds-tokens
+   * 只把上游 `--cds-*` 前缀改写成 `--m-*`，上游这个键本身没有 cds 前缀，原样保留。
+   * 不要手改生成物去另造一个 --m-radius-sm。 */
+  --radius-control: var(--radius-sm);
   /* Composer 外框：几何与阴影的唯一真源是生成物里的上游值（gen-cds-tokens.mjs
    * 从 open-claude-ui 的 cds-theme.css 逐条解析），这里只留语义名字。若在本文件
    * 重写 20px / rgba，就会多出第二份会与上游漂移的数值。 */
@@ -1007,14 +1017,25 @@ button.chat-ledger-head:hover {
   border-bottom-color: transparent;
 }
 
-/* 运行中的呼吸圆点。 */
+/* 运行中的呼吸圆点。直径取 CDS 的**官方标准 6px 状态灯**（open-claude-ui
+ * `StatusIndicators.tsx` 的 `.status-dot`：width/height 6px，来源 REA 对
+ * Claude Desktop 生产 CSS 的取证）。旧值 7px 是散装字面量；动画节奏
+ * （1.9s 呼吸 vs 上游 running 态 1.2s blink）属于动效语言、不在本切片的
+ * 几何对齐范围，保留原样。 */
 .chat-ledger-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex: none;
   background: rgb(var(--accent));
   animation: chat-ledger-dot 1.9s ease-in-out infinite;
+}
+
+/* 状态灯与「运行中」标签的间距对齐 open-claude-ui `StatusIndicators.tsx`
+ * 的 `gap-2`（8px）：运行态行内 flex gap 是 6px（`gap-x-1.5`），补 2px
+ * margin 只作用于灯→标签这一对，不动同行时钟/用时的既有 6px 节奏。 */
+.chat-ledger-head .chat-ledger-dot {
+  margin-right: 2px;
 }
 
 @keyframes chat-ledger-dot {

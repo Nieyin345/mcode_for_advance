@@ -121,6 +121,27 @@ function toggleHoldPosition(
   });
 }
 
+/** 【ARC-005】工具卡头部行（BatchToolGroup / Edit / Write / GenericToolCard）的
+ *  共享几何 —— 只此一份、四处引用，防止各自漂开（硬规矩 2）。
+ *
+ *  圆角取**控件档** `--radius-control`（→ 生成物 `--radius-sm` = .25rem/4px，
+ *  上游 open-claude-ui cds-theme.css 的取证值），不是面板档 10px
+ *  （`--radius-panel`）。理由按参考实现选：上游对"流内可点的紧凑控件"用
+ *  Tailwind `rounded`（4px，见 ThinkingAccordion 的复制按钮、McpToolDecisionCard
+ *  的行内控件）；10px 面板档留给真正的卡片外壳（ThinkingAccordion 的 rounded-xl、
+ *  McpToolDecisionCard 的 rounded-2xl）。这里是一行可点的交互行、不是独立面板，
+ *  所以取小档。旧值 `rounded-md`（6px）是散装字面量，已换回 token。
+ *
+ *  背景沿用既有语义类 `hover:bg-surface-muted`（亮/暗由 styles.css 指到
+ *  --m-gray-50 / --m-gray-800），不另造第二套命名。 */
+const TOOL_ROW_CLS =
+  "flex w-full items-center gap-2 rounded-[var(--radius-control)] py-1.5 text-left hover:bg-surface-muted/50";
+
+/** 【ARC-005】工具卡展开体的左侧缩进发丝边：宽度走 `--hairline`
+ *  （→ 生成物 `--m-ring-hairline` = 1px，上游 ring-hairline 取证值），
+ *  不再是 Tailwind `border` 的隐式 1px 字面量；颜色仍是既有 `--edge`。 */
+const TOOL_BODY_RULE_CLS = "border-l-[length:var(--hairline)] border-edge";
+
 /** Render the content blocks of a message.
  *
  *  In the turn-level aggregation model (ChatPane's `groupMessagesForRender`),
@@ -407,7 +428,7 @@ export function BatchToolGroup({
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={(e) => toggleHoldPosition(e, setOpen)}
-        className="flex w-full items-center gap-2 rounded-md py-1.5 text-left hover:bg-surface-muted/40"
+        className={TOOL_ROW_CLS}
       >
         {/* 操作集合: a stack of layers reads as "a set of folded operations",
             clearer than the toolbox wrench for the N-ops batch header. */}
@@ -435,7 +456,7 @@ export function BatchToolGroup({
         // Cap height so a large batch (20 reads) doesn't stretch the stream;
         // the list scrolls internally instead. The left border marks this as
         // an expanded group body, visually nested under its header.
-        <div className="max-h-80 space-y-1.5 overflow-y-auto border-l border-edge py-1 pl-2">
+        <div className={cn("max-h-80 space-y-1.5 overflow-y-auto py-1 pl-2", TOOL_BODY_RULE_CLS)}>
           {/* Tool calls key by their unique toolCallId (thinking has no id —
               the run only appends, so the index is stable for it). Each child
               gets its own boundary: one broken block must not take down the
@@ -1510,7 +1531,7 @@ function EditToolCard({
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={(e) => toggleHoldPosition(e, setOpen)}
-        className="flex w-full items-center gap-2 rounded-md py-1.5 text-left hover:bg-surface-muted/50"
+        className={TOOL_ROW_CLS}
       >
         <StatusIcon status={status} live={live} />
         <ToolIcon name="Edit" className="text-content-subtle" />
@@ -1525,7 +1546,7 @@ function EditToolCard({
         </span>
       </button>
       {open && (
-        <div className="space-y-2 border-l border-edge py-2 pl-2">
+        <div className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
           <DiffView diff={diff} />
           {result !== undefined && (
             <div>
@@ -1594,7 +1615,7 @@ function WriteToolCard({
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={(e) => toggleHoldPosition(e, setOpen)}
-        className="flex w-full items-center gap-2 rounded-md py-1.5 text-left hover:bg-surface-muted/50"
+        className={TOOL_ROW_CLS}
       >
         <StatusIcon status={status} live={live} />
         <ToolIcon name="Write" className="text-content-subtle" />
@@ -1610,7 +1631,7 @@ function WriteToolCard({
         </span>
       </button>
       {open && (
-        <div className="space-y-2 border-l border-edge py-2 pl-2">
+        <div className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
           {diff ? (
             <div>
               <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">
@@ -1680,7 +1701,7 @@ function GenericToolCard({
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={(e) => toggleHoldPosition(e, setOpen)}
-        className="flex w-full items-center gap-2 rounded-md py-1.5 text-left hover:bg-surface-muted/50"
+        className={TOOL_ROW_CLS}
       >
         <StatusIcon status={block.status} live={live} />
         <ToolIcon name={block.toolName} className="text-content-subtle" />
@@ -1707,7 +1728,7 @@ function GenericToolCard({
         </div>
       )}
       {open && (
-        <div className="space-y-2 border-l border-edge py-2 pl-2">
+        <div className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
           <div>
             <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">{t("chatStream.tool.input")}</div>
             <pre className="max-h-60 overflow-auto rounded bg-surface-muted/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
