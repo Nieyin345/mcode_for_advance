@@ -24,6 +24,9 @@
  *   - `saveDocx(path, data)` —— 把编辑后的字节写回**这个视图打开过的那份文件**。
  *     页面传的 `path` 被忽略：目标路径由宿主从 `openedFilePath` 取，页面没有
  *     "另存到任意工作区文件"的能力（否则一个被投毒的编辑器页就能覆盖任何 `.docx`）；
+ *     宿主保存前比对"打开时版本 vs 盘上版本"，不一致时回 `reason:"conflict"`
+ *     + `error`（人话原因），**不写盘** —— 这是宿主侧乐观锁，因为 vendor 的
+ *     `saveDocx(path, data, auto)` 不携带版本（见 `saveOpenedFile` 的注释）；
  *   - 几个页面首次渲染必需的只读默认值（语言/主题/自动保存），全部写死为安全值，
  *     不走任何 IPC。
  *
@@ -81,8 +84,21 @@ const api = {
    *  「这个视图打开过的那份文件」，页面没有"另存到别处"的能力。
    *
    *  形状与 vendor 的 `saveDocx(path, data, auto?)` 对齐（前两个参数语义相同），
-   *  但**忽略 vendor 传进来的 path**：那是页面自己的说法，不可信。 */
-  saveDocx: (path: string, data: ArrayBuffer | Uint8Array, auto?: boolean): Promise<{ ok: boolean; bytes?: number; error?: string }> => {
+   *  但**忽略 vendor 传进来的 path**：那是页面自己的说法，不可信。
+   *
+   *  失败时 `error` 是给人看的原因；版本冲突额外带 `reason:"conflict"` 与
+   *  `currentRevision`（盘上当前 sha256）。vendor 的保存链路读 `result.error`
+   *  显示失败（`apps/docs/src/renderer/file-actions.ts` 的 `appSaveFailed`），
+   *  所以冲突原因会原样出现在页面的状态栏/提示里。vendor 的 `saveDocx` 只有
+   *  三个参数、不知道版本 —— 冲突判据的 expected 由宿主在 openPath 时记下，
+   *  页面将来若要携带版本，宿主侧 IPC 已接受 `expectedRevision` 字段。 */
+  saveDocx: (path: string, data: ArrayBuffer | Uint8Array, auto?: boolean): Promise<{
+    ok: boolean;
+    bytes?: number;
+    error?: string;
+    reason?: string;
+    currentRevision?: string | null;
+  }> => {
     void path;
     return ipcRenderer.invoke(SAVE_DOCUMENT_CHANNEL, {
       bytes: data instanceof Uint8Array ? data : new Uint8Array(data),

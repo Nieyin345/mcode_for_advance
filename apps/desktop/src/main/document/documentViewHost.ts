@@ -52,6 +52,7 @@
 import { getMainWindow } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
+import { fileContentVersion } from "@main/lib/fileVersion.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 
 /** webPreferences 的**完整**形状 —— 三项安全开关是字面量类型，改一处都过不了 typecheck。 */
@@ -146,6 +147,30 @@ interface LiveDocumentView {
   openedFilePath: string | null;
   /** 最近一次加载/渲染失败(诊断用;成功后清空)。 */
   lastFailure?: { kind: "load" | "render-gone"; reason: string; at: number };
+  /** 【ARC-007】**打开时的内容版本**（`fileContentVersion` 的 sha256；文件当时不存在
+   *  则为 null）。保存通道拿它做**宿主侧乐观锁**：页面保存前重算盘上版本，不一致
+   *  就报 conflict 且不写盘。
+   *
+   *  存的是 Promise 而不是结果：`openPath` 是同步返回的，哈希读盘是异步的；保存
+   *  恰好在哈希算完之前发生时，`saveOpenedFile` 会 await 同一个 Promise，拿到的是
+   *  **打开那一刻**读到的字节的哈希 —— 于是不存在"还没算完就当成 null"的假冲突。
+   *
+   *  ⚠️ 为什么 expected 是"宿主记下的"而不是页面给的：vendor 编辑器的保存链路
+   *  `saveDocx(path, data, auto)`（`genoffice/apps/docs/src/renderer/file-actions.ts:1114`
+   *  → `src/preload/index.ts:116` → `shared/ipc.ts:417`）**不携带任何版本**，页面
+   *  不知道自己读的是哪个版本。宿主只能假设"它基于打开时读到的内容在保存" ——
+   *  这是诚实的乐观锁，不是伪造的并发控制：如果打开后没人动过文件，保存通过；
+   *  动过就拦下。将来页面能携带版本时，`saveOpenedFile` 的 `expectedRevision`
+   *  参数已经是现成入口。 */
+  openedFileRevision: Promise<string | null> | null;
+  /** 保存冲突的最近一次记录（成功后清空）。与 `lastFailure` 分开：页面崩了和
+   *  保存被拒是两件不同的事，混在一个字段里会让诊断文案说谎。 */
+  lastSaveConflict?: {
+    expectedRevision: string | null;
+    currentRevision: string | null;
+    message: string;
+    at: number;
+  };
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -278,6 +303,7 @@ export class DocumentViewHost {
       bounds: input.bounds,
       visible: false,
       openedFilePath: null,
+      openedFileRevision: null,
     };
 
     try {
@@ -404,6 +430,9 @@ export class DocumentViewHost {
     }
     live.lastFailure = undefined;
     live.openedFilePath = filePath;
+    // 【ARC-007】记下**打开时**的内容版本（异步读盘算 sha256；保存通道会 await
+    // 同一个 Promise，见 `openedFileRevision` 字段的说明）。
+    live.openedFileRevision = fileContentVersion(filePath);
     log.info(`document view open-path: ${docId} ${filePath}`);
     return { ok: true };
   }
@@ -422,17 +451,36 @@ export class DocumentViewHost {
    * 2. **再验一次工作区**：`openPath` 时的围栏只对"打开"负责；保存时工作区集合
    *    可能已经变了（项目被移除），所以每次保存都重新问 `withinWorkspace`。
    * 3. **大小上限**：`DOC_VIEW_SAVE_MAX_BYTES`，防止页面用一条消息撑爆内存/磁盘。
-   * 4. **原子写**：先用 `atomicReplaceFile`（同目录临时文件 + rename），中途失败
-   *    不会留下半份文件。这里不重复实现 CAS —— 冲突判据属于 `document.*`
-   *    （VersionedFileStore 切片），本通道只负责"页面保存到它打开的文件"。
+   * 4. **冲突检测（宿主侧乐观锁）**：保存前重算盘上内容的 sha256（
+   *    `fileContentVersion`，与 `document.edit` 的 `expectedRevision` 同一算法），
+   *    与 `openPath` 时记下的版本比较；不一致 → `{ ok:false, reason:"conflict" }`
+   *    且**不写盘**。页面不知道自己读的是哪个版本（vendor 的 `saveDocx` 只有
+   *    `(path, data, auto)` 三参，证据见 `openedFileRevision` 字段注释），所以
+   *    expected 由宿主记 —— 页面若能携带版本，走 `expectedRevision` 参数。
+   * 5. **原子写**：先用 `atomicReplaceFile`（同目录临时文件 + rename），中途失败
+   *    不会留下半份文件。
    *
-   * 返回 `{ ok:true, bytes }` 让页面能显示"已保存 N 字节"；失败带人话原因。
+   * 返回 `{ ok:true, bytes, revision }` 让页面能显示"已保存 N 字节"，并给下一步
+   * （页面携带 revision 再来）留位；失败带人话原因。冲突时额外带 `currentRevision`，
+   * 页面/面板能显示"盘上现在是哪一版"。
    */
   async saveOpenedFile(
     docId: string,
     bytes: Uint8Array,
     withinWorkspace: (p: string) => boolean,
-  ): Promise<{ ok: true; bytes: number; filePath: string } | { ok: false; reason: string }> {
+    expectedRevision?: string | null,
+  ): Promise<
+    | { ok: true; bytes: number; filePath: string; revision: string | null }
+    | {
+        ok: false;
+        /** 冲突时**恰好**是 `"conflict"`；其余失败是人话原因。 */
+        reason: string;
+        /** 仅冲突时存在：盘上内容的当前 sha256（页面/面板据此显示"现在是哪一版"）。 */
+        currentRevision?: string | null;
+        /** 仅冲突时存在：给页面显示的人话说明。 */
+        message?: string;
+      }
+  > {
     const live = this.views.get(docId);
     if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
     const target = live.openedFilePath;
@@ -452,15 +500,42 @@ export class DocumentViewHost {
         reason: `保存内容过大：${bytes.byteLength} 字节（上限 ${DOC_VIEW_SAVE_MAX_BYTES}）`,
       };
     }
+
+    // 【ARC-007】冲突判据：调用方显式给了 expectedRevision（将来页面携带版本）就用它；
+    // 否则用**宿主打开时记下的**版本（页面携带不了版本时的乐观锁，见字段注释）。
+    const expected =
+      expectedRevision !== undefined ? expectedRevision : await live.openedFileRevision;
+    const current = await fileContentVersion(target);
+    if (current !== expected) {
+      // ⚠️ 顺序即判据：冲突检查必须在**写盘之前**，且冲突路径上一个字节都不落盘。
+      const message =
+        "文档已被别处改动（另一个窗口、Agent 或外部编辑器）—— 为避免覆盖对方刚保存的内容，本次保存未执行。请重新打开后再改。";
+      live.lastSaveConflict = {
+        expectedRevision: expected,
+        currentRevision: current,
+        message,
+        at: Date.now(),
+      };
+      log.warn(
+        `document view save conflict: ${docId} ${target} expected=${String(expected)} current=${String(current)}`,
+      );
+      return { ok: false, reason: "conflict", currentRevision: current, message };
+    }
+
     try {
       // 与 `file.writeFile` 共用同一份原子替换（`@main/lib/atomicFile`）。
       await atomicReplaceFile(target, bytes);
     } catch (err) {
       return { ok: false, reason: `写入失败：${err instanceof Error ? err.message : String(err)}` };
     }
+    const revision = await fileContentVersion(target);
+    // 保存成功后，本视图的"打开时版本"推进到刚写下的这一版 —— 用户连续保存两次
+    // （第二次基于第一次的结果）不该被自己的上一次保存判成冲突。
+    live.openedFileRevision = Promise.resolve(revision);
     live.lastFailure = undefined;
+    live.lastSaveConflict = undefined;
     log.info(`document view saved: ${docId} ${target} (${bytes.byteLength} bytes)`);
-    return { ok: true, bytes: bytes.byteLength, filePath: target };
+    return { ok: true, bytes: bytes.byteLength, filePath: target, revision };
   }
 
   /**
@@ -519,6 +594,7 @@ export class DocumentViewHost {
       visible: live.visible,
       bounds: { ...live.bounds },
       ...(live.lastFailure !== undefined ? { lastFailure: { ...live.lastFailure } } : {}),
+      ...(live.lastSaveConflict !== undefined ? { lastSaveConflict: { ...live.lastSaveConflict } } : {}),
     }));
   }
 

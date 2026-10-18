@@ -423,6 +423,8 @@ export const en = {
   "ide.genoffice.slides": "slides",
   "ide.genoffice.sheets": "sheets",
   "ide.genoffice.viewHostPageFailed": "Editor page failed to load",
+  "ide.genoffice.viewHostSaveConflict": "Save conflict: the file on disk was changed elsewhere",
+  "ide.genoffice.viewHostSaveConflictRetry": "Reload",
   "ide.genoffice.viewHost": "Editor view",
   "ide.genoffice.viewHostHint": "Open the GenOffice editor page in a controlled window (requires the GenOffice editor page to be built)",
   "ide.genoffice.viewHostOpenFailed": "Failed to open the GenOffice editor view",

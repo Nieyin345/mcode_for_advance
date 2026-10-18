@@ -174,17 +174,38 @@ export function registerDocumentViewHandlers(
    *
    * 字节在 Electron 里经结构化克隆过来是 `Uint8Array`（或 Node `Buffer`，
    * 两者都是 Uint8Array 的子类）；其它形状一律拒绝，不尝试"猜一个转换"。
+   *
+   * ## 冲突回包为什么带 `error`
+   *
+   * vendor 编辑器保存失败时读的是 `result.error`（`file-actions.ts` 的
+   * `ctx.setStatus(t('appSaveFailed', { error: result.error ?? '' }))`），
+   * 而不是我们的 `message` 字段。宿主的冲突结果带 `message`；这里把它映射成
+   * `error`，页面才会在状态栏/提示里显示真正的原因，而不是一条空白错误。
+   * `reason:"conflict"` 与 `currentRevision` 原样保留 —— 页面将来要携带
+   * revision 时直接可用（vendor 当前的 `saveDocx(path, data, auto)` 不带版本）。
    */
   ipc.handle("mcode:document-view:save", async (evt: unknown, raw: unknown) => {
     try {
-      const input = raw as { bytes?: unknown } | null;
+      const input = raw as { bytes?: unknown; expectedRevision?: unknown } | null;
       const sender = (evt as { sender?: unknown } | null)?.sender;
       const docId = host.docIdForSender(sender);
       if (docId === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
       if (!(input?.bytes instanceof Uint8Array)) {
         return { ok: false, reason: "保存内容不是字节数组" };
       }
-      return await host.saveOpenedFile(docId, input.bytes, withinWorkspace);
+      // 留位：当前 vendor preload 不发送版本；若将来页面携带（或宿主内部直接调用），
+      // 字符串形态原样交给宿主作为 expected。非字符串一律忽略（不猜转换）。
+      const expected = typeof input.expectedRevision === "string" ? input.expectedRevision : undefined;
+      const result = await host.saveOpenedFile(docId, input.bytes, withinWorkspace, expected);
+      if (!result.ok && result.reason === "conflict") {
+        return {
+          ok: false,
+          reason: "conflict",
+          error: result.message,
+          currentRevision: result.currentRevision,
+        };
+      }
+      return result;
     } catch (err) {
       return failed(err);
     }

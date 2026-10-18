@@ -67,6 +67,11 @@ const PAGE_HTML = `<!doctype html>
     (r) => { document.body.dataset.openReply = JSON.stringify(r); return r; },
     (e) => { document.body.dataset.openReply = 'rejected:' + String(e); },
   );
+  // saveDocx 的回包写进 DOM —— 冲突断言要看页面**真的收到**什么，而不是探针自己调宿主。
+  window.__requestSave = (text) => bridge.saveDocx('', new TextEncoder().encode(text)).then(
+    (r) => { document.body.dataset.saveReply = JSON.stringify(r); return r; },
+    (e) => { document.body.dataset.saveReply = 'rejected:' + String(e); },
+  );
 </script>
 </body></html>`;
 
@@ -256,7 +261,36 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
       assert((await readFile(outsidePath, "utf8")) === "outside bytes", "页面瞎传的路径绝不能被执行");
     });
 
-    await check("保存的路径不可由页面指定（源码级：preload 不转发、handler 不读 path）", async () => {
+    await check("保存冲突端到端：外部改动后页面保存被拒、盘上保留外部内容", async () => {
+      const view = viewWebContents("u1-doc");
+      // 前置：上一段保存后 openedFileRevision 已推进到 "INJECTED"。
+      assert((await readFile(docPath, "utf8")) === "INJECTED", "前置内容不符");
+      // 模拟"别处改了文件"（另一窗口 / Agent / 外部编辑器）。
+      await writeFile(docPath, "OUTSIDE-EDIT", "utf8");
+      await view.executeJavaScript("document.body.dataset.saveReply = ''");
+      await view.executeJavaScript("window.__requestSave('PAGE-SHOULD-NOT-LAND')");
+      await until(async () => {
+        const mark = (await view.executeJavaScript("document.body.dataset.saveReply")) as string;
+        return mark.length > 0 && mark !== "rejected:undefined";
+      }, "页面收到 saveDocx 回包");
+      const reply = JSON.parse(
+        (await view.executeJavaScript("document.body.dataset.saveReply")) as string,
+      ) as { ok: boolean; reason?: string; error?: string; currentRevision?: string | null };
+      assert(reply.ok === false, `冲突保存应失败: ${JSON.stringify(reply)}`);
+      assert(reply.reason === "conflict", `reason 应为 conflict: ${JSON.stringify(reply)}`);
+      assert(typeof reply.error === "string" && reply.error.length > 0, `冲突原因应可显示: ${JSON.stringify(reply)}`);
+      assert(typeof reply.currentRevision === "string" && reply.currentRevision.length === 64, `应回传盘上 sha256: ${JSON.stringify(reply)}`);
+      assert((await readFile(docPath, "utf8")) === "OUTSIDE-EDIT", "冲突时盘上必须是外部内容");
+      const snap = host.list().find((v) => v.docId === "u1-doc");
+      assert(snap?.lastSaveConflict !== undefined, "宿主快照应记录 lastSaveConflict（面板第二条可见路径）");
+      // 恢复基线：外部改动落定 + openPath 重新记版本，让后续断言（含收尾）看到干净状态。
+      assert(host.openPath("u1-doc", docPath, withinWorkspace).ok, "重新 openPath 失败");
+      const okSave = await view.executeJavaScript("window.__requestSave('AFTER-REOPEN')");
+      assert((okSave as { ok: boolean }).ok === true, `重新打开后的保存应成功: ${JSON.stringify(okSave)}`);
+      await until(async () => (await readFile(docPath, "utf8")) === "AFTER-REOPEN", "重新打开后的保存落盘");
+    });
+
+    await check("saveDocx 的路径不可由页面指定（源码级：preload 不转发、handler 不读 path）", async () => {
       const { readFileSync } = await import("node:fs");
       const preloadSrc = readFileSync(join(process.cwd(), "src/main/document/documentViewPreload.ts"), "utf8");
       const handlerSrc = readFileSync(join(process.cwd(), "src/main/ipc/documentView.ts"), "utf8");

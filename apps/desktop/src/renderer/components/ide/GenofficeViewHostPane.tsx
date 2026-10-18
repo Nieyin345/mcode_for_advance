@@ -224,6 +224,9 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
    *  页面却崩了）。vendor 编辑器页依赖 preload 桥，而本宿主刻意不给 preload ——
    *  没有这条，用户只看到一片空白，分不清"没加载"与"加载了但崩了"。 */
   const [pageFailure, setPageFailure] = useState<{ kind: string; reason: string } | null>(null);
+  /** 【ARC-007】保存冲突（宿主侧乐观锁拦下的保存）。与 pageFailure 分开显示：
+   *  页面没坏，只是**保存被拒**，用户需要先重新载入再改。 */
+  const [saveConflict, setSaveConflict] = useState<{ message: string; at: number } | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const stageRef = useRef<HTMLDivElement | null>(null);
 
@@ -351,6 +354,9 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
           if (cancelled) return;
           const mine = result.views.find((v) => v.docId === docId);
           setPageFailure(mine?.lastFailure ?? null);
+          // 【ARC-007】保存冲突走同一张快照（宿主在成功保存后清空它）。
+          const conflict = mine?.lastSaveConflict;
+          setSaveConflict(conflict !== undefined ? { message: conflict.message, at: conflict.at } : null);
         },
         () => { /* 读不到快照不该刷错误条 */ },
       );
@@ -420,6 +426,29 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
             }
           >
             <div className="break-words">{pageFailure.reason}</div>
+          </ErrorNote>
+        </div>
+      )}
+      {saveConflict !== null && (
+        <div className="p-3">
+          <ErrorNote
+            title={t("ide.genoffice.viewHostSaveConflict")}
+            tone="warning"
+            action={
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setSaveConflict(null);
+                  // 重新载入 = 重建视图并重新 openPath：宿主会记下新的打开时版本。
+                  setRetryNonce((n) => n + 1);
+                }}
+              >
+                {t("ide.genoffice.viewHostSaveConflictRetry")}
+              </Button>
+            }
+          >
+            <div className="break-words">{saveConflict.message}</div>
           </ErrorNote>
         </div>
       )}

@@ -25,6 +25,10 @@
  *  6. **IPC 层**：七条 `documentView:*` 通道都注册；每条 handler 都进了
  *     `recordRpcHandler`（`app_api_call` 看得见）；zod 拒绝非法 bounds（负数/小数/
  *     超上限/缺字段）且**宿主一次都没被调**；`documentView.list` 返回 `{views:[...]}`。
+ *  7. **保存冲突检测（宿主侧乐观锁，第 11 段）**：打开后外改文件 → 保存必须
+ *     `reason:"conflict"` 且盘上保留外部内容；没改 → 保存成功且不误报；
+ *     冲突经内部 IPC 通道时带页面认识的 `error`。变异验证：撤掉 sha256 比较
+ *     （`current !== expected` 恒假）→ 第 11 段 9 条变红，逐字节还原后回到 200/200。
  *
  * ## 变异自检（判据承重验证）
  *
@@ -704,6 +708,93 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   await (await import("node:fs/promises")).rm(workspace, { recursive: true, force: true });
 }
 
+
+/* ══════════ 11.【ARC-007】保存冲突检测：宿主侧乐观锁（expectedRevision） ══════════
+ * vendor 的保存链路 `saveDocx(path, data, auto)` 不携带版本（页面不知道自己读的是
+ * 哪个版本），所以 expected 由宿主在 openPath 时记下。判据：打开后文件被别处改过
+ * → 保存必须报 conflict 且**一个字节都不写盘**；没人动过 → 保存成功且不误报。 */
+{
+  const { mkdtempSync, writeFileSync, readFileSync: readSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: joinPath } = await import("node:path");
+  const { createHash } = await import("node:crypto");
+  const { rm } = await import("node:fs/promises");
+  const workspace11 = mkdtempSync(joinPath(tmpdir(), "mcode-dv-conflict-"));
+  const doc = joinPath(workspace11, "thesis.docx");
+  writeFileSync(doc, "opened-content", "utf8");
+  const sha = (s: string): string => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
+
+  const win = makeFakeWindow();
+  const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
+  host.open({ docId: "conf-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+  eq("openPath 成功（记下打开时版本）", host.openPath("conf-1", doc, () => true), { ok: true });
+
+  // ── 情形 A：打开后没人动过 → 保存成功，且回传新 revision ──
+  const cleanSave = await host.saveOpenedFile("conf-1", new TextEncoder().encode("clean-edit"), () => true);
+  check("★ 没人动过文件时保存成功（乐观锁不误报）", cleanSave.ok === true, cleanSave);
+  check("★ 成功保存回传写后内容的 revision（供页面下次携带）",
+    cleanSave.ok === true && cleanSave.revision === sha("clean-edit"), cleanSave);
+  eq("★ 成功保存的内容真的落盘", readSync(doc, "utf8"), "clean-edit");
+  // 自己上一次保存要把打开时版本推进 —— 连续第二次保存不该被自己的上一版判冲突。
+  const secondSave = await host.saveOpenedFile("conf-1", new TextEncoder().encode("clean-edit-2"), () => true);
+  check("★ 基于自己上一次保存的连续保存不被误判冲突", secondSave.ok === true, secondSave);
+
+  // ── 情形 B：外面改文件 → 页面保存必须 conflict 且盘上保留外部内容 ──
+  writeFileSync(doc, "outside-agent-edit", "utf8");
+  const conflicted = await host.saveOpenedFile("conf-1", new TextEncoder().encode("page-save-should-not-land"), () => true);
+  check("★ 外部改动后保存被拒且 reason 恰为 conflict",
+    conflicted.ok === false && conflicted.reason === "conflict", conflicted);
+  check("★ 冲突回包带盘上当前 revision（与外部内容的 sha256 一致）",
+    conflicted.ok === false && conflicted.currentRevision === sha("outside-agent-edit"), conflicted);
+  check("★ 冲突回包带人话说明（页面能原样显示）",
+    conflicted.ok === false && typeof conflicted.message === "string" && conflicted.message.length > 0, conflicted);
+  eq("★★ 冲突时盘上是外部内容，页面字节一个都没写进去", readSync(doc, "utf8"), "outside-agent-edit");
+  {
+    const snap = host.list().find((v) => v.docId === "conf-1");
+    check("★ 冲突记进 list 快照 lastSaveConflict（面板有第二条可见路径）",
+      snap?.lastSaveConflict?.currentRevision === sha("outside-agent-edit"), snap?.lastSaveConflict);
+  }
+
+  // ── 情形 C：显式 expectedRevision（将来页面携带版本的入口） ──
+  const explicitBad = await host.saveOpenedFile("conf-1", new TextEncoder().encode("x"), () => true, sha("some-old-version"));
+  check("★ 显式 expectedRevision 不匹配时同样 conflict", explicitBad.ok === false && explicitBad.reason === "conflict", explicitBad);
+  const explicitGood = await host.saveOpenedFile("conf-1", new TextEncoder().encode("explicit-ok"), () => true, sha("outside-agent-edit"));
+  check("★ 显式 expectedRevision 与盘上一致时保存通过", explicitGood.ok === true, explicitGood);
+  eq("★ 显式路径写入落盘", readSync(doc, "utf8"), "explicit-ok");
+  {
+    const snap = host.list().find((v) => v.docId === "conf-1");
+    eq("★ 成功保存后 lastSaveConflict 被清空", snap?.lastSaveConflict, undefined);
+  }
+
+  // ── 情形 D：冲突经内部 IPC 通道到页面时带 `error`（vendor 读 error 显示失败） ──
+  {
+    writeFileSync(doc, "outside-again", "utf8");
+    const handlers11 = new Map<string, (event: unknown, raw: unknown) => unknown>();
+    const fakeIpc11 = {
+      handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
+        handlers11.set(channel, listener);
+      },
+    } as unknown as IpcMain;
+    registerDocumentViewHandlers(fakeIpc11, host, () => true);
+    const sender = (host as unknown as { views: Map<string, { view: { webContents: unknown } }> })
+      .views.get("conf-1")?.view.webContents;
+    const reply = (await handlers11.get("mcode:document-view:save")!(
+      { sender },
+      { bytes: new TextEncoder().encode("page-bytes") },
+    )) as { ok?: boolean; reason?: string; error?: string; currentRevision?: string | null };
+    check("★ 内部保存通道把冲突翻成页面认识的 reason/error",
+      reply.ok === false && reply.reason === "conflict" && typeof reply.error === "string" && reply.error.length > 0,
+      reply);
+    check("★ 内部通道冲突回包同样带 currentRevision", reply.currentRevision === sha("outside-again"), reply);
+    eq("★ 经内部通道的冲突同样不写盘", readSync(doc, "utf8"), "outside-again");
+    // 陌生 sender：照旧拒绝（身份不因新字段而放宽）。
+    const stranger = (await handlers11.get("mcode:document-view:save")!(null, { bytes: new Uint8Array([1]) })) as { ok?: boolean };
+    check("★ 陌生 sender 的保存请求仍被拒", stranger.ok === false, stranger);
+  }
+
+  host.closeAll();
+  await rm(workspace11, { recursive: true, force: true });
+}
 
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

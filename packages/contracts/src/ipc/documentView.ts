@@ -107,6 +107,18 @@ export interface DocViewSnapshot {
    *  刻意不给 preload。页面加载后会抛错、或渲染进程直接退出 —— 没有这个字段时
    *  外层只看到空白，分不清"没加载"和"加载了但崩了"。 */
   lastFailure?: { kind: "load" | "render-gone"; reason: string; at: number };
+  /** 【ARC-007】最近一次**保存冲突**（保存成功后清空）。
+   *
+   *  为什么与 `lastFailure` 分开:页面加载失败与"页面想保存、被宿主以版本冲突
+   *  拦下"是两件不同的事，混进一个字段会让诊断文案说谎。保存通道的冲突回包
+   *  已经交给页面（`reason:"conflict"` + `error`），这个字段是给面板的第二条
+   *  可见路径 —— 将来页面若吞掉失败原因，面板仍能从这里显示。 */
+  lastSaveConflict?: {
+    expectedRevision: string | null;
+    currentRevision: string | null;
+    message: string;
+    at: number;
+  };
 }
 
 /**
