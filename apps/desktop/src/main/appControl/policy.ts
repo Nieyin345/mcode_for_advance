@@ -336,6 +336,7 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "git.discoverRepos": "read",
   "rg.status": "read",
   "automation.runs": "read",
+  "automation.preflight": "read",
   "automation.sessions": "read",
   "automation.statusAll": "read",
   "automation.watchStatus": "read",

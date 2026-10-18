@@ -85,6 +85,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "void"
  },
  {
+  "method": "automation.preflight",
+  "channel": "automation:preflight",
+  "doc": "**触发前只读预检**:回答「它会跑哪条工作流、缺什么执行器、要不要先审查、参数坏没坏」。 **不产生任何副作用**(不建会话、不写运行记录、不派发)。`ok` 只表示预检没发现问题, 不是执行授权。返回形状见 `AutomationPreflightResult`。",
+  "input": "{ workflowId: string; triggerNodeId: string }",
+  "inputFull": "{ workflowId: string; triggerNodeId: string }",
+  "output": "{ ok: boolean; workflowId: string; triggerKey: string; problem?: AutomationPreflightProblem | undefined; problems: AutomationPreflightProblem[]; capabilities: { required: string[]; available: string[]; } }"
+ },
+ {
   "method": "automation.rebuildWatchTemplates",
   "channel": "automation:rebuildWatchTemplates",
   "doc": "【MC-054】显式「备份损坏原值 → 校验 → 重建」—— 唯一能吃下损坏状态的操作。",

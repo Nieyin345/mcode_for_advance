@@ -911,6 +911,7 @@ const workflowEngine: Api["workflowEngine"] = {
  *  (自定义 UI 右键项)也在桌面。手机端没有 "automation:*" 白名单 handler。 */
 const automation: Api["automation"] = {
   run: () => webUnsupported("automation.run"),
+  preflight: () => webUnsupported("automation.preflight"),
   runs: () => webUnsupported("automation.runs"),
   sessions: () => webUnsupported("automation.sessions"),
   watch: () => webUnsupported("automation.watch"),

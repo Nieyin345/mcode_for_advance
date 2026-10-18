@@ -201,6 +201,32 @@ export const AutomationRunSchema = z.object({
 });
 export type AutomationRunInput = z.infer<typeof AutomationRunSchema>;
 
+/**
+ * **触发前只读预检**(`automation.preflight`)—— 与 `automation.run` 同形入参,
+ * 但**不执行任何副作用**:不建会话、不写运行记录、不派发。
+ */
+export const AutomationPreflightSchema = z.object({
+  workflowId: z.string().min(1),
+  triggerNodeId: z.string().min(1),
+});
+export type AutomationPreflightInput = z.infer<typeof AutomationPreflightSchema>;
+
+/** 预检的一条问题。`kind` 是给 Agent 分支用的稳定枚举。 */
+export interface AutomationPreflightProblem {
+  kind: "corrupt" | "missing" | "missing-executor" | "needs-grant";
+  reason: string;
+}
+
+/** `automation.preflight` 的返回:`ok` 只表示「预检没发现问题」,**不是执行授权**。 */
+export interface AutomationPreflightResult {
+  ok: boolean;
+  workflowId: string;
+  triggerKey: string;
+  problem?: AutomationPreflightProblem;
+  problems: AutomationPreflightProblem[];
+  capabilities: { required: string[]; available: string[] };
+}
+
 /** 取这条自动化的运行历史。 */
 export const AutomationRunsSchema = z.object({
   workflowId: z.string().min(1),

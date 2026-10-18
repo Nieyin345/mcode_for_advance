@@ -162,17 +162,17 @@ async function callAsync(channel: string, raw?: unknown): Promise<unknown> {
 /** 把 `unknown` 收成能点属性的形状 —— 断言里读返回值的字段用。 */
 const obj = (v: unknown): Record<string, unknown> => v as Record<string, unknown>;
 
-/* ──────────────── 1. 31 条 handler 一条不少、一条不多 ──────────────── */
+/* ──────────────── 1. 32 条 handler 一条不少、一条不多 ──────────────── */
 
 console.log("\n注册面");
 
-// 31 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
+// 32 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
 // 点了没反应;多一条 = 白名单那边没跟上(renderer 根本调不到,但说明有人改了这里
 // 却没改契约那一份)。
 const registered = [...handlers.keys()].sort();
 check(
-  `注册了 31 条 handler(实际 ${registered.length})`,
-  registered.length === 31,
+  `注册了 32 条 handler(实际 ${registered.length})`,
+  registered.length === 32,
   registered,
 );
 
@@ -195,6 +195,7 @@ const expectedChannels: Array<[string, string]> = [
   ["岔路口选路", IPC.WORKFLOW_CHOOSE],
   ["失败重试", IPC.WORKFLOW_RETRY],
   ["立刻跑一次", IPC.AUTOMATION_RUN],
+  ["触发前只读预检", IPC.AUTOMATION_PREFLIGHT],
   ["自动化运行历史", IPC.AUTOMATION_RUNS],
   ["自动化的后台会话", IPC.AUTOMATION_SESSIONS],
   ["全部触发器事实", IPC.AUTOMATION_STATUS_ALL],
@@ -211,7 +212,7 @@ const expectedChannels: Array<[string, string]> = [
   ["自定义 UI 运行自动化", IPC.CUSTOM_UI_RUN_AUTOMATION],
 ];
 const missing = expectedChannels.filter(([, ch]) => !handlers.has(ch)).map(([name]) => name);
-same("包括「命令模板(显式重建)」在内的 31 条一条不缺", missing, []);
+same("包括「命令模板(显式重建)」在内的 32 条一条不缺", missing, []);
 
 /* ──────────────── 2. 种子铺出来的目录 ──────────────── */
 
@@ -1714,6 +1715,123 @@ console.log("\n对话里那张「跑过什么」");
   // 那一组 loadAutomationHistory 断言随之删除 —— 被测函数不存在了,留着只会测一个副本。
   // `runs.history` 通道本身仍被 `WorkflowBoardPanel` 使用,上一段的 handler 断言继续覆盖。
 
+}
+
+/* ──────────────── 12b. ★ 触发前只读预检(automation.preflight) ──────────────── */
+
+// 真 handler + 真清单 + 真能力装配(plugin stub 返回空、engine 真注册了 command/code)。
+// 三类问题各造一条,外加健康正控与"不产生任何副作用"的计数断言。
+console.log("\n触发前只读预检");
+
+{
+  const { workflowReviewOf } = await import("@main/orchestration/workflowTrust.js");
+  const { WorkflowRepo } = await import("@main/store/repositories.js");
+
+  // 夹具:一条带触发器的自动化。节点清单用真内置(触发器 + 命令节点)。
+  const preflightDoc = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id: "wf_preflight",
+    name: "预检夹具",
+    prompt: "",
+    builtin: false,
+    updatedAt: 0,
+    nodes: [
+      { id: "main", type: "mcode.main", title: "入口", params: { instruction: "跑" }, position: { x: 0, y: 0 } },
+      { id: "t1", type: "mcode.trigger", title: "触发器", params: { triggerKind: "manual", project: "prj_smoke", task: "手动跑" }, position: { x: 0, y: 100 } },
+      { id: "c1", type: "mcode.command", title: "跑命令", params: { command: "echo hi" }, position: { x: 0, y: 200 } },
+    ],
+    edges: [],
+    ...over,
+  });
+  WorkflowRepo.save(preflightDoc() as never);
+
+  const preflight = async (raw: unknown): Promise<Record<string, unknown>> =>
+    obj(await callAsync(IPC.AUTOMATION_PREFLIGHT, raw));
+  const runCountBefore = (await (async () => {
+    const { WorkflowRunRepo } = await import("@main/store/repositories.js");
+    return WorkflowRunRepo.listForAutomationWorkflow("wf_preflight", 50).length;
+  })());
+
+  // ① 健康:ok、列出能力、problem 缺席。
+  {
+    const r = await preflight({ workflowId: "wf_preflight", triggerNodeId: "t1" });
+    eq("★ 健康触发器 → ok", r.ok, true);
+    eq("★ 健康触发器 → 没有 problem", r.problem, undefined);
+    eq("★ 健康触发器 → problems 空数组", (r.problems as unknown[]).length, 0);
+    eq("★ 健康触发器 → 列出 triggerKey", r.triggerKey, "wf_preflight:t1");
+    const caps = r.capabilities as { required: string[]; available: string[] };
+    check("★ 健康触发器 → 列出所需能力(空过防线:至少能读到结构)", Array.isArray(caps.required) && Array.isArray(caps.available), caps);
+    check("★ 健康触发器 → 已满足能力是所需能力的子集", caps.available.every((c) => caps.required.includes(c)), caps);
+  }
+
+  // ② 缺执行器:造一个引用了没装节点类型的节点 → missing-executor 点名。
+  {
+    WorkflowRepo.save(preflightDoc({
+      nodes: [
+        { id: "c1", type: "ghost.node", title: "幽灵步骤", params: {}, position: { x: 0, y: 0 } },
+        { id: "t1", type: "mcode.trigger", title: "触发器", params: { triggerKind: "manual", project: "prj_smoke", task: "跑" }, position: { x: 0, y: 100 } },
+      ],
+    }) as never);
+    const r = await preflight({ workflowId: "wf_preflight", triggerNodeId: "t1" });
+    eq("★ 缺执行器 → ok:false", r.ok, false);
+    eq("★ 缺执行器 → problem.kind=missing-executor", (r.problem as { kind?: string })?.kind, "missing-executor");
+    check(
+      "★ 缺执行器 → 原因点名那个节点类型(可读)",
+      String((r.problem as { reason?: string })?.reason ?? "").includes("ghost.node"),
+      r.problem,
+    );
+  }
+
+  // ③ 坏档:存储层把坏 payload 退化成空文档(id 对不上)→ corrupt,且不是"不存在"。
+  {
+    const origGet = WorkflowRepo.get;
+    WorkflowRepo.get = ((id: string) => id === "wf_preflight"
+      ? { id, name: "坏", description: null, icon: null, builtin: false, updatedAt: 0,
+          doc: { id: "", name: "", nodes: [], edges: [], builtin: false, updatedAt: 0 } }
+      : origGet.call(WorkflowRepo, id)) as typeof WorkflowRepo.get;
+    try {
+      const r = await preflight({ workflowId: "wf_preflight", triggerNodeId: "t1" });
+      eq("★ 坏档 → ok:false", r.ok, false);
+      eq("★ 坏档 → problem.kind=corrupt(不是谎报不存在)", (r.problem as { kind?: string })?.kind, "corrupt");
+      check(
+        "★ 坏档 → 原因可读(说存档损坏)",
+        String((r.problem as { reason?: string })?.reason ?? "").includes("损坏"),
+        r.problem,
+      );
+    } finally {
+      WorkflowRepo.get = origGet;
+    }
+  }
+
+  // ④ 需审查:标记为待审 → needs-grant,与 runNow 的拒绝同源。
+  {
+    WorkflowRepo.save(preflightDoc() as never);
+    const { requireWorkflowReview } = await import("@main/orchestration/workflowTrust.js");
+    requireWorkflowReview("wf_preflight", "import");
+    const r = await preflight({ workflowId: "wf_preflight", triggerNodeId: "t1" });
+    eq("★ 未审查 → problem.kind=needs-grant", (r.problem as { kind?: string })?.kind, "needs-grant");
+    const { approveWorkflowRevision } = await import("@main/orchestration/workflowTrust.js");
+    const { workflowRevision } = await import("@main/orchestration/workflowTrust.js");
+    const doc = WorkflowRepo.get("wf_preflight")!.doc;
+    approveWorkflowRevision(doc, workflowRevision(doc));
+    const okAgain = await preflight({ workflowId: "wf_preflight", triggerNodeId: "t1" });
+    eq("批准后预检恢复 ok(闸门没关过头)", okAgain.ok, true);
+  }
+
+  // ⑤ 不存在 / 触发器不在图里。
+  {
+    const missing = await preflight({ workflowId: "wf_根本不存在", triggerNodeId: "t1" });
+    eq("不存在的工作流 → problem.kind=missing", (missing.problem as { kind?: string })?.kind, "missing");
+    const noTrigger = await preflight({ workflowId: "wf_preflight", triggerNodeId: "nope" });
+    eq("触发器不在图里 → problem.kind=missing", (noTrigger.problem as { kind?: string })?.kind, "missing");
+  }
+
+  // ⑥ **只读**:整个过程不产生任何运行记录、不建后台会话。
+  {
+    const { WorkflowRunRepo } = await import("@main/store/repositories.js");
+    eq("★ 预检不产生任何运行记录(计数断言)", WorkflowRunRepo.listForAutomationWorkflow("wf_preflight", 50).length, runCountBefore);
+    eq("★ 预检不建后台会话", SessionRepo.listAutomationsByWorkflow("wf_preflight").length, 0);
+    eq("预检后 workflowReviewOf 仍是已审查(没有写审查记录)", workflowReviewOf(WorkflowRepo.get("wf_preflight")!.doc)?.pending, false);
+  }
 }
 
 /* ──────────────── 12. 无参 handler 收到 undefined 时不能炸 ──────────────── */

@@ -22,6 +22,7 @@ import { watchTemplatesRevision } from "@contracts/ipc/workflow";
 import {
   AgentProfileRemoveSchema,
   AgentProfileSaveSchema,
+  AutomationPreflightSchema,
   AutomationRunsSchema,
   AutomationRunSchema,
   AutomationSessionsSchema,
@@ -73,8 +74,16 @@ import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
 import { hasActiveRun, resolveWorkflowChoice, resolveWorkflowRetry } from "@main/orchestration/runner.js";
 import { exportWorkflowDoc } from "@main/orchestration/workflowValidation.js";
+import { automationPreflight } from "@main/appServices/automationPreflight.js";
+import {
+  HOST_CAPABILITY_DECLARATIONS,
+  collectCapabilityInventory,
+} from "@main/orchestration/capabilityResolver.js";
+import { executionEngine } from "@main/orchestration/executionEngine.js";
+import { providerRegistry } from "@main/providers/registry.js";
+import { getEnabledPlugins } from "@main/plugins/pluginManager.js";
 import { decoratePresetCatalog, readPresetCatalog, readPresetWorkflow } from "@main/orchestration/presetWorkflows.js";
-import { SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
+import { SessionRepo, SettingRepo, WorkflowRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 
 /**
  * 把「建议的文件名」洗成一个能落盘的名字。
@@ -352,6 +361,57 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.AUTOMATION_RUN, async (_evt, raw) => {
     const input = AutomationRunSchema.parse(raw);
     return automationRunner.runNow(input.workflowId, input.triggerNodeId);
+  });
+
+  // **触发前只读预检** —— 与 `automation.run` 同形入参,但**什么都不执行**:不建会话、
+  // 不写运行记录、不派发。三类问题(坏档 / 缺执行器 / 需审查)共用调度器那一份能力
+  // 判据(见 `appServices/automationPreflight.ts` 的宿主注入)。Agent 经 `app_api_call`
+  // 拿到的是同一段 handler 的返回。
+  ipcMain.handle(IPC.AUTOMATION_PREFLIGHT, async (_evt, raw) => {
+    const input = AutomationPreflightSchema.parse(raw);
+    return automationPreflight(input, {
+      getWorkflow: (id) => {
+        // 行不存在 → missing;行在但文档键都对不上(坏 JSON 被存储层退化成空文档、
+        // 或外部改库) → corrupt。**不把读不出来当成不存在** —— 那会让预检谎报
+        // "工作流不存在",而用户明明看着它在列表里。
+        const row = WorkflowRepo.get(id);
+        if (row === null) return { kind: "missing" };
+        const doc = row.doc;
+        if (doc.id !== id || doc.name.trim().length === 0) {
+          return { kind: "corrupt", reason: "工作流存档无法解析或关键字段缺失(文档内容损坏)" };
+        }
+        return { kind: "ok", doc };
+      },
+      loadManifests: async () =>
+        new Map((await loadNodeTypes()).entries.map((e) => [e.id, e.manifest])),
+      loadCapabilityInventory: async () => {
+        try {
+          const plugins = (await getEnabledPlugins()).map((p) => ({
+            name: p.name,
+            manifest: p.manifest,
+            compatibleProviderIds: p.compatibleProviderIds,
+            componentReports: p.componentReports,
+          }));
+          const executorKinds = [...executionEngine.kinds()];
+          return {
+            inventory: collectCapabilityInventory({
+              providers: providerRegistry.list(),
+              plugins,
+              executorKinds,
+              hostCapabilities: [...HOST_CAPABILITY_DECLARATIONS],
+            }),
+            executorKinds,
+          };
+        } catch (err) {
+          // 清单装配失败 → 返回 undefined,预检如实报"查不了"而不是假装通过。
+          log.warn(`[automation] 预检能力清单装配失败:${(err as Error).message}`);
+          return undefined;
+        }
+      },
+      reviewErrorOf: (doc) => workflowReviewOf(doc)?.pending === true
+        ? `工作流「${doc.name}」来自导入或 AI 修改，当前版本尚未审查；请到设置 → 工作流/自动化检查内容并明确启用`
+        : null,
+    });
   });
 
   // 自定义 UI 的「运行自动化」:右键的目标(条目 / 分类 / 大类 / 文件)当载荷,手动跑一次。

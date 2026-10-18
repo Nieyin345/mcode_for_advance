@@ -107,7 +107,7 @@ import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
 import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefaultInput, WorkflowShippedUpdateInput } from "./workflow.js";
-import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, WorkflowImportPresetInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchTemplatesRebuildInput, WatchCommandTemplate } from "./workflow.js";
+import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, WorkflowImportPresetInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationPreflightInput, AutomationPreflightResult, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchTemplatesRebuildInput, WatchCommandTemplate } from "./workflow.js";
 import type { HostHookGrantListInput, HostHookGrantIssueInput, HostHookGrantRevokeInput } from "./hostHookGrants.js";
 import type { HostHookGrant } from "../hostHookGrant.js";
 import type { AutomationTriggerHealth, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
@@ -1034,6 +1034,10 @@ export interface RpcMap {
    *  `ok: false` 时 `error` 是**给人看的句子**(比如"这个触发器不在一条已保存的自动化里"),
    *  不是异常 —— 用户点了一个还没存过的触发器,该得到一句解释而不是一个错误框。 */
   "automation.run": (input: AutomationRunInput) => Promise<{ ok: boolean; error?: string }>;
+  /** **触发前只读预检**:回答「它会跑哪条工作流、缺什么执行器、要不要先审查、参数坏没坏」。
+   *  **不产生任何副作用**(不建会话、不写运行记录、不派发)。`ok` 只表示预检没发现问题,
+   *  不是执行授权。返回形状见 `AutomationPreflightResult`。 */
+  "automation.preflight": (input: AutomationPreflightInput) => Promise<AutomationPreflightResult>;
   /** 运行历史(新的在前)。**从存档折出来**,不是另存的一份 —— 见 `AutomationRunEntry`。 */
   "automation.runs": (
     input: AutomationRunsInput,
@@ -2069,6 +2073,8 @@ export const IPC = {
   // 这三个只在桌面暴露(手机端那个 RPC 是手写白名单)。
   /** **立刻跑一次** —— 冒充一个 manual 触发器。 */
   AUTOMATION_RUN: "automation:run",
+  /** 触发前只读预检(不产生任何副作用)。 */
+  AUTOMATION_PREFLIGHT: "automation:preflight",
   /** 这条自动化的运行历史(从存档折出来)。 */
   AUTOMATION_RUNS: "automation:runs",
   /** 这条自动化的后台会话 id(没跑过时 null)。 */

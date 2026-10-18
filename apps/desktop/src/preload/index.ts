@@ -938,6 +938,8 @@ const api = {
   automation: {
     run: ((input) =>
       ipcRenderer.invoke(IPC.AUTOMATION_RUN, input)) as RpcMap["automation.run"],
+    preflight: ((input) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_PREFLIGHT, input)) as RpcMap["automation.preflight"],
     runs: ((input) =>
       ipcRenderer.invoke(IPC.AUTOMATION_RUNS, input)) as RpcMap["automation.runs"],
     sessions: ((input) =>

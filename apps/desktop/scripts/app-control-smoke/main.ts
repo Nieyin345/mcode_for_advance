@@ -2807,6 +2807,42 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
     { op: opResultOf(r), text: textOf(r).slice(0, 400) });
 }
 
+/* ── 触发前只读预检的 Agent 可读面 ── */
+{
+  const { createDbGuardedIpc } = await import("@main/ipc/dbGuardedIpc.js");
+  const { rpcHandlerFor } = await import("@main/appControl/registry.js");
+  const { policyFor } = await import("@main/appControl/policy.js");
+  const { API_CATALOG } = await import("@main/appControl/apiCatalog.generated.js");
+
+  check("★ 预检:preflight 是只读档(不是 blocked)", policyFor("automation.preflight").level === "read",
+    policyFor("automation.preflight"));
+  check("★ 预检:在 catalog 里(Agent 可发现)", API_CATALOG.some((e) => e.method === "automation.preflight"));
+
+  const handled = new Map<string, (e: unknown, raw: unknown) => unknown>();
+  const fakeMain = { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => handled.set(ch, fn) } as never;
+  const ipc = createDbGuardedIpc(fakeMain) as unknown as { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => void };
+  let calls = 0;
+  ipc.handle("automation:preflight", async (_e, raw) => {
+    calls += 1;
+    const input = raw as { workflowId?: string; triggerNodeId?: string };
+    return {
+      ok: false, workflowId: input.workflowId, triggerKey: `${input.workflowId}:${input.triggerNodeId}`,
+      problem: { kind: "missing-executor", reason: "缺执行器 ghost" },
+      problems: [{ kind: "missing-executor", reason: "缺执行器 ghost" }],
+      capabilities: { required: ["executor:command"], available: [] },
+    };
+  });
+  check("★ 预检:UI 通道与 registry 登记的是同一个函数",
+    rpcHandlerFor("automation:preflight") === handled.get("automation:preflight"));
+
+  const { ctx } = ctxWith();
+  const r = await invokeAppTool("app_api_call", { method: "automation.preflight", input: { workflowId: "wf_y", triggerNodeId: "t1" } }, "me", ctx);
+  check("★ 预检:Agent 经 app_api_call 真的落到同一个函数", calls === 1, calls);
+  check("★ 预检:Agent 读到 problem.kind 与原因",
+    textOf(r).includes("missing-executor") && textOf(r).includes("缺执行器 ghost") && opResultOf(r)?.resultKind === "SUCCEEDED",
+    { op: opResultOf(r), text: textOf(r).slice(0, 400) });
+}
+
 /* ── 【MC-040】帮助分级(detail=full)与教程索引 ──
  *
  * 台账红例:`workflow.save` 的浅版 input 291 字符、嵌套结构全在 `{…}` 里 —— agent
