@@ -339,11 +339,36 @@ export interface AutomationRunStep {
 /** 运行历史里的一次运行。 */
 export interface AutomationRunEntry {
   runId: string;
+  /**
+   * 这次是**哪条触发器**起的(`workflowId:nodeId`)。从存档的 `state.entry.nodeId`
+   * 折出来;老存档 / 非触发器起的(比如在对话里手动跑)没有这个字段。
+   *
+   * Agent 要回答「这条自动化的哪个入口最近老失败」,只给 runId 是答不了的。
+   */
+  triggerKey?: string;
   status: AutomationRunStatus;
   /** 这次运行什么时候开始的。 */
   startedAt: number;
-  /** 最后一次更新(收尾时刻)。 */
+  /** 最后一次更新(收尾时刻)。`running` 时是最后一次落盘时刻,不是"结束"。 */
   updatedAt: number;
+  /**
+   * 收尾时刻(ms)。= `updatedAt`,但**只在 `status !== "running"` 时给** ——
+   * 进行中的运行没有"结束时刻",拿最后一次落盘时刻冒充会让 Agent 算出偏小的耗时。
+   */
+  endedAt?: number;
+  /**
+   * **失败分类** —— 只在 `status === "failed"` 时给。判据取节点结局里**第一个
+   * failed** 那一步:`outcome.retryable === true` 或错误文本像瞬时故障
+   * (`@contracts/nodeType` 的 `isTransientError`,与调度器重试判据**同一份**)→
+   * `"transient"`;其余 → `"terminal"`。
+   *
+   * Agent 据此回答「这次该不该再试」—— 重试策略就是照这个分的,重判一遍只会分家。
+   */
+  failureClass?: "transient" | "terminal";
+  /** 失败原因(首个 failed 步骤的 error,原样)。`failed` 且拿得到时给。 */
+  error?: string;
+  /** 这次运行**一共花了多久**(ms)。只在收尾态给(`updatedAt - startedAt`,`>= 0`)。 */
+  durationMs?: number;
   steps: AutomationRunStep[];
 }
 

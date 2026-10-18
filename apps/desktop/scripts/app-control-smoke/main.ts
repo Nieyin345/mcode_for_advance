@@ -2769,6 +2769,44 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
     { op: opResultOf(r), text: textOf(r).slice(0, 300) });
 }
 
+/* ── 自动化运行历史的 Agent 可读面 ──
+ *
+ * `automation.runs` 已存在;这里钉三件事:①只读档、不在 blocked;②Agent 经
+ * `app_api_call` 与 UI 走**同一个注册函数**;③失败分类/耗时字段真的穿过 Agent 路径
+ * 交回(不是只在 handler 里有)。
+ */
+{
+  const { createDbGuardedIpc } = await import("@main/ipc/dbGuardedIpc.js");
+  const { rpcHandlerFor } = await import("@main/appControl/registry.js");
+  const { policyFor } = await import("@main/appControl/policy.js");
+
+  check("★ 运行历史:runs 是只读档(不是 blocked)", policyFor("automation.runs").level === "read",
+    policyFor("automation.runs"));
+
+  const handled = new Map<string, (e: unknown, raw: unknown) => unknown>();
+  const fakeMain = { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => handled.set(ch, fn) } as never;
+  const ipc = createDbGuardedIpc(fakeMain) as unknown as { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => void };
+  let calls = 0;
+  ipc.handle("automation:runs", async (_e, raw) => {
+    calls += 1;
+    const input = raw as { workflowId?: string; limit?: number };
+    return { runs: [{
+      runId: "run-1", triggerKey: `${input.workflowId}:t1`, status: "failed",
+      startedAt: 1000, updatedAt: 1500, endedAt: 1500, durationMs: 500,
+      failureClass: "transient", error: "429 rate limit", steps: [],
+    }], limit: input.limit };
+  });
+  check("★ 运行历史:UI 通道与 registry 登记的是同一个函数",
+    rpcHandlerFor("automation:runs") === handled.get("automation:runs"));
+
+  const { ctx } = ctxWith();
+  const r = await invokeAppTool("app_api_call", { method: "automation.runs", input: { workflowId: "wf_x", limit: 3 } }, "me", ctx);
+  check("★ 运行历史:Agent 经 app_api_call 真的落到同一个函数", calls === 1, calls);
+  check("★ 运行历史:Agent 读到失败分类与耗时",
+    textOf(r).includes("transient") && textOf(r).includes("500") && opResultOf(r)?.resultKind === "SUCCEEDED",
+    { op: opResultOf(r), text: textOf(r).slice(0, 400) });
+}
+
 /* ── 【MC-040】帮助分级(detail=full)与教程索引 ──
  *
  * 台账红例:`workflow.save` 的浅版 input 291 字符、嵌套结构全在 `{…}` 里 —— agent

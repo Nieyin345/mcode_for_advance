@@ -15,8 +15,9 @@
 import type { IpcMain } from "electron";
 import { dialog } from "electron";
 import { readFile, writeFile } from "node:fs/promises";
-import type { AutomationRunEntry, AutomationTriggerFacts, PersistedWorkflowRunLite, WatchCommandTemplate } from "@contracts/ipc";
+import type { AutomationRunEntry, AutomationRunStep, AutomationTriggerFacts, PersistedWorkflowRunLite, WatchCommandTemplate } from "@contracts/ipc";
 import { diagnoseTriggerFacts } from "@contracts/ipc";
+import { shouldRetryOutcome } from "@contracts/nodeType";
 import { watchTemplatesRevision } from "@contracts/ipc/workflow";
 import {
   AgentProfileRemoveSchema,
@@ -692,19 +693,37 @@ function automationRunsOf(workflowId: string, limit: number): AutomationRunEntry
   };
   return WorkflowRunRepo.listForAutomationWorkflow(workflowId, limit).map((row) => {
     const snapshot = decodeSnapshot(row.payload);
+    const steps: AutomationRunStep[] = (snapshot?.state.outcomes ?? []).map(([nodeId, outcome]) => ({
+      nodeId,
+      title: titleOf(nodeId),
+      status: outcome.status,
+      summary: firstLine(outcome.summary),
+      ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+    }));
+    // 【Agent 可读面】失败分类与耗时从**同一份存档**折出来,不另存:
+    //  - 分类取第一个 failed 步骤,判据与调度器重试同一份(`retryable` 优先,
+    //    缺席才 `isTransientError` 猜文本 —— 见 `@contracts/nodeType`);
+    //  - 耗时只在收尾态给(running 的 `updatedAt` 是最后一次落盘时刻,不是结束)。
+    const firstFailed = (snapshot?.state.outcomes ?? [])
+      .find(([, outcome]) => outcome.status === "failed")?.[1];
+    const failureClass = row.status !== "failed" || firstFailed === undefined
+      ? undefined
+      : shouldRetryOutcome(firstFailed) ? "transient" as const : "terminal" as const;
+    const endedAt = row.status === "running" ? undefined : row.updatedAt;
     return {
       runId: row.id,
       // 这一行赋值就是那两个类型的"对表":哪边多一个状态,这里就编译不过。
       status: row.status,
       startedAt: row.createdAt,
       updatedAt: row.updatedAt,
-      steps: (snapshot?.state.outcomes ?? []).map(([nodeId, outcome]) => ({
-        nodeId,
-        title: titleOf(nodeId),
-        status: outcome.status,
-        summary: firstLine(outcome.summary),
-        ...(outcome.error !== undefined ? { error: outcome.error } : {}),
-      })),
+      ...(endedAt !== undefined ? { endedAt } : {}),
+      ...(endedAt !== undefined ? { durationMs: Math.max(0, endedAt - row.createdAt) } : {}),
+      ...(snapshot?.state.entry?.nodeId !== undefined
+        ? { triggerKey: `${workflowId}:${snapshot.state.entry.nodeId}` }
+        : {}),
+      ...(failureClass !== undefined ? { failureClass } : {}),
+      ...(failureClass !== undefined && firstFailed?.error !== undefined ? { error: firstFailed.error } : {}),
+      steps,
     };
   });
 }

@@ -1489,6 +1489,105 @@ console.log("\n自动化那一栏 · 历史从哪来");
   check("而且末尾标了省略号(用户知道被截了)", sum.endsWith("…"), sum.slice(-10));
   check("只留首行(第二行不在)", !sum.includes("第二行"), sum.slice(-30));
   eq("失败那一步带着 error 给人看", ok?.steps.find((s) => s.nodeId === "n_fail")?.error, "命令挂了");
+
+  // ── 【Agent 可读面】失败分类、耗时、triggerKey、limit ──
+  // 同一份保存档折出来,不另存:分类判据与调度器重试同一份(`retryable` 优先,
+  // 缺席才按错误文本猜),耗时只在收尾态给,running 不算结束时刻。
+  // **独立工作流与会话**:不污染上面那组按 wf_hist 精确清单的既有断言。
+  {
+    type Entry = {
+      runId: string; status: string; startedAt: number; updatedAt: number;
+      endedAt?: number; durationMs?: number; triggerKey?: string;
+      failureClass?: string; error?: string;
+    };
+    const AGENT_WF = "wf_hist_agent";
+    SessionRepo.create({
+      id: "s_hist_agent",
+      projectId,
+      providerId: "claude",
+      claudeSessionId: null,
+      kind: "automation",
+      parentSessionId: null,
+      composerMode: AGENT_WF,
+      title: "自动化 · Agent 可读面",
+      status: "idle",
+      model: "default",
+      effort: "default",
+      permissionMode: "plan",
+      workflowId: AGENT_WF,
+      customModelId: null,
+      envMode: "local",
+      worktreePath: null,
+      archived: false,
+      pinnedAt: null,
+      contextSnapshot: null,
+      todos: null,
+      subagents: null,
+      planDraft: null,
+      turnFiles: null,
+      usageHistory: null,
+      bookmarks: null,
+      subagentTranscripts: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as never);
+    const saveAgentRun = (id: string, status: string, state: unknown): void => {
+      WorkflowRunRepo.save({
+        id, sessionId: "s_hist_agent", workflowId: AGENT_WF, status: status as never,
+        payload: JSON.stringify({ cwd: "/tmp", capturedAt: 1, prompt: "", state }), awaiting: [],
+      });
+    };
+    // 收尾的失败运行:首步瞬时故障(带 retryable:true)、末步终态失败。
+    saveAgentRun("a_classes", "failed", {
+      record: [], rounds: [], picks: [], awaiting: [],
+      entry: { nodeId: "t_sched", summary: "到点了" },
+      outcomes: [
+        ["n_rate", { status: "failed", summary: "限流", error: "429 rate limit", retryable: true }],
+        ["n_bad", { status: "failed", summary: "参数坏", error: "参数不合法" }],
+      ],
+    });
+    // 健康运行(防空过):成功、有步骤,不带失败分类。
+    saveAgentRun("a_ok", "success", {
+      record: [], rounds: [], picks: [], awaiting: [],
+      outcomes: [["n_done", { status: "success", summary: "做完了" }]],
+    });
+    // 进行中的运行:没有结束时刻、没有耗时。
+    saveAgentRun("a_running", "running", { record: [], rounds: [], picks: [], awaiting: [], outcomes: [] });
+    // 终态失败但错误文本像网络故障(执行器没表态 → 按文本猜成瞬时)。
+    saveAgentRun("a_text", "failed", {
+      record: [], rounds: [], picks: [], awaiting: [],
+      outcomes: [["n_net", { status: "failed", summary: "断网", error: "fetch failed: ECONNRESET" }]],
+    });
+
+    const all = obj(await callAsync(IPC.AUTOMATION_RUNS, { workflowId: AGENT_WF, limit: 50 })).runs as Entry[];
+    const byId = (id: string) => all.find((r) => r.runId === id);
+    eq("★ 失败分类:retryable 优先,首个失败步是瞬时 → transient", byId("a_classes")?.failureClass, "transient");
+    eq("★ 失败原因原样带回(首个 failed 步)", byId("a_classes")?.error, "429 rate limit");
+    eq("★ 失败分类:执行器没表态时按错误文本猜(网络 → transient)", byId("a_text")?.failureClass, "transient");
+    eq("★ 失败分类:成功运行不带分类", byId("a_ok")?.failureClass, undefined);
+    check(
+      "★ 耗时:收尾态给 endedAt 与 durationMs(>=0)",
+      byId("a_ok")?.endedAt !== undefined && (byId("a_ok")?.durationMs ?? -1) >= 0,
+      byId("a_ok"),
+    );
+    eq("耗时的值就是 endedAt - startedAt", byId("a_ok")?.durationMs, (byId("a_ok")?.endedAt ?? 0) - (byId("a_ok")?.startedAt ?? 0));
+    eq("★ 进行中的运行没有 endedAt(不拿最后一次落盘冒充结束)", byId("a_running")?.endedAt, undefined);
+    eq("进行中的运行没有 durationMs", byId("a_running")?.durationMs, undefined);
+    eq("★ triggerKey 从存档 entry 折出来", byId("a_classes")?.triggerKey, `${AGENT_WF}:t_sched`);
+    eq("没有 entry 的老运行不带 triggerKey", byId("a_ok")?.triggerKey, undefined);
+    // 健康路径(防空过):普通成功运行仍在列表里、状态正确。
+    check("★ 正常一条也在(成功运行照常列出)", byId("a_ok")?.status === "success" && all.length === 4, { len: all.length, ok: byId("a_ok") });
+
+    // ── 限数分页 ──
+    const limited = obj(await callAsync(IPC.AUTOMATION_RUNS, { workflowId: AGENT_WF, limit: 2 })).runs as Entry[];
+    eq("★ limit 生效:只回 2 条", limited.length, 2);
+    check("limit 回的是最新的那几条(按 updatedAt 倒序)", limited[0]?.runId === all[0]?.runId, { first: limited[0]?.runId, allFirst: all[0]?.runId });
+    const over = await callAsync(IPC.AUTOMATION_RUNS, { workflowId: AGENT_WF, limit: 51 }).then(
+      () => null,
+      (e: unknown) => (e as Error).message,
+    );
+    check("★ limit 上限 50:超限显式拒绝(不是静默截断)", typeof over === "string" && over.length > 0, over);
+  }
 }
 
 /* ──────────────── 11. 某个对话的图运行历史 ──────────────── */
