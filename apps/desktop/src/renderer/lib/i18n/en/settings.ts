@@ -1384,6 +1384,9 @@ export const en = {
   // `composer.mode.*`, shared with the composer dropdown (see lib/workflowLabels.tsx).
   "settings.workflows.tabLibrary": "Library",
   "settings.workflows.tabNodeTypes": "Node types",
+  // Screen readers cannot see the accent bar on the active row — say it in words.
+  // Visible text is unchanged; only the row's accessible name gains this (see WorkflowListRow).
+  "settings.workflows.listRowCurrent": "Currently open",
   "settings.workflows.loadFailed": "Could not read the workflow library: {error}",
   "settings.workflows.openFailed": "Could not open this workflow: {error}",
   "settings.workflows.listEmpty": "The library is empty.",

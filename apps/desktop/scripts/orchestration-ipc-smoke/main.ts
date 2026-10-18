@@ -1580,6 +1580,52 @@ console.log("\n导入");
     2,
   );
 
+  // 【ARC-006】导入含未知节点类型与未知字段的档案 —— handler 必须把解析阶段的
+  // 提醒**原样送到调用方**(渲染端 / Agent)。从前 `importWorkflowInto` 把
+  // `parseWorkflowText` 算出的 warnings 丢了,`finishImport` 拿到的是空,界面看到的
+  // 是一次"完整导入",而图里有一个这一版不认识的节点、外加一批被保留但没人告诉他的
+  // 字段。判据立在**IPC 返回值**上:这是界面唯一能看见的那一份。
+  const fidelitySrc = {
+    ...goodDoc({ id: "wf_import_fidelity", name: "导入保真" }),
+    futureDocField: { keep: true },
+    nodes: [
+      { id: "main", type: "mcode.main", title: "入口", params: { instruction: "把活分给下游" }, position: { x: 0, y: 0 } },
+      {
+        id: "n2",
+        type: "acme.future-node",
+        title: "未来节点",
+        params: { instruction: "做点什么" },
+        position: { x: 0, y: 120 },
+        futureNodeField: ["keep"],
+      },
+    ],
+  };
+  const fidelity = obj(await callAsync(IPC.WORKFLOW_IMPORT, { text: JSON.stringify(fidelitySrc) }));
+  eq("含未知节点/字段的档案 → 仍可导入", fidelity.ok, true);
+  const fidelityWarnings = Array.isArray(fidelity.warnings) ? (fidelity.warnings as string[]) : [];
+  check(
+    "★ 导入成功时 warnings 随 IPC 结果回来(不再在 main 里丢掉)",
+    fidelityWarnings.length > 0,
+    fidelity,
+  );
+  check(
+    "★ 而且点名未知节点类型与已保留的未知字段",
+    fidelityWarnings.some((w) => w.includes("acme.future-node")) &&
+      fidelityWarnings.some((w) => w.includes("futureNodeField")) &&
+      fidelityWarnings.some((w) => w.includes("已原样保留")),
+    fidelityWarnings,
+  );
+  // 落库之后再从 get 读一遍:未知节点与字段都还在(拒绝不算、没丢才算)。
+  const fidelityBack = obj(await callAsync(IPC.WORKFLOW_GET, { id: fidelity.id }));
+  const backDoc = (fidelityBack.workflow ?? {}) as Record<string, unknown>;
+  const backNodes = (backDoc.nodes ?? []) as Array<Record<string, unknown>>;
+  check(
+    "★ 未知节点与未知字段在库里原样保留(get 读得回来)",
+    backNodes.some((n) => n.id === "n2" && n.type === "acme.future-node" && JSON.stringify(n.futureNodeField) === JSON.stringify(["keep"])) &&
+      JSON.stringify(backDoc.futureDocField) === JSON.stringify({ keep: true }),
+    { nodes: backNodes.map((n) => n.type), futureDocField: backDoc.futureDocField },
+  );
+
   // 从文件导入,两条路:**用户取消** / **真读到一个文件**。
   resetDialog();
   const cancelled = obj(await callAsync(IPC.WORKFLOW_IMPORT_FROM_FILE, {}));

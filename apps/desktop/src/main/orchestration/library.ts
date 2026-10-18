@@ -536,9 +536,14 @@ export function restoreWorkflowDefault(id: string): { ok: boolean; error?: strin
 
 /* ── 导入 / 导出(WF-08) ── */
 
-/** 导入失败的形状。**整份拒绝** —— 过不了闸门的图不写库,库里一个字节都没变。 */
+/** 导入结果。`warnings` 是**给用户/Agent 看的提醒**,不是错误:
+ *  - 解析闸门算出来的那些(未知节点类型 `node.unknown-kind`、契约外字段
+ *    `schema.unknown-field`、断链、触发器有入边……)—— 能存能跑,但用户必须知道
+ *    "档案里有什么这一版不认识/不会生效";
+ *  - 【MC-006】随包脚本缺失时的提醒(不拦导入)。
+ *  失败时也带着解析阶段已经算出的提醒(拒绝原因在 `errors` 里)。 */
 export type WorkflowImportOutcome =
-  | { ok: true; id: string; name: string; /** 【MC-006】随包脚本缺失时的提醒(不拦导入)。 */ warnings?: string[] }
+  | { ok: true; id: string; name: string; warnings?: string[] }
   | { ok: false; errors: string[]; warnings: string[] };
 
 /**
@@ -557,6 +562,22 @@ export type WorkflowImportOutcome =
  *
  * 别人分享来的图引用了你没装的节点类型是常态 —— `saveWorkflow` 那一关的档位是
  * `unknownTypeSeverity: "warning"`,所以那种图照样收得下、画得出来,只是跑不了。
+ *
+ * ## 解析阶段的提醒**必须送到调用方**(ARC-006,2026-10-18)
+ *
+ * 从前这里只把 `materializePresetScriptsFor` 的脚本警告带回去,而
+ * `parseWorkflowText`(即 `importWorkflowDoc`)自己算出来的那批 —— 未知节点类型
+ * (`node.unknown-kind`)、契约外字段(`schema.unknown-field`)、断链、触发器有入边
+ * —— **在 `parsed.doc` 被取走时就整批丢了**。于是同一份档案:直接过校验器会提醒,
+ * 从文件导进来一声不响,而"有一个节点这一版不认识"这件事只有主进程日志知道,用户
+ * 在界面上看到的就是一份完整导入。台账 ARC-006 的硬要求是"新画布不得无声丢弃未知
+ * 节点/字段"——字段由 `mergeUnknownWorkflowFields` 保住了,但"说出来"这一半断在
+ * 这里。现在两处提醒合并后随结果返回,由 IPC 原样送到渲染端/Agent。
+ *
+ * 未知**节点**本身不丢:节点是契约里的 `{id,type,title,params,position}`,类型 id 是
+ * 自由字符串,认不出的类型照样按原文落库(画布用 `findNodeType` 找不到清单时按
+ * `type` 原样显示);真正会丢的是"这一版不认识的**字段**",那条由契约层的
+ * `mergeUnknownWorkflowFields` 按身份贴回,并已在 `schema.unknown-field` 里点名。
  *
  * ## id 与名字在这两层定下来
  *
@@ -582,9 +603,21 @@ export async function importWorkflowInto(
   const types = new Map((await loadNodeTypes()).entries.map((entry) => [entry.id, entry.manifest]));
   const parsed = parseWorkflowText(text, { types, unknownTypeSeverity: "warning", locale: uiLocale() });
   if (!parsed.ok) {
-    return { ok: false, errors: parsed.report.errors.map((e) => e.message), warnings: [] };
+    // 拒绝时也把这次校验**已经算出来的**提醒带回去(比如"未知类型 + 另一处硬错误"
+    // 同时存在:拒的是硬错误,但未知类型那一条同样该让用户看到)。JSON/形状/版本
+    // 三关的失败报告里 warnings 本来就是空数组,这条只是不丢第四关的产出。
+    return {
+      ok: false,
+      errors: parsed.report.errors.map((e) => e.message),
+      warnings: (parsed.report.warnings ?? []).map((w) => w.message),
+    };
   }
   const doc = parsed.doc;
+  // 解析闸门已经算出来的提醒(未知类型 / 契约外字段 / 断链 / 触发器入边……)。
+  // 不管后面成不成功,它们描述的都是"这份档案本身长什么样",必须一路带出去 ——
+  // 成功时由调用方显示,失败时与 errors 并列返回(拒绝原因之外,用户仍要知道
+  // 档案里有哪些东西这一版不认识)。
+  const parseWarnings = parsed.warnings.map((w) => w.message);
 
   const overwrite = opts.id !== undefined;
   const previous = overwrite ? getWorkflow(opts.id!) : null;
@@ -592,7 +625,7 @@ export async function importWorkflowInto(
     return {
       ok: false,
       errors: [`库里没有 id 为「${opts.id}」的工作流,覆盖不了不存在的一份`],
-      warnings: [],
+      warnings: parseWarnings,
     };
   }
 
@@ -608,11 +641,12 @@ export async function importWorkflowInto(
     untrustedOrigin: "import",
     expectedRevision: previous === null ? null : workflowSaveVersion(previous),
   });
-  if (!res.ok) return { ok: false, errors: [res.error], warnings: [] };
+  if (!res.ok) return { ok: false, errors: [res.error], warnings: parseWarnings };
   // 【MC-006】这份图引用了随预设携带的脚本(如引用核对)→ 现在才落盘到数据根。
   // 落盘规则与启动 seed 同一条(没改过的换新版、改过的不动);找不到随包脚本只记警告,
   // 不拦导入(缺一个可选脚本不该让整份工作流进不来),但警告要随结果带回去。
   const { missing } = materializePresetScriptsFor(text);
   const scriptWarnings = missing.map((name) => `这份工作流引用的脚本 \`${name}\` 不在当前安装的随包预设里 —— 那一步会找不到文件`);
-  return { ok: true, id, name, ...(scriptWarnings.length > 0 ? { warnings: scriptWarnings } : {}) };
+  const warnings = [...parseWarnings, ...scriptWarnings];
+  return { ok: true, id, name, ...(warnings.length > 0 ? { warnings } : {}) };
 }

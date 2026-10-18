@@ -41,6 +41,8 @@ const { initDb } = await import("@main/store/db.js");
 const { SettingRepo, WorkflowRepo } = await import("@main/store/repositories.js");
 const { BUILTIN_WORKFLOWS } = await import("@main/orchestration/builtins.js");
 const lib = await import("@main/orchestration/library.js");
+// 导出用的是 `library.ts` 内部同一份 `exportWorkflowDoc`(纯函数,不起 DB / Electron)。
+const { exportWorkflowDoc } = await import("@main/orchestration/workflowValidation.js");
 
 await initDb();
 
@@ -117,6 +119,115 @@ if (process.argv.includes("seed")) {
   });
   // 正控:库里原有的别的行照常列出来(不是"读列表整个挂了")。
   check("读列表本身没挂(其余行照常列出)", listed.length >= BUILTIN_WORKFLOWS.length - 1, listed.length);
+} else if (process.argv.includes("import-fidelity")) {
+  // ── 第四趟:【ARC-006】导入不得无声丢未知节点/字段,提醒必须随结果出来。 ──
+  //
+  // 判据立在**真实的导入入口** `importWorkflowInto`(界面「从文件导入」、Agent 的
+  // `workflow.import`、出厂预设四条路共用这一个函数)上,不是解析器单测:
+  //  - 从前 `parseWorkflowText` 算出的提醒(`node.unknown-kind` / `schema.unknown-field`)
+  //    在 `const doc = parsed.doc` 那一行之后**整批丢掉**,用户只看到"导入成功";
+  //  - 未知**节点**按契约是 `{id,type,title,params}` 的自由类型 id,不该被导入路径丢弃;
+  //  - 未知**字段**由 `mergeUnknownWorkflowFields` 按身份贴回,落库后再读出来必须还在。
+  //
+  // 用虚构档案(临时数据根),不碰用户文件。
+  console.log("\n【ARC-006】第四趟:导入含未知节点类型与未知字段的档案");
+  const archive = {
+    id: "wf_import_fidelity_source",
+    name: "导入保真冒烟",
+    builtin: false,
+    updatedAt: 0,
+    // 文档级未知字段(未来版本写的档案)
+    futureDocField: { keep: true },
+    nodes: [
+      { id: "A", type: "mcode.main", title: "主对话", params: { instruction: "拆成几步" }, position: { x: 0, y: 0 } },
+      {
+        id: "B",
+        type: "acme.future-node", // 这台机器没装的节点类型
+        title: "未来节点",
+        params: { instruction: "做这一步" },
+        position: { x: 0, y: 120 },
+        futureNodeField: ["keep"], // 节点级未知字段
+      },
+    ],
+    edges: [{ id: "e1", from: "A", to: "B", futureEdgeField: "e" }], // 边级未知字段
+  };
+  const imported = await lib.importWorkflowInto(JSON.stringify(archive));
+  check("★ 未知节点类型/字段不拦导入(只提醒)", imported.ok === true, imported);
+  const warnings = imported.ok ? (imported.warnings ?? []) : imported.warnings;
+  check("★ 导入结果**带回** warnings(不再无声)", warnings.length > 0, imported);
+  check(
+    "★ 提醒点名未知节点类型(acme.future-node)",
+    warnings.some((w) => w.includes("acme.future-node")),
+    warnings,
+  );
+  check(
+    "★ 提醒点名已保留的未知字段(futureDocField / futureNodeField / futureEdgeField)",
+    warnings.some((w) => w.includes("futureDocField")) &&
+      warnings.some((w) => w.includes("futureNodeField")) &&
+      warnings.some((w) => w.includes("futureEdgeField")),
+    warnings,
+  );
+  check(
+    "提醒里明说未知字段「已原样保留」(不是含糊带过)",
+    warnings.some((w) => w.includes("已原样保留")),
+    warnings,
+  );
+
+  const stored = imported.ok ? lib.getWorkflow(imported.id) : null;
+  check("落库后读得回来", stored !== null, imported.ok ? imported.id : imported);
+  const storedRaw = (stored ?? {}) as unknown as Record<string, unknown>;
+  const storedNodes = (stored?.nodes ?? []) as unknown as Array<Record<string, unknown>>;
+  const storedEdges = (stored?.edges ?? []) as unknown as Array<Record<string, unknown>>;
+  check(
+    "★ 未知节点没有被丢:落库仍有 acme.future-node 且 id/type 原样",
+    storedNodes.some((n) => n.id === "B" && n.type === "acme.future-node"),
+    storedNodes.map((n) => n.type),
+  );
+  check(
+    "★ 未知字段没有被丢:文档级/节点级/边级都原样留在库里",
+    JSON.stringify(storedRaw.futureDocField) === JSON.stringify({ keep: true }) &&
+      JSON.stringify(storedNodes.find((n) => n.id === "B")?.futureNodeField) === JSON.stringify(["keep"]) &&
+      storedEdges[0]?.futureEdgeField === "e",
+    { doc: storedRaw.futureDocField, node: storedNodes.find((n) => n.id === "B")?.futureNodeField, edge: storedEdges[0]?.futureEdgeField },
+  );
+  // 导出再读一遍 —— "一进一出瘦一圈"那条反例的正面:导出文本里它们也在。
+  const exported = stored === null ? "" : exportWorkflowDoc(stored);
+  check(
+    "★ 导出文本仍带未知节点与字段(导入→导出不在库里瘦一圈)",
+    exported.includes("acme.future-node") && exported.includes("futureDocField") &&
+      exported.includes("futureNodeField") && exported.includes("futureEdgeField"),
+    exported.slice(0, 300),
+  );
+  // 负面:干净档案不该凭空多一批提醒,否则"未知项"这条提醒会被噪声淹没。
+  const clean = await lib.importWorkflowInto(JSON.stringify({
+    id: "wf_import_clean_source",
+    name: "干净导入冒烟",
+    builtin: false,
+    updatedAt: 0,
+    nodes: [{ id: "A", type: "mcode.main", title: "主对话", params: { instruction: "拆成几步" }, position: { x: 0, y: 0 } }],
+    edges: [],
+  }));
+  check("干净档案导入成功且不带提醒(不误报)", clean.ok && (clean.warnings ?? []).length === 0, clean);
+
+  // 失败路径:档案同时有**硬错误**(悬空边)与**未知节点类型** —— 整份拒绝,
+  // 但已经算出来的未知类型提醒同样要带回去(它描述的是档案本身,不是"存不存").
+  const rejected = await lib.importWorkflowInto(JSON.stringify({
+    id: "wf_import_rejected_source",
+    name: "被拒导入冒烟",
+    builtin: false,
+    updatedAt: 0,
+    nodes: [
+      { id: "A", type: "mcode.main", title: "主对话", params: { instruction: "拆成几步" }, position: { x: 0, y: 0 } },
+      { id: "B", type: "acme.future-node", title: "未来节点", params: {}, position: { x: 0, y: 120 } },
+    ],
+    edges: [{ id: "e_bad", from: "A", to: "ghost" }],
+  }));
+  check("硬错误仍然整份拒绝(警告不把拒绝变成成功)", rejected.ok === false, rejected);
+  check(
+    "★ 拒绝时也不丢掉已算出的未知类型提醒",
+    !rejected.ok && rejected.warnings.some((w) => w.includes("acme.future-node")),
+    rejected,
+  );
 }
 
 console.log(`\nworkflow-seed-smoke(${process.argv[2] ?? ""}):${total - failures}/${total} 通过`);

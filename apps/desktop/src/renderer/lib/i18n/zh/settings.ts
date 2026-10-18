@@ -1384,6 +1384,9 @@ export const zh = {
   // `composer.mode.*`(与输入框那个选择器同源,见 lib/workflowLabels.tsx)。
   "settings.workflows.tabLibrary": "工作流库",
   "settings.workflows.tabNodeTypes": "节点类型",
+  // 读屏用户听不到"左边那根强调色竖条",行的选中态用一句话说。可见文本不变,
+  // 只有 `aria-current` 与按钮的无障碍名多这一句(见 WorkflowListRow)。
+  "settings.workflows.listRowCurrent": "当前打开",
   "settings.workflows.loadFailed": "工作流库读不出来：{error}",
   "settings.workflows.openFailed": "这个工作流打不开：{error}",
   "settings.workflows.listEmpty": "库里还没有工作流。",

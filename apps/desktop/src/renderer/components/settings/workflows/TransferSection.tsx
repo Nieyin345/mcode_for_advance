@@ -43,6 +43,19 @@ function describeErrors(errors: readonly string[], fallback: string, more: (n: n
   return errors.length > 3 ? `${shown}; ${more(errors.length - 3)}` : shown;
 }
 
+/**
+ * **导入带回来的提醒**,按落库 id 存(ARC-006)。
+ *
+ * 为什么是模块作用域而不是组件 state:导入成功后 `onImported` 会让父组件重拉这一份
+ * (`openWorkflow` → `docLoading`),**整个检查器连同本组件一起卸载再挂回来** ——
+ * 放在 state 里的话,提醒恰好会被那次"切换"抹掉,用户还是看不到。与 `DRAFTS`
+ * (见 `WorkflowLibraryView`)同一个理由、同一种存法。
+ *
+ * 只活在内存里:它是**这一次导入**的说明,不是文档的一部分;关掉设置页/重启就没了,
+ * 而那时用户已经看过或本来就不需要。
+ */
+const IMPORT_NOTES = new Map<string, string[]>();
+
 export function TransferSection({
   doc,
   onImported,
@@ -55,6 +68,9 @@ export function TransferSection({
   const [busy, setBusy] = useState(false);
   const [pendingOverwrite, setPendingOverwrite] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 提醒计数只用来看"要不要重画":真正的消息在模块级 `IMPORT_NOTES`(见那里
+   *  文件头注释:检查器会在导入后的重拉里卸载,state 撑不过那一次切换)。 */
+  const [, setNotesVersion] = useState(0);
   /** 上一次导出的落点。摆出来,不然"到底导到哪去了"只能靠回忆那个系统弹框。 */
   const [savedTo, setSavedTo] = useState<string | null>(null);
 
@@ -103,10 +119,20 @@ export function TransferSection({
               (n) => t("settings.workflows.errorsMore", { n }),
             ),
           );
+          // 失败时也把解析阶段算出的提醒摆出来(拒绝原因之外:档案里有哪些东西
+          // 这一版不认识)—— 它们和错误一起回来,不能因为没存成就丢。
+          if ((res.warnings ?? []).length > 0) {
+            IMPORT_NOTES.set(doc.id, res.warnings ?? []);
+            setNotesVersion((v) => v + 1);
+          }
         }
         return;
       }
       setPendingOverwrite(false);
+      // 成功时 **warnings 必须显示**:未知节点类型 / 已保留的契约外字段 / 随包
+      // 脚本缺失 —— 这些正是"导入成功但档案里有东西这一版不认识"的唯一出口。
+      if ((res.warnings ?? []).length > 0) IMPORT_NOTES.set(res.id!, res.warnings ?? []);
+      else IMPORT_NOTES.delete(res.id!);
       onImported(res.id!);
     } catch (err) {
       setError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
@@ -164,6 +190,41 @@ export function TransferSection({
         <p className="mt-1 break-all text-[0.7143em] leading-relaxed text-content-muted">
           {t("settings.workflows.exportedTo", { path: savedTo })}
         </p>
+      )}
+      {/* 导入带回来的提醒。**逐条摆出原文**,不是只给一个数字 —— 每条都在点名
+          "哪个节点/哪条字段/哪个脚本",那正是用户能照着处理的信息。按当前文档 id
+          取:切去别的图就不摆(提醒描述的是那一份档案)。 */}
+      {(IMPORT_NOTES.get(doc.id) ?? []).length > 0 && (
+        <div
+          role="status"
+          className="mt-1 rounded border border-warning/40 bg-warning/10 p-2 text-[0.7143em] leading-relaxed text-content"
+        >
+          <div className="flex items-start gap-1.5">
+            <IconAlertTriangle size={12} className="mt-0.5 shrink-0 text-warning" />
+            <div className="min-w-0 flex-1">
+              {/* 不另加抬头文案:每条提醒本身已经点名声明的对象(「节点『X』的类型
+                  『Y』…」「这份档案带着这一版不认识的字段(…)」),再压一句"有 N 条
+                  提醒"只会重复。`role="status"` 让屏幕阅读器把整段读出来。 */}
+              <ul className="list-disc space-y-0.5 pl-4 text-content-muted">
+                {(IMPORT_NOTES.get(doc.id) ?? []).map((message, index) => (
+                  <li key={index} className="break-words">{message}</li>
+                ))}
+              </ul>
+            </div>
+            <button
+              type="button"
+              className="shrink-0 rounded px-1 text-content-subtle hover:text-content"
+              onClick={() => {
+                IMPORT_NOTES.delete(doc.id);
+                setNotesVersion((v) => v + 1);
+              }}
+              aria-label={t("common.close")}
+              title={t("common.close")}
+            >
+              ×
+            </button>
+          </div>
+        </div>
       )}
       {error !== null && (
         <p className="mt-1 flex items-start gap-1.5 text-[0.7143em] leading-relaxed text-danger">

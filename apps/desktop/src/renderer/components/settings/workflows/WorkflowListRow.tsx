@@ -39,21 +39,30 @@ export function WorkflowListRow({
   const { t, locale } = useI18n();
   return (
     <button
+      type="button"
       onClick={onSelect}
+      // 「当前打开的是哪一个」不只是一根视觉竖条 —— 读屏用户拿不到颜色。
+      // `aria-current` 是文档里现行的写法(SkillNodesView 的引用行同一约定);
+      // 它同时让「切换工作流」这件事在辅助技术里可读,而不只是一个会变宽的按钮。
+      aria-current={active ? "true" : undefined}
       className={cn(
         "relative block w-full rounded px-2.5 py-1.5 text-left transition-colors",
         active ? "bg-surface-hover" : "hover:bg-surface-hover/60",
       )}
     >
-      {/* 「当前选中的是哪一个」—— 左侧那根强调色竖条,与 SkillsPanel 的列表同一形状。 */}
+      {/* 「当前选中的是哪一个」—— 左侧那根强调色竖条,与 SkillsPanel 的列表同一形状。
+          `aria-current` 已说了同一件事,这根竖条对读屏是装饰,别让它变成额外的空节点。 */}
       {active && (
-        <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+        <span aria-hidden className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
       )}
       <div className="flex items-center gap-1">
         <span className="shrink-0 text-content-subtle">{workflowIcon(entry.id, 11)}</span>
         <span className="truncate text-[0.7857em] font-medium text-content">
           {workflowDisplayName(entry, locale)}
         </span>
+        {/* 竖条与底色读屏都拿不到 —— 当前打开的那一行把这件事说进无障碍名里。
+            可见文本一个字不变(紧贴名字,不占视觉空间)。 */}
+        {active && <span className="sr-only">· {t("settings.workflows.listRowCurrent")}</span>}
         {/* 「已修改」= 内置工作流被用户覆盖过。自建的不打这个徽章 —— 它整条都是用户写的,
             再说"已修改"没有意义。 */}
         {entry.edited && (

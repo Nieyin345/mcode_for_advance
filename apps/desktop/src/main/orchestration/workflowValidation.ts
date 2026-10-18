@@ -415,7 +415,9 @@ export function validateWorkflowDoc(
       const issue: WorkflowValidationIssue = {
         code: "node.unknown-kind",
         nodeId: node.id,
-        message: `节点「${labelOf(node)}」的类型「${node.type}」不在这台机器的注册表里 —— 跑之前得先装上它`,
+        message:
+          `节点「${labelOf(node)}」的类型「${node.type}」不在这台机器的注册表里 —— ` +
+          "这张卡片和它的参数会原样保留(导入/保存都不丢),但跑之前得先装上它",
       };
       if (unknownSeverity === "error") fail(issue);
       else hint(issue);
