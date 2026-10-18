@@ -98,7 +98,7 @@ https://<隧道域名>/mcp/<密钥>
 
 ## 公网工具精简与项目技能（project-compact-v4，本地源码变更）
 
-仅公网工具表从 45 项合并为 **39 项**。桌面引擎、本机扩展、内部 Agent 和工作流保留原有接口；不自动转发第三方 MCP 或插件。
+公网工具表早期从 45 项合并为 39 项；新增 PDF 页面图像只读工具后现为 **40 项**。桌面引擎、本机扩展、内部 Agent 和工作流保留原有接口；不自动转发第三方 MCP 或插件。
 
 | 旧公网工具 | 新调用 |
 |---|---|
@@ -108,6 +108,20 @@ https://<隧道域名>/mcp/<密钥>
 | `agent_process_sessions` | `agent_process_read` 不传 `process_id` |
 
 旧名称不保留隐藏执行入口，直接调用给出迁移指引。更新客户端 `tools/list`；这不是应用版本发布或运行时开关变更。
+
+### GenOffice 复用、PDF 与图像读取（2026-10-19）
+
+- **避免平行实现**：GenOffice 已有真正的 `docs_read` / `slides_read` / `sheet_read` / `pdf_read`、`render`、`convert`、`guide` 等工具，Office/PDF 复杂功能优先用现成 GenOffice CLI/MCP，不再在公网工具里重新实现 OOXML/PDF 编辑或转换引擎。Mcode 已有 `document.read/edit/convert/capabilities` + `app_api_*` 共用宿主与 GenOffice CLI 适配；需要完整原生工具表时由 MCP 设置安装现有 `genoffice` stdio server，而非向公网 MCP 再复制 20+ 个工具（且不绕过审核/路径围栏）。
+- `agent_read_document` 的 `reader` 可选 `auto`（默认，GenOffice 优先，依赖不存在/能力 unavailable 时保留旧兼容读取）、`genoffice`（仅调用 GenOffice，**失败不会悄悄更换解析器**）或 `native`（显式使用旧兼容工具链）。GenOffice 路径由 `document.read` 已有宿主 repo-root 规则查找，仍以公网项目的 `pOfRead` 校验路径后才调用 CLI，并受同一文档读取并发/解压预算保护。`pdf_mode=layout` 的 x/y 坐标目前 GenOffice PDFium 没有提供，因此 `auto` 在此模式保留原有 pdfjs 实现，指定 `reader=genoffice` 则明确报不支持；工作表筛选等无法无损映射的参数不静默忽略，仍交给已有兼容路径或 GenOffice 原生命令。
+
+- `agent_read_document({path:"paper.pdf"})` 默认优先通过 GenOffice 的 PDFium 文本层读取并返回分页面信息（不执行 OCR）；在缺失 GenOffice CLI 时才回退到旧 pdfjs 读取，或用 `reader:native` 显式选择旧实现。文本模式现在支持 `page_start` 与 `max_pages` 按页续读，并保留每页的页码标记。`pdf_mode:"layout"` 则逐页返回真实文档书签（如果 PDF 有内嵌 Outline）、页面尺寸、近似文字坐标与 PDF 图像绘制命令数量；可搭配 `page_start:2,max_pages:3` 分页。布局模式每次最多 20 页，防止大文件执行过多绘制算子；坐标只是布局线索，**不能据此声称准确恢复复杂表格、双栏阅读顺序或图片内容**；页码从 1 开始，超出范围会报错。不要将图片绘制命令数当作图片/图表准确数量。
+- `agent_render_pdf_page({path:"paper.pdf",page:2,max_dimension:1400})` 默认复用 GenOffice 的 PDFium 原生 `render` 输出 PNG 图像，仍返回标准 **MCP image content block**；仅在 CLI 不可用或图片需进一步缩小时兼容旧 PyMuPDF JPEG 路径。可加 `renderer:"genoffice"` 禁止回退，或 `renderer:"native"` 明确走旧 Python。GenOffice 只写调用时创建的系统临时目录，读取 PNG 后立即清理，不修改原 PDF 或工作区；最大边 2000px、图像 ≤6 MiB、共用文档并发闸门，不执行 OCR。支持图片块的客户端才能真正查看画面，公网 ChatGPT 端需安装后独立实测。
+- `agent_read_document({path:"report.docx",docx_mode:"structure",block_start:1,max_blocks:30})` 默认使用 GenOffice `docs_read` 的结构块结果，包含段落/表格等原生解析信息；工具层 `block_start` 从 1 开始，自动对应 GenOffice 自己的 0-based block indexes，`max_blocks` 限制返回块数。仅在 `reader=native` 或 CLI 不可用时使用已有 OOXML 只读兼容提取（其表格最多展开 100 行×30 列）；不承诺复杂页面布局、原版样式绝对一致或 OCR。
+- 大页 PDF：先用 GenOffice PDFium 自己的 `pdfRead(page)` 取得真实尺寸，再据此设置 `render --scale`。不用以前固定 842pt 的猜测值，宽页先缩放再渲染；真实隔离 2000×500pt PDF 在 max_dimension=700 下返回了 PNG。
+- PDF 原始输入预算（ARC-007 文档安全切片）：GenOffice、pdfjs、PyMuPDF 三种读取或渲染路径，均在起解析器之前对文件做统一的 ReadBudget 原始大小检查。`max_chars` 和 `max_dimension` 只是输出限制，不能替代 128 MiB 文件大小上限。超限会显示实际字节数和上限并拒绝。
+- 安装包资源：共用 GenOffice CLI resolver 已补安装态目录 `resources/genoffice/cli/genoffice.cjs` 的检索，安装版至少需要 `cli/node_modules` 和 `wasm/pdfium.wasm` 配套资源，缺失时不宣称可用；开发态仍兼容固定 vendor 快照。出包侧已接入按需 staging（默认只产 availability.json(bundled:false)，显式 `MCODE_INCLUDE_GENOFFICE_BUNDLE=1` 才带 CLI/依赖/PDFium WASM/许可到 `resources/genoffice`），仍需合法来源、真实安装包与重启验收；本轮没有编译、安装或重启 MCP。
+- `agent_read_image` 仍直接返回本地图片的 MCP 图像块；没有视觉能力的客户端不能单凭返回尺寸理解内容。图片、PDF 页面渲染、文档布局读取都使用**同一套只读项目路径/资料库屏蔽策略**，不新增越权入口。
+- 由于公网 MCP 工具表新增了 `agent_render_pdf_page`，须重新启动更新后的 Mcode 并刷新 MCP 客户端工具列表（`tools/list`）；旧连接缓存不会凭源码改动自行出现新接口。
 
 ### 项目技能：发现不等于执行
 
