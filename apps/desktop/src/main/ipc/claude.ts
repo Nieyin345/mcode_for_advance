@@ -1,5 +1,8 @@
 import { CUSTOM_UI_SETTING_KEY } from "@contracts/customUi";
+import { LIBRARY_GROUPS_SETTING_KEY, LIBRARY_SUPPRESS_SETTING_KEY } from "@contracts/libraryTypes";
 import { validateCustomUiWrite } from "@main/customUi/configValidation.js";
+import { invalidateLibraryGroupsCache } from "@main/library/groupRegistry.js";
+import { invalidateSuppressCache } from "@main/library/suppress.js";
 import type { IpcMain } from "electron";
 import {
   IPC,
@@ -665,6 +668,17 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       SettingRepo.setMany(entries);
     } else {
       SettingRepo.set(input.key, input.value);
+    }
+    // 【资料库缓存失效】`library.groups` / `library.suppress` 的**正常**写口是
+    // `saveLibraryGroups` / `saveSuppress`(设置页),它们写完会同步刷新各自的缓存。
+    // 而通用设置写是同一个键的**第二个写者**(Agent 的 `app_api_call`、自定义面板的
+    // `mcode.api.call` 都够得到这里):落库了、进程内缓存却不知道,`groupPromptOf` /
+    // 屏蔽判定会一直停在旧表上直到重启 —— 而"屏蔽没生效"是用户会当成安全问题的那
+    // 一侧。判据走契约里的共享键常量,不在这里另写字面量。
+    if (input.key === LIBRARY_GROUPS_SETTING_KEY) {
+      invalidateLibraryGroupsCache();
+    } else if (input.key === LIBRARY_SUPPRESS_SETTING_KEY) {
+      invalidateSuppressCache();
     }
     // 「跟着人走」的键(语言、强调色、自定义命令、快捷键……)写完推给已配对的
     // 手机,当场生效;桌面自己也会收到回声,套用是幂等的。键表见

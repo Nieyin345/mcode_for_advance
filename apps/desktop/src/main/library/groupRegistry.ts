@@ -10,6 +10,7 @@
 
 import { log } from "@main/lib/logger.js";
 import { SettingRepo } from "@main/store/repositories.js";
+import { bumpLibraryChangeRevision } from "./changeRevision.js";
 import {
   DEFAULT_LIBRARY_GROUPS,
   LIBRARY_GROUPS_SETTING_KEY,
@@ -43,12 +44,23 @@ export function loadLibraryGroups(): LibraryGroupMeta[] {
   return groupsCache;
 }
 
-/** 整表替换大类。校验失败原样交回说人话的错误。 */
+/**
+ * 整表替换大类。校验失败原样交回说人话的错误。
+ *
+ * ⚠️ **写完必须让进程内缓存一致。** 这里是 `library.groups` 的正常写口;通用
+ * `setting.set`(Agent / 自定义面板)是同一个键的第二个写者,它经
+ * {@link invalidateLibraryGroupsCache} 接进来 —— 两个写者都要走同一份失效逻辑
+ * (从前只有本函数刷 `groupsCache`,第二个写者落库后进程一直停在旧表上直到重启,
+ * 而 `groupPromptOf` / `nodeTypes` 的「资料」候选都读这份缓存)。
+ */
 export function saveLibraryGroups(groups: unknown): { ok: true } | { ok: false; error: string } {
   const res = parseLibraryGroupsJson(groups);
   if (!res.ok) return res;
   SettingRepo.set(LIBRARY_GROUPS_SETTING_KEY, JSON.stringify(res.groups));
   groupsCache = res.groups;
+  // 大类表也参与资料库归属判定(`suppressionReasonOfItem` 的 `group:` 键)与公网
+  // 只读门的缓存,所以"表变了"这件事要 bump 到共享版本号上(见 `changeRevision.ts`)。
+  bumpLibraryChangeRevision();
   return { ok: true };
 }
 
@@ -67,4 +79,17 @@ export function groupPromptOf(groupId: string): string | undefined {
  */
 export function resetLibraryGroupsCacheForTest(): void {
   groupsCache = null;
+}
+
+/**
+ * 设置键被**别的入口**改写后让本模块的缓存失效 —— 当前唯一的生产调用方是
+ * `ipc/claude.ts` 的通用 `setting.set`。
+ *
+ * 与 `saveLibraryGroups` 里的同步刷新是同一条规矩的第二个写者:通用写落库后本进程
+ * 的 `groupsCache` 不会自己知道,不失效就一直停在旧表上(读取面见 `groupPromptOf` /
+ * `manifest.ts` / `nodeTypes.ts` 的「资料」候选)。
+ */
+export function invalidateLibraryGroupsCache(): void {
+  groupsCache = null;
+  bumpLibraryChangeRevision();
 }

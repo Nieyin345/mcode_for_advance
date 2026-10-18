@@ -54,6 +54,7 @@ import {
 } from "@contracts/libraryTypes";
 import { CollectionRepo, LibraryRepo, SettingRepo } from "@main/store/repositories.js";
 import { loadLibraryGroups } from "./groupRegistry.js";
+import { bumpLibraryChangeRevision } from "./changeRevision.js";
 import { log } from "@main/lib/logger.js";
 import { extname } from "node:path";
 
@@ -110,12 +111,33 @@ export function saveSuppress(raw: unknown): { ok: true } | { ok: false; error: s
   if (!res.ok) return res;
   SettingRepo.set(LIBRARY_SUPPRESS_SETTING_KEY, JSON.stringify(res.rule));
   cache = res.rule;
+  // 规则变了 → 依赖它的跨模块缓存(公网只读门的"条目 → 屏蔽原因")要立刻重算,
+  // 不能等它的 TTL(见 `changeRevision.ts`)。只清本模块的缓存不够:那份缓存存的
+  // 是**判定结果**,输入里含这份规则。
+  bumpLibraryChangeRevision();
   return { ok: true };
 }
 
 /** 测试用:把缓存丢掉,逼下一次 load 重新读 DB。 */
 export function resetSuppressCacheForTest(): void {
   cache = null;
+}
+
+/**
+ * 设置键被**别的入口**改写后让本模块的缓存失效 —— 当前唯一的生产调用方是
+ * `ipc/claude.ts` 的通用 `setting.set`(Agent 的 `app_api_call` 与自定义面板的
+ * `mcode.api.call` 走它)。
+ *
+ * 为什么必须有:本模块的 save 口(`saveSuppress`)只在设置页那条路被走到;通用设置
+ * 写是同一个键的**第二个写者**,它落库后本进程的 `cache` 不会自己知道 —— 不在这里
+ * 失效,进程会一直停在旧规则上(直到重启),而这期间"屏蔽"是**失效**的一侧。
+ * 走不到 save 口的写者还有 `SettingRepo.setMany` / 设置导入,但前者没有调用方写这个
+ * 键、后者按 `library.` 前缀排除了它(`settingsTransfer.ts`),所以这里只需覆盖
+ * `setting.set`。
+ */
+export function invalidateSuppressCache(): void {
+  cache = null;
+  bumpLibraryChangeRevision();
 }
 
 /**

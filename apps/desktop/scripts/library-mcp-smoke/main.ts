@@ -586,6 +586,101 @@ console.log("\n回收站:agent_context 的路");
   restoreItemsFromTrash([doomed.id]);
 }
 
+/* ──────────── 5d. 公网只读门:库一变,缓存立刻失效(不等 3 秒 TTL) ──────────── */
+
+console.log("\n公网只读门 · 缓存跟着库变更走");
+
+// 公网 `agent_read_*` 在沙箱外只读资料库里的东西 —— 而"资料库里有哪些文件、哪条被
+// 屏蔽"这份表在 `sandboxReadPolicy.ts` 里缓存着。它原来只有 3 秒 TTL、没有任何写入口
+// 失效信号:用户刚保存的屏蔽规则(或刚被删掉的条目),门在 TTL 内仍按旧表放行 ——
+// 屏蔽是硬过滤,"晚 3 秒才挡"等于把用户明确要挡的内容又放开了一会儿(反方向的删除
+// 同病:条目没了,它名下的文件在 TTL 内仍被当成"资料库的东西")。
+// 现在写入口(`notifyLibraryChanged` / `saveSuppress`,见 `library/changeRevision.ts`)
+// 一宣布变更,下一次读立刻重扫;TTL 只当兜底。
+{
+  const { sandboxReadCheck, resetSandboxReadCacheForTest, sandboxReadScanCountForTest } =
+    await import("@main/mcp/sandboxReadPolicy.js");
+  const { notifyLibraryChanged } = await import("@main/library/broadcast.js");
+
+  resetSandboxReadCacheForTest();
+  // 库外的一份文件 —— 只有"它属于某条资料库条目"时,门才认它。
+  const outside = join(SRC, "只读门的库外文件.txt");
+  writeFileSync(outside, "外部内容", "utf8");
+  const linkedItem = LibraryRepo.upsert({
+    title: "只读门认领的库外文件",
+    entryMode: "linked",
+    filePath: outside,
+  });
+  const doorCol = CollectionRepo.create("只读门冒烟分类", null, "paper");
+  CollectionRepo.assign(doorCol.id, [linkedItem.id], true);
+
+  // ① 健康路径:同一库变更版本内连问两次,第二次命中缓存 —— 证明缓存仍生效(防空过)。
+  const scansBefore = sandboxReadScanCountForTest();
+  eq("库外文件属于资料库条目 → 放行", sandboxReadCheck(outside, "read"), null);
+  eq("第一次问真的扫了库", sandboxReadScanCountForTest(), scansBefore + 1);
+  eq("同一版本再问:仍放行", sandboxReadCheck(outside, "read"), null);
+  eq("同一版本再问:命中缓存(没有重扫)", sandboxReadScanCountForTest(), scansBefore + 1);
+
+  // ② 数据变更(屏蔽规则):保存后**立刻**挡住,中间不调 reset —— 撤掉 `saveSuppress`
+  //    里那句 bump,这一条就红。
+  const savedRule = saveSuppress({ nodes: [`collection:${doorCol.id}`], extensions: [] });
+  check("前提:屏蔽规则保存成功", savedRule.ok === true, savedRule);
+  const blocked = sandboxReadCheck(outside, "read");
+  check(
+    "★ 屏蔽规则刚保存 → 下一次问立刻拒绝(不等 3 秒 TTL)",
+    typeof blocked === "string" && blocked.includes(LIBRARY_BLOCK_SETTINGS_PAGE),
+    blocked,
+  );
+
+  // ③ 数据变更(条目本身):解除屏蔽后立刻放行;条目删掉后门不再认它。
+  saveSuppress({ nodes: [], extensions: [] });
+  eq("解除屏蔽后立刻恢复放行", sandboxReadCheck(outside, "read"), null);
+
+  // ④ 数据变更(大类表):屏蔽原因那句话里的大类名是缓存的一部分 —— 改名后立刻
+  //    体现在**用户/模型看到的那句话**上(而不是 TTL 内还说着旧名字)。
+  //    大类经 `group_id` 直挂分类(kind 退役后的归属),屏蔽键是 `group:<id>`。
+  {
+    const { loadLibraryGroups, saveLibraryGroups } = await import("@main/library/groupRegistry.js");
+    const base = loadLibraryGroups().map((g) => ({ ...g }));
+    const groupId = base[0]!.id;
+    const oldName = base[0]!.name;
+    // 分类创建时就挂到大类下(`group_id` 直挂),条目入该分类,再屏蔽那个大类。
+    const groupedCol = CollectionRepo.create("只读门大类冒烟分类", null, groupId);
+    CollectionRepo.assign(groupedCol.id, [linkedItem.id], true);
+    const byGroup = saveSuppress({ nodes: [`group:${groupId}`], extensions: [] });
+    check("前提:按大类屏蔽保存成功", byGroup.ok === true, byGroup);
+    const reasonOld = sandboxReadCheck(outside, "read");
+    check(
+      "前提:拒绝原因点名了那个大类(旧名)",
+      typeof reasonOld === "string" && reasonOld.includes(oldName),
+      reasonOld,
+    );
+    // 改大类名 —— 走 `saveLibraryGroups`(设置页那条写口)。
+    const renamed = saveLibraryGroups([{ ...base[0]!, name: "改过名的大类" }, ...base.slice(1)]);
+    check("前提:大类改名保存成功", renamed.ok === true, renamed);
+    const reasonNew = sandboxReadCheck(outside, "read");
+    check(
+      "★ 大类改名 → 下一次问的拒绝原因立刻用新名(不等 3 秒 TTL)",
+      typeof reasonNew === "string" && reasonNew.includes("改过名的大类") && !reasonNew.includes(oldName),
+      reasonNew,
+    );
+    // 收尾:撤掉大类屏蔽与改名。
+    saveSuppress({ nodes: [], extensions: [] });
+    saveLibraryGroups(base);
+  }
+  eq("收尾:放行恢复", sandboxReadCheck(outside, "read"), null);
+
+  // 删除走共享广播 —— 生产里每一条删除/归类/导入的写路都经它(`ipc/library.ts` 的
+  // `deleteItemsCore` 等);这里用同一个入口,不另造一条"通知缓存"的旁路。
+  LibraryRepo.delete([linkedItem.id]);
+  notifyLibraryChanged("delete:1");
+  eq(
+    "★ 条目删除后,它名下的库外文件不再被当成资料库的东西",
+    sandboxReadCheck(outside, "read"),
+    undefined,
+  );
+}
+
 /* ──────────────── 6. 长尾:调用方最可能踩的两个错 ──────────────── */
 
 console.log("\n长尾");

@@ -29,6 +29,7 @@ import { libraryRoot, markdownArtifact } from "@main/library/paths.js";
 import { aiVisibleFilesOf, readableFilesOf } from "@main/library/fileImport.js";
 import { isFileSuppressed, loadSuppress, suppressionReasonOfItem, LIBRARY_BLOCK_SETTINGS_PAGE } from "@main/library/suppress.js";
 import { trashedItemIds } from "@main/library/trash.js";
+import { libraryChangeRevision } from "@main/library/changeRevision.js";
 import { LibraryRepo } from "@main/store/repositories.js";
 
 /** 读一份文件 / 列目录(含 glob)/ 全文搜索(grep、后台搜索)。 */
@@ -67,14 +68,28 @@ interface OwnedRoot {
   reason: string | null;
 }
 
-/** 条目 → 它在磁盘上占的那几处。几秒内复用 —— 一次 `agent_read_files` 会连问好几回。 */
-let cache: { at: number; roots: OwnedRoot[] } | null = null;
+/**
+ * 条目 → 它在磁盘上占的那几处。同一个**库变更版本**内复用 —— 一次
+ * `agent_read_files` 会连问好几回。
+ *
+ * ⚠️ **不能只靠时间窗。** 从前这里只有 3 秒 TTL,而资料库的写入口(导入 / 删除 /
+ * 归类 / 保存屏蔽规则)都不会碰它:用户刚保存的屏蔽(或刚把条目挪进被屏蔽的分类),
+ * 在这 3 秒里对公网只读门**不生效** —— 屏蔽是硬过滤,「晚 3 秒才挡」等于把用户明确
+ * 要挡的内容又放开了一会儿。反方向的删除同理:条目删掉后,它名下库外文件在 TTL 内
+ * 仍被当成"资料库的东西"放行。所以缓存带上 `libraryChangeRevision()` 的戳:写入口
+ * (经 `notifyLibraryChanged` / `saveSuppress`,见 `changeRevision.ts`)一 bump,
+ * 下一次读立刻重扫;TTL 只作为"绕开这些入口的改动"的兜底。
+ */
+let cache: { at: number; revision: number; roots: OwnedRoot[] } | null = null;
 const CACHE_MS = 3_000;
 const MAX_ITEMS = 100_000;
+/** 真正重扫库的次数 —— 只给回归用:证明"缓存命中"与"失效"各发生过(防空过)。 */
+let scanCountForTest = 0;
 
 function ownedRoots(): OwnedRoot[] {
   const now = Date.now();
-  if (cache && now - cache.at < CACHE_MS) return cache.roots;
+  const revision = libraryChangeRevision();
+  if (cache && now - cache.at < CACHE_MS && cache.revision === revision) return cache.roots;
   const rule = loadSuppress();
   const anyNodeRule = rule.nodes.length > 0 || rule.extensions.length > 0;
   const roots: OwnedRoot[] = [];
@@ -84,13 +99,24 @@ function ownedRoots(): OwnedRoot[] {
     if (files.markdown) roots.push({ root: markdownArtifact(files.markdown).path, reason });
     if (files.original) roots.push({ root: files.original, reason });
   }
-  cache = { at: now, roots };
+  cache = { at: now, revision, roots };
+  scanCountForTest += 1;
   return roots;
 }
 
-/** 测试 / 库变更后想立刻生效时用。 */
+/**
+ * 测试用:丢掉缓存,逼下一次读重新扫库。
+ *
+ * 生产路径**不需要**它 —— 库一变(`notifyLibraryChanged`)或屏蔽规则一存
+ * (`saveSuppress`),revision 就 bump,下一次读自己会重扫(见 `ownedRoots` 的注释)。
+ */
 export function resetSandboxReadCacheForTest(): void {
   cache = null;
+}
+
+/** 测试用:ownedRoots 真正重扫了几次。命中缓存时不涨 —— 用它断言"缓存仍生效"。 */
+export function sandboxReadScanCountForTest(): number {
+  return scanCountForTest;
 }
 
 export const sandboxReadCheck: SandboxReadCheck = (abs, kind) => {

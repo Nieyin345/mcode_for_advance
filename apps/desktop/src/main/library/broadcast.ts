@@ -29,6 +29,7 @@ import type { RuntimeEvent } from "@contracts/runtime";
 import { sendToRenderer } from "@main/window.js";
 import { currentAutomationOrigin, withAutomationOrigin } from "@main/orchestration/automationEventOrigin.js";
 import { log } from "@main/lib/logger.js";
+import { bumpLibraryChangeRevision } from "./changeRevision.js";
 
 /**
  * 运行时的发出口 —— 由 `main/index.ts` 注入(`configureLibraryEvents`)。
@@ -54,6 +55,16 @@ export function configureLibraryEvents(next: LibraryEventRuntime): void {
 }
 
 export function notifyLibraryChanged(reason: string): void {
+  // **进程内缓存靠这一下失效**(见 `changeRevision.ts`)。
+  //
+  // 这个函数是条目/分类增删改的**唯一**广播口 —— 界面(IPC)与 AI(MCP 工具)两条写
+  // 路都走它。缓存持有者(如 `mcp/sandboxReadPolicy.ts` 的「条目 → 路径/屏蔽原因」)
+  // 拿仓库里的数据算东西,写入口不在这里打戳的话,它们只能靠 TTL 猜"数据还新不新"
+  // ——而屏蔽规则/归属变了的头几秒,公网只读门会继续按旧归属放行。
+  //
+  // bump 放在最前:广播的送达与否(窗口不在时会抛并被下面吞掉)与"库已经变了"这个
+  // 事实无关。
+  bumpLibraryChangeRevision();
   try {
     sendToRenderer(IPC.LIBRARY_CHANGED, { channel: IPC.LIBRARY_CHANGED, reason });
   } catch {

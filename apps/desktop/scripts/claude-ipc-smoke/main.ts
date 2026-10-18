@@ -1172,6 +1172,81 @@ console.log("\n13b. 轮预算保存:主键与 last-good 同一次提交落盘");
   );
 }
 
+/* ─────── 13c. 资料库两份设置的第二写者:通用 setting.set 必须让缓存失效 ─────── */
+
+// `library.groups` / `library.suppress` 的正常写口是设置页的 `saveLibraryGroups` /
+// `saveSuppress`,它们写完会同步刷新各自的进程内缓存。而**通用设置写是同一个键的
+// 第二个写者** —— Agent 的 `app_api_call` 与自定义面板的 `mcode.api.call` 都落到
+// SETTING_SET。它从前只落库、不碰缓存:进程会一直停在旧表上直到重启,而"屏蔽没
+// 生效"是用户会当成安全问题的那一侧。
+console.log("\n13c. library.groups / library.suppress:通用设置写也要让缓存失效");
+
+{
+  const { loadLibraryGroups, saveLibraryGroups } = await import("@main/library/groupRegistry.js");
+  const { loadSuppress, saveSuppress } = await import("@main/library/suppress.js");
+  const { LIBRARY_GROUPS_SETTING_KEY, LIBRARY_SUPPRESS_SETTING_KEY, DEFAULT_LIBRARY_GROUPS } = await import(
+    "@contracts/libraryTypes"
+  );
+
+  // 起点用**正常写口**落一份可辨认的表,并把缓存建起来。
+  const savedGroups = saveLibraryGroups([
+    { id: "docs", name: "文档" },
+    { id: "my-readings", name: "我的精读" },
+  ]);
+  check("前提:设置页那条写口保存成功(大类表)", savedGroups.ok === true, savedGroups);
+  same("前提:读到的就是刚存的那份", loadLibraryGroups().map((g) => g.id), ["docs", "my-readings"]);
+
+  // 健康路径:缓存仍生效 —— 绕开写口直接改库,缓存**不会**自己消失(证明它在,
+  // 而不是每次现读;否则下面"失效"那条断言就是空过)。
+  SettingRepo.set(
+    LIBRARY_GROUPS_SETTING_KEY,
+    JSON.stringify([{ id: "docs", name: "文档" }, { id: "bypass", name: "绕开写口" }]),
+  );
+  same(
+    "缓存仍生效:旁路改库后进程仍读旧表(直到有写入口宣布变更)",
+    loadLibraryGroups().map((g) => g.id),
+    ["docs", "my-readings"],
+  );
+
+  // ★ 通用 setting.set 落库后必须让缓存失效,下一次读拿到**新**值。
+  await call(IPC.SETTING_SET, {
+    key: LIBRARY_GROUPS_SETTING_KEY,
+    value: JSON.stringify([{ id: "docs", name: "文档" }, { id: "agent-made", name: "Agent 建的" }]),
+  });
+  same(
+    "★ setting.set 写了大类表 → 下一次 loadLibraryGroups 立刻是新表(不是旧缓存)",
+    loadLibraryGroups().map((g) => g.id),
+    ["docs", "agent-made"],
+  );
+
+  // 屏蔽规则同理。
+  const savedSuppress = saveSuppress({ nodes: [], extensions: [".pdf"] });
+  check("前提:设置页那条写口保存成功(屏蔽)", savedSuppress.ok === true, savedSuppress);
+  eq("前提:读到的就是刚存的屏蔽", JSON.stringify(loadSuppress().extensions), JSON.stringify([".pdf"]));
+  SettingRepo.set(
+    LIBRARY_SUPPRESS_SETTING_KEY,
+    JSON.stringify({ nodes: ["group:bypass"], extensions: [] }),
+  );
+  eq(
+    "缓存仍生效:旁路改库后进程仍读旧规则",
+    JSON.stringify(loadSuppress().extensions),
+    JSON.stringify([".pdf"]),
+  );
+  await call(IPC.SETTING_SET, {
+    key: LIBRARY_SUPPRESS_SETTING_KEY,
+    value: JSON.stringify({ nodes: [], extensions: [".docx"] }),
+  });
+  eq(
+    "★ setting.set 写了屏蔽规则 → 下一次 loadSuppress 立刻是新规则(不是旧缓存)",
+    JSON.stringify(loadSuppress().extensions),
+    JSON.stringify([".docx"]),
+  );
+
+  // 收尾:恢复出厂表与空规则,不给后面(以及将来插入的)段落留状态。
+  saveLibraryGroups(DEFAULT_LIBRARY_GROUPS);
+  saveSuppress({ nodes: [], extensions: [] });
+}
+
 /* ──────────────── 14. 会话设置 ──────────────── */
 
 console.log("\n14. 会话设置");
