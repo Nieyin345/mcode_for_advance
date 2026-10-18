@@ -2530,3 +2530,73 @@ html.sketch.dark body::after {
   color: rgb(var(--accent));
   opacity: 1;
 }
+
+/* ───────────── Windows 强制高对比（forced-colors）─────────────
+ *
+ * 高对比模式下 UA 会把作者颜色强制成系统色，并且**丢弃 box-shadow**。
+ * 本仓此前是 0 处适配（docs/design/claude-desktop-ui-细节逆向.md §3.8/§5.1
+ * 对参考实现记了 6 处，Mcode 记 0 处）——意味着：
+ *
+ *  1. 焦点环的可见部分走 box-shadow → 整条消失。唯一留下来的是基础规则里
+ *     那条**透明 outline 占位**（UA 会把 #0000 换成可见系统色）——这也是
+ *     §3.6「透明 outline 不能省」的原因。本层把它显式写成系统色并加粗到
+ *     2px，保证 6px 光晕没了之后信号仍清晰；危险变体同形同色（颜色语义
+ *     已由系统托管，不能再靠"红色"区分危险操作）。
+ *  2. 纯 background-color 画出来的小状态形状（运行灯、流式光标、均衡器、
+ *     任务进度条、档位条）底色被强制成 Canvas 后与背景同色，语义整个消失。
+ *     统一改画成 CanvasText（系统色不会被二次强制改写）。
+ *  3. 用户消息气泡的 tint 被强制成 Canvas，与助手消息不可分 —— 用负 offset
+ *     的内描边恢复边界，不引起布局位移。
+ *
+ * 真装饰（扫光/光晕/呼吸动画）不在这里重建：高对比下它们本就该让位于
+ * 系统可读性，状态仍由文本、边框与图标承载。本层必须留在文件末尾：媒体
+ * 查询不提升优先级，同特异性下靠**源序**覆盖上面的纯色规则。
+ *
+ * 断言在 scripts/design-tokens-smoke（§8），不从注释里认规则本体。 */
+@media (forced-colors: active) {
+  /* 焦点：box-shadow 环被系统丢弃，outline 占位由 UA 接管 —— 这里把
+   * 尺寸与系统色钉住，避免不同 UA 对透明色占位的处理差异。 */
+  :where(button, [role="button"], [role="tab"], [role="menuitem"], [role="option"], a[href], input, select, textarea):focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+    box-shadow: none;
+  }
+  /* 危险操作的焦点环与普通焦点同形同色：系统接管颜色后，「危险」由
+   * 控件文案/图标表达，不再依赖 --danger 的红色。 */
+  :where(.danger, [data-danger]):focus-visible,
+  :where(button[data-variant="danger"]):focus-visible {
+    box-shadow: none;
+  }
+
+  /* 纯底色的小状态形状 → 系统文本色，否则与 Canvas 同色不可见。 */
+  .chat-ledger-dot,
+  .chat-caret,
+  .live-eq > span {
+    background: CanvasText;
+  }
+
+  /* 用户气泡：tint 被强制成 Canvas 后与助手消息不可分。负 offset 让描边
+   * 画在盒内边缘，不改变布局。 */
+  .user-bubble-fill {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+
+  /* 任务进度：轨道（原 --edge）与填充（原 --accent）都会被强制成 Canvas，
+   * 比例不可读。轨道描边 + 填充系统色，比例重新可见。 */
+  .activity-cluster-miniprog {
+    outline: 1px solid CanvasText;
+  }
+  .activity-cluster-miniprog > i {
+    background: CanvasText;
+  }
+
+  /* 思考档位条：亮/暗两态原来只靠 accent 与 opacity 区分；底色被强制后
+   * 统一改画 CanvasText，档位差由基础规则里既有的 opacity（0.45 vs 1）
+   * 与组件给的高度差承载。`.on` 变体的特异性 (0,2,1) 高于单类规则，
+   * 必须一并列出，否则亮档仍会被 UA 强制回 Canvas。 */
+  .composer-lvlbars > span,
+  .composer-lvlbars > span.on {
+    background: CanvasText;
+  }
+}

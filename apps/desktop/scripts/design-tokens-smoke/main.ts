@@ -289,5 +289,64 @@ section("7. 【ARC-005】工具调用卡接 CDS 几何/表面 token");
   check("★ 工具行背景不新增暗色字面量(dark:bg-*)", !/TOOL_ROW_CLS[\s\S]{0,300}dark:bg-/.test(blocks));
 }
 
+section("8. 【ARC-005】forced-colors 高对比层");
+{
+  const css = read("src/renderer/styles.css");
+  // 从规则本体取块，不从注释里认：先把块注释剥掉，再定位 @media 的
+  // 选择器 + `{`，块内同时出现声明才算数。
+  const noComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const blockAt = noComments.indexOf("@media (forced-colors: active)");
+  check("★ forced-colors 媒体块存在", blockAt >= 0);
+  const block = blockAt >= 0 ? noComments.slice(blockAt) : "";
+  // 反向正控：规则不能只出现在注释里。逐字符扫描原文，只有**注释之外**
+  // 的那次出现才算数（上面剥注释后定位只证明"剥完还在"，不能证明原文那次
+  // 不是注释；两边都核，注释里写规则而真规则没写时这里会红）。
+  const NEEDLE = "@media (forced-colors: active)";
+  let inComment = false;
+  let liveAt = -1;
+  for (let i = 0; i < css.length; i++) {
+    if (!inComment && css.startsWith("/*", i)) { inComment = true; i++; continue; }
+    if (inComment && css.startsWith("*/", i)) { inComment = false; i++; continue; }
+    if (!inComment && css.startsWith(NEEDLE, i)) { liveAt = i; break; }
+  }
+  check("★ forced-colors 规则不是只写在注释里", liveAt >= 0);
+
+  // 1) 焦点环：box-shadow 环在高对比下被 UA 丢弃，必须落到 outline 上。
+  check("★ 高对比焦点落 outline 而非 box-shadow",
+    /:focus-visible\s*\{[\s\S]{0,200}?outline:\s*2px solid CanvasText[\s\S]{0,200}?box-shadow:\s*none/.test(block));
+  check("★ 高对比危险焦点不再依赖 --danger 区分",
+    /\[data-danger\][\s\S]{0,160}?box-shadow:\s*none/.test(block));
+
+  // 2) 纯底色小形状改画系统色。
+  for (const sel of [".chat-ledger-dot", ".chat-caret", ".live-eq > span"]) {
+    check(`★ 高对比下 ${sel} 改画 CanvasText`,
+      new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[\\s\\S]{0,120}?background:\\s*CanvasText").test(block));
+  }
+
+  // 3) 用户气泡边界恢复。
+  check("★ 高对比下用户气泡用内描边恢复边界",
+    /\.user-bubble-fill\s*\{[\s\S]{0,160}?outline:\s*1px solid CanvasText[\s\S]{0,80}?outline-offset:\s*-1px/.test(block));
+
+  // 4) 任务进度轨道可见 + 填充系统色。
+  check("★ 高对比下任务进度轨道有描边",
+    /\.activity-cluster-miniprog\s*\{[\s\S]{0,120}?outline:\s*1px solid CanvasText/.test(block));
+  check("★ 高对比下任务进度填充改画 CanvasText",
+    /\.activity-cluster-miniprog > i\s*\{[\s\S]{0,120}?background:\s*CanvasText/.test(block));
+
+  // 5) 档位条：`.on` 变体特异性更高，必须一并覆盖，否则亮档被强制回 Canvas。
+  check("★ 高对比下档位条亮/暗两态都改画 CanvasText",
+    /\.composer-lvlbars > span,[\s\S]{0,80}?\.composer-lvlbars > span\.on\s*\{[\s\S]{0,80}?background:\s*CanvasText/.test(block));
+
+  // 6) 源序前提：媒体查询不提升优先级，同特异性下靠源序覆盖 —— 块若
+  // 出现在被覆盖规则之前，高对比规则会被后写的纯色规则反压，整层失效。
+  // 只在**真实规则起点之前**找基础规则的最后一次出现（块内也有同名选择器，
+  // 直接 lastIndexOf 会命中块内那份，断言永远假绿）。
+  const rawAt = liveAt;
+  const lastBubble = rawAt >= 0 ? css.lastIndexOf(".user-bubble-fill {", rawAt) : -1;
+  const lastDot = rawAt >= 0 ? css.lastIndexOf(".chat-ledger-dot {", rawAt) : -1;
+  check("★ forced-colors 块在被覆盖规则之后（源序前提）",
+    rawAt >= 0 && lastBubble >= 0 && lastDot >= 0 && lastBubble < rawAt && lastDot < rawAt);
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
