@@ -1,4 +1,4 @@
-import { visibleMemory } from "./paths.js";
+import { memoryAddress, visibleMemory, visibleMemoryDiagnostic } from "./paths.js";
 import { redactSecrets } from "./sourceText.js";
 /**
  * 记忆的检索注入(MEM-02)—— 把记忆库聚合成**一段可以直接拼进提示词的文本**。
@@ -281,6 +281,8 @@ function countOccurrencesUpTo(hay: string, needle: string, cap: number): number 
  *   - 列表阶段复用 store 既有的 `onUnreadable` 回调(不另造机制);
  *   - 读取阶段 `catch` 也把路径记下来(TOCTOU:列表时还在、读时没了);
  *   - 合并去重后**过项目可见谓词**(别把整棵树收集到的**别项目**不可读路径漏进本项目注入);
+ *     谓词是 `visibleMemoryDiagnostic`:列表阶段报的**目录级**漏读(类目目录被链接替换/
+ *     整目录读不动)也必须留下,不能因为「目录不是文件地址」被文件版谓词整批丢掉;
  *   - 披露句写进**返回值**(真正拼进提示词、并出现在注入预览里的那一份),最多点名 8 条。
  *
  * ⚠️ 空库(无不可读)仍返回 `""` —— 保持"整节不出现"的旧语义,只有**真的漏了**才加披露。 */
@@ -310,11 +312,18 @@ export function scopedMemorySnapshot(
   }
   // 只保留**本项目可见**的不可读路径(列表阶段扫的是整棵树,别项目的坏条不该出现在本项目注入里),
   // 去重后逐条上报给调用方(落日志/UI),再拼一句进返回值让模型也知道"这一轮少了东西"。
-  const missing = [...new Set(unreadable)].filter(p => visibleMemory(p, projectId));
+  // 谓词用**诊断版**:列表阶段也会报目录(类目目录被链接替换/整目录读不动),那些路径
+  // 不是文件地址,拿文件版判会被整批静默丢掉 —— 正是本条要消灭的「漏读扮完整」。
+  const missing = [...new Set(unreadable)].filter(p => visibleMemoryDiagnostic(p, projectId));
   for (const p of missing) onUnreadable?.(p);
-  const disclosure = missing.length
-    ? `${missing.length} 条记忆读不出来,本轮未注入(${missing.slice(0, 8).join("、")}${missing.length > 8 ? " …" : ""})；`
-    : "";
+  const missingFiles = missing.filter(p => memoryAddress(p) !== null);
+  const missingDirs = missing.filter(p => memoryAddress(p) === null);
+  const sentence = (count: number, what: string, paths: string[]): string =>
+    `${count} ${what}读不出来,本轮未注入(${paths.slice(0, 8).join("、")}${paths.length > 8 ? " …" : ""})；`;
+  const disclosure = [
+    ...(missingDirs.length ? [sentence(missingDirs.length, "个记忆目录", missingDirs)] : []),
+    ...(missingFiles.length ? [sentence(missingFiles.length, "条记忆", missingFiles)] : []),
+  ].join("");
   if (!blocks.length && !disclosure) return "";
   const head = `${disclosure}范围：本项目 + 显式全局；选中 ${blocks.length}/${all.length} 条；正文受长度预算限制。`;
   return blocks.length ? `${head}\n${blocks.join("\n\n")}` : head;

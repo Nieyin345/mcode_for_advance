@@ -140,6 +140,54 @@ await test('creation snapshot retains its own framing and independent backflow',
     assert.match(text, /ONLY_GOOD/);
     assert.doesNotMatch(text, /读不出来/, '没有坏条时不得出现披露句');
   });
+
+  /* 目录级漏读:listMemoryFiles 的 onUnreadable 不只会报**文件**(读不动/符号链接),
+   * 还会报**目录**(类目目录被 symlink/junction 替换、整目录 readdir 被拒)。这一档
+   * 从前被 `visibleMemory` 过滤整批丢掉 —— 它只认 `<类目>/<文件>.md` 形式的文件地址。
+   * 后果与原始缺陷同一类:一整类记忆都没进来,模型却拿到空快照、零披露。 */
+  const { symlinkSync, unlinkSync, lstatSync } = await import('node:fs');
+  const { dirname } = await import('node:path');
+  const outside = join(dirname(memoryRoot()), 'mc031-outside');
+  const junction = (at: string): boolean => {
+    try {
+      mkdirSync(dirname(at), { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      symlinkSync(outside, at, process.platform === 'win32' ? 'junction' : 'dir');
+      // 自证:目录项确实被当成链接(否则断言会空过)。
+      return lstatSync(at).isSymbolicLink();
+    } catch { return false; }
+  };
+  const unjunction = (at: string): void => { try { unlinkSync(at); } catch { /* 清理尽力而为 */ } };
+
+  await test('★ MC-031:类目目录整体读不出来时也披露(目录级漏读不漏成空串)', () => {
+    reset();
+    note('projects/A/preferences/ok.md', 'KEPT_READABLE_BODY', 'Kept');
+    const self = join(memoryRoot(), 'projects', 'A', 'rules');
+    const global = join(memoryRoot(), 'global', 'rules');
+    if (!junction(self) || !junction(global)) { console.log('  (跳过:本环境造不出目录链接夹具)'); return; }
+    try {
+      const seen: string[] = [];
+      const text = scopedMemorySnapshot('A', '', (p) => seen.push(p));
+      assert.match(text, /KEPT_READABLE_BODY/, '可读条照常注入');
+      assert.match(text, /记忆目录读不出来/, '目录级漏读必须披露,不能静默当完整');
+      assert.match(text, /projects\/A\/rules/, '要点名本项目读不出来的目录');
+      assert.match(text, /global\/rules/, '全局目录的漏读同样属于本次注入范围');
+      assert.ok(seen.some((p) => p.endsWith('rules')), 'onUnreadable 回调应收到目录路径: ' + JSON.stringify(seen));
+    } finally { unjunction(self); unjunction(global); }
+  });
+
+  await test('★ MC-031:别的项目的不可读目录不得出现在本项目披露里(不泄露项目名)', () => {
+    reset();
+    const self = join(memoryRoot(), 'projects', 'A', 'rules');
+    // 别的项目整个目录被链接替换 —— 走的是「projects/<id>」这条目录级上报路径。
+    const other = join(memoryRoot(), 'projects', 'B');
+    if (!junction(self) || !junction(other)) { console.log('  (跳过:本环境造不出目录链接夹具)'); return; }
+    try {
+      const text = scopedMemorySnapshot('A', '');
+      assert.match(text, /projects\/A\/rules/, '本项目的目录级漏读要披露');
+      assert.doesNotMatch(text, /projects\/B/, '别的项目的存在与名字绝不能借诊断泄露');
+    } finally { unjunction(self); unjunction(other); }
+  });
 }
 
 const failed=results.filter(r=>!r.ok).length;
