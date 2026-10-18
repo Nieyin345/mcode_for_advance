@@ -25,8 +25,10 @@ import {
   EngineNodeRegistry,
   ENGINE_NODE_REGISTRY_FILENAME,
   sha256OfBytes,
+  stableDirectoryHash,
   type EngineNodeRegistryFs,
 } from "@main/workflowEngines/engineNodeRegistry.js";
+import { readdirNames } from "./helpers.js";
 import { declaresNetwork } from "@contracts/modules";
 
 let total = 0;
@@ -232,6 +234,129 @@ try {
     // 它自己不应再读权限短语（那会是第三份判据）。
     check("permissionedProcessRunner 不读权限短语（allowNetwork 由调用方按共享判据算）",
       !/includes\("network"\)/.test(runner));
+  }
+
+  /* ══════════ 7b. 真实安装入口：字节 / 目录 + 下载期 sha256 ══════════ */
+  console.log("\n7b. installFromBytes / installFromDirectory（下载期哈希 + 原子落盘）");
+  {
+    const { installBytes, installDir, readTreeReal, mkFailingFs } = await import("./helpers.js");
+    void installBytes;
+    const bytes = Buffer.from("node package tarball bytes");
+    const bytesHash = createHash("sha256").update(bytes).digest("hex");
+
+    // ── 合法包：落盘 + 清单 ──
+    {
+      const dataDir = join(temp, "install-a");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const result = await registry.installFromBytes(
+        installRequest({ name: "node-red-contrib-good", sha256: bytesHash }), bytes);
+      check("★ 合法字节包安装成功", result.ok, result);
+      const pkgFile = join(dataDir, "node_modules", "node-red-contrib-good", "package.tgz");
+      check("★ 包体文件真的落盘", existsSync(pkgFile));
+      eq("★ 落盘字节与输入逐字节一致", (await readFile(pkgFile)).equals(bytes), true);
+      const state = await registry.readState();
+      eq("★ 清单里出现该包且哈希正确",
+        state.kind === "ok" ? state.entries.find((e) => e.name === "node-red-contrib-good")?.sha256 : null, bytesHash);
+      check("★ 暂存目录已清理（.staging-* 不存在）",
+        !existsSync(join(dataDir, "node_modules", `.staging-node-red-contrib-good`)));
+    }
+
+    // ── 篡改字节（同长度改一字节）→ 拒绝、零残留 ──
+    {
+      const dataDir = join(temp, "install-tamper");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const tampered = Buffer.from(bytes);
+      tampered[0] = tampered[0]! ^ 0xff; // 同长度改一字节
+      const result = await registry.installFromBytes(
+        installRequest({ name: "node-red-contrib-evil", sha256: bytesHash }), tampered);
+      check("★ 篡改字节被拒（sha256 不符）", result.ok === false && /sha256/.test(result.reason), result);
+      check("★ 拒绝路径上包体目录不存在", !existsSync(join(dataDir, "node_modules", "node-red-contrib-evil")));
+      check("★ 拒绝路径上没有暂存目录残留", !existsSync(join(dataDir, "node_modules")) || (await readdirNames(join(dataDir, "node_modules"))).every((n) => !n.startsWith(".staging-")));
+      eq("★ 拒绝路径上清单无记录", (await registry.readState()).kind, "absent");
+    }
+
+    // ── 安装中途失败（模拟写失败）→ 不留半截、清单无记录 ──
+    {
+      const dataDir = join(temp, "install-fail");
+      const realFs = await readTreeReal();
+      const failing = mkFailingFs(realFs, dataDir, () => true);
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red", fs: failing });
+      const result = await registry.installFromBytes(
+        installRequest({ name: "node-red-contrib-fail", sha256: bytesHash }), bytes);
+      check("★ 写盘失败时 installFromBytes 报错（不是假成功）", result.ok === false && /落盘失败/.test(result.reason), result);
+      check("★ 失败后目标目录不存在（不留半截）", !existsSync(join(dataDir, "node_modules", "node-red-contrib-fail")));
+      check("★ 失败后暂存目录已清理", (await readdirNames(join(dataDir, "node_modules"))).every((n) => !n.startsWith(".staging-")));
+      eq("★ 失败后清单无记录", (await registry.readState()).kind, "absent");
+    }
+
+    // ── 目录包：稳定哈希 ──
+    const dirHash = stableDirectoryHash([
+      { path: "package.json", bytes: Buffer.from("{\"name\":\"node-red-contrib-dir\"}") },
+      { path: "nodes/hello.js", bytes: Buffer.from("module.exports = function(RED){};") },
+    ]);
+    check("★ 稳定哈希是 64 位 hex", typeof dirHash === "string" && /^[0-9a-f]{64}$/.test(dirHash), dirHash);
+    eq("★ 稳定哈希与枚举顺序无关", stableDirectoryHash([
+      { path: "nodes/hello.js", bytes: Buffer.from("module.exports = function(RED){};") },
+      { path: "package.json", bytes: Buffer.from("{\"name\":\"node-red-contrib-dir\"}") },
+    ]), dirHash);
+    eq("★ 稳定哈希与路径分隔符写法无关", stableDirectoryHash([
+      { path: "package.json", bytes: Buffer.from("{\"name\":\"node-red-contrib-dir\"}") },
+      { path: "nodes\\hello.js", bytes: Buffer.from("module.exports = function(RED){};") },
+    ]), dirHash);
+    eq("★ 改一个文件内容 → 哈希变化", stableDirectoryHash([
+      { path: "package.json", bytes: Buffer.from("{\"name\":\"node-red-contrib-dir\"}") },
+      { path: "nodes/hello.js", bytes: Buffer.from("module.exports = function(RED){/*x*/};") },
+    ]) === dirHash, false);
+    eq("★ 空目录 / 重复路径 / 越界路径 → null（调用方必须拒绝）",
+      [stableDirectoryHash([]), stableDirectoryHash([
+        { path: "a.js", bytes: new Uint8Array(1) }, { path: "a.js", bytes: new Uint8Array(1) },
+      ]), stableDirectoryHash([{ path: "../escape.js", bytes: new Uint8Array(1) }])], [null, null, null]);
+
+    {
+      const dataDir = join(temp, "install-dir");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const result = await installDir(registry, installRequest({ name: "node-red-contrib-dir", sha256: dirHash! }));
+      check("★ 合法目录包安装成功", result.ok, result);
+      check("★ 目录内容按相对路径落盘", existsSync(join(dataDir, "node_modules", "node-red-contrib-dir", "nodes", "hello.js")));
+      check("★ package.json 也在", existsSync(join(dataDir, "node_modules", "node-red-contrib-dir", "package.json")));
+      const state = await registry.readState();
+      eq("★ 清单记录目录包的稳定哈希",
+        state.kind === "ok" ? state.entries.find((e) => e.name === "node-red-contrib-dir")?.sha256 : null, dirHash);
+    }
+
+    // ── 重复安装同名不同哈希 → 显式拒绝 ──
+    {
+      const dataDir = join(temp, "install-dup");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const first = await registry.installFromBytes(installRequest({ name: "node-red-contrib-dup", sha256: bytesHash }), bytes);
+      check("前置：第一次安装成功", first.ok, first);
+      const other = Buffer.from("different bytes");
+      const otherHash = createHash("sha256").update(other).digest("hex");
+      const second = await registry.installFromBytes(installRequest({ name: "node-red-contrib-dup", sha256: otherHash }), other);
+      check("★ 同名不同哈希 → 显式拒绝（不静默替换可执行体）", second.ok === false && /卸载/.test(second.reason), second);
+      eq("★ 被拒后盘上仍是第一份字节", (await readFile(join(dataDir, "node_modules", "node-red-contrib-dup", "package.tgz"))).equals(bytes), true);
+      // 同哈希重装 = 幂等（允许）。
+      const again = await registry.installFromBytes(installRequest({ name: "node-red-contrib-dup", sha256: bytesHash }), bytes);
+      check("★ 同哈希重装幂等（允许）", again.ok, again);
+    }
+
+    // ── 旧调用方没有新端口：安装入口 fail-closed ──
+    {
+      const dataDir = join(temp, "install-noport");
+      const registry = new EngineNodeRegistry({
+        dataDir, engineId: "node-red",
+        fs: {
+          async readFile(path) { return readFile(path, "utf8"); },
+          async writeFile(path, text) { await writeFile(path, text, "utf8"); },
+          async rename(from, to) { const { rename } = await import("node:fs/promises"); await rename(from, to); },
+          async mkdir(path) { await mkdir(path, { recursive: true }); },
+          async remove(path) { await rm(path, { recursive: true, force: true }); },
+        },
+      });
+      const result = await registry.installFromBytes(installRequest({ name: "node-red-contrib-noport", sha256: bytesHash }), bytes);
+      check("★ 没有写盘端口时安装被拒（fail-closed，不退化成只登记）",
+        result.ok === false && /写盘通道/.test(result.reason), result);
+    }
   }
 
   /* ══════════ 8. sha256 计算出口 ══════════ */
