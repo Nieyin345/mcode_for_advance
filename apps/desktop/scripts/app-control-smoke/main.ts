@@ -1698,8 +1698,21 @@ console.log("\n§ARC-002 用户派生工具：检索 → help → 结构化执�
         && !/function atomicReplaceFile/.test(files),
     );
     check(
-      "★ atomicReplaceFile 真是原子替换(临时文件 → fsync → rename)",
-      /export async function atomicReplaceFile[\s\S]{0,900}?handle\.sync\(\)[\s\S]{0,300}?rename\(tmp, filePath\)/.test(atomicLib),
+      // 判据按**函数体内部顺序**钉，不按固定字符窗口：实现会随安全加固增长
+      // （lstat/权限/清理），"sync 距函数头 900 字符"这种窗口迟早误报。这里
+      // 先切出 atomicReplaceFile 的函数体，再要求 wx 独占创建 → write →
+      // handle.sync() → rename(tmp, filePath) 在**同一段**里按序出现。
+      "★ atomicReplaceFile 真是原子替换(独占临时文件 → write → fsync → rename)",
+      (() => {
+        const start = atomicLib.indexOf("export async function atomicReplaceFile");
+        if (start < 0) return false;
+        const body = atomicLib.slice(start, atomicLib.indexOf("\n}", start) + 2);
+        const wx = body.search(/openFile\(tmp, "wx"/);
+        const write = body.search(/await handle\.writeFile\(/);
+        const sync = body.search(/await handle\.sync\(\)/);
+        const rename = body.search(/await rename\(tmp, filePath\)/);
+        return wx >= 0 && write > wx && sync > write && rename > sync;
+      })(),
     );
     check("★ file:copy 真走裸 copyFile(与下面那条「非原子」说法相符)", /await copyFile\(/.test(files));
     // 注释侧(逐行取,避免窗口误差):writeFile 那行不得再说「非原子」。
