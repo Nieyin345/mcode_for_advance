@@ -463,6 +463,16 @@ div:has(> [role="menu"]) {
   margin-left: 1.5em;
 }
 
+/* 【ARC-005】围栏代码块的圆角走 role 档 --radius-code（上游 12px）。
+ * 组件侧仍是 Tailwind 的 `rounded-lg`（8px，与上游 code 档不一致）——
+ * 这条规则特异性 (0,1,1) 高于 `.rounded-lg` 的 (0,1,0)，在不动
+ * Markdown.tsx 的前提下把角色档接上；sketch 通过重指同一 token 自动获得
+ * 手抖档（见「Sketch theme」区块）。只作用于 Markdown 根的直接 pre
+ * （围栏块），shiki 内部嵌套的 pre 在 div 里，不受影响。 */
+.chat-md > pre {
+  border-radius: var(--radius-code);
+}
+
 /* ───────────── Font-weight ladder shifts ─────────────
  * Pairs with the base font-weight set on :root (500, light) and .dark (600,
  * dark). Because the inherited base is lifted, the raw Tailwind utilities
@@ -977,6 +987,24 @@ body {
    * 只把上游 `--cds-*` 前缀改写成 `--m-*`，上游这个键本身没有 cds 前缀，原样保留。
    * 不要手改生成物去另造一个 --m-radius-sm。 */
   --radius-control: var(--radius-sm);
+  /* 【ARC-005】角色档（role tiers）—— 参考矩阵缺的五档，值全部指回生成物
+   * （tokens.cds.css），不在本文件重抄数值：
+   *   btn-xs  6px  = 上游 --cds-radius-btn-xs
+   *   btn-md  8px  = 上游 --cds-radius-btn-md
+   *   dialog 16px  = 上游 --cds-radius-dialog
+   *   code   12px  = 上游 --cds-radius-code
+   *   card   ≈12px = 上游 --radius-card = calc(8px + .25rem × rem-scale)
+   * 上游这几个键在 cds-theme.css 的别名块里，键名不带 `--m-` 前缀（生成器只
+   * 改写 `--cds-*`），所以消费 `--radius-md` / `--radius-lg` / `--radius-xl` /
+   * `--radius-2xl` 这些原样键。card 档与气泡档在上游是同一个算式 —— 直接用
+   * 已生成的 --m-message-bubble-radius，避免第二份会漂移的 calc。
+   * 逆向报告没有逐档实测（矩阵只给上游 E1 值），**待真机对照**。
+   * 浅/深不分档：上游这几个值都在主题无关的 :root 里，暗色不覆盖。 */
+  --radius-btn-xs: var(--radius-md);              /* 6px 按钮 xs */
+  --radius-btn-md: var(--radius-lg);              /* 8px 按钮 md */
+  --radius-dialog: var(--radius-2xl);             /* 16px 弹窗 */
+  --radius-code: var(--radius-xl);                /* 12px 代码块 */
+  --radius-card: var(--m-message-bubble-radius);  /* ≈12px 卡片（与气泡同算式） */
   /* Composer 外框：几何与阴影的唯一真源是生成物里的上游值（gen-cds-tokens.mjs
    * 从 open-claude-ui 的 cds-theme.css 逐条解析），这里只留语义名字。若在本文件
    * 重写 20px / rgba，就会多出第二份会与上游漂移的数值。 */
@@ -2381,6 +2409,17 @@ html.sketch .rounded-lg {
 html.sketch .rounded-xl,
 html.sketch .rounded-2xl {
   border-radius: var(--sk-r-lg);
+}
+/* 【ARC-005】role 档的 Tailwind 任意值类（rounded-[var(--radius-*)])不经过
+ * 上面三档映射 —— 它们是字面量选择器，sketch 的形状语言会整块丢失。这里把
+ * 五个 role token 在 sketch 下**重指到同语义的手抖档**：卡片/弹窗→大档、
+ * 按钮/代码→中档（与原先 rounded-lg→--sk-r-md 的映射一致，形状不回归）。 */
+html.sketch {
+  --radius-card: var(--sk-r-lg);
+  --radius-dialog: var(--sk-r-lg);
+  --radius-code: var(--sk-r-md);
+  --radius-btn-xs: var(--sk-r-sm);
+  --radius-btn-md: var(--sk-r-md);
 }
 
 /* 硬阴影:柔光阴影全部换成实色偏移(贴纸感)。 */

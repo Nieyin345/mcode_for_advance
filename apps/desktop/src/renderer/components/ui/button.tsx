@@ -18,7 +18,10 @@ const buttonVariants = cva(
   // 【ARC-005】焦点可见环不在组件里写散装 ring 工具类：styles.css 的
   // `:where(button, …):focus-visible` 统一消费 `--focus-ring` 三层 token。
   // 组件自带的 ring 类特异性更高(0,2,0 > 0,1,0)，会静默盖掉 token 环。
-  "inline-flex items-center justify-center gap-1 rounded font-medium transition-colors select-none outline-none",
+  // 圆角也按 size 走角色档（--radius-btn-xs 6px / --radius-btn-md 8px，值来自
+  // 上游 open-claude-ui，见 styles.css）；不再写 Tailwind 裸 `rounded`(4px) —
+  // 那是与上游按钮档不一致的旧值。className 透传仍可覆盖（twMerge 后写赢）。
+  "inline-flex items-center justify-center gap-1 font-medium transition-colors select-none outline-none",
   {
     variants: {
       variant: {
@@ -34,9 +37,9 @@ const buttonVariants = cva(
           "border border-edge bg-surface text-content-muted hover:bg-surface-muted hover:text-content disabled:opacity-50 disabled:cursor-not-allowed",
       },
       size: {
-        sm: "h-6 px-2 text-[11px]",
-        md: "h-8 px-3 text-xs",
-        icon: "h-6 w-6 p-0",
+        sm: "h-6 rounded-[var(--radius-btn-xs)] px-2 text-[11px]",
+        md: "h-8 rounded-[var(--radius-btn-md)] px-3 text-xs",
+        icon: "h-6 w-6 rounded-[var(--radius-btn-xs)] p-0",
       },
     },
     defaultVariants: {

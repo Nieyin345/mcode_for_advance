@@ -631,5 +631,81 @@ section("13. 【ARC-005】终端主题接语义 token");
   check("★ 同一构建器能产出浅/深两套不同值", builtLight.background !== built.background && builtLight.cursor !== built.cursor);
 }
 
+section("14. 【ARC-005】圆角 role 档（btn-xs/btn-md/dialog/code/card）");
+{
+  const css = read("src/renderer/styles.css");
+  const noComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const tokens = read("src/renderer/tokens.cds.css");
+  const ROLE_TOKENS = ["--radius-btn-xs", "--radius-btn-md", "--radius-dialog", "--radius-code", "--radius-card"];
+
+  // ★ 五个 role 档都有**真实定义**（剥注释后的声明本体）。这些档主题无关
+  // （上游在 :root 的别名块里、暗色不覆盖），所以只要求 `:root` 有一份 ——
+  // 但 sketch 的形状块必须重指它们（see below），否则手绘主题丢形状语言。
+  for (const tok of ROLE_TOKENS) {
+    check(`★ ${tok} 已定义`, new RegExp(`${tok}:\\s*var\\([^)]+\\);`).test(noComments));
+  }
+  // 反向正控：role 档不许重抄 px/rem 字面量（值必须来自生成物/已有档）。
+  const literals = ROLE_TOKENS.filter((tok) => new RegExp(`${tok}:\\s*[\\d.]`).test(noComments));
+  check("★ role 档不写 px/rem 字面量（单一真源）", literals.length === 0, literals);
+
+  // ★ 每个 role 档引用的上游键在生成物里真的存在且有值 —— 否则 var() 解析
+  // 为空、圆角整条失效（静默）。
+  const upstreamRefs: Record<string, string> = {
+    "--radius-btn-xs": "--radius-md",
+    "--radius-btn-md": "--radius-lg",
+    "--radius-dialog": "--radius-2xl",
+    "--radius-code": "--radius-xl",
+    "--radius-card": "--m-message-bubble-radius",
+  };
+  for (const [role, upstream] of Object.entries(upstreamRefs)) {
+    check(`★ ${role} 指向上游键 ${upstream}`, new RegExp(`${role}:\\s*var\\(${upstream.replace(/[()]/g, "\\$&")}\\)`).test(noComments));
+    check(`★ 生成物里有 ${upstream} 且非空`, new RegExp(`${upstream}:\\s*[^;]+;`).test(tokens));
+  }
+  // 上游档位值与参考矩阵一致（6/8/16/12px + card 的 calc 同算式）。
+  check("★ 上游 radius-md = 6px（btn-xs 档）", /--radius-md:\s*\.375rem;/.test(tokens));
+  check("★ 上游 radius-lg = 8px（btn-md 档）", /--radius-lg:\s*\.5rem;/.test(tokens));
+  check("★ 上游 radius-2xl = 16px（dialog 档）", /--radius-2xl:\s*1rem;/.test(tokens));
+  check("★ 上游 radius-xl = 12px（code 档）", /--radius-xl:\s*\.75rem;/.test(tokens));
+  check("★ card 档与气泡同算式（≈12px）", /--m-message-bubble-radius:\s*calc\(8px \+ calc\(\.25rem \* 1\)\)/.test(tokens));
+
+  // ★ Button 各 size 不再写裸 rounded 数值 —— 三个 size 都消费 role 档。
+  const button = read("src/renderer/components/ui/button.tsx");
+  const buttonNoComments = button.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  check("★ button base 不再有裸 rounded", !/"inline-flex[^"]*\brounded\b(?!-\[)/.test(buttonNoComments));
+  check("★ button sm 消费 --radius-btn-xs", /sm:\s*"[^"]*rounded-\[var\(--radius-btn-xs\)\]/.test(buttonNoComments));
+  check("★ button md 消费 --radius-btn-md", /md:\s*"[^"]*rounded-\[var\(--radius-btn-md\)\]/.test(buttonNoComments));
+  check("★ button icon 消费 --radius-btn-xs", /icon:\s*"[^"]*rounded-\[var\(--radius-btn-xs\)\]/.test(buttonNoComments));
+  // 反向正控：size 里不得再出现 Tailwind 数值圆角（rounded / rounded-lg / rounded-md）。
+  const sizeBlock = /size:\s*\{([\s\S]*?)\},\s*defaultVariants/.exec(buttonNoComments)?.[1] ?? "";
+  const bareSizes = sizeBlock.match(/\brounded(-(sm|md|lg|xl|2xl))?\b(?!-\[)/g);
+  check("★ button 各 size 无裸圆角类", bareSizes === null, bareSizes);
+
+  // ★ 其它消费点接上 role 档：Card→card、Dialog.Popup→dialog、代码块→code。
+  const card = read("src/renderer/components/ui/card.tsx").replace(/\/\/[^\n]*/g, "");
+  check("★ Card 消费 --radius-card", card.includes("rounded-[var(--radius-card)]"));
+  check("★ Card 不再写 rounded-lg", !/"rounded-lg[^"]*border border-edge bg-surface"/.test(card));
+  const dialog = read("src/renderer/components/ui/dialog.tsx").replace(/\/\/[^\n]*/g, "");
+  check("★ Dialog.Popup 消费 --radius-dialog", dialog.includes("rounded-[var(--radius-dialog)]"));
+  check("★ Dialog.Popup 不再写 rounded-lg", !/"rounded-lg border border-edge bg-surface shadow-2xl"/.test(dialog));
+  const md = read("src/renderer/components/chat/Markdown.tsx").replace(/\/\/[^\n]*/g, "");
+  // code 档在 CSS 侧消费（不动 Markdown.tsx）：`.chat-md > pre` 特异性
+  // (0,1,1) 高于 Tailwind `.rounded-lg` (0,1,0)，围栏代码块改用 role 档。
+  check("★ 围栏代码块消费 --radius-code（styles.css）",
+    /\.chat-md > pre\s*\{[^}]*border-radius:\s*var\(--radius-code\)/.test(noComments));
+  check("★ Markdown.tsx 未写入 role token（消费点在 CSS）", !md.includes("--radius-code"));
+
+  // ★ sketch 主题必须把 role 档重指回手抖档 —— Tailwind 任意值类
+  // (rounded-[var(--radius-*)]) 是字面量选择器，不经过 .rounded-lg 那套映射，
+  // 不重指的话手绘主题在这几处直接退化成规则圆角。
+  const sketchAt = noComments.lastIndexOf("html.sketch {");
+  const sketchBlock = sketchAt >= 0 ? noComments.slice(sketchAt, noComments.indexOf("}", sketchAt)) : "";
+  for (const tok of ROLE_TOKENS) {
+    check(`★ sketch 重指 ${tok} 到手抖档`, new RegExp(`${tok}:\\s*var\\(--sk-r-(sm|md|lg)\\)`).test(sketchBlock));
+  }
+  // 源序：重指块必须在 --sk-r-* 定义块之后，否则引用了未定义变量。
+  const skDefAt = noComments.indexOf("--sk-r-lg:");
+  check("★ sketch role 重指在 --sk-r-* 定义之后", skDefAt >= 0 && sketchAt > skDefAt);
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

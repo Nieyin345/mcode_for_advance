@@ -19,7 +19,9 @@ export function Card({ className, ...props }: CardProps) {
   return (
     <div
       className={cn(
-        "rounded-lg border border-edge bg-surface",
+        // 【ARC-005】卡片档圆角走 --radius-card（上游 --radius-card ≈12px）；
+        // sketch 主题在 styles.css 把该 token 指回手抖档，形状映射不丢。
+        "rounded-[var(--radius-card)] border border-edge bg-surface",
         className,
       )}
       {...props}
