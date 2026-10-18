@@ -21,6 +21,17 @@
  *   - 假 port 的执行次数 = 1（经节点自己写进 userDir 的计数文件核对 —— 节点包在引擎
  *     进程里跑，测试进程不能直接看它的内存）。
  *
+ * ## 并行隔离（与 node-red-e2e-smoke 可同跑；2026-10-19 修）
+ *
+ * 两个真引擎套件**不能共享可变状态**。此前本套把 `MCODE_SMOKE_DATA_ROOT` 指到
+ * `.tmp/nr-e2e`，并在那里写 `engine-trust.json = {"trusted":true}` —— 而那正是
+ * node-red-e2e 用来断言「untrusted / 未审批 flow 不执行」的同一个目录；并行时
+ * 对侧固定 78/80（两条红）。现在本套的 dataRoot 是 run.sh 的 **mktemp 私有目录**，
+ * 其中 `workflow-engines/node-red/node_modules` 用 **junction** 指向共享安装树
+ * （106MB 不复制；`engine-trust.json`/`flows.json`/`bootstrap.cjs`/令牌全部落在
+ * 私有目录）。junction 不可用时**回退为整树复制**（慢、占盘，但仍然隔离）——
+ * 绝不回退成共享目录。
+ *
  * ## 假 port 怎么进引擎进程
  *
  * `run.sh` 把 `mcodeNodePack.ts` 打成 CJS 到 `$OUT/mcodeNodePack.cjs`。套件在临时
@@ -34,7 +45,7 @@
  *
  * Run: bash scripts/mcode-node-pack-smoke/run.sh
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -218,96 +229,272 @@ await (async () => {
   }
 })();
 
-/* ══════════ B. 真 node-red 5.0.8：注册/部署/执行 ══════════ */
-console.log("\nB. 真引擎：节点包被 Node-RED 注册、迁移流启动、节点执行");
+/* ══════════ B. 纯逻辑：其余 6 种节点（runXNode 输入/输出形状） ══════════ */
+console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-capability / node-red-call");
+{
+  const {
+    MCODE_NODE_PACK_TYPES,
+    allNodeHtml,
+    branchNodeHtml,
+    triggerMessage,
+    triggerSubscribePayload,
+    runConversationNode,
+    runBranchNode,
+    runCodeNode,
+    runModuleCapabilityNode,
+    runNodeRedCallNode,
+  } = await import("@main/workflowEngines/mcodeNodeTypes.js");
+
+  const cfg = (params: Record<string, unknown>, wires?: string[][]): McodeAgentNodeConfig & { wires?: string[][] } => ({
+    id: "n_other",
+    "x-mcode": { nodeId: "o1", params },
+    ...(wires !== undefined ? { wires } : {}),
+  });
+
+  // ★ 7 个类型都在清单里（agent + 其余 6；condition/command 走原生节点，不注册）。
+  eq("★ 节点包注册类型 = 7（agent + 其余 6；condition/command 用原生）", [...MCODE_NODE_PACK_TYPES].sort(), [
+    "mcode-agent", "mcode-branch", "mcode-code", "mcode-conversation",
+    "mcode-module-capability", "mcode-node-red-call", "mcode-trigger",
+  ]);
+  eq("★ HTML 覆盖全部 7 个类型", ["mcode-agent", "mcode-conversation", "mcode-branch", "mcode-trigger", "mcode-code", "mcode-module-capability", "mcode-node-red-call"]
+    .filter((t) => !allNodeHtml().includes(`data-template-name="${t}"`)), []);
+
+  // ── conversation ──
+  {
+    const calls: Array<Record<string, unknown>> = [];
+    const out = await runConversationNode({ payload: "上句", mcode: { runId: "r1" } }, cfg({ instruction: "聊一句" }), {
+      run: async (p) => { calls.push(p as unknown as Record<string, unknown>); return { text: "聊完了", artifacts: [] }; },
+    });
+    check("★ conversation：port 被调用一次且收到 instruction",
+      calls.length === 1 && calls[0]?.instruction === "聊一句", { count: calls.length, calls });
+    eq("★ conversation：产出 {text,artifacts}", out.msg.payload, { text: "聊完了", artifacts: [] });
+    eq("★ conversation：runId 沿用输入", (out.msg.mcode as Record<string, unknown>).runId, "r1");
+  }
+
+  // ── branch ──
+  {
+    const wires = [["t0"], ["t1"], ["t2"]];
+    // 人工点选优先：msg.mcode.branchPort = 2
+    let decideAsked = false;
+    const manual = await runBranchNode({ payload: "保持", mcode: { branchPort: 2 } }, cfg({ decider: "user" }, wires), {
+      decide: async () => { decideAsked = true; return { port: 0 }; },
+    });
+    eq("★ branch：msg.mcode.branchPort 优先（人工点选）", manual.port, 2);
+    check("★ branch：人工点选时不问 port", decideAsked === false);
+    eq("★ branch：上游 payload 原样保留", manual.msg.payload, "保持");
+    // port 决定 + 越界收缩
+    const byPort = await runBranchNode({ payload: 1 }, cfg({ decider: "model" }, wires), {
+      decide: async (p) => ({ port: p.portCount - 1, label: "最后一条" }),
+    });
+    eq("★ branch：port 决定落在端口范围内", byPort.port, 2);
+    eq("★ branch：label 进 msg.mcode.branch", (byPort.msg.mcode as { branch?: unknown }).branch, { port: 2, label: "最后一条" });
+    const bad = await runBranchNode({}, cfg({}, wires), { decide: async () => ({ port: 99 }) });
+    eq("★ branch：port 越界 → 收缩到 0（不丢消息）", bad.port, 0);
+    check("★ branch HTML 的 outputs 随 wires 增长", branchNodeHtml().includes("function () { return Math.max(1, (this.wires && this.wires.length) || 1); }"));
+  }
+
+  // ── trigger ──
+  {
+    const msg = triggerMessage({ id: "t", "x-mcode": { nodeId: "tr1", params: { triggerKind: "schedule" } } }, 123);
+    eq("★ trigger：无输入仍产出（payload.trigger.kind/at）", msg.payload, { trigger: { kind: "schedule", at: 123 } });
+    eq("★ trigger：mcode.nodeId 透传", (msg.mcode as Record<string, unknown>).nodeId, "tr1");
+    const sub = triggerSubscribePayload({ id: "t", "x-mcode": { nodeId: "tr1", params: { triggerKind: "file" } } });
+    eq("★ trigger：订阅 payload 带 triggerKind", sub.triggerKind, "file");
+  }
+
+  // ── code ──
+  {
+    const calls: Array<Record<string, unknown>> = [];
+    const out = await runCodeNode({ payload: { n: 1 } }, cfg({ code: "print(1)", language: "python" }), {
+      run: async (p) => { calls.push(p as unknown as Record<string, unknown>); return { text: "printed", artifacts: [] }; },
+    });
+    check("★ code：port 收到 code/language 与输入",
+      calls[0]?.code === "print(1)" && calls[0]?.language === "python" && JSON.stringify(calls[0]?.input) === '{"n":1}', calls[0]);
+    eq("★ code：产出 {text,artifacts}", out.msg.payload, { text: "printed", artifacts: [] });
+  }
+
+  // ── module-capability ──
+  {
+    const calls: Array<Record<string, unknown>> = [];
+    await runModuleCapabilityNode({}, cfg({ moduleId: "core.file-report", contributionId: "inspect", path: "a.txt" }), {
+      run: async (p) => { calls.push(p as unknown as Record<string, unknown>); return { text: "ok", artifacts: [] }; },
+    });
+    check("★ module-capability：port 收到 moduleId/contributionId/path",
+      calls[0]?.moduleId === "core.file-report" && calls[0]?.contributionId === "inspect" && calls[0]?.path === "a.txt", calls[0]);
+  }
+
+  // ── node-red-call ──
+  {
+    const calls: Array<Record<string, unknown>> = [];
+    const out = await runNodeRedCallNode({}, cfg({ enginePath: "/api/x", engineMethod: "POST", engineBody: "{}" }), {
+      run: async (p) => { calls.push(p as unknown as Record<string, unknown>); return { text: "resp", artifacts: [], status: 200 }; },
+    });
+    check("★ node-red-call：port 收到 enginePath/engineMethod/engineBody",
+      calls[0]?.enginePath === "/api/x" && calls[0]?.engineMethod === "POST" && calls[0]?.engineBody === "{}", calls[0]);
+    eq("★ node-red-call：HTTP 状态进 msg.mcode.engineStatus", (out.msg.mcode as Record<string, unknown>).engineStatus, 200);
+  }
+}
+console.log(`\nmcode-node-pack-smoke(含 6 类型纯逻辑):${total - failures}/${total} 通过`);
+
+/* ══════════ C. 真 node-red 5.0.8：7 类型全链 ══════════ */
+console.log("\nC. 真引擎：7 类型全部注册 → 全 runner.kind 迁移流启动 → 各节点执行一次");
 
 const APP_DIR = process.cwd();
 const NR_ROOT = process.env.MCODE_NR_E2E_ROOT ?? join(APP_DIR, ".tmp", "nr-e2e");
 const INSTALLED = join(NR_ROOT, "workflow-engines", "node-red");
 const NODE_RED_PKG = join(INSTALLED, "node_modules", "node-red", "package.json");
 const PACK_BUNDLE = join(process.env.MCODE_NODE_PACK_TEST_ROOT ?? ".", "mcodeNodePack.cjs");
+const TYPES_BUNDLE = join(process.env.MCODE_NODE_PACK_TEST_ROOT ?? ".", "mcodeNodeTypes.cjs");
 
-if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE)) {
+if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_BUNDLE)) {
   console.log("SKIP: 未安装 node-red（或节点包 bundle 缺失）—— 真引擎段整套跳过（不是失败）。");
   console.log(`  期望 node-red: ${NODE_RED_PKG}`);
-  console.log(`  期望节点包: ${PACK_BUNDLE}`);
+  console.log(`  期望节点包: ${PACK_BUNDLE} / ${TYPES_BUNDLE}`);
 } else {
   const { ProductionWorkflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
   const { EngineRuntime, defaultEngineRuntimePorts } = await import("@main/workflowEngines/runtimeSupervisor.js");
+  const { MCODE_NODE_PACK_TYPES, allNodeHtml } = await import("@main/workflowEngines/mcodeNodeTypes.js");
 
   // 类型清单：真内置清单（迁移器看到的就是生产注册表看到的那份）。
-  const types = new Map<string, NonNullable<ReturnType<typeof builtinManifestById>>>();
-  for (const id of ["mcode.main", "mcode.agent", "mcode.branch", "mcode.condition", "mcode.trigger", "mcode.command", "mcode.code"]) {
+  const types = new Map<string, ReturnType<typeof builtinManifestById> & object>();
+  for (const id of [
+    "mcode.main", "mcode.agent", "mcode.conversation", "mcode.branch", "mcode.condition",
+    "mcode.trigger", "mcode.command", "mcode.code", "mcode.module-capability", "mcode.node-red",
+  ]) {
     const manifest = builtinManifestById(id);
     if (manifest !== undefined) types.set(id, manifest);
   }
 
-  // 迁移图：mcode.main → mcode.branch(两条出边) → 一个 mcode-agent 支路 + 一个原生
-  // http response 支路。agent 的产出会经下游 HTTP response 回来 —— 这条断言同时证明
-  // 「整组启动了」「节点真的执行了」「端口被调用了」。
+  // 含**全部 7 种 runner.kind** 的迁移图：
+  //   trigger → conversation → agent → branch(两出口)
+  //     ├─ 出口0 → condition(true) → code → module-capability
+  //     └─ 出口1 → command(exec) → node-red-call
+  // branch 的出口由 trigger 的假 port 注入 msg.mcode.branchPort=0。
   const doc = {
-    id: "wf_agent_pack",
-    name: "mcode-agent 节点包样例",
+    id: "wf_all_kinds",
+    name: "7 种 runner.kind 全链",
     builtin: false,
     updatedAt: 1_760_000_000_000,
     nodes: [
-      { id: "a_main", type: "mcode.main", title: "主代理", params: { instruction: "拆解" }, position: { x: 10, y: 10 } },
-      { id: "a_agent", type: "mcode.agent", title: "子 agent", params: { instruction: "把输入原样交回", outputVars: [{ name: "text" }] }, position: { x: 110, y: 10 } },
-      { id: "a_cond", type: "mcode.condition", title: "条件", params: { expression: { logic: "and", rules: [] } }, position: { x: 210, y: 10 } },
+      { id: "k_trigger", type: "mcode.trigger", title: "触发", params: { triggerKind: "manual", task: "跑一遍" }, position: { x: 10, y: 10 } },
+      { id: "k_conv", type: "mcode.conversation", title: "对话", params: { instruction: "聊一句" }, position: { x: 110, y: 10 } },
+      { id: "k_agent", type: "mcode.agent", title: "子 agent", params: { instruction: "查资料" }, position: { x: 210, y: 10 } },
+      { id: "k_branch", type: "mcode.branch", title: "岔路", params: { decider: "user" }, position: { x: 310, y: 10 } },
+      { id: "k_cond", type: "mcode.condition", title: "条件", params: { expression: { logic: "and", rules: [] } }, position: { x: 410, y: 10 } },
+      { id: "k_code", type: "mcode.code", title: "代码", params: { code: "print(1)", language: "python" }, position: { x: 510, y: 10 } },
+      { id: "k_module", type: "mcode.module-capability", title: "模块", params: { moduleId: "core.file-report", contributionId: "inspect", path: "a.txt" }, position: { x: 610, y: 10 } },
+      { id: "k_cmd", type: "mcode.command", title: "命令", params: { command: "echo hi" }, position: { x: 410, y: 110 } },
+      { id: "k_nr", type: "mcode.node-red", title: "NR 调用", params: { enginePath: "/api/x", engineMethod: "POST", engineBody: "{}" }, position: { x: 510, y: 110 } },
     ],
     edges: [
-      { id: "ea1", from: "a_main", to: "a_agent" },
-      { id: "ea2", from: "a_agent", to: "a_cond" },
-      { id: "ea3", from: "a_cond", to: "a_agent", label: "true" },
-      { id: "ea4", from: "a_cond", to: "a_agent", label: "false" },
+      { id: "ke1", from: "k_trigger", to: "k_conv" },
+      { id: "ke2", from: "k_conv", to: "k_agent" },
+      { id: "ke3", from: "k_agent", to: "k_branch" },
+      { id: "ke4", from: "k_branch", to: "k_cond", label: "继续" },
+      { id: "ke5", from: "k_branch", to: "k_cmd", label: "停" },
+      { id: "ke6", from: "k_cond", to: "k_code", label: "true" },
+      { id: "ke7", from: "k_cond", to: "k_module", label: "false" },
+      { id: "ke8", from: "k_code", to: "k_module" },
+      { id: "ke9", from: "k_cmd", to: "k_nr" },
     ],
   } as unknown as Parameters<typeof migrateWorkflowDoc>[0];
   const migrated = migrateWorkflowDoc(doc, { types });
-  check("★ 迁移图里 mcode-agent 节点存在（节点包要注册的就是它）",
-    migrated.flow.nodes.some((n) => n.type === MCODE_AGENT_NODE_TYPE), migrated.flow.nodes.map((n) => n.type));
+  const migratedTypes = new Set(migrated.flow.nodes.map((n) => n.type));
+  check("★【MERGE-2】迁移产物覆盖 7 种 runner.kind（5 个 mcode-* + 原生 switch/exec）",
+    ["mcode-conversation", "mcode-agent", "mcode-branch", "switch", "mcode-trigger", "exec", "mcode-code", "mcode-module-capability", "mcode-node-red-call"]
+      .every((t) => migratedTypes.has(t)), [...migratedTypes]);
+  // 条件节点（原生 switch）必须**两个输出口**并接上 true/false 两条边：只给一个口时
+  // else 分支的消息会被 Node-RED 直接丢弃（真引擎实测，2026-10-19）。
+  const switchNode = migrated.flow.nodes.find((n) => n.type === "switch");
+  check("★【MERGE-2】condition → switch 有 true/false 两个输出口",
+    switchNode?.wires?.length === 2 && switchNode.wires.every((w) => w.length === 1),
+    switchNode?.wires);
+  const switchRules = (switchNode as unknown as { rules?: Array<{ t?: string }> } | undefined)?.rules;
+  check("★【MERGE-2】switch 带最小可执行规则（msg.mcode.condition → true/else 两口）",
+    Array.isArray(switchRules) && switchRules.map((r) => r.t).join(",") === "true,else",
+    switchRules);
 
-  // 临时 userDir + 节点包安装（Node-RED 约定：<userDir>/nodes/<name>.js + 同名 .html）。
+  // 临时 userDir：节点包 = 一个 js + 一个 html。
   const userDir = mkdtempSync(join(tmpdir(), "mcode-node-pack-user-"));
+
+  // ── 并行隔离（与 node-red-e2e-smoke 可同跑）──
+  // 本套的数据根是 run.sh 用 mktemp 建的**私有目录**（MCODE_SMOKE_DATA_ROOT），
+  // 不再借用 node-red-e2e 的 `.tmp/nr-e2e`（那边在同目录断言 engine-trust.json
+  // = untrusted，并行时会被本套写入的 {"trusted":true} 踩红 —— 实测 78/80）。
+  // 生产注册表的安装检查只看 `<dataDir>/node_modules/node-red/package.json`，所以
+  // 把 `node_modules` 用 **junction** 指向共享安装树：106MB 不复制，而 flows.json /
+  // engine-trust.json / bootstrap.cjs / .engine-admin-token 全落在本套私有目录。
+  // junction 不可用 → 回退为整树复制（慢、占盘，但**绝不**回退成共享目录）。
+  const sharedEngineRoot = process.env.MCODE_NODE_PACK_SHARED_ENGINE_ROOT
+    ?? process.env.MCODE_NR_E2E_ROOT
+    ?? join(APP_DIR, ".tmp", "nr-e2e");
+  const sharedNodeModules = join(sharedEngineRoot, "workflow-engines", "node-red", "node_modules");
+  const privateDataRoot = process.env.MCODE_SMOKE_DATA_ROOT ?? "";
+  const privateEngineDir = privateDataRoot === "" ? "" : join(privateDataRoot, "workflow-engines", "node-red");
+  let linkMode: "junction" | "copied" | "none" = "none";
+  if (privateEngineDir !== "") {
+    mkdirSync(privateEngineDir, { recursive: true });
+    const linkPath = join(privateEngineDir, "node_modules");
+    if (!existsSync(linkPath)) {
+      try {
+        // Windows junction：不需要管理员权限、不复制内容；Node 的 rmSync/rm -rf
+        // 都不会跟随它删掉目标（实测）。
+        symlinkSync(sharedNodeModules, linkPath, "junction");
+        linkMode = "junction";
+      } catch {
+        // 回退：整树复制（代价：每次跑约 106MB 的 IO；仍然隔离，不共享可变状态）。
+        cpSync(sharedNodeModules, linkPath, { recursive: true });
+        linkMode = "copied";
+      }
+    } else {
+      linkMode = lstatSync(linkPath).isSymbolicLink() ? "junction" : "copied";
+    }
+  }
+  check("★ 真引擎数据目录与 node-red-e2e 隔离（私有 dataRoot + junction/复制共享安装树）",
+    privateDataRoot !== "" && privateEngineDir !== sharedEngineRoot && linkMode !== "none",
+    { privateDataRoot, sharedEngineRoot, linkMode });
+  check("★ engine-trust.json 落私有目录（不写 node-red-e2e 的安装树）",
+    privateEngineDir === "" || !privateEngineDir.startsWith(join(sharedEngineRoot, "workflow-engines")),
+    { privateEngineDir, sharedEngineRoot });
   const nodesDir = join(userDir, "nodes");
   mkdirSync(nodesDir, { recursive: true });
-  writeFileSync(join(nodesDir, "mcode-agent.js"), `
-// 测试注入的注册外壳：与生产完全同一条 RED.nodes.registerType 路径。
-const pack = require(${JSON.stringify(PACK_BUNDLE)});
-const fs = require("node:fs");
-const path = require("node:path");
-const userDir = process.env.MCODE_NODE_PACK_USER_DIR || "";
-module.exports = function (RED) {
-  pack.registerMcodeAgentNodes(RED, function () {
-    return {
-      async run(payload) {
-        // 假 port：记录每次调用（引擎进程里写文件，测试进程读回核对次数与内容）。
-        try {
-          fs.appendFileSync(path.join(userDir, "agent-runs.jsonl"), JSON.stringify(payload) + "\\n");
-        } catch (e) { /* 记录失败不改变产出一致性 */ }
-        return {
-          text: "agent:" + payload.instruction,
-          artifacts: [{ kind: "file", uri: "file:///tmp/mcode-agent-output.txt", mimeType: "text/plain" }],
-          runId: "run_pack_1",
-        };
-      },
-    };
-  });
-};
-`.trimStart(), "utf8");
-  writeFileSync(join(nodesDir, "mcode-agent.html"), agentNodeHtml(), "utf8");
+  const runnerJs = [
+    "// 测试注入的注册外壳：与生产完全同一条 RED.nodes.registerType 路径。",
+    "const pack = require(" + JSON.stringify(TYPES_BUNDLE) + ");",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "const userDir = process.env.MCODE_NODE_PACK_USER_DIR || '';",
+    "function rec(name, payload) {",
+    "  try { fs.appendFileSync(path.join(userDir, 'node-runs.jsonl'), JSON.stringify({ kind: name, payload }) + '\\n'); } catch (e) {}",
+    "}",
+    "const artifact = [{ kind: 'file', uri: 'file:///tmp/mcode-node-output.txt', mimeType: 'text/plain' }];",
+    "module.exports = function (RED) {",
+    "  pack.registerMcodeNodePack(RED, function () {",
+    "    return {",
+    "      agent: { async run(p) { rec('agent', p); return { text: 'agent:' + p.instruction, artifacts: artifact, runId: 'run_all_1' }; } },",
+    "      conversation: { async run(p) { rec('conversation', p); return { text: 'conv:' + p.instruction, artifacts: artifact }; } },",
+    "      branch: { async decide(p) { rec('branch', p); return { port: 0, label: '继续' }; } },",
+    "      trigger: { subscribe(p, emit) { rec('trigger', p); setTimeout(function () { emit({ payload: { trigger: { kind: p.triggerKind, at: 1 } }, mcode: { nodeId: p.nodeId, runId: null, condition: true } }); }, 150); } },",
+    "      code: { async run(p) { rec('code', p); return { text: 'code:' + p.code, artifacts: artifact }; } },",
+    "      moduleCapability: { async run(p) { rec('module-capability', p); return { text: 'module:' + p.moduleId, artifacts: artifact }; } },",
+    "      nodeRedCall: { async run(p) { rec('node-red-call', p); return { text: 'nr:' + p.enginePath, artifacts: artifact, status: 200 }; } },",
+    "    };",
+    "  });",
+    "};",
+    "",
+  ].join("\n");
+  writeFileSync(join(nodesDir, "mcode-node-pack.js"), runnerJs, "utf8");
+  writeFileSync(join(nodesDir, "mcode-node-pack.html"), allNodeHtml(), "utf8");
 
   const registry = new ProductionWorkflowEngineRegistry();
-  // 可信标记：迁移流里没有持久化 flow 也无所谓；写它只为与 A/B 段一致。
-  writeFileSync(join(registry.dataDirOf("node-red"), "engine-trust.json"), JSON.stringify({ trusted: true }), "utf8");
+  const registryDataDir = registry.dataDirOf("node-red");
+  eq("★ 生产注册表的引擎数据目录 = 本套私有 dataRoot（不是共享安装树）",
+    registryDataDir, privateEngineDir);
+  writeFileSync(join(registryDataDir, "engine-trust.json"), JSON.stringify({ trusted: true }), "utf8");
   const launch = registry.launchSpec("node-red");
   check("★ 生产 launchSpec 可用", launch !== null);
 
   if (launch !== null) {
-    // 本套用独立 userDir 起（数据文件隔离）：bootstrap 从 argv 拿 userDir，节点包在
-    // `<userDir>/nodes/`，已被 Node-RED 的 loader 扫到（B 段第一条断言即证）。
-    /** 记录式 spawn：捕获引擎 tail 输出（bootstrap 日志是 warn 级，missing-types 是 info
-     *  级看不到 —— 但节点包加载错误会以 error/异常出现在这里）。 */
-    // 包一层对象：赋值发生在 spawn 闭包里，直接 `let fn = null` 会被 TS 收窄成 null。
     const tailBox: { get: (() => string) | null } = { get: null };
     const ports = {
       ...defaultEngineRuntimePorts,
@@ -319,7 +506,6 @@ module.exports = function (RED) {
     };
     const runtime = new EngineRuntime("node-red", ports);
     try {
-      // bootstrap 的 argv[3] 是 userDir —— 用 args 覆写指到临时 userDir（其余命令/env 原样）。
       const status = await runtime.start({
         engineId: "node-red",
         dataDir: userDir,
@@ -334,106 +520,81 @@ module.exports = function (RED) {
       const token = launch.env?.MCODE_ENGINE_ADMIN_TOKEN ?? "";
       const auth = { authorization: `Bearer ${token}` };
 
-      // ① 节点包被注册：GET /nodes 里能看到 mcode-agent 类型且没有 err。
+      // ① GET /nodes：7 个 mcode-* 类型全部注册且无 err。
       const nodesRes = await fetch(`http://127.0.0.1:${port}/nodes`, {
         headers: { ...auth, accept: "application/json" },
         signal: AbortSignal.timeout(8_000),
       });
-      const nodeList = (await nodesRes.json()) as Array<{ types?: string[]; err?: string; id?: string }>;
-      const packEntry = nodeList.find((n) => Array.isArray(n.types) && n.types.includes(MCODE_AGENT_NODE_TYPE));
-      check("★【MERGE-2】真引擎把 mcode-agent 注册进节点表（GET /nodes）",
-        nodesRes.status === 200 && packEntry !== undefined,
-        { status: nodesRes.status, types: nodeList.map((n) => n.types) });
-      check("★【MERGE-2】注册条目没有加载错误（err 缺席）", packEntry?.err === undefined, packEntry);
+      const nodeList = (await nodesRes.json()) as Array<{ types?: string[]; err?: string }>;
+      const registeredTypes = new Set(nodeList.flatMap((n) => n.types ?? []));
+      check("★【MERGE-2】GET /nodes 里 7 个 mcode-* 类型全部注册",
+        nodesRes.status === 200 && MCODE_NODE_PACK_TYPES.every((t) => registeredTypes.has(t)),
+        { status: nodesRes.status, missing: MCODE_NODE_PACK_TYPES.filter((t) => !registeredTypes.has(t)), types: [...registeredTypes] });
+      const packEntries = nodeList.filter((n) => n.types?.some((t) => (MCODE_NODE_PACK_TYPES as readonly string[]).includes(t)));
+      check("★【MERGE-2】7 个类型都没有加载错误（err 缺席）",
+        packEntries.every((n) => n.err === undefined), packEntries.map((n) => n.err));
 
-      // ② 部署迁移流：含 mcode-agent 的整组 flow 真的启动。
-      const flowWithAgent = migrated.flow.nodes;
-      const deploy = await fetch(`http://127.0.0.1:${port}/flows`, {
-        method: "POST",
-        headers: { ...auth, "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2" },
-        body: JSON.stringify({ flows: flowWithAgent }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      check("★【MERGE-2】含 mcode-agent 的迁移流部署成功（200）", deploy.status === 200, deploy.status);
-
-      // ②' 迁移图里有 mcode.main / mcode.condition 等**未安装**的类型，整组仍会
-      //      missing-types 不启动（Gate C 已钉的硬事实）—— 这不是本片要改的。
-      //      「mcode-agent 已注册 → 整组能启动」用一份**只含已注册类型**的流来验：
-      //      http in → mcode-agent → http response（全部已注册）。它的 HTTP-in 200
-      //      就是注册成功的对照证据；若 mcode-agent 未注册，它会与 Gate C 一样 404。
-      const directFlow = [
-        { id: "tab_direct", type: "tab", label: "direct", disabled: false, info: "", env: [] },
-        { id: "in_direct", type: "http in", z: "tab_direct", url: "/agent-run", method: "get", upload: false, swaggerDoc: "", x: 100, y: 800, wires: [["agent_direct"]] },
-        {
-          id: "agent_direct",
-          type: MCODE_AGENT_NODE_TYPE,
-          z: "tab_direct",
-          name: "agent",
-          instruction: "把输入原样交回",
-          capability: "read",
-          outputVar: "text",
-          x: 300,
-          y: 800,
-          wires: [["out_direct"]],
-          "x-mcode": { nodeId: "a_agent_direct", params: { instruction: "把输入原样交回" } },
-        },
-        { id: "out_direct", type: "http response", z: "tab_direct", x: 500, y: 800, wires: [] },
-      ];
-      // 触发前清掉计数文件（全量重部署会重建节点，但文件跨部署保留）。
+      // ② 部署整张迁移流 + 一条原生 HTTP-in 活体探针（同一份部署）。
+      const probeTab = { id: "tab_probe_all", type: "tab", label: "probe", disabled: false, info: "", env: [] };
+      const probeIn = { id: "in_probe_all", type: "http in", z: "tab_probe_all", url: "/all-kinds", method: "get", upload: false, swaggerDoc: "", x: 100, y: 900, wires: [["out_probe_all"]] };
+      const probeOut = { id: "out_probe_all", type: "http response", z: "tab_probe_all", x: 300, y: 900, wires: [] };
+      const deployFlows = [...migrated.flow.nodes, probeTab, probeIn, probeOut];
       try {
-        rmSync(join(userDir, "agent-runs.jsonl"), { force: true });
+        rmSync(join(userDir, "node-runs.jsonl"), { force: true });
       } catch {
         /* 不存在 */
       }
-      const deployDirect = await fetch(`http://127.0.0.1:${port}/flows`, {
+      const deploy = await fetch(`http://127.0.0.1:${port}/flows`, {
         method: "POST",
         headers: { ...auth, "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2" },
-        body: JSON.stringify({ flows: directFlow }),
+        body: JSON.stringify({ flows: deployFlows }),
         signal: AbortSignal.timeout(15_000),
       });
-      check("★【MERGE-2】http-in → mcode-agent → http-response 流部署成功", deployDirect.status === 200);
+      check("★【MERGE-2】含全部 7 种 runner.kind 的迁移流部署成功（200）", deploy.status === 200, deploy.status);
 
+      // ③ HTTP-in 真的 200：missing-types 闸不再触发（对照 Gate C 的 404）。
       let probeStatus = 0;
-      let probeBody = "";
       const deadline = Date.now() + 10_000;
       while (Date.now() < deadline) {
-        const r = await fetch(`http://127.0.0.1:${port}/api/agent-run`, { signal: AbortSignal.timeout(2_000) }).catch(() => null);
+        const r = await fetch(`http://127.0.0.1:${port}/api/all-kinds`, { signal: AbortSignal.timeout(2_000) }).catch(() => null);
         probeStatus = r?.status ?? 0;
-        probeBody = r === null ? "" : await r.text();
         if (probeStatus === 200) break;
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
       if (probeStatus !== 200) {
-        console.log("  [evidence] engine tail:", (tailBox.get === null ? "(no child)" : tailBox.get()).slice(-1500));
+        console.log("  [evidence] engine tail:", (tailBox.get === null ? "(no child)" : tailBox.get()).slice(-2000));
       }
-      check("★【MERGE-2】含 mcode-agent 的整组 flow 真的启动（全已注册类型的流，HTTP-in 200）",
-        probeStatus === 200, { probeStatus });
-      let body: unknown = null;
-      try {
-        body = JSON.parse(probeBody);
-      } catch {
-        /* 断言里看原文 */
-      }
-      check("★【MERGE-2】节点被触发执行一次并产出预期 payload（HTTP response 回 { text, artifacts }）",
-        probeStatus === 200
-        && (body as { text?: string } | null)?.text === "agent:把输入原样交回"
-        && Array.isArray((body as { artifacts?: unknown[] } | null)?.artifacts)
-        && ((body as { artifacts?: Array<{ uri?: string }> }).artifacts ?? [])[0]?.uri === "file:///tmp/mcode-agent-output.txt",
-        { status: probeStatus, body, probeBody: probeBody.slice(0, 300) });
+      check("★【MERGE-2】迁移流整组真的启动（HTTP-in 200；missing-types 闸不再触发）", probeStatus === 200, { probeStatus });
 
-      // ④ 假 port 被调用一次：读引擎进程写的计数文件。
-      let calls: Array<Record<string, unknown>> = [];
-      try {
-        calls = readFileSync(join(userDir, "agent-runs.jsonl"), "utf8")
-          .split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as Record<string, unknown>);
-      } catch {
-        /* 文件不存在 = 0 次 */
+      // ④ 各节点执行一次（trigger 自动 emit → conversation → agent → branch →
+      //    condition → code → module-capability；exec/switch 是原生节点不记 port）。
+      const expectedKinds = ["trigger", "conversation", "agent", "branch", "code", "module-capability"];
+      let calls: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+      const callsDeadline = Date.now() + 10_000;
+      while (Date.now() < callsDeadline) {
+        try {
+          calls = readFileSync(join(userDir, "node-runs.jsonl"), "utf8")
+            .split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as { kind: string; payload: Record<string, unknown> });
+        } catch {
+          calls = [];
+        }
+        if (expectedKinds.every((k) => calls.some((c) => c.kind === k))) break;
+        await new Promise((resolve) => setTimeout(resolve, 150));
       }
-      eq("★【MERGE-2】假 port 恰好被调用一次", calls.length, 1);
-      check("★【MERGE-2】假 port 收到的 instruction 正确", calls[0]?.instruction === "把输入原样交回", calls[0]);
-      check("★【MERGE-2】假 port 收到的 nodeId 来自 x-mcode", calls[0]?.nodeId === "a_agent_direct", calls[0]);
+      const kindCounts = new Map<string, number>();
+      for (const c of calls) kindCounts.set(c.kind, (kindCounts.get(c.kind) ?? 0) + 1);
+      eq("★【MERGE-2】6 个经 port 的节点各执行一次（trigger/conversation/agent/branch/code/module-capability）",
+        expectedKinds.map((k) => [k, kindCounts.get(k) ?? 0]), expectedKinds.map((k) => [k, 1]));
+      check("★【MERGE-2】exec / switch 是原生节点（不经过 port；node-red-call 因 branch 选 0 未走到）",
+        !calls.some((c) => c.kind === "node-red-call"), [...kindCounts.keys()]);
+      const byKind = (k: string): Record<string, unknown> | undefined => calls.find((c) => c.kind === k)?.payload;
+      check("★【MERGE-2】conversation 收到 instruction", byKind("conversation")?.instruction === "聊一句", byKind("conversation"));
+      check("★【MERGE-2】agent 收到 instruction", byKind("agent")?.instruction === "查资料", byKind("agent"));
+      check("★【MERGE-2】branch 收到端口数 = 2", byKind("branch")?.portCount === 2, byKind("branch"));
+      check("★【MERGE-2】code 收到 code/language", byKind("code")?.code === "print(1)" && byKind("code")?.language === "python", byKind("code"));
+      check("★【MERGE-2】module-capability 收到 moduleId", byKind("module-capability")?.moduleId === "core.file-report", byKind("module-capability"));
+      check("★【MERGE-2】trigger 收到 triggerKind", byKind("trigger")?.triggerKind === "manual", byKind("trigger"));
 
-      // 清理：停止引擎。
       const stopped = await runtime.stop(1_000);
       check("★ 真引擎 stop 后状态 stopped、端口清空", stopped.state === "stopped" && stopped.port === null, stopped);
     } finally {
@@ -450,6 +611,7 @@ module.exports = function (RED) {
     }
   }
 }
+
 
 console.log(`\nmcode-node-pack-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
