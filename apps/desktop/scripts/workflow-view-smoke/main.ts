@@ -2409,6 +2409,66 @@ console.log("\n引擎编辑器视图的凭据(源码级：面板递 engineId，�
   );
 }
 
+console.log("\nEngineNodePackagesSection(节点包：列表不伪装空、审批卡字段齐全)");
+// 【ARC-006 Gate E】节点安装 = 装可执行代码。判据钉在源码上（组件 effect 不在 SSR 里跑）：
+//   ① 列表真的读 nodesList，且 corrupt 时**显式报原因**（不把"读不懂"画成"没装"）；
+//   ② 审批卡展示 describeEngineNodeInstall 的每一个字段（包名/版本、来源、许可、
+//      能力、sha256、intent、network 标记）；
+//   ③ 批准/拒绝都经 respondNodeInstallApproval，**渲染端没有 approvedByUser 可传**。
+{
+  const panel = readFileSync(
+    "src/renderer/components/settings/workflows/EngineRuntimePanel.tsx",
+    "utf8",
+  );
+  const code = panel.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ 节点包列表来自 api.workflowEngine.nodesList",
+    /api\.workflowEngine\.nodesList\(\)/.test(code),
+  );
+  check(
+    "★ 清单损坏时显式报原因(不伪装成空列表)",
+    /nodesCorrupt/.test(code) && /list\.data\?\.corrupt/.test(code),
+  );
+  check(
+    "★ 空列表有独立的空态(没装 ≠ 读不懂)",
+    /data-engine-nodes-empty/.test(code) && /nodesEmpty/.test(code),
+  );
+  check(
+    "★ 已装列表逐条渲染(name@version + 许可 + sha)",
+    /data-engine-nodes-list/.test(code) && /node\.name/.test(code) && /node\.license/.test(code) && /node\.sha256/.test(code),
+  );
+  // 审批卡：七个字段一个都不能少（少一个，用户就可能批一个没看清的包）。
+  for (const [label, re] of [
+    ["包名/版本", /approval\.name\}@\{approval\.version/],
+    ["来源", /nodesFieldSource[\s\S]{0,80}?approval\.source/],
+    ["许可", /nodesFieldLicense[\s\S]{0,80}?approval\.license/],
+    ["能力声明", /nodesFieldCapabilities[\s\S]{0,80}?approval\.capabilities\.join/],
+    ["sha256", /nodesFieldSha[\s\S]{0,80}?approval\.sha256/],
+    ["intent", /nodesFieldIntent[\s\S]{0,80}?approval\.intent/],
+    ["network 标记", /approval\.network[\s\S]{0,200}?nodesApprovalNetwork/],
+  ] as const) {
+    check(`★ 审批卡展示${label}`, re.test(code), code.match(re)?.[0]);
+  }
+  check(
+    "★ 批准/拒绝都经 respondNodeInstallApproval(只回答那一次 requestId)",
+    /respondNodeInstallApproval\(\{ requestId, approved \}\)/.test(code) && /respond\(true\)/.test(code) && /respond\(false\)/.test(code),
+  );
+  check(
+    "★ 渲染端没有 approvedByUser 可传(批准只能来自审批卡)",
+    !/approvedByUser/.test(code),
+    code.match(/approvedByUser[^\n]*/g),
+  );
+  check(
+    "★ 审批请求订阅的是主进程推送通道",
+    /api\.on\.nodeInstallApproval\(/.test(code) && /workflowEngine:nodeInstallApproval/.test(code),
+  );
+  // 防空过：上面任何一条正则若因改名全部失配，面板里那几段结构必须仍然存在。
+  check(
+    "防空过：节点包区块确实挂在引擎面板里",
+    /<EngineNodePackagesSection\s*\/>/.test(code) && /export function EngineNodePackagesSection/.test(code),
+  );
+}
+
 console.log("\nEngineCallbackSection(桥 2 预留位:如实说「还不能用」)");
 // 这块的失败模式不是"画错",而是**画得太像可用配置**:给一份填好的 command/args/env
 // 加复制按钮,用户会把它填进 Node-RED,然后排查一个不存在的故障。所以断言分成三组:

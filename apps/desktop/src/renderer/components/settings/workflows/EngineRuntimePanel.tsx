@@ -461,6 +461,146 @@ export function EngineCallbackSection() {
   );
 }
 
+/**
+ * 【ARC-006 Gate E】**已装节点包**：列表 + 安装入口 + 渲染端审批卡。
+ *
+ * ## 它为什么长在设置页
+ *
+ * 安装节点包 = 往引擎里放一份会被 `require()` 执行的可执行代码（与「装 MCP 服务器」
+ * 同一档）。审批卡放在用户主动点「安装」的这个面板里，卡片能说清包名/版本/来源/
+ * 许可/能力（含 network）/sha256 —— 比原生框更说得清；这也与 `moduleApproval` 的
+ * 分工一致（主进程发请求、渲染端画卡，`engineNodeApprovalBridge.ts`）。
+ *
+ * ## 审批卡不是"确认按钮"
+ *
+ * 主进程在安装时推送 `workflowEngine:nodeInstallApproval`；本组件画卡，用户点
+ * 「允许安装/拒绝」后经 `respondNodeInstallApproval` **只回答那一次 requestId**。
+ * 主进程不保存任何批准状态 —— 下次安装要重新点头。
+ *
+ * ## 不伪装空
+ *
+ * `nodesList` 的 `corrupt` 非空时显示原因（清单读不懂 ≠ 没装）。
+ */
+export function EngineNodePackagesSection() {
+  const { t } = useI18n();
+  const list = useRpc(() => api.workflowEngine.nodesList(), [], { toastOnError: false });
+  // 安装请求的完整形状（`{sourceDir, meta}`）由调用方给：sha256 是**对着要装的那份字节**
+  // 算出来的，面板没有能力自己算（也不该假装知道）。与 `ModuleSurface` 的清单草稿同形。
+  const [draft, setDraft] = useState(() => JSON.stringify({
+    sourceDir: "",
+    meta: { name: "", version: "", source: "", sha256: "", license: "", capabilities: [] },
+  }, null, 2));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [approval, setApproval] = useState<Extract<Parameters<Parameters<typeof api.on.nodeInstallApproval>[0]>[0], { channel: "workflowEngine:nodeInstallApproval" }> | null>(null);
+
+  // 主进程推来的审批卡：一次一张（安装是串行动作，不会并发）。
+  useEffect(() => {
+    const off = api.on.nodeInstallApproval((msg) => setApproval(msg));
+    return off;
+  }, []);
+
+  const respond = async (approved: boolean): Promise<void> => {
+    if (approval === null) return;
+    const requestId = approval.requestId;
+    setApproval(null);
+    try { await api.workflowEngine.respondNodeInstallApproval({ requestId, approved }); }
+    catch { /* 应答失败 = 主进程那边超时会按拒绝处理（fail-closed） */ }
+  };
+
+  const install = async (): Promise<void> => {
+    if (busy) return;
+    let request: { sourceDir: string; meta: { name: string; version: string; source: string; sha256: string; license: string; capabilities: string[] } };
+    try {
+      request = JSON.parse(draft) as typeof request;
+    } catch {
+      setError(t("settings.workflows.engine.nodesNeedDir"));
+      return;
+    }
+    if (typeof request?.sourceDir !== "string" || request.sourceDir.trim() === "") {
+      setError(t("settings.workflows.engine.nodesNeedDir"));
+      return;
+    }
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      // 审批由主进程弹出（渲染端只回 requestId）；这里**没有** approvedByUser 字段可传。
+      const result = await api.workflowEngine.nodeInstall({ sourceDir: request.sourceDir.trim(), meta: request.meta });
+      if (!result.ok) { setError(`${t("settings.workflows.engine.nodesInstallFailed")}: ${result.reason}`); return; }
+      setNotice(t("settings.workflows.engine.nodesInstalled", { name: result.node.name, version: result.node.version }));
+      await list.refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-2" data-engine-nodes="">
+      <h4 className="text-sm font-semibold">{t("settings.workflows.engine.nodesTitle")}</h4>
+      <p className="text-[0.7857em] text-content-muted">{t("settings.workflows.engine.nodesMetaHint")}</p>
+      {list.loading && list.data === undefined && <LoadingNote label={t("common.loading")} />}
+      {list.error !== null && list.data === undefined && <ErrorNote>{list.error.message}</ErrorNote>}
+      {list.data?.corrupt !== null && list.data?.corrupt !== undefined && (
+        <ErrorNote tone="warning" icon={IconAlertTriangle}>
+          {t("settings.workflows.engine.nodesCorrupt", { reason: list.data.corrupt })}
+        </ErrorNote>
+      )}
+      {list.data !== undefined && list.data.nodes.length === 0 && list.data.corrupt === null && (
+        <p className="text-[0.7857em] text-content-subtle" data-engine-nodes-empty="">{t("settings.workflows.engine.nodesEmpty")}</p>
+      )}
+      {list.data !== undefined && list.data.nodes.length > 0 && (
+        <ul className="space-y-1" data-engine-nodes-list="">
+          {list.data.nodes.map((node) => (
+            <li key={node.name} className="rounded border border-edge px-2 py-1 text-[0.7857em]">
+              <span className="font-mono">{node.name}@{node.version}</span>
+              <span className="ml-2 text-content-subtle">{t("settings.workflows.engine.nodesFieldLicense")}: {node.license}</span>
+              <span className="ml-2 font-mono text-content-subtle" title={node.sha256}>{node.sha256.slice(0, 12)}…</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <label className="block space-y-1 text-sm">
+        <span>{t("settings.workflows.engine.nodesSourceDir")}</span>
+        <textarea
+          data-testid="engine-nodes-request"
+          className="h-40 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          spellCheck={false}
+        />
+      </label>
+      <Button variant="primary" disabled={busy} onClick={() => void install()}>
+        {t("settings.workflows.engine.nodesInstall")}
+      </Button>
+      {error !== null && <ErrorNote title={t("settings.workflows.engine.nodesInstallFailed")}>{error}</ErrorNote>}
+      {notice !== null && <p className="text-[0.7857em] text-content-muted">{notice}</p>}
+      {approval !== null && (
+        <div className="space-y-2 rounded border border-warning/50 bg-warning/10 p-3 text-[0.7857em]" data-engine-approval="">
+          <div className="font-semibold">{t("settings.workflows.engine.nodesApprovalTitle")}</div>
+          <p>{t("settings.workflows.engine.nodesApprovalBody")}</p>
+          <div className="space-y-0.5 font-mono text-content-muted">
+            <div>{approval.name}@{approval.version}</div>
+            <div>{t("settings.workflows.engine.nodesFieldSource")}: {approval.source}</div>
+            <div>{t("settings.workflows.engine.nodesFieldLicense")}: {approval.license}</div>
+            <div>{t("settings.workflows.engine.nodesFieldCapabilities")}: {approval.capabilities.join(", ")}</div>
+            <div>{t("settings.workflows.engine.nodesFieldSha")}: {approval.sha256.slice(0, 16)}…</div>
+            <div>{t("settings.workflows.engine.nodesFieldIntent")}: {approval.intent}</div>
+          </div>
+          {approval.network && (
+            <p className="text-warning">{t("settings.workflows.engine.nodesApprovalNetwork")}</p>
+          )}
+          <div className="flex gap-2">
+            <Button size="sm" variant="primary" onClick={() => void respond(true)}>{t("settings.workflows.engine.nodesApprovalAllow")}</Button>
+            <Button size="sm" variant="secondary" onClick={() => void respond(false)}>{t("settings.workflows.engine.nodesApprovalDeny")}</Button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function EngineRuntimePanel({ active: activeTab = true }: { active?: boolean }) {
   const { t } = useI18n();
   const listRead = useRpc(() => api.workflowEngine.list(), []);
@@ -534,6 +674,7 @@ export function EngineRuntimePanel({ active: activeTab = true }: { active?: bool
       {/* 回调通道的预留位（桥 2）。放在引擎行下面而不是列表之上：它描述的是
           "引擎能对 Mcode 做什么"，是引擎配置的一部分，不是操作入口。 */}
       <EngineCallbackSection />
+      <EngineNodePackagesSection />
       <div className="text-[0.7143em] text-content-subtle">
         {t("settings.workflows.engine.footnote")}
       </div>

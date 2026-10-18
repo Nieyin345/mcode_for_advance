@@ -1041,6 +1041,11 @@ const api = {
     stop: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_STOP, input)) as RpcMap["workflowEngine.stop"],
     status: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_STATUS, input)) as RpcMap["workflowEngine.status"],
     list: (() => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_LIST)) as RpcMap["workflowEngine.list"],
+    // 【ARC-006 Gate E】节点包：列表只读；安装的审批由主进程推送（见
+    // `onNodeInstallApproval`）、渲染端经 respond 回布尔。
+    nodesList: (() => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_NODES_LIST)) as RpcMap["workflowEngine.nodesList"],
+    nodeInstall: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_NODE_INSTALL, input)) as RpcMap["workflowEngine.nodeInstall"],
+    respondNodeInstallApproval: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_NODE_INSTALL_RESPOND, input)) as RpcMap["workflowEngine.respondNodeInstallApproval"],
   },
   unattended: {
     // 无人值守任务计划:用户签发计划级授权 + 正式执行。**只有桌面渲染端**够得到
@@ -1054,6 +1059,7 @@ const api = {
   // 手机端**故意不做**的一块;独立命名空间在 webApi 的 Proxy 兜底里自然变 unsupported)。
   unattendedPlans: {
     list: (() => ipcRenderer.invoke(IPC.UNATTENDED_PLANS_LIST)) as RpcMap["unattendedPlans.list"],
+    health: (() => ipcRenderer.invoke(IPC.UNATTENDED_PLANS_HEALTH)) as RpcMap["unattendedPlans.health"],
     resume: ((input) => ipcRenderer.invoke(IPC.UNATTENDED_PLANS_RESUME, input)) as RpcMap["unattendedPlans.resume"],
     abandon: ((input) => ipcRenderer.invoke(IPC.UNATTENDED_PLANS_ABANDON, input)) as RpcMap["unattendedPlans.abandon"],
   },
@@ -1273,6 +1279,18 @@ const api = {
     },
     /** 【MC-061 残余】插件 hook 授权变了(签发 / 撤销 / 用尽)。设置 → 插件里那一块授权栏
      *  据此**只刷它自己**(消息带 `pluginId`)—— 不必等用户手动切页才看到状态已变。 */
+    /** 【ARC-006 Gate E】主进程请求「安装这个节点包」的审批。渲染端画卡、用户点
+     *  允许/拒绝后经 `api.workflowEngine.respondNodeInstallApproval` 回布尔。
+     *  与 `hostHookGrantsChanged` 同一套推送模式（`sendToRenderer` → preload `on`）。 */
+    nodeInstallApproval(handler: (msg: Extract<MainToRendererMessage, { channel: "workflowEngine:nodeInstallApproval" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.WORKFLOW_ENGINE_NODE_INSTALL_APPROVAL) handler(msg);
+      };
+      ipcRenderer.on(IPC.WORKFLOW_ENGINE_NODE_INSTALL_APPROVAL, listener);
+      return () => {
+        ipcRenderer.off(IPC.WORKFLOW_ENGINE_NODE_INSTALL_APPROVAL, listener);
+      };
+    },
     hostHookGrantsChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "hooks:hostHookGrantsChanged" }>) => void): () => void {
       const listener = (_e: unknown, msg: MainToRendererMessage) => {
         if (msg.channel === IPC.HOST_HOOK_GRANTS_CHANGED) handler(msg);

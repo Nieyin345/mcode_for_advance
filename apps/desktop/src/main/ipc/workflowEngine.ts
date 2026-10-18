@@ -25,9 +25,15 @@ import {
   WorkflowEngineStartSchema,
   WorkflowEngineStopSchema,
   WorkflowEngineStatusSchema,
+  WorkflowEngineNodeInstallSchema,
+  WorkflowEngineNodeInstallRespondSchema,
   type WorkflowEngineListResult,
   type WorkflowEngineResult,
   type WorkflowEngineStatusView,
+  type WorkflowEngineNodesListResult,
+  type WorkflowEngineNodeInstallInput,
+  type WorkflowEngineNodeInstallResult,
+  type WorkflowEngineNodeInstallRespondInput,
 } from "@contracts/ipc";
 import { recordRpcHandler } from "@main/appControl/registry.js";
 import { errText } from "@main/lib/ipcError.js";
@@ -56,6 +62,17 @@ export interface WorkflowEngineHandlerPorts {
   registry: WorkflowEngineRegistry;
   /** 取某个引擎的启动参数；未配置返回 null。 */
   launchSpec(engineId: string): WorkflowEngineLaunchSpec | null;
+  /** 【ARC-006 Gate E】节点包清单（`engineNodeRegistry.ts` 的实例）。缺省 = 不提供
+   *  安装面（`nodesList` 回空 + `nodeInstall` 显式拒绝，fail-closed）。 */
+  nodes?: {
+    /** 列已装节点（读清单；corrupt 带原因）。 */
+    list(): Promise<WorkflowEngineNodesListResult>;
+    /** 安装（调 `installEngineNode`，审批端口已由装配层接好）。 */
+    /** 绑定本次操作来源的真实 webContents id；缺失身份拒绝安装。 */
+    install(input: WorkflowEngineNodeInstallInput, senderId: number): Promise<WorkflowEngineNodeInstallResult>;
+    /** 必须核对回答者就是申请窗口，而非只信 requestId。 */
+    respond(input: WorkflowEngineNodeInstallRespondInput, senderId: number): boolean;
+  };
 }
 
 function failed(err: unknown, status: WorkflowEngineStatusView | null = null): WorkflowEngineResult {
@@ -143,4 +160,52 @@ export function registerWorkflowEngineHandlers(ipc: IpcMain, ports: WorkflowEngi
   };
   recordRpcHandler(IPC.WORKFLOW_ENGINE_LIST, onList);
   ipc.handle(IPC.WORKFLOW_ENGINE_LIST, onList);
+
+  // 【ARC-006 Gate E】节点包：列表只读、安装走审批硬前置、respond 只兑现一次请求。
+  // 三条都过 `recordRpcHandler`（与其它域同一条纪律）；安装的审批由 `nodes.install`
+  // 背后的路由完成 —— handler 这一层**不接受**任何 approvedByUser 字段。
+  const onNodesList = async (): Promise<WorkflowEngineNodesListResult> => {
+    if (ports.nodes === undefined) return { corrupt: null, nodes: [] };
+    try {
+      return await ports.nodes.list();
+    } catch (err) {
+      return { corrupt: errText(err), nodes: [] };
+    }
+  };
+  recordRpcHandler(IPC.WORKFLOW_ENGINE_NODES_LIST, onNodesList);
+  ipc.handle(IPC.WORKFLOW_ENGINE_NODES_LIST, onNodesList);
+
+  const senderIdOf = (evt: unknown): number | null => {
+    const id = (evt as { sender?: { id?: unknown } } | null)?.sender?.id;
+    return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : null;
+  };
+  const onNodeInstall = async (evt: unknown, raw: unknown): Promise<WorkflowEngineNodeInstallResult> => {
+    try {
+      const input = WorkflowEngineNodeInstallSchema.parse(raw);
+      if (ports.nodes === undefined) {
+        return { ok: false, code: "approval_unavailable", reason: "当前宿主没有配置节点包安装通道，已拒绝安装" };
+      }
+      const senderId = senderIdOf(evt);
+      if (senderId === null) return { ok: false, code: "approval_unavailable", reason: "没有可信安装发起窗口，已拒绝" };
+      return await ports.nodes.install(input, senderId);
+    } catch (err) {
+      return { ok: false, code: "invalid", reason: errText(err) };
+    }
+  };
+  recordRpcHandler(IPC.WORKFLOW_ENGINE_NODE_INSTALL, onNodeInstall);
+  ipc.handle(IPC.WORKFLOW_ENGINE_NODE_INSTALL, onNodeInstall);
+
+  const onNodeInstallRespond = async (evt: unknown, raw: unknown): Promise<{ ok: boolean }> => {
+    try {
+      const input = WorkflowEngineNodeInstallRespondSchema.parse(raw);
+      if (ports.nodes === undefined) return { ok: false };
+      const senderId = senderIdOf(evt);
+      return { ok: senderId !== null && ports.nodes.respond(input, senderId) };
+    } catch {
+      // 形状非法 / 迟到应答：`ok:false`（不抛 —— 与其它 handler 同一条取向）。
+      return { ok: false };
+    }
+  };
+  recordRpcHandler(IPC.WORKFLOW_ENGINE_NODE_INSTALL_RESPOND, onNodeInstallRespond);
+  ipc.handle(IPC.WORKFLOW_ENGINE_NODE_INSTALL_RESPOND, onNodeInstallRespond);
 }

@@ -161,6 +161,9 @@ const BLOCKED: Record<string, string> = {
   // 批过的计划;`list` 虽是只读,但它读的是「哪些计划在等用户批准」这类**治理事实**,也不开给
   // agent(与 `agentSsh.list` 同取向)。三条一律 blocked。
   "unattendedPlans.list": "无人值守计划的等待列表是用户的治理视图,agent 不必读",
+  // 【ARC-006 Gate E】审批应答 = 「用户本人点头」这件事的落点：agent 任何理由都不该
+  // 自己回答一张安装审批卡（答了就等于自己批准自己装可执行代码）。
+  "workflowEngine.respondNodeInstallApproval": "安装审批的应答只能由用户在审批卡上本人点击",
   "unattendedPlans.resume": "续跑无人值守计划会在本机建会话,只能由用户本人发起",
   "unattendedPlans.abandon": "放弃计划是用户的治理动作,只能由用户本人发起"
 };
@@ -178,6 +181,11 @@ const DANGER: Record<string, string> = {
   "plugins.marketplaceRemove": "移除插件市场源",
   "plugins.marketplaceRefresh": "刷新插件市场(会联网拉取)",
   "mcp.save": "新增/修改 MCP 服务器(会在本机启动进程或连外部服务)",
+  // 【ARC-006 Gate E】安装第三方节点包 = **装可执行代码**（Node-RED 会 require 它）。
+  // 与 mcp.save / plugins.installLocal 同档：每次都要用户本人在审批卡上点头。
+  // 审批卡由主进程推给渲染端（`workflowEngine:nodeInstallApproval`），handler 不接受
+  // 任何 approvedByUser 字段。
+  "workflowEngine.nodeInstall": "安装第三方节点包(可执行代码,会由引擎进程 require)",
   // 【ARC-007】GenOffice 安装入口 = 往真相层写一条会在本机拉起 `genoffice mcp`
   // 进程的 stdio 条目(围栏是此刻的工作区根快照)。与 `mcp.save` 同档 ——
   // 用户点的那一下与「新增 MCP server」是同一件事,只是配置由 Mcode 自己生成。
@@ -337,6 +345,10 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "rg.status": "read",
   "automation.runs": "read",
   "automation.preflight": "read",
+  // 【MC-029 剩余项】无人值守计划存档健康度是**只读诊断**(ok / corrupt / unreadable +
+  // 原因),不含任何治理事实(不列计划、不带授权),故开给 Agent —— 与 `unattendedPlans.list`
+  // 的 blocked 不冲突:那一条读的是「哪些计划在等用户批准」,这一条只答「存档坏没坏、怎么修」。
+  "unattendedPlans.health": "read",
   "automation.sessions": "read",
   "automation.statusAll": "read",
   "automation.watchStatus": "read",

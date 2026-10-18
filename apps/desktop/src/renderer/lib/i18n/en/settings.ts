@@ -1421,6 +1421,27 @@ export const en = {
   "settings.workflows.engine.noneBody": "The main-process engine registry is empty — this build usually has no third-party engines wired up.",
   "settings.workflows.engine.footnote":
     "The engine is a standalone process: closing this view does not stop it — use Stop above. Flows you draw in its editor do not run by themselves (deploy is still your click inside the engine).",
+  // ── ARC-006 Gate E: node packages (executable code) ──
+  "settings.workflows.engine.nodesTitle": "Installed node packages",
+  "settings.workflows.engine.nodesEmpty": "No node packages installed yet.",
+  "settings.workflows.engine.nodesCorrupt": "The node registry cannot be read ({reason}) — the installed list is not trustworthy; fix or remove engine-nodes.json first.",
+  "settings.workflows.engine.nodesInstall": "Install node package…",
+  "settings.workflows.engine.nodesNeedDir": "Enter the local directory of the node package below first.",
+  "settings.workflows.engine.nodesSourceDir": "Node package directory (downloaded / unpacked)",
+  "settings.workflows.engine.nodesMetaHint": "Before installing, verify that the name, version, source, license, capabilities and sha256 match the package you intend to install.",
+  "settings.workflows.engine.nodesInstallFailed": "Node package installation did not complete",
+  "settings.workflows.engine.nodesInstalled": "Installed {name} {version}",
+  "settings.workflows.engine.nodesApprovalTitle": "Install executable node package",
+  "settings.workflows.engine.nodesApprovalBody":
+    "This installs a third-party node package into this engine that will be require()d and executed. Check the source, license and capabilities before approving.",
+  "settings.workflows.engine.nodesApprovalNetwork": "This package declares network access (it can reach the network).",
+  "settings.workflows.engine.nodesApprovalAllow": "Allow install",
+  "settings.workflows.engine.nodesApprovalDeny": "Deny",
+  "settings.workflows.engine.nodesFieldSource": "Source",
+  "settings.workflows.engine.nodesFieldLicense": "License",
+  "settings.workflows.engine.nodesFieldCapabilities": "Capabilities",
+  "settings.workflows.engine.nodesFieldSha": "SHA-256",
+  "settings.workflows.engine.nodesFieldIntent": "Operation",
   // ── ARC-006 bridge 2: let the engine call back into Mcode (stdio server not implemented yet, see EngineCallbackSection) ──
   "settings.workflows.engine.callbackTitle": "Let the engine call back into Mcode (optional)",
   "settings.workflows.engine.callbackSoon": "Not available yet",

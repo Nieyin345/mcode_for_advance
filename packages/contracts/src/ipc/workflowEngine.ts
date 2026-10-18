@@ -26,6 +26,13 @@ export const WORKFLOW_ENGINE_START_CHANNEL = "workflowEngine:start";
 export const WORKFLOW_ENGINE_STOP_CHANNEL = "workflowEngine:stop";
 export const WORKFLOW_ENGINE_STATUS_CHANNEL = "workflowEngine:status";
 export const WORKFLOW_ENGINE_LIST_CHANNEL = "workflowEngine:list";
+/** 【ARC-006 Gate E】已装节点包（只读）。 */
+export const WORKFLOW_ENGINE_NODES_LIST_CHANNEL = "workflowEngine:nodesList";
+/** 【ARC-006 Gate E】安装一个节点包（主进程路由 `installEngineNode`，审批硬前置）。 */
+export const WORKFLOW_ENGINE_NODE_INSTALL_CHANNEL = "workflowEngine:nodeInstall";
+/** 【ARC-006 Gate E】渲染端对「安装审批」的回答（主→渲染推送审批请求之后的应答）。
+ *  不是"批准位"：它只回答**这一次**的审批请求，主进程不把它存成任何常驻状态。 */
+export const WORKFLOW_ENGINE_NODE_INSTALL_RESPOND_CHANNEL = "workflowEngine:respondNodeInstallApproval";
 
 /** 引擎 id：稳定、小写、连字符分词（"node-red"）。 */
 const EngineIdSchema = z
@@ -73,4 +80,70 @@ export type WorkflowEngineResult =
 
 export interface WorkflowEngineListResult {
   engines: WorkflowEngineStatusView[];
+}
+
+/* ──────────────────── 【ARC-006 Gate E】节点包安装 ──────────────────── */
+
+/** 一个已装节点包（对渲染端/Agent 的只读视图；**不含**包体路径以外的内部句柄）。 */
+export interface WorkflowEngineNodeView {
+  name: string;
+  version: string;
+  source: string;
+  sha256: string;
+  license: string;
+  capabilities: string[];
+  installedAt: number;
+  approvedByUser: boolean;
+}
+
+export interface WorkflowEngineNodesListResult {
+  /** 清单损坏时的显式诊断（`null` = 清单可读）。 */
+  corrupt: string | null;
+  nodes: WorkflowEngineNodeView[];
+}
+
+/** 安装请求的元数据。⚠️ **刻意没有 `approvedByUser`** —— 批准只能来自审批端口
+ *  （见 `engineNodeInstallRoute.ts` 的防自授权说明）。 */
+export const WorkflowEngineNodeMetaSchema = z.object({
+  name: z.string().min(1).max(214),
+  version: z.string().min(1).max(64),
+  source: z.string().min(1).max(4096),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  license: z.string().min(1).max(200),
+  capabilities: z.array(z.string().min(1).max(64)).max(16),
+}).strict();
+export type WorkflowEngineNodeMeta = z.infer<typeof WorkflowEngineNodeMetaSchema>;
+
+export const WorkflowEngineNodeInstallSchema = z.object({
+  /** 本地目录（已下载/解包后的节点包）。 */
+  sourceDir: z.string().min(1).max(4096),
+  meta: WorkflowEngineNodeMetaSchema,
+}).strict();
+export type WorkflowEngineNodeInstallInput = z.infer<typeof WorkflowEngineNodeInstallSchema>;
+
+export type WorkflowEngineNodeInstallResult =
+  | { ok: true; node: WorkflowEngineNodeView }
+  | { ok: false; reason: string; code: "invalid" | "approval_denied" | "approval_unavailable" | "duplicate" | "install_failed" };
+
+/** 渲染端对安装审批的回答。`requestId` 由主进程生成并随审批请求推送。 */
+export const WorkflowEngineNodeInstallRespondSchema = z.object({
+  requestId: z.string().min(1).max(200),
+  /** 用户是否批准**这一次**安装。 */
+  approved: z.boolean(),
+}).strict();
+export type WorkflowEngineNodeInstallRespondInput = z.infer<typeof WorkflowEngineNodeInstallRespondSchema>;
+
+/** 主 → 渲染：一张安装审批卡。字段来自 `describeEngineNodeInstall`（与路由共用一份），
+ *  渲染端只负责画。`network` 是给卡片选警示色的标记（与 `allowNetwork` 同一判据）。 */
+export interface WorkflowEngineNodeInstallApprovalMessage {
+  channel: "workflowEngine:nodeInstallApproval";
+  requestId: string;
+  name: string;
+  version: string;
+  source: string;
+  license: string;
+  capabilities: string[];
+  network: boolean;
+  sha256: string;
+  intent: "install" | "upgrade";
 }

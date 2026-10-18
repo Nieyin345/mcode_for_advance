@@ -492,6 +492,133 @@ try {
         state.kind === "ok" ? state.entries.find((e) => e.name === "node-red-contrib-sponsored-4")?.version : null, "2.0.0");
     }
   }
+
+  /* ══════════ 10. 审批桥：超时 / 无窗口 fail-closed、迟到应答不误兑现 ══════════ */
+  console.log("\n10. NodeInstallApprovalBridge（渲染端审批卡的桥）");
+  {
+    const { NodeInstallApprovalBridge } = await import("@main/workflowEngines/engineNodeApprovalBridge.js");
+    const card = {
+      name: "node-red-contrib-bridge", version: "1.0.0", source: "local:///tmp/pkg",
+      license: "Apache-2.0", capabilities: ["resource.read", "network"],
+      network: true, sha256: "c".repeat(64), intent: "install" as const,
+    };
+    // 有窗口：请求发出 → 应答兑现。
+    {
+      const sent: Array<{ requestId: string; channel: string }> = [];
+      const bridge = new NodeInstallApprovalBridge({
+        send: (message) => { sent.push({ requestId: message.requestId, channel: message.channel }); return true; },
+      });
+      const pending = bridge.request(card, 11);
+      eq("★ 审批请求经推送通道发出（带 requestId）", [sent.length, sent[0]?.channel], [1, "workflowEngine:nodeInstallApproval"]);
+      eq("★ 应答批准 → resolve(true)", [bridge.resolve({ requestId: sent[0]!.requestId, approved: true }, 11), await pending], [true, true]);
+      eq("★ 同一 requestId 不能兑现第二次（迟到/重复应答）", bridge.resolve({ requestId: sent[0]!.requestId, approved: true }, 11), false);
+    }
+    // 应答拒绝：必须真的 resolve(false)，不能把"回答了"当成"批准了"。
+    {
+      const sent: string[] = [];
+      const bridge = new NodeInstallApprovalBridge({
+        send: (message) => { sent.push(message.requestId); return true; },
+      });
+      const pending = bridge.request(card, 11);
+      eq("★ 应答拒绝 → resolve(false)", [bridge.resolve({ requestId: sent[0]!, approved: false }, 11), await pending], [true, false]);
+    }
+    // 无窗口：立刻 false（不等超时）。
+    {
+      const bridge = new NodeInstallApprovalBridge({ send: () => false });
+      eq("★ 没有渲染端可问 → 立刻 resolve(false)（fail-closed）", await bridge.request(card, 11), false);
+    }
+    // 超时：fail-closed 且迟到应答不会误兑现下一次。
+    {
+      const sent: string[] = [];
+      const bridge = new NodeInstallApprovalBridge({
+        send: (message) => { sent.push(message.requestId); return true; },
+      }, 20);
+      const started = Date.now();
+      const result = await bridge.request(card, 11);
+      check("★ 审批超时 → resolve(false)（fail-closed）", result === false, result);
+      check("★ 超时是等满预算才拒（不是立刻）", Date.now() - started >= 15, Date.now() - started);
+      eq("★ 超时后迟到应答找不到请求（不误兑现）", bridge.resolve({ requestId: sent[0]!, approved: true }, 11), false);
+    }
+    // dispose：未决请求全部按拒绝兑现，不留挂着的 Promise。
+    {
+      const bridge = new NodeInstallApprovalBridge({ send: () => true });
+      const pending = bridge.request(card, 11);
+      bridge.dispose();
+      eq("★ dispose 把未决请求按拒绝兑现", await pending, false);
+    }
+  }
+
+  /* ══════════ 11. 安装**不得**改可信标记（engine-trust.json） ══════════ */
+  // 台账 2026-10-18 21:58 复审 P0-2 / Gate A：节点安装 = 装可执行代码，审批卡是它的
+  // 落点；但「持久化 flow 重启后是否执行」是**另一条独立的真人动作**（engine-trust.json）。
+  // 安装路由必须一个字节都不碰它 —— 安装成功 ≠ flow 被信任。
+  console.log("\n11. 安装不写 engine-trust.json（两条独立的真人动作）");
+  {
+    const { installEngineNode } = await import("@main/workflowEngines/engineNodeInstallRoute.js");
+    const dataDir = join(temp, "trust-check");
+    const sourceDir = join(temp, "trust-check-src");
+    await mkdir(join(sourceDir, "nodes"), { recursive: true });
+    await writeFile(join(sourceDir, "package.json"), '{"name":"node-red-contrib-trust"}', "utf8");
+    await writeFile(join(sourceDir, "nodes", "hello.js"), "module.exports = function(RED){};", "utf8");
+    const { stableDirectoryHash } = await import("@main/workflowEngines/engineNodeRegistry.js");
+    const hash = stableDirectoryHash([
+      { path: "package.json", bytes: new Uint8Array(await readFile(join(sourceDir, "package.json"))) },
+      { path: "nodes/hello.js", bytes: new Uint8Array(await readFile(join(sourceDir, "nodes", "hello.js"))) },
+    ])!;
+    const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+    const result = await installEngineNode({
+      registry, sourceDir,
+      meta: { name: "node-red-contrib-trust", version: "1.0.0", source: `local://${sourceDir}`, sha256: hash, license: "Apache-2.0", capabilities: ["resource.read"] },
+      approval: async () => true,
+    });
+    check("前置：安装成功", result.ok, result);
+    check("★ 安装成功后 engine-trust.json 仍不存在（安装 ≠ flow 被信任）",
+      !existsSync(join(dataDir, "engine-trust.json")));
+    // 源码级：安装链路（路由 + 清单）里没有写可信标记的路径。
+    const { readFileSync } = await import("node:fs");
+    const routeSrc = readFileSync(join(process.cwd(), "src/main/workflowEngines/engineNodeInstallRoute.ts"), "utf8");
+    const registrySrc = readFileSync(join(process.cwd(), "src/main/workflowEngines/engineNodeRegistry.ts"), "utf8");
+    check("★ 安装路由源码里没有 engine-trust / MCODE_ENGINE_TRUSTED",
+      !/engine-trust|MCODE_ENGINE_TRUSTED/.test(routeSrc) && !/engine-trust|MCODE_ENGINE_TRUSTED/.test(registrySrc));
+  }
+  /* ══════════ 12. 契约三层对齐（契约 / RpcMap / preload / handler / 策略） ══════════ */
+  console.log("\n12. 节点安装的三层接线与策略");
+  {
+    const { readFileSync } = await import("node:fs");
+    const appDir = process.cwd();
+    const repoRoot = appDir.replace(/apps[\\/]desktop$/, "");
+    const contract = readFileSync(join(repoRoot, "packages/contracts/src/ipc/workflowEngine.ts"), "utf8");
+    const rpcMap = readFileSync(join(repoRoot, "packages/contracts/src/ipc/rpcMap.ts"), "utf8");
+    const preload = readFileSync(join(appDir, "src/preload/index.ts"), "utf8");
+    const handler = readFileSync(join(appDir, "src/main/ipc/workflowEngine.ts"), "utf8");
+    const policy = readFileSync(join(appDir, "src/main/appControl/policy.ts"), "utf8");
+    const webApi = readFileSync(join(appDir, "src/renderer/lib/webApi.ts"), "utf8");
+
+    for (const key of ["nodesList", "nodeInstall", "respondNodeInstallApproval"]) {
+      check(`★ RpcMap 声明了 workflowEngine.${key}`, rpcMap.includes(`"workflowEngine.${key}"`));
+      check(`★ preload 暴露了 workflowEngine.${key}`, new RegExp(`RpcMap\\["workflowEngine\\.${key}"\\]`).test(preload));
+      check(`★ 手机端 webApi 显式列出 workflowEngine.${key}（unsupported，不静默 undefined）`,
+        new RegExp(`webUnsupported\\("workflowEngine\\.${key}"\\)`).test(webApi));
+    }
+    for (const channel of ["workflowEngine:nodesList", "workflowEngine:nodeInstall", "workflowEngine:respondNodeInstallApproval"]) {
+      check(`契约域文件钉着 ${channel}`, contract.includes(`"${channel}"`));
+    }
+    check("★ main handler 三条都经 recordRpcHandler 登记",
+      ["NODES_LIST", "NODE_INSTALL", "NODE_INSTALL_RESPOND"].every((suffix) =>
+        new RegExp(`recordRpcHandler\\(IPC\\.WORKFLOW_ENGINE_${suffix}`).test(handler)));
+    check("★ 审批推送通道在契约域文件里",
+      contract.includes('"workflowEngine:nodeInstallApproval"'));
+    check("★ policy：nodeInstall = danger（装可执行代码，每次本人批）",
+      /"workflowEngine\.nodeInstall":\s*"安装第三方节点包/.test(policy)
+      && policy.indexOf("workflowEngine.nodeInstall") > policy.indexOf("const DANGER"),
+      policy.match(/"workflowEngine\.nodeInstall"[^\n]*/)?.[0]);
+    check("★ policy：respondNodeInstallApproval = blocked（agent 不能替用户批准）",
+      policy.includes('"workflowEngine.respondNodeInstallApproval"'),
+      policy.match(/"workflowEngine\.respondNodeInstallApproval"[^\n]*/)?.[0]);
+    check("★ 安装输入里没有 approvedByUser 字段",
+      /WorkflowEngineNodeMetaSchema = z\.object\(\{[\s\S]*?\}\)\.strict\(\)/.test(contract)
+      && !/WorkflowEngineNodeMetaSchema = z\.object\(\{[\s\S]*?approvedByUser[\s\S]*?\}\)\.strict\(\)/.test(contract));
+  }
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

@@ -1421,6 +1421,27 @@ export const zh = {
   "settings.workflows.engine.noneBody": "主进程的引擎注册表是空的——这通常意味着当前构建没有装配第三方引擎。",
   "settings.workflows.engine.footnote":
     "引擎是独立进程：关掉这个视图不会停掉它，停止要按上面的「停止」。编辑器里画的流不会自动执行（deploy 仍由你在引擎里点）。",
+  // ── ARC-006 Gate E：节点包（可执行代码）──
+  "settings.workflows.engine.nodesTitle": "已装节点包",
+  "settings.workflows.engine.nodesEmpty": "还没有安装任何节点包。",
+  "settings.workflows.engine.nodesCorrupt": "节点清单读不懂（{reason}）—— 已装列表暂不可信，请先修复或删除 engine-nodes.json。",
+  "settings.workflows.engine.nodesInstall": "安装节点包…",
+  "settings.workflows.engine.nodesNeedDir": "请先在下方填入节点包所在的本地目录。",
+  "settings.workflows.engine.nodesSourceDir": "节点包目录（已下载 / 已解包）",
+  "settings.workflows.engine.nodesMetaHint": "安装前请核对：包名、版本、来源、许可、能力声明与 sha256 必须与你要装的那一份一致。",
+  "settings.workflows.engine.nodesInstallFailed": "节点包安装未完成",
+  "settings.workflows.engine.nodesInstalled": "已安装 {name} {version}",
+  "settings.workflows.engine.nodesApprovalTitle": "安装可执行节点包",
+  "settings.workflows.engine.nodesApprovalBody":
+    "这会在这个引擎里安装一个会被 require 执行的第三方节点包。请核对来源、许可与能力声明后再批准。",
+  "settings.workflows.engine.nodesApprovalNetwork": "该包声明了网络能力（会出网）。",
+  "settings.workflows.engine.nodesApprovalAllow": "允许安装",
+  "settings.workflows.engine.nodesApprovalDeny": "拒绝",
+  "settings.workflows.engine.nodesFieldSource": "来源",
+  "settings.workflows.engine.nodesFieldLicense": "许可",
+  "settings.workflows.engine.nodesFieldCapabilities": "能力声明",
+  "settings.workflows.engine.nodesFieldSha": "SHA-256",
+  "settings.workflows.engine.nodesFieldIntent": "操作",
   // ── ARC-006 桥 2：让引擎回调 Mcode（stdio server 尚未实现，见 EngineCallbackSection）──
   "settings.workflows.engine.callbackTitle": "让引擎回调 Mcode（可选）",
   "settings.workflows.engine.callbackSoon": "尚未可用",

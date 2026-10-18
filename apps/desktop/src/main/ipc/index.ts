@@ -6,6 +6,10 @@ import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
 import { DocumentViewCredentialBroker, readEngineAdminToken } from "@main/document/documentViewCredentialBroker.js";
+import { EngineNodeRegistry } from "@main/workflowEngines/engineNodeRegistry.js";
+import { installEngineNode } from "@main/workflowEngines/engineNodeInstallRoute.js";
+import { NodeInstallApprovalBridge } from "@main/workflowEngines/engineNodeApprovalBridge.js";
+import { getMainWindow, hasLiveRendererWindow, sendToRenderer } from "@main/window.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { registerUnattendedHandlers } from "./unattended.js";
 import { registerModuleHandlers } from "./modules.js";
@@ -143,11 +147,96 @@ export function registerIpcHandlers(): void {
     getSession: () => session.defaultSession,
   }));
   registerDocumentViewHandlers(ipc, documentViewHost, (p) => findContainingWorkspaceRoot(p) !== null);
+  // 【ARC-007 P0】打开链的真实 dirty 来源已由 preload 的 `reportCloseCheck`
+  // 上报进宿主；这里只补「脏时由真人确认是否放弃未保存修改」的端口 ——
+  // 与关闭守卫同一个取向：默认按钮是**取消**（不丢用户修改）。
+  documentViewHost.setConfirmDirty(async ({ filePath }) => {
+    const options = {
+      type: "warning" as const,
+      message: "当前文档有未保存的修改",
+      detail: filePath
+        ? `打开另一份文档会放弃这些修改：${filePath}`
+        : "打开另一份文档会放弃当前未保存的修改",
+      buttons: ["取消", "放弃修改并打开"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    };
+    const { dialog, BrowserWindow } = await import("electron");
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
+    const result = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+    return result.response === 1;
+  });
   // 【ARC-006 WF-INT】第三方工作流引擎的起停/状态。引擎是**独立子进程**，
   // 只绑 127.0.0.1；数据目录与启动命令由注册表给（node-red 未安装时显式失败）。
+  // 【ARC-006 Gate E】节点包安装：清单落在 node-red 的引擎数据目录；审批经渲染端审批卡
+  // （推送 + RPC 应答，见 `engineNodeApprovalBridge.ts`）。没有窗口时 sendToRenderer
+  // 返回 false → 桥立刻拒绝（fail-closed）。
+  const engineNodeRegistry = new EngineNodeRegistry({
+    dataDir: workflowEngineRegistry.dataDirOf("node-red"),
+    engineId: "node-red",
+  });
+  const nodeApprovalBridge = new NodeInstallApprovalBridge({
+    // 推送通道用 `IPC.` 常量（`ipc-wiring-smoke` 的扫描器按这个形状认出口，
+    // 与 `sendToRenderer(IPC.WORKFLOW_CHANGED, …)` 同一写法）。
+    send: (message, expectedSenderId) => {
+      const win = getMainWindow();
+      // MC-057: 只把审批卡发给发起安装的受信主窗口，空/崩溃/换窗都拒绝。
+      if (!win || !hasLiveRendererWindow() || win.webContents.id !== expectedSenderId) return false;
+      sendToRenderer(IPC.WORKFLOW_ENGINE_NODE_INSTALL_APPROVAL, message);
+      return true;
+    },
+  });
   registerWorkflowEngineHandlers(ipc, {
     registry: workflowEngineRegistry,
     launchSpec: (engineId) => workflowEngineRegistry.launchSpec(engineId),
+    nodes: {
+      list: async () => {
+        const state = await engineNodeRegistry.readState();
+        if (state.kind === "corrupt") return { corrupt: state.reason, nodes: [] };
+        return {
+          corrupt: null,
+          nodes: state.entries.map((entry) => ({
+            name: entry.name, version: entry.version, source: entry.source,
+            sha256: entry.sha256, license: entry.license,
+            capabilities: [...entry.capabilities], installedAt: entry.installedAt,
+            approvedByUser: entry.approvedByUser,
+          })),
+        };
+      },
+      install: async (input, senderId) => {
+        const win = getMainWindow();
+        if (!win || !hasLiveRendererWindow() || win.webContents.id !== senderId) {
+          return { ok: false, code: "approval_unavailable", reason: "不是可信桌面窗口发起的节点安装" };
+        }
+        const result = await installEngineNode({
+          registry: engineNodeRegistry,
+          sourceDir: input.sourceDir,
+          meta: input.meta,
+          approval: async (card) => nodeApprovalBridge.request({
+            name: card.name, version: card.version, source: card.source,
+            license: card.license, capabilities: [...card.capabilities],
+            network: card.network, sha256: card.sha256, intent: card.intent,
+          }, senderId),
+        });
+        if (!result.ok) return { ok: false, code: result.code, reason: result.reason };
+        const entry = result.entry;
+        return {
+          ok: true,
+          node: {
+            name: entry.name, version: entry.version, source: entry.source,
+            sha256: entry.sha256, license: entry.license,
+            capabilities: [...entry.capabilities], installedAt: entry.installedAt,
+            approvedByUser: entry.approvedByUser,
+          },
+        };
+      },
+      respond: (input, senderId) => {
+        const win = getMainWindow();
+        return !!win && hasLiveRendererWindow() && win.webContents.id === senderId
+          && nodeApprovalBridge.resolve(input, senderId);
+      },
+    },
   });
   registerUnattendedHandlers(ipc);
   registerMemoryAssistantHandlers(ipc);

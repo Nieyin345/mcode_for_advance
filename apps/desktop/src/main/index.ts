@@ -58,11 +58,19 @@ import { importAnyFiles } from "@main/library/importDispatch.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
 import { configureCodeNodeLibraryHost } from "@main/orchestration/adoptFromCode.js";
 import { initPanelProtocol, registerPanelSchemePrivileged } from "@main/customUi/panelProtocol.js";
+import {
+  initDocumentHandoffProtocol,
+  registerDocumentHandoffSchemePrivileged,
+} from "@main/document/documentViewHandoff.js";
 import { pathToFileURL } from "node:url";
 import { desktopCsp } from "@main/lib/desktopCsp.js";
 
 // 自定义面板的 `mcode-panel://` 协议(R41)。注册特权 scheme **必须**在 app ready 之前。
 registerPanelSchemePrivileged();
+// 【ARC-007 P0】文档打开链的一次性字节响应走 vendor 页面 CSP 已放行的
+// `genoffice-docx-media://handoff/<token>`（与 vendor 主进程 handoff 同一
+// scheme/形状）。特权 scheme 同样只能在 ready 前注册。
+registerDocumentHandoffSchemePrivileged();
 
 // 库导入/下载事件的发出口(钩子与「事件发生时」触发器都挂在 runtimeManager 上)。
 // 在模块顶层装配:下载队列可能在窗口出来前就恢复并完成条目。注入而非让
@@ -169,6 +177,8 @@ app.whenReady().then(async () => {
   logStartup("whenReady entered");
   installDbPersistenceAlerts();
   initPanelProtocol();
+  // 【ARC-007 P0】挂上一次性字节响应的协议处理（ready 之后）。
+  initDocumentHandoffProtocol();
 
   // Kick off DB init in the background (sql.js loads ~6MB asm.js + reads the
   // file + migrates). We DON'T await it - the window is created next so the
