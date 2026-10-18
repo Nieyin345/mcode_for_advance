@@ -25,7 +25,7 @@ import { useCallback, useEffect, useState } from "react";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
-import { Button } from "@renderer/components/ui/index.js";
+import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import { IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingRow } from "./SettingRow.js";
@@ -52,6 +52,9 @@ function TreeRow({ name, note, depth = 0 }: { name: string; note: string; depth?
 export function DataRootPanel() {
   const { t } = useI18n();
   const [info, setInfo] = useState<RootInfo | null>(null);
+  /** 读数据根失败的原因。从前读失败只是把 info 置回 null —— 界面永远显示
+   *  「…」,用户分不清"在读"与"坏了"(硬规矩 3)。 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 已经点了迁移、正在等重启 —— 界面上给一句明确的话,不然会以为卡住。 */
@@ -60,8 +63,9 @@ export function DataRootPanel() {
   const load = useCallback(async () => {
     try {
       setInfo(await api.app.getDataRoot());
-    } catch {
-      setInfo(null);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
@@ -123,13 +127,28 @@ export function DataRootPanel() {
         {/* 根在哪 + 搬走 —— 这一页的主操作 */}
         <SettingRow layout="vertical" title={t("settings.dataRoot.currentPath")}>
           <div className="flex min-w-0 flex-col gap-2">
-            <div
-              className="flex min-w-0 items-center gap-1.5 rounded-md border border-edge bg-surface-muted px-2.5 py-1.5 font-mono text-xs text-content"
-              title={info?.root}
-            >
-              <IconFolder size={12} className="shrink-0 text-content-subtle" />
-              <span className="truncate select-all">{info?.root ?? "…"}</span>
-            </div>
+            {loadError !== null ? (
+              <ErrorNote
+                title={t("settings.dataRoot.loadFailed")}
+                action={
+                  <Button size="sm" variant="ghost" onClick={() => void load()}>
+                    {t("common.retry")}
+                  </Button>
+                }
+              >
+                {loadError}
+              </ErrorNote>
+            ) : !info ? (
+              <LoadingNote label={t("common.loading")} className="justify-start px-0 py-1.5" />
+            ) : (
+              <div
+                className="flex min-w-0 items-center gap-1.5 rounded-md border border-edge bg-surface-muted px-2.5 py-1.5 font-mono text-xs text-content"
+                title={info.root}
+              >
+                <IconFolder size={12} className="shrink-0 text-content-subtle" />
+                <span className="truncate select-all">{info.root}</span>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => void move()} disabled={busy || !info}>
                 <IconFolder size={12} />

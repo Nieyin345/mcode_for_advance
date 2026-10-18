@@ -102,6 +102,87 @@ await withAuditPage(dir,async(page)=>{
   check('B5 兼容:迁移成功后出现“等待重启”提示(原文案,不断言字面量)',
     await page.eval(`[...document.querySelectorAll('#root button')].every(b=>!b.textContent.includes('迁移到新位置'))`));
 
+  /* ───────────── D. 设置页「静默失败」:读失败不再永远停在加载 ───────────── */
+  // 判据立在**用户看到的那行字**上:失败原因出现、重试钮可点、加载态消失。
+  //
+  // 两个读 RPC 由这里注入到页内 mock(`labApi` 的代理会把赋值写回它的底层对象),
+  // 于是不用动共享的 mocks.js —— 只有这一段需要失败注入。
+  await page.eval(`(()=>{
+    window.labApi.app.getDataRoot = async () => {
+      window.labCalls.push(['app.getDataRoot']);
+      if (window.labMode.getDataRoot === 'reject') throw new Error('mock-getDataRoot-rejected');
+      return {root:'D:/mcode-data',dbPath:'D:/mcode-data/mcode.db',libraryPath:'D:/mcode-data/library'};
+    };
+    window.labApi.voice = {
+      modelList: async () => {
+        window.labCalls.push(['voice.modelList']);
+        if (window.labMode.voiceModelList === 'reject') throw new Error('mock-voiceModelList-rejected');
+        return {
+          models:[{id:'zipformer-zh',name:'Zipformer 中文',langLabel:'中文 (zh-CN)',sizeLabel:'~120 MB',dir:'zipformer-zh',files:[]}],
+          downloaded:[],selected:null,modelDir:'D:/mcode-data/voice-models',isCustom:false,
+        };
+      },
+    };
+    window.labApi.on.voiceDownloadProgress = () => () => {};
+    window.labMode.getDataRoot = 'ok';
+    window.labMode.voiceModelList = 'ok';
+  })()`);
+
+  // D1/D2 DataRootPanel:getDataRoot 拒绝 → 错误横幅(标题 + 原因)替代“…”占位,
+  // 不落成未处理 promise 拒绝。
+  await page.eval(`window.__mount('dataroot')`);
+  await page.waitFor(`document.body.textContent.includes('D:/mcode-data')`);
+  await page.eval(`window.labUnhandled.length=0;window.labMode.getDataRoot='reject';`);
+  await page.eval(`window.__mount('dataroot')`);
+  await sleep(450);
+  const drText = await page.eval(`document.getElementById('root').textContent`);
+  check('D1 ★ 数据根读取失败:错误标题与原因对用户可见',
+    drText.includes('数据根读取失败') && drText.includes('mock-getDataRoot-rejected'),
+    {text:drText});
+  check('D1b ★ 数据根读取失败:加载占位(“…”所在的位置)不再被当成加载中',
+    !drText.includes('…') && !drText.includes('正在加载'),
+    {text:drText});
+  check('D1c 数据根读取失败不落成未处理 promise 拒绝',
+    (await page.eval('window.labUnhandled.length'))===0,
+    {unhandled:await page.eval('window.labUnhandled')});
+
+  // D2 重试钮点下去真的重新发请求:恢复成功态后点「重试」→ 路径回来、错误消失。
+  check('D2a ★ 数据根读取失败时给出「重试」钮',
+    await page.eval(`[...document.querySelectorAll('#root button')].some(b=>b.textContent.trim()==='重试')`));
+  await page.eval(`window.labMode.getDataRoot='ok';`);
+  await page.eval(`(()=>{const btn=[...document.querySelectorAll('#root button')].find(b=>b.textContent.trim()==='重试');if(btn)btn.click();})()`);
+  await sleep(450);
+  check('D2b ★ 点「重试」后读到数据根、错误横幅消失',
+    await page.eval(`document.getElementById('root').textContent.includes('D:/mcode-data')
+      && !document.getElementById('root').textContent.includes('数据根读取失败')`));
+  await page.eval(`window.labMode.getDataRoot='ok';`);
+
+  // D3/D4 VoicePanel:modelList 拒绝 → 错误横幅替代永远转圈的「正在加载模型列表…」。
+  await page.eval(`window.labUnhandled.length=0;window.labMode.voiceModelList='reject';`);
+  await page.eval(`window.__mount('voice')`);
+  await page.waitFor(`document.getElementById('root').textContent.includes('模型列表加载失败')`,5000).catch(()=>{});
+  await sleep(450);
+  const vText = await page.eval(`document.getElementById('root').textContent`);
+  check('D3 ★ 模型列表读取失败:错误标题与原因对用户可见',
+    vText.includes('模型列表加载失败') && vText.includes('mock-voiceModelList-rejected'),
+    {text:vText});
+  check('D3b ★ 模型列表读取失败:不再永远停在「正在加载模型列表…」',
+    !vText.includes('正在加载模型列表'), {text:vText});
+  check('D3c 模型列表读取失败不落成未处理 promise 拒绝',
+    (await page.eval('window.labUnhandled.length'))===0,
+    {unhandled:await page.eval('window.labUnhandled')});
+
+  // D4 重试钮可点,点后加载成功、失败横幅消失、卡片出现。
+  check('D4a ★ 模型列表读取失败时给出「重试」钮',
+    await page.eval(`[...document.querySelectorAll('#root button')].some(b=>b.textContent.trim()==='重试')`));
+  await page.eval(`window.labMode.voiceModelList='ok';`);
+  await page.eval(`(()=>{const btn=[...document.querySelectorAll('#root button')].find(b=>b.textContent.trim()==='重试');if(btn)btn.click();})()`);
+  await sleep(450);
+  const vOk = await page.eval(`document.getElementById('root').textContent`);
+  check('D4b ★ 点「重试」后模型列表读到、错误横幅消失',
+    vOk.includes('Zipformer 中文') && !vOk.includes('模型列表加载失败'),
+    {text:vOk});
+
   /* ───────────── C. GeneralPanel:阈值输入的草稿保持 ───────────── */
   await page.eval(`window.__mount('general')`);
   await page.waitFor(`document.getElementById('setting-paste-threshold')`);

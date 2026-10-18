@@ -19,7 +19,7 @@ import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Select, Button } from "@renderer/components/ui/index.js";
+import { Select, Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import { SettingRow } from "./SettingRow.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -32,7 +32,6 @@ import {
   IconDownload,
   IconPlayerStop,
   IconCheck,
-  IconLoader2,
   IconAlertTriangle,
   IconTrash,
   IconFolder,
@@ -60,6 +59,9 @@ export function VoicePanel() {
 
   // ── Model catalog + selection ──
   const [list, setList] = useState<ModelListState | null>(null);
+  /** 读失败的原因。从前这里是一个空 catch —— 请求一失败,`list` 永远是 null,
+   *  界面就永远停在「正在加载模型列表…」(硬规矩 3:坏东西显式报出来)。 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [progress, setProgress] = useState<
     Record<string, VoiceDownloadProgressPayload>
   >({});
@@ -67,9 +69,13 @@ export function VoicePanel() {
   const reload = useCallback(() => {
     void api.voice
       .modelList()
-      .then((res) => setList(res))
-      .catch(() => {
-        /* desktop engine not ready — the empty catalog state shows */
+      .then((res) => {
+        setList(res);
+        setLoadError(null);
+      })
+      .catch((err: unknown) => {
+        // 保留上一次成功的列表(一次瞬时失败不该把它抹掉),错误横幅说原因。
+        setLoadError(err instanceof Error ? err.message : String(err));
       });
   }, []);
 
@@ -185,12 +191,22 @@ export function VoicePanel() {
         title={t("settings.voice.sectionModels")}
         desc={t("settings.voice.sectionModelsDesc")}
       >
-        {!list ? (
-          <div className="flex items-center justify-center gap-2 px-4 py-8 text-[0.85em] text-content-subtle">
-            <IconLoader2 size={14} className="animate-spin" />
-            {t("settings.voice.loading")}
-          </div>
-        ) : (
+        {loadError !== null && (
+          <ErrorNote
+            title={t("settings.voice.loadFailed")}
+            action={
+              <Button size="sm" variant="ghost" onClick={reload}>
+                {t("common.retry")}
+              </Button>
+            }
+          >
+            {loadError}
+          </ErrorNote>
+        )}
+        {!list && loadError === null && (
+          <LoadingNote label={t("settings.voice.loading")} />
+        )}
+        {list && (
           list.models.map((m) => (
             <ModelCard
               key={m.id}
