@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { ModuleHost } from "../../src/main/modules/ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "../../src/main/modules/fileCapabilities.js";
 import { runPermissionedProcess, permissionedFailure, permissionArgs, verifyPermissionedProgram } from "../../src/main/modules/permissionedProcessRunner.js";
-import { ModuleManifestSchema } from "@contracts/modules";
+import { ModuleManifestSchema, ResourceSchema, ResultSchema } from "@contracts/modules";
 import { hostCapabilityDeclarationsFromCatalog, collectCapabilityInventory } from "../../src/main/orchestration/capabilityResolver.js";
 import { ModuleInstallSchema as IpcInstallSchema } from "@contracts/ipc";
 import { createHash } from "node:crypto";
@@ -389,6 +389,88 @@ try {
   }));
   const v2 = await upgradeHost.invoke({ moduleId: "user.lifecycle", contributionId: "convert", resource: { projectPath: root, path: target }, requestId: "up-2" });
   eq("覆盖安装后执行的是新版本程序(不沿用旧执行体)", (v2 as { type: string; value?: { text?: string } }).value?.text, "v2:note.txt");
+
+  // ── 7c.【MC-035 更新切片】失败升级必须保留旧执行体与磁盘清单 ─────────────
+  // 真实触发路径:清单 schema 合法(`module.<短名>` 单段,短名 ≤93 字符),但宿主分配后的
+  // id(`module.<slug>.<短名>`)超过 100 字符的 `Id` 上限 —— 旧实现「先落盘 → 撤旧能力 →
+  // 边绑边校验」会在这一步抛错,留下「旧执行体已撤、盘上已是新清单、新能力注册了一半」
+  // 的状态。新实现要求所有新能力先准备成功,磁盘与旧执行体才动。
+  const longShort = "x".repeat(84); // module.lifecycle.<84 字符> = 101 字符 > Id 上限 100
+  const longSource = `({ convert: async () => ({ text: "v2-should-not-run" }), ${longShort}: async () => ({}) })`;
+  const badUpgrade = manifestOf({
+    version: "2.0.0",
+    contributions: [
+      manifestOf().contributions[0],
+      { ...manifestOf().contributions[0], id: "long", capability: "module." + longShort },
+    ],
+    program: { source: longSource },
+  });
+  check("过长分配 id 的清单在形状层仍然合法(缺陷只在宿主绑定阶段暴露)",
+    ModuleManifestSchema.safeParse(badUpgrade).success);
+  const rollbackHost = makeHost({ persist: recordingPersist });
+  await rollbackHost.install(manifestOf());
+  const snapshotCountBefore = diskSnapshots.length;
+  const persistedBefore = diskSnapshots[diskSnapshots.length - 1];
+  let upgradeError: Error | null = null;
+  try { await rollbackHost.install(badUpgrade); upgradeError = null; }
+  catch (error) { upgradeError = error instanceof Error ? error : new Error(String(error)); }
+  check("★ 绑定阶段会失败的升级被拒绝(不是假成功)", upgradeError !== null, { upgradeError: upgradeError?.message });
+  eq("★ 升级失败后磁盘清单仍是旧版本(一个字节没写)", diskSnapshots.length, snapshotCountBefore);
+  eq("★ 升级失败后落盘的仍是 v1 清单", diskSnapshots[diskSnapshots.length - 1], persistedBefore);
+  check("★ 升级失败后旧执行体仍在注册表里(没有被先撤掉)",
+    rollbackHost.catalog().capabilities.some((c) => c.id === "module.lifecycle.convert"),
+    rollbackHost.catalog().capabilities.map((c) => c.id));
+  eq("升级失败后目录仍显示旧版本", rollbackHost.catalog().modules.find((m) => m.id === "user.lifecycle")?.version, "1.0.0");
+  const afterFailedUpgrade = await rollbackHost.invoke({ moduleId: "user.lifecycle", contributionId: "convert", resource: { projectPath: root, path: target }, requestId: "rb-1" })
+    .catch((error) => ({ type: "threw", message: error instanceof Error ? error.message : String(error) } as const));
+  eq("★ 升级失败后旧执行体仍可调用", (afterFailedUpgrade as { type?: string }).type, "result");
+  eq("★ 旧执行体返回的仍是 v1 程序的结果",
+    (afterFailedUpgrade as { value?: { text?: string } }).value?.text, "hello extension");
+  check("升级失败后没留下半绑定的长 id 能力",
+    rollbackHost.catalog().capabilities.every((c) => !c.id.includes(longShort)));
+
+  // 重启视角:盘上还是 v1,restore 后能力复活。
+  const afterFailedUpgradeRestart = makeHost({ persist: async () => {} });
+  for (const manifest of JSON.parse(diskSnapshots[diskSnapshots.length - 1]!) as unknown[]) afterFailedUpgradeRestart.restore(manifest);
+  eq("升级失败后重启恢复的仍是 v1", afterFailedUpgradeRestart.catalog().modules[0]?.version, "1.0.0");
+
+  // 启动失败:restore 一份准备阶段会失败的清单,注册表不得留下半绑定能力。
+  // (旧实现边绑定边 register,第二条失败时第一条会以 `module.*` 残留在能力目录里,
+  //  而模块本身并未恢复 —— 一个不可见、不可卸载的执行能力。)
+  const leakHost = makeHost({ persist: async () => {} });
+  const restoreError = (() => { try { leakHost.restore(badUpgrade); return null; } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })();
+  check("★ 启动恢复一条绑定会失败的清单时显式抛错", restoreError !== null);
+  eq("★ 启动恢复失败后没有模块被恢复", leakHost.catalog().modules.length, 0);
+  eq("★ 启动恢复失败后能力目录里没有半绑定的 module.*",
+    leakHost.catalog().capabilities.filter((c) => c.id.startsWith("module.")).length, 0);
+
+  // 跨来源 id 冲突:同一分配 id 已被宿主注册的**非扩展能力**占用时,安装必须在落盘前
+  // 被拒 —— 否则覆盖安装会静默抢走那个实现。先装一个占位能力模拟"宿主已注册"。
+  const collisionHost = new ModuleHost({
+    authorize: async (resource: { projectPath: string; path: string }) => { await resolveModuleResource(resource, (p: string) => p === root); },
+    resolveResource: async (resource: { projectPath: string; path: string }) => resolveModuleResource(resource, (p: string) => p === root),
+    verifyProgram: async (source: string, capabilities: readonly string[], timeoutMs: number | undefined) =>
+      verifyPermissionedProgram(source, capabilities, timeoutMs ?? 10_000),
+    persist: async () => {},
+  });
+  for (const capability of fileCapabilities((candidate: string) => candidate === root)) collisionHost.register(capability);
+  collisionHost.register({
+    id: "module.lifecycle.convert", kind: "query",
+    input: ResourceSchema, output: ResultSchema, run: async () => ({ text: "host-owned" }),
+  });
+  let collisionError: Error | null = null;
+  try { await collisionHost.install(manifestOf()); }
+  catch (error) { collisionError = error instanceof Error ? error : new Error(String(error)); }
+  check("★ 分配 id 已被宿主注册的非扩展能力占用时安装被拒",
+    collisionError !== null && /Duplicate capability/.test(collisionError.message), { message: collisionError?.message });
+  eq("冲突被拒后模块没有装进来", collisionHost.catalog().modules.length, 0);
+  const keptPlaceholder = collisionHost.catalog().capabilities.find((c) => c.id === "module.lifecycle.convert");
+  check("冲突被拒后宿主自己的那个能力仍留在注册表里(没有被覆盖)",
+    keptPlaceholder !== undefined && keptPlaceholder.kind === "query", keptPlaceholder);
+  let collisionRetry: Error | null = null;
+  try { await collisionHost.install(manifestOf()); }
+  catch (error) { collisionRetry = error instanceof Error ? error : new Error(String(error)); }
+  check("冲突仍存在时重试安装仍被拒(不会第二次静默覆盖)", collisionRetry !== null);
 
   // ── 8. 重启:持久化清单恢复后能力复活(restore 会重新绑定) ─────────────
   const persisted = JSON.parse(diskSnapshots[0]) as unknown[];

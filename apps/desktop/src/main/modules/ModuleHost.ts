@@ -109,8 +109,10 @@ export class ModuleHost {
       Promise<{ ok: true } | { ok: false; reason: string }>;
   }) {}
 
-  register<I>(definition: Capability<I>): void {
-    if (this.capabilities.has(definition.id)) throw Error("Duplicate capability");
+  /** 【MC-035】构造一条能力注册记录 —— **只校验、只构造,不碰任何注册表**。
+   *  `register` 与 `prepareProgramBindings` 共用这一份;后者靠它实现「全部准备好
+   *  才允许持久的/破坏性的动作发生」(见那里的注释)。 */
+  private prepareCapability<I>(definition: Capability<I>): { id: string; record: ErasedCapability } {
     // Validate discovery data once at registration, and never retain a caller-
     // owned metadata object. The display schema is not an execution validator.
     const descriptor = structuredClone(ModuleCapabilityDescriptorSchema.parse({
@@ -152,19 +154,27 @@ export class ModuleHost {
       : createIsolatedActionRun({ source: definition.isolatedSource },
           definition.isolatedTimeoutMs === undefined ? {} : { timeoutMs: definition.isolatedTimeoutMs });
     const run = definition.run === undefined ? null : definition.run.bind(definition);
-    this.capabilities.set(descriptor.id, {
-      ...descriptor, output: definition.output,
-      run: (input, context) => isolatedRun
-        ? isolatedRun(inputSchema.parse(input), context)
-        : run!(inputSchema.parse(input), context),
-    });
+    return {
+      id: descriptor.id,
+      record: {
+        ...descriptor, output: definition.output,
+        run: (input, context) => isolatedRun
+          ? isolatedRun(inputSchema.parse(input), context)
+          : run!(inputSchema.parse(input), context),
+      },
+    };
+  }
+  register<I>(definition: Capability<I>): void {
+    if (this.capabilities.has(definition.id)) throw Error("Duplicate capability");
+    const prepared = this.prepareCapability(definition);
+    this.capabilities.set(prepared.id, prepared.record);
   }
   private validate(raw: unknown): ModuleManifest {
     const manifest = ModuleManifestSchema.parse(raw);
     if (!manifest.permissions.includes("resource.read")) throw Error("resource.read permission required");
     for (const c of manifest.contributions) {
       // 【MC-035】`module.<短名>` 是**扩展程序能力**:它的实现不在注册表里等着被引用,
-      // 而是由本模块的 `program` 在安装期派生(见 bindProgram)。这里只挡形状 —— 短名
+      // 而是由本模块的 `program` 在安装期派生(见 prepareProgramBindings)。这里只挡形状 —— 短名
       // 必须是单段、清单引用的每个短名必须由 program 覆盖(由 ModuleManifestSchema 的
       // refine 与安装期核验共同保证)。指向**别的模块**的 `module.*` 不可能命中:
       // 分配后的 id 带模块 slug,validate 阶段看到的 `module.x` 不是宿主分配形状。
@@ -217,12 +227,19 @@ export class ModuleHost {
    *  `action` 注册(执行前必审批),否则是 `query`。执行体一律 **受控子进程**
    *  (`runPermissionedProcess`)—— `run` 只做参数搬运,不在这里 eval 任何源码。
    *
-   *  ⚠️ 同一模块的旧能力必须先撤(install 覆盖同 id 模块时),否则 `register` 会以
-   *  "Duplicate capability" 失败 —— 调用方保证顺序(见 install/restore)。
+   *  ⚠️ 同一模块的旧能力必须先撤(install 覆盖同 id 模块时),否则会撞上旧条目 ——
+   *  调用方保证顺序(见 install/restore)。
+   *
+   *  【MC-035 更新切片】**只构造、不落表**:所有能力先经 `prepareCapability` 校验并
+   *  造好记录(这一步会在分配 id 超长 / 与其它模块撞 id 时抛),再由调用方在
+   *  **落盘之后、撤旧能力之前**用 `commitProgramBindings` 原子换入。这样「替换执行体」
+   *  具备了台账要求的回滚保障:新版本只要有任何一条能力准备不了,旧执行体、磁盘清单、
+   *  注册表都保持原样 —— 不会出现"旧能力已撤、盘上是新清单、新能力只绑了一半"。
    */
-  private bindProgram(manifest: ModuleManifest): void {
-    if (manifest.program === undefined) return;
+  private prepareProgramBindings(manifest: ModuleManifest): Array<{ id: string; record: ErasedCapability }> {
+    if (manifest.program === undefined) return [];
     const isAction = manifest.permissions.includes("resource.write");
+    const prepared: Array<{ id: string; record: ErasedCapability }> = [];
     const bound = new Set<string>();
     for (const contribution of manifest.contributions) {
       const short = extensionCapabilityShortName(contribution.capability);
@@ -231,12 +248,20 @@ export class ModuleHost {
       // 同一个短名可能被多个贡献引用(不同视图/标题)—— 只注册一次。
       // ⚠️ 不用 `capabilities.has(id)` 判重:覆盖安装(同 id 模块、新版本/新源码)时
       // 旧能力还在注册表里,靠它跳过就会**沿用旧执行体**(台账:换版本不得继承旧实现)。
-      // 调用方(install/restore)保证传入前该模块的旧能力已被 unbindProgram 撤掉。
+      // 调用方(install/restore)保证提交前该模块的旧能力已被 unbindProgram 撤掉。
       if (bound.has(id)) continue;
       bound.add(id);
+      // 本模块覆盖安装/重启恢复时,旧能力还在注册表里(提交前才撤),允许被新一份替换;
+      // 其它任何已存在的同名能力(宿主注册的实现、或不属于本模块的扩展能力)一律拒绝 ——
+      // 否则覆盖安装会静默抢走别的能力的 id。
+      const owner = this.extensionCapabilities.get(id);
+      if (owner !== undefined && owner !== manifest.id) {
+        throw Error(`能力 id ${id} 已被模块 ${owner} 占用,新模块未安装(旧模块保持原样)`);
+      }
+      if (owner === undefined && this.capabilities.has(id)) throw Error("Duplicate capability");
       const source = manifest.program.source;
       const timeoutMs = manifest.program.timeoutMs ?? 15_000;
-      this.register({
+      prepared.push(this.prepareCapability({
         id, kind: isAction ? "action" : "query",
         input: ResourceSchema, output: ResultSchema,
         run: async (resource, context) => {
@@ -255,8 +280,16 @@ export class ModuleHost {
             signal: context.signal,
           });
         },
-      });
-      this.extensionCapabilities.set(id, manifest.id);
+      }));
+    }
+    return prepared;
+  }
+  /** 【MC-035】把 `prepareProgramBindings` 造好的记录一次性换入注册表。**只做内存操作、
+   *  不会抛**(校验已在准备阶段完成);调用方须已 `unbindProgram` 清掉同模块旧能力。 */
+  private commitProgramBindings(manifestId: string, prepared: ReadonlyArray<{ id: string; record: ErasedCapability }>): void {
+    for (const entry of prepared) {
+      this.capabilities.set(entry.id, entry.record);
+      this.extensionCapabilities.set(entry.id, manifestId);
     }
   }
   /** 【MC-035】资源解析的**可选注入**:返回真实路径的解析器(通常是 `resolveModuleResource`)。
@@ -274,11 +307,17 @@ export class ModuleHost {
       this.extensionCapabilities.delete(id);
     }
   }
-  /** Restoration only after the host has validated its own persisted store. */
+  /** Restoration only after the host has validated its own persisted store.
+   *
+   *  【MC-035 更新切片】**先准备、后换入**:任一能力准备不了(分配 id 超长、与其它
+   *  模块撞 id)时抛错,而注册表**一个条目都没有被改过** —— 调用方(生产 `service.ts`)
+   *  显式记录并跳过这一条,其余模块照常恢复。旧实现边绑边注册,中途失败会留下半绑定
+   *  的能力(一条不可见的 `module.*` 残留在目录里)。 */
   restore(raw: unknown): void {
     const manifest = this.validate(raw);
     if (!manifest.id.startsWith("user.") || this.modules.has(manifest.id)) throw Error("Invalid persisted module ID");
-    this.bindProgram(manifest);
+    const prepared = this.prepareProgramBindings(manifest);
+    this.commitProgramBindings(manifest.id, prepared);
     this.modules.set(manifest.id, manifest);
   }
   private serializeMutation<T>(fn: () => Promise<T>): Promise<T> {
@@ -305,11 +344,18 @@ export class ModuleHost {
         if (!verdict.ok) throw Error("扩展程序核验失败,未安装:" + verdict.reason);
       }
       const next = new Map(this.modules); next.set(manifest.id, manifest);
+      // 【MC-035 更新切片】**先把新执行体全部准备（校验+构造）好，再动磁盘和注册表**。
+      // 旧实现是「落盘 → 撤旧能力 → 边绑边校验」：新清单的任何一条能力在绑定时失败
+      // （分配 id 超过 `Id` 上限被 `ModuleCapabilityDescriptorSchema` 拒、或与其它模块
+      // 撞分配 id），都会留下「旧执行体已撤、盘上却是新清单、新能力只注册了一半」的
+      // 坏状态 —— 覆盖安装失败后既不能回滚也不能用。现在：准备阶段任何一步抛错，
+      // 磁盘清单与旧执行体都**保持原样**（台账：安装失败必须保留上一版）。
+      const prepared = this.prepareProgramBindings(manifest);
       await this.options.persist([...next.values()].filter(m => !this.builtinIds.has(m.id)));
-      // 覆盖同 id 模块时先撤旧能力再绑新能力 —— 否则 register 以 Duplicate 失败,
-      // 且旧的执行体会被新清单"继承"(台账:换版本不得沿用旧实现)。
+      // 覆盖同 id 模块时先撤旧能力再换入新能力 —— 否则会沿用旧执行体
+      // （台账：换版本不得继承旧实现）。commit 只做内存 put，不会失败。
       this.unbindProgram(manifest.id);
-      this.bindProgram(manifest);
+      this.commitProgramBindings(manifest.id, prepared);
       this.modules.set(manifest.id, manifest);
       return this.catalog();
     });
