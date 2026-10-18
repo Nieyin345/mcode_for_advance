@@ -809,7 +809,7 @@ main.ts[TS8S]: F:回归Markdown图片路径守卫对library/templates与项目�
 run.sh[TQ5T]: F:编译并执行Markdown预览图片路径围栏的无头烟测 | R:code:apps/desktop/scripts/md-image-guard-smoke/main.ts,code:apps/desktop/scripts/db-migrate-smoke/stubs/dataRoot.ts,code:apps/desktop/scripts/lib/esbuild-path.sh | A:esbuild bundle/临时DATA与OUT/MCODE_SMOKE_DATA_ROOT | S:仅用临时DATA与OUT且trap清理；本地esbuild缺失时回退npx
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/memory-codex-smoke/===
-main.ts[TD8L]: F:调用真实记忆与Codex provider IPC handler及全注册表,回归CRUD/CAS、路径逃逸(符号链接+junction)、密钥屏蔽、TOML重生成,以及【思考强度映射】每模型thinkingLevelMap的save→list全kind往返 | R:code:apps/desktop/src/main/ipc/memory.ts,code:apps/desktop/src/main/ipc/codexModels.ts,code:apps/desktop/src/main/lib/codexModelsStore.ts,code:apps/desktop/src/main/store/db.ts | A:handler记名替身与契约形状/CAS冲突/provider保存删除+TOML/全注册表差集/awaitDb守卫;thinkingLevelMap空表缺席不落盘、枚举外值照存 | S:真实写库与Codex HOME均由runner指向mktemp;safeStorage桩仅走无钥匙串base64往返分支;无参handler必须parse(raw??{});枚举外映射值在存储照存,只拦在发送那一刻;19条词法穿越用例断言数据根外零残留
+main.ts[TD8L]: F:调真记忆与Codex provider handler及全注册表,回归CRUD/CAS、路径逃逸、密钥屏蔽、TOML重生成与思考强度映射 | R:code:apps/desktop/src/main/ipc/memory.ts,code:apps/desktop/src/main/ipc/codexModels.ts | A:handler记名替身;全注册表差集 | S:真库与Codex HOME均由runner指向mktemp;无参handler必须parse(raw??{});零裸channel守卫中仅豁免文档视图preload内部通道且须断言真注册;19条词法穿越用例断言零残留
 run.sh[TQ6T]: F:以隔离数据根与HOME打包执行真实记忆/Codex IPC回归，并替换Electron导入依赖 | R:code:apps/desktop/scripts/memory-codex-smoke/main.ts,code:apps/desktop/scripts/memory-codex-smoke/stubs/dataRoot.ts,code:apps/desktop/scripts/memory-codex-smoke/stubs/electron.ts,code:apps/desktop/scripts/lib/esbuild-path.sh | A:esbuild/临时OUT与DATA与HOMEDIR/环境变量覆盖 | S:sql.js会重写整份mcode.db且Codex写config.toml；runner必须将数据根与HOME覆写到mktemp
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/memory-codex-smoke/stubs/===
@@ -3318,8 +3318,8 @@ run.sh[TQ6T]: F:esbuild打包module-extension-lifecycle-smoke后node直跑 | R:c
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/src/main/document/===
 genofficeCli.ts[II8M]: F:GenOffice CLI受控适配层:docs/slides/sheet read、apply、convert、guide,解析--json信封并分类失败 | R:code:apps/desktop/src/main/lib/spawnRun.ts,code:apps/desktop/src/main/lib/pathGuard.ts | A:docsRead/docsApply/convertFile/guideOps/resolveGenofficeCliPath | S:路径围栏先于起进程;子进程不继承宿主env;app_unavailable≠failed;CLI是仓库内固定commit快照
-documentViewHost.ts[IS9L]: F:受控WebContentsView宿主:docId复用、URL围栏、bounds/显隐/保活/销毁、失败诊断、openPath | R:code:apps/desktop/src/main/ipc/documentView.ts,code:packages/contracts/src/ipc/documentView.ts | A:DocumentViewHost;checkDocumentViewUrl;openPath/docIdForSender | S:URL只放行file://与本机回环;拒绝先拒后建;openPath围栏在发消息前;docId只认event.sender;ERR_ABORTED不算失败
-documentViewPreload.ts[ES9T]: F:视图最小preload桥:只暴露openDocxPath与写死只读默认值 | R:code:apps/desktop/src/main/document/documentViewHost.ts,code:apps/desktop/src/main/ipc/documentView.ts | A:openDocxPath;getLanguage/getTheme/onThemeChanged | S:不暴露ipcRenderer/文件对话框/AI/知识库;对象上不定义的能力即降级;页面接收路径须走vendor认识的menu:command通道
+documentViewHost.ts[IS9L]: F:受控WebContentsView宿主:docId复用、URL围栏、bounds/显隐/保活/销毁、失败诊断、openPath | R:code:apps/desktop/src/main/ipc/documentView.ts,code:packages/contracts/src/ipc/documentView.ts | A:DocumentViewHost;checkDocumentViewUrl;openPath/docIdForSender | S:URL只放行file://与本机回环;拒绝先拒后建;openPath围栏在发消息前;推给页面必须用vendor的menu:command+open-path(自定义通道=发了没人收);docId只认event.sender
+documentViewPreload.ts[ES9S]: F:视图最小preload桥:openDocxPath上送+onMenuCommand接收+写死只读默认值 | R:code:apps/desktop/src/main/document/documentViewHost.ts,code:apps/desktop/src/main/ipc/documentView.ts | A:openDocxPath;onMenuCommand;getLanguage/getTheme | S:不暴露ipcRenderer/文件框/AI/知识库;对象上未定义的能力即降级;接收必须订阅menu:command且与宿主常量逐字对齐(缺接收=断链);页面不传身份
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/genoffice-format-gates-smoke/===
 main.ts[TI8S]: F:真CLI验逐格式门:打开不重写、编辑往返(含md→docx→md)、路由拒绝、写围栏、dry-run | R:code:apps/desktop/src/main/document/genofficeCli.ts | A:docsRead/docsApply/convertFile | S:围栏验磁盘事实;无sidecar显式跳过并可见;CLI缺失整套SKIP
@@ -3336,7 +3336,7 @@ WorkspaceShell.tsx[EE6S]: F:会话优先壳:shellVariantOf映射与ClassicShell�
 shellPrefs.ts[FC4T]: F:ui.shell偏好的renderer单一事实源:默认值与防卫式解析 | R:code:packages/contracts/src/ipc/settings.ts,code:apps/desktop/src/renderer/stores/sessionStore.ts | A:DEFAULT_SHELL_PREF/parseShellPref/ShellVariant | S:坏值一律回落classic(升级外观零变化);叶子模块只import契约避免成环
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/document-view-host-smoke/===
-main.ts[TU8L]: F:无头验文档视图宿主:docId复用、URL白名单、安全开关、隐藏保活、销毁与IPC注册 | R:code:apps/desktop/src/main/document/documentViewHost.ts,code:apps/desktop/src/main/ipc/documentView.ts | A:DocumentViewHost;checkDocumentViewUrl;registerDocumentViewHandlers | S:拒绝路径先拒后建;hide不销毁,dispose后open须拒;内部open-path通道不进RPC表;身份只认event.sender
+main.ts[TU8L]: F:无头验文档视图宿主:docId复用、URL白名单、安全开关、隐藏保活、销毁、IPC注册与openPath推送形状 | R:code:apps/desktop/src/main/document/documentViewHost.ts,code:apps/desktop/src/main/ipc/documentView.ts | A:DocumentViewHost;checkDocumentViewUrl;registerDocumentViewHandlers | S:拒绝路径先拒后建;hide不销毁,dispose后open须拒;内部open-path通道不进RPC表;推送必须是vendor的menu:command+open-path且与preload常量对齐;身份只认event.sender
 run.sh[TQ6T]: F:esbuild打包宿主套件并换@main/window.js为假窗口 | R:code:apps/desktop/scripts/document-view-host-smoke/main.ts | A:main | S:必须换window模块(真模块顶层import electron)
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/document-view-host-smoke/stubs/===
@@ -3350,7 +3350,7 @@ fakeReact.ts[TQ7M]: F:单函数组件的极小React运行时与确定性__flush 
 iconsStub.cjs[TQ3T]: F:tabler图标空壳CJS | R:- | A:Proxy默认导出 | S:必须CJS,ESM具名导出不可枚举
 jsxRuntime.ts[TQ4T]: F:jsx-runtime替身,children链进props | R:- | A:jsx/jsxs | S:不链children裸文本消失,判据假绿
 lsp-stub.ts[TQ3T]: F:lspProviders替身 | R:- | A:monacoLanguageToLsp | S:-
-main.ts[TU8L]: F:渲染端验新面板与FileEditor路由:open/resize bounds/卸载close/失败重试/默认档不变 | R:code:apps/desktop/src/renderer/components/ide/GenofficeViewHostPane.tsx,code:apps/desktop/src/renderer/components/ide/FileEditor.tsx | A:mountPane/resizeStage;editorHostForPath/stableDocId | S:卸载必须close;同几何不重发;负坐标夹0;能力缺失零open;判据看汉字文案
+main.ts[TU8L]: F:渲染端验新面板与FileEditor路由:open/resize bounds/卸载close/openPath/失败重试/默认档不变 | R:code:apps/desktop/src/renderer/components/ide/GenofficeViewHostPane.tsx,code:apps/desktop/src/renderer/components/ide/FileEditor.tsx | A:mountPane/resizeStage;editorHostForPath/stableDocId | S:open成功后必须发openPath且同docId/filePath;openPath被拒须显示原因;卸载必须close;同几何不重发;负坐标夹0;能力缺失零open
 monaco-react-stub.ts[TQ3T]: F:monaco-react替身 | R:- | A:Editor/DiffEditor | S:-
 portal-stub.ts[TQ3T]: F:react-dom替身 | R:- | A:createPortal | S:-
 prelude.ts[TQ5S]: F:浏览器全局+可驱动ResizeObserver与rAF队列 | R:- | A:__flushRaf/__triggerResize | S:rAF须同步可flush;卸载后观察数归零
