@@ -431,5 +431,62 @@ section("9. 【ARC-005】动效 token 的消费侧:四张共享浮层 + 真编�
   check("★ 四文件编译产物不再含裸毫秒规则", bareRules === null, bareRules);
 }
 
+section("10. 【ARC-005】共享原语消费 --focus-ring(不再散装 ring)");
+{
+  // 判据:三份可聚焦原语(Button / Switch / InfoHint)的源码不得再出现
+  // `focus-visible:ring-*` —— 那些 Tailwind ring 工具类的特异性是 (0,2,0),
+  // 高于 styles.css 全局 token 规则 `:where(...):focus-visible` 的 (0,1,0);
+  // 留一个 ring 类,用户实际看到的就还是旧环,token 只是"写了没人用"。
+  for (const file of [
+    "src/renderer/components/ui/button.tsx",
+    "src/renderer/components/ui/switch.tsx",
+    "src/renderer/components/ui/info-hint.tsx",
+  ]) {
+    const src = read(file);
+    const scattered = src.match(/focus-visible:ring-[^\s"]+/g);
+    check(`★ ${file.split("/").pop()} 不再写散装 focus-visible:ring-*`, scattered === null, scattered);
+  }
+
+  // 正向:全局选择器列表必须覆盖角色型可聚焦控件。Base UI Switch 渲染的是
+  // `span[role="switch"]`(不是 button),漏了它,开关就完全没有 token 焦点环。
+  const css = read("src/renderer/styles.css");
+  const baseRule = /:where\(button, \[role="button"\], \[role="switch"\], \[role="tab"\], \[role="menuitem"\], \[role="option"\], a\[href\], input, select, textarea\):focus-visible \{\s*\n?\s*outline: 2px solid #0000;/.test(css);
+  check("★ 全局焦点规则含 [role=switch] 且保留透明 outline 占位", baseRule);
+
+  // 死亡选择器正控:`button[data-variant="danger"]` 只有在组件真的把 variant
+  // 落到 DOM 时才不是死代码。两条都要:模板里有 data-variant,且 CSS 有选择器。
+  check("★ button.tsx 把 variant 落到 DOM(data-variant)",
+    /data-variant=\{variant \?\? "secondary"\}/.test(read("src/renderer/components/ui/button.tsx")));
+  check("★ styles.css 危险焦点选择器存在", css.includes('button[data-variant="danger"]'));
+
+  // forced-colors 层同样要含 [role=switch](它复制了基础选择器列表)。
+  const noComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const fcAt = noComments.indexOf("@media (forced-colors: active)");
+  const fcBlock = fcAt >= 0 ? noComments.slice(fcAt) : "";
+  check("★ forced-colors 焦点规则也含 [role=switch]",
+    /\[role="switch"\][\s\S]{0,160}outline: 2px solid CanvasText/.test(fcBlock));
+}
+
+section("11. 【ARC-005】reduce-motion 总闸覆盖动效词表本身");
+{
+  const css = read("src/renderer/styles.css");
+  // 只压 `animation-duration/transition-duration` 不够:新代码读 `--dur-*`
+  // 写进任意属性(或 JS 读变量做 setTimeout 基准)时,词表仍是 300ms。
+  // 总闸必须把五个时长变量本身归零。
+  const gateAt = css.indexOf('html[data-reduce-motion="true"] {');
+  check("★ 总闸有词表归零块", gateAt >= 0);
+  const gateBlock = gateAt >= 0 ? css.slice(gateAt, css.indexOf("}", gateAt)) : "";
+  for (const t of ["--dur-fast", "--dur-snap", "--dur-base", "--dur-sheet", "--dur-slow"]) {
+    check(`★ 总闸把 ${t} 归零`, new RegExp(`${t}:\\s*0ms;`).test(gateBlock));
+  }
+  // 反向正控:声明真实存在而不是只出现在注释 —— 取规则本体判。
+  check("★ 词表归零不是注释", !/\/\*[^*]*--dur-fast:\s*0ms[\s\S]*?\*\//.test(gateBlock));
+
+  // 延迟也压:入场动画常带 delay,只压 duration 会让"等 300ms 再瞬间出现"。
+  const childRule = css.slice(gateAt, css.indexOf("scroll-behavior", gateAt));
+  check("★ 总闸压 animation-delay", /animation-delay:\s*0ms\s*!important/.test(childRule));
+  check("★ 总闸压 transition-delay", /transition-delay:\s*0ms\s*!important/.test(childRule));
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

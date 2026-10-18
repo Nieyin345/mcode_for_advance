@@ -42,7 +42,9 @@ const Switch = forwardRef<HTMLElement, SwitchProps>(
           // 看不见、也点不到。放进 flex 行里时会被自动块级化,所以只有
           // **裸放在块级流里**的那些开关会塌(工作流检查器的「读流程记录」就是)。
           "relative block h-4 w-7 shrink-0 rounded-full outline-none transition-colors",
-          "focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface",
+          // 【ARC-005】焦点环由 styles.css 的 `[role="switch"]:focus-visible`
+          // 统一消费 `--focus-ring` token；组件不再写散装 ring —— ring 工具类
+          // 特异性 (0,2,0) 高于全局规则 (0,1,0)，写了反而盖掉 token。
           checked ? "bg-accent" : "bg-surface-hover",
           disabled && "cursor-not-allowed opacity-50",
           className,

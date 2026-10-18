@@ -15,7 +15,10 @@ import { cn } from "@renderer/lib/cn.js";
 
 const buttonVariants = cva(
   // Base styles
-  "inline-flex items-center justify-center gap-1 rounded font-medium transition-colors select-none outline-none focus-visible:ring-2 focus-visible:ring-accent-strong focus-visible:ring-offset-2 focus-visible:ring-offset-surface",
+  // 【ARC-005】焦点可见环不在组件里写散装 ring 工具类：styles.css 的
+  // `:where(button, …):focus-visible` 统一消费 `--focus-ring` 三层 token。
+  // 组件自带的 ring 类特异性更高(0,2,0 > 0,1,0)，会静默盖掉 token 环。
+  "inline-flex items-center justify-center gap-1 rounded font-medium transition-colors select-none outline-none",
   {
     variants: {
       variant: {
@@ -52,6 +55,9 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     return (
       <BaseButton
         ref={ref}
+        // 【ARC-005】variant 落到 DOM：styles.css 的危险焦点环选择器是
+        // `button[data-variant="danger"]` —— 不写这个属性它永远匹配不到。
+        data-variant={variant ?? "secondary"}
         className={cn(buttonVariants({ variant, size }), className)}
         {...props}
       />

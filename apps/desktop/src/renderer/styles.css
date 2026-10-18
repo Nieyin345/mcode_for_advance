@@ -911,12 +911,16 @@ body {
 
 /* 统一焦点可见态：组件不再各写 `focus-visible:ring-*`。用透明 outline 占位
  * （Windows 高对比度会把 #0000 换成系统色），可见环交给 box-shadow ——
- * 这是报告 §3.6 那条"透明 outline 不能省"的直接落地。 */
-:where(button, [role="button"], [role="tab"], [role="menuitem"], [role="option"], a[href], input, select, textarea):focus-visible {
+ * 这是报告 §3.6 那条"透明 outline 不能省"的直接落地。
+ * `[role="switch"]`：Base UI Switch 渲染的是 `span[role="switch"]`，不是
+ * button —— 不列进来它就只剩组件自带的散装 ring（且那圈 ring 会盖掉 token）。 */
+:where(button, [role="button"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], a[href], input, select, textarea):focus-visible {
   outline: 2px solid #0000;
   outline-offset: 2px;
   box-shadow: var(--focus-ring);
 }
+/* `button[data-variant="danger"]` 由 ui/button.tsx 把 cva 的 variant 落到
+ * DOM（data-variant={variant ?? "secondary"}）；不落属性这条永远匹配不到。 */
 :where(.danger, [data-danger]):focus-visible,
 :where(button[data-variant="danger"]):focus-visible {
   box-shadow: var(--focus-ring-danger);
@@ -932,12 +936,23 @@ body {
  *
  * 用 `!important` 是刻意的：它要压过 Tailwind 的 `transition-*` 工具类，而这是
  * 一个**全局开关**，不是组件样式。作用域限定在 html 属性下，误伤面为零。 */
+/* 词表本身也归零：任何新代码读 `--dur-*` 得到的就是 0，不靠上面那条
+ * `!important` 兜底；两条一起保证"读变量"与"用工具类"两种写法殊途同归。 */
+html[data-reduce-motion="true"] {
+  --dur-fast: 0ms;
+  --dur-snap: 0ms;
+  --dur-base: 0ms;
+  --dur-sheet: 0ms;
+  --dur-slow: 0ms;
+}
 html[data-reduce-motion="true"] *,
 html[data-reduce-motion="true"] *::before,
 html[data-reduce-motion="true"] *::after {
   animation-duration: 0.01ms !important;
+  animation-delay: 0ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
+  transition-delay: 0ms !important;
   scroll-behavior: auto !important;
 }
 
@@ -2556,7 +2571,7 @@ html.sketch.dark body::after {
 @media (forced-colors: active) {
   /* 焦点：box-shadow 环被系统丢弃，outline 占位由 UA 接管 —— 这里把
    * 尺寸与系统色钉住，避免不同 UA 对透明色占位的处理差异。 */
-  :where(button, [role="button"], [role="tab"], [role="menuitem"], [role="option"], a[href], input, select, textarea):focus-visible {
+  :where(button, [role="button"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], a[href], input, select, textarea):focus-visible {
     outline: 2px solid CanvasText;
     outline-offset: 2px;
     box-shadow: none;

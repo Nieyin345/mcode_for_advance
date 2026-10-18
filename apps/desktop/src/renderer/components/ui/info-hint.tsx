@@ -50,8 +50,10 @@ export function InfoHint({ children, size = 13, side = "top", className, label }
           setOpen((v) => !v);
         }}
         className={cn(
+          // 【ARC-005】焦点环由 styles.css 的 `button:focus-visible` 统一消费
+          // `--focus-ring` token；这里只保留文字色反馈，不再写散装 ring。
           "inline-flex shrink-0 items-center justify-center rounded-full align-middle text-content-subtle/70 outline-none transition-colors",
-          "hover:text-content-muted focus-visible:text-content focus-visible:ring-1 focus-visible:ring-accent",
+          "hover:text-content-muted focus-visible:text-content",
           className,
         )}
       >
