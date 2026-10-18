@@ -11,11 +11,18 @@
  *    同步工具（网盘/版本库）的"未变"判断、触发 OnlyOffice 之类写入方的冲突检测，
  *    甚至让"打开即修复"把用户没同意的格式变更悄悄落盘。这是"只读"两个字的字面
  *    含义，不是实现细节。
- *  - G2 编辑往返：docx 生成→apply→再 read 能看到新内容；pptx create→slides read；
- *    xlsx 从 CSV create→`sheet check` 纯 Node 读回（占位符定位到具体单元格，证明
- *    真解析了内容）；应用侧 `sheet read` 走 Rust sidecar，本机无 sidecar 时显式记
- *    `sidecar_unavailable` 并跳过该断言 —— 不算通过也不算失败，但必须在输出里
- *    可见，且要带上具体命令与 CLI 错误码。
+ *  - G2 编辑往返：docx 生成→apply→再 read 能看到新内容；pptx create→**真编辑**
+ *    （`slides apply` addElement）→再 `slides read` 看到新文本；xlsx 从 CSV create→
+ *    **真编辑**（`sheet apply` set_cell 写入 TODO）→`sheet check` 纯 Node 读回并
+ *    定位到具体单元格 —— 三句都必须经过 `editByKind`（生产 `document.edit` 的
+ *    路由函数），不是绕过路由直接调适配层。应用侧 `sheet read` 走 Rust sidecar，
+ *    本机无 sidecar 时显式记 `sidecar_unavailable` 并跳过该断言 —— 不算通过也不算
+ *    失败，但必须在输出里可见，且要带上具体命令与 CLI 错误码。
+ *    **为什么用 editByKind 而不是直调适配层**：`document.edit` 曾经无条件走
+ *    `docs apply`（docx 专用），pptx/xlsx 的编辑会报
+ *    `conversion_failed: document.xml has no <w:body> element` —— docx 解析器在说
+ *    "这不是 docx"，却被当成"文档坏了"透传。路由函数按 `documentKindOf` 分派到
+ *    `slides apply` / `sheet apply` 才是真能力；断言打在路由上，退回旧行为才会红。
  *
  * ## xlsx 命令依赖矩阵（本套件只覆盖不需要 sidecar 的部分）
  *
@@ -41,9 +48,10 @@
  *    （md→refused 指向 file.readFile；html→unavailable；未知扩展名→refused），
  *    且每种拒绝理由文本非空。**为什么**：路由的失败必须"说得出为什么"，
  *    静默退化成"反正读不出来"等于把能力缺口藏起来。
- *  - G4 围栏：所有写路径（apply 输出 / convert 输出）指到工作区外 → refused，
- *    且目标文件**确实不存在**。**为什么**：refused 只是返回值，若进程已经先写了
- *    半个文件再拒绝，围栏就是纸的 —— 必须验磁盘事实，不能只验返回值。
+ *  - G4 围栏：所有写路径（docs/slides/sheet apply、convert 输出）指到工作区外 →
+ *    refused，且目标文件**确实不存在** / 源文件字节未动。**为什么**：refused 只是
+ *    返回值，若进程已经先写了半个文件再拒绝，围栏就是纸的 —— 必须验磁盘事实，
+ *    不能只验返回值。
  *  - G5 dry-run 语义：`docs apply --dry-run` 在已存在且可读的 docx 上不改 sha256。
  *    与 G1 同判据，但针对写命令 —— dry-run 说"没写"就必须真没写。
  *  - 反向正控：故意改一个字节，确认 sha256 比较真的能区分（防"两次都读到空/失败、
@@ -54,7 +62,7 @@
  *
  * Run: scripts/genoffice-format-gates-smoke/run.sh
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -245,13 +253,17 @@ if (cliPath === null) {
     /* ══════════ G2 编辑往返 ══════════ */
     section("G2 编辑往返（生成→编辑/读→再看得到）");
     {
+      // `editByKind` 是生产 `document.edit` 的路由函数（见文件头「为什么用 editByKind」）。
+      // 动态导入理由同 G3 的 readByKind：这条链经 pathGuard 拉进 store/db。
+      const { editByKind } = await import("../../src/main/ipc/document.js");
+
       // docx：md→docx 生成 → apply 插入一段 → 再 read 必须看到。
       const docx2 = join(root, "g2.docx");
       const md2 = join(root, "g2.md");
       writeFileSync(md2, "# Title\n\nOriginal.\n");
       const conv = await convertFile(ports, md2, "docx", docx2);
       check("G2 docx：md→docx 生成成功", conv.ok, conv);
-      const apply = await docsApply(ports, docx2, [{ op: "insert_content", index: 1, html: "<p>G2 inserted</p>" }]);
+      const apply = await editByKind(ports, docx2, [{ op: "insert_content", index: 1, html: "<p>G2 inserted</p>" }], {});
       check("G2 docx：docs apply 插入成功", apply.ok, apply);
       const reread = await docsRead(ports, docx2, { full: true });
       check("G2 docx：apply 后再 read 成功", reread.ok, reread);
@@ -264,21 +276,56 @@ if (cliPath === null) {
         );
       }
 
-      // pptx：create 生成 → slides read 成功（读回页数）。
+      // pptx：create 生成空白 deck → **真编辑**（addElement 一个带文本的文本框）→
+      // slides read 必须看得到这段文本。判据是"编辑前读不到、编辑后读得到"，
+      // 不是"read 成功" —— 空白 deck 的 read 本来就成功，只断 read 等于没验编辑。
       const pptx2 = join(root, "g2.pptx");
       const created = cliCreate(["create", "--type", "pptx", "--ops", "-", "--out", pptx2], "[]");
       check("G2 pptx：create 生成成功", created.status === 0 && existsSync(pptx2), created);
-      const sread = await slidesRead(ports, pptx2);
-      check("G2 pptx：create 后 slides read 成功", sread.ok, sread);
-      if (sread.ok) {
-        const detail = sread.envelope.detail as { slides?: number };
-        check("G2 pptx：读回至少 1 页", (detail.slides ?? 0) >= 1, detail);
+      if (created.status === 0 && existsSync(pptx2)) {
+        const beforeEdit = await slidesRead(ports, pptx2);
+        const beforeHas = beforeEdit.ok
+          && (beforeEdit.envelope.detail as { pages?: Array<{ elements?: Array<{ text?: string }> }> }).pages
+            ?.some((pg) => (pg.elements ?? []).some((el) => (el.text ?? "").includes("G2EDITED-pptx"))) === true;
+        check("G2 pptx：编辑前读不到编辑文本（判据能区分改动）", beforeEdit.ok && beforeHas === false, beforeEdit);
+
+        const added = await editByKind(ports, pptx2, [{
+          op: "addElement",
+          target: { slide: 0 },
+          kind: "textbox",
+          offset: { x: 914400, y: 914400, cx: 3000000, cy: 600000 },
+          paragraphs: [{ runs: [{ text: "G2EDITED-pptx" }] }],
+        }], {});
+        check("G2 pptx：editByKind → slides apply 成功（不是 docs apply）", added.ok, added);
+        if (added.ok) {
+          check(
+            "G2 pptx：apply 走的是 slides 命令（envelope.command 判据）",
+            (added.envelope.command ?? "") === "slides",
+            added.envelope,
+          );
+        }
+        const sread = await slidesRead(ports, pptx2);
+        check("G2 pptx：apply 后 slides read 成功", sread.ok, sread);
+        if (sread.ok) {
+          const detail = sread.envelope.detail as {
+            slides?: number;
+            pages?: Array<{ elements?: Array<{ text?: string }> }>;
+          };
+          check("G2 pptx：读回至少 1 页", (detail.slides ?? 0) >= 1, detail);
+          check(
+            "G2 pptx ★ 再 read 看得到 apply 插入的文本（真编辑往返）",
+            detail.pages?.some((pg) => (pg.elements ?? []).some((el) => (el.text ?? "").includes("G2EDITED-pptx"))) === true,
+            detail.pages,
+          );
+        }
       }
 
-      // xlsx：CSV→xlsx（create，纯 JS）→ 读回。
+      // xlsx：CSV→xlsx（create，纯 JS）→ **真编辑**（set_cell 往 D9 写 TODO）→
+      // sheet check 读回且 placeholder 定位到 D9 —— check 的 8 项检查会真解析
+      // workbook.xml/sharedStrings，用"新写入的 TODO 出现在新坐标"同时证明:
+      // (a) 编辑真的落盘；(b) 读路径真解析了编辑后的内容。
       // 两条读路径分开断言：
-      //  a) 纯 Node 的 `sheet check`：读回内容必须看得到表头/单元格文本 —— 这条
-      //     本机就能跑，是 xlsx 往返的真实判据。
+      //  a) 纯 Node 的 `sheet check`：这条本机就能跑，是 xlsx 往返的真实判据。
       //  b) 应用侧 `sheet read`（适配层 sheetRead）：走 Rust sidecar，本机无 sidecar
       //     时显式 SKIP，并打印具体命令与 CLI 错误码（不是一句"缺件"了事）。
       const xlsx = join(root, "g2.xlsx");
@@ -287,17 +334,41 @@ if (cliPath === null) {
       const xCreated = cliCreate(["create", "--type", "xlsx", "--from", csv, "--out", xlsx]);
       check("G2 xlsx：从 CSV create 成功", xCreated.status === 0 && existsSync(xlsx), xCreated);
       if (xCreated.status === 0 && existsSync(xlsx)) {
+        type SheetIssue = { code?: string; cell?: string; context?: string };
         const xc = cliJson(["sheet", "check", xlsx]);
-        const xIssues = (xc.envelope?.detail as { issues?: Array<{ code?: string; cell?: string }> } | undefined)?.issues ?? [];
+        const xIssues = (xc.envelope?.detail as { issues?: SheetIssue[] } | undefined)?.issues ?? [];
+        const placeholderContext = (issues: SheetIssue[]): string =>
+          issues.filter((i) => i.code === "placeholder_left").map((i) => i.context ?? "").join(" | ");
         check(
           "G2 xlsx：sheet check 读回成功（CSV 生成的单元格被真解析）",
           xc.status === 0 && xc.envelope?.status === "ok" && Array.isArray((xc.envelope.detail as { checks?: unknown[] }).checks),
           xc.envelope ?? xc.raw,
         );
         check(
-          "G2 xlsx：读回内容看得到 CSV 里的文本（TODO → A3）",
-          xIssues.some((i) => i.code === "placeholder_left" && i.cell === "A3"),
+          "G2 xlsx：编辑前占位符只在 A3（D9 还没有，判据能区分编辑前后）",
+          placeholderContext(xIssues).includes("A3") && !placeholderContext(xIssues).includes("D9"),
           xIssues,
+        );
+
+        // 真编辑：在 D9 写一个 TODO —— 新坐标是"这次编辑造出来的"，不是 CSV 自带的。
+        // 判据必须能区分"编辑前 A3 有 TODO / 编辑后 D9 也有 TODO"，否则 read 恒报
+        // A3 的 TODO 会让假绿通过。同一条 issue 会把多个单元格聚合进 context
+        // （cell 字段只留第一个），所以判据看 context 全文。
+        const xEdit = await editByKind(ports, xlsx, [{ op: "set_cell", address: "D9", value: "TODO" }], {});
+        check("G2 xlsx：editByKind → sheet apply 成功（不是 docs apply）", xEdit.ok, xEdit);
+        if (xEdit.ok) {
+          check(
+            "G2 xlsx：apply 走的是 sheet 命令（envelope.command 判据）",
+            (xEdit.envelope.command ?? "") === "sheet",
+            xEdit.envelope,
+          );
+        }
+        const xc2 = cliJson(["sheet", "check", xlsx]);
+        const xIssues2 = (xc2.envelope?.detail as { issues?: SheetIssue[] } | undefined)?.issues ?? [];
+        check(
+          "G2 xlsx ★ 编辑后再 check 看得到新单元格（D9 落盘，真编辑往返）",
+          xc2.status === 0 && placeholderContext(xIssues2).includes("D9"),
+          xIssues2,
         );
       }
 
@@ -401,6 +472,26 @@ if (cliPath === null) {
         [mdRefusal, htmlRefusal, weirdRefusal, bareRefusal].every((x) => x !== null && x.reason.length > 0),
         { mdRefusal, htmlRefusal, weirdRefusal, bareRefusal },
       );
+
+      /* ── 编辑路由的负向面：editByKind 与 readByKind 同一张判据表 ──
+       * 只验"读会被拒"不够：编辑是写路径，若它对 md/html 也放行，CLI 会拿到
+       * 一份它不认识的格式再报 docx 内部错误 —— 拒绝必须发生在路由层。 */
+      const { editByKind } = await import("../../src/main/ipc/document.js");
+      const mdEdit = await editByKind(ports, notesMd, [{ op: "insert_content", index: 0, html: "<p>x</p>" }], {});
+      const mdEditRefusal = refusalOf(mdEdit);
+      check("G3 md：editByKind → refused（不假装结构化编辑）", mdEditRefusal?.kind === "refused", mdEdit);
+      check("G3 md 编辑：拒绝理由指向编辑器/文件通道", /编辑器|file\.writeFile/.test(mdEditRefusal?.reason ?? ""), mdEditRefusal?.reason);
+      const htmlEdit = await editByKind(ports, page, [{ op: "x" }], {});
+      const htmlEditRefusal = refusalOf(htmlEdit);
+      check("G3 html：editByKind → unavailable（需要应用渲染器）", htmlEditRefusal?.kind === "unavailable", htmlEdit);
+      const weirdEdit = await editByKind(ports, weird, [{ op: "x" }], {});
+      const weirdEditRefusal = refusalOf(weirdEdit);
+      check("G3 未知扩展名：editByKind → refused", weirdEditRefusal?.kind === "refused", weirdEdit);
+      check(
+        "G3 编辑路由拒绝理由文本非空",
+        [mdEditRefusal, htmlEditRefusal, weirdEditRefusal].every((x) => x !== null && x.reason.length > 0),
+        { mdEditRefusal, htmlEditRefusal, weirdEditRefusal },
+      );
     }
 
     /* ══════════ G4 围栏（写路径） ══════════
@@ -434,10 +525,58 @@ if (cliPath === null) {
       const earlyRefusal = refusalOf(early);
       check("G4 ★ 围栏先于起进程（坏 cliPath 仍先 refused）", earlyRefusal?.kind === "refused", early);
       check("G4 ★ 围栏先于起进程时目标也不存在", !existsSync(join(outside, "early.docx")));
+
+      /* ── 编辑路由的三个写口共用同一道围栏 ──
+       * slides apply / sheet apply 是这轮新接的写路径；它们与 docs apply 一样
+       * 是**原地写**，判据因此是"源文件在工作区外 → refused 且源字节一字节未动"。
+       * 只验返回值不够：若进程先写了再拒，围栏就是纸的。
+       *
+       * ⚠️ 界外夹具必须是**合法**的 pptx/xlsx（先在工作区内造好再复制出去）。
+       * 用垃圾字节当夹具时，撤掉围栏后 CLI 也会因解析失败而不写盘 —— 那样
+       * "字节未动"恒真，断言区分不了"围栏挡住"与"文件本来就读不了"（变异实测
+       * 抓过这条假绿：撤围栏后字节断言仍然绿）。 */
+      const { editByKind } = await import("../../src/main/ipc/document.js");
+      const outsidePptx = join(outside, "outside.pptx");
+      const outsideXlsx = join(outside, "outside.xlsx");
+      const fixturePptx = join(root, "g4-fixture.pptx");
+      const fixtureXlsx = join(root, "g4-fixture.xlsx");
+      const fixtureCsv = join(root, "g4-fixture.csv");
+      writeFileSync(fixtureCsv, "name,qty\nwidget,3\n");
+      const madePptx = cliCreate(["create", "--type", "pptx", "--ops", "-", "--out", fixturePptx], "[]");
+      const madeXlsx = cliCreate(["create", "--type", "xlsx", "--from", fixtureCsv, "--out", fixtureXlsx]);
+      const viableFixtures = madePptx.status === 0 && existsSync(fixturePptx) && madeXlsx.status === 0 && existsSync(fixtureXlsx);
+      if (viableFixtures) {
+        copyFileSync(fixturePptx, outsidePptx);
+        copyFileSync(fixtureXlsx, outsideXlsx);
+        const pptxBytes = readFileSync(outsidePptx);
+        const xlsxBytes = readFileSync(outsideXlsx);
+        const pptxEdit = await editByKind(ports, outsidePptx, [{
+          op: "addElement", target: { slide: 0 }, kind: "textbox",
+          offset: { x: 0, y: 0, cx: 914400, cy: 457200 },
+          paragraphs: [{ runs: [{ text: "leak" }] }],
+        }], {});
+        check("G4 slides apply：工作区外文件 → refused", refusalOf(pptxEdit)?.kind === "refused", pptxEdit);
+        const xlsxEdit = await editByKind(ports, outsideXlsx, [{ op: "set_cell", address: "A1", value: "leak" }], {});
+        check("G4 sheet apply：工作区外文件 → refused", refusalOf(xlsxEdit)?.kind === "refused", xlsxEdit);
+        eq("G4 slides apply：拒绝后工作区外文件字节未动", sha256(outsidePptx), createHash("sha256").update(pptxBytes).digest("hex"));
+        eq("G4 sheet apply：拒绝后工作区外文件字节未动", sha256(outsideXlsx), createHash("sha256").update(xlsxBytes).digest("hex"));
+        // 反向正控：同一份合法夹具在**工作区内**用同一 op 能真写成功，
+        // 证明"字节未动"不是"这个 op 本来就写不了"。
+        const inPptx = join(root, "g4-inside.pptx");
+        copyFileSync(fixturePptx, inPptx);
+        const inOk = await editByKind(ports, inPptx, [{
+          op: "addElement", target: { slide: 0 }, kind: "textbox",
+          offset: { x: 0, y: 0, cx: 914400, cy: 457200 },
+          paragraphs: [{ runs: [{ text: "inside" }] }],
+        }], {});
+        check("G4 反向正控：同一 op 在工作区内真写入成功", inOk.ok && sha256(inPptx) !== createHash("sha256").update(pptxBytes).digest("hex"), inOk);
+      } else {
+        skip("G4 slides/sheet apply 围栏", "合法夹具生成失败");
+      }
     }
 
     /* ══════════ G5 dry-run 语义 ══════════ */
-    section("G5 docs apply --dry-run 不改 sha256");
+    section("G5 dry-run 语义（docs / slides / sheet 三条写命令都不改 sha256）");
     {
       // 与 G1 同判据，但针对**写命令**：dry-run 声称"没写"，就必须逐字节没写。
       const g5 = join(root, "g5.docx");
@@ -456,6 +595,37 @@ if (cliPath === null) {
         eq("G5 ★ dry-run 不改文件（sha256 不变）", after, before);
       } else {
         skip("G5 dry-run", "样本生成失败");
+      }
+
+      // slides apply --dry-run：与上面同一判据，覆盖这轮新接的 pptx 写口。
+      const { editByKind } = await import("../../src/main/ipc/document.js");
+      const g5pptx = join(root, "g5.pptx");
+      const g5pCreated = cliCreate(["create", "--type", "pptx", "--ops", "-", "--out", g5pptx], "[]");
+      if (g5pCreated.status === 0 && existsSync(g5pptx)) {
+        const pBefore = sha256(g5pptx);
+        const pDry = await editByKind(ports, g5pptx, [{
+          op: "addElement", target: { slide: 0 }, kind: "textbox",
+          offset: { x: 0, y: 0, cx: 914400, cy: 457200 },
+          paragraphs: [{ runs: [{ text: "dry" }] }],
+        }], { dryRun: true });
+        check("G5 slides apply --dry-run 成功", pDry.ok, pDry);
+        eq("G5 ★ slides dry-run 不改文件（sha256 不变）", sha256(g5pptx), pBefore);
+      } else {
+        skip("G5 slides dry-run", "pptx 样本生成失败");
+      }
+
+      // sheet apply --dry-run：同上，覆盖 xlsx 写口。
+      const g5xlsx = join(root, "g5.xlsx");
+      const g5csv = join(root, "g5.csv");
+      writeFileSync(g5csv, "name,qty\nwidget,3\n");
+      const g5xCreated = cliCreate(["create", "--type", "xlsx", "--from", g5csv, "--out", g5xlsx]);
+      if (g5xCreated.status === 0 && existsSync(g5xlsx)) {
+        const xBefore = sha256(g5xlsx);
+        const xDry = await editByKind(ports, g5xlsx, [{ op: "set_cell", address: "E5", value: "dry" }], { dryRun: true });
+        check("G5 sheet apply --dry-run 成功", xDry.ok, xDry);
+        eq("G5 ★ sheet dry-run 不改文件（sha256 不变）", sha256(g5xlsx), xBefore);
+      } else {
+        skip("G5 sheet dry-run", "xlsx 样本生成失败");
       }
     }
 

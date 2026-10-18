@@ -24,7 +24,7 @@ import {
   type DocumentIpcResult,
 } from "@contracts/ipc";
 import { documentKindOf } from "@contracts/documentKind";
-import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, sheetRead, convertFile, guideOps, type GenofficeResult } from "@main/document/genofficeCli.js";
+import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, slidesApply, sheetRead, sheetApply, convertFile, guideOps, type GenofficeResult } from "@main/document/genofficeCli.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 
@@ -128,6 +128,54 @@ export async function readByKind(
   };
 }
 
+/**
+ * 按 `documentKindOf` 选**编辑**口 —— 与 {@link readByKind} 同一张格式判据表。
+ *
+ * 之前 `document.edit` 无条件走 `docs apply`（docx 专用），于是 pptx/xlsx 的编辑
+ * 会返回 `conversion_failed: document.xml has no <w:body> element` —— 那是 docx
+ * 解析器在报"这不是 docx"，却被当成"文档执行失败"透传给调用方。CLI 本身有
+ * `slides apply` / `sheet apply`（都是纯 Node），按格式路由才是真能力。
+ *
+ * 不接的格式沿用读侧同款措辞：markdown 指回编辑器，html 需应用渲染器，其余拒绝。
+ */
+export async function editByKind(
+  p: { cliPath: string; withinWorkspace(q: string): boolean },
+  filePath: string,
+  ops: unknown,
+  options: { dryRun?: boolean; track?: boolean },
+): Promise<GenofficeResult> {
+  const kind = documentKindOf(filePath);
+  if (kind === "markdown") {
+    return {
+      ok: false, kind: "refused", envelope: null,
+      reason: "Markdown 请走编辑器或 file.writeFile；GenOffice CLI 对 md 只提供转换（→docx/html），没有结构化编辑。",
+    };
+  }
+  if (kind === "html") {
+    return {
+      ok: false, kind: "unavailable", envelope: null,
+      reason: "HTML 编辑需要 GenOffice 应用渲染器（GENOFFICE_APP_BIN）；请用编辑器写文本。",
+    };
+  }
+  if (kind === "office") {
+    const ext = filePath.slice(filePath.lastIndexOf(".") + 1).toLowerCase();
+    if (ext === "pptx" || ext === "pptm" || ext === "potx" || ext === "odp") {
+      return slidesApply(p, filePath, ops, { ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}) });
+    }
+    if (ext === "xlsx" || ext === "xlsm" || ext === "xltx" || ext === "ods") {
+      return sheetApply(p, filePath, ops, { ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}) });
+    }
+    return docsApply(p, filePath, ops, {
+      ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+      ...(options.track !== undefined ? { track: options.track } : {}),
+    });
+  }
+  return {
+    ok: false, kind: "refused", envelope: null,
+    reason: `这个格式没有结构化编辑路由:${filePath}（documentKind=${kind}）`,
+  };
+}
+
 export function registerDocumentHandlers(ipc: IpcMain): void {
   const p = ports();
 
@@ -158,7 +206,7 @@ export function registerDocumentHandlers(ipc: IpcMain): void {
         };
       }
     }
-    const result = await docsApply(p.ports, input.filePath, input.ops, {
+    const result = await editByKind(p.ports, input.filePath, input.ops, {
       ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
       ...(input.track !== undefined ? { track: input.track } : {}),
     });

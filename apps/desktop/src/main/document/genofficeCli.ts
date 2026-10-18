@@ -176,6 +176,46 @@ export async function sheetRead(ports: GenofficePorts, file: string, signal?: Ab
   return invoke(ports, ["sheet", "read", file, "--json"], signal ? { signal } : {});
 }
 
+/** `slides apply`：按 ops 编辑 pptx。与 `docsApply` **同一条围栏与信封口径**
+ *  （围栏先于起进程；`dryRun` 只演练不写盘）。
+ *
+ *  为什么必须单列：`docs apply` 只认 docx，对 pptx/xlsx 会报
+ *  `conversion_failed: document.xml has no <w:body> element` —— 那是 docx 内部
+ *  解析器的错误，既不是"文档坏了"也不是"能力没装"，拿它回给调用方就是误导。
+ *  slides/sheet 各有自己的 apply 子命令（纯 Node，不需要 sidecar）。 */
+export async function slidesApply(
+  ports: GenofficePorts,
+  file: string,
+  ops: unknown,
+  options: { dryRun?: boolean; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "演示文稿路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const args = ["slides", "apply", file, "--ops", "-", "--json"];
+  if (options.dryRun) args.push("--dry-run");
+  return invoke(ports, args, {
+    stdin: JSON.stringify(ops),
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+}
+
+/** `sheet apply`：按 ops 编辑 xlsx（纯 Node 写路径，不需要 Rust sidecar）。 */
+export async function sheetApply(
+  ports: GenofficePorts,
+  file: string,
+  ops: unknown,
+  options: { dryRun?: boolean; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "表格路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const args = ["sheet", "apply", file, "--ops", "-", "--json"];
+  if (options.dryRun) args.push("--dry-run");
+  return invoke(ports, args, {
+    stdin: JSON.stringify(ops),
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+}
+
 /** `guide <domain> [op]`：机器可读的 ops 目录（`--json`）。Agent 据此知道"能做哪些编辑操作"，
  *  而不是靠猜 op 名。只读、不碰文件。 */
 export async function guideOps(
