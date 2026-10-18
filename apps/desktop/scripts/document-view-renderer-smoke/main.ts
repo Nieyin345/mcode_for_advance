@@ -20,6 +20,10 @@
  *     漂浮在窗口最上层盖住别的面板。**这是本套最重要的一条**（变异验证对象）；
  *  4. **编辑器页未构建**：CLI 缺失时**不创建视图**（零 open 调用），且界面上是
  *     真词典里的「GenOffice 编辑器页未构建」+ 原因 + 重试；
+ *  4c. **sheets / slides 显式降级**：它们的打开通道在 vendor 自己的主进程里
+ *     （sheets=workbook:select、slides=slides:open-path），宿主没有对端 ——
+ *     CLI 可用时也**零 open / 零 openPath**，界面是「该格式的编辑器打开入口尚未
+ *     接入」+ 点名 vendor 通道 + 替代入口，且不误报"未构建"；
  *  5. **open 失败**：显示宿主给的原因 + 重试；点重试真的再 open 一次；
  *  6. **FileEditor 默认档不变**：office 文件在没有任何偏好时仍是 OnlyOffice（wysiwyg），
  *     **不**默认落到任何 GenOffice 档；
@@ -56,6 +60,7 @@ import {
   GenofficeViewHostPane,
   editorHostForPath,
   editorPageUrl,
+  hasHostOpenChannel,
   stableDocId,
 } from "@renderer/components/ide/GenofficeViewHostPane.js";
 import { FileEditor } from "@renderer/components/ide/FileEditor.js";
@@ -258,7 +263,12 @@ section("2. 组件生命周期：open / bounds / close");
 
   const opens = ops("open");
   eq("★ 挂载后恰好 open 一次", opens.length, 1);
-  const openInput = opens[0]?.input as {
+  if (opens.length === 0) {
+    // 后续断言都读 opens[0]：先给出可读失败与总 FAIL，别让套件以 TypeError 崩掉
+    // （崩掉的套件只看到一条栈，看不到其余判据红在哪里）。
+    check("★ 挂载后必须发过 open（后续断言的前提）", false, "没有 open 调用");
+  }
+  const openInput = (opens[0]?.input ?? {}) as {
     docId?: string;
     url?: string;
     bounds?: { x: number; y: number; width: number; height: number };
@@ -391,6 +401,57 @@ section("4b. openPath 被拒（工作区外/宿主拒绝）时显示原因");
   check("前提：确实发过 openPath", ops("openPath").length > 0, ops("openPath").length);
   const text = uiText();
   check("★ 界面显示宿主给的拒绝原因原文", text.includes("文件不在已知工作区内"), text);
+  await unmountPane();
+}
+
+/* ══════════════════ 4c. sheets / slides：打开入口无宿主对端 → 显式降级 ══════════════════ */
+
+section("4c. sheets / slides：明说打开入口未接，不建视图、不装空白");
+{
+  // 判据不是"vendor 有没有通道"，而是"宿主能不能在不伪造数据的前提下回它"
+  eq("★ docs 是唯一有宿主打开对端的编辑器页", hasHostOpenChannel("docs"), true);
+  eq("sheets 没有宿主打开对端（打开=workbook:select，实现在 vendor 主进程）", hasHostOpenChannel("sheets"), false);
+  eq("slides 没有宿主打开对端（打开=slides:open-path，实现在 vendor 主进程）", hasHostOpenChannel("slides"), false);
+
+  // 路径路由与降级判据的落点：扩展名 → 编辑器页 → 是否有对端。
+  eq("xlsx 路由到 sheets 且无对端", [editorHostForPath("/w/a.xlsx"), hasHostOpenChannel(editorHostForPath("/w/a.xlsx"))], ["sheets", false]);
+  eq("ods 路由到 sheets 且无对端", [editorHostForPath("/w/a.ods"), hasHostOpenChannel(editorHostForPath("/w/a.ods"))], ["sheets", false]);
+  eq("pptx 路由到 slides 且无对端", [editorHostForPath("/w/a.pptx"), hasHostOpenChannel(editorHostForPath("/w/a.pptx"))], ["slides", false]);
+  eq("docx 路由到 docs 且有对端", [editorHostForPath("/w/a.docx"), hasHostOpenChannel(editorHostForPath("/w/a.docx"))], ["docs", true]);
+
+  const cases: Array<[string, string, string]> = [
+    ["/workspace/budget.xlsx", "表格", "workbook:select"],
+    ["/workspace/talk.pptx", "演示文稿", "slides:open-path"],
+  ];
+  for (const [file, format, vendorChannel] of cases) {
+    // CLI **可用**时也必须降级：缺的不是构建，而是 vendor 主进程那一侧的对端
+    // （CLI 缺失分支由第 3 段另行覆盖）。
+    resetWorld({ available: true, path: CLI_PATH });
+    await mountPane(file);
+
+    eq(`★ ${format}：CLI 可用时仍不创建任何视图（零 open）`, ops("open").length, 0);
+    eq(`★ ${format}：也不发 openPath（没有可打开的对端）`, ops("openPath").length, 0);
+    eq(`★ ${format}：不发 bounds（不存在的视图没有几何）`, ops("bounds").length, 0);
+    eq(`★ ${format}：不轮询 list（没有视图可诊断）`, ops("list").length, 0);
+
+    const text = uiText();
+    check(`★ ${format}：界面出现「该格式的编辑器打开入口尚未接入」`, text.includes("该格式的编辑器打开入口尚未接入"), text);
+    check(`★ ${format}：原因点名 vendor 的打开通道 ${vendorChannel}`, text.includes(vendorChannel), text);
+    check(`${format}：原因点名 vendor 主进程（不是"我们没做"，是通道在对端）`, text.includes("GenOffice 自己的主进程"), text);
+    check(`${format}：给出仍可用的替代入口（OnlyOffice / 结构化视图）`, text.includes("OnlyOffice") && text.includes("GenOffice 结构化视图"), text);
+    check(`★ ${format}：不是「编辑器页未构建」的误报`, !text.includes("GenOffice 编辑器页未构建"), text);
+    check(`${format}：不残留「加载中」`, !text.includes("加载中…"), text);
+    // 显式降级是警告（tone=warning，role=status），不是"出错了"的红色警报。
+    const notes = deepNodes().filter((n) => typeof n.type === "function" && (n.type as { name?: string }).name === "ErrorNote");
+    eq(`${format}：恰好一条说明框`, notes.length, 1);
+    eq(`${format}：说明框是 warning 档（不是"坏了"）`, notes[0]?.props.tone, "warning");
+    await unmountPane();
+  }
+
+  // 对照：同一套挂载路径下 docx 是**真的**会 open —— 上面的零 open 不是套件假绿。
+  resetWorld({ available: true, path: CLI_PATH });
+  await mountPane(OFFICE_FILE);
+  eq("对照：docx 在同一条件下会 open（证明降级分支是格式判据，不是环境问题）", ops("open").length, 1);
   await unmountPane();
 }
 

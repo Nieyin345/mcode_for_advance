@@ -31,11 +31,34 @@
  * 报告的 CLI 缺失（或路径形状不认识）就是"页面不可用"的**可判定**信号，此时直接
  * 画出错误说明与重试入口，不创建视图。
  *
+ * ## sheets / slides 的打开入口：宿主侧没有对端（显式降级，不装空白）
+ *
+ * 只有 docs 能真正打开指定文件。表格与演示文稿的**打开通道**长在 GenOffice
+ * **自己的主进程**里，而 Mcode 宿主不跑那份主进程：
+ *
+ *  - sheets：渲染端唯一的打开入口 `handleInspectWorkbook` → `desktopApi.selectWorkbook()`
+ *    → `ipcRenderer.invoke("workbook:select")`（`genoffice/apps/sheets/src/preload/index.ts:107`），
+ *    handler 在 vendor 主进程里读 `queuedWorkbookPaths`（按 vendor 的 webContents id 键）
+ *    再跑 `prepareWorkbookForOpen` + `openWorkbookSession`
+ *    （`apps/sheets/src/main/sheets-main.ts:2809`、`:2231`）；`sheets:has-queued-workbook`
+ *    读的是同一张 Map（`:2785`）。渲染端没有"按路径打开"的入口。
+ *  - slides：renderer 订阅的是 `slides:menu`（`apps/slides/src/preload/index.ts:384`），
+ *    `MenuCommand` 联合里**没有** open-path 且不带路径参数
+ *    （`apps/slides/src/shared/ipc.ts:1269`）；按路径打开只有 `slides:open-path` /
+ *    `slides:consume-pending-open` 两条 `invoke`，handler 在 vendor 主进程跑
+ *    `preparePresentationForOpen` + `openAndBuild`（`apps/slides/src/main/slides-main.ts:1458`、`:1466`）。
+ *
+ * 宿主注册这些通道只能伪造一份 `WorkbookFile` / `OpenResult`（真实内容由 vendor 的
+ * xlsx/pptx 引擎在那边组装），所以这里**不伪造**：对 sheets/slides 不创建视图、
+ * 不发 open，直接画出「该格式的编辑器打开入口尚未接入」+ 原因。否则用户看到的是
+ * 一个已挂载但被 vendor 页面自身启动逻辑炸掉（`window.desktopApi.getAiSettings()`
+ * 无保护，`apps/sheets/src/renderer/App.tsx:1729`；`window.slidesApi.onMenuCommand`
+ * 无保护，`apps/slides/src/renderer/App.tsx:2312`）的空面板 —— 分不清"没构建"和"没接线"。
+ *
  * ## 已知边界（如实记录，不在本切片里假装解决）
  *
- * - 这一版宿主**没有文档桥**：视图里是编辑器的起始页，不会自动打开 `filePath`
- *   指向的那份文档（主进程不向页面注入参数，页面也没有消费通道）。打开具体文档
- *   属于后续 DocumentSessionRegistry 切片。
+ * - docs 的打开/保存桥已接（`documentViewPreload.ts`）；sheets/slides 的打开入口
+ *   未接，见上一节。
  * - CLI 存在但三个 module 的 `out/renderer` 没构建时，渲染端没有可用的 stat IPC
  *   去探测文件是否存在 —— 该情形由主进程的导航失败日志暴露，界面层只能保证
  *   **CLI 缺失**这一分支是显式的（见上）。
@@ -75,6 +98,20 @@ export function editorHostForPath(filePath: string): GenofficeEditorHost {
     default:
       return "docs";
   }
+}
+
+/**
+ * 【ARC-007】docs 是唯一在宿主里有**打开对端**的编辑器页。
+ *
+ * 判据不是"vendor 有没有某个通道"，而是"宿主能不能在不伪造数据的前提下回它"：
+ * docs 的 `menu:command("open-path", path)` 由宿主直接下发路径、页面自己读盘
+ * （`apps/docs/src/preload/index.ts` 的 `onMenuCommand` → `App.tsx` 的 `case "open-path"`）；
+ * sheets 需要宿主交出一份 vendor 主进程组装好的 `WorkbookFile`（含 sessionId、分块
+ * 读取的会话），slides 需要 vendor 主进程先 `preparePresentationForOpen` 再回
+ * `OpenResult` —— 两者宿主都没有对端，伪造就等于伪造文档内容。详见文件头。
+ */
+export function hasHostOpenChannel(host: GenofficeEditorHost): boolean {
+  return host === "docs";
 }
 
 /**
@@ -171,7 +208,12 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
   const docId = useMemo(() => stableDocId(filePath), [filePath]);
   const host = editorHostForPath(filePath);
   const cliPath = caps.data?.cli.available === true ? caps.data.cli.path : null;
-  const url = cliPath !== null ? editorPageUrl(cliPath, host) : null;
+  // 【ARC-007】只给有宿主对端的编辑器页算 URL：sheets/slides 的打开通道在 vendor
+  // 自己的主进程里（见文件头），宿主侧没有对端 —— 建视图只会得到一张
+  // vendor 页面自身启动逻辑炸掉的空面板。`null` 让下面两个 effect 全部跳过。
+  const url = cliPath !== null && hasHostOpenChannel(host) ? editorPageUrl(cliPath, host) : null;
+  /** sheets/slides 的**显式降级**分支：与"未构建"是两回事，文案与原因也分开。 */
+  const unsupportedHost = hasHostOpenChannel(host) ? null : host;
 
   useEffect(() => {
     if (url === null) return;
@@ -302,7 +344,23 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {caps.loading && <LoadingNote label={t("common.loading")} />}
-      {!caps.loading && url === null && (
+      {/* 【ARC-007】sheets/slides：**显式**说明打开入口未接，不装空白。
+          这一支必须排在「未构建」之前 —— CLI 是否构建不影响"宿主没有打开对端"
+          这个事实，两个错误的修法也不同（一个是去构建，一个是等后续切片）。 */}
+      {!caps.loading && unsupportedHost !== null && (
+        <div className="p-3">
+          <ErrorNote title={t("ide.genoffice.viewHostUnsupported")} tone="warning">
+            <div>
+              {t(
+                unsupportedHost === "sheets"
+                  ? "ide.genoffice.viewHostUnsupportedSheets"
+                  : "ide.genoffice.viewHostUnsupportedSlides",
+              )}
+            </div>
+          </ErrorNote>
+        </div>
+      )}
+      {!caps.loading && unsupportedHost === null && url === null && (
         <div className="p-3">
           <ErrorNote
             title={t("ide.genoffice.editorNotBuilt")}

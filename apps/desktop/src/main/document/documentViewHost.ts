@@ -25,7 +25,15 @@
  *
  * webPreferences 三项逐项钉死：`contextIsolation: true`（页面碰不到宿主作用域）、
  * `nodeIntegration: false`（没有 Node 能力）、`sandbox: true`（渲染进程进 Chromium
- * 沙箱）。没有 preload —— 这一版视图里还没有文档桥，宁可少给能力。
+ * 沙箱）。preload 只在编译产物存在时挂**最小桥**（`documentViewPreload.ts`），
+ * 取不到就宁可不给能力（fail-closed）。
+ *
+ * ## 打开通道只对 docs 成立
+ *
+ * `openPath` 发的是 vendor **docs** 页面认识的那对常量；sheets/slides 的打开
+ * 实现长在 GenOffice 自己的主进程里（sheets=`workbook:select`、slides=
+ * `slides:open-path`），本宿主没有对端，也不会伪造 `WorkbookFile`/`OpenResult`。
+ * 渲染端对这两类文件直接显式降级（见 `GenofficeViewHostPane.tsx` 文件头）。
  *
  * ## 可测性
  *
@@ -535,7 +543,7 @@ export class DocumentViewHost {
   private navigate(live: LiveDocumentView): void {
     try {
       // 导航失败只记日志：open 已经成功创建了视图，调用方拿到的应是"视图在"，
-      // 页面是否加载成功由后续的文档桥/状态事件回答（这一版还没有桥）。
+      // 页面是否加载成功由 `did-fail-load`/`render-process-gone` 记进 lastFailure。
       void Promise.resolve(live.view.webContents.loadURL(live.url)).catch(() => {
         log.warn(`document view navigation failed: ${live.docId} (${live.url})`);
       });
