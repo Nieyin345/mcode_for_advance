@@ -7,6 +7,7 @@
 import type { Session, SessionTodoItem, SessionPlanDraft, SessionBookmark } from "@contracts/session";
 import type { SubagentSnapshot, TurnFileEntry, TurnUsageRecord } from "@contracts/runtime";
 import { normPathKey } from "@main/lib/pathNorm.js";
+import { defaultProviderId } from "@main/providers/defaultProvider.js";
 import { getDb, persist } from "../db.js";
 import { v, safeJson, SESSION_COLUMNS, type BindValue, type SessionRow } from "../sessionSchema.js";
 
@@ -801,7 +802,10 @@ export const SessionRepo = {
       out.push({
         id: row.id,
         kind: row.kind ?? "chat",
-        providerId: row.provider_id ?? "claude-sdk",
+        // 【MC-013】默认引擎只有一份事实:`providers/defaultProvider.ts` 的唯一出口。
+        // 从前这里写死默认引擎 id 的字面量 —— 值恰好相等,但那又是一条"默认引擎是谁"
+        // 的读法;契约常量改值时它不会跟着变。
+        providerId: row.provider_id ?? defaultProviderId(),
         customModelId: row.custom_model_id ?? null,
         usageHistory: parsed as TurnUsageRecord[],
       });

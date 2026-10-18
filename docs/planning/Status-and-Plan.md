@@ -110,7 +110,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | 节点进度事件 + 进度卡 | 完成 |
 | 只有「执行方式没实现」才判不可跑（不再误伤 `command` 节点） | 完成 |
 
-**八个内置节点类型**（都在 `nodeTypes.ts` 的 `BUILTIN_NODE_TYPES` 里）：
+**十个内置节点类型**（都在 `nodeTypes.ts` 的 `BUILTIN_NODE_TYPES` 里）：
 
 - `mcode.main` —— 主代理。用户那句话进图的第一站，一份工作流**有且只有一个**、删不掉；
   **跑在主对话里**（执行方式是 conversation，用户看得见它拆解与分派）；
@@ -120,12 +120,16 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 - `mcode.condition` —— 声明式条件判断，AND/OR，true/false 分流；不调用模型，也不是人工回环闸门；
 - `mcode.command` —— 跑一条命令。**非零退出码不算这一步失败**（失败的是命令，不是流程）；
 - `mcode.code` —— 跑一段代码（Python / Node / Shell / PowerShell）；
+- `mcode.module-capability` —— 调用宿主内置模块的**只读文件能力**（moduleId / contributionId / path）；
+  不运行用户导入的模块，缺执行器时 **fail-closed**，绝不落模型兜底；
+- `mcode.node-red` —— 向本机受管的 Node-RED 引擎发一次**回环** HTTP 请求（只许 127.0.0.1/本引擎端口）；
+  引擎未启动时明确失败（清单带 executor requirement），不落模型兜底；
 - `mcode.trigger` —— 触发器。自动化的入口，自己不跑东西。
 
 插件可以注册自己的类型（`nodeTypes` 是第一个由 Mcode 自己消费的插件组件种类）。
 
 **执行分派只有一个入口**：`manifest.runner.kind` 在注册表里就交给它，没有就落兜底
-（模型轮）。新增一种执行方式 = 注册一个执行器，分派链一行不改。
+（模型轮；`module-capability` 例外 —— 缺执行器时 fail-closed，绝不落模型）。新增一种执行方式 = 注册一个执行器，分派链一行不改。
 
 **三条硬约束**（校验层拦，不只靠界面）：
 - 普通图型工作流必须有且只有一个 `mcode.main`（自动化以触发器为入口）；

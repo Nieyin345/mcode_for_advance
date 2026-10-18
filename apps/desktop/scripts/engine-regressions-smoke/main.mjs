@@ -619,6 +619,27 @@ test("workflow provider overrides survive node-session reuse and drive provider-
   assert.match(automation, /origin\?\.providerId \?\? configuredProviderId \?\? defaultProviderId\(\)/);
   assert.ok(!/DEFAULT_PROVIDER_ID/.test(automation), "automation must use the single defaultProviderId() exit, not the raw constant");
   assert.match(automation, /origin\?\.model \?\? configuredModel \?\? "default"/);
+
+  // 【MC-013 复核补漏】默认引擎的读路径也不能再写死字面量 —— 审计点名的
+  // 「第二出口/第二读法」既包括注册表上的解析口(agent-mail-smoke §⑱ 钉着),
+  // 也包括存储层这两处:它们值恰好等于常量,但常量改值时不会跟着变,而且
+  // typecheck 看不见(grep 才看得见)。判据:任何 `?? "claude-sdk"` / DDL 的
+  // `DEFAULT 'claude-sdk'` 都必须走 `defaultProviderId()`。
+  const sessionSchema = readFileSync(resolve(here, "../../src/main/store/sessionSchema.ts"), "utf8");
+  const sessionRepo = readFileSync(resolve(here, "../../src/main/store/repositories/session.ts"), "utf8");
+  for (const [file, text] of [["sessionSchema.ts", sessionSchema], ["repositories/session.ts", sessionRepo]]) {
+    assert.ok(!/["']claude-sdk["']/.test(text),
+      `${file} must not hardcode the default provider id — use defaultProviderId() (MC-013)`);
+    assert.match(text, /defaultProviderId\(\)/,
+      `${file} must read the default provider through the single exit (MC-013)`);
+  }
+  // DDL 的 DEFAULT 由常量派生(而不是字符串里再写一份)—— 钉住形状,防止有人
+  // 只改读回兜底、留下 CREATE/ALTER 的旧默认。
+  assert.match(sessionSchema, /def: `TEXT NOT NULL DEFAULT '\$\{defaultProviderId\(\)/,
+    "provider_id DDL default must be derived from defaultProviderId() (MC-013)");
+  // 读回兜底同样走唯一出口。
+  assert.match(sessionRepo, /row\.provider_id \?\? defaultProviderId\(\)/,
+    "usage-history read path must fall back through defaultProviderId() (MC-013)");
   const nodeTypes = readFileSync(resolve(here, "../../src/main/orchestration/nodeTypes.ts"), "utf8");
   assert.match(nodeTypes, /label: "无人值守引擎"/);
   assert.match(nodeTypes, /label: "无人值守模型"/);

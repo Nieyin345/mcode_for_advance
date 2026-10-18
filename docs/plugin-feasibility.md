@@ -2,7 +2,7 @@
 
 > Mcode — 基于 Agent SDK 的桌面端 GUI · 插件(Plugin)子系统规划前置调研
 >
-> 状态:**可行性结论已定,待排期实施**。调研日期 2026-09-09,所有三家(Claude Code / Codex CLI / ZCode)的插件机制均为**本机实测**(二进制 --help 探测、本机插件目录剖析、官方文档核对),非纯文档转述。
+> 状态:**已实施**(插件系统已上线:`main/plugins/` + `plugins.*` RPC + 设置页 Plugins 面板;本文保留为调研定稿)。调研日期 2026-09-09,所有三家(Claude Code / Codex CLI / ZCode)的插件机制均为**本机实测**(二进制 --help 探测、本机插件目录剖析、官方文档核对),非纯文档转述。
 
 **结论先行:Mcode 做插件系统高度可行,且是「管道大半已铺好」的状态。** skills 与 MCP 两类组件的投递通道在三个 provider 侧均已存在(Mcode 为隔离配置目录、codex skills RPC、Pi skill bridge 各自建过一遍);剩余工作主要是插件生命周期管理这层「壳」——清单解析、安装管线、启用/禁用、设置页面板。建议 v1 以 **skills + MCP servers** 为核心组件面,Claude 侧后续用 SDK 原生 `options.plugins` 解锁全组件。hooks 采取「v1 明示不执行 → v1.5 Claude 透传 → v3 宿主统一 runner」的分段路线(分析见四.2)。
 
@@ -66,7 +66,7 @@ VSCode/Eclipse 的插件扩展的是**软件本身**(加 UI、加语言支持);C
 
 ### 2.2 Claude Agent SDK 的原生插件支持(关键利好)
 
-仓库当前钉的 `@anthropic-ai/claude-agent-sdk` **0.3.258**(`package.json` 实测;⚠️ AGENTS.md 仍记 0.3.238,文档漂移待修正)实测具备:
+仓库当前钉的 `@anthropic-ai/claude-agent-sdk` **0.3.258**(`package.json` 实测;AGENTS.md 已同步为 0.3.258)实测具备:
 
 - **`options.plugins?: SdkPluginConfig[]`**——类型为 `{ type: 'local'; path: string; skipMcpDiscovery?: boolean }`,按会话加载本地插件,官方注释明确覆盖 custom commands、agents、skills、hooks。`skipMcpDiscovery: true` 时只装 skills/hooks/agents/commands、不读插件的 `.mcp.json` 与清单 `mcpServers`——留给宿主自管 MCP 连接(Mcode 若想统一走自己的 MCP 管理面,就用这个开关);
 - **会话内热重载 API**——"Reload plugins from disk and return the refreshed commands, agents, plugins, and MCP server status"(无需重建会话);
@@ -179,7 +179,7 @@ marketplace.json 同样采纳 Claude 形态(`.claude-plugin/marketplace.json`):`
    **安全底线(不论路线)**:hooks 默认关、安装时逐条审查、面板上活跃可见。
 3. **Codex 原生插件子系统未校准**(2026-09-09 实测):`codex plugin` CLI 子命令存在,但最小 marketplace 清单(尝试过 `.codex-plugin/marketplace.json`、根 `marketplace.json`、个人市场 `~/.agents/plugins/marketplace.json` 三种摆放 + 补 version 字段)均未通过校验("marketplace root does not contain a supported manifest");二进制内嵌的校验字符串显示 plugin.json 要求严格 semver、author 对象、`interface.*` 仅 https URL 等;另有 "[plugins feature is disabled" 字符串**疑似 feature 门控**。→ **v1 完全不耦合 codex 原生插件**,走 extraRoots + config.toml 翻译路线(两条已在生产验证);原生通道留作后续优化,实施前须按「协议硬事实」纪律重新探测。
 4. **Commands 的跨端落差**:Claude 原生;Codex/Pi 无等价物。翻译方案(composer 预制指令)是 Mcode 自有 UI 概念,需进 i18n 词典。
-5. **SDK 版本纪律**:AGENTS.md 记 0.3.238,`package.json`/node_modules 实际 0.3.258——`options.plugins` 在 0.3.258 实测存在;若版本有变,升级回归清单须加上「插件加载」链路。
+5. **SDK 版本纪律**:AGENTS.md 与环境事实都已记 0.3.258,`package.json`/node_modules 实际也是 0.3.258——`options.plugins` 在 0.3.258 实测存在;若版本有变,升级回归清单须加上「插件加载」链路。
 6. **`.claude.json` 竞态**:CLI 频繁重写该文件,Mcode 已用 read-modify-write + 保留未知键处理(`mcpConfig.ts`);插件 MCP 若并入 user scope 须走同一条通道,不另开写路径。
 
 ---

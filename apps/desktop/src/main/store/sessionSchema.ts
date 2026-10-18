@@ -30,6 +30,7 @@ import type {
   SessionBookmark,
 } from "@contracts/session";
 import type { ContextSnapshot, SubagentSnapshot, TurnFileEntry, TurnUsageRecord } from "@contracts/runtime";
+import { defaultProviderId } from "@main/providers/defaultProvider.js";
 
 /* sql.js binds `?` params positionally as an array. Values must be
  * string | number | Uint8Array | null — booleans/undefined aren't accepted,
@@ -72,8 +73,11 @@ export const SESSION_COLUMNS: readonly SessionColumn[] = [
     bind: (s) => v(s.id), read: (r) => r.id },
   { name: "project_id", def: "TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE", inCreate: true, key: "projectId",
     bind: (s) => v(s.projectId), read: (r) => r.project_id },
-  { name: "provider_id", def: "TEXT NOT NULL DEFAULT 'claude-sdk'", inCreate: true, key: "providerId",
-    bind: (s) => v(s.providerId), read: (r) => r.provider_id ?? "claude-sdk" },
+  // 【MC-013】默认引擎只有一份事实:`providers/defaultProvider.ts` 的唯一出口。
+  // DDL 的 DEFAULT 与读回兜底都不能再各写一遍字面量 —— 值今天恰好相等,但契约常量
+  // 改值时这两处不会跟着变,又是一条"默认引擎是谁"的独立读法。
+  { name: "provider_id", def: `TEXT NOT NULL DEFAULT '${defaultProviderId().replace(/'/g, "''")}'`, inCreate: true, key: "providerId",
+    bind: (s) => v(s.providerId), read: (r) => r.provider_id ?? defaultProviderId() },
   { name: "claude_session_id", def: "TEXT", inCreate: true, key: "claudeSessionId",
     bind: (s) => v(s.claudeSessionId), read: (r) => r.claude_session_id ?? null },
   { name: "title", def: "TEXT NOT NULL", inCreate: true, key: "title",
