@@ -62,6 +62,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
+import { resolveProjectFlowDir } from "./projectFlowDir.js";
 import { log } from "@main/lib/logger.js";
 import { ensureEngineBootstrap } from "./bootstrapManifest.js";
 import {
@@ -206,7 +207,7 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     return this.runtimes.get(engineId)?.status() ?? null;
   }
 
-  /** 引擎自己的目录（也放引导脚本）。 */
+  /** 引擎自己的目录（也放引导脚本）。**默认项目 = 旧单例目录**（兼容，只读语义不变）。 */
   dataDirOf(engineId: string): string {
     const cached = this.dataDirs.get(engineId);
     if (cached !== undefined) return cached;
@@ -214,6 +215,30 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     mkdirSync(dir, { recursive: true });
     this.dataDirs.set(engineId, dir);
     return dir;
+  }
+
+  /**
+   * 【ARC-006 MERGE-1 / P1-7】**按项目隔离**的引擎数据目录。
+   *
+   * 纯判据在 `projectFlowDir.ts`（同 projectId 稳定、不同 projectId 隔离、非法 id
+   * 拒绝）；这里只做"算出来 + 建目录"这一层。
+   *
+   * - `projectId` 省略 / null / `"default"` → **旧单例目录**（`dataDirOf`），内容
+   *   与行为原样兼容，不迁移；
+   * - 合法的新 projectId → `<engineDir>/projects/<safe>/`；
+   * - **非法 id → 抛错**（绝不回退成默认目录，那会让坏 id 写进共享目录）。
+   *
+   * 与 `dataDirOf` 不同，本方法**不缓存**：项目目录的集合是开放的，缓存一张随时
+   * 增长的 Map 只会把生命周期搞复杂；路径计算是纯字符串操作。
+   */
+  projectDataDirOf(engineId: string, projectId?: string | null): string {
+    if (!(ENGINE_IDS as readonly string[]).includes(engineId)) {
+      throw new Error(`未知工作流引擎：${engineId}`);
+    }
+    const result = resolveProjectFlowDir(this.dataDirOf(engineId), projectId);
+    if (!result.ok) throw new Error(`非法 projectId：${result.reason}`);
+    mkdirSync(result.dir, { recursive: true });
+    return result.dir;
   }
 
   launchSpec(engineId: string): WorkflowEngineLaunchSpec | null {

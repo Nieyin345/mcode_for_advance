@@ -114,6 +114,10 @@ import { workflowReviewError, workflowRevision } from "./workflowTrust.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import { setWorkflowReloader } from "./reloadRequest.js";
 import { hasActiveRun, startWorkflowRun } from "./runner.js";
+import {
+  createInMemoryExecutorOwnership,
+  type ExecutorOwnershipRegistry,
+} from "@main/workflowEngines/executorOwnership.js";
 
 import {
   TICK_MS,
@@ -230,6 +234,26 @@ class AutomationRunner {
    * 什么时候跑的、最近一次为什么没跑成。reload 重建挂载侧,运行侧只增不改。
    */
   private facts = new AutomationFacts();
+  /**
+   * 【ARC-006 MERGE-3 第二刀】**executor owner 判据**（同一 flow 只能一端执行）。
+   *
+   * 默认是**进程内内存注册表**：没有 Node-RED 侧登记时 `claim` 恒成功 —— 现有用户
+   * 行为一字不变。装配处（或测试）用 {@link setExecutorOwnership} 换成真注册表
+   * （将来是落盘版，与 flows.json 同一事务边界）。
+   *
+   * 接入点只有三处窄边界（见文件里的 `claimExecutorOwner` / `releaseExecutorOwner`）：
+   * `fire()` 派发前 claim、`dispose()` 与 `apply()` 里 release。**Node-RED 侧启动
+   * 入口本片不改**（下一片）。
+   */
+  private executorOwnership: ExecutorOwnershipRegistry = createInMemoryExecutorOwnership();
+  /** 本 runner 当前已登记为 `mcode` owner 的 flowId（只放行 release 自己登记过的）。 */
+  private claimedFlowIds = new Set<string>();
+
+  /** 装配/测试注入 executor owner 注册表（传 null 复位为进程内内存版）。 */
+  setExecutorOwnership(registry: ExecutorOwnershipRegistry | null): void {
+    this.executorOwnership = registry ?? createInMemoryExecutorOwnership();
+    this.claimedFlowIds.clear();
+  }
 
   /* ────────────────────────── 启停 ───────────────────────── */
 
@@ -360,6 +384,9 @@ class AutomationRunner {
     this.droppedDirty = false;
     this.facts.clear();
     this.entries.clear();
+    // 【MERGE-3】退出时释放本进程登记过的 owner（只释放自己 claim 过的，绝不偷别人的）。
+    for (const flowId of [...this.claimedFlowIds]) this.releaseExecutorOwner(flowId);
+    this.claimedFlowIds.clear();
     log.info("AutomationRunner disposed");
   }
 
@@ -403,8 +430,14 @@ class AutomationRunner {
 
   /** 换掉一条自动化的触发器集合(空数组 = 它不再是自动化,或者被删了)。 */
   private apply(workflowId: string, triggers: LoadedTrigger[]): void {
-    if (triggers.length === 0) this.entries.delete(workflowId);
-    else this.entries.set(workflowId, triggers);
+    if (triggers.length === 0) {
+      this.entries.delete(workflowId);
+      // 不再是自动化（或已被删除）→ 不再由 mcode 执行；释放所有权，另一端（将来的
+      // Node-RED 切换流程）才能接手。
+      this.releaseExecutorOwner(workflowId);
+    } else {
+      this.entries.set(workflowId, triggers);
+    }
 
     // 已经不在表里的那些,攒着的触发要一起丢掉 —— 否则"改完触发方式"之后,旧配置
     // 那次还没跑出去的触发会按**旧条件**起一次运行(而那正是用户刚改掉的东西)。
@@ -2318,6 +2351,15 @@ class AutomationRunner {
         return this.skip(trigger, "上一次还在跑,这一次触发已跳过");
       }
 
+      // 【ARC-006 MERGE-3 第二刀】派发前先确认「这条 flow 归 mcode 执行」。另一端
+      // （Node-RED）已登记 → **不启动**，走现有的可见诊断通道（界面 statusOf 的
+      // lastError + 日志），而不是起跑后才发现两端各跑了一遍。
+      // 默认注册表是进程内内存版：没有 Node-RED 侧登记时恒成功，现有行为不变。
+      const ownership = this.claimExecutorOwner(trigger.workflowId);
+      if (!ownership.ok) {
+        settleClaim();
+        return this.skip(trigger, ownership.reason);
+      }
       const session = this.sessionOf(trigger, project?.id ?? "", opts?.originSessionId);
       // 【MC-091 续】**派发这一刻把未交付的积压丢弃并进载荷事实。** 之前批次里被超限丢掉的
       // 条目,有些**没能随它的载荷交出去** —— 那一批被配置改动 / 用户取消作废了,或应用在
@@ -2430,6 +2472,38 @@ class AutomationRunner {
    */
   private markArmed(trigger: LoadedTrigger): void {
     this.facts.recordSetup(triggerSeedOf(trigger), true);
+  }
+
+  /**
+   * 派发前确认 owner。**幂等**：同一条 flow 重复 claim 会得到 `alreadyOwned`，不重复登记。
+   * 冲突时把原因原样返回（调用方走 `skip` —— 界面可见）。
+   */
+  private claimExecutorOwner(flowId: string): { ok: true } | { ok: false; reason: string } {
+    const result = this.executorOwnership.claim(flowId, "mcode", {
+      reason: "automationRunner：自动化触发器起跑",
+      now: () => Date.now(),
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        reason:
+          `这条工作流当前由 ${result.conflict?.current ?? "另一端"} 执行，自动化触发器本次未启动`
+          + `（同一 flow 只能有一个 executor owner；${result.reason}）`,
+      };
+    }
+    this.claimedFlowIds.add(flowId);
+    return { ok: true };
+  }
+
+  /** 释放本 runner 登记过的 owner。失败只记日志 —— 关闭路径不该因为账本坏了而卡住。 */
+  private releaseExecutorOwner(flowId: string): void {
+    if (!this.claimedFlowIds.has(flowId)) return;
+    const result = this.executorOwnership.release(flowId, "mcode");
+    if (result.ok) {
+      this.claimedFlowIds.delete(flowId);
+    } else {
+      log.warn(`[automation] 释放「${flowId}」的 executor owner 失败：${result.reason}`);
+    }
   }
 
   private skip(trigger: LoadedTrigger, reason: string): AutomationRunResult {

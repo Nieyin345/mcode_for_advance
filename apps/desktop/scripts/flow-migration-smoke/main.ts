@@ -30,11 +30,17 @@
  * 执行。两边同时登记 → 同一事件跑两遍。本段钉住判据：第二个 owner 被**显式拒绝**
  * （不是后写赢）、释放后可重新登记、未登记返回 null（防空过）、不同 flow 互不影响。
  *
+ * ## 8. MERGE-1 / P1-7：按项目隔离的 flow 目录
+ *
+ * `<engineDir>/projects/<safe-project-id>/` —— 同 projectId 稳定、不同 projectId
+ * 隔离、非法 id 拒绝；默认项目仍指向旧单例目录（只读兼容，不迁移）。
+ *
  * Run: bash scripts/flow-migration-smoke/run.sh
  */
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
 import type { NodeRunner, NodeTypeManifest } from "@contracts/nodeType";
 import { MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
@@ -57,6 +63,14 @@ import {
   decideClaim,
   isExecutorOwner,
 } from "@main/workflowEngines/executorOwnership.js";
+import {
+  DEFAULT_PROJECT_ID,
+  PROJECTS_DIR,
+  projectFlowDir,
+  resolveProjectFlowDir,
+  safeProjectDirName,
+  validateProjectId,
+} from "@main/workflowEngines/projectFlowDir.js";
 
 let failures = 0;
 let total = 0;
@@ -427,6 +441,91 @@ console.log("\n7. 迁移产物的 flow 身份与 owner 登记键对齐");
     registry.executorOwnerOf(richDoc.id), "node-red");
   const conflict = registry.claim(richDoc.id, "mcode");
   check("★ 旧 runner 若试图登记同一 flow → 显式冲突", conflict.ok === false, conflict);
+}
+
+/* ══════════ 8. 按项目隔离的 flow 目录（MERGE-1 / P1-7） ══════════ */
+console.log("\n8. projectFlowDir：项目隔离 + 默认项目兼容");
+{
+  const engineDir = join(tmpdir(), "mcode-engine-root-fixture");
+  const ra = resolveProjectFlowDir(engineDir, "proj_alpha");
+  const rb = resolveProjectFlowDir(engineDir, "proj_beta");
+  check("前置：两个合法 projectId 都解析成功", ra.ok === true && rb.ok === true, { ra, rb });
+  const a = ra.ok ? ra.dir : "";
+  const b = rb.ok ? rb.dir : "";
+  check("★ 两个 projectId 的目录互不相同（隔离）", a !== "" && b !== "" && a !== b, { a, b });
+  check("★ 目录落在 <engineDir>/projects/ 下",
+    a.includes(PROJECTS_DIR) && b.includes(PROJECTS_DIR), { a, b });
+  eq("★ 同一 projectId 重复调用稳定（纯判据）", resolveProjectFlowDir(engineDir, "proj_alpha"), ra);
+
+  // 折叠碰撞：两个**合法**但折叠后同名的 id（空格与点都折成 `-`）→ 哈希后缀仍区分。
+  const rc1 = resolveProjectFlowDir(engineDir, "a b");
+  const rc2 = resolveProjectFlowDir(engineDir, "a.b");
+  check("★ 折叠后同名的两个不同 id 目录仍不同（哈希后缀兜底）",
+    rc1.ok && rc2.ok && rc1.dir !== rc2.dir, { rc1, rc2 });
+  check("★ safeProjectDirName 带 8 位十六进制哈希后缀",
+    /-[0-9a-f]{8}$/.test(safeProjectDirName("proj_alpha")), safeProjectDirName("proj_alpha"));
+  check("★ safeProjectDirName 只含白名单字符",
+    /^[A-Za-z0-9_-]+$/.test(safeProjectDirName("a b.c:d")), safeProjectDirName("a b.c:d"));
+
+  // ★ 非法 projectId 被拒（..、绝对路径、空、分隔符、盘符、控制字符、超长）。
+  const invalid = [
+    ["空串", ""],
+    ["纯空白", "   "],
+    ["..", ".."],
+    [".", "."],
+    ["绝对路径（/）", "/etc/passwd"],
+    ["绝对路径（\\）", "C:\\Windows"],
+    ["盘符", "D:secret"],
+    ["含分隔符", "a/b"],
+    ["含反斜杠", "a\\b"],
+    ["NUL", "a\u0000b"],
+    ["超长", "x".repeat(201)],
+  ] as const;
+  for (const [label, id] of invalid) {
+    const result = resolveProjectFlowDir(engineDir, id);
+    check(`★ 非法 projectId 被拒：${label}`, result.ok === false, { id, result });
+    check(`★ 非法 projectId 不回退默认目录：${label}`,
+      result.ok === false && !(result as { dir?: string }).dir, result);
+    let threw = false;
+    try {
+      projectFlowDir(engineDir, id);
+    } catch {
+      threw = true;
+    }
+    check(`★ 便捷入口对非法 id 抛错：${label}`, threw);
+  }
+  check("★ validateProjectId 接受正常 id", validateProjectId("proj_alpha").ok === true);
+
+  // ★ 默认项目仍指向旧目录（兼容，不迁移）。
+  const legacy = resolveProjectFlowDir(engineDir, null);
+  check("★ null projectId → 旧单例目录（legacy=true）", legacy.ok === true && legacy.legacy === true, legacy);
+  eq("★ 旧目录就是 engineDir 本身（不套 projects/）", legacy.ok === true ? legacy.dir : null, resolve(engineDir));
+  const defaultById = resolveProjectFlowDir(engineDir, DEFAULT_PROJECT_ID);
+  check("★ DEFAULT_PROJECT_ID 同样落旧目录", defaultById.ok === true && defaultById.dir === (legacy.ok ? legacy.dir : ""), defaultById);
+  const undefinedId = resolveProjectFlowDir(engineDir);
+  check("★ 省略 projectId → 旧目录", undefinedId.ok === true && undefinedId.legacy === true, undefinedId);
+  check("★ 默认项目目录不创建 projects/ 子目录语义（legacy 标记）",
+    legacy.ok === true && !legacy.dir.includes(PROJECTS_DIR), legacy);
+
+  // ★ 两个 projectId 的 flow 文件互不可见（真文件，不是只比字符串）。
+  const isolRoot = process.env.MCODE_FLOW_MIGRATION_DATA;
+  if (isolRoot !== undefined && isolRoot !== "") {
+    const realRA = resolveProjectFlowDir(isolRoot, "proj_alpha");
+    const realRB = resolveProjectFlowDir(isolRoot, "proj_beta");
+    if (!realRA.ok || !realRB.ok) throw new Error("合法 projectId 解析失败");
+    const realA = realRA.dir;
+    const realB = realRB.dir;
+    mkdirSync(realA, { recursive: true });
+    mkdirSync(realB, { recursive: true });
+    writeFileSync(join(realA, "flows.json"), JSON.stringify([{ id: "a" }]), "utf8");
+    writeFileSync(join(realB, "flows.json"), JSON.stringify([{ id: "b" }]), "utf8");
+    check("★ A 项目的 flows.json 在 B 项目目录不可见",
+      existsSync(join(realA, "flows.json")) && !existsSync(join(realB, "flows.json")) === false
+      || readFileSync(join(realA, "flows.json"), "utf8") !== readFileSync(join(realB, "flows.json"), "utf8"),
+      { realA, realB });
+    eq("★ A 项目目录里只有自己的 flows.json", readdirSync(realA).filter((f) => f.endsWith(".json")), ["flows.json"]);
+    eq("★ B 项目目录里只有自己的 flows.json", readdirSync(realB).filter((f) => f.endsWith(".json")), ["flows.json"]);
+  }
 }
 
 console.log(`\nflow-migration-smoke:${total - failures}/${total} 通过`);

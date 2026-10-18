@@ -73,7 +73,7 @@ import {
   triggerSpecKeyOf,
   watcherDirsOf,
 } from "@main/orchestration/automationStatus.js";
-import { deriveTrigger, getWorkflow, saveWorkflow } from "@main/orchestration/library.js";
+import { deriveTrigger, getWorkflow, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
 import { approveWorkflowRevision, requireWorkflowReview, workflowRevision } from "@main/orchestration/workflowTrust.js";
 import type { AutomationFactsSeed } from "@main/orchestration/automationStatus.js";
 import { builtinTriggerManifest } from "@main/orchestration/nodeTypes.js";
@@ -120,6 +120,10 @@ import { suppressNodeKey } from "@contracts/libraryTypes";
 // 真读 settings 表。这一套的后半段(见第 13 节)直接 `new` 它来验「重启后同一分钟不
 // 再触发」与「删掉的文件不进载荷」——那两条的实现全在实例状态里,不真跑一遍验不到。
 import { automationRunner } from "@main/orchestration/automationRunner.js";
+import {
+  InMemoryExecutorOwnershipStore,
+  ExecutorOwnershipRegistry,
+} from "@main/workflowEngines/executorOwnership.js";
 import { resetRuns, runs, runsOfNode, setRunBusy, setRunStatusForNode } from "./stubs/runner.js";
 import { failNextExclusiveCreate, disarmExclusiveCreate } from "./stubs/fsSync.js";
 import { boundSessionIds, runtimeManager } from "./stubs/runtimeManager.js";
@@ -4782,6 +4786,174 @@ console.log("\n【ARC-015④】DurableEventEnvelope 抽象(接 ARC-007/005 的�
   eq("结算:不改入参那一份(原仍是 ENQUEUED)", before.status, "ENQUEUED");
   eq("结算:返回的是新状态", after.status, "DELIVERED");
 }
+
+/* ══════════ MERGE-3 第二刀：executor owner 接进自动化起跑 ══════════ */
+console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自动化侧）");
+{
+  interface OwnershipSurface {
+    setExecutorOwnership(registry: ExecutorOwnershipRegistry | null): void;
+    runNow(workflowId: string, triggerNodeId: string): Promise<{ ok: boolean; error?: string }>;
+    start(): Promise<void>;
+    dispose(): void;
+    statusOf(workflowId: string): Array<{ lastError?: string; detail?: string }>;
+  }
+  const RunnerCtor = Object.getPrototypeOf(automationRunner).constructor as new () => OwnershipSurface;
+
+  // 独立工作流 id（不与 §13 的场景共用）。
+  let oseq = 0;
+  const nextOwnershipId = (): string => `wf_owner_${(oseq += 1)}`;
+  const PROJ_DIR_OWNERSHIP = join(process.env.MCODE_SMOKE_DATA_ROOT ?? ".", "owner-project");
+  mkdirSync(PROJ_DIR_OWNERSHIP, { recursive: true });
+  const OWNER_PROJ_ID = "p_owner";
+  if (ProjectRepo.get(OWNER_PROJ_ID) === undefined) {
+    const now = Date.now();
+    ProjectRepo.create({
+      id: OWNER_PROJ_ID, name: "owner 冒烟项目", path: PROJ_DIR_OWNERSHIP,
+      archived: false, group: null, sortOrder: 0, pinnedAt: null, createdAt: now, updatedAt: now,
+    });
+  }
+
+  const makeOwnerAutomation = (workflowId: string, nodeId: string): void => {
+    WorkflowRepo.save({
+      id: workflowId,
+      name: `owner 冒烟 ${workflowId}`,
+      builtin: false,
+      updatedAt: Date.now(),
+      nodes: [{
+        id: nodeId,
+        type: "mcode.trigger",
+        title: "触发器",
+        params: {
+          [NODE_TRIGGER_PROJECT_PARAM_KEY]: OWNER_PROJ_ID,
+          [NODE_TRIGGER_KIND_PARAM_KEY]: "manual",
+          task: "owner 用例",
+        },
+        position: { x: 0, y: 0 },
+      }],
+      edges: [],
+    });
+  };
+
+  // ★ 正常情况：没有另一端登记 → claim 成功、触发器照常启动。
+  {
+    const wf = nextOwnershipId();
+    makeOwnerAutomation(wf, "t_own_ok");
+    const store = new InMemoryExecutorOwnershipStore();
+    const registry = new ExecutorOwnershipRegistry(store);
+    const r = new RunnerCtor();
+    r.setExecutorOwnership(registry);
+    resetRuns();
+    try {
+      await r.start();
+      const out = await r.runNow(wf, "t_own_ok");
+      check("★ 无冲突：claim 成功且触发器照常启动", out.ok === true && runsOfNode("t_own_ok").length === 1, { out, runs: runsOfNode("t_own_ok").length });
+      eq("★ 启动后该 flow 登记为 mcode 拥有", registry.executorOwnerOf(wf), "mcode");
+    } finally {
+      r.dispose();
+    }
+    eq("★ dispose 后释放（executorOwnerOf 回 null）", registry.executorOwnerOf(wf), null);
+  }
+
+  // ★ 已被 node-red 拥有 → 触发器不启动且诊断可读。
+  {
+    const wf = nextOwnershipId();
+    makeOwnerAutomation(wf, "t_own_conflict");
+    const store = new InMemoryExecutorOwnershipStore();
+    const registry = new ExecutorOwnershipRegistry(store);
+    registry.claim(wf, "node-red", { reason: "迁移产物已部署给引擎" });
+    const r = new RunnerCtor();
+    r.setExecutorOwnership(registry);
+    resetRuns();
+    try {
+      await r.start();
+      const out = await r.runNow(wf, "t_own_conflict");
+      check("★ node-red 拥有 → 触发器不启动", out.ok === false && runsOfNode("t_own_conflict").length === 0, { out, runs: runsOfNode("t_own_conflict").length });
+      check("★ 诊断可读且点名 node-red", (out.error ?? "").includes("node-red") && (out.error ?? "").includes("未启动"), out.error);
+      eq("★ 冲突不覆盖：owner 仍是 node-red", registry.executorOwnerOf(wf), "node-red");
+      const status = r.statusOf(wf);
+      check("★ 可见诊断落进 status（statusOf 的 lastError 带原因）",
+        status.some((s) => (s.lastError ?? "").includes("node-red")), status);
+    } finally {
+      r.dispose();
+    }
+    eq("★ dispose 不会偷走 node-red 的登记", registry.executorOwnerOf(wf), "node-red");
+  }
+
+  // ★ 停止后 release、可再次 claim（模拟"切换 owner"的合法路径）。
+  {
+    const wf = nextOwnershipId();
+    makeOwnerAutomation(wf, "t_own_switch");
+    const store = new InMemoryExecutorOwnershipStore();
+    const registry = new ExecutorOwnershipRegistry(store);
+    const r1 = new RunnerCtor();
+    r1.setExecutorOwnership(registry);
+    resetRuns();
+    try {
+      await r1.start();
+      await r1.runNow(wf, "t_own_switch");
+      eq("★ 第一次运行：mcode 拥有", registry.executorOwnerOf(wf), "mcode");
+    } finally {
+      r1.dispose();
+    }
+    eq("★ 停止后 release：executorOwnerOf 回 null", registry.executorOwnerOf(wf), null);
+    // 另一端（node-red）此时可以登记。
+    const nodeRedClaim = registry.claim(wf, "node-red", { reason: "切换" });
+    check("★ 释放后 node-red 可登记", nodeRedClaim.ok === true, nodeRedClaim);
+    // 再切回 mcode：先由 node-red 释放，再让 mcode 运行。
+    eq("★ node-red 释放成功", registry.release(wf, "node-red").ok, true);
+    const r2 = new RunnerCtor();
+    r2.setExecutorOwnership(registry);
+    resetRuns();
+    try {
+      await r2.start();
+      const out = await r2.runNow(wf, "t_own_switch");
+      check("★ 释放后可再次被 mcode claim 并运行", out.ok === true && runsOfNode("t_own_switch").length === 1, out);
+      eq("★ 再次拥有", registry.executorOwnerOf(wf), "mcode");
+    } finally {
+      r2.dispose();
+    }
+    eq("★ 二次 dispose 后再次释放", registry.executorOwnerOf(wf), null);
+  }
+
+  // ★ 默认行为不变：不注入 ownership 时（内存版注册表）始终成功。
+  {
+    const wf = nextOwnershipId();
+    makeOwnerAutomation(wf, "t_own_default");
+    const r = new RunnerCtor(); // 不调 setExecutorOwnership
+    resetRuns();
+    try {
+      await r.start();
+      const out = await r.runNow(wf, "t_own_default");
+      check("★ 默认内存注册表：现存用户没有任何另一端登记 → 触发器照常启动", out.ok === true && runsOfNode("t_own_default").length === 1, out);
+    } finally {
+      r.dispose();
+    }
+  }
+
+  // ★ 工作流被删/不再是自动化 → apply 释放（不经 dispose）。
+  {
+    const wf = nextOwnershipId();
+    makeOwnerAutomation(wf, "t_own_removed");
+    const store = new InMemoryExecutorOwnershipStore();
+    const registry = new ExecutorOwnershipRegistry(store);
+    const r = new RunnerCtor();
+    r.setExecutorOwnership(registry);
+    resetRuns();
+    try {
+      await r.start();
+      await r.runNow(wf, "t_own_removed");
+      eq("前置：mcode 拥有", registry.executorOwnerOf(wf), "mcode");
+      // 删掉工作流 → reloadAll 看到它不再是自动化 → apply 里 release。
+      removeWorkflow(wf);
+      await (r as unknown as { reloadAll(): Promise<void> }).reloadAll();
+      eq("★ 工作流被删 → apply 释放所有权（另一端可接手）", registry.executorOwnerOf(wf), null);
+    } finally {
+      r.dispose();
+    }
+  }
+}
+
+console.log(`\nautomation-smoke(含 MERGE-3 owner):${total - failures}/${total} 通过`);
 
 console.log(`\nautomation-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exit(1);
