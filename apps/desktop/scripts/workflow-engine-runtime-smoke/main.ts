@@ -18,7 +18,16 @@
  *
  * Run: bash scripts/workflow-engine-runtime-smoke/run.sh
  */
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EngineRuntime, type EngineChildProcess, type EngineRuntimePorts, type EngineSpawnSpec } from "@main/workflowEngines/runtimeSupervisor.js";
+import {
+  BOOTSTRAP_MANIFEST_FILENAME,
+  BOOTSTRAP_VERSION,
+  ensureEngineBootstrap,
+} from "@main/workflowEngines/bootstrapManifest.js";
 
 let failures = 0;
 let total = 0;
@@ -308,6 +317,200 @@ console.log(`\nworkflow-engine-runtime-smoke(含IPC):${total - failures}/${total
   check("★ 分配到的不是 fetch 黑名单端口", port !== null && !isBlockedPort(port), port);
 }
 console.log(`\nworkflow-engine-runtime-smoke(含注册表):${total - failures}/${total} 通过`);
+
+/* ══════════ 10. 引导脚本版本与完整性（ARC-006 Gate B / P1-5） ══════════ */
+// 生产引导脚本的**内容**属于 Gate A（另一个切片），本段不碰它 —— 只验版本/哈希
+// 清单这一层：旧版升级、篡改恢复、一致不重写、失败拒绝、flows/creds 不被碰。
+console.log("\n10. 引导脚本版本与完整性（bootstrap.manifest.json）");
+{
+  const NEW = "// bootstrap v2 (current)\nconsole.error('current');\n";
+  const OLD = "// bootstrap v1 (stale on disk)\nconsole.error('stale');\n";
+  const sha = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+  const mkDataDir = (): string => mkdtempSync(join(tmpdir(), "mcode-bootstrap-"));
+
+  /** 只有脚本、没有清单的旧布局（正是 P1-5 说的"存档目录里任意旧 JS"）。 */
+  function seedOldLayout(dir: string, text: string): void {
+    writeFileSync(join(dir, "bootstrap.cjs"), text, "utf8");
+  }
+  function listBackups(dir: string): string[] {
+    return readdirSync(dir).filter((name) => name.startsWith("bootstrap.cjs.bak-")).sort();
+  }
+  function readManifestOrNull(dir: string): Record<string, unknown> | null {
+    try {
+      return JSON.parse(readFileSync(join(dir, BOOTSTRAP_MANIFEST_FILENAME), "utf8")) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  // —— 10.1 盘上是旧版本（无清单）→ 启动前替换为新版、旧字节备份 ——
+  {
+    const dir = mkDataDir();
+    seedOldLayout(dir, OLD);
+    writeFileSync(join(dir, "flows.json"), JSON.stringify([{ id: "flow1", type: "tab", label: "user" }]), "utf8");
+    writeFileSync(join(dir, "flows_cred.json"), JSON.stringify({ $: "user-creds" }), "utf8");
+    const flowsBefore = readFileSync(join(dir, "flows.json"));
+    const credsBefore = readFileSync(join(dir, "flows_cred.json"));
+
+    const result = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW, now: () => new Date("2026-01-02T03:04:05.678Z") });
+    check("★ 旧版本 bootstrap → 启动前被替换（upgraded）", result.ok && result.action === "upgraded", result);
+    eq("★ 盘上现在是新版内容（sha256 一致）", sha(readFileSync(join(dir, "bootstrap.cjs"), "utf8")), sha(NEW));
+    check("★ 旧文件有备份（.bak-<时间戳>）", result.backupPath !== null && existsSync(result.backupPath), result.backupPath);
+    eq("★ 备份内容 = 旧字节（逐字节）", result.backupPath === null ? null : readFileSync(result.backupPath, "utf8"), OLD);
+    const manifest = readManifestOrNull(dir);
+    eq("★ 清单记录当前版本号", (manifest?.bootstrap as { version?: number } | undefined)?.version, BOOTSTRAP_VERSION);
+    eq("★ 清单记录新版 sha256", (manifest?.bootstrap as { sha256?: string } | undefined)?.sha256, sha(NEW));
+    check("★ 清单记录生成来源", typeof (manifest?.bootstrap as { source?: unknown } | undefined)?.source === "string", manifest);
+    eq("★ flows.json 一个字节都没动", readFileSync(join(dir, "flows.json")), flowsBefore);
+    eq("★ flows_cred.json 一个字节都没动", readFileSync(join(dir, "flows_cred.json")), credsBefore);
+    eq("★ flows.json 没有被备份/改名（用户数据不参与引导脚本管理）", listBackups(dir).length, 1);
+  }
+
+  // —— 10.1b 清单版本低于当前（v-1）+ 旧内容 → 按升级处理，不静默使用 ——
+  {
+    const dir = mkDataDir();
+    seedOldLayout(dir, OLD);
+    writeFileSync(
+      join(dir, BOOTSTRAP_MANIFEST_FILENAME),
+      JSON.stringify({
+        schema: "mcode.workflow-engine.bootstrap/v1",
+        engineId: "node-red",
+        bootstrap: { version: BOOTSTRAP_VERSION - 1, sha256: sha(OLD), source: "old-release" },
+      }),
+      "utf8",
+    );
+    const result = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW });
+    check("★ 清单版本低于当前 → 升级（upgraded），旧文件有备份", result.ok && result.action === "upgraded" && result.backupPath !== null, result);
+    eq("★ 低版本清单升级后盘上是新版", sha(readFileSync(join(dir, "bootstrap.cjs"), "utf8")), sha(NEW));
+  }
+
+  // —— 10.1c 文件已一致、但清单版本落后 → 只把清单升到当前版本，不碰脚本 ——
+  {
+    const dir = mkDataDir();
+    writeFileSync(join(dir, "bootstrap.cjs"), NEW, "utf8");
+    const mtimeBefore = statSync(join(dir, "bootstrap.cjs")).mtimeMs;
+    writeFileSync(
+      join(dir, BOOTSTRAP_MANIFEST_FILENAME),
+      JSON.stringify({
+        schema: "mcode.workflow-engine.bootstrap/v1",
+        engineId: "node-red",
+        bootstrap: { version: BOOTSTRAP_VERSION - 1, sha256: sha(NEW), source: "old-release" },
+      }),
+      "utf8",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const result = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW });
+    eq("★ 清单版本落后但文件一致 → 清单被升到当前版本", (readManifestOrNull(dir)?.bootstrap as { version?: number } | undefined)?.version, BOOTSTRAP_VERSION);
+    eq("★ 清单升级不重写脚本（mtime 不变）", statSync(join(dir, "bootstrap.cjs")).mtimeMs, mtimeBefore);
+    check("★ 清单升级不产生备份", result.backupPath === null, result);
+  }
+
+  // —— 10.2 同版本但内容被外部篡改 → 替换并说明「已恢复」 ——
+  {
+    const dir = mkDataDir();
+    const seeded = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW });
+    check("前置：首次写入（written）", seeded.ok && seeded.action === "written", seeded);
+    const tampered = `${NEW}// injected by somebody else\n`;
+    writeFileSync(join(dir, "bootstrap.cjs"), tampered, "utf8");
+
+    const result = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW, now: () => new Date("2026-01-02T03:04:06.000Z") });
+    check("★ 同版本号但内容不同 → 被替换且归类为恢复（restored）", result.ok && result.action === "restored", result);
+    eq("★ 恢复后的内容 = 清单字节", sha(readFileSync(join(dir, "bootstrap.cjs"), "utf8")), sha(NEW));
+    check("★ 篡改内容被备份下来（可取证）", result.backupPath !== null && readFileSync(result.backupPath, "utf8") === tampered, result.backupPath);
+  }
+
+  // —— 10.2b 清单损坏（坏 JSON）→ 按「没有清单」处理，替换并重写清单 ——
+  {
+    const dir = mkDataDir();
+    seedOldLayout(dir, OLD);
+    writeFileSync(join(dir, BOOTSTRAP_MANIFEST_FILENAME), "{ not json", "utf8");
+    const result = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW });
+    check("★ 清单损坏 → 不静默使用旧脚本（替换为当前版）", result.ok && result.action === "upgraded" && result.backupPath !== null, result);
+    eq("★ 清单损坏 → 新清单可读且版本正确", readManifestOrNull(dir)?.bootstrap !== undefined
+      ? ((readManifestOrNull(dir)!.bootstrap as { version?: number }).version ?? null)
+      : null, BOOTSTRAP_VERSION);
+  }
+
+  // —— 10.3 已一致 → 不重写（mtime 不变） ——
+  {
+    const dir = mkDataDir();
+    ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW });
+    const bootstrapPath = join(dir, "bootstrap.cjs");
+    const mtimeBefore = statSync(bootstrapPath).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const result = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW });
+    eq("★ 已一致 → 判定 unchanged", result.action, "unchanged");
+    eq("★ 已一致 → 不重写（mtime 不变）", statSync(bootstrapPath).mtimeMs, mtimeBefore);
+    eq("★ 已一致 → 不产生备份", listBackups(dir).length, 0);
+  }
+
+  // —— 10.4 清单缺失但脚本已一致 → 只补清单，不重写脚本 ——
+  {
+    const dir = mkDataDir();
+    writeFileSync(join(dir, "bootstrap.cjs"), NEW, "utf8");
+    const mtimeBefore = statSync(join(dir, "bootstrap.cjs")).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const result = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW });
+    check("★ 清单缺失但脚本一致 → 成功且补写清单", result.ok && readManifestOrNull(dir) !== null, result);
+    eq("★ 清单缺失但脚本一致 → 脚本本身不重写（mtime 不变）", statSync(join(dir, "bootstrap.cjs")).mtimeMs, mtimeBefore);
+  }
+
+  // —— 10.5 替换失败（bootstrap.cjs 是目录）→ failed + 原因，生产 launchSpec 拒绝启动 ——
+  {
+    const { ProductionWorkflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
+    const registry = new ProductionWorkflowEngineRegistry();
+    const dir = registry.dataDirOf("node-red");
+    // 造出"已安装 node-red"的最小标记（launchSpec 只查这个文件存在）。
+    mkdirSync(join(dir, "node_modules", "node-red"), { recursive: true });
+    writeFileSync(join(dir, "node_modules", "node-red", "package.json"), JSON.stringify({ name: "node-red", version: "0.0.0-fixture" }), "utf8");
+    // 「bootstrap.cjs 是个目录」制造必失败：读它 EISDIR → 当作缺失；rename 到目录上
+    // 必失败。不能用只读目录模拟 —— Windows 上对只读目录照样能写（实测）。
+    mkdirSync(join(dir, "bootstrap.cjs"));
+
+    const result = ensureEngineBootstrap({ engineId: "node-red", dataDir: dir, content: NEW });
+    check("★ 替换失败 → ok:false 且带可读原因", result.ok === false && (result.reason ?? "").length > 0, result);
+    check("★ 替换失败 → 不归类为任何成功动作", result.action === null, result.action);
+
+    const launch = registry.launchSpec("node-red");
+    check("★ 替换失败 → 生产 launchSpec 拒绝给出启动参数（旧脚本不会被 spawn）", launch === null, launch);
+    // 失败后盘上仍然只有那个目录 —— 没有留下半份新 bootstrap，也没有残留的 staging。
+    check("★ 替换失败 → 没有留下半份 staging 文件", !existsSync(join(dir, "bootstrap.cjs.tmp")));
+    check("★ 替换失败 → 失败现场仍是原来的目录（没有被退化成直接写）", statSync(join(dir, "bootstrap.cjs")).isDirectory());
+
+    // 清掉失败夹具，交给 10.6 验成功路径。
+    rmSync(join(dir, "bootstrap.cjs"), { recursive: true, force: true });
+  }
+
+  // —— 10.6 生产 launchSpec 真装配：旧脚本在盘 → 被替换；一致 → 不重写 ——
+  {
+    const { ProductionWorkflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
+    const registry = new ProductionWorkflowEngineRegistry();
+    const dir = registry.dataDirOf("node-red");
+    writeFileSync(join(dir, "bootstrap.cjs"), OLD, "utf8");
+    writeFileSync(join(dir, "flows.json"), JSON.stringify([{ id: "flow1", type: "tab", label: "user" }]), "utf8");
+    const flowsBefore = readFileSync(join(dir, "flows.json"));
+
+    const launch = registry.launchSpec("node-red");
+    check("★ 生产 launchSpec 认得旧脚本并给出启动参数", launch !== null, launch);
+    const onDisk = readFileSync(join(dir, "bootstrap.cjs"), "utf8");
+    check("★ 生产 launchSpec 启动前把旧脚本换成了当前版（不再悄悄用旧 JS）", onDisk !== OLD && onDisk.includes("mcode-engine"), onDisk.slice(0, 60));
+    check("★ 生产 launchSpec 留下了旧字节备份", listBackups(dir).length >= 1, listBackups(dir));
+    check("★ 生产 launchSpec 生成了清单", readManifestOrNull(dir) !== null, readManifestOrNull(dir));
+
+    // 第二次 launchSpec：已经一致 → 不再写盘，也不再产生新备份。
+    const mtimeBefore = statSync(join(dir, "bootstrap.cjs")).mtimeMs;
+    const backupsBefore = listBackups(dir).length;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const second = registry.launchSpec("node-red");
+    check("★ 第二次 launchSpec 仍给出启动参数", second !== null);
+    eq("★ 已一致 → 第二次不改写 bootstrap（mtime 不变）", statSync(join(dir, "bootstrap.cjs")).mtimeMs, mtimeBefore);
+    eq("★ 已一致 → 不产生第二份备份", listBackups(dir).length, backupsBefore);
+    eq("★ 用户 flows.json 全程未被触碰", readFileSync(join(dir, "flows.json")), flowsBefore);
+  }
+
+  console.log(`\nworkflow-engine-runtime-smoke(含引导完整性):${total - failures}/${total} 通过`);
+}
+
 // 退出码只在这里定一次 —— 前面 §7/§8 的失败同样要红(从前 exitCode=1 设在 §7 之前,
 // §7/§8 里的 FAIL 会被仍为 0 的退出码盖过去:变异验证时实测「套件绿着而断言红着」)。
 if (failures > 0) process.exitCode = 1;

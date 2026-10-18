@@ -24,19 +24,21 @@
  * **未安装时本套显式 SKIP（带原因）并以 0 退出** —— 全量套件在无网机器上不能红。
  * 安装位置可用 `MCODE_NR_E2E_ROOT` 覆盖（见 run.sh）。
  *
- * ## 两条路径，各管一件事（⚠️ 记一条真缺陷）
+ * ## 两条路径，各管一件事
  *
- * **A. 生产 bootstrap（`workflowEngines/registry.ts` 写出的那份）—— 已知缺陷的绊线。**
- * 实测：它 `http.createServer()` 时**没有给请求处理器**，也从未
- * `app.use(RED.httpAdmin)` / `app.use(httpNodeRoot, RED.httpNode)`；`RED.init(server)`
- * 只初始化运行时、不往 server 上挂请求路由。结果：
- *   - 端口在监听（TCP connect 成功），但任何 HTTP 请求（就绪探测 `GET /`、编辑器页、
- *     HTTP-in）都**得不到任何响应**；
- *   - 生产就绪探测 `defaultProbe` 的 `fetch` **自身没有超时**，而
- *     `EngineRuntime.startInner` 是 `await probe(...)` 之后才检查 deadline ——
- *     探测被挂住时**就绪超时（30s）形同虚设**（实测 25s 内 start() 不返回）。
- * 本套把这两条当作**绊线**断言：一旦 registry.ts 修成官方挂载形状，这里会红，
- * 提醒把路径 B 换成生产 bootstrap。按任务要求，本套**不修改**那三个生产文件。
+ * **A. 生产 bootstrap（`workflowEngines/registry.ts` 写出的那份）—— Gate A 验收。**
+ * 2026-10-18 专项复审的 P0-1 曾经是：它 `http.createServer()` 时**没有给请求处理器**，
+ * 也从未 `app.use(RED.httpAdmin)` / `app.use(RED.httpNode)`，端口在听但编辑器与
+ * HTTP-in 都没有响应。现在 A 段验证**修好后的**生产形状（官方 embedding 挂载 +
+ * 宿主签发令牌的 `adminAuth` + 默认 `safeMode`）：
+ *   - 编辑器 GET / 真的 200 且是 Node-RED 页面；
+ *   - 无凭据客户端访问 `/flows`、`/settings`、部署、装节点一律 401；
+ *   - 带宿主令牌可以部署，HTTP-in 部署后真的应答；
+ *   - 未审批的持久化 flow 重启后**不进入 runtime**（`safeMode`），宿主写下可信标记
+ *     `engine-trust.json` 才执行；标记损坏按不可信处理（fail-closed）；
+ *   - 第二个**无凭据的本机子进程**（不是本测试进程）尝试改图/部署/装节点 → 全部被拒，
+ *     原图与运行行为不变；
+ *   - 真子进程 stop 后端口释放。
  *
  * **B. NR3 全链（fixture bootstrap，官方 CLI 同形的挂载方式）**：仍是生产同一套
  * `EngineRuntime` + `defaultEngineRuntimePorts`（真 spawn、`listenOnDialablePort`
@@ -49,9 +51,9 @@
  * Run: bash scripts/node-red-e2e-smoke/run.sh
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { connect } from "node:net";
-import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import {
   EngineRuntime,
@@ -168,32 +170,24 @@ function tcpConnect(port: number, timeoutMs: number, host = "127.0.0.1"): Promis
   });
 }
 
-/** 有界原始 HTTP GET：response 是否真的回来了（超时/拒绝都算 false）。 */
-function rawHttpGet(port: number, path: string, timeoutMs: number): Promise<{ responded: boolean; status?: number; error?: string }> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (value: { responded: boolean; status?: number; error?: string }): void => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET", timeout: timeoutMs }, (res) => {
-      res.resume();
-      res.on("end", () => done({ responded: true, status: res.statusCode }));
-      res.on("error", (err) => done({ responded: false, error: err.message }));
-    });
-    req.on("timeout", () => {
-      req.destroy();
-      done({ responded: false, error: `timeout after ${timeoutMs}ms` });
-    });
-    req.on("error", (err) => done({ responded: false, error: err.message }));
-    req.end();
-  });
-}
-
 async function fetchOn(port: number, path: string, init: RequestInit = {}, timeoutMs = 10_000): Promise<{ status: number; text: string }> {
   const res = await fetch(`http://127.0.0.1:${port}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   return { status: res.status, text: await res.text() };
+}
+
+/** 部署形状：`http in → function 回显 → http response`（A/B 两段共用一个 nonce 机制）。 */
+function echoFlow(nonceHeader = "x-nr-e2e-nonce"): unknown[] {
+  return [
+    { id: "flow1", type: "tab", label: "nr-e2e" },
+    { id: "in1", type: "http in", z: "flow1", url: "/echo", method: "post", upload: false, swaggerDoc: "", x: 100, y: 100, wires: [["fn1"]] },
+    {
+      id: "fn1", type: "function", z: "flow1", name: "echo", outputs: 1, x: 250, y: 100, wires: [["out1"]],
+      func: "msg.headers={'content-type':'application/json'};"
+        + "msg.payload={echo: msg.payload, via:'node-red', nonce:(msg.req.headers['" + nonceHeader + "']||null)};"
+        + "return msg;",
+    },
+    { id: "out1", type: "http response", z: "flow1", x: 400, y: 100, wires: [] },
+  ];
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -251,77 +245,323 @@ function killQuietly(child: EngineChildProcess | undefined, signal: NodeJS.Signa
   }
 }
 
-/* ══════════ A. 生产 bootstrap：记录真缺陷（绊线） ══════════ */
-console.log("\nA. 生产注册表 bootstrap（registry.ts 写出的引导脚本）");
+/* ══════════ A. 生产 bootstrap：Gate A 验收（真 node-red 5.0.8） ══════════ */
+console.log("\nA. 生产注册表 bootstrap（官方挂载 + 宿主令牌认证 + 默认 safeMode）");
+
+/** 生产 dataDir 里由本套造出来的文件；A 段开始/结束都清掉，避免上次运行的状态影响判据。 */
+function cleanProductionState(): void {
+  for (const name of ["flows.json", ".flows.json.backup", "flows_cred.json", ".config.runtime.json", "engine-trust.json"]) {
+    try {
+      rmSync(join(INSTALLED, name), { force: true });
+    } catch {
+      /* 清不掉就让断言去暴露 */
+    }
+  }
+}
+
+/** 第二个**独立进程**的无凭据 HTTP 客户端 —— 不是本进程内的 fetch。
+ *  它尝试的部署会注册 `/pwned`（若成功，`/api/pwned` 就会应答）；被拒后必须既
+ *  改不动图，也跑不出任何新行为。 */
+const UNPRIVILEGED_CLIENT = `// node-red-e2e-smoke：另一个本机进程，没有任何宿主凭据。
+const http = require("node:http");
+const port = Number(process.argv[2]);
+function req(method, path, body) {
+  return new Promise((resolve) => {
+    // 头与编辑器真实部署一致（缺 Node-RED-API-Version 时上游按旧协议解析，会 400 ——
+    // 那样"被拒"就不是认证的功劳，敌意部署根本没被尝试）。
+    const r = http.request({ host: "127.0.0.1", port, path, method, headers: body === null ? {} : { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2" } }, (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.statusCode));
+    });
+    r.on("error", () => resolve(-1));
+    r.end(body === null ? undefined : body);
+  });
+}
+const hostileFlow = [
+  { id: "pwnflow", type: "tab", label: "pwn" },
+  { id: "pwnin", type: "http in", z: "pwnflow", url: "/pwned", method: "post", wires: [["pwnout"]] },
+  { id: "pwnout", type: "http response", z: "pwnflow", wires: [] },
+];
+(async () => {
+  const result = {
+    getFlows: await req("GET", "/flows", null),
+    getSettings: await req("GET", "/settings", null),
+    postFlows: await req("POST", "/flows", JSON.stringify({ flows: hostileFlow })),
+    postNodes: await req("POST", "/nodes", "{}"),
+  };
+  console.log(JSON.stringify(result));
+})();
+`;
+
+function runUnprivilegedClient(port: number): Record<string, number> | null {
+  const dir = mkdtempSync(join(INSTALLED, "unprivileged-"));
+  const script = join(dir, "client.cjs");
+  try {
+    writeFileSync(script, UNPRIVILEGED_CLIENT, "utf8");
+    const out = spawnSync(process.execPath, [script, String(port)], { encoding: "utf8", timeout: 20_000 });
+    if (out.status !== 0 || typeof out.stdout !== "string") return null;
+    return JSON.parse(out.stdout.trim()) as Record<string, number>;
+  } catch {
+    return null;
+  } finally {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* 清理失败不影响结论 */
+    }
+  }
+}
+
 let runtimeA: EngineRuntime | null = null;
 let childA: EngineChildProcess | undefined;
 try {
+  cleanProductionState();
   const registry = new ProductionWorkflowEngineRegistry();
-  // registry.launchSpec 会按生产路径把 bootstrap.cjs 写进
-  // <dataRoot>/workflow-engines/node-red/（本套里 dataRoot 就是 .tmp/nr-e2e）。
-  const launch = registry.launchSpec(NODE_RED_ENGINE_ID);
+  let launch = registry.launchSpec(NODE_RED_ENGINE_ID);
   check("★ 生产注册表认出已安装的 node-red 并给出启动参数", launch !== null);
   if (launch === null) throw new Error("launchSpec 返回 null —— 安装布局与生产注册表不一致");
 
+  // —— A1. 引导脚本形状：官方挂载 + adminAuth + safeMode ——
   const bootstrapPath = join(INSTALLED, "bootstrap.cjs");
   const bootstrapText = existsSync(bootstrapPath) ? readFileSync(bootstrapPath, "utf8") : "";
   evidence("production bootstrap", bootstrapPath);
   evidence("production bootstrap sha256", createHash("sha256").update(bootstrapText).digest("hex"));
-  evidence("production bootstrap 形状", bootstrapText.includes("RED.init(server") && !bootstrapText.includes("app.use(")
-    ? "listen() 先于 RED.init，且没有 express 挂载（app.use）——请求路由从未接到 server 上"
-    : "与预期不同（可能已被修复，见下方绊线）");
-  check("生产 bootstrap 先 listen 再 RED.init（缺陷形状的来源）", bootstrapText.includes("server.listen(port, \"127.0.0.1\"") && bootstrapText.includes("RED.init(server"));
+  check("★【P0-1】生产 bootstrap 把 RED.httpAdmin 挂到 \"/\"（官方 embedding 形状）",
+    bootstrapText.includes("app.use(\"/\", RED.httpAdmin)"));
+  check("★【P0-1】生产 bootstrap 把 RED.httpNode 挂到 \"/api\"",
+    bootstrapText.includes("app.use(\"/api\", RED.httpNode)"));
+  check("★【P0-1】请求处理器接到 server 上（express 作为 request listener）",
+    bootstrapText.includes("http.createServer((req, res) => app(req, res))"));
+  check("★【P0-2】生产 bootstrap 配置 adminAuth（不是 Node-RED 默认的无认证）",
+    bootstrapText.includes("adminAuth:") && bootstrapText.includes("tokens:"));
+  check("★【P0-2】生产 bootstrap 默认 safeMode（未审批的持久化 flow 不自动执行）",
+    bootstrapText.includes("safeMode,") && bootstrapText.includes("MCODE_ENGINE_TRUSTED"));
+  check("★ 生产 bootstrap 的 flowFile 固定（不随 hostname 漂移）", bootstrapText.includes("flowFile: \"flows.json\""));
 
+  // —— A2. 宿主签发的凭据 ——
   const secretPath = join(INSTALLED, ".engine-secret");
   const secret = existsSync(secretPath) ? readFileSync(secretPath, "utf8").trim() : "";
-  evidence(".engine-secret", `${secretPath} (${secret.length} 字符)`);
   check("★ 宿主生成了凭据密钥（32 字节 hex）并放在 dataDir 的 .engine-secret", /^[0-9a-f]{64}$/.test(secret));
   check("★ 启动 env 里的凭据密钥与 .engine-secret 一致（不进日志/flows）", launch.env?.NODE_RED_CREDENTIAL_SECRET === secret);
+  const tokenPath = join(INSTALLED, ".engine-admin-token");
+  const adminToken = existsSync(tokenPath) ? readFileSync(tokenPath, "utf8").trim() : "";
+  evidence(".engine-admin-token", `${tokenPath} (${adminToken.length} 字符)`);
+  check("★【P0-2】宿主签发了 Admin API 令牌（32 字节 hex，与凭据密钥分开存）",
+    /^[0-9a-f]{64}$/.test(adminToken) && adminToken !== secret);
+  check("★【P0-2】令牌随 env 注入引擎（MCODE_ENGINE_ADMIN_TOKEN），不在 status/flows 里",
+    launch.env?.MCODE_ENGINE_ADMIN_TOKEN === adminToken);
+  check("★【P0-2】未写可信标记时 env 是 untrusted（MCODE_ENGINE_TRUSTED=0）",
+    launch.env?.MCODE_ENGINE_TRUSTED === "0");
   check("★ 启动命令是宿主自己的 node + 引导脚本（不是 node-red CLI）", launch.command === process.execPath && launch.args.length > 0);
 
+  // 预置一份**未经宿主审批**的持久化 flow：重启后不得自动执行。
+  writeFileSync(join(INSTALLED, "flows.json"), JSON.stringify(echoFlow()), "utf8");
+
+  // —— A3. 真启动（生产 EngineRuntime + 生产端口分配 + 真探测） ——
   const portsA = recordingPorts();
   runtimeA = new EngineRuntime(NODE_RED_ENGINE_ID, portsA);
-  // 就绪超时故意给 8s：如果 deadline 被遵守，start() 应在 ~8s 内以 failed 返回。
-  const startPromiseA = runtimeA.start({
+  let statusA = await runtimeA.start({
     engineId: NODE_RED_ENGINE_ID,
     dataDir: launch.dataDir,
     command: launch.command,
     args: launch.args,
     ...(launch.env !== undefined ? { env: launch.env } : {}),
-    readyTimeoutMs: 8_000,
+    readyTimeoutMs: 20_000,
   });
-  const raceA = settleWithin(startPromiseA, 25_000);
-
-  const portA = await waitFor(() => (portsA.allocated.length > 0 ? portsA.allocated[0] : null), 15_000);
-  check("★ 生产路径经 listenOnDialablePort 分到了回环端口", typeof portA === "number" && portA > 0);
+  childA = portsA.children[0];
+  evidence("production start status", statusA);
+  evidence("engine log tail", childA?.tailOutput().slice(-600) ?? "(no child)");
+  check("★【P0-1】生产引导路径真的就绪（真 spawn / 生产端口分配 / 真 HTTP 探活）",
+    statusA.state === "running" && statusA.port !== null, statusA);
+  const portA = statusA.port ?? 0;
   evidence("production port", portA);
 
-  childA = portsA.children[0];
-  const listeningA = portA !== null ? await waitFor(async () => ((await tcpConnect(portA, 800)) ? true : null), 25_000) : null;
-  check("★ 生产 bootstrap 的端口**在监听**（TCP connect 成功）", listeningA === true);
+  const editor = await fetchOn(portA, "/");
+  evidence("production GET /", { status: editor.status, bytes: editor.text.length });
+  check("★【P0-1】编辑器 GET / 真响应 200 且是 Node-RED 编辑器页",
+    editor.status === 200 && editor.text.includes("red-ui-editor") && editor.text.includes("<title>Node-RED</title>"));
 
-  const getA = portA !== null ? await rawHttpGet(portA, "/", 3_000) : { responded: false, error: "no port" };
-  evidence("production GET /", getA);
-  check("★【已知缺陷】端口在听但 HTTP 不应答（GET / 超时无响应）", listeningA === true && getA.responded === false);
+  // —— A4. 无凭据客户端一律被拒（控制面） ——
+  const noAuthFlows = await fetchOn(portA, "/flows");
+  const noAuthSettings = await fetchOn(portA, "/settings");
+  const noAuthDeploy = await fetchOn(portA, "/flows", {
+    method: "POST",
+    headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2" },
+    body: JSON.stringify({ flows: [] }),
+  });
+  const noAuthNodes = await fetchOn(portA, "/nodes", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  evidence("no-auth Admin API", {
+    flows: noAuthFlows.status, settings: noAuthSettings.status, deploy: noAuthDeploy.status, nodes: noAuthNodes.status,
+  });
+  check("★【P0-2】未带宿主凭据：GET /flows 被拒（401）", noAuthFlows.status === 401);
+  check("★【P0-2】未带宿主凭据：GET /settings 被拒（401）", noAuthSettings.status === 401);
+  check("★【P0-2】未带宿主凭据：Deploy 被拒（401）", noAuthDeploy.status === 401);
+  check("★【P0-2】未带宿主凭据：安装节点被拒（401）", noAuthNodes.status === 401);
 
-  const raceResultA = await raceA;
-  evidence("production start() 结果", raceResultA.settled ? raceResultA.value : "25s 内没有 settle（探测 fetch 被挂住）");
-  // 绊线：registry.ts 修好后这里会红 —— 那是提醒把路径 B 换成生产 bootstrap，而不是本套坏了。
-  check("★【已知缺陷·绊线】readyTimeoutMs=8s 不生效：start() 25s 内没有返回（defaultProbe 的 fetch 无自身超时）",
-    raceResultA.settled === false);
+  // —— A5. 第二个本机进程（无凭据）同样被拒，且原图/行为不变 ——
+  const authHeaders = { authorization: `Bearer ${adminToken}` };
+  const flowsBefore = await fetchOn(portA, "/flows", { headers: authHeaders });
+  check("★ 带宿主凭据 GET /flows 返回 200（编辑器可读原图）", flowsBefore.status === 200);
+  const unprivileged = runUnprivilegedClient(portA);
+  evidence("second unprivileged process", unprivileged);
+  check("★【P0-2】第二个无凭据本机进程访问 /flows、/settings、部署端点、装节点 → 全部 401",
+    unprivileged !== null && unprivileged.getFlows === 401 && unprivileged.getSettings === 401
+    && unprivileged.postFlows === 401 && unprivileged.postNodes === 401, unprivileged);
+  const flowsAfterUnprivileged = await fetchOn(portA, "/flows", { headers: authHeaders });
+  check("★【P0-2】被拒之后原图未变（字节级相同）",
+    flowsBefore.status === 200 && flowsAfterUnprivileged.text === flowsBefore.text);
+  const pwned = await fetchOn(portA, "/api/pwned", {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  evidence("second process hostile deploy effect", { pwned: pwned.status });
+  check("★【P0-2】被拒的敌意部署没有产生任何运行行为（/api/pwned 仍是 404）", pwned.status === 404);
+  // 敌意 deploy 被拒的**直接**证据：请求状态必须是 401。只看 /api/pwned 404 会被
+  // 另一层巧合掩盖 —— 实测：无 adminAuth 时上游没有 http in 节点模块（multipart/multer
+  // 上传形状不对时返回 400），部署根本不会发生，404 仍成立。断言要打在拒绝本身。
+  check("★【P0-2】第二个无凭据进程的敌意 Deploy 本身被拒（401，不是被上游参数校验挡掉）",
+    unprivileged !== null && unprivileged.postFlows === 401
+    && unprivileged.getFlows === 401 && unprivileged.getSettings === 401 && unprivileged.postNodes === 401,
+    unprivileged);
 
-  // 收掉子进程，让被挂住的探测失败、start() 真正落定。
-  killQuietly(childA);
-  const settledA = await settleWithin(startPromiseA, 15_000);
-  evidence("kill 后 start() 落定", settledA.settled ? settledA.value : "仍未返回");
-  check("★ 子进程被杀后 start() 最终以 failed 落定且原因是就绪超时",
-    settledA.settled && settledA.value.state === "failed" && /没有就绪/.test(settledA.value.reason ?? ""),
-    settledA.settled ? settledA.value : null);
+  // —— A6. 未审批的持久化 flow：safeMode 下不进入 runtime ——
+  const safeEcho = await fetchOn(portA, "/api/echo", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ x: 1 }),
+  });
+  evidence("untrusted HTTP-in", { status: safeEcho.status });
+  check("★【P0-2】未审批的持久化 flow 不进入 runtime（HTTP-in 404，编辑器仍可见原图）",
+    safeEcho.status === 404 && flowsBefore.status === 200);
+
+  // —— A7. 带凭据部署成功；会话内显式 deploy 是用户的动作（会解除 safeMode） ——
+  const nonce = `nr-e2e-${randomUUID()}`;
+  const deploy = await fetchOn(portA, "/flows", {
+    method: "POST",
+    headers: {
+      ...authHeaders,
+      "content-type": "application/json",
+      "Node-RED-Deployment-Type": "full",
+      "Node-RED-API-Version": "v2",
+    },
+    body: JSON.stringify({ flows: echoFlow() }),
+  }, 15_000);
+  let deployRev: string | null = null;
+  try {
+    deployRev = (JSON.parse(deploy.text) as { rev?: string }).rev ?? null;
+  } catch {
+    /* 下面断言会红 */
+  }
+  evidence("authorized deploy", { status: deploy.status, rev: deployRev });
+  check("★【P0-2】带宿主凭据的 Deploy 成功（200 且带 rev）",
+    deploy.status === 200 && typeof deployRev === "string");
+  const registered = await waitFor(async () => {
+    const res = await fetchOn(portA, "/api/echo", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-nr-e2e-nonce": nonce },
+      body: JSON.stringify({ warmup: true }),
+    }, 5_000);
+    return res.status === 200 ? res : null;
+  }, 15_000);
+  evidence("HTTP-in after authorized deploy", registered === null ? null : { status: registered.status });
+  check("★【P0-1】带凭据部署后 HTTP-in 真的注册并应答（200）", registered !== null);
+
+  // —— A8. stop：端口释放（真子进程） ——
+  const stoppedA = await runtimeA.stop(2_000);
+  evidence("A stop status", stoppedA);
+  check("★ stop 后状态 stopped、端口清空", stoppedA.state === "stopped" && stoppedA.port === null, stoppedA);
+  const portClosedA = await waitFor(async () => ((await tcpConnect(portA, 500)) ? null : true), 10_000);
+  check("★【真子进程】stop 后端口不再监听（无孤儿监听）", portClosedA === true);
+  childA = undefined;
+
+  // —— A9. 重启：未经宿主审批的持久化 flow 不得自动执行 ——
+  // ⚠️ Gate A 边界：会话内的显式 Deploy 会解除**本次会话**的 safeMode（Node-RED 上游
+  // 语义）；跨重启的可信判定只看宿主标记。所以下面这一步必须发生在「部署过、flows.json
+  // 已落盘」之后。
+  const persistedFlows = readFileSync(join(INSTALLED, "flows.json"), "utf8");
+  check("★ 部署后的 flow 已持久化到 production dataDir 的 flows.json", persistedFlows.includes("\"http in\""));
+
+  launch = registry.launchSpec(NODE_RED_ENGINE_ID);
+  check("★ 重启前：宿主仍未写可信标记 → env 仍是 untrusted",
+    launch !== null && launch.env?.MCODE_ENGINE_TRUSTED === "0");
+  const portsA2 = recordingPorts();
+  runtimeA = new EngineRuntime(NODE_RED_ENGINE_ID, portsA2);
+  statusA = await runtimeA.start({
+    engineId: NODE_RED_ENGINE_ID,
+    dataDir: launch!.dataDir,
+    command: launch!.command,
+    args: launch!.args,
+    ...(launch!.env !== undefined ? { env: launch!.env } : {}),
+    readyTimeoutMs: 20_000,
+  });
+  childA = portsA2.children[0];
+  const portA2 = statusA.port ?? 0;
+  evidence("restart(untrusted) status", statusA);
+  check("★ 重启（untrusted）后引擎就绪", statusA.state === "running" && portA2 > 0, statusA);
+  const restartEcho = portA2 > 0
+    ? await waitFor(async () => {
+        const res = await fetchOn(portA2, "/api/echo", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ after: "restart" }),
+        }, 3_000);
+        // 404 就是我们要的稳定结论；多等一轮确认没有「迟到启动」。
+        return res.status === 404 ? res : null;
+      }, 8_000)
+    : null;
+  const restartFlows = portA2 > 0 ? await fetchOn(portA2, "/flows", { headers: authHeaders }) : { status: 0, text: "" };
+  evidence("restart(untrusted) HTTP-in", { echo: restartEcho?.status ?? null, flows: restartFlows.status });
+  check("★【P0-2】未经审批的持久化 flow 重启后不自动执行（HTTP-in 持续 404，编辑器仍能读到原图）",
+    restartEcho !== null && restartFlows.status === 200 && restartFlows.text.includes("\"http in\""));
+
+  const stoppedA2 = await runtimeA.stop(2_000);
+  check("★ 第二次 stop 后端口清空", stoppedA2.state === "stopped" && stoppedA2.port === null, stoppedA2);
+  childA = undefined;
+
+  // —— A10. 宿主写下可信标记后才自动执行 ——
+  writeFileSync(join(INSTALLED, "engine-trust.json"), JSON.stringify({ trusted: true }), "utf8");
+  launch = registry.launchSpec(NODE_RED_ENGINE_ID);
+  check("★ 宿主写下可信标记后 env 变成 trusted（MCODE_ENGINE_TRUSTED=1）",
+    launch !== null && launch.env?.MCODE_ENGINE_TRUSTED === "1");
+  const portsA3 = recordingPorts();
+  runtimeA = new EngineRuntime(NODE_RED_ENGINE_ID, portsA3);
+  statusA = await runtimeA.start({
+    engineId: NODE_RED_ENGINE_ID,
+    dataDir: launch!.dataDir,
+    command: launch!.command,
+    args: launch!.args,
+    ...(launch!.env !== undefined ? { env: launch!.env } : {}),
+    readyTimeoutMs: 20_000,
+  });
+  childA = portsA3.children[0];
+  const portA3 = statusA.port ?? 0;
+  evidence("restart(trusted) status", statusA);
+  const trustedEcho = portA3 > 0
+    ? await waitFor(async () => {
+        const res = await fetchOn(portA3, "/api/echo", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-nr-e2e-nonce": nonce },
+          body: JSON.stringify({ trusted: true }),
+        }, 3_000);
+        return res.status === 200 ? res : null;
+      }, 15_000)
+    : null;
+  check("★【P0-2】宿主批准（可信标记）后，重启自动执行持久化 flow（HTTP-in 200）", trustedEcho !== null);
+
+  const stoppedA3 = await runtimeA.stop(2_000);
+  check("★ 第三次 stop 后端口清空", stoppedA3.state === "stopped" && stoppedA3.port === null, stoppedA3);
+  childA = undefined;
+
+  // —— A11. 标记损坏 → fail-closed ——
+  writeFileSync(join(INSTALLED, "engine-trust.json"), "not-json{", "utf8");
+  const brokenLaunch = registry.launchSpec(NODE_RED_ENGINE_ID);
+  check("★【P0-2】可信标记损坏 → 按 untrusted 处理（fail-closed）",
+    brokenLaunch !== null && brokenLaunch.env?.MCODE_ENGINE_TRUSTED === "0");
 } catch (err) {
   check(`A 段未抛异常（${err instanceof Error ? err.message : String(err)}）`, false);
 } finally {
   killQuietly(childA);
   if (runtimeA !== null) await settleWithin(runtimeA.stop(500), 8_000);
+  cleanProductionState();
   try {
     const status = runtimeA?.status();
     if (status) evidence("A 段收尾状态", status.state);
@@ -471,17 +711,7 @@ try {
 
   // —— B2. 经 Admin API 部署流：HTTP-in → function 回显 body/头 → HTTP response ——
   const nonce = `nr-e2e-${randomUUID()}`;
-  const flow = [
-    { id: "flow1", type: "tab", label: "nr-e2e" },
-    { id: "in1", type: "http in", z: "flow1", url: "/echo", method: "post", upload: false, swaggerDoc: "", x: 100, y: 100, wires: [["fn1"]] },
-    {
-      id: "fn1", type: "function", z: "flow1", name: "echo", outputs: 1, x: 250, y: 100, wires: [["out1"]],
-      func: "msg.headers={'content-type':'application/json'};"
-        + "msg.payload={echo: msg.payload, via:'node-red', nonce:(msg.req.headers['x-nr-e2e-nonce']||null)};"
-        + "return msg;",
-    },
-    { id: "out1", type: "http response", z: "flow1", x: 400, y: 100, wires: [] },
-  ];
+  const flow = echoFlow();
   const deploy = await fetchOn(portB, "/flows", {
     method: "POST",
     headers: {

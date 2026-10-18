@@ -25,46 +25,164 @@
  *   1. 端口由**宿主**分配（CLI 的 `PORT` env 也能做到，但 `--port` 的优先级在不同
  *      版本里变过，不值得赌）；
  *   2. 就绪判据由宿主控制（HTTP 探活）。
- * 所以写一个最小引导脚本：`RED.init(server)` + `RED.start()`，端口从 argv 拿。
- * 这与 NR0 的实测脚本是同一份形状（那份已在本机跑通过）。
+ * 所以写一个最小引导脚本，端口从 argv 拿。
+ *
+ * ## 挂载形状（ARC-006 Gate A，官方 embedding 形状）
+ *
+ * Node-RED 的 `RED.httpAdmin` / `RED.httpNode` 是**等着宿主挂载**的 Express app：
+ * `RED.init(server, settings)` 只初始化运行时，**不会**把任何请求处理器接到 server 上。
+ * 早先这里的引导脚本只 `http.createServer()` + `listen()` + `RED.init()`，结果端口在
+ * 听、编辑器和 HTTP-in 却没有任何路由（台账 2026-10-18 专项复审 P0-1，真引擎实测
+ * GET / 无响应）。现在的形状与官方 embedding 一致：
+ *
+ *   1. `express()` + `http.createServer((req,res) => app(req,res))`；
+ *   2. `RED.init(server, settings)`；
+ *   3. `app.use("/", RED.httpAdmin)`、`app.use("/api", RED.httpNode)`；
+ *   4. `RED.start()`，**resolve 之后**才 `server.listen(...)`（先 listen 会让端口先通、
+ *      runtime 未起，编辑器回 503，宿主探针误判就绪 —— 真引擎实测抓到）。
+ *
+ * ## 认证（同批修复的 P0-2）
+ *
+ * Node-RED 官方默认是「能连到端口的客户端就能改 flow、deploy、装节点」。这里给
+ * `adminAuth` 配一个**宿主签发**的静态令牌（`.engine-admin-token`，随 env 注入，
+ * 绝不进 status / 日志 / flows）：`tokens` 校验函数只认这一个值，`permissions: "*"`。
+ * 没有 `default` 匿名用户 —— 未带 `Authorization: Bearer <token>` 的本机客户端访问
+ * Admin API（/flows、/settings、/nodes…）一律 401，deploy 与装节点同样被拒。
+ * HTTP-in 路由不受 adminAuth 影响（那是数据面，不是控制面）。
+ *
+ * ## 持久化 flow 的可信启动
+ *
+ * 引擎**每次启动默认 safeMode**：flows 会从磁盘加载（编辑器里看得到），但**不会
+ * 进入 runtime 执行**（HTTP-in 404、定时器/function 节点不跑）。只有宿主写下
+ * `engine-trust.json` = `{"trusted":true}` 才放开。标记缺失/损坏一律按 untrusted
+ * 处理（fail-closed）。Gate A 只实现这个「默认不自动执行」的边界；把标记的写入接到
+ * Mcode 的 `workflow.approve`（工作流审查 + 真人点头）属于 MERGE-1 的存储合并，
+ * 这里不新造第二套授权入口 —— `launchSpec` 只**读**标记，不提供写 API。
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
+import { ensureEngineBootstrap } from "./bootstrapManifest.js";
 import { EngineRuntime, defaultEngineRuntimePorts, type EngineRuntime as EngineRuntimeType, type EngineRuntimeStatus } from "./runtimeSupervisor.js";
 import type { WorkflowEngineLaunchSpec, WorkflowEngineRegistry } from "@main/ipc/workflowEngine.js";
 
-/** 引导脚本：与 NR0 实测的那份同形。 */
-const BOOTSTRAP = `// 【ARC-006 WF-INT】Node-RED 引导 —— 端口与数据目录由 Mcode 宿主给。
+/** 引导脚本：官方 embedding 形状 + 宿主令牌认证 + 默认 safeMode（见文件头）。 */
+const BOOTSTRAP = `// 【ARC-006 Gate A】Node-RED 引导 —— 端口与数据目录由 Mcode 宿主给。
+// 挂载形状与 Node-RED 官方 embedding 一致：RED.httpAdmin / RED.httpNode 是等待
+// 宿主挂载的 Express app，RED.init 不会替宿主接路由。
 const RED = require("node-red");
+const express = require("express");
 const http = require("node:http");
 const port = Number(process.argv[2]);
 const userDir = process.argv[3];
-const server = http.createServer();
-server.listen(port, "127.0.0.1", () => {
-  RED.init(server, {
-    httpAdminRoot: "/",
-    httpNodeRoot: "/api",
-    userDir,
-    // 凭据密钥由宿主注入（见 launchSpec 的 NODE_RED_CREDENTIAL_SECRET）。
-    credentialSecret: process.env.NODE_RED_CREDENTIAL_SECRET || false,
-    logging: { console: { level: "warn" } },
-  });
-  RED.start().then(
-    () => {
-      // 只用 stderr 打日志：stdout 留给将来可能的协议行。
-      console.error("[mcode-engine] node-red ready on " + port);
+const adminToken = process.env.MCODE_ENGINE_ADMIN_TOKEN || "";
+const safeMode = process.env.MCODE_ENGINE_TRUSTED !== "1";
+
+const app = express();
+const server = http.createServer((req, res) => app(req, res));
+
+RED.init(server, {
+  httpAdminRoot: "/",
+  httpNodeRoot: "/api",
+  userDir,
+  // 固定的 flow 文件名：不随机器 hostname 漂移，宿主才能确定性地管这一份流。
+  flowFile: "flows.json",
+  // 凭据密钥由宿主注入（见 launchSpec 的 NODE_RED_CREDENTIAL_SECRET）。
+  credentialSecret: process.env.NODE_RED_CREDENTIAL_SECRET || false,
+  // 未审批的持久化 flow 不进入 runtime 执行；只有宿主写下的可信标记才放开。
+  safeMode,
+  // 控制面认证：只认宿主签发的那一个令牌。没有 default 匿名用户 —— 未带
+  // Authorization: Bearer <token> 的客户端访问 Admin API 一律 401。
+  adminAuth: {
+    type: "credentials",
+    tokens: function (token) {
+      return new Promise(function (resolve) {
+        resolve(adminToken !== "" && token === adminToken
+          ? { username: "mcode-host", permissions: "*" }
+          : null);
+      });
     },
-    (err) => {
-      console.error("[mcode-engine] node-red start failed: " + (err && err.message));
-      process.exit(2);
-    },
-  );
+  },
+  logging: { console: { level: "warn" } },
 });
+
+app.use("/", RED.httpAdmin);
+app.use("/api", RED.httpNode);
+
+// 令牌与凭据密钥已被 init 读进闭包/内存；从 process.env 抹掉，避免部署后的
+// Function 节点或第三方节点在 process.env 里捡到控制面令牌（进程内隔离不是
+// Gate A 的威胁模型，但这一步没有代价）。
+delete process.env.MCODE_ENGINE_ADMIN_TOKEN;
+delete process.env.NODE_RED_CREDENTIAL_SECRET;
+
+// 官方 embedding 的顺序：**先 RED.start()，再 listen**。反过来（先 listen 再 start）
+// 会让「端口通了」不等于「runtime 已起」—— 编辑器页会在 ensureRuntimeStarted 上回
+// 503，而宿主探针只看 HTTP status > 0，于是把未就绪误判成 running（真引擎实测抓到）。
+RED.start().then(
+  function () {
+    server.listen(port, "127.0.0.1", function () {
+      // 只用 stderr 打日志：stdout 留给将来可能的协议行。绝不打印令牌。
+      console.error("[mcode-engine] node-red ready on " + port + (safeMode ? " (safeMode: flows not started)" : ""));
+    });
+  },
+  function (err) {
+    console.error("[mcode-engine] node-red start failed: " + (err && err.message));
+    process.exit(2);
+  },
+);
 `;
 
 const ENGINE_IDS = ["node-red"] as const;
+
+/**
+ * 写入引导脚本。**【ARC-006 Gate B / P1-5】版本 + sha256 清单校验**（见
+ * `bootstrapManifest.ts`）：内容一致则不动；旧版/被篡改/缺失清单时**先备份旧字节再
+ * 原子替换**；替换失败 → 调用方**不得启动旧脚本**（返回 false）。同一目录下的
+ * `flows.json` / `flows_cred.json` 是用户数据，本函数不碰。
+ */
+function writeEngineBootstrap(engineId: string, dataDir: string): boolean {
+  const result = ensureEngineBootstrap({ engineId, dataDir, content: BOOTSTRAP });
+  if (!result.ok) {
+    log.error(
+      `[workflow-engine:${engineId}] 引导脚本完整性校验失败，拒绝启动：${result.reason ?? "未知原因"}`,
+    );
+    return false;
+  }
+  return true;
+}
+
+/** 读一个小文件；不存在则生成并写入（mode 0600，Windows 上尽力而为）。 */
+function readOrCreateFile(path: string, generate: () => string): string {
+  try {
+    const value = readFileSync(path, "utf8").trim();
+    if (value !== "") return value;
+  } catch {
+    /* 不存在 */
+  }
+  const value = generate();
+  writeFileSync(path, value, { encoding: "utf8", mode: 0o600 });
+  return value;
+}
+
+/**
+ * 持久化 flow 是否已被宿主标记为可信（Gate A 的「未审批 flow 重启后不得自动执行」）。
+ *
+ * 标记是宿主数据目录下的 `engine-trust.json`，**只有** `{"trusted":true}` 算数；
+ * 缺失、坏 JSON、其它形状一律 untrusted（fail-closed）。这里刻意**只读不写**：
+ * 写标记的入口将来接 Mcode 的 `workflow.approve`（工作流审查 + 真人点头），
+ * 本层不新造第二套授权通道。
+ */
+export function isFlowTrusted(dataDir: string): boolean {
+  try {
+    const raw = readFileSync(join(dataDir, "engine-trust.json"), "utf8");
+    const value: unknown = JSON.parse(raw);
+    return typeof value === "object" && value !== null && (value as { trusted?: unknown }).trusted === true;
+  } catch {
+    return false;
+  }
+}
 
 export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry {
   private readonly runtimes = new Map<string, EngineRuntimeType>();
@@ -115,21 +233,17 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
       return null;
     }
     const bootstrapPath = join(dir, "bootstrap.cjs");
-    if (!existsSync(bootstrapPath)) {
-      writeFileSync(bootstrapPath, BOOTSTRAP, "utf8");
+    // 【P1-5】完整性校验失败 → 返回 null（IPC 回"没有配置启动命令"并带原因），
+    // **绝不**带着盘上的旧/被篡改脚本启动。
+    if (!writeEngineBootstrap(engineId, dir)) {
+      log.error(`[workflow-engine:${engineId}] 引导脚本未能升级/恢复，拒绝启动引擎（不会执行旧脚本）`);
+      return null;
     }
-    // 凭据密钥：每个数据目录一个，存在 dataDir 之外（engine-secret 文件），
-    // 不写进 flows.json / creds，也不进日志。
-    const secretPath = join(dir, ".engine-secret");
-    let secret: string;
-    if (existsSync(secretPath)) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      secret = require("node:fs").readFileSync(secretPath, "utf8").trim();
-    } else {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      secret = require("node:crypto").randomBytes(32).toString("hex");
-      writeFileSync(secretPath, secret, { encoding: "utf8", mode: 0o600 });
-    }
+    // 凭据密钥：每个数据目录一个。不写进 flows.json / creds，也不进日志。
+    const secret = readOrCreateFile(join(dir, ".engine-secret"), () => randomBytes(32).toString("hex"));
+    // 控制面令牌（Gate A）：与凭据密钥分开一个文件 —— 前者解 creds，后者只认证
+    // Admin API；轮换一个不该牵连另一个。
+    const adminToken = readOrCreateFile(join(dir, ".engine-admin-token"), () => randomBytes(32).toString("hex"));
     return {
       command: process.execPath,
       // argv: node bootstrap.cjs <port> <userDir>
@@ -137,6 +251,9 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
       dataDir: dir,
       env: {
         NODE_RED_CREDENTIAL_SECRET: secret,
+        MCODE_ENGINE_ADMIN_TOKEN: adminToken,
+        // 只有宿主写下的可信标记才让持久化 flow 进入 runtime（见 isFlowTrusted）。
+        MCODE_ENGINE_TRUSTED: isFlowTrusted(dir) ? "1" : "0",
       },
     };
   }
