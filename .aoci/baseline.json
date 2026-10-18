@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-18T10:40:54Z",
+  "updated_at": "2026-10-18T11:10:07Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -77,9 +77,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "7bb82ece5bcb67347427310a8864ac0953d9229ca34e770509a15dad561cb653",
-      "size": 1195533,
-      "normalized_sha256": "7bb82ece5bcb67347427310a8864ac0953d9229ca34e770509a15dad561cb653"
+      "sha256": "b6199099c4467b3e6983d1aab8cad6588311f03ca10219bd24f32bc9a6c18261",
+      "size": 1195899,
+      "normalized_sha256": "b6199099c4467b3e6983d1aab8cad6588311f03ca10219bd24f32bc9a6c18261"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -14694,6 +14694,12 @@
       "sha256": "d3d2acf091b3e16758db234e54ee8fe3a157e1c794bf19e4399f206006c719c3",
       "size": 24725,
       "normalized_sha256": "938e86da3bc7713ce09f441b2117255fc2a87a558c1f676f8b8093ee5a622392"
+    },
+    "docs/planning/arc-006-wf-integration.md": {
+      "role": "index",
+      "sha256": "62787d67cda26ba37c376322a9199f1c5443da4a292fb3d992133d3b018da453",
+      "size": 8599,
+      "normalized_sha256": "62787d67cda26ba37c376322a9199f1c5443da4a292fb3d992133d3b018da453"
     },
     "docs/planning/arc-006-wf0-ex0-audit.md": {
       "role": "index",

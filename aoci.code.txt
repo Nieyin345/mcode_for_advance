@@ -2415,6 +2415,7 @@ Status-and-Plan.md[SG9M]: F:截至2026-09-30的项目状态、打包验收与后
 前端待办.md[SU7M]: F:用户2026-09-20提出的前端问题及逐项复现/核对要求清单。 | R:code:docs/功能性问题审查记录.md,code:docs/代码审查修复进度-2026-10-03.md | A:记录文档系统、自动化入口、子代理面板、流程画布、GPT网页桥与手机重复消息等现象和进展。 | S:核对时点为2026-09-26,部分事项注明在另一会话未提交改动中进行;2026-10-07补:画布#5已真浏览器量过(flow-preview 20/20);不是当前缺陷单,后续状态以现源码为准。
 genoffice-integration-frontend-redesign.md[SC8M]: F:GenOffice文档内核接入与前端大重构的计划文档(G0-G4/V0-V4、门槛与风险边界) | R:code:docs/planning/Status-and-Plan.md,code:apps/desktop/src/main/document/genofficeCli.ts | A:目标架构、阶段分解、验收与风险边界 | S:不引入GenOffice的agent loop/聊天UI/云AI;旧引擎保留为回退;真Electron与三引擎U1是门槛
 arc-006-wf0-ex0-audit.md[SD8M]: F:WF0依赖许可审计与EX0扩展基础设施盘点,含npm实查版本/许可与源码实读 | R:code:docs/planning/Status-and-Plan.md | A:npm view实查表;现有模块模型与缺口清单 | S:不是已完成声明;未下tarball逐文件核LICENSE/NOTICE不做SBOM;n8n非OSI,Theia含GPL,须逐文件审计
+arc-006-wf-integration.md[SD8M]: F:第三方工作流引擎集成方案:NR0实测、目标架构、三条桥、权限边界、NR0-NR5阶段与验收门 | R:code:docs/planning/arc-006-wf0-ex0-audit.md | A:方案与阶段表 | S:不是已完成声明;node-red 5.0.8 Apache-2.0纯JS已本机实测;不得把vendor有通道当成我们能接上;两套调度器不合并
 
 ===D:/destop/work_space/work_for_reseach/mcode/docs/releases/===
 v0.1.57.md[SV7T]: F:Mcode v0.1.57版本变更、命令迁移与发布边界说明。 | R:code:docs/代码审查修复进度-2026-10-03.md,code:docs/public-mcp-endpoint.md | A:列出文本工具分页/哈希、Codex工作流修复、命令模板迁移及打包范围。 | S:本版明确不改公网MCP免审批/隧道策略、不恢复核心转录或学术抽取，也不宣称历史问题全修或真实模型/在线验收；release note不证明当前安装版本。
