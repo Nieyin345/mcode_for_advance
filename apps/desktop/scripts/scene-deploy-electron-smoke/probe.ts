@@ -50,6 +50,7 @@ import { createDeployment, advanceDeployment } from "@contracts/sceneDeployment"
 import { validateSceneSpec, SCENE_SPEC_SCHEMA_VERSION, type SceneSpec } from "@contracts/sceneSpec";
 import { compileScenePlan } from "@contracts/scenePlan";
 import { saveDeployment, loadDeployment } from "@main/appServices/sceneDeploymentStore.js";
+import { SceneDeploymentRepo } from "@main/store/repositories.js";
 
 interface Check {
   name: string;
@@ -251,6 +252,37 @@ export async function runSceneDeployProbe(dir: string): Promise<void> {
       await until("无快照提示出现", `document.body.innerText.includes('没有声明快照')`);
       const after = await bodyText();
       assert(after.includes("没有声明快照"), "点恢复后没有出现「没有声明快照」的明确提示");
+    });
+
+    /* 【MC-002】真 Electron 读库失败必须给用户错误，而不是展示虚假的空部署列表。
+     * 只替换本套隔离 sql.js Repo 的 listRecent，真 store + IPC + 组件全部照常工作。
+     * 重载后恢复真正 Repo 并验证那两条历史记录仍可读取，不能污染用户数据。 */
+    await check("③a 真 Electron：隔离 DB 读异常显示具体故障，不伪装成空记录", async () => {
+      const original = SceneDeploymentRepo.listRecent;
+      const fake = (..._args: Parameters<typeof original>): ReturnType<typeof original> => {
+        throw new Error("MC002_FAKE_DB_READ_ERROR");
+      };
+      Object.assign(SceneDeploymentRepo, { listRecent: fake });
+      try {
+        await new Promise<void>((resolve) => {
+          wc.once("did-finish-load", () => resolve());
+          wc.reload();
+        });
+        await until("数据库读错误可见", "document.body.innerText.includes('MC002_FAKE_DB_READ_ERROR')");
+        const text = await bodyText();
+        assert(text.includes("MC002_FAKE_DB_READ_ERROR"), "界面没有透出错误原因");
+        assert(!text.includes("暂无未完成的部署"), "读失败不能报空记录");
+      } finally {
+        Object.assign(SceneDeploymentRepo, { listRecent: original });
+      }
+    });
+    await check("③b 故障解除后重载面板，原来的可恢复部署记录无损", async () => {
+      await new Promise<void>((resolve) => {
+        wc.once("did-finish-load", () => resolve());
+        wc.reload();
+      });
+      await until("可恢复的历史记录重新出现", "document.body.innerText.includes(" + JSON.stringify(DEP_ID) + ")");
+      assert((await bodyText()).includes(NO_SNAP_ID), "读异常后的其他原记录丢失");
     });
 
     /* ═══ ④-⑤ 点选恢复 → 原快照回到输入框;不自动恢复授权 ═══ */

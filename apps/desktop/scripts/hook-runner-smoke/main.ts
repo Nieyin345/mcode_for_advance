@@ -27,7 +27,7 @@
  *
  * Run: scripts/hook-runner-smoke/run.sh
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookSpec, DeliveryPolicy } from "@contracts/hook";
@@ -343,6 +343,31 @@ rt.emit({
 } satisfies RuntimeEvent);
 await until("改了文件之后新钩子当场生效(不用重启应用)", () => g.hits() === 1);
 eq("新钩子生效", g.hits(), 1);
+
+// 【ARC-006】等长 hooks.json 走 atomic rename 后，mtime 可以与旧文件相同。
+// 单看 mtimeMs 的缓存会继续运行旧命令，用户刚切换 Hook 却没有生效。
+// 在真实临时目录强制同一 mtime，让两份快照具备可观察的不同文件身份。
+{
+  const first = makeCmd({ tag: "stamp-a" });
+  const second = makeCmd({ tag: "stamp-b" });
+  const hook = spec({ command: first.command, tag: "stamp" });
+  const frozen = new Date("2024-01-01T00:00:00.000Z");
+  writeHooks([hook]);
+  utimesSync(hooksFilePath(), frozen, frozen);
+  const before = statSync(hooksFilePath());
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_stamp_before", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("同 mtime 第一份 Hook 执行完毕", () => hookRunner.listRuns().some((r) => r.hookId === hook.id && r.status === "ok") && first.hits() === 1, 18000);
+  writeHooks([{ ...hook, command: second.command }]);
+  utimesSync(hooksFilePath(), frozen, frozen);
+  const after = statSync(hooksFilePath());
+  eq("重写前后 mtime 完全一致（旧缓存无法分辨）", after.mtimeMs, before.mtimeMs);
+  eq("重写前后文件长度也完全一致", after.size, before.size);
+  check("文件元数据仍能区分原子改名后的两份实体", before.ino !== after.ino || before.ctimeMs !== after.ctimeMs,
+    { before: { ino: before.ino, ctimeMs: before.ctimeMs }, after: { ino: after.ino, ctimeMs: after.ctimeMs } });
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_stamp_after", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("mtime 不变时第二份 Hook 也真的生效", () => second.hits() === 1, 18000);
+  eq("新命令生效后旧命令不能再执行", first.hits(), 1);
+}
 
 /* ──────────────── 6. 环与坏东西 ──────────────── */
 

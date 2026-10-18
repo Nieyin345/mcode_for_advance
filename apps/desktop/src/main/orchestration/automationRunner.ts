@@ -181,6 +181,8 @@ class AutomationRunner {
    * 派发前 durable 写入,运行结束时 durable 结算成 `SUCCEEDED`。
    */
   private triggerClaims = new Map<string, TriggerClaim>();
+  /** 领取历史不可读时，绝不把空 Map 当成可写空账本；仅下一次显式启动重新核验。 */
+  private triggerClaimsReadable = true;
   /** 每条自动化连续 reload 的序号,防止慢的那次覆盖快的那次。 */
   private reloadSeq = new Map<string, number>();
   private ticker: ReturnType<typeof setInterval> | null = null;
@@ -895,11 +897,31 @@ class AutomationRunner {
     // 先补挂:目录在两次 tick 之间回来了的话,这一跳就把它接上(MC-020)。它只对
     // `watcher === null` 且退避到点的目录动手,不会成为高频轮询。
     this.retryWatchers();
+    // 不只检查启动时读盘：另一个 writer 在进程运行期间改坏 durable
+    // 领取账本时，也必须在本分钟去重表的首次写入之前发现并锁住派发。
+    // 只校验存档形状，不把重新读取的值直接覆盖当前正在结算的内存 Map。
+    if (this.triggerClaimsReadable) {
+      try {
+        const raw = SettingRepo.get(TRIGGER_CLAIMS_SETTING_KEY);
+        if (raw !== null && !isTriggerClaims(JSON.parse(raw))) {
+          throw new Error("领取账本形状不正确");
+        }
+      } catch (err) {
+        this.triggerClaimsReadable = false;
+        log.error(`[automation] 运行中定时领取账本损坏或不可读：拒绝后续定时派发并保留原件:${String(err)}`);
+      }
+    }
     const now = new Date();
     const minute = Math.floor(now.getTime() / 60_000);
     for (const trigger of this.all()) {
       if (trigger.disarmed || trigger.spec.kind !== "schedule") continue;
       if (!cronMatches(trigger.spec.cron, now)) continue;
+      // 旧版坏 JSON 变空 Map 后会照常派发，并把坏原件覆盖成新领取，
+      // 丢失 crash/CLAIMED 的去重事实。必须在 lastMinute 第一笔写盘之前挡住。
+      if (!this.triggerClaimsReadable) {
+        this.skip(trigger, "定时领取账本损坏或不可读，已拒绝派发；请先检查并恢复原始存档");
+        continue;
+      }
       const key = triggerKey(trigger);
       // **同一分钟只跑一次**(30 秒一跳会看两次)。不去重的话 `*/1 * * * *` 一分钟两次。
       // 这条记忆**跨重启**(见 `lastMinute` 的说明):重启后那一跳看到的还是"本分钟
@@ -1057,6 +1079,7 @@ class AutomationRunner {
    * **拒绝派发**(不是转圈重试)。
    */
   private writeTriggerClaimDurable(claimId: string, claim: TriggerClaim): boolean {
+    if (!this.triggerClaimsReadable) return false;
     const prev = this.triggerClaims.get(claimId);
     // **单调性**:终态(`SUCCEEDED`/`FAILED`/`UNCERTAIN`)不许被迟到的 `CLAIMED` 覆盖回去
     // (见文件头那条"崩溃点不能被后来的内存值骗到")。终态之间可以互相推进(正常路径不会,
@@ -1112,19 +1135,22 @@ class AutomationRunner {
     }
   }
 
-  /** 读回上一次进程留下的领取账本。读不回来当空表,不抛(同 `readLastMinutes`)。 */
+  /** 读取 durable 领取账本：只有真正缺失才是空表；坏原件保留且锁住派发。 */
   private readTriggerClaims(): Map<string, TriggerClaim> {
+    this.triggerClaimsReadable = true;
     try {
       const raw = SettingRepo.get(TRIGGER_CLAIMS_SETTING_KEY);
-      if (raw === null || raw.length === 0) return new Map();
+      if (raw === null) return new Map();
       const parsed: unknown = JSON.parse(raw);
       if (!isTriggerClaims(parsed)) {
-        log.warn("[automation] 定时领取账本读不回来(形状不对),当空表");
+        this.triggerClaimsReadable = false;
+        log.error("[automation] 定时领取账本损坏(形状不对)：已暂停所有定时派发，原始字节保留");
         return new Map();
       }
       return new Map(Object.entries(parsed));
     } catch (err) {
-      log.warn(`[automation] 定时领取账本读不回来,当空表:${(err as Error).message}`);
+      this.triggerClaimsReadable = false;
+      log.error(`[automation] 定时领取账本损坏或不可读：已暂停所有定时派发，原始字节保留:${(err as Error).message}`);
       return new Map();
     }
   }

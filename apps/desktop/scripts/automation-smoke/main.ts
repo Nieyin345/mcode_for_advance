@@ -4183,6 +4183,51 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     replayRunner.dispose();
   }
 
+  /* ── ARC-006/MC-091:损坏的 durable trigger-claim 不能静默当空表重跑 ──
+   *
+   * 模拟此前崩溃留下无法解析的领取记录。旧 readTriggerClaims() 把它转成空 Map，
+   * 然后启动第一次 onTick 就往同一 SettingRepo 行写入新 CLAIMED/SUCCEEDED，
+   * 擦掉原始损坏证据，还可能重复外部副作用。
+   */
+  {
+    resetRuns();
+    const key = "automation.triggerClaims";
+    const damaged = '{"wf:tick@1122":{"status":"CLAIMED","minute":1122';
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    SettingRepo.set(key, damaged);
+    const wf = nextId(), node = "t_claim_corrupt_lock";
+    makeAutomation({ workflowId: wf, nodeId: node, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "损坏账本不可重新派发",
+    } });
+    const minute = 50_000_000;
+    const brokenRunner = await withClockAsync(minute * 60_000, () => startRunner());
+    withClock(minute * 60_000, () => brokenRunner.onTick());
+    eq("★ 损坏领取账本不得派发新自动化", runsOfNode(node).length, 0);
+    eq("★ 损坏领取账本原始字节必须保留", SettingRepo.get(key), damaged);
+    eq("★ 损坏领取账本不得先改去重表", SettingRepo.get(LAST_MINUTE_KEY), "{}");
+    check("★ 损坏领取账本的拒绝原因需在自动化事实可见",
+      (brokenRunner.statusOf(wf)[0]?.lastError ?? "").includes("领取账本损坏"), brokenRunner.statusOf(wf));
+    brokenRunner.dispose();
+    // 显式由人工修复原始存档后，新实例恢复正常派发。
+    resetRuns();
+    SettingRepo.set(key, "{}");
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    const cleanRunner = await withClockAsync((minute + 1) * 60_000, () => startRunner());
+    await sleep(20);
+    eq("正控:人工恢复健康账本后新的触发可执行", runsOfNode(node).length, 1);
+    const liveDamaged = '{"unsafe-live-claim":';
+    SettingRepo.set(key, liveDamaged);
+    const priorRunCount = runsOfNode(node).length;
+    withClock((minute + 2) * 60_000, () => cleanRunner.onTick());
+    eq("★ 运行时领取账本被写坏后拒绝新派发", runsOfNode(node).length, priorRunCount);
+    eq("★ 运行时领取账本损坏原文不被覆盖", SettingRepo.get(key), liveDamaged);
+    cleanRunner.dispose();
+    SettingRepo.set(key, "{}");
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+  }
+
   /* ── 文件监听:编辑器式保存(写临时文件再 rename)只触发一次 ──
    *
    * 真实 `fs.watch` 对一次原子保存会连发多条事件(临时文件的 rename/change、最终

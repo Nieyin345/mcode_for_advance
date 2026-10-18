@@ -339,6 +339,53 @@ if (MODE === "write") {
     check("★ 跨场景按最近更新排序(新的在前)", idxSnap >= 0 && (idxOld < 0 || idxSnap < idxOld), { idxSnap, idxOld });
   }
 
+  /* ── 11.【MC-002 复审】坏数据库读取≠空部署历史：必须显式报错 ── */
+  console.log("\n⑪ 部署历史读取失败必须抛到 IPC：不许谎报没有待恢复记录");
+  {
+    const before = (await diskPayload("dep_snap")) ?? "";
+    const recent = SceneDeploymentRepo.listRecent;
+    const byScene = SceneDeploymentRepo.listByScene;
+    const injected = "FAKE_DB_IO_ERROR_SCENE";
+    try {
+      SceneDeploymentRepo.listRecent = () => { throw new Error(injected); };
+      SceneDeploymentRepo.listByScene = () => { throw new Error(injected); };
+      let recentErr = "";
+      let sceneErr = "";
+      try { listRecentDeploymentEntries(20, { resumableOnly: true }); }
+      catch (err) { recentErr = (err as Error).message; }
+      try { listDeploymentEntries(SCENE, 20); }
+      catch (err) { sceneErr = (err as Error).message; }
+      check("★ 跨场景查最近部署：仓库读失败向调用方抛出，不能被包装为空表", recentErr.includes(injected), recentErr);
+      check("★ 按 sceneId 查部署：同一种读取失败合同，不得另有静默空表", sceneErr.includes(injected), sceneErr);
+    } finally {
+      SceneDeploymentRepo.listRecent = recent;
+      SceneDeploymentRepo.listByScene = byScene;
+    }
+    // MC-002: the single-record resume path and the save rollback pre-read
+    // must also fail closed on I/O errors, not pretend the row is absent.
+    const prevGet = SceneDeploymentRepo.get;
+    const prevSave = SceneDeploymentRepo.save;
+    let unexpectedSaveCalls = 0;
+    try {
+      SceneDeploymentRepo.get = () => { throw new Error(injected); };
+      SceneDeploymentRepo.save = () => { unexpectedSaveCalls++; };
+      let singleReadError = "";
+      try { loadDeployment("dep_snap"); }
+      catch (err) { singleReadError = (err as Error).message; }
+      check("★ single deployment DB read error reaches the caller", singleReadError.includes(injected));
+      const pending = partialDeployment("dep_snap", SCENE, "wf_s", "auto_s");
+      eq("★ previous-record read error refuses a write before mutation",
+        saveDeployment(pending, { durable: true }), false);
+      eq("★ pre-read error causes zero writes", unexpectedSaveCalls, 0);
+    } finally {
+      SceneDeploymentRepo.get = prevGet;
+      SceneDeploymentRepo.save = prevSave;
+    }
+    eq("★ 失败注入不动已有用户存档字节", (await diskPayload("dep_snap")) ?? "", before);
+    check("★ 故障解除后跨场景仍能列出原记录",
+      listRecentDeploymentEntries(20).some((entry) => entry.deploymentId === "dep_snap"));
+  }
+
   console.log(`\n[write 阶段] 通过 ${total - failures}/${total}`);
   if (failures > 0) process.exitCode = 1;
   closeDb();

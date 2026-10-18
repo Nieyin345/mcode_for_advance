@@ -113,7 +113,7 @@ export { readbackScene } from "./sceneReadback.js";
 //   表达业务拒绝,不抛异常 —— 不检查它,一步被拒也会被记成 done(洞)。
 import { decodeDomainOutcome, type DomainOutcome } from "@main/appControl/commandOutcome.js";
 import { log } from "@main/lib/logger.js";
-import { loadDeployment, saveDeployment } from "./sceneDeploymentStore.js";
+import { loadDeployment, readDeploymentOutcome, saveDeployment } from "./sceneDeploymentStore.js";
 
 /**
  * 一次场景部署的「apply」动作在授权核里的**方法名**。计划级授权(`Grant.allowedActions`)必须含它,
@@ -264,6 +264,10 @@ export interface SceneApplyRefusal {
     | "no_grant"
     /** 部署存档的**初始那一笔** durable 落盘失败 —— 建了也记不住,故不建(MC-058)。 */
     | "archive_not_durable"
+    /** 存档读取失败，而非记录真正不存在；应显示可恢复的存储故障。 */
+    | "archive_read_failed"
+    /** 存档行存在但 payload 损坏，绝不能当不存在而诱导新部署覆盖。 */
+    | "archive_corrupt"
     /** 崩溃续跑时盘上**没有**这份部署记录 —— 无从续跑,需作为一次全新部署重新预览批准(MC-058 残余)。 */
     | "no_record"
     /**
@@ -958,13 +962,27 @@ export async function resumeScene(input: SceneResumeInput): Promise<SceneApplyRe
     return { ok: false, kind: "refused", refusal };
   }
 
-  // ④ 读回盘上那份记录。读不到 = 无从续跑(绝不静默当成新部署去建)。
-  const record = loadDeployment(input.deploymentId);
-  if (record === null) {
-    const reason = `盘上没有部署记录「${input.deploymentId}」(不存在 / 存档读不回来),无从续跑。若这是一次全新部署,请走正常预览批准流程,而不是 resume。`;
+  // ④ Read through the same decoder as ordinary loads, but retain whether
+  // this row is genuinely absent or present with a corrupt payload.
+  let loaded: ReturnType<typeof readDeploymentOutcome>;
+  try {
+    loaded = readDeploymentOutcome(input.deploymentId);
+  } catch (err) {
+    const reason = `部署记录「${input.deploymentId}」读取存储时出错，请检查数据文件并重试：${err instanceof Error ? err.message : String(err)}`;
+    log.warn(`scene resume ${input.deploymentId}: ${reason}`);
+    return { ok: false, kind: "refused", refusal: { code: "archive_read_failed", reason } };
+  }
+  if (loaded.kind === "corrupt") {
+    const reason = `部署记录「${input.deploymentId}」仍在存储中，但内容损坏无法恢复；请保留原档并检查备份，不要把它当成全新部署覆盖。`;
+    log.warn(`scene resume ${input.deploymentId}: ${reason}`);
+    return { ok: false, kind: "refused", refusal: { code: "archive_corrupt", reason } };
+  }
+  if (loaded.kind === "missing") {
+    const reason = `盘上没有部署记录「${input.deploymentId}」,无从续跑。若这是一次全新部署,请走正常预览批准流程,而不是 resume。`;
     log.warn(`scene resume ${input.deploymentId}: ${reason}`);
     return { ok: false, kind: "refused", refusal: { code: "no_record", reason } };
   }
+  const record = loaded.deployment;
 
   // ⑤ plan digest 必须与盘上那份一致 —— 声明在崩溃后被改过就拒绝续跑(绝不把新计划套到旧记录上)。
   if (record.planDigest !== plan.digest) {

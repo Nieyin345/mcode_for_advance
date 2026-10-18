@@ -208,7 +208,10 @@ export function saveDeployment(d: SceneDeployment, opts: { durable?: boolean } =
   try {
     prevRow = SceneDeploymentRepo.get(d.deploymentId);
   } catch (err) {
-    log.warn(`scene deployment ${d.deploymentId}: 读取旧存档失败,落盘失败时将无法回滚 ${(err as Error).message}`);
+    // A failed pre-read must never be confused with an absent row. Otherwise a
+    // later durable rollback could delete an existing deployment rather than restore it.
+    log.warn(`scene deployment ${d.deploymentId}: 读取旧存档失败,拒绝覆盖 ${(err as Error).message}`);
+    return false;
   }
   try {
     SceneDeploymentRepo.save({
@@ -251,17 +254,29 @@ export function saveDeployment(d: SceneDeployment, opts: { durable?: boolean } =
   }
 }
 
-/** 读回一条部署(行 → 解码)。行不在 / 解码失败都返回 `null`。 */
+/** Keep the absent/corrupt/found distinction in one shared read path. */
+export type SceneDeploymentReadOutcome =
+  | { kind: "missing" }
+  | { kind: "corrupt" }
+  | { kind: "found"; deployment: SceneDeployment };
+
+/** Storage failures throw; a present row with an invalid payload is not missing. */
+export function readDeploymentOutcome(deploymentId: string): SceneDeploymentReadOutcome {
+  const row = SceneDeploymentRepo.get(deploymentId);
+  if (row === null) return { kind: "missing" };
+  const deployment = decodeDeployment(row.payload);
+  return deployment === null ? { kind: "corrupt" } : { kind: "found", deployment };
+}
+
+/** Legacy nullable read: absence and malformed payload return null; storage I/O still throws. */
 export function loadDeployment(deploymentId: string): SceneDeployment | null {
-  let row;
   try {
-    row = SceneDeploymentRepo.get(deploymentId);
+    const result = readDeploymentOutcome(deploymentId);
+    return result.kind === "found" ? result.deployment : null;
   } catch (err) {
     log.warn(`scene deployment ${deploymentId}: 读取失败 ${(err as Error).message}`);
-    return null;
+    throw err;
   }
-  if (row === null) return null;
-  return decodeDeployment(row.payload);
 }
 
 /** 场景部署列表里的一项 —— 存档读不回来时 `deployment` 为 `null`(那一行**仍然列出**)。 */
@@ -308,8 +323,9 @@ export function listRecentDeploymentEntries(limit: number, options: { resumableO
   try {
     rows = SceneDeploymentRepo.listRecent(limit, options);
   } catch (err) {
+    // MC-002: 存储读失败不是「无可恢复部署」；由 IPC 统一向用户返回 ok:false。
     log.warn(`scene deployment recent list failed: ${(err as Error).message}`);
-    return [];
+    throw err;
   }
   return rows.map((row) => {
     const deployment = decodeDeployment(row.payload);
@@ -354,8 +370,9 @@ export function listDeploymentsByScene(sceneId: string, limit: number): SceneDep
   try {
     rows = SceneDeploymentRepo.listByScene(sceneId, limit);
   } catch (err) {
+    // MC-002: 同一发现合同；按 sceneId 查询同样不得把 I/O 故障伪装成空表。
     log.warn(`scene deployment list read failed: ${(err as Error).message}`);
-    return [];
+    throw err;
   }
   return rows.map((row) => {
     const deployment = decodeDeployment(row.payload);

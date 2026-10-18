@@ -27,6 +27,9 @@ ln -s "$PWD/node_modules" "$OUT/node_modules"
 trap 'rm -rf "$OUT" "$DATA" "$HOMEDIR"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
+# The full IPC registry also imports Slides; this suite does not exercise PPTX.
+# Alias to the production fail-closed vendor stub rather than resolving absent
+# optional @genoffice/* workspace packages from the temp ESM bundle.
 "$ESBUILD" scripts/memory-codex-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
@@ -46,6 +49,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/providers/registry.js=./scripts/claude-ipc-smoke/stubs/providerRegistry.ts \
   --alias:@main/lib/mcpConfig.js=./scripts/memory-codex-smoke/stubs/mcpConfig.ts \
   --alias:@main/lib/mcpEngines.js=./scripts/memory-codex-smoke/stubs/mcpEngines.ts \
+  --alias:@main/document/slidesVendorModules.js=./src/main/document/slidesVendorModulesStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 # ⚠️ 两个变量都是**安全前提**,不是一个指纹:

@@ -1144,6 +1144,107 @@ console.log("\n【MC-048】模板事务围栏(单一异步变更协议)");
     eq("★ MC-048:关闭后不再回调组件状态", callbacks, afterClose);
     check("关闭后提交的变换被拒", (await sync.mutate((cur) => [...cur])).ok === false);
   }
+
+  // ⑤【边角复核】删除失败 + 紧接着新增:队列按 FIFO,失败让后一笔**可见地**取消、
+  //    且后一笔的变换**一次都不执行**(不建立在未成功的状态上,也不偷偷写盘)。
+  {
+    const be = backend([tpl("A"), tpl("B")]);
+    let notice: string | null = null;
+    let lastIds: string[] = [];
+    let lastPending: boolean | null = null;
+    const sync = createWatchTemplatesSync({
+      read: be.read, save: be.save,
+      onChange: (snap, n) => { lastIds = snap.templates.map((t) => t.id); lastPending = snap.pending; if (n !== null) notice = n; },
+    });
+    await sync.load();
+    be.pushBehavior("fail"); // 第一笔(删除 A)失败
+    let laterTransformRan = 0;
+    const pDel = sync.mutate((cur) => cur.filter((t) => t.id !== "A"));
+    const pAdd = sync.mutate((cur) => { laterTransformRan++; return [...cur, tpl("C")]; });
+    const [del, add] = await Promise.all([pDel, pAdd]);
+    check("★ MC-048 边角:删除失败时新增也如实失败", del.ok === false && add.ok === false, [del, add]);
+    eq("★ MC-048 边角:失败让后续可见地取消(两笔同一可读提示)", add.ok === false ? add.notice : "<ok>", "fake disk full");
+    check("★ MC-048 边角:失败后同批排队的变换一次都不执行", laterTransformRan === 0, { laterTransformRan });
+    eq("★ MC-048 边角:保存次数 = 1(新增没有拿失败后的列表去写)", be.saves.length, 1);
+    eq("★ MC-048 边角:UI = 盘上(A,B 原样,没有 C)", lastIds.join(","), "A,B");
+    eq("★ MC-048 边角:结束时 pending=false", lastPending, false);
+    check("★ MC-048 边角:失败提示是主进程给的原因", notice === "fake disk full", notice);
+  }
+
+  // ⑥【边角复核】冲突重载后重放一次**仍冲突** → 停住并如实报错,不无限重试。
+  {
+    const be = backend([tpl("A")]);
+    let saves = 0;
+    let notice: string | null = null;
+    let lastIds: string[] = [];
+    const sync = createWatchTemplatesSync({
+      read: be.read,
+      save: async (input) => {
+        saves++;
+        // 前两次(首发 + 重放)都模拟"另一端又改了盘";之后走正常的 revision 比较。
+        if (saves <= 2) be.pushBehavior("conflict-once");
+        return be.save(input);
+      },
+      onChange: (snap, n) => { lastIds = snap.templates.map((t) => t.id); if (n !== null) notice = n; },
+    });
+    await sync.load();
+    const res = await sync.mutate((cur) => [...cur, tpl("B")]);
+    check("★ MC-048 边角:重放一次仍冲突 → 如实失败(不假装成功)", res.ok === false, res);
+    eq("★ MC-048 边角:只尝试两次(首发 + 重放一次),不无限重试", saves, 2);
+    // 失败提示来自同步围栏的失败投影(conflict 回包没有 error 时用兜底语)。
+    // 用读取函数绕开 TS 的收窄:赋值发生在异步回调里,直接读会被窄成 null。
+    const readNotice = (): string | null => notice;
+    const noticeText = readNotice();
+    check("★ MC-048 边角:失败提示可见", noticeText !== null && noticeText.length > 0, noticeText);
+    // 重放前重读过一次:UI 停在那次重读的权威内容(A,ZZ);盘上随后又被另一端改成 A,ZZ,ZZ,
+    // 但围栏不无限追 —— 失败已如实告知用户。
+    eq("★ MC-048 边角:UI = 最后一次重读的权威内容", lastIds.join(","), "A,ZZ");
+    const after = await sync.mutate((cur) => [...cur, tpl("D")]);
+    check("★ MC-048 边角:失败后围栏仍可用(下一次变更能成功)", after.ok === true, after);
+  }
+
+  // ⑦【边角复核】卸载(close)时有一笔在飞:迟到结果不回写,也不改盘上别人的内容;
+  //    close 时排队中的那笔收到明确失败(不是永远挂着的 promise)。
+  {
+    const be = backend([tpl("A")]);
+    let callbacksAfterClose = 0;
+    let closed = false;
+    const sync = createWatchTemplatesSync({
+      read: be.read, save: be.save,
+      onChange: () => { if (closed) callbacksAfterClose++; },
+    });
+    await sync.load();
+    const inFlight = sync.mutate((cur) => [...cur, tpl("B")]);
+    const queued = sync.mutate((cur) => [...cur, tpl("C")]);
+    closed = true;
+    sync.close();
+    const [a, b] = await Promise.all([inFlight, queued]);
+    eq("★ MC-048 边角:卸载时排队中的那笔收到明确失败", b.ok, false);
+    check("★ MC-048 边角:在飞那笔成功与否都有结论(不悬挂)", a.ok === true || a.ok === false, a);
+    eq("★ MC-048 边角:卸载后零回调", callbacksAfterClose, 0);
+    // 在飞那笔的真实保存已交给后端(IPC 不中断),但排队那笔绝不被执行 —— 盘上不得出现 C。
+    check("★ MC-048 边角:被取消的排队变换没有写进盘", !be.disk.some((t) => t.id === "C"), be.disk.map((t) => t.id));
+  }
+
+  /* ⑧【边角复核·接线】组件层:四条不变量必须仍**接在真组件上**,不是只活在纯模块里。
+     判据是调用关系(读源码里的真实符号),不测行为 —— 行为由上 ①–⑦ 在同一个被组件
+     调用的模块上钉住。任何一条接线被改回"组件自己乐观改本地状态",这里先红。 */
+  {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const seg = readFileSync(join(process.cwd(), "src/renderer/components/chat/WatchSegment.tsx"), "utf8");
+    check("★ MC-048 接线:组件只经 createWatchTemplatesSync 读写模板(读口喂给围栏)",
+      seg.includes("createWatchTemplatesSync({") && /read:\s*\(\)\s*=>\s*api\.automation\.watchTemplates\(\)/.test(seg), null);
+    check("★ MC-048 接线:保存经围栏的 save 端口(组件不自己调 saveWatchTemplates)",
+      /save:\s*\(input\)\s*=>\s*api\.automation\.saveWatchTemplates\(input\)/.test(seg)
+      && seg.split("api.automation.saveWatchTemplates").length - 1 === 1, null);
+    check("★ MC-048 接线:删/增都投递为变换(不在组件里先改列表)",
+      /runMutation\(\(current\)\s*=>\s*current\.filter\(\(x\)\s*=>\s*x\.id\s*!==\s*targetId\)\)/.test(seg)
+      && /runMutation\(\(current\)\s*=>\s*\[\.\.\.current,\s*tpl\]\)/.test(seg), null);
+    check("★ MC-048 接线:卸载清理真的调 sync.close()(关闭后不回写)",
+      /return \(\) => \{[\s\S]*?sync\.close\(\);[\s\S]*?\};/.test(seg)
+      && seg.includes("cancelled = true"), null);
+  }
 }
 
 /* ═══════════════ 【ARC-005 V2】Esc 只关最内层(escapeLayer) ═══════════════ */

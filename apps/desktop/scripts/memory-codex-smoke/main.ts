@@ -116,6 +116,8 @@ const PUSH_CHANNELS = [
   "voice:result",
   "window:focusChanged",
   "workflow:changed",
+  // Node installation approval is a main → renderer event, not an invoke handler.
+  "workflowEngine:nodeInstallApproval",
 ].sort();
 
 /** 这个路径是不是落在数据根里(`..` 穿不出去的判据)。 */
@@ -954,7 +956,20 @@ console.log("\n总注册表:registerIpcHandlers");
   // 例外:宿主**自己注入的页面 preload** 用的内部通道。它刻意不进 RpcMap ——
   // 那条通道是给不受信任的文档视图页面发起的,渲染端与 Agent 都不该有入口
   // (见 `main/ipc/documentView.ts` 的说明)。它不是"漏接线",是"不该接线"。
-  const INTERNAL_PRELOAD_CHANNELS = ["mcode:document-view:open-path", "mcode:document-view:save"];
+  const INTERNAL_PRELOAD_CHANNELS = [
+    // Host-only doc preload callbacks: sender's webContents is checked by
+    // documentView handlers, and these must not become public Agent RPCs.
+    "mcode:document-view:close-check-result",
+    "mcode:document-view:confirm-replace",
+    "mcode:document-view:open-committed",
+    "mcode:document-view:open-path",
+    "mcode:document-view:read-opened",
+    "mcode:document-view:save",
+    "mcode:document-view:slides-add-slide",
+    "mcode:document-view:slides-edit-text",
+    "mcode:document-view:slides-read-opened",
+    "mcode:document-view:slides-save",
+  ].sort();
   const extra = registered.filter((c) => !table.has(c) && !INTERNAL_PRELOAD_CHANNELS.includes(c));
   same("主进程注册的每条 invoke 通道都在共享 IPC 表里(零裸 channel,M36)", extra, []);
   same(

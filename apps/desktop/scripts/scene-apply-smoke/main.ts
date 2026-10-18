@@ -1486,6 +1486,50 @@ console.log("\n⑱ MC-058 残余:resume 入口:跳过已建成步(handler 不再
   if (noRec.ok === false && noRec.kind === "refused") eq("拒绝码 = no_record", noRec.refusal.code, "no_record");
   eq("★ 无记录的 resume 一个 handler 都没调", saveCalls.length, 0);
   check("★ 也没为它凭空建一条部署行", loadDeployment("dep_no_such") === null);
+
+  // MC-002: a storage read error is not a missing record. The visible refusal
+  // must distinguish them and execute no resource handlers.
+  const repo = (await import("@main/store/repositories.js")).SceneDeploymentRepo;
+  const originalGet = repo.get;
+  try {
+    repo.get = () => { throw new Error("FAKE_SCENE_DB_READ_FAILED"); };
+    saveCalls = [];
+    const readFailure = await resumeScene({
+      deploymentId: "dep_resume", spec, actor: ACTOR, grant: grantFor(plan.digest),
+    });
+    check("★ resume returns a visible refusal on DB read error",
+      readFailure.ok === false && readFailure.kind === "refused", readFailure);
+    if (readFailure.ok === false && readFailure.kind === "refused") {
+      eq("★ storage error has its own code, not no_record",
+        readFailure.refusal.code, "archive_read_failed");
+      check("★ the user can see a storage error", readFailure.refusal.reason.includes("读取"));
+    }
+    eq("★ read failure does not execute any resource handlers", saveCalls.length, 0);
+  } finally {
+    repo.get = originalGet;
+  }
+
+  // A present but corrupt archive is different from an absent archive.
+  const baseline = repo.get("dep_resume");
+  check("★ corrupt-resume fixture has a real deployment", baseline !== null);
+  if (baseline !== null) {
+    repo.save({ ...baseline, deploymentId: "dep_resume_corrupt_case", payload: "{corrupt_archive" });
+    try {
+      saveCalls = [];
+      const corrupt = await resumeScene({
+        deploymentId: "dep_resume_corrupt_case", spec, actor: ACTOR, grant: grantFor(plan.digest),
+      });
+      check("★ corrupt archived deployment explicitly refuses resume",
+        corrupt.ok === false && corrupt.kind === "refused", corrupt);
+      if (corrupt.ok === false && corrupt.kind === "refused") {
+        eq("★ corrupt archive is distinguished from genuinely absent row",
+          corrupt.refusal.code, "archive_corrupt");
+      }
+      eq("★ corrupt resume does not dispatch any resource handlers", saveCalls.length, 0);
+    } finally {
+      repo.remove("dep_resume_corrupt_case");
+    }
+  }
 }
 
 /* ── ⑲ ★★ MC-058 残余:compensated 的步在 resume 时**重建**(资源被撤过,必须补回,不是跳过) ──
