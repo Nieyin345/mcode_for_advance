@@ -106,6 +106,16 @@ extraResources:
     filter:
       - "*.json"
       - "scripts/**"
+  # ARC-007: staging is always created by the package pipeline. Without
+  # explicit MCODE_INCLUDE_GENOFFICE_BUNDLE=1 it contains availability.json
+  # (bundled:false) only; no ignored vendor files are required for CI.
+  # With opt-in the staged CLI, its dependencies, PDFium WASM and license
+  # notices are shipped as real resources (not ASAR). The resolver checks
+  # all three runtime paths before advertising the capability.
+  - from: .tmp/genoffice-release
+    to: genoffice
+    filter:
+      - "**/*"
 
 # node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
 # runtime. Unpack them from the asar so they can be require()'d from disk.

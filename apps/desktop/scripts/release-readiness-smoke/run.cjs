@@ -102,7 +102,7 @@ async function bundledSchemaPeers() {
  const banner=sf.statements.filter(ts.isVariableStatement).flatMap(n=>[...n.declarationList.declarations]).find(n=>n.name.getText(sf)==='mainEsmBanner');
  assert.ok(banner&&ts.isNoSubstitutionTemplateLiteral(banner.initializer),'ESM shim banner must be a literal');
  const mainEsmBanner=banner.initializer.text;
- const exports={};new Function('exports','externalizeDepsPlugin','resolve','mainEsmBanner',compile('exports.config='+main.getText(sf)+';'))(exports,req('electron-vite').externalizeDepsPlugin,path.resolve,mainEsmBanner);
+ const exports={};new Function('exports','externalizeDepsPlugin','resolve','mainEsmBanner','existsSync','slidesVendorAliases',compile('exports.config='+main.getText(sf)+';'))(exports,req('electron-vite').externalizeDepsPlugin,path.resolve,mainEsmBanner,()=>false,()=>[]);
  assert.equal(exports.config.build.rollupOptions.output.banner,mainEsmBanner);
  const chunksDir=path.join(path.dirname(req.resolve('electron-vite')),'chunks');
  const installedShim=fs.readdirSync(chunksDir).filter(n=>n.endsWith('.cjs')).map(n=>fs.readFileSync(path.join(chunksDir,n),'utf8')).find(s=>s.includes('const CJSShim_node_20_11 ='));
