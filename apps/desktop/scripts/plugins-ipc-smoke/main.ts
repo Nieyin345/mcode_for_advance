@@ -588,6 +588,59 @@ console.log("\n[6c] MC-037 插件市场 add 的 await 窗口");
   SettingRepo.set(MARKET_KEY, healthy);
 }
 
+/* ══════════ 【MC-019/037 同判据】插件市场记录的部分损坏 ══════════
+ *
+ * 共享分类核的合同是「parse 逐条校验,个别坏行隔离丢弃,不算整表损坏」——
+ * 技能/MCP 两个消费方都实现了;插件市场从前传给 `classifyMarketRegistry` 的
+ * parse 是**裸 cast**,任何非数组以外的形状都放行。于是:
+ *   - `{name:"evil", source:null}` 判成 ok,`listMarketplaces` 在 `rec.source.kind`
+ *     上抛 TypeError —— 打开一次插件面板整条 RPC 挂掉;
+ *   - `{name:"../../escape", ...}` 判成 ok,`marketplaceDirOf` 把名字 `path.join`
+ *     进 `PLUGINS_ROOT/marketplaces/` 之外,remove/refresh 会指到目录外;
+ *   - `recordEcosystem` 同款崩溃。
+ * 这里断的是「同一份分类器」的行为,不是实现细节。 */
+console.log("\n[6d] 插件市场记录部分损坏:坏行隔离、健康行照常、绝不越界");
+{
+  const MARKET_KEY = "plugins.marketplaces";
+  const healthy = SettingRepo.__dump()[MARKET_KEY]!;
+  const poisoned = JSON.stringify([
+    ...(JSON.parse(healthy) as Array<Record<string, unknown>>),
+    { name: "evil-null-source", source: null, addedAt: "x" },
+    { name: "../../escape", source: { kind: "git", ref: "https://example.invalid/x" }, addedAt: "x" },
+    { name: 42, source: { kind: "git", ref: "https://example.invalid/y" }, addedAt: "x" },
+    { name: "evil-kind", source: { kind: "ftp", ref: "z" }, addedAt: "x" },
+  ]);
+  SettingRepo.set(MARKET_KEY, poisoned);
+
+  type MpList = { marketplaces: Array<{ name: string }>; corrupt?: unknown };
+  let listed: MpList | null = null;
+  let listErr = "";
+  try {
+    listed = (await call(IPC.PLUGINS_MARKETPLACE_LIST)) as MpList;
+  } catch (err) {
+    listErr = err instanceof Error ? err.message : String(err);
+  }
+  eq("★ 部分坏记录不炸列表(不再 TypeError)", listErr, "");
+  const names = (listed?.marketplaces ?? []).map((m) => m.name);
+  check("★ 坏来源(null)的行被隔离,不出现", !names.includes("evil-null-source"), names);
+  check("★ 越界名字的行被隔离,不出现", !names.includes("../../escape"), names);
+  check("健康行照常列出(不是整表拒绝)", names.includes("marketplace-a"), names);
+  eq("部分坏记录 ≠ 整表损坏(逐条隔离是分类核合同,cannot 谎报 corrupt)", listed?.corrupt, undefined);
+
+  const escaped = asOk(await call(IPC.PLUGINS_MARKETPLACE_REMOVE, { name: "../../escape" }));
+  eq("★ 越界名字的坏行不可被 remove 命中(绝不拼到市场目录外)", escaped.ok, false);
+  check("…错误说它不存在", (escaped.error ?? "").includes("不存在"), escaped);
+
+  const refreshEscaped = asOk(await call(IPC.PLUGINS_MARKETPLACE_REFRESH, { name: "../../escape" }));
+  eq("越界名字的坏行 refresh 同样拒绝", refreshEscaped.ok, false);
+
+  // 恢复:健康记录原样可用。
+  SettingRepo.set(MARKET_KEY, healthy);
+  const healed = (await call(IPC.PLUGINS_MARKETPLACE_LIST)) as { marketplaces: Array<{ name: string }>; corrupt?: unknown };
+  eq("恢复健康记录后不再有任何诊断", healed.corrupt, undefined);
+  check("…原用户市场仍在", healed.marketplaces.some((m) => m.name === "marketplace-a"), healed.marketplaces.map((m) => m.name));
+}
+
 /* ────────────────────────── 7. 半截状态 ────────────────────────── */
 
 console.log("\n[7] 装到一半失败,留没留半截");
@@ -903,9 +956,78 @@ same("W5:…插件目录一个字没动(拒绝要干净,不留半截)", treeOf(P
 check("W5:…错误里点名设置键", (wRemove.error ?? "").includes("plugins.enabled"), wRemove);
 SettingRepo.set("plugins.enabled", JSON.stringify(["failclosed"]));
 
+/* W6:removePlugin 除了无条件回写 enabled/mcpDisabled,还会**重建并回写**
+ * plugins.projectOverrides(清掉被卸插件的条目)与 plugins.engines(删它那一行)。
+ * 若守卫只盯着三个 setter,这两条写路径就是同一条 fail-open 链的另两个入口:
+ *   - projectOverrides 走 cleanOverride **重建**表,静默丢掉形状坏的兄弟条目
+ *     (可能是别的项目的「关」),再把清洗后的表写回 —— 坏表被洗成"合法",
+ *     健康闸从此不再报,那些项目回落全局「开」;
+ *   - engines 表在坏叶子恰好属于被卸插件时,`delete map[name]` 后写回同样是
+ *     把坏键洗成 `{}`(健康闸从"全场拒投递"变成"全场恢复")。
+ * 判据必须与三个 setter 同一份:键存在但读不懂 → 拒绝写入,原字节一个不动。 */
+{
+  const projVictim = path.join(base, "proj-w6-victim");
+  const projSibling = path.join(base, "proj-w6-sibling");
+  SettingRepo.set(
+    "plugins.projectOverrides",
+    JSON.stringify({
+      [projVictim]: { failclosed: { enabled: false } },
+      [projSibling]: { bystander: { enabled: "no" } },
+    }),
+  );
+  const w6Bytes = SettingRepo.get("plugins.projectOverrides")!;
+  const w6Tree = treeOf(PLUGINS_ROOT);
+  const w6 = asOk(await call(IPC.PLUGINS_REMOVE, { name: "failclosed" }));
+  eq("★ W6:覆盖表形状坏时 remove → ok:false(与三个 setter 同一判据)", w6.ok, false);
+  check("W6:…错误里点名 plugins.projectOverrides", (w6.error ?? "").includes("plugins.projectOverrides"), w6);
+  eq("★ W6:…覆盖表原字节一个没动(坏兄弟条目没被洗掉)", SettingRepo.get("plugins.projectOverrides"), w6Bytes);
+  same("W6:…插件目录一个字没动", treeOf(PLUGINS_ROOT), w6Tree);
+  SettingRepo.set("plugins.projectOverrides", "{}");
+
+  // W6b:同一条写路径上的 engines 表 —— 坏叶子属于被卸插件时删行回写 = 洗白。
+  const enginesBefore = SettingRepo.get("plugins.engines");
+  SettingRepo.set("plugins.engines", '{"failclosed":{"pi":"bad"}}');
+  const w6b = asOk(await call(IPC.PLUGINS_REMOVE, { name: "failclosed" }));
+  eq("★ W6b:引擎表形状坏时 remove → ok:false", w6b.ok, false);
+  check("W6b:…错误里点名 plugins.engines", (w6b.error ?? "").includes("plugins.engines"), w6b);
+  eq("★ W6b:…引擎表原字节一个没动", SettingRepo.get("plugins.engines"), '{"failclosed":{"pi":"bad"}}');
+  SettingRepo.set("plugins.engines", enginesBefore ?? JSON.stringify({}));
+}
+
+/* W7 正控(防空过):同一张表、坏条目换成健康的兄弟条目时,remove 必须成功,
+ * 且只删被卸插件的覆盖/引擎行、别的项目/插件原样保留 —— 否则 W6 的"被拒"可能
+ * 只是这条卸载路径本来就删不动,而不是守卫命中。 */
+{
+  const projVictim = path.join(base, "proj-w7-victim");
+  const projSibling = path.join(base, "proj-w7-sibling");
+  SettingRepo.set(
+    "plugins.projectOverrides",
+    JSON.stringify({
+      [projVictim]: { failclosed: { enabled: false } },
+      [projSibling]: { bystander: { enabled: false } },
+    }),
+  );
+  SettingRepo.set(
+    "plugins.engines",
+    JSON.stringify({ failclosed: { pi: false }, bystander: { codex: false } }),
+  );
+  const w7 = asOk(await call(IPC.PLUGINS_REMOVE, { name: "failclosed" }));
+  eq("★ W7 正控:覆盖表/引擎表健康时 remove → ok", w7.ok, true);
+  same(
+    "W7 正控:只删了被卸插件的条目,别的项目/插件覆盖原样保留",
+    JSON.parse(SettingRepo.get("plugins.projectOverrides")!),
+    { [projSibling]: { bystander: { enabled: false } } },
+  );
+  same(
+    "W7 正控:引擎表同样只少了被卸插件那一行",
+    JSON.parse(SettingRepo.get("plugins.engines")!),
+    { bystander: { codex: false } },
+  );
+}
+
 /* 收尾:恢复合法状态并撤掉夹具,后续小节面对的还是干净设置表。 */
 SettingRepo.set("plugins.enabled", "[]");
-eq("收尾:fixture 卸载 ok", asOk(await call(IPC.PLUGINS_REMOVE, { name: "failclosed" })).ok, true);
+SettingRepo.set("plugins.engines", "{}");
 same("收尾:装/卸一轮后没有留下半截", stagingLeftovers(), []);
 
 /* ────────────────────────── 11. 坏输入怎么报 ────────────────────────── */

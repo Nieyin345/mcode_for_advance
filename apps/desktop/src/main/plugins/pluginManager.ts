@@ -256,6 +256,24 @@ function writeEnabledPlugins(names: string[]): void {
   writeJsonSetting(PLUGINS_ENABLED_SETTING_KEY, names);
 }
 
+/** 【MC-037】插件市场记录的**逐条**形状校验 —— 顶层数组的成员必须能安全地当记录用。
+ *  共享分类核(`lib/marketRegistry.ts`)的合同是「parse 逐条校验,个别坏行隔离丢弃,
+ *  不算整表损坏」;技能/MCP 市场两个消费方都这样做了,这里从前是裸 cast:
+ *  `source: null` / 名字非字符串的坏行会被判 `ok` 后在 `listMarketplaces` 的
+ *  `rec.source.kind` 上抛 TypeError(整条 RPC 挂掉),`removeMarketplace` 还会把它
+ *  原样写回。名字还要过 PLUGIN_NAME_RE —— 它会被 `path.join(MARKETPLACES_DIR, name)`
+ *  拼成目录,带分隔符/`..` 的坏名字不能进入任何读/删路径。 */
+function isPluginMarketplaceRecord(rec: unknown): rec is PluginMarketplaceRecord {
+  if (!rec || typeof rec !== "object" || Array.isArray(rec)) return false;
+  const r = rec as Record<string, unknown>;
+  if (typeof r.name !== "string" || !PLUGIN_NAME_RE.test(r.name)) return false;
+  const src = r.source;
+  if (!src || typeof src !== "object" || Array.isArray(src)) return false;
+  const s = src as Record<string, unknown>;
+  if (s.kind !== "git" && s.kind !== "local") return false;
+  return typeof s.ref === "string";
+}
+
 /** 【MC-037】插件市场记录三态 —— 与技能/MCP 市场共用分类核(`lib/marketRegistry.ts`)。 */
 function readMarketplaceRecordsState(): MarketRegistryRead<PluginMarketplaceRecord> {
   let raw: string | null;
@@ -264,7 +282,11 @@ function readMarketplaceRecordsState(): MarketRegistryRead<PluginMarketplaceReco
   } catch (err) {
     return { kind: "corrupt", reason: `读取失败(${(err as Error).message})` };
   }
-  return classifyMarketRegistry(raw, (value) => (Array.isArray(value) ? (value as PluginMarketplaceRecord[]) : null), "插件市场");
+  return classifyMarketRegistry(
+    raw,
+    (value) => (Array.isArray(value) ? value.filter(isPluginMarketplaceRecord) : null),
+    "插件市场",
+  );
 }
 
 /** 读侧降级出口:损坏 → 空表(列表展示出厂市场,`ensureBuiltin` 的落盘在损坏时被拒)。 */
@@ -1336,13 +1358,17 @@ export function removePlugin(name: string): { ok: boolean; error?: string } {
   }
   if (probe.kind === "absent") return { ok: false, error: `插件 ${name} 未安装` };
   const base = probe.base;
-  // 【MC-019】逐个键检查它**无条件回写**的那两个策略键:启用名单与 MCP 禁用名单。
-  // 损坏时回写会把坏值洗成兜底空表 —— 别的插件静默停用 / 别的已关服务静默放开。
+  // 【MC-019】逐个键检查它**会回写**的四个策略键:启用名单与 MCP 禁用名单无条件回写;
+  // 引擎表与项目覆盖表在命中该插件时也会回写(删行/删条目)。损坏时回写会把坏值洗成
+  // 兜底空表或"清洗后的合法表" —— 别的插件静默停用 / 别的已关服务静默放开 /
+  // 别的项目的覆盖(多半是「关」)被 cleanOverride 静默丢弃后按全局「开」重新投递。
   // 放在任何文件改动之前:拒绝要干净,不留"目录删了、设置没动"的半截。
   // (未安装的早退在上面:那条路径一个字节都不写,没有可洗的东西。)
   const refuse =
     refuseIfCorrupt(PLUGINS_ENABLED_SETTING_KEY, isPluginNameListShape) ??
-    refuseIfCorrupt(PLUGINS_MCP_DISABLED_SETTING_KEY, isPluginNameListShape);
+    refuseIfCorrupt(PLUGINS_MCP_DISABLED_SETTING_KEY, isPluginNameListShape) ??
+    refuseIfCorrupt(PLUGINS_ENGINES_SETTING_KEY, isPluginEnginesMapShape) ??
+    refuseIfCorrupt(PLUGINS_PROJECT_SETTING_KEY, isPluginProjectMapShape);
   if (refuse) return refuse;
   // 先整体改名挪开再删:Windows 上插件文件被占用(它的 MCP 服务还在跑)时,直接
   // `rmSync` 会删掉一半后抛出 —— 插件残缺却仍处于启用状态。改名要么整体成功、要么
