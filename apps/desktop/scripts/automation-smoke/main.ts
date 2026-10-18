@@ -4207,6 +4207,116 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     } finally { atomicRunner.dispose(); }
   }
 
+  /* ── 文件 / 事件触发的批次跨崩溃:残留标记可见、不补投、派发后清除 ──
+   *
+   * 批次只活在内存 `pendingFires` 里;合并窗口里进程被杀,那一批无声消失。修复后
+   * 批次开始攒时 durable 写一条 `automation.pendingBatches` 标记,派发/明确放弃时清除;
+   * 重启发现残留 = 「有一批没派发」,记进事实(界面可见)、不自动补投。
+   */
+  {
+    const BATCH_KEY = "automation.pendingBatches";
+    const batchesOnDisk = (): Record<string, { kind?: string; count?: number; at?: number }> => {
+      const raw = SettingRepo.get(BATCH_KEY);
+      return raw === null || raw.length === 0 ? {} : (JSON.parse(raw) as Record<string, { kind?: string; count?: number; at?: number }>);
+    };
+
+    // -- ① 崩溃残留:盘上已有标记(模拟上一进程攒着批被杀),新进程启动 --never dispatch--
+    resetRuns();
+    const wfB = nextId(), nodeIdB = "t_batch_crash";
+    makeAutomation({ workflowId: wfB, nodeId: nodeIdB, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+      [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 10_000, // 长窗口:断言期间不会被收口
+      task: "崩在合并窗口里",
+    } });
+    const keyB = `${wfB}:${nodeIdB}`;
+    SettingRepo.set(BATCH_KEY, JSON.stringify({ [keyB]: { kind: "file", count: 3, at: 1_000 } }));
+    const crashedRunner = await startRunner();
+    try {
+      const factsB = crashedRunner.statusOf(wfB);
+      check(
+        "★ 崩溃残留的批次标记 → 重启后可见「有一批触发未确定是否已执行」",
+        (factsB[0]?.lastError ?? "").includes("未确认是否已派发") === true,
+        factsB,
+      );
+      eq("★ 不自动补投(派发计数为 0)", runsOfNode(nodeIdB).length, 0);
+      check("★ 残留标记被消费掉(不重复报)", batchesOnDisk()[keyB] === undefined, batchesOnDisk());
+      // 同一 tick 再跑两次也不补投。
+      crashedRunner.onTick();
+      crashedRunner.onTick();
+      eq("★ 重启后同一标记不会因 ticker 变成补投", runsOfNode(nodeIdB).length, 0);
+    } finally { crashedRunner.dispose(); }
+
+    // -- ② 正常派发完成后标记被清除(防空过:下一批不受影响)--
+    resetRuns();
+    SettingRepo.set(BATCH_KEY, "{}");
+    const wfC2 = nextId(), nodeIdC2 = "t_batch_clear";
+    makeAutomation({ workflowId: wfC2, nodeId: nodeIdC2, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+      [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+      task: "攒完就派发",
+    } });
+    const keyC2 = `${wfC2}:${nodeIdC2}`;
+    const clearRunner = await startRunner();
+    try {
+      const f1 = join(PROJ_DIR, "batch-clear-1.md");
+      writeFileSync(f1, "# 一");
+      clearRunner.onFsChange(PROJ_DIR, "batch-clear-1.md");
+      // 攒着时标记在盘上(durable,派发前就有)。
+      check("★ 批次攒着时标记已在盘上(派发前 durable)",
+        batchesOnDisk()[keyC2]?.kind === "file" && (batchesOnDisk()[keyC2]?.count ?? 0) >= 1,
+        batchesOnDisk());
+      await sleep(FLUSH_SLACK_MS);
+      eq("正常派发发生", runsOfNode(nodeIdC2).length, 1);
+      check("★ 派发完成后标记被清除(下一批不受影响)", batchesOnDisk()[keyC2] === undefined, batchesOnDisk());
+
+      // 下一批照常:标记重新写、派发后再次清除。
+      const f2 = join(PROJ_DIR, "batch-clear-2.md");
+      writeFileSync(f2, "# 二");
+      clearRunner.onFsChange(PROJ_DIR, "batch-clear-2.md");
+      check("下一批重新写标记", batchesOnDisk()[keyC2] !== undefined, batchesOnDisk());
+      await sleep(FLUSH_SLACK_MS);
+      eq("下一批照常派发", runsOfNode(nodeIdC2).length, 2);
+      check("下一批派发后标记再次清除", batchesOnDisk()[keyC2] === undefined, batchesOnDisk());
+    } finally { clearRunner.dispose(); }
+
+    // -- ③ 明确放弃(配置改动作废)清除标记,不报成崩溃残留 --
+    resetRuns();
+    SettingRepo.set(BATCH_KEY, "{}");
+    const wfD = nextId(), nodeIdD = "t_batch_discard";
+    makeAutomation({ workflowId: wfD, nodeId: nodeIdD, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+      [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 10_000,
+      task: "改配置作废",
+    } });
+    const keyD = `${wfD}:${nodeIdD}`;
+    const discardRunner = await startRunner();
+    try {
+      writeFileSync(join(PROJ_DIR, "batch-discard.md"), "# 改配置前");
+      discardRunner.onFsChange(PROJ_DIR, "batch-discard.md");
+      check("夹具:攒着时标记在", batchesOnDisk()[keyD] !== undefined, batchesOnDisk());
+      // 改配置(合并窗口 → 0)并 reload:旧批次按签名作废。
+      makeAutomation({ workflowId: wfD, nodeId: nodeIdD, params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+        [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+        task: "改配置作废",
+      } });
+      await discardRunner.reloadAll();
+      check("★ 配置改动作废的批次清掉标记(不报成崩溃残留)", batchesOnDisk()[keyD] === undefined, batchesOnDisk());
+    } finally { discardRunner.dispose(); }
+
+    // -- ④ 坏标记 fail-open(读不回来当空,不挡启动)且不误报 --
+    SettingRepo.set(BATCH_KEY, "{ 这不是 json");
+    const badRunner = await startRunner();
+    try {
+      check("坏批次标记:启动不抛、不误报", badRunner.statusOf(wfD).length >= 0);
+    } finally { badRunner.dispose(); }
+    SettingRepo.set(BATCH_KEY, "{}");
+  }
+
   /* ── 【ARC-005】非 durable 的落盘**不许留幻影行**(边界迁移)—─
    *
    * `rememberLastMinuteDurable` / `writeTriggerClaimDurable` 落盘走的是「`SettingRepo.set`

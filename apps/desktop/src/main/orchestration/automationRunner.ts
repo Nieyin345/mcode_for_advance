@@ -137,13 +137,17 @@ import {
   TRIGGER_CLAIMS_HISTORY_KEEP,
   DROPPED_SETTING_KEY,
   DROPPED_HISTORY_KEEP,
+  PENDING_BATCH_SETTING_KEY,
+  PENDING_BATCH_HISTORY_KEEP,
   TYPES_CACHE_TTL_MS,
   isLastMinutes,
   isUndeliveredDrops,
+  isPendingBatchMarks,
   existingFilesOf,
   type LoadedTrigger,
   type PendingFire,
   type UndeliveredDrop,
+  type PendingBatchMark,
   type WatcherEntry,
   type AutomationRunResult,
 } from "./automationRunnerTypes.js";
@@ -207,6 +211,17 @@ class AutomationRunner {
   private droppedUndelivered = new Map<string, UndeliveredDrop>();
   /** 欠账表自上次落盘后变过没有(见 {@link recordDropped} / {@link flushDroppedUndelivered})。 */
   private droppedDirty = false;
+  /**
+   * **攒着但还没派发**的批次标记(跨重启可见性,见 {@link PENDING_BATCH_SETTING_KEY})。
+   *
+   * 文件 / 事件批次只活在 `pendingFires` 里;进程在合并窗口里被杀死,那一批无声消失。
+   * 这张表在批次开始攒时 durable 写一条标记,派发 / 明确放弃时清除 —— 残留标记就是
+   * 「上一次有一批没派发」的证据,启动时按 uncertain 语义记进事实(界面可见),
+   * **不自动补投**(那会造出第二次外部副作用)。
+   */
+  private pendingBatchMarks = new Map<string, PendingBatchMark>();
+  /** `start()` 读盘那一刻的批次标记快照 —— 恢复只认它们(启动后新攒的批不是"崩溃残留")。 */
+  private crashedPendingBatchMarks = new Map<string, PendingBatchMark>();
   private unsubscribe: (() => void) | null = null;
   /** 与钩子共用一份逻辑、各持一个实例 —— `tool.result` 要回查工具名,所以它**有状态**。 */
   private subjects = createEventSubjects();
@@ -233,6 +248,10 @@ class AutomationRunner {
     this.lastMinute = this.readLastMinutes();
     this.triggerClaims = this.readTriggerClaims();
     this.droppedUndelivered = this.readDroppedUndelivered();
+    this.pendingBatchMarks = this.readPendingBatchMarks();
+    // 读盘那一刻的标记 = 上一个进程留下的(崩溃残留)。快照必须**现在就取**:之后
+    // 启动窗口里的新批会往 `pendingBatchMarks` 写,恢复只认这份快照,不能把新批误报成崩溃。
+    this.crashedPendingBatchMarks = new Map(this.pendingBatchMarks);
 
     // 见文件头不变量 ①:这里是同步回调,真正的活全在下面的计时器里,不 await。
     this.unsubscribe = runtimeManager.subscribe((e) => {
@@ -276,6 +295,10 @@ class AutomationRunner {
     // **之前** —— 那些领取对应的分钟已经被 `lastMinute` 记过,启动那一跳本就不会重跑它们
     // (`recoverIncompleteClaims` 不改变这一点,只是把"没确认完成"这件事显式化)。
     this.recoverIncompleteClaims();
+    // **上一次进程攒着没派发的批次**:残留标记按 uncertain 上报(界面可见)、不补投,
+    // 随后清掉。放在 reloadAll 之后(`all()` 才解得开触发器)、启动 tick 之前 ——
+    // 与 `recoverIncompleteClaims` 同一时机、同一语义。
+    this.recoverPendingBatches();
     // **启动即看本分钟**(MC-021)。ticker 的第一跳要等 30 秒,而"应用在本分钟里已经
     // 起来了"这件事本身就该让这一分钟的计划跑掉:每天 `0 9 * * *` 那条,09:00:45 开
     // 应用,若只等 ticker 就要到 09:01:15 才跑,而那一瞬间钟已经翻到 09:01 —— 这一次
@@ -321,6 +344,12 @@ class AutomationRunner {
       if (pending.timer !== null) clearTimeout(pending.timer);
     }
     this.pendingFires.clear();
+    // 【跨崩溃可见性】退出时**不清**批次标记 —— 攒着没派发的那一批确实没跑,下次启动
+    // 按 uncertain 上报(与崩溃同一语义:不需要区分"优雅退出"与"被杀",两者都没派发)。
+    // 只把最终计数冲刷一次(非 durable:可见性退化的代价只是少报一次,不是副作用)。
+    this.flushPendingBatchMarks(false);
+    this.pendingBatchMarks.clear();
+    this.crashedPendingBatchMarks.clear();
     this.lastMinute.clear();
     this.triggerClaims.clear();
     this.missedSweptTo.clear();
@@ -393,6 +422,9 @@ class AutomationRunner {
           triggerSpecKeyOf(current.spec) !== triggerSpecKeyOf(pending.trigger.spec)) {
         if (pending.timer !== null) clearTimeout(pending.timer);
         this.pendingFires.delete(key);
+        // 【跨崩溃可见性】配置改动 / 停用 / 项目切换让这一批作废 —— 清除标记:它不是
+        // "没派发就崩了",下次启动不该报成不确定。
+        this.clearPendingBatchMark(key);
         // 攒着的那一批作废了,界面上那行「排队中」也要跟着走(见 `recordQueued`)。
         this.facts.recordQueued(triggerSeedOf(pending.trigger), 0, Date.now());
       }
@@ -1092,6 +1124,134 @@ class AutomationRunner {
     }
   }
 
+  /* ─────────────────── 待派发批次的跨崩溃可见性 ─────────────────── */
+
+  /**
+   * 读回上一次进程留下的**待派发批次标记**(见 {@link PENDING_BATCH_SETTING_KEY})。
+   * 读不回来当空表(同 `readDroppedUndelivered` 的立场:坏数据最多少报一次提示,
+   * 不能让执行器起不来)。
+   */
+  private readPendingBatchMarks(): Map<string, PendingBatchMark> {
+    try {
+      const raw = SettingRepo.get(PENDING_BATCH_SETTING_KEY);
+      if (raw === null || raw.length === 0) return new Map();
+      const parsed: unknown = JSON.parse(raw);
+      if (!isPendingBatchMarks(parsed)) {
+        log.warn("[automation] 待派发批次标记读不回来(形状不对),当空表");
+        return new Map();
+      }
+      return new Map(Object.entries(parsed));
+    } catch (err) {
+      log.warn(`[automation] 待派发批次标记读不回来,当空表:${(err as Error).message}`);
+      return new Map();
+    }
+  }
+
+  /**
+   * 把 `pendingBatchMarks` 落盘(按最近攒批时刻修剪)。值没变就不写(同
+   * `flushDroppedUndelivered`)。`durable=true` 时走 `commitNow()` 同步 fsync 并返回
+   * 是否 DURABLE —— 批次**开始攒**的那一次用 durable:标记必须先于任何派发可能,
+   * 崩溃后才有证据。写失败只记日志、不挡攒批(可见性退化一次,不制造第二次副作用
+   * 的风险 —— 与 MC-051「去重不 durable 就不派发」不同,这一步不是副作用闸门)。
+   */
+  private flushPendingBatchMarks(durable: boolean): boolean {
+    try {
+      const rows = [...this.pendingBatchMarks.entries()]
+        .sort((a, b) => b[1].at - a[1].at)
+        .slice(0, PENDING_BATCH_HISTORY_KEEP);
+      const next = JSON.stringify(Object.fromEntries(rows));
+      if (SettingRepo.get(PENDING_BATCH_SETTING_KEY) === next) return true;
+      this.pendingBatchMarks = new Map(rows);
+      SettingRepo.set(PENDING_BATCH_SETTING_KEY, next);
+      if (!durable) return true;
+      const commit = commitNow();
+      if (isDurable(commit)) return true;
+      log.warn(`[automation] 待派发批次标记没能同步落盘:${commit.reason ?? commit.outcome}`);
+      return false;
+    } catch (err) {
+      log.warn(`[automation] 待派发批次标记写不进去:${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * 一次事件 / 文件路径被收进某一格:第一笔时 durable 写标记,之后只刷新内存计数。
+   * 计数取"至少这么多"(单调不减):批次攒着期间条目只会被追加或按上限淘汰,淘汰掉的
+   * 也算"曾经在这一批里"。
+   */
+  private notePendingBatch(trigger: LoadedTrigger, pending: PendingFire, kind: "file" | "event"): void {
+    const count = Math.max(1, this.pendingBatchCount(pending));
+    if (pending.batchMarked !== true) {
+      pending.batchMarked = true;
+      this.pendingBatchMarks.set(triggerKey(trigger), { kind, count, at: Date.now() });
+      this.flushPendingBatchMarks(true);
+      return;
+    }
+    const prev = this.pendingBatchMarks.get(triggerKey(trigger));
+    if (prev === undefined) {
+      // 标记被别处清掉(恢复路径按 at 比对只清崩溃残留)—— 重建一条,别让在飞的批次没有证据。
+      pending.batchMarked = true;
+      this.pendingBatchMarks.set(triggerKey(trigger), { kind, count, at: Date.now() });
+      this.flushPendingBatchMarks(true);
+      return;
+    }
+    if (count > prev.count) this.pendingBatchMarks.set(triggerKey(trigger), { ...prev, count });
+  }
+
+  /** 这一格此刻攒着多少条(与 `pendingItemsHeld` 同一口径:files + event.items)。 */
+  private pendingBatchCount(pending: PendingFire): number {
+    const items = pending.event?.kind === "event" ? (pending.event.items?.length ?? 0) : 0;
+    return pending.files.length + items;
+  }
+
+  /**
+   * 清除某条触发器的批次标记 —— 派发成立 / 明确跳过 / 配置作废 / 用户取消时调用。
+   * 清除走普通 `SettingRepo.set`(异步 persist):崩在清除落盘之前只会让下次启动
+   * 保守地报一次「不确定」,不会漏报。没有标记时是 no-op(不写盘)。
+   */
+  private clearPendingBatchMark(key: string): void {
+    if (!this.pendingBatchMarks.has(key)) return;
+    this.pendingBatchMarks.delete(key);
+    this.flushPendingBatchMarks(false);
+  }
+
+  /**
+   * **启动恢复**:上一次进程留下、这次启动读盘时仍在的批次标记 = 「有一批攒着的事件 /
+   * 文件触发在派发前进程就没了」。按 `uncertain` 语义处理(与 `recoverIncompleteClaims`
+   * 同一条纪律):
+   *
+   *  - **不自动补投** —— 那一批可能已经派发了一半、也可能完全没派发,补投会造出第二次
+   *    外部副作用;要重跑由用户手动运行;
+   *  - **必须可见** —— 记进触发器事实(`recordBlocked` + 用户能读的中文原因)并
+   *    `log.warn`,界面那一栏说得出"上一次有一批没派发";
+   *  - 处理完**清掉标记**(不重复报),并把清理落盘。
+   *
+   * 找不到对应触发器(工作流 / 节点已删)时只记日志 —— 没有界面位置挂这句话,但账
+   * 不再留着(下次启动不再反复报同一笔)。
+   */
+  private recoverPendingBatches(): void {
+    const crashed = this.crashedPendingBatchMarks;
+    this.crashedPendingBatchMarks = new Map();
+    if (crashed.size === 0) return;
+    const now = Date.now();
+    let cleared = false;
+    for (const [key, mark] of crashed) {
+      const trigger = this.all().find((t) => triggerKey(t) === key);
+      const what = mark.kind === "file" ? "文件" : "事件";
+      const reason = `上一次应用退出前有一批${what}触发(${mark.count} 条)攒着但未确认是否已派发,结果不确定;这次不自动补投,如需重跑请手动运行一次`;
+      if (trigger !== undefined) this.facts.recordBlocked(triggerSeedOf(trigger), reason, now);
+      log.warn(`[automation] 待派发批次「${key}」(${what} ${mark.count} 条)在上一次退出时未派发,${trigger === undefined ? "对应触发器已不存在" : "已记入事实"},不自动补投`);
+      // 只清**这次启动读到的**那一条;启动后同一触发器新攒的批会重新写标记,
+      // 不能被恢复路径顺手抹掉(按值比对:新标记的 at 一定不同)。
+      const current = this.pendingBatchMarks.get(key);
+      if (current !== undefined && current.at === mark.at) {
+        this.pendingBatchMarks.delete(key);
+        cleared = true;
+      }
+    }
+    if (cleared) this.flushPendingBatchMarks(false);
+  }
+
   /**
    * 【MC-091 续】把「被积压丢弃」累加进某个触发器的**未交付欠账**。**只改内存 + 标脏**;
    * 真正落盘由 {@link flushDroppedUndelivered} 按 `onTick`(30 秒)节流 —— 一条抖动 / 大批量的
@@ -1449,6 +1609,10 @@ class AutomationRunner {
       // "一直没新输入、只是在上一次运行没结束时反复回看"这一种;新文件到达说明
       // 这一批**变了**,该尽快收口而不是接着等比等下去。
       pending.busyRetryMs = undefined;
+      // 【跨崩溃可见性】这一批开始攒 / 又多了东西:先 durable 写标记(每格只写一次),
+      // 进程若在合并窗口里被杀,重启后仍有证据说"有一批没派发"。放在累计之后,计数
+      // 取的是这批此刻的真实条目数(文件 + 事件条目)。
+      this.notePendingBatch(trigger, pending, "file");
       this.rearm(pending, WATCH_SETTLE_MS + trigger.spec.debounceMs);
     }
   }
@@ -1624,6 +1788,8 @@ class AutomationRunner {
       // **来了新东西 → 回看间隔从头数。** 同 `onFsChange` 那条:退避只管"没有新输入、
       // 只是在上一次运行没结束时反复回看"这一种,新事件说明这一批变了,该尽快收口。
       pending.busyRetryMs = undefined;
+      // 【跨崩溃可见性】这一批(事件)开始攒 / 又多了一条:durable 写标记(每格一次)。
+      this.notePendingBatch(trigger, pending, "event");
       this.rearm(pending, trigger.spec.debounceMs);
     }
   }
@@ -1924,7 +2090,13 @@ class AutomationRunner {
       //
       // 已删除、停用或停止服务的触发器不再派发旧批次。
       const trigger = this.findLoaded(pending.trigger);
-      if (!this.started || trigger === undefined || trigger.disarmed) return;
+      if (!this.started) return; // dispose 中:标记留给下次启动按 uncertain 上报(优雅退出也是"没派发")
+      if (trigger === undefined || trigger.disarmed) {
+        // 【跨崩溃可见性】这一批被明确放弃(触发器没了 / 停用),清除标记
+        // —— 它不会再"悬着",下次启动不该把它报成崩溃残留。
+        this.clearPendingBatchMark(triggerKey(pending.trigger));
+        return;
+      }
       let payload: TriggerPayload;
       if (trigger.spec.kind === "file") {
         // **载荷按 flush 这一刻现拼,并丢掉此刻已经不在了的那些**(见 `existingFilesOf`)。
@@ -1947,6 +2119,8 @@ class AutomationRunner {
           // 不唤醒模型** —— 这是 MC-022 的产品取舍,本切片不改它。方向信息只在**这一次
           // 真的为存活文件跑起来时**随 `changes` 捎上(见下);「某处少了个文件」不单独起一轮。
           log.info(`[automation] 「${trigger.title}」攒着的文件在收口前都不在了,这一次不跑`);
+          // 【跨崩溃可见性】这是"明确放弃",不是"没派发就崩了" —— 清标记,下次启动不报。
+          this.clearPendingBatchMark(triggerKey(trigger));
           return;
         }
         // 【ARC-015①】收口这一刻**再问一次盘**(二次 stat):一个方向说"还在"的路径若此刻
@@ -1975,6 +2149,9 @@ class AutomationRunner {
         // 这一格刚在这一句之前被删掉(见上一行 `pendingFires.delete`),忙时分支
         // 会重建一格 —— 把退避累乘值一起带过去,否则它每次都从下限重新数(见 `fire`)。
         ...(pending.busyRetryMs !== undefined ? { busyRetryMs: pending.busyRetryMs } : {}) });
+      // 【跨崩溃可见性】这一次要么已派发、要么明确跳过 —— 标记清除。忙时重排队那条
+      // 路会在 `fire` 里重建一格并重新写标记(`notePendingBatch`),这里按"有没有新格"区分。
+      if (!this.pendingFires.has(triggerKey(trigger))) this.clearPendingBatchMark(triggerKey(trigger));
     }, Math.max(0, delayMs));
     // 攒着的那一下不该拖着进程不退出(退出时这一跑本来就该丢 —— 它还没开始)。
     pending.timer.unref();
@@ -2072,6 +2249,9 @@ class AutomationRunner {
         if (opts?.manual !== true && (payload.kind === "file" ||
             (payload.kind === "event" && (payload.items?.length ?? 0) > 0))) {
           const pending = this.pendingOf(trigger);
+          // 【跨崩溃可见性】忙时重排队也是"攒着没派发" —— 重建的格子要重新写标记
+          // (计时器回调删旧格时已清掉旧标记,这里按新格补上)。
+          this.notePendingBatch(trigger, pending, payload.kind === "file" ? "file" : "event");
           // **接着上一格的退避走。** `rearm` 的计时器回调**先删掉**那一格再 fire
           // (见那里的注释),于是忙时分支这里 `pendingOf` 建的是**全新**的一格 ——
           // `busyRetryMs` 不复原的话它每次都是 undefined,`next` 永远等于下限,

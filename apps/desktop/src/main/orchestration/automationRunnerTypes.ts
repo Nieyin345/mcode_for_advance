@@ -223,6 +223,43 @@ interface UndeliveredDrop {
   at: number;
 }
 
+/**
+ * **文件 / 事件触发的「攒着但还没派发」批次标记**(跨崩溃可见性)。
+ *
+ * ## 它在补哪个洞
+ *
+ * 文件与事件触发的批次只活在**内存**里(`AutomationRunner.pendingFires`):合并窗口
+ * (默认 2 秒)里进程被杀死 / 断电,那一批就**无声消失** —— 既没有 `lastError`,也不在
+ * 运行史里,`droppedUndelivered` 只记"因积压超限丢掉的条目",不记"整批没了"。用户唯一
+ * 的现象是"我改了文件,自动化没反应",没有任何一处说得出为什么。
+ *
+ * 现在每次一个新批次开始攒时,往这张表 durable 写一条标记(`{kind,count,at}`);派发
+ * 完成 / 明确跳过 / 配置作废时清除。**崩溃重启后**残留的标记就是"上一次有一批没派发"
+ * 的证据 —— 启动时按 `uncertain` 语义记进触发器事实(界面可见),`log.warn` 点名,
+ * 然后清掉。**绝不自动补投**:补投会造出第二次外部副作用;需要重跑由用户手动运行。
+ *
+ * ## 形状与落盘
+ *
+ * 一张小映射(`触发器 key → 标记`),与 `lastMinute` / `triggerClaims` /
+ * `droppedUndelivered` 同一类,都走 `SettingRepo`,不另开表。**批次开始时那一次写入
+ * 走 `commitNow`(fsync)**,满足"派发前已 durable";之后同一批的计数变化只改内存
+ * (一次 fs 事件风暴不该每次整库重写)。清除走普通 `SettingRepo.set`(崩溃在清除的异步
+ * 落盘之前 → 标记残留 → 下次启动报"不确定",保守且正确)。
+ *
+ * 条数上限按最近攒批时刻修剪(同一触发器只占一个键,键数 = 攒过批的触发器数)。
+ */
+const PENDING_BATCH_SETTING_KEY = "automation.pendingBatches";
+/** 上面那张表最多留多少条(按最近攒批时刻修剪)。 */
+const PENDING_BATCH_HISTORY_KEEP = 64;
+
+/** 一条「攒着还没派发」的批次标记。`count` 是攒批那一刻的条目数(至少这么多)。 */
+interface PendingBatchMark {
+  kind: "file" | "event";
+  count: number;
+  /** 批次开始攒的时刻(ms),修剪用。 */
+  at: number;
+}
+
 /** 节点清单的短缓存窗口(见 `AutomationRunner.loadTypes`)。 */
 const TYPES_CACHE_TTL_MS = 5_000;
 
@@ -246,6 +283,22 @@ function isUndeliveredDrops(raw: unknown): raw is Record<string, UndeliveredDrop
     if (key.length === 0 || typeof value !== "object" || value === null || Array.isArray(value)) return false;
     const rec = value as { count?: unknown; at?: unknown };
     return typeof rec.count === "number" && Number.isFinite(rec.count) && rec.count > 0 &&
+      typeof rec.at === "number" && Number.isFinite(rec.at);
+  });
+}
+
+/**
+ * 落盘那份**待派发批次标记**能读的判据。读不回来**不抛**,当空表 —— 同
+ * `isUndeliveredDrops` 的立场(坏一格不该让执行器起不来;代价只是少报一次
+ * 「上次有一批没派发」)。
+ */
+function isPendingBatchMarks(raw: unknown): raw is Record<string, PendingBatchMark> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  return Object.entries(raw).every(([key, value]) => {
+    if (key.length === 0 || typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const rec = value as { kind?: unknown; count?: unknown; at?: unknown };
+    return (rec.kind === "file" || rec.kind === "event") &&
+      typeof rec.count === "number" && Number.isFinite(rec.count) && rec.count >= 0 &&
       typeof rec.at === "number" && Number.isFinite(rec.at);
   });
 }
@@ -356,6 +409,8 @@ interface PendingFire {
   externalChain?: readonly string[];
   /** 「上一次还在跑」时的回看间隔,指数退避(见 {@link BUSY_RETRY_MIN_MS})。 */
   busyRetryMs?: number;
+  /** 这一格是否已往 `automation.pendingBatches` 写过崩溃可见性标记(每格只写一次)。 */
+  batchMarked?: boolean;
 }
 
 /** 一次手动运行的结论。IPC 那一路要把它变成给用户看的一句话。 */
@@ -403,14 +458,18 @@ export {
   TRIGGER_CLAIMS_HISTORY_KEEP,
   DROPPED_SETTING_KEY,
   DROPPED_HISTORY_KEEP,
+  PENDING_BATCH_SETTING_KEY,
+  PENDING_BATCH_HISTORY_KEEP,
   TYPES_CACHE_TTL_MS,
   isLastMinutes,
   isUndeliveredDrops,
+  isPendingBatchMarks,
   existingFilesOf,
 };
 export type {
   LoadedTrigger,
   PendingFire,
   UndeliveredDrop,
+  PendingBatchMark,
   WatcherEntry,
 };
