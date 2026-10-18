@@ -284,5 +284,110 @@ console.log("\n【MC-004】密钥键判据唯一一份:三条路(导出 / agent 
   check("正控:普通偏好键不被误判成密钥", overblocked.length === 0, overblocked);
 }
 
+console.log("\n【MC-026 复核】真实敏感键清单:从生产定义处取,不用手写样例");
+{
+  // 判据立在三件事上:
+  //  1. 用**生产代码里的定义**(contracts 导出的键常量 / 密钥清单模块)构造夹具,
+  //     而不是在测试里手打一串"看起来像密钥"的字符串 —— 手写的样例会在键改名时
+  //     悄悄变成测一个不存在的键;
+  //  2. 每个真实敏感键都**不可导出**,且**不出现在导出文档里**;
+  //  3. 正控:同一份文档里普通偏好照常导出(证明不是一刀切)。
+  //
+  // ⚠️ 有些键的定义模块会拉进原生依赖(`agentRemoteSsh.ts` → ssh2 → cpu-features),
+  // 纯模块 smoke 打包不了;那几条改用**源码锚定**:读定义文件断言字面量确实在那里,
+  // 再把真值喂给判据。锚定失败(键改了名)= 红,而不是静默测空气。
+
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const contracts = await import("@contracts/ipc");
+  const mobile = await import("@contracts/mobile");
+  const relay = await import("@contracts/relay");
+  const { SECRET_SETTING_KEYS } = await import("@main/lib/secretKeys.js");
+
+  // ── ① 从定义处取的敏感键(contracts / 共享密钥清单) ──
+  const REAL_SENSITIVE = [
+    contracts.BROWSER_COOKIE_VAULT_SETTING_KEY,
+    contracts.BROWSER_COOKIE_VAULT_ENC_SETTING_KEY,
+    contracts.MCP_MANAGEMENT_SETTING_KEY,
+    contracts.MCP_PROJECT_TRUST_SETTING_KEY,
+    contracts.ONLYOFFICE_CONFIG_SETTING_KEY,
+    relay.RELAY_CONFIG_SETTING_KEY,
+    contracts.PUBLIC_MCP_SECRET_SETTING_KEY,
+    contracts.PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY,
+    contracts.PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY,
+    mobile.MOBILE_PAIRED_DEVICES_SETTING_KEY,
+    mobile.MOBILE_LOGIN_SETTING_KEY,
+    mobile.MOBILE_TUNNEL_TOKEN_SETTING_KEY,
+    ...SECRET_SETTING_KEYS,
+  ];
+  const mustNotExport = REAL_SENSITIVE;
+  const leakedReal = mustNotExport.filter((k) => isTransferableSettingKey(k));
+  check("★ 生产定义处的敏感键全部不可导出", leakedReal.length === 0, { leakedReal });
+
+  // 每个都必须被**导出侧的迁移判据**挡下(密钥本体走共享的 `isSecretSettingKey`,
+  // 安全授信走 `isTransferableSettingKey` 里的授信族判据 —— 两条闸,同一出口)。
+  // 不要求每个都进 `isSecretSettingKey`:授信键不是密钥,但它们同样**绝不可导出**。
+  const notRecognized = mustNotExport.filter((k) => !isSecretSettingKey(k) && isTransferableSettingKey(k));
+  check("★ 每个真实敏感键都被某一条闸挡下(密钥判据或授信判据)", notRecognized.length === 0, { notRecognized });
+
+  // ── ② 源码锚定:定义模块不能 import 的那几条 ──
+  const anchor = (file: string, key: string): boolean =>
+    readFileSync(join(process.cwd(), file), "utf8").includes(`"${key}"`);
+  const ANCHORED: Array<[string, string]> = [
+    ["src/main/mcp/agentRemoteSsh.ts", "agentSsh.knownHosts"],
+    ["src/main/mcp/agentRemoteSsh.ts", "agentSsh.hostTrustGrants"],
+    ["src/main/providers/bridge/extensionBridge.ts", "web.bridgeToken"],
+    ["src/main/lib/secretStore.ts", "customModelKeys"],
+    ["src/main/lib/piModelsStore.ts", "piProviderKeys"],
+    ["src/main/lib/codexModelsStore.ts", "codexProviderKeys"],
+    ["src/main/lib/secretStore.ts", "customModels"], // 公开元数据(正控)
+  ];
+  for (const [file, key] of ANCHORED) {
+    check(`锚定:${key} 确实定义在 ${file}`, anchor(file, key));
+  }
+  const anchoredSensitive = ANCHORED.map(([, k]) => k).filter((k) => k !== "customModels");
+  const anchoredLeak = anchoredSensitive.filter((k) => isTransferableSettingKey(k));
+  check("★ 源码锚定的敏感键全部不可导出", anchoredLeak.length === 0, { anchoredLeak });
+  check("正控:customModels(公开元数据)仍可导出", isTransferableSettingKey("customModels") === true);
+
+  // ── ③ 端到端:整张表喂进去,真实敏感键一条都不得出现在导出文档里 ──
+  const all: Record<string, string | null> = { "ui.locale": "zh", "ui.appearance.theme": "dark" };
+  for (const k of [...mustNotExport, ...anchoredSensitive]) all[k] = "SHOULD-NOT-LEAK";
+  const { doc } = buildSettingsExport(all, { appVersion: "0.0.0" });
+  const endToEndLeak = [...mustNotExport, ...anchoredSensitive].filter((k) => k in doc.settings);
+  check("★ 导出文档里没有任何真实敏感键", endToEndLeak.length === 0, { endToEndLeak });
+  check("正控:同一份文档里普通偏好照常导出", doc.settings["ui.locale"] === "zh" && doc.settings["ui.appearance.theme"] === "dark");
+}
+
+console.log("\n【MC-026 复核】未知/未来偏好键:导入侧不静默丢,往返保全");
+{
+  // 台账要求"未知键被保全或明确拒绝,不是静默丢"。当前设计是**保全**:
+  // 名字合法、不命中密钥/授信/本机状态判据的键(例如未来版本新增的一条偏好)导入时
+  // 照常 upsert,再次导出时原样带回去 —— 新旧版本之间往返不丢数据。
+  // 这里钉住这个方向:它若哪天被改成"悄悄丢掉",这条会红。
+  const { parseSettingsImport } = await import("@main/settings/settingsTransfer.js");
+  const futureKey = "futureFeature.newPreference";
+  const parsed = parseSettingsImport(JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: "",
+    settings: { [futureKey]: "v2-value", "ui.locale": "en" },
+  }));
+  check("未知偏好键被接受(不是静默丢)", parsed.ok === true && parsed.entries.some(([k]) => k === futureKey), parsed);
+  if (parsed.ok) {
+    const { doc } = buildSettingsExport(Object.fromEntries(parsed.entries), { appVersion: "0.0.0" });
+    check("★ 未知偏好键导入后再导出仍在(往返不丢)", doc.settings[futureKey] === "v2-value", doc.settings);
+    check("正控:同批普通偏好也在", doc.settings["ui.locale"] === "en");
+  }
+  // 反面:名字像未来键、但命中密钥/授信判据的 —— 必须明确进 skipped,不是接受。
+  const badParsed = parseSettingsImport(JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: "",
+    settings: { "futureFeature.bridgeToken": "leak", "ui.locale": "en" },
+  }));
+  check(
+    "★ 像未来键的敏感键被明确拒绝并计入 skipped(不是静默接受也不是静默丢)",
+    badParsed.ok === true && badParsed.skipped.includes("futureFeature.bridgeToken") && !badParsed.entries.some(([k]) => k === "futureFeature.bridgeToken"),
+    badParsed,
+  );
+}
+
 console.log(`\nsettings-export-secrets-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

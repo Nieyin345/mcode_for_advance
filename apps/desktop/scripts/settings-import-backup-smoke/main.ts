@@ -781,6 +781,201 @@ console.log("\nMC-052:导入设置不能夹带 SSH 主机授信(knownHosts / hos
   }
 }
 
+/* ══════════ MC-026 复核补强：未知键 / 版本 / 迁移面 / 原子恢复 ─═════════
+ *
+ * 台账点名四件事,其中三件在 2026-10-19 复核时**源码可证仍是错的**:
+ *
+ *  1. **未知键被静默丢弃**。`parseSettingsImport` 只按 `isTransferableSettingKey`
+ *     过滤,对未来版本写进来的**新键**(名字合法、但本版本不认识)照收不误 —— 而
+ *     真正的危险方向是反的:把**已知的运行时状态键**误归为"跟着人走的偏好"。
+ *     复核实证:`automation.lastMinute` / `automation.triggerClaims` /
+ *     `automation.missedSweptTo` / `automation.droppedUndelivered` /
+ *     `automation.selfTriggerCount.<id>` 整族都是 transferable —— 一份被诱导导入的
+ *     "设置备份"可以把定时触发器的**跨重启去重格**与**durable 领取账本**直接种好:
+ *     那一分钟永远不会触发(去重格被写成"已跑"),或盘上凭空多出一条 `CLAIMED`
+ *     领取,重启恢复把它报成"上一次运行结果不确定"。这不是偏好,是执行状态。
+ *     同族还有 `workflow.seededShipped`(清空它 = 用户删除过的出厂工作流在下次
+ *     读取时**复活**,直接推翻 MC-053 的"删了就是删了")。
+ *
+ *  2. **版本闸不严**。`version` 只挡"比当前新",但 `1.0` / `NaN` / 缺版本号
+ *     (`undefined` 也是 `typeof !== "number"` 的真分支,报错却说"比当前新")照收;
+ *     将来把 `SETTINGS_EXPORT_VERSION` 提到 2 时,一份**旧**版本文件会带着旧语义
+ *     被直接套用,而不是显式换算或拒绝。
+ *
+ *  3. **导入失败后不留可读原因**的一半已修(错误里有人话),但 `skipped` 只有一个
+ *     计数、且**合法但未知**的键与"被安全策略挡下"的键混在一起 —— 用户/Agent 都
+ *     分不出"你的备份里有两项本版本不认识"与"两项含密钥被清洗"。
+ *
+ * 判据(每条都立在用户/Agent 能观察到的事实上):
+ *  - 导出档里**绝不出现**运行时状态键(用真实写入方建出来的键,不是手写字面量);
+ *  - 导入时这些键**不落库**、且计入 `skipped`;普通偏好照常写入(防空过);
+ *  - 版本非正整数 / 缺版本 → fail-closed,错误信息**说清原因**,当前设置一个字节不动;
+ *  - `restore` 模式**绝不删**运行时状态键(它不在档里,但不是"可迁移偏好");
+ *  - `applySettingsImport` 中途抛错时内存库与导入前逐键一致(含 `deleteKeys` 的旧行)。
+ */
+
+console.log("\nMC-026 复核:运行时状态键不可迁移(真实写入方建键,不是手写字面量)");
+
+{
+  const { isTransferableSettingKey: transferable } = await import("@main/settings/settingsTransfer.js");
+  // 真实键名从生产模块取(它们归 `automationRunnerTypes.ts` 管,执行器本体也从那里
+  // import)—— 不手写字面量:判据若与真实键漂开,下面几条会直接红。
+  // ⚠️ 不 import `automationRunner.js` 本体:它会拉进 ssh2 → cpu-features 原生模块,
+  // 无头 esbuild 打包解不了 `.node`;键名所在的 `automationRunnerTypes.ts` 是纯模块。
+  const runnerTypes = await import("@main/orchestration/automationRunnerTypes.js");
+  const RUNTIME_KEYS = [
+    runnerTypes.LAST_MINUTE_SETTING_KEY,
+    runnerTypes.MISSED_SWEPT_SETTING_KEY,
+    runnerTypes.TRIGGER_CLAIMS_SETTING_KEY,
+    runnerTypes.DROPPED_SETTING_KEY,
+    runnerTypes.SELF_TRIGGER_COUNT_PREFIX + "wf_mc026",
+    runnerTypes.SELF_TRIGGER_AT_PREFIX + "wf_mc026",
+    "workflow.seededShipped",
+    "workflow.shippedRevisions",
+  ];
+  for (const k of RUNTIME_KEYS) {
+    eq(`★ ${k} 不可迁移`, transferable(k), false);
+  }
+  // 正控:同一前缀族里的**显示偏好**照常可迁移(别把 automation. 一刀切)。
+  // `automation.watch.templates` 是用户保存的守望命令模板 —— 是偏好,不是执行账本。
+  eq("正控:automation.watch.templates(用户保存的模板)仍可迁移", transferable("automation.watch.templates"), true);
+  eq("正控:工作流显示偏好仍可迁移", transferable("workflow.nodePrefs.wf_x"), true);
+
+  // 端到端:库里真有这些键时,导出档里没有它们;导入一份夹带它们的文件也不落库。
+  for (const k of RUNTIME_KEYS) SettingRepo.set(k, JSON.stringify({ seeded: true }));
+  SettingRepo.set("ui.locale", "zh");
+  clearBackups();
+  const out = join(WORK, "runtime-state-export.json");
+  const exportRes = (await handlers.get(IPC.SETTING_EXPORT_TO_PATH)!(null, { path: out })) as { ok: boolean };
+  eq("导出成功", exportRes.ok, true);
+  const exported = JSON.parse(readFileSync(out, "utf8")) as { settings: Record<string, string> };
+  const leaked = RUNTIME_KEYS.filter((k) => k in exported.settings);
+  check("★ 导出档里没有任何运行时状态键", leaked.length === 0, { leaked });
+  eq("正控:普通偏好照常导出", exported.settings["ui.locale"], "zh");
+
+  const importedFile = join(WORK, "runtime-state-import.json");
+  writeFileSync(importedFile, `${JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: new Date().toISOString(),
+    settings: { "ui.locale": "en", ...Object.fromEntries(RUNTIME_KEYS.map((k) => [k, "FORGED"])) },
+  }, null, 2)}\n`, "utf8");
+  // 先清掉这些键,证明"没落库"确实是导入挡下的,不是它们本来就在。
+  for (const k of RUNTIME_KEYS) SettingRepo.delete(k);
+  const imported = await runImport(importedFile);
+  eq("★ 夹带运行时状态键的导入仍成功(被挡下的键不影响整体)", imported.ok, true);
+  eq("★ 只有普通偏好被写入", imported.count, 1);
+  eq("★ 运行时状态键全部计入 skipped", imported.skipped, RUNTIME_KEYS.length);
+  const landed = RUNTIME_KEYS.filter((k) => SettingRepo.get(k) !== null);
+  check("★ 运行时状态键一个都没有落库", landed.length === 0, { landed });
+  eq("正控:普通偏好照常落库", SettingRepo.get("ui.locale"), "en");
+
+  // restore 模式:它们不在档里,但**不可迁移** → 绝不能因"备份里没有"被删。
+  for (const k of RUNTIME_KEYS) SettingRepo.set(k, JSON.stringify({ local: true }));
+  clearBackups();
+  const restoreFile = join(WORK, "runtime-state-restore.json");
+  writeFileSync(restoreFile, `${JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: new Date().toISOString(),
+    settings: { "ui.locale": "restored" },
+  }, null, 2)}\n`, "utf8");
+  resetDialog(); pushOpenResult({ canceled: false, filePaths: [restoreFile] });
+  const restored = (await IMPORTER!(null, { mode: "restore" })) as ImportResult;
+  eq("完整恢复成功", restored.ok, true);
+  const deletedRuntime = RUNTIME_KEYS.filter((k) => SettingRepo.get(k) === null);
+  check("★ 完整恢复没有误删任何运行时状态键", deletedRuntime.length === 0, { deletedRuntime });
+  for (const k of RUNTIME_KEYS) SettingRepo.delete(k);
+}
+
+console.log("\nMC-026 复核:版本闸 fail-closed + 可读原因");
+
+{
+  const versionFile = (doc: unknown, name: string): string => {
+    const p = join(WORK, name);
+    writeFileSync(p, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
+    return p;
+  };
+  SettingRepo.set("ui.locale", "KEEP");
+  const base = { format: "mcode-settings", exportedAt: new Date().toISOString(), settings: { "ui.locale": "en" } };
+
+  // ① 未来版本:拒绝,原因说"先升级"。
+  clearBackups();
+  const future = await runImport(versionFile({ ...base, version: 2 }, "future-version.json"));
+  eq("★ 未来版本被拒", future.ok, false);
+  check("★ 未来版本的错误信息说清『比当前新』", typeof future.error === "string" && future.error.includes("新"), future);
+  eq("未来版本被拒后设置未动", SettingRepo.get("ui.locale"), "KEEP");
+
+  // ② 非整数 / NaN / 负数 / 零:都不该被当成"合法旧版本"放行。
+  for (const [label, version] of [["小数", 1.5], ["零", 0], ["负数", -1], ["NaN", Number.NaN], ["字符串", "1"]] as const) {
+    clearBackups();
+    const res = await runImport(versionFile({ ...base, version }, `bad-version-${label}.json`));
+    eq(`★ 版本为${label}时被拒`, res.ok, false);
+    check(`版本为${label}时的错误信息可读(不是空洞的 "undefined")`, typeof res.error === "string" && res.error.length > 0, res);
+    eq(`版本为${label}被拒后设置未动`, SettingRepo.get("ui.locale"), "KEEP");
+  }
+
+  // ③ 缺 version 字段:拒绝,且错误信息**不能**说成"比当前支持的新"(那句是假话)。
+  clearBackups();
+  const missingVer = await runImport(versionFile({ ...base }, "missing-version.json"));
+  eq("★ 缺 version 被拒", missingVer.ok, false);
+  check(
+    "★ 缺 version 的错误信息点明『缺少版本号』,不谎称『比当前新』",
+    typeof missingVer.error === "string" && missingVer.error.includes("版本") && !missingVer.error.includes("比当前"),
+    missingVer,
+  );
+  eq("缺 version 被拒后设置未动", SettingRepo.get("ui.locale"), "KEEP");
+
+  // ④ 当前版本照常通过(防空过)。
+  clearBackups();
+  const okRes = await runImport(versionFile({ ...base, version: 1 }, "current-version.json"));
+  eq("正控:当前版本照常导入", okRes.ok, true);
+  eq("正控:值真的写进去了", SettingRepo.get("ui.locale"), "en");
+}
+
+console.log("\nMC-026 复核:导入原子性——write 事务中途失败时内存库与导入前逐键一致(含 deleteKeys)");
+
+{
+  // 上一节已有"merge 导入中途失败"的触发器注入(§5)。这里补 **restore 模式**:
+  // upsert 与 delete 在同一事务里;若第 N 项失败,已执行的 delete 也必须一起回滚 ——
+  // 否则"恢复失败"之后用户的设置被删掉了一批,而界面说"当前设置未改动"。
+  clearBackups();
+  SettingRepo.set("ui.locale", "OLD");
+  SettingRepo.set("ui.theme", "THEME-OLD");
+  SettingRepo.set("ui.accent", "ACCENT-OLD");
+  resetSent();
+  const db = getDb();
+  db.run("DROP TRIGGER IF EXISTS mc026_restore_boom");
+  db.run(
+    "CREATE TRIGGER mc026_restore_boom BEFORE INSERT ON settings WHEN NEW.key = 'ui.boom' " +
+      "BEGIN SELECT RAISE(ABORT, 'MC026 restore injected failure'); END;",
+  );
+  const restoreFile = join(WORK, "restore-atomic-fail.json");
+  writeFileSync(restoreFile, `${JSON.stringify({
+    format: "mcode-settings", version: 1, exportedAt: new Date().toISOString(),
+    settings: { "ui.locale": "NEW", "ui.boom": "boom" },
+  }, null, 2)}\n`, "utf8");
+  let res: ImportResult;
+  try {
+    resetDialog(); pushOpenResult({ canceled: false, filePaths: [restoreFile] });
+    res = (await IMPORTER!(null, { mode: "restore" })) as ImportResult;
+  } finally {
+    db.run("DROP TRIGGER IF EXISTS mc026_restore_boom");
+  }
+  eq("★ restore 中途失败时导入报失败", res.ok, false);
+  check("★ 失败理由是写入失败/回滚", typeof res.error === "string" && /回滚|写入/.test(res.error), res);
+  eq("★ upsert 那项没有被部分写入(仍是 OLD)", SettingRepo.get("ui.locale"), "OLD");
+  eq("★ deleteKeys 算出的 ui.theme **没有被删**(事务回滚)", SettingRepo.get("ui.theme"), "THEME-OLD");
+  eq("★ deleteKeys 算出的 ui.accent **没有被删**(事务回滚)", SettingRepo.get("ui.accent"), "ACCENT-OLD");
+  eq("★ 失败那一项也没有落库", SettingRepo.get("ui.boom"), null);
+  eq("★ 失败导入零广播", eventsOfType("setting.changed").length, 0);
+
+  // 正控:拆掉触发器后同一份 restore 一次成功,且该删的删、该写的写。
+  resetSent();
+  resetDialog(); pushOpenResult({ canceled: false, filePaths: [restoreFile] });
+  const ok = (await IMPORTER!(null, { mode: "restore" })) as ImportResult;
+  eq("正控:去掉注入后 restore 成功", ok.ok, true);
+  eq("正控:upsert 生效", SettingRepo.get("ui.locale"), "NEW");
+  eq("正控:档里没有的可迁移键被删掉", SettingRepo.get("ui.theme"), null);
+  eq("正控:另一条不在档里的键也被删掉", SettingRepo.get("ui.accent"), null);
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

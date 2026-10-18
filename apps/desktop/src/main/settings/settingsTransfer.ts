@@ -126,9 +126,39 @@ const EXCLUDED_KEYS = new Set<string>([
 
 /** 按前缀排除(一族状态键)。 */
 const EXCLUDED_PREFIXES = [
+  // 【MC-026 复核·技能预设/市场】技能预设(`.skill-presets.json`)、导入包
+  // (`.bundles.json`)、技能市场(`skill-markets/markets.json`)都**不在 settings 表**
+  // (`defaultSkillsRoot()` 下是文件;技能市场记录也是文件),所以设置导入/导出天然
+  // 够不到它们 —— 它们的坏档保全由 `ipc/skills.ts` 的三态读 + 写侧拒写负责
+  // (MC-053 同族,另一条车道)。`library.` 前缀排的是资料库**表内**状态,与此无关。
   "library.",
   "automation.eventChain.",
   "automation.state.",
+  // ── 【MC-026 复核】自动化的**执行状态**,不是偏好 ──────────────────────────
+  // 这些键整族都是"这台机器上执行器自己的账",导入它们不是搬偏好,而是**种执行事实**:
+  //  - `automation.lastMinute` / `automation.selfTriggerCount.` / `automation.selfTriggerAt.`
+  //    是跨重启的去重与自触发额度。导入一份被诱导的"设置备份"就能把某条定时触发器
+  //    这一分钟/这一窗口写成"已经跑过",让它**该响而不响**(或反过来抬高自触发额度);
+  //  - `automation.triggerClaims` 是"领取→执行"的 durable 账本。种一条 `CLAIMED`
+  //    进去,下次重启 `recoverIncompleteClaims` 会把它报成"上一次运行结果不确定" ——
+  //    凭空制造一次从未发生的运行,并可能让真正该跑的那次被判为重复;
+  //  - `automation.missedSweptTo` / `automation.droppedUndelivered` 是"错过结算到哪"
+  //    与"丢了几条还没交付"的游标,跨机器搬运只会让界面报出别的机器的账。
+  // 判据落在**执行账本 vs 显示偏好**上:`automation.watch.templates`(用户保存的守望
+  // 命令)仍是偏好,照常可迁移 —— 别把 automation. 一刀切。
+  "automation.lastMinute",
+  "automation.missedSweptTo",
+  "automation.triggerClaims",
+  "automation.droppedUndelivered",
+  "automation.selfTriggerCount.",
+  "automation.selfTriggerAt.",
+  // ── 【MC-026 复核】出厂内容的**本机记账**,不是偏好 ─────────────────────────
+  // `workflow.seededShipped` 记"哪些出厂工作流已经播过" —— 它是产品承诺「删了就是
+  // 删了」的唯一事实(MC-053)。导入一份清空/篡改的名单,已删除的出厂工作流会在下次
+  // 读取时被**重新播回**;`workflow.shippedRevisions` 同理是"这一行跟到了哪版出厂内容"
+  // 的本机基线,跨机器搬运会让"出厂版有更新"的判定全错。两者都不该离开这台机器。
+  "workflow.seededShipped",
+  "workflow.shippedRevisions",
   "mobile.",
   "publicMcp.",
   "relay.",
@@ -386,8 +416,25 @@ export function parseSettingsImport(text: string): ParsedSettingsImport {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return { ok: false, error: "文件内容不是 Mcode 设置导出文件" };
   const o = obj as Partial<SettingsExportDoc>;
   if (o.format !== SETTINGS_EXPORT_FORMAT) return { ok: false, error: "文件内容不是 Mcode 设置导出文件(缺少 format 标记)" };
-  if (typeof o.version !== "number" || o.version > SETTINGS_EXPORT_VERSION) {
+  // 【MC-026 复核】版本闸 fail-closed 且**说清是哪种不对**:
+  //  - 缺席 / 不是数字:不是本格式的有效文件(旧实现把它和"比当前新"混成一句假话);
+  //  - 非正整数(`0` / `-1` / `1.5` / `NaN`):没有任何已发布版本产生过这种值,拒;
+  //  - 比当前新:让用户先升级(绝不能按当前语义硬套未来文件);
+  //  - **比当前旧**:当前只有 v1,没有旧版本需要换算;将来升到 v2 时,这里必须显式
+  //    写一条迁移,而不是让旧语义文件悄悄套进新版本(读到 v2 的代码之前,旧文件一律拒)。
+  if (typeof o.version !== "number") {
+    return { ok: false, error: "导出文件缺少版本号(version),无法确认它的格式" };
+  }
+  if (!Number.isInteger(o.version) || o.version < 1) {
+    return { ok: false, error: `导出文件版本号无效(${String(o.version)}),这不是 Mcode 产生的设置文件` };
+  }
+  if (o.version > SETTINGS_EXPORT_VERSION) {
     return { ok: false, error: `导出文件版本(${String(o.version)})比当前 Mcode 支持的新,请先升级 Mcode` };
+  }
+  if (o.version < SETTINGS_EXPORT_VERSION) {
+    // 当前 `SETTINGS_EXPORT_VERSION` 仍是 1,走不到这里;这是给"将来升版本"留的
+    // fail-closed 闸:没有显式迁移就不许把旧文件按新语义导入。
+    return { ok: false, error: `导出文件版本(${String(o.version)})比当前 Mcode 支持的旧,暂不支持自动降级导入` };
   }
   if (!o.settings || typeof o.settings !== "object" || Array.isArray(o.settings)) {
     return { ok: false, error: "文件里没有 settings 字段" };
