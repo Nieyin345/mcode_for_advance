@@ -101,6 +101,16 @@ export function UnattendedPlanPanel(): React.JSX.Element {
     { toastOnError: false },
   );
   const pending = useMemo(() => sortPendingPlans(listData?.plans ?? []), [listData]);
+  // 【MC-029 剩余项】**结构化健康度**(只读、独立于 list):即便 list 抛错(坏档时它拒绝),
+  // 面板也要说得出是「内容坏了」还是「读不了」以及怎么修 —— 而不是只画一个错误条 +
+  // 一张「没有等待中的计划」的空态(两者并列时用户会以为列表真的空)。
+  const { data: healthData } = useRpc(
+    () => api.unattendedPlans.health(),
+    [listNonce],
+    { toastOnError: false },
+  );
+  const archiveHealth = healthData?.archiveHealth;
+  const archiveProblem = archiveHealth !== undefined && archiveHealth.state !== "ok" ? archiveHealth : null;
 
   const draft = useMemo(
     () => ({ planId: state.planId, projectId: state.projectId, operations: state.operations, ttlMs: state.ttlMs, maxCount: state.maxCount }),
@@ -346,7 +356,23 @@ export function UnattendedPlanPanel(): React.JSX.Element {
           {listError.message}
         </ErrorNote>
       ) : null}
-      {listLoading && pending.length === 0 ? null : pending.length === 0 ? (
+      {/* 【MC-029 剩余项】坏档的结构化诊断 —— 带状态标签、原因、恢复动作,并把「空列表」
+          替换掉(诊断在时不再画 EmptyState:那会被读成"真的没有计划")。 */}
+      {archiveProblem !== null ? (
+        <ErrorNote tone="danger" icon={IconAlertTriangle} className="mb-2">
+          <p>
+            {t(
+              archiveProblem.state === "unreadable"
+                ? "unattended.archiveHealth.unreadable"
+                : "unattended.archiveHealth.corrupt",
+            )}
+          </p>
+          {archiveProblem.reason ? <p className="text-[0.7143em]">{archiveProblem.reason}</p> : null}
+          <p className="text-[0.7143em]">{t("unattended.archiveHealth.recovery")}</p>
+        </ErrorNote>
+      ) : null}
+      {archiveProblem !== null && pending.length === 0 ? null
+        : listLoading && pending.length === 0 ? null : pending.length === 0 ? (
         <EmptyState icon={IconUserCheck} title={t("unattended.pendingEmpty")} desc={t("unattended.pendingEmptyDesc")} />
       ) : (
         pending.map((plan) => (

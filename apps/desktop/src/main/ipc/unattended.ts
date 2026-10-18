@@ -48,6 +48,7 @@ import {
   approveUnattendedPlan,
   abandonUnattendedPlan,
   listUnattendedPlans,
+  unattendedArchiveHealth,
   resumeUnattendedPlanWithGrant,
   runUnattendedPlanWithGrant,
   type UnattendedOperation,
@@ -147,7 +148,14 @@ export function registerUnattendedHandlers(ipc: IpcMain): void {
   });
   // 【MC-059 残余 ④】**列出等待批准 / 待执行**的计划(跨重启)—— 只读,一步不执行。
   ipc.handle(IPC.UNATTENDED_PLANS_LIST, () => {
-    return { plans: listUnattendedPlans() };
+    // 【MC-029 剩余项】成功路径恒 `ok`(坏档时 `listUnattendedPlans` 会抛);带上结构化
+    // 健康度让返回形状与 `unattendedPlans.health` 一致,调用方不必两条通道间做形状分叉。
+    return { plans: listUnattendedPlans(), archiveHealth: unattendedArchiveHealth() };
+  });
+  // 【MC-029 剩余项】**只读健康度** —— query 档(policy read),Agent 经 `app_api_call`
+  // 也能读到同一份诊断;只回诊断,不列计划、不执行任何一步。
+  ipc.handle(IPC.UNATTENDED_PLANS_HEALTH, () => {
+    return { archiveHealth: unattendedArchiveHealth() };
   });
   // 【MC-059 残余 ④】**续跑**一份等待中的计划 —— 只给 planId,正文与授权由服务函数从存档 +
   // `GrantStore` 取回(取不到即拒、一步不建)。已建成的操作**跳过**(不重复外部副作用)。

@@ -31,6 +31,11 @@ export const zh = {
   "unattended.refresh": "刷新",
   "unattended.pendingEmpty": "没有等待中的计划",
   "unattended.pendingEmptyDesc": "批准一份计划后,它会出现在这里 —— 重启应用也还在,可以续跑或明确放弃。",
+  // 【MC-029 剩余项】存档健康度(结构化诊断):内容坏了与读不了是两件事,恢复方向不同。
+  "unattended.archiveHealth.corrupt": "计划存档损坏(内容读不懂)—— 下面的原因与恢复步骤来自存档核。",
+  "unattended.archiveHealth.unreadable": "计划存档读不了(权限或磁盘错误)—— 这不是内容损坏,先修读取权限。",
+  "unattended.archiveHealth.recovery":
+    "恢复:到 <数据根>/appControl/ 找到 unattended-plans.json —— 修好 JSON(或先备份再删除它)后重启应用;存档已停用写入,原文件不会被覆盖。",
   "unattended.planKind.resumable": "可续跑",
   "unattended.planKind.waiting_approval": "等待批准",
   "unattended.planKind.completed": "已完成",

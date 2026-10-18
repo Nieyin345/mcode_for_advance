@@ -73,11 +73,32 @@ function unattendedArchiveCorruptReason(): string {
   );
 }
 
-/** 存档读不懂 → 抛可诊断错误(供返回值类入口;`refused` 类入口直接返回拒绝结果)。 */
+/**
+ * 存档健康度不是 `ok` → 抛可诊断错误(供返回值类入口;`refused` 类入口直接返回拒绝结果)。
+ *
+ * 【MC-029 剩余项】判据从 `isArchiveCorrupt()` 升级为 `archiveHealth()` —— **`unreadable`
+ * (文件在但读不了)与 `corrupt` 同样不许被当成「没有计划」**。从前那条只认 corrupt,
+ * 权限坏了时 list 会静默回空表(与真·没有计划无法区分),正是本条要消灭的谎。
+ */
 function assertPlanArchiveReadable(): void {
-  if (getUnattendedPlanStore().isArchiveCorrupt()) {
-    throw new Error(unattendedArchiveCorruptReason());
+  const health = unattendedArchiveHealth();
+  if (health.state !== "ok") {
+    throw new Error(health.reason ?? unattendedArchiveCorruptReason());
   }
+}
+
+/**
+ * 【MC-029 剩余项】**结构化健康度** —— 给 `unattendedPlans.list` 的成功返回与只读
+ * `unattendedPlans.health` 共用。判据只有一份:直接问存档核(`archiveHealth()`),
+ * `corrupt` / `unreadable` 分开(一种修内容、一种修权限),`absent` 归 `ok`(真空无需动作)。
+ */
+export function unattendedArchiveHealth(): { state: "ok" | "corrupt" | "unreadable"; reason?: string } {
+  const state = getUnattendedPlanStore().archiveHealth();
+  if (state === "ok") return { state };
+  const reason = state === "corrupt"
+    ? unattendedArchiveCorruptReason()
+    : "unattended-plans.json 读不了(权限不足或磁盘错误)—— 计划存档暂时不可用;请检查 <数据根>/appControl/ 下该文件的读取权限后重启。";
+  return { state, reason };
 }
 
 /** 一条**无人值守操作** —— 计划里一次有界的动作。当前只支持 `session.create`。 */
@@ -463,8 +484,9 @@ export function approveUnattendedPlan(
   // ★ MC-029(读侧):存档读不懂时**先拒** —— 正文记不进去,签出去的授权就是「有授权、
   //   列不出、续不了」的孤儿(台账触发链的「重启后又创建另一个 p2」正是这一步)。
   //   放在签发**之前**:拒绝时不产生任何新授权。
-  if (getUnattendedPlanStore().isArchiveCorrupt()) {
-    return { ok: false, kind: "refused", code: UNATTENDED_ARCHIVE_CORRUPT_CODE, reason: unattendedArchiveCorruptReason() };
+  {
+    const health = unattendedArchiveHealth();
+    if (health.state !== "ok") return { ok: false, kind: "refused", code: UNATTENDED_ARCHIVE_CORRUPT_CODE, reason: health.reason ?? unattendedArchiveCorruptReason() };
   }
   // 签发主体**写死为用户本人** —— 调用方给不了、也改不了这个身份(见上)。
   const plan: UnattendedTaskPlan = {
@@ -609,8 +631,9 @@ export async function runUnattendedPlanWithGrant(
 ): Promise<UnattendedRunOutcome> {
   // ★ MC-029(读侧):存档读不懂 → **建任何会话之前**就拒绝。执行完回写不了进度,重启后
   //   续跑会重跑已建成的步(重复的外部副作用)—— 与「授权取不到」同一档,先拒再说。
-  if (getUnattendedPlanStore().isArchiveCorrupt()) {
-    return { ok: false, kind: "refused", code: UNATTENDED_ARCHIVE_CORRUPT_CODE, reason: unattendedArchiveCorruptReason() };
+  {
+    const health = unattendedArchiveHealth();
+    if (health.state !== "ok") return { ok: false, kind: "refused", code: UNATTENDED_ARCHIVE_CORRUPT_CODE, reason: health.reason ?? unattendedArchiveCorruptReason() };
   }
   // 取回授权。`get` 对「不存在 / 已撤销 / 已过期」一律回 null —— 取不到就明确拒绝,不静默放行。
   const grant = getGrantStore().get(input.grantId, now);

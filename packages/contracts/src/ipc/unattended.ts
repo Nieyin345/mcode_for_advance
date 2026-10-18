@@ -187,6 +187,32 @@ export interface PendingUnattendedPlanWire {
 /** 列出等待中计划的结果 —— **只读**(不执行任何一步)。 */
 export interface UnattendedListIpcResult {
   plans: PendingUnattendedPlanWire[];
+  /**
+   * 【MC-029 剩余项】存档健康度。`list` 在坏档时**仍然拒绝**(抛 `archive_corrupt`,
+   * 因为它是 blocked 的治理视图、且空列表在这里是一句谎);成功返回时这里恒为 `ok`。
+   * 坏档/读不了的诊断由只读 `unattendedPlans.health` 提供(Agent 也能读)。
+   */
+  archiveHealth: UnattendedArchiveHealth;
+}
+
+/** 【MC-029 剩余项】只读健康查询的返回 —— 与 `UnattendedListIpcResult.archiveHealth` 同形。 */
+export interface UnattendedHealthIpcResult {
+  archiveHealth: UnattendedArchiveHealth;
+}
+
+/**
+ * 【MC-029 剩余项】**存档健康度**的结构化诊断(四态里的三态;`absent`/`valid` 都归 `ok`)。
+ *
+ * - `ok` —— 文件不存在 / 空串(真空)或解析有效;无需动作;
+ * - `corrupt` —— 文件在,但内容读不懂(非 JSON / 版本不符 / 信封形状坏) → 已停用写入,
+ *   原字节保留;
+ * - `unreadable` —— 文件在,但**读不了**(权限 / IO 错误)。与 `corrupt` **分开**:一种要
+ *   修内容,一种要修权限;把两者混为一谈会让恢复动作指错方向。
+ */
+export interface UnattendedArchiveHealth {
+  state: "ok" | "corrupt" | "unreadable";
+  /** `state !== "ok"` 时给人看的一句话(含稳定子串「unattended-plans.json」)。 */
+  reason?: string;
 }
 
 /**

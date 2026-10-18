@@ -2843,6 +2843,37 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
     { op: opResultOf(r), text: textOf(r).slice(0, 400) });
 }
 
+/* ── 无人值守计划存档健康度的 Agent 可读面(MC-029 剩余项) ── */
+{
+  const { createDbGuardedIpc } = await import("@main/ipc/dbGuardedIpc.js");
+  const { rpcHandlerFor } = await import("@main/appControl/registry.js");
+  const { policyFor } = await import("@main/appControl/policy.js");
+  const { API_CATALOG } = await import("@main/appControl/apiCatalog.generated.js");
+
+  check("★ 计划健康:health 是只读档(不是 blocked)", policyFor("unattendedPlans.health").level === "read",
+    policyFor("unattendedPlans.health"));
+  check("★ 计划健康:list 仍是 blocked(Agent 读不到治理视图)", policyFor("unattendedPlans.list").level === "blocked");
+  check("★ 计划健康:在 catalog 里(Agent 可发现)", API_CATALOG.some((e) => e.method === "unattendedPlans.health"));
+
+  const handled = new Map<string, (e: unknown, raw: unknown) => unknown>();
+  const fakeMain = { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => handled.set(ch, fn) } as never;
+  const ipc = createDbGuardedIpc(fakeMain) as unknown as { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => void };
+  let calls = 0;
+  ipc.handle("unattendedPlans:health", async () => {
+    calls += 1;
+    return { archiveHealth: { state: "corrupt", reason: "unattended-plans.json 读不懂" } };
+  });
+  check("★ 计划健康:UI 通道与 registry 登记的是同一个函数",
+    rpcHandlerFor("unattendedPlans:health") === handled.get("unattendedPlans:health"));
+
+  const { ctx } = ctxWith();
+  const r = await invokeAppTool("app_api_call", { method: "unattendedPlans.health" }, "me", ctx);
+  check("★ 计划健康:Agent 经 app_api_call 真的落到同一个函数", calls === 1, calls);
+  check("★ 计划健康:Agent 读到同一结构化诊断(状态 + 原因)",
+    textOf(r).includes("corrupt") && textOf(r).includes("unattended-plans.json") && opResultOf(r)?.resultKind === "SUCCEEDED",
+    { op: opResultOf(r), text: textOf(r).slice(0, 300) });
+}
+
 /* ── 【MC-040】帮助分级(detail=full)与教程索引 ──
  *
  * 台账红例:`workflow.save` 的浅版 input 291 字符、嵌套结构全在 `{…}` 里 —— agent

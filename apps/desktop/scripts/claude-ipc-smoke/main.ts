@@ -2994,6 +2994,74 @@ console.log("\n19f. 【MC-059 残余】发起者可追溯(②)+ 计划跨重启�
       resResume2 !== null && resResume2.code !== "archive_corrupt", resResume2);
   }
 
+  // ── ★ MC-029 剩余项:结构化恢复诊断(archiveHealth)与 UNREADABLE 四态 ──
+  //    list 保持"坏档即拒绝"(blocked 的治理视图),但诊断由只读 `unattendedPlans.health`
+  //    给出:Agent 可读(政策 read 档),corrupt 与 unreadable 分开,健康时 state=ok。
+  {
+    check("★ MC-029H:health 通道真的注册进了 handler 表", handlers.has(IPC.UNATTENDED_PLANS_HEALTH));
+    const { policyFor } = await import("@main/appControl/policy.js");
+    eq("★ MC-029H:health 是只读档(Agent 可读,不受 list 的 blocked 牵连)",
+      policyFor("unattendedPlans.health").level, "read");
+    eq("★ MC-029H:list 仍是 blocked(治理视图不开给 Agent)", policyFor("unattendedPlans.list").level, "blocked");
+
+    mkProject("p_utpf_health", UTPF_DIR);
+    headless();
+    fresh(); setGrantStore(null); setUnattendedPlanStore(null);
+    assembleGrantStore(DATA); assembleUnattendedPlanStore(DATA); headless();
+    const healthPath = planStorePath;
+
+    // ① 健康路径(state=ok,防空过):有效存档。
+    const okApprove = await call<{ ok: boolean }>(
+      IPC.UNATTENDED_APPROVE, planBody("p_utpf_health", { planId: "plan_health_ok", maxCount: 2 }),
+    );
+    check("★ MC-029H:正控 approve 成功(夹具)", okApprove.ok === true, okApprove);
+    const healthy = await call<{ archiveHealth: { state: string; reason?: string } }>(IPC.UNATTENDED_PLANS_HEALTH);
+    eq("★ MC-029H:健康存档 → state=ok", healthy.archiveHealth.state, "ok");
+    eq("★ MC-029H:健康时不给 reason(不塞恒空字段)", healthy.archiveHealth.reason, undefined);
+
+    // ② corrupt → state=corrupt,带可读原因。
+    writeFileSync(healthPath, "{ \"version\": 1, \"plans\": [ {\"plan", "utf8");
+    setUnattendedPlanStore(null);
+    assembleUnattendedPlanStore(DATA); headless();
+    const corrupt = await call<{ archiveHealth: { state: string; reason?: string } }>(IPC.UNATTENDED_PLANS_HEALTH);
+    eq("★ MC-029H:坏内容 → state=corrupt", corrupt.archiveHealth.state, "corrupt");
+    check("★ MC-029H:corrupt 带可读原因(含文件名)", (corrupt.archiveHealth.reason ?? "").includes("unattended-plans.json"), corrupt.archiveHealth);
+    // list 照旧拒绝(形状不变),但 health 给了结构化的同一条事实。
+    const listRejected = (await call(IPC.UNATTENDED_PLANS_LIST).catch(() => null)) === null;
+    eq("★ MC-029H:corrupt 时 list 仍拒绝(既有语义不变)", listRejected, true);
+
+    // ③ unreadable(权限/IO)与 corrupt 分开:注入一个"文件在但读不了"的持久化。
+    //    真文件 EACCES 在 Windows 上不稳定,故在**同一份真装配**外面换掉活单例的持久层 ——
+    //    判据仍走生产 `archiveHealth()`(healthDetail 抛 → unreadable)。
+    {
+      const { UnattendedPlanStore, setUnattendedPlanStore: setStore } = await import("@main/appServices/unattendedPlanStore.js");
+      const unreadableStore = new UnattendedPlanStore({
+        persist: {
+          load: () => [],
+          save: () => {},
+          health: () => "absent",
+          healthDetail: () => { throw new Error("EACCES: injected"); },
+        },
+      });
+      setStore(unreadableStore);
+      const unreadable = await call<{ archiveHealth: { state: string; reason?: string } }>(IPC.UNATTENDED_PLANS_HEALTH);
+      eq("★ MC-029H:读不了 → state=unreadable(与 corrupt 分开)", unreadable.archiveHealth.state, "unreadable");
+      check("★ MC-029H:unreadable 的原因点明是读取问题(不是内容损坏)",
+        (unreadable.archiveHealth.reason ?? "").includes("读不了") && !(unreadable.archiveHealth.reason ?? "").includes("读不懂"),
+        unreadable.archiveHealth);
+      // list 对 unreadable 也拒绝(不许把读不了说成"没有计划")。
+      const listUnreadable = (await call(IPC.UNATTENDED_PLANS_LIST).catch(() => null)) === null;
+      eq("★ MC-029H:unreadable 时 list 同样拒绝(不谎报空表)", listUnreadable, true);
+    }
+
+    // ④ 恢复后 state 回到 ok。
+    writeFileSync(healthPath, readFileSync(join(DATA, "appControl", "unattended-plans.json"), "utf8") === "" ? "" : JSON.stringify({ version: 1, plans: [] }), "utf8");
+    setUnattendedPlanStore(null);
+    assembleUnattendedPlanStore(DATA); headless();
+    const recovered = await call<{ archiveHealth: { state: string } }>(IPC.UNATTENDED_PLANS_HEALTH);
+    eq("★ MC-029H:修好后 state 回到 ok", recovered.archiveHealth.state, "ok");
+  }
+
   // 复位,免得把落了盘的示例计划带进后续用例。
   setUnattendedPlanStore(null);
   setGrantStore(null);

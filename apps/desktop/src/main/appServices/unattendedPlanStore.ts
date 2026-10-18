@@ -34,6 +34,7 @@
  * 恢复的字节,不算损坏。唯一条纪律是**绝不**把读不懂的东西当成一份有效计划去执行。
  */
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import type { BlobIO } from "@main/appControl/grantStoreFile.js";
 import { atomicFileBlob } from "@main/appControl/grantStoreFile.js";
 import type { UnattendedOperation } from "./unattendedTaskPlan.js";
@@ -96,6 +97,12 @@ export interface UnattendedPlanStorePersist {
    * 可选:自定义持久化(测试桩)不实现它时按 `absent` 处理(不阻塞写入)。
    */
   health?(): UnattendedPlanStoreHealth;
+  /**
+   * 【MC-029 剩余项】比 {@link health} 更细的**四态**诊断:`unreadable`(文件在但读不了,
+   * 权限 / IO 错误)与 `corrupt`(内容读不懂)分开。`BlobIO.read()` 把读错误吞成 `null`,
+   * 所以只能由**真文件**那层回答;测试桩不实现时退回 {@link health} 的判据。
+   */
+  healthDetail?(): "ok" | "corrupt" | "unreadable";
 }
 
 /** 存档健康度:不存在 / 有效 / 损坏(读不懂)。 */
@@ -202,6 +209,39 @@ export function fileUnattendedPlanPersist(blob: BlobIO): UnattendedPlanStorePers
     // (文件头 / 与 GrantStore 同姿势),而 `@main/lib/logger` 依赖 electron。上报由持有核的
     // `isArchiveCorrupt()` 与调用方(装配层)负责(硬规矩 3 的"显式报出来"落在那里)。
     health: () => classifyUnattendedPlanArchive(blob.read()),
+    // 【MC-029 剩余项】`BlobIO.read()` 把「读不了」吞成 null,分不出来 —— 这里没有真文件的
+    // 读错误信息,只能退回 `health` 的判据(测试桩走这条)。真文件层见
+    // {@link fileUnattendedPlanPersistOnDisk}。
+    healthDetail: () => {
+      const h = classifyUnattendedPlanArchive(blob.read());
+      return h === "corrupt" ? "corrupt" : "ok";
+    },
+  };
+}
+
+/**
+ * 【MC-029 剩余项】真文件版的持久化 —— 与 {@link fileUnattendedPlanPersist} 同一份读写,
+ * 只是**保留读错误**这一层:文件在但 `readFileSync` 抛(EACCES / EIO…)→ `unreadable`;
+ * 不存在(`ENOENT`)→ `ok`(真空);内容坏 → `corrupt`。
+ *
+ * 为什么不在 `atomicFileBlob` 里改:`BlobIO` 的契约(读不了 → null)是 `grantStoreFile`
+ * 与 hook 授权的**共用约定**,改它会影响两套已经闭合的存档;这层细分只对需要
+ * `unreadable` 诊断的计划存档开放。
+ */
+export function fileUnattendedPlanPersistOnDisk(file: string): UnattendedPlanStorePersist {
+  const blob = atomicFileBlob(file);
+  return {
+    ...fileUnattendedPlanPersist(blob),
+    healthDetail: () => {
+      let text: string;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return "ok"; // 真空
+        return "unreadable"; // 权限 / IO:文件在,读不了
+      }
+      return classifyUnattendedPlanArchive(text) === "corrupt" ? "corrupt" : "ok";
+    },
   };
 }
 
@@ -236,6 +276,22 @@ export class UnattendedPlanStore {
   /** 存档此刻是否处于「读不懂、已拒绝写入」状态(供诊断 / 测试)。 */
   isArchiveCorrupt(): boolean {
     return this.corrupt;
+  }
+
+  /**
+   * 【MC-029 剩余项】**结构化健康度** —— `ok` / `corrupt` / `unreadable`。
+   *
+   * `corrupt` 是**载入时**定下的(写侧闸与它同一枚标记);`unreadable` 是**此刻现问**
+   * 持久层得到的(文件可能在运行期被改权限 —— 载入时读得动、之后读不动)。现问失败
+   * (持久层没实现 `healthDetail`)时退回载入时的 `corrupt` 判定。
+   */
+  archiveHealth(): "ok" | "corrupt" | "unreadable" {
+    if (this.corrupt) return "corrupt";
+    try {
+      return this.persist?.healthDetail?.() ?? "ok";
+    } catch {
+      return "unreadable";
+    }
   }
 
   /** 写入 / 覆盖一份计划记录(重试是同一 planId 的覆盖)。落盘走可注入的 persist。 */
@@ -315,7 +371,9 @@ export function setUnattendedPlanStore(store: UnattendedPlanStore | null): void 
  */
 export function assembleUnattendedPlanStore(dataRoot: string): UnattendedPlanStore {
   const store = new UnattendedPlanStore({
-    persist: fileUnattendedPlanPersist(atomicFileBlob(unattendedPlanStorePath(dataRoot))),
+    // 【MC-029 剩余项】真文件版:保留「文件在但读不了」这一层,`archiveHealth()` 才能
+    // 把 `unreadable` 与 `corrupt` 分开。
+    persist: fileUnattendedPlanPersistOnDisk(unattendedPlanStorePath(dataRoot)),
   });
   setUnattendedPlanStore(store);
   return store;

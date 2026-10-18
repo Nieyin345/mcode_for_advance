@@ -31,6 +31,12 @@ export const en = {
   "unattended.refresh": "Refresh",
   "unattended.pendingEmpty": "No pending plans",
   "unattended.pendingEmptyDesc": "Once you approve a plan it shows up here — it survives restarts, and you can resume or explicitly abandon it.",
+  // 【MC-029 剩余项】Archive health (structured diagnosis): bad content and unreadable file
+  // are different problems with different recovery steps.
+  "unattended.archiveHealth.corrupt": "The plan archive is corrupt (content unreadable) — the reason and recovery steps below come from the archive core.",
+  "unattended.archiveHealth.unreadable": "The plan archive cannot be read (permissions or disk error) — this is not corrupt content; fix read access first.",
+  "unattended.archiveHealth.recovery":
+    "Recovery: find unattended-plans.json under <data root>/appControl/ — repair the JSON (or back it up and delete it), then restart. Writes to the archive are disabled, so the original file will not be overwritten.",
   "unattended.planKind.resumable": "Resumable",
   "unattended.planKind.waiting_approval": "Waiting approval",
   "unattended.planKind.completed": "Completed",
