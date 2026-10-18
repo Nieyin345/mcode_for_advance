@@ -850,6 +850,20 @@ const theme: Api["theme"] = {
   set: (input) => themeSet(input),
 };
 
+/** 【ARC-007】受控文档视图宿主:视图是**那台电脑主窗口**的原生子视图,手机端既
+ *  没有窗口也没有 WebContentsView。显式列出整个命名空间(与 publicMcp 同一规矩):
+ *  少列一个方法 = `api.documentView.close` 在手机上变成 undefined 调用,共用组件在
+ *  effect 里调用会让 React 19 整棵卸载。 */
+const documentView: Api["documentView"] = {
+  open: () => webUnsupported("documentView.open"),
+  bounds: () => webUnsupported("documentView.bounds"),
+  show: () => webUnsupported("documentView.show"),
+  hide: () => webUnsupported("documentView.hide"),
+  focus: () => webUnsupported("documentView.focus"),
+  close: () => webUnsupported("documentView.close"),
+  list: () => webUnsupported("documentView.list"),
+};
+
 const shell: Api["shell"] = {
   // No OS shell surface in a phone browser — resolve as no-ops so any
   // "open folder"-style call from shared UI degrades silently.
@@ -995,6 +1009,7 @@ export function createWebApi(): Api {
     } satisfies Api["modules"],
     project,
     session,
+    documentView,
     provider,
     customModel,
     webBridge,

@@ -10,10 +10,11 @@ import { basename, dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import { isOnlyOfficeSupportedPath, isOnlyOfficeViewOnlyPath, type FileViewMode } from "@contracts/ipc";
 import { GenofficeDocumentPane } from "./GenofficeDocumentPane.js";
+import { GenofficeViewHostPane } from "./GenofficeViewHostPane.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
-import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff, IconArrowLeft, IconArrowRight } from "@renderer/lib/icons.js";
+import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff, IconArrowLeft, IconArrowRight, IconWorld } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { ChunkedMarkdown } from "../chat/ChunkedMarkdown.js";
 import { PdfPreview } from "../library/PdfPreview.js";
@@ -127,6 +128,12 @@ export function FileEditor({
     pid ? s.ideFileViewModeByProject[pid]?.[filePath] : undefined,
   );
   const useGenoffice = office && genofficeReady && viewModePref === "genoffice";
+  /**
+   * 【ARC-007】可视化编辑视图（受控 WebContentsView）与结构化视图**并列**、不互相
+   * 取代：结构化视图无宿主也能用（诊断/回退面），可视化视图依赖 GenOffice 编辑器页
+   * 的构建产物。两个偏好都只经工具栏显式进入，默认档一个字没动。
+   */
+  const useGenofficeView = office && genofficeReady && viewModePref === "genoffice-view";
   const defaultMode: FileViewMode = markdown || office
     ? "wysiwyg"
     : isPdfFile(filePath)
@@ -164,7 +171,12 @@ export function FileEditor({
   //  - wysiwyg: Markdown 的所见即所得（Milkdown），或 OnlyOffice 文档编辑器。
   // Markdown 的旧 preview 偏好只在此适配，不改其他文件/项目的已保存偏好。
   //  - edit: the normal editable Monaco instance (default for non-md files).
-  const effectiveMode: FileViewMode = useGenoffice
+  //  - 【ARC-007】genoffice / genoffice-view: 用户显式选择的 GenOffice 结构化视图 /
+  //    可视化编辑视图（见上面 useGenofficeView 的说明）。两者互斥（同一时刻只有
+  //    一个偏好值），且都只在 office 文件上生效。
+  const effectiveMode: FileViewMode = useGenofficeView
+    ? "genoffice-view"
+    : useGenoffice
     ? "genoffice"
     : office
     ? "wysiwyg"
@@ -196,6 +208,11 @@ export function FileEditor({
         onToggleGenoffice={() =>
           setViewMode(filePath, useGenoffice ? "wysiwyg" : "genoffice")
         }
+        genofficeViewActive={useGenofficeView}
+        canUseGenofficeView={office && genofficeReady}
+        onToggleGenofficeView={() =>
+          setViewMode(filePath, useGenofficeView ? "wysiwyg" : "genoffice-view")
+        }
         isImage={image}
         isUnsupported={unsupported}
         onTogglePreview={() =>
@@ -219,6 +236,8 @@ export function FileEditor({
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
         ) : effectiveMode === "genoffice" ? (
           <GenofficeDocumentPane key={filePath} filePath={filePath} />
+        ) : effectiveMode === "genoffice-view" ? (
+          <GenofficeViewHostPane key={filePath} filePath={filePath} />
         ) : effectiveMode === "wysiwyg" ? (
           office ? (
             <OnlyOfficeEditorPane
@@ -265,6 +284,7 @@ const TOGGLE_LABEL_KEY = {
   preview: "ide.editor.toggleEdit",
   wysiwyg: "ide.editor.toggleSource",
   genoffice: "ide.editor.toggleSource",
+  "genoffice-view": "ide.editor.toggleSource",
 } as const satisfies Record<FileViewMode, string>;
 
 const TOGGLE_TITLE_KEY = {
@@ -273,6 +293,7 @@ const TOGGLE_TITLE_KEY = {
   preview: "ide.editor.switchToSource",
   wysiwyg: "ide.editor.switchToSourceView",
   genoffice: "ide.editor.switchToSourceView",
+  "genoffice-view": "ide.editor.switchToSourceView",
 } as const satisfies Record<FileViewMode, string>;
 
 /** Markdown 两档（Milkdown ↔ 源码）。与图片/二进制预览按钮分开，避免误导。 */
@@ -282,6 +303,7 @@ const MARKDOWN_TOGGLE_LABEL_KEY = {
   preview: "ide.editor.toggleEdit",
   wysiwyg: "ide.editor.toggleSource",
   genoffice: "ide.editor.toggleSource",
+  "genoffice-view": "ide.editor.toggleSource",
 } as const satisfies Record<FileViewMode, string>;
 const MARKDOWN_TOGGLE_TITLE_KEY = {
   edit: "ide.editor.switchToMarkdownEdit",
@@ -289,6 +311,7 @@ const MARKDOWN_TOGGLE_TITLE_KEY = {
   preview: "ide.editor.switchToMarkdownEdit",
   wysiwyg: "ide.editor.switchToSourceView",
   genoffice: "ide.editor.switchToSourceView",
+  "genoffice-view": "ide.editor.switchToSourceView",
 } as const satisfies Record<FileViewMode, string>;
 
 function EditorToolbar({
@@ -304,6 +327,9 @@ function EditorToolbar({
   canUseGenoffice,
   genofficeActive,
   onToggleGenoffice,
+  canUseGenofficeView,
+  genofficeViewActive,
+  onToggleGenofficeView,
   editorMode,
   onToggleEditorMode,
 }: {
@@ -320,6 +346,11 @@ function EditorToolbar({
   canUseGenoffice: boolean;
   genofficeActive: boolean;
   onToggleGenoffice: () => void;
+  /** 【ARC-007】可视化编辑视图（受控 WebContentsView）—— 与结构化视图同一条
+   *  gating 判据（GenOffice CLI 就绪），但命中不同的偏好档。 */
+  canUseGenofficeView: boolean;
+  genofficeViewActive: boolean;
+  onToggleGenofficeView: () => void;
   editorMode: "tabs" | "replace";
   onToggleEditorMode: () => void;
 }) {
@@ -515,6 +546,23 @@ function EditorToolbar({
           >
             <IconEye size={12} />
             {t("ide.genoffice.toggle")}
+          </button>
+        )}
+        {/* 【ARC-007】可视化编辑视图 —— 与结构化视图并列的第二档；默认不进入
+            （默认档仍是 OnlyOffice），只有用户显式点它才切过去。 */}
+        {canUseGenofficeView && (
+          <button
+            type="button"
+            onClick={onToggleGenofficeView}
+            className={cn(
+              "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
+              "text-content-muted hover:bg-surface-hover hover:text-content",
+              genofficeViewActive && "text-accent",
+            )}
+            title={t("ide.genoffice.viewHostHint")}
+          >
+            <IconWorld size={12} />
+            {t("ide.genoffice.viewHost")}
           </button>
         )}
         {/* Office files stay in OnlyOffice. Other previewable binary types

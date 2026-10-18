@@ -1077,11 +1077,15 @@ export type GitDiffOpenMode = z.infer<typeof GitDiffOpenModeSchema>;
  *  - "preview": rendered Markdown preview (read-only)
  *  - "wysiwyg": 所见即所得编辑（只有 Markdown 用；MDXEditor，工具栏 + 表格/公式/链接）
  *  - "genoffice": 【ARC-007】GenOffice 文档视图（结构化只读；CLI 就绪且用户显式选择时）
+ *  - "genoffice-view": 【ARC-007】GenOffice **可视化编辑视图**（受控 WebContentsView，
+ *    见 `GenofficeViewHostPane`）。与 "genoffice" 并列而不是替换它：结构化视图是
+ *    无宿主也能用的诊断/回退面，可视化视图依赖编辑器页构建与 `documentView.*` 宿主，
+ *    两者任一不可用时另一条仍可达。**不是默认档** —— 既有默认逐字不变。
  *
  *  Markdown 默认走 **"wysiwyg"**（2026-09-21 用户改的：点开就该能改，
  *  不是先看点不动的一屏），源码视图 / 预览仍然在工具栏上一键可切。
  *  纯渲染端状态，不过 IPC 校验。 */
-export type FileViewMode = "edit" | "diff" | "preview" | "wysiwyg" | "genoffice";
+export type FileViewMode = "edit" | "diff" | "preview" | "wysiwyg" | "genoffice" | "genoffice-view";
 
 /* ── Settings ── */
 export const GetSettingSchema = z.object({ key: z.string() });
