@@ -319,7 +319,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "browser.vaultStatus",
   "channel": "browser:vaultStatus",
-  "doc": "【MC-023】Cookie 保管库健康态:加密是否可用、持久化是否在保存、已保存多少条、 是否擦过旧明文、最近一次被拒的原因。设置界面据此显示\"加密不可用、已停用 持久化(原因)\" —— 不再有静默的明文降级。",
+  "doc": "【MC-023】Cookie 保管库健康态:加密是否可用、持久化是否在保存、已保存多少条、 是否擦过旧明文、最近一次保存被拒/恢复失败的原因。设置界面据此显示\"加密不可用、 已停用持久化(原因)\"与\"这次启动登录态没恢复(原因)\" —— 不再有静默的明文降级, 也不再让「解不开密文」与「没有 Cookie」同形。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
   "output": "{ encryptionAvailable: boolean // safeStorage(系统钥匙串/DPAPI)现在是否可用 —— 不可用时不保存 Cookie。; persistLogin: boolean // 用户是否开着「记住网站登录状态」。; savedCount: number // 上次成功保存的 Cookie 条数(-1 = 本进程还没保存过)。; plaintextErased: boolean // 本次进程是否擦除过旧版本留下的明文保管库字段。; lastError: string | …"

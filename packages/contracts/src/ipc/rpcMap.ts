@@ -455,8 +455,10 @@ export interface RpcMap {
   /** Recursive file search under a project root (composer @ / add-context). */
   "file.search": (input: FileSearchInput) => Promise<FileSearchResult>;
   /** Write content to a file (creates parents), scoped to a project root. */
-  /** 【MC-097】`conflict:true` = 带 `expectedVersion` 的 CAS 冲突(磁盘已被改动,未写)。 */
-  "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean; conflict?: boolean }>;
+  /** 【MC-097】`conflict:true` = 带 `expectedVersion` 的 CAS 冲突(磁盘已被改动,未写)。
+   *  【MC-024】冲突时本次 `content` **不丢**:另存为同目录 `<name>.conflict-<ISO 时间戳><ext>`
+   *  并把落盘路径回在 `conflictPath`(副本写入失败时缺省 —— 此时回包仍是冲突,只是没有副本)。 */
+  "file.writeFile": (input: FileWriteInput) => Promise<{ ok: boolean; conflict?: boolean; conflictPath?: string }>;
   /** Create a directory (recursive), scoped to a project root. */
   "file.mkdir": (input: FileMkdirInput) => Promise<{ ok: boolean }>;
   /** Delete a file or directory (moves to system trash), scoped to a project root. */
@@ -580,8 +582,9 @@ export interface RpcMap {
    *  restart via restoreCookieVault. */
   "browser.clearCookies": () => Promise<BrowserOpResult>;
   /** 【MC-023】Cookie 保管库健康态:加密是否可用、持久化是否在保存、已保存多少条、
-   *  是否擦过旧明文、最近一次被拒的原因。设置界面据此显示"加密不可用、已停用
-   *  持久化(原因)" —— 不再有静默的明文降级。 */
+   *  是否擦过旧明文、最近一次保存被拒/恢复失败的原因。设置界面据此显示"加密不可用、
+   *  已停用持久化(原因)"与"这次启动登录态没恢复(原因)" —— 不再有静默的明文降级,
+   *  也不再让「解不开密文」与「没有 Cookie」同形。 */
   "browser.vaultStatus": () => Promise<BrowserVaultStatus>;
   /** Remove one entry from the address-bar history. */
   "browser.historyRemove": (input: BrowserHistoryRemoveInput) => Promise<BrowserOpResult>;

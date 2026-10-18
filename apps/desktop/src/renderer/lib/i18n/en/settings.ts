@@ -245,6 +245,8 @@ export const en = {
   "settings.browser.persistLogin": "Remember sign-in state",
   "settings.browser.persistLoginDesc": "When enabled, all browser cookies — including session cookies from sites where you didn't check \"remember me\" — are saved on quit and restored on the next launch, so signed-in sites survive restarts. A site can still expire the session server-side.",
   "settings.browser.vaultEncryptionUnavailable": "The system credential store (keychain/DPAPI) is unavailable, so cookies cannot be encrypted. To avoid writing them in plaintext, cookies will not be saved — you'll need to sign in again after a restart.",
+  "settings.browser.vaultSaveFailed": "Cookies could not be saved",
+  "settings.browser.vaultRestoreFailed": "Cookies could not be restored",
   "settings.browser.vaultPlaintextErased": "A plaintext cookie record left by an older version was found and erased (plaintext persistence is retired).",
   "settings.browser.sectionCache": "Cache",
   "settings.lsp.section": "Server list",

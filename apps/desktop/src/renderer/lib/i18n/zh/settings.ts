@@ -248,6 +248,8 @@ export const zh = {
   "settings.browser.persistLogin": "记住网站登录状态",
   "settings.browser.persistLoginDesc": "开启后,应用会在退出前保存浏览器的全部 Cookie(包括未勾选「记住我」网站的会话 Cookie),下次启动自动恢复,已登录的网站无需重新登录;网站服务器端使会话过期时仍需重新登录。",
   "settings.browser.vaultEncryptionUnavailable": "系统凭据存储(钥匙串/DPAPI)当前不可用,Cookie 无法加密 —— 为避免明文落盘,本次不会保存 Cookie,重启后需要重新登录。",
+  "settings.browser.vaultSaveFailed": "Cookie 未能保存",
+  "settings.browser.vaultRestoreFailed": "Cookie 未能恢复",
   "settings.browser.vaultPlaintextErased": "检测到旧版本留下的明文 Cookie 记录,已清除(明文持久化已停用)。",
   "settings.browser.sectionCache": "缓存",
   "settings.lsp.section": "服务器列表",

@@ -52,11 +52,18 @@ export function setRecords(): string[] {
 export function resetSetRecords(): void {
   restoredSets.length = 0;
 }
+/** 【MC-023】让 `cookies.set()` 全部抛错 —— 验「一条都没注入成功」时状态页如实报错,
+ *  而不是与「没有可恢复的 Cookie」同形。 */
+let setThrows = false;
+export function setCookiesSetThrows(v: boolean): void {
+  setThrows = v;
+}
 const fakeCookies = {
   async get(): Promise<unknown[]> {
     return fakeCookieList.map((c) => ({ session: false, ...c }));
   },
   async set(details: { name: string; value: string }): Promise<void> {
+    if (setThrows) throw new Error(`fake session refused cookie ${details.name}`);
     restoredSets.push(`${details.name}=${details.value}`);
     await gate;
   },
@@ -183,9 +190,19 @@ export function setEncryptionAvailable(v: boolean): void {
   encryptionAvailable = v;
 }
 
+/** 【MC-023】"加密可用、但 encryptString 抛错" —— 真机上 DPAPI/钥匙串也可能在
+ *  可用性检查通过后仍然加密失败(锁定/权限)。测试用它验「抛错同样不落明文」。 */
+let encryptThrows = false;
+export function setEncryptThrows(v: boolean): void {
+  encryptThrows = v;
+}
+
 export const safeStorage = {
   isEncryptionAvailable: (): boolean => encryptionAvailable,
-  encryptString: (s: string): Buffer => Buffer.from(`enc:${s}`, "utf8"),
+  encryptString: (s: string): Buffer => {
+    if (encryptThrows) throw new Error("fake keychain locked");
+    return Buffer.from(`enc:${s}`, "utf8");
+  },
   decryptString: (b: Buffer): string => {
     const t = b.toString("utf8");
     if (!t.startsWith("enc:")) throw new Error("not encrypted by this fake keychain");

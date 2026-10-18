@@ -284,5 +284,39 @@ console.log("\n【M25】登录开关:凭据保管库状态读失败 → 错误�
   check("★ 重试成功后保管库错误行消失", !hasErrorRow(), hasErrorRow());
 }
 
+/* ───────────── ⑪ 登录开关:保存被拒/恢复失败的**原因**在界面上可见 ───────────── */
+
+console.log("\n【MC-023】登录开关:保管库保存被拒 / 恢复失败的原因要在设置页看得到");
+{
+  // 保存侧原因(加密抛错/旧明文擦除失败):主进程 vaultStatus().lastError。
+  stub.resetApiStub();
+  stub.seedSetting(BROWSER_PERSIST_LOGIN_SETTING_KEY, "1");
+  stub.seedVaultStatus({ encryptionAvailable: true, lastError: "SYNTHETIC_SAVE_REASON_7" });
+  __mount(() => PersistLoginRow());
+  await __flush();
+  const serialized = JSON.stringify(deepNodes().map((n) => n.props));
+  check("★ 保存被拒的具体原因出现在界面上(不是只进日志)", serialized.includes("SYNTHETIC_SAVE_REASON_7"), {});
+  check("★ 保存被拒有错误行(带标题,不是裸字符串)", hasErrorRow(), hasErrorRow());
+}
+{
+  // 恢复侧原因(密文解不开/内容坏/全部注入被拒):主进程 vaultStatus().restoreError。
+  stub.resetApiStub();
+  stub.seedSetting(BROWSER_PERSIST_LOGIN_SETTING_KEY, "1");
+  stub.seedVaultStatus({ restoreError: "SYNTHETIC_RESTORE_REASON_9" });
+  __mount(() => PersistLoginRow());
+  await __flush();
+  const serialized = JSON.stringify(deepNodes().map((n) => n.props));
+  check("★ 恢复失败的具体原因出现在界面上(从前解不开=没 Cookie)", serialized.includes("SYNTHETIC_RESTORE_REASON_9"), {});
+  check("★ 恢复失败有错误行(用户知道为什么要重新登录)", hasErrorRow(), hasErrorRow());
+}
+{
+  // 健康路径(防空过):无 lastError / restoreError → 一条保管库错误行都不该出现。
+  stub.resetApiStub();
+  stub.seedSetting(BROWSER_PERSIST_LOGIN_SETTING_KEY, "1");
+  __mount(() => PersistLoginRow());
+  await __flush();
+  check("★ 健康路径:没有保管库错误行(防「永远在报」)", !hasErrorRow(), hasErrorRow());
+}
+
 console.log(`\nsettings-form-lifecycle-smoke:${checks - failures}/${checks} 通过`);
 process.exit(failures === 0 ? 0 : 1);

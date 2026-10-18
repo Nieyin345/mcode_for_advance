@@ -252,6 +252,21 @@ export function PersistLoginRow() {
               {t("settings.browser.vaultEncryptionUnavailable")}
             </div>
           )}
+          {/* 【MC-023】保存被拒的**具体原因**(加密抛错/旧明文擦除失败)—— 只有布尔位
+              不够:encryptionAvailable=true 而 encryptString 抛错时上面那条不会出现,
+              用户却同样没存上 Cookie。原因来自主进程 vaultStatus().lastError。 */}
+          {enabled && vault?.lastError && (
+            <ErrorNote title={t("settings.browser.vaultSaveFailed")} tone="warning" className="mt-1">
+              {vault.lastError}
+            </ErrorNote>
+          )}
+          {/* 【MC-023】这次启动登录态没恢复的原因(密文解不开/内容损坏/全部注入被拒)。
+              从前解不开只进日志,界面与"没存过 Cookie"同形 —— 用户只看到莫名其妙要重登。 */}
+          {enabled && vault?.restoreError && (
+            <ErrorNote title={t("settings.browser.vaultRestoreFailed")} tone="warning" className="mt-1">
+              {vault.restoreError}
+            </ErrorNote>
+          )}
           {/* 保管库状态读不到 → 说清楚(上面那条警告是否成立未知),带重试。
               复用通用的「读取失败 + 原因」形态,不新增文案(这一行同时至多只有
               一条读错误,两种读互斥:设置没读成功时保管库状态根本不发请求)。 */}

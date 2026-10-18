@@ -209,6 +209,7 @@ export const BrowserManager = {
       savedCount: 0,
       plaintextErased: false,
       lastError: null,
+      restoreError: null,
     });
   },
 

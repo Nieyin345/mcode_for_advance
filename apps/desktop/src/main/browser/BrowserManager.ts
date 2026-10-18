@@ -1049,10 +1049,15 @@ class BrowserManagerImpl {
 
   /**
    * 【MC-023】保管库的当前健康态 —— 设置界面据此区分「在保存」「加密不可用、
-   * 持久化已停用(以及为什么)」「有旧明文被清掉」。
+   * 持久化已停用(以及为什么)」「有旧明文被清掉」「保存被拒」「恢复失败」。
    *
    * `encryptionAvailable` 每次都现问 safeStorage(它可能随系统钥匙串状态变化);
    * `plaintextErased` 在本次进程里擦了旧明文字段后置位(只报事实,不是状态机)。
+   *
+   * `lastError` 是**保存侧**(加密失败/写盘被拒/旧明文擦除失败)的最近原因;
+   * `restoreError` 是**恢复侧**(密文解不开/钥匙串不可用/内容损坏)的最近原因。
+   * 两者分开:一次成功的保存不该把「上次重启时登录态没恢复」这句话抹掉 ——
+   * 恢复失败 ≠ 没存过 Cookie,用户必须能在设置页看到为什么又要重新登录。
    */
   vaultStatus(): {
     encryptionAvailable: boolean;
@@ -1060,13 +1065,15 @@ class BrowserManagerImpl {
     savedCount: number;
     plaintextErased: boolean;
     lastError: string | null;
+    restoreError: string | null;
   } {
     return {
       encryptionAvailable: safeStorage.isEncryptionAvailable(),
       persistLogin: isPersistLoginEnabled(),
       savedCount: Math.max(0, this.lastVaultSaved),
       plaintextErased: this.plaintextVaultErased,
-      lastError: this.vaultLastError,
+      lastError: this.vaultLastError ?? this.legacyEraseError,
+      restoreError: this.vaultRestoreError,
     };
   }
 
@@ -1087,7 +1094,13 @@ class BrowserManagerImpl {
         log.warn("browser: legacy plaintext cookie vault erased (plaintext persistence is retired)");
         return true;
       }
+      // 确认字段为空/不存在(且这次读没抛)→ 上一次的擦除失败原因不再成立,清掉。
+      this.legacyEraseError = null;
     } catch (err) {
+      // 【MC-023】擦不掉旧明文是**安全面**的失败:盘上躺着一份凭据副本,而这次进程
+      // 以为它已退役。从前只写一行日志 —— 设置页看不到,用户也就无从知道"明文已停用"
+      // 这句话此刻不成立。原因进 vaultStatus().lastError。
+      this.legacyEraseError = `旧版明文 Cookie 记录清除失败,盘上可能仍留有明文:${err instanceof Error ? err.message : String(err)}`;
       log.warn(
         `browser: legacy plaintext cookie vault erase failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -1133,9 +1146,9 @@ class BrowserManagerImpl {
         log.warn("browser: safeStorage unavailable — cookie vault save skipped (plaintext persistence is retired)");
       }
     } catch (err) {
-      this.vaultLastError = `加密失败,本次不保存 Cookie:${err instanceof Error ? err.message : String(err)}`;
+      this.vaultLastError = `加密或落盘失败,本次不保存 Cookie:${err instanceof Error ? err.message : String(err)}`;
       log.warn(
-        `browser: cookie vault encryption failed (save skipped, plaintext refused): ${err instanceof Error ? err.message : String(err)}`,
+        `browser: cookie vault save failed (save skipped, plaintext refused): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     if (encrypted) {
@@ -1176,10 +1189,19 @@ class BrowserManagerImpl {
   private plaintextVaultErased = false;
   /** 【MC-023】最近一次保存被拒的原因(加密不可用/失败),成功即清。 */
   private vaultLastError: string | null = null;
+  /** 【MC-023】最近一次旧明文擦除失败的原因(擦成功即清)。 */
+  private legacyEraseError: string | null = null;
+  /** 【MC-023】最近一次**恢复**失败的原因(解不开/内容坏/钥匙串不可用)。
+   *  与保存侧的 lastError 分开 —— 一次成功保存不该抹掉「这次启动登录态没恢复」。
+   *  下一次恢复成功时清空。 */
+  private vaultRestoreError: string | null = null;
 
   private async restoreCookieVault(ses: Session): Promise<void> {
     if (this.vaultRestored.has(ses)) return;
     this.vaultRestored.add(ses);
+    // 【MC-023】每次恢复尝试从"无错"开始 —— 下面的失败分支各自写原因,成功走完
+    // 就把上一次启动留下的旧原因清掉(状态页报的是**最近一次**恢复的结论)。
+    this.vaultRestoreError = null;
     if (!isPersistLoginEnabled()) {
       // 【MC-023】持久化被关掉时,旧明文那行就是躺着的凭据 —— 直接擦。
       // (开启时不能在**这里**擦:下面还要把它读出来当一次性迁移来源。)
@@ -1189,16 +1211,26 @@ class BrowserManagerImpl {
     // Preferred source: safeStorage-encrypted vault. 【MC-023】密文解不开(如 DB
     // 行来自另一个系统用户)只如实记日志,不再回退明文 —— 明文字段已退役:
     // 还在的旧明文走下面那条一次性读取路径,读出来注入后立即擦除。
+    //
+    // ⚠️ **解不开 ≠ 没有 Cookie。** 从前这里只写一行日志就继续走「没有 raw → return」,
+    // 调用方/设置页都看到"没有可恢复的登录态"—— 与真的没存过同形。现在把原因写进
+    // `vaultRestoreError`,由 `vaultStatus()` 暴露给设置页(硬规矩 3);恢复成功才清。
     let raw: string | null = null;
     let fromLegacyPlaintext = false;
     const enc = SettingRepo.get(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY);
-    if (enc && safeStorage.isEncryptionAvailable()) {
-      try {
-        raw = safeStorage.decryptString(Buffer.from(enc, "base64"));
-      } catch (err) {
-        log.warn(
-          `browser: cookie vault decrypt failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+    if (enc) {
+      if (!safeStorage.isEncryptionAvailable()) {
+        this.vaultRestoreError =
+          "系统钥匙串/凭据存储不可用 —— 已保存的加密 Cookie 本次无法解密,登录状态没有恢复。";
+        log.warn("browser: cookie vault present but safeStorage unavailable — restore skipped");
+      } else {
+        try {
+          raw = safeStorage.decryptString(Buffer.from(enc, "base64"));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.vaultRestoreError = `已保存的 Cookie 密文解密失败 —— 登录状态没有恢复(可能是系统凭据存储或数据文件变化):${msg}`;
+          log.warn(`browser: cookie vault decrypt failed: ${msg}`);
+        }
       }
     }
     if (!raw) {
@@ -1209,14 +1241,20 @@ class BrowserManagerImpl {
     let vault: VaultCookie[];
     try {
       const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return;
+      if (!Array.isArray(parsed)) {
+        this.vaultRestoreError = "已保存的 Cookie 保管库内容损坏(不是数组),登录状态没有恢复。";
+        log.warn("browser: cookie vault is corrupt (not an array), ignoring");
+        return;
+      }
       vault = parsed as VaultCookie[];
-    } catch {
+    } catch (err) {
+      this.vaultRestoreError = `已保存的 Cookie 保管库内容损坏,登录状态没有恢复:${err instanceof Error ? err.message : String(err)}`;
       log.warn("browser: cookie vault is corrupt, ignoring");
       return;
     }
     const now = Math.floor(Date.now() / 1000);
     let restored = 0;
+    let rejected = 0;
     for (const c of vault) {
       if (!c || typeof c.name !== "string" || typeof c.domain !== "string" || !c.domain) continue;
       if (typeof c.expirationDate === "number" && c.expirationDate <= now) continue;
@@ -1245,12 +1283,18 @@ class BrowserManagerImpl {
         await ses.cookies.set(details);
         restored++;
       } catch (err) {
+        rejected++;
         log.warn(
           `browser: cookie vault restore failed for ${c.name}@${c.domain}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
     if (restored > 0) log.info(`browser: cookie vault restored (${restored} cookies)`);
+    // 【MC-023】一条都没注入成功而确实有可注入的条目 —— 这也是一种「登录态没恢复」,
+    // 从前只有逐条 warn、状态页一片空白。有成功的就不报(单条坏 cookie 很正常)。
+    if (restored === 0 && rejected > 0) {
+      this.vaultRestoreError = `已保存的 Cookie 全部注入失败(${rejected} 条被会话拒绝),登录状态没有恢复。`;
+    }
     // 【MC-023】旧明文读出来注入完就擦 —— 一次性的迁移读取,不留第二份副本。
     if (fromLegacyPlaintext) this.eraseLegacyPlaintextVault();
   }

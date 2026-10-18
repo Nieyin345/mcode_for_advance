@@ -207,6 +207,80 @@ el.setFakeCookies([
   SettingRepo.set(BROWSER_PERSIST_LOGIN_SETTING_KEY, "1");
 }
 
+{
+  // ⑤ 加密"可用"、但 encryptString 抛错(钥匙串锁定/权限):同样必须拒写 ——
+  //    不落密文、不落明文,且原因要能从 vaultStatus() 读到(设置页可见)。
+  el.setEncryptionAvailable(true);
+  el.setEncryptThrows(true);
+  SettingRepo.set(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY, "");
+  SettingRepo.set(BROWSER_COOKIE_VAULT_SETTING_KEY, "");
+  const res = await BrowserManager.saveCookieVault();
+  check("★ 加密抛错:保存如实报失败(ok=false),不假装成功", res.ok === false, res);
+  check("★ 加密抛错:密文行没有被写入", (SettingRepo.get(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY) ?? "") === "", {
+    enc: SettingRepo.get(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY),
+  });
+  check("★ 加密抛错:普通 settings 行里没有明文凭据原文", !(SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY) ?? "").includes(SECRET), {
+    row: SettingRepo.get(BROWSER_COOKIE_VAULT_SETTING_KEY),
+  });
+  const st = BrowserManager.vaultStatus();
+  check("★ 加密抛错:状态报出可见原因(不是只进日志)", typeof st.lastError === "string" && st.lastError.length > 0, st);
+  el.setEncryptThrows(false);
+}
+
+{
+  // ⑥ 解密失败 ≠ 没有 Cookie。密文在、钥匙串在,但内容解不开(如来自另一个系统用户 /
+  //    密钥环变了)—— 从前只写一行日志,状态页与「没存过」同形。现在必须报出可见错误。
+  el.setEncryptionAvailable(true);
+  SettingRepo.set(
+    BROWSER_COOKIE_VAULT_ENC_SETTING_KEY,
+    Buffer.from("ciphertext-from-another-keychain").toString("base64"),
+  );
+  SettingRepo.set(BROWSER_COOKIE_VAULT_SETTING_KEY, "");
+  el.resetSetRecords();
+  await BrowserManager.restoreCookieVaultForTest();
+  const st = BrowserManager.vaultStatus();
+  check(
+    "★ 解密失败:没有被当成「没有 Cookie」静默吞掉 —— 状态报出可见原因",
+    typeof st.restoreError === "string" && st.restoreError.length > 0,
+    st,
+  );
+  check("解密失败:没有任何 cookie 被注入(守卫,防空过)", el.setRecords().length === 0, el.setRecords());
+}
+
+{
+  // ⑦ 健康路径:密文可解 → 恢复成功,restoreError 必须清空(防「永远在报」的假修复,
+  //    也防 ⑥ 的原因黏住后续正常启动)。
+  const healthyVault = JSON.stringify([
+    { name: "sid", value: SECRET, domain: "example.com", hostOnly: true, path: "/", secure: true, httpOnly: true },
+  ]);
+  SettingRepo.set(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY, Buffer.from(`enc:${healthyVault}`, "utf8").toString("base64"));
+  el.resetSetRecords();
+  await BrowserManager.restoreCookieVaultForTest();
+  const st = BrowserManager.vaultStatus();
+  check("★ 健康路径:密文保管库能恢复登录态", el.setRecords().includes(`sid=${SECRET}`), el.setRecords());
+  check("★ 健康路径:恢复成功后没有残留错误(防「永远在报」)", st.restoreError === null, st);
+}
+
+{
+  // ⑧ 有可恢复的条目、但会话全部拒绝注入:这是「登录态没恢复」而不是「没有 Cookie」,
+  //    状态页必须如实报(从前只有逐条 warn,汇总口径一片空白)。
+  const healthyVault = JSON.stringify([
+    { name: "sid", value: SECRET, domain: "example.com", hostOnly: true, path: "/", secure: true, httpOnly: true },
+  ]);
+  SettingRepo.set(BROWSER_COOKIE_VAULT_ENC_SETTING_KEY, Buffer.from(`enc:${healthyVault}`, "utf8").toString("base64"));
+  el.setCookiesSetThrows(true);
+  el.resetSetRecords();
+  await BrowserManager.restoreCookieVaultForTest();
+  el.setCookiesSetThrows(false);
+  const st = BrowserManager.vaultStatus();
+  check(
+    "★ 全部注入被拒:状态如实报「登录态没有恢复」(不是静默空)",
+    typeof st.restoreError === "string" && st.restoreError.length > 0,
+    st,
+  );
+  check("全部注入被拒:确实没有 cookie 落进 session(守卫)", el.setRecords().length === 0, el.setRecords());
+}
+
 rmSync(DATA, { recursive: true, force: true });
 
 console.log(`\nbrowser-smoke(navigate):${total - failures}/${total} 通过`);

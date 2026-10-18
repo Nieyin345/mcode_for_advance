@@ -16,6 +16,15 @@ const failGetKeys = new Map<string, string>();
 const failSetKeys = new Map<string, string>();
 const vaultFailures: string[] = [];
 let vaultCalls = 0;
+/** `browser.vaultStatus()` 的成功回执。`seedVaultStatus` 覆盖默认值(健康态)。 */
+let vaultStatus: Record<string, unknown> = {
+  encryptionAvailable: true,
+  persistLogin: true,
+  savedCount: 0,
+  plaintextErased: false,
+  lastError: null,
+  restoreError: null,
+};
 
 export function seedSetting(key: string, value: string): void {
   values.set(key, value);
@@ -32,6 +41,10 @@ export function failNextVaultStatus(message: string): void {
 }
 export function vaultStatusCalls(): number {
   return vaultCalls;
+}
+/** 覆盖 `vaultStatus()` 的成功回执(不传的字段保持健康默认值)。 */
+export function seedVaultStatus(patch: Record<string, unknown>): void {
+  vaultStatus = { ...vaultStatus, ...patch };
 }
 export function getCalls(): string[] {
   return [...gets];
@@ -50,6 +63,14 @@ export function resetApiStub(): void {
   failSetKeys.clear();
   vaultFailures.length = 0;
   vaultCalls = 0;
+  vaultStatus = {
+    encryptionAvailable: true,
+    persistLogin: true,
+    savedCount: 0,
+    plaintextErased: false,
+    lastError: null,
+    restoreError: null,
+  };
 }
 
 export const api = {
@@ -80,13 +101,7 @@ export const api = {
       vaultCalls += 1;
       const failure = vaultFailures.shift();
       if (failure !== undefined) return Promise.reject(new Error(failure));
-      return Promise.resolve({
-        encryptionAvailable: true,
-        persistLogin: true,
-        savedCount: 0,
-        plaintextErased: false,
-        lastError: null,
-      });
+      return Promise.resolve(vaultStatus);
     },
   },
 };

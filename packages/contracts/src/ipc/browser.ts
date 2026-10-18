@@ -346,8 +346,11 @@ export interface BrowserVaultStatus {
   savedCount: number;
   /** 本次进程是否擦除过旧版本留下的明文保管库字段。 */
   plaintextErased: boolean;
-  /** 最近一次保存被拒的原因(加密不可用/失败);成功即 null。 */
+  /** 最近一次保存侧被拒的原因(加密不可用/失败/旧明文擦除失败);成功即 null。 */
   lastError: string | null;
+  /** 最近一次**恢复**侧失败的原因(密文解不开/内容损坏/全部注入被拒/钥匙串不可用)。
+   *  与 lastError 分开:一次成功保存不该抹掉「这次启动登录态没恢复」。恢复成功即 null。 */
+  restoreError: string | null;
 }
 
 /* ── Address history ──
