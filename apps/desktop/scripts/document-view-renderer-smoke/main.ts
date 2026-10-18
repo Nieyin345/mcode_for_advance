@@ -226,6 +226,23 @@ section("1. 编辑器页 URL 与 docId（纯函数）");
   check("★ 同路径两次得到同一个 docId（宿主复用语义）", id1 === id2, { id1, id2 });
   check("不同路径得到不同 docId", stableDocId("/workspace/other.docx") !== id1);
   check("docId 长度在契约上限内（≤200）", id1.length <= 200, id1.length);
+  // 【ARC-007】编辑器页若把资源引用写成绝对路径（`/assets/...`）或跨源 URL，
+  // `file://` 加载会白屏。构建产物是相对路径才说明这条路真能走通。
+  // 只在产物存在时断言 —— 没构建过时如实跳过（不假装验过）。
+  {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const htmlPath = path.join(process.cwd(), "..", "..", "genoffice", "apps", "docs", "out", "renderer", "index.html");
+    if (fs.existsSync(htmlPath)) {
+      const html = fs.readFileSync(htmlPath, "utf8");
+      const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]);
+      check("★ 编辑器页有资源引用（防空文件假绿）", refs.length > 0, refs.length);
+      check("★ 资源引用全是相对路径（file:// 才能加载）",
+        refs.every((r) => !r.startsWith("/") && !r.startsWith("//") && !/^[a-z]+:/i.test(r)), refs.slice(0, 5));
+    } else {
+      console.log("  skip 编辑器页产物不存在（genoffice/apps/docs/out 未构建）");
+    }
+  }
 
   // 两个套件类型：契约把 docId 限在 200 字符内，深路径要靠散列压短。
   const deepPath = "/workspace/" + "a/".repeat(180) + "deep.docx";
