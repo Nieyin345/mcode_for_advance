@@ -48,6 +48,8 @@ export interface WorkflowEngineLaunchSpec {
   args: (port: number, dataDir: string) => string[];
   dataDir: string;
   env?: NodeJS.ProcessEnv;
+  /** 宿主签发的控制面身份 —— 就绪探针据此确认「这是我们自己的引擎」（P1-3）。 */
+  probeIdentity?: { adminToken: string };
 }
 
 export interface WorkflowEngineHandlerPorts {
@@ -88,6 +90,7 @@ export function registerWorkflowEngineHandlers(ipc: IpcMain, ports: WorkflowEngi
         command: spec.command,
         args: spec.args,
         ...(spec.env !== undefined ? { env: spec.env } : {}),
+        ...(spec.probeIdentity !== undefined ? { probeIdentity: spec.probeIdentity } : {}),
       });
       status = toStatusView(result);
       if (result.state === "failed") {

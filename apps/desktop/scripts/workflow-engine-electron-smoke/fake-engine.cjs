@@ -10,9 +10,9 @@
 // ## 它被谁跑
 //
 // `EngineRuntime` 的**生产** spawn 端口：`process.execPath`（真 Electron 主进程里
-// 就是 electron.exe）+ `ELECTRON_RUN_AS_NODE=1`。这样套件验的是生产那条
-// spawn 路径本身（env 完整替换、cwd=数据目录、SIGTERM 收进程），只把「引擎二进制」
-// 换成一个本地脚本。
+// 就是 electron.exe）+ `ELECTRON_RUN_AS_NODE=1`。启动参数由**生产**
+// `createEngineLaunchSpec` 生成（探针见 probe.ts）—— 套件不再自己拼 env，
+// 生产缺了 Electron-as-Node 模式时这套会真的起不来。
 //
 // ## 最小编辑器页
 //
@@ -57,7 +57,21 @@ const PAGE = `<!doctype html>
 </body></html>`;
 
 const deploys = [];
+const adminToken = process.env.MCODE_ENGINE_ADMIN_TOKEN || '';
 const server = http.createServer((req, res) => {
+  // 【P1-3/P1-4】与生产 bootstrap 同一条控制面语义：/settings 只认宿主令牌。
+  // 宿主探针（生产 defaultProbe）先匿名要 401、再带令牌要 200 + Node-RED 形状。
+  // 令牌由**生产** createEngineLaunchSpec 生成并注入 —— 套件自己不补任何配置。
+  if (req.url === '/settings') {
+    if (adminToken === '' || req.headers.authorization !== 'Bearer ' + adminToken) {
+      res.writeHead(401, { 'content-type': 'text/plain' });
+      res.end('Unauthorized');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ httpNodeRoot: '/api', version: '0.0.0-fake-engine' }));
+    return;
+  }
   if (req.method === 'GET' && req.url === '/') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(PAGE);

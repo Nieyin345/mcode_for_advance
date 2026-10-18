@@ -42,7 +42,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { DocumentViewHost } from "@main/document/documentViewHost.js";
 import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
 import { registerWorkflowEngineHandlers } from "@main/ipc/workflowEngine.js";
-import { EngineRuntime, defaultEngineRuntimePorts, type EngineRuntimePorts } from "@main/workflowEngines/runtimeSupervisor.js";
+import {
+  EngineRuntime,
+  createEngineLaunchSpec,
+  defaultEngineRuntimePorts,
+  NODE_RED_MIN_NODE,
+  type EngineRuntimePorts,
+} from "@main/workflowEngines/runtimeSupervisor.js";
 import { listenOnDialablePort } from "@main/lib/loopbackPort.js";
 import { rpcHandlerFor, registeredRpcChannels } from "@main/appControl/registry.js";
 import { IPC, type DocViewListResult, type DocViewResult, type WorkflowEngineResult } from "@contracts/ipc";
@@ -99,8 +105,30 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
   });
   await win.loadURL("data:text/html,<title>host</title>");
 
-  // ── 生产同形的注册表：一个 node-red 引擎，启动参数指向套件的假引擎脚本。 ──
-  // 与 `ProductionWorkflowEngineRegistry.launchSpec` 同形，只换引擎二进制。
+  // ── 生产同形的注册表：一个 node-red 引擎，入口指向套件的假引擎脚本。 ──
+  // 【P1-4】启动参数（command/args/env/Electron-as-Node/宿主身份）由**生产**
+  // `createEngineLaunchSpec` 生成，套件**不再自己补** ELECTRON_RUN_AS_NODE ——
+  // 生产生成器漏了它，这一整条真 Electron 路径就会起不来（而不是测试替它兜底）。
+  // 唯一被替换的是入口脚本（真 Node-RED 未装）；`<dataDir>/node_modules/node-red`
+  // 放一个安装标记，让生成器的"已安装"检查与生产同形。
+  await mkdir(join(engineDataDir, "node_modules", "node-red"), { recursive: true });
+  await writeFile(
+    join(engineDataDir, "node_modules", "node-red", "package.json"),
+    JSON.stringify({ name: "node-red", version: "0.0.0-fake-engine" }),
+    "utf8",
+  );
+  const launch = createEngineLaunchSpec({
+    engineId: ENGINE_ID,
+    dataDir: engineDataDir,
+    entryFile: fakeEngine, // 绝对路径：生成器直接采用（不查 app 路径）
+    installPackage: "node-red",
+    minNodeVersion: NODE_RED_MIN_NODE,
+    adminTokenFile: join(engineDataDir, ".engine-admin-token"),
+    secretFile: engineDataDir,
+  });
+  assert(launch.env?.ELECTRON_RUN_AS_NODE === "1", "生产 launchSpec 没给 ELECTRON_RUN_AS_NODE —— 真 Electron 下引擎会起成 GUI 进程");
+  assert(typeof launch.env?.MCODE_ENGINE_ADMIN_TOKEN === "string" && launch.probeIdentity?.adminToken === launch.env.MCODE_ENGINE_ADMIN_TOKEN,
+    "生产 launchSpec 没有把宿主控制面令牌同时放进 env 与 probeIdentity");
   //
   // ⚠️ 端口分配**不用** `defaultEngineRuntimePorts.allocatePort`：那一份把
   // `listenOnDialablePort(server, onBind)` 的 `onBind(port, attempt)` 误当成
@@ -125,11 +153,11 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
     launchSpec: (engineId: string) =>
       engineId === ENGINE_ID
         ? {
-            command: process.execPath,
-            args: (port: number, dataDir: string): string[] => [fakeEngine, String(port), dataDir],
-            dataDir: engineDataDir,
-            // 生产里 `process.execPath` 是 electron.exe；换成 node 语义才跑得起来。
-            env: { ELECTRON_RUN_AS_NODE: "1" },
+            command: launch.command,
+            args: launch.args,
+            dataDir: launch.dataDir,
+            ...(launch.env !== undefined ? { env: launch.env } : {}),
+            ...(launch.probeIdentity !== undefined ? { probeIdentity: launch.probeIdentity } : {}),
           }
         : null,
   };

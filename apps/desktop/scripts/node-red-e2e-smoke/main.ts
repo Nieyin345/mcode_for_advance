@@ -50,7 +50,7 @@
  *
  * Run: bash scripts/node-red-e2e-smoke/run.sh
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { connect } from "node:net";
@@ -571,48 +571,13 @@ try {
 }
 
 /* ══════════ B. NR3 全链：真 Node-RED + 生产 EngineRuntime + 生产执行器 ══════════ */
-console.log("\nB. NR3 全链：执行器 → HTTP-in 流 → 返回值回灌（fixture bootstrap，官方 CLI 同形挂载）");
+console.log("\nB. NR3 全链：执行器 → HTTP-in 流 → 返回值回灌（生产 bootstrap，与 A 段同一份启动参数）");
 
-// fixture bootstrap：与 Node-RED 官方 red.js 的挂载方式同形。生产 bootstrap 的缺陷见 A 段。
-const FIXTURE_BOOTSTRAP = `// 【node-red-e2e-smoke】官方 CLI 同形的引导脚本：端口与数据目录由宿主给。
-const RED = require("node-red");
-const express = require("express");
-const http = require("node:http");
-const fs = require("node:fs");
-const path = require("node:path");
-const port = Number(process.argv[2]);
-const userDir = process.argv[3];
-const app = express();
-const server = http.createServer((req, res) => app(req, res));
-RED.init(server, {
-  httpAdminRoot: "/",
-  httpNodeRoot: "/api",
-  userDir,
-  credentialSecret: process.env.NODE_RED_CREDENTIAL_SECRET || false,
-  logging: { console: { level: "warn" } },
-});
-app.use("/", RED.httpAdmin);
-app.use("/api", RED.httpNode);
-RED.start().then(
-  () => {
-    server.listen(port, "127.0.0.1", () => {
-      fs.writeFileSync(path.join(userDir, "fixture-ready.json"), JSON.stringify({
-        port,
-        address: server.address(),
-        hostEnv: process.env.HOST ?? null,
-        portEnv: process.env.PORT ?? null,
-        envKeys: Object.keys(process.env).sort(),
-        nodeRedVersion: RED.version(),
-      }));
-      console.error("[mcode-engine-fixture] node-red ready on " + port);
-    });
-  },
-  (err) => {
-    console.error("[mcode-engine-fixture] node-red start failed: " + (err && err.message));
-    process.exit(2);
-  },
-);
-`;
+// 【Gate B / P1-4】B 段不再自带 fixture bootstrap：测试若自己写一份引导脚本、自己拼
+// env，生产缺了 Electron-as-Node / 宿主身份 / 版本检查也照样绿 —— 这正是 P1-4 的漂移。
+// 现在 B 段用的是生产注册表的 launchSpec（入口脚本即生产 P1-5 清单写出的
+// bootstrap.cjs，env/身份/命令全由生产生成器给），只有数据目录换成本段临时 userDir。
+// 这也复验了 P1-3 的探针：B 段能进 running，靠的是真 Node-RED 的宿主身份握手。
 
 /** 与执行器同形的上下文：优先走 `input.engineRequest`（调度器解算后的形状）。 */
 function execContext(path: string, method: string, body: string | null, headers?: Record<string, string>) {
@@ -629,22 +594,40 @@ let runtimeB: EngineRuntime | null = null;
 let childB: EngineChildProcess | undefined;
 let fixtureUserDir: string | null = null;
 try {
-  const fixtureBootstrapPath = join(INSTALLED, "bootstrap-e2e-fixture.cjs");
-  writeFileSync(fixtureBootstrapPath, FIXTURE_BOOTSTRAP, "utf8");
   fixtureUserDir = mkdtempSync(join(INSTALLED, "fixture-user-"));
 
   // 宿主环境里的 canary：env 完全替换时它绝不能出现在引擎进程里。
   process.env.MCODE_E2E_SECRET_CANARY = "must-not-leak";
-  const secretB = randomBytes(32).toString("hex");
+
+  // 【P1-4】B 段启动参数 = 生产注册表 launchSpec。生产把文件（bootstrap / 密钥 /
+  // 令牌）写在自己的数据目录；本段要在临时 userDir 上跑，所以把生产写出的
+  // bootstrap.cjs 复制过去，其余（command/args/env/身份）原样复用。
+  const productionRegistryB = new ProductionWorkflowEngineRegistry();
+  // 生产 bootstrap 默认 safeMode（未审批的持久化 flow 不执行）。B 段要验执行器链路，
+  // 所以先写下宿主可信标记 —— 与 A 段 A10 同一个入口（engine-trust.json），
+  // launchSpec 只读它、不提供写 API。
+  writeFileSync(join(productionRegistryB.dataDirOf(NODE_RED_ENGINE_ID), "engine-trust.json"), JSON.stringify({ trusted: true }), "utf8");
+  const generatedB = productionRegistryB.launchSpec(NODE_RED_ENGINE_ID);
+  check("★【P1-4】B 段复用生产 launchSpec（不再自带 fixture bootstrap）", generatedB !== null, generatedB);
+  if (generatedB === null) throw new Error("生产 launchSpec 不可用 —— 安装布局与生产注册表不一致");
+  check("★【P0-2】B 段启动 env 是可信模式（宿主写下了 engine-trust.json）",
+    generatedB.env?.MCODE_ENGINE_TRUSTED === "1", generatedB.env?.MCODE_ENGINE_TRUSTED);
+  writeFileSync(
+    join(fixtureUserDir, "bootstrap.cjs"),
+    readFileSync(join(productionRegistryB.dataDirOf(NODE_RED_ENGINE_ID), "bootstrap.cjs"), "utf8"),
+    "utf8",
+  );
+  const launchB = { ...generatedB, dataDir: fixtureUserDir };
 
   const portsB = recordingPorts();
   runtimeB = new EngineRuntime(NODE_RED_ENGINE_ID, portsB);
   const statusB = await runtimeB.start({
     engineId: NODE_RED_ENGINE_ID,
-    dataDir: fixtureUserDir,
-    command: process.execPath,
-    args: (port, userDir) => [fixtureBootstrapPath, String(port), userDir],
-    env: { NODE_RED_CREDENTIAL_SECRET: secretB },
+    dataDir: launchB.dataDir,
+    command: launchB.command,
+    args: launchB.args,
+    ...(launchB.env !== undefined ? { env: launchB.env } : {}),
+    ...(launchB.probeIdentity !== undefined ? { probeIdentity: launchB.probeIdentity } : {}),
   });
   evidence("fixture start status", statusB);
   check("★ 真 node-red 经**生产 EngineRuntime** 起来（真 spawn / listenOnDialablePort / 真 HTTP 探活）",
@@ -654,45 +637,30 @@ try {
   evidence("fixture port", portB);
   evidence("engine log tail", childB?.tailOutput().slice(-800) ?? "(no child)");
   check("★ 端口由生产 listenOnDialablePort 分配（不是 fetch 黑名单端口）", portB > 0 && !isBlockedPort(portB));
+  // B 段现在跑的是生产 bootstrap（adminAuth + safeMode）。Admin API 要带宿主令牌；
+  // 持久化 flow 默认不执行 —— 所以先写可信标记并在启动前把它读进 launchSpec env。
+  const adminTokenB = launchB.env?.MCODE_ENGINE_ADMIN_TOKEN ?? "";
+  const authHeadersB = { authorization: `Bearer ${adminTokenB}` };
+  check("★【P1-3】B 段启动参数带宿主控制面令牌", /^[0-9a-f]{64}$/.test(adminTokenB), adminTokenB.slice(0, 6));
 
-  const readyFile = join(fixtureUserDir, "fixture-ready.json");
-  const ready = await waitFor(() => (existsSync(readyFile) ? JSON.parse(readFileSync(readyFile, "utf8")) as {
-    port: number;
-    address: { address?: string; port?: number } | null;
-    hostEnv: string | null;
-    portEnv: string | null;
-    envKeys: string[];
-    nodeRedVersion: string;
-  } : null), 15_000);
-  check("★ 引擎自报已就绪（fixture-ready.json）", ready !== null);
-  if (ready !== null) {
-    evidence("engine-side address", ready.address);
-    evidence("engine-side node-red version", ready.nodeRedVersion);
-    evidence("engine-side env keys", ready.envKeys);
-    check("★ 引擎只绑 127.0.0.1（server.address().address）", ready.address?.address === "127.0.0.1", ready.address);
-    check("★ 引擎侧 PORT/HOST 与宿主分配一致", ready.portEnv === String(portB) && ready.hostEnv === "127.0.0.1",
-      { portEnv: ready.portEnv, hostEnv: ready.hostEnv });
-
-    const keysLower = ready.envKeys.map((k) => k.toLowerCase()).sort();
-    // `EngineRuntime` 的 spec.env 是**完整替换**（只给 PATH[/SystemRoot]/PORT/HOST/凭据密钥）。
-    // 但 Windows 上 CreateProcess 的 lpEnvironment 即便由调用方给，子进程仍会看到
-    // 系统级会话变量（HOMEDRIVE/HOMEPATH/LOGONSERVER/TEMP/USERPROFILE/WINDIR 等）——
-    // 实测：spec.env 只有 5 个键，引擎进程看到 14 个，多出来的全是系统注入且**不含**
-    // 宿主进程里的任意 canary。所以判据分两层：
-    //   1) 宿主 spec 里恰好是白名单（直接查 spawn spec，不查子进程环境）；
-    //   2) 子进程环境不得出现宿主进程的任意自定义变量（canary 缺席 + 无 ANTHROPIC_*/MCODE_*）。
-    const specKeys = Object.keys(portsB.specs[0]?.env ?? {}).sort();
-    const expectedSpec = ["HOST", "NODE_RED_CREDENTIAL_SECRET", "PATH", "PORT", ...(process.platform === "win32" ? ["SystemRoot"] : [])].sort();
-    check("★ env 在 spawn spec 里**完全替换**：恰好是宿主白名单（PATH[/SystemRoot]/PORT/HOST/凭据密钥）",
+  // —— B1'. env 边界（此前靠 fixture 的 fixture-ready.json 自报；生产 bootstrap
+  // 不写这种文件，改为直接查宿主真正交给 spawn 的 spec —— 那才是"env 完全替换"
+  // 的判据；子进程侧的 Windows 会话变量注入不是本段的职责）。 ——
+  {
+    const specB = portsB.specs[0];
+    const specKeys = Object.keys(specB?.env ?? {}).sort();
+    const expectedSpec = [
+      "HOST", "NODE_RED_CREDENTIAL_SECRET", "MCODE_ENGINE_ADMIN_TOKEN", "MCODE_ENGINE_TRUSTED", "PATH", "PORT",
+      ...(process.platform === "win32" ? ["SystemRoot"] : []),
+    ].sort();
+    check("★ env 在 spawn spec 里**完全替换**：宿主白名单 + 引擎凭据/控制面令牌（无宿主密钥）",
       deepEqual(specKeys, expectedSpec), { actual: specKeys, expected: expectedSpec });
-    const hostInjected = keysLower.filter((k) => !expectedSpec.map((s) => s.toLowerCase()).includes(k));
-    evidence("engine-side 额外（系统注入）变量", hostInjected);
-    const hostSecrets = ready.envKeys.filter((k) => /^(ANTHROPIC|OPENAI|DEEPSEEK|MCODE_|CLAUDE_)/i.test(k));
-    check("★ 宿主环境变量没有泄漏进引擎进程（canary 缺席，且无 ANTHROPIC_*/OPENAI_*/MCODE_*/CLAUDE_*）",
-      !keysLower.includes("mcode_e2e_secret_canary") && hostSecrets.length === 0, hostSecrets);
-    check("★ 引擎进程里的额外变量只可能来自 Windows 会话（非宿主进程的密钥/自定义变量）",
-      hostInjected.every((k) => ["homedrive", "homepath", "logonserver", "systemdrive", "temp", "userdomain", "username", "userprofile", "windir"].includes(k)),
-      hostInjected);
+    check("★ 宿主自定义变量没有泄漏进 spawn spec（canary 缺席）",
+      !specKeys.some((k) => k.toLowerCase() === "mcode_e2e_secret_canary"));
+    check("★ spawn spec 不含任何 ANTHROPIC_*/OPENAI_* 宿主密钥",
+      !specKeys.some((k) => /^(ANTHROPIC|OPENAI|CLAUDE)_/i.test(k)), specKeys);
+    check("★【P1-3】控制面身份随 spec 进了探针（跑绿 running 本身就是握手成功的证据）",
+      typeof specB?.env?.MCODE_ENGINE_ADMIN_TOKEN === "string" && (specB.env.MCODE_ENGINE_ADMIN_TOKEN as string).length === 64);
   }
 
   const exec = nodeRedExecutor({
@@ -718,6 +686,7 @@ try {
       "content-type": "application/json",
       "Node-RED-Deployment-Type": "full",
       "Node-RED-API-Version": "v2",
+      ...authHeadersB,
     },
     body: JSON.stringify({ flows: flow }),
   }, 15_000);
