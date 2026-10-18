@@ -39,6 +39,8 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { DocumentViewHost } from "@main/document/documentViewHost.js";
 import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
+import { SlidesBridge } from "@main/document/slidesBridge.js";
+import { VendorSlidesExecutor } from "@main/document/slidesExecutor.js";
 import {
   initDocumentHandoffProtocol,
   registerDocumentHandoffSchemePrivileged,
@@ -49,7 +51,11 @@ interface Check { name: string; status: "PASS" | "FAIL"; error?: string; detail?
 
 interface Config {
   pagePath: string;
+  /** 【ARC-007 P1/GA1】slides 页（真实构建产物；缺失时本套件跳过 slides 段）。 */
+  slidesPagePath?: string;
   preloadPath: string;
+  /** slides 页用的 preload（同一份生产 preload；显式列出便于诊断）。 */
+  slidesPreloadPath?: string;
   waitMs: number;
   urlSuffix: string;
 }
@@ -86,6 +92,53 @@ async function makeDocxWithText(text: string): Promise<Uint8Array> {
 /** 用 vendor 的空模板 + 注入唯一文本，生成一份合法 docx。 */
 async function makeFixtureDocx(): Promise<Uint8Array> {
   return makeDocxWithText(UNIQUE_TEXT);
+}
+
+/** 【ARC-007 P1/GA1】slides 唯一文本（与 DOCX 的区分开，避免跨断言串证据）。 */
+const SLIDES_UNIQUE_TEXT = "MCODE-P1-SLIDES-9c4e";
+
+/** 生成含指定文本的合法 pptx（vendor `createBlankPptx` + `addElement` 同一实现）。 */
+async function makePptxWithText(text: string): Promise<Uint8Array> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const engine = require("@genoffice/pptx-engine") as {
+    createBlankPptx(): Promise<Uint8Array>;
+    openPptx(bytes: Uint8Array): Promise<{ deck: { slides: Array<{ elements: unknown[] }>; size: { cx: number; cy: number } } }>;
+    addElement(slide: unknown, opts: Record<string, unknown>): { id?: string };
+    savePptx(opened: unknown): Promise<Uint8Array>;
+  };
+  const opened = await engine.openPptx(await engine.createBlankPptx());
+  const slide = opened.deck.slides[0];
+  engine.addElement(slide, {
+    kind: "textbox",
+    offset: { x: 800000, y: 800000, cx: 8000000, cy: 1200000 },
+    paragraphs: [{ runs: [{ text }] }],
+    bodyPr: { wrap: "square" },
+  });
+  return engine.savePptx(opened);
+}
+
+/** 从 vendor `RenderSlide[]` 的文本节点里拼出纯文本。 */
+function flattenRenderText(slides: unknown[]): string {
+  const parts: string[] = [];
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== "object") return;
+    const record = node as {
+      text?: { lines?: Array<{ runs?: Array<{ text?: unknown }>; trailingText?: unknown }> };
+      children?: unknown[];
+    };
+    if (record.text && Array.isArray(record.text.lines)) {
+      for (const line of record.text.lines) {
+        for (const run of line.runs ?? []) parts.push(String(run.text ?? ""));
+        if (typeof line.trailingText === "string") parts.push(line.trailingText);
+      }
+    }
+    for (const child of record.children ?? []) walk(child);
+  };
+  for (const slide of slides) {
+    if (slide === null || typeof slide !== "object") continue;
+    for (const node of (slide as { nodes?: unknown[] }).nodes ?? []) walk(node);
+  }
+  return parts.join("");
 }
 
 /**
@@ -174,7 +227,32 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
     confirmCalls.push(input);
     return confirmAnswer;
   });
-  registerDocumentViewHandlers(ipcMain, host, withinWorkspace);
+  // 【ARC-007 P1/GA1】生产执行器（同一份 vendor 解析器/写盘函数）——必须在注册
+  // handlers 之前构造：本套件让**生产路由**（openPath/slides-read-opened/slides-save）
+  // 真的跑起来，而不是只调宿主方法。
+  const slidesExecutor = VendorSlidesExecutor.create();
+  const slidesBridgeForProbe = new SlidesBridge(slidesExecutor);
+  if (slidesExecutor !== null) host.setViewDisposer((id) => slidesExecutor.release(id));
+  // 记录 handler 以便探针用**真实的 event.sender**直接驱动生产路由
+  // （与页面 invoke 走同一个函数对象）；同时仍注册到 ipcMain（preload 真的调用要通）。
+  const recordedHandlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+  const recordingIpc = {
+    handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
+      recordedHandlers.set(channel, listener);
+      (ipcMain as unknown as { handle(c: string, l: unknown): void }).handle(channel, listener);
+    },
+  } as unknown as Electron.IpcMain;
+  registerDocumentViewHandlers(recordingIpc, host, withinWorkspace, slidesBridgeForProbe);
+  /** 用某个视图的 webContents 作为 sender 直接调生产 handler。 */
+  const ipcMainInvokeFrom = async (
+    sender: unknown,
+    channel: string,
+    payload: unknown,
+  ): Promise<unknown> => {
+    const handler = recordedHandlers.get(channel);
+    if (handler === undefined) throw new Error(`handler 未注册：${channel}`);
+    return await handler({ sender }, payload);
+  };
   // 与生产同一条：ready 之后挂上 handoff 协议处理。
   initDocumentHandoffProtocol();
 
@@ -390,23 +468,39 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
     host.reportPageDirty(docId, false);
 
     // ── 6. 坏档 / 跨路径 / 失败回滚 ──
+    // 文档可能已被真实 vendor 页提交到 session；此时拒绝替换必须保留原会话，
+    // 不能误把「原文档仍打开」解释成「坏档占用新会话」。先记下有效基准。
+    const sessionBeforeBadOpen = host.sessionFor(docId);
+    const revisionBeforeBadOpen = sessionBeforeBadOpen ? await sessionBeforeBadOpen.revision : null;
     host.openPath(docId, badPath, withinWorkspace);
     const bad = await host.readOpened(docId, withinWorkspace);
     await check("★ 坏档：readOpened 拒绝且不占会话", () => {
       assert(bad.ok === false, `坏档未被拒: ${JSON.stringify(bad)}`);
-      // 提交一个坏档的 pending 也不该建立会话（页面没回执）。
-      host.settlePendingOpen(docId, false, withinWorkspace);
     });
+    // 即使页面解析失败或上述断言已抛错，也必须放弃未提交的 pending。
+    host.settlePendingOpen(docId, false, withinWorkspace);
     host.openPath(docId, outsidePath, () => true);
     const cross = await host.readOpened(docId, withinWorkspace);
     evidence.cross = cross;
     await check("★ 跨路径：读时围栏拒绝", () => {
       assert(cross.ok === false && (cross as { reason: string }).reason.includes("不在已知工作区内"), JSON.stringify(cross));
     });
-    await check("★ 失败路径都不占会话（失败回滚）", () => {
-      assert(host.sessionFor(docId) === null, "失败后会话被占用");
-    });
     host.settlePendingOpen(docId, false, withinWorkspace);
+    await check("★ 坏档和越界打开失败不占新会话，原有效会话保持", async () => {
+      const session = host.sessionFor(docId);
+      assert(
+        session === null || session.filePath === docPath,
+        `失败替换竟占用了错误路径: ${session?.filePath}`,
+      );
+      if (sessionBeforeBadOpen !== null) {
+        assert(session !== null, "失败替换删除了此前已提交的合法会话");
+        assert(session?.key === sessionBeforeBadOpen.key, "失败替换改变了原有效会话键");
+        assert(session?.openedAt === sessionBeforeBadOpen.openedAt, "失败替换重新创建了原会话");
+        assert(await session?.revision === revisionBeforeBadOpen, "失败替换改变了原会话 CAS 基准");
+      }
+      const pending = host.pendingOpenFor(docId);
+      assert(pending === null, `失败替换留下 pending: ${pending?.filePath}`);
+    });
 
     // ── 7. 过期版本：两次打开之间文件被改写 ──
     host.openPath(docId, docPath, withinWorkspace);
@@ -445,6 +539,177 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
       assert(consoleErrors.length === 0, `console error: ${JSON.stringify(consoleErrors.slice(0, 3))}`);
       assert(pageErrors.length === 0, `页面钩子: ${JSON.stringify(pageErrors.slice(0, 3))}`);
     });
+
+        // ── 9. 【ARC-007 P1/GA1】slides：从 Mcode 打开 .pptx → 画布出现 → 保存 → 重开 ──
+    //    真实 slides 构建产物 + 生产 preload + 真宿主 + **生产执行器**
+    //    （`VendorSlidesExecutor`，vendor 解析/渲染/写盘同一份实现），并且走
+    //    **生产 handler**（`registerDocumentViewHandlers` 注入同一个 bridge）。
+    if (typeof config.slidesPagePath === "string" && config.slidesPagePath !== "") {
+      const pptxPath = join(workspace, "p1-talk.pptx");
+      const pptxBytes = await makePptxWithText(SLIDES_UNIQUE_TEXT);
+      await writeFile(pptxPath, pptxBytes);
+      const slidesDocId = "p1-slides";
+      const slidesOpened = host.open({
+        docId: slidesDocId,
+        url: pathToFileURL(config.slidesPagePath).toString() + config.urlSuffix,
+        bounds: { x: 0, y: 0, width: 1280, height: 900 },
+        visible: true,
+        editor: "slides",
+      });
+      await check("slides：宿主创建演示文稿视图", () => {
+        assert(slidesOpened.ok, JSON.stringify(slidesOpened));
+      });
+      const slideWc = host.webContentsOf(slidesDocId) as unknown as Electron.WebContents;
+      slideWc.on("console-message", (event: unknown, level?: number, message?: string) => {
+        const d = event as { message?: string; level?: string };
+        const text = d.message ?? String(message ?? "");
+        if ((d.level ?? String(level)) === "error" || /Uncaught|is not a function/.test(text)) {
+          consoleErrors.push(text.split("\n")[0]);
+        }
+      });
+      const slideJs = <T = unknown>(expr: string): Promise<T> => slideWc.executeJavaScript(expr, true) as Promise<T>;
+
+      // 推送计数：`slides:opened` 在**传输层**被发了几次（回环判据之一）。
+      let slidesOpenedPushes = 0;
+      const slideOriginalSend = slideWc.send.bind(slideWc);
+      (slideWc as unknown as { send: (channel: string, ...args: unknown[]) => void }).send = (
+        channel: string,
+        ...args: unknown[]
+      ) => {
+        if (channel === "slides:opened") slidesOpenedPushes += 1;
+        return slideOriginalSend(channel, ...args);
+      };
+      // 与生产同一出口（`ipc/index.ts` 的 setSlidesNotify）：只推给该视图的
+      // webContents，通道名是 vendor 页面订阅的 `slides:opened`。
+      host.setSlidesNotify((targetDocId, openResult) => {
+        if (targetDocId !== slidesDocId) return;
+        const target = host.webContentsOf(targetDocId) as
+          | { send?: (channel: string, ...args: unknown[]) => void }
+          | null;
+        target?.send?.("slides:opened", openResult);
+      });
+      const executor = slidesExecutor;
+      if (executor === null) {
+        await check("slides：本机可装配 vendor 执行器（genoffice 源码在场）", () => {
+          throw new Error("VendorSlidesExecutor.create() 返回 null —— genoffice/ 未安装/未构建");
+        });
+      } else {
+        // ── 生产打开链：`documentView.openPath`（面板同一条 IPC）→ 宿主准备 →
+        //    执行器解析 → 推 `slides:opened`；随后页面拉取（openPptxPath/
+        //    consumePendingOpen）走 `slides-read-opened`。
+        const openPathReply = (await ipcMainInvokeFrom(slideWc, "documentView:openPath", {
+          docId: slidesDocId,
+          filePath: pptxPath,
+        })) as { ok?: boolean; reason?: string };
+        await check("★ slides：生产 openPath 准备并解析成功（围栏内）", () => {
+          assert(openPathReply.ok === true, JSON.stringify(openPathReply));
+        });
+        const readReply = (await ipcMainInvokeFrom(slideWc, "mcode:document-view:slides-read-opened", {
+          docId: slidesDocId,
+        })) as { ok?: boolean; result?: { slides?: unknown[] }; hash?: string; reason?: string };
+        await check("★ slides：页面拉取返回 vendor OpenResult（含渲染树）", () => {
+          assert(readReply.ok === true && Array.isArray(readReply.result?.slides), JSON.stringify(readReply).slice(0, 400));
+        });
+        const renderText = flattenRenderText(readReply.result?.slides ?? []);
+        await check("★ slides：OpenResult 的渲染树里包含唯一文本", () => {
+          assert(renderText.includes(SLIDES_UNIQUE_TEXT), renderText.slice(0, 300));
+        });
+        // ── 真页面消费（React 状态 → Konva 画布/缩略图）：等状态栏显示打开的文件名。
+        //    空白 deck 也会有缩略图，只数缩略图会假绿（实测）。
+        const shown = await (async () => {
+          const start = Date.now();
+          let last = { thumbs: 0, text: "" };
+          while (Date.now() - start < 20000) {
+            last = await slideJs<{ thumbs: number; text: string }>(`(() => {
+              const root = document.getElementById('root');
+              return { thumbs: document.querySelectorAll('[class*="thumb"]').length, text: root ? root.innerText : '' };
+            })()`).catch(() => ({ thumbs: 0, text: "" }));
+            if (last.thumbs > 0 && last.text.includes("p1-talk.pptx")) {
+              return { ok: true, ...last, waitedMs: Date.now() - start };
+            }
+            await delay(200);
+          }
+          return { ok: false, ...last, waitedMs: 20000 };
+        })();
+        evidence.slidesShown = shown;
+        await check("★ slides：真页面消费后显示打开的文件名（缩略图已挂载）", () => {
+          assert(shown.ok, `20s 内状态栏未显示 p1-talk.pptx（DOM 文本前 200 字：${shown.text.slice(0, 200)}）`);
+        });
+        await check("★ slides：一条打开链（slides:opened 恰好一次，无回环）", () => {
+          assert(slidesOpenedPushes === 1, `slides:opened 推送 ${slidesOpenedPushes} 次`);
+        });
+        // ── 保存：生产 slides-save handler（页面 save() 的宿主对端）。
+        const beforeBytes = (await readFile(pptxPath)).byteLength;
+        const saveReply = (await ipcMainInvokeFrom(slideWc, "mcode:document-view:slides-save", {
+          docId: slidesDocId,
+        })) as { ok?: boolean; path?: string; bytes?: number; error?: string };
+        await check("★ slides：生产保存写回打开的同一份文件", () => {
+          assert(saveReply.ok === true, JSON.stringify(saveReply));
+          assert((saveReply.bytes ?? 0) > 1000, `字节数过小: ${String(saveReply.bytes)}`);
+        });
+        const afterBytes = (await readFile(pptxPath)).byteLength;
+        evidence.slidesBytes = { beforeBytes, afterBytes };
+        await check("★ slides：保存后盘上是合法 pptx（PK 魔数）", async () => {
+          const bytes = await readFile(pptxPath);
+          assert(bytes[0] === 0x50 && bytes[1] === 0x4b, "不是 zip");
+        });
+        // ── 重开：新视图（另一个 docId）走同一条生产链，文本仍在。
+        // 重开前先关掉第一个视图（同一文件单持有者是宿主的硬规则）。
+        host.close(slidesDocId);
+        const reopenDocId = "p1-slides-reopen";
+        host.open({
+          docId: reopenDocId,
+          url: pathToFileURL(config.slidesPagePath).toString() + config.urlSuffix,
+          bounds: { x: 0, y: 0, width: 1280, height: 900 },
+          visible: false,
+          editor: "slides",
+        });
+        const reopenWc = host.webContentsOf(reopenDocId);
+        const reopenOpen = (await ipcMainInvokeFrom(reopenWc, "documentView:openPath", {
+          docId: reopenDocId,
+          filePath: pptxPath,
+        })) as { ok?: boolean; reason?: string };
+        const reopenRead = (await ipcMainInvokeFrom(reopenWc, "mcode:document-view:slides-read-opened", {
+          docId: reopenDocId,
+        })) as { ok?: boolean; result?: { slides?: unknown[] } };
+        await check("★ slides：保存后重开仍含唯一文本（真 zip 往返）", () => {
+          assert(reopenOpen.ok === true, JSON.stringify(reopenOpen));
+          assert(reopenRead.ok === true, JSON.stringify(reopenRead).slice(0, 300));
+          const text = flattenRenderText(reopenRead.result?.slides ?? []);
+          assert(text.includes(SLIDES_UNIQUE_TEXT), text.slice(0, 300));
+        });
+        host.close(reopenDocId);
+        // ── 工作区外：生产 openPath 在准备阶段就拒（页面/执行器都拿不到路径）。
+        const outsidePptx = join(dir, "outside", "escape.pptx");
+        await writeFile(outsidePptx, pptxBytes);
+        // 独立视图：前两个都已关，先建一个干净视图再试围栏。
+        const outsideDocId = "p1-slides-outside";
+        host.open({
+          docId: outsideDocId,
+          url: pathToFileURL(config.slidesPagePath).toString() + config.urlSuffix,
+          bounds: { x: 0, y: 0, width: 1280, height: 900 },
+          visible: false,
+          editor: "slides",
+        });
+        const outsideWc = host.webContentsOf(outsideDocId);
+        const outsideReply = (await ipcMainInvokeFrom(outsideWc, "documentView:openPath", {
+          docId: outsideDocId,
+          filePath: outsidePptx,
+        })) as { ok?: boolean; reason?: string };
+        await check("★ slides：工作区外路径在生产 openPath 被拒", () => {
+          assert(
+            outsideReply.ok === false && (outsideReply.reason ?? "").includes("不在已知工作区内"),
+            JSON.stringify(outsideReply),
+          );
+        });
+      }
+      host.close("p1-slides-outside");
+    } else {
+      await check("slides：本机有 slides 构建产物（否则本段如实跳过）", () => {
+        throw new Error("config.slidesPagePath 缺失 —— genoffice/apps/slides/out/renderer/index.html 未构建");
+      });
+    }
+
   } finally {
     if (debuggerAttached) { try { wc.debugger.detach(); } catch { /* 已分离 */ } }
     host.dispose();

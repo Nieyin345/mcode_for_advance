@@ -110,6 +110,13 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
   // 同名 handler，复刻「preload 的 invoke 有对端」这一层。
   ipcMain.handle("mcode:document-view:open-path", () => ({ ok: false, error: "probe: 不打开文件" }));
   ipcMain.handle("mcode:document-view:save", () => ({ ok: false, error: "probe: 不保存" }));
+  // 【ARC-007 P0】挂载期页面会调 `getRecentFiles()`（preload 借它回执
+  // `open-committed`），以及打开流程里的 read-opened/confirm-replace。
+  // 本探针不起宿主，但必须给 invoke 一个对端，否则 unhandled rejection 会被
+  // 「首帧零未捕获异常」如实抓住。
+  ipcMain.handle("mcode:document-view:read-opened", () => ({ ok: false, reason: "probe: 不打开文件" }));
+  ipcMain.handle("mcode:document-view:open-committed", () => ({ ok: true }));
+  ipcMain.handle("mcode:document-view:confirm-replace", () => false);
 
   const pageEvidence: Array<Record<string, unknown>> = [];
 
@@ -259,6 +266,9 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
   } finally {
     ipcMain.removeHandler("mcode:document-view:open-path");
     ipcMain.removeHandler("mcode:document-view:save");
+    ipcMain.removeHandler("mcode:document-view:read-opened");
+    ipcMain.removeHandler("mcode:document-view:open-committed");
+    ipcMain.removeHandler("mcode:document-view:confirm-replace");
     await writeFile(
       join(dir, "evidence.json"),
       JSON.stringify({ pages: pageEvidence, checks }, null, 2),
@@ -291,10 +301,20 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
      *  页面拿不到 `ipcRenderer` 本身。白名单是**通道级**授权，不是数量授权。
      */
     const ALLOWED_INVOKE_CHANNELS = new Set([
-      "mcode:document-view:open-path",
+      // `mcode:document-view:open-path` **不在**白名单里：P0 起页面不再向它
+      // invoke（那是回环的根源），打开只经 read-opened 拉取 + open-committed 回执。
       "mcode:document-view:save",
       "mcode:document-view:slides-add-slide",
       "mcode:document-view:slides-edit-text",
+      // 【ARC-007 P1/GA1】slides 打开/保存链：页面拉取 OpenResult（openPptxPath/
+      // consumePendingOpen）与保存（save()）都只经这两条内部通道。
+      "mcode:document-view:slides-read-opened",
+      "mcode:document-view:slides-save",
+      // 【ARC-007 P0】打开链：页面只**拉取**宿主已准备的响应；回执与替换守卫
+      // 是两条独立内部通道（不再反向触发 open-path）。
+      "mcode:document-view:read-opened",
+      "mcode:document-view:open-committed",
+      "mcode:document-view:confirm-replace",
     ]);
 
     // 解析本文件里的字符串常量声明：`const NAME = "...";`（含 `as const` 后缀）。
@@ -339,11 +359,18 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
       const re = new RegExp(`^\\s*${name}\\s*[:(]`, "m");
       assert(!re.test(src), `preload 不得提供 ${name}`);
     }
-    // 订阅口只有 menu:command 一条（白名单式：只允许一个 on，且 channel 必须是它）。
+    // 订阅口白名单：menu:command（宿主推送）+ close-check（P0 的 dirty 查询，
+    // 页面经 reportCloseCheck 回答）。任何其它 on 都是新增能力面。
+    const ALLOWED_ON_CHANNELS = new Set(["menu:command", "mcode:document-view:close-check", "slides:opened"]);
     const onArgs = [...src.matchAll(/ipcRenderer\.on\(\s*([^,)]+)/g)].map((m) => m[1].trim());
+    const onResolved = onArgs.map((a) => {
+      const literal = /^"([^"]+)"$/.exec(a);
+      return literal ? literal[1] : (constants.get(a) ?? a);
+    });
     assert(
-      onArgs.length === 1 && constants.get(onArgs[0]) === "menu:command",
-      `ipcRenderer.on 只允许 menu:command 一条，实际：${JSON.stringify(onArgs.map((a) => constants.get(a) ?? a))}`,
+      onResolved.every((c) => ALLOWED_ON_CHANNELS.has(c)) &&
+        [...ALLOWED_ON_CHANNELS].every((c) => onResolved.includes(c)),
+      `ipcRenderer.on 只允许 ${JSON.stringify([...ALLOWED_ON_CHANNELS])}，实际：${JSON.stringify(onResolved)}`,
     );
     // 两个命名空间都必须暴露（docs 读 desktop、slides 读 slidesApi）。
     assert(/exposeInMainWorld\(\s*"desktop"/.test(src), "缺少 window.desktop 暴露");

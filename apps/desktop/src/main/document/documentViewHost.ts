@@ -93,7 +93,7 @@ import { withOsFileLease } from "@main/lib/osFileLease.js";
 // `realPathWithin` 就是为这种场景拆出来的零依赖叶子（已经给了 fileSnapshot 用）。
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import { existsSync, rmSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { issueDocumentHandoff } from "./documentViewHandoff.js";
@@ -288,10 +288,17 @@ interface LiveDocumentView {
   /** 【ARC-006 Gate A 缺口】这个视图加载的是哪个工作流引擎的编辑器页
    *  （`open` 时由 `workflowEngineId` 记下）。换引擎/换回普通文档视图时要摘旧凭据绑定。 */
   workflowEngineId: string | null;
+  /** 【ARC-007 P1/GA1】编辑器域（`open` 的 `editor` 字段）。`"slides"` 时
+   *  `openPath`/保存走 slides 通道（vendor 解析器构造 `OpenResult`）。 */
+  editor: "slides" | null;
   /** 【ARC-007 P0】**待打开请求**：`openPath` 准备的路径，等页面经 `readOpened`
    *  拉取一次性字节响应；页面回执（`settlePendingOpen`）后才登记会话。
    *  失败/拒绝不占会话、不改 CAS 基准。 */
   pendingOpen: { docId: string; filePath: string; requestedAt: number } | null;
+  /** 【ARC-007 P1/GA1】最近一次为这个视图解析好的 slides `OpenResult`（连同当时
+   *  字节的 sha256）。页面在推送与拉取竞争/StrictMode 双挂载时重拉同一份结果，
+   *  **不重复解析**也不重复提交会话。换文件（`prepareSlidesOpen`）时清空。 */
+  slidesOpen?: { result: unknown; hash: string } | null;
   /** 【ARC-007 P0】页面经 `reportCloseCheck` 上报的脏标记（vendor 每次编辑/保存
    *  后都报）。`confirmDocumentReplace` 的真实来源。 */
   pageDirty: boolean;
@@ -408,6 +415,14 @@ export class DocumentViewHost {
    *  生产单例在模块加载时就构造好了，而注入器依赖注册表/Electron session（装配在
    *  `ipc/index.ts`）—— 故留一个**只在装配期**调用的 setter；之后不再改。 */
   private editorCredentials: EditorCredentialPort | null;
+  /** 【ARC-007 P1/GA1】slides 页"文件已打开"的**推送**出口（vendor 通道名
+   *  `slides:opened`，参数是 `OpenResult`）。由装配期注入（`ipc/index.ts`），
+   *  与 inbox 的 `sendToRenderer` 同一纪律：没有注入 = 不推（此时 slides 打开
+   *  仍可经 `consumePendingOpen` 拉取，只是页面的 `onOpened` 订阅收不到热更新）。 */
+  private slidesNotify: ((docId: string, openResult: unknown) => void) | null = null;
+  /** 【ARC-007 P1/GA1】视图关闭/释放时的清理端口（装配层注入 slides 执行器的
+   *  `release(webContentsId)`）。宿主只负责"什么时候"调；"调谁"由装配层决定。 */
+  private viewDisposer: ((webContentsId: number) => void) | null = null;
   /** 已经挂过 `closed` 清理钩子的那个窗口（换窗口时先摘旧的）。 */
   private cleanupWindow: DocumentViewHostWindow | null = null;
   private cleanupHandler: (() => void) | null = null;
@@ -475,6 +490,10 @@ export class DocumentViewHost {
       existing.url = checked.url;
       existing.bounds = input.bounds;
       existing.workflowEngineId = engineId;
+      // 【ARC-007 P1/GA1】编辑器域随 open 更新：同一个 docId 从 docs 切到 slides
+      // （或反之）时，打开/保存链必须跟着切 —— 否则 slides 页会拿到 docx 的
+      // OpenDocxResult、docs 页会拿到 OpenResult。
+      existing.editor = input.editor ?? null;
       if (urlChanged) this.navigate(existing);
       if (input.visible) {
         if (!existing.visible) {
@@ -512,7 +531,9 @@ export class DocumentViewHost {
       openedFilePath: null,
       openedFileRevision: null,
       workflowEngineId: engineId,
+      editor: input.editor ?? null,
       pendingOpen: null,
+      slidesOpen: null,
       pageDirty: false,
     };
 
@@ -644,6 +665,16 @@ export class DocumentViewHost {
       // 销毁、close 后到"的迟到调用。）
       this.releaseSession(docId);
       return { ok: true };
+    }
+    // 【ARC-007 P1/GA1】vendor 会话（slides 执行器按 webContents id 持有）随视图
+    // 一起释放 —— 必须在 `detachAndDestroy` 之前取 id。
+    const viewWcId = (live.view.webContents as { id?: unknown }).id;
+    if (typeof viewWcId === "number" && this.viewDisposer !== null) {
+      try {
+        this.viewDisposer(viewWcId);
+      } catch {
+        /* 清理失败不影响关闭语义 */
+      }
     }
     this.detachAndDestroy(live);
     this.views.delete(docId);
@@ -810,6 +841,211 @@ export class DocumentViewHost {
     live.openedFileRevision = claim.session.revision;
     log.info(`document view open-path: committed ${docId} ${pending.filePath}`);
     return { ok: true };
+  }
+
+  /**
+   * 【ARC-007 P1/GA1】**slides 打开链的宿主侧准备** —— 与 docs 的 `openPath`
+   * 同一判据、同一 `pendingOpen` 状态机，区别只在**谁来解析**：
+   *
+   *  - docs：宿主把字节 issue 成 handoff，页面自己解析（`readOpened`）；
+   *  - slides：vendor 渲染端只会消费 `OpenResult`（`shared/ipc.ts:91-98`），而
+   *    `RenderSlide` 树由 vendor 主进程的解析器构造 —— 宿主经 `DocumentViewHostPorts`
+   *    注入的 `slidesDeck` 执行器调**同一份** vendor 代码（`slidesBridge` 的
+   *    `openDeck`），把结果原样交给页面。页面拿不到路径，也就没有"任意路径"这回事。
+   *
+   * 路径围栏、持锁预检、待打开登记、页面通知（`slides:opened` 事件）与 docs 完全
+   * 一致；**会话仍然只在页面回执后提交**（`settleSlidesOpen` → `claimOpenedPath`）。
+   * 返回的 `pending` 是给 handler 层拿去调执行器的（本方法不 import vendor）。
+   */
+  prepareSlidesOpen(
+    docId: string,
+    filePath: string,
+    withinWorkspace: (p: string) => boolean,
+  ): { ok: true; pending: { docId: string; filePath: string } } | { ok: false; reason: string } {
+    const live = this.views.get(docId);
+    if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
+    if (live.editor !== "slides") {
+      return { ok: false, reason: "这个视图不是演示文稿编辑器（open 时未声明 editor:\"slides\"）" };
+    }
+    if (typeof filePath !== "string" || filePath.trim() === "") {
+      return { ok: false, reason: "文件路径为空" };
+    }
+    if (!withinWorkspace(filePath)) {
+      return { ok: false, reason: `文件不在已知工作区内：${filePath}` };
+    }
+    const key = physicalPath(filePath);
+    if (key === null) {
+      return { ok: false, reason: `无法解析文件路径（断裂链接或不可访问），拒绝打开：${filePath}` };
+    }
+    const holder = this.sessions.get(key);
+    if (holder !== undefined && holder.docId !== docId) {
+      return {
+        ok: false,
+        reason: `该文件已在另一个视图打开（docId=${holder.docId}）：${holder.filePath}。同一文件同时只允许一个视图持有；请先关闭那个视图或切回它。`,
+      };
+    }
+    live.pendingOpen = { docId, filePath, requestedAt: Date.now() };
+    live.slidesOpen = null;
+    log.info(`document view slides-open: prepared ${docId} ${filePath}`);
+    return { ok: true, pending: { docId, filePath } };
+  }
+
+  /**
+   * 【ARC-007 P1/GA1】**slides 打开链的页面回执** —— vendor slides 页在
+   * `applyOpen(result)` 之后才走到这里（preload 的 `onOpened`/`consumePendingOpen`
+   * 包装在把结果交给 React **之后**回执）。成功才提交会话；失败只丢弃待打开。
+   *
+   * `openResult.path` 必须与待打开请求的路径一致（同一物理路径）：执行器若被
+   * 换掉/页面串了请求，宿主这里能发现，不把 A 文件的会话算到 B 头上。
+   */
+  settleSlidesOpen(
+    docId: string,
+    openResult: unknown,
+    accepted: boolean,
+    withinWorkspace: (p: string) => boolean,
+  ): DocViewResult {
+    const live = this.views.get(docId);
+    if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
+    const pending = live.pendingOpen;
+    if (pending === null) return accepted ? { ok: true } : { ok: false, reason: "没有待打开的文档" };
+    if (!accepted) {
+      live.pendingOpen = null;
+      log.info(`document view slides-open: rejected by page ${docId} ${pending.filePath}`);
+      return { ok: true };
+    }
+    const claimedPath =
+      openResult !== null && typeof openResult === "object"
+        ? (openResult as { path?: unknown }).path
+        : undefined;
+    if (typeof claimedPath === "string" && claimedPath !== "" && claimedPath !== pending.filePath) {
+      const samePhysical = physicalPath(claimedPath) === physicalPath(pending.filePath);
+      if (!samePhysical) {
+        live.pendingOpen = null;
+        return {
+          ok: false,
+          reason: `打开结果与待打开请求不一致（请求 ${pending.filePath}，结果 ${claimedPath}）—— 拒绝提交`,
+        };
+      }
+    }
+    if (!withinWorkspace(pending.filePath)) {
+      live.pendingOpen = null;
+      return { ok: false, reason: `文件已不在已知工作区内：${pending.filePath}` };
+    }
+    const claim = this.claimOpenedPath(docId, pending.filePath, live.view.webContents);
+    if (!claim.ok) return { ok: false, reason: claim.reason };
+    live.pendingOpen = null;
+    live.lastFailure = undefined;
+    live.openedFilePath = claim.session.filePath;
+    live.openedFileRevision = claim.session.revision;
+    log.info(`document view slides-open: committed ${docId} ${pending.filePath}`);
+    return { ok: true };
+  }
+
+  /** 【ARC-007 P1/GA1】只读诊断：这个视图的编辑器域（未声明 = null）。 */
+  editorOf(docId: string): "slides" | null {
+    return this.views.get(docId)?.editor ?? null;
+  }
+
+  /** 【ARC-007 P1/GA1】缓存一次已解析的 slides `OpenResult`（重拉不重复解析；
+   *  换文件时由 `prepareSlidesOpen` 清空）。 */
+  cacheSlidesOpenResult(docId: string, result: unknown, hash: string): void {
+    const live = this.views.get(docId);
+    if (!live) return;
+    live.slidesOpen = { result, hash };
+  }
+
+  /** 【ARC-007 P1/GA1】取缓存的 `OpenResult`（无则 null）。只读诊断/重拉用。 */
+  slidesOpenResultFor(docId: string): { result: unknown; hash: string } | null {
+    const live = this.views.get(docId);
+    if (!live) return null;
+    return live.slidesOpen ?? null;
+  }
+
+  /** 【ARC-007 P1/GA1】装配期注入 `slides:opened` 推送（只推给**这个视图**的
+   *  webContents；函数由装配方从 docId 反查）。 */
+  setSlidesNotify(fn: ((docId: string, openResult: unknown) => void) | null): void {
+    this.slidesNotify = fn;
+  }
+
+  /** 【ARC-007 P1/GA1】装配期注入"视图销毁前"的清理（slides 执行器按
+   *  webContents id 持有 vendor 会话，必须有释放点）。`webContents.id` 在
+   *  `close()`/`closeAll()` 里取于销毁之前。 */
+  setViewDisposer(fn: ((webContentsId: number) => void) | null): void {
+    this.viewDisposer = fn;
+  }
+
+  /** 【ARC-007 P1/GA1】把执行器解析好的 `OpenResult` 推给页面（vendor 通道
+   *  `slides:opened`）。页面没在听时静默 —— 它仍可在挂载时 `consumePendingOpen`。 */
+  notifySlidesOpened(docId: string, openResult: unknown): void {
+    if (this.slidesNotify === null) return;
+    try {
+      this.slidesNotify(docId, openResult);
+    } catch {
+      /* 推送失败不影响打开链（拉取路径仍在） */
+    }
+  }
+
+  /**
+   * 【ARC-007 P1/GA1】**slides 保存的目标路径** —— 只返回这个视图自己的打开会话
+   * 路径（与 `saveOpenedFile` 同一判据：会话表是唯一真值，且每次保存都重新过围栏）。
+   * 页面不传路径；handler 拿它去调 vendor 执行器（`slidesBridge.saveDeck`）。
+   */
+  slidesSaveTarget(
+    docId: string,
+    withinWorkspace: (p: string) => boolean,
+  ): { ok: true; filePath: string } | { ok: false; reason: string } {
+    const live = this.views.get(docId);
+    if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
+    if (live.editor !== "slides") {
+      return { ok: false, reason: "这个视图不是演示文稿编辑器（open 时未声明 editor:\"slides\"）" };
+    }
+    const target = live.openedFilePath;
+    if (target === null) return { ok: false, reason: "这个视图还没有打开任何演示文稿" };
+    const session = this.sessionOf(docId);
+    const targetKey = physicalPath(target);
+    if (session === null || targetKey === null || session.key !== targetKey) {
+      return {
+        ok: false,
+        reason: "保存目标与打开会话不一致（视图的打开记录已失效或被别的视图接管），拒绝保存",
+      };
+    }
+    if (!withinWorkspace(target)) return { ok: false, reason: `演示文稿已不在已知工作区内：${target}` };
+    return { ok: true, filePath: target };
+  }
+
+  /**
+   * 【ARC-007 P1/GA1】**slides 保存成功后的版本推进** —— vendor 执行器把 deck
+   * 写到 `slidesSaveTarget` 给的路径后，宿主重算盘上版本并同步到会话表与
+   * `openedFileRevision`（与 `saveOpenedFile` 成功路径同一组字段）。
+   *
+   * 这里**不写盘**：写盘由 vendor 的 `savePptxToFile`（同一份实现）完成 —— 宿主
+   * 复制一份 zip 逻辑等于两套保存语义。宿主负责的是围栏/会话/版本这三件事。
+   */
+  async recordSlidesSave(
+    docId: string,
+    withinWorkspace: (p: string) => boolean,
+  ): Promise<
+    | { ok: true; bytes: number; filePath: string; revision: string | null }
+    | { ok: false; reason: string }
+  > {
+    const target = this.slidesSaveTarget(docId, withinWorkspace);
+    if (!target.ok) return target;
+    let bytes = 0;
+    try {
+      const info = await stat(target.filePath);
+      bytes = info.size;
+    } catch (err) {
+      return { ok: false, reason: `保存后无法读取文件：${err instanceof Error ? err.message : String(err)}` };
+    }
+    const revision = await fileContentVersion(target.filePath);
+    const live = this.views.get(docId)!;
+    const session = this.sessionOf(docId);
+    if (session !== null) session.revision = Promise.resolve(revision);
+    live.openedFileRevision = Promise.resolve(revision);
+    live.lastFailure = undefined;
+    live.lastSaveConflict = undefined;
+    log.info(`document view slides-save: committed ${docId} ${target.filePath} (${bytes} bytes)`);
+    return { ok: true, bytes, filePath: target.filePath, revision };
   }
 
   /**
@@ -1250,6 +1486,15 @@ export class DocumentViewHost {
       // 【ARC-006 Gate A 缺口】凭据绑定随视图一起摘（窗口没了，视图就是孤儿，
       // 令牌不能再发给一个已销毁的 webContents id）。
       this.editorCredentials?.release(docId);
+      // 【ARC-007 P1/GA1】vendor 会话同样随视图释放（`id` 必须在销毁前取）。
+      const viewWcId = (live.view.webContents as { id?: unknown }).id;
+      if (typeof viewWcId === "number" && this.viewDisposer !== null) {
+        try {
+          this.viewDisposer(viewWcId);
+        } catch {
+          /* 清理失败不影响关闭语义 */
+        }
+      }
       this.detachAndDestroy(live);
       this.views.delete(docId);
       // 【ARC-007 DocumentSessionRegistry】closeAll 是窗口级/退出级清理，会话

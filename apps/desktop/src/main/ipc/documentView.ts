@@ -34,6 +34,8 @@
  * `DocumentViewHost`（假构造器）来验状态机，生产装配传 `documentViewHost` 单例。
  */
 import type { IpcMain } from "electron";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import {
   IPC,
   DocViewBoundsSchema,
@@ -62,6 +64,11 @@ function failed(err: unknown): DocViewResult {
 function slidesFailed(err: unknown): DocViewSlidesResult {
   return { ok: false, reason: errText(err) };
 }
+
+/** 【ARC-007 P1/GA1】slides 渲染树的宽度（vendor 的 `FIT_WIDTH`，`App.tsx` 固定
+ *  1280）。放这里而不是让页面传：页面给的数字会决定服务端渲染树几何，宿主只认
+ *  自己的常量（与 docs 的保存通道同一取向：页面不参与决策）。 */
+const SLIDES_FIT_WIDTH_PX = 1280;
 
 export function registerDocumentViewHandlers(
   ipc: IpcMain,
@@ -222,6 +229,28 @@ export function registerDocumentViewHandlers(
   const onOpenPath = async (_evt: unknown, raw: unknown): Promise<DocViewResult> => {
     try {
       const input = DocViewOpenPathSchema.parse(raw);
+      // 【ARC-007 P1/GA1】slides 视图的 openPath 走**两条链**（见 `prepareSlidesOpen`）：
+      // 宿主准备待打开并**立即**让注入的执行器解析（vendor 同一份代码）；解析成功
+      // 推送 `slides:opened`，页面挂载/通知后拉取。失败 = 不登记待打开（不占会话）。
+      if (host.editorOf(input.docId) === "slides") {
+        const prepared = host.prepareSlidesOpen(input.docId, input.filePath, withinWorkspace);
+        if (!prepared.ok) return prepared;
+        const wc = host.webContentsOf(input.docId) as unknown as { id?: unknown } | null;
+        const webContentsId = wc && typeof wc.id === "number" ? wc.id : null;
+        if (webContentsId === null) {
+          host.settleSlidesOpen(input.docId, null, false, withinWorkspace);
+          return { ok: false, reason: "当前视图没有 webContents id，无法定位 slides 会话" };
+        }
+        const opened = await slides.openDeck(webContentsId, input.docId, input.filePath, SLIDES_FIT_WIDTH_PX);
+        if (!opened.ok) {
+          host.settleSlidesOpen(input.docId, null, false, withinWorkspace);
+          return { ok: false, reason: opened.reason };
+        }
+        // 缓存：页面挂载时的 `consumePendingOpen` 拉取直接拿这一份，不重复解析。
+        host.cacheSlidesOpenResult(input.docId, opened.openResult, "");
+        host.notifySlidesOpened(input.docId, opened.openResult);
+        return { ok: true };
+      }
       return host.openPath(input.docId, input.filePath, withinWorkspace);
     } catch (err) {
       return failed(err);
@@ -297,6 +326,117 @@ export function registerDocumentViewHandlers(
     }
   };
   ipc.handle("mcode:document-view:slides-edit-text", onSlidesEditText);
+
+  /**
+   * 【ARC-007 P1/GA1】**slides 打开**：页面（preload 的 `openPptxPath` /
+   * `consumePendingOpen`）拉取宿主已准备的 `OpenResult`。
+   *
+   * 两条单向链与 docs 相同，只是"解析者"换成 vendor：
+   *  1. 宿主 `openSlidesPath`（面板经 `documentView:openPath` 触发）只登记
+   *     `pendingOpen` 并**推一次** `slides:opened`（executor 解析后的结果）；
+   *  2. 页面挂载/收到通知后 invoke 本通道**拉取**（`slides.readOpened`）；
+   *     页面**不再**把路径回传给宿主，也不 invoke `slides:open-path`。
+   *
+   * 路径来自宿主的 `pendingOpen`（`prepareSlidesOpen` 已过围栏）；执行器只做
+   * 解析与渲染树构造（vendor 同一份代码），返回值里的 `path` 仅供标题显示。
+   */
+  const onSlidesReadOpened = async (evt: unknown, raw: unknown) => {
+    try {
+      const input = raw as { docId?: unknown } | null;
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const resolved = host.docIdForSender(sender);
+      if (resolved === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
+      if (typeof input?.docId === "string" && input.docId !== "" && input.docId !== resolved) {
+        return {
+          ok: false,
+          reason: `docId 与发送方不一致（声明 ${input.docId}，实际 ${resolved}）—— 拒绝操作`,
+        };
+      }
+      // 【ARC-007 P1/GA1】先看页面回执：`slides:opened` 推送之后页面会调
+      // `applyOpen` 并**回执**（`settleSlidesOpen` 在这里由 preload 触发）。
+      // 拉取本身是幂等的：已经准备好的 `OpenResult` 缓存到 live 视图上，
+      // 页面重拉（StrictMode 双挂载）不会重复解析、也不会重复提交。
+      const pending = host.pendingOpenFor(resolved);
+      if (pending === null) {
+        const cached = host.slidesOpenResultFor(resolved);
+        if (cached !== null) {
+          // 重拉（StrictMode 双挂载 / 推送与拉取竞争）：会话提交是幂等的，
+          // 结果不重复解析。
+          host.settleSlidesOpen(resolved, cached.result, true, withinWorkspace);
+          return { ok: true, ...cached };
+        }
+        return { ok: false, reason: "没有待打开的演示文稿（openPath 尚未请求）" };
+      }
+      if (!withinWorkspace(pending.filePath)) {
+        return { ok: false, reason: `文件已不在已知工作区内：${pending.filePath}` };
+      }
+      const wc = host.webContentsOf(resolved) as unknown as { id?: unknown } | null;
+      const webContentsId = wc && typeof wc.id === "number" ? wc.id : null;
+      if (webContentsId === null) {
+        return { ok: false, reason: "当前视图没有 webContents id，无法定位 slides 会话" };
+      }
+      const opened = await slides.openDeck(webContentsId, resolved, pending.filePath, SLIDES_FIT_WIDTH_PX);
+      if (!opened.ok) return { ok: false, reason: opened.reason };
+      const result = opened.openResult as { path?: unknown; slides?: unknown; size?: unknown; defaultFont?: unknown } | null;
+      if (result === null || typeof result !== "object" || !Array.isArray(result.slides)) {
+        return { ok: false, reason: "打开失败：vendor 解析器返回的形状不是 OpenResult（缺 slides）" };
+      }
+      let hash = "";
+      try {
+        const bytes = await readFile(pending.filePath);
+        hash = createHash("sha256").update(bytes).digest("hex");
+      } catch {
+        /* 版本只是保存乐观锁的基准；读不到时为空串（保存时会重新判） */
+      }
+      // 缓存给重拉用（StrictMode 双挂载 / 推送与拉取竞争），并回执提交会话：
+      // 到这里页面已经拿到能渲染的 `OpenResult`，与 docs 的 open-committed 同一
+      // 时机语义（成功标记后置，失败不占会话）。
+      host.cacheSlidesOpenResult(resolved, result, hash);
+      host.settleSlidesOpen(resolved, result, true, withinWorkspace);
+      return { ok: true, result, hash };
+    } catch (err) {
+      return { ok: false, reason: errText(err) };
+    }
+  };
+  ipc.handle("mcode:document-view:slides-read-opened", onSlidesReadOpened);
+
+  /**
+   * 【ARC-007 P1/GA1】**slides 保存**：页面 `save()` 的宿主对端。
+   *
+   * 页面不传路径也不传字节：vendor 主进程的会话里已有 deck（打开时由执行器
+   * 建立），宿主只给**它自己打开的那份路径**（`slidesSaveTarget` 每次保存都
+   * 重新过围栏），执行器调 vendor 的 `savePptxToFile` 同一份实现写盘。
+   * 写盘后宿主重算盘上版本并推进会话（`recordSlidesSave`）。
+   */
+  const onSlidesSave = async (evt: unknown, raw: unknown) => {
+    try {
+      const input = raw as { docId?: unknown } | null;
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const resolved = host.docIdForSender(sender);
+      if (resolved === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
+      if (typeof input?.docId === "string" && input.docId !== "" && input.docId !== resolved) {
+        return {
+          ok: false,
+          reason: `docId 与发送方不一致（声明 ${input.docId}，实际 ${resolved}）—— 拒绝操作`,
+        };
+      }
+      const target = host.slidesSaveTarget(resolved, withinWorkspace);
+      if (!target.ok) return { ok: false, error: target.reason };
+      const wc = host.webContentsOf(resolved) as unknown as { id?: unknown } | null;
+      const webContentsId = wc && typeof wc.id === "number" ? wc.id : null;
+      if (webContentsId === null) {
+        return { ok: false, error: "当前视图没有 webContents id，无法定位 slides 会话" };
+      }
+      const saved = await slides.saveDeck(webContentsId, resolved, target.filePath);
+      if (!saved.ok) return { ok: false, error: saved.reason };
+      const recorded = await host.recordSlidesSave(resolved, withinWorkspace);
+      if (!recorded.ok) return { ok: false, error: recorded.reason };
+      return { ok: true, path: recorded.filePath, bytes: recorded.bytes };
+    } catch (err) {
+      return { ok: false, error: errText(err) };
+    }
+  };
+  ipc.handle("mcode:document-view:slides-save", onSlidesSave);
 
   /**
    * 【ARC-007】**视图 preload 的内部通道** —— 页面请求打开某个文档。

@@ -121,19 +121,24 @@ export function editorHostForPath(filePath: string): GenofficeEditorHost {
 }
 
 /**
- * 【ARC-007】docs 是唯一在宿主里有**打开对端**的编辑器页。
+ * 【ARC-007】哪些编辑器页在宿主里有**打开对端**。
  *
  * 判据不是"vendor 有没有某个通道"，而是"宿主能不能在不伪造数据的前提下回它"：
- * docs 的 `menu:command("open-path", path)` 由宿主直接下发路径、页面自己读盘
- * （`apps/docs/src/preload/index.ts:250` 的 `onMenuCommand` → `App.tsx` 的
- * `case "open-path"`）。sheets/slides **没有**任何渲染端可达的打开入口（这一结论
- * 是对 vendor 渲染端逐入口核对后的结果，文件头「sheets / slides 的打开入口」一节
- * 列了每一条被排除的通道与 `文件:行`）：sheets 需要宿主交出一份 vendor 主进程组装
- * 好的 `WorkbookFile`（含 sessionId、分块读取的会话），slides 需要 vendor 主进程先
- * `preparePresentationForOpen` 再回 `OpenResult` —— 伪造就等于伪造文档内容。
+ *
+ *  - **docs**：`menu:command("open-path", path)` 由宿主直接下发路径、页面自己读盘
+ *    （`apps/docs/src/preload/index.ts:250` 的 `onMenuCommand` → `App.tsx` 的
+ *    `case "open-path"`）。
+ *  - **slides**：宿主装配了 slides 执行器（`slidesBridge` + `slidesExecutor.ts`）时，
+ *    打开链把**宿主已过围栏的路径**交给 vendor 的解析器（`openPptx` 同一份实现）
+ *    构造 `OpenResult`，再经 `slides:opened`/`slides-read-opened` 交给页面；保存
+ *    写回同一份打开会话。页面拿到的是渲染树，**拿不到任意路径**。
+ *    装配事实经 `document.capabilities.hosts.slides` 报告（`genoffice/` 快照缺失
+ *    或未构建时为 false）—— 这里只信能力报告，不猜。
+ *  - **sheets**：**没有**对端（打开需要宿主交出一份 vendor 主进程组装好的
+ *    `WorkbookFile`，含 sessionId 与分块读取的会话）。本切片未接，恒为 false。
  */
-export function hasHostOpenChannel(host: GenofficeEditorHost): boolean {
-  return host === "docs";
+export function hasHostOpenChannel(host: GenofficeEditorHost, slidesHost = false): boolean {
+  return host === "docs" || (host === "slides" && slidesHost);
 }
 
 /**
@@ -233,12 +238,18 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
   const docId = useMemo(() => stableDocId(filePath), [filePath]);
   const host = editorHostForPath(filePath);
   const cliPath = caps.data?.cli.available === true ? caps.data.cli.path : null;
-  // 【ARC-007】只给有宿主对端的编辑器页算 URL：sheets/slides 的打开通道在 vendor
-  // 自己的主进程里（见文件头），宿主侧没有对端 —— 建视图只会得到一张
+  // 【ARC-007 P1/GA1】打开对端是**能力报告**（装配事实），不是格式猜测：
+  // `document.capabilities.hosts` 由主进程报告（docs 恒真；slides 取决于 vendor
+  // 执行器是否装配；sheets 未接恒假）。
+  const slidesHostAvailable = caps.data?.hosts?.slides === true;
+  // 【ARC-007】只给有宿主对端的编辑器页算 URL：没有对端时建视图只会得到一张
   // vendor 页面自身启动逻辑炸掉的空面板。`null` 让下面两个 effect 全部跳过。
-  const url = cliPath !== null && hasHostOpenChannel(host) ? editorPageUrl(cliPath, host) : null;
-  /** sheets/slides 的**显式降级**分支：与"未构建"是两回事，文案与原因也分开。 */
-  const unsupportedHost = hasHostOpenChannel(host) ? null : host;
+  const url =
+    cliPath !== null && hasHostOpenChannel(host, slidesHostAvailable)
+      ? editorPageUrl(cliPath, host)
+      : null;
+  /** 没有打开对端的编辑器页：**显式降级**分支（与"未构建"是两回事，文案与原因也分开）。 */
+  const unsupportedHost = hasHostOpenChannel(host, slidesHostAvailable) ? null : host;
 
   useEffect(() => {
     if (url === null) return;
@@ -253,7 +264,15 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
     let observer: ResizeObserver | null = null;
 
     const sendOpen = (bounds: DocViewRect): void => {
-      const pending = api.documentView.open({ docId, url, bounds, visible: true });
+      // 【ARC-007 P1/GA1】slides 视图必须声明编辑器域：宿主据此把 openPath/保存
+      // 接到 vendor 解析器与 slides 会话（docs 不声明，行为不变）。
+      const pending = api.documentView.open({
+        docId,
+        url,
+        bounds,
+        visible: true,
+        ...(host === "slides" ? { editor: "slides" as const } : {}),
+      });
       lastKey = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
       void pending.then(
         (result) => {

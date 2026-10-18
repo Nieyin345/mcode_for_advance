@@ -388,8 +388,13 @@ export async function runAiAskProbe(dir: string): Promise<void> {
 
     // ── 0. 先登记 seed 会话：宿主拿到可信目录（工作区内），页面收到 open-path 后
     //    的 openRecent 会被探针的 confirmDocumentReplace=false 拦在"保留当前文档"。
-    const seedOpen = host.openPath(docId, seedPath, withinWorkspace);
-    evidence.seedOpen = seedOpen;
+    // 【ARC-007 P0】openPath 只准备；会话在页面回执后提交。探针直接补一次
+    // 提交（等价于页面成功解析后的 getRecentFiles 回执），seed 会话即建立。
+    const seedPrepared = host.openPath(docId, seedPath, withinWorkspace);
+    const seedOpen = seedPrepared.ok
+      ? host.settlePendingOpen(docId, true, withinWorkspace)
+      : seedPrepared;
+    evidence.seedOpen = { prepared: seedPrepared, committed: seedOpen };
     const session = host.sessionFor(docId);
     evidence.seedSession = session ? { filePath: session.filePath } : null;
     await check("保存前置：视图已登记工作区内 seed 会话（openedFilePath 可信）", () => {

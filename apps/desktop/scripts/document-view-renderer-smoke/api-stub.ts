@@ -28,7 +28,9 @@ export function __resetCalls(): void {
   plans.clear();
 }
 
-type CapabilityPlan = { kind: "ok"; cli: { available: boolean; path: string | null } } | { kind: "error"; message: string };
+type CapabilityPlan =
+  | { kind: "ok"; cli: { available: boolean; path: string | null }; hosts?: { docs: boolean; slides: boolean; sheets: boolean } }
+  | { kind: "error"; message: string };
 let capabilityPlan: CapabilityPlan = { kind: "ok", cli: { available: false, path: null } };
 export function __setCapabilities(next: CapabilityPlan): void {
   capabilityPlan = next;
@@ -85,6 +87,7 @@ function makeNs(ns: string): unknown {
             if (capabilityPlan.kind === "error") return Promise.reject(new Error(capabilityPlan.message));
             return Promise.resolve({
               cli: capabilityPlan.cli,
+              hosts: capabilityPlan.hosts ?? { docs: true, slides: false, sheets: false },
               local: [],
               needsApp: [],
               needsSidecar: [],

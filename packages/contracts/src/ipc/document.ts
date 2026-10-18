@@ -91,4 +91,16 @@ export interface DocumentCapabilities {
   /** 【ARC-007】各域的 ops 目录（GenOffice `guide <domain> --json` 的说明文本）。
    *  让 Agent 不必猜 op 名；取不到时缺省。 */
   opsGuides?: Record<string, string>;
+  /** 【ARC-007 P1/GA1】宿主侧编辑器视图的**打开对端**报告（面板据此决定是否
+   *  创建视图，而不是靠"vendor 有没有某个通道"猜）。
+   *
+   *  - `slides`：宿主装配了 slides 执行器（vendor 解析器 + 保存写回同一份实现）
+   *    时为 `true` —— 此时 `.pptx` 的打开链真的可用；
+   *  - `docs`：恒为 `true`（`menu:command("open-path")` 是宿主直接下发的）；
+   *  - `sheets`：本切片**未接**（`workbook:select` 需要 vendor 的 WorkbookFile
+   *    会话，宿主没有对端），恒为 `false`。
+   *
+   *  ⚠️ 这是**装配事实**，不是"页面有没有某个 API"：只有宿主真的能给出
+   *  `OpenResult`/`OpenDocxResult` 时才为 true。 */
+  hosts?: { docs: boolean; slides: boolean; sheets: boolean };
 }

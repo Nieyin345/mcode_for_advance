@@ -406,46 +406,49 @@ section("4b. openPath 被拒（工作区外/宿主拒绝）时显示原因");
   await unmountPane();
 }
 
-/* ══════════════════ 4c. sheets / slides：打开入口无宿主对端 → 显式降级 ══════════════════ */
+/* ================== 4c. sheets 无宿主对端；slides 无执行器时同样显式降级 ================== */
 
-section("4c. sheets / slides：明说打开入口未接，不建视图、不装空白");
+section("4c. sheets 无对端 / slides 能力未装配：明说原因，不建视图、不装空白");
 {
-  // 判据不是"vendor 有没有通道"，而是"宿主能不能在不伪造数据的前提下回它"
-  eq("★ docs 是唯一有宿主打开对端的编辑器页", hasHostOpenChannel("docs"), true);
-  eq("sheets 没有宿主打开对端（打开=workbook:select，实现在 vendor 主进程）", hasHostOpenChannel("sheets"), false);
-  eq("slides 没有宿主打开对端（打开=slides:open-path，实现在 vendor 主进程）", hasHostOpenChannel("slides"), false);
+  // 判据不是"vendor 有没有通道"，而是"宿主能不能在不伪造数据的前提下回它"。
+  // 【ARC-007 P1/GA1】slides 的判据改为**装配事实**（能力报告 hosts.slides）：
+  // 装配了 vendor 执行器才为 true；未装配时仍如实降级。
+  eq("★ docs 恒有宿主打开对端", hasHostOpenChannel("docs"), true);
+  eq("sheets 没有宿主打开对端（打开=workbook:select，需 vendor WorkbookFile 会话）", hasHostOpenChannel("sheets", true), false);
+  eq("★ slides 未装配执行器时没有打开对端（能力报告 false）", hasHostOpenChannel("slides", false), false);
+  eq("★ slides 装配了执行器时有打开对端（能力报告 true）", hasHostOpenChannel("slides", true), true);
 
   // 路径路由与降级判据的落点：扩展名 → 编辑器页 → 是否有对端。
-  eq("xlsx 路由到 sheets 且无对端", [editorHostForPath("/w/a.xlsx"), hasHostOpenChannel(editorHostForPath("/w/a.xlsx"))], ["sheets", false]);
-  eq("ods 路由到 sheets 且无对端", [editorHostForPath("/w/a.ods"), hasHostOpenChannel(editorHostForPath("/w/a.ods"))], ["sheets", false]);
-  eq("pptx 路由到 slides 且无对端", [editorHostForPath("/w/a.pptx"), hasHostOpenChannel(editorHostForPath("/w/a.pptx"))], ["slides", false]);
-  eq("docx 路由到 docs 且有对端", [editorHostForPath("/w/a.docx"), hasHostOpenChannel(editorHostForPath("/w/a.docx"))], ["docs", true]);
+  eq("xlsx 路由到 sheets 且无对端", [editorHostForPath("/w/a.xlsx"), hasHostOpenChannel(editorHostForPath("/w/a.xlsx"), true)], ["sheets", false]);
+  eq("ods 路由到 sheets 且无对端", [editorHostForPath("/w/a.ods"), hasHostOpenChannel(editorHostForPath("/w/a.ods"), true)], ["sheets", false]);
+  eq("pptx 路由到 slides 且无对端（未装配）", [editorHostForPath("/w/a.pptx"), hasHostOpenChannel(editorHostForPath("/w/a.pptx"), false)], ["slides", false]);
+  eq("docx 路由到 docs 且有对端", [editorHostForPath("/w/a.docx"), hasHostOpenChannel(editorHostForPath("/w/a.docx"), false)], ["docs", true]);
 
   const cases: Array<[string, string, string]> = [
     ["/workspace/budget.xlsx", "表格", "workbook:select"],
-    ["/workspace/talk.pptx", "演示文稿", "slides:open-path"],
+    ["/workspace/talk.pptx", "演示文稿", "hosts.slides"],
   ];
   for (const [file, format, vendorChannel] of cases) {
-    // CLI **可用**时也必须降级：缺的不是构建，而是 vendor 主进程那一侧的对端
-    // （CLI 缺失分支由第 3 段另行覆盖）。
+    // CLI **可用**、且 slides 能力报告为 false：缺的不是构建，而是执行器未装配。
     resetWorld({ available: true, path: CLI_PATH });
+    __setCapabilities({ kind: "ok", cli: { available: true, path: CLI_PATH }, hosts: { docs: true, slides: false, sheets: false } });
     await mountPane(file);
 
-    eq(`★ ${format}：CLI 可用时仍不创建任何视图（零 open）`, ops("open").length, 0);
+    eq(`★ ${format}：不创建任何视图（零 open）`, ops("open").length, 0);
     eq(`★ ${format}：也不发 openPath（没有可打开的对端）`, ops("openPath").length, 0);
     eq(`★ ${format}：不发 bounds（不存在的视图没有几何）`, ops("bounds").length, 0);
     eq(`★ ${format}：不轮询 list（没有视图可诊断）`, ops("list").length, 0);
 
     const text = uiText();
-    // 【ARC-007】文案判据落在**原因**上，不是笼统的"不支持"：降级标题必须点名
-    // vendor 主进程是打开通道的所在（用户据此知道缺的是对端，不是构建）。
-    check(
-      `★ ${format}：标题明说「打开暂不可用」且点名原因在 vendor 主进程`,
-      text.includes("打开暂不可用") && text.includes("GenOffice 自己的主进程"),
-      text,
-    );
-    check(`★ ${format}：原因点名 vendor 的打开通道 ${vendorChannel}`, text.includes(vendorChannel), text);
-    check(`${format}：原因点名 vendor 主进程（不是"我们没做"，是通道在对端）`, text.includes("Mcode 宿主不运行那份主进程"), text);
+    check(`★ ${format}：标题明说「打开暂不可用」`, text.includes("打开暂不可用"), text);
+    if (format === "表格") {
+      check("★ 表格：原因点名 vendor 的打开通道 workbook:select", text.includes(vendorChannel), text);
+      check("表格：原因点名 vendor 主进程", text.includes("GenOffice 自己的主进程"), text);
+    } else {
+      check("★ 演示文稿：原因点名能力报告 hosts.slides（装配事实，不是通道名）", text.includes(vendorChannel), text);
+      check("演示文稿：原因点名 GenOffice 解析器（不是「我们没做」）", text.includes("GenOffice 的演示文稿解析器"), text);
+      check("★ 演示文稿：不再声称 slides:open-path 是唯一缺口（已接）", !text.includes("slides:open-path"), text);
+    }
     check(`${format}：给出仍可用的替代入口（OnlyOffice / 结构化视图）`, text.includes("OnlyOffice") && text.includes("GenOffice 结构化视图"), text);
     check(`★ ${format}：不是「编辑器页未构建」的误报`, !text.includes("GenOffice 编辑器页未构建"), text);
     check(`${format}：不残留「加载中」`, !text.includes("加载中…"), text);
@@ -453,6 +456,29 @@ section("4c. sheets / slides：明说打开入口未接，不建视图、不装�
     const notes = deepNodes().filter((n) => typeof n.type === "function" && (n.type as { name?: string }).name === "ErrorNote");
     eq(`${format}：恰好一条说明框`, notes.length, 1);
     eq(`${format}：说明框是 warning 档（不是"坏了"）`, notes[0]?.props.tone, "warning");
+    await unmountPane();
+  }
+
+  // ---------- 4c-2. ★ slides 能力报告为 true：真的建视图、真的带 editor:"slides" ----------
+  {
+    resetWorld({ available: true, path: CLI_PATH });
+    __setCapabilities({ kind: "ok", cli: { available: true, path: CLI_PATH }, hosts: { docs: true, slides: true, sheets: false } });
+    await mountPane("/workspace/talk.pptx");
+    for (let i = 0; i < 6; i++) await __flush();
+    const opens = ops("open");
+    eq("★ slides 能力就绪：创建了视图（一次 open）", opens.length, 1);
+    const input = (opens[0]?.input ?? {}) as { url?: string; editor?: string };
+    check(
+      "★ open 的 URL 是 slides 编辑器页",
+      typeof input.url === "string" && input.url.includes("/genoffice/apps/slides/out/renderer/index.html"),
+      input.url,
+    );
+    eq("★ open 声明 editor:\"slides\"（宿主据此接 vendor 解析器）", input.editor, "slides");
+    const paths = ops("openPath");
+    check("★ 视图建好后请求打开指定文件", paths.length > 0, paths.length);
+    eq("openPath 带面板的 filePath", (paths.at(-1)?.input as { filePath?: string } | undefined)?.filePath, "/workspace/talk.pptx");
+    const text = uiText();
+    check("★ 能力就绪时不再显示降级说明", !text.includes("打开暂不可用"), text);
     await unmountPane();
   }
 

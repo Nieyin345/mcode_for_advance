@@ -836,6 +836,9 @@ const NON_API_HANDLER_CHANNELS = [
   // 【ARC-007】slides 编辑（A 方案第一步）：同样是独立 preload 的内部通道。
   "mcode:document-view:slides-add-slide",
   "mcode:document-view:slides-edit-text",
+  // 【ARC-007 P1/GA1】slides 打开/保存链（拉取 OpenResult；保存写回打开会话）。
+  "mcode:document-view:slides-read-opened",
+  "mcode:document-view:slides-save",
   // 【ARC-007 P0】打开链（拉取/回执/替换守卫/dirty 上报）。
   "mcode:document-view:read-opened",
   "mcode:document-view:open-committed",
@@ -884,6 +887,9 @@ diff(
     "mcode:document-view:confirm-replace",
     "mcode:document-view:slides-add-slide",
     "mcode:document-view:slides-edit-text",
+    // 【ARC-007 P1/GA1】slides 打开/保存（页面拉取 OpenResult；保存不传路径）。
+    "mcode:document-view:slides-read-opened",
+    "mcode:document-view:slides-save",
   ]);
   const constants = new Map<string, string>();
   for (const m of docPreload.matchAll(/(?:^|\n)\s*const\s+([A-Z][A-Z0-9_]*)\s*=\s*"([^"]+)"/g)) {
@@ -924,7 +930,7 @@ diff(
     sendResolved,
   );
   const onArgs = [...docPreload.matchAll(/ipcRenderer\.on\(\s*([^,)]+)/g)].map((m) => m[1].trim());
-  const ALLOWED_ON = new Set(["menu:command", "mcode:document-view:close-check"]);
+  const ALLOWED_ON = new Set(["menu:command", "mcode:document-view:close-check", "slides:opened"]);
   const onResolved = onArgs.map((a) => constants.get(a) ?? a.replace(/^"|"$/g, ""));
   check(
     "★ preload 的订阅集合 ⊆ {menu:command, close-check} 且两条都在",

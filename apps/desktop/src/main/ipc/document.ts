@@ -25,6 +25,7 @@ import {
 } from "@contracts/ipc";
 import { documentKindOf } from "@contracts/documentKind";
 import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, slidesApply, sheetRead, sheetApply, convertFile, guideOps, type GenofficeResult } from "@main/document/genofficeCli.js";
+import { slidesBridge } from "@main/document/slidesBridge.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
@@ -292,6 +293,10 @@ function capabilitiesStatic(): DocumentCapabilities {
   const cliPath = resolveGenofficeCliPath(repoRoot());
   return {
     cli: { available: cliPath !== null, path: cliPath },
+    // 【ARC-007 P1/GA1】打开对端是**装配事实**：docs 恒有（宿主直接下发路径）；
+    // slides 取决于宿主有没有装配执行器（生产在 `ipc/index.ts` 装配 vendor 解析器，
+    // 未装配时 true 就变成一句谎话）；sheets 本切片未接，恒 false。
+    hosts: { docs: true, slides: hostsSlidesOverride ?? slidesBridge.available, sheets: false },
     local: [
       "docx read/apply（纯 Node）",
       "pptx read/apply/create（纯 Node）",
@@ -311,4 +316,18 @@ function capabilitiesStatic(): DocumentCapabilities {
       ? "CLI 不可用：先构建 genoffice/packages/cli。"
       : "CLI 已就绪。标注 needsApp 的路由需要设置 GENOFFICE_APP_BIN 指向 GenOffice 可执行文件；needsSidecar 的路由需要构建 Rust xlsx-sidecar。",
   };
+}
+
+/** 【ARC-007 P1/GA1】能力报告里的 `hosts.slides` 由**装配层**决定（vendor 执行器
+ *  装没装上）。本模块不在生产路径上 import vendor —— 装配方（`ipc/index.ts`）
+ *  在 `slidesBridge.attach(...)` 之后调用一次；无头套件可用同一入口伪造。
+ *
+ *  为什么不直接读 `slidesBridge.available`：`capabilitiesStatic` 是纯函数，套件
+ *  会直接调它断言"未装配 = false"；把它绑死到生产单例会让那条断言无法覆盖
+ *  "已装配"分支。默认实现读单例（生产装配后自然为真），显式覆盖只给套件用。 */
+let hostsSlidesOverride: boolean | null = null;
+
+/** 测试/装配用：覆盖 `hosts.slides`（传 null 复位到单例的装配事实）。 */
+export function configureSlidesHostAvailable(value: boolean | null): void {
+  hostsSlidesOverride = value;
 }

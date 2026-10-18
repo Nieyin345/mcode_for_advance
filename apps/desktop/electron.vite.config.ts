@@ -24,6 +24,39 @@ const monacoPkgDir = resolve(
 const pdfjsPkgDir = resolve(__dirname, "node_modules/pdfjs-dist");
 
 /**
+ * 【ARC-007 P1/GA1】slides 执行器用的 vendor 包（genoffice 快照）的**子路径别名**。
+ *
+ * 为什么需要：vendor 源码用 `@genoffice/pptx-engine/table-grid` 这类**子路径
+ * 导出**（package.json `exports` 映射到 `.ts` 源码）。esbuild/Rollup 对「包根
+ * 别名 + 子路径」的处理是把后缀拼到别名目标后面（`.../index.ts/table-grid`），
+ * 解析必然失败（实测）。所以每个被闭包用到的子路径都显式列在这里；新增时要
+ * 跟着闭包 grep 一遍（vendor 更新后漏一个，构建会在解析处当场报错，不会静默）。
+ *
+ * 快照不在场时返回空表 —— 此时 `slidesVendorModules` 已经被别名到 stub，
+ * 这些包根本不会被 import。
+ */
+function slidesVendorAliases(): Array<{ find: string; replacement: string }> {
+  const vendor = resolve("../../genoffice");
+  if (!existsSync(resolve(vendor, "packages/pptx-engine/package.json"))) return [];
+  const pkg = (pkgDir: string, file: string): string => resolve(vendor, "packages", pkgDir, "src", file);
+  // ⚠️ 顺序即判据：Rollup 的 alias 插件按数组顺序做**前缀**匹配，
+  // 包根别名写在子路径前面会把 `@genoffice/pptx-engine/table-grid`
+  // 拼成 `.../index.ts/table-grid`（实测）。所以子路径全部排在前面。
+  return [
+    { find: "@genoffice/pptx-engine/table-grid", replacement: pkg("pptx-engine", "table-grid.ts") },
+    { find: "@genoffice/pptx-engine/identity", replacement: pkg("pptx-engine", "identity.ts") },
+    { find: "@genoffice/pptx-engine/custgeom", replacement: pkg("pptx-engine", "custgeom.ts") },
+    { find: "@genoffice/pptx-engine/background-promote", replacement: pkg("pptx-engine", "background-promote.ts") },
+    { find: "@genoffice/docx-engine/math", replacement: pkg("docx-engine", "math.ts") },
+    { find: "@genoffice/agent-core/redact-range", replacement: pkg("agent-core", "redact-range.ts") },
+    { find: "@genoffice/pptx-engine", replacement: pkg("pptx-engine", "index.ts") },
+    { find: "@genoffice/pptx-render", replacement: pkg("pptx-render", "index.ts") },
+    { find: "@genoffice/pptx-ops", replacement: pkg("pptx-ops", "index.ts") },
+    { find: "@genoffice/docx-engine", replacement: pkg("docx-engine", "index.ts") },
+  ];
+}
+
+/**
  * 把 pdfjs 的 `cmaps` 与 `standard_fonts` 复制进渲染端的 public 目录。
  *
  * ## 为什么需要这个
@@ -186,12 +219,30 @@ export default defineConfig({
       },
     },
     resolve: {
-      alias: {
-        "@contracts": resolve("../../packages/contracts/src"),
-        "@main": resolve("src/main"),
+      alias: [
+        {
+          // 【ARC-007 P1/GA1】slides 的 vendor 依赖入口：`genoffice/` 是 gitignored
+          // 快照，未安装的机器上它不存在。快照在场 → 真实现（静态 import 三个
+          // vendor 包，构建期打包）；不在场 → stub（同一组导出、vendorAvailable=false，
+          // 装配层据此不 attach，能力报告如实报 false）。
+          //
+          // 用**精确匹配**的 alias 数组项而不是对象键：对象键在 Rollup 的 alias
+          // 插件里是前缀匹配，`@main` 那条会把 `@main/document/...` 也一起吞掉
+          // （顺序敏感）。精确正则保证只有这一个说明符被改写。
+          find: /^@main\/document\/slidesVendorModules\.js$/,
+          replacement: existsSync(resolve("../../genoffice/packages/pptx-engine/package.json"))
+            ? resolve("src/main/document/slidesVendorModules.ts")
+            : resolve("src/main/document/slidesVendorModulesStub.ts"),
+        },
+        ...slidesVendorAliases(),
+        { find: "@contracts", replacement: resolve("../../packages/contracts/src") },
+        { find: "@main", replacement: resolve("src/main") },
         // Only the pure translation core is shared with main; never externalize this source alias.
-        "@renderer/lib/i18n/core.js": resolve("src/renderer/lib/i18n/core.ts"),
-      },
+        {
+          find: "@renderer/lib/i18n/core.js",
+          replacement: resolve("src/renderer/lib/i18n/core.ts"),
+        },
+      ],
     },
   },
   preload: {

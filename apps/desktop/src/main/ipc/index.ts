@@ -5,8 +5,20 @@ import { registerDocumentViewHandlers } from "./documentView.js";
 import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
+// 【ARC-007 P1/GA1】slides 执行器与桥：**静态** import（而非运行时
+// require("@main/...") —— 那是构建器 alias，打包后无法解析）。
+// vendor 快照缺失时的降级在 **seam** 里：slidesVendorModules 被别名到 stub，
+// VendorSlidesExecutor.create() 返回 null。
+// 【ARC-007 P1/GA1】slides 执行器与桥：**静态** import。运行时
+// `require("@main/...")` 是构建器 alias，打包后无法解析
+// （实测：产物里变成无法解析的 require2("@main/...")）。
+// vendor 快照缺失时的降级在静态 seam 里：
+// slidesVendorModules 被别名到 stub， VendorSlidesExecutor.create() 返回 null。
+import { VendorSlidesExecutor } from "@main/document/slidesExecutor.js";
+import { slidesBridge } from "@main/document/slidesBridge.js";
 import { DocumentViewCredentialBroker, readEngineAdminToken } from "@main/document/documentViewCredentialBroker.js";
 import { EngineNodeRegistry } from "@main/workflowEngines/engineNodeRegistry.js";
+import { ensureEngineNodeReady } from "@main/workflowEngines/engineNodeReadiness.js";
 import { installEngineNode } from "@main/workflowEngines/engineNodeInstallRoute.js";
 import { NodeInstallApprovalBridge } from "@main/workflowEngines/engineNodeApprovalBridge.js";
 import { getMainWindow, hasLiveRendererWindow, sendToRenderer } from "@main/window.js";
@@ -147,6 +159,26 @@ export function registerIpcHandlers(): void {
     getSession: () => session.defaultSession,
   }));
   registerDocumentViewHandlers(ipc, documentViewHost, (p) => findContainingWorkspaceRoot(p) !== null);
+  // 【ARC-007 P1/GA1】slides 视图的打开/保存执行器 —— **按需加载** vendor 源码
+  // （`genoffice/` 是 gitignored 快照）。加载不到 = 不装配，桥保持 fail-closed，
+  // `document.capabilities.hosts.slides` 报 false（面板显式降级）—— 不假装能力存在。
+  {
+    const executor = VendorSlidesExecutor.create();
+    if (executor !== null) {
+      slidesBridge.attach(executor);
+      // 【ARC-007 P1/GA1】视图销毁前的清理：vendor 会话按 webContents id 持有，
+      // 关闭时必须释放（否则 Map 会随面板开关无限累积）。
+      documentViewHost.setViewDisposer((webContentsId) => executor.release(webContentsId));
+      // 打开成功后的推送（vendor `slides:opened` 通道名，页面 `onOpened` 订阅）。
+      documentViewHost.setSlidesNotify((docId, openResult) => {
+        const wc = documentViewHost.webContentsOf(docId) as
+          | { send?: (channel: string, ...args: unknown[]) => void }
+          | null;
+        if (!wc || typeof wc.send !== "function") return;
+        wc.send("slides:opened", openResult);
+      });
+    }
+  }
   // 【ARC-007 P0】打开链的真实 dirty 来源已由 preload 的 `reportCloseCheck`
   // 上报进宿主；这里只补「脏时由真人确认是否放弃未保存修改」的端口 ——
   // 与关闭守卫同一个取向：默认按钮是**取消**（不丢用户修改）。
@@ -176,6 +208,12 @@ export function registerIpcHandlers(): void {
     dataDir: workflowEngineRegistry.dataDirOf("node-red"),
     engineId: "node-red",
   });
+  // 【ARC-006 Gate E】生产启动闸门：清单/中断备份/撤权残留不可信时不能起 Node-RED。
+  // 与安装共用同一核查：先恢复*唯一且哈希匹配*的旧包，歧义原样保留并阻断运行。
+  const ensureEngineNodesReady = (): Promise<void> => ensureEngineNodeReady(engineNodeRegistry);
+  // 【MC-057】每个窗口只装一次撤权监听。导航/重载不会改变 webContents.id，
+  // 但旧文档的批准卡已经过期；窗口关闭/渲染进程死亡亦必须立即拒绝 pending。
+  const watchedNodeApprovalContents = new WeakSet<object>();
   const nodeApprovalBridge = new NodeInstallApprovalBridge({
     // 推送通道用 `IPC.` 常量（`ipc-wiring-smoke` 的扫描器按这个形状认出口，
     // 与 `sendToRenderer(IPC.WORKFLOW_CHANGED, …)` 同一写法）。
@@ -183,6 +221,14 @@ export function registerIpcHandlers(): void {
       const win = getMainWindow();
       // MC-057: 只把审批卡发给发起安装的受信主窗口，空/崩溃/换窗都拒绝。
       if (!win || !hasLiveRendererWindow() || win.webContents.id !== expectedSenderId) return false;
+      const wc = win.webContents;
+      if (!watchedNodeApprovalContents.has(wc)) {
+        watchedNodeApprovalContents.add(wc);
+        const revoke = (): void => { nodeApprovalBridge.cancelForSender(wc.id); };
+        wc.on("did-start-navigation", revoke);
+        wc.on("render-process-gone", revoke);
+        wc.once("destroyed", revoke);
+      }
       sendToRenderer(IPC.WORKFLOW_ENGINE_NODE_INSTALL_APPROVAL, message);
       return true;
     },
@@ -190,6 +236,9 @@ export function registerIpcHandlers(): void {
   registerWorkflowEngineHandlers(ipc, {
     registry: workflowEngineRegistry,
     launchSpec: (engineId) => workflowEngineRegistry.launchSpec(engineId),
+    beforeStart: async (engineId) => {
+      if (engineId === "node-red") await ensureEngineNodesReady();
+    },
     nodes: {
       list: async () => {
         const state = await engineNodeRegistry.readState();
@@ -208,6 +257,15 @@ export function registerIpcHandlers(): void {
         const win = getMainWindow();
         if (!win || !hasLiveRendererWindow() || win.webContents.id !== senderId) {
           return { ok: false, code: "approval_unavailable", reason: "不是可信桌面窗口发起的节点安装" };
+        }
+        const state = workflowEngineRegistry.statusOf("node-red")?.state;
+        if (state === "starting" || state === "running") {
+          return { ok: false, code: "install_failed", reason: "Node-RED 正在启动或运行；先停止引擎再安装可执行节点包" };
+        }
+        try {
+          await ensureEngineNodesReady();
+        } catch (err) {
+          return { ok: false, code: "install_failed", reason: err instanceof Error ? err.message : String(err) };
         }
         const result = await installEngineNode({
           registry: engineNodeRegistry,

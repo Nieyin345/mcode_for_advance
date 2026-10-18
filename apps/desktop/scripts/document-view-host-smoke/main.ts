@@ -522,6 +522,10 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
     "mcode:document-view:save",
     "mcode:document-view:slides-add-slide",
     "mcode:document-view:slides-edit-text",
+    // 【ARC-007 P1/GA1】slides 打开/保存链：页面拉取 `OpenResult`；保存写回打开的
+    // 那份文件（页面不传路径/字节）。
+    "mcode:document-view:slides-read-opened",
+    "mcode:document-view:slides-save",
   ];
   for (const ch of internalChannels) check(`内部通道已注册：${ch}`, handlers.has(ch));
   check("注册的通道就是这八条 + 八条内部通道（不多不漏）",
@@ -1490,15 +1494,25 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
     const stubs: Array<{ calls: unknown[][] }> = [];
     const makeExecutor = (): {
       addBlankSlide(webContentsId: number, docId: string): Promise<{ slideCount: number }>;
+      openDeck(webContentsId: number, docId: string, filePath: string, fitWidthPx: number): Promise<{ openResult: unknown }>;
       editText(webContentsId: number, docId: string, slideIndex: number, elementId: string, text: string): Promise<{ text: string }>;
+      saveDeck(webContentsId: number, docId: string, filePath: string): Promise<{ bytes: number }>;
     } => ({
       async addBlankSlide(webContentsId, docId) {
         stubs.push({ calls: [["addBlankSlide", webContentsId, docId]] });
         return { slideCount: 2 };
       },
+      async openDeck(webContentsId, docId, filePath, fitWidthPx) {
+        stubs.push({ calls: [["openDeck", webContentsId, docId, filePath, fitWidthPx]] });
+        return { openResult: { path: filePath, slides: [], size: { width: fitWidthPx, height: 720 } } };
+      },
       async editText(webContentsId, docId, slideIndex, elementId, text) {
         stubs.push({ calls: [["editText", webContentsId, docId, slideIndex, elementId, text]] });
         return { text };
+      },
+      async saveDeck(webContentsId, docId, filePath) {
+        stubs.push({ calls: [["saveDeck", webContentsId, docId, filePath]] });
+        return { bytes: 1024 };
       },
     });
 
@@ -1739,6 +1753,121 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
   host.closeAll();
   rmSync(ws, { recursive: true, force: true });
   rmSync(outside, { force: true });
+}
+
+/* ========== 18. 【ARC-007 P1/GA1】slides 打开/保存链（宿主侧状态机） ==========
+ *
+ * 判据（对应台账 P1/GA1 的 slides 半边）：
+ *  - 只有 `editor:"slides"` 的视图才接 slides 打开链（docs 视图不受影响）；
+ *  - 准备阶段的围栏/持锁预检/路径空判与 docs 的 openPath 同一条；
+ *  - 页面回执后才提交会话；回执里的 `OpenResult.path` 与待打开不一致即拒；
+ *  - `slidesSaveTarget` 只认自己的打开会话，且每次保存重新过围栏；
+ *  - `recordSlidesSave` 推进会话 revision（后续乐观锁以新版本为基准）。
+ */
+{
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const ws18 = mkdtempSync(join(tmpdir(), "mcode-dv-slides-"));
+  const deck = join(ws18, "talk.pptx");
+  writeFileSync(deck, Buffer.from("PK\u0003\u0004fake-pptx", "latin1"));
+  const outside18 = join(tmpdir(), `mcode-dv-slides-outside-${Date.now()}.pptx`);
+  writeFileSync(outside18, "outside", "utf8");
+  const within18 = (p: string): boolean =>
+    p.replace(/\\/g, "/").toLowerCase().startsWith(ws18.replace(/\\/g, "/").toLowerCase());
+
+  const win18 = makeFakeWindow();
+  const host18 = new DocumentViewHost({ getMainWindow: () => win18, createView: makeFakeView });
+  host18.open({ docId: "slides-18", url: FILE_URL, bounds: BOUNDS, visible: true, editor: "slides" });
+  host18.open({ docId: "docs-18", url: FILE_URL, bounds: BOUNDS, visible: true });
+
+  eq("editorOf 报告 slides 域", host18.editorOf("slides-18"), "slides");
+  eq("docs 视图的 editorOf 为 null（未声明）", host18.editorOf("docs-18"), null);
+
+  // 18a. docs 视图不得走 slides 打开链。
+  {
+    const r = host18.prepareSlidesOpen("docs-18", deck, within18);
+    check(
+      "★ docs 视图 prepareSlidesOpen 被拒（编辑器域不匹配）",
+      r.ok === false && r.reason.includes("不是演示文稿编辑器"),
+      r,
+    );
+  }
+
+  // 18b. 围栏/空路径/持锁预检与 docs 同一条。
+  {
+    check(
+      "★ 工作区外路径在准备阶段被拒",
+      host18.prepareSlidesOpen("slides-18", outside18, within18).ok === false,
+    );
+    check(
+      "空路径被拒",
+      host18.prepareSlidesOpen("slides-18", "   ", within18).ok === false,
+    );
+    const prepared = host18.prepareSlidesOpen("slides-18", deck, within18);
+    eq("围栏内路径准备成功", prepared.ok, true);
+    eq("★ 准备阶段不占会话（成功标记后置）", host18.sessionFor("slides-18"), null);
+    eq("待打开请求已登记", host18.pendingOpenFor("slides-18")?.filePath, deck);
+  }
+
+  // 18c. 回执路径与待打开不一致 → 拒（不把 A 文件的会话算到 B 头上）。
+  {
+    const wrong = host18.settleSlidesOpen("slides-18", { path: join(ws18, "other.pptx") }, true, within18);
+    check(
+      "★ 回执里的 OpenResult.path 与待打开不一致即拒",
+      wrong.ok === false && wrong.reason.includes("不一致"),
+      wrong,
+    );
+    eq("拒后不占会话", host18.sessionFor("slides-18"), null);
+    eq("拒后待打开请求已清空", host18.pendingOpenFor("slides-18"), null);
+  }
+
+  // 18d. 正确回执：提交会话；保存目标只认自己的会话。
+  {
+    host18.prepareSlidesOpen("slides-18", deck, within18);
+    const committed = host18.settleSlidesOpen("slides-18", { path: deck, slides: [] }, true, within18);
+    eq("★ 回执后提交会话", committed, { ok: true });
+    eq("会话路径是待打开路径", host18.sessionFor("slides-18")?.filePath, deck);
+    eq("待打开请求清空", host18.pendingOpenFor("slides-18"), null);
+    eq("slidesSaveTarget 返回会话路径", host18.slidesSaveTarget("slides-18", within18), { ok: true, filePath: deck });
+    check(
+      "★ 工作区已移除时保存目标被拒（每次保存重新过围栏）",
+      host18.slidesSaveTarget("slides-18", () => false).ok === false,
+    );
+    check(
+      "★ docs 视图没有 slides 保存目标",
+      host18.slidesSaveTarget("docs-18", within18).ok === false,
+    );
+  }
+
+  // 18e. 保存成功后推进 revision（后续乐观锁以新版本为基准）。
+  {
+    const before = host18.sessionFor("slides-18")?.revision;
+    const beforeRev = before ? await before : null;
+    writeFileSync(deck, Buffer.from("PK\u0003\u0004fake-pptx-v2", "latin1"));
+    const recorded = await host18.recordSlidesSave("slides-18", within18);
+    check("★ recordSlidesSave 成功并报告字节数", recorded.ok === true && recorded.bytes > 0, recorded);
+    const afterRev = host18.sessionFor("slides-18")?.revision;
+    const afterRevValue = afterRev ? await afterRev : null;
+    check(
+      "★ 保存后会话 revision 推进到盘上新版本",
+      recorded.ok === true && recorded.revision === afterRevValue && afterRevValue !== beforeRev,
+      { beforeRev, afterRevValue, recorded },
+    );
+  }
+
+  // 18f. 失败回执只丢弃待打开、不改变既有会话。
+  {
+    host18.prepareSlidesOpen("slides-18", deck, within18);
+    const rejected = host18.settleSlidesOpen("slides-18", null, false, within18);
+    eq("回绝回执成功（只丢弃）", rejected, { ok: true });
+    eq("★ 回绝不改变既有会话", host18.sessionFor("slides-18")?.filePath, deck);
+    eq("回绝后待打开清空", host18.pendingOpenFor("slides-18"), null);
+  }
+
+  host18.closeAll();
+  rmSync(ws18, { recursive: true, force: true });
+  rmSync(outside18, { force: true });
 }
 
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);

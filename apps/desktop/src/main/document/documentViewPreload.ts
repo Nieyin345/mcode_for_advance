@@ -148,6 +148,14 @@ const invokeSave = (payload: Record<string, unknown>): Promise<Record<string, un
  *  理由与 `mcode:document-view:save` 相同：只能被我们注入的 preload 调用。 */
 const SLIDES_ADD_SLIDE_CHANNEL = "mcode:document-view:slides-add-slide";
 const SLIDES_EDIT_TEXT_CHANNEL = "mcode:document-view:slides-edit-text";
+/** 【ARC-007 P1/GA1】slides 打开/保存：页面拉取宿主已解析的 `OpenResult`；
+ *  保存写回宿主打开会话里的那份文件（页面不传路径、不传字节）。 */
+const SLIDES_READ_OPENED_CHANNEL = "mcode:document-view:slides-read-opened";
+const SLIDES_SAVE_CHANNEL = "mcode:document-view:slides-save";
+/** 【ARC-007 P1/GA1】slides 页"文档已打开"的推送通道名 —— vendor 页面只订阅
+ *  这个名字（`apps/slides/src/preload/index.ts:389-391` 的 `onOpened`）。
+ *  与 docs 的 `menu:command` 是两个命名空间，不能互换。 */
+const SLIDES_OPENED_CHANNEL = "slides:opened";
 /** 【ARC-007 P0】打开链：页面 `openDocxPath` 改为**拉取**宿主已准备好的打开响应，
  *  不再反向触发 `open-path`（消除台账 E1 的 rpcCalls=2 回环）。 */
 const READ_OPENED_CHANNEL = "mcode:document-view:read-opened";
@@ -487,9 +495,57 @@ const slidesApi = {
     }) as Promise<{ ok?: boolean; error?: string }>;
   },
 
+  /** 【ARC-007 P1/GA1】vendor `openPptxPath(path, fitWidthPx)`（preload:149 /
+   *  `slides:open-path`）的**宿主重接**版本。
+   *
+   *  ⚠️ 页面给的 `path` 只作一致性提示：宿主以自己 `pendingOpen` 里的路径为准，
+   *  页面给什么路径都改不了读哪份文件（与 docs 的 `openDocxPath` 同一条纪律）。
+   *  返回值是 vendor `OpenResult`（`{ path, slides[], size, defaultFont? }`）或
+   *  null —— 与 vendor 的契约逐字对齐，页面代码无需分支。 */
+  openPptxPath: (path: string, fitWidthPx?: number): Promise<unknown> => {
+    void path;
+    void fitWidthPx;
+    return (ipcRenderer.invoke(SLIDES_READ_OPENED_CHANNEL, {}) as Promise<{
+      ok?: boolean;
+      result?: unknown;
+    }>).then((reply) => (reply && reply.ok === true ? reply.result : null));
+  },
+
+  /** 【ARC-007 P1/GA1】vendor `consumePendingOpen(fitWidthPx)`（preload:150）的
+   *  宿主对端：挂载时拉取（与 `openPptxPath` 同一条通道；重拉由宿主缓存结果，
+   *  不重复解析）。 */
+  consumePendingOpen: (fitWidthPx?: number): Promise<unknown> => {
+    void fitWidthPx;
+    return (ipcRenderer.invoke(SLIDES_READ_OPENED_CHANNEL, {}) as Promise<{
+      ok?: boolean;
+      result?: unknown;
+    }>).then((reply) => (reply && reply.ok === true ? reply.result : null));
+  },
+
+  /** 【ARC-007 P1/GA1】vendor `onOpened(handler)`（preload:389）的宿主对端：
+   *  宿主在 `openPath` 解析成功后推 `slides:opened`（与 vendor 主进程同一形状）。 */
+  onOpened: (handler: (result: unknown) => void): (() => void) => {
+    const listener = (_event: unknown, result: unknown): void => handler(result);
+    ipcRenderer.on(SLIDES_OPENED_CHANNEL, listener);
+    return () => {
+      ipcRenderer.removeListener(SLIDES_OPENED_CHANNEL, listener);
+    };
+  },
+
+  /** 【ARC-007 P1/GA1】vendor `save()`（preload:357 / `slides:save`）的宿主对端：
+   *  把该视图会话里的 deck 写回**宿主打开的那份文件**。页面不传路径与字节 ——
+   *  vendor 的 `save()` 本来也不传（路径在 vendor 主进程的 session 里）。
+   *  失败形状与 vendor 对齐：`{ ok:false, error }`（`file-actions.ts:96-108` 读它）。 */
+  save: (): Promise<{ ok: boolean; path?: string; error?: string; slides?: unknown[] }> =>
+    ipcRenderer.invoke(SLIDES_SAVE_CHANNEL, {}) as Promise<{
+      ok: boolean;
+      path?: string;
+      error?: string;
+      slides?: unknown[];
+    }>,
+
   // ── 空订阅 / 空数据（见上方注释的真实来源） ──
   onFontsChanged: noopUnsubscribe,
-  onOpened: noopUnsubscribe,
   onRenamed: noopUnsubscribe,
   onAiSettingsChanged: noopUnsubscribe,
   onAiPanelPrefsChanged: noopUnsubscribe,
@@ -505,10 +561,14 @@ const slidesApi = {
   setAutoSavePref: (): Promise<void> => Promise.resolve(),
 
   clipboardProbe: (): Promise<boolean> => Promise.resolve(false),
-  consumePendingOpen: (): Promise<null> => Promise.resolve(null),
   consumeHeadlessExport: (): Promise<null> => Promise.resolve(null),
   headlessExportDone: (): void => {},
   isDirty: (): Promise<boolean> => Promise.resolve(false),
+  /** 【ARC-007 P1/GA1】vendor slides 成功路径同样会调 `getRecentFiles()`
+   *  （`App.tsx:1281-1283` 的 start screen 最近列表；打开成功后它被调用），
+   *  但**它不在打开成功链上**（`applyOpen` 不依赖它）—— 因此这里不再兼任回执点；
+   *  slides 的回执在 `slides-read-opened`（宿主拿到页面拉取即提交，见该 handler）。
+   *  返回值仍是空表（Mcode 不维护 vendor 的最近文件列表）。 */
   getRecentFiles: (): Promise<string[]> => Promise.resolve([]),
   getAiSettings: api.getAiSettings,
   getAiPanelPrefs: (): Promise<unknown> => Promise.resolve({}),
@@ -521,6 +581,13 @@ const slidesApi = {
   getComments: (): Promise<unknown[]> => Promise.resolve([]),
   getSections: (): Promise<unknown[]> => Promise.resolve([]),
   getChartData: (): Promise<null> => Promise.resolve(null),
+  /** 【ARC-007 P1/GA1】vendor `getLayouts()`（preload:243 / shared/ipc.ts:1836）。
+   *  **不是可选的**：`applyOpen` 成功路径上无条件调它（`App.tsx:891`），
+   *  缺失会抛 `is not a function`（实测在页面里留一条未捕获错误）。
+   *  宿主当前没有布局目录服务（`slides:get-layouts` 需要 vendor 会话的
+   *  archive）—— 回 `null` = "这个 deck 没有可列出的布局"，页面按 vendor 的
+   *  空分支处理（不显示布局选择器）。将来接布局服务时换成真实数据。 */
+  getLayouts: (): Promise<null> => Promise.resolve(null),
 };
 
 contextBridge.exposeInMainWorld("desktop", Object.freeze(api));

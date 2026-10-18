@@ -439,6 +439,10 @@ const INDEPENDENT_PRELOAD_CHANNELS = new Set([
   // 【ARC-007】slides 编辑（A 方案第一步）：同样是独立视图 preload 的内部通道。
   "mcode:document-view:slides-add-slide",
   "mcode:document-view:slides-edit-text",
+  // 【ARC-007 P1/GA1】slides 打开/保存链：独立视图 preload 直达的内部通道
+  // （页面拉取 OpenResult；保存写回打开的会话，不传路径/字节）。
+  "mcode:document-view:slides-read-opened",
+  "mcode:document-view:slides-save",
   // 【ARC-007 P0】打开链：页面拉取/回执/替换守卫/dirty 上报 —— 全部由独立视图
   // preload 直达，不进 `window.api` 面（渲染端/Agent 没有入口）。
   "mcode:document-view:read-opened",
