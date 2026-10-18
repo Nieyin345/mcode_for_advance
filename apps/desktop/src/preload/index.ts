@@ -1026,6 +1026,7 @@ const api = {
   // 渲染端只拿 docId 与像素 bounds；URL 白名单、安全开关、生命周期全在主进程。
   documentView: {
     open: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_OPEN, input)) as RpcMap["documentView.open"],
+    openPath: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_OPEN_PATH, input)) as RpcMap["documentView.openPath"],
     bounds: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_BOUNDS, input)) as RpcMap["documentView.bounds"],
     show: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_SHOW, input)) as RpcMap["documentView.show"],
     hide: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_HIDE, input)) as RpcMap["documentView.hide"],

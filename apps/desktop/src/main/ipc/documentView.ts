@@ -38,6 +38,7 @@ import {
   IPC,
   DocViewBoundsSchema,
   DocViewCloseSchema,
+  DocViewOpenPathSchema,
   DocViewDocIdSchema,
   DocViewOpenSchema,
   type DocViewListResult,
@@ -52,7 +53,12 @@ function failed(err: unknown): DocViewResult {
   return { ok: false, reason: errText(err) };
 }
 
-export function registerDocumentViewHandlers(ipc: IpcMain, host: DocumentViewHost): void {
+export function registerDocumentViewHandlers(
+  ipc: IpcMain,
+  host: DocumentViewHost,
+  /** 【ARC-007】路径围栏判据（生产传 `findContainingWorkspaceRoot` 那一份）。 */
+  withinWorkspace: (p: string) => boolean,
+): void {
   // IpcMain.handle 的监听器形参带类型化的 event；本模块的 handler 全都不读它，
   // 按 `(event: unknown, raw: unknown)` 声明即可结构兼容 recordRpcHandler。
   const onOpen = async (_evt: unknown, raw: unknown): Promise<DocViewResult> => {
@@ -116,8 +122,46 @@ export function registerDocumentViewHandlers(ipc: IpcMain, host: DocumentViewHos
   recordRpcHandler(IPC.DOCUMENT_VIEW_CLOSE, onClose);
   ipc.handle(IPC.DOCUMENT_VIEW_CLOSE, onClose);
 
+  const onOpenPath = async (_evt: unknown, raw: unknown): Promise<DocViewResult> => {
+    try {
+      const input = DocViewOpenPathSchema.parse(raw);
+      return host.openPath(input.docId, input.filePath, withinWorkspace);
+    } catch (err) {
+      return failed(err);
+    }
+  };
+  recordRpcHandler(IPC.DOCUMENT_VIEW_OPEN_PATH, onOpenPath);
+  ipc.handle(IPC.DOCUMENT_VIEW_OPEN_PATH, onOpenPath);
+
   // 只读诊断：返回状态快照（没有会失败的路径，不带 ok 信封）。
   const onList = (): DocViewListResult => ({ views: host.list() });
   recordRpcHandler(IPC.DOCUMENT_VIEW_LIST, onList);
   ipc.handle(IPC.DOCUMENT_VIEW_LIST, onList);
+
+  /**
+   * 【ARC-007】**视图 preload 的内部通道** —— 页面请求打开某个文档。
+   *
+   * 为什么不是第八条 `documentView.*` RPC：它只由我们注入的 preload 调用，
+   * 渲染端/Agent 都不该有这个入口。挂成 RPC 等于把"让页面读任意工作区内文件"
+   * 的能力开给 Agent —— 那是扩大能力面，不是补桥。
+   *
+   * `withinWorkspace` 由生产装配注入（`findContainingWorkspaceRoot` 那一份判据），
+   * **不在这里另写一套路径判断**（README 硬规矩 2）。
+   */
+  ipc.handle("mcode:document-view:open-path", async (evt: unknown, raw: unknown) => {
+    try {
+      const input = raw as { filePath?: unknown };
+      const filePath = typeof input?.filePath === "string" ? input.filePath : "";
+      // 【ARC-007】**身份由宿主反查，页面说了不算**：从 `event.sender` 找到是哪个
+      // WebContents 在请求，再映射回 docId。页面改自己的 URL/参数都影响不到这一步 ——
+      // 否则"页面能改 docId"就等于"页面能把 A 视图的打开请求算到 B 头上"。
+      const sender = (evt as { sender?: unknown } | null)?.sender;
+      const docId = host.docIdForSender(sender);
+      if (docId === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
+      return host.openPath(docId, filePath, withinWorkspace);
+    } catch (err) {
+      return failed(err);
+    }
+  });
+
 }

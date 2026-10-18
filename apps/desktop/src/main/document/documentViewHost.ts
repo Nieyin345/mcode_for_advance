@@ -43,6 +43,9 @@ export interface DocumentViewWebPreferences {
   contextIsolation: true;
   nodeIntegration: false;
   sandbox: true;
+  /** 【ARC-007】最小桥（见 `documentViewPreload.ts`）。缺省 = 不给任何桥
+   *  （页面会降级，但无法打开指定文档）。 */
+  preload?: string;
 }
 
 /** 假构造器要满足的视图最小面（真 `WebContentsView` 天然满足，见文件头的注入说明）。 */
@@ -60,6 +63,8 @@ export interface DocumentViewWebContentsLike {
    *  完全不知道"是没加载还是加载了但崩了"。有了钩子,`list()` 能如实报出失败原因。 */
   on?(event: "did-fail-load", listener: (...args: unknown[]) => void): unknown;
   on?(event: "render-process-gone", listener: (...args: unknown[]) => void): unknown;
+  /** 向页面发一条受控消息（只有 `openPath` 用它）。 */
+  send?(channel: string, ...args: unknown[]): void;
 }
 
 export interface DocumentViewLike {
@@ -151,6 +156,19 @@ function defaultCreateView(webPreferences: DocumentViewWebPreferences): Document
   return new WebContentsView({ webPreferences }) as unknown as DocumentViewLike;
 }
 
+/** 【ARC-007】视图 preload 的**编译产物**路径。构建把 `documentViewPreload.ts`
+ *  打进 `dist/main/document/documentViewPreload.js`；本文件同名，用 `__dirname`
+ *  取同目录即可（开发时是源码旁的编译产物）。取不到就**不给桥**（fail-closed：
+ *  宁可页面降级，也不假装桥在）。 */
+function resolveViewPreload(): string | undefined {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("node:path").join(__dirname, "documentViewPreload.js");
+  } catch {
+    return undefined;
+  }
+}
+
 export class DocumentViewHost {
   private readonly views = new Map<string, LiveDocumentView>();
   private readonly getWindow: () => DocumentViewHostWindow | null;
@@ -206,7 +224,10 @@ export class DocumentViewHost {
 
     let view: DocumentViewLike;
     try {
-      view = this.createView({ contextIsolation: true, nodeIntegration: false, sandbox: true });
+      view = this.createView({
+        contextIsolation: true, nodeIntegration: false, sandbox: true,
+        ...(resolveViewPreload() !== undefined ? { preload: resolveViewPreload()! } : {}),
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error(`document view create failed: ${msg}`);
@@ -308,6 +329,54 @@ export class DocumentViewHost {
     this.detachAndDestroy(live);
     this.views.delete(docId);
     return { ok: true };
+  }
+
+  /**
+   * 【ARC-007】把某个文档载入**已打开的那个视图**（页面里的 `openDocxPath`）。
+   *
+   * 判据：路径必须落在已知工作区内（与 `document.*` 同一条围栏）；视图必须存在。
+   * 通过后经 `webContents.send` 把路径交给页面。
+   *
+   * ⚠️ 信任模型：页面**不可信**，它只能**请求**打开某个路径；宿主拒绝时原样返回原因。
+   * 没有"页面给什么就读什么"这回事。
+   */
+  openPath(docId: string, filePath: string, withinWorkspace: (p: string) => boolean): DocViewResult {
+    const live = this.views.get(docId);
+    if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
+    if (typeof filePath !== "string" || filePath.trim() === "") {
+      return { ok: false, reason: "文件路径为空" };
+    }
+    if (!withinWorkspace(filePath)) {
+      return { ok: false, reason: `文件不在已知工作区内：${filePath}` };
+    }
+    const wc = live.view.webContents;
+    if (typeof wc.send !== "function") {
+      return { ok: false, reason: "当前视图不支持接收打开请求" };
+    }
+    try {
+      wc.send("mcode:document-view:open-path", filePath);
+    } catch (err) {
+      return { ok: false, reason: `发送打开请求失败：${err instanceof Error ? err.message : String(err)}` };
+    }
+    live.lastFailure = undefined;
+    log.info(`document view open-path: ${docId} ${filePath}`);
+    return { ok: true };
+  }
+
+  /**
+   * 【ARC-007】把一条 IPC 的 `event.sender` 映射回 docId。**身份由宿主决定**，
+   * 页面说了不算 —— 页面改自己的 URL/参数都影响不到这一步。
+   *
+   * 为什么需要:视图 preload 的 `openDocxPath` 只带路径;宿主要知道"是哪个视图在请求",
+   * 才能保证 A 视图的请求不会被算到 B 头上。`sender` 是 Electron 给的 webContents
+   * 句柄,preload 里拿不到、也伪造不了。
+   */
+  docIdForSender(sender: unknown): string | null {
+    if (!sender || typeof sender !== "object") return null;
+    for (const [docId, live] of this.views) {
+      if (live.view.webContents === sender) return docId;
+    }
+    return null;
   }
 
   /** 销毁全部（主窗口 closed / 应用退出）。幂等。 */

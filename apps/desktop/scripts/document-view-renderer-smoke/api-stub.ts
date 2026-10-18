@@ -10,7 +10,7 @@
 import type { DocViewResult } from "@contracts/ipc";
 
 export interface DocumentViewCall {
-  method: "open" | "bounds" | "show" | "hide" | "focus" | "close" | "list";
+  method: "open" | "openPath" | "bounds" | "show" | "hide" | "focus" | "close" | "list";
   input: unknown;
   seq: number;
 }
@@ -39,6 +39,10 @@ const documentView = {
   open: (input: unknown): Promise<DocViewResult> => {
     documentViewCalls.push({ method: "open", input, seq: ++seq });
     return Promise.resolve(plans.get("open") ?? { ok: true });
+  },
+  openPath: (input: unknown): Promise<DocViewResult> => {
+    documentViewCalls.push({ method: "openPath", input, seq: ++seq });
+    return Promise.resolve(plans.get("openPath") ?? { ok: true });
   },
   bounds: (input: unknown): Promise<DocViewResult> => {
     documentViewCalls.push({ method: "bounds", input, seq: ++seq });

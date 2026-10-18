@@ -428,8 +428,16 @@ const mobileOnly = new Set<string>([...webApiText.matchAll(/rpc\(\s*"([^"]+)"/g)
  */
 for (const m of preloadText.matchAll(/invoke\(\s*"([^"]+)"/g)) preloadInvoked.add(m[1]);
 
+/**
+ * 【ARC-007】由**独立 preload** 触达的通道,不属于 `window.api` 那一层。
+ * 只放行这一个 —— 每加一条都要有对应的独立 preload 存在(见 ipc-wiring-smoke
+ * 里那对两端断言),否则这里就成了静默放行的后门。
+ */
+const INDEPENDENT_PRELOAD_CHANNELS = new Set(["mcode:document-view:open-path"]);
+
 const notSurfaced = [...mainChannels.keys()]
-  .filter((ch) => !preloadInvoked.has(ch) && !mobileOnly.has(ch) && !pushChannels.has(ch))
+  .filter((ch) => !preloadInvoked.has(ch) && !mobileOnly.has(ch) && !pushChannels.has(ch)
+    && !INDEPENDENT_PRELOAD_CHANNELS.has(ch))
   .sort();
 eqArr("主进程注册的渠道,渲染端都够得着(preload 或手机端桥)", notSurfaced, []);
 

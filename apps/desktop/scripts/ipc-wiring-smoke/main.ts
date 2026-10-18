@@ -817,7 +817,13 @@ diff("preload 每次 invoke 出去的通道,主进程都有 handle", invokeChann
  * 但它**不是靠这条豁免活下来的** —— 下面有一条专门钉住它两边都在。豁免只是不让它
  * 出现在这条方向性断言的差集里(那条断言问的是"`window.api` 这一层")。
  */
-const NON_API_HANDLER_CHANNELS = ["__mcode_pick_result__"];
+const NON_API_HANDLER_CHANNELS = [
+  "__mcode_pick_result__",
+  // 【ARC-007】文档视图的**独立 preload**(`main/document/documentViewPreload.ts`)
+  // 里由页面请求"打开某个文档"。它不是 `window.api` 的一层,而是注入给
+  // WebContentsView 的最小桥 —— 和浏览器 picker 同一个形态。
+  "mcode:document-view:open-path",
+];
 diff(
   "主进程每条 handle 的通道,preload 都发得出去(或属于已知的独立 preload)",
   [...handledChannels].sort(),
@@ -839,6 +845,22 @@ diff(
     { browserPickerSends: pickSent, mainOnlyHandlers: [...handledChannels].filter((c) => !invokeChannels.has(c)) },
   );
 }
+
+/* 【ARC-007】文档视图 preload 的两端:它 invoke 的通道主进程必须收着。 */
+{
+  const docPreload = read(join(DESKTOP, "src/main/document/documentViewPreload.ts"));
+  const invoked = [...docPreload.matchAll(/ipcRenderer\.invoke\(\s*OPEN_DOCUMENT_CHANNEL/g)].map(() => "mcode:document-view:open-path");
+  check(
+    "文档视图 preload 发的通道,主进程正好收着那一端",
+    invoked.length === 1 && handledChannels.has(invoked[0]),
+    { docPreloadInvokes: invoked },
+  );
+  // 反向:这个独立 preload 绝不能再拿到 `ipcRenderer` 的**任意**通道能力。
+  check("★ 文档视图 preload 只有一个 invoke 通道(不暴露任意 IPC)",
+    (docPreload.match(/ipcRenderer\.invoke\(/g) ?? []).length === 1,
+    (docPreload.match(/ipcRenderer\.invoke\(/g) ?? []).length);
+}
+
 
 // 自检:上面那条反向断言如果因为"主进程也接推送通道"而失真,这里挡住。
 const handledPush = [...pushChannels].filter((c) => handledChannels.has(c));

@@ -48,6 +48,7 @@ import {
   DOCUMENT_VIEW_FOCUS_CHANNEL,
   DOCUMENT_VIEW_CLOSE_CHANNEL,
   DOCUMENT_VIEW_LIST_CHANNEL,
+  DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
 } from "@contracts/ipc";
 import {
   DocumentViewHost,
@@ -440,7 +441,7 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
     },
   } as unknown as IpcMain;
 
-  registerDocumentViewHandlers(fakeIpc, host);
+  registerDocumentViewHandlers(fakeIpc, host, () => true);
 
   const channels = [
     DOCUMENT_VIEW_OPEN_CHANNEL,
@@ -450,12 +451,21 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
     DOCUMENT_VIEW_FOCUS_CHANNEL,
     DOCUMENT_VIEW_CLOSE_CHANNEL,
     DOCUMENT_VIEW_LIST_CHANNEL,
+    DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
   ];
-  eq("★ 七条 documentView:* 通道全注册上了", channels.filter((c) => !handlers.has(c)), []);
-  eq("注册的通道就是这七条（不多不漏）", [...handlers.keys()].sort(), [...channels].sort());
+  eq("★ 八条 documentView:* 通道全注册上了", channels.filter((c) => !handlers.has(c)), []);
+  // 另有一条**内部通道**（视图 preload 的 open-path）：它不挂成 RPC，
+  // 但主进程必须注册 —— 页面打开文档靠它。
+  const internal = "mcode:document-view:open-path";
+  check("视图 preload 的内部打开通道已注册", handlers.has(internal));
+  check("注册的通道就是这八条 + 一条内部通道（不多不漏）",
+    JSON.stringify([...handlers.keys()].sort()) === JSON.stringify([...channels, internal].sort()),
+    { actual: [...handlers.keys()].sort(), expected: [...channels, internal].sort() });
 
   const rpc = new Set(registeredRpcChannels());
-  eq("★ 七条通道全登记进 recordRpcHandler（app_api_call 看得见）", channels.filter((c) => !rpc.has(c)), []);
+  eq("★ 八条通道全登记进 recordRpcHandler（app_api_call 看得见）", channels.filter((c) => !rpc.has(c)), []);
+  // 内部通道**不该**出现在 RPC 表里 —— 那是给页面的，不是给 Agent 的。
+  check("★ 内部 open-path 通道不在 RPC 表（不扩大 Agent 能力面）", !rpc.has(internal), [...rpc].filter((c) => c.includes("open-path")));
   eq("IPC 表里的常量与契约字符串一致", IPC.DOCUMENT_VIEW_OPEN, "documentView:open");
 
   const call = async (channel: string, raw?: unknown): Promise<{ ok?: boolean; reason?: string }> => {
@@ -534,7 +544,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
     for (const key of ["open", "bounds", "show", "hide", "focus", "close", "list"]) {
       check(`RpcMap 声明了 documentView.${key}`, rpcMap.includes(`"documentView.${key}"`));
     }
-    check("ipc/index.ts 调用了 registerDocumentViewHandlers", /registerDocumentViewHandlers\(ipc, documentViewHost\)/.test(index));
+    check("ipc/index.ts 调用了 registerDocumentViewHandlers（带路径围栏）", /registerDocumentViewHandlers\(ipc, documentViewHost,/.test(index));
     check("退出路径 dispose 文档视图宿主", readFileSync(join(appDir, "src/main/index.ts"), "utf8").includes("documentViewHost.dispose()"));
   }
 }
@@ -572,6 +582,40 @@ section("7. 三层接线：preload / rpcMap / main 注册");
   diagView.failureListeners["render-process-gone"]?.({}, { reason: "crashed" });
   eq("★ 渲染进程退出被记成 render-gone",
     host.list().find((v) => v.docId === "diag-1")?.lastFailure?.kind, "render-gone");
+  host.closeAll();
+}
+
+
+/* ══════════ 9.【ARC-007】openPath：页面请求打开文档 ══════════ */
+{
+  const win = makeFakeWindow();
+  const sends: Array<{ channel: string; args: unknown[] }> = [];
+  const host = new DocumentViewHost({
+    getMainWindow: () => win,
+    createView: (prefs) => {
+      const v = makeFakeView(prefs);
+      (v.webContents as { send?: (c: string, ...a: unknown[]) => void }).send = (c, ...a) => { sends.push({ channel: c, args: a }); };
+      return v;
+    },
+  });
+  host.open({ docId: "open-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+
+  const ok = host.openPath("open-1", "D:/workspace/doc.docx", () => true);
+  check("工作区内路径 → ok", ok.ok, ok);
+  eq("★ 发到了页面约定的内部通道", sends.at(-1)?.channel, "mcode:document-view:open-path");
+  eq("★ 路径原样交给页面", sends.at(-1)?.args[0], "D:/workspace/doc.docx");
+
+  const before = sends.length;
+  const denied = host.openPath("open-1", "C:/Windows/system32/config", () => false);
+  check("★ 工作区外路径被拒", denied.ok === false, denied);
+  eq("★ 被拒时没有向页面发任何消息（围栏在发之前）", sends.length, before);
+
+  check("不存在的 docId → 拒", host.openPath("nope", "D:/workspace/x.docx", () => true).ok === false);
+  check("空路径 → 拒", host.openPath("open-1", "   ", () => true).ok === false);
+
+  const live = (host as unknown as { views: Map<string, { view: { webContents: unknown } }> }).views.get("open-1");
+  eq("★ docIdForSender 能反查真实视图", host.docIdForSender(live?.view.webContents), "open-1");
+  eq("★ 陌生 sender 反查为 null（页面伪造不了身份）", host.docIdForSender({}), null);
   host.closeAll();
 }
 

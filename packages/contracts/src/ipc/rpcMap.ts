@@ -3,6 +3,7 @@ import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflig
 import type { DocumentReadInput, DocumentEditInput, DocumentConvertInput, DocumentIpcResult, DocumentCapabilities } from "./document.js";
 import {
   DOCUMENT_VIEW_OPEN_CHANNEL,
+  DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
   DOCUMENT_VIEW_BOUNDS_CHANNEL,
   DOCUMENT_VIEW_SHOW_CHANNEL,
   DOCUMENT_VIEW_HIDE_CHANNEL,
@@ -10,7 +11,7 @@ import {
   DOCUMENT_VIEW_CLOSE_CHANNEL,
   DOCUMENT_VIEW_LIST_CHANNEL,
 } from "./documentView.js";
-import type { DocViewOpenInput, DocViewBoundsInput, DocViewCloseInput, DocViewResult, DocViewListResult } from "./documentView.js";
+import type { DocViewOpenInput, DocViewOpenPathInput, DocViewBoundsInput, DocViewCloseInput, DocViewResult, DocViewListResult } from "./documentView.js";
 import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult, UnattendedListIpcResult, UnattendedResumeInput, UnattendedAbandonInput, UnattendedAbandonIpcResult } from "./unattended.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
@@ -1118,6 +1119,8 @@ export interface RpcMap {
   "document.capabilities": () => Promise<DocumentCapabilities>;
   /** 【ARC-007】受控文档视图宿主的打开/复用:一个 docId 一个 WebContentsView。URL 只放行 `file://` 与本机回环(主进程复核,fail-closed);同 docId 重复 open 复用视图并更新 url/bounds。 */
   "documentView.open": (input: DocViewOpenInput) => Promise<DocViewResult>;
+  /** 【ARC-007】把某个文档载入已打开的视图（路径围栏在主进程）。 */
+  "documentView.openPath": (input: DocViewOpenPathInput) => Promise<DocViewResult>;
   /** 【ARC-007】只改文档视图几何(窗口像素矩形)。视图隐藏时记住新几何,show 时恢复。 */
   "documentView.bounds": (input: DocViewBoundsInput) => Promise<DocViewResult>;
   /** 【ARC-007】显示文档视图:重新挂到窗口并恢复最后几何。已可见时幂等。 */
@@ -2086,6 +2089,7 @@ export const IPC = {
   // 【ARC-007】受控文档视图宿主(WebContentsView)。渠道字符串本体钉在
   // `./documentView.js` 的 `DOCUMENT_VIEW_*_CHANNEL` 常量上,这里只取值。
   DOCUMENT_VIEW_OPEN: DOCUMENT_VIEW_OPEN_CHANNEL,
+  DOCUMENT_VIEW_OPEN_PATH: DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
   DOCUMENT_VIEW_BOUNDS: DOCUMENT_VIEW_BOUNDS_CHANNEL,
   DOCUMENT_VIEW_SHOW: DOCUMENT_VIEW_SHOW_CHANNEL,
   DOCUMENT_VIEW_HIDE: DOCUMENT_VIEW_HIDE_CHANNEL,

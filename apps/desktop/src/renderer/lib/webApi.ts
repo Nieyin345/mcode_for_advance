@@ -856,6 +856,7 @@ const theme: Api["theme"] = {
  *  effect 里调用会让 React 19 整棵卸载。 */
 const documentView: Api["documentView"] = {
   open: () => webUnsupported("documentView.open"),
+  openPath: () => webUnsupported("documentView.openPath"),
   bounds: () => webUnsupported("documentView.bounds"),
   show: () => webUnsupported("documentView.show"),
   hide: () => webUnsupported("documentView.hide"),

@@ -196,7 +196,18 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
             closeQuietly(docId);
             return;
           }
-          if (!result.ok) setOpenError(result.reason);
+          if (!result.ok) {
+            setOpenError(result.reason);
+            return;
+          }
+          // 【ARC-007】open 成功后再请求"打开这份文档":视图里是编辑器起始页,
+          // 不请求的话用户看到的是空白文档。宿主侧会核对路径在工作区内。
+          void api.documentView.openPath({ docId, filePath }).then(
+            (opened) => {
+              if (!opened.ok && !disposed) setOpenError(opened.reason);
+            },
+            () => { /* 打开失败不覆盖 open 成功的事实;页面失败另有 lastFailure */ },
+          );
         },
         (err: unknown) => {
           if (!disposed) setOpenError(err instanceof Error ? err.message : String(err));

@@ -152,8 +152,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "automation.watchTemplatesSave",
   "channel": "automation:watchTemplatesSave",
   "doc": "存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。 【MC-054】带 `expectedRevision` 时做原值版本检查:盘上已被别处改动 → `ok:false` 并说明,不覆盖对方刚保存的内容(两端并发编辑不再静默丢更新)。",
-  "input": "{ templates: { id: string; name: string; command: string; }[]; expectedRevision?: string | undefined // 【MC-054】**原值版本检查** —— 保存方上次读到的 revision(见 `automation.watchTemplates` 的返回值)。给了就必须与当前盘上一致:… }",
-  "inputFull": "{ templates: { id: string; name: string; command: string; }[]; expectedRevision?: string | undefined // 【MC-054】**原值版本检查** —— 保存方上次读到的 revision(见 `automation.watchTemplates` 的返回值)。给了就必须与当前盘上一致:… }",
+  "input": "{ templates: { id: string; name: string; command: string; }[]; expectedRevision?: string | null | undefined // 【MC-054】保存方上次读到的 revision。 }",
+  "inputFull": "{ templates: { id: string; name: string; command: string; }[]; expectedRevision?: string | null | undefined // 【MC-054】保存方上次读到的 revision。 }",
   "output": "{ ok: boolean; error?: string | undefined; conflict?: boolean | undefined; currentRevision?: string | undefined }"
  },
  {
@@ -674,6 +674,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【ARC-007】受控文档视图宿主的打开/复用:一个 docId 一个 WebContentsView。URL 只放行 `file://` 与本机回环(主进程复核,fail-closed);同 docId 重复 open 复用视图并更新 url/bounds。",
   "input": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean }",
   "inputFull": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean }",
+  "output": "{ ok: true } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.openPath",
+  "channel": "documentView:openPath",
+  "doc": "【ARC-007】把某个文档载入已打开的视图（路径围栏在主进程）。",
+  "input": "{ filePath: string; docId: string }",
+  "inputFull": "{ filePath: string; docId: string }",
   "output": "{ ok: true } | { ok: false; reason: string }"
  },
  {
@@ -1946,15 +1954,15 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "全部模块(**内置 + 已装**)的清单:各自的贡献项、宿主能力表、以及内置只读模块能当工作流目标的那几项。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.install",
   "channel": "modules:install",
   "doc": "安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单。",
-  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
-  "inputFull": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
+  "inputFull": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.invoke",
@@ -1970,7 +1978,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【MC-036】给一个已安装的用户模块的只读贡献**签发**工作流运行授权(绑定模块 id/版本/ 贡献/能力/工作区)。由设置页里用户本人的点击发起;Agent 侧钉 blocked(见 `appControl/policy.ts`)—— 自动运行权不能由模型自己给自己升。返回签发后的目录。",
   "input": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
   "inputFull": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.remove",
@@ -1978,7 +1986,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单。",
   "input": "{ moduleId: string }",
   "inputFull": "{ moduleId: string }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.revokeWorkflowGrant",
@@ -1986,7 +1994,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【MC-036】撤销一条工作流运行授权(同一 (模块,版本,贡献,能力,工作区) 幂等键)。",
   "input": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
   "inputFull": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write')[]; contributions: { id: str…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
  },
  {
   "method": "modules.task",
@@ -2640,8 +2648,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "scene.listDeployments",
   "channel": "scene:listDeployments",
   "doc": "【MC-002】**列出某个场景已落盘的部署记录**(重启后发现未完成部署的唯一读通道)。**只读**,不执行任何步骤。`deploymentId` 只活在渲染端内存里,重启后没有这条通道用户就永远看不到盘上那份 `partial/failed`。`resumable` 只是\"状态上还能接着跑\"的只读推导,**不是授权** —— 真正续跑仍要用户重新预览 + 批准(`scene.approve`),旧 grant 可能已过期。**只有桌面渲染端够得到它**(agent 侧 blocked,手机端 unsuppor…",
-  "input": "{ sceneId: string; limit?: number | undefined // 最多列多少条(宿主有上限;默认 20)。 }",
-  "inputFull": "{ sceneId: string; limit?: number | undefined // 最多列多少条(宿主有上限;默认 20)。 }",
+  "input": "{ limit?: number | undefined // 最多列多少条(宿主有上限;默认 20)。; sceneId?: string | undefined // 【MC-002】**省略 = 跨场景列最近的部署**。; resumableOnly?: boolean | undefined // 只看还能续跑的(状态 partial/failed 且存档读得回来)。默认 false。 }",
+  "inputFull": "{ limit?: number | undefined // 最多列多少条(宿主有上限;默认 20)。; sceneId?: string | undefined // 【MC-002】**省略 = 跨场景列最近的部署**。; resumableOnly?: boolean | undefined // 只看还能续跑的(状态 partial/failed 且存档读得回来)。默认 false。 }",
   "output": "{ ok: true; deployments: SceneDeploymentListEntryWire[] } | { ok: false; reason: string }"
  },
  {

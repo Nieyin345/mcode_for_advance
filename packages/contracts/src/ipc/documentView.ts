@@ -29,6 +29,11 @@ import { z } from "zod";
  * 字符串本体钉在这里（与 `_CHANNEL` 系列同一种写法），IPC 表只引用、不重写第二份 ——
  * 改一处而另一处静默漂移是这套表最典型的坏法。 */
 export const DOCUMENT_VIEW_OPEN_CHANNEL = "documentView:open";
+/** 【ARC-007】请求把某个文档载入已打开的视图（渲染端 → 主进程）。
+ *
+ *  为什么需要:视图里是**编辑器起始页**,不请求打开就永远空白。路径围栏在主进程
+ *  （`findContainingWorkspaceRoot` 那一份),渲染端只表达"想打开哪个文件"。 */
+export const DOCUMENT_VIEW_OPEN_PATH_CHANNEL = "documentView:openPath";
 export const DOCUMENT_VIEW_BOUNDS_CHANNEL = "documentView:bounds";
 export const DOCUMENT_VIEW_SHOW_CHANNEL = "documentView:show";
 export const DOCUMENT_VIEW_HIDE_CHANNEL = "documentView:hide";
@@ -62,6 +67,13 @@ export const DocViewOpenSchema = z.object({
   visible: z.boolean(),
 });
 export type DocViewOpenInput = z.infer<typeof DocViewOpenSchema>;
+
+/** `documentView:openPath` 的入参。`filePath` 由主进程过围栏后才交给页面。 */
+export const DocViewOpenPathSchema = z.object({
+  docId: DocIdSchema,
+  filePath: z.string().min(1).max(4096),
+}).strict();
+export type DocViewOpenPathInput = z.infer<typeof DocViewOpenPathSchema>;
 
 /** `documentView:bounds` 的入参：只改几何，不动 URL/可见性。 */
 export const DocViewBoundsSchema = z.object({
