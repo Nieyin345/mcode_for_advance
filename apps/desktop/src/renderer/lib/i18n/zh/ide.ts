@@ -452,7 +452,7 @@ export const zh = {
   "ide.genoffice.viewHostStageTooSmall": "面板没有可用的显示区域（宽或高为 0），视图未打开",
   "ide.genoffice.viewHostUnsupported": "表格/演示文稿的打开暂不可用：打开通道在 GenOffice 自己的主进程里",
   "ide.genoffice.viewHostUnsupportedSheets": "原因：表格（xlsx/xlsm/ods…）的打开通道长在 GenOffice 自己的主进程里 —— 渲染端只通过 workbook:select 请那一侧准备并返回工作簿会话，Mcode 宿主不运行那份主进程，也没有按路径打开的渲染端入口（menu:action 不带路径，排队表也只存在 vendor 主进程内存里）。因此这里不会创建编辑视图，避免显示一张空白的表格页。表格文件仍可通过 OnlyOffice 编辑器或 GenOffice 结构化视图打开。",
-  "ide.genoffice.viewHostUnsupportedSlides": "原因：演示文稿（pptx/potx/odp…）的打开通道同样在 GenOffice 自己的主进程里 —— 按路径打开只有 slides:open-path 一条 invoke，需要那一侧先解析演示文稿再回传 OpenResult；渲染端订阅的 slides:menu 只承载菜单命令、不带路径（其中的 open 只是弹文件对话框）。Mcode 宿主不运行那份主进程，所以这里不会创建编辑视图，避免显示一张空白的演示文稿页。演示文稿仍可通过 OnlyOffice 编辑器或 GenOffice 结构化视图打开。",
+  "ide.genoffice.viewHostUnsupportedSlides": "原因：演示文稿（pptx/potm/potx/odp…）的打开对端尚未装配到这台机器上 —— 宿主需要 GenOffice 的演示文稿解析器（genoffice/ 源码快照与 out/renderer 构建产物）才能构造编辑视图所需的 OpenResult；当前能力报告（document.capabilities.hosts.slides）为 false，所以这里不会创建编辑视图，避免显示一张空白的演示文稿页。演示文稿仍可通过 OnlyOffice 编辑器或 GenOffice 结构化视图打开。",
   "ide.genoffice.editorNotBuilt": "GenOffice 编辑器页未构建",
   "ide.genoffice.editorNotBuiltDesc": "没有找到仓库内的 GenOffice CLI 快照（genoffice/packages/cli/dist/genoffice.cjs），无法定位编辑器页。请先在 genoffice/ 下构建 CLI 与对应编辑器（docs/sheets/slides）。",
   "ide.modules.title": "UI 扩展",

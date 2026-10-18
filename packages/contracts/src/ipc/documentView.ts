@@ -79,6 +79,13 @@ export const DocViewOpenSchema = z.object({
   visible: z.boolean(),
   /** 工作流引擎 id（`[a-z][a-z0-9-]*`，与 `workflowEngine.*` 同一套形状）。 */
   workflowEngineId: z.string().min(1).max(64).regex(/^[a-z][a-z0-9-]*$/).optional(),
+  /** 【ARC-007 P1/GA1】编辑器域。`"slides"` = 这个视图是演示文稿页：宿主对它的
+   *  `openPath` 走 **vendor 解析器**（`slides:open-path` 同一份实现），字节与
+   *  一次性 handoff 仍由宿主发出；页面拿到的 `OpenResult` 由
+   *  `slidesBridge` 的执行器构造，页面**不接触任意路径**。
+   *
+   *  省略 = 普通文档视图（docs 语义），现有调用方行为不变。 */
+  editor: z.enum(["slides"]).optional(),
 });
 export type DocViewOpenInput = z.infer<typeof DocViewOpenSchema>;
 
@@ -143,3 +150,85 @@ export interface DocViewSnapshot {
 export interface DocViewListResult {
   views: DocViewSnapshot[];
 }
+
+/* ────────────────────── 【ARC-007】slides 编辑通道（A 方案第一步） ──────────────────────
+ *
+ * slides 渲染端的所有编辑操作都经 vendor 主进程的 session 表执行
+ * （`genoffice/apps/slides/src/main/session-state.ts:50`），渲染端只持有渲染树。
+ * Mcode 的最小桥因此**不照搬 vendor 全量 slidesApi**（198 个方法里有 42 个危险
+ * channel，见 `docs/planning/genoffice-ai-interaction.md` 第 9 节）：这里只开
+ * 两个编辑操作，经宿主 typed 通道转发到 vendor 执行器。
+ *
+ * 身份纪律与 open/save 完全相同：**docId 由页面声明、宿主从 `event.sender`
+ * 反查核对**（`DocumentViewHost.docIdForSender`）—— 页面伪造 docId 影响不到
+ * 任何一步。
+ */
+/** 【ARC-007】**内部通道**（与 `mcode:document-view:save` 同一形态）：只由我们注入的
+ *  视图 preload 调用，不进 `RpcMap` 的 renderer 面 —— 渲染端/Agent 都没有这个入口。
+ *  原因：`documentView.*` 是 `Api["documentView"]` 的完整类型面，加进 RpcMap 会
+ *  强制手机端 HTTP 桥（`webApi.ts`，本片禁区）同步补条目；而 slides 编辑本来
+ *  也只能发生在承载视图的桌面进程里（手机端没有 WebContentsView），走内部通道
+ *  与既有 save/newDocument 一致。契约仍在此定义 schema 与结果类型（唯一形状来源）。 */
+export const DOCUMENT_VIEW_SLIDES_ADD_SLIDE_CHANNEL = "mcode:document-view:slides-add-slide";
+export const DOCUMENT_VIEW_SLIDES_EDIT_TEXT_CHANNEL = "mcode:document-view:slides-edit-text";
+/** 【ARC-007 P1/GA1】打开链（slides）：页面用 `openPptxPath`/`consumePendingOpen`
+ *  换取宿主准备好的 `OpenResult`；保存用 `save()`（宿主写回打开会话，页面不传路径）。
+ *  与上面两条同一形态：**内部通道**，只由注入的视图 preload 调用。 */
+export const DOCUMENT_VIEW_SLIDES_READ_OPENED_CHANNEL = "mcode:document-view:slides-read-opened";
+export const DOCUMENT_VIEW_SLIDES_SAVE_CHANNEL = "mcode:document-view:slides-save";
+
+/** `documentView:slidesAddSlide` 的入参：只带 docId（新页位置由 vendor 的
+ *  `addBlankSlide` 语义决定：插在当前页之后）。 */
+export const DocViewSlidesAddSlideSchema = z.object({ docId: DocIdSchema }).strict();
+export type DocViewSlidesAddSlideInput = z.infer<typeof DocViewSlidesAddSlideSchema>;
+
+/** `documentView:slidesEditText` 的入参。
+ *
+ *  - `slideIndex`：页序号（0-based；vendor `EditTextOp.slideIndex`，`shared/ipc.ts:199`）；
+ *  - `elementId`：vendor 的元素 `sourceId`（渲染树里 `RenderNode.sourceId`，
+ *    由 `addElement`/读页返回）；
+ *  - `text`：替换该元素的纯文本（vendor 侧会转成一个 run 的 `EditParagraph[]`）。
+ *    上限 200 000 字符与 vendor 聊天存储同一条量级；超过直接拒。 */
+export const DocViewSlidesEditTextSchema = z
+  .object({
+    docId: DocIdSchema,
+    slideIndex: z.number().int().min(0).max(10_000),
+    elementId: z.string().min(1).max(512),
+    text: z.string().max(200_000),
+  })
+  .strict();
+export type DocViewSlidesEditTextInput = z.infer<typeof DocViewSlidesEditTextSchema>;
+
+/** slides 编辑通道的结果。失败时 `reason` 是给人/模型看的一句话 ——
+ *  包括「vendor 主进程未装配」这种 fail-closed 情形（绝不假装成功）。 */
+export type DocViewSlidesResult =
+  | { ok: true; slideCount: number }
+  | { ok: true; text: string }
+  | { ok: false; reason: string };
+
+/* ────────────────────── 【ARC-007 P1/GA1】slides 打开/保存链 ──────────────────────
+ *
+ * 形状来源是 vendor 的 `OpenResult`（`genoffice/apps/slides/src/shared/ipc.ts:91-98`）：
+ * `{ path, slides: RenderSlide[], size: {cx,cy}, defaultFont? }`。宿主把 vendor
+ * 解析器（同一份 `openPptx`/`buildAllRenderSlides` 代码，见 `slidesBridge.ts`）
+ * 构造的结果**原样**交给页面 —— 契约层不重写 vendor 的形状，只把它标成
+ * `unknown` 之外的具名 alias，方便调用方识别。
+ *
+ * `path` 只作为**标题栏显示**回给页面：页面拿它做不了任何事（保存不认路径，
+ * 打开不认路径 —— 那两条都由宿主从自己的待打开/已打开记录里取）。
+ */
+export interface DocViewSlidesOpenResult {
+  /** 宿主已过围栏的文件路径（仅显示用）。空串 = 未命名 deck。 */
+  path: string;
+  /** vendor `RenderSlide[]`（形状由 vendor 契约定义，见上）。 */
+  slides: unknown[];
+  size: { cx: number; cy: number };
+  defaultFont?: string;
+}
+
+/** 【ARC-007 P1/GA1】页面拉取打开结果的回包：ok 时带 vendor `OpenResult` 形状；
+ *  `hash` 是宿主对**这次打开读到的字节**算的 sha256（保存时的乐观锁基准与
+ *  handoff 响应同源）。失败一律 `{ ok:false, reason }`，页面按"打开失败"处理。 */
+export type DocViewSlidesReadOpenedResult =
+  | { ok: true; result: DocViewSlidesOpenResult; hash: string }
+  | { ok: false; reason: string };
