@@ -67,11 +67,12 @@ export function SidebarQuickActions({
   const canNewSession = newSessionOverride != null || activeProjectId !== null;
 
   return (
-    <div className="mb-2 flex flex-col gap-1">
+    <div className="mb-2 flex flex-col gap-1" data-sidebar-quick-actions="">
       {/* 新建会话 — neutral resting state (no persistent highlight), accent
           only on hover so it doesn't read as an "active/selected" row. */}
       <button
         type="button"
+        data-sidebar-quick-action="new"
         onClick={() => {
           if (newSessionOverride) newSessionOverride();
           else if (canNewSession) void startSession();
@@ -106,6 +107,7 @@ export function SidebarQuickActions({
       {showSearch && (
         <button
           type="button"
+          data-sidebar-quick-action="search"
           onClick={() => setCommandPaletteOpen(true)}
           title={t("layout.palette.placeholder.all")}
           className={cn(

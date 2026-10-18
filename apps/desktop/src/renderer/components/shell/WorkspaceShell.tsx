@@ -44,8 +44,10 @@ import type { ShellPreference } from "@contracts/ipc";
 export type { ShellVariant };
 
 /**
- * `ui.shell` 偏好 → 布局变体。`"workspace"` 之外的一切(含坏值)都走 classic ——
- * 与 `DEFAULT_SHELL_PREF` 同一条"升级后外观零变化"的取舍。
+ * 已水合的 `ui.shell` 偏好 → 布局变体。默认与坏值回落由
+ * `parseShellPref` 在 store 唯一处理（新装机缺值选择 workspace）。
+ * 这个叶子映射对于未通过 schema 的 null 仍保守退到 classic，
+ * 但 App 生产只会传入已解析的 ShellPreference。
  */
 export function shellVariantOf(pref: ShellPreference | null | undefined): ShellVariant {
   return pref === "workspace" ? "workspace" : "classic";

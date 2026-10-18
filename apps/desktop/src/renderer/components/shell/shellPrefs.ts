@@ -15,8 +15,8 @@
  *
  * **硬约束**:任何取值都只决定「用哪个壳来摆放」,永远不许卸载工作区子树
  * (终端 PTY / Monaco / 草稿保活);壳切换是重新摆放,不是三元切换。V1 只铺
- * 偏好与 ClassicShell 的抽离,`"workspace"` 壳尚未实装 —— App 目前无论取值
- * 都渲染 ClassicShell。
+ * 偏好与 ClassicShell 的抽离。现在 `"workspace"` 已作为同一
+ * ClassicShell 的 variant 生效，不另建工作区 React 子树。
  */
 import {
   ShellPreferenceSchema,
@@ -27,8 +27,10 @@ import {
 export { UI_SHELL_SETTING_KEY };
 export type { ShellPreference };
 
-/** 未设置 / 无法识别时的外壳。`"classic"` 保证老用户升级后外观零变化。 */
-export const DEFAULT_SHELL_PREF: ShellPreference = "classic";
+/** ARC-005: 缺失/未知偏好默认 Claude 风格 workspace。
+ * 已经明确保存的 classic 选择继续有效且可随时切回。未明确设置的旧用户
+ * 首屏会发生变化（产品迁移），应通过新用户旅程验收并确保设置入口可见。 */
+export const DEFAULT_SHELL_PREF: ShellPreference = "workspace";
 
 /**
  * 【ARC-005 V2】布局变体 —— 与 `ShellPreference` **同一组取值**,但语义是

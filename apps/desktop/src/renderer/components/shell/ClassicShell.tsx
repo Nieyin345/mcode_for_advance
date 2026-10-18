@@ -108,7 +108,7 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
       {leftOpen && (
         <Divider
           orientation="vertical"
-          hideLine
+          hideLine={isWorkspace}
           className="z-20"
           onResize={onResizeLeft}
           onDoubleClick={onResetLeft}
@@ -138,12 +138,14 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
  */
 const WorkspaceInertShell = memo(function WorkspaceInertShell({
   children,
+  variant,
 }: {
   children: ReactNode;
+  variant: ShellVariant;
 }) {
   const settingsOpen = useSessionStore((s) => s.settingsOpen);
   return (
-    <div className="flex min-w-0 flex-1" inert={settingsOpen}>
+    <div className="flex min-w-0 flex-1" data-ui-shell-variant={variant} inert={settingsOpen}>
       {children}
     </div>
   );
@@ -567,7 +569,7 @@ export interface ClassicShellProps {
  */
 export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
   return (
-    <WorkspaceInertShell>
+    <WorkspaceInertShell variant={variant}>
       <WorkspaceSidebar
         variant={variant}
         leftOpen={leftOpen}
@@ -626,6 +628,7 @@ export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftW
             scan, browser view ownership — is never torn down.
           */}
           <ThreePaneLayout
+            variant={variant}
             left={null}
             center={<CenterPane wide={widePanelOpen} />}
             right={<RightPanel />}

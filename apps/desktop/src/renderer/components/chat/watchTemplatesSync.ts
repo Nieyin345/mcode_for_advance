@@ -96,14 +96,12 @@ export function createWatchTemplatesSync(ports: WatchTemplatesSyncPorts): WatchT
     revision: loaded.revision ?? null,
   });
 
-  /** 用"当前确认状态"保存一份列表；返回主进程的原始回包。
-   *
-   *  【MC-054 第十七轮】`expectedRevision` 现在是**必填**的(主进程缺字段即拒)。
-   *  读口没给 revision 的旧宿主(理论上不存在,但防御式处理)用显式 `null`:
-   *  那是"我知道自己在整表覆盖"的唯一合法写法 —— 与"没带字段"在契约里是两个值。
-   *  正常路径永远带真实 revision。 */
+  /** 【MC-054】普通保存必须携带真实版本。旧宿主若没给 revision，
+   *  绝不使用 null 冒充用户授权的整表覆盖；此时不会向 IPC 发送任何写请求。 */
   const save = (templates: WatchCommandTemplate[]): ReturnType<WatchTemplatesSyncPorts["save"]> =>
-    ports.save({ templates, expectedRevision: confirmed.revision });
+    confirmed.revision === null
+      ? Promise.resolve({ ok: false, error: "缺少命令模板原值版本，普通保存已拒绝；请重新加载后重试。" })
+      : ports.save({ templates, expectedRevision: confirmed.revision });
 
   const flush = async (): Promise<void> => {
     if (running) return;

@@ -25,6 +25,7 @@ import {
 } from "@renderer/components/customUi/registry.js";
 import { CustomTabView } from "@renderer/components/customUi/CustomTabView.js";
 import { useWorkspaceTarget } from "@renderer/components/customUi/useWorkspaceTarget.js";
+import { nextRailFocusIndex } from "./panelRailNavigation.js";
 
 const NO_MODULES: never[] = [];
 
@@ -138,7 +139,27 @@ export function RightPanel() {
           openCustomUiSettings("rightPanel.tab");
         }}
       >
-        <div className="flex min-w-0 flex-row items-center gap-1 overflow-x-auto [scrollbar-width:none]">
+        <div
+          className="flex min-w-0 flex-row items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+          aria-label={t("customUi.slot.rightPanel.tab")}
+          onKeyDown={(e) => {
+            // Do not steal SDK shortcuts, Alt menus or IME composition.
+            if (e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+            if (!(e.target instanceof Element)) return;
+            const currentButton = e.target.closest<HTMLButtonElement>("button[data-pane-rail-button]");
+            if (!currentButton) return;
+            const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-pane-rail-button]"));
+            const index = buttons.indexOf(currentButton);
+            const nextIndex = nextRailFocusIndex(e.key, index, buttons.length);
+            if (nextIndex === null) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const nextButton = buttons[nextIndex];
+            if (!nextButton) return;
+            nextButton.focus();
+            nextButton.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }}
+        >
           {entries.map((e) => {
             if (e.kind === "builtin") {
               if (!isBuiltinTabId(e.meta.id)) return null;
@@ -237,8 +258,11 @@ function RailButton({
   return (
     <button
       type="button"
+      data-pane-rail-button=""
       onClick={onClick}
       title={title}
+      aria-label={title}
+      aria-pressed={active}
       className={cn(
         "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
         active

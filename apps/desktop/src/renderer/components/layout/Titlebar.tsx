@@ -190,6 +190,10 @@ export function Titlebar({
                 </button>
               )
             )}
+            {/* ARC-005: session context yields space to reachable right-side
+                controls when the desktop window is narrow. Keep the exact
+                store-connected chip instances and the branch no-drag region. */}
+            <div data-arc005-titlebar-context="" className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
             <ActiveThreadTitle />
             {/* Owning-project chip — folder icon + project name for the active
                 session's project (full path in the tooltip). Rendered for
@@ -204,10 +208,11 @@ export function Titlebar({
                 Renders only for worktree sessions; local threads leave no
                 gap (the component returns null). */}
             <ActiveWorktreeChip />
+            </div>
+            <div data-arc005-titlebar-actions="" className="flex shrink-0 items-center gap-1">
             {/* Editor column toggle - shows/hides the center-pane editor column
                 without closing the open file. Sits right of the branch pill. */}
             {!isBrowserMode && <EditorColumnToggle />}
-            <div className="flex-1" />
             {/* Worktree merge-back (Land) — session-scoped, right-aligned with
                 the panel toggles. Shown only while the active session runs in
                 a worktree with unmerged changes; self-hiding otherwise (the
@@ -226,6 +231,7 @@ export function Titlebar({
                     : "text-content-muted hover:bg-surface-hover hover:text-content",
                 )}
                 title={(bottomTerminalOpen ? t("layout.hideTerminal") : t("layout.showTerminal")) + hintFor("layout.toggle-bottom-terminal")}
+                aria-label={bottomTerminalOpen ? t("layout.hideTerminal") : t("layout.showTerminal")}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               >
                 <IconTerminal2 size={18} className="shrink-0" />
@@ -245,6 +251,7 @@ export function Titlebar({
                     : "text-content-muted hover:bg-surface-hover hover:text-content",
                 )}
                 title={(rightOpen ? t("layout.hideRightPanel") : t("layout.showRightPanel")) + hintFor("layout.toggle-right")}
+                aria-label={rightOpen ? t("layout.hideRightPanel") : t("layout.showRightPanel")}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               >
                 <IconLayoutSidebarRightExpand
@@ -256,6 +263,7 @@ export function Titlebar({
                 />
               </button>
             )}
+            </div>
           </>
         )}
       </div>
@@ -292,7 +300,7 @@ function ActiveThreadTitle() {
   if (!title) return null;
   const { Icon, color } = getProviderIcon(providerId);
   return (
-    <div className="flex min-w-0 max-w-[280px] shrink-0 items-center gap-1 px-1.5 text-xs font-medium text-content-muted">
+    <div className="flex min-w-0 max-w-[280px] flex-[2_1_60px] items-center gap-1 px-1.5 text-xs font-medium text-content-muted">
       <Icon size={13} className={cn("shrink-0", color)} />
       <span className="truncate" title={title}>
         {title}
@@ -317,7 +325,7 @@ function ActiveProjectChip() {
   if (!activeSessionId || !project) return null;
   return (
     <div
-      className="flex min-w-0 max-w-[180px] shrink-0 items-center gap-1 px-1 text-xs text-content-subtle"
+      className="flex min-w-0 max-w-[180px] flex-[1_1_45px] items-center gap-1 px-1 text-xs text-content-subtle"
       title={project.path}
     >
       <IconFolder size={13} className="shrink-0" />
@@ -344,7 +352,7 @@ function ActiveWorktreeChip() {
   if (!worktreePath) return null;
   return (
     <div
-      className="flex min-w-0 max-w-[160px] shrink-0 items-center gap-1 px-1 text-xs text-accent"
+      className="flex min-w-0 max-w-[160px] flex-[1_1_50px] items-center gap-1 px-1 text-xs text-accent"
       title={worktreePath}
     >
       <IconGitFork size={13} className="shrink-0" />

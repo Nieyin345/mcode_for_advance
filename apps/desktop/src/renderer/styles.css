@@ -1027,6 +1027,112 @@ body {
     0 0 0 6px rgb(var(--danger) / 0.18);
 }
 
+/* ARC-005 / Claude Code Desktop v2 workspace-density slice.
+ * Reverse-engineering reference: open-claude-ui/docs/v2/03-架构重构与对比分析.md
+ * §3.3 (compact 12px / comfortable 14px Composer, 24–32px controls).
+ * Scoped to the workspace variant; classic, settings overlay, mobile, embedded
+ * GenOffice and portal-based dialogs keep their established metrics.
+ *
+ * Each value is a semantic role, not an alias to an unverified "official" value.
+ * The 28px one-line session row of v2 is NOT copied wholesale: our stream rows
+ * include project identity, live authorization/status and worktree metadata.
+ * Compact them without hiding status/branch/approval affordances. */
+[data-ui-shell-variant="workspace"] {
+  --composer-radius: 14px; /* v2 comfortable; classic remains generated v1 20px */
+}
+[data-ui-shell-variant="workspace"] [data-sidebar-quick-actions] {
+  gap: 3px;
+  margin-bottom: 8px;
+}
+[data-ui-shell-variant="workspace"] [data-sidebar-quick-action="new"] {
+  min-height: 32px;
+  padding: 5px 10px;
+  border-radius: var(--radius-btn-md);
+  color: rgb(var(--content));
+  background: rgb(var(--surface) / 0.8);
+  box-shadow: inset 0 0 0 1px rgb(var(--edge) / 0.5);
+  transition: background-color var(--dur-snap) var(--ease-snap),
+              box-shadow var(--dur-snap) var(--ease-snap);
+}
+[data-ui-shell-variant="workspace"] [data-sidebar-quick-action="new"]:not(:disabled):hover {
+  background: rgb(var(--surface-hover));
+  box-shadow: inset 0 0 0 1px rgb(var(--edge) / 0.75);
+}
+[data-ui-shell-variant="workspace"] [data-sidebar-quick-action="search"] {
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: var(--radius-btn-md);
+}
+[data-ui-shell-variant="workspace"] [data-tree-session-row] {
+  min-height: 28px; /* v2 28px compact tree row; all status/controls remain visible */
+  padding: 4px 8px;
+  border-radius: var(--radius-btn-md);
+  transition: background-color var(--dur-snap) var(--ease-snap);
+}
+[data-ui-shell-variant="workspace"] [data-stream-session-row] {
+  gap: 2px;
+  padding: 5px 8px;
+  border-radius: var(--radius-btn-md);
+  transition: background-color var(--dur-snap) var(--ease-snap),
+              opacity var(--dur-snap) var(--ease-snap);
+}
+[data-ui-shell-variant="workspace"] [data-stream-session-row][aria-current="page"] {
+  box-shadow: inset 0 0 0 1px rgb(var(--edge) / 0.45);
+}
+/* Keep keyboard focus / accessibility distinct from active selection. */
+[data-ui-shell-variant="workspace"] [data-stream-session-row]:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] [data-stream-session-row],
+  [data-ui-shell-variant="workspace"] [data-sidebar-quick-action="new"] {
+    transition: none;
+  }
+}
+
+/* ARC-005: Claude Desktop v2 starter-card motion reference.
+ * The home cards are real library/workflow/automation controls. Keep pseudo
+ * highlights pointer-inert; do not alter click/approval targets or React trees.
+ * Scope to the new workspace shell and honor OS reduced motion. */
+[data-ui-shell-variant="workspace"] [data-arc005-starter-card] {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  transition: transform 150ms cubic-bezier(0.165, 0.84, 0.44, 1),
+              border-color 150ms ease-out,
+              box-shadow 150ms ease-out;
+}
+[data-ui-shell-variant="workspace"] [data-arc005-starter-card]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: radial-gradient(ellipse at bottom, rgb(var(--accent) / 0.1), transparent 80%);
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+[data-ui-shell-variant="workspace"] [data-arc005-starter-card]:focus-within {
+  border-color: rgb(var(--accent) / 0.3);
+  box-shadow: 0 2px 10px rgb(var(--accent) / 0.08);
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  [data-ui-shell-variant="workspace"] [data-arc005-starter-card]:hover {
+    transform: scaleX(1.005) scaleY(1.015);
+    box-shadow: 0 4px 14px rgb(var(--content) / 0.07);
+  }
+  [data-ui-shell-variant="workspace"] [data-arc005-starter-card]:hover::after {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] [data-arc005-starter-card],
+  [data-ui-shell-variant="workspace"] [data-arc005-starter-card]::after {
+    transition: none;
+    transform: none;
+  }
+}
+
 /* 统一焦点可见态：组件不再各写 `focus-visible:ring-*`。用透明 outline 占位
  * （Windows 高对比度会把 #0000 换成系统色），可见环交给 box-shadow ——
  * 这是报告 §3.6 那条"透明 outline 不能省"的直接落地。

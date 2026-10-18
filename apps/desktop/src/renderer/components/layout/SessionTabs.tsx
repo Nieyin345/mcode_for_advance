@@ -22,6 +22,9 @@ import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Session } from "@contracts/session";
 import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
+import { keyboardReorderTarget, handleTabReorderKeyDown } from "./tabKeyboardReorder.js";
+import { SessionTabContextMenu } from "./SessionTabContextMenu.js";
+import { sessionTabsToClose, sessionTabMenuPosition } from "./sessionTabContextActions.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /** Tab strip rendered along the top of the center pane in `tabs` display
@@ -66,6 +69,7 @@ export function SessionTabs() {
   const tabNodes = useRef<Map<string, HTMLDivElement>>(new Map());
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
+  const [sessionCtxMenu, setSessionCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
 
   const recomputeScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -146,7 +150,7 @@ export function SessionTabs() {
   if (tabs.length === 0) return null;
   // The ⋯ overflow menu doubles as the multi-row toggle's home, so it stays
   // mounted in multi-row mode even though nothing scrolls horizontally.
-  const showOverflowMenu = multiRow || canScrollLeft || canScrollRight;
+  const showOverflowMenu = multiRow || canScrollLeft || canScrollRight || tabs.length >= 2;
   // rectSortingStrategy understands wrapped 2-D layouts; the horizontal
   // strategy would drag tabs along a single axis only.
   const sortStrategy = multiRow ? rectSortingStrategy : horizontalListSortingStrategy;
@@ -192,7 +196,7 @@ export function SessionTabs() {
               items={tabs}
               strategy={sortStrategy}
             >
-              {tabs.map((id) => {
+              {tabs.map((id, index) => {
                 const sess = findSession(sessionsByProject, pinnedSessions, streamSessions, id);
                 const isActive = id === activeId;
                 const running = !!runningBySession[id];
@@ -202,6 +206,8 @@ export function SessionTabs() {
                     key={id}
                     session={sess}
                     sessionId={id}
+                    position={index + 1}
+                    setSize={tabs.length}
                     isActive={isActive}
                     running={running}
                     unreadCount={unread}
@@ -212,6 +218,17 @@ export function SessionTabs() {
                     }}
                     onActivate={() => void selectSession(id)}
                     onClose={() => closeTab(id)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const anchor = sessionTabMenuPosition(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect());
+                      setSessionCtxMenu({ id, ...anchor });
+                    }}
+                    onKeyboardReorder={(key) => {
+                      const from = tabs.indexOf(id);
+                      const target = keyboardReorderTarget(key, from, tabs.length);
+                      if (target !== null) reorderTab(from, target);
+                    }}
                   />
                 );
               })}
@@ -260,6 +277,14 @@ export function SessionTabs() {
           onSelect={(id) => void selectSession(id)}
         />
       )}
+      <SessionTabContextMenu
+        ctxMenu={sessionCtxMenu}
+        tabCount={tabs.length}
+        onClose={() => setSessionCtxMenu(null)}
+        onCloseSessions={(id, mode) => {
+          for (const closingId of sessionTabsToClose(tabs, id, mode)) closeTab(closingId);
+        }}
+      />
     </div>
   );
 }
@@ -267,6 +292,9 @@ export function SessionTabs() {
 interface SortableTabProps {
   session: Session | undefined;
   sessionId: string;
+  /** 1-based position and group size for assistive technology. */
+  position: number;
+  setSize: number;
   isActive: boolean;
   running: boolean;
   /** Unread event count for this session (0 = no badge). Rendered as a small
@@ -281,6 +309,8 @@ interface SortableTabProps {
   registerNode: (node: HTMLDivElement | null) => void;
   onActivate: () => void;
   onClose: () => void;
+  onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
+  onKeyboardReorder: (key: string) => void;
 }
 
 /** A single session tab. Exported so the unified tab bar (tabs displayMode)
@@ -289,6 +319,8 @@ interface SortableTabProps {
 export function SortableSessionTab({
   session,
   sessionId,
+  position,
+  setSize,
   isActive,
   running,
   unreadCount,
@@ -296,6 +328,8 @@ export function SortableSessionTab({
   registerNode,
   onActivate,
   onClose,
+  onContextMenu,
+  onKeyboardReorder,
 }: SortableTabProps) {
   const { t } = useI18n();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -350,14 +384,19 @@ export function SortableSessionTab({
       style={style}
       {...attributes}
       {...listeners}
+      onKeyDown={(e) => { handleTabReorderKeyDown(e, onKeyboardReorder); }}
       onClick={() => {
         // A real drag is captured away by dnd-kit and never lands here; this
         // fires only for an actual tap, which we treat as tab activation.
         onActivate();
       }}
       onMouseDown={onMouseDown}
+      onContextMenu={onContextMenu}
       role="tab"
       aria-selected={isActive}
+      aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
+      aria-posinset={position}
+      aria-setsize={setSize}
       title={title}
       className={cn(
         // Uniform chip style shared with editor file tabs (rounded-md +

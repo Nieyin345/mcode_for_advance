@@ -279,6 +279,33 @@ try {
     host.install(manifestOf({ program: { source: `(() => { require("node:fs").readFileSync(${JSON.stringify(secret)}, "utf8"); return { convert: async () => ({}) }; })()` } })), /核验失败/);
   eq("恶意工厂失败后仍没有落盘", diskSnapshots.length, 0);
 
+  // 【MC-035】安装期本身也会 eval 扩展工厂。即使清单将来声明 network，
+  // 安装核验没有拿到用户对本次执行的逐次许可，绝不能先连网后再询问安装授权。
+  // 真 TCP 回环接收器钉住「扩展在核验期间联网」这一旧反例（只在 mktemp 测试中运行）。
+  {
+    const { createServer } = await import("node:net");
+    let connected = 0;
+    const listener = createServer((socket) => { connected++; socket.destroy(); });
+    await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+    const addr = listener.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    try {
+      const installSource = `(() => {
+        try {
+          const socket = require("node:net").connect(${port}, "127.0.0.1");
+          socket.on("error", () => {});
+        } catch (error) { /* 网络被拒时仍可导出声明对象 */ }
+        return { convert: async () => ({ text: "safe" }) };
+      })()`;
+      const result = await verifyPermissionedProgram(installSource, ["convert"], 10_000);
+      await delay(150);
+      check("★ 安装期工厂在受控核验中仍能合法返回能力表", result.ok, result);
+      eq("★ MC-035:未经本次真人授权，安装核验阶段不能连接本地 TCP", connected, 0);
+    } finally {
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+    }
+  }
+
   // 无核验端口 → fail-closed
   const noVerify = new ModuleHost({ authorize: async () => {}, persist: async () => {} });
   await rejects("没有核验通道时安装可执行扩展必须被拒(fail-closed)",

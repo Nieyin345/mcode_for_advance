@@ -17,6 +17,16 @@
   var failOnce = {};
   /** 按**设置键**注入一次失败(外观/语言那几个 setter 都走 `setting.set`)。 */
   var failOnceKey = {};
+  /* ── 【MC-047 复核】按 key 的读侧夹具 ───────────────────────────────────
+   * 真 App 里的 `useSettingValue` 只有三态(loading/ready/error),要把它钉在
+   * 真 Electron 里,必须能**定向**让某一格读失败、并给其余格真实值:
+   *   - `window.__seedSetting(key, value)`:该 key 的读回值;
+   *   - `window.__failNextGet(key, message)`:下一次该 key 的读拒一次,之后成功。
+   * 由探针在**点击导航之前**注入,于是面板挂载那一刻读到的是坏结果。 */
+  var settingValues = {};
+  var getFailures = {};
+  window.__seedSetting = function (key, value) { settingValues[key] = value; };
+  window.__failNextGet = function (key, message) { getFailures[key] = message; };
   if (scenario === "theme-set-fail") {
     // theme 走真 IPC(bridge.cjs);探针据同一 scenario 让主进程那一次 theme:set 失败。
   }
@@ -106,13 +116,26 @@
       set: function (input) { return themeBridge ? themeBridge.set(input) : Promise.resolve({ theme: input.theme, effective: input.theme }); },
     },
     setting: {
-      get: function () { return invoke("setting.get", { value: null }); },
+      get: function (input) {
+        var key = input && input.key;
+        calls["setting.get:" + key] = (calls["setting.get:" + key] || 0) + 1;
+        if (key && getFailures[key]) {
+          var msg = getFailures[key];
+          delete getFailures[key];
+          return Promise.reject(new Error(msg));
+        }
+        var value = key && Object.prototype.hasOwnProperty.call(settingValues, key) ? settingValues[key] : null;
+        return invoke("setting.get", { value: value });
+      },
       set: function (input) {
         var key = input && input.key;
+        // 【MC-047 复核】按 key **无条件**计数(从前只在失败分支 +1,导致
+        // 「读失败期间没有写」这类断言两边都是 0、空过)。
+        if (key) calls["setting.set:" + key] = (calls["setting.set:" + key] || 0) + 1;
+        if (key) window.__lastSettingSet = { key: key, value: input && input.value };
         if (key && failOnceKey[key]) {
           var msg = failOnceKey[key];
           delete failOnceKey[key];
-          calls["setting.set:" + key] = (calls["setting.set:" + key] || 0) + 1;
           return Promise.reject(new Error(msg));
         }
         return invoke("setting.set", { ok: true });
@@ -214,6 +237,20 @@
       groupsGet: function () { return invoke("library.groupsGet", { groups: [] }); },
       listCollections: function () { return invoke("library.listCollections", { collections: [] }); },
       suppressGet: function () { return invoke("library.suppressGet", { rule: { nodes: [], extensions: [] } }); },
+    },
+    /** 【MC-047 复核】浏览器设置页的保管库状态读(PersistLoginRow 在设置读成功后
+     *  才发)。健康回执按真实形状给全字段。 */
+    browser: {
+      vaultStatus: function () {
+        return invoke("browser.vaultStatus", {
+          encryptionAvailable: true,
+          persistLogin: true,
+          savedCount: 0,
+          plaintextErased: false,
+          lastError: null,
+          restoreError: null,
+        });
+      },
     },
     automation: {
       runs: function () { return invoke("automation.runs", { runs: [] }); },

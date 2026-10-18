@@ -194,3 +194,44 @@ btn-md 8 / panel 10（上游 radius-sm/md/lg 实为 4/6/8px）；设置页 94 �
 本矩阵是 **V0 的部分交付**：令牌与几何按上游 E1 冻结、13 屏现状按当前源码盘点完毕；
 Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核」**仍双空** —— V4 真机对照
 是台账写明的通过门槛，本文件不改变该结论。
+
+## 十、2026-10-19 ARC-005 当前实装差距复核（E1/E2，取代上方早期“待办”的现状判断）
+
+**参考目标**：Claude Code Desktop 2026-04-14 公开新版 Code 工作区（https://claude.com/blog/claude-code-desktop-redesign）及 https://code.claude.com/docs/en/desktop。官方公开内容确认“并行会话侧栏 + 任意位置拖放 pane + 终端/文件编辑/可视 Diff + 侧聊”。**没有用户本机 Code 页的同分辨率截图**，所以下表只是源码/可运行功能对照，**不是像素或视觉相似度百分比**。更不能复制 Anthropic 专属图标、字体文件或源码。
+
+| Claude Desktop Code 参照维度 | Mcode 本轮实际源码状态 | 差距/验收 |
+|---|---|---|
+| 默认首屏 | App.tsx 始终使用 ClassicShell；DEFAULT_SHELL_PREF 仍为 classic，workspace 需在设置主动开启；共享 sessionStore/PTY/Monaco 保活 | **未完成**：用户新进入时仍看到 Mcode 老壳，不能宣称 Code UI 已默认完成。禁止仅把 default 改成 workspace 当完工 |
+| 左侧项目/会话/并行 | LeftBar/StreamSidebar 已有项目树、置顶、会话状态、命令搜索与新建；WorkspaceShell 仍复用同一内容和大号品牌入口 | **未达到 Claude Code 的信息密度和层级**：分组/筛选/Recent/Pinned/环境/运行状态逐屏 UI 尚未按参考重排 |
+| 主列与侧栏几何 | V2 旧版只有侧栏 240px 下限与 10px 圆角，主列一直是 24px。**本轮修正**：ThreePaneLayout 接 variant；workspace 主列左上/左下 10px，classic 保留 24px；Divider 的 hideLine 改为仅 workspace 隐藏，classic 仍有可见线；只切 class，同 main/PTY 子树保活 | **部分完成**：组件几何更一致，但真实 Windows/浅暗/DPI 的 Claude↔Mcode 截图边界测量仍缺 |
+| 聊天/工具/审批 | ChatPane/MessageBlocks 等成熟可用，composer radius/shadow 动效来自 CDS 语义令牌；已存在权限卡、流式工具事件、三引擎 | **未完成**：消息/工具折叠、审批/错误卡、按钮/hover/focus、输入控件布局仍未逐屏与 Claude Code 对齐 |
+| 主题/字体/颜色 | tokens.cds.css 由 MIT 参考生成，diff 行色已在 styles.css 使用 --diff-*，按钮有 --radius-btn-*；但 --accent 仍 emerald，字体/CJK/边框角色仍与参考存在待测差异 | **未完成**：不能把逆向令牌视为用户 Claude 版屏幕取样；不得擅自全局替换强调色造成低对比度 |
+| 分屏/拖放 | ThreePaneLayout 支持左右/底部 Divider、右栏和终端折叠；文件标签可拖动排序 | **关键缺项**：并非 Claude Code 的任意 pane 布局、拖拽停靠/弹出窗口/恢复工作区；当前仅固定三列/底部终端，且关闭部分面板有卸载风险 |
+| 终端/编辑/Diff/预览 | 真实 PTY、Monaco、Git Diff、侧聊已有；本地 AI 刚加入 HTML 预览（html-preview-electron-smoke 通过，2026-10-19） | 功能入口存在但共享 pane 样式/布局持久化与多窗口互操作、App/GenOffice 文档一体化仍缺 |
+| Mcode 独有能力 | 资料库、自动化、工作流、GenOffice、MCP/Skills/Hook/插件等均有入口 | **必须保留**；后续纳入 Code 风格 Views/功能中心，不得为外观相似度删功能或创建平行业务状态机 |
+
+**新写的可变异旧输入**：本轮 workspace-shell-smoke 先加入五条几何/生命周期断言，修复前 48/52（4 红），修复后 52/52；发现 Divider 原来对 classic/workspace 都无条件 hideLine，又先加断言修复前 52/53（1 红），改成 hideLine={isWorkspace} 后通过。最终六套相关 smoke 全部 PASS：workspace-shell、design-tokens、settings-layout、leftbar-render、terminal-panel-worktree、html-preview-electron。**这是 E1/E2，不是参考图视觉 U1**。测试过程中，另一个并发分支的 desktop TypeScript 暂时因 document-view-host-smoke 的 SlidesEditExecutor fixture 缺 openDeck 而红（属于 ARC-007 测试夹具，非本轮 UI 布局变更）；ui-interaction 另报 model-form-labels 场景 reloadCustomModels 缺桩，待另行核根因。
+
+**下一轮最优先改造建议（ARC-005 内继续，不重复开新架构编号）**：
+1. **V1/V2 会话首屏**：工作区变体沿用同一组件实例，先重排左侧顶部的 New session / 搜索 / Pinned / Recents / 项目分组与运行徽标，再改顶栏按钮和输入区视觉密度。不要默认启动大 IDE 布局，主聊天自然占宽。
+2. **Pane 模型**：以独立的布局树 + 内容实例保活层实现 Code/Diff/Terminal/Browser/File/Side chat 的拖放停靠，布局保存/恢复；防止拖动卸载 PTY 和脏 Monaco 文档。不用在 ThreePaneLayout 上堆彼此冲突的百分比。
+3. **视觉 token 与功能统一**：对照官方与用户安装版的浅/深截图量字体、CJK 行高、暗色背景、边框、按钮尺寸和状态卡；逐页改 React UI primitives，保留高对比度；和 ARC-007 GenOffice 的 WebContentsView 几何/焦点合同共用。
+4. **V4 验收矩阵**：同 DPI/主题/窗口尺寸下采 13 类参照画面，测量元素 bounds/像素颜色 + 键鼠动作；优先“空会话→多任务→工具失败→批准→Diff→侧聊→终端→文件保存→重启恢复”；没有这些证据 **ARC-005 仍 [ ]/[ ]**。
+
+本节源码修改仅限 ThreePaneLayout.tsx、ClassicShell.tsx 和 workspace-shell-smoke/main.ts；无业务重写、无本机 Claude 私有源码访问或字体复制。已有上方“Diff 尚无 token/HTML 无内嵌预览/按钮仍 4px”的旧状态属于更早版本，不再作为当前事实。
+
+## 十一、2026-10-19 直接复用仓内 Claude Desktop v2 逆向的密度实现（E1 + E2；非视觉 U1）
+
+**输入证据**：`open-claude-ui/docs/v2/03-架构重构与对比分析.md`（2026-10-15，声称 v2.37337.1）第 3.1、3.3 节，及 `open-claude-ui/code-examples/DraggableSessionList.tsx`、`CdsButton.tsx`、`ClaudeDesktopHeader.tsx`；对照仓内 `docs/design/claude-desktop-ui-细节逆向.md`（v1.0 旧版本静态记录）。这批是**第三方逆向分析/参考实现**，未经用户本机实际 Claude Code 逐屏取样，不能把每个数值写成已经验真的官方像素尺寸。此处只转移通用设计参数与交互语义，不复制私有安装包代码、字库或品牌资产。
+
+| v2 逆向特征 | 此次 Mcode 落地 | 未复制的边界 |
+| --- | --- | --- |
+| Composer v1 20px → v2 compact 12px / comfortable 14px | 仅 `[data-ui-shell-variant="workspace"]` 下 `--composer-radius: 14px`；旧 classic 仍由生成器的 v1 20px token 提供。busy sweep 也随同一 `--composer-radius` 变化 | 尚无用户 Code 实机尺寸/字体对照；全局主题和其它 Office 画布不变 |
+| 侧栏 28px 单行高密度、分级任务状态 | tree 模式 28px 最小行高、4px 垂直内距；stream 保留项目/标题/branch 三行数据但缩小 padding/gap；激活高亮、键盘、未读、执行状态、工作树/置顶/归档均保持现有业务事实 | 不强行将 3 行 stream 隐藏成 1 行，不隐藏未读/审批或 PR 信息；PR 尚无统一真后端不伪造 |
+| 高频控件 24–32px、弹簧和作用域隔离 | workspace 新建会话 32px minHeight、搜索 28px、8px 角色圆角，读现有语义色；原始 Claude 的按钮弹簧示例只作参考，不强行改全 app | 移动 UI/设置/经典壳/弹窗继续原尺寸，扩展控件不能因全局改 CSS 被误伤 |
+
+代码：`ClassicShell.tsx` 在**同一** WorkspaceInertShell DOM 根增加 variant 属性（不重挂 PTY/Monaco/Tiptap）；`SidebarQuickActions.tsx`、`StreamSidebar.tsx`、`LeftBarParts.tsx` 给真实操作/会话行添加稳定 data 选择器；所有变体声明收敛到 `styles.css`；`workspace-shell-smoke` 对生产组件与作用域的静态联线断言先红 53/58、修后绿，后续 tree 子项补旧输入红 59/60、修后绿。`design-tokens-smoke` 的原全局字面量否定扫描改为先精确剔除 workspace 覆写块，**依旧严格禁止全局别名漂移**。
+
+运行性反证：`ui-interaction-smoke` 使用真 Chromium + 真实编译 Tailwind CSS 的隔离 fixture，读取 `getComputedStyle`：classic Composer 20px、workspace Composer 14px、workspace New session ≥32px，stream padding 缩小、tree 行 ≥28px、tree 垂直 padding 4px，**同一个 textarea 节点及 KEEP DRAFT 文本在 classic→workspace→classic 往返保持**。这证明 CSS 作用域可计算与不卸载的样式层，不证明真实生产大应用下的全部 PTY/Monaco / Code 参考视觉 U1。
+
+最终验证：`node scripts/run-smokes.mjs workspace-shell-smoke design-tokens-smoke ui-interaction-smoke leftbar-render-smoke settings-layout-smoke terminal-panel-worktree-smoke` → **6/6 PASS**，本次末次 `apps/desktop pnpm exec tsc --noEmit` **PASS**（过程中其它 AI 并发改动过文档 mock 导致临时红，但末次已通过）。暂未跑全量 smoke/真 Electron 主窗口截图。高相似度剩余关键点仍是侧栏导航信息架构、真正自由 pane 拖放/弹出与布局恢复、顶栏/消息/审批/文件 UI 全状态 + 本机 Claude Code 参考图的 DPI/主题/中英文逐屏验收。ARC-005 开发、复核双空不变。

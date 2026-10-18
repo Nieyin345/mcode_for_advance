@@ -28,6 +28,7 @@ import {
 } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { TabBarChevronButton, TabBarOverflowMenu } from "../layout/TabBarChrome.js";
+import { keyboardReorderTarget, handleTabReorderKeyDown } from "../layout/tabKeyboardReorder.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import { useDirtyFiles } from "@renderer/hooks/useDirtyFiles.js";
@@ -257,7 +258,7 @@ export function OpenTabsBar() {
   if (openFiles.length === 0 && !hasPlanTab) return null;
   // The ⋯ overflow menu doubles as the multi-row toggle's home, so it stays
   // mounted in multi-row mode even though nothing scrolls horizontally.
-  const showOverflowMenu = multiRow || canScrollLeft || canScrollRight;
+  const showOverflowMenu = multiRow || canScrollLeft || canScrollRight || openFiles.length + (hasPlanTab ? 1 : 0) >= 2;
   // rectSortingStrategy understands wrapped 2-D layouts; the horizontal
   // strategy would drag tabs along a single axis only.
   const sortStrategy = multiRow ? rectSortingStrategy : horizontalListSortingStrategy;
@@ -299,10 +300,12 @@ export function OpenTabsBar() {
               items={openFiles}
               strategy={sortStrategy}
             >
-              {openFiles.map((path) => (
+              {openFiles.map((path, index) => (
                 <SortableFileTab
                   key={path}
                   path={path}
+                  position={index + 1}
+                  setSize={openFiles.length}
                   displayName={fileDisplayNames[path]}
                   isActive={path === activeFile && !planTabActive}
                   dirty={dirtySet.has(path)}
@@ -319,6 +322,11 @@ export function OpenTabsBar() {
                     }
                   }}
                   onClose={() => close(path)}
+                  onKeyboardReorder={(key) => {
+                    const from = openFiles.indexOf(path);
+                    const target = keyboardReorderTarget(key, from, openFiles.length);
+                    if (target !== null) reorderFile(from, target);
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     setCtxMenu({ path, x: e.clientX, y: e.clientY });
@@ -462,6 +470,9 @@ export function OpenTabsBar() {
 
 interface SortableFileTabProps {
   path: string;
+  /** File-only index and count: the plan/session groups are not reorder targets. */
+  position: number;
+  setSize: number;
   displayName?: string;
   isActive: boolean;
   dirty: boolean;
@@ -473,6 +484,7 @@ interface SortableFileTabProps {
   registerNode: (node: HTMLDivElement | null) => void;
   onActivate: () => void;
   onClose: () => void;
+  onKeyboardReorder: (key: string) => void;
   /** Right-click handler: opens the context menu at the cursor. */
   onContextMenu: (e: React.MouseEvent) => void;
 }
@@ -482,6 +494,8 @@ interface SortableFileTabProps {
  *  per-item, so the same component works under any shared context. */
 export function SortableFileTab({
   path,
+  position,
+  setSize,
   displayName,
   isActive,
   dirty,
@@ -489,6 +503,7 @@ export function SortableFileTab({
   registerNode,
   onActivate,
   onClose,
+  onKeyboardReorder,
   onContextMenu,
 }: SortableFileTabProps) {
   const { t } = useI18n();
@@ -540,6 +555,7 @@ export function SortableFileTab({
       style={style}
       {...attributes}
       {...listeners}
+      onKeyDown={(e) => { handleTabReorderKeyDown(e, onKeyboardReorder); }}
       onClick={() => {
         // A real drag is captured away by dnd-kit and never lands here; this
         // fires only for an actual tap, which we treat as tab activation.
@@ -549,6 +565,9 @@ export function SortableFileTab({
       onContextMenu={onContextMenu}
       role="tab"
       aria-selected={isActive}
+      aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
+      aria-posinset={position}
+      aria-setsize={setSize}
       title={displayName?.trim() ? `${tabLabel} (${path})` : path}
       className={cn(
         // Editor file tabs share the same chip style as session tabs

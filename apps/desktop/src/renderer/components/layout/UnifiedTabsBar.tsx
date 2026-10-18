@@ -20,6 +20,9 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useFileViewStore } from "@renderer/stores/fileViewStore.js";
 import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
 import { SortableSessionTab, findSession } from "./SessionTabs.js";
+import { SessionTabContextMenu } from "./SessionTabContextMenu.js";
+import { sessionTabsToClose, sessionTabMenuPosition } from "./sessionTabContextActions.js";
+import { keyboardReorderTarget } from "./tabKeyboardReorder.js";
 import {
   PLAN_TAB_KEY,
   SortableFileTab,
@@ -127,6 +130,7 @@ export function UnifiedTabsBar() {
   // Right-click context menu state for file tabs (lifted to the bar level,
   // same pattern as OpenTabsBar).
   const [ctxMenu, setCtxMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [sessionCtxMenu, setSessionCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Maps session, file, and plan tab keys to their DOM nodes for active-tab
@@ -272,7 +276,7 @@ export function UnifiedTabsBar() {
   if (tabs.length === 0 && openFiles.length === 0 && !hasPlanTab && fileView === null) return null;
   // The ⋯ overflow menu doubles as the multi-row toggle's home, so it stays
   // mounted in multi-row mode even though nothing scrolls horizontally.
-  const showOverflowMenu = multiRow || canScrollLeft || canScrollRight;
+  const showOverflowMenu = multiRow || canScrollLeft || canScrollRight || tabs.length + openFiles.length + (hasPlanTab ? 1 : 0) + (fileView ? 1 : 0) >= 2;
   // rectSortingStrategy understands wrapped 2-D layouts; the horizontal
   // strategy would drag tabs along a single axis only.
   const sortStrategy = multiRow ? rectSortingStrategy : horizontalListSortingStrategy;
@@ -314,13 +318,15 @@ export function UnifiedTabsBar() {
             onDragEnd={onDragEnd}
           >
             <SortableContext items={tabs} strategy={sortStrategy}>
-              {tabs.map((id) => {
+              {tabs.map((id, index) => {
                 const sess = findSession(sessionsByProject, pinnedSessions, streamSessions, id);
                 return (
                   <SortableSessionTab
                     key={id}
                     session={sess}
                     sessionId={id}
+                    position={index + 1}
+                    setSize={tabs.length}
                     isActive={id === activeId && !editorFocused && !fileViewFocused}
                     running={!!runningBySession[id]}
                     unreadCount={unreadBySession[id] ?? 0}
@@ -331,6 +337,17 @@ export function UnifiedTabsBar() {
                     }}
                     onActivate={() => void selectSession(id)}
                     onClose={() => closeTab(id)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const anchor = sessionTabMenuPosition(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect());
+                      setSessionCtxMenu({ id, ...anchor });
+                    }}
+                    onKeyboardReorder={(key) => {
+                      const from = tabs.indexOf(id);
+                      const target = keyboardReorderTarget(key, from, tabs.length);
+                      if (target !== null) reorderTab(from, target);
+                    }}
                   />
                 );
               })}
@@ -346,10 +363,12 @@ export function UnifiedTabsBar() {
             )}
 
             <SortableContext items={openFiles} strategy={sortStrategy}>
-              {openFiles.map((path) => (
+              {openFiles.map((path, index) => (
                 <SortableFileTab
                   key={path}
                   path={path}
+                  position={index + 1}
+                  setSize={openFiles.length}
                   displayName={fileDisplayNames[path]}
                   isActive={path === activeFile && editorFocused && !planTabActive}
                   dirty={dirtySet.has(path)}
@@ -366,6 +385,11 @@ export function UnifiedTabsBar() {
                     }
                   }}
                   onClose={() => closeFile(path)}
+                  onKeyboardReorder={(key) => {
+                    const from = openFiles.indexOf(path);
+                    const target = keyboardReorderTarget(key, from, openFiles.length);
+                    if (target !== null) reorderIdeFile(from, target);
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     setCtxMenu({ path, x: e.clientX, y: e.clientY });
@@ -573,6 +597,15 @@ export function UnifiedTabsBar() {
         />
       )}
 
+      {/* Session context menu: the same store closeTab semantics in both layouts. */}
+      <SessionTabContextMenu
+        ctxMenu={sessionCtxMenu}
+        tabCount={tabs.length}
+        onClose={() => setSessionCtxMenu(null)}
+        onCloseSessions={(id, mode) => {
+          for (const closingId of sessionTabsToClose(tabs, id, mode)) closeTab(closingId);
+        }}
+      />
       {/* Right-click context menu for file tabs (same menu as OpenTabsBar). */}
       <FileTabContextMenu
         ctxMenu={ctxMenu}

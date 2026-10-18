@@ -212,6 +212,31 @@ console.log("\n【MC-047】浏览器截图目录:读失败同样显式(不是只
   })(), deepNodes().filter((n) => isInputNode(n)).map((n) => n.props.disabled));
 }
 
+/* ───────────── ⑥b 终端 Shell:点「重试」真的重发并恢复 ─────────────
+ * 【MC-047 复核】此前这一套只验了「重试入口存在」,没点过它 —— 真 Electron U1 里
+ * 点了。这里补同一条判据的无头版:计数 +1、错误行消失、控件恢复且值就位。 */
+console.log("\n【MC-047】终端 Shell:点「重试」真的重发 setting.get 并恢复(不是摆设)");
+{
+  stub.resetApiStub();
+  stub.seedSetting(TERMINAL_SHELL_SETTING_KEY, "/opt/fish");
+  stub.failNextGetFor(TERMINAL_SHELL_SETTING_KEY, "AUDIT_FAKE_IO_REJECTION");
+  __mount(() => ShellSection());
+  await __flush();
+  const getsBefore = stub.getCalls().filter((k) => k === TERMINAL_SHELL_SETTING_KEY).length;
+  const retry = buttonByText("重试");
+  check("守卫:读失败时有「重试」按钮可点", !!retry);
+  (retry?.props.onClick as (() => void) | undefined)?.();
+  await __flush();
+  const getsAfter = stub.getCalls().filter((k) => k === TERMINAL_SHELL_SETTING_KEY).length;
+  check("★ 点「重试」重发了 setting.get:terminal.shell(计数 +1)", getsAfter === getsBefore + 1, { getsBefore, getsAfter });
+  check("★ 重试成功后错误行消失", !hasErrorRow(), hasErrorRow());
+  const input = inputById("setting-terminal-shell");
+  check("★ 重试成功后控件恢复可用且值就位", input?.props.disabled === false && input?.props.value === "/opt/fish", {
+    disabled: input?.props.disabled,
+    value: input?.props.value,
+  });
+}
+
 /* ───────────── ⑦ 浏览器数据目录:读成功 ───────────── */
 
 console.log("\n【MC-047】浏览器数据目录:读成功 → 值就位、控件可用");

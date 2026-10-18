@@ -367,6 +367,7 @@ export function SessionRow({
   return (
     <li
       ref={(el) => registerNode(session.id, el)}
+      data-tree-session-row=""
       tabIndex={0}
       aria-current={active ? "page" : undefined}
       onClick={handleRowClick}

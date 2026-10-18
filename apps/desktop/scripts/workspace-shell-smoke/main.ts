@@ -61,7 +61,7 @@ const read = (p: string): string => readFileSync(join(root, p), "utf8");
 section("A1. 契约键与解析器");
 {
   eq("设置键是 ui.shell", UI_SHELL_SETTING_KEY, "ui.shell");
-  eq("默认外壳是 classic", DEFAULT_SHELL_PREF, "classic");
+  eq("新装机默认 Claude 风格 workspace", DEFAULT_SHELL_PREF, "workspace");
   check("schema 接受 classic", ShellPreferenceSchema.safeParse("classic").success);
   check("schema 接受 workspace", ShellPreferenceSchema.safeParse("workspace").success);
   check("schema 拒绝未知值", !ShellPreferenceSchema.safeParse("dual").success);
@@ -77,20 +77,20 @@ section("A3. 解析:合法值透传,坏值回落默认");
 {
   eq("classic 透传", parseShellPref("classic"), "classic");
   eq("workspace 透传", parseShellPref("workspace"), "workspace");
-  eq("null → 默认", parseShellPref(null), "classic");
-  eq("空串 → 默认", parseShellPref(""), "classic");
-  eq("未知值 → 默认", parseShellPref("workspace-ish"), "classic");
+  eq("null → 新装机默认 workspace", parseShellPref(null), "workspace");
+  eq("空串 → 新装机默认 workspace", parseShellPref(""), "workspace");
+  eq("未知值 → 防御回落 workspace", parseShellPref("workspace-ish"), "workspace");
   // 正向对照:同一函数的两种输出不可能被同一条"永远 X"的实现同时满足。
   check(
     "正向对照:透传与回落不能同时被常量实现满足",
-    parseShellPref("workspace") !== parseShellPref("bogus"),
+    parseShellPref("classic") !== parseShellPref("bogus"),
   );
 }
 
 section("A4. store 默认值与 setShellPref 落盘(setting.set)");
 {
   const store = useSessionStore.getState();
-  eq("store 初始 shellPref = classic", store.shellPref, "classic");
+  eq("store 初始 shellPref = workspace", store.shellPref, "workspace");
 
   resetSettingSetCalls();
   await store.setShellPref("workspace");
@@ -125,13 +125,19 @@ section("A5. 水合:下一次启动 init() 从设置表读回");
   useSessionStore.setState({ _initStarted: false, shellPref: "classic" });
   setApiStub("setting.getMany", async () => ({ [UI_SHELL_SETTING_KEY]: "not-a-shell" }));
   await useSessionStore.getState().init();
-  eq("坏值行不炸,回落 classic", useSessionStore.getState().shellPref, "classic");
+  eq("坏值行不炸,回落 workspace", useSessionStore.getState().shellPref, "workspace");
 
   // 缺行:同默认。
-  useSessionStore.setState({ _initStarted: false, shellPref: "classic" });
+  useSessionStore.setState({ _initStarted: false, shellPref: DEFAULT_SHELL_PREF });
   setApiStub("setting.getMany", async () => ({}));
   await useSessionStore.getState().init();
-  eq("缺行保持默认 classic", useSessionStore.getState().shellPref, "classic");
+  eq("缺行保持默认 workspace", useSessionStore.getState().shellPref, "workspace");
+
+  // 已经明确保存 classic 的老用户：即使新装机默认 workspace 也不能被升级覆盖。
+  useSessionStore.setState({ _initStarted: false, shellPref: DEFAULT_SHELL_PREF });
+  setApiStub("setting.getMany", async () => ({ [UI_SHELL_SETTING_KEY]: "classic" }));
+  await useSessionStore.getState().init();
+  eq("★ 旧版用户明确保存 classic：水合后依然 classic", useSessionStore.getState().shellPref, "classic");
 
   setApiStub("setting.getMany", null);
   setApiStub("project.list", null);
@@ -229,9 +235,60 @@ section("B3. 挂载点不在条件分支里(壳偏好怎么翻都不卸载子树
   // workspace 变体的两处 class 差异必须在位且**只**在 class 上。
   check("★ workspace 变体加侧栏最小宽度", /min-w-\[240px\]/.test(shellSrc));
   check("★ workspace 变体用 CDS 10px 圆角", /rounded-tl-\[10px\]/.test(shellSrc));
+  check("★ 只有 workspace 关闭可见分隔线，classic 保留画线且拖拽仍共用", /hideLine=\{isWorkspace\}/.test(shellSrc));
   const wsSrc = read("src/renderer/components/shell/WorkspaceShell.tsx");
   check("WorkspaceShell 只是 ClassicShell 的 variant 包装", /variant="workspace"/.test(wsSrc));
   check("shellVariantOf 只认 workspace", /pref === "workspace" \? "workspace" : "classic"/.test(wsSrc));
+}
+
+section("C. 主列几何按 shell variant 一致切换（Claude 风格不是只改左栏）");
+{
+  const shell = read("src/renderer/components/shell/ClassicShell.tsx");
+  const pane = read("src/renderer/components/layout/ThreePaneLayout.tsx");
+  check("★ ClassicShell 把 variant 交给主列布局", /<ThreePaneLayout\s+variant=\{variant\}/.test(shell));
+  check("★ 布局明确定义 variant，设置/老布局不传时仍保持 classic",
+    /variant\?: ShellVariant/.test(pane) && /variant = "classic"/.test(pane));
+  check("★ workspace 主列沿用 10px 圆角，不与左栏 10px 对照成 24px 旧几何",
+    /variant === "workspace"[^\n]*rounded-tl-\[10px\][^\n]*rounded-bl-\[10px\]/.test(pane));
+  check("★ classic 主列仍保留历史 24px 左上/左下圆角，不破坏原工作区",
+    /rounded-tl-3xl rounded-bl-3xl/.test(pane));
+  check("★ 主列为同一 main 元素 class 切换，禁止双树互换造成 PTY/草稿被销毁",
+    /<main\s+className=\{cn\(/.test(pane) && !/variant\s*===\s*"workspace"\s*\?\s*<main/.test(pane));
+}
+
+section("D. 复用本机 Claude Desktop v2 逆向：密度 token 仅作用于 workspace，保留经典和真实业务");
+{
+  const shell = read("src/renderer/components/shell/ClassicShell.tsx");
+  const css = read("src/renderer/styles.css");
+  const actions = read("src/renderer/components/layout/SidebarQuickActions.tsx");
+  const stream = read("src/renderer/components/layout/StreamSidebar.tsx");
+  const tree = read("src/renderer/components/layout/LeftBarParts.tsx");
+  check("★ 同一挂载工作区拥有 shell variant 数据作用域（不覆盖其他页面）",
+    /<WorkspaceInertShell\s+variant=\{variant\}/.test(shell) &&
+    /data-ui-shell-variant=\{variant\}/.test(shell));
+  check("★ 新版逆向 comfortable Composer 14px 只在 workspace 生效，classic 保留 v1 20px",
+    /\[data-ui-shell-variant="workspace"\]\s*\{[^}]*--composer-radius:\s*14px/.test(css) &&
+    /--composer-radius:\s*var\(--m-radius-composer\)/.test(css));
+  check("★ 侧栏快捷入口有独立可测试的元素钩子，动作仍共用 store",
+    actions.includes('data-sidebar-quick-actions') &&
+    actions.includes('data-sidebar-quick-action="new"') &&
+    actions.includes('data-sidebar-quick-action="search"') &&
+    actions.includes('void startSession()') && actions.includes('setCommandPaletteOpen(true)'));
+  check("★ 紧凑会话卡仍保留状态、分支、操作与键盘可达性",
+    stream.includes('data-stream-session-row') &&
+    stream.includes('statusLabel') &&
+    stream.includes('worktreeBranch ||') &&
+    stream.includes('tabIndex={0}') &&
+    stream.includes('onContextMenu='));
+  check("★ workspace 的快捷入口/会话卡 CSS 全部有作用域，不污染 classic",
+    /\[data-ui-shell-variant="workspace"\]\s+\[data-sidebar-quick-action="new"\]/.test(css) &&
+    /\[data-ui-shell-variant="workspace"\]\s+\[data-stream-session-row\]/.test(css));
+  check("★ workspace 树侧栏会话行也同步 v2 密度，不只 stream 模式有效",
+    tree.includes('data-tree-session-row') &&
+    /\[data-ui-shell-variant="workspace"\]\s+\[data-tree-session-row\]/.test(css));
+  check("★ 会话树仍保留原生键盘选择、未读、运行图标、工作树与主进程事件",
+    tree.includes('tabIndex={0}') && tree.includes('showUnreadBadge') &&
+    tree.includes('isRunning') && tree.includes('session.worktreePath') && tree.includes('onSelect();'));
 }
 
 console.log(`\nworkspace-shell-smoke: ${total - failures}/${total} 通过`);

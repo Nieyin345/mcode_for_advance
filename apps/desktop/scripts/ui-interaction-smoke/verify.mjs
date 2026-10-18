@@ -10,6 +10,51 @@ await withAuditPage(here,async page=>{
  const click=async selector=>{const rect=await page.eval(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('Missing button: '+${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);await page.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...rect});await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...rect});await page.sleep(80);};
  const key=async(key,code=key,vk=key==='Enter'?13:key==='Escape'?27:key==='Tab'?9:37)=>{await page.send('Input.dispatchKeyEvent',{type:'keyDown',key,code,windowsVirtualKeyCode:vk});await page.send('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:vk});await page.sleep(80);};
  const test=async(name,fn)=>{try{await fn();check(name+' / no uncaught errors',page.exceptions.length===0,page.exceptions.slice());}catch(e){check(name,false,String(e));}await page.screenshot(name+'.png');};
+ // ARC-005: not merely source-string checks. Chromium must compute two distinct
+ // theme geometries on one and the SAME subtree, with the draft surviving a flip.
+ // Fixture is purely visual: no SDK, IPC, terminal or user-data side effects.
+ await test('workspace-density-computed-css',async()=>{
+  await go('primitives');
+  const proof=await page.eval(`(()=>{
+   const host=document.createElement('div');
+   host.setAttribute('data-ui-shell-variant','classic');
+   host.setAttribute('id','workspace-density-probe');
+   host.innerHTML='<div class="composer-card"><textarea aria-label="draft-probe">KEEP DRAFT</textarea></div><button data-sidebar-quick-action="new">New</button><div data-stream-session-row class="px-2.5 py-2">Session</div><div data-tree-session-row class="rounded-md px-1 py-1">Tree</div>';
+   document.body.append(host);
+   const composer=host.querySelector('.composer-card');
+   const input=host.querySelector('textarea');
+   const button=host.querySelector('button');
+   const row=host.querySelector('[data-stream-session-row]');
+   const tree=host.querySelector('[data-tree-session-row]');
+   composer.style.borderRadius='var(--composer-radius)';
+   const snap=()=>({
+    radius:getComputedStyle(composer).borderTopLeftRadius,
+    buttonHeight:getComputedStyle(button).minHeight,
+    rowPadding:getComputedStyle(row).paddingTop,
+    treeMinHeight:getComputedStyle(tree).minHeight,
+    treePadding:getComputedStyle(tree).paddingTop,
+    inputValue:input.value,
+    sameNode:host.querySelector('textarea')===input
+   });
+   const classic=snap();
+   host.setAttribute('data-ui-shell-variant','workspace');
+   const workspace=snap();
+   host.setAttribute('data-ui-shell-variant','classic');
+   const restored=snap();
+   host.remove();
+   return { classic, workspace, restored };
+  })()`);
+  check('★ 真实 Chromium: classic Composer 是原版 20px',proof.classic.radius==='20px',proof);
+  check('★ 真实 Chromium: workspace Composer 按 v2 comfortable 为 14px',proof.workspace.radius==='14px',proof);
+  check('★ 真实 Chromium: workspace New session 控件不低于 32px',parseFloat(proof.workspace.buttonHeight)>=32,proof);
+  check('★ 真实 Chromium: workspace 会话卡压缩 padding 且 classic 保留旧尺寸',parseFloat(proof.workspace.rowPadding) < parseFloat(proof.classic.rowPadding),proof);
+  check('★ 真实 Chromium: v2 树行最小 28px 且经典模式不变',parseFloat(proof.workspace.treeMinHeight)>=28 &&
+   parseFloat(proof.workspace.treePadding)===4 && proof.classic.treeMinHeight!==proof.workspace.treeMinHeight,proof);
+  check('★ CSS 切壳前后恢复原几何，且不替换 textarea 或损失草稿',proof.restored.radius===proof.classic.radius &&
+   proof.restored.rowPadding===proof.classic.rowPadding && proof.restored.treePadding===proof.classic.treePadding &&
+   proof.workspace.sameNode && proof.restored.sameNode &&
+   proof.restored.inputValue==='KEEP DRAFT',proof);
+ });
  await test('approval-scope',async()=>{await go('approval');await click('[aria-label="B 会话输入"]');await key('Escape');check('background approval untouched',await page.eval('labEvents.length===0'));});
  // 审批卡展开区那段「输入」标签必须走 i18n key —— 它的孪生 MessageBlocks(工具卡)用的是
  // 同一把 key `chatStream.tool.input`。用哨兵把该 key 换成 OVR::toolInput:源码走 key 则

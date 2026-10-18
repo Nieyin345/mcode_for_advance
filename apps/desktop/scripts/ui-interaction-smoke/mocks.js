@@ -15,7 +15,10 @@ window.labApi.context={get:async()=>({content:''}),memoriesList:async()=>({dirs:
 window.labApi.memory={manage:async()=>({projects:[]}),categories:async()=>['facts'],list:async()=>({files:Object.keys(labMemory).map(path=>({path,category:'facts',title:path.endsWith('a.md')?'Memory A':'Memory B',pinned:false}))}),read:async({path})=>labMemory[path],save:async({path,content,expectedRevision})=>{if(labDelayMemorySave)await new Promise(resolve=>window.labReleaseMemorySave=resolve);if(labMemory[path]?.revision!==expectedRevision)return {ok:false,code:'conflict'};const revision=String(Date.now());labMemory[path]={content,revision};return {ok:true,revision};}};
 window.labDelayMemorySave=false;
 
-Object.assign(window.labState,{planApprovalDraftBySession:{},providers:[],customModels:[],piAvailableModels:[],providerId:'mock',model:'mock',customModelId:null});
+// CustomModelsPanel 初次挂载会调用 store.reloadCustomModels()；返回 null 表示读取成功。
+// 模拟这条真实 store 合同，而不是省略方法导致组件崩溃、让标签 i18n 的用例空过。
+Object.assign(window.labState,{planApprovalDraftBySession:{},providers:[],customModels:[],customModelsStoreInvalid:null,
+ reloadCustomModels:async()=>null,piAvailableModels:[],providerId:'mock',model:'mock',customModelId:null});
 
 // ── 模型配置页(CustomModelsPanel)夹具 ──
 // 一家 Claude 端点 + 一家 Pi + 一家 Codex,好让三种表单(各有 Base URL / API Key /

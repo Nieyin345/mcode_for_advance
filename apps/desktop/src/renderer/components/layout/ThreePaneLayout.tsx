@@ -1,8 +1,11 @@
 import { type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { Divider } from "./Divider.js";
+import type { ShellVariant } from "../shell/shellPrefs.js";
 
 interface Props {
+  /** ARC-005: 只影响几何 class，不切换主区组件身份（PTY/编辑器需保活）。 */
+  variant?: ShellVariant;
   left: ReactNode;
   center: ReactNode;
   right: ReactNode;
@@ -52,6 +55,7 @@ interface Props {
  * overflow-hidden is preserved on xterm ancestors (FitAddon breaks under a
  * scrolling ancestor) — do not change those to overflow-y-auto. */
 export function ThreePaneLayout({
+  variant = "classic",
   left,
   center,
   right,
@@ -95,7 +99,7 @@ export function ThreePaneLayout({
         />
       )}
 
-      {/* Center pane — 3xl arcs on the LEFT edge only (top-left at the
+      {/* Center pane — classic 24px / workspace 10px arcs on the LEFT edge only (top-left at the
          toolbar/sidebar junction, bottom-left at the track below): the muted
          frame shows through both notches against the pane's bg-surface, so
          the arcs read cleanly. overflow-hidden clips the CONTENT to the same
@@ -105,7 +109,10 @@ export function ThreePaneLayout({
          behind the arc. Non-scrolling overflow-hidden is xterm-safe (see the
          note on the right sidebar).
          Stacks the center content above an optional bottom terminal bar. */}
-      <main className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-3xl rounded-bl-3xl border-t border-edge-panel bg-surface">
+      <main className={cn(
+        "relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden border-t border-edge-panel bg-surface",
+        variant === "workspace" ? "rounded-tl-[10px] rounded-bl-[10px]" : "rounded-tl-3xl rounded-bl-3xl",
+      )}>
         <div className="min-h-0 flex-1 overflow-hidden">{center}</div>
         {/* Bottom terminal bar — keep-alive: always rendered, height collapses
             to 0 when closed so PTYs/scrollback survive. overflow-hidden clips

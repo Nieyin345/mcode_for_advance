@@ -1054,6 +1054,7 @@ function StreamCard({
   return (
     <li
       ref={(el) => registerNode(session.id, el)}
+      data-stream-session-row=""
       tabIndex={0}
       aria-current={active ? "page" : undefined}
       onClick={() => { setPendingConfirm(null); onSelect(); }}

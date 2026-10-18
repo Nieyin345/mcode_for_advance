@@ -813,6 +813,201 @@ export async function runSettingsPanelsProbe(dir: string): Promise<void> {
       assert(warned === true, "回退没有留下 console.warn 诊断:" + consoleLog.slice(consoleBefore).join(" | "));
     });
 
+    /* ═══ 【MC-047 复核·U1】终端/浏览器设置读失败:真 Electron 里的可见错误 + 重试 ═══
+     *
+     * 台账 remaining 的「真 Electron U1」:设置行读失败时必须是
+     *   **错误行可见(role=alert + 注入原因)+ 重试真的重发 + 不锁死无关行**,
+     * 而不是从前那个「disabled 永远灰、屏幕上没有一句话」。
+     * 判据全部来自真 DOM(`input.disabled` / `[role=switch]` 的禁用态 / role=alert 文本),
+     * 不是组件内部 state。注入面见 `api-stub.js` 的 `__failNextGet` / `__seedSetting`。
+     */
+    /** 页面里含 `marker` 的 ErrorNote(role=alert/status)是否出现;返回其文本。 */
+    const errorRowText = (marker: string): Promise<string | null> =>
+      js<string | null>(`(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        const hit = rows.find((r) => (r.innerText || '').includes(${JSON.stringify(marker)}));
+        return hit ? hit.innerText : null;
+      })()`);
+    /** 在含 `marker` 的错误行里点「重试」——按行定向,避免多行同时报错时点错。 */
+    const clickRetryWithin = (marker: string): Promise<void> =>
+      js<void>(`(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        const row = rows.find((r) => (r.innerText || '').includes(${JSON.stringify(marker)}));
+        if (!row) throw new Error('找不到含标记的错误行: ' + ${JSON.stringify(marker)});
+        const b = [...row.querySelectorAll('button')].find((x) => x.textContent.trim() === '重试');
+        if (!b) throw new Error('错误行里没有「重试」: ' + ${JSON.stringify(marker)});
+        b.click();
+      })()`);
+    /** 浏览器两行目录输入框:终端行有 id,浏览器行没有 —— 按 placeholder 定位。 */
+    const inputByPlaceholder = (placeholder: string): Promise<{ disabled: boolean; value: string } | null> =>
+      js<{ disabled: boolean; value: string } | null>(`(() => {
+        const el = [...document.querySelectorAll('.settings-root input')]
+          .find((i) => (i.placeholder || '') === ${JSON.stringify(placeholder)});
+        return el ? { disabled: el.disabled, value: el.value } : null;
+      })()`);
+    /** 登录开关的禁用态(@base-ui 的 Switch 根是 button / role=switch)。 */
+    const switchState = (): Promise<{ found: boolean; disabled: boolean; checked: boolean }> =>
+      js(`(() => {
+        const el = document.querySelector('.settings-root [role="switch"]');
+        if (!el) return { found: false, disabled: true, checked: false };
+        const disabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('data-disabled');
+        return { found: true, disabled, checked: el.getAttribute('aria-checked') === 'true' || el.checked === true };
+      })()`);
+
+    await check("★ MC-047 终端 Shell:读失败时错误行可见(点名原因)+ 输入框禁用 + 有「重试」", async () => {
+      await js<void>(`window.__seedSetting("terminal.shell", "/bin/zsh")`);
+      await js<void>(`window.__failNextGet("terminal.shell", "AUDIT_E2E_MC047_TERMINAL_READ")`);
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "terminal")`);
+      await until("终端页内容出现", `${CENTER_TEXT}.includes('Shell 路径')`, 20000);
+      await until("终端读错误行出现", `(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        return rows.some((r) => (r.innerText || '').includes('AUDIT_E2E_MC047_TERMINAL_READ'));
+      })()`, 15000);
+      const rowText = await errorRowText("AUDIT_E2E_MC047_TERMINAL_READ");
+      assert(rowText !== null && rowText.includes("读取失败"), "错误行没有「读取失败」标题:" + JSON.stringify(rowText));
+      const shell = await js<{ disabled: boolean; value: string } | null>(`(() => {
+        const el = document.querySelector('#setting-terminal-shell');
+        return el ? { disabled: el.disabled, value: el.value } : null;
+      })()`);
+      assert(shell !== null, "终端 Shell 输入框不存在");
+      assert(shell!.disabled === true, "读失败时输入框仍可编辑(未知值可能被当空值写回):" + JSON.stringify(shell));
+      const hasRetry = await js<boolean>(`(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        const row = rows.find((r) => (r.innerText || '').includes('AUDIT_E2E_MC047_TERMINAL_READ'));
+        return !!row && [...row.querySelectorAll('button')].some((b) => b.textContent.trim() === '重试');
+      })()`);
+      assert(hasRetry === true, "错误行里没有「重试」入口(用户只能切走再切回来)");
+    });
+
+    await check("★ MC-047 终端 Shell:点「重试」真的重发 setting.get,成功后错误消失、控件恢复且值就位", async () => {
+      const before = await calls("setting.get:terminal.shell");
+      await clickRetryWithin("AUDIT_E2E_MC047_TERMINAL_READ");
+      await until("终端读错误消失", `(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        return !rows.some((r) => (r.innerText || '').includes('AUDIT_E2E_MC047_TERMINAL_READ'));
+      })()`, 15000);
+      const after = await calls("setting.get:terminal.shell");
+      assert(after === before + 1, `重试没有重发 setting.get:terminal.shell:${before} → ${after}`);
+      const shell = await js<{ disabled: boolean; value: string } | null>(`(() => {
+        const el = document.querySelector('#setting-terminal-shell');
+        return el ? { disabled: el.disabled, value: el.value } : null;
+      })()`);
+      assert(shell!.disabled === false, "重试成功后输入框仍禁用:" + JSON.stringify(shell));
+      assert(shell!.value === "/bin/zsh", "重试成功后没有显示真实值:" + JSON.stringify(shell));
+    });
+
+    await check("★ MC-047 终端 Shell 健康路径(防空过):重新进入面板无错误行、控件可用", async () => {
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "general")`);
+      await until("回到常规页", `${CENTER_TEXT}.includes('界面语言')`, 15000);
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "terminal")`);
+      await until("终端页再次出现", `${CENTER_TEXT}.includes('Shell 路径')`, 20000);
+      await until("Shell 输入框出现", `document.querySelector('#setting-terminal-shell') !== null`);
+      await delay(300);
+      const rowText = await errorRowText("读取失败");
+      assert(rowText === null, "健康路径出现读失败错误行(永远在报):" + JSON.stringify(rowText));
+      const shell = await js<{ disabled: boolean; value: string } | null>(`(() => {
+        const el = document.querySelector('#setting-terminal-shell');
+        return el ? { disabled: el.disabled, value: el.value } : null;
+      })()`);
+      assert(shell!.disabled === false && shell!.value === "/bin/zsh", "健康路径控件状态不对:" + JSON.stringify(shell));
+    });
+
+    await check("★ MC-047 浏览器截图/数据目录:各自读失败各自可见、两行同时禁用(不是整页死锁的假象)", async () => {
+      await js<void>(`window.__seedSetting("browser.screenshotDir", "C:/shots")`);
+      await js<void>(`window.__seedSetting("browser.dataDir", "D:/browser-data")`);
+      await js<void>(`window.__failNextGet("browser.screenshotDir", "AUDIT_E2E_MC047_SHOT_READ")`);
+      await js<void>(`window.__failNextGet("browser.dataDir", "AUDIT_E2E_MC047_DATA_READ")`);
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "browser")`);
+      await until("浏览器页内容出现", `${CENTER_TEXT}.includes('截图目录') && ${CENTER_TEXT}.includes('数据目录')`, 20000);
+      await until("两行错误行都出现", `(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        const t = rows.map((r) => r.innerText || '').join('\\n');
+        return t.includes('AUDIT_E2E_MC047_SHOT_READ') && t.includes('AUDIT_E2E_MC047_DATA_READ');
+      })()`, 15000);
+      const shot = await inputByPlaceholder("留空使用系统图片目录");
+      const data = await inputByPlaceholder("留空使用默认位置");
+      assert(shot !== null && shot.disabled === true, "截图目录读失败时输入框仍可编辑:" + JSON.stringify(shot));
+      assert(data !== null && data.disabled === true, "数据目录读失败时输入框仍可编辑:" + JSON.stringify(data));
+      assert((await errorRowText("AUDIT_E2E_MC047_SHOT_READ")) !== null, "截图目录的错误行不可见");
+      assert((await errorRowText("AUDIT_E2E_MC047_DATA_READ")) !== null, "数据目录的错误行不可见");
+    });
+
+    await check("★ MC-047 浏览器:只重试截图行 → 它单独恢复,数据目录仍禁用(按行恢复,不是整页刷新)", async () => {
+      const before = await calls("setting.get:browser.screenshotDir");
+      await clickRetryWithin("AUDIT_E2E_MC047_SHOT_READ");
+      await until("截图行错误消失", `(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        return !rows.some((r) => (r.innerText || '').includes('AUDIT_E2E_MC047_SHOT_READ'));
+      })()`, 15000);
+      const after = await calls("setting.get:browser.screenshotDir");
+      assert(after === before + 1, `截图行重试没有重发:${before} → ${after}`);
+      const shot = await inputByPlaceholder("留空使用系统图片目录");
+      assert(shot!.disabled === false && shot!.value === "C:/shots", "截图行没有单独恢复:" + JSON.stringify(shot));
+      const data = await inputByPlaceholder("留空使用默认位置");
+      assert(data!.disabled === true, "数据目录的错误行被截图行的重试连带清掉了(错误状态串行):" + JSON.stringify(data));
+      assert((await errorRowText("AUDIT_E2E_MC047_DATA_READ")) !== null, "数据目录的错误行消失了(不该被无关重试清掉)");
+    });
+
+    await check("★ MC-047 浏览器:再重试数据目录行 → 恢复;两行都恢复后无错误行(健康路径防空过)", async () => {
+      await clickRetryWithin("AUDIT_E2E_MC047_DATA_READ");
+      await until("数据目录错误消失", `(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        return !rows.some((r) => (r.innerText || '').includes('AUDIT_E2E_MC047_DATA_READ'));
+      })()`, 15000);
+      const data = await inputByPlaceholder("留空使用默认位置");
+      assert(data!.disabled === false && data!.value === "D:/browser-data", "数据目录行没有恢复:" + JSON.stringify(data));
+      assert((await errorRowText("读取失败")) === null, "两行都恢复后仍留着读失败错误行");
+    });
+
+    await check("★ MC-047 登录开关:读失败时开关禁用 + 错误行 + 重试;重试后启用且不写默认值", async () => {
+      const setsBefore = await calls("setting.set:browser.persistLogin");
+      // 离开再回来,让 PersistLoginRow 重新挂载并撞上这一次注入的失败。
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "general")`);
+      await until("回到常规页", `${CENTER_TEXT}.includes('界面语言')`, 15000);
+      await js<void>(`window.__seedSetting("browser.persistLogin", "0")`);
+      await js<void>(`window.__failNextGet("browser.persistLogin", "AUDIT_E2E_MC047_PERSIST_READ")`);
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "browser")`);
+      await until("浏览器页再次出现", `${CENTER_TEXT}.includes('记住网站登录状态')`, 20000);
+      await until("登录开关错误行出现", `(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        return rows.some((r) => (r.innerText || '').includes('AUDIT_E2E_MC047_PERSIST_READ'));
+      })()`, 15000);
+      const sw = await switchState();
+      assert(sw.found === true, "登录开关没有渲染出来");
+      assert(sw.disabled === true, "读失败时开关仍可切换(会拿默认值覆盖真实设置):" + JSON.stringify(sw));
+      assert((await errorRowText("AUDIT_E2E_MC047_PERSIST_READ")) !== null, "登录开关的读失败错误行不可见");
+      // 读失败期间不写任何东西 —— 尤其不能把默认值写回。
+      assert((await calls("setting.set:browser.persistLogin")) === setsBefore, "读失败期间发出了 setting.set:browser.persistLogin");
+      await clickRetryWithin("AUDIT_E2E_MC047_PERSIST_READ");
+      await until("登录开关错误消失", `(() => {
+        const rows = [...document.querySelectorAll('.settings-root [role=alert], .settings-root [role=status]')];
+        return !rows.some((r) => (r.innerText || '').includes('AUDIT_E2E_MC047_PERSIST_READ'));
+      })()`, 15000);
+      const swAfter = await switchState();
+      assert(swAfter.disabled === false, "重试成功后登录开关仍禁用:" + JSON.stringify(swAfter));
+      assert(swAfter.checked === false, "读到 \"0\" 后开关应关闭(没把未知当默认 true):" + JSON.stringify(swAfter));
+      // 【防空过】证明 `setting.set:<key>` 计数不是恒 0 的死探针:真点一下开关,
+      // 写入必须被计数、且落的是 "1"(上一条「读失败期间不写」才因此有判别力)。
+      const setsBeforeToggle = await calls("setting.set:browser.persistLogin");
+      await js<void>(`(() => {
+        const el = document.querySelector('.settings-root [role="switch"]');
+        if (!el) throw new Error('找不到登录开关');
+        el.click();
+      })()`);
+      await until("开关写入被计数", `(window.__calls['setting.set:browser.persistLogin'] ?? 0) > ${setsBeforeToggle}`, 15000);
+      const setsAfterToggle = await calls("setting.set:browser.persistLogin");
+      assert(setsAfterToggle === setsBeforeToggle + 1, "点一下开关应恰好写一次:" + setsBeforeToggle + " → " + setsAfterToggle);
+      const lastSetValue = await js<string | null>(`(() => {
+        const log = window.__lastSettingSet;
+        return log && log.key === 'browser.persistLogin' ? String(log.value) : null;
+      })()`);
+      assert(lastSetValue === "1", "点开开关写入的不是 \"1\":" + JSON.stringify(lastSetValue));
+    });
+
+    /* 收尾:回到「常规」—— 下一条(全程无异常)沿用原判据。 */
+    await js<void>(`window.__store.getState().setSettingsOpen(true, "general")`);
+    await until("收尾回到常规页", `${CENTER_TEXT}.includes('界面语言')`, 15000);
+
     /* ═══ 渲染端全程无未捕获异常(整树卸载探针) ═══ */
     await check("★ 全程无渲染端未捕获异常(最后一页仍完整)", async () => {
       const errors = await rendererErrors();

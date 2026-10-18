@@ -267,7 +267,7 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section data-home-section={id} className="min-w-0 rounded-xl border border-edge bg-surface/60 p-1.5">
+    <section data-home-section={id} data-arc005-starter-card="" className="min-w-0 rounded-xl border border-edge bg-surface/60 p-1.5">
       <h3 className="flex items-center gap-1.5 px-2 pb-1 pt-0.5 text-[0.7857em] font-medium text-content-subtle">
         <Icon size={13} className="shrink-0" />
         {title}

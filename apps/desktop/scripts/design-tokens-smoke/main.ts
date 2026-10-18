@@ -197,10 +197,16 @@ section("6. 【ARC-005】Composer 外框接上游几何/阴影 token");
     /--composer-shadow:\s*var\(--m-shadow-composer\)/.test(css));
   check("★ --composer-shadow-focus 指向 var(--m-shadow-composer-focus)",
     /--composer-shadow-focus:\s*var\(--m-shadow-composer-focus\)/.test(css));
-  // 反向正控：别名若是裸 px/hex，上游 token 更新时这里会静默漂移 —— 必须红。
+  // 反向正控限定在通用语义层：新版 Claude Desktop v2 有独立 workspace
+  // 密度作用域，可使用 14px comfortable Composer，但不许回写 :root 影响 classic。
+  // 先剔除精确的 workspace 作用域块，再审查全局别名是否漂移。
+  const workspaceScope = '[data-ui-shell-variant="workspace"] {';
+  const scopeStart = css.indexOf(workspaceScope);
+  const scopeEnd = scopeStart < 0 ? -1 : css.indexOf("}", scopeStart);
+  const globalCss = scopeEnd < 0 ? css : css.slice(0, scopeStart) + css.slice(scopeEnd + 1);
   for (const name of ["--composer-radius", "--composer-shadow", "--composer-shadow-focus"]) {
-    check(`★ ${name} 值走 var(--m-*) 而非字面量`, new RegExp(`${name}:\\s*var\\(--m-`).test(css));
-    check(`${name} 未回落为 px/hex 字面量`, !new RegExp(`${name}:\\s*(\\d|#)`).test(css));
+    check(`★ ${name} 值走 var(--m-*) 而非字面量`, new RegExp(`${name}:\\s*var\\(--m-`).test(globalCss));
+    check(`${name} 全局别名未回落为 px/hex 字面量`, !new RegExp(`${name}:\\s*(\\d|#)`).test(globalCss));
   }
   // 生成物的阴影边线色必须包 rgb()：Mcode 的 --edge/--input-edge 是 "R G B"
   // 三元组，裸写进 box-shadow 会展开成 "195 194 183"，整条声明在计算值阶段
