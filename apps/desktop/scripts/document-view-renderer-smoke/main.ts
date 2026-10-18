@@ -21,9 +21,11 @@
  *  4. **编辑器页未构建**：CLI 缺失时**不创建视图**（零 open 调用），且界面上是
  *     真词典里的「GenOffice 编辑器页未构建」+ 原因 + 重试；
  *  4c. **sheets / slides 显式降级**：它们的打开通道在 vendor 自己的主进程里
- *     （sheets=workbook:select、slides=slides:open-path），宿主没有对端 ——
- *     CLI 可用时也**零 open / 零 openPath**，界面是「该格式的编辑器打开入口尚未
- *     接入」+ 点名 vendor 通道 + 替代入口，且不误报"未构建"；
+ *     （sheets=workbook:select、slides=slides:open-path），且两家的渲染端都**不订阅**
+ *     `menu:command`（只有 docs 订阅；genoffice 源码在场时做机械复核）—— 宿主没有
+ *     对端。CLI 可用时也**零 open / 零 openPath**，界面是「表格/演示文稿的打开暂不可用：
+ *     打开通道在 GenOffice 自己的主进程里」+ 点名 vendor 通道 + 替代入口，且不误报
+ *     "未构建"；
  *  5. **open 失败**：显示宿主给的原因 + 重试；点重试真的再 open 一次；
  *  6. **FileEditor 默认档不变**：office 文件在没有任何偏好时仍是 OnlyOffice（wysiwyg），
  *     **不**默认落到任何 GenOffice 档；
@@ -435,9 +437,15 @@ section("4c. sheets / slides：明说打开入口未接，不建视图、不装�
     eq(`★ ${format}：不轮询 list（没有视图可诊断）`, ops("list").length, 0);
 
     const text = uiText();
-    check(`★ ${format}：界面出现「该格式的编辑器打开入口尚未接入」`, text.includes("该格式的编辑器打开入口尚未接入"), text);
+    // 【ARC-007】文案判据落在**原因**上，不是笼统的"不支持"：降级标题必须点名
+    // vendor 主进程是打开通道的所在（用户据此知道缺的是对端，不是构建）。
+    check(
+      `★ ${format}：标题明说「打开暂不可用」且点名原因在 vendor 主进程`,
+      text.includes("打开暂不可用") && text.includes("GenOffice 自己的主进程"),
+      text,
+    );
     check(`★ ${format}：原因点名 vendor 的打开通道 ${vendorChannel}`, text.includes(vendorChannel), text);
-    check(`${format}：原因点名 vendor 主进程（不是"我们没做"，是通道在对端）`, text.includes("GenOffice 自己的主进程"), text);
+    check(`${format}：原因点名 vendor 主进程（不是"我们没做"，是通道在对端）`, text.includes("Mcode 宿主不运行那份主进程"), text);
     check(`${format}：给出仍可用的替代入口（OnlyOffice / 结构化视图）`, text.includes("OnlyOffice") && text.includes("GenOffice 结构化视图"), text);
     check(`★ ${format}：不是「编辑器页未构建」的误报`, !text.includes("GenOffice 编辑器页未构建"), text);
     check(`${format}：不残留「加载中」`, !text.includes("加载中…"), text);
@@ -446,6 +454,45 @@ section("4c. sheets / slides：明说打开入口未接，不建视图、不装�
     eq(`${format}：恰好一条说明框`, notes.length, 1);
     eq(`${format}：说明框是 warning 档（不是"坏了"）`, notes[0]?.props.tone, "warning");
     await unmountPane();
+  }
+
+  // 【ARC-007】降级判据的**事实基础**：vendor 渲染端是否真有可用的打开入口。
+  // 结论（宿主只对 docs 有对端）建立在"sheets/slides 渲染端不订阅 menu:command"
+  // 之上。genoffice 是 gitignored 快照：在场时做机械复核（源码级 grep），
+  // 不在场时如实跳过 —— 不假装验过。
+  {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const genoffice = path.join(process.cwd(), "..", "..", "genoffice");
+    const sheetsSrc = path.join(genoffice, "apps", "sheets", "src");
+    const slidesSrc = path.join(genoffice, "apps", "slides", "src");
+    if (fs.existsSync(sheetsSrc) && fs.existsSync(slidesSrc)) {
+      const walk = (dir: string): string[] => {
+        const out: string[] = [];
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          if (entry.isDirectory()) out.push(...walk(p));
+          else if (/\.(ts|tsx)$/.test(entry.name)) out.push(p);
+        }
+        return out;
+      };
+      const subscribers = (dir: string, pattern: RegExp): string[] =>
+        walk(dir).filter((p) => {
+          const src = fs.readFileSync(p, "utf8");
+          return pattern.test(src);
+        });
+      const menuCommand = /ipcRenderer\.on\(\s*['"]menu:command['"]/;
+      eq("★ vendor sheets 渲染端/预加载没有任何 menu:command 订阅者", subscribers(sheetsSrc, menuCommand), []);
+      eq("★ vendor slides 渲染端/预加载没有任何 menu:command 订阅者", subscribers(slidesSrc, menuCommand), []);
+      // 正对照：docs 确实订阅它（证明 grep 判据本身不是恒真）。
+      const docsPreload = path.join(genoffice, "apps", "docs", "src", "preload", "index.ts");
+      check(
+        "对照：docs 预加载订阅 menu:command（grep 判据不是恒真）",
+        fs.existsSync(docsPreload) && menuCommand.test(fs.readFileSync(docsPreload, "utf8")),
+      );
+    } else {
+      console.log("  skip genoffice 源码快照不在场（gitignored），跳过菜单通道复核");
+    }
   }
 
   // 对照：同一套挂载路径下 docx 是**真的**会 open —— 上面的零 open 不是套件假绿。

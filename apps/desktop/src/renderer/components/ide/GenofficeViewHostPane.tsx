@@ -34,24 +34,44 @@
  * ## sheets / slides 的打开入口：宿主侧没有对端（显式降级，不装空白）
  *
  * 只有 docs 能真正打开指定文件。表格与演示文稿的**打开通道**长在 GenOffice
- * **自己的主进程**里，而 Mcode 宿主不跑那份主进程：
+ * **自己的主进程**里，而 Mcode 宿主不跑那份主进程。这条结论是逐条核对 vendor
+ * 渲染端所有可达入口之后得出的（不是"没找"）：
  *
- *  - sheets：渲染端唯一的打开入口 `handleInspectWorkbook` → `desktopApi.selectWorkbook()`
- *    → `ipcRenderer.invoke("workbook:select")`（`genoffice/apps/sheets/src/preload/index.ts:107`），
- *    handler 在 vendor 主进程里读 `queuedWorkbookPaths`（按 vendor 的 webContents id 键）
- *    再跑 `prepareWorkbookForOpen` + `openWorkbookSession`
- *    （`apps/sheets/src/main/sheets-main.ts:2809`、`:2231`）；`sheets:has-queued-workbook`
- *    读的是同一张 Map（`:2785`）。渲染端没有"按路径打开"的入口。
- *  - slides：renderer 订阅的是 `slides:menu`（`apps/slides/src/preload/index.ts:384`），
- *    `MenuCommand` 联合里**没有** open-path 且不带路径参数
- *    （`apps/slides/src/shared/ipc.ts:1269`）；按路径打开只有 `slides:open-path` /
- *    `slides:consume-pending-open` 两条 `invoke`，handler 在 vendor 主进程跑
- *    `preparePresentationForOpen` + `openAndBuild`（`apps/slides/src/main/slides-main.ts:1458`、`:1466`）。
+ *  - **`menu:command` 只有 docs 订阅**。在 `genoffice/apps/sheets/src` 与
+ *    `genoffice/apps/slides/src` 里都 grep 不到 `menu:command` 订阅者；docs 是
+ *    唯一监听它的页面（`genoffice/apps/docs/src/preload/index.ts:250`）。宿主发
+ *    `menu:command("open-path", path)` 对 sheets/slides 等于发进没有收件人的通道。
+ *  - **sheets**：渲染端唯一的打开入口 `handleInspectWorkbook`
+ *    （`apps/sheets/src/renderer/App.tsx:4604`）→ `desktopApi.selectWorkbook()`
+ *    （`App.tsx:4617`）→ `ipcRenderer.invoke("workbook:select")`
+ *    （`apps/sheets/src/preload/index.ts:107`）；handler 在 vendor 主进程里读
+ *    `queuedWorkbookPaths`（按 vendor 的 webContents id 键，
+ *    `apps/sheets/src/main/sheets-main.ts:2231`）再跑 `prepareWorkbookForOpen` +
+ *    `openWorkbookSession`（`:2811`、`:2873`）。渲染端其余"打开"线索也都回到主进程：
+ *    `hasQueuedWorkbook` 读同一张 Map（`sheets-main.ts:2785`；渲染端调用点
+ *    `App.tsx:1901` / `renderer/main.tsx:91`），`menu:action` 只承载**不带路径**的
+ *    菜单动作（`preload/index.ts:438`、`shared/ipc-channels.ts:95`）。也就是说，
+ *    即便宿主把"有排队文档"喂成 true，渲染端下一步仍要向 vendor 主进程要一份
+ *    `WorkbookFile` —— 那条路同样没有对端。
+ *  - **slides**：renderer 订阅的是 `slides:menu`
+ *    （`apps/slides/src/preload/index.ts:384`），`MenuCommand` 联合
+ *    （`apps/slides/src/shared/ipc.ts:1269`）里只有 `'open'`（弹**文件对话框**，
+ *    `App.tsx:2318`），没有任何带路径的命令。按路径打开只有 `slides:open-path` /
+ *    `slides:consume-pending-open` 两条 `invoke`（`preload/index.ts:149`、`:150`），
+ *    handler 在 vendor 主进程跑 `preparePresentationForOpen` + `openAndBuild`
+ *    （`apps/slides/src/main/slides-main.ts:1458`）；`consume-pending-open` 读的
+ *    `pendingByWc` 只由 vendor 主进程的 `createSlidesView` 填充（`:343`、`:5064`），
+ *    宿主无从写入。
+ *  - **其余入口也核过**：两家的 URL 参数只有 `?mode=`（页签/观众模式）与 sheets 的
+ *    `?openingWorkbook=1`（只是首帧 spinner 标志，`App.tsx:726`），都不携带路径；
+ *    渲染端没有 `postMessage` 打开通道，也没有"把待打开路径写进 localStorage /
+ *    IndexedDB 再自读"的排队表 —— 排队事实只存在于 vendor 主进程的内存 Map。
  *
  * 宿主注册这些通道只能伪造一份 `WorkbookFile` / `OpenResult`（真实内容由 vendor 的
  * xlsx/pptx 引擎在那边组装），所以这里**不伪造**：对 sheets/slides 不创建视图、
- * 不发 open，直接画出「该格式的编辑器打开入口尚未接入」+ 原因。否则用户看到的是
- * 一个已挂载但被 vendor 页面自身启动逻辑炸掉（`window.desktopApi.getAiSettings()`
+ * 不发 open，直接画出「表格/演示文稿的打开暂不可用」+ 明确原因（vendor 的打开通道
+ * 在其主进程）。否则用户看到的是一个已挂载但被 vendor 页面自身启动逻辑炸掉
+ * （`window.desktopApi.getAiSettings()`
  * 无保护，`apps/sheets/src/renderer/App.tsx:1729`；`window.slidesApi.onMenuCommand`
  * 无保护，`apps/slides/src/renderer/App.tsx:2312`）的空面板 —— 分不清"没构建"和"没接线"。
  *
@@ -105,10 +125,12 @@ export function editorHostForPath(filePath: string): GenofficeEditorHost {
  *
  * 判据不是"vendor 有没有某个通道"，而是"宿主能不能在不伪造数据的前提下回它"：
  * docs 的 `menu:command("open-path", path)` 由宿主直接下发路径、页面自己读盘
- * （`apps/docs/src/preload/index.ts` 的 `onMenuCommand` → `App.tsx` 的 `case "open-path"`）；
- * sheets 需要宿主交出一份 vendor 主进程组装好的 `WorkbookFile`（含 sessionId、分块
- * 读取的会话），slides 需要 vendor 主进程先 `preparePresentationForOpen` 再回
- * `OpenResult` —— 两者宿主都没有对端，伪造就等于伪造文档内容。详见文件头。
+ * （`apps/docs/src/preload/index.ts:250` 的 `onMenuCommand` → `App.tsx` 的
+ * `case "open-path"`）。sheets/slides **没有**任何渲染端可达的打开入口（这一结论
+ * 是对 vendor 渲染端逐入口核对后的结果，文件头「sheets / slides 的打开入口」一节
+ * 列了每一条被排除的通道与 `文件:行`）：sheets 需要宿主交出一份 vendor 主进程组装
+ * 好的 `WorkbookFile`（含 sessionId、分块读取的会话），slides 需要 vendor 主进程先
+ * `preparePresentationForOpen` 再回 `OpenResult` —— 伪造就等于伪造文档内容。
  */
 export function hasHostOpenChannel(host: GenofficeEditorHost): boolean {
   return host === "docs";
@@ -344,9 +366,10 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {caps.loading && <LoadingNote label={t("common.loading")} />}
-      {/* 【ARC-007】sheets/slides：**显式**说明打开入口未接，不装空白。
-          这一支必须排在「未构建」之前 —— CLI 是否构建不影响"宿主没有打开对端"
-          这个事实，两个错误的修法也不同（一个是去构建，一个是等后续切片）。 */}
+      {/* 【ARC-007】sheets/slides：**显式**说明打开为什么不可用（原因：vendor 的
+          打开通道在其主进程里），不装空白。这一支必须排在「未构建」之前 —— CLI 是否
+          构建不影响"宿主没有打开对端"这个事实，两个错误的修法也不同（一个是去构建，
+          一个是等 vendor 提供渲染端入口）。 */}
       {!caps.loading && unsupportedHost !== null && (
         <div className="p-3">
           <ErrorNote title={t("ide.genoffice.viewHostUnsupported")} tone="warning">

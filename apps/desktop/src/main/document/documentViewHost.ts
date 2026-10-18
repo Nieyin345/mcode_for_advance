@@ -33,7 +33,14 @@
  * `openPath` 发的是 vendor **docs** 页面认识的那对常量；sheets/slides 的打开
  * 实现长在 GenOffice 自己的主进程里（sheets=`workbook:select`、slides=
  * `slides:open-path`），本宿主没有对端，也不会伪造 `WorkbookFile`/`OpenResult`。
- * 渲染端对这两类文件直接显式降级（见 `GenofficeViewHostPane.tsx` 文件头）。
+ * 这不是"没找到渲染端入口"：vendor 的 sheets/slides 渲染端都不订阅
+ * `menu:command`（只有 docs 订阅，`apps/docs/src/preload/index.ts:250`），
+ * slides 订阅的 `slides:menu` 只承载不带路径的菜单命令
+ * （`apps/slides/src/preload/index.ts:384`、`apps/slides/src/shared/ipc.ts:1269`），
+ * sheets 的 `menu:action` 同样不带路径（`apps/sheets/src/preload/index.ts:438`），
+ * 两家的 URL 参数与 localStorage/IndexedDB 里也没有待打开路径。核对明细见
+ * `GenofficeViewHostPane.tsx` 文件头「sheets / slides 的打开入口」一节。
+ * 渲染端对这两类文件直接显式降级并点名原因（见同文件）。
  *
  * ## 可测性
  *

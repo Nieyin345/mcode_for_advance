@@ -42,8 +42,9 @@
  *
  *   - 只转发 `openDocxPath`/`saveDocx`，而且只对 **docs** 页面有对端：表格/演示文稿
  *     的打开实现在 vendor 自己的主进程里（sheets=`workbook:select`、slides=
- *     `slides:open-path`），宿主不伪造 `WorkbookFile`/`OpenResult`；渲染端对这两类
- *     文件显式降级（见 `GenofficeViewHostPane.tsx` 文件头）。
+ *     `slides:open-path`），且它们的渲染端**不订阅** `menu:command`（只有 docs 订阅），
+ *     宿主不伪造 `WorkbookFile`/`OpenResult`；渲染端对这两类文件显式降级并点名原因
+ *     （见 `GenofficeViewHostPane.tsx` 文件头与 `viewHostUnsupported*` 文案）。
  *   - 保存只写回本视图打开的那份文件，没有"另存为"；
  *   - 没有主题/语言的动态同步：页面用写死的默认值，Mcode 切主题不会传导过去。
  */
