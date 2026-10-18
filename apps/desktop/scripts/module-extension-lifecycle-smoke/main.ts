@@ -850,6 +850,130 @@ try {
     }).success);
   eq("identityHost 未参与本段(守卫:各 host 状态独立)", identityHost.catalog().modules.length, 0);
 
+  // ── 9d.【ARC-006 Gate E】升级不继承旧授权,且升级失败不留半旧半新 ──────────
+  // 判据(台账 MERGE-4「升级/卸载/撤权不留下可执行体」):
+  //   - 版本变化 → 旧 grant 从存档里**撤掉**(不是只靠版本比对挡住);
+  //   - 同版本换源码(重打包)同样换执行体 → 同样撤(只比版本号会漏掉这一种);
+  //   - 升级中途写盘失败 → 旧版仍可执行、新版不落盘、**授权不变**(回滚);
+  //   - 升级成功 → 新版可执行、旧执行体不残留、旧授权不再放行、重新授权按新版本生效;
+  //   - 清单完全相同(no-op 重装)不撤授权(防空过:没有换执行体就不该误伤)。
+  {
+    const saved: { text: string | null } = { text: null };
+    const persistCalls: string[] = [];
+    let failNextManifestWrite = false;
+    const upgradeHost = new ModuleHost({
+      ...ports({}),
+      readWorkflowGrants: () => saved.text,
+      persistWorkflowGrants: async (text: string) => { saved.text = text; },
+      persist: async (manifests: unknown) => {
+        if (failNextManifestWrite) { failNextManifestWrite = false; throw Error("磁盘写入失败(模拟)"); }
+        persistCalls.push(JSON.stringify(manifests));
+      },
+    });
+    for (const capability of fileCapabilities((candidate: string) => candidate === root)) upgradeHost.register(capability);
+    const grantV1 = {
+      moduleId: "user.lifecycle", moduleVersion: "1.0.0", contributionId: "convert",
+      capabilityId: "module.lifecycle.convert", projectPath: root,
+    };
+    /** 存档里还有几条属于该模块。 */
+    const grantCountFor = (moduleId: string): number => {
+      if (saved.text === null) return 0;
+      const parsed = JSON.parse(saved.text) as { grants?: Array<{ moduleId?: string }> };
+      return (parsed.grants ?? []).filter((g) => g.moduleId === moduleId).length;
+    };
+
+    // 健康安装照常(空过守卫:下面每条"被拒/被撤"都要有一个"正常能过"的对照)。
+    await upgradeHost.install(manifestOf());
+    await upgradeHost.issueWorkflowGrant(grantV1);
+    eq("前置:安装+授权后存档里有 1 条该模块的授权", grantCountFor("user.lifecycle"), 1);
+    eq("前置:授权让工作流目标可见",
+      upgradeHost.catalog().workflowTargets?.some((t) => t.moduleId === "user.lifecycle") === true, true);
+
+    // no-op 重装(逐字节相同的清单):没有换执行体 → 授权不动。
+    await upgradeHost.install(manifestOf());
+    eq("★ 逐字节相同的重装不撤授权(没换执行体不误伤)", grantCountFor("user.lifecycle"), 1);
+
+    // 升级中途失败:新版本持久化写盘抛错 → 旧版可执行、新版不落盘、授权不变。
+    const writesBeforeFailure = persistCalls.length;
+    failNextManifestWrite = true;
+    let failure: Error | null = null;
+    try { await upgradeHost.install(manifestOf({ version: "2.0.0" })); }
+    catch (error) { failure = error instanceof Error ? error : new Error(String(error)); }
+    check("★ 升级写盘失败 → 显式报错(不是假成功)", failure !== null && /磁盘写入失败/.test(failure.message), failure?.message);
+    eq("★ 升级失败后旧版清单仍是 1.0.0",
+      upgradeHost.catalog().modules.find((m) => m.id === "user.lifecycle")?.version, "1.0.0");
+    eq("★ 升级失败后清单一个字节都没写", persistCalls.length, writesBeforeFailure);
+    eq("★ 升级失败后旧授权**被回滚**(存档里仍有 1 条)", grantCountFor("user.lifecycle"), 1);
+    eq("★ 升级失败后旧版仍可执行(执行体未被撤)",
+      upgradeHost.catalog().capabilities.some((c) => c.id === "module.lifecycle.convert"), true);
+    const stillV1 = await upgradeHost.invoke({
+      moduleId: "user.lifecycle", contributionId: "convert",
+      resource: { projectPath: root, path: target }, requestId: "upgrade-fail-1",
+    });
+    eq("★ 升级失败后执行的是旧版程序", (stillV1 as { value?: { text?: string } }).value?.text, "hello extension");
+    eq("★ 升级失败后旧授权仍放行工作流入口",
+      upgradeHost.catalog().workflowTargets?.some((t) => t.moduleId === "user.lifecycle") === true, true);
+
+    // 升级成功(版本号变化):旧授权撤掉,旧版本号不再被放行。
+    await upgradeHost.install(manifestOf({
+      version: "2.0.0",
+      program: { source: `({ convert: async (resource) => ({ text: "v2:" + resource.path.split(String.fromCharCode(92)).pop() }) })` },
+    }));
+    eq("★ 版本升级成功 → 旧授权从存档里撤掉", grantCountFor("user.lifecycle"), 0);
+    eq("★ 升级成功后旧版本工作流目标不再可见",
+      upgradeHost.catalog().workflowTargets?.some((t) => t.moduleId === "user.lifecycle") === true, false);
+    const upgraded = await upgradeHost.invoke({
+      moduleId: "user.lifecycle", contributionId: "convert",
+      resource: { projectPath: root, path: target }, requestId: "upgrade-ok-1",
+    });
+    eq("★ 升级成功后执行的是新版程序", (upgraded as { value?: { text?: string } }).value?.text, "v2:note.txt");
+    eq("★ 升级成功后能力注册表里没有旧执行体残留",
+      upgradeHost.catalog().capabilities.filter((c) => c.id === "module.lifecycle.convert").length, 1);
+
+    // 同版本换源码(重打包):版本号没变,但执行体变了 —— 也必须撤(只按版本判会漏)。
+    await upgradeHost.issueWorkflowGrant({ ...grantV1, moduleVersion: "2.0.0" });
+    eq("前置:按新版本重新授权后有 1 条", grantCountFor("user.lifecycle"), 1);
+    await upgradeHost.install(manifestOf({
+      version: "2.0.0",
+      program: { source: `({ convert: async () => ({ text: "repacked" }) })` },
+    }));
+    eq("★ 同版本换执行体重装 → 旧授权同样撤掉(不是只按版本号判)", grantCountFor("user.lifecycle"), 0);
+    eq("★ 重打包后工作流目标不再可见",
+      upgradeHost.catalog().workflowTargets?.some((t) => t.moduleId === "user.lifecycle") === true, false);
+    const repacked = await upgradeHost.invoke({
+      moduleId: "user.lifecycle", contributionId: "convert",
+      resource: { projectPath: root, path: target }, requestId: "upgrade-repack-1",
+    });
+    eq("★ 重打包后执行的是新程序", (repacked as { value?: { text?: string } }).value?.text, "repacked");
+
+    // 重新授权按新版本生效(升级不永久禁用授权,只是不继承)。
+    await upgradeHost.issueWorkflowGrant({ ...grantV1, moduleVersion: "2.0.0" });
+    eq("★ 升级后重新授权按新版本生效",
+      upgradeHost.catalog().workflowTargets?.some((t) => t.moduleId === "user.lifecycle") === true, true);
+  }
+
+  // ── 9e.【ARC-006 Gate E】坏授权表:升级被拒(撤不干净就不升级) ─────────────
+  {
+    let savedText: string | null = "{ not json";
+    const brokenGrantHost = new ModuleHost({
+      ...ports({}),
+      readWorkflowGrants: () => savedText,
+      persistWorkflowGrants: async (text: string) => { savedText = text; },
+    });
+    for (const capability of fileCapabilities((candidate: string) => candidate === root)) brokenGrantHost.register(capability);
+    await brokenGrantHost.install(manifestOf());
+    let brokenError: Error | null = null;
+    try { await brokenGrantHost.install(manifestOf({ version: "2.0.0" })); }
+    catch (error) { brokenError = error instanceof Error ? error : new Error(String(error)); }
+    check("★ 授权表损坏时升级被拒(无法确认旧授权已撤,不放宽)",
+      brokenError !== null && /授权表损坏/.test(brokenError.message), brokenError?.message);
+    eq("★ 被拒后旧版本仍在(升级不生效)",
+      brokenGrantHost.catalog().modules.find((m) => m.id === "user.lifecycle")?.version, "1.0.0");
+    eq("坏表原样保留(不被空表覆盖)", savedText, "{ not json");
+    eq("★ 被拒后旧版仍可执行",
+      brokenGrantHost.catalog().capabilities.some((c) => c.id === "module.lifecycle.convert"), true);
+  }
+
   // ── 10. 权限参数本身:每一条都在,且不给目录 ───────────────────────────
   const args = permissionArgs(target, false);
   check("权限参数打开 --permission", args.includes("--permission"));

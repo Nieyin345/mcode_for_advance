@@ -353,7 +353,40 @@ export class ModuleHost {
       // 坏状态 —— 覆盖安装失败后既不能回滚也不能用。现在：准备阶段任何一步抛错，
       // 磁盘清单与旧执行体都**保持原样**（台账：安装失败必须保留上一版）。
       const prepared = this.prepareProgramBindings(manifest);
-      await this.options.persist([...next.values()].filter(m => !this.builtinIds.has(m.id)));
+      // 【ARC-006 Gate E】升级（同 id 重装）时**旧授权必须失效** —— 台账 MERGE-4：
+      // 「升级/卸载/撤权不留下可执行体」。执行体换了，旧的工作流运行授权不该自动
+      // 适用于新代码：用户批准的是**那一版**的只读行为。判据不是「版本号变了」一条
+      // —— 同版本重装换源码（重打包、改了程序）同样换执行体；版本号或执行体任一
+      // 变化都撤。纯声明式模块（没有 program）没有可执行体，版本变化仍按发布单位撤
+      // （新版本的能力面可能变）。清单完全相同（no-op 重装）不撤 —— 没换执行体。
+      const previous = this.modules.get(manifest.id);
+      const executionChanged = previous !== undefined && (
+        previous.version !== manifest.version
+        || (previous.program?.source ?? null) !== (manifest.program?.source ?? null)
+      );
+      // **事务顺序（失败方向即判据）**：先撤授权（收紧方向）、再写清单；清单写失败
+      // 就把授权**回滚**回原样，于是「升级中途失败 → 旧版仍可执行、新版不落盘、
+      // 授权不变」三条同时成立。反向顺序（先写清单后撤授权）一旦撤授权失败，就会
+      // 留下「新代码带着旧授权」的放宽 —— 那正是要堵的洞。
+      // 崩溃窗口（撤了授权、清单还没写就断电）最坏是旧版少一条授权：收紧、可重新
+      // 授权，不是放宽。
+      const purged = executionChanged ? await this.purgeWorkflowGrantsFor(manifest.id) : null;
+      try {
+        await this.options.persist([...next.values()].filter(m => !this.builtinIds.has(m.id)));
+      } catch (error) {
+        if (purged !== null) {
+          try {
+            await this.writeGrantsOrRefuse(purged.restore);
+          } catch (rollbackError) {
+            throw Error(
+              "升级写盘失败,且旧授权回滚也失败(旧版本仍在,工作流授权可能已丢失,请重新授权):"
+              + (error instanceof Error ? error.message : String(error))
+              + " / 回滚:" + (rollbackError instanceof Error ? rollbackError.message : String(rollbackError)),
+            );
+          }
+        }
+        throw error;
+      }
       // 覆盖同 id 模块时先撤旧能力再换入新能力 —— 否则会沿用旧执行体
       // （台账：换版本不得继承旧实现）。commit 只做内存 put，不会失败。
       this.unbindProgram(manifest.id);
@@ -361,6 +394,28 @@ export class ModuleHost {
       this.modules.set(manifest.id, manifest);
       return this.catalog();
     });
+  }
+  /** 【ARC-006 Gate E】**撤掉某模块的全部工作流运行授权**（升级换执行体时调用）。
+   *
+   *  返回被撤掉的完整存档（调用方在后续步骤失败时据此**回滚**，让「升级中途失败 →
+   *  授权不变」成立）；本来没有该模块的授权时返回 `null`。
+   *
+   *  判据（全部 fail-closed，撤不干净就不升级）：
+   *   - 坏授权表 → **拒绝**（不能拿空表覆盖读不懂的账）；
+   *   - 没有持久化端口 → 拒绝（与签发同一条：授权必须跨重启有效，不能只活在内存里）。
+   */
+  private async purgeWorkflowGrantsFor(
+    moduleId: string,
+  ): Promise<{ restore: readonly ModuleWorkflowGrant[] } | null> {
+    const archive = this.workflowGrants();
+    if (archive.state === "corrupt") {
+      throw Error(`工作流授权表损坏(${archive.reason}),已拒绝升级(无法确认旧授权已撤销;先修复或删除「ui-modules/workflow-grants.json」)`);
+    }
+    if (archive.state !== "valid") return null;
+    const remaining = archive.grants.filter((grant) => grant.moduleId !== moduleId);
+    if (remaining.length === archive.grants.length) return null;
+    await this.writeGrantsOrRefuse(remaining);
+    return { restore: archive.grants };
   }
   remove(id: string): Promise<ModuleCatalog> {
     return this.serializeMutation(async () => {
