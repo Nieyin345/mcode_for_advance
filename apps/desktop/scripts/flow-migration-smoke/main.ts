@@ -41,6 +41,12 @@
  * SHA-256；保存带 expectedRevision CAS；坏档 → `corrupt`（不装空）。与 Mcode
  * `workflowId` 的关联靠 `x-mcode.docId`，同一条 flow 的 docId 不可漂移。
  *
+ * ## 10. MERGE-1 / P1-6：graphRevision ↔ workflowTrust
+ *
+ * 审批记录里的 `approvedRevision` 必须等于**盘上 flow 现算的 revision**；三态严格
+ * 区分：`untrusted`（没批过）/ `trust-corrupt`（账本坏了）/ `revision-mismatch`
+ * （批的是旧版，带两个 revision）。组合顺序：owner（身份）先、trust（内容许可）后。
+ *
  * Run: bash scripts/flow-migration-smoke/run.sh
  */
 import { createHash } from "node:crypto";
@@ -84,6 +90,11 @@ import {
   safeFlowFileName,
   validateFlowId,
 } from "@main/workflowEngines/nodeRedStorage.js";
+import {
+  canExecuteFlow,
+  flowExecutableUnderTrust,
+  parseFlowTrust,
+} from "@main/workflowEngines/flowTrustGate.js";
 
 let failures = 0;
 let total = 0;
@@ -707,6 +718,135 @@ console.log("\n9. nodeRedStorage：CAS 保存、坏档不装空、项目隔离�
     const l = storage.listFlows("proj_store_c");
     check("★ 清单把坏档列为 corrupt（不静默跳过）",
       l.ok && l.entries.some((e) => e.corrupt), l.ok ? l.entries : l);
+  }
+}
+
+/* ══════════ 10. graphRevision ↔ workflowTrust（MERGE-1 / P1-6） ══════════ */
+console.log("\n10. flowTrustGate：审批版本 = 盘上版本；三态可区分");
+{
+  const root = process.env.MCODE_FLOW_MIGRATION_DATA;
+  if (root === undefined || root === "") throw new Error("MCODE_FLOW_MIGRATION_DATA 没设");
+  const storage = new NodeRedFlowStorage(root);
+  const PROJECT = "proj_trust";
+  const FLOW = "wf_trust_flow";
+  const flowOf = (marker: string): { nodes: Array<{ id: string; type: string }>; "x-mcode": { docId: string; marker: string } } => ({
+    nodes: [{ id: "n1", type: "inject" }],
+    "x-mcode": { docId: FLOW, marker },
+  });
+  const trustOf = (approvedRevision: string | null, origin: "import" | "ai" = "ai"): string =>
+    JSON.stringify({ origin, approvedRevision, reviewedAt: 1_760_000_000_000 });
+
+  // 前置：存一版并读到 revision。
+  const saved = await storage.saveFlow(PROJECT, FLOW, flowOf("v1") as never, { expectedRevision: null });
+  if (!saved.ok) throw new Error(`前置保存失败：${JSON.stringify(saved)}`);
+  const rev1 = saved.revision;
+  const trustMap = new Map<string, string | null>([[FLOW, trustOf(rev1)]]);
+  const readTrust = (id: string): string | null | undefined => trustMap.get(id);
+
+  // ★ 健康路径（防空过）：审批后未改动 → 允许执行。
+  {
+    const trust = flowExecutableUnderTrust(rev1, trustMap.get(FLOW) ?? null);
+    check("★ 审批后未改动 → 允许执行", trust.ok === true && trust.approvedRevision === rev1, trust);
+    check("★ 允许时带 origin（import / ai）", trust.ok === true && trust.origin === "ai", trust);
+    const viaStorage = storage.executableUnderTrust(PROJECT, FLOW, readTrust);
+    check("★ 存储组合入口同样允许（现算 revision 而非信任文件自报）",
+      viaStorage.ok === true && viaStorage.approvedRevision === rev1, viaStorage);
+  }
+
+  // ★ 审批后 flow 被改（revision 变）→ revision-mismatch 且带两个 revision。
+  {
+    const updated = await storage.saveFlow(PROJECT, FLOW, flowOf("v2") as never, { expectedRevision: rev1 });
+    check("前置：改动保存成功", updated.ok === true, updated);
+    const rev2 = updated.ok ? updated.revision : "";
+    check("前置：内容变化确实改变了 revision", rev2 !== rev1, { rev1, rev2 });
+    const trust = flowExecutableUnderTrust(rev2, trustMap.get(FLOW) ?? null);
+    check("★ 审批后 flow 被改 → revision-mismatch", !trust.ok && trust.reason === "revision-mismatch", trust);
+    check("★ mismatch 带两个 revision（approved + current）",
+      !trust.ok && trust.approvedRevision === rev1 && trust.currentRevision === rev2,
+      !trust.ok ? { approved: trust.approvedRevision, current: trust.currentRevision } : trust);
+    // 存储组合入口同样给出 mismatch。
+    const viaStorage = storage.executableUnderTrust(PROJECT, FLOW, readTrust);
+    check("★ 存储组合入口：mismatch 且带 currentRevision",
+      !viaStorage.ok && viaStorage.kind === "revision-mismatch" && viaStorage.currentRevision === rev2, viaStorage);
+
+    // ★ 重新审批当前版本 → 又允许。
+    trustMap.set(FLOW, trustOf(rev2));
+    const reapprove = storage.executableUnderTrust(PROJECT, FLOW, readTrust);
+    check("★ 重新审批当前版本后再次允许", reapprove.ok === true && reapprove.approvedRevision === rev2, reapprove);
+  }
+
+  // ★ 未审批 → untrusted；待审标记（approvedRevision:null）同样是 untrusted。
+  {
+    trustMap.set(FLOW, null);
+    const none = flowExecutableUnderTrust(rev1, null);
+    check("★ 没有审批记录 → untrusted", !none.ok && none.reason === "untrusted", none);
+    const emptyMarker = flowExecutableUnderTrust(rev1, "");
+    check("★ 空标记（clearWorkflowReview 写的）→ untrusted", !emptyMarker.ok && emptyMarker.reason === "untrusted", emptyMarker);
+    const pending = flowExecutableUnderTrust(rev1, trustOf(null));
+    check("★ 已登记待审（approvedRevision:null）→ untrusted", !pending.ok && pending.reason === "untrusted", pending);
+    check("★ 三态可区分：untrusted ≠ trust-corrupt ≠ revision-mismatch",
+      !none.ok && none.reason === "untrusted"
+      && (() => { const r = flowExecutableUnderTrust(rev1, "{bad json"); return !r.ok && r.reason === "trust-corrupt"; })()
+      && (() => { const r = flowExecutableUnderTrust("a".repeat(64), trustOf("b".repeat(64))); return !r.ok && r.reason === "revision-mismatch"; })());
+  }
+
+  // ★ trust 坏档 → trust-corrupt（不是"没审批"）。
+  {
+    const badCases: Array<[string, string]> = [
+      ["非 JSON", "{not json"],
+      ["不是对象", "[1,2,3]"],
+      ["origin 非法", JSON.stringify({ origin: "manual", approvedRevision: rev1 })],
+      ["approvedRevision 形状不对", JSON.stringify({ origin: "ai", approvedRevision: "not-a-hash" })],
+      ["approvedRevision 是数字", JSON.stringify({ origin: "ai", approvedRevision: 42 })],
+    ];
+    for (const [label, raw] of badCases) {
+      const trust = flowExecutableUnderTrust(rev1, raw);
+      check(`★ trust 坏档 → trust-corrupt：${label}`, !trust.ok && trust.reason === "trust-corrupt", trust);
+      check(`★ trust-corrupt 带 detail：${label}`, !trust.ok && trust.reason === "trust-corrupt" && trust.detail.length > 5);
+      const parsed = parseFlowTrust(raw);
+      check(`★ parseFlowTrust 三态：${label} 不是 untrusted`, !parsed.ok && parsed.reason === "trust-corrupt", parsed);
+    }
+    // 存储组合入口也报 trust-corrupt（而不是 missing/untrusted）。
+    trustMap.set(FLOW, "{not json");
+    const viaStorage = storage.executableUnderTrust(PROJECT, FLOW, readTrust);
+    check("★ 存储组合入口：trust 坏档 → kind=trust-corrupt", !viaStorage.ok && viaStorage.kind === "trust-corrupt", viaStorage);
+  }
+
+  // ★ 组合判据：owner 先、trust 后。
+  {
+    const goodTrust = trustOf(rev1);
+    // owner 缺失 → owner-mismatch（哪怕 trust 是好的）—— 先判身份。
+    const noOwner = canExecuteFlow({ owner: null, expectedOwner: "node-red", currentRevision: rev1, trustRaw: goodTrust });
+    check("★ 组合：owner 为空 → owner-mismatch（不看 trust）", !noOwner.ok && noOwner.reason === "owner-mismatch", noOwner);
+    // owner 是 mcode 而期望 node-red → owner-mismatch。
+    const wrongOwner = canExecuteFlow({ owner: "mcode", expectedOwner: "node-red", currentRevision: rev1, trustRaw: goodTrust });
+    check("★ 组合：owner 不匹配 → owner-mismatch", !wrongOwner.ok && wrongOwner.reason === "owner-mismatch", wrongOwner);
+    // owner 对但 trust 坏 → trust-corrupt。
+    const corrupt = canExecuteFlow({ owner: "node-red", expectedOwner: "node-red", currentRevision: rev1, trustRaw: "{bad" });
+    check("★ 组合：owner 对、trust 坏 → trust-corrupt", !corrupt.ok && corrupt.reason === "trust-corrupt", corrupt);
+    // owner 对、trust 未批 → untrusted。
+    const untrusted = canExecuteFlow({ owner: "node-red", expectedOwner: "node-red", currentRevision: rev1, trustRaw: null });
+    check("★ 组合：owner 对、trust 未批 → untrusted", !untrusted.ok && untrusted.reason === "untrusted", untrusted);
+    // owner 对、trust 是旧版 → revision-mismatch。
+    const mismatch = canExecuteFlow({ owner: "node-red", expectedOwner: "node-red", currentRevision: "a".repeat(64), trustRaw: trustOf(rev1) });
+    check("★ 组合：owner 对、trust 旧版 → revision-mismatch", !mismatch.ok && mismatch.reason === "revision-mismatch", mismatch);
+    // 全绿 → 允许。
+    const allowed = canExecuteFlow({ owner: "node-red", expectedOwner: "node-red", currentRevision: rev1, trustRaw: goodTrust });
+    check("★ 组合：owner 对 + trust 匹配 → 允许", allowed.ok === true && allowed.approvedRevision === rev1, allowed);
+    // flow 读不到 → flow-missing（不是 untrusted）。
+    const missing = canExecuteFlow({ owner: "node-red", expectedOwner: "node-red", currentRevision: null, trustRaw: goodTrust });
+    check("★ 组合：盘上 flow 读不到 → flow-missing（不冒充没审批）", !missing.ok && missing.reason === "flow-missing", missing);
+  }
+
+  // ★ 读取面注入：trust 由调用方给（本模块不 import workflowTrust / SettingRepo）。
+  {
+    const reads: string[] = [];
+    const recordingReader = (id: string): string | null => {
+      reads.push(id);
+      return trustOf(rev1);
+    };
+    storage.executableUnderTrust(PROJECT, FLOW, recordingReader);
+    eq("★ trust 读取面按 flowId 查询一次", reads, [FLOW]);
   }
 }
 

@@ -52,6 +52,11 @@ import { join } from "node:path";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 import { resolveProjectFlowDir } from "./projectFlowDir.js";
 import type { NodeRedFlow } from "./flowMigration.js";
+import {
+  flowExecutableUnderTrust,
+  type FlowExecutableResult,
+  type FlowTrustRawReader,
+} from "./flowTrustGate.js";
 
 /** flow 文件所在子目录（相对项目目录）。 */
 export const FLOWS_SUBDIR = "flows";
@@ -301,6 +306,41 @@ export class NodeRedFlowStorage {
       }
       return { ok: true as const, flowId: valid.id, revision, created: current === null };
     });
+  }
+
+  /**
+   * **可执行性判据**（MERGE-1 / P1-6）：这条 flow 的**这一版**能否在 trust 下执行。
+   *
+   * 顺序（与 `flowTrustGate.ts` 文件头一致）：调用方先过 owner 判据（身份），
+   * 再过这里（内容许可）。本方法只回答后者：
+   *   - 盘上不存在 / 读不出 → `missing` / `corrupt` 原样返回（不把"读不到"说成"没审批"）；
+   *   - 盘上 revision 现算（不信任文件内自报值）后交给 `flowExecutableUnderTrust`：
+   *     `untrusted` / `trust-corrupt` / `revision-mismatch` 三态可区分。
+   *
+   * @param readTrust 审批记录原文的读取面（生产 = `SettingRepo.get(workflow.review.v1.<id>)`；
+   *                  测试注入）。不 import `workflowTrust.ts` 是为了让本模块保持叶子
+   *                  （那边拖进 SettingRepo → DB）。
+   */
+  executableUnderTrust(
+    projectId: string | null | undefined,
+    flowId: string,
+    readTrust: FlowTrustRawReader,
+  ): { ok: true; approvedRevision: string } | { ok: false; kind: string; reason: string; approvedRevision?: string | null; currentRevision?: string | null } {
+    const loaded = this.loadFlow(projectId, flowId);
+    if (!loaded.ok) {
+      return { ok: false, kind: loaded.kind, reason: loaded.reason, currentRevision: null };
+    }
+    const trust: FlowExecutableResult = flowExecutableUnderTrust(loaded.revision, readTrust(flowId));
+    if (!trust.ok) {
+      return {
+        ok: false,
+        kind: trust.reason,
+        reason: trust.detail,
+        approvedRevision: trust.approvedRevision,
+        currentRevision: trust.currentRevision,
+      };
+    }
+    return { ok: true, approvedRevision: trust.approvedRevision };
   }
 
   /** 只读清单：坏档**不静默跳过**，作为 `corrupt: true` 的条目如实列出。 */
