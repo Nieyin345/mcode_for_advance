@@ -77,7 +77,10 @@ export const ModuleManifestSchema = z.object({
    *  该模块的 action 能力接进来(v1 的安全默认:纯 JSON 清单**不直接**成为执行权限)。
    *  写上它只是「请求」;真正的执行仍要经宿主授权(见 ModuleHost 的 register/validate
    *  与 hostHookGrants 同款默认拒绝取向)。 */
-  permissions: z.array(z.enum(["resource.read", "resource.write"])).min(1).max(2)
+  /** 【MC-035】`network` 是**显式**声明:没有它就默认不能出网(见
+   *  `permissionedProcessRunner` 的网络拦截)。写上它只是「请求」—— 宿主仍会在
+   *  执行前把网络能力作为一次待批准项交给用户(与 `resource.write` 同一纪律)。 */
+  permissions: z.array(z.enum(["resource.read", "resource.write", "network"])).min(1).max(3)
     .refine((p) => new Set(p).size === p.length, "Duplicate permission"),
   contributions: z.array(z.object({
     id: LocalId,

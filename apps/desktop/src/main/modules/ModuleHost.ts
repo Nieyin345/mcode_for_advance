@@ -243,6 +243,10 @@ export class ModuleHost {
             source, capability: short,
             resource: { projectPath: resource.projectPath, path: realPath },
             allowWrite: isAction,
+            // 【MC-035】网络是**显式**权限:清单声明 `network` 才放行。未声明时
+            // 引导脚本会在扩展代码求值前把 http/net/dns/fetch 换成抛错函数 ——
+            // 默认拒绝,而不是"Node 权限模型不管网络"的静默放行。
+            allowNetwork: manifest.permissions.includes("network"),
             timeoutMs,
             signal: context.signal,
           });

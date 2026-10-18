@@ -13,8 +13,14 @@
  *   - 文件系统:只放行**本次调用具体资源**的读(和声明了 `resource.write` 时的写)。
  *     越界读/写/建目录/删文件一律 `ERR_ACCESS_DENIED`,由操作系统边界拒绝;
  *   - `child_process`、`worker_threads`、原生插件加载:默认**全部拒绝**;
- *   - 网络:⚠️ **不受**该权限模型限制(它只治理 fs / 子进程 / worker / 原生模块)。
- *     本模块**不**声称网络隔离 —— 那需要 OS 沙箱(seccomp / AppContainer / jobs)。
+ *   - 网络:⚠️ **Node 的 `--permission` 不管网络**(它只治理 fs / 子进程 / worker /
+ *     原生模块)。台账第十七轮复核用真子进程实测过:没有任何网络 grant 的扩展照样能
+ *     HTTP POST 外传。本模块因此在引导脚本里**先于扩展代码**安装一层网络拦截
+ *     (见 {@link NETWORK_GUARD}):`http`/`https`/`net`/`dns`/`fetch`/`WebSocket`
+ *     全部替换为抛错,除非调用方**显式**给了 `allowNetwork`。
+ *     ⚠️ 这不是 OS 级沙箱 —— 进程内拦截挡不住绕过 Node API 的路径(原生插件、直接
+ *     系统调用)。真正的出站限制需要 OS 沙箱(seccomp / AppContainer / 受限代理);
+ *     本层的作用是让"未声明的网络访问"在**默认路径上**明确失败,而不是静默放行。
  *
  * ## 为什么用 `-e <引导脚本>` 而不是落一个 runner 文件
  *
@@ -52,6 +58,9 @@ export interface PermissionedProcessOptions {
   resource: { projectPath: string; path: string };
   /** true = 放行对该资源的写(模块声明了 `resource.write` 且已获逐次批准)。 */
   allowWrite: boolean;
+  /** 【MC-035】true = 放行网络。**默认 false** —— 未声明网络能力的扩展不能出站。
+   *  清单里声明了网络权限且用户逐次批准时才传 true(见 ModuleHost 的权限判定)。 */
+  allowNetwork?: boolean;
   timeoutMs: number;
   signal: AbortSignal;
 }
@@ -65,6 +74,64 @@ export interface PermissionedProcessOptions {
  * 不用 console.log:扩展代码可能自己往 stdout 打印,协议行必须能凭前缀认出来。
  * 结果 JSON 里的换行已被 `JSON.stringify` 转义,不会把协议行拆断。
  */
+/**
+ * 【MC-035】**网络拦截** —— 在扩展代码求值**之前**执行。
+ *
+ * ## 为什么必须有
+ *
+ * Node 的 `--permission` 只治理 fs / 子进程 / worker / 原生模块,**完全不限制网络**。
+ * 台账第十七轮用真子进程实测:一个只放行单文件读的扩展进程仍能 `http.request` 到
+ * `127.0.0.1` 并成功 POST 内容 —— 「只约束 fs 不能阻止扩展读已授权文件后外传」。
+ *
+ * ## 它怎么拦
+ *
+ * 把 Node 的对外网络入口替换成抛错函数。替换发生在工厂源码 `eval` 之前,扩展拿到的
+ * 就是被替换过的模块对象:
+ *   - `http` / `https` / `http2` 的 `request` / `get` / `connect`;
+ *   - `net` 的 `connect` / `createConnection`;
+ *   - `dns` 的查询函数(否则可先解析到 IP 再走其它路径);
+ *   - 全局 `fetch` / `WebSocket` / `EventSource`。
+ *
+ * ## 它不是什么(如实)
+ *
+ * **不是 OS 级沙箱**:原生插件、直接系统调用、`process.binding` 一类底层路径仍可能绕过。
+ * 真正的出站限制需要 seccomp / AppContainer / 受限代理。本层的作用是让**未声明的网络
+ * 访问在默认路径上明确失败**,而不是静默放行;它把"能不能出网"从"没人管"变成
+ * "默认不能,声明并批准才放行"。
+ *
+ * `allowNetwork=true` 时整段跳过(扩展拿到的就是原始模块对象)。
+ */
+const NETWORK_GUARD = String.raw`
+(function installNetworkGuard(){
+  try {
+    const deny = (what) => function(){ throw new Error("network_access_denied: 扩展未声明网络权限(" + what + ")"); };
+    for (const name of ["http","https","http2"]) {
+      try {
+        const mod = require("node:" + name);
+        for (const key of ["request","get","connect"]) {
+          if (typeof mod[key] === "function") mod[key] = deny(name + "." + key);
+        }
+      } catch (e) { /* 模块不在(老版本) — 忽略 */ }
+    }
+    try {
+      const net = require("node:net");
+      for (const key of ["connect","createConnection"]) {
+        if (typeof net[key] === "function") net[key] = deny("net." + key);
+      }
+    } catch (e) {}
+    try {
+      const dns = require("node:dns");
+      for (const key of ["lookup","resolve","resolve4","resolve6","resolveAny"]) {
+        if (typeof dns[key] === "function") dns[key] = deny("dns." + key);
+      }
+    } catch (e) {}
+    for (const key of ["fetch","WebSocket","EventSource"]) {
+      if (typeof globalThis[key] === "function") globalThis[key] = deny(key);
+    }
+  } catch (e) { /* 拦截本身失败不应让扩展崩溃 — 调用方仍会得到结果 */ }
+})();
+`;
+
 const BOOTSTRAP = [
   '"use strict";',
   'const MAX=8*1024*1024;',
@@ -216,10 +283,13 @@ export async function runPermissionedProcess(
     capability: options.capability,
     resource: options.resource,
   });
+  // 【MC-035】网络拦截**先于**工厂求值:未声明网络的扩展拿到的 http/net/fetch 已被
+  // 替换成抛错函数。声明并批准了就是原样(见 NETWORK_GUARD 的注释)。
+  const bootstrap = options.allowNetwork === true ? BOOTSTRAP : NETWORK_GUARD + BOOTSTRAP;
   // 单行协议在 `spawnRun` 里按字节切行;上限给足一个结果窗(32 个字段 × 4 KiB 余量)。
   const result = await spawnRun({
     command: process.execPath,
-    args: [...permissionArgs(options.resource.path, options.allowWrite), "-e", BOOTSTRAP],
+    args: [...permissionArgs(options.resource.path, options.allowWrite), "-e", bootstrap],
     env: permissionedEnv(),
     stdin: payload,
     timeoutMs: options.timeoutMs,

