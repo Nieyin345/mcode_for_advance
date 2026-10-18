@@ -46,7 +46,10 @@ export interface PublicCredentialSnapshot {
   projectId: string;
   /** 鉴权时刻解析出的**规范沙箱根**。空串/缺失一律 fail closed,不得回退。 */
   canonicalRoot: string;
-  /** 授权修订号(凭据身份 + 密钥 + 规范根的一份短摘要);复验时比对。 */
+  /**
+   * 授权修订号(凭据身份 + **绑定项目 id** + 密钥 + 规范根的一份短摘要);复验时比对。
+   * 项目身份变化(即使根相同)也会让它变 —— 授权对象换了人,旧快照不得继续用。
+   */
   grantRevision: string;
   /** 撤销世代(链接删除/密钥轮换递增);随快照落下,复验时可比对。 */
   revocationEpoch: number;

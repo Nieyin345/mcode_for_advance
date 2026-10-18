@@ -557,10 +557,22 @@ function installRetentionAuditSink(): () => void {
  */
 let revocationEpoch = 0;
 
-/** 授权修订号 —— 凭据身份 + 密钥 + 规范根的一份短摘要,任一项变化它就变。 */
-function grantRevisionOf(credentialId: string, secret: string, root: string): string {
+/**
+ * 授权修订号 —— 凭据身份 + **绑定项目 id** + 密钥 + 规范根的一份短摘要,任一项变化它就变。
+ *
+ * 【MC-018 系统性修复第二条】从前默认链接只摘要常量 `"default" + 密钥 + 根`,**不含**
+ * 解析出的项目 id。于是「项目身份变了、根没变」的两种路径都能让旧快照蒙混过关:
+ *  - A 被删、同路径重建成 B(或 unset 回退目标从 A 变 B)→ 旧快照仍被接受;
+ *  - 这正是台账说的「授权对象的身份变了却没人问过用户」,只是走了另一条路径。
+ * 把 `projectId` 摘进 revision 后,复验的 `grantRevision` 比对即可发现项目切换
+ * (fail closed:要求可信用户重新选择 / 重新握手拿新快照),而项目没变时值不变。
+ *
+ * @param credentialId 凭据身份(默认链接是 {@link PUBLIC_MCP_DEFAULT_CREDENTIAL_ID},否则项目 id)
+ * @param projectId 这条凭据**此刻解析出的**项目 id(默认链接尤其可能与 credentialId 不同)
+ */
+function grantRevisionOf(credentialId: string, projectId: string, secret: string, root: string): string {
   return createHash("sha256")
-    .update(`${credentialId}\u0000${secret}\u0000${root}`)
+    .update(`${credentialId}\u0000${projectId}\u0000${secret}\u0000${root}`)
     .digest("hex")
     .slice(0, 16);
 }
@@ -581,7 +593,7 @@ export function publicMcpCredentialFor(projectId: string | null): PublicCredenti
       credentialId: PUBLIC_MCP_DEFAULT_CREDENTIAL_ID,
       projectId: pid,
       canonicalRoot: root,
-      grantRevision: grantRevisionOf(PUBLIC_MCP_DEFAULT_CREDENTIAL_ID, secret, root),
+      grantRevision: grantRevisionOf(PUBLIC_MCP_DEFAULT_CREDENTIAL_ID, pid, secret, root),
       revocationEpoch,
     };
   }
@@ -593,7 +605,7 @@ export function publicMcpCredentialFor(projectId: string | null): PublicCredenti
     credentialId: projectId,
     projectId,
     canonicalRoot: root,
-    grantRevision: grantRevisionOf(projectId, link.secret, root),
+    grantRevision: grantRevisionOf(projectId, projectId, link.secret, root),
     revocationEpoch,
   };
 }

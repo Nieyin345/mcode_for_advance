@@ -612,4 +612,74 @@ equal("disable returns no listening port", disabledStatus.port, 0);
   equal("★ MC-018:恢复后凭据快照又能解析出根", publicMcpCredentialFor(null)?.canonicalRoot, "/tmp/alpha");
 }
 
+/* ── ★ MC-018 系统性修复第二条:凭据 grant revision 必须绑定**稳定项目 ID** ──
+ *
+ * 台账「系统性修复」点名:凭据 grant revision 纳入稳定项目 ID,项目变化需要可信用户
+ * 重新确认或签发新代凭据。现状缺口:默认链接的 `grantRevisionOf` 只摘要
+ * `"default" + 密钥 + 根`(**不含**解析出的项目 id),而 `revalidatePublicMcpCredential`
+ * 只比 revision。于是「项目身份变了、根没变」时旧快照仍被接受:
+ *   - A 被删、同路径重建成 B(项目 id 变、root 相同);
+ *   - 或 unset 态下「第一个非归档项目」从 A 变成 B(同路径)。
+ * 这正是「授权对象的身份变了却没人问过用户」的同一根因(MC-018),只是换了一条路径。
+ *
+ * 本段用 A/B 两个虚构项目、同一目录 `/tmp/shared-root`:
+
+ *   ① 台账原例形态:选了 A、A 失效 → 旧快照复验必须拒(不回退、不接受);
+ *   ② 项目 A→B 切换(同根、显式重选)→ 旧快照必须**不接受**;
+ *   ③ 健康路径防空过:项目没变时复验通过(不许把 normal path 一并收紧);
+ *   ④ unset 态回退目标从 A 变 B(同根)→ 旧快照也必须拒。 */
+{
+  const {
+    publicMcpCredentialFor: credFor,
+    revalidatePublicMcpCredential: revalidate,
+    setPublicMcpProject,
+  } = await import("../../src/main/providers/bridge/publicMcpSession.js");
+
+  // ① 台账原例形态:显式选了 A,快照签发;A 被删且**没有**其它项目。
+  resetRepositories([{ id: "p-a", name: "Alpha", path: "/tmp/shared-root", archived: false }]);
+  SettingRepo.set("publicMcp.projectId", "p-a");
+  const snapA = credFor(null);
+  equal("★ MC-018·revision①:前置——A 有效时拿到快照", snapA?.projectId, "p-a");
+  equal("健康:项目未变 → 复验通过(防空过)", revalidate(snapA!), null);
+  resetRepositories([]); // A 被删,库空
+  equal("★ MC-018·revision①:原例形态——A 失效后旧快照被拒(不静默改绑)", typeof revalidate(snapA!), "string");
+
+  // ② 项目 A→B 切换:同根重建,用户显式重选 B → 旧快照(绑定 A)不接受。
+  resetRepositories([
+    { id: "p-a", name: "Alpha", path: "/tmp/shared-root", archived: false },
+    { id: "p-b", name: "Beta", path: "/tmp/shared-root", archived: false },
+  ]);
+  SettingRepo.set("publicMcp.projectId", "p-a");
+  const snapA2 = credFor(null);
+  equal("★ MC-018·revision②:前置——A 的快照根是共享根", snapA2?.canonicalRoot, "/tmp/shared-root");
+  resetRepositories([
+    { id: "p-b", name: "Beta", path: "/tmp/shared-root", archived: false },
+  ]);
+  setPublicMcpProject("p-b"); // 用户显式重选 B(同根)
+  equal("★ MC-018·revision②:项目 A→B 切换后旧凭据**不接受**(根相同也不行)", typeof revalidate(snapA2!), "string");
+  equal("★ MC-018·revision②:新选择 B 之后的快照能拿到", credFor(null)?.projectId, "p-b");
+  equal("健康:重选后 B 自己的快照复验通过", revalidate(credFor(null)!), null);
+
+  // ③ 健康路径(防空过):同一项目、同一密钥、同一根,连续两次快照复验必须通过。
+  resetRepositories([{ id: "p-b", name: "Beta", path: "/tmp/shared-root", archived: false }]);
+  SettingRepo.set("publicMcp.projectId", "p-b");
+  const snapB1 = credFor(null);
+  equal("健康:同项目连续快照复验通过(不误伤正常路径)", revalidate(snapB1!), null);
+
+  // ④ unset 态:「第一个非归档项目」从 A 变成 B(同根)—— 旧快照同样必须拒。
+  resetRepositories([
+    { id: "p-a", name: "Alpha", path: "/tmp/shared-root", archived: false },
+    { id: "p-b", name: "Beta", path: "/tmp/shared-root", archived: false },
+  ]);
+  SettingRepo.set("publicMcp.projectId", ""); // unset → 回退第一个(A)
+  const snapFallbackA = credFor(null);
+  equal("★ MC-018·revision④:前置——unset 回退到 A", snapFallbackA?.projectId, "p-a");
+  resetRepositories([{ id: "p-b", name: "Beta", path: "/tmp/shared-root", archived: false }]); // A 删除后第一个变成 B
+  equal("★ MC-018·revision④:回退目标 A→B(同根)后旧快照被拒", typeof revalidate(snapFallbackA!), "string");
+
+  // 恢复干净状态,不影响后面的段落。
+  SettingRepo.set("publicMcp.projectId", "");
+  resetRepositories([]);
+}
+
 console.log("public MCP session lifecycle smoke passed");
