@@ -1234,6 +1234,49 @@ console.log("\n§8 审计读取:hooks.runs 返回落盘审计(不只 50 条会�
   assembleHostHookGrantPersist(DATA);
 }
 
+/* ── ★ MC-029 读侧:hook 授权坏存档不谎报「没有任何授权」 ──
+ *
+ * 台账实施记录自认的残留:写侧闸(commit 拒绝)已在,但 `listHostHookGrants()` 在坏存档下
+ * 仍回空表 —— UI 画成「没有授权」,与真·零授权无法区分,而原授权很可能还在坏字节里。
+ * 修法:读口抛可诊断错误(稳定码 `archive_corrupt`),IPC reject 落 `useRpc` 的 error,
+ * 走现有 ErrorNote 路径(与计划存档读侧守卫同一个姿势)。
+ */
+{
+  const { isHostHookGrantArchiveCorrupt, listHostHookGrants: listNow } = await import("@main/hooks/hostHookGrants.js");
+  const { classifyHostHookGrantArchive } = await import("@main/hooks/hostHookGrantFile.js");
+  const original = '{ "version": 1, "grants": [ { "grantId": "hhg-1"';
+  writeFileSync(GRANT_FILE, original, "utf-8");
+  eq("★ MC-029R:盘上的坏存档被判 corrupt", classifyHostHookGrantArchive(original), "corrupt");
+  // 重装配(模拟重启):写侧标记就位。
+  assembleHostHookGrantPersist(DATA);
+  eq("★ MC-029R:重装配后持有核知道存档损坏", isHostHookGrantArchiveCorrupt(), true);
+
+  // ① 直接读口/list RPC:**拒绝**,不是空表。
+  let listThrew = "";
+  try { listNow(); } catch (err) { listThrew = (err as Error).message; }
+  check("★ MC-029R:读口抛可诊断错误(不谎报空表)", listThrew.includes("读不懂"), listThrew);
+  check("★ MC-029R:错误带稳定码 archive_corrupt", (() => {
+    try { listNow(); } catch (err) { return (err as Error & { code?: string }).code === "archive_corrupt"; }
+    return false;
+  })());
+  let rpcThrew = "";
+  try { await call(IPC.HOOKS_HOST_HOOK_GRANTS_LIST); } catch (err) { rpcThrew = (err as Error).message; }
+  check("★ MC-029R:list RPC reject(错误可见,不是空列表)", rpcThrew.includes("读不懂"), rpcThrew);
+
+  // ③ 被拒的读之后坏字节仍原样(读路径不写盘)。
+  eq("★ MC-029R:读路径不写盘(坏字节原样)", readFileSync(GRANT_FILE, "utf-8"), original);
+
+  // ② 正控:健康存档照常列出(防空过)。
+  const healthy = JSON.stringify({ version: 1, grants: [] });
+  writeFileSync(GRANT_FILE, healthy, "utf-8");
+  assembleHostHookGrantPersist(DATA);
+  eq("★ MC-029R:健康存档重装配后不再报损坏", isHostHookGrantArchiveCorrupt(), false);
+  let healthyList: { grants: unknown[] } | null = null;
+  let healthyThrew = "";
+  try { healthyList = (await call(IPC.HOOKS_HOST_HOOK_GRANTS_LIST)) as { grants: unknown[] }; } catch (err) { healthyThrew = (err as Error).message; }
+  check("★ MC-029R:健康存档 list RPC 照常返回(不误伤)", healthyThrew === "" && Array.isArray(healthyList?.grants), healthyThrew || healthyList);
+}
+
 /* ────────────────────── 收尾 ────────────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

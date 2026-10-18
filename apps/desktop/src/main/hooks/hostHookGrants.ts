@@ -197,6 +197,40 @@ export function isHostHookGrantArchiveCorrupt(): boolean {
 }
 
 /**
+ * 【MC-029 读侧】坏存档的**稳定诊断码**(与计划存档的 `archive_corrupt` 同形)。
+ * 消费端(IPC → `useRpc` → `ErrorNote`)不用解析中文,按码分支也认得出。
+ */
+export const HOST_HOOK_GRANT_ARCHIVE_CORRUPT_CODE = "archive_corrupt";
+
+/** 【MC-029 读侧】坏存档时的可读原因 —— 与写侧 `commit` 的拒绝语同口径。 */
+export function hostHookGrantArchiveCorruptReason(): string {
+  return (
+    "host-hook-grants.json 读不懂(可能写入中断被截断)—— 授权表已停用写入,也列不出 / " +
+    "签发不了任何授权;原文件保留在 <数据根>/hooks/ 下,修复或删除它后重启即可。"
+  );
+}
+
+/**
+ * 【MC-029 读侧】读不懂的存档**不得谎报成「没有任何授权」**。
+ *
+ * 从前 `listHostHookGrants()` 直接回 `[...grants]` —— 坏存档在装配时被解析成空表(那本身
+ * 是安全的收紧),但**读侧**把它原样交给 UI:插件面板画成「没有授权」,与真·零授权无法
+ * 区分;而原授权很可能**还在坏字节里**。判据与写侧闸同一枚 `archiveCorrupt` 标记,不另写
+ * 一套。
+ *
+ * `refused` 类入口(签发 / 撤销)已由 `commit` 的写侧闸拒绝;这里是**返回列表**的读口,
+ * 抛可诊断错误让 IPC 的 reject 落到 `useRpc` 的 `error` → 现有 `ErrorNote` 路径
+ * (与计划存档 `assertPlanArchiveReadable` 同一个姿势)。
+ */
+function assertHostHookGrantArchiveReadable(): void {
+  if (archiveCorrupt) {
+    const error = new Error(hostHookGrantArchiveCorruptReason()) as Error & { code?: string };
+    error.code = HOST_HOOK_GRANT_ARCHIVE_CORRUPT_CODE;
+    throw error;
+  }
+}
+
+/**
  * **装配持久化**(唯一入口)—— 接上可注入的 load/save,并**立即载入**已存授权。
  * 传 `undefined` 复位回内存版。载入是 fail-safe 的:文件不存在 / 坏数据 → `load()` 给
  * `null` / 空 → 空表(**仍默认拒绝**,绝不把读不懂的当成「全部允许」)。
@@ -226,8 +260,9 @@ export function resetHostHookGrants(): void {
   archiveCorrupt = false;
 }
 
-/** 当前全部授权(只读快照;诊断 / 断言用)。 */
+/** 当前全部授权(只读快照;诊断 / 断言用)。**坏存档时抛错**,不谎报空表(MC-029 读侧)。 */
 export function listHostHookGrants(): HostHookGrant[] {
+  assertHostHookGrantArchiveReadable();
   return [...grants.values()];
 }
 
