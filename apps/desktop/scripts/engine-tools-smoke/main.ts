@@ -302,8 +302,9 @@ try {
   // 三个桌面引擎一个都没有。桥只桥只读那一小撮,绝不桥写/bash/ssh。
   const bridgeSrc = readFileSync(resolve(process.cwd(), "src/main/mcp/agentEngineBridge.ts"), "utf8");
   check(
-    "桥只列只读的三个(文档/图片/环境概况)",
+    "桥只列只读的四个(文档/页面图像/图片/环境概况)",
     bridgeSrc.includes('"agent_read_document"') &&
+      bridgeSrc.includes('"agent_render_pdf_page"') &&
       bridgeSrc.includes('"agent_read_image"') &&
       bridgeSrc.includes('"agent_context"') &&
       !bridgeSrc.includes('"agent_bash"') &&

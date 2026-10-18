@@ -137,22 +137,29 @@ function pageLimitError(maxPages: number): string | null {
   return Number.isInteger(maxPages) && maxPages >= 1 && maxPages <= 500
     ? null : "maxPages 必须是 1 到 500 的整数";
 }
-async function textOfPages(doc: MinimalDoc, maxPages: number): Promise<PageText> {
+async function textOfPages(doc: MinimalDoc, maxPages: number, startPage = 1, showPageNumbers = false): Promise<PageText> {
   const out: string[] = [];
   const failedPages: number[] = [];
-  const last = Math.min(doc.numPages, maxPages);
+  const last = Math.min(doc.numPages, startPage + maxPages - 1);
   let pagesRead = 0;
-  for (let n = 1; n <= last; n += 1) {
+  for (let n = startPage; n <= last; n += 1) {
     try {
       const page = (await doc.getPage(n)) as { getTextContent: () => Promise<{ items: Array<{ str?: string }> }> };
       const content = await page.getTextContent();
-      out.push(content.items.map((i) => i.str ?? "").join(" "));
+      const pageText = content.items.map((i) => i.str ?? "").join(" ");
+      out.push(showPageNumbers ? `## 第 ${n} 页\n${pageText || "(此页没有可抽取的文本；未执行 OCR)"}` : pageText);
       pagesRead++;
     } catch {
       failedPages.push(n);
     }
   }
-  return { text: out.join("\n\n").replace(/[ \t]+/g, " ").trim(), pagesAttempted: last, pagesRead, failedPages, truncated: last < doc.numPages };
+  return {
+    text: out.join("\n\n").replace(/[ \t]+/g, " ").trim(),
+    pagesAttempted: Math.max(0, last - startPage + 1),
+    pagesRead,
+    failedPages,
+    truncated: startPage > 1 || last < doc.numPages,
+  };
 }
 
 /** XMP 里挑出来的字段。`rawIdentifier` 保留原始串,便于诊断「为什么没认出 DOI」。 */
@@ -240,17 +247,132 @@ export async function probePdf(absPath: string, maxPages = 3): Promise<PdfProbe>
   }
 }
 
+
+
+/**
+ * Model-facing PDF layout inspector. PDF text item order is NOT the same as visual
+ * reading order; surface approximate coordinates and explicit limits rather than
+ * silently flattening columns/tables into one paragraph. No OCR is performed.
+ */
+export async function extractPdfLayout(
+  absPath: string,
+  startPage = 1,
+  maxPages = 10,
+): Promise<{ ok: true; text: string; pageCount: number; pagesRead: number; failedPages: number[]; truncated: boolean } | { ok: false; error: string }> {
+  if (!Number.isInteger(startPage) || startPage < 1) return { ok: false, error: "page_start 必须是从 1 开始的正整数" };
+  const invalid = pageLimitError(maxPages);
+  if (invalid) return { ok: false, error: invalid };
+  // Layout walks paint operators as well as text: keep this stricter than flat extraction.
+  if (maxPages > 20) return { ok: false, error: "PDF 布局模式每次最多处理 20 页；请用 page_start 分页" };
+  const opened = await openDocument(absPath);
+  if (!opened.ok) return opened;
+  const doc = opened.doc;
+  const failedPages: number[] = [];
+  let pagesRead = 0;
+  const body: string[] = [];
+  try {
+    if (startPage > doc.numPages) {
+      return { ok: false, error: `page_start=${startPage} 超过 PDF 总页数 ${doc.numPages}` };
+    }
+    const endPage = Math.min(doc.numPages, startPage + maxPages - 1);
+    body.push(`[PDF 结构化布局] 总页数 ${doc.numPages}; 本次页码 ${startPage}–${endPage}; 坐标单位 pt; 非 OCR`);
+    // Bookmarks are actual embedded outline nodes, NOT headings inferred from font sizes.
+    if (startPage === 1) {
+      try {
+        const raw = (await (doc as MinimalDoc & { getOutline?: () => Promise<unknown> }).getOutline?.()) as
+          Array<{ title?: string; items?: unknown[] }> | null | undefined;
+        if (raw?.length) {
+          body.push("## PDF 内嵌书签（不等于自动识别的正文标题）");
+          let count = 0;
+          const traverse = (nodes: Array<{ title?: string; items?: unknown[] }>, depth: number): void => {
+            for (const entry of nodes) {
+              if (count >= 100) return;
+              body.push(`${"  ".repeat(Math.min(depth, 8))}- ${String(entry.title ?? "(无题)").replace(/[\r\n]/g, " ").slice(0, 180)}`);
+              count += 1;
+              if (depth < 8 && Array.isArray(entry.items)) traverse(entry.items as typeof nodes, depth + 1);
+            }
+          };
+          traverse(raw, 0);
+          if (count >= 100) body.push("…书签超出 100 条，仅列出前 100 条");
+        }
+      } catch { body.push("[书签元数据不可读取；正文页仍可解析]"); }
+    }
+    const pdfjs = await loadPdfjs();
+    for (let n = startPage; n <= endPage; n++) {
+      try {
+        const page = (await doc.getPage(n)) as {
+          getViewport: (opts: { scale: number }) => { width: number; height: number };
+          getTextContent: () => Promise<{ items: Array<{ str?: string; transform?: number[]; width?: number; height?: number; hasEOL?: boolean }> }>;
+          getOperatorList?: () => Promise<{ fnArray: number[] }>;
+        };
+        const viewport = page.getViewport({ scale: 1 });
+        const content = await page.getTextContent();
+        // Position + right edge distinguish adjacent glyph runs from distant columns
+        // sharing a baseline. In particular, never join two columns merely because
+        // their y coordinates match (that destroys layout evidence).
+        const lines: Array<{ y: number; x: number; right: number; text: string }> = [];
+        for (const item of content.items) {
+          if (typeof item.str !== "string" || !item.str.trim()) continue;
+          const x = Math.round(item.transform?.[4] ?? 0);
+          const y = Math.round(viewport.height - (item.transform?.[5] ?? 0));
+          const right = x + Math.max(0, item.width ?? 0);
+          const row = lines.find(l => Math.abs(l.y - y) <= 2 && x >= l.right - 2 && x <= l.right + 12);
+          if (row) {
+            row.text += " " + item.str;
+            row.right = Math.max(row.right, right);
+          } else {
+            lines.push({ x, y, right, text: item.str });
+          }
+        }
+        lines.sort((a, b) => a.y - b.y || a.x - b.x);
+        let paintOps: number | null = null;
+        try {
+          const ops = await page.getOperatorList?.();
+          const kinds = new Set<number>([
+            pdfjs.OPS.paintImageXObject, pdfjs.OPS.paintInlineImageXObject,
+            pdfjs.OPS.paintImageMaskXObject,
+          ].filter((x): x is number => typeof x === "number"));
+          if (ops) paintOps = ops.fnArray.filter(id => kinds.has(id)).length;
+        } catch { /* render-command stats are optional, text layout is still valid */ }
+        body.push(`\n## 第 ${n} 页 (约 ${Math.round(viewport.width)}×${Math.round(viewport.height)} pt)`);
+        if (paintOps !== null) body.push(`图像绘制指令: ${paintOps}（不等于图/表数量；查看画面请用 agent_render_pdf_page）`);
+        body.push(lines.length ? lines.map(l => `[x=${l.x},y=${l.y}] ${l.text}`).join("\n") :
+          "(未检测到可抽取文本；可能是扫描页、矢量图或空页；未执行 OCR，查看图像请用 agent_render_pdf_page)");
+        pagesRead += 1;
+      } catch (error) {
+        failedPages.push(n);
+        body.push(`\n## 第 ${n} 页\n[解析失败: ${error instanceof Error ? error.message : String(error)}]`);
+      }
+    }
+    if (pagesRead === 0) return { ok: false, error: `所请求的 ${endPage - startPage + 1} 页全部解析失败: ${failedPages.join(", ")}` };
+    const truncated = startPage > 1 || endPage < doc.numPages;
+    if (truncated) body.push(`\n[只读取了第 ${startPage}–${endPage} 页；未读取其余页。可更改 page_start/max_pages 翻页]`);
+    if (failedPages.length) body.push(`[未成功解析页: ${failedPages.join(", ")}]`);
+    body.push("[注意：坐标/行分组是近似布局，不保证双栏阅读顺序、表格结构或图片内容；图表请渲染页检查]");
+    return { ok: true, text: body.join("\n"), pageCount: doc.numPages, pagesRead, failedPages, truncated };
+  } catch (error) {
+    return { ok: false, error: `PDF 布局解析失败: ${error instanceof Error ? error.message : String(error)}` };
+  } finally {
+    try { await doc.destroy(); } catch { /* ignore cleanup */ }
+  }
+}
+
 /** Bounded text reading only (1–500 pages), not OCR or Markdown transcription. */
 export async function extractPdfText(
   absPath: string,
   maxPages = 500,
+  startPage = 1,
 ): Promise<({ ok: true; pageCount: number } & PageText) | { ok: false; error: string; encrypted?: boolean }> {
   const invalid = pageLimitError(maxPages);
   if (invalid) return { ok: false, error: invalid };
+  if (!Number.isSafeInteger(startPage) || startPage < 1) return { ok: false, error: "page_start 必须是从 1 开始的正整数" };
   const opened = await openDocument(absPath);
   if (!opened.ok) return opened;
   try {
-    const pages = await textOfPages(opened.doc, maxPages);
+    if (startPage > opened.doc.numPages) {
+      return { ok: false, error: `page_start=${startPage} 超过 PDF 总页数 ${opened.doc.numPages}` };
+    }
+    const pages = await textOfPages(opened.doc, maxPages, startPage, true);
     if (pages.pagesAttempted > 0 && pages.pagesRead === 0) {
       return { ok: false, error: `尝试读取的 ${pages.pagesAttempted} 页全部解析失败; 不能当作没有文本层或已完成 OCR` };
     }

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, truncateSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
+import { convertFile, resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
 import { __registeredDisposerCount, __registeredShutdownHookCount } from "@main/mcp/agentSessionCleanup.js";
 import { ResponseReadGate, classifyContentType, readResponseWithinBudget, checkZipInflation, clampCellBudget, MAX_CONCURRENT_URL_READS, DOCUMENT_READ_BUDGET, type ReadBudget } from "@main/lib/readBudget.js";
 import { toolTextOf, type ToolResult } from "@main/mcp/sdk.js";
@@ -13,23 +14,132 @@ const root=mkdtempSync(join(tmpdir(),"mcode-doc-read-"));
 const failures:string[]=[];let passed=0;
 async function test(name:string,fn:()=>unknown){try{await fn();passed++;console.log("PASS "+name);}catch(e){failures.push(name+":"+String(e));console.error("FAIL "+failures.at(-1));}}
 const specs=agentMcpTools({cwdFor:()=>root});const spec=specs.find(x=>x.name==="agent_read_document")!;
-const read=async(path:string,args:Record<string,unknown>={})=>spec.handler(z.object(spec.inputSchema).parse({path,...args}),{sessionId:"document-fixture"});
+const read=async(path:string,args:Record<string,unknown>={})=>spec.handler(z.object(spec.inputSchema).parse({path,reader:"native",...args}),{sessionId:"document-fixture"});
 const text=toolTextOf;
-function pdf(){
+function pdf(width=595,height=842,file="paper.pdf"){
  const objects:string[]=["<< /Type /Catalog /Pages 2 0 R >>","<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>"];
- for(let n=1;n<=3;n++){const s=`BT /F1 12 Tf 50 750 Td (PAGE_${n} ${"Paper metadata ".repeat(200)}) Tj ET`;objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 9 0 R >> >> /Contents ${2+n*2} 0 R >>`,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);}
+ for(let n=1;n<=3;n++){const s=n===2?`BT /F1 12 Tf 50 750 Td (PAGE_2_LEFT) Tj ET\nBT /F1 12 Tf 340 750 Td (PAGE_2_RIGHT) Tj ET`:`BT /F1 12 Tf 50 750 Td (PAGE_${n} ${"Paper metadata ".repeat(200)}) Tj ET`;objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 9 0 R >> >> /Contents ${2+n*2} 0 R >>`,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);}
  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");let body="%PDF-1.4\n";const offsets=[0];for(const [i,o]of objects.entries()){offsets.push(Buffer.byteLength(body));body+=`${i+1} 0 obj\n${o}\nendobj\n`;}
- const x=Buffer.byteLength(body);body+=`xref\n0 ${objects.length+1}\n0000000000 65535 f \n`+offsets.slice(1).map(o=>`${String(o).padStart(10,"0")} 00000 n \n`).join("")+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;writeFileSync(join(root,"paper.pdf"),body);
+ const x=Buffer.byteLength(body);body+=`xref\n0 ${objects.length+1}\n0000000000 65535 f \n`+offsets.slice(1).map(o=>`${String(o).padStart(10,"0")} 00000 n \n`).join("")+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;writeFileSync(join(root,file),body);
 }
 try {
  let py:string|undefined;for(const exe of process.platform==="win32"?["python","py","python3"]:["python3","python"]){const r=spawnSync(exe,["-X","utf8",resolve("scripts/document-read-smoke/fixtures.py"),root],{encoding:"utf8",timeout:20000});if(r.status===0){py=exe;break;}}
- assert.ok(py,"This integration suite requires the existing Python + python-pptx + openpyxl toolchain; nothing is installed automatically");pdf();
+ assert.ok(py,"This integration suite requires the existing Python + python-pptx + openpyxl toolchain; nothing is installed automatically");pdf();pdf(2000,500,"wide-paper.pdf");
  await test("PPTX reader reads actual slides instead of slicing an unsupported collection",async()=>{const r=await read("slides.pptx",{max_slides:1});assert.ok(!r.isError,text(r));assert.ok(text(r).includes("SLIDE_1"));assert.ok(!text(r).includes("SLIDE_2"));});
  await test("PPTX reports page-limit truncation explicitly",async()=>{const r=await read("slides.pptx",{max_slides:1});assert.ok(!r.isError,text(r));assert.match(text(r),/截断|未读取/);});
  await test("PDF reader extracts real fixture text",async()=>{const r=await read("paper.pdf",{max_pages:1});assert.ok(!r.isError,text(r));assert.ok(text(r).includes("PAGE_1"));assert.ok(!text(r).includes("PAGE_2"));});
+ // MC-065: the GenOffice backend must not parse a gigantic PDF just because
+ // max_chars only limits returned text. Sparse file is private to this suite.
+ const hugePdf=join(root,"oversize.pdf");writeFileSync(hugePdf,"%PDF-1.4\n");truncateSync(hugePdf,DOCUMENT_READ_BUDGET.maxRawBytes+1);
+ for(const reader of ["native","auto","genoffice"] as const) await test(`★ ${reader} PDF is refused at raw-file budget BEFORE parser/CLI`,async()=>{
+   const r=await read("oversize.pdf",{reader,max_chars:100});
+   assert.equal(r.isError,true,text(r));
+   assert.match(text(r),/PDF.*(?:预算|上限)|PDF.*超过|文件.*超过上限/);
+   assert.match(text(r),new RegExp(String(DOCUMENT_READ_BUDGET.maxRawBytes)));
+ });
+ await test("★ GenOffice reader uses vendor PDFium instead of own pdfjs parser",async()=>{const r=await read("paper.pdf",{reader:"genoffice",page_start:2,max_pages:1});assert.ok(!r.isError,text(r));assert.match(text(r),/GenOffice\/PDFium/);assert.match(text(r),/PAGE_2/);assert.ok(!text(r).includes("PAGE_1"));});
+ await test("★ explicit GenOffice mode must not silently use native layout parser",async()=>{const r=await read("paper.pdf",{reader:"genoffice",pdf_mode:"layout"});assert.equal(r.isError,true,text(r));assert.match(text(r),/不支持|请用/);});
+ await test("★ GenOffice max_pages larger than short PDF is clipped to real page count, not rejected",async()=>{const r=await read("paper.pdf",{reader:"genoffice",max_pages:20});assert.ok(!r.isError,text(r));assert.match(text(r),/GenOffice\/PDFium/);assert.match(text(r),/PAGE_3/);});
  await test("PDF reports page-limit truncation instead of presenting total pages as read",async()=>{const r=await read("paper.pdf",{max_pages:1});assert.ok(!r.isError,text(r));assert.match(text(r),/截断|未读取/);});
+ await test("★ PDF layout exposes real page dimensions and positioned text instead of a flattened paragraph",async()=>{
+   const r=await read("paper.pdf",{pdf_mode:"layout",page_start:2,max_pages:1});
+   assert.ok(!r.isError,text(r));
+   const t=text(r);
+   assert.match(t,/第 2 页/);assert.match(t,/\[x=\d+,y=\d+\]/);
+   assert.match(t,/\[x=50,y=\d+\] PAGE_2_LEFT/,"左栏必须有独立坐标");
+   assert.match(t,/\[x=340,y=\d+\] PAGE_2_RIGHT/,"右栏不能被并入左栏");
+   assert.ok(!t.includes("PAGE_1")&&!t.includes("PAGE_3"),"Layout selection must not mix pages");
+   assert.match(t,/未读取其余页|只读取了第 2/);
+ });
+ await test("★ PDF layout refuses an unbounded 500-page paint-operator walk",async()=>{
+   const r=await read("paper.pdf",{pdf_mode:"layout",max_pages:500});
+   assert.equal(r.isError,true,text(r));assert.match(text(r),/20 页|最多/);
+ });
+ await test("★ PDF layout out-of-range page fails explicitly instead of reporting empty success",async()=>{
+   const r=await read("paper.pdf",{pdf_mode:"layout",page_start:40,max_pages:1});
+   assert.equal(r.isError,true,text(r));assert.match(text(r),/超出|超过/);
+ });
+ await test("★ PDF text reading can resume at page 2 without silently restarting page 1",async()=>{
+   const r=await read("paper.pdf",{page_start:2,max_pages:1});
+   assert.ok(!r.isError,text(r));
+   assert.match(text(r),/PAGE_2/);
+   assert.ok(!text(r).includes("PAGE_1")&&!text(r).includes("PAGE_3"),"page_start ignored");
+   assert.match(text(r),/第 2 页/);
+   assert.match(text(r),/截断|未读取/);
+ });
+ await test("★ rendered PDF page is actual JPEG image content with correct dimensions",async()=>{
+   const render=specs.find(x=>x.name==="agent_render_pdf_page");
+   assert.ok(render,"MCP must expose PDF visual page rendering");
+   const input=z.object(render!.inputSchema).parse({path:"paper.pdf",page:1,max_dimension:700,renderer:"native"});
+   const r=await render!.handler(input,{sessionId:"document-fixture"});
+   assert.ok(!r.isError,text(r));
+   const block=r.content.find(c=>c.type==="image");
+   assert.ok(block&&block.type==="image","MCP must return image content, not a base64 text blob");
+   if(block?.type==="image"){
+     assert.equal(block.mimeType,"image/jpeg");
+     assert.deepEqual([...Buffer.from(block.data,"base64").subarray(0,2)],[0xff,0xd8]);
+     assert.ok(block.data.length<8*1024*1024,"render output is bounded");
+   }
+ });
+ await test("★ PDF page image route shares MC-065 raw PDF input ceiling",async()=>{
+   const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+   const result=await render.handler(z.object(render.inputSchema).parse({path:"oversize.pdf",page:1,renderer:"genoffice",max_dimension:700}),{sessionId:"document-fixture"});
+   assert.equal(result.isError,true,text(result));
+   assert.match(text(result),new RegExp(String(DOCUMENT_READ_BUDGET.maxRawBytes)));
+ });
+ await test("★ GenOffice PDFium render returns a real PNG MCP image block without PyMuPDF",async()=>{
+   const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+   const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:1400}),{sessionId:"document-fixture"});
+   assert.ok(!r.isError,text(r));
+   const block=r.content.find(c=>c.type==="image");assert.ok(block&&block.type==="image",text(r));
+   if(block?.type==="image"){
+     assert.equal(block.mimeType,"image/png");
+     assert.equal(Buffer.from(block.data,"base64").subarray(0,8).toString("hex"),"89504e470d0a1a0a");
+   }
+ });
+ await test("★ GenOffice wide PDF page is rendered under max_dimension using vendor page geometry",async()=>{
+   const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+   const result=await render.handler(z.object(render.inputSchema).parse({path:"wide-paper.pdf",page:1,renderer:"genoffice",max_dimension:700}),{sessionId:"document-fixture"});
+   assert.ok(!result.isError,text(result));
+   const picture=result.content.find(c=>c.type==="image");
+   assert.ok(picture&&picture.type==="image",text(result));
+   if(picture?.type==="image"){
+     assert.equal(picture.mimeType,"image/png");
+     const bytes=Buffer.from(picture.data,"base64");
+     assert.equal(bytes.subarray(0,8).toString("hex"),"89504e470d0a1a0a");
+     assert.ok(bytes.readUInt32BE(16)<=700 && bytes.readUInt32BE(20)<=700,"vendor scaled real landscape page below budget");
+   }
+ });
+ await test("★ PDF rendering invalid page is a visible failure",async()=>{
+   const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+   const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:50}),{sessionId:"document-fixture"});
+   assert.equal(r.isError,true,text(r));assert.match(text(r),/50|页|out of range/);
+ });
+
  for(const file of ["paper.pdf","text.docx","slides.pptx"])await test(file+" respects max_chars=100 including truncation notice",async()=>{const r=await read(file,{max_chars:100});assert.ok(!r.isError,text(r));const t=text(r);assert.ok(t.length<=100,`returned ${t.length}`);assert.match(t,/截断/);assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(t),"no split surrogate");});
  await test("DOCX Unicode survives Python pipe decoding",async()=>{const r=await read("text.docx");assert.ok(!r.isError,text(r));assert.ok(text(r).includes("研究😀"),text(r).slice(0,120));});
+ await test("★ GenOffice creates the DOCX and MCP reuses its true style/table reader",async()=>{
+   const cli=resolveGenofficeCliPath(resolve("../.."));assert.ok(cli,"GenOffice bundle is required for vendor-route test");
+   writeFileSync(join(root,"genoffice-seed.md"),"# Vendor Heading\n\n| Key | Value |\n| --- | --- |\n| sample | 42 |\n");
+   const ports={cliPath:cli,withinWorkspace:(p:string)=>p.startsWith(root)};
+   const made=await convertFile(ports,join(root,"genoffice-seed.md"),"docx",join(root,"vendor.docx"));
+   assert.ok(made.ok,JSON.stringify(made));
+   const result=await read("vendor.docx",{reader:"genoffice",docx_mode:"structure",max_blocks:5});
+   assert.ok(!result.isError,text(result));
+   assert.match(text(result),/GenOffice\/Office/);
+   assert.match(text(result),/Vendor Heading/);
+   assert.match(text(result),/sample/);
+   assert.match(text(result),/42/);
+   const automatic=await spec.handler(z.object(spec.inputSchema).parse({path:"vendor.docx",docx_mode:"structure"}),{sessionId:"document-fixture"});
+   assert.ok(!automatic.isError,text(automatic));
+   assert.match(text(automatic),/GenOffice\/Office/,"unspecified reader should prefer the existing GenOffice engine");
+ });
+ writeFileSync(join(root,"styled.docx"),Buffer.from("UEsDBBQAAAAIAImmUl2/054C3wAAAO8BAAARAAAAd29yZC9kb2N1bWVudC54bWyVkduKwjAQhl9F+gBOV9CLUAtFg0dsqWvFK4ltPEAOJclu1rffGrWCB8Sb+Rnm/+ZnmMCiQuY/nArT+ONMaGS73t6YEgHofE850U1ZUlHNtlJxYqpW7cBKVZRK5lTrg9hxBi3f7wAnB+GFgUUbWRxPWrqSKCdzc2S0YdEvYV1vSElRkV8ehAHUHldMmKTxGPe+13GG02yElyeHcT51dte7L8Ac9+JZf51EaTRIo2T4FDAb5uTM5Pc7Jnj1BIOr9RHIoukCv0agjnoRyKTWnyX6Tb/9NhAul8L1DXB7cfgPUEsBAhQDFAAAAAgAiaZSXb/TngLfAAAA7wEAABEAAAAAAAAAAAAAAIABAAAAAHdvcmQvZG9jdW1lbnQueG1sUEsFBgAAAAABAAEAPwAAAA4BAAAAAA==","base64"));
+ await test("★ DOCX structure must preserve style and table coordinates",async()=>{const r=await read("styled.docx",{docx_mode:"structure",max_blocks:3});assert.ok(!r.isError,text(r));assert.match(text(r),/Heading1/);assert.match(text(r),/TABLE 2×2/);assert.match(text(r),/\[c1\]loss/);assert.match(text(r),/\[c2\]0\.05/);});
+ await test("★ DOCX structure supports partial block reads with continuation",async()=>{const r=await read("styled.docx",{docx_mode:"structure",block_start:2,max_blocks:1});assert.ok(!r.isError,text(r));assert.match(text(r),/SECOND_PARAGRAPH/);assert.ok(!text(r).includes("PROJECT_OVERVIEW")&&!text(r).includes("loss"));assert.match(text(r),/next_block_start=3/);});
+ await test("★ DOCX structure out-of-range is error instead of empty success",async()=>{const r=await read("styled.docx",{docx_mode:"structure",block_start:999});assert.equal(r.isError,true,text(r));assert.match(text(r),/超过/);});
+ await test("★ DOCX structure cannot bypass existing ZIP decompression guard",async()=>{const r=await read("bomb.docx",{docx_mode:"structure"});assert.equal(r.isError,true,text(r));assert.match(text(r),/解压后体积|压缩膨胀/);});
+ await test("★ DOCX default text mode is unchanged after structure addition",async()=>{const r=await read("styled.docx");assert.ok(!r.isError,text(r));assert.match(text(r),/PROJECT_OVERVIEW/);assert.match(text(r),/0\.05/);});
  await test("Excel selection returns actual Unicode cells and values",async()=>{const r=await read("table.xlsx",{sheet:"Research",range:"A2:B2"});assert.ok(!r.isError,text(r));assert.match(text(r),/研究论文/);assert.match(text(r),/2026/);});
  // 【MC-065】显式 range 必须**在迭代之前**夹紧,并显式回报 range 被截断。
  // 修前 `ws[rg]` 会先按声明的 dimension 构造整个矩形(与 max_rows/max_cols 无关),

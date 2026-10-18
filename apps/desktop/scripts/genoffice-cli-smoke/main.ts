@@ -63,6 +63,20 @@ if (cliPath === null) {
   };
 
   try {
+    /* ── 0. 安装包资源路径：与开发快照相互独立 ── */
+    section("0. GenOffice 可选安装资源路径");
+    const fakeResources = join(root, "resources");
+    const packagedCli = join(fakeResources, "genoffice", "cli", "genoffice.cjs");
+    const fakeRepoRoot = join(root, "fresh-repo-without-vendor");
+    mkdirSync(join(fakeResources, "genoffice", "cli", "node_modules"), { recursive: true });
+    writeFileSync(packagedCli, "// mock vendor CLI; never execute\n");
+    eq("只有 CLI 没有 PDFium WASM → unavailable", resolveGenofficeCliPath(fakeRepoRoot, fakeResources), null);
+    mkdirSync(join(fakeResources, "genoffice", "wasm"), { recursive: true });
+    writeFileSync(join(fakeResources, "genoffice", "wasm", "pdfium.wasm"), "mock-wasm");
+    eq("★ 安装版同一个 resolver 找到 GenOffice sidecar", resolveGenofficeCliPath(fakeRepoRoot, fakeResources), packagedCli);
+    eq("未预置资源且 checkout 没 vendor → unavailable", resolveGenofficeCliPath(fakeRepoRoot, join(root, "no-resources")), null);
+    eq("现有开发 checkout 快照路径仍可读", resolveGenofficeCliPath(repoRoot), cliPath);
+
     /* ── 1. 围栏先于起进程 ── */
     section("1. 路径围栏");
     {

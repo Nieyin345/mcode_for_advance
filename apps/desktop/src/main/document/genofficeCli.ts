@@ -62,7 +62,13 @@ export interface GenofficePorts {
 }
 
 /** 解析随仓库快照的 CLI bundle 路径。**固定 commit 的 vendor 快照**，不是全局安装。 */
-export function resolveGenofficeCliPath(repoRoot: string): string | null {
+export function resolveGenofficeCliPath(repoRoot: string, resourcesDir?: string): string | null {
+  const resources = resourcesDir ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  if (resources && isAbsolute(resources)) {
+    const base = join(resources, "genoffice");
+    const cli = join(base, "cli", "genoffice.cjs");
+    if (existsSync(cli) && existsSync(join(base, "cli", "node_modules")) && existsSync(join(base, "wasm", "pdfium.wasm"))) return cli;
+  }
   const candidate = join(repoRoot, "genoffice", "packages", "cli", "dist", "genoffice.cjs");
   return existsSync(candidate) ? candidate : null;
 }
@@ -143,6 +149,42 @@ export async function docsRead(
   if (options.full) args.push("--full");
   if (options.range !== undefined) args.push("--range", options.range);
   return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+/** `pdf read`：复用 GenOffice 自带 PDFium 文本层与页面元信息，不另写 PDF 解析器。 */
+export async function pdfRead(
+  ports: GenofficePorts,
+  file: string,
+  options: { page?: number; range?: string; full?: boolean; maxChars?: number; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "PDF 路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  if (options.page !== undefined && options.range !== undefined) {
+    return { ok: false, kind: "refused", envelope: null, reason: "PDF 的 page 与 range 不能同时提供" };
+  }
+  const args = ["pdf", "read", file, "--json"];
+  if (options.page !== undefined) args.push("--page", String(options.page));
+  if (options.range !== undefined) args.push("--range", options.range);
+  if (options.full) args.push("--full");
+  if (options.maxChars !== undefined) args.push("--max-chars", String(options.maxChars));
+  return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+/** GenOffice 原生 PDFium 页面渲染：PNG 文件落到调用方受控的临时目录。 */
+export async function pdfRender(
+  ports: GenofficePorts,
+  file: string,
+  outDir: string,
+  page: number,
+  scale = 1,
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "PDF 路径")
+    ?? requireWorkspacePath(ports, outDir, "渲染输出目录");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  if (!Number.isInteger(page) || page < 1 || !Number.isFinite(scale) || scale <= 0 || scale > 4) {
+    return { ok: false, kind: "refused", envelope: null, reason: "page/scale 参数超出 GenOffice 渲染限制" };
+  }
+  return invoke(ports, ["render", file, "--out", outDir, "--page", String(page), "--scale", String(scale), "--json"]);
 }
 
 /** `docs apply`：按 ops 编辑 docx。`dryRun` 只演练不写盘。 */
