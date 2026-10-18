@@ -94,6 +94,10 @@ const impl = {
         kind:n.params.triggerKind,enabled:n.params.enabled!==false,armed:n.params.enabled!==false,
       }));
     },
+    // 【预检对齐】「立刻运行一次」现在**先问再跑**：生产 handler 先 walk 文档、
+    // 找执行器/授权/坏档。预览台的桩必须答这一问（ok:true），否则按钮在
+    // preflight 处就停下、runCalls 永远不增长 —— 那是夹具漏项，不是产品回归。
+    preflight:async()=>({ok:true,problem:null}),
     run:async({workflowId,triggerNodeId}:{workflowId:string;triggerNodeId:string})=>{
       const t=docs[workflowId]?.nodes.find(n=>n.id===triggerNodeId);
       runCalls.push({workflowId,triggerNodeId,savedTask:t?.params.task});
