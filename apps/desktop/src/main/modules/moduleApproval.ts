@@ -30,16 +30,22 @@ import { configureModuleApprovalPort, type ModuleApprovalPort } from "@main/modu
 /** 把一个审批请求映射成原生确认框,拿到用户的 yes/no。**只做这一个决定**。 */
 const nativeModuleApprovalPort: ModuleApprovalPort = async (request) => {
   const win = getMainWindow();
+  // 【MC-035】联网与写文件是**两件事**,审批框必须说清楚在批哪一件。
+  // 否则用户看到"请求执行写操作"就批了,实际批准的是"这个扩展可以出网"。
+  const isNetwork = request.scope === "network";
   const options = {
     type: "question" as const,
-    title: dialogText("common.moduleApprovalTitle"),
-    message: dialogText("common.moduleApprovalMessage", {
+    title: dialogText(isNetwork ? "common.moduleNetworkApprovalTitle" : "common.moduleApprovalTitle"),
+    message: dialogText(isNetwork ? "common.moduleNetworkApprovalMessage" : "common.moduleApprovalMessage", {
       module: request.moduleId,
       contribution: request.contributionId,
       path: request.resource.path,
     }),
-    detail: dialogText("common.moduleApprovalDetail"),
-    buttons: [dialogText("common.moduleApprovalAllow"), dialogText("common.moduleApprovalDeny")],
+    detail: dialogText(isNetwork ? "common.moduleNetworkApprovalDetail" : "common.moduleApprovalDetail"),
+    buttons: [
+      dialogText(isNetwork ? "common.moduleNetworkApprovalAllow" : "common.moduleApprovalAllow"),
+      dialogText("common.moduleApprovalDeny"),
+    ],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
@@ -49,7 +55,7 @@ const nativeModuleApprovalPort: ModuleApprovalPort = async (request) => {
   const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
   if (response !== 0) {
     // 命令**没执行** —— 宿主会把这个原因包成 approval_denied(REJECTED,可安全重来)。
-    throw Error(dialogText("common.moduleApprovalDenied"));
+    throw Error(dialogText(isNetwork ? "common.moduleNetworkApprovalDenied" : "common.moduleApprovalDenied"));
   }
 };
 

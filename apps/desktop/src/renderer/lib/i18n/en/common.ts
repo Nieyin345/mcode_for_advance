@@ -60,4 +60,11 @@ export const en = {
   "common.moduleApprovalAllow": "Allow this action",
   "common.moduleApprovalDeny": "Deny",
   "common.moduleApprovalDenied": "You denied this module write action; nothing was executed.",
+  // 【MC-035】Per-invocation network approval: same native dialog, but it states
+  // what is being approved (network access, not a file write).
+  "common.moduleNetworkApprovalTitle": "Extension module wants network access",
+  "common.moduleNetworkApprovalMessage": "Module \"{module}\" contribution \"{contribution}\" declares network permission; this run will make outbound requests.\nRelated file: {path}",
+  "common.moduleNetworkApprovalDetail": "Approving runs this call, and it will reach the network. Modules that do not declare it cannot reach the network at all.",
+  "common.moduleNetworkApprovalAllow": "Allow this network call",
+  "common.moduleNetworkApprovalDenied": "The user declined this network call; nothing was executed.",
 } as const;

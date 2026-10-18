@@ -66,4 +66,11 @@ export const zh = {
   "common.moduleApprovalAllow": "允许这次操作",
   "common.moduleApprovalDeny": "拒绝",
   "common.moduleApprovalDenied": "用户拒绝了这次模块写操作,未执行。",
+  // 【MC-035】网络权限的逐次审批:同一套原生框,但**说清楚在批什么** ——
+  // 用户批准的是"这次可以让它联网",不是"这次可以改文件"。
+  "common.moduleNetworkApprovalTitle": "扩展模块请求联网",
+  "common.moduleNetworkApprovalMessage": "模块「{module}」的贡献「{contribution}」声明了网络权限,这次执行会向外部地址发起请求。\n关联文件:{path}",
+  "common.moduleNetworkApprovalDetail": "批准后这次调用才会执行,并且它会联网。未声明的扩展默认不能出网。",
+  "common.moduleNetworkApprovalAllow": "允许这次联网",
+  "common.moduleNetworkApprovalDenied": "用户拒绝了这次联网,未执行。",
 } as const;
