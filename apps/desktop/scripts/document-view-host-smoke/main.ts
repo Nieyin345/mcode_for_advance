@@ -75,6 +75,12 @@ import {
   type DocumentViewWebPreferences,
 } from "@main/document/documentViewHost.js";
 import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
+import {
+  DocumentViewCredentialBroker,
+  EDITOR_CREDENTIAL_TTL_MS,
+  type EditorCredentialRequestDetails,
+  type EditorCredentialSessionLike,
+} from "@main/document/documentViewCredentialBroker.js";
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import {
   clearRpcHandlers,
@@ -111,10 +117,13 @@ interface FakeViewLog {
   failureListeners: Partial<Record<"did-fail-load" | "render-process-gone", (...args: unknown[]) => void>>;
   /** 宿主经 `webContents.send` 发给页面的所有消息。 */
   sends: Array<{ channel: string; args: unknown[] }>;
+  /** 【ARC-006 Gate A 缺口】这个假视图的 webContents id（凭据绑定按它收窄）。 */
+  webContentsId: number;
 }
 
 /** 按创建顺序记录每个假视图 —— 断言读它。 */
 const created: FakeViewLog[] = [];
+let nextFakeWebContentsId = 1000;
 
 function makeFakeView(prefs: DocumentViewWebPreferences): DocumentViewLike {
   const log: FakeViewLog = {
@@ -126,10 +135,13 @@ function makeFakeView(prefs: DocumentViewWebPreferences): DocumentViewLike {
     windowOpenHandlerInstalled: false,
     failureListeners: {},
     sends: [],
+    webContentsId: nextFakeWebContentsId++,
   };
   created.push(log);
   const view: DocumentViewLike = {
     webContents: {
+      // 【ARC-006 Gate A 缺口】真实 webContents 恒有 id；凭据注入按它绑定。
+      id: log.webContentsId,
       loadURL(url: string) {
         log.loads.push(url);
         return Promise.resolve();
@@ -1209,6 +1221,221 @@ section("7. 三层接线：preload / rpcMap / main 注册");
 
   host14.dispose();
   rmSync(ws14, { recursive: true, force: true });
+}
+
+/* ══════════════════ 15.【ARC-006 Gate A 缺口】编辑器页凭据注入 ══════════════════
+ *
+ * 判据（文件头 `documentViewCredentialBroker.ts` 逐条对应）：
+ *   - 令牌**不进** URL / 快照 / 状态视图 —— 打开引擎编辑器页后，`list()` 的序列化
+ *     结果与 open 的回包里都搜不到令牌；
+ *   - 只给「这个 webContents + 这个引擎回环 origin」注入（XHR 与 WebSocket 握手都算），
+ *     别的 webContents / 别的端口 / 别的协议一律不注入；
+ *   - 端口必须等于引擎此刻的监听端口（渲染端指一个别的本机服务 → 拒绝建视图）；
+ *   - 宿主没装注入器时带 `workflowEngineId` 的 open 显式拒绝（fail-closed）；
+ *   - close / closeAll 立即摘绑定；空闲超过 TTL → 停止注入（页面下一次 API 调用 401）。
+ */
+section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webContents + origin 绑定）");
+{
+  const TOKEN = "a".repeat(64);
+  const ENGINE = "node-red";
+  const ENGINE_PORT = 45231;
+  const ENGINE_URL = `http://127.0.0.1:${ENGINE_PORT}/`;
+
+  /** 假 session：捕获监听器，让套件能直接喂请求给它（与真 webRequest 同形状）。 */
+  function makeFakeSession(): {
+    session: EditorCredentialSessionLike;
+    installed: () => boolean;
+    dispatch: (details: EditorCredentialRequestDetails) => Record<string, string>;
+  } {
+    let listener: ((details: EditorCredentialRequestDetails, callback: (r: { requestHeaders: Record<string, string> }) => void) => void) | null = null;
+    return {
+      session: {
+        webRequest: {
+          onBeforeSendHeaders(_filter, fn) {
+            listener = fn;
+          },
+        },
+      },
+      installed: () => listener !== null,
+      dispatch: (details) => {
+        let headers: Record<string, string> = {};
+        listener!(details, (r) => {
+          headers = r.requestHeaders;
+        });
+        return headers;
+      },
+    };
+  }
+
+  let clock = 1_000_000;
+  const portsFor = (
+    over: { runningPort?: number | null; token?: string | null } = {},
+  ): ConstructorParameters<typeof DocumentViewCredentialBroker>[0] => ({
+    readToken: () => (over.token === undefined ? TOKEN : over.token),
+    runningPort: () => (over.runningPort === undefined ? ENGINE_PORT : over.runningPort),
+    getSession: () => fake.session,
+    now: () => clock,
+  });
+  const fake = makeFakeSession();
+
+  created.length = 0;
+  const win = makeFakeWindow();
+  const broker = new DocumentViewCredentialBroker(portsFor(), { ttlMs: EDITOR_CREDENTIAL_TTL_MS });
+  const host = new DocumentViewHost({
+    getMainWindow: () => win,
+    createView: makeFakeView,
+    editorCredentials: broker,
+  });
+
+  // ── 15a. 正常路径：建视图 + 绑定；list 快照与 open 回包都不含令牌 ──
+  {
+    const before = created.length;
+    const opened = host.open({ docId: "eng-1", url: ENGINE_URL, bounds: BOUNDS, visible: true, workflowEngineId: ENGINE });
+    eq("引擎编辑器视图打开成功", opened, { ok: true });
+    const view = created[before]!;
+    check("★ 引擎视图的导航地址里没有令牌（access_token / Bearer 都不出现）",
+      view.loads.length > 0 && view.loads.every((u) => !u.includes(TOKEN) && !/access_token|authorization|token=/i.test(u)), view.loads);
+    const listed = JSON.stringify(host.list());
+    check("★ list() 的序列化结果里没有令牌", !listed.includes(TOKEN), listed.slice(0, 400));
+    check("★ open 的回包里没有令牌", !JSON.stringify(opened).includes(TOKEN), opened);
+    check("★ 引擎视图在 use 快照里仍只报原本的编辑器地址", listed.includes(ENGINE_URL), listed.slice(0, 400));
+    eq("绑定只挂着一条（docId 维度）", broker.debugState().map((b) => b.docId), ["eng-1"]);
+    eq("debugState 只报 hasToken，不报令牌本体", JSON.stringify(broker.debugState()).includes(TOKEN), false);
+
+    const headers = fake.dispatch({
+      url: `${ENGINE_URL}flows`,
+      resourceType: "xhr",
+      webContentsId: view.webContentsId,
+      requestHeaders: { Accept: "application/json" },
+    });
+    eq("★ 这个视图打引擎 /flows：注入了宿主 Bearer", headers.Authorization, `Bearer ${TOKEN}`);
+    eq("原有请求头保留", headers.Accept, "application/json");
+
+    const ws = fake.dispatch({
+      url: `ws://127.0.0.1:${ENGINE_PORT}/comms`,
+      resourceType: "webSocket",
+      webContentsId: view.webContentsId,
+      requestHeaders: {},
+    });
+    eq("★ WebSocket 握手（ws:// 归一为 http 源）同样注入", ws.Authorization, `Bearer ${TOKEN}`);
+  }
+
+  // ── 15b. 收窄：别的 webContents / 别的端口 / 非 http(s) 一律不注入 ──
+  {
+    const viewId = created[created.length - 1]!.webContentsId;
+    const otherView = fake.dispatch({
+      url: `${ENGINE_URL}flows`, resourceType: "xhr", webContentsId: viewId + 1, requestHeaders: {},
+    });
+    eq("★ 同一个 session 里别的 webContents 不注入", otherView.Authorization, undefined);
+    const otherPort = fake.dispatch({
+      url: "http://127.0.0.1:49999/flows", resourceType: "xhr", webContentsId: viewId, requestHeaders: {},
+    });
+    eq("★ 同视图但换端口（别的本机服务）不注入", otherPort.Authorization, undefined);
+    const remote = fake.dispatch({
+      url: "https://example.com/flows", resourceType: "xhr", webContentsId: viewId, requestHeaders: {},
+    });
+    eq("★ 同视图打到远程地址不注入", remote.Authorization, undefined);
+    const pageOwnAuth = fake.dispatch({
+      url: `${ENGINE_URL}flows`, resourceType: "xhr", webContentsId: viewId, requestHeaders: { Authorization: "Bearer page-supplied" },
+    });
+    eq("★ 页面自带的 Authorization 被宿主身份替换（不能被页面协商）", pageOwnAuth.Authorization, `Bearer ${TOKEN}`);
+  }
+
+  // ── 15c. 端口不一致 → 连视图都不建（先拒后建） ──
+  {
+    const wrongPortBroker = new DocumentViewCredentialBroker(portsFor({ runningPort: 1 }));
+    const wrongPortHost = new DocumentViewHost({
+      getMainWindow: () => win,
+      createView: makeFakeView,
+      editorCredentials: wrongPortBroker,
+    });
+    const before = created.length;
+    const rejected = wrongPortHost.open({
+      docId: "eng-wrong-port", url: ENGINE_URL, bounds: BOUNDS, visible: true, workflowEngineId: ENGINE,
+    });
+    check("★ 渲染端指一个别的本机端口 → 拒绝注入", rejected.ok === false && rejected.reason.includes("端口"), rejected);
+    eq("★ 拒绝路径上一个视图都没建", created.length, before);
+    // 引擎没在跑（runningPort=null）同样拒绝。
+    const stoppedBroker = new DocumentViewCredentialBroker(portsFor({ runningPort: null }));
+    const stoppedHost = new DocumentViewHost({
+      getMainWindow: () => win, createView: makeFakeView, editorCredentials: stoppedBroker,
+    });
+    const stopped = stoppedHost.open({ docId: "eng-stopped", url: ENGINE_URL, bounds: BOUNDS, visible: true, workflowEngineId: ENGINE });
+    check("★ 引擎不在运行 → 拒绝（不猜端口）", stopped.ok === false && stopped.reason.includes("不在运行"), stopped);
+    wrongPortHost.dispose();
+    stoppedHost.dispose();
+  }
+
+  // ── 15d. 宿主没装注入器：带 workflowEngineId 的 open 显式拒绝（fail-closed） ──
+  {
+    const bare = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
+    const before = created.length;
+    const res = bare.open({ docId: "eng-bare", url: ENGINE_URL, bounds: BOUNDS, visible: true, workflowEngineId: ENGINE });
+    check("★ 没有注入器时引擎视图被显式拒绝（不说谎地给一个 401 页面）",
+      res.ok === false && res.reason.includes("凭据注入"), res);
+    eq("拒绝路径上不建视图", created.length, before);
+    // 普通文档视图不受影响。
+    const doc = bare.open({ docId: "doc-bare", url: FILE_URL, bounds: BOUNDS, visible: true });
+    eq("普通文档视图照常打开（不受引擎凭据影响）", doc, { ok: true });
+    bare.dispose();
+  }
+
+  // ── 15e. 空闲租约：过期后停止注入（页面下一次 API 调用 401，如实） ──
+  {
+    clock += EDITOR_CREDENTIAL_TTL_MS + 1; // 越过空闲租约
+    const viewId = created.find((c) => c.loads.includes(ENGINE_URL))!.webContentsId;
+    const expired = fake.dispatch({ url: `${ENGINE_URL}flows`, resourceType: "xhr", webContentsId: viewId, requestHeaders: {} });
+    eq("★ 空闲超过 TTL → 不再注入（页面会如实 401，不是静默降级）", expired.Authorization, undefined);
+    eq("★ 过期后绑定被摘掉（状态不撒谎）", broker.debugState().map((b) => b.docId), []);
+    // 重新 open = 新的使用意图 → 绑定恢复。
+    const reopened = host.open({ docId: "eng-1", url: ENGINE_URL, bounds: BOUNDS, visible: true, workflowEngineId: ENGINE });
+    eq("重新 open 成功", reopened, { ok: true });
+    const fresh = fake.dispatch({ url: `${ENGINE_URL}settings`, resourceType: "xhr", webContentsId: viewId, requestHeaders: {} });
+    eq("★ 重新 open 后凭据重新可用", fresh.Authorization, `Bearer ${TOKEN}`);
+  }
+
+  // ── 15f. close / closeAll 立即摘绑定 ──
+  {
+    const viewId = created.find((c) => c.loads.includes(ENGINE_URL))!.webContentsId;
+    eq("close 前绑定在", broker.debugState().map((b) => b.docId), ["eng-1"]);
+    host.close("eng-1");
+    eq("★ close 之后绑定立刻摘掉", broker.debugState(), []);
+    const after = fake.dispatch({ url: `${ENGINE_URL}flows`, resourceType: "xhr", webContentsId: viewId, requestHeaders: {} });
+    eq("★ close 后即使 webContents id 还被喂进来也不注入", after.Authorization, undefined);
+
+    // closeAll 路径：重开一个引擎视图，再走窗口级清理。
+    const opened = host.open({ docId: "eng-2", url: ENGINE_URL, bounds: BOUNDS, visible: true, workflowEngineId: ENGINE });
+    eq("重开成功", opened, { ok: true });
+    eq("绑定又建了一条", broker.debugState().map((b) => b.docId), ["eng-2"]);
+    host.closeAll();
+    eq("★ closeAll 之后所有绑定摘掉", broker.debugState(), []);
+  }
+
+  // ── 15g. 端口判据的纯函数级收窄：file:// / 无显式端口 / 伪装回环一律拒绝 ──
+  {
+    const probe = new DocumentViewCredentialBroker(portsFor());
+    eq("file:// 编辑器页拒绝注入", probe.prepare({ engineId: ENGINE, url: "file:///C:/editor/index.html" }).ok, false);
+    eq("没有显式端口的回环地址拒绝（无法与端口核对）", probe.prepare({ engineId: ENGINE, url: "http://127.0.0.1/" }).ok, false);
+    eq("伪装回环后缀拒绝", probe.prepare({ engineId: ENGINE, url: `http://localhost.evil.com:${ENGINE_PORT}/` }).ok, false);
+    eq("端口对上的回环地址通过", probe.prepare({ engineId: ENGINE, url: ENGINE_URL }).ok, true);
+  }
+
+  // ── 15h. Agent 不可调：没有新 RPC 通道，且 documentView.open 本身是 blocked ──
+  // 方案 B（宿主注入头）**刻意不新开** `workflowEngine.editorSession` 之类返回令牌的
+  // RPC —— 令牌连渲染端都到不了，Agent 就没有"调用它"的入口。这条断言把"刻意没开"
+  // 变成可检验的事实：多一条 editorSession/credential 通道就会红。
+  {
+    const { policyFor } = await import("@main/appControl/policy.js");
+    const rpc = new Set(registeredRpcChannels());
+    const tokenish = [...rpc].filter((c) => /editorSession|credential|secret|token/i.test(c));
+    eq("★ 没有任何返回编辑器凭据的 RPC 通道（Agent 无入口可调）", tokenish, []);
+    eq("★ documentView.open 对 Agent 是 blocked（注入能力藏在它后面）",
+      policyFor("documentView.open").level, "blocked");
+    // 宿主接口本身也不在 RPC 表里：注入器只由宿主构造，没有 IPC 通道暴露它。
+    eq("凭据注入器没有出现在 RPC 表", [...rpc].filter((c) => c.includes("CredentialBroker")), []);
+  }
+
+  host.dispose();
 }
 
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);

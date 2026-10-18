@@ -93,6 +93,7 @@ import { withOsFileLease } from "@main/lib/osFileLease.js";
 // `realPathWithin` 就是为这种场景拆出来的零依赖叶子（已经给了 fileSnapshot 用）。
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
+import type { EditorCredentialPort } from "./documentViewCredentialBroker.js";
 
 /** webPreferences 的**完整**形状 —— 三项安全开关是字面量类型，改一处都过不了 typecheck。 */
 export interface DocumentViewWebPreferences {
@@ -106,6 +107,9 @@ export interface DocumentViewWebPreferences {
 
 /** 假构造器要满足的视图最小面（真 `WebContentsView` 天然满足，见文件头的注入说明）。 */
 export interface DocumentViewWebContentsLike {
+  /** 【ARC-006 Gate A 缺口】webContents id —— 编辑器凭据注入按它收窄绑定。
+   *  Electron 的 `WebContents.id` 恒有；假视图可以不给（那时引擎视图 open 会被拒）。 */
+  id?: number;
   loadURL(url: string): unknown;
   focus(): void;
   close(): void;
@@ -153,6 +157,10 @@ export interface DocumentViewHostPorts {
    *  持锁的窗口"拉长 —— 从而断言落败者在租约串行下真的没走到替换那一步；没有它，
    *  并发断言只能靠时序碰运气。 */
   beforeAtomicReplace?: (realPath: string) => void | Promise<void>;
+  /** 【ARC-006 Gate A 缺口】编辑器页的**宿主凭据注入**（`workflowEngineId` 视图）。
+   *  省略 = 不支持引擎编辑器凭据（`workflowEngineId` 的 open 被显式拒绝，fail-closed），
+   *  因为带着这个标记却没有注入器，页面只会拿到 401 —— 与其静默降级，不如说清原因。 */
+  editorCredentials?: EditorCredentialPort;
 }
 
 /** 隐藏视图的落点：只挪坐标、保留宽高（与 BrowserManager.hide 同一取舍）。 */
@@ -215,6 +223,9 @@ interface LiveDocumentView {
     message: string;
     at: number;
   };
+  /** 【ARC-006 Gate A 缺口】这个视图加载的是哪个工作流引擎的编辑器页
+   *  （`open` 时由 `workflowEngineId` 记下）。换引擎/换回普通文档视图时要摘旧凭据绑定。 */
+  workflowEngineId: string | null;
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -321,6 +332,11 @@ export class DocumentViewHost {
   private readonly getWindow: () => DocumentViewHostWindow | null;
   private readonly createView: (webPreferences: DocumentViewWebPreferences) => DocumentViewLike;
   private readonly beforeAtomicReplace: (realPath: string) => void | Promise<void>;
+  /** 【ARC-006 Gate A 缺口】引擎编辑器页的凭据注入（可缺省；缺省时带
+   *  `workflowEngineId` 的 open 显式拒绝 —— 见 `DocumentViewHostPorts.editorCredentials`）。
+   *  生产单例在模块加载时就构造好了，而注入器依赖注册表/Electron session（装配在
+   *  `ipc/index.ts`）—— 故留一个**只在装配期**调用的 setter；之后不再改。 */
+  private editorCredentials: EditorCredentialPort | null;
   /** 已经挂过 `closed` 清理钩子的那个窗口（换窗口时先摘旧的）。 */
   private cleanupWindow: DocumentViewHostWindow | null = null;
   private cleanupHandler: (() => void) | null = null;
@@ -331,6 +347,7 @@ export class DocumentViewHost {
     this.getWindow = ports.getMainWindow;
     this.createView = ports.createView ?? defaultCreateView;
     this.beforeAtomicReplace = ports.beforeAtomicReplace ?? (() => undefined);
+    this.editorCredentials = ports.editorCredentials ?? null;
   }
 
   /**
@@ -346,15 +363,46 @@ export class DocumentViewHost {
     if (!checked.ok) return { ok: false, reason: checked.reason };
     if (this.disposed) return { ok: false, reason: "文档视图宿主已释放" };
 
+    // 【ARC-006 Gate A 缺口】引擎编辑器页的凭据注入：**先预检、后建视图**。
+    // 预检失败（引擎没跑 / 端口不符 / 没有令牌 / 宿主没装注入器）时不创建任何
+    // webContents —— 与 URL 闸同一条「拒绝路径上不留加载过的视图」纪律。
+    const engineId = input.workflowEngineId ?? null;
+    if (engineId !== null) {
+      if (this.editorCredentials === null) {
+        return {
+          ok: false,
+          reason: "当前宿主没有配置工作流引擎凭据注入，无法打开需要认证的引擎编辑器页",
+        };
+      }
+      const prepared = this.editorCredentials.prepare({ engineId, url: checked.url });
+      if (!prepared.ok) return { ok: false, reason: prepared.reason };
+    }
+
     const win = this.liveWindow();
     if (win === null) return { ok: false, reason: "主窗口尚未就绪，无法创建文档视图" };
     this.installWindowCleanup(win);
 
     const existing = this.views.get(input.docId);
     if (existing) {
+      // 【ARC-006 Gate A 缺口】每次 open（含复用）都重新核验并续上凭据绑定：
+      // 绑定带空闲租约，过期后页面会 401；用户重新打开/面板重渲染就是新的使用
+      // 意图，这里按当下的引擎状态（端口/令牌）重新判定 —— 引擎已停则如实失败。
+      // ⚠️ 绑定**先于**任何状态更新：失败时这个视图保持原样（不留下"字段已改、
+      // 绑定没换"的中间态）。
+      if (engineId !== null) {
+        const rebound = this.bindEditorCredentials(existing, engineId, checked.url);
+        if (!rebound.ok) {
+          this.editorCredentials?.release(input.docId);
+          return rebound;
+        }
+      } else {
+        // 变回普通文档视图（同一个 docId 从引擎页改作他用）：旧凭据绑定立刻失效。
+        this.editorCredentials?.release(input.docId);
+      }
       const urlChanged = existing.url !== checked.url;
       existing.url = checked.url;
       existing.bounds = input.bounds;
+      existing.workflowEngineId = engineId;
       if (urlChanged) this.navigate(existing);
       if (input.visible) {
         if (!existing.visible) {
@@ -391,6 +439,7 @@ export class DocumentViewHost {
       visible: false,
       openedFilePath: null,
       openedFileRevision: null,
+      workflowEngineId: engineId,
     };
 
     try {
@@ -408,6 +457,16 @@ export class DocumentViewHost {
       return { ok: false, reason: `挂载文档视图失败：${msg}` };
     }
 
+    // 【ARC-006 Gate A 缺口】凭据绑定要在**第一次导航之前**装好，否则编辑器页的
+    // 首个 /settings 就 401。绑定失败 = 拆视图（fail-closed：不留下一个注定 401 的页面）。
+    if (engineId !== null) {
+      const bound = this.bindEditorCredentials(live, engineId, checked.url);
+      if (!bound.ok) {
+        this.detachAndDestroy(live);
+        return bound;
+      }
+    }
+
     // 【ARC-007】诊断钩子要在导航**之前**装上，否则首帧的失败会漏掉。
     this.watchFailures(live);
     this.views.set(input.docId, live);
@@ -418,8 +477,33 @@ export class DocumentViewHost {
     } else {
       this.parkOffscreen(live);
     }
-    log.info(`document view opened: ${input.docId} visible=${input.visible}`);
+    log.info(`document view opened: ${input.docId} visible=${input.visible}${engineId !== null ? ` engine=${engineId}` : ""}`);
     return { ok: true };
+  }
+
+  /** 【ARC-006 Gate A 缺口】把「这个视图 ⇄ 这个引擎的编辑器源」交给凭据注入器。
+   *  `webContents.id` 由 Electron 给；假视图没有 id 时显式拒绝（不存在"猜一个"）。 */
+  private bindEditorCredentials(
+    live: LiveDocumentView,
+    engineId: string,
+    url: string,
+  ): { ok: true } | { ok: false; reason: string } {
+    const broker = this.editorCredentials;
+    if (broker === null) {
+      return { ok: false, reason: "当前宿主没有配置工作流引擎凭据注入" };
+    }
+    const webContentsId = live.view.webContents.id;
+    if (typeof webContentsId !== "number") {
+      return { ok: false, reason: "当前视图没有 webContents id，无法绑定编辑器凭据" };
+    }
+    return broker.bind({ docId: live.docId, engineId, url, webContentsId });
+  }
+
+  /** 【ARC-006 Gate A 缺口】给生产单例装上凭据注入器。**只在装配期调用一次**
+   *  （`ipc/index.ts` 的 `register*Handlers` 之前）；之后换会丢掉已建立的绑定，
+   *  没有这个用法。 */
+  setEditorCredentials(port: EditorCredentialPort | null): void {
+    this.editorCredentials = port;
   }
 
   /** 只改几何。隐藏时记住新几何、不应用到视图（与 BrowserManager.setBounds 同）。 */
@@ -475,6 +559,9 @@ export class DocumentViewHost {
 
   /** 销毁一个视图。不存在 = 已经关了，幂等成功（与 BrowserManager.close 同）。 */
   close(docId: string): DocViewResult {
+    // 【ARC-006 Gate A 缺口】凭据绑定与视图同生共死（先于 views.delete 摘，
+    // 保证「视图不在了但令牌还给它的 webContents id 发」不存在）。
+    this.editorCredentials?.release(docId);
     const live = this.views.get(docId);
     if (!live) {
       // 【ARC-007 DocumentSessionRegistry】视图已经不在了，会话也必须摘 —— 否则
@@ -817,6 +904,9 @@ export class DocumentViewHost {
   /** 销毁全部（主窗口 closed / 应用退出）。幂等。 */
   closeAll(): void {
     for (const [docId, live] of [...this.views]) {
+      // 【ARC-006 Gate A 缺口】凭据绑定随视图一起摘（窗口没了，视图就是孤儿，
+      // 令牌不能再发给一个已销毁的 webContents id）。
+      this.editorCredentials?.release(docId);
       this.detachAndDestroy(live);
       this.views.delete(docId);
       // 【ARC-007 DocumentSessionRegistry】closeAll 是窗口级/退出级清理，会话

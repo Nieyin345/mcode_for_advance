@@ -213,7 +213,9 @@ export function EngineRow({
     const sendOpen = (bounds: DocViewRect): void => {
       lastKey = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
       openedUrlRef.current = url;
-      const pending = api.documentView.open({ docId, url, bounds, visible: true });
+      // 【ARC-006 Gate A 缺口】把 engineId 一起递下去：宿主据此从主进程注入
+      // `Authorization`（令牌不进 URL / 不进 status/list）。渲染端拿不到令牌。
+      const pending = api.documentView.open({ docId, url, bounds, visible: true, workflowEngineId: status.engineId });
       void pending.then(
         (result) => {
           if (disposed) {
@@ -232,6 +234,7 @@ export function EngineRow({
       );
     };
 
+    // 首次进入 running：`start()` 会先 open（建视图 + 装凭据绑定），之后只发改几何。
     const sync = (): void => {
       if (disposed) return;
       const bounds = measureBounds(stage);

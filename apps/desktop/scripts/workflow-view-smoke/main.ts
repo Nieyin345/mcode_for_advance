@@ -2378,6 +2378,37 @@ console.log("\nEngineRow(SSR:每种状态用户看到什么)");
 }
 
 
+console.log("\n引擎编辑器视图的凭据(源码级：面板递 engineId，令牌不经过渲染端)");
+// 【ARC-006 Gate A 缺口】编辑器页内的 API 调用需要宿主凭据。令牌留在主进程，
+// 渲染端只声明「这个视图是哪个引擎的编辑器」。判据钉在源码上（面板 effect 不在
+// SSR 里跑）：
+//   ① open 必须带 workflowEngineId —— 漏了 = 页面 401 而断言全绿；
+//   ② 渲染端**不许**出现令牌/Authorization/access_token 的拼装（那等于把控制面
+//      交给渲染端，Agent 可经 executeJavaScript 驱动它）。
+{
+  const panel = readFileSync(
+    "src/renderer/components/settings/workflows/EngineRuntimePanel.tsx",
+    "utf8",
+  );
+  const code = panel.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ 面板 open 视图时递 workflowEngineId(宿主据此注入凭据)",
+    /documentView\.open\(\{[^}]*workflowEngineId:\s*status\.engineId/.test(code),
+    code.match(/documentView\.open\([^\n]*/g),
+  );
+  check(
+    "★ 面板不拼令牌/Authorization/access_token(令牌不经过渲染端)",
+    !/Authorization|access_token|Bearer|MCODE_ENGINE_ADMIN_TOKEN/i.test(code),
+    code.match(/Authorization|access_token|Bearer|MCODE_ENGINE_ADMIN_TOKEN/g),
+  );
+  // 端口判据在宿主侧：渲染端只用 status.editorUrl，不自己拼 URL。
+  check(
+    "★ 编辑器 URL 来自 status.editorUrl，渲染端不拼 host/port",
+    /const url = status\.editorUrl/.test(code) && !/127\.0\.0\.1:\$\{/.test(code),
+    code.match(/status\.editorUrl[^\n]*/g),
+  );
+}
+
 console.log("\nEngineCallbackSection(桥 2 预留位:如实说「还不能用」)");
 // 这块的失败模式不是"画错",而是**画得太像可用配置**:给一份填好的 command/args/env
 // 加复制按钮,用户会把它填进 Node-RED,然后排查一个不存在的故障。所以断言分成三组:

@@ -5,11 +5,12 @@ import { registerDocumentViewHandlers } from "./documentView.js";
 import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
+import { DocumentViewCredentialBroker, readEngineAdminToken } from "@main/document/documentViewCredentialBroker.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { registerUnattendedHandlers } from "./unattended.js";
 import { registerModuleHandlers } from "./modules.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
-import { ipcMain, type IpcMain } from "electron";
+import { ipcMain, session, type IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
 import { awaitDb } from "@main/store/db.js";
 import { registerProjectHandlers } from "./projects.js";
@@ -123,6 +124,24 @@ export function registerIpcHandlers(): void {
   // 与 `document.*` 区别:那条是 CLI 读写能力,这条是**视图生命周期**;
   // 宿主单例由 `main/index.ts` 的退出路径 `dispose()`。
   // 【ARC-007】路径围栏用与 `document.*` / file IPC 同一份判据（README 硬规矩 2）。
+  // 【ARC-006 Gate A 缺口】引擎编辑器页的凭据注入:令牌只在主进程里,经
+  // `session.webRequest.onBeforeSendHeaders` 按 webContentsId + 回环 origin 注入;
+  // 渲染端只递 `workflowEngineId`,令牌不进 URL / 快照 / 日志。
+  documentViewHost.setEditorCredentials(new DocumentViewCredentialBroker({
+    readToken: (engineId) => {
+      // 只读;未启动过的引擎（数据目录还不存在）返回 null,不因一句查询创建目录。
+      try {
+        return readEngineAdminToken(workflowEngineRegistry.dataDirOf(engineId));
+      } catch {
+        return null;
+      }
+    },
+    runningPort: (engineId) => {
+      const status = workflowEngineRegistry.statusOf(engineId);
+      return status?.state === "running" ? status.port : null;
+    },
+    getSession: () => session.defaultSession,
+  }));
   registerDocumentViewHandlers(ipc, documentViewHost, (p) => findContainingWorkspaceRoot(p) !== null);
   // 【ARC-006 WF-INT】第三方工作流引擎的起停/状态。引擎是**独立子进程**，
   // 只绑 127.0.0.1；数据目录与启动命令由注册表给（node-red 未安装时显式失败）。

@@ -672,8 +672,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "documentView.open",
   "channel": "documentView:open",
   "doc": "【ARC-007】受控文档视图宿主的打开/复用:一个 docId 一个 WebContentsView。URL 只放行 `file://` 与本机回环(主进程复核,fail-closed);同 docId 重复 open 复用视图并更新 url/bounds。",
-  "input": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean }",
-  "inputFull": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean }",
+  "input": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean; workflowEngineId?: string | undefined // 工作流引擎 id（`[a-z][a-z0-9-]*`，与 `workflowEngine.*` 同一套形状）。 }",
+  "inputFull": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean; workflowEngineId?: string | undefined // 工作流引擎 id（`[a-z][a-z0-9-]*`，与 `workflowEngine.*` 同一套形状）。 }",
   "output": "{ ok: true } | { ok: false; reason: string }"
  },
  {
@@ -2895,10 +2895,10 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "skills.bundles",
   "channel": "skills:bundles",
-  "doc": "Read the bundle manifest (import groups of the universal library). Missing / unparsable manifest → empty list.",
+  "doc": "Read the bundle manifest (import groups of the universal library). Missing manifest → empty list; a corrupt one still lists empty but carries `corrupt` (and import/market-install refuse to rewrite it, MC-053 family).",
   "input": "{}",
   "inputFull": "{}",
-  "output": "{ bundles: SkillBundle[] }"
+  "output": "{ bundles: SkillBundle[]; corrupt?: { reason: string; } | undefined }"
  },
  {
   "method": "skills.copyToProject",
@@ -2967,10 +2967,10 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "skills.marketInstall",
   "channel": "skills:marketInstall",
-  "doc": "Copy market skills into the universal library (existing names skipped).",
+  "doc": "Copy market skills into the universal library (existing names skipped). 【MC-053 同族】导入包清单损坏时安装照常成功，但结果带 `corrupt` —— 清单未被改写。",
   "input": "{ names: string[]; market: string; requestId?: string | undefined }",
   "inputFull": "{ names: string[]; market: string; requestId?: string | undefined }",
-  "output": "{ ok: boolean; error?: string | undefined; imported: string[]; skipped: string[]; errors: { name: string; error: string; }[] }"
+  "output": "{ ok: boolean; error?: string | undefined; imported: string[]; skipped: string[]; errors: { name: string; error: string; }[]; corrupt?: string | undefined // 【MC-053 同族】导入包清单读不懂时的原因。有值 = 安装照常成功,但这次**没有** 改写清单(否则会把用户历史导入包整份抹掉)。 }"
  },
  {
   "method": "skills.marketList",
@@ -2999,26 +2999,26 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "skills.presetsDelete",
   "channel": "skills:presetsDelete",
-  "doc": "删一套预设。",
+  "doc": "删一套预设。清单损坏 → `ok:false` + `corrupt:true`，原文件不动。",
   "input": "{ id: string }",
   "inputFull": "{ id: string }",
-  "output": "{ ok: boolean; error?: string | undefined }"
+  "output": "{ ok: boolean; error?: string | undefined; corrupt?: boolean | undefined }"
  },
  {
   "method": "skills.presetsList",
   "channel": "skills:presetsList",
-  "doc": "**一套技能预设** —— \"这类项目默认装这几个\"。改整个数组（整份给过来， 局部更新在这里没有意义，同 `workflow.agentProfiles` 的取舍）。",
+  "doc": "**一套技能预设** —— \"这类项目默认装这几个\"。改整个数组（整份给过来， 局部更新在这里没有意义，同 `workflow.agentProfiles` 的取舍）。 【MC-053 同族】清单文件损坏时仍给空表（页面可打开），但带 `corrupt` 诊断 —— 保存/删除在损坏时被拒（不会拿空表当写回基准抹掉已有预设）。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ presets: SkillPreset[] }"
+  "output": "{ presets: SkillPreset[]; corrupt?: { reason: string; } | undefined }"
  },
  {
   "method": "skills.presetsSave",
   "channel": "skills:presetsSave",
-  "doc": "存一套预设（新建或覆盖同 id 的）。",
+  "doc": "存一套预设（新建或覆盖同 id 的）。清单损坏 → `ok:false` + `corrupt:true`，原文件不动。",
   "input": "{ preset: { id: string; skills: string[]; name: string; description?: string | undefined; } }",
   "inputFull": "{ preset: { id: string; skills: string[]; name: string; description?: string | undefined; } }",
-  "output": "{ ok: boolean; error?: string | undefined }"
+  "output": "{ ok: boolean; error?: string | undefined; corrupt?: boolean | undefined }"
  },
  {
   "method": "skills.projectOverview",
