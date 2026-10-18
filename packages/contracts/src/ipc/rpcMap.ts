@@ -110,7 +110,7 @@ import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefa
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, WorkflowImportPresetInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchTemplatesRebuildInput, WatchCommandTemplate } from "./workflow.js";
 import type { HostHookGrantListInput, HostHookGrantIssueInput, HostHookGrantRevokeInput } from "./hostHookGrants.js";
 import type { HostHookGrant } from "../hostHookGrant.js";
-import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
+import type { AutomationTriggerHealth, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_REVIEW_CHANNEL, MEMORY_REVIEW_DELETE_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemoryReviewDeleteInput, type MemoryReviewResult, type MemorySaveInput } from "../memory.js";
 import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, LibraryReadAssetInput, LibraryReadAssetResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput } from "./library.js";
 import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput, OnlyOfficeSessionState, OnlyOfficeStatusResult, OnlyOfficeConfig, OnlyOfficeSetConfigInput, OnlyOfficeLocalDetectResult } from "./onlyoffice.js";
@@ -135,10 +135,10 @@ export const ClaudeSubagentsSaveSchema = z.object({ subagents: z.array(z.record(
 export interface RpcMap {
   /** 全部模块(**内置 + 已装**)的清单:各自的贡献项、宿主能力表、以及内置只读模块能当工作流目标的那几项。 */
   "modules.catalog": () => Promise<import("../modules.js").ModuleCatalog>;
-  /** 安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单。 */
-  "modules.install": (input: import("./modules.js").ModuleInstallInput) => Promise<import("../modules.js").ModuleCatalog>;
-  /** 卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单。 */
-  "modules.remove": (input: {moduleId:string}) => Promise<import("../modules.js").ModuleCatalog>;
+  /** 安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单,以及这次变更取消掉的运行中任务数/失败原因(升级换执行体时为非零)。 */
+  "modules.install": (input: import("./modules.js").ModuleInstallInput) => Promise<import("../modules.js").ModuleChangeResult>;
+  /** 卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单与取消诊断。 */
+  "modules.remove": (input: {moduleId:string}) => Promise<import("../modules.js").ModuleChangeResult>;
   /** 触发模块的一个贡献项。按能力 `kind` 分流:非 task 的直接跑出结果,是 task 的立刻返回 `{type:"task"}` 句柄(进度靠 `modules.task` 拉)。 */
   "modules.invoke": (input: import("../modules.js").ModuleInvoke) => Promise<import("../modules.js").ModuleReply>;
   /** 取一个模块任务的当前快照(状态 / 进度 / 结果)。 */
@@ -1072,8 +1072,10 @@ export interface RpcMap {
     kept?: number;
   }>;
   /** 全部触发器的**事实状态**(挂没挂上 / 为什么 / 最近一次跑,见
-   *  `AutomationTriggerFacts`)。**无参 handler**,同 `workflow.agentProfiles`。 */
-  "automation.statusAll": () => Promise<AutomationTriggerFacts[]>;
+   *  `AutomationTriggerFacts`)。**无参 handler**,同 `workflow.agentProfiles`。
+   *  返回项额外带**判定后的诊断**(`activeFailure` / `missedNotice`,见
+   *  `diagnoseTriggerFacts`)—— Agent 不必自己重判旧账。 */
+  "automation.statusAll": () => Promise<import("./orchestration.js").AutomationTriggerHealth[]>;
   // ── 自定义 UI(见 `@contracts/customUi`)──
   /** 自定义项的「运行自动化」动作:用指定触发器**手动**起一次,右键的目标当载荷带进去
    *  (条目 / 分类 / 大类 → 条目清单,文件 → 文件列表)。`dryRun` 只数条数不真跑。

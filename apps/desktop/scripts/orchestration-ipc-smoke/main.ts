@@ -1942,6 +1942,51 @@ console.log("\n过期的卡片");
   );
 }
 
+/* ──────────────── 16b. 触发器诊断:Agent 读到的"现在还算不算失败" ──────────────── */
+
+// 原始 `lastError` 是只增不改的旧账;`automation.statusAll` 现在对每条事实叠一层
+// 判定后的诊断(`activeFailure` / `activeFailureAt` / `missedNotice`)—— 判据就是界面
+// 用的 `latestFailureOf`/`missedNoticeOf`(同一份契约函数),Agent 经 app_api_call
+// 拿到的是同一段 handler 的返回,不必自己重判。
+console.log("\n★ 触发器诊断:旧账不冒充现状、健康行照常列出");
+
+{
+  const { automationRunner } = await import("@main/orchestration/automationRunner.js");
+  const { AutomationFacts } = await import("@main/orchestration/automationStatus.js");
+  type FactsHolder = { facts: InstanceType<typeof AutomationFacts> };
+  const facts = (automationRunner as unknown as FactsHolder).facts;
+  const seed = (workflowId: string, nodeId: string, title: string) => ({
+    workflowId, nodeId, title, kind: "schedule" as const, enabled: true,
+  });
+
+  // ① 仍阻塞:失败之后没再跑过 → activeFailure + 时刻。
+  facts.recordBlocked(seed("wf_health", "t_blocked", "被阻塞的"), "项目不在了(p_gone)", 1_000);
+  // ② 健康:挂上且跑过、没有失败 → 照常列出,无 activeFailure(防空过)。
+  facts.recordSetup(seed("wf_health", "t_healthy", "健康的"), true);
+  facts.recordFired(seed("wf_health", "t_healthy", "健康的"), 2_000);
+  // ③ 旧账:失败发生在起跑**之前** → 原始 lastError 还在,但现状不显示。
+  facts.recordFired(seed("wf_health", "t_recovered", "已恢复的"), 3_000);
+  facts.recordBlocked(seed("wf_health", "t_recovered", "已恢复的"), "上一次还在跑,这一次触发已跳过", 1_000);
+  // ④ 错过:该提示 3 次。
+  facts.recordMissed(seed("wf_health", "t_missed", "错过定时的"), 3, 4_000);
+
+  const rows = (await callAsync(IPC.AUTOMATION_STATUS_ALL)) as Array<Record<string, unknown>>;
+  const byKey = (k: string) => rows.find((r) => r.key === k);
+  const blocked = byKey("wf_health:t_blocked");
+  eq("★ 阻塞事实:只读方法带回原因(activeFailure)", blocked?.activeFailure, "项目不在了(p_gone)");
+  eq("★ 阻塞事实:带回时刻(activeFailureAt)", blocked?.activeFailureAt, 1_000);
+  const healthy = byKey("wf_health:t_healthy");
+  check("★ 健康触发器也列出(防空过)", healthy !== undefined && healthy.armed === true, healthy);
+  eq("健康行没有 activeFailure", healthy?.activeFailure, undefined);
+  const recovered = byKey("wf_health:t_recovered");
+  eq("★ 旧账不冒充现状:恢复过的行没有 activeFailure", recovered?.activeFailure, undefined);
+  eq("原始 lastError 原样保留(判定是叠加不是替换)", recovered?.lastError, "上一次还在跑,这一次触发已跳过");
+  eq("★ 错过提示带回来(missedNotice)", byKey("wf_health:t_missed")?.missedNotice, 3);
+
+  // 清场:注入的事实别影响同一进程里后面的用例。
+  facts.retainWorkflow("wf_health", new Set());
+}
+
 /* ──────────────── 17. 代理档案 ──────────────── */
 
 console.log("\n代理档案");

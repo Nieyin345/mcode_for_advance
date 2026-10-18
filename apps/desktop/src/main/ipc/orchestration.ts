@@ -16,6 +16,7 @@ import type { IpcMain } from "electron";
 import { dialog } from "electron";
 import { readFile, writeFile } from "node:fs/promises";
 import type { AutomationRunEntry, AutomationTriggerFacts, PersistedWorkflowRunLite, WatchCommandTemplate } from "@contracts/ipc";
+import { diagnoseTriggerFacts } from "@contracts/ipc";
 import { watchTemplatesRevision } from "@contracts/ipc/workflow";
 import {
   AgentProfileRemoveSchema,
@@ -378,11 +379,16 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   // 全部触发器的"挂没挂上 / 为什么 / 最近一次跑"。**无参 handler**,同
   // `workflow.list`。返回值注成 contracts 的镜像类型(见 `AutomationTriggerFacts`):
   // 主进程那份事实在 `automationStatus.ts`,哪边形状漂了,这一行赋值就编译不过。
+  //
+  // **判定后诊断随返回:** 原始 `lastError` 是只增不改的旧账;「现在还算不算失败 /
+  // 该不该提示错过」的判据在 `@contracts/ipc` 的 `latestFailureOf` / `missedNoticeOf`
+  // (界面用的同一份)。这里对每条事实调 `diagnoseTriggerFacts` 把结论叠上去 ——
+  // Agent 经 `app_api_call` 拿到的是**同一段代码**的返回,不必(也无法)自己重判。
   ipcMain.handle(IPC.AUTOMATION_STATUS_ALL, async () => {
     const facts: AutomationTriggerFacts[] = automationRunner.statusAll();
     // **直接返回数组**(不包 `{ facts }`)—— preload 的 api 面与渲染端都按裸数组消费,
     // 包一层只会让每一处调用点多一次解构。
-    return facts;
+    return facts.map(diagnoseTriggerFacts);
   });
 
   // ── 运行历史(某个对话的所有图运行)──

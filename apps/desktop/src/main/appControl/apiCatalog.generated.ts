@@ -119,7 +119,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "automation.statusAll",
   "channel": "automation:statusAll",
-  "doc": "全部触发器的**事实状态**(挂没挂上 / 为什么 / 最近一次跑,见 `AutomationTriggerFacts`)。**无参 handler**,同 `workflow.agentProfiles`。",
+  "doc": "全部触发器的**事实状态**(挂没挂上 / 为什么 / 最近一次跑,见 `AutomationTriggerFacts`)。**无参 handler**,同 `workflow.agentProfiles`。 返回项额外带**判定后的诊断**(`activeFailure` / `missedNotice`,见 `diagnoseTriggerFacts`)—— Agent 不必自己重判旧账。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
   "output": "{ length: number // Gets or sets the length of the array.; toString: () => string // Returns a string representation of an array.; toLocaleString: { (): string; (locales: string | string[], options?: Intl.NumberFormatOptions & Intl.DateTimeFormatOptions): str…"
@@ -1959,10 +1959,10 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "modules.install",
   "channel": "modules:install",
-  "doc": "安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单。",
+  "doc": "安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单,以及这次变更取消掉的运行中任务数/失败原因(升级换执行体时为非零)。",
   "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
   "inputFull": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "output": "{ catalog: ModuleCatalog; cancelledTasks: number; cancelFailures: { taskId: string; reason: string; }[] }"
  },
  {
   "method": "modules.invoke",
@@ -1983,10 +1983,10 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
  {
   "method": "modules.remove",
   "channel": "modules:remove",
-  "doc": "卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单。",
+  "doc": "卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单与取消诊断。",
   "input": "{ moduleId: string }",
   "inputFull": "{ moduleId: string }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('resource.read' | 'resource.write' | 'network')[]; contribution…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
+  "output": "{ catalog: ModuleCatalog; cancelledTasks: number; cancelFailures: { taskId: string; reason: string; }[] }"
  },
  {
   "method": "modules.revokeWorkflowGrant",

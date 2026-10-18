@@ -2729,6 +2729,46 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
   );
 }
 
+/* ── 自动化事实/诊断的 Agent 可读面 ──
+ *
+ * 判据:**同一条只读 RPC、同一个注册函数**。`automation.statusAll` 是 read 档、
+ * 不在 blocked 表;Agent 经 `app_api_call` 与界面按按钮最终调的是 `createDbGuardedIpc`
+ * 登记进 registry 的那**同一个** handler。这里真驱动包装器 + 真 `app_api_call`,
+ * 断言两件事:①请求确实落到了 registry 里那个函数;②返回的判定字段原样带出。
+ */
+{
+  const { createDbGuardedIpc } = await import("@main/ipc/dbGuardedIpc.js");
+  const { rpcHandlerFor, registeredRpcChannels } = await import("@main/appControl/registry.js");
+  const { policyFor } = await import("@main/appControl/policy.js");
+  const { API_CATALOG } = await import("@main/appControl/apiCatalog.generated.js");
+
+  check("★ 自动化诊断:statusAll 是只读档(不是 blocked)", policyFor("automation.statusAll").level === "read",
+    policyFor("automation.statusAll"));
+  check("★ 自动化诊断:在 catalog 里有说明(Agent 可发现)",
+    API_CATALOG.some((e) => e.method === "automation.statusAll" && e.doc.length > 0));
+
+  // 用真包装器注册同一个 handler,再经 registry 取回 —— UI 与 Agent 是同一个函数。
+  const handled = new Map<string, (e: unknown, raw: unknown) => unknown>();
+  const fakeMain = { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => handled.set(ch, fn) } as never;
+  const ipc = createDbGuardedIpc(fakeMain) as unknown as { handle: (ch: string, fn: (e: unknown, raw: unknown) => unknown) => void };
+  let calls = 0;
+  ipc.handle("automation:statusAll", async () => {
+    calls += 1;
+    return [{ key: "wf_x:t1", activeFailure: "项目不在了", activeFailureAt: 1 }];
+  });
+  check("★ 自动化诊断:UI 通道与 registry 登记的是同一个函数",
+    rpcHandlerFor("automation:statusAll") === handled.get("automation:statusAll"),
+    { registered: registeredRpcChannels().includes("automation:statusAll") });
+
+  // Agent 路径:app_api_call → 同一 registry handler。
+  const { ctx } = ctxWith();
+  const r = await invokeAppTool("app_api_call", { method: "automation.statusAll" }, "me", ctx);
+  check("★ 自动化诊断:Agent 经 app_api_call 真的落到同一个函数", calls === 1, calls);
+  check("★ 自动化诊断:Agent 读到判定后的原因与时刻",
+    textOf(r).includes("项目不在了") && opResultOf(r)?.resultKind === "SUCCEEDED",
+    { op: opResultOf(r), text: textOf(r).slice(0, 300) });
+}
+
 /* ── 【MC-040】帮助分级(detail=full)与教程索引 ──
  *
  * 台账红例:`workflow.save` 的浅版 input 291 字符、嵌套结构全在 `{…}` 里 —— agent

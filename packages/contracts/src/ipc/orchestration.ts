@@ -176,6 +176,47 @@ export function missedNoticeOf(facts: AutomationTriggerFacts): number {
   return count;
 }
 
+/**
+ * **给 Agent 读的触发器诊断** —— `automation.statusAll` 的返回项(见
+ * {@link diagnoseTriggerFacts})。
+ *
+ * ## 它补的是哪个洞
+ *
+ * 原始事实里的 `lastError` 是**只增不改**的(见 `automationStatus.ts` 类头):
+ * 一次失败之后哪怕后面跑成了,那句旧账仍留在字段里。界面对它做了"是否已经比最近
+ * 一次起跑更旧"的判定({@link latestFailureOf} / {@link missedNoticeOf}),所以用户
+ * 看到的是真实现状;而 Agent 经 `app_api_call` 拿到的是**原始行** —— 它会把一条
+ * 早已恢复的自动化报成"仍被阻塞",或漏报该提示的错过。同一份判据在两处各判一遍
+ * 就是"分家"的老病,这里把**判定后的结论**也放进返回体,Agent 与界面读的是同一份。
+ *
+ * 字段都是**可选**:没有阻塞就不给 `activeFailure`(同 `overflowDropped` 口径,
+ * 不塞恒空字段)。原始字段原样保留 —— 判定是叠加,不是替换。
+ */
+export interface AutomationTriggerHealth extends AutomationTriggerFacts {
+  /** **现在仍成立**的阻塞/失败原因(`latestFailureOf` 判过旧账);无 = 不阻塞。 */
+  activeFailure?: string;
+  /** {@link activeFailure} 的时刻(ms,即原始 `lastErrorAt`)。 */
+  activeFailureAt?: number;
+  /** **仍值得提示**的错过次数(`missedNoticeOf` 判过旧账);无 = 不提示。 */
+  missedNotice?: number;
+}
+
+/**
+ * 把一条原始事实折成**判定后**的诊断 —— `automation.statusAll` 的 handler 对每条
+ * 事实调一次,判据**复用** {@link latestFailureOf} / {@link missedNoticeOf}(唯一
+ * 一份),不在这里另写一套"谁的更近"。
+ */
+export function diagnoseTriggerFacts(facts: AutomationTriggerFacts): AutomationTriggerHealth {
+  const failure = latestFailureOf(facts);
+  const missed = missedNoticeOf(facts);
+  return {
+    ...facts,
+    ...(failure !== undefined ? { activeFailure: failure } : {}),
+    ...(failure !== undefined && facts.lastErrorAt !== undefined ? { activeFailureAt: facts.lastErrorAt } : {}),
+    ...(missed > 0 ? { missedNotice: missed } : {}),
+  };
+}
+
 /* ── 监控(monitoring.*)── */
 
 /**
