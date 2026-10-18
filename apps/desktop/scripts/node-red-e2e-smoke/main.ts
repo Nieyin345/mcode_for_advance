@@ -777,5 +777,260 @@ try {
   }
 }
 
+/* ══════════ C. Gate C：迁移器产物 → 真 Node-RED 部署/读回 ══════════ */
+// 这一段把 `flowMigration.ts` 的**真实产物**（不是手写夹具）部署给真 node-red 5.0.8：
+//   - 迁移一张含全部 runner.kind 的 WorkflowDoc → flow；
+//   - 经 Admin API（带宿主令牌）部署 → 200 + rev；
+//   - GET /flows 读回：每个节点都在、wires 连的是节点 id、`x-mcode` 原样保留；
+//   - **未知节点类型（未安装 mcode-* 节点包）的硬事实**：见下面「实测」注释。
+//
+// ## 实测硬事实（2026-10-19，node-red 5.0.8）
+//
+// 1. **部署不拒绝未知类型**：POST /flows 回 200 + rev，节点原样落盘、原样读回
+//    （编辑器里显示为"未知节点"红框，但节点与连线都在）。
+// 2. **但整组 flows 不启动**：`@node-red/runtime/lib/flows/index.js` 的
+//    `updateMissingTypes()` 收集到 `missingTypes.length > 0` 后，日志打
+//    "Waiting for missing types to be registered:" + 每个类型一行，emit
+//    `runtime-state {state:'stop', error:'missing-types', text:'notification.warnings.missing-types'}`，
+//    然后 **return** —— 这一份部署里的**所有** flow（包括全由原生节点组成的那条支路）
+//    都停在未启动状态。这不是 Mcode 迁移器的 bug，是 Node-RED 的全局闸：只要 flow 里
+//    引用了未注册类型，整组不跑。
+// 3. **`GET /flows/state` 不可作为判据**：该版本在 missing-types 分支 return 前已把模块
+//    级 `state = 'start'`，接口仍回 `{"state":"start"}`（版本怪癖）。本套件因此用
+//    **行为**证明"整组不启动"：同一份部署里放一条**全原生节点**（inject → debug）的
+//    支路，部署后它的 runtime event 不会来、HTTP-in（若流里有）也不会应答。
+//    为了让这条判据稳定可测，C 段额外部署一条**只有原生节点**的探针流，先证明引擎本身
+//    能跑，再部署迁移流并证明同一引擎上它不跑。
+// 4. **未知节点类型在编辑器里保留为 unknown**（不是丢弃、不是拒绝加载）：`GET /flows`
+//    读回的节点 `type` 原样是 `mcode-agent` 等；Node-RED 的 palette 里没有它们。
+// 5. 生产 bootstrap 的 logging 级别是 `warn`，上述 info 级 missing-types 日志**不会**
+//    出现在 tailOutput 里 —— 所以断言不能依赖日志文本，只能依赖行为 + 读回结构。
+//
+// 结论（Gate C 必须知道）：**在 mcode-* 节点包真正安装之前，迁移产物可以部署、可以
+// 在编辑器里查看/编辑，但整组 flow 不会执行**。迁移器报告里的 `needsHumanDecision`
+// 与这条是同一层事实的两面：换内核后"能看"不等于"能跑"。
+console.log("\nC. Gate C：迁移器产物 → 真 Node-RED 部署/读回（未知节点硬事实）");
+{
+  const { migrateWorkflowDoc } = await import("@main/workflowEngines/flowMigration.js");
+  const { builtinManifestById } = await import("@main/orchestration/nodeTypes.js");
+  // 类型清单用**真内置清单**（不是夹具）：迁移器与生产注册表看到的是同一份 runner.kind。
+  const types = new Map<string, NonNullable<ReturnType<typeof builtinManifestById>>>();
+  for (const id of [
+    "mcode.main", "mcode.agent", "mcode.conversation", "mcode.branch", "mcode.condition",
+    "mcode.trigger", "mcode.command", "mcode.code", "mcode.module-capability", "mcode.node-red",
+  ]) {
+    const manifest = builtinManifestById(id);
+    if (manifest !== undefined) types.set(id, manifest);
+  }
+
+  /** 7 种 runner.kind 全出现的最小图（与 flow-migration-smoke 的 richDoc 同形，更小）。 */
+  const docForMigration = {
+    id: "wf_gatec_engine",
+    name: "Gate C 真引擎样例",
+    builtin: false,
+    updatedAt: 1_760_000_000_000,
+    nodes: [
+      { id: "m_main", type: "mcode.main", title: "主代理", params: { instruction: "拆" }, position: { x: 10, y: 10 } },
+      { id: "m_agent", type: "mcode.agent", title: "子 agent", params: { instruction: "查" }, position: { x: 110, y: 10 } },
+      { id: "m_conv", type: "mcode.conversation", title: "对话", params: { instruction: "聊" }, position: { x: 210, y: 10 } },
+      { id: "m_branch", type: "mcode.branch", title: "岔路", params: { decider: "user" }, position: { x: 310, y: 10 } },
+      { id: "m_cond", type: "mcode.condition", title: "条件", params: { expression: { logic: "and", rules: [] } }, position: { x: 410, y: 10 } },
+      { id: "m_cmd", type: "mcode.command", title: "命令", params: { command: "echo hi" }, position: { x: 510, y: 10 } },
+      { id: "m_code", type: "mcode.code", title: "代码", params: { code: "return msg;", language: "node" }, position: { x: 610, y: 10 } },
+      { id: "m_trigger", type: "mcode.trigger", title: "触发", params: { triggerKind: "manual" }, position: { x: 710, y: 10 } },
+    ],
+    edges: [
+      { id: "e1", from: "m_main", to: "m_agent" },
+      { id: "e2", from: "m_agent", to: "m_conv" },
+      { id: "e3", from: "m_conv", to: "m_branch" },
+      { id: "e4", from: "m_branch", to: "m_cond", label: "继续" },
+      { id: "e5", from: "m_branch", to: "m_cmd", label: "停" },
+      { id: "e6", from: "m_cond", to: "m_code", label: "true" },
+      { id: "e7", from: "m_cond", to: "m_trigger", label: "false" },
+    ],
+  } as unknown as Parameters<typeof migrateWorkflowDoc>[0];
+  const migrated = migrateWorkflowDoc(docForMigration, { types });
+  evidence("migration report", {
+    mapped: migrated.report.mapped.length,
+    unmapped: migrated.report.unmapped.length,
+    needsHumanDecision: migrated.report.needsHumanDecision.map((i) => i.merge0Item),
+  });
+  check("★【Gate C】含 7 种 runner.kind 的文档迁移无「无法映射」", migrated.report.unmapped.length === 0, migrated.report.unmapped);
+
+  // 启动一台真引擎（与 A/B 同一套生产 launchSpec），部署迁移产物。
+  const productionRegistryC = new ProductionWorkflowEngineRegistry();
+  writeFileSync(join(productionRegistryC.dataDirOf(NODE_RED_ENGINE_ID), "engine-trust.json"), JSON.stringify({ trusted: true }), "utf8");
+  const launchC = productionRegistryC.launchSpec(NODE_RED_ENGINE_ID);
+  check("★【Gate C】生产 launchSpec 可用", launchC !== null);
+  if (launchC !== null) {
+    const portsC = recordingPorts();
+    const runtimeC = new EngineRuntime(NODE_RED_ENGINE_ID, portsC);
+    let childC: EngineChildProcess | undefined;
+    const userDirC = mkdtempSync(join(INSTALLED, "gatec-user-"));
+    try {
+      const statusC = await runtimeC.start({
+        engineId: NODE_RED_ENGINE_ID,
+        dataDir: launchC.dataDir,
+        command: launchC.command,
+        args: launchC.args,
+        ...(launchC.env !== undefined ? { env: launchC.env } : {}),
+        ...(launchC.probeIdentity !== undefined ? { probeIdentity: launchC.probeIdentity } : {}),
+        readyTimeoutMs: 20_000,
+      });
+      childC = portsC.children[0];
+      evidence("gate C engine status", statusC);
+      check("★【Gate C】真引擎经生产路径就绪", statusC.state === "running" && statusC.port !== null, statusC);
+      const portC = statusC.port ?? 0;
+      const tokenC = launchC.env?.MCODE_ENGINE_ADMIN_TOKEN ?? "";
+      const authC = { authorization: `Bearer ${tokenC}` };
+
+      // C1. 迁移产物部署 → 200 + rev。
+      const deployC = await fetchOn(portC, "/flows", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "Node-RED-Deployment-Type": "full",
+          "Node-RED-API-Version": "v2",
+          ...authC,
+        },
+        body: JSON.stringify({ flows: migrated.flow.nodes }),
+      }, 15_000);
+      let revC: string | null = null;
+      try {
+        revC = (JSON.parse(deployC.text) as { rev?: string }).rev ?? null;
+      } catch {
+        /* 下面断言会红 */
+      }
+      evidence("gate C deploy", { status: deployC.status, rev: revC });
+      check("★【Gate C】迁移产物部署成功（200 + rev）", deployC.status === 200 && typeof revC === "string", deployC);
+
+      // C2. GET /flows 读回：每个迁移节点都在（id/type 原样），tab 也在。
+      const readC = await fetchOn(portC, "/flows", { headers: { ...authC, "Node-RED-API-Version": "v2" } }, 10_000);
+      let readFlows: Array<Record<string, unknown>> = [];
+      try {
+        readFlows = (JSON.parse(readC.text) as { flows?: Array<Record<string, unknown>> }).flows ?? [];
+      } catch {
+        /* 下面断言会红 */
+      }
+      const migratedIds = migrated.flow.nodes.filter((n) => n.type !== "tab").map((n) => n.id);
+      const readById = new Map(readFlows.map((n) => [n.id as string, n]));
+      check("★【Gate C】读回里每个迁移节点都在（按 Node-RED id）",
+        migratedIds.every((id) => readById.has(id)), { missing: migratedIds.filter((id) => !readById.has(id)) });
+      check("★【Gate C】读回里未知节点类型原样保留为 unknown（不丢弃、不改名）",
+        readFlows.some((n) => n.type === "mcode-agent") && readFlows.some((n) => n.type === "mcode-branch"),
+        [...new Set(readFlows.map((n) => n.type))]);
+      check("★【Gate C】读回里 wires 连的是目标节点 id（不是 link id）",
+        JSON.stringify(readById.get("n_m_main")?.wires ?? []).includes("n_m_agent"),
+        readById.get("n_m_main")?.wires);
+      check("★【Gate C】读回里 x-mcode 元数据原样保留（nodeId/params）",
+        (readById.get("n_m_main") as { "x-mcode"?: { nodeId?: string; params?: unknown } } | undefined)?.["x-mcode"]?.nodeId === "m_main",
+        (readById.get("n_m_main") as Record<string, unknown> | undefined)?.["x-mcode"]);
+      check("★【Gate C】所有节点挂在 tab 下（z 指向 tab 的 id）",
+        [...readById.values()].filter((n) => n.type !== "tab").every((n) => typeof n.z === "string" && readById.has(n.z as string)),
+        [...readById.values()].map((n) => ({ id: n.id, z: n.z })));
+
+      // C3. 未知节点硬事实：整组 flows 不启动。用行为证明 —— 同一台引擎上，
+      //     一条**全原生节点**的注入流能跑；而迁移流里混入未知类型后，同一份部署的
+      //     原生支路也不跑（Node-RED 的 missing-types 全局闸）。
+      //     做法：部署第一条纯原生流（inject 每 100ms → debug），读回 /flows 的状态
+      //     无法可靠判断（见文件头 #3），所以用**第二条部署**覆盖它，观察 runtime event。
+      const nativeFlow = [
+        { id: "tabN", type: "tab", label: "native", disabled: false, info: "", env: [] },
+        { id: "injN", type: "inject", z: "tabN", name: "tick", props: [{ p: "payload" }], repeat: "0.2", once: false, x: 100, y: 100, wires: [["dbgN"]] },
+        { id: "dbgN", type: "debug", z: "tabN", name: "dbg", active: true, complete: "payload", targetType: "msg", x: 200, y: 100, wires: [] },
+      ];
+      const deployNative = await fetchOn(portC, "/flows", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...authC },
+        body: JSON.stringify({ flows: nativeFlow }),
+      }, 15_000);
+      check("★【Gate C】纯原生节点流部署成功（引擎本身可跑，作为对照）", deployNative.status === 200, deployNative);
+
+      // 对照组：纯原生流的 HTTP-in 能应答（证明引擎的 runtime 确实在跑）。
+      const nativeHttpIn = [
+        { id: "tabH", type: "tab", label: "http", disabled: false, info: "", env: [] },
+        { id: "inH", type: "http in", z: "tabH", url: "/gatec-native", method: "get", upload: false, swaggerDoc: "", x: 100, y: 100, wires: [["outH"]] },
+        { id: "outH", type: "http response", z: "tabH", x: 300, y: 100, wires: [] },
+      ];
+      const deployNativeHttp = await fetchOn(portC, "/flows", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...authC },
+        body: JSON.stringify({ flows: nativeHttpIn }),
+      }, 15_000);
+      check("★【Gate C】原生 HTTP-in 流部署成功", deployNativeHttp.status === 200, deployNativeHttp);
+      const nativeAlive = await waitFor(async () => {
+        const res = await fetchOn(portC, "/api/gatec-native", {}, 2_000);
+        return res.status === 200 ? res : null;
+      }, 8_000);
+      check("★【Gate C】对照：纯原生流真的在跑（HTTP-in 200）", nativeAlive !== null);
+
+      // 现在换成迁移流（含未知 mcode-* 类型）：同一台引擎、同一条部署路径。
+      const deployMigrated = await fetchOn(portC, "/flows", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...authC },
+        body: JSON.stringify({ flows: migrated.flow.nodes }),
+      }, 15_000);
+      check("★【Gate C】迁移流部署本身仍成功（200，未知类型不是部署错误）", deployMigrated.status === 200, deployMigrated);
+      // 在迁移流里加一条原生 HTTP-in：若 runtime 启动，它必须应答 200；实测是 404
+      // （整组不启动，HTTP-in 未注册）。这不是"路由没挂"——同一路径在上一份纯原生成
+      // 部署里是 200。
+      const migratedWithNativeProbe = migrateWorkflowDoc({
+        ...docForMigration,
+        nodes: [
+          ...(docForMigration.nodes as unknown[]),
+          { id: "m_http", type: "mcode.agent", title: "占位", params: {}, position: { x: 810, y: 10 } },
+        ],
+      } as typeof docForMigration, { types });
+      const nativeProbeNodes = [
+        ...migratedWithNativeProbe.flow.nodes,
+        { id: "tabP", type: "tab", label: "probe", disabled: false, info: "", env: [] },
+        { id: "inP", type: "http in", z: "tabP", url: "/gatec-blocked", method: "get", upload: false, swaggerDoc: "", x: 100, y: 500, wires: [["outP"]] },
+        { id: "outP", type: "http response", z: "tabP", x: 300, y: 500, wires: [] },
+      ];
+      const deployProbe = await fetchOn(portC, "/flows", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...authC },
+        body: JSON.stringify({ flows: nativeProbeNodes }),
+      }, 15_000);
+      check("★【Gate C】迁移流 + 原生 HTTP-in 探针一起部署（200）", deployProbe.status === 200, deployProbe);
+      // 给 runtime 一点时间：若它会启动，HTTP-in 会立刻注册。
+      await sleep(2_000);
+      const blocked = await fetchOn(portC, "/api/gatec-blocked", {}, 3_000);
+      evidence("migrated-flow HTTP-in status", { status: blocked.status });
+      check("★【Gate C 硬事实】含未知节点类型的整组 flows 不启动（同流里的原生 HTTP-in 404，而它在前一份纯原生部署里是 200）",
+        blocked.status === 404, blocked);
+
+      // C4. 把迁移流单独再部署一次：未知节点仍在读回里（不因"不启动"而被清掉/丢弃）。
+      const redeploy = await fetchOn(portC, "/flows", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...authC },
+        body: JSON.stringify({ flows: migrated.flow.nodes }),
+      }, 15_000);
+      const reRead = await fetchOn(portC, "/flows", { headers: { ...authC, "Node-RED-API-Version": "v2" } }, 10_000);
+      let reFlows: Array<Record<string, unknown>> = [];
+      try {
+        reFlows = (JSON.parse(reRead.text) as { flows?: Array<Record<string, unknown>> }).flows ?? [];
+      } catch {
+        /* 下面断言会红 */
+      }
+      check("★【Gate C】不启动的迁移流仍可读回全部节点（未知类型不被清掉）",
+        redeploy.status === 200 && migratedIds.every((id) => reFlows.some((n) => n.id === id)),
+        { redeploy: redeploy.status, read: reFlows.length });
+      check("★【Gate C】未知类型在读回里仍是原始 type（编辑器保留为 unknown，不丢、不改名）",
+        reFlows.filter((n) => n.type === "mcode-agent").length >= 1
+        && reFlows.filter((n) => n.type === "mcode-branch").length === 1,
+        [...new Set(reFlows.map((n) => n.type))]);
+    } finally {
+      killQuietly(childC);
+      await settleWithin(runtimeC.stop(500), 8_000);
+      try {
+        rmSync(userDirC, { recursive: true, force: true });
+      } catch {
+        /* 清理失败不影响结论 */
+      }
+    }
+  }
+}
+
 console.log(`\nnode-red-e2e-smoke: ${total - failures}/${total} 通过${failures === 0 ? "" : `（${failures} FAIL）`}`);
 if (failures > 0) process.exitCode = 1;

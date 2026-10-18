@@ -167,7 +167,13 @@ export interface NodeRedFlow {
   id: string;
   label: string;
   nodes: NodeRedNode[];
-  links: NodeRedLink[];
+  /**
+   * Mcode 侧的边元数据 sidecar（label/note/未知字段）。**不是 Node-RED 的格式**：
+   * 真实 flows.json / GET /flows 里没有 `links`，连接全在节点的 `wires`（目标节点 id）。
+   * 部署给 Node-RED 时只发 `nodes`；本字段留在这里供往返与将来的 StorageAdapter。
+   * 从真引擎读回的对象没有它 —— 所以是可选的。
+   */
+  links?: NodeRedLink[];
   /** 文档级未知字段与 Mcode 元数据。 */
   "x-mcode"?: {
     docId: string;
@@ -470,34 +476,82 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     }
   }
 
-  // 端口分配后写 wires：每个出端口的目标 link-id 列表。
-  for (const link of links) {
-    const source = [...nodeRedOf.values()].find((n) => n.id === link.source);
-    if (source?.wires !== undefined && source.wires[link.sourcePort] !== undefined) {
-      source.wires[link.sourcePort].push(link.id);
+  // 端口分配后写 wires：每个出端口的目标 **节点 id** 列表。
+  //
+  // ⚠️ Node-RED 的 `wires` 装的是**目标节点的 id**，不是 link 的 id —— 这条是
+  // 2026-10-19 用真 node-red 5.0.8 源码确认的（`@node-red/runtime/lib/flows/util.js`
+  // 只认 wires / link in-out 的 `links` 目标 id；flows.json 格式里**没有**顶层
+  // `links` 数组，Node-RED 的存储层以 wires 为真相）。本文件的 `links` 是
+  // **Mcode 侧的边元数据 sidecar**（label/note/未知字段只能住在这里，Node-RED 的
+  // 节点形上没有边对象的家）——部署给 Node-RED 时只发 `flow.nodes`，link 元数据留在
+  // 迁移器这边，供往返与将来的 StorageAdapter 使用。
+  const linkTargets = new Map<string, string[]>(); // sourceNrId + "#" + port → target nr ids
+  for (const [index, edge] of doc.edges.entries()) {
+    const sourceNr = nodeRedOf.get(edge.from);
+    const targetNr = nodeRedOf.get(edge.to);
+    if (sourceNr === undefined || targetNr === undefined) continue;
+    const kind = kindOf.get(edge.from) ?? "unknown";
+    let sourcePort = 0;
+    if (kind === "branch") {
+      // branch 的端口号按文档顺序分配（与上面 links 循环同一顺序）。
+      sourcePort = doc.edges.slice(0, index).filter((e) => e.from === edge.from).length;
+    } else if (kind === "condition") {
+      sourcePort = edge.label?.trim() === "false" ? 1 : 0;
+    }
+    const key = `${sourceNr.id}#${sourcePort}`;
+    const list = linkTargets.get(key) ?? [];
+    list.push(targetNr.id);
+    linkTargets.set(key, list);
+  }
+  for (const [key, targets] of linkTargets) {
+    const [sourceId, portText] = key.split("#");
+    const source = [...nodeRedOf.values()].find((n) => n.id === sourceId);
+    const port = Number(portText);
+    if (source?.wires !== undefined && source.wires[port] !== undefined) {
+      source.wires[port].push(...targets);
     }
   }
 
-  const flow: NodeRedFlow = {
-    id: nodeRedIdOf("flow", doc.id, usedIds),
+  const flowId = nodeRedIdOf("flow", doc.id, usedIds);
+  // 【真引擎硬事实，2026-10-19 node-red 5.0.8 实测】节点**必须**有 `z`（所属 tab 的 id）
+  // 且 tab 必须在同一个 flows 数组里，否则编辑器里它们不挂任何 flow（部署 200、读回也在，
+  // 但画布上无处显示）。迁移器为每份文档生成一个 tab 并给所有节点挂 z。
+  //
+  // 文档级 `x-mcode` 元数据同时挂在 tab 上：真引擎 GET /flows 读回的是节点数组，
+  // 没有"flow 级"对象，tab 是唯一能让元数据活过往返的容器。
+  const tab: NodeRedNode = {
+    id: nodeRedIdOf("tab", doc.id, usedIds),
+    type: "tab",
     label: doc.name,
-    nodes: [...nodeRedOf.values()],
+    disabled: false,
+    info: "",
+    env: [],
+  };
+  for (const nr of nodeRedOf.values()) nr.z = tab.id;
+
+  const docMeta: NonNullable<NodeRedFlow["x-mcode"]> = {
+    docId: doc.id,
+    name: doc.name,
+    ...(doc.description !== undefined ? { description: doc.description } : {}),
+    ...(doc.icon !== undefined ? { icon: doc.icon } : {}),
+    ...(doc.prompt !== undefined ? { prompt: doc.prompt } : {}),
+    ...(doc.frameworkNote !== undefined ? { frameworkNote: doc.frameworkNote } : {}),
+    ...(doc.trigger !== undefined ? { trigger: doc.trigger } : {}),
+    ...(doc.schemaVersion !== undefined ? { schemaVersion: doc.schemaVersion } : {}),
+    ...(doc.inputSchema !== undefined ? { inputSchema: doc.inputSchema } : {}),
+    ...(doc.outputSchema !== undefined ? { outputSchema: doc.outputSchema } : {}),
+    builtin: doc.builtin,
+    updatedAt: doc.updatedAt,
+    ...(Object.keys(docUnknown).length > 0 ? { unknown: docUnknown } : {}),
+  };
+  (tab as Record<string, unknown>)["x-mcode"] = docMeta;
+
+  const flow: NodeRedFlow = {
+    id: flowId,
+    label: doc.name,
+    nodes: [tab, ...nodeRedOf.values()],
     links,
-    "x-mcode": {
-      docId: doc.id,
-      name: doc.name,
-      ...(doc.description !== undefined ? { description: doc.description } : {}),
-      ...(doc.icon !== undefined ? { icon: doc.icon } : {}),
-      ...(doc.prompt !== undefined ? { prompt: doc.prompt } : {}),
-      ...(doc.frameworkNote !== undefined ? { frameworkNote: doc.frameworkNote } : {}),
-      ...(doc.trigger !== undefined ? { trigger: doc.trigger } : {}),
-      ...(doc.schemaVersion !== undefined ? { schemaVersion: doc.schemaVersion } : {}),
-      ...(doc.inputSchema !== undefined ? { inputSchema: doc.inputSchema } : {}),
-      ...(doc.outputSchema !== undefined ? { outputSchema: doc.outputSchema } : {}),
-      builtin: doc.builtin,
-      updatedAt: doc.updatedAt,
-      ...(Object.keys(docUnknown).length > 0 ? { unknown: docUnknown } : {}),
-    },
+    "x-mcode": docMeta,
   };
 
   const report: FlowMigrationReport = {
@@ -529,10 +583,16 @@ const RUNNER_OF_NODE_RED_TYPE: ReadonlyMap<string, NodeRunnerKind> = new Map(
  * 由调用方/报告点名 —— 不在这里抛。
  */
 export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
-  const meta = flow["x-mcode"];
+  // 文档级元数据优先取 flow 顶层；从真引擎读回的数组没有顶层元数据 —— 它挂在 tab 上
+  // （见正向迁移里 `(tab as ...)["x-mcode"] = docMeta`）。
+  const tabMeta = flow.nodes.find((n) => n.type === "tab")?.["x-mcode"] as NodeRedFlow["x-mcode"] | undefined;
+  const meta = flow["x-mcode"] ?? tabMeta;
   const nrToMcodeNode = new Map<string, string>();
   const nodes: WorkflowNode[] = [];
   for (const nrNode of flow.nodes) {
+    // tab 是迁移器生成的容器（文档级元数据挂在它身上），不是 Mcode 节点 —— 读回时跳过。
+    // Mcode 的类型 id 形如 `作者.名字`，不可能叫 `tab`，所以这个跳过不吞用户节点。
+    if (nrNode.type === "tab") continue;
     const x = nrNode["x-mcode"];
     const nodeId = x?.nodeId ?? nrNode.id;
     nrToMcodeNode.set(nrNode.id, nodeId);
@@ -553,21 +613,39 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
     nodes.push(node);
   }
 
-  // 边：按 link 的源端口排序还原。branch 的端口顺序 = 文档顺序，所以对每个 source
-  // 按 sourcePort 排序即可；其它 kind 只有 0 号口。
+  // 边：优先用 `links` sidecar（迁移器原样往返，含边级未知字段）；若 flow 来自真
+  // Node-RED 的读回（没有 links），就从节点的 `wires` 重建 —— 真引擎的真相就是它。
   const edges: Array<WorkflowEdge & Record<string, unknown>> = [];
-  const links = [...flow.links].sort((a, b) => (a.source === b.source ? a.sourcePort - b.sourcePort : 0));
-  for (const link of links) {
-    const x = link["x-mcode-edge"];
-    const edge: WorkflowEdge & Record<string, unknown> = {
-      id: x?.edgeId ?? link.id,
-      from: nrToMcodeNode.get(link.source) ?? link.source,
-      to: nrToMcodeNode.get(link.target) ?? link.target,
-      ...(x?.label !== undefined ? { label: x.label } : {}),
-      ...(x?.note !== undefined ? { note: x.note } : {}),
-      ...(x?.unknown ?? {}),
-    };
-    edges.push(edge);
+  if (flow.links !== undefined) {
+    const links = [...flow.links].sort((a, b) => (a.source === b.source ? a.sourcePort - b.sourcePort : 0));
+    for (const link of links) {
+      const x = link["x-mcode-edge"];
+      const edge: WorkflowEdge & Record<string, unknown> = {
+        id: x?.edgeId ?? link.id,
+        from: nrToMcodeNode.get(link.source) ?? link.source,
+        to: nrToMcodeNode.get(link.target) ?? link.target,
+        ...(x?.label !== undefined ? { label: x.label } : {}),
+        ...(x?.note !== undefined ? { note: x.note } : {}),
+        ...(x?.unknown ?? {}),
+      };
+      edges.push(edge);
+    }
+  } else {
+    // 从 wires 重建：按节点文档顺序 + 端口顺序，node id 用 `e_<from>_<to>[_N]` 稳定生成。
+    for (const nrNode of flow.nodes) {
+      if (nrNode.wires === undefined) continue;
+      const from = nrToMcodeNode.get(nrNode.id) ?? nrNode.id;
+      let n = 0;
+      nrNode.wires.forEach((targets, port) => {
+        for (const targetNrId of targets) {
+          const to = nrToMcodeNode.get(targetNrId) ?? targetNrId;
+          n += 1;
+          const edgeId = `e_${from}_${to}${n > 1 ? `_${n}` : ""}`;
+          const label = nrNode.type === "switch" ? (port === 1 ? "false" : port === 0 ? "true" : undefined) : undefined;
+          edges.push({ id: edgeId, from, to, ...(label !== undefined ? { label } : {}) } as WorkflowEdge);
+        }
+      });
+    }
   }
 
   return {

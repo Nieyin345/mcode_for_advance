@@ -139,8 +139,17 @@ console.log("\n1. 7 种 runner.kind 全映射，未知语义逐条点名");
     check(`★ 映射覆盖 runner.kind=${kind}`, mappedKinds.has(kind), [...mappedKinds]);
   }
   check("★ 含全部 7 种 runner.kind 的样例 → 报告里没有「无法映射」", report.unmapped.length === 0, report.unmapped);
-  check("★ 每个文档节点都产出一个 Node-RED 节点", flow.nodes.length === richDoc.nodes.length, { flow: flow.nodes.length, doc: richDoc.nodes.length });
-  check("★ 每条边都产出一条 link", flow.links.length === richDoc.edges.length, { links: flow.links.length, edges: richDoc.edges.length });
+  check("★ 每个文档节点都产出一个 Node-RED 节点（另有一个 tab 容器）",
+    flow.nodes.length === richDoc.nodes.length + 1 && flow.nodes.filter((n) => n.type === "tab").length === 1,
+    { flow: flow.nodes.length, doc: richDoc.nodes.length });
+  check("★ 所有节点挂在同一个 tab 下（z 指向 tab；Node-RED 编辑器才显示它们）",
+    flow.nodes.filter((n) => n.type !== "tab").every((n) => n.z === flow.nodes[0]?.id), flow.nodes.map((n) => ({ id: n.id, z: n.z })));
+  check("★ wires 指向**目标节点 id**（Node-RED 格式的真相是 wires，不是 link id）",
+    flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_main")?.wires?.[0]?.includes(
+      flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_agent")?.id ?? "??") === true,
+    flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_main")?.wires);
+  const links = flow.links ?? [];
+  check("★ 每条边都产出一条 link", links.length === richDoc.edges.length, { links: links.length, edges: richDoc.edges.length });
   check("★ 报告版本号可复核", report.migratorVersion === FLOW_MIGRATOR_VERSION);
 
   // MERGE-0 四条未知语义：遇到必须列，不静默丢。
@@ -175,7 +184,7 @@ console.log("\n1. 7 种 runner.kind 全映射，未知语义逐条点名");
   // 端口规则：branch = 每条出边一个口；condition = true 口 0 / false 口 1。
   const branchNode = flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_branch");
   check("★ branch 的端口数 = 出边数", branchNode?.wires?.length === 2, branchNode?.wires);
-  const condLinks = flow.links.filter((l) => l.source === flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_cond")?.id);
+  const condLinks = links.filter((l) => l.source === flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_cond")?.id);
   check("★ condition 的 true 边在端口 0、false 边在端口 1",
     condLinks.some((l) => l["x-mcode-edge"]?.edgeId === "e_cond_true" && l.sourcePort === 0)
     && condLinks.some((l) => l["x-mcode-edge"]?.edgeId === "e_cond_false" && l.sourcePort === 1),
@@ -188,9 +197,10 @@ console.log("\n1. 7 种 runner.kind 全映射，未知语义逐条点名");
   check("★ 类型不在清单里 → 报告 unmapped-node 点名（不猜执行语义）",
     unknownTypeDoc.report.unmapped.some((u) => u.nodeId === "u" && u.type === "myorg.mystery"),
     unknownTypeDoc.report.unmapped);
+  const unknownNode = unknownTypeDoc.flow.nodes.find((n) => n.type === "mcode-unknown");
   check("★ 未知类型节点仍以 mcode-unknown 迁移且保留原始 type",
-    unknownTypeDoc.flow.nodes[0]?.type === "mcode-unknown" && unknownTypeDoc.flow.nodes[0]?.["x-mcode"]?.type === "myorg.mystery",
-    unknownTypeDoc.flow.nodes[0]);
+    unknownNode?.["x-mcode"]?.type === "myorg.mystery",
+    unknownTypeDoc.flow.nodes);
 }
 
 /* ══════════ 2. 未知字段：报告点名 + 往返后逐字节仍在 ══════════ */
