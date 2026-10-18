@@ -470,12 +470,36 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
         error: `命令模板里还有 ${health.problems.length} 条读不出来的条目 —— 直接整份保存会把你手写的那几条抹掉。请先修好它们,或在守望面板上用「备份并重建」显式重建。`,
       };
     }
-    // 【MC-054】原值版本检查(两端并发编辑):调用方给了 expectedRevision 就必须与
-    // 盘上当前内容一致 —— 不一致 = 有人在此期间改过,拒绝覆盖并**把当前 revision
-    // 带回去**(调用方据此重读后再决定)。读与写用同一个 `watchTemplatesRevision`,
-    // 两边不可能漂开。没给 revision = 旧调用方,维持整份写(兼容取舍,见契约注释)。
+    // 【MC-054】原值版本检查(两端并发编辑)**是默认要求,不是可选项**。
+    //
+    // 第十七轮复核点破了上一版的口子:上一版把 expectedRevision 设成 optional,
+    // 「没给 = 整表覆盖」,于是旧调用方(含 Agent 经 `app_api_*` 调的宿主方法)
+    // 仍能静默丢别人的更新 —— 两条旧快照各存 [A]/[B],最后只剩 [B]。
+    //
+    // 现在的判据:
+    //   - 给了 revision:必须与盘上现算一致,否则冲突(带回 currentRevision);
+    //   - **没给 revision**:一律拒绝,并明确告诉调用方先读 `automation.watchTemplates`
+    //     拿 revision 再重试。旧调用方不会被静默放行。
+    //
+    // 唯一的例外是 `expectedRevision` **显式**为 null 的迁移路径 —— 契约里用
+    // `z.union([string, z.null()])` 区分「没带字段」(拒绝) 与「明确声明我知道自己在
+    // 覆盖」(仍要求 null 只在重建口使用)。重建口是另一条 RPC
+    // (`automation.rebuildWatchTemplates`),那里才是唯一允许整表覆盖的入口。
     const current = loadWatchTemplatesReport();
-    if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
+    if (input.expectedRevision === undefined) {
+      log.warn("[workflow] 拒绝保存命令模板:调用方没有带 expectedRevision");
+      return {
+        ok: false,
+        conflict: true,
+        currentRevision: current.revision,
+        error:
+          "这次保存没有带原值版本(expectedRevision)。为避免覆盖别人刚保存的内容," +
+          "请先读一次命令模板(automation.watchTemplates)拿到 revision,改完再带着它保存。" +
+          "如果你的本意是修复损坏的模板,请用「备份并重建」而不是普通保存。",
+      };
+    }
+    // 显式 `null` = "我知道自己在整表覆盖"(仅显式重建/迁移路径):跳过比对。
+    if (input.expectedRevision !== null && input.expectedRevision !== current.revision) {
       log.warn(`[workflow] 拒绝保存命令模板:版本已变(期望 ${input.expectedRevision},当前 ${current.revision})`);
       return {
         ok: false,

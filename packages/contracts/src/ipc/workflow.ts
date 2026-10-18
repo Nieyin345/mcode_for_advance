@@ -261,7 +261,16 @@ export const WatchTemplatesSaveSchema = z.object({
    *  这条台账红例被堵住,而既有调用方不被无谓打断。缺省不拒绝是**兼容取舍**,不是
    *  安全默认:需要防丢更新的调用方必须给 revision。
    */
-  expectedRevision: z.string().min(1).max(200).optional(),
+  /** 【MC-054】保存方上次读到的 revision。
+   *
+   *  **业务上必填**,但 schema 上保留 `optional()`:缺字段的调用要得到一条**可诊断的
+   *  业务拒绝**(`{ok:false, conflict:true, error:"请先读…"}`),而不是协议层 ZodError。
+   *  第十七轮复核点破的洞是"缺字段 = 整表覆盖"—— 那已在 handler 里改成拒绝;
+   *  这里不改成必填,是因为 ZodError 会让旧调用方看到一句 "Invalid input",
+   *  既不知道缺什么、也拿不到 currentRevision。
+   *
+   *  显式 `null` = "我知道自己在整表覆盖"(仅显式重建入口使用)。 */
+  expectedRevision: z.union([z.string().min(1).max(200), z.null()]).optional(),
 }).strict();
 export type WatchTemplatesSaveInput = z.infer<typeof WatchTemplatesSaveSchema>;
 

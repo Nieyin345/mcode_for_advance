@@ -1039,7 +1039,7 @@ console.log("\n【MC-048】模板事务围栏(单一异步变更协议)");
   /** 假后端:盘上列表 + 可注入的行为(每笔的结果),记录每次保存。 */
   const backend = (initial: Tpl[]) => {
     let disk = [...initial];
-    const saves: Array<{ templates: Tpl[]; expectedRevision?: string }> = [];
+    const saves: Array<{ templates: Tpl[]; expectedRevision: string | null }> = [];
     let nextBehavior: Array<"ok" | "fail" | "conflict-once"> = [];
     let revision = watchTemplatesRevision(disk);
     return {
@@ -1047,7 +1047,7 @@ console.log("\n【MC-048】模板事务围栏(单一异步变更协议)");
       get saves() { return saves; },
       pushBehavior(...behaviors: Array<"ok" | "fail" | "conflict-once">) { nextBehavior.push(...behaviors); },
       read: async () => ({ templates: [...disk], health: "valid" as const, problems: [] as string[], revision }),
-      save: async (input: { templates: Tpl[]; expectedRevision?: string }) => {
+      save: async (input: { templates: Tpl[]; expectedRevision: string | null }) => {
         saves.push(input);
         const behavior = nextBehavior.shift() ?? "ok";
         await new Promise((r) => setTimeout(r, 5));

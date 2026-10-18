@@ -908,6 +908,9 @@ console.log("\n守望命令模板");
   const refusedPartial = obj(
     await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
       templates: [{ id: "a", name: "好的", command: "echo 1" }],
+      // 显式 null = "我知道自己在整表覆盖";这一条测的是**健康态守卫**先拒,
+      // 不是 revision 缺失(后者是另一条断言)。
+      expectedRevision: null,
     }),
   );
   eq("★ MC-054:partial 时普通保存被拒绝(不静默抹掉读不出的条目)", refusedPartial.ok, false);
@@ -933,6 +936,7 @@ console.log("\n守望命令模板");
   const refusedCorrupt = obj(
     await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
       templates: [{ id: "a", name: "好的", command: "echo 1" }],
+      expectedRevision: null,
     }),
   );
   eq("★ MC-054:corrupt 时普通保存被拒绝", refusedCorrupt.ok, false);
@@ -976,10 +980,13 @@ console.log("\n守望命令模板");
   const noNeed = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
   eq("★ MC-054:文件没坏时显式重建拒绝(不做多余动作)", noNeed.ok, false);
 
-  // 健康状态下正常保存照旧(没被上面的拒写卡死)。
+  // 健康状态下正常保存照旧(没被上面的拒写卡死)。【MC-054 第十七轮】现在必须带
+  // revision —— 否则连健康态也拒(那正是修复:旧调用方不再被静默放行)。
+  const healthyRev = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES)).revision;
   const saveRes = obj(
     await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
       templates: [{ id: "a", name: "好的", command: "echo 1" }],
+      expectedRevision: healthyRev,
     }),
   );
   eq("健康时存模板返回 ok", saveRes.ok, true);
@@ -1013,11 +1020,34 @@ console.log("\n守望命令模板");
     (JSON.parse(SettingRepo.get("automation.watch.templates") ?? "[]") as Array<{ id: string }>).map((t) => t.id),
     ["A"],
   );
-  // 不带 expectedRevision 的旧调用方:行为与从前一致(整份写)—— 兼容取舍。
+  // 【MC-054 第十七轮复核】不带 expectedRevision 的旧调用方**必须被拒**:
+  // 上一版把"没给 = 整表覆盖"当兼容,结果是两条旧快照各存 [A]/[B]、最后只剩 [B]。
+  // 现在缺字段即冲突,并带回当前 revision 供调用方重读。
   const legacySave = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
     templates: [{ id: "L", name: "旧", command: "echo L" }],
   }));
-  eq("★ MC-054:旧调用方(不带 revision)仍可保存(兼容)", legacySave.ok, true);
+  eq("★ MC-054:不带 revision 的旧调用方被拒(不再静默整表覆盖)", legacySave.ok, false);
+  // ⚠️ 只看 ok:false 会假绿:把"缺字段"改成放行后,`undefined !== revision` 仍成立,
+  // 同一笔调用会被**冲突分支**接住 —— 结果同样是 ok:false。判据必须落到**拒绝语**
+  // 上:缺字段要明确说"没有带原值版本(revision)",而不是一句"已被别处改动"。
+  check("★ MC-054:拒绝理由点明「没有带 expectedRevision」(不是冲突误报)",
+    typeof legacySave.error === "string" && legacySave.error.includes("没有带原值版本"),
+    legacySave.error);
+  eq("★ MC-054:拒绝标了 conflict", legacySave.conflict, true);
+  check("★ MC-054:拒绝带回当前 revision 供重读", typeof legacySave.currentRevision === "string", legacySave.currentRevision);
+  // 盘上必须没有写进 [L] —— 拒绝是真的没写。
+  const afterLegacy = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
+  check("★ MC-054:被拒后盘上没有 [L](拒绝真的不写)",
+    !(afterLegacy.templates as Array<{ id?: string }>).some((t) => t.id === "L"), afterLegacy.templates);
+  // 显式 null 是"我知道自己在覆盖"的唯一写法 —— 它仍然能写(重建口之外的显式声明)。
+  const explicitNull = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+    templates: [{ id: "N", name: "显式覆盖", command: "echo N" }], expectedRevision: null,
+  }));
+  eq("★ MC-054:显式 null 仍可写(与「没带字段」区分)", explicitNull.ok, true);
+  // 复原成一条干净的健康表,后续断言按自己的路径继续。
+  await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
+    templates: [], expectedRevision: obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES)).revision,
+  });
   // 同一个版本连续保存两次(自撞):第二次必须用第一次之后的新 revision。
   const r1 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
   const s1 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
@@ -1411,8 +1441,10 @@ for (const [name, ch, raw] of [
   ["自动化的后台会话:没给 workflowId", IPC.AUTOMATION_SESSIONS, {}],
   ["守望起跑:没给 sessionId", IPC.AUTOMATION_WATCH, {}],
   ["守望状态:没给 sessionId", IPC.AUTOMATION_WATCH_STATUS, {}],
-  ["存模板:templates 不是数组", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, { templates: "不是数组" }],
-  ["存模板:模板里缺 command", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, { templates: [{ id: "a", name: "甲" }] }],
+  // 【MC-054】expectedRevision 现在必填 —— 这两条要测的是**别的**字段错,
+  // 所以显式给 null,否则 Zod 先在 revision 上报错,断言测不到目标。
+  ["存模板:templates 不是数组", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, { templates: "不是数组", expectedRevision: null }],
+  ["存模板:模板里缺 command", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, { templates: [{ id: "a", name: "甲" }], expectedRevision: null }],
   ["存档案:没给 profile", IPC.WORKFLOW_SAVE_AGENT_PROFILE, {}],
   ["删档案:没给 id", IPC.WORKFLOW_REMOVE_AGENT_PROFILE, {}],
   ["岔路口:没给参数", IPC.WORKFLOW_CHOOSE, {}],
