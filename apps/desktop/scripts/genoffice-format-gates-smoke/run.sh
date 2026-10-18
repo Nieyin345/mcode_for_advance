@@ -5,8 +5,10 @@
 # 被测：src/main/document/genofficeCli.ts（docsRead/docsApply/slidesRead/sheetRead/
 # convertFile）与 src/main/ipc/document.ts 的 readByKind 路由。
 # CLI bundle 不存在时整套显式 SKIP（与 genoffice-cli-smoke 一致）。
-# 不碰 db / sql.js；但因 readByKind 的动态导入链会经 pathGuard 拉进 store，
-# 照例挂 logger/dataRoot 桩并给临时数据根。
+# G1–G5 不碰 db；G6 走 document.edit 的**真 handler**（版本比较住在里面），
+# 那条链经 pathGuard 拉进 store/db —— 所以除 logger/dataRoot 桩与临时数据根之外，
+# 还要把 `electron` 整个包换成显式抛桩（同 library-trash-smoke；db.ts 顶层
+# `import { app } from "electron"`，真包在无头 ESM 下直接起不来）。
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -19,6 +21,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
+  --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error

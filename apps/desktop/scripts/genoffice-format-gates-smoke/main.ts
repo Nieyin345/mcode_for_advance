@@ -54,6 +54,11 @@
  *    不能只验返回值。
  *  - G5 dry-run 语义：`docs apply --dry-run` 在已存在且可读的 docx 上不改 sha256。
  *    与 G1 同判据，但针对写命令 —— dry-run 说"没写"就必须真没写。
+ *  - G6 `expectedRevision` 冲突路径（pptx / xlsx）：版本比较住在 `document.edit`
+ *    的**真 handler** 里（不是 `editByKind`），所以这一节用 fakeIpc 取出注册进去
+ *    的真函数、配真 sql.js 库与登记过的项目根，调用户动作本身。判据三件：
+ *    旧 revision → `conflict` 且回带盘上当前值、**整份字节未动**；用 currentRevision
+ *    重试 → 成功且内容真落盘；不带 revision → 按契约兼容语义执行（旧调用方）。
  *  - 反向正控：故意改一个字节，确认 sha256 比较真的能区分（防"两次都读到空/失败、
  *    哈希相等"的假绿）。
  *
@@ -156,6 +161,25 @@ function refusalOf(r: GenofficeResult): { kind: string; reason: string } | null 
 
 const repoRoot = process.cwd().replace(/apps[\\/]desktop$/, "");
 const cliPath = resolveGenofficeCliPath(repoRoot);
+
+/** 【G6】写盘前后的"版本"判据 —— **与生产同一算法**（`fileContentVersion`：原始
+ *  字节的 sha256）。不在这里另写一份哈希实现：那正是"期望的版本值"与"handler
+ *  实际比的值"分家的起点（本套件曾经的假绿形态之一）。 */
+async function liveRevision(path: string): Promise<string | null> {
+  const { fileContentVersion } = await import("@main/lib/fileVersion.js");
+  return fileContentVersion(path);
+}
+
+/** 【G6】`document.edit` 的真 handler 形状（只取本套用得到的字段）。 */
+type EditWireResult = {
+  ok: boolean;
+  kind?: string;
+  reason?: string;
+  revision?: string | null;
+  currentRevision?: string | null;
+  command?: string;
+};
+
 if (cliPath === null) {
   console.log("SKIP genoffice-format-gates-smoke: 未找到 genoffice/packages/cli/dist/genoffice.cjs。");
   console.log("     先运行 `npm install --ignore-scripts && npm run build -w @genoffice/cli`（在 genoffice/ 下）。");
@@ -649,6 +673,215 @@ if (cliPath === null) {
         // 还原（把原字节写回），保持后续/重跑不自相矛盾。
         writeFileSync(probe, bytes);
         eq("反向正控：还原后 sha256 回到原值", sha256(probe), before);
+      }
+    }
+
+    /* ══════════ G6 expectedRevision 冲突路径（pptx / xlsx） ══════════
+     * 版本比较住在 `document.edit` 的 **handler 函数体**里，`editByKind`（路由层）
+     * 看不到 `expectedRevision` —— 只调路由层永远验不到冲突分支。所以这里按
+     * `library-trash-smoke` 的办法取**注册进 fakeIpc 的真函数**，调用用户动作本身。
+     *
+     * 为什么要登记项目根：生产围栏走 `findContainingWorkspaceRoot`（真 pathGuard），
+     * 不是本套 G1–G5 用的业务桩 `ports.withinWorkspace`。不登记的话 `document.edit`
+     * 会在围栏处 refused，冲突分支根本到不了（断言"拒绝"会假绿）。 */
+    section("G6 expectedRevision 冲突路径（document.edit 真 handler；pptx / xlsx）");
+    {
+      const { ProjectRepo } = await import("@main/store/repositories.js");
+      const { initDb } = await import("@main/store/db.js");
+      await initDb();
+      ProjectRepo.create({
+        id: "proj_g6_smoke",
+        name: "G6 门",
+        path: root,
+        archived: false,
+        group: null,
+        sortOrder: 0,
+        pinnedAt: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+
+      const { IPC } = await import("@contracts/ipc");
+      const { registerDocumentHandlers, configureDocumentRepoRoot, editByKind } = await import("../../src/main/ipc/document.js");
+      // `registerDocumentHandlers` 在注册时现解析仓库根：无头环境里 `require("electron")`
+      // 拿不到 appPath，会回落到 `process.cwd()`（= apps/desktop），于是
+      // `resolveGenofficeCliPath(apps/desktop)` 为 null、每条 edit 都回 unavailable ——
+      // 冲突分支根本跑不到。生产装配不需要这个注入，测试按模块自带的注入口固定它。
+      configureDocumentRepoRoot(repoRoot);
+      const editHandlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+      registerDocumentHandlers({
+        handle(channel: string, fn: (event: unknown, raw: unknown) => unknown): void {
+          editHandlers.set(channel, fn);
+        },
+      } as never);
+      const editHandler = editHandlers.get(IPC.DOCUMENT_EDIT);
+      check("G6 ★ 拿到了 document.edit 的真 handler（不是路由层复印件）", editHandler !== undefined);
+      /** 调真 handler（与 preload 之后的主进程入口同一段代码）。 */
+      const callEdit = (raw: unknown): Promise<EditWireResult> =>
+        Promise.resolve(editHandler!(null, raw) as EditWireResult);
+
+      const { findContainingWorkspaceRoot } = await import("@main/lib/pathGuard.js");
+      check(
+        "G6 前置：真 pathGuard 认得登记的项目根（围栏放行夹具目录）",
+        findContainingWorkspaceRoot(root) !== null,
+      );
+
+      /** 外部内容的 sha256（不必落盘就能比）。 */
+      const sha256Buf = (buf: Buffer): string => createHash("sha256").update(buf).digest("hex");
+
+      /**
+       * 一条格式的完整冲突往返。
+       *  - `make()` 造样本（写完即返回）；`external` 是"外部编辑器写的另一份内容"
+       *    （合法文件字节，直接写盘，模拟另一个窗口/程序）。
+       *  - `once` / `again` 是两次**不同**的合法编辑：重试必须真落盘；不带 revision
+       *    的第三次编辑用 `again`，否则同一 op 重复应用可能产生相同字节，"写了盘"
+       *    的断言就会假红。
+       *  - `verifyLanded(file, marker)` 做**内容层**读回（不只是字节变了）。
+       *
+       * 判据全落在**磁盘事实**上：冲突时整份字节必须还是外部那份；成功时字节必须
+       * 变、且内容/新版本都读得回来。
+       */
+      const conflictRoundtrip = async (
+        label: string,
+        ext: "pptx" | "xlsx",
+        make: () => void,
+        once: unknown[],
+        again: unknown[],
+        external: Buffer,
+        verifyLanded: (file: string, marker: string) => Promise<{ landed: boolean; detail: unknown }>,
+      ): Promise<void> => {
+        const file = join(root, `g6.${ext}`);
+        make();
+        const rev0 = await liveRevision(file);
+        check(`${label} 前置：样本生成且版本可读`, existsSync(file) && rev0 !== null, { rev0 });
+
+        // 外部改文件：直接写字节（不经过 Mcode 的写路径 —— 这才是"别处改动"）。
+        writeFileSync(file, external);
+        const revExternal = await liveRevision(file);
+        check(`${label} 前置：外部改动后版本确实变了（判据能区分）`, revExternal !== null && revExternal !== rev0, { rev0, revExternal });
+
+        // ① 带旧 revision → conflict；currentRevision 是盘上当前值；盘上仍是外部内容。
+        const stale = await callEdit({ filePath: file, ops: once, expectedRevision: rev0 });
+        check(`${label} ① 旧 revision 编辑 → conflict（不执行）`, stale.ok === false && stale.kind === "conflict", stale);
+        check(`${label} ① 冲突回带的 currentRevision 是盘上当前值`, stale.currentRevision === revExternal, {
+          actual: stale.currentRevision, expected: revExternal,
+        });
+        eq(`${label} ① 冲突后盘上仍是外部内容（整份字节未动）`, sha256(file), sha256Buf(external));
+
+        // ② 用 currentRevision 重试 → 成功且内容落盘。
+        const retried = await callEdit({ filePath: file, ops: once, expectedRevision: revExternal });
+        check(`${label} ② 用 currentRevision 重试 → 成功`, retried.ok === true, retried);
+        const revAfter = await liveRevision(file);
+        check(`${label} ② 成功后回传的 revision 是盘上新值`, revAfter !== null && retried.revision === revAfter, {
+          actual: retried.revision, expected: revAfter,
+        });
+        check(`${label} ② 成功后盘上版本不再等于外部版本（真写盘）`, revAfter !== revExternal, { revExternal, revAfter });
+        const landed = await verifyLanded(file, "G6");
+        check(`${label} ② 读回看得到这次编辑的内容（内容真落盘）`, landed.landed, landed.detail);
+
+        // ③ 不带 revision → 与契约兼容语义一致：整份执行（旧调用方不带版本仍可用）。
+        //    这是实现现有且写进契约注释的行为（`expectedRevision` 可选 = 兼容取舍），
+        //    不是"漏检" —— 断言钉住它；将来若改成"必须带"，要先改契约与调用方，这里会红。
+        const beforeNoRev = sha256(file);
+        const noRev = await callEdit({ filePath: file, ops: again });
+        check(`${label} ③ 不带 revision 的编辑按兼容语义执行（成功）`, noRev.ok === true, noRev);
+        check(`${label} ③ 不带 revision 的编辑确实写了盘`, sha256(file) !== beforeNoRev);
+        const landedNoRev = await verifyLanded(file, "G6-NOREV");
+        check(`${label} ③ 不带 revision 的编辑内容也落盘`, landedNoRev.landed, landedNoRev.detail);
+      };
+
+      /* ── pptx ──
+       * 夹具：G2 已证明可被 `slides apply` 写的那份 create 产物；"外部内容"是另一份
+       * **合法** pptx（也加过一个元素，保证字节与样本不同），而不是垃圾字节 —— 垃圾
+       * 字节会让 CLI 无论冲突分支走没走都失败，断言就区分不了"冲突挡住"与"文件坏了"。
+       * 读回用 `slidesRead`：只要编辑真落盘，标记文本必须出现在 pages 里。 */
+      {
+        const pptxExternalPath = join(root, "g6-external.pptx");
+        const madeExternal = cliCreate(["create", "--type", "pptx", "--ops", "-", "--out", pptxExternalPath], "[]");
+        check("G6 pptx 前置：外部内容样本（另一份合法 deck）生成成功", madeExternal.status === 0 && existsSync(pptxExternalPath), madeExternal);
+        if (madeExternal.status === 0 && existsSync(pptxExternalPath)) {
+          const extEdit = await editByKind(ports, pptxExternalPath, [{
+            op: "addElement", target: { slide: 0 }, kind: "textbox",
+            offset: { x: 0, y: 0, cx: 914400, cy: 457200 },
+            paragraphs: [{ runs: [{ text: "EXTERNAL-pptx" }] }],
+          }], {});
+          check("G6 pptx 前置：外部内容样本真被改写过（字节与空白 deck 不同）", extEdit.ok, extEdit);
+          const externalBytes = readFileSync(pptxExternalPath);
+          await conflictRoundtrip(
+            "G6 pptx",
+            "pptx",
+            () => {
+              const made = cliCreate(["create", "--type", "pptx", "--ops", "-", "--out", join(root, "g6.pptx")], "[]");
+              check("G6 pptx 前置：样本 deck 生成成功", made.status === 0, made);
+            },
+            [{
+              op: "addElement", target: { slide: 0 }, kind: "textbox",
+              offset: { x: 914400, y: 914400, cx: 3000000, cy: 600000 },
+              paragraphs: [{ runs: [{ text: "G6-pptx" }] }],
+            }],
+            [{
+              op: "addElement", target: { slide: 0 }, kind: "textbox",
+              offset: { x: 914400, y: 1828800, cx: 3000000, cy: 600000 },
+              paragraphs: [{ runs: [{ text: "G6-NOREV-pptx" }] }],
+            }],
+            externalBytes,
+            async (file, marker) => {
+              const r = await slidesRead(ports, file);
+              const pages = r.ok
+                ? (r.envelope.detail as { pages?: Array<{ elements?: Array<{ text?: string }> }> }).pages
+                : undefined;
+              return {
+                landed: pages?.some((pg) => (pg.elements ?? []).some((el) => (el.text ?? "").includes(marker))) === true,
+                detail: r.ok ? pages : r,
+              };
+            },
+          );
+        } else {
+          skip("G6 pptx revision 冲突", "外部内容样本生成失败");
+        }
+      }
+
+      /* ── xlsx ──
+       * 全部走纯 Node 路径：`sheet apply` 写、`sheet check` 读回（本机无 sidecar 时
+       * `sheet read` 不可用，见 G2 的 SKIP 说明）。内容层标记用 **TODO 占位符**：
+       * `sheet check` 的 `placeholder_left` issue 会把命中单元格地址聚合进 context，
+       * 编辑把 TODO 写进一个新坐标（D9 / E11），读回时该坐标必须出现在 context 里 ——
+       * 与 G2 的判据同款，且"编辑前没有 D9/E11、编辑后有"能区分真假落盘。 */
+      {
+        const xlsxExternalPath = join(root, "g6-external.xlsx");
+        const externalJson = join(root, "g6-external.json");
+        writeFileSync(externalJson, JSON.stringify([["name", "qty"], ["external", 1]]));
+        const madeExternal = cliCreate(["create", "--type", "xlsx", "--from", externalJson, "--out", xlsxExternalPath]);
+        check("G6 xlsx 前置：外部内容样本生成成功", madeExternal.status === 0 && existsSync(xlsxExternalPath), madeExternal);
+        if (madeExternal.status === 0 && existsSync(xlsxExternalPath)) {
+          const externalBytes = readFileSync(xlsxExternalPath);
+          await conflictRoundtrip(
+            "G6 xlsx",
+            "xlsx",
+            () => {
+              const sampleJson = join(root, "g6.json");
+              writeFileSync(sampleJson, JSON.stringify([["name", "qty"], ["widget", 3]]));
+              const made = cliCreate(["create", "--type", "xlsx", "--from", sampleJson, "--out", join(root, "g6.xlsx")]);
+              check("G6 xlsx 前置：样本工作簿生成成功", made.status === 0, made);
+            },
+            [{ op: "set_cell", address: "D9", value: "TODO" }],
+            [{ op: "set_cell", address: "E11", value: "TODO" }],
+            externalBytes,
+            async (file, marker) => {
+              const r = cliJson(["sheet", "check", file]);
+              const issues = (r.envelope?.detail as { issues?: Array<{ code?: string; cell?: string; context?: string }> } | undefined)?.issues ?? [];
+              const context = issues.filter((i) => i.code === "placeholder_left").map((i) => i.context ?? "").join(" | ");
+              // 标记坐标按本轮 op 定：once → D9，again → E11。
+              const located = marker === "G6-NOREV" ? context.includes("E11") : context.includes("D9");
+              return {
+                landed: r.status === 0 && r.envelope?.status === "ok" && located,
+                detail: issues,
+              };
+            },
+          );
+        } else {
+          skip("G6 xlsx revision 冲突", "外部内容样本生成失败");
+        }
       }
     }
 
