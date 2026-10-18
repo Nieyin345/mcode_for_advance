@@ -63,8 +63,24 @@ export function createAssistantJob(sourceSessionId: string, projectId: string, w
   // 永不回收的设置(设置表每次写都要重写整个库文件)。
   const entries: Array<readonly [string, string]> = [[key(job.id), JSON.stringify(job)]];
   // Keep a bounded inbox; evicted ready payloads are no longer deliverable.
-  for (const prior of old.slice(19)) { prior.status = "expired"; prior.result = ""; entries.push([key(prior.id), JSON.stringify(prior)]); }
-  entries.push([indexKey(sourceSessionId), JSON.stringify([job.id, ...old.slice(0, 19).map(j => j.id)])]);
+  // 【MC-025 残口】**queued 包不参与淘汰**:它是一份尚未交付的承诺,目标下一次
+  // 开工就要来取。从前这里无条件把 `old.slice(19)` 标 expired —— 一份排了 20 轮以上
+  // 还没被目标取走的包会被**无声终止**,`.target.<目标>` 指针原地变成"悬挂在终结态"
+  // (正是过期补漏要消灭的形状,只是换了个入口)。排队包每个目标至多一份
+  // (`queueAssistantHandoff` 的互斥闸),留在收件箱里不会无界增长。
+  const keptIds: string[] = [job.id];
+  let keptEvictable = 1; // 新 job 自己占一个名额;其余名额留给最近的非排队 job
+  for (const prior of old) {
+    if (prior.status === "queued") { keptIds.push(prior.id); continue; }
+    if (keptEvictable < 20) { keptIds.push(prior.id); keptEvictable++; continue; }
+    prior.status = "expired"; prior.result = "";
+    entries.push([key(prior.id), JSON.stringify(prior)]);
+    // 防御:若将来有终结态仍带指针,清理与 job 终结同一事务(指针 CAS 与撤回/过期同款)。
+    if (prior.targetSessionId && SettingRepo.get(targetKey(prior.targetSessionId)) === prior.id) {
+      entries.push([targetKey(prior.targetSessionId), ""]);
+    }
+  }
+  entries.push([indexKey(sourceSessionId), JSON.stringify(keptIds)]);
   SettingRepo.setMany(entries);
   return job;
 }

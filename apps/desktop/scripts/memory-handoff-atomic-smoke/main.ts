@@ -71,7 +71,7 @@ const { initDb, flushDb } = await import("@main/store/db.js");
 // ⚠️ 这个 specifier 被 run.sh 的 --alias 换成 `stubs/repositories.ts`;桩 `export *`
 // 真模块,所以这里拿到的 SessionRepo/ProjectRepo 仍是真货。
 const { SessionRepo, ProjectRepo, SettingRepo } = await import("@main/store/repositories.js");
-const { armWriteFault } = await import("./stubs/repositories.js");
+const { armWriteFault, disarmWriteFault } = await import("./stubs/repositories.js");
 const store = await import("@main/memory/assistantStore.js");
 
 await initDb();
@@ -216,6 +216,115 @@ if (pass === "seed") {
   eq("撤回状态跨重启持久", store.readAssistantJob(f.cancelledJob)?.status, "cancelled");
   eq("撤回清掉的指针跨重启仍为空", SettingRepo.get(targetKeyOf(T3)), "");
   eq("撤回清掉的指针跨重启仍清(读口)", store.pendingAssistantHandoff(T3), null);
+
+  flushDb();
+  finish(pass);
+} else if (pass === "guard") {
+  console.log("【MC-025】第九趟:同进程守卫 —— 中途失败两键保持旧值、淘汰不吞排队包、坏存档 fail-closed");
+  const f = readFixture();
+
+  // 清场:verify-restart 遗留在 T2 的排队包(本趟要用 T2 做"两键皆旧"的判据)。
+  {
+    const leftover = store.pendingAssistantHandoff(T2);
+    if (leftover) store.consumeAssistantHandoff(T2, leftover.id);
+  }
+
+  // ── ① 写入中途失败(不是崩溃,是"第二次保存抛错")→ 两个键都保持旧值 ──────────
+  // 崩溃趟(exits)证明"没有补救代码"时不留半边;这一趟证明**故障可恢复**时也不留:
+  // setMany 事务在写之前被杀 → 同一进程里两个键都读回旧值。
+  {
+    const srcKey = `memory.assistant.source.${f.sourceId}`;
+    const indexBefore = SettingRepo.get(srcKey);
+    armWriteFault("throw", "memory.assistant.source.");
+    let createErr = "";
+    try { store.createAssistantJob(f.sourceId, PROJECT_ID, "worker-throw-create", "checkpoint"); } catch (e) { createErr = (e as Error).message; }
+    disarmWriteFault();
+    check("★ 中途失败(非崩溃):创建抛错且确实是注入的那一刀", createErr.includes("注入故障"), createErr);
+    eq("★ 中途失败:源索引保持旧值(不是一半新一半旧)", SettingRepo.get(srcKey), indexBefore);
+    eq("★ 中途失败:没有出现'行在、索引列不出'的不可见 job", invisibleJobs(f.sourceId).length, 0);
+    // 正控:解除武装后,同一动作整体成功。
+    const created = store.createAssistantJob(f.sourceId, PROJECT_ID, "worker-throw-retry", "checkpoint");
+    check("★ 中途失败后重试整体成功", store.listAssistantJobs(f.sourceId).some((j) => j.id === created.id));
+  }
+  // 转交:job 行 + 目标指针,抛错同样两键皆旧。
+  {
+    const g = readyJob();
+    const before = store.readAssistantJob(g.id);
+    const pointerBefore = SettingRepo.get(targetKeyOf(T2));
+    check("转交前:T2 没有待投递包(指针为清空哨兵)", !pointerBefore, pointerBefore);
+    armWriteFault("throw", "memory.assistant.target.");
+    let queueErr = "";
+    try { store.queueAssistantHandoff(g.id, f.sourceId, T2); } catch (e) { queueErr = (e as Error).message; }
+    disarmWriteFault();
+    check("★ 中途失败(非崩溃):转交抛错且确实是注入的那一刀", queueErr.includes("注入故障"), queueErr);
+    eq("★ 中途失败:job 仍是 ready(不半发表成 queued)", store.readAssistantJob(g.id)?.status, "ready");
+    eq("★ 中途失败:目标指针原字节未变(一个字节都没写)", SettingRepo.get(targetKeyOf(T2)), pointerBefore);
+    eq("★ 中途失败:目标读不到半份材料", store.pendingAssistantHandoff(T2), null);
+    // 正控:重试后整体可见,且之前的 ready 状态与正文未受损。
+    store.queueAssistantHandoff(g.id, f.sourceId, T2);
+    eq("★ 中途失败后重试整体可见", store.pendingAssistantHandoff(T2)?.id, g.id);
+    eq("重试后正文完好", store.pendingAssistantHandoff(T2)?.result, before?.result ?? "");
+    store.cancelAssistantJob(store.readAssistantJob(g.id)!);
+    eq("清场:T2 已空", store.pendingAssistantHandoff(T2), null);
+  }
+
+  // ── ② 并发交接的状态互斥(第二接收者/覆盖面)──────────────────────────────
+  // 主进程单线程,「并发」的现实形状是两个调用在同一 tick 内先后到达:后一个必须
+  // 看到前一个的结果并显式拒绝,不能静默覆盖前一份材料或排给第二个接收者。
+  {
+    const x = readyJob();
+    store.queueAssistantHandoff(x.id, f.sourceId, T1);
+    // 两个会话同时想交接到同一个目标 T1:后到者必须看到 x 已占位并拒绝。
+    const y = readyJob();
+    throws("★ 并发交接:后到目标已被占时显式拒绝,不覆盖前者", () => store.queueAssistantHandoff(y.id, f.sourceId, T1));
+    eq("★ 并发交接:先到者的材料仍在(没被静默顶掉)", store.pendingAssistantHandoff(T1)?.id, x.id);
+    // 同一包同时排给 T2:必须冲突,不能出现两个接收者。
+    throws("★ 并发交接:同一包不能同时排给两个目标", () => store.queueAssistantHandoff(x.id, f.sourceId, T2));
+    eq("★ 并发交接:没有第二个接收者", store.pendingAssistantHandoff(T2), null);
+    store.cancelAssistantJob(store.readAssistantJob(x.id)!);
+    eq("清场:撤回后 T1 空", store.pendingAssistantHandoff(T1), null);
+    // 重复投递同包同目标幂等(不是"后者覆盖前者",是同一结果)。
+    const z = readyJob();
+    const first = store.queueAssistantHandoff(z.id, f.sourceId, T1);
+    const second = store.queueAssistantHandoff(z.id, f.sourceId, T1);
+    check("★ 并发交接:同包同目标的重复投递幂等(同一 job id)", first.id === second.id && store.pendingAssistantHandoff(T1)?.id === z.id);
+    store.cancelAssistantJob(store.readAssistantJob(z.id)!);
+  }
+
+  // ── ③ 淘汰不能吞掉排队中的包(第五个发表点)────────────────────────────────
+  // 收件箱只留最近 20 条;一份**已 queued、目标还没取**的包排在窗口之外时,淘汰
+  // 必须放过它 —— 否则目标下一次开工读不到材料,指针还会悬挂在终结态。
+  {
+    const queued = readyJob();
+    store.queueAssistantHandoff(queued.id, f.sourceId, T2);
+    // 再建 25 条把 queued 挤到窗口之外。
+    for (let i = 0; i < 25; i++) readyJob();
+    eq("★ 淘汰窗口外的排队包仍可投递(不被无声终止)", store.pendingAssistantHandoff(T2)?.id, queued.id);
+    eq("★ 淘汰后没有指针悬挂在终结态", store.readAssistantJob(queued.id)?.status, "queued");
+    store.cancelAssistantJob(store.readAssistantJob(queued.id)!);
+  }
+
+  // ── ④ 坏存档 fail-closed —— 不当成空、不被覆盖 ─────────────────────────────
+  {
+    const srcKey = `memory.assistant.source.${f.sourceId}`;
+    const title = "源索引";
+    // 4a 源索引坏 JSON:读取必须报中文损坏(不是当空表),写入(创建新 job)不许覆盖坏字节。
+    const goodIndex = SettingRepo.get(srcKey);
+    SettingRepo.set(srcKey, "{ 半截写盘");
+    throws(`★ 坏${title}:读取报错而不是当成空(不静默)`, () => store.listAssistantJobs(f.sourceId));
+    throws(`★ 坏${title}:创建时拒绝,不以空索引作写入基准`, () => store.createAssistantJob(f.sourceId, PROJECT_ID, "worker-corrupt", "checkpoint"));
+    eq(`★ 坏${title}:拒绝写入后坏字节原样保留(没被空表盖掉)`, SettingRepo.get(srcKey), "{ 半截写盘");
+    SettingRepo.set(srcKey, goodIndex ?? "[]");
+    check("恢复索引后读取正常(健康路径不回归)", Array.isArray(store.listAssistantJobs(f.sourceId)));
+    // 4b job 本体坏:读口报中文损坏;目标指针指向坏 job 时 pending 必须 fail-closed(不可投递,
+    //    也不能把坏行当成新包重新发表)。
+    SettingRepo.set("memory.assistant.job.corrupt-guard", "{ broken");
+    throws("★ 坏 job 本体:读取报错而不是返回空 job", () => store.readAssistantJob("corrupt-guard"));
+    SettingRepo.set(targetKeyOf(T3), "corrupt-guard");
+    throws("★ 坏 job 本体:目标读取沿指针撞上坏行时显式报错,不当作没有", () => store.pendingAssistantHandoff(T3));
+    eq("★ 坏 job 本体:坏字节未被读路径覆盖", SettingRepo.get("memory.assistant.job.corrupt-guard"), "{ broken");
+    SettingRepo.deleteMany([targetKeyOf(T3), "memory.assistant.job.corrupt-guard"]);
+  }
 
   flushDb();
   finish(pass);
