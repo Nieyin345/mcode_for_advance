@@ -8,7 +8,7 @@ import {
   ModuleWorkflowGrantSchema, classifyModuleWorkflowGrants, serializeModuleWorkflowGrants,
   moduleWorkflowGrantKey, applyModuleWorkflowGrantChange,
 } from "@contracts/moduleCapability";
-import { EXAMPLE_MODULE, ModuleManifestSchema, ModuleInvokeSchema, ResourceSchema, missingCapabilityPermission, actionInvocationDenied } from "@contracts/modules";
+import { EXAMPLE_MODULE, ModuleManifestSchema, ModuleInvokeSchema, ResourceSchema, missingCapabilityPermission, actionInvocationDenied, resolvedContributionCapability } from "@contracts/modules";
 import { NodeRunnerSchema, isRunnerImplemented, isNodeRunnable, renderNodeTypeCatalog, showsNodeCapability, validateNodeParams, type NodeTypeManifest } from "@contracts/nodeType";
 
 let count = 0;
@@ -209,6 +209,33 @@ check("catalog shape accepts host-granted user targets but still rejects action 
   assert.equal(ModuleCatalogSchema.safeParse({ ...userCatalog, modules: [{ ...EXAMPLE_MODULE, id: "other.file-report" }] }).success, false, "unknown module prefix");
   assert.equal(ModuleCatalogSchema.safeParse({ ...userCatalog, capabilities: [{ id: "core.file.inspect", kind: "action", metadata }] }).success, false, "actions never become targets");
   assert.equal(ModuleCatalogSchema.safeParse({ ...userCatalog, workflowTargets: [{ ...userTarget, capabilityId: "core.file.info" }], capabilities: [{ id: "core.file.inspect", kind: "task", metadata }, { id: "core.file.info", kind: "query", metadata }] }).success, false, "target must match the contribution's capability");
+});
+// 【MC-035】扩展包的贡献写的是 `module.<短名>`,宿主发布的目标是分配后的
+// `module.<slug>.<短名>`。契约一致性校验必须走同一份分配规则;从前拿清单原文直接比,
+// 于是**任何被授予工作流运行权的扩展都会让整份目录被判非法**,而调用侧也因此把
+// 两种身份(清单引用 vs 注册表键)混为一谈。
+check("extension contribution identity is resolved through the host assignment rule", () => {
+  const extension = {
+    ...EXAMPLE_MODULE, id: "user.demo", permissions: ["resource.read"],
+    contributions: [{ ...EXAMPLE_MODULE.contributions[0], capability: "module.convert" }],
+    program: { source: "({ convert: async () => ({}) })" },
+  };
+  const extensionTarget = { moduleId: "user.demo", contributionId: "inspect", capabilityId: "module.demo.convert" };
+  const extensionCatalog = {
+    ...userCatalog,
+    modules: [extension],
+    capabilities: [{ id: "module.demo.convert", kind: "query" }],
+    workflowTargets: [extensionTarget],
+  };
+  assert.equal(ModuleCatalogSchema.safeParse(extensionCatalog).success, true, "a granted extension must not invalidate the whole catalog");
+  // 对照:目标写成清单原文 —— 那不是任何注册表键,必须拒(证明上面的绿来自映射而非宽放)。
+  assert.equal(ModuleCatalogSchema.safeParse({ ...extensionCatalog, workflowTargets: [{ ...extensionTarget, capabilityId: "module.convert" }] }).success, false, "the raw short-name reference is not a registry identity");
+  // 对照:指向别的扩展的分配 id 也必须拒(不能借映射规则冒充他人)。
+  assert.equal(ModuleCatalogSchema.safeParse({ ...extensionCatalog, workflowTargets: [{ ...extensionTarget, capabilityId: "module.other.convert" }] }).success, false, "assignment is bound to the owning module id");
+  // 内置侧原文即实际 id,同一函数不二次分配。
+  assert.equal(ModuleCatalogSchema.safeParse(userCatalog).success, true);
+  assert.equal(resolvedContributionCapability("core.file-report", "core.file.inspect"), "core.file.inspect");
+  assert.equal(resolvedContributionCapability("user.demo", "module.convert"), "module.demo.convert");
 });
 console.log(`${count} module contract checks passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

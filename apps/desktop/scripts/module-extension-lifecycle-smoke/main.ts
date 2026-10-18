@@ -21,6 +21,7 @@ import { ModuleHost } from "../../src/main/modules/ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "../../src/main/modules/fileCapabilities.js";
 import { runPermissionedProcess, permissionedFailure, permissionArgs, verifyPermissionedProgram } from "../../src/main/modules/permissionedProcessRunner.js";
 import { ModuleManifestSchema, ResourceSchema, ResultSchema } from "@contracts/modules";
+import { ModuleCatalogSchema } from "@contracts/moduleCapability";
 import { hostCapabilityDeclarationsFromCatalog, collectCapabilityInventory } from "../../src/main/orchestration/capabilityResolver.js";
 import { ModuleInstallSchema as IpcInstallSchema } from "@contracts/ipc";
 import { createHash } from "node:crypto";
@@ -517,6 +518,52 @@ try {
   await preflightHost.remove("user.lifecycle");
   eq("卸载后预检声明不再包含该扩展能力",
     hostCapabilityDeclarationsFromCatalog(preflightHost.catalog()).some((d) => d.id === "module.lifecycle.convert"), false);
+
+  // ── 9c.【MC-035】调用侧身份:扩展能力被授予工作流后,宿主发布的目录必须满足
+  // 冻结的 ModuleCatalogSchema,且「使用它的扩展」能按同一映射认出贡献。
+  // 从前契约 schema 拿清单原文(module.convert)比宿主分配 id(module.lifecycle.convert),
+  // 于是**任意**被授权的扩展都会让整份目录被判非法;目录面板同样拿原文比,扩展能力
+  // 永远显示"没有扩展使用"。
+  const identityHost = makeHost({ persist: async () => {} });
+  let savedGrants: string | null = null;
+  const grantHost = new ModuleHost({
+    ...ports({}),
+    readWorkflowGrants: () => savedGrants,
+    persistWorkflowGrants: async (text: string) => { savedGrants = text; },
+  });
+  for (const capability of fileCapabilities((candidate: string) => candidate === root)) grantHost.register(capability);
+  await grantHost.install(manifestOf());
+  const grantCandidate = grantHost.catalog().workflowGrantCandidates?.find((c) => c.moduleId === "user.lifecycle" && c.contributionId === "convert");
+  eq("扩展的只读贡献成为可授权候选,能力身份是宿主分配 id",
+    grantCandidate?.capabilityId, "module.lifecycle.convert");
+  await grantHost.issueWorkflowGrant({
+    moduleId: "user.lifecycle", moduleVersion: "1.0.0", contributionId: "convert",
+    capabilityId: "module.lifecycle.convert", projectPath: root,
+  });
+  const grantedCatalog = grantHost.catalog();
+  check("★ 被授权扩展发布的工作流目标用的是宿主分配 id(不是清单原文)",
+    grantedCatalog.workflowTargets?.some((t) => t.moduleId === "user.lifecycle" && t.contributionId === "convert"
+      && t.capabilityId === "module.lifecycle.convert") === true,
+    grantedCatalog.workflowTargets);
+  const catalogParse = ModuleCatalogSchema.safeParse(grantedCatalog);
+  check("★ 宿主发布含扩展目标的目录仍满足冻结的 ModuleCatalogSchema(不被自己的契约判非法)",
+    catalogParse.success, catalogParse.success ? undefined : catalogParse.error.issues);
+  // 用户模块包一层**内置**能力的贡献仍按原文成立(内置侧原文就是实际 id):
+  // 同一函数两类身份都有同一真相,不是只给扩展开了个特例。
+  await grantHost.install({ ...manifestOf({ id: "user.wrapped" }), contributions: [{ ...manifestOf().contributions[0], capability: "core.file.inspect" }], program: undefined });
+  const mixedParse = ModuleCatalogSchema.safeParse(grantHost.catalog());
+  check("★ 同时装着扩展能力与内置能力引用的目录仍通过同一 schema",
+    mixedParse.success, mixedParse.success ? undefined : mixedParse.error.issues);
+  eq("内置能力引用仍是原文,不被二次分配",
+    grantHost.catalog().modules.find((m) => m.id === "user.wrapped")?.contributions[0]?.capability, "core.file.inspect");
+  // 反例(防空过):目标若指向原文,同一 schema 必须拒绝 —— 证明上面的绿是映射在起作用,
+  // 不是 schema 对目标一律放行。
+  check("★ 对照:目标写成清单原文 module.convert 时 schema 明确拒绝",
+    !ModuleCatalogSchema.safeParse({
+      ...grantedCatalog,
+      workflowTargets: [{ moduleId: "user.lifecycle", contributionId: "convert", capabilityId: "module.convert" }],
+    }).success);
+  eq("identityHost 未参与本段(守卫:各 host 状态独立)", identityHost.catalog().modules.length, 0);
 
   // ── 10. 权限参数本身:每一条都在,且不给目录 ───────────────────────────
   const args = permissionArgs(target, false);

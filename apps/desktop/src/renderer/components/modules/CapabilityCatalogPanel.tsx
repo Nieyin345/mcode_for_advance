@@ -1,4 +1,5 @@
 import type { ModuleCatalog } from "@contracts/modules";
+import { resolvedContributionCapability } from "@contracts/modules";
 import type { ModuleCapabilityDescriptor, ModuleCapabilityMetadata, ModuleWorkflowTarget } from "@contracts/moduleCapability";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Badge, Button, EmptyState, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
@@ -75,7 +76,11 @@ export function CapabilityCatalogPanel({
   const usedBy = (capabilityId: string): string[] =>
     catalog?.modules.flatMap((module) =>
       module.contributions
-        .filter((contribution) => contribution.capability === capabilityId)
+        // 【MC-035】扩展包的贡献写的是 `module.<短名>`，实际能力 id 是宿主分配的
+        // `module.<slug>.<短名>`。从前这里拿清单原文直接比 —— 扩展能力永远显示
+        // "没有扩展使用"，而用户模块包一层内置能力时却照常显示，两行字互相矛盾。
+        // 与宿主/契约用同一份映射（`resolvedContributionCapability`）。
+        .filter((contribution) => resolvedContributionCapability(module.id, contribution.capability) === capabilityId)
         .map((contribution) => `${module.title[locale]} · ${contribution.title[locale]}`),
     ) ?? [];
   return (

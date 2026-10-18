@@ -53,6 +53,20 @@ const corruptGrantCatalog=ModuleCatalogSchema.parse({
   workflowGrantCandidates:[grantCandidate],
   workflowGrantStatus:{archive:"corrupt",reason:"第 1 条授权记录形状不合法"},
 });
+/** 【MC-035】扩展能力"使用它的扩展"夹具:贡献写清单短名 `module.convert`,实际能力 id 是
+ *  宿主分配的 `module.demo.convert` —— 面板必须按同一份映射认出来。从前拿原文直接比,
+ *  列表里永远是"当前没有扩展使用此能力",而用户模块包一层内置能力时又照常显示。 */
+const extensionCatalog=ModuleCatalogSchema.parse({
+  modules:[{
+    ...example,id:"user.demo",title:{zh:"示例扩展",en:"Demo extension"},
+    contributions:[{
+      ...inspectContribution,title:{zh:"转换",en:"Convert"},capability:"module.convert",
+      view:{title:{zh:"结果",en:"Result"},fields:[{key:"text",title:{zh:"文本",en:"Text"}}]},
+    }],
+    program:{source:"({ convert: async () => ({}) })"},
+  }],
+  capabilities:[{id:"module.demo.convert",kind:"query"}],
+});
 /** 【MC-036】授权替身的状态:签发 / 撤销改它,`catalog` 从它派生 —— 组件签发后会
  *  `refetch()` 重读目录,所以替身必须"记住"刚刚发生的授权,否则面板永远画不出已授权态。 */
 const grantedState={on:false,projectsVariant:false};
@@ -63,10 +77,10 @@ const grantedCatalog=():unknown=>grantedState.on
       workflowGrantCandidates:[{...grantCandidate,grants:[{projectPath:join(root,"project"),grantedAt:1}]}],
     })
   : structuredClone(grantCatalog);
-type Mode="hold"|"fail"|"empty"|"real"|"legacy"|"rich"|"grants"|"grants-corrupt";
+type Mode="hold"|"fail"|"empty"|"real"|"legacy"|"rich"|"grants"|"grants-corrupt"|"extension";
 let mode:Mode="hold";const held:Call[]=[];
 interface Call {id:number;name:string;input:unknown}
-const catalog=():unknown=>{if(mode==="fail")throw Error("catalog unavailable (fixture)");if(mode==="empty")return {modules:[],capabilities:[]};if(mode==="legacy")return structuredClone(legacy);if(mode==="rich")return structuredClone(rich);if(mode==="grants")return structuredClone(grantedCatalog());if(mode==="grants-corrupt")return structuredClone(corruptGrantCatalog);return host.catalog();};
+const catalog=():unknown=>{if(mode==="fail")throw Error("catalog unavailable (fixture)");if(mode==="empty")return {modules:[],capabilities:[]};if(mode==="legacy")return structuredClone(legacy);if(mode==="rich")return structuredClone(rich);if(mode==="grants")return structuredClone(grantedCatalog());if(mode==="grants-corrupt")return structuredClone(corruptGrantCatalog);if(mode==="extension")return structuredClone(extensionCatalog);return host.catalog();};
 const projectRoot=join(root,"project");
 /** 项目行里显示的路径 —— 与授权记录里的写法**故意不同**(见 grants 用例)。 */
 const projectVariantRoot=projectRoot+"/./";
@@ -132,6 +146,14 @@ await withAuditPage(dir,async(page:Page)=>{
   assert.equal(await page.eval(`document.querySelector("${info} [data-testid=capability-workflow]").dataset.usable`),"false");assert.equal(await page.eval("!!document.querySelector('[data-testid=capability-workflow-none]')"),false);
   pass("workflow usability comes only from host workflowTargets; the user module using the same capability is not offered");
   await page.screenshot("catalog-rich.png");
+  // 【MC-035】扩展能力的贡献写的是清单短名(`module.convert`),注册表键是宿主分配的
+  // `module.demo.convert`。面板必须按同一份映射认出来 —— 从前这里永远显示
+  // "当前没有扩展使用此能力",而同一面板对包了内置能力的用户模块却照常显示。
+  await open("","extension","UI 扩展");await page.waitFor(inDialog("[data-testid=capability-entry]"));
+  const extensionInspect="[data-capability-id='module.demo.convert']";
+  assert.equal(await page.eval(`document.querySelector("${extensionInspect} [data-testid=capability-used-by]").textContent.includes("当前没有扩展使用此能力")`),false);
+  assert.match(await text(`${extensionInspect} [data-testid=capability-used-by]`),/示例扩展 · 转换/);
+  pass("an extension contribution is attributed to its host-assigned capability id (not the raw short name)");
   await open("","empty","UI 扩展");await page.waitFor(inDialog("[data-testid=capability-catalog-empty]"));assert.equal(await page.eval("document.querySelectorAll('[data-testid=capability-entry]').length"),0);pass("empty catalog has an explicit empty state");
   await open("locale=en","rich","UI extensions");await page.waitFor(inDialog("[data-testid=capability-entry]"));
   assert.match(await text("[role=dialog] [data-testid=capability-catalog]"),/Capability catalog/);assert.match(await text(`${inspect} [data-testid=capability-kind]`),/Task/);assert.match(await text(`${inspect} [data-testid=capability-limits]`),/max 32 MiB per file/);assert.match(await text("[data-capability-id='core.file.legacy'] [data-testid=capability-metadata-missing]"),/No descriptive metadata/);

@@ -67,6 +67,24 @@ export function extensionCapabilityAssignment(moduleId: string, shortName: strin
   return MODULE_CAPABILITY_PREFIX + slug + "." + shortName;
 }
 
+/** 清单贡献引用(`contributions[].capability`)→ **注册表里的实际能力 id**。
+ *
+ * 【MC-035】内置/宿主能力原样返回;`module.<短名>` 按宿主分配规则展开成
+ * `module.<slug>.<短名>`。宿主侧的分配点(`ModuleHost.capabilityIdOf`)与这里同一规则;
+ * 本函数是**契约与渲染端**消费的那一份:
+ *
+ *   - `ModuleCatalogSchema` 的 workflowTarget 一致性校验 —— 它从前拿清单原文
+ *     (`module.convert`)去比宿主发布的目标 id(`module.lifecycle.convert`),于是
+ *     **只要一个用户扩展被授予工作流运行权,整份目录就被冻结 schema 判非法**;
+ *   - 能力目录面板的「使用它的扩展」—— 同样拿原文比,扩展能力永远显示没人使用,
+ *     而用户模块包一层内置能力时又照常显示,用户看到的两行字互相矛盾。
+ *
+ * 映射只有这一份;调用侧需要把清单引用翻成注册表键时不得再手写拼接。 */
+export function resolvedContributionCapability(moduleId: string, capabilityRef: string): string {
+  const short = extensionCapabilityShortName(capabilityRef);
+  return short === undefined ? capabilityRef : extensionCapabilityAssignment(moduleId, short);
+}
+
 /**
  * 【MC-035】模块权限枚举的**唯一一份**。
  *

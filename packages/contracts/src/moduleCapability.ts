@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { LocalizedTextSchema, ModuleInvokeSchema, ModuleManifestSchema, ModulePermissionListSchema } from "./modules.js";
+import { LocalizedTextSchema, ModuleInvokeSchema, ModuleManifestSchema, ModulePermissionListSchema, resolvedContributionCapability } from "./modules.js";
 
 /** Discovery only: this bounded subset is NOT a runtime JSON Schema engine.
  * Runtime input/output Zod checks and host authorization remain authoritative. */
@@ -419,12 +419,21 @@ export const ModuleCatalogSchema = z.object({
     const module = catalog.modules.find(item => item.id === target.moduleId);
     const contribution = module?.contributions.find(item => item.id === target.contributionId);
     const capability = catalog.capabilities.find(item => item.id === target.capabilityId);
-    // 【MC-036】`user.*` 目标在这里是**合法形状**：宿主只为「有有效工作流授权」的用户
+    // 【MC-035】`user.*` 目标在这里是**合法形状**：宿主只为「有有效工作流授权」的用户
     // 模块发布目标，是否为真的授权由 ModuleHost 判定（本 schema 只查引用一致性，
     // 见上方注释）。内置目标仍必须是 `core.*` —— 伪造的 `core.` 前缀在宿主那侧过不了
     // `addBuiltin` 登记表，这里再保一道形状约束。读写类别对谁都不许是 action。
+    //
+    // 贡献引用与目标 id 的比对走**宿主分配规则**（`resolvedContributionCapability`）：
+    // 扩展包的贡献写的是 `module.<短名>`，宿主发布的是 `module.<slug>.<短名>`。从前
+    // 这里拿清单原文直接 `===`，于是**任何被授予工作流运行权的扩展都会让整份目录
+    // 被判非法**；而拿原文比对又恰是调用侧"能力身份被混淆"的那个形状 —— 两边只认
+    // 一份映射，扩展侧与内置侧（原文就是实际 id）才都有同一真相。
+    const declared = module !== undefined && contribution !== undefined
+      ? resolvedContributionCapability(module.id, contribution.capability)
+      : undefined;
     const knownPrefix = module !== undefined && (module.id.startsWith("core.") || module.id.startsWith("user."));
-    if (!knownPrefix || contribution?.capability !== target.capabilityId || !capability || capability.kind === "action") {
+    if (!knownPrefix || declared !== target.capabilityId || !capability || capability.kind === "action") {
       issue("Workflow target must reference a listed read-only contribution (core builtin or host-granted user module)");
     }
   }
