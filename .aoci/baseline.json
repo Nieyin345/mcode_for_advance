@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-18T02:45:35Z",
+  "updated_at": "2026-10-18T08:57:02Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -77,9 +77,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "3a4f6a13b1d7f7562ded1ca5f79839214220b84bb8ea4eb497096dd140fa1e21",
-      "size": 1194457,
-      "normalized_sha256": "3a4f6a13b1d7f7562ded1ca5f79839214220b84bb8ea4eb497096dd140fa1e21"
+      "sha256": "677b22dc25078aab6a025102a3d02be127eb6794371b1be244b21373d1159db2",
+      "size": 1196113,
+      "normalized_sha256": "677b22dc25078aab6a025102a3d02be127eb6794371b1be244b21373d1159db2"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1322,6 +1322,36 @@
       "sha256": "3b069128c5e9a40c8f6409ba0f23244d318272b8e20e1d20b85b0fd18d1e3cbd",
       "size": 612,
       "normalized_sha256": "3b069128c5e9a40c8f6409ba0f23244d318272b8e20e1d20b85b0fd18d1e3cbd"
+    },
+    "apps/desktop/scripts/document-view-electron-smoke/build.mjs": {
+      "role": "index",
+      "sha256": "f7ba84d9102c829854315341ca2432c9a55e8bcc03aa89508a3dab4190d33db6",
+      "size": 4820,
+      "normalized_sha256": "f7ba84d9102c829854315341ca2432c9a55e8bcc03aa89508a3dab4190d33db6"
+    },
+    "apps/desktop/scripts/document-view-electron-smoke/electron-host.cjs": {
+      "role": "index",
+      "sha256": "dc855ca8effe59717b9f2e594fd1947759e821be03a9ec0076f83bb145937afd",
+      "size": 1566,
+      "normalized_sha256": "dc855ca8effe59717b9f2e594fd1947759e821be03a9ec0076f83bb145937afd"
+    },
+    "apps/desktop/scripts/document-view-electron-smoke/probe.ts": {
+      "role": "index",
+      "sha256": "f23bcdef90a0970dadf1c4a36f444dd3193617be8b003867ad18eb5615ec225a",
+      "size": 14977,
+      "normalized_sha256": "f23bcdef90a0970dadf1c4a36f444dd3193617be8b003867ad18eb5615ec225a"
+    },
+    "apps/desktop/scripts/document-view-electron-smoke/run.sh": {
+      "role": "index",
+      "sha256": "dde19c5f100e4bb7f9be560dc5ee864364747fbbe3d7c3a9cb0cf025ba82e19d",
+      "size": 598,
+      "normalized_sha256": "dde19c5f100e4bb7f9be560dc5ee864364747fbbe3d7c3a9cb0cf025ba82e19d"
+    },
+    "apps/desktop/scripts/document-view-electron-smoke/stubs/window.ts": {
+      "role": "index",
+      "sha256": "c82841b00b6c4203b188348caa5b5df11565d135db5b8348f96f3e667df425c5",
+      "size": 689,
+      "normalized_sha256": "c82841b00b6c4203b188348caa5b5df11565d135db5b8348f96f3e667df425c5"
     },
     "apps/desktop/scripts/document-view-host-smoke/main.ts": {
       "role": "index",
@@ -8441,9 +8471,9 @@
     },
     "apps/desktop/src/main/document/documentViewHost.ts": {
       "role": "index",
-      "sha256": "d6eee80e14a5ad76a3e36975aef313547f679a86ce60a181507d8193d123995d",
-      "size": 23155,
-      "normalized_sha256": "d6eee80e14a5ad76a3e36975aef313547f679a86ce60a181507d8193d123995d"
+      "sha256": "dad6a6582f0de390105ba2357d33d1d11be4e3b6384bc83c3334dd342aa75a35",
+      "size": 23538,
+      "normalized_sha256": "dad6a6582f0de390105ba2357d33d1d11be4e3b6384bc83c3334dd342aa75a35"
     },
     "apps/desktop/src/main/document/documentViewPreload.ts": {
       "role": "index",

@@ -3318,7 +3318,7 @@ run.sh[TQ6T]: F:esbuild打包module-extension-lifecycle-smoke后node直跑 | R:c
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/src/main/document/===
 genofficeCli.ts[II8M]: F:GenOffice CLI受控适配层:docs/slides/sheet read、apply、convert、guide,解析--json信封并分类失败 | R:code:apps/desktop/src/main/lib/spawnRun.ts,code:apps/desktop/src/main/lib/pathGuard.ts | A:docsRead/docsApply/convertFile/guideOps/resolveGenofficeCliPath | S:路径围栏先于起进程;子进程不继承宿主env;app_unavailable≠failed;CLI是仓库内固定commit快照
-documentViewHost.ts[IS9L]: F:受控WebContentsView宿主:docId复用、URL围栏、bounds/显隐/保活/销毁、失败诊断、openPath | R:code:apps/desktop/src/main/ipc/documentView.ts,code:packages/contracts/src/ipc/documentView.ts | A:DocumentViewHost;checkDocumentViewUrl;openPath/docIdForSender | S:URL只放行file://与本机回环;拒绝先拒后建;openPath围栏在发消息前;推给页面必须用vendor的menu:command+open-path(自定义通道=发了没人收);docId只认event.sender
+documentViewHost.ts[IS9L]: F:受控WebContentsView宿主:docId复用、URL围栏、bounds/显隐/保活/销毁、失败诊断、openPath、内部句柄 | R:code:apps/desktop/src/main/ipc/documentView.ts,code:packages/contracts/src/ipc/documentView.ts | A:DocumentViewHost;checkDocumentViewUrl;openPath/docIdForSender/webContentsOf | S:URL只放行file://与本机回环;拒绝先拒后建;openPath围栏在发消息前;推给页面必须用vendor的menu:command+open-path(自定义通道=发了没人收);docId只认event.sender;webContentsOf不进RpcMap
 documentViewPreload.ts[ES9S]: F:视图最小preload桥:openDocxPath上送+onMenuCommand接收+写死只读默认值 | R:code:apps/desktop/src/main/document/documentViewHost.ts,code:apps/desktop/src/main/ipc/documentView.ts | A:openDocxPath;onMenuCommand;getLanguage/getTheme | S:不暴露ipcRenderer/文件框/AI/知识库;对象上未定义的能力即降级;接收必须订阅menu:command且与宿主常量逐字对齐(缺接收=断链);页面不传身份
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/genoffice-format-gates-smoke/===
@@ -3370,4 +3370,13 @@ run.sh[TQ7T]: F:打包agent-guide套件,换electron/dataRoot/repositories/窗口
 
 ===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/agent-guide-smoke/stubs/===
 repositories.ts[TQ4S]: F:SettingRepo换内存表,其余仓库转发真实现 | R:code:apps/desktop/src/main/store/repositories.ts | A:__clearSettings;SettingRepo | S:转发真模块必须用相对路径(否则alias自指成环);每套自持替身不跨套复用
+
+===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/document-view-electron-smoke/===
+build.mjs[TQ7S]: F:真Electron U1启动器:打包probe与视图preload,隔离env,起真Electron二进制 | R:code:apps/desktop/src/main/document/documentViewPreload.ts | A:esbuild.build;spawnSync(electron) | S:preload必须CJS且与宿主resolveViewPreload找的documentViewPreload.js同名;window.js换桩(真模块拖sherpa原生);exit 0且每条断言PASS才算过
+electron-host.cjs[TQ4T]: F:隔离Electron宿主:app所有路径重指到MCODE_DV_DIR,隐藏窗,只由启动器判成败 | R:- | A:app.setPath;runDocumentViewProbe | S:路径重指必须在whenReady之前;window-all-closed置空否则失败会变exit 0
+probe.ts[TU8M]: F:真Electron验文档视图:挂载/bounds/preload注入/openPath端到端/围栏/hide保活/show/身份反查/close/dispose | R:code:apps/desktop/src/main/document/documentViewHost.ts,code:apps/desktop/src/main/document/documentViewPreload.ts | A:runDocumentViewProbe | S:必须注册到真ipcMain(假对象会让openDocxPath静默No handler);hide断言须分清快照逻辑几何与视图实际bounds;页面自造不依赖genoffice构建
+run.sh[TQ3T]: F:真Electron U1套件入口 | R:- | A:build.mjs | S:没有Electron二进制就显式失败不联网下载
+
+===D:/destop/work_space/work_for_reseach/mcode/apps/desktop/scripts/document-view-electron-smoke/stubs/===
+window.ts[TQ4T]: F:@main/window.js替身只给U1探针 | R:- | A:getMainWindow | S:必须换:真模块拖sherpa-onnx原生模块esbuild解不了;探针显式注入窗口用不到默认解析器
 
