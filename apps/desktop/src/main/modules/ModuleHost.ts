@@ -53,6 +53,25 @@ export interface ActionApprovalRequest {
    *  "要不要让这个扩展联网",而不是"要不要让它改文件"。 */
   scope?: "write" | "network";
 }
+
+/** 【ARC-006 Gate E】**一次模块变更（安装/升级/卸载）的副作用诊断**。
+ *
+ *  升级换了执行体 / 卸载时，旧版本**正在运行**的任务必须被取消 —— 否则它们跑完后
+ *  会把结果写回一个已经不存在的模块版本（"取消后又被算成功"的反面：没人取消，
+ *  一个本应作废的执行体继续影响世界）。取消是**协作式**的：走任务自己的
+ *  `AbortController`（扩展代码拿到的是 `signal`），不杀进程。
+ *
+ *  `cancelledTasks` 是这次真正被取消的任务数；`cancelFailures` 是取消时抛错的任务
+ *  与原因（如实上报，不静默吞）。两者都随 `install`/`remove` 的结果一起交给调用方，
+ *  IPC 层可经 `onChanged` 端口把它写进诊断日志。 */
+export interface ModuleChangeOutcome {
+  moduleId: string;
+  /** 这次变更取消掉的运行中任务数。 */
+  cancelledTasks: number;
+  /** 取消失败的任务（理论上 `cancel` 是同步内存操作，不会失败；保留出口是为了
+   *  将来若引入异步收尾，失败也必须可见）。 */
+  cancelFailures: Array<{ taskId: string; reason: string }>;
+}
 type LiveTask = { snapshot: ModuleTask; controller: AbortController; requestKey: string; fingerprint: string; timer: ReturnType<typeof setTimeout> };
 
 /** 【MC-036】签发 / 撤销授权的入参形状 —— 与记录同形但**不带** `grantedAt`(签发时补,
@@ -107,6 +126,10 @@ export class ModuleHost {
      * 这与 `requestApproval` 的取向一致 —— 没有安全通道时不执行,而不是默认放行。 */
     verifyProgram?(source: string, capabilities: readonly string[], timeoutMs: number | undefined):
       Promise<{ ok: true } | { ok: false; reason: string }>;
+    /** 【ARC-006 Gate E】模块变更的**副作用诊断端口**（可选）。`install`/`remove` 在
+     *  事务内取消掉运行中任务之后回调一次；生产装配把它写进日志/诊断，无头套件可
+     *  直接收集。缺省 = 不报告（诊断不改变事务结果）。 */
+    onChanged?(outcome: ModuleChangeOutcome): void;
   }) {}
 
   /** 【MC-035】构造一条能力注册记录 —— **只校验、只构造,不碰任何注册表**。
@@ -387,11 +410,20 @@ export class ModuleHost {
         }
         throw error;
       }
+      // 【ARC-006 Gate E】换了执行体就把旧版本**正在运行**的任务取消掉 —— 否则它们
+      // 跑完后会把结果写回一个已不存在的版本（旧执行体继续影响世界）。放在清单
+      // 落盘之后、换执行体之前：清单写失败时不误杀旧任务（失败升级 = 什么都没发生）。
+      // 取消是协作式的（任务的 AbortController），不杀进程；`finish` 是幂等的，
+      // 取消后迟到的结果不会把状态改回 completed（见 `finish` 的状态守卫）。
+      const change = executionChanged
+        ? this.cancelRunningTasksOf(manifest.id)
+        : { moduleId: manifest.id, cancelledTasks: 0, cancelFailures: [] };
       // 覆盖同 id 模块时先撤旧能力再换入新能力 —— 否则会沿用旧执行体
       // （台账：换版本不得继承旧实现）。commit 只做内存 put，不会失败。
       this.unbindProgram(manifest.id);
       this.commitProgramBindings(manifest.id, prepared);
       this.modules.set(manifest.id, manifest);
+      this.reportChange(change);
       return this.catalog();
     });
   }
@@ -417,6 +449,43 @@ export class ModuleHost {
     await this.writeGrantsOrRefuse(remaining);
     return { restore: archive.grants };
   }
+  /** 【ARC-006 Gate E】**取消某模块全部正在运行的任务**（升级换执行体 / 卸载时）。
+   *
+   *  ## 语义
+   *
+   *  - **协作式**：走任务自己的 `AbortController`（扩展代码拿到的是 `signal`），
+   *    不 kill 进程、不强制中断；
+   *  - **先结算再通知**：`finish(job, "cancelled")` 有状态守卫（只从 `running`
+   *    迁移一次），之后扩展代码即使无视 signal、迟到了结果，`finish` 也不会把它
+   *    改回 `completed` —— 取消后旧结果**不写回**；
+   *  - **如实上报**：返回被取消的任务数与取消时抛错的任务（`cancel` 是同步内存
+   *    操作，理论上不抛；出口留着是为了将来异步收尾失败也可见，不静默）。
+   *
+   * 与 `remove` 里原来那段内联循环是同一条判据；两处共用一个函数，避免漂移。 */
+  private cancelRunningTasksOf(moduleId: string): ModuleChangeOutcome {
+    const outcome: ModuleChangeOutcome = { moduleId, cancelledTasks: 0, cancelFailures: [] };
+    for (const job of [...this.jobs.values()]) {
+      if (job.snapshot.moduleId !== moduleId || job.snapshot.status !== "running") continue;
+      try {
+        this.cancel({ moduleId, taskId: job.snapshot.id });
+        outcome.cancelledTasks += 1;
+      } catch (error) {
+        outcome.cancelFailures.push({
+          taskId: job.snapshot.id,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return outcome;
+  }
+  /** 变更诊断只回调、不改变事务结果（没有端口 = 不报告，不是失败）。 */
+  private reportChange(outcome: ModuleChangeOutcome): void {
+    try {
+      this.options.onChanged?.(outcome);
+    } catch {
+      /* 诊断端点的异常不翻案一次已经落定的变更 */
+    }
+  }
   remove(id: string): Promise<ModuleCatalog> {
     return this.serializeMutation(async () => {
       if (this.builtinIds.has(id)) throw Error("Builtin module cannot be removed");
@@ -439,7 +508,10 @@ export class ModuleHost {
       // 【MC-035】撤销该模块派生的扩展能力 —— 能力注册表与模块清单同生共死:
       // 卸载后再调它的 `module.*` 能力只会在 invoke 的"能力不可用"处失败。
       this.unbindProgram(id);
-      for (const j of this.jobs.values()) if (j.snapshot.moduleId === id && j.snapshot.status === "running") this.cancel({moduleId: id, taskId: j.snapshot.id});
+      // 【ARC-006 Gate E】取消该模块所有运行中任务（协作式，走任务自己的 AbortSignal）。
+      // 与 install 共用同一个 `cancelRunningTasksOf` —— 两处各写一份循环迟早漂移。
+      const change = this.cancelRunningTasksOf(id);
+      this.reportChange(change);
       return this.catalog();
     });
   }

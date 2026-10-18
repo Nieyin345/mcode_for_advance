@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
+import { log } from "@main/lib/logger.js";
 import { EXAMPLE_MODULE, ModuleManifestSchema, moduleRefusalError, type ModuleManifest } from "@contracts/modules";
 import { ModuleHost, type ActionApprovalRequest } from "./ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "./fileCapabilities.js";
@@ -73,6 +74,16 @@ async function createHost(): Promise<ModuleHost> {
     resolveResource: (resource) => resolveModuleResource(resource, isKnownWorkspaceRoot),
     verifyProgram: (source, capabilities, timeoutMs) =>
       verifyPermissionedProgram(source, capabilities, timeoutMs ?? 10_000),
+    // 【ARC-006 Gate E】升级换执行体 / 卸载时取消运行中任务的诊断：取消数与非空失败
+    // 都落日志（取消失败不静默）。诊断不改变事务结果。
+    onChanged: (outcome) => {
+      if (outcome.cancelledTasks > 0) {
+        log.info(`[modules] ${outcome.moduleId}: 已取消 ${outcome.cancelledTasks} 个运行中任务`);
+      }
+      for (const failure of outcome.cancelFailures) {
+        log.warn(`[modules] ${outcome.moduleId}: 取消任务 ${failure.taskId} 失败：${failure.reason}`);
+      }
+    },
     persist:async manifests=>{
       const body=JSON.stringify(manifests,null,2);
       if(Buffer.byteLength(body)>512*1024)throw Error("Module store exceeds 512 KiB");

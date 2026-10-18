@@ -17,6 +17,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { ModuleHost } from "../../src/main/modules/ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "../../src/main/modules/fileCapabilities.js";
 import { runPermissionedProcess, permissionedFailure, permissionArgs, verifyPermissionedProgram } from "../../src/main/modules/permissionedProcessRunner.js";
@@ -972,6 +973,91 @@ try {
     eq("坏表原样保留(不被空表覆盖)", savedText, "{ not json");
     eq("★ 被拒后旧版仍可执行",
       brokenGrantHost.catalog().capabilities.some((c) => c.id === "module.lifecycle.convert"), true);
+  }
+
+  // ── 9f.【ARC-006 Gate E】升级/卸载取消运行中的旧执行体任务 ─────────────────
+  // 语义:协作式取消(任务自己的 AbortController),不杀进程;取消后迟到的结果
+  // **不写回**(finish 只从 running 迁移一次);无运行中任务时不误伤;上报取消数。
+  {
+    const outcomeLog: Array<{ moduleId: string; cancelledTasks: number; cancelFailures: unknown[] }> = [];
+    // 用对象持有（闭包里赋值 + 测试读数）：TS 对同作用域的 `let x: T | null = null`
+    // 会按控制流收窄成 null，闭包内的赋值不被看见 —— 对象属性没有这个问题。
+    const probe: { release: (() => void) | null; signal: AbortSignal | null } = { release: null, signal: null };
+    const slowHost = new ModuleHost({
+      ...ports({}),
+      persist: async () => {},
+      onChanged: (outcome) => { outcomeLog.push({ ...outcome }); },
+    });
+    for (const capability of fileCapabilities((candidate: string) => candidate === root)) slowHost.register(capability);
+    // 一个**可阻塞**的 task 能力:等到测试放行才返回结果,拿到的是任务自己的 signal。
+    slowHost.register({
+      id: "core.test.blocking", kind: "task", input: ResourceSchema, output: ResultSchema,
+      run: (resource, context) => new Promise((resolve) => {
+        probe.signal = context.signal;
+        probe.release = () => resolve({ text: "late-result-must-not-land" });
+        // 协作式:收到 abort 就立刻返回一个"被取消后仍返回"的结果 —— 用来断言迟到的
+        // 结果不会把 cancelled 状态改回 completed。
+        context.signal.addEventListener("abort", () => resolve({ text: "late-result-must-not-land" }), { once: true });
+        void resource;
+      }),
+    });
+    const slowManifest = (overrides: Record<string, unknown> = {}) => ({
+      ...manifestOf(overrides),
+      contributions: [
+        ...manifestOf().contributions,
+        {
+          id: "slow", slot: "files.context", title: { zh: "慢任务", en: "Slow task" },
+          capability: "core.test.blocking",
+          view: { title: { zh: "结果", en: "Result" }, fields: [{ key: "text", title: { zh: "文本", en: "Text" } }] },
+        },
+      ],
+      ...overrides,
+    });
+
+    // 健康安装照常(空过守卫)。
+    await slowHost.install(slowManifest());
+    eq("前置:带 task 贡献的扩展正常安装", slowHost.catalog().modules.length, 1);
+
+    // 无运行中任务时升级:不取消任何东西,也不上报失败。
+    outcomeLog.length = 0;
+    await slowHost.install(slowManifest({ version: "2.0.0" }));
+    eq("★ 无运行中任务时升级:取消数为 0(不误伤,防空过)", outcomeLog.at(-1)?.cancelledTasks, 0);
+
+    // 起一个运行中的 task,再升级 → 必须被取消。
+    const started = await slowHost.invoke({
+      moduleId: "user.lifecycle", contributionId: "slow",
+      resource: { projectPath: root, path: target }, requestId: "slow-1",
+    });
+    eq("前置:任务进入 running", (started as { type?: string; task?: { status?: string } }).task?.status, "running");
+    const taskId = (started as { task?: { id?: string } }).task?.id ?? "";
+    await delay(20); // 让 run 真的开始、signal 已建立
+    check("前置:扩展拿到了任务的 AbortSignal", probe.signal !== null && probe.signal.aborted === false);
+    outcomeLog.length = 0;
+    await slowHost.install(slowManifest({
+      version: "3.0.0",
+      program: { source: `({ convert: async () => ({ text: "v3" }) })` },
+    }));
+    eq("★ 升级时运行中的旧任务被取消(协作式,通过任务自己的 signal)", probe.signal?.aborted, true);
+    eq("★ 上报「已取消 N 个运行中任务」", outcomeLog.at(-1)?.cancelledTasks, 1);
+    eq("★ 取消后任务状态是 cancelled(不是 completed)", slowHost.task({ moduleId: "user.lifecycle", taskId }).status, "cancelled");
+    // 放行那个"迟到"的执行体:它 resolve 了结果,但 finish 的状态守卫必须挡住写回。
+    probe.release?.();
+    await delay(30);
+    const afterLate = slowHost.task({ moduleId: "user.lifecycle", taskId });
+    eq("★ 取消后旧结果不写回(状态仍是 cancelled)", afterLate.status, "cancelled");
+    eq("★ 取消后旧结果不写回(没有 result 字段)", afterLate.result, undefined);
+
+    // 卸载路径同样取消运行中任务并上报。
+    const second = await slowHost.invoke({
+      moduleId: "user.lifecycle", contributionId: "slow",
+      resource: { projectPath: root, path: target }, requestId: "slow-2",
+    });
+    const secondId = (second as { task?: { id?: string } }).task?.id ?? "";
+    await delay(20);
+    outcomeLog.length = 0;
+    await slowHost.remove("user.lifecycle");
+    eq("★ 卸载时同样取消运行中任务", slowHost.task({ moduleId: "user.lifecycle", taskId: secondId }).status, "cancelled");
+    eq("★ 卸载同样上报取消数", outcomeLog.at(-1)?.cancelledTasks, 1);
   }
 
   // ── 10. 权限参数本身:每一条都在,且不给目录 ───────────────────────────
