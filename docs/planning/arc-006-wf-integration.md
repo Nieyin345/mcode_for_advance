@@ -116,8 +116,16 @@ Node-RED 的 HTTP-in 端点发一个请求：
 「危险档仍要求审批通道，没有通道即 fail-closed」；真端到端（Node-RED 流真调 Mcode）
 留 U1。
 
-**当前状态**：这个 stdio server **尚未实现**。桥 2 因此仍处于设计阶段，
-NR4 未完成。
+**当前状态（2026-10-18 更新）**：stdio server 的**纯逻辑核心已落地**
+（提交 `13d0faeb`，`apps/desktop/src/main/mcp/hostMcpServer.ts`）：
+`tools()` 就是注入的 `appMcpTools()` 同一份（引用相等），参数按工具自带
+`inputSchema` 校验，危险/写档无审批端口一律 fail-closed，四类失败码可区分。
+`host-mcp-server-smoke` 50/50（7 项变异真红）。
+
+**仍未实现**：真实 stdio 传输（JSON-RPC 帧、stdin/stdout 生命周期、
+`ELECTRON_RUN_AS_NODE=1` 进程形态）、stdio 进程 → 主进程的中继（转给
+`invokeAppTool`、审批请求转回宿主 UI 弹卡）、`main/index.ts` 装配。
+桥 2 因此仍处于设计阶段，NR4 未完成。
 
 ### 桥 3：共享事件（可选，后做）
 Node-RED 的 webhook/定时器事件推给 Mcode 的自动化触发器（`automationRunner`），
