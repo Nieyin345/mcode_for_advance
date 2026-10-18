@@ -186,12 +186,36 @@ export function registerDocumentViewHandlers(
    */
   ipc.handle("mcode:document-view:save", async (evt: unknown, raw: unknown) => {
     try {
-      const input = raw as { bytes?: unknown; expectedRevision?: unknown } | null;
+      const input = raw as {
+        bytes?: unknown;
+        expectedRevision?: unknown;
+        newDocument?: unknown;
+        defaultName?: unknown;
+      } | null;
       const sender = (evt as { sender?: unknown } | null)?.sender;
       const docId = host.docIdForSender(sender);
       if (docId === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
       if (!(input?.bytes instanceof Uint8Array)) {
         return { ok: false, reason: "保存内容不是字节数组" };
+      }
+      /**
+       * 【ARC-007】`newDocument: true` —— vendor `saveDocxNew(defaultName, data)`
+       * （shared/ipc.ts:472-481，file-actions.ts:1101）的首次保存。
+       *
+       * 页面只传**文件名建议**与字节（vendor 语义本来就不传路径）。宿主把它当
+       * 「落在这个视图已打开文档所在目录里的一个新文件」：目录来自
+       * `openedFilePath`，文件名由宿主清洗 + 随机后缀保证不覆盖，路径从不回传到
+       * 页面（页面后续保存只走 `saveDocx`，宿主认 `openedFilePath`）。`defaultName`
+       * 非字符串按空名处理（宿主给 `untitled`）—— 不因一个坏字段拒绝一次合法保存。
+       */
+      if (input.newDocument === true) {
+        const defaultName = typeof input.defaultName === "string" ? input.defaultName : "";
+        const created = await host.saveNewFile(docId, input.bytes, withinWorkspace, defaultName);
+        if (!created.ok) {
+          // vendor 的 saveDocxNew 读 `result.error` 显示失败（file-actions.ts:1102-1107）。
+          return { ok: false, error: created.reason };
+        }
+        return { ok: true, path: created.filePath, bytes: created.bytes };
       }
       // 留位：当前 vendor preload 不发送版本；若将来页面携带（或宿主内部直接调用），
       // 字符串形态原样交给宿主作为 expected。非字符串一律忽略（不猜转换）。

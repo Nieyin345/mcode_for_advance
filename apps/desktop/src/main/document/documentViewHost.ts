@@ -92,6 +92,9 @@ import { withOsFileLease } from "@main/lib/osFileLease.js";
 // 本模块不能 import `pathGuard`（它会拉进 repositories → db → electron），
 // `realPathWithin` 就是为这种场景拆出来的零依赖叶子（已经给了 fileSnapshot 用）。
 import { physicalPath } from "@main/lib/realPathWithin.js";
+import { existsSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 import type { EditorCredentialPort } from "./documentViewCredentialBroker.js";
 
@@ -182,6 +185,49 @@ const VENDOR_OPEN_PATH_COMMAND = "open-path";
 /** 【ARC-007】保存通道的单次上限（256 MiB）。真实办公文档远小于它；超过基本可以
  *  确定是页面算错或投毒，放任它会一次性把内存和磁盘撑满。 */
 const DOC_VIEW_SAVE_MAX_BYTES = 256 * 1024 * 1024;
+
+/** Windows 保留设备名（大小写不敏感）。页面给的名字落在这些词上时一律改写。 */
+const WINDOWS_RESERVED_BASENAMES = new Set([
+  "con", "prn", "aux", "nul",
+  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`),
+]);
+
+/**
+ * 【ARC-007】把页面给的 `defaultName` 洗成一个**纯文件名**（不含目录）。
+ *
+ * 只取 `basename` 语义 + 去掉路径分隔符/控制字符/尾随点与空格；保留名
+ * （Windows `CON`/`NUL`…）替换为 `untitled`。输出永远不含 `/` `\` `..`，
+ * 因此 `join(dir, name)` 不可能逃出 `dir`。空结果 → `untitled.docx`。
+ */
+function safeNewDocName(raw: string): string {
+  const base = typeof raw === "string" ? raw : "";
+  // 先按两种分隔符切：页面的说法不可信，Windows 风格 `a\b` 在 POSIX 上也是分隔符。
+  const lastSegment = base.split(/[\\/]/).pop() ?? "";
+  let stem = lastSegment
+    .replace(/[\u0000-\u001f<>:"|?*]/g, "")
+    .replace(/^\.+/, "")
+    .replace(/[. ]+$/, "")
+    .replace(/\.docx$/i, "")
+    .trim();
+  if (stem === "" || WINDOWS_RESERVED_BASENAMES.has(stem.toLowerCase())) stem = "untitled";
+  return `${stem.slice(0, 120)}.docx`;
+}
+
+/**
+ * 【ARC-007】在 `dir` 里为新文件分配一个**不存在的**路径：
+ * `<stem>-<8位短随机>.docx`。与 vendor 的 `uniquePathIn` 同一职责（保证不覆盖），
+ * 但用随机后缀而不是 `(1)` 计数 —— 并发两个保存不会抢同一个名字。
+ * 8 位十六进制 + 最多 3 次重试；仍冲突则抛错（由调用方回 ok:false）。
+ */
+function uniquePathIn(dir: string, name: string): string {
+  const stem = name.replace(/\.docx$/i, "");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const candidate = join(dir, `${stem}-${randomUUID().replace(/-/g, "").slice(0, 8)}.docx`);
+    if (!existsSync(candidate)) return candidate;
+  }
+  throw new Error("无法在目录内分配一个不冲突的文件名（重试 3 次）");
+}
 
 interface LiveDocumentView {
   docId: string;
@@ -874,6 +920,124 @@ export class DocumentViewHost {
       }
       return { ok: false, reason: `写入失败：${err instanceof Error ? err.message : String(err)}` };
     }
+  }
+
+  /**
+   * 【ARC-007】**新建文档的首次保存** —— vendor `saveDocxNew(defaultName, data)`
+   * （`genoffice/apps/docs/src/shared/ipc.ts:472-481`，调用点
+   * `file-actions.ts:1101`）的宿主对端。
+   *
+   * ## vendor 语义（实读）
+   *
+   * 「first save of a new document: silently writes into the default folder, no
+   * dialog」。页面只传**文件名**（`defaultName`）与字节；vendor 主进程把它放进
+   * 自己的 `defaultSaveDir()` 并保证唯一（`docs-main.ts:5044-5084` 的
+   * `uniquePathIn(defaultSaveDir(), defaultName)`）。**页面从不传绝对路径** ——
+   * 它也没有"另存到任意路径"的表达方式（那是 `saveDocxAs`/`saveDocxTo`）。
+   *
+   * ## Mcode 的决定：路径完全由宿主给，页面连文件名都只是"建议"
+   *
+   *  - **目录**：这个视图**已打开文档**所在目录（`openedFilePath` 的
+   *    `dirname`）—— 那是唯一一个已经通过工作区围栏的落点。视图没有打开任何
+   *    文档 = 没有可信目录，**拒绝**（`{ ok:false }`），不退回"主进程任意目录"。
+   *  - **文件名**：`<页面给的 defaultName 的词干，清洗后>-<短随机>.docx`；清洗
+   *    去掉路径分隔符/保留名/控制字符，空则 `untitled`。随机后缀保证不覆盖已有
+   *    文件（vendor 的 `uniquePathIn` 同一职责）。**页面给的字符串永远不会被当成
+   *    路径**（`extname`/`basename` 语义只取名字，`join` 之后仍在目录内）。
+   *  - **围栏**：目标路径生成后**再问一次 `withinWorkspace`**（目录可能已从工作区
+   *    移除），并通过 `physicalPath` 归一确认父目录未被链接替换出工作区。
+   *  - **登记会话**：成功后走 `claimOpenedPath` 同一张会话表 —— 新文件从此是
+   *    这个视图的打开文档，之后的 `saveDocx` 走既有 `saveOpenedFile` 通道；
+   *    同时把 `openedFilePath` 指向它（页面后续的普通保存只认这个字段）。
+   *  - **大小上限**：与 `saveOpenedFile` 共用 `DOC_VIEW_SAVE_MAX_BYTES`；
+   *    空字节拒绝（不落一个 0 字节 docx）。
+   *
+   * 与 vendor 的差别只有一处，且是收紧：vendor 的 `defaultSaveDir()` 是应用级
+   * 目录；Mcode 把它换成"该视图已打开的文档所在工作区目录"。
+   */
+  async saveNewFile(
+    docId: string,
+    bytes: Uint8Array,
+    withinWorkspace: (p: string) => boolean,
+    defaultName: string,
+  ): Promise<
+    | { ok: true; bytes: number; filePath: string; revision: string | null }
+    | { ok: false; reason: string }
+  > {
+    const live = this.views.get(docId);
+    if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
+    const anchor = live.openedFilePath;
+    if (anchor === null) {
+      return {
+        ok: false,
+        reason: "这个视图还没有打开任何文档，无法确定新文件应落在哪个工作区目录",
+      };
+    }
+    if (!(bytes instanceof Uint8Array)) return { ok: false, reason: "保存内容不是字节数组" };
+    if (bytes.byteLength === 0) return { ok: false, reason: "保存内容为空（拒绝把文档清空后落盘）" };
+    if (bytes.byteLength > DOC_VIEW_SAVE_MAX_BYTES) {
+      return {
+        ok: false,
+        reason: `保存内容过大：${bytes.byteLength} 字节（上限 ${DOC_VIEW_SAVE_MAX_BYTES}）`,
+      };
+    }
+    const dir = dirname(anchor);
+    if (!withinWorkspace(dir)) {
+      return { ok: false, reason: `打开文档所在目录已不在已知工作区内：${dir}` };
+    }
+    const safeName = safeNewDocName(defaultName);
+    let target: string | null = null;
+    try {
+      target = uniquePathIn(dir, safeName);
+    } catch (err) {
+      return { ok: false, reason: `无法为新文档分配路径：${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (target === null || !withinWorkspace(target)) {
+      return { ok: false, reason: `新文档路径不在已知工作区内：${String(target)}` };
+    }
+    // 父目录的物理形态也必须仍在工作区内（链接/junction 替换目录的绕过）。
+    const physicalTarget = physicalPath(target);
+    if (physicalTarget === null || !withinWorkspace(physicalTarget)) {
+      return { ok: false, reason: `新文档路径的物理位置不在已知工作区内：${target}` };
+    }
+    // ⚠️ 顺序：**先写盘、后登记会话**。反过来的话，写失败时的回滚会连视图原有的
+    // 打开会话一起摘掉（claimOpenedPath 会先释放旧路径的会话），失败的新建会把
+    // 视图的既有文档变成"打开记录已失效"。随机文件名保证并发写在盘上不会撞。
+    let revision: string | null;
+    try {
+      revision = await withOsFileLease(target, async (real): Promise<string | null> => {
+        await this.beforeAtomicReplace(real);
+        await atomicReplaceFile(real, bytes);
+        return fileContentVersion(real);
+      });
+    } catch (err) {
+      if (err instanceof Error && /^FILE_VERSION_CONFLICT/.test(err.message)) {
+        return {
+          ok: false,
+          reason:
+            "目标路径正被另一个进程写入（跨进程文件租约未取得）—— 本次保存未执行，请稍后重试。",
+        };
+      }
+      return { ok: false, reason: `写入失败：${err instanceof Error ? err.message : String(err)}` };
+    }
+    const claim = this.claimOpenedPath(docId, target, live.view.webContents);
+    if (!claim.ok) {
+      // 盘上已写出的新文件没有主人：同步删掉，不留孤儿（目标名是随机分配的，删除安全）。
+      try {
+        rmSync(target, { force: true });
+      } catch {
+        /* 删除失败只影响一次清理，不影响拒绝语义 */
+      }
+      return { ok: false, reason: claim.reason };
+    }
+    const advanced = Promise.resolve(revision);
+    live.openedFilePath = target;
+    live.openedFileRevision = advanced;
+    claim.session.revision = advanced;
+    live.lastFailure = undefined;
+    live.lastSaveConflict = undefined;
+    log.info(`document view saved new: ${docId} ${target} (${bytes.byteLength} bytes)`);
+    return { ok: true, bytes: bytes.byteLength, filePath: target, revision };
   }
 
   /**

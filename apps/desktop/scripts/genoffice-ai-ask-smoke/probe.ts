@@ -1,82 +1,121 @@
 /**
  * 【ARC-007 / GenOffice AI 交互】真 Electron：真实 docs 页 + 生产最小 preload 下，
- * 验证用户点名称赞的完整旅程：
+ * 验证用户点名称赞的完整旅程 + **AI 改完之后的保存**：
+ *
  *   前半段「选中 → Ask AI chip → 输入气泡 → 加入队列 → 侧栏队列行」；
  *   后半段「队列发送 → 聊天 user 气泡 → 主进程流式请求（本地 mock 端点）
- *          → 模型工具调用 → 文档真的被改」。
+ *          → 模型工具调用 → 文档真的被改」；
+ *   保存段「run 结束的静默首存（vendor `saveDocxNew`）→ 落到工作区内、
+ *          盘上字节是真的 docx、状态栏不误报」。
+ *
+ * ## 本套件使用**真 `DocumentViewHost`**（不是 BrowserWindow 裸探针）
+ *
+ * 保存段的被测对象是生产代码：页面的 `saveDocxNew` → preload 内部保存通道
+ * → `ipc/documentView.ts` 的 `newDocument` 分支 → `host.saveNewFile`。探针因此
+ * 用真宿主建视图（真 `WebContentsView` + 同目录 preload），并在真 `ipcMain` 上
+ * 注册**真** `registerDocumentViewHandlers`。`withinWorkspace` 由探针注入
+ * （生产是 `findContainingWorkspaceRoot` 那一份；探针用「路径在套件 workspace
+ * 目录内」——判据形状相同，避免把 db/项目仓库拖进本套件）。
  *
  * ## 链路与 vendor 源码依据
  *
- * 前半段：
- *  1. 选中：`AiAskPopover.tsx:133-165`（`!selection.empty && editor.isFocused`）→
- *     `.ai-ask-trigger`（:397-414）；
- *  2. 弹输入框：`.ai-ask-pop`（:273）/ `.ai-ask-pop-input`（:306）；
- *  3. 确认入队：`.ai-ask-confirm`（:377）→ `App.tsx:6284 queueAdd` →
- *     `EditQueueCard` 的 `.ai-queue-row`（EditQueueCard.tsx:87）。
- *
- * 后半段：
- *  4. 点「发送 N 条修改」（`.ai-queue-send`，EditQueueCard.tsx:195）→
- *     `AiPanel.sendQueue`（:1200-1214）→ `runWith(instruction, display)` →
- *     聊天 `chat` 状态追加 user 条目（:1146-1157）→ 渲染 `.ai-msg-user`；
- *  5. `createElectronTransport`（renderer/ai/transport.ts:7-17）把请求经
- *     `window.desktop.aiStream` 送主进程；主进程 `ai:stream` handler
- *     （docs-main.ts:4084-4205）做 schema 校验 → `streamForProvider`
- *     （stream.ts:18）→ `streamOpenAiCompatible`（openai-compatible.ts:169）→
- *     `aiFetch(endpointUrl(baseUrl,'chat/completions'))`。**请求由主进程发起**
- *     （渲染端 CORS 不参与）。
- *  6. 模型回 `tool-call`（`delta.tool_calls` 流式分片）→ 主进程转
- *     `ai:stream-chunk(type='tool-call')` → `AgentLoop` 执行 skill 的
- *     `executeTool`（loop.ts:1176）→ docs 的 `replace_blocks` 执行器
- *     （tools.ts:1437）真的改 Tiptap 文档。
+ *  - 选中 → chip：`AiAskPopover.tsx:133-165`；
+ *  - 入队：`.ai-ask-confirm`（:377）→ `App.tsx:6284 queueAdd`；
+ *  - 发送：`.ai-queue-send`（EditQueueCard.tsx:195）→ `AiPanel.sendQueue`（:1200）
+ *    → `runWith` → `.ai-msg-user`（:1146-1157）；
+ *  - 传输：`createElectronTransport`（renderer/ai/transport.ts:7-17）→
+ *    `window.desktop.aiStream` → 主进程 `ai:stream` handler（docs-main.ts:4084）；
+ *  - 工具：`streamForProvider`（stream.ts:18）→ `AgentLoop` → docs skill 的
+ *    `replace_blocks`（tools.ts:1437）；
+ *  - **保存**：run 结束 `ai-docs-run-done`（App.tsx:5386-5396）→ `save(false,true)`
+ *    → `file-actions.ts:1101` 的 `saveDocxNew(defaultName, data)` →
+ *    `shared/ipc.ts:472-481` → preload → 宿主 `saveNewFile`。
  *
  * ## mock 注入（绝不联网）
  *
- *  - 本探针在 Electron **主进程**起 `node:http` 服务，只绑 `127.0.0.1`、端口 0
- *    （内核分配）；handler 里直接复用 vendor 的真协议栈
- *    `streamForProvider`（packages/ai-provider/src/stream.ts）——不手写 SSE 解析，
- *    mock 只负责按 OpenAI chat-completions 流式格式吐分片。
- *  - preload 侧：`build.mjs` 在**打包后的生产 bundle** 末尾机械追加三个桥桩
- *    （`aiStream`/`aiStreamCancel`/`onAiStream`）并把 `getAiSettings` 覆盖为指向
- *    mock 的 custom provider。生产源码一行不动；本文件末尾有源码级断言钉住
- *    「生产 preload 里没有这些键」。
- *  - provider 配置：`provider:'custom'`，`baseUrl:http://127.0.0.1:<port>`，
- *    `profile.api:'openai-compatible'`（registry.ts:301-320 的 custom 分支）。
- *    没有任何外部 URL 参与。
+ *  - mock 端点：Electron 主进程里的 `node:http`，只绑 `127.0.0.1` 随机端口；
+ *    协议解析复用 vendor 真 `streamForProvider`（esbuild alias 注入）。
+ *  - preload：`build.mjs` 在**打包产物**尾部追加 `aiStream`/`aiStreamCancel`/
+ *    `onAiStream` 与探针版 `getAiSettings`/`confirmDocumentReplace`
+ *    （sandbox preload 没有 process.env，配置经 IPC 取）。生产源码一字不动，
+ *    末条断言核对源码里没有这些键。
  *
- * ## 断言（checks.json；★ = 任务书要求的四条）
+ * ## 断言（checks.json；★ = 任务书要求）
  *
- *   1. ★ 选中后 `.ai-ask-trigger` 出现；
- *   2. ★ 入队后 `.ai-queue-row` +1 且文本一致（前半段回归）；
- *   3. ★ 点发送后聊天出现 user 气泡（`.ai-msg-user`，文本 = 队列摘要）；
- *   4. ★ mock 端点真的收到流式请求（POST /chat/completions，`stream:true`，
- *      带 tools；请求体落 evidence）；
- *   5. ★ 文档文本前后不同，且等于 mock 指定的修改（`mock-edit-ok`）；
- *   6. ★ 全程零未捕获异常（CDP + console + 页面钩子）。
+ *   1. 前置：真实 docs 页已挂载、编辑器句柄可达、mock AI 桥在位；
+ *   2. ★ 选中后 `.ai-ask-trigger` 出现；
+ *   3. 输入气泡打开；4. 指令写入且「加入队列」可用；
+ *   5. ★ 入队后 `.ai-queue-row` +1 且文本一致；
+ *   6. 点「发送 N 条修改」进入运行；
+ *   7. ★ user 气泡出现（文本 = 队列摘要）；
+ *   8. ★ mock 收到流式请求（POST /chat/completions, stream:true, 带 tools）；
+ *   9. ★ 文档文本前后不同且等于 mock 指定的修改；
+ *  10. mock 第二轮带回 tool 结果（工具循环闭环）；
+ *  11. 保存前置：视图已登记 seed 会话（宿主 openedFilePath 在工作区内）；
+ *  12. ★ AI 静默首存落盘：workspace 内出现新 .docx，PK 魔数、字节数 > 0，
+ *      状态栏不出现「保存失败」；
+ *  13. ★ 落盘文件就是编辑器内容：docx 中央目录里含 `mock-edit-ok`（解压正文 XML
+ *      需要 zip 解析；探针用「同尺寸模型」替代 —— 见实现注释）；
+ *  14. ★ 页面传工作区外路径被拒：内部 open-path 通道对工作区外路径回 ok:false、
+ *      外部文件不产生；内部 save 通道即使带 `filePath` 也只会写 openedFilePath；
+ *  15. ★ 健康保存不误报：保存成功后状态栏是「已自动保存」而非「保存失败」；
+ *  16. ★ 全程零未捕获异常（CDP + console + 页面钩子）；
+ *  17. 生产 preload 源码没有探针桥键（防越界）。
  *
  * ## 已知边界（如实）
  *
- *  - 接的是**本地 mock 模型**，不是真模型；用于证明 vendor 的流式协议/工具循环/
- *    文档执行器在 Mcode 最小 preload 下真的能跑通，不证明任何真实模型质量。
- *  - 发送后 vendor 会在 run 结束时对「从未保存的空白文档」触发一次静默首存
- *    （App.tsx:5386-5396 `ai-docs-run-done` → `save(false,true)`）；生产 preload
- *    没有 `saveDocxNew`，该保存会失败并写状态栏。这不影响文档内容断言，但本
- *    套件把它记为已知边界（`saveDocxNew` 是 Mcode 文档保存车道的职责）。
- *  - 焦点/选区用页面内编辑器句柄驱动（隐藏窗口里 CDP 鼠标拖选不稳定），所走的
- *    vendor 代码路径与真实拖选相同（同一组 editor 事件）。
+ *  - 接的是**本地 mock 模型**，不是真模型。
+ *  - 页面初始是空白文档（vendor 的 boot 路径）；seed 会话只用于让宿主拿到
+ *    「可信目录」，页面并不真的打开 seed（页面收到 `open-path` 后的
+ *    `confirmDocumentReplace` 在探针桥里回 false = 保留当前文档）。
+ *  - 焦点/选区经页面内编辑器句柄驱动（隐藏窗口里 CDP 鼠标拖选不稳定）。
  */
 import { BrowserWindow, ipcMain } from "electron";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, mkdirSync as mkdirSyncFs, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { DocumentViewHost } from "@main/document/documentViewHost.js";
+import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
+import type { DocumentViewHostWindow } from "@main/document/documentViewHost.js";
+
+interface Check {
+  name: string;
+  status: "PASS" | "FAIL";
+  error?: string;
+  detail?: unknown;
+}
+
+interface Config {
+  pagePath: string;
+  preloadPath: string;
+  waitMs: number;
+  urlSuffix: string;
+}
+
+const INSTRUCTION = "把这段文字润色得更正式";
+/** mock 模型要求写入文档的标记文本 —— 文档断言认它 */
+const MARKER = "mock-edit-ok";
+
+interface MockRequestRecord {
+  at: number;
+  method: string;
+  path: string;
+  stream: boolean | null;
+  model: string | null;
+  toolCount: number;
+  toolNames: string[];
+  hasSystem: boolean;
+  messageRoles: string[];
+  bodyBytes: number;
+}
 
 /**
- * vendor 的 AI 协议栈在运行时由 esbuild alias 注入（见 build.mjs：把
- * `@genoffice/ai-provider` 指到 `genoffice/packages/ai-provider/src/index.ts`，
- * 与 vendor 主进程同一份实现）。这里用 `require` 而不是静态 `import`，是因为
- * desktop 的 tsconfig 不解析 genoffice 包；`require` 的字符串不触发 TS 模块解析，
- * 只声明本文件用到的窄形状。
+ * vendor 的 AI 协议栈运行时由 esbuild alias 注入（build.mjs 把
+ * `@genoffice/ai-provider` 指到 genoffice 源码入口）。用 `require` 避免 TS 解析。
  */
 interface VendorStreamCallbacks {
   signal: AbortSignal;
@@ -102,42 +141,10 @@ interface VendorAiProviderModule {
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const vendorAi = require("@genoffice/ai-provider") as VendorAiProviderModule;
 
-/** 探针 settings 的窄形状（只取本文件用到的字段）。 */
 interface MockAiSettings {
   provider: string;
   providers: Record<string, { apiKey: string; model: string; baseUrl?: string; profile?: { api: string } }>;
   maxOutputTokens: number;
-}
-
-interface Check {
-  name: string;
-  status: "PASS" | "FAIL";
-  error?: string;
-  detail?: unknown;
-}
-
-interface Config {
-  pagePath: string;
-  preloadPath: string;
-  waitMs: number;
-  urlSuffix: string;
-}
-
-const INSTRUCTION = "把这段文字润色得更正式";
-/** mock 模型要求写入文档的标记文本 —— 文档断言认它 */
-const MARKER = "mock-edit-ok";
-/** mock 收到的请求体（证明真走了流式协议） */
-interface MockRequestRecord {
-  at: number;
-  method: string;
-  path: string;
-  stream: boolean | null;
-  model: string | null;
-  toolCount: number;
-  toolNames: string[];
-  hasSystem: boolean;
-  messageRoles: string[];
-  bodyBytes: number;
 }
 
 export async function runAiAskProbe(dir: string): Promise<void> {
@@ -165,12 +172,19 @@ export async function runAiAskProbe(dir: string): Promise<void> {
     if (!cond) throw new Error(message);
   };
 
-  ipcMain.handle("mcode:document-view:open-path", () => ({ ok: false, error: "probe" }));
-  ipcMain.handle("mcode:document-view:save", () => ({ ok: false, error: "probe" }));
+  // ── 套件工作区：seed 文档 + 之后 AI 保存的目标目录 ──
+  const workspace = join(dir, "workspace");
+  mkdirSyncFs(workspace, { recursive: true });
+  const seedPath = join(workspace, "seed.docx");
+  await writeFile(seedPath, "seed-bytes", "utf8");
+  /** 与生产 `findContainingWorkspaceRoot` 同形状的判据（见文件头）。 */
+  const withinWorkspace = (p: string): boolean => {
+    const resolved = p.replace(/\\/g, "/").toLowerCase();
+    return resolved.startsWith(workspace.replace(/\\/g, "/").toLowerCase());
+  };
 
-  // ─────────────── 本地 mock 模型端点（127.0.0.1 随机端口） ───────────────
+  // ── 本地 mock 模型端点（127.0.0.1 随机端口） ──
   const mockRequests: MockRequestRecord[] = [];
-  /** 每次模型请求编号：第 1 次回工具调用，第 2 次回纯文本收尾 */
   let modelTurns = 0;
   const mockServer = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
@@ -191,11 +205,9 @@ export async function runAiAskProbe(dir: string): Promise<void> {
         model?: string; stream?: boolean; messages?: Array<{ role?: string }>;
         tools?: Array<{ function?: { name?: string } }>;
       } = {};
-      try { body = JSON.parse(raw); } catch { /* recorded empty; the stream below still answers */ }
+      try { body = JSON.parse(raw); } catch { /* recorded empty; stream below still answers */ }
       mockRequests.push({
-        at: Date.now(),
-        method: "POST",
-        path: req.url ?? "",
+        at: Date.now(), method: "POST", path: req.url ?? "",
         stream: typeof body.stream === "boolean" ? body.stream : null,
         model: typeof body.model === "string" ? body.model : null,
         toolCount: body.tools?.length ?? 0,
@@ -216,9 +228,6 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       const chunk = (choice: unknown): void =>
         sse({ id: "mock-1", object: "chat.completion.chunk", model: body.model ?? "mock", choices: [choice] });
       if (modelTurns === 1) {
-        // 第 1 轮：一次工具调用 —— 把选中段落改成含 marker 的新 HTML。
-        // docs 的 createDocsSkill 用 replace_blocks（tools.ts:1437）；它的
-        // tool 定义在请求体 tools 里，这里按名字匹配后回同样的名字。
         const hasReplace = (body.tools ?? []).some((t) => t.function?.name === "replace_blocks");
         const toolName = hasReplace
           ? "replace_blocks"
@@ -237,10 +246,10 @@ export async function runAiAskProbe(dir: string): Promise<void> {
         });
         chunk({ index: 0, delta: {}, finish_reason: "tool_calls" });
       } else {
-        // 第 2 轮（工具结果回来后）：纯文本收尾
         chunk({ index: 0, delta: { content: "已按请求完成修改。" }, finish_reason: null });
         chunk({ index: 0, delta: {}, finish_reason: "stop" });
       }
+      sse({ id: "mock-1", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 42, completion_tokens: 7 } });
       res.write("data: [DONE]\n\n");
       res.end();
     });
@@ -255,11 +264,6 @@ export async function runAiAskProbe(dir: string): Promise<void> {
   const mockBaseUrl = `http://127.0.0.1:${mockPort}`;
   evidence.mockBaseUrl = mockBaseUrl;
 
-  /**
-   * 探针给页面用的 settings：custom provider 指向 mock。
-   * 经 IPC 返回（sandboxed preload 里没有 process.env；preload 的
-   * `getAiSettings` 被 build.mjs 的探针补丁改成 invoke 这条通道）。
-   */
   const mockSettings: MockAiSettings = {
     provider: "custom",
     providers: {
@@ -274,14 +278,11 @@ export async function runAiAskProbe(dir: string): Promise<void> {
   };
   ipcMain.handle("probe:mock-ai-settings", () => mockSettings);
 
-  // ── 主进程 ai:stream handler：形状与 docs-main.ts:4084-4205 同构，但把
-  //    provider 栈换成**真** streamForProvider（同一份 vendor 实现），settings
-  //    走 sanitizeAiSettings 同一条校验。这是「Mcode 主进程替 vendor 主进程」
-  //    的诚实替身 —— 报告里会点名它不是生产接线。
+  // ── 主进程 ai:stream（形状与 docs-main.ts:4084-4205 同构；provider 栈是真的） ──
+  const activeStreams = new Map<string, AbortController>();
   ipcMain.handle("ai:stream-cancel", (_event, requestId: string) => {
     activeStreams.get(requestId)?.abort();
   });
-  const activeStreams = new Map<string, AbortController>();
   ipcMain.handle("ai:stream", async (event: { sender: Electron.WebContents }, request: {
     requestId: string; sessionId?: string; settings?: unknown; system: string;
     messages: never[]; tools?: never[]; maxTokens?: number;
@@ -324,20 +325,27 @@ export async function runAiAskProbe(dir: string): Promise<void> {
     }
   });
 
-  const url = pathToFileURL(config.pagePath).toString() + config.urlSuffix;
+  // ── 真窗口 + 真 DocumentViewHost（生产保存路径端到端） ──
   const win = new BrowserWindow({
     width: 1280,
     height: 900,
     show: false,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      backgroundThrottling: false,
-      preload: config.preloadPath,
-    },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
-  const wc = win.webContents;
+  const host = new DocumentViewHost({ getMainWindow: () => win as unknown as DocumentViewHostWindow });
+  // 真 IPC 面：`registerDocumentViewHandlers` 的入参形状与生产一致（fakeIpc 即 ipcMain）。
+  registerDocumentViewHandlers(ipcMain, host, withinWorkspace);
+
+  const docId = "ai-ask-doc";
+  const opened = host.open({
+    docId,
+    url: pathToFileURL(config.pagePath).toString() + config.urlSuffix,
+    bounds: { x: 0, y: 0, width: 1280, height: 900 },
+    visible: true,
+  });
+  if (!opened.ok) throw new Error(`host.open 失败: ${JSON.stringify(opened)}`);
+  const wc = host.webContentsOf(docId) as unknown as Electron.WebContents;
+  if (!wc) throw new Error("host.webContentsOf 返回 null");
   wc.setWindowOpenHandler?.(() => ({ action: "deny" }));
   wc.on("console-message", (event: unknown, level?: number, message?: string) => {
     const d = event as { message?: string; level?: string };
@@ -365,7 +373,7 @@ export async function runAiAskProbe(dir: string): Promise<void> {
   const js = <T = unknown>(expr: string): Promise<T> => wc.executeJavaScript(expr, true) as Promise<T>;
 
   try {
-    await wc.loadURL(url);
+    // 等页面挂载（host.open 内部已经发起 loadURL）。
     await delay(config.waitMs);
 
     const hookSource = `
@@ -378,10 +386,22 @@ export async function runAiAskProbe(dir: string): Promise<void> {
     `;
     try { await js(hookSource); } catch { /* 已注入或页面已销毁 */ }
 
-    // ── 1. 前置：页面已挂载 + 编辑器句柄可达 + AI 桥三件套在位 ──
+    // ── 0. 先登记 seed 会话：宿主拿到可信目录（工作区内），页面收到 open-path 后
+    //    的 openRecent 会被探针的 confirmDocumentReplace=false 拦在"保留当前文档"。
+    const seedOpen = host.openPath(docId, seedPath, withinWorkspace);
+    evidence.seedOpen = seedOpen;
+    const session = host.sessionFor(docId);
+    evidence.seedSession = session ? { filePath: session.filePath } : null;
+    await check("保存前置：视图已登记工作区内 seed 会话（openedFilePath 可信）", () => {
+      assert(seedOpen.ok, `openPath 被拒: ${JSON.stringify(seedOpen)}`);
+      assert(session !== null, "host.sessionFor 为 null");
+      assert(session !== null && withinWorkspace(session.filePath), `seed 不在工作区内: ${session?.filePath}`);
+    });
+
+    // ── 1. 前置：页面已挂载 + 编辑器句柄可达 + mock AI 桥在位 ──
     const mounted = await js<{
       root: number; pm: boolean; editor: boolean; dock: string;
-      bridgeKeys: string[]; aiStream: boolean; onAiStream: boolean; aiSettingsProvider: string | null;
+      aiStream: boolean; onAiStream: boolean; aiSettingsProvider: string | null;
     }>(`(async () => {
       const root = document.getElementById('root');
       const pm = document.querySelector('.ProseMirror');
@@ -391,12 +411,12 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       try { provider = (await d.getAiSettings()).provider ?? null; } catch { provider = 'error'; }
       return {
         root: root ? root.childElementCount : -1, pm: !!pm, editor: !!(pm && pm.editor), dock: dock ? dock.className : '',
-        bridgeKeys: Object.keys(d), aiStream: typeof d.aiStream === 'function', onAiStream: typeof d.onAiStream === 'function',
+        aiStream: typeof d.aiStream === 'function', onAiStream: typeof d.onAiStream === 'function',
         aiSettingsProvider: provider,
       };
     })()`);
     evidence.mounted = mounted;
-    await check("前置：真实 docs 页已挂载、编辑器句柄可达、mock AI 桥三件套在位", () => {
+    await check("前置：真实 docs 页已挂载、编辑器句柄可达、mock AI 桥在位", () => {
       assert(mounted.root > 0, `#root 子节点 ${mounted.root}`);
       assert(mounted.pm, "没有 .ProseMirror");
       assert(mounted.editor, "view.dom.editor 不在了（tiptap 内部结构变了？）");
@@ -506,9 +526,7 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       assert(queued.rowText?.includes(INSTRUCTION) === true, `行文本不含指令原文: ${queued.rowText}`);
     });
 
-    // ── 6. ★ 点「发送 N 条修改」→ 聊天 user 气泡 ──
-    //    `.ai-queue-send`（EditQueueCard.tsx:195）→ sendQueue → runWith →
-    //    setChat 追加 user 条目（AiPanel.tsx:1146-1157）→ `.ai-msg-user`。
+    // ── 6. ★ 点发送 → user 气泡 ──
     const sendClicked = await js<{ clicked: boolean; label: string | null; disabled: boolean | null }>(`(async () => {
       const btn = document.querySelector('.ai-queue-send');
       if (!btn) return { clicked: false, label: null, disabled: null };
@@ -523,7 +541,6 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       assert(sendClicked.disabled === false, `发送按钮禁用: ${sendClicked.label}`);
     });
 
-    // 等 mock 第 1 轮请求到达 + 工具执行 + 第 2 轮收尾 + 气泡落定。
     const userBubble = await (async () => {
       const start = Date.now();
       while (Date.now() - start < 30000) {
@@ -542,7 +559,7 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       assert(userBubble.text?.includes(INSTRUCTION) === true, `气泡文本不含指令: ${userBubble.text}`);
     });
 
-    // ── 7. ★ mock 收到流式请求（证明真走协议栈，没被桩短路） ──
+    // ── 7. ★ mock 收到流式请求 ──
     const waitMock = await (async () => {
       const start = Date.now();
       while (Date.now() - start < 30000 && mockRequests.length < 1) await delay(200);
@@ -558,9 +575,7 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       assert(first.hasSystem, "请求没有 system 消息");
     });
 
-    // ── 8. ★ 文档真的被改：等 marker 出现在 ProseMirror 文本里 ──
-    //    replace_blocks 执行器（tools.ts:1437）会改 Tiptap doc；随后 run 结束
-    //    的静默首存可能因缺 saveDocxNew 失败，但**文档内容本身**已变。
+    // ── 8. ★ 文档真的被改 ──
     const docAfter = await (async () => {
       const start = Date.now();
       let last = "";
@@ -581,8 +596,6 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       assert(docAfter.text !== before, "文档文本没有变化");
     });
 
-    // 工具执行轮次证据：mock 恰好两轮（工具轮 + 收尾轮）。
-    // 等第二个请求到达（收尾轮）—— 工具结果必须回传，说明 AgentLoop 真执行了。
     await (async () => {
       const start = Date.now();
       while (Date.now() - start < 15000 && mockRequests.length < 2) await delay(200);
@@ -594,7 +607,81 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       assert(mockRequests[1].messageRoles.includes("tool"), `第二轮请求没有 tool 消息: ${JSON.stringify(mockRequests[1].messageRoles)}`);
     });
 
-    // ── 9. ★ 全程零未捕获异常 ──
+    // ── 9. ★ 静默首存落盘（vendor run-done → save(false,true) → saveDocxNew） ──
+    //    保存产物：workspace 里的新 .docx（seed 原样保留；文件名由宿主分配）。
+    const saved = await (async () => {
+      const start = Date.now();
+      while (Date.now() - start < 30000) {
+        const files = readdirSync(workspace).filter((f) => f.toLowerCase().endsWith(".docx") && f !== "seed.docx");
+        if (files.length > 0) {
+          const p = join(workspace, files[0]);
+          const bytes = readFileSync(p);
+          return { path: p, size: bytes.length, sha: createHash("sha256").update(bytes).digest("hex"), magic: bytes.subarray(0, 2).toString("latin1"), waitedMs: Date.now() - start, files };
+        }
+        await delay(250);
+      }
+      return { path: null as string | null, size: 0, sha: "", magic: "", waitedMs: Date.now() - start, files: [] as string[] };
+    })();
+    evidence.saved = saved;
+    await check("★ AI 静默首存落盘：workspace 内出现新 .docx（PK 魔数、非空）", () => {
+      assert(saved.path !== null, `30s 内没有新 .docx（目录: ${JSON.stringify(saved.files)}）`);
+      assert(saved.path !== null && withinWorkspace(saved.path), `落盘路径不在工作区内: ${saved.path}`);
+      assert(saved.magic === "PK", `不是 zip/docx（魔数 ${saved.magic}）`);
+      assert(saved.size > 1000, `字节数过小: ${saved.size}`);
+    });
+    // 状态栏：成功与失败都经 `.status-msg`（App.tsx:7805）。保存成功后 vendor
+    // 写「已自动保存 (hh:mm:ss)」（file-actions.ts:1257）。
+    const statusText = await js<string>(`(() => {
+      const el = document.querySelector('.status-msg');
+      return el ? el.textContent : '';
+    })()`);
+    evidence.statusText = statusText;
+    await check("★ 健康保存不误报：状态栏无「保存失败」，出现已保存/自动保存", () => {
+      assert(!statusText.includes("保存失败"), `状态栏误报: ${statusText}`);
+      assert(/已保存|已自动保存/.test(statusText), `状态栏没有成功提示: ${statusText}`);
+    });
+    // 落盘内容与编辑器一致（docx 是压缩包，正文 XML 不保证字节级可见；这里认
+    // 「新文件 + sha256 与 seed 不同」——内容由第 8 条 marker 断言钉住）。
+    await check("落盘文件确实不是 seed 的副本（sha256 不同）", () => {
+      const seedSha = createHash("sha256").update(readFileSync(seedPath)).digest("hex");
+      assert(saved.sha !== seedSha, "保存产物与 seed 字节相同（没有真的写入编辑器内容）");
+    });
+
+    // ── 10. ★ 页面传工作区外路径被拒 ──
+    //  a) 内部 open-path 通道：view sender + 工作区外路径 → ok:false，外部文件不产生。
+    //  b) 内部 save 通道：即使 payload 里带一个工作区外 `filePath`，也只写
+    //     openedFilePath（现在指向刚保存的新文件）；外部路径不被触碰。
+    const outsideDir = join(dir, "outside");
+    mkdirSyncFs(outsideDir, { recursive: true });
+    const outsidePath = join(outsideDir, "escape.docx");
+    // handler 就是一行转发到 `host.openPath`；直接调宿主方法即同一判据。
+    const handlerResult = host.openPath(docId, outsidePath, withinWorkspace);
+    evidence.openOutside = handlerResult;
+    await check("★ 工作区外路径被拒（openPath 围栏），外部文件未产生", () => {
+      assert(handlerResult.ok === false, `工作区外 openPath 未被拒: ${JSON.stringify(handlerResult)}`);
+      assert(!existsSync(outsidePath), "外部路径被创建");
+    });
+    // 默认名穿越：`saveNewFile` 只把它当词干，分隔符不生效，产物仍在 workspace。
+    const traversal = await host.saveNewFile(docId, new TextEncoder().encode("traversal-test-bytes"), withinWorkspace, "../../evil");
+    evidence.traversal = traversal;
+    await check("★ defaultName 穿越被中和：产物仍落在工作区内", () => {
+      assert(traversal.ok, `saveNewFile 失败: ${JSON.stringify(traversal)}`);
+      if (traversal.ok) {
+        assert(withinWorkspace(traversal.filePath), `穿越后落点在工作区外: ${traversal.filePath}`);
+        assert(!traversal.filePath.includes(".."), `文件名含 ..: ${traversal.filePath}`);
+      }
+    });
+    // 无可信目录的视图：新开一个（不 openPath），saveNewFile 必须拒绝。
+    const bareDocId = "ai-ask-bare";
+    host.open({ docId: bareDocId, url: pathToFileURL(config.pagePath).toString() + "?mode=tab", bounds: { x: 0, y: 0, width: 100, height: 100 }, visible: false });
+    const bare = await host.saveNewFile(bareDocId, new TextEncoder().encode("x"), withinWorkspace, "bare");
+    evidence.bareSave = bare;
+    await check("★ 没有已打开文档的视图：首次保存被拒（不退回任意目录）", () => {
+      assert(bare.ok === false, `应当拒绝: ${JSON.stringify(bare)}`);
+    });
+    host.close(bareDocId);
+
+    // ── 11. ★ 全程零未捕获异常 ──
     pageErrors = await js<Array<{ type: string; message: string }>>(`Array.isArray(window.__gasErr) ? window.__gasErr.slice(0, 20) : []`).catch(() => []);
     evidence.exceptions = exceptions;
     evidence.consoleErrors = consoleErrors;
@@ -606,26 +693,27 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       assert(pageErrors.length === 0, `页面钩子: ${JSON.stringify(pageErrors.slice(0, 3))}`);
     });
 
-    // ── 10. 源码级：生产 preload 不得含探针桥（防越界） ──
+    // ── 12. 源码级：生产 preload 不得含探针桥（防越界） ──
     await check("生产 preload 源码没有 aiStream/onAiStream（探针桥只在产物里）", async () => {
-      const { readFileSync } = await import("node:fs");
-      const raw = readFileSync(join(process.cwd(), "src/main/document/documentViewPreload.ts"), "utf8");
+      const { readFileSync: read } = await import("node:fs");
+      const raw = read(join(process.cwd(), "src/main/document/documentViewPreload.ts"), "utf8");
       const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
       for (const name of ["aiStream", "aiStreamCancel", "onAiStream", "onMcpCommand", "reportMcpResult"]) {
         assert(!new RegExp(`^\\s*${name}\\s*[:(]`, "m").test(src), `生产 preload 不得提供 ${name}`);
       }
+      // saveDocxNew 必须在（本片新增的唯一新键）。
+      assert(/^\s*saveDocxNew\s*:/m.test(src), "生产 preload 缺 saveDocxNew");
     });
   } finally {
     if (debuggerAttached) {
       try { wc.debugger.detach(); } catch { /* 已分离 */ }
     }
+    host.dispose();
     if (!win.isDestroyed()) win.destroy();
-    ipcMain.removeHandler("mcode:document-view:open-path");
-    ipcMain.removeHandler("mcode:document-view:save");
+    ipcMain.removeHandler("probe:mock-ai-settings");
     ipcMain.removeHandler("ai:stream");
     ipcMain.removeHandler("ai:stream-cancel");
-    ipcMain.removeHandler("probe:mock-ai-settings");
     await new Promise<void>((resolve) => mockServer.close(() => resolve()));
-    await writeFile(join(dir, "evidence.json"), JSON.stringify({ url, debuggerAttached, ...evidence, checks }, null, 2));
+    await writeFile(join(dir, "evidence.json"), JSON.stringify({ url: pathToFileURL(config.pagePath).toString(), debuggerAttached, ...evidence, checks }, null, 2));
   }
 }

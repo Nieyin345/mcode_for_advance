@@ -65,6 +65,9 @@ await build({
   // apps/desktop 出发解析不到；显式 alias 到源码入口。
   alias: {
     "@genoffice/ai-provider": join(repoRoot, "genoffice/packages/ai-provider/src/index.ts"),
+    // 真 `DocumentViewHost` 顶层 import `@main/window.js`（生产默认解析器），那个
+    // 模块拖上语音引擎原生模块；探针显式注入窗口，用不到默认解析器 —— 换桩。
+    "@main/window.js": join(suite, "stubs/window.ts"),
   },
   nodePaths: [join(repoRoot, "genoffice/node_modules")],
 });
@@ -109,6 +112,21 @@ api.onAiStream = (handler) => {
   import_electron.ipcRenderer.on("ai:stream-chunk", listener);
   return () => import_electron.ipcRenderer.removeListener("ai:stream-chunk", listener);
 };
+// 宿主 openPath 会推 menu:command("open-path", path)；vendor 收到后走 openRecent →
+// openDocxPath → 宿主 openPath(refresh) → 再推 —— 在没有真实 docs:open-path 数据
+// 供给的探针里会无限回环。本套件只测**保存**链路（打开链由
+// document-view-electron-smoke 覆盖），因此这里记录命令而不交给页面。
+globalThis.__gasMenuCommands = [];
+api.onMenuCommand = (handler) => {
+  const listener = (_event, command, payload) => {
+    globalThis.__gasMenuCommands.push({ command, payload });
+    void handler; // 记录但不调用：见上
+  };
+  import_electron.ipcRenderer.on("menu:command", listener);
+  return () => import_electron.ipcRenderer.removeListener("menu:command", listener);
+};
+// vendor 的替换守卫：探针里永远"保留当前文档"（没有可替换的真实打开数据源）。
+api.confirmDocumentReplace = () => Promise.resolve(false);
 `;
 const patched = bundleSource.replace(exposeMarker, probeBridge + "\n" + exposeMarker);
 if (patched === bundleSource) throw new Error("preload probe patch failed");
@@ -169,7 +187,8 @@ try {
   checks = [];
 }
 const failed = checks.filter((c) => c.status !== "PASS");
-const complete = checks.length >= 7 && failed.length === 0;
+// 20 条（AI 全链 12 + 保存段 8）。下限钉住，防止探针提前崩退只写了一半。
+const complete = checks.length >= 20 && failed.length === 0;
 const result = { dir, exitCode: run.status, signal: run.signal, checks: checks.length, failed, complete };
 writeFileSync(join(dir, "result.json"), JSON.stringify(result, null, 2));
 if (run.status !== 0 || !complete) {

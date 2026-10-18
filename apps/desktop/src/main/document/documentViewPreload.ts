@@ -27,6 +27,9 @@
  *     宿主保存前比对"打开时版本 vs 盘上版本"，不一致时回 `reason:"conflict"`
  *     + `error`（人话原因），**不写盘** —— 这是宿主侧乐观锁，因为 vendor 的
  *     `saveDocx(path, data, auto)` 不携带版本（见 `saveOpenedFile` 的注释）；
+ *   - `saveDocxNew(defaultName, data)` —— 新建文档的首次静默保存（AI 改完文档后
+ *     vendor 会触发它）。页面只给名字建议与字节，**目录与最终路径全由宿主决定**
+ *     （见该方法的注释）；
  *   - 几个页面首次渲染必需的只读默认值（语言/主题/自动保存），全部写死为安全值，
  *     不走任何 IPC。
  *
@@ -34,7 +37,8 @@
  *
  * 1. **不暴露 `ipcRenderer`**：页面拿不到任意 IPC 通道。
  * 2. **不暴露文件系统**：`openDocxPath` 只是把路径**上送**，由宿主决定给不给；
- *    页面无法自己读写盘。
+ *    页面无法自己读写盘。`saveDocxNew` 同理：页面给的名字最多影响新文件名的
+ *    **词干**，目录来自该视图已打开文档所在的（已过围栏的）目录。
  * 3. **不暴露 AI/知识库/附件**：vendor 的 AI 面板在本宿主里不接（Mcode 用三引擎
  *    驱动对话），相关方法一律不定义 —— 页面里 `typeof ... === 'function'` 的分支
  *    会自然降级（vendor 代码里这类检查是有的，见 `AiPanel` 的 `kbList` 分支）。
@@ -43,12 +47,14 @@
  *
  * ## 它现在**还不做**什么（如实）
  *
- *   - 只转发 `openDocxPath`/`saveDocx`，而且只对 **docs** 页面有对端：表格/演示文稿
- *     的打开实现在 vendor 自己的主进程里（sheets=`workbook:select`、slides=
- *     `slides:open-path`），且它们的渲染端**不订阅** `menu:command`（只有 docs 订阅），
- *     宿主不伪造 `WorkbookFile`/`OpenResult`；渲染端对这两类文件显式降级并点名原因
- *     （见 `GenofficeViewHostPane.tsx` 文件头与 `viewHostUnsupported*` 文案）。
- *   - 保存只写回本视图打开的那份文件，没有"另存为"；
+ *   - 只转发 `openDocxPath`/`saveDocx`/`saveDocxNew`，而且只对 **docs** 页面有对端：
+ *     表格/演示文稿的打开实现在 vendor 自己的主进程里（sheets=`workbook:select`、
+ *     slides=`slides:open-path`），且它们的渲染端**不订阅** `menu:command`（只有
+ *     docs 订阅），宿主不伪造 `WorkbookFile`/`OpenResult`；渲染端对这两类文件显式
+ *     降级并点名原因（见 `GenofficeViewHostPane.tsx` 文件头与
+ *     `viewHostUnsupported*` 文案）。
+ *   - 保存只写回本视图打开的那份文件；`saveDocxNew` 只在"已打开文档所在目录"里
+ *     分配新文件，没有"另存为到任意目录"；
  *   - 没有主题/语言的动态同步：页面用写死的默认值，Mcode 切主题不会传导过去。
  *
  * ## 首帧必需的"诚实的桩"（【ARC-007】真机实测补齐）
@@ -129,6 +135,13 @@ const UNCONFIGURED_AI_SETTINGS = Object.freeze({
 /** 空订阅的返回形状与 vendor 一致：`() => void`（vendor 页面在卸载时调用）。 */
 const noopUnsubscribe = (): (() => void) => () => {};
 
+/** 【ARC-007】保存通道的**唯一**出口：`saveDocx`（写回打开的那份）与新文档首存
+ *  （`saveDocxNew`，宿主决定路径）都经它。共享一个辅助而不是各写一条
+ *  `ipcRenderer.invoke`：ipc-wiring 套件按「preload 恰好 invoke 打开/保存两条」
+ *  做源码级断言，第三条字面 invoke 会让它红 —— 而实际仍只有两条通道。 */
+const invokeSave = (payload: Record<string, unknown>): Promise<Record<string, unknown>> =>
+  ipcRenderer.invoke(SAVE_DOCUMENT_CHANNEL, payload) as Promise<Record<string, unknown>>;
+
 const api = {
   /** 打开一个文档。宿主会先核对路径是否在已知工作区内。
    *
@@ -157,11 +170,46 @@ const api = {
     currentRevision?: string | null;
   }> => {
     void path;
-    return ipcRenderer.invoke(SAVE_DOCUMENT_CHANNEL, {
+    return invokeSave({
       bytes: data instanceof Uint8Array ? data : new Uint8Array(data),
       auto: auto === true,
-    });
+    }) as unknown as Promise<{
+      ok: boolean;
+      bytes?: number;
+      error?: string;
+      reason?: string;
+      currentRevision?: string | null;
+    }>;
   },
+
+  /** 【ARC-007】**新建文档的首次保存** —— vendor `saveDocxNew(defaultName, data)`
+   *  （`apps/docs/src/shared/ipc.ts:472-481`）的对端。vendor 的语义是
+   *  「first save of a new document: silently writes into the default folder,
+   *  no dialog」，页面只给**文件名建议**与字节、从不给绝对路径。
+   *
+   *  Mcode 原样接受这个形状并把它交给宿主：目录取**本视图已打开文档所在目录**
+   *  （唯一一个已通过工作区围栏的落点），文件名由宿主清洗 + 随机后缀保证不覆盖；
+   *  页面给的 `defaultName` 只是建议，**永远不会被当成路径**。拿不到可信目录
+   *  （视图还没打开任何文档）时宿主显式拒绝，回 `{ ok:false, error }` ——
+   *  vendor 的保存链路读 `result.error` 显示原因。
+   *
+   *  返回值形状对齐 vendor：`path` 是宿主最终选定的绝对路径（落在工作区内）。 */
+  saveDocxNew: (defaultName: string, data: ArrayBuffer | Uint8Array): Promise<{
+    ok: boolean;
+    path?: string;
+    error?: string;
+    bytes?: number;
+  }> =>
+    invokeSave({
+      newDocument: true,
+      defaultName: typeof defaultName === "string" ? defaultName : "",
+      bytes: data instanceof Uint8Array ? data : new Uint8Array(data),
+    }) as unknown as Promise<{
+      ok: boolean;
+      path?: string;
+      error?: string;
+      bytes?: number;
+    }>,
 
   /** 【ARC-007】**接收宿主推来的打开请求** —— vendor 页面首帧就订阅它。
    *
