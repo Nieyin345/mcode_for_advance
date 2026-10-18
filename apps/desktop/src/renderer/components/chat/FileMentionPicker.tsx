@@ -6,6 +6,7 @@
  * ↑↓ move, Enter/Tab confirm, Esc close.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
@@ -172,11 +173,14 @@ export function FileMentionPicker({
   // focus is on the attach button.
   useEffect(() => {
     if (!open) return;
+    // 【ARC-005 V2】Esc 关最内层（与 TagPopover 同一条纪律）。
+    const closeEscapeLayer = openEscapeLayer("chat.file-mention-picker");
     const onKey = (e: KeyboardEvent) => {
       // IME composition keys (candidate confirm / pinyin Space) belong to the
       // input method, not the picker.
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Escape") {
+        if (!claimEscape("chat.file-mention-picker")) return;
         e.preventDefault();
         e.stopPropagation();
         onClose();
@@ -208,7 +212,10 @@ export function FileMentionPicker({
     };
     // Capture so we beat textarea Enter-to-send.
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    return () => {
+      closeEscapeLayer();
+      window.removeEventListener("keydown", onKey, true);
+    };
   }, [open, files, activeIdx, mode, confirmMention, confirmAttach, onClose]);
 
   // Click outside the picker to close. Mirrors the ModelDropdown / TagPopover

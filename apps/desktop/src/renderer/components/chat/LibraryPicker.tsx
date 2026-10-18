@@ -14,6 +14,7 @@
  * 清单由主进程的 `library.manifest` 生成(见 makeLibraryTag 的说明)。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
@@ -243,11 +244,14 @@ export function LibraryPicker({
   // 键盘:↑↓ 导航、空格/回车勾选、Esc 关闭。捕获阶段,免得被编辑器的按键处理吃掉。
   useEffect(() => {
     if (!open) return undefined;
+    // 【ARC-005 V2】Esc 关最内层（与 TagPopover / FileMentionPicker 同一条纪律）。
+    const closeEscapeLayer = openEscapeLayer("chat.library-picker");
     const onKey = (e: KeyboardEvent) => {
       // IME composition keys (candidate confirm / pinyin Space) belong to the
       // input method, not the picker.
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Escape") {
+        if (!claimEscape("chat.library-picker")) return;
         e.preventDefault();
         e.stopPropagation();
         onClose();
@@ -276,7 +280,10 @@ export function LibraryPicker({
       }
     };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    return () => {
+      closeEscapeLayer();
+      document.removeEventListener("keydown", onKey, true);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, options, activeIdx, selected, excluded, onClose]);
 

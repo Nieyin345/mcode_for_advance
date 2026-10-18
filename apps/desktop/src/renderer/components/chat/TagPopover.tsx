@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
@@ -100,6 +101,9 @@ export function TagPopover({
 
   // Outside-click + ESC close. Mirrors ModelDropdown's pattern.
   useEffect(() => {
+    // 【ARC-005 V2】Esc 关最内层：与其它弹层叠在一起时只有栈顶能关自己
+    // （以前各弹层都直接 onClose，一次 Esc 会连关两层）。
+    const closeEscapeLayer = openEscapeLayer("chat.tag-popover");
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       // The chip that opened us is OUTSIDE the popover; allow clicks on
@@ -111,11 +115,15 @@ export function TagPopover({
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        if (!claimEscape("chat.tag-popover")) return;
+        onClose();
+      }
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
+      closeEscapeLayer();
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };

@@ -1185,11 +1185,28 @@ console.log("\n【MC-048】模板事务围栏(单一异步变更协议)");
   for (const [file, id] of [
     ["src/renderer/components/chat/ActivityCluster.tsx", "chat.activity-cluster"],
     ["src/renderer/components/chat/PlanViewer.tsx", "chat.plan-viewer"],
+    // 【ARC-005 V2 续】四个同源对话弹层：叠在一起时一次 Esc 只关最内层。
+    ["src/renderer/components/chat/TagPopover.tsx", "chat.tag-popover"],
+    ["src/renderer/components/chat/FileMentionPicker.tsx", "chat.file-mention-picker"],
+    ["src/renderer/components/chat/LibraryPicker.tsx", "chat.library-picker"],
+    ["src/renderer/components/chat/SlashCommandPicker.tsx", "chat.slash-command-picker"],
   ] as const) {
     const src = readFileSync(join(root, file), "utf8");
     check(`★ ${file} 打开时开层`, src.includes(`openEscapeLayer("${id}")`));
     check(`★ ${file} 处理 Esc 前先 claim`, src.includes(`claimEscape("${id}")`) && src.includes(`if (!claimEscape("${id}")) return;`));
-    check(`${file} 卸载时关层`, src.includes("closeLayer();"));
+    check(`${file} 卸载时关层`, /closeEscapeLayer\(\);/.test(src) || /closeLayer\(\);/.test(src));
+  }
+  // 反向:这四个文件里不得再有"Esc 直接 onClose 而不 claim"的裸分支。
+  for (const file of [
+    "src/renderer/components/chat/TagPopover.tsx",
+    "src/renderer/components/chat/FileMentionPicker.tsx",
+    "src/renderer/components/chat/LibraryPicker.tsx",
+    "src/renderer/components/chat/SlashCommandPicker.tsx",
+  ]) {
+    const src = readFileSync(join(root, file), "utf8");
+    check(`★ ${file} 没有绕过 escapeLayer 的裸 Esc 分支`,
+      !/if \(e\.key === "Escape"\) onClose\(\);/.test(src),
+      src.match(/if \(e\.key === "Escape"\)[^\n]*/g));
   }
 }
 

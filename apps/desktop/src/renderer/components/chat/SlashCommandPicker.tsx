@@ -20,6 +20,7 @@
  * Visual language matches FileMentionPicker.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconCommand, IconSparkles, IconTerminal } from "@renderer/lib/icons.js";
@@ -146,11 +147,14 @@ export function SlashCommandPicker({
 
   useEffect(() => {
     if (!open) return;
+    // 【ARC-005 V2】Esc 关最内层（与其它对话弹层同一条纪律）。
+    const closeEscapeLayer = openEscapeLayer("chat.slash-command-picker");
     const onKey = (e: KeyboardEvent) => {
       // IME composition keys (candidate confirm / pinyin Space) belong to the
       // input method, not the picker.
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Escape") {
+        if (!claimEscape("chat.slash-command-picker")) return;
         e.preventDefault();
         e.stopPropagation();
         onClose();
@@ -204,7 +208,10 @@ export function SlashCommandPicker({
       }
     };
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    return () => {
+      closeEscapeLayer();
+      window.removeEventListener("keydown", onKey, true);
+    };
   }, [open, commands, onPickSkill, onPickCommand, onPickEngineCommand, onClose, skillCmds.length, activeBuiltinCmds.length, engineCmds.length]);
 
   if (!open || !anchorRect) return null;
