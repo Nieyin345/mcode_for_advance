@@ -17,12 +17,19 @@
  * 3. **不信任节点给的 host**：端口只认宿主给的那一个，节点只能给路径、方法、载荷。
  * 4. **响应有上限**：超过 `maxResponseBytes` 截断并如实说明（不让一条大响应撑爆内存）。
  *
- * ## 为什么这个执行器不注册成内置 kind
+ * ## 为什么这个执行器是**条件注册**的
  *
- * 它是**可选能力**：Node-RED 没装时注册它会让清单里出现一个永远跑不了的 kind。
- * 生产装配在"引擎可用"时才把执行器挂进 `ExecutionEngine`（见 `executionEngine.ts` 的
- * `setWorkflowEngineStatusPort` 与 `createBuiltinExecutionEngine`），这与
- * `module-capability` 的 fail-closed 是同一种取向。
+ * 它是**可选能力**：Node-RED 没装/没起时注册它，节点会在派发时失败在"没有执行器"
+ * 上，而不是一句能照着做的"去启动引擎"。生产装配在"引擎可用"时才把执行器挂进
+ * `ExecutionEngine`（见 `executionEngine.ts` 的 `setWorkflowEngineStatusPort` 与
+ * `createBuiltinExecutionEngine`），这与 `module-capability` 的 fail-closed 是同一种取向。
+ *
+ * ⚠️ **但 `node-red` 在 `IMPLEMENTED_RUNNER_KINDS` 里**（2026-10-18 三处同源落地）。
+ * 那张表回答的是"Mcode 有没有实现这种执行方式"，不是"这台机器此刻装没装"。引擎缺席
+ * 由清单的 `requirements: [{ kind: "executor", id: "node-red" }]` 表达 —— 调度器的
+ * 能力预检拿它对本次运行实际注册的执行器，缺了就以「缺少执行器「node-red」」失败。
+ * 把它排除在那张表外会让 `isNodeRunnable` 恒 false：引擎跑着的机器上画布也永远标
+ * "跑不了"，而 schema 认得它 → `workflow-extension-seams-smoke` 当场红。
  */
 import type { NodeOutcome } from "@contracts/nodeType";
 import type { ExecutionContext } from "./executionContext.js";
@@ -57,9 +64,9 @@ export interface NodeRedExecutorPorts {
 
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024;
 
-/** 这种节点的 `runner.kind` —— 与清单 `mcode.node-red` 的 runner 一致。
- *  **不进** `IMPLEMENTED_RUNNER_KINDS`：那是"静态、永远可跑"的白名单，而这个 kind
- *  依赖本机装没装 Node-RED（见文件头）。 */
+/** 这种节点的 `runner.kind` —— 与清单 `mcode.node-red` 的 runner 一致（清单 import
+ *  本常量，不写字面量）。**在** `IMPLEMENTED_RUNNER_KINDS` 里：执行方式本身已实现，
+ *  "这台机器此刻能不能跑"由清单的 executor `requirements` + 条件注册回答（见文件头）。 */
 export const NODE_RED_RUNNER_KIND = "node-red";
 
 /** 宿主监管的引擎 id（与 `workflowEngines/registry.ts` 的注册 id 一致）。 */

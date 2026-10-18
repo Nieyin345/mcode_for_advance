@@ -595,7 +595,7 @@ writeManifest("smoke-good.json", JSON.stringify(manifestFixture()));
 {
   const c = await catalog();
   const builtinIds = c.entries.filter((e) => e.source === "builtin").map((e) => e.id).sort();
-  same("内置节点类型精确包含模块能力、条件及原有类型", builtinIds, [
+  same("内置节点类型精确包含模块能力、条件、Node-RED 及原有类型", builtinIds, [
     "mcode.agent",
     "mcode.branch",
     "mcode.code",
@@ -604,8 +604,53 @@ writeManifest("smoke-good.json", JSON.stringify(manifestFixture()));
     "mcode.conversation",
     "mcode.main",
     "mcode.module-capability",
+    "mcode.node-red",
     "mcode.trigger",
   ]);
+}
+
+// ④b ★ **「两处各写一份」的漂移闸**:清单里 node-red 的参数键与 runner.kind 必须
+// **逐字**等于执行器导出的常量。
+//
+// 清单(`main/orchestration/nodeTypes.ts`)与执行器(`nodeRedExecutor.ts`)是两份东西:
+// 前者给画布/模型看,后者从 `params` 读值。参数键写歪一个字符,症状是"界面上填得进去、
+// 运行时执行器读不到"(enginePath 读成 undefined → 那句"缺少路径参数"),而且**两边各自
+// 都自洽**,不会报任何错。所以这里直接 import 执行器的常量,对着**真清单**(经真 IPC
+// 读出来的那一份)逐字比对 —— 不抄一份字面量进夹具,抄本会跟真货漂开。
+{
+  const { NODE_RED_PATH_PARAM, NODE_RED_METHOD_PARAM, NODE_RED_BODY_PARAM, NODE_RED_RUNNER_KIND } =
+    await import("@main/orchestration/nodeRedExecutor.js");
+  const c = await catalog();
+  const red = c.entries.find((e) => e.id === "mcode.node-red");
+  check("前提:内置清单里真的有 mcode.node-red", red !== undefined, c.entries.map((e) => e.id));
+  if (red) {
+    // 参数表必须**恰好**是「执行器三格 + 宿主共用的产出变量表」:多一个键(比如把
+    // enginePath 改成 enginePathX 又留了个旧的)会让界面上出现一个执行器永远读不到的
+    // 控件 —— 那也是漂移,只是方向反过来。第一版只比"三个常量在里面",变异验证时
+    // 才发现改名后旧键会漏网,所以这里比**完整键表**。
+    const { NODE_OUTPUT_VARS_KEY } = await import("@contracts/outputConstraint");
+    same(
+      "★ mcode.node-red 的参数键逐字等于执行器常量 + 共用产出变量表(顺序也一致)",
+      red.manifest.params.map((p) => p.key),
+      [NODE_RED_PATH_PARAM, NODE_RED_METHOD_PARAM, NODE_RED_BODY_PARAM, NODE_OUTPUT_VARS_KEY],
+    );
+    eq("★ mcode.node-red 的 runner.kind 等于执行器常量", red.manifest.runner.kind, NODE_RED_RUNNER_KIND);
+    // 引擎执行器是**条件注册**的:清单必须声明这条需求,否则引擎缺席时预检说不出
+    // 「缺少执行器」,节点会掉进模型兜底(它返回的是失败,但原因不对)。
+    const req = (red.manifest.requirements ?? []).find(
+      (r) => r.kind === "executor" && r.id === NODE_RED_RUNNER_KIND,
+    );
+    check("★ mcode.node-red 声明了 executor requirement(引擎缺席时预检才说得出原因)", req !== undefined, red.manifest.requirements);
+    // 参数说明是悬停浮窗里的一段(mcode-admin-smoke 的 80 字上界同样适用于内置类型),
+    // 这里在**真清单**上再钉一次,免得那套的红要等到下次全量才被看见。
+    const tooLong = red.manifest.params.filter((p) => (p.help ?? "").length > 80).map((p) => p.key);
+    same("★ mcode.node-red 的参数说明都在 80 字以内", tooLong, []);
+    check(
+      "★ mcode.node-red 每个参数都有说明",
+      red.manifest.params.every((p) => (p.help ?? "").trim().length > 0),
+      red.manifest.params.map((p) => p.key),
+    );
+  }
 }
 
 // ⑤ ★ **「资料」下拉的候选是资料库大类的现读,不是硬编码。**
@@ -2055,10 +2100,11 @@ console.log("\n新建节点:两条路会不会分家");
 {
   const catalog = obj(await callAsync(IPC.WORKFLOW_NODE_TYPES));
   const entries = catalog.entries as Array<{ id: string; manifest: { runner: { kind: string } } }>;
-  check("IPC 清单带着含条件和模块能力的 9 种内置类型",
-    entries.filter((e) => e.id.startsWith("mcode.")).length === 9 &&
+  check("IPC 清单带着含条件、模块能力与 Node-RED 的 10 种内置类型",
+    entries.filter((e) => e.id.startsWith("mcode.")).length === 10 &&
       entries.some((e) => e.id === "mcode.condition" && e.manifest.runner.kind === "condition") &&
-      entries.some((e) => e.id === "mcode.module-capability" && e.manifest.runner.kind === "module-capability"), {
+      entries.some((e) => e.id === "mcode.module-capability" && e.manifest.runner.kind === "module-capability") &&
+      entries.some((e) => e.id === "mcode.node-red" && e.manifest.runner.kind === "node-red"), {
     got: entries.map((e) => e.id),
   });
   same("这一份读得干干净净 → problems 是空的", catalog.problems, []);

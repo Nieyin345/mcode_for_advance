@@ -64,6 +64,7 @@ import {
   IconHelpCircle,
   IconMessages,
   IconPuzzle,
+  IconPlugConnected,
   IconRobotFace,
   IconStar,
   IconTerminal2,
@@ -127,6 +128,9 @@ const KIND_LOOK: Record<NodeRunnerKind, NodeLook> = {
   // 命令那档「动手」的绿;拼图图标表示「接进来的能力」。在门禁激活前它会被上面的
   // `isNodeRunnable` 判为跑不了,卡片走 DEAD_LOOK,这一档届时才显示。
   "module-capability": { bar: "bg-info", tint: "bg-info/10", icon: "text-info", Icon: IconPuzzle },
+  // Node-RED 引擎(ARC-006 桥 1):向本机受管引擎发一次回环请求,同样不是"动手"的
+  // 进程 —— 与 module-capability 同一档(info + 插头图标)。
+  "node-red": { bar: "bg-info", tint: "bg-info/10", icon: "text-info", Icon: IconPlugConnected },
 };
 
 /** 跑不起来的节点(`isNodeRunnable` 不过:执行方式没实现、或命令写在清单自带的脚本里

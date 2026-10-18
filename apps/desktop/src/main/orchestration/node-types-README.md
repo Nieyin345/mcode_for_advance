@@ -106,6 +106,7 @@
 | `command`(命令进**自带脚本**) | `{ "kind": "command", "entry": "./x.py", "interpreter": "python", "args": [] }` | ✅ **能跑** —— 第三方插件随包发的脚本;脚本相对**清单所在目录**解析,本机起进程跑 |
 | `code` | `{ "kind": "code", "language": "python" }` | ✅ 能用 —— 内置的 `mcode.code`,写一段脚本跑,产出 `exitCode`/`stdout`/`stderr` |
 | `module-capability` | `{ "kind": "module-capability" }` | ✅ 内置 `mcode.module-capability`，通过同一宿主调用只读内置模块贡献，不运行用户模块或脚本 |
+| `node-red` | `{ "kind": "node-red" }` | ✅ **执行方式已实现,但依赖可选引擎**:内置 `mcode.node-red` 向本机受管的 Node-RED 引擎发一次回环请求(引擎没装/没起时这一步明确失败)。自己写清单时同时声明 `"requirements": [{ "kind": "executor", "id": "node-red" }]` —— 调度器的能力预检据此在引擎缺席时说清原因 |
 
 `command` 的 `entry` 是**相对本文档所在目录**的路径,逃出这个目录的路径会被拒绝。
 
@@ -643,8 +644,8 @@ JavaScript 字符串。例如:
 
 - **写操作会弹审批**,你点了同意才落盘,落盘位置就是这个目录;
 - 它写的也只能是**数据** —— 下面那几样字段。执行方式用的是上面那几种**现成的原语**
-  (`prompt` / `conversation` / `branch` / `command` / `code`),不能自己发明,而自带脚本的
-  `command` 那种**跑不了**(见「执行方式」)。
+  (`prompt` / `conversation` / `branch` / `command` / `code` / `node-red`),不能自己发明,
+  而 `node-red` 依赖一个可选引擎(见「执行方式」)。
 
 另外 `mcode.` 是内置类型的保留前缀,AI 和第三方写的类型都不能用它。
 

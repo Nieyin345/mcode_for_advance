@@ -764,6 +764,28 @@ export const NodeRunnerSchema = z.discriminatedUnion("kind", [
     /** 固定附加的参数(不来自 params)。 */
     args: z.array(z.string()).optional(),
   }),
+  /**
+   * **第三方工作流引擎(Node-RED,ARC-006 桥 1)**:向本机受管引擎的 HTTP-in 端点
+   * 发一次请求,响应成为这一步的产出。
+   *
+   * ## 它是"实现了"但"按机器可选"的那一个
+   *
+   * 执行器已经在代码里(`nodeRedExecutor.ts`),但注册是**条件**的:只在引擎 running
+   * 时进 `ExecutionEngine`(见 `executionEngine.ts`)。所以它**在**
+   * {@link IMPLEMENTED_RUNNER_KINDS} 里 —— 那一列回答的是"Mcode 有没有实现这种执行
+   * 方式",不是"这台机器此刻装没装"。
+   *
+   * "此刻跑不跑得了"由清单自己声明:
+   *
+   * ```json
+   * { "runner": { "kind": "node-red" }, "requirements": [{ "kind": "executor", "id": "node-red" }] }
+   * ```
+   *
+   * 调度器的能力预检按这条 requirement 对**本次运行**的执行器注册表,引擎没装/没起
+   * 时节点以「缺少执行器「node-red」」明确失败 —— 不会掉进模型兜底(见
+   * `capabilityResolver.ts` 里 `requirementsForNode` 的推导规则)。
+   */
+  z.object({ kind: z.literal("node-red") }),
 ]);
 export type NodeRunner = z.infer<typeof NodeRunnerSchema>;
 export type NodeRunnerKind = NodeRunner["kind"];
@@ -1304,11 +1326,24 @@ export function isAskChoice(value: unknown): value is AskChoice {
  *
  * 放在 contracts 而不是主进程,是因为渲染端也要用它:画布上那种节点要标出"这个节点
  * 当前跑不了",否则用户画好一张图、发消息,才发现有一格是死的。
+ *
+ * ## 它是"Mcode 有没有实现",不是"这台机器此刻装没装"
+ *
+ * `node-red` 在列表里,但它依赖一个**可选的外部引擎**:执行器只在引擎 running 时
+ * 注册(见 `orchestration/executionEngine.ts` 的 `createBuiltinExecutionEngine`)。
+ * 所以"此刻跑不跑得了"**不能**靠这张静态表回答 —— 正确姿势是清单声明
+ * `requirements: [{ kind: "executor", id: "node-red" }]`(内置 `mcode.node-red` 就
+ * 这么做),调度器的能力预检拿它对本次运行真正注册了哪些执行器,引擎没起时以
+ * 「缺少执行器「node-red」」失败(见 `capabilityResolver.ts`)。
+ *
+ * 反过来,把它排除在这张表外**不是**"可选"的正确表达:那样 `isNodeRunnable` 会对
+ * 它恒 false,`workflow-extension-seams-smoke` 的「schema 认得 ⇒ 必须实现」当场红,
+ * 而且引擎明明 running 的机器上画布也会一直标"跑不了" —— 两种错都不随引擎状态变。
  */
 // module-capability is wired in both production engines; a missing executor
 // fails closed instead of invoking the model fallback (P2-01-REQ-02).
 // This shared availability flag is not module/resource authorization.
-export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "condition", "trigger", "command", "code", "module-capability"] as const;
+export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "condition", "trigger", "command", "code", "module-capability", "node-red"] as const;
 export function isRunnerImplemented(kind: NodeRunnerKind): boolean {
   return (IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(kind);
 }
@@ -1321,6 +1356,10 @@ export function isRunnerImplemented(kind: NodeRunnerKind): boolean {
  * 是 {@link isRunnerImplemented} 的别名 —— 留着它是因为"kind 实现了"和"这个具体清单
  * 跑得起来"是**两个层次的问题**,将来还会分家(比如某天某个 kind 依赖一个可选组件)。
  * 调度器的拒绝与渲染端的"跑不了"徽标读的是**这一份答案**,不是各自去问 kind。
+ *
+ * ⚠️ **可选依赖(如 `node-red`)归 `manifest.requirements` 管,不归这里。** 这个函数
+ * 是同步纯函数、拿不到"这台机器装了什么";而 `requirements` 会被调度器的能力预检
+ * 对**本次运行的执行器注册表**解析(见 {@link IMPLEMENTED_RUNNER_KINDS} 的说明)。
  */
 export function isNodeRunnable(manifest: NodeTypeManifest): boolean {
   return isRunnerImplemented(manifest.runner.kind);

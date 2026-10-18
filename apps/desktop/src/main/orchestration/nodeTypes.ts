@@ -100,6 +100,12 @@ import {
   type NodeTypeManifest,
   type NodeTypeSource,
 } from "@contracts/nodeType";
+import {
+  NODE_RED_BODY_PARAM,
+  NODE_RED_METHOD_PARAM,
+  NODE_RED_PATH_PARAM,
+  NODE_RED_RUNNER_KIND,
+} from "./nodeRedExecutor.js";
 import { MODULE_CAPABILITY_NODE_TYPE_ID, MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { MEMORY_PARAM_KEY } from "@contracts/memory";
@@ -135,6 +141,15 @@ export const NODE_CONVERSATION_TYPE_ID = "mcode.conversation";
  * 下游 —— 要按成败分流,下游接一个决定权给模型的分支看「退出码」。
  */
 export const NODE_COMMAND_TYPE_ID = "mcode.command";
+
+/**
+ * 【ARC-006 桥 1】内置的"Node-RED 引擎"节点类型 id。
+ *
+ * 它**只有一项**:清单给画布/模型看的那一份。执行器在 `nodeRedExecutor.ts`(条件注册),
+ * 参数键与 `runner.kind` 都 import 那边的常量 —— 两份各写一份的字符串是"清单给得出来、
+ * 执行器读不到"这类漂移的温床,而这里一个字都不手抄。
+ */
+export const NODE_RED_NODE_TYPE_ID = "mcode.node-red";
 
 /**
  * 「资料」下拉的候选 —— **资料库大类的现读**。
@@ -542,7 +557,11 @@ const AGENT_USAGE_TAIL =
  * - **命令** —— 在本机跑一条 shell 命令(见 `runner.kind === "command"` 的 `param`
  *   形状):跑什么写在节点参数里,退出码和输出尾部是它的产出。**没有审批** —— 命令是
  *   画图的人写死的配置,不是跑到一半才问的事;第三方那种自带脚本的 `entry` 形状
- *   仍然没实现(调度器会明确拒绝,见 `isNodeRunnable`)。
+ *   也实现了(见 `isNodeRunnable`)。
+ * - **Node-RED 引擎**(`mcode.node-red`)—— 向本机受管引擎发一次回环 HTTP 请求
+ *   (见 `runner.kind === "node-red"`)。它是**可选能力**:执行器只在引擎 running 时
+ *   注册,所以清单上声明一条 executor `requirements`,引擎没起时调度器的能力预检
+ *   会明确说「缺少执行器」。
  *
  * 前三种是原来"对话模式"里那几步的形态 —— 其中**主代理与对话节点跑在主对话里**,
  * 只有子 agent 另开会话;后三种是"自动化"那一摊的入口、岔路口和手。
@@ -899,6 +918,87 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
       "The host supplies workspace and request identity, rejects user modules and real-path escapes, and owns cancellation/timeouts. " +
       "No shell, model, caller-provided trusted/projectPath/requestId, or automatic restart recovery. " +
       "Downstream nodes can reference {{File inspection.bytes}} (or sha256 for inspect, modifiedAt for info).",
+  },
+  /**
+   * 【ARC-006 桥 1】**第三方工作流引擎(Node-RED)**—— 向本机受管引擎的 HTTP-in
+   * 端点发一次请求,响应成为这一步的产出。
+   *
+   * ## 参数键**逐字**来自执行器的常量
+   *
+   * `enginePath` / `engineMethod` / `engineBody` 是 `nodeRedExecutor.ts` 导出的
+   * `NODE_RED_PATH_PARAM` / `NODE_RED_METHOD_PARAM` / `NODE_RED_BODY_PARAM`。清单与执行器
+   * 是**两份各写一份**的东西(清单给画布/模型看,执行器读 `params`),所以这里直接 import
+   * 那三个常量,不手抄字符串 —— 看一眼下面那个 `runner.kind`,同理 import `NODE_RED_RUNNER_KIND`
+   * 而不是写 `"node-red"`。漂移闸在 `orchestration-ipc-smoke` §4b 里(经真 IPC 读真清单,
+   * 与执行器常量逐字比对,外加变异验证过它会红)。
+   *
+   * ## 为什么 `requirements` 里有一条 executor
+   *
+   * `node-red` 的执行器是**条件注册**的(引擎 running 才进注册表,见
+   * `executionEngine.ts`)。`isNodeRunnable` 是同步纯函数、答不了"这台机器装了没有";
+   * 调度器的能力预检拿 `requirements` 对**本次运行**的执行器注册表,引擎没起时这一步以
+   * 「缺少执行器「node-red」」明确失败 —— 而不是画布上永远标"跑不了"(那在引擎跑着的
+   * 机器上是假话),也不是掉进模型兜底。`requirementsForNode` 只给**真的经注册表派发**
+   * 的 kind 自动加 executor 需求,那时执行器已注册、需求恒满足;显式这一条的意义是
+   * **引擎缺席时也有它**,让预检说得出一句人话。
+   *
+   * "运行中的模型照样可能照清单画一个 node-red 节点" —— 这是有意的:分享来的网络/审批
+   * 那一套照旧,执行时才判引擎在不在。
+   */
+  {
+    id: NODE_RED_NODE_TYPE_ID,
+    manifestVersion: 1,
+    name: "Node-RED 引擎 / Node-RED engine",
+    description:
+      "向本机受管的 Node-RED 引擎发一次 HTTP 请求(只限回环同端口),响应交给下游。引擎未启动时这一步明确失败。 / Send one loopback HTTP request to the host-managed Node-RED engine; its response becomes this step's output.",
+    icon: "plug",
+    category: "自动化 / Automation",
+    runner: { kind: NODE_RED_RUNNER_KIND },
+    // 这一项对它不生效(起的是 HTTP 请求,不是模型轮),填 `read` 是如实描述:它不该
+    // 被当成"动手"的那一步。与 module-capability 同一档。
+    capability: "read",
+    // 见上面那段:引擎执行器是**条件注册**的,这条需求让预检在引擎缺席时说得出原因。
+    requirements: [{ kind: "executor", id: NODE_RED_RUNNER_KIND }],
+    params: [
+      {
+        key: NODE_RED_PATH_PARAM,
+        kind: "text",
+        label: "路径 / Path",
+        required: true,
+        help: "引擎根相对路径或本端口回环地址;可写变量。/ Relative path or loopback URL; templates allowed.",
+      },
+      {
+        key: NODE_RED_METHOD_PARAM,
+        kind: "select",
+        label: "方法 / Method",
+        default: "POST",
+        options: [
+          { value: "POST", label: "POST" },
+          { value: "GET", label: "GET" },
+          { value: "PUT", label: "PUT" },
+          { value: "PATCH", label: "PATCH" },
+          { value: "DELETE", label: "DELETE" },
+        ],
+        help: "留空默认 POST。 / Defaults to POST when empty.",
+      },
+      {
+        key: NODE_RED_BODY_PARAM,
+        kind: "longtext",
+        label: "请求体 / Body",
+        help: "作为 JSON 载荷发出的文本;可写变量。GET 时留空。/ JSON payload; templates allowed.",
+      },
+      ...outputVarsParam(),
+    ],
+    outputs: [
+      { key: "status", label: "HTTP 状态 / Status", description: "引擎返回的状态码 / HTTP status code" },
+      { key: "body", label: "响应体 / Body", description: "解析后的 JSON;不是 JSON 时是原文 / Parsed JSON, or raw text" },
+    ],
+    usage:
+      "Send one HTTP request from this step to the **host-managed Node-RED engine** and hand its response to downstream nodes. " +
+      "The target must be loopback on the engine's own port: enginePath may be relative (/api/flow) or an absolute 127.0.0.1/localhost/[::1] URL on that port. " +
+      "The engine must be running (start it in the 工作流引擎 panel); if it is not, this step fails with「工作流引擎尚未运行」and is not retried. " +
+      "2xx becomes success with outputs.status/body; 4xx fails without retry; 5xx fails and may retry. " +
+      "Downstream nodes can reference {{Node-RED.status}} and {{Node-RED.body.someField}}.",
   },
   {
     id: TRIGGER_NODE_TYPE_ID,

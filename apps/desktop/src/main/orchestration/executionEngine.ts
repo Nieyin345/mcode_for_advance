@@ -114,11 +114,12 @@ export type { NodeExecutor } from "./executorRegistry.js";
 
 /** 【ARC-006 WF-INT · 桥 1】「引擎可用吗」的**注入点**。
  *
- *  `node-red` 是可选能力：没装/没起时它的 kind **不能**进执行器注册表（否则清单里
- *  出现一个永远跑不了的 kind）。而 `executionEngine.ts` 不能直接 import 生产注册表
- *  单例 —— `registry.ts` 会拖进 `dataRoot`（electron 的 `app.getPath`），而本模块被
- *  每一套无头 smoke 打包（`module-workflow-smoke` 用 AST 提取 `createBuiltinExecutionEngine`
- *  的注册表达式并在纯 node 里执行它）。所以判据做成**注入**：
+ *  `node-red` 是**可选能力**：没装/没起时它的执行器不注册（否则这条节点拿到的是
+ *  "没有执行器"，而不是一句能照着做的"去启动引擎"）。而 `executionEngine.ts` 不能
+ *  直接 import 生产注册表单例 —— `registry.ts` 会拖进 `dataRoot`（electron 的
+ *  `app.getPath`），而本模块被每一套无头 smoke 打包（`module-workflow-smoke` 用 AST
+ *  提取 `createBuiltinExecutionEngine` 的注册表达式并在纯 node 里执行它）。所以判据
+ *  做成**注入**：
  *
  *  - 生产在装配处（`main/index.ts`）调 `setWorkflowEngineStatusPort(() => workflowEngineRegistry.statusOf(id))`；
  *  - 套件注入假引擎状态（见 `execution-engine-smoke` §引擎执行器），不碰磁盘。
@@ -248,12 +249,14 @@ export class ExecutionEngine {
 /** Both the shared engine and runner's run-scoped engine use this registration.
  *
  *  【ARC-006 桥 1】第三方引擎（Node-RED）是**可选能力**：只有引擎此刻可用（注入的
- *  状态口说 running）才注册它的执行器。不可用时**不注册**，且 `node-red` **不在**
- *  `IMPLEMENTED_RUNNER_KINDS` 里 —— 于是 `isNodeRunnable` 对 `mcode.node-red` 为
- *  false，画布/检查器照常标"跑不了"，调度器也在 `isNodeRunnable` 那道闸明确拒绝，
- *  不会掉进模型兜底（那不是 fail-open，是**没有**执行器 —— 见 `ExecutionEngine.execute`
- *  的未知 kind 分支）。注册一次即保留：引擎随后停掉时，节点拿到的是代码里那句
- *  "引擎尚未运行 —— 请先启动它"（可照着做），而不是"没有能执行这种节点的执行器"。 */
+ *  状态口说 running）才注册它的执行器。不可用时**不注册**；`node-red` **在**
+ *  `IMPLEMENTED_RUNNER_KINDS` 里（执行方式已实现，那张表不回答"这台机器装没装"），
+ *  引擎缺席由清单 `mcode.node-red` 的 executor `requirements` 表达 —— 调度器的能力预检
+ *  对**本次运行**真正注册的执行器列表（`runEngine.kinds()`）求值，缺了就以
+ *  「缺少执行器「node-red」」明确失败。这一道闸**必须在调度器预检里**：`ExecutionEngine.execute`
+ *  对未注册的 kind 会落模型兜底（只有 module-capability 例外），不能指望执行引擎替它拦。
+ *  注册一次即保留：引擎随后停掉时，节点拿到的是代码里那句"引擎尚未运行 —— 请先启动它"
+ *  （可照着做），而不是"没有能执行这种节点的执行器"。 */
 export function createBuiltinExecutionEngine(): ExecutionEngine {
   const engine = new ExecutionEngine()
     .register(new CommandExecutor())

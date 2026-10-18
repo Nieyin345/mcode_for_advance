@@ -267,21 +267,43 @@ ok(exact.summary === "exact", "registered kind wins over fallback");
       }
     }
 
-    // 3. 静态层:node-red **不在** IMPLEMENTED_RUNNER_KINDS,isNodeRunnable 恒 false。
+    // 3. 静态层:node-red **在** IMPLEMENTED_RUNNER_KINDS(执行方式已实现);
+    //    "这台机器此刻能不能跑"由清单的 executor requirement + 条件注册回答。
     const { IMPLEMENTED_RUNNER_KINDS, isRunnerImplemented, isNodeRunnable, renderNodeTypeCatalog } =
       await import("@contracts/nodeType");
-    ok(!(IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(nodeRedKind),
-      "★ node-red 不在 IMPLEMENTED_RUNNER_KINDS(它是可选能力,不是静态可跑)");
-    ok(!isRunnerImplemented(nodeRedKind as never), "★ isRunnerImplemented(node-red) 保持 false");
-    // 一份声明 node-red 的清单(形状借用内置清单;眼下契约还不认这个 kind,所以
-    // 用对象字面量而不是过 schema —— 这条钉的是**判据**,不是某份具体清单)。
+    ok((IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(nodeRedKind),
+      "★ node-red 在 IMPLEMENTED_RUNNER_KINDS(那张表答『实现了没有』,不答『这台机器装没装』)");
+    ok(isRunnerImplemented(nodeRedKind as never), "★ isRunnerImplemented(node-red) 为 true");
+    // 一份声明 node-red 的清单(形状借用内置清单;契约已认这个 kind —— schema 认得
+    // 是 `workflow-extension-seams-smoke` 的事,这里钉的是**判据**)。
     const redManifest = {
       id: "mcode.node-red", manifestVersion: 1, name: "Node-RED 引擎", runner: { kind: nodeRedKind },
       capability: "read", params: [],
+      requirements: [{ kind: "executor", id: nodeRedKind }],
     } as unknown as import("@contracts/nodeType").NodeTypeManifest;
-    ok(!isNodeRunnable(redManifest), "★ 清单声明 node-red 时 isNodeRunnable 为 false(画布/检查器据此标跑不了)");
+    ok(isNodeRunnable(redManifest), "★ 清单声明 node-red 时 isNodeRunnable 为 true(引擎跑着时它真的能跑)");
     const catalogText = renderNodeTypeCatalog([{ id: redManifest.id, source: "plugin", from: "test", manifest: redManifest }]);
-    ok(catalogText.includes("跑不了"), `★ 节点目录如实标出该类型跑不了(实际:${catalogText.split("\n").pop()})`);
+    ok(!catalogText.includes("跑不了"), `★ 节点目录不再谎报 node-red 跑不了(实际:${catalogText.split("\n").pop()})`);
+    // **引擎缺席的那一半**由 requirements 表达:调度器的能力预检拿它对本次运行真正
+    // 注册的执行器列表。这里用生产装配的原语直接验判据(本套不打包 scheduler)。
+    {
+      const { requirementsForNode, checkNodeCapabilities } = await import(
+        "../../src/main/orchestration/capabilityResolver.js"
+      );
+      const missing = requirementsForNode(redManifest, {}, undefined, []);
+      const problems = checkNodeCapabilities(redManifest, missing, []);
+      ok(!problems.ok && problems.missing.some((r) => r.kind === "executor" && r.id === nodeRedKind),
+        "★ 引擎执行器缺席时,预检把 node-red 报成缺少执行器(不是模型兜底)");
+      const present = requirementsForNode(redManifest, {}, undefined, [nodeRedKind]);
+      const okRes = checkNodeCapabilities(redManifest, present, [
+        { kind: "executor", id: nodeRedKind, source: "mcode", capabilities: [] },
+      ]);
+      ok(okRes.ok, "★ 引擎执行器在场时,同一条 requirement 通过预检");
+    }
+    // 注:**清单 ↔ 执行器同源闸**(参数键逐字等于执行器常量)住在
+    // `orchestration-ipc-smoke` §4b —— 它走真 IPC 读真注册表,而本套刻意只打包
+    // `executionEngine` + 纯契约(不碰 dataRoot/electron),import 内置注册表会在
+    // 纯 node 里炸 `Dynamic require`。
 
     // 界面那条路:卡片/类型页的"跑不了"徽标必须读**同一个** isNodeRunnable ——
     // 本切片不允许改渲染端,所以钉判据来源(而不是另写一份 kind 名单):只要两边
