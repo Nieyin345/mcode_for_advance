@@ -41,7 +41,11 @@
   }
 
   var docs = {
-    "auto-1": { id: "auto-1", name: "每日整理", description: "", nodes: [], edges: [], builtin: false, updatedAt: 1 },
+    // 带一个真触发器节点:自动化检查器里的「立刻运行一次」才出得来(见「运行前预检」场景)。
+    "auto-1": {
+      id: "auto-1", name: "每日整理", description: "", edges: [], builtin: false, updatedAt: 1,
+      nodes: [{ id: "t1", type: "mcode.trigger", title: "触发器", params: { triggerKind: "manual", task: "跑" }, position: { x: 0, y: 0 } }],
+    },
   };
 
   // 主题走**真 IPC**(bridge.cjs → 探针注册的 theme:get/set),其余命名空间用内存桩。
@@ -135,6 +139,26 @@
     automation: {
       runs: function () { return invoke("automation.runs", { runs: [] }); },
       statusAll: function () { return invoke("automation.statusAll", []); },
+      /** 「运行前预检」:按场景给不同结论;`preflight-throw` 让调用 reject。 */
+      preflight: function (input) {
+        if (scenario === "preflight-throw") {
+          calls["automation.preflight"] = (calls["automation.preflight"] || 0) + 1;
+          return Promise.reject(new Error("AUDIT_E2E_PREFLIGHT_FAILED"));
+        }
+        if (scenario === "preflight-missing-executor") {
+          return invoke("automation.preflight", {
+            ok: false, workflowId: input && input.workflowId, triggerKey: (input && input.workflowId) + ":" + (input && input.triggerNodeId),
+            problem: { kind: "missing-executor", reason: "缺执行器「node-red」" },
+            problems: [{ kind: "missing-executor", reason: "缺执行器「node-red」" }],
+            capabilities: { required: ["executor:node-red"], available: [] },
+          });
+        }
+        return invoke("automation.preflight", {
+          ok: true, workflowId: input && input.workflowId, triggerKey: (input && input.workflowId) + ":" + (input && input.triggerNodeId),
+          problems: [], capabilities: { required: [], available: [] },
+        });
+      },
+      run: function () { return invoke("automation.run", { ok: true }); },
     },
     webBridge: { status: function () { return invoke("webBridge.status", { paired: false }); } },
     /** 常规页里的「输出风格」小节会读它(空表 = 只有内置 Default)。 */

@@ -1512,6 +1512,16 @@ export const en = {
   "settings.automation.runNoTrigger":
     "This automation has no trigger, so it cannot run — add a trigger node and draw lines from it.",
   "settings.automation.runFailed": "That run did not start.",
+  // Pre-run check (automation.preflight): the reason and the next step, shown when the
+  // run was NOT dispatched.
+  "settings.automation.preflightError":
+    "The pre-run check failed, so this run was not started: {error}. Try again after the check works.",
+  "settings.automation.preflightNext.missingExecutor":
+    "Open Settings → Workflows → Engines and confirm the engine is running, or install the missing plugin / node type.",
+  "settings.automation.preflightNext.needsGrant":
+    "This graph came from an import or an AI edit and the current version is not reviewed yet: inspect and approve it under “Review & enable” on this page, then run.",
+  "settings.automation.preflightNext.corrupt":
+    "This workflow's stored copy is corrupt: export a backup, confirm you can recover it, then delete and re-import; do not save over it.",
   // `describeCron` quotes Chinese (same as the prose written by the main process), so this
   // line only frames it.
   "settings.automation.scheduleLine": "In words: {text}",

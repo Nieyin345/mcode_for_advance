@@ -1510,6 +1510,15 @@ export const zh = {
   "settings.automation.runNoTrigger":
     "这条自动化还没有触发器，跑不起来——先放一个触发器节点，从它往下拉线。",
   "settings.automation.runFailed": "这一次没跑起来。",
+  // 触发前预检（automation.preflight）:点了运行但**没派发**时,原因与下一步分开说。
+  "settings.automation.preflightError":
+    "运行前检查没做成,这一次没有启动:{error}。确认检查恢复后再试。",
+  "settings.automation.preflightNext.missingExecutor":
+    "到「设置 → 工作流 → 引擎」确认对应引擎已启动,或装好缺失的插件 / 节点类型。",
+  "settings.automation.preflightNext.needsGrant":
+    "这张图来自导入或 AI 修改,当前版本还没审查:到本页的「审查并启用」里检查内容并批准后再运行。",
+  "settings.automation.preflightNext.corrupt":
+    "这份工作流的存档已损坏:先导出备份、确认可恢复后删除并重新导入;不要直接覆盖保存。",
   // `describeCron` 说的是中文（和主进程那几段话一样，见 `@contracts/cron`），所以这里
   // 只负责把"这句话在说什么"框一下。
   "settings.automation.scheduleLine": "也就是说：{text}",

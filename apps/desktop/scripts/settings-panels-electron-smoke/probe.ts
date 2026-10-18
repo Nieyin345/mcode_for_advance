@@ -307,6 +307,57 @@ export async function runSettingsPanelsProbe(dir: string): Promise<void> {
       assert(value === "用户改过的自动化名", `保存失败后输入被回弹:${JSON.stringify(value)}`);
     });
 
+    /* ═══ 自动化:运行前预检(界面对齐) ═══ */
+    // 判定全部来自真 DOM + `__calls` 计数:预检说不能跑 → 原因画在页面上且
+    // `automation.run` 一次都没调;预检通过 → 照常派发;预检自己抛错 → 错误可见、
+    // 同样不派发(不静默继续)。
+    const clickRunOnce = (): Promise<string> =>
+      js<string>(`(() => {
+        const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === '立刻运行一次');
+        if (!b) return 'no-button';
+        if (b.disabled) return 'disabled';
+        b.click();
+        return 'ok';
+      })()`);
+
+    await check("★ 自动化预检:missing-executor → 原因与下一步可见,且没有派发", async () => {
+      await open("automation", "preflight-missing-executor", `document.body.innerText.includes('每日整理')`);
+      await until("运行按钮出现", `[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '立刻运行一次')`);
+      const before = await calls("automation.run");
+      const clicked = await clickRunOnce();
+      assert(clicked === "ok", "点「立刻运行一次」失败:" + clicked);
+      await until("预检原因出现", `document.body.innerText.includes('缺执行器「node-red」')`);
+      const text = await bodyText();
+      assert(text.includes("引擎"), "没有给出下一步(引擎面板):" + text.slice(0, 600));
+      const after = await calls("automation.run");
+      assert(after === before, `预检失败时仍派发了运行:${before} → ${after}`);
+      assert((await calls("automation.preflight")) >= 1, "没有调用预检");
+    });
+
+    await check("★ 自动化预检:ok → 照常派发(防空过)", async () => {
+      await open("automation", "healthy", `document.body.innerText.includes('每日整理')`);
+      await until("运行按钮出现", `[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '立刻运行一次')`);
+      const before = await calls("automation.run");
+      const clicked = await clickRunOnce();
+      assert(clicked === "ok", "点「立刻运行一次」失败:" + clicked);
+      await until("运行真的派发", `(window.__calls['automation.run'] ?? 0) > ${before}`);
+      const after = await calls("automation.run");
+      assert(after === before + 1, `预检通过后应派发一次:${before} → ${after}`);
+      const text = await bodyText();
+      assert(!text.includes("缺执行器"), "健康路径出现预检错误:" + text.slice(0, 400));
+    });
+
+    await check("★ 自动化预检:预检本身抛错 → 错误可见且不派发(不静默继续)", async () => {
+      await open("automation", "preflight-throw", `document.body.innerText.includes('每日整理')`);
+      await until("运行按钮出现", `[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '立刻运行一次')`);
+      const before = await calls("automation.run");
+      const clicked = await clickRunOnce();
+      assert(clicked === "ok", "点「立刻运行一次」失败:" + clicked);
+      await until("预检错误出现", `document.body.innerText.includes('AUDIT_E2E_PREFLIGHT_FAILED')`);
+      const after = await calls("automation.run");
+      assert(after === before, `预检抛错时仍派发了运行:${before} → ${after}`);
+    });
+
     /* ═══ 外观 / 语言 / 文本大小:即时生效 + 保存失败回退 ═══ */
 
     // 读 `<html>` 的真实状态:类、属性、以及**计算值**(不是内联字符串)。

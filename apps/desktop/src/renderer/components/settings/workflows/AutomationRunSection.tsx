@@ -56,6 +56,27 @@ export function AutomationRunSection({ doc, catalog, dirty = false }: {
     if (dirty || busyRef.current || running || !triggerNodeId) return;
     busyRef.current = true; setBusy(true); setNotice(null);
     try {
+      // 【预检对齐】**先问再跑**:坏档 / 缺执行器 / 未审查在起跑前就说清,而不是
+      // 点下去才在运行史里出现一次失败。只读 RPC,在事件处理器里显式 await。
+      // 预检本身抛错(IPC 断了 / 主进程没注册)也**不静默继续** —— 按"没确认过"
+      // 处理,宁可这一次不跑。
+      let preflight: Awaited<ReturnType<typeof api.automation.preflight>>;
+      try {
+        preflight = await api.automation.preflight({ workflowId: doc.id, triggerNodeId });
+      } catch (error) {
+        if (alive.current) setNotice(t("settings.automation.preflightError", { error: error instanceof Error ? error.message : String(error) }));
+        return;
+      }
+      if (!preflight.ok) {
+        if (!alive.current) return;
+        const problem = preflight.problem;
+        let next = "";
+        if (problem?.kind === "missing-executor") next = ` ${t("settings.automation.preflightNext.missingExecutor")}`;
+        else if (problem?.kind === "needs-grant") next = ` ${t("settings.automation.preflightNext.needsGrant")}`;
+        else if (problem?.kind === "corrupt") next = ` ${t("settings.automation.preflightNext.corrupt")}`;
+        setNotice((problem?.reason ?? t("settings.automation.runFailed")) + next);
+        return;
+      }
       const result = await api.automation.run({ workflowId: doc.id, triggerNodeId });
       if (alive.current && !result.ok) setNotice(result.error ?? t("settings.automation.runFailed"));
     } catch (error) {
