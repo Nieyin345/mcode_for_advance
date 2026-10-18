@@ -863,6 +863,21 @@ class AutomationRunner {
       // 与去重表同一条红线:**落不盘就不派发**。领取与去重各是一次同库 fsync,而定时
       // 触发本来就一分钟最多一次 —— 这点开销换"领取→执行"有一个真正 durable 的边界。
       const claimId = scheduleClaimId(key, minute);
+      // 【自动化事件去重·重放】去重表不是唯一的事实来源:它可能丢(坏 JSON 当空表 /
+      // 历史修剪 / 搬库),系统时钟也可能回拨到同一分钟。而**持久化领取账本**里
+      // `workflowId:nodeId@minute` 已是终态 = 这一分钟**确实执行过**(SUCCEEDED/FAILED/
+      // UNCERTAIN 都是"这一格已消费,不再重跑"—— 后者按 claimRecoveryReason 的口径
+      // 明说"如需重跑请手动运行一次")。只查 lastMinute 的话,去重表一丢就会把同一
+      // 事件键再执行一遍,对带外部副作用的自动化就是重复副作用。
+      //
+      // 命中终态:记账后跳过(记账失败也不影响跳过 —— 判据是账本,不是它),并把原因
+      // 记进事实,界面看得见"为什么这一分钟没跑"。
+      const knownClaim = this.triggerClaims.get(claimId);
+      if (knownClaim !== undefined && isTerminalClaimStatus(knownClaim.status)) {
+        this.rememberLastMinute(key, minute, minute); // 让后续 tick 走上面那道静默闸
+        this.skip(trigger, "这一分钟已经执行过(持久化领取账本为终态),不重复执行");
+        continue;
+      }
       if (!this.writeTriggerClaimDurable(claimId, { status: "CLAIMED", minute, at: now.getTime() })) {
         log.warn(`[automation] 「${trigger.title}」这一分钟的领取记录没能落盘,跳过这次触发(避免领取不 durable 时的重复外部执行)`);
         this.skip(trigger, "这一分钟的领取记录没能落盘,已跳过这次触发");

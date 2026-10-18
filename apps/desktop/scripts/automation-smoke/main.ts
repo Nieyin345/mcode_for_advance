@@ -32,7 +32,7 @@ import { withAutomationOrigin } from "@main/orchestration/automationEventOrigin.
  *
  * Run: scripts/automation-smoke/run.sh
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
 import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, addToFileBacklog, capOldest, shouldIgnoreWatchPath, isSpecificGlob, classifyFileChange, reconcileFileChangeKind, isWithinWatchRoot, type HookEvent } from "@contracts/hook";
@@ -4130,6 +4130,81 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       failing.statusOf(wfF),
     );
     failing.dispose();
+  }
+
+  /* ── 事件去重与重放:持久化「已执行集合」必须参与派发判定 ──
+   *
+   * 去重表 `automation.lastMinute` 会丢(坏 JSON 当空表 / 历史修剪 / 用户搬库),
+   * 系统时钟也可能回拨到同一分钟。而**领取账本**(`automation.triggerClaims`)里
+   * `workflowId:nodeId@minute` 已是终态 = 这一分钟**确实执行过**。只查 lastMinute 的
+   * 实现会把它当"本分钟没见过"照常派发 —— 同一事件键第二次副作用。
+   * 修复后派发前先查账本终态:命中即跳过,原因记进事实(界面可见),账本不被改写。
+   */
+  {
+    const claimsOnDisk = (): Record<string, { status?: string }> => {
+      const raw = SettingRepo.get("automation.triggerClaims");
+      return raw === null || raw.length === 0 ? {} : (JSON.parse(raw) as Record<string, { status?: string }>);
+    };
+    resetRuns();
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    SettingRepo.set("automation.triggerClaims", "{}");
+    const wfR = nextId(), nodeIdR = "t_claim_replay";
+    makeAutomation({ workflowId: wfR, nodeId: nodeIdR, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "同一事件键不许重放",
+    } });
+    const keyR = `${wfR}:${nodeIdR}`;
+    const minuteR = 40_000_000;
+    // 盘上事实:这一分钟已经执行过(终态 SUCCEEDED),但去重表没了(丢失/修剪/时钟回拨)。
+    SettingRepo.set("automation.triggerClaims", JSON.stringify({
+      [`${keyR}@${minuteR}`]: { status: "SUCCEEDED", minute: minuteR, at: minuteR * 60_000 },
+    }));
+    const replayRunner = await withClockAsync(minuteR * 60_000, () => startRunner());
+    withClock(minuteR * 60_000, () => replayRunner.onTick());
+    eq("★ 同一事件键不重放(持久化领取账本是判据,不只看 lastMinute)", runsOfNode(nodeIdR).length, 0);
+    check(
+      "★ 跳过原因对用户可见(不是静默丢弃)",
+      (replayRunner.statusOf(wfR)[0]?.lastError ?? "").includes("已经执行过") === true,
+      replayRunner.statusOf(wfR),
+    );
+    eq("★ 账本终态不被重放路径改写", claimsOnDisk()[`${keyR}@${minuteR}`]?.status, "SUCCEEDED");
+
+    // 正控:下一分钟是一个**新**事件键,同一 tick 连看两次也只执行一次(健康路径不回归)。
+    withClock((minuteR + 1) * 60_000, () => {
+      replayRunner.onTick();
+      replayRunner.onTick();
+    });
+    eq("正控:下一分钟照常执行且同一 tick 两次仍只一次", runsOfNode(nodeIdR).length, 1);
+    replayRunner.dispose();
+  }
+
+  /* ── 文件监听:编辑器式保存(写临时文件再 rename)只触发一次 ──
+   *
+   * 真实 `fs.watch` 对一次原子保存会连发多条事件(临时文件的 rename/change、最终
+   * 文件的 rename,实测同一毫秒簇)。WATCH_SETTLE_MS + 合并窗口必须把它们收成**一批**:
+   * 一次保存 = 一次运行,而不是每个平台事件各跑一遍。
+   */
+  {
+    resetRuns();
+    const wfA = nextId(), nodeIdA = "t_atomic_save";
+    makeAutomation({ workflowId: wfA, nodeId: nodeIdA, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+      [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+      task: "一次保存只办一次",
+    } });
+    const atomicRunner = await startRunner();
+    try {
+      const tmp = join(PROJ_DIR, "atomic-save.md.tmp");
+      const dest = join(PROJ_DIR, "atomic-save.md");
+      writeFileSync(tmp, "# v1");
+      renameSync(tmp, dest);
+      await sleep(FLUSH_SLACK_MS + 400);
+      eq("★ 一次编辑器式保存只产生一次运行", runsOfNode(nodeIdA).length, 1);
+      const payloadFiles = runsOfNode(nodeIdA)[0]?.entry?.payload?.files as string[] | undefined;
+      check("载荷里是最终文件(临时文件不在里面)", payloadFiles?.includes(dest) === true && payloadFiles?.includes(tmp) !== true, payloadFiles);
+    } finally { atomicRunner.dispose(); }
   }
 
   /* ── 【ARC-005】非 durable 的落盘**不许留幻影行**(边界迁移)—─
