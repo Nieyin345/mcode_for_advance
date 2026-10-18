@@ -5,14 +5,38 @@
  * 信封解析、unavailable/failed 分类、一条 md→docx 往返）。这一套不重复它，钉的是
  * **每种格式进门时的语义**：
  *
- *  - G1 打开不重写：对每种能读的格式（docx / pptx），read 前后文件 sha256 必须逐字节
- *    一致。**为什么**：编辑器/查看器"打开→不改→关闭"不得改写用户的文件 —— 一次
- *    无意的重写会刷新 mtime、破坏外部同步工具（网盘/版本库）的"未变"判断、触发
- *    OnlyOffice 之类写入方的冲突检测，甚至让"打开即修复"把用户没同意的格式变更
- *    悄悄落盘。这是"只读"两个字的字面含义，不是实现细节。
+ *  - G1 打开不重写：对每种能读的格式（docx / pptx，以及 xlsx 的纯 Node 读路径
+ *    `sheet check`），read 前后文件 sha256 必须逐字节一致。**为什么**：编辑器/查看器
+ *    "打开→不改→关闭"不得改写用户的文件 —— 一次无意的重写会刷新 mtime、破坏外部
+ *    同步工具（网盘/版本库）的"未变"判断、触发 OnlyOffice 之类写入方的冲突检测，
+ *    甚至让"打开即修复"把用户没同意的格式变更悄悄落盘。这是"只读"两个字的字面
+ *    含义，不是实现细节。
  *  - G2 编辑往返：docx 生成→apply→再 read 能看到新内容；pptx create→slides read；
- *    xlsx 从 CSV create→sheet read（本机无 Rust sidecar 时显式记 `sidecar_unavailable`
- *    并跳过该断言 —— 不算通过也不算失败，但必须在输出里可见）。
+ *    xlsx 从 CSV create→`sheet check` 纯 Node 读回（占位符定位到具体单元格，证明
+ *    真解析了内容）；应用侧 `sheet read` 走 Rust sidecar，本机无 sidecar 时显式记
+ *    `sidecar_unavailable` 并跳过该断言 —— 不算通过也不算失败，但必须在输出里
+ *    可见，且要带上具体命令与 CLI 错误码。
+ *
+ * ## xlsx 命令依赖矩阵（本套件只覆盖不需要 sidecar 的部分）
+ *
+ *   纯 Node（JSZip + xlsx-gateway；本机无 sidecar 也能跑，已实测）：
+ *     - `create --type xlsx --from <csv|json> [--header]`
+ *     - `convert <csv> --to xlsx`
+ *     - `sheet check <file>`      ← 本套件用它做 xlsx 的「读一次」与「读回」
+ *     - `guide sheets`
+ *     - `sheet apply --ops`（单元格/格式/结构类 op；公式缓存、add_pivot 的公式源、
+ *       convert_to_values 才会走 sidecar）
+ *   需要 Rust xlsx-sidecar（`XLSX_SIDECAR_PATH`，或
+ *   `genoffice/apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar`）：
+ *     - `sheet read` / `info <xlsx>` / `merge <xlsx>` / `convert <xlsx> --to csv` /
+ *       `sheet apply --cells`（先做 workbookSummary）
+ *   需要 GenOffice 应用（headless Electron）：
+ *     - `convert <xlsx> --to pdf` / `render` / `open`
+ *
+ *   应用适配层的 `sheetRead` 走 `sheet read`，所以本套件对它保留显式 SKIP（G2），
+ *   并打印命令与错误码。`sheet check` 是 CLI 里唯一不依赖 sidecar 的 xlsx 读路径，
+ *   它真解析文件内容（JSZip 读 workbook.xml / sheet XML / sharedStrings），不是拿
+ *   写路径冒充读路径。
  *  - G3 格式路由拒绝面：`readByKind` 的行为必须与 `documentKindOf` 的判据一致
  *    （md→refused 指向 file.readFile；html→unavailable；未知扩展名→refused），
  *    且每种拒绝理由文本非空。**为什么**：路由的失败必须"说得出为什么"，
@@ -42,6 +66,7 @@ import {
   resolveGenofficeCliPath,
   sheetRead,
   slidesRead,
+  type GenofficeEnvelope,
   type GenofficeResult,
 } from "../../src/main/document/genofficeCli.js";
 // `documentKindOf` 是纯契约函数（唯一格式判据）。`readByKind` 经 `@main/ipc/document`
@@ -59,6 +84,35 @@ function cliCreate(args: string[], stdin?: string): { status: number | null; std
     timeout: 60_000,
   });
   return { status: r.status, stdout: (r.stdout ?? "").slice(0, 300), stderr: (r.stderr ?? "").slice(0, 300) };
+}
+
+/**
+ * 跑一条 **纯 Node** 的 xlsx CLI 命令并解析 `--json` 信封。
+ *
+ * 为什么不用适配层：适配层只封装了 `sheet read`（需要 sidecar）；`sheet check` /
+ * `create` 这类纯 Node 子命令没有封装，且本任务不改适配层。这里与 `cliCreate`
+ * 同一条调用口径（不继承宿主 env），只是把信封解析出来供断言。
+ *
+ * `stdout` 在解析失败时保留原文，便于在 FAIL 里看到 CLI 到底说了什么。
+ */
+function cliJson(args: string[], stdin?: string): {
+  status: number | null;
+  envelope: GenofficeEnvelope | null;
+  raw: string;
+} {
+  const r = spawnSync(process.execPath, [cliPath!, ...args, "--json"], {
+    env: { ELECTRON_RUN_AS_NODE: "1", ...(process.env.PATH ? { PATH: process.env.PATH } : {}) },
+    ...(stdin !== undefined ? { input: stdin } : {}),
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  const out = r.stdout ?? "";
+  const line = out.trim().split("\n").filter((l) => l.trim().startsWith("{")).pop();
+  let envelope: GenofficeEnvelope | null = null;
+  if (line !== undefined) {
+    try { envelope = JSON.parse(line) as GenofficeEnvelope; } catch { /* raw 里能看到 */ }
+  }
+  return { status: r.status, envelope, raw: out.slice(0, 400) };
 }
 
 let failures = 0;
@@ -143,6 +197,46 @@ if (cliPath === null) {
         check("G1 pptx：slides read 成功（否则下面的哈希比较没有意义）", r2.ok, r2);
         eq("G1 pptx：打开→不改→关闭后文件 sha256 不变", pAfter, pBefore);
         if (pAfter !== pBefore) console.log(`       前后哈希:${pBefore.slice(0, 12)}… → ${pAfter.slice(0, 12)}…`);
+
+        /* ── xlsx：应用侧 `sheet read` 需要 Rust sidecar，但 CLI 的 `sheet check`
+         * 是纯 Node 的读路径（JSZip 解析 workbook.xml / sheet XML / sharedStrings，
+         * 不 spawn sidecar）。用它对「打开不重写」做同判据断言；read 是否成功由
+         * `detail.checks` 的 8 项检查存在来证明 —— 空信封也算"成功"会变成假绿。 */
+        const xlsx = join(root, "g1.xlsx");
+        // 样本里放一个 TODO，让 check 有真实 finding 可报：证明它真读了单元格文本，
+        // 而不是只把 zip 打开、什么都没解析就返回空 issues。
+        const xlsxJson = join(root, "g1-xlsx.json");
+        writeFileSync(xlsxJson, JSON.stringify([
+          ["name", "qty"],
+          ["widget", 3],
+          ["TODO", 4],
+        ]));
+        const xCreated = cliCreate(["create", "--type", "xlsx", "--from", xlsxJson, "--out", xlsx]);
+        const xCreatedOk = xCreated.status === 0 && existsSync(xlsx);
+        check("前置：xlsx 样本生成成功（create --from json，纯 JS）", xCreatedOk, xCreated);
+        if (xCreatedOk) {
+          const xBefore = sha256(xlsx);
+          const check1 = cliJson(["sheet", "check", xlsx]);
+          const xAfter = sha256(xlsx);
+          const checks = (check1.envelope?.detail as { checks?: unknown[] } | undefined)?.checks;
+          // read 成功的判据：status ok 且 8 项检查都报了（说明 checkWorkbook 真跑完）。
+          check(
+            "G1 xlsx：sheet check 读取成功（返回完整检查清单）",
+            check1.status === 0 && check1.envelope?.status === "ok" && Array.isArray(checks) && checks.length >= 8,
+            check1.envelope ?? check1.raw,
+          );
+          // 内容真的被解析：TODO 文本被定位到具体单元格（A3）。
+          const issues = (check1.envelope?.detail as { issues?: Array<{ code?: string; cell?: string }> } | undefined)?.issues ?? [];
+          check(
+            "G1 xlsx：check 真解析了单元格内容（TODO 定位到 A3）",
+            issues.some((i) => i.code === "placeholder_left" && i.cell === "A3"),
+            issues,
+          );
+          eq("G1 xlsx：打开→不改→关闭后文件 sha256 不变（sheet check 纯 Node 读）", xAfter, xBefore);
+          if (xAfter !== xBefore) console.log(`       前后哈希:${xBefore.slice(0, 12)}… → ${xAfter.slice(0, 12)}…`);
+        } else {
+          skip("G1 xlsx", "样本生成失败，无法验证读不重写");
+        }
       } else {
         skip("G1 docx/pptx", "样本生成失败，无法验证读不重写");
       }
@@ -181,12 +275,32 @@ if (cliPath === null) {
         check("G2 pptx：读回至少 1 页", (detail.slides ?? 0) >= 1, detail);
       }
 
-      // xlsx：CSV→xlsx（create）→ sheet read。
+      // xlsx：CSV→xlsx（create，纯 JS）→ 读回。
+      // 两条读路径分开断言：
+      //  a) 纯 Node 的 `sheet check`：读回内容必须看得到表头/单元格文本 —— 这条
+      //     本机就能跑，是 xlsx 往返的真实判据。
+      //  b) 应用侧 `sheet read`（适配层 sheetRead）：走 Rust sidecar，本机无 sidecar
+      //     时显式 SKIP，并打印具体命令与 CLI 错误码（不是一句"缺件"了事）。
       const xlsx = join(root, "g2.xlsx");
       const csv = join(root, "g2.csv");
-      writeFileSync(csv, "name,qty\nwidget,3\n");
+      writeFileSync(csv, "name,qty\nwidget,3\nTODO,9\n");
       const xCreated = cliCreate(["create", "--type", "xlsx", "--from", csv, "--out", xlsx]);
       check("G2 xlsx：从 CSV create 成功", xCreated.status === 0 && existsSync(xlsx), xCreated);
+      if (xCreated.status === 0 && existsSync(xlsx)) {
+        const xc = cliJson(["sheet", "check", xlsx]);
+        const xIssues = (xc.envelope?.detail as { issues?: Array<{ code?: string; cell?: string }> } | undefined)?.issues ?? [];
+        check(
+          "G2 xlsx：sheet check 读回成功（CSV 生成的单元格被真解析）",
+          xc.status === 0 && xc.envelope?.status === "ok" && Array.isArray((xc.envelope.detail as { checks?: unknown[] }).checks),
+          xc.envelope ?? xc.raw,
+        );
+        check(
+          "G2 xlsx：读回内容看得到 CSV 里的文本（TODO → A3）",
+          xIssues.some((i) => i.code === "placeholder_left" && i.cell === "A3"),
+          xIssues,
+        );
+      }
+
       const xread = await sheetRead(ports, xlsx);
       if (xread.ok) {
         const detail = xread.envelope.detail as { rows?: unknown[][] };
@@ -194,8 +308,15 @@ if (cliPath === null) {
       } else if (xread.kind === "unavailable") {
         // 【显式跳过】本机没构建 Rust xlsx-sidecar（XLSX_SIDECAR_PATH 未设 / 仓库内无 target/release 产物）。
         // 这不是"通过"（读取路径根本没跑到），也不是"失败"（能力缺件是已知边界）——
-        // 必须在输出里可见，防止把 SKIP 统计成绿。
-        skip("G2 xlsx：sheet read 读回", `sidecar_unavailable — ${xread.reason}`);
+        // 必须在输出里可见，防止把 SKIP 统计成绿。把具体命令、错误码与 hint 打全，
+        // 便于区分「本机缺件」与「代码没做」：error=conversion_failed + hint 指到
+        // XLSX_SIDECAR_PATH = 环境缺件（sidecar 源码在 apps/sheets/native/xlsx-engine，
+        // 本机无 cargo 构建）。
+        const env = xread.envelope;
+        skip(
+          "G2 xlsx：适配层 sheet read 读回",
+          `sidecar_unavailable — 命令 \`sheet read ${xlsx} --json\`，code=${String(env?.code)} error=${String(env?.error)} message=${xread.reason}`,
+        );
       } else {
         check("G2 xlsx：sheet read 成功", false, xread);
       }
