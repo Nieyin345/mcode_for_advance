@@ -218,6 +218,9 @@ export const NODE_RED_TYPE_OF_RUNNER: Record<string, string> = {
 /** 这个 runner 的输出端口数（`branch` = 出边数，调用方另算；`trigger` 无输入）。 */
 function outputPortCountOf(kind: NodeRunnerKind | "unknown", outDegree: number): number {
   if (kind === "branch") return Math.max(1, outDegree);
+  // condition → 原生 switch **固定两个输出口**（true / false）。2026-10-19 真引擎
+  // 实测：只给 1 个口时，switch 的 else 分支（口 1）消息被直接丢弃 —— 下游静默不动。
+  if (kind === "condition") return 2;
   return 1;
 }
 
@@ -384,6 +387,24 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       x: Math.round(node.position.x),
       y: Math.round(node.position.y),
       wires: Array.from({ length: outPorts }, () => [] as string[]),
+      // condition → 原生 switch 的**最小可执行形状**（2026-10-19 真引擎实测：
+      // 只写 type:"switch" 不给 rules/property 时，switch 没有任何规则、消息不会
+      // 转发到任何一个口 —— 整条下游静默不动）。按 `msg.mcode.condition`（布尔）
+      // 分两路：true → 口 0，否则（含 else 规则）→ 口 1。Mcode 的完整表达式求值
+      // （{{上游.字段}} / logic and-or / 多种 op）属于 Host 侧，MERGE-3 接
+      // `mcode-condition` 时替换本规则；此前它是"可启动的最小语义"，报告里点名。
+      ...(kind === "condition"
+        ? {
+            rules: [
+              { t: "true", v: "", vt: "bool" },
+              { t: "else" },
+            ],
+            property: "mcode.condition",
+            propertyType: "msg",
+            checkall: "false",
+            repair: false,
+          }
+        : {}),
       "x-mcode": {
         nodeId: node.id,
         type: node.type,
@@ -406,6 +427,16 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       });
     }
     nodeRedOf.set(node.id, nrNode);
+    if (kind === "condition") {
+      lossy.push({
+        code: "lossy",
+        nodeId: node.id,
+        message:
+          "condition 迁为原生 switch，规则暂为「msg.mcode.condition 为 true → 口 0，否则口 1」；"
+          + "Mcode 的完整表达式求值（{{上游.字段}} / and-or / op）由 Host 侧承担（MERGE-3 接 mcode-condition），"
+          + "此前该节点只保证整组能启动、消息按布尔分流。",
+      });
+    }
     needsHumanDecision.push(...humanDecisionIssuesOf(node, kind, node.params));
 
     mapped.push({ nodeRedId, nodeId: node.id, type: node.type, runnerKind: kind });

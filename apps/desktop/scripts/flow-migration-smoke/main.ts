@@ -22,6 +22,14 @@
  * 个条件/扩展原语），所以它证明的是"规则覆盖全部 kind"，不是"某个清单文件的内容"。
  * 真清单与迁移器之间是否有漂移，由 Gate C 接存储时的装配断言负责。
  *
+ * ## 6/7. MERGE-3：executor owner 单一性（同一 flow 不能两端执行）
+ *
+ * 冲突形态（读 `automationRunner.ts` / `runner.ts` 得出）：旧 runner 以 `workflowId`
+ * （= `WorkflowDoc.id`）维护 cron/文件/事件触发器并经 `runWorkflow()` 执行；Node-RED
+ * 侧同一份 flow（迁移器在 `x-mcode.docId` 保留同一个 id）由引擎自己的 inject/http-in
+ * 执行。两边同时登记 → 同一事件跑两遍。本段钉住判据：第二个 owner 被**显式拒绝**
+ * （不是后写赢）、释放后可重新登记、未登记返回 null（防空过）、不同 flow 互不影响。
+ *
  * Run: bash scripts/flow-migration-smoke/run.sh
  */
 import { createHash } from "node:crypto";
@@ -41,6 +49,12 @@ import {
   backupWorkflowDocBytes,
   backupWorkflowDocText,
 } from "@main/workflowEngines/flowMigrationBackup.js";
+import {
+  EXECUTOR_OWNERS,
+  createInMemoryExecutorOwnership,
+  decideClaim,
+  isExecutorOwner,
+} from "@main/workflowEngines/executorOwnership.js";
 
 let failures = 0;
 let total = 0;
@@ -51,6 +65,9 @@ function check(name: string, cond: boolean, detail?: unknown): void {
     failures++;
     console.log(`  FAIL ${name}${detail === undefined ? "" : ` — ${JSON.stringify(detail)}`}`);
   }
+}
+function eq(name: string, actual: unknown, expected: unknown): void {
+  check(name, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
 }
 
 /* ── 夹具：覆盖全部 runner.kind 的类型清单（runner 值与真内置清单一一对应） ── */
@@ -284,6 +301,99 @@ console.log("\n4. 迁移前备份（workflow-migrations/<id>-<时间戳>.json）
   const later = await backupWorkflowDocText(dataRoot, "wf_backup", originalText, { at: new Date("2026-10-19T01:02:04.000Z") });
   check("★ 不同时间戳产生独立备份（前一份仍在）", later.path !== backup.path && existsSync(backup.path) && existsSync(later.path));
   check("★ 非法字符 id 被折成安全文件名", (await backupWorkflowDocText(dataRoot, "a/b:c", "{}", { at })).path.endsWith("a-b-c-2026-10-19T01-02-03-004Z.json"));
+}
+
+/* ══════════ 6. executor owner 单一性（MERGE-3 第一刀） ══════════ */
+console.log("\n6. executor owner：同一 flow 只能一端执行");
+{
+  check("★ owner 只有两端（封闭集合：mcode / node-red）", JSON.stringify([...EXECUTOR_OWNERS]) === '["mcode","node-red"]');
+  check("★ 非 owner 字符串被拒（防空过）", !isExecutorOwner("other") && !isExecutorOwner(null) && isExecutorOwner("mcode"));
+
+  // ★ 同一 flowId 登记两个 owner → 第二个被拒且原因可读。
+  {
+    const registry = createInMemoryExecutorOwnership();
+    const first = registry.claim("wf_shared", "mcode", { reason: "旧 runner 的自动化触发器表" });
+    check("★ 第一个 owner 登记成功", first.ok === true && first.owner === "mcode", first);
+    const second = registry.claim("wf_shared", "node-red", { reason: "迁移产物部署到引擎" });
+    check("★ 同一 flowId 登记第二个 owner → 被拒（不是后写赢）", second.ok === false, second);
+    check("★ 拒绝原因点名双方且可读",
+      second.ok === false
+      && second.reason.includes("wf_shared") && second.reason.includes("mcode") && second.reason.includes("node-red"),
+      second.ok === false ? second.reason : second);
+    check("★ 冲突结果带双方身份（requested / current）",
+      second.ok === false && second.conflict?.requested === "node-red" && second.conflict?.current === "mcode",
+      second.ok === false ? second.conflict : second);
+    eq("★ 冲突后 owner 仍是第一个（未被覆盖）", registry.executorOwnerOf("wf_shared"), "mcode");
+    // 同一 owner 重复登记是幂等（automationRunner.reload 会反复登记），不是冲突。
+    const again = registry.claim("wf_shared", "mcode");
+    check("★ 同一 owner 重复登记 → 幂等允许（alreadyOwned）", again.ok === true && again.alreadyOwned === true, again);
+  }
+
+  // ★ 释放后可重新登记（切换 owner 的唯一合法路径）。
+  {
+    const registry = createInMemoryExecutorOwnership();
+    registry.claim("wf_switch", "mcode");
+    const wrongRelease = registry.release("wf_switch", "node-red");
+    check("★ 非当前 owner 不能释放（陈旧一方偷不走所有权）", wrongRelease.ok === false, wrongRelease);
+    eq("★ 释放被拒后 owner 不变", registry.executorOwnerOf("wf_switch"), "mcode");
+    const released = registry.release("wf_switch", "mcode");
+    check("★ 当前 owner 释放成功", released.ok === true, released);
+    eq("★ 释放后 executorOwnerOf 回 null", registry.executorOwnerOf("wf_switch"), null);
+    const reClaim = registry.claim("wf_switch", "node-red", { reason: "MERGE-3 切换" });
+    check("★ 释放后可由另一端重新登记", reClaim.ok === true && reClaim.alreadyOwned === false, reClaim);
+    eq("★ 重新登记后 owner 是 node-red", registry.executorOwnerOf("wf_switch"), "node-red");
+    // 重复释放：没有登记过 → 明确失败（不是静默成功）。
+    check("★ 重复释放明确失败", registry.release("wf_switch", "node-red").ok === true
+      && registry.release("wf_switch", "node-red").ok === false);
+  }
+
+  // ★ 未登记的 flowId 返回 null（防空过：绝不能默认落端）。
+  {
+    const registry = createInMemoryExecutorOwnership();
+    eq("★ 未登记的 flowId → null", registry.executorOwnerOf("wf_unknown"), null);
+    eq("★ 空 flowId → null（不成为第二条'没人拥有'的路）", registry.executorOwnerOf(""), null);
+    const bad = registry.claim("", "mcode");
+    check("★ 空 flowId 登记被拒", bad.ok === false && bad.conflict === null, bad);
+    const badOwner = registry.claim("wf_x", "other" as unknown as "mcode");
+    check("★ 未知 owner 登记被拒且原因点名合法集合", badOwner.ok === false && badOwner.reason.includes("mcode"), badOwner);
+  }
+
+  // ★ 两个不同 flowId 互不影响。
+  {
+    const registry = createInMemoryExecutorOwnership();
+    registry.claim("wf_a", "mcode");
+    registry.claim("wf_b", "node-red");
+    eq("★ 不同 flowId 各自 owner 独立", [registry.executorOwnerOf("wf_a"), registry.executorOwnerOf("wf_b")], ["mcode", "node-red"]);
+    registry.release("wf_a", "mcode");
+    eq("★ 释放一个不影响另一个", [registry.executorOwnerOf("wf_a"), registry.executorOwnerOf("wf_b")], [null, "node-red"]);
+    const conflictB = registry.claim("wf_b", "mcode");
+    check("★ 另一个 flow 的冲突判定同样生效", conflictB.ok === false && conflictB.conflict?.current === "node-red", conflictB);
+    eq("★ 登记表里只有 wf_b 一条", registry.list().map((r) => r.flowId), ["wf_b"]);
+  }
+
+  // 纯判据面：decideClaim 不碰存储（可直接单测）。
+  {
+    const existing = { flowId: "x", owner: "node-red" as const };
+    eq("★ decideClaim：未登记 → 允许", decideClaim(null, "mcode"), { ok: true, alreadyOwned: false });
+    eq("★ decideClaim：同 owner → 幂等", decideClaim(existing, "node-red"), { ok: true, alreadyOwned: true });
+    eq("★ decideClaim：异 owner → 拒绝并报 current", decideClaim(existing, "mcode"), { ok: false, current: "node-red" });
+  }
+}
+console.log(`\nflow-migration-smoke(含 executor owner):${total - failures}/${total} 通过`);
+
+/* ══════════ 7. 迁移产物的 flow 身份 = 登记键（端到端对齐） ══════════ */
+console.log("\n7. 迁移产物的 flow 身份与 owner 登记键对齐");
+{
+  const { flow } = migrateWorkflowDoc(richDoc, { types: TYPES });
+  const meta = flow["x-mcode"];
+  eq("★ 迁移产物的 x-mcode.docId 就是 WorkflowDoc.id（两端说同一个键）", meta?.docId, richDoc.id);
+  const registry = createInMemoryExecutorOwnership();
+  const claimed = registry.claim(String(meta?.docId), "node-red", { reason: "迁移产物已部署给引擎" });
+  check("★ 用迁移产物里的 docId 可直接登记归属", claimed.ok === true, claimed);
+  eq("★ 旧 runner 侧按同一个 workflowId 查询会看到 node-red 拥有",
+    registry.executorOwnerOf(richDoc.id), "node-red");
+  const conflict = registry.claim(richDoc.id, "mcode");
+  check("★ 旧 runner 若试图登记同一 flow → 显式冲突", conflict.ok === false, conflict);
 }
 
 console.log(`\nflow-migration-smoke:${total - failures}/${total} 通过`);
