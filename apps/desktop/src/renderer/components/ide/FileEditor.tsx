@@ -197,11 +197,8 @@ export function FileEditor({
   const pdf = isPdfFile(filePath);
   /** 【ARC-005】HTML 本地预览入口：工作区内的 `.html`/`.htm` 才显示按钮。
    *  点它复用既有浏览器面板通路（`openUrlInBrowser`），不新开视图生命周期；
-   *  判据与围栏在 `lib/htmlPreview.ts`（纯函数，有回归网）。 */
+   *  判据与围栏在 `fileEditorKinds.ts` 的 `canPreviewHtml`（纯函数，有回归网）。 */
   const htmlPreviewable = canPreviewHtml(filePath, projectPath);
-  const openHtmlPreview = useCallback(() => {
-    useSessionStore.getState().openUrlInBrowser(localPathToFileUrl(filePath));
-  }, [filePath]);
 
   return (
     <div className="flex h-full flex-col">
@@ -225,7 +222,6 @@ export function FileEditor({
         isImage={image}
         isUnsupported={unsupported}
         canPreviewHtml={htmlPreviewable}
-        onPreviewHtml={openHtmlPreview}
         onTogglePreview={() =>
           // md 只在 Milkdown 编辑与源码之间切换；差异视图也可回到 Milkdown。
           // 保留源码入口，用于精确修改 frontmatter、表格及原始 Markdown。
@@ -325,6 +321,29 @@ const MARKDOWN_TOGGLE_TITLE_KEY = {
   "genoffice-view": "ide.editor.switchToSourceView",
 } as const satisfies Record<FileViewMode, string>;
 
+/** 【ARC-005】HTML 本地预览入口按钮（导出以便真 Electron 端到端套件挂载
+ *  **同一个实现**，不另写一份）。仅在 `canPreviewHtml(filePath, projectPath)`
+ *  时调用方渲染它；点击 = `openUrlInBrowser(file://…)`，复用既有浏览器面板。 */
+export function HtmlPreviewButton({ filePath, projectPath }: { filePath: string; projectPath: string }) {
+  const { t } = useI18n();
+  return (
+    <button
+      type="button"
+      onClick={() => useSessionStore.getState().openUrlInBrowser(localPathToFileUrl(filePath))}
+      className={cn(
+        "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
+        "text-content-muted hover:bg-surface-hover hover:text-content",
+      )}
+      title={t("ide.editor.previewHtmlHint")}
+      data-html-preview-entry=""
+      data-project-path={projectPath}
+    >
+      <IconWorld size={12} />
+      {t("ide.editor.previewHtml")}
+    </button>
+  );
+}
+
 function EditorToolbar({
   filePath,
   projectPath,
@@ -335,7 +354,6 @@ function EditorToolbar({
   isImage,
   isUnsupported,
   canPreviewHtml,
-  onPreviewHtml,
   onTogglePreview,
   canUseGenoffice,
   genofficeActive,
@@ -356,7 +374,6 @@ function EditorToolbar({
   isUnsupported: boolean;
   /** 【ARC-005】工作区内 HTML：显示「在浏览器中预览」入口。 */
   canPreviewHtml: boolean;
-  onPreviewHtml: () => void;
   onTogglePreview: () => void;
   /** 【ARC-007】GenOffice CLI 就绪时才出现「GenOffice 视图」按钮。 */
   canUseGenoffice: boolean;
@@ -586,18 +603,7 @@ function EditorToolbar({
             BrowserManager 的 WebContentsView），不新开视图生命周期；工作区外
             与其它种类在 lib/htmlPreview.ts 就被拒（按钮根本不画）。 */}
         {canPreviewHtml && (
-          <button
-            type="button"
-            onClick={onPreviewHtml}
-            className={cn(
-              "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
-              "text-content-muted hover:bg-surface-hover hover:text-content",
-            )}
-            title={t("ide.editor.previewHtmlHint")}
-          >
-            <IconWorld size={12} />
-            {t("ide.editor.previewHtml")}
-          </button>
+          <HtmlPreviewButton filePath={filePath} projectPath={projectPath} />
         )}
         {/* Office files stay in OnlyOffice. Other previewable binary types
             keep their existing raw-source escape hatch. */}
