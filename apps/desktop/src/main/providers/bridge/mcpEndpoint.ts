@@ -50,10 +50,11 @@ export const MCP_ENDPOINT_PATH = "/mcp";
  */
 export { MCODE_SESSION_HEADER };
 
-/** 与扩展侧 `core/mcp/constants.ts` 的 `MCP_PROTOCOL_VERSION` 对齐。 */
-const MCP_PROTOCOL_VERSION = "2025-06-18";
-/** 扩展那头支持的历史版本,跟着一起认 —— 它 negotiate 时会带自己最新的那版。 */
-const SUPPORTED_PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", MCP_PROTOCOL_VERSION];
+// 协议版本与协商规则住在 `@main/mcp/hostMcpStdio.js` —— 全仓唯一一份(ARC-006 桥 2 的
+// stdio 通路也用同一份;那份零 runtime import,子进程包可以直接引)。这里只是转出,
+// 让原来认这两个常量的调用方不用改 import。
+export { MCP_PROTOCOL_VERSION, negotiateMcpProtocolVersion } from "@main/mcp/hostMcpStdio.js";
+import { negotiateMcpProtocolVersion } from "@main/mcp/hostMcpStdio.js";
 
 /**
  * 请求体上限。工具的入参里最大的是 `workflow_save` 的整张图,几十 KB 量级;
@@ -532,9 +533,7 @@ async function handleCall(
 
 /** 客户端报的版本我们认就用它的,不认就回我们自己最新的那版(协议规定的协商方式)。 */
 function negotiatedVersion(params: unknown): string {
-  const asked = (params as { protocolVersion?: unknown } | undefined)?.protocolVersion;
-  if (typeof asked === "string" && SUPPORTED_PROTOCOL_VERSIONS.includes(asked)) return asked;
-  return MCP_PROTOCOL_VERSION;
+  return negotiateMcpProtocolVersion(params);
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
