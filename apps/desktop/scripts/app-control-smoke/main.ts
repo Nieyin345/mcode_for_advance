@@ -187,6 +187,14 @@ const pin: Array<[string, string]> = [
   // 菜单能调"自行升成"这个模块可以自动跑",故钉 blocked(不是可弹卡的 write)。
   ["modules.issueWorkflowGrant", "blocked"],
   ["modules.revokeWorkflowGrant", "blocked"],
+  // 【MC-035 / ARC-002】`modules.invoke` 是**扩展能力的执行入口** —— Agent 要能
+  // 经 app_api_call 发现并调用用户装好的扩展(能力经 `modules.catalog` 可见、
+  // 经 `app_api_*` 可描述)。它落 write(弹卡)而不是 blocked:blocked 会让扩展对
+  // Agent **完全不可用**,那正好否定了"三引擎能发现同一能力"这条验收。判据是
+  // "每次执行要用户批准",不是"不给用"。
+  ["modules.invoke", "write"],
+  ["modules.catalog", "read"],
+  ["modules.tasks", "read"],
   ["plugins.installGit", "danger"],
   ["mcp.save", "danger"],
   ["hooks.save", "danger"],
