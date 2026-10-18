@@ -89,11 +89,35 @@ await test("server.json → install options", () => {
 });
 
 // Fake registry: /v0.1 → 404 (old registry), /v0 → two pages, page 1 lists an old + latest version.
+// 另含一个最小假 GitHub(mc037/race):**commit 请求**是 addSkillMarket 拉索引的第一跳 ——
+// 在它返回前执行 `raceHook`,用来精确落在「读到写之间」的 await 窗口里。
 const calls: string[] = [];
+const SHA = "a".repeat(40);
+let raceHook: (() => void) | null = null;
 globalThis.fetch = (async (input: string | URL | Request) => {
   const url = new URL(String(input));
   calls.push(url.pathname + url.search);
+  // 时序注入:任意**第一跳**请求返回前执行一次 —— 技能市场的第一跳是 commit,
+  // MCP 探测的第一跳是 /v0.1/servers;两者都落在"已读过记录、还没写回"的窗口里。
+  const hook = raceHook;
+  raceHook = null; // 只触发一次
+  hook?.();
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  if (url.hostname === "api.github.com" && url.pathname.startsWith("/repos/mc037/race")) {
+    if (url.pathname === "/repos/mc037/race/commits/HEAD") {
+      return new Response(SHA, { status: 200, headers: { "content-type": "application/vnd.github.sha" } });
+    }
+    if (url.pathname === `/repos/mc037/race/git/trees/${SHA}`) {
+      return json({
+        truncated: false,
+        tree: [{ path: "race-skill/SKILL.md", sha: "b".repeat(40), size: 12, mode: "100644", type: "blob" }],
+      });
+    }
+    return json({ error: "nope" }, 404);
+  }
+  if (url.hostname === "raw.githubusercontent.com" && url.pathname.startsWith("/mc037/race/")) {
+    return new Response("---\nname: race-skill\ndescription: R\n---\n", { status: 200 });
+  }
   if (url.hostname === "old.example.com") {
     if (url.pathname === "/v0.1/servers") return json({}, 404);
     if (url.pathname === "/v0/servers") {
@@ -109,6 +133,31 @@ globalThis.fetch = (async (input: string | URL | Request) => {
   }
   return json({ error: "nope" }, 404);
 }) as typeof fetch;
+
+// ── 时序窗口注入辅助:在假 fetch 的 commit 跳里执行一次回调 ──
+const CORRUPT_JSON = "{\"markets\":[";
+function raceBreak(recordsPath: string): void {
+  raceHook = () => writeFileSync(recordsPath, CORRUPT_JSON, "utf8");
+}
+function raceConcurrentAdd(recordsPath: string, record: unknown): void {
+  raceHook = () => {
+    const cur = JSON.parse(readFileSync(recordsPath, "utf8")) as { version: number; markets: unknown[] };
+    writeFileSync(recordsPath, JSON.stringify({ ...cur, markets: [...cur.markets, record] }, null, 2) + "\n", "utf8");
+  };
+}
+function raceBreakSetting(key: string, repo: { get: (k: string) => string | null; set: (k: string, v: string) => void }): void {
+  raceHook = () => repo.set(key, "{not json");
+}
+function raceConcurrentAddSetting(key: string, repo: { get: (k: string) => string | null; set: (k: string, v: string) => void }, rec: unknown): void {
+  raceHook = () => repo.set(key, JSON.stringify([...JSON.parse(repo.get(key) ?? "[]"), rec]));
+}
+function raceClean(): void {
+  raceHook = null;
+}
+function raceReset(): void {
+  raceHook = null;
+}
+
 
 await test("registry sources: add (probed) / list / remove", async () => {
   assert.equal(listMcpMarketSources().length, 1);
@@ -307,6 +356,81 @@ await test("技能索引损坏时的报错是给用户看的中文", () => {
     assert.equal(added.ok, true, added.error);
     assert.ok(listMcpMarketSources().some((s) => s.label === "Fresh"));
     stubRepo.set(KEY, before);
+  });
+
+  /* ══════════ 【MC-037 时序变体】读→写之间的 await 窗口 ══════════
+   *
+   * 台账验收点名「读后并发修改」。add/refresh 在入口处读一次记录,然后要经过
+   * git 索引拉取 / 网络探测这类**秒级 await**;窗口内记录被并发改写或砸坏时,
+   * 从前写回用的仍是操作前的快照(或降级读 `readRecords()` → []),于是:
+   *   ① 窗口内被砸坏 → 原字节被一次"成功"写入覆盖(台账原例的时序版);
+   *   ② 窗口内并发新增 → 新增的记录下来被整表覆盖丢失。
+   * 判据仍立在**盘上的字节**上:写回必须用写回时刻的 fresh 记录。
+   */
+  await test("MC-037 时序:技能市场 add 的 await 窗口内坏档 → 拒绝且原字节不动", async () => {
+    const skillRecords = path.join(homedir(), ".mcode", "skill-markets", "markets.json");
+    writeFileSync(skillRecords, JSON.stringify({ version: 1, markets: [] }, null, 2) + "\n", "utf8");
+    assert.equal(skillMarketsCorrupt(), null, "前置:起点是健康空表");
+    // 造一个**可被假 GitHub 索引**接受的仓库;fetch 桩在 commit 请求处把记录砸坏。
+    const gh = path.join(out, "mc037-race-repo");
+    mkdirSync(gh, { recursive: true });
+    // 假 fetch:见下方 RACE_FETCH 注入(按 pathname 开关)。
+    raceBreak(skillRecords);
+    const res = await addSkillMarket({ kind: "git", ref: "https://github.com/mc037/race" });
+    assert.equal(res.ok, false, "窗口内砸坏的记录必须让写入被拒");
+    assert.equal(res.corrupt, true, "拒绝要带 corrupt 标记");
+    assert.equal(readFileSync(skillRecords, "utf8"), CORRUPT_JSON, "★ 窗口内砸坏的原字节一个不动");
+    raceReset();
+  });
+
+  await test("MC-037 时序:技能市场 add 的 await 窗口内并发新增 → 不丢别人刚加的记录", async () => {
+    const skillRecords = path.join(homedir(), ".mcode", "skill-markets", "markets.json");
+    const existing = { name: "race-existing", source: { kind: "local", ref: path.join(out, "race-existing") }, addedAt: "x" };
+    writeFileSync(skillRecords, JSON.stringify({ version: 1, markets: [existing] }, null, 2) + "\n", "utf8");
+    // 窗口内并发新增一条(相当于另一个 add 在 await 期间完成)。
+    raceConcurrentAdd(skillRecords, { name: "race-newcomer", source: { kind: "local", ref: path.join(out, "race-newcomer") }, addedAt: "y" });
+    const res = await addSkillMarket({ kind: "git", ref: "https://github.com/mc037/race" });
+    assert.equal(res.ok, true, res.error);
+    const onDisk = JSON.parse(readFileSync(skillRecords, "utf8")).markets.map((m: { name: string }) => m.name).sort();
+    assert.deepEqual(onDisk, ["race-existing", "race-newcomer", res.name].sort(), "★ 窗口内并发新增的 race-newcomer 必须还在");
+    raceReset();
+  });
+
+  await test("MC-037 时序:MCP 来源 add 的网络探测窗口内坏档 → 拒绝且设置行不动", async () => {
+    const { SettingRepo: stubRepo } = await import("@main/store/repositories.js");
+    const KEY = "mcp.marketSources";
+    stubRepo.set(KEY, JSON.stringify([{ id: "seed", label: "Seed", url: "https://seed.example.com" }]));
+    raceBreakSetting(KEY, stubRepo);
+    const res = await addMcpMarketSource({ url: "https://old.example.com", label: "Race" });
+    assert.equal(res.ok, false, "窗口内砸坏的设置行必须让写入被拒");
+    assert.equal(res.corrupt, true, "拒绝要带 corrupt 标记");
+    assert.equal(stubRepo.get(KEY), "{not json", "★ 窗口内砸坏的设置行一个不动");
+    raceReset();
+  });
+
+  await test("MC-037 时序:MCP 来源 add 的探测窗口内并发新增 → 不丢", async () => {
+    const { SettingRepo: stubRepo } = await import("@main/store/repositories.js");
+    const KEY = "mcp.marketSources";
+    stubRepo.set(KEY, JSON.stringify([{ id: "seed", label: "Seed", url: "https://seed.example.com" }]));
+    raceConcurrentAddSetting(KEY, stubRepo, { id: "newcomer", label: "Newcomer", url: "https://newcomer.example.com" });
+    const res = await addMcpMarketSource({ url: "https://old.example.com", label: "Race2" });
+    assert.equal(res.ok, true, res.error);
+    const ids = JSON.parse(stubRepo.get(KEY)!).map((s: { id: string }) => s.id);
+    assert.ok(ids.includes("seed") && ids.includes("newcomer"), `★ 并发新增的 newcomer 必须还在:${ids}`);
+    raceReset();
+  });
+
+  // 正控(防空过):窗口干净时同样的 add 必须成功并真的落盘 —— 否则上面几条
+  // "被拒"可能只是"这个仓/这个 URL 本来就加不进去"造成的假绿。
+  await test("MC-037 时序正控:窗口无干扰时 git add 成功并落盘", async () => {
+    const skillRecords = path.join(homedir(), ".mcode", "skill-markets", "markets.json");
+    writeFileSync(skillRecords, JSON.stringify({ version: 1, markets: [] }, null, 2) + "\n", "utf8");
+    raceClean();
+    const res = await addSkillMarket({ kind: "git", ref: "https://github.com/mc037/race" });
+    assert.equal(res.ok, true, res.error);
+    const names = JSON.parse(readFileSync(skillRecords, "utf8")).markets.map((m: { name: string }) => m.name);
+    assert.ok(names.includes(res.name!), `正控失败会让上面的拒绝断言变成假绿:${names}`);
+    raceReset();
   });
 }
 

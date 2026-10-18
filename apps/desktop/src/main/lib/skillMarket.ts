@@ -11,7 +11,7 @@
  * 记录存成文件(`markets.json`),不进数据库 —— 技能本来就全是文件,便于 smoke 隔离。
  */
 import { promoteMarketCatalog, type MarketProgressSink } from "@main/lib/marketClone.js";
-import { classifyMarketRegistry, marketRegistryCorruptMessage, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
+import { classifyMarketRegistry, marketRegistryCorruptMessage, recheckMarketRegistryBeforeWrite, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -96,6 +96,17 @@ function readRecordsState(): MarketRegistryRead<MarketRecord> {
 function readRecords(): MarketRecord[] {
   const state = readRecordsState();
   return state.kind === "ok" ? state.records : [];
+}
+
+/**
+ * 写回时刻的 fresh 基准(【MC-037】时序变体)。`add` 里在 fetch/scan 的 await
+ * 窗口**之前**读过一次,但窗口内记录可能被并发改写或砸坏;从前这里用
+ * `readRecords()`(损坏时降级成 `[]`)当基准 —— 坏档照样会被一次成功添加覆盖。
+ * 修复:写回前重读三态,corrupt → 拒绝且原字节不动;ok → 以 fresh 为基准。
+ */
+function freshRecordsForWrite(): { ok: true; records: MarketRecord[] } | { ok: false; error: string; corrupt: true } {
+  const fresh = recheckMarketRegistryBeforeWrite(readRecordsState(), "技能市场");
+  return fresh.ok ? { ok: true, records: fresh.base } : fresh;
 }
 
 async function writeRecords(records: MarketRecord[]): Promise<void> {
@@ -332,7 +343,18 @@ export async function addSkillMarket(input: {
       if (rec.source.kind === "git") await fs.rm(catalogDir(rec), { recursive: true, force: true }).catch(() => {});
       return { ok: false, error: "里面没有找到任何 SKILL.md —— 它不是技能仓库" };
     }
-    await writeRecords([...readRecords(), rec]);
+    // 【MC-037】写回前**重读**记录:fetch/scan 的 await 窗口内记录可能被并发
+    // 改写或砸坏。从前这里用 `readRecords()`(损坏时 = [])当旧清单,坏档会被
+    // 这次成功添加整表覆盖;现在损坏 → 拒绝,健康 → 以 fresh 为准合并。
+    const fresh = freshRecordsForWrite();
+    if (!fresh.ok) return fresh;
+    if (fresh.records.some((r) => r.name === name)) {
+      // 窗口内已有人建了同名市场 —— 不覆盖别人的记录。
+      if (rec.source.kind === "git") await fs.rm(catalogDir(rec), { recursive: true, force: true }).catch(() => {});
+      return { ok: false, error: `同名市场已存在:${name}(记录在添加期间被其他操作更新)` };
+    }
+    // 与原落盘语义一致:内置市场只在内存里合并,不随这次写落盘。
+    await writeRecords([...fresh.records, rec]);
     return { ok: true, name };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
@@ -366,7 +388,11 @@ export async function refreshSkillMarket(name: string, progress?: MarketProgress
   }
   try {
     await fetchGitCatalog(rec, progress);
-    const records = readRecords();
+    // 【MC-037】写回前重读:刷新是长操作,窗口内记录可能被改写/砸坏。
+    // 从前这里用 `readRecords()`(损坏时 = [])当基准,坏档会被 fetchedAt 回写覆盖。
+    const fresh = freshRecordsForWrite();
+    if (!fresh.ok) return fresh;
+    const records = fresh.records;
     const fetchedAt = new Date().toISOString();
     const idx = records.findIndex((r) => r.name === name);
     if (idx >= 0) records[idx] = { ...records[idx], fetchedAt };

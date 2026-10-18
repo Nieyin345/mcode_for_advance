@@ -73,3 +73,26 @@ export function refuseMarketRegistryWrite(
     ? { ok: false, error: marketRegistryCorruptMessage(label, read.reason) }
     : null;
 }
+
+/**
+ * 长操作(git 索引拉取/扫描/网络探测)结束、真正写回之前的**二次判据**。
+ *
+ * 各 `add*` 入口在操作开始前读过一次记录,但那之后的 `await` 窗口里记录可能被
+ * 并发改写或砸坏。若照旧用**操作前的快照**(或更糟:降级读 `readRecords()`,
+ * 损坏时返回 `[]`)写回,就会覆盖窗口内发生的改动 —— 这是 MC-037 原例的时序
+ * 变体。这里把"写回基准"统一改成**写回时刻的 fresh 快照**:
+ *
+ *   - fresh `corrupt` → 拒绝写入,原字节不动(与入口处同一句拒绝语);
+ *   - fresh `ok`/`absent` → 以 fresh 为基准合并本次变更(不丢窗口内的并发新增)。
+ *
+ * 物理写回仍由各副本自己做(文件 / 设置行不同),判据只有这一份。
+ */
+export function recheckMarketRegistryBeforeWrite<T>(
+  fresh: MarketRegistryRead<T>,
+  label: string,
+): { ok: true; base: T[] } | { ok: false; error: string; corrupt: true } {
+  if (fresh.kind === "corrupt") {
+    return { ok: false, error: marketRegistryCorruptMessage(label, fresh.reason), corrupt: true };
+  }
+  return { ok: true, base: fresh.kind === "ok" ? fresh.records : [] };
+}

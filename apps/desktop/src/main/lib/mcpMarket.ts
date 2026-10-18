@@ -17,7 +17,7 @@ import {
   type McpMarketSearchResult,
   type McpMarketSource,
 } from "@contracts/ipc";
-import { classifyMarketRegistry, marketRegistryCorruptMessage, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
+import { classifyMarketRegistry, marketRegistryCorruptMessage, recheckMarketRegistryBeforeWrite, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
 import { SettingRepo } from "@main/store/repositories.js";
 
 export const MCP_MARKET_SOURCES_SETTING_KEY = "mcp.marketSources";
@@ -147,12 +147,21 @@ export async function addMcpMarketSource(input: {
   } catch (err) {
     return { ok: false, error: `连不上或不是 MCP 注册中心:${describeFetchError(err)}` };
   }
+  // 【MC-037 时序变体】网络探测是 await 窗口:结束后必须**重读**来源记录再写回。
+  // 从前用探测前的 `state`(甚至可能已被并发改写/砸坏)整表覆盖 —— 窗口内的
+  // 新增会丢,坏档会被覆盖。损坏 → 拒绝,原设置行一个不动。
+  const fresh = recheckMarketRegistryBeforeWrite(readUserSourcesState(), "MCP 注册中心");
+  if (!fresh.ok) return fresh;
+  const merged = [OFFICIAL_MCP_REGISTRY, ...fresh.base];
+  if (merged.some((s) => s.url.toLowerCase() === base.toLowerCase())) {
+    return { ok: false, error: "这个注册中心已经在列表里了(记录在添加期间被其他操作更新)" };
+  }
   const host = new URL(base).hostname;
   let id = `custom-${host.replace(/[^A-Za-z0-9]+/g, "-")}`;
   let i = 2;
-  while (all.some((s) => s.id === id)) id = `custom-${host.replace(/[^A-Za-z0-9]+/g, "-")}-${i++}`;
+  while (merged.some((s) => s.id === id)) id = `custom-${host.replace(/[^A-Za-z0-9]+/g, "-")}-${i++}`;
   const label = input.label?.trim() || host;
-  const next = [...(state.kind === "ok" ? state.records : []), { id, label, url: base, builtin: false }];
+  const next = [...fresh.base, { id, label, url: base, builtin: false }];
   SettingRepo.set(MCP_MARKET_SOURCES_SETTING_KEY, JSON.stringify(next.map(({ id: a, label: b, url: c }) => ({ id: a, label: b, url: c }))));
   return { ok: true, id };
 }
