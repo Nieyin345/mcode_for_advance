@@ -2,8 +2,21 @@
  * 【ARC-007 / GenOffice AI 交互】AI Ask 链路真 Electron 启动器。
  *
  * 与 document-view-vendor-page-smoke 同一形态：真实 vendor docs 构建产物 +
- * **生产** `documentViewPreload.ts` 原样打包为 CJS preload + 隔离 app 路径。
- * 产物缺失时如实 skip（exit 0）。
+ * `documentViewPreload.ts` 打包为 CJS preload + 隔离 app 路径。产物缺失时如实
+ * skip（exit 0）。
+ *
+ * ## 与生产 preload 的关系
+ *
+ * 生产源码一字不动地打包；随后在**打包产物**末尾机械追加本套件需要的探针桥
+ * （`aiStream`/`aiStreamCancel`/`onAiStream`，并把 `getAiSettings` 指向本地 mock
+ * 端点）。理由：后半段「发送 → 流式 → 工具 → 文档被改」必须经 vendor 的 AI
+ * 传输三件套，而生产 preload 有意不提供它们（AI 归 Mcode 三引擎）。探针断言
+ * 会核对生产源码里没有这些键，探针桥只存在于本套件的产物。
+ *
+ * ## mock 端点
+ *
+ * 探针在 Electron 主进程里起 `node:http`，只绑 127.0.0.1 随机端口，并用 vendor
+ * **同一份** `streamForProvider` 协议栈消费 SSE —— 不联网、不手写协议解析。
  *
  * 断言由探针写进 `checks.json`，启动器要求 exit 0 且每条 PASS。
  */
@@ -46,6 +59,14 @@ await build({
   outfile: join(dir, "probe.cjs"),
   logLevel: "error",
   external: ["electron"],
+  // 本探针在主进程里复用 vendor 的**真** AI 协议栈（`streamForProvider`）处理
+  // mock 端点的流式回包 —— 与 vendor 主进程同一份实现，不手写 SSE 解析。
+  // vendor 包在 genoffice/node_modules 里是指向源码的 symlink，esbuild 从
+  // apps/desktop 出发解析不到；显式 alias 到源码入口。
+  alias: {
+    "@genoffice/ai-provider": join(repoRoot, "genoffice/packages/ai-provider/src/index.ts"),
+  },
+  nodePaths: [join(repoRoot, "genoffice/node_modules")],
 });
 await build({
   entryPoints: [join(desktop, "src/main/document/documentViewPreload.ts")],
@@ -58,6 +79,40 @@ await build({
   logLevel: "error",
   external: ["electron"],
 });
+
+// 【探针专用】在**生产产物**上机械追加本套件需要的三个桥桩。生产源码
+// `documentViewPreload.ts` 一字不动（它的 `getAiSettings` 仍是「未配置」）；
+// 这里只是把打包后的 bundle 末尾换成"先挂桩、再冻结暴露"——同一文件、同一
+// contextBridge 调用，桩清单由本套件独一无二地决定。断言会核对生产源码里没有
+// 这些键（防越界）。
+const preloadBundle = join(dir, "documentViewPreload.js");
+const bundleSource = readFileSync(preloadBundle, "utf8");
+// esbuild 产物的暴露语句带着 `import_electron.` 前缀 —— marker 必须整行匹配，
+// 否则替换后留下 `import_electron.` 半截、preload 语法错误、整页白屏。
+const exposeMarker = "import_electron.contextBridge.exposeInMainWorld(\"desktop\", Object.freeze(api));";
+if (!bundleSource.includes(exposeMarker)) {
+  throw new Error("preload bundle shape changed: expose marker not found");
+}
+const probeBridge = `
+// ── 【genoffice-ai-ask-smoke 探针覆盖】仅存在于打好的探针 preload 里 ──
+// 真 Electron 页面要用 vendor 的 AI 传输三件套（docs/src/shared/ipc.ts:559-561,648）：
+// aiStream / aiStreamCancel / onAiStream。生产 preload 有意不提供（AI 由 Mcode
+// 三引擎驱动），本套件用它们驱动**本地 mock 端点**验证「发送→流→工具→文档被改」。
+// getAiSettings 同时覆盖为指向 mock 的 custom provider（生产仍是 genspark 未配置，
+// 由源码级断言钉住）。settings 经 IPC 从主进程取 —— sandboxed preload 里没有
+// process.env，不能把 mock 配置烘进 bundle。
+api.getAiSettings = () => import_electron.ipcRenderer.invoke("probe:mock-ai-settings");
+api.aiStream = (request) => import_electron.ipcRenderer.invoke("ai:stream", request);
+api.aiStreamCancel = (requestId) => import_electron.ipcRenderer.invoke("ai:stream-cancel", requestId);
+api.onAiStream = (handler) => {
+  const listener = (_event, chunk) => handler(chunk);
+  import_electron.ipcRenderer.on("ai:stream-chunk", listener);
+  return () => import_electron.ipcRenderer.removeListener("ai:stream-chunk", listener);
+};
+`;
+const patched = bundleSource.replace(exposeMarker, probeBridge + "\n" + exposeMarker);
+if (patched === bundleSource) throw new Error("preload probe patch failed");
+writeFileSync(preloadBundle, patched);
 
 copyFileSync(join(suite, "electron-host.cjs"), join(dir, "electron-host.cjs"));
 writeFileSync(
