@@ -37,7 +37,7 @@ import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import { initDb } from "@main/store/db.js";
-import { ProjectRepo, SessionRepo, MessageRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, MessageRepo, SettingRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
 import { registerProjectHandlers } from "@main/ipc/projects.js";
 
 import { eventsOfType, resetSent, sentChannels } from "./stubs/window.js";
@@ -344,6 +344,21 @@ console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全�
   // 甲那张图正跑到一半,乙有一段还没被带走的并回内容。
   markRunActive(a);
   queueBackflow(b, "乙这一轮的产出");
+  // 【MC-052 同族】项目级清理的归属夹具(断言在 `PROJECT_DELETE` 之后):
+  //   · 别项目会话的健康 job —— 必须完好;
+  //   · 一条不归属任何项目的坏 job —— 原字节保留;
+  //   · 本项目会话索引可证明归属的坏 job —— 照常删(正控,防"一律不删")。
+  const outsiderJobId = "outsider-healthy-job";
+  SettingRepo.set(
+    `memory.assistant.job.${outsiderJobId}`,
+    JSON.stringify({
+      id: outsiderJobId, sourceSessionId: outsider, projectId: other, workerSessionId: "w",
+      kind: "capture", status: "ready", createdAt: 1, expiresAt: 9_999_999_999_999, result: "别项目的摘要",
+    }),
+  );
+  SettingRepo.set("memory.assistant.job.bad-foreign-proj", "{ foreign damaged");
+  SettingRepo.set(`memory.assistant.source.${a}`, JSON.stringify(["owned-bad-proj"]));
+  SettingRepo.set("memory.assistant.job.owned-bad-proj", "{ broken owned project job");
 
   await call(IPC.PROJECT_DELETE, { id: pid });
 
@@ -386,6 +401,24 @@ console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全�
     [a, b, side].every((id) => assistantDropped.includes(id)),
     assistantDropped,
   );
+  // 【MC-052 同族工程入口】项目删除走的是 `deleteProjectEverywhere` → 逐会话
+  // `dropAssistantJobs(sid)`。要求与单删会话**同一条判据**:只按被删会话的
+  // source/target 精确对;别项目的坏 job 行原字节保留、别项目的健康 job 完好。
+  // 这里走真 IPC(真 rowDeletion 顺序 + 真 assistantStore 实现),把"项目级越权"
+  // 这条形态钉在工程入口上,而不是只测函数本身。
+  eq("★ 项目删除:别项目的**坏** job 行原字节保留(不随项目级逐会话清理越权删)", SettingRepo.get("memory.assistant.job.bad-foreign-proj"), "{ foreign damaged");
+  check(
+    "★ 项目删除:别项目的**健康** job 也完好",
+    SettingRepo.get(`memory.assistant.job.${outsiderJobId}`) !== null,
+    SettingRepo.get(`memory.assistant.job.${outsiderJobId}`),
+  );
+  eq("★ 项目删除:本项目索引可证明归属的坏 job 照常清掉(正控,防'一律不删')", SettingRepo.get("memory.assistant.job.owned-bad-proj"), null);
+  // 清场:这条坏行/别项目健康 job 只属于本节夹具,别让它们漏进后续用例(那些用例
+  // 假定 settings 里没有 memory.assistant.* 残留)。
+  SettingRepo.deleteMany([
+    "memory.assistant.job.bad-foreign-proj",
+    `memory.assistant.job.${outsiderJobId}`,
+  ]);
   // 项目级收尾钩子(按**路径**留的资源,如 LSP 的 workspace server)。判据:钩子拿到的
   // **路径**必须是这个项目的根 —— 删完就再也问不到它了(见 `runProjectCleanupHooks`)。
   check(

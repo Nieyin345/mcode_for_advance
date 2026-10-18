@@ -1821,5 +1821,79 @@ console.log("\n⑱【MC-013】注册表死接口面已删,活着的入口语义�
   );
 }
 
+/* ──────────────────── MC-052 同族:删会话不能越权抹掉归属未知的挂账 ──────────────────── */
+//
+// 与记忆助手 job 那条(MC-052)同一种越权形态:owner 读不出来 → 被当成"可以清"。
+// 这里的写回点有两处 —— `dropAgentMail`(删会话)与 `saveAsks`(任何一次销账/新增)。
+// 两处都必须在**整份 JSON 重写**时把读不懂的条目原样搬回去,而不是静默丢掉。
+console.log("\n⑯c MC-052 同族:删会话只清可证明归属的挂账,读不懂的条目保留并显式报告");
+{
+  const KEY = "agentMail.pendingAsks";
+  const logLines: string[] = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]): boolean => {
+    for (const line of String(chunk).split("\n")) if (line.trim().length > 0) logLines.push(line);
+    return (origWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stderr.write;
+  const rawNow = (): unknown[] => JSON.parse(SettingRepo.get(KEY) ?? "[]") as unknown[];
+  try {
+    const doomed = mkSession({ kind: "chat", title: "被删的会话" });
+    const foreign = mkSession({ kind: "chat", title: "毫不相干的会话" });
+    const malformed = { question: "半截写坏的条目,连 fromSessionId 都没有", at: "not-a-number" };
+    SettingRepo.set(KEY, JSON.stringify([
+      // 属于 foreign、形状**完整**的挂账:删 doomed 时不许碰。
+      { askId: "ask_foreign_ok", fromSessionId: foreign.id, fromName: "别人的", toSessionId: foreign.id, question: "别人的健康挂账", at: 1 },
+      // 归属未知(读不出 from/to)的坏条目:不是正在删的会话能证明的东西 → 保留。
+      malformed,
+      // 属于 doomed 的挂账:该删。
+      { askId: "ask_doomed", fromSessionId: doomed.id, fromName: "本会话", toSessionId: foreign.id, question: "删掉我", at: 2 },
+      // 归属读不出(fromSessionId 不是字符串,也没有 toSessionId)的半坏条目:保留。
+      { askId: "ask_half", fromSessionId: 42, fromName: "本会话", question: 4 },
+      // 半坏但**读得出 toSessionId = doomed** → 可证明归属 → 删。
+      { askId: "ask_half2", fromSessionId: 42, toSessionId: doomed.id, question: "半坏的" },
+    ]));
+
+    dropAgentMail(doomed.id);
+
+    const after = rawNow();
+    // ★ 反例形态:foreign 的条目仍在(从前 `loadAsks` 过滤 + 整份重写会把它连同坏条目一起
+    //   留下?不 —— 它会被当作"读得出、不属于本次会话"而保留;真正被抹的是坏条目)。
+    check("★ 归属未知的坏条目**原样保留**(不随无关会话删除被抹掉)",
+      after.some((item) => JSON.stringify(item) === JSON.stringify(malformed)), after);
+    check("★ 精确属于被删会话的挂账被清掉",
+      !after.some((item) => (item as { askId?: string }).askId === "ask_doomed"), after);
+    check("★ 半坏但可证明属于被删会话的条目(读得出 toSessionId)也清掉",
+      !after.some((item) => (item as { askId?: string }).askId === "ask_half2"), after);
+    check("★ 归属读不出、只带半个字段的条目不被误删",
+      after.some((item) => (item as { askId?: string }).askId === "ask_half"), after);
+    check("★ 别的会话的健康挂账一条没动",
+      after.some((item) => (item as { askId?: string }).askId === "ask_foreign_ok"), after);
+    check("★ 保留坏条目时显式报告(硬规矩 3,不是静默跳过)",
+      logLines.some((line) => line.includes("无法解析") && line.includes("归属未知")), logLines.filter((l) => l.includes("agentMail")));
+    check("前置:确实有 warn 说过话", logLines.some((line) => line.includes("agentMail")), logLines.slice(-5));
+
+    // ── 第二写点:`saveAsks`(经销账/新增)也不能顺手抹掉坏条目 ──
+    // 一条健康挂账 + 前面的坏条目;清掉健康挂账走 `clearAgentMail → saveAsks` 这条真路。
+    SettingRepo.set(KEY, JSON.stringify([
+      malformed,
+      { askId: "ask_to_clear", fromSessionId: foreign.id, fromName: "别人的", toSessionId: doomed.id, question: "待取", at: 3 },
+    ]));
+    // 直接经 recordAsk 再写一次(新增 → saveAsks),验证"普通写回"也保留坏条目。
+    recordAsk({ fromSessionId: foreign.id, fromName: "别人的", toSessionId: doomed.id, question: "新问题" });
+    check("★ 普通写回(saveAsks)也保留归属未知的坏条目",
+      rawNow().some((item) => JSON.stringify(item) === JSON.stringify(malformed)), rawNow());
+
+    // 整份不是 JSON:删会话不得无差别覆盖,只报一句。
+    SettingRepo.set(KEY, "{ 半截写盘");
+    dropAgentMail(doomed.id);
+    eq("★ 挂账整份读不出来时,删会话不覆盖原字节", SettingRepo.get(KEY), "{ 半截写盘");
+    check("★ 并对整份读不出来显式报告",
+      logLines.some((line) => line.includes("整份读不出来")), logLines.filter((l) => l.includes("agentMail")));
+    SettingRepo.delete(KEY);
+  } finally {
+    process.stderr.write = origWrite as typeof process.stderr.write;
+  }
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);

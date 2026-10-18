@@ -419,9 +419,41 @@ export function dropAgentMail(sessionId: string): void {
   // `agentMail.pendingAsks` 里,而这里从前只清内存那两个 Map。会话一删,它名下(作
   // 提问方或回答方)的那些挂账行**永远留着**:既没人会来销账(两条会话可能都没了),
   // 又随着每一次删除越攒越多,而设置表每写一次都要重写整个 `mcode.db`。与收件箱同理。
-  const asked = loadAsks();
-  const kept = asked.filter((a) => a.fromSessionId !== sessionId && a.toSessionId !== sessionId);
-  if (kept.length !== asked.length) saveAsks(kept);
+  //
+  // 【MC-052 同族】判据与 `dropAssistantJobs` 同一条 —— **只删可证明属于本次会话的条目**:
+  //   - 条目里读得出 `fromSessionId` / `toSessionId` 且等于本会话 → 删(形状坏到一半也
+  //     算数:那两个字段本身就是按会话 id 写的归属记录);
+  //   - 两个都读不出(归属未知)→ **保留**并显式报出。从前这里经 `loadAsks` 过滤后整份
+  //     重写,一条属于别的会话、只是形状坏了的挂账会随任意无关会话的删除被永久抹掉 ——
+  //     与 MC-052 的坏 job 原例同一种越权:读不出来不等于可以丢,更不等于属于正在删的会话。
+  //
+  // 整份不是数组 / 不是 JSON → 不做任何写回(没有可证明归属的条目,覆盖只会无差别销毁),
+  // 只记一行 warn —— 留给诊断路径。
+  const raw = loadRawAskArray();
+  if (raw === null) {
+    log.warn("agentMail: 挂账整份读不出来,本次删除不写回(避免无差别覆盖原内容)");
+    return;
+  }
+  const kept: unknown[] = [];
+  let removed = 0;
+  const preservedUnknown: number[] = [];
+  raw.forEach((item, index) => {
+    const owners = readableAskOwners(item);
+    if (owners !== null && (owners.from === sessionId || owners.to === sessionId)) {
+      removed += 1;
+      return;
+    }
+    if (!isPendingAsk(item)) preservedUnknown.push(index);
+    kept.push(item);
+  });
+  if (preservedUnknown.length > 0) {
+    // 显式报出来(硬规矩 3),但**不删** —— 归属未知的条目没人能在删别的会话时替它做主。
+    log.warn(
+      `agentMail: 保留 ${preservedUnknown.length} 条无法解析的挂账条目(归属未知,不随本次会话删除): 第 ${preservedUnknown.join(", ")} 条`,
+    );
+  }
+  // 没有可删的条目就不写 —— 写回会 persist(),而 persist 重写整个库文件。
+  if (removed > 0) writeAskItems(kept);
 }
 
 /* ────────────────────── 图跑完之后的「叫醒」 ────────────────────── */
@@ -571,6 +603,27 @@ function loadAsks(): PendingAsk[] {
   }
 }
 
+/**
+ * 盘上那份挂账的**原始**数组 —— 一条元素就是一个条目,不解析、不过滤。
+ *
+ * 调用方只有在**准备写回**时才需要它(见 {@link saveAsks} 与 {@link dropAgentMail}):
+ * 单条看起来坏、但**身份(owner)读不出来**的元素必须原样搬回去 —— "读不懂"证明的
+ * 是"这一条读不懂",不是"这一条可以丢",更不是"这一条属于正在删的会话"。
+ *
+ * 整份都不是数组 / 不是 JSON → `null`。那说明连"一条条元素"的结构都没有,没有
+ * 任何可搬的原始形状;此时写回会整份覆盖,由调用方显式报出来(硬规矩 3),不静默。
+ */
+function loadRawAskArray(): unknown[] | null {
+  const raw = SettingRepo.get(ASK_SETTING_KEY);
+  if (raw === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function isPendingAsk(x: unknown): x is PendingAsk {
   if (typeof x !== "object" || x === null) return false;
   const r = x as Record<string, unknown>;
@@ -584,23 +637,82 @@ function isPendingAsk(x: unknown): x is PendingAsk {
   );
 }
 
+/** 一条挂账条目里**能读出来的**归属 id。两个字段都是可选的 —— 形状坏到一半的条目
+ *  也可能还留着其中一个,而"读得出的那一个"就是可证明的归属(见 {@link dropAgentMail})。 */
+function readableAskOwners(item: unknown): { from?: string; to?: string } | null {
+  if (typeof item !== "object" || item === null) return null;
+  const r = item as Record<string, unknown>;
+  const from = typeof r.fromSessionId === "string" ? r.fromSessionId : undefined;
+  const to = typeof r.toSessionId === "string" ? r.toSessionId : undefined;
+  return from === undefined && to === undefined ? null : { from, to };
+}
+
 /** 挂账落盘前的**双重封顶**:条数({@link MAX_PENDING_ASKS})与**总字节**
  *  ({@link MAX_PENDING_ASKS_BYTES})任一超限,就从**最早**的开始挤,直到两者都在限内。
  *  至少留最近一条 —— 哪怕它一份就超了字节红线(与收件箱那条同一取舍:丢老的,别撑爆)。
  *
  *  ⚠️ 字节按 **UTF-8**(`Buffer.byteLength`)量,不是 `String.length`:一个汉字 `length`
- *  是 1 却占 3 字节,按码元数封顶对中文/emoji 提问形同虚设(仓规 MC-033/MC-030 同款)。 */
-function capAsks(asks: PendingAsk[]): PendingAsk[] {
-  let kept = asks;
+ *  是 1 却占 3 字节,按码元数封顶对中文/emoji 提问形同虚设(仓规 MC-033/MC-030 同款)。
+ *
+ *  ⚠️ **读不懂的条目([MC-052] 同族)不参与淘汰。** 它们可能是任何会话的挂账,身份
+ *  未知 —— 为省字节把"读不出来的那一条"挤掉,正是"解析失败被推断成可丢弃"的越权。
+ *  淘汰只在**看得懂**的条目上从最早开始;它们全部挤完(最多留一条)后若仍超字节红线,
+ *  只能让这条红线暂时让步并显式报告,由用户去修那份坏数据。
+ */
+function capAskItems(items: readonly unknown[]): unknown[] {
+  let kept = [...items];
+  const decodable = (): number => kept.reduce<number>((n, item) => n + (isPendingAsk(item) ? 1 : 0), 0);
   const byteLen = (): number => Buffer.byteLength(JSON.stringify(kept), "utf8");
-  while (kept.length > 1 && (kept.length > MAX_PENDING_ASKS || byteLen() > MAX_PENDING_ASKS_BYTES)) {
-    kept = kept.slice(1);
+  while (decodable() > 1 && (decodable() > MAX_PENDING_ASKS || byteLen() > MAX_PENDING_ASKS_BYTES)) {
+    const index = kept.findIndex(isPendingAsk);
+    kept = [...kept.slice(0, index), ...kept.slice(index + 1)];
   }
-  return kept.length > MAX_PENDING_ASKS ? kept.slice(-MAX_PENDING_ASKS) : kept;
+  if (byteLen() > MAX_PENDING_ASKS_BYTES) {
+    // 读不懂的条目不能为了字节红线被挤掉 —— 红线只能让步,并且**说出来**(硬规矩 3)。
+    log.warn(
+      `agentMail: 挂账超出字节上限且剩余条目无法解析(保留 ${kept.length} 条,${byteLen()} 字节)—— 请修掉坏条目`,
+    );
+  }
+  return kept;
+}
+
+/** 落盘任意形状的条目(看得懂的 + 读不懂的)。唯一写点。 */
+function writeAskItems(items: readonly unknown[]): void {
+  SettingRepo.set(ASK_SETTING_KEY, JSON.stringify(capAskItems(items)));
 }
 
 function saveAsks(asks: PendingAsk[]): void {
-  SettingRepo.set(ASK_SETTING_KEY, JSON.stringify(capAsks(asks)));
+  // 【MC-052 同族】盘上**读不懂**的条目一律原样、**原位**搬回去。从前这里只写
+  // `asks` —— `loadAsks` 把读不懂的过滤掉,一次普通写回(销账/新增/删会话)就顺手把
+  // 它们永久抹掉了。"读不懂"证明的是"这一条读不懂",不是"这一条可以丢",更不是
+  // "它不属于任何会话"。
+  const raw = loadRawAskArray();
+  if (raw === null) {
+    // 整份不是数组/不是 JSON → 连"一条条元素"都没有,只能整份重写。显式报出来。
+    log.warn("agentMail: 挂账整份不是数组/不是 JSON,写回会覆盖原内容(无法按条保留)");
+    writeAskItems(asks);
+    return;
+  }
+  const nextById = new Map(asks.map((a) => [a.askId, a]));
+  const merged: unknown[] = [];
+  const placed = new Set<string>();
+  let preservedUnknown = 0;
+  for (const item of raw) {
+    if (!isPendingAsk(item)) {
+      merged.push(item);
+      preservedUnknown += 1;
+      continue;
+    }
+    const next = nextById.get(item.askId);
+    if (next === undefined) continue; // 被销账 / 被删除:这一条是看得懂的,可以断言它该走
+    merged.push(next);
+    placed.add(next.askId);
+  }
+  for (const ask of asks) if (!placed.has(ask.askId)) merged.push(ask);
+  if (preservedUnknown > 0) {
+    log.warn(`agentMail: 保留 ${preservedUnknown} 条无法解析的挂账条目(身份未知,不随本次写入删除)`);
+  }
+  writeAskItems(merged);
 }
 
 /**

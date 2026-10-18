@@ -741,38 +741,65 @@ const originalRunSave = repo.save;
   // 无条件删除(旧代码 catch → doomed.add)。修复后归属判据只剩"可证明归属":
   //   · 坏行不在任何被删会话的索引/指针里 → 保留原字节;
   //   · 坏行的 id 恰在被删会话的索引里(旁证) → 才删。
+  //
+  // 显式报告(硬规矩 3)这一半由 stderr 观察:logger 桩把 `log.warn` 原样写到 stderr,
+  // 这里接住一份,断言"保留"真的说了话,而不只是"碰巧没删"。
   {
-    const doomedSrc = SessionRepo.get(PARENT_B)!;
-    const foreignSrc = SessionRepo.get(PARENT)!;
-    const badForeign = "memory.assistant.job.bad-foreign";
-    SettingRepo.set(badForeign, "{ foreign user content damaged");
+    const logLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown, ...rest: unknown[]): boolean => {
+      for (const line of String(chunk).split("\n")) if (line.trim().length > 0) logLines.push(line);
+      return (origWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stderr.write;
+    try {
+      const doomedSrc = SessionRepo.get(PARENT_B)!;
+      const foreignSrc = SessionRepo.get(PARENT)!;
+      const badForeign = "memory.assistant.job.bad-foreign";
+      SettingRepo.set(badForeign, "{ foreign user content damaged");
 
-    // 目标会话自己的**健康** job(应当被删)与**损坏但索引指向它**的 job(旁证成立,应删)。
-    const healthy = store.createAssistantJob(doomedSrc.id, doomedSrc.projectId, "w1", "checkpoint");
-    const healthyKey = `memory.assistant.job.${healthy.id}`;
-    SettingRepo.set("memory.assistant.source." + doomedSrc.id, JSON.stringify([healthy.id, "owned-bad"]));
-    const ownedBad = "memory.assistant.job.owned-bad";
-    SettingRepo.set(ownedBad, "{ broken owned job");
+      // 目标会话自己的**健康** job(应当被删)与**损坏但索引指向它**的 job(旁证成立,应删)。
+      const healthy = store.createAssistantJob(doomedSrc.id, doomedSrc.projectId, "w1", "checkpoint");
+      const healthyKey = `memory.assistant.job.${healthy.id}`;
+      SettingRepo.set("memory.assistant.source." + doomedSrc.id, JSON.stringify([healthy.id, "owned-bad"]));
+      const ownedBad = "memory.assistant.job.owned-bad";
+      SettingRepo.set(ownedBad, "{ broken owned job");
 
-    // 无关会话的健康 job —— 必须完好保留(旧行为就守得住,新行为不许退化)。
-    const foreignHealthy = store.createAssistantJob(foreignSrc.id, foreignSrc.projectId, "w2", "capture");
-    const foreignHealthyKey = `memory.assistant.job.${foreignHealthy.id}`;
+      // 【MC-052 判据未覆盖面】坏行不在**自己的索引**里,但别人的 `.target` 指针指着它:
+      // 指针值就是 job id(`.target.<会话>` 只由本模块写入)—— 它是可证明的归属旁证。
+      // 只在索引旁证上钉过是不够的:指针那条判据撤掉,这里必须真红。
+      const pointerOwnedBad = "memory.assistant.job.pointer-owned-bad";
+      SettingRepo.set(pointerOwnedBad, "{ broken pointer-owned job");
+      SettingRepo.set("memory.assistant.target." + doomedSrc.id, "pointer-owned-bad");
 
-    const badForeignRawBefore = SettingRepo.get(badForeign);
-    check("收尾前:无关坏行在表里", badForeignRawBefore === "{ foreign user content damaged", badForeignRawBefore);
+      // 无关会话的健康 job —— 必须完好保留(旧行为就守得住,新行为不许退化)。
+      const foreignHealthy = store.createAssistantJob(foreignSrc.id, foreignSrc.projectId, "w2", "capture");
+      const foreignHealthyKey = `memory.assistant.job.${foreignHealthy.id}`;
 
-    store.dropAssistantJobs(doomedSrc.id);
+      const badForeignRawBefore = SettingRepo.get(badForeign);
+      check("收尾前:无关坏行在表里", badForeignRawBefore === "{ foreign user content damaged", badForeignRawBefore);
 
-    eq("★ 无关会话的坏 job 行**原字节保留**(归属未知,不越权删)", SettingRepo.get(badForeign), "{ foreign user content damaged");
-    eq("★ 本会话的健康 job 照常删掉", SettingRepo.get(healthyKey), null);
-    eq("★ 本会话索引可证明归属的坏 job 删掉(旁证成立)", SettingRepo.get(ownedBad), null);
-    check("★ 无关会话的健康 job 完好", SettingRepo.get(foreignHealthyKey) !== null, SettingRepo.get(foreignHealthyKey));
+      store.dropAssistantJobs(doomedSrc.id);
 
-    // 再删 foreign 会话时,那条坏行仍保留(它是坏数据,但从不被任何人"顺手"删)。
-    store.dropAssistantJobs(foreignSrc.id);
-    eq("★ 再删 foreign 会话也不碰它(坏行从不被顺手删)", SettingRepo.get(badForeign), "{ foreign user content damaged");
-    // 清场,免得后续断言的表里留着它。
-    SettingRepo.deleteMany([badForeign, `memory.assistant.source.${doomedSrc.id}`]);
+      eq("★ 无关会话的坏 job 行**原字节保留**(归属未知,不越权删)", SettingRepo.get(badForeign), "{ foreign user content damaged");
+      eq("★ 本会话的健康 job 照常删掉", SettingRepo.get(healthyKey), null);
+      eq("★ 本会话索引可证明归属的坏 job 删掉(旁证成立)", SettingRepo.get(ownedBad), null);
+      eq("★ 本会话目标指针可证明归属的坏 job 删掉(指针旁证成立)", SettingRepo.get(pointerOwnedBad), null);
+      check("★ 无关会话的健康 job 完好", SettingRepo.get(foreignHealthyKey) !== null, SettingRepo.get(foreignHealthyKey));
+      // ★ 显式报告:坏行被保留时必须有一条点名它的 warn,而不是静默留下/静默删掉。
+      check(
+        "★ 保留坏行时显式报告(硬规矩 3:不是静默跳过)",
+        logLines.some((line) => line.includes("保留") && line.includes(badForeign) && line.includes("归属未知")),
+        logLines.filter((line) => line.includes("记忆助手 job")),
+      );
+
+      // 再删 foreign 会话时,那条坏行仍保留(它是坏数据,但从不被任何人"顺手"删)。
+      store.dropAssistantJobs(foreignSrc.id);
+      eq("★ 再删 foreign 会话也不碰它(坏行从不被顺手删)", SettingRepo.get(badForeign), "{ foreign user content damaged");
+      // 清场,免得后续断言的表里留着它。
+      SettingRepo.deleteMany([badForeign, `memory.assistant.source.${doomedSrc.id}`, `memory.assistant.target.${doomedSrc.id}`]);
+    } finally {
+      process.stderr.write = origWrite as typeof process.stderr.write;
+    }
   }
 
   // ★ 坏掉的记忆助手行报的是**同一句中文**,不是 `SyntaxError`/`ZodError` 的英文原句。
