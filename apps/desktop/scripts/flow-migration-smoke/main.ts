@@ -35,6 +35,12 @@
  * `<engineDir>/projects/<safe-project-id>/` —— 同 projectId 稳定、不同 projectId
  * 隔离、非法 id 拒绝；默认项目仍指向旧单例目录（只读兼容，不迁移）。
  *
+ * ## 9. MERGE-1 第一步：flow 存储（CAS + corrupt/missing + docId 防漂移）
+ *
+ * 每条 flow 一个文件（`<projectDir>/flows/<safe>.json`），revision = 规范化 JSON 的
+ * SHA-256；保存带 expectedRevision CAS；坏档 → `corrupt`（不装空）。与 Mcode
+ * `workflowId` 的关联靠 `x-mcode.docId`，同一条 flow 的 docId 不可漂移。
+ *
  * Run: bash scripts/flow-migration-smoke/run.sh
  */
 import { createHash } from "node:crypto";
@@ -71,6 +77,13 @@ import {
   safeProjectDirName,
   validateProjectId,
 } from "@main/workflowEngines/projectFlowDir.js";
+import {
+  FLOWS_SUBDIR,
+  NodeRedFlowStorage,
+  flowRevision,
+  safeFlowFileName,
+  validateFlowId,
+} from "@main/workflowEngines/nodeRedStorage.js";
 
 let failures = 0;
 let total = 0;
@@ -324,7 +337,7 @@ console.log("\n4. 迁移前备份（workflow-migrations/<id>-<时间戳>.json）
 
   const backup = await backupWorkflowDocText(dataRoot, "wf_backup", originalText, { at });
   check("★ 备份文件落在 <数据根>/workflow-migrations/", backup.path.includes(WORKFLOW_MIGRATIONS_DIR), backup.path);
-  check("★ 文件名带 id 与时间戳", backup.path.endsWith(join(WORKFLOW_MIGRATIONS_DIR, "wf_backup-2026-10-19T01-02-03-004Z.json")), backup.path);
+  check("★ 文件名带 id、原 ID 哈希、时间戳与唯一 UUID", /wf_backup-[0-9a-f]{12}-2026-10-19T01-02-03-004Z-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.json$/.test(backup.path), backup.path);
   check("★ 备份文件存在", existsSync(backup.path));
   check("★ 备份逐字节等于原文", Buffer.compare(readFileSync(backup.path), Buffer.from(originalBytes)) === 0, {
     expectedBytes: originalBytes.byteLength,
@@ -347,7 +360,32 @@ console.log("\n4. 迁移前备份（workflow-migrations/<id>-<时间戳>.json）
   // 同一 id 不同时间戳 → 两份独立备份（不互相覆盖）。
   const later = await backupWorkflowDocText(dataRoot, "wf_backup", originalText, { at: new Date("2026-10-19T01:02:04.000Z") });
   check("★ 不同时间戳产生独立备份（前一份仍在）", later.path !== backup.path && existsSync(backup.path) && existsSync(later.path));
-  check("★ 非法字符 id 被折成安全文件名", (await backupWorkflowDocText(dataRoot, "a/b:c", "{}", { at })).path.endsWith("a-b-c-2026-10-19T01-02-03-004Z.json"));
+  check("★ 非法字符 id 被折成安全文件名（仍带原 ID 的哈希）",
+    /a-b-c-[0-9a-f]{12}-2026-10-19T01-02-03-004Z-[0-9a-f-]{36}\.json$/.test(
+      (await backupWorkflowDocText(dataRoot, "a/b:c", "{}", { at })).path));
+
+  // ARC-006 Gate C：同一毫秒的连续迁移可能读取到两个不同版本。
+  // 备份必须按「每次迁移的原始字节」独立保存，不许让后一次 atomicReplace 覆盖前一次。
+  const firstSame = await backupWorkflowDocText(dataRoot, "wf_same_ms", "first revision", { at });
+  const secondSame = await backupWorkflowDocText(dataRoot, "wf_same_ms", "second revision", { at });
+  check("★ 同 id 同毫秒两份不同原文不能覆盖", firstSame.path !== secondSame.path
+    && readFileSync(firstSame.path, "utf8") === "first revision"
+    && readFileSync(secondSame.path, "utf8") === "second revision",
+  { firstSame: firstSame.path, secondSame: secondSame.path });
+
+  // 两个不同 id 经白名单折叠也可能同名：a/b 与 a:b 都是 a-b。
+  const firstFold = await backupWorkflowDocText(dataRoot, "wf/a", "project A", { at });
+  const secondFold = await backupWorkflowDocText(dataRoot, "wf:a", "project B", { at });
+  check("★ 不同原始 id 折叠碰撞仍保留两份独立备份", firstFold.path !== secondFold.path
+    && readFileSync(firstFold.path, "utf8") === "project A"
+    && readFileSync(secondFold.path, "utf8") === "project B",
+  { firstFold: firstFold.path, secondFold: secondFold.path });
+
+  // 原始 id 若来自外部数据可超过 255 字符：备份不能因文件名过长而失败。
+  const longBackup = await backupWorkflowDocText(dataRoot, "long".repeat(110), "long-id bytes", { at });
+  check("★ 超长工作流 id 的备份文件名保持 Windows 安全长度且内容无损",
+    longBackup.path.split(/[\\/]/).at(-1)!.length < 180
+    && readFileSync(longBackup.path, "utf8") === "long-id bytes", longBackup.path);
 }
 
 /* ══════════ 6. executor owner 单一性（MERGE-3 第一刀） ══════════ */
@@ -471,6 +509,10 @@ console.log("\n8. projectFlowDir：项目隔离 + 默认项目兼容");
   const invalid = [
     ["空串", ""],
     ["纯空白", "   "],
+    // 项目身份不做静默 trim：不同原始 ID 不能被映射到同一个 flow/凭据目录。
+    ["前导空格", " proj_alpha"],
+    ["尾随空格", "proj_alpha "],
+    ["默认项目伪装（尾随空格）", "default "],
     ["..", ".."],
     [".", "."],
     ["绝对路径（/）", "/etc/passwd"],
@@ -525,6 +567,146 @@ console.log("\n8. projectFlowDir：项目隔离 + 默认项目兼容");
       { realA, realB });
     eq("★ A 项目目录里只有自己的 flows.json", readdirSync(realA).filter((f) => f.endsWith(".json")), ["flows.json"]);
     eq("★ B 项目目录里只有自己的 flows.json", readdirSync(realB).filter((f) => f.endsWith(".json")), ["flows.json"]);
+  }
+}
+
+/* ══════════ 9. flow 存储：CAS / corrupt / missing / docId 防漂移 ══════════ */
+console.log("\n9. nodeRedStorage：CAS 保存、坏档不装空、项目隔离、docId 防漂移");
+{
+  const root = process.env.MCODE_FLOW_MIGRATION_DATA;
+  if (root === undefined || root === "") throw new Error("MCODE_FLOW_MIGRATION_DATA 没设");
+  const storage = new NodeRedFlowStorage(root);
+  const flowOf = (docId: string, marker: string): { nodes: Array<{ id: string; type: string }>; "x-mcode": { docId: string; marker: string } } => ({
+    nodes: [{ id: "n1", type: "inject" }],
+    "x-mcode": { docId, marker },
+  });
+
+  // ★ 健康往返（防空过）：保存 → 读回 → revision 一致。
+  {
+    const flow = flowOf("wf_store_ok", "v1");
+    const created = await storage.saveFlow("proj_store_a", "wf_store_ok", flow as never, { expectedRevision: null });
+    check("★ 新建保存成功（expectedRevision=null）", created.ok === true && created.created === true, created);
+    const read = storage.loadFlow("proj_store_a", "wf_store_ok");
+    check("★ 读回成功且 revision 与保存返回一致",
+      read.ok === true && created.ok === true && read.revision === created.revision,
+      { read: read.ok ? read.revision : read, created: created.ok ? created.revision : created });
+    check("★ 读回的 flow 内容与写入一致（docId 补齐）",
+      read.ok === true && (read.flow as unknown as { "x-mcode": { docId: string; marker: string } })["x-mcode"].marker === "v1",
+      read.ok ? read.flow : read);
+    // revision 对同一内容稳定：重新算一遍。
+    check("★ revision 是内容哈希（同内容稳定）", read.ok === true && flowRevision(read.flow) === read.revision);
+  }
+
+  // ★ 两个客户端带同一 expectedRevision 并发保存 → 一成一败，败者 conflict + currentRevision。
+  {
+    const flowId = "wf_store_race";
+    const first = await storage.saveFlow("proj_store_b", flowId, flowOf(flowId, "v1") as never, { expectedRevision: null });
+    check("前置：初始保存成功", first.ok === true, first);
+    const baseRevision = first.ok ? first.revision : "";
+    // 两个客户端都拿着 baseRevision 同时提交不同内容。
+    const [r1, r2] = await Promise.all([
+      storage.saveFlow("proj_store_b", flowId, flowOf(flowId, "client-A") as never, { expectedRevision: baseRevision }),
+      storage.saveFlow("proj_store_b", flowId, flowOf(flowId, "client-B") as never, { expectedRevision: baseRevision }),
+    ]);
+    const successes = [r1, r2].filter((r) => r.ok);
+    const failures = [r1, r2].filter((r) => !r.ok);
+    eq("★ 并发同一 expectedRevision：恰好一成一败", [successes.length, failures.length], [1, 1]);
+    const loser = failures[0];
+    check("★ 败者 conflict 且带 currentRevision",
+      loser !== undefined && !loser.ok && loser.kind === "conflict" && typeof loser.currentRevision === "string",
+      loser);
+    const winner = successes[0];
+    check("★ 败者的 currentRevision = 胜者写入的 revision",
+      loser !== undefined && !loser.ok && winner !== undefined && winner.ok && loser.currentRevision === winner.revision,
+      { loser: loser !== undefined && !loser.ok ? loser.currentRevision : null, winner: winner?.ok ? winner.revision : null });
+    // 冲突不写：盘上内容是胜者的。
+    const after = storage.loadFlow("proj_store_b", flowId);
+    check("★ 冲突后盘上是胜者的内容（败者没有覆盖）",
+      after.ok === true && (after.flow as unknown as { "x-mcode": { marker: string } })["x-mcode"].marker === (winner?.ok && (winner as { flowId: string }).flowId === flowId ? ((r1.ok ? "client-A" : "client-B")) : "?"),
+      after.ok ? (after.flow as unknown as { "x-mcode": { marker: string } })["x-mcode"].marker : after);
+  }
+
+  // ★ 坏 JSON → corrupt（不是空对象）；不存在 → missing。
+  {
+    const dir = storage.projectDir("proj_store_c");
+    mkdirSync(join(dir, FLOWS_SUBDIR), { recursive: true });
+    const file = join(dir, FLOWS_SUBDIR, `${safeFlowFileName("wf_broken")}.json`);
+    writeFileSync(file, "{not json", "utf8");
+    const broken = storage.loadFlow("proj_store_c", "wf_broken");
+    check("★ 坏 JSON → corrupt（kind 明确）", !broken.ok && broken.kind === "corrupt", broken);
+    check("★ corrupt 不返回空对象（没有 flow 字段）", !broken.ok && !("flow" in broken), broken);
+    check("★ corrupt 带可读原因", !broken.ok && broken.reason.length > 5, broken);
+    // 形状不对（合法 JSON 但不是 flow）也算 corrupt。
+    const shapeFile = join(dir, FLOWS_SUBDIR, `${safeFlowFileName("wf_shape")}.json`);
+    writeFileSync(shapeFile, JSON.stringify({ hello: 1 }), "utf8");
+    const shape = storage.loadFlow("proj_store_c", "wf_shape");
+    check("★ 形状不是 flow → corrupt", !shape.ok && shape.kind === "corrupt", shape);
+    // 不存在 → missing。
+    const missing = storage.loadFlow("proj_store_c", "wf_missing");
+    check("★ 不存在 → missing（不是 corrupt）", !missing.ok && missing.kind === "missing", missing);
+    // 坏档不可被静默覆盖。
+    const overwrite = await storage.saveFlow("proj_store_c", "wf_broken", flowOf("wf_broken", "v2") as never, { expectedRevision: null });
+    check("★ 坏档存在时保存被拒（不拿新内容盖掉可抢救的字节）",
+      overwrite.ok === false && overwrite.kind === "corrupt", overwrite);
+    eq("★ 坏档字节原样保留", readFileSync(file, "utf8"), "{not json");
+  }
+
+  // ★ 项目隔离：两个 projectId 互不可见。
+  {
+    const p1 = "proj_iso_a";
+    const p2 = "proj_iso_b";
+    const f1 = "wf_iso_1";
+    const f2 = "wf_iso_2";
+    const s1 = await storage.saveFlow(p1, f1, flowOf(f1, "only-a") as never, { expectedRevision: null });
+    check("前置：项目 A 保存成功", s1.ok === true, s1);
+    check("★ A 的 flow 在 B 项目不可见（missing）", (() => {
+      const r = storage.loadFlow(p2, f1);
+      return !r.ok && r.kind === "missing";
+    })(), storage.loadFlow(p2, f1));
+    check("★ B 的清单里没有 A 的 flow", (() => {
+      const l = storage.listFlows(p2);
+      return l.ok && !l.entries.some((e) => e.flowId === f1);
+    })(), storage.listFlows(p2));
+    const s2 = await storage.saveFlow(p2, f2, flowOf(f2, "only-b") as never, { expectedRevision: null });
+    check("前置：项目 B 保存成功", s2.ok === true, s2);
+    check("★ 两个项目各自清单互不含对方",
+      (() => {
+        const la = storage.listFlows(p1);
+        const lb = storage.listFlows(p2);
+        return la.ok && lb.ok
+          && la.entries.some((e) => e.flowId === f1) && !la.entries.some((e) => e.flowId === f2)
+          && lb.entries.some((e) => e.flowId === f2) && !lb.entries.some((e) => e.flowId === f1);
+      })(), { a: storage.listFlows(p1), b: storage.listFlows(p2) });
+  }
+
+  // ★ docId 漂移被拒。
+  {
+    const flowId = "wf_drift_target";
+    const evil = { nodes: [{ id: "n1", type: "inject" }], "x-mcode": { docId: "wf_someone_else" } };
+    const rejected = await storage.saveFlow("proj_drift", flowId, evil as never, { expectedRevision: null });
+    check("★ 写入内容的 docId ≠ flowId → 拒绝（doc-id-drift）", !rejected.ok && rejected.kind === "doc-id-drift", rejected);
+    check("★ 拒绝后盘上没有该 flow", (() => {
+      const r = storage.loadFlow("proj_drift", flowId);
+      return !r.ok && r.kind === "missing";
+    })(), storage.loadFlow("proj_drift", flowId));
+    // 先正常存一条，再用"另一条 workflow 的内容"覆盖同一条 flow → 也被拒。
+    const ok = await storage.saveFlow("proj_drift", flowId, flowOf(flowId, "v1") as never, { expectedRevision: null });
+    check("前置：正常保存成功", ok.ok === true, ok);
+    const drift = await storage.saveFlow("proj_drift", flowId, evil as never, { expectedRevision: ok.ok ? ok.revision : null });
+    check("★ 覆盖时 docId 漂移同样被拒", !drift.ok && drift.kind === "doc-id-drift", drift);
+  }
+
+  // ★ 未知 flowId 与清单的 corrupt 条目。
+  {
+    const invalidIds = ["", "..", "a/b", "C:x", "x".repeat(201)];
+    for (const id of invalidIds) {
+      const r = storage.loadFlow("proj_store_c", id);
+      check(`★ 非法 flowId 被拒：${JSON.stringify(id).slice(0, 12)}`, !r.ok && r.kind === "invalid-flow-id", r);
+    }
+    check("★ validateFlowId 接受正常 id", validateFlowId("wf_ok").ok === true);
+    const l = storage.listFlows("proj_store_c");
+    check("★ 清单把坏档列为 corrupt（不静默跳过）",
+      l.ok && l.entries.some((e) => e.corrupt), l.ok ? l.entries : l);
   }
 }
 

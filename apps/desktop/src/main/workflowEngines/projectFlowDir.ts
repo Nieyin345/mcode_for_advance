@@ -64,8 +64,13 @@ export function validateProjectId(projectId: unknown): { ok: true; id: string } 
   if (typeof projectId !== "string") {
     return { ok: false, reason: `projectId 必须是字符串（收到 ${typeof projectId}）` };
   }
-  const id = projectId.trim();
-  if (id.length === 0) return { ok: false, reason: "projectId 不能为空" };
+  // projectId 是身份标识，不是显示名称：静默 trim 会把「p」和「 p 」
+  // 合并到同一个 flows/credentials 目录，破坏跨项目隔离。
+  const id = projectId;
+  if (id.trim().length === 0) return { ok: false, reason: "projectId 不能为空" };
+  if (id !== id.trim()) {
+    return { ok: false, reason: "projectId 首尾不能包含空白字符（必须精确匹配项目身份）" };
+  }
   if (id.length > MAX_PROJECT_ID_LENGTH) {
     return { ok: false, reason: `projectId 过长（${id.length} > ${MAX_PROJECT_ID_LENGTH}）` };
   }
