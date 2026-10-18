@@ -304,7 +304,7 @@ const api = {
   /** 【安全】**明确不提供**的能力（页面里的特性检测会据此降级）：
    *  - 文件对话框（openDocx / saveDocxAs / pickImage / pickAttachments）
    *  - 密码与加密（openDocxDecrypt / setDocPassword）
-   *  - AI 设置写入 / 流式 / 搜索 / 图像（setAiSettings / aiStream / aiGskStatus / …）
+   *  - AI 设置写入 / 流式 / 搜索 / 图像（setAiSettings / aiStream / search / generate）
    *  - 知识库 / 附件 / 打印 / 导出
    *  - 任意 IPC / 剪贴板 / 系统对话框
    *
@@ -312,4 +312,108 @@ const api = {
    *  `"undefined"`，与"没装 preload"的降级路径一致。 */
 };
 
+/**
+ * 【ARC-007】**slides 页的桥（`window.slidesApi`）** —— 与 docs 的 `window.desktop`
+ * 是**两个命名空间**：slides 渲染端读 `window.slidesApi`
+ * （`genoffice/apps/slides/src/preload/index.ts:485`），而 docs 读 `window.desktop`。
+ * 只挂 desktop 时 slides 页第一帧就抛 `Cannot read properties of undefined`
+ * （真 Electron 实测），`#root` 整树卸载。
+ *
+ * 这里同样只回答**首帧**会问的问题（真机逐级实测，缺一个就白屏），不是完整
+ * vendor preload：文件对话框、附件、字体安装/下载、AI 流式、知识库、剪贴板、
+ * 打印/导出、演示放映控制……一律不给。**打开/保存**与 docs 共用同一组宿主
+ * 通道（`openDocxPath`/`saveDocx`/`saveDocxNew`/`onMenuCommand`），身份由宿主从
+ * `event.sender` 反查，路径围栏在宿主。
+ *
+ * 每个桩的「真实数据将来从哪来」：
+ *  - `newBlank`：诚实空 deck（16:9 空白页，与 vendor `createBlankPptx()` 同尺寸）。
+ *    将来接 Mcode 的新建流程时，由宿主返回真实 `OpenResult`；
+ *  - `consumePendingOpen`/`consumeHeadlessExport`/`onOpened`：无排队项/无无头导出/
+ *    无推送源；将来接系统级打开时复用 `menu:command`，不另造推送；
+ *  - `getAiSettings`/`onAiSettingsChanged`/`aiGskStatus`：AI 未配置（Mcode 的 AI
+ *    由三引擎驱动，本视图不接 vendor 后端）；将来由宿主 RPC 返回真实模型配置；
+ *  - `getTransition`/`getAnimations`/`getNotes`/`getComments`/`getSections`/
+ *    `getChartData`：deck 的只读旁路数据；本宿主目前没有 deck 会话存储，
+ *    回空值 = "这个 deck 没有这些内容"。将来由 Mcode 的 deck 服务提供；
+ *  - `isDirty`/`clipboardProbe`/`onRenamed`/`getRecentFiles`/`confirmDocumentReplace`：
+ *    无脏标记/无剪贴板探测/无重命名推送/无 recent 列表/不替换当前文档。
+ */
+const slidesApi = {
+  // ── 与 docs 共用同一组宿主通道 ──
+  openDocxPath: api.openDocxPath,
+  saveDocx: api.saveDocx,
+  saveDocxNew: api.saveDocxNew,
+  onMenuCommand: api.onMenuCommand,
+
+  // ── 首帧只读默认值（与 docs 同一组） ──
+  getLanguage: api.getLanguage,
+  getTheme: api.getTheme,
+  getDocumentTheme: api.getDocumentTheme,
+  getAutoSaveDefault: api.getAutoSaveDefault,
+  onThemeChanged: api.onThemeChanged,
+  onLanguageChanged: api.onLanguageChanged,
+  onDocumentThemeChanged: api.onDocumentThemeChanged,
+  getSystemLocale: (): Promise<string> => Promise.resolve("zh-CN"),
+
+  /** vendor `newBlank(fitWidthPx): Promise<OpenResult>`（slides/shared/ipc.ts:1725 附近，
+   *  实现在 main/slides-main.ts:2213）。**诚实的空 deck**：一页 16:9 空白，
+   *  几何与 vendor `createBlankPptx()` 的 12192000×6858000 EMU 一致；不是伪造
+   *  用户文件。将来由 Mcode 的新建流程返回真实 deck。 */
+  newBlank: (fitWidthPx: number): Promise<unknown> => {
+    const widthPx = Number(fitWidthPx) > 0 ? Number(fitWidthPx) : 1280;
+    return Promise.resolve({
+      path: "",
+      slides: [
+        {
+          widthPx,
+          heightPx: Math.round((widthPx * 6858000) / 12192000),
+          scale: widthPx / 1280,
+          background: { kind: "solid", color: "FFFFFF" },
+          nodes: [],
+        },
+      ],
+      size: { cx: 12192000, cy: 6858000 },
+      defaultFont: "Calibri",
+    });
+  },
+
+  // ── 空订阅 / 空数据（见上方注释的真实来源） ──
+  onFontsChanged: noopUnsubscribe,
+  onOpened: noopUnsubscribe,
+  onRenamed: noopUnsubscribe,
+  onAiSettingsChanged: noopUnsubscribe,
+  onAiPanelPrefsChanged: noopUnsubscribe,
+  onAutoSaveDefaultChanged: noopUnsubscribe,
+  onChromePressed: noopUnsubscribe,
+  onCloseCheck: noopUnsubscribe,
+  onCloseSaveRequest: noopUnsubscribe,
+  onDeckChanged: noopUnsubscribe,
+  onContextMenuRequest: noopUnsubscribe,
+  armContextMenu: (): void => {},
+  reportCloseCheck: (): void => {},
+  reportCloseSaveResult: (): void => {},
+  reportViewMenuState: (): void => {},
+  setShowFullScreen: (): Promise<void> => Promise.resolve(),
+  setAutoSavePref: (): Promise<void> => Promise.resolve(),
+
+  clipboardProbe: (): Promise<boolean> => Promise.resolve(false),
+  consumePendingOpen: (): Promise<null> => Promise.resolve(null),
+  consumeHeadlessExport: (): Promise<null> => Promise.resolve(null),
+  headlessExportDone: (): void => {},
+  isDirty: (): Promise<boolean> => Promise.resolve(false),
+  getRecentFiles: (): Promise<string[]> => Promise.resolve([]),
+  getAiSettings: api.getAiSettings,
+  getAiPanelPrefs: (): Promise<unknown> => Promise.resolve({}),
+  setAiPanelPrefs: (): Promise<unknown> => Promise.resolve({}),
+  aiGskStatus: (): Promise<{ loggedIn: boolean }> => Promise.resolve({ loggedIn: false }),
+  confirmDocumentReplace: (): Promise<boolean> => Promise.resolve(false),
+  getTransition: (): Promise<string> => Promise.resolve("none"),
+  getAnimations: (): Promise<unknown[]> => Promise.resolve([]),
+  getNotes: (): Promise<string> => Promise.resolve(""),
+  getComments: (): Promise<unknown[]> => Promise.resolve([]),
+  getSections: (): Promise<unknown[]> => Promise.resolve([]),
+  getChartData: (): Promise<null> => Promise.resolve(null),
+};
+
 contextBridge.exposeInMainWorld("desktop", Object.freeze(api));
+contextBridge.exposeInMainWorld("slidesApi", Object.freeze(slidesApi));

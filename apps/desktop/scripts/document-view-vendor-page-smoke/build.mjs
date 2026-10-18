@@ -1,14 +1,14 @@
 /**
- * 【ARC-007】真 Electron 加载真实 GenOffice docs 页的启动器。
+ * 【ARC-007】真 Electron 加载**真实 GenOffice 编辑器页**（docs + slides）的启动器。
  *
  * ## 这一套回答的问题
  *
  * `document-view-electron-smoke` 用套件自造的最小 HTML 页验「宿主 ⇄ 页面」；
  * 它**不加载** vendor 真实编辑器（见其 probe.ts 文件头），因此证明不了
- * 「真实 docs 页在 Mcode 的最小 preload 下能挂载」。本套件补的就是这一半：
+ * 「真实编辑器页在 Mcode 的最小 preload 下能挂载」。本套件补的就是这一半：
  *
- *   - 真实构建产物 `genoffice/apps/docs/out/renderer/index.html`（`?mode=tab`，
- *     与 `editorPageUrl()` 推出的 URL 形状一致）；
+ *   - 真实构建产物 `genoffice/apps/{docs,slides}/out/renderer/index.html`
+ *     （`?mode=tab`，与 `editorPageUrl()` 推出的 URL 形状一致）；
  *   - **生产** `src/main/document/documentViewPreload.ts` 原样打包成 CJS preload；
  *   - 真 BrowserWindow（contextIsolation + sandbox + nodeIntegration:false，
  *     与 `documentViewHost.ts` 的视图三项安全开关逐字一致）；
@@ -16,11 +16,13 @@
  *
  * ## 断言（探针写进 checks.json，启动器要求 exit 0 且全部 PASS 才算过）
  *
+ * 每个页面（docs / slides）各 5 条：
  *   1. ★ `#root` 有子节点（React 没有整树卸载）；
  *   2. ★ 可见文本长度 > 0；
- *   3. ★ 出现编辑器特征（`.app`/`.ribbon`/`.ProseMirror`/`.doc-page` 任一）；
+ *   3. ★ 出现编辑器特征（docs: `.app`/`.ribbon`/`.ProseMirror`/`.doc-page`；
+ *      slides: `.app`/`.ribbon`/`canvas`/`.konvajs-content`/缩略图 任一）；
  *   4. ★ 首帧零未捕获异常（CDP 异常事件 + 页面钩子都为空）；
- *   5. ★ preload 仍未暴露 ipcRenderer / 文件对话框（源码级断言，防补桩越界）。
+ *   5. ★ preload 仍未暴露 ipcRenderer / 文件对话框（源码级断言，防补齐时越界）。
  *
  * ## 隔离与不联网
  *
@@ -29,9 +31,10 @@
  *
  * ## 产物缺失 = skip，不是 FAIL
  *
- * `genoffice/` 被 .gitignore 排除，CI/新机器上可能没有 `out/renderer`。那种情况下
- * 本套件打印 skip 并 exit 0 —— 与 `document-view-renderer-smoke` 的既有约定一致
- * （「没构建过时如实跳过，不假装验过」）。有产物时必须全绿。
+ * `genoffice/` 被 .gitignore 排除，CI/新机器上可能没有 `out/renderer`。缺失的页面
+ * **逐个跳过**（打印 skip），全部缺失时整套 skip 并 exit 0 —— 与
+ * `document-view-renderer-smoke` 的既有约定一致（「没构建过时如实跳过，不假装验过」）。
+ * 有产物时必须全绿。
  */
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -46,13 +49,22 @@ import { createRequire } from "node:module";
 const suite = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(suite, "../..");
 const repoRoot = resolve(desktop, "../..");
-const pagePath = join(repoRoot, "genoffice", "apps", "docs", "out", "renderer", "index.html");
+const PAGES = [
+  { kind: "docs", path: join(repoRoot, "genoffice", "apps", "docs", "out", "renderer", "index.html") },
+  { kind: "slides", path: join(repoRoot, "genoffice", "apps", "slides", "out", "renderer", "index.html") },
+];
 
 if (process.argv.length > 2) throw Error("Unknown test option");
 
-if (!existsSync(pagePath)) {
-  console.log(`document-view-vendor-page-smoke: skip（未构建：${pagePath}）`);
-  console.log("  先构建 genoffice docs renderer 再跑；本套件不联网、不代构建。");
+const presentPages = PAGES.filter((p) => existsSync(p.path));
+for (const p of PAGES) {
+  if (!existsSync(p.path)) {
+    console.log(`document-view-vendor-page-smoke: skip ${p.kind}（未构建：${p.path}）`);
+  }
+}
+if (presentPages.length === 0) {
+  console.log("document-view-vendor-page-smoke: skip（docs 与 slides 产物都未构建）");
+  console.log("  先构建 genoffice renderer 再跑；本套件不联网、不代构建。");
   process.exit(0);
 }
 
@@ -93,11 +105,13 @@ writeFileSync(
   join(dir, "config.json"),
   JSON.stringify(
     {
-      pagePath,
-      preloadPath: join(dir, "documentViewPreload.js"),
-      waitMs: 10000,
-      // 与 renderer 套件里的 editorPageUrl() 形状一致（apps/docs 以 ?mode=tab 启动）。
-      urlSuffix: "?mode=tab",
+      pages: presentPages.map((p) => ({
+        pagePath: p.path,
+        preloadPath: join(dir, "documentViewPreload.js"),
+        waitMs: 10000,
+        // 与 renderer 套件里的 editorPageUrl() 形状一致（apps 以 ?mode=tab 启动）。
+        urlSuffix: "?mode=tab",
+      })),
     },
     null,
     2,
@@ -144,13 +158,16 @@ try {
   checks = [];
 }
 const failed = checks.filter((c) => c.status !== "PASS");
-// 5 条核心断言（probe.ts 里逐条写）；条数下限钉住，防止探针提前崩退只写了一半。
-const complete = checks.length >= 5 && failed.length === 0;
+// 每页 4 条 + 末尾 1 条共享的源码级断言（probe.ts 里逐条写）；下限钉住，
+// 防止探针提前崩退只写了一半。
+const EXPECTED_CHECKS = presentPages.length * 4 + 1;
+const complete = checks.length >= EXPECTED_CHECKS && failed.length === 0;
 const result = { dir, exitCode: run.status, signal: run.signal, checks: checks.length, failed, complete };
 writeFileSync(join(dir, "result.json"), JSON.stringify(result, null, 2));
 if (run.status !== 0 || !complete) {
-  console.error(`DOCUMENT VIEW VENDOR PAGE FAILED: exit=${run.status} checks=${checks.length} failed=${failed.length}`);
+  console.error(`DOCUMENT VIEW VENDOR PAGE FAILED: exit=${run.status} checks=${checks.length}/${EXPECTED_CHECKS} failed=${failed.length}`);
   process.exitCode = 1;
 } else {
-  console.log(`document-view-vendor-page-smoke: ${checks.length}/${checks.length} 真 Electron 断言通过（真实 vendor docs 页）`);
+  const kinds = presentPages.map((p) => p.kind).join(" + ");
+  console.log(`document-view-vendor-page-smoke: ${checks.length}/${checks.length} 真 Electron 断言通过（真实 vendor ${kinds} 页）`);
 }
