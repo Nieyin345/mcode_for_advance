@@ -526,6 +526,68 @@ console.log("\n[6b] MC-037 插件市场坏记录");
   SettingRepo.set(MARKET_KEY, healthyRecords);
 }
 
+/* ══════════ 【MC-037 时序变体】addMarketplace 的 await 窗口 ══════════
+ *
+ * `addMarketplace` 在入口读一次记录,然后要经过 `materializeMarketplaceTree`
+ * (本地 `fs.cp` / git clone)与 `promoteMarketCatalog` 的多个 await 才写回。
+ * 台账验收点名「读后并发修改」:窗口内记录被砸坏或并发新增时,写回若仍用
+ * 入口快照就会覆盖。判据立在设置行的**值**上,不钉实现。
+ *
+ * 注入方式:调用后 `setTimeout(0)` —— Node 事件循环先跑 timers 再跑 poll,
+ * 所以这条定时器一定落在 add 的第一次 `fs.mkdir` 让出之后、后续 I/O 回调之前,
+ * 即"已经读过、还没写回"的窗口内。确定,不靠拷贝耗时。
+ */
+console.log("\n[6c] MC-037 插件市场 add 的 await 窗口");
+{
+  const MARKET_KEY = "plugins.marketplaces";
+  const healthy = SettingRepo.__dump()[MARKET_KEY]!;
+  const broken = "{broken-timing";
+
+  // ① 窗口内砸坏 → 写入被拒,原值一个不动。
+  const breaking = call(IPC.PLUGINS_MARKETPLACE_ADD, {
+    kind: "local",
+    ref: mkMarketplace("mp-race-1", { name: "mp-race-1", plugins: [] }),
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  SettingRepo.set(MARKET_KEY, broken);
+  const rejected = asOk(await breaking);
+  eq("★ 窗口内砸坏的记录必须让写入被拒", rejected.ok, false);
+  eq("…带 corrupt 标记", rejected.corrupt, true);
+  eq("★ 窗口内砸坏的原值一个不动", SettingRepo.__dump()[MARKET_KEY], broken);
+
+  // ② 窗口内并发新增 → newcomer 必须还在(不能被入口旧快照整表覆盖)。
+  SettingRepo.set(MARKET_KEY, healthy);
+  const concurrent = call(IPC.PLUGINS_MARKETPLACE_ADD, {
+    kind: "local",
+    ref: mkMarketplace("mp-race-2", { name: "mp-race-2", plugins: [] }),
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  SettingRepo.set(
+    MARKET_KEY,
+    JSON.stringify([
+      ...(JSON.parse(healthy) as Array<Record<string, unknown>>),
+      { name: "mp-newcomer", source: { kind: "local", ref: path.join(base, "mp-newcomer") }, addedAt: "2026-10-19T00:00:00.000Z" },
+    ]),
+  );
+  const raced = asOk(await concurrent);
+  eq("窗口内有并发新增时 add 仍成功", raced.ok, true);
+  const racedNames = (JSON.parse(SettingRepo.__dump()[MARKET_KEY]!) as Array<{ name: string }>).map((r) => r.name);
+  check("★ 窗口内并发新增的 mp-newcomer 仍在(没被旧快照覆盖)", racedNames.includes("mp-newcomer"), racedNames);
+  check("…本次新加的 mp-race-2 也落盘了", racedNames.includes("mp-race-2"), racedNames);
+
+  // ③ 正控(防空过):窗口干净时 add 必须成功并落盘 —— 否则上面两条"被拒"
+  //    可能只是"这个市场本来就加不进去"造成的假绿。
+  const clean = asOk(await call(IPC.PLUGINS_MARKETPLACE_ADD, {
+    kind: "local",
+    ref: mkMarketplace("mp-race-3", { name: "mp-race-3", plugins: [] }),
+  }));
+  eq("正控:无干扰时 add 成功", clean.ok, true);
+  const cleanNames = (JSON.parse(SettingRepo.__dump()[MARKET_KEY]!) as Array<{ name: string }>).map((r) => r.name);
+  check("…正控确实落盘(否则上面的拒绝断言是假绿)", cleanNames.includes("mp-race-3"), cleanNames);
+
+  SettingRepo.set(MARKET_KEY, healthy);
+}
+
 /* ────────────────────────── 7. 半截状态 ────────────────────────── */
 
 console.log("\n[7] 装到一半失败,留没留半截");

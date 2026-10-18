@@ -75,7 +75,7 @@ import {
   type PluginState,
 } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
-import { classifyMarketRegistry, marketRegistryCorruptMessage, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
+import { classifyMarketRegistry, marketRegistryCorruptMessage, recheckMarketRegistryBeforeWrite, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 import {
   findPluginManifest,
@@ -1593,12 +1593,25 @@ export async function addMarketplace(input: {
     const dest = marketplaceDirOf(rawName);
     await fs.mkdir(path.dirname(dest), { recursive: true });
     await promoteMarketCatalog(staging, dest);
-    records.push({
-      name: rawName,
-      source: { kind: input.kind, ref: input.ref },
-      addedAt: new Date().toISOString(),
-    });
-    writeJsonSetting(PLUGINS_MARKETPLACES_SETTING_KEY, records);
+    // 【MC-037 时序变体】materialize/校验是 await 窗口(本地 fs.cp,git 还要 clone):
+    // 写回前必须**重读**记录。从前这里用入口处的 `records` 快照整表覆盖 ——
+    // 窗口内记录被并发改写/砸坏时,新增的 marketplace 会丢、坏档会被覆盖。
+    // 与技能/MCP 市场共用同一判据(`lib/marketRegistry.ts`):损坏拒绝且原值不动。
+    const fresh = recheckMarketRegistryBeforeWrite(readMarketplaceRecordsState(), "插件市场");
+    if (!fresh.ok) return fresh;
+    if (fresh.base.some((r) => r.name === rawName)) {
+      // 窗口内已有人建了同名市场 —— 不覆盖别人的记录。目录可能已被对方写,
+      // 这里不删(删了可能删掉对方刚 promote 的树),记录才是真相层。
+      return { ok: false, error: `同名 marketplace 已存在:${rawName}(记录在添加期间被其他操作更新)` };
+    }
+    writeJsonSetting(PLUGINS_MARKETPLACES_SETTING_KEY, [
+      ...fresh.base,
+      {
+        name: rawName,
+        source: { kind: input.kind, ref: input.ref },
+        addedAt: new Date().toISOString(),
+      },
+    ]);
     return { ok: true };
   } catch (err) {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
