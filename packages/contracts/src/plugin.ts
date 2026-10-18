@@ -348,6 +348,11 @@ export interface PluginState {
    *  与「该引擎的逐组件交付报告」做 ALL 判定得出,面板据此把「部分兼容」与「全部就绪」
    *  分成两件事。缺省 = 老宿主,客户端按旧逻辑(仅看兼容列表)显示。 */
   componentReadiness?: Record<string, SceneComponentReadiness>;
+  /** 【MC-030】这一行的**诊断**。存在且非空 = 这个插件没能正常加载(如安装目录
+   *  存在但读不了,ACL/磁盘错误),`components` 因此可能不全 —— 面板必须把原因显示
+   *  出来,而不是让这一行看起来像"装了个空插件"。缺省 = 老宿主,按旧逻辑显示。
+   *  与 `workflow.nodeTypes` / 代理档案的 `problems` 同一语义:读不了 ≠ 不存在。 */
+  problems?: string[];
 }
 
 /** A marketplace added by the user (or materialized from BUILTIN_MARKETPLACES).

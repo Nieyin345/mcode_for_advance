@@ -850,6 +850,7 @@ export const zh = {
   "settings.plugins.cmpMcp": "MCP",
   "settings.plugins.cmpHooks": "Hooks",
   "settings.plugins.noComponents": "未声明可识别组件",
+  "settings.plugins.problems": "{n} 个读取问题",
   "settings.plugins.cmpApps": "Apps",
   "settings.plugins.appsNote":
     "{n} 个 ChatGPT 应用(连接器)只在登录 ChatGPT 账号的 Codex 里可用,Mcode 的三个引擎都不会收到。",

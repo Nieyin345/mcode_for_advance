@@ -581,6 +581,13 @@ function PluginRow({
                 {plugin.description || t("settings.plugins.noComponents")}
               </span>
             )}
+            {/* 【MC-030】读不了的插件目录:必须在这一行说清原因,不能让它看起来
+                像"装了个空插件"(组件的 0 是读不出来,不是没声明)。 */}
+            {(plugin.problems?.length ?? 0) > 0 && (
+              <span className="mt-0.5 block text-[0.8em] text-warning" data-plugin-problems={plugin.name}>
+                {t("settings.plugins.problems", { n: plugin.problems!.length })}:{plugin.problems!.join(";")}
+              </span>
+            )}
           </span>
         </button>
         <PluginEngineKeys plugin={plugin} busy={enginesBusy} onToggle={onEngine} />

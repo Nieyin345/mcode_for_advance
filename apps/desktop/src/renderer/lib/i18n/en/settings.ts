@@ -843,6 +843,7 @@ export const en = {
   "settings.plugins.cmpMcp": "MCP",
   "settings.plugins.cmpHooks": "Hooks",
   "settings.plugins.noComponents": "No recognizable components declared",
+  "settings.plugins.problems": "{n} load problem(s)",
   "settings.plugins.cmpApps": "Apps",
   "settings.plugins.appsNote":
     "{n} ChatGPT apps (connectors) only work in Codex signed in with a ChatGPT account; none of Mcode's engines receive them.",

@@ -880,6 +880,112 @@ const weirdRes = asOk(await call(IPC.PLUGINS_MARKETPLACE_ADD, { kind: "local", r
 eq("市场清单里的中文名不合规 → ok:false", weirdRes.ok, false);
 check("…点明是名称非法", (weirdRes.error ?? "").includes("名称非法"), weirdRes);
 
+/* ────────────────────────── 11b. 【MC-030】读不了 ≠ 不存在 ────────────────────────── */
+
+console.log("\n[11b] MC-030:已安装目录读不了 ≠ 未安装");
+/* 复现的三种旧症状(全部是"把 EACCES 折叠成 ENOENT"):
+ *   ① `plugins.list` 直接 `continue` —— 面板上这个插件像"从没装过";
+ *   ② `setPluginEnabled/removePlugin` 报"未安装" —— 用户会去重装一个其实还在的插件;
+ *   ③ 启用中的插件从投递集里静默消失,没人知道为什么。
+ * 这里用**真权限拒绝**造 EACCES(Windows `icacls /deny (RD)` → readdir EPERM;
+ * POSIX `chmod 000`),注入前自证 `readdirSync` 真抛 —— 否则断言会空过。
+ * 只拒"列目录",`existsSync`/stat/删文件都照常 —— 正好模拟 ACL 那类故障。
+ * ⚠️ Windows 上 ACL 恢复不可靠(同 orchestration-ipc-smoke §17b 的踩坑):被拒的只是
+ * 本段自建的临时插件目录;结束时把目录整个删掉,不指望恢复 ACE。 */
+{
+  const { execFileSync } = await import("node:child_process");
+  const { readdirSync } = await import("node:fs");
+  const denyName = "mc030-unreadable";
+  const fixture = mkPlugin(denyName, { name: denyName, version: "1.0.0", description: "fixture" });
+  const install = asInstall(await installLocal(fixture));
+  eq("前置:夹具装上了", install.ok, true);
+  eq("前置:启用它", asOk(await call(IPC.PLUGINS_SET_ENABLED, { name: denyName, enabled: true })).ok, true);
+  const installedDir = path.join(PLUGINS_ROOT, denyName);
+
+  const user = process.env.USERNAME ?? process.env.USER ?? "";
+  const isWin = process.platform === "win32";
+  let madeDeny = false;
+  try {
+    if (isWin) { execFileSync("icacls", [installedDir, "/deny", `${user}:(RD)`], { stdio: "ignore" }); madeDeny = true; }
+    else { execFileSync("chmod", ["000", installedDir], { stdio: "ignore" }); madeDeny = true; }
+  } catch { /* 造不出来就走跳过分支 */ }
+  let reallyDenied = false;
+  if (madeDeny) { try { readdirSync(installedDir); } catch { reallyDenied = true; } }
+
+  if (reallyDenied) {
+    const warns: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warns.push(args.map((a) => String(a)).join(" ")); };
+    let listed: { plugins: Array<Record<string, unknown>> };
+    let delivery: unknown;
+    let enableRes: OkRes;
+    let removeRes: OkRes;
+    try {
+      listed = (await call(IPC.PLUGINS_LIST)) as typeof listed;
+      delivery = await pluginManager.getEnabledPlugins();
+      enableRes = asOk(await call(IPC.PLUGINS_SET_ENABLED, { name: denyName, enabled: false }));
+      removeRes = asOk(await call(IPC.PLUGINS_REMOVE, { name: denyName }));
+    } finally {
+      console.warn = realWarn;
+    }
+    const row = listed.plugins.find((p) => p.name === denyName);
+    check("★ MC-030:目录读不了 → 插件行仍在列表里(不是'从没装过')", row !== undefined, listed.plugins.map((p) => p.name));
+    check(
+      "★ MC-030:那一行带着原因(problems 非空,含读不了/目录)",
+      JSON.stringify(row?.problems ?? []).length > 2 &&
+        JSON.stringify(row?.problems).includes(denyName),
+      row?.problems,
+    );
+    eq("那一行仍按用户的启用配置显示 enabled", row?.enabled, true);
+    eq("★ MC-030:读不了不投递(坏项不执行)", (delivery as unknown[]).length, 0);
+    check(
+      "★ MC-030:投递缺失有留痕(不是静默消失)",
+      warns.some((w) => w.includes(denyName) && (w.includes("读不了") || w.includes("无法投递"))),
+      warns,
+    );
+    const enableMsg = enableRes.error ?? "";
+    check(
+      "★ MC-030:setEnabled 说的是'读不了',不是'未安装'",
+      enableRes.ok === false && enableMsg.includes("读不了") && !enableMsg.includes("未安装"),
+      enableRes,
+    );
+    const removeMsg = removeRes.error ?? "";
+    check(
+      "★ MC-030:remove 拒绝且不谎报'未安装'",
+      removeRes.ok === false && removeMsg.includes("读不了") && !removeMsg.includes("未安装"),
+      removeRes,
+    );
+    check("★ MC-030:remove 被拒时目录一个字没动", existsSync(installedDir), installedDir);
+    // 尽力撤销(失败也不影响:下面整个删掉)。
+    try {
+      if (isWin) execFileSync("icacls", [installedDir, "/remove:d", user], { stdio: "ignore" });
+      else execFileSync("chmod", ["755", installedDir], { stdio: "ignore" });
+    } catch { /* 尽力 */ }
+  } else {
+    console.log("  (跳过:本环境造不出 EACCES 夹具)");
+  }
+  // 清场:先恢复 ACL(失败无妨)再整体删除;不留夹具给后面的小节。
+  try {
+    if (isWin) execFileSync("icacls", [installedDir, "/remove:d", user], { stdio: "ignore" });
+    else execFileSync("chmod", ["755", installedDir], { stdio: "ignore" });
+  } catch { /* 尽力 */ }
+  rmSync(installedDir, { recursive: true, force: true });
+  SettingRepo.set("plugins.enabled", "[]");
+  /* 健康路径(防空过):同一份夹具在**能读**时必须照常列出、照常投递 —— 证明上面那几条
+   * 断的是"读不了才报诊断",不是"一律出诊断"或"一律不投递"。 */
+  const healthy = asInstall(await installLocal(fixture));
+  eq("正控:同一份夹具重装 → ok", healthy.ok, true);
+  eq("正控:启用", asOk(await call(IPC.PLUGINS_SET_ENABLED, { name: denyName, enabled: true })).ok, true);
+  const healthyRow = ((await call(IPC.PLUGINS_LIST)) as { plugins: Array<Record<string, unknown>> }).plugins.find(
+    (p) => p.name === denyName,
+  );
+  check("★ MC-030 正控:可读时照常列出", healthyRow !== undefined, healthyRow);
+  eq("★ MC-030 正控:可读时没有 problems", healthyRow?.problems, undefined);
+  eq("★ MC-030 正控:可读时照常投递", (await pluginManager.getEnabledPlugins()).length, 1);
+  eq("收尾:正控夹具卸载 ok", asOk(await call(IPC.PLUGINS_REMOVE, { name: denyName })).ok, true);
+  SettingRepo.set("plugins.enabled", "[]");
+}
+
 /* ────────────────────────── 12. 空过守卫 ────────────────────────── */
 
 console.log("\n[12] 每条 channel 都被真的调过(没有登记了却没人命中的)");

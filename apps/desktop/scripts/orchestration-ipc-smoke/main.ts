@@ -1256,11 +1256,15 @@ console.log("\n守望命令模板");
   const afterLegacy = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
   check("★ MC-054:被拒后盘上没有 [L](拒绝真的不写)",
     !(afterLegacy.templates as Array<{ id?: string }>).some((t) => t.id === "L"), afterLegacy.templates);
-  // 显式 null 是"我知道自己在覆盖"的唯一写法 —— 它仍然能写(重建口之外的显式声明)。
+  // 【MC-054】显式 null 也绝不能绕过普通保存的 CAS。重建有专用 RPC
+  // 且原值先备份；普通 save 即使收到 "null" 也必须保留 A 已提交的数据。
+  const beforeNull = SettingRepo.get("automation.watch.templates");
   const explicitNull = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
     templates: [{ id: "N", name: "显式覆盖", command: "echo N" }], expectedRevision: null,
   }));
-  eq("★ MC-054:显式 null 仍可写(与「没带字段」区分)", explicitNull.ok, true);
+  eq("★ MC-054:显式 null 不能绕过普通保存 CAS", explicitNull.ok, false);
+  eq("★ MC-054:null 版本拒写仍有冲突诊断", explicitNull.conflict, true);
+  eq("★ MC-054:null 版本被拒后原值逐字节保全", SettingRepo.get("automation.watch.templates"), beforeNull);
   // 复原成一条干净的健康表,后续断言按自己的路径继续。
   await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
     templates: [], expectedRevision: obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES)).revision,
@@ -2798,6 +2802,74 @@ console.log("\n随预设携带的脚本");
   materializePresetScriptsFor("check_citations.py");
   eq("用户改过的脚本不被覆盖", readFileSync(shipped, "utf8"), "# 我的版本\n");
   rmSync(shipped, { force: true });
+}
+
+/* ──────────────── 24. 【MC-030】节点类型目录**读不了** ≠ 资源不存在 ──────────────── */
+
+console.log("\n节点类型目录读不了 ≠ 不存在");
+
+/* §17b 只钉了代理档案那一处;`loadDir` 是同一条判据的第二个消费者(台账点名三处)。
+ * 这里补上节点类型这一支:目录存在但 `readdir` 被拒(EACCES/EPERM)时,清单必须
+ * **照常给出内置类型**,同时把"读不了目录"如实报进 `problems` —— 而不是把它折叠成
+ * "用户没写过自定义节点"。健康路径(能读时 `problems` 为空、自定义节点在)先断,
+ * 证明判据只对非 ENOENT 报,不是"一律报"或"一律不报"。 */
+{
+  const { execFileSync } = await import("node:child_process");
+  writeManifest("smoke-mc030-good.json", JSON.stringify(manifestFixture({ id: "smoke.mc030" })));
+  {
+    const c = await catalog();
+    check(
+      "正控:能读时自定义节点照常出现",
+      c.entries.some((e) => e.id === "smoke.mc030"),
+      c.entries.map((e) => e.id),
+    );
+    same("正控:能读时 problems 是空的", c.problems, []);
+  }
+
+  const user = process.env.USERNAME ?? process.env.USER ?? "";
+  const isWin = process.platform === "win32";
+  let madeDeny = false;
+  try {
+    // 只拒"列目录"(RD) —— 模拟 ACL 那类故障;文件本身仍在,只是这一轮看不见。
+    if (isWin) { execFileSync("icacls", [dir, "/deny", `${user}:(RD)`], { stdio: "ignore" }); madeDeny = true; }
+    else { execFileSync("chmod", ["000", dir], { stdio: "ignore" }); madeDeny = true; }
+  } catch { /* 造不出来就走跳过分支 */ }
+  let reallyDenied = false;
+  if (madeDeny) { try { readdirSync(dir); } catch { reallyDenied = true; } }
+  if (reallyDenied) {
+    const denied = await catalog();
+    check(
+      "★ MC-030:节点类型目录读不了 → 报进 problems(不是静默空)",
+      JSON.stringify(denied.problems).includes(dir) || JSON.stringify(denied.problems).includes("读不了目录"),
+      denied.problems,
+    );
+    check(
+      "★ MC-030:读不了时内置类型照常在(坏一个目录不连坐)",
+      denied.entries.filter((e) => e.id.startsWith("mcode.")).length >= 7,
+      denied.entries.map((e) => e.id),
+    );
+  } else {
+    console.log("  (跳过:本环境造不出 EACCES 夹具)");
+  }
+  // 尽力撤销,并**自证读回来**(撤销不可靠时如实说跳过,不把环境问题记成代码红)。
+  try {
+    if (isWin) execFileSync("icacls", [dir, "/remove:d", user], { stdio: "ignore" });
+    else execFileSync("chmod", ["755", dir], { stdio: "ignore" });
+  } catch { /* 尽力 */ }
+  let restored = false;
+  try { readdirSync(dir); restored = true; } catch { /* 没恢复 */ }
+  if (restored) {
+    const back = await catalog();
+    check(
+      "★ MC-030 正控:恢复可读后自定义节点回来",
+      back.entries.some((e) => e.id === "smoke.mc030"),
+      back.entries.map((e) => e.id),
+    );
+    same("★ MC-030 正控:恢复可读后 problems 清空", back.problems, []);
+  } else {
+    console.log("  (跳过恢复断言:本环境撤不掉目录拒绝)");
+  }
+  removeManifest("smoke-mc030-good.json");
 }
 
 /* ──────────────── 收尾 ──────────────── */

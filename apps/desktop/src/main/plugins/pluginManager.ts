@@ -323,7 +323,12 @@ export function setPluginEngines(
   patch: Partial<PluginEngineSwitches>,
 ): { ok: boolean; error?: string } {
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
-  if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
+  // 【MC-030】读不了 ≠ 未安装(否则用户会去重装一个还在的插件);读不了时也不写。
+  const probe = probeInstalledDir(name);
+  if (isUnreadableProbe(probe)) {
+    return { ok: false, error: `插件 ${name} 的目录读不了(ACL/磁盘错误?),无法读取安装信息:${probe.error.message}` };
+  }
+  if (!installedRootFrom(probe)) return { ok: false, error: `插件 ${name} 未安装` };
   // 【MC-019】引擎表损坏时拒绝写 — 否则这次读-改-写会拿兜底空表当基准,
   // 把「坏了」洗成「合法」,而空表语义恰是**全开**:原禁用条目全部消失。
   const refuse = refuseIfCorrupt(PLUGINS_ENGINES_SETTING_KEY, isPluginEnginesMapShape);
@@ -403,7 +408,12 @@ export function setPluginProjectOverride(
   patch: { enabled?: boolean | null; engines?: Partial<PluginEngineSwitches> | null },
 ): { ok: boolean; error?: string } {
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
-  if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
+  // 【MC-030】读不了 ≠ 未安装:读不了时如实报读不了,也不碰覆盖表。
+  const probe = probeInstalledDir(name);
+  if (isUnreadableProbe(probe)) {
+    return { ok: false, error: `插件 ${name} 的目录读不了(ACL/磁盘错误?),无法读取安装信息:${probe.error.message}` };
+  }
+  if (!installedRootFrom(probe)) return { ok: false, error: `插件 ${name} 未安装` };
   if (!path.isAbsolute(projectPath)) return { ok: false, error: "项目路径必须是绝对路径" };
   // 【MC-019】覆盖表损坏时拒绝写 — 不然这次写把坏表洗成只含本项目的"合法"表,
   // 其他项目的覆盖(多半是"关")被静默丢弃,那些项目按全局状态重新投递。
@@ -722,20 +732,45 @@ function readInstallRecord(pluginRoot: string): InstallRecord | null {
   return null;
 }
 
-/** Newest-version directory of an installed plugin (v1's single-version
- *  model makes "newest" a plain lexicographic max — semver-ish strings sort
- *  well enough for the 0.x world this ships in). */
-function installedRootOf(name: string): string | null {
-  if (isReservedPluginName(name)) return null;
+/** 【MC-030】判"这个插件没装"之前**先要能证明真没有**:一次 `readdir` 定生死。
+ *  - `absent`      = 目录不存在(ENOENT):真没装,调用方照旧当"未安装";
+ *  - `unreadable`  = 目录存在但**读不了**(EACCES/EPERM/磁盘错误):不能折叠成
+ *    "没有" —— 否则已启用插件会静默消失、`setPluginEnabled/removePlugin` 还会谎报
+ *    "未安装"。调用方必须显式报告并拒绝把状态说成"没装"。
+ *  readdir 的结果回传给 {@link installedRootFrom} 复用,免得"检查时读得动、扫描时
+ *  读不动"的 TOCTOU 分叉出两种说法。 */
+type InstalledDirProbe =
+  | { kind: "ok"; base: string; entries: string[] }
+  | { kind: "absent" }
+  | { kind: "unreadable"; base: string; error: Error };
+
+function probeInstalledDir(name: string): InstalledDirProbe {
   const base = path.join(PLUGINS_ROOT, name);
-  if (!existsSync(base)) return null;
+  let entries: string[];
+  try {
+    entries = readdirSync(base);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code === "ENOENT" ? { kind: "absent" } : { kind: "unreadable", base, error: err as Error };
+  }
+  return { kind: "ok", base, entries };
+}
+
+/** 同一个 "要打开的路径自己读不了" 判断的**唯一一份**。 */
+function isUnreadableProbe(probe: InstalledDirProbe): probe is Extract<InstalledDirProbe, { kind: "unreadable" }> {
+  return probe.kind === "unreadable";
+}
+
+function installedRootFrom(probe: InstalledDirProbe): string | null {
+  if (probe.kind !== "ok") return null;
+  const { base, entries } = probe;
   // ⚠️ 安装时的临时目录(`<版本>.swapping-*` / `<版本>.backup-*`)就落在同一层,删不掉
   // (Windows 上文件被插件的 MCP 进程占着)时会留下来;按字符串取最大值的话
   // `1.0.0.backup-…` 比 `1.0.0` 大,于是加载的是**旧的备份**。所以跳过这些目录,
   // 并优先按安装记录的时间挑(剩下多个版本时,最后装的那个才是用户要的;
   // 「1.10.0」按字符串还比「1.9.0」小),没有记录再按数字感知的版本号比较。
   let best: { entry: string; at: number } | null = null;
-  for (const entry of readdirSync(base)) {
+  for (const entry of entries) {
     if (entry.includes(".swapping-") || entry.includes(".backup-")) continue;
     const dir = path.join(base, entry);
     try {
@@ -753,6 +788,16 @@ function installedRootOf(name: string): string | null {
     }
   }
   return best ? path.join(base, best.entry) : null;
+}
+
+/** Newest-version directory of an installed plugin (v1's single-version model
+ *  makes "newest" a plain lexicographic max — semver-ish strings sort well
+ *  enough for the 0.x world this ships in). A directory that exists but cannot
+ *  be read scans as `null` here; callers that must not confuse that with
+ *  "not installed" go through {@link probeInstalledDir} instead. */
+function installedRootOf(name: string): string | null {
+  if (isReservedPluginName(name)) return null;
+  return installedRootFrom(probeInstalledDir(name));
 }
 
 /** Providers that can consume at least one executable component. An explicit
@@ -890,7 +935,9 @@ export function pluginComponentReadiness(
 }
 
 /** Build one PluginState row; null when the directory holds no valid
- *  manifest (orphans from interrupted installs are invisible by design). */
+ *  manifest (orphans from interrupted installs are invisible by design).
+ *  Installed directories that are **unreadable** (ACL / disk error) never
+ *  reach here — {@link listPlugins} turns them into a problem row first (MC-030). */
 function toPluginState(
   rootDir: string,
   enabled: Set<string>,
@@ -903,6 +950,37 @@ function toPluginState(
     return null;
   }
   if (!resolved) return null;
+  return pluginStateOf(resolved, rootDir, enabled, enginesMap);
+}
+
+/** MC-030: an installed plugin directory that cannot be read, as a row that
+ *  keeps its identity and carries the reason. `enabled` reflects the user's
+ *  stored list — the configuration did not change just because the disk said no. */
+function unreadablePluginState(
+  problem: { name: string; base: string; error: Error },
+  enabled: Set<string>,
+): PluginState {
+  return {
+    name: problem.name,
+    version: "",
+    description: `插件目录读不了:${problem.error.message}`,
+    rootDir: problem.base,
+    enabled: enabled.has(problem.name),
+    installedAt: "",
+    source: { kind: "unknown", ref: "" },
+    components: { skills: [], commands: [], agents: [], hooks: [], mcpServers: [] },
+    compatibleProviderIds: [],
+    deliveredProviderIds: [],
+    problems: [`读不了插件目录(${problem.base}):${problem.error.message}`],
+  };
+}
+
+function pluginStateOf(
+  resolved: NonNullable<ReturnType<typeof findPluginManifest>>,
+  rootDir: string,
+  enabled: Set<string>,
+  enginesMap: PluginEnginesMap,
+): PluginState {
   const record = readInstallRecord(rootDir);
   const components = summarizeComponents(rootDir, resolved.manifest);
   const compatibleProviderIds = compatibleProviderIdsForPlugin(resolved.manifest, components);
@@ -974,7 +1052,15 @@ export function listPlugins(): PluginState[] {
     // Skip housekeeping dirs (marketplaces / staging / dotfiles).
     if (entry.startsWith(".") || entry === "marketplaces") continue;
     if (!PLUGIN_NAME_RE.test(entry)) continue;
-    const rootDir = installedRootOf(entry);
+    const probe = probeInstalledDir(entry);
+    // 【MC-030】目录存在但读不了 = 这个插件**在**,只是这一轮读不出来。老实产出一行
+    //   带 `problems` 的诊断行 —— 从前这里 `continue`,面板上它就像"从没装过"。
+    if (isUnreadableProbe(probe)) {
+      console.warn(`[plugins] 已安装插件「${entry}」的目录读不了,面板按诊断行列出: ${probe.error.message}`);
+      out.push(unreadablePluginState({ name: entry, base: probe.base, error: probe.error }, enabled));
+      continue;
+    }
+    const rootDir = installedRootFrom(probe);
     if (!rootDir) continue;
     const state = toPluginState(rootDir, enabled, enginesMap);
     if (state) out.push(state);
@@ -1219,7 +1305,13 @@ export async function installFromGit(url: string, ref?: string): Promise<Install
 
 export function setPluginEnabled(name: string, enabledValue: boolean): { ok: boolean; error?: string } {
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
-  if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
+  // 【MC-030】目录读不了 **不是** "未安装":从前这里只判 `installedRootOf` 为 null
+  //   就报"未安装",用户会去重装一个其实还在的插件。读不了要如实说是读不了。
+  const probe = probeInstalledDir(name);
+  if (isUnreadableProbe(probe)) {
+    return { ok: false, error: `插件 ${name} 的目录读不了(ACL/磁盘错误?),无法读取安装信息:${probe.error.message}` };
+  }
+  if (!installedRootFrom(probe)) return { ok: false, error: `插件 ${name} 未安装` };
   // 【MC-019】启用名单损坏时拒绝写 — 读-改-写会把坏值洗成"合法"名单,
   // 而兜底空表 = 全部停用(用户会以为只动了一个插件)。
   const refuse = refuseIfCorrupt(PLUGINS_ENABLED_SETTING_KEY, isPluginNameListShape);
@@ -1235,8 +1327,15 @@ export function setPluginEnabled(name: string, enabledValue: boolean): { ok: boo
 
 export function removePlugin(name: string): { ok: boolean; error?: string } {
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
-  const base = path.join(PLUGINS_ROOT, name);
-  if (!existsSync(base)) return { ok: false, error: `插件 ${name} 未安装` };
+  // 【MC-030】读不了的目录**不删**。它可能只是暂时读不了(ACL / 磁盘),而里面是
+  //   用户的插件文件 —— 不能在"看不见里面有什么"的时候动手。从前这里 `existsSync`
+  //   为真就继续,后面 `renameSync` 会得到同样的错误但被包装成"文件被占用"的误导话术。
+  const probe = probeInstalledDir(name);
+  if (isUnreadableProbe(probe)) {
+    return { ok: false, error: `插件 ${name} 的目录读不了(ACL/磁盘错误?),未做任何改动:${probe.error.message}` };
+  }
+  if (probe.kind === "absent") return { ok: false, error: `插件 ${name} 未安装` };
+  const base = probe.base;
   // 【MC-019】逐个键检查它**无条件回写**的那两个策略键:启用名单与 MCP 禁用名单。
   // 损坏时回写会把坏值洗成兜底空表 —— 别的插件静默停用 / 别的已关服务静默放开。
   // 放在任何文件改动之前:拒绝要干净,不留"目录删了、设置没动"的半截。
@@ -1848,7 +1947,19 @@ export function enabledPluginsNow(projectPath?: string): EnabledPlugin[] {
   const enginesMap = readPluginEnginesMap();
   const out: EnabledPlugin[] = [];
   for (const name of enabledNames) {
-    const rootDir = installedRootOf(name);
+    const probe = probeInstalledDir(name);
+    // 【MC-030】已启用 + 目录读不了 ≠ 未安装。从前这里 `continue`,该插件从本轮
+    //   投递集里**静默消失**(模型那侧的插件工具/技能就没了,没人知道为什么)。
+    //   现在显式留痕;真正"能从面板读到"的诊断行走 `listPlugins`(同一次失败在那里
+    //   落成带 `problems` 的行,两处消费同一条 README 语义:读不了 ≠ 不存在)。
+    if (isUnreadableProbe(probe)) {
+      console.warn(
+        `[plugins] 已启用插件「${name}」的目录读不了(ACL/磁盘错误?),本轮无法投递: ${probe.error.message}`,
+      );
+      continue;
+    }
+    if (probe.kind === "absent") continue;
+    const rootDir = installedRootFrom(probe);
     if (!rootDir) continue;
     try {
       const resolved = findPluginManifest(rootDir);
