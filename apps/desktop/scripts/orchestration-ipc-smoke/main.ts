@@ -608,6 +608,113 @@ writeManifest("smoke-good.json", JSON.stringify(manifestFixture()));
   ]);
 }
 
+// ⑤ ★ **「资料」下拉的候选是资料库大类的现读,不是硬编码。**
+//
+// 用户的原话是「工作流节点的『收到什么 / 资料』这一路必须走资料库的统一入口」——
+// 这条下拉就是那个入口的**候选面**。判据立在三件事上:
+//   1. 候选跟着 settings 里的 `library.groups` **当场变**(改表 → 下一次 `workflow.nodeTypes`
+//      就看得见,不需要重启,更不是写死的 `docs/templates`);
+//   2. 用户清空大类表 → 候选退回**出厂两组**(这是 `contextOptions` 的兜底,理由见
+//      `nodeTypes.ts` 那段:一个选项都没有会让 `validateNodeTypeManifest` 把
+//      mcode.main / mcode.agent / mcode.conversation 三个内置类型**整个摘掉**);
+//   3. 「读失败」与「空表」**不是一回事**:读失败(库还没就绪 / settings 读抛)必须
+//      把问题**报出来**(`workflow.nodeTypes` 抛错 → 渲染端那栏显示原因),而不是
+//      伪装成"没有资料"让用户以为自己的大类丢了。
+//
+// 走的是真 handler:改 `SettingRepo`,再按 channel 调 `loadNodeTypes()` 那一份——
+// 中间没有一层是这里复刻的。
+console.log("\n「资料」下拉的候选(资料库大类现读)");
+{
+  const { loadLibraryGroups, resetLibraryGroupsCacheForTest } = await import(
+    "@main/library/groupRegistry.js"
+  );
+  const { LIBRARY_GROUPS_SETTING_KEY, DEFAULT_LIBRARY_GROUPS } = await import("@contracts/libraryTypes");
+  const { SettingRepo } = await import("@main/store/repositories.js");
+
+  /** 当前 `workflow.nodeTypes` 返回里,给定内置类型的「资料」候选。 */
+  const contextOptionsOf = async (typeId: string): Promise<string[]> => {
+    const c = (await callAsync(IPC.WORKFLOW_NODE_TYPES)) as {
+      entries: Array<{ id: string; manifest: NodeTypeManifest }>;
+    };
+    const spec = c.entries.find((e) => e.id === typeId)?.manifest.params.find((p) => p.key === "context");
+    return (spec?.options ?? []).map((o) => o.value);
+  };
+
+  // 起点:把表恢复到出厂两份,先证明**正向**(改表后候选真的跟着变)。
+  SettingRepo.set(
+    LIBRARY_GROUPS_SETTING_KEY,
+    JSON.stringify([
+      { id: "docs", name: "文档" },
+      { id: "my-readings", name: "我的精读" },
+    ]),
+  );
+  resetLibraryGroupsCacheForTest();
+  same("★ 改了大类表 → 「资料」候选跟着变(现读,不是硬编码)", await contextOptionsOf("mcode.agent"), [
+    "docs",
+    "my-readings",
+  ]);
+  same("主代理与对话节点共用同一份候选", await contextOptionsOf("mcode.main"), ["docs", "my-readings"]);
+
+  // 清空表 → 退回出厂两组(而不是整批内置类型消失)。
+  SettingRepo.set(LIBRARY_GROUPS_SETTING_KEY, JSON.stringify([]));
+  resetLibraryGroupsCacheForTest();
+  same(
+    "★ 用户清空大类表 → 候选退回出厂两组(内置类型不能被摘掉)",
+    await contextOptionsOf("mcode.agent"),
+    DEFAULT_LIBRARY_GROUPS.map((g) => g.id),
+  );
+  eq(
+    "空表下三个内置模型节点仍然在注册表里",
+    (await contextOptionsOf("mcode.main")).length > 0 &&
+      (await contextOptionsOf("mcode.conversation")).length > 0,
+    true,
+  );
+
+  // **读失败 ≠ 空表。** 把 settings 读注入成抛错(库还没就绪 / 磁盘坏),再强制重读——
+  // 必须**抛出来**让调用方/界面看见原因,绝不能悄悄退回出厂两组当"没有资料"。
+  // (退回出厂两组只在"表合法但为空"与"从没存过"两种情形下成立;读失败是第三种。)
+  const storage = await import("@main/store/repositories.js");
+  const originalGet = storage.SettingRepo.get;
+  let threw = false;
+  let message = "";
+  resetLibraryGroupsCacheForTest();
+  try {
+    (storage.SettingRepo as { get: (k: string) => string | null }).get = (key: string) => {
+      if (key === LIBRARY_GROUPS_SETTING_KEY) throw new Error("disk I/O error (injected)");
+      return originalGet(key);
+    };
+    try {
+      loadLibraryGroups();
+    } catch (err) {
+      threw = true;
+      message = (err as Error).message;
+    }
+    check(
+      "★ 大类表读失败 → 显式抛出(不伪装成『没有资料』)",
+      threw && message.includes("injected"),
+      { threw, message },
+    );
+    // `workflow.nodeTypes` 这条入口也必须把同一件事报出来,而不是返回一份缺了三个节点
+    // 类型的"正常"目录 —— 那会让用户以为自己的内置类型"莫名其妙没了"。
+    let catalogThrew = false;
+    try {
+      await callAsync(IPC.WORKFLOW_NODE_TYPES);
+    } catch {
+      catalogThrew = true;
+    }
+    check("★ 读失败沿 `workflow.nodeTypes` 冒到界面(不是静默少类型)", catalogThrew);
+  } finally {
+    (storage.SettingRepo as { get: (k: string) => string | null }).get = originalGet;
+    SettingRepo.set(LIBRARY_GROUPS_SETTING_KEY, JSON.stringify(DEFAULT_LIBRARY_GROUPS));
+    resetLibraryGroupsCacheForTest();
+  }
+  same(
+    "恢复之后候选取回出厂值",
+    await contextOptionsOf("mcode.agent"),
+    DEFAULT_LIBRARY_GROUPS.map((g) => g.id),
+  );
+}
+
 /* ──────────────── 5. 坏定义:显式报出来,不静默跳过 ──────────────── */
 
 console.log("\n坏定义 · 是报出来还是当没看见");

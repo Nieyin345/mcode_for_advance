@@ -7,6 +7,8 @@
 import { attachmentPathsIn, contextKindOfPath, contextRefOfPath, inheritContextLines, type ContextLine, type ContextLookup } from "@main/orchestration/contextInherit.js";
 import { runWorkflow } from "@main/orchestration/scheduler.js";
 import { composeNodePrompt } from "@main/orchestration/schedulerPrompt.js";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { renderTemplate, type NodeTemplateScope, type NodeTemplateNode } from "@contracts/nodeTemplate";
 import { checkOutput, describeOutputVars, outputExampleOf, outputVarsFor, referenceableOutputsOf, validateOutputRules } from "@contracts/outputConstraint";
@@ -384,6 +386,98 @@ eq(
     .join("|"),
   `templates/item@${libManifest("li_两边都要.md")}`,
 );
+
+/* ── 围栏与 `file.readFile` 同一道(大小写 + 物理目的地) ──
+ *
+ * 节点勾了「资料」之后,这一步能不能拿到它,判的是 `resolveRef` 那道 `pathWithin`。
+ * 同一份清单文件,**读**那一侧(`file.readFile` / `files.ts`)用的也是 `pathWithin`
+ * —— 两条判据必须是同一道,否则会出现"读得到、但不算这一步的资料"(静默少给模型
+ * 东西)。下面用真文件系统造两个只有共享围栏才分得清的形态:
+ *
+ *   1. **大小写写法不同**:Windows/macOS 是大小写不敏感文件系统,盘符或目录大小写
+ *      与库里存的写法不同时仍是同一份文件。从前这里手写 `startsWith`(大小写敏感),
+ *      读者接受、认类目拒绝 —— 节点一份资料都拿不到且不报错。
+ *   2. **collections 里的 junction 指向库外**:字面在库内、物理在库外。读取那道闸
+ *      拒(物理越界),认类目也必须拒 —— 否则节点会"拿到"一份根本读不了的清单路径,
+ *      而提示词里写着"用读文件的工具打开"。
+ *
+ * ⚠️ 只在**真临时目录**里造:junction 在 Windows 上就是 `symlinkSync(..., "junction")`,
+ * macOS/Linux 退成目录 symlink;两者都由 `pathWithin` 的 `realpathSync.native` 跟进。
+ */
+console.log("\n资料清单的围栏(与 file.readFile 同一道)");
+{
+  const box = mkdtempSync(join(tmpdir(), "mcode-ctx-fence-"));
+  try {
+    const lib = join(box, "library");
+    const collections = join(lib, "collections");
+    const outside = join(box, "outside");
+    mkdirSync(collections, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    const manifest = join(collections, "group-docs.md");
+    writeFileSync(manifest, "# docs\n", "utf8");
+
+    const realLookup: ContextLookup = {
+      libraryRoot: lib,
+      groupsOfCollection: () => undefined,
+      groupsOfItem: () => undefined,
+    };
+    const accepted = (p: string): number => inheritContextLines(`@${p}`, ["docs"], realLookup).length;
+
+    eq("原样大小写 → 认得出(正向对照,证明后面两条不是被别的闸挡的)", accepted(manifest), 1);
+
+    // ① 大小写写法不同(只在不敏感平台成立;Linux 上是两份不同文件,跳过并明说)。
+    if (process.platform === "win32" || process.platform === "darwin") {
+      // 翻转**目录**的大小写(盘符那一段在 macOS 上不存在,统一翻 library 目录)。
+      const swapped = join(
+        process.platform === "win32" ? lib.replace(/^[A-Za-z]:/, (d) => d.toUpperCase() === d ? d.toLowerCase() : d.toUpperCase()) : lib.toUpperCase(),
+        "collections",
+        "group-docs.md",
+      );
+      eq("★ 大小写写法不同 → 仍认得出(与 file.readFile 同一道围栏)", accepted(swapped), 1);
+    } else {
+      console.log("  skip 大小写围栏:Linux 文件系统大小写敏感,这条不适用");
+    }
+
+    // ② collections 里指向库外的 junction/symlink —— 物理目的地不在库内,必须拒。
+    let linkMade = false;
+    try {
+      symlinkSync(outside, join(collections, "group-escape.md"), "junction");
+      linkMade = true;
+    } catch {
+      try {
+        symlinkSync(outside, join(collections, "group-escape.md"), "dir");
+        linkMade = true;
+      } catch {
+        linkMade = false;
+      }
+    }
+    if (linkMade) {
+      // ⚠️ 这里**不能**用 `accepted()`(它按 `wanted` 过滤):字面在 `collections/` 下的
+      // 越界链接会被手写成 `group-escape` 这个"类目",`wanted: ["docs"]` 一过就变成 0 ——
+      // 红线落在过滤上而不是围栏上,变异验证会假绿。问的是**不带 wanted** 的类目判定:
+      // 物理目的地越界的路径必须**一个类目都认不出来**。
+      eq(
+        "★ collections 里指向库外的 junction → 认不出任何类目(物理目的地越界)",
+        contextKindOfPath(join(collections, "group-escape.md"), realLookup),
+        null,
+      );
+    } else {
+      console.log("  skip 物理围栏:这个账户建不了 junction/symlink");
+    }
+
+    // ③ 普通文件(不是清单)照旧拒 —— 与 ①② 同一条 `pathWithin`,只是文件名不认。
+    writeFileSync(join(collections, "notes.txt"), "x", "utf8");
+    eq("collections 下的非清单文件 → 认不出来", accepted(join(collections, "notes.txt")), 0);
+  } finally {
+    // junction 与目录一起删;Windows 上先删链接再删根,免得 rmSync 递归时跟进去。
+    try {
+      rmSync(join(box, "library", "collections", "group-escape.md"), { force: true });
+    } catch {
+      /* 没建出来或已删 */
+    }
+    rmSync(box, { recursive: true, force: true });
+  }
+}
 
 /* ────────────────────── 变量({{...}}) ────────────────────── */
 

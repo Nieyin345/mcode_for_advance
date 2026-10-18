@@ -56,3 +56,15 @@ export function saveLibraryGroups(groups: unknown): { ok: true } | { ok: false; 
 export function groupPromptOf(groupId: string): string | undefined {
   return loadLibraryGroups().find((g) => g.id === groupId)?.prompt;
 }
+
+/**
+ * 丢掉缓存,让下一次 `loadLibraryGroups()` 重新读 settings。
+ *
+ * 只给无头回归用(同 `suppress.ts` 的 `resetSuppressCacheForTest`):缓存是成品行为
+ * (设置改动走 `saveLibraryGroups` 时同步刷新,见上),而"首次读就失败"与"缓存之后
+ * 表被外部改坏"这两种状态,**只有在缓存为空时才观测得到** —— 不重置的话,测试里
+ * 注入一次读失败会静默命中旧缓存,断言假绿。
+ */
+export function resetLibraryGroupsCacheForTest(): void {
+  groupsCache = null;
+}

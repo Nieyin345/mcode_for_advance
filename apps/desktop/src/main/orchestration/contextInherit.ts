@@ -30,10 +30,18 @@
  * 调度器那个 `RunPorts` 是同一条:**可验证** —— "一条路径属于哪个类目"是这段代码里
  * 最容易写错的地方(前缀比较、`kind-` 前缀、id 是不透明的),而只有不依赖 electron
  * 和数据库,它才喂得进无头脚本(见 `scripts/scheduler-smoke`)。
+ *
+ * 唯一复用的"主进程"代码是 `@main/lib/realPathWithin` 的 {@link pathWithin} —— 它
+ * 本来就是**零依赖叶子**(只 import node:path / node:fs),专为无头 bundle 抽出来的。
+ * 用它是为了和 `file.readFile` / `files.ts` / `fileSnapshot` 共用**同一道围栏**:
+ * 大小写不敏感平台(Windows/macOS)上折叠大小写,并且比物理目的地(junction/symlink)
+ * 而不只是字面前缀。从前这里自己写了一遍 `startsWith`,两条判据会分家 —— 同一份
+ * 库清单,读取那道闸认、认类目这道闸不认,节点就静默地一份资料都拿不到。
  */
-import { basename, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import type { NodeContextKind } from "@contracts/nodeType";
 import { TEMPLATES_LIBRARY_GROUP_ID } from "@contracts/libraryTypes";
+import { pathWithin } from "@main/lib/realPathWithin.js";
 
 /** 外面要给的东西:库根,加上两次"这条清单挂着哪个大类"。 */
 export interface ContextLookup {
@@ -60,9 +68,15 @@ export interface ContextLookup {
   groupsOfItem(itemId: string): string[] | undefined;
 }
 
-/** 把路径统一成 `/` 分隔,好在两套前缀之间比较(`relative` 在 Windows 上给的是 `\`)。 */
+/** 把路径统一成 `/` 分隔,好在两套前缀之间比较(`relative` 在 Windows 上给的是 `\`)。
+ *  大小写不敏感平台折叠大小写 —— 与围栏(`pathWithin`)同一条规矩:不折叠的话,
+ *  同一份清单的两种大小写写法会被当成两条,提示词里就多出一行重复资料。 */
 function slash(path: string): string {
-  return resolve(path).split(sep).join("/");
+  const abs = resolve(path);
+  const folded = process.platform === "win32" || process.platform === "darwin"
+    ? abs.toLowerCase()
+    : abs;
+  return folded.split(sep).join("/");
 }
 
 /**
@@ -195,10 +209,17 @@ function purposeOfKinds(kinds: readonly string[]): ContextPurpose {
  * `return null`** —— 它认不出来,于是这一步少一份资料,而不是拿到一份错类目的。
  */
 function resolveRef(path: string, lookup: ContextLookup): Omit<ContextRef, "kind"> & { kinds: string[] } | null {
-  const abs = slash(path);
-
-  const libPrefix = `${slash(lookup.libraryRoot)}/collections/`;
-  if (abs.startsWith(libPrefix)) {
+  // **和 `file.readFile` 同一道围栏**(见文件头):字面在 `collections/` 下 **且** 物理
+  // 目的地也在里面。大小写不敏感平台折叠大小写;库里的 junction 指向库外时**不认**
+  // —— 那不是一份库清单,按"认不出来什么都不给"处理。
+  //
+  // ⚠️ 从前这里手写 `abs.startsWith(libPrefix)`。两条判据会分家:Windows/macOS 上
+  // 盘符或目录大小写与库里存的写法不同(Monaco/LSP 会给出小写盘符,附件路径也可能
+  // 来自另一台设备的写法)时,读取那道闸接受、这道闸不认 —— 节点勾了「资料」却一份
+  // 都拿不到,而**没有任何地方报错**(少给模型东西是静默失败里最难查的一种)。
+  const abs = resolve(path);
+  const collectionsDir = join(lookup.libraryRoot, "collections");
+  if (pathWithin(collectionsDir, abs)) {
     const stem = basename(abs).replace(/\.md$/i, "");
     // 大类清单:`group-<大类 id>.md`,整个大类一次挂上。**这一条先试** —— 一个分类的
     // id 恰好叫 `group-docs` 的概率远小于把整大类清单误当成某个分类。
