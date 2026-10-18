@@ -3173,12 +3173,20 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ planId: string; abandoned: boolean // 这次调用是否真的把一条**未放弃**的计划标记为放弃(`false` = 记录不存在或已放弃)。 }"
  },
  {
+  "method": "unattendedPlans.health",
+  "channel": "unattendedPlans:health",
+  "doc": "【MC-029 剩余项】**只读**存档健康度(query 档、Agent 可读):回答无人值守计划存档是 `ok` / `corrupt`(内容读不懂)/ `unreadable`(文件在但读不了),带可读原因与恢复提示。 只回诊断,不列计划、不执行任何一步。",
+  "input": "(无参数)",
+  "inputFull": "(无参数)",
+  "output": "{ archiveHealth: UnattendedArchiveHealth }"
+ },
+ {
   "method": "unattendedPlans.list",
   "channel": "unattendedPlans:list",
   "doc": "【MC-059 残余 ④】**列出等待批准 / 待执行**的无人值守计划(跨重启)—— 重启后从计划存档 + `GrantStore` 现取现算,每条给三态(`waiting_approval` / `resumable` / `completed`)。**只读**,一步不执行。与 `unattended.*` 同一条纪律:**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ plans: PendingUnattendedPlanWire[] }"
+  "output": "{ plans: PendingUnattendedPlanWire[]; archiveHealth: UnattendedArchiveHealth // 【MC-029 剩余项】存档健康度。`list` 在坏档时**仍然拒绝**(抛 `archive_corrupt`, 因为它是 blocked 的治理视图、且空列表在这里是一句谎… }"
  },
  {
   "method": "unattendedPlans.resume",
@@ -3467,6 +3475,30 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "(无参数)",
   "inputFull": "(无参数)",
   "output": "{ engines: WorkflowEngineStatusView[] }"
+ },
+ {
+  "method": "workflowEngine.nodeInstall",
+  "channel": "workflowEngine:nodeInstall",
+  "doc": "【ARC-006 Gate E】安装一个节点包（本地目录）。审批是**硬前置**：主进程向渲染端 推送审批卡并等待应答，超时/无渲染端一律拒绝。**输入里没有 `approvedByUser`**。",
+  "input": "{ sourceDir: string // 本地目录（已下载/解包后的节点包）。; meta: { version: string; source: string; name: string; sha256: string; license: string; capabilities: string[]; } }",
+  "inputFull": "{ sourceDir: string // 本地目录（已下载/解包后的节点包）。; meta: { version: string; source: string; name: string; sha256: string; license: string; capabilities: string[]; } }",
+  "output": "{ ok: true; node: WorkflowEngineNodeView } | { ok: false; reason: string; code: 'invalid' | 'approval_denied' | 'approval_unavailable' | 'duplicate' | 'install_failed' }"
+ },
+ {
+  "method": "workflowEngine.nodesList",
+  "channel": "workflowEngine:nodesList",
+  "doc": "【ARC-006 Gate E】列出已安装的第三方节点包（只读）。清单损坏时 `corrupt` 带原因， `nodes` 为空 —— 不把\"读不懂\"伪装成\"没装”。",
+  "input": "(无参数)",
+  "inputFull": "(无参数)",
+  "output": "{ corrupt: string | null // 清单损坏时的显式诊断（`null` = 清单可读）。; nodes: WorkflowEngineNodeView[] }"
+ },
+ {
+  "method": "workflowEngine.respondNodeInstallApproval",
+  "channel": "workflowEngine:respondNodeInstallApproval",
+  "doc": "【ARC-006 Gate E】渲染端对安装审批请求的应答（只回答那一次 `requestId`）。",
+  "input": "{ requestId: string; approved: boolean // 用户是否批准**这一次**安装。 }",
+  "inputFull": "{ requestId: string; approved: boolean // 用户是否批准**这一次**安装。 }",
+  "output": "{ ok: boolean }"
  },
  {
   "method": "workflowEngine.start",

@@ -13,6 +13,9 @@ import {
 } from "./documentView.js";
 import type { DocViewOpenInput, DocViewOpenPathInput, DocViewBoundsInput, DocViewCloseInput, DocViewResult, DocViewListResult } from "./documentView.js";
 import {
+  WORKFLOW_ENGINE_NODES_LIST_CHANNEL,
+  WORKFLOW_ENGINE_NODE_INSTALL_CHANNEL,
+  WORKFLOW_ENGINE_NODE_INSTALL_RESPOND_CHANNEL,
   WORKFLOW_ENGINE_START_CHANNEL,
   WORKFLOW_ENGINE_STOP_CHANNEL,
   WORKFLOW_ENGINE_STATUS_CHANNEL,
@@ -24,8 +27,12 @@ import type {
   WorkflowEngineStatusInput,
   WorkflowEngineResult,
   WorkflowEngineListResult,
+  WorkflowEngineNodesListResult,
+  WorkflowEngineNodeInstallInput,
+  WorkflowEngineNodeInstallResult,
+  WorkflowEngineNodeInstallRespondInput,
 } from "./workflowEngine.js";
-import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult, UnattendedListIpcResult, UnattendedResumeInput, UnattendedAbandonInput, UnattendedAbandonIpcResult } from "./unattended.js";
+import type { UnattendedApproveInput, UnattendedApproveResult, UnattendedRunInput, UnattendedRunIpcResult, UnattendedListIpcResult, UnattendedHealthIpcResult, UnattendedResumeInput, UnattendedAbandonInput, UnattendedAbandonIpcResult } from "./unattended.js";
 import {
   EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET_CHANNEL,
@@ -1169,12 +1176,24 @@ export interface RpcMap {
   "workflowEngine.status": (input: WorkflowEngineStatusInput) => Promise<WorkflowEngineResult>;
   /** 【ARC-006 WF-INT】列出所有已知引擎的状态。 */
   "workflowEngine.list": () => Promise<WorkflowEngineListResult>;
+  /** 【ARC-006 Gate E】列出已安装的第三方节点包（只读）。清单损坏时 `corrupt` 带原因，
+   *  `nodes` 为空 —— 不把"读不懂"伪装成"没装”。 */
+  "workflowEngine.nodesList": () => Promise<WorkflowEngineNodesListResult>;
+  /** 【ARC-006 Gate E】安装一个节点包（本地目录）。审批是**硬前置**：主进程向渲染端
+   *  推送审批卡并等待应答，超时/无渲染端一律拒绝。**输入里没有 `approvedByUser`**。 */
+  "workflowEngine.nodeInstall": (input: WorkflowEngineNodeInstallInput) => Promise<WorkflowEngineNodeInstallResult>;
+  /** 【ARC-006 Gate E】渲染端对安装审批请求的应答（只回答那一次 `requestId`）。 */
+  "workflowEngine.respondNodeInstallApproval": (input: WorkflowEngineNodeInstallRespondInput) => Promise<{ ok: boolean }>;
   /** 【MC-059】**用户签发无人值守任务计划的计划级授权** —— 用户在无人值守计划预览页点「批准」的落点。宿主把一份有界操作序列(`session.create`)铸成一枚绑定目标项目权威路径、签发主体(**写死为 user**)、有效期、次数上限的计划级授权。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(批准主体必须是用户本人);手机端 `webApi.ts` 显式 unsupported。 */
   "unattended.approve": (input: UnattendedApproveInput) => Promise<UnattendedApproveResult>;
   /** 【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。 */
   "unattended.run": (input: UnattendedRunInput) => Promise<UnattendedRunIpcResult>;
   /** 【MC-059 残余 ④】**列出等待批准 / 待执行**的无人值守计划(跨重启)—— 重启后从计划存档 + `GrantStore` 现取现算,每条给三态(`waiting_approval` / `resumable` / `completed`)。**只读**,一步不执行。与 `unattended.*` 同一条纪律:**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。 */
   "unattendedPlans.list": () => Promise<UnattendedListIpcResult>;
+  /** 【MC-029 剩余项】**只读**存档健康度(query 档、Agent 可读):回答无人值守计划存档是
+   *  `ok` / `corrupt`(内容读不懂)/ `unreadable`(文件在但读不了),带可读原因与恢复提示。
+   *  只回诊断,不列计划、不执行任何一步。 */
+  "unattendedPlans.health": () => Promise<UnattendedHealthIpcResult>;
   /** 【MC-059 残余 ④】**续跑**一份等待中的计划 —— 只给 `planId`,正文与授权 id 由宿主从存档 + `GrantStore` 取回(**取不到即拒、一步不建**)。已建成的操作**跳过**(不重复外部副作用)。**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。 */
   "unattendedPlans.resume": (input: UnattendedResumeInput) => Promise<UnattendedRunIpcResult>;
   /** 【MC-059 残余 ④】**明确放弃**一份等待中的计划(不再列出、不再可续跑)。幂等。**只有桌面渲染端够得到它**(agent 侧 blocked、手机端 unsupported)。 */
@@ -2132,6 +2151,12 @@ export const IPC = {
   WORKFLOW_ENGINE_STOP: WORKFLOW_ENGINE_STOP_CHANNEL,
   WORKFLOW_ENGINE_STATUS: WORKFLOW_ENGINE_STATUS_CHANNEL,
   WORKFLOW_ENGINE_LIST: WORKFLOW_ENGINE_LIST_CHANNEL,
+  // 【ARC-006 Gate E】节点包安装：列表只读；安装走审批硬前置；respond 是审批应答。
+  WORKFLOW_ENGINE_NODES_LIST: WORKFLOW_ENGINE_NODES_LIST_CHANNEL,
+  WORKFLOW_ENGINE_NODE_INSTALL: WORKFLOW_ENGINE_NODE_INSTALL_CHANNEL,
+  WORKFLOW_ENGINE_NODE_INSTALL_RESPOND: WORKFLOW_ENGINE_NODE_INSTALL_RESPOND_CHANNEL,
+  /** Main → renderer push:一张节点安装审批卡（渲染端画卡后经上面的 respond 应答）。 */
+  WORKFLOW_ENGINE_NODE_INSTALL_APPROVAL: "workflowEngine:nodeInstallApproval",
   DOCUMENT_VIEW_BOUNDS: DOCUMENT_VIEW_BOUNDS_CHANNEL,
   DOCUMENT_VIEW_SHOW: DOCUMENT_VIEW_SHOW_CHANNEL,
   DOCUMENT_VIEW_HIDE: DOCUMENT_VIEW_HIDE_CHANNEL,
@@ -2141,6 +2166,7 @@ export const IPC = {
   UNATTENDED_APPROVE: "unattended:approve",
   UNATTENDED_RUN: "unattended:run",
   UNATTENDED_PLANS_LIST: "unattendedPlans:list",
+  UNATTENDED_PLANS_HEALTH: "unattendedPlans:health",
   UNATTENDED_PLANS_RESUME: "unattendedPlans:resume",
   UNATTENDED_PLANS_ABANDON: "unattendedPlans:abandon",
   MEMORY_LIST: MEMORY_LIST_CHANNEL,
