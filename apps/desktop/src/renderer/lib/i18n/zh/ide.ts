@@ -467,6 +467,9 @@ export const zh = {
   "ide.modules.completed": "已完成",
   "ide.modules.failed": "失败",
   "ide.modules.cancelled": "已取消",
+  // 【ARC-006 Gate E】升级换执行体 / 卸载时协作式取消运行中的旧任务，变更成功后提示。
+  "ide.modules.changeCancelled": "已取消 {count} 个运行中任务",
+  "ide.modules.changeCancelFailed": "有 {count} 个任务取消失败（详见诊断）",
   "ide.modules.result": "能力调用结果",
   "ide.modules.progress": "任务进度",
   "ide.modules.cancel": "取消任务",

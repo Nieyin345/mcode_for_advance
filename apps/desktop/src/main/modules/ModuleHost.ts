@@ -4,7 +4,7 @@ import {
   ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, ResultSchema, missingCapabilityPermission, actionInvocationRefusal, declaresNetwork, moduleRefusal, moduleRefusalError,
   extensionCapabilityShortName, extensionCapabilityAssignment, MODULE_CAPABILITY_PREFIX,
   type ModuleManifest, type ModuleInvoke, type ModuleResource, type ModuleResult, type ModuleTask,
-  type ModuleReply, type ModuleCatalog, type ModuleTaskRef,
+  type ModuleReply, type ModuleCatalog, type ModuleTaskRef, type ModuleChangeResult,
 } from "@contracts/modules";
 import {
   ModuleCapabilityDescriptorSchema, ModuleWorkflowGrantSchema, classifyModuleWorkflowGrants,
@@ -350,7 +350,7 @@ export class ModuleHost {
     this.mutation = next.then(() => {}, () => {});
     return next;
   }
-  install(raw: unknown): Promise<ModuleCatalog> {
+  install(raw: unknown): Promise<ModuleChangeResult> {
     return this.serializeMutation(async () => {
       const manifest = this.validate(raw);
       if (!manifest.id.startsWith("user.")) throw Error("External IDs must start with user.");
@@ -424,7 +424,7 @@ export class ModuleHost {
       this.commitProgramBindings(manifest.id, prepared);
       this.modules.set(manifest.id, manifest);
       this.reportChange(change);
-      return this.catalog();
+      return { catalog: this.catalog(), cancelledTasks: change.cancelledTasks, cancelFailures: change.cancelFailures };
     });
   }
   /** 【ARC-006 Gate E】**撤掉某模块的全部工作流运行授权**（升级换执行体时调用）。
@@ -486,7 +486,7 @@ export class ModuleHost {
       /* 诊断端点的异常不翻案一次已经落定的变更 */
     }
   }
-  remove(id: string): Promise<ModuleCatalog> {
+  remove(id: string): Promise<ModuleChangeResult> {
     return this.serializeMutation(async () => {
       if (this.builtinIds.has(id)) throw Error("Builtin module cannot be removed");
       if (!this.modules.has(id)) throw Error("Unknown module");
@@ -512,7 +512,7 @@ export class ModuleHost {
       // 与 install 共用同一个 `cancelRunningTasksOf` —— 两处各写一份循环迟早漂移。
       const change = this.cancelRunningTasksOf(id);
       this.reportChange(change);
-      return this.catalog();
+      return { catalog: this.catalog(), cancelledTasks: change.cancelledTasks, cancelFailures: change.cancelFailures };
     });
   }
   /** 【MC-035】贡献引用的**实际注册 id**:内置能力就是清单里写的 id;扩展程序能力则是

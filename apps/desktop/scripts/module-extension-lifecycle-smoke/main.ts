@@ -1015,13 +1015,20 @@ try {
     });
 
     // 健康安装照常(空过守卫)。
-    await slowHost.install(slowManifest());
+    const firstInstall = await slowHost.install(slowManifest());
     eq("前置:带 task 贡献的扩展正常安装", slowHost.catalog().modules.length, 1);
+    // 【ARC-006 Gate E】install 回包 = `{ catalog, cancelledTasks, cancelFailures }`
+    // （IPC 层原样透传；UI 据此提示）。首次安装没有取消任何任务。
+    check("★ install 回包带 catalog / cancelledTasks / cancelFailures(IPC 回传形状)",
+      firstInstall.catalog?.modules.some((m) => m.id === "user.lifecycle") === true
+      && firstInstall.cancelledTasks === 0 && Array.isArray(firstInstall.cancelFailures),
+      firstInstall);
 
     // 无运行中任务时升级:不取消任何东西,也不上报失败。
     outcomeLog.length = 0;
-    await slowHost.install(slowManifest({ version: "2.0.0" }));
+    const quietUpgrade = await slowHost.install(slowManifest({ version: "2.0.0" }));
     eq("★ 无运行中任务时升级:取消数为 0(不误伤,防空过)", outcomeLog.at(-1)?.cancelledTasks, 0);
+    eq("★ 无运行中任务时升级:回包 cancelledTasks 也是 0", quietUpgrade.cancelledTasks ?? null, 0);
 
     // 起一个运行中的 task,再升级 → 必须被取消。
     const started = await slowHost.invoke({
@@ -1033,10 +1040,14 @@ try {
     await delay(20); // 让 run 真的开始、signal 已建立
     check("前置:扩展拿到了任务的 AbortSignal", probe.signal !== null && probe.signal.aborted === false);
     outcomeLog.length = 0;
-    await slowHost.install(slowManifest({
+    const cancelledUpgrade = await slowHost.install(slowManifest({
       version: "3.0.0",
       program: { source: `({ convert: async () => ({ text: "v3" }) })` },
     }));
+    // ★ IPC 回包里的取消数就是 UI 要显示的那个 N（不是只活在 onChanged 诊断里）。
+    eq("★ 升级回包 cancelledTasks = 已取消的运行中任务数", cancelledUpgrade.cancelledTasks ?? null, 1);
+    check("★ 升级回包 cancelFailures 为空(取消没失败)", (cancelledUpgrade.cancelFailures ?? []).length === 0, cancelledUpgrade.cancelFailures);
+    eq("★ 升级回包 catalog 是新版本", cancelledUpgrade.catalog?.modules.find((m) => m.id === "user.lifecycle")?.version, "3.0.0");
     eq("★ 升级时运行中的旧任务被取消(协作式,通过任务自己的 signal)", probe.signal?.aborted, true);
     eq("★ 上报「已取消 N 个运行中任务」", outcomeLog.at(-1)?.cancelledTasks, 1);
     eq("★ 取消后任务状态是 cancelled(不是 completed)", slowHost.task({ moduleId: "user.lifecycle", taskId }).status, "cancelled");
@@ -1055,9 +1066,49 @@ try {
     const secondId = (second as { task?: { id?: string } }).task?.id ?? "";
     await delay(20);
     outcomeLog.length = 0;
-    await slowHost.remove("user.lifecycle");
+    const removed = await slowHost.remove("user.lifecycle");
     eq("★ 卸载时同样取消运行中任务", slowHost.task({ moduleId: "user.lifecycle", taskId: secondId }).status, "cancelled");
     eq("★ 卸载同样上报取消数", outcomeLog.at(-1)?.cancelledTasks, 1);
+    eq("★ 卸载回包 cancelledTasks = 1(UI 可显示)", removed.cancelledTasks ?? null, 1);
+    check("★ 卸载回包 catalog 已不含该模块", removed.catalog?.modules.some((m) => m.id === "user.lifecycle") !== true, removed.catalog);
+  }
+
+  // ── 9g.【ARC-006 Gate E】回包形状与 UI 提示文案(源码级) ──────────────────
+  // IPC 层是**透传**（`ipc/modules.ts` 直接返回 host 的结果），UI 读同一份
+  // `cancelledTasks` / `cancelFailures`。组件级渲染断言依赖可阻塞任务夹具，这里
+  // 把承重判据钉在源码上：漏掉任一端，用户就看不到"已取消 N 个"的提示。
+  {
+    const { readFileSync } = await import("node:fs");
+    const appDir = process.cwd();
+    const repoRoot = appDir.replace(/apps[\\/]desktop$/, "");
+    const ipcSrc = readFileSync(join(appDir, "src/main/ipc/modules.ts"), "utf8");
+    const uiSrc = readFileSync(join(appDir, "src/renderer/components/modules/ModuleSurface.tsx"), "utf8");
+    const zhIde = readFileSync(join(appDir, "src/renderer/lib/i18n/zh/ide.ts"), "utf8");
+    const enIde = readFileSync(join(appDir, "src/renderer/lib/i18n/en/ide.ts"), "utf8");
+    const rpcMap = readFileSync(join(repoRoot, "packages/contracts/src/ipc/rpcMap.ts"), "utf8");
+    const contracts = readFileSync(join(repoRoot, "packages/contracts/src/modules.ts"), "utf8");
+
+    check("★ 契约把变更诊断包成 ModuleChangeResult(catalog + cancelledTasks + cancelFailures)",
+      /export interface ModuleChangeResult \{[\s\S]*?catalog: ModuleCatalog;[\s\S]*?cancelledTasks: number;[\s\S]*?cancelFailures: Array</.test(contracts));
+    check("★ RpcMap 的 modules.install/remove 返回 ModuleChangeResult",
+      /"modules\.install"[\s\S]{0,120}?ModuleChangeResult/.test(rpcMap) && /"modules\.remove"[\s\S]{0,120}?ModuleChangeResult/.test(rpcMap));
+    check("★ IPC handler 原样透传 host 回包(不重新包一层、不丢字段)",
+      /MODULE_INSTALL[\s\S]{0,200}?return \(await getModuleHost\(\)\)\.install\(input\.manifest\)/.test(ipcSrc)
+      && /MODULE_REMOVE[\s\S]{0,200}?return \(await getModuleHost\(\)\)\.remove\(input\.moduleId\)/.test(ipcSrc));
+    check("★ 渲染端 install 成功后把回包交给 reportChange",
+      /const result=await api\.modules\.install\(\{[\s\S]{0,400}?reportChange\(result\)/.test(uiSrc));
+    check("★ 渲染端 remove 成功后把回包交给 reportChange",
+      /const result=await api\.modules\.remove\(\{moduleId:m\.id\}\);reportChange\(result\)/.test(uiSrc));
+    check("★ 取消数 > 0 时弹 toast(用 ide.modules.changeCancelled)",
+      /cancelled>0[\s\S]{0,300}?useToastStore\.getState\(\)\.push\([\s\S]{0,200}?ide\.modules\.changeCancelled/.test(uiSrc));
+    check("★ 取消失败非空时用 ErrorNote 的出口报原因(changeCancelFailed)",
+      /failures\.length>0[\s\S]{0,200}?ide\.modules\.changeCancelFailed/.test(uiSrc));
+    check("★ zh 词典有提示文案且带 {count}",
+      /"ide\.modules\.changeCancelled": "[^"]*\{count\}[^"]*"/.test(zhIde)
+      && /"ide\.modules\.changeCancelFailed": "[^"]*\{count\}[^"]*"/.test(zhIde));
+    check("★ en 词典有同一对键(不是只加中文)",
+      /"ide\.modules\.changeCancelled": "[^"]*\{count\}[^"]*"/.test(enIde)
+      && /"ide\.modules\.changeCancelFailed": "[^"]*\{count\}[^"]*"/.test(enIde));
   }
 
   // ── 10. 权限参数本身:每一条都在,且不给目录 ───────────────────────────

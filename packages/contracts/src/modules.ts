@@ -291,6 +291,21 @@ export interface ModuleCatalog {
   workflowGrantStatus?: ModuleWorkflowGrantStatus;
 }
 
+/** 【ARC-006 Gate E】`modules.install` / `modules.remove` 的回包。
+ *
+ *  包一层对象而不是往 {@link ModuleCatalog} 加字段：`ModuleCatalogSchema` 是 catalog
+ *  通道与冻结契约共用的形状（ipc-parity / 多个套件按它逐字段断言），把变更诊断混进去
+ *  会把「读目录」与「做变更」两种回包绑成同一个形状。这里只扩两条变更通道。
+ *
+ *  - `cancelledTasks`：这次变更取消掉的运行中任务数（升级换执行体 / 卸载时）。
+ *    UI 据此提示「已取消 N 个运行中任务」；0 = 没有任务被取消（不显示提示）。
+ *  - `cancelFailures`：取消失败的任务与原因（不静默；理论上为空，出口为将来保留）。 */
+export interface ModuleChangeResult {
+  catalog: ModuleCatalog;
+  cancelledTasks: number;
+  cancelFailures: Array<{ taskId: string; reason: string }>;
+}
+
 /** This example is used by the import editor, docs and tests; no executable code. */
 export const EXAMPLE_MODULE: ModuleManifest = {
   apiVersion: 1, id: "user.file-report", version: "1.0.0",

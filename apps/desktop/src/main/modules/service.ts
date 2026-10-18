@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { z } from "zod";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
-import { log } from "@main/lib/logger.js";
 import { EXAMPLE_MODULE, ModuleManifestSchema, moduleRefusalError, type ModuleManifest } from "@contracts/modules";
 import { ModuleHost, type ActionApprovalRequest } from "./ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "./fileCapabilities.js";
@@ -76,13 +75,15 @@ async function createHost(): Promise<ModuleHost> {
       verifyPermissionedProgram(source, capabilities, timeoutMs ?? 10_000),
     // 【ARC-006 Gate E】升级换执行体 / 卸载时取消运行中任务的诊断：取消数与非空失败
     // 都落日志（取消失败不静默）。诊断不改变事务结果。
+    // 【ARC-006 Gate E】变更诊断（取消数/失败原因）**不在这里落日志**：`service.ts`
+    // 被多个**无头** smoke bundle，而 `@main/lib/logger.js` 静态依赖 electron 的
+    // `app`（实测：加一行静态导入就让 `module-catalog-smoke` / `module-phase2-security`
+    // / `module-workflow-smoke` 在打包阶段崩掉，动态 import 也一样被 esbuild 跟进）。
+    // 诊断随 `ModuleHost.install/remove` 的**回包**交给 IPC 层与 UI —— 那里在真
+    // Electron 环境里本来就有日志通道，也在本模块的职责之外。
     onChanged: (outcome) => {
-      if (outcome.cancelledTasks > 0) {
-        log.info(`[modules] ${outcome.moduleId}: 已取消 ${outcome.cancelledTasks} 个运行中任务`);
-      }
-      for (const failure of outcome.cancelFailures) {
-        log.warn(`[modules] ${outcome.moduleId}: 取消任务 ${failure.taskId} 失败：${failure.reason}`);
-      }
+      // 保留端口：将来若有纯 Node 的诊断汇聚器（不经 electron），在这里接。
+      void outcome;
     },
     persist:async manifests=>{
       const body=JSON.stringify(manifests,null,2);

@@ -115,8 +115,10 @@ await test('AUTH user install shares the same resource.write gate as builtin adm
     /resource\.write/,
   );
   // 对照:同一份用户清单显式声明 resource.write → install 通过(判定不是无条件拒)。
-  const catalog=await h.install({...EXAMPLE_MODULE,id:'user.action-ok',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.action3'}]});
-  assert.ok(catalog.modules.some(m=>m.id==='user.action-ok'),'user action module admitted with resource.write');
+  // 【ARC-006 Gate E】install/remove 回包是 `ModuleChangeResult`（`{ catalog, cancelledTasks,
+  // cancelFailures }`）—— 目录在 `.catalog` 下；这条同时钉住回包形状本身。
+  const installed=await h.install({...EXAMPLE_MODULE,id:'user.action-ok',permissions:['resource.read','resource.write'],contributions:[{...EXAMPLE_MODULE.contributions[0],capability:'core.test.action3'}]});
+  assert.ok(installed.catalog.modules.some(m=>m.id==='user.action-ok'),'user action module admitted with resource.write');
 });
 // 【MC-060 承重】action 能力的**受控执行宿主**:准入(能不能挂这个能力)在 register/validate 已判,
 // 这条盯的是**执行点**的第二层 —— 一次 action  invocation 必须 ①模块清单持有 resource.write(作用域),

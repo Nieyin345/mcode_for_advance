@@ -450,6 +450,9 @@ export const en = {
   "ide.modules.completed": "Completed",
   "ide.modules.failed": "Failed",
   "ide.modules.cancelled": "Cancelled",
+  // 【ARC-006 Gate E】upgrade/uninstall cancels running tasks cooperatively.
+  "ide.modules.changeCancelled": "{count} running task(s) cancelled",
+  "ide.modules.changeCancelFailed": "{count} task cancellation(s) failed (see diagnostics)",
   "ide.modules.result": "Capability result",
   "ide.modules.progress": "Task progress",
   "ide.modules.cancel": "Cancel task",

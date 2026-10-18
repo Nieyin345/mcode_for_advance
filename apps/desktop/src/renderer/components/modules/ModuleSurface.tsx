@@ -7,6 +7,7 @@ import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.j
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { CapabilityCatalogPanel } from "./CapabilityCatalogPanel.js";
 
@@ -40,6 +41,24 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
     try{await fn();}catch(e){if(alive.current)setError(e instanceof Error?e.message:String(e));}
     finally{busyRef.current=false;if(alive.current)setBusy(false);}
   };
+  /** 【ARC-006 Gate E】安装/升级/卸载的**变更诊断**：取消数 > 0 弹一条 info toast
+   *  （「已取消 N 个运行中任务」—— 用户刚点了升级，需要知道旧任务被停掉）；
+   *  取消失败非空时把原因摆进 `ErrorNote`（不静默）。`t` 来自 `useI18n`，
+   *  组件外的 store 不参与这条路径。 */
+  const reportChange=(result:{cancelledTasks?:number;cancelFailures?:Array<{taskId:string;reason:string}>}|null|undefined)=>{
+    if(!alive.current||!result)return;
+    const cancelled=result.cancelledTasks??0;
+    if(cancelled>0){
+      useToastStore.getState().push({
+        kind:"info",
+        title:t("ide.modules.changeCancelled",{count:cancelled}),
+      });
+    }
+    const failures=result.cancelFailures??[];
+    if(failures.length>0){
+      setError(t("ide.modules.changeCancelFailed",{count:failures.length})+"："+failures.map(f=>f.reason).join("；"));
+    }
+  };
   const invoke=async(module:ModuleManifest,contribution:ModuleContribution,path:string)=>{
     await mutate(async()=>{
       const result=await createModuleClient(api.modules,module.id).invoke(contribution.id,{projectPath,path},crypto.randomUUID());
@@ -49,11 +68,12 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
   const install=async()=>{
     await mutate(async()=>{
       const manifest=ModuleManifestSchema.parse(JSON.parse(draft));
-      await api.modules.install({
+      const result=await api.modules.install({
         manifest,confirmReadAccess:true,
         // 【MC-035】可执行扩展的第二次同意由 UI 的独立勾选框给出;纯声明式模块不传。
         ...(manifest.program!==undefined?{confirmExecutableCode:true as const}:{}),
       });
+      reportChange(result);
       if(alive.current){setConsent(false);setCodeConsent(false);await catalog.refetch();}
     });
   };
@@ -67,7 +87,7 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         {error && <ErrorNote>{error}</ErrorNote>}
         <div className="space-y-2">{catalog.data?.modules.map(m=><div key={m.id} className="flex items-center gap-2 rounded border border-edge p-2 text-sm">
           <span className="flex-1">{text(m.title)} <code className="text-xs text-content-muted">{m.id} · {m.version}</code></span>
-          {!m.id.startsWith("core.") && <Button disabled={busy} onClick={()=>void mutate(async()=>{await api.modules.remove({moduleId:m.id});await catalog.refetch();await history.refetch();})}>{t("ide.modules.remove")}</Button>}
+          {!m.id.startsWith("core.") && <Button disabled={busy} onClick={()=>void mutate(async()=>{const result=await api.modules.remove({moduleId:m.id});reportChange(result);await catalog.refetch();await history.refetch();})}>{t("ide.modules.remove")}</Button>}
         </div>)}</div>
         <CapabilityCatalogPanel catalog={catalog.data} loading={catalog.loading} error={catalog.error} onRetry={()=>void catalog.refetch()}/>
         <label className="block space-y-2 text-sm"><span>{t("ide.modules.manifest")}</span>

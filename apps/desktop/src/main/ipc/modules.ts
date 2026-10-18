@@ -9,6 +9,10 @@ const GrantChangeSchema = ModuleWorkflowGrantSchema.omit({ grantedAt: true });
 
 export function registerModuleHandlers(ipcMain:IpcMain):void {
   ipcMain.handle(IPC.MODULE_CATALOG,async()=> (await getModuleHost()).catalog());
+  // 【ARC-006 Gate E】安装/卸载的回包带**变更诊断**（`cancelledTasks` / `cancelFailures`）：
+  // 升级换执行体或卸载时运行中的旧任务会被协作式取消，UI 据此提示"已取消 N 个运行中
+  // 任务"；取消失败原因原样带回（不静默）。`ModuleHost` 返回的就是这个形状，这一层
+  // 只透传，不再包第二份。
   ipcMain.handle(IPC.MODULE_INSTALL,async(_event,raw:unknown)=>{
     const input=ModuleInstallSchema.parse(raw);return (await getModuleHost()).install(input.manifest);
   });
