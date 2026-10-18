@@ -271,9 +271,67 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
     const raw = readFileSync(join(process.cwd(), "src/main/document/documentViewPreload.ts"), "utf8");
     // 去注释后再查 —— 文件头会**点名**这些能力来说明"不提供"，不能把说明当实现。
     const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-    // 只允许两个 invoke 通道（打开/保存），不暴露任意 IPC。
-    const invokeCount = (src.match(/ipcRenderer\.invoke\(/g) ?? []).length;
-    assert(invokeCount === 2, `ipcRenderer.invoke 出现 ${invokeCount} 次（应恰好打开/保存两条）`);
+
+    /**
+     * 【ARC-007 复审】IPC 白名单，不是写死的条数。
+     *
+     * 从前这里断言「`ipcRenderer.invoke` 恰好出现 2 次」—— 合法的第三条
+     * `saveDocxNew` 一进来就红，而它并不是"页面拿到了裸 ipcRenderer"。复审要求：
+     *
+     *   1. 实际 invoke 用到的 **channel 标识符集合 ⊆ 白名单**（新增不在名单里的
+     *      调用 = 红）；
+     *   2. 白名单**每条都必须至少出现一次**（删掉一条实现 = 红，防空过）；
+     *   3. channel 标识符必须**先声明成字符串常量**（下面解析它的值），所以
+     *      "绕过常量直接 invoke 页面给的字符串" 会因为不是标识符而红。
+     *
+     * 白名单的语义（不是"允许任意 IPC"）：
+     *  - 两条**页面 → 宿主**的写入/读请求：`open-path`、`save`；
+     *  - 两条 slides 编辑（A 方案第一步）：`slides-add-slide`、`slides-edit-text`。
+     *  四条都是**内部通道**：只能被本 preload 调用，不进 `RpcMap` 的 renderer 面，
+     *  页面拿不到 `ipcRenderer` 本身。白名单是**通道级**授权，不是数量授权。
+     */
+    const ALLOWED_INVOKE_CHANNELS = new Set([
+      "mcode:document-view:open-path",
+      "mcode:document-view:save",
+      "mcode:document-view:slides-add-slide",
+      "mcode:document-view:slides-edit-text",
+    ]);
+
+    // 解析本文件里的字符串常量声明：`const NAME = "...";`（含 `as const` 后缀）。
+    const constants = new Map<string, string>();
+    for (const m of src.matchAll(/(?:^|\n)\s*const\s+([A-Z][A-Z0-9_]*)\s*=\s*"([^"]+)"/g)) {
+      constants.set(m[1], m[2]);
+    }
+
+    // 每一条 `ipcRenderer.invoke(<第一个实参>` 的实参。
+    const invokeArgs = [...src.matchAll(/ipcRenderer\.invoke\(\s*([^,)]+)/g)].map((m) => m[1].trim());
+    const usedChannels: string[] = [];
+    const unresolved: string[] = [];
+    for (const arg of invokeArgs) {
+      if (/^[A-Z][A-Z0-9_]*$/.test(arg)) {
+        const value = constants.get(arg);
+        if (value !== undefined) usedChannels.push(value);
+        else unresolved.push(arg);
+      } else {
+        // 字面量 / 表达式 / 页面变量一律不接受：通道必须来自本文件常量。
+        unresolved.push(arg);
+      }
+    }
+    assert(
+      unresolved.length === 0,
+      `invoke 的 channel 必须来自本文件的字符串常量（找不到：${JSON.stringify(unresolved)}）`,
+    );
+    const outsideWhitelist = usedChannels.filter((c) => !ALLOWED_INVOKE_CHANNELS.has(c));
+    assert(
+      outsideWhitelist.length === 0,
+      `invoke 了白名单之外的通道：${JSON.stringify(outsideWhitelist)}（白名单：${JSON.stringify([...ALLOWED_INVOKE_CHANNELS])}）`,
+    );
+    const unusedWhitelist = [...ALLOWED_INVOKE_CHANNELS].filter((c) => !usedChannels.includes(c));
+    assert(
+      unusedWhitelist.length === 0,
+      `白名单里这些通道在 preload 里不存在（删实现或常量漏了）：${JSON.stringify(unusedWhitelist)}`,
+    );
+
     assert(!/exposeInMainWorld\(\s*["'](ipcRenderer|require|process)["']/.test(src), "禁止暴露 ipcRenderer/require/process");
     // 对象字面量里的属性键（`name:` 或 `name(`，行首缩进）—— 注释已剥掉，命中即真实暴露。
     const propertyNames = ["openDocx", "openDocxDecrypt", "setDocPassword", "pickAttachments", "pickImage", "kbList", "aiStream", "setAiSettings", "ipcRenderer", "openPptx", "pickPictureFile", "fontInstallLocal", "fontDownload"];
@@ -281,9 +339,12 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
       const re = new RegExp(`^\\s*${name}\\s*[:(]`, "m");
       assert(!re.test(src), `preload 不得提供 ${name}`);
     }
-    // 打开/保存之外不得再出现第三个 ipcRenderer 用法（on 只允许 menu:command 订阅）。
-    const onCount = (src.match(/ipcRenderer\.on\(/g) ?? []).length;
-    assert(onCount === 1, `ipcRenderer.on 出现 ${onCount} 次（只允许 menu:command 一条）`);
+    // 订阅口只有 menu:command 一条（白名单式：只允许一个 on，且 channel 必须是它）。
+    const onArgs = [...src.matchAll(/ipcRenderer\.on\(\s*([^,)]+)/g)].map((m) => m[1].trim());
+    assert(
+      onArgs.length === 1 && constants.get(onArgs[0]) === "menu:command",
+      `ipcRenderer.on 只允许 menu:command 一条，实际：${JSON.stringify(onArgs.map((a) => constants.get(a) ?? a))}`,
+    );
     // 两个命名空间都必须暴露（docs 读 desktop、slides 读 slidesApi）。
     assert(/exposeInMainWorld\(\s*"desktop"/.test(src), "缺少 window.desktop 暴露");
     assert(/exposeInMainWorld\(\s*"slidesApi"/.test(src), "缺少 window.slidesApi 暴露（slides 页会白屏）");
