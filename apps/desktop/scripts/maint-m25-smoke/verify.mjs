@@ -358,6 +358,120 @@ await withAuditPage(dir,async(page)=>{
     (await page.eval(`window.labCalls.filter(c=>c[0]==='skills.projectOverview').length`))>=3,
     {calls:await page.eval(`window.labCalls.filter(c=>c[0]==='skills.projectOverview')`)});
 
+  /* ───────────── H. SkillPresetsView:读失败不得伪装成「还没有预设」 ───────────── */
+  // 从前 catch → `setPresets([])`,界面画成「还没有预设。」—— 用户以为真的一套都
+  // 没存,可能照着空表去新建、覆盖掉原有预设。判据:错误标题+原因+重试可见,
+  // 空态文案不出现;重试后预设行回来、横幅消失。
+  //
+  // 注意:`api.skills` 在 G 段已被整体替换 —— 这里必须把 presetsList 加到**同一个**
+  // 对象上,不能重新赋一个只有 presetsList 的对象(那会把 projectOverview 抹掉)。
+  await page.eval(`(()=>{
+    window.labApi.skills.presetsList = async () => {
+      window.labCalls.push(['skills.presetsList']);
+      if (window.labMode.presetsList === 'reject') throw new Error('mock-presetsList-rejected');
+      return {presets:[{id:'sp_1',name:'论文项目',skills:['paper-writing'],createdAt:1,updatedAt:1}]};
+    };
+    window.labMode.presetsList = 'ok';
+  })()`);
+
+  // H0 基线:读成功 → 预设行渲染,无错误横幅、无空态。
+  await page.eval(`window.__mount('presets');`);
+  await page.waitFor(`document.getElementById('root').textContent.includes('论文项目')`,5000).catch(()=>{});
+  const prText0 = await page.eval(`document.getElementById('root').textContent`);
+  check('H0 基线:预设读成功时预设行渲染、无错误横幅、无空态',
+    prText0.includes('论文项目') && !prText0.includes('预设读取失败') && !prText0.includes('还没有预设。'),
+    {text:prText0});
+
+  // H1 初始读拒绝(presets 从未到过手 —— 正是"空表伪装"的原现场)。
+  await page.eval(`window.labUnhandled.length=0;window.labMode.presetsList='reject';`);
+  await page.eval(`window.__mount('presets');`);
+  await sleep(450);
+  const prFail = await page.eval(`document.getElementById('root').textContent`);
+  check('H1a ★ 预设读取失败:错误标题与原因对用户可见',
+    prFail.includes('预设读取失败') && prFail.includes('mock-presetsList-rejected'),
+    {text:prFail});
+  check('H1b ★ 预设读取失败:不伪装成「还没有预设。」(空表)',
+    !prFail.includes('还没有预设。') && !prFail.includes('论文项目'), {text:prFail});
+  check('H1c ★ 预设读取失败时给出「重试」钮',
+    await page.eval(`[...document.querySelectorAll('#root button')].some(b=>b.textContent.trim()==='重试')`));
+  check('H1d 预设读取失败不落成未处理 promise 拒绝',
+    (await page.eval('window.labUnhandled.length'))===0,
+    {unhandled:await page.eval('window.labUnhandled')});
+
+  // H2 重试 → 预设行回来、横幅消失。
+  await page.eval(`window.labMode.presetsList='ok';`);
+  await page.eval(`(()=>{const btn=[...document.querySelectorAll('#root button')].find(b=>b.textContent.trim()==='重试');if(btn)btn.click();})()`);
+  await sleep(450);
+  const prOk = await page.eval(`document.getElementById('root').textContent`);
+  check('H2a ★ 点「重试」后预设读到、错误横幅消失',
+    prOk.includes('论文项目') && !prOk.includes('预设读取失败'), {text:prOk});
+  check('H2b 重试确实重新发了 skills.presetsList 请求',
+    (await page.eval(`window.labCalls.filter(c=>c[0]==='skills.presetsList').length`))>=3,
+    {calls:await page.eval(`window.labCalls.filter(c=>c[0]==='skills.presetsList')`)});
+
+  /* ───────────── I. HooksPanel:执行记录读失败不得伪装成「还没有执行过」 ───────────── */
+  // `hooks.runs` 一次拒绝同时决定两栏(本次启动执行 / 落盘审计)。从前 catch 静默
+  // 吞掉,两栏都画成各自的空态 —— 「读不出来」与「一次没跑」长得一样。
+  await page.eval(`(()=>{
+    window.labApi.hooks = {
+      list: async () => {
+        window.labCalls.push(['hooks.list']);
+        return {hooks:[],problems:[],fileHealth:'valid'};
+      },
+      runs: async () => {
+        window.labCalls.push(['hooks.runs']);
+        if (window.labMode.hooksRuns === 'reject') throw new Error('mock-hooks-runs-rejected');
+        if (window.labMode.hooksRuns === 'one') return {runs:[{
+          runId:'r1',hookId:'h1',hookName:'格式检查',event:'turn.files',sessionId:'s1',
+          sessionKind:'chat',startedAt:1750000000000,status:'ok',
+        }],audit:[],auditError:null};
+        return {runs:[],audit:[],auditError:null};
+      },
+    };
+    window.labMode.hooksRuns = 'empty';
+  })()`);
+
+  // I0 基线:读成功且真的没有记录 → 两栏各自的空态、无错误横幅。
+  await page.eval(`window.__mount('hooks');`);
+  await page.waitFor(`document.getElementById('root').textContent.includes('本次启动以来的执行')`,5000).catch(()=>{});
+  await sleep(300);
+  const hkText0 = await page.eval(`document.getElementById('root').textContent`);
+  check('I0 基线:执行记录读成功时两栏各自空态、无错误横幅',
+    hkText0.includes('本次启动以来还没有执行过') && hkText0.includes('还没有钩子被执行过')
+      && !hkText0.includes('执行记录读不出来'),
+    {text:hkText0});
+
+  // I1 runs 拒绝 → 两栏都不得画成「没执行过」;原因与重试可见。
+  await page.eval(`window.labUnhandled.length=0;window.labMode.hooksRuns='reject';`);
+  await page.eval(`window.__mount('hooks');`);
+  await sleep(450);
+  const hkFail = await page.eval(`document.getElementById('root').textContent`);
+  check('I1a ★ 执行记录读取失败:错误标题与原因对用户可见',
+    hkFail.includes('执行记录读不出来') && hkFail.includes('mock-hooks-runs-rejected'),
+    {text:hkFail});
+  check('I1b ★ 执行记录读取失败:两栏都不伪装成「没执行过」(空态)',
+    !hkFail.includes('本次启动以来还没有执行过') && !hkFail.includes('还没有钩子被执行过'),
+    {text:hkFail});
+  check('I1c ★ 执行记录读取失败时给出「重试」钮',
+    await page.eval(`[...document.querySelectorAll('#root button')].some(b=>b.textContent.trim()==='重试')`));
+  check('I1d 执行记录读取失败不落成未处理 promise 拒绝',
+    (await page.eval('window.labUnhandled.length'))===0,
+    {unhandled:await page.eval('window.labUnhandled')});
+
+  // I2 点「重试」→ 恢复成功(带回一条真实记录),错误消失、记录行出现。
+  // 断言真实记录行而不是空态文案 —— 否则修复前"没有重试钮、但空态本来就在"也会绿。
+  await page.eval(`window.labMode.hooksRuns='one';`);
+  await page.eval(`(()=>{const btn=[...document.querySelectorAll('#root button')].find(b=>b.textContent.trim()==='重试');if(btn)btn.click();})()`);
+  await sleep(450);
+  const hkOk = await page.eval(`document.getElementById('root').textContent`);
+  check('I2a ★ 点「重试」后执行记录读到、错误横幅消失',
+    !hkOk.includes('执行记录读不出来') && !hkOk.includes('本次启动以来还没有执行过')
+      && hkOk.includes('格式检查'),
+    {text:hkOk});
+  check('I2b 重试确实重新发了 hooks.runs 请求',
+    (await page.eval(`window.labCalls.filter(c=>c[0]==='hooks.runs').length`))>=3,
+    {calls:await page.eval(`window.labCalls.filter(c=>c[0]==='hooks.runs')`)});
+
   /* ───────────── C. GeneralPanel:阈值输入的草稿保持 ───────────── */
   await page.eval(`window.__mount('general')`);
   await page.waitFor(`document.getElementById('setting-paste-threshold')`);

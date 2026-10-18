@@ -17,6 +17,13 @@
  *
  * `<通用库>/.skill-presets.json`（dot-prefix，技能扫描会跳过它）。**不存进任何项目
  * 里** —— 预设是跨项目的配置，放进项目就变成"每个项目一套预设"，那正是要消除的重复。
+ *
+ * ## 读失败不许画成「还没有预设」
+ *
+ * 从前 `catch { setPresets([]) }` —— 一次读取失败与"真的一套都没存"在界面上长得
+ * 一模一样，用户会照着空表去新建、覆盖掉自己原有的预设（硬规矩 3：坏东西显式报出来）。
+ * 现在失败进 `loadError` → 错误横幅（标题 + 原因 + 重试）；只有"读成功且为空"才显示
+ * 空态。做法与 `SkillProjectOverview` / `VoicePanel` 同一套。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SkillInfo, SkillPreset } from "@contracts/ipc";
@@ -24,7 +31,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, ErrorNote } from "@renderer/components/ui/index.js";
 import {
   IconPlus,
   IconSparkles,
@@ -45,6 +52,9 @@ export function SkillPresetsView({
 }) {
   const { t } = useI18n();
   const [presets, setPresets] = useState<SkillPreset[] | null>(null);
+  /** 读失败的原因。从前 catch → `setPresets([])`,界面画成「还没有预设。」——
+   *  用户以为真的一套都没存,实际是一次读取失败(硬规矩 3:坏东西显式报出来)。 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<SkillPreset | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [pendingDelete, setPendingDelete] = useState<SkillPreset | null>(null);
@@ -53,9 +63,11 @@ export function SkillPresetsView({
     try {
       const res = await api.skills.presetsList();
       setPresets(res.presets);
-    } catch {
-      // 读不到就空表 —— 预设是附加能力，坏了不该让这一页打不开（同主进程那边的取舍）。
-      setPresets([]);
+      setLoadError(null);
+    } catch (err: unknown) {
+      // 保留上一次成功的表(一次瞬时失败不该把它抹掉);没有表 = 状态未知,
+      // 由下面的错误横幅替代空态。
+      setLoadError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
@@ -73,7 +85,18 @@ export function SkillPresetsView({
   };
 
   if (presets === null) {
-    return (
+    return loadError !== null ? (
+      <ErrorNote
+        title={t("settings.skills.presetsLoadFailed")}
+        action={
+          <Button size="sm" variant="ghost" onClick={() => void load()}>
+            {t("common.retry")}
+          </Button>
+        }
+      >
+        {loadError}
+      </ErrorNote>
+    ) : (
       <div className="px-2 py-3 text-[0.8571em] text-content-subtle">{t("common.loading")}</div>
     );
   }
@@ -99,7 +122,23 @@ export function SkillPresetsView({
         </button>
       </div>
 
-      {presets.length === 0 && !editing && (
+      {/* 刷新失败但旧表还在:横幅说原因,表保持可读(重试就是下面那颗按钮)。 */}
+      {loadError !== null && (
+        <div className="px-3 pt-2">
+          <ErrorNote
+            title={t("settings.skills.presetsLoadFailed")}
+            action={
+              <Button size="sm" variant="ghost" onClick={() => void load()}>
+                {t("common.retry")}
+              </Button>
+            }
+          >
+            {loadError}
+          </ErrorNote>
+        </div>
+      )}
+
+      {presets.length === 0 && !editing && loadError === null && (
         <div className="px-3 py-4 text-center text-[0.8571em] text-content-subtle">
           {t("settings.skills.presetEmpty")}
         </div>

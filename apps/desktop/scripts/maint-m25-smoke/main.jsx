@@ -7,6 +7,8 @@ import {VoicePanel} from '@renderer/components/settings/VoicePanel.js';
 import {LspLanguagesPanel} from '@renderer/components/settings/LspLanguagesPanel.js';
 import {RemoteControlPanel} from '@renderer/components/settings/RemoteControlPanel.js';
 import {SkillProjectOverview} from '@renderer/components/settings/SkillProjectOverview.js';
+import {SkillPresetsView} from '@renderer/components/settings/SkillPresetsView.js';
+import {HooksPanel} from '@renderer/components/settings/HooksPanel.js';
 import {useSessionStore} from '@renderer/stores/sessionStore.js';
 
 window.labStore=useSessionStore;
@@ -32,10 +34,12 @@ useSessionStore.setState({locale:'zh',runtimes:[rt('claude',true),rt('codex',fal
 
 const host=document.getElementById('root');
 let root=null;
+const librarySkills=[{name:'paper-writing',description:'',source:'global'}];
+const mountFor=name=>name==='general'?<GeneralPanel/>:name==='dataroot'?<DataRootPanel/>:name==='voice'?<VoicePanel/>:name==='lsp'?<LspLanguagesPanel/>:name==='remote'?<RemoteControlPanel onError={(msg)=>{window.labRcErrors=(window.labRcErrors||[]).concat(msg);}}/>:name==='overview'?<SkillProjectOverview refreshKey={0}/>:name==='presets'?<SkillPresetsView librarySkills={librarySkills} onCopyPreset={()=>{}}/>:name==='hooks'?<HooksPanel/>:<RuntimesPanel/>;
 window.__mount=(name)=>{
   if(root)root.unmount();
   root=createRoot(host);
-  root.render(name==='general'?<GeneralPanel/>:name==='dataroot'?<DataRootPanel/>:name==='voice'?<VoicePanel/>:name==='lsp'?<LspLanguagesPanel/>:name==='remote'?<RemoteControlPanel onError={(msg)=>{window.labRcErrors=(window.labRcErrors||[]).concat(msg);}}/>:name==='overview'?<SkillProjectOverview refreshKey={0}/>:<RuntimesPanel/>);
+  root.render(mountFor(name));
 };
 window.__mount('runtimes');
 window.__ready=true;

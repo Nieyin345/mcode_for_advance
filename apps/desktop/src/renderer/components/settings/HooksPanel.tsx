@@ -157,6 +157,9 @@ export function HooksPanel() {
   /** 重建成功后的备份路径 —— 显式给用户看一眼(「你的原件在这里」)。 */
   const [rebuildBackup, setRebuildBackup] = useState<string | null>(null);
   const [runs, setRuns] = useState<HookRun[]>([]);
+  /** 读「本次启动以来的执行」失败的原因。从前 catch 静默吞掉,runs 停在 `[]` ——
+   *  一次读取失败与「一次都没跑过」在界面上长得一模一样(硬规矩 3)。 */
+  const [runsError, setRunsError] = useState<string | null>(null);
   /** 【MC-061】落盘审计(跨重启活着;MC-010 起两种来源都落)—— 与 `runs` 那份内存环是两栏。 */
   const [audit, setAudit] = useState<HookAuditEntry[]>([]);
   /** 【MC-010 第四轮复审】审计读取失败的原因。「一次没执行」与「读不出来」必须**分开呈现**
@@ -204,8 +207,11 @@ export function HooksPanel() {
       setAudit(res.audit ?? []);
       // 【MC-010】主进程读审计失败时把原因带出来(旧 preload 没有这个字段 → undefined → null)。
       setAuditError(res.auditError ?? null);
-    } catch {
-      // 记录拉不到不影响编辑 —— 它只是排错用的窗口。
+      setRunsError(null);
+    } catch (err) {
+      // 记录拉不到不影响编辑 —— 但**不能画成「还没有执行过」**:那是在替一次读取
+      // 失败撒谎。原因显式报在记录栏里,「刷新记录」就是重试。
+      setRunsError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
@@ -464,9 +470,22 @@ export function HooksPanel() {
         <ListPane
           title={t("settings.hooks.runsTitle")}
           count={runs.length}
-          isEmpty={runs.length === 0}
+          isEmpty={runs.length === 0 && runsError === null}
           empty={t("settings.hooks.runsEmpty")}
         >
+          {/* 读不出来 ≠ 没执行过。原因与重试(「刷新记录」同一入口)都摆在这一栏里。 */}
+          {runsError !== null && (
+            <div className="rounded bg-danger/10 px-1.5 py-1 text-[0.7857em] text-danger" title={runsError}>
+              <div>{t("settings.hooks.runsReadError", { message: runsError })}</div>
+              <button
+                type="button"
+                onClick={() => void loadRuns()}
+                className="mt-0.5 rounded border border-danger/40 px-1.5 py-0.5 hover:bg-danger/10"
+              >
+                {t("common.retry")}
+              </button>
+            </div>
+          )}
           {runs.map((run) => (
             <RunRow
               key={run.runId}
@@ -482,12 +501,19 @@ export function HooksPanel() {
         <ListPane
           title={t("settings.hooks.auditTitle")}
           count={audit.length}
-          isEmpty={audit.length === 0 && auditError === null}
+          isEmpty={audit.length === 0 && auditError === null && runsError === null}
           empty={t("settings.hooks.auditEmpty")}
         >
           {auditError !== null && (
             <div className="rounded bg-danger/10 px-1.5 py-1 text-[0.7857em] text-danger" title={auditError}>
               {t("settings.hooks.auditReadError", { message: auditError })}
+            </div>
+          )}
+          {/* 整个 `hooks.runs` 都拒绝了:审计这一栏同样拿不到东西 —— 不许画成
+              「还没有钩子被执行过」,与左边那一栏共用同一句错误。 */}
+          {runsError !== null && auditError === null && (
+            <div className="rounded bg-danger/10 px-1.5 py-1 text-[0.7857em] text-danger" title={runsError}>
+              {t("settings.hooks.auditReadError", { message: runsError })}
             </div>
           )}
           {audit.map((entry) => (

@@ -1070,6 +1070,7 @@ export const zh = {
   "settings.skills.presetNamePh": "如:论文项目",
   "settings.skills.presetSkills": "这套包含的技能",
   "settings.skills.presetEmpty": "还没有预设。",
+  "settings.skills.presetsLoadFailed": "预设读取失败",
   "settings.skills.presetSave": "保存",
   "settings.skills.presetCancel": "取消",
   "settings.skills.presetDelete": "删除预设",
@@ -1612,6 +1613,7 @@ export const zh = {
 
   "settings.hooks.runsTitle": "本次启动以来的执行",
   "settings.hooks.runsEmpty": "本次启动以来还没有执行过（执行记录只保存在内存里，重启后清空）。",
+  "settings.hooks.runsReadError": "执行记录读不出来了（不是「没执行过」）：{message}",
   "settings.hooks.auditTitle": "落盘审计（跨重启保留）",
   "settings.hooks.auditEmpty": "还没有钩子被执行过（这一栏跨重启保留；你手写的钩子与插件带来的钩子都在这里）。",
   "settings.hooks.auditSourceUser": "我手写的钩子",

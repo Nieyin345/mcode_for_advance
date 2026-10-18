@@ -1066,6 +1066,7 @@ export const en = {
   "settings.skills.presetNamePh": "e.g. Paper project",
   "settings.skills.presetSkills": "Skills in this preset",
   "settings.skills.presetEmpty": "No presets yet.",
+  "settings.skills.presetsLoadFailed": "Failed to read presets",
   "settings.skills.presetSave": "Save",
   "settings.skills.presetCancel": "Cancel",
   "settings.skills.presetDelete": "Delete preset",
@@ -1615,6 +1616,7 @@ export const en = {
 
   "settings.hooks.runsTitle": "Runs since launch",
   "settings.hooks.runsEmpty": "Nothing has run since launch (run history is kept in memory and cleared on restart).",
+  "settings.hooks.runsReadError": "The run log can't be read (this is not \"nothing ran\"): {message}",
   "settings.hooks.auditTitle": "Audit log (kept across restarts)",
   "settings.hooks.auditEmpty": "No hooks have run yet (kept across restarts; both your own hooks and plugin hooks land here).",
   "settings.hooks.auditSourceUser": "My own hook",
