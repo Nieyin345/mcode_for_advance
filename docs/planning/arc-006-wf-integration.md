@@ -67,10 +67,48 @@ Node-RED 的 HTTP-in 端点发一个请求：
 - 结果（HTTP 响应）成为节点产出，交给下游。
 
 ### 桥 2：Node-RED → Mcode（流里调用 Mcode 能力）
-Node-RED 流里的一个节点调用 Mcode 的 `app_api_call`（经本地回环 + 一次性令牌）：
-- Mcode 侧新增一个**仅回环**的 HTTP 端点，只接受 Node-RED 运行时进程的令牌；
-- 端点背后就是现有的 `invokeAppTool` —— 同一套策略/审批/账本，不另开通道；
-- 危险操作（`danger`/`blocked`）仍要真人审批，**Node-RED 不能替用户点**。
+
+**方案修订（2026-10-18，实现前定稿）**：**不再新开回环 HTTP 端点**。
+
+原方案想在 Mcode 侧加一个「仅回环 + 一次性令牌」的 HTTP 端点，背后接
+`invokeAppTool`。复核后否掉，理由三条：
+
+1. **审批需要会话上下文**：`invokeAppTool(name, args, sessionId, ctx)` 的审批走
+   `ctx.requestApproval` —— 那是**某个 Agent 回合**的通道。引擎进程没有回合，
+   新端点要么伪造一个 `ProviderContext`（等于绕过审批的真实性），要么把危险操作
+   降级成"无审批执行"。两条都不可接受。
+2. **多一条网络面 = 多一份要审计的鉴权**：一次性令牌要生成、轮换、防重放、防同机
+   其它进程窃取。而这些事 MCP 面**已经做完了**。
+3. **MCP 面本来就是给"外部工具"用的**：用户装一个 MCP server 是为了让 Agent 调到它；
+   反过来也一样 —— 引擎要调 Mcode，最自然的位置是让引擎的流去调**它自己的** MCP
+   客户端，而不是让宿主再开一个洞。
+
+**⚠️ 进一步核实（同日）**：`mcode-app` 是 **Claude SDK 的进程内 server**
+（`buildAppMcpServer` 用 `createSdkMcpServer` 构造，不监听任何端口/stdio），
+**外部进程连不上它**。所以「让 Node-RED 指向 mcode-app」在当前形态下不成立。
+
+可行的落法是**新增一个 stdio MCP server**（与 `genoffice mcp` 同一种形态）：
+`mcode-host-mcp` —— 一个 `ELECTRON_RUN_AS_NODE=1` 起的小进程，它把请求通过
+**宿主已有的本地 IPC/回环**转给主进程的 `invokeAppTool`，并把审批请求**转回
+宿主 UI 弹卡**（人在看 Mcode 窗口，卡弹在那儿）。这才是真正"同一套审批"。
+
+即便如此，它的能力面必须与 Agent 完全一致（同一份 `appMcpTools()` 表），
+不多一个方法。于是：
+
+- **同一套策略/审批/账本**，一行都不用新写；
+- **危险操作仍要真人审批** —— 审批卡弹在 Mcode 里，引擎不能替用户点；
+- 引擎侧没有"额外能力"：它能做的事与 Agent 完全一致，不多不少。
+
+**宿主需要做的**只有一件：把 `mcode-app` 的启动参数（命令/args/env）以用户可复制的
+形式显示在引擎面板里，让用户配进 Node-RED 的 MCP 客户端节点。这不需要新契约、
+不需要新通道，**也不扩大能力面**。
+
+**验证方式**：无头套件验「新 server 的工具表就是 `appMcpTools()` 的同一份」
+「危险档仍要求审批通道，没有通道即 fail-closed」；真端到端（Node-RED 流真调 Mcode）
+留 U1。
+
+**当前状态**：这个 stdio server **尚未实现**。桥 2 因此仍处于设计阶段，
+NR4 未完成。
 
 ### 桥 3：共享事件（可选，后做）
 Node-RED 的 webhook/定时器事件推给 Mcode 的自动化触发器（`automationRunner`），
