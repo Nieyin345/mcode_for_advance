@@ -48,8 +48,25 @@ const officeNodes = officeAst.statements.filter(node =>
   ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
     ts.isIdentifier(d.name) && officeNames.includes(d.name.text)));
 assert.equal(officeNodes.length, officeNames.length, "Production Office classifier boundaries");
+// 【ARC-007】文档种类判据已收口到 `@contracts/documentKind`（`fileEditorKinds.ts`
+// 现在只调 `documentKindOf`）。这一套要执行**真分类器**，所以把那两个纯函数也按
+// AST 边界读进来一起转译 —— 不读就会在沙箱里报 `documentKindOf is not defined`
+// （2026-10-18 实测：32 条断言里 31 条红，全栽在这一句）。
+const kindPath = join(desktop, "../../packages/contracts/src/documentKind.ts");
+const kindSource = readFileSync(kindPath, "utf8");
+const kindAst = ts.createSourceFile(kindPath, kindSource, ts.ScriptTarget.Latest, true);
+const kindFnNames = ["documentExtension", "documentKindOf"];
+const kindSetNames = ["OFFICE_EDITABLE", "OFFICE_VIEW_ONLY", "IMAGE", "UNSUPPORTED", "HTML", "MARKDOWN"];
+const kindNodes = kindAst.statements.filter(node =>
+  (ts.isFunctionDeclaration(node) && kindFnNames.includes(node.name?.text)) ||
+  (ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
+    ts.isIdentifier(d.name) && kindSetNames.includes(d.name.text))));
+assert.equal(kindNodes.length, kindFnNames.length + kindSetNames.length,
+  "Production documentKind boundaries (2 functions + 6 sets)");
+
 const code = ts.transpileModule([
   ...officeNodes.map(n => n.getText(officeAst)),
+  ...kindNodes.map(n => n.getText(kindAst)),
   ...selected.map(n => n.getText(ast)),
   ...selectedKinds.map(n => n.getText(kindsAst)),
 ].join("\n"), {
@@ -78,6 +95,11 @@ const env = {
   resolveShortcut: () => null,
   acceleratorToDisplayString: value => value,
   cn: (...args) => args.filter(x => typeof x === "string").join(" "),
+  // 【ARC-007】FileEditor 现在用 `useRpc` 读 document.capabilities（决定是否给出
+  // GenOffice 视图）。这一套只验路由/工具栏，不验数据读取，所以给一个"永远没有数据"
+  // 的桩 —— 与"CLI 未就绪"的真实首帧一致，路由判定不受影响。
+  useRpc: () => ({ data: undefined, loading: false, error: null, refetch: async () => {} }),
+  api: new Proxy({}, { get: () => () => Promise.resolve(undefined) }),
   EMPTY_NAV: [],
 };
 env.useSessionStore.getState = () => state;

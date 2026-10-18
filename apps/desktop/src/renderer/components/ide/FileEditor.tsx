@@ -117,6 +117,10 @@ export function FileEditor({
    * 项目里为这个文件选了 genoffice 时才用；默认仍是 OnlyOffice（旧引擎在替换验收前
    * 保持可靠回退，台账"未完成不得默认启用"）。能力不可用时按钮不出现。
    */
+  // ⚠️ `pid` 必须先于任何引用它的 hook 求值 —— 下面 useRpc 的 selector 与
+  // viewModePref 都读它。放在后面会在首次渲染抛 TDZ（"Cannot access 'pid'
+  // before initialization"），markdown-mode-smoke 的沙箱正是这样抓到的。
+  const pid = useSessionStore((s) => s.activeProjectId);
   const genoffice = useRpc(() => api.document.capabilities(), [], { enabled: office, toastOnError: false });
   const genofficeReady = genoffice.data?.cli.available === true;
   const viewModePref = useSessionStore((s) =>
@@ -128,7 +132,6 @@ export function FileEditor({
     : isPdfFile(filePath)
       ? "preview"
       : "edit";
-  const pid = useSessionStore((s) => s.activeProjectId);
   const viewMode = useSessionStore((s) =>
     pid ? s.ideFileViewModeByProject[pid]?.[filePath] ?? defaultMode : defaultMode,
   );
