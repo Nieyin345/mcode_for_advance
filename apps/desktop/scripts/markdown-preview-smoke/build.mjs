@@ -18,7 +18,26 @@ await esbuild.build({entryPoints:[join(dir,'main.tsx')],bundle:true,platform:'br
 }}]});
 // Keep the actual Crepe CSS. Only layout for the host's Tailwind-based picker
 // is supplied here; this test does not bundle or launch the whole application.
-writeFileSync(join(dir,'app.css'),(existsSync(join(dir,'bundle.css'))?readFileSync(join(dir,'bundle.css'),'utf8'):'')+`
+//
+// 【MC-055】聊天/工作区只读预览走真 `chat/Markdown`（react-markdown），它的表格
+// 尺寸是 **Tailwind 任意值类**（`[width:max-content] [min-width:100%]`、
+// `max-w-[32ch]`）—— 不编译这些类，聊天 fixture 量到的计算宽度就是假的。
+// 只编译 `@tailwind utilities;`（不含 preflight/base）：Crepe 的既有布局断言
+// 依赖 bundle.css 的原样级联，不能被 base 重置污染。
+const chatUtilitiesInput = join(dir, 'chat-utilities.css');
+writeFileSync(chatUtilitiesInput, '@tailwind utilities;\n');
+const chatConfigPath = join(dir, 'tailwind.chat.config.cjs');
+writeFileSync(chatConfigPath, readFileSync(join(desktop, 'tailwind.config.js'), 'utf8')
+  .replace('export default', 'module.exports =')
+  .replace('content: ["./src/renderer/**/*.{ts,tsx,html}"]',
+    'content: ' + JSON.stringify([join(desktop, 'src/renderer/components/chat/Markdown.tsx').replaceAll('\\', '/')])));
+const chatCssPath = join(dir, 'chat-utilities.out.css');
+const { spawnSync } = await import('node:child_process');
+const tw = spawnSync(process.execPath, [pkg('tailwindcss@', 'tailwindcss/lib/cli.js'),
+  '-c', chatConfigPath, '-i', chatUtilitiesInput, '-o', chatCssPath], { cwd: desktop, encoding: 'utf8', timeout: 30000 });
+if (tw.status !== 0) throw new Error('chat utilities tailwind failed: ' + (tw.stderr ?? ''));
+const chatUtilities = existsSync(chatCssPath) ? readFileSync(chatCssPath, 'utf8') : '';
+writeFileSync(join(dir,'app.css'),(existsSync(join(dir,'bundle.css'))?readFileSync(join(dir,'bundle.css'),'utf8'):'')+chatUtilities+`
 html,body,#root{height:100%;margin:0}body{font-family:sans-serif}.flex{display:flex}.flex-col{flex-direction:column}.flex-1{flex:1}.h-full{height:100%}.min-h-0{min-height:0}.overflow-auto{overflow:auto}.relative{position:relative}.absolute{position:absolute}.pointer-events-none{pointer-events:none}.border{border:1px solid #ccc}.rounded-lg{border-radius:8px}.bg-surface{background:white}.w-full{width:100%}.text-left{text-align:left}.overflow-y-auto{overflow-y:auto}.z-50{z-index:50}.milkdown{min-height:100%;--crepe-color-background:#fff;--crepe-color-on-background:#222}.quote-fixture{height:680px;width:850px;border:1px solid #aaa;margin:50px}.quote-fixture button{cursor:pointer}.quote-fixture .mcode-milkdown{height:100%}.mcode-milkdown .editor{min-height:300px}
 `);
 await import(pathToFileURL(join(dir,'verify.mjs')).href);

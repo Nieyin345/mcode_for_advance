@@ -23,7 +23,9 @@ const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.S
 const kindsPath = join(desktop, "src/renderer/components/ide/fileEditorKinds.ts");
 const kindsSource = readFileSync(kindsPath, "utf8");
 const kindsAst = ts.createSourceFile(kindsPath, kindsSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const functions = ["FileEditor", "EditorToolbar", "isMarkdown", "isPdfFile", "isImage", "isUnsupported"];
+// 【ARC-005】`FileEditor` 调用的分类器也要按 AST 边界执行 —— 漏一个就是
+// `canPreviewHtml is not defined` 整片红（HTML 预览入口片引入后真发生过）。
+const functions = ["FileEditor", "EditorToolbar", "isMarkdown", "isPdfFile", "isImage", "isUnsupported", "canPreviewHtml", "htmlPreviewDecision"];
 const selected = ast.statements.filter(node =>
   ts.isFunctionDeclaration(node) && functions.includes(node.name?.text) ||
   ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
