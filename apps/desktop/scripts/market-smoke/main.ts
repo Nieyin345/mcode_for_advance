@@ -20,6 +20,7 @@ import {
   removeSkillMarket,
   skillMarketBundle,
   skillMarketsCorrupt,
+  refreshSkillMarket,
 } from "@main/lib/skillMarket.js";
 import { parseGithubSkillIndex } from "@main/lib/githubSkillCatalog.js";
 import { defaultSkillsRoot, parseSkillFrontmatter } from "@main/lib/skillEngines.js";
@@ -417,6 +418,75 @@ await test("技能索引损坏时的报错是给用户看的中文", () => {
     assert.equal(res.ok, true, res.error);
     const ids = JSON.parse(stubRepo.get(KEY)!).map((s: { id: string }) => s.id);
     assert.ok(ids.includes("seed") && ids.includes("newcomer"), `★ 并发新增的 newcomer 必须还在:${ids}`);
+    raceReset();
+  });
+
+
+  /* MC-037 同族时序缺口：刷新在网络 await 之后不可复活已删除的自定义市场，
+   * 也不能把旧来源的 fetchedAt 写给同名新来源。此处操作完全隔离 home 和假 fetch。 */
+  await test("MC-037 刷新并发：网络期间删除的自定义来源不得复活", async () => {
+    const file = path.join(homedir(), ".mcode", "skill-markets", "markets.json");
+    const name = "mc037-race-removed";
+    const rec = { name, source: { kind: "git", ref: "https://github.com/mc037/race" }, addedAt: "old" };
+    writeFileSync(file, JSON.stringify({ version: 1, markets: [rec] }), "utf8");
+    raceHook = () => {
+      // 另一窗口完成了删除：这份记录已经明确不在盘上。
+      writeFileSync(file, JSON.stringify({ version: 1, markets: [] }), "utf8");
+    };
+    const result = await refreshSkillMarket(name);
+    assert.equal(result.ok, false, "网络窗口内市场已删除，旧 refresh 必须报告冲突");
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).markets, [], "旧 refresh 不得把用户已删除的来源重新加回");
+    assert.equal(existsSync(path.join(homedir(), ".mcode", "skill-markets", name)), false,
+      "刷新在网络窗口发现删除后，不得重新落地旧缓存目录");
+    raceReset();
+  });
+
+  await test("MC-037 刷新并发：同名新来源不得被旧来源刷新冒充成功", async () => {
+    const file = path.join(homedir(), ".mcode", "skill-markets", "markets.json");
+    const name = "mc037-race-replaced";
+    const oldRec = { name, source: { kind: "git", ref: "https://github.com/mc037/race" }, addedAt: "old" };
+    const newRec = { name, source: { kind: "local", ref: path.join(out, "replacement") }, addedAt: "new" };
+    writeFileSync(file, JSON.stringify({ version: 1, markets: [oldRec] }), "utf8");
+    raceHook = () => writeFileSync(file, JSON.stringify({ version: 1, markets: [newRec] }), "utf8");
+    const result = await refreshSkillMarket(name);
+    assert.equal(result.ok, false, "同名替换不能将旧 Git 网络结果归属到本地新来源");
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).markets, [newRec], "替换后的来源元数据逐字段保持原值");
+    assert.equal(existsSync(path.join(homedir(), ".mcode", "skill-markets", name)), false,
+      "网络完成后已换成 local 来源，不得偷偷覆盖同名缓存");
+    raceReset();
+  });
+
+  await test("MC-037 刷新正控：来源身份不变时 fetchedAt 正常更新", async () => {
+    const file = path.join(homedir(), ".mcode", "skill-markets", "markets.json");
+    const rec = { name: "mc037-race-stable", source: { kind: "git", ref: "https://github.com/mc037/race" }, addedAt: "stable" };
+    writeFileSync(file, JSON.stringify({ version: 1, markets: [rec] }), "utf8");
+    raceReset();
+    const result = await refreshSkillMarket(rec.name);
+    assert.equal(result.ok, true, result.error);
+    const onDisk = JSON.parse(readFileSync(file, "utf8")).markets;
+    assert.equal(onDisk.length, 1);
+    assert.equal(onDisk[0].source.ref, rec.source.ref);
+    assert.ok(typeof onDisk[0].fetchedAt === "string" && !Number.isNaN(Date.parse(onDisk[0].fetchedAt)),
+      "正常刷新仍然写回更新时间（不能靠全部拒绝使红例变绿）");
+  });
+
+
+  await test("MC-037 添加并发：别人新建同名来源时缓存不得被旧请求覆盖/删除", async () => {
+    const root = path.join(homedir(), ".mcode", "skill-markets");
+    const file = path.join(root, "markets.json");
+    const name = "mc037-race";
+    const dest = path.join(root, name);
+    mkdirSync(dest, { recursive: true });
+    const sentinel = path.join(dest, "owner-sentinel.txt");
+    writeFileSync(sentinel, "other-window owns this cache", "utf8");
+    writeFileSync(file, JSON.stringify({ version: 1, markets: [] }), "utf8");
+    const another = { name, source: { kind: "local", ref: path.join(out, "newcomer-dir") }, addedAt: "other-window" };
+    raceHook = () => writeFileSync(file, JSON.stringify({ version: 1, markets: [another] }), "utf8");
+    const res = await addSkillMarket({ kind: "git", ref: "https://github.com/mc037/race" });
+    assert.equal(res.ok, false, "同名来源必须拒绝，不可冒充安装完成");
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).markets, [another], "并行加入的来源应保留");
+    assert.equal(readFileSync(sentinel, "utf8"), "other-window owns this cache",
+      "旧添加不得覆盖/删除并行来源拥有的同名缓存");
     raceReset();
   });
 

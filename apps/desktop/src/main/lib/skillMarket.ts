@@ -280,10 +280,17 @@ export async function listSkillMarkets(): Promise<SkillMarketState[]> {
 
 /** Replace an index only after a complete successful metadata fetch. Legacy
  * checkout caches remain readable until the first successful refresh. */
-async function fetchGitCatalog(rec: MarketRecord, progress?: MarketProgressSink): Promise<void> {
+async function fetchGitCatalog(
+  rec: MarketRecord,
+  progress?: MarketProgressSink,
+  beforePromote?: () => void,
+): Promise<void> {
   let previous: GithubSkillIndex | null = null;
   try { previous = cachedGithubIndex(rec); } catch { /* refresh replaces a damaged index */ }
   const index = await fetchGithubSkillIndex(rec.source.ref, rec.name, progress, previous ?? undefined);
+  // 刷新网络请求可能耗时很久；调用方在缓存目录被替换之前可再次验证
+  // 来源是否仍属于这次刷新，避免已删除/同名换源者的旧索引覆盖新缓存。
+  beforePromote?.();
   const root = skillMarketsRoot();
   await fs.mkdir(root, { recursive: true });
   const staging = path.join(root, `.index-${randomUUID()}`);
@@ -335,12 +342,20 @@ export async function addSkillMarket(input: {
     }
     const rec: MarketRecord = { name, source: { kind: input.kind, ref }, addedAt: new Date().toISOString() };
     if (rec.source.kind === "git") {
-      await fetchGitCatalog(rec, progress);
+      await fetchGitCatalog(rec, progress, () => {
+        // 网络请求结束但缓存尚未提升时，检查是否有另一窗口抢先注册了同名源。
+        // 不能先覆盖对方缓存，再在记录冲突分支把这个同名目录删掉。
+        const current = readRecordsState();
+        if (current.kind === "ok" && current.records.some((r) => r.name === name)) {
+          throw new Error(`同名市场已存在:${name}(添加期间由其他窗口创建)`);
+        }
+      });
       rec.fetchedAt = new Date().toISOString();
     }
     progress?.({ phase: "scan", message: "扫描技能目录 / Scanning skill catalog", elapsedMs: 0 });
     if ((await scanCatalog(rec)).length === 0) {
-      if (rec.source.kind === "git") await fs.rm(catalogDir(rec), { recursive: true, force: true }).catch(() => {});
+      // 放弃添加时不按公开 name 盲删缓存：并行窗口可能已经将同名目录归属给
+      // 新来源。少量孤立缓存留待带身份校验的垃圾回收，优先保护别人的字节。
       return { ok: false, error: "里面没有找到任何 SKILL.md —— 它不是技能仓库" };
     }
     // 【MC-037】写回前**重读**记录:fetch/scan 的 await 窗口内记录可能被并发
@@ -349,8 +364,8 @@ export async function addSkillMarket(input: {
     const fresh = freshRecordsForWrite();
     if (!fresh.ok) return fresh;
     if (fresh.records.some((r) => r.name === name)) {
-      // 窗口内已有人建了同名市场 —— 不覆盖别人的记录。
-      if (rec.source.kind === "git") await fs.rm(catalogDir(rec), { recursive: true, force: true }).catch(() => {});
+      // 这里仍做第二次检查；两次检查之间若有人建了同名源，拒绝覆盖记录。
+      // 不能 rm(catalogDir) —— 此时同名缓存的归属已不可信。
       return { ok: false, error: `同名市场已存在:${name}(记录在添加期间被其他操作更新)` };
     }
     // 与原落盘语义一致:内置市场只在内存里合并,不随这次写落盘。
@@ -387,7 +402,17 @@ export async function refreshSkillMarket(name: string, progress?: MarketProgress
     return existsSync(catalogDir(rec)) ? { ok: true } : { ok: false, error: `目录不存在:${rec.source.ref}` };
   }
   try {
-    await fetchGitCatalog(rec, progress);
+    await fetchGitCatalog(rec, progress, () => {
+      const current = readRecordsState();
+      // 坏档由下方 freshRecordsForWrite() 以 corrupt:true 的原有合同处理；
+      // 健康表/缺失表则先拒绝已经删除或身份改变的来源，缓存也不能偷换。
+      if (current.kind === "corrupt") return;
+      const sameName = current.kind === "ok" ? current.records.find((r) => r.name === rec.name) : undefined;
+      if (!sameName && !rec.builtin) throw new Error(`市场 ${name} 在刷新期间已被移除，请重新打开市场列表`);
+      if (sameName && (
+        sameName.source.kind !== rec.source.kind || sameName.source.ref !== rec.source.ref || sameName.addedAt !== rec.addedAt
+      )) throw new Error(`市场 ${name} 在刷新期间已被替换，请重新打开市场列表`);
+    });
     // 【MC-037】写回前重读:刷新是长操作,窗口内记录可能被改写/砸坏。
     // 从前这里用 `readRecords()`(损坏时 = [])当基准,坏档会被 fetchedAt 回写覆盖。
     const fresh = freshRecordsForWrite();
@@ -395,8 +420,26 @@ export async function refreshSkillMarket(name: string, progress?: MarketProgress
     const records = fresh.records;
     const fetchedAt = new Date().toISOString();
     const idx = records.findIndex((r) => r.name === name);
-    if (idx >= 0) records[idx] = { ...records[idx], fetchedAt };
-    else records.push({ ...rec, addedAt: rec.addedAt || fetchedAt, fetchedAt });
+    // 【MC-037 后续时序】刷新完成前，另一窗口可能已删除/替换该来源。
+    // 不能把旧的网络结果重新写成被用户删除的自定义市场，更不能给同名的新市场
+    // 标记一次从未执行过的刷新。新装机内置市场没有落盘记录属于正常初态，
+    // 只有这种内置记录允许首次写入 fetchedAt。
+    if (idx < 0) {
+      if (!rec.builtin) {
+        return { ok: false, error: `市场 ${name} 在刷新期间已被移除，请重新打开市场列表` };
+      }
+      records.push({ ...rec, addedAt: rec.addedAt || fetchedAt, fetchedAt });
+    } else {
+      const current = records[idx];
+      if (
+        current.source.kind !== rec.source.kind ||
+        current.source.ref !== rec.source.ref ||
+        current.addedAt !== rec.addedAt
+      ) {
+        return { ok: false, error: `市场 ${name} 在刷新期间已被替换，请重新打开市场列表` };
+      }
+      records[idx] = { ...current, fetchedAt };
+    }
     await writeRecords(records);
     return { ok: true };
   } catch (err) {
