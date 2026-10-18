@@ -244,6 +244,74 @@ equal("disable returns no listening port", disabledStatus.port, 0);
   settingsStore.set("publicMcp.retentionAudit", "");
 }
 
+/* ── ★ MC-034 验收条件「失败释放」:释放器抛错必须如实分类,不谎报成功、不冒用 no-releaser ──
+ *
+ * 台账验收条件点名要模拟「失败释放」。从前 `releaseOwnerResources` 在释放器抛错时返回
+ * `reason: "no-releaser"` —— 运维看到它会去查"释放器接没接上",实际该查的是"接了但杀不掉";
+ * 而且它与真正的 no-releaser 混在一起,**无法从返回值区分**。这里钉:
+ *  ① 失败报 `release-failed`(不是 released,也不是 no-releaser);
+ *  ② 归属记录**不回收**(下次还能再试),`evicted` 里的原始凭据也**不能**被抹掉;
+ *  ③ 失败后把释放器换成能成功的 → 同一 owner 第二次能真的释放并留 `released` 审计,
+ *     且审计里的 `credentialId` 仍是**原始凭据** —— 这就是「忙 owner 的凭据身份直到资源
+ *     安全释放都可溯源」的终态(MC-034 的保证跨过失败重试)。 */
+{
+  const {
+    issueClientSession,
+    rememberSyntheticOwner,
+    pruneOrphanedOwners,
+    releaseOwnerResources,
+    registerOwnerWorkProbe,
+    registerOwnerResourceReleaser,
+    registerRetentionAuditSink,
+    __setMaxIssuedForTest,
+    __trackedOwnerCount,
+    __resetPublicClientSessions,
+  } = await import("../../src/main/providers/bridge/publicClientSessions.js");
+
+  __resetPublicClientSessions();
+  __setMaxIssuedForTest(1);
+  const owner = issueClientSession("cred-fail-release");
+  rememberSyntheticOwner("sess_fail_release", owner);
+  const offProbe = registerOwnerWorkProbe((id) => id === owner); // 恒忙,确保它被受控保留
+  for (let i = 0; i < 3; i += 1) issueClientSession(`cred-fail-churn-${i}`); // 真淘汰 owner
+  const keptBusy = pruneOrphanedOwners().keptBusyDetails.find((k) => k.ownerId === owner);
+  equal("★ MC-034·失败释放(前置):忙 owner 被保留且凭据可溯源", keptBusy?.credentialId, "cred-fail-release");
+
+  const auditEvents: Array<{ kind: string; credentialId: string | null }> = [];
+  const offSink = registerRetentionAuditSink((e) => {
+    if (e.kind === "released") auditEvents.push({ kind: e.kind, credentialId: e.credentialId });
+  });
+  // 第一个释放器:抛错(模拟进程杀不掉 / SSH 关闭异常)。
+  const offFailing = registerOwnerResourceReleaser(() => {
+    throw new Error("fixture: terminator failed");
+  });
+  const failed = releaseOwnerResources(owner);
+  equal("★ MC-034·失败释放:报 release-failed(不谎报 released)", failed.reason, "release-failed");
+  equal("★ MC-034·失败释放:released=false", failed.released, false);
+  equal("★ MC-034·失败释放:失败不冒用 no-releaser(两种原因必须可分)", failed.reason !== "no-releaser", true);
+  equal("★ MC-034·失败释放:归属不回收(下次还能再试)", __trackedOwnerCount(), 1);
+  equal("★ MC-034·失败释放:失败时不发 released 审计(不假装释放了)", auditEvents.length, 0);
+  // 凭据映射也必须还在 —— 失败后重新问一次 probe/审计面。
+  equal(
+    "★ MC-034·失败释放:失败后原始凭据仍可溯源(evicted 未被动过)",
+    pruneOrphanedOwners().keptBusyDetails.find((k) => k.ownerId === owner)?.credentialId,
+    "cred-fail-release",
+  );
+  // 第二次:能成功的释放器接上 → 真释放,且审计带原凭据。
+  offFailing();
+  const offOk = registerOwnerResourceReleaser(() => {});
+  const ok = releaseOwnerResources(owner);
+  equal("★ MC-034·失败释放:换掉失败释放器后重试成功", ok.reason, "released");
+  equal("★ MC-034·失败释放:成功释放的审计带原始凭据(跨失败重试仍可溯源)", auditEvents.at(-1)?.credentialId, "cred-fail-release");
+  equal("★ MC-034·失败释放:成功后归属回收", __trackedOwnerCount(), 0);
+
+  offProbe();
+  offOk();
+  offSink();
+  __setMaxIssuedForTest(null);
+  __resetPublicClientSessions();
+}
+
 /* ── ★ 复核(2026-10-17):`evicted` 的界与清理路径 —— 忙 owner 转闲后到底谁删条目? ──
  *
  * **被复核的怀疑**(不照单全收):「`evicted` 只在 owner 仍忙时才被处理;忙 owner 后来

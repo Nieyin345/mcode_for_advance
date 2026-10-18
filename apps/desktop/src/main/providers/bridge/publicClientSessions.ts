@@ -298,9 +298,13 @@ export interface OwnerReleaseResult {
    *  - `"released"` —— 已终止其名下资源并回收归属;
    *  - `"still-valid"` —— 会话**仍有效**,不是孤儿,拒绝(避免误杀在用 owner);
    *  - `"not-managed"` —— 非本服务签发的 owner(legacy / 本机会话 id)不归本模块释放;
-   *  - `"no-releaser"` —— 没有已注册的释放器(资源管理器还没接上),不动。
+   *  - `"no-releaser"` —— 没有已注册的释放器(资源管理器还没接上),不动;
+   *  - `"release-failed"` —— 释放器**跑了但抛错**(终止资源失败,如进程杀不掉/SSH 关闭异常)。
+   *    【MC-034 验收条件·失败释放】从前这里复用 `"no-releaser"`,把"释放失败"谎报成
+   *    "没有释放器" —— 运维看到前者会去查装配,实际该查的是资源管理器为什么杀不掉。
+   *    归属**不**回收,下次还能再试;但原因必须如实分开(坏东西显式报出来)。
    */
-  reason: "released" | "still-valid" | "not-managed" | "no-releaser";
+  reason: "released" | "still-valid" | "not-managed" | "no-releaser" | "release-failed";
   /** 释放前名下的活资源计数(报告用)。 */
   resources: OwnerResourceCounts;
 }
@@ -320,7 +324,8 @@ export interface OwnerReleaseResult {
  *
  *  - 会话**仍有效**(`issued` 里还在)→ 拒绝(`still-valid`),绝不动在用 owner;
  *  - 非 `pcs_` 前缀(legacy / 本机会话 id)→ 拒绝(`not-managed`),不归本模块生命周期;
- *  - 没有已注册的释放器 → 拒绝(`no-releaser`),不假装释放了。
+ *  - 没有已注册的释放器 → 拒绝(`no-releaser`),不假装释放了;
+ *  - 释放器抛错 → 拒绝(`release-failed`),归属不回收、下次可重试,且与"没接线"分开报。
  * 只有「本服务签发过、已淘汰」的孤儿才走终止路径 —— 与 `pruneOrphanedOwners` 的保守判据同源。
  */
 export function releaseOwnerResources(ownerId: string): OwnerReleaseResult {
@@ -333,7 +338,9 @@ export function releaseOwnerResources(ownerId: string): OwnerReleaseResult {
       releaser(ownerId);
     } catch {
       // 释放失败不抛出 —— 归属不回收,下次还能再试(显式,不静默假装成功)。
-      return { ownerId, released: false, reason: "no-releaser", resources };
+      // 【MC-034 失败释放】如实报 `release-failed`,不冒用 `no-releaser`(那是"没接线",
+      // 与"接了线但杀不掉"是两种运维动作)。
+      return { ownerId, released: false, reason: "release-failed", resources };
     }
   }
   // 资源已终止 → 回收归属记录(该 owner 名下所有合成会话里的条目)。

@@ -65,6 +65,8 @@ import { configureDelegateDeps, delegateMcpTools, __resetDelegateJobs } from "@m
 // **同一个文件**（`mcode-admin-smoke/stubs/repositories.ts`）。不能写成
 // `./stubs/repositories.js`：那个文件不存在，而 esbuild 会按真实路径去找。
 import { __seedSessionLogs, LibraryRepo } from "../mcode-admin-smoke/stubs/repositories.js";
+// 与 `run.sh` 的 `@main/lib/logger.js` 别名指向**同一个文件**,所以拿到的是同一份捕获环。
+import { __capturedLogs, __clearCapturedLogs } from "./stub-logger.js";
 
 let checks = 0;
 let passed = 0;
@@ -1152,6 +1154,7 @@ check("agent 工具进表：文件/搜索/系统进程/持久进程/技能", [
   "agent_read_file",
   "agent_read_files",
   "agent_read_document",
+  "agent_render_pdf_page",
   "agent_read_image",
   "agent_read_docx_xml",
   "agent_read_url",
@@ -1196,7 +1199,7 @@ check("agent 工具进表：文件/搜索/系统进程/持久进程/技能", [
 // **工作流那 9 个 = 表里的 11 个减掉 2 个会话工具** —— `session_read_log` 与
 // `session_list`(2026-09-24 加)从公网摘掉了,见 `SESSION_LOG_TOOLS` 与上面那几条断言。
 // 这条数字就是防"谁又把它挂回来"或"谁不小心删了工具"。
-check("工具数量 = 替身 7 + 真工作流 9 + agent 41", names.length === 57, names.length);
+check("工具数量 = 替身 7 + 真工作流 9 + agent 42", names.length === 58, names.length);
 check(
   "同名工具只报一次",
   new Set(names).size === names.length,
@@ -2176,7 +2179,8 @@ check("★ agent_process_start 重定向到沙箱内正常(不误伤)", !procIns
   const ctx = { sessionId: "s1", audience: "public" as const, ownerId: "pcs_compact", publicScope: frozenScope };
   const invoke = (name: string, args: Record<string, unknown> = {}) => host.callTool(name, args, ctx);
   try {
-    eq("compact public tool count", host.listTools("public").length, 39);
+    eq("compact public tool count", host.listTools("public").length, 40);
+    check("★ 公网 PDF 页面渲染为只读能力（不放大沙箱）", host.listTools("public").find(t => t.name === "agent_render_pdf_page")?.annotations?.readOnlyHint === true);
     const removed = ["agent_read_files", "agent_skill_list", "agent_skill_read", "agent_process_sessions", "library_collections", "library_search", "library_items", "library_links"];
     for (const name of removed) {
       check(`compact absent ${name}`, !host.listTools("public").some(t => t.name === name));
@@ -3176,6 +3180,134 @@ configureMcpToolHost(null);
     try { await call(busyOwner, "agent_process_stop", { process_id: procId }); } catch { /* 已停 */ }
     try { rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
     __resetPublicClientSessions();
+  }
+}
+
+/* ── ★ MC-034:忙 owner 被淘汰时,**真 HTTP 路径上的诊断必须可见且带原凭据** ──
+ *
+ * MC-034 的台账验收条件要求「忙 owner 源凭据和计数完整」。函数级断言已证明
+ * `keptBusyDetails` 带凭据;但**运维实际能看到的那一行**是 `mcpEndpoint` 在 initialize
+ * 分支里的 `log.warn` —— 它不打出来(或打成 `?`),凭据追溯在操作上就等于不存在。
+ *
+ * 本段走**真 HTTP**:小上限 1、项目链接凭据 `cred-mc034`:
+ *   ① 客户端 A 握手拿到 `pcs_...`(唯一名额),并在它名下起一个**真持久进程**;
+ *   ② 客户端 B 再握手 → A 被真淘汰(它已不可再认证),但名下资源还在;
+ *      这次 initialize 触发的 prune 应把 A 作为 keptBusy 保留;
+ *   ③ 断言 stderr 里那行诊断:含 A 的**原始凭据** `cred-mc034`(不是 `?`)、
+ *      含资源计数 `1p/`(不是全 0)。
+ * 凭据身份在淘汰后仍能对上链接 —— 这正是 MC-034 要的「可溯源」在端到端面的样子。 */
+{
+  const {
+    resolveClientSessionDetailed,
+    registerOwnerWorkProbe,
+    __setMaxIssuedForTest,
+    __resetPublicClientSessions: resetPcs034,
+  } = await import("@main/providers/bridge/publicClientSessions.js");
+
+  const root034 = mkdtempSync(path.join(tmpdir(), "mcode-mc034-diag-"));
+  const host034 = createWebToolHost({
+    gateFor: () => ({
+      permissionMode: () => "bypassPermissions" as PermissionMode,
+      isAlwaysAllowed: () => true,
+      async requestApproval() {
+        return { allow: true };
+      },
+    }),
+    cwdFor: () => root034,
+    sandboxRootFor: () => root034,
+  });
+  // 与公共 fake host 不同:这里把 tools/call 真正派给 agent 工具(要真进程)。
+  configureMcpToolHost(host034);
+  configurePublicMcpStore({
+    getEnabled: () => publicStoreEnabled,
+    setEnabled: () => {},
+    getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
+    setSecret: () => {},
+    getSessionId: () => PUBLIC_SESSION,
+    setSessionId: () => {},
+    credentialFor: () => credentialSnapshot("cred-mc034", "proj-mc034", root034),
+    revalidateCredential: () => null,
+  });
+  await startPublicMcp();
+  const port034 = publicMcpPort();
+  const init034 = async (id: number): Promise<string> => {
+    const res = await fetch(`http://127.0.0.1:${port034}${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "initialize", params: {} }),
+    });
+    await res.text();
+    return res.headers.get("mcp-session-id") ?? "";
+  };
+  const callAs = async (owner: string, name: string, args: Record<string, unknown>) => {
+    const res = await fetch(`http://127.0.0.1:${port034}${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [PUBLIC_MCP_CLIENT_SESSION_HEADER]: owner,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 900, method: "tools/call", params: { name, arguments: args } }),
+    });
+    return { status: res.status, text: await res.text() };
+  };
+
+  resetPcs034();
+  __setMaxIssuedForTest(1);
+  let procId034 = "";
+  let ownerA = "";
+  try {
+    ownerA = await init034(1);
+    check("★ MC-034 诊断(前置):A 握手拿到 pcs_ owner", ownerA.startsWith("pcs_"), ownerA);
+    const started = await callAs(ownerA, "agent_process_start", {
+      command: process.platform === "win32" ? "ping -n 30 127.0.0.1 > nul" : "sleep 30",
+      wait_ms: 0,
+    });
+    check("★ MC-034 诊断(前置):A 名下起了真持久进程", started.status === 200 && /proc_[0-9a-f]+/.test(started.text), started.text);
+    procId034 = /proc_[0-9a-f]+/.exec(started.text)?.[0] ?? "";
+    // 清掉此前所有日志,只看这次 initialize 产生的诊断。
+    __clearCapturedLogs();
+    // 再挂一条**恒忙**探针兜底(真进程状态在 Windows 上可能有极短窗口),保证本段测的是
+    // "淘汰时忙 → 诊断可见",而不是去赌进程管理器采样时机。
+    const offBusy = registerOwnerWorkProbe((id) => id === ownerA);
+    const ownerB = await init034(2); // 小上限 1 → A 被真淘汰
+    offBusy();
+    check("★ MC-034 诊断(前置):A 已被真淘汰(不可再认证)", ownerB.startsWith("pcs_") && resolveClientSessionDetailed("cred-mc034", ownerA).kind === "expired", {
+      ownerB,
+      resolution: resolveClientSessionDetailed("cred-mc034", ownerA).kind,
+    });
+    const warnLine = __capturedLogs().find((line) => line.includes("orphaned owner(s) kept busy"));
+    check("★ MC-034 诊断:淘汰忙 owner 的告警真的打出来了", !!warnLine, __capturedLogs());
+    check(
+      "★ MC-034 诊断:告警带**原始凭据**(不是 ?,运维才知道哪条链接死了)",
+      !!warnLine && warnLine.includes("cred-mc034") && !warnLine.includes("?"),
+      warnLine,
+    );
+    check(
+      "★ MC-034 诊断:告警带活资源计数(不是全 0)",
+      !!warnLine && /[1-9]\d*p\//.test(warnLine),
+      warnLine,
+    );
+  } finally {
+    // ⚠️ A 已被淘汰,HTTP 那头带着它的会话头会被 404 拒 —— 清理走宿主直调(带 ownerId),
+    //    与其它「真淘汰 owner 名下的进程」段同一个办法。
+    if (procId034 && ownerA) {
+      try {
+        await host034.callTool("agent_process_stop", { process_id: procId034 }, {
+          sessionId: PUBLIC_SESSION,
+          audience: "public",
+          ownerId: ownerA,
+          publicScope: {
+            credentialId: "cred-mc034", projectId: "proj-mc034", sessionId: PUBLIC_SESSION,
+            canonicalRoot: root034, grantRevision: "rev:mc034", revocationEpoch: 0,
+            clientSessionId: ownerA, actorId: ownerA, traceId: "t:mc034",
+          },
+        });
+      } catch { /* 已停 */ }
+    }
+    stopPublicMcp();
+    __setMaxIssuedForTest(null);
+    resetPcs034();
+    try { rmSync(root034, { recursive: true, force: true }); } catch { /* Windows 上进程树可能稍后才释放 cwd */ }
   }
 }
 
