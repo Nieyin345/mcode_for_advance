@@ -34,7 +34,7 @@
  * - 不碰用户数据根(electron-host.cjs 重指所有 app 路径);
  * - 不联网;窗口隐藏;所有资源都是 mktemp 目录里的空工作流文档。
  */
-import { app, BrowserWindow, ipcMain, type IpcMain } from "electron";
+import { BrowserWindow, ipcMain } from "electron";
 import { writeFileSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -174,7 +174,6 @@ export async function runSceneDeployProbe(dir: string): Promise<void> {
   if (loadDeployment(DEP_ID)?.specSnapshot === undefined) throw new Error("盘上记录应带快照");
 
   /* ── 2. 真窗口 + 真 SceneDeployPanel ── */
-  const page = join(dir, "page.html");
   const win = new BrowserWindow({
     width: 1100,
     height: 900,
@@ -187,7 +186,7 @@ export async function runSceneDeployProbe(dir: string): Promise<void> {
       backgroundThrottling: false,
     },
   });
-  await win.loadFile(page);
+  await win.loadFile(join(dir, "page.html"));
   const wc = win.webContents;
 
   async function js<T>(expr: string): Promise<T> {
@@ -220,7 +219,10 @@ export async function runSceneDeployProbe(dir: string): Promise<void> {
   const hasButton = (label: string): Promise<boolean> =>
     js<boolean>(`[...document.querySelectorAll('button')].some(b => b.textContent.includes(${JSON.stringify(label)}))`);
 
-  try {
+  // 页面级 run 结果先落盘(见 electron-host.cjs 文件头的「为什么必须由启动器判成败」:
+  // 探针抛错时 Electron 退出,若失败断言只活在这个进程的内存里,启动器就只剩一条
+  // `checks=0` —— 真实失败原因被吞掉)。`run()` 的异常由这里转成正文 + 退出码。
+  const runBody = async (): Promise<void> => {
     /* ═══ ①-③ 重启后的起点:空输入框上用户就能看见记录 ═══ */
     await check("① 空输入框打开面板:用户看得到「未完成的部署」区", async () => {
       await until("未完成的部署标题出现", `document.body.innerText.includes('未完成的部署')`);
@@ -331,6 +333,9 @@ export async function runSceneDeployProbe(dir: string): Promise<void> {
       const still = await js<boolean>(`!!document.querySelector('[data-testid="scene-deploy-approval-bar"]')`);
       assert(still, "面板动作栏已从 DOM 消失(整树卸载?)");
     });
+  };
+  try {
+    await runBody();
   } finally {
     win.destroy();
   }

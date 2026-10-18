@@ -34,6 +34,7 @@ import {
   canApprove,
   canDeploy,
   canPreview,
+  canResume,
   INITIAL_SCENE_DEPLOY_STATE,
   mergePreviewWithPlan,
   newDeploymentId,
@@ -357,12 +358,35 @@ section("8b. restoreFromDeployment + restored:发现 → 选择 → 只还原输
   eq("记录读不回来(deployment=null) → null", restoreFromDeployment({ deployment: null }), null);
 
   // 状态机:restored 只保留 specText + deploymentId,预览/授权/结局全部为空。
-  const after = sceneDeployReducer(INITIAL_SCENE_DEPLOY_STATE, { type: "restored", text: "{}", deploymentId: "dep_r1" });
+  const after = sceneDeployReducer(INITIAL_SCENE_DEPLOY_STATE, { type: "restored", text: "{}", deploymentId: "dep_r1", resumable: true });
   eq("restored 保留盘上的 deploymentId(续跑必须复用同一次部署)", after.deploymentId, "dep_r1");
   eq("restored 不恢复预览(必须重新预览)", after.preview, null);
   eq("restored 不恢复授权(必须重新批准)", after.grant, null);
   eq("restored 不恢复部署结局", after.apply, null);
   check("restored 之后 canDeploy 为假(没有授权)", !canDeploy(after));
+  // 【MC-002 真 Electron 验收】恢复一条**可续跑**记录后,重新预览 + 批准必须让
+  // `canResume` 为真 —— 否则「续跑剩余步骤」不出现,用户唯一能点的「部署」会以全
+  // pending 重跑已完成的步(真 Electron 套件 `scene-deploy-electron-smoke` 的 ⑧⑩ 钉住)。
+  {
+    const preview = buildScenePreview(twoResSpec());
+    let s: SceneDeployState = { ...after, specText: "x", deploymentId: "dep_r1" };
+    s = sceneDeployReducer(s, { type: "previewed", result: preview });
+    check("恢复后未批准:canResume 仍为假(恢复不是授权)", !canResume(s));
+    s = sceneDeployReducer(s, { type: "granted", grantId: "g-1", expiresAt: Date.now() + 60000 });
+    check("恢复 + 重新预览 + 批准后:canResume 为真(续跑按钮才会出现)", canResume(s));
+    const plain: SceneDeployState = { ...INITIAL_SCENE_DEPLOY_STATE, specText: "x" };
+    let p: SceneDeployState = sceneDeployReducer(plain, { type: "previewed", result: preview });
+    p = sceneDeployReducer(p, { type: "granted", grantId: "g-1", expiresAt: Date.now() + 60000 });
+    check("对照:从未恢复过的普通新部署,批准后 canResume 仍为假", !canResume(p));
+    // `edit` / `reset` 会清掉恢复标记(换了声明就不再是盘上那条记录)。
+    eq("编辑后 restoredResumable 清空", sceneDeployReducer(s, { type: "edit", text: "y" }).restoredResumable, false);
+    eq("reset 后 restoredResumable 清空", sceneDeployReducer(s, { type: "reset" }).restoredResumable, false);
+    // 恢复一条**不可续跑**记录(坏存档行)不会让续跑按钮出现。
+    const notResumable = sceneDeployReducer(INITIAL_SCENE_DEPLOY_STATE, { type: "restored", text: "{}", deploymentId: "dep_bad", resumable: false });
+    let n: SceneDeployState = sceneDeployReducer({ ...notResumable, specText: "x" }, { type: "previewed", result: preview });
+    n = sceneDeployReducer(n, { type: "granted", grantId: "g-2", expiresAt: Date.now() + 60000 });
+    check("恢复一条不可续跑记录,批准后 canResume 仍为假", !canResume(n));
+  }
 }
 
 /* ───────────────────────── 9. 接线不变量(源码正则 backstop) ───────────────────────── */
@@ -386,6 +410,15 @@ section("9. 面板真的接上四条入口 + 挂进设置页(只声明不接线 
     panel.includes("api.scene.listDeployments({ resumableOnly: true })"), panel.match(/resumableOnly[^)]*/)?.[0]);
   check("★ 列表查询不再以 sceneId 为前提(旧实现的 enabled 门控已移除)",
     !panel.includes("enabled: sceneIdForList !== null"));
+  // 【MC-002 假绿修复(变异发现)】上面两条只钉了**查询参数**:把整段「未完成的部署」
+  // 重新包回 `{sceneIdForList !== null && (...)}` —— 查询照发、区块不渲染,正是真
+  // Electron 验收暴露的断点 —— 91/91 依然全绿。渲染点本身必须被钉住:空输入框(崩溃
+  // 重启后的真实起点)下这块要么渲染列表、要么渲染空态文案,不能整个消失。
+  const panelCode = panel.replace(/\/\*[\s\S]*?\*\//g, "");
+  check("★ 「未完成的部署」区块的渲染不以 sceneId 为条件(空输入框的崩溃起点也看得到)",
+    panelCode.includes('data-testid="scene-unfinished"')
+      && !/\{\s*sceneIdForList\b[^}]*&&\s*\(?\s*<section\b[^>]*data-testid="scene-unfinished"/.test(panelCode),
+    panelCode.match(/sceneIdForList[^\n]*/g)?.slice(0, 3));
   check("★ 面板把记录恢复成输入(restoreFromDeployment + restored 动作)", panel.includes("restoreFromDeployment(") && panel.includes('type: "restored"'));
   // 【MC-001 系统性修复第 3 条】场景与无人值守共用**同一个**「预览 → 批准 → 执行」动作栏,
   // 不再各写一份。判据落在 `PlanApprovalBar` 真的被渲染 + 两族面板各自传给它的 testId 上。

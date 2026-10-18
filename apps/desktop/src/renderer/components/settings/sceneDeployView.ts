@@ -238,6 +238,12 @@ export interface SceneDeployState {
   apply: SceneApplyOutcome | null;
   /** 上一次部署失败 / 被拒的原因。 */
   applyError: string | null;
+  /** 【MC-002】当前这份声明是**从盘上一份未完成的部署记录恢复**的,且那条记录仍可续跑
+   *  (`partial` / `failed`)。真 Electron 路径实测暴露的洞:`restored` 只还原了输入,
+   *  `apply` 仍为 `null`,于是重新预览 + 批准之后 `canResume` 为假 —— 「续跑剩余步骤」
+   *  不出现,用户唯一能点的「部署」会以全 `pending` 重跑已完成的步(重复外部副作用)。
+   *  编辑 / 重置 / 一次新的成功部署都会清掉它(见各 case)。 */
+  restoredResumable: boolean;
 }
 
 export const INITIAL_SCENE_DEPLOY_STATE: SceneDeployState = {
@@ -248,6 +254,7 @@ export const INITIAL_SCENE_DEPLOY_STATE: SceneDeployState = {
   grantError: null,
   apply: null,
   applyError: null,
+  restoredResumable: false,
 };
 
 let deploymentSeq = 0;
@@ -287,8 +294,10 @@ export type SceneDeployAction =
   | { type: "applyRefused"; reason: string }
   /** 清空一切(面板上的「清空」)。 */
   | { type: "reset" }
-  /** 【MC-002】重启后发现未完成部署 → 把它的声明放回输入框。**不恢复授权**(见 restoreFromDeployment)。 */
-  | { type: "restored"; text: string; deploymentId: string };
+  /** 【MC-002】重启后发现未完成部署 → 把它的声明放回输入框。**不恢复授权**(见 restoreFromDeployment)。
+   *  `resumable` 取自列表投影(盘上记录是 partial/failed 且存档可读)—— 它只回答「这份记录
+   *  能续跑吗」,不是授权;重新批准之后 `canResume` 才为真。 */
+  | { type: "restored"; text: string; deploymentId: string; resumable: boolean };
 
 /**
  * 状态机 —— 纯函数。四条不变量写在这里(而不是散在组件的 onClick 里):
@@ -327,7 +336,7 @@ export function sceneDeployReducer(state: SceneDeployState, action: SceneDeployA
     case "grantRefused":
       return { ...state, grant: null, grantError: action.reason };
     case "applied":
-      return { ...state, apply: { ok: true, deployment: action.deployment, observed: action.observed }, applyError: null };
+      return { ...state, apply: { ok: true, deployment: action.deployment, observed: action.observed }, applyError: null, restoredResumable: false };
     case "applyRefused":
       return { ...state, apply: null, applyError: action.reason };
     case "reset":
@@ -335,7 +344,9 @@ export function sceneDeployReducer(state: SceneDeployState, action: SceneDeployA
     case "restored":
       // 与 `edit` 同一条不变量(换声明 = 旧预览/旧授权作废),唯一的差别是 `deploymentId`
       // 保留盘上那个 —— 续跑必须复用同一次部署的 id(否则 `resumeScene` 报 no_record)。
-      return { ...INITIAL_SCENE_DEPLOY_STATE, specText: action.text, deploymentId: action.deploymentId };
+      // 【MC-002】`restoredResumable` 记住「这条记录本来就能续跑」;没有它,重新预览批准后
+      // 「续跑剩余步骤」不出现,用户只能走「部署」把已完成的步再派发一遍。
+      return { ...INITIAL_SCENE_DEPLOY_STATE, specText: action.text, deploymentId: action.deploymentId, restoredResumable: action.resumable };
   }
 }
 
@@ -376,6 +387,10 @@ export function canDeploy(state: SceneDeployState): boolean {
  */
 export function canResume(state: SceneDeployState): boolean {
   if (state.preview === null || !state.preview.ok || state.grant === null) return false;
+  // 【MC-002】两种来源:① 本进程里上一次部署落成 partial/failed(内存结局);② 面板从
+  // 盘上一条**可续跑**记录恢复而来(`restoredResumable`)—— 那种情况下本进程从未执行过,
+  // `apply` 恒为 `null`,只看 ① 会把「续跑」整个藏掉。
+  if (state.restoredResumable) return true;
   const outcome = state.apply;
   return outcome !== null && outcome.ok && (outcome.deployment.status === "partial" || outcome.deployment.status === "failed");
 }

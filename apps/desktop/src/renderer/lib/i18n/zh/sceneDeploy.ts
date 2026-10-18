@@ -96,6 +96,7 @@ export const zh = {
   "sceneDeploy.unfinishedTitle": "未完成的部署",
   "sceneDeploy.unfinishedHint": "这些是盘上留下的部署记录(应用重启后仍可见)。选一条把它的声明放回输入框,重新预览并批准后即可续跑剩余步骤。",
   "sceneDeploy.unfinishedEmpty": "这个场景没有留下部署记录。",
+  "sceneDeploy.unfinishedEmptyAny": "盘上没有未完成的部署记录。",
   "sceneDeploy.unfinishedLoadError": "读取部署记录失败:{reason}",
   "sceneDeploy.unfinishedRetry": "重试",
   "sceneDeploy.unfinishedResumable": "可续跑",

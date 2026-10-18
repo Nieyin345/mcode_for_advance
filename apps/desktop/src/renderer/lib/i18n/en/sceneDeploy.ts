@@ -90,6 +90,7 @@ export const en = {
   "sceneDeploy.unfinishedTitle": "Unfinished deployments",
   "sceneDeploy.unfinishedHint": "These records are on disk (still visible after an app restart). Pick one to put its spec back into the input, then preview and approve again to resume the remaining steps.",
   "sceneDeploy.unfinishedEmpty": "No deployment records for this scene.",
+  "sceneDeploy.unfinishedEmptyAny": "No unfinished deployments found on disk.",
   "sceneDeploy.unfinishedLoadError": "Failed to read deployment records: {reason}",
   "sceneDeploy.unfinishedRetry": "Retry",
   "sceneDeploy.unfinishedResumable": "Resumable",
