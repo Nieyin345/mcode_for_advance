@@ -44,14 +44,49 @@
     // 带一个真触发器节点:自动化检查器里的「立刻运行一次」才出得来(见「运行前预检」场景)。
     "auto-1": {
       id: "auto-1", name: "每日整理", description: "", edges: [], builtin: false, updatedAt: 1,
+      // `trigger` 决定它归「自动化」那一栏(见 workflowView.ts 的 purposeOf)——
+      // 从前是列表映射里无差别补上的;加上 MC-045 的图型夹具后不能再那样补,
+      // 否则工作流那一栏会把自动化也列进来。
+      trigger: { kind: "manual" },
       nodes: [{ id: "t1", type: "mcode.trigger", title: "触发器", params: { triggerKind: "manual", task: "跑" }, position: { x: 0, y: 0 } }],
     },
+    // 【MC-045 复核】深链带上 workflowId 时要打开的那一份(无 trigger = 工作流栏)。
+    "wf-mc045": {
+      id: "wf-mc045", name: "MC045 深链取证图", description: "", edges: [], builtin: false, updatedAt: 2,
+      nodes: [],
+    },
   };
+  /** 最近一次 `workflow.get` 的目标 id —— 断言"深链真的打开的是它",而不是只看页面有字。 */
+  window.__lastWorkflowGet = null;
 
   // 主题走**真 IPC**(bridge.cjs → 探针注册的 theme:get/set),其余命名空间用内存桩。
   // `on` 返回的取消函数必须可调用 —— useTheme 在卸载时会调用它。
   var themeBridge = window.__electronTheme || null;
+  // 【ARC-005】节点安装审批：有真桥(?panel=engine-runtime)时用它——审批请求由探针
+  // 从主进程 `wc.send` 推送、应答走真 `invoke`（探针据此计数并把参数记进 checks）。
+  var nodeApprovalBridge = window.__electronNodeApproval || null;
   var noopSub = function () { return function () {}; };
+  /**
+   * 【MC-045 复核】未列出的命名空间回一个**惰性 Proxy**:真 App 的工作区外围会读
+   * `relay.status()` / `lsp.list()` / `runtimes.list()` 这类与设置无关的 RPC,而它们
+   * 在 `on` 上还要求"取消函数可调用"。回 `Promise.resolve({})` + noop 订阅,
+   * 让这些外围组件安静地拿空数据 —— 深链判据不受它们影响。
+   * 注意 `then` 必须回 undefined,否则 Promise 链会把它当 thenable。
+   */
+  function makeNamespace(ns) {
+    function rpc(input) {
+      calls[ns + ".<rpc>"] = (calls[ns + ".<rpc>"] || 0) + 1;
+      return Promise.resolve({});
+    }
+    return new Proxy(rpc, {
+      get: function (_t, prop) {
+        if (prop === "then") return undefined;
+        if (prop === "on") return noopSub;
+        if (typeof prop !== "string") return undefined;
+        return function () { return Promise.resolve({}); };
+      },
+    });
+  }
 
   window.api = {
     platform: "win32",
@@ -59,6 +94,9 @@
       get: function (_t, prop) {
         if (prop === "themeChanged") {
           return function (cb) { return themeBridge ? themeBridge.onChanged(cb) : noopSub(); };
+        }
+        if (prop === "nodeInstallApproval") {
+          return function (cb) { return nodeApprovalBridge ? nodeApprovalBridge.onApproval(cb) : noopSub(); };
         }
         return noopSub;
       },
@@ -88,7 +126,11 @@
       test: function () { return invoke("customModel.test", { ok: true }); },
       getToken: function () { return invoke("customModel.getToken", { token: "" }); },
     },
-    piModels: { list: function () { return invoke("piModels.list", { providers: {} }); } },
+    piModels: {
+      list: function () { return invoke("piModels.list", { providers: {} }); },
+      /** 真 App 的 store `initDeferred` 读它(面板自身不读)。 */
+      listAvailable: function () { return invoke("piModels.listAvailable", { models: [] }); },
+    },
     codexModels: { list: function () { return invoke("codexModels.list", { providers: [] }); } },
     engineTools: {
       get: function () {
@@ -117,14 +159,19 @@
     },
     workflow: {
       list: function () {
+        // 【MC-045 复核】逐条保留自己的 `trigger`:从前这里无差别补
+        // `trigger:{kind:"manual"}`,会把工作流也标成自动化(库的分栏读的就是它)。
         return invoke("workflow.list", {
           workflows: Object.keys(docs).map(function (id) {
-            return Object.assign({}, docs[id], { kind: "graph", trigger: { kind: "manual" } });
+            return Object.assign({}, docs[id], { kind: "graph" });
           }),
         });
       },
       get: function (input) {
-        return invoke("workflow.get", { workflow: docs[input && input.id] || null, review: null });
+        var id = (input && input.id) || null;
+        window.__lastWorkflowGet = id;
+        calls["workflow.get:" + id] = (calls["workflow.get:" + id] || 0) + 1;
+        return invoke("workflow.get", { workflow: docs[id] || null, review: null });
       },
       save: function (input) {
         return invoke("workflow.save", function () {
@@ -135,7 +182,39 @@
       nodeTypes: function () { return invoke("workflow.nodeTypes", { entries: [], problems: [] }); },
       agentProfiles: function () { return invoke("workflow.agentProfiles", { profiles: [], problems: [] }); },
     },
-    project: { list: function () { return invoke("project.list", { projects: [{ id: "p1", name: "项目", path: "C:/p1" }] }); } },
+    project: { list: function () { return invoke("project.list", { projects: [{ id: "p1", name: "项目", path: "C:/p1" }] }); },
+      /** `fetchProjectSessionBuckets` 对每个项目读两段(本地 + 工作树)再读归档。 */
+      sessions: function (input) {
+        var archived = !!(input && input.archived);
+        return invoke("project.sessions", archived
+          ? { sessions: [] }
+          : { sessions: [], hasMore: false, total: 0 });
+      },
+    },
+    /** 【MC-045 复核】真 App 的 store 首屏会读这三处;给全形状,免得真实工作区
+     *  在空数据上炸树(炸了会把深链判据一起带走,分不清是导航缺陷还是夹具缺陷)。 */
+    session: {
+      listPinned: function () { return invoke("session.listPinned", { sessions: [] }); },
+      list: function () { return invoke("session.list", { sessions: [] }); },
+    },
+    provider: { list: function () { return invoke("provider.list", { providers: [] }); } },
+    skills: { list: function () { return invoke("skills.list", { skills: [] }); } },
+    voice: {
+      modelList: function () {
+        return invoke("voice.modelList", { models: [], downloaded: [], selected: null, modelDir: "C:/mc045/models", isCustom: false });
+      },
+    },
+    /** `?panel=app` 里「文档管理」深链的落地页会读它(数据位置那块)。 */
+    app: {
+      getDataRoot: function () {
+        return invoke("app.getDataRoot", { root: "C:/mc045/data", dbPath: "C:/mc045/data/mcode.db", libraryPath: "C:/mc045/data/library" });
+      },
+    },
+    library: {
+      groupsGet: function () { return invoke("library.groupsGet", { groups: [] }); },
+      listCollections: function () { return invoke("library.listCollections", { collections: [] }); },
+      suppressGet: function () { return invoke("library.suppressGet", { rule: { nodes: [], extensions: [] } }); },
+    },
     automation: {
       runs: function () { return invoke("automation.runs", { runs: [] }); },
       statusAll: function () { return invoke("automation.statusAll", []); },
@@ -186,5 +265,33 @@
         });
       },
     },
+    // 【ARC-005】引擎面板（?panel=engine-runtime）读的节点包清单 + 安装应答。
+    // 必须给**一个**引擎：`EngineRuntimePanel` 在引擎表为空时只画「没有可用的第三方
+    // 引擎」，节点包区块（审批卡订阅者）根本不会挂载 —— 推送请求会被静默丢掉，
+    // 那会让审批卡断言变成等待超时而不是真的红。`nodeInstall` 不派发（探针只验
+    // 审批卡，不真装）。
+    workflowEngine: {
+      list: function () {
+        return invoke("workflowEngine.list", {
+          engines: [{ engineId: "node-red", state: "stopped", port: null, reason: null, editorUrl: null }],
+        });
+      },
+      nodesList: function () { return invoke("workflowEngine.nodesList", { corrupt: null, nodes: [] }); },
+      nodeInstall: function () { return invoke("workflowEngine.nodeInstall", { ok: false, code: "approval_denied", reason: "stub" }); },
+      respondNodeInstallApproval: function (input) {
+        return nodeApprovalBridge
+          ? nodeApprovalBridge.respond(input)
+          : invoke("workflowEngine.respondNodeInstallApproval", { ok: true });
+      },
+    },
   };
+  // 【MC-045 复核】显式列出的命名空间优先;其余一律惰性 Proxy(见 makeNamespace)。
+  var stubApi = window.api;
+  window.api = new Proxy(stubApi, {
+    get: function (target, ns) {
+      if (typeof ns !== "string" || ns === "then") return undefined;
+      if (Object.prototype.hasOwnProperty.call(target, ns)) return target[ns];
+      return makeNamespace(ns);
+    },
+  });
 })();

@@ -524,11 +524,304 @@ export async function runSettingsPanelsProbe(dir: string): Promise<void> {
       assert((await panelFont()) === before, `失败后全局字号没有回退:${before} → ${await panelFont()}`);
     });
 
+    /* ═══ 【ARC-005】审批卡输入保护（Claude 工具审批 + 节点安装审批） ═══ */
+    //
+    // 判据来自**真 DOM + 真输入事件**：
+    //   - 打开卡片时 activeElement 是卡片本身（不是「允许」）；
+    //   - 「允许」在短延迟内 disabled（防回车/连击），等待后可用（健康路径防空过）；
+    //   - Esc 应答为**拒绝**（respond 参数 approved:false），且拒绝按钮从不被延迟。
+    // 键盘走 `webContents.sendInputEvent`（Electron 输入管线），不是页内合成事件。
+    const pressEscape = async (): Promise<void> => {
+      wc.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+      wc.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+      await delay(120);
+    };
+    /** 焦点描述：activeElement 是不是审批卡、是不是「允许」按钮。 */
+    const approvalFocus = (cardSel: string, allowText: string): Promise<{
+      isCard: boolean; isAllow: boolean; allowDisabled: boolean; denyDisabled: boolean;
+    }> =>
+      js(`(() => {
+        const card = document.querySelector(${JSON.stringify(cardSel)});
+        const a = document.activeElement;
+        const buttons = card ? [...card.querySelectorAll('button')] : [];
+        const allow = buttons.find((b) => (b.textContent || '').includes(${JSON.stringify(allowText)}));
+        const deny = buttons.find((b) => (b.textContent || '').trim() === '拒绝');
+        return {
+          isCard: !!(card && a === card),
+          isAllow: !!(allow && a === allow),
+          allowDisabled: allow ? allow.disabled : null,
+          denyDisabled: deny ? deny.disabled : null,
+        };
+      })()`);
+
+    await check("★ 工具审批卡:打开时焦点在卡片本身,不在「允许」;「允许」延迟期内不可点、「拒绝」立即可用", async () => {
+      await open("approval", "healthy", `document.querySelector('[role=alertdialog]') !== null`);
+      const f = await approvalFocus("[role=alertdialog]", "允许");
+      assert(f.isCard === true, "焦点没有落在审批卡上:" + JSON.stringify(f));
+      assert(f.isAllow === false, "焦点错误地落在「允许」按钮上(回车即批准):" + JSON.stringify(f));
+      assert(f.allowDisabled === true, "「允许」在开卡瞬间就可点(连击/回车可误批):" + JSON.stringify(f));
+      assert(f.denyDisabled === false, "「拒绝」被延迟了(fail-closed 不该等):" + JSON.stringify(f));
+    });
+
+    await check("★ 工具审批卡:延迟到期后「允许」可点,点它真的批准(健康路径防空过)", async () => {
+      await until("「允许」变为可点", `(() => {
+        const b = [...document.querySelectorAll('[role=alertdialog] button')]
+          .find((x) => (x.textContent || '').includes('允许'));
+        return !!b && !b.disabled;
+      })()`, 5000);
+      await js<void>(`(() => {
+        const b = [...document.querySelectorAll('[role=alertdialog] button')]
+          .find((x) => (x.textContent || '').includes('允许'));
+        if (!b) throw new Error('找不到「允许」');
+        b.click();
+      })()`);
+      await until("批准决策被记录", `(window.__approvalDecisions || []).some((d) => d.granted === true)`);
+      const decisions = await js<Array<{ granted: boolean }>>("window.__approvalDecisions || []");
+      assert(decisions.length === 1 && decisions[0]!.granted === true, "批准没有经 onDecide 送达:" + JSON.stringify(decisions));
+    });
+
+    await check("★ 工具审批卡:Esc 应答为拒绝(approved:false),不是悄悄关掉", async () => {
+      // 上一次批准后夹具重挂了一张新卡 —— 等它渲染,焦点应在卡上,再按真 Esc。
+      await until("新审批卡出现", `document.querySelector('[role=alertdialog]') !== null`);
+      await until("焦点回到卡片", `document.activeElement === document.querySelector('[role=alertdialog]')`);
+      await pressEscape();
+      await until("拒绝决策被记录", `(window.__approvalDecisions || []).filter((d) => d.granted === false).length === 1`);
+      const decisions = await js<Array<{ granted: boolean }>>("window.__approvalDecisions || []");
+      assert(decisions[decisions.length - 1]!.granted === false, "Esc 没有产生拒绝决策:" + JSON.stringify(decisions));
+    });
+
+    await check("★ 节点安装审批卡:焦点在卡片本身;「允许安装」延迟期内不可点;Esc 应答 approved:false", async () => {
+      // 主进程推送一张真审批请求（字段与契约 WorkflowEngineNodeInstallApprovalMessage 同形）。
+      let responded: Array<{ requestId: string; approved: boolean }> = [];
+      ipcMain.removeHandler("workflowEngine:respondNodeInstallApproval");
+      ipcMain.handle("workflowEngine:respondNodeInstallApproval", (_e, input: { requestId: string; approved: boolean }) => {
+        responded.push(input);
+        return { ok: true };
+      });
+      await open("engine-runtime", "healthy", `document.querySelector('[data-engine-nodes]') !== null`);
+      const push = (requestId: string): void => {
+        wc.send("workflowEngine:nodeInstallApproval", {
+          channel: "workflowEngine:nodeInstallApproval",
+          requestId,
+          name: "danger-node",
+          version: "1.0.0",
+          source: "https://example.invalid/pkg.tgz",
+          license: "MIT",
+          capabilities: ["network"],
+          network: true,
+          sha256: "a".repeat(64),
+          intent: "install",
+        });
+      };
+      push("arc005-esc");
+      await until("审批卡出现", `document.querySelector('[data-engine-approval]') !== null`);
+      const f = await approvalFocus("[data-engine-approval]", "允许安装");
+      assert(f.isCard === true, "焦点没有落在安装审批卡上:" + JSON.stringify(f));
+      assert(f.isAllow === false, "焦点错误地落在「允许安装」上:" + JSON.stringify(f));
+      assert(f.allowDisabled === true, "「允许安装」在开卡瞬间就可点:" + JSON.stringify(f));
+      assert(f.denyDisabled === false, "「拒绝」被延迟了:" + JSON.stringify(f));
+      // 焦点在卡片上时按真 Esc → 应答必须是拒绝。
+      await pressEscape();
+      for (let i = 0; i < 100 && responded.length === 0; i++) await delay(50);
+      assert(responded.length === 1, "Esc 之后没有应答:" + JSON.stringify(responded));
+      assert(responded[0]!.requestId === "arc005-esc" && responded[0]!.approved === false,
+        "Esc 的应答不是拒绝:" + JSON.stringify(responded));
+      await until("审批卡收起", `document.querySelector('[data-engine-approval]') === null`);
+    });
+
+    await check("★ 节点安装审批卡:延迟到期后可批准(健康路径防空过)——approved:true", async () => {
+      let responded: Array<{ requestId: string; approved: boolean }> = [];
+      ipcMain.removeHandler("workflowEngine:respondNodeInstallApproval");
+      ipcMain.handle("workflowEngine:respondNodeInstallApproval", (_e, input: { requestId: string; approved: boolean }) => {
+        responded.push(input);
+        return { ok: true };
+      });
+      wc.send("workflowEngine:nodeInstallApproval", {
+        channel: "workflowEngine:nodeInstallApproval",
+        requestId: "arc005-allow",
+        name: "danger-node",
+        version: "1.0.0",
+        source: "https://example.invalid/pkg.tgz",
+        license: "MIT",
+        capabilities: [],
+        network: false,
+        sha256: "b".repeat(64),
+        intent: "install",
+      });
+      await until("审批卡再次出现", `document.querySelector('[data-engine-approval]') !== null`);
+      await until("「允许安装」变为可点", `(() => {
+        const b = [...document.querySelectorAll('[data-engine-approval] button')]
+          .find((x) => (x.textContent || '').includes('允许安装'));
+        return !!b && !b.disabled;
+      })()`, 5000);
+      await js<void>(`(() => {
+        const b = [...document.querySelectorAll('[data-engine-approval] button')]
+          .find((x) => (x.textContent || '').includes('允许安装'));
+        if (!b) throw new Error('找不到「允许安装」');
+        b.click();
+      })()`);
+      for (let i = 0; i < 100 && responded.length === 0; i++) await delay(50);
+      assert(responded.length === 1 && responded[0]!.requestId === "arc005-allow" && responded[0]!.approved === true,
+        "延迟到期后批准没有正确应答:" + JSON.stringify(responded));
+    });
+
+    /* ═══ 【MC-045 复核·U1】真 App 里的跨面板深链 ═══
+     *
+     * 台账验收:设置先开在「常规」,再收到指向「工作流」的深链 ——
+     *   **左侧高亮**、**内容区**、以及带上 workflowId 时**内部打开的那一份**都要当场到位;
+     *   手动切换不被过期请求抢回;关闭后重开语义一致;设置未打开时深链要打开并直达。
+     *
+     * 判据全部来自真 DOM:
+     *   - 高亮 = 左栏 `<nav>` 里 accent 竖条所在的按钮文字(active 的唯一用户可见判据);
+     *   - 内容 = 内容区标题(「工作流」页的 PanelHeader)+ 库列表里的条目名;
+     *   - 焦点图 = `workflow.get:<id>` 的调用计数(桩按 id 分开记,不只看"页面有字")。
+     *
+     * 调用形状是**生产调用端**的两条真实入口:
+     *   1. MCP/插件/技能面板的 `useSessionStore.getState().setSettingsOpen(true, section, workflowId)`;
+     *   2. Agent 的 `open_settings` —— 经真 App 里安装的 `window.__mcodeAppControl`
+     *      (appControlHost)走 JSON 入参/回参,不是直接摸 store。
+     */
+    const ACTIVE_NAV = `(() => {
+      const nav = document.querySelector('.settings-root nav');
+      if (!nav) return null;
+      const marker = nav.querySelector('span.bg-accent');
+      return marker && marker.closest('button') ? marker.closest('button').innerText.trim() : null;
+    })()`;
+    /** 内容区(设置页 center pane)可见文本 —— 高亮之外的第二个判据。 */
+    const CENTER_TEXT = `(() => {
+      const root = document.querySelector('.settings-root');
+      if (!root) return '';
+      const center = root.querySelector('main');
+      return center ? center.innerText : '';
+    })()`;
+    const openSettings = async (): Promise<void> => {
+      // 本套件的 `__ready` 只表示"入口脚本跑完";真 App 的挂载要等 React 提交,
+      // 所以这里等的是工作区外壳真的出现在 DOM 里。
+      await open("app", "healthy", `document.querySelector('[data-testid=workspace-main]') !== null`);
+      await until("工作区外壳就绪", `document.querySelector('[data-testid=workspace-main]') !== null`, 30000);
+    };
+
+    await check("★ MC-045 前置:真 App 能挂起来,设置初始是关闭的(深链要能自己把它打开)", async () => {
+      await openSettings();
+      const openNow = await js<boolean>("window.__store.getState().settingsOpen === true");
+      assert(openNow === false, "夹具启动时设置就是打开的,后面「未打开→深链打开」一条会空过");
+      assert((await js<boolean>("document.querySelector('.settings-root') === null")), "设置层已挂但 store 说没开:夹具不同步");
+    });
+
+    await check("★ MC-045 未打开时深链:设置被打开并直达「工作流」(高亮 + 内容 + 指定图真被打开)", async () => {
+      // Agent `open_settings` 的真实形状(JSON 字符串进,JSON 字符串出)。
+      const reply = await js<string>(`window.__mcodeAppControl(JSON.stringify({ op: "open_settings", section: "workflows" }))`);
+      const parsed = JSON.parse(reply) as { ok: boolean; error?: string };
+      assert(parsed.ok === true, "open_settings 回执不是 ok:" + reply);
+      await until("设置层出现", `document.querySelector('.settings-root') !== null`, 15000);
+      await until("内容区出现工作流页", `${CENTER_TEXT}.includes('工作流库')`, 30000);
+      const active = await js<string | null>(ACTIVE_NAV);
+      assert(active === "工作流", "左侧高亮没落在「工作流」,而是:" + JSON.stringify(active));
+      const center = await js<string>(CENTER_TEXT);
+      assert(!center.includes("界面语言"), "内容区还停在「常规」(语言设置还在):" + center.slice(0, 200));
+      // 没有 workflowId 的深链只切栏,不该擅自打开某一份图。
+      assert((await calls("workflow.get:wf-mc045")) === 0, "未指定 workflowId 却打开了 wf-mc045");
+    });
+
+    await check("★ MC-045 未打开时深链带 workflowId:栏切过去后真的 openWorkflow 指定的那一份,且一次性意图用完即清", async () => {
+      // 关掉再深链 —— 覆盖"关闭后重开"的语义。
+      await js<void>(`window.__store.getState().setSettingsOpen(false)`);
+      await until("设置层卸载", `document.querySelector('.settings-root') === null`, 15000);
+      const reply = await js<string>(`window.__mcodeAppControl(JSON.stringify({ op: "open_settings", section: "workflows" }))`);
+      assert((JSON.parse(reply) as { ok: boolean }).ok === true, "open_settings(重开)回执不是 ok:" + reply);
+      await until("设置层重新出现", `document.querySelector('.settings-root') !== null`, 15000);
+      // 先按生产调用端带 workflowId 的第二次深链(MCP/插件/技能面板的形状)。
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "workflows", "wf-mc045")`);
+      await until("指定的图被打开", `(window.__calls['workflow.get:wf-mc045'] ?? 0) >= 1`, 20000);
+      await until("图上标题出现", `${CENTER_TEXT}.includes('MC045 深链取证图')`, 20000);
+      const cleared = await js<string | null>("window.__store.getState().settingsFocusWorkflowId");
+      assert(cleared === null, "一次性焦点用完后没有清掉:" + JSON.stringify(cleared));
+      const active = await js<string | null>(ACTIVE_NAV);
+      assert(active === "工作流", "左侧高亮没在「工作流」:" + JSON.stringify(active));
+    });
+
+    await check("★ MC-045 已打开时跨面板深链:停在「工作流」再收到「外观」,左栏高亮与内容区当场一起切(不是只改了 state)", async () => {
+      // 此刻设置是开着的(上一条收尾在「工作流」)。先断言起点有效(防空过)。
+      const before = await js<string | null>(ACTIVE_NAV);
+      assert(before === "工作流", "起点不在「工作流」,这条没有判别力:" + JSON.stringify(before));
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "appearance")`);
+      await until("内容区换成外观页", `${CENTER_TEXT}.includes('界面主题')`, 15000);
+      const active = await js<string | null>(ACTIVE_NAV);
+      assert(active === "外观", "左栏高亮没有当场切到「外观」,而是:" + JSON.stringify(active));
+      const center = await js<string>(CENTER_TEXT);
+      assert(!center.includes("工作流库"), "内容区还留着工作流页:" + center.slice(0, 200));
+    });
+
+    await check("★ MC-045 已打开、设置先停在「常规」时再深链「工作流」:高亮与内容当场切(台账原始红例的复现路径)", async () => {
+      // 走真实鼠标点左栏「常规」—— 生产里用户就是这样切栏的,顺便把"手动切换生效"钉住。
+      const clicked = await js<string>(`(() => {
+        const nav = document.querySelector('.settings-root nav');
+        if (!nav) return 'no-nav';
+        const b = [...nav.querySelectorAll('button')].find((x) => x.innerText.trim() === '常规');
+        if (!b) return 'no-button';
+        b.click();
+        return 'ok';
+      })()`);
+      assert(clicked === "ok", "点「常规」失败:" + clicked);
+      await until("高亮回到「常规」", `${ACTIVE_NAV} === '常规'`, 15000);
+      await until("内容区回到常规页", `${CENTER_TEXT}.includes('界面语言')`, 15000);
+
+      // 台账红例的调用形状(MCP/插件/技能页的「跳转到工作流」)。
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "workflows")`);
+      await until("内容区再次出现工作流页", `${CENTER_TEXT}.includes('工作流库')`, 20000);
+      const active = await js<string | null>(ACTIVE_NAV);
+      assert(active === "工作流", "Store 改成 workflows 了,左栏高亮仍停在:" + JSON.stringify(active));
+      const center = await js<string>(CENTER_TEXT);
+      assert(!center.includes("界面语言"), "内容区仍停在「常规」:" + center.slice(0, 200));
+    });
+
+    await check("★ MC-045 手动切换不被过期深链抢回:深链到「工作流」后手动点「外观」,停留后仍在「外观」", async () => {
+      const clicked = await js<string>(`(() => {
+        const nav = document.querySelector('.settings-root nav');
+        if (!nav) return 'no-nav';
+        const b = [...nav.querySelectorAll('button')].find((x) => x.innerText.trim() === '外观');
+        if (!b) return 'no-button';
+        b.click();
+        return 'ok';
+      })()`);
+      assert(clicked === "ok", "点「外观」失败:" + clicked);
+      await until("高亮切到「外观」", `${ACTIVE_NAV} === '外观'`, 15000);
+      // 给消费 effect / 订阅任何晚到的重放留足时间:若旧修订号被重放,这里会弹回「工作流」。
+      await delay(700);
+      const active = await js<string | null>(ACTIVE_NAV);
+      assert(active === "外观", "手动选择被过期深链弹回:" + JSON.stringify(active));
+      const section = await js<string | null>("window.__store.getState().settingsSection");
+      // Store 里仍是上次请求的 section 是**设计如此**(修订号才是"新请求"的判据),
+      // 但界面必须跟着用户走 —— 这条断言同时把这两件事分开。
+      assert(section === "workflows", "store 的 settingsSection 被手动切换改写了(契约是只有深链写它):" + JSON.stringify(section));
+    });
+
+    await check("★ MC-045 遗留 id 深链(data-root → 文档管理):仍走同一状态机并当场切栏", async () => {
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "data-root")`);
+      await until("内容区出现文档管理页", `${CENTER_TEXT}.includes('数据位置')`, 20000);
+      const active = await js<string | null>(ACTIVE_NAV);
+      assert(active === "文档管理", "遗留 id 没映射到「文档管理」,高亮是:" + JSON.stringify(active));
+    });
+
+    await check("★ MC-045 未知栏目深链:显式回退「常规」并留下诊断,不停在没有内容的旧栏目", async () => {
+      const before = await js<string | null>(ACTIVE_NAV);
+      assert(before === "文档管理", "起点不在「文档管理」,回退断言没有判别力:" + JSON.stringify(before));
+      const consoleBefore = consoleLog.length;
+      await js<void>(`window.__store.getState().setSettingsOpen(true, "definitely-retired")`);
+      await until("高亮回退到「常规」", `${ACTIVE_NAV} === '常规'`, 15000);
+      const warned = consoleLog.slice(consoleBefore).some((l) => l.includes('未知的深链栏目'));
+      assert(warned === true, "回退没有留下 console.warn 诊断:" + consoleLog.slice(consoleBefore).join(" | "));
+    });
+
     /* ═══ 渲染端全程无未捕获异常(整树卸载探针) ═══ */
     await check("★ 全程无渲染端未捕获异常(最后一页仍完整)", async () => {
       const errors = await rendererErrors();
       assert(errors.length === 0, "渲染端未捕获异常:" + errors.join("\n").slice(0, 800));
-      assert((await bodyText()).includes("字号"), "页面在最后一次断言后不完整:" + (await bodyText()).slice(0, 300));
+      // 最后一页是 MC-045 的真 App 场景:设置层开着、停在未知栏目回退后的「常规」。
+      // 整树仍在(不是被一次异常卸载成空 body)。
+      const text = await bodyText();
+      assert(text.includes("界面语言"), "页面在最后一次断言后不完整:" + text.slice(0, 300));
+      assert((await js<boolean>("document.querySelector('.settings-root') !== null")), "设置层在最后一次断言后不在了");
     });
   } finally {
     win?.destroy();

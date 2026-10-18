@@ -7,6 +7,10 @@
 // 主进程那条链。本桥把渲染端 `api.theme.*` 直接接到探针注册的真 handler。
 const { contextBridge, ipcRenderer } = require("electron");
 
+// 【MC-045 复核】与生产 preload 同一个存在性标记(见 `lib/platform.ts` 的
+// `isElectron`)—— 真 App 的 store 据此决定是否走只有桌面端才有的 RPC。
+contextBridge.exposeInMainWorld("mcodeElectron", true);
+
 contextBridge.exposeInMainWorld("__electronTheme", {
   get: () => ipcRenderer.invoke("theme:get"),
   set: (input) => ipcRenderer.invoke("theme:set", input),
@@ -15,4 +19,16 @@ contextBridge.exposeInMainWorld("__electronTheme", {
     ipcRenderer.on("theme:changed", listener);
     return () => ipcRenderer.off("theme:changed", listener);
   },
+});
+
+// 【ARC-005】节点安装审批的**真推送通道** —— 与生产 preload 的
+// `api.on.nodeInstallApproval` 同一形状（`ipcRenderer.on(WORKFLOW_ENGINE_NODE_INSTALL_APPROVAL)`）。
+// 仅 `?panel=engine-runtime` 的页面启用；其余面板的 `on` 仍是 api-stub 的 noop。
+contextBridge.exposeInMainWorld("__electronNodeApproval", {
+  onApproval: (cb) => {
+    const listener = (_event, msg) => cb(msg);
+    ipcRenderer.on("workflowEngine:nodeInstallApproval", listener);
+    return () => ipcRenderer.off("workflowEngine:nodeInstallApproval", listener);
+  },
+  respond: (input) => ipcRenderer.invoke("workflowEngine:respondNodeInstallApproval", input),
 });

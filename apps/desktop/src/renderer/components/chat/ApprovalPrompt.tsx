@@ -3,6 +3,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useApprovalArming } from "@renderer/hooks/useApprovalArming.js";
 import { toolSummary } from "./activityShared.js";
 import { APP_DANGER_APPROVAL_PREFIX } from "@contracts/appControl";
 import {
@@ -36,10 +37,15 @@ import {
  * The header shows "n / total" only when total > 1 so a single approval
  * stays visually quiet.
  *
- * Keyboard: Enter allows the head, Esc denies. The "允许" button auto-focuses
- * on mount so Enter works without an extra click. This is one-shot — when
- * the queue shifts, this card unmounts and the next one auto-focuses its
- * own button via the same effect.
+ * Keyboard / input protection (ARC-005): Esc denies. The card itself (not the
+ * "允许" button) takes focus on mount and on every queue head shift, so a
+ * stray Enter cannot approve. The "允许" button additionally stays disabled
+ * for `APPROVAL_ARM_DELAY_MS` after the request appears (shared with the
+ * engine node-install approval card via `useApprovalArming`) — double-clicks
+ * and the Enter that was already in flight when the card rendered land on
+ * nothing. Enter still activates "允许" once the user deliberately Tabs to it
+ * and the delay has elapsed; that is explicit consent. This is one-shot —
+ * when the queue shifts, this card unmounts and the next one re-arms.
  */
 export function ApprovalPrompt({
   providerName,
@@ -69,8 +75,9 @@ export function ApprovalPrompt({
   const promptActive = active && !settingsOpen;
   const [open, setOpen] = useState(false);
   const [always, setAlways] = useState(false);
-  const allowRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  // 「允许」开卡后短延迟才可点（ARC-005 输入保护，与节点安装审批卡共用一份）。
+  const allowArmed = useApprovalArming(queuePosition);
 
   // One-line hint via the shared toolSummary (activityShared) so the user sees what
   // the tool is about without expanding.
@@ -78,14 +85,14 @@ export function ApprovalPrompt({
   // mcode-app 的高风险操作每次都要本人点:不给「始终允许」(主进程那头也不认)。
   const allowAlways = !toolName.startsWith(APP_DANGER_APPROVAL_PREFIX);
 
-  // Auto-focus the "允许" button on mount (and on every queue head shift),
-  // so Enter confirms without an extra click. Also bring the whole card
-  // into view in case the queue scrolled it out.
+  // Focus the CARD, never the "允许" button (ARC-005): with focus on the
+  // alertdialog itself, a stray Enter has no action to activate. Also bring
+  // the whole card into view in case the queue scrolled it out.
   useEffect(() => {
     if (!promptActive || !cardRef.current?.getClientRects().length ||
         document.querySelector('[aria-modal="true"]')) return;
-    allowRef.current?.focus();
-    cardRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    cardRef.current.focus({ preventScroll: true });
+    cardRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [promptActive, toolName, queuePosition]);
 
   // Keyboard decisions are local to this card, never document-wide:
@@ -101,13 +108,14 @@ export function ApprovalPrompt({
   return (
     <div
       ref={cardRef}
+      tabIndex={-1}
       onKeyDown={(e) => {
         if (!promptActive || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 ||
             !e.currentTarget.contains(e.target as Node)) return;
         if (e.key === "Escape") {
           e.preventDefault();
           e.stopPropagation();
-          onDecide(false);
+          decide(false);
         }
       }}
       role="alertdialog"
@@ -204,13 +212,15 @@ export function ApprovalPrompt({
               submit — the Button component has no warning variant, so this is
               a single purpose-built button rather than <Button variant>. */}
           <button
-            ref={allowRef}
             type="button"
             onClick={() => decide(true)}
+            disabled={!allowArmed}
+            aria-disabled={!allowArmed}
             title={t("chat.approval.allowTitle")}
             className={cn(
               "inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium transition-colors",
               "bg-warning text-surface hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning/50",
+              "disabled:cursor-not-allowed disabled:opacity-50",
             )}
           >
             <IconCheck size={12} />

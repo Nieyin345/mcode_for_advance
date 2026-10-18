@@ -40,6 +40,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
+import { useApprovalArming } from "@renderer/hooks/useApprovalArming.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Badge, Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -494,12 +495,23 @@ export function EngineNodePackagesSection() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [approval, setApproval] = useState<Extract<Parameters<Parameters<typeof api.on.nodeInstallApproval>[0]>[0], { channel: "workflowEngine:nodeInstallApproval" }> | null>(null);
+  const approvalCardRef = useRef<HTMLDivElement>(null);
+  // 【ARC-005】审批卡输入保护：「允许安装」开卡后短延迟才可点（与 Claude 工具
+  // 审批卡共用 useApprovalArming 一份实现）；Esc 视为拒绝。
+  const allowArmed = useApprovalArming(approval?.requestId ?? null);
 
   // 主进程推来的审批卡：一次一张（安装是串行动作，不会并发）。
   useEffect(() => {
     const off = api.on.nodeInstallApproval((msg) => setApproval(msg));
     return off;
   }, []);
+
+  // 默认焦点落在卡片本身（不是「允许安装」）：误按回车没有可激活的动作。
+  useEffect(() => {
+    if (approval === null) return;
+    // 同步阶段把焦点移进卡：卡片挂载后的同一提交里完成。
+    approvalCardRef.current?.focus({ preventScroll: true });
+  }, [approval?.requestId]);
 
   const respond = async (approved: boolean): Promise<void> => {
     if (approval === null) return;
@@ -577,7 +589,24 @@ export function EngineNodePackagesSection() {
       {error !== null && <ErrorNote title={t("settings.workflows.engine.nodesInstallFailed")}>{error}</ErrorNote>}
       {notice !== null && <p className="text-[0.7857em] text-content-muted">{notice}</p>}
       {approval !== null && (
-        <div className="space-y-2 rounded border border-warning/50 bg-warning/10 p-3 text-[0.7857em]" data-engine-approval="">
+        <div
+          ref={approvalCardRef}
+          tabIndex={-1}
+          role="alertdialog"
+          aria-label={t("settings.workflows.engine.nodesApprovalTitle")}
+          className="space-y-2 rounded border border-warning/50 bg-warning/10 p-3 text-[0.7857em] focus:outline-none"
+          data-engine-approval=""
+          onKeyDown={(e) => {
+            // 【ARC-005】Esc = 拒绝（明着回答这一次 requestId）。没有「关闭卡片但
+            // 不作答」这条路：不作答会让主进程等到超时，用户却以为已经取消了。
+            // 输入法合成中的按键不当作 Esc（与 ApprovalPrompt 同一守卫）。
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+            if (e.key !== "Escape") return;
+            e.preventDefault();
+            e.stopPropagation();
+            void respond(false);
+          }}
+        >
           <div className="font-semibold">{t("settings.workflows.engine.nodesApprovalTitle")}</div>
           <p>{t("settings.workflows.engine.nodesApprovalBody")}</p>
           <div className="space-y-0.5 font-mono text-content-muted">
@@ -592,8 +621,18 @@ export function EngineNodePackagesSection() {
             <p className="text-warning">{t("settings.workflows.engine.nodesApprovalNetwork")}</p>
           )}
           <div className="flex gap-2">
-            <Button size="sm" variant="primary" onClick={() => void respond(true)}>{t("settings.workflows.engine.nodesApprovalAllow")}</Button>
+            {/* 「拒绝」先渲染且立即可用；「允许安装」开卡 500ms 内不可点（防连击/
+                与开卡撞车的回车误批）。顺序 = Tab 先到拒绝。 */}
             <Button size="sm" variant="secondary" onClick={() => void respond(false)}>{t("settings.workflows.engine.nodesApprovalDeny")}</Button>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={!allowArmed}
+              aria-disabled={!allowArmed}
+              onClick={() => void respond(true)}
+            >
+              {t("settings.workflows.engine.nodesApprovalAllow")}
+            </Button>
           </div>
         </div>
       )}
