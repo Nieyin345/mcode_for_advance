@@ -5,7 +5,7 @@ import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, HintLabel, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, ErrorNote, HintLabel, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
 import {
   IconPlus,
   IconTrash,
@@ -426,15 +426,43 @@ export function CustomModelsPanel() {
   const [codexForm, setCodexForm] = useState<CodexFormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * 【MC-026 复核·设置页读失败】三个家族的 provider 列表读取失败 —— 与"没有供应商
+   * 配置"必须分开。
+   *
+   * 从前 `reloadPi` / `reloadCodex` 失败只 `console.error`,Claude 那条读的是 store
+   * 里的 `reloadCustomModels`(同样只 console)。三条路的失败都表现成**空列表**:
+   * 用户看到「还没有供应商配置」并照着它重建,而他原有的配置其实还在,只是没读出来 ——
+   * 面板里没有一句解释、没有重试。现在按家族记失败原因,顶部显式红条 +「重试」;
+   * 重试**真的重发**对应的那一条 RPC,成功后红条消失。
+   *
+   * 为什么不并进 `error`(保存/校验错误):那条会被下一次表单编辑清掉,而读失败要
+   * 一直站到重试成功 —— 两条生命周期不同。
+   */
+  const [listErrors, setListErrors] = useState<Partial<Record<Family, string>>>({});
   const [test, setTest] = useState<TestState>({ status: "idle" });
   const [pendingDelete, setPendingDelete] = useState<Selection & { id: string } | null>(null);
+
+  const setFamilyError = (family: Family, message: string | null) =>
+    setListErrors((prev) => {
+      if (message === null) {
+        if (!(family in prev)) return prev;
+        const next = { ...prev };
+        delete next[family];
+        return next;
+      }
+      return { ...prev, [family]: message };
+    });
 
   const reloadPi = async () => {
     try {
       const { providers } = await api.piModels.list();
       setPiProviders(providers);
+      setFamilyError("pi", null);
     } catch (err) {
       console.error("piModels.list failed:", err);
+      // 【MC-026 复核】读失败 ≠ 没有配置:原因站到顶部红条上,别让空列表冒充"还没配"。
+      setFamilyError("pi", (err as Error).message);
     }
   };
 
@@ -442,14 +470,26 @@ export function CustomModelsPanel() {
     try {
       const { providers } = await api.codexModels.list();
       setCodexProviders(providers);
+      setFamilyError("codex", null);
     } catch (err) {
       console.error("codexModels.list failed:", err);
+      setFamilyError("codex", (err as Error).message);
     }
   };
 
+  /** Claude 的列表来自 store(`reloadCustomModels`);它把失败吞成 console,这里按
+   *  返回值把事实与**原因**搬到面板上(store 那次改动只让返回值带上原因,行为不变)。 */
+  const reloadClaude = async () => {
+    const reason = await reloadCustomModels();
+    setFamilyError("claude", reason);
+  };
+
   useEffect(() => {
+    void reloadClaude();
     void reloadPi();
     void reloadCodex();
+    // 只在挂载时拉一次;重试走下面的按钮(各自重发自己那条 RPC)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const listItems = useMemo<ListItem[]>(() => {
@@ -674,7 +714,6 @@ export function CustomModelsPanel() {
       void reloadCustomModels();
     }
   };
-
   const runClaudeTest = async (idx: number) => {
     if (!claudeForm) return;
     // 网页端没有端点可探 —— 它的"连通性"就是浏览器扩展有没有连上这条桥。
@@ -917,6 +956,34 @@ export function CustomModelsPanel() {
         </div>
       )}
 
+      {/* 【MC-026 复核】provider 清单**读失败** —— 与上面的「密钥表损坏」和下面的
+          「还没有供应商配置」是三件不同的事。从前读失败只进 console、列表画成空,
+          用户会照着重建设置;现在红条说清是哪一个家族读不出来、原因是什么,并给
+          「重试」——重试真的重发那一条 RPC。 */}
+      {(listErrors.claude || listErrors.pi || listErrors.codex) && (
+        <div data-slot="providers-load-error" className="mb-3 space-y-1">
+          {(["claude", "pi", "codex"] as const).map((family) =>
+            listErrors[family] ? (
+              <ErrorNote
+                key={family}
+                title={t("settings.customModels.providersLoadFailed")}
+                action={
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void (family === "claude" ? reloadClaude() : family === "pi" ? reloadPi() : reloadCodex())}
+                  >
+                    {t("common.retry")}
+                  </Button>
+                }
+              >
+                {family === "claude" ? "Claude" : family === "pi" ? "Pi" : "Codex"} · {listErrors[family]}
+              </ErrorNote>
+            ) : null,
+          )}
+        </div>
+      )}
+
       {/* ───────── Claude / Pi family tabs ───────── */}
       <div className="mb-3 flex w-fit items-center gap-0.5 rounded-lg border border-edge bg-surface/40 p-0.5">
         {(["claude", "pi", "codex"] as const).map((k) => {
@@ -989,7 +1056,9 @@ export function CustomModelsPanel() {
                 )}
               </div>
             )}
-            {listItems.length === 0 && !(selection?.id === "new" && selection.kind === tab) && (
+            {listItems.length === 0 && !(selection?.id === "new" && selection.kind === tab) && !listErrors[tab] && (
+              // 【MC-026 复核】读失败时**不画「还没有供应商配置」** —— 那会让用户
+              // 照着重建设置,而他原有的配置其实只是没读出来(顶部红条已说明)。
               <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
                 {t("settings.customModels.emptyProviders")}
               </div>

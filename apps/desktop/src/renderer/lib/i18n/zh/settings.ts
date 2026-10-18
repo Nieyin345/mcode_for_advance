@@ -479,6 +479,7 @@ export const zh = {
   "settings.customModels.listModelsFailed": "拉不到模型列表:{error}。可以继续手动填模型 id。",
   "settings.customModels.listModelsEmpty": "端点没有返回任何模型。请手动填模型 id。",
   "settings.customModels.storeInvalid": "密钥表读取失败，下面的列表可能不完整（读不出来的条目已按“没有”显示）。盘上数据没有被改动 —— 重新配置受影响的那几项即可覆盖坏记录。",
+  "settings.customModels.providersLoadFailed": "供应商清单读取失败",
   "settings.customModels.apiKeyHint": "密钥经 safeStorage 加密存于设置表,turn 开始时注入到 Pi。",
   "settings.customModels.apiKeyKeepPlaceholder": "留空 = 保持现有 Key",
   "settings.customModels.authHeaderLabel": "自动添加 Authorization: Bearer 请求头",

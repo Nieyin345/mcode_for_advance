@@ -225,7 +225,17 @@ export function EngineToolsPanel() {
               codex: snap.engines.codex.exclude,
             } : undefined}
           />
-          {rpc.error && <ErrorNote>{rpc.error.message}</ErrorNote>}
+          {rpc.error && (
+            <ErrorNote
+              action={
+                <Button size="sm" variant="ghost" onClick={() => void rpc.refetch()}>
+                  {t("common.retry")}
+                </Button>
+              }
+            >
+              {rpc.error.message}
+            </ErrorNote>
+          )}
           {/* 【MC-071】策略文件损坏时**显式告警**,不把 fail-open 当用户主动启用。
               主进程已据 last-good 保守恢复(或无备份时按不设限),这里把那一事实讲出来。 */}
           {snap?.status === "INVALID" && (

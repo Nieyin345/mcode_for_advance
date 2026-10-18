@@ -5404,15 +5404,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     persistComposerSelection(get());
   },
 
-  reloadCustomModels: async () => {
+  /** 重新读自定义模型清单。**返回失败原因(null = 成功)** —— 设置面板据此把"读失败"
+   *  与"还没有配置"分开显示,并把主进程给的原因原样摆到界面上(【MC-026 复核】从前失败
+   *  只 console,面板画成空列表 + 让用户照着重建设置)。返回值只加不改:现有调用方忽略
+   *  返回值,行为不变。 */
+  reloadCustomModels: async (): Promise<string | null> => {
     try {
       const { models, storeInvalid } = await api.customModel.list();
       set({ customModels: models, customModelsStoreInvalid: storeInvalid });
       // A persisted composer pick whose custom config was deleted falls back
       // to auto.
       validateComposerSelection(set, get);
+      return null;
     } catch (err) {
       console.error("reloadCustomModels failed:", err);
+      return err instanceof Error ? err.message : String(err);
     }
   },
 

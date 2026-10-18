@@ -998,7 +998,14 @@ export function WorkflowLibraryView({
             )}
             {listError !== null && (
               <div className="px-2 py-3 text-[0.7143em] leading-relaxed text-danger">
-                {t("settings.workflows.loadFailed", { error: listError })}
+                <div>{t("settings.workflows.loadFailed", { error: listError })}</div>
+                {/* 【MC-026 复核·设置页读失败】库列表读失败必须给**重试入口** ——
+                    从前这里只有一行红字,用户想再读一次只能切走再切回来(那也不是
+                    用户知道的一条"再试一次"的路径)。重试真的重发 `workflow.list`。 */}
+                <Button variant="ghost" size="sm" onClick={() => void loadList()} className="mt-1 gap-1">
+                  <IconRefresh size={12} />
+                  {t("common.retry")}
+                </Button>
               </div>
             )}
           </nav>

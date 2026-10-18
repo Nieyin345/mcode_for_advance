@@ -63,6 +63,8 @@ export function resetApiStub(): void {
   failSetKeys.clear();
   vaultFailures.length = 0;
   vaultCalls = 0;
+  panelFailures.clear();
+  panelCallCounts.clear();
   vaultStatus = {
     encryptionAvailable: true,
     persistLogin: true,
@@ -73,7 +75,7 @@ export function resetApiStub(): void {
   };
 }
 
-export const api = {
+const settingsApi = {
   setting: {
     get(input: { key: string }): Promise<{ value: string | null }> {
       gets.push(input.key);
@@ -118,12 +120,106 @@ function shell(path: string): unknown {
   });
 }
 
-export default new Proxy({} as Record<string, unknown>, {
+/* ── 【MC-026 复核】三个设置面板的读/存注入面 ─────────────────────────────────
+ *
+ * 与上面的 setting.get/set 同一套手法:`failNext<Rpc>` 注入**下一次**失败,
+ * `<rpc>Calls()` 数调用次数(重试是否真的重发就看它)。面板挂载时各自读一遍,
+ * 所以"读失败"场景用 failNext(只砸第一次);"重试成功"自然是第二次。 */
+
+type PanelRpc = "customModel.list" | "piModels.list" | "codexModels.list" | "engineTools.get" | "workflow.list" | "workflow.get" | "workflow.save" | "engineTools.set";
+const panelFailures = new Map<PanelRpc, string[]>();
+const panelCallCounts = new Map<PanelRpc, number>();
+
+export function failNextPanel(rpc: PanelRpc, message: string): void {
+  const q = panelFailures.get(rpc) ?? [];
+  q.push(message);
+  panelFailures.set(rpc, q);
+}
+export function panelCalls(rpc: PanelRpc): number {
+  return panelCallCounts.get(rpc) ?? 0;
+}
+
+/** 面板类 RPC 夹具的返回值(与生产同形到消费方只读的那几个字段)。 */
+const customModels: Array<Record<string, unknown>> = [];
+let engineSnapshot: Record<string, unknown> = {
+  engines: {
+    claude: { exclude: [], supported: true, known: ["Bash", "Read"], guidance: "" },
+    pi: { exclude: [], supported: true, known: ["read", "bash"], guidance: "" },
+    codex: { exclude: [], supported: false, known: [], guidance: "" },
+  },
+  status: "MISSING",
+};
+const workflowDocs = new Map<string, Record<string, unknown>>([
+  ["auto-1", { id: "auto-1", name: "每日整理", nodes: [], edges: [], builtin: false, updatedAt: 1 }],
+]);
+
+function panelInvoke(rpc: PanelRpc, args: unknown[]): Promise<unknown> {
+  panelCallCounts.set(rpc, (panelCallCounts.get(rpc) ?? 0) + 1);
+  const queue = panelFailures.get(rpc);
+  if (queue !== undefined && queue.length > 0) {
+    const message = queue.shift()!;
+    return Promise.reject(new Error(message));
+  }
+  switch (rpc) {
+    case "customModel.list":
+      return Promise.resolve({ models: [...customModels], storeInvalid: false });
+    case "piModels.list":
+      return Promise.resolve({ providers: {} });
+    case "codexModels.list":
+      return Promise.resolve({ providers: [] });
+    case "engineTools.get":
+      return Promise.resolve(engineSnapshot);
+    case "engineTools.set":
+      return Promise.resolve({ ok: true, snapshot: engineSnapshot });
+    case "workflow.list":
+      return Promise.resolve({
+        workflows: [...workflowDocs.values()].map((d) => ({ ...d, kind: "graph", trigger: { kind: "manual" } })),
+      });
+    case "workflow.get": {
+      const id = (args[0] as { id?: string } | undefined)?.id;
+      return Promise.resolve({ workflow: workflowDocs.get(id ?? "") ?? null, review: null });
+    }
+    case "workflow.save":
+      return Promise.resolve({ ok: true });
+  }
+}
+
+const panelApi = {
+  customModel: { list: () => panelInvoke("customModel.list", []) },
+  piModels: { list: () => panelInvoke("piModels.list", []) },
+  codexModels: { list: () => panelInvoke("codexModels.list", []) },
+  engineTools: {
+    get: () => panelInvoke("engineTools.get", []),
+    set: (input: unknown) => panelInvoke("engineTools.set", [input]),
+  },
+  workflow: {
+    list: () => panelInvoke("workflow.list", []),
+    get: (input: unknown) => panelInvoke("workflow.get", [input]),
+    save: (input: unknown) => panelInvoke("workflow.save", [input]),
+    nodeTypes: () => Promise.resolve({ entries: [], problems: [] }),
+    agentProfiles: () => Promise.resolve({ profiles: [], problems: [] }),
+  },
+  project: { list: () => Promise.resolve({ projects: [{ id: "p1", name: "项目", path: "C:/p1" }] }) },
+  automation: {
+    runs: () => Promise.resolve({ runs: [] }),
+    statusAll: () => Promise.resolve([]),
+  },
+};
+
+/** 命名导出 `api` 与默认导出**同一份** —— 组件用的是 `import { api }`,
+ *  测试用的是 `import * as stub`,两边必须看到同一组注入面。 */
+const apiProxy = new Proxy({} as Record<string, unknown>, {
   get(_t, prop) {
-    if (prop === "setting") return api.setting;
-    if (prop === "pickFolder") return api.pickFolder;
-    if (prop === "browser") return api.browser;
+    if (prop === "setting") return settingsApi.setting;
+    if (prop === "pickFolder") return settingsApi.pickFolder;
+    if (prop === "browser") return settingsApi.browser;
+    if (typeof prop === "string" && Object.prototype.hasOwnProperty.call(panelApi, prop)) {
+      return (panelApi as Record<string, unknown>)[prop];
+    }
+    if (prop === "on") return new Proxy({}, { get: () => () => () => {} });
     if (typeof prop !== "string") return undefined;
     return shell(prop);
   },
 });
+export { apiProxy as api };
+export default apiProxy;

@@ -129,6 +129,18 @@ export function isValidElement(v: unknown): boolean {
 }
 export const StrictMode = Fragment;
 
+/* ── 【MC-026 复核】面板级组件需要的两个最小实现 ──────────────────────────
+ *
+ * `WorkflowLibraryView` 的执行链里 `CodeParamField` 用了 `lazy` + `Suspense`;
+ * 假运行时只渲染**根组件**,这些子组件只以节点形式留在树里,所以:
+ *   - `lazy` 返回一个"永不渲染"的惰性组件——它不会被执行,但导入面要完整;
+ *   - `Suspense` 是透传 children 的包装(与 Fragment 同形)。
+ * 两者都**不改变本套件的判据面**(状态与按钮仍在根组件的树里)。 */
+export function lazy<T>(_factory: () => Promise<{ default: T }>): T {
+  return (() => null) as unknown as T;
+}
+export const Suspense: (p: { children?: unknown }) => unknown = (p) => p.children;
+
 // ── 测试侧的驱动面 ────────────────────────────────────────────────────────
 export function __mount(fn: () => unknown): void {
   rootFn = fn;
@@ -197,5 +209,5 @@ export default {
   useState, useReducer, useRef, useMemo, useCallback, useEffect, useLayoutEffect,
   useInsertionEffect, useSyncExternalStore, useDebugValue, useId, useTransition,
   useImperativeHandle, useContext, createContext, createElement, Fragment, memo,
-  forwardRef, isValidElement, StrictMode,
+  forwardRef, isValidElement, StrictMode, lazy, Suspense,
 };

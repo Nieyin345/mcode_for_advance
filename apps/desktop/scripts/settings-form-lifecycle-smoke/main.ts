@@ -318,5 +318,274 @@ console.log("\n【MC-023】登录开关:保管库保存被拒 / 恢复失败的�
   check("★ 健康路径:没有保管库错误行(防「永远在报」)", !hasErrorRow(), hasErrorRow());
 }
 
+/* ═════════ 【MC-026 复核】三个常用面板的「读失败 / 重试真重发 / 保存失败保留输入」 ═════════
+ *
+ * 上面各节挂的是 SettingRow 级的叶子;这一节按协调要求走**模型配置 / 引擎工具 /
+ * 自动化**三个真实面板组件(它们自带多层组合:列表、表单、错误条、重试按钮)。
+ *
+ * 手法与上面相同:真组件 + 假 React 运行时 + 按 RPC 注入失败。`__mount` 只渲染**根**
+ * 组件,子组件以 {type, props} 留在树里 —— 对这三个面板恰好够用,因为"读失败的状态
+ * 与错误条"都长在根组件上,而「重试」按钮的 onClick 也挂在根组件的树里:
+ *   - 模型配置: `listErrors` 状态 + 顶部 ErrorNote(根组件持有);
+ *   - 引擎工具: `useRpc().error` + 根组件渲染的 ErrorNote;
+ *   - 自动化:   WorkflowLibraryView 的 `listError` + 左栏重试。
+ * 每个面板三条:错误可见 / 点重试真的重发(计数 +1)且成功后错误消失 / 保存失败时
+ * 用户输入仍在(自动化那条:新建时 workbook.save 失败,错误可见)。
+ */
+
+import { CustomModelsPanel } from "@renderer/components/settings/CustomModelsPanel.js";
+import { EngineToolsPanel } from "@renderer/components/settings/EngineToolsPanel.js";
+import { WorkflowLibraryView } from "@renderer/components/settings/workflows/WorkflowLibraryView.js";
+
+/** run.sh 生成的真实节点类型目录(内置清单;数据根/插件目录已换桩)。 */
+const SMOKE_CATALOG = JSON.parse(process.env.MCODE_SMOKE_NODE_CATALOG ?? "null") as import("@contracts/nodeType").NodeTypeCatalog | null;
+if (SMOKE_CATALOG === null) throw new Error("MCODE_SMOKE_NODE_CATALOG 未设置 —— 请用 run.sh 跑(它会生成真实节点类型目录)");
+
+/** 收集一段子树里的全部元素节点(含 children / action / descExtra)。 */
+function nodesOfTree(rootNodes: El[]): El[] {
+  const out: El[] = [];
+  const walk = (n: unknown): void => {
+    if (Array.isArray(n)) return void n.forEach(walk);
+    if (!n || typeof n !== "object") return;
+    const e = n as { type?: unknown; props?: Record<string, unknown> };
+    if (!("type" in e)) return;
+    out.push({ type: e.type, props: e.props ?? {} });
+    walk(e.props?.children);
+    walk(e.props?.descExtra);
+    walk(e.props?.action);
+  };
+  walk(rootNodes);
+  return out;
+}
+
+/** 页面上所有可见文本(拼成一串),用于"错误原因/空态文案"这一类判据。 */
+function textOf(nodes: El[]): string {
+  const parts: string[] = [];
+  const walk = (n: unknown): void => {
+    if (n === null || n === undefined || n === false || n === true) return;
+    if (typeof n === "string" || typeof n === "number") return void parts.push(String(n));
+    if (Array.isArray(n)) return void n.forEach(walk);
+    if (typeof n === "object") walk((n as { props?: { children?: unknown } }).props?.children);
+  };
+  for (const n of nodes) walk(n.props.children);
+  return parts.join(" ");
+}
+
+/** 找 props 里带 `onClick` 且 children 文本含 label 的按钮节点。 */
+function findButton(nodes: El[], label: string): El | undefined {
+  return nodes.find((n) => {
+    if (typeof n.props.onClick !== "function") return false;
+    const kids = JSON.stringify(n.props.children ?? "");
+    return kids.includes(label);
+  });
+}
+
+/** 节点数组里有没有一个"看起来像 ErrorNote"的(role alert/status 或函数组件名)。 */
+function hasErrorNote(nodes: El[]): boolean {
+  return nodes.some(
+    (n) => n.props.role === "alert" || n.props.role === "status" || (typeof n.type === "function" && (n.type as { name?: string }).name === "ErrorNote"),
+  );
+}
+
+/* ───────── ⑫ 模型配置:provider 清单读失败 → 红条 + 重试,重试真重发、成功后消失 ───────── */
+console.log("\n【MC-026 复核】模型配置:provider 清单读失败不再画成「还没有供应商配置」");
+{
+  stub.resetApiStub();
+  stub.failNextPanel("customModel.list", "AUDIT_FAKE_MODELS_LIST_REJECTION");
+  __mount(() => CustomModelsPanel());
+  await __flush();
+  const panelNodes = nodesOfTree(nodes());
+  const text = textOf(panelNodes);
+  check("★ 模型配置:claude 清单读失败出现可读错误条", hasErrorNote(panelNodes), text.slice(0, 200));
+  check(
+    "★ 模型配置:错误条里点名失败原因(注入原因原样可见,或标题为「供应商清单读取失败」)",
+    text.includes("AUDIT_FAKE_MODELS_LIST_REJECTION") || text.includes("供应商清单读取失败"),
+    text.slice(0, 300),
+  );
+  check("★ 模型配置:读失败时不冒充「还没有供应商配置」", !text.includes("还没有供应商配置"), text.slice(0, 300));
+  const retry = findButton(panelNodes, "重试");
+  check("守卫:模型配置的错误条带「重试」按钮", !!retry, panelNodes.filter((n) => typeof n.props.onClick === "function").map((n) => n.props.children));
+  const before = stub.panelCalls("customModel.list");
+  (retry?.props.onClick as (() => void) | undefined)?.();
+  await __flush();
+  check("★ 模型配置:点「重试」真的重发了 customModel.list(计数 +1)", stub.panelCalls("customModel.list") === before + 1, {
+    before,
+    after: stub.panelCalls("customModel.list"),
+  });
+  check("★ 模型配置:重试成功后错误条消失", !hasErrorNote(nodesOfTree(nodes())), textOf(nodesOfTree(nodes())).slice(0, 200));
+  // 健康路径(防空过):无注入时没有任何错误条。
+  stub.resetApiStub();
+  __mount(() => CustomModelsPanel());
+  await __flush();
+  check("★ 模型配置健康路径:无错误条(防「永远在报」)", !hasErrorNote(nodesOfTree(nodes())));
+}
+
+/* ───────── ⑬ 引擎工具:engineTools.get 读失败 → 错误 + 重试真重发 ───────── */
+console.log("\n【MC-026 复核】引擎工具:engineTools.get 读失败有可读错误与重试入口");
+{
+  stub.resetApiStub();
+  stub.failNextPanel("engineTools.get", "AUDIT_FAKE_ENGINE_TOOLS_REJECTION");
+  __mount(() => EngineToolsPanel());
+  await __flush();
+  const panelNodes = nodesOfTree(nodes());
+  const text = textOf(panelNodes);
+  check("★ 引擎工具:读失败出现错误条(带原因)", hasErrorNote(panelNodes) && text.includes("AUDIT_FAKE_ENGINE_TOOLS_REJECTION"), text.slice(0, 300));
+  const retry = findButton(panelNodes, "重试");
+  check("★ 引擎工具:错误条带「重试」入口(从前只有一行字)", !!retry);
+  const before = stub.panelCalls("engineTools.get");
+  (retry?.props.onClick as (() => void) | undefined)?.();
+  await __flush();
+  check("★ 引擎工具:点「重试」真的重发了 engineTools.get(计数 +1)", stub.panelCalls("engineTools.get") === before + 1, {
+    before,
+    after: stub.panelCalls("engineTools.get"),
+  });
+  check("★ 引擎工具:重试成功后错误条消失", !hasErrorNote(nodesOfTree(nodes())), textOf(nodesOfTree(nodes())).slice(0, 300));
+  // 健康路径:无注入时正常列出引擎卡片(不误报)。
+  stub.resetApiStub();
+  __mount(() => EngineToolsPanel());
+  await __flush();
+  const healthyNodes = nodesOfTree(nodes());
+  const engineCards = healthyNodes.filter((n) => typeof n.props.engine === "string" && n.props.state !== undefined);
+  check(
+    "★ 引擎工具健康路径:无错误条且三个引擎卡片真的渲染出来",
+    !hasErrorNote(healthyNodes) && new Set(engineCards.map((n) => n.props.engine)).size === 3,
+    { error: hasErrorNote(healthyNodes), engines: [...new Set(engineCards.map((n) => n.props.engine))] },
+  );
+}
+
+/* ───────── ⑭ 自动化:工作流库读失败 → 红字 + 重试,重试真重发;保存失败保留输入 ───────── */
+console.log("\n【MC-026 复核】自动化:库列表读失败可重试;保存失败时用户输入不被回弹");
+{
+  stub.resetApiStub();
+  stub.failNextPanel("workflow.list", "AUDIT_FAKE_WORKFLOW_LIST_REJECTION");
+  __mount(() =>
+    WorkflowLibraryView({
+      purpose: "automation",
+      catalog: SMOKE_CATALOG,
+      catalogError: null,
+      onRetryCatalog: () => {},
+      profiles: [],
+      profileError: null,
+      onSaveProfile: async () => true,
+      onRemoveProfile: async () => {},
+    }),
+  );
+  await __flush();
+  const panelNodes = nodesOfTree(nodes());
+  const text = textOf(panelNodes);
+  check("★ 自动化:库列表读失败出现可读错误(不是空白/加载中)", text.includes("工作流库读不出来") && text.includes("AUDIT_FAKE_WORKFLOW_LIST_REJECTION"), text.slice(0, 300));
+  const retry = findButton(panelNodes, "重试");
+  check("★ 自动化:错误旁有「重试」入口(从前只有一行红字)", !!retry);
+  const before = stub.panelCalls("workflow.list");
+  (retry?.props.onClick as (() => void) | undefined)?.();
+  await __flush(80);
+  check("★ 自动化:点「重试」真的重发了 workflow.list(计数 +1)", stub.panelCalls("workflow.list") === before + 1, {
+    before,
+    after: stub.panelCalls("workflow.list"),
+  });
+  check("★ 自动化:重试成功后错误消失", !textOf(nodesOfTree(nodes())).includes("工作流库读不出来"), textOf(nodesOfTree(nodes())).slice(0, 300));
+}
+
+/* ───────── ⑮ 自动化:列表健康但 doc 读失败 →「打不开」可见;保存失败错误可见且不崩 ───────── */
+console.log("\n【MC-026 复核】自动化:打开文档失败要说出来(不是空白画布)");
+{
+  stub.resetApiStub();
+  stub.failNextPanel("workflow.get", "AUDIT_FAKE_WORKFLOW_GET_REJECTION");
+  __mount(() =>
+    WorkflowLibraryView({
+      purpose: "automation",
+      catalog: SMOKE_CATALOG,
+      catalogError: null,
+      onRetryCatalog: () => {},
+      profiles: [],
+      profileError: null,
+      onSaveProfile: async () => true,
+      onRemoveProfile: async () => {},
+      focusWorkflowId: "auto-1",
+    }),
+  );
+  await __flush(80);
+  const text = textOf(nodesOfTree(nodes()));
+  check("★ 自动化:doc 读取失败时点名「这个工作流打不开」并带原因", text.includes("这个工作流打不开") && text.includes("AUDIT_FAKE_WORKFLOW_GET_REJECTION"), text.slice(0, 400));
+  // 健康路径:不注入时 focusWorkflowId 能真的打开文档(列表 → doc 读成功)。
+  stub.resetApiStub();
+  __mount(() =>
+    WorkflowLibraryView({
+      purpose: "automation",
+      catalog: SMOKE_CATALOG,
+      catalogError: null,
+      onRetryCatalog: () => {},
+      profiles: [],
+      profileError: null,
+      onSaveProfile: async () => true,
+      onRemoveProfile: async () => {},
+      focusWorkflowId: "auto-1",
+    }),
+  );
+  await __flush(80);
+  const healthy = textOf(nodesOfTree(nodes()));
+  check("★ 自动化健康路径:文档打开、无「打不开」错误", !healthy.includes("这个工作流打不开") && healthy.includes("每日整理"), healthy.slice(0, 300));
+}
+
+/* ───────── ⑯ 自动化:保存失败 → 错误可见、用户输入不被回弹清空 ───────── */
+console.log("\n【MC-026 复核】自动化:保存失败时错误可见、编辑器里用户输入保持");
+{
+  stub.resetApiStub();
+  // 打开一条已存在的自动化。假运行时只执行**根组件** —— 检查器(NodeInspector)以
+  // 元素形式留在树里,它的 `doc` / `onUpdateWorkflow` props 就是用户键入所走的那条
+  // 回调(输入框 onChange → onUpdateWorkflow → edit())。从这里驱动与真实键入同源。
+  __mount(() =>
+    WorkflowLibraryView({
+      purpose: "automation",
+      catalog: SMOKE_CATALOG,
+      catalogError: null,
+      onRetryCatalog: () => {},
+      profiles: [],
+      profileError: null,
+      onSaveProfile: async () => true,
+      onRemoveProfile: async () => {},
+      focusWorkflowId: "auto-1",
+    }),
+  );
+  await __flush(80);
+  type InspectorDoc = { id?: string; name?: string };
+  const inspector = (): El | undefined =>
+    nodesOfTree(nodes()).find((n) => {
+      const doc = n.props.doc as InspectorDoc | undefined;
+      return typeof n.props.onUpdateWorkflow === "function" && doc?.id === "auto-1";
+    });
+  const workingName = (): string | undefined => (inspector()?.props.doc as InspectorDoc | undefined)?.name;
+  check("守卫:自动化打开后检查器渲染出来了(带 doc)", !!inspector(), nodesOfTree(nodes()).filter((n) => typeof n.props.onUpdateWorkflow === "function").length);
+  (inspector()?.props.onUpdateWorkflow as ((patch: Record<string, unknown>) => void) | undefined)?.({ name: "用户改过的名字" });
+  await __flush();
+  check(
+    "守卫:改名后工作副本里是用户输入",
+    workingName() === "用户改过的名字",
+    workingName(),
+  );
+  // 保存失败注入:点根树里的「保存」。
+  stub.failNextPanel("workflow.save", "AUDIT_FAKE_WORKFLOW_SAVE_REJECTION");
+  const saveBtn = findButton(nodesOfTree(nodes()), "保存");
+  check("守卫:有保存按钮", !!saveBtn, nodesOfTree(nodes()).filter((n) => typeof n.props.onClick === "function").map((n) => n.props.children));
+  (saveBtn?.props.onClick as (() => void) | undefined)?.();
+  await __flush(80);
+  type SaveStateShape = { kind?: string; message?: string };
+  const saveLine = nodesOfTree(nodes()).find((n) => {
+    const st = n.props.state as SaveStateShape | undefined;
+    return typeof st === "object" && st !== null && st.kind === "error";
+  });
+  const saveState = saveLine?.props.state as SaveStateShape | undefined;
+  check(
+    "★ 自动化:保存失败后保存状态行是 error 且带注入原因(用户看得见)",
+    saveState?.kind === "error" && String(saveState?.message ?? "").includes("AUDIT_FAKE_WORKFLOW_SAVE_REJECTION"),
+    saveState,
+  );
+  check(
+    "★ 自动化:保存失败后用户输入仍在(工作副本仍是用户改过的名字,没被回弹成已保存值)",
+    workingName() === "用户改过的名字",
+    { working: workingName(), saved: (inspector()?.props.savedDoc as InspectorDoc | undefined)?.name },
+  );
+}
+
 console.log(`\nsettings-form-lifecycle-smoke:${checks - failures}/${checks} 通过`);
 process.exit(failures === 0 ? 0 : 1);

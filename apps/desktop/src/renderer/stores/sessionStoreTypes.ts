@@ -1772,7 +1772,10 @@ export interface SessionState {
   setModel: (model: string) => void;
   setEffort: (effort: EffortLevel) => void;
   setCustomModel: (id: string | null, model?: string) => void;
-  reloadCustomModels: () => Promise<void>;
+  /** 重新读自定义模型清单(`null` = 读到了;字符串 = 读失败的原因 —— 设置面板据此
+   *  区分「读不出来」与「还没有配置」并把原因摆到界面上,见 CustomModelsPanel 的
+   *  MC-026 复核注释)。 */
+  reloadCustomModels: () => Promise<string | null>;
   /** Re-fetch language server states from main. Called on init and after any
    *  lsp mutation (install/toggle/setPath). Failures keep the existing list
    *  and surface through `lspLoadError` (the panel shows a retry banner).
