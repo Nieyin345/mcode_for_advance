@@ -45,6 +45,7 @@ import { createDbGuardedIpc } from "@main/ipc/dbGuardedIpc.js";
 import { registerWorkflowHandlers } from "@main/ipc/orchestration.js";
 import { invokeAppTool } from "@main/appControl/tools.js";
 import { closeDb, flushDb, initDb } from "@main/store/db.js";
+import { SettingRepo } from "@main/store/repositories.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import type { ProviderContext, ApprovalRequest, ProviderApprovalDecision } from "@contracts/provider";
 import type { IpcMain } from "electron";
@@ -336,6 +337,21 @@ export async function runWatchTemplatesCasProbe(dir: string): Promise<void> {
       await reopenDb();
     });
 
+    await check("★ MC-054:Agent 即使传显式 null 也不能跳过普通保存的 CAS", async () => {
+      const before = (await readTemplatesOnDisk()).raw;
+      await reopenDb();
+      const overwrite = await agentCall("automation.watchTemplatesSave", {
+        templates: [{ id: "tpl_null", name: "非法无条件覆盖", command: "echo null-bypass" }],
+        expectedRevision: null,
+      });
+      const reply = JSON.parse(overwrite.text) as { ok?: boolean; conflict?: boolean; error?: string };
+      assert(reply.ok === false && reply.conflict === true, "显式 null 绕过了 CAS:" + overwrite.text);
+      assert(reply.error?.includes("不能用 null") === true, "拒绝没有点明 null 绕过:" + overwrite.text);
+      const after = (await readTemplatesOnDisk()).raw;
+      assert(after === before, "显式 null 的恶意普通保存改动了盘上原字节");
+      await reopenDb();
+    });
+
     /* ── 3. WatchSegment 真组件：冲突后界面换成盘上内容 ─────────────────── */
 
     /** 在页面里开面板、用现写输入框存一条模板 —— 走的是**真组件**的同步围栏
@@ -410,6 +426,122 @@ export async function runWatchTemplatesCasProbe(dir: string): Promise<void> {
         assert(t.command.trim().length > 0, `盘上出现空命令模板:${JSON.stringify(t)}`);
       }
       await reopenDb();
+    });
+
+    /* 【MC-054】同一个真实 sql.js DB 下，模拟磁盘坏 JSON / 部分坏条目：
+     * UI/preload 返回健康度；普通保存拒写；被拒后坏原文逐字节保留。
+     * 无论断言成功与否，finally 都恢复 suite 之前的有效内容。 */
+    await check("★ MC-054:真 Electron 坏 JSON 的健康度可见、拒绝普通写且保全原字节", async () => {
+      const original = SettingRepo.get("automation.watch.templates");
+      const broken = "{MC054 deliberately broken JSON";
+      try {
+        SettingRepo.set("automation.watch.templates", broken);
+        await js("document.querySelector('div.fixed.inset-0.z-40')?.click()");
+        await panelOpen();
+        await until(async () => (await js<string>("document.body.innerText")).includes("备份并重建"), "损坏模板 UI 的重建按钮");
+        const pageText = await js<string>("document.body.innerText");
+        assert(pageText.includes("备份并重建"), "真实 WatchSegment 没展示损坏恢复入口");
+        const health = await js<{ health?: string; problems?: string[] }>("window.api.automation.watchTemplates()");
+        assert(health.health === "corrupt" && (health.problems?.length ?? 0) > 0,
+          "损坏数据库没有向页面明确报告:" + JSON.stringify(health));
+        const attempted = await js<{ ok?: boolean; error?: string }>(
+          `window.api.automation.saveWatchTemplates(${JSON.stringify({ templates: [{ id: "evil", name: "覆盖", command: "echo" }], expectedRevision: "stale" })})`,
+        );
+        assert(attempted.ok === false, "坏 JSON 仍能被普通保存覆盖:" + JSON.stringify(attempted));
+        assert(attempted.error?.includes("坏得读不出来") === true, "没有提供损坏诊断:" + JSON.stringify(attempted));
+        assert(SettingRepo.get("automation.watch.templates") === broken, "坏档原字节被写坏");
+      } finally {
+        if (original !== null) SettingRepo.set("automation.watch.templates", original);
+      }
+    });
+    await check("★ MC-054:真 Electron 部分损坏列表不得被整表保存抹掉", async () => {
+      const original = SettingRepo.get("automation.watch.templates");
+      const partial = JSON.stringify([
+        { id: "good", name: "有效模板", command: "echo good" },
+        { id: "broken", name: "未通过形状校验" },
+      ]);
+      try {
+        SettingRepo.set("automation.watch.templates", partial);
+        const health = await js<{ health?: string; problems?: string[]; templates?: unknown[] }>("window.api.automation.watchTemplates()");
+        assert(health.health === "partial" && health.templates?.length === 1 && (health.problems?.length ?? 0) > 0,
+          "部分坏档没有结构化暴露:" + JSON.stringify(health));
+        const attempted = await js<{ ok?: boolean; error?: string }>(
+          `window.api.automation.saveWatchTemplates(${JSON.stringify({ templates: [{ id: "good", name: "有效模板", command: "echo good" }], expectedRevision: "stale" })})`,
+        );
+        assert(attempted.ok === false && attempted.error?.includes("读不出来的条目") === true,
+          "部分损坏时没拒绝丢失未知条目:" + JSON.stringify(attempted));
+        assert(SettingRepo.get("automation.watch.templates") === partial, "部分坏档原字节被覆盖");
+      } finally {
+        if (original !== null) SettingRepo.set("automation.watch.templates", original);
+      }
+    });
+
+    /* 【MC-048 边角复核】真组件上验"删除失败 + 紧接着新增":
+     * 面板**先以健康状态打开**(四条都在),随后设置被写坏(模拟主进程写盘失败/读不动
+     * → 普通保存被拒),再点删除、紧接点存为模板:
+     *   - 两种操作都必须**可见地失败**,不能把删除画成成功;
+     *   - 界面列表与选择保持原样(不乐观确认),盘上原字节一字不动;
+     *   - 恢复后同一对操作都成功,面板 = 盘上。 */
+    await check("★ MC-048 边角:真组件删除失败 + 紧接着新增 → 可见失败、列表/选择不动、盘上不动", async () => {
+      const original = SettingRepo.get("automation.watch.templates");
+      assert(original !== null, "起点应有前一步保存的模板");
+      // 关掉再开面板:先以健康状态读到四条(上一步已恢复有效设置)。
+      await js("document.querySelector('div.fixed.inset-0.z-40')?.click()");
+      await panelOpen();
+      const names0 = await panelTemplateNames();
+      assert(names0.includes("A 面板加的模板"), `恢复后面板应读到四条:${JSON.stringify(names0)}`);
+      // 选中要删的那条,确认删除按钮可用。
+      await js(`document.querySelector('[role=combobox]').click()`);
+      await until(async () => (await js<number>("document.querySelectorAll('[role=option]').length")) > 0, "下拉展开");
+      await js(`[...document.querySelectorAll('[role=option]')].find((el) => el.textContent.trim() === 'A 面板加的模板').click()`);
+      await until(async () => (await js<boolean>(`(() => { const b = document.querySelector('button[title="删除这个模板"]'); return !!b && !b.disabled; })()`)), "删除按钮可用");
+      // 盘上被写坏 → 主进程对普通保存一律拒绝(先于 CAS 的健康分类分支)。
+      SettingRepo.set("automation.watch.templates", "{MC048 broken");
+      const beforeRaw = SettingRepo.get("automation.watch.templates");
+      try {
+        await js(`document.querySelector('button[title="删除这个模板"]').click()`);
+        await until(async () => (await js<string>("document.body.innerText")).includes("坏得读不出来"), "删除失败的错误在面板上可见");
+        // 紧接着新增(同一面板、同一围栏)。
+        await panelSaveTemplate("失败后新增", "echo must-not-land");
+        await until(async () => (await js<string>("document.body.innerText")).includes("坏得读不出来"), "新增失败的错误在面板上可见");
+        // 等待围栏回到 idle,再核对界面:四条一条不少、选择仍是被点的那条。
+        await until(async () => (await js<boolean>(`(() => { const b = document.querySelector('button[title="删除这个模板"]'); return !!b && !b.disabled; })()`)), "围栏回到 idle");
+        const names = await panelTemplateNames();
+        assert(names.includes("A 面板加的模板"), `删除失败后界面却把模板去掉了:${JSON.stringify(names)}`);
+        const selected = await js<string>("document.querySelector('[role=combobox]').textContent.trim()");
+        assert(selected.includes("A 面板加的模板"), `删除失败后选择被清空:${selected}`);
+        assert(SettingRepo.get("automation.watch.templates") === beforeRaw, "被拒的删除/新增改动了盘上原字节");
+        assert(!(await js<string>("document.body.innerText")).includes("失败后新增"), "新增失败却出现在界面列表里(乐观确认)");
+      } finally {
+        if (original !== null) SettingRepo.set("automation.watch.templates", original);
+      }
+    });
+
+    await check("★ MC-048 边角:恢复后真组件连续删一条、加一条 → 两笔都落盘且面板 = 盘上", async () => {
+      // 关掉再开:围栏重读恢复后的盘上内容。
+      await js("document.querySelector('div.fixed.inset-0.z-40')?.click()");
+      await panelOpen();
+      const names0 = await panelTemplateNames();
+      assert(names0.includes("A 面板加的模板"), `恢复后面板应读到盘上四条:${JSON.stringify(names0)}`);
+      // 选中「A 面板加的模板」并删除(真组件下拉 + 回收站按钮)。
+      await js(`document.querySelector('[role=combobox]').click()`);
+      await until(async () => (await js<number>("document.querySelectorAll('[role=option]').length")) > 0, "下拉展开");
+      await js(`[...document.querySelectorAll('[role=option]')].find((el) => el.textContent.trim() === 'A 面板加的模板').click()`);
+      await until(async () => (await js<boolean>("!!document.querySelector('button[title=\"删除这个模板\"]') && !document.querySelector('button[title=\"删除这个模板\"]').disabled")), "删除按钮可用");
+      await js(`document.querySelector('button[title="删除这个模板"]').click()`);
+      // 紧接着新增一条(包围栏排队/串行)。
+      await panelSaveTemplate("删除后新增", "echo after-delete");
+      await until(async () => {
+        const names = await panelTemplateNames();
+        return names.includes("删除后新增") && !names.includes("A 面板加的模板");
+      }, "界面显示删除 + 新增的结果");
+      const disk = await readTemplatesOnDisk();
+      await reopenDb();
+      const ids = disk.templates.map((t) => t.id);
+      assert(!disk.templates.some((t) => t.name === "A 面板加的模板"), `被删的模板仍在盘上:${JSON.stringify(ids)}`);
+      assert(disk.templates.some((t) => t.name === "删除后新增"), `新增没落盘:${JSON.stringify(ids)}`);
+      // 盘上其余三条一条不少(两笔不是互相覆盖,而是叠加)。
+      assert(disk.templates.length === 4, `盘上应有四条(原四条 - 删 1 + 加 1):${JSON.stringify(disk.templates.map((t) => t.name))}`);
     });
 
     await check("收尾：渲染端全程没有未捕获错误，库在套件目录里（不联网、不碰用户数据）", async () => {

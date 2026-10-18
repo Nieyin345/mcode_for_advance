@@ -249,12 +249,24 @@ console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过
   const call = async (channel: string, raw?: unknown): Promise<unknown> =>
     (await handlers.get(channel)!(null, raw));
 
-  eq("★ 四条 workflowEngine 通道全注册", [...handlers.keys()].sort(), [
+  // 【Gate E / MC-057】新增节点包读/安装/审批应答后不能再把合法新增通道当回归。
+  // 反向也要抓：这里列的全部必须注册且受审计，不允许悄悄出现未知通道。
+  const expectedChannels = [
     IPC.WORKFLOW_ENGINE_LIST, IPC.WORKFLOW_ENGINE_START, IPC.WORKFLOW_ENGINE_STATUS, IPC.WORKFLOW_ENGINE_STOP,
-  ].sort());
+    IPC.WORKFLOW_ENGINE_NODES_LIST, IPC.WORKFLOW_ENGINE_NODE_INSTALL, IPC.WORKFLOW_ENGINE_NODE_INSTALL_RESPOND,
+  ];
+  eq("★ workflowEngine 七条已声明通道精确注册（不允许未知通道）",
+    [...handlers.keys()].sort(), [...expectedChannels].sort());
   const rpc = new Set(registeredRpcChannels());
-  eq("每条都进 recordRpcHandler（Agent 也够得到同一个函数）",
-    [IPC.WORKFLOW_ENGINE_START, IPC.WORKFLOW_ENGINE_STOP, IPC.WORKFLOW_ENGINE_STATUS, IPC.WORKFLOW_ENGINE_LIST].filter((c) => !rpc.has(c)), []);
+  eq("★ 所有 workflowEngine 通道都进 recordRpcHandler（并非只校验旧四条）",
+    expectedChannels.filter((c) => !rpc.has(c)), []);
+  const unavailableInstall = await call(IPC.WORKFLOW_ENGINE_NODE_INSTALL, {
+    sourceDir: "C:/fake/node",
+    meta: { name: "fake-node", version: "0.0.1", source: "fixture", sha256: "f".repeat(64), license: "MIT", capabilities: [] },
+  }) as { ok: boolean; code?: string };
+  check("★ 未装配安装端口时节点安装 fail-closed", unavailableInstall.ok === false && unavailableInstall.code === "approval_unavailable", unavailableInstall);
+  const unsolicitedApproval = await call(IPC.WORKFLOW_ENGINE_NODE_INSTALL_RESPOND, { requestId: "a", approved: true }) as { ok: boolean };
+  eq("★ 无实际审批请求时任意应答都拒绝", unsolicitedApproval.ok, false);
 
   const started = (await call(IPC.WORKFLOW_ENGINE_START, { engineId: "node-red" })) as { ok: boolean; status?: { state: string; editorUrl: string | null } };
   eq("handler start → ok", started.ok, true);

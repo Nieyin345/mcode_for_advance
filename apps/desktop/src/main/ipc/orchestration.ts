@@ -556,10 +556,9 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     //   - **没给 revision**:一律拒绝,并明确告诉调用方先读 `automation.watchTemplates`
     //     拿 revision 再重试。旧调用方不会被静默放行。
     //
-    // 唯一的例外是 `expectedRevision` **显式**为 null 的迁移路径 —— 契约里用
-    // `z.union([string, z.null()])` 区分「没带字段」(拒绝) 与「明确声明我知道自己在
-    // 覆盖」(仍要求 null 只在重建口使用)。重建口是另一条 RPC
-    // (`automation.rebuildWatchTemplates`),那里才是唯一允许整表覆盖的入口。
+    // 旧版留下的第二个绕过口：普通 save 收到显式 null 就跳过 CAS。
+    // 即使 Agent/UI 明确传 null 也不得获得无条件覆盖能力；重建只能走单独
+    // `automation.rebuildWatchTemplates`（备份原始字节 + 审批）通道。
     const current = loadWatchTemplatesReport();
     if (input.expectedRevision === undefined) {
       log.warn("[workflow] 拒绝保存命令模板:调用方没有带 expectedRevision");
@@ -573,8 +572,16 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
           "如果你的本意是修复损坏的模板,请用「备份并重建」而不是普通保存。",
       };
     }
-    // 显式 `null` = "我知道自己在整表覆盖"(仅显式重建/迁移路径):跳过比对。
-    if (input.expectedRevision !== null && input.expectedRevision !== current.revision) {
+    if (input.expectedRevision === null) {
+      log.warn("[workflow] 拒绝保存命令模板:普通保存不允许用 null 跳过版本围栏");
+      return {
+        ok: false,
+        conflict: true,
+        currentRevision: current.revision,
+        error: "命令模板的普通保存必须携带当前原值版本(expectedRevision)，不能用 null 跳过并发保护。请先重新读取模板；若要修复损坏数据，请使用「备份并重建」专用入口。",
+      };
+    }
+    if (input.expectedRevision !== current.revision) {
       log.warn(`[workflow] 拒绝保存命令模板:版本已变(期望 ${input.expectedRevision},当前 ${current.revision})`);
       return {
         ok: false,
