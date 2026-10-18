@@ -193,27 +193,90 @@ export interface NodeRedFlow {
   [key: string]: unknown;
 }
 
-/** 迁移器版本：映射规则一变就 +1（报告可追溯到规则）。 */
-export const FLOW_MIGRATOR_VERSION = 1;
+/**
+ * 迁移器版本：映射规则一变就 +1（报告可追溯到规则）。
+ *
+ * v2（2026-10-19 节点统一）：`trigger` 按 triggerKind 分流到内置 `inject`/`watch`
+ * （仅应用事件保留 `mcode-trigger`）；`code` 删除 `mcode-code`，非 JS 语言走
+ * `exec` + 解释器前缀。
+ */
+export const FLOW_MIGRATOR_VERSION = 2;
 
 /* ── runner.kind → Node-RED 节点类型 ── */
 
 /**
- * 每种执行原语在 Node-RED 侧的节点类型。`condition` 用官方 `switch`（MERGE-0：
- * 强度「官方」），其余是 Mcode 节点包（`mcode-*`，MERGE-2/3 才落地 —— 本切片只
- * 产出形状）。
+ * 每种执行原语在 Node-RED 侧的节点类型（**默认值**；`trigger`/`code` 另有按参数分流，
+ * 见 {@link effectiveNodeRedTypeOf}）。
+ *
+ * 节点统一审计（`docs/planning/arc-006-node-unification.md`，2026-10-19）：
+ *   - `condition` / `command` / `code(node)` 直接用内置 `switch` / `exec` / `function`；
+ *   - `trigger` 的手动/定时 → 内置 `inject`（含 `crontab`），文件变化 → 内置 `watch`；
+ *     只有「Mcode 应用事件」内置没有，保留 `mcode-trigger`；
+ *   - `code` 的 python/shell/powershell 本质是起进程 → 内置 `exec` + 解释器前缀，
+ *     `mcode-code` 删除；
+ *   - 其余（agent/conversation/branch/module-capability/node-red-call）保留自定义，
+ *     理由见审计文档（Host RPC / 主对话 / 人工挂起 / 宿主能力面 / 回环围栏）。
  */
 export const NODE_RED_TYPE_OF_RUNNER: Record<string, string> = {
   prompt: "mcode-agent",
   conversation: "mcode-conversation",
   branch: "mcode-branch",
   condition: "switch",
+  // trigger 的默认（event / 未知 kind）；manual/schedule/file 由 effectiveNodeRedTypeOf 分流。
   trigger: "mcode-trigger",
   command: "exec",
   code: "function",
   [MODULE_CAPABILITY_RUNNER_KIND]: "mcode-module-capability",
   [NODE_RED_RUNNER_KIND]: "mcode-node-red-call",
 };
+
+/** Mcode 触发器参数键（与 `@contracts/nodeType` 的 `NODE_TRIGGER_*` 同值；此处不 import
+ *  是为了让迁移器保持纯函数、不拖进 nodeType 的整包依赖）。 */
+const TRIGGER_KIND_KEY = "triggerKind";
+const TRIGGER_CRON_KEY = "cron";
+const TRIGGER_PATHS_KEY = "paths";
+
+/** 非 JS 语言的 exec 前缀（command 为空时也不留半个解释器）。 */
+const EXEC_LANGUAGE_PREFIX: Record<string, string> = {
+  python: "python -c",
+  shell: "sh -c",
+  powershell: "powershell -Command",
+};
+
+/**
+ * 一个节点**实际**落到哪个 Node-RED 类型（在默认表之上按参数分流）。
+ *
+ * - `trigger`：`manual` → `inject`（once）、`schedule` → `inject`（crontab）、
+ *   `file` → `watch`、`event`/未知 → `mcode-trigger`；
+ * - `code`：`language === "node"` → `function`，其余 → `exec`（前缀见
+ *   {@link EXEC_LANGUAGE_PREFIX}；未列出的语言按 `python` 处理并在报告里点名）；
+ * - 其它 kind 原样查表。
+ */
+export function effectiveNodeRedTypeOf(
+  kind: NodeRunnerKind | "unknown",
+  params: Record<string, unknown>,
+): string {
+  if (kind === "trigger") {
+    const triggerKind = typeof params[TRIGGER_KIND_KEY] === "string" ? (params[TRIGGER_KIND_KEY] as string) : "manual";
+    if (triggerKind === "manual" || triggerKind === "schedule") return "inject";
+    if (triggerKind === "file") return "watch";
+    return "mcode-trigger";
+  }
+  if (kind === "code") {
+    const language = typeof params["language"] === "string" ? (params["language"] as string) : "python";
+    return language === "node" ? "function" : "exec";
+  }
+  return NODE_RED_TYPE_OF_RUNNER[kind] ?? "mcode-unknown";
+}
+
+/** `code` 节点的 exec 命令（解释器前缀 + 脚本文本）；`node` 语言返回 null。 */
+export function execCommandForCode(params: Record<string, unknown>): string | null {
+  const language = typeof params["language"] === "string" ? (params["language"] as string) : "python";
+  if (language === "node") return null;
+  const code = typeof params["code"] === "string" ? (params["code"] as string) : "";
+  const prefix = EXEC_LANGUAGE_PREFIX[language] ?? EXEC_LANGUAGE_PREFIX["python"];
+  return code.trim() === "" ? prefix : `${prefix} ${code}`;
+}
 
 /** 这个 runner 的输出端口数（`branch` = 出边数，调用方另算；`trigger` 无输入）。 */
 function outputPortCountOf(kind: NodeRunnerKind | "unknown", outDegree: number): number {
@@ -302,7 +365,36 @@ function humanDecisionIssuesOf(
         code: "needs-human-decision",
         nodeId: node.id,
         merge0Item: 3,
-        message: `code 节点语言为 ${language}；Node-RED function 只跑 JS，${language} 只能经 exec 子进程，沙箱面不同 —— 需人工裁决（MERGE-0 未知语义 #3）。`,
+        message: `code 节点语言为 ${language}；节点统一后它映射到内置 exec（解释器前缀 ${EXEC_LANGUAGE_PREFIX[language] ?? EXEC_LANGUAGE_PREFIX["python"]}），与 Mcode code 节点的沙箱面不同、非零退出的成败判定也不同 —— 需人工裁决（MERGE-0 未知语义 #3 与 #4）。`,
+      });
+    }
+  }
+  if (kind === "trigger") {
+    const triggerKind = typeof params[TRIGGER_KIND_KEY] === "string" ? (params[TRIGGER_KIND_KEY] as string) : "manual";
+    if (triggerKind === "manual" || triggerKind === "schedule") {
+      issues.push({
+        code: "lossy",
+        nodeId: node.id,
+        message:
+          `trigger 迁移到内置 inject（${triggerKind === "schedule" ? "crontab 由 Mcode 5 段 cron 原样写入" : "once = 手动/立即运行一次"}）；`
+          + "Mcode 的合并窗口 debounceMs、项目 id、task 文本保留在 x-mcode.params，内置 inject 不表达 —— 执行侧由 Host 承担。",
+      });
+    } else if (triggerKind === "file") {
+      issues.push({
+        code: "lossy",
+        nodeId: node.id,
+        message:
+          "trigger 迁移到内置 watch（files 取 paths）；Mcode 的 excludePaths / debounceMs / 项目 id 保留在 x-mcode.params，"
+          + "内置 watch 不表达（它的 change 事件没有合并窗口）—— 执行侧由 Host 承担。",
+      });
+    } else {
+      // event / 未知：内置没有应用事件订阅，保留自定义 mcode-trigger。
+      issues.push({
+        code: "needs-human-decision",
+        nodeId: node.id,
+        message:
+          `trigger 的触发方式是 ${triggerKind}（应用事件）—— Node-RED 内置没有对应节点，保留 mcode-trigger；`
+          + "订阅源（HookEvent / 事件筛选）由 Host RPC 承担，需人工确认事件名与载荷映射。",
       });
     }
   }
@@ -369,7 +461,7 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     const nodeUnknown = unknownKeysForNode(unknownPaths, index);
     const outPorts = outputPortCountOf(kind, outDegree);
 
-    const wireType = kind === "unknown" ? "mcode-unknown" : (NODE_RED_TYPE_OF_RUNNER[kind] ?? "mcode-unknown");
+    const effectiveType = kind === "unknown" ? "mcode-unknown" : effectiveNodeRedTypeOf(kind, node.params);
     if (kind === "unknown") {
       unmapped.push({
         nodeId: node.id,
@@ -377,8 +469,38 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
         reason: `类型「${node.type}」不在节点类型清单里 —— 执行语义未知，按 mcode-unknown 迁移（原始 type 留在 x-mcode.type，可逆）`,
       });
     }
-    // code 非 node 语言：Node-RED function 只跑 JS，落 mcode-code 保留语言。
-    const effectiveType = kind === "code" && (node.params["language"] ?? "python") !== "node" ? "mcode-code" : wireType;
+    // 内置 inject / watch / exec 的**最小可执行参数**（节点统一：不再造 mcode-code）。
+    const builtinConfig: Record<string, unknown> = {};
+    if (kind === "trigger" && effectiveType === "inject") {
+      const triggerKind = typeof node.params[TRIGGER_KIND_KEY] === "string" ? (node.params[TRIGGER_KIND_KEY] as string) : "manual";
+      if (triggerKind === "schedule") {
+        builtinConfig.crontab = typeof node.params[TRIGGER_CRON_KEY] === "string" ? node.params[TRIGGER_CRON_KEY] : "";
+        builtinConfig.repeat = "";
+        builtinConfig.once = false;
+      } else {
+        builtinConfig.once = true;
+        builtinConfig.onceDelay = 0.1;
+        builtinConfig.repeat = "";
+      }
+      builtinConfig.props = [{ p: "payload" }];
+      builtinConfig.topic = "";
+    }
+    if (kind === "trigger" && effectiveType === "watch") {
+      builtinConfig.files = typeof node.params[TRIGGER_PATHS_KEY] === "string" ? node.params[TRIGGER_PATHS_KEY] : "";
+      builtinConfig.recursive = false;
+    }
+    if (kind === "code" && effectiveType === "exec") {
+      const command = execCommandForCode(node.params);
+      builtinConfig.command = command ?? "";
+      // 非零退出在 Mcode 是 success（退出码进产物）；exec 默认当错误 —— MERGE-0 #4。
+      builtinConfig.addpay = false;
+      builtinConfig.append = "";
+      builtinConfig.useSpawn = false;
+      builtinConfig.timer = "";
+      // 注意：exec 的 stdio 消息按口分（stdout→口0、stderr→口1、退出码→口2）。迁移器
+      // 只给 code 节点 1 个输出口 —— stdout 正常到口 0；stderr/退出码落到不存在的口会
+      // 被 Node-RED 丢弃（本片的最小语义，报告 lossy 点名；MERGE-3 接 Host 执行器时替换）。
+    }
 
     const nrNode: NodeRedNode = {
       id: nodeRedId,
@@ -387,6 +509,7 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       x: Math.round(node.position.x),
       y: Math.round(node.position.y),
       wires: Array.from({ length: outPorts }, () => [] as string[]),
+      ...builtinConfig,
       // condition → 原生 switch 的**最小可执行形状**（2026-10-19 真引擎实测：
       // 只写 type:"switch" 不给 rules/property 时，switch 没有任何规则、消息不会
       // 转发到任何一个口 —— 整条下游静默不动）。按 `msg.mcode.condition`（布尔）
@@ -437,7 +560,12 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
           + "此前该节点只保证整组能启动、消息按布尔分流。",
       });
     }
-    needsHumanDecision.push(...humanDecisionIssuesOf(node, kind, node.params));
+    for (const issue of humanDecisionIssuesOf(node, kind, node.params)) {
+      // 该函数同时产出两类条目：需人工裁决（needsHumanDecision）与已知损失
+      // （lossy —— 例如 trigger 迁到内置 inject 后 debounce/项目字段无处安放）。
+      // 按 code 分流，不让 lossy 混进"裁决"清单（那会误导复审者）。
+      (issue.code === "lossy" ? lossy : needsHumanDecision).push(issue);
+    }
 
     mapped.push({ nodeRedId, nodeId: node.id, type: node.type, runnerKind: kind });
   }

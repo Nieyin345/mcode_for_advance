@@ -40,6 +40,8 @@ import type { NodeRunner, NodeTypeManifest } from "@contracts/nodeType";
 import { MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
 import {
   FLOW_MIGRATOR_VERSION,
+  effectiveNodeRedTypeOf,
+  execCommandForCode,
   flowToWorkflowDoc,
   migrateWorkflowDoc,
   roundTripMismatchPaths,
@@ -197,6 +199,37 @@ console.log("\n1. 7 种 runner.kind 全映射，未知语义逐条点名");
   );
   check("★ language=node 的 code 不被当成语言面不等价",
     !jsCode.report.needsHumanDecision.some((i) => i.merge0Item === 3));
+
+  // ── 节点统一（2026-10-19）：trigger 分流 + code 删除 ──
+  const triggerNr = flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_trigger");
+  check("★【节点统一】triggerKind=schedule → 内置 inject（crontab 原样）",
+    triggerNr?.type === "inject" && (triggerNr as { crontab?: string }).crontab === "0 9 * * *",
+    { type: triggerNr?.type, crontab: (triggerNr as { crontab?: string } | undefined)?.crontab });
+  check("★【节点统一】schedule 的 lossy 报告点名内置 inject 不表达的字段",
+    report.lossy.some((i) => i.nodeId === "n_trigger" && i.message.includes("inject")),
+    report.lossy.filter((i) => i.nodeId === "n_trigger"));
+  const codeNr = flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_code");
+  check("★【节点统一】code(python) → 内置 exec + 解释器前缀",
+    codeNr?.type === "exec" && String((codeNr as { command?: unknown }).command).startsWith("python -c "),
+    { type: codeNr?.type, command: (codeNr as { command?: unknown } | undefined)?.command });
+  check("★【节点统一】迁移产物里没有任何 mcode-code",
+    !flow.nodes.some((n) => n.type === "mcode-code"), flow.nodes.map((n) => n.type));
+  // 四种 triggerKind 的分流表（纯函数面直接钉）。
+  eq("★【节点统一】manual → inject", effectiveNodeRedTypeOf("trigger", { triggerKind: "manual" }), "inject");
+  eq("★【节点统一】schedule → inject", effectiveNodeRedTypeOf("trigger", { triggerKind: "schedule" }), "inject");
+  eq("★【节点统一】file → watch（内置文件监听）", effectiveNodeRedTypeOf("trigger", { triggerKind: "file" }), "watch");
+  eq("★【节点统一】event → mcode-trigger（内置没有应用事件）", effectiveNodeRedTypeOf("trigger", { triggerKind: "event" }), "mcode-trigger");
+  eq("★【节点统一】code(node) → function", effectiveNodeRedTypeOf("code", { language: "node" }), "function");
+  eq("★【节点统一】code(python) → exec", effectiveNodeRedTypeOf("code", { language: "python" }), "exec");
+  eq("★【节点统一】code(shell) → exec", effectiveNodeRedTypeOf("code", { language: "shell" }), "exec");
+  eq("★【节点统一】code(powershell) → exec", effectiveNodeRedTypeOf("code", { language: "powershell" }), "exec");
+  eq("★【节点统一】exec 命令带语言前缀（python）", execCommandForCode({ language: "python", code: "print(1)" }), "python -c print(1)");
+  eq("★【节点统一】exec 命令带语言前缀（shell）", execCommandForCode({ language: "shell", code: "echo hi" }), "sh -c echo hi");
+  eq("★【节点统一】node 语言不产生 exec 命令", execCommandForCode({ language: "node", code: "return msg;" }), null);
+  // 内置确认不重复：condition/command/code(JS) 没有自定义替身。
+  eq("★【节点统一】condition 仍走内置 switch（无自定义替身）", effectiveNodeRedTypeOf("condition", {}), "switch");
+  eq("★【节点统一】command 仍走内置 exec", effectiveNodeRedTypeOf("command", { command: "echo hi" }), "exec");
+  check("★【节点统一】migratorVersion 升到 2（规则变更可追溯）", FLOW_MIGRATOR_VERSION === 2, FLOW_MIGRATOR_VERSION);
 
   // 端口规则：branch = 每条出边一个口；condition = true 口 0 / false 口 1。
   const branchNode = flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_branch");

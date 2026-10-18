@@ -240,7 +240,6 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
     triggerSubscribePayload,
     runConversationNode,
     runBranchNode,
-    runCodeNode,
     runModuleCapabilityNode,
     runNodeRedCallNode,
   } = await import("@main/workflowEngines/mcodeNodeTypes.js");
@@ -252,12 +251,15 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
   });
 
   // ★ 7 个类型都在清单里（agent + 其余 6；condition/command 走原生节点，不注册）。
-  eq("★ 节点包注册类型 = 7（agent + 其余 6；condition/command 用原生）", [...MCODE_NODE_PACK_TYPES].sort(), [
-    "mcode-agent", "mcode-branch", "mcode-code", "mcode-conversation",
+  eq("★ 节点包注册类型 = 6（agent + 其余 5；condition/command/code 用内置）", [...MCODE_NODE_PACK_TYPES].sort(), [
+    "mcode-agent", "mcode-branch", "mcode-conversation",
     "mcode-module-capability", "mcode-node-red-call", "mcode-trigger",
   ]);
-  eq("★ HTML 覆盖全部 7 个类型", ["mcode-agent", "mcode-conversation", "mcode-branch", "mcode-trigger", "mcode-code", "mcode-module-capability", "mcode-node-red-call"]
+  eq("★ HTML 覆盖全部 6 个类型", ["mcode-agent", "mcode-conversation", "mcode-branch", "mcode-trigger", "mcode-module-capability", "mcode-node-red-call"]
     .filter((t) => !allNodeHtml().includes(`data-template-name="${t}"`)), []);
+  check("★ 节点统一：mcode-code 已删除（JS→内置 function，其它语言→exec）",
+    !(MCODE_NODE_PACK_TYPES as readonly string[]).includes("mcode-code")
+    && !allNodeHtml().includes('data-template-name="mcode-code"'));
 
   // ── conversation ──
   {
@@ -300,17 +302,6 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
     eq("★ trigger：mcode.nodeId 透传", (msg.mcode as Record<string, unknown>).nodeId, "tr1");
     const sub = triggerSubscribePayload({ id: "t", "x-mcode": { nodeId: "tr1", params: { triggerKind: "file" } } });
     eq("★ trigger：订阅 payload 带 triggerKind", sub.triggerKind, "file");
-  }
-
-  // ── code ──
-  {
-    const calls: Array<Record<string, unknown>> = [];
-    const out = await runCodeNode({ payload: { n: 1 } }, cfg({ code: "print(1)", language: "python" }), {
-      run: async (p) => { calls.push(p as unknown as Record<string, unknown>); return { text: "printed", artifacts: [] }; },
-    });
-    check("★ code：port 收到 code/language 与输入",
-      calls[0]?.code === "print(1)" && calls[0]?.language === "python" && JSON.stringify(calls[0]?.input) === '{"n":1}', calls[0]);
-    eq("★ code：产出 {text,artifacts}", out.msg.payload, { text: "printed", artifacts: [] });
   }
 
   // ── module-capability ──
@@ -376,7 +367,7 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
     builtin: false,
     updatedAt: 1_760_000_000_000,
     nodes: [
-      { id: "k_trigger", type: "mcode.trigger", title: "触发", params: { triggerKind: "manual", task: "跑一遍" }, position: { x: 10, y: 10 } },
+      { id: "k_trigger", type: "mcode.trigger", title: "触发", params: { triggerKind: "event", task: "跑一遍" }, position: { x: 10, y: 10 } },
       { id: "k_conv", type: "mcode.conversation", title: "对话", params: { instruction: "聊一句" }, position: { x: 110, y: 10 } },
       { id: "k_agent", type: "mcode.agent", title: "子 agent", params: { instruction: "查资料" }, position: { x: 210, y: 10 } },
       { id: "k_branch", type: "mcode.branch", title: "岔路", params: { decider: "user" }, position: { x: 310, y: 10 } },
@@ -400,9 +391,15 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
   } as unknown as Parameters<typeof migrateWorkflowDoc>[0];
   const migrated = migrateWorkflowDoc(doc, { types });
   const migratedTypes = new Set(migrated.flow.nodes.map((n) => n.type));
-  check("★【MERGE-2】迁移产物覆盖 7 种 runner.kind（5 个 mcode-* + 原生 switch/exec）",
-    ["mcode-conversation", "mcode-agent", "mcode-branch", "switch", "mcode-trigger", "exec", "mcode-code", "mcode-module-capability", "mcode-node-red-call"]
+  check("★【MERGE-2】迁移产物覆盖 7 种 runner.kind（4 个 mcode-* + 原生 inject/switch/exec）",
+    ["mcode-conversation", "mcode-agent", "mcode-branch", "switch", "mcode-trigger", "exec", "mcode-module-capability", "mcode-node-red-call"]
       .every((t) => migratedTypes.has(t)), [...migratedTypes]);
+  check("★【节点统一】迁移产物里不再出现 mcode-code（非 JS 语言走内置 exec）",
+    !migratedTypes.has("mcode-code"), [...migratedTypes]);
+  const codeNode = migrated.flow.nodes.find((n) => n["x-mcode"]?.nodeId === "k_code");
+  check("★【节点统一】code(python) → 内置 exec + 解释器前缀",
+    codeNode?.type === "exec" && String((codeNode as { command?: unknown }).command).startsWith("python -c "),
+    { type: codeNode?.type, command: (codeNode as { command?: unknown } | undefined)?.command });
   // 条件节点（原生 switch）必须**两个输出口**并接上 true/false 两条边：只给一个口时
   // else 分支的消息会被 Node-RED 直接丢弃（真引擎实测，2026-10-19）。
   const switchNode = migrated.flow.nodes.find((n) => n.type === "switch");
@@ -475,7 +472,7 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
     "      conversation: { async run(p) { rec('conversation', p); return { text: 'conv:' + p.instruction, artifacts: artifact }; } },",
     "      branch: { async decide(p) { rec('branch', p); return { port: 0, label: '继续' }; } },",
     "      trigger: { subscribe(p, emit) { rec('trigger', p); setTimeout(function () { emit({ payload: { trigger: { kind: p.triggerKind, at: 1 } }, mcode: { nodeId: p.nodeId, runId: null, condition: true } }); }, 150); } },",
-    "      code: { async run(p) { rec('code', p); return { text: 'code:' + p.code, artifacts: artifact }; } },",
+    "",
     "      moduleCapability: { async run(p) { rec('module-capability', p); return { text: 'module:' + p.moduleId, artifacts: artifact }; } },",
     "      nodeRedCall: { async run(p) { rec('node-red-call', p); return { text: 'nr:' + p.enginePath, artifacts: artifact, status: 200 }; } },",
     "    };",
@@ -568,7 +565,7 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
 
       // ④ 各节点执行一次（trigger 自动 emit → conversation → agent → branch →
       //    condition → code → module-capability；exec/switch 是原生节点不记 port）。
-      const expectedKinds = ["trigger", "conversation", "agent", "branch", "code", "module-capability"];
+      const expectedKinds = ["trigger", "conversation", "agent", "branch", "module-capability"];
       let calls: Array<{ kind: string; payload: Record<string, unknown> }> = [];
       const callsDeadline = Date.now() + 10_000;
       while (Date.now() < callsDeadline) {
@@ -583,7 +580,7 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       }
       const kindCounts = new Map<string, number>();
       for (const c of calls) kindCounts.set(c.kind, (kindCounts.get(c.kind) ?? 0) + 1);
-      eq("★【MERGE-2】6 个经 port 的节点各执行一次（trigger/conversation/agent/branch/code/module-capability）",
+      eq("★【MERGE-2】5 个经 port 的节点各执行一次（trigger/conversation/agent/branch/module-capability）",
         expectedKinds.map((k) => [k, kindCounts.get(k) ?? 0]), expectedKinds.map((k) => [k, 1]));
       check("★【MERGE-2】exec / switch 是原生节点（不经过 port；node-red-call 因 branch 选 0 未走到）",
         !calls.some((c) => c.kind === "node-red-call"), [...kindCounts.keys()]);
@@ -591,9 +588,8 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       check("★【MERGE-2】conversation 收到 instruction", byKind("conversation")?.instruction === "聊一句", byKind("conversation"));
       check("★【MERGE-2】agent 收到 instruction", byKind("agent")?.instruction === "查资料", byKind("agent"));
       check("★【MERGE-2】branch 收到端口数 = 2", byKind("branch")?.portCount === 2, byKind("branch"));
-      check("★【MERGE-2】code 收到 code/language", byKind("code")?.code === "print(1)" && byKind("code")?.language === "python", byKind("code"));
       check("★【MERGE-2】module-capability 收到 moduleId", byKind("module-capability")?.moduleId === "core.file-report", byKind("module-capability"));
-      check("★【MERGE-2】trigger 收到 triggerKind", byKind("trigger")?.triggerKind === "manual", byKind("trigger"));
+      check("★【MERGE-2】trigger 收到 triggerKind", byKind("trigger")?.triggerKind === "event", byKind("trigger"));
 
       const stopped = await runtime.stop(1_000);
       check("★ 真引擎 stop 后状态 stopped、端口清空", stopped.state === "stopped" && stopped.port === null, stopped);

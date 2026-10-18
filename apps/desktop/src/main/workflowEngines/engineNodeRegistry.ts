@@ -47,7 +47,7 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { declaresNetwork } from "@contracts/modules";
 
@@ -97,7 +97,11 @@ export interface EngineNodeInstallRequest {
   approvedByUser: boolean;
 }
 
-/** 注入端口（套件用假实现；生产默认 node:fs + Date.now）。 */
+/** 注入端口（套件用假实现；生产默认 node:fs + Date.now）。
+ *
+ *  `readTree` / `writeBytes` 只有**安装入口**用（`installFromBytes` / `installFromDirectory`）；
+ *  旧调用方（只登记清单 / 卸载）不需要它们 —— 缺失时安装入口显式拒绝（fail-closed），
+ *  不会静默退化成"只登记不落盘"。 */
 export interface EngineNodeRegistryFs {
   readFile(path: string): Promise<string>;
   writeFile(path: string, text: string): Promise<void>;
@@ -106,6 +110,11 @@ export interface EngineNodeRegistryFs {
   /** 删除一个可执行体（包体是**目录**：npm 包落在 `<dataDir>/node_modules/<name>/`）。
    *  实现必须递归删除；只删文件会把目录留下（实测 EISDIR），那正是"卸载后仍留可执行体"。 */
   remove(path: string): Promise<void>;
+  /** 写一个**二进制**文件（安装时把包体落到暂存目录）。父目录由实现创建。 */
+  writeBytes?(path: string, bytes: Uint8Array): Promise<void>;
+  /** 递归读一棵目录树，返回 `{ 相对路径(/-分隔), 内容 }`。symlink / 设备文件一律拒绝
+   *  （fail-closed：包体里出现链接就可能把工作区外的内容带进安装目录）。 */
+  readTree?(root: string): Promise<Array<{ path: string; bytes: Uint8Array }>>;
 }
 
 export interface EngineNodeRegistryOptions {
@@ -137,6 +146,29 @@ const nodeFs: EngineNodeRegistryFs = {
     // 递归删除：包体是目录（`node_modules/<name>/` 里有 package.json 与源码）。
     // `force` 让"本来就不存在"也成功 —— 幂等重试不该因第一次已删而报错。
     await rm(path, { recursive: true, force: true });
+  },
+  async writeBytes(path, bytes) {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, bytes);
+  },
+  async readTree(root) {
+    const out: Array<{ path: string; bytes: Uint8Array }> = [];
+    const walk = async (dir: string, prefix: string): Promise<void> => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+        const abs = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(abs, rel);
+        } else if (entry.isFile()) {
+          out.push({ path: rel, bytes: await readFile(abs) });
+        } else {
+          // symlink / FIFO / 设备文件：包体里出现它们就可能把安装目录外的内容带进来。
+          throw Error(`包体里含不支持的文件类型（链接或设备文件）：${rel}`);
+        }
+      }
+    };
+    await walk(root, "");
+    return out;
   },
 };
 
@@ -341,6 +373,152 @@ export class EngineNodeRegistry {
     return join(this.dataDir, "node_modules", name);
   }
 
+  /**
+   * 【ARC-006 Gate E】**真实安装入口：从字节（tarball / 单文件包）安装**。
+   *
+   * ## 哈希规则
+   *
+   * 安装前用**传入字节**现算 sha256，与 `meta.sha256` 比对；不一致立即拒绝 ——
+   * 此时**一个字节都还没落盘**（连暂存目录都不建）。这是「下载期校验」的落点：
+   * 调用方（将来的 npm 路由）先下载到内存/临时文件，把字节交到这里再核一遍。
+   *
+   * ## 事务顺序（失败方向即判据）
+   *
+   *   1. 形状校验（`validateInstall`：包名/版本/来源/sha256/许可/能力/批准）；
+   *   2. 字节 sha256 == meta.sha256？（拒绝路径零落盘）；
+   *   3. 同名不同哈希 → 显式拒绝（见下）；
+   *   4. 写 `<dataDir>/node_modules/.staging-<name>-<随机>/package.tgz`；
+   *   5. 原子 rename 到 `<dataDir>/node_modules/<name>`（同盘 rename；失败删暂存目录）；
+   *   6. 写清单（沿用 `recordInstall` 的同一事务）。
+   *
+   * 任一步失败：暂存目录被删（不留半截），清单不写（`recordInstall` 在最后一步才写）。
+   * 注意第 5 步与第 6 步之间若崩溃，会出现「包体在、清单无记录」—— 这是**收紧**方向
+   * （`recoverPendingRemovals` 只清 pending-remove，不会误删它；下次安装同包会覆盖，
+   * 清单随之补上），不会留下「清单说有、实际没有」的假象。
+   *
+   * ## 同名不同哈希
+   *
+   * **显式拒绝**，不静默走升级：升级是一次需要重新审核（许可/能力/真人批准）的动作，
+   * 自动接受一个哈希不同的包等于让"换掉可执行体"绕过审核。调用方要升级，先
+   * `uninstall(name)`（两阶段事务，确保旧可执行体真的被删）再装新版本。
+   */
+  async installFromBytes(
+    meta: EngineNodeInstallRequest,
+    bytes: Uint8Array,
+  ): Promise<{ ok: true; entry: EngineNodeRecord } | { ok: false; reason: string }> {
+    const valid = validateInstall(meta);
+    if (!valid.ok) return valid;
+    if (!(bytes instanceof Uint8Array)) return { ok: false, reason: "包体不是字节数组，拒绝安装" };
+    const actual = sha256OfBytes(bytes);
+    if (actual !== meta.sha256) {
+      return { ok: false, reason: `包体 sha256 与声明的值不一致（声明 ${meta.sha256}，实际 ${actual}），拒绝安装` };
+    }
+    const fsPort = this.fs;
+    if (fsPort.writeBytes === undefined) {
+      return { ok: false, reason: "当前宿主没有安装写盘通道，已拒绝安装（fail-closed）" };
+    }
+    const duplicate = await this.duplicateCheck(meta);
+    if (duplicate !== null) return duplicate;
+
+    const staging = join(this.dataDir, "node_modules", `.staging-${sanitizeName(meta.name)}-${randomTag()}`);
+    try {
+      await fsPort.mkdir(staging);
+      await fsPort.writeBytes(join(staging, "package.tgz"), bytes);
+      // 原子落位：先将暂存目录 rename 到最终位置（若目标已存在，先删 —— 只有
+      // 同哈希重装会走到这里，删掉的是同一份字节）。
+      const target = this.packagePath(meta.name);
+      await fsPort.remove(target);
+      await fsPort.rename(staging, target);
+    } catch (error) {
+      try { await fsPort.remove(staging); } catch { /* 清理失败不改变结论 */ }
+      return { ok: false, reason: `安装落盘失败，已清理暂存目录：${error instanceof Error ? error.message : String(error)}` };
+    }
+    // 清单事务（与 recordInstall 同一份实现；它内部会再校验一次形状）。
+    const recorded = await this.recordInstall(meta);
+    if (!recorded.ok) {
+      // 清单没写成 → 包体也不能留（否则是「有可执行体、账上没有」）。
+      try { await fsPort.remove(this.packagePath(meta.name)); } catch { /* 同上 */ }
+      return recorded;
+    }
+    return recorded;
+  }
+
+  /**
+   * 【ARC-006 Gate E】**真实安装入口：从目录（Node-RED 节点包）安装**。
+   *
+   * ## 哈希规则（稳定哈希）
+   *
+   * 按**相对路径排序**后，对每个文件累计 `sha256(相对路径 + "\u0000" + sha256(内容) + "
+")`。
+   * 排序消除了文件系统枚举顺序的随机性；内层是内容哈希而不是内容本身，避免大包
+   * 撑爆内存。路径统一用 `/` 分隔（Windows/macOS/Linux 同一份包得到同一个哈希）。
+   * 校验时用同一规则对 `meta.sha256` 比对。
+   *
+   * 其余事务顺序、同名不同哈希的拒绝、失败清理与 {@link installFromBytes} 完全一致；
+   * 目录内容按原样复制到暂存目录（保留相对路径），再原子 rename。
+   */
+  async installFromDirectory(
+    meta: EngineNodeInstallRequest,
+    sourceDir: string,
+  ): Promise<{ ok: true; entry: EngineNodeRecord } | { ok: false; reason: string }> {
+    const valid = validateInstall(meta);
+    if (!valid.ok) return valid;
+    const fsPort = this.fs;
+    if (fsPort.readTree === undefined || fsPort.writeBytes === undefined) {
+      return { ok: false, reason: "当前宿主没有目录安装通道，已拒绝安装（fail-closed）" };
+    }
+    let files: Array<{ path: string; bytes: Uint8Array }>;
+    try {
+      files = await fsPort.readTree(sourceDir);
+    } catch (error) {
+      return { ok: false, reason: `读取包体目录失败：${error instanceof Error ? error.message : String(error)}` };
+    }
+    if (files.length === 0) return { ok: false, reason: "包体目录为空，拒绝安装" };
+    const actual = stableDirectoryHash(files);
+    if (actual !== meta.sha256) {
+      return { ok: false, reason: `包体目录的稳定哈希与声明的值不一致（声明 ${meta.sha256}，实际 ${actual}），拒绝安装` };
+    }
+    const duplicate = await this.duplicateCheck(meta);
+    if (duplicate !== null) return duplicate;
+
+    const staging = join(this.dataDir, "node_modules", `.staging-${sanitizeName(meta.name)}-${randomTag()}`);
+    try {
+      await fsPort.mkdir(staging);
+      for (const file of files) {
+        // 相对路径来自 readTree（已拒绝链接）；再挡一次 `..` / 绝对路径（防御纵深）。
+        const relative = normalizeRelative(file.path);
+        if (relative === null) throw Error(`包体里的路径非法：${file.path}`);
+        await fsPort.writeBytes(join(staging, relative), file.bytes);
+      }
+      const target = this.packagePath(meta.name);
+      await fsPort.remove(target);
+      await fsPort.rename(staging, target);
+    } catch (error) {
+      try { await fsPort.remove(staging); } catch { /* 清理失败不改变结论 */ }
+      return { ok: false, reason: `安装落盘失败，已清理暂存目录：${error instanceof Error ? error.message : String(error)}` };
+    }
+    const recorded = await this.recordInstall(meta);
+    if (!recorded.ok) {
+      try { await fsPort.remove(this.packagePath(meta.name)); } catch { /* 同上 */ }
+      return recorded;
+    }
+    return recorded;
+  }
+
+  /** 同名不同哈希 → 拒绝（升级要显式 uninstall + 重装，见 installFromBytes 的说明）。
+   *  同哈希重装 = 幂等（允许，覆盖同一份字节）。 */
+  private async duplicateCheck(meta: EngineNodeInstallRequest): Promise<{ ok: false; reason: string } | null> {
+    const state = await this.readState();
+    if (state.kind !== "ok") return null; // absent 正常；corrupt 由 recordInstall 统一拒绝
+    const existing = state.entries.find((e) => e.name === meta.name);
+    if (existing === undefined) return null;
+    if (existing.sha256 === meta.sha256) return null;
+    return {
+      ok: false,
+      reason: `已安装同名包 ${meta.name}（版本 ${existing.version}，sha256 ${existing.sha256}）。换包体必须先卸载（uninstall）再安装，不能静默替换可执行体。`,
+    };
+  }
+
   private async writeEntries(entries: EngineNodeRecord[]): Promise<void> {
     const body = `${JSON.stringify({ schema: SCHEMA, engineId: this.engineId, entries }, null, 2)}\n`;
     await this.fs.writeFile(this.path, body);
@@ -381,6 +559,60 @@ function parseEntry(raw: unknown): { ok: true; entry: EngineNodeRecord } | { ok:
 /** 计算 tarball/包体的 sha256（安装入口在写清单前调用；这里只给纯函数，不碰盘）。 */
 export function sha256OfBytes(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * 【ARC-006 Gate E】**目录包的稳定哈希**（与 `installFromDirectory` 的校验同一份）。
+ *
+ * 规则：按**相对路径**（统一 `/` 分隔）排序；对每个文件累计
+ * `sha256(路径 + "\u0000" + sha256(内容) + "
+")`。
+ *
+ * - 排序消除文件系统枚举顺序的随机性（同一份包在任何机器上得到同一个哈希）；
+ * - 内层用内容哈希而不是内容本体，避免大包占内存；
+ * - 路径统一分隔符：Windows 产出的包与 Linux 产出的包不会因 `\` vs `/` 失配。
+ *
+ * 返回 `null` 表示输入形状非法（空表 / 重复路径 / 非法路径）—— 调用方必须**拒绝**，
+ * 不能拿一个"看起来像哈希"的值继续。
+ */
+export function stableDirectoryHash(files: ReadonlyArray<{ path: string; bytes: Uint8Array }>): string | null {
+  if (!Array.isArray(files) || files.length === 0) return null;
+  const normalized: Array<{ path: string; digest: string }> = [];
+  const seen = new Set<string>();
+  for (const file of files) {
+    const relative = normalizeRelative(file.path);
+    if (relative === null) return null;
+    if (seen.has(relative)) return null; // 重复路径 = 形状非法（复制时会互相覆盖）
+    seen.add(relative);
+    if (!(file.bytes instanceof Uint8Array)) return null;
+    normalized.push({ path: relative, digest: sha256OfBytes(file.bytes) });
+  }
+  normalized.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const hash = createHash("sha256");
+  for (const file of normalized) {
+    hash.update(`${file.path}\u0000${file.digest}\n`);
+  }
+  return hash.digest("hex");
+}
+
+/** 相对路径归一：统一 `/`；拒绝绝对路径、`..` 段、空段、盘符、NUL。非法返回 null。 */
+function normalizeRelative(raw: string): string | null {
+  if (typeof raw !== "string" || raw === "" || raw.includes("\u0000")) return null;
+  const slashed = raw.replace(/\\/g, "/");
+  if (slashed.startsWith("/") || /^[A-Za-z]:/.test(slashed)) return null;
+  const parts = slashed.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return null;
+  return parts.join("/");
+}
+
+/** 暂存目录名里只用安全字符（包名可能带 `@scope/`，不能原样进文件系统路径）。 */
+function sanitizeName(name: string): string {
+  return name.replace(/[^a-z0-9._-]/gi, "-").slice(0, 80);
+}
+
+/** 暂存目录的随机后缀（时间 + 随机，避免并发安装撞名）。 */
+function randomTag(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 /** 读一个小文件（生产便捷函数；套件不用）。 */
