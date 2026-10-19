@@ -26,7 +26,7 @@
  */
 
 /** 收到"某一份变了"之后该干什么。`workflowId` 是被改的那一份。 */
-export type WorkflowReloader = (workflowId: string) => void;
+export type WorkflowReloader = (workflowId: string) => void | Promise<void>;
 
 let reloader: WorkflowReloader | null = null;
 
@@ -48,7 +48,14 @@ export function setWorkflowReloader(fn: WorkflowReloader | null): void {
  */
 export function requestWorkflowReload(workflowId: string): void {
   try {
-    reloader?.(workflowId);
+    const result = reloader?.(workflowId);
+    // A future async reloader must not leave an unhandled rejection that can
+    // crash Electron AFTER the workflow has already been saved successfully.
+    if (result && typeof (result as PromiseLike<void>).then === "function") {
+      void Promise.resolve(result).catch(() => {
+        /* reload failed, but the source-of-truth file was already saved */
+      });
+    }
   } catch {
     /* 后台没接住 —— 与"没人在听"同一类,不影响这次写盘 */
   }
