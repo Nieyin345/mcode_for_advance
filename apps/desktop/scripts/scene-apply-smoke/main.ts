@@ -55,6 +55,7 @@ import { GrantStore } from "@main/appControl/grantStore.js";
 import { loadDeployment, decodeDeployment } from "@main/appServices/sceneDeploymentStore.js";
 // ★ MC-058 / ARC-002 崩溃—重启—续跑(**真跨进程**,不是同进程模拟):起真子进程 + 磁盘上的
 //   宿主快照 / 调用日志(内存不跨进程,跨进程事实必须落盘才能核对)。
+import { probeResource, probeExistingResource } from "@main/appServices/sceneReadback.js";
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -759,6 +760,90 @@ console.log("\n⑨ 独立回读:资源被带外删掉 → 回读查不到 → �
   }
 }
 
+/* ── 9b. 损坏/失败回读不可假装不存在，补偿不得误删 ── */
+console.log("\n⑨b 回读错误、畸形成功响应、补偿时修订不可确认均保守拒删");
+{
+  const workflow = { id: "wf-real" };
+  const wfCases: Array<[string, unknown]> = [
+    ["null 结果", null],
+    ["无 workflow 字段", {}],
+    ["响应拒绝", { ok: false, error: "fake database unavailable" }],
+    ["结果不是对象", { workflow: "fake" }],
+    ["服务侧身份不一致", { workflow: { id: "wf-other" } }],
+  ];
+  for (const [kind, response] of wfCases) {
+    clearRpcHandlers();
+    recordRpcHandler("workflow:get", () => response);
+    const prior = await probeExistingResource("workflow", workflow);
+    eq(`★ workflow.get ${kind}：派发前必须判 unknown 不能标 created`, prior.existence, "unknown");
+    const rb = await probeResource("wf-scene", "workflow", workflow);
+    check(`★ workflow.get ${kind}：验收标不可回读且说明原因`,
+      !rb.observed && typeof rb.unverifiableReason === "string" && rb.unverifiableReason.length > 0, rb);
+  }
+  for (const [kind, response] of [
+    ["null 结果", null],
+    ["缺少 skills 列表", {}],
+    ["部分坏行", { skills: [{ name: "safe" }, { wrong: true }] }],
+    ["错误顶层", { skills: "not-list" }],
+  ] as const) {
+    clearRpcHandlers();
+    recordRpcHandler("skills:list", () => response);
+    const prior = await probeExistingResource("skill", { name: "safe" });
+    eq(`★ skills.list ${kind}：不把不可信列表当作资源不存在`, prior.existence, "unknown");
+    const rb = await probeResource("s", "skill", { name: "safe" });
+    check(`★ skills.list ${kind}：回读汇总列入 unverifiable`,
+      !rb.observed && !!rb.unverifiableReason, rb);
+  }
+  // Two genuine absence controls: not-found is an explicit null field or an
+  // explicitly well-formed empty list, NOT an omitted/malformed response.
+  clearRpcHandlers();
+  recordRpcHandler("workflow:get", () => ({ workflow: null, revision: null }));
+  eq("对照:明确 workflow:null 才代表派发前不存在", (await probeExistingResource("workflow", workflow)).existence, "created");
+  recordRpcHandler("skills:list", () => ({ skills: [] }));
+  eq("对照:合法空技能列表代表派发前不存在", (await probeExistingResource("skill", { name: "safe" })).existence, "created");
+  recordRpcHandler("workflow:get", () => ({ workflow: { id: "wf-real" }, revision: "v2" }));
+  eq("对照:正确资源身份仍为 preExisting", (await probeExistingResource("workflow", workflow)).existence, "preExisting");
+
+  // A known post-save revision MUST be verified before compensation deletes
+  // the newly-created workflow. A broken get between save and remove must
+  // preserve the created workflow and report the uncertainty.
+  clearRpcHandlers();
+  const host = newHost();
+  const removed: string[] = [];
+  mountHost(host, {
+    failSave: (p) => isAutoPayload(p) ? "fake next step failed" : null,
+    onRemove: (id) => removed.push(id),
+  });
+  let liveReads = 0;
+  recordRpcHandler("workflow:get", (_e, raw) => {
+    const id = (raw as { id?: string })?.id ?? "";
+    if (!host.workflows.has(id)) return { workflow: null, revision: null };
+    liveReads++;
+    return liveReads === 1
+      ? { workflow: { id }, revision: "known-revision" }
+      : { ok: false, error: "FAKE_READ_AFTER_SAVE_FAILED" };
+  });
+  const spec = checked(specWith(
+    "rollback_readback_unavailable_scene",
+    [wfRes("wf"), autoRes("auto", { cron: "test-failure" }, ["wf"])],
+    ["wf", "auto"],
+  ));
+  const plan = compileScenePlan(spec);
+  const r = await applyScene({
+    deploymentId: "dep_readback_unavailable_compensation",
+    spec, actor: ACTOR, grant: grantFor(plan.digest),
+  });
+  check("对照:补偿回读失败的场景仍返回部署结果", r.ok && r.kind === "applied", r);
+  if (r.ok && r.kind === "applied") {
+    const step = r.deployment.steps.find((s) => s.actionId === "wf");
+    eq("对照:新建资源的修订已落在步骤上", step?.createdRevision, "known-revision");
+    eq("★★ 回读损坏不得触发 workflow.remove", removed.length, 0);
+    eq("★★ 回读不明时宿主原资源被保全", host.workflows.has("wf"), true);
+    eq("★★ 不可确认的补偿不得标 compensated", step?.status, "done");
+    check("★★ 补偿记录明确报告复查未知状态", (step?.compensation?.reason ?? "").includes("无法确认"), step?.compensation);
+  }
+}
+
 /* ── 10. ★★ 中途失败 → 补偿之前已建成、可补偿的步(不留孤儿) ── */
 console.log("\n⑩ 补偿:一步失败 → 逆序撤销前面已建成、可补偿的步(失败不留孤儿)");
 {
@@ -799,6 +884,38 @@ console.log("\n⑩ 补偿:一步失败 → 逆序撤销前面已建成、可补�
     eq("★ 落盘的补偿记录保留逆操作入口", backWf?.compensation?.inverseLabel, "workflow.remove");
     eq("★ 落盘整体仍 FAILED(重算不回落)", back?.status, "failed");
   }
+}
+
+/* ── 10b. RPC resolve + {ok:false} is NOT a successful compensation ── */
+console.log("\n⑩b 逆操作返回显式业务拒绝不得假称已删除");
+{
+  clearRpcHandlers();
+  const host = newHost();
+  mountHost(host, { failSave: (p) => isAutoPayload(p) ? "fake second-step failure" : null });
+  let removeCalls = 0;
+  recordRpcHandler("workflow:remove", () => {
+    removeCalls++;
+    return { ok: false, error: "FAKE_REMOVE_REFUSED" };
+  });
+  const spec = checked(specWith(
+    "rollback_refusal_scene",
+    [wfRes("wf"), autoRes("auto", { cron: "test-failure" }, ["wf"])],
+    ["wf", "auto"],
+  ));
+  const plan = compileScenePlan(spec);
+  const r = await applyScene({
+    deploymentId: "dep_business_rejected_compensation",
+    spec, actor: ACTOR, grant: grantFor(plan.digest),
+  });
+  check("对照:逆操作真实被派发一次", removeCalls === 1, removeCalls);
+  check("对照:逆操作业务拒绝后资源确实还在", host.workflows.has("wf"));
+  if (r.ok && r.kind === "applied") {
+    const step = r.deployment.steps.find((s) => s.actionId === "wf");
+    eq("★★ 逆操作返回 ok:false 不得标为 compensated", step?.status, "done");
+    eq("★★ 逆操作返回 ok:false 必须写 applied:false", step?.compensation?.applied, false);
+    check("★★ 逆操作业务错误必须进入可见补偿原因",
+      (step?.compensation?.reason ?? "").includes("FAKE_REMOVE_REFUSED"), step?.compensation);
+  } else check("对照:业务拒绝的部署仍有明细", false, r);
 }
 
 /* ── 11. ★★ 不可补偿 / 无逆操作的步:如实记「未补偿 + 原因」,不静默 ── */

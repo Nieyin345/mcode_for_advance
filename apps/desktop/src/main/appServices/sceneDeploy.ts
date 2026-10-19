@@ -453,27 +453,45 @@ async function compensateDoneSteps(d: SceneDeployment, commands: SceneCommandPla
       continue;
     }
 
-    // ② CAS:建成后又被别的写者改过 → 不删(删了会毁掉别人的改动)。
-    if (step.createdRevision != null) {
-      const now = await probeExistingResource(kind, command.payload);
-      if (now.existence === "preExisting" && now.revision !== null && now.revision !== step.createdRevision) {
-        d = advanceDeployment(d, {
-          actionId: command.actionId,
-          status: "done",
-          compensation: {
-            applied: false,
-            inverseLabel: entry.label,
-            reason: `该步本次新建,但建成后资源已被**改动**(修订号 ${step.createdRevision} → ${now.revision}),补偿**不删除**,以免毁掉后来的改动;请人工核对`,
-          },
-        }, clock());
-        continue;
-      }
+    // ② 安全复查 + CAS:即使派发前是 created，补偿前也必须再次确认目标
+    // 真正存在；读取失败 / 返回坏形状 / 此时已被别人删掉都不能作为删除许可。
+    // 若建成时拿到了修订号，还必须重新读到**相同**的号；否则另一写者
+    // 修改过资源或回读不足以证明未修改，均保守不删除。
+    const now = await probeExistingResource(kind, command.payload);
+    if (now.existence !== "preExisting" ||
+        (step.createdRevision != null && now.revision !== step.createdRevision)) {
+      const reason = now.existence !== "preExisting"
+        ? "补偿前无法确认资源仍然存在且属于本次新建（不存在或回读失败），为避免误删已保留原资源"
+        : now.revision !== null
+          ? `该资源建成后**已被改动**(修订号 ${step.createdRevision} → ${now.revision}),为避免误删已保留原资源`
+          : `补偿前无法确认资源修订未变化(建成时 ${step.createdRevision},当前修订未知),为避免误删已保留原资源`;
+      d = advanceDeployment(d, {
+        actionId: command.actionId,
+        status: "done",
+        compensation: { applied: false, inverseLabel: entry.label, reason },
+      }, clock());
+      continue;
     }
 
     try {
       const inv = findEntry(entry.label);
       if (!inv) throw new Error(`逆操作入口「${entry.label}」在当前版本里没有注册`);
-      await callRpc(inv, { [entry.arg]: identity });
+      const inverseResult = await callRpc(inv, { [entry.arg]: identity });
+      // A resolved IPC promise is NOT proof that the inverse took effect.
+      // Some domain contracts expose {ok:false} instead of throwing, and a
+      // few legacy inverse methods are not catalogued by commandOutcome.
+      // Respect the shared decoder plus the generic explicit refusal bit.
+      const inverseOutcome = decodeDomainOutcome(entry.label, inverseResult);
+      const explicitRefusal = inverseResult !== null && typeof inverseResult === "object" &&
+        !Array.isArray(inverseResult) && (inverseResult as { ok?: unknown }).ok === false;
+      if (inverseOutcome.kind !== "accepted") {
+        throw new Error(failureTextFromOutcome(entry.label, inverseOutcome));
+      }
+      if (explicitRefusal) {
+        const rawReason = (inverseResult as { error?: unknown }).error;
+        const reason = typeof rawReason === "string" && rawReason.length > 0 ? rawReason : "服务返回 ok:false";
+        throw new Error(`逆操作被服务拒绝:${reason}`);
+      }
       d = advanceDeployment(d, {
         actionId: command.actionId,
         status: "compensated",

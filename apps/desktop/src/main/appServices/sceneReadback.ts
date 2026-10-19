@@ -2,7 +2,7 @@ import {
   type SceneSpec,
   type SceneResourceKind,
 } from "@contracts/sceneSpec";
-import { serviceForKind, sceneResourceIdentity } from "@contracts/sceneCommands";
+import { serviceForKind, sceneResourceIdentity, type SceneKindReadback } from "@contracts/sceneCommands";
 import type { SceneDeployment, SceneStepPriorExistence } from "@contracts/sceneDeployment";
 import { callRpc, findEntry } from "@main/appControl/tools.js";
 
@@ -15,6 +15,63 @@ import { callRpc, findEntry } from "@main/appControl/tools.js";
  * **纯搬迁，函数体逐字节一致。**
  */
 /* ───────────────────────── 独立回读(M-C058 的真实资源回读) ───────────────────────── */
+
+/**
+ * The two consumers (acceptance and pre-compensation existence) MUST share the
+ * exact same meaning of a readback response. A missing/invalid field, a domain
+ * {ok:false}, or a mismatched identity is UNKNOWN, never confirmed absence.
+ * Confirmed absence is ONLY an explicit null by-id result or a complete,
+ * well-formed list with no matching identity. This prevents cleanup from
+ * deleting a resource when the read-side schema or transport has failed.
+ */
+type ResourcePresence =
+  | { state: "present"; revision: string | null; reason: null }
+  | { state: "absent"; revision: null; reason: null }
+  | { state: "unknown"; revision: null; reason: string };
+
+async function queryResourcePresence(rb: SceneKindReadback, identity: string): Promise<ResourcePresence> {
+  const unknown = (reason: string): ResourcePresence => ({ state: "unknown", revision: null, reason });
+  const rpc = findEntry(rb.label);
+  if (!rpc) return unknown(`回读入口「${rb.label}」在当前版本里没有注册`);
+  try {
+    const raw = await callRpc(rpc, rb.mode === "byArg" ? { [rb.arg as string]: identity } : {});
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      return unknown(`回读入口「${rb.label}」返回无效对象`);
+    }
+    const res = raw as Record<string, unknown>;
+    if (res.ok === false) return unknown(`回读入口「${rb.label}」返回失败`);
+    if (!Object.prototype.hasOwnProperty.call(res, rb.field)) {
+      return unknown(`回读入口「${rb.label}」缺少「${rb.field}」字段`);
+    }
+    const value = res[rb.field];
+    if (rb.mode === "byArg") {
+      if (value === null) return { state: "absent", revision: null, reason: null };
+      if (!value || typeof value !== "object" || Array.isArray(value) ||
+          (value as Record<string, unknown>)[rb.matchField] !== identity) {
+        return unknown(`回读入口「${rb.label}」返回了形状或身份不匹配的资源`);
+      }
+      return {
+        state: "present",
+        revision: typeof res.revision === "string" ? res.revision : null,
+        reason: null,
+      };
+    }
+    if (!Array.isArray(value)) return unknown(`回读入口「${rb.label}」未返回合法列表`);
+    if (value.some((item) =>
+      !item || typeof item !== "object" || Array.isArray(item) ||
+      typeof (item as Record<string, unknown>)[rb.matchField] !== "string" ||
+      (item as Record<string, unknown>)[rb.matchField] === ""
+    )) {
+      return unknown(`回读入口「${rb.label}」列表存在形状不合法的记录`);
+    }
+    const matched = value.some((item) => (item as Record<string, unknown>)[rb.matchField] === identity);
+    return matched
+      ? { state: "present", revision: typeof res.revision === "string" ? res.revision : null, reason: null }
+      : { state: "absent", revision: null, reason: null };
+  } catch (err) {
+    return unknown(`回读查询出错:${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 /** 一条资源的**独立回读**结果。 */
 export interface SceneStepReadback {
@@ -80,25 +137,14 @@ export async function probeResource(actionId: string, kind: SceneResourceKind, s
           : `声明正文里缺稳定身份字段「${entry.identityPath}」,无法可靠回读(如实记为「未验证」)`,
     };
   }
-  try {
-    const rpc = findEntry(rb.label);
-    if (!rpc) {
-      return { actionId, kind, observed: false, readLabel: rb.label, unverifiableReason: `回读入口「${rb.label}」在当前版本里没有注册` };
-    }
-    if (rb.mode === "byArg") {
-      const res = (await callRpc(rpc, { [rb.arg as string]: identity })) as Record<string, unknown> | null;
-      const node = res?.[rb.field];
-      const observed = typeof node === "object" && node !== null && !Array.isArray(node);
-      return { actionId, kind, observed, readLabel: rb.label, unverifiableReason: null };
-    }
-    const res = (await callRpc(rpc, {})) as Record<string, unknown> | null;
-    const list = res?.[rb.field];
-    const observed =
-      Array.isArray(list) && list.some((x) => typeof x === "object" && x !== null && (x as Record<string, unknown>)[rb.matchField] === identity);
-    return { actionId, kind, observed, readLabel: rb.label, unverifiableReason: null };
-  } catch (err) {
-    return { actionId, kind, observed: false, readLabel: rb.label, unverifiableReason: `回读查询出错:${(err as Error).message}` };
-  }
+  const presence = await queryResourcePresence(rb, identity);
+  return {
+    actionId,
+    kind,
+    observed: presence.state === "present",
+    readLabel: rb.label,
+    unverifiableReason: presence.reason,
+  };
 }
 
 /**
@@ -169,23 +215,10 @@ export async function probeExistingResource(kind: SceneResourceKind, spec: Recor
   // ★ 按真实契约钉死身份:声明里推不出稳定身份 → 不探测(记 unknown),绝不用场景 id 冒充服务身份。
   const uid = sceneResourceIdentity(kind, spec);
   if (uid === null) return { existence: "unknown", revision: null, uid: null };
-  try {
-    const rpc = findEntry(rb.label);
-    if (!rpc) return { existence: "unknown", revision: null, uid };
-    if (rb.mode === "byArg") {
-      const res = (await callRpc(rpc, { [rb.arg as string]: uid })) as Record<string, unknown> | null;
-      const node = res?.[rb.field];
-      const present = typeof node === "object" && node !== null && !Array.isArray(node);
-      const revision = typeof res?.revision === "string" ? res.revision : null;
-      return { existence: present ? "preExisting" : "created", revision, uid };
-    }
-    const res = (await callRpc(rpc, {})) as Record<string, unknown> | null;
-    const list = res?.[rb.field];
-    const present =
-      Array.isArray(list) && list.some((x) => typeof x === "object" && x !== null && (x as Record<string, unknown>)[rb.matchField] === uid);
-    const revision = typeof res?.revision === "string" ? res.revision : null;
-    return { existence: present ? "preExisting" : "created", revision, uid };
-  } catch {
-    return { existence: "unknown", revision: null, uid };
-  }
+  const presence = await queryResourcePresence(rb, uid);
+  return {
+    existence: presence.state === "present" ? "preExisting" : presence.state === "absent" ? "created" : "unknown",
+    revision: presence.revision,
+    uid,
+  };
 }
