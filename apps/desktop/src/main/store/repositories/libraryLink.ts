@@ -140,7 +140,9 @@ export const LibraryLinkRepo = {
    */
   countsOf(itemIds: readonly string[]): Record<string, number> {
     const ids = [...new Set(itemIds.filter((id) => id.length > 0))];
-    const counts: Record<string, number> = {};
+    // Imported ids are strings, not safe object property names. A plain {}
+    // swallows "__proto__" and gives inherited "constructor" special meaning.
+    const counts: Record<string, number> = Object.create(null) as Record<string, number>;
     if (ids.length === 0) return counts;
     const db = getDb();
     const marks = ids.map(() => "?").join(",");
@@ -240,7 +242,9 @@ export const LibraryLinkRepo = {
    * 空数组(调用方 `?? []`),省得两边都做一次对齐。
    */
   viewsOfMany(itemIds: readonly string[]): Record<string, LibraryLinkView[]> {
-    const out: Record<string, LibraryLinkView[]> = {};
+    // Use a dictionary without setters/getters in the prototype chain.
+    // Otherwise item id "__proto__" is not stored and preview lookups break.
+    const out: Record<string, LibraryLinkView[]> = Object.create(null) as Record<string, LibraryLinkView[]>;
     for (const id of itemIds) out[id] = [];
     const db = getDb();
     const ids = [

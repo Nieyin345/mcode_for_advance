@@ -8,6 +8,7 @@ import type { MessageRecord } from "@contracts/session";
 import { getDb, persist } from "../db.js";
 import { log } from "@main/lib/logger.js";
 import { v } from "../sessionSchema.js";
+import { withStatement } from "./withStatement.js";
 
 /* ─────────────────────────────── Messages ─────────────────────────────── */
 
@@ -43,6 +44,38 @@ function parseMessageContent(r: MessageRow): unknown {
   }
 }
 
+/** The outer IPC session ID is authoritative: never let an embedded row
+ * redirect writes into another conversation's history. */
+function assertMessageSession(sessionId: string, messages: readonly MessageRecord[]): void {
+  if (messages.some((m) => m.sessionId !== sessionId)) {
+    throw new Error("消息归属(sessionId)与当前会话不匹配，拒绝跨会话写入");
+  }
+}
+
+/** For upsert/edit-and-resend, id is a GLOBAL primary key. An ON CONFLICT(id)
+ * update without an ownership check would MOVE the same message into another
+ * conversation. Check all row IDs before ANY mutation within this transaction.
+ * A second writer in this process shares this synchronous sql.js connection. */
+function assertNoMessageIdReassignment(messages: readonly MessageRecord[]): void {
+  const seen = new Map<string, string>();
+  const stmt = getDb().prepare("SELECT session_id FROM messages WHERE id = ?");
+  withStatement(stmt, (query) => {
+    for (const m of messages) {
+      const previous = seen.get(m.id);
+      if (previous !== undefined && previous !== m.sessionId) {
+        throw new Error("同一批消息内重复 id 指向不同会话，拒绝跨会话写入");
+      }
+      seen.set(m.id, m.sessionId);
+      query.bind([v(m.id)]);
+      const found = query.step();
+      if (found && (query.getAsObject() as { session_id: string }).session_id !== m.sessionId) {
+        throw new Error("消息 id 已属于其他会话，拒绝覆盖或迁移历史");
+      }
+      query.reset();
+    }
+  });
+}
+
 export const MessageRepo = {
   /**
    * Cheap existence probe: does the session hold ANY persisted message?
@@ -65,6 +98,9 @@ export const MessageRepo = {
    * last-complete view. Simple and avoids per-delta write churn.
    */
   replaceAll(sessionId: string, messages: MessageRecord[]): void {
+    // Validate before DELETE: otherwise a tampered snapshot wipes the real
+    // session and re-inserts the rows under the embedded foreign session ID.
+    assertMessageSession(sessionId, messages);
     const db = getDb();
     db.run("BEGIN");
     try {
@@ -72,10 +108,11 @@ export const MessageRepo = {
       const stmt = db.prepare(
         "INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
       );
-      for (const m of messages) {
-        stmt.run([v(m.id), v(m.sessionId), v(m.role), v(JSON.stringify(m.content)), v(m.createdAt)]);
-      }
-      stmt.free();
+      withStatement(stmt, (query) => {
+        for (const m of messages) {
+          query.run([v(m.id), v(m.sessionId), v(m.role), v(JSON.stringify(m.content)), v(m.createdAt)]);
+        }
+      });
       db.run("COMMIT");
     } catch (err) {
       db.run("ROLLBACK");
@@ -167,11 +204,13 @@ export const MessageRepo = {
    *  a turn appended a few rows, or a turn-files card was attached to the
    *  trailing assistant message). Use {@link replaceAll} when rows must be
    *  truncated (edit-and-resend, rewind mutations that remove history). */
-  upsertMany(messages: MessageRecord[]): void {
+  upsertMany(messages: MessageRecord[], expectedSessionId?: string): void {
+    if (expectedSessionId !== undefined) assertMessageSession(expectedSessionId, messages);
     if (messages.length === 0) return;
     const db = getDb();
     db.run("BEGIN");
     try {
+      assertNoMessageIdReassignment(messages);
       const stmt = db.prepare(
         `INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
@@ -180,10 +219,11 @@ export const MessageRepo = {
            content = excluded.content,
            created_at = excluded.created_at`,
       );
-      for (const m of messages) {
-        stmt.run([v(m.id), v(m.sessionId), v(m.role), v(JSON.stringify(m.content)), v(m.createdAt)]);
-      }
-      stmt.free();
+      withStatement(stmt, (query) => {
+        for (const m of messages) {
+          query.run([v(m.id), v(m.sessionId), v(m.role), v(JSON.stringify(m.content)), v(m.createdAt)]);
+        }
+      });
       db.run("COMMIT");
     } catch (err) {
       db.run("ROLLBACK");
@@ -207,9 +247,11 @@ export const MessageRepo = {
     cursor: { createdAt: number; id: string },
     messages: MessageRecord[],
   ): void {
+    assertMessageSession(sessionId, messages);
     const db = getDb();
     db.run("BEGIN");
     try {
+      assertNoMessageIdReassignment(messages);
       db.run(
         `DELETE FROM messages WHERE session_id = ?
          AND (created_at > ? OR (created_at = ? AND id >= ?))`,
@@ -224,10 +266,11 @@ export const MessageRepo = {
              content = excluded.content,
              created_at = excluded.created_at`,
         );
-        for (const m of messages) {
-          stmt.run([v(m.id), v(m.sessionId), v(m.role), v(JSON.stringify(m.content)), v(m.createdAt)]);
-        }
-        stmt.free();
+        withStatement(stmt, (query) => {
+          for (const m of messages) {
+            query.run([v(m.id), v(m.sessionId), v(m.role), v(JSON.stringify(m.content)), v(m.createdAt)]);
+          }
+        });
       }
       db.run("COMMIT");
     } catch (err) {

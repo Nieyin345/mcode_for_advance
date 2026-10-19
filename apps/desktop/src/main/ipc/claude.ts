@@ -597,7 +597,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.SESSION_UPSERT_MESSAGES, (_evt, raw) => {
     const input = UpsertMessagesSchema.parse(raw) as UpsertMessagesInput;
-    MessageRepo.upsertMany(input.messages);
+    // The host-validated outer sessionId is authoritative. Embedded rows
+    // cannot silently redirect a single upsert IPC into another session.
+    MessageRepo.upsertMany(input.messages, input.sessionId);
   });
 
   ipcMain.handle(IPC.SESSION_TRUNCATE_AND_INSERT_MESSAGES, (_evt, raw) => {
