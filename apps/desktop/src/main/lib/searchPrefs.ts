@@ -54,8 +54,11 @@ export function readCriteriaValues(workflowId: string): Record<string, string> {
   if (!raw) return {};
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object") return {};
-    const out: Record<string, string> = {};
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    // Conditions are user-named keys; e.g. "constructor" and "toString" are
+    // valid names, not inherited selection values. A null-prototype map avoids
+    // throwing when the workflow's criteria table contains such a name.
+    const out: Record<string, string> = Object.create(null) as Record<string, string>;
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof value === "string") out[key] = value;
     }
