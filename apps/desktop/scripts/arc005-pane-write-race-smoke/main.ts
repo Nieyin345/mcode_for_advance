@@ -28,6 +28,35 @@ finish(2,true);await flush();
 ck("Failed DB write does not strand the latest pending layout",started.length===4&&started[3].val==="dock-left:420"&&errors.length===1);
 finish(3);await Promise.all([failure,recovery]);
 ck("Recovered queue has no residual async activity",inFlight===0&&started.length===4);
+// Adversarial microtask interleaving: the first drain has already checked
+// dirty=false, but its Promise.finally lock release has not run yet. A new
+// request in that tiny gap MUST NOT be lost.
+let lateValue = "A", lateActive = 0, latePeak = 0;
+const lateWrites: Array<{value:string;resolve:()=>void}> = [];
+const lateQueue = createCoalescedPaneWriter(
+  () => lateValue,
+  (value) => new Promise<void>((resolve) => {
+    lateActive++;latePeak = Math.max(latePeak,lateActive);
+    lateWrites.push({value,resolve:()=>{lateActive--;resolve();}});
+  }),
+  (err) => {throw err;},
+);
+const lateFirst=lateQueue.request();
+lateWrites[0].resolve();
+let lateRequest:Promise<void> | null=null;
+queueMicrotask(() => {
+  lateValue="B";
+  lateRequest=lateQueue.request();
+});
+for(let step=0;step<10;step++) await Promise.resolve();
+ck("Layout change between drain completion and finalizer is not silently lost",
+  lateWrites.length===2&&lateWrites[1].value==="B");
+ck("Microtask edge preserves one writer at a time",latePeak===1);
+lateWrites[1]?.resolve();
+await lateFirst;
+if(lateRequest) await lateRequest;
+ck("Microtask edge queue settles after newest write",lateActive===0);
+
 ck("Production pane persistence uses single-flight queue instead of overlapping await setting.set",
   store.includes("const paneWidthWriter = createCoalescedPaneWriter(")&&store.includes("void paneWidthWriter.request()"));
 ck("Production still applies 400ms debounce before queueing",store.includes("}, 400);")&&store.includes("paneWidthPersistTimer"));
@@ -36,7 +65,8 @@ ck("Hydration proceeds when no local layout action occurred",mayApplyPaneHydrati
 ck("A second local resize invalidates the older delayed hydration",!mayApplyPaneHydration(4,6));
 ck("Production snapshot guards deferred pane settings against local changes",
   store.includes("initialPaneLayoutRevision = paneLayoutRevision;") &&
-  store.includes("if (mayApplyPaneHydration(initialPaneLayoutRevision, paneLayoutRevision))") &&
+  store.includes("mayApplyPaneHydration(initialPaneLayoutRevision, paneLayoutRevision)") &&
+  store.includes("firstPaintLayout") &&
   store.includes("paneLayoutRevision++;"));
 const persistedLayout={rightDock:"right",leftWidthPct:29,rightWidth:525,bottomTerminalHeight:310,editorWidthPct:62};
 const userChangedDock=new Set<keyof typeof persistedLayout>(["rightDock"]);

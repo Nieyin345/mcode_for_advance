@@ -34,6 +34,11 @@ export function createCoalescedPaneWriter<T>(
 ): { request: () => Promise<void> } {
   let dirty = false;
   let inFlight: Promise<void> | null = null;
+  const writeLatest = async () => {
+    const value = snapshot();
+    try { await write(value); }
+    catch (err) { onError(err); }
+  };
   return {
     request() {
       dirty = true;
@@ -41,11 +46,19 @@ export function createCoalescedPaneWriter<T>(
         inFlight = (async () => {
           while (dirty) {
             dirty = false;
-            const value = snapshot();
-            try { await write(value); }
-            catch (err) { onError(err); }
+            await writeLatest();
           }
-        })().finally(() => { inFlight = null; });
+        })().finally(async () => {
+          // A request can run in the microtask gap AFTER the loop observes
+          // dirty=false and BEFORE this Promise.finally releases the lock.
+          // Drain it here while still owning the lock. The last dirty check
+          // and lock release are synchronous, so there is no second gap.
+          while (dirty) {
+            dirty = false;
+            await writeLatest();
+          }
+          inFlight = null;
+        });
       }
       return inFlight;
     },

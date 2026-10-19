@@ -44,6 +44,7 @@ import type { ThemeStyle } from "@contracts/theme";
 import { DEFAULT_SHELL_PREF, parseShellPref } from "@renderer/components/shell/shellPrefs.js";
 import { parsePaneDock } from "@renderer/components/layout/paneDock.js";
 import { createCoalescedPaneWriter, mayApplyPaneHydration, withoutLocallyEditedPaneFields } from "./paneWidthWriteQueue.js";
+import { parseSavedPaneLayout } from "./paneLayoutPrefs.js";
 
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -268,7 +269,12 @@ const paneWidthWriter = createCoalescedPaneWriter(
       editor: s.editorWidthPct,
     }),
   }),
-  (err) => console.error("setting.set(paneWidths) failed:", err),
+  (err) => {
+    console.error("setting.set(paneWidths) failed:", err);
+    // Docking and resizing are explicit user settings. Do not silently let
+    // an apparently successful UI change revert on the next application boot.
+    reportSettingSaveFailed(err);
+  },
 );
 function schedulePaneWidthPersist(_get: () => SessionState, field: PanePersistedField): void {
   paneLayoutRevision++;
@@ -926,6 +932,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           UI_LAST_PROJECT_SETTING_KEY,
           UI_LAST_SESSION_SETTING_KEY,
           UI_STREAM_SCOPE_SETTING_KEY,
+          UI_PANE_WIDTHS_SETTING_KEY,
           UI_COMPOSER_MODEL_SETTING_KEY,
           SESSION_WORKTREE_DEFAULT_SETTING_KEY,
           WORKTREE_NAMES_SETTING_KEY,
@@ -936,6 +943,39 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         console.error("setting.getMany(first-paint) failed:", err);
         return {} as Record<string, string | null>;
       });
+
+    // Pane docking and resize geometry affect the first visible workspace
+    // frame and native browser placement. Restore them with the FIRST settings
+    // batch, never after the pane/Monaco/Chromium tree has already mounted.
+    const firstPaintLayout = parseSavedPaneLayout(fp[UI_PANE_WIDTHS_SETTING_KEY]);
+    if (firstPaintLayout) {
+      const patch: Partial<SessionState> = { rightDock: firstPaintLayout.dock };
+      if (firstPaintLayout.leftPct !== undefined) {
+        patch.leftWidthPct = clampLeftWidthPct(firstPaintLayout.leftPct);
+      }
+      if (firstPaintLayout.right !== undefined) {
+        const leftPct = paneLayoutLocalEdits.has("leftWidthPct")
+          ? get().leftWidthPct
+          : firstPaintLayout.leftPct ?? get().leftWidthPct;
+        patch.rightWidth = clampRightWidth(
+          firstPaintLayout.right,
+          centerRightRowWidth(get().leftOpen, leftPct),
+        );
+      }
+      if (firstPaintLayout.bottomTerminal !== undefined) {
+        patch.bottomTerminalHeight = clampBottomTerminalHeight(firstPaintLayout.bottomTerminal);
+      }
+      if (firstPaintLayout.editor !== undefined) {
+        patch.editorWidthPct = clampEditorWidthPct(firstPaintLayout.editor);
+      }
+      const next = mayApplyPaneHydration(initialPaneLayoutRevision, paneLayoutRevision)
+        ? patch
+        : withoutLocallyEditedPaneFields(patch, paneLayoutLocalEdits);
+      if (Object.keys(next).length > 0) set(next);
+    } else if (fp[UI_PANE_WIDTHS_SETTING_KEY]) {
+      // Do not echo corrupt setting contents (may include user-defined data).
+      console.warn("apply(paneWidths): invalid saved layout ignored");
+    }
 
     // Composer's default working environment for new sessions. Folded into
     // the first-paint batch so the chip renders correctly on frame one.
@@ -1322,7 +1362,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           UI_ACCENT_COLOR_SETTING_KEY,
           UI_EDITOR_THEME_SETTING_KEY,
           UI_SHORTCUTS_SETTING_KEY,
-          UI_PANE_WIDTHS_SETTING_KEY,
           UI_RIGHT_PANEL_TAB_SETTING_KEY,
           UI_IDE_OPEN_FILES_SETTING_KEY,
           UI_IDE_ACTIVE_FILE_SETTING_KEY,
@@ -1418,55 +1457,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // throws — malformed rows fall back to the disabled default.
     const autoArchiveRaw = ds[AUTO_ARCHIVE_SETTING_KEY];
     if (autoArchiveRaw) set({ autoArchiveConfig: parseAutoArchiveConfig(autoArchiveRaw) });
-
-    // Draggable pane widths (one JSON blob). The async read is conditional:
-    // once a local resize/dock happens during init, its state wins over the
-    // stale settings snapshot, and the queued write persists that choice.
-    try {
-      const paneRaw = ds[UI_PANE_WIDTHS_SETTING_KEY];
-      if (paneRaw) {
-        const parsed = JSON.parse(paneRaw) as Partial<{
-          leftPct: number; right: number; dock: unknown; bottomTerminal: number; editor: number;
-        }>;
-        const patch: Partial<SessionState> = {};
-        if (parsed && typeof parsed === "object") {
-          // Only `leftPct` is read — the legacy `left` (px) field from the old
-          // fixed-width layout is deliberately dropped; the redesigned 3:7
-          // layout starts everyone at the percentage default.
-          if (Number.isFinite(parsed.leftPct)) patch.leftWidthPct = clampLeftWidthPct(parsed.leftPct!);
-          if (Number.isFinite(parsed.right)) {
-            // Clamp against the live row width so a width dragged up to the
-            // 2:8 cap survives a restart (the fixed 640px cap is gone).
-            const leftPct = paneLayoutLocalEdits.has("leftWidthPct")
-              ? get().leftWidthPct
-              : Number.isFinite(parsed.leftPct)
-                ? parsed.leftPct!
-                : get().leftWidthPct;
-            patch.rightWidth = clampRightWidth(
-              parsed.right!,
-              centerRightRowWidth(get().leftOpen, leftPct),
-            );
-          }
-          // Unknown/legacy dock preference is mapped safely to the old right
-          // placement without moving/restoring any live browser/editor instance.
-          patch.rightDock = parsePaneDock(parsed.dock);
-          if (Number.isFinite(parsed.bottomTerminal)) {
-            patch.bottomTerminalHeight = clampBottomTerminalHeight(parsed.bottomTerminal!);
-          }
-          if (Number.isFinite(parsed.editor)) patch.editorWidthPct = clampEditorWidthPct(parsed.editor!);
-          if (mayApplyPaneHydration(initialPaneLayoutRevision, paneLayoutRevision)) {
-            if (Object.keys(patch).length > 0) set(patch);
-          } else {
-            // A quick dock/resize during async init supersedes *only* that
-            // field; unrelated saved widths are still restored on startup.
-            const safe = withoutLocallyEditedPaneFields(patch, paneLayoutLocalEdits);
-            if (Object.keys(safe).length > 0) set(safe);
-          }
-        }
-      }
-    } catch (err) {
-      console.error("apply(paneWidths) failed:", err);
-    }
 
     // IDE right-panel prefs (active tab, open files, active file, expanded tree
     // dirs, editor mode, diff mode, commit-gen model/prompt, custom commands,

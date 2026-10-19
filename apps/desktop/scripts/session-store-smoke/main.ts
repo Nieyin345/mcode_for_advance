@@ -2113,6 +2113,103 @@ console.log("\n[ARC005 UIK7-039] 真实 Zustand 左右停靠的即时值与隔�
   setSettingSetStub(null);
 }
 
+console.log("\n[ARC005 UIK7-042] 真实 Zustand 首帧布局恢复：阻塞项目列表 IPC 观察首次 setting.getMany 的时序");
+{
+  const seenKeys: string[][] = [];
+  let releaseProjects!: (value: { projects: [] }) => void;
+  const projectsGate = new Promise<{ projects: [] }>((resolve) => { releaseProjects = resolve; });
+  setApiStub("setting.getMany", async (input) => {
+    const keys = (input as { keys?: string[] })?.keys ?? [];
+    seenKeys.push(keys);
+    return keys.includes(UI_PANE_WIDTHS_SETTING_KEY)
+      ? { [UI_PANE_WIDTHS_SETTING_KEY]: JSON.stringify({
+          dock: "left", leftPct: 27, right: 470, bottomTerminal: 298, editor: 63,
+        }) }
+      : {};
+  });
+  setApiStub("project.list", async () => projectsGate);
+  setApiStub("setting.get", async () => ({ value: null }));
+  setApiStub("session.listPinned", async () => ({ sessions: [] }));
+  useSessionStore.setState({
+    _initStarted: false,
+    rightDock: "right",
+    rightWidth: 360,
+    leftWidthPct: 30,
+    bottomTerminalHeight: 280,
+    editorWidthPct: 50,
+  });
+  const boot = useSessionStore.getState().init();
+  for (let n=0; n<8; n++) await Promise.resolve();
+  eq("★ 首批 settings.getMany 返回、项目列表尚阻塞时已经是保存的左停靠",
+    useSessionStore.getState().rightDock, "left");
+  eq("★ 首批 settings.getMany 已应用编辑器宽度", useSessionStore.getState().editorWidthPct, 63);
+  check("★ 首次 getMany 必须包含 paneWidths", seenKeys[0]?.includes(UI_PANE_WIDTHS_SETTING_KEY) === true);
+  releaseProjects({ projects: [] });
+  await boot;
+  for (let n=0; n<8; n++) await Promise.resolve();
+  check("★ 后台 deferred getMany 不再重新读取布局设置",
+    seenKeys.slice(1).every((keys) => !keys.includes(UI_PANE_WIDTHS_SETTING_KEY)));
+  setApiStub("setting.getMany", null);
+  setApiStub("project.list", null);
+  setApiStub("setting.get", null);
+  setApiStub("session.listPinned", null);
+}
+
+console.log("\n[ARC005 UIK7-043] 启动首屏 settings IPC 在飞：本地 dock/resize 优先，其他宽度仍可恢复");
+{
+  let resolveSettings!: (value: Record<string, string>) => void;
+  const pendingSettings = new Promise<Record<string,string>>((resolve) => { resolveSettings = resolve; });
+  setApiStub("setting.getMany", async (input) => {
+    const keys = (input as { keys?: string[] })?.keys ?? [];
+    return keys.includes(UI_PANE_WIDTHS_SETTING_KEY) ? pendingSettings : {};
+  });
+  setApiStub("project.list", async () => ({ projects: [] }));
+  setApiStub("setting.get", async () => ({ value: null }));
+  setApiStub("session.listPinned", async () => ({ sessions: [] }));
+  setSettingSetStub(async () => ({ ok: true }));
+  useSessionStore.setState({
+    _initStarted: false,
+    rightDock: "right",
+    rightWidth: 360,
+    editorWidthPct: 50,
+    bottomTerminalHeight: 280,
+  });
+  const pendingBoot = useSessionStore.getState().init();
+  // User moves the dock and right separator before the first getMany settles.
+  useSessionStore.getState().setRightDock("left");
+  useSessionStore.getState().adjustRightWidth(-20);
+  const changedWidth = useSessionStore.getState().rightWidth;
+  resolveSettings({ [UI_PANE_WIDTHS_SETTING_KEY]: JSON.stringify({
+    dock: "right", right: 190, editor: 66, bottomTerminal: 305,
+  }) });
+  await pendingBoot;
+  eq("★ 用户先操作左停靠 → 延迟首屏旧 right 不得覆盖", useSessionStore.getState().rightDock, "left");
+  eq("★ 同时更改的侧栏宽度不被旧 190px 覆盖", useSessionStore.getState().rightWidth, changedWidth);
+  eq("★ 没改过的编辑器宽度仍按设置恢复", useSessionStore.getState().editorWidthPct, 66);
+  eq("★ 没改过的终端高度仍按设置恢复", useSessionStore.getState().bottomTerminalHeight, 305);
+  await new Promise((resolve) => setTimeout(resolve, 460)); // let bounded fake persistence finish
+  setApiStub("setting.getMany", null);
+  setApiStub("project.list", null);
+  setApiStub("setting.get", null);
+  setApiStub("session.listPinned", null);
+  setSettingSetStub(null);
+}
+
+console.log("\n[ARC005 UIK7-044] 用户显式布局保存失败不可静默：假 IPC 抛错 → error toast");
+{
+  useToastStore.getState().clear();
+  setSettingSetStub(async () => { throw new Error("isolated layout DB failure"); });
+  const before = useSessionStore.getState().rightDock;
+  useSessionStore.getState().setRightDock(before === "left" ? "right" : "left");
+  const chosen = useSessionStore.getState().rightDock;
+  await new Promise((resolve) => setTimeout(resolve, 465));
+  eq("★ 写入失败不反向覆盖内存里用户刚选择的停靠",useSessionStore.getState().rightDock,chosen);
+  check("★ 写入失败有 error toast，不能只在后台 console.error",
+    useToastStore.getState().toasts.some((toast)=>toast.kind==="error" && toast.title.length>0));
+  useToastStore.getState().clear();
+  setSettingSetStub(null);
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {
   console.error(`${failures} check(s) failed`);

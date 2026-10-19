@@ -21,7 +21,7 @@ check("Stable flex order puts IDE aside before center in left dock",dockFlexOrde
 check("Stable flex order puts IDE aside after center in right dock",dockFlexOrder("right").center<dockFlexOrder("right").toolbar&&dockFlexOrder("right").toolbar<dockFlexOrder("right").divider&&dockFlexOrder("right").divider<dockFlexOrder("right").aside);
 check("Private drag MIME cannot be confused with file or text drag",PANE_DOCK_MIME.includes("pane-dock")&&RIGHT_PANE_DRAG_ID==="mcode-right-panel");
 check("Persisted layout includes dock beside existing width fields",store.includes("dock: s.rightDock"));
-check("Hydration validates dock field strictly",store.includes("parsePaneDock(parsed.dock)")&&store.includes("patch.rightDock"));
+check("Hydration validates dock field strictly",store.includes("parseSavedPaneLayout(fp[UI_PANE_WIDTHS_SETTING_KEY])")&&store.includes("rightDock: firstPaintLayout.dock"));
 check("Initial dock defaults right and setter persists",store.includes('rightDock: "right"')&&store.includes("setRightDock: (dock)")&&store.includes('schedulePaneWidthPersist(get, "rightDock")'));
 check("Store type includes right dock and action",types.includes("rightDock: PaneDock")&&types.includes("setRightDock: (dock: PaneDock) => void"));
 check("App subscribes and forwards dock store state",app.includes("const rightDock = useSessionStore")&&app.includes("rightDock={rightDock}"));
