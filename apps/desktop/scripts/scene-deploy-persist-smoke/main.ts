@@ -271,6 +271,23 @@ if (MODE === "write") {
     eq("★ 重试成功后磁盘真的有了 V2", decodeDeployment((await diskPayload("dep_fault")) ?? "")?.status, "active");
   }
 
+  // A caller's pre-computed status is not authoritative: the steps are.
+  {
+    const original = partialDeployment("dep_stale_write_projection", SCENE, "wf_stale_w", "auto_stale_w");
+    const stale = { ...original, status: "active" as const };
+    try {
+      eq("★ valid deployment with stale caller status can be persisted",
+        saveDeployment(stale, { durable: true }), true);
+      eq("★ stored query projection must be derived from steps, not caller.status",
+        SceneDeploymentRepo.get(stale.deploymentId)?.status, "partial");
+      eq("★ archived top-level status is normalized before durable save",
+        JSON.parse(SceneDeploymentRepo.get(stale.deploymentId)?.payload ?? "{}").status, "partial");
+      eq("★ decoded archive remains partial", loadDeployment(stale.deploymentId)?.status, "partial");
+    } finally {
+      SceneDeploymentRepo.remove(stale.deploymentId);
+    }
+  }
+
   /* ── 9. 编码失败一个字节都不落库(保住旧档) ── */
   console.log("\n⑨ 编码失败:不覆盖上一次有效存档");
   {
@@ -337,6 +354,43 @@ if (MODE === "write") {
     const idxSnap = recentAll.findIndex((e) => e.deploymentId === "dep_snap");
     const idxOld = recentAll.findIndex((e) => e.deploymentId === DEP_A);
     check("★ 跨场景按最近更新排序(新的在前)", idxSnap >= 0 && (idxOld < 0 || idxSnap < idxOld), { idxSnap, idxOld });
+  }
+
+  /* ── MC-002: resumable query must inspect the payload, never a stale SQL projection ── */
+  console.log("\n⑩b 恢复发现按真实 payload 状态筛选，不能信可变的 SQL 投影");
+  {
+    const hidden = partialDeployment("dep_projection_hidden", SCENE, "wf_projection_h", "auto_projection_h");
+    const falsePositive = advanceDeployment(
+      partialDeployment("dep_projection_false_positive", SCENE, "wf_projection_a", "auto_projection_a"),
+      { actionId: "auto_projection_a", status: "done", resourceUid: "auto_projection_uid" },
+      1500,
+    );
+    try {
+      // Fictional isolated sqlite only: deliberately forge opposite status projections.
+      SceneDeploymentRepo.save({
+        deploymentId: hidden.deploymentId, sceneId: hidden.sceneId, status: "active",
+        specDigest: hidden.specDigest, planDigest: hidden.planDigest, payload: encodeDeployment(hidden),
+      });
+      SceneDeploymentRepo.save({
+        deploymentId: falsePositive.deploymentId, sceneId: falsePositive.sceneId, status: "partial",
+        specDigest: falsePositive.specDigest, planDigest: falsePositive.planDigest, payload: encodeDeployment(falsePositive),
+      });
+      // Explicit ordering makes the LIMIT=1 case deterministic even on same-ms insertions.
+      const base = Date.now() + 100_000;
+      getDb().run("UPDATE scene_deployments SET updated_at = ? WHERE deployment_id = ?", [base + 2, falsePositive.deploymentId]);
+      getDb().run("UPDATE scene_deployments SET updated_at = ? WHERE deployment_id = ?", [base + 1, hidden.deploymentId]);
+
+      const normal = listRecentDeploymentEntries(50);
+      eq("★ unfiltered row status is re-derived from payload, not forged projection",
+        normal.find((item) => item.deploymentId === hidden.deploymentId)?.status, "partial");
+      const filtered = listRecentDeploymentEntries(1, { resumableOnly: true });
+      eq("★ resumableOnly skips forged partial projection and discovers genuine partial row beyond SQL LIMIT",
+        filtered[0]?.deploymentId, hidden.deploymentId);
+      eq("★ discovered row is actually resumable", filtered[0]?.resumable, true);
+    } finally {
+      SceneDeploymentRepo.remove(hidden.deploymentId);
+      SceneDeploymentRepo.remove(falsePositive.deploymentId);
+    }
   }
 
   /* ── 11.【MC-002 复审】坏数据库读取≠空部署历史：必须显式报错 ── */

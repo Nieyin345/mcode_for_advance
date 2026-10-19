@@ -132,25 +132,36 @@ export const SceneDeploymentRepo = {
     }
   },
 
-  /** 【MC-002】**跨场景**列出最近的部署,新的在前。
+  /** Cross-scene recovery discovery, newest first.
    *
-   *  为什么需要它:一次部署的 `deploymentId` 只活在渲染端内存里;进程崩溃/重启后
-   *  用户没有任何上下文能"按 sceneId 查" —— 他连 sceneId 都没有(粘贴的 spec 文本
-   *  已随进程消失)。要发现盘上的 partial/failed,只能**不带场景条件**列最近的记录。
+   * The SQL status column is only a *projection*: the archived payload is the
+   * source of truth. The caller may provide an include predicate which inspects
+   * the actual payload. With such a predicate we scan in SQL order until
+   * `limit` accepted rows, not LIMIT before filtering (which could hide older
+   * valid recoveries behind stale/forged projection rows).
    *
-   *  `resumableOnly` 在 SQL 层先按 status 收一遍(走 idx 的 scene_id 索引之外,
-   *  靠 updated_at 排序 + LIMIT;记录量小,不额外建索引)。 */
-  listRecent(limit: number, options: { resumableOnly?: boolean } = {}): SceneDeploymentRow[] {
-    const where = options.resumableOnly === true ? "WHERE status IN ('partial','failed')" : "";
+   * Without include, keep the original bounded indexed SQL query. */
+  listRecent(
+    limit: number,
+    options: { resumableOnly?: boolean; include?: (row: SceneDeploymentRow) => boolean } = {},
+  ): SceneDeploymentRow[] {
+    const hasPayloadFilter = options.include !== undefined;
+    const where = !hasPayloadFilter && options.resumableOnly === true
+      ? "WHERE status IN ('partial','failed')"
+      : "";
     const stmt = getDb().prepare(
       `SELECT * FROM scene_deployments
         ${where}
-        ORDER BY updated_at DESC, deployment_id DESC LIMIT ?`,
+        ORDER BY updated_at DESC, deployment_id DESC
+        ${hasPayloadFilter ? "" : "LIMIT ?"}`,
     );
     try {
-      stmt.bind([v(limit)]);
+      if (!hasPayloadFilter) stmt.bind([v(limit)]);
       const out: SceneDeploymentRow[] = [];
-      while (stmt.step()) out.push(rowToSceneDeployment(stmt.getAsObject() as unknown as SceneDeploymentDbRow));
+      while (out.length < limit && stmt.step()) {
+        const row = rowToSceneDeployment(stmt.getAsObject() as unknown as SceneDeploymentDbRow);
+        if (options.include === undefined || options.include(row)) out.push(row);
+      }
       return out;
     } finally {
       stmt.free();

@@ -29,6 +29,7 @@
  */
 import { log } from "@main/lib/logger.js";
 import { SceneDeploymentRepo } from "@main/store/repositories.js";
+import type { SceneDeploymentRow } from "@main/store/repositories/scene.js";
 import { commitNow } from "@main/store/db.js";
 import {
   deriveDeploymentStatus,
@@ -191,14 +192,17 @@ export function decodeDeployment(raw: string): SceneDeployment | null {
 export function saveDeployment(d: SceneDeployment, opts: { durable?: boolean } = {}): boolean {
   let payload: string;
   try {
-    payload = encodeDeployment(d);
+    // Status is a projection of the steps, never an independent caller assertion.
+    // Keep the archived top-level status and SQL query projection consistent.
+    payload = encodeDeployment({ ...d, status: deriveDeploymentStatus(d.steps) });
   } catch (err) {
     // 编码失败 → 一个字节都不落库,保住上一次有效存档(与 saveRun 的 MC-053 同款)。
     log.warn(`scene deployment ${d.deploymentId}: 编码失败,保留上一次有效存档不动 ${(err as Error).message}`);
     return false;
   }
   // 「能编码」≠「写得进来」:把刚落盘的同一段 payload 交给读侧解码器走一趟,收不回来就拒写。
-  if (decodeDeployment(payload) === null) {
+  const validated = decodeDeployment(payload);
+  if (validated === null) {
     log.warn(`scene deployment ${d.deploymentId}: 存档结构通不过解码器校验,拒写以保住上一次有效存档`);
     return false;
   }
@@ -217,7 +221,7 @@ export function saveDeployment(d: SceneDeployment, opts: { durable?: boolean } =
     SceneDeploymentRepo.save({
       deploymentId: d.deploymentId,
       sceneId: d.sceneId,
-      status: d.status,
+      status: validated.status,
       specDigest: d.specDigest,
       planDigest: d.planDigest,
       payload,
@@ -319,16 +323,34 @@ export function listRecentDeploymentEntries(limit: number, options: { resumableO
   deployment: SceneDeployment | null;
   resumable: boolean;
 }> {
+  // The SQL status field is only a query projection. For recovery discovery
+  // inspect the actual archive before applying the row limit; a stale "active"
+  // projection must not hide a genuinely partial deployment. Keep corrupt
+  // projected partial rows visible as non-resumable diagnostic entries.
+  const acceptedPayloads = new Map<string, SceneDeployment | null>();
+  const include = (row: SceneDeploymentRow): boolean => {
+    const parsed = decodeDeployment(row.payload);
+    const match = parsed !== null
+      ? parsed.status === "partial" || parsed.status === "failed"
+      : row.status === "partial" || row.status === "failed";
+    if (match) acceptedPayloads.set(row.deploymentId, parsed);
+    return match;
+  };
   let rows;
   try {
-    rows = SceneDeploymentRepo.listRecent(limit, options);
+    rows = SceneDeploymentRepo.listRecent(
+      limit,
+      options.resumableOnly === true ? { ...options, include } : options,
+    );
   } catch (err) {
     // MC-002: 存储读失败不是「无可恢复部署」；由 IPC 统一向用户返回 ok:false。
     log.warn(`scene deployment recent list failed: ${(err as Error).message}`);
     throw err;
   }
   return rows.map((row) => {
-    const deployment = decodeDeployment(row.payload);
+    const deployment = acceptedPayloads.has(row.deploymentId)
+      ? acceptedPayloads.get(row.deploymentId) ?? null
+      : decodeDeployment(row.payload);
     return {
       deploymentId: row.deploymentId,
       sceneId: row.sceneId,
