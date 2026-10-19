@@ -1,12 +1,14 @@
 "use strict";
 /**
- * ARC-007: opt-in GenOffice CLI release staging.
+ * ARC-007: opt-in GenOffice CLI and original six-editor release staging.
  *
  * Default CI installs must remain buildable without the ignored vendor checkout,
  * and must never silently ship an incomplete/stale GenOffice sidecar. Explicit
  * MCODE_INCLUDE_GENOFFICE_BUNDLE=1 requires a reviewed local vendor snapshot.
- * We stage only its CLI bundle, CLI runtime dependencies, PDFium WASM and
- * redistribution notices (not its separate Electron application/agent loop).
+ * By default we stage only the CLI bundle/dependencies/PDFium/notices. A second
+ * explicit opt-in stages the six already-built ORIGINAL vendor renderer assets
+ * (not their separate Electron shell/agent loop). Missing editor outputs fail
+ * before touching any previously staged resources.
  *
  * electron-builder extraResources copies .tmp/genoffice-release => resources/genoffice.
  * All paths are app-local; never write to the user's Electron data directory.
@@ -14,6 +16,7 @@
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const { isAbsolute, join, resolve, relative, sep } = require("node:path");
+const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
 
 function assertWithin(root, candidate) {
   const rel = relative(resolve(root), resolve(candidate));
@@ -45,8 +48,33 @@ function dirReady(dir, label) {
   } catch {}
   throw new Error(`GenOffice bundle missing required ${label}: ${dir}`);
 }
-function prepareGenofficeResources({ appDir, repoRoot, include = false }) {
-  if (typeof include !== "boolean") throw new TypeError("include must be boolean");
+/**
+ * A renderer index with a dangling Vite entry script is not a working vendor
+ * editor. Check generated local script/style references before advertising
+ * that the original editor ASSETS (not necessarily its Host RPC) are staged.
+ */
+function assertRendererAssetsReady(renderer, name) {
+  const html = fs.readFileSync(join(renderer, "index.html"), "utf8");
+  const entryScripts = [...html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)];
+  if (entryScripts.length === 0) throw new Error(`GenOffice ${name} original renderer has no entry script`);
+  const references = [...html.matchAll(/\b(?:src|href)=["'](\.\/assets\/[^"']+)["']/gi)];
+  for (const [, ref] of references) {
+    const target = resolve(renderer, ref);
+    assertWithin(renderer, target);
+    fileReady(target, `${name} renderer asset ${ref}`);
+  }
+  for (const [, script] of entryScripts) {
+    if (!script.startsWith("./assets/")) {
+      throw new Error(`GenOffice ${name} renderer script is not a local vendor asset`);
+    }
+  }
+}
+
+function prepareGenofficeResources({ appDir, repoRoot, include = false, includeEditors = false }) {
+  if (typeof include !== "boolean" || typeof includeEditors !== "boolean") {
+    throw new TypeError("include and includeEditors must be boolean");
+  }
+  if (includeEditors && !include) throw new Error("GenOffice editors require the CLI bundle to be included");
   const app = resolve(appDir);
   const repo = resolve(repoRoot);
   const tmp = join(app, ".tmp");
@@ -63,6 +91,21 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false }) {
     [join(pdfium, "LICENSE.pdfium"), "PDFium-LICENSE.pdfium"],
   ];
   // Validate the entire input BEFORE touching a previous stage.
+  // Vite renderer assets are source-built vendor files; never package an
+  // incomplete subset (or a symlink to arbitrary workstation/private files).
+  const editors = EDITOR_APPS.map((name) => ({
+    name, renderer: join(vendor, "apps", name, "out", "renderer"),
+  }));
+  if (includeEditors) {
+    for (const { name, renderer } of editors) {
+      dirReady(renderer, `${name} original renderer`);
+      fileReady(join(renderer, "index.html"), `${name} original renderer index`);
+      dirReady(join(renderer, "assets"), `${name} original renderer assets`);
+      assertVendorTreeSafe(vendor, renderer);
+      assertWithin(vendor, fs.realpathSync.native(renderer));
+      assertRendererAssetsReady(renderer, name);
+    }
+  }
   if (include) {
     fileReady(cli, "CLI");
     dirReady(nodeModules, "CLI node_modules");
@@ -91,10 +134,18 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false }) {
       fs.cpSync(nodeModules, join(temp, "cli", "node_modules"), { recursive: true, dereference: true });
       fs.copyFileSync(wasm, join(temp, "wasm", "pdfium.wasm"));
       for (const [file, name] of licenses) fs.copyFileSync(file, join(temp, "licenses", name));
+      if (includeEditors) {
+        for (const { name, renderer } of editors) {
+          const target = join(temp, "apps", name, "out", "renderer");
+          fs.cpSync(renderer, target, { recursive: true, dereference: false });
+        }
+      }
     }
     fs.writeFileSync(join(temp, "availability.json"), JSON.stringify({
       format: "mcode.genoffice.resources.v1",
       bundled: include,
+      editorsBundled: includeEditors,
+      editors: includeEditors ? [...EDITOR_APPS] : [],
     }) + "\n", "utf8");
     if (fs.existsSync(destination)) {
       fs.renameSync(destination, backup);
@@ -107,7 +158,7 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false }) {
       throw err;
     }
     if (hadOld) fs.rmSync(backup, { recursive: true, force: true });
-    return { bundled: include, resourceDirectory: destination };
+    return { bundled: include, editorsBundled: includeEditors, resourceDirectory: destination };
   } finally {
     if (fs.existsSync(temp)) fs.rmSync(temp, { recursive: true, force: true });
   }
@@ -119,14 +170,19 @@ if (require.main === module) {
     if (setting !== "" && setting !== "0" && setting !== "1") {
       throw new Error("MCODE_INCLUDE_GENOFFICE_BUNDLE must be 0 or 1");
     }
+    const editorsSetting = process.env.MCODE_INCLUDE_GENOFFICE_EDITORS ?? "";
+    if (editorsSetting !== "" && editorsSetting !== "0" && editorsSetting !== "1") {
+      throw new Error("MCODE_INCLUDE_GENOFFICE_EDITORS must be 0 or 1");
+    }
     const appDir = resolve(__dirname, "..");
     const result = prepareGenofficeResources({
       appDir, repoRoot: resolve(appDir, "../.."), include: setting === "1",
+      includeEditors: editorsSetting === "1",
     });
-    console.log(`GenOffice release sidecar: ${result.bundled ? "OPT-IN staged (verify licenses before publication)" : "not included (explicit unavailable)"}`);
+    console.log(`GenOffice release sidecar: ${result.bundled ? "CLI staged" : "not included"}; original editors: ${result.editorsBundled ? "six staged" : "not included"}`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
 }
-module.exports = { prepareGenofficeResources, assertWithin };
+module.exports = { prepareGenofficeResources, assertWithin, EDITOR_APPS };
