@@ -47,7 +47,8 @@
  *
  * Run: scripts/hooks-ipc-smoke/run.sh
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
@@ -122,6 +123,30 @@ const { hookRunner } = await import("@main/hooks/HookRunner.js");
 registerHookHandlers(fakeIpc);
 
 const FILE = hooksFilePath();
+
+/** 故障只拦截本套件 dataRoot 下的 Hook 随机暂存文件 open(wx)。
+ *  用 syncBuiltinESMExports 同步 Node 内置命名导入；不依赖生产临时文件名字。
+ *  任何目标之外的文件都走真实 fs，finally 恢复进程级桩。
+ */
+async function withBlockedHookStage<T>(action: () => Promise<T>): Promise<{ result: T; hits: number }> {
+  const open = fs.openSync;
+  let hits = 0;
+  fs.openSync = ((path, flags, ...args) => {
+    if (typeof path === "string" && path.startsWith(`${FILE}.`) && path.endsWith(".tmp") && flags === "wx") {
+      hits++;
+      const error = new Error("FAKE_HOOK_TEMP_EACCES") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+      throw error;
+    }
+    return (open as (...args: unknown[]) => number)(path, flags, ...args);
+  }) as typeof fs.openSync;
+  syncBuiltinESMExports();
+  try { return { result: await action(), hits }; }
+  finally {
+    fs.openSync = open;
+    syncBuiltinESMExports();
+  }
+}
 
 console.log("\n§0 九个 channel 都接上了");
 
@@ -365,16 +390,14 @@ try {
 }
 check("不给参数删除:显式拒", removeNoArg !== "没抛", removeNoArg);
 
-/* 写盘失败的那条路:删除**必须**把它报上去。找不到那条 id 时 `removeHook` 直接返回
- * `{ok:true}`(想要的结局已经在了),所以只有"真要写盘"时才会走到这里 —— 坑还是
- * `hooks.json.tmp` 那个固定名字。 */
-rmSync(`${FILE}.tmp`, { recursive: true, force: true });
-mkdirSync(`${FILE}.tmp`);
-const removeBlocked = await removeAsUser("h_keep");
+/* 写盘失败的那条路:删除**必须**把它报上去。拦截本次唯一
+ * 随机暂存文件的独占打开，不能再依赖旧的固定 hooks.json.tmp 名字。 */
+const blockedRemove = await withBlockedHookStage(() => removeAsUser("h_keep"));
+const removeBlocked = blockedRemove.result;
+check("★ 删除故障确实命中了生产随机临时文件", blockedRemove.hits === 1, blockedRemove);
 eq("删的时候写不进去 → 显式报失败(不是静默成功)", removeBlocked.ok, false);
 mentions("而且给了原因", removeBlocked.message, "E");
 eq("失败之后那条还在盘上(没被「删了一半」)", onDisk().hooks.some((x) => x.id === "h_keep"), true);
-rmSync(`${FILE}.tmp`, { recursive: true, force: true });
 
 /* 无参 handler 自己不该 parse —— 契约里明写了 `z.object({}).parse(undefined)` 会炸。 */
 let listThrew: unknown = null;
@@ -676,14 +699,13 @@ writeFileSync(
   JSON.stringify({ version: 1, hooks: [h({ id: "h_old", name: "盘上原来的" })] }),
   "utf-8",
 );
-/** 写临时文件那一步失败(把 `hooks.json.tmp` 做成一个目录——它是固定名字)。
- *  这模拟的就是"写盘失败"本身:打开文件失败 / 磁盘满 / 目录权限没了。 */
-rmSync(`${FILE}.tmp`, { recursive: true, force: true });
-mkdirSync(`${FILE}.tmp`);
-
-const blocked = (await call(IPC.HOOKS_SAVE, {
+/** 注入本次随机暂存文件的 O_EXCL 打开失败（真正的 EACCES 路径）。
+ *  不耦合固定 `hooks.json.tmp`，不改变用户/测试数据根之外的 fs。 */
+const blockedWrite = await withBlockedHookStage(() => call(IPC.HOOKS_SAVE, {
   hook: h({ id: "h_new", name: "存不进去的那条" }),
-})) as { ok: boolean; error?: string };
+}));
+const blocked = blockedWrite.result as { ok: boolean; error?: string };
+check("★ 保存故障确实命中了生产随机暂存文件", blockedWrite.hits === 1, blockedWrite);
 eq("写不进去 → 显式报失败(不是静默成功)", blocked.ok, false);
 check(
   "而且给了原因(不是一句空字符串)",
@@ -697,7 +719,6 @@ eq("原来那条完好", afterFail.hooks[0]?.id, "h_old");
 eq("新来的那条**没有被**写进去", afterFail.hooks.some((x) => x.id === "h_new"), false);
 eq("失败的这一次也不算 problem(它是一次的写失败,不是文件坏了)", afterFail.problems.length, 0);
 
-rmSync(`${FILE}.tmp`, { recursive: true, force: true });
 const recovered = (await call(IPC.HOOKS_SAVE, { hook: h({ id: "h_new", name: "存得进去的那条" }) })) as {
   ok: boolean;
 };

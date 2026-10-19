@@ -29,7 +29,7 @@
  *
  * Run: scripts/hook-exec-smoke/run.sh
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -382,6 +382,35 @@ eq("存得下", saveHook(hook({ id: "h_1", name: "第一条" })).ok, true);
 eq("读回来一条", readHooks().hooks.length, 1);
 eq("盘上是包了一层壳的形状", onDisk().version, 1);
 check("写完没有留下 .tmp(改名是原子的)", !existsSync(`${FILE}.tmp`));
+
+// 【MC-051/ARC-006】固定临时名曾被复用、覆盖、然后 rename 到原文件。
+// 一个别的进程尚在写的 .tmp，或者上次崩溃留下的原始字节，都不能
+// 被本次保存吞掉；新的临时文件必须属于本次调用。
+{
+  const foreignTmp = `${FILE}.tmp`;
+  const sentinel = "a different writer owns this draft";
+  writeFileSync(foreignTmp, sentinel, "utf-8");
+  eq("★ 并存临时文件时保存仍可完成", saveHook(hook({ id: "h_with_foreign_tmp" })).ok, true);
+  eq("★ 外部遗留的同名临时原文字节不被覆盖/改名", existsSync(foreignTmp) ? readFileSync(foreignTmp, "utf-8") : null, sentinel);
+  check("★ 保存没有残留自己的随机临时文件", !readdirSync(DATA).some((name) => /^hooks\.json\.[0-9a-f-]+\.tmp$/i.test(name)), readdirSync(DATA));
+  rmSync(foreignTmp, { force: true });
+  eq("★ 临时冲突隔离后正常删除刚才测试 Hook", removeHook("h_with_foreign_tmp").ok, true);
+}
+
+// 验证 rename 最终失败路径：如果目标是目录，不能留下一份可能泄露
+// 用户 Hook 命令的随机临时文档；失败也不能破坏外部 .tmp 。
+{
+  const original = readFileSync(FILE, "utf-8");
+  rmSync(FILE, { force: true });
+  mkdirSync(FILE);
+  const result = writeHooks([hook({ id: "rename-failure" })]);
+  check("★ 目标被目录占用，原子保存必须显式拒绝", result.ok === false, result);
+  check("★ 目标目录及其内容不被错误清理", existsSync(FILE));
+  check("★ 失败路径也不遗留包含 Hook 命令的随机临时文件", !readdirSync(DATA).some((name) => name.startsWith("hooks.json.") && name.endsWith(".tmp")), readdirSync(DATA));
+  rmSync(`${FILE}.tmp`, { force: true }); // 旧源码会留垃圾；隔离测试清理自己的失败夹具
+  rmSync(FILE, { recursive: true, force: true });
+  writeFileSync(FILE, original, "utf-8");
+}
 
 saveHook(hook({ id: "h_2", name: "第二条" }));
 saveHook(hook({ id: "h_3", name: "第三条" }));

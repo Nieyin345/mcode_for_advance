@@ -21,7 +21,7 @@
  * 这个文件很小(几十条),而**部分写入**要处理"改到一半崩了"的中间态。整份重写、先写
  * 临时文件再改名更简单也更安全:要么是旧的完整内容,要么是新的完整内容。
  */
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { parseHooksFile, stripBom, validateHook, type HookSpec, type HooksFile } from "@contracts/hook";
@@ -109,8 +109,9 @@ export function readHooks(): HooksFile {
  * 整份写回。**先写临时文件再改名** —— 改名在同一个目录里是原子的,所以任何时刻读到的
  * 都是完整的一份,不会出现"写了一半"的文件。
  *
- * 临时名是固定的(不是随机名):同一时刻只可能有一次保存(设置页一次改一条),而固定
- * 名字让"上次写崩了留下的垃圾"能被下一次覆盖掉。
+ * 每次保存使用唯一临时文件并以 wx 独占创建：两个 Mcode 进程同时写入时
+ * 不得共用 hooks.json.tmp（否则可能把对方仍在写的内容提前 rename 走）。
+ * 失败时只清理自己创建的暂存文件；目录里的别的临时文件不是本进程的垃圾。
  *
  * ⚠️ **它写的就是给它的那一份**(不给盘上原来的东西留位置)。`saveHook` / `removeHook`
  * 走的是 {@link commitHooks} —— 那一个会把看不懂的条目搬回去、并在损坏时拒绝;
@@ -123,14 +124,31 @@ export function writeHooks(hooks: HookSpec[]): { ok: true } | { ok: false; error
 /** {@link writeHooks} 的底层:收**原始**条目(可能是我们看不懂的那些),不只是 `HookSpec`。 */
 function writeRaw(items: readonly unknown[]): { ok: true } | { ok: false; error: string } {
   const file = hooksFilePath();
-  const tmp = `${file}.tmp`;
+  const tmp = `${file}.${randomUUID()}.tmp`;
+  let fd: number | null = null;
+  let ownsTmp = false;
   try {
-    writeFileSync(tmp, JSON.stringify({ version: HOOKS_FILE_VERSION, hooks: items }, null, 2), "utf-8");
+    // Create with O_EXCL. Never truncate another writer's staging file, even
+    // after an unexpected UUID collision. Keep the descriptor so a failed
+    // write can be cleaned up without deleting someone else's file.
+    fd = openSync(tmp, "wx");
+    ownsTmp = true;
+    writeFileSync(fd, JSON.stringify({ version: HOOKS_FILE_VERSION, hooks: items }, null, 2), "utf-8");
+    closeSync(fd);
+    fd = null;
     renameSync(tmp, file);
     return { ok: true };
   } catch (err) {
     log.warn(`[hooks] 写不进去(${file}):${(err as Error).message}`);
     return { ok: false, error: (err as Error).message };
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* keep original write error */ }
+    }
+    if (ownsTmp) {
+      try { rmSync(tmp, { force: true }); }
+      catch (err) { log.warn(`[hooks] 无法清理自己的暂存文件(${tmp}):${(err as Error).message}`); }
+    }
   }
 }
 
