@@ -14,20 +14,20 @@
  *  2. **在 `tasks` 目录下，且以 `.output` 结尾**。CLI 的任务输出固定长这样
  *     （公开文档里的例子：`/private/tmp/claude/<项目>/tasks/<id>.output`）。这一条是
  *     **正向**判据 —— 只认这个形状，而不是"排除几个危险路径"（黑名单永远少一条）。
- *  3. **必须是普通文件**，不是目录、不是符号链接指向别处（`statSync` 跟随链接之后再判，
- *     所以符号链接指出去也会被第 2 条拦下 —— 链接目标的路径不满足前缀）。
+ *  3. **必须是普通文件，拒绝链接**：`lstatSync` 从输出文件逐级回溯到 `tasks`
+ *     目录，拒绝 symlink / Windows junction，并以 `realpathSync` 核实真实目标。
  *
- * ⚠️ 第 2 条拦的是"路径本身"，不是"最终读到的东西"。所以还要求调用方**只把 CLI 自己
- * 发来的路径传进来**（`RuntimeManager` 从我们存的快照里取，不从渲染端取）。两层各自
- * 独立成立，任何一层被绕过都还有另一层。
+ * ⚠️ 第 2 条只验证词法路径，第三条才检查磁盘上的链接；两道护栏均非
+ * 原子 OS 沙箱（链接若在检查与打开之间被恶意替换，仍有 TOCTOU 窗口）。
+ * 调用方还必须只传主进程掌握的 CLI 任务输出路径，而不能采信模型自报文件名。
  *
  * ## 只读尾部
  *
  * 与命令节点同一个取舍（`COMMAND_OUTPUT_TAIL_CHARS`）：长任务的输出动辄几兆，
  * 而要看的东西（错误栈、结果）都在尾部。截断**如实报告**，由界面说明。
  */
-import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { closeSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute } from "node:path";
 import { decodeOutput } from "@main/lib/outBuf.js";
 
 /** 只读尾部这么多**字节**。与 `OutBuf` 的窗口同一量级。 */
@@ -42,7 +42,9 @@ export function isAllowedTaskOutputPath(p: string): boolean {
   const parts = p.split(/[\\/]/).filter((s) => s !== "");
   const tasksAt = parts.lastIndexOf("tasks");
   // 必须是 `tasks/<文件>` 这个形状：`tasks` 不能是最后一段，且它后面有东西。
-  if (tasksAt === -1 || tasksAt >= parts.length - 1) return false;
+  // CLI only reports tasks/<id>.output: an extra directory level makes
+  // arbitrary files reachable through a forged task notification path.
+  if (tasksAt === -1 || tasksAt !== parts.length - 2) return false;
   // ③ 以 `.output` 结尾。
   const last = parts[parts.length - 1] as string;
   if (!last.endsWith(".output")) return false;
@@ -61,6 +63,23 @@ export function readTaskOutputFile(filePath: string): { text: string; truncated:
   }
   let size: number;
   try {
+    // A task_notification path can be forged; a lexical tasks/*.output check
+    // alone does not stop a symlink or Windows junction inside that tree.
+    // Reject links from the output itself up through its nearest tasks folder.
+    // Ancestors before tasks may legitimately be OS mounts / home aliases.
+    let current = filePath;
+    while (true) {
+      if (lstatSync(current).isSymbolicLink()) throw new Error("task output link");
+      if (basename(current) === "tasks") break;
+      const parent = dirname(current);
+      if (parent === current) throw new Error("task output root not found");
+      current = parent;
+    }
+    // The physical destination must also have the expected CLI output shape.
+    // This is defense-in-depth, not a guarantee against concurrent swaps.
+    if (!isAllowedTaskOutputPath(realpathSync.native(filePath))) {
+      throw new Error("task output resolved outside tasks");
+    }
     const st = statSync(filePath);
     if (!st.isFile()) throw new Error("not a file");
     size = st.size;
