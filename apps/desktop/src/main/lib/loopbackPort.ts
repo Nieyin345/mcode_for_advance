@@ -81,8 +81,15 @@ export async function listenOnDialablePort(
       const onListening = () => {
         cleanup();
         const addr = server.address() as AddressInfo | null;
-        if (addr && typeof addr === "object") resolve(addr.port);
-        else reject(new Error("绑定 loopback 监听端口失败(拿不到端口号)"));
+        if (addr && typeof addr === "object" && Number.isInteger(addr.port) && addr.port > 0 && addr.port <= 65535) {
+          resolve(addr.port);
+          return;
+        }
+        // listen() reported success but no usable port. We own this new
+        // listener, so reject only after its socket has actually closed.
+        const error = new Error("绑定 loopback 监听端口失败(拿不到有效端口号)");
+        try { server.close(() => reject(error)); }
+        catch { reject(error); }
       };
       server.once("error", onError);
       try {

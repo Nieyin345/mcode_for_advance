@@ -168,6 +168,19 @@ function fakeServer(ports: number[]) {
   check("★ giving up: 说的是人话中文(不是英文原句)", /[一-鿿]/.test(message) && !/failed to bind/.test(message), message);
 }
 
+{
+  // An asynchronous listening callback with no usable address must release the
+  // socket it just bound; an exception alone leaks a live port into the host.
+  const srv = fakeServer([54322]);
+  srv.address = () => ({ port: null }) as never;
+  let error = "";
+  try { await listenOnDialablePort(srv as unknown as Server); }
+  catch (err) { error = (err as Error).message; }
+  check("no-address: fails instead of inventing a port", error.includes("端口"), error);
+  await new Promise<void>((resolve) => setTimeout(resolve, 12));
+  check("no-address: closes the socket after rejecting", srv.calls.includes("close:done"), srv.calls.join(" "));
+}
+
 /* ───────────────────────────── report ───────────────────────────── */
 
 if (failures.length > 0) {
