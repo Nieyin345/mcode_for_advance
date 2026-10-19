@@ -3,6 +3,7 @@ import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { IconCheck, IconChevronLeft, IconChevronRight, IconDotsVertical } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { canNavigateTabKey, tabNavigationTargetIndex } from "./tabNavigationKeys.js";
 
 /**
  * Shared tab-bar chrome for the center pane's two tab strips:
@@ -16,7 +17,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /** Keyboard behavior shared by session and unified tab strips. */
 export function handleTabListKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-  if (e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (!canNavigateTabKey(e)) return;
   const target = e.target;
   if (!(target instanceof HTMLElement) || target.getAttribute("role") !== "tab") return;
   const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'));
@@ -24,15 +25,17 @@ export function handleTabListKeyDown(e: KeyboardEvent<HTMLDivElement>) {
   if (index < 0) return;
   if (e.key === "Enter" || e.key === " ") {
     e.preventDefault();
+    e.stopPropagation();
     target.click();
     return;
   }
-  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+  const nextIndex = tabNavigationTargetIndex(e.key, index, tabs.length);
+  if (nextIndex === null) return;
   e.preventDefault();
-  const nextIndex = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1
-    : (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  e.stopPropagation();
   const next = tabs[nextIndex];
-  next?.focus();
+  next?.focus({ preventScroll: true });
+  next?.scrollIntoView({ block: "nearest", inline: "nearest" });
   next?.click();
 }
 

@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { useTickerReducedMotion } from "./useTickerReducedMotion.js";
+import { safeStringify } from "./messageBlockToolParts.js";
 import {
   IconCheck,
   IconX,
@@ -53,7 +55,7 @@ function TickerRow({ op, running }: { op: ToolUseBlock; running: boolean }) {
   return (
     <span
       className="flex h-5 items-center gap-1.5 whitespace-nowrap"
-      title={typeof op.input === "object" ? JSON.stringify(op.input) : String(op.input)}
+      title={safeStringify(op.input).slice(0, 2048)}
     >
       {status === "error" && <IconX size={12} className="shrink-0 text-danger" />}
       {status === "done" && <IconCheck size={12} className="shrink-0 text-content-subtle" />}
@@ -90,12 +92,20 @@ export function CurrentOpTicker({
   // tool (its status may flip running→done under us).
   const frontOpRef = useRef<ToolUseBlock | null>(null);
 
-  const reducedMotion = useMemo(
-    () =>
-      typeof window !== "undefined" &&
-      !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
-    [],
-  );
+  // Live app-preference and OS subscription. A one-time matchMedia memo
+  // misses both user setting changes and OS toggles while a turn is running.
+  const reducedMotion = useTickerReducedMotion();
+
+  // An OS/app motion change can happen mid-roll. When animations become
+  // disabled there will be no transitionend to commit the next tool row.
+  useEffect(() => {
+    if (!reducedMotion || !nextOp) return;
+    frontOpRef.current = nextOp;
+    setFrontId(nextOp.toolCallId);
+    setNextOp(null);
+    setRolled(false);
+    setTransitionEnabled(false);
+  }, [reducedMotion, nextOp]);
 
   // Keep the front row's snapshot live while the parent's `op` still refers to
   // the same tool.

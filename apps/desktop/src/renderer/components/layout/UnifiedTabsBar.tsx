@@ -22,6 +22,7 @@ import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from ".
 import { SortableSessionTab, findSession } from "./SessionTabs.js";
 import { SessionTabContextMenu } from "./SessionTabContextMenu.js";
 import { sessionTabsToClose, sessionTabMenuPosition } from "./sessionTabContextActions.js";
+import { tabScrollBehavior } from "./tabScrollMotion.js";
 import { keyboardReorderTarget } from "./tabKeyboardReorder.js";
 import {
   PLAN_TAB_KEY,
@@ -29,6 +30,7 @@ import {
   FileTabContextMenu,
 } from "../ide/OpenTabsBar.js";
 import { useDirtyFiles } from "@renderer/hooks/useDirtyFiles.js";
+import { liveFileTabMenu, type ProjectFileTabMenu } from "../ide/fileTabMenuSafety.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 
@@ -129,7 +131,12 @@ export function UnifiedTabsBar() {
 
   // Right-click context menu state for file tabs (lifted to the bar level,
   // same pattern as OpenTabsBar).
-  const [ctxMenu, setCtxMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<ProjectFileTabMenu | null>(null);
+  // Clear an invalidated file context menu; hiding it alone would allow it
+  // to reopen after switching back to the old project or reopening the tab.
+  useEffect(() => {
+    setCtxMenu((prev) => prev && !liveFileTabMenu(prev, pid, openFiles) ? null : prev);
+  }, [pid, openFiles]);
   const [sessionCtxMenu, setSessionCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -184,16 +191,16 @@ export function UnifiedTabsBar() {
       // Multi-row layout has no horizontal overflow — just reveal the tab's
       // row vertically (the track scrolls vertically past the ~3-row cap).
       if (multiRow) {
-        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: tabScrollBehavior() });
         return;
       }
       const nodeRect = node.getBoundingClientRect();
       const viewRect = el.getBoundingClientRect();
       const BUFFER = 10; // px - keep the close button clear of the edge fade
       if (nodeRect.left < viewRect.left + 1) {
-        el.scrollBy({ left: nodeRect.left - viewRect.left - 2, behavior: "smooth" });
+        el.scrollBy({ left: nodeRect.left - viewRect.left - 2, behavior: tabScrollBehavior() });
       } else if (nodeRect.right > viewRect.right - BUFFER) {
-        el.scrollBy({ left: nodeRect.right - viewRect.right + BUFFER, behavior: "smooth" });
+        el.scrollBy({ left: nodeRect.right - viewRect.right + BUFFER, behavior: tabScrollBehavior() });
       }
     };
     const doScroll = () => {
@@ -217,7 +224,7 @@ export function UnifiedTabsBar() {
   const scrollByPage = useCallback((dir: 1 | -1) => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: "smooth" });
+    el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: tabScrollBehavior() });
   }, []);
 
   const onWheel = useCallback(
@@ -392,7 +399,9 @@ export function UnifiedTabsBar() {
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    setCtxMenu({ path, x: e.clientX, y: e.clientY });
+                    e.stopPropagation();
+                    const anchor = sessionTabMenuPosition(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect());
+                    setCtxMenu({ path, projectId: pid, ...anchor });
                   }}
                 />
               ))}
@@ -608,7 +617,7 @@ export function UnifiedTabsBar() {
       />
       {/* Right-click context menu for file tabs (same menu as OpenTabsBar). */}
       <FileTabContextMenu
-        ctxMenu={ctxMenu}
+        ctxMenu={liveFileTabMenu(ctxMenu, pid, openFiles)}
         onClose={() => setCtxMenu(null)}
         dirtySet={dirtySet}
         reportBlocked={reportBlocked}

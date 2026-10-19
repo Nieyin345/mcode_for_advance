@@ -27,11 +27,16 @@ import {
   IconStack2,
 } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
-import { TabBarChevronButton, TabBarOverflowMenu } from "../layout/TabBarChrome.js";
+import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from "../layout/TabBarChrome.js";
+import { tabScrollBehavior } from "../layout/tabScrollMotion.js";
 import { keyboardReorderTarget, handleTabReorderKeyDown } from "../layout/tabKeyboardReorder.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import { useDirtyFiles } from "@renderer/hooks/useDirtyFiles.js";
+import { copyText } from "@renderer/lib/clipboard.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
+import { sessionTabMenuPosition } from "../layout/sessionTabContextActions.js";
+import { liveFileTabMenu, type ProjectFileTabMenu } from "./fileTabMenuSafety.js";
 import type { IdeCloseResult } from "@renderer/lib/ideDirty.js";
 
 /** Stable empty array so the selector never returns a fresh [] (Zustand
@@ -114,7 +119,11 @@ export function OpenTabsBar() {
   // Right-click context menu state: which file + cursor position. null =
   // menu closed. Lifted to the bar level (single Menu) rather than per-tab
   // to avoid conflicts with dnd-kit listeners on each tab.
-  const [ctxMenu, setCtxMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<ProjectFileTabMenu | null>(null);
+  // Do not let an old menu reappear after a project round-trip or tab re-open.
+  useEffect(() => {
+    setCtxMenu((prev) => prev && !liveFileTabMenu(prev, pid, openFiles) ? null : prev);
+  }, [pid, openFiles]);
 
   // Plan tab: shown alongside file tabs when a plan has been opened for
   // viewing. The plan state is per-session (keyed by activeSessionId), while
@@ -177,7 +186,7 @@ export function OpenTabsBar() {
       // Multi-row layout has no horizontal overflow — just reveal the tab's
       // row vertically (the track scrolls vertically past the ~3-row cap).
       if (multiRow) {
-        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: tabScrollBehavior() });
         return;
       }
       const nodeRect = node.getBoundingClientRect();
@@ -185,10 +194,10 @@ export function OpenTabsBar() {
       const BUFFER = 10; // px - keep the close button clear of the edge fade
       if (nodeRect.left < viewRect.left + 1) {
         // Left edge clipped - scroll left to reveal the whole tab.
-        el.scrollBy({ left: nodeRect.left - viewRect.left - 2, behavior: "smooth" });
+        el.scrollBy({ left: nodeRect.left - viewRect.left - 2, behavior: tabScrollBehavior() });
       } else if (nodeRect.right > viewRect.right - BUFFER) {
         // Right edge (close button) clipped or under the fade - scroll right.
-        el.scrollBy({ left: nodeRect.right - viewRect.right + BUFFER, behavior: "smooth" });
+        el.scrollBy({ left: nodeRect.right - viewRect.right + BUFFER, behavior: tabScrollBehavior() });
       }
     };
     const doScroll = () => {
@@ -214,7 +223,7 @@ export function OpenTabsBar() {
   const scrollByPage = useCallback((dir: 1 | -1) => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: "smooth" });
+    el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: tabScrollBehavior() });
   }, []);
 
   const onWheel = useCallback(
@@ -226,7 +235,9 @@ export function OpenTabsBar() {
       const el = scrollRef.current;
       if (!el) return;
       if (e.deltaY !== 0 && e.deltaX === 0) {
+        const previous = el.scrollLeft;
         el.scrollLeft += e.deltaY;
+        if (el.scrollLeft !== previous) e.preventDefault();
       }
     },
     [multiRow],
@@ -280,6 +291,10 @@ export function OpenTabsBar() {
       <div className="relative min-w-0 flex-1">
         <div
           ref={scrollRef}
+          role="tablist"
+          aria-label={t("ide.editor.openTabs")}
+          aria-orientation="horizontal"
+          onKeyDown={handleTabListKeyDown}
           onScroll={recomputeScrollState}
           onWheel={onWheel}
           className={cn(
@@ -329,7 +344,9 @@ export function OpenTabsBar() {
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    setCtxMenu({ path, x: e.clientX, y: e.clientY });
+                    e.stopPropagation();
+                    const anchor = sessionTabMenuPosition(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect());
+                    setCtxMenu({ path, projectId: pid, ...anchor });
                   }}
                 />
               ))}
@@ -347,6 +364,7 @@ export function OpenTabsBar() {
               }}
               role="tab"
               aria-selected={planTabActive}
+              tabIndex={0}
               title={t("ide.editor.viewPlan")}
               onClick={() => {
                 if (activeSessionId) {
@@ -452,7 +470,7 @@ export function OpenTabsBar() {
           (Pattern B from LeftBar) so it opens exactly at the cursor position,
           and doesn't conflict with dnd-kit listeners on the tab. */}
       <FileTabContextMenu
-        ctxMenu={ctxMenu}
+        ctxMenu={liveFileTabMenu(ctxMenu, pid, openFiles)}
         onClose={() => setCtxMenu(null)}
         dirtySet={dirtySet}
         reportBlocked={reportBlocked}
@@ -672,7 +690,12 @@ export function FileTabContextMenu({
   const targetDirty = !!path && dirtySet.has(path);
 
   const handleCopyPath = () => {
-    if (path) navigator.clipboard.writeText(path).catch(() => {});
+    if (!path) return;
+    void (async () => {
+      if (!(await copyText(path))) {
+        useToastStore.getState().push({ kind: "error", title: t("chat.tagPopover.copyFailed") });
+      }
+    })();
   };
 
   return (

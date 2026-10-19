@@ -25,6 +25,7 @@ import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from ".
 import { keyboardReorderTarget, handleTabReorderKeyDown } from "./tabKeyboardReorder.js";
 import { SessionTabContextMenu } from "./SessionTabContextMenu.js";
 import { sessionTabsToClose, sessionTabMenuPosition } from "./sessionTabContextActions.js";
+import { tabScrollBehavior } from "./tabScrollMotion.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /** Tab strip rendered along the top of the center pane in `tabs` display
@@ -95,7 +96,7 @@ export function SessionTabs() {
   useEffect(() => {
     if (!activeId) return;
     const node = tabNodes.current.get(activeId);
-    node?.scrollIntoView({ inline: "nearest", behavior: "smooth", block: "nearest" });
+    node?.scrollIntoView({ inline: "nearest", behavior: tabScrollBehavior(), block: "nearest" });
     // Recompute after the smooth scroll settles.
     const t = setTimeout(recomputeScrollState, 260);
     return () => clearTimeout(t);
@@ -104,7 +105,7 @@ export function SessionTabs() {
   const scrollByPage = useCallback((dir: 1 | -1) => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: "smooth" });
+    el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: tabScrollBehavior() });
   }, []);
 
   const onWheel = useCallback(

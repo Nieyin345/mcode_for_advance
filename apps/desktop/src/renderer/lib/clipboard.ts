@@ -20,8 +20,13 @@ export async function copyText(text: string): Promise<boolean> {
       // platform even in a secure context)
     }
   }
+  // The legacy copy fallback steals focus for its hidden textarea. Preserve
+  // the user's focused editor/composer/button so keyboard input continues
+  // working immediately after copy, without scrolling its pane into view.
+  const previousFocus = document.activeElement as HTMLElement | null;
+  let ta: HTMLTextAreaElement | null = null;
   try {
-    const ta = document.createElement("textarea");
+    ta = document.createElement("textarea");
     ta.value = text;
     // Position off the visible area but keep it focusable/selectable —
     // `display:none` and `visibility:hidden` both break execCommand copy.
@@ -33,10 +38,15 @@ export async function copyText(text: string): Promise<boolean> {
     ta.focus();
     ta.select();
     ta.setSelectionRange(0, text.length);
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
+    return document.execCommand("copy");
   } catch {
     return false;
+  } finally {
+    // Some platforms throw from execCommand. Never strand a focusable
+    // invisible textarea in the document on a denied/failed copy.
+    ta?.remove();
+    if (previousFocus?.isConnected && typeof previousFocus.focus === "function") {
+      try { previousFocus.focus({ preventScroll: true }); } catch { /* restore best-effort */ }
+    }
   }
 }
