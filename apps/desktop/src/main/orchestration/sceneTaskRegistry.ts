@@ -66,9 +66,9 @@ function isNonNegFinite(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n >= 0;
 }
 
-/** 运行期数值校验:非负的**有限整数**(token 数 / 并发槽)。 */
+/** 运行期数值校验:非负的**安全整数**(token 数 / 并发槽)。 */
 function isNonNegInt(n: unknown): n is number {
-  return typeof n === "number" && Number.isFinite(n) && Number.isInteger(n) && n >= 0;
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
 }
 
 /**
@@ -90,6 +90,34 @@ export function isTerminalState(state: SceneTaskState): boolean {
 
 /* ══════════════════════════ SceneTaskRegistry ══════════════════════════ */
 
+/** A typed invocation can still originate in malformed restored JSON or SDK output.
+ * Reject malformed shape before it can disable depth, fan-out, or time limits. */
+function invalidInvocationReason(inv: TaskInvocation): string | null {
+  for (const key of ["sceneId", "taskId", "originAgentId", "providerId", "budgetAccountId"] as const) {
+    if (typeof inv[key] !== "string" || inv[key].trim().length === 0) {
+      return `${key} 必须是非空字符串`;
+    }
+  }
+  if (inv.sessionId !== null && typeof inv.sessionId !== "string") return "sessionId 必须是字符串或 null";
+  if (!["user", "agent", "scene", "workflow", "automation"].includes(inv.triggerOrigin)) {
+    return "triggerOrigin 不是有效的任务来源";
+  }
+  if (!Array.isArray(inv.allowedCapabilities) || inv.allowedCapabilities.some(
+    (v) => typeof v !== "string" || v.trim().length === 0,
+  )) return "allowedCapabilities 必须只含非空能力名";
+  if (!isNonNegInt(inv.maxFanout) || !isNonNegInt(inv.maxDepth)) {
+    return "maxFanout/maxDepth 必须是非负安全整数";
+  }
+  if (inv.deadline !== null && (!isNonNegInt(inv.deadline))) {
+    return "deadline 必须是毫秒时间戳安全整数或 null";
+  }
+  return null;
+}
+
+const TASK_STATES: readonly SceneTaskState[] = [
+  "pending", "running", "paused", ...SCENE_TASK_TERMINAL_STATES,
+];
+
 /** 一条场景任务的内部登记(公开形态就是 SceneTask 本身)。 */
 export class SceneTaskRegistry {
   private readonly tasks = new Map<string, SceneTask>();
@@ -110,6 +138,8 @@ export class SceneTaskRegistry {
     if (inv.parentTaskId !== null) {
       return refuse("PARENT_NOT_FOUND", `根任务不能带 parentTaskId(${inv.parentTaskId})`);
     }
+    const invalid = invalidInvocationReason(inv);
+    if (invalid) return refuse("INVALID_TASK", `任务创建参数无效:${invalid}`);
     if (this.tasks.has(inv.taskId)) {
       return refuse("DUPLICATE_TASK", `任务 id 已存在:${inv.taskId}`);
     }
@@ -133,7 +163,10 @@ export class SceneTaskRegistry {
     };
     this.tasks.set(task.taskId, task);
     this.childIndex.set(task.taskId, []);
-    return { ok: true, value: task };
+    // Do not expose the mutable registry entry to consumers. They could
+    // otherwise change parent limits/state/capabilities without going through
+    // spawn/setState and bypass the host's task governance.
+    return { ok: true, value: cloneTask(task) };
   }
 
   /**
@@ -159,6 +192,8 @@ export class SceneTaskRegistry {
   spawn(parentTaskId: string, inv: TaskInvocation): RegistryResult<SceneTask> {
     const parent = this.tasks.get(parentTaskId);
     if (!parent) return refuse("PARENT_NOT_FOUND", `父任务不存在:${parentTaskId}`);
+    const invalid = invalidInvocationReason(inv);
+    if (invalid) return refuse("INVALID_TASK", `派生任务参数无效:${invalid}`);
     if (isTerminalState(parent.state)) {
       return refuse("PARENT_TERMINAL", `父任务已处于终态(${parent.state}),不能再派生`);
     }
@@ -224,7 +259,7 @@ export class SceneTaskRegistry {
     this.tasks.set(child.taskId, child);
     this.childIndex.set(child.taskId, []);
     this.childIndex.get(parent.taskId)!.push(child.taskId);
-    return { ok: true, value: child };
+    return { ok: true, value: cloneTask(child) };
   }
 
   /** 从 `task` 的父链一路向上(父、祖父、…),用于祖先状态与截止时刻校验。 */
@@ -272,6 +307,11 @@ export class SceneTaskRegistry {
   setState(taskId: string, state: SceneTaskState): RegistryResult<SceneTask> {
     const t = this.tasks.get(taskId);
     if (!t) return refuse("TASK_NOT_FOUND", `任务不存在:${taskId}`);
+    if (!TASK_STATES.includes(state)) return refuse("INVALID_TASK", `任务状态无效:${String(state)}`);
+    // A completed/failed/cancelled result may be delivered again after
+    // reconnect/replay. Treat the identical terminal event as an idempotent
+    // acknowledgement, not a fresh state generation.
+    if (isTerminalState(t.state) && t.state === state) return { ok: true, value: cloneTask(t) };
     if (isTerminalState(t.state) && t.state !== state) {
       return refuse("TASK_NOT_FOUND", `任务已处于终态(${t.state}),不能迁到 ${state}`);
     }
@@ -346,6 +386,7 @@ export class SceneTaskRegistry {
   markExternalAction(taskId: string, inFlight: boolean): RegistryResult<SceneTask> {
     const t = this.tasks.get(taskId);
     if (!t) return refuse("TASK_NOT_FOUND", `任务不存在:${taskId}`);
+    if (typeof inFlight !== "boolean") return refuse("INVALID_TASK", "外部动作在途标记必须是布尔值");
     if (isTerminalState(t.state)) {
       return refuse("TASK_NOT_FOUND", `任务已处于终态(${t.state}),不能再改外部动作在途标记`);
     }
@@ -554,6 +595,17 @@ export class SceneBudgetAccounts {
     const costUsd = est.costUsd ?? UNKNOWN_COST_USD_UPPER_BOUND;
     const concurrency = est.concurrency ?? 1;
 
+    // A missing limit is NOT permission to corrupt the counter itself.
+    // Integer precision loss or a floating-point Infinity would make future
+    // budget comparisons meaningless, and can silently admit overspending.
+    if (!Number.isSafeInteger(a.reservedTokens + tokens) ||
+        !Number.isSafeInteger(a.committedTokens + a.reservedTokens + tokens) ||
+        !Number.isSafeInteger(a.reservedConcurrency + concurrency) ||
+        !Number.isFinite(a.reservedCostUsd + costUsd) ||
+        !Number.isFinite(a.committedCostUsd + a.reservedCostUsd + costUsd)) {
+      return refuse("INVALID_ESTIMATE", "本次预留会使累计预算账本溢出可精确表示的范围");
+    }
+
     const over: string[] = [];
     if (exceeds(a.committedTokens + a.reservedTokens, tokens, a.limits.maxTokens)) {
       over.push(`token ${a.committedTokens + a.reservedTokens}+${tokens}/${a.limits.maxTokens}`);
@@ -607,6 +659,10 @@ export class SceneBudgetAccounts {
         "INVALID_USAGE",
         `实际用量必须是非负数(token 为整数),收到 tokens=${String(usage.tokens)} costUsd=${String(usage.costUsd)}`,
       );
+    }
+    if (!Number.isSafeInteger(a.committedTokens + usage.tokens) ||
+        !Number.isFinite(a.committedCostUsd + usage.costUsd)) {
+      return refuse("INVALID_USAGE", "实际用量累计后会使场景预算账本溢出可表示范围");
     }
     if (r.sceneId !== a.sceneId) {
       return refuse("SCENE_MISMATCH", `预留场景(${r.sceneId})与账户场景(${a.sceneId})不一致`);
