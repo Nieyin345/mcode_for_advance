@@ -249,6 +249,21 @@ section("1. 编辑器页 URL 与 docId（纯函数）");
   check("★ 同路径两次得到同一个 docId（宿主复用语义）", id1 === id2, { id1, id2 });
   check("不同路径得到不同 docId", stableDocId("/workspace/other.docx") !== id1);
   check("docId 长度在契约上限内（≤200）", id1.length <= 200, id1.length);
+  // In the previous 32-bit FNV-1a scheme, these *real, different*, equally
+  // long filenames both hashed to c2394c5a. The view registry is keyed only
+  // by docId: opening B reused A's native editor and could route save/close
+  // to the wrong document. A length suffix did not prevent this collision.
+  const collisionA = "/workspace/2441682214.docx";
+  const collisionB = "/workspace/4073878106.docx";
+  check("★ adversarial same-length DOCX paths must never reuse a native view ID",
+    stableDocId(collisionA) !== stableDocId(collisionB),
+    { a: stableDocId(collisionA), b: stableDocId(collisionB) });
+  check("★ collision fix retains deterministic IDs for both documents",
+    stableDocId(collisionA) === stableDocId(collisionA) &&
+    stableDocId(collisionB) === stableDocId(collisionB));
+  check("Unicode paths and emoji produce bounded deterministic IDs",
+    stableDocId("/workspace/报告📄.docx") === stableDocId("/workspace/报告📄.docx") &&
+    stableDocId("/workspace/报告📄.docx").length <= 200);
   // 【ARC-007】编辑器页若把资源引用写成绝对路径（`/assets/...`）或跨源 URL，
   // `file://` 加载会白屏。构建产物是相对路径才说明这条路真能走通。
   // 只在产物存在时断言 —— 没构建过时如实跳过（不假装验过）。

@@ -177,20 +177,34 @@ export function editorPageUrl(cliPath: string, host: GenofficeEditorHost): strin
 }
 
 /**
- * docId 的稳定生成：`filePath` 的 FNV-1a 32 位散列 + 长度。
+ * Stable per-file native-view identity (not a content fingerprint).
  *
- * 为什么用散列而不是路径本身：契约把 `docId` 限在 200 字符内，而 Windows 深路径
- * 很容易超；为什么带上长度：不同路径撞同一个 32 位散列时，长度再不同的会被分开，
- * 剩下同长同散列的概率可以忽略。稳定性是必要的 —— 同一文件的重渲染必须命中
- * 同一个视图（宿主对同 docId 的 open 是复用语义）。
+ * The previous 32-bit FNV-1a + string length collided for two different
+ * same-length DOCX paths, causing the view keyed by docId to be reused for
+ * a different file. Length does not make a 32-bit hash collision-safe.
+ *
+ * Two differently seeded 64-bit FNV-1a streams, each over the exact UTF-16
+ * code units encoded as two bytes, give a bounded 128-bit identity while
+ * remaining synchronous in the sandboxed renderer (Web Crypto is async).
+ * This is not an authorization mechanism: the host must still validate the
+ * requested path. Keep the complete result within the contract's 200 chars.
  */
 export function stableDocId(filePath: string): string {
-  let hash = 0x811c9dc5;
+  const mask = 0xffff_ffff_ffff_ffffn;
+  const prime = 0x100000001b3n;
+  let first = 0xcbf29ce484222325n;
+  let second = 0x84222325cbf29ce4n;
   for (let i = 0; i < filePath.length; i++) {
-    hash ^= filePath.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
+    const code = filePath.charCodeAt(i);
+    const lo = BigInt(code & 0xff);
+    const hi = BigInt(code >>> 8);
+    first = ((first ^ lo) * prime) & mask;
+    first = ((first ^ hi) * prime) & mask;
+    second = ((second ^ lo) * prime) & mask;
+    second = ((second ^ hi) * prime) & mask;
   }
-  return `genoffice-view-${hash.toString(16).padStart(8, "0")}-${filePath.length}`;
+  const hex = (value: bigint): string => value.toString(16).padStart(16, "0");
+  return `genoffice-view-${hex(first)}${hex(second)}-${filePath.length}`;
 }
 
 /** 占位矩形的窗口坐标 → 契约 bounds（整数、非负、尺寸至少 1）。 */
