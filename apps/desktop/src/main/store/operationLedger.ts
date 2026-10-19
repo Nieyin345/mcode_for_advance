@@ -32,10 +32,11 @@
  * 反过来说:只读档的凭据在 `app_api_call` 层就不进账本(见 `tools.ts`),所以「每个普通只读
  * 请求都 fsync 整库」不会发生 —— 账本只对**带了幂等键的**调用生效。
  */
-import type { OperationIntent, OperationRecord, OperationStatus, OperationResult, OperationResultKind } from "@contracts/appControl";
+import { OperationResultSchema, type OperationIntent, type OperationRecord, type OperationStatus, type OperationResult, type OperationResultKind } from "@contracts/appControl";
 import { getDb, persist, commitNow } from "@main/store/db.js";
 import { durableRevisionOf } from "@contracts/commit";
 import { log } from "@main/lib/logger.js";
+import { withStatement } from "./repositories/withStatement.js";
 import {
   intentFingerprint,
   type BeginOutcome,
@@ -71,24 +72,44 @@ function rowToRecord(r: Row): OperationRecord {
     status: r.status as OperationStatus,
     updatedAt: r.updated_at,
   };
-  if (r.result_json) {
+  if (r.body !== null) record.body = r.body;
+  if (r.result_json !== null) {
+    // Parsing must never turn a committed but damaged result into a fake
+    // SUCCEEDED replay. Preserve the original SQL bytes and operation
+    // identity; quarantine only the returned projection as UNCERTAIN.
+    let decoded: unknown;
     try {
-      record.result = JSON.parse(r.result_json) as OperationResult;
+      decoded = JSON.parse(r.result_json);
     } catch {
-      /* 结果正文坏掉不影响「这一行存在」这个去重事实;不抛。 */
+      decoded = undefined;
+    }
+    const result = OperationResultSchema.safeParse(decoded);
+    if (
+      !result.success
+      || result.data.operationId !== r.operation_id
+      || result.data.method !== r.method
+      || result.data.resultKind !== r.status
+    ) {
+      record.status = "UNCERTAIN";
+      record.result = undefined;
+      record.body = "操作结果存档损坏或归属不匹配，无法证明先前成功；请先核对实际副作用，不要用同一幂等键盲目重跑。";
+    } else {
+      // Preserve extra result fields in older/future formats after checking
+      // the core contract. Zod's parsed value strips unknown metadata.
+      record.result = decoded as OperationResult;
     }
   }
-  if (r.body !== null) record.body = r.body;
   return record;
 }
 
 function readRow(operationId: string): OperationRecord | undefined {
   const stmt = getDb().prepare("SELECT * FROM operations WHERE operation_id = ?");
-  stmt.bind([operationId]);
-  const found = stmt.step();
-  const row = found ? (stmt.getAsObject() as unknown as Row) : undefined;
-  stmt.free();
-  return row ? rowToRecord(row) : undefined;
+  return withStatement(stmt, (query) => {
+    query.bind([operationId]);
+    const found = query.step();
+    const row = found ? (query.getAsObject() as unknown as Row) : undefined;
+    return row ? rowToRecord(row) : undefined;
+  });
 }
 
 /**
