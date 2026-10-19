@@ -20,11 +20,12 @@ function run(...args) {
 }
 function put(p, s = "fixture") { fs.mkdirSync(path.dirname(p), {recursive:true}); fs.writeFileSync(p,s); }
 function check(name, fn) { fn(); count++; console.log("  ok " + name); }
-function lock(revision) {
+function lock(revision, lineage) {
   put(lockPath, JSON.stringify({
     format:"mcode.genoffice.upstream-lock.v1",
     repository:"https://github.com/genspark-ai/genoffice",
     revision, license:"Apache-2.0", editors:[...EDITORS],
+    ...(lineage ?? {}),
   }));
 }
 try {
@@ -45,6 +46,8 @@ try {
   run("config","user.name","Mcode Upstream Fixture");
   put(path.join(vendor,"LICENSE"),"Apache License\nVersion 2.0, January 2004\n");
   put(path.join(vendor,"NOTICE"),"Fixture upstream NOTICE\n");
+  put(path.join(vendor,"package.json"),'{"name":"original-genoffice-fixture","scripts":{"build":"native"}}\n');
+  put(path.join(vendor,"package-lock.json"),'{"name":"original-genoffice-fixture","lockfileVersion":3}\n');
   for(const name of EDITORS) for(const sub of ["main","preload","renderer"]) {
     put(path.join(vendor,"apps",name,"src",sub,"index.ts"),"export const fixture = true;\n");
   }
@@ -66,6 +69,16 @@ try {
     assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/dirty/i);
     run("restore","apps/docs/src/renderer/index.ts");
   });
+  check("tracked root package manifest drift cannot bypass source provenance",()=>{
+    put(path.join(vendor,"package.json"),'{"name":"modified-vendor-scripts"}\n');
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/dirty/i);
+    run("restore","package.json");
+  });
+  check("tracked dependency lock drift cannot bypass source provenance",()=>{
+    put(path.join(vendor,"package-lock.json"),'{"name":"changed-transitive-dependencies"}\n');
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/dirty/i);
+    run("restore","package-lock.json");
+  });
   check("untracked native source under apps fails rather than bypassing revision pin",()=>{
     put(path.join(vendor,"apps/pdf/src/main/new-native.ts"),"export const newPart=true;");
     assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/dirty/i);
@@ -86,6 +99,45 @@ try {
     partial.editors.pop();put(lockPath,JSON.stringify(partial));
     assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/source lock/i);
     lock(sha);
+  });
+  // Simulate the exact FULL-2/L3 pattern: a reviewed native PDF safety patch
+  // committed on top of the previously pinned clean upstream baseline.
+  const approvedPaths=[
+    "apps/pdf/src/main/atomic-write.ts",
+    "apps/pdf/tests/page-operation-atomic-write.test.ts",
+  ];
+  for(const name of approvedPaths) put(path.join(vendor,name),"export const reviewedFix=true;\n");
+  run("add",".");run("commit","-qm","reviewed native PDF atomic-write fix");
+  const patchSha=run("rev-parse","HEAD");
+  const lineage={baseRevision:sha,approvedPatch:{revision:patchSha,paths:approvedPaths}};
+  check("reviewed native PDF patch with exact parent and changed files passes",()=>{
+    lock(patchSha,lineage);
+    assert.equal(assertUpstreamRevision({repoRoot:repo,lockPath}).revision,patchSha);
+  });
+  check("new vendor HEAD with stale pinned release revision still fails closed",()=>{
+    lock(sha);
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/commit mismatch/i);
+    lock(patchSha,lineage);
+  });
+  check("patch ancestry cannot be relabeled as another baseline",()=>{
+    lock(patchSha,{...lineage,baseRevision:"0".repeat(40)});
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/parent mismatch/i);
+    lock(patchSha,lineage);
+  });
+  check("patch manifest cannot hide a changed native source file",()=>{
+    lock(patchSha,{...lineage,approvedPatch:{revision:patchSha,paths:approvedPaths.slice(0,1)}});
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/manifest mismatch/i);
+    lock(patchSha,lineage);
+  });
+  check("patch revision must equal the locked checkout revision",()=>{
+    lock(patchSha,{...lineage,approvedPatch:{revision:sha,paths:approvedPaths}});
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/lineage|manifest|invalid/i);
+    lock(patchSha,lineage);
+  });
+  check("patch lineage cannot silently omit its change manifest",()=>{
+    lock(patchSha,{baseRevision:sha});
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/lineage|invalid/i);
+    lock(patchSha,lineage);
   });
   check("package pipeline must verify source BEFORE staging or electron-builder",()=>{
     const pkg=JSON.parse(fs.readFileSync(path.join(__dirname,"../../package.json"),"utf8"));

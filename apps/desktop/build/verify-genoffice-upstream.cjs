@@ -39,6 +39,21 @@ function assertUpstreamRevision({ repoRoot, lockPath } = {}) {
       || JSON.stringify(lock.editors) !== JSON.stringify(EDITORS)) {
     throw new Error("GenOffice source lock invalid or missing canonical upstream/commit/license/six apps");
   }
+  // A reviewed GenOffice L3 patch must remain tied to its upstream base, and
+  // may only change the explicitly approved original source/test files.
+  const patch = lock.approvedPatch;
+  const hasLineage = lock.baseRevision !== undefined || patch !== undefined;
+  if (hasLineage && (typeof lock.baseRevision !== "string"
+      || !/^[0-9a-f]{40}$/.test(lock.baseRevision)
+      || !patch || typeof patch !== "object" || Array.isArray(patch)
+      || patch.revision !== lock.revision
+      || !Array.isArray(patch.paths) || patch.paths.length === 0
+      || patch.paths.some(p => typeof p !== "string"
+        || !/^apps\/[a-z0-9/.-]+\.(?:ts|tsx)$/.test(p)
+        || p.split("/").some(segment => !segment || segment === "." || segment === ".."))
+      || new Set(patch.paths).size !== patch.paths.length)) {
+    throw new Error("GenOffice approved upstream patch lineage / changed-path manifest invalid");
+  }
   const vendor = path.join(path.resolve(repoRoot), "genoffice");
   try {
     if (!fs.lstatSync(vendor).isDirectory() || fs.lstatSync(vendor).isSymbolicLink())
@@ -57,10 +72,21 @@ function assertUpstreamRevision({ repoRoot, lockPath } = {}) {
   if (head !== lock.revision) {
     throw new Error(`GenOffice upstream commit mismatch: locked ${lock.revision}, actual ${head}`);
   }
-  // Ignored build output is expected, but tracked changes or new source files
-  // under apps/packages can alter runtime capabilities without changing HEAD.
+  if (hasLineage) {
+    const parent = runGit(vendor, "rev-parse", `${patch.revision}^`);
+    if (parent !== lock.baseRevision) {
+      throw new Error(`GenOffice approved patch parent mismatch: expected ${lock.baseRevision}, actual ${parent}`);
+    }
+    const changed = runGit(vendor, "diff-tree", "--no-commit-id", "--name-only", "-r", patch.revision)
+      .split(/\r?\n/).filter(Boolean).sort();
+    if (JSON.stringify(changed) !== JSON.stringify([...patch.paths].sort())) {
+      throw new Error(`GenOffice approved patch file manifest mismatch: ${changed.join(", ")}`);
+    }
+  }
+  // Ignored build output is expected, but source changes AND root dependency
+  // manifest/lock changes can alter bundled native runtimes without changing HEAD.
   const changes = runGit(vendor, "status", "--porcelain", "--untracked-files=all", "--",
-    "apps", "packages", "LICENSE", "NOTICE");
+    "apps", "packages", "LICENSE", "NOTICE", "package.json", "package-lock.json");
   if (changes) throw new Error("GenOffice upstream tracked/untracked source is dirty: " + changes.slice(0, 300));
   const licenseFile = path.join(vendor, "LICENSE");
   nonempty(licenseFile, "LICENSE");

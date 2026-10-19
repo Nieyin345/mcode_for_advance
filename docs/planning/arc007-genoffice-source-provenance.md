@@ -5,8 +5,8 @@
 ## 上游来源（L1 直接复用）
 
 - 官方仓库：<https://github.com/genspark-ai/genoffice>（本机 Git remote 经 `ghfast.top` 镜像访问），独立嵌套 Git 仓：`genoffice/`，被 Mcode 顶层 Git 忽略，**不得用主仓 HEAD 替代它的版本**。
-- 锁定 commit：`cbec600ace9c930b2646b6739cf6df3741bb9d6a`，固定文件 `apps/desktop/build/genoffice-upstream.lock.json`。
-- 上游许可证：根目录 `genoffice/LICENSE`（Apache-2.0）与 `genoffice/NOTICE`；发布的 CLI/PDFium 另由已有 `stage-genoffice-resources.cjs` 搬运第三方许可，不能因原厂页面能运行就跳过下游各依赖许可审查。
+- 当前锁定独立 GenOffice HEAD：`73ba918083b5e2bedff7633925c3d7f625e04449`，固定文件 `apps/desktop/build/genoffice-upstream.lock.json`。已审批基线：`cbec600ace9c930b2646b6739cf6df3741bb9d6a`，在此基础上批准的 **原厂 L3 补丁**：`73ba918`（仅 `apps/pdf/src/main/atomic-write.ts` 和 `apps/pdf/tests/page-operation-atomic-write.test.ts`）；门禁额外逐项核实补丁 commit 的 parent SHA 与实际 Git changed paths 是否和锁文件相等，避免把其它私有改动伪装成这个 PDF 修复。
+- 上游许可证：根目录 `genoffice/LICENSE`（Apache-2.0）与 `genoffice/NOTICE`；根 `package.json` / `package-lock.json` 也是原厂构建和依赖版本输入，门禁按源码同等查 Git dirty（已有隔离旧红）；发布的 CLI/PDFium 另由已有 `stage-genoffice-resources.cjs` 搬运第三方许可，不能因原厂页面能运行就跳过下游各依赖许可审查。
 - 原生入口按相同顺序：`genoffice/apps/{docs,sheets,slides,pdf,markdown,html}/src/{main,preload,renderer}`，涉及原版 DOCX 引擎、Univer+Rust XLSX、PPTX 包、PDFium、Markdown/HTML 编辑器，不在 Mcode 中复刻其业务内核。
 
 ## 新的发行时强制校验（L2 最薄适配）
@@ -22,7 +22,7 @@
 
 ## 已覆盖和仍缺的证据
 
-- 通过隔离 synthetic Git 测试确认正常 HEAD、错误 SHA、dirty tracked 文件、untracked 新 native 源码、六应用缺目录、缺 NOTICE、无效锁、无 opt-in、非法 opt-in，以及正式 package 命令必须先校验再 stage；`genoffice-source-smoke` 对此前没有校验的打包命令产生真实红例。
+- 通过隔离 synthetic Git 测试确认正常 HEAD、错误 SHA、dirty tracked 文件、untracked 新 native 源码、六应用缺目录、缺 NOTICE、无效锁、无 opt-in、非法 opt-in，以及正式 package 命令必须先校验再 stage；`genoffice-source-smoke` 对此前没有校验的打包命令产生真实红例。**2026-10-20 L3 升级实证**：GenOffice PDF 原实现以 PID 固定 `.gensave-<pid>.tmp` 命名，同进程写者会互相覆盖/删临时文件，另一开发 owner 已在原厂仓将 `atomic-write.ts` 改为 `randomUUID` + `open(wx)` 私有临时文件 + `fsync` 后 rename + 只清理己方临时文件，且在原厂测试加入并发临时文件保全的红绿。锁保持旧 cbec600 时真实 opt-in 发行校验 **exit1**，更新 73ba918 和补丁血统后真实校验 **exit0**。原厂 `@genoffice/pdf` 的 `page-operation-atomic-write` / `save-pdf` / `edit-ops` 共 **108/108 PASS**、原厂 PDF typecheck exit0；Mcode `genoffice-source-smoke` 从 11 扩展至 **17/17 PASS**，含旧 HEAD、错误补丁父提交、伪造变更文件列表/漏补丁元数据等安全拒绝；与编辑器资源/发行 smoke 合跑 **3/3 套 PASS**，Mcode Desktop/Contracts 双 tsc exit0。
 - 可执行命令：`node apps/desktop/scripts/genoffice-source-smoke/main.cjs`；在真实开发源码 checkout 检查 `set MCODE_INCLUDE_GENOFFICE_BUNDLE=1&& node apps/desktop/build/verify-genoffice-upstream.cjs`（Windows cmd）。
 - **没有因此完成**：六套原生 GUI 的 main/preload/Host RPC、Rust sidecar 和 PDFium 在离开开发机后的 U1；GenOffice 原版 AI 选区→审阅→撤销的三 SDK 桥；Node-RED 一执行事实源；真实 Electron 六格式编辑/另存/关闭重开、许可证 SBOM；完整安装后的跨 OS E2E-1～6。
 - 原始编译目录存在和资源完整性属于 **来源/发布门禁**，不是六格式功能存在的证明。FULL-2～6 仍必须逐项开发并由独立审核验收，ARC-007 双勾不得因本门禁绿而改变。

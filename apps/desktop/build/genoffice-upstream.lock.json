@@ -1,7 +1,15 @@
 {
   "format": "mcode.genoffice.upstream-lock.v1",
   "repository": "https://github.com/genspark-ai/genoffice",
-  "revision": "cbec600ace9c930b2646b6739cf6df3741bb9d6a",
+  "revision": "73ba918083b5e2bedff7633925c3d7f625e04449",
+  "baseRevision": "cbec600ace9c930b2646b6739cf6df3741bb9d6a",
+  "approvedPatch": {
+    "revision": "73ba918083b5e2bedff7633925c3d7f625e04449",
+    "paths": [
+      "apps/pdf/src/main/atomic-write.ts",
+      "apps/pdf/tests/page-operation-atomic-write.test.ts"
+    ]
+  },
   "license": "Apache-2.0",
   "editors": [
     "docs",
