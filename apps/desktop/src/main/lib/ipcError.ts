@@ -26,8 +26,25 @@ export function describeInputError(err: z.ZodError): string {
   return `入参不合法(${where}${first?.message ?? "没通过校验"})`;
 }
 
+/** Shared bounded fallback for arbitrary thrown values from plugins / SDKs.
+ * JavaScript permits throwing Object.create(null), objects with a malicious
+ * toString, and Error subclasses whose message getter throws. A handler's
+ * catch must not trigger a second uncaught exception while reporting one. */
+export function safeErrorMessage(err: unknown): string {
+  try {
+    if (err instanceof Error) {
+      const msg: unknown = err.message;
+      return typeof msg === "string" && msg ? msg : "未知错误";
+    }
+    const text = String(err);
+    return text || "未知错误";
+  } catch {
+    return "未知错误";
+  }
+}
+
 /** `catch` 里唯一的出口。 */
 export function errText(err: unknown): string {
   if (err instanceof z.ZodError) return describeInputError(err);
-  return err instanceof Error ? err.message : String(err);
+  return safeErrorMessage(err);
 }

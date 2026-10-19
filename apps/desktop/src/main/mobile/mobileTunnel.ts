@@ -105,7 +105,17 @@ async function probeHealth(
     });
     const body = await res.text().catch(() => "");
     const s = res.status;
-    if (s === 200 && body.includes('"ok":true')) return { phase: "ready", error: null, note: null };
+    if (s === 200) {
+      // A substring match accepted malformed JSON and duplicate-key bodies
+      // such as {"ok":true,"ok":false}, wrongly reporting a tunnel as ready.
+      // Evaluate the actual top-level health response instead.
+      let health: unknown = null;
+      try { health = JSON.parse(body); } catch { /* malformed response */ }
+      if (health && typeof health === "object" && !Array.isArray(health) &&
+          (health as { ok?: unknown }).ok === true) {
+        return { phase: "ready", error: null, note: null };
+      }
+    }
     if (s >= 300 && s < 400) {
       // 挂了 Cloudflare Access:手机会先过 Access 登录页,我们这边核对不了,但不算错。
       return { phase: "ready", error: null, note: "这个域名挂了 Cloudflare Access(登录页),无法自动核对隧道;手机上过了 Access 之后会看到 Mcode 登录页。" };

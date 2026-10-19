@@ -13,9 +13,10 @@ function check(label: string, pass: boolean, detail?: unknown): void {
   else console.log("PASS " + label);
 }
 const fetched: string[] = [];
+let fakeHealthBody = '{"ok":true}';
 globalThis.fetch = (async (uri: string | URL | Request) => {
   fetched.push(String(uri));
-  return { status: 200, text: async () => '{"ok":true}' } as Response;
+  return { status: 200, text: async () => fakeHealthBody } as Response;
 }) as typeof fetch;
 reset();
 SettingRepo.set(MODE, "external");
@@ -53,5 +54,24 @@ SettingRepo.set(HOST, "user@127.0.0.1");
 const status = await mobileTunnelStatus();
 check("★ malformed hostname already persisted must fail closed on status/probe",
   status.hostname === "" && fetched.length === fetches, { status, fetched });
+// A body containing the bytes '"ok":true' is not necessarily a valid Mcode
+// health response. Duplicate JSON keys and malformed JSON were accepted.
+fakeHealthBody = '{"ok":true,"ok":false}';
+await setMobileTunnelConfig({ mode: "external", hostname: "false-health.example.com" });
+await new Promise<void>((resolve) => setImmediate(resolve));
+const falseHealth = await mobileTunnelStatus();
+check("★ duplicate health JSON keys ending in false cannot mark tunnel ready",
+  falseHealth.phase === "failed", falseHealth);
+fakeHealthBody = '{"ok":true} NOT JSON';
+await setMobileTunnelConfig({ mode: "external", hostname: "bad-json.example.com" });
+await new Promise<void>((resolve) => setImmediate(resolve));
+const malformed = await mobileTunnelStatus();
+check("★ malformed health response cannot mark tunnel ready",
+  malformed.phase === "failed", malformed);
+fakeHealthBody = '{"ok":true}';
+await setMobileTunnelConfig({ mode: "external", hostname: "real-health.example.com" });
+await new Promise<void>((resolve) => setImmediate(resolve));
+const healthy = await mobileTunnelStatus();
+check("valid exact health JSON stays ready", healthy.phase === "ready", healthy);
 console.log(`mobile-tunnel-host-smoke: ${checks - fails}/${checks}`);
 if (fails) process.exitCode = 1;

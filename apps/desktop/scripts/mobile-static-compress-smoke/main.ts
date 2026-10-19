@@ -143,6 +143,16 @@ console.log("B. things that must stay raw");
   check("pairing page raw", p.headers["content-encoding"] === undefined && p.body.toString().includes("pair"));
   const t = await get("/assets/tiny-abc123.js", BROWSER);
   check("tiny asset served raw", t.headers["content-encoding"] === undefined && t.body.toString() === "export{}");
+  const assetWithNonce = await get("/assets/tiny-abc123.js?nonce=fictional", BROWSER);
+  check("★ nonce query must not turn asset URL into pairing HTML",
+    assetWithNonce.status === 200 && assetWithNonce.body.toString() === "export{}", assetWithNonce.body.toString().slice(0, 90));
+  const spurious = await get("/?search=nonce=fictional", BROWSER);
+  check("★ nonce= inside another query value must not open pairing page",
+    spurious.status === 200 && spurious.body.toString().includes("INDEX") && !spurious.body.toString().includes("<body>pair</body>"),
+    spurious.body.toString().slice(0, 90));
+  const noncePair = await get("/?nonce=fictional", BROWSER);
+  check("real pairing link with root nonce still uses pair.html",
+    noncePair.status === 200 && noncePair.body.toString().includes("<body>pair</body>"));
   const png = await get("/assets/logo.png", BROWSER);
   check("binary image not compressed", png.headers["content-encoding"] === undefined && png.body.length === 4096);
   const miss = await get("/assets/missing.js", BROWSER);

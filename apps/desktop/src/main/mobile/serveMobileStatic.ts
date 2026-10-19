@@ -158,8 +158,15 @@ export function serveMobileAsset(req: IncomingMessage, res: ServerResponse): voi
   // few KB instead of several MB over the VPS/relay link. The full app is
   // served for every other path; after pairing the page redirects to the bare
   // origin (nonce stripped) to load it.
+  // Pairing links are generated only at /?nonce=... . A substring search
+  // also matched /assets/app.js?nonce=... and /?search=nonce=..., replacing
+  // JS or the main shell with HTML. Parse the query key, and only select the
+  // small pairing page at its actual entry route.
+  const query = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?") + 1) : "";
+  const hasNonce = new URLSearchParams(query).has("nonce");
   const isPairing =
-    rawUrl.includes("nonce=") || urlPath === "/pair" || urlPath === "/pair.html";
+    urlPath === "/pair" || urlPath === "/pair.html" ||
+    ((urlPath === "/" || urlPath === "/index.html") && hasNonce);
   if (isPairing) {
     servePairingPage(res, root);
     return;

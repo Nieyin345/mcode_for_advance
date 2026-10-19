@@ -36,6 +36,7 @@ import { BROWSER_SCREENSHOT_DIR_SETTING_KEY } from "@contracts/ipc";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { notifyAppSettingWrite } from "@main/customUi/settingSync.js";
 import { savePngArtifact } from "@main/lib/screenshotStore.js";
+import { safeErrorMessage } from "@main/lib/ipcError.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ProviderContext } from "@contracts/provider";
@@ -787,7 +788,7 @@ function errText(err: unknown): string {
   if (err instanceof z.ZodError) {
     return `参数不对:${err.issues.map((i) => `${i.path.join(".") || "(根)"} ${i.message}`).join(";")}。先用 app_api_describe 看参数格式。`;
   }
-  return err instanceof Error ? err.message : String(err);
+  return safeErrorMessage(err);
 }
 
 async function ui(cmd: AppUiCommand): Promise<AppUiReply> {
