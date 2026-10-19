@@ -10,6 +10,7 @@ import { normPathKey } from "@main/lib/pathNorm.js";
 import { defaultProviderId } from "@main/providers/defaultProvider.js";
 import { getDb, persist } from "../db.js";
 import { v, safeJson, SESSION_COLUMNS, type BindValue, type SessionRow } from "../sessionSchema.js";
+import { withStatement } from "./withStatement.js";
 
 /* ─────────────────────────────── Sessions ─────────────────────────────── */
 
@@ -89,11 +90,12 @@ export const SessionRepo = {
       }
     }
     const stmt = db.prepare(sql);
-    stmt.bind(params);
+    return withStatement(stmt, (query) => {
+    query.bind(params);
     const out: Session[] = [];
-    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
-    stmt.free();
+    while (query.step()) out.push(rowToSession(query.getAsObject() as unknown as SessionRow));
     return out;
+    });
   },
 
   /**
@@ -110,11 +112,12 @@ export const SessionRepo = {
   listIdsByProject(projectId: string): string[] {
     const db = getDb();
     const stmt = db.prepare("SELECT id FROM sessions WHERE project_id = ?");
-    stmt.bind([v(projectId)]);
+    return withStatement(stmt, (query) => {
+    query.bind([v(projectId)]);
     const out: string[] = [];
-    while (stmt.step()) out.push(String((stmt.getAsObject() as { id: string }).id));
-    stmt.free();
+    while (query.step()) out.push(String((query.getAsObject() as { id: string }).id));
     return out;
+    });
   },
 
   /** Count sessions for a project, optionally filtered by archived flag and
@@ -144,11 +147,12 @@ export const SessionRepo = {
       where.push("worktree_path IS NOT NULL");
     }
     const stmt = db.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE ${where.join(" AND ")}`);
-    stmt.bind(params);
-    stmt.step();
-    const n = (stmt.getAsObject() as { n: number }).n;
-    stmt.free();
+    return withStatement(stmt, (query) => {
+    query.bind(params);
+    query.step();
+    const n = (query.getAsObject() as { n: number }).n;
     return n;
+    });
   },
 
   /** All pinned non-archived sessions across every project, most recent pin
@@ -160,10 +164,11 @@ export const SessionRepo = {
     const stmt = db.prepare(
       "SELECT * FROM sessions WHERE archived = 0 AND pinned_at IS NOT NULL AND kind = 'chat' ORDER BY pinned_at DESC",
     );
+    return withStatement(stmt, (query) => {
     const out: Session[] = [];
-    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
-    stmt.free();
+    while (query.step()) out.push(rowToSession(query.getAsObject() as unknown as SessionRow));
     return out;
+    });
   },
 
   /** Cross-project aggregate of non-archived chat sessions, newest-first —
@@ -205,19 +210,20 @@ export const SessionRepo = {
       }
     }
     const stmt = db.prepare(sql);
-    stmt.bind(params);
+    return withStatement(stmt, (query) => {
+    query.bind(params);
     const out: Session[] = [];
-    while (stmt.step()) {
-      const s = rowToSession(stmt.getAsObject() as unknown as SessionRow);
+    while (query.step()) {
+      const s = rowToSession(query.getAsObject() as unknown as SessionRow);
       if (wtKey !== undefined && (!s.worktreePath || normPathKey(s.worktreePath) !== wtKey)) continue;
       out.push(s);
     }
-    stmt.free();
     if (wtKey !== undefined) {
       const offset = opts?.offset ?? 0;
       return opts?.limit !== undefined ? out.slice(offset, offset + opts.limit) : out.slice(offset);
     }
     return out;
+    });
   },
 
   /** Count matching {@link listAll}'s filter — the aggregate `total` for
@@ -235,17 +241,18 @@ export const SessionRepo = {
     const wtKey = opts?.worktreeKey;
     if (wtKey !== undefined) where.push("worktree_path IS NOT NULL");
     const stmt = db.prepare(`SELECT * FROM sessions WHERE ${where.join(" AND ")}`);
-    stmt.bind(params);
+    return withStatement(stmt, (query) => {
+    query.bind(params);
     let n = 0;
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as unknown as { worktree_path: string | null };
+    while (query.step()) {
+      const row = query.getAsObject() as unknown as { worktree_path: string | null };
       if (wtKey !== undefined && (!row.worktree_path || normPathKey(row.worktree_path) !== wtKey)) {
         continue;
       }
       n++;
     }
-    stmt.free();
     return n;
+    });
   },
 
   /** Cross-project title-substring search (Ctrl+K unified search). Scans all
@@ -261,11 +268,12 @@ export const SessionRepo = {
     params.push(v(limit));
     const sql = `SELECT * FROM sessions WHERE archived = 0 AND kind = 'chat' AND title LIKE ? ESCAPE '\\' ORDER BY updated_at DESC, created_at DESC LIMIT ?`;
     const stmt = db.prepare(sql);
-    stmt.bind(params);
+    return withStatement(stmt, (query) => {
+    query.bind(params);
     const out: Session[] = [];
-    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
-    stmt.free();
+    while (query.step()) out.push(rowToSession(query.getAsObject() as unknown as SessionRow));
     return out;
+    });
   },
 
   /** Cross-session bookmark search for the Ctrl+K palette: substring match
@@ -284,14 +292,15 @@ export const SessionRepo = {
     const stmt = getDb().prepare(
       "SELECT id, project_id, title, bookmarks FROM sessions WHERE archived = 0 AND kind = 'chat' AND bookmarks IS NOT NULL ORDER BY updated_at DESC",
     );
+    return withStatement(stmt, (query) => {
     const out: Array<{
       bookmark: SessionBookmark;
       sessionId: string;
       sessionTitle: string;
       projectId: string;
     }> = [];
-    outer: while (stmt.step()) {
-      const row = stmt.getAsObject() as unknown as {
+    outer: while (query.step()) {
+      const row = query.getAsObject() as unknown as {
         id: string;
         project_id: string;
         title: string;
@@ -309,8 +318,8 @@ export const SessionRepo = {
         }
       }
     }
-    stmt.free();
     return out;
+    });
   },
 
   /** Non-archived, unpinned sessions across ALL projects whose `updated_at`
@@ -322,21 +331,23 @@ export const SessionRepo = {
     const stmt = db.prepare(
       "SELECT * FROM sessions WHERE archived = 0 AND pinned_at IS NULL AND kind = 'chat' AND updated_at < ?",
     );
-    stmt.bind([v(cutoffMs)]);
+    return withStatement(stmt, (query) => {
+    query.bind([v(cutoffMs)]);
     const out: Session[] = [];
-    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
-    stmt.free();
+    while (query.step()) out.push(rowToSession(query.getAsObject() as unknown as SessionRow));
     return out;
+    });
   },
 
   get(id: string): Session | undefined {
     const db = getDb();
     const stmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
-    stmt.bind([v(id)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
-    stmt.free();
+    return withStatement(stmt, (query) => {
+    query.bind([v(id)]);
+    const found = query.step();
+    const row = found ? (query.getAsObject() as unknown as SessionRow) : undefined;
     return row ? rowToSession(row) : undefined;
+    });
   },
 
   /** Newest still-fresh session of a project — the "new session" button
@@ -354,11 +365,12 @@ export const SessionRepo = {
          AND kind = 'chat' AND status = 'idle' AND title = 'New session'
        ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
     );
-    stmt.bind([v(projectId)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
-    stmt.free();
+    return withStatement(stmt, (query) => {
+    query.bind([v(projectId)]);
+    const found = query.step();
+    const row = found ? (query.getAsObject() as unknown as SessionRow) : undefined;
     return row ? rowToSession(row) : undefined;
+    });
   },
 
   /** Newest still-fresh side chat of a parent — the ask tab's "new chat"
@@ -422,11 +434,12 @@ export const SessionRepo = {
       `SELECT * FROM sessions WHERE ${where.join(" AND ")}
        ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
     );
-    stmt.bind(params);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
-    stmt.free();
+    return withStatement(stmt, (query) => {
+    query.bind(params);
+    const found = query.step();
+    const row = found ? (query.getAsObject() as unknown as SessionRow) : undefined;
     return row ? rowToSession(row) : undefined;
+    });
   },
 
   /** List a main session's side chats (kind='side', parent = the given id),
@@ -445,11 +458,12 @@ export const SessionRepo = {
     const stmt = db.prepare(
       "SELECT * FROM sessions WHERE kind = 'side' AND parent_session_id = ? ORDER BY created_at DESC",
     );
-    stmt.bind([v(parentSessionId)]);
+    return withStatement(stmt, (query) => {
+    query.bind([v(parentSessionId)]);
     const out: Session[] = [];
-    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
-    stmt.free();
+    while (query.step()) out.push(rowToSession(query.getAsObject() as unknown as SessionRow));
     return out;
+    });
   },
 
   /** 一个对话里**跑过的每一步**各自的会话(`kind='node'`),最近碰过的在前。
@@ -468,11 +482,12 @@ export const SessionRepo = {
     const stmt = db.prepare(
       "SELECT * FROM sessions WHERE kind = 'node' AND parent_session_id = ? ORDER BY updated_at DESC, created_at DESC",
     );
-    stmt.bind([v(parentSessionId)]);
+    return withStatement(stmt, (query) => {
+    query.bind([v(parentSessionId)]);
     const out: Session[] = [];
-    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
-    stmt.free();
+    while (query.step()) out.push(rowToSession(query.getAsObject() as unknown as SessionRow));
     return out;
+    });
   },
 
   /** 这个对话里有没有一格**留下过会话**。
@@ -487,10 +502,11 @@ export const SessionRepo = {
     const stmt = getDb().prepare(
       "SELECT 1 FROM sessions WHERE kind = 'node' AND parent_session_id = ? LIMIT 1",
     );
-    stmt.bind([v(parentSessionId)]);
-    const found = stmt.step();
-    stmt.free();
+    return withStatement(stmt, (query) => {
+    query.bind([v(parentSessionId)]);
+    const found = query.step();
     return found;
+    });
   },
 
   /** 自动化会话按(工作流, 项目)复用；未指定项目时返回最近使用的会话。
@@ -512,11 +528,12 @@ export const SessionRepo = {
           WHERE r.session_id = s.id AND r.workflow_id = s.composer_mode), 0)) DESC,
          s.created_at DESC, s.id DESC`,
     );
-    stmt.bind([v(workflowId)]);
+    return withStatement(stmt, (query) => {
+    query.bind([v(workflowId)]);
     const out: Session[] = [];
-    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
-    stmt.free();
+    while (query.step()) out.push(rowToSession(query.getAsObject() as unknown as SessionRow));
     return out;
+    });
   },
 
   /** 这个对话里**跑在 `nodeId` 那一格**的会话(`kind='node'`)。没有返回 undefined。
@@ -540,11 +557,12 @@ export const SessionRepo = {
        WHERE kind = 'node' AND parent_session_id = ? AND node_id = ?
        ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
     );
-    stmt.bind([v(parentSessionId), v(nodeId)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
-    stmt.free();
+    return withStatement(stmt, (query) => {
+    query.bind([v(parentSessionId), v(nodeId)]);
+    const found = query.step();
+    const row = found ? (query.getAsObject() as unknown as SessionRow) : undefined;
     return row ? rowToSession(row) : undefined;
+    });
   },
 
   /** Persist claude's own session id so future turns can --resume. */
@@ -588,11 +606,12 @@ export const SessionRepo = {
        WHERE kind = 'automation' AND parent_session_id = ?
        ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
     );
-    stmt.bind([v(parentSessionId)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
-    stmt.free();
+    return withStatement(stmt, (query) => {
+    query.bind([v(parentSessionId)]);
+    const found = query.step();
+    const row = found ? (query.getAsObject() as unknown as SessionRow) : undefined;
     return row ? rowToSession(row) : undefined;
+    });
   },
 
   /** Backfill the materialized worktree path (first-turn materialization).
@@ -628,13 +647,17 @@ export const SessionRepo = {
     const stmt = getDb().prepare(
       "SELECT worktree_path AS path, COUNT(*) AS n FROM sessions WHERE worktree_path IS NOT NULL GROUP BY worktree_path",
     );
-    const out: Record<string, number> = {};
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as unknown as { path: string; n: number };
+    return withStatement(stmt, (query) => {
+    // The worktree path is a database value, not a trusted JS property name.
+    // A path called '__proto__' or 'constructor' must stay an own numeric key,
+    // otherwise cleanup can mistake a referenced worktree for an orphan.
+    const out: Record<string, number> = Object.create(null) as Record<string, number>;
+    while (query.step()) {
+      const row = query.getAsObject() as unknown as { path: string; n: number };
       out[row.path] = row.n;
     }
-    stmt.free();
     return out;
+    });
   },
 
   /** All distinct materialized worktree paths (the session-environment
@@ -645,13 +668,14 @@ export const SessionRepo = {
     const stmt = getDb().prepare(
       "SELECT DISTINCT worktree_path FROM sessions WHERE worktree_path IS NOT NULL",
     );
+    return withStatement(stmt, (query) => {
     const out: string[] = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as unknown as { worktree_path: string };
+    while (query.step()) {
+      const row = query.getAsObject() as unknown as { worktree_path: string };
       if (row.worktree_path) out.push(row.worktree_path);
     }
-    stmt.free();
     return out;
+    });
   },
 
   /** All sessions (any kind/state) whose worktree_path points at the given
@@ -662,13 +686,14 @@ export const SessionRepo = {
   listByWorktreePath(worktreePath: string): Session[] {
     const target = normPathKey(worktreePath);
     const stmt = getDb().prepare("SELECT * FROM sessions WHERE worktree_path IS NOT NULL");
+    return withStatement(stmt, (query) => {
     const out: Session[] = [];
-    while (stmt.step()) {
-      const s = rowToSession(stmt.getAsObject() as unknown as SessionRow);
+    while (query.step()) {
+      const s = rowToSession(query.getAsObject() as unknown as SessionRow);
       if (s.worktreePath && normPathKey(s.worktreePath) === target) out.push(s);
     }
-    stmt.free();
     return out;
+    });
   },
 
   updateTitle(id: string, title: string): void {
@@ -782,6 +807,7 @@ export const SessionRepo = {
     const stmt = getDb().prepare(
       "SELECT id, kind, provider_id, custom_model_id, usage_history FROM sessions WHERE usage_history IS NOT NULL",
     );
+    return withStatement(stmt, (query) => {
     const out: Array<{
       id: string;
       kind: string;
@@ -789,8 +815,8 @@ export const SessionRepo = {
       customModelId: string | null;
       usageHistory: TurnUsageRecord[];
     }> = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as unknown as {
+    while (query.step()) {
+      const row = query.getAsObject() as unknown as {
         id: string;
         kind: string | null;
         provider_id: string | null;
@@ -810,8 +836,8 @@ export const SessionRepo = {
         usageHistory: parsed as TurnUsageRecord[],
       });
     }
-    stmt.free();
     return out;
+    });
   },
 
   /** Persist which custom-model config this session is bound to (null = built-in). */
