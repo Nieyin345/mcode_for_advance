@@ -109,8 +109,10 @@ function validateBudgetObject(v: TurnBudgetSetting):
   const checkInt = (name: "maxTurns" | "maxTotalTokens"): void => {
     const raw = v[name];
     if (raw === undefined) return;
-    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) out[name] = Math.floor(raw);
-    else anyInvalidField = true; // 有值但格式不合法(0.2 / 0 / 负 / 非数)→ 记 INVALID,不静默丢
+    // Turn count and token count are discrete quantities. Flooring 1.9 to
+    // 1 silently rewrites a corrupted budget into a trusted VALID last-good.
+    if (typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 1) out[name] = raw;
+    else anyInvalidField = true; // 小数、不安全整数、0、负数或非数 → INVALID
   };
   checkInt("maxTurns");
   checkInt("maxTotalTokens");

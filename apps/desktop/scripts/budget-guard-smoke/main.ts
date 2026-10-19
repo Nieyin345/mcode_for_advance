@@ -52,17 +52,17 @@ eq("maxTurns", (full as { maxTurns?: number } | undefined)?.maxTurns, 5);
 eq("maxUsd", (full as { maxUsd?: number } | undefined)?.maxUsd, 0.5);
 eq("maxTotalTokens", (full as { maxTotalTokens?: number } | undefined)?.maxTotalTokens, 120000);
 
-// 小数轮数要取整(界面输入不拦 2.5,但预算只能按整轮算)。
+// 旧回退曾将 2.9 轮默默 floor 成 2，甚至让这份输入覆盖 last-good。
+// 轮数/Token 是离散预算；启用状态下遇小数必须整份 INVALID、由宿主拒绝本轮。
 eq(
-  "小数轮数向下取整",
-  (parseTurnBudget(JSON.stringify({ enabled: true, maxTurns: 2.9 })) as { maxTurns?: number } | undefined)?.maxTurns,
-  2,
+  "小数轮数不能隐式截断成可接受的整数预算",
+  parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxTurns: 2.9 })).status,
+  "INVALID",
 );
 eq(
-  "小数 token 同样取整",
-  (parseTurnBudget(JSON.stringify({ enabled: true, maxTotalTokens: 99.9 })) as { maxTotalTokens?: number } | undefined)
-    ?.maxTotalTokens,
-  99,
+  "小数 Token 上限同样必须 INVALID",
+  parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxTotalTokens: 99.9 })).status,
+  "INVALID",
 );
 // 花费是小数语义,不取整 —— 0.05 美元的上限是合法的。
 eq(
@@ -199,6 +199,24 @@ console.log("\nparseTurnBudgetDetailed(三态 + last-good 恢复,坏配置不静
   const mixed = parseTurnBudgetDetailed(JSON.stringify({ enabled: true, maxUsd: 1, maxTurns: 0.2 }));
   eq("★ 有合法 maxUsd 但 maxTurns 非法 → 整体 INVALID(不挑好的用)", mixed.status, "INVALID");
 }
+
+
+  // 启用的预算是费用安全边界：大于 1 的小数同样是非法输入。
+  // 旧版只判 >=1 然后 Math.floor，导致 1.9 轮被当成 VALID 并能刷掉 last-good。
+  const fractionalTurn = parseTurnBudgetDetailed(JSON.stringify({enabled:true,maxTurns:1.9}));
+  eq("★ maxTurns:1.9 不能 floor 为 1 并放行，必须 INVALID", fractionalTurn.status, "INVALID");
+  const fractionalTokens = parseTurnBudgetDetailed(JSON.stringify({enabled:true,maxTotalTokens:9.5}));
+  eq("★ maxTotalTokens:9.5 必须 INVALID，不能 floor 为 9", fractionalTokens.status, "INVALID");
+  eq("★ 浮点 enabled:true 不得成为 last-good 可信快照",
+    budgetCommitWorthBackingUp(JSON.stringify({enabled:true,maxTurns:1.9})), false);
+  const fractionalWithBackup = parseTurnBudgetDetailed(
+    JSON.stringify({enabled:true,maxTurns:1.9}),
+    JSON.stringify({enabled:true,maxTurns:3}),
+  );
+  eq("★ 非法小数只能回到最后已确认整数预算",fractionalWithBackup.budget?.maxTurns,3);
+  eq("  非法小数+合法备份须保持 INVALID 状态", fractionalWithBackup.status,"INVALID");
+  eq("正常整数预算仍合法", parseTurnBudgetDetailed(JSON.stringify({enabled:true,maxTurns:2})).status, "VALID");
+  eq("费用上限 maxUsd 允许合法小数", parseTurnBudgetDetailed(JSON.stringify({enabled:true,maxUsd:0.75})).status, "VALID");
 
 /* ───────── 【MC-083 残余】保存成功那一刻就该刷新 last-good,不是等下一轮 ───────── */
 
