@@ -52,7 +52,13 @@ export class ThinkTagSplitter {
   push(text: string): ThinkSegment[] {
     const out: ThinkSegment[] = [];
     const emit = (s: string): void => {
-      if (s.length > 0) out.push({ kind: this.mode, text: s });
+      if (s.length === 0) return;
+      // Ordinary prose may contain thousands of '<' characters (logs, HTML,
+      // JSX). Each rejected candidate used to allocate a separate segment.
+      // Downstream stream bridges must not receive one segment per character.
+      const last = out[out.length - 1];
+      if (last?.kind === this.mode) last.text += s;
+      else out.push({ kind: this.mode, text: s });
     };
 
     const buf = this.held + text;
@@ -77,10 +83,11 @@ export class ThinkTagSplitter {
         i = lt + tag.length;
         continue;
       }
-      const tail = buf.slice(lt);
-      if (tag.startsWith(tail)) {
-        // Partial tag at the chunk boundary — hold until more arrives.
-        this.held = tail;
+      const remaining = buf.length - lt;
+      if (remaining < tag.length && tag.startsWith(buf.slice(lt))) {
+        // Only take a short slice when the remainder may actually be a tag
+        // prefix. Taking buf.slice(lt) for every ordinary '<' was quadratic.
+        this.held = buf.slice(lt);
         return out;
       }
       // A `<` that can't start the active tag — literal text; rescan after it
