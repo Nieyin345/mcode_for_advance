@@ -38,6 +38,7 @@ import {
 } from "@contracts/agentProfile";
 import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 import { log } from "@main/lib/logger.js";
+import { managedAgentProfilePathError } from "@main/orchestration/agentProfiles.js";
 
 /** 一份档案能当会话角色用,结果就是这两样:落进会话行的快照 + 会话标题。 */
 export interface SessionProfileSeed {
@@ -71,6 +72,10 @@ export function loadAgentProfileForSession(
     return { ok: false, error: `档案编号不合法:${id}` };
   }
   const file = path.join(dir, `${id}.json`);
+  // 与列表/保存/删除共用一份物理路径守卫：合法 id 仍可能落在
+  // 被 junction 替换的目录，不能读成外部角色的提示词。
+  const unsafe = managedAgentProfilePathError(file);
+  if (unsafe) return { ok: false, error: unsafe };
   if (!existsSync(file)) return { ok: false, error: `档案不在了:${id}` };
   let text: string;
   try {
@@ -80,6 +85,11 @@ export function loadAgentProfileForSession(
   }
   const parsed = parseAgentProfile(text);
   if ("error" in parsed) return { ok: false, error: `档案读不了:${parsed.error}` };
+  // 列表入口已有同一个不变量，子会话入口必须独立维护：否则用户选中 A 文件，
+  // 实际拿到 B 身份的指令，错误会持续保存在会话快照中。
+  if (parsed.profile.id !== id) {
+    return { ok: false, error: `档案文件名与内容 id 不一致:${id} / ${parsed.profile.id}` };
+  }
   if (!isSessionAgentProfile(parsed.profile)) {
     return { ok: false, error: `这份档案是给「${parsed.profile.type}」用的,当不了对话的角色` };
   }

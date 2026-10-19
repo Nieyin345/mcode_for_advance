@@ -25,7 +25,7 @@
  * `ipc/orchestration.ts` 立了一条硬规矩:`main/orchestration/` 与 `main/workflows/`
  * 互不 import。目录名在这里复述一遍是那条规矩的代价(见 `nodeTypes.ts` 同款注释)。
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as path from "node:path";
 import {
@@ -44,6 +44,43 @@ export function agentProfilesDir(): string {
 }
 
 const FILE_SUFFIX = ".json";
+
+/**
+ * ARC-006 / MC-033: one physical path check for all profile readers/writers.
+ * An id validated by regex is not sufficient: a junction in workflows/agents
+ * or a linked <id>.json can redirect read/write to unrelated files.
+ * Traverse from the trusted dataRoot, and reject *every* linked ancestor.
+ * Only ENOENT means a future path may safely be created. No I/O on error.
+ *
+ * This is an E1 filesystem gate, not an OS handle-relative protection against
+ * an adversarial process replacing a directory between lstat and I/O.
+ */
+export function managedAgentProfilePathError(target: string): string | null {
+  const root = path.resolve(dataRoot());
+  const absolute = path.resolve(target);
+  const rel = path.relative(root, absolute);
+  if (!rel || path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep)) {
+    return "档案路径越出受管数据根";
+  }
+  const parts = rel.split(path.sep);
+  let current = root;
+  for (let i = 0; i < parts.length; i++) {
+    current = path.join(current, parts[i]);
+    try {
+      const stat = lstatSync(current);
+      if (stat.isSymbolicLink()) return "档案路径包含符号链接或 junction，已拒绝";
+      if (i < parts.length - 1 && !stat.isDirectory()) {
+        return "档案路径的父级不是目录，已拒绝";
+      }
+      if (!stat.isDirectory() && !stat.isFile()) return "档案路径包含特殊文件，已拒绝";
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      return "档案路径检查失败:" + (err as Error).message;
+    }
+  }
+  return null;
+}
+
 
 /**
  * 【MC-033】一个引用**是不是**一个合法的档案 id(形如 `p_xxxx`)。
@@ -72,7 +109,7 @@ export function isAgentProfileIdRef(id: string): boolean {
  */
 export function agentProfileContentHash(id: string): string | null {
   const file = fileOf(id);
-  if (!file) return null;
+  if (!file || managedAgentProfilePathError(file)) return null;
   try {
     return createHash("sha256").update(readFileSync(file, "utf-8")).digest("hex");
   } catch {
@@ -83,6 +120,11 @@ export function agentProfileContentHash(id: string): string | null {
 export function readAgentProfiles(): AgentProfileCatalog {
   const dir = agentProfilesDir();
   const out: AgentProfileCatalog = { profiles: [], problems: [] };
+  const unsafeDir = managedAgentProfilePathError(dir);
+  if (unsafeDir) {
+    out.problems.push({ file: dir, error: unsafeDir });
+    return out;
+  }
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -97,6 +139,11 @@ export function readAgentProfiles(): AgentProfileCatalog {
   }
   for (const name of names.filter((n) => n.toLowerCase().endsWith(FILE_SUFFIX)).sort()) {
     const file = path.join(dir, name);
+    const unsafeFile = managedAgentProfilePathError(file);
+    if (unsafeFile) {
+      out.problems.push({ file: name, error: unsafeFile });
+      continue;
+    }
     let text: string;
     try {
       text = readFileSync(file, "utf-8");
@@ -154,9 +201,11 @@ export function saveAgentProfile(
   if (!file) return { ok: false, error: `档案 id「${check.profile.id}」不是合法引用(须形如 p_xxxx)` };
   const dir = agentProfilesDir();
   const tmp = `${file}.tmp`;
+  const unsafe = managedAgentProfilePathError(file) ?? managedAgentProfilePathError(tmp);
+  if (unsafe) return { ok: false, error: unsafe };
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(tmp, JSON.stringify(check.profile, null, 2), "utf-8");
+    writeFileSync(tmp, JSON.stringify(check.profile, null, 2), { encoding: "utf-8", flag: "wx" });
     renameSync(tmp, file);
     return { ok: true };
   } catch (err) {
@@ -177,6 +226,8 @@ export function removeAgentProfile(id: string): { ok: true } | { ok: false; erro
   // 【MC-033】非法引用**明说拒绝**,不静默当"本来就不在" —— MCP 那条路的入参是裸
   //  z.string(),`../../x` 从前能一路走到 rmSync 删界外文件;现在连"成功的假象"都不给。
   if (!file) return { ok: false, error: `档案 id「${id}」不是合法引用(须形如 p_xxxx)` };
+  const unsafe = managedAgentProfilePathError(file);
+  if (unsafe) return { ok: false, error: unsafe };
   if (!existsSync(file)) return { ok: true };
   try {
     rmSync(file, { force: true });

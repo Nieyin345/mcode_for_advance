@@ -580,6 +580,90 @@ console.log("\n档案编号:path traversal 一律拒");
   check("对照:合法形状的编号照常走'档案不在了'那条路", okId.ok === false && okId.error.includes("档案不在了"), okId);
 }
 
+
+// 【MC-033 / ARC-006】同一份档案的 filename id、存储根边界：会话入口不能绕过目录列表的身份约束。
+// 文件内容故意合法，只改变外层文件名；旧 loadAgentProfileForSession 会直接采纳另一人的人格。
+console.log("\n档案身份/物理目录围栏：文件名匹配 + Windows junction");
+{
+  const { loadAgentProfileForSession } = await import("@main/lib/sessionAgentProfile.js");
+  const { readAgentProfiles, saveAgentProfile, agentProfileContentHash, removeAgentProfile } = await import("@main/orchestration/agentProfiles.js");
+  const fs = await import("node:fs");
+  const realDir = agentProfilesDir();
+  const original = path.join(realDir, "p_reader.json");
+  const alias = path.join(realDir, "p_identity_wrong.json");
+  const originalText = fs.readFileSync(original, "utf8");
+  fs.writeFileSync(alias, originalText);
+  const wrong = loadAgentProfileForSession("p_identity_wrong", realDir);
+  check("文件名与 JSON id 不一致时会话入口必须拒绝", wrong.ok === false &&
+    /id|编号|不一致|对不上/.test(wrong.error ?? ""), wrong);
+  const catalogWrong = readAgentProfiles();
+  check("目录扫描本就将 id 不一致标成问题(有效对照)",
+    catalogWrong.problems.some(p => /p_identity_wrong/.test(p.file) && /id|对不上/.test(p.error)), catalogWrong.problems);
+  fs.rmSync(alias);
+
+  // 并行保存/崩溃可能留下同名 .tmp；旧 writeFileSync(tmp) 会直接覆盖它，
+  // 当前 save 必须独占创建而非抢走其他写者留下的字节。
+  const occupiedTmp = path.join(realDir, "p_reader.json.tmp");
+  fs.writeFileSync(occupiedTmp, "preexisting-writer-sentinel", "utf8");
+  const originalProfile = loadAgentProfileForSession(PROFILE_A, realDir);
+  check("夹具：原档案仍是有效的可保存角色", originalProfile.ok === true, originalProfile);
+  if (originalProfile.ok) {
+    const saveConflict = saveAgentProfile(originalProfile.profile);
+    check("并发/崩溃暂存文件已被占用时普通保存不得覆盖", saveConflict.ok === false, saveConflict);
+    check("被另一个写者占用的 .tmp 字节必须保持原样",
+      fs.existsSync(occupiedTmp) && fs.readFileSync(occupiedTmp, "utf8") === "preexisting-writer-sentinel");
+  }
+  fs.rmSync(occupiedTmp, { force: true });
+
+  const external = path.join(realDir, "..", "mcode-smoke-profile-outside");
+  const moved = realDir + ".mcode-smoke-original";
+  fs.mkdirSync(external, { recursive: true });
+  const externalFile = path.join(external, "p_reader.json");
+  // 外部确实拥有另一份可解析但内容不同的档案，旧代码若误写可通过字节比对发现。
+  fs.writeFileSync(externalFile, JSON.stringify({
+    ...JSON.parse(originalText),
+    name: "outside-owner-sentinel",
+    updatedAt: 1_800_000_000_000,
+  }, null, 2));
+  const expectedOutside = fs.readFileSync(externalFile, "utf8");
+  fs.renameSync(realDir, moved);
+  let linked = false;
+  try {
+    try {
+      fs.symlinkSync(external, realDir, process.platform === "win32" ? "junction" : "dir");
+      linked = true;
+    } catch (err) {
+      console.log("  SKIP 目录 junction 测试：当前 OS 不允许创建链接", (err as Error).message);
+    }
+    if (linked) {
+      check("测试夹具自证目录确实为真实 junction / symlink", fs.lstatSync(realDir).isSymbolicLink());
+      const linkedRead = loadAgentProfileForSession(PROFILE_A, realDir);
+      check("会话角色不得通过重定向的档案目录读取外部 JSON", linkedRead.ok === false &&
+        /路径|链接|目录|越界|不可用/.test(linkedRead.error ?? ""), linkedRead);
+      const list = readAgentProfiles();
+      check("目录扫描对 junction 不可默默返回外部角色", list.profiles.every(p=>p.id !== PROFILE_A) &&
+        list.problems.length > 0, list);
+      check("档案哈希读取不得越过 junction 指向外部 JSON", agentProfileContentHash(PROFILE_A) === null);
+      const refusedDelete = removeAgentProfile(PROFILE_A);
+      check("档案删除不得跟随 junction 删除外部 JSON", refusedDelete.ok === false, refusedDelete);
+      check("被拒绝的删除不改变外部真实文件", fs.readFileSync(externalFile, "utf8") === expectedOutside);
+      const legal = loadAgentProfileForSession(PROFILE_A, moved);
+      check("夹具原档案依然可以被直接读取(并未损坏)", legal.ok === true, legal);
+      if (legal.ok) {
+        const saved = saveAgentProfile(legal.profile);
+        check("目录被 junction 劫持时不得向外写出档案", saved.ok === false, saved);
+      }
+      check("被指向的外部档案字节不变", fs.readFileSync(externalFile, "utf8") === expectedOutside);
+    }
+  } finally {
+    if (linked) {
+      if (process.platform === "win32") fs.rmdirSync(realDir);
+      else fs.unlinkSync(realDir);
+    }
+    fs.renameSync(moved, realDir);
+  }
+}
+
 console.log(`\n${total - failures}/${total} 通过`);
 if (failures > 0) {
   console.log(`${failures} 条失败`);
