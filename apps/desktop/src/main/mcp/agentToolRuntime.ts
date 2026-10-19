@@ -862,6 +862,55 @@ function requireBoundedSheetRange(range: string | undefined): void {
   }
 }
 
+/** Validate the vendor selection envelope; do not parse workbook contents here. */
+function assertGenofficeSheetSelection(
+  detail: unknown, input: { sheet?: string; range?: string; maxRows?: number },
+): void {
+  const d = detail && typeof detail === "object" ? detail as Record<string, unknown> : null;
+  if (!d || typeof d.sheet !== "string" || !d.sheet
+      || typeof d.range !== "string" || !Array.isArray(d.rows)
+      || !Number.isSafeInteger(d.rowsShown) || !Number.isSafeInteger(d.rowsTotal)) {
+    throw new Error("GenOffice Excel 工作表 range/rows/行数字段无效，拒绝错误表格结果");
+  }
+  if (input.sheet !== undefined && d.sheet.toLocaleLowerCase() !== input.sheet.toLocaleLowerCase()) {
+    throw new Error(`GenOffice 返回工作表与请求 sheet=${input.sheet} 不一致，拒绝错误工作表内容`);
+  }
+  const shown = d.rowsShown as number;
+  const total = d.rowsTotal as number;
+  if (shown < 0 || total < 0 || shown > total || shown !== d.rows.length
+      || shown > (input.maxRows ?? 30)) {
+    throw new Error("GenOffice Excel 返回行数与 rowsShown/rowsTotal/max_rows 上限不一致");
+  }
+  const a1 = /^([A-Z]{1,3})([1-9]\d{0,6}):([A-Z]{1,3})([1-9]\d{0,6})$/;
+  const returned = a1.exec(d.range as string);
+  const col = (v: string): number => [...v].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+  if (!returned) throw new Error("GenOffice Excel 返回 range 地址格式无效");
+  const beginRow = Number(returned[2]);
+  const endRow = Number(returned[4]);
+  const beginCol = col(returned[1]!);
+  const endCol = col(returned[3]!);
+  if (beginRow > endRow || beginCol > endCol || endRow > 1_048_576 || endCol > 16_384
+      || d.rows.some(row => !Array.isArray(row) || row.length !== endCol - beginCol + 1)) {
+    throw new Error("GenOffice Excel 返回 rows 行宽/矩形 range 不一致");
+  }
+  if (shown > 0 && endRow !== beginRow + shown - 1) {
+    throw new Error("GenOffice Excel 返回 range 与实际行数 rowsShown 不一致");
+  }
+  if (input.range !== undefined) {
+    const request = /^([A-Z]{1,3})([1-9]\d{0,6})(?::([A-Z]{1,3})([1-9]\d{0,6}))?$/.exec(input.range.trim().toUpperCase());
+    if (!request) throw new Error("GenOffice Excel 请求 range 非法");
+    const requestedFirstRow = Math.min(Number(request[2]), Number(request[4] ?? request[2]));
+    const requestedLastRow = Math.max(Number(request[2]), Number(request[4] ?? request[2]));
+    const requestedFirstCol = Math.min(col(request[1]!), col(request[3] ?? request[1]!));
+    const requestedLastCol = Math.max(col(request[1]!), col(request[3] ?? request[1]!));
+    if (beginRow !== requestedFirstRow || beginCol !== requestedFirstCol
+        || endCol !== requestedLastCol || endRow > requestedLastRow
+        || total !== requestedLastRow - requestedFirstRow + 1) {
+      throw new Error(`GenOffice Excel 返回 range=${d.range} 与请求 ${input.range} 不一致`);
+    }
+  }
+}
+
 async function readViaGenoffice(input: {
   abs: string; reader?: "auto" | "native" | "genoffice";
   pdfMode?: "text" | "layout"; pageStart?: number; maxPages?: number;
@@ -1101,11 +1150,8 @@ async function readViaGenoffice(input: {
       throw new Error(`GenOffice PDF 返回页段与请求页码 ${start} 或请求页数不一致，拒绝缺页/错页内容`);
     }
   }
-  if ([".xlsx", ".xlsm", ".xltx"].includes(ext) && input.sheet !== undefined) {
-    const selected = detail && typeof detail === "object" ? (detail as { sheet?: unknown }).sheet : null;
-    if (typeof selected !== "string" || selected.toLocaleLowerCase() !== input.sheet.toLocaleLowerCase()) {
-      throw new Error(`GenOffice 返回工作表与请求 sheet=${input.sheet} 不一致，拒绝错误工作表内容`);
-    }
+  if ([".xlsx", ".xlsm", ".xltx"].includes(ext)) {
+    assertGenofficeSheetSelection(detail, input);
   }
   if (ext === ".docx" || ext === ".dotx") {
     const d = detail && typeof detail === "object" ? detail as { blocks?: number; items?: unknown[]; range?: unknown } : null;
@@ -1115,14 +1161,19 @@ async function readViaGenoffice(input: {
     if (probedDocBlocks !== null && d.blocks !== probedDocBlocks) {
       throw new Error(`GenOffice DOCX 结构块数量从 ${probedDocBlocks} 变化为 ${d.blocks}，拒绝拼接不同版本结果`);
     }
+    if (d.blocks === 0 && (d.items.length !== 0 || d.range !== "0--1")) {
+      throw new Error("GenOffice DOCX 声明空结构却返回非空块/错误范围，拒绝假成功");
+    }
     {
       const from = input.docxMode === "structure" ? (input.blockStart ?? 1) - 1 : 0;
       const maxBlocks = input.docxMode === "structure" ? (input.maxBlocks ?? 30) : 30;
       if (d.blocks! > 0) {
         const expectedEnd = Math.min(d.blocks! - 1, from + maxBlocks - 1);
         const expectedRange = `${from}-${expectedEnd}`;
-        if (d.range !== expectedRange || d.items.length !== expectedEnd - from + 1) {
-          throw new Error(`GenOffice DOCX 结构块索引/range 与请求 ${expectedRange} 不一致，拒绝错位块内容`);
+        if (d.range !== expectedRange || d.items.length !== expectedEnd - from + 1
+            || !d.items.every((item, index) => item !== null && typeof item === "object"
+              && (item as { index?: unknown }).index === from + index)) {
+          throw new Error(`GenOffice DOCX 结构块索引/index/range 与请求 ${expectedRange} 不一致，拒绝错位块内容`);
         }
       }
       const last = from + d.items.length - 1;

@@ -444,6 +444,33 @@ try {
      assert.equal(r.isError,true,text(r));assert.match(text(r),/块数量|版本|变化|不一致/);
    } finally {configureDocumentRepoRoot(null);}
  });
+ await test("★ GenOffice DOCX refuses forged item index despite matching range and count",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"ok",summary:"FORGED_INDEX",detail:{blocks:2,range:"0-0",items:[{index:1,text:"WRONG_BLOCK"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("text.docx",{reader:"genoffice",docx_mode:"structure",block_start:1,max_blocks:1});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/index|索引|错位|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice DOCX refuses malformed item entry in a valid range",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"ok",summary:"FORGED_ITEM",detail:{blocks:2,range:"0-0",items:[null]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("text.docx",{reader:"genoffice",docx_mode:"structure",block_start:1,max_blocks:1});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/index|索引|块|字段|无效/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice DOCX zero-block envelope cannot contain phantom items",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'const a=process.argv.slice(2);if(a.includes("--range")){console.log(JSON.stringify({status:"error",code:2,error:"invalid_argument",message:"--range out of bounds (0--1)"}));process.exitCode=2}else{console.log(JSON.stringify({status:"ok",summary:"PHANTOM_EMPTY",detail:{blocks:0,range:"0--1",items:[{index:0,text:"PHANTOM"}]}}))}\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("text.docx",{reader:"genoffice",max_blocks:1});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/空|blocks|块|索引/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
  await test("★ GenOffice DOCX refuses missing or malformed block envelope",async()=>{
    const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
    writeFileSync(fakeCli,'console.log(JSON.stringify({status:"ok",summary:"MALFORMED",detail:{blocks:2,range:"0-0",items:"not-an-array"}}))\n');
@@ -504,7 +531,7 @@ try {
  const fakeSheetCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
  const sheetSpawnMarker=join(root,"sheet-cli-spawned.txt");
  mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
- writeFileSync(fakeSheetCli,`const fs=require("node:fs");\nfs.writeFileSync(${JSON.stringify(join(root,"sheet-cli-spawned.txt"))},"called");\nconst args=process.argv.slice(2);const idx=args.indexOf("--range");const range=idx<0?"none":args[idx+1];\nconsole.log(JSON.stringify({status:"ok",summary:"MOCK_SHEET "+range,detail:{sheet:"Research",rows:[["SAFE"]],range}}));\n`);
+ writeFileSync(fakeSheetCli,`const fs=require("node:fs");\nfs.writeFileSync(${JSON.stringify(join(root,"sheet-cli-spawned.txt"))},"called");\nconst args=process.argv.slice(2);const idx=args.indexOf("--range");const range=idx<0?"none":args[idx+1];\nconsole.log(JSON.stringify({status:"ok",summary:"MOCK_SHEET "+range,detail:{sheet:"Research",range:"A1:B2",rows:[["SAFE","VALUE"],[null,null]],rowsShown:2,rowsTotal:3}}));\n`);
  await test("★ GenOffice huge XLSX range is refused before any vendor process even with max_rows=1",async()=>{
    rmSync(sheetSpawnMarker,{force:true});configureDocumentRepoRoot(root);
    try {
@@ -542,6 +569,53 @@ try {
      const r=await read("table.xlsx",{reader:"genoffice",sheet:"Research",range:"A1:B2",max_rows:2});
      assert.equal(r.isError,true,text(r));
      assert.match(text(r),/工作表|sheet|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice sheet refuses unrelated rectangle even with matching worksheet",async()=>{
+   writeFileSync(fakeSheetCli,'console.log(JSON.stringify({status:"ok",summary:"WRONG_RANGE",detail:{sheet:"Research",range:"C9:D10",rows:[["X","Y"],["Z","Q"]],rowsShown:2,rowsTotal:2}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("table.xlsx",{reader:"genoffice",sheet:"Research",range:"A1:B3",max_rows:2});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/range|区域|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice sheet refuses overlimit returned rows even when max_rows=1",async()=>{
+   writeFileSync(fakeSheetCli,'console.log(JSON.stringify({status:"ok",summary:"TOO_MANY",detail:{sheet:"Research",range:"A1:B3",rows:[[1,2],[3,4],[5,6]],rowsShown:3,rowsTotal:3}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("table.xlsx",{reader:"genoffice",sheet:"Research",range:"A1:B3",max_rows:1});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/max_rows|行数|上限|超出/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice sheet refuses mismatched rowsShown and nonrectangular rows",async()=>{
+   const responses=[
+     {sheet:"Research",range:"A1:B2",rows:[[1,2],[3,4]],rowsShown:1,rowsTotal:2},
+     {sheet:"Research",range:"A1:B2",rows:[[1,2],[3]],rowsShown:2,rowsTotal:2},
+   ];
+   configureDocumentRepoRoot(root);
+   try {
+     for(const detail of responses){
+       writeFileSync(fakeSheetCli,`console.log(JSON.stringify({status:"ok",summary:"SHEET_INVALID",detail:${JSON.stringify(detail)}}))\n`);
+       const r=await read("table.xlsx",{reader:"genoffice",sheet:"Research",range:"A1:B2",max_rows:2});
+       assert.equal(r.isError,true,`${JSON.stringify(detail)} => ${text(r)}`);
+       assert.match(text(r),/rows|矩形|行数|字段|不一致/);
+     }
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice valid reversed XLSX range and truncated response remain accepted",async()=>{
+   writeFileSync(fakeSheetCli,'console.log(JSON.stringify({status:"ok",summary:"NORMALIZED",detail:{sheet:"Research",range:"A1:B2",rows:[[1,2],[3,4]],rowsShown:2,rowsTotal:3}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("table.xlsx",{reader:"genoffice",sheet:"Research",range:"B3:A1",max_rows:2});
+     assert.ok(!r.isError,text(r));assert.match(text(r),/NORMALIZED/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice empty valid XLSX selection is not confused with a malformed grid",async()=>{
+   writeFileSync(fakeSheetCli,'console.log(JSON.stringify({status:"ok",summary:"EMPTY_REGION",detail:{sheet:"Research",range:"A1:B3",rows:[],rowsShown:0,rowsTotal:3}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("table.xlsx",{reader:"genoffice",sheet:"Research",range:"A1:B3",max_rows:2});
+     assert.ok(!r.isError,text(r));assert.match(text(r),/EMPTY_REGION/);
    } finally {configureDocumentRepoRoot(null);}
  });
  await test("★ Native tiny XLSX output preserves range-clipped warning",async()=>{
