@@ -71,10 +71,15 @@ function createForkedSession(fork: Session, messages: ReadonlyArray<{ id: string
       const stmt = db.prepare(
         "INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
       );
-      for (const m of messages) {
-        stmt.run([v(m.id), v(m.sessionId), v(m.role), v(JSON.stringify(m.content)), v(m.createdAt)]);
+      try {
+        for (const m of messages) {
+          stmt.run([v(m.id), v(m.sessionId), v(m.role), v(JSON.stringify(m.content)), v(m.createdAt)]);
+        }
+      } finally {
+        // The SQL transaction rolls back on INSERT failure, but the prepared
+        // sql.js statement is a separate resource and must be released too.
+        stmt.free();
       }
-      stmt.free();
     }
     db.run("COMMIT");
   } catch (err) {
@@ -121,7 +126,18 @@ export async function forkSession(sourceId: string, title: string): Promise<Sess
     // 而这一句背后可能是"会话文件不在这台机器上""这段对话一条消息都没有""引擎
     // 的配置根找错了"—— 三种都得看 main.log 才知道是哪种。
     try {
-      providerSessionId = await provider.forkSession(source.claudeSessionId, { cwd, title });
+      const newProviderSessionId = await provider.forkSession(source.claudeSessionId, { cwd, title });
+      // A resolved Promise is not proof of a fork. Some SDK/adapter failures
+      // return an empty ID or accidentally echo the source ID; persisting
+      // either would create two Mcode conversations sharing one engine history.
+      // Never compensate-delete an echoed source ID: that would delete the
+      // user's original conversation. Reject before adopting this ID.
+      if (typeof newProviderSessionId !== "string" ||
+          !newProviderSessionId.trim() ||
+          newProviderSessionId === source.claudeSessionId) {
+        throw new Error(`引擎 ${source.providerId} 没有返回独立有效的复制会话 ID`);
+      }
+      providerSessionId = newProviderSessionId;
     } catch (err) {
       log.error(
         `session fork failed at provider: ${source.id} (provider=${source.providerId}, ` +

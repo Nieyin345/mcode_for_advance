@@ -242,6 +242,27 @@ console.log("\n引擎报错时一条新行都不留(顺序不能反)");
   eq("源的消息也没被动", MessageRepo.listBySession("s_src").messages.length, msgsBefore);
 }
 
+
+console.log("\nARC-003: SDK 必须真的返回一份不同的引擎侧会话 ID，否则不建本地副本");
+for (const [label, value] of [
+  ["空字符串", ""],
+  ["空白 ID", "   "],
+  ["竟然返回源 ID", "cli-source"],
+  ["错误类型 null", null],
+] as const) {
+  const before = countSessions();
+  const probe = fakeClaude({
+    forkSession: async () => value as string,
+  });
+  let err = "";
+  try {
+    await forkSession("s_src", `无效 SDK ID: ${label}`);
+  } catch (e) { err = (e as Error).message; }
+  check(`★ ${label}：真实宿主明确拒绝 SDK 非法 ID`, !!err && /ID|会话|引擎/.test(err), err);
+  eq(`★ ${label}：库里没留下新副本`, countSessions(), before);
+  eq(`★ ${label}：不得对源 ID 执行补偿 deleteSession`, probe.deleteCalls.length, 0);
+}
+
 console.log("\n引擎不支持复制时,明确拒绝而不是建一个空壳");
 {
   const before = countSessions();
@@ -278,14 +299,32 @@ console.log("\nMC-027:消息复制中途失败时,会话行与消息**同一个�
       "BEGIN SELECT RAISE(ABORT, 'MC027 injected message failure'); END;",
   );
 
+  // Track the actual sql.js prepared message INSERT statement. On a
+  // halfway INSERT failure the transaction rolls back, but the statement
+  // must ALSO be freed or repeated fork attempts leak WASM/asm allocations.
+  let freedMessageStatement = false;
+  let preparedMessageStatement = false;
+  const originalPrepare = db.prepare;
+  (db as any).prepare = (sql: string, ...params: unknown[]) => {
+    const stmt = originalPrepare.apply(db, [sql, ...params] as Parameters<typeof db.prepare>);
+    if (sql.startsWith("INSERT INTO messages (id, session_id")) {
+      preparedMessageStatement = true;
+      const originalFree = stmt.free.bind(stmt);
+      stmt.free = () => { freedMessageStatement = true; return originalFree(); };
+    }
+    return stmt;
+  };
   let threw = "";
   try {
     await forkSession("s_src", "消息会写失败的一份");
   } catch (err) {
     threw = (err as Error).message;
   } finally {
+    (db as any).prepare = originalPrepare;
     db.run("DROP TRIGGER IF EXISTS mc027_boom");
   }
+  check("failed message insertion really prepared its statement", preparedMessageStatement);
+  check("failed message insertion frees the prepared statement", freedMessageStatement);
 
   check("错误冒到调用方(不是被吞掉)", threw.includes("MC027 injected message failure"), threw);
   eq("★ 消息复制失败后**没有**留下新会话行", countSessions(), sessionsBefore);
