@@ -114,9 +114,13 @@ export class SlidesBridge {
       if (result === null) {
         return { ok: false, reason: "slides 视图会话不存在（vendor 主进程没有这个 webContents 的打开会话）" };
       }
-      // Vendor slides UI consumes slides[] and index to update its canvas.
-      // Returning only slideCount made the IPC look successful while the UI
-      // never received the new RenderSlide[] (ARC-007 real preload ABI).
+      // A malformed vendor result is NOT a completed page insertion. The
+      // native canvas requires a full slide list and an in-range new index.
+      if (!Number.isSafeInteger(result.slideCount) || result.slideCount <= 0 ||
+          !Array.isArray(result.slides) || result.slides.length !== result.slideCount ||
+          !Number.isSafeInteger(result.index) || result.index < 0 || result.index >= result.slideCount) {
+        return { ok: false, reason: "加页失败：原厂未返回完整的幻灯片列表与页码" };
+      }
       return { ok: true, slideCount: result.slideCount, slides: result.slides, index: result.index };
     } catch (err) {
       return { ok: false, reason: `加页失败：${safeErrorMessage(err)}` };
@@ -135,6 +139,10 @@ export class SlidesBridge {
       const result = await this.executor.openDeck(webContentsId, docId, filePath, fitWidthPx);
       if (result === null) {
         return { ok: false, reason: "打开失败：vendor 解析器拒绝了该文件（坏档、旧版 .ppt 或不受支持的格式）" };
+      }
+      if (!result.openResult || typeof result.openResult !== "object" ||
+          !Array.isArray((result.openResult as { slides?: unknown }).slides)) {
+        return { ok: false, reason: "打开失败：原厂未返回可渲染的幻灯片树" };
       }
       return { ok: true, openResult: result.openResult };
     } catch (err) {
@@ -157,6 +165,9 @@ export class SlidesBridge {
       // conflict visible to the original Slides UI rather than presenting an
       // undefined byte count as if the save succeeded.
       if ("reason" in result) return { ok: false, reason: result.reason };
+      if (!Number.isSafeInteger(result.bytes) || result.bytes <= 0) {
+        return { ok: false, reason: "保存失败：原厂未返回有效的 PPTX 文件字节数" };
+      }
       return { ok: true, bytes: result.bytes };
     } catch (err) {
       return { ok: false, reason: `保存失败：${safeErrorMessage(err)}` };
@@ -179,8 +190,11 @@ export class SlidesBridge {
           reason: "改文字失败：元素不存在或 vendor 执行器拒绝了该操作（slideIndex/elementId 可能已失效）",
         };
       }
-      // Vendor editText() expects RenderSlide fields (especially nodes) at
-      // the top level, not a nested `slide` object or text-only receipt.
+      // A text-only acknowledgement does not update the real native canvas.
+      // Reject absent render nodes rather than reporting a phantom edit.
+      if (!result.renderedSlide || !Array.isArray(result.renderedSlide.nodes)) {
+        return { ok: false, reason: "改文字失败：原厂未返回可渲染的幻灯片节点" };
+      }
       return { ...result.renderedSlide, ok: true, text: result.text };
     } catch (err) {
       return { ok: false, reason: `改文字失败：${safeErrorMessage(err)}` };
@@ -198,6 +212,12 @@ class AttachableSlidesBridge extends SlidesBridge {
 
   /** 装配期调用一次；之后不可更换（换执行器会留下不一致的会话绑定）。 */
   attach(executor: SlidesEditExecutor): void {
+    // The bridge is the single authoritative vendor session binding. Swapping
+    // an executor after an open would strand its deck in the old instance.
+    // Repeated bootstrap with the SAME executor remains idempotent.
+    if (this.executor !== null && this.executor !== executor) {
+      throw new Error("slides 编辑通道已装配，禁止替换正在使用的 vendor 执行器");
+    }
     this.executor = executor;
   }
 }
