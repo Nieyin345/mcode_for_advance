@@ -85,9 +85,16 @@ export function makeEngineBridge(label: string, specs: () => McpToolSpec[], read
       let input = args;
       if (!readonly.has(name) && !opts.autoApprove && !(ctx.isToolAlwaysAllowed?.(name) ?? false)) {
         if (!ctx.requestApproval) return fail(`${label}写操作需要用户批准,但审批通道不可用;没有做任何修改。`);
-        const decision = await ctx.requestApproval({ requestId: randomUUID(), toolName: name, input: args });
-        if (!decision.allow) {
-          return fail(decision.reason ? `用户未批准这次${label}操作:${decision.reason}` : `用户未批准这次${label}操作。`);
+        let decision: Awaited<ReturnType<NonNullable<ProviderContext["requestApproval"]>>>;
+        try {
+          decision = await ctx.requestApproval({ requestId: randomUUID(), toolName: name, input: args });
+        } catch {
+          // An unavailable/failed approval transport is a refusal, never a
+          // rejected provider tool turn and certainly not implicit consent.
+          return fail(`${label}写操作审批失败或通道不可用;没有做任何修改。`);
+        }
+        if (!decision || decision.allow !== true) {
+          return fail(decision?.reason ? `用户未批准这次${label}操作:${decision.reason}` : `用户未批准这次${label}操作。`);
         }
         if (decision.updatedInput !== undefined) input = decision.updatedInput;
       }
