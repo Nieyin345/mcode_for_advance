@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, truncateSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, truncateSync, rmSync, mkdirSync, copyFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
-import { convertFile, resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
+import { convertFile, docsRead, sheetRead, resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
+import { configureDocumentRepoRoot } from "@main/ipc/document.js";
 import { __registeredDisposerCount, __registeredShutdownHookCount } from "@main/mcp/agentSessionCleanup.js";
 import { ResponseReadGate, classifyContentType, readResponseWithinBudget, checkZipInflation, clampCellBudget, MAX_CONCURRENT_URL_READS, DOCUMENT_READ_BUDGET, type ReadBudget } from "@main/lib/readBudget.js";
 import { toolTextOf, type ToolResult } from "@main/mcp/sdk.js";
@@ -16,16 +17,86 @@ async function test(name:string,fn:()=>unknown){try{await fn();passed++;console.
 const specs=agentMcpTools({cwdFor:()=>root});const spec=specs.find(x=>x.name==="agent_read_document")!;
 const read=async(path:string,args:Record<string,unknown>={})=>spec.handler(z.object(spec.inputSchema).parse({path,reader:"native",...args}),{sessionId:"document-fixture"});
 const text=toolTextOf;
-function pdf(width=595,height=842,file="paper.pdf"){
- const objects:string[]=["<< /Type /Catalog /Pages 2 0 R >>","<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>"];
- for(let n=1;n<=3;n++){const s=n===2?`BT /F1 12 Tf 50 750 Td (PAGE_2_LEFT) Tj ET\nBT /F1 12 Tf 340 750 Td (PAGE_2_RIGHT) Tj ET`:`BT /F1 12 Tf 50 750 Td (PAGE_${n} ${"Paper metadata ".repeat(200)}) Tj ET`;objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 9 0 R >> >> /Contents ${2+n*2} 0 R >>`,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);}
+function pdf(width=595,height=842,file="paper.pdf",pages=3){
+ const kids=Array.from({length:pages},(_,i)=>`${3+2*i} 0 R`).join(" ");
+ const fontId=3+2*pages;
+ const objects:string[]=["<< /Type /Catalog /Pages 2 0 R >>",`<< /Type /Pages /Kids [${kids}] /Count ${pages} >>`];
+ for(let n=1;n<=pages;n++){const s=n===2?`BT /F1 12 Tf 50 750 Td (PAGE_2_LEFT) Tj ET\nBT /F1 12 Tf 340 750 Td (PAGE_2_RIGHT) Tj ET`:`BT /F1 12 Tf 50 750 Td (PAGE_${n} ${"Paper metadata ".repeat(200)}) Tj ET`;objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${2+n*2} 0 R >>`,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);}
  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");let body="%PDF-1.4\n";const offsets=[0];for(const [i,o]of objects.entries()){offsets.push(Buffer.byteLength(body));body+=`${i+1} 0 obj\n${o}\nendobj\n`;}
  const x=Buffer.byteLength(body);body+=`xref\n0 ${objects.length+1}\n0000000000 65535 f \n`+offsets.slice(1).map(o=>`${String(o).padStart(10,"0")} 00000 n \n`).join("")+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;writeFileSync(join(root,file),body);
 }
 try {
  let py:string|undefined;for(const exe of process.platform==="win32"?["python","py","python3"]:["python3","python"]){const r=spawnSync(exe,["-X","utf8",resolve("scripts/document-read-smoke/fixtures.py"),root],{encoding:"utf8",timeout:20000});if(r.status===0){py=exe;break;}}
- assert.ok(py,"This integration suite requires the existing Python + python-pptx + openpyxl toolchain; nothing is installed automatically");pdf();pdf(2000,500,"wide-paper.pdf");
+ assert.ok(py,"This integration suite requires the existing Python + python-pptx + openpyxl toolchain; nothing is installed automatically");pdf();pdf(2000,500,"wide-paper.pdf");pdf(595,842,"many-pages.pdf",220);
+ const emptyDeck=spawnSync(py,["-X","utf8","-c","from pptx import Presentation;import sys;Presentation().save(sys.argv[1])",join(root,"empty-slides.pptx")],{encoding:"utf8",timeout:20000});
+ assert.equal(emptyDeck.status,0,emptyDeck.stderr);
  await test("PPTX reader reads actual slides instead of slicing an unsupported collection",async()=>{const r=await read("slides.pptx",{max_slides:1});assert.ok(!r.isError,text(r));assert.ok(text(r).includes("SLIDE_1"));assert.ok(!text(r).includes("SLIDE_2"));});
+ await test("★ GenOffice PPTX first slide reuses native --slide selector",async()=>{
+   const r=await read("slides.pptx",{reader:"genoffice",max_slides:1});
+   assert.ok(!r.isError,text(r).slice(0,260));
+   const body=text(r);
+   assert.match(body,/SLIDE_1/);
+   assert.ok(!body.includes("SLIDE_2"),"GenOffice vendor must not ignore max_slides=1");
+   assert.match(body,/next_slide.*2/);
+ });
+ await test("★ GenOffice PPTX resumes at slide 2 using original vendor --slide",async()=>{
+   const r=await read("slides.pptx",{reader:"genoffice",slide_start:2,max_slides:1});
+   assert.ok(!r.isError,text(r));const s=text(r);
+   assert.match(s,/SLIDE_2/);assert.ok(!s.includes("SLIDE_1"),"slide_start ignored");
+   assert.ok(!/next_slide.*3/.test(s),"last page must not offer an out-of-range continuation");
+ });
+ await test("★ GenOffice PPTX native two-slide window does not switch to Python",async()=>{
+   const r=await read("slides.pptx",{reader:"genoffice",slide_start:1,max_slides:2});
+   assert.ok(!r.isError,text(r));const s=text(r);
+   assert.match(s,/GenOffice\/Office/);assert.match(s,/SLIDE_1/);assert.match(s,/SLIDE_2/);
+   assert.ok(!s.includes("SLIDE_3"),"unexpected third slide");
+ });
+ await test("★ GenOffice PPTX default is bounded and exposes continuation",async()=>{
+   const r=await read("slides.pptx",{reader:"genoffice"});
+   assert.ok(!r.isError,text(r));const s=text(r);
+   assert.match(s,/SLIDE_1/);assert.ok(!s.includes("SLIDE_2"),"default vendor full deck is unbounded");
+   assert.match(s,/next_slide.*2/);
+ });
+ await test("★ Native PPTX slide_start=2 shares the same continuation contract",async()=>{
+   const r=await read("slides.pptx",{reader:"native",slide_start:2,max_slides:1});
+   assert.ok(!r.isError,text(r));const s=text(r);
+   assert.match(s,/SLIDE_2/);assert.ok(!s.includes("SLIDE_1"),"native slide_start ignored");
+   assert.match(s,/第 2|Slide 2/);
+ });
+ await test("★ PPTX invalid start returns error, not false empty success",async()=>{
+   for(const reader of ["native","genoffice"]){
+     const r=await read("slides.pptx",{reader,slide_start:999,max_slides:1});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/999|范围|超出/);
+   }
+ });
+ await test("★ GenOffice slide window hard cap rejects 9 while auto preserves native fallback",async()=>{
+   const exact=await read("slides.pptx",{reader:"genoffice",max_slides:9});
+   assert.equal(exact.isError,true,text(exact));assert.match(text(exact),/最多8张/);
+   const automatic=await read("slides.pptx",{reader:"auto",max_slides:9});
+   assert.ok(!automatic.isError,text(automatic));
+   assert.match(text(automatic),/SLIDE_1/);assert.match(text(automatic),/SLIDE_2/);
+   assert.ok(!text(automatic).includes("GenOffice/Office"),"unsupported vendor window must use declared auto compatibility");
+ });
+ await test("★ Empty PPTX deck reports zero slides, no false missing-page failure",async()=>{
+   for (const reader of ["genoffice","native"] as const) {
+     const r=await read("empty-slides.pptx",{reader});
+     assert.ok(!r.isError,text(r));
+     assert.match(text(r),/0 (slides|页)|slides.*0/);
+     assert.ok(!/next_slide/.test(text(r)),"empty deck cannot have continuation");
+   }
+ });
+ await test("★ GenOffice multi-slide rejects source changed between vendor calls",async()=>{
+   const mutable=join(root,"mutable-slides.pptx");copyFileSync(join(root,"slides.pptx"),mutable);
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
+   writeFileSync(fakeCli,`const fs=require("node:fs");\nconst args=process.argv.slice(2);\nconst file=args[2];\nconst idx=Number(args[args.indexOf("--slide")+1]);\nconsole.log(JSON.stringify({status:"ok",summary:"mocked vendor",detail:{slides:2,pages:[{index:idx,text:"S"+idx}]}}));\nif(idx===0) fs.appendFileSync(file,"MUTATED_AFTER_SLIDE_0");\n`);
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("mutable-slides.pptx",{reader:"genoffice",slide_start:1,max_slides:2});
+     assert.equal(r.isError,true,text(r));
+     assert.match(text(r),/修改|变化|版本|一致性/);
+   } finally { configureDocumentRepoRoot(null); }
+ });
  await test("PPTX reports page-limit truncation explicitly",async()=>{const r=await read("slides.pptx",{max_slides:1});assert.ok(!r.isError,text(r));assert.match(text(r),/截断|未读取/);});
  await test("PDF reader extracts real fixture text",async()=>{const r=await read("paper.pdf",{max_pages:1});assert.ok(!r.isError,text(r));assert.ok(text(r).includes("PAGE_1"));assert.ok(!text(r).includes("PAGE_2"));});
  // MC-065: the GenOffice backend must not parse a gigantic PDF just because
@@ -40,6 +111,12 @@ try {
  await test("★ GenOffice reader uses vendor PDFium instead of own pdfjs parser",async()=>{const r=await read("paper.pdf",{reader:"genoffice",page_start:2,max_pages:1});assert.ok(!r.isError,text(r));assert.match(text(r),/GenOffice\/PDFium/);assert.match(text(r),/PAGE_2/);assert.ok(!text(r).includes("PAGE_1"));});
  await test("★ explicit GenOffice mode must not silently use native layout parser",async()=>{const r=await read("paper.pdf",{reader:"genoffice",pdf_mode:"layout"});assert.equal(r.isError,true,text(r));assert.match(text(r),/不支持|请用/);});
  await test("★ GenOffice max_pages larger than short PDF is clipped to real page count, not rejected",async()=>{const r=await read("paper.pdf",{reader:"genoffice",max_pages:20});assert.ok(!r.isError,text(r));assert.match(text(r),/GenOffice\/PDFium/);assert.match(text(r),/PAGE_3/);});
+ await test("★ GenOffice PDFium 220-page output is budgeted before CLI JSON",async()=>{
+   const r=await read("many-pages.pdf",{reader:"genoffice",max_pages:220,max_chars:300000});
+   assert.ok(!r.isError,text(r).slice(0,320));
+   assert.match(text(r),/PAGE_220/,"requested final page must survive bounded preview");
+   assert.match(text(r),/GenOffice\/PDFium/);
+ });
  await test("PDF reports page-limit truncation instead of presenting total pages as read",async()=>{const r=await read("paper.pdf",{max_pages:1});assert.ok(!r.isError,text(r));assert.match(text(r),/截断|未读取/);});
  await test("★ PDF layout exposes real page dimensions and positioned text instead of a flattened paragraph",async()=>{
    const r=await read("paper.pdf",{pdf_mode:"layout",page_start:2,max_pages:1});
@@ -134,12 +211,102 @@ try {
    assert.ok(!automatic.isError,text(automatic));
    assert.match(text(automatic),/GenOffice\/Office/,"unspecified reader should prefer the existing GenOffice engine");
  });
+ await test("★ GenOffice DOCX late block uses vendor range BEFORE large stdout",async()=>{
+   const cli=resolveGenofficeCliPath(resolve("../.."));assert.ok(cli,"GenOffice CLI snapshot missing");
+   const ports={cliPath:cli,withinWorkspace:(p:string)=>p.startsWith(root)};
+   const hugeMarkdown=Array.from({length:250},(_,i)=>`LONG_BLOCK_${i+1} ${"X".repeat(3300)}`).join("\n\n");
+   writeFileSync(join(root,"long-structure.md"),hugeMarkdown);
+   const converted=await convertFile(ports,join(root,"long-structure.md"),"docx",join(root,"long-structure.docx"));
+   assert.ok(converted.ok,JSON.stringify(converted));
+   const page=await read("long-structure.docx",{reader:"genoffice",docx_mode:"structure",block_start:220,max_blocks:2});
+   assert.ok(!page.isError,text(page).slice(0,240));
+   const body=text(page);
+   assert.match(body,/LONG_BLOCK_220/);
+   assert.match(body,/LONG_BLOCK_221/);
+   assert.ok(!body.includes("LONG_BLOCK_219")&&!body.includes("LONG_BLOCK_222"),"GenOffice range ignored");
+   assert.match(body,/next_block_start.*222/);
+ });
+ await test("★ GenOffice large DOCX default read reports native continuation",async()=>{
+   const r=await read("long-structure.docx",{reader:"genoffice"});
+   assert.ok(!r.isError,text(r).slice(0,300));
+   const body=text(r);
+   assert.match(body,/LONG_BLOCK_1\b/);
+   assert.ok(!body.includes("LONG_BLOCK_220"),"Default read must not claim to load every block");
+   assert.match(body,/next_block_start.*31/);
+   assert.match(body,/truncated.*true/);
+ });
+ await test("★ oversized GenOffice CLI JSON fails with explicit output budget, not malformed JSON",async()=>{
+   const cli=resolveGenofficeCliPath(resolve("../.."));assert.ok(cli);
+   const ports={cliPath:cli,withinWorkspace:(p:string)=>p.startsWith(root)};
+   const result=await docsRead(ports,join(root,"long-structure.docx"),{full:true});
+   assert.equal(result.ok,false,"oversized full document must not be falsely reported as complete");
+   if(!result.ok)assert.match(result.reason,/输出超过.*字节|输出.*预算/);
+ });
+ await test("★ GenOffice DOCX late out-of-range block fails instead of wrapping around",async()=>{
+   const r=await read("long-structure.docx",{reader:"genoffice",docx_mode:"structure",block_start:999,max_blocks:1});
+   assert.equal(r.isError,true,text(r));
+   assert.match(text(r),/block_start=999.*超过/);
+ });
  writeFileSync(join(root,"styled.docx"),Buffer.from("UEsDBBQAAAAIAImmUl2/054C3wAAAO8BAAARAAAAd29yZC9kb2N1bWVudC54bWyVkduKwjAQhl9F+gBOV9CLUAtFg0dsqWvFK4ltPEAOJclu1rffGrWCB8Sb+Rnm/+ZnmMCiQuY/nArT+ONMaGS73t6YEgHofE850U1ZUlHNtlJxYqpW7cBKVZRK5lTrg9hxBi3f7wAnB+GFgUUbWRxPWrqSKCdzc2S0YdEvYV1vSElRkV8ehAHUHldMmKTxGPe+13GG02yElyeHcT51dte7L8Ac9+JZf51EaTRIo2T4FDAb5uTM5Pc7Jnj1BIOr9RHIoukCv0agjnoRyKTWnyX6Tb/9NhAul8L1DXB7cfgPUEsBAhQDFAAAAAgAiaZSXb/TngLfAAAA7wEAABEAAAAAAAAAAAAAAIABAAAAAHdvcmQvZG9jdW1lbnQueG1sUEsFBgAAAAABAAEAPwAAAA4BAAAAAA==","base64"));
  await test("★ DOCX structure must preserve style and table coordinates",async()=>{const r=await read("styled.docx",{docx_mode:"structure",max_blocks:3});assert.ok(!r.isError,text(r));assert.match(text(r),/Heading1/);assert.match(text(r),/TABLE 2×2/);assert.match(text(r),/\[c1\]loss/);assert.match(text(r),/\[c2\]0\.05/);});
  await test("★ DOCX structure supports partial block reads with continuation",async()=>{const r=await read("styled.docx",{docx_mode:"structure",block_start:2,max_blocks:1});assert.ok(!r.isError,text(r));assert.match(text(r),/SECOND_PARAGRAPH/);assert.ok(!text(r).includes("PROJECT_OVERVIEW")&&!text(r).includes("loss"));assert.match(text(r),/next_block_start=3/);});
  await test("★ DOCX structure out-of-range is error instead of empty success",async()=>{const r=await read("styled.docx",{docx_mode:"structure",block_start:999});assert.equal(r.isError,true,text(r));assert.match(text(r),/超过/);});
  await test("★ DOCX structure cannot bypass existing ZIP decompression guard",async()=>{const r=await read("bomb.docx",{docx_mode:"structure"});assert.equal(r.isError,true,text(r));assert.match(text(r),/解压后体积|压缩膨胀/);});
  await test("★ DOCX default text mode is unchanged after structure addition",async()=>{const r=await read("styled.docx");assert.ok(!r.isError,text(r));assert.match(text(r),/PROJECT_OVERVIEW/);assert.match(text(r),/0\.05/);});
+ await test("★ GenOffice sheet adapter forwards native worksheet/range/max-rows flags",async()=>{
+   const fakeCli=join(root,"probe-sheet-cli.cjs");
+   writeFileSync(fakeCli,'process.stdout.write(JSON.stringify({status:"ok",summary:"fake",detail:{argv:process.argv.slice(2)}})+"\\n")');
+   const ports={cliPath:fakeCli,withinWorkspace:(p:string)=>p.startsWith(root)};
+   const result=await sheetRead(ports,join(root,"table.xlsx"),undefined,{sheet:"Research",range:"A2:B2",maxRows:2});
+   assert.ok(result.ok,JSON.stringify(result));
+   if(result.ok){
+     const argv=(result.envelope.detail as {argv:string[]}).argv;
+     assert.deepEqual(argv.slice(0,3),["sheet","read",join(root,"table.xlsx")]);
+     assert.ok(argv.includes("--json"));
+     assert.deepEqual(argv.slice(argv.indexOf("--sheet"),argv.indexOf("--sheet")+2),["--sheet","Research"]);
+     assert.deepEqual(argv.slice(argv.indexOf("--range"),argv.indexOf("--range")+2),["--range","A2:B2"]);
+     assert.deepEqual(argv.slice(argv.indexOf("--max-rows"),argv.indexOf("--max-rows")+2),["--max-rows","2"]);
+   }
+ });
+ await test("★ explicitly unsupported GenOffice max_cols fails rather than ignoring it",async()=>{
+   const r=await read("table.xlsx",{reader:"genoffice",max_cols:1});
+   assert.equal(r.isError,true,text(r));
+   assert.match(text(r),/筛选参数|无法|不支持/);
+ });
+ const fakeSheetCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+ const sheetSpawnMarker=join(root,"sheet-cli-spawned.txt");
+ mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
+ writeFileSync(fakeSheetCli,`const fs=require("node:fs");\nfs.writeFileSync(${JSON.stringify(join(root,"sheet-cli-spawned.txt"))},"called");\nconst args=process.argv.slice(2);const idx=args.indexOf("--range");const range=idx<0?"none":args[idx+1];\nconsole.log(JSON.stringify({status:"ok",summary:"MOCK_SHEET "+range,detail:{sheet:"Research",rows:[["SAFE"]],range}}));\n`);
+ await test("★ GenOffice huge XLSX range is refused before any vendor process even with max_rows=1",async()=>{
+   rmSync(sheetSpawnMarker,{force:true});configureDocumentRepoRoot(root);
+   try {
+     const r=await read("table.xlsx",{reader:"genoffice",range:"A1:AZ3000",max_rows:1});
+     assert.equal(r.isError,true,text(r));
+     assert.match(text(r),/单元格预算|超过/);
+     assert.match(text(r),/100000/);
+     assert.equal(existsSync(sheetSpawnMarker),false,"unbounded range reached GenOffice before budget check");
+   } finally { configureDocumentRepoRoot(null); }
+ });
+ await test("★ GenOffice range guard also refuses invalid A1 coordinates and huge rectangles",async()=>{
+   configureDocumentRepoRoot(root);
+   try {
+     for(const range of ["A1:XFD1048576","XFE1","A0:B10","A1:AZ3000"]){
+       const r=await read("table.xlsx",{reader:"genoffice",range,max_rows:1});
+       assert.equal(r.isError,true,`${range}: ${text(r)}`);
+     }
+     assert.equal(existsSync(sheetSpawnMarker),false,"invalid range launched the CLI");
+   } finally { configureDocumentRepoRoot(null); }
+ });
+ await test("★ GenOffice safe XLSX area still reaches the original vendor selector",async()=>{
+   rmSync(sheetSpawnMarker,{force:true});configureDocumentRepoRoot(root);
+   try {
+     const r=await read("table.xlsx",{reader:"genoffice",range:"A1:B3",max_rows:2});
+     assert.ok(!r.isError,text(r));
+     assert.match(text(r),/GenOffice\/Office/);
+     assert.match(text(r),/MOCK_SHEET A1:B3/);
+     assert.equal(existsSync(sheetSpawnMarker),true,"normal range must use GenOffice");
+   } finally { configureDocumentRepoRoot(null); }
+ });
  await test("Excel selection returns actual Unicode cells and values",async()=>{const r=await read("table.xlsx",{sheet:"Research",range:"A2:B2"});assert.ok(!r.isError,text(r));assert.match(text(r),/研究论文/);assert.match(text(r),/2026/);});
  // 【MC-065】显式 range 必须**在迭代之前**夹紧,并显式回报 range 被截断。
  // 修前 `ws[rg]` 会先按声明的 dimension 构造整个矩形(与 max_rows/max_cols 无关),

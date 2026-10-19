@@ -798,11 +798,35 @@ async function docxStructureText(abs: string, start: number, maxBlocks: number, 
  * fail-closed path checks. The historical readers remain an explicit compat
  * path for systems without the vendor runtime or unsupported legacy options.
  */
+/**
+ * Bound the input area before passing --range to GenOffice. Its native
+ * readSheet currently materializes the entire requested rectangle *before*
+ * --max-rows slices rows, so max_rows=1 alone does not bound allocations.
+ * This is only an A1-range budget check; GenOffice stays the sole parser.
+ */
+function requireBoundedSheetRange(range: string | undefined): void {
+  if (range === undefined) return;
+  const match = /^([A-Za-z]{1,3})([1-9]\d{0,6})(?::([A-Za-z]{1,3})([1-9]\d{0,6}))?$/.exec(range.trim());
+  if (!match) throw new Error(`Excel range 格式不支持:${range}；请指定 A1:D20 形式的单元格区域`);
+  const column = (label: string): number => [...label.toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+  const a = column(match[1]!);
+  const b = column(match[3] ?? match[1]!);
+  const firstRow = Number(match[2]);
+  const lastRow = Number(match[4] ?? match[2]);
+  if (a < 1 || b > 16_384 || a > 16_384 || b < 1 || firstRow > 1_048_576 || lastRow > 1_048_576) {
+    throw new Error(`Excel range 超出工作表坐标上限:${range}`);
+  }
+  const cells = (Math.abs(lastRow - firstRow) + 1) * (Math.abs(b - a) + 1);
+  if (cells > DOCUMENT_READ_BUDGET.maxCells!) {
+    throw new Error(`Excel range=${range} 请求 ${cells} 格超过单元格预算 ${DOCUMENT_READ_BUDGET.maxCells} 格；GenOffice 在 --max-rows 截断前会先分配整个区域，请缩小 range`);
+  }
+}
+
 async function readViaGenoffice(input: {
   abs: string; reader?: "auto" | "native" | "genoffice";
   pdfMode?: "text" | "layout"; pageStart?: number; maxPages?: number;
   docxMode?: "text" | "structure"; blockStart?: number; maxBlocks?: number;
-  sheet?: string; range?: string; maxSlides?: number;
+  sheet?: string; range?: string; slideStart?: number; maxSlides?: number;
   maxRows?: number; maxCols?: number; maxChars?: number;
 }, maxChars: number): Promise<string | null> {
   const ext = path.extname(input.abs).toLowerCase();
@@ -814,15 +838,18 @@ async function readViaGenoffice(input: {
   // GenOffice sheet/slides CLI read has different filtering contracts; do not
   // silently ignore legacy options by passing them to an unrelated command.
   const legacyOptions = (([".xlsx", ".xlsm", ".xltx"].includes(ext))
-    && (input.sheet !== undefined || input.range !== undefined
-        || input.maxRows !== undefined || input.maxCols !== undefined))
-    || (([".pptx", ".potx"].includes(ext)) && input.maxSlides !== undefined);
+    && input.maxCols !== undefined)
+    || (([".pptx", ".potx"].includes(ext)) && (input.maxSlides ?? 1) > 8);
   if (legacyOptions) {
+    if (exact && [".pptx", ".potx"].includes(ext) && (input.maxSlides ?? 1) > 8) {
+      throw new Error("GenOffice 原生幻灯片逐页读取最多8张/次；请调小 max_slides，或明确使用 reader=native");
+    }
     if (exact) throw new Error("该筛选参数暂不能安全映射到 GenOffice read；请使用 reader=native，或直接使用 GenOffice 的 sheet_read/slides_read 工具");
     return null;
   }
   const supported = [".docx", ".dotx", ".pptx", ".potx", ".xlsx", ".xlsm", ".xltx", ".pdf"].includes(ext);
   if (!supported) return null;
+  if ([".xlsx", ".xlsm", ".xltx"].includes(ext)) requireBoundedSheetRange(input.range);
   // documentRepoRoot is also used by document.read / MCP installation. Do not
   // invent a different CLI bundle location for the public tool.
   const cliPath = await findBundledGenofficeCli();
@@ -838,17 +865,22 @@ async function readViaGenoffice(input: {
   if (ext === ".pdf") {
     const start = input.pageStart ?? 1;
     const count = input.maxPages;
+    // GenOffice --max-chars is PER PAGE. 500 pages × 4000 chars would
+    // overrun our 512-KiB JSON stdout envelope before we can paginate the
+    // model response. Bound aggregate previews BEFORE invoking the vendor.
+    const previewCharsPerPage = (pages: number): number =>
+      Math.max(32, Math.min(4000, Math.floor(160_000 / Math.max(1, pages))));
     if (count === undefined && input.pageStart === undefined) {
       // GenOffice itself defaults to a bounded first-page window and reports
       // the continuation cursor.
-      result = await pdfRead(ports, input.abs, { maxChars: 4000 });
+      result = await pdfRead(ports, input.abs, { maxChars: previewCharsPerPage(20) });
     } else if (count === 1) {
       result = await pdfRead(ports, input.abs, { page: start, maxChars: 4000 });
     } else {
       // Vendor --range rejects an end that exceeds the real page count.
       // Probe its own bounded first window for the authoritative count, then
       // clamp the requested range. No duplicate PDF parser or metadata probe.
-      const probe = await pdfRead(ports, input.abs, { maxChars: 4000 });
+      const probe = await pdfRead(ports, input.abs, { maxChars: 1 });
       if (!probe.ok) {
         result = probe;
       } else {
@@ -860,36 +892,136 @@ async function readViaGenoffice(input: {
           throw new Error(`GenOffice PDF 页码 ${start} 超出范围 1–${total}`);
         }
         const end = Math.min(total, start + (count ?? 20) - 1);
+        const perPage = previewCharsPerPage(end - start + 1);
         result = await pdfRead(ports, input.abs,
-          start === end ? { page: start, maxChars: 4000 }
-          : { range: `${start}-${end}`, maxChars: 4000 });
+          start === end ? { page: start, maxChars: perPage }
+          : { range: `${start}-${end}`, maxChars: perPage });
       }
     }
   } else if (ext === ".docx" || ext === ".dotx") {
-    result = await docsRead(ports, input.abs, { full: true });
+    // The CLI stdout is capped to 512 KiB. Ask GenOffice itself for the
+    // requested 0-based block window BEFORE serializing output; slicing a
+    // full-document JSON afterwards fails on otherwise valid large DOCX.
+    const from = input.docxMode === "structure" ? (input.blockStart ?? 1) - 1 : 0;
+    const limit = input.docxMode === "structure" ? (input.maxBlocks ?? 30) : 30;
+    const probe = await docsRead(ports, input.abs, { range: "0", maxChars: 100 });
+    if (!probe.ok) {
+      // A truly empty document has no valid --range 0; read its small empty
+      // envelope without a range instead of changing its success semantics.
+      if (/0--1/.test(probe.reason)) {
+        if (from > 0) throw new Error(`block_start=${from + 1} 超过 GenOffice 结构块数量 0`);
+        result = await docsRead(ports, input.abs, { maxChars: 100 });
+      } else {
+        result = probe;
+      }
+    } else {
+      const count = (probe.envelope.detail as { blocks?: unknown } | null)?.blocks;
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1) {
+        throw new Error("GenOffice docs_read 未返回可信结构块总数，拒绝猜测页段");
+      }
+      if (from >= count) throw new Error(`block_start=${from + 1} 超过 GenOffice 结构块数量 ${count}`);
+      const end = Math.min(count - 1, from + limit - 1);
+      // Use the CLI's existing per-block preview control; never request
+      // --full for an unbounded document and then truncate in our process.
+      const perBlockChars = Math.max(100, Math.min(4000, Math.floor(maxChars / Math.max(1, limit * 2))));
+      result = await docsRead(ports, input.abs, { range: `${from}-${end}`, maxChars: perBlockChars });
+    }
   } else if (ext === ".pptx" || ext === ".potx") {
-    result = await slidesRead(ports, input.abs);
+    // GenOffice supports --slide (0-based), not a multi-slide range. Never
+    // serialize an entire deck to the bounded 512KiB CLI stdout merely to
+    // slice it afterwards; request each selected slide from the original CLI.
+    // Eight is a hard bound on subprocess count per public tool call.
+    const from = (input.slideStart ?? 1) - 1;
+    const limit = input.maxSlides ?? 1;
+    const perSlide = Math.max(100, Math.min(1000, Math.floor(maxChars / Math.max(1, limit * 3))));
+    // Eight CLI calls must share ONE 60s budget and one file identity. Without
+    // either, a caller can wait 8×60s or mix slides from different revisions
+    // of a deck that still has the same slide count.
+    const initial = await fs.stat(input.abs, { bigint: true });
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), DOCUMENT_READ_BUDGET.maxTimeMs);
+    const readCheckedSlide = async (slide: number | undefined, preview: number): Promise<GenofficeResult> => {
+      if (abort.signal.aborted) throw new Error(`GenOffice 幻灯片窗口超过 ${DOCUMENT_READ_BUDGET.maxTimeMs}ms 总预算`);
+      const part = await slidesRead(ports, input.abs, abort.signal, {
+        ...(slide === undefined ? {} : { slide }), maxChars: preview,
+      });
+      if (abort.signal.aborted) throw new Error(`GenOffice 幻灯片窗口超过 ${DOCUMENT_READ_BUDGET.maxTimeMs}ms 总预算`);
+      const current = await fs.stat(input.abs, { bigint: true });
+      if (initial.size !== current.size || initial.mtimeNs !== current.mtimeNs
+          || initial.ctimeNs !== current.ctimeNs || initial.ino !== current.ino || initial.dev !== current.dev) {
+        throw new Error("GenOffice PPTX 文件在分页面读取过程中发生修改；拒绝将不同版本幻灯片拼接，请重新读取");
+      }
+      return part;
+    };
+    try {
+    const first = await readCheckedSlide(from, perSlide);
+    if (!first.ok) {
+      // An empty valid deck has no slide 0: check GenOffice's own unfiltered
+      // metadata only for that specific case, never reinterpret a corrupt PPTX.
+      if (from === 0 && /slide out of range/i.test(first.reason)) {
+        const empty = await readCheckedSlide(undefined, 100);
+        const d = empty.ok ? empty.envelope.detail as { slides?: unknown; pages?: unknown } | null : null;
+        result = empty.ok && d?.slides === 0 && Array.isArray(d.pages) && d.pages.length === 0
+          ? empty : { ...first, reason: `slide_start=1: ${first.reason}` };
+      } else {
+        result = { ...first, reason: `slide_start=${from + 1}: ${first.reason}` };
+      }
+    } else {
+      const firstDetail = first.envelope.detail as { slides?: unknown; pages?: unknown } | null;
+      const total = firstDetail?.slides;
+      const firstPages = firstDetail?.pages;
+      if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 1 || !Array.isArray(firstPages)
+          || firstPages.length !== 1 || (firstPages[0] as { index?: unknown })?.index !== from) {
+        throw new Error("GenOffice slides_read 未返回与请求页码一致的结构，拒绝猜测幻灯片");
+      }
+      const pages: unknown[] = [...firstPages];
+      const end = Math.min(total, from + limit);
+      for (let index = from + 1; index < end; index++) {
+        const next = await readCheckedSlide(index, perSlide);
+        if (!next.ok) throw new Error(`GenOffice 第 ${index + 1} 张幻灯片读取失败：${next.reason}`);
+        const info = next.envelope.detail as { slides?: unknown; pages?: unknown } | null;
+        if (info?.slides !== total || !Array.isArray(info.pages) || info.pages.length !== 1
+            || (info.pages[0] as { index?: unknown })?.index !== index) {
+          throw new Error("GenOffice 演示稿在分页过程中发生变化，拒绝拼接不同版本的幻灯片");
+        }
+        pages.push(info.pages[0]);
+      }
+      const continuation = end < total ? { next_slide: end + 1, truncated: true } : {};
+      result = { ok: true, envelope: {
+        ...first.envelope,
+        detail: { ...firstDetail, pages, read_slides: [from + 1, end],
+          ...(from > 0 ? { prior_slides_omitted: true } : {}), ...continuation,
+          note: "按原厂 GenOffice slides --slide 原生读取；slide_start/next_slide 为 1-based，单次最多8页；每页正文可受预览字符限制",
+        },
+      } };
+    }
+    } finally {
+      clearTimeout(timeout);
+    }
   } else {
-    result = await sheetRead(ports, input.abs);
+    // Delegate common sheet selection to GenOffice itself; 30-row default
+    // keeps the public preview well below CLI stdout limits. Explicit
+    // max_cols cannot be translated without changing native semantics.
+    result = await sheetRead(ports, input.abs, undefined, {
+      sheet: input.sheet, range: input.range, maxRows: input.maxRows ?? 30,
+    });
   }
   if (!result.ok) {
     if (result.kind === "unavailable" && !exact) return null;
     throw new Error(`GenOffice ${result.kind}: ${result.reason}`);
   }
   let detail = result.envelope.detail;
-  if ((ext === ".docx" || ext === ".dotx") && input.docxMode === "structure"
-      && detail && typeof detail === "object") {
+  if ((ext === ".docx" || ext === ".dotx") && detail && typeof detail === "object") {
     const d = detail as { blocks?: number; items?: unknown[] };
-    if (Array.isArray(d.items)) {
-      const from = (input.blockStart ?? 1) - 1;
-      if (from >= (d.blocks ?? d.items.length)) throw new Error(`block_start=${from + 1} 超过 GenOffice 结构块数量 ${d.blocks ?? d.items.length}`);
-      const limit = input.maxBlocks ?? 30;
+    if (Array.isArray(d.items) && Number.isSafeInteger(d.blocks) && (d.blocks ?? -1) >= 0) {
+      const from = input.docxMode === "structure" ? (input.blockStart ?? 1) - 1 : 0;
+      const last = from + d.items.length - 1;
       detail = {
         ...d,
-        items: d.items.slice(from, from + limit),
-        requested_blocks: [from, from + Math.min(limit, d.items.length - from) - 1],
-        ...(from + limit < d.items.length ? { next_block_start: from + limit + 1, truncated: true } : {}),
-        units: "GenOffice 原生索引从 0 开始；public block_start 从 1 开始",
+        ...(d.items.length > 0 ? { requested_blocks: [from, last] } : {}),
+        ...(last + 1 < d.blocks! ? { next_block_start: last + 2, truncated: true } : {}),
+        ...(from > 0 ? { prior_blocks_omitted: true } : {}),
+        units: "GenOffice 原生索引从 0 开始；public block_start 从 1 开始；每块文本可能按 max_chars 限额预览",
       };
     }
   }
@@ -912,6 +1044,7 @@ export async function readRichDocumentRaw(input: {
   docxMode?: "text" | "structure";
   blockStart?: number;
   maxBlocks?: number;
+  slideStart?: number;
   maxSlides?: number;
   maxRows?: number;
   maxCols?: number;
@@ -1041,22 +1174,33 @@ export async function readRichDocumentRaw(input: {
       " from pptx import Presentation",
       "except Exception as e:",
       " print(json.dumps({'error':'缺少 python-pptx: '+str(e)},ensure_ascii=False));sys.exit(2)",
-      "prs=Presentation(sys.argv[1]);limit=int(sys.argv[2]);slides=[]",
+      "prs=Presentation(sys.argv[1]);limit=int(sys.argv[2]);start=int(sys.argv[3]);slides=[]",
+      "if len(prs.slides)==0 and start==1:",
+      " print(json.dumps({'count':0,'slides':[]},ensure_ascii=False));sys.exit(0)",
+      "if start > len(prs.slides):",
+      " print(json.dumps({'error':f'slide_start={start} 超出 PPTX 幻灯片范围 (总数 {len(prs.slides)})'},ensure_ascii=False));sys.exit(0)",
       "for i,slide in enumerate(prs.slides,1):",
-      " if i>limit: break",
+      " if i<start: continue",
+      " if i>=start+limit: break",
       " parts=[]",
       " for sh in slide.shapes:",
       "  if hasattr(sh,'text') and sh.text.strip(): parts.append(sh.text.strip())",
       " slides.append({'n':i,'text':'\\n'.join(parts)})",
       "print(json.dumps({'count':len(prs.slides),'slides':slides},ensure_ascii=False))",
     ].join("\n");
-    const out = await runCaptured(py, ["-c", script, input.abs, String(Math.max(1, Math.min(input.maxSlides ?? 200, 1000)))], DOCUMENT_READ_BUDGET.maxTimeMs, PYTHON_DOCUMENT_ENV, DOCUMENT_READ_BUDGET.maxChildOutputBytes);
+    const out = await runCaptured(py, ["-c", script, input.abs,
+      String(Math.max(1, Math.min(input.maxSlides ?? 200, 1000))), String(input.slideStart ?? 1)],
+      DOCUMENT_READ_BUDGET.maxTimeMs, PYTHON_DOCUMENT_ENV, DOCUMENT_READ_BUDGET.maxChildOutputBytes);
     if (out.code !== 0) throw new Error(`PPTX 抽取失败:${out.stderr.trim() || out.stdout.trim() || `exit ${out.code}`}`);
     const parsed = JSON.parse(out.stdout) as { error?: string; count?: number; slides?: Array<{ n: number; text: string }> };
     if (parsed.error) throw new Error(parsed.error);
     const readCount = parsed.slides?.length ?? 0;
-    const clipped = readCount < (parsed.count ?? 0) ? "; 按 max_slides 截断,其余页未读取" : "";
-    const body = [`[PPTX ${parsed.count ?? 0} 页] [已读取 ${readCount} 页${clipped}]`, ...(parsed.slides ?? []).map((s) => `\n## Slide ${s.n}\n${s.text || "(无文本)"}`)];
+    const start = input.slideStart ?? 1;
+    const end = start + readCount - 1;
+    const count = parsed.count ?? 0;
+    const hasMore = end < count;
+    const clipped = `${start > 1 ? `; 已略过前 ${start - 1} 页` : ""}${hasMore ? `; 其余页未读取, next_slide=${end + 1}` : ""}`;
+    const body = [`[PPTX ${count} 页] [已读取 ${readCount} 页${clipped}]`, ...(parsed.slides ?? []).map((s) => `\n## Slide ${s.n}\n${s.text || "(无文本)"}`)];
     return capDocumentOutput(body.join("\n"), "PPTX 文本", maxChars);
   }
 
@@ -1080,6 +1224,7 @@ export async function readRichDocument(input: {
   docxMode?: "text" | "structure";
   blockStart?: number;
   maxBlocks?: number;
+  slideStart?: number;
   maxSlides?: number;
   maxRows?: number;
   maxCols?: number;
