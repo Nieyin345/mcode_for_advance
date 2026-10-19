@@ -7,10 +7,19 @@
  * Callers should still handle spawn failures gracefully - the resolved binary
  * may not be executable at runtime (permissions, broken symlink, etc.).
  */
-import { existsSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { decodeOutput } from "./outBuf.js";
+
+/** Directories and non-executable POSIX PATH entries are not binaries. */
+function runnableFile(filePath: string): boolean {
+  try {
+    if (!statSync(filePath).isFile()) return false;
+    if (process.platform !== "win32") accessSync(filePath, constants.X_OK);
+    return true;
+  } catch { return false; }
+}
 
 /**
  * `where <name>` 的**第一个真实存在的**命中(win32)。找不到 / 非 win32 返回 null。
@@ -41,7 +50,7 @@ export function whereFirstOnPath(name: string): string | null {
     }));
     for (const line of out.split(/\r?\n/)) {
       const p = line.trim();
-      if (p && existsSync(p)) return p;
+      if (p && runnableFile(p)) return p;
     }
   } catch {
     // `where` unavailable / not on PATH
@@ -60,7 +69,7 @@ export function whereFirstOnPath(name: string): string | null {
 export function which(name: string): string | null {
   // Absolute / relative path that already exists - trust the caller.
   if (name.includes("/") || name.includes("\\")) {
-    return existsSync(name) ? name : null;
+    return runnableFile(name) ? name : null;
   }
 
   if (process.platform === "win32") {
@@ -86,7 +95,7 @@ export function which(name: string): string | null {
       join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", `${name}.exe`),
     ];
     for (const c of candidates) {
-      if (existsSync(c)) return c;
+      if (runnableFile(c)) return c;
     }
     return null;
   }
@@ -96,11 +105,11 @@ export function which(name: string): string | null {
   for (const dir of pathEnv.split(delimiter)) {
     if (!dir) continue;
     const full = join(dir, name);
-    if (existsSync(full)) return full;
+    if (runnableFile(full)) return full;
   }
   // Common absolute locations.
   for (const full of [`/bin/${name}`, `/usr/bin/${name}`, `/usr/local/bin/${name}`]) {
-    if (existsSync(full)) return full;
+    if (runnableFile(full)) return full;
   }
   return null;
 }
@@ -157,7 +166,9 @@ export function resolveGitBash(): string | null {
 }
 
 function resolveGitBashUncached(): string | null {
-  const exists = (p: string): string | null => (existsSync(p) ? p : null);
+  // Reuse the same runnable-file predicate as which(): a directory named
+  // bash.exe must not eclipse a later real Git Bash executable.
+  const exists = (p: string): string | null => (runnableFile(p) ? p : null);
 
   // 1. Well-known install dirs (Git for Windows is often NOT on PATH).
   const pf = process.env["ProgramFiles"] ?? "C:\\Program Files";
