@@ -15,6 +15,7 @@
  *   `<baseDir>/<sessionId>/turn-<N>/<timestamp>-<toolCallId>.png`
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 /**
@@ -26,15 +27,31 @@ export function savePngArtifact(
   opts: { baseDir: string; sessionId?: string; turnNumber?: number; toolCallId: string },
 ): string | null {
   if (!opts.sessionId || !data) return null;
-  // 会话 id 正常是 UUID,仍按文件名消毒一道(与浏览器截图同一条规矩)。
+  // Session IDs are untrusted path components, not directories supplied by
+  // the caller. "." and ".." survive the usual filename allowlist and would
+  // flatten session isolation or escape the selected screenshot base.
   const safeSession = opts.sessionId.replace(/[^\w.-]/g, "_");
-  const turnDir = join(opts.baseDir, safeSession, `turn-${opts.turnNumber ?? 0}`);
+  if (!safeSession || safeSession === "." || safeSession === ".." || safeSession.length > 128) return null;
+  const turn = opts.turnNumber ?? 0;
+  if (!Number.isSafeInteger(turn) || turn < 0) return null;
+  // Buffer.from(base64) is deliberately permissive and silently ignores bad
+  // characters. Without a PNG signature check we'd report a junk/zero-byte
+  // file as a successfully saved screenshot.
+  if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return null;
+  const png = Buffer.from(data, "base64");
+  if (png.length < 8 || !png.subarray(0, 8).equals(
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  )) return null;
+  const turnDir = join(opts.baseDir, safeSession, `turn-${turn}`);
   try {
     mkdirSync(turnDir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "-").slice(0, 19);
-    const safeCallId = opts.toolCallId.replace(/[^\w.-]/g, "_");
-    const filePath = join(turnDir, `${ts}-${safeCallId}.png`);
-    writeFileSync(filePath, Buffer.from(data, "base64"));
+    const safeCallId = opts.toolCallId.replace(/[^\w.-]/g, "_").slice(0, 128);
+    // A tool call can retry twice in the same second. The old deterministic
+    // name silently overwrote the first PNG, even if another Agent still had
+    // its path. A private UUID + exclusive create preserves both artifacts.
+    const filePath = join(turnDir, `${ts}-${safeCallId}-${randomUUID()}.png`);
+    writeFileSync(filePath, png, { flag: "wx" });
     return filePath;
   } catch {
     return null;

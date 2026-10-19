@@ -17,7 +17,7 @@
  *
  * Run: scripts/panel-screenshot-smoke/run.sh
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { APP_CONTROL_RENDERER_GLOBAL } from "@contracts/appControl";
 import { computePanelCaptureRect } from "@main/appControl/panelCaptureRect.js";
@@ -99,6 +99,49 @@ console.log("\n面板截图:存盘核");
   check("空数据 → 不存(返回 null)", savePngArtifact("", { baseDir: dir, sessionId: "s", toolCallId: "x" }) === null);
   const sanitized = savePngArtifact(FAKE_PNG, { baseDir: dir, sessionId: "a/b:c", turnNumber: 0, toolCallId: "c/d" });
   check("★ 会话 id / 调用 id 里的非法字符被消毒(不写出目录)", typeof sanitized === "string" && existsSync(sanitized) && !sanitized.includes("a/b"), sanitized);
+
+  // A segment consisting only of ".." passes the old allowlist unchanged.
+  // Use a nested private baseDir so even the intentionally vulnerable build
+  // can only write into this suite's own temporary directory.
+  const privateBase = join(dir, "private-shots");
+  mkdirSync(privateBase, { recursive: true });
+  const escaped = savePngArtifact(FAKE_PNG, {
+    baseDir: privateBase, sessionId: "..", turnNumber: 92301, toolCallId: "escape",
+  });
+  check("★ sessionId='..' must not escape the screenshot base directory", escaped === null && !existsSync(join(dir, "turn-92301")), escaped);
+  const dot = savePngArtifact(FAKE_PNG, {
+    baseDir: privateBase, sessionId: ".", turnNumber: 92302, toolCallId: "dot",
+  });
+  check("★ sessionId='.' must not flatten session isolation", dot === null && !existsSync(join(privateBase, "turn-92302")), dot);
+  for (const n of [NaN, Infinity, -1, 1.5]) {
+    const badTurn = savePngArtifact(FAKE_PNG, {
+      baseDir: privateBase, sessionId: "sess", turnNumber: n, toolCallId: "bad-turn",
+    });
+    check(`★ invalid turnNumber ${String(n)} must fail closed`, badTurn === null, badTurn);
+  }
+
+  // When the same tool call writes twice within one second, no file may be
+  // overwritten: concurrent Agent/browser images need independent receipts.
+  const otherPng = Buffer.concat([Buffer.from(FAKE_PNG, "base64"), Buffer.from("other")]);
+  const first = savePngArtifact(FAKE_PNG, {
+    baseDir: privateBase, sessionId: "same-second", turnNumber: 2, toolCallId: "call",
+  });
+  const second = savePngArtifact(otherPng.toString("base64"), {
+    baseDir: privateBase, sessionId: "same-second", turnNumber: 2, toolCallId: "call",
+  });
+  check("★ repeated call in same second creates two different paths", !!first && !!second && first !== second, { first, second });
+  check("★ both PNG artifacts preserve their own exact bytes",
+    !!first && !!second && readFileSync(first).equals(Buffer.from(FAKE_PNG, "base64")) &&
+      readFileSync(second).equals(otherPng), { first, second });
+
+  const fakeImage = savePngArtifact(Buffer.from("NOT A PNG").toString("base64"), {
+    baseDir: privateBase, sessionId: "not-image", toolCallId: "fake",
+  });
+  check("★ malformed image bytes must not be reported as a saved PNG", fakeImage === null, fakeImage);
+  const invalidBase64 = savePngArtifact("!!!!", {
+    baseDir: privateBase, sessionId: "invalid-base64", toolCallId: "fake",
+  });
+  check("★ invalid base64 cannot create an empty .png", invalidBase64 === null, invalidBase64);
 }
 
 /* ── 3. screenshot_panel 端到端(假窗 + 假 NativeImage)── */
