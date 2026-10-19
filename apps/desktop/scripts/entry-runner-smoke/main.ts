@@ -488,6 +488,123 @@ console.log("\nbind · argv / env / stdin");
   );
 }
 
+/* ──────────────── Direct plugin/IPC caller boundary ──────────────── */
+{
+  const cyclic: { self?: unknown } = {};
+  cyclic.self = cyclic;
+  for (const input of [1n, cyclic]) {
+    const fake = recordingSpawn({ stdout:"should not execute" });
+    let outcome: Awaited<ReturnType<typeof runEntryScript>> | undefined;
+    let thrown: unknown;
+    try {
+      outcome = await runEntryScript({script:"./count.py",manifestDir:PLUGIN,input,
+        timeoutMs:1000,signal:new AbortController().signal},{spawn:fake.spawn});
+    } catch (err) { thrown=err; }
+    check("★ malformed unencodable input is structured failure, not Promise rejection",
+      thrown===undefined && outcome?.status==="failed" &&
+        /stdin|JSON|输入/.test(String(outcome.error)) && fake.calls.length===0,
+      {outcome,thrown:String(thrown),spawns:fake.calls.length});
+  }
+  for (const timeoutMs of [NaN,Infinity,-1,1.5,2_147_483_648]) {
+    const fake=recordingSpawn({stdout:"should not execute"});
+    let outcome:Awaited<ReturnType<typeof runEntryScript>>|undefined;
+    let thrown:unknown;
+    try {
+      outcome=await runEntryScript({script:"./count.py",manifestDir:PLUGIN,timeoutMs,
+        signal:new AbortController().signal},{spawn:fake.spawn});
+    } catch (err) { thrown=err; }
+    check("★ direct unsafe timeout fails before spawning any plugin interpreter",
+      thrown===undefined && outcome?.status==="failed" &&
+        /timeout|超时|毫秒/.test(String(outcome.error)) && fake.calls.length===0,
+      {timeoutMs:String(timeoutMs),status:outcome?.status,error:outcome?.error,spawns:fake.calls.length,thrown:String(thrown)});
+  }
+  for (const bindings of [
+    [{binding:{kind:"env",name:"__proto__"},value:"forged"}],
+    [{binding:{kind:"stdin"},value:"one"},{binding:{kind:"stdin"},value:"two"}],
+  ]) {
+    const fake=recordingSpawn({stdout:"should not execute"});
+    let outcome:Awaited<ReturnType<typeof runEntryScript>>|undefined;
+    let thrown:unknown;
+    try {
+      outcome=await runEntryScript({script:"./count.py",manifestDir:PLUGIN,
+        timeoutMs:1000,signal:new AbortController().signal,
+        bindings:bindings as never},{spawn:fake.spawn});
+    } catch(err){thrown=err;}
+    check("★ malformed direct bind declarations fail closed, not silently mutate/override",
+      thrown===undefined && outcome?.status==="failed" &&
+        /bind|绑定|stdin|env/.test(String(outcome.error)) && fake.calls.length===0,
+      {outcome,spawns:fake.calls.length,thrown:String(thrown)});
+  }
+  const invalid=recordingSpawn({stdout:"should not execute"});
+  let brokenScript:Awaited<ReturnType<typeof runEntryScript>>|undefined;
+  let scriptThrown:unknown;
+  try {
+    brokenScript=await runEntryScript({script:42 as unknown as string,manifestDir:PLUGIN,timeoutMs:1000,
+      signal:new AbortController().signal},{spawn:invalid.spawn});
+  } catch(err){scriptThrown=err;}
+  check("★ non-text plugin script path is rejected without TypeError/spawn",
+    scriptThrown===undefined && brokenScript?.status==="failed" && invalid.calls.length===0,
+    {status:brokenScript?.status,spawns:invalid.calls.length,thrown:String(scriptThrown)});
+}
+
+{
+  for (const fixture of [
+    { interpreter: 47 as unknown as string },
+    { args: ["--safe", 22] as unknown as string[] },
+    { manifestDir: {not:"a directory"} as unknown as string },
+    { bindings: [{binding:{kind:"arg"},value:()=>42}] as never },
+  ]) {
+    const fake=recordingSpawn({stdout:"SHOULD_NOT_RUN"});
+    let outcome:Awaited<ReturnType<typeof runEntryScript>>|undefined;
+    let thrown:unknown;
+    try {
+      outcome=await runEntryScript({script:"count.py",manifestDir:PLUGIN,timeoutMs:1200,
+        signal:new AbortController().signal,...fixture},{spawn:fake.spawn});
+    } catch(err){thrown=err;}
+    check("★ wrong direct manifest/interpreter/argv/bound value shape fails safely before spawn",
+      thrown===undefined && outcome?.status==="failed" && fake.calls.length===0,
+      {fixture:Object.keys(fixture),status:outcome?.status,error:outcome?.error,spawns:fake.calls.length,thrown:String(thrown)});
+  }
+  // A third-party bind serializer may throw an arbitrary JavaScript value
+  // that cannot be converted to String. Catch/error reporting must not throw.
+  const nonCoercible = Object.create(null) as Record<string, unknown>;
+  const malicious = { toJSON() { throw nonCoercible; } };
+  const throwingToString = { toJSON() { throw { toString() { throw new Error("SECONDARY"); } }; } };
+  const accessorError = new Error("base");
+  Object.defineProperty(accessorError, "message", { get() { throw nonCoercible; } });
+  for (const badValue of [malicious, throwingToString, {toJSON(){throw accessorError;}}]) {
+    const fake=recordingSpawn({stdout:"SHOULD_NOT_RUN"});
+    let result:Awaited<ReturnType<typeof runEntryScript>>|undefined;
+    let thrown:unknown;
+    try {
+      result=await runEntryScript({script:"count.py",manifestDir:PLUGIN,timeoutMs:1000,
+        signal:new AbortController().signal,
+        bindings:[{binding:{kind:"arg"},value:badValue}]},{spawn:fake.spawn});
+    } catch (err) { thrown=err; }
+    check("★ arbitrary noncoercible errors from plugin JSON serialization are structured failure",
+      thrown===undefined && result?.status==="failed" && fake.calls.length===0
+        && typeof result.error==="string" && result.error.length>0,
+      {status:result?.status, error:result?.error, rejected:thrown!==undefined, spawnCalls:fake.calls.length});
+  }
+  const progress:Array<{percent?:number;message?:string}>=[];
+  const fake=recordingSpawn({stdout:[
+    '@@mcode:progress {"percent":-1,"message":"low"}',
+    '@@mcode:progress {"percent":175,"message":"high"}',
+    '@@mcode:progress {"percent":25,"message":"valid"}',
+    "",
+  ].join("\n")});
+  const out=await runEntryScript({script:"count.py",manifestDir:PLUGIN,
+    timeoutMs:1200,signal:new AbortController().signal,
+    onProgress:(p)=>progress.push(p)},{spawn:fake.spawn});
+  eq("progress-check fixture exits successfully",out.status,"success");
+  check("★ entry script negative progress does not enter the UI percentage",
+    progress[0]?.percent===undefined,progress);
+  check("★ entry script progress over 100 does not enter the UI percentage",
+    progress[1]?.percent===undefined,progress);
+  eq("entry script valid progress remains intact",progress[2]?.percent,25);
+  eq("entry script invalid percentage keeps human message",progress[1]?.message,"high");
+}
+
 try {
   rmSync(ROOT, { recursive: true, force: true });
 } catch {

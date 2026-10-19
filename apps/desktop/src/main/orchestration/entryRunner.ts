@@ -43,6 +43,7 @@ import {
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
 import { spawnRun, type SpawnFn } from "@main/lib/spawnRun.js";
 import { markTruncatedTail } from "@main/lib/outBuf.js";
+import { safeErrorMessage } from "@main/lib/ipcError.js";
 
 interface ProtocolResult {
   summary?: string;
@@ -64,7 +65,7 @@ interface ProtocolResult {
  * `manifestDir` 缺席(内置类型没有文件)也返回 null。
  */
 export function resolveEntryScript(entry: string, manifestDir: string | undefined): string | null {
-  if (!manifestDir) return null;
+  if (!manifestDir || typeof entry !== "string" || !entry.trim()) return null;
   if (isAbsolute(entry) || entry.includes("\0")) return null;
   const root = resolve(manifestDir);
   const target = resolve(root, entry);
@@ -108,7 +109,8 @@ function consumeProtocolLine(
       // 成两个数。兄弟 `commandRunner` / `codeRunner` 的同名函数都有这一道
       // (`codeRunner` 是 af9ccaa1 补的),这一支当时漏了。
       onProgress?.({
-        ...(typeof value.percent === "number" && Number.isFinite(value.percent) ? { percent: value.percent } : {}),
+        ...(typeof value.percent === "number" && Number.isFinite(value.percent)
+          && value.percent >= 0 && value.percent <= 100 ? { percent: value.percent } : {}),
         ...(typeof value.message === "string" ? { message: value.message } : {}),
       });
     } else if (match[1] === "result" && payload && typeof payload === "object") {
@@ -159,7 +161,9 @@ export interface EntryRunArgs {
 function boundTextOf(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
-  return JSON.stringify(value ?? null);
+  const json = JSON.stringify(value ?? null);
+  if (typeof json !== "string") throw new TypeError("脚本 bind JSON 输入无法序列化");
+  return json;
 }
 
 /**
@@ -187,16 +191,34 @@ export function buildBoundInvocation(
   bindings: ReadonlyArray<{ binding: NodeParamBinding; value: unknown }>,
 ): { args: string[]; env: Record<string, string>; stdin?: string } {
   const args: string[] = [];
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = Object.create(null) as Record<string, string>;
   let stdin: string | undefined;
-  for (const { binding, value } of bindings) {
+  let seenStdin = false;
+  for (const item of bindings) {
+    if (item === null || typeof item !== "object"
+      || item.binding === null || typeof item.binding !== "object") {
+      throw new TypeError("脚本 bind 绑定声明无效");
+    }
+    const { binding, value } = item;
     if (binding.kind === "arg") {
+      if (binding.flag !== undefined && typeof binding.flag !== "string") {
+        throw new TypeError("脚本 bind argv flag 类型无效");
+      }
       if (binding.flag !== undefined) args.push(binding.flag);
       args.push(boundTextOf(value));
     } else if (binding.kind === "env") {
+      // Revalidate the contract at the execution boundary. A hostile IPC
+      // value must not set __proto__ or silently disappear via its setter.
+      if (typeof binding.name !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(binding.name)) {
+        throw new TypeError("脚本 bind env 变量名无效");
+      }
       env[binding.name] = boundTextOf(value);
-    } else {
+    } else if (binding.kind === "stdin") {
+      if (seenStdin) throw new TypeError("脚本 bind stdin 最多允许一次");
+      seenStdin = true;
       stdin = boundTextOf(value);
+    } else {
+      throw new TypeError("脚本 bind 类型无效");
     }
   }
   return { args, env, ...(stdin !== undefined ? { stdin } : {}) };
@@ -216,6 +238,22 @@ export async function runEntryScript(
   const { script, manifestDir, interpreter, args: extraArgs, input, bindings, timeoutMs, signal, onProgress } = args;
 
   if (signal.aborted) return { status: "cancelled", summary: "" };
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647) {
+    return { status: "failed", summary: "", error: "脚本 timeoutMs 必须是 0–2147483647 的整数毫秒" };
+  }
+  // Third-party manifests are runtime data. A cast TypeScript type cannot
+  // authorize a non-text interpreter, directory, or an argv array containing
+  // non-string values to reach the OS spawn boundary.
+  if (manifestDir !== undefined && (typeof manifestDir !== "string" || !manifestDir.trim())) {
+    return { status: "failed", summary: "", error: "脚本 manifestDir 必须是有效目录字符串" };
+  }
+  if (interpreter !== undefined && (typeof interpreter !== "string" || !interpreter.trim())) {
+    return { status: "failed", summary: "", error: "脚本 interpreter 必须是非空文本" };
+  }
+  if (extraArgs !== undefined && (!Array.isArray(extraArgs)
+    || !extraArgs.every((arg) => typeof arg === "string"))) {
+    return { status: "failed", summary: "", error: "脚本 args 必须是纯字符串数组" };
+  }
 
   const abs = resolveEntryScript(script, manifestDir);
   if (abs === null) {
@@ -231,7 +269,20 @@ export async function runEntryScript(
 
   // `bind` 拼出来的参数排在**固定参数之后**(`runner.args` 是清单写死的,绑定值按
   // 声明顺序追加在后面 —— 与契约"位置参数按 params 数组顺序追加"一致)。
-  const bound = buildBoundInvocation(bindings ?? []);
+  let bound: ReturnType<typeof buildBoundInvocation>;
+  let stdinText: string | undefined;
+  try {
+    bound = buildBoundInvocation(bindings ?? []);
+    if (bound.stdin !== undefined) stdinText = bound.stdin;
+    else if (input !== undefined) {
+      const json = JSON.stringify(input ?? null);
+      if (typeof json !== "string") throw new TypeError("input cannot be encoded as JSON");
+      stdinText = json + "\n";
+    }
+  } catch (err) {
+    return { status: "failed", summary: "",
+      error: `脚本 bind/JSON stdin 输入无效：${safeErrorMessage(err)}` };
+  }
   // `interpreter` 给了就 `python <脚本> <参数…>`,没给就直接执行脚本本身(需要可执行位)。
   const file = interpreter ?? abs;
   const argv = interpreter !== undefined
@@ -251,11 +302,7 @@ export async function runEntryScript(
     // **`stdin` 绑定的参数优先于 `input` 的 JSON。** 一个节点只有一个 stdin
     // (清单校验挡了两个),而 `bind: stdin` 是作者对"这个参数怎么送"的明确声明 ——
     // `input`(上游 JSON)只是命令节点一直以来的默认载荷。两者同时在场时按声明的来。
-    ...(bound.stdin !== undefined
-      ? { stdin: bound.stdin }
-      : input !== undefined
-        ? { stdin: JSON.stringify(input ?? null) + "\n" }
-        : {}),
+    ...(stdinText !== undefined ? { stdin: stdinText } : {}),
     timeoutMs,
     signal,
     limitBytes: COMMAND_OUTPUT_TAIL_CHARS,
