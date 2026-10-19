@@ -93,7 +93,7 @@ import { importAnyFiles } from "@main/library/importDispatch.js";
 import {
   highlightsPathFor,
   originalPathFor,
-  readHighlights,
+  readHighlightsDetailed,
   writeHighlights,
   writeBackToFile,
 } from "@main/library/pdfHighlightsStore.js";
@@ -961,7 +961,9 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     //    就像"这篇还没划过高亮"—— 静默错,用户永远不知道自己在看一个假结果。
     //    (从前这里写着同一句话、代码却回的是 `{highlights: []}` —— 注释和实现对不上。)
     if (!guard) throw new Error("这个位置不允许读取高亮(不在任何已知工作区/资料库内)");
-    return { highlights: readHighlights(input.pdfPath) };
+    // Missing index is legitimately empty. Damaged/partially invalid index
+    // must carry diagnostics instead of impersonating a blank annotation set.
+    return readHighlightsDetailed(input.pdfPath);
   });
 
   /**

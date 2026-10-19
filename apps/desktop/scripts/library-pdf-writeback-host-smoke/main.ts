@@ -132,6 +132,47 @@ check("rejected foreign backup preserves the foreign original bytes",
  readFileSync(unlinked).toString("utf8")==="UNRELATED PRIVATE BYTES");
 rmSync(injectedBackup,{force:true});
 
+// A user-visible "zero highlights" is not an acceptable interpretation of
+// malformed/partially damaged sidecar JSON. The IPC can keep its legacy
+// highlights array but MUST disclose the loss to UI/Agent callers.
+const readHighlightsHandler=handlers.get(IPC.LIBRARY_READ_HIGHLIGHTS);
+if(!readHighlightsHandler)throw Error("real readHighlights IPC handler missing");
+const readIndex=async () => await Promise.resolve(readHighlightsHandler(null,{pdfPath:pdf})) as
+ {highlights:unknown[];error?:string;omittedCount?:number};
+writeFileSync(sidecar,JSON.stringify({version:1,highlights:[]}));
+const healthyIndex=await readIndex();
+check("normal empty versioned sidecar has no false corruption warning",
+ healthyIndex.highlights.length===0 && !healthyIndex.error && !healthyIndex.omittedCount,healthyIndex);
+const malformedBytes="{ unfinished user's original annotations";
+writeFileSync(sidecar,malformedBytes);
+const damagedIndex=await readIndex();
+check("★★ corrupted JSON sidecar explicitly reports unreadable instead of silent []",
+ !!damagedIndex.error && damagedIndex.highlights.length===0,damagedIndex);
+check("★★ corrupt index raw bytes remain available for user recovery",
+ readFileSync(sidecar,"utf8")===malformedBytes);
+writeFileSync(sidecar,JSON.stringify({version:1,highlights:"unexpected string"}));
+const wrongShape=await readIndex();
+check("★★ wrong highlights top-level shape is explicitly reported",
+ !!wrongShape.error,wrongShape);
+const goodRect={x1:0.1,y1:0.1,x2:0.5,y2:0.2,width:0.4,height:0.1,pageNumber:1};
+const validRow={
+ id:"retained-good",position:{boundingRect:goodRect,rects:[goodRect]},
+ text:"readable",comment:"retained",color:"#ffee11",createdAt:1,
+};
+writeFileSync(sidecar,JSON.stringify({version:1,highlights:[validRow,{id:"damaged-entry"}]}));
+const mixedIndex=await readIndex();
+check("★★ invalid individual highlight omission is counted for UI/Agent",
+ mixedIndex.omittedCount===1 && mixedIndex.highlights.length===1
+ && (mixedIndex.highlights[0] as {id?:string}).id==="retained-good",mixedIndex);
+rmSync(sidecar,{force:true});
+linkSync(unlinked,sidecar);
+const foreignIndex=await readIndex();
+check("★★ hardlinked foreign annotation sidecar is rejected with diagnostic",
+ !!foreignIndex.error && foreignIndex.highlights.length===0,foreignIndex);
+check("foreign sidecar target remains untouched",
+ readFileSync(unlinked).toString("utf8")==="UNRELATED PRIVATE BYTES");
+rmSync(sidecar,{force:true});
+
 closeDb();
 console.log("library-pdf-writeback-host-smoke:"+(count-errors)+"/"+count+" PASS");
 if(errors)process.exitCode=1;

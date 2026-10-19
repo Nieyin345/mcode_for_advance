@@ -11,5 +11,8 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --external:pdfjs-dist \
+  --alias:@main/store/repositories.js=./scripts/pdf-highlights-integrity-smoke/stubs/repositories.ts \
+  --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --outfile="$OUT/main.mjs" --log-level=error
 node "$OUT/main.mjs"

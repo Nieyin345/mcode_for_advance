@@ -33,6 +33,7 @@ import { validatePdfHighlight } from "@contracts/pdfHighlight";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
+import { readPdfFileBounded } from "./pdfRead.js";
 
 /** 高亮索引文件的后缀。点开头 + 原文件名，排序时自然挨着。 */
 const SIDECAR_SUFFIX = ".mcode-highlights.json";
@@ -91,23 +92,61 @@ export function ensureOriginal(pdfPath: string, bytes: Uint8Array): void {
   }
 }
 
-/**
- * 读某一篇 PDF 的全部高亮。没有索引文件就是空数组（**不是**错误 —— 第一次打开
- * 一篇没划过的论文是常态）。
- */
-export function readHighlights(pdfPath: string): PdfHighlight[] {
-  const p = highlightsPathFor(pdfPath);
-  if (!existsSync(p)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(p, "utf8")) as { highlights?: PdfHighlight[] };
-    const list = Array.isArray(raw?.highlights) ? raw.highlights : [];
-    // 坏数据**在这里就滤掉**，别让它流到写回那一层（那里会算出一堆 NaN 坐标）
-    return list.filter((h) => validatePdfHighlight(h) === null);
-  } catch {
-    // 索引文件本身坏了（手改坏了 / 半截写入）—— 当没有处理，但**不覆盖它**：
-    // 用户还有机会从里面捞回内容。
-    return [];
+/** Full read result keeps corruption observable for UI and Agent callers.
+ * No index file is legitimately empty; an existing corrupt one is NOT.
+ * The legacy array API delegates here, so parsing rules have one owner. */
+export interface PdfHighlightsReadResult {
+  highlights: PdfHighlight[];
+  error?: string;
+  omittedCount?: number;
+}
+
+export function readHighlightsDetailed(pdfPath: string): PdfHighlightsReadResult {
+  const path = highlightsPathFor(pdfPath);
+  if (!existsSync(path)) return { highlights: [] };
+
+  // The index is another independent file beside the authorized PDF.
+  // Its sibling name is not proof that its contents are authorized; reuse
+  // the existing bounded FD read with single-link/inode checks.
+  const bytes = readPdfFileBounded(path, { rejectHardlinks: true });
+  if (!bytes.ok || !bytes.bytes) {
+    return { highlights: [], error: `批注索引无法安全读取：${bytes.error ?? "磁盘读取失败"}；已保留原文件` };
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.bytes));
+  } catch {
+    return { highlights: [], error: "批注索引 JSON 损坏或编码无效，已保留原文件，请备份后修复" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { highlights: [], error: "批注索引结构无效，已保留原文件" };
+  }
+  const record = parsed as { version?: unknown; highlights?: unknown };
+  if ((record.version !== undefined && record.version !== 1) || !Array.isArray(record.highlights)) {
+    return { highlights: [], error: "批注索引版本或列表格式无效，已保留原文件" };
+  }
+
+  const highlights: PdfHighlight[] = [];
+  let omittedCount = 0;
+  for (const row of record.highlights) {
+    try {
+      if (validatePdfHighlight(row as PdfHighlight) === null) {
+        highlights.push(row as PdfHighlight);
+        continue;
+      }
+    } catch {
+      // A malformed JSON object must not crash the whole read pipeline.
+    }
+    omittedCount++;
+  }
+  return omittedCount ? { highlights, omittedCount } : { highlights };
+}
+
+/** Legacy callers keep the same filtered array, backed by the single
+ * parser above. Use readHighlightsDetailed at user/Agent IPC boundaries to
+ * disclose unreadable archives and skipped invalid entries. */
+export function readHighlights(pdfPath: string): PdfHighlight[] {
+  return readHighlightsDetailed(pdfPath).highlights;
 }
 
 /**

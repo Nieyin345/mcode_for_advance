@@ -1470,7 +1470,13 @@ export interface RpcMap {
    * `main/library/pdfHighlightsStore.ts`），所以这里按**路径**问 —— 项目目录里那些
    * 根本不在资料库里的 PDF 也要能有高亮。
    */
-  "library.readHighlights": (input: PdfHighlightsReadInput) => Promise<{ highlights: PdfHighlight[] }>;
+  "library.readHighlights": (input: PdfHighlightsReadInput) => Promise<{
+    highlights: PdfHighlight[];
+    /** An existing index was unreadable or its structure was damaged. */
+    error?: string;
+    /** Invalid individual entries omitted from the readable portion. */
+    omittedCount?: number;
+  }>;
   /** **只写索引**（PDF 旁边那份 JSON）—— 划一笔就走这条，几毫秒，不动 PDF。 */
   "library.saveHighlights": (input: PdfHighlightsSaveInput) => Promise<{ ok: boolean; error?: string }>;
   /**
