@@ -26,7 +26,7 @@
  * 这里只管**盘上的事**（读文件、写文件）。
  */
 import { randomUUID } from "node:crypto";
-import { constants, copyFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { PdfHighlight } from "@contracts/library";
 import { validatePdfHighlight } from "@contracts/pdfHighlight";
@@ -70,17 +70,21 @@ export function hasOriginal(pdfPath: string): boolean {
 export function ensureOriginal(pdfPath: string, bytes: Uint8Array): void {
   const target = originalPathFor(pdfPath);
   if (existsSync(target)) return;
-  const tmp = `${target}.${Date.now().toString(36)}.tmp`;
+  const tmp = `${target}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(tmp, bytes);
-    renameSync(tmp, target);
-  } catch (err) {
+    writeFileSync(tmp, bytes, { flag: "wx" });
+    // Check-then-rename is not atomic: between existsSync and rename,
+    // another process can create the pristine baseline. rename would then
+    // overwrite that first owner's ONLY clean copy. A hard link is atomic
+    // create-if-absent on the same volume and fails with EEXIST instead.
     try {
-      rmSync(tmp, { force: true });
-    } catch {
-      /* 尽力而为 */
+      linkSync(tmp, target);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
-    throw err;
+  } finally {
+    // No loser may leave a temporary baseline as if it were authoritative.
+    try { rmSync(tmp, { force: true }); } catch { /* cleanup only */ }
   }
 }
 
@@ -109,7 +113,9 @@ export function readHighlights(pdfPath: string): PdfHighlight[] {
  */
 export function writeHighlights(pdfPath: string, highlights: PdfHighlight[]): void {
   const target = highlightsPathFor(pdfPath);
-  const tmp = `${target}.${Date.now().toString(36)}.tmp`;
+  // Millisecond-only temp names collide across processes. Distinct writers
+  // must never commandeer each other's in-flight JSON.
+  const tmp = `${target}.${randomUUID()}.tmp`;
   try {
     if (existsSync(target)) {
       let valid = false;
@@ -129,7 +135,7 @@ export function writeHighlights(pdfPath: string, highlights: PdfHighlight[]): vo
     writeFileSync(
       tmp,
       JSON.stringify({ version: 1, pdf: basename(pdfPath), highlights }, null, 2),
-      "utf8",
+      { encoding: "utf8", flag: "wx" },
     );
     renameSync(tmp, target);
   } catch (err) {
@@ -172,6 +178,12 @@ export async function writeBackToFile(
   if (!existsSync(pdfPath)) return { written: 0, skipped };
 
   const out = await save(usable);
+  // An interrupted/misbehaving PDF renderer may return an empty or arbitrary
+  // byte buffer without throwing. Never replace the source document with it.
+  if (!(out instanceof Uint8Array) ||
+      !Buffer.from(out.subarray(0, 1024)).includes("%PDF-")) {
+    throw new Error("PDF 写回结果不是有效 PDF 字节，已拒绝覆盖原文件");
+  }
   const tmp = join(
     dirname(pdfPath),
     `.${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.tmp.pdf`,
