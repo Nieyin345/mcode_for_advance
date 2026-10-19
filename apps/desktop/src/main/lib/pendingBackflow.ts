@@ -23,7 +23,20 @@
 import { log } from "@main/lib/logger.js";
 
 /** sessionId → 还没被带进去的那几段。**按顺序**,先跑完的在前。 */
-const pending = new Map<string, Array<{ text: string; source?: string }>>();
+interface PendingBackflowEntry { text: string; source?: string; sequence: number }
+const pending = new Map<string, PendingBackflowEntry[]>();
+let nextBackflowSequence = 0;
+// Backflow may contain large workflow/tool output. Keep a bounded in-memory
+// handoff rather than creating an unbounded next-turn prompt / main-process
+// allocation. Reject before mutating the queue: never silently drop a result.
+const MAX_BACKFLOW_ENTRIES = 1024;
+const MAX_BACKFLOW_CHARS = 4 * 1024 * 1024;
+function assertBackflowBudget(entries: readonly PendingBackflowEntry[], body: string): void {
+  if (entries.length >= MAX_BACKFLOW_ENTRIES || body.length > MAX_BACKFLOW_CHARS
+    || entries.reduce((sum, entry) => sum + entry.text.length, body.length) > MAX_BACKFLOW_CHARS) {
+    throw new RangeError("待并回上下文超过内存预算，请缩短工作流输出后重试");
+  }
+}
 
 /** 挂一段并回内容。空的一律丢掉 —— 上层算出来是空的,不该在白名单里占一个位置。
  *
@@ -34,7 +47,8 @@ export function queueBackflow(sessionId: string, text: string): void {
   const body = text.trim();
   if (body.length === 0) return;
   const list = pending.get(sessionId) ?? [];
-  list.push({ text: body });
+  assertBackflowBudget(list, body);
+  list.push({ text: body, sequence: ++nextBackflowSequence });
   pending.set(sessionId, list);
 }
 
@@ -86,7 +100,10 @@ export function backflowPrompt(text: string): string {
 export function replaceBackflowSource(sessionId: string, source: string, text: string): void {
   const list = (pending.get(sessionId) ?? []).filter(entry => entry.source !== source);
   const body = text.trim();
-  if (body) list.push({ source, text: body });
+  if (body) {
+    assertBackflowBudget(list, body);
+    list.push({ source, text: body, sequence: ++nextBackflowSequence });
+  }
   if (list.length) pending.set(sessionId, list); else pending.delete(sessionId);
 }
 
@@ -95,6 +112,31 @@ export function pendingBackflowPrompt(sessionId: string): string {
   const entries = pending.get(sessionId) ?? [];
   const workflow = entries.filter(entry => entry.source !== "memory.creation-snapshot").map(entry => entry.text).join("\n\n");
   return [backflowPrompt(workflow), pendingCreationMemoryPrompt(sessionId)].filter(Boolean).join("\n\n");
+}
+
+/** Snapshot the exact material about to be sent in a provider startTurn.
+ * Other workflow events and source replacements may arrive during its await;
+ * acknowledge only these existing sequence numbers after successful start. */
+export function pendingBackflowBatch(sessionId: string): { text: string; through: number } {
+  const entries = pending.get(sessionId);
+  return {
+    text: pendingBackflowPrompt(sessionId),
+    through: entries?.at(-1)?.sequence ?? 0,
+  };
+}
+
+/** Acknowledge only the snapshot that was actually put in the last request.
+ * Never erase backflow queued/replaced after the snapshot while startTurn ran. */
+export function clearBackflowThrough(sessionId: string, through: number): void {
+  if (!Number.isSafeInteger(through) || through < 0) return;
+  const entries = pending.get(sessionId);
+  if (!entries) return;
+  const retained = entries.filter((entry) => entry.sequence > through);
+  if (retained.length === entries.length) return;
+  if (retained.length > 0) pending.set(sessionId, retained);
+  else pending.delete(sessionId);
+  const consumed = entries.filter((entry) => entry.sequence <= through);
+  log.info(`backflow: 已带进会话 ${sessionId}(${consumed.map((entry) => entry.text).join("").length} 字)`);
 }
 
 /** The SAME fragment used by dispatch and inspection; never re-read the library. */
