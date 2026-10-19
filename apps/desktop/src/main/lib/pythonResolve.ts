@@ -43,7 +43,9 @@ const BUNDLED_INTERPRETERS: ReadonlyArray<{ match: string; owner: string }> = [
 export function bundledInterpreterOwner(exe: string): string | null {
   const key = normPathKey(exe);
   for (const { match, owner } of BUNDLED_INTERPRETERS) {
-    if (key.includes(match)) return owner;
+    // Match a complete installation-directory segment, not an unrelated
+    // `libreoffice-project` or `LibreOfficeExtensions` virtualenv directory.
+    if (key === match || key.includes(`${match}/`)) return owner;
   }
   return null;
 }

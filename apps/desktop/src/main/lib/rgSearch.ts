@@ -22,7 +22,6 @@
  */
 import { spawn } from "node:child_process";
 import { basename, join } from "node:path";
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { app } from "electron";
 import { which } from "@main/lib/binaryResolve.js";
@@ -58,7 +57,9 @@ export function resolveRg(): string | null {
   if (cachedRg !== undefined) return cachedRg;
   let found: string | null = null;
   const bundled = bundledRgPath();
-  if (existsSync(bundled)) found = bundled;
+  // Reuse the shared executable check: a directory named rg.exe must not
+  // hide a healthy PATH executable (and POSIX files need execute permission).
+  if (which(bundled)) found = bundled;
   if (!found) found = which("rg");
   if (!found && process.platform === "win32") {
     const home = homedir();
@@ -66,7 +67,7 @@ export function resolveRg(): string | null {
       join(home, ".cargo", "bin", "rg.exe"),
       join(home, "scoop", "shims", "rg.exe"),
     ]) {
-      if (existsSync(p)) {
+      if (which(p)) {
         found = p;
         break;
       }
@@ -114,15 +115,22 @@ function stripNewline(s: string): string {
  *  indices so the renderer's `line.slice(start, end)` highlighting aligns.
  *  Precomputes the byte offset at each char once per line, then a binary
  *  search per submatch (lines are short — the cost is negligible). */
-function byteOffsetsToUtf16(
+export function byteOffsetsToUtf16(
   line: string,
   submatches: Array<{ start: number; end: number }>,
 ): Array<{ start: number; end: number }> {
   const byteAt: number[] = [0];
-  let acc = 0;
-  for (let i = 0; i < line.length; i++) {
-    acc += Buffer.byteLength(line[i], "utf8");
-    byteAt.push(acc);
+  const utf16At: number[] = [0];
+  let bytes = 0;
+  let codeUnits = 0;
+  // for..of advances by Unicode code point. A surrogate pair is four UTF-8
+  // bytes but TWO UTF-16 units; measuring each half separately yields 6
+  // replacement bytes and offsets that highlight the wrong characters.
+  for (const point of line) {
+    bytes += Buffer.byteLength(point, "utf8");
+    codeUnits += point.length;
+    byteAt.push(bytes);
+    utf16At.push(codeUnits);
   }
   const toIdx = (b: number): number => {
     let lo = 0;
@@ -132,7 +140,7 @@ function byteOffsetsToUtf16(
       if (byteAt[mid] <= b) lo = mid + 1;
       else hi = mid;
     }
-    return Math.max(0, lo - 1);
+    return utf16At[Math.max(0, lo - 1)] ?? 0;
   };
   return submatches.map((m) => ({ start: toIdx(m.start), end: toIdx(m.end) }));
 }
