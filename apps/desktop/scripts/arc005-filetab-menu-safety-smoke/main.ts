@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { liveFileTabMenu } from "../../src/renderer/components/ide/fileTabMenuSafety.js";
+import { fileTabMenuActionPath, liveFileTabMenu } from "../../src/renderer/components/ide/fileTabMenuSafety.js";
 import { sessionTabMenuPosition } from "../../src/renderer/components/layout/sessionTabContextActions.js";
 import { copyText } from "../../src/renderer/lib/clipboard.js";
 const source=(path:string)=>readFileSync(resolve("src/renderer/components",path),"utf8");
@@ -14,6 +14,17 @@ ck("A closed tab context cannot batch-close other files",liveFileTabMenu(menu,"p
 ck("Null and no-active-project are denied",liveFileTabMenu(null,"p1",["/virtual/shared.txt"])===null&&liveFileTabMenu(menu,null,["/virtual/shared.txt"])===null);
 ck("Missing origin project id cannot grant context actions",liveFileTabMenu({...menu,projectId:null},"p1",["/virtual/shared.txt"])===null);
 ck("Matching project and target does not mutate tab list",(()=>{const tabs=["/virtual/shared.txt"];const live=liveFileTabMenu(menu,"p1",tabs);return live!==null&&tabs.length===1})());
+let latest = {activeProjectId:"p1" as string|null,ideOpenFilesByProject:{p1:["/virtual/shared.txt"],p2:["/virtual/shared.txt"]}};
+const liveSnapshot = () => latest;
+ck("Menu action reads a valid live store snapshot",fileTabMenuActionPath(menu,liveSnapshot)==="/virtual/shared.txt");
+latest={...latest,activeProjectId:"p2"};
+ck("A project switch BETWEEN render and click cancels the old action",fileTabMenuActionPath(menu,liveSnapshot)===null);
+latest={...latest,activeProjectId:"p1",ideOpenFilesByProject:{p1:[],p2:["/virtual/shared.txt"]}};
+ck("A tab close BETWEEN render and click cancels the old action",fileTabMenuActionPath(menu,liveSnapshot)===null);
+ck("Menu click reads Zustand current state instead of trusting the prior popup render",
+  file.includes("fileTabMenuActionPath(ctxMenu, useSessionStore.getState)"));
+ck("Every FileTabContextMenu action obtains a fresh valid path at click time",
+  (file.match(/currentMenuPath\(\)/g)?.length??0)>=5);
 ck("Both file strips record project identity at contextmenu creation",file.includes("setCtxMenu({ path, projectId: pid, ...anchor })")&&unified.includes("setCtxMenu({ path, projectId: pid, ...anchor })"));
 ck("Both file menus receive ONLY the validated live context",file.includes("ctxMenu={liveFileTabMenu(ctxMenu, pid, openFiles)}")&&unified.includes("ctxMenu={liveFileTabMenu(ctxMenu, pid, openFiles)}"));
 ck("Both file bars clear the stale menu state on project or open-tab changes",

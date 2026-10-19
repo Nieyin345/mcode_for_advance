@@ -36,7 +36,7 @@ import { useDirtyFiles } from "@renderer/hooks/useDirtyFiles.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { sessionTabMenuPosition } from "../layout/sessionTabContextActions.js";
-import { liveFileTabMenu, type ProjectFileTabMenu } from "./fileTabMenuSafety.js";
+import { fileTabMenuActionPath, liveFileTabMenu, type ProjectFileTabMenu } from "./fileTabMenuSafety.js";
 import type { IdeCloseResult } from "@renderer/lib/ideDirty.js";
 
 /** Stable empty array so the selector never returns a fresh [] (Zustand
@@ -671,7 +671,7 @@ export function FileTabContextMenu({
   dirtySet,
   reportBlocked,
 }: {
-  ctxMenu: { path: string; x: number; y: number } | null;
+  ctxMenu: ProjectFileTabMenu | null;
   onClose: () => void;
   actions: FileTabContextMenuActions;
   /** 未保存文件的集合 —— 用来置灰「关闭」。 */
@@ -688,8 +688,12 @@ export function FileTabContextMenu({
 
   const path = ctxMenu?.path;
   const targetDirty = !!path && dirtySet.has(path);
+  // A project/tab may change after the popup rendered but before Base UI
+  // dispatches its item click. Check the live store at action time as well.
+  const currentMenuPath = () => fileTabMenuActionPath(ctxMenu, useSessionStore.getState);
 
   const handleCopyPath = () => {
+    const path = currentMenuPath();
     if (!path) return;
     void (async () => {
       if (!(await copyText(path))) {
@@ -706,21 +710,21 @@ export function FileTabContextMenu({
             <Menu.Item
               disabled={targetDirty}
               title={targetDirty ? t("ide.editor.closeBlockedUnsaved") : undefined}
-              onClick={() => { if (path) actions.close(path); }}
+              onClick={() => { const p = currentMenuPath(); if (p) actions.close(p); }}
               className={MENU_ITEM_CLASS}
             >
               <IconX size={14} className="shrink-0" />
               <span>{t("common.close")}</span>
             </Menu.Item>
             <Menu.Item
-              onClick={() => { if (path) reportBlocked(actions.closeOthers(path).blocked); }}
+              onClick={() => { const p = currentMenuPath(); if (p) reportBlocked(actions.closeOthers(p).blocked); }}
               className={MENU_ITEM_CLASS}
             >
               <IconX size={14} className="shrink-0 opacity-50" />
               <span>{t("ide.editor.closeOthers")}</span>
             </Menu.Item>
             <Menu.Item
-              onClick={() => reportBlocked(actions.closeAll().blocked)}
+              onClick={() => { if (currentMenuPath()) reportBlocked(actions.closeAll().blocked); }}
               className={MENU_ITEM_CLASS}
             >
               <IconStack2 size={14} className="shrink-0" />
@@ -728,7 +732,7 @@ export function FileTabContextMenu({
             </Menu.Item>
             <Menu.Separator className="my-1 h-px bg-edge" />
             <Menu.Item
-              onClick={() => { if (path) actions.addToChat(path); }}
+              onClick={() => { const p = currentMenuPath(); if (p) actions.addToChat(p); }}
               className={MENU_ITEM_CLASS}
             >
               <IconMessage size={14} className="shrink-0" />

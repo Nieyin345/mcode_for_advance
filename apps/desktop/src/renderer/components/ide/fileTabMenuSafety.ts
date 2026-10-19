@@ -8,6 +8,23 @@ export interface ProjectFileTabMenu {
   y: number;
   projectId: string | null;
 }
+/** Check the latest Zustand snapshot synchronously when a menu command
+ * executes, not just when React last rendered the popup. The selected project
+ * can change between those two moments.
+ */
+export function fileTabMenuActionPath(
+  menu: ProjectFileTabMenu | null,
+  getSnapshot: () => {
+    activeProjectId: string | null;
+    ideOpenFilesByProject: Record<string, readonly string[]>;
+  },
+): string | null {
+  const state = getSnapshot();
+  const projectId = state.activeProjectId;
+  const files = projectId ? state.ideOpenFilesByProject[projectId] ?? [] : [];
+  return liveFileTabMenu(menu, projectId, files)?.path ?? null;
+}
+
 export function liveFileTabMenu(
   menu: ProjectFileTabMenu | null,
   activeProjectId: string | null,
