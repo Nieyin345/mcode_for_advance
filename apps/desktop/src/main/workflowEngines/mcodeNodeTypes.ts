@@ -38,6 +38,7 @@ import {
   MCODE_AGENT_NODE_TYPE,
   MCODE_NODE_PACK_VERSION,
   agentNodeHtml,
+  assertMcodeNodePortResult,
   normalizeAgentConfig,
   registerMcodeAgentNodes,
   type McodeAgentNodeConfig,
@@ -92,6 +93,8 @@ function outputMsg(
   result: { text: string; artifacts: Array<Record<string, unknown>>; runId?: string },
   extraMcode: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  // Validate every custom node against the same Host RPC result contract.
+  assertMcodeNodePortResult(result);
   const normalized = normalizeAgentConfig(config);
   const incoming = (inputMsg["mcode"] !== null && typeof inputMsg["mcode"] === "object"
     ? inputMsg["mcode"]
@@ -160,6 +163,9 @@ export async function runBranchNode(
   });
   if (!chosen || typeof chosen !== "object" || !Number.isInteger(chosen.port) || chosen.port < 0 || chosen.port >= portCount) {
     throw new Error("分支端口无效，拒绝执行");
+  }
+  if (chosen.label !== undefined && typeof chosen.label !== "string") {
+    throw new Error("Host branch label invalid: expected a string");
   }
   const msg = outputMsg(
     inputMsg,
@@ -254,9 +260,19 @@ export async function runNodeRedCallNode(
   const engineMethod = typeof base.params["engineMethod"] === "string" ? (base.params["engineMethod"] as string) : "GET";
   const engineBody = typeof base.params["engineBody"] === "string" ? (base.params["engineBody"] as string) : null;
   const result = await port.run({ ...base, enginePath, engineMethod, engineBody });
-  return {
-    msg: outputMsg(inputMsg, config, result, result.status !== undefined ? { engineStatus: result.status } : {}),
-  };
+  assertMcodeNodePortResult(result);
+  if (result.status !== undefined && (!Number.isInteger(result.status)
+    || result.status < 100 || result.status > 599)) {
+    throw new Error("Host node-red-call status invalid: expected an HTTP status");
+  }
+  const msg = outputMsg(inputMsg, config, result,
+    result.status !== undefined ? { engineStatus: result.status } : {});
+  // Upstream Node-RED nodes can forge arbitrary msg.mcode properties. HTTP
+  // status is authoritative only when the Host actually returned one.
+  if (result.status === undefined) {
+    delete (msg["mcode"] as Record<string, unknown>)["engineStatus"];
+  }
+  return { msg };
 }
 
 /* ── 端口聚合 ── */

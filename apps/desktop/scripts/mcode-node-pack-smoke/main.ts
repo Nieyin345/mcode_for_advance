@@ -155,6 +155,32 @@ await (async () => {
     eq("非法 outputVar → null", normalized.outputVar, null);
   }
 
+  // A damaged Node-RED flows.json may contain runtime values that do not
+  // satisfy the TypeScript interface. Normalization must be total, and an
+  // untrusted Host RPC result must not be forwarded as a successful run.
+  {
+    let damagedThrew = false;
+    let normalized: ReturnType<typeof normalizeAgentConfig> | null = null;
+    try { normalized = normalizeAgentConfig(null as unknown as McodeAgentNodeConfig); }
+    catch { damagedThrew = true; }
+    check("★ null Node-RED config uses conservative defaults without throwing",
+      !damagedThrew && normalized?.capability === "read" && normalized.instruction === "",normalized);
+    const arrayParams = normalizeAgentConfig({
+      id: "fixture", "x-mcode": { params: ["forged"] as unknown as Record<string, unknown> },
+    });
+    check("★ invalid array x-mcode.params never gets forwarded as an argument object",
+      !Array.isArray(arrayParams.params) && Object.keys(arrayParams.params).length === 0,arrayParams.params);
+    for (const bad of [null, { text: "untrusted", artifacts: null }, { text: 1, artifacts: [] }]) {
+      let caught = false;
+      try {
+        await runAgentNode({}, { id: "runtime-bad" }, { run: async () => bad as never });
+      } catch (error) {
+        caught = error instanceof Error && /结果|result|artifacts|text|invalid/i.test(error.message);
+      }
+      check("★ malformed Host Agent RPC result cannot pass as a successful Node-RED message", caught, bad);
+    }
+  }
+
   // ★ 注册外壳：假 RED 收到 registerType，input 处理器调 port 并 send/done。
   {
     type Registered = { ctor: new (config: McodeAgentNodeConfig) => NodeRedNodeLike };
@@ -322,6 +348,52 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
     });
     check("★ module-capability：port 收到 moduleId/contributionId/path",
       calls[0]?.moduleId === "core.file-report" && calls[0]?.contributionId === "inspect" && calls[0]?.path === "a.txt", calls[0]);
+  }
+
+  // ARC-006: the Host RPC boundary is shared by all custom Node-RED node
+  // types, not only mcode-agent. Malformed results must fail before send().
+  {
+    const badResults = [
+      { text: 42, artifacts: [] },
+      { text: "ok", artifacts: null },
+      { text: "ok", artifacts: [{ kind: "file" }] },
+    ];
+    for (const invalid of badResults) {
+      for (const [type, invoke] of [
+        ["conversation", () => runConversationNode({}, cfg({instruction: "safe"}), { run: async () => invalid as never })],
+        ["module-capability", () => runModuleCapabilityNode({}, cfg({moduleId: "test"}), { run: async () => invalid as never })],
+        ["node-red-call", () => runNodeRedCallNode({}, cfg({enginePath: "/ok"}), { run: async () => invalid as never })],
+      ] as const) {
+        let denied = false;
+        try { await invoke(); } catch (err) {
+          denied = err instanceof Error && /invalid|结果|artifacts|text/.test(err.message);
+        }
+        check("★ " + type + " rejects malformed Host RPC output, never successful downstream payload", denied, {type, invalid});
+      }
+    }
+    for (const malformed of [{ text: "ok", artifacts: [], status: "200" }, { text: "ok", artifacts: [], status: -1 }]) {
+      let denied = false;
+      try { await runNodeRedCallNode({}, cfg({enginePath: "/ok"}), {run: async () => malformed as never}); }
+      catch (err) { denied = err instanceof Error && /invalid|status/.test(err.message); }
+      check("★ node-red-call rejects untrusted invalid HTTP status", denied, malformed);
+    }
+    let badLabelDenied = false;
+    try { await runBranchNode({}, cfg({}, [["x"]]), {decide: async () => ({port: 0, label: 42} as never)}); }
+    catch (err) { badLabelDenied = err instanceof Error && /label|invalid|无效/.test(err.message); }
+    check("★ branch denies non-string Host choice label", badLabelDenied);
+  }
+
+  // Upstream msg.mcode is untrusted. If Host node-red-call does not return
+  // an HTTP status, forwarding a previously spoofed engineStatus is misleading.
+  {
+    const incoming = { payload: "request", mcode: { engineStatus: 200, note: "keep" } };
+    const out = await runNodeRedCallNode(incoming, cfg({enginePath:"/api"}), {
+      run: async () => ({ text: "actual body", artifacts: [] }),
+    });
+    const meta = out.msg.mcode as Record<string, unknown>;
+    check("★ stale upstream HTTP status is not inherited as trusted Host result",
+      !Object.hasOwn(meta, "engineStatus"), meta);
+    check("★ unrelated metadata preserved on Host result output", meta.note === "keep", meta);
   }
 
   // ── node-red-call ──

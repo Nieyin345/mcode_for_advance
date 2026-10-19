@@ -98,23 +98,48 @@ export function normalizeAgentConfig(config: McodeAgentNodeConfig): {
   nodeId: string;
   params: Record<string, unknown>;
 } {
-  const xmcode = config["x-mcode"] ?? {};
-  const rawParams = (xmcode.params !== null && typeof xmcode.params === "object" ? xmcode.params : {}) as Record<string, unknown>;
+  // This node can be restored from untrusted/old flows.json; a TS interface
+  // does not guarantee runtime shape. Never let one invalid node crash load.
+  const safeConfig = config !== null && typeof config === "object" && !Array.isArray(config)
+    ? config : {} as McodeAgentNodeConfig;
+  const meta = safeConfig["x-mcode"];
+  const xmcode = meta !== null && typeof meta === "object" && !Array.isArray(meta) ? meta : {};
+  const params = "params" in xmcode ? xmcode.params : undefined;
+  const rawParams = params !== null && typeof params === "object" && !Array.isArray(params)
+    ? params as Record<string, unknown> : {};
   // instruction 优先取迁移器放在 x-mcode.params 里的原文（Mcode 侧参数），其次节点配置
   // 的顶层 instruction（编辑器里手填的那种）。
-  const instruction = typeof xmcode.params === "object" && xmcode.params !== null && typeof rawParams["instruction"] === "string"
+  const instruction = typeof rawParams["instruction"] === "string"
     ? (rawParams["instruction"] as string)
-    : typeof config.instruction === "string" ? config.instruction : "";
-  const capability = config.capability === "write" || rawParams["capability"] === "write" ? "write" : "read";
-  const outputVar = typeof config.outputVar === "string" && config.outputVar.trim() !== ""
-    ? config.outputVar.trim()
+    : typeof safeConfig.instruction === "string" ? safeConfig.instruction : "";
+  const capability = safeConfig.capability === "write" || rawParams["capability"] === "write" ? "write" : "read";
+  const outputVar = typeof safeConfig.outputVar === "string" && safeConfig.outputVar.trim() !== ""
+    ? safeConfig.outputVar.trim()
     : typeof rawParams["outputVar"] === "string" && (rawParams["outputVar"] as string).trim() !== ""
       ? (rawParams["outputVar"] as string).trim()
       : null;
   const nodeId = typeof xmcode.nodeId === "string" && xmcode.nodeId !== ""
     ? xmcode.nodeId
-    : typeof config.id === "string" ? config.id : "";
+    : typeof safeConfig.id === "string" ? safeConfig.id : "";
   return { instruction, capability, outputVar, nodeId, params: rawParams };
+}
+
+/** Host RPC boundary validator shared by agent, conversation, module and
+ * node-red-call. TypeScript signatures do not validate dynamic IPC payloads.
+ * A malformed response must reach Node-RED Catch, not emit a success message.
+ */
+export function assertMcodeNodePortResult(result: unknown): void {
+  if (result === null || typeof result !== "object"
+    || typeof (result as { text?: unknown }).text !== "string"
+    || !Array.isArray((result as { artifacts?: unknown }).artifacts)
+    || !(result as { artifacts: unknown[] }).artifacts.every(
+      (item) => item !== null && typeof item === "object"
+        && typeof (item as { kind?: unknown }).kind === "string"
+        && typeof (item as { uri?: unknown }).uri === "string")
+    || ((result as { runId?: unknown }).runId !== undefined
+      && typeof (result as { runId?: unknown }).runId !== "string")) {
+    throw new Error("Host RPC result invalid: expected { text, artifacts, runId? }");
+  }
 }
 
 /** 一次节点执行的结果 —— 纯数据，供 Node-RED 外壳与单测共用。 */
@@ -151,6 +176,8 @@ export async function runAgentNode(
     params: normalized.params,
   };
   const result = await port.run(payload);
+  // All six Node-RED bridge node types share one Host result validator.
+  assertMcodeNodePortResult(result);
   // 产出形状与 Mcode 侧「这一步交什么」一致：text + artifacts。
   const msg: Record<string, unknown> = {
     ...inputMsg,
