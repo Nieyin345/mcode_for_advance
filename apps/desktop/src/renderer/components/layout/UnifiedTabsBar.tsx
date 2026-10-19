@@ -21,7 +21,7 @@ import { useFileViewStore } from "@renderer/stores/fileViewStore.js";
 import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
 import { SortableSessionTab, findSession } from "./SessionTabs.js";
 import { SessionTabContextMenu } from "./SessionTabContextMenu.js";
-import { sessionTabsToClose, sessionTabMenuPosition } from "./sessionTabContextActions.js";
+import { liveSessionTabMenu, sessionTabsToClose, sessionTabMenuPosition, type ProjectSessionTabMenu } from "./sessionTabContextActions.js";
 import { tabScrollBehavior } from "./tabScrollMotion.js";
 import { keyboardReorderTarget } from "./tabKeyboardReorder.js";
 import {
@@ -137,7 +137,10 @@ export function UnifiedTabsBar() {
   useEffect(() => {
     setCtxMenu((prev) => prev && !liveFileTabMenu(prev, pid, openFiles) ? null : prev);
   }, [pid, openFiles]);
-  const [sessionCtxMenu, setSessionCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [sessionCtxMenu, setSessionCtxMenu] = useState<ProjectSessionTabMenu | null>(null);
+  useEffect(() => {
+    setSessionCtxMenu((prev) => prev && !liveSessionTabMenu(prev, pid, tabs) ? null : prev);
+  }, [pid, tabs]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Maps session, file, and plan tab keys to their DOM nodes for active-tab
@@ -348,7 +351,7 @@ export function UnifiedTabsBar() {
                       e.preventDefault();
                       e.stopPropagation();
                       const anchor = sessionTabMenuPosition(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect());
-                      setSessionCtxMenu({ id, ...anchor });
+                      setSessionCtxMenu({ id, projectId: pid, ...anchor });
                     }}
                     onKeyboardReorder={(key) => {
                       const from = tabs.indexOf(id);
@@ -608,11 +611,13 @@ export function UnifiedTabsBar() {
 
       {/* Session context menu: the same store closeTab semantics in both layouts. */}
       <SessionTabContextMenu
-        ctxMenu={sessionCtxMenu}
+        ctxMenu={liveSessionTabMenu(sessionCtxMenu, pid, tabs)}
         tabCount={tabs.length}
         onClose={() => setSessionCtxMenu(null)}
         onCloseSessions={(id, mode) => {
-          for (const closingId of sessionTabsToClose(tabs, id, mode)) closeTab(closingId);
+          const current = useSessionStore.getState();
+          if (liveSessionTabMenu(sessionCtxMenu, current.activeProjectId, current.openTabs)?.id !== id) return;
+          for (const closingId of sessionTabsToClose(current.openTabs, id, mode)) current.closeTab(closingId);
         }}
       />
       {/* Right-click context menu for file tabs (same menu as OpenTabsBar). */}

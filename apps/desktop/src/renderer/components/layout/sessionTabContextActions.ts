@@ -5,6 +5,28 @@
  */
 export type SessionTabCloseMode = "one" | "others" | "all";
 
+/** A context-menu click can arrive after the selected project or open tabs
+ * changed. Session IDs may still exist in the global openTabs array, so just
+ * checking that ID is present cannot protect an old menu from closing tabs in
+ * the newly selected project.
+ */
+export interface ProjectSessionTabMenu {
+  id: string;
+  x: number;
+  y: number;
+  projectId: string | null;
+}
+
+export function liveSessionTabMenu(
+  menu: ProjectSessionTabMenu | null,
+  activeProjectId: string | null,
+  openTabs: readonly string[],
+): ProjectSessionTabMenu | null {
+  if (!menu || !menu.projectId || !activeProjectId ||
+      menu.projectId !== activeProjectId || !openTabs.includes(menu.id)) return null;
+  return menu;
+}
+
 /** Mouse contextmenu events often also have detail === 0.
  * Use coordinates, not detail, to distinguish keyboard Shift+F10 fallback. */
 export function sessionTabMenuPosition(

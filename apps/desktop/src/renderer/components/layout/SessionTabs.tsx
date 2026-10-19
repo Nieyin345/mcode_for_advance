@@ -24,7 +24,7 @@ import type { Session } from "@contracts/session";
 import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
 import { keyboardReorderTarget, handleTabReorderKeyDown } from "./tabKeyboardReorder.js";
 import { SessionTabContextMenu } from "./SessionTabContextMenu.js";
-import { sessionTabsToClose, sessionTabMenuPosition } from "./sessionTabContextActions.js";
+import { liveSessionTabMenu, sessionTabsToClose, sessionTabMenuPosition, type ProjectSessionTabMenu } from "./sessionTabContextActions.js";
 import { tabScrollBehavior } from "./tabScrollMotion.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
@@ -51,6 +51,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 export function SessionTabs() {
   const { t } = useI18n();
   const tabs = useSessionStore((s) => s.openTabs);
+  const pid = useSessionStore((s) => s.activeProjectId);
   const activeId = useSessionStore((s) => s.activeSessionId);
   const sessionsByProject = useSessionStore((s) => s.sessionsByProject);
   const pinnedSessions = useSessionStore((s) => s.pinnedSessions);
@@ -70,7 +71,10 @@ export function SessionTabs() {
   const tabNodes = useRef<Map<string, HTMLDivElement>>(new Map());
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
-  const [sessionCtxMenu, setSessionCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [sessionCtxMenu, setSessionCtxMenu] = useState<ProjectSessionTabMenu | null>(null);
+  useEffect(() => {
+    setSessionCtxMenu((prev) => prev && !liveSessionTabMenu(prev, pid, tabs) ? null : prev);
+  }, [pid, tabs]);
 
   const recomputeScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -223,7 +227,7 @@ export function SessionTabs() {
                       e.preventDefault();
                       e.stopPropagation();
                       const anchor = sessionTabMenuPosition(e.clientX, e.clientY, e.currentTarget.getBoundingClientRect());
-                      setSessionCtxMenu({ id, ...anchor });
+                      setSessionCtxMenu({ id, projectId: pid, ...anchor });
                     }}
                     onKeyboardReorder={(key) => {
                       const from = tabs.indexOf(id);
@@ -279,11 +283,13 @@ export function SessionTabs() {
         />
       )}
       <SessionTabContextMenu
-        ctxMenu={sessionCtxMenu}
+        ctxMenu={liveSessionTabMenu(sessionCtxMenu, pid, tabs)}
         tabCount={tabs.length}
         onClose={() => setSessionCtxMenu(null)}
         onCloseSessions={(id, mode) => {
-          for (const closingId of sessionTabsToClose(tabs, id, mode)) closeTab(closingId);
+          const current = useSessionStore.getState();
+          if (liveSessionTabMenu(sessionCtxMenu, current.activeProjectId, current.openTabs)?.id !== id) return;
+          for (const closingId of sessionTabsToClose(current.openTabs, id, mode)) current.closeTab(closingId);
         }}
       />
     </div>
