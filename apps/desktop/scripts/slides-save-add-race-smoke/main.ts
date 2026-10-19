@@ -1,0 +1,48 @@
+import {mkdtempSync,writeFileSync,readFileSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {VendorSlidesExecutor} from "../../src/main/document/slidesExecutor.js";
+let good=0,bad=0;
+function ok(s:string,p:boolean,details?:unknown){console.log((p?"PASS ":"FAIL ")+s+" "+JSON.stringify(details));p?good++:bad++;}
+function gate(){let unlock!:()=>void;const promise=new Promise<void>(r=>unlock=r);return {promise,unlock};}
+const dir=mkdtempSync(join(tmpdir(),"mcode-native-slides-add-save-"));
+const file=join(dir,"source.pptx");writeFileSync(file,"original");
+const entered=gate(), proceed=gate();
+let serializations=0;
+const engine={
+async openPptx(){return {deck:{slides:[{id:"original"}],size:{cx:10,cy:10}}};},
+async savePptxToFile(opened:unknown,p:string){
+ const d=opened as {deck:{slides:{id:string}[]}};
+ const captured=d.deck.slides.map(x=>x.id).join(",");
+ serializations++;
+ if(serializations===1){entered.unlock();await proceed.promise;}
+ writeFileSync(p,captured);
+},
+async createBlankPptx(){return new Uint8Array([1]);},
+commitSaved(){}
+};
+const executor=new VendorSlidesExecutor({
+ engine,
+ render:{HeuristicMetrics:class{},buildRenderSlide:(slide:unknown)=>slide},
+ ops:{runTxn(opened:unknown,req:unknown){
+  (opened as {deck:{slides:{id:string}[]}}).deck.slides.push({id:"added"});
+  return {applied:true};
+ }}
+} as never);
+try{
+const opened=await executor.openDeck(101,"actual-doc",file,1200);
+ok("vendor original file opens",opened!==null);
+const firstSave=executor.saveDeck(101,"actual-doc",file);
+await entered.promise;
+const appended=await executor.addBlankSlide(101,"actual-doc");
+ok("native slide added while vendor serializer awaits",appended!==null,appended);
+proceed.unlock();
+const oldResult=await firstSave;
+ok("in-flight save must not report success after native addSlide",oldResult===null,oldResult);
+ok("in-flight stale save must not replace on-disk document",readFileSync(file,"utf8")==="original",readFileSync(file,"utf8"));
+const secondSave=await executor.saveDeck(101,"actual-doc",file);
+ok("subsequent fresh save succeeds",secondSave!==null,secondSave);
+ok("subsequent save contains newly added slide",readFileSync(file,"utf8")==="original,added",readFileSync(file,"utf8"));
+ok("wrong document identity cannot insert slide",(await executor.addBlankSlide(101,"another-doc"))===null);
+}finally{executor.release(101);rmSync(dir,{recursive:true,force:true});}
+console.log(`slides-save-add-race-smoke: ${good}/${good+bad}`);if(bad)process.exitCode=1;

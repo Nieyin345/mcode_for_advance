@@ -319,6 +319,9 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       session.undo.pop();
       return null;
     }
+    // addBlankSlide mutates the exact same native deck as editText. A staged
+    // save started before this operation must not claim to have saved it.
+    session.editEpoch++;
     // The original Slides UI's addBlankSlide() consumes the full updated
     // RenderSlide[] and the inserted index, not merely the new slide count.
     const slides = renderSlides(this.render, deck, session.fitWidthPx);
