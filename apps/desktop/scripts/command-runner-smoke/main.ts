@@ -233,6 +233,9 @@ console.log("\n假 spawn · 空命令与预中止根本不起进程");
   const empty = await runCommandNode({ command: "", timeoutMs: 0, signal: controller().signal }, { spawn });
   eq("空命令是失败", empty.status, "failed");
   check("错误在说命令没填", String(empty.error).includes("没有填"), empty.error);
+  const blank = await runCommandNode({ command: " \t  ", timeoutMs: 0, signal: controller().signal }, { spawn });
+  check("★ 只有空白的命令不能执行任何 shell",blank.status==="failed" && String(blank.error).includes("没有填"),blank);
+  eq("★ 空白命令不应额外启动进程",calls.length,0);
 
   const preAborted = await runCommandNode(
     { command: "anything", timeoutMs: 0, signal: AbortSignal.abort() },
@@ -240,6 +243,104 @@ console.log("\n假 spawn · 空命令与预中止根本不起进程");
   );
   eq("拿到的 signal 已经中止 → cancelled", preAborted.status, "cancelled");
   eq("两种情况都没起进程", calls.length, 0);
+}
+
+console.log("\n独立审核E1 · 非法 caller 输入不能直接拒绝 Promise，更不能 spawn");
+{
+  const child = fakeChild();
+  const { spawn, calls } = recordingSpawn(child);
+  const invalid = [
+    { label: "toJSON 抛 null-prototype 非 Error", command: "echo safe" as unknown, input: { toJSON() { throw Object.create(null); } } },
+    { label: "BigInt input 不能被 JSON 序列化", command: "echo safe" as unknown, input: 1n },
+    { label: "非字符串命令不能执行 trim", command: 42 as unknown, input: "ok" },
+    { label: "循环引用 input 不应炸坏调度器", command: "echo safe" as unknown, input: (() => { const v: Record<string, unknown> = {}; v.self=v; return v; })() },
+    { label: "不支持的 function input 不应生成假 JSON", command: "echo safe" as unknown, input: () => 1 },
+  ];
+  for(const item of invalid) {
+    let outcome: Awaited<ReturnType<typeof runCommandNode>> | null = null;
+    let threw = false;
+    try {
+      outcome = await runCommandNode(
+        { command: item.command as string, input: item.input, timeoutMs: 0, signal: controller().signal },
+        { spawn },
+      );
+    } catch {
+      threw = true;
+    }
+    check(`★ ${item.label} 要作为 NodeOutcome.failed 返回，不得 reject Promise`,
+      !threw && outcome?.status === "failed" && typeof outcome.error === "string" && outcome.error.length > 0,
+      { threw, outcome: outcome === null ? null : { status: outcome.status, error: outcome.error } });
+    eq(`${item.label} 的失败不能启动进程`,calls.length,0);
+  }
+  const cancelled = await runCommandNode(
+    { command: "echo safe", input: 2n, timeoutMs: 0, signal: AbortSignal.abort() },
+    { spawn },
+  );
+  eq("预中止优先于无效 stdin 序列化",cancelled.status,"cancelled");
+  eq("预中止的错误输入亦零 spawn",calls.length,0);
+}
+
+console.log("\n假 spawn · 进度行只能携带有效 0..100 进度或有效消息");
+{
+  const child = fakeChild({pid: 337});
+  const spawn = (() => {
+    queueMicrotask(() => {
+      const c = child as unknown as {
+        stdout: EventEmitter;
+        emitExit: (c: number|null,s: NodeJS.Signals|null)=>void;
+      };
+      c.stdout.emit("data",Buffer.from([
+        '@@mcode:progress {"percent":-10}',
+        '@@mcode:progress {"percent":1000}',
+        '@@mcode:progress {}',
+        '@@mcode:progress {"percent":"ten"}',
+        '@@mcode:progress {"percent":50}',
+        '@@mcode:progress {"message":"halfway"}',
+        ''
+      ].join("\\n").replaceAll("\\n","\n")));
+      c.emitExit(0,null);
+    });
+    return child;
+  }) as unknown as SpawnFn;
+  const updates: Array<{ percent?:number; message?:string }>=[];
+  const out = await runCommandNode({command:"x",timeoutMs:0,signal:controller().signal,onProgress:p=>updates.push(p)}, {spawn});
+  eq("协议流完整消费后命令仍成功",out.status,"success");
+  eq("★ 非法/空进度行不能回调假 UI 进度",updates.length,2);
+  eq("★ 0..100 进度真实传递",updates[0]?.percent,50);
+  eq("★ 有效消息独立传递",updates[1]?.message,"halfway");
+}
+
+
+console.log("\n假 spawn · 结果协议必须唯一且可解析,不能最后一行静默覆写");
+{
+  const runProtocol=async(lines:string[])=>{
+    const child=fakeChild({pid:338});
+    const spawn=(()=>{
+      queueMicrotask(()=>{
+        const c=child as unknown as {stdout:EventEmitter;emitExit:(c:number|null,s:NodeJS.Signals|null)=>void};
+        c.stdout.emit("data",Buffer.from(lines.join("\n")+"\n"));
+        c.emitExit(0,null);
+      });
+      return child;
+    }) as unknown as SpawnFn;
+    return runCommandNode({command:"x",timeoutMs:0,signal:controller().signal},{spawn});
+  };
+  const valid=await runProtocol(['@@mcode:result {"summary":"first","outputs":{"pages":12}}']);
+  eq("单条合法结果协议仍为成功",valid.status,"success");
+  eq("结构化结果仍携带有效 outputs",valid.outputs?.["pages"],12);
+  const duplicated=await runProtocol([
+    '@@mcode:result {"summary":"first"}',
+    '@@mcode:result {"summary":"overwrite"}'
+  ]);
+  eq("★ 同一运行出现两条 result 不能让第二条静默覆盖第一条",duplicated.status,"failed");
+  const broken=await runProtocol(['@@mcode:result {bad-json']);
+  eq("★ 有结果协议前缀却是坏 JSON 不能冒充正常命令输出",broken.status,"failed");
+  const wrongSummary=await runProtocol(['@@mcode:result {"summary":10}']);
+  eq("★ result.summary 错类型不能作为合法结果",wrongSummary.status,"failed");
+  const wrongOutputs=await runProtocol(['@@mcode:result {"outputs":[]}']);
+  eq("★ result.outputs 不是对象不能作为合法结果",wrongOutputs.status,"failed");
+  const wrongArtifacts=await runProtocol(['@@mcode:result {"artifacts":{}}']);
+  eq("★ result.artifacts 必须是数组",wrongArtifacts.status,"failed");
 }
 
 console.log("\n假 spawn · spawn 同步抛");

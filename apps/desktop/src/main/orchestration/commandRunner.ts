@@ -23,11 +23,12 @@
  * 尤其是第 1 条,那条规矩在代码节点那边是相反的(非零即失败)。
  */
 
-import { COMMAND_OUTPUT_TAIL_CHARS } from "@contracts/nodeType";
+import { COMMAND_OUTPUT_TAIL_CHARS, commandOf } from "@contracts/nodeType";
 import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeArtifact, type NodeOutcome } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
 import { spawnRun, type SpawnFn } from "@main/lib/spawnRun.js";
 import { markTruncatedTail } from "@main/lib/outBuf.js";
+import { safeErrorMessage } from "@main/lib/ipcError.js";
 
 export interface CommandProgress {
   percent?: number;
@@ -38,6 +39,11 @@ interface ProtocolResult {
   summary?: string;
   outputs?: Record<string, unknown>;
   artifacts?: NodeArtifact[];
+}
+interface ProtocolState {
+  result?: ProtocolResult;
+  resultSeen?: boolean;
+  error?: string;
 }
 
 /**
@@ -50,21 +56,45 @@ interface ProtocolResult {
 function consumeProtocolLine(
   line: string,
   onProgress: ((progress: CommandProgress) => void) | undefined,
-  state: { result?: ProtocolResult },
+  state: ProtocolState,
 ): boolean {
   if (!line.startsWith(NODE_STDOUT_PROTOCOL_PREFIX)) return false;
   const match = line.match(/^@@mcode:(progress|result)\s+(.+)$/);
-  if (!match) return true;
+  if (!match) {
+    if (line.startsWith("@@mcode:result")) state.error = "命令返回的结果协议格式错误";
+    return true;
+  }
+  if (match[1] === "result") {
+    if (state.resultSeen) {
+      state.error = "命令返回了多条结果协议，拒绝以最后一条覆盖先前结果";
+      return true;
+    }
+    state.resultSeen = true;
+  }
   try {
     const payload = JSON.parse(match[2]) as unknown;
     if (match[1] === "progress" && payload && typeof payload === "object") {
       const value = payload as Record<string, unknown>;
       const progress: CommandProgress = {};
-      if (typeof value.percent === "number" && Number.isFinite(value.percent)) progress.percent = value.percent;
-      if (typeof value.message === "string") progress.message = value.message;
-      onProgress?.(progress);
-    } else if (match[1] === "result" && payload && typeof payload === "object") {
+      // Percent is a UI percentage, not an arbitrary numeric telemetry
+      // field. Ignore out-of-range values and never emit a phantom empty
+      // progress event for malformed protocol payloads.
+      if (typeof value.percent === "number" && Number.isFinite(value.percent) &&
+          value.percent >= 0 && value.percent <= 100) progress.percent = value.percent;
+      if (typeof value.message === "string" && value.message.length > 0) progress.message = value.message;
+      if (progress.percent !== undefined || progress.message !== undefined) onProgress?.(progress);
+    } else if (match[1] === "result" && payload && typeof payload === "object" && !Array.isArray(payload)) {
       const value = payload as Record<string, unknown>;
+      // The result protocol is a structured contract. Ignore malformed
+      // progress telemetry, but never accept a result with incorrectly
+      // typed fields as a successful structured output.
+      const owns = (key: string) => Object.prototype.hasOwnProperty.call(value, key);
+      if ((owns("summary") && typeof value.summary !== "string") ||
+          (owns("outputs") && (value.outputs === null || typeof value.outputs !== "object" || Array.isArray(value.outputs))) ||
+          (owns("artifacts") && !Array.isArray(value.artifacts))) {
+        state.error = "命令返回的结果协议字段类型错误";
+        return true;
+      }
       state.result = {
         ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
         ...(value.outputs && typeof value.outputs === "object" && !Array.isArray(value.outputs)
@@ -72,9 +102,13 @@ function consumeProtocolLine(
           : {}),
         ...(Array.isArray(value.artifacts) ? { artifacts: value.artifacts as NodeArtifact[] } : {}),
       };
+    } else if (match[1] === "result") {
+      state.error = "命令返回的结果协议不是 JSON 对象";
     }
   } catch {
-    // 协议行是控制输出;坏掉的 payload 忽略即可,不该让整步崩掉。
+    // Progress telemetry is best-effort. A malformed *result*, however,
+    // cannot be silently discarded while the command reports success.
+    if (match[1] === "result") state.error = "命令返回的结果协议 JSON 无法解析";
   }
   return true;
 }
@@ -104,18 +138,38 @@ export async function runCommandNode(
   deps?: { spawn?: SpawnFn },
 ): Promise<NodeOutcome> {
   const { command, input, timeoutMs, cwd, signal, onProgress } = args;
-  if (command.length === 0) {
+  // Direct/internal callers can bypass the IPC/runner parameter validator.
+  // Reuse the contract helper so a numeric/symbol command cannot throw on
+  // .trim() and break the scheduler instead of producing a failed outcome.
+  if (commandOf({ command }).length === 0) {
     return { status: "failed", summary: "", error: "命令节点没有填要跑的命令" };
   }
   // 预中止:**根本不 spawn** —— 用户已经按了停止,没有理由再起一个进程。
   if (signal.aborted) return { status: "cancelled", summary: "" };
 
-  const protocolState: { result?: ProtocolResult } = {};
+  // JSON.stringify can throw on BigInt, circular references, or arbitrary
+  // user-supplied toJSON getters (which may even throw null-prototype objects).
+  // Its result can also be undefined (function/symbol), not valid JSON.
+  // Never spawn a command after a failed input snapshot.
+  let serializedInput: string | undefined;
+  if (input !== undefined) {
+    try {
+      const json = JSON.stringify(input);
+      if (typeof json !== "string") {
+        return { status: "failed", summary: "", error: "命令节点输入无法序列化为 JSON" };
+      }
+      serializedInput = json + "\n";
+    } catch (err) {
+      return { status: "failed", summary: "", error: `命令节点输入无法序列化:${safeErrorMessage(err)}` };
+    }
+  }
+
+  const protocolState: ProtocolState = {};
   const run = await spawnRun({
     command,
     shell: true,
     ...(cwd !== undefined ? { cwd } : {}),
-    ...(input !== undefined ? { stdin: JSON.stringify(input ?? null) + "\n" } : {}),
+    ...(serializedInput !== undefined ? { stdin: serializedInput } : {}),
     timeoutMs,
     signal,
     limitBytes: COMMAND_OUTPUT_TAIL_CHARS,
@@ -156,6 +210,10 @@ export async function runCommandNode(
       error: `命令被信号终止(${run.signal ?? "未知"}),没有拿到退出码`,
     };
   }
+  // A malformed/duplicate protocol result is not a reliable structured
+  // output. Ordinary command exit codes (including nonzero) retain their
+  // documented successful-node semantics, but corrupt control data fails.
+  if (protocolState.error) return { status: "failed", summary: text, error: protocolState.error };
   // **非零退出码照样成功** —— 见文件头第 1 条。退出码进产出变量,分流是下游的事。
   return {
     status: "success",
