@@ -146,6 +146,29 @@ eq("源存在:内容=源(空)", st.content, "");
 
 // stripManagedMarker 单独钉一下(收养 codex/pi 侧组装产物时也会用到)。
 eq("剥标记:只有标记时归空", stripManagedMarker(`${MANAGED_MARKER}\n\n`), "");
+// A handwritten Markdown file can mention our marker in documentation or a
+// code block. An occurrence away from the header conveys NO write/delete
+// authority; only the exact first line is evidence of Mcode ownership.
+{
+  const handwritten = join(root, "quoted-managed-marker.md");
+  const prose = `# My private notes\nThe app writes: \n${MANAGED_MARKER}\nDO NOT ERASE\n`;
+  writeFileSync(handwritten, prose, "utf-8");
+  eq("★ 用户正文里的托管标记只是文字，收养不得把它删掉", stripManagedMarker(prose), prose);
+  const adopted = readInstructionsState(join(root, "not-created-source.md"), [handwritten]);
+  eq("★ 从手写文档收养时仍保留托管标记引用和全部正文", adopted.content, prose);
+  eq("★ 空指令的自动同步绝不可删除仅引用标记的手写文件",
+    materializeManagedFile(handwritten, "", { force: false }).action, "unchanged");
+  eq("★ 空指令自动同步后手写文件仍存在且字节原样",
+    readFileSync(handwritten, "utf-8"), prose);
+  eq("★ 非空指令自动同步不得把引用标记的手写文件覆写成托管",
+    materializeManagedFile(handwritten, "replacement", { force: false }).action, "skipped-unmanaged");
+  eq("★ 非空自动同步后手写内容原样", readFileSync(handwritten, "utf-8"), prose);
+  // Exact first-line marker remains a valid managed file and is allowed
+  // to be reclaimed or removed as before.
+  writeFileSync(handwritten, `${MANAGED_MARKER}\n\n# truly managed\n`, "utf-8");
+  eq("确实带首行标记的文件仍允许删除",
+    materializeManagedFile(handwritten, "", { force: false }).action, "deleted");
+}
 
 /* ────────────────────── 3. 全局指令:写 / 物化 ────────────────────── */
 
@@ -161,6 +184,21 @@ check(
   readFileSync(claudeMd, "utf-8") === `${MANAGED_MARKER}\n\n# 全局指令 v1\n`,
   JSON.stringify(readFileSync(claudeMd, "utf-8")),
 );
+
+// When a later consumer target fails, report the earlier consumers that
+// actually changed. Returning materialized:[] hides a half-applied save and
+// prevents the settings UI from explaining which native engine was updated.
+{
+  const partialSource = join(root, "partial-instructions.md");
+  const partialOk = join(root, "partial-claude.md");
+  const partialBad = join(root, "partial-is-directory");
+  mkdirSync(partialBad);
+  const partial = writeInstructionsAt(partialSource, [partialOk, partialBad], "partial delivery", { force: false });
+  eq("故意不可读的第二个消费点必须使总体保存失败", partial.ok, false);
+  eq("第一消费者即使第二个失败也确实被物化", readFileSync(partialOk, "utf-8").includes("partial delivery"), true);
+  eq("★ 第二消费者失败时必须如实报告第一个目标已成功物化",partial.materialized.length,1);
+  eq("★ 部分成功列表必须指向真实已变动的目标",partial.materialized[0]?.target,partialOk);
+}
 
 // 幂等:同内容重写必须是 unchanged(CONTEXT_GET 会反复触发物化)。
 w = writeInstructionsAt(source, [claudeMd, codexMd], "# 全局指令 v1", { force: true });

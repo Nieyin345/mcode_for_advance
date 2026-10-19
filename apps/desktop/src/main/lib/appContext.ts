@@ -50,15 +50,18 @@ export function instructionsSourcePath(dataRootPath: string): string {
 
 /** 去掉托管标记行,得到纯正文(收养已托管文件时用,编辑器里不该看到标记)。 */
 export function stripManagedMarker(content: string): string {
-  return content
-    .split("\n")
-    .filter((line) => line.trim() !== MANAGED_MARKER)
-    .join("\n")
-    .replace(/^\s+/, "");
+  // Only the first line is an ownership claim. A handwritten Markdown file
+  // may quote the marker later in prose or examples; those references must
+  // survive adoption, and must NEVER grant Mcode delete/write authority.
+  if (!hasManagedMarker(content)) return content;
+  const endOfHeader = content.indexOf("\n");
+  if (endOfHeader < 0) return "";
+  return content.slice(endOfHeader + 1).replace(/^\s+/, "");
 }
 
 function hasManagedMarker(content: string): boolean {
-  return content.includes(MANAGED_MARKER);
+  const firstLine = content.split(/\r?\n/, 1)[0]?.replace(/^\uFEFF/, "");
+  return firstLine === MANAGED_MARKER;
 }
 
 /** 原子写:tmp + rename,rename 失败(Windows 目标被占用)退回直接写。
@@ -187,15 +190,21 @@ export function writeInstructionsAt(
   content: string,
   opts: { force: boolean },
 ): WriteInstructionsResult {
+  // One source can fan out to several SDK consumers. If consumer #2 fails,
+  // #1 has ALREADY changed on disk. Preserve that truthful partial result,
+  // rather than reporting an empty list that suggests nothing happened.
+  const materialized: MaterializeResult[] = [];
   try {
     atomicWrite(sourcePath, content.replace(/\r\n/g, "\n").trimEnd() + (content.trim() === "" ? "" : "\n"));
-    const materialized = targets.map((t) => materializeManagedFile(t, content, opts));
+    for (const target of targets) {
+      materialized.push(materializeManagedFile(target, content, opts));
+    }
     const warnings = materialized
       .filter((m) => m.action === "skipped-unmanaged")
       .map((m) => `${m.target} 不是 Mcode 托管文件,已保持原样`);
     return { ok: true, warnings: warnings.length > 0 ? warnings : undefined, materialized };
   } catch (err) {
-    return { ok: false, error: (err as Error).message, materialized: [] };
+    return { ok: false, error: (err as Error).message, materialized };
   }
 }
 
