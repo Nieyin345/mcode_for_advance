@@ -29,7 +29,8 @@
  *
  * Run: scripts/hook-exec-smoke/run.sh
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -546,6 +547,47 @@ eq("★ 坏档删除失败不能改变原始字节", readFileSync(FILE, "utf-8")
   check("★ 重建过程中外部修好配置时必须拒绝覆盖", changed && result?.ok === false, result);
   eq("★ 重建竞态不覆盖外部新配置字节", readFileSync(FILE, "utf-8"), healthy);
   eq("★ 外部恢复的 Hook 仍然可读", readHooks().hooks.map((h) => h.id).join(), "external-recovered");
+}
+
+/* ── 【MC-051】读取之后外部并发编辑不得被旧快照带走 ── */
+
+console.log("\nMC-051:编辑后及时重取最新磁盘状态");
+
+// saveHook 曾先 readHooks 再 commitHooks 重读，两次之间另一编辑器新增
+// 的有效行不在旧 next 里，旧 commitHooks 会把外部新增行当成删除。
+// 在隔离临时根中拦截真实第二次 readFileSync，模拟同一文件的外部保存。
+// syncBuiltinESMExports 只在本用例短暂修改 node:fs 命名导出并在 finally 复原。
+{
+  const first = hook({ id: "race-first" });
+  const external = hook({ id: "race-external" });
+  putOnDisk(JSON.stringify({ version: 1, hooks: [first] }));
+  const previous = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = ((path: unknown, ...args: unknown[]) => {
+    if (path === FILE) {
+      reads++;
+      if (reads === 2) {
+        writeFileSync(FILE, JSON.stringify({ version: 1, hooks: [first, external] }), "utf-8");
+      }
+    }
+    return Reflect.apply(previous, fs, [path, ...args]);
+  }) as typeof fs.readFileSync;
+  syncBuiltinESMExports();
+  let result: ReturnType<typeof saveHook> | null = null;
+  try {
+    result = saveHook(hook({ id: "race-new" }));
+  } finally {
+    fs.readFileSync = previous;
+    syncBuiltinESMExports();
+  }
+  // 新事务只读取一次最新的原件：不再存在「旧 UI 快照 / 新存档」
+  // 两次 read 之间的时序缝。旧实现会命中第二次、确实把 external 丢掉。
+  eq("★ 增删写事务只读取一次最新配置，消除双读旧快照窗口", reads, 1);
+  eq("★ 合法新增 Hook 保存后仍返回成功", result?.ok, true);
+  eq("★ 若触发旧双读夹具，外部新增 Hook 不可被静默抹掉",
+    readHooks().hooks.map((h) => h.id).join(","),
+    reads === 1 ? "race-first,race-new" : "race-first,race-external,race-new");
+  eq("★ 保存结果与成功读取的快照保持一致", onDisk().hooks.length, reads === 1 ? 2 : 3);
 }
 
 /* ── 匹配与"命令能不能跑"无关 ── */

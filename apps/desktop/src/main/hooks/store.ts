@@ -184,7 +184,7 @@ function understoodOrNull(item: unknown): HookSpec | null {
 }
 
 /**
- * 把"看得懂的那一份"(`next`)写回去,**同时把盘上看不懂的条目录在原处**。
+ * 从最新的一份盘上内容执行单条变更(`mutate`)，**同时把看不懂的条目留在原处**。
  *
  * ## 为什么不能直接 `writeHooks(next)`
  *
@@ -210,13 +210,20 @@ function understoodOrNull(item: unknown): HookSpec | null {
  * 按**顺序**走盘上那份:看懂的那条按 id 替换成新值(被删掉的就跳过,即真的删掉),
  * 看不懂的原样留在那个位置;`next` 里新加的追加在末尾。
  */
-function commitHooks(next: HookSpec[]): { ok: true } | { ok: false; error: string } {
+function commitHooks(mutate: (latest: HookSpec[]) => HookSpec[] | null): { ok: true } | { ok: false; error: string } {
   const health = classifyHooksFile();
   if (health.state === "corrupt" || health.state === "read_error") {
     log.warn(`[hooks] 拒绝保存:${HOOKS_FILENAME} ${health.state === "corrupt" ? "损坏" : "读不动"}(${health.error})—— 原文件保持不动`);
     return corruptRefusal(health);
   }
   const raw = readRawHooks(health);
+  // Classify once, mutate THAT snapshot, and merge raw unrecognized entries
+  // from the same bytes. The former saveHook/readHooks -> commitHooks/read
+  // two-stage path could silently delete a hook added by an external editor
+  // in between, because stale `next` did not contain the external entry.
+  const latest = health.state === "missing" ? [] : parseHooksFile(health.text).hooks;
+  const next = mutate(latest);
+  if (next === null) return { ok: true }; // Removing an absent id is a true no-op.
 
   const byId = new Map(next.map((spec) => [spec.id, spec]));
   const claimed = new Set<string>();
@@ -315,11 +322,12 @@ function readOriginalForBackup(): string | null {
 export function saveHook(spec: HookSpec): { ok: true } | { ok: false; error: string } {
   const check = validateHook(spec);
   if (!check.ok) return check;
-  const { hooks } = readHooks();
-  const index = hooks.findIndex((h) => h.id === spec.id);
-  if (index >= 0) hooks[index] = spec;
-  else hooks.push(spec);
-  return commitHooks(hooks);
+  return commitHooks((hooks) => {
+    const index = hooks.findIndex((h) => h.id === spec.id);
+    if (index >= 0) hooks[index] = spec;
+    else hooks.push(spec);
+    return hooks;
+  });
 }
 
 /**
@@ -334,12 +342,10 @@ export function saveHook(spec: HookSpec): { ok: true } | { ok: false; error: str
  */
 export function removeHook(id: string): { ok: true } | { ok: false; error: string } {
   // A corrupt file can parse as zero usable hooks, but removing an unknown id
-  // is NOT a successful operation in that state. Surface the same refusal as
-  // saveHook/commitHooks even when the target does not occur in the list.
-  const health = classifyHooksFile();
-  if (health.state === "corrupt" || health.state === "read_error") return corruptRefusal(health);
-  const { hooks } = readHooks();
-  const next = hooks.filter((h) => h.id !== id);
-  if (next.length === hooks.length) return { ok: true };
-  return commitHooks(next);
+  // is NOT a successful operation in that state. The single fresh classify
+  // inside commitHooks refuses it, even if the target id was absent.
+  return commitHooks((hooks) => {
+    const next = hooks.filter((h) => h.id !== id);
+    return next.length === hooks.length ? null : next;
+  });
 }
