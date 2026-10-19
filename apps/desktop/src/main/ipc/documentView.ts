@@ -267,9 +267,9 @@ export function registerDocumentViewHandlers(
   /**
    * 【ARC-007】slides 编辑（A 方案第一步）：`documentView.slidesAddSlide`。
    *
-   * **身份**：与 open/save 同一条纪律 —— 页面声明的 `docId` 必须与宿主从
-   * `event.sender` 反查的结果**一致**；不一致直接拒（不拿 sender 的结果悄悄
-   * 顶替，否则调用方以为自己操作的是 A 视图，实际改了 B）。
+   * **身份**：与 open/save 同一条纪律 —— 始终从受信 `event.sender`
+   * 反查目标 docId。生产 preload 的空入参属于合法调用；历史调用方
+   * 若主动提供 `docId`，则必须与 sender 一致，否则拒绝（绝不跨视图）。
    *
    * **执行**：经注入的 `SlidesBridge` 转发到 vendor 主进程同一份 handler
    * （`slides:add-blank-slide`）。桥未装配 = `ok:false` + 点名原因，绝不假装成功。
@@ -280,7 +280,7 @@ export function registerDocumentViewHandlers(
       const sender = (evt as { sender?: unknown } | null)?.sender;
       const resolved = host.docIdForSender(sender);
       if (resolved === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
-      if (resolved !== input.docId) {
+      if (input.docId !== undefined && resolved !== input.docId) {
         return {
           ok: false,
           reason: `docId 与发送方不一致（声明 ${input.docId}，实际 ${resolved}）—— 拒绝操作`,
@@ -309,7 +309,7 @@ export function registerDocumentViewHandlers(
       const sender = (evt as { sender?: unknown } | null)?.sender;
       const resolved = host.docIdForSender(sender);
       if (resolved === null) return { ok: false, reason: "这个请求不是来自任何文档视图" };
-      if (resolved !== input.docId) {
+      if (input.docId !== undefined && resolved !== input.docId) {
         return {
           ok: false,
           reason: `docId 与发送方不一致（声明 ${input.docId}，实际 ${resolved}）—— 拒绝操作`,

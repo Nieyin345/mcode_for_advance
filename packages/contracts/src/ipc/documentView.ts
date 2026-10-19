@@ -159,9 +159,10 @@ export interface DocViewListResult {
  * channel，见 `docs/planning/genoffice-ai-interaction.md` 第 9 节）：这里只开
  * 两个编辑操作，经宿主 typed 通道转发到 vendor 执行器。
  *
- * 身份纪律与 open/save 完全相同：**docId 由页面声明、宿主从 `event.sender`
- * 反查核对**（`DocumentViewHost.docIdForSender`）—— 页面伪造 docId 影响不到
- * 任何一步。
+ * 身份纪律与 open/save 完全相同：**docId 由宿主从 `event.sender`
+ * 反查**（`DocumentViewHost.docIdForSender`），不是页面自行授权。
+ * 真实注入 preload 不携带 docId；若旧调用方仍发送 docId，宿主必须
+ * 对其作一致性校验，伪造别的 docId 一律拒绝。
  */
 /** 【ARC-007】**内部通道**（与 `mcode:document-view:save` 同一形态）：只由我们注入的
  *  视图 preload 调用，不进 `RpcMap` 的 renderer 面 —— 渲染端/Agent 都没有这个入口。
@@ -177,13 +178,15 @@ export const DOCUMENT_VIEW_SLIDES_EDIT_TEXT_CHANNEL = "mcode:document-view:slide
 export const DOCUMENT_VIEW_SLIDES_READ_OPENED_CHANNEL = "mcode:document-view:slides-read-opened";
 export const DOCUMENT_VIEW_SLIDES_SAVE_CHANNEL = "mcode:document-view:slides-save";
 
-/** `documentView:slidesAddSlide` 的入参：只带 docId（新页位置由 vendor 的
- *  `addBlankSlide` 语义决定：插在当前页之后）。 */
-export const DocViewSlidesAddSlideSchema = z.object({ docId: DocIdSchema }).strict();
+/** `documentView:slidesAddSlide` 的入参：生产视图 preload 实际发送 `{}`。
+ *  docId 是历史兼容的**可选一致性提示**，不用于授权或选择目标会话；
+ *  新页位置仍由 vendor `addBlankSlide` 语义决定。 */
+export const DocViewSlidesAddSlideSchema = z.object({ docId: DocIdSchema.optional() }).strict();
 export type DocViewSlidesAddSlideInput = z.infer<typeof DocViewSlidesAddSlideSchema>;
 
 /** `documentView:slidesEditText` 的入参。
  *
+ *  - `docId`：旧调用方可选的一致性提示；生产 preload 不发送，宿主必须从 sender 识别会话；
  *  - `slideIndex`：页序号（0-based；vendor `EditTextOp.slideIndex`，`shared/ipc.ts:199`）；
  *  - `elementId`：vendor 的元素 `sourceId`（渲染树里 `RenderNode.sourceId`，
  *    由 `addElement`/读页返回）；
@@ -191,7 +194,7 @@ export type DocViewSlidesAddSlideInput = z.infer<typeof DocViewSlidesAddSlideSch
  *    上限 200 000 字符与 vendor 聊天存储同一条量级；超过直接拒。 */
 export const DocViewSlidesEditTextSchema = z
   .object({
-    docId: DocIdSchema,
+    docId: DocIdSchema.optional(),
     slideIndex: z.number().int().min(0).max(10_000),
     elementId: z.string().min(1).max(512),
     text: z.string().max(200_000),
@@ -202,8 +205,8 @@ export type DocViewSlidesEditTextInput = z.infer<typeof DocViewSlidesEditTextSch
 /** slides 编辑通道的结果。失败时 `reason` 是给人/模型看的一句话 ——
  *  包括「vendor 主进程未装配」这种 fail-closed 情形（绝不假装成功）。 */
 export type DocViewSlidesResult =
-  | { ok: true; slideCount: number }
-  | { ok: true; text: string }
+  | { ok: true; slideCount: number; slides: unknown[]; index: number }
+  | ({ ok: true; text: string } & Record<string, unknown>)
   | { ok: false; reason: string };
 
 /* ────────────────────── 【ARC-007 P1/GA1】slides 打开/保存链 ──────────────────────

@@ -1493,14 +1493,14 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
     const { SlidesBridge, SLIDES_BRIDGE_UNAVAILABLE } = await import("@main/document/slidesBridge.js");
     const stubs: Array<{ calls: unknown[][] }> = [];
     const makeExecutor = (): {
-      addBlankSlide(webContentsId: number, docId: string): Promise<{ slideCount: number }>;
+      addBlankSlide(webContentsId: number, docId: string): Promise<{ slideCount: number; slides: unknown[]; index: number }>;
       openDeck(webContentsId: number, docId: string, filePath: string, fitWidthPx: number): Promise<{ openResult: unknown }>;
-      editText(webContentsId: number, docId: string, slideIndex: number, elementId: string, text: string): Promise<{ text: string }>;
+      editText(webContentsId: number, docId: string, slideIndex: number, elementId: string, text: string): Promise<{ text: string; renderedSlide: Record<string, unknown> }>;
       saveDeck(webContentsId: number, docId: string, filePath: string): Promise<{ bytes: number }>;
     } => ({
       async addBlankSlide(webContentsId, docId) {
         stubs.push({ calls: [["addBlankSlide", webContentsId, docId]] });
-        return { slideCount: 2 };
+        return { slideCount: 2, index: 1, slides: [{ nodes: [] }, { nodes: [{ sourceId: "fake-text" }] }] };
       },
       async openDeck(webContentsId, docId, filePath, fitWidthPx) {
         stubs.push({ calls: [["openDeck", webContentsId, docId, filePath, fitWidthPx]] });
@@ -1508,7 +1508,7 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
       },
       async editText(webContentsId, docId, slideIndex, elementId, text) {
         stubs.push({ calls: [["editText", webContentsId, docId, slideIndex, elementId, text]] });
-        return { text };
+        return { text, renderedSlide: { nodes: [{ sourceId: elementId, text: { lines: [{ runs: [{ text }] }] } }] } };
       },
       async saveDeck(webContentsId, docId, filePath) {
         stubs.push({ calls: [["saveDeck", webContentsId, docId, filePath]] });
@@ -1578,7 +1578,9 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
         { sender },
         { docId: "slides-1" },
       )) as { ok?: boolean; slideCount?: number };
-      eq("★ 有执行器：加页返回 ok:true 且页数来自执行器", add, { ok: true, slideCount: 2 });
+      check("★ 有执行器：加页返回 ok:true 且页数来自执行器", add.ok === true && add.slideCount === 2, add);
+      check("★ Mcode preload 的 addBlankSlide 必须返回 vendor 要的 slides[] 与 index",
+        Array.isArray((add as { slides?: unknown[] }).slides) && (add as { index?: number }).index === 1, add);
       eq(
         "★ 参数原样转发：执行器收到 webContentsId 与宿主反查的 docId",
         stubs.at(-1)?.calls,
@@ -1589,12 +1591,32 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
         { sender },
         { docId: "slides-1", slideIndex: 3, elementId: "el-9", text: "hello" },
       )) as { ok?: boolean; text?: string };
-      eq("★ 有执行器：改文字返回 ok:true 且回显文本", edit, { ok: true, text: "hello" });
+      check("★ 有执行器：改文字返回 ok:true 且回显文本", edit.ok === true && edit.text === "hello", edit);
+      check("★ Mcode preload 的 editText 必须返回渲染树 nodes 供 vendor 更新画布",
+        Array.isArray((edit as { nodes?: unknown[] }).nodes), edit);
       eq(
         "★ 改文字参数原样转发（slideIndex/elementId/text）",
         stubs.at(-1)?.calls,
         [["editText", wcId, "slides-1", 3, "el-9", "hello"]],
       );
+
+      // 【ARC-007】真实生产 preload 的 ABI：addBlankSlide 发 {}，editText 只发
+      // slideIndex/elementId/text，不带 docId。不能让两份携带 docId 的假调用
+      // 通过就误认为用户可以真编辑；真实身份从 event.sender 的受信视图反查。
+      const preloadAdd = (await handlers.get("mcode:document-view:slides-add-slide")!(
+        { sender },
+        {},
+      )) as { ok?: boolean; slideCount?: number };
+      check("★ 真 preload 加页入参 {} 不会被强制 docId schema 拒掉", preloadAdd.ok === true && preloadAdd.slideCount === 2, preloadAdd);
+      eq("★ 无 docId 请求的执行对象仍来自可信 sender", stubs.at(-1)?.calls,
+        [["addBlankSlide", wcId, "slides-1"]]);
+      const preloadEdit = (await handlers.get("mcode:document-view:slides-edit-text")!(
+        { sender },
+        { slideIndex: 4, elementId: "el-preload", text: "preload payload" },
+      )) as { ok?: boolean; text?: string };
+      check("★ 真 preload 改文字入参无 docId 也能透传", preloadEdit.ok === true && preloadEdit.text === "preload payload", preloadEdit);
+      eq("★ 无 docId 编辑仍绑定可信 sender 而非页面身份", stubs.at(-1)?.calls,
+        [["editText", wcId, "slides-1", 4, "el-preload", "preload payload"]]);
 
       // 页面伪造 docId：sender 反查是 slides-1，页面声明 slides-2 → 拒，执行器不被调用。
       const before = stubs.length;
@@ -1613,6 +1635,17 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
         { docId: "slides-1" },
       )) as { ok?: boolean; reason?: string };
       check("★ 陌生 sender 的编辑请求被拒", stranger.ok === false, stranger);
+      const beforeStranger = stubs.length;
+      const missingIdentity = (await handlers.get("mcode:document-view:slides-add-slide")!(
+        { sender: {} }, {},
+      )) as { ok?: boolean; reason?: string };
+      check("★ 即使不声明 docId，陌生 sender 仍不得编辑", missingIdentity.ok === false && stubs.length === beforeStranger,
+        { missingIdentity, beforeStranger, after: stubs.length });
+      const forgedEdit = (await handlers.get("mcode:document-view:slides-edit-text")!(
+        { sender }, { docId: "another-view", slideIndex: 0, elementId: "el-9", text: "wrong view" },
+      )) as { ok?: boolean; reason?: string };
+      check("★ 旧调用方改文字若伪造 docId 必拒绝", forgedEdit.ok === false && stubs.length === beforeStranger,
+        { forgedEdit, beforeStranger, after: stubs.length });
       host16.dispose();
     }
   }

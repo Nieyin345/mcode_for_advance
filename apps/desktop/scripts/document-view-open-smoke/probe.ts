@@ -614,6 +614,49 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
         await check("★ slides：OpenResult 的渲染树里包含唯一文本", () => {
           assert(renderText.includes(SLIDES_UNIQUE_TEXT), renderText.slice(0, 300));
         });
+        // ── 生产宿主两条 Slides 编辑 IPC：真实 preload 发不带 docId 的入参。
+        // 与 slides-edit-smoke 的全量 vendor preload 不同，这里走 Mcode
+        // registerDocumentViewHandlers + SlidesBridge + 真 VendorSlidesExecutor。
+        const originalSlideCount = readReply.result?.slides?.length ?? 0;
+        const addReply = (await ipcMainInvokeFrom(slideWc, "mcode:document-view:slides-add-slide", {})) as {
+          ok?: boolean; reason?: string; slides?: unknown[]; index?: number; slideCount?: number;
+        };
+        await check("★ slides Mcode 宿主：真实无 docId 加页返回 vendor 可消费的 slides/index", () => {
+          assert(addReply.ok === true, JSON.stringify(addReply).slice(0, 350));
+          assert(Array.isArray(addReply.slides) && addReply.slides.length === originalSlideCount + 1,
+            `新增渲染树页数错误：${String(addReply.slides?.length)}`);
+          assert(addReply.index === originalSlideCount, `新页 index：${String(addReply.index)}`);
+        });
+        let editTarget: { slideIndex: number; elementId: string } | null = null;
+        for (const [slideIndex, slide] of (readReply.result?.slides ?? []).entries()) {
+          const scan = (nodes: unknown[]): void => {
+            for (const node of nodes) {
+              if (!node || typeof node !== "object") continue;
+              const part = node as { sourceId?: unknown; children?: unknown[] };
+              if (!editTarget && typeof part.sourceId === "string" &&
+                  flattenRenderText([{ nodes: [node] }]).includes(SLIDES_UNIQUE_TEXT)) {
+                editTarget = { slideIndex, elementId: part.sourceId };
+              }
+              if (Array.isArray(part.children)) scan(part.children);
+            }
+          };
+          scan((slide as { nodes?: unknown[] })?.nodes ?? []);
+        }
+        await check("★ slides Mcode 宿主：文本节点有 vendor sourceId 可用于编辑", () => {
+          assert(editTarget !== null, "没有可编辑 sourceId");
+        });
+        if (editTarget !== null) {
+          const target = editTarget as { slideIndex: number; elementId: string };
+          const editedReply = (await ipcMainInvokeFrom(slideWc, "mcode:document-view:slides-edit-text", {
+            slideIndex: target.slideIndex, elementId: target.elementId, text: SLIDES_UNIQUE_TEXT,
+          })) as { ok?: boolean; reason?: string; nodes?: unknown[] };
+          await check("★ slides Mcode 宿主：真实无 docId 改文字返回可消费的 RenderSlide.nodes", () => {
+            assert(editedReply.ok === true && Array.isArray(editedReply.nodes),
+              JSON.stringify(editedReply).slice(0, 450));
+            assert(flattenRenderText([{ nodes: editedReply.nodes }]).includes(SLIDES_UNIQUE_TEXT),
+              "返回的 RenderSlide 不包含目标文本");
+          });
+        }
         // ── 真页面消费（React 状态 → Konva 画布/缩略图）：等状态栏显示打开的文件名。
         //    空白 deck 也会有缩略图，只数缩略图会假绿（实测）。
         const shown = await (async () => {

@@ -9,8 +9,8 @@
  * `docs/planning/genoffice-ai-interaction.md` 第 9 节），只为两个编辑操作开
  * typed 通道：
  *
- *   - `documentView.slidesAddSlide({ docId })` → `{ ok, slideCount }`
- *   - `documentView.slidesEditText({ docId, slideIndex, elementId, text })` → `{ ok, text }`
+ *   - `documentView.slidesAddSlide({})` → `{ ok, slideCount, slides, index }`
+ *   - `documentView.slidesEditText({ slideIndex, elementId, text })` → `{ ok, text, ...RenderSlide }`
  *
  * 两者都**转发到 vendor 主进程的同一份 handler**（`slides:add-blank-slide` /
  * `slides:edit-text`），不复制任何 vendor 逻辑。
@@ -24,7 +24,7 @@
  *
  * ## 身份与围栏
  *
- * docId 由页面声明、宿主从 `event.sender` 反查核对（`docIdForSender` 同一纪律，
+ * docId 由宿主从 `event.sender` 反查（若旧页面声明则强制一致性核对，
  * 见 `ipc/documentView.ts` 的 handler）。本模块**不**再做第二套身份判断 ——
  * 它只接收已经核对过的 docId 与参数，把调用转给执行器。
  *
@@ -43,7 +43,7 @@
 export interface SlidesEditExecutor {
   /** vendor `slides:add-blank-slide`（`slides-main.ts:2770`）语义：
    *  在当前页之后加一张空白页，返回新的页数与新页 index。 */
-  addBlankSlide(webContentsId: number, docId: string): Promise<{ slideCount: number } | null>;
+  addBlankSlide(webContentsId: number, docId: string): Promise<{ slideCount: number; slides: unknown[]; index: number } | null>;
   /** vendor `slides:edit-text`（`slides-main.ts:1507`）语义：把某页某元素的文本
    *  替换为 `text`，返回该元素替换后的纯文本（vendor 可能把它折成多个 run）。 */
   editText(
@@ -52,7 +52,7 @@ export interface SlidesEditExecutor {
     slideIndex: number,
     elementId: string,
     text: string,
-  ): Promise<{ text: string } | null>;
+  ): Promise<{ text: string; renderedSlide: Record<string, unknown> } | null>;
   /** 【ARC-007 P1/GA1】vendor `slides:open-path`（`slides-main.ts:1458`）语义：
    *  用 vendor 的解析器打开**宿主已过围栏的路径**，返回 vendor `OpenResult`
    *  （`shared/ipc.ts:91-98`：`{ path, slides[], size, defaultFont? }`）。
@@ -73,7 +73,10 @@ export interface SlidesEditExecutor {
   ): Promise<{ bytes: number } | null>;
 }
 
-export type SlidesEditResult = { ok: true; slideCount: number } | { ok: true; text: string } | { ok: false; reason: string };
+export type SlidesEditResult =
+  | { ok: true; slideCount: number; slides: unknown[]; index: number }
+  | ({ ok: true; text: string } & Record<string, unknown>)
+  | { ok: false; reason: string };
 
 /** 【ARC-007 P1/GA1】打开结果：vendor `OpenResult` 原样透传（形状由 vendor 契约
  *  `shared/ipc.ts:91-98` 定义，本层不重写）。 */
@@ -109,7 +112,10 @@ export class SlidesBridge {
       if (result === null) {
         return { ok: false, reason: "slides 视图会话不存在（vendor 主进程没有这个 webContents 的打开会话）" };
       }
-      return { ok: true, slideCount: result.slideCount };
+      // Vendor slides UI consumes slides[] and index to update its canvas.
+      // Returning only slideCount made the IPC look successful while the UI
+      // never received the new RenderSlide[] (ARC-007 real preload ABI).
+      return { ok: true, slideCount: result.slideCount, slides: result.slides, index: result.index };
     } catch (err) {
       return { ok: false, reason: `加页失败：${err instanceof Error ? err.message : String(err)}` };
     }
@@ -166,7 +172,9 @@ export class SlidesBridge {
           reason: "改文字失败：元素不存在或 vendor 执行器拒绝了该操作（slideIndex/elementId 可能已失效）",
         };
       }
-      return { ok: true, text: result.text };
+      // Vendor editText() expects RenderSlide fields (especially nodes) at
+      // the top level, not a nested `slide` object or text-only receipt.
+      return { ...result.renderedSlide, ok: true, text: result.text };
     } catch (err) {
       return { ok: false, reason: `改文字失败：${err instanceof Error ? err.message : String(err)}` };
     }

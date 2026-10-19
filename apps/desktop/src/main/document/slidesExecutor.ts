@@ -234,7 +234,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
   async addBlankSlide(
     webContentsId: number,
     docId: string,
-  ): Promise<{ slideCount: number } | null> {
+  ): Promise<{ slideCount: number; slides: unknown[]; index: number } | null> {
     void docId;
     const session = this.sessions.get(webContentsId);
     if (!session) return null;
@@ -251,7 +251,10 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       session.undo.pop();
       return null;
     }
-    return { slideCount: deck.deck.slides.length };
+    // The original Slides UI's addBlankSlide() consumes the full updated
+    // RenderSlide[] and the inserted index, not merely the new slide count.
+    const slides = renderSlides(this.render, deck, session.fitWidthPx);
+    return { slideCount: deck.deck.slides.length, slides, index: deck.deck.slides.length - 1 };
   }
 
   async editText(
@@ -260,7 +263,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     slideIndex: number,
     elementId: string,
     text: string,
-  ): Promise<{ text: string } | null> {
+  ): Promise<{ text: string; renderedSlide: Record<string, unknown> } | null> {
     void docId;
     const session = this.sessions.get(webContentsId);
     if (!session) return null;
@@ -282,7 +285,12 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     const deck = session.opened as VendorDeck;
     const slide = deck.deck.slides[slideIndex] as { nodes?: unknown[] } | undefined;
     const nodesText = flattenNodeText(slide?.nodes ?? []);
-    return { text: nodesText.length > 0 ? nodesText : text };
+    // The vendor editor uses the returned RenderSlide's `nodes` to replace
+    // its on-screen slide. A text-only acknowledgement would silently leave
+    // the canvas stale even though the deck mutation succeeded.
+    const renderedSlide = renderSlides(this.render, deck, session.fitWidthPx)[slideIndex];
+    if (!renderedSlide || typeof renderedSlide !== "object") return null;
+    return { text: nodesText.length > 0 ? nodesText : text, renderedSlide: renderedSlide as Record<string, unknown> };
   }
 
   /** 浅快照（vendor `takeSnapshot` 的简化版）：undo 只在失败回滚时用。 */
