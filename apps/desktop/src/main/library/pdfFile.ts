@@ -5,11 +5,24 @@
  * (`pdfImport.ts`)还要用它们,所以单独留下这一小份。
  */
 import { createHash } from "node:crypto";
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 
 /** 文件内容的 sha256(十六进制)。库里 PDF 按它内容寻址,天然去重。 */
 export function hashFile(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+  const fd = openSync(path, "r");
+  try {
+    const sha = createHash("sha256");
+    // Fixed-size buffer: hashing a 2GB file must not allocate 2GB at once.
+    const chunk = Buffer.allocUnsafe(1024 * 1024);
+    for (;;) {
+      const size = readSync(fd, chunk, 0, chunk.length, null);
+      if (size === 0) break;
+      sha.update(chunk.subarray(0, size));
+    }
+    return sha.digest("hex");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
