@@ -28,9 +28,10 @@
  * 与 `sessionFork.ts` 同一个理由:它要能在没有 Electron 的环境里被单跑一遍
  * (`scripts/session-fork-smoke`),不能把 IPC / Electron 拉进来。它只碰 db。
  */
-import { getDb, persist } from "@main/store/db.js";
+import { getDb, persistNowOrThrow } from "@main/store/db.js";
 import type { BindValue } from "@main/store/sessionSchema.js";
 import { log } from "@main/lib/logger.js";
+import { withStatement } from "./repositories/withStatement.js";
 
 /** 一条孤儿记录(表行 → 对象)。 */
 export interface ForkOrphan {
@@ -86,8 +87,9 @@ export interface OrphanInput {
 
 export const ForkOrphanRepo = {
   /**
-   * 登记一行孤儿,返回它的 id。**一定落盘**(走 `persist()` 那条合并写)—— 这是待办,
-   * 不能只在内存里。
+   * 登记一行孤儿,返回它的 id。必须在返回前同步 durable 落盘:
+   * 这是外部 SDK fork 已发生但本地事务失败后的唯一补偿线索,
+   * 不能等合并写的微任务,否则当前进程崩溃时线索又丢失。
    */
   add(input: OrphanInput): string {
     const db = getDb();
@@ -110,17 +112,21 @@ export const ForkOrphanRepo = {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       bind,
     );
-    persist();
+    // A pending fork compensation is more important than an ordinary
+    // coalesced setting write. Fail visibly if the only orphan record could
+    // not be fsync'd to disk before control leaves this recovery path.
+    persistNowOrThrow();
     return id;
   },
 
   get(id: string): ForkOrphan | undefined {
     const stmt = getDb().prepare("SELECT * FROM fork_orphans WHERE id = ?");
-    stmt.bind([id]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as Row) : undefined;
-    stmt.free();
-    return row ? rowToOrphan(row) : undefined;
+    return withStatement(stmt, (query) => {
+      query.bind([id]);
+      const found = query.step();
+      const row = found ? (query.getAsObject() as unknown as Row) : undefined;
+      return row ? rowToOrphan(row) : undefined;
+    });
   },
 
   /** 待清理的孤儿(默认只列 ORPHANED)。 */
@@ -128,11 +134,12 @@ export const ForkOrphanRepo = {
     const stmt = getDb().prepare(
       "SELECT * FROM fork_orphans WHERE status = ? ORDER BY created_at DESC",
     );
-    stmt.bind([status]);
-    const out: ForkOrphan[] = [];
-    while (stmt.step()) out.push(rowToOrphan(stmt.getAsObject() as unknown as Row));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([status]);
+      const out: ForkOrphan[] = [];
+      while (query.step()) out.push(rowToOrphan(query.getAsObject() as unknown as Row));
+      return out;
+    });
   },
 
   /** 某段源对话名下、还待清理的孤儿数(排查/断言用)。 */
@@ -140,19 +147,24 @@ export const ForkOrphanRepo = {
     const stmt = getDb().prepare(
       "SELECT COUNT(*) AS n FROM fork_orphans WHERE source_session_id = ? AND status = 'ORPHANED'",
     );
-    stmt.bind([sourceSessionId]);
-    stmt.step();
-    const n = Number((stmt.getAsObject() as { n: number }).n);
-    stmt.free();
-    return n;
+    return withStatement(stmt, (query) => {
+      query.bind([sourceSessionId]);
+      query.step();
+      return Number((query.getAsObject() as { n: number }).n);
+    });
   },
 
   /** 标记一条孤儿已处理(清理者删掉了引擎侧那份后调它)。 */
   resolve(id: string): void {
-    getDb().run(
+    const db = getDb();
+    db.run(
       "UPDATE fork_orphans SET status = 'RESOLVED', updated_at = ? WHERE id = ?",
       [Date.now(), id],
     );
+    // Completing the external compensation is also a durability boundary.
+    // A scheduled flush is insufficient: an immediate crash would resurrect
+    // a resolved orphan and invite another cleanup of the same SDK session.
+    if (db.getRowsModified() > 0) persistNowOrThrow();
   },
 };
 
