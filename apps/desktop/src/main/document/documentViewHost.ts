@@ -126,8 +126,7 @@ export interface DocumentViewWebContentsLike {
    *  刻意不给 preload(见文件头)。页面在 `App` 的 effect 里会抛
    *  `Cannot read properties of undefined` —— 没有这两个钩子时,外层只看到一片空白,
    *  完全不知道"是没加载还是加载了但崩了"。有了钩子,`list()` 能如实报出失败原因。 */
-  on?(event: "did-fail-load", listener: (...args: unknown[]) => void): unknown;
-  on?(event: "render-process-gone", listener: (...args: unknown[]) => void): unknown;
+  on?(event: "did-fail-load" | "render-process-gone" | "will-navigate" | "will-redirect", listener: (...args: unknown[]) => void): unknown;
   /** 向页面发一条受控消息（只有 `openPath` 用它）。 */
   send?(channel: string, ...args: unknown[]): void;
 }
@@ -348,11 +347,24 @@ type ClaimResult =
  * 而这条闸是「不加载远程内容」的唯一落点。
  */
 export function checkDocumentViewUrl(raw: string): { ok: true; url: string } | { ok: false; reason: string } {
+  // FULL-1: a document editor view has a privileged, narrowly-scoped Host
+  // preload. WHATWG new URL() removes TAB/LF/CR and edge whitespace before
+  // checking origin; accepting such an ambiguous raw request would make the
+  // security gate evaluate a different URL than the caller supplied.
+  if (raw.trim() !== raw || /[\u0000-\u001f\u007f]/.test(raw)) {
+    return { ok: false, reason: "文档编辑器 URL 含控制字符或非规范空白，已拒绝加载" };
+  }
   let parsed: URL;
   try {
     parsed = new URL(raw);
   } catch {
     return { ok: false, reason: `不是合法的 URL：${raw.slice(0, 200)}` };
+  }
+  // The Node-RED editor's actual auth is injected by the per-webContents
+  // credential broker; user:password@ in a URL is neither an editor identity
+  // nor a safe means of transport. Reject it before allowing any scheme.
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: "文档编辑器 URL 不能携带账号或密码" };
   }
   if (parsed.protocol === "file:") {
     // `file://remote/share/x.html` 会去读网络共享 —— 只认空主机或 localhost。
@@ -1564,6 +1576,37 @@ export class DocumentViewHost {
    *  两个事件都只记诊断、不改状态 —— 视图仍然"在"，只是页面没起来。 */
   private watchFailures(live: LiveDocumentView): void {
     const wc = live.view.webContents;
+    // FULL-1: checking the initial open URL is insufficient. A vendor page,
+    // script or HTTP redirect could later navigate this same privileged
+    // WebContentsView to unrelated HTML, retaining its Mcode preload.
+    // Keep file-based editors on the same entry document; the original
+    // Node-RED editor may change routes but only within its exact origin
+    // (including its bound port). WebContents.loadURL() itself remains a
+    // Host-authorized action and updates live.url on explicit open().
+    const blockUntrustedNavigation = (...args: unknown[]): void => {
+      const event = args[0] as { preventDefault?: () => void } | undefined;
+      const detail = args[1] as { url?: unknown } | string | undefined;
+      const proposedUrl = typeof detail === "string" ? detail :
+        detail && typeof detail.url === "string" ? detail.url : null;
+      let allowed = false;
+      if (proposedUrl !== null) {
+        const checked = checkDocumentViewUrl(proposedUrl);
+        if (checked.ok) {
+          const origin = new URL(live.url);
+          const target = new URL(checked.url);
+          allowed = origin.protocol === "file:"
+            ? target.protocol === "file:" &&
+              target.hostname === origin.hostname && target.pathname === origin.pathname
+            : target.origin === origin.origin;
+        }
+      }
+      if (!allowed) {
+        event?.preventDefault?.();
+        log.warn(`document view blocked navigation: ${live.docId}`);
+      }
+    };
+    wc.on?.("will-navigate", blockUntrustedNavigation);
+    wc.on?.("will-redirect", blockUntrustedNavigation);
     wc.on?.("did-fail-load", (...args: unknown[]) => {
       // Electron 签名:(event, errorCode, errorDescription, validatedURL, isMainFrame)
       const code = typeof args[1] === "number" ? args[1] : null;

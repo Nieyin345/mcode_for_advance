@@ -116,6 +116,7 @@ interface FakeViewLog {
   windowOpenHandlerInstalled: boolean;
   /** 【ARC-007】宿主注册的失败监听(诊断钩子)。 */
   failureListeners: Partial<Record<"did-fail-load" | "render-process-gone", (...args: unknown[]) => void>>;
+  navigationListeners: Partial<Record<"will-navigate" | "will-redirect", (...args: unknown[]) => void>>;
   /** 宿主经 `webContents.send` 发给页面的所有消息。 */
   sends: Array<{ channel: string; args: unknown[] }>;
   /** 【ARC-006 Gate A 缺口】这个假视图的 webContents id（凭据绑定按它收窄）。 */
@@ -135,6 +136,7 @@ function makeFakeView(prefs: DocumentViewWebPreferences): DocumentViewLike {
     closed: false,
     windowOpenHandlerInstalled: false,
     failureListeners: {},
+    navigationListeners: {},
     sends: [],
     webContentsId: nextFakeWebContentsId++,
   };
@@ -163,6 +165,9 @@ function makeFakeView(prefs: DocumentViewWebPreferences): DocumentViewLike {
       on(event: string, listener: (...args: unknown[]) => void) {
         if (event === "did-fail-load" || event === "render-process-gone") {
           log.failureListeners[event] = listener;
+        }
+        if (event === "will-navigate" || event === "will-redirect") {
+          log.navigationListeners[event] = listener;
         }
         return this;
       },
@@ -282,6 +287,16 @@ section("2. URL 闸：只放行 file:// 与本机回环，其余一律拒且不�
     "javascript:alert(1)",
     "file://fileserver.example/share/editor.html", // file: 指向远程主机（UNC）
     "about:blank",
+    // FULL-1: WHATWG URL silently strips these bytes, but this is a
+    // privileged DocumentHost WebContentsView with a host-only preload.
+    // The raw request must be unambiguous before any native view is created.
+    "  file:///C:/tmp/editor.html",
+    "file:///C:/tmp/ed\titor.html",
+    "http://127.0.0.1:5173/ab\nc",
+    "http://127.0.0.1:5173/ab\rc",
+    // Node-RED editor auth is injected by the Host credential broker, not
+    // embedded in a URL that can escape into history/access logs.
+    "http://user:password@127.0.0.1:5173/editor",
     "not a url at all",
   ];
   for (const url of rejected) {
@@ -309,6 +324,64 @@ section("2. URL 闸：只放行 file:// 与本机回环，其余一律拒且不�
   }
   eq("★ 通过的白名单 URL 各建且仅建一个视图", created.length, allowed.length);
   host.dispose();
+}
+
+// FULL-1: an initially trusted editor page can subsequently try to navigate
+// or HTTP-redirect its privileged webContents to an untrusted document.
+// The Host must guard the ENTIRE navigation lifecycle, not only open().
+{
+  created.length = 0;
+  const host = new DocumentViewHost({ getMainWindow: makeFakeWindow, createView: makeFakeView });
+  eq("导航守卫前置：文档打开成功",
+    host.open({ docId: "nav-file", url: FILE_URL, bounds: BOUNDS, visible: true }), { ok: true });
+  const fileView = created.at(-1)!;
+  const navigateFile = (phase: "will-navigate" | "will-redirect", target: string): boolean => {
+    let blocked = false;
+    fileView.navigationListeners[phase]?.(
+      { preventDefault: () => { blocked = true; } },
+      { url: target },
+    );
+    return blocked;
+  };
+  eq("★ 文件编辑器禁止导航到远程网页（不能借文档 preload 越权）",
+    navigateFile("will-navigate", "https://fake-remote.test/editor"), true);
+  eq("★ 文件编辑器禁止导航到另一个本地文件",
+    navigateFile("will-navigate", "file:///C:/private/doc.html"), true);
+  eq("★ 文件编辑器阻断服务端/页面重定向到不同源",
+    navigateFile("will-redirect", "http://127.0.0.1:34567/foreign"), true);
+  eq("同一编辑页 hash 导航仍允许",
+    navigateFile("will-navigate", FILE_URL + "#selection"), false);
+  eq("同一编辑页 query 导航仍允许",
+    navigateFile("will-navigate", FILE_URL + "?mode=selection"), false);
+  host.dispose();
+
+  created.length = 0;
+  const httpHost = new DocumentViewHost({ getMainWindow: makeFakeWindow, createView: makeFakeView });
+  eq("引擎编辑器回环初始打开",
+    httpHost.open({ docId: "nav-http", url: "http://127.0.0.1:3527/editor", bounds: BOUNDS, visible: false }),
+    { ok: true });
+  const httpView = created.at(-1)!;
+  const navigateHttp = (phase: "will-navigate" | "will-redirect", target: string): boolean => {
+    let blocked = false;
+    httpView.navigationListeners[phase]?.(
+      { preventDefault: () => { blocked = true; } }, { url: target },
+    );
+    return blocked;
+  };
+  eq("★ 不能从本机编辑器跳转到其它本机服务端口",
+    navigateHttp("will-navigate", "http://127.0.0.1:4189/"), true);
+  eq("★ 本机端口相同但主机身份不同仍拒绝",
+    navigateHttp("will-redirect", "http://localhost:3527/"), true);
+  eq("同源编辑器子路由允许（Node-RED Auth 页面等）",
+    navigateHttp("will-redirect", "http://127.0.0.1:3527/auth/login"), false);
+  eq("宿主显式切换页时可以更新可信 origin",
+    httpHost.open({ docId: "nav-http", url: "http://localhost:3527/editor",
+      bounds: BOUNDS, visible: false }), { ok: true });
+  eq("旧 origin 在新页面切换后不再可信",
+    navigateHttp("will-navigate", "http://127.0.0.1:3527/editor"), true);
+  eq("新 origin 的合法本地路由仍然可用",
+    navigateHttp("will-redirect", "http://localhost:3527/auth/login"), false);
+  httpHost.dispose();
 }
 
 // 纯函数级断言：闸本身（不经状态机），把判定锥体钉在原因文案上而不是"某处拒绝"。

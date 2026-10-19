@@ -122,6 +122,11 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
   await mkdir(viewsRoot, { recursive: true });
   await mkdir(outsideRoot, { recursive: true });
   await writeFile(pagePath, PAGE_HTML, "utf8");
+  // A second *isolated* page is a realistic browser navigation target. The
+  // editor preload must not become accessible there just because both are
+  // file:// pages on the same machine.
+  const unrelatedEditorPath = join(viewsRoot, "untrusted-extra-page.html");
+  await writeFile(unrelatedEditorPath, "<!doctype html><title>Untrusted page</title>", "utf8");
   // 最小 PK 夹具：宿主 readOpened 会做 docx 魔数预检（"PK"），非 zip 会按
   // 「坏档」拒绝 —— 那是产品行为，夹具必须过得了这道门才能验后面的链路。
   const DOCX_FIXTURE = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("fake docx bytes", "utf8")]);
@@ -206,6 +211,37 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
       const view = viewWebContents("u1-doc");
       await until(async () => (await view.executeJavaScript("document.readyState")) === "complete", "页面 DOM 完成");
       assert(snap[0].lastFailure === undefined, `加载失败: ${JSON.stringify(snap[0].lastFailure)}`);
+    });
+
+    await check("真 Electron 文档视图拒绝页面自行导航到另一个本地文件", async () => {
+      const view = viewWebContents("u1-doc");
+      const trustedUrl = view.getURL();
+      const foreignUrl = pathToFileURL(unrelatedEditorPath).toString();
+      let attempted = false;
+      // Electron ships WebContents navigation listeners with version-specific
+      // overload typings/signatures. The production listener is actually
+      // installed (we observe it below); assert the real event occurred and
+      // the browser remained on its original document, without depending on
+      // the shape of the event's second argument.
+      const listener = (..._args: unknown[]): void => { attempted = true; };
+      const navigationEmitter = view as unknown as {
+        on: (event: string, fn: (...args: unknown[]) => void) => void;
+        removeListener: (event: string, fn: (...args: unknown[]) => void) => void;
+      };
+      navigationEmitter.on("will-navigate", listener);
+      try {
+        // This is a real renderer-initiated navigation, unlike host.loadURL.
+        // We never navigate to an external network or user file.
+        await view.executeJavaScript("location.assign(" + JSON.stringify(foreignUrl) + "); 'attempted'");
+        await until(() => attempted, "页面触发 will-navigate");
+        await delay(150);
+        assert(view.getURL() === trustedUrl,
+          `编辑器绕过宿主围栏导航到非本会话页面: ${view.getURL()}`);
+        const bridge = await view.executeJavaScript("typeof window.desktop");
+        assert(bridge === "object", "原文档页/受控 preload 应保持活动状态");
+      } finally {
+        navigationEmitter.removeListener("will-navigate", listener);
+      }
     });
 
     await check("preload 桥真的注入页面：onMenuCommand / openDocxPath 都是函数", async () => {
