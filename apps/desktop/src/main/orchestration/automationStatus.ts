@@ -218,7 +218,14 @@ export function triggerSpecKeyOf(spec: TriggerSpec): string {
     case "file":
       // JSON keeps the include/exclude sets and their boundary unambiguous, even
       // when a glob itself contains punctuation used by the old signature format.
-      return `file:${JSON.stringify([spec.globs, spec.excludeGlobs, spec.debounceMs])}`;
+      // 目录默认忽略策略也是挂载条件：显式选择观测 dist/node_modules 后，
+      // 若用户切回安全默认值，等待合并窗口的旧触发不能继续按原授权条件派发。
+      return `file:${JSON.stringify([
+        spec.globs,
+        spec.excludeGlobs,
+        spec.debounceMs,
+        spec.defaultIgnorePolicy === "EXPLICIT_OVERRIDE" ? "EXPLICIT_OVERRIDE" : "SAFE_DEFAULT",
+      ])}`;
     case "event":
       return `event:${spec.events.join(SEP)}:${spec.matcher}:${spec.debounceMs}`;
   }
