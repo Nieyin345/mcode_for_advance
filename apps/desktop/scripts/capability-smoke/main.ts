@@ -521,6 +521,7 @@ ok(
     capabilities: [
       { kind: "builtin", id: "nonexistent.host.action" },
       { kind: "executor", id: "code" },
+      { kind: "provider", id: "phantom-sdk", capabilities: ["mcp", "streaming"] },
       { kind: "skill", id: "legit-skill" },
     ],
   });
@@ -530,9 +531,10 @@ ok(
     const ids = descs.map((d) => `${d.kind}:${d.id}`);
     ok(!ids.includes("builtin:nonexistent.host.action"), "★ MC-099:插件声明的 builtin 不被转成可用 descriptor");
     ok(!ids.includes("executor:code"), "★ MC-099:插件声明的 executor 不被转成可用 descriptor");
+    ok(!ids.includes("provider:phantom-sdk"), "★ 插件不能靠自报 provider 让未加载 SDK 被认为可运行");
     ok(ids.includes("skill:legit-skill"), "MC-099:插件能贡献的 kind(skill)照常收(不是「什么都拦」)");
     const rejected = rejectedPluginHostCapabilities(spoofManifest.data.capabilities ?? []);
-    ok(rejected.length === 2 && rejected.some((r) => r.id === "nonexistent.host.action"), "MC-099:被拒的宿主领地声明可被显式报出(不静默丢)");
+    ok(rejected.length === 3 && rejected.some((r) => r.id === "nonexistent.host.action") && rejected.some((r) => r.id === "phantom-sdk"), "MC-099:被拒的宿主和 SDK 声明可被显式报出(不静默丢)");
     // ★ 端到端:注入到 inventory 后,对那个不存在能力的**需求**照样判缺(不因自报而通过)。
     const spoofInv = collectCapabilityInventory({
       providers: [claudeProvider],
@@ -544,6 +546,12 @@ ok(
       spoofInv,
     );
     ok(!needPhantom.ok, "★ MC-099:仅靠插件的自报声明,对不存在能力的需求仍判缺(fail-closed 不通过)");
+    const needFakeProvider = checkNodeCapabilities(
+      { id: "mcode.main", runner: { kind: "prompt" } } as never,
+      [{ kind: "provider", id: "phantom-sdk", capabilities: ["mcp"] }],
+      spoofInv,
+    );
+    ok(!needFakeProvider.ok, "★ 插件不能伪造一台并未注册的原生 provider 并绕过预检");
   }
 }
 

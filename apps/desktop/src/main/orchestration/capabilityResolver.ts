@@ -62,7 +62,11 @@ export function pluginCapabilityDescriptors(
   // 从 false 变 true)。宿主侧那两个来源(`hostCapabilityDescriptors` /
   // `executorCapabilityDescriptors`)才是这两类能力的**唯一权威**;插件声明的这里一律丢弃
   // —— 丢弃会在 `collectCapabilityInventory` 的调用方日志里显式报出(不静默)。
-  const PLUGIN_CONTRIBUTABLE_KINDS = new Set<CapabilityDescriptor["kind"]>(["skill", "mcp", "plugin", "provider"]);
+  // Like host builtin/executor, a provider represents an actually registered
+  // SDK adapter, not a third-party manifest assertion. Otherwise a plugin
+  // declaring a phantom provider could make scene preflight green even though
+  // that engine cannot execute any turn.
+  const PLUGIN_CONTRIBUTABLE_KINDS = new Set<CapabilityDescriptor["kind"]>(["skill", "mcp", "plugin"]);
   return declarations
     .filter((declaration) => PLUGIN_CONTRIBUTABLE_KINDS.has(declaration.kind))
     .map((declaration) => ({
@@ -80,7 +84,7 @@ export function pluginCapabilityDescriptors(
 export function rejectedPluginHostCapabilities(
   declarations: readonly PluginCapabilityDeclaration[],
 ): PluginCapabilityDeclaration[] {
-  return declarations.filter((d) => d.kind === "builtin" || d.kind === "executor");
+  return declarations.filter((d) => d.kind === "builtin" || d.kind === "executor" || d.kind === "provider");
 }
 
 /** 【ARC-003】逐组件交付报告 → **组件级可用性标签**。
