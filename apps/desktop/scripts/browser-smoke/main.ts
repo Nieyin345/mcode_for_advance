@@ -250,6 +250,30 @@ resetBookmarks();
 Bookmarks.add("https://no-title.test", "");
 eq("标题是空串也存得下(菜单里靠 host 兜底显示)", bookmarkRows()[0]?.title, "");
 
+console.log("\n收藏 / 历史:伪造协议和损坏网址不能污染持久导航记录");
+const { AddressHistory: HistoryForUrlGuard } = await import("@main/browser/addressHistory.js");
+const { BROWSER_ADDRESS_HISTORY_SETTING_KEY: HISTORY_KEY_FOR_URL_GUARD } = await import("@contracts/ipc");
+resetBookmarks();
+SettingRepo.set(HISTORY_KEY_FOR_URL_GUARD, "[]");
+for (const malformed of [
+  "http:javascript", "https:not-a-real-authority", "file:../../secret",
+  "https://", "file://", "https://host.test/\nmalicious",
+  " https://space.test", "https://space.test ",
+  "http://host.test/\todd",
+]) {
+  Bookmarks.add(malformed, "Invalid");
+  HistoryForUrlGuard.record(malformed, "Invalid");
+}
+eq("★★ 书签拒绝伪协议、缺失 host、控制符和首尾空白", storedBookmarks(), []);
+eq("★★ 地址历史拒绝这些非可导航原文，不能污染历史",
+  SettingRepo.get(HISTORY_KEY_FOR_URL_GUARD), "[]");
+Bookmarks.add("https://good-after-invalid.test/path", "合法地址");
+HistoryForUrlGuard.record("https://good-after-invalid.test/path", "合法地址");
+eq("正常书签仍可加入", storedUrls(), ["https://good-after-invalid.test/path"]);
+eq("正常历史仍可加入",
+  JSON.parse(SettingRepo.get(HISTORY_KEY_FOR_URL_GUARD) ?? "[]").map((row: {url:string})=>row.url),
+  ["https://good-after-invalid.test/path"]);
+
 console.log("\n收藏:上限");
 
 // 「上限类逻辑要在追加时滚动截断」。这里 MAX_ENTRIES = 100:加第 101 条之后,

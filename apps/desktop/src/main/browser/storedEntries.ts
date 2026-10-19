@@ -13,6 +13,30 @@ import { SettingRepo } from "@main/store/repositories.js";
 
 export type BrowserEntryTimeField = "addedAt" | "at";
 
+/**
+ * A scheme prefix alone is not a navigable address: "http:javascript" and
+ * "file:../../private" passed the old regex and were persisted as bookmarks.
+ * Use the same strict predicate for bookmarks and main-frame history writes.
+ * Do not normalize the input: keeping the exact visited URL is important
+ * for bookmark removal/deduplication, so reject ambiguous spelling instead.
+ */
+export function isStorableBrowserUrl(url: string): boolean {
+  if (typeof url !== "string" || url.trim() !== url || /[\u0000-\u0020\u007f]/.test(url)) return false;
+  if (!/^(https?:\/\/|file:\/\/)/i.test(url)) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.hostname.length > 0;
+    }
+    if (parsed.protocol === "file:") {
+      return parsed.pathname.length > 1;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function isStoredBrowserEntry(
   value: unknown,
   timeField: BrowserEntryTimeField,
