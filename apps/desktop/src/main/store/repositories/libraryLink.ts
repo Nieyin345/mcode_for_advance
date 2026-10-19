@@ -9,6 +9,7 @@ import { basename } from "node:path";
 import { getDb, persist } from "../db.js";
 import { v } from "../sessionSchema.js";
 import { makeId } from "./makeId.js";
+import { withStatement } from "./withStatement.js";
 
 /* ─────────────────────────────── 条目关联 ─────────────────────────────── */
 /* 见 contracts/src/library.ts 的 `LibraryItemLink`,以及 db.ts 里那张表的注释。
@@ -49,13 +50,14 @@ export const LibraryLinkRepo = {
     const stmt = db.prepare(
       "SELECT * FROM library_item_links WHERE item_id = ? OR target_item_id = ?",
     );
-    stmt.bind([v(itemId), v(itemId)]);
-    while (stmt.step()) {
-      const link = rowToLink(stmt.getAsObject() as unknown as LinkRow);
-      out.push({ ...link, direction: link.itemId === itemId ? "out" : "in" });
-    }
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(itemId), v(itemId)]);
+      while (query.step()) {
+        const link = rowToLink(query.getAsObject() as unknown as LinkRow);
+        out.push({ ...link, direction: link.itemId === itemId ? "out" : "in" });
+      }
+      return out;
+    });
   },
 
   /**
@@ -81,13 +83,11 @@ export const LibraryLinkRepo = {
         ? "SELECT * FROM library_item_links WHERE item_id = ? AND target_item_id = ?"
         : "SELECT * FROM library_item_links WHERE item_id = ? AND target_path = ?",
     );
-    existing.bind([v(itemId), v(hasItem ? target.targetItemId : target.targetPath)]);
-    if (existing.step()) {
-      const found = rowToLink(existing.getAsObject() as unknown as LinkRow);
-      existing.free();
-      return found;
-    }
-    existing.free();
+    const prior = withStatement(existing, (query) => {
+      query.bind([v(itemId), v(hasItem ? target.targetItemId : target.targetPath)]);
+      return query.step() ? rowToLink(query.getAsObject() as unknown as LinkRow) : null;
+    });
+    if (prior) return prior;
 
     const link: LibraryItemLink = {
       id: makeId("ll"),
@@ -107,9 +107,10 @@ export const LibraryLinkRepo = {
   remove(linkId: string): boolean {
     const db = getDb();
     const before = db.prepare("SELECT id FROM library_item_links WHERE id = ?");
-    before.bind([v(linkId)]);
-    const exists = before.step();
-    before.free();
+    const exists = withStatement(before, (query) => {
+      query.bind([v(linkId)]);
+      return query.step();
+    });
     if (!exists) return false;
     db.run("DELETE FROM library_item_links WHERE id = ?", [v(linkId)]);
     persist();
@@ -161,14 +162,15 @@ export const LibraryLinkRepo = {
            WHERE target_item_id IN (${marks}) AND target_item_id <> item_id
        ) GROUP BY owner`,
     );
-    stmt.bind([...ids.map((x) => v(x)), ...ids.map((x) => v(x))]);
-    while (stmt.step()) {
-      const r = stmt.getAsObject() as { owner: unknown; n: unknown };
-      const owner = r.owner === null || r.owner === undefined ? "" : String(r.owner);
-      if (owner) counts[owner] = Number(r.n);
-    }
-    stmt.free();
-    return counts;
+    return withStatement(stmt, (query) => {
+      query.bind([...ids.map((x) => v(x)), ...ids.map((x) => v(x))]);
+      while (query.step()) {
+        const r = query.getAsObject() as { owner: unknown; n: unknown };
+        const owner = r.owner === null || r.owner === undefined ? "" : String(r.owner);
+        if (owner) counts[owner] = Number(r.n);
+      }
+      return counts;
+    });
   },
 
   /**
@@ -195,12 +197,13 @@ export const LibraryLinkRepo = {
       const stmt = db.prepare(
         `SELECT id, title FROM library_items WHERE id IN (${otherIds.map(() => "?").join(",")})`,
       );
-      stmt.bind(otherIds.map((x) => v(x)));
-      while (stmt.step()) {
-        const r = stmt.getAsObject() as { id: string; title: string };
-        titles.set(String(r.id), String(r.title));
-      }
-      stmt.free();
+      withStatement(stmt, (query) => {
+        query.bind(otherIds.map((x) => v(x)));
+        while (query.step()) {
+          const r = query.getAsObject() as { id: string; title: string };
+          titles.set(String(r.id), String(r.title));
+        }
+      });
     }
 
     for (const link of rows) {
@@ -257,10 +260,12 @@ export const LibraryLinkRepo = {
     const stmt = db.prepare(
       `SELECT * FROM library_item_links WHERE item_id IN (${marks}) OR target_item_id IN (${marks})`,
     );
-    stmt.bind([...ids.map((x) => v(x)), ...ids.map((x) => v(x))]);
-    const rows: LinkRow[] = [];
-    while (stmt.step()) rows.push(stmt.getAsObject() as unknown as LinkRow);
-    stmt.free();
+    const rows: LinkRow[] = withStatement(stmt, (query) => {
+      query.bind([...ids.map((x) => v(x)), ...ids.map((x) => v(x))]);
+      const found: LinkRow[] = [];
+      while (query.step()) found.push(query.getAsObject() as unknown as LinkRow);
+      return found;
+    });
 
     // 另一头的标题批量查(一次 IN)—— 与 `viewsOf` 同一条理由:几十条关联发几十条
     // SQL 是这一条 RPC 存在的意义所在。要查的 id 是**行里出现过的全部**,不只是被问
@@ -277,12 +282,13 @@ export const LibraryLinkRepo = {
       const t = db.prepare(
         `SELECT id, title FROM library_items WHERE id IN (${wanted.map(() => "?").join(",")})`,
       );
-      t.bind(wanted.map((x) => v(x)));
-      while (t.step()) {
-        const r = t.getAsObject() as { id: string; title: string };
-        titles.set(String(r.id), String(r.title));
-      }
-      t.free();
+      withStatement(t, (query) => {
+        query.bind(wanted.map((x) => v(x)));
+        while (query.step()) {
+          const r = query.getAsObject() as { id: string; title: string };
+          titles.set(String(r.id), String(r.title));
+        }
+      });
     }
 
     const idSet = new Set(ids);

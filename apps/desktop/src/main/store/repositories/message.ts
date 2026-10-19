@@ -85,10 +85,10 @@ export const MessageRepo = {
   hasAny(sessionId: string): boolean {
     const db = getDb();
     const stmt = db.prepare("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1");
-    stmt.bind([v(sessionId)]);
-    const found = stmt.step();
-    stmt.free();
-    return found;
+    return withStatement(stmt, (query) => {
+      query.bind([v(sessionId)]);
+      return query.step();
+    });
   },
 
   /**
@@ -144,12 +144,13 @@ export const MessageRepo = {
     // Unpaginated path — keep the historical shape for callers that haven't
     // opted in (they get all rows and ignore `hasMore`).
     if (limit == null) {
-      const stmt = db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC");
-      stmt.bind([v(sessionId)]);
-      const out: MessageRecord[] = [];
-      while (stmt.step()) out.push(rowToMessage(stmt.getAsObject() as unknown as MessageRow));
-      stmt.free();
-      return { messages: out, hasMore: false };
+      const stmt = db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC");
+      return withStatement(stmt, (query) => {
+        query.bind([v(sessionId)]);
+        const out: MessageRecord[] = [];
+        while (query.step()) out.push(rowToMessage(query.getAsObject() as unknown as MessageRow));
+        return { messages: out, hasMore: false };
+      });
     }
 
     // 取数一律降序:多取的那一条(判 `hasMore` 用的探针)**永远在降序结果的末尾**
@@ -170,9 +171,10 @@ export const MessageRepo = {
       const stmt = db.prepare(
         "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
       );
-      stmt.bind([v(sessionId), v(fetchN)]);
-      while (stmt.step()) rows.push(rowToMessage(stmt.getAsObject() as unknown as MessageRow));
-      stmt.free();
+      withStatement(stmt, (query) => {
+        query.bind([v(sessionId), v(fetchN)]);
+        while (query.step()) rows.push(rowToMessage(query.getAsObject() as unknown as MessageRow));
+      });
     } else {
       // 游标支:游标 `(beforeCreatedAt, beforeId)` 指向**已加载那一段最老的那条**
       // (渲染端传的是 `list[0]`,见 sessionStore 的 `loadOlderMessages`),要取的是比
@@ -185,9 +187,10 @@ export const MessageRepo = {
          AND (created_at < ? OR (created_at = ? AND id < ?))
          ORDER BY created_at DESC, id DESC LIMIT ?`,
       );
-      stmt.bind([v(sessionId), v(before), v(before), v(beforeId), v(fetchN)]);
-      while (stmt.step()) rows.push(rowToMessage(stmt.getAsObject() as unknown as MessageRow));
-      stmt.free();
+      withStatement(stmt, (query) => {
+        query.bind([v(sessionId), v(before), v(before), v(beforeId), v(fetchN)]);
+        while (query.step()) rows.push(rowToMessage(query.getAsObject() as unknown as MessageRow));
+      });
     }
     const hasMore = rows.length === fetchN;
     const page = hasMore ? rows.slice(0, -1) : rows;
