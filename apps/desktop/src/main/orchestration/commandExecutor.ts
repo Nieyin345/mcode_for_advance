@@ -11,14 +11,16 @@ import type { NodeExecutor } from "./executorRegistry.js";
  *
  * 没声明 bind 的参数一个都不收:混进来等于凭空多一个 argv/env。
  */
-function bindingsOf(
+export function bindingsOf(
   manifest: NodeTypeManifest,
   boundParams: Record<string, unknown> | undefined,
 ): Array<{ binding: NodeParamBinding; value: unknown }> {
   const out: Array<{ binding: NodeParamBinding; value: unknown }> = [];
   for (const spec of manifest.params) {
     if (spec.bind === undefined) continue;
-    if (boundParams === undefined || !(spec.key in boundParams)) continue;
+    // Runtime caller can supply a forged prototype independently of the
+    // input builder. Only own bound JSON fields may become argv/env/stdin.
+    if (boundParams === undefined || !Object.hasOwn(boundParams, spec.key)) continue;
     out.push({ binding: spec.bind, value: boundParams[spec.key] });
   }
   return out;

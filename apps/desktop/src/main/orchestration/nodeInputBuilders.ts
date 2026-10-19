@@ -88,6 +88,11 @@ export class NodeInputBuilderRegistry {
 
 function codeInputOf(params: Record<string, unknown>, base: NodeRunInput): NodeRunInput {
   const raw = params[NODE_CODE_INPUT_KEY];
+  // Code input is a text/JSON textarea in the node manifest. An unexpected
+  // object/number from IPC must not silently be replaced by unrelated data.
+  if (raw !== undefined && raw !== null && typeof raw !== "string") {
+    throw new Error("代码节点 input 必须是 JSON 文本或字符串");
+  }
   let input: unknown = raw;
   if (typeof raw === "string" && raw.trim()) {
     try {
@@ -100,10 +105,25 @@ function codeInputOf(params: Record<string, unknown>, base: NodeRunInput): NodeR
   }
   const code = typeof params[NODE_CODE_PARAM_KEY] === "string" ? params[NODE_CODE_PARAM_KEY] : "";
   const rawLanguage = params[NODE_CODE_LANGUAGE_KEY];
+  // Missing means the documented Python default; an explicit unknown
+  // interpreter must never be silently switched to Python.
+  if (rawLanguage !== undefined && rawLanguage !== null && rawLanguage !== ""
+    && rawLanguage !== "python" && rawLanguage !== "node"
+    && rawLanguage !== "shell" && rawLanguage !== "powershell") {
+    throw new Error("代码节点 language 无效：不能静默更换解释器");
+  }
   const language = rawLanguage === "node" || rawLanguage === "shell" || rawLanguage === "powershell"
     ? rawLanguage
     : "python";
-  const timeoutMs = typeof params[NODE_CODE_TIMEOUT_KEY] === "number" ? params[NODE_CODE_TIMEOUT_KEY] : 0;
+  // Node.js timers are bounded. Non-integer / NaN / infinity / negative or
+  // overflowing values cannot be used as a reliable execution watchdog.
+  const rawTimeout = params[NODE_CODE_TIMEOUT_KEY];
+  if (rawTimeout !== undefined && rawTimeout !== null && rawTimeout !== ""
+    && (typeof rawTimeout !== "number" || !Number.isSafeInteger(rawTimeout)
+      || rawTimeout < 0 || rawTimeout > 2_147_483_647)) {
+    throw new Error("代码节点 timeoutMs 必须是 0（不限时）或 1–2147483647 的整数毫秒");
+  }
+  const timeoutMs = typeof rawTimeout === "number" ? rawTimeout : 0;
   return { ...base, prompt: "", skills: [], mcpServerNames: [], pluginNames: [], returnMode: "none", code: { code, language, input, timeoutMs } };
 }
 
@@ -146,14 +166,17 @@ function boundParamsOf(
   params: Record<string, unknown>,
   manifest: NodeTypeManifest,
 ): { boundParams?: Record<string, unknown> } {
-  const bound: Record<string, unknown> = {};
+  // Never treat inherited props as workflow inputs, nor invoke a prototype
+  // setter when a JSON property happens to be named __proto__.
+  const bound: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   let any = false;
   for (const spec of manifest.params) {
     if (spec.bind === undefined) continue;
-    if (!(spec.key in params)) continue;
+    if (!Object.hasOwn(params, spec.key)) continue;
     const value = params[spec.key];
     if (value === undefined || value === null || value === "") continue;
-    bound[spec.key] = value;
+    // Approval and execution are asynchronous: detach the validated value.
+    bound[spec.key] = structuredClone(value);
     any = true;
   }
   // 没声明任何绑定 → 字段不出现(与 `input` / `engineRequest` 同一条"缺席 = 没有"的读法)。
@@ -351,13 +374,13 @@ export function buildNodeInput(
       ? (scope.trigger as Record<string, unknown>)
       : undefined;
   type DataWithTrigger = WorkflowDataContext & { trigger?: Record<string, unknown> };
-  const data: DataWithTrigger = {
+  const data: DataWithTrigger = structuredClone({
     userInput: scope.userPrompt,
     upstreamText: scope.upstream,
     upstreamOutputs: scope.upstreamOutputs,
     upstreamArtifacts: scope.upstreamArtifacts,
     ...(trigger !== undefined ? { trigger } : {}),
-  };
+  }) as DataWithTrigger;
   const base: NodeRunInput = {
     prompt: "",
     data,
