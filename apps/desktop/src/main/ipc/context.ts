@@ -23,7 +23,7 @@ import {
 import type { McpToolSpec } from "@main/mcp/sdk.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { errText } from "@main/lib/ipcError.js";
-import { estimateToolTokens } from "@main/lib/tokenEstimate.js";
+import { estimateToolTokensSafely } from "@main/lib/tokenEstimate.js";
 import { workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import { libraryMcpTools } from "@main/mcp/libraryServer.js";
 import { BROWSER_TOOL_SPECS } from "@main/browser/agentBrowserTools.js";
@@ -96,16 +96,16 @@ export function registerContextHandlers(ipcMain: IpcMain): void {
     // 开销一致 —— 所以这里不做引擎区分。
     const inSpecs = (specs: McpToolSpec[]): ToolUsageItem[] =>
       specs.map((spec) => {
-        const jsonSchema = zodToJsonSchema(z.object(spec.inputSchema), {
-          target: "jsonSchema7",
-          $refStrategy: "none",
-        }) as Record<string, unknown>;
-        delete jsonSchema.$schema;
-        return {
-          name: spec.name,
-          description: spec.description,
-          estTokens: estimateToolTokens({ name: spec.name, description: spec.description, inputSchema: jsonSchema }),
-        };
+        let estTokens: number | null = null;
+        try {
+          const jsonSchema = zodToJsonSchema(z.object(spec.inputSchema), {
+            target: "jsonSchema7",
+            $refStrategy: "none",
+          }) as Record<string, unknown>;
+          delete jsonSchema.$schema;
+          estTokens = estimateToolTokensSafely({ name: spec.name, description: spec.description, inputSchema: jsonSchema });
+        } catch { /* Unreadable schema: report unknown instead of failing every tool row. */ }
+        return { name: spec.name, description: spec.description, estTokens };
       });
     const inprocess = [...inSpecs(workflowMcpTools()), ...inSpecs(libraryMcpTools())];
     if (inprocess.length > 0) {
@@ -124,7 +124,7 @@ export function registerContextHandlers(ipcMain: IpcMain): void {
       const items: ToolUsageItem[] = Object.values(BROWSER_TOOL_SPECS).map((spec) => ({
         name: spec.name,
         description: spec.description,
-        estTokens: estimateToolTokens({ name: spec.name, description: spec.description }),
+        estTokens: estimateToolTokensSafely({ name: spec.name, description: spec.description }),
       }));
       groups.push({
         source: "builtin",

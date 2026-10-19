@@ -30,3 +30,13 @@ export function estimateToolTokens(tool: EstimableTool): number {
   });
   return Math.ceil(json.length / 4);
 }
+
+/** Null is an explicit unknown estimate, never a fabricated zero. */
+export function estimateToolTokensSafely(tool: EstimableTool): number | null {
+  try {
+    const count = estimateToolTokens(tool);
+    return Number.isSafeInteger(count) && count >= 0 ? count : null;
+  } catch {
+    return null;
+  }
+}
