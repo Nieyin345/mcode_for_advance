@@ -8,12 +8,14 @@
 import type { EngineNodeRegistry } from "./engineNodeRegistry.js";
 
 export async function ensureEngineNodeReady(registry: EngineNodeRegistry): Promise<void> {
+  // Verify durable approval state BEFORE any crash-recovery mutation. A broken
+  // ledger must never prompt us to restore/delete executable node backups.
+  const initial = await registry.readState();
+  if (initial.kind === "corrupt") throw new Error(`节点清单不可读：${initial.reason}`);
   const crash = await registry.recoverCrashBackups();
   if (crash.blocked.length > 0) {
     throw new Error(`节点包崩溃恢复需人工核对：${crash.blocked.map((x) => `${x.name}: ${x.reason}`).join("；")}`);
   }
-  const before = await registry.readState();
-  if (before.kind === "corrupt") throw new Error(`节点清单不可读：${before.reason}`);
   const removed = await registry.recoverPendingRemovals();
   if (removed.failed.length > 0) {
     throw new Error(`撤销的节点包仍残留：${removed.failed.map((x) => `${x.name}: ${x.reason}`).join("；")}`);
