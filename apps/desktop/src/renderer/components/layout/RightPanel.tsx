@@ -27,7 +27,7 @@ import { CustomTabView } from "@renderer/components/customUi/CustomTabView.js";
 import { useWorkspaceTarget } from "@renderer/components/customUi/useWorkspaceTarget.js";
 import { nextRailFocusIndex } from "./panelRailNavigation.js";
 import { CACHED_BUILTIN_RIGHT_TABS, prunePanelIds, rememberPanelId, rememberRightTab, shouldMountCachedBuiltin } from "./rightPanelKeepAlive.js";
-import { PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID } from "./paneDock.js";
+import { PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, paneDockFromKeyboard } from "./paneDock.js";
 
 const NO_MODULES: never[] = [];
 
@@ -229,7 +229,21 @@ export function RightPanel() {
         <button type="button" draggable
           data-testid="right-pane-drag-handle"
           title={dockTitle} aria-label={dockTitle}
+          aria-keyshortcuts="ArrowLeft ArrowRight"
           onClick={() => setRightDock(rightDock === "left" ? "right" : "left")}
+          onKeyDown={(e) => {
+            const dockSide = paneDockFromKeyboard({
+              key: e.key, altKey: e.altKey, ctrlKey: e.ctrlKey,
+              metaKey: e.metaKey, shiftKey: e.shiftKey,
+              isComposing: e.nativeEvent.isComposing,
+              keyCode: e.nativeEvent.keyCode,
+            });
+            if (dockSide) {
+              e.preventDefault();
+              e.stopPropagation();
+              setRightDock(dockSide);
+            }
+          }}
           onDragStart={(e) => {
             e.stopPropagation();
             e.dataTransfer.setData(PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID);

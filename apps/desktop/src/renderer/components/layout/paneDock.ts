@@ -26,6 +26,26 @@ export function dockResizeDelta(deltaPx: number, dock: PaneDock): number {
   return dock === "left" ? -deltaPx : deltaPx;
 }
 
+/** Explicit keyboard docking for the rail drag handle. Keyboard arrows map to
+ * the visual side, not to a toggle, so repeated presses are deterministic.
+ * Ignore IME composition and modifier shortcuts owned by the workspace/OS.
+ */
+export function paneDockFromKeyboard(event: {
+  key: string;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+  keyCode: number;
+}): PaneDock | null {
+  if (event.isComposing || event.keyCode === 229 || event.altKey ||
+      event.ctrlKey || event.metaKey || event.shiftKey) return null;
+  if (event.key === "ArrowLeft") return "left";
+  if (event.key === "ArrowRight") return "right";
+  return null;
+}
+
 /** Flex order values are stable even while switching right panel side.
  * "aside" keeps its React key and element identity, so PTY/Monaco/iframe
  * descendants aren't destroyed by docking operations.

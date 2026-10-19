@@ -22,7 +22,7 @@ check("Stable flex order puts IDE aside after center in right dock",dockFlexOrde
 check("Private drag MIME cannot be confused with file or text drag",PANE_DOCK_MIME.includes("pane-dock")&&RIGHT_PANE_DRAG_ID==="mcode-right-panel");
 check("Persisted layout includes dock beside existing width fields",store.includes("dock: s.rightDock"));
 check("Hydration validates dock field strictly",store.includes("parsePaneDock(parsed.dock)")&&store.includes("patch.rightDock"));
-check("Initial dock defaults right and setter persists",store.includes('rightDock: "right"')&&store.includes("setRightDock: (dock)")&&store.includes("schedulePaneWidthPersist(get)"));
+check("Initial dock defaults right and setter persists",store.includes('rightDock: "right"')&&store.includes("setRightDock: (dock)")&&store.includes('schedulePaneWidthPersist(get, "rightDock")'));
 check("Store type includes right dock and action",types.includes("rightDock: PaneDock")&&types.includes("setRightDock: (dock: PaneDock) => void"));
 check("App subscribes and forwards dock store state",app.includes("const rightDock = useSessionStore")&&app.includes("rightDock={rightDock}"));
 check("Shell and layout forward dock while preserving center tree",shell.includes("rightDock={rightDock}")&&layout.includes("dockFlexOrder(rightDock)"));
@@ -38,7 +38,7 @@ check("Left dock mirrors center corner radius instead of leaving clipped notch",
 check("Drag target preview is hidden from screen readers",
   layout.includes('data-testid="pane-dock-preview"') && layout.includes('aria-hidden="true"'));
 check("Right pane drag is a private-only HTML5 operation",rail.includes("PANE_DOCK_MIME")&&rail.includes("RIGHT_PANE_DRAG_ID")&&rail.includes("onDragStart")&&layout.includes("e.dataTransfer.getData(PANE_DOCK_MIME)"));
-check("Drag target honors workspace left/right geometry",layout.includes("dockSideAtPoint(e.clientX")&&layout.includes("onDrop="));
+check("Drag target honors workspace left/right geometry",layout.includes("dockSideAtPoint(e.clientX")&&layout.includes("onDropCapture="));
 check("Keyboard-accessible dock switch is available",rail.includes("onClick={() => setRightDock(rightDock === \"left\" ? \"right\" : \"left\")}")&&rail.includes("aria-label={dockTitle}"));
 check("Right/left docking flips normal and wide split resize sign",shell.includes("dockResizeDelta(deltaPx, rightDock)")&&shell.includes("onResizeRight={handleDockedResize}"));
 console.log("arc005-pane-docking "+ok+"/"+(ok+fail));if(fail)process.exitCode=1;

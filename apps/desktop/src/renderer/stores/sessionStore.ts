@@ -43,6 +43,7 @@ import type { ThemeStyle } from "@contracts/theme";
 // 【ARC-005 V1】外壳偏好的默认值 + 防卫式解析(叶子模块,只 import 契约)。
 import { DEFAULT_SHELL_PREF, parseShellPref } from "@renderer/components/shell/shellPrefs.js";
 import { parsePaneDock } from "@renderer/components/layout/paneDock.js";
+import { createCoalescedPaneWriter, mayApplyPaneHydration, withoutLocallyEditedPaneFields } from "./paneWidthWriteQueue.js";
 
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -248,25 +249,34 @@ function forceDeltaFlush(): void {
  * the settings table only gets hit once, ~400ms after the last move. The
  * timer is module-scoped so successive adjust calls reset the same timer. */
 let paneWidthPersistTimer: ReturnType<typeof setTimeout> | null = null;
-function schedulePaneWidthPersist(get: () => SessionState): void {
+type PanePersistedField = "leftWidthPct" | "rightWidth" | "rightDock" | "bottomTerminalHeight" | "editorWidthPct";
+let paneLayoutRevision = 0; // incremented for every local drag/reset/dock action
+let initialPaneLayoutRevision = 0; // captured before first-paint and deferred settings reads
+const paneLayoutLocalEdits = new Set<PanePersistedField>();
+// Debounce reduces normal drag traffic; this single-flight writer additionally
+// prevents a slow, older IPC write from completing *after* a newer layout
+// save and putting the old dock/width back in settings on next boot.
+const paneWidthWriter = createCoalescedPaneWriter(
+  () => useSessionStore.getState(),
+  (s: SessionState) => api.setting.set({
+    key: UI_PANE_WIDTHS_SETTING_KEY,
+    value: JSON.stringify({
+      leftPct: s.leftWidthPct,
+      right: s.rightWidth,
+      dock: s.rightDock,
+      bottomTerminal: s.bottomTerminalHeight,
+      editor: s.editorWidthPct,
+    }),
+  }),
+  (err) => console.error("setting.set(paneWidths) failed:", err),
+);
+function schedulePaneWidthPersist(_get: () => SessionState, field: PanePersistedField): void {
+  paneLayoutRevision++;
+  paneLayoutLocalEdits.add(field);
   if (paneWidthPersistTimer) clearTimeout(paneWidthPersistTimer);
-  paneWidthPersistTimer = setTimeout(async () => {
+  paneWidthPersistTimer = setTimeout(() => {
     paneWidthPersistTimer = null;
-    const s = get();
-    try {
-      await api.setting.set({
-        key: UI_PANE_WIDTHS_SETTING_KEY,
-        value: JSON.stringify({
-          leftPct: s.leftWidthPct,
-          right: s.rightWidth,
-          dock: s.rightDock,
-          bottomTerminal: s.bottomTerminalHeight,
-          editor: s.editorWidthPct,
-        }),
-      });
-    } catch (err) {
-      console.error("setting.set(paneWidths) failed:", err);
-    }
+    void paneWidthWriter.request();
   }, 400);
 }
 
@@ -879,6 +889,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // everything and (worse) race with the first. Bail out silently.
     if (get()._initStarted) return;
     set({ _initStarted: true });
+    // A user can resize/dock while deferred settings are still loading. Do not
+    // apply an older saved layout over a newer local choice when that resolves.
+    initialPaneLayoutRevision = paneLayoutRevision;
+    paneLayoutLocalEdits.clear();
 
     // IDE hydration staging: parsed from deferred settings, applied after the
     // project list loads so we can drop paths that belong to no project.
@@ -1405,7 +1419,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const autoArchiveRaw = ds[AUTO_ARCHIVE_SETTING_KEY];
     if (autoArchiveRaw) set({ autoArchiveConfig: parseAutoArchiveConfig(autoArchiveRaw) });
 
-    // Draggable pane widths (one JSON blob).
+    // Draggable pane widths (one JSON blob). The async read is conditional:
+    // once a local resize/dock happens during init, its state wins over the
+    // stale settings snapshot, and the queued write persists that choice.
     try {
       const paneRaw = ds[UI_PANE_WIDTHS_SETTING_KEY];
       if (paneRaw) {
@@ -1421,9 +1437,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           if (Number.isFinite(parsed.right)) {
             // Clamp against the live row width so a width dragged up to the
             // 2:8 cap survives a restart (the fixed 640px cap is gone).
-            const leftPct = Number.isFinite(parsed.leftPct)
-              ? parsed.leftPct!
-              : get().leftWidthPct;
+            const leftPct = paneLayoutLocalEdits.has("leftWidthPct")
+              ? get().leftWidthPct
+              : Number.isFinite(parsed.leftPct)
+                ? parsed.leftPct!
+                : get().leftWidthPct;
             patch.rightWidth = clampRightWidth(
               parsed.right!,
               centerRightRowWidth(get().leftOpen, leftPct),
@@ -1436,7 +1454,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             patch.bottomTerminalHeight = clampBottomTerminalHeight(parsed.bottomTerminal!);
           }
           if (Number.isFinite(parsed.editor)) patch.editorWidthPct = clampEditorWidthPct(parsed.editor!);
-          if (Object.keys(patch).length > 0) set(patch);
+          if (mayApplyPaneHydration(initialPaneLayoutRevision, paneLayoutRevision)) {
+            if (Object.keys(patch).length > 0) set(patch);
+          } else {
+            // A quick dock/resize during async init supersedes *only* that
+            // field; unrelated saved widths are still restored on startup.
+            const safe = withoutLocallyEditedPaneFields(patch, paneLayoutLocalEdits);
+            if (Object.keys(safe).length > 0) set(safe);
+          }
         }
       }
     } catch (err) {
@@ -4543,13 +4568,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // caller converted px via the container width.
     const next = clampLeftWidthPct(get().leftWidthPct + deltaPct);
     set({ leftWidthPct: next });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "leftWidthPct");
   },
   setRightDock: (dock) => {
     const side = parsePaneDock(dock);
     if (get().rightDock === side) return;
     set({ rightDock: side });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "rightDock");
   },
   adjustRightWidth: (deltaPx) => {
     const s = get();
@@ -4558,7 +4583,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       centerRightRowWidth(s.leftOpen, s.leftWidthPct),
     );
     set({ rightWidth: next });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "rightWidth");
   },
   adjustBottomTerminalHeight: (deltaPx) => {
     // Divider sits on TOP of the terminal. Dragging the handle DOWN (delta>0)
@@ -4566,7 +4591,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // as the right-bar divider. Drag UP (delta<0) to grow it.
     const next = clampBottomTerminalHeight(get().bottomTerminalHeight - deltaPx);
     set({ bottomTerminalHeight: next });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "bottomTerminalHeight");
   },
   adjustEditorWidthPct: (deltaPx) => {
     // The divider sits to the LEFT of the editor column. Dragging it RIGHT
@@ -4577,23 +4602,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // jump right).
     const next = clampEditorWidthPct(get().editorWidthPct - deltaPx);
     set({ editorWidthPct: next });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "editorWidthPct");
   },
   resetLeftWidthPct: () => {
     set({ leftWidthPct: LEFT_WIDTH_PCT_DEFAULT });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "leftWidthPct");
   },
   resetRightWidth: () => {
     set({ rightWidth: 360 });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "rightWidth");
   },
   resetBottomTerminalHeight: () => {
     set({ bottomTerminalHeight: 280 });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "bottomTerminalHeight");
   },
   resetEditorWidthPct: () => {
     set({ editorWidthPct: 50 });
-    schedulePaneWidthPersist(get);
+    schedulePaneWidthPersist(get, "editorWidthPct");
   },
   adjustWidePanelPct: (deltaPx) => {
     // Divider sits LEFT of the right panel in the wide-panel split, so a drag

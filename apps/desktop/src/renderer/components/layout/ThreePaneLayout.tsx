@@ -92,6 +92,11 @@ export function ThreePaneLayout({
   // Reordering stable flex children avoids remounting Chromium/Monaco/PTY.
   const order = dockFlexOrder(rightDock);
   const [dockPreview, setDockPreview] = useState<PaneDock | null>(null);
+  // Closing or moving the panel invalidates any outstanding HTML5 drag hover.
+  // A lost dragend (e.g. over native WebContentsView) must not strand its ghost.
+  useEffect(() => {
+    setDockPreview(null);
+  }, [rightOpen, rightDock]);
   useEffect(() => {
     const clearPreview = () => setDockPreview(null);
     window.addEventListener("dragend", clearPreview);
@@ -108,6 +113,9 @@ export function ThreePaneLayout({
     const side = dockSideAtPoint(e.clientX, bounds.left, bounds.width);
     if (!side) return;
     e.preventDefault();
+    // This is an internal pane drag: consume it before nested chat/editor
+    // file-drop handlers can interpret it as a user attachment.
+    e.stopPropagation();
     e.dataTransfer.dropEffect = "move";
     setDockPreview((prior) => prior === side ? prior : side);
   };
@@ -162,9 +170,9 @@ export function ThreePaneLayout({
         variant === "workspace"
           ? (rightDock === "left" ? "rounded-tr-[10px] rounded-br-[10px]" : "rounded-tl-[10px] rounded-bl-[10px]")
           : (rightDock === "left" ? "rounded-tr-3xl rounded-br-3xl" : "rounded-tl-3xl rounded-bl-3xl"),
-      )} style={{ order: order.center }} onDragOver={handleDockDragOver}
+      )} style={{ order: order.center }} onDragOverCapture={handleDockDragOver}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDockPreview(null); }}
-        onDrop={handleDockDrop}>
+        onDropCapture={handleDockDrop}>
         {dockPreview && (
           <div data-testid="pane-dock-preview" data-dock-preview={dockPreview} aria-hidden="true"
             className={cn(
@@ -218,11 +226,15 @@ export function ThreePaneLayout({
          internally, and xterm FitAddon breaks under a scrolling ancestor. */}
       {rightEverMounted && (
         <aside
-          className="flex h-full shrink-0 flex-col overflow-hidden border-t border-edge-panel bg-surface"
+          className="flex h-full min-w-0 shrink-0 flex-col overflow-hidden border-t border-edge-panel bg-surface"
           aria-hidden={!rightOpen}
           inert={!rightOpen}
           style={{
             order: order.aside,
+            // Preserve the stored width across window shrink/restore,
+            // but keep the center usable on a very narrow viewport. Include
+            // the adjacent toolbar/drag handle in the remaining-width budget.
+            maxWidth: "calc(80% - 48px)",
             width: rightWidthPct !== undefined ? `${rightWidthPct}%` : rightWidth,
             display: rightOpen ? "flex" : "none",
           }}
