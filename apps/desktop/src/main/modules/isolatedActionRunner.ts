@@ -36,7 +36,7 @@
  * 派发函数。故"闸在派发到隔离进程之前"由宿主保证,并于 smoke 里以「拒绝 → 零 spawn」钉住。
  */
 import { Worker } from "node:worker_threads";
-import type { ModuleResult } from "@contracts/modules";
+import { ResultSchema, type ModuleResult } from "@contracts/modules";
 
 /** 隔离执行的执行体规格:一段 `async (input) => ModuleResult` 的源码,在 worker 线程里 `eval`。 */
 export interface IsolatedActionSpec { source: string }
@@ -129,20 +129,34 @@ export async function runIsolatedAction(
     function onAbort(): void {
       settle(() => reject(isolationError("isolated_cancelled", "隔离执行已取消。")));
     }
+    // 取消监听必须先于 worker 工厂及事件监听器的注册。否则工厂同步触发取消
+    // 时会白白启动子线程；注册事件过程中触发的取消也会丢，直到超时才发现。
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) { onAbort(); return; }
     try {
       worker = workerFactory({ source: spec.source, input });
     } catch (error) {
       settle(() => reject(isolationError("isolated_spawn_failed", "隔离执行进程启动失败:" + (error instanceof Error ? error.message : String(error)))));
       return;
     }
-    if (options.signal?.aborted) { onAbort(); return; }
-    worker.on("message", (message: unknown) => {
+    // factory 可同步触发 AbortSignal；此时 settle 发生在 worker 返回前，
+    // 必须额外终止刚创建的 worker，避免丢失句柄形成孤儿线程。
+    if (settled) { try { void worker.terminate(); } catch { /* 异常线程 */ } return; }
+    try {
+      worker.on("message", (message: unknown) => {
       if (!message || typeof message !== "object") {
         settle(() => reject(isolationError("isolated_crash", "隔离执行进程返回了无法识别的消息。")));
         return;
       }
       const reply = message as { ok?: unknown; result?: unknown; error?: unknown };
-      if (reply.ok === true) settle(() => resolve(reply.result as ModuleResult));
+      if (reply.ok === true) {
+        const checked = ResultSchema.safeParse(reply.result);
+        if (!checked.success) {
+          settle(() => reject(isolationError("isolated_crash", "隔离执行体返回的结果不符合模块合同。")));
+        } else {
+          settle(() => resolve(checked.data));
+        }
+      }
       else settle(() => reject(Error(typeof reply.error === "string" ? reply.error : "隔离执行体抛出未知错误")));
     });
     worker.on("error", (error: unknown) => {
@@ -152,7 +166,11 @@ export async function runIsolatedAction(
       // 正常路径在收到 message 时已 settle;走到这里说明**没回结果就退出了**(含 process.exit)。
       settle(() => reject(isolationError("isolated_crash", "隔离执行进程在返回结果前退出(退出码 " + String(code) + ")。")));
     });
-    if (options.signal) options.signal.addEventListener("abort", onAbort, { once: true });
+    } catch (error) {
+      settle(() => reject(isolationError("isolated_spawn_failed", "隔离执行进程事件监听注册失败:" + (error instanceof Error ? error.message : String(error)))));
+      return;
+    }
+    if (settled) return;
     timer = setTimeout(() => {
       settle(() => reject(isolationError("isolated_timeout", "隔离执行超时(" + timeoutMs + " 毫秒),已终止。")));
     }, timeoutMs);
