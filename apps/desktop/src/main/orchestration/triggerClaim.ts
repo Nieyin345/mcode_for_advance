@@ -128,21 +128,37 @@ export function scheduleClaimId(triggerKey: string, minute: number): string {
   return `${triggerKey}@${minute}`;
 }
 
-/** 从一个 claimId 拆回触发器 key(`workflowId:nodeId`)。拆不出来返回 null。 */
-export function triggerKeyOfClaim(claimId: string): string | null {
+/**
+ * 校验恢复记录的幂等 ID。只接受真正的十进制非负安全整数分钟：
+ * 错乱的 @suffix / 精度溢出不能被拿去恢复到另一条触发器。
+ * 旧数据允许不含 ':' 的触发器 key（例如 a@1），保持兼容。
+ */
+function parseClaimId(claimId: string): { triggerKey: string; minute: number } | null {
   const at = claimId.lastIndexOf("@");
-  return at > 0 ? claimId.slice(0, at) : null;
+  if (at <= 0) return null;
+  const suffix = claimId.slice(at + 1);
+  if (!/^(0|[1-9][0-9]*)$/.test(suffix)) return null;
+  const minute = Number(suffix);
+  if (!Number.isSafeInteger(minute)) return null;
+  return { triggerKey: claimId.slice(0, at), minute };
 }
 
-/** 落盘那份能读的判据。读不回来**不抛**,当空表 —— 同 `isLastMinutes` 的立场。 */
+/** 从领取 id 还原触发器 key；非法/不安全的分钟后缀拒绝。 */
+export function triggerKeyOfClaim(claimId: string): string | null {
+  return parseClaimId(claimId)?.triggerKey ?? null;
+}
+
+/** 落盘的领取历史必须是规范 claimId + 对应分钟 + 有界时间戳；坏行由调用方 fail-closed。 */
 export function isTriggerClaims(raw: unknown): raw is Record<string, TriggerClaim> {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
   return Object.entries(raw).every(([key, value]) => {
-    if (key.length === 0 || typeof value !== "object" || value === null) return false;
+    const parsed = parseClaimId(key);
+    if (parsed === null || typeof value !== "object" || value === null || Array.isArray(value)) return false;
     const c = value as Record<string, unknown>;
     if (c.status !== "CLAIMED" && c.status !== "SUCCEEDED" && c.status !== "FAILED" && c.status !== "UNCERTAIN") return false;
-    return typeof c.minute === "number" && Number.isFinite(c.minute) &&
-      typeof c.at === "number" && Number.isFinite(c.at);
+    return typeof c.minute === "number" && Number.isSafeInteger(c.minute) &&
+      c.minute >= 0 && c.minute === parsed.minute &&
+      typeof c.at === "number" && Number.isSafeInteger(c.at) && c.at >= 0;
   });
 }
 
