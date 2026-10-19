@@ -7,6 +7,8 @@
  * phone. Always route id generation through here when the code can run in the
  * web shell.
  */
+let fallbackSequence = 0;
+
 export function browserUuid(): string {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -17,5 +19,8 @@ export function browserUuid(): string {
   }
   // RFC 4122 v4-ish fallback — collision odds are irrelevant for the
   // request/tab-scoped ids this app generates.
-  return "id-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // Insecure LAN shells may not have crypto.randomUUID, and random values
+  // plus coarse timestamps can repeat across adjacent composer requests.
+  fallbackSequence += 1;
+  return "id-" + Math.random().toString(36).slice(2) + Date.now().toString(36) + "-" + fallbackSequence.toString(36);
 }

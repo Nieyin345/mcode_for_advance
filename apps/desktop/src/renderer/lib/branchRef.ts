@@ -31,6 +31,9 @@ export function checkoutArgsFor(
   if (branch.current) return null;
   if (branch.type === "remote") {
     const shortName = remoteShortName(branch.name);
+    // origin/HEAD is the remote default symbolic ref, not a real checkout
+    // branch. Never ask git to create an empty or reserved branch name.
+    if (!branch.name.includes("/") || !shortName || shortName === "HEAD") return null;
     // 本地已有同名分支 → 直接切它;没有 → 建跟踪分支。
     return localNames.has(shortName)
       ? { branch: shortName }

@@ -1,0 +1,11 @@
+import { formatBytes, formatSpeed } from "../../src/renderer/lib/format.js";
+let ok=0,bad=0;
+const eq=(name:string,a:unknown,b:unknown)=>{const pass=a===b;console.log((pass?"PASS ":"FAIL ")+name+(pass?"":` actual=${a} expected=${b}`));if(pass)ok++;else bad++;};
+eq("NaN never reaches update byte counter",formatBytes(Number.NaN),"0 B");
+eq("Infinity never appears in downloaded-size UI",formatBytes(Infinity),"0 B");
+eq("negative Infinity never appears in progress UI",formatBytes(-Infinity),"0 B");
+eq("Infinite transfer speed is not rendered as Infinity GB/s",formatSpeed(Infinity),"0 B/s");
+eq("normal kilobyte formatter stays unchanged",formatBytes(1024),"1.0 KB");
+eq("normal larger byte count preserved",formatBytes(1234),"1.2 KB");
+eq("zero transfer speed remains zero",formatSpeed(0),"0 B/s");
+console.log(`transfer-format-guard-smoke: ${ok}/${ok+bad}`);if(bad)process.exitCode=1;

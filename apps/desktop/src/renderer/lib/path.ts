@@ -10,6 +10,14 @@
 /** Matches the last path separator (forward or back slash). */
 const SEP_RE = /[/\\]/;
 
+/** Remove redundant trailing separators without destroying POSIX/drive roots. */
+function normalizedPathRoot(value: string): string {
+  const path = value.replace(/\\/g, "/");
+  if (/^\/+$/.test(path)) return "/";
+  if (/^[A-Za-z]:\/+$/.test(path)) return `${path.slice(0, 2)}/`;
+  return path.replace(/\/+$/, "");
+}
+
 /** The base name of a path — the segment after the last separator.
  *  `"foo/bar/baz.ts"` → `"baz.ts"`. Returns the input unchanged if it has no
  *  separator. */
@@ -59,12 +67,17 @@ export function joinPath(base: string, add: string): string {
 export function relativePath(absPath: string, root: string): string {
   // Normalize both to forward slashes for a single comparison path.
   const normAbs = absPath.replace(/\\/g, "/");
-  const normRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normRoot = normalizedPathRoot(root);
   if (!normRoot) return normAbs;
-  // Match root either exactly or as a directory prefix (followed by "/").
-  if (normAbs === normRoot) return "";
-  if (normAbs.startsWith(normRoot + "/")) {
-    return normAbs.slice(normRoot.length + 1);
+  const windows = /^[A-Za-z]:\//.test(normRoot) || normRoot.startsWith("//");
+  const checkAbs = windows ? normAbs.toLowerCase() : normAbs;
+  const checkRoot = windows ? normRoot.toLowerCase() : normRoot;
+  // A filesystem root already ends in a slash. Keep this one separator so
+  // /home and C:/file stay inside / and C:/ respectively.
+  if (checkAbs === checkRoot) return "";
+  const prefix = checkRoot.endsWith("/") ? checkRoot : `${checkRoot}/`;
+  if (checkAbs.startsWith(prefix)) {
+    return normAbs.slice(prefix.length);
   }
   // Not under root - return the normalized input unchanged (defensive).
   return normAbs;
@@ -123,12 +136,12 @@ export function resolveRelativePath(baseDir: string, rel: string): string {
  *    a project stored with an uppercase one.
  */
 export function isPathWithin(root: string, abs: string): boolean {
-  const normRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
-  const normAbs = abs.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normRoot = normalizedPathRoot(root);
+  const normAbs = normalizedPathRoot(abs);
   if (!normRoot) return false;
   const windows = /^[a-zA-Z]:\//.test(normRoot) || normRoot.startsWith("//");
   const r = windows ? normRoot.toLowerCase() : normRoot;
   const a = windows ? normAbs.toLowerCase() : normAbs;
   if (a === r) return true;
-  return a.startsWith(r + "/");
+  return a.startsWith(r.endsWith("/") ? r : r + "/");
 }

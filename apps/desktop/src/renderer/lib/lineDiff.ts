@@ -26,10 +26,29 @@ export function lineDiff(oldText: string, newText: string): DiffLine[] {
   const m = oldLines.length;
   const n = newLines.length;
 
-  // Build the LCS length table. `lcs[i][j]` = LCS length of oldLines[0..i) and newLines[0..j).
-  // Use a flat Int32Array to keep allocation predictable; we never index more
-  // than m+1 rows of n+1 columns.
+  // Keep the exact LCS table for normal edit snippets, but don't allocate
+  // unbounded O(m*n) memory on a pasted/generated multi-thousand-line diff.
+  // 1M Int32 cells = 4 MiB; above that use a linear-memory prefix/suffix
+  // fallback, preserving every line and the existing insert-before-delete
+  // presentation order without freezing the whole Electron renderer.
   const cols = n + 1;
+  if ((m + 1) * cols > 1_000_000) {
+    let commonStart = 0;
+    while (commonStart < m && commonStart < n && oldLines[commonStart] === newLines[commonStart]) commonStart++;
+    let oldEnd = m;
+    let newEnd = n;
+    while (oldEnd > commonStart && newEnd > commonStart && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+      oldEnd--;
+      newEnd--;
+    }
+    const coarse: DiffLine[] = [];
+    for (let i = 0; i < commonStart; i++) coarse.push({ op: "equal", text: oldLines[i] });
+    for (let j = commonStart; j < newEnd; j++) coarse.push({ op: "insert", text: newLines[j] });
+    for (let i = commonStart; i < oldEnd; i++) coarse.push({ op: "delete", text: oldLines[i] });
+    for (let i = oldEnd; i < m; i++) coarse.push({ op: "equal", text: oldLines[i] });
+    return coarse;
+  }
+  // Build the exact LCS length table, in a bounded allocation.
   const lcs = new Int32Array((m + 1) * cols);
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
