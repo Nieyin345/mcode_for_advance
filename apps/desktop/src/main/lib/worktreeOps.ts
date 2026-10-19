@@ -43,6 +43,7 @@ import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { log } from "@main/lib/logger.js";
 import { normPathKey } from "@main/lib/pathNorm.js";
 import { pathWithin } from "@main/lib/pathGuard.js";
+import { worktreeRepoSegment, worktreeSessionSegment } from "./worktreePathSegment.js";
 
 // Own lazy loader (mirrors git.ts's) — importing it from ipc/git.ts would
 // create a cycle once the handlers there pull this module in.
@@ -89,8 +90,8 @@ function managedWorktreeRoot(): string {
  *  derives the same path (idempotent by construction, for a given root).
  *  Now only the FALLBACK shape (detached HEAD / unresolvable branch). */
 export function worktreeDirFor(repoPath: string, sessionId: string): string {
-  const repoName = basename(repoPath).replace(/[^A-Za-z0-9._-]+/g, "-") || "repo";
-  return join(managedWorktreeRoot(), repoName, sessionId.slice(-12));
+  const repoName = worktreeRepoSegment(basename(repoPath));
+  return join(managedWorktreeRoot(), repoName, worktreeSessionSegment(sessionId));
 }
 
 /** Prefix for generated worktree branches (`mcode/<dirname>`). Doubles as the
@@ -136,7 +137,7 @@ export async function nextWorktreeDir(
 ): Promise<string> {
   const root = join(
     managedWorktreeRoot(),
-    basename(repoPath).replace(/[^A-Za-z0-9._-]+/g, "-") || "repo",
+    worktreeRepoSegment(basename(repoPath)),
   );
   let branch = "";
   let git: import("simple-git").SimpleGit | null = null;
