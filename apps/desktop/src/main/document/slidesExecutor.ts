@@ -149,6 +149,10 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
   private readonly ops: VendorPptxOps;
   /** webContents id → deck 会话（与 vendor `sessions` 同一键空间）。 */
   private readonly sessions = new Map<number, DeckSession>();
+  // One webContents can request A, then B before A finishes parsing. A slow
+  // vendor parser must not overwrite the newer B deck, and a closed view must
+  // not recreate an orphaned session after release().
+  private readonly sessionEpochs = new Map<number, object>();
 
   constructor(modules: { engine: VendorPptxEngine; render: VendorPptxRender; ops: VendorPptxOps }) {
     this.engine = modules.engine;
@@ -165,6 +169,9 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
 
   /** 视图关闭时摘会话（由装配层在 `close`/`dispose` 时调用，避免按 id 累积）。 */
   release(webContentsId: number): void {
+    // Deleting invalidates every pending open token, without retaining a
+    // forever-growing tombstone for destroyed Electron webContents ids.
+    this.sessionEpochs.delete(webContentsId);
     this.sessions.delete(webContentsId);
   }
 
@@ -180,6 +187,9 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     fitWidthPx: number,
   ): Promise<{ openResult: unknown } | null> {
     void docId;
+    const epoch = {};
+    this.sessionEpochs.set(webContentsId, epoch);
+    const stillCurrent = (): boolean => this.sessionEpochs.get(webContentsId) === epoch;
     if (extname(filePath).toLowerCase() === ".ppt") return null; // 旧版 CFB，vendor 同样拒绝
     let bytes: Uint8Array;
     try {
@@ -197,15 +207,21 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       return null;
     }
     const deck = opened as VendorDeck;
+    if (!stillCurrent()) return null;
     if (!deck || !deck.deck || !Array.isArray(deck.deck.slides)) return null;
+    // Rendering can fail after the vendor parser accepts a damaged deck.
+    // Publish the saveable session only after every native RenderSlide exists.
+    // Otherwise a failed Open could still save a partially parsed document.
+    const width = fitWidthPx > 0 ? fitWidthPx : DEFAULT_FIT_WIDTH_PX;
+    const slides = renderSlides(this.render, deck, width);
+    if (!stillCurrent()) return null;
     this.sessions.set(webContentsId, {
       opened,
       filePath,
-      fitWidthPx: fitWidthPx > 0 ? fitWidthPx : DEFAULT_FIT_WIDTH_PX,
+      fitWidthPx: width,
       undo: [],
       redo: [],
     });
-    const slides = renderSlides(this.render, deck, fitWidthPx > 0 ? fitWidthPx : DEFAULT_FIT_WIDTH_PX);
     return { openResult: toOpenResult(deck, filePath, slides) };
   }
 
