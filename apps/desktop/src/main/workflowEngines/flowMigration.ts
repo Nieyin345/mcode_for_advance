@@ -71,6 +71,8 @@ import {
   type NodeRunnerKind,
 } from "@contracts/nodeType";
 import { MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 const NODE_RED_RUNNER_KIND = "node-red" as const;
 
@@ -418,9 +420,27 @@ export interface MigrateOptions {
   types?: ReadonlyMap<string, NodeTypeManifest>;
 }
 
-/** Node-RED 节点 id 规则：只允许 `[A-Za-z0-9_-]`，且不能与边 id 冲突。 */
-function nodeRedIdOf(prefix: string, id: string, used: Set<string>): string {
-  const base = `${prefix}_${id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+/** Existing unambiguous IDs keep their legacy name. When multiple distinct
+ * Mcode identities fold to the same Node-RED basename, use an identity-derived
+ * suffix for *all* members, rather than assigning _2 by iteration order.
+ * Hash UTF-16 code units so even malformed surrogate identities stay distinct.
+ */
+function foldedNodeRedId(prefix: string, id: string): string {
+  return `${prefix}_${id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+function collidingBases(ids: readonly string[], prefix: string): ReadonlySet<string> {
+  const counts = new Map<string, number>();
+  for (const id of ids) {
+    const base = foldedNodeRedId(prefix, id);
+    counts.set(base, (counts.get(base) ?? 0) + 1);
+  }
+  return new Set([...counts].filter(([, count]) => count > 1).map(([base]) => base));
+}
+function nodeRedIdOf(prefix: string, id: string, used: Set<string>, collisions?: ReadonlySet<string>): string {
+  const folded = foldedNodeRedId(prefix, id);
+  const base = collisions?.has(folded)
+    ? `${folded}_${createHash("sha256").update(id, "utf16le").digest("hex").slice(0, 16)}`
+    : folded;
   let candidate = base;
   let n = 2;
   while (used.has(candidate)) candidate = `${base}_${n++}`;
@@ -435,9 +455,15 @@ function nodeRedIdOf(prefix: string, id: string, used: Set<string>): string {
  * 把对应键原样装进每个 Node-RED 节点的 `x-mcode.unknown` / 边的 `x-mcode-edge.unknown`。
  */
 export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {}): FlowMigrationResult {
+  // Migration emits an archived flow which may be saved asynchronously. Do not
+  // reuse mutable params, schemas, or unknown-field objects owned by the caller:
+  // changing the original document must never mutate the migrated artifact.
+  doc = structuredClone(doc);
   const types = options.types;
   const unknownPaths = unknownWorkflowFieldPaths(doc);
   const usedIds = new Set<string>();
+  const nodeCollisions = collidingBases(doc.nodes.map((node) => node.id), "n");
+  const edgeCollisions = collidingBases(doc.edges.map((edge) => edge.id), "l");
   const mapped: FlowMigrationReport["mapped"] = [];
   const unmapped: FlowMigrationReport["unmapped"] = [];
   const needsHumanDecision: FlowMigrationIssue[] = [];
@@ -456,7 +482,7 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     const manifest = types?.get(node.type);
     const kind: NodeRunnerKind | "unknown" = manifest?.runner.kind ?? "unknown";
     kindOf.set(node.id, kind);
-    const nodeRedId = nodeRedIdOf("n", node.id, usedIds);
+    const nodeRedId = nodeRedIdOf("n", node.id, usedIds, nodeCollisions);
     const outDegree = doc.edges.filter((e) => e.from === node.id).length;
     const nodeUnknown = unknownKeysForNode(unknownPaths, index);
     const outPorts = outputPortCountOf(kind, outDegree);
@@ -598,7 +624,7 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     }
     const edgeUnknownKeys = unknownKeysForEdge(unknownPaths, index);
     const edgeUnknown = pickKeys(edge as unknown as Record<string, unknown>, edgeUnknownKeys);
-    const linkId = nodeRedIdOf("l", edge.id, usedIds);
+    const linkId = nodeRedIdOf("l", edge.id, usedIds, edgeCollisions);
     const link: NodeRedLink = {
       id: linkId,
       source: sourceNr.id,
@@ -703,7 +729,9 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     updatedAt: doc.updatedAt,
     ...(Object.keys(docUnknown).length > 0 ? { unknown: docUnknown } : {}),
   };
-  (tab as Record<string, unknown>)["x-mcode"] = docMeta;
+  // The tab survives an actual Node-RED GET /flows round-trip; the top-level
+  // x-mcode is only a Mcode sidecar. They must never share mutable metadata.
+  (tab as Record<string, unknown>)["x-mcode"] = structuredClone(docMeta);
 
   const flow: NodeRedFlow = {
     id: flowId,
@@ -742,6 +770,9 @@ const RUNNER_OF_NODE_RED_TYPE: ReadonlyMap<string, NodeRunnerKind> = new Map(
  * 由调用方/报告点名 —— 不在这里抛。
  */
 export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
+  // The returned editor document is mutable. Detach all nested values from
+  // the source flow so editing a restored doc cannot alter the archive bytes.
+  flow = structuredClone(flow);
   // 文档级元数据优先取 flow 顶层；从真引擎读回的数组没有顶层元数据 —— 它挂在 tab 上
   // （见正向迁移里 `(tab as ...)["x-mcode"] = docMeta`）。
   const tabMeta = flow.nodes.find((n) => n.type === "tab")?.["x-mcode"] as NodeRedFlow["x-mcode"] | undefined;
@@ -833,7 +864,9 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
 export function roundTripMismatchPaths(doc: WorkflowDoc, roundTripped: WorkflowDoc): string[] {
   const paths: string[] = [];
   const compare = (path: string, a: unknown, b: unknown): void => {
-    if (JSON.stringify(a) === JSON.stringify(b)) return;
+    // JSON key order does not change workflow semantics. A textual stringify
+    // comparison reports false data loss after a harmless object reordering.
+    if (isDeepStrictEqual(a, b)) return;
     // 位置允许 <1px 的整数化差异（迁移器显式在 report.lossy 里点名）。
     if (path.endsWith(".position") || path.endsWith("position")) {
       const pa = a as { x?: number; y?: number } | undefined;
