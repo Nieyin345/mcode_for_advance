@@ -23,18 +23,27 @@
 import { homedir } from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 import type { PiModelsFile, PiProviderConfig, PiProviderPublic } from "@contracts/piModel";
 import { encrypt, decrypt } from "@main/lib/secretStore.js";
-import { readSecretMap, writeSecretMap } from "@main/lib/secretMapStore.js";
+import { readSecretMap, writeSecretMap, secretMapCorrupted } from "@main/lib/secretMapStore.js";
 import { log } from "@main/lib/logger.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 
 /** Encrypted apiKey map keyed by provider name. Stored as plain JSON in the
  *  settings table (the values themselves are safeStorage ciphertext blobs). */
 const KEYS_SETTING_KEY = "piProviderKeys";
 type KeyMap = Record<string, string>;
 
-function readKeyMap(): KeyMap {
-  return readSecretMap(KEYS_SETTING_KEY, "Pi 供应商密钥");
+function readKeyMap(forWrite = false): KeyMap {
+  const keys = readSecretMap(KEYS_SETTING_KEY, "Pi 供应商密钥");
+  // 列表侧保留显式损坏提示与空表降级；写侧不能把损坏的原密文表
+  // 误当“零凭据”，否则保存/删除会永久覆盖尚可人工恢复的密文。
+  // 事故标记在当前进程只增不减：修复密钥表后应重启再保存。
+  if (forWrite && secretMapCorrupted(KEYS_SETTING_KEY)) {
+    throw new Error("Pi 供应商密钥映射损坏，已拒绝修改配置和密钥，请先修复并重新启动");
+  }
+  return keys;
 }
 
 function writeKeyMap(map: KeyMap): void {
@@ -86,21 +95,60 @@ async function readModelsFile(forWrite = false): Promise<PiModelsFile> {
     }
     return { ...parsed, providers: {} };
   }
-  return parsed;
+  // Pi 允许手工编辑配置，不能假定每个 provider 的 JSON 值都符合类型
+  // 声明。旧代码仅验 providers 顶层对象：null、string、models 字段非数组
+  // 都被带进下一次保存，悄悄把用户坏档永久改写。写侧先拒绝整个坏档；
+  // 列表侧跳过坏条目且显式告警，绝不修改用户盘上原文。
+  const validProviders: Record<string, PiProviderConfig> = Object.create(null) as Record<string, PiProviderConfig>;
+  for (const [name, cfg] of Object.entries(parsed.providers)) {
+    const valid = !unsafeProviderName(name)
+      && cfg !== null && typeof cfg === "object" && !Array.isArray(cfg)
+      && (cfg.models === undefined || (Array.isArray(cfg.models)
+        && cfg.models.every((model: unknown) =>
+          model !== null && typeof model === "object" && !Array.isArray(model)
+          && typeof (model as { id?: unknown }).id === "string"
+          && (model as { id: string }).id.trim().length > 0)));
+    if (!valid) {
+      const reason = `${modelsPath()} 的 providers.${name} 结构损坏；盘上原文件保留`;
+      if (forWrite) throw new Error(`${reason}，为免覆盖原内容，这次没有保存`);
+      log.warn(`piModels: ${reason}`);
+      continue;
+    }
+    validProviders[name] = cfg;
+  }
+  return { ...parsed, providers: validProviders };
 }
 
 /** 临时文件 + rename:Pi SDK 每轮都读它,不能让它读到写了一半的文件。 */
 async function writeModelsFile(file: PiModelsFile): Promise<void> {
   const target = modelsPath();
   await fs.mkdir(path.dirname(target), { recursive: true });
-  const tmp = `${target}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(file, null, 2), "utf-8");
-  try {
-    await fs.rename(tmp, target);
-  } catch (err) {
-    await fs.unlink(tmp).catch(() => {});
-    throw err;
-  }
+  // 与 Codex/MCP/DOCX 用同一套原子文件保存边界：
+  // 私有暂存 + fsync + 错误清理，拒绝覆盖已有符号链接/硬链接，
+  // 不让一处改了文件安全语义、另一处仍然用弱化版 rename。
+  await atomicReplaceFile(target, JSON.stringify(file, null, 2));
+}
+
+/**
+ * 同一进程内所有 Pi provider 保存/删除都是 read-modify-write。
+ * 若两个 IPC 并发读取同一 models.json，独立临时文件也不能阻止最后 rename
+ * 抹掉前一个 provider。必须将读配置、写配置及更新加密 key 当作一个任务。
+ * 一条失败不能让后续保存永久卡死（双分支 then）。
+ * 在进程内队列外再复用共享 withOsFileLease：参与同一宿主文件租约的
+ * Mcode 进程可以跨 OS 进程串行；不遵守租约的第三方 CLI 编辑器不在保证内。
+ */
+let piWriteTail: Promise<void> = Promise.resolve();
+function serializePiModelsMutation<T>(operation: () => Promise<T>): Promise<T> {
+  // 进程内队列只能覆盖本进程 IPC。另一个 Mcode 实例不会共享此
+  // Promise；两者可能同时读旧 models.json，然后各自 rename 丢另一方。
+  // 复用唯一宿主级磁盘租约，整段读-改-写都在独占窗口里执行。
+  const locked = async (): Promise<T> => {
+    await fs.mkdir(path.dirname(modelsPath()), { recursive: true });
+    return withOsFileLease(modelsPath(), async () => operation());
+  };
+  const run = piWriteTail.then(locked, locked);
+  piWriteTail = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 /** Build a PiProviderPublic from stored config + hasApiKey flag. The apiKey
@@ -111,8 +159,15 @@ function toPublic(cfg: PiProviderConfig, hasApiKey: boolean): PiProviderPublic {
 
 /** Validate a provider config (without apiKey — that's now stored separately).
  *  baseUrl / api / at-least-one-model are required. */
+function unsafeProviderName(name: string): boolean {
+  // JSON.parse 结果是普通对象。把这些键用于 providers[name] 时可能
+  // 命中继承成员或改写 __proto__，写操作返回成功却没有真正序列化。
+  return name === "prototype" || name in Object.prototype;
+}
+
 function validateProvider(name: string, cfg: PiProviderConfig): string | null {
   if (!name.trim()) return "Provider 名称不能为空";
+  if (unsafeProviderName(name)) return `Pi Provider 名称「${name}」与 JavaScript 原型成员冲突`;
   if (!cfg.baseUrl?.trim()) return "Base URL 不能为空";
   if (!cfg.api) return "API 类型不能为空";
   const models = cfg.models ?? [];
@@ -130,7 +185,7 @@ export const PiModelsStore = {
   async listPublic(): Promise<Record<string, PiProviderPublic>> {
     const file = await readModelsFile();
     const keys = readKeyMap();
-    const out: Record<string, PiProviderPublic> = {};
+    const out = Object.create(null) as Record<string, PiProviderPublic>;
     for (const [name, cfg] of Object.entries(file.providers)) {
       out[name] = toPublic(cfg, Boolean(keys[name]));
     }
@@ -153,11 +208,12 @@ export const PiModelsStore = {
     config: PiProviderConfig,
     apiKey?: string,
   ): Promise<Record<string, PiProviderPublic>> {
+    return serializePiModelsMutation(async () => {
     const err = validateProvider(name, config);
     if (err) throw new Error(err);
 
     // ---- apiKey handling (encrypted settings map) ----
-    const keys = readKeyMap();
+    const keys = readKeyMap(true);
     const isNew = !(name in keys);
     if (apiKey && apiKey.trim()) {
       keys[name] = encrypt(apiKey.trim());
@@ -168,7 +224,7 @@ export const PiModelsStore = {
 
     // ---- models.json handling (metadata only) ----
     const file = await readModelsFile(true);
-    const existing = file.providers[name] ?? {};
+    const existing = (Object.hasOwn(file.providers, name) ? file.providers[name] : undefined) ?? {};
     const existingModels = new Map((existing.models ?? []).map((m) => [m.id, m]));
     const mergedModels = (config.models ?? []).map((m) => {
       const prev = existingModels.get(m.id);
@@ -188,22 +244,26 @@ export const PiModelsStore = {
     writeKeyMap(keys);
     log.info(`piModels: saved provider "${name}" (${mergedModels.length} models)`);
     return this.listPublic();
+    });
   },
 
   /** Delete one provider. Removes both models.json entry and encrypted key. */
   async deleteProvider(name: string): Promise<Record<string, PiProviderPublic>> {
+    if (unsafeProviderName(name)) throw new Error(`Pi Provider 名称「${name}」与 JavaScript 原型成员冲突`);
+    return serializePiModelsMutation(async () => {
+    const keys = readKeyMap(true); // 必须早于任何文件写入
     const file = await readModelsFile(true);
     if (name in file.providers) {
       delete file.providers[name];
       await writeModelsFile(file);
     }
-    const keys = readKeyMap();
     if (name in keys) {
       delete keys[name];
       writeKeyMap(keys);
     }
     log.info(`piModels: deleted provider "${name}"`);
     return this.listPublic();
+    });
   },
 
   /**
@@ -212,6 +272,7 @@ export const PiModelsStore = {
    * into the pi authStorage at turn time.
    */
   resolveApiKey(name: string): string | null {
+    if (unsafeProviderName(name)) return null;
     const keys = readKeyMap();
     const ciphertext = keys[name];
     if (!ciphertext) return null;

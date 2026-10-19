@@ -30,7 +30,7 @@
  *
  * Run: scripts/memory-codex-smoke/run.sh
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type { MemoryFileMeta } from "@contracts/memory";
@@ -172,7 +172,7 @@ const {
 } = await import("@contracts/memory");
 const { registerMemoryHandlers } = await import("@main/ipc/memory.js");
 const { registerCodexModelsHandlers } = await import("@main/ipc/codexModels.js");
-const { codexHomePath, codexKeyEnvVar } = await import("@main/lib/codexModelsStore.js");
+const { CodexModelsStore, codexHomePath, codexKeyEnvVar } = await import("@main/lib/codexModelsStore.js");
 // 直接写一条 legacy 存量记录用(handler 那条路现在会拒**新建** legacy,见 §1b)。
 const { saveMemoryFile } = await import("@main/memory/store.js");
 
@@ -676,6 +676,30 @@ console.log("\nCodex 供应商:config.toml 真的重生成、且不含 Key");
   check("wire_api 钉死在 responses", body.includes(`wire_api = "responses"`), body);
   // 没开 imageGeneration 就不该有那个解锁用的 header。
   check("没开 imageGeneration 时不写那个 header", !body.includes("x-openai-actor-authorization"), body);
+
+  // 真实 NTFS hardlink：以前 config.toml 重写用 rename 覆盖链接入口，
+  // 另一入口留在旧 inode，模型配置即使成功仍与同文件其它名字分叉。
+  const outside = join(codexHomePath(), "config-linked-original.toml");
+  writeFileSync(outside, body + "\n# external manually linked entry\n");
+  rmSync(toml);
+  linkSync(outside, toml);
+  check("★ 真 Codex config.toml 与外部入口初始为硬链接",
+    lstatSync(outside).nlink >= 2 && lstatSync(toml).nlink >= 2);
+  let linkedDenied = false;
+  try { await CodexModelsStore.ensureConfigMaterialized(); }
+  catch { linkedDenied = true; }
+  check("★ 已有硬链接的 Codex 派生配置不可被静默重命名替换",
+    linkedDenied);
+  check("★ 拒绝后两处路径仍共享链接且内容原字节不变",
+    lstatSync(toml).nlink >= 2
+    && readFileSync(toml, "utf8") === readFileSync(outside, "utf8")
+    && readFileSync(outside, "utf8").includes("external manually linked entry"));
+  check("★ Codex 被拒保存不得留下 config.toml 临时内容",
+    readdirSync(codexHomePath()).every(name => !name.endsWith(".tmp")));
+  rmSync(toml);
+  await CodexModelsStore.ensureConfigMaterialized();
+  check("★ 清除异常硬链接后正常 Codex 配置可修复重建",
+    readFileSync(toml, "utf8").includes(`[model_providers.${PROVIDER.id}]`));
 }
 
 console.log("\nCodex 供应商:思考强度映射存得进、读得回");
@@ -1049,6 +1073,138 @@ console.log("\n总注册表:registerIpcHandlers");
   check("入参不合法时包装层把错原样抛出来(不吞)", surfaced.length > 0, surfaced);
 
   eq("等待 DB 用的那个 promise 已经有主了", awaitDb().constructor.name, "Promise");
+}
+
+/* ───────── Codex 并发物化旧快照不得覆盖后来新配置 ───────── */
+{
+  // 真实 materializeConfigToml 从设置表抓取供应商快照后等待插件。
+  // 只有测试桩卡住首次插件查找；必须让第二次保存先完成或进入队列，
+  // 然后才释放旧请求，观察磁盘最终版本而不是单次 promise 返回。
+  // 仅 bundle --alias 的测试桩具有此 hook；生产模块没有、也不应有。
+  const { holdNextCodexPluginLookup } =
+    (await import("@main/plugins/pluginManager.js")) as unknown as {
+      holdNextCodexPluginLookup: () => { entered: Promise<void>; release: () => void };
+    };
+  const hold = holdNextCodexPluginLookup();
+  const stale = CodexModelsStore.ensureConfigMaterialized();
+  await hold.entered;
+  const newerId = "materialize-late-provider";
+  let lateDoneBeforeRelease = false;
+  const newer = CodexModelsStore.saveProvider(newerId, PROVIDER, FAKE_KEY)
+    .then((value) => { lateDoneBeforeRelease = true; return value; });
+  // 修复前异步物化没有队列，第二次通常在首次 hold 时即已完成；
+  // 修复后第二次必须排队，在 release 后刷新为最新供应商。
+  await Promise.race([
+    newer.then(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, 350)),
+  ]);
+  hold.release();
+  const settled = await Promise.allSettled([stale, newer]);
+  check("★ 两个并发 Codex 物化调用都必须正常结束",
+    settled.every((outcome) => outcome.status === "fulfilled"), settled.map((x) => x.status));
+  const body = readFileSync(join(codexHomePath(), "config.toml"), "utf8");
+  check("★ 后到的新供应商必须仍在最终 config.toml，不允许旧物化覆盖",
+    body.includes(`[model_providers.${newerId}]`),
+    { lateDoneBeforeRelease, hasLatest: body.includes(`[model_providers.${newerId}]`) });
+  check("★ 并发最终 TOML 仍不包含明文 API Key", !body.includes(FAKE_KEY));
+}
+
+/* ───────── 损坏的 Codex Providers 真相层不可被保存/删除/启动物化覆盖 ───────── */
+{
+  const { SettingRepo } = await import("@main/store/repositories.js");
+  const key = "codexProviders";
+  const previous = SettingRepo.get(key);
+  const tomlPath = join(codexHomePath(), "config.toml");
+  const beforeToml = readFileSync(tomlPath, "utf8");
+  for (const malformed of ["{broken:", '{"notAnArray": true}']) {
+    const scenarios: Array<{ name: string; run: () => Promise<unknown> }> = [
+      { name: "保存", run: () => CodexModelsStore.saveProvider("corrupt-saved", PROVIDER, FAKE_KEY) },
+      { name: "删除", run: () => CodexModelsStore.deleteProvider("materialize-late-provider") },
+      { name: "重物化", run: () => CodexModelsStore.ensureConfigMaterialized() },
+    ];
+    for (const scenario of scenarios) {
+      SettingRepo.set(key, malformed);
+      let refused: string | null = null;
+      try { await scenario.run(); } catch (err) { refused = String(err); }
+      check("★ Codex 损坏真相层时" + scenario.name + "必须明确拒绝", refused !== null, refused);
+      check("★ Codex 被拒操作不得覆盖有误的真相层原字节",
+        SettingRepo.get(key) === malformed, {operation:scenario.name});
+      check("★ Codex 被拒操作不能覆盖磁盘上最后一份有效 TOML",
+        readFileSync(tomlPath, "utf8") === beforeToml, {operation:scenario.name});
+    }
+  }
+  if (previous !== null) SettingRepo.set(key, previous);
+  else SettingRepo.set(key, "[]");
+  await CodexModelsStore.ensureConfigMaterialized();
+}
+
+/* ────────── Codex 加密凭据表坏档不得破坏模型真相层 ────────── */
+{
+  const { SettingRepo } = await import("@main/store/repositories.js");
+  const key = "codexProviderKeys";
+  const previous = SettingRepo.get(key);
+  const beforeProviders = SettingRepo.get("codexProviders");
+  const beforeToml = readFileSync(join(codexHomePath(), "config.toml"), "utf8");
+  const brokenKeys = "not-json";
+  SettingRepo.set(key, brokenKeys);
+  let saved: string | null = null;
+  try { await CodexModelsStore.saveProvider("broken-map-save", PROVIDER, FAKE_KEY); }
+  catch (err) { saved = String(err); }
+  check("★ Codex 加密密钥表坏档不能继续保存 provider", saved !== null, saved);
+  check("★ Codex 保存拒绝后两份设置与 TOML 保持原字节",
+    SettingRepo.get(key) === brokenKeys
+    && SettingRepo.get("codexProviders") === beforeProviders
+    && readFileSync(join(codexHomePath(), "config.toml"), "utf8") === beforeToml);
+  let deleted: string | null = null;
+  try { await CodexModelsStore.deleteProvider("materialize-late-provider"); }
+  catch (err) { deleted = String(err); }
+  check("★ Codex 密钥表坏档不能删除 provider", deleted !== null, deleted);
+  check("★ Codex 删除拒绝后不改真相层、密钥表及派生 TOML",
+    SettingRepo.get(key) === brokenKeys
+    && SettingRepo.get("codexProviders") === beforeProviders
+    && readFileSync(join(codexHomePath(), "config.toml"), "utf8") === beforeToml);
+  SettingRepo.set(key, previous ?? "{}");
+}
+
+
+// 隔离先前“坏密钥表”注入，否则持久损坏标记会让本组误绿。
+{ const { __resetSecretMapCorruptionForTest } = await import("@main/lib/secretMapStore.js");
+  __resetSecretMapCorruptionForTest(); }
+/* ───────── Codex 供应商数组条目虽为合法 JSON，但结构损坏时拒写 ───────── */
+{
+  const { SettingRepo } = await import("@main/store/repositories.js");
+  const original = SettingRepo.get("codexProviders") ?? "[]";
+  const configFile = join(codexHomePath(), "config.toml");
+  const oldToml = readFileSync(configFile, "utf8");
+  const existing = (id: string) => ({
+    id, name: "From old settings", baseUrl: "https://example.invalid/v1", models: [{id: "valid"}],
+  });
+  const invalidCases = [
+    JSON.stringify([existing("duplicate"), existing("duplicate")]),
+    JSON.stringify([existing("same-name"), existing("same_name")]),
+    '[{"id":"damaged","models":[]}]',
+    '[{"id":"damaged","name":"Demo","baseUrl":"https://example.invalid","models":[{"id":123}]}]',
+  ];
+  for (const invalid of invalidCases) {
+    SettingRepo.set("codexProviders", invalid);
+    let refusal: string | null = null;
+    try { await CodexModelsStore.saveProvider("new-valid", PROVIDER, FAKE_KEY); }
+    catch (error) { refusal = String(error); }
+    check("★ Codex 供应商条目结构坏档不能保存", refusal !== null, refusal);
+    check("★ Codex 拒绝保存后原始条目逐字节不变",
+      SettingRepo.get("codexProviders") === invalid);
+    check("★ Codex 坏条目保存不得覆盖上一份有效 TOML",
+      readFileSync(configFile, "utf8") === oldToml);
+    SettingRepo.set("codexProviders", invalid);
+    let deleteRefusal: string | null = null;
+    try { await CodexModelsStore.deleteProvider("not-listed"); }
+    catch (error) { deleteRefusal = String(error); }
+    check("★ Codex 条目结构坏档不能删除任何供应商", deleteRefusal !== null, deleteRefusal);
+    check("★ Codex 坏条目删除不得覆盖原始真相层",
+      SettingRepo.get("codexProviders") === invalid);
+    SettingRepo.set("codexProviders", original);
+    await CodexModelsStore.ensureConfigMaterialized();
+  }
 }
 
 /* ────────────────────── 【MC-078】含点号插件名的 TOML 表头 ────────────────────── */

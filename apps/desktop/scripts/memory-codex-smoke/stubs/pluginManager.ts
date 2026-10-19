@@ -24,8 +24,26 @@ function notHere(name: string): () => never {
 
 export const PLUGINS_ROOT = "/nonexistent/mcode-smoke/plugins";
 
+/** 只在本测试主动开启的 Codex 物化并发屏障，正常测试仍然无延迟。 */
+let pendingLookup: { entered: () => void; wait: Promise<void> } | null = null;
+export function holdNextCodexPluginLookup(): { entered: Promise<void>; release: () => void } {
+  if (pendingLookup) throw new Error("已有一个待释放的 Codex 查询屏障");
+  let reached!: () => void;
+  let resume!: () => void;
+  const entered = new Promise<void>((resolve) => { reached = resolve; });
+  const wait = new Promise<void>((resolve) => { resume = resolve; });
+  pendingLookup = { entered: reached, wait };
+  return { entered, release: resume };
+}
+
 /** 本套一个插件都不装 —— 空表。 */
 export async function getEnabledPlugins(): Promise<unknown[]> {
+  const hold = pendingLookup;
+  if (hold) {
+    pendingLookup = null;
+    hold.entered();
+    await hold.wait;
+  }
   return [];
 }
 export async function getPluginSkillSources(): Promise<unknown[]> {
