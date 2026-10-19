@@ -21,6 +21,7 @@
  * dropped — they simply stay enabled and outside the panel's control.
  */
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
@@ -71,23 +72,20 @@ function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
-/** Write JSON atomically-ish: tmp file + rename, falling back to a direct
- *  write when rename fails (Windows can refuse renames over an existing file
- *  held by another process). Creates parent dirs as needed. */
+/** Prepare each JSON update in a unique sibling and publish only by rename.
+ * A locked destination must fail closed: a direct-write fallback can truncate
+ * the Claude CLI's user configuration and destroy unrelated account metadata.
+ * Unique temp paths also prevent concurrent Mcode writers sharing a staging file.
+ */
 async function writeJson(file: string, value: unknown): Promise<void> {
   const text = JSON.stringify(value, null, 2);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.mcode-tmp`;
+  const tmp = `${file}.mcode-tmp-${randomUUID()}`;
   try {
     await fs.writeFile(tmp, text, "utf-8");
     await fs.rename(tmp, file);
-  } catch {
-    try {
-      await fs.rm(tmp, { force: true });
-    } catch {
-      // best-effort cleanup
-    }
-    await fs.writeFile(file, text, "utf-8");
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {});
   }
 }
 
