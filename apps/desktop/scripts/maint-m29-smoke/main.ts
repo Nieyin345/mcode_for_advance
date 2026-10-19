@@ -194,6 +194,11 @@ console.log("\n2b. readAutomationEventChain · 会话级兜底链的读法");
   throws("链里不含自己的 workflowId = 损坏,拒绝", () => readAutomationEventChain(source), "损坏");
   SettingRepo.set(EVENT_CHAIN_PREFIX + source.id, JSON.stringify({ version: 2, workflowIds: ["wf_m29"] }));
   throws("版本不认识 = 损坏,拒绝", () => readAutomationEventChain(source), "损坏");
+  // Invalid on-disk JSON is a corrupt provenance record, not a generic
+  // SyntaxError and never an implicit empty chain.
+  SettingRepo.set(EVENT_CHAIN_PREFIX + source.id, '{"version":1,"workflowIds":[');
+  throws("无效 JSON 来源链应明确报损坏，而非裸 SyntaxError", () => readAutomationEventChain(source), "损坏");
+  eq("坏链原文保留供诊断，不自动重写", SettingRepo.get(EVENT_CHAIN_PREFIX + source.id), '{"version":1,"workflowIds":[');
   SettingRepo.set(EVENT_CHAIN_PREFIX + source.id, JSON.stringify({ version: 1, workflowIds: ["wf_m29", "wf_m29"] }));
   throws("重复 id = 损坏,拒绝", () => readAutomationEventChain(source), "损坏");
 }

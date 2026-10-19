@@ -86,7 +86,14 @@ export function withAmbientAutomationOrigin<E extends RuntimeEvent>(event: E): E
 export function readAutomationEventChain(source: Pick<Session, "id" | "workflowId">): string[] {
   const raw = SettingRepo.get(EVENT_CHAIN_PREFIX + source.id);
   if (raw === null) return [source.workflowId];
-  const value: unknown = JSON.parse(raw);
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    // Keep the malformed on-disk bytes intact for explicit recovery;
+    // a bare JSON SyntaxError hides which durable safety record failed.
+    throw new Error("自动化事件来源链损坏（JSON 无法解析）；请手动运行来源工作流重建");
+  }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("自动化事件来源链损坏；请手动运行来源工作流重建");
   }
