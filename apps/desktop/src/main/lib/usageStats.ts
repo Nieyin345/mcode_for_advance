@@ -48,6 +48,8 @@ const ANTHROPIC_VENDOR = "Anthropic";
  *  locally or through the user's own provider config, which the record does
  *  not expose, so Pi is the coarsest honest grouping. */
 const PI_VENDOR = "Pi";
+/** The native Codex provider is not the built-in Anthropic provider. */
+const CODEX_VENDOR = "Codex";
 
 /** Per-turn usage after provider normalization. */
 interface NormalizedTurn {
@@ -74,9 +76,11 @@ interface NormalizedTurn {
  *  name literally contains a null byte (it can't). */
 const GROUP_SEP = "\u0000";
 
-/** Module-level cache of the normalized records. Invalidated whenever a turn
- *  appends to any session's usage history (see invalidateUsageStats). */
+/** Turn updates invalidate this cache explicitly. Vendor names can also
+ * change independently when a user renames/deletes a custom endpoint, so
+ * each read checks the current public model-id/name fingerprint. */
 let cache: NormalizedTurn[] | null = null;
+let cachedVendorFingerprint: string | null = null;
 
 /** Drop the cached aggregation input. Called after SessionRepo.updateUsageHistory
  *  so the next `usage.stats` request sees fresh data. Cheap and synchronous. */
@@ -128,25 +132,34 @@ function diffCumulative(prev: number | null, cur: number | null): number | null 
 
 /** Vendor label for one session's records:
  *  - Pi sessions → "Pi" (the record carries no provider info beyond that).
- *  - Claude sessions bound to a custom-model config → the config's user-chosen
- *    name (that name IS the user's mental "vendor" — e.g. "浩联云", "ds",
- *    "opencode", "智谱"). null when the binding config no longer exists.
- *  - Claude sessions on the built-in path → "Anthropic". */
+ *  - Codex sessions → "Codex" (a host engine label, not Anthropic).
+ *  - Claude sessions bound to a custom-model config → its user-chosen name,
+ *    null when the binding config no longer exists.
+ *  - Claude sessions on the built-in path → "Anthropic".
+ *  - Unknown/extension providers → null, never fabricated "Anthropic". */
 function vendorFor(
   providerId: string,
   customModelId: string | null,
   nameById: Map<string, string>,
 ): string | null {
   if (providerId === PI_PROVIDER_ID) return PI_VENDOR;
+  if (providerId === "codex-sdk") return CODEX_VENDOR;
+  if (providerId !== "claude-sdk") return null;
   if (customModelId) return nameById.get(customModelId) ?? null;
   return ANTHROPIC_VENDOR;
 }
 
 function loadTurnRecords(): NormalizedTurn[] {
-  if (cache) return cache;
   const nameById = new Map(
-    CustomModelStore.listPublic().map((m) => [m.id, m.name]),
+    CustomModelStore.listPublic().map((m) => [m.id, m.name] as const),
   );
+  // A model configuration may be renamed or deleted without any turn
+  // completing. A cached vendor label must not survive that change until
+  // the next query to a provider. Sorting removes irrelevant UI list order.
+  const vendorFingerprint = JSON.stringify(
+    [...nameById.entries()].sort(([idA], [idB]) => idA.localeCompare(idB)),
+  );
+  if (cache !== null && cachedVendorFingerprint === vendorFingerprint) return cache;
   const out: NormalizedTurn[] = [];
   for (const row of SessionRepo.listUsageRows()) {
     const cumulative = row.providerId === PI_PROVIDER_ID;
@@ -160,7 +173,7 @@ function loadTurnRecords(): NormalizedTurn[] {
         out.push({
           sessionId: row.id,
           endedAt,
-          hiddenSession: row.kind === "node",
+          hiddenSession: row.kind === "node" || row.kind === "automation",
           vendor,
           model: r.model ?? null,
           totalTokens: diffCumulative(finiteNum(prev?.totalProcessedTokens), finiteNum(r.totalProcessedTokens)) ?? 0,
@@ -174,7 +187,7 @@ function loadTurnRecords(): NormalizedTurn[] {
         out.push({
           sessionId: row.id,
           endedAt,
-          hiddenSession: row.kind === "node",
+          hiddenSession: row.kind === "node" || row.kind === "automation",
           vendor,
           model: r.model ?? null,
           totalTokens: Math.max(0, finiteNum(r.totalProcessedTokens) ?? 0),
@@ -189,6 +202,7 @@ function loadTurnRecords(): NormalizedTurn[] {
     }
   }
   cache = out;
+  cachedVendorFingerprint = vendorFingerprint;
   return out;
 }
 

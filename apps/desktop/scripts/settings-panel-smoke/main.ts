@@ -447,11 +447,32 @@ eq("  另一根是用户给网关起的名字", sameName.find((m) => m.vendor ==
 // 网关配置**被删掉**之后:`customModelId` 还挂在会话上,`nameById` 里查不到了 ——
 // 那时厂商名是 null(未知),但那一轮的 token **仍然要算**(用户真花掉的)。
 CustomModelStore.remove(gwId!);
+// 主进程真实保存/删除端点配置不会触发 SessionRepo.updateUsageHistory。
+// UI 再开用量面板时必须**直接**反映名字删除，不能等下一次发模型轮次才刷新。
+const withoutExplicitInvalidation = await statsOf("all");
+eq("★ 模型配置删除后已有用量缓存应自动刷新厂商名",
+  withoutExplicitInvalidation.models.find((m) => m.model === "shared-name" && m.vendor === null)?.totalTokens, 50);
 invalidateUsageStats();
 const orphaned = await statsOf("all");
 const orphanBar = orphaned.models.find((m) => m.model === "shared-name" && m.vendor === null);
 eq("配置删了之后厂商名变成未知(null),token 照算", orphanBar?.totalTokens, 50);
 eq("  内置那根不受影响", orphaned.models.find((m) => m.model === "shared-name" && m.vendor === "Anthropic")?.totalTokens, 70);
+
+
+// 真实 Codex 会话不是 Anthropic：同名同 token 也必须按引擎分桶。
+seedSession("s_codex_same", { providerId: "codex-sdk" }, [
+  turn({ endedAt: localNoon(0), model: "shared-name", totalProcessedTokens: 27 }),
+]);
+const codexStats = await statsOf("all");
+const codexBar = codexStats.models.find((m) => m.model === "shared-name" && m.vendor === "Codex");
+eq("★ Codex 独立厂商分桶，而不是误标 Anthropic", codexBar?.totalTokens, 27);
+eq("★ 加入 Codex 后同名 Anthropic 模型没有被合并", codexStats.models.find((m) => m.model === "shared-name" && m.vendor === "Anthropic")?.totalTokens, 70);
+seedSession("s_unknown_provider", { providerId: "future-engine" }, [
+  turn({ endedAt: localNoon(0), model: "future-model", totalProcessedTokens: 13 }),
+]);
+const unknownProvider = await statsOf("all");
+eq("★ 未知引擎不得编造 Anthropic 厂商，按未知 null 原样上报",
+  unknownProvider.models.find(m=>m.model==="future-model")?.vendor, null);
 
 /* ────────────────────────── 6. Pi 的累计差分 ────────────────────────── */
 
@@ -513,17 +534,13 @@ const afterHidden = await statsOf("all");
 
 const tokenDelta = afterHidden.summary.totalTokens - beforeHidden.summary.totalTokens;
 eq("三条会话(chat / node / automation)的 token 全部算上", tokenDelta, 11 + 22 + 33);
-// ⚠️ `chat` 1 个 + **`side` 1 个** = 2。`side` 那一半是 `usageStats.ts` 里
-// `hiddenSession: row.kind === "node"` 这句的**可观察后果**:它只把 node 当隐藏,而
-// `RuntimeManager.isHiddenSessionKind` 认的是 `node || automation` —— 于是 side(右栏
-// 「问」标签页的问答子会话)会被计进「涉及会话」。见报告里"查到但没修"那一段。
-// 这条**不是**在钉一个正确的数:它把现状原样记下来,好让上面对齐时这条会红。
-eq("「涉及会话」多出一个 chat + 一个 side(现状,见报告)", afterHidden.summary.sessions - beforeHidden.summary.sessions, 2);
+// 主进程 RuntimeManager 对 node / automation 均认定为隐藏会话，统计应保持同一边界。
+// 三条记录都算 Token / turns，但只有 chat 是用户实际打开的会话。
+eq("★ 用户会话只增加 chat；后台 node/automation 不应该冒充用户会话", afterHidden.summary.sessions - beforeHidden.summary.sessions, 1);
 
-// **反向判据**:把 node 与 automation 也数进去的人会 +4。上面两条已经把它挡住了,
-// 这里再钉一次"轮次是 3 而对话数是 2",两句话说的不是一回事。
+// **反向判据**:把 node 与 automation 也数进去的人会多算 2 段隐藏会话。
 eq("  轮次是 3 轮", afterHidden.summary.turns - beforeHidden.summary.turns, 3);
-eq("  其中 node 与 automation 那两轮不算对话", afterHidden.summary.sessions - beforeHidden.summary.sessions, 2);
+eq("  其中 node 与 automation 那两轮不算对话", afterHidden.summary.sessions - beforeHidden.summary.sessions, 1);
 
 // 同一个 `node` 会话里两轮:token 累加、会话数仍不涨。
 const beforeNodeRounds = await statsOf("all");
@@ -738,6 +755,55 @@ const withDir = await outputStyleList({});
 check("同名的子目录不把整份列表搞崩", Array.isArray(stylesOf(withDir)) && idsOf(withDir).length >= 5, {
   count: idsOf(withDir).length,
 });
+
+
+const filteredDir = await outputStyleList({});
+check("★ .md 子目录不是文件，不能生成不存在的风格 id",
+  !idsOf(filteredDir).includes("adir"), filteredDir);
+
+mkdirSync(join(USER_STYLE_DIR, "Proactive.md"), { recursive: true });
+const fauxBuiltin = await outputStyleList({});
+check("★ 损坏的同名 .md 子目录不得遮蔽真正的内置 Proactive",
+  stylesOf(fauxBuiltin).some(s => s.id === "Proactive" && s.source === "builtin"), fauxBuiltin);
+
+// 输出风格根目录可以被另一个本机进程换成 Windows junction。真实 OS 链接
+// 指向隔离 HOME 下的另一个目录，旧实现会把外部 Markdown 的 frontmatter
+// 扫成用户可选风格(对提示词来源而言就是“错源”而非正常选择)。
+{
+  const fs = await import("node:fs");
+  const originalDir = USER_STYLE_DIR + ".smoke-original";
+  const externalDir = join(MCODE_CONFIG_DIR, "mcode-external-style-sentinel");
+  mkdirSync(externalDir, { recursive: true });
+  const externalFile = join(externalDir, "out.md");
+  fs.writeFileSync(externalFile, "---\nname: OutsideStyleWronglyLoaded\ndescription: external private notes\n---\n", "utf8");
+  const savedBytes = fs.readFileSync(externalFile, "utf8");
+  fs.renameSync(USER_STYLE_DIR, originalDir);
+  let linked = false;
+  try {
+    try {
+      fs.symlinkSync(externalDir, USER_STYLE_DIR, process.platform === "win32" ? "junction" : "dir");
+      linked = true;
+    } catch (err) {
+      console.log("  SKIP 创建用户风格目录 junction", (err as Error).message);
+    }
+    if (linked) {
+      check("★ 风格目录真实为 OS junction/symlink，测试非假阳性",
+        fs.lstatSync(USER_STYLE_DIR).isSymbolicLink());
+      const linkedStyles = await outputStyleList({});
+      check("★ 被 junction 换掉的整个目录不能引入外部用户风格",
+        !idsOf(linkedStyles).includes("OutsideStyleWronglyLoaded") &&
+        stylesOf(linkedStyles).every(s => s.source === "builtin"), linkedStyles);
+      check("★ 外部源文件从未被篡改", fs.readFileSync(externalFile, "utf8") === savedBytes);
+    }
+  } finally {
+    if (linked) {
+      if (process.platform === "win32") fs.rmdirSync(USER_STYLE_DIR);
+      else fs.unlinkSync(USER_STYLE_DIR);
+    }
+    fs.renameSync(originalDir, USER_STYLE_DIR);
+  }
+}
+
 
 /* ────────────────────────── 11. 输出风格:无参调用 ────────────────────────── */
 

@@ -15,7 +15,7 @@
  *    CLAUDE_CONFIG_DIR — files in ~/.claude are invisible to Mcode sessions).
  *    Verified live: frontmatter names containing spaces match verbatim.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import {
@@ -103,9 +103,14 @@ function parseStyleFrontmatter(md: string): { name?: string; description?: strin
 function listUserStyles(): OutputStyleEntry[] {
   let files: string[];
   try {
+    // A user-scope directory replaced by a junction must not silently load
+    // prompt styles belonging to an unrelated folder. The supplied
+    // MCODE_CONFIG_DIR itself is trusted; descendants cannot be links.
+    const dir = lstatSync(USER_STYLE_DIR);
+    if (!dir.isDirectory() || dir.isSymbolicLink()) return [];
     files = readdirSync(USER_STYLE_DIR);
   } catch {
-    return []; // directory missing — no custom styles yet
+    return []; // new install or unreadable directory; no external fallback
   }
   const out: OutputStyleEntry[] = [];
   for (const file of files) {
@@ -114,11 +119,18 @@ function listUserStyles(): OutputStyleEntry[] {
     let name = fallback;
     let description: string | undefined;
     try {
-      const fm = parseStyleFrontmatter(readFileSync(join(USER_STYLE_DIR, file), "utf-8"));
+      const path = join(USER_STYLE_DIR, file);
+      const stat = lstatSync(path);
+      // A .md directory isn't a style, and even a readable symlink can
+      // redirect the CLI's prompt to outside this selected style directory.
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      const fm = parseStyleFrontmatter(readFileSync(path, "utf-8"));
       if (fm.name?.trim()) name = fm.name.trim();
       description = fm.description?.trim() || undefined;
     } catch {
-      /* unreadable — keep the filename fallback */
+      // Invalid/unreadable candidate is NOT the same as a valid .md without
+      // frontmatter. Don't create phantom options that can shadow builtins.
+      continue;
     }
     out.push(description ? { id: name, source: "user", description } : { id: name, source: "user" });
   }
