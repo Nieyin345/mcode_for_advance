@@ -9,12 +9,12 @@
  * worktreeOps.ts, sessionStart.ts `applyWorktreeBind`).
  */
 import { isMac, isWindows } from "./platform.js";
+import { canonicalPathKey } from "../../shared/pathKey.js";
 
 /** Canonical group/map key for a worktree path: backslashes → slashes,
  *  trailing separators trimmed, lowercased on case-insensitive filesystems. */
 export function normWorktreeKey(p: string): string {
-  const n = p.replace(/\\/g, "/").replace(/\/+$/, "");
-  return isWindows || isMac ? n.toLowerCase() : n;
+  return canonicalPathKey(p, isWindows || isMac);
 }
 
 /** Left-bar display name for a worktree directory: the user's custom name

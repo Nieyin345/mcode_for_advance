@@ -7,8 +7,8 @@
  * here (the renderer keeps its own twin, `lib/worktree.ts normWorktreeKey`,
  * because it cannot import main modules).
  */
+import { canonicalPathKey } from "../../shared/pathKey.js";
+
 export function normPathKey(p: string): string {
-  const ci = process.platform === "win32" || process.platform === "darwin";
-  const n = p.replace(/\\/g, "/").replace(/\/+$/, "");
-  return ci ? n.toLowerCase() : n;
+  return canonicalPathKey(p, process.platform === "win32" || process.platform === "darwin");
 }
