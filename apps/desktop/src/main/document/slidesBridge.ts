@@ -39,6 +39,8 @@
  *     （与 docs 的 `openPath`/`saveOpenedFile` 同一条判据）。
  */
 
+import { safeErrorMessage } from "@main/lib/ipcError.js";
+
 /** 执行器注入面 —— 生产由 vendor 主进程包装，套件注入假实现。 */
 export interface SlidesEditExecutor {
   /** vendor `slides:add-blank-slide`（`slides-main.ts:2770`）语义：
@@ -117,7 +119,7 @@ export class SlidesBridge {
       // never received the new RenderSlide[] (ARC-007 real preload ABI).
       return { ok: true, slideCount: result.slideCount, slides: result.slides, index: result.index };
     } catch (err) {
-      return { ok: false, reason: `加页失败：${err instanceof Error ? err.message : String(err)}` };
+      return { ok: false, reason: `加页失败：${safeErrorMessage(err)}` };
     }
   }
 
@@ -136,7 +138,7 @@ export class SlidesBridge {
       }
       return { ok: true, openResult: result.openResult };
     } catch (err) {
-      return { ok: false, reason: `打开失败：${err instanceof Error ? err.message : String(err)}` };
+      return { ok: false, reason: `打开失败：${safeErrorMessage(err)}` };
     }
   }
 
@@ -152,7 +154,7 @@ export class SlidesBridge {
       }
       return { ok: true, bytes: result.bytes };
     } catch (err) {
-      return { ok: false, reason: `保存失败：${err instanceof Error ? err.message : String(err)}` };
+      return { ok: false, reason: `保存失败：${safeErrorMessage(err)}` };
     }
   }
 
@@ -176,7 +178,7 @@ export class SlidesBridge {
       // the top level, not a nested `slide` object or text-only receipt.
       return { ...result.renderedSlide, ok: true, text: result.text };
     } catch (err) {
-      return { ok: false, reason: `改文字失败：${err instanceof Error ? err.message : String(err)}` };
+      return { ok: false, reason: `改文字失败：${safeErrorMessage(err)}` };
     }
   }
 }
