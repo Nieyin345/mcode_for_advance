@@ -8,8 +8,8 @@
  *   - 每个入参都走 `Schema.parse`(契约即安全边界);
  *   - **变更类 handler 返回新的完整列表**,渲染端整体替换缓存。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { shell, type IpcMain } from "electron";
 import {
   IPC,
@@ -91,12 +91,11 @@ import { loadSuppress, saveSuppress, suppressionReasonOfItem } from "@main/libra
 import { entryRootAbsPath, importGenericFiles, readEntryAsset, readEntryFile } from "@main/library/fileImport.js";
 import { importAnyFiles } from "@main/library/importDispatch.js";
 import {
-  ensureOriginal,
-  hasOriginal,
   highlightsPathFor,
   originalPathFor,
   readHighlights,
   writeHighlights,
+  writeBackToFile,
 } from "@main/library/pdfHighlightsStore.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { assignToCollection, assignImportedToCollections } from "@main/library/operations.js";
@@ -994,63 +993,44 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    * （pdf.js 跑在渲染进程里）。所以字节由渲染端算好、base64 送过来，主进程只负责
    * **落盘**（原子替换）和**更新索引**。这也让主进程不必依赖 pdf.js 的运行时。
    */
-  ipcMain.handle(IPC.LIBRARY_WRITE_HIGHLIGHTS, (_evt, raw) => {
+  ipcMain.handle(IPC.LIBRARY_WRITE_HIGHLIGHTS, async (_evt, raw) => {
     const input = PdfHighlightsWriteBackSchema.parse(raw);
     if (!highlightPathAllowed(input.pdfPath)) {
       return { ok: false, error: "这个位置不允许写入" };
     }
-    if (!existsSync(input.pdfPath)) return { ok: false, error: "文件不在了" };
-
+    // An old renderer can supply bytes but cannot prove what on-disk revision
+    // those bytes were based on. Never allow it to bypass host conflict checks.
+    if (!input.expectedRevision) {
+      return { ok: false, error: "PDF 保存缺少原始版本，请重新打开文件后重试" };
+    }
     const bytes = Buffer.from(input.bytesBase64, "base64");
     if (bytes.length === 0) return { ok: false, error: "字节是空的" };
 
-    /**
-     * ⚠️ **先把干净底稿存下来**（只存一次，绝不覆盖）。
-     *
-     * 烘烤是**画上去**的（`exportPdf` 把标注画进页面），**擦不掉也改不了** ——
-     * 所以"改个颜色再烤"会变成烤两遍（旧的还在）。渲染端每次都是拿
-     * `<底稿 + 全部标注>` 重新算一份，这里负责让那份底稿**存在且永远是干净的**。
-     *
-     * 顺序要紧：**必须在覆盖 PDF 之前**。反过来的话，这一篇的原始内容就永远没了。
-     */
     try {
-      if (!hasOriginal(input.pdfPath)) {
-        ensureOriginal(input.pdfPath, readFileSync(input.pdfPath));
-        log.info(`[library] 存了干净底稿：${basename(originalPathFor(input.pdfPath))}`);
+      // UI, Agent and the test harness converge on ONE save core: OS lease,
+      // source-revision CAS, real pdf.js validation, immutable first backup,
+      // and atomic fsync+rename. This IPC handler never owns a second tmp.
+      const result = await writeBackToFile(
+        input.pdfPath,
+        (input.highlights ?? []) as PdfHighlight[],
+        async () => new Uint8Array(bytes),
+        input.expectedRevision,
+        input.highlights !== undefined,
+      );
+      if (result.indexError !== undefined) {
+        log.warn(`[library] PDF 写入后批注索引保存失败：${result.indexError}`);
+        return {
+          ok: false,
+          error: "PDF 已写入，但批注索引保存失败（部分成功）；请保留原文件并检查索引",
+          written: result.written,
+          skipped: result.skipped,
+        };
       }
+      return { ok: true, written: result.written, skipped: result.skipped };
     } catch (err) {
-      // 底稿存不下来就**不许烤** —— 烤下去会把原始内容永久盖掉（标注擦不掉），
-      // 而用户以为还能撤销。
-      return { ok: false, error: `存底稿失败，为了不弄坏原文件已放弃：${(err as Error).message}` };
+      const detail = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: detail };
     }
-
-    // ⚠️ **原子替换。** 渲染端给的是整个文件；直接写原路径、中途崩了，
-    //    用户那篇论文就毁了。临时文件必须落在**同一个目录**（跨盘 rename 在
-    //    Windows 上会抛 EXDEV）。
-    const tmp = join(dirname(input.pdfPath), `.${Date.now().toString(36)}-annot.tmp.pdf`);
-    try {
-      writeFileSync(tmp, bytes);
-      renameSync(tmp, input.pdfPath);
-    } catch (err) {
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        /* 尽力而为 */
-      }
-      return { ok: false, error: (err as Error).message };
-    }
-
-    // 索引跟着一起更新 —— 分两次调用会留下"文件写了、索引没写"的不一致窗口。
-    if (input.highlights) {
-      try {
-        writeHighlights(input.pdfPath, input.highlights as PdfHighlight[]);
-      } catch (err) {
-        // 文件已经写成功了，索引失败只影响"下次打开看到什么" —— 如实记下来，
-        // 但**不改 ok**（用户的批注确实进 PDF 了）。
-        log.warn(`[library] 写高亮索引失败：${(err as Error).message}`);
-      }
-    }
-    return { ok: true, written: input.highlights?.length ?? 0, skipped: [] };
   });
 
   /**

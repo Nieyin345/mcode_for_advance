@@ -53,6 +53,13 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
+// Browser WebCrypto matches the SHA-256 revision used by the Host file CAS.
+async function pdfRevision(bytes: ArrayBuffer): Promise<string> {
+  if (!crypto.subtle) throw new Error("PDF 原始版本校验不可用，不能安全保存");
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((n) => n.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * 它真正用到的只有 `item.id`，**不是**整篇文献：标题由外面的顶栏显示，PDF 状态 / 转录
  * 那一套是右栏详情页的事。所以入参收窄成这两样 —— 中间栏那个 `FileViewer` 什么都
@@ -93,6 +100,7 @@ export function PdfPreview({
   /** 重新加载的把手：失败后「重试」用。 */
   const [nonce, setNonce] = useState(0);
   const [docBytes, setDocBytes] = useState<ArrayBuffer | null>(null);
+  const [loadedRevision, setLoadedRevision] = useState<string | null>(null);
   /** 保存（把批注导出并写回文件）的状态机。 */
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveErr, setSaveErr] = useState<string | null>(null);
@@ -125,6 +133,7 @@ export function PdfPreview({
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setLoadedRevision(null);
     setDocBytes(null);
 
     // async IIFE 而不是直接挂 .then：手机端的 web shim 对没有映射的命名空间是同步
@@ -144,7 +153,11 @@ export function PdfPreview({
         }
         // ⚠️ 拷贝一份独立的 ArrayBuffer：EmbedPDF 会接管这块内存，而调用方传进来的
         //    字节在别处也可能还在用（同 pdf.js 那边 detach 的老问题）。
-        setDocBytes(toArrayBuffer(res.bytes));
+        const originalBytes = toArrayBuffer(res.bytes);
+        const revision = await pdfRevision(originalBytes);
+        if (cancelled) return;
+        setLoadedRevision(revision);
+        setDocBytes(originalBytes);
       } catch (err) {
         if (!cancelled) {
           setError((err as Error).message);
@@ -200,6 +213,7 @@ export function PdfPreview({
     setSaveState("saving");
     setSaveErr(null);
     try {
+      if (!loadedRevision) throw new Error("PDF 原始版本尚未确认，请重新打开文件再保存");
       const registry = await viewerRef.current?.registry;
       /**
        * ⚠️ **不能写成 `registry.getPlugin("export")?.provides()`。**
@@ -236,11 +250,14 @@ export function PdfPreview({
       for (let i = 0; i < u8.length; i += CHUNK) {
         bin += String.fromCharCode(...u8.subarray(i, i + CHUNK));
       }
+      const exportedRevision = await pdfRevision(toArrayBuffer(u8));
       const r = await api.library.writeHighlights({
         pdfPath: filePath,
         bytesBase64: btoa(bin),
-      } as never);
+        expectedRevision: loadedRevision,
+      });
       if (!r.ok) throw new Error(r.error ?? t("library.pdfViewer.saveFailed"));
+      setLoadedRevision(exportedRevision);
       setSaveState("saved");
       markDirty(false);
       return true;
@@ -249,7 +266,7 @@ export function PdfPreview({
       setSaveErr((err as Error).message);
       return false;
     }
-  }, [filePath, t]);
+  }, [filePath, loadedRevision, t]);
 
   /**
    * 【UI-012】把"保存我"登记给 store —— 用户切文件/关预览时若这份 PDF 有未保存批注,

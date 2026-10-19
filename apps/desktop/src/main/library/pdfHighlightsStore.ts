@@ -25,7 +25,7 @@
  * 也要用同一套（它不许 import 主进程），而"共享实现只有一份"是这个仓库的硬规矩。
  * 这里只管**盘上的事**（读文件、写文件）。
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, copyFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { PdfHighlight } from "@contracts/library";
@@ -202,6 +202,9 @@ export interface WriteBackResult {
   written: number;
   skipped: Array<{ id: string; reason: string }>;
   bytes?: number;
+  /** PDF bytes committed, but sidecar index could not be written. Callers
+   * must report partial success rather than falsely acknowledging both. */
+  indexError?: string;
 }
 
 /**
@@ -215,6 +218,8 @@ export async function writeBackToFile(
   pdfPath: string,
   highlights: PdfHighlight[],
   save: (usable: PdfHighlight[]) => Promise<Uint8Array>,
+  expectedRevision?: string,
+  persistSidecar = false,
 ): Promise<WriteBackResult> {
   const skipped: Array<{ id: string; reason: string }> = [];
   const usable: PdfHighlight[] = [];
@@ -230,7 +235,10 @@ export async function writeBackToFile(
   // competing Mcode processes from both accepting the same stale version.
   return withOsFileLease(pdfPath, async (real) => {
     const before = await fileContentVersion(real);
-    if (before === null) return { written: 0, skipped };
+    if (before === null) throw new Error("PDF 文件不在了，不能保存批注");
+    if (expectedRevision !== undefined && before !== expectedRevision) {
+      throw new Error("PDF 已被其他写入者改动（版本冲突），请重新打开后再保存；原文件已保留");
+    }
 
     const out = await save(usable);
     // saveDocument() is untrusted; an accepted callback does not imply a PDF.
@@ -244,9 +252,38 @@ export async function writeBackToFile(
       throw new Error("PDF 已被其他写入者改动（版本冲突），请重新打开后再保存；原文件已保留");
     }
 
+    // The original backup belongs to the SAME durable save transaction.
+    // The UI/Agent IPC must not create it independently before validation.
+    // Verify the bytes we copy are exactly the revision being replaced.
+    if (!hasOriginal(real)) {
+      const originalBytes = readFileSync(real);
+      const snapshotRevision = createHash("sha256").update(originalBytes).digest("hex");
+      if (snapshotRevision !== before) {
+        throw new Error("PDF 在准备原始备份时已发生版本冲突，拒绝覆盖");
+      }
+      ensureOriginal(real, originalBytes);
+    }
+
     // UUID, exclusive wx, fsync, file-mode and hardlink checks live in the
     // shared Host primitive. Never revive a separate PDF-specific temp path.
     await atomicReplaceFile(real, out);
-    return { written: usable.length, skipped, bytes: statSync(real).size };
+    // Keep the PDF+sidecar sequence inside the SAME Host OS lease, so a
+    // second cooperating editor cannot commit a newer PDF in between our
+    // PDF commit and this sidecar update. Two files are not one filesystem
+    // transaction; if the index fails, report partial completion explicitly.
+    let indexError: string | undefined;
+    if (persistSidecar) {
+      try {
+        writeHighlights(real, usable);
+      } catch (err) {
+        indexError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    return {
+      written: usable.length,
+      skipped,
+      bytes: statSync(real).size,
+      ...(indexError !== undefined ? { indexError } : {}),
+    };
   });
 }

@@ -288,6 +288,10 @@ export const PdfHighlightsWriteBackSchema = z.object({
   pdfPath: z.string().min(1),
   /** 改好的 PDF，base64（不带 `data:` 前缀）。 */
   bytesBase64: z.string().min(1),
+  /** SHA-256 of the exact PDF bytes the editor originally loaded. A missing
+   * revision cannot authorize replacement; the Host refuses that write.
+   * Optional only to parse legacy callers and return structured ok:false. */
+  expectedRevision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   highlights: z.array(z.unknown()).optional(),
 });
 export type PdfHighlightsWriteBackInput = z.infer<typeof PdfHighlightsWriteBackSchema>;
