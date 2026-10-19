@@ -41,5 +41,44 @@ bridge.dispose();
 check("销毁/退出时未决审批默认拒绝", await pending4 === false);
 const bridgeWithoutWindow = new NodeInstallApprovalBridge({send:()=>false},100);
 check("无窗口立即拒绝", await bridgeWithoutWindow.request(card,A) === false);
+// A sender adapter must not obtain user approval before the host has
+// confirmed that the card was actually delivered. A synchronous reentrant
+// callback followed by false/throw is a failed delivery, never consent.
+for (const failureMode of ["false", "throw"] as const) {
+  let bridge: NodeInstallApprovalBridge;
+  let prematureAccepted: boolean | null = null;
+  bridge = new NodeInstallApprovalBridge({
+    send: (message, senderId) => {
+      prematureAccepted = bridge.resolve({ requestId: message.requestId, approved: true }, senderId);
+      if (failureMode === "throw") throw new Error("FAKE_CARD_DELIVERY_FAILED");
+      return false;
+    },
+  }, 100);
+  const result = await bridge.request(card, A);
+  check("★ card delivery "+failureMode+" cannot synchronously pre-authorize its own request",
+    prematureAccepted === false, prematureAccepted);
+  check("★ undelivered/throwing approval card settles fail-closed "+failureMode,
+    result === false, result);
+  bridge.dispose();
+}
+// A sender can synchronously attempt a response before returning true.
+// That premature decision is discarded, but the real user's later click
+// is still accepted once the delivery was actually confirmed.
+let earlyBridge: NodeInstallApprovalBridge;
+let pendingEarlyId = "";
+let rejectedBeforeDelivery: boolean | null = null;
+earlyBridge = new NodeInstallApprovalBridge({
+  send: (message, senderId) => {
+    pendingEarlyId = message.requestId;
+    rejectedBeforeDelivery = earlyBridge.resolve({ requestId: pendingEarlyId, approved: true }, senderId);
+    return true;
+  },
+}, 100);
+const pendingAfterDelivery = earlyBridge.request(card, A);
+check("★ response before acknowledged delivery is not user consent", rejectedBeforeDelivery === false);
+check("★ genuine later response after acknowledged delivery succeeds",
+  earlyBridge.resolve({ requestId: pendingEarlyId, approved: true }, A) === true);
+check("★ later response settles the request as approved", await pendingAfterDelivery === true);
+earlyBridge.dispose();
 console.log(`mc057-approval-identity-smoke:${total-failures}/${total}`);
 if(failures)process.exitCode=1;

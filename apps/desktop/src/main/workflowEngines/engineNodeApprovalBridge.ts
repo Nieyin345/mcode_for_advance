@@ -54,6 +54,8 @@ interface PendingInstallApproval {
   timer: ReturnType<typeof setTimeout>;
   /** 只能由发起此次安装的受信窗口回答，requestId 自身不是授权。 */
   expectedSenderId: number;
+  /** Do not accept responses until the host confirms delivery succeeded. */
+  delivered: boolean;
 }
 
 export class NodeInstallApprovalBridge {
@@ -82,7 +84,8 @@ export class NodeInstallApprovalBridge {
       }, this.timeoutMs);
       // ⚠️ **不能 unref**：这个计时器就是"超时必然拒绝"的唯一保证。unref 之后
       // 事件循环里没有别的句柄时进程会直接退出，等待永远不兑现（套件实测挂住）。
-      this.pending.set(requestId, { resolve, timer, expectedSenderId });
+      const pending: PendingInstallApproval = { resolve, timer, expectedSenderId, delivered: false };
+      this.pending.set(requestId, pending);
       let delivered = false;
       try {
         delivered = this.sender.send({
@@ -90,6 +93,9 @@ export class NodeInstallApprovalBridge {
           requestId,
           ...card,
         }, expectedSenderId);
+        // Sending can synchronously invoke an adapter callback. Ignore any
+        // approval that arrived before its delivery was acknowledged.
+        if (delivered) pending.delivered = true;
       } catch {
         // 窗口销毁与 send 抛异常都视作无审批端口；不能留下 pending。
       }
@@ -106,7 +112,7 @@ export class NodeInstallApprovalBridge {
   resolve(input: WorkflowEngineNodeInstallRespondInput, actualSenderId: number): boolean {
     const pending = this.pending.get(input.requestId);
     // 错误窗口即使知道 UUID 也不能消费/批准（保留给真正发起窗口）。
-    if (pending === undefined || pending.expectedSenderId !== actualSenderId) return false;
+    if (pending === undefined || !pending.delivered || pending.expectedSenderId !== actualSenderId) return false;
     clearTimeout(pending.timer);
     this.pending.delete(input.requestId);
     pending.resolve(input.approved === true);
