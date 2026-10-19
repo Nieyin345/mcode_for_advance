@@ -80,6 +80,14 @@ export function parseFlowTrust(raw: string | null | undefined): FlowTrustParseRe
   if (entry["origin"] !== "import" && entry["origin"] !== "ai") {
     return { ok: false, reason: "trust-corrupt", detail: `审批记录的 origin 非法：${JSON.stringify(entry["origin"])}` };
   }
+  // 审计时间虽然兼容老版本缺省，但存在时必须是有效毫秒戳。
+  // 过去把非法 reviewedAt 丢掉，却仍按 approvedRevision 授权执行，
+  // 使坏审批记录看上去像健康批准；这是信任账本的 fail-open。
+  const reviewedAt = entry["reviewedAt"];
+  if (Object.prototype.hasOwnProperty.call(entry, "reviewedAt") &&
+      !(typeof reviewedAt === "number" && Number.isSafeInteger(reviewedAt) && reviewedAt >= 0)) {
+    return { ok: false, reason: "trust-corrupt", detail: "审批记录的 reviewedAt 不是有效毫秒时间戳" };
+  }
   const approved = entry["approvedRevision"];
   if (approved !== null && !(typeof approved === "string" && SHA256_HEX.test(approved))) {
     return {
