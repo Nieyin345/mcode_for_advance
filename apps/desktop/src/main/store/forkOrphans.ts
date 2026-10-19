@@ -31,6 +31,7 @@
 import { getDb, persistNowOrThrow } from "@main/store/db.js";
 import type { BindValue } from "@main/store/sessionSchema.js";
 import { log } from "@main/lib/logger.js";
+import { safeErrorMessage } from "@main/lib/ipcError.js";
 import { withStatement } from "./repositories/withStatement.js";
 
 /** 一条孤儿记录(表行 → 对象)。 */
@@ -214,17 +215,22 @@ export async function compensateProviderFork(args: {
         `(source=${sourceSessionId}, provider=${providerId}, cwd=${cwd}). ${cause}`,
     );
   } catch (err) {
+    // SDK implementations are allowed to throw ANY JavaScript value:
+    // null, Object.create(null), or even an Error with a throwing message
+    // getter. The compensating catch must never itself throw before we
+    // durably record the external session that could not be deleted.
+    const detail = safeErrorMessage(err);
     recordOrphan({
       sourceSessionId,
       providerSessionId,
       providerId,
       cwd,
-      reason: `补偿删除失败:${(err as Error).message}(本地写入失败原因:${cause})`,
+      reason: `补偿删除失败:${detail}(本地写入失败原因:${cause})`,
     });
     log.warn(
       `session fork compensation: deleteSession failed for ${providerSessionId} ` +
         `(source=${sourceSessionId}, provider=${providerId}, cwd=${cwd}): ` +
-        `${(err as Error).message}. Recorded orphan.`,
+        `${detail}. Recorded orphan.`,
     );
   }
 }
@@ -237,7 +243,7 @@ function recordOrphan(input: OrphanInput): void {
     log.error(
       `session fork compensation FAILED to record orphan ${input.providerSessionId} ` +
         `(source=${input.sourceSessionId}, provider=${input.providerId}, cwd=${input.cwd}): ` +
-        `${(err as Error).message}. Engine-side copy remains untracked.`,
+        `${safeErrorMessage(err)}. Engine-side copy remains untracked.`,
     );
   }
 }

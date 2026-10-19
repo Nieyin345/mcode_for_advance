@@ -6,7 +6,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import { initDb, getDb, commitNow, closeDb } from "@main/store/db.js";
-import { ForkOrphanRepo } from "@main/store/forkOrphans.js";
+import { ForkOrphanRepo, compensateProviderFork } from "@main/store/forkOrphans.js";
 
 let total=0,failed=0;
 function check(name:string,ok:boolean,data?:unknown):void{
@@ -28,6 +28,17 @@ function diskStatus():string|undefined{
  try{
   const rows=handle.exec("SELECT status FROM fork_orphans WHERE id = 'orphan_source_a'");
   return rows[0]?.values[0]?.[0] as string|undefined;
+ }finally{handle.close();}
+}
+function diskHasUnresolvedProvider(providerSessionId:string):boolean{
+ const file=join(root!,"mcode.db");
+ const handle=new SQL.Database(new Uint8Array(readFileSync(file)));
+ try{
+  const stmt=handle.prepare("SELECT 1 FROM fork_orphans WHERE provider_session_id = ? AND status = 'ORPHANED'");
+  try{
+   stmt.bind([providerSessionId]);
+   return stmt.step();
+  }finally{stmt.free();}
  }finally{handle.close();}
 }
 const id=ForkOrphanRepo.add({
@@ -82,6 +93,44 @@ check("★★ resolving an orphan commits status before resolve() returns",diskS
 check("normal ORPHANED list excludes resolved",ForkOrphanRepo.list().length===0);
 equal("normal RESOLVED list includes record",ForkOrphanRepo.list("RESOLVED").map(x=>x.id),[id]);
 
+// SDK/plugin failures can reject with ANY JS value, not just Error.
+// The compensation path promises never to throw a secondary exception:
+// otherwise the original failed fork is masked AND no orphan is recorded.
+const unsafeGetter=Object.defineProperty({}, "message", {
+ get(){throw new Error("synthetic hostile message getter");},
+});
+for(const [tag,thrown] of [["null",null],["getter",unsafeGetter]] as const){
+ const providerSessionId="synthetic_bad_delete_"+tag;
+ let secondary:unknown=undefined;
+ try{
+  await compensateProviderFork({
+   sourceSessionId:"s_parent",
+   providerSessionId,providerId:"claude-sdk",cwd:"/isolated/only",
+   cause:"synthetic failed local transaction",
+   deleteSession:async()=>{throw thrown;},
+  });
+ }catch(err){secondary=err;}
+ check("★★ SDK rejection "+tag+" cannot rethrow during fork compensation",
+  secondary===undefined,{secondary:String(secondary)});
+ check("★★ SDK rejection "+tag+" still creates an orphan in memory",
+  ForkOrphanRepo.list().some((o)=>o.providerSessionId===providerSessionId));
+ check("★★ SDK rejection "+tag+" persists orphan in a second on-disk DB reader",
+  diskHasUnresolvedProvider(providerSessionId));
+}
+// Failing the registry itself must not let a malicious thrown value break
+// the "never throw from compensation" contract either.
+const dbRunSpy=db as unknown as {run:(sql:string,params?:unknown)=>unknown};
+const savedRun=dbRunSpy.run;
+let registrySecondary:unknown=undefined;
+try{
+ dbRunSpy.run=()=>{throw null;};
+ await compensateProviderFork({
+  sourceSessionId:"s_parent",providerSessionId:"synthetic_registry_fail",
+  providerId:"claude-sdk",cwd:"/isolated/only",cause:"synthetic failure",
+ });
+}catch(err){registrySecondary=err;}finally{dbRunSpy.run=savedRun;}
+check("★★ orphan registry rejecting null never causes secondary compensation exception",
+ registrySecondary===undefined,{secondary:String(registrySecondary)});
 closeDb();
 console.log("fork-orphan-lifetime-smoke:"+(total-failed)+"/"+total+" PASS");
 if(failed)process.exitCode=1;
