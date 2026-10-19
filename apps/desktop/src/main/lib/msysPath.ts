@@ -42,14 +42,14 @@
  */
 export function msysToWindowsPath(p: string): string {
   // WSL mount notation first: /mnt/d/foo → D:\foo.
-  const wsl = /^\/mnt\/([a-zA-Z])\/(.*)$/.exec(p);
+  const wsl = /^\/mnt\/([a-zA-Z])(?:\/(.*))?$/.exec(p);
   if (wsl) {
-    return `${wsl[1].toUpperCase()}:\\${wsl[2].replace(/\//g, "\\")}`;
+    return `${wsl[1].toUpperCase()}:\\${(wsl[2] ?? "").replace(/\//g, "\\")}`;
   }
   // MSYS drive notation: /d/foo → D:/foo (forward slashes — safe in bash).
-  const msys = /^\/([a-zA-Z])\/(.*)$/.exec(p);
+  const msys = /^\/([a-zA-Z])(?:\/(.*))?$/.exec(p);
   if (msys) {
-    return `${msys[1].toUpperCase()}:/${msys[2]}`;
+    return `${msys[1].toUpperCase()}:/${msys[2] ?? ""}`;
   }
   return p;
 }
