@@ -35,10 +35,31 @@ export class OutBuf {
   /** 丢过东西。 */
   truncated = false;
 
-  constructor(private readonly limitBytes: number) {}
+  constructor(private readonly limitBytes: number) {
+    if (!Number.isSafeInteger(limitBytes) || limitBytes < 0) {
+      throw new RangeError("输出尾部字节上限必须是非负安全整数");
+    }
+  }
 
   push(chunk: Buffer): void {
-    this.chunks.push(chunk);
+    if (chunk.length === 0) return;
+    if (this.limitBytes === 0) {
+      this.truncated = true;
+      this.chunks = [];
+      this.size = 0;
+      return;
+    }
+    if (chunk.length >= this.limitBytes) {
+      // A subarray would retain the ENTIRE incoming buffer (which may be many
+      // megabytes), defeating the bounded tail and exposing later mutations
+      // of a reused SDK/stream buffer. Copy only the bytes actually retained.
+      if (this.size > 0 || chunk.length > this.limitBytes) this.truncated = true;
+      this.chunks = [Buffer.from(chunk.subarray(chunk.length - this.limitBytes))];
+      this.size = this.limitBytes;
+      return;
+    }
+    // Never retain the caller's mutable ArrayBuffer beyond this push.
+    this.chunks.push(Buffer.from(chunk));
     this.size += chunk.length;
     // 从**头**丢,直到装得下。`subarray` 不复制 —— 一次大输出不会因为反复拼接而翻倍。
     while (this.size > this.limitBytes && this.chunks.length > 0) {
