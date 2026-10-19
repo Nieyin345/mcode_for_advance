@@ -10,4 +10,22 @@ assert.deepEqual(mergeMcpSecretEdits(stdio, { ...masked, env: {} }).env, {});
 const remote = { type: "http" as const, url: "https://example.invalid/mcp", headers: { Authorization: "Bearer SECRET" } };
 assert.equal(JSON.stringify(maskMcpConfig(remote)).includes("Bearer SECRET"), false);
 assert.deepEqual(mergeMcpSecretEdits(remote, maskMcpConfig(remote)), remote);
-console.log("maint-p1-mcp-smoke: 7/7 passed");
+// A stdio MCP server can keep the same executable while changing the script
+// in args/cwd. Such a new endpoint must never inherit blank masked secrets.
+const oldScript = { ...stdio, args: ["old-server.mjs"], cwd: "C:/safe-old" };
+const hidden = maskMcpConfig(oldScript);
+assert.throws(() => mergeMcpSecretEdits(oldScript, { ...hidden, args: ["untrusted.mjs"] }), /密钥|命令|参数|重新填写/i);
+assert.throws(() => mergeMcpSecretEdits(oldScript, { ...hidden, cwd: "C:/different" }), /密钥|命令|参数|重新填写/i);
+// Re-entering a value deliberately is permitted on a changed invocation.
+assert.equal((mergeMcpSecretEdits(oldScript, { ...hidden, args: ["untrusted.mjs"], env: { TOKEN: "new-secret", EMPTY: "new-value" } }) as typeof stdio).env.TOKEN, "new-secret");
+// Existing values are only from OWN keys, never Object.prototype.constructor.
+const unusual = Object.fromEntries([["constructor", ""], ["__proto__", ""]]);
+const oddMerged = mergeMcpSecretEdits(stdio, { ...masked, env: unusual });
+assert.equal(oddMerged.env?.["constructor"], "");
+assert.equal((oddMerged.env as Record<string, string> | undefined)?.["__proto__"], "");
+assert.equal(Object.hasOwn(oddMerged.env ?? {}, "constructor"), true);
+// An existing own special-name credential still retains the real old value.
+const specialOld = { ...stdio, env: JSON.parse('{"constructor":"own-token"}') as Record<string, string> };
+const specialMasked = maskMcpConfig(specialOld);
+assert.equal(mergeMcpSecretEdits(specialOld, specialMasked).env?.["constructor"], "own-token");
+console.log("maint-p1-mcp-smoke: credential isolation assertions passed");
