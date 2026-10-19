@@ -305,14 +305,23 @@ function registerIoSugar(
   RED.nodes.registerType(type, function (this: NodeInstance, config: Cfg) {
     const node = this;
     RED.nodes.createNode(node, config);
+    // Node-RED can close this instance during a pending Host RPC on deploy.
+    // The Host call itself still owns cancellation; the thin node adapter
+    // must at least refuse publishing a stale result into the replaced graph.
+    let closed = false;
+    node.on("close", () => { closed = true; });
     node.on("input", (msg, send, done) => {
+      if (closed) {
+        done(new Error("Node-RED 节点已关闭"));
+        return;
+      }
       void (async () => {
         try {
           const outcome = await run(msg, config);
-          send(outcome.msg);
+          if (!closed) send(outcome.msg);
           done();
         } catch (err) {
-          node.error(err, msg);
+          if (!closed) node.error(err, msg);
           done(err instanceof Error ? err : new Error(String(err)));
         }
       })();
@@ -339,17 +348,25 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
   RED.nodes.registerType(MCODE_BRANCH_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
     const node = this;
     RED.nodes.createNode(node, config);
+    let closed = false;
+    node.on("close", () => { closed = true; });
     node.on("input", (msg, send, done) => {
+      if (closed) {
+        done(new Error("Node-RED 分支节点已关闭"));
+        return;
+      }
       void (async () => {
         try {
           const outcome = await runBranchNode(msg, config, getPorts().branch);
-          const portCount = Math.max(1, node.wires?.length ?? 1);
-          const ports: Array<Record<string, unknown> | null> = Array.from({ length: portCount }, () => null);
-          ports[outcome.port] = outcome.msg;
-          send(ports);
+          if (!closed) {
+            const portCount = Math.max(1, node.wires?.length ?? 1);
+            const ports: Array<Record<string, unknown> | null> = Array.from({ length: portCount }, () => null);
+            ports[outcome.port] = outcome.msg;
+            send(ports);
+          }
           done();
         } catch (err) {
-          node.error(err, msg);
+          if (!closed) node.error(err, msg);
           done(err instanceof Error ? err : new Error(String(err)));
         }
       })();
@@ -360,18 +377,24 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
   RED.nodes.registerType(MCODE_TRIGGER_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
     const node = this;
     RED.nodes.createNode(node, config);
+    let closed = false;
     let dispose: (() => void) | void;
     try {
       dispose = getPorts().trigger.subscribe(triggerSubscribePayload(config), (msg) => {
-        node.send(msg);
+        // A queued event can still arrive after unsubscribe during redeploy.
+        if (!closed) node.send(msg);
       });
     } catch (err) {
       node.error(err);
     }
     node.on("close", () => {
+      if (closed) return;
+      closed = true;
       if (typeof dispose === "function") {
+        const release = dispose;
+        dispose = undefined;
         try {
-          dispose();
+          release();
         } catch {
           /* 清理失败不影响关停 */
         }
