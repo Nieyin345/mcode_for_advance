@@ -9,7 +9,7 @@
  * 用词要像人说话(「到点了:2026-09-16 09:00」),而不是把事件对象 JSON 塞进去 ——
  * 后者会让模型去猜字段含义,而它手里没有 schema。
  */
-import { capOldest, type EventItemFactKey, type FileChange, type HookEvent } from "@contracts/hook";
+import { capOldest, EVENT_ITEM_FACT_KEYS, type EventItemFactKey, type FileChange, type HookEvent } from "@contracts/hook";
 
 /** 列表最多列这么多项,剩下的折成一句"还有几个"。文件连着变(churn)时一串路径能上千,
  *  全塞进提示词纯属浪费 token —— 而模型要的是"变了些文件"这个事实,不是清单本身。 */
@@ -234,6 +234,21 @@ export interface TriggerPayloadFacts {
   [key: `input.${string}`]: string | readonly string[] | undefined;
 }
 
+/**
+ * 来自 SDK/Hook 的条目字段不是 JSON schema 已验证对象。
+ * 只取 contracts 里列出的字符串事实，避免运行时多余字段（kind/event/
+ * toolName/__proto__）经 {...first} 覆盖这一次真实的触发来源。
+ */
+function snapshotEventItem(item: Partial<Record<EventItemFactKey, string>>): Partial<Record<EventItemFactKey, string>> {
+  const out: Partial<Record<EventItemFactKey, string>> = {};
+  if (typeof item !== "object" || item === null || Array.isArray(item)) return out;
+  for (const key of EVENT_ITEM_FACT_KEYS) {
+    const value = Object.hasOwn(item, key) ? item[key] : undefined;
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
+
 /** input 值表 → 拍平的 `input.<key>` 键(空表 → 不加键,同 items 的口径)。 */
 function inputFactsOf(input: TriggerInputValues | undefined): Record<string, string | readonly string[]> {
   if (input === undefined) return {};
@@ -270,7 +285,7 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
       // 条目那几项**拍平进来**(见 `TriggerPayloadFacts.itemId` 上的说明)。合并窗口里
       // 攒了好几条时,take 第一条 —— 单数名字与 `describeTriggerPayload` 那段人话里的
       // "共 N 条"配套。
-      const first = payload.items?.[0];
+      const first = payload.items?.[0] === undefined ? undefined : snapshotEventItem(payload.items[0]);
       return {
         kind: "event",
         event: payload.event,
@@ -284,7 +299,7 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
         // 会让「这次带得出哪几项」这个问题多一个永远为假的答案,而消费方还得为它写
         // 一个分支。
         ...(payload.items !== undefined && payload.items.length > 0
-          ? { items: payload.items.map((it) => ({ ...it })) }
+          ? { items: payload.items.map(snapshotEventItem) }
           : {}),
         ...(payload.items !== undefined && payload.items.length > 1 ? { itemCount: payload.items.length } : {}),
         // 【MC-091】合并窗口积压截断时,把"这次不完整"这件事实带进载荷 —— 与 file 那一路
@@ -327,12 +342,15 @@ export function mergeEventPayload(
   facts: { toolName?: string; subjects?: readonly string[] },
   item: Partial<Record<EventItemFactKey, string>> | undefined,
 ): TriggerPayload {
-  let items = prior?.kind === "event" ? [...(prior.items ?? [])] : [];
+  // 事件由 SDK/HookPort 异步交付；不能持有传入 item 对象的引用。
+  // 合并窗口期间上游复用或修改了对象时，已经排队的事实必须保持当时快照。
+  let items = prior?.kind === "event" ? (prior.items ?? []).map(snapshotEventItem) : [];
   let dropped = prior?.kind === "event" ? (prior.itemsOverflowDropped ?? 0) : 0;
   if (item !== undefined) {
-    const id = item.itemId;
+    const safeItem = snapshotEventItem(item);
+    const id = safeItem.itemId;
     const seen = id !== undefined && items.some((existing) => existing.itemId === id);
-    if (!seen) items.push(item);
+    if (!seen) items.push(safeItem);
   }
   // 【MC-091】合并窗口里的事件条目**必须有界**。从前 `items` 只 push 不设上限,一条持续
   // 吐不同 `itemId` 的事件流会让它只涨不落(实测 1500 个唯一 itemId → 保留 1500),而
@@ -348,7 +366,7 @@ export function mergeEventPayload(
     kind: "event",
     event,
     ...(facts.toolName !== undefined ? { toolName: facts.toolName } : {}),
-    ...(facts.subjects !== undefined ? { subjects: facts.subjects } : {}),
+    ...(facts.subjects !== undefined ? { subjects: [...facts.subjects] } : {}),
     ...(items.length > 0 ? { items } : {}),
     ...(dropped > 0 ? { itemsOverflowDropped: dropped } : {}),
   };
@@ -384,7 +402,9 @@ export function describeTriggerPayload(payload: TriggerPayload): string {
       const directionSaid = describeFileChanges(payload.changes);
       if (listed.shown.length === 0) {
         const head = inputSaid === "" ? "监听的文件有变化。" : "手动带着输入运行。";
-        return [head, ...directionSaid, ...overflowSaid].join("\n");
+        // 文件名可能因删除/过滤而为空，但手动运行提供的 input 仍是
+        // 这次任务的真实参数；旧实现只说“带着输入”却漏了输入内容。
+        return [head, ...directionSaid, ...overflowSaid, ...(inputSaid === "" ? [] : [inputSaid])].join("\n");
       }
       return [
         "有文件变了:",
