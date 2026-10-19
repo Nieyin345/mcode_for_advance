@@ -4,7 +4,7 @@
  *
  * Run: scripts/scheduler-data-smoke/run.sh
  */
-import { attachmentPathsIn, contextKindOfPath, contextRefOfPath, inheritContextLines, type ContextLine, type ContextLookup } from "@main/orchestration/contextInherit.js";
+import { attachmentPathsIn, contextKindOfPath, contextRefOfPath, inheritContextLines, kindLabel, type ContextLine, type ContextLookup } from "@main/orchestration/contextInherit.js";
 import { runWorkflow } from "@main/orchestration/scheduler.js";
 import { composeNodePrompt } from "@main/orchestration/schedulerPrompt.js";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -261,10 +261,22 @@ eq(
   contextRefOfPath(libManifest("lc_两边都要.md"), LOOKUP, ["templates"])?.kind,
   "templates",
 );
+eq("★ 指定了另一个类目却没有交集，不能回退到它自己的 docs",
+  contextRefOfPath(libManifest("lc_文献.md"), LOOKUP, ["templates"]), null);
+eq("★ 空 wanted 应当是显式不给，不应回退第一类",
+  contextRefOfPath(libManifest("lc_文献.md"), LOOKUP, []), null);
+eq("★ 未知类目 label 保留原文，不能读到原型的对象",
+  kindLabel("__proto__"), "__proto__");
+eq("★ constructor 名类目仍是纯字符串",
+  kindLabel("constructor"), "constructor");
 // 挂着、但**没归任何大类** → 认得出层级,但 `kinds` 是空的 → 谁都拿不到。
 eq("★ 没挂大类的分类 → 认不出来(它不属于任何一个大类)", kindOf(libManifest("lc_没挂大类.md")), null);
 eq("★ 没归类的条目 → 同样认不出来", kindOf(libManifest("li_没归类.md")), null);
 eq("库里没有的 id → 认不出来", kindOf(libManifest("不认识.md")), null);
+// ARC-002: Path must be a generated .md manifest; not just any similarly
+// named non-manifest file in collections/.
+eq("★ 假 group 清单 .txt 不能冒充已挂载的 docs 大类",kindOf(libManifest("group-docs.txt")),null);
+eq("★ 有效分类 id 的 .json 非清单不得继承",kindOf(libManifest("lc_文献.json")),null);
 // 模版就是「模版」大类下的普通分类 / 条目(独立模版库退役,2026-09-27)。
 eq("模版分类 → 查出来是大类 templates", kindOf(libManifest("lc_模版集.md")), "templates");
 eq("模版条目 → 查出来是大类 templates", kindOf(libManifest("li_模版图.md")), "templates");
@@ -524,7 +536,7 @@ eq("params 取数字", render("{{A.params.n}}"), "3");
 eq("outputs 取嵌套对象", render("{{A.outputs.stats.count}}"), "3");
 eq("artifacts 取 URI", render("{{A.artifacts[0].uri}}"), "D:/work/report.pdf");
 eq("artifacts 取名称", render("{{A.artifacts[0].name}}"), "report.pdf");
-eq("取不存在的参数 = 空串", render("[{{A.params.没有}}]"), "[]");
+check("取不存在的参数必须明确报错，不能悄悄变成空串", render("[{{A.params.没有}}]").includes("ERR:") && render("[{{A.params.没有}}]").includes("没有参数路径"));
 // 一句话里多处引用。
 eq("一句里多处", render("{{检索.output}},目标 {{A.params.target}}"), "找到三篇,目标 量子");
 

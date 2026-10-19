@@ -220,7 +220,11 @@ function resolveRef(path: string, lookup: ContextLookup): Omit<ContextRef, "kind
   const abs = resolve(path);
   const collectionsDir = join(lookup.libraryRoot, "collections");
   if (pathWithin(collectionsDir, abs)) {
-    const stem = basename(abs).replace(/\.md$/i, "");
+    const name = basename(abs);
+    // Only the generated Markdown manifest shape is a context attachment.
+    // A plain collection asset named group-docs.txt cannot become a group.
+    if (!/\.md$/i.test(name)) return null;
+    const stem = name.slice(0, -3);
     // 大类清单:`group-<大类 id>.md`,整个大类一次挂上。**这一条先试** —— 一个分类的
     // id 恰好叫 `group-docs` 的概率远小于把整大类清单误当成某个分类。
     if (stem.startsWith("group-")) {
@@ -268,8 +272,10 @@ export function contextRefOfPath(
   const base = resolveRef(path, lookup);
   if (base === null) return null;
   const { kinds, ...rest } = base;
+  // A specified selection is a hard filter, not a preference. Falling back
+  // to kinds[0] would claim an unrelated group was explicitly selected.
   const pick =
-    wanted === undefined ? kinds[0] : wanted.find((w) => kinds.includes(w)) ?? kinds[0];
+    wanted === undefined ? kinds[0] : wanted.find((w) => kinds.includes(w));
   if (pick === undefined) return null;
   return { ...rest, kind: pick };
 }
@@ -338,7 +344,9 @@ export const KIND_LABEL: Record<string, string> = {
 /** 一类在提示词里的显示名:内置表兜底,**最后退回类目 id 原文** ——
  *  显示一个没见过的 id 也比显示 undefined 强。 */
 export function kindLabel(kind: NodeContextKind): string {
-  return KIND_LABEL[kind] ?? kind;
+  // User-defined group IDs can shadow Object.prototype keys. Only
+  // registered OWN labels are safe; never stringify a prototype object.
+  return Object.prototype.hasOwnProperty.call(KIND_LABEL, kind) ? KIND_LABEL[kind] : kind;
 }
 
 /** 一条清单覆盖的范围 → 提示词里那个词。见 {@link ContextLevel}。 */
