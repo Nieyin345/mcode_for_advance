@@ -7,6 +7,7 @@
 import type { Project } from "@contracts/session";
 import { getDb, persist } from "../db.js";
 import { v } from "../sessionSchema.js";
+import { withStatement } from "./withStatement.js";
 
 /* ─────────────────────────────── Projects ─────────────────────────────── */
 
@@ -59,9 +60,10 @@ export const ProjectRepo = {
     const nextOrderStmt = db.prepare(
       "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM projects",
     );
-    nextOrderStmt.step();
-    const nextOrder = (nextOrderStmt.getAsObject() as { next: number }).next;
-    nextOrderStmt.free();
+    const nextOrder = withStatement(nextOrderStmt, (query) => {
+      query.step();
+      return (query.getAsObject() as { next: number }).next;
+    });
     db.run(
       "INSERT INTO projects (id, name, path, archived, `group`, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [
@@ -87,13 +89,14 @@ export const ProjectRepo = {
     const stmt = db.prepare(
       "SELECT * FROM projects ORDER BY (pinned_at IS NULL) ASC, pinned_at DESC, sort_order ASC, created_at ASC",
     );
-    const out: Project[] = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as unknown as ProjectRow;
-      if (row.id !== SYSTEM_AUTOMATION_PROJECT_ID) out.push(rowToProject(row));
-    }
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      const out: Project[] = [];
+      while (query.step()) {
+        const row = query.getAsObject() as unknown as ProjectRow;
+        if (row.id !== SYSTEM_AUTOMATION_PROJECT_ID) out.push(rowToProject(row));
+      }
+      return out;
+    });
   },
 
   /** Root paths of all persisted projects, served from an in-memory cache.
@@ -103,17 +106,20 @@ export const ProjectRepo = {
    *  use {@link list}; mutations re-populate the cache lazily. */
   listPaths(): string[] {
     if (!rootPathsCache) rootPathsCache = ProjectRepo.list().map((p) => p.path);
-    return rootPathsCache;
+    // This list is an authorization input for pathGuard. Never expose the
+    // shared mutable cache to a caller that can splice a root or inject one.
+    return rootPathsCache.slice();
   },
 
   get(id: string): Project | undefined {
     const db = getDb();
     const stmt = db.prepare("SELECT * FROM projects WHERE id = ?");
-    stmt.bind([v(id)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as ProjectRow) : undefined;
-    stmt.free();
-    return row ? rowToProject(row) : undefined;
+    return withStatement(stmt, (query) => {
+      query.bind([v(id)]);
+      const found = query.step();
+      const row = found ? (query.getAsObject() as unknown as ProjectRow) : undefined;
+      return row ? rowToProject(row) : undefined;
+    });
   },
 
   /** Hard-delete a project. Child sessions + messages cascade-delete via the
@@ -192,14 +198,21 @@ export const ProjectRepo = {
    *  absent from the input keep their old sort_order. Mirrors the
    *  MessageRepo.replaceAll transaction pattern. */
   reorder(orderedIds: string[]): void {
+    // A duplicate ID silently rewrites one project's sort_order twice and
+    // leaves two unrelated projects with the same order. Validate before
+    // opening the transaction or changing persistent sorting data.
+    if (new Set(orderedIds).size !== orderedIds.length) {
+      throw new Error("项目排序包含重复 id，已拒绝修改顺序");
+    }
     const db = getDb();
     db.run("BEGIN");
     try {
       const stmt = db.prepare("UPDATE projects SET sort_order = ? WHERE id = ?");
-      for (let i = 0; i < orderedIds.length; i++) {
-        stmt.run([v(i), v(orderedIds[i])]);
-      }
-      stmt.free();
+      withStatement(stmt, (query) => {
+        for (let i = 0; i < orderedIds.length; i++) {
+          query.run([v(i), v(orderedIds[i])]);
+        }
+      });
       db.run("COMMIT");
     } catch (err) {
       db.run("ROLLBACK");

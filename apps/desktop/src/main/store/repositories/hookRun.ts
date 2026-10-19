@@ -130,7 +130,8 @@ export const HookRunRepo = {
    * **最旧**的,保住"最近发生过什么"这个排错窗口。
    */
   record(row: HookRunRow): void {
-    getDb().run(
+    const db = getDb();
+    db.run(
       `INSERT INTO hook_runs
          (run_id, hook_id, source, plugin_id, plugin_version, native_event, command_digest,
           matcher_digest, event, session_id, session_kind, status, exit_code,
@@ -140,7 +141,18 @@ export const HookRunRepo = {
          status       = excluded.status,
          exit_code    = excluded.exit_code,
          duration_ms  = excluded.duration_ms,
-         error        = excluded.error`,
+         error        = excluded.error
+       WHERE hook_runs.hook_id = excluded.hook_id
+         AND hook_runs.source = excluded.source
+         AND hook_runs.plugin_id = excluded.plugin_id
+         AND hook_runs.plugin_version IS excluded.plugin_version
+         AND hook_runs.native_event = excluded.native_event
+         AND hook_runs.command_digest = excluded.command_digest
+         AND hook_runs.matcher_digest IS excluded.matcher_digest
+         AND hook_runs.event = excluded.event
+         AND hook_runs.session_id = excluded.session_id
+         AND hook_runs.session_kind = excluded.session_kind
+         AND hook_runs.started_at = excluded.started_at`,
       [
         v(row.runId),
         v(row.hookId),
@@ -160,7 +172,12 @@ export const HookRunRepo = {
         v(row.startedAt),
       ],
     );
-    this.prune(HOOK_RUNS_RETAIN);
+    // A runId collision must not rewrite the audit status of a different
+    // hook/plugin/session. Check the single SQL statement's atomic result.
+    if (db.getRowsModified() === 0) {
+      throw new Error("Hook 执行 runId 的来源/会话归属不匹配，拒绝覆盖已有审计记录");
+    }
+    HookRunRepo.prune(HOOK_RUNS_RETAIN);
     persist();
   },
 
