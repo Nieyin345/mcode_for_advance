@@ -43,6 +43,28 @@ try {
     console.log(`SKIP real junction/symlink could not be created: ${reason}`);
     skip++;
   }
+  // A trusted managed dataRoot path itself may be replaced with a Junction.
+  // A recursive mkdir of dataRoot/workflow-migrations follows that link
+  // BEFORE the current check of only the terminal migration directory.
+  const actualRoot = join(temp, "actual-root");
+  mkdirSync(actualRoot);
+  const linkedDataRoot = join(temp, "linked-dataroot");
+  try {
+    symlinkSync(actualRoot, linkedDataRoot, process.platform === "win32" ? "junction" : "dir");
+    const sentinel = join(actualRoot, "existing.txt");
+    writeFileSync(sentinel, "unchanged");
+    let rejected = false;
+    try {
+      await backupWorkflowDocText(linkedDataRoot, "wf-redirect", "must-not-follow", { at: fixed });
+    } catch { rejected = true; }
+    check("★ migration rejects a linked dataRoot before creating managed backup directory", rejected);
+    check("★ rejected linked dataRoot does not create external backup directory",
+      !existsSync(join(actualRoot, WORKFLOW_MIGRATIONS_DIR)));
+    check("external original data stays byte-for-byte unchanged",readFileSync(sentinel,"utf8")==="unchanged");
+  } catch (err) {
+    console.log("SKIP dataRoot junction (OS privilege):", String(err));
+    skip++;
+  }
   if (linking) {
     check("fixture link is really a junction/symlink", lstatSync(link).isSymbolicLink());
     const sentinel = join(outside, "sentinel.txt");

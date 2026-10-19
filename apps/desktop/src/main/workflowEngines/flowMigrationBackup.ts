@@ -63,6 +63,14 @@ export async function backupWorkflowDocBytes(
   bytes: Uint8Array,
   options: { at?: Date } = {},
 ): Promise<WorkflowMigrationBackup> {
+  // Validate the supplied managed root BEFORE recursive mkdir of its child.
+  // Otherwise an attacker-replaced dataRoot Junction causes our first write
+  // to create workflow-migrations outside the Host's intended data root.
+  await mkdir(dataRoot, { recursive: true });
+  const rootInfo = await lstat(dataRoot);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error("工作流数据根不是普通目录（拒绝符号链接或 junction）");
+  }
   const dir = join(dataRoot, WORKFLOW_MIGRATIONS_DIR);
   await mkdir(dir, { recursive: true });
   // `mkdir({recursive:true})` does NOT reject an existing directory link.
