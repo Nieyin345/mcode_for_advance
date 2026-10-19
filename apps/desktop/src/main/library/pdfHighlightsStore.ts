@@ -148,6 +148,52 @@ export function writeHighlights(pdfPath: string, highlights: PdfHighlight[]): vo
   }
 }
 
+/** Validate with the same upstream pdf.js parser that opens the document in
+ * the desktop reader. Magic bytes alone accept even the five-byte "%PDF-"
+ * string; an invalid result must never replace a user's original PDF.
+ * Use a separate copy since pdf.js may transfer/detach the provided buffer.
+ */
+async function validateWrittenPdf(bytes: Uint8Array): Promise<void> {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 32 ||
+      bytes.byteLength > 200 * 1024 * 1024 ||
+      !Buffer.from(bytes.subarray(0, 1024)).includes("%PDF-")) {
+    throw new Error("PDF 写回结果无效或超过解析上限，已拒绝覆盖原文件");
+  }
+  // pdf.js deliberately repairs some truncated documents. A generated
+  // saveDocument() result must not need that repair: reject missing EOF even
+  // if its partial page tree happens to be salvageable.
+  const tail = Buffer.from(bytes.subarray(Math.max(0, bytes.length - 2048))).toString("latin1");
+  if (!/%%EOF[\x00\x09-\x0d\x20]*$/.test(tail)) {
+    throw new Error("PDF 写回结果缺少完整的 EOF 结尾，已拒绝覆盖原文件");
+  }
+
+  let task: ReturnType<typeof import("pdfjs-dist/legacy/build/pdf.mjs")["getDocument"]> | undefined;
+  let doc: { numPages: number; getPage(page: number): Promise<unknown>; destroy(): Promise<void> } | undefined;
+  try {
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    task = pdfjs.getDocument({
+      data: new Uint8Array(bytes),
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      disableFontFace: true,
+      verbosity: 0,
+    });
+    doc = await task.promise;
+    if (!Number.isSafeInteger(doc.numPages) || doc.numPages < 1) {
+      throw new Error("PDF 没有可读取的页面");
+    }
+    await doc.getPage(1);
+  } catch (err) {
+    throw new Error(`PDF 写回结果无法被阅读器解析，已拒绝覆盖原文件：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    if (doc) {
+      try { await doc.destroy(); } catch { /* cleanup only */ }
+    } else if (task) {
+      try { await task.destroy(); } catch { /* cleanup only */ }
+    }
+  }
+}
+
 /** 写回结果，给界面报"写了几条、跳过几条"。 */
 export interface WriteBackResult {
   written: number;
@@ -178,12 +224,9 @@ export async function writeBackToFile(
   if (!existsSync(pdfPath)) return { written: 0, skipped };
 
   const out = await save(usable);
-  // An interrupted/misbehaving PDF renderer may return an empty or arbitrary
-  // byte buffer without throwing. Never replace the source document with it.
-  if (!(out instanceof Uint8Array) ||
-      !Buffer.from(out.subarray(0, 1024)).includes("%PDF-")) {
-    throw new Error("PDF 写回结果不是有效 PDF 字节，已拒绝覆盖原文件");
-  }
+  // Never trust a successful saveDocument() callback as proof of a valid
+  // document. Verify the exact output before creating/replacing any file.
+  await validateWrittenPdf(out);
   const tmp = join(
     dirname(pdfPath),
     `.${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.tmp.pdf`,

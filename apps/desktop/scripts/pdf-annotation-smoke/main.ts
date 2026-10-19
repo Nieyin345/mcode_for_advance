@@ -334,18 +334,20 @@ console.log("\n8. 塞进 pdf.js 的 annotationStorage");
 console.log("\n9. 写回文件");
 
 const target = join(TMP, "writeback.pdf");
+const validWritebackBytes = new Uint8Array(readFileSync(join(process.cwd(), "scripts/fixtures/sample-paper.pdf")));
 writeFileSync(target, "%PDF-1.7 原始内容");
 
 {
   let sawHighlights: PdfHighlight[] = [];
   const r = await writeBackToFile(target, [mkHl()], async (hs) => {
     sawHighlights = hs;
-    return new TextEncoder().encode("%PDF-1.7 写回之后的内容");
+    return validWritebackBytes.slice();
   });
   eq("写回 1 条", r.written, 1);
   eq("没有跳过的", r.skipped.length, 0);
   eq("交给 save 的就是那条", sawHighlights.length, 1);
-  check("★ 文件内容真的被替换了", readFileSync(target, "utf8").includes("写回之后"), readFileSync(target, "utf8"));
+  check("★ 文件内容真的被替换为可被 PDF.js 打开的完整 PDF",
+    readFileSync(target).equals(Buffer.from(validWritebackBytes)));
   check("报告里有字节数", (r.bytes ?? 0) > 0, r.bytes);
 }
 
@@ -360,7 +362,7 @@ writeFileSync(target, "%PDF-1.7 原始内容");
   let threw: string | null = null;
   try {
     r = await writeBackToFile(target, [mkHl({ id: "ok" }), bad], async () =>
-      new TextEncoder().encode("%PDF-1.7 x"),
+      validWritebackBytes.slice(),
     );
   } catch (e) {
     threw = (e as Error).message;
@@ -409,13 +411,14 @@ writeFileSync(target, "%PDF-1.7 原始内容");
     saveCalled = true;
     // save 跑的时候，原文件应该**还是旧内容** —— 说明是先算完再落盘
     targetDuringSave = readFileSync(target, "utf8");
-    return new TextEncoder().encode("%PDF-1.7 新的");
+    return validWritebackBytes.slice();
   });
 
   eq("原子写回成功", r.written, 1);
   check("★ save 在写盘前被调用（先算完再落盘）", saveCalled);
   check("★ save 执行时原文件还是旧内容", targetDuringSave.includes("原内容"), targetDuringSave);
-  check("★ 落盘之后内容换成新的", readFileSync(target, "utf8").includes("新的"));
+  check("★ 落盘之后内容是合法的完整 PDF",
+    readFileSync(target).equals(Buffer.from(validWritebackBytes)));
 }
 
 {
