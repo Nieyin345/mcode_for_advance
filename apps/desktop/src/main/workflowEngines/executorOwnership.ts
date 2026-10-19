@@ -75,12 +75,15 @@ export class InMemoryExecutorOwnershipStore implements ExecutorOwnershipStore {
   private readonly records = new Map<string, ExecutorOwnershipRecord>();
 
   get(flowId: string): ExecutorOwnershipRecord | null {
-    return this.records.get(flowId) ?? null;
+    const record = this.records.get(flowId);
+    return record === undefined ? null : { ...record };
   }
 
   insert(record: ExecutorOwnershipRecord): boolean {
     if (this.records.has(record.flowId)) return false;
-    this.records.set(record.flowId, record);
+    // Never store a caller-owned mutable reference: otherwise a consumer can
+    // change the owner after an approved claim without release/claim checks.
+    this.records.set(record.flowId, { ...record });
     return true;
   }
 
@@ -92,7 +95,9 @@ export class InMemoryExecutorOwnershipStore implements ExecutorOwnershipStore {
   }
 
   list(): ExecutorOwnershipRecord[] {
-    return [...this.records.values()];
+    // Diagnostics/UI may annotate their local rows. Those mutations must not
+    // change the sole owner registry or bypass conflict checks.
+    return [...this.records.values()].map((record) => ({ ...record }));
   }
 }
 
