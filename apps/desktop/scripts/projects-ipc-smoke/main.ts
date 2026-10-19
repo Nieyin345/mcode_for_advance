@@ -1055,6 +1055,37 @@ console.log("\n分页 SQL 的排序要有 id 兜底(否则翻页可能跳过一�
   );
 }
 
+
+/* ────────────── 删除会话/项目与已缓存用量的一致性 ────────────── */
+console.log("\n真实删除 IPC → 用量统计缓存不得继续显示已删除的 token/成本");
+{
+  const { buildUsageStats, invalidateUsageStats } = await import("@main/lib/usageStats.js");
+  const pid = mkProject("usage-delete-cache");
+  const s = mkSession("s_usage_cache_a",pid);
+  const s2 = mkSession("s_usage_cache_b",pid);
+  const usage = (tokens: number) => [{
+    endedAt: Date.now(), durationMs: 1000, totalProcessedTokens: tokens,
+    outputTokens: tokens, cacheReadTokens: 0, cacheCreationTokens: 0,
+    usedTokens: 0, costUsd: tokens / 100,
+  }];
+  SessionRepo.updateUsageHistory(s, usage(100));
+  SessionRepo.updateUsageHistory(s2, usage(300));
+  invalidateUsageStats();
+  const initial = buildUsageStats("all");
+  const baseTokens = initial.summary.totalTokens;
+  check("前置: 两条真实会话用量至少 400 tokens",baseTokens>=400,{baseTokens});
+  await call(IPC.SESSION_DELETE, {id:s});
+  const afterSession = buildUsageStats("all");
+  check("★ 删会话后再次用量读取不得保留已删除会话的100 tokens",
+    afterSession.summary.totalTokens === baseTokens - 100,
+    {before:baseTokens,after:afterSession.summary.totalTokens});
+  await call(IPC.PROJECT_DELETE, {id:pid});
+  const afterProject = buildUsageStats("all");
+  check("★ 级联删除项目后再读用量统计必须立刻减去剩余300 tokens",
+    afterProject.summary.totalTokens === baseTokens - 400,
+    {before:baseTokens,after:afterProject.summary.totalTokens});
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

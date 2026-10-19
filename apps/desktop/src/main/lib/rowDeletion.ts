@@ -16,6 +16,7 @@ import { dropAgentMail } from "@main/lib/agentMail.js";
 import { dropAssistantJobs } from "@main/memory/assistantStore.js";
 import { runSessionCleanupHooks, runProjectCleanupHooks } from "@main/lib/sessionCleanupHooks.js";
 import { disposeAgentSession } from "@main/mcp/agentSessionCleanup.js";
+import { invalidateUsageStats } from "@main/lib/usageStats.js";
 
 /** 系统项目(后台自动化的外键归属)不能删 —— 调用方据此给出各自的错误形态。 */
 export class SystemProjectDeleteError extends Error {
@@ -63,6 +64,10 @@ export function deleteSessionEverywhere(id: string): void {
   // 这条路上才该清,否则一张会话键的表随会话数只涨不落(与 `dropAgentMail` 同一类)。
   runtimeManager.forgetSession(id);
   SessionRepo.delete(id);
+  // Usage history belongs to the deleted row. The aggregation cache was
+  // invalidated only on completed turns, so post-delete settings still
+  // reported tokens/cost for a session that no longer exists.
+  invalidateUsageStats();
   broadcastSessionDeleted(id);
 }
 
@@ -109,6 +114,9 @@ export function deleteProjectEverywhere(id: string): { sessions: number; stopped
   // 之前:钩子拿到的路径是上面读下来的那份,但语义上"这个项目还在"时收最稳。
   runProjectCleanupHooks(id, projectPath);
   ProjectRepo.delete(id);
+  // Project FK cascade deletes all usage rows at once. Both desktop IPC
+  // and mobile RPC share this entry point, so invalidate exactly here.
+  invalidateUsageStats();
   // 另一端这几条会话也是"刚才还在列表里"的,逐条告诉它;项目列表本身另发一条。
   for (const sid of doomed) broadcastSessionDeleted(sid);
   broadcastProjectsChanged();

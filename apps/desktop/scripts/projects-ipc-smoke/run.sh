@@ -34,7 +34,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
-  --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
+  --alias:electron=./scripts/settings-panel-smoke/stubs/electron.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/projects-ipc-smoke/stubs/runtimeManager.ts \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
