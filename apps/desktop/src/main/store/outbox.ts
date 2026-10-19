@@ -79,6 +79,10 @@ interface InFlight<T> {
   event: T;
   /** 本轮之前**已经投成**的订阅者 id —— 重投只补投没成的。 */
   deliveredTargets: Set<string>;
+  /** Previously failed targets may disappear from a dynamic targets() list.
+   * Unsubscribing is not delivery success: keep their failure attributable
+   * until a later retry actually reaches them or the budget is exhausted. */
+  unresolvedTargets: Set<string>;
 }
 
 /**
@@ -97,6 +101,9 @@ export class RetryableOutbox<T> {
   /** 防重入:投递过程中若订阅者又 `enqueue`(如一次提交触发下一次提交),嵌套的
    *  `drain` 直接返回,交给外层那个 `while` 继续把新压入的条目投完。 */
   private draining = false;
+  /** The head is shifted out of queue *before* delivery; count it until
+   * callback completion so stats.pending remains truthful during callbacks. */
+  private active = 0;
 
   constructor(
     private readonly opts: {
@@ -139,7 +146,7 @@ export class RetryableOutbox<T> {
           `${dropped?.record.envelope.eventId ?? ""}(累计丢弃 ${this.overflowDropped})`,
       );
     }
-    this.queue.push({ record, event, deliveredTargets: new Set() });
+    this.queue.push({ record, event, deliveredTargets: new Set(), unresolvedTargets: new Set() });
     this.drain();
   }
 
@@ -156,7 +163,12 @@ export class RetryableOutbox<T> {
     try {
       while (this.queue.length > 0) {
         const head = this.queue.shift()!;
-        this.deliverHead(head);
+        this.active += 1;
+        try {
+          this.deliverHead(head);
+        } finally {
+          this.active -= 1;
+        }
       }
     } finally {
       this.draining = false;
@@ -191,12 +203,12 @@ export class RetryableOutbox<T> {
         this.failedTotal += 1;
         this.deadLetterLog.push({
           eventId: item.record.envelope.eventId,
-          targetId: f.target.id,
+          targetId: f.targetId,
           attempts: item.record.envelope.attempt,
           lastError: f.error.message,
         });
         log.error(
-          `outbox: 事件 ${item.record.envelope.eventId} 投给订阅者 ${f.target.id} 重试 ` +
+          `outbox: 事件 ${item.record.envelope.eventId} 投给订阅者 ${f.targetId} 重试 ` +
             `${item.record.envelope.attempt} 轮仍失败,如实登记为失败(不静默丢、不假装成功)`,
         );
       }
@@ -205,16 +217,42 @@ export class RetryableOutbox<T> {
   }
 
   /** 对全部**还没投成**的订阅者扇出一轮;返回这一轮抛错的那些(空 = 全成)。 */
-  private runRound(item: InFlight<T>): Array<{ target: OutboxTarget<T>; error: Error }> {
-    const failures: Array<{ target: OutboxTarget<T>; error: Error }> = [];
-    for (const target of this.opts.targets()) {
+  private runRound(item: InFlight<T>): Array<{ targetId: string; error: Error }> {
+    const failures: Array<{ targetId: string; error: Error }> = [];
+    let targets: OutboxTarget<T>[];
+    try {
+      targets = this.opts.targets();
+    } catch (err) {
+      // The event has already left the queue. Letting this exception escape
+      // silently loses the durable-after-commit notification forever.
+      // Treat discovery as a failed target with the SAME retry/dead-letter
+      // path as a failed deliver(), without fabricating a successful result.
+      const reason = err instanceof Error ? err : new Error(String(err));
+      failures.push({ targetId: "@target-discovery", error: reason });
+      for (const targetId of item.unresolvedTargets) {
+        failures.push({ targetId, error: reason });
+      }
+      return failures;
+    }
+    const available = new Set<string>();
+    for (const target of targets) {
+      available.add(target.id);
       if (item.deliveredTargets.has(target.id)) continue; // 已投成的不再重投
       try {
         target.deliver(item.event);
+        item.unresolvedTargets.delete(target.id);
         item.deliveredTargets.add(target.id);
         this.deliveredTotal += 1;
       } catch (err) {
-        failures.push({ target, error: err instanceof Error ? err : new Error(String(err)) });
+        item.unresolvedTargets.add(target.id);
+        failures.push({ targetId: target.id, error: err instanceof Error ? err : new Error(String(err)) });
+      }
+    }
+    // A target that failed the preceding round may unsubscribe before a
+    // retry. That disappearance does NOT turn a failed delivery into DELIVERED.
+    for (const targetId of item.unresolvedTargets) {
+      if (!available.has(targetId)) {
+        failures.push({ targetId, error: new Error("订阅者在上次投递失败后不可用，未确认送达") });
       }
     }
     return failures;
@@ -223,7 +261,7 @@ export class RetryableOutbox<T> {
   /** 投递账本的当前投影。 */
   stats(): OutboxStats {
     return {
-      pending: this.queue.length,
+      pending: this.queue.length + this.active,
       delivered: this.deliveredTotal,
       failed: this.failedTotal,
       overflowDropped: this.overflowDropped,
@@ -232,6 +270,6 @@ export class RetryableOutbox<T> {
 
   /** 重试用尽仍没投成的那些(诊断 / 测试;只读快照)。 */
   deadLetters(): readonly OutboxFailure[] {
-    return this.deadLetterLog;
+    return this.deadLetterLog.map((entry) => ({ ...entry }));
   }
 }
