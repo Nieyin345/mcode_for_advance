@@ -27,7 +27,8 @@
  * 这条 bug 能活这么久,是因为**没有任何套件覆盖这条路**(在 scripts 目录下搜
  * `importPdfFiles` 一个都搜不到)。
  */
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { constants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, extname } from "node:path";
 import type { LibraryItem } from "@contracts/library";
 import { hashFile, verifyPdf } from "@main/library/pdfFile.js";
@@ -71,6 +72,55 @@ export async function importPdfFiles(input: {
  * 批量着几十份,一个过期的分类 id 不该让整批都不入库。真正的报错留给调用方按
  * `errors` 回报。
  */
+/**
+ * Publish one immutable, content-addressed PDF using the SAME rule for
+ * imports and attaching to existing items.
+ *
+ * Hashing source and then copying straight to <sha>.pdf was a TOCTOU:
+ * the source can change after hashFile(), and two writers can race to
+ * overwrite the final name. Stage to a unique temporary path instead,
+ * re-hash the completed copy and atomically create the final hard link.
+ * Existing objects are never silently trusted or overwritten.
+ */
+function publishHashedPdf(rawPath: string, sha: string): string {
+  const dest = pdfPathForHash(sha);
+  mkdirSync(dirname(dest), { recursive: true });
+  const verifyPublished = (): void => {
+    const stat = lstatSync(dest);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("PDF 内容寻址目标不是普通文件，已拒绝覆盖或关联");
+    }
+    if (hashFile(dest) !== sha) {
+      throw new Error("PDF 内容寻址目标与预期哈希不一致，已保留原件并拒绝关联");
+    }
+  };
+  try {
+    verifyPublished();
+    return dest; // Existing exact matching PDF is an idempotent success.
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+
+  const tmp = `${dest}.${randomUUID()}.tmp`;
+  try {
+    copyFileSync(rawPath, tmp, constants.COPYFILE_EXCL);
+    if (hashFile(tmp) !== sha) {
+      throw new Error("PDF 源文件在计算哈希与复制之间发生变化，未将错误内容入库");
+    }
+    try {
+      linkSync(tmp, dest);
+    } catch (err) {
+      // Another writer won the same content-addressed name. Confirm its
+      // immutable bytes match before linking a LibraryRepo row to it.
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    verifyPublished();
+    return dest;
+  } finally {
+    try { rmSync(tmp, { force: true }); } catch { /* preserve original failure */ }
+  }
+}
+
 async function importOne(rawPath: string, collectionIds?: string[]): Promise<ImportedFile> {
   try {
     if (!existsSync(rawPath)) return { path: rawPath, error: "文件不存在" };
@@ -81,10 +131,7 @@ async function importOne(rawPath: string, collectionIds?: string[]): Promise<Imp
 
     // 2 + 3. 按内容查重,并把字节收进库
     const sha = hashFile(rawPath);
-    const dest = pdfPathForHash(sha);
-    mkdirSync(dirname(dest), { recursive: true });
-    if (!existsSync(dest)) copyFileSync(rawPath, dest);
-    const rel = toLibraryRelative(dest);
+    const rel = toLibraryRelative(publishHashedPdf(rawPath, sha));
 
     const dup = LibraryRepo.findByPdfSha(sha);
     if (dup) {
@@ -131,16 +178,20 @@ export function attachPdfToItem(
   const item = LibraryRepo.get(itemId);
   if (!item) return { ok: false, error: `库里没有这个 id:${itemId}` };
   if (item.pdfPath && !opts.force) return { ok: false, error: "这一条已经有 PDF 了(要换掉就把 force 打开)" };
-  const bad = verifyPdf(rawPath);
-  if (bad) return { ok: false, error: bad };
-  const sha = hashFile(rawPath);
-  const dest = pdfPathForHash(sha);
-  mkdirSync(dirname(dest), { recursive: true });
-  if (!existsSync(dest)) copyFileSync(rawPath, dest);
-  const rel = toLibraryRelative(dest);
-  LibraryRepo.setPdf(itemId, rel, sha);
-  const updated = LibraryRepo.get(itemId)!;
-  log.info(`library: attached PDF ${basename(rawPath)} to ${itemId}`);
-  emitItemDownloaded(updated);
-  return { ok: true, item: updated, replaced: Boolean(item.pdfPath) };
+  try {
+    const bad = verifyPdf(rawPath);
+    if (bad) return { ok: false, error: bad };
+    const sha = hashFile(rawPath);
+    const rel = toLibraryRelative(publishHashedPdf(rawPath, sha));
+    LibraryRepo.setPdf(itemId, rel, sha);
+    const updated = LibraryRepo.get(itemId)!;
+    log.info(`library: attached PDF ${basename(rawPath)} to ${itemId}`);
+    emitItemDownloaded(updated);
+    return { ok: true, item: updated, replaced: Boolean(item.pdfPath) };
+  } catch (err) {
+    // Contract is a result union, not an uncaught exception that an IPC
+    // caller could mistake for lost transport; keep filesystem paths private.
+    const text = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: text.startsWith("PDF ") ? text : "PDF 挂载失败（文件读取或写入错误）" };
+  }
 }
