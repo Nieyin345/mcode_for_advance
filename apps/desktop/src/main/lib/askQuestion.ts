@@ -45,7 +45,11 @@ export function parseQuestions(input: unknown): AskUserQuestionItem[] {
     if (Array.isArray(rawOpts)) {
       optsArr = rawOpts;
     } else if (rawOpts && typeof rawOpts === "object" && "item" in rawOpts) {
-      optsArr = (rawOpts as Record<string, unknown>).item as unknown[];
+      const inner = (rawOpts as Record<string, unknown>).item;
+      // Some SDK/XML serializers emit an object or scalar instead of an
+      // array. Do not let that malformed wrapper throw before the host can
+      // render a question; ignore its options rather than coercing it.
+      optsArr = Array.isArray(inner) ? inner : null;
     }
     const options = (optsArr ?? [])
       .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
@@ -70,7 +74,11 @@ export function formatAnswersForModel(
 ): string {
   const lines: string[] = [];
   for (const q of questions) {
-    const v = answers[q.question];
+    // Answers are a user-owned map. A question named "constructor" or
+    // "toString" must not pick up Object.prototype as a fake user choice.
+    const v = Object.prototype.hasOwnProperty.call(answers, q.question)
+      ? answers[q.question]
+      : undefined;
     if (v == null) {
       lines.push(`${q.question}: (no answer)`);
     } else {
