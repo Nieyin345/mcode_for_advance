@@ -285,12 +285,23 @@ writeFileSync(pdfPath, "%PDF-1.7 fake");
 }
 
 {
-  // 坏数据在读进来那一刻就被滤掉 —— 别让它流到写回那层去算 NaN 坐标
+  // 保存入口必须拒绝一批中任意非法记录，不允许先报告已保存、
+  // 随后读取却悄悄遗漏；仅“已经存在的坏档”采用兼容过滤+IPC诊断。
   const bad = mkHl({ id: "bad" });
   bad.position.boundingRect.pageNumber = -5;
-  writeHighlights(pdfPath, [mkHl(), bad]);
+  const sc = highlightsPathFor(pdfPath);
+  const before = readFileSync(sc);
+  let rejected = false;
+  try { writeHighlights(pdfPath, [mkHl(), bad]); }
+  catch (err) { rejected = /批注索引第/.test(String(err)); }
+  check("★ 写入含非法批注的批次必须拒绝并报告序号", rejected);
+  check("★ 无效保存不修改最后正常侧车字节", readFileSync(sc).equals(before));
+
+  // Historical/imported corrupt data still needs a recovery view; write
+  // the malformed fixture directly, never through the real validated API.
+  writeFileSync(sc, JSON.stringify({ version: 1, highlights: [mkHl(), bad] }));
   const back = readHighlights(pdfPath);
-  eq("★ 坏的那条读回来时被滤掉", back.length, 1);
+  eq("★ 历史坏索引里好的那条依然能读回来", back.length, 1);
   eq("好的那条还在", back[0]?.id, "h1");
 }
 

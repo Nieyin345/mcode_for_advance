@@ -2,8 +2,8 @@
  * True production IPC regression. All bytes live in a disposable sql.js
  * dataRoot and synthetic sample-paper.pdf; NEVER touch user library.
  */
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, linkSync, truncateSync, statSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, linkSync, truncateSync, statSync, readdirSync } from "node:fs";
+import { join, dirname, basename } from "node:path";
 import { createHash } from "node:crypto";
 import type { IpcMain } from "electron";
 import { initDb, closeDb } from "@main/store/db.js";
@@ -172,6 +172,38 @@ check("★★ hardlinked foreign annotation sidecar is rejected with diagnostic"
 check("foreign sidecar target remains untouched",
  readFileSync(unlinked).toString("utf8")==="UNRELATED PRIVATE BYTES");
 rmSync(sidecar,{force:true});
+
+// A bad renderer/Agent must never receive saveHighlights ok:true after it
+// persists an invalid record that the very next read silently drops.
+const saveHandler=handlers.get(IPC.LIBRARY_SAVE_HIGHLIGHTS);
+if(!saveHandler)throw Error("real SAVE_HIGHLIGHTS IPC handler missing");
+const saveIndex=async (rows:unknown[])=>await Promise.resolve(saveHandler(null,{pdfPath:pdf,highlights:rows})) as
+ {ok:boolean;error?:string};
+writeFileSync(sidecar,JSON.stringify({version:1,highlights:[validRow]}));
+const safeBefore=readFileSync(sidecar);
+const malformedSave=await saveIndex([validRow,{id:"INVALID_ONLY"}]);
+check("★★ invalid annotation cannot be persisted with ok:true",
+ !malformedSave.ok && /批注|无效|第/.test(malformedSave.error??""),malformedSave);
+check("★★ bad save input does not change last good versioned index",
+ readFileSync(sidecar).equals(safeBefore));
+
+// The existing sidecar path can itself be a hardlink to another file.
+// Backing it up as .corrupt- would duplicate unrelated PRIVATE user bytes.
+rmSync(sidecar,{force:true});
+linkSync(unlinked,sidecar);
+const existingBackups=()=>readdirSync(dirname(sidecar)).filter(name=>name.startsWith(basename(sidecar)+".corrupt-"));
+const previousBackups=existingBackups();
+const foreignWrite=await saveIndex([validRow]);
+check("★★ existing hardlinked sidecar cannot be overwritten as if ours",
+ !foreignWrite.ok && readFileSync(sidecar).toString("utf8")==="UNRELATED PRIVATE BYTES",foreignWrite);
+check("★★ foreign sidecar bytes never copied into a .corrupt-backup by save",
+ JSON.stringify(existingBackups())===JSON.stringify(previousBackups),existingBackups());
+check("foreign file original survived attempted index save",
+ readFileSync(unlinked).toString("utf8")==="UNRELATED PRIVATE BYTES");
+rmSync(sidecar,{force:true});
+const saveGood=await saveIndex([validRow]);
+check("normal validated annotation index saves through production IPC",
+ saveGood.ok && (await readIndex()).highlights.length===1,saveGood);
 
 closeDb();
 console.log("library-pdf-writeback-host-smoke:"+(count-errors)+"/"+count+" PASS");

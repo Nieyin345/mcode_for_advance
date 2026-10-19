@@ -26,7 +26,7 @@
  * 这里只管**盘上的事**（读文件、写文件）。
  */
 import { createHash, randomUUID } from "node:crypto";
-import { constants, copyFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, existsSync, linkSync, lstatSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { PdfHighlight } from "@contracts/library";
 import { validatePdfHighlight } from "@contracts/pdfHighlight";
@@ -154,12 +154,39 @@ export function readHighlights(pdfPath: string): PdfHighlight[] {
  * 旧索引若读不出/含坏记录，先留一份不覆盖的备份，避免下一次保存抹掉可恢复内容。
  */
 export function writeHighlights(pdfPath: string, highlights: PdfHighlight[]): void {
+  // The IPC schema accepts unknown[] for compatibility. Validate *before*
+  // touching the filesystem: a partial/bad batch must not claim success
+  // only for the reader to hide some of those records on the next open.
+  for (const [index, highlight] of highlights.entries()) {
+    let invalid: string | null;
+    try {
+      invalid = validatePdfHighlight(highlight);
+    } catch {
+      invalid = "结构无效";
+    }
+    if (invalid !== null) {
+      throw new Error(`批注索引第 ${index + 1} 条无效：${invalid}；原文件未覆盖`);
+    }
+  }
+
   const target = highlightsPathFor(pdfPath);
   // Millisecond-only temp names collide across processes. Distinct writers
   // must never commandeer each other's in-flight JSON.
   const tmp = `${target}.${randomUUID()}.tmp`;
   try {
-    if (existsSync(target)) {
+    let targetExists = false;
+    try {
+      const previous = lstatSync(target);
+      if (!previous.isFile() || previous.isSymbolicLink() || previous.nlink !== 1) {
+        // Never copy unrelated hardlink/symlink content into .corrupt-UUID
+        // and never replace a path that is not our own plain index file.
+        throw new Error("批注索引目标不是安全的独占普通文件，拒绝覆盖或备份");
+      }
+      targetExists = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    if (targetExists) {
       let valid = false;
       try {
         const old = JSON.parse(readFileSync(target, "utf8")) as
