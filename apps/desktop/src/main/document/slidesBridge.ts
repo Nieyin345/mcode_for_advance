@@ -72,7 +72,7 @@ export interface SlidesEditExecutor {
     webContentsId: number,
     docId: string,
     filePath: string,
-  ): Promise<{ bytes: number } | null>;
+  ): Promise<{ bytes: number } | { reason: string } | null>;
 }
 
 export type SlidesEditResult =
@@ -152,6 +152,11 @@ export class SlidesBridge {
       if (result === null) {
         return { ok: false, reason: "保存失败：vendor 主进程没有这个 webContents 的打开会话（或写盘失败）" };
       }
+      // An executor-side file version CAS may fail after the Host preflight
+      // (while the native vendor serializer was awaiting). Keep the precise
+      // conflict visible to the original Slides UI rather than presenting an
+      // undefined byte count as if the save succeeded.
+      if ("reason" in result) return { ok: false, reason: result.reason };
       return { ok: true, bytes: result.bytes };
     } catch (err) {
       return { ok: false, reason: `保存失败：${safeErrorMessage(err)}` };

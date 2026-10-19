@@ -1,10 +1,11 @@
-import {mkdtempSync,rmSync,writeFileSync,readFileSync} from "node:fs";
+import {mkdtempSync,rmSync,writeFileSync,readFileSync,readdirSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {VendorSlidesExecutor} from "../../src/main/document/slidesExecutor.js";
 let passed=0,failed=0;
 function check(name:string,ok:boolean,details:unknown){console.log((ok?"PASS ":"FAIL ")+name+" "+JSON.stringify(details)); ok?passed++:failed++;}
 const root=mkdtempSync(join(tmpdir(),"mcode-slides-epoch-"));
+function requireNoStages(dir:string):boolean{return readdirSync(dir).every(name=>!name.startsWith(".mcode-slides-stage-"));}
 function deferred<T>(){let resolve!:(arg:T)=>void; const promise=new Promise<T>(r=>resolve=r);return {promise,resolve};}
 const waiting=new Map<string,ReturnType<typeof deferred<unknown>>>();
 const makeDeck=(name:string)=>({deck:{slides:[{id:name}],size:{cx:1,cy:1}}});
@@ -57,6 +58,138 @@ try{await broken;}catch{caught=true;}
 check("malformed renderer error is visibly reported",caught,null);
 check("failed render must not publish a saveable opened session",executor.sessionCount===0,executor.sessionCount);
 check("failed render cannot save broken deck",(await executor.saveDeck(88,"doc-BROKEN",pathBroken))===null,null);
+/* FULL-1 Slides native vendor save, Host revision, no silent overwrite:
+   real mkdtemp files + actual bundled VendorSlidesExecutor with fake native vendor ports. */
+const base=join(root,"real-vendor.pptx"), failTarget=join(root,"bad-vendor.pptx");
+writeFileSync(base,"ORIGINAL");
+writeFileSync(failTarget,"ORIGINAL");
+let savedPaths:string[]=[];
+let commits=0;
+let saveFault=false;
+let enteredSave:()=>void=()=>{};
+let unblockSave:()=>void=()=>{};
+let saveBarrier=new Promise<void>(r=>{unblockSave=()=>r();});
+let entering=new Promise<void>(r=>{enteredSave=()=>r();});
+let blocked=false;
+const safeVendor={
+  engine:{
+    async openPptx(bytes:Uint8Array){
+      return makeDeck(new TextDecoder().decode(bytes));
+    },
+    async savePptxToFile(_opened:unknown,path:string){
+      savedPaths.push(path);
+      writeFileSync(path,"NEW-CONTENT");
+      if(saveFault)throw new Error("SYNTHETIC_VENDER_MID_SAVE");
+      if(blocked){enteredSave?.();await saveBarrier;}
+    },
+    async createBlankPptx(){return new Uint8Array([66]);},
+    commitSaved(){commits++;}
+  },
+  render:{HeuristicMetrics:class{},buildRenderSlide(slide:unknown){return slide;}},
+  ops:{runTxn(){return {applied:false};}}
+};
+const saver=new VendorSlidesExecutor(safeVendor as never);
+check("★ vendor fake open original document",(await saver.openDeck(121,"owner",base,1200))!==null,null);
+writeFileSync(base,"EXTERNAL_NEWER");
+const conflict=await saver.saveDeck(121,"owner",base);
+check("★ external edit after Slides open must reject stale vendor write",
+  conflict!==null&&"reason" in conflict&&conflict.reason.includes("VERSION_CONFLICT")&&
+    readFileSync(base,"utf8")==="EXTERNAL_NEWER",{conflict,actual:readFileSync(base,"utf8")});
+check("★ stale save must not advance the vendor commitSaved state",commits===0,{commits});
+check("★ old vendor must NOT have written directly to target without CAS",
+  savedPaths.length===0,{savedPaths});
+saver.release(121);
+
+check("★ vendor fake opens second real file",(await saver.openDeck(122,"owner",failTarget,1200))!==null,null);
+saveFault=true;
+const failedVendor=await saver.saveDeck(122,"owner",failTarget);
+check("★ vendor write fails after staging partial: original PPTX must survive",
+  failedVendor===null&&readFileSync(failTarget,"utf8")==="ORIGINAL",
+  {failedVendor,actual:readFileSync(failTarget,"utf8")});
+check("★ failed write never calls commitSaved",commits===0,{commits});
+saveFault=false;
+savedPaths=[];
+const success=await saver.saveDeck(122,"owner",failTarget);
+check("★ valid native vendor save still commits and advances target revision",
+  success!==null&&readFileSync(failTarget,"utf8")==="NEW-CONTENT"&&commits===1,
+  {success,actual:readFileSync(failTarget,"utf8"),commits});
+check("★ vendor writes only to a private staging pathname before atomic publish",
+  savedPaths.length===1&&savedPaths[0]!==failTarget,{savedPaths});
+saver.release(122);
+
+const closed=join(root,"closed-during-vendor-save.pptx");
+writeFileSync(closed,"STILL-ORIGINAL");
+blocked=true;
+check("★ native session opened for close during write",
+  (await saver.openDeck(123,"owner",closed,1200))!==null,null);
+const inFlight=saver.saveDeck(123,"owner",closed);
+await entering;
+saver.release(123);
+unblockSave();
+const dead=await inFlight;
+check("★ vendor save finished after webContents close cannot republish orphan result",
+  dead===null&&readFileSync(closed,"utf8")==="STILL-ORIGINAL",
+  {dead,bytes:readFileSync(closed,"utf8")});
+check("★ close race leaves no saveable vendor session",saver.sessionCount===0,saver.sessionCount);
+
+const concurrent=join(root,"vendor-save-late-edit.pptx");
+writeFileSync(concurrent,"EXTERNAL-BASE");
+saveBarrier=new Promise<void>(r=>{unblockSave=()=>r();});
+entering=new Promise<void>(r=>{enteredSave=()=>r();});
+blocked=true;
+check("★ vendor opens target for external modification during async serialization",
+  (await saver.openDeck(124,"owner",concurrent,1200))!==null,null);
+const externalSaving=saver.saveDeck(124,"owner",concurrent);
+await entering;
+writeFileSync(concurrent,"EXTERNAL-NEWER-VERSION");
+unblockSave();
+const externalRaced=await externalSaving;
+check("★ late external bytes during native PPTX serialization reject stale save explicitly",
+  externalRaced!==null&&"reason" in externalRaced&&
+  externalRaced.reason.includes("VERSION_CONFLICT")&&
+  readFileSync(concurrent,"utf8")==="EXTERNAL-NEWER-VERSION",
+  {externalRaced,bytes:readFileSync(concurrent,"utf8")});
+check("★ failed late save cleaned up private staging directories",
+  requireNoStages(root),null);
+saver.release(124);
+
+const editedWhileSaving=join(root,"vendor-save-internal-edit.pptx");
+writeFileSync(editedWhileSaving,"EDIT-SOURCE");
+saveBarrier=new Promise<void>(r=>{unblockSave=()=>r();});
+entering=new Promise<void>(r=>{enteredSave=()=>r();});
+blocked=true;
+check("★ vendor opens for model edit during in-flight serializer",
+  (await saver.openDeck(125,"owner",editedWhileSaving,1200))!==null,null);
+const modelSaving=saver.saveDeck(125,"owner",editedWhileSaving);
+await entering;
+(safeVendor.ops as {runTxn:(opened:unknown,request:unknown)=>unknown}).runTxn=(opened,request)=>{
+  (opened as {deck:{slides:Array<{id:string}>}}).deck.slides[0]!.id="LATER-UI-EDIT";
+  void request;
+  return {applied:true};
+};
+const changed=await saver.editText(125,"owner",0,"fake-node","LATER-UI-EDIT");
+check("★ second UI edit was actually accepted before old serializer completed",
+  changed!==null,changed);
+unblockSave();
+const obsolete=await modelSaving;
+check("★ older serializing deck cannot overwrite a newer UI model edit",
+  obsolete===null&&readFileSync(editedWhileSaving,"utf8")==="EDIT-SOURCE",
+  {obsolete,bytes:readFileSync(editedWhileSaving,"utf8")});
+check("★ model edit race leaves no staged filesystem residue",requireNoStages(root),null);
+saver.release(125);
+
+const otherDoc=join(root,"different-doc-owner.pptx");
+writeFileSync(otherDoc,"SAFE-OWNER");
+blocked=false;
+check("★ native vendor opens dedicated docId", (await saver.openDeck(126,"authorized",otherDoc,1200))!==null,null);
+const wrongSave=await saver.saveDeck(126,"imposter",otherDoc);
+check("★ same webContents stale/incorrect docId cannot save other document",
+  wrongSave===null&&readFileSync(otherDoc,"utf8")==="SAFE-OWNER",wrongSave);
+check("★ same webContents stale/incorrect docId cannot mutate other document",
+  (await saver.addBlankSlide(126,"imposter"))===null&&
+  (await saver.editText(126,"imposter",0,"x","BAD"))===null,null);
+saver.release(126);
+
 }finally{rmSync(root,{recursive:true,force:true});}
 console.log(`slides-executor-session-epoch-smoke: ${passed}/${passed+failed}`);
 if(failed)process.exitCode=1;

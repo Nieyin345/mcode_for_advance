@@ -36,8 +36,11 @@
  * 撤销栈。与 vendor `sessions`（`session-state.ts:84`）同形，但只保留本适配层
  * 用到的字段；`saveDeck` 把该模型写回宿主给的路径（页面没有路径参数）。
  */
-import { readFile, stat } from "node:fs/promises";
-import { dirname, extname } from "node:path";
+import { chmod, lstat, mkdtemp, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { basename, dirname, extname, join } from "node:path";
+import { fileContentVersion } from "@main/lib/fileVersion.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 import type { SlidesEditExecutor } from "./slidesBridge.js";
 /**
  * 【ARC-007 P1/GA1】vendor 依赖的静态入口。构建期（`electron.vite.config.ts`）
@@ -75,7 +78,12 @@ interface VendorDeck {
 
 interface DeckSession {
   opened: unknown;
+  docId: string;
   filePath: string;
+  /** Original physical bytes at open time; same CAS as Mcode file edits. */
+  revision: string;
+  /** Any edit made while savePptxToFile is awaiting invalidates that save. */
+  editEpoch: number;
   fitWidthPx: number;
   undo: unknown[];
   redo: unknown[];
@@ -186,7 +194,6 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     filePath: string,
     fitWidthPx: number,
   ): Promise<{ openResult: unknown } | null> {
-    void docId;
     const epoch = {};
     this.sessionEpochs.set(webContentsId, epoch);
     const stillCurrent = (): boolean => this.sessionEpochs.get(webContentsId) === epoch;
@@ -217,7 +224,10 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     if (!stillCurrent()) return null;
     this.sessions.set(webContentsId, {
       opened,
+      docId,
       filePath,
+      revision: createHash("sha256").update(bytes).digest("hex"),
+      editEpoch: 0,
       fitWidthPx: width,
       undo: [],
       redo: [],
@@ -229,19 +239,62 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     webContentsId: number,
     docId: string,
     filePath: string,
-  ): Promise<{ bytes: number } | null> {
-    void docId;
+  ): Promise<{ bytes: number } | { reason: string } | null> {
     const session = this.sessions.get(webContentsId);
-    if (!session) return null;
-    // 宿主给的路径必须与打开时那份一致：页面没有路径参数，但装配层若被误用，
-    // 这一句保证"保存只会写回它打开过的那份"（与宿主会话表是两道独立的判断）。
-    if (session.filePath !== filePath) return null;
-    if (dirname(filePath) === "") return null;
+    if (!session || session.docId !== docId || session.filePath !== filePath) return null;
+    const epoch = this.sessionEpochs.get(webContentsId);
+    if (!epoch || dirname(filePath) === "") return null;
+    const editEpoch = session.editEpoch;
+    const stillCurrent = (): boolean =>
+      this.sessions.get(webContentsId) === session &&
+      this.sessionEpochs.get(webContentsId) === epoch &&
+      session.editEpoch === editEpoch;
     try {
-      await this.engine.savePptxToFile(session.opened, filePath);
-      this.engine.commitSaved(session.opened);
-      const info = await stat(filePath);
-      return { bytes: info.size };
+      // Reuse exactly the same Host path lease and SHA256 revision source as
+      // Docs/file.writeFile. A renderer read→vendor-save gap without this
+      // critical section silently overwrote edits made by another process.
+      return await withOsFileLease(filePath, async (real) => {
+        if (!stillCurrent()) return null;
+        const original = await lstat(real);
+        if (!original.isFile() || original.nlink !== 1) return null;
+        if (await fileContentVersion(real) !== session.revision) {
+          return { reason: "SLIDES_FILE_VERSION_CONFLICT:演示文稿已被外部编辑，拒绝覆盖新版本" };
+        }
+
+        // The original GenOffice pptx-engine still serializes every slide,
+        // animation and unknown archive part. The Host only changes where
+        // vendor writes BEFORE publication: isolated staging in same folder.
+        const stageDir = await mkdtemp(join(dirname(real), ".mcode-slides-stage-"));
+        const stage = join(stageDir, basename(real));
+        try {
+          await this.engine.savePptxToFile(session.opened, stage);
+          if (!stillCurrent()) return null; // tab closed, switched, or edited
+          const stagedInfo = await lstat(stage);
+          if (!stagedInfo.isFile() || stagedInfo.nlink !== 1) return null;
+          const stagedHash = await fileContentVersion(stage);
+          if (stagedHash === null) return null;
+          // While vendor awaited, another editor may have changed the file;
+          // never publish that old deck over a newer revision.
+          if (await fileContentVersion(real) !== session.revision) {
+            return { reason: "SLIDES_FILE_VERSION_CONFLICT:原版 PPTX 保存期间文件被修改，已保留新版本" };
+          }
+          if (!stillCurrent()) return null;
+          if (process.platform !== "win32") await chmod(stage, original.mode & 0o777);
+          // Flush the vendor-produced bytes before same-filesystem rename.
+          const fd = await open(stage, "r+"); // Windows fsync requires a writable file handle
+          try { await fd.sync(); } finally { await fd.close(); }
+          if (!stillCurrent()) return null;
+          if (await fileContentVersion(real) !== session.revision) {
+            return { reason: "SLIDES_FILE_VERSION_CONFLICT:最终写入前发现外部修改，已保留原始文件" };
+          }
+          await rename(stage, real);
+          session.revision = stagedHash;
+          this.engine.commitSaved(session.opened);
+          return { bytes: stagedInfo.size };
+        } finally {
+          await rm(stageDir, { recursive: true, force: true });
+        }
+      });
     } catch {
       return null;
     }
@@ -251,9 +304,8 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     webContentsId: number,
     docId: string,
   ): Promise<{ slideCount: number; slides: unknown[]; index: number } | null> {
-    void docId;
     const session = this.sessions.get(webContentsId);
-    if (!session) return null;
+    if (!session || session.docId !== docId) return null;
     const deck = session.opened as VendorDeck;
     // vendor `slides:add-blank-slide`（slides-main.ts:2770）的同一事务：插在当前页
     // 之后。宿主没有"当前页"概念 → 固定插在最后一页之后（页面后续以返回的
@@ -280,9 +332,8 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     elementId: string,
     text: string,
   ): Promise<{ text: string; renderedSlide: Record<string, unknown> } | null> {
-    void docId;
     const session = this.sessions.get(webContentsId);
-    if (!session) return null;
+    if (!session || session.docId !== docId) return null;
     session.undo.push(this.snapshot(session.opened as VendorDeck));
     const result = this.ops.runTxn(session.opened, {
       ops: [
@@ -297,6 +348,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       session.undo.pop();
       return null;
     }
+    session.editEpoch++;
     // 回读：用渲染树里该元素的文本作为"替换后的纯文本"（与 vendor 的返回同一语义）。
     const deck = session.opened as VendorDeck;
     const slide = deck.deck.slides[slideIndex] as { nodes?: unknown[] } | undefined;

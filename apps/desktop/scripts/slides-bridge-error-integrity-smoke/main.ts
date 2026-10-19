@@ -33,5 +33,14 @@ async saveDeck(){return {bytes:120};}
 check("vendor healthy add keeps full slides",JSON.stringify(await normal.addSlide(1,"view"))===JSON.stringify({ok:true,slideCount:1,slides:[{id:"one"}],index:0}),await normal.addSlide(1,"view"));
 check("vendor healthy save keeps byte count",(await normal.saveDeck(1,"view","/fixture/a.pptx")).ok===true,await normal.saveDeck(1,"view","/fixture/a.pptx"));
 check("vendor healthy open keeps result",(await normal.openDeck(1,"view","/fixture/a.pptx",1200)).ok===true,await normal.openDeck(1,"view","/fixture/a.pptx",1200));
+const raced=new SlidesBridge({
+ async addBlankSlide(){return null;},async editText(){return null;},
+ async openDeck(){return null;},
+ async saveDeck(){return {reason:"SLIDES_FILE_VERSION_CONFLICT: another editor changed this file"};}
+} as SlidesEditExecutor);
+const racedResult=await raced.saveDeck(1,"view","/fixture/a.pptx");
+check("★ native vendor revision conflicts are propagated as ok:false, not false saves",
+  racedResult.ok===false&&racedResult.reason.includes("VERSION_CONFLICT"),racedResult);
+
 console.log(`slides-bridge-error-integrity-smoke: ${passes}/${passes+failures}`);
 if(failures)process.exitCode=1;
