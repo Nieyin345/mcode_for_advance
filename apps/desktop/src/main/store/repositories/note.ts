@@ -8,6 +8,7 @@ import type { LibraryNote } from "@contracts/library";
 import { getDb, persist } from "../db.js";
 import { v } from "../sessionSchema.js";
 import { makeId } from "./makeId.js";
+import { withStatement } from "./withStatement.js";
 
 /* ──────────────────────────────── 条目笔记 ─────────────────────────────── */
 /* 读文献时随手记的小段文字,挂在条目上。与「笔记库」的条目是两回事:
@@ -40,11 +41,12 @@ export const NoteRepo = {
     const stmt = getDb().prepare(
       "SELECT * FROM library_notes WHERE item_id = ? ORDER BY updated_at DESC",
     );
-    stmt.bind([v(itemId)]);
-    const out: LibraryNote[] = [];
-    while (stmt.step()) out.push(rowToNote(stmt.getAsObject() as unknown as NoteRow));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(itemId)]);
+      const out: LibraryNote[] = [];
+      while (query.step()) out.push(rowToNote(query.getAsObject() as unknown as NoteRow));
+      return out;
+    });
   },
 
   /** 新建或改写一条。带 id 就改(不存在则当作新建,免得前端状态过期时报错)。
@@ -54,11 +56,17 @@ export const NoteRepo = {
     const db = getDb();
     const now = Date.now();
     if (input.id) {
-      const exists = db.prepare("SELECT id FROM library_notes WHERE id = ?");
-      exists.bind([v(input.id)]);
-      const found = exists.step();
-      exists.free();
-      if (found) {
+      const exists = db.prepare("SELECT item_id FROM library_notes WHERE id = ?");
+      const existing = withStatement(exists, (query) => {
+        query.bind([v(input.id)]);
+        return query.step() ? (query.getAsObject() as { item_id: unknown }) : null;
+      });
+      if (existing) {
+        // The note ID must still belong to the caller's parent item.
+        // Never silently edit a different library item's note.
+        if (existing.item_id !== input.itemId) {
+          throw new Error("笔记归属条目(itemId)不匹配，已拒绝覆盖其他条目的笔记");
+        }
         db.run("UPDATE library_notes SET content = ?, updated_at = ? WHERE id = ?", [
           v(input.content), v(now), v(input.id),
         ]);
@@ -78,10 +86,11 @@ export const NoteRepo = {
   delete(id: string): string | null {
     const db = getDb();
     const stmt = db.prepare("SELECT item_id FROM library_notes WHERE id = ?");
-    stmt.bind([v(id)]);
-    const found = stmt.step();
-    const itemId = found ? (stmt.getAsObject() as { item_id: string }).item_id : null;
-    stmt.free();
+    const itemId = withStatement(stmt, (query) => {
+      query.bind([v(id)]);
+      const found = query.step();
+      return found ? (query.getAsObject() as { item_id: string }).item_id : null;
+    });
     if (!itemId) return null;
     db.run("DELETE FROM library_notes WHERE id = ?", [v(id)]);
     persist();

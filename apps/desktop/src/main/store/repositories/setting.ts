@@ -6,6 +6,7 @@
  */
 import { getDb, persist } from "../db.js";
 import { v, type BindValue } from "../sessionSchema.js";
+import { withStatement } from "./withStatement.js";
 
 /* ─────────────────────────────── Settings ──────────────────────────────── */
 /* Generic key-value store for app preferences (e.g. the configured claude CLI
@@ -15,11 +16,12 @@ export const SettingRepo = {
   get(key: string): string | null {
     const db = getDb();
     const stmt = db.prepare("SELECT value FROM settings WHERE key = ?");
-    stmt.bind([v(key)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as { value: BindValue }) : undefined;
-    stmt.free();
-    return row ? String(row.value) : null;
+    return withStatement(stmt, (query) => {
+      query.bind([v(key)]);
+      const found = query.step();
+      const row = found ? (query.getAsObject() as { value: BindValue }) : undefined;
+      return row ? String(row.value) : null;
+    });
   },
 
   /** Read multiple keys in one pass. sql.js is synchronous so this is a single
@@ -27,16 +29,19 @@ export const SettingRepo = {
    *  (one IPC instead of N). Missing keys map to `null`. */
   getMany(keys: string[]): Record<string, string | null> {
     const db = getDb();
-    const out: Record<string, string | null> = {};
+    // Null prototype: user-owned settings keys like "__proto__" and
+    // "constructor" must be ordinary own keys, never object magic/accessors.
+    const out: Record<string, string | null> = Object.create(null) as Record<string, string | null>;
     const stmt = db.prepare("SELECT value FROM settings WHERE key = ?");
-    for (const k of keys) {
-      stmt.bind([v(k)]);
-      const found = stmt.step();
-      out[k] = found ? String((stmt.getAsObject() as { value: BindValue }).value) : null;
-      stmt.reset();
-    }
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      for (const k of keys) {
+        query.bind([v(k)]);
+        const found = query.step();
+        out[k] = found ? String((query.getAsObject() as { value: BindValue }).value) : null;
+        query.reset();
+      }
+      return out;
+    });
   },
 
   /** Upsert a setting value. */
@@ -87,11 +92,12 @@ export const SettingRepo = {
     // (下面 `findMany` 那两处是模板字符串,`\\` 同样只转出一个反斜杠,两边一致。)
     const stmt = db.prepare("SELECT key FROM settings WHERE key LIKE ? ESCAPE '\\'");
     // `_` 与 `%` 在 LIKE 里是通配符,前缀里出现就会多匹配 —— 转义掉。
-    stmt.bind([v(`${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)]);
-    const out: string[] = [];
-    while (stmt.step()) out.push(String((stmt.getAsObject() as { key: BindValue }).key));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(`${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)]);
+      const out: string[] = [];
+      while (query.step()) out.push(String((query.getAsObject() as { key: BindValue }).key));
+      return out;
+    });
   },
 
   /** 删一个 key(没有也不算错)。 */
