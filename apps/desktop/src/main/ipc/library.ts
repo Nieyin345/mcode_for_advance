@@ -1040,7 +1040,10 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    */
   ipcMain.handle(IPC.LIBRARY_READ_ORIGINAL_PDF, (_evt, raw) => {
     const input = PdfHighlightsReadSchema.parse(raw);
-    if (!findContainingWorkspaceRoot(input.pdfPath)) return { bytes: null };
+    // Read-original must obey the SAME DB-record-backed permission as the
+    // PDF's highlights read/save/write IPC paths: an explicitly linked file
+    // can be outside project roots, but an arbitrary external file cannot.
+    if (!highlightPathAllowed(input.pdfPath)) return { bytes: null };
     const original = originalPathFor(input.pdfPath);
     const src = existsSync(original) ? original : input.pdfPath;
     if (!existsSync(src)) return { bytes: null };

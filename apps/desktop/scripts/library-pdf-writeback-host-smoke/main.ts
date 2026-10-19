@@ -7,6 +7,7 @@ import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import type { IpcMain } from "electron";
 import { initDb, closeDb } from "@main/store/db.js";
+import { LibraryRepo } from "@main/store/repositories.js";
 import { IPC } from "@contracts/ipc";
 import { registerLibraryHandlers } from "@main/ipc/library.js";
 import { originalPathFor, highlightsPathFor } from "@main/library/pdfHighlightsStore.js";
@@ -84,6 +85,31 @@ check("★★ rejecting stale editor leaves immutable original snapshot unchange
  readFileSync(originalPathFor(pdf)).equals(valid));
 check("stale editor refusal does not leak a Host OS file lease",
  !existsSync(pdf+".mcode-lock"));
+
+// ARC-007: A PDF the user explicitly linked from outside their project/root
+// must use the same DB-record-backed path permission for read-original as
+// read/save highlights. An arbitrary unrelated outside path remains denied.
+const readOrigHandler=handlers.get(IPC.LIBRARY_READ_ORIGINAL_PDF);
+if (!readOrigHandler) throw Error("production library.readOriginalPdf handler missing");
+const readOriginal=async (path:string):Promise<{bytes:Uint8Array|null}> =>
+  (await Promise.resolve(readOrigHandler(null,{pdfPath:path}))) as {bytes:Uint8Array|null};
+const linked=join(root,"linked-outside-library.pdf");
+const unlinked=join(root,"unlinked-private.pdf");
+writeFileSync(linked,valid);
+writeFileSync(unlinked,Buffer.from("UNRELATED PRIVATE BYTES"));
+const linkedItem=LibraryRepo.upsert({title:"Linked external PDF",entryMode:"linked",filePath:linked});
+check("linked PDF fixture is an actual DB path reference",
+ LibraryRepo.pathRefCounts().has(linked) && LibraryRepo.get(linkedItem.id)?.filePath===linked);
+const originalLinked=await readOriginal(linked);
+check("★★ legitimate linked external PDF can read its original through production IPC",
+ originalLinked.bytes!==null && Buffer.from(originalLinked.bytes).equals(valid),
+ {bytesLength:originalLinked.bytes?.byteLength??null,linkedItemId:linkedItem.id});
+const deniedExternal=await readOriginal(unlinked);
+check("★★ unreferenced external PDF remains unreadable",
+ deniedExternal.bytes===null);
+const readLibraryOriginal=await readOriginal(pdf);
+check("ordinary library PDF original remains readable",
+ readLibraryOriginal.bytes!==null && Buffer.from(readLibraryOriginal.bytes).equals(valid));
 closeDb();
 console.log("library-pdf-writeback-host-smoke:"+(count-errors)+"/"+count+" PASS");
 if(errors)process.exitCode=1;
