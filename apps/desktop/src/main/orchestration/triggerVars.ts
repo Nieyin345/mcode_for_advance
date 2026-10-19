@@ -40,11 +40,16 @@ function stringifyTriggerValue(value: unknown): string {
   if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
     return (value as string[]).join("、");
   }
+  // 非 JSON 载荷（循环引用/BigInt/Symbol/函数）不是空值。
+  // 过去一律吞错返回空串，会把模板中真实存在但不可表达的事件字段
+  // 静默抹掉，模型仍收到似乎完整的指令。拒绝并让调度器报告这步失败。
   try {
-    return JSON.stringify(value) ?? "";
+    const json = JSON.stringify(value);
+    if (typeof json === "string") return json;
   } catch {
-    return "";
+    throw new Error("触发器变量值无法安全序列化，拒绝将它静默展开为空串");
   }
+  throw new Error("触发器变量值无法安全序列化，拒绝将它静默展开为空串");
 }
 
 /**
