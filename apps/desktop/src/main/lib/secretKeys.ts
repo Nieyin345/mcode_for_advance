@@ -68,6 +68,13 @@ export const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
   "mobile.passwordLogin",
 ]);
 
+/** Case-fold the explicit list once, too: unlike /i regexes, Set.has does not
+ * match e.g. ONLYOFFICE.CONFIG / PUBLICMCP.PROJECTLINKS. Those names carry
+ * credentials but have none of the generic secret-key words. */
+const CASE_FOLDED_SECRET_SETTING_KEYS = new Set(
+  [...SECRET_SETTING_KEYS].map((key) => key.toLowerCase()),
+);
+
 /**
  * 判据只收**真密钥**。个别消费方可以在此基础上**更严**(这是策略分歧,不是判据漂移,
  * 但必须在消费方写明理由):
@@ -92,7 +99,7 @@ const SECRET_STORE_RE = /(Keys|Tokens|Secrets|Credentials|Passwords)$/i;
 export function isSecretSettingKey(key: unknown): boolean {
   if (typeof key !== "string" || key.length === 0) return false;
   return (
-    SECRET_SETTING_KEYS.has(key) ||
+    CASE_FOLDED_SECRET_SETTING_KEYS.has(key.toLowerCase()) ||
     SECRET_WORD_RE.test(key) ||
     SECRET_STORE_RE.test(key)
   );

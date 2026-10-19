@@ -58,6 +58,48 @@ const SECRET_KEYS = [
   "onlyoffice.config",
 ];
 
+// The explicit secret-key list covers names like onlyoffice.config that do
+// not contain words such as "token" or "password". Unlike the regex fallback,
+// Set.has is case-sensitive. A case variant must not escape the export filter.
+const CASED_SECRET_KEYS = [
+  "RELAY.VPSCONFIG", "ONLYOFFICE.CONFIG",
+  "PUBLICMCP.PROJECTLINKS", "MCP.MANAGEMENT",
+  "MOBILE.PAIREDDEVICES",
+];
+for (const k of CASED_SECRET_KEYS) {
+  check(`★ 显式凭据设置的大小写变体必须仍被识别: ${k}`, isSecretSettingKey(k));
+  check(`★ 显式凭据设置的大小写变体不能进入导出: ${k}`, !isTransferableSettingKey(k));
+}
+{
+  const input: Record<string, string> = { "ui.locale": "zh" };
+  for (const k of CASED_SECRET_KEYS) input[k] = "SENTINEL-SHOULD-NOT-EXPORT";
+  const { doc } = buildSettingsExport(input, { appVersion: "0.0.0" });
+  check("★ 带大小写混排的密钥设置真实导出结果无泄漏",
+    CASED_SECRET_KEYS.every((k) => !(k in doc.settings)), doc.settings);
+  check("★ 普通界面语言依然允许导出", doc.settings["ui.locale"] === "zh");
+}
+
+// Local OS trust and runtime state are also non-transferable. The explicit
+// security-grant and local-state prefix tables were case-sensitive, while
+// exported setting keys may include aliases originating from a plugin.
+const CASED_LOCAL_TRUST = [
+  "MCP.PROJECTTRUST", "AGENTSSH.KNOWNHOSTS",
+  "AGENTSSH.FUTUREGRANT", "MCP.TRUST.FUTURE",
+  "SECURITYGRANT.PROJECTS", "MOBILE.PORT",
+  "AUTOMATION.LASTMINUTE", "RELAY.HOSTNAME",
+];
+for (const k of CASED_LOCAL_TRUST) {
+  check(`★ 不同大小写的信任/本机状态绝不允许迁移: ${k}`, !isTransferableSettingKey(k));
+}
+{
+  const all: Record<string, string> = { "ui.locale": "en" };
+  for (const k of CASED_LOCAL_TRUST) all[k] = "LOCAL-TRUST-SENTINEL";
+  const { doc } = buildSettingsExport(all, { appVersion: "0.0.0" });
+  check("★ 混合大小写的信任/本机状态不能真实进入导出 JSON",
+    CASED_LOCAL_TRUST.every((k) => !(k in doc.settings)), doc.settings);
+  check("★ 安全过滤后普通 ui.locale 仍可迁移", doc.settings["ui.locale"] === "en");
+}
+
 console.log("导出设置:密钥类设置键一律不导出");
 for (const key of SECRET_KEYS) {
   check(`★ ${key} 不可导出`, !isTransferableSettingKey(key), { key });

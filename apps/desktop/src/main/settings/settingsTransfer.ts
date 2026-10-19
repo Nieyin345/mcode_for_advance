@@ -180,13 +180,22 @@ const EXCLUDED_PREFIXES = [
   "agentMail.",
 ];
 
+// The setting table has string keys from IPC/imports/extensions. Grant and
+// local-state exclusions are security categories, not case-sensitive UI names:
+// a differently-cased spelling must never be treated as transferable.
+const FOLDED_GRANT_KEYS = new Set([...SECURITY_GRANT_KEYS].map((k) => k.toLowerCase()));
+const FOLDED_GRANT_PREFIXES = SECURITY_GRANT_PREFIXES.map((p) => p.toLowerCase());
+const FOLDED_EXCLUDED_KEYS = new Set([...EXCLUDED_KEYS].map((k) => k.toLowerCase()));
+const FOLDED_EXCLUDED_PREFIXES = EXCLUDED_PREFIXES.map((p) => p.toLowerCase());
+
 export function isTransferableSettingKey(key: string): boolean {
   if (!key || key.length > 200) return false;
+  const folded = key.toLowerCase();
   // 【MC-004】密钥键判据走共享的那一份(通用词 + 结构形状 + 显式名单),见文件头。
   if (isSecretSettingKey(key)) return false;
-  // 【MC-031 / MC-052】安全授信一律不可迁移 —— 单列一类,不是再往排除表里加一条。
-  if (SECURITY_GRANT_KEYS.has(key)) return false;
-  if (SECURITY_GRANT_PREFIXES.some((p) => key.startsWith(p))) return false;
+  // 【MC-031 / MC-052】安全授信一律不可迁移 —— 别让大小写变体绕过。
+  if (FOLDED_GRANT_KEYS.has(folded)) return false;
+  if (FOLDED_GRANT_PREFIXES.some((p) => folded.startsWith(p))) return false;
   // 【ARC-006 创建≠执行授权】**工作流执行信任事实**同属"安全授信":审批记录
   // (`workflow.review.v1.<id>`)是"这条自动化 / 外来工作流能不能无人值守执行"的唯一
   // 事实;「恢复默认」快照(`workflow.pinnedDefaults`)是**不过审直接落库**的完整文档
@@ -195,9 +204,9 @@ export function isTransferableSettingKey(key: string): boolean {
   // 外来自动化(或种下一份未经当前审批、恢复后即可执行的文档)。判据走 `@contracts/ipc`
   // 的共享谓词,与通用 `setting.set` 的拒绝是同一份(别在这里另写 `startsWith`/整键比较)。
   // 注意前缀只到 `review.v1.`:`workflow.nodePrefs.<id>`(显示偏好)仍要可迁移。
-  if (isWorkflowExecutionTrustSettingKey(key)) return false;
-  if (EXCLUDED_KEYS.has(key)) return false;
-  return !EXCLUDED_PREFIXES.some((p) => key.startsWith(p));
+  if (isWorkflowExecutionTrustSettingKey(key) || isWorkflowExecutionTrustSettingKey(folded)) return false;
+  if (FOLDED_EXCLUDED_KEYS.has(folded)) return false;
+  return !FOLDED_EXCLUDED_PREFIXES.some((p) => folded.startsWith(p));
 }
 
 /** 深度去掉值里像密钥的字段。
