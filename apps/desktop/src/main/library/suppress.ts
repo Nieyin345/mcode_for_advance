@@ -40,9 +40,9 @@
  * ## 与注册表的两个表同一种存法
  *
  * 一个设置键、值是一份 JSON、读的时候走纯校验函数:与 `library.types` / `library.groups`
- * 一致。同样带缓存(设置页保存后立刻生效,不等 DB 重开),同样在存坏时**退回空规则
- * 而不是炸** —— 空规则 = 什么都不挡,与"这个功能还没配过"是同一个行为,是这里唯一
- * 安全的退路(反过来,坏数据退回"全挡"会让用户的东西凭空消失)。
+ * 一致。同样带缓存(设置页保存后立刻生效,不等 DB 重开)，但**已有的损坏存档**
+ * 必须区别于**从未配置**：只有无设置行(null)可以代表“全部不屏蔽”。
+ * 对已存在的坏 JSON / 不合法形状必须拒读/拒写，不能让 AI 的读取禁令 fail-open。
  */
 import {
   EMPTY_LIBRARY_SUPPRESS,
@@ -55,7 +55,6 @@ import {
 import { CollectionRepo, LibraryRepo, SettingRepo } from "@main/store/repositories.js";
 import { loadLibraryGroups } from "./groupRegistry.js";
 import { bumpLibraryChangeRevision } from "./changeRevision.js";
-import { log } from "@main/lib/logger.js";
 import { extname } from "node:path";
 
 /**
@@ -79,38 +78,46 @@ export const LIBRARY_BLOCK_SETTINGS_PAGE = "文档管理";
 
 let cache: LibrarySuppressRule | null = null;
 
-/** 读当前规则。没存过 / 存坏了 → 空规则(什么都不挡)。 */
+function copySuppressRule(rule: LibrarySuppressRule): LibrarySuppressRule {
+  return { nodes: [...rule.nodes], extensions: [...rule.extensions] };
+}
+
+/** The sole safe default is a missing row, not damaged persisted policy. */
+function parseStoredSuppress(raw: string | null): LibrarySuppressRule {
+  if (raw === null) return { nodes: [], extensions: [] };
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    throw new Error("资料库屏蔽规则存档损坏（不是合法 JSON），已拒绝读取或覆盖原始记录");
+  }
+  const checked = parseSuppressJson(decoded);
+  if (!checked.ok) {
+    throw new Error(`资料库屏蔽规则存档损坏（${checked.error}），已拒绝读取或覆盖原始记录`);
+  }
+  return checked.rule;
+}
+
+/** Missing setting = unconfigured; corrupt setting = error, never allow-all. */
 export function loadSuppress(): LibrarySuppressRule {
-  if (cache) return cache;
-  const raw = SettingRepo.get(LIBRARY_SUPPRESS_SETTING_KEY);
-  let parsed: unknown = null;
-  if (raw !== null) {
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      log.warn(`[library] 屏蔽规则不是合法 JSON,按"什么都没屏蔽"处理(键 ${LIBRARY_SUPPRESS_SETTING_KEY})`);
-    }
-  }
-  if (parsed === null) {
-    cache = { nodes: [], extensions: [] };
-    return cache;
-  }
-  const res = parseSuppressJson(parsed);
-  if (!res.ok) {
-    log.warn(`[library] 屏蔽规则校验失败(${res.error}),按"什么都没屏蔽"处理`);
-    cache = { nodes: [], extensions: [] };
-    return cache;
-  }
-  cache = res.rule;
-  return cache;
+  if (!cache) cache = copySuppressRule(parseStoredSuppress(SettingRepo.get(LIBRARY_SUPPRESS_SETTING_KEY)));
+  // Callers cannot mutate the internal authorization policy by reference.
+  return copySuppressRule(cache);
 }
 
 /** 整表替换。校验失败原样交回说人话的错误,且**缓存不动**(同注册表那边的处置)。 */
 export function saveSuppress(raw: unknown): { ok: true } | { ok: false; error: string } {
   const res = parseSuppressJson(raw);
   if (!res.ok) return res;
+  // Recheck current persisted bytes even if cache was previously healthy:
+  // a concurrent writer could have damaged this setting since the read.
+  try {
+    parseStoredSuppress(SettingRepo.get(LIBRARY_SUPPRESS_SETTING_KEY));
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "资料库屏蔽规则存档损坏，已拒绝写入" };
+  }
   SettingRepo.set(LIBRARY_SUPPRESS_SETTING_KEY, JSON.stringify(res.rule));
-  cache = res.rule;
+  cache = copySuppressRule(res.rule);
   // 规则变了 → 依赖它的跨模块缓存(公网只读门的"条目 → 屏蔽原因")要立刻重算,
   // 不能等它的 TTL(见 `changeRevision.ts`)。只清本模块的缓存不够:那份缓存存的
   // 是**判定结果**,输入里含这份规则。
