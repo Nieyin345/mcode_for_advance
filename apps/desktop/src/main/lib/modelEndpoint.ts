@@ -23,6 +23,8 @@
  * 不往用户没配的地方撒指纹。
  */
 
+import { readResponseWithinBudget, type ReadBudget } from "@main/lib/readBudget.js";
+
 /** 默认超时。比一次真回合短很多 —— 这是连通性探测，不是跑任务。 */
 export const ENDPOINT_PROBE_TIMEOUT_MS = 15_000;
 
@@ -45,6 +47,11 @@ function assertHttpUrl(raw: string): URL {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("地址必须以 http:// 或 https:// 开头");
   }
+  // The base is a path prefix, not a complete request URL. Appending paths
+  // after ?/# would corrupt routing and may expose credentials in diagnostics.
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("端点地址不允许内嵌账号、密码、查询参数或片段");
+  }
   return url;
 }
 
@@ -55,24 +62,45 @@ function joinUrl(base: string, suffix: string): string {
   return `${trimmed}${path}`;
 }
 
-/** 一次带超时的 fetch。返回 Response；网络层失败抛人话。 */
+/** Read the entire exchange with ONE deadline and the shared input budget.
+ * Default fetch redirects could replay configured Authorization to another URL.
+ * Keep redirects visible as errors rather than following them implicitly. */
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number,
-): Promise<Response> {
+): Promise<{ ok: boolean; status: number; text: string }> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("请求超时参数无效");
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const timer = setTimeout(() => ac.abort(), Math.min(timeoutMs, ENDPOINT_PROBE_TIMEOUT_MS));
+  const maxBytes = 256 * 1024;
+  const budget: ReadBudget = {
+    maxRawBytes: maxBytes,
+    maxDecodedBytes: maxBytes,
+    maxOutputChars: maxBytes,
+    maxTimeMs: Math.min(timeoutMs, ENDPOINT_PROBE_TIMEOUT_MS),
+  };
   try {
-    return await fetch(url, { ...init, signal: ac.signal });
-  } catch (err) {
-    // AbortError 与网络错误分开说 —— 前者是「等太久」，后者多半是地址/网络不通。
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`请求超时(超过 ${Math.round(timeoutMs / 1000)} 秒没有响应)`);
+    const res = await fetch(url, { ...init, signal: ac.signal, redirect: "manual" });
+    const declared = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new Error("端点响应体超过读取预算");
     }
-    throw new Error(`连不上这个地址:${(err as Error).message}`);
+    const outcome = await readResponseWithinBudget(res, budget);
+    if (outcome.kind === "TRUNCATED_BY_BUDGET") throw new Error("端点响应体超过读取预算");
+    if (outcome.kind === "TIMEOUT" || ac.signal.aborted) throw new Error("端点响应体读取超时");
+    if (outcome.kind !== "COMPLETE") throw new Error("端点响应体读取失败");
+    return { ok: res.ok, status: res.status, text: outcome.text };
+  } catch (err) {
+    if (ac.signal.aborted || (err instanceof Error && err.name === "AbortError")) {
+      throw new Error("请求超时(响应头或响应体未在时限内完成)");
+    }
+    if (err instanceof Error && /读取预算|读取失败|超时参数/.test(err.message)) throw err;
+    throw new Error(`连不上这个地址:${err instanceof Error ? err.message : String(err)}`);
   } finally {
     clearTimeout(timer);
+    ac.abort();
   }
 }
 
@@ -96,6 +124,8 @@ export async function listEndpointModels(args: {
 }): Promise<{ models: string[] }> {
   const base = assertHttpUrl(args.baseUrl).toString();
   const timeoutMs = args.timeoutMs ?? ENDPOINT_PROBE_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("请求超时参数无效");
+  const deadline = Date.now() + Math.min(timeoutMs, ENDPOINT_PROBE_TIMEOUT_MS);
   const headers: Record<string, string> = { Accept: "application/json", ...(args.headers ?? {}) };
   if (args.apiKey) {
     if (args.authMode === "x-api-key") headers["x-api-key"] = args.apiKey;
@@ -107,9 +137,13 @@ export async function listEndpointModels(args: {
   const candidates = [joinUrl(base, "/v1/models"), joinUrl(base, "/models")];
   let lastError = "";
   for (const url of candidates) {
-    let res: Response;
+    // Time spent on the first candidate counts against the entire lookup;
+    // never double the advertised timeout by retrying another route.
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    let res: { ok: boolean; status: number; text: string };
     try {
-      res = await fetchWithTimeout(url, { method: "GET", headers }, timeoutMs);
+      res = await fetchWithTimeout(url, { method: "GET", headers }, remaining);
     } catch (err) {
       lastError = (err as Error).message;
       continue;
@@ -120,7 +154,7 @@ export async function listEndpointModels(args: {
     }
     let body: unknown;
     try {
-      body = await res.json();
+      body = JSON.parse(res.text);
     } catch {
       lastError = "端点返回的不是 JSON";
       continue;
@@ -133,6 +167,14 @@ export async function listEndpointModels(args: {
 }
 
 /** 从各种形态的 `{data:[...]}` / `{models:[...]}` / 裸数组里抠出模型 id。 */
+function validModelId(raw: string): string {
+  const id = raw.trim();
+  if (id.length > 512 || [...id].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127)) {
+    throw new Error("端点返回了过长或含控制字符的模型 ID");
+  }
+  return id;
+}
+
 function extractModelIds(body: unknown): string[] {
   const arr = Array.isArray(body)
     ? body
@@ -141,12 +183,13 @@ function extractModelIds(body: unknown): string[] {
       : body && typeof body === "object" && Array.isArray((body as { models?: unknown }).models)
         ? ((body as { models: unknown[] }).models)
         : [];
+  if (arr.length > 1000) throw new Error("端点模型列表条目过多");
   const out: string[] = [];
   for (const item of arr) {
-    if (typeof item === "string" && item.trim()) out.push(item.trim());
+    if (typeof item === "string" && item.trim()) out.push(validModelId(item));
     else if (item && typeof item === "object") {
       const id = (item as { id?: unknown; name?: unknown }).id ?? (item as { name?: unknown }).name;
-      if (typeof id === "string" && id.trim()) out.push(id.trim());
+      if (typeof id === "string" && id.trim()) out.push(validModelId(id));
     }
   }
   // 去重，保持出现顺序。
@@ -171,6 +214,15 @@ export async function probeEndpoint(args: {
 }): Promise<EndpointProbeResult> {
   const base = assertHttpUrl(args.baseUrl).toString();
   const timeoutMs = args.timeoutMs ?? ENDPOINT_PROBE_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("请求超时参数无效");
+  const deadline = Date.now() + Math.min(timeoutMs, ENDPOINT_PROBE_TIMEOUT_MS);
+  // Some gateways reflect Authorization or custom credential headers in
+  // diagnostics. These error strings reach the settings UI; never echo keys.
+  const secrets = [args.apiKey, ...Object.entries(args.headers ?? {})
+    .filter(([name]) => /authorization|api[-_]?key|token|secret|cookie|password/i.test(name))
+    .map(([, value]) => value)].filter((value): value is string => typeof value === "string" && value.length > 0);
+  const redact = (text: string): string =>
+    secrets.reduce((body, secret) => body.split(secret).join("[redacted]"), text);
   const attempt = async (
     url: string,
     body: unknown,
@@ -186,21 +238,66 @@ export async function probeEndpoint(args: {
       if (args.authMode === "x-api-key") headers["x-api-key"] = args.apiKey;
       else headers["Authorization"] = `Bearer ${args.apiKey}`;
     }
-    let res: Response;
+    let res: { ok: boolean; status: number; text: string };
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { ok: false, error: "请求超时(端点探测总时限已到)" };
     try {
-      res = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(body) }, timeoutMs);
+      res = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(body) }, remaining);
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
-    if (res.ok) return { ok: true, detail: `连接成功(${args.model})` };
+    if (res.ok) {
+      // HTTP 2xx alone also describes HTML login pages, empty 204 responses,
+      // and proxies that return JSON {error:...} with status 200. A connection
+      // test must prove the model-specific request returned a model reply.
+      try {
+        const parsed: unknown = JSON.parse(res.text);
+        const record = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown> : null;
+        const hasAnthropicReply = Array.isArray(record?.content)
+          && (record.content as unknown[]).some((entry) => {
+            if (!entry || typeof entry !== "object") return false;
+            const part = entry as Record<string, unknown>;
+            return (part.type === "text" && typeof part.text === "string" && part.text.length > 0)
+              || (part.type === "tool_use" && typeof part.name === "string" && part.name.length > 0);
+          });
+        const hasOpenAiReply = Array.isArray(record?.choices)
+          && (record.choices as unknown[]).some((entry) => {
+            if (!entry || typeof entry !== "object") return false;
+            const choice = entry as Record<string, unknown>;
+            if (!choice.message || typeof choice.message !== "object") return false;
+            const message = choice.message as Record<string, unknown>;
+            const contentParts = Array.isArray(message.content) && message.content.some(part => {
+              if (!part || typeof part !== "object") return false;
+              const segment = part as Record<string, unknown>;
+              return segment.type === "text" && typeof segment.text === "string" && segment.text.length > 0;
+            });
+            const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.some(call => {
+              if (!call || typeof call !== "object") return false;
+              const functionCall = (call as Record<string, unknown>).function;
+              return !!functionCall && typeof functionCall === "object"
+                && typeof (functionCall as Record<string, unknown>).name === "string"
+                && (functionCall as Record<string, string>).name.length > 0;
+            });
+            return (typeof message.content === "string" && message.content.length > 0)
+              || contentParts || toolCalls
+              || (typeof message.refusal === "string" && message.refusal.length > 0);
+          });
+        if ((hasAnthropicReply && record?.error === undefined)
+          || (hasOpenAiReply && record?.error === undefined)) {
+          return { ok: true, detail: `连接成功(${args.model})` };
+        }
+      } catch { /* Invalid JSON cannot prove a model responded. */ }
+      return { ok: false, error: "端点返回成功状态，但没有有效的模型响应" };
+    }
     // 读一小段响应体做线索——网关常把「模型不存在」写在里面。
     let snippet = "";
     try {
-      snippet = (await res.text()).slice(0, 200);
+      snippet = res.text.slice(0, 200);
     } catch {
       /* ignore */
     }
-    return { ok: false, error: `端点返回 ${res.status}${snippet ? `:${snippet}` : ""}` };
+    return { ok: false, error: `端点返回 ${res.status}${snippet ? `:${redact(snippet)}` : ""}` };
   };
 
   // Anthropic Messages 形态（始终带 anthropic-version —— 这条路由本来就是 Anthropic 的）。

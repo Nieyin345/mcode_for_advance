@@ -46,6 +46,93 @@ const server: Server = createServer((req, res) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(typeof body === "string" ? body : JSON.stringify(body));
   };
+  // Fake-only hostile gateways: each is confined to this loopback server.
+  if (req.url?.startsWith("/false-ok/")) {
+    send(200, { error: { message: "model unauthorized" } });
+    return;
+  }
+  if (req.url?.startsWith("/html-ok/")) {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end("<!doctype html><title>Gateway sign in</title>");
+    return;
+  }
+  if (req.url?.startsWith("/empty-ok/")) {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  if (req.url?.startsWith("/bogus-content-ok/")) {
+    if (req.url?.endsWith("/v1/messages")) send(200, { content: [{ type: "untrusted_gateway_control" }] });
+    else send(200, { choices: [{ message: { content: "" } }] });
+    return;
+  }
+  if (req.url?.startsWith("/valid-tool-calls/")) {
+    if (req.url?.endsWith("/v1/messages")) send(404, { error: "Anthropic not provided" });
+    else send(200, { choices: [{ message: { tool_calls: [{ type: "function", function: { name: "ping_tool", arguments: "{}" } }] } }] });
+    return;
+  }
+  if (req.url?.startsWith("/invalid-tool-calls-ok/")) {
+    if (req.url?.endsWith("/v1/messages")) send(200, { content: [{ type: "tool_use", name: "" }] });
+    else send(200, { choices: [{ message: { tool_calls: [null] } }] });
+    return;
+  }
+  if (req.url?.startsWith("/invalid-content-parts-ok/")) {
+    if (req.url?.endsWith("/v1/messages")) send(200, { content: [{ type: "text", text: "" }] });
+    else send(200, { choices: [{ message: { content: [null] } }] });
+    return;
+  }
+  if (req.url?.startsWith("/empty-tool-calls-ok/")) {
+    if (req.url?.endsWith("/v1/messages")) send(200, { content: [{ type: "text" }] });
+    else send(200, { choices: [{ message: { tool_calls: [] } }] });
+    return;
+  }
+  if (req.url?.startsWith("/empty-array-ok/")) {
+    if (req.url?.endsWith("/v1/messages")) send(200, { content: [] });
+    else send(200, { choices: [{ message: {} }] });
+    return;
+  }
+  if (req.url?.startsWith("/malformed-ok/")) {
+    send(200, { "choices": "not an array" });
+    return;
+  }
+  if (req.url?.startsWith("/echo/")) {
+    send(401, { error: "invalid token " + String(req.headers["authorization"] ?? "") });
+    return;
+  }
+  if (req.url?.startsWith("/redirect/")) {
+    res.writeHead(302, { location: "/v1/models" });
+    res.end();
+    return;
+  }
+  if (req.url?.startsWith("/too-many-models/")) {
+    send(200, { data: Array.from({ length: 1200 }, (_, i) => ({ id: "model-" + i })) });
+    return;
+  }
+  if (req.url?.startsWith("/model-id-too-long/")) {
+    send(200, { data: [{ id: "model-" + "x".repeat(8192) }] });
+    return;
+  }
+  if (req.url?.startsWith("/model-id-control/")) {
+    send(200, { data: [{ id: "alpha\u0000secret" }] });
+    return;
+  }
+  if (req.url?.startsWith("/oversize/")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ data: [{ id: "x".repeat(700_000) }] }));
+    return;
+  }
+  if (req.url?.startsWith("/double-slow/")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.flushHeaders();
+    setTimeout(() => res.end(JSON.stringify({ data: [{ id: "late" }] })), 180);
+    return;
+  }
+  if (req.url?.startsWith("/slow-body/")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.flushHeaders();
+    setTimeout(() => res.end(JSON.stringify({ data: [{ id: "late" }] })), 130);
+    return;
+  }
   // 假网关路由
   if (req.url === "/v1/models" && req.headers["authorization"]) {
     send(200, { data: [{ id: "alpha" }, { id: "beta" }] });
@@ -117,6 +204,15 @@ try {
     check("★ 端点没有列模型接口时抛错(不静默返回空)", threw.length > 0, threw);
   }
 
+  {
+    for (const route of ["model-id-too-long", "model-id-control", "too-many-models"]) {
+      let failed = false;
+      try { await listEndpointModels({ baseUrl: base + "/" + route, apiKey: "fixture-key" }); }
+      catch (err) { failed = /模型|ID|列表|name/i.test((err as Error).message); }
+      check("malformed model identifiers are refused before entering the settings dropdown (" + route + ")", failed);
+    }
+  }
+
   /* ── 2. 连通性测试 ── */
   console.log("\n2. 连通性测试");
   {
@@ -130,9 +226,68 @@ try {
     check("失败原因带上状态码线索", /500/.test(r.error ?? ""), r.error);
   }
 
-  /* ── 3. 地址守门 ── */
+  /* ── 2b. Fake 2xx is not evidence a model answered ── */
+  for (const badGateway of ["false-ok", "html-ok", "empty-ok", "malformed-ok", "empty-array-ok", "bogus-content-ok", "empty-tool-calls-ok", "invalid-tool-calls-ok", "invalid-content-parts-ok"]) {
+    const r = await probeEndpoint({ baseUrl: base + "/" + badGateway, apiKey: "test-only-secret", model: "alpha" });
+    check("200/204 without an actual model reply is not a successful connection (" + badGateway + ")", !r.ok, r);
+  }
+
+  {
+    const r = await probeEndpoint({ baseUrl: base + "/valid-tool-calls", apiKey: "dummy", model: "alpha" });
+    check("valid OpenAI tool call response still confirms API connectivity", r.ok, r);
+  }
+
+  /* ── 3. Network response abuse guards: bytes/redirect/body deadline ── */
+  {
+    seen.length = 0;
+    let error = "";
+    try { await listEndpointModels({ baseUrl: base + "/oversize", apiKey: "secret", timeoutMs: 200 }); }
+    catch (err) { error = (err as Error).message; }
+    check("oversize model body fails with explicit resource-budget error", /too large|过大|超过|预算|bytes/i.test(error), error);
+  }
+  {
+    seen.length = 0;
+    let error = "";
+    try { await listEndpointModels({ baseUrl: base + "/slow-body", apiKey: "secret", timeoutMs: 25 }); }
+    catch (err) { error = (err as Error).message; }
+    check("body read deadline persists past response headers", /超时|timeout/i.test(error), error);
+  }
+  {
+    seen.length = 0;
+    let error = "";
+    try { await listEndpointModels({ baseUrl: base + "/redirect", apiKey: "secret" }); }
+    catch (err) { error = (err as Error).message; }
+    check("authenticated model lookup refuses implicit 302 forwarding", /30[1278]|redirect|重定向/i.test(error), error);
+    check("redirect endpoint never replays configured secret to new path",
+      seen.every(v => v.url.startsWith("/redirect/")), seen);
+  }
+
+  {
+    const r = await probeEndpoint({ baseUrl: base + "/echo", apiKey: "sk-localsecretXYZ", model: "alpha" });
+    check("authentication rejection remains visible", !r.ok && (r.error ?? "").includes("401"), r);
+    check("gateway echo of Authorization never leaks to model settings UI",
+      !(r.error ?? "").includes("sk-localsecretXYZ"), r.error);
+  }
+
+  /* ── 3b. A probe's deadline covers both fallback routes, not each separately ── */
+  {
+    seen.length = 0;
+    let error = "";
+    try { await listEndpointModels({ baseUrl: base + "/double-slow", apiKey: "fake-only", timeoutMs: 30 }); }
+    catch (err) { error = (err as Error).message; }
+    check("slow first model-list route does not spend another full deadline on fallback", seen.filter(s => s.url.startsWith("/double-slow/")).length === 1, seen);
+    check("shared timeout failure is explicit", /timeout|超时/i.test(error), error);
+  }
+  {
+    seen.length = 0;
+    const result = await probeEndpoint({ baseUrl: base + "/double-slow", apiKey: "fake-only", model: "alpha", timeoutMs: 30 });
+    check("slow first conversation probe does not send a second timed-out request", seen.filter(s => s.url.startsWith("/double-slow/")).length === 1, seen);
+    check("shared timeout is not mislabeled successful", !result.ok, result);
+  }
+
+  /* ── 4. 地址守门 ── */
   console.log("\n3. 地址守门(相对地址 / 非法协议一律拒)");
-  for (const bad of ["not-a-url", "ftp://x/y", "file:///etc/passwd"]) {
+  for (const bad of ["not-a-url", "ftp://x/y", "file:///etc/passwd", base + "/v1?token=test-only", base + "/v1#fragment", "http://user:password@127.0.0.1:" + port]) {
     let threw = false;
     try {
       await listEndpointModels({ baseUrl: bad });
