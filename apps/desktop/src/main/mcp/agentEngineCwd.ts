@@ -19,12 +19,21 @@
  * 刻意零依赖(只依赖同样零依赖的 `agentSessionCleanup`):调用方在无头套件里也要能引它。
  */
 
+import { isAbsolute } from "node:path";
 import { registerAgentSessionDisposer } from "@main/mcp/agentSessionCleanup.js";
 
 const cwdBySession = new Map<string, string>();
 
 /** 登记/覆盖某会话的 cwd(provider 每轮 `sendTurn` 都会调,覆盖旧值即可)。 */
 export function registerAgentEngineSession(sessionId: string, cwd: string): void {
+  // All three SDKs use this same table for resolving relative agent file
+  // operations. An invalid relative cwd would silently fall back to Mcode's
+  // own process directory and mis-scope those tools. Keep the last valid
+  // binding if an incoming provider request is malformed.
+  if (typeof sessionId !== "string" || sessionId.trim().length === 0 ||
+      typeof cwd !== "string" || !isAbsolute(cwd) || cwd.includes("\0")) {
+    throw new Error("Agent session workspace must be an absolute native path with a valid session ID");
+  }
   cwdBySession.set(sessionId, cwd);
 }
 

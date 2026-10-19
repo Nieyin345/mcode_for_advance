@@ -1,0 +1,18 @@
+import { registerAgentEngineSession, agentEngineCwdFor } from "../../src/main/mcp/agentEngineCwd.js";
+import { disposeAgentSession } from "../../src/main/mcp/agentSessionCleanup.js";
+let pass=0,fail=0;
+const check=(name:string,ok:boolean)=>{console.log((ok?"PASS ":"FAIL ")+name);if(ok)pass++;else fail++;};
+const rejects=(fn:()=>unknown)=>{try{fn();return false;}catch{return true;}};
+const id="fake-provider-session-"+process.pid;
+const cwd=process.cwd();
+registerAgentEngineSession(id,cwd);
+check("absolute native workspace accepted",agentEngineCwdFor(id)===cwd);
+check("relative workspace is rejected rather than resolved at unrelated process cwd",rejects(()=>registerAgentEngineSession(id,"../outside")));
+check("rejected rebind preserves previously verified workspace",agentEngineCwdFor(id)===cwd);
+check("empty session identity is rejected",rejects(()=>registerAgentEngineSession(" ",cwd)));
+check("NUL in workspace is rejected",rejects(()=>registerAgentEngineSession(id,cwd+"\u0000hidden")));
+disposeAgentSession(id);
+check("deleting session clears its workspace binding",agentEngineCwdFor(id)===null);
+check("unknown session is never granted a cwd",agentEngineCwdFor("absent")===null);
+console.log(`agent-engine-cwd-guard-smoke: ${pass}/${pass+fail}`);
+if(fail)process.exitCode=1;
