@@ -4,9 +4,10 @@
  * 从 `repositories.ts`（3277 行、13 张表挤在一起）按实体拆出。
  * 本文件只管这一张表；**正文是整段搬过来的，没有改写**。
  */
-import type { WorkflowDoc } from "@contracts/workflow";
+import { WorkflowDocSchema, type WorkflowDoc } from "@contracts/workflow";
 import { getDb, persist } from "../db.js";
 import { v, type BindValue } from "../sessionSchema.js";
+import { withStatement } from "./withStatement.js";
 
 /* ──────────────────────────────── 工作流 ───────────────────────────────── */
 
@@ -33,28 +34,40 @@ function rowToWorkflow(r: Record<string, BindValue>): WorkflowRow {
     description: r.description === null ? null : String(r.description),
     icon: r.icon === null ? null : String(r.icon),
     builtin: Number(r.builtin) === 1,
-    // payload 是我们自己写进去的 WorkflowDoc。解析失败说明文件被外部改坏了 ——
-    // 不抛异常(那会让整个列表打不开),退化成一份空文档,让它至少能被看见和删掉。
-    doc: parseWorkflowDoc(String(r.payload)),
+    // A corrupt row is not a new, empty workflow. Never feed a synthetic
+    // blank document into import/edit/save or overwrite its original bytes.
+    doc: parseWorkflowDoc(String(r.payload), String(r.id)),
     updatedAt: Number(r.updated_at),
   };
 }
 
-function parseWorkflowDoc(raw: string): WorkflowDoc {
+function parseWorkflowDoc(raw: string, rowId: string): WorkflowDoc {
+  const invalid = (reason: string): never => {
+    // Never log the raw payload; graph node params can contain user secrets.
+    throw new Error(`工作流「${rowId}」存档损坏（${reason}），已拒绝伪造空文档或覆盖原记录；请先备份后修复。`);
+  };
+  let decoded: unknown;
   try {
-    return JSON.parse(raw) as WorkflowDoc;
+    decoded = JSON.parse(raw);
   } catch {
-    return { id: "", name: "", nodes: [], edges: [], builtin: false, updatedAt: 0 };
+    return invalid("JSON 解析失败");
   }
+  const checked = WorkflowDocSchema.safeParse(decoded);
+  if (!checked.success) return invalid("文档结构不符合工作流契约");
+  if (checked.data.id !== rowId) return invalid("持久行 ID 与文档 ID 不匹配");
+  // Preserve unknown fields on read. The workflow import/export layer owns
+  // their round-trip policy; using checked.data here would silently strip them.
+  return decoded as WorkflowDoc;
 }
 
 function getWorkflowRow(id: string): WorkflowRow | null {
   const stmt = getDb().prepare("SELECT * FROM workflows WHERE id = ?");
-  stmt.bind([v(id)]);
-  const found = stmt.step();
-  const row = found ? (stmt.getAsObject() as Record<string, BindValue>) : null;
-  stmt.free();
-  return row ? rowToWorkflow(row) : null;
+  return withStatement(stmt, (query) => {
+    query.bind([v(id)]);
+    const found = query.step();
+    const row = found ? (query.getAsObject() as Record<string, BindValue>) : null;
+    return row ? rowToWorkflow(row) : null;
+  });
 }
 
 export const WorkflowRepo = {
@@ -64,10 +77,11 @@ export const WorkflowRepo = {
     const stmt = db.prepare(
       "SELECT * FROM workflows ORDER BY sort_order ASC, created_at ASC",
     );
-    const out: WorkflowRow[] = [];
-    while (stmt.step()) out.push(rowToWorkflow(stmt.getAsObject() as Record<string, BindValue>));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      const out: WorkflowRow[] = [];
+      while (query.step()) out.push(rowToWorkflow(query.getAsObject() as Record<string, BindValue>));
+      return out;
+    });
   },
 
   get: getWorkflowRow,
@@ -81,9 +95,10 @@ export const WorkflowRepo = {
     let sortOrder = 0;
     if (existing === null) {
       const stmt = db.prepare("SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM workflows");
-      stmt.step();
-      sortOrder = Number((stmt.getAsObject() as { next: BindValue }).next);
-      stmt.free();
+      sortOrder = withStatement(stmt, (query) => {
+        query.step();
+        return Number((query.getAsObject() as { next: BindValue }).next);
+      });
     }
     const now = Date.now();
     db.run(

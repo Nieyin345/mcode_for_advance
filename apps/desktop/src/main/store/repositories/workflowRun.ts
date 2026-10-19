@@ -75,7 +75,8 @@ export const WorkflowRunRepo = {
     awaiting: readonly string[];
   }): void {
     const now = Date.now();
-    getDb().run(
+    const db = getDb();
+    db.run(
       `INSERT INTO workflow_runs
          (id, session_id, workflow_id, status, awaiting_node, payload, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -83,7 +84,9 @@ export const WorkflowRunRepo = {
          status        = excluded.status,
          awaiting_node = excluded.awaiting_node,
          payload       = excluded.payload,
-         updated_at    = excluded.updated_at`,
+         updated_at    = excluded.updated_at
+       WHERE workflow_runs.session_id = excluded.session_id
+         AND workflow_runs.workflow_id = excluded.workflow_id`,
       [
         v(args.id),
         v(args.sessionId),
@@ -95,6 +98,13 @@ export const WorkflowRunRepo = {
         v(now),
       ],
     );
+    // Run ids are globally unique. An ON CONFLICT update without a WHERE
+    // guard lets a different session/workflow mutate this run's status and
+    // payload. The WHERE predicate is evaluated atomically by SQLite, not a
+    // race-prone SELECT followed by an unconditional write.
+    if (db.getRowsModified() === 0) {
+      throw new Error("运行 ID 的会话/工作流归属不匹配，已拒绝覆盖其他运行的存档");
+    }
     persist();
   },
 
