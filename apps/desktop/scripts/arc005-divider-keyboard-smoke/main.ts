@@ -1,0 +1,18 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { dividerKeyboardAction } from "../../src/renderer/components/layout/dividerKeyboard.js";
+const src=readFileSync(resolve("src/renderer/components/layout/Divider.tsx"),"utf8");
+let total=0,failed=0;const ck=(s:string,b:boolean)=>{total++;if(!b)failed++;console.log((b?"PASS ":"FAIL ")+s)};
+const ev=(key:string, o: Record<string,unknown>={})=>({key,shiftKey:false,altKey:false,metaKey:false,ctrlKey:false, isComposing:false,keyCode:0,...o});
+const resizeDelta=(key:string, orientation:"vertical"|"horizontal",options:Record<string,unknown>={})=>{const a=dividerKeyboardAction(ev(key,options),orientation);return a?.kind==="resize" ? a.delta:null;};
+ck("Divider production delegates keyboard to shared action",src.includes("dividerKeyboardAction({")&&src.includes("action?.kind === \"resize\""));
+ck("Divider does not handle keyboard from nested elements",src.includes("if (e.target !== e.currentTarget) return;"));
+ck("Divider reset consumes event without bubbling",src.includes("e.stopPropagation(); onDoubleClick();"));
+ck("Divider ignores modern composition flags",dividerKeyboardAction(ev("ArrowRight",{isComposing:true}),"vertical")===null);
+ck("Divider ignores legacy IME 229",dividerKeyboardAction(ev("ArrowRight",{keyCode:229}),"vertical")===null);
+ck("No Alt/Ctrl/Meta layout resizing",["altKey","ctrlKey","metaKey"].every(k=>dividerKeyboardAction(ev("ArrowRight",{[k]:true}),"vertical")===null));
+ck("Normal horizontal/vertical direction",resizeDelta("ArrowRight","vertical")===10 && resizeDelta("ArrowLeft","vertical")===-10 && resizeDelta("ArrowUp","horizontal")===-10);
+ck("Shift adds 40px keyboard step",resizeDelta("ArrowDown","horizontal",{shiftKey:true})===40);
+ck("Wrong-axis/unrelated keys ignored",dividerKeyboardAction(ev("ArrowUp"),"vertical")===null && dividerKeyboardAction(ev("Backspace"),"horizontal")===null);
+ck("Reset remains explicit (only consumed if callback exists)",dividerKeyboardAction(ev("Home"),"horizontal")?.kind==="reset" && dividerKeyboardAction(ev("Enter"),"vertical")?.kind==="reset");
+console.log("divider keyboard "+(total-failed)+"/"+total);if(failed)process.exitCode=1;

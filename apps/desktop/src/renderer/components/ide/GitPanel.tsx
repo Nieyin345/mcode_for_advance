@@ -8,6 +8,7 @@ import { GitHistoryView } from "./GitHistoryView.js";
 import { WorktreeManagerPanel } from "./WorktreeManagerPanel.js";
 import { IconGitBranch, IconGitCommit, IconGitFork, IconLoader2, IconRefresh } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { GitScanGeneration } from "./gitScanGeneration.js";
 
 type GitSubTab = "changes" | "history" | "worktrees";
 
@@ -36,32 +37,37 @@ export function GitPanel() {
   const [repos, setRepos] = useState<GitRepo[]>([]);
   const [loading, setLoading] = useState(true);
   /** 扫描请求序号 —— 过期响应不许写状态(见 `scan`)。 */
-  const scanSeqRef = useRef(0);
+  const scanGeneration = useRef(new GitScanGeneration());
 
   const scan = async (path: string) => {
     // **请求序号:只有最新一次扫描能写状态。** 快速在项目 A→B 之间切换时,
     // scan(A) 的 discoverRepos 可能**后**回来,把 A 的仓库列表写进 B 的页面。
-    const seq = ++scanSeqRef.current;
+    const seq = scanGeneration.current.next();
     setLoading(true);
     try {
       const { repos } = await api.git.discoverRepos({ projectPath: path });
-      if (seq !== scanSeqRef.current) return;
+      if (!scanGeneration.current.isCurrent(seq)) return;
       setRepos(repos);
     } catch {
-      if (seq !== scanSeqRef.current) return;
+      if (!scanGeneration.current.isCurrent(seq)) return;
       setRepos([]);
     } finally {
-      if (seq === scanSeqRef.current) setLoading(false);
+      if (scanGeneration.current.isCurrent(seq)) setLoading(false);
     }
   };
 
   useEffect(() => {
     if (!projectPath) {
+      // A pending discoverRepos(A) must not repopulate the Git panel after
+      // switching to "no project". Invalidate even without a successor scan.
+      scanGeneration.current.invalidate();
       setRepos([]);
       setLoading(false);
       return;
     }
     void scan(projectPath);
+    // Also invalidate on unmount and while changing to another project.
+    return () => scanGeneration.current.invalidate();
   }, [projectPath]);
 
   if (!projectPath) {
@@ -131,6 +137,7 @@ export function GitPanel() {
             onClick={() => void scan(projectPath)}
             className="flex items-center gap-1 rounded px-1.5 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
             title={t("ide.git.rescanRepos")}
+            aria-label={t("ide.git.rescanRepos")}
           >
             <IconRefresh size={12} />
           </button>
@@ -173,6 +180,7 @@ function SubTabButton({
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
         "flex items-center gap-1 px-3 py-1.5 [font-size:var(--right-panel-font-size)] font-medium transition-colors",
         active
