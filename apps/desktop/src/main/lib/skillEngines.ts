@@ -136,7 +136,9 @@ function parseEnginesMapText(raw: string): { ok: true; map: SkillEnginesMap } | 
     return { ok: false };
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ok: false };
-  const out: SkillEnginesMap = {};
+  // The map keys come from untrusted skill/MCP names; preserve "__proto__"
+  // and "constructor" as literal own keys without rewriting Object.prototype.
+  const out: SkillEnginesMap = Object.create(null) as SkillEnginesMap;
   for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
     // 【MC-077】**部分损坏也要整份判 INVALID** —— 从前这里对类型不对的某一项 `continue`
     // 跳过,于是 `{"private":{"codex":false}}` 被写坏成 `{"private":5}` 时,用户的「禁用
@@ -215,6 +217,7 @@ export function readEnginesMap(skillsRoot: string): SkillEnginesMap {
 /** 写映射到显式路径（pretty-printed）。**每次都刷新 last-good 备份**(含空映射 —— 用户明确
  *  全允许那次也是合法提交)。见 {@link writeEnginesMap} 的 skills-root 包装。 */
 export function writeEnginesMapFile(file: string, map: SkillEnginesMap): void {
+  if (isEnginesDenyAll(map)) throw new Error("引擎映射文件损坏且无法恢复，拒绝把受限配置写成全允许");
   atomicWrite(file, JSON.stringify(map, null, 2) + "\n");
   // 【MC-077】与 MC-071 残余同一条:空映射("用户明确全允许")也必须成为新的 last-good,
   // 否则「先有限制 → 用户明确全允许 → 文件损坏」会从更旧的限制错误恢复。
@@ -238,7 +241,7 @@ export function engineEnabled(
   engine: string,
 ): boolean {
   if (isEnginesDenyAll(map)) return false;
-  return map[name]?.[engine as SkillEngine] !== false;
+  return !Object.hasOwn(map, name) || map[name]?.[engine as SkillEngine] !== false;
 }
 
 /** True when at least one skill disables `engine` — the signal for providers
@@ -262,8 +265,9 @@ export function setEnginesEntry(
   name: string,
   wanted: Record<SkillEngine, boolean>,
 ): SkillEnginesMap {
+  if (isEnginesDenyAll(map)) throw new Error("引擎映射损坏且没有有效备份，必须先显式恢复配置");
   const entry = minimizeEntry(wanted);
-  if (entry) map[name] = entry;
+  if (entry) Object.defineProperty(map, name, { value: entry, enumerable: true, configurable: true, writable: true });
   else delete map[name];
   return map;
 }

@@ -24,7 +24,7 @@ import {
   type SkillEnginesMap,
 } from "./skillEngines.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
-import type { McpManagementState } from "@contracts/ipc";
+import type { McpManagementState, McpServerConfig } from "@contracts/ipc";
 
 /** Engines an MCP server can be assigned to. pi is absent on purpose. */
 export const MCP_ENGINES = ["claude", "codex"] as const;
@@ -92,9 +92,11 @@ export function deriveMcpEngineView(
   engine: McpEngine,
 ): Record<string, unknown> {
   const disabled = state.userDisabled ?? {};
-  const out: Record<string, unknown> = {};
+  // MCP server names are user-provided opaque strings (including JS prototype
+  // names). A null-prototype record preserves them as own data properties.
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [name, config] of Object.entries(state.userServers ?? {})) {
-    if (name in disabled) continue;
+    if (Object.hasOwn(disabled, name)) continue;
     if (!mcpEngineEnabled(map, name, engine)) continue;
     out[name] = config;
   }
@@ -110,20 +112,20 @@ export function applyUserMcpToggle(
   name: string,
   enabled: boolean,
 ): { ok: boolean; error?: string; state: McpManagementState } {
-  const userServers = { ...(state.userServers ?? {}) };
-  const stash = { ...(state.userDisabled ?? {}) };
+  const userServers: Record<string, McpServerConfig> = Object.assign(Object.create(null), state.userServers ?? {});
+  const stash: Record<string, McpServerConfig> = Object.assign(Object.create(null), state.userDisabled ?? {});
   if (enabled) {
-    const config = stash[name];
+    const config = Object.hasOwn(stash, name) ? stash[name] : undefined;
     if (!config) {
       // Enabling something already enabled (or unknown) — idempotent ok only
       // when the truth layer actually has it; otherwise refuse.
-      if (!(name in userServers)) return { ok: false, error: "未找到该 server 的配置", state };
+      if (!Object.hasOwn(userServers, name)) return { ok: false, error: "未找到该 server 的配置", state };
       return { ok: true, state };
     }
     userServers[name] = config;
     delete stash[name];
   } else {
-    const config = userServers[name];
+    const config = Object.hasOwn(userServers, name) ? userServers[name] : undefined;
     if (!config) return { ok: false, error: "未找到该 server 的配置", state };
     stash[name] = config;
   }

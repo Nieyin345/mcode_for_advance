@@ -121,7 +121,14 @@ try {
     engineEnabled(defensive, "good-skill", "claude"), false);
 
   /* ── setEnginesEntry + round-trip ── */
-  const map = readEnginesMap(root);
+  const brokenBeforeReset = readEnginesMap(root);
+  let refusedImplicitReset = false;
+  try { setEnginesEntry(brokenBeforeReset, "my-skill", { claude: true, codex: false, pi: false }); }
+  catch { refusedImplicitReset = true; }
+  check("损坏无备份的 deny-all 不允许普通开关隐式清空限制", refusedImplicitReset);
+  // A deliberate explicit reset is a NEW trusted empty configuration, not an
+  // accidental mutation/serialization of the corrupted deny-all sentinel.
+  const map = {} as ReturnType<typeof readEnginesMap>;
   setEnginesEntry(map, "my-skill", { claude: true, codex: false, pi: false });
   writeEnginesMap(root, map);
   const persisted = JSON.parse(readFileSync(enginesMapPath(root), "utf-8"));

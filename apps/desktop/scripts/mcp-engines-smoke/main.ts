@@ -140,6 +140,15 @@ try {
     // ★ 核心判据:损坏且无备份时,引擎视图里**一个都不出现**(不是照旧全给)。
     eqDeep("★ E1:坏矩阵无备份 → claude 派生视图为空", deriveMcpEngineView(e1Truth, denyAll, "claude"), {});
     eqDeep("★ E1:坏矩阵无备份 → codex 派生视图为空", deriveMcpEngineView(e1Truth, denyAll, "codex"), {});
+    let writeRejected = false;
+    try { writeEnginesMapFile(brokenNoBackup, denyAll); }
+    catch { writeRejected = true; }
+    check("corrupt matrix deny-all cannot be silently serialized into unrestricted {}", writeRejected);
+    check("rejected write retains original corrupt file", readFileSync(brokenNoBackup, "utf8").includes('"only"'));
+    let editRejected = false;
+    try { setMcpEnginesEntry(denyAll, "assigned-claude", { claude: false, codex: true }); }
+    catch { editRejected = true; }
+    check("editing fail-closed map must require explicit recovery", editRejected);
     eq("E1:坏矩阵无备份 → mcpEngineEnabled 对已分配项也拒绝",
       mcpEngineEnabled(denyAll, "assigned-both", "claude"), false);
     // 对照:同一 truth + 一份合法空矩阵(VALID 全可见)→ 两项照常出现,证明上面的空来自 fail-closed 而非 truth 本身。
@@ -192,6 +201,34 @@ try {
     Object.keys(deriveMcpEngineView(truth, {}, "claude")).includes("switched-off"),
     false,
   );
+
+  /* ── Server names are opaque strings, never JS prototype lookups ── */
+  {
+    const special = JSON.parse('{"__proto__":{"command":"safe-fixture"},"constructor":{"command":"legit"}}') as Record<string, McpServerConfig>;
+    const input: McpManagementState = { userServers: special, userDisabled: {} };
+    const view = deriveMcpEngineView(input, {}, "claude");
+    check("own __proto__ server survives derived view without mutating its prototype",
+      Object.hasOwn(view, "__proto__") && Object.getPrototypeOf(view) === null);
+    check("own constructor server survives derived view",
+      Object.hasOwn(view, "constructor") && (view["constructor"] as { command?: string })?.command === "legit");
+    const disabledSpecial = applyUserMcpToggle(input, "__proto__", false);
+    check("turning off __proto__ records a real disabled own entry",
+      disabledSpecial.ok && Object.hasOwn(disabledSpecial.state.userDisabled ?? {}, "__proto__"));
+    const viewAfter = deriveMcpEngineView(disabledSpecial.state, {}, "claude");
+    check("disabled __proto__ no longer delivered to Claude", !Object.hasOwn(viewAfter, "__proto__"));
+    const parsedFile = join(root, "prototype-name-matrix.json");
+    writeFileSync(parsedFile, '{"__proto__":{"claude":false}}', "utf8");
+    rmSync(parsedFile + ".last-good", { force: true });
+    const parsed = readEnginesMapFile(parsedFile);
+    check("parsing own __proto__ matrix restriction preserves entry", Object.hasOwn(parsed, "__proto__"));
+    check("read own __proto__ restriction denies Claude", mcpEngineEnabled(parsed, "__proto__", "claude") === false);
+    const mutable: McpEnginesMap = {};
+    setMcpEnginesEntry(mutable, "__proto__", { claude: false, codex: true });
+    check("setting own __proto__ restriction does not rewrite map prototype",
+      Object.getPrototypeOf(mutable) === Object.prototype && Object.hasOwn(mutable, "__proto__"));
+    const ghost = applyUserMcpToggle({ userServers: {}, userDisabled: {} }, "constructor", true);
+    check("inherited constructor is not mistaken for an enabled server", !ghost.ok);
+  }
 
   /* ── applyUserMcpToggle 行为表 ── */
   const base: McpManagementState = {
