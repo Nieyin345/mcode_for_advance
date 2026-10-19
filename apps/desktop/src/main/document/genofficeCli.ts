@@ -242,6 +242,7 @@ export async function pdfRender(
   outDir: string,
   page: number,
   scale = 1,
+  options: { signal?: AbortSignal } = {},
 ): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "PDF 路径")
     ?? requireWorkspacePath(ports, outDir, "渲染输出目录");
@@ -249,7 +250,8 @@ export async function pdfRender(
   if (!Number.isInteger(page) || page < 1 || !Number.isFinite(scale) || scale <= 0 || scale > 4) {
     return { ok: false, kind: "refused", envelope: null, reason: "page/scale 参数超出 GenOffice 渲染限制" };
   }
-  return invoke(ports, ["render", file, "--out", outDir, "--page", String(page), "--scale", String(scale), "--json"]);
+  return invoke(ports, ["render", file, "--out", outDir, "--page", String(page), "--scale", String(scale), "--json"],
+    options.signal ? { signal: options.signal } : {});
 }
 
 /** `docs apply`：按 ops 编辑 docx。`dryRun` 只演练不写盘。 */

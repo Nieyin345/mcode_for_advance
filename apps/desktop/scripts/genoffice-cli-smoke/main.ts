@@ -28,6 +28,7 @@ import {
   convertFile,
   docsApply,
   docsRead,
+  pdfRender,
   resolveGenofficeCliPath,
   sheetRead,
   slidesRead,
@@ -174,6 +175,13 @@ if (cliPath === null) {
       check("★ 用户主动取消明确报告取消而非空 JSON/成功", !aborted.ok && aborted.kind === "failed" && /取消|abort/.test(aborted.reason), aborted);
       const valid = await docsRead(fake("valid", 'console.log(JSON.stringify({status:"ok",summary:"GOOD",detail:{blocks:0}}));\n'), input);
       check("★ 合法单信封且退出码0继续成功", valid.ok && valid.envelope.summary === "GOOD", valid);
+      const pdfFile=join(root,"fake.pdf");writeFileSync(pdfFile,"%PDF-1.4\n");
+      const outDir=join(root,"fake-render");mkdirSync(outDir,{recursive:true});
+      const renderAbort=new AbortController();
+      const pendingRender=pdfRender(fake("render-cancel", 'setTimeout(()=>console.log(JSON.stringify({status:"ok",summary:"LATE"})),5000);\n'),pdfFile,outDir,1,1,{signal:renderAbort.signal});
+      setTimeout(()=>renderAbort.abort(),90);
+      const cancelled=await pendingRender;
+      check("★ GenOffice PDF 渲染子进程能接受外部 AbortSignal",!cancelled.ok&&cancelled.kind==="failed"&&/取消|abort/.test(cancelled.reason),cancelled);
     }
 
     /* ── 4. 能力不可用的分类(需 headless Electron) ── */

@@ -600,36 +600,64 @@ async function findBundledGenofficeCli(): Promise<string | null> {
 /** Vendor PDFium page renderer; temp output is deleted before returning. */
 async function renderWithGenoffice(input: {
   abs: string; page: number; maxDimension: number; renderer?: "auto" | "native" | "genoffice";
-}): Promise<{ base64: string; mime: "image/png"; pageCount: null; width: number; height: number } | null> {
+}): Promise<{ base64: string; mime: "image/png"; pageCount: number; width: number; height: number } | null> {
   const cliPath = await findBundledGenofficeCli();
   if (!cliPath) {
     if (input.renderer === "genoffice") throw new Error("GenOffice CLI 未构建/安装，无法使用其 PDFium 渲染；请选择 renderer=native");
     return null;
   }
   const tmp = await fs.mkdtemp(path.join(tmpdir(), "mcode-pdf-render-"));
+  // The metadata read and PDFium render share one bounded operation, not
+  // separate CLI timeouts that can each consume a full minute.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
+    const source = await fs.stat(input.abs, { bigint: true });
+    const ensureUnchanged = async (): Promise<void> => {
+      if (controller.signal.aborted) throw new Error("GenOffice PDFium 页面读取/渲染超过 30 秒总预算");
+      const current = await fs.stat(input.abs, { bigint: true });
+      if (source.size !== current.size || source.mtimeNs !== current.mtimeNs
+          || source.ctimeNs !== current.ctimeNs || source.dev !== current.dev || source.ino !== current.ino) {
+        throw new Error("PDF 在页面尺寸读取与渲染期间发生修改；拒绝混合不同版本的结果");
+      }
+    };
     const checkedInput = path.resolve(input.abs);
     const ports = { cliPath, withinWorkspace: (p: string) => {
       const candidate = path.resolve(p);
       const rel = path.relative(tmp, candidate);
       return candidate === checkedInput || (rel !== "" && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel)) || candidate === tmp;
     } };
-    const details = await pdfRead(ports, input.abs, { page: input.page, maxChars: 1 });
-    if (!details.ok) throw new Error(`GenOffice 读取 PDF 页面尺寸失败: ${details.reason}`);
-    const pages = (details.envelope.detail as { pages_read?: Array<{ page?: number; width_pt?: number; height_pt?: number }> } | null)?.pages_read;
-    const geometry = pages?.find(entry => entry.page === input.page);
+    const details = await pdfRead(ports, input.abs, { page: input.page, maxChars: 1, signal: controller.signal });
+    if (controller.signal.aborted) throw new Error("GenOffice PDFium 页面读取/渲染超过 30 秒总预算");
+    if (!details.ok) {
+      if (details.kind === "unavailable" && input.renderer !== "genoffice") return null;
+      throw new Error(`GenOffice 读取 PDF 页面尺寸失败: ${details.reason}`);
+    }
+    await ensureUnchanged();
+    const metadata = details.envelope.detail as { pages?: unknown; pages_read?: unknown } | null;
+    const pageCount = metadata?.pages;
+    const pages = metadata?.pages_read;
+    if (typeof pageCount !== "number" || !Number.isSafeInteger(pageCount) || pageCount < input.page
+        || !Array.isArray(pages) || pages.length !== 1 || pages[0]?.page !== input.page) {
+      throw new Error("GenOffice PDFium 页数/请求页码元数据不一致，拒绝渲染错误页面");
+    }
+    const geometry = pages[0] as { width_pt?: number; height_pt?: number };
     const widthPt = geometry?.width_pt ?? 0;
     const heightPt = geometry?.height_pt ?? 0;
     if (!Number.isFinite(widthPt) || !Number.isFinite(heightPt) || widthPt <= 0 || heightPt <= 0) throw new Error("GenOffice PDFium 未返回有效页面尺寸");
     const scale = Math.min(1, (input.maxDimension - 2) / Math.max(widthPt, heightPt));
-    const result = await pdfRender(ports, input.abs, tmp, input.page, scale);
+    const result = await pdfRender(ports, input.abs, tmp, input.page, scale, { signal: controller.signal });
+    if (controller.signal.aborted) throw new Error("GenOffice PDFium 页面读取/渲染超过 30 秒总预算");
     if (!result.ok) {
       if (result.kind === "unavailable" && input.renderer !== "genoffice") return null;
       throw new Error(`GenOffice PDFium 渲染 ${result.kind}: ${result.reason}`);
     }
+    await ensureUnchanged();
     const files = (result.envelope.detail as { files?: Array<{ page?: number; path?: string; width?: number; height?: number }> } | null)?.files;
-    const rendered = files?.find(f => f.page === input.page && typeof f.path === "string");
-    if (!rendered?.path) throw new Error("GenOffice 没有返回所请求页的 PNG 文件");
+    const matches = files?.filter(f => f?.page === input.page && typeof f.path === "string");
+    if (!matches || matches.length !== 1) throw new Error("GenOffice 未返回唯一的请求页 PNG 文件");
+    const rendered = matches[0]!;
+    if (!rendered.path) throw new Error("GenOffice 没有返回所请求页的 PNG 文件");
     // Even if the vendor returns an unexpected path or symlink, never read
     // outside the unique temp directory created by this call.
     const real = await fs.realpath(rendered.path);
@@ -643,17 +671,26 @@ async function renderWithGenoffice(input: {
       throw new Error("GenOffice PDFium PNG 超过 6MiB，减小 max_dimension 或选择 renderer=native");
     }
     const bytes = await fs.readFile(real);
-    if (bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
-      throw new Error("GenOffice 返回的不是合法 PNG 头");
+    await ensureUnchanged();
+    // PNG requires an 8-byte signature and a complete 25-byte IHDR chunk
+    // including its CRC. A 24-byte forged prefix is NOT a renderable image.
+    if (bytes.length < 33 || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a"
+        || bytes.readUInt32BE(8) !== 13 || bytes.toString("ascii", 12, 16) !== "IHDR") {
+      throw new Error("GenOffice 返回的 PNG 头/IHDR 无效或文件被截断");
     }
     const width = bytes.readUInt32BE(16);
     const height = bytes.readUInt32BE(20);
+    if ((rendered.width !== undefined && rendered.width !== width)
+        || (rendered.height !== undefined && rendered.height !== height)) {
+      throw new Error("GenOffice PNG 尺寸与渲染信封元数据不一致");
+    }
     if (width < 1 || height < 1 || Math.max(width, height) > input.maxDimension) {
       if (input.renderer !== "genoffice") return null;
       throw new Error(`GenOffice 输出尺寸 ${width}×${height} 超过 ${input.maxDimension}px；请选择 renderer=native`);
     }
-    return { base64: bytes.toString("base64"), mime: "image/png", pageCount: null, width, height };
+    return { base64: bytes.toString("base64"), mime: "image/png", pageCount, width, height };
   } finally {
+    clearTimeout(timeout);
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
   }
 }

@@ -220,6 +220,95 @@ try {
      assert.equal(Buffer.from(block.data,"base64").subarray(0,8).toString("hex"),"89504e470d0a1a0a");
    }
  });
+ await test("★ GenOffice PDFium image exposes authoritative page count",async()=>{
+   const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+   const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:2,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+   assert.ok(!r.isError,text(r));assert.match(text(r),/第 2\/3 页/);
+ });
+ await test("★ auto PDF render falls back when GenOffice PDFium read is unavailable",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"error",code:4,error:"app_unavailable",message:"fixture PDFium not found"}));process.exitCode=4;\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"auto",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.ok(!r.isError,text(r));
+     const image=r.content.find(c=>c.type==="image");assert.ok(image&&image.type==="image",text(r));
+     if(image?.type==="image")assert.equal(image.mimeType,"image/jpeg");
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ renderer=auto falls back only when PDFium render stage is unavailable",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
+   writeFileSync(fakeCli,'const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",summary:"geometry",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}))}else{console.log(JSON.stringify({status:"error",code:4,error:"app_unavailable",message:"fixture PDFium render disabled"}));process.exitCode=4}\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const automatic=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"auto",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.ok(!automatic.isError,text(automatic));
+     const picture=automatic.content.find(c=>c.type==="image");assert.ok(picture&&picture.type==="image",text(automatic));
+     if(picture?.type==="image")assert.equal(picture.mimeType,"image/jpeg");
+     const exact=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.equal(exact.isError,true,text(exact));assert.match(text(exact),/render|PDFium|不可用|disabled/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ malformed PNG containing only IHDR dimensions must not be reported as image",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
+   writeFileSync(fakeCli,`const fs=require("node:fs"),path=require("node:path");const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",summary:"fake",detail:{pages:3,pages_read:[{page:1,width_pt:600,height_pt:800}]}}));}else{const out=a[a.indexOf("--out")+1];const file=path.join(out,"pretend.png");const data=Buffer.alloc(24);Buffer.from("89504e470d0a1a0a","hex").copy(data);data.write("IHDR",12,"ascii");data.writeUInt32BE(1,16);data.writeUInt32BE(1,20);fs.writeFileSync(file,data);console.log(JSON.stringify({status:"ok",summary:"pretend",detail:{files:[{page:1,path:file,width:1,height:1}]}}));}`);
+   configureDocumentRepoRoot(root);
+   try {
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/PNG|图像|无效/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice rejects duplicate rendered page artifacts",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9H8kAAAAASUVORK5CYII=";
+   writeFileSync(fakeCli,`const fs=require("node:fs"),path=require("node:path");const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}));}else{const file=path.join(a[a.indexOf("--out")+1],"valid.png");fs.writeFileSync(file,Buffer.from("${png}","base64"));console.log(JSON.stringify({status:"ok",detail:{files:[{page:1,path:file,width:1,height:1},{page:1,path:file,width:1,height:1}]}}));}`);
+   configureDocumentRepoRoot(root);
+   try {
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/唯一|重复|PNG/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice PDFium rejects PNG file path outside unique temp folder",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   const outside=join(root,"outside-render.png");
+   writeFileSync(outside,Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9H8kAAAAASUVORK5CYII=","base64"));
+   writeFileSync(fakeCli,`const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}));}else{console.log(JSON.stringify({status:"ok",detail:{files:[{page:1,path:${JSON.stringify(outside)},width:1,height:1}]}}));}`);
+   configureDocumentRepoRoot(root);
+   try {
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/围栏|临时目录|越过/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice refuses a PDF modified between geometry read and render",async()=>{
+   const target=join(root,"mutable-render.pdf");copyFileSync(join(root,"paper.pdf"),target);
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,`const fs=require("node:fs");const args=process.argv.slice(2);if(args[0]==="pdf"){fs.appendFileSync(args[2],"MUTATION");console.log(JSON.stringify({status:"ok",summary:"old geometry",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}))}else{console.log(JSON.stringify({status:"error",error:"should_not_render",message:"source had changed"}));process.exitCode=1}`);
+   configureDocumentRepoRoot(root);
+   try {
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const r=await render.handler(z.object(render.inputSchema).parse({path:"mutable-render.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/修改|不同版本|变化/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice rejects PNG whose actual size contradicts vendor envelope",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9H8kAAAAASUVORK5CYII=";
+   writeFileSync(fakeCli,`const fs=require("node:fs"),path=require("node:path");const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",summary:"dimensions",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}));}else{const out=a[a.indexOf("--out")+1],file=path.join(out,"image.png");fs.writeFileSync(file,Buffer.from("${png}","base64"));console.log(JSON.stringify({status:"ok",summary:"wrong dimensions",detail:{files:[{page:1,path:file,width:2,height:1}]}}));}`);
+   configureDocumentRepoRoot(root);
+   try {
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/尺寸|元数据|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
  await test("★ GenOffice wide PDF page is rendered under max_dimension using vendor page geometry",async()=>{
    const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
    const result=await render.handler(z.object(render.inputSchema).parse({path:"wide-paper.pdf",page:1,renderer:"genoffice",max_dimension:700}),{sessionId:"document-fixture"});
