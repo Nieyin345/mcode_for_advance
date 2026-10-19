@@ -759,6 +759,10 @@ console.log("\nARC-013 步③:场景总预算接进真实派发(运行期入口 
   eq("★ 数组形状 → 没配(null)", parseSceneBudgetLimits("[1,2]"), null);
   eq("★ 负数上限 → 没配(null,拒绝坏值)", parseSceneBudgetLimits('{"maxTokens":-1}'), null);
   eq("★ 小数 token → 没配(null)", parseSceneBudgetLimits('{"maxTokens":1.5}'), null);
+  eq("★ 超出 JS 安全整数精度的 token 额度不得被视为有效设置",
+    parseSceneBudgetLimits('{"maxTokens":9007199254740992}'), null);
+  eq("★ 超出 JS 安全整数精度的并发额度不得被视为有效设置",
+    parseSceneBudgetLimits('{"maxConcurrency":9007199254740992}'), null);
   eq("★ 空对象 {} → 没配(null,不建一本「不限」的账)", parseSceneBudgetLimits("{}"), null);
   {
     const lim = parseSceneBudgetLimits('{"maxTokens":1000,"maxCostUsd":2.5,"maxConcurrency":3}');
@@ -774,7 +778,13 @@ console.log("\nARC-013 步③:场景总预算接进真实派发(运行期入口 
   const e2 = ensureSceneBudgetAccount("acct_scene", "scene_1", { maxTokens: 1000 });
   check("★ 同 id 同场景再 ensure → 成功(不报 ACCOUNT_ALREADY_EXISTS)", e2.ok, e2);
   eq("★ 复取读回同一本账(已占 400 没被清零)", getSceneBudgetAccounts().getAccount("acct_scene")?.reservedTokens, 400);
-  // 复取后**同一本账**继续约束:committed+reserved 已达 400,再来 700 会超 1000。
+  const tightened = ensureSceneBudgetAccount("acct_scene", "scene_1", { maxTokens: 500 });
+  check("★ 用户更新场景额度后 ensure 应应用较紧的新上限", tightened.ok && tightened.value.limits.maxTokens === 500, tightened);
+  eq("调整额度不重置已预留的 400 token", getSceneBudgetAccounts().getAccount("acct_scene")?.reservedTokens, 400);
+  const belowUsage = ensureSceneBudgetAccount("acct_scene", "scene_1", { maxTokens: 300 });
+  check("★ 新额度低于已占用时必须显式拒绝而非忽略用户配置", !belowUsage.ok && belowUsage.code === "LIMITS_BELOW_USAGE", belowUsage);
+  eq("额度更新失败保持原有效的 500 token 限制", getSceneBudgetAccounts().getAccount("acct_scene")?.limits.maxTokens, 500);
+  // 复取后**同一本账**继续约束:committed+reserved 已达 400,再来 700 会超上限。
   const over = reserveSceneBudget("acct_scene", { tokens: 700 }, "t_over", "scene_1");
   check("★ 复取后超预算仍被拒(约束累积,不是每轮归零)", !over.ok, over);
   if (!over.ok) eq("拒绝码 = BUDGET_EXCEEDED", over.code, "BUDGET_EXCEEDED");

@@ -102,7 +102,7 @@ export function parseSceneBudgetLimits(raw: string | null | undefined): SceneBud
   for (const k of ints) {
     const v = obj[k];
     if (v === undefined) continue;
-    if (typeof v !== "number" || !Number.isFinite(v) || !Number.isInteger(v) || v < 0) return null;
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) return null;
     limits[k] = v;
   }
   const cost = obj.maxCostUsd;
@@ -142,7 +142,18 @@ export function ensureSceneBudgetAccount(
   if (created.ok) return created;
   if (created.code === "ACCOUNT_ALREADY_EXISTS") {
     const existing = activeBudgetAccounts.getAccount(accountId);
-    if (existing) return { ok: true, value: existing };
+    if (existing) {
+      // User budget settings may change between turns. Returning the old
+      // account unchanged silently ignores a lowered limit; updating it through
+      // the shared ledger also refuses a limit below already committed/reserved
+      // usage without erasing pending reservations.
+      if (existing.limits.maxTokens !== limits.maxTokens ||
+          existing.limits.maxCostUsd !== limits.maxCostUsd ||
+          existing.limits.maxConcurrency !== limits.maxConcurrency) {
+        return activeBudgetAccounts.updateLimits(accountId, limits);
+      }
+      return { ok: true, value: existing };
+    }
   }
   return created;
 }
