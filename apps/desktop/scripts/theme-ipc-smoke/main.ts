@@ -263,6 +263,18 @@ console.log("\n§3 effective 是「实际在渲染的那个」,跟着 nativeThem
   eq("OS 翻回深色,显式的 light 不受影响", themeLib.getEffectiveTheme(), "light");
 }
 
+/* ──────────────── §3b 运行时无效主题值 fail-closed ──────────────── */
+{
+  const beforeSource = themeState.themeSource;
+  const beforeStored = SettingRepo.get("theme");
+  let refused = false;
+  try { themeLib.applyTheme("unexpected-system-theme" as never); }
+  catch { refused = true; }
+  check("★ runtime-invalid theme is rejected before persistence", refused);
+  eq("★ invalid theme does not poison stored preference", SettingRepo.get("theme"), beforeStored);
+  eq("★ invalid theme does not poison Electron themeSource", themeState.themeSource, beforeSource);
+}
+
 /* ──────────────── §4 initTheme 的幂等与 osPrefersDark 的抓取时机 ──────────────── */
 
 console.log("\n§4 initTheme:抓 OS 值的时机、跑两次只初始化一次");

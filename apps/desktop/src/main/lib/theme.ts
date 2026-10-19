@@ -89,6 +89,11 @@ export function getEffectiveTheme(): EffectiveTheme {
  * via its own useTheme subscription (or the theme.changed push).
  */
 export function applyTheme(theme: ThemeName): { theme: ThemeName; effective: EffectiveTheme } {
+  // IPC and restored settings may bypass TypeScript at runtime. Never persist
+  // an unrecognized preference or assign an invalid Electron themeSource.
+  if (theme !== "dark" && theme !== "light" && theme !== "system") {
+    throw new TypeError("无效的主题偏好");
+  }
   SettingRepo.set(THEME_SETTING_KEY, theme);
   nativeTheme.themeSource = theme;
   log.info(`theme applied: ${theme} (effective ${effective()})`);
