@@ -167,6 +167,26 @@ check(
   validateAgainstSchema("c", { type: "string", enum: ["a", "b"] }).length > 0,
 );
 
+
+// JSON Schema enum 按 JSON 值相等，不按对象序列化时的插入顺序相等。
+// 模型把同样字段换个排序应该通过，而不是无意义地触发重试。
+check("enum 对象只改变 key 顺序应视为相同 JSON 值",
+  validateAgainstSchema(JSON.parse('{"b":2,"a":1}'), {
+    type: "object", enum: [JSON.parse('{"a":1,"b":2}')],
+  }).length === 0);
+check("enum 的嵌套对象顺序不同也应通过",
+  validateAgainstSchema(JSON.parse('{"inner":{"y":2,"x":1}}'), {
+    type: "object", enum: [JSON.parse('{"inner":{"x":1,"y":2}}')],
+  }).length === 0);
+check("enum 相同键但数值不同必须拒绝",
+  validateAgainstSchema(JSON.parse('{"b":3,"a":1}'), {
+    type: "object", enum: [JSON.parse('{"a":1,"b":2}')],
+  }).length > 0);
+check("enum JSON 数字 -0 与 0 语义相等（不能因 deepStrictEqual 误拒）",
+  validateAgainstSchema(JSON.parse('{"value":-0}'), {
+    type: "object", enum: [JSON.parse('{"value":0}')],
+  }).length === 0);
+
 const STRICT = {
   type: "object",
   properties: { a: { type: "number" } },
@@ -191,6 +211,28 @@ check(
   "嵌套里的错误带路径",
   validateAgainstSchema({ rows: [{ id: 1 }, { nope: 2 }] }, NESTED).some((e) => e.includes("rows[1]")),
 );
+
+
+// ARC-003: 降级 JSON parser 读的是 JSON.parse 的 own fields；
+// Object.prototype 上的 constructor/toString 不等于模型真的交付了这些字段。
+const OBJECT_PROTO_REQUIRED = { type: "object", required: ["toString"] };
+check("required:toString 不存在时应报缺失（不能采信 Object.prototype）",
+  validateAgainstSchema(JSON.parse("{}"), OBJECT_PROTO_REQUIRED).some(e=>e.includes("toString")));
+check("required:constructor 不存在时也必须报缺失",
+  validateAgainstSchema(JSON.parse("{}"), {type:"object",required:["constructor"]}).some(e=>e.includes("constructor")));
+check("合法 JSON 真自有 toString 可以通过 required",
+  validateAgainstSchema(JSON.parse('{"toString":"real"}'), OBJECT_PROTO_REQUIRED).length === 0);
+const OBJECT_PROTO_EXTRA = { type: "object", properties: {}, additionalProperties: false };
+check("additionalProperties:false 不应放行 JSON 自有 constructor 字段",
+  validateAgainstSchema(JSON.parse('{"constructor":"injected"}'), OBJECT_PROTO_EXTRA).some(e=>e.includes("constructor")));
+check("additionalProperties:false 不应放行 JSON 自有 toString 字段",
+  validateAgainstSchema(JSON.parse('{"toString":"injected"}'), OBJECT_PROTO_EXTRA).some(e=>e.includes("toString")));
+check("显式把 constructor 列在 properties 时仍应按 schema 校验类型",
+  validateAgainstSchema(JSON.parse('{"constructor":5}'), {
+    type:"object", properties:{constructor:{type:"string"}}, additionalProperties:false,
+  }).some(e=>e.includes("constructor")));
+check("生产组合入口不得误验继承 required 为满足",
+  !parseStructuredOutput("{}", {name:"strict",schema:OBJECT_PROTO_REQUIRED}).ok);
 
 // null 和 undefined 是 JSON 里不存在的值 —— 传进来不能崩,要当类型错误报。
 check("null 值报类型错误不崩", validateAgainstSchema(null, { type: "object" }).length > 0);

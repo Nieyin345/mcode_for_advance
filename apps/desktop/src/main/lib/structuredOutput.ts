@@ -102,7 +102,10 @@ export function validateAgainstSchema(
   if (type !== undefined && !matchesType(value, type)) {
     return [`${path} 的类型应为 ${fmtType(type)}，实际是 ${jsonType(value)}`];
   }
-  if (Array.isArray(schema.enum) && !schema.enum.some((v) => JSON.stringify(v) === JSON.stringify(value))) {
+  // JSON Schema enum compares JSON values, not property insertion order.
+  // JSON.stringify itself normalizes -0 and 0 to the same JSON number;
+  // native deepStrictEqual does not, so compare canonical JSON bytes.
+  if (Array.isArray(schema.enum) && !schema.enum.some((v) => canonicalJson(v) === canonicalJson(value))) {
     errors.push(`${path} 不在枚举 ${JSON.stringify(schema.enum)} 内`);
   }
   if (jsonType(value) === "object") {
@@ -110,15 +113,21 @@ export function validateAgainstSchema(
     const required = (schema.required ?? []) as string[];
     const obj = value as Record<string, unknown>;
     for (const key of required) {
-      if (!(key in obj)) errors.push(`${path} 缺少必需字段 "${key}"`);
+      // JSON.parse returns an ordinary object with Object.prototype.
+      // Inherited constructor/toString etc. are NOT model-supplied fields.
+      if (!Object.prototype.hasOwnProperty.call(obj, key)) {
+        errors.push(`${path} 缺少必需字段 "${key}"`);
+      }
     }
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(obj)) {
-        if (!(key in props)) errors.push(`${path} 出现 schema 之外的字段 "${key}"`);
+        if (!Object.prototype.hasOwnProperty.call(props, key)) {
+          errors.push(`${path} 出现 schema 之外的字段 "${key}"`);
+        }
       }
     }
     for (const [key, sub] of Object.entries(props)) {
-      if (key in obj && obj[key] !== undefined) {
+      if (Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== undefined) {
         errors.push(...validateAgainstSchema(obj[key], sub ?? {}, `${path}.${key}`));
       }
     }
@@ -174,6 +183,20 @@ function balancedEnd(text: string, start: number): number {
     }
   }
   return -1;
+}
+
+/** Canonical JSON representation: object keys are unordered in JSON Schema,
+ * arrays remain ordered, JSON numeric -0 compares equal to 0. JSON output
+ * schemas and candidate values are JSON-only (not arbitrary JS object graphs).
+ * Null-prototype output keeps "__proto__" as a real own JSON key. */
+function canonicalJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, current: unknown) => {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return current;
+    const object = current as Record<string, unknown>;
+    const sorted: Record<string, unknown> = Object.create(null);
+    for (const key of Object.keys(object).sort()) sorted[key] = object[key];
+    return sorted;
+  });
 }
 
 function jsonType(value: unknown): string {
