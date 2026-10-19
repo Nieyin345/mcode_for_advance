@@ -525,7 +525,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_read_document",
       description:
         "读取 PDF / DOCX / XLSX / PPTX。默认 reader=auto 优先复用 GenOffice 原生 CLI 文档工具；仅其不可用或参数不兼容时使用历史只读解析器。reader=genoffice 禁止静默回退；reader=native 显式使用旧实现。" +
-        "Excel/PowerPoint 使用本机 Python 文档工具链。PDF 传 pdf_mode=layout 可查看真实书签、逐页文字坐标、图像绘制指令；配合 agent_render_pdf_page 查看图表与扫描页。布局仅近似、不做 OCR。",
+        "Excel/PowerPoint 默认优先复用 GenOffice 原厂 CLI；不支持的兼容筛选参数或未安装时才使用历史 Python 工具链。PPTX 提供 slide_start/max_slides 与 next_slide 续读。PDF 传 pdf_mode=layout 可查看真实书签、逐页文字坐标、图像绘制指令；配合 agent_render_pdf_page 查看图表与扫描页。布局仅近似、不做 OCR。",
       inputSchema: {
         path: z.string().min(1).describe("文档路径"),
         sheet: z.string().optional().describe("Excel 工作表名；省略取第一张"),
@@ -537,7 +537,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         docx_mode: z.enum(["text", "structure"]).optional().describe("DOCX：text=原有 Markdown/纯文本(默认)；structure=OOXML 原始段落 styleId 与表格单元格"),
         block_start: z.number().int().min(1).optional().describe("DOCX structure 模式起始 Block 编号，从 1 开始"),
         max_blocks: z.number().int().min(1).max(100).optional().describe("DOCX structure 每次最多读取的顶层结构块，默认 30、最多 100"),
-        max_slides: z.number().int().min(1).max(1000).optional().describe("PPTX 最多解析页数，默认 200"),
+        slide_start: z.number().int().min(1).optional().describe("PPTX 起始页(1-based)，可按 next_slide 续读"),
+        max_slides: z.number().int().min(1).max(1000).optional().describe("PPTX 本次页数：GenOffice 默认1、每次最多8页；native 默认200"),
         max_rows: z.number().int().min(1).max(1000).optional().describe("Excel 最多返回行数，默认 200"),
         max_cols: z.number().int().min(1).max(200).optional().describe("Excel 最多返回列数，默认 50"),
         max_chars: z.number().int().min(100).max(300000).optional().describe("最多返回字符数，默认 100000"),
@@ -553,6 +554,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         docx_mode?: "text" | "structure";
         block_start?: number;
         max_blocks?: number;
+        slide_start?: number;
         max_slides?: number;
         max_rows?: number;
         max_cols?: number;
@@ -569,6 +571,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           docxMode: args.docx_mode,
           blockStart: args.block_start,
           maxBlocks: args.max_blocks,
+          slideStart: args.slide_start,
           maxSlides: args.max_slides,
           maxRows: args.max_rows,
           maxCols: args.max_cols,

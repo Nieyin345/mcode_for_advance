@@ -27,8 +27,8 @@
  *   接入保存链路时补，见计划 B.2）；
  * - 不 import Electron / DB —— 纯 Node，可被无头套件直接驱动。
  */
-import { existsSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnRun } from "@main/lib/spawnRun.js";
 
 /** CLI 的 JSON 信封（与 GenOffice `result.ts` 同形，只取需要的字段）。 */
@@ -103,8 +103,28 @@ async function invoke(
   if (result.killedBy.timeout) {
     return { ok: false, kind: "failed", envelope: null, reason: `CLI 超时(${ports.timeoutMs ?? 60_000} 毫秒)` };
   }
+  // A cancelled command can exit 0/1 or leave a buffered success envelope.
+  // Cancellation wins over stdout; never present stale output as committed.
+  if (result.killedBy.abort) {
+    return { ok: false, kind: "failed", envelope: null, reason: "GenOffice CLI 操作已取消" };
+  }
+  // GenOffice uses one-line JSON envelopes. If spawnRun has dropped the
+  // beginning of that line, the remaining tail is NOT a valid response even
+  // when the child exits 0. Report the stdout budget instead of disguising
+  // this as missing/malformed JSON or accidentally accepting a late fragment.
+  if (result.stdoutTruncated || result.stdoutLineTruncated) {
+    return {
+      ok: false, kind: "failed", envelope: null,
+      reason: "GenOffice CLI 输出超过 524288 字节上限；请使用原生 --range/--max-chars 等选项缩小读取范围",
+    };
+  }
   // CLI 的 `--json` 把信封打到 stdout;stderr 只在崩溃时才有内容。
-  const line = result.stdout.trim().split("\n").filter((l) => l.trim().startsWith("{")).pop();
+  const jsonLines = result.stdout.trim().split("\n").filter((l) => l.trim().startsWith("{"));
+  if (jsonLines.length > 1) {
+    return { ok: false, kind: "failed", envelope: null,
+      reason: `GenOffice CLI 返回多个 JSON 信封(${jsonLines.length})，无法安全判定哪一份是真实结果` };
+  }
+  const line = jsonLines[0];
   if (line === undefined) {
     return {
       ok: false, kind: "failed", envelope: null,
@@ -117,7 +137,16 @@ async function invoke(
   } catch {
     return { ok: false, kind: "failed", envelope: null, reason: `CLI 返回的 JSON 解析失败:${line.slice(0, 200)}` };
   }
-  if (envelope.status === "ok") return { ok: true, envelope };
+  if (envelope === null || typeof envelope !== "object" || !["ok", "error"].includes(envelope.status)) {
+    return { ok: false, kind: "failed", envelope: null, reason: "GenOffice CLI JSON 信封缺少合法 status" };
+  }
+  if (envelope.status === "ok") {
+    if (result.code !== 0) {
+      return { ok: false, kind: "failed", envelope,
+        reason: `GenOffice CLI 退出码 ${String(result.code)} 非零，拒绝将 status=ok 当作成功` };
+    }
+    return { ok: true, envelope };
+  }
   // 能力不可用 vs 执行失败：code 4 = app_unavailable；conversion_failed + hint = 原生资源缺失。
   const unavailable = envelope.code === 4 || envelope.error === "app_unavailable"
     || (envelope.error === "conversion_failed" && typeof (envelope.detail as { hint?: unknown } | undefined)?.hint === "string");
@@ -136,18 +165,54 @@ export function requireWorkspacePath(ports: Pick<GenofficePorts, "withinWorkspac
   if (!isAbsolute(path)) return `${label} 必须是绝对路径:${path}`;
   const abs = resolve(path);
   if (!ports.withinWorkspace(abs)) return `${label} 不在任何已知工作区内:${abs}`;
+  // Lexical checks do not resolve NTFS junctions/symlinks. For an existing
+  // source/output, check its real destination; for a new output, resolve its
+  // nearest existing ancestor before appending the missing path suffix.
+  // This keeps a link within the project from reaching files outside it.
+  let canonical: string;
+  try {
+    canonical = realpathSync.native(abs);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") return `${label} 真实路径无法验证:${abs} (${String(code)})`;
+    // A dangling final symlink must not be treated as a new regular output.
+    try {
+      if (lstatSync(abs).isSymbolicLink()) return `${label} 是悬空符号链接:${abs}`;
+    } catch (statError) {
+      if ((statError as NodeJS.ErrnoException).code !== "ENOENT") {
+        return `${label} 路径状态无法验证:${abs}`;
+      }
+    }
+    const missing: string[] = [basename(abs)];
+    let parent = dirname(abs);
+    for (;;) {
+      try {
+        canonical = resolve(realpathSync.native(parent), ...missing);
+        break;
+      } catch (parentError) {
+        const parentCode = (parentError as NodeJS.ErrnoException).code;
+        if (parentCode !== "ENOENT" || dirname(parent) === parent) {
+          return `${label} 父目录真实路径无法验证:${parent} (${String(parentCode)})`;
+        }
+        missing.unshift(basename(parent));
+        parent = dirname(parent);
+      }
+    }
+  }
+  if (!ports.withinWorkspace(canonical)) return `${label} 经符号链接解析后不在工作区内:${canonical}`;
   return null;
 }
 
 /** `docs read`：只读列出 docx 的块。 */
 export async function docsRead(
-  ports: GenofficePorts, file: string, options: { full?: boolean; range?: string; signal?: AbortSignal } = {},
+  ports: GenofficePorts, file: string, options: { full?: boolean; range?: string; maxChars?: number; signal?: AbortSignal } = {},
 ): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "文档路径");
   if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
   const args = ["docs", "read", file, "--json"];
   if (options.full) args.push("--full");
   if (options.range !== undefined) args.push("--range", options.range);
+  if (options.maxChars !== undefined) args.push("--max-chars", String(options.maxChars));
   return invoke(ports, args, options.signal ? { signal: options.signal } : {});
 }
 
@@ -206,16 +271,29 @@ export async function docsApply(
 }
 
 /** `slides read` / `sheet read`（同一形状，`domain` 区分）。 */
-export async function slidesRead(ports: GenofficePorts, file: string, signal?: AbortSignal): Promise<GenofficeResult> {
+export async function slidesRead(
+  ports: GenofficePorts, file: string, signal?: AbortSignal,
+  options: { slide?: number; maxChars?: number } = {},
+): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "演示文稿路径");
   if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
-  return invoke(ports, ["slides", "read", file, "--json"], signal ? { signal } : {});
+  const args = ["slides", "read", file, "--json"];
+  if (options.slide !== undefined) args.push("--slide", String(options.slide));
+  if (options.maxChars !== undefined) args.push("--max-chars", String(options.maxChars));
+  return invoke(ports, args, signal ? { signal } : {});
 }
 
-export async function sheetRead(ports: GenofficePorts, file: string, signal?: AbortSignal): Promise<GenofficeResult> {
+export async function sheetRead(
+  ports: GenofficePorts, file: string, signal?: AbortSignal,
+  options: { sheet?: string; range?: string; maxRows?: number } = {},
+): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "表格路径");
   if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
-  return invoke(ports, ["sheet", "read", file, "--json"], signal ? { signal } : {});
+  const args = ["sheet", "read", file, "--json"];
+  if (options.sheet !== undefined) args.push("--sheet", options.sheet);
+  if (options.range !== undefined) args.push("--range", options.range);
+  if (options.maxRows !== undefined) args.push("--max-rows", String(options.maxRows));
+  return invoke(ports, args, signal ? { signal } : {});
 }
 
 /** `slides apply`：按 ops 编辑 pptx。与 `docsApply` **同一条围栏与信封口径**

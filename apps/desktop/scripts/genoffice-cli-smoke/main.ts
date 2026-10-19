@@ -20,7 +20,7 @@
  *
  * Run: scripts/genoffice-cli-smoke/run.sh
  */
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -92,6 +92,19 @@ if (cliPath === null) {
       const badCli = { ...ports, cliPath: join(root, "no-such-cli.cjs") };
       const r4 = await docsRead(badCli, outsideDoc);
       check("★ 围栏先于起进程(坏 cliPath 也先 refused)", r4.ok === false && r4.kind === "refused", r4);
+      // A lexical child of root can resolve through a junction/symlink to
+      // another directory. Both read and output must be refused before CLI.
+      const escape = join(root, "escape-junction");
+      try {
+        symlinkSync(outside, escape, process.platform === "win32" ? "junction" : "dir");
+        const linkedRead = await docsRead(badCli, join(escape, "x.docx"));
+        check("★ 目录 junction 指到沙箱外的只读拒绝", !linkedRead.ok && linkedRead.kind === "refused", linkedRead);
+        const linkedWrite = await convertFile(badCli, join(root, "a.md"), "docx", join(escape, "evil.docx"));
+        check("★ 目录 junction 指到沙箱外的写入拒绝", !linkedWrite.ok && linkedWrite.kind === "refused", linkedWrite);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EPERM") throw e;
+        console.log("  SKIP junction 测试: OS 未授予符号链接权限");
+      }
     }
 
     /* ── 2. 真实往返:md → docx → read → apply → read ── */
@@ -139,16 +152,50 @@ if (cliPath === null) {
       }
     }
 
+    /* ── 3b. CLI 不可信输出:退出码、取消与冲突信封 ── */
+    section("3b. 子进程状态与 JSON 信封不可互相欺骗");
+    {
+      const input = join(root, "fake.docx");
+      writeFileSync(input, "fictional fixture");
+      const fake = (name: string, js: string) => {
+        const script = join(root, name + ".cjs");
+        writeFileSync(script, js);
+        return { ...ports, cliPath: script };
+      };
+      const forged = await docsRead(fake("bad-exit", 'console.log(JSON.stringify({status:"ok",summary:"FORGED"}));process.exitCode=7;\n'), input);
+      check("★ 非零退出即使输出 status=ok 也不能当成功", !forged.ok && forged.kind === "failed" && /7|退出码/.test(forged.reason), forged);
+      const conflict = await docsRead(fake("two-envelopes", 'console.log(JSON.stringify({status:"error",error:"first"}));console.log(JSON.stringify({status:"ok",summary:"FORGED"}));\n'), input);
+      check("★ 同一 CLI 输出两个冲突 JSON 信封必须拒绝", !conflict.ok && conflict.kind === "failed" && /多个|重复|信封/.test(conflict.reason), conflict);
+      const controller = new AbortController();
+      const slow = fake("cancel", 'setTimeout(()=>console.log(JSON.stringify({status:"ok",summary:"TOO_LATE"})),5000);\n');
+      const pending = docsRead(slow, input, { signal: controller.signal });
+      setTimeout(() => controller.abort(), 100);
+      const aborted = await pending;
+      check("★ 用户主动取消明确报告取消而非空 JSON/成功", !aborted.ok && aborted.kind === "failed" && /取消|abort/.test(aborted.reason), aborted);
+      const valid = await docsRead(fake("valid", 'console.log(JSON.stringify({status:"ok",summary:"GOOD",detail:{blocks:0}}));\n'), input);
+      check("★ 合法单信封且退出码0继续成功", valid.ok && valid.envelope.summary === "GOOD", valid);
+    }
+
     /* ── 4. 能力不可用的分类(需 headless Electron) ── */
     section("4. 能力不可用 vs 执行失败");
     {
       const asPdf = join(root, "sample.pdf");
       const conv = await convertFile(ports, md, "pdf", asPdf);
-      // 本机未安装 GenOffice app → code 4/app_unavailable。
-      check("★ →pdf 归类为 unavailable(不是 failed)", conv.ok === false && conv.kind === "unavailable", conv);
-      if (conv.ok === false && conv.envelope !== null) {
+      // Optional Electron app availability varies by host. Missing app must
+      // classify as unavailable; installed-but-crashing/timeout must stay failed
+      // rather than disguising a real native crash as "not installed".
+      if (conv.ok) {
+        check("→pdf 已安装渲染端成功时真有 PDF", existsSync(asPdf), conv);
+      } else if (conv.envelope?.error === "app_unavailable") {
+        check("★ 真缺少 Electron app 才归为 unavailable", conv.kind === "unavailable", conv);
         eq("错误码是 app_unavailable", conv.envelope.error, "app_unavailable");
+      } else {
+        check("★ Electron 转换失败/超时如实显示 failed，不伪称 unavailable", conv.kind === "failed" && /超时|exited|转换|失败|code/i.test(conv.reason), conv);
       }
+      const unavailableCli = join(root, "missing-app.cjs");
+      writeFileSync(unavailableCli, 'console.log(JSON.stringify({status:"error",code:4,error:"app_unavailable",message:"needs sidecar"}));process.exitCode=4;\n');
+      const missingApp = await docsRead({ ...ports, cliPath: unavailableCli }, join(root, "sample.docx"));
+      check("★ 原生 error=app_unavailable + exit4 准确归类", !missingApp.ok && missingApp.kind === "unavailable" && missingApp.envelope?.error === "app_unavailable", missingApp);
       const renderOut = join(root, "pngs");
       mkdirSync(renderOut, { recursive: true });
       const pptx = join(root, "d.pptx");
