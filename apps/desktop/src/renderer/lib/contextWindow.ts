@@ -37,9 +37,9 @@ export function isValidSnapshot(s: unknown): s is ContextSnapshot {
   if (!s || typeof s !== "object") return false;
   const o = s as Record<string, unknown>;
   return (
-    typeof o.usedTokens === "number" &&
-    typeof o.maxTokens === "number" &&
-    typeof o.pct === "number" &&
+    typeof o.usedTokens === "number" && Number.isFinite(o.usedTokens) && o.usedTokens >= 0 &&
+    typeof o.maxTokens === "number" && Number.isFinite(o.maxTokens) && o.maxTokens >= 0 &&
+    typeof o.pct === "number" && Number.isFinite(o.pct) && o.pct >= 0 && o.pct <= 100 &&
     (o.warning === "ok" || o.warning === "near-window" || o.warning === "critical") &&
     Array.isArray(o.warnings)
   );
@@ -49,6 +49,8 @@ export function isValidSnapshot(s: unknown): s is ContextSnapshot {
 
 /** Compact token count: 1234 → "1.2k", 1_500_000 → "1.5M". */
 export function fmtTokens(n: number): string {
+  // Gateway data can be incomplete/corrupt; never paint InfinityM or NaNk.
+  if (!Number.isFinite(n) || n < 0) return "—";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
@@ -94,7 +96,9 @@ export interface ContextBreakdownRow {
 /** Cache-hit percentage with one decimal ("82.4%"); "—" when the prompt
  *  denominator is 0/unknown (gateway sent no usage). */
 export function fmtCacheHitRate(cacheRead: number, promptTokens: number): string {
-  if (promptTokens <= 0) return "—";
+  // Mixed usage bases/malformed snapshots are unknown, not 110% cache hits.
+  if (!Number.isFinite(cacheRead) || !Number.isFinite(promptTokens) ||
+      cacheRead < 0 || promptTokens <= 0 || cacheRead > promptTokens) return "—";
   return `${Math.round((cacheRead / promptTokens) * 1000) / 10}%`;
 }
 

@@ -22,7 +22,9 @@ export function previewLibraryItem(item: Pick<LibraryItem, "id" | "mdPath" | "fi
   const lib = useLibraryStore.getState();
   // `setActiveItem` 顺带把 previewWhich 清成 null —— 看的是本体，不是转录。
   lib.setActiveItem(item.id);
-  const isMd = Boolean(item.mdPath?.endsWith(".md") || item.filePath?.endsWith(".md"));
+  // Files from Windows and third-party exports commonly use uppercase .MD.
+  // Classification should match the actual extension, regardless of case.
+  const isMd = Boolean(item.mdPath && /\.md$/i.test(item.mdPath) || item.filePath && /\.md$/i.test(item.filePath));
   lib.setDetailTab(isMd ? "edit" : "meta");
   const session = useSessionStore.getState();
   session.setRightPanelTab("preview");

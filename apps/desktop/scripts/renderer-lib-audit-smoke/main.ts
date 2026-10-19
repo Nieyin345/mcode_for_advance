@@ -150,7 +150,7 @@ section("2. 路径包含/相对：分隔符无关 + Windows 大小写");
 
   // relativePath 是**纯字符串**比较（不搞 Windows 大小写折叠）—— 钉现状：盘符大小写不同则
   // 判“不在 root 下”，原样返回。与 isPathWithin 的折叠是**刻意的不同**，别顺手“统一”。
-  eq("★ relativePath 盘符大小写不同 → 不算相对(纯字符串)", relativePath("D:/proj/a.ts", "d:/proj"), "D:/proj/a.ts");
+  eq("★ relativePath Windows 盘符大小写不同仍按同根算相对", relativePath("D:/proj/a.ts", "d:/proj"), "a.ts");
   eq("relativePath 同大小写 → 相对", relativePath("D:/proj/a.ts", "D:/proj"), "a.ts");
   eq("relativePath 无关根 → 原样返回", relativePath("/elsewhere/x.ts", "/proj"), "/elsewhere/x.ts");
 

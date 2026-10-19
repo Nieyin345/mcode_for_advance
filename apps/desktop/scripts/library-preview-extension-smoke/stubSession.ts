@@ -1,0 +1,1 @@
+export const events:string[]=[];export const useSessionStore={getState:()=>({setRightPanelTab:(tab:string)=>events.push("tab:"+tab),setRightOpen:(open:boolean)=>events.push("right:"+open)})};

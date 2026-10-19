@@ -33,7 +33,9 @@ export function turnTokenUsage(
   cumulative: boolean,
 ): number | null {
   if (!history || history.length === 0 || endedAt === undefined) return null;
-  const target = history.find((r) => r.endedAt === endedAt);
+  // Multiple provider snapshots can share one millisecond timestamp. Prefer
+  // the last finite sample rather than an older partial/invalid duplicate.
+  const target = [...history].reverse().find((r) => r.endedAt === endedAt && Number.isFinite(r.totalProcessedTokens));
   if (!target) return null;
   const cur = target.totalProcessedTokens;
   if (typeof cur !== "number" || !Number.isFinite(cur)) return null;
@@ -46,8 +48,11 @@ export function turnTokenUsage(
     prevEnded = r.endedAt;
     prevValue = r.totalProcessedTokens;
   }
-  if (typeof prevValue !== "number" || !Number.isFinite(prevValue)) return Math.max(0, cur);
-  return Math.max(0, cur - prevValue);
+  // A present but invalid previous cumulative sample is NOT a session reset.
+  // Do not mislabel the whole session counter as one turn of usage.
+  if (prevEnded !== Number.NEGATIVE_INFINITY && (typeof prevValue !== "number" || !Number.isFinite(prevValue))) return null;
+  if (prevEnded === Number.NEGATIVE_INFINITY) return Math.max(0, cur);
+  return Math.max(0, cur - (prevValue as number));
 }
 
 /** Providers whose usage records carry session-cumulative counters (mirrors

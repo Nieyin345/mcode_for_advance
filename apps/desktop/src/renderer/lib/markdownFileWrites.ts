@@ -26,14 +26,32 @@ export class FileConflictError extends Error {
  *  `expected` 一致仍会放行,行为不退化)。 */
 const lastWritten = new Map<string, string>();
 const LAST_WRITTEN_MAX = 200;
+// The cache stores whole file bodies, so a count-only bound can retain
+// hundreds of megabytes of recently saved Markdown. Use a conservative
+// UTF-16 upper bound (two bytes/code unit) with a total and per-file cap.
+const LAST_WRITTEN_MAX_BYTES = 8 * 1024 * 1024;
+const LAST_WRITTEN_MAX_ENTRY_BYTES = 1 * 1024 * 1024;
+let lastWrittenBytes = 0;
+
+function forgetWritten(filePath: string): void {
+  const previous = lastWritten.get(filePath);
+  if (previous === undefined) return;
+  lastWrittenBytes -= previous.length * 2;
+  lastWritten.delete(filePath);
+}
 
 function rememberWritten(filePath: string, content: string): void {
-  lastWritten.delete(filePath); // 挪到队尾(Map 按插入序,队头即最久未用)
+  forgetWritten(filePath);
+  const size = content.length * 2;
+  // Large files still save normally; only this optional same-pane conflict
+  // shortcut is disabled. A stale editor will then fail closed with conflict.
+  if (size > LAST_WRITTEN_MAX_ENTRY_BYTES) return;
   lastWritten.set(filePath, content);
-  while (lastWritten.size > LAST_WRITTEN_MAX) {
+  lastWrittenBytes += size;
+  while (lastWritten.size > LAST_WRITTEN_MAX || lastWrittenBytes > LAST_WRITTEN_MAX_BYTES) {
     const oldest = lastWritten.keys().next().value;
     if (oldest === undefined) break;
-    lastWritten.delete(oldest);
+    forgetWritten(oldest);
   }
 }
 

@@ -1,0 +1,1 @@
+export const events:string[]=[];export const useLibraryStore={getState:()=>({setActiveItem:(id:string)=>events.push("id:"+id),setDetailTab:(tab:string)=>events.push("tab:"+tab)})};

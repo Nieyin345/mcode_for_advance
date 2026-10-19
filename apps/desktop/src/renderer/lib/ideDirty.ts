@@ -33,7 +33,13 @@ export const ideDirtyTracker = {
     // 判断要不要重渲染 —— 原地改同一个 Set、snapshot 恒是同一个引用的话,
     // 通知发了也不会重渲染,脏点要等某次无关的 store 更新才跟着出现(迟到)。
     dirtySnapshot = new Set(dirtyFiles);
-    listeners.forEach((fn) => fn());
+    // Snapshot the observer set: one tab can unsubscribe a sibling while a
+    // dirty update is being delivered. Every listener present at notification
+    // start must get one chance; a crashing observer must not block the rest.
+    for (const fn of [...listeners]) {
+      try { fn(); }
+      catch (error) { console.warn("ideDirtyTracker observer failed:", error); }
+    }
   },
   has(filePath: string) {
     return dirtyFiles.has(filePath);
