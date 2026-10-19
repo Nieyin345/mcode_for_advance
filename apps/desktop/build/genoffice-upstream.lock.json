@@ -1,0 +1,14 @@
+{
+  "format": "mcode.genoffice.upstream-lock.v1",
+  "repository": "https://github.com/genspark-ai/genoffice",
+  "revision": "cbec600ace9c930b2646b6739cf6df3741bb9d6a",
+  "license": "Apache-2.0",
+  "editors": [
+    "docs",
+    "sheets",
+    "slides",
+    "pdf",
+    "markdown",
+    "html"
+  ]
+}
