@@ -27,7 +27,7 @@
  *   接入保存链路时补，见计划 B.2）；
  * - 不 import Electron / DB —— 纯 Node，可被无头套件直接驱动。
  */
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnRun } from "@main/lib/spawnRun.js";
 
@@ -62,15 +62,61 @@ export interface GenofficePorts {
 }
 
 /** 解析随仓库快照的 CLI bundle 路径。**固定 commit 的 vendor 快照**，不是全局安装。 */
+function regularResourceFile(file: string): boolean {
+  try { const stat = lstatSync(file); return stat.isFile() && !stat.isSymbolicLink(); }
+  catch { return false; }
+}
+function isPdfiumWasm(file: string): boolean {
+  if (!regularResourceFile(file)) return false;
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const header = Buffer.alloc(8);
+    if (readSync(fd, header, 0, 8, 0) !== 8) return false;
+    return header.equals(Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
+  } catch { return false; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+function ordinaryResourceDir(dir: string): boolean {
+  try { const stat = lstatSync(dir); return stat.isDirectory() && !stat.isSymbolicLink(); }
+  catch { return false; }
+}
+
 export function resolveGenofficeCliPath(repoRoot: string, resourcesDir?: string): string | null {
   const resources = resourcesDir ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  if (resources && isAbsolute(resources)) {
+  if (resources !== undefined) {
+    if (!isAbsolute(resources)) return null;
     const base = join(resources, "genoffice");
-    const cli = join(base, "cli", "genoffice.cjs");
-    if (existsSync(cli) && existsSync(join(base, "cli", "node_modules")) && existsSync(join(base, "wasm", "pdfium.wasm"))) return cli;
+    // Electron development may have an unrelated resourcesPath without a
+    // GenOffice stage. An EXPLICIT packaged root, however, must never fall
+    // back to source-tree code when the release marker says unavailable.
+    const electronProcess = process as NodeJS.Process & { defaultApp?: boolean };
+    // Electron's defaultApp flag distinguishes an unpackaged development
+    // launch. A real installed app may have a deleted resources/genoffice/
+    // directory: NEVER execute a nearby source checkout in that situation.
+    const suppliedBundle = resourcesDir !== undefined || existsSync(base)
+      || electronProcess.defaultApp !== true;
+    if (suppliedBundle) {
+      const marker = join(base, "availability.json");
+      if (!ordinaryResourceDir(base) || !regularResourceFile(marker) || lstatSync(marker).size > 8192) return null;
+      let info: { format?: unknown; bundled?: unknown };
+      try { info = JSON.parse(readFileSync(marker, "utf8")) as typeof info; }
+      catch { return null; }
+      if (info.format !== "mcode.genoffice.resources.v1" || info.bundled !== true) return null;
+      const cliDir = join(base, "cli");
+      const cli = join(cliDir, "genoffice.cjs");
+      const wasmDir = join(base, "wasm");
+      if (!ordinaryResourceDir(cliDir) || !ordinaryResourceDir(wasmDir)
+        || !ordinaryResourceDir(join(cliDir, "node_modules"))
+        || !isPdfiumWasm(join(wasmDir, "pdfium.wasm"))
+        || !regularResourceFile(cli)) return null;
+      return cli;
+    }
   }
-  const candidate = join(repoRoot, "genoffice", "packages", "cli", "dist", "genoffice.cjs");
-  return existsSync(candidate) ? candidate : null;
+  const source = join(repoRoot, "genoffice");
+  const candidate = join(source, "packages", "cli", "dist", "genoffice.cjs");
+  if (!ordinaryResourceDir(source) || !regularResourceFile(candidate)) return null;
+  return candidate;
 }
 
 /** 一次 CLI 调用的共同外壳：参数校验 → 路径围栏 → 起进程 → 解析信封。 */

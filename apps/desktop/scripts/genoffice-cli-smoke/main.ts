@@ -73,7 +73,10 @@ if (cliPath === null) {
     writeFileSync(packagedCli, "// mock vendor CLI; never execute\n");
     eq("只有 CLI 没有 PDFium WASM → unavailable", resolveGenofficeCliPath(fakeRepoRoot, fakeResources), null);
     mkdirSync(join(fakeResources, "genoffice", "wasm"), { recursive: true });
-    writeFileSync(join(fakeResources, "genoffice", "wasm", "pdfium.wasm"), "mock-wasm");
+    writeFileSync(join(fakeResources, "genoffice", "wasm", "pdfium.wasm"), Buffer.from([0,97,115,109,1,0,0,0,0]));
+    writeFileSync(join(fakeResources, "genoffice", "availability.json"), JSON.stringify({
+      format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: false, editors: [],
+    }));
     eq("★ 安装版同一个 resolver 找到 GenOffice sidecar", resolveGenofficeCliPath(fakeRepoRoot, fakeResources), packagedCli);
     eq("未预置资源且 checkout 没 vendor → unavailable", resolveGenofficeCliPath(fakeRepoRoot, join(root, "no-resources")), null);
     eq("现有开发 checkout 快照路径仍可读", resolveGenofficeCliPath(repoRoot), cliPath);
