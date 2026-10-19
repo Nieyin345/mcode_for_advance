@@ -7,6 +7,7 @@
 import type { LibraryItem } from "@contracts/library";
 import { getDb, persist } from "../db.js";
 import { v, type BindValue } from "../sessionSchema.js";
+import { withStatement } from "./withStatement.js";
 
 /* ──────────────────────────────── 文献库 ───────────────────────────────── */
 
@@ -105,10 +106,11 @@ export const LibraryRepo = {
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const countStmt = db.prepare(`SELECT COUNT(*) AS n FROM library_items i ${whereSql}`);
-    countStmt.bind(params);
-    countStmt.step();
-    const total = Number((countStmt.getAsObject() as { n: number }).n ?? 0);
-    countStmt.free();
+    const total = withStatement(countStmt, (query) => {
+      query.bind(params);
+      query.step();
+      return Number((query.getAsObject() as { n: number }).n ?? 0);
+    });
 
     const limit = filter.limit ?? 200;
     const offset = filter.offset ?? 0;
@@ -119,11 +121,12 @@ export const LibraryRepo = {
     const stmt = db.prepare(
       `SELECT i.* FROM library_items i ${whereSql} ORDER BY i.added_at DESC, i.id DESC LIMIT ? OFFSET ?`,
     );
-    stmt.bind([...params, v(limit), v(offset)]);
-    const items: LibraryItem[] = [];
-    while (stmt.step()) items.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
-    stmt.free();
-    return { items, total };
+    return withStatement(stmt, (query) => {
+      query.bind([...params, v(limit), v(offset)]);
+      const items: LibraryItem[] = [];
+      while (query.step()) items.push(rowToLibraryItem(query.getAsObject() as unknown as LibraryItemRow));
+      return { items, total };
+    });
   },
 
   /**
@@ -137,11 +140,12 @@ export const LibraryRepo = {
   listAllItems(): LibraryItem[] {
     const db = getDb();
     const stmt = db.prepare("SELECT * FROM library_items ORDER BY added_at DESC");
-    stmt.bind([]);
-    const out: LibraryItem[] = [];
-    while (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([]);
+      const out: LibraryItem[] = [];
+      while (query.step()) out.push(rowToLibraryItem(query.getAsObject() as unknown as LibraryItemRow));
+      return out;
+    });
   },
 
   /**
@@ -176,24 +180,25 @@ export const LibraryRepo = {
       if (typeof p !== "string" || !p) return;
       out.set(p, (out.get(p) ?? 0) + 1);
     };
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as { pdf_path: unknown; md_path: unknown; file_path: unknown };
-      bump(row.pdf_path);
-      bump(row.md_path);
-      bump(row.file_path);
-    }
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      while (query.step()) {
+        const row = query.getAsObject() as { pdf_path: unknown; md_path: unknown; file_path: unknown };
+        bump(row.pdf_path);
+        bump(row.md_path);
+        bump(row.file_path);
+      }
+      return out;
+    });
   },
 
   get(id: string): LibraryItem | null {
     const db = getDb();
     const stmt = db.prepare("SELECT * FROM library_items WHERE id = ?");
-    stmt.bind([v(id)]);
-    const found = stmt.step();
-    const row = found ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow) : null;
-    stmt.free();
-    return row;
+    return withStatement(stmt, (query) => {
+      query.bind([v(id)]);
+      const found = query.step();
+      return found ? rowToLibraryItem(query.getAsObject() as unknown as LibraryItemRow) : null;
+    });
   },
 
   /** 按 DOI / arXiv ID 查已有条目 —— 入库前查重与下载前判重的唯一入口。 */
@@ -201,11 +206,11 @@ export const LibraryRepo = {
     if (!sha256) return null;
     const db = getDb();
     const stmt = db.prepare("SELECT * FROM library_items WHERE pdf_sha256 = ? LIMIT 1");
-    stmt.bind([v(sha256)]);
-    const found = stmt.step();
-    const row = found ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow) : null;
-    stmt.free();
-    return row;
+    return withStatement(stmt, (query) => {
+      query.bind([v(sha256)]);
+      const found = query.step();
+      return found ? rowToLibraryItem(query.getAsObject() as unknown as LibraryItemRow) : null;
+    });
   },
 
   /**
@@ -284,12 +289,12 @@ export const LibraryRepo = {
     const stmt = db.prepare(
       "SELECT * FROM library_items WHERE entry_mode = 'linked' AND file_path = ? LIMIT 1",
     );
-    stmt.bind([v(absPath)]);
-    const found = stmt.step()
-      ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow)
-      : undefined;
-    stmt.free();
-    return found;
+    return withStatement(stmt, (query) => {
+      query.bind([v(absPath)]);
+      return query.step()
+        ? rowToLibraryItem(query.getAsObject() as unknown as LibraryItemRow)
+        : undefined;
+    });
   },
 
   /** 写通用文件路径(attached 的相对库根路径;linked 不走这里,建条目时就带上)。 */
@@ -310,10 +315,10 @@ export const LibraryRepo = {
     const db = getDb();
     const countOf = (sql: string): number => {
       const stmt = db.prepare(sql);
-      stmt.step();
-      const n = Number((stmt.getAsObject() as { n: number }).n ?? 0);
-      stmt.free();
-      return n;
+      return withStatement(stmt, (query) => {
+        query.step();
+        return Number((query.getAsObject() as { n: number }).n ?? 0);
+      });
     };
     const total = countOf("SELECT COUNT(*) AS n FROM library_items");
     const converted = countOf(
@@ -355,18 +360,20 @@ export const LibraryRepo = {
   delete(ids: string[]): void {
     if (ids.length === 0) return;
     const db = getDb();
-    // 多行删除同进同退:中途抛错不能留下「删了一半」的状态(下一次 persist 会落盘)。
-    const stmt = db.prepare("DELETE FROM library_items WHERE id = ?");
+    // Start the transaction BEFORE preparing a statement. If BEGIN throws,
+    // allocating first would leak the already-prepared statement. Keep the
+    // original atomic rollback for a failure at any item in the batch.
     db.run("BEGIN");
     try {
-      for (const id of ids) stmt.run([v(id)]);
+      const stmt = db.prepare("DELETE FROM library_items WHERE id = ?");
+      withStatement(stmt, (query) => {
+        for (const id of ids) query.run([v(id)]);
+      });
       db.run("COMMIT");
     } catch (err) {
       db.run("ROLLBACK");
-      stmt.free();
       throw err;
     }
-    stmt.free();
     persist();
   },
 
@@ -375,14 +382,15 @@ export const LibraryRepo = {
     if (ids.length === 0) return [];
     const db = getDb();
     const stmt = db.prepare("SELECT * FROM library_items WHERE id = ?");
-    const out: LibraryItem[] = [];
-    for (const id of ids) {
-      stmt.bind([v(id)]);
-      if (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
-      stmt.reset();
-    }
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      const out: LibraryItem[] = [];
+      for (const id of ids) {
+        query.bind([v(id)]);
+        if (query.step()) out.push(rowToLibraryItem(query.getAsObject() as unknown as LibraryItemRow));
+        query.reset();
+      }
+      return out;
+    });
   },
 
   /** 某个集合内的全部条目(按加入时间倒序)。
@@ -397,11 +405,12 @@ export const LibraryRepo = {
        WHERE ci.collection_id = ?
        ORDER BY ci.added_at DESC`,
     );
-    stmt.bind([v(collectionId)]);
-    const out: LibraryItem[] = [];
-    while (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(collectionId)]);
+      const out: LibraryItem[] = [];
+      while (query.step()) out.push(rowToLibraryItem(query.getAsObject() as unknown as LibraryItemRow));
+      return out;
+    });
   },
 
   /**
@@ -441,20 +450,21 @@ export const LibraryRepo = {
        WHERE ci.collection_id IN (SELECT id FROM subtree)
        ORDER BY ci.added_at DESC`,
     );
-    stmt.bind([v(collectionId)]);
-    const out: LibraryItem[] = [];
-    while (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(collectionId)]);
+      const out: LibraryItem[] = [];
+      while (query.step()) out.push(rowToLibraryItem(query.getAsObject() as unknown as LibraryItemRow));
+      return out;
+    });
   },
 
   /** 库内条目总数(界面概览用)。 */
   count(): number {
     const db = getDb();
     const stmt = db.prepare("SELECT COUNT(*) AS n FROM library_items");
-    stmt.step();
-    const n = Number((stmt.getAsObject() as { n: number }).n ?? 0);
-    stmt.free();
-    return n;
+    return withStatement(stmt, (query) => {
+      query.step();
+      return Number((query.getAsObject() as { n: number }).n ?? 0);
+    });
   },
 };
