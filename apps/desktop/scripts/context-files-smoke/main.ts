@@ -144,6 +144,35 @@ eq("源存在:内容=源(空)", st.content, "");
   check("★ 收养到的正文完整", s2.content.trim() === "# 别删我\n正文", JSON.stringify(s2.content));
 }
 
+
+// A source which *exists* but cannot be read is NOT an intentional empty
+// instruction. Treating EISDIR/ACL failures as empty used to delete a
+// perfectly good engine-side managed document.
+{
+  const damagedSource = join(root, "broken-source-is-a-directory.md");
+  const retainedTarget = join(root, "must-retain-managed.md");
+  mkdirSync(damagedSource);
+  writeFileSync(retainedTarget, `${MANAGED_MARKER}\n\n# still needed\n`, "utf8");
+  const result = ensureMaterialized(damagedSource, [retainedTarget]);
+  eq("★ 事实源无法读取时不能向消费端发出误删除", result.length, 0);
+  eq("★ 事实源损坏后的已有托管指令必须逐字节保全",
+     readFileSync(retainedTarget, "utf8"), `${MANAGED_MARKER}\n\n# still needed\n`);
+}
+
+// A fixed $target.mcode-tmp file can belong to another writer. Clobbering
+// it corrupts an in-flight write; on Windows a hardlink can even redirect
+// the truncation to a different protected fixture outside this directory.
+{
+  const protectedTmp = join(root, "foreign-inflight.mcode-tmp");
+  const toWrite = join(root, "foreign-inflight");
+  writeFileSync(protectedTmp, "another writer has not finished", "utf8");
+  const wrote = writeMemoryFile(toWrite, "# new memory\n");
+  eq("独立写入仍成功", wrote.ok, true);
+  eq("★ 原有的另一个写入者临时文件不得被复用或覆盖",
+     readFileSync(protectedTmp, "utf8"), "another writer has not finished");
+  eq("写入自己的事实源仍成功", readFileSync(toWrite, "utf8"), "# new memory\n");
+}
+
 // stripManagedMarker 单独钉一下(收养 codex/pi 侧组装产物时也会用到)。
 eq("剥标记:只有标记时归空", stripManagedMarker(`${MANAGED_MARKER}\n\n`), "");
 // A handwritten Markdown file can mention our marker in documentation or a

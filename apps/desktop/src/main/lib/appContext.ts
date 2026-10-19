@@ -27,6 +27,7 @@
  *
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 /** Legacy CLI memory discovery remains for migration tests; it is not an editable UI model. */
@@ -68,9 +69,12 @@ function hasManagedMarker(content: string): boolean {
  *  供本模块的托管文件使用;skillEngines 的矩阵文件也复用同一姿势。 */
 export function atomicWrite(file: string, text: string): void {
   mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.mcode-tmp`;
+  // A shared deterministic temp name allows overlapping writers to clobber
+  // each other (and can follow a stale hardlink). Unique name + exclusive
+  // creation keep each in-flight snapshot owned by its writing process.
+  const tmp = `${file}.mcode-tmp-${randomUUID()}`;
   try {
-    writeFileSync(tmp, text, "utf-8");
+    writeFileSync(tmp, text, { encoding: "utf-8", flag: "wx" });
     try {
       renameSync(tmp, file);
     } catch {
@@ -224,7 +228,14 @@ export function ensureMaterialized(
   targets: string[],
 ): MaterializeResult[] {
   if (!existsSync(sourcePath)) return [];
-  const source = readInstructionsSource(sourcePath);
+  let source: string;
+  try {
+    source = readFileSync(sourcePath, "utf-8");
+  } catch {
+    // EISDIR, permission failures and transient read errors are not an
+    // intentional empty configuration. Do NOT delete native SDK consumers.
+    return [];
+  }
   // Empty canonical source must also clear stale managed output, never handwritten files.
   return targets.map((t) => materializeManagedFile(t, source, { force: false }))
     .filter(result => source.trim() !== "" || result.action !== "unchanged");
