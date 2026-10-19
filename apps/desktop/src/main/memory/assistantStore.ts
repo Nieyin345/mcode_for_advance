@@ -29,8 +29,11 @@ function parseJob(raw: string): MemoryAssistantJob {
 }
 export function readAssistantJob(id: string): MemoryAssistantJob | null {
   const raw = SettingRepo.get(key(id));
-  if (!raw) return null;
+  // An existing but empty row is a damaged persisted record, not "missing".
+  // Likewise the JSON job ID cannot redirect a read of one key to another.
+  if (raw === null) return null;
   const job = parseJob(raw);
+  if (job.id !== id) throw new Error(CORRUPT);
   if (job.status !== "running" && job.expiresAt < Date.now() && job.result) {
     job.result = ""; job.status = "expired";
     // 【MC-025 补漏】过期也是**发表点**:状态终结与目标指针清理同一事务,与撤回/消费
@@ -218,6 +221,10 @@ export function dropAssistantJobs(sessionId: string): void {
     const suffixId = k.slice(JOB_PREFIX.length);
     try {
       const job = MemoryAssistantJobSchema.parse(JSON.parse(raw));
+      // Identity is the setting key suffix. A schema-valid payload with a
+      // different id could belong to another job; it is not proof that this
+      // row should be destroyed when its claimed source session is removed.
+      if (job.id !== suffixId) throw new Error(CORRUPT);
       if (job.sourceSessionId === sessionId || job.targetSessionId === sessionId) {
         doomed.add(k);
         doomedJobIds.add(job.id);
