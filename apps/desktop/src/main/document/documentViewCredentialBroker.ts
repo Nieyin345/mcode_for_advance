@@ -110,6 +110,8 @@ interface Binding {
   /** 归一化 origin：`http(s)://host:port`（请求侧的 ws/wss 会先归一再比较）。 */
   origin: string;
   token: string;
+  /** Listener port at bind time. Recheck live identity on every request. */
+  port: number;
   webContentsId: number;
   /** 空闲租约到期时间（每次成功注入滑动续期）。 */
   expiresAt: number;
@@ -216,6 +218,7 @@ export class DocumentViewCredentialBroker implements EditorCredentialPort {
       engineId: input.engineId,
       origin: resolved.origin,
       token: resolved.token,
+      port: resolved.port,
       webContentsId: input.webContentsId,
       expiresAt: this.now() + this.ttlMs,
     };
@@ -260,6 +263,15 @@ export class DocumentViewCredentialBroker implements EditorCredentialPort {
       const binding = this.byWebContents.get(details.webContentsId);
       if (binding === undefined) return original;
       if (requestOrigin(details.url) !== binding.origin) return original;
+      // A window may remain open when Node-RED stops, rebinds its port, or
+      // rotates its admin token. A lease is NOT authority to hand that old
+      // token to another process which has since claimed the same port.
+      // Revalidate the live engine identity before each privileged request.
+      if (this.ports.runningPort(binding.engineId) !== binding.port ||
+          this.ports.readToken(binding.engineId) !== binding.token) {
+        this.release(binding.docId);
+        return original;
+      }
       const now = this.now();
       if (!(now < binding.expiresAt)) {
         // 空闲到期：如实停发（页面下一次 API 调用会 401）。绑定本身摘掉，状态不撒谎。
@@ -284,7 +296,7 @@ export class DocumentViewCredentialBroker implements EditorCredentialPort {
     engineId: string,
     url: string,
   ):
-    | { ok: true; origin: string; token: string }
+    | { ok: true; origin: string; token: string; port: number }
     | { ok: false; reason: string } {
     const port = this.ports.runningPort(engineId);
     if (port === null) {
@@ -302,7 +314,7 @@ export class DocumentViewCredentialBroker implements EditorCredentialPort {
     if (token === null || token === "") {
       return { ok: false, reason: `工作流引擎 ${engineId} 还没有控制面令牌（先在面板里启动一次引擎）` };
     }
-    return { ok: true, origin: parsed.origin, token };
+    return { ok: true, origin: parsed.origin, token, port };
   }
 
   private ensureInstalled(): boolean {

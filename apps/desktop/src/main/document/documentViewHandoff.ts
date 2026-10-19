@@ -15,7 +15,8 @@
  *
  *  - **一次性**：`takeDocumentHandoff` 取走即删（重复 fetch 得到 404）；
  *  - **限时**：60s TTL，超时丢弃（与 vendor `HANDOFF_TTL_MS` 同）；
- *  - **限额**：总量 64 MiB，超了先挤最旧的（vendor 同一思路）；
+ *  - **限额**：与 vendor 原版一致，未消费最多 8 份或 1 GiB；
+ *    oldest-first 淘汰，但不能用自设 64 MiB 把原厂可打开的文档误挤掉；
  *  - **绑定**：token 只在 `issue` 的调用里生成，而 `issue` 只由宿主在
  *    `readOpened`（已过工作区围栏）里调用 —— 页面自己造不出有效 token；
  *    响应里同时带 docId/路径的 sha256，页面无法把它当成"别的文件"用。
@@ -53,8 +54,9 @@ export const DOCUMENT_HANDOFF_SCHEME = "genoffice-docx-media";
 export const DOCUMENT_HANDOFF_HOST = "handoff";
 
 const HANDOFF_TTL_MS = 60_000;
-/** 总量上限（vendor 的 evict 语义：先挤最旧的，不拒绝新的）。 */
-const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+/** 与 genoffice/apps/docs/src/main/byte-handoff.ts 对齐的原厂预算。 */
+const MAX_PENDING_HANDOFFS = 8;
+const MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
 
 interface HandoffEntry {
   bytes: Buffer;
@@ -63,6 +65,7 @@ interface HandoffEntry {
   filePath: string;
   sha256: string;
   expires: number;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 const pending = new Map<string, HandoffEntry>();
@@ -71,15 +74,19 @@ let pendingBytes = 0;
 function drop(token: string): void {
   const entry = pending.get(token);
   if (entry === undefined) return;
+  clearTimeout(entry.timer);
   pending.delete(token);
   pendingBytes -= entry.bytes.length;
 }
 
 function evictFor(bytes: number): void {
-  for (const [token, entry] of pending) {
-    if (pendingBytes + bytes <= MAX_TOTAL_BYTES) break;
-    void entry;
-    drop(token);
+  // Reuse the vendor eviction order and its combined count+byte budget;
+  // a single large (but allowed by the Host) doc is not rejected merely
+  // because earlier unclaimed handoffs exist.
+  while (pending.size + 1 > MAX_PENDING_HANDOFFS || pendingBytes + bytes > MAX_TOTAL_BYTES) {
+    const oldest = pending.keys().next();
+    if (oldest.done) break;
+    drop(oldest.value);
   }
 }
 
@@ -91,7 +98,10 @@ export function issueDocumentHandoff(
   bytes: Uint8Array,
   meta: { docId: string; filePath: string; sha256: string },
 ): string {
-  const buffer = Buffer.from(bytes);
+  // DocumentViewHost already supplies a Buffer from readFile. Copying it
+  // again doubles native memory pressure for a large DOCX. Keep the same
+  // Buffer as the vendor handOffBytes does; Uint8Array callers still copy.
+  const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   evictFor(buffer.length);
   const token = randomUUID();
   const timer = setTimeout(() => drop(token), HANDOFF_TTL_MS);
@@ -102,6 +112,7 @@ export function issueDocumentHandoff(
     filePath: meta.filePath,
     sha256: meta.sha256,
     expires: Date.now() + HANDOFF_TTL_MS,
+    timer,
   });
   pendingBytes += buffer.length;
   return `${DOCUMENT_HANDOFF_SCHEME}://${DOCUMENT_HANDOFF_HOST}/${token}`;
