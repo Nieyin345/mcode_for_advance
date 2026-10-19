@@ -286,6 +286,40 @@ export async function runSettingsFocusProbe(dir: string): Promise<void> {
     assert(trail.every((t) => t.inside), JSON.stringify(trail));
   });
 
+  // Visible-but-inert/aria-hidden descendants must NOT enter our Tab ring.
+  // Otherwise pressing Tab from the last real setting tries to focus the
+  // inert button (no-op/stuck) or sends focus to an a11y-hidden control.
+  for (const mode of ["inert", "aria-hidden", "fieldset", "negative-tabindex", "negative-other"] as const) {
+    await check("★ 设置焦点循环跳过 " + mode + " 子树，仍回绕首个控件", async () => {
+      const prepared = await js<boolean>(`(() => {
+        const root = document.querySelector(".settings-root");
+        const list = [...root.querySelectorAll(${JSON.stringify(FOCUSABLE_SEL)})].filter(
+          el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden",
+        );
+        const first = list[0], last = list[list.length - 1];
+        const mode = "${mode}";
+        const ignored = document.createElement(mode === "fieldset" ? "fieldset" : "div");
+        ignored.setAttribute("data-sfe-ignored", "");
+        if (mode === "inert") ignored.setAttribute("inert", "");
+        if (mode === "aria-hidden") ignored.setAttribute("aria-hidden", "true");
+        if (mode === "fieldset") ignored.setAttribute("disabled", "");
+        const hiddenButton = document.createElement("button");
+        hiddenButton.textContent = "unreachable inner button";
+        if (mode === "negative-tabindex") hiddenButton.tabIndex = -1;
+        if (mode === "negative-other") hiddenButton.tabIndex = -2;
+        ignored.appendChild(hiddenButton);
+        root.appendChild(ignored);
+        window.__sfeTrapFirst = first;
+        last.focus();
+        return document.activeElement === last;
+      })()`);
+      await pressTab(false);
+      const wrapped = await js<boolean>(`document.activeElement === window.__sfeTrapFirst`);
+      await js(`document.querySelector("[data-sfe-ignored]")?.remove()`);
+      assert(prepared && wrapped, "Tab must wrap to first real setting: " + JSON.stringify({ mode, prepared, wrapped }));
+    });
+  }
+
   // ── 关闭：走真实的标题栏「返回工作区」按钮（鼠标事件）。 ──
   await check("★ 关闭设置后焦点归还到打开前的工作区控件", async () => {
     const rect = await js<{ x: number; y: number } | null>(`(() => {
@@ -401,6 +435,15 @@ export async function runSettingsFocusProbe(dir: string): Promise<void> {
         });
       })()`));
     }
+    // Base UI portals are outside the Settings container; Electron evidence
+    // confirms role=dialog is present even without aria-modal=true. This
+    // cannot be diagnosed using [aria-modal=true] alone.
+    const isPortalOwner = await js<boolean>(`(() => {
+      const d = document.querySelector("[role=dialog]");
+      const root = document.querySelector(".settings-root");
+      return !!(d && root && !root.contains(d) && d.getAttribute("aria-modal") !== "false");
+    })()`);
+    assert(isPortalOwner, "nested Base UI dialog must be the top external layer");
     assert(f.inDialog, "focus is not inside the nested dialog: " + JSON.stringify(f));
     assert(f.tag !== "BODY", "focus fell to BODY: " + JSON.stringify(f));
     assert(!f.inInert, "focus fell into the inert workspace: " + JSON.stringify(f));

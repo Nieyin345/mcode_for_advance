@@ -92,6 +92,11 @@ export function useFocusTrap(
       // 同层组件(Monaco 等)已经消费了这次 Tab 就让它走 —— React 的根级
       // 监听在我们之前跑,document 冒泡层拿到时 defaultPrevented 已可见。
       if (e.defaultPrevented) return;
+      // A Base UI popup lives in a body portal, outside this Settings root.
+      // It does not necessarily expose aria-modal=true (verified in the
+      // Electron focus probe). When its focus guard temporarily drops focus
+      // to BODY, this lower trap must not reclaim Tab before Base UI does.
+      if (hasTopmostForeignDialog(container)) return;
       const active = document.activeElement;
       // "还归我们管"的两种情形:焦点在容器内;或焦点掉到了 body(inert 清
       // 焦、点击非聚焦背景后的残留)。焦点在别的元素上 —— 嵌套弹窗/下拉的
@@ -138,6 +143,30 @@ export function useFocusTrap(
   }, [containerRef, enabled]);
 }
 
+
+/**
+ * A nested modal portal owns Tab even if focus briefly falls back to BODY
+ * or remains on a settings control during the opening transition.
+ *
+ * Base UI Dialog.Popup uses role=dialog but does NOT necessarily set
+ * aria-modal=true. Conversely non-modal dialogs explicitly set false.
+ * Only connected, visible, non-inert portals outside our container count.
+ * Reuse the upstream Base UI trap; never implement a competing second trap.
+ */
+export function hasTopmostForeignDialog(
+  container: Pick<HTMLElement, "contains">,
+  hostDocument: Pick<Document, "querySelectorAll"> = document,
+): boolean {
+  const dialogs = hostDocument.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]');
+  return Array.from(dialogs).some((dialog) =>
+    dialog.isConnected &&
+    dialog.getAttribute("aria-modal") !== "false" &&
+    !container.contains(dialog) &&
+    !dialog.closest('[inert], [aria-hidden="true"]') &&
+    dialog.getClientRects().length > 0
+  );
+}
+
 /** 可聚焦元素的选择器 —— 与主流 focus-trap 一致的惯用集合,不含 `[tabindex="-1"]`
  *  (那类只能程序化聚焦,不参与 Tab 循环)。 */
 const FOCUSABLE_SELECTOR = [
@@ -151,11 +180,19 @@ const FOCUSABLE_SELECTOR = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
-/** 可见才可聚焦。`getClientRects()` 同时覆盖 display:none 与未挂树;visibility
- *  要单独看(inherited,子元素自己读得到)。 */
+/** A keyboard Tab target must be visible AND operable. CSS visibility
+ * alone does not detect visible inert/aria-hidden descendants (or a control
+ * disabled by an ancestor fieldset). Such nodes break our explicit Tab ring. */
 function isVisible(el: HTMLElement): boolean {
   if (el.getClientRects().length === 0) return false;
-  return getComputedStyle(el).visibility !== "hidden";
+  if (getComputedStyle(el).visibility === "hidden") return false;
+  if (el.closest('[inert], [aria-hidden="true"]')) return false;
+  if (el.matches(":disabled")) return false;
+  // Buttons/links with tabindex=-1 (or any negative value) remain in the
+  // CSS selector above but are deliberately outside sequential Tab order.
+  // Contenteditable without an explicit tabindex can still be Tab-reachable.
+  if (el.tabIndex < 0 && (el.hasAttribute("tabindex") || !el.isContentEditable)) return false;
+  return true;
 }
 
 function focusableElements(container: HTMLElement): HTMLElement[] {
