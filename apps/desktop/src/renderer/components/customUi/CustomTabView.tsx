@@ -100,6 +100,9 @@ export function FileTab({ title, abs, projectPath }: { title: string; abs: strin
   }, [abs]);
 
   useEffect(() => {
+    // Invalidate the previous read even when the new project has no file.
+    // Without this, an old request can write to a hidden/unmounted tab.
+    ++loadSeqRef.current;
     setContent(null);
     setUnreadable(false);
     if (abs === null) return;
@@ -110,6 +113,7 @@ export function FileTab({ title, abs, projectPath }: { title: string; abs: strin
     const onFocus = () => void load();
     window.addEventListener("focus", onFocus);
     return () => {
+      ++loadSeqRef.current; // unmount or path change: discard in-flight responses
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };

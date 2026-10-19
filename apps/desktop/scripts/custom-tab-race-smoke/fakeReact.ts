@@ -165,6 +165,25 @@ export function __tree(): unknown {
   return tree;
 }
 
+/** Test-only state observation: detect a stale async setState even when
+ * its currently rendered branch (e.g. abs=null) masks the bad contents.
+ */
+export function __stateValues(): unknown[] {
+  return slots.filter((s) => "v" in s).map((s) => s.v);
+}
+
+/** Simulate a real effect teardown without immediately remounting. */
+export function __unmount(): void {
+  for (const s of slots) {
+    const cleanup = s.cleanup as (() => void) | undefined;
+    if (cleanup) {
+      cleanup();
+      s.cleanup = undefined;
+    }
+  }
+  rootFn = null;
+}
+
 /** 深度优先收集树里的所有元素节点。 */
 export function __nodes(): Array<{ type: unknown; props: Record<string, unknown> }> {
   const out: Array<{ type: unknown; props: Record<string, unknown> }> = [];

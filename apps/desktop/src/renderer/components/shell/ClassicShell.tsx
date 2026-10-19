@@ -34,6 +34,7 @@ import { useSessionStore } from "../../stores/sessionStore.js";
 import { useFileViewStore } from "../../stores/fileViewStore.js";
 import { useI18n } from "../../lib/i18n/index.js";
 import type { ShellVariant } from "./shellPrefs.js";
+import { shouldMountUnifiedEditorHost } from "./editorMountPolicy.js";
 
 // Lazy-load the Monaco-backed editor / diff dialog / plan viewer and the
 // read-only file preview (moved here verbatim from App.tsx) so the large
@@ -178,7 +179,7 @@ export function CenterPane({ wide }: { wide: boolean }) {
  *  for whichever view is active). All open tabs' ChatPanes stay mounted and
  *  are backgrounded via CSS (`hidden`) so drafts / scroll / undo survive
  *  focus flips (same keep-alive trick the old tabs-mode chat column used);
- *  the editor column mounts only while an editor tab holds the focus.
+ *  an open file editor stays mounted even while a chat/preview tab is focused.
  *
  *  In wide mode the editor has no surface (the plan opens as the
  *  WidePlanDialog overlay instead), so the strip swaps to the session-only
@@ -214,7 +215,9 @@ function UnifiedTabbedPane({ wide }: { wide: boolean }) {
   // hidden PlanViewer here would double the markdown/Monaco work on every
   // streamed plan update. Visible only when not wide; the chat pane is the
   // wide-mode surface, matching isSessionChatOnScreen's wide semantics.
-  const editorMounted = showEditor && !(wide && !activeFile);
+  // A tab change must not destroy the active Monaco instance. Keep it mounted
+  // while the project still has an active file, merely CSS-hide it behind chat.
+  const editorMounted = shouldMountUnifiedEditorHost(activeFile, showEditor, wide);
   const editorVisible = showEditor && !wide;
   // 预览:**宽模式里也留着**(它不是 Monaco,没有"重建一次要几百毫秒"的成本);
   // 而且预览恰恰是宽模式最该看的东西 —— 宽模式就是给"边看边聊"用的。

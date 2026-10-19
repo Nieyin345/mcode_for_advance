@@ -1,6 +1,7 @@
-import { type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { Divider } from "./Divider.js";
+import { shouldMountRightPane } from "./rightPaneKeepAlive.js";
 import type { ShellVariant } from "../shell/shellPrefs.js";
 
 interface Props {
@@ -47,8 +48,9 @@ interface Props {
  * widths/height are driven by store state (persisted); the Divider reports
  * an incremental px delta that the store action applies + clamps.
  *
- * Side panes unmount when closed (conditional render), so their dividers
- * render only when the pane is open. The bottom terminal uses keep-alive
+ * The right pane lazily mounts once and stays mounted across collapse/restore
+ * so custom panels preserve local state. Its divider only renders while open.
+ * The bottom terminal uses keep-alive
  * (always mounted, height collapses to 0) — its divider renders only while
  * expanded.
  *
@@ -75,6 +77,13 @@ export function ThreePaneLayout({
   onResetRight,
   onResetBottomTerminal,
 }: Props) {
+  // Avoid mounting expensive right-panel contents before the user first opens
+  // that pane. Thereafter retain the SAME React identity when it is collapsed.
+  const [hasOpenedRight, setHasOpenedRight] = useState(rightOpen);
+  useEffect(() => {
+    if (rightOpen) setHasOpenedRight(true);
+  }, [rightOpen]);
+  const rightEverMounted = shouldMountRightPane(rightOpen, hasOpenedRight);
   return (
     <>
       {/* Left sidebar — only used by the settings page since the workspace
@@ -129,10 +138,12 @@ export function ThreePaneLayout({
             )}
             <div
               className={cn(
-                "shrink-0 overflow-hidden border-edge-panel transition-[height] duration-150 ease-out",
+                "shrink-0 overflow-hidden border-edge-panel transition-[height] duration-150 ease-out motion-reduce:transition-none",
                 bottomTerminalOpen ? "border-t" : "h-0",
               )}
               style={bottomTerminalOpen ? { height: bottomTerminalHeight } : undefined}
+              inert={!bottomTerminalOpen}
+              aria-hidden={!bottomTerminalOpen}
             >
               {bottomTerminal}
             </div>
@@ -154,10 +165,15 @@ export function ThreePaneLayout({
          it reads as a continuation of the chat area; the border-l below is
          the divider. overflow-hidden (not overflow-y-auto): Files/Git scroll
          internally, and xterm FitAddon breaks under a scrolling ancestor. */}
-      {rightOpen && (
+      {rightEverMounted && (
         <aside
           className="flex h-full shrink-0 flex-col overflow-hidden border-t border-edge-panel bg-surface"
-          style={{ width: rightWidthPct !== undefined ? `${rightWidthPct}%` : rightWidth }}
+          aria-hidden={!rightOpen}
+          inert={!rightOpen}
+          style={{
+            width: rightWidthPct !== undefined ? `${rightWidthPct}%` : rightWidth,
+            display: rightOpen ? "flex" : "none",
+          }}
         >
           <div className="min-h-0 flex-1 overflow-hidden border-l border-edge-panel/60">{right}</div>
         </aside>

@@ -24,6 +24,7 @@ import {
   type BrowserOpResult,
 } from "@contracts/ipc";
 import { BrowserToolbar } from "./BrowserToolbar.js";
+import { mayShowNativeBrowserView, sidebarBrowserIsActive } from "./sidebarBrowserVisibility.js";
 import { DeviceToolbar } from "./DeviceToolbar.js";
 import { BrowserTabs, type BrowserTabDisplay } from "./BrowserTabs.js";
 import { PickedElementsBar } from "./PickedElementsBar.js";
@@ -62,6 +63,8 @@ export type BrowserMode = "overlay" | "sidebar";
 
 export interface BrowserPanelProps {
   mode: BrowserMode;
+  /** True only if this sidebar is the actual displayed RightPanel content. */
+  selected?: boolean;
 }
 
 /** Emulated viewport dims for a tab, honoring orientation (landscape swaps
@@ -121,13 +124,14 @@ function newTabId(): string {
 let initialTabInFlight = false;
 let initialTabCreated = false;
 
-export function BrowserPanel({ mode }: BrowserPanelProps) {
+export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
   const { t } = useI18n();
   // Layout / mode state from the store.
   const open = useSessionStore((s) => s.browserPanelOpen);
   const setOpen = useSessionStore((s) => s.setBrowserPanelOpen);
   const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
   const setRightOpen = useSessionStore((s) => s.setRightOpen);
+  const rightOpen = useSessionStore((s) => s.rightOpen);
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const projects = useSessionStore((s) => s.projects);
   const enqueueChatElement = useSessionStore((s) => s.enqueueChatElement);
@@ -221,17 +225,22 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
    *  finished after its menu closed won't hide the view into the snapshot. */
   const freezeSeqRef = useRef(0);
 
-  /** Whether THIS container is currently the active one (owns the views). The
-   *  overlay is active while `browserPanelOpen`; the sidebar is active while
-   *  mounted AND the overlay is NOT open (overlay takes precedence so the two
-   *  containers never fight over the same view). BOTH deactivate while the
-   *  settings overlay is open: the browser's WebContentsView is an OS-level
+  /** Whether THIS container is active (owns native WebContentsViews).
+   *  A kept-mounted sidebar is NOT active while rightOpen=false — CSS hiding
+   *  an ancestor cannot hide an OS-level view. Overlay owns the view while
+   *  browserPanelOpen, and settings always deactivate both.
+   *  The browser's WebContentsView is an OS-level
    *  surface that floats ABOVE the renderer DOM, so no CSS z-index can stack
    *  the settings page on top of it — the only way to keep the settings panel
    *  clickable is to hide the view (hide() parks it offscreen, the session
    *  survives and re-shows on return). */
   const settingsOpen = useSessionStore((s) => s.settingsOpen);
-  const isActive = settingsOpen ? false : mode === "overlay" ? open : !open;
+  // The host resolves *effective* custom tab visibility. A deleted/hidden
+  // custom ID may remain in store while the browser fallback is onscreen.
+  // Using raw activeCustomTab here would leave the visible native browser blank.
+  const isActive = sidebarBrowserIsActive(mode, open, rightOpen, settingsOpen, selected);
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
@@ -335,8 +344,8 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
    *  renderer has measured the stage, the view paints at that wrong rect and
    *  floats above everything until some later resize happens to re-sync.
    *  Instead: (1) while the stage isn't measurable yet, DON'T show — retry on
-   *  subsequent frames (bounded, so a never-measurable container can't spin
-   *  rAF forever; after ~1s fall back to a plain show); (2) syncBounds() FIRST
+   *  subsequent frames (bounded; do NOT fall back to a guessed native rect
+   *  after ~1s, because it can obscure the whole app); (2) syncBounds() FIRST
    *  so main stores the true rect while the view is still hidden (setBounds on
    *  an invisible view only updates lastBounds); (3) only then show(), which
    *  applies exactly those bounds; (4) one more rAF sync in case layout moved.
@@ -347,13 +356,15 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
   const showActiveViewRef = useRef<(attempt?: number) => void>(() => {});
   const showActiveView = useCallback(
     (attempt = 0) => {
+      // A pending animation-frame retry must never resurrect a hidden native view.
+      if (!isActiveRef.current) return;
       const stage = stageRef.current;
       const r = stage ? stage.getBoundingClientRect() : null;
-      if (!r || r.width < 1 || r.height < 1) {
-        if (attempt < 60) {
-          requestAnimationFrame(() => showActiveViewRef.current(attempt + 1));
-          return;
-        }
+      if (!mayShowNativeBrowserView(isActiveRef.current, r?.width, r?.height)) {
+        if (attempt < 60) requestAnimationFrame(() => showActiveViewRef.current(attempt + 1));
+        // Never show at guessed bounds after the retry cap. Reopening or a
+        // fresh measurable stage can schedule another show attempt instead.
+        return;
       } else {
         // ALWAYS force the setBounds through: lastBoundsRef dedupes identical
         // rects, but a tab switch lands on a DIFFERENT view that never received
@@ -366,6 +377,7 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
       const tab = activeTabIdRef.current
         ? tabsRef.current.find((t) => t.id === activeTabIdRef.current)
         : null;
+      if (!isActiveRef.current) return;
       if (tab) void api.browser.show({ browserId: tab.browserId });
       requestAnimationFrame(syncBounds);
     },
@@ -678,7 +690,11 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
   // When the component unmounts (container swap / panel close), hide the active
   // view so it can't linger over the workspace. The view survives in main.
   useEffect(() => {
+    // React StrictMode may replay cleanup/setup without a new render.
+    // Restore this live guard during setup, not only while rendering.
+    isActiveRef.current = isActive;
     return () => {
+      isActiveRef.current = false;
       setBrowserStageRect(null);
       const tab = activeTabIdRef.current
         ? tabsRef.current.find((t) => t.id === activeTabIdRef.current)

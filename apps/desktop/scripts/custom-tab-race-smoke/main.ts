@@ -26,7 +26,7 @@
  * Run: scripts/custom-tab-race-smoke/run.sh
  */
 import "./prelude.js";
-import { __mount, __render, __flush, __text } from "./fakeReact.js";
+import { __mount, __render, __flush, __text, __stateValues, __unmount } from "./fakeReact.js";
 import { server, resetApi, release } from "./api-stub.js";
 import { FileTab } from "@renderer/components/customUi/CustomTabView.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -79,9 +79,49 @@ async function scenario(): Promise<void> {
     __text().includes("CONTENT-OF-B") && !__text().includes("CONTENT-OF-A"),
     __text(),
   );
+  __unmount();
+}
+
+/** Newly discovered case: project removed (abs=null) cancels an old read.
+ * The "no project" Hint masks a stale content state, so observe fake React's
+ * hook values instead of checking only rendered text.
+ */
+async function scenarioNullPathInvalidatesRead(): Promise<void> {
+  resetApi();
+  server.files[A] = "STALE-NULL-READ";
+  server.hold.add("file:readFile");
+  let abs: string | null = A;
+  __mount(() => FileTab({ title: "project switch", abs, projectPath: "/p" }));
+  await __flush();
+  check("null-path case has pending original read",server.held.some((h) => h.input.filePath === A));
+  abs = null;
+  __render();
+  await __flush();
+  release("file:readFile", (input) => input.filePath === A);
+  await __flush();
+  check("late read cannot poison state after abs becomes null",
+    !__stateValues().includes("STALE-NULL-READ"),__stateValues());
+  __unmount();
+}
+
+/** A request can resolve after a hidden file tab has been unmounted. */
+async function scenarioUnmountInvalidatesRead(): Promise<void> {
+  resetApi();
+  server.files[A] = "STALE-UNMOUNT-READ";
+  server.hold.add("file:readFile");
+  __mount(() => FileTab({ title: "removed tab", abs: A, projectPath: "/p" }));
+  await __flush();
+  check("unmount case has pending read",server.held.some((h) => h.input.filePath === A));
+  __unmount();
+  release("file:readFile", (input) => input.filePath === A);
+  await new Promise((done) => setTimeout(done, 0));
+  check("late read cannot set state after tab unmount",
+    !__stateValues().includes("STALE-UNMOUNT-READ"),__stateValues());
 }
 
 await scenario();
+await scenarioNullPathInvalidatesRead();
+await scenarioUnmountInvalidatesRead();
 
 console.log(`\ncustom-tab-race-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

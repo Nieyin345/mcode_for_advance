@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { customUiLabel, type CustomUiItem } from "@contracts/customUi";
 import type { RightPanelTab } from "@contracts/ipc";
@@ -26,6 +26,7 @@ import {
 import { CustomTabView } from "@renderer/components/customUi/CustomTabView.js";
 import { useWorkspaceTarget } from "@renderer/components/customUi/useWorkspaceTarget.js";
 import { nextRailFocusIndex } from "./panelRailNavigation.js";
+import { CACHED_BUILTIN_RIGHT_TABS, prunePanelIds, rememberPanelId, rememberRightTab, shouldMountCachedBuiltin } from "./rightPanelKeepAlive.js";
 
 const NO_MODULES: never[] = [];
 
@@ -97,7 +98,7 @@ export function RightPanel() {
   /** Toggle the embedded sidebar browser: open it if another tab is active,
    *  or close it (fall back to files) if it's already showing. */
   const toggleBrowser = () => {
-    showBuiltin(activeCustomId === null && tab === "browser" ? "files" : "browser");
+    showBuiltin(!activeCustom && tab === "browser" ? "files" : "browser");
   };
 
   // 内置页签的「点了做什么」。全部给出 = 全部可显示;藏不藏、排第几由布局决定。
@@ -116,6 +117,28 @@ export function RightPanel() {
           (e): e is Extract<(typeof entries)[number], { kind: "custom" }> =>
             e.kind === "custom" && e.item.id === activeCustomId,
         )?.item ?? null);
+
+  // Stateful builtin panes (Files/Git/Browser) and sandboxed HTML panel iframes
+  // mount only when first visited. Keep their same React identity when another
+  // rail tab is selected, preserving Git subtabs, explorer scroll and iframe
+  // runtime state. Hidden custom entries are excluded by the live entries list.
+  const [visitedBuiltinTabs, setVisitedBuiltinTabs] = useState<ReadonlySet<RightPanelTab>>(() => new Set());
+  const [visitedPanelIds, setVisitedPanelIds] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (activeCustom === null) setVisitedBuiltinTabs((prev) => rememberRightTab(prev, tab));
+    else if (activeCustom.action.type === "panel")
+      setVisitedPanelIds((prev) => rememberPanelId(prev, activeCustom.id));
+  }, [activeCustom, tab]);
+  const availablePanelIds = new Set(entries.flatMap(
+    (e) => e.kind === "custom" && e.item.action.type === "panel" ? [e.item.id] : [],
+  ));
+  useEffect(() => {
+    setVisitedPanelIds((prev) => prunePanelIds(prev, availablePanelIds));
+  }, [entries]);
+  const cachedPanelIds = entries.filter(
+    (e) => e.kind === "custom" && e.item.action.type === "panel" &&
+      (visitedPanelIds.has(e.item.id) || activeCustom?.id === e.item.id),
+  );
 
   const badgeOf = (id: BuiltinTabId): number =>
     id === "browser" ? browserTabCount : id === "flow" ? runningNodeCount : 0;
@@ -144,7 +167,7 @@ export function RightPanel() {
           aria-label={t("customUi.slot.rightPanel.tab")}
           onKeyDown={(e) => {
             // Do not steal SDK shortcuts, Alt menus or IME composition.
-            if (e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
             if (!(e.target instanceof Element)) return;
             const currentButton = e.target.closest<HTMLButtonElement>("button[data-pane-rail-button]");
             if (!currentButton) return;
@@ -224,19 +247,42 @@ export function RightPanel() {
           sidebar (mobile-first) renders inline here; the PC-fullscreen overlay
           is rendered at the App root and covers the whole workspace. */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {activeCustom ? (
+        {CACHED_BUILTIN_RIGHT_TABS.map((id) => {
+          if (!shouldMountCachedBuiltin(id, tab, visitedBuiltinTabs)) return null;
+          const selected = !activeCustom && tab === id;
+          return (
+            <div
+              key={id}
+              data-keepalive-tab={id}
+              className="h-full min-h-0"
+              style={{ display: selected ? "block" : "none" }}
+              inert={!selected}
+              aria-hidden={!selected}
+            >
+              {id === "files" && <FilesPanel />}
+              {id === "git" && <GitPanel />}
+              {id === "browser" && <BrowserPanel mode="sidebar" selected={selected} />}
+            </div>
+          );
+        })}
+        {cachedPanelIds.map((e) => {
+          if (e.kind !== "custom") return null;
+          const selected = activeCustom?.id === e.item.id;
+          return (
+            <div key={e.item.id} className="h-full min-h-0"
+              style={{ display: selected ? "block" : "none" }}
+              inert={!selected} aria-hidden={!selected}>
+              <CustomTabView item={e.item} target={target} />
+            </div>
+          );
+        })}
+        {activeCustom && activeCustom.action.type !== "panel" && (
           <CustomTabView key={activeCustom.id} item={activeCustom} target={target} />
-        ) : (
-          <>
-            {tab === "files" && <FilesPanel />}
-            {tab === "git" && <GitPanel />}
-            {tab === "turns" && <TurnFlowPanel />}
-            {tab === "flow" && <WorkflowBoardPanel />}
-            {tab === "tasks" && <TaskListPanel />}
-            {tab === "preview" && <PreviewPanel />}
-            {tab === "browser" && <BrowserPanel mode="sidebar" />}
-          </>
         )}
+        {!activeCustom && tab === "turns" && <TurnFlowPanel />}
+        {!activeCustom && tab === "flow" && <WorkflowBoardPanel />}
+        {!activeCustom && tab === "tasks" && <TaskListPanel />}
+        {!activeCustom && tab === "preview" && <PreviewPanel />}
       </div>
     </div>
   );

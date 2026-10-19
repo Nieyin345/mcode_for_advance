@@ -25,6 +25,7 @@ export function BottomTerminalBar({ active }: { active: boolean }) {
         !active && "invisible",
       )}
       aria-hidden={!active}
+      inert={!active}
     >
       <TerminalPanel active={active} />
     </div>

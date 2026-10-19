@@ -1,0 +1,22 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { shouldMountUnifiedEditorHost } from "../../src/renderer/components/shell/editorMountPolicy.js";
+const source=(p:string)=>readFileSync(resolve("src/renderer/components",p),"utf8");
+const shell=source("shell/ClassicShell.tsx");
+const layout=source("layout/ThreePaneLayout.tsx");
+const terminal=source("layout/BottomTerminalBar.tsx");
+let pass=0,fail=0;
+function check(name:string, ok:boolean){console.log((ok?"PASS ":"FAIL ")+name);if(ok)pass++;else fail++;}
+check("A file editor remains mounted when switching to chat",shouldMountUnifiedEditorHost("/project/file.ts",false,false));
+check("An open editor remains mounted while read-only preview takes focus",shouldMountUnifiedEditorHost("/project/file.ts",false,false));
+check("An open file editor survives entering wide mode",shouldMountUnifiedEditorHost("/project/file.ts",false,true));
+check("An empty editor does not eagerly mount on chat",!shouldMountUnifiedEditorHost(null,false,false));
+check("A plan-only editor is displayed in normal mode",shouldMountUnifiedEditorHost(null,true,false));
+check("Wide plan does not double-mount an invisible PlanViewer",!shouldMountUnifiedEditorHost(null,true,true));
+check("Unified pane uses shared mount policy instead of focus-only mount",shell.includes("shouldMountUnifiedEditorHost(activeFile, showEditor, wide)")&&!shell.includes("const editorMounted = showEditor &&"));
+check("Unified host is hidden but mounted behind chat",shell.includes("editorMounted && (")&&shell.includes("!editorVisible && \"hidden\""));
+check("Bottom terminal host is inert and hidden from readers when collapsed",layout.includes("inert={!bottomTerminalOpen}")&&layout.includes("aria-hidden={!bottomTerminalOpen}"));
+check("Collapsed terminal subtree itself is inert",terminal.includes("inert={!active}")&&terminal.includes("aria-hidden={!active}"));
+check("Bottom terminal height transition respects OS motion preference",layout.includes("motion-reduce:transition-none"));
+check("PTY keepalive is preserved; no conditional destroy on close",layout.includes("{bottomTerminal && (")&&!layout.includes("{bottomTerminalOpen && bottomTerminal"));
+console.log("arc005-editor-keepalive "+pass+"/"+(pass+fail));if(fail)process.exitCode=1;
