@@ -14,7 +14,8 @@
  * 不 import electron、不 import 任何 `ipc/*`：无头套件加载它不会把 electron 兼容层
  * 拖进来（与 `atomicFile.ts` 同一个理由）。
  */
-import { access } from "node:fs/promises";
+import { link, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, extname, join } from "node:path";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 
@@ -33,21 +34,53 @@ export function conflictCopyPathFor(filePath: string, attempt = 1): string {
   const stem = basename(filePath, ext);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const suffix = attempt === 1 ? "" : `-${attempt}`;
-  return join(dirname(filePath), `${stem}.conflict-${stamp}${suffix}${ext}`);
+  const tail = `.conflict-${stamp}${suffix}${ext}`;
+  const fullName = `${stem}${tail}`;
+  // 源文件自己合法（单段名 <= 255）不代表增加时间戳后仍合法。
+  // 超长时给原名加短哈希，避免仅截前缀使两个不同文件互撞。
+  // 同时遵守 POSIX UTF-8 字节上限与 NTFS UTF-16 名称长度上限，
+  // 不切断一个 Unicode 码点；常规短文件名保留原格式。
+  if (Buffer.byteLength(fullName, "utf8") <= 255 && fullName.length <= 255) {
+    return join(dirname(filePath), fullName);
+  }
+  const tag = "-" + createHash("sha256").update(basename(filePath)).digest("hex").slice(0, 12);
+  const byteBudget = 255 - Buffer.byteLength(tail + tag, "utf8");
+  const unitBudget = 255 - (tail + tag).length;
+  if (byteBudget < 1 || unitBudget < 1) {
+    throw new Error("冲突副本文件扩展名超出文件系统单段名称限制");
+  }
+  let prefix = "";
+  for (const character of stem) {
+    const next = prefix + character;
+    if (Buffer.byteLength(next, "utf8") > byteBudget || next.length > unitBudget) break;
+    prefix = next;
+  }
+  return join(dirname(filePath), `${prefix}${tag}${tail}`);
 }
 
 /** 把**本次尝试写入的内容**另存为冲突副本（原子写），返回落盘路径。
  *  只应在 CAS 冲突分支里调用；不碰原文件。 */
 export async function writeConflictCopy(filePath: string, content: string): Promise<string> {
-  for (let attempt = 1; ; attempt++) {
-    const target = conflictCopyPathFor(filePath, attempt);
-    try {
-      await access(target);
-      continue; // 名字已被占（同毫秒第二次冲突 / 第三方文件）→ 派生下一个
-    } catch {
-      // ENOENT = 名字可用。其它错误交给下面的原子写如实抛。
+  // 不能先 access(target) 再 rename：两并发 CAS 拒绝请求可同时看到
+  // ENOENT，后一个 rename 静默覆盖前一个冲突副本，造成用户尚未保存内容丢失。
+  // 先用唯一临时文件完成 fsync，再用同目录硬链接的原子 no-clobber 创建：
+  // link() 在目标存在时只会 EEXIST，而不会替换其字节/链接。
+  // stage 不能重复整个原 basename：合法的长源文件名加 UUID 后会越过 255。
+  const staging = join(dirname(filePath), `.${randomUUID()}.mcode-stage`);
+  try {
+    await atomicReplaceFile(staging, content);
+    for (let attempt = 1; ; attempt++) {
+      const target = conflictCopyPathFor(filePath, attempt);
+      try {
+        await link(staging, target);
+        return target;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
+        // 不支持硬链接的文件系统 fail-closed，绝不回退到可覆盖的 rename。
+        throw err;
+      }
     }
-    await atomicReplaceFile(target, content);
-    return target;
+  } finally {
+    await rm(staging, { force: true });
   }
 }
