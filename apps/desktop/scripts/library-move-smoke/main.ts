@@ -286,6 +286,58 @@ console.log("\n回给渲染端的列表");
   check("甲和乙都在列表里", [a, b].every((id) => res.collections.some((c) => (c as { id: string }).id === id)));
 }
 
+/* ───────── 8. Corrupt pre-existing ancestor cycle must fail closed ───────── */
+console.log("\n已存在坏祖先环不允许吸入一棵健康分类子树");
+{
+  const { getDb } = await import("@main/store/db.js");
+  const db = getDb();
+  const one = CollectionRepo.create("损坏环甲", null).id;
+  const two = CollectionRepo.create("损坏环乙", null).id;
+  const healthy = CollectionRepo.create("健康树根", null).id;
+  const child = CollectionRepo.create("健康树叶", healthy).id;
+  // Foreign keys do not prevent two existing parents from pointing at each
+  // other. Simulate a damaged imported DB using real SQLite.
+  db.run("UPDATE library_collections SET parent_id = ? WHERE id = ?", [two, one]);
+  db.run("UPDATE library_collections SET parent_id = ? WHERE id = ?", [one, two]);
+  const before = CollectionRepo.list().find((c) => c.id === healthy);
+  const result = await move({ id: healthy, parentId: one });
+  eq("★★ 目标祖先已形成环时拒绝移动而不是达上限后继续写", result.ok, false);
+  eq("★★ 被请求移动的健康分类仍在原来的根", parentOf(healthy), null);
+  eq("★★ 健康子分类仍在自己原父级", parentOf(child), healthy);
+  eq("★★ 原分类排序也未被重写", CollectionRepo.list().find((c) => c.id === healthy)?.sortOrder, before?.sortOrder);
+}
+
+/* ───────── 9. Fault injection must release prepared statements on rollback ───────── */
+console.log("\n事务内 stmt.run 抛错仍释放 Statement、ROLLBACK 原样传播");
+{
+  const { getDb } = await import("@main/store/db.js");
+  const db = getDb() as unknown as { prepare: (sql: string) => unknown };
+  const realPrepare = db.prepare;
+  const source = CollectionRepo.create("抛错待挪分类", null).id;
+  const destination = CollectionRepo.create("抛错目标父级", null).id;
+  for (const [test, sqlMatch, execute] of [
+    ["move", "UPDATE library_collections SET sort_order", () => CollectionRepo.move(source, destination)],
+    ["assign", "INSERT INTO library_collection_items", () => CollectionRepo.assign(destination, ["fake_item"], true)],
+  ] as const) {
+    let freeds = 0, hits = 0;
+    db.prepare = (sql: string) => {
+      if (!sql.includes(sqlMatch)) return realPrepare.call(db, sql);
+      hits++;
+      return {
+        run: () => { throw new Error("INJECTED_COLLECTION_STATEMENT_FAILURE"); },
+        free: () => { freeds++; },
+      };
+    };
+    let error = "";
+    try { execute(); } catch (err) { error = String(err); }
+    finally { db.prepare = realPrepare; }
+    check("★★ "+test+" 传播原始 SQL 错误", error.includes("INJECTED_COLLECTION_STATEMENT_FAILURE"), error);
+    eq("★★ "+test+" 异常路径恰好释放 stmt 一次", freeds, 1);
+    eq("注入確实命中 "+test+" UPDATE/INSERT", hits, 1);
+    if (test === "move") eq("★★ move ROLLBACK 后父关系没被半改", parentOf(source), null);
+  }
+}
+
 rmSync(DATA, { recursive: true, force: true });
 
 console.log(`\n${checks - failures}/${checks} passed`);

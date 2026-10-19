@@ -8,6 +8,7 @@ import type { LibraryCollection } from "@contracts/library";
 import { getDb, persist } from "../db.js";
 import { v } from "../sessionSchema.js";
 import { makeId } from "./makeId.js";
+import { withStatement } from "./withStatement.js";
 
 /* ──────────────────────────────── 集合 ─────────────────────────────────── */
 
@@ -43,11 +44,12 @@ export const CollectionRepo = {
   list(): LibraryCollection[] {
     const db = getDb();
     const stmt = db.prepare("SELECT * FROM library_collections ORDER BY sort_order ASC, created_at ASC");
-    stmt.bind([]);
-    const out: LibraryCollection[] = [];
-    while (stmt.step()) out.push(rowToCollection(stmt.getAsObject() as unknown as CollectionRow));
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([]);
+      const out: LibraryCollection[] = [];
+      while (query.step()) out.push(rowToCollection(query.getAsObject() as unknown as CollectionRow));
+      return out;
+    });
   },
 
   /**
@@ -96,10 +98,11 @@ export const CollectionRepo = {
         ? "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id = ?"
         : "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id IS NULL",
     );
-    maxStmt.bind(parentId ? [v(parentId)] : []);
-    maxStmt.step();
-    const nextOrder = Number((maxStmt.getAsObject() as { m: number }).m ?? -1) + 1;
-    maxStmt.free();
+    const nextOrder = withStatement(maxStmt, (query) => {
+      query.bind(parentId ? [v(parentId)] : []);
+      query.step();
+      return Number((query.getAsObject() as { m: number }).m ?? -1) + 1;
+    });
 
     db.run(
       "INSERT INTO library_collections (id, name, kind, group_id, prompt, parent_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -209,14 +212,22 @@ export const CollectionRepo = {
       if (target.id === id) {
         return { ok: false, error: "不能把一个分类移到它自己下面" };
       }
+      // Existing imported/partially repaired databases may already contain a
+      // cycle. The old 10k loop cap merely stopped traversing, then ATTACHED
+      // a healthy subtree to that cycle and made it invisible. Never continue
+      // to UPDATE unless the entire ancestor chain actually terminates.
+      const parentById = new Map(all.map((c) => [c.id, c.parentId] as const));
+      const visited = new Set<string>([target.id]);
       let cursor: string | null = target.parentId;
-      let guard = 0;
-      while (cursor !== null && guard < 10_000) {
+      while (cursor !== null) {
         if (cursor === id) {
           return { ok: false, error: "不能把一个分类移到它自己的子分类下面" };
         }
-        cursor = all.find((c) => c.id === cursor)?.parentId ?? null;
-        guard += 1;
+        if (visited.has(cursor) || !parentById.has(cursor)) {
+          return { ok: false, error: "目标分类的祖先链已损坏或形成环，拒绝移动以保护原分类" };
+        }
+        visited.add(cursor);
+        cursor = parentById.get(cursor) ?? null;
       }
     }
 
@@ -241,8 +252,9 @@ export const CollectionRepo = {
     try {
       db.run("UPDATE library_collections SET parent_id = ? WHERE id = ?", [v(nextParent), v(id)]);
       const stmt = db.prepare("UPDATE library_collections SET sort_order = ? WHERE id = ?");
-      for (let i = 0; i < siblings.length; i++) stmt.run([v(i), v(siblings[i]!.id)]);
-      stmt.free();
+      withStatement(stmt, (query) => {
+        for (let i = 0; i < siblings.length; i++) query.run([v(i), v(siblings[i]!.id)]);
+      });
       db.run("COMMIT");
     } catch (err) {
       db.run("ROLLBACK");
@@ -264,14 +276,16 @@ export const CollectionRepo = {
           `INSERT INTO library_collection_items (collection_id, item_id, added_at) VALUES (?, ?, ?)
            ON CONFLICT(collection_id, item_id) DO NOTHING`,
         );
-        for (const itemId of itemIds) stmt.run([v(collectionId), v(itemId), v(now)]);
-        stmt.free();
+        withStatement(stmt, (query) => {
+          for (const itemId of itemIds) query.run([v(collectionId), v(itemId), v(now)]);
+        });
       } else {
         const stmt = db.prepare(
           "DELETE FROM library_collection_items WHERE collection_id = ? AND item_id = ?",
         );
-        for (const itemId of itemIds) stmt.run([v(collectionId), v(itemId)]);
-        stmt.free();
+        withStatement(stmt, (query) => {
+          for (const itemId of itemIds) query.run([v(collectionId), v(itemId)]);
+        });
       }
       db.run("COMMIT");
     } catch (err) {
@@ -285,12 +299,13 @@ export const CollectionRepo = {
   collectionsOfItem(itemId: string): string[] {
     const db = getDb();
     const stmt = db.prepare("SELECT collection_id FROM library_collection_items WHERE item_id = ?");
-    stmt.bind([v(itemId)]);
-    const out: string[] = [];
-    while (stmt.step()) {
-      out.push(String((stmt.getAsObject() as { collection_id: string }).collection_id));
-    }
-    stmt.free();
-    return out;
+    return withStatement(stmt, (query) => {
+      query.bind([v(itemId)]);
+      const out: string[] = [];
+      while (query.step()) {
+        out.push(String((query.getAsObject() as { collection_id: string }).collection_id));
+      }
+      return out;
+    });
   },
 };
