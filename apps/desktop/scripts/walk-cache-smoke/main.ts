@@ -92,6 +92,42 @@ section("§2 忽略表:按目录名整段跳过");
   );
 }
 
+/* ──────────────── §2b 同项目不同忽略策略与缓存防篡改 ──────────────── */
+
+section("§2b 同一根目录使用不同忽略表不得串缓存或允许外部污染");
+
+{
+  const root = join(ROOT, "ignore-switch");
+  mkdirSync(join(root, "node_modules"), { recursive: true });
+  writeFileSync(join(root, "visible.ts"), "const visible = true", "utf8");
+  writeFileSync(join(root, "node_modules", "hidden.js"), "const hidden = true", "utf8");
+
+  const first = await cachedTreeFiles(root, new Set(["node_modules"]));
+  check("忽略模式初次不返回 node_modules", !relsOf(first.files).includes("node_modules/hidden.js"), relsOf(first.files));
+
+  const unignored = await cachedTreeFiles(root, NO_IGNORE);
+  check("★ 同一个根目录切换成空忽略表后必须看到被排除的文件",
+    relsOf(unignored.files).includes("node_modules/hidden.js"), relsOf(unignored.files));
+
+  const ignoredAgain = await cachedTreeFiles(root, new Set(["node_modules"]));
+  check("★ 同一个根目录切回忽略表后不能保留敏感目录条目",
+    !relsOf(ignoredAgain.files).includes("node_modules/hidden.js"), relsOf(ignoredAgain.files));
+
+  // Callers may sort/filter the returned list; that must not permanently
+  // change cached search results for subsequent unrelated requests.
+  const ordinary = ignoredAgain.files.find(f => f.relPath === "visible.ts");
+  check("可变路径反例被实际定位（不能空过）", ordinary !== undefined);
+  try {
+    if (ordinary) ordinary.relPath = "FORGED-FILE";
+    ignoredAgain.files.push({ name: "injected", relPath: "injected", abs: "/tmp/injected" });
+  } catch { /* protected immutable cache is allowed to reject mutations */ }
+  const after = await cachedTreeFiles(root, new Set(["node_modules"]));
+  check("★ 上一调用方不能修改缓存中的文件路径",
+    relsOf(after.files).includes("visible.ts") && !relsOf(after.files).includes("FORGED-FILE"), relsOf(after.files));
+  check("★ 上一调用方不能插入虚假的搜索结果",
+    !relsOf(after.files).includes("injected"), relsOf(after.files));
+}
+
 /* ──────────────── §3 预算:太深要显式报,不静默截断 ──────────────── */
 
 section("§3 深度预算:超深要报 incompleteScan,不静默截断");

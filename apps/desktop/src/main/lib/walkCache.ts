@@ -55,6 +55,8 @@ const MAX_CACHED_ROOTS = 8;
 
 interface CacheEntry {
   files: WalkFile[] | null;
+  /** Ignored directory names are part of the cached query, not just the root. */
+  ignoredSignature: string | null;
   incompleteScan: boolean;
   dirty: boolean;
   watcher: FSWatcher | null;
@@ -133,9 +135,13 @@ export async function cachedTreeFiles(
   ignored: ReadonlySet<string>,
 ): Promise<{ files: WalkFile[]; incompleteScan: boolean }> {
   const key = resolve(root);
+  // Two callers searching the same workspace can use different exclusion
+  // policies. Reusing only the root key incorrectly leaks ignored results or
+  // silently hides searchable directories until TTL expiration.
+  const ignoredSignature = JSON.stringify([...ignored].sort());
   let entry = caches.get(key);
   if (!entry) {
-    entry = { files: null, incompleteScan: false, dirty: false, watcher: null, watchOk: false, watchAttempted: false, builtAt: 0 };
+    entry = { files: null, ignoredSignature: null, incompleteScan: false, dirty: false, watcher: null, watchOk: false, watchAttempted: false, builtAt: 0 };
     caches.set(key, entry);
     if (caches.size > MAX_CACHED_ROOTS) {
       const keys = [...caches.keys()];
@@ -179,7 +185,8 @@ export async function cachedTreeFiles(
     }
   }
 
-  if (entry.files != null && !entry.dirty && Date.now() - entry.builtAt < TTL_MS) {
+  if (entry.files != null && entry.ignoredSignature === ignoredSignature &&
+      !entry.dirty && Date.now() - entry.builtAt < TTL_MS) {
     return { files: entry.files, incompleteScan: entry.incompleteScan };
   }
 
@@ -192,8 +199,13 @@ export async function cachedTreeFiles(
   entry.dirty = false;
   const { files, incompleteScan } = await collectTreeFilesUncached(key, ignored);
   if (!entry.dirty) {
-    // Nothing changed while we walked — safe to cache.
+    // Nothing changed while we walked — safe to cache. Freeze both the list
+    // and entries: callers must not be able to inject/alter another caller's
+    // search results while preserving the same cached-array identity.
+    for (const file of files) Object.freeze(file);
+    Object.freeze(files);
     entry.files = files;
+    entry.ignoredSignature = ignoredSignature;
     entry.incompleteScan = incompleteScan;
     entry.builtAt = Date.now();
   } else {
