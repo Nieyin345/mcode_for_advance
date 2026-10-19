@@ -1,5 +1,5 @@
 /** ARC-007: atomicReplaceFile 的失败清理与原文保全（仅系统隔离临时目录）。 */
-import { chmod, lstat, mkdir, mkdtemp, readlink, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readlink, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,6 +114,36 @@ try {
     const source = candidate ? await readFile(candidate, "utf8") : "";
     check("★ Windows 跳过 OS symlink 后须有 lstat 不跟随链接的代码围栏",
       /await lstat\(filePath\)/.test(source), candidate);
+  }
+
+  // 真 OS hardlink 不是 symlink；lstat().isFile() 对两个名字都返回 true。
+  // rename 覆盖其中一个名字会让另一个名字仍指向旧 inode，静默分叉文档。
+  // 安全保存不应向用户假装两个硬链接仍是一个文件。
+  const hardlinkTarget = join(dir, "hardlink-original.bin");
+  const hardlinkAlias = join(dir, "hardlink-alias.bin");
+  await writeFile(hardlinkTarget, "original shared bytes");
+  let hardlinkSupported = true;
+  try { await link(hardlinkTarget, hardlinkAlias); }
+  catch (err) {
+    if (["EPERM", "EOPNOTSUPP", "ENOTSUP"].includes((err as NodeJS.ErrnoException).code ?? "")) {
+      hardlinkSupported = false;
+      console.log("  [SKIP] 当前文件系统不支持硬链接，不能将真 OS 断言计为 PASS");
+    } else throw err;
+  }
+  if (hardlinkSupported) {
+    check("★ 真实硬链接双方最初指向同一 inode/文件索引",
+      (await lstat(hardlinkTarget)).nlink >= 2
+      && (await lstat(hardlinkAlias)).nlink >= 2);
+    let hardlinkRejected = false;
+    try { await atomicReplaceFile(hardlinkAlias, "modified via alias"); }
+    catch { hardlinkRejected = true; }
+    check("★ 已有多个硬链接的文件必须拒绝原子替换", hardlinkRejected);
+    check("★ 拒绝硬链接保存后两个入口原字节都不改变",
+      (await readFile(hardlinkTarget, "utf8")) === "original shared bytes"
+      && (await readFile(hardlinkAlias, "utf8")) === "original shared bytes"
+      && (await lstat(hardlinkAlias)).nlink >= 2);
+    check("★ 硬链接拒写不产生包含敏感内容的临时残留",
+      (await readdir(dir)).every((x) => !x.includes(".mcode-tmp")));
   }
 
   // Win32 的目录 junction 不一定要求开发者模式；相比不能创建的文件

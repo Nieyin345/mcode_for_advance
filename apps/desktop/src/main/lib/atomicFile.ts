@@ -35,7 +35,12 @@ export async function atomicReplaceFile(filePath: string, content: string | Uint
     // lstat 不追踪符号链接。若使用 stat，拿到的是链接目标的权限，随后
     // rename 却替换链接本身，导致用户原有链接消失且目标文件并未被更新。
     const existing = await lstat(filePath);
-    if (!existing.isFile()) throw new Error("原子保存目标必须是普通文件（拒绝目录或符号链接）");
+    if (!existing.isFile() || existing.nlink !== 1) {
+      // hardlink 也被 lstat 识别成普通文件。rename 只更换当前路径的
+      // 目录项，另一个同 inode 的路径仍保留旧字节，不能伪称同步保存成功。
+      // 同时拒绝不可信/未知 nlink，避免丢失原文件的其它名字。
+      throw new Error("原子保存目标必须是独立普通文件（拒绝目录、符号链接或硬链接）");
+    }
     // 已有文件保留既定权限，不把用户的 0600/0640 改成 0644。
     mode = existing.mode & 0o777;
   } catch (err) {
