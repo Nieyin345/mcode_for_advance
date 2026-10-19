@@ -1,8 +1,18 @@
 import type { WebContents } from "electron";
 
+/** WHATWG URL silently strips raw tab/LF/CR (and leading/trailing spaces).
+ * Refuse such input *before parsing*: a renderer-supplied address must not
+ * silently become a different trusted document / OS browser destination.
+ * Escaped %0A in a query is not a raw control character and remains legal.
+ */
+function hasUnsafeUrlWhitespace(raw: string): boolean {
+  return raw.length === 0 || raw.trim() !== raw || /[\u0000-\u001f\u007f]/.test(raw);
+}
+
 /** Only web pages and mail links may dispatch from renderer-created popups.
  * File launching remains behind the explicit project-scoped shell IPC. */
 export function externalWindowUrl(raw: string): string | null {
+  if (hasUnsafeUrlWhitespace(raw)) return null;
   try {
     const url = new URL(raw);
     if (!["https:", "http:", "mailto:"].includes(url.protocol)) return null;
@@ -14,6 +24,7 @@ export function externalWindowUrl(raw: string): string | null {
 /** Query/hash updates may use the trusted entry; other documents must not load
  * with the full main-window preload. Embedded browser views have their own policy. */
 export function isMainWindowEntry(raw: string, entry: string): boolean {
+  if (hasUnsafeUrlWhitespace(raw) || hasUnsafeUrlWhitespace(entry)) return false;
   try {
     const target = new URL(raw);
     const trusted = new URL(entry);
