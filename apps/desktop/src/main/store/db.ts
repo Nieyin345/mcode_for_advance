@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync,
 import { log } from "@main/lib/logger.js";
 import { migrateLegacyIntoDataRoot, dbPath as resolveDbPath } from "@main/lib/dataRoot.js";
 import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
+import { withStatement } from "./repositories/withStatement.js";
 import { DEFAULT_LIBRARY_GROUPS, parseLibraryGroupsJson, LIBRARY_GROUPS_SETTING_KEY } from "@contracts/libraryTypes";
 import type { CommitResult } from "@contracts/commit";
 
@@ -545,17 +546,19 @@ function migrate(database: Database): void {
     // sql.js 的 getAsObject() 只读取**当前行**；未 step() 时得到 {}，旧代码因此
     // 每次都读到 undefined，从来没执行过这段回填（即使库里已有隐藏分类）。
     const countStmt = database.prepare("SELECT COUNT(*) AS n FROM library_collections WHERE group_id IS NULL OR group_id = ''");
-    countStmt.step();
-    const needsBackfill = Number((countStmt.getAsObject() as { n?: number }).n ?? 0);
-    countStmt.free();
+    const needsBackfill = withStatement(countStmt, (query) => {
+      query.step();
+      return Number((query.getAsObject() as { n?: number }).n ?? 0);
+    });
     if (needsBackfill > 0) {
       // 用共享常量而不是字面量:键一旦改名,这里的回填会静默读空、把所有旧分类归到首组。
       const settingsStmt = database.prepare("SELECT value FROM settings WHERE key = ?");
-      settingsStmt.bind([LIBRARY_GROUPS_SETTING_KEY]);
-      const row = settingsStmt.step()
-        ? (settingsStmt.getAsObject() as { value: string })
-        : null;
-      settingsStmt.free();
+      const row = withStatement(settingsStmt, (query) => {
+        query.bind([LIBRARY_GROUPS_SETTING_KEY]);
+        return query.step()
+          ? (query.getAsObject() as { value: string })
+          : null;
+      });
       // 未保存过组表时 UI 展示的是出厂大类，不能把 fallback 写成空串。
       // 已保存的 [] 则表示用户删光了大类，暂不回填，等重新建组后再归属。
       let groups: Array<{ id: string; kinds?: string[] }> = DEFAULT_LIBRARY_GROUPS.map((g) => ({ id: g.id }));
@@ -578,13 +581,15 @@ function migrate(database: Database): void {
       const fallback = groups[0]?.id;
       if (fallback) {
         const stmt = database.prepare("SELECT id, kind FROM library_collections WHERE group_id IS NULL OR group_id = ''");
-        stmt.bind([]);
-        const updates: Array<{ id: string; gid: string }> = [];
-        while (stmt.step()) {
-          const r = stmt.getAsObject() as unknown as { id: string; kind: string | null };
-          updates.push({ id: r.id, gid: groupOfKind.get(r.kind ?? "") ?? fallback });
-        }
-        stmt.free();
+        const updates = withStatement(stmt, (query) => {
+          query.bind([]);
+          const changes: Array<{ id: string; gid: string }> = [];
+          while (query.step()) {
+            const r = query.getAsObject() as unknown as { id: string; kind: string | null };
+            changes.push({ id: r.id, gid: groupOfKind.get(r.kind ?? "") ?? fallback });
+          }
+          return changes;
+        });
         for (const u of updates) {
           database.run("UPDATE library_collections SET group_id = ? WHERE id = ?", [u.gid, u.id]);
         }
@@ -651,10 +656,10 @@ function migrate(database: Database): void {
 
 function tableExists(database: Database, table: string): boolean {
   const stmt = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?");
-  stmt.bind([table]);
-  const exists = stmt.step();
-  stmt.free();
-  return exists;
+  return withStatement(stmt, (query) => {
+    query.bind([table]);
+    return query.step();
+  });
 }
 
 /** Add a column only if it isn't already present. SQLite has no ADD COLUMN IF
@@ -665,9 +670,10 @@ function tableExists(database: Database, table: string): boolean {
  * 返回是否**真的改了** —— 调用方据此决定要不要落盘(见 `migrate` 末尾)。 */
 function addColumnIfMissing(database: Database, table: string, column: string, def: string): boolean {
   const stmt = database.prepare(`SELECT name FROM pragma_table_info(?) WHERE name = ?`);
-  stmt.bind([table, column]);
-  const exists = stmt.step();
-  stmt.free();
+  const exists = withStatement(stmt, (query) => {
+    query.bind([table, column]);
+    return query.step();
+  });
   if (!exists) {
     database.run(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${def}`);
     schemaChanged = true;
