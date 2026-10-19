@@ -36,6 +36,33 @@ function assertVendorTreeSafe(repo, dir) {
     if (entry.isDirectory()) assertVendorTreeSafe(repo, child);
   }
 }
+/** Inspect every path component before copying original vendor resources.
+ * A junction apps/docs/out -> apps/html/out can stay inside the approved Git
+ * checkout while substituting the wrong native editor. CLI node_modules can
+ * also point to unreviewed sibling directories inside the *Mcode* repo, which
+ * the old assertWithin(repo, realpath) erroneously accepted. Check physical
+ * identity for both, not just resolved path containment or nested children. */
+function assertNativeVendorPath(vendor, input) {
+  assertWithin(vendor, input);
+  const rootInfo = fs.lstatSync(vendor);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error("GenOffice native vendor root unsafe symlink/junction: " + vendor);
+  }
+  const parts = relative(vendor, input).split(sep).filter(Boolean);
+  let current = vendor;
+  for (let index = 0; index < parts.length; index++) {
+    current = join(current, parts[index]);
+    let s;
+    try { s = fs.lstatSync(current); }
+    catch (err) {
+      if (err?.code === "ENOENT") throw new Error("GenOffice original renderer/resource missing: " + current);
+      throw err;
+    }
+    if (s.isSymbolicLink() || (index < parts.length - 1 && !s.isDirectory())) {
+      throw new Error("GenOffice native resource unsafe ancestor symlink/junction: " + current);
+    }
+  }
+}
 function fileReady(file, label) {
   try {
     if (fs.statSync(file).isFile() && fs.statSync(file).size > 0) return;
@@ -140,6 +167,7 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
   }));
   if (includeEditors) {
     for (const { name, renderer } of editors) {
+      assertNativeVendorPath(vendor, renderer);
       dirReady(renderer, `${name} original renderer`);
       fileReady(join(renderer, "index.html"), `${name} original renderer index`);
       dirReady(join(renderer, "assets"), `${name} original renderer assets`);
@@ -158,6 +186,7 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
     }
     for (const [file, name] of licenses) fileReady(file, name);
     for (const path of [cli, nodeModules, wasm, ...licenses.map(([f]) => f)]) {
+      assertNativeVendorPath(vendor, path);
       // A vendor's symlink/junction must not redirect the build to arbitrary
       // machine-private files outside the known checkout.
       assertWithin(repo, fs.realpathSync.native(path));

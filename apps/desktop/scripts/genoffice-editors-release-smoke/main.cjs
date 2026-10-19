@@ -45,6 +45,24 @@ try {
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(stage, "availability.json"))).editors, []);
   });
   const cliBefore = fs.readFileSync(path.join(stage, "cli", "genoffice.cjs"));
+  verify("CLI staging cannot follow a GenOffice node_modules junction into sibling Mcode files", () => {
+    const modules = path.join(vendor, "packages/cli/dist/node_modules");
+    const saved = path.join(vendor, "packages/cli/dist/.modules-for-test");
+    const alien = path.join(repoRoot, "sibling-unreviewed-node-modules");
+    put(path.join(alien, "unreviewed", "index.js"), "module.exports = 1;");
+    fs.renameSync(modules, saved);
+    try {
+      fs.symlinkSync(alien, modules, process.platform === "win32" ? "junction" : "dir");
+      assert.throws(
+        () => prepareGenofficeResources({ appDir, repoRoot, include: true }),
+        /symlink|junction|ancestor|unsafe/i,
+      );
+      assert.equal(fs.readFileSync(path.join(stage, "cli", "genoffice.cjs")).toString(), cliBefore.toString());
+    } finally {
+      fs.rmSync(modules, { recursive: true, force: true });
+      fs.renameSync(saved, modules);
+    }
+  });
   verify("editor opt-in cannot bypass explicit CLI bundle inclusion", () => {
     assert.throws(() => prepareGenofficeResources({ appDir, repoRoot, includeEditors: true }),
       /require|CLI/i);
@@ -79,6 +97,25 @@ try {
         "window.vendor = true;");
     }
   });
+  verify("native renderer source cannot be swapped via an in-vendor ancestor junction", () => {
+    const docsOut = path.join(vendor,"apps","docs","out");
+    const savedOut = path.join(vendor,"apps","docs",".original-out-for-test");
+    const htmlOut = path.join(vendor,"apps","html","out");
+    const previous = fs.readFileSync(path.join(stage,"apps/docs/out/renderer/index.html"));
+    fs.renameSync(docsOut,savedOut);
+    try {
+      fs.symlinkSync(htmlOut,docsOut,process.platform === "win32" ? "junction" : "dir");
+      // Both resolved renderers are *inside* vendor, contain valid Vite
+      // assets, and all nested children are safe. Yet docs is now replaced
+      // with the *wrong* original editor through an ancestor junction.
+      assert.throws(() => prepareGenofficeResources({appDir,repoRoot,include:true,includeEditors:true}),
+        /symlink|junction|ancestor|unsafe/i);
+      assert.deepEqual(fs.readFileSync(path.join(stage,"apps/docs/out/renderer/index.html")),previous);
+    } finally {
+      fs.rmSync(docsOut,{recursive:true,force:true});
+      fs.renameSync(savedOut,docsOut);
+    }
+  });
   verify("renamed/corrupt index fails before any existing vendor renderer stage changes", () => {
     const previously = fs.readFileSync(path.join(stage, "apps/docs/out/renderer/index.html"));
     fs.renameSync(path.join(renderDir("html"), "index.html"), path.join(renderDir("html"), "renamed.html"));
@@ -107,6 +144,27 @@ try {
     assert.deepEqual(verifyAfterPack({ appOutDir: winOut }), {
       editorsBundled: true, editors: [...EDITOR_APPS],
     });
+  });
+  verify("afterPack refuses six-editor manifest when original CLI entry is missing", () => {
+    const file = path.join(winResources, "cli", "genoffice.cjs");
+    const original = fs.readFileSync(file);
+    fs.rmSync(file);
+    try { assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /CLI|genoffice\.cjs|missing/i); }
+    finally { put(file, original); }
+  });
+  verify("afterPack refuses six-editor manifest with invalid PDFium WASM", () => {
+    const file = path.join(winResources, "wasm", "pdfium.wasm");
+    const original = fs.readFileSync(file);
+    put(file, Buffer.alloc(original.length));
+    try { assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /WASM|PDFium|invalid/i); }
+    finally { put(file, original); }
+  });
+  verify("afterPack refuses missing GenOffice NOTICE in native install", () => {
+    const file = path.join(winResources, "licenses", "GenOffice-NOTICE");
+    const original = fs.readFileSync(file);
+    fs.rmSync(file);
+    try { assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /NOTICE|license|missing/i); }
+    finally { put(file, original); }
   });
   verify("afterPack also rejects an in-resource apps ancestor junction", () => {
     const apps = path.join(winResources, "apps");
@@ -186,6 +244,14 @@ try {
     assert.deepEqual(verifyAfterPack({ appOutDir: cliOnly }), { editorsBundled: false });
     fs.mkdirSync(path.join(resources, "apps"));
     assert.throws(() => verifyAfterPack({ appOutDir: cliOnly }), /unexpected|assets/i);
+  });
+  verify("afterPack opt-out cannot retain stale CLI from previous release", () => {
+    const out = path.join(base, "no-vendor-unpacked");
+    const resources = path.join(out, "resources", "genoffice");
+    fs.mkdirSync(path.dirname(resources), { recursive: true });
+    fs.cpSync(stage, resources, { recursive: true });
+    put(path.join(resources, "cli", "genoffice.cjs"), "stale");
+    assert.throws(() => verifyAfterPack({ appOutDir: out }), /unexpected|native|opt-out/i);
   });
   verify("validates boolean options rather than treating untrusted strings as yes", () => {
     assert.throws(() => prepareGenofficeResources({ appDir, repoRoot, include: "true" }),

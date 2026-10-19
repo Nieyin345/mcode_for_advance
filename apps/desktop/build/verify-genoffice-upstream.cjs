@@ -83,11 +83,39 @@ function assertUpstreamRevision({ repoRoot, lockPath } = {}) {
       throw new Error(`GenOffice approved patch file manifest mismatch: ${changed.join(", ")}`);
     }
   }
-  // Ignored build output is expected, but source changes AND root dependency
-  // manifest/lock changes can alter bundled native runtimes without changing HEAD.
-  const changes = runGit(vendor, "status", "--porcelain", "--untracked-files=all", "--",
-    "apps", "packages", "LICENSE", "NOTICE", "package.json", "package-lock.json");
+  // The pinned SHA only authenticates tracked Git content. A dirty source,
+  // workspace manifest, root native build config, or newly added script could
+  // otherwise alter the renderer and sidecars without advancing the reviewed
+  // commit. Inspect the *entire* checkout, not only apps/packages and two
+  // package manifests. Properly ignored build artifacts remain ignored by Git.
+  const changes = runGit(vendor, "status", "--porcelain", "--untracked-files=all");
   if (changes) throw new Error("GenOffice upstream tracked/untracked source is dirty: " + changes.slice(0, 300));
+  // Git also hides *ignored* untracked files from status. This matters for
+  // native editor/source directories: a malicious or accidental .gitignore
+  // rule could hide a loadable JS/TS/Rust module, while Git HEAD and status
+  // both look clean. Scan source roots explicitly. Do NOT scan ignored build
+  // output under out/dist/node_modules; those generated resources are covered
+  // separately by the staging integrity manifest.
+  const nativeSourceRoots = ["apps", "packages"].flatMap((root) => {
+    const dir = path.join(vendor, root);
+    try {
+      return fs.readdirSync(dir, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => `${root}/${entry.name}/src`)
+        .filter(relative => fs.existsSync(path.join(vendor, relative)));
+    } catch {
+      return [];
+    }
+  });
+  if (nativeSourceRoots.length > 0) {
+    const ignored = runGit(vendor, "ls-files", "--others", "--ignored", "--exclude-standard",
+      "--", ...nativeSourceRoots);
+    const executableSource = ignored.split(/\r?\n/).find(file =>
+      /\.(?:[cm]?js|jsx|[cm]?ts|tsx|rs|html|css|json|wasm)$/i.test(file));
+    if (executableSource) {
+      throw new Error("GenOffice upstream ignored/untracked source is not pinned: " + executableSource);
+    }
+  }
   const licenseFile = path.join(vendor, "LICENSE");
   nonempty(licenseFile, "LICENSE");
   nonempty(path.join(vendor, "NOTICE"), "NOTICE");

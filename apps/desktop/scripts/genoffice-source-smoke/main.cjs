@@ -48,6 +48,9 @@ try {
   put(path.join(vendor,"NOTICE"),"Fixture upstream NOTICE\n");
   put(path.join(vendor,"package.json"),'{"name":"original-genoffice-fixture","scripts":{"build":"native"}}\n');
   put(path.join(vendor,"package-lock.json"),'{"name":"original-genoffice-fixture","lockfileVersion":3}\n');
+  put(path.join(vendor,"pnpm-workspace.yaml"), 'packages: ["apps/*", "packages/*"]\n');
+  put(path.join(vendor,"electron.vite.config.ts"), 'export const buildMode="original";\n');
+  put(path.join(vendor,".gitignore"), 'apps/docs/src/renderer/.extra-plugin.ts\n');
   for(const name of EDITORS) for(const sub of ["main","preload","renderer"]) {
     put(path.join(vendor,"apps",name,"src",sub,"index.ts"),"export const fixture = true;\n");
   }
@@ -78,6 +81,30 @@ try {
     put(path.join(vendor,"package-lock.json"),'{"name":"changed-transitive-dependencies"}\n');
     assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/dirty/i);
     run("restore","package-lock.json");
+  });
+  check("tracked root workspace manifest cannot silently replace native package graph",()=>{
+    put(path.join(vendor,"pnpm-workspace.yaml"),'packages: ["malicious-code"]\n');
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/dirty/i);
+    run("restore","pnpm-workspace.yaml");
+  });
+  check("tracked root editor build config cannot silently alter renderer source graph",()=>{
+    put(path.join(vendor,"electron.vite.config.ts"),'export const buildMode="different";\n');
+    assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/dirty/i);
+    run("restore","electron.vite.config.ts");
+  });
+  check("untracked top-level build script is not exempt from source lock",()=>{
+    const script=path.join(vendor,"native-build-hook.cjs");
+    put(script,"process.exit(0);\n");
+    try { assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/dirty/i); }
+    finally { fs.rmSync(script,{force:true}); }
+  });
+  check("ignored-but-runtime-loadable original editor source cannot evade HEAD pin",()=>{
+    // Git status --porcelain, even at repository root, deliberately hides
+    // ignored files. The native editor may still import them by relative path.
+    const injected = path.join(vendor,"apps/docs/src/renderer/.extra-plugin.ts");
+    put(injected,"export const injector = true;\n");
+    try { assert.throws(()=>assertUpstreamRevision({repoRoot:repo,lockPath}),/ignored|untracked|dirty/i); }
+    finally { fs.rmSync(injected,{force:true}); }
   });
   check("untracked native source under apps fails rather than bypassing revision pin",()=>{
     put(path.join(vendor,"apps/pdf/src/main/new-native.ts"),"export const newPart=true;");

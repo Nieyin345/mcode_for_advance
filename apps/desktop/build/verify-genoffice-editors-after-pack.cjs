@@ -26,6 +26,44 @@ function verifyPhysicalDirChain(root, parts = []) {
     }
   }
 }
+/** The same afterPack hook must verify native CLI/PDFium/licences, not only
+ * Vite renderer assets. An editor page with a missing engine entrypoint or a
+ * zeroed WASM is a broken release even when all six HTML hashes are valid. */
+function verifyPackagedNativeRuntime(root, bundled) {
+  const nativeRoots = ["cli", "wasm", "licenses"];
+  if (!bundled) {
+    if (nativeRoots.some(name => fs.existsSync(path.join(root, name)))) {
+      throw new Error("GenOffice native runtime unexpectedly present in opt-out release");
+    }
+    return;
+  }
+  for (const name of nativeRoots) verifyPhysicalDirChain(root, [name]);
+  verifyPhysicalDirChain(root, ["cli", "node_modules"]);
+  const required = [
+    ["cli/genoffice.cjs", "GenOffice CLI"],
+    ["wasm/pdfium.wasm", "PDFium WASM"],
+    ["licenses/GenOffice-LICENSE", "GenOffice LICENSE"],
+    ["licenses/GenOffice-NOTICE", "GenOffice NOTICE"],
+    ["licenses/PDFium-LICENSE", "PDFium LICENSE"],
+    ["licenses/PDFium-LICENSE.pdfium", "PDFium LICENSE.pdfium"],
+  ];
+  for (const [name, label] of required) {
+    const file = path.join(root, name);
+    let stat;
+    try { stat = fs.lstatSync(file); }
+    catch (err) {
+      if (err?.code === "ENOENT") throw new Error(`GenOffice packaged native ${label} missing: ${file}`);
+      throw err;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0) {
+      throw new Error(`GenOffice packaged native ${label} invalid: ${file}`);
+    }
+  }
+  const wasm = fs.readFileSync(path.join(root, "wasm", "pdfium.wasm"));
+  if (wasm.subarray(0, 4).toString("hex") !== "0061736d") {
+    throw new Error("GenOffice packaged PDFium WASM invalid magic");
+  }
+}
 function verifyPackagedGenofficeEditorAssets(resourceRoot) {
   const root = path.resolve(resourceRoot);
   verifyPhysicalDirChain(path.dirname(root), [path.basename(root)]);
@@ -38,6 +76,7 @@ function verifyPackagedGenofficeEditorAssets(resourceRoot) {
     || !Array.isArray(info.editors)) {
     throw new Error("GenOffice packaged editor availability manifest invalid");
   }
+  verifyPackagedNativeRuntime(root, info.bundled);
   if (!info.editorsBundled) {
     if (info.editors.length > 0 || fs.existsSync(path.join(root, "apps"))) {
       throw new Error("GenOffice editor assets unexpectedly present despite editorsBundled=false");
