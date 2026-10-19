@@ -111,6 +111,29 @@ async function main(): Promise<void> {
     eq("节点上没这个参数 → 空表", entryCriteriaOf(docWithMainNode({})).length, 0);
   }
 
+  console.log("\nUI/host 固定条件边界必须一致（自由存档错形不能造成隐藏注入）");
+  {
+    const malformed = docWithMainNode({
+      criteria: [
+        { name: "  ", choices: ["可见"] },
+        { name: "空下拉", choices: ["", "  "] },
+        { name: "有效条件", choices: ["不限", "近三年", ""] },
+        { name: "未知来源应回落手写", choices: ["近三年"], source: "not-a-known-source" },
+        { name: "动态来源不要求手写候选", choices: [], source: "collections" },
+      ],
+    });
+    const got = entryCriteriaOf(malformed);
+    eq("★ 纯空白名称条件在 UI 不出现，host 也不得接受",got.some(c=>c.name==="  "),false);
+    eq("★ 全为空白的手写候选条件在 UI 不出现，host 也不得注入",got.some(c=>c.name==="空下拉"),false);
+    eq("★ 混合候选应剔除空白选项",got.find(c=>c.name==="有效条件")?.choices.join(","),"不限,近三年");
+    eq("★ 未知 source 必须按手写候选回退，而不是强行保留无效来源",got.find(c=>c.name==="未知来源应回落手写")?.source,undefined);
+    eq("合法动态来源 + 空候选仍应被保留",got.some(c=>c.name==="动态来源不要求手写候选"),true);
+    setPrefs({ "  ":"invisible", "空下拉":"secret", "未知来源应回落手写":"近三年" });
+    const prompt = injectEntryCriteria({doc:malformed,workflowId:WORKFLOW,prompt:"检索",resumed:false,firstTurn:true});
+    check("★ UI 不可见的空下拉残留偏好不能悄悄进入模型提示词",!prompt.includes("secret")&&!prompt.includes("invisible"),prompt);
+    check("★ 未知来源退回手写路径仍应进行近三年的绝对年份转换",prompt.includes("近三年(即 "),prompt);
+  }
+
   console.log("\n只在对话的第一轮注入(用户报的那条)");
   {
     setPrefs({ 时间范围: "近三年", 期刊层次: "T1" });

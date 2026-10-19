@@ -22,7 +22,7 @@
  * 边才够得着存档和消息表。
  */
 import type { WorkflowDoc } from "@contracts/workflow";
-import { MAIN_NODE_TYPE_ID, NODE_CRITERIA_PARAM_KEY, NODE_CRITERIA_PASS_DOWN_PARAM_KEY } from "@contracts/nodeType";
+import { MAIN_NODE_TYPE_ID, NODE_CRITERIA_PARAM_KEY, NODE_CRITERIA_PASS_DOWN_PARAM_KEY, NodeParamRefSourceSchema } from "@contracts/nodeType";
 import { nodeCriteriaPrompt, type CriteriaCondition } from "@main/lib/searchPrefs.js";
 
 /**
@@ -47,16 +47,22 @@ export function entryCriteriaOf(doc: WorkflowDoc): CriteriaCondition[] {
       note?: unknown;
       source?: unknown;
     };
-    if (typeof name !== "string" || !Array.isArray(choices)) continue;
+    if (typeof name !== "string" || name.trim() === "" || !Array.isArray(choices)) continue;
+    // Match SearchFilterBar's visible options: blank manual choices and an
+    // invalid source should not become an invisible model-only condition.
+    const validSource = NodeParamRefSourceSchema.safeParse(source);
+    const from = validSource.success ? validSource.data : undefined;
+    const list = choices.filter((c): c is string => typeof c === "string" && c.trim() !== "");
+    if (list.length === 0 && from === undefined) continue;
     out.push({
       name,
-      choices: choices.filter((c): c is string => typeof c === "string"),
+      choices: list,
       // 空解释不带上 —— 契约里它可选,而且一个空串在提示词里会变成一对空括号。
       ...(typeof note === "string" && note.trim() !== "" ? { note } : {}),
       // `source` 要**原样带上**:它是候选现读那一支的判据,而且注入侧要靠它把选中的
       // id 翻成可读名(见 `searchPrefs.ts` 的 `sourceLabelsOf`)。丢了它,提示词里就会
       // 出现一个不透明的 `lc_xxx`。
-      ...(typeof source === "string" && source.trim() !== "" ? { source: source.trim() } : {}),
+      ...(from !== undefined ? { source: from } : {}),
     });
   }
   return out;
