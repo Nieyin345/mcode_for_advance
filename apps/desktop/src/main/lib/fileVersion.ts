@@ -9,7 +9,7 @@
  * 其它只需要"算个版本"的模块（`ipc/document.ts` 及其无头套件）不该被拖进整条
  * electron 依赖链。与 `realPathWithin.ts` 从 `pathGuard` 拆出同一条理由。
  */
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 
 /** 文件当前内容的稳定版本哈希(缓存无关,直接读当前字节)。
@@ -19,8 +19,11 @@ import { createHash } from "node:crypto";
  *  误把不可信的版本检查当成成功。此规则供文档编辑与文档视图共用。 */
 export async function fileContentVersion(filePath: string): Promise<string | null> {
   try {
-    const buf = await readFile(filePath);
-    return createHash("sha256").update(buf).digest("hex");
+    // Hash in bounded chunks: a large PDF/Office file must not be duplicated
+    // in full in the main process heap just to compute a CAS revision.
+    const sha = createHash("sha256");
+    for await (const chunk of createReadStream(filePath)) sha.update(chunk);
+    return sha.digest("hex");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err; // 读失败不等于不存在：上层失败关闭并保留原字节。
