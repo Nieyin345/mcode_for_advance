@@ -47,7 +47,7 @@
  */
 import { spawnRun } from "@main/lib/spawnRun.js";
 import { randomBytes } from "node:crypto";
-import type { ModuleResult } from "@contracts/modules";
+import { ResultSchema, type ModuleResult } from "@contracts/modules";
 import { ISOLATION_FAILURE_CODES, ISOLATION_FAILURE_MARKER } from "./isolatedActionRunner.js";
 
 export interface PermissionedProcessOptions {
@@ -471,10 +471,11 @@ export async function runPermissionedProcess(
     throw failure("isolated_crash", "执行协议关联值不匹配。");
   }
   if (reply.ok === true) {
-    if (reply.result === null || typeof reply.result !== "object" || Array.isArray(reply.result)) {
-      throw failure("isolated_crash", "扩展程序返回的不是结果对象。");
+    const validated = ResultSchema.safeParse(reply.result);
+    if (!validated.success) {
+      throw failure("isolated_crash", "扩展程序返回值不符合 ModuleResult 合同（字段类型/大小/数量）。");
     }
-    return reply.result as ModuleResult;
+    return validated.data;
   }
   const message = typeof reply.message === "string" ? reply.message : "扩展程序执行失败";
   if (reply.code === "denied") {

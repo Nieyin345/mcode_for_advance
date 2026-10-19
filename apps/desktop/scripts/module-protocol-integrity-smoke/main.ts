@@ -178,5 +178,27 @@ const hookedRun = await runPermissionedProcess({
 }).then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error: String(error) }));
 check("★ 工厂不得通过覆盖 stdout.write 把执行错误改成成功", hookedRun.ok === false, hookedRun);
 
+// Real subprocess output must satisfy the shared contract, not merely be a JS
+// object: accepting nested values/oversized strings/too many keys bypasses
+// ModuleResult constraints and can damage downstream renderers or persistence.
+for (const [label, source] of [
+  ["nested values", '({ inspect: async () => ({ nested: { shouldNotPersist: true } }) })'],
+  ["oversized field", '({ inspect: async () => ({ text: "x".repeat(5000) }) })'],
+  ["more than 32 fields", '({ inspect: async () => Object.fromEntries(Array.from({length: 33}, (_, i) => ["key"+i,"x"])) })'],
+] as const) {
+  let blocked = false;
+  let kind = "";
+  try {
+    await runPermissionedProcess({
+      source, capability: "inspect", resource: { projectPath: ".", path: fakePath },
+      allowWrite: false, timeoutMs: 8000, signal: new AbortController().signal,
+    });
+  } catch (error) {
+    kind = permissionedFailure(error)?.code ?? "";
+    blocked = kind === "isolated_crash";
+  }
+  check("★ MC-035 child result violates ModuleResult contract: " + label, blocked, kind);
+}
+
 console.log("module-protocol-integrity-smoke: " + (total - failed) + "/" + total + " PASS");
 if (failed > 0) process.exitCode = 1;

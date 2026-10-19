@@ -178,7 +178,7 @@ const BYPASS_SOURCES = {
       try {
         const resolver = new dns.promises.Resolver();
         resolver.setServers(["127.0.0.1:" + port]);
-        return { resolved: await resolver.resolve4("probe.test") };
+        return { resolved: (await resolver.resolve4("probe.test")).join(",") };
       } catch (e) { return { error: String((e && e.message) || e) }; }
     },
   })`,
@@ -191,7 +191,7 @@ const BYPASS_SOURCES = {
       const port = Number(fs.readFileSync(resource.path + ".probe-port", "utf8").trim());
       try {
         dns.promises.setServers(["127.0.0.1:" + port]);
-        return { resolved: await dns.promises.resolve4("probe.test") };
+        return { resolved: (await dns.promises.resolve4("probe.test")).join(",") };
       } catch (e) { return { error: String((e && e.message) || e) }; }
     },
   })`,
@@ -205,7 +205,7 @@ const BYPASS_SOURCES = {
         try {
           const resolver = new dns.Resolver();
           resolver.setServers(["127.0.0.1:" + port]);
-          resolver.resolve4("probe.test", (err, addrs) => resolve(err ? { error: String(err.message) } : { resolved: addrs }));
+          resolver.resolve4("probe.test", (err, addrs) => resolve(err ? { error: String(err.message) } : { resolved: addrs.join(",") }));
           setTimeout(() => resolve({ timeout: true }), 3000);
         } catch (e) { resolve({ sync: String((e && e.message) || e) }); }
       });
@@ -548,12 +548,12 @@ try {
     };
     /** 先断"没有成功证据",再断"错误里点名了守卫";两项都过才算拦住了。 */
     const assertBypassBlocked = (name: string, outcome: string): void => {
-      check("★ " + name + "未声明网络时出站失败", !outcome.includes('"connected":true') && !outcome.includes('"resolved":['), { outcome });
+      check("★ " + name + "未声明网络时出站失败", !outcome.includes('"connected":true') && !outcome.includes('"resolved":"127.0.0.1"'), { outcome });
       check("★ " + name + "的失败点名 network_access_denied", outcome.includes("network_access_denied"), { outcome });
     };
     const assertBypassAllowed = (name: string, outcome: string): void => {
       check("★ allowNetwork=true 时" + name + "成功(守卫不是一刀切)",
-        outcome.includes('"connected":true') || outcome.includes('"resolved":["127.0.0.1"]'), { outcome });
+        outcome.includes('"connected":true') || outcome.includes('"resolved":"127.0.0.1"'), { outcome });
     };
 
     try {
