@@ -660,6 +660,14 @@ const originalRunSave = repo.save;
   eq("交互代理多级回到可见对话", interactiveRoute("node", id => ({ node: "worker", worker: "chat" } as Record<string,string>)[id]), "chat");
   eq("交互代理循环不逃逸", interactiveRoute("node", id => ({ node: "worker", worker: "node" } as Record<string,string>)[id]), "node");
   eq("普通交互路由不变", interactiveRoute("chat", () => undefined), "chat");
+  eq("★ 代理层读取失败不可把异常抛入用户批准/提问流程", interactiveRoute("node", () => {
+    throw new Error("FAKE_SESSION_LOOKUP_IO_ERROR");
+  }), "node");
+  eq("★ 返回非法非字符串 session identity 必须保持原始用户路由",
+    interactiveRoute("node", () => 42 as unknown as string), "node");
+  eq("★ 空白目标 id 不能被当成受信路由", interactiveRoute("node", () => "   "), "node");
+  eq("★ 代理目标非有限链路不退化至中间节点",
+    interactiveRoute("node", (id) => id === "node" ? "worker" : "\u0000malformed"), "node");
   const aborted = new AbortController(); aborted.abort();
   const sends = rt.sentPrompts.length;
   eq("取消的启动不触发模型", await startWorkflowRun({ session: source, startSignal: aborted.signal }), null);
