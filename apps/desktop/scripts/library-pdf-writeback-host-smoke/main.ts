@@ -2,7 +2,7 @@
  * True production IPC regression. All bytes live in a disposable sql.js
  * dataRoot and synthetic sample-paper.pdf; NEVER touch user library.
  */
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, linkSync, truncateSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import type { IpcMain } from "electron";
@@ -110,6 +110,28 @@ check("★★ unreferenced external PDF remains unreadable",
 const readLibraryOriginal=await readOriginal(pdf);
 check("ordinary library PDF original remains readable",
  readLibraryOriginal.bytes!==null && Buffer.from(readLibraryOriginal.bytes).equals(valid));
+
+// The unbounded original-read IPC must not return a 65MiB payload to a renderer.
+// Sparse file keeps this regression fast and never touches user documents.
+const massive=join(root,"library","papers","65mb-original.pdf");
+writeFileSync(massive,"%PDF-1.7\\n");
+truncateSync(massive,64*1024*1024+1);
+const oversizedRead=await readOriginal(massive);
+check("★★ readOriginalPdf refuses a source PDF larger than the shared 64MiB IPC budget",
+ oversizedRead.bytes===null,{read:oversizedRead.bytes?.byteLength,fileBytes:statSync(massive).size});
+
+// The PDF is an allowed linked file, but its optional sibling backup can
+// be a hardlink pointing to unrelated private bytes outside library roots.
+// Permission on the PDF MUST NOT grant access to unrelated backup inodes.
+const injectedBackup=originalPathFor(linked);
+linkSync(unlinked,injectedBackup);
+const backupRead=await readOriginal(linked);
+check("★★ readOriginalPdf rejects a hardlinked foreign backup rather than leaking it",
+ backupRead.bytes===null,{actual:backupRead.bytes?Buffer.from(backupRead.bytes).toString("utf8"):null});
+check("rejected foreign backup preserves the foreign original bytes",
+ readFileSync(unlinked).toString("utf8")==="UNRELATED PRIVATE BYTES");
+rmSync(injectedBackup,{force:true});
+
 closeDb();
 console.log("library-pdf-writeback-host-smoke:"+(count-errors)+"/"+count+" PASS");
 if(errors)process.exitCode=1;

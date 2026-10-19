@@ -74,7 +74,7 @@ import { log } from "@main/lib/logger.js";
 import { createNote, importNoteFiles, writeNote } from "@main/library/notesImport.js";
 import { convertItemToMarkdown, conversionReport, repairCollectionMarkdown } from "@main/library/convert.js";
 import { readMarkdownForPreview } from "@main/library/markdownPreview.js";
-import { readPdfBytes } from "@main/library/pdfRead.js";
+import { readPdfBytes, readPdfFileBounded } from "@main/library/pdfRead.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
 import { openDirectory } from "@main/lib/reveal.js";
 import {
@@ -1046,14 +1046,12 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     if (!highlightPathAllowed(input.pdfPath)) return { bytes: null };
     const original = originalPathFor(input.pdfPath);
     const src = existsSync(original) ? original : input.pdfPath;
-    if (!existsSync(src)) return { bytes: null };
-    try {
-      const buf = readFileSync(src);
-      // 走结构化克隆（与 `library.readPdf` 同一条）—— base64 会让论文多涨三分之一。
-      return { bytes: new Uint8Array(buf) };
-    } catch {
-      return { bytes: null };
-    }
+    // Reuse the SAME bounded, inode-checked disk reader as library.readPdf.
+    // A backup sibling is not itself an authorization: refuse symlinks or
+    // hardlinks redirecting it to unrelated private content. Corrupt backups
+    // must not silently fall back to the potentially baked current PDF.
+    const result = readPdfFileBounded(src, { rejectHardlinks: src === original });
+    return { bytes: result.bytes };
   });
 
   ipcMain.handle(IPC.LIBRARY_CONVERSION_STATS, () => LibraryRepo.conversionStats());
