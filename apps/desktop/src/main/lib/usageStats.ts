@@ -15,8 +15,9 @@
  *    `session.getSessionStats()`, which is cumulative ACROSS the whole session
  *    (piTokenUsage.ts). Summing raw records would multiply-count earlier turns,
  *    so we take adjacent differences per session (records sorted by endedAt).
- *    A stats reset (never observed — Pi keeps compacted history in the totals)
- *    would surface as a negative diff, clamped to 0 by the differ.
+ *    If the cumulative counter resets (e.g. engine state recreated), the
+ *    first lower counter starts a new segment and its reported usage is
+ *    counted; simply clamping a negative delta to zero loses that turn.
  *
  * `usedTokens` (context-window occupancy) is intentionally NOT part of usage
  * stats — it measures window state, not consumption. `subagentTokens` (the
@@ -121,12 +122,14 @@ function finiteNum(x: unknown): number | null {
   return typeof x === "number" && Number.isFinite(x) ? x : null;
 }
 
-/** Adjacent difference for a monotonically-growing cumulative counter.
- *  No baseline yet (first record) → the value itself is the increment; no
- *  current value → unknown (null). */
+/** Adjacent difference for a provider-reported cumulative counter.
+ *  First record (or a counter reset to a smaller value) starts a new
+ *  cumulative segment. Its current value is real consumption and cannot
+ *  be thrown away as a negative delta. Equal values correctly add zero.
+ *  A missing counter is unknown; do not manufacture a usage sample. */
 function diffCumulative(prev: number | null, cur: number | null): number | null {
   if (cur == null) return null;
-  if (prev == null) return Math.max(0, cur);
+  if (prev == null || cur < prev) return Math.max(0, cur);
   return Math.max(0, cur - prev);
 }
 

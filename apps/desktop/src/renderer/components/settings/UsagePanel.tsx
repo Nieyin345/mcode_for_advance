@@ -147,6 +147,28 @@ export function UsagePanel() {
     void load(preset);
   }, [load, preset]);
 
+  // The main-side usage cache is invalidated as soon as rowDeletion commits.
+  // Without this existing host event subscription an already-open settings
+  // panel still displays deleted sessions' tokens/cost until a preset change
+  // or unmount. Desktop and mobile deletions both emit session.deleted.
+  useEffect(() => {
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const off = api.on.claudeEvent((msg) => {
+      if (msg.event.type !== "session.deleted") return;
+      // Project cascades publish many session.deleted events in a burst.
+      // Coalesce them rather than scanning the whole usage table per row.
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        void load(preset);
+      }, 80);
+    });
+    return () => {
+      off();
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
+    };
+  }, [load, preset]);
+
   const daily = result?.daily ?? [];
   const summary = result?.summary;
   const models = useMemo(() => result?.models ?? [], [result]);

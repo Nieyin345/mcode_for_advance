@@ -498,15 +498,16 @@ check("  柱子上标着 Pi", pi?.vendor === "Pi");
 const piRaw = SessionRepo.get("s_pi")?.usageHistory ?? [];
 same("库里存的仍是累计值原文,差分不改写历史", piRaw.map((r) => r.totalProcessedTokens), [1000, 3000, 6000]);
 
-// 第一条记录**没有前一条**:它的增量就是它自己(没有基线)。第二条要是**变小**了
-// (理论上不会发生,但手工改过的库/重置过的统计会有),增量钳到 0 而不是负数 ——
-// 否则用户的"总消耗"会被一个负数吃掉。
+// 第一条记录的增量是它自己。接着累计值若从500降到200，
+// 是新段以200开头，不是负消耗，也不是凭空丢弃这200个真实Token。
+// 旧版只把负差归零，导致 Pi 运行时/计数重置后的第一轮长期漏账。
 seedSession("s_pi_reset", { providerId: "pi-sdk" }, [
   turn({ endedAt: localNoon(0), totalProcessedTokens: 500, model: "pi-reset" }),
   turn({ endedAt: localNoon(0) + 1000, totalProcessedTokens: 200, model: "pi-reset" }),
 ]);
 const resetAll = await statsOf("all");
-eq("累计值回退时钳到 0,不让负数吃掉总量", resetAll.models.find((m) => m.model === "pi-reset")?.totalTokens, 500);
+eq("累计值回退时按新累计段计入，避免负数也避免丢失真实消耗",
+  resetAll.models.find((m) => m.model === "pi-reset")?.totalTokens, 700);
 
 // Claude 会话**不是**累计的:同样三个数字必须原样相加,不能被差分掉。这条是
 // "别把差分套到所有 provider 上"的反向判据。
@@ -1174,6 +1175,45 @@ console.log("\n视觉中继:面板接线与 store 链");
     /supportsVision:\s*Boolean\(e\.supportsVision\)/.test(panel2),
     "claudeFormFromConfig 漏了 supportsVision",
   );
+}
+
+/* ────────────────────────── Pi 同会话累计计数器重新开始 ────────────────────────── */
+// Some Pi sessions resume after engine/runtime reset and report a new
+// cumulative segment. The first new segment is actual consumption, not 0.
+console.log("\nPi 累计计数重置后，新计数段不能漏账");
+{
+  seedSession("s_pi_counter_reset", { providerId: "pi-sdk" }, [
+    turn({ endedAt: localNoon(0) + 8000, model: "pi-reset-sentinel", totalProcessedTokens: 500, outputTokens: 50, costUsd: 1 }),
+    turn({ endedAt: localNoon(0) + 9000, model: "pi-reset-sentinel", totalProcessedTokens: 1300, outputTokens: 130, costUsd: 3 }),
+    turn({ endedAt: localNoon(0) + 10000, model: "pi-reset-sentinel", totalProcessedTokens: 80, outputTokens: 8, costUsd: 0.5 }),
+    turn({ endedAt: localNoon(0) + 11000, model: "pi-reset-sentinel", totalProcessedTokens: 200, outputTokens: 20, costUsd: 0.8 }),
+  ]);
+  const res = await statsOf("all");
+  const reset = res.models.find((m) => m.model === "pi-reset-sentinel");
+  // Without a reset: 500 + 800 + 0 + 120 = 1420 (the first 80 gets lost).
+  eq("★ Pi 计数器下降后要计入新段起始的 80 tokens", reset?.totalTokens, 1500);
+  eq("★ Pi 输出计数器下降后要计入新段的 8 output tokens", reset?.outputTokens, 150);
+  check("★ Pi cost 重置后不能漏计新段起始 0.5 USD",
+    reset !== undefined && Math.abs(reset.costUsd - 3.8) < 1e-9,
+    reset?.costUsd);
+  eq("每次真实完成的轮次仍按四轮统计",reset?.turns,4);
+}
+
+/* ───────────────────── 用量页实时接收跨端删除事件 ───────────────────── */
+// React/Electron UI itself has a separate U1 gate. This source-wiring guard
+// ensures the existing host event stream is subscribed and burst deletions
+// do not trigger one DB scan per session when deleting a whole project.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/settings/UsagePanel.tsx"), "utf8");
+  check("★ UsagePanel 必须监听现有 Claude 运行事件，而不只靠 mount/preset 重查",
+    src.includes("api.on.claudeEvent("));
+  check("★ 只有 session.deleted 等真实删除通知才触发用量刷新",
+    src.includes('msg.event.type !== "session.deleted"') && src.includes("load(preset)"));
+  check("★ 删除项目时多条 session.deleted 应先合并、卸载取消计时器",
+    src.includes("clearTimeout(refreshTimer)") && src.includes("setTimeout(") && src.includes("return () =>"));
+  check("重新查询仍保留旧回包序号守卫",
+    src.includes("const seq = ++loadSeqRef.current") && src.includes("seq !== loadSeqRef.current"));
 }
 
 /* ────────────────────────── 收尾 ────────────────────────── */
