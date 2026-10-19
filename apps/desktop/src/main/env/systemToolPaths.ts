@@ -11,7 +11,7 @@
  * smoke 在运行时直接死在 `Dynamic require of "fs"` 上。这里只依赖 node:fs / node:path
  * 与契约里的工具 id 表。
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ToolchainToolId } from "@contracts/ipc";
 import { TOOLCHAIN_TOOL_IDS } from "@contracts/ipc";
@@ -53,7 +53,11 @@ export function systemToolBinDirs(): string[] {
   const dirs = new Set<string>();
   for (const tool of TOOLCHAIN_TOOL_IDS) {
     for (const file of knownInstallPaths(tool)) {
-      if (existsSync(file)) dirs.add(dirname(file));
+      try {
+        if (!statSync(file).isFile()) continue;
+        if (process.platform !== "win32") accessSync(file, constants.X_OK);
+        dirs.add(dirname(file));
+      } catch { /* missing, directory or not executable */ }
     }
   }
   return [...dirs];
@@ -75,7 +79,8 @@ export function macShellPathDirs(): string[] {
   const out: string[] = [];
   const add = (raw: string): void => {
     const d = raw.trim();
-    if (d.startsWith("/") && !out.includes(d) && existsSync(d)) out.push(d);
+    if (!d.startsWith("/") || out.includes(d)) return;
+    try { if (statSync(d).isDirectory()) out.push(d); } catch { /* missing/non-directory */ }
   };
   const lines = (file: string): string[] => {
     try { return readFileSync(file, "utf8").split("\n"); } catch { return []; }
