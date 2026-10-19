@@ -40,12 +40,21 @@
  * - `builtins.ts`:按钮后端(`default` / `watch` / 记忆工作流),**播种**进表、删不掉语义。
  * - 这份:用户**按需导入**的出厂内容,导进来就是普通行(可改可删)。
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { PresetCatalogHealth } from "@contracts/workflow";
+
+/**
+ * 预置选择只接受目录中的一个叶子名；仓库另有 presetRelativePath("scripts")
+ *  用于预置脚本目录。不能让新调用者把 "../secrets.json" 当文件名传给读取器。
+ */
+function validPresetLeaf(fileName: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(fileName) && fileName !== "." && fileName !== "..";
+}
 
 /** 预置文件名 → 相对每个候选根的路径。 */
 export function presetRelativePath(fileName: string): string {
+  if (!validPresetLeaf(fileName)) throw new Error("非法预置文件名：只允许一个叶子文件名");
   return join("resources", "presets", fileName);
 }
 
@@ -84,20 +93,64 @@ export function presetRootCandidates(env: NodeJS.ProcessEnv = process.env): stri
 
 /** 某个根下该文件的两种可能路径(开发布局在前、打包布局在后)。 */
 export function presetPathCandidatesIn(root: string, fileName: string): string[] {
+  if (!validPresetLeaf(fileName)) return [];
   return [join(root, presetRelativePath(fileName)), join(root, "presets", fileName)];
 }
 
-/** 解析到**第一个真实存在**的预置文件;都不在返回 null(调用方报 `absent`)。 */
+type PresetCandidate = { state: "ok"; path: string } |
+  { state: "absent" } | { state: "unsafe"; path: string; reason: string };
+
+/** Shared predicate for both public entrypoints. All components BELOW the
+ * trusted root (including the final leaf) must be real dirs/files, not
+ * symlinks, junctions, special files or unreadable paths. No lexical/physical
+ * escape is permitted. A missing path is only "absent", not "corrupt".
+ * The explicit candidate root itself may be an OS managed resource link.
+ * This is not a handle-relative / TOCTOU-proof OS sandbox. */
+function inspectPresetCandidate(root: string, file: string): PresetCandidate {
+  const rel = relative(resolve(root), resolve(file));
+  if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith(".." + sep)) {
+    return { state: "unsafe", path: file, reason: "预置路径越出指定根目录" };
+  }
+  let cursor = resolve(root);
+  const parts = rel.split(sep);
+  for (let i = 0; i < parts.length; i++) {
+    cursor = join(cursor, parts[i]);
+    try {
+      const stat = lstatSync(cursor);
+      if (stat.isSymbolicLink()) {
+        return { state: "unsafe", path: file, reason: "预置路径包含符号链接或 junction" };
+      }
+      if (i < parts.length - 1 ? !stat.isDirectory() : !stat.isFile()) {
+        return { state: "unsafe", path: file, reason: "预置路径的目录或文件类型异常" };
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { state: "absent" };
+      return { state: "unsafe", path: file, reason: "预置路径不可检查:" + (err as Error).message };
+    }
+  }
+  return { state: "ok", path: file };
+}
+
+function pickPresetCandidate(fileName: string, candidates: readonly string[]): PresetCandidate {
+  if (!validPresetLeaf(fileName)) {
+    return { state: "unsafe", path: fileName, reason: "非法预置文件名：不能包含目录分隔符或路径穿越" };
+  }
+  for (const root of candidates) {
+    for (const file of presetPathCandidatesIn(root, fileName)) {
+      const check = inspectPresetCandidate(root, file);
+      if (check.state !== "absent") return check;
+    }
+  }
+  return { state: "absent" };
+}
+
+/** 解析到第一个安全且真实存在的预置文件；任何越界/损坏返回 null。 */
 export function resolvePresetFile(
   fileName: string,
   candidates: readonly string[] = presetRootCandidates(),
 ): string | null {
-  for (const root of candidates) {
-    for (const file of presetPathCandidatesIn(root, fileName)) {
-      if (existsSync(file)) return file;
-    }
-  }
-  return null;
+  const picked = pickPresetCandidate(fileName, candidates);
+  return picked.state === "ok" ? picked.path : null;
 }
 
 export type PresetFileRead =
@@ -113,16 +166,19 @@ export function readPresetJson(
   fileName: string,
   candidates: readonly string[] = presetRootCandidates(),
 ): PresetFileRead {
-  const rel = presetRelativePath(fileName);
-  const file = resolvePresetFile(fileName, candidates);
-  if (file === null) {
+  const picked = pickPresetCandidate(fileName, candidates);
+  if (picked.state === "unsafe") {
+    return { health: "corrupt", reason: picked.reason, path: picked.path };
+  }
+  if (picked.state === "absent") {
+    const rel = presetRelativePath(fileName);
     return {
       health: "absent",
       reason: `没有找到出厂预置文件(${rel});试过:${candidates.join("、")}`,
-      // 报**真实试过**的路径(两种布局都算),否则打包态排查时会被引导到不存在的目录。
       path: candidates.flatMap((root) => presetPathCandidatesIn(root, fileName)).join("、"),
     };
   }
+  const file = picked.path;
 
   let raw: string;
   try {

@@ -257,6 +257,45 @@ console.log("\n§G 预置文件在「打包布局」下也能解析");
     check("presetPathCandidatesIn 给出两种布局", presetPathCandidatesIn(root, "x.json").length === 2);
     const real = readPresetJson("workflows.json");
     check("开发态:真仓库的资源目录仍解析得到 workflows.json", real.health === "ok", real);
+
+    // MC-007 后续路径保全：读取器是导出函数，未来的调用方未必只传当前的
+    // workflows.json 常量，非法 basename 或目录链接不能把“出厂”变成任意文件读取。
+    writeFileSync(joinPath(root, "secrets.json"), JSON.stringify({ marker: "OUTSIDE-PRESETS" }), "utf8");
+    const traversal = readPresetJson("../secrets.json", [root]);
+    check("★ 非法 .. 文件名显式拒绝，不回传安装根下的任意 JSON",
+      traversal.health === "corrupt" && !JSON.stringify(traversal).includes("OUTSIDE-PRESETS"), traversal);
+    check("★ resolvePresetFile 遇非法文件名不返回越界路径",
+      resolvePresetFile("../secrets.json", [root]) === null);
+
+    const linkRoot = joinPath(root, "link-root");
+    const outside = joinPath(root, "outside-asset-dir");
+    mkdirSync(joinPath(linkRoot, "resources"), { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(joinPath(outside, "workflows.json"), JSON.stringify({ marker: "JUNCTION-SECRET" }), "utf8");
+    const redirected = joinPath(linkRoot, "resources", "presets");
+    let linkMade = false;
+    try {
+      const { symlinkSync, lstatSync, rmdirSync, unlinkSync, readFileSync } = await import("node:fs");
+      try { symlinkSync(outside, redirected, process.platform === "win32" ? "junction" : "dir"); linkMade = true; }
+      catch (err) { console.log("  SKIP junction 创建被 OS 拒绝", (err as Error).message); }
+      if (linkMade) {
+        check("★ OS 确有真实的目录重解析点，防止假夹具通过", lstatSync(redirected).isSymbolicLink());
+        const escaped = readPresetJson("workflows.json", [linkRoot]);
+        check("★ 出厂预置目录被 junction 换到外部时返回损坏态，不跟随读取",
+          escaped.health === "corrupt" && !JSON.stringify(escaped).includes("JUNCTION-SECRET"), escaped);
+        check("★ 越界的符号链接路径不给成功解析器",
+          resolvePresetFile("workflows.json", [linkRoot]) === null);
+        check("★ 外部 JSON 字节不变", readFileSync(joinPath(outside, "workflows.json"), "utf8").includes("JUNCTION-SECRET"));
+        if (process.platform === "win32") rmdirSync(redirected); else unlinkSync(redirected);
+        linkMade = false;
+      }
+    } finally {
+      if (linkMade) {
+        const { rmdirSync, unlinkSync } = await import("node:fs");
+        if (process.platform === "win32") rmdirSync(redirected); else unlinkSync(redirected);
+      }
+    }
+
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
