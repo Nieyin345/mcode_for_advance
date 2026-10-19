@@ -29,8 +29,6 @@ import {
   UI_TITLE_GEN_PROMPT_SETTING_KEY,
   UI_TITLE_GEN_MAX_LEN_SETTING_KEY,
   UI_TITLE_GEN_LANG_SETTING_KEY,
-  TITLE_GEN_BUILTIN_MODEL_PREFIX,
-  TITLE_GEN_BUILTIN_ALIASES,
   TitleGenLangSchema,
   parseTitleGenMaxLen,
 } from "@contracts/ipc";
@@ -43,6 +41,7 @@ import { resolveModelForGitOp } from "@main/ipc/git.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import { log } from "@main/lib/logger.js";
+import { parseModel } from "@main/lib/visionRelayCore.js";
 
 /** Fixed system prompt - never overridden. Guarantees a clean short title. */
 const TITLE_GEN_SYSTEM_PROMPT = [
@@ -146,50 +145,34 @@ export async function generateSessionTitle(
   session: Session,
   firstPrompt: string,
 ): Promise<string | null> {
-  // 1. Feature gate. Default off — absent/unknown value means "do nothing".
-  const enabled = SettingRepo.get(UI_TITLE_GEN_ENABLED_SETTING_KEY);
-  if (enabled !== "on") return null;
-  if (!firstPrompt.trim()) return null;
-
-  // 2. Resolve the model config. There is no default model — generation only
-  //    runs when an explicit "configId:modelId" was picked in settings;
-  //    otherwise the placeholder title stays.
-  const stored = SettingRepo.get(UI_TITLE_GEN_MODEL_SETTING_KEY);
-  let customModelId: string | undefined;
-  let customModelRole: string | undefined;
-  // 「内置 Claude」:"@claude" / "@claude:haiku" —— 走本机 Claude Code 登录,不需要自定义模型。
-  let builtin = false;
-  let builtinModel: string | undefined;
-  if (stored === TITLE_GEN_BUILTIN_MODEL_PREFIX || stored?.startsWith(`${TITLE_GEN_BUILTIN_MODEL_PREFIX}:`)) {
-    builtin = true;
-    const alias = stored.slice(TITLE_GEN_BUILTIN_MODEL_PREFIX.length + 1);
-    builtinModel = (TITLE_GEN_BUILTIN_ALIASES as readonly string[]).includes(alias) ? alias : undefined;
-  } else if (stored) {
-    const idx = stored.indexOf(":");
-    if (idx > 0) {
-      customModelId = stored.slice(0, idx);
-      customModelRole = stored.slice(idx + 1);
-    } else {
-      customModelId = stored;
-    }
+  // Missing/invalid model settings should keep the placeholder title, not
+  // silently select another engine/model. Settings can throw during DB
+  // startup; title generation is background work and must never reject.
+  let stored: string | null;
+  try {
+    if (SettingRepo.get(UI_TITLE_GEN_ENABLED_SETTING_KEY) !== "on" || !firstPrompt.trim()) return null;
+    stored = SettingRepo.get(UI_TITLE_GEN_MODEL_SETTING_KEY);
+  } catch (err) {
+    log.warn(`titleGen: settings unavailable for ${session.id}: ${(err as Error).message || String(err)}`);
+    return null;
   }
-  if (!builtin && !customModelId) return null;
+  const choice = parseModel(stored);
+  if (!choice) return null;
 
-  const { query } = await import("@anthropic-ai/claude-agent-sdk");
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 60000); // 60s timeout
 
   let releaseBridge: (() => void) | undefined;
   try {
+    const { query } = await import("@anthropic-ai/claude-agent-sdk");
     let model: string | undefined;
     let env: import("@anthropic-ai/claude-agent-sdk").Options["env"];
 
-    if (builtin) {
-      // 不传 env:SDK 继承进程环境,用本机 Claude Code 的登录 / 默认模型(和不选模型时的
-      // 提交信息生成同一条路)。
-      model = builtinModel;
+    if (choice.builtin) {
+      // No custom env on the official native Claude Code login.
+      model = choice.alias;
     } else {
-      const resolved = await resolveModelForGitOp(customModelId as string, customModelRole);
+      const resolved = await resolveModelForGitOp(choice.id, choice.role);
       if (!resolved.ok) {
         log.warn(`titleGen: model resolve failed for ${session.id}: ${resolved.error}`);
         return null;
@@ -229,6 +212,7 @@ export async function generateSessionTitle(
 
     // 3. Collect the assistant's text response.
     let title = "";
+    let completed = false;
     for await (const m of q) {
       if (m.type === "assistant") {
         const content = (m as { message?: { content?: Array<{ type: string; text?: string }> } }).message?.content;
@@ -239,10 +223,25 @@ export async function generateSessionTitle(
             .join("\n");
         }
       }
-      if (m.type === "result") break;
+      if (m.type === "result") {
+        // SDK can emit an assistant error text followed by a failed result.
+        // Never persist that diagnostic as a generated conversation title.
+        if ((m as { is_error?: boolean }).is_error) {
+          log.warn(`titleGen: SDK result failed for ${session.id}`);
+          return null;
+        }
+        completed = true;
+        break;
+      }
     }
 
     clearTimeout(timer);
+    // An SDK iterator that ends after an assistant chunk without a terminal
+    // success result is incomplete; never persist that partial title.
+    if (!completed) {
+      log.warn(`titleGen: SDK stream ended without a result for ${session.id}`);
+      return null;
+    }
     if (!title.trim()) {
       log.warn(`titleGen: empty response for ${session.id}`);
       return null;
@@ -254,8 +253,12 @@ export async function generateSessionTitle(
       .replace(/^```\w*\n?/, "")
       .replace(/\n?```$/, "")
       .trim()
-      .replace(/\s+/g, " ")
-      .slice(0, Math.max(80, parseTitleGenMaxLen(SettingRepo.get(UI_TITLE_GEN_MAX_LEN_SETTING_KEY)) + 20));
+      .replace(/\s+/g, " ");
+    // The saved title must honor the user's actual 10–100 character limit,
+    // even when a model disregards the system prompt. Count Unicode code
+    // points, not UTF-16 halves, so truncation never produces broken emoji.
+    const maxTitleChars = parseTitleGenMaxLen(SettingRepo.get(UI_TITLE_GEN_MAX_LEN_SETTING_KEY));
+    title = Array.from(title).slice(0, maxTitleChars).join("");
 
     if (!title) return null;
 
@@ -281,6 +284,12 @@ export async function generateSessionTitle(
     return null;
   } finally {
     clearTimeout(timer);
-    releaseBridge?.();
+    try {
+      releaseBridge?.();
+    } catch (err) {
+      // A bridge teardown error after a successful title save must not
+      // turn background generation into an unhandled rejected promise.
+      log.warn(`titleGen: bridge cleanup failed: ${(err as Error).message || String(err)}`);
+    }
   }
 }
