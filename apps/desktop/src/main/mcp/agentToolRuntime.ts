@@ -904,6 +904,28 @@ async function readViaGenoffice(input: {
   let result: GenofficeResult;
   let probedDocBlocks: number | null = null;
   let probedPdfPages: number | null = null;
+  // PDF/DOCX perform a vendor probe followed by the selected native read.
+  // Both calls must share ONE document deadline and one source-file identity;
+  // matching page/block counts do not prove the file stayed unchanged.
+  const stagedRead = ext === ".pdf" || ext === ".docx" || ext === ".dotx";
+  const sourceStat = stagedRead ? await fs.stat(input.abs, { bigint: true }) : null;
+  const stageController = stagedRead ? new AbortController() : null;
+  const stageTimeout = stageController
+    ? setTimeout(() => stageController.abort(), DOCUMENT_READ_BUDGET.maxTimeMs) : null;
+  const readCheckedStage = async (run: (signal?: AbortSignal) => Promise<GenofficeResult>): Promise<GenofficeResult> => {
+    if (stageController?.signal.aborted) throw new Error(`GenOffice 文档两阶段读取超过 ${DOCUMENT_READ_BUDGET.maxTimeMs}ms 总预算`);
+    const part = await run(stageController?.signal);
+    if (stageController?.signal.aborted) throw new Error(`GenOffice 文档两阶段读取超过 ${DOCUMENT_READ_BUDGET.maxTimeMs}ms 总预算`);
+    if (sourceStat) {
+      const current = await fs.stat(input.abs, { bigint: true });
+      if (sourceStat.size !== current.size || sourceStat.mtimeNs !== current.mtimeNs
+          || sourceStat.ctimeNs !== current.ctimeNs || sourceStat.ino !== current.ino || sourceStat.dev !== current.dev) {
+        throw new Error("GenOffice PDF/DOCX 文件在元数据探测或正文读取期间发生修改；拒绝混合不同版本结果");
+      }
+    }
+    return part;
+  };
+  try {
   if (ext === ".pdf") {
     const start = input.pageStart ?? 1;
     const count = input.maxPages;
@@ -915,14 +937,14 @@ async function readViaGenoffice(input: {
     if (count === undefined && input.pageStart === undefined) {
       // GenOffice itself defaults to a bounded first-page window and reports
       // the continuation cursor.
-      result = await pdfRead(ports, input.abs, { maxChars: previewCharsPerPage(20) });
+      result = await readCheckedStage(signal => pdfRead(ports, input.abs, { maxChars: previewCharsPerPage(20), signal }));
     } else if (count === 1) {
-      result = await pdfRead(ports, input.abs, { page: start, maxChars: 4000 });
+      result = await readCheckedStage(signal => pdfRead(ports, input.abs, { page: start, maxChars: 4000, signal }));
     } else {
       // Vendor --range rejects an end that exceeds the real page count.
       // Probe its own bounded first window for the authoritative count, then
       // clamp the requested range. No duplicate PDF parser or metadata probe.
-      const probe = await pdfRead(ports, input.abs, { maxChars: 1 });
+      const probe = await readCheckedStage(signal => pdfRead(ports, input.abs, { maxChars: 1, signal }));
       if (!probe.ok) {
         result = probe;
       } else {
@@ -936,9 +958,9 @@ async function readViaGenoffice(input: {
         probedPdfPages = total;
         const end = Math.min(total, start + (count ?? 20) - 1);
         const perPage = previewCharsPerPage(end - start + 1);
-        result = await pdfRead(ports, input.abs,
-          start === end ? { page: start, maxChars: perPage }
-          : { range: `${start}-${end}`, maxChars: perPage });
+        result = await readCheckedStage(signal => pdfRead(ports, input.abs,
+          start === end ? { page: start, maxChars: perPage, signal }
+          : { range: `${start}-${end}`, maxChars: perPage, signal }));
       }
     }
   } else if (ext === ".docx" || ext === ".dotx") {
@@ -947,13 +969,13 @@ async function readViaGenoffice(input: {
     // full-document JSON afterwards fails on otherwise valid large DOCX.
     const from = input.docxMode === "structure" ? (input.blockStart ?? 1) - 1 : 0;
     const limit = input.docxMode === "structure" ? (input.maxBlocks ?? 30) : 30;
-    const probe = await docsRead(ports, input.abs, { range: "0", maxChars: 100 });
+    const probe = await readCheckedStage(signal => docsRead(ports, input.abs, { range: "0", maxChars: 100, signal }));
     if (!probe.ok) {
       // A truly empty document has no valid --range 0; read its small empty
       // envelope without a range instead of changing its success semantics.
       if (/0--1/.test(probe.reason)) {
         if (from > 0) throw new Error(`block_start=${from + 1} 超过 GenOffice 结构块数量 0`);
-        result = await docsRead(ports, input.abs, { maxChars: 100 });
+        result = await readCheckedStage(signal => docsRead(ports, input.abs, { maxChars: 100, signal }));
       } else {
         result = probe;
       }
@@ -968,7 +990,7 @@ async function readViaGenoffice(input: {
       // Use the CLI's existing per-block preview control; never request
       // --full for an unbounded document and then truncate in our process.
       const perBlockChars = Math.max(100, Math.min(4000, Math.floor(maxChars / Math.max(1, limit * 2))));
-      result = await docsRead(ports, input.abs, { range: `${from}-${end}`, maxChars: perBlockChars });
+      result = await readCheckedStage(signal => docsRead(ports, input.abs, { range: `${from}-${end}`, maxChars: perBlockChars, signal }));
     }
   } else if (ext === ".pptx" || ext === ".potx") {
     // GenOffice supports --slide (0-based), not a multi-slide range. Never
@@ -1049,6 +1071,9 @@ async function readViaGenoffice(input: {
     result = await sheetRead(ports, input.abs, undefined, {
       sheet: input.sheet, range: input.range, maxRows: input.maxRows ?? 30,
     });
+  }
+  } finally {
+    if (stageTimeout !== null) clearTimeout(stageTimeout);
   }
   if (!result.ok) {
     if (result.kind === "unavailable" && !exact) return null;

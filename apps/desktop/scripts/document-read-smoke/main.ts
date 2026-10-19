@@ -163,6 +163,37 @@ try {
      assert.equal(r.isError,true,text(r));assert.match(text(r),/页数|变化|不一致/);
    } finally {configureDocumentRepoRoot(null);}
  });
+ await test("★ GenOffice PDF refuses source mutation after metadata probe even with identical page count",async()=>{
+   const src=join(root,"mutable-probe.pdf");copyFileSync(join(root,"paper.pdf"),src);
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'const fs=require("node:fs"),a=process.argv.slice(2),probe=!a.includes("--range")&&!a.includes("--page");if(probe)fs.appendFileSync(a[2],"MUTATED_AFTER_PROBE");console.log(JSON.stringify({status:"ok",summary:"same count",detail:{pages:3,pages_read:probe?[{page:1,text:"probe"}]:[{page:1,text:"new1"},{page:2,text:"new2"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("mutable-probe.pdf",{reader:"genoffice",page_start:1,max_pages:2});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/修改|变化|版本|一致性/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice single-page PDF detects source changed during the native read",async()=>{
+   const src=join(root,"mutable-single.pdf");copyFileSync(join(root,"paper.pdf"),src);
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'const fs=require("node:fs"),a=process.argv.slice(2);fs.appendFileSync(a[2],"CHANGED_DURING_PAGE");console.log(JSON.stringify({status:"ok",summary:"stale page",detail:{pages:3,pages_read:[{page:1,text:"old"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("mutable-single.pdf",{reader:"genoffice",page_start:1,max_pages:1});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/修改|变化|版本/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ Auto PDF falls back only for a genuinely unavailable GenOffice probe",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"error",code:4,error:"app_unavailable",message:"mock PDFium unavailable"}));process.exitCode=4;\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const auto=await read("paper.pdf",{reader:"auto",page_start:2,max_pages:2});
+     assert.ok(!auto.isError,text(auto));assert.match(text(auto),/PAGE_2/);assert.ok(!text(auto).includes("GenOffice\/PDFium"));
+     const exact=await read("paper.pdf",{reader:"genoffice",page_start:2,max_pages:2});
+     assert.equal(exact.isError,true,text(exact));assert.match(text(exact),/unavailable/i);
+   } finally {configureDocumentRepoRoot(null);}
+ });
  await test("PDF reports page-limit truncation instead of presenting total pages as read",async()=>{const r=await read("paper.pdf",{max_pages:1});assert.ok(!r.isError,text(r));assert.match(text(r),/截断|未读取/);});
  await test("★ PDF layout exposes real page dimensions and positioned text instead of a flattened paragraph",async()=>{
    const r=await read("paper.pdf",{pdf_mode:"layout",page_start:2,max_pages:1});
@@ -381,6 +412,27 @@ try {
      const r=await read("text.docx",{reader:"genoffice",docx_mode:"structure",block_start:2,max_blocks:1});
      assert.equal(r.isError,true,text(r));
      assert.match(text(r),/结构块|range|索引|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice DOCX refuses same-count source mutation after block probe",async()=>{
+   const src=join(root,"mutable-blocks.docx");copyFileSync(join(root,"long-structure.docx"),src);
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'const fs=require("node:fs"),a=process.argv.slice(2),rg=a[a.indexOf("--range")+1],probe=rg==="0";if(probe)fs.appendFileSync(a[2],"MUTATED_AFTER_PROBE");console.log(JSON.stringify({status:"ok",summary:"same blocks",detail:{blocks:250,range:probe?"0-0":"219-220",items:probe?[{index:0,text:"probe"}]:[{index:219,text:"one"},{index:220,text:"two"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("mutable-blocks.docx",{reader:"genoffice",docx_mode:"structure",block_start:220,max_blocks:2});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/修改|变化|版本|一致性/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ Auto DOCX fallback remains available after native vendor probe reports unavailable",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"error",code:4,error:"app_unavailable",message:"mock DOCX unavailable"}));process.exitCode=4;\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const auto=await read("text.docx",{reader:"auto",docx_mode:"structure",block_start:1,max_blocks:2});
+     assert.ok(!auto.isError,text(auto));assert.match(text(auto),/DOCX XML 结构/);
+     const exact=await read("text.docx",{reader:"genoffice",docx_mode:"structure",block_start:1,max_blocks:2});
+     assert.equal(exact.isError,true,text(exact));assert.match(text(exact),/unavailable/i);
    } finally {configureDocumentRepoRoot(null);}
  });
  await test("★ GenOffice DOCX refuses block count changed between probe and selected window",async()=>{
