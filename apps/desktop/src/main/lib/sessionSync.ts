@@ -25,18 +25,34 @@ import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 
 /** Strip the heavy per-session payloads, keeping only list-visible fields. */
 export function toSessionListEntry(s: Session): SessionListEntry {
-  const {
-    contextSnapshot: _cs,
-    todos: _td,
-    subagents: _sa,
-    planDraft: _pd,
-    usageHistory: _uh,
-    turnFiles: _tf,
-    bookmarks: _bm,
-    subagentTranscripts: _st,
-    ...entry
-  } = s;
-  return entry;
+  // Explicit allowlist, not a rest-spread of the session object. Session
+  // rows can gain runtime/internal fields without a simultaneous change to
+  // the SessionListEntry type. A rest-spread would silently push such fields
+  // (potentially raw tool input or credentials) to both desktop and mobile.
+  return {
+    id: s.id,
+    projectId: s.projectId,
+    providerId: s.providerId,
+    claudeSessionId: s.claudeSessionId,
+    kind: s.kind,
+    parentSessionId: s.parentSessionId,
+    nodeId: s.nodeId,
+    agentProfile: s.agentProfile,
+    title: s.title,
+    status: s.status,
+    model: s.model,
+    effort: s.effort,
+    permissionMode: s.permissionMode,
+    workflowId: s.workflowId,
+    customModelId: s.customModelId,
+    archived: s.archived,
+    pinnedAt: s.pinnedAt,
+    envMode: s.envMode,
+    wtStyle: s.wtStyle,
+    worktreePath: s.worktreePath,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+  } satisfies SessionListEntry;
 }
 
 /** Fan a generic out-of-turn RuntimeEvent out to every client — the desktop
