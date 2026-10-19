@@ -33,6 +33,12 @@ export class NodeExecutorRegistry {
   private readonly executors = new Map<string, NodeExecutor>();
 
   register(executor: NodeExecutor): this {
+    // A corrupt plug-in manifest must not register an unreachable empty runner
+    // or a kind with whitespace aliases that the scheduler will never find.
+    if (!executor || typeof executor.kind !== "string" || !executor.kind ||
+        executor.kind.trim() !== executor.kind || typeof executor.execute !== "function") {
+      throw new Error("Invalid executor registration: kind and execute are required");
+    }
     if (this.executors.has(executor.kind)) {
       throw new Error(`Executor already registered: ${executor.kind}`);
     }

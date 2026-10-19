@@ -1,0 +1,17 @@
+import { NodeExecutorRegistry } from "../../src/main/orchestration/executorRegistry.js";
+const reg=new NodeExecutorRegistry();
+let pass=0,fail=0;
+const check=(name:string,ok:boolean)=>{console.log((ok?"PASS ":"FAIL ")+name);if(ok)pass++;else fail++;};
+const fake=(kind:string)=>({kind,execute:async()=>({} as never)});
+const rejects=(fn:()=>unknown)=>{try{fn();return false;}catch{return true;}};
+check("empty executor kind fails closed",rejects(()=>reg.register(fake(""))));
+check("whitespace-only executor kind fails closed",rejects(()=>reg.register(fake("  "))));
+check("non-normalized executor kind fails closed",rejects(()=>reg.register(fake(" exec "))));
+check("missing execute function cannot register",rejects(()=>reg.register({kind:"broken"} as never)));
+check("invalid registrations do not poison registry",reg.kinds().length===0);
+reg.register(fake("command"));
+check("valid executor registered",reg.has("command")&&reg.get("command")?.kind==="command");
+check("duplicate executor kind is rejected",rejects(()=>reg.register(fake("command"))));
+check("registered executor kind enumeration stable",reg.kinds().join(",")==="command");
+console.log(`executor-registry-guard-smoke: ${pass}/${pass+fail}`);
+if(fail)process.exitCode=1;
