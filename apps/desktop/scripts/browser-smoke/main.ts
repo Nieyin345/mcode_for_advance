@@ -281,51 +281,74 @@ for (let i = 0; i < 101; i++) Bookmarks.add(`https://cap.test/${i}`, `第 ${i} �
   );
 }
 
-console.log("\n收藏:设置行坏掉时");
+console.log("\n收藏 / 地址历史：损坏的持久设置不得假装空表并覆盖旧字节（ARC-005）");
 
-// 设置行是**用户可见数据的落点**,可能被手工改坏 / 被老版本写过。读的时候必须兜住 ——
-// 判据是"再加一条不会炸、而且落地的是一个干净的数组",不是"库里那段原文被读出来了"。
-// (`storedBookmarks()` 返回 null 就是"那段原文不是 JSON 数组",所以下面从这条看结果。)
-SettingRepo.set(BROWSER_BOOKMARKS_SETTING_KEY, "{这不是 JSON");
-Bookmarks.add("https://after-garbage.test", "坏行之后加的第一条");
-eq(
-  "设置行是坏 JSON(手工改坏了):再加一条不炸,库里只剩新的那条",
-  storedUrls(),
-  ["https://after-garbage.test"],
-);
-
-SettingRepo.set(BROWSER_BOOKMARKS_SETTING_KEY, '{"a":1}');
-Bookmarks.add("https://after-object.test", "非数组之后再加");
-eq(
-  "设置行是个对象(不是数组):再加一条不炸,库里只剩新的那条",
-  storedUrls(),
-  ["https://after-object.test"],
-);
-
-SettingRepo.set(
-  BROWSER_BOOKMARKS_SETTING_KEY,
-  JSON.stringify([
+const { BROWSER_ADDRESS_HISTORY_SETTING_KEY } = await import("@contracts/ipc");
+const { AddressHistory } = await import("@main/browser/addressHistory.js");
+for (const [kind, broken] of [
+  ["截断 JSON", "{这不是 JSON"],
+  ["错误顶层", '{"a":1}'],
+  ["部分坏行", JSON.stringify([
     { url: "https://good.test", title: "好的", addedAt: 1 },
-    { title: "没有 url 的", addedAt: 2 },
+    { title: "没有 url", addedAt: 2 },
     null,
-    { url: 123, title: "url 不是字符串", addedAt: 3 },
-  ]),
-);
-// `read()` 过滤过一道(只留 url 是字符串的),所以好行还在、坏行读不出来。
-// 判据立在**读出来的那些**上 —— 这正是渲染端菜单会渲染的那份。
-eq(
-  "混在里面的坏行读不出来,好行不受影响",
-  storedUrls(),
-  ["https://good.test"],
-);
+  ])],
+  ["错误时间戳", JSON.stringify([{url:"https://x.test",title:"x",addedAt:"not-a-number"}])],
+] as const) {
+  SettingRepo.set(BROWSER_BOOKMARKS_SETTING_KEY, broken);
+  let addError = "";
+  try { Bookmarks.add("https://new.test", "测试"); } catch (err) { addError = String(err); }
+  check(`书签 ${kind}：新增明确失败而非重建空表`, addError.includes("browser.bookmarks"), addError);
+  eq(`书签 ${kind}：新增失败后原始字节不动`, SettingRepo.get(BROWSER_BOOKMARKS_SETTING_KEY), broken);
 
-// 再写一次:坏行在 read() 那一步就没了,所以不会被带回去。
-Bookmarks.add("https://another.test", "另一条");
-eq(
-  "写回去的时候坏行被清掉了,只剩两条好的",
-  storedUrls().sort(),
-  ["https://another.test", "https://good.test"],
-);
+  let removeError = "";
+  try { Bookmarks.remove("https://good.test"); } catch (err) { removeError = String(err); }
+  check(`书签 ${kind}：删除明确失败`, removeError.includes("browser.bookmarks"), removeError);
+  eq(`书签 ${kind}：删除失败后原始字节不动`, SettingRepo.get(BROWSER_BOOKMARKS_SETTING_KEY), broken);
+}
+
+for (const [kind, broken] of [
+  ["截断 JSON", "{broken-json"],
+  ["错误顶层", '{"entries":[]}'],
+  ["部分坏行", JSON.stringify([
+    { url: "https://good.test", title: "好的", at: 1 },
+    { url: 123, title: "bad", at: 2 },
+  ])],
+  ["错误时间戳", JSON.stringify([{url:"https://x.test",title:"x",at:null}])],
+] as const) {
+  SettingRepo.set(BROWSER_ADDRESS_HISTORY_SETTING_KEY, broken);
+  for (const [action, execute] of [
+    ["记录", () => AddressHistory.record("https://new.test", "new")],
+    ["删除", () => AddressHistory.remove("https://good.test")],
+    ["清空", () => AddressHistory.clear()],
+  ] as const) {
+    let error = "";
+    try { execute(); } catch (err) { error = String(err); }
+    check(`地址历史 ${kind}：${action}拒写明确失败`, error.includes("browser.addressHistory"), error);
+    eq(`地址历史 ${kind}：${action}不覆盖原始设置`, SettingRepo.get(BROWSER_ADDRESS_HISTORY_SETTING_KEY), broken);
+  }
+}
+
+SettingRepo.set(BROWSER_BOOKMARKS_SETTING_KEY, "{partial");
+{
+  const result = await call(IPC.BROWSER_BOOKMARK_ADD, { url:"https://ipc.test", title:"hello" }) as {ok:boolean;error?:string};
+  eq("书签坏档：真 IPC 不报假成功", result.ok, false);
+  check("书签坏档：真 IPC 给出可读错误", typeof result.error === "string" && result.error.includes("browser.bookmarks"));
+  eq("书签坏档：真 IPC 不改原字节", SettingRepo.get(BROWSER_BOOKMARKS_SETTING_KEY), "{partial");
+}
+SettingRepo.set(BROWSER_ADDRESS_HISTORY_SETTING_KEY, "{partial");
+{
+  const result = await call(IPC.BROWSER_HISTORY_CLEAR, undefined) as {ok:boolean;error?:string};
+  eq("历史坏档：真 IPC 不报假清空", result.ok, false);
+  check("历史坏档：真 IPC 给出可读错误", typeof result.error === "string" && result.error.includes("browser.addressHistory"));
+  eq("历史坏档：真 IPC 不改原字节", SettingRepo.get(BROWSER_ADDRESS_HISTORY_SETTING_KEY), "{partial");
+}
+SettingRepo.set(BROWSER_ADDRESS_HISTORY_SETTING_KEY, "[]");
+AddressHistory.record("https://healthy.test", "ok");
+eq("地址历史健康数据：原单写者路径仍可记录", JSON.parse(SettingRepo.get(BROWSER_ADDRESS_HISTORY_SETTING_KEY) ?? "[]").map((e: {url:string}) => e.url), ["https://healthy.test"]);
+AddressHistory.clear();
+eq("地址历史健康数据：主动清空仍有效", SettingRepo.get(BROWSER_ADDRESS_HISTORY_SETTING_KEY), "[]");
+
 
 console.log("\n收藏:走真的那条 IPC");
 

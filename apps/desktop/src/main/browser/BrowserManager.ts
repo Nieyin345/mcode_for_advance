@@ -507,6 +507,21 @@ class BrowserManagerImpl {
   private attachNavigationEvents(live: LiveBrowser): void {
     const wc = live.view.webContents;
     const id = live.id;
+    // A corrupt history row must not break navigation, but silently ignoring it
+    // conceals a data-preservation failure. Report once per contiguous failure
+    // period, reset after a successful write (avoids a warning per title event).
+    let historyErrorReported = false;
+    const recordVisit = (url: string, title: string): void => {
+      try {
+        AddressHistory.record(url, title);
+        historyErrorReported = false;
+      } catch (err) {
+        if (!historyErrorReported) {
+          log.warn(`browser history write refused (original data preserved): ${err instanceof Error ? err.message : String(err)}`);
+          historyErrorReported = true;
+        }
+      }
+    };
     const push = (type: "navigation" | "loading", payload: unknown) => {
       sendToRenderer(IPC.BROWSER_EVENT, {
         channel: IPC.BROWSER_EVENT,
@@ -522,11 +537,7 @@ class BrowserManagerImpl {
       // Address-bar history (main is the single writer; renderer only reads
       // and requests removals). The title may still be blank this early —
       // page-title-updated below refreshes the entry via record()'s dedupe.
-      try {
-        AddressHistory.record(url, wc.getTitle());
-      } catch {
-        /* history must never break navigation */
-      }
+      recordVisit(url, wc.getTitle());
       push("navigation", {
         url,
         title: wc.getTitle(),
@@ -544,11 +555,7 @@ class BrowserManagerImpl {
     );
     wc.on("page-title-updated", (_e, title) => {
       // did-navigate may have recorded a blank title; re-record to fill it in.
-      try {
-        AddressHistory.record(wc.getURL(), title);
-      } catch {
-        /* ignore */
-      }
+      recordVisit(wc.getURL(), title);
       push("navigation", {
         url: wc.getURL(),
         title,

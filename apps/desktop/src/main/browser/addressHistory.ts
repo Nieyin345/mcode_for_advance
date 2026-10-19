@@ -12,23 +12,14 @@ import {
   type BrowserHistoryEntry,
 } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
+import { readStoredBrowserEntries } from "./storedEntries.js";
 
 /** Cap on stored entries. Navigation frequency is low, so the array stays
  *  small; 50 matches typical browser history dropdowns. */
 const MAX_ENTRIES = 50;
 
 function read(): BrowserHistoryEntry[] {
-  const raw = SettingRepo.get(BROWSER_ADDRESS_HISTORY_SETTING_KEY);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return (parsed as BrowserHistoryEntry[]).filter(
-      (e) => e && typeof e.url === "string",
-    );
-  } catch {
-    return [];
-  }
+  return readStoredBrowserEntries<BrowserHistoryEntry>(BROWSER_ADDRESS_HISTORY_SETTING_KEY, "at");
 }
 
 function write(entries: BrowserHistoryEntry[]): void {
@@ -56,6 +47,9 @@ export const AddressHistory = {
 
   /** Clear everything. */
   clear(): void {
+    // Even an intentional clear must not silently destroy an unreadable row:
+    // a corrupt archive requires a separate, explicit backup/recovery flow.
+    read();
     write([]);
   },
 };

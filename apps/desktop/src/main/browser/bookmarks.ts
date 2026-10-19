@@ -8,23 +8,14 @@
  */
 import { BROWSER_BOOKMARKS_SETTING_KEY, type BrowserBookmarkEntry } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
+import { readStoredBrowserEntries } from "./storedEntries.js";
 
 /** Cap on stored bookmarks. Bookmarking is deliberate and rare; 100 is far
  *  more than a panel dropdown shows and keeps the settings row bounded. */
 const MAX_ENTRIES = 100;
 
 function read(): BrowserBookmarkEntry[] {
-  const raw = SettingRepo.get(BROWSER_BOOKMARKS_SETTING_KEY);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return (parsed as BrowserBookmarkEntry[]).filter(
-      (e) => e && typeof e.url === "string",
-    );
-  } catch {
-    return [];
-  }
+  return readStoredBrowserEntries<BrowserBookmarkEntry>(BROWSER_BOOKMARKS_SETTING_KEY, "addedAt");
 }
 
 function write(entries: BrowserBookmarkEntry[]): void {

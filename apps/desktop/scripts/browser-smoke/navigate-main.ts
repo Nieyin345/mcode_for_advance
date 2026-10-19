@@ -45,7 +45,7 @@ const { initDb } = await import("@main/store/db.js");
 const { SettingRepo, ProjectRepo } = await import("@main/store/repositories.js");
 const { BrowserManager } = await import("@main/browser/BrowserManager.js");
 const el = await import("./navigate-stubs/electron.js");
-const { BROWSER_PERSIST_LOGIN_SETTING_KEY, BROWSER_COOKIE_VAULT_SETTING_KEY, BROWSER_COOKIE_VAULT_ENC_SETTING_KEY } = await import("@contracts/ipc");
+const { BROWSER_PERSIST_LOGIN_SETTING_KEY, BROWSER_COOKIE_VAULT_SETTING_KEY, BROWSER_COOKIE_VAULT_ENC_SETTING_KEY, BROWSER_ADDRESS_HISTORY_SETTING_KEY } = await import("@contracts/ipc");
 
 await initDb();
 
@@ -79,6 +79,39 @@ el.armCookieGate();
 const created = BrowserManager.create(PROJECT, "desktop");
 check("守卫:create 成功(不是在空台上跑)", (created as { ok: boolean }).ok === true, created);
 const browserId = (created as { browserId: string }).browserId;
+
+/* ── ARC-005: bad address history must not break real navigation events ── */
+{
+  const webContents = el.liveWebContents[el.liveWebContents.length - 1];
+  const invalidHistory = "{truncated";
+  const warnings: string[] = [];
+  const oldWrite = process.stderr.write;
+  process.stderr.write = ((chunk: unknown, ..._args: unknown[]) => {
+    const line = String(chunk);
+    if (line.includes("browser history write refused")) warnings.push(line);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    SettingRepo.set(BROWSER_ADDRESS_HISTORY_SETTING_KEY, invalidHistory);
+    webContents.emit("did-navigate", null, "https://fake-history.test");
+    webContents.emit("page-title-updated", null, "fake title");
+    check("★ 历史损坏时原生 did-navigate / title 事件不抛异常", true);
+    check("★ 自动历史写入失败必须有诊断且不被标题更新刷屏", warnings.length === 1, warnings);
+    check("★ 两次事件未覆盖损坏历史原始字节", SettingRepo.get(BROWSER_ADDRESS_HISTORY_SETTING_KEY) === invalidHistory);
+
+    SettingRepo.set(BROWSER_ADDRESS_HISTORY_SETTING_KEY, "[]");
+    webContents.emit("did-navigate", null, "https://history-recovered.test");
+    check("★ 修复存档后正常导航重新可以写入历史",
+      (SettingRepo.get(BROWSER_ADDRESS_HISTORY_SETTING_KEY) ?? "").includes("https://history-recovered.test"));
+    SettingRepo.set(BROWSER_ADDRESS_HISTORY_SETTING_KEY, invalidHistory);
+    webContents.emit("did-navigate", null, "https://fake-history-again.test");
+    check("★ 经过成功写入后发生的新损坏仍会报告", warnings.length === 2, warnings);
+    check("★ 新损坏不会被导航再次覆盖", SettingRepo.get(BROWSER_ADDRESS_HISTORY_SETTING_KEY) === invalidHistory);
+  } finally {
+    process.stderr.write = oldWrite;
+    SettingRepo.set(BROWSER_ADDRESS_HISTORY_SETTING_KEY, "[]");
+  }
+}
 
 // 与真实调用方同一顺序:`browserNavigate` 先 loadUrl 再 waitForLoad。loadUrl 会把真正的
 // `wc.loadURL()` 排在 `live.ready` 之后 —— 所以闸门锁着时导航根本还没开始。
