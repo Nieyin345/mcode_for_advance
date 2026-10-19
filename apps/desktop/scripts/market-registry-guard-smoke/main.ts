@@ -1,0 +1,16 @@
+import { classifyMarketRegistry, recheckMarketRegistryBeforeWrite } from "@main/lib/marketRegistry.js";
+let t=0,f=0;const chk=(name:string,pass:boolean,info?:unknown)=>{t++;console.log((pass?"ok ":"FAIL ")+name+(pass?"":" "+JSON.stringify(info)));if(!pass)f++;};
+const fail=classifyMarketRegistry('[{"id":"x"}]',()=>{throw new TypeError("invalid item");},"MCP");
+chk("★ throwing row parser becomes corrupt result, not a crash",fail.kind==="corrupt",fail);
+chk("★ throwing parser fails closed on second write check",!recheckMarketRegistryBeforeWrite(fail,"MCP").ok);
+const badReturn=classifyMarketRegistry('[{"id":"x"}]',()=>({records:["x"]}) as never,"Market");
+chk("★ parser returning non-array must be classified corrupt, not trusted",badReturn.kind==="corrupt",badReturn);
+const malformed=classifyMarketRegistry('[]',()=>["a"] as string[],"Market");
+chk("normal valid parser still succeeds",malformed.kind==="ok");
+const missing=classifyMarketRegistry(null,()=>[],"Market");
+chk("missing source is absent",missing.kind==="absent");
+const weird=classifyMarketRegistry('{"a":1}',()=>null,"Market");
+chk("wrong top-level shape is corrupt",weird.kind==="corrupt");
+const input=classifyMarketRegistry('[{"id":"x"}]',()=>["x"],"Market");
+chk("healthy list is ok",input.kind==="ok");
+console.log("market-registry-guard-smoke:"+(t-f)+"/"+t+" PASS");if(f)process.exitCode=1;

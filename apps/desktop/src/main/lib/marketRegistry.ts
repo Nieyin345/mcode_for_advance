@@ -51,8 +51,16 @@ export function classifyMarketRegistry<T>(
   } catch {
     return { kind: "corrupt", reason: `${label}记录不是合法 JSON` };
   }
-  const records = parse(value);
-  if (records === null) return { kind: "corrupt", reason: shapeError };
+  // A malformed individual entry can make a stricter caller-supplied parser
+  // throw. That must not escape the shared read classifier: a catalog write
+  // after an unhandled parse failure could fall back to an empty list.
+  let records: T[] | null;
+  try {
+    records = parse(value);
+  } catch {
+    return { kind: "corrupt", reason: `${label}记录解析失败` };
+  }
+  if (records === null || !Array.isArray(records)) return { kind: "corrupt", reason: shapeError };
   return { kind: "ok", records };
 }
 
