@@ -774,7 +774,10 @@ async function docxStructureText(abs: string, start: number, maxBlocks: number, 
       rows?: number; cols?: number; cells?: string[][]; clipped?: boolean }>;
   };
   const end = start + parsed.entries.length - 1;
-  const lines = [`[DOCX XML 结构] ${parsed.total} 个顶层段落/表格；本次读取 ${parsed.entries.length} 个，索引 ${start}–${Math.max(start, end)}`];
+  const nextBlock = end < parsed.total ? `；next_block_start=${end + 1}` : "";
+  // Keep pagination visible even if a large paragraph forces max_chars to
+  // truncate the body before the old continuation footer can be reached.
+  const lines = [`[DOCX XML 结构] ${parsed.total} 个顶层段落/表格；本次读取 ${parsed.entries.length} 个，索引 ${start}–${Math.max(start, end)}${nextBlock}`];
   for (const entry of parsed.entries) {
     if (entry.kind === "paragraph") {
       lines.push(`\n## Block ${entry.n} PARAGRAPH style=${entry.style || "Normal"}\n${entry.text || "(空段落)"}`);
@@ -862,6 +865,8 @@ async function readViaGenoffice(input: {
   // this point. Limit the vendor CLI to only that checked single file here.
   const ports = { cliPath, withinWorkspace: (p: string) => path.resolve(p) === allowedPath };
   let result: GenofficeResult;
+  let probedDocBlocks: number | null = null;
+  let probedPdfPages: number | null = null;
   if (ext === ".pdf") {
     const start = input.pageStart ?? 1;
     const count = input.maxPages;
@@ -891,6 +896,7 @@ async function readViaGenoffice(input: {
         if (start < 1 || start > total) {
           throw new Error(`GenOffice PDF 页码 ${start} 超出范围 1–${total}`);
         }
+        probedPdfPages = total;
         const end = Math.min(total, start + (count ?? 20) - 1);
         const perPage = previewCharsPerPage(end - start + 1);
         result = await pdfRead(ports, input.abs,
@@ -920,6 +926,7 @@ async function readViaGenoffice(input: {
         throw new Error("GenOffice docs_read 未返回可信结构块总数，拒绝猜测页段");
       }
       if (from >= count) throw new Error(`block_start=${from + 1} 超过 GenOffice 结构块数量 ${count}`);
+      probedDocBlocks = count;
       const end = Math.min(count - 1, from + limit - 1);
       // Use the CLI's existing per-block preview control; never request
       // --full for an unbounded document and then truncate in our process.
@@ -1011,10 +1018,51 @@ async function readViaGenoffice(input: {
     throw new Error(`GenOffice ${result.kind}: ${result.reason}`);
   }
   let detail = result.envelope.detail;
-  if ((ext === ".docx" || ext === ".dotx") && detail && typeof detail === "object") {
-    const d = detail as { blocks?: number; items?: unknown[] };
-    if (Array.isArray(d.items) && Number.isSafeInteger(d.blocks) && (d.blocks ?? -1) >= 0) {
+  // Trust the GenOffice parser for extraction, but not a mismatched selection:
+  // returning a different page/sheet as success would silently mislead the
+  // agent, especially when the result is clipped and only its heading remains.
+  if (ext === ".pdf") {
+    const d = detail as { pages?: unknown; pages_read?: unknown } | null;
+    if (typeof d?.pages !== "number" || !Number.isSafeInteger(d.pages) || d.pages < 0
+        || !Array.isArray(d.pages_read)) throw new Error("GenOffice PDF 页数/读取页段元数据无效");
+    const selected = d.pages_read as Array<{ page?: unknown }>;
+    const start = input.pageStart ?? 1;
+    if (probedPdfPages !== null && d.pages !== probedPdfPages) {
+      throw new Error(`GenOffice PDF 页数从 ${probedPdfPages} 变化为 ${d.pages}，拒绝拼接不同版本的分页结果`);
+    }
+    const valid = selected.every((item, i) => item !== null && typeof item === "object"
+      && item.page === start + i && (item.page as number) <= (d.pages as number));
+    const expectedCount = input.maxPages === undefined ? null
+      : Math.min(input.maxPages, Math.max(0, d.pages - start + 1));
+    if (!valid || (selected.length === 0 && d.pages > 0)
+        || (expectedCount !== null && selected.length !== expectedCount)) {
+      throw new Error(`GenOffice PDF 返回页段与请求页码 ${start} 或请求页数不一致，拒绝缺页/错页内容`);
+    }
+  }
+  if ([".xlsx", ".xlsm", ".xltx"].includes(ext) && input.sheet !== undefined) {
+    const selected = detail && typeof detail === "object" ? (detail as { sheet?: unknown }).sheet : null;
+    if (typeof selected !== "string" || selected.toLocaleLowerCase() !== input.sheet.toLocaleLowerCase()) {
+      throw new Error(`GenOffice 返回工作表与请求 sheet=${input.sheet} 不一致，拒绝错误工作表内容`);
+    }
+  }
+  if (ext === ".docx" || ext === ".dotx") {
+    const d = detail && typeof detail === "object" ? detail as { blocks?: number; items?: unknown[]; range?: unknown } : null;
+    if (!d || !Array.isArray(d.items) || !Number.isSafeInteger(d.blocks) || (d.blocks ?? -1) < 0) {
+      throw new Error("GenOffice DOCX 结构块字段无效，拒绝假成功或缺失的块结果");
+    }
+    if (probedDocBlocks !== null && d.blocks !== probedDocBlocks) {
+      throw new Error(`GenOffice DOCX 结构块数量从 ${probedDocBlocks} 变化为 ${d.blocks}，拒绝拼接不同版本结果`);
+    }
+    {
       const from = input.docxMode === "structure" ? (input.blockStart ?? 1) - 1 : 0;
+      const maxBlocks = input.docxMode === "structure" ? (input.maxBlocks ?? 30) : 30;
+      if (d.blocks! > 0) {
+        const expectedEnd = Math.min(d.blocks! - 1, from + maxBlocks - 1);
+        const expectedRange = `${from}-${expectedEnd}`;
+        if (d.range !== expectedRange || d.items.length !== expectedEnd - from + 1) {
+          throw new Error(`GenOffice DOCX 结构块索引/range 与请求 ${expectedRange} 不一致，拒绝错位块内容`);
+        }
+      }
       const last = from + d.items.length - 1;
       detail = {
         ...d,
@@ -1026,10 +1074,46 @@ async function readViaGenoffice(input: {
     }
   }
   const engine = ext === ".pdf" ? "GenOffice/PDFium" : "GenOffice/Office";
-  const pages = (detail && typeof detail === "object" && "pages" in detail) ? (detail as { pages?: unknown }).pages : null;
-  const legacyPdfHeader = ext === ".pdf" && typeof pages === "number" ? `[PDF ${pages} 页] ` : "";
+  const data = detail && typeof detail === "object" ? detail as Record<string, unknown> : {};
+  const totalPages = data.pages;
+  const legacyPdfHeader = ext === ".pdf" && typeof totalPages === "number" ? `[PDF ${totalPages} 页] ` : "";
+  // Put truthful pagination metadata BEFORE the potentially large JSON body.
+  // Otherwise max_chars=100 hides next_slide/next_block_start/pages_read at
+  // the tail, and an agent cannot resume after a clipped preview.
+  const cursor: string[] = [];
+  if ([".pptx", ".potx"].includes(ext)) {
+    const slides = data.read_slides;
+    if (Array.isArray(slides) && slides.length === 2 && slides.every(n => Number.isSafeInteger(n))) {
+      cursor.push(`slides=${slides[0]}-${slides[1]}`);
+    }
+    if (Number.isSafeInteger(data.next_slide)) cursor.push(`next_slide=${data.next_slide}`);
+    if (data.prior_slides_omitted) cursor.push("prior_slides_omitted");
+  } else if ([".docx", ".dotx"].includes(ext)) {
+    const blocks = data.requested_blocks;
+    if (Array.isArray(blocks) && blocks.length === 2 && blocks.every(n => Number.isSafeInteger(n))) {
+      cursor.push(`blocks=${Number(blocks[0]) + 1}-${Number(blocks[1]) + 1}`);
+    }
+    if (Number.isSafeInteger(data.next_block_start)) cursor.push(`next_block_start=${data.next_block_start}`);
+  } else if (ext === ".pdf" && typeof totalPages === "number" && Number.isSafeInteger(totalPages)) {
+    const read = data.pages_read;
+    if (Array.isArray(read) && read.length > 0) {
+      const indices = read.map((p: unknown) => (p !== null && typeof p === "object") ? (p as { page?: unknown }).page : null);
+      if (indices.every(n => Number.isSafeInteger(n) && (n as number) > 0)) {
+        const last = indices[indices.length - 1] as number;
+        cursor.push(`pages=${indices[0]}-${last}`);
+        if (last < totalPages) cursor.push(`next_page=${last + 1}`);
+      }
+    }
+  } else if ([".xlsx", ".xlsm", ".xltx"].includes(ext)) {
+    if (typeof data.sheet === "string") cursor.push(`sheet=${data.sheet}`);
+    if (typeof data.range === "string") cursor.push(`range=${data.range}`);
+    if (typeof data.rowsShown === "number" && typeof data.rowsTotal === "number") {
+      cursor.push(`rows=${data.rowsShown}/${data.rowsTotal}`);
+    }
+  }
+  const pagination = cursor.length ? ` [${cursor.join("; ")}]` : "";
   return capDocumentOutput(
-    `${legacyPdfHeader}[${engine}] ${result.envelope.summary ?? ""}\n${JSON.stringify(detail ?? {}, null, 2)}`,
+    `${legacyPdfHeader}[${engine}]${pagination} ${result.envelope.summary ?? ""}\n${JSON.stringify(detail ?? {}, null, 2)}`,
     "GenOffice 文档", maxChars);
 }
 
@@ -1069,7 +1153,11 @@ export async function readRichDocumentRaw(input: {
       out.truncated ? "只读取请求页段,其余页未读取(按 page_start/max_pages 翻页)" : "",
       out.failedPages.length ? `解析失败页: ${out.failedPages.join(", ")}` : "",
     ].filter(Boolean);
-    return capDocumentOutput(`[PDF ${out.pageCount} 页] [成功读取 ${out.pagesRead} 页${notes.length ? "; " + notes.join("; ") : ""}]\n${out.text || "(没有可抽取的文本层; 未执行 OCR)"}`, "PDF 文本", maxChars);
+    const next = (input.pageStart ?? 1) + Math.max(1, Math.min(input.maxPages ?? 200, 500));
+    // Show the next cursor in the short header, not only after potentially
+    // clipped text, and only when unrequested later pages really exist.
+    const nextPage = next <= out.pageCount ? `; next_page=${next}` : "";
+    return capDocumentOutput(`[PDF ${out.pageCount} 页] [成功读取 ${out.pagesRead} 页${nextPage}${notes.length ? "; " + notes.join("; ") : ""}]\n${out.text || "(没有可抽取的文本层; 未执行 OCR)"}`, "PDF 文本", maxChars);
   }
 
   if (ext === ".docx" || ext === ".dotx") {

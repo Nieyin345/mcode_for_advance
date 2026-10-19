@@ -97,6 +97,12 @@ try {
      assert.match(text(r),/修改|变化|版本|一致性/);
    } finally { configureDocumentRepoRoot(null); }
  });
+ await test("★ GenOffice tiny output must retain PPTX next_slide cursor",async()=>{
+   const r=await read("slides.pptx",{reader:"genoffice",max_chars:130});
+   assert.ok(!r.isError,text(r));
+   assert.match(text(r),/next_slide=2/);
+   assert.ok(text(r).length<=130);
+ });
  await test("PPTX reports page-limit truncation explicitly",async()=>{const r=await read("slides.pptx",{max_slides:1});assert.ok(!r.isError,text(r));assert.match(text(r),/截断|未读取/);});
  await test("PDF reader extracts real fixture text",async()=>{const r=await read("paper.pdf",{max_pages:1});assert.ok(!r.isError,text(r));assert.ok(text(r).includes("PAGE_1"));assert.ok(!text(r).includes("PAGE_2"));});
  // MC-065: the GenOffice backend must not parse a gigantic PDF just because
@@ -116,6 +122,46 @@ try {
    assert.ok(!r.isError,text(r).slice(0,320));
    assert.match(text(r),/PAGE_220/,"requested final page must survive bounded preview");
    assert.match(text(r),/GenOffice\/PDFium/);
+ });
+ await test("★ Native tiny PDF response preserves next_page in front header",async()=>{
+   const r=await read("paper.pdf",{reader:"native",page_start:1,max_pages:1,max_chars:140});
+   assert.ok(!r.isError,text(r));assert.match(text(r),/next_page=2/);
+   assert.ok(text(r).length<=140);
+ });
+ await test("★ GenOffice tiny PDF response preserves next_page when text is clipped",async()=>{
+   const r=await read("paper.pdf",{reader:"genoffice",page_start:1,max_pages:1,max_chars:140});
+   assert.ok(!r.isError,text(r));
+   assert.match(text(r),/next_page=2/);
+   assert.ok(text(r).length<=140);
+ });
+ await test("★ GenOffice PDF rejects a mismatched page from vendor envelope",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"ok",summary:"wrong page",detail:{pages:3,pages_read:[{page:3,text:"OTHER_PAGE"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("paper.pdf",{reader:"genoffice",page_start:1,max_pages:1});
+     assert.equal(r.isError,true,text(r));
+     assert.match(text(r),/页码|页段|不一致|匹配/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice PDF refuses incomplete requested two-page window",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"ok",summary:"MISSING_PAGE",detail:{pages:3,pages_read:[{page:1,text:"ONLY_FIRST"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("paper.pdf",{reader:"genoffice",page_start:1,max_pages:2});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/页段|页数|不完整|请求/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice PDF refuses page-count drift between probe and requested range",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'const a=process.argv.slice(2);const probe=!a.includes("--range")&&!a.includes("--page");console.log(JSON.stringify({status:"ok",summary:"COUNT_DRIFT",detail:{pages:probe?3:4,pages_read:probe?[{page:1,text:"PROBE"}]:[{page:1,text:"A"},{page:2,text:"B"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("paper.pdf",{reader:"genoffice",page_start:1,max_pages:2});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/页数|变化|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
  });
  await test("PDF reports page-limit truncation instead of presenting total pages as read",async()=>{const r=await read("paper.pdf",{max_pages:1});assert.ok(!r.isError,text(r));assert.match(text(r),/截断|未读取/);});
  await test("★ PDF layout exposes real page dimensions and positioned text instead of a flattened paragraph",async()=>{
@@ -226,6 +272,47 @@ try {
    assert.ok(!body.includes("LONG_BLOCK_219")&&!body.includes("LONG_BLOCK_222"),"GenOffice range ignored");
    assert.match(body,/next_block_start.*222/);
  });
+ await test("★ Native tiny DOCX structure retains next_block_start cursor",async()=>{
+   const r=await read("long-structure.docx",{reader:"native",docx_mode:"structure",block_start:220,max_blocks:2,max_chars:145});
+   assert.ok(!r.isError,text(r));assert.match(text(r),/next_block_start=222/);
+   assert.ok(text(r).length<=145);
+ });
+ await test("★ GenOffice tiny DOCX output retains next_block_start cursor",async()=>{
+   const r=await read("long-structure.docx",{reader:"genoffice",docx_mode:"structure",block_start:220,max_blocks:2,max_chars:145});
+   assert.ok(!r.isError,text(r));
+   assert.match(text(r),/next_block_start=222/);
+   assert.ok(text(r).length<=145);
+ });
+ await test("★ GenOffice DOCX rejects vendor block range inconsistent with request",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"ok",summary:"WRONG_BLOCK",detail:{blocks:2,range:"0-0",items:[{index:0,text:"FORGED_0"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("text.docx",{reader:"genoffice",docx_mode:"structure",block_start:2,max_blocks:1});
+     assert.equal(r.isError,true,text(r));
+     assert.match(text(r),/结构块|range|索引|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice DOCX refuses block count changed between probe and selected window",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'const args=process.argv.slice(2);const rg=args[args.indexOf("--range")+1];const probe=rg==="0";console.log(JSON.stringify({status:"ok",summary:"MUTATED_BLOCKS",detail:{blocks:probe?3:4,range:probe?"0-0":"1-1",items:[{index:probe?0:1,text:"MUTATED"}]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("text.docx",{reader:"genoffice",docx_mode:"structure",block_start:2,max_blocks:1});
+     assert.equal(r.isError,true,text(r));assert.match(text(r),/块数量|版本|变化|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ GenOffice DOCX refuses missing or malformed block envelope",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   writeFileSync(fakeCli,'console.log(JSON.stringify({status:"ok",summary:"MALFORMED",detail:{blocks:2,range:"0-0",items:"not-an-array"}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("text.docx",{reader:"genoffice",docx_mode:"structure",block_start:1,max_blocks:1});
+     assert.equal(r.isError,true,text(r));
+     assert.match(text(r),/结构块|索引|字段|格式|不合法/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
  await test("★ GenOffice large DOCX default read reports native continuation",async()=>{
    const r=await read("long-structure.docx",{reader:"genoffice"});
    assert.ok(!r.isError,text(r).slice(0,300));
@@ -306,6 +393,20 @@ try {
      assert.match(text(r),/MOCK_SHEET A1:B3/);
      assert.equal(existsSync(sheetSpawnMarker),true,"normal range must use GenOffice");
    } finally { configureDocumentRepoRoot(null); }
+ });
+ await test("★ GenOffice sheet rejects vendor response for a different requested worksheet",async()=>{
+   writeFileSync(fakeSheetCli,'console.log(JSON.stringify({status:"ok",summary:"OTHER_SHEET",detail:{sheet:"Unexpected",range:"A1:B2",rows:[["WRONG"]]}}))\n');
+   configureDocumentRepoRoot(root);
+   try {
+     const r=await read("table.xlsx",{reader:"genoffice",sheet:"Research",range:"A1:B2",max_rows:2});
+     assert.equal(r.isError,true,text(r));
+     assert.match(text(r),/工作表|sheet|不一致/);
+   } finally {configureDocumentRepoRoot(null);}
+ });
+ await test("★ Native tiny XLSX output preserves range-clipped warning",async()=>{
+   const r=await read("table.xlsx",{reader:"native",sheet:"Research",range:"A1:J1000",max_rows:1,max_cols:2,max_chars:125});
+   assert.ok(!r.isError,text(r));assert.match(text(r),/range.*截断|部分区域|range.*夹紧/);
+   assert.ok(text(r).length<=125);
  });
  await test("Excel selection returns actual Unicode cells and values",async()=>{const r=await read("table.xlsx",{sheet:"Research",range:"A2:B2"});assert.ok(!r.isError,text(r));assert.match(text(r),/研究论文/);assert.match(text(r),/2026/);});
  // 【MC-065】显式 range 必须**在迭代之前**夹紧,并显式回报 range 被截断。
