@@ -179,6 +179,11 @@ export function ensureEngineBootstrap(opts: {
   content: string;
   now?: () => Date;
 }): BootstrapEnsureResult {
+  // 产物加载异常可能返回空字符串。绝不能把空白文件当成「新版本」
+  // 替换已经能启动的引擎，甚至落一份声称安装成功的 manifest。
+  if (typeof opts.content !== "string" || opts.content.trim().length === 0) {
+    return { ok: false, action: null, backupPath: null, reason: "引导脚本内容为空，拒绝安装或覆盖" };
+  }
   const bootstrapPath = join(opts.dataDir, "bootstrap.cjs");
   const manifestPath = join(opts.dataDir, BOOTSTRAP_MANIFEST_FILENAME);
   const expectedHash = sha256Of(opts.content);

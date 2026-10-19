@@ -21,6 +21,30 @@ const manifest = join(root, BOOTSTRAP_MANIFEST_FILENAME);
 const options = { engineId: "node-red", dataDir: root, content, now: fixed };
 const backups = () => readdirSync(root).filter((f) => f.startsWith("bootstrap.cjs.bak-")).sort();
 try {
+  // A compromised/empty template must never replace a healthy bootstrap or
+  // be recorded as a valid installed runtime, even on the very first install.
+  const blankInputRoot = join(root, "blank-input-existing");
+  mkdirSync(blankInputRoot);
+  const existingScript = join(blankInputRoot, "bootstrap.cjs");
+  const existingManifest = join(blankInputRoot, BOOTSTRAP_MANIFEST_FILENAME);
+  writeFileSync(existingScript, content);
+  writeFileSync(existingManifest, JSON.stringify(buildManifest("node-red", content)) + "\n");
+  const originalScript = readFileSafe(existingScript);
+  const originalManifest = readFileSafe(existingManifest);
+  for (const [caseName, supplied] of [["empty", ""], ["whitespace", " \t\n"]] as const) {
+    const refusedBlank = ensureEngineBootstrap({ ...options, dataDir: blankInputRoot, content: supplied });
+    check(`refuse ${caseName} bootstrap input before any overwrite`, !refusedBlank.ok, refusedBlank);
+    check(`refused ${caseName} input preserves installed bootstrap`, readFileSafe(existingScript) === originalScript);
+    check(`refused ${caseName} input preserves installed manifest`, readFileSafe(existingManifest) === originalManifest);
+  }
+  check("invalid bootstrap content creates no historical backup",
+    readdirSync(blankInputRoot).filter((item) => item.startsWith("bootstrap.cjs.bak-")).length === 0);
+  const firstInstall = join(root, "blank-new-engine");
+  mkdirSync(firstInstall);
+  const blankInstall = ensureEngineBootstrap({ ...options, dataDir: firstInstall, content: "" });
+  check("empty first install is rejected", !blankInstall.ok, blankInstall);
+  check("empty first install creates no bootstrap or manifest", readdirSync(firstInstall).length === 0);
+
   // A. Existing unrelated staging files must not be silently overwritten by a manifest upgrade.
   writeFileSync(bootstrap, content);
   const unrelatedManifestTmp = manifest + ".tmp";
