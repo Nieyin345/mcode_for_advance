@@ -132,7 +132,36 @@ export async function installEngineNode(options: {
   meta: EngineNodeInstallMeta;
   approval?: EngineNodeInstallApprovalPort;
 }): Promise<EngineNodeInstallOutcome> {
-  const { registry, sourceDir, meta } = options;
+  const { registry, sourceDir } = options;
+  // IPC and extension callers can pass runtime values that do not match TS
+  // types. Check the data *before* opening a human approval card, and snapshot
+  // the exact version/capabilities being approved. Otherwise the caller may
+  // mutate meta.capabilities while the approval Promise is pending and install
+  // a network-enabled executable after the user saw a no-network card.
+  let meta: EngineNodeInstallMeta;
+  try {
+    const incoming: unknown = options.meta;
+    if (incoming === null || typeof incoming !== "object" || Array.isArray(incoming)) {
+      return { ok: false, code: "invalid", reason: "节点包安装元数据必须是对象" };
+    }
+    const value = incoming as EngineNodeInstallMeta;
+    if (typeof value.name !== "string" || value.name.trim() === ""
+      || typeof value.version !== "string" || value.version.trim() === ""
+      || typeof value.source !== "string" || value.source.trim() === ""
+      || typeof value.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.sha256)
+      || typeof value.license !== "string" || value.license.trim() === ""
+      || !Array.isArray(value.capabilities)
+      || !value.capabilities.every((capability) => typeof capability === "string" && capability !== "")) {
+      return { ok: false, code: "invalid", reason: "节点包安装元数据不合法，拒绝发送审批卡" };
+    }
+    meta = {
+      name: value.name, version: value.version, source: value.source,
+      sha256: value.sha256, license: value.license,
+      capabilities: [...value.capabilities],
+    };
+  } catch {
+    return { ok: false, code: "invalid", reason: "节点包安装元数据读取失败，拒绝发送审批卡" };
+  }
   // ⚠️ 先算 intent 再审批：卡片要说清"这是升级/换执行体"还是"首次安装"。
   const prior = await existingHash(registry, meta.name);
   // 根本读不懂原来的安装账，就不能问用户批准一次注定失败的写入。

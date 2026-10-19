@@ -390,6 +390,65 @@ try {
       };
     };
 
+    // Runtime IPC/SDK inputs do not satisfy TypeScript interfaces by fiat.
+    // Never ask a human to approve a malformed card, and do not let a null
+    // capability list throw through the IPC handler.
+    {
+      const dataDir = join(temp, "route-invalid-approval-meta");
+      const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+      const { sourceDir, meta } = await dirMetaBase("node-red-contrib-invalid-approval-meta");
+      let approved = 0;
+      for (const invalid of [
+        null,
+        { ...meta, capabilities: null },
+        { ...meta, capabilities: "network" },
+        { ...meta, capabilities: ["network", 7] },
+      ]) {
+        let thrown = "";
+        let result: Awaited<ReturnType<typeof installEngineNode>> | null = null;
+        try {
+          result = await installEngineNode({
+            registry, sourceDir, meta: invalid as typeof meta,
+            approval: async () => { approved++; return true; },
+          });
+        } catch (error) {
+          thrown = error instanceof Error ? error.message : String(error);
+        }
+        check("★ malformed node install metadata rejects safely before approval",
+          thrown === "" && result?.ok === false && result.code === "invalid",
+          { invalid, thrown, result });
+      }
+      eq("★ invalid install metadata did not summon a misleading approval card", approved, 0);
+      check("★ invalid metadata did not install executable bytes",
+        !existsSync(registry.packagePath(meta.name)));
+      eq("★ invalid metadata leaves registry absent", (await registry.readState()).kind, "absent");
+    }
+
+    // The approval promise is an async boundary. The input meta is owned by
+    // the caller and can change between the card and the actual install.
+    // Network access must be bound to exactly what the human was shown.
+    {
+      const registry = new EngineNodeRegistry({
+        dataDir: join(temp, "route-mutable-capability"), engineId: "node-red",
+      });
+      const { sourceDir, meta } = await dirMetaBase("node-red-contrib-mutable-approval", {
+        capabilities: ["resource.read"],
+      });
+      let cardNetwork: boolean | null = null;
+      const result = await installEngineNode({
+        registry, sourceDir, meta,
+        approval: async (card) => {
+          cardNetwork = card.network;
+          (meta.capabilities as string[]).push("network");
+          return true;
+        },
+      });
+      check("★ precondition: local approval port granted the install", result.ok, result);
+      check("★ approval card was genuinely read-only, with no network privilege", cardNetwork === false);
+      check("★ caller mutation during approval cannot silently add network permission",
+        !(await registry.allowsNetwork(meta.name)), (await registry.readState()));
+    }
+
     // ── 9a. 审批端口缺失 → fail-closed、零落盘 ──
     {
       const dataDir = join(temp, "route-noapproval");
