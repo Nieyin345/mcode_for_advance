@@ -27,7 +27,7 @@
  * (accidental file overwrite / wrong edits) without taking on a
  * dependency.
  */
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TurnFileEntry } from "@contracts/runtime";
@@ -89,6 +89,8 @@ export class FileSnapshot {
    *  无论成功、失败(ENOENT/EACCES)还是不可恢复,都在 finally 里摘掉占位,
    *  绝不留一个永远 pending 的洞。 */
   private readonly inflight = new Map<string, Promise<void>>();
+  /** Invalidate asynchronous reads from an abandoned turn after clear(). */
+  private generation = 0;
   /** Once frozen, recordPre() is a no-op. Lets us safely call
    *  freeze() at turn end and have any straggling tool_use events
    *  (rare, but possible) be ignored. */
@@ -117,12 +119,12 @@ export class FileSnapshot {
       await pending;
       return;
     }
-    const job = this.capturePre(abs);
+    const job = this.capturePre(abs, this.generation);
     this.inflight.set(abs, job);
     try {
       await job;
     } finally {
-      this.inflight.delete(abs);
+      if (this.inflight.get(abs) === job) this.inflight.delete(abs);
     }
   }
 
@@ -132,9 +134,10 @@ export class FileSnapshot {
    *  once each), and counting it avoids a nondeterministic filesystem race
    *  between the read and a concurrent write. Split out from `recordPre` so
    *  that method can register the in-flight promise before awaiting it. */
-  protected async capturePre(abs: string): Promise<void> {
+  protected async capturePre(abs: string, generation = this.generation): Promise<void> {
     try {
       const bytes = await readFile(abs);
+      if (generation !== this.generation) return; // stale in-flight capture after clear()
       let content: string;
       try {
         content = STRICT_UTF8.decode(bytes);
@@ -144,17 +147,17 @@ export class FileSnapshot {
         // text over the user's file — the undo itself would corrupt it. Leave
         // the file out of the rewind set instead, and remember that: a later
         // tool call must not snapshot the post-edit state as "before".
-        this.unrestorable.add(abs);
+        if (generation === this.generation) this.unrestorable.add(abs);
         console.warn(`FileSnapshot: skip ${abs} (not valid UTF-8, cannot restore losslessly)`);
         return;
       }
-      this.originals.set(abs, { absPath: abs, exists: true, content });
+      if (generation === this.generation) this.originals.set(abs, { absPath: abs, exists: true, content });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
         // File didn't exist before — claude will create it. Record
         // exists:false so restore can unlink.
-        this.originals.set(abs, { absPath: abs, exists: false, content: "" });
+        if (generation === this.generation) this.originals.set(abs, { absPath: abs, exists: false, content: "" });
       } else {
         // EACCES, EISDIR, etc. — not safe to restore later, so skip.
         // Logged so devs can see it without crashing the stream.
@@ -179,26 +182,41 @@ export class FileSnapshot {
    *  against the snapshotted `before`. Read failures (deleted mid-turn,
    *  binary, permission) degrade gracefully to adds=dels=0 and before=""
    *  so a single bad file never blocks the whole turn-files event. */
+  /** Overridable IO seam for deterministic async freeze-race regression. */
+  protected readCurrent(path: string): Promise<Uint8Array> {
+    return readFile(path);
+  }
+
   async freeze(): Promise<TurnFileEntry[]> {
     if (this.frozen) return [];
     this.frozen = true;
+    const generation = this.generation;
+    // Every pre-turn read ACCEPTED before freeze belongs in the frozen card.
+    // Snapshot pending reads now; later recordPre calls are blocked by frozen.
+    await Promise.all([...this.inflight.values()]);
+    if (generation !== this.generation) return []; // clear() abandoned this turn
     const out: TurnFileEntry[] = [];
-    for (const [path, rec] of this.originals) {
+    for (const [path, rec] of [...this.originals]) {
+      if (generation !== this.generation) return [];
       const before = rec.exists ? rec.content : "";
       // exists=false 时 `after` 读不到 → 用 null 与"读到了空文件"区分开(见下)。
       // 【MC-002 残余】`after` 的**字符串**用于 diff 计数与"逐字节相等"判据(既有语义:
       // 宽松解码),而**指纹**必须按原始字节算(见 `hashBytes` 注释)。
       let after: string | null = null;
       let afterBytes: Uint8Array | null = null;
+      let afterMissing = false;
       try {
-        afterBytes = await readFile(rec.absPath);
+        afterBytes = await this.readCurrent(rec.absPath);
         after = Buffer.from(afterBytes).toString("utf-8");
-      } catch {
-        // File is unreadable (gone, binary, EACCES, …). Keep null so the net-zero
-        // check below doesn't mistake "read failed" for "empty file".
+      } catch (error) {
+        // Only ENOENT proves this *created* pathname is now absent.
+        // EISDIR, EPERM and transient IO errors mean the path may still
+        // exist, so never hide the card or invent a checksum for empty bytes.
+        afterMissing = (error as NodeJS.ErrnoException).code === "ENOENT";
         afterBytes = null;
         after = null;
       }
+      if (generation !== this.generation) return []; // clear() during awaited read
       // 【MC-005】"净零"必须按**原始字节**判,不能按 `adds === 0 && dels === 0`。
       // 行数统计有个角落:文件内容只是**末尾换行**变了("hello" ⇄ "hello\n"),
       // splitLines 把末尾单个换行当终止符丢掉,于是两边都是 ["hello"],adds=dels=0
@@ -215,11 +233,16 @@ export class FileSnapshot {
       // 那可能是被删/无权限/二进制,宁可留一张说得出话的卡,也别把磁盘上真实发生过
       // 的改动当成没发生。
       if (after === null) {
-        if (!rec.exists) {
+        if (!rec.exists && afterMissing) {
           this.originals.delete(path);
           continue;
         }
-      } else if (after === before) {
+      } else if (rec.exists && afterBytes !== null &&
+        Buffer.from(afterBytes).equals(Buffer.from(before, "utf-8"))) {
+        // A string-only equality test is unsafe: valid pre-turn U+FFFD and
+        // invalid post-turn 0xff decode to the same JS text. Compare BYTES.
+        // Also never drop a newly created *empty* file: its existence is
+        // the change to rewind even when the content is zero bytes.
         this.originals.delete(path);
         continue;
       }
@@ -233,9 +256,12 @@ export class FileSnapshot {
         // 【MC-002】记下"本轮收尾时磁盘上的样子"。历史回滚前拿它跟当前磁盘比一比:
         // 不一致 = 这个文件在本轮之后又被改过(第二轮、或用户自己改的),直接写回
         // before 会把那些改动也一起抹掉 —— 那正是"撤销第 1 轮顺手毁了第 2 轮"。
-        afterHash: hashBytes(afterBytes ?? new Uint8Array()),
+        // An unreadable/unverifiable after-state has no truthful checksum.
+        // Restore treats legacy/no-hash entries as conflicts (fail closed).
+        ...(afterBytes === null ? {} : { afterHash: hashBytes(afterBytes) }),
       });
     }
+    if (generation !== this.generation) return [];
     // Hand the contents to the GC: the entries above carry `before` to the
     // renderer + DB, and post-freeze readers of this map need keys only.
     for (const rec of this.originals.values()) {
@@ -252,6 +278,8 @@ export class FileSnapshot {
    *  sees the records and its `frozen` flag can't leak into the next
    *  turn's snapshot. */
   clear(): void {
+    this.generation++;
+    this.inflight.clear(); // new turn must not wait for an old turn\u0027s slow read
     this.originals.clear();
     this.unrestorable.clear();
     this.frozen = false;
@@ -308,14 +336,44 @@ export async function restoreFiles(
   const restored: string[] = [];
   const failed: string[] = [];
   const conflicts: string[] = [];
+  // Historical cards are serialized inputs and may contain relative paths or
+  // conflicting duplicate rows. Resolve using the *project* cwd once and
+  // apply ALL IO to this absolute identity, never Electron's process.cwd().
+  const normalized = entries.map((entry) => typeof entry?.filePath === "string" ? safeResolve(cwd, entry.filePath) : null);
+  const canonicalKey = (p: string) => process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p;
+  const frequencies = new Map<string, number>();
+  for (const path of normalized) {
+    if (path !== null) {
+      const key = canonicalKey(path);
+      frequencies.set(key, (frequencies.get(key) ?? 0) + 1);
+    }
+  }
   // Process created-files first (unlink) so a parent that was also
   // modified can be cleanly rewritten without the child blocking.
-  const created = entries.filter((e) => e.kind === "created");
-  const modified = entries.filter((e) => e.kind === "modified");
-  for (const entry of [...created, ...modified]) {
-    if (!safeResolveOk(cwd, entry.filePath)) {
-      console.warn(`restoreFiles: refused, escapes cwd: ${entry.filePath}`);
+  const order = entries.map((entry, i) => ({ entry, normalized: normalized[i] }))
+    .sort((a, b) => Number(a.entry?.kind !== "created") - Number(b.entry?.kind !== "created"));
+  const seenConflicts = new Set<string>();
+  for (const { entry, normalized: preflight } of order) {
+    // IPC/SQLite rows are not protected by their TypeScript annotation at
+    // runtime. A corrupt kind previously fell through to unlink(!), and
+    // a non-string 'before' could throw while hashing and abort the batch.
+    if ((entry?.kind !== "created" && entry?.kind !== "modified") ||
+        typeof entry?.before !== "string" ||
+        (entry?.afterHash !== undefined && typeof entry?.afterHash !== "string")) {
+      failed.push(preflight ?? (typeof entry?.filePath === "string" ? entry.filePath : "[invalid rewind entry]"));
+      continue;
+    }
+    const path = safeResolve(cwd, entry.filePath);
+    if (path === null || preflight === null || path !== preflight) {
+      console.warn(`restoreFiles: refused, unsafe or moved path: ${entry.filePath}`);
       failed.push(entry.filePath);
+      continue;
+    }
+    if ((frequencies.get(canonicalKey(path)) ?? 0) > 1) {
+      if (!seenConflicts.has(canonicalKey(path))) {
+        seenConflicts.add(canonicalKey(path));
+        conflicts.push(path);
+      }
       continue;
     }
     // 【MC-002】先看这个文件在本轮之后有没有被再改过。
@@ -323,14 +381,26 @@ export async function restoreFiles(
       let current: string | null;
       let currentBytes: Uint8Array | null;
       try {
-        currentBytes = await readFile(entry.filePath);
+        currentBytes = await readFile(path);
         // 宽松解码只为与 `before` 做字符串相等(幂等判断),指纹另走字节(见下)。
         current = Buffer.from(currentBytes).toString("utf-8");
-      } catch {
-        // 读不到(被删了 / 二进制 / 无权限)。对 created 条目来说"文件不在了"
-        // 等于目标状态已达成(创建的东西不再存在)——不算冲突;对 modified
-        // 条目则是"没法确认",按冲突处理,绝不盲目覆盖。
-        current = entry.kind === "created" ? null : "";
+      } catch (error) {
+        // ENOENT is the ONLY read failure proving absence. EISDIR/EACCES/
+        // EPERM can all describe an existing entry; reporting them as an
+        // already-restored created file silently lies to the user.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") {
+          console.warn(`restoreFiles: cannot inspect ${path} (${code ?? String(error)})`);
+          failed.push(path);
+          continue;
+        }
+        if (entry.kind === "modified") {
+          // A later deletion is a real conflicting user edit. Never turn a
+          // failed read into the empty-file hash and recreate the file.
+          conflicts.push(path);
+          continue;
+        }
+        current = null; // created, already missing: target state reached
         currentBytes = null;
       }
       if (current !== null && hashBytes(currentBytes ?? new Uint8Array()) !== entry.afterHash) {
@@ -348,18 +418,18 @@ export async function restoreFiles(
           entry.kind === "modified" &&
           hashBytes(currentBytes ?? new Uint8Array()) === hashBytes(Buffer.from(entry.before, "utf-8"))
         ) {
-          restored.push(entry.filePath);
+          restored.push(path);
           continue;
         }
         // 磁盘上现在的内容 ≠ 本轮收尾时的样子 —— 被后来的动作改过了。
         // 直接写回/删除会把那些改动一并抹掉,所以**什么都不做**,如实列进 conflicts。
-        console.warn(`restoreFiles: skip ${entry.filePath} (changed after the turn; refusing to clobber)`);
-        conflicts.push(entry.filePath);
+        console.warn(`restoreFiles: skip ${path} (changed after the turn; refusing to clobber)`);
+        conflicts.push(path);
         continue;
       }
       if (entry.kind === "created" && current === null) {
         // 本轮创建的文件现在不存在了 —— 目标状态已达成,算已还原(不报错)。
-        restored.push(entry.filePath);
+        restored.push(path);
         continue;
       }
     } else {
@@ -369,29 +439,58 @@ export async function restoreFiles(
       // 第 23 轮明确要求:对无指纹的遗留快照**保守拒绝**(不自动覆盖),在文件级结果里
       // 如实标成冲突,让用户自己决定。宁可少还原一个,也不静默毁掉用户的当前内容。
       console.warn(
-        `restoreFiles: skip ${entry.filePath} (no afterHash — legacy snapshot; refusing to auto-restore)`,
+        `restoreFiles: skip ${path} (no afterHash — legacy snapshot; refusing to auto-restore)`,
       );
-      conflicts.push(entry.filePath);
+      conflicts.push(path);
       continue;
     }
     try {
+      // Revalidate immediately before mutation: the read/hash check above
+      // may have yielded while another process changed the target. In
+      // particular never follow a newly substituted hardlink when writing.
+      // This narrows a real race but is not a cross-process atomic CAS.
+      if (safeResolve(cwd, path) !== path) {
+        conflicts.push(path);
+        continue;
+      }
+      let latest: Uint8Array;
+      try {
+        const metadata = await lstat(path);
+        if (!metadata.isFile() || metadata.nlink !== 1) {
+          conflicts.push(path);
+          continue;
+        }
+        latest = await readFile(path);
+      } catch (error) {
+        // A user may have deleted/replaced this file between the first
+        // check and the final write; never recreate or report restored.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          conflicts.push(path);
+          continue;
+        }
+        throw error;
+      }
+      if (hashBytes(latest) !== entry.afterHash) {
+        conflicts.push(path);
+        continue;
+      }
       if (entry.kind === "modified") {
         // Ensure parent dir exists in case the user (or another tool)
         // deleted it mid-turn.
-        await mkdir(dirname(entry.filePath), { recursive: true });
-        await writeFile(entry.filePath, entry.before, "utf-8");
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, entry.before, "utf-8");
       } else {
         try {
-          await unlink(entry.filePath);
+          await unlink(path);
         } catch (err) {
           // Already gone — nothing to do.
           if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         }
       }
-      restored.push(entry.filePath);
+      restored.push(path);
     } catch (err) {
-      console.warn(`restoreFiles: failed for ${entry.filePath} (${(err as Error).message})`);
-      failed.push(entry.filePath);
+      console.warn(`restoreFiles: failed for ${path} (${(err as Error).message})`);
+      failed.push(path);
     }
   }
   return { restored, failed, conflicts };
