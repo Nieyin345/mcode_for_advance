@@ -12,7 +12,9 @@ import path from "node:path";
 export function projectKey(p: string): string {
   let r = path.resolve(p);
   if (process.platform === "win32") r = r.toLowerCase();
-  return r.length > 1 ? r.replace(/[\\/]+$/, "") : r;
+  // A volume root is already canonical. Trimming D:\\ to D: creates a
+  // drive-relative path and breaks callers that round-trip the stored key.
+  return r === path.parse(r).root ? r : r.replace(/[\\/]+$/, "");
 }
 
 /** The stored key (one of `keys`) whose project contains `cwd` — longest
@@ -24,7 +26,9 @@ export function matchProjectKey(cwd: string | undefined, keys: readonly string[]
   let bestLen = -1;
   for (const k of keys) {
     const kk = projectKey(k);
-    if ((c === kk || c.startsWith(kk + path.sep)) && kk.length > bestLen) {
+    // POSIX / and Windows volume roots already end with a separator.
+    const prefix = kk.endsWith(path.sep) ? kk : kk + path.sep;
+    if ((c === kk || c.startsWith(prefix)) && kk.length > bestLen) {
       best = k;
       bestLen = kk.length;
     }
