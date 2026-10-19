@@ -1328,6 +1328,14 @@ console.log("\n账号密码登录");
   // ── MC-016:可信代理配置下,转发头才被采信 ──────────────────────────────
   // 只有当直连来源本身写进可信代理白名单,才读转发头 —— 这时不同的 XFF 才是不同来源。
   SettingRepo.set("mobile.login.trustedProxy", "127.0.0.1");
+  const fakeRequest = (headers: Record<string, string>) =>
+    ({ socket: { remoteAddress: "127.0.0.1" }, headers }) as never;
+  eq("★ 可信代理转发头若不是 IP,不可将任意字符串当新限流身份",
+    login.loginClientKey(fakeRequest({ "cf-connecting-ip": "FAKE-ID-1" })), "127.0.0.1");
+  eq("★ 畸形 XFF 也不得绕开来源限流（退回真实 socket）",
+    login.loginClientKey(fakeRequest({ "x-forwarded-for": "FAKE-ID-2, 10.1.1.1" })), "127.0.0.1");
+  eq("合法可信代理 XFF 仍正确识别来源",
+    login.loginClientKey(fakeRequest({ "x-forwarded-for": "10.1.1.1, 127.0.0.1" })), "10.1.1.1");
   login.resetLoginThrottle();
   for (let i = 0; i < 5; i += 1) await loginReq({ username: "alice", password: `tp-${i}-wrong` }, { "x-forwarded-for": "10.1.1.1" });
   eq("★ 可信代理下:来源 A 连错 5 次后密码对了也 429", (await loginReq({ username: "alice", password: PW }, { "x-forwarded-for": "10.1.1.1" })).status, 429);

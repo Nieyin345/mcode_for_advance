@@ -21,6 +21,7 @@
  */
 import { randomBytes, scrypt as scryptCb, timingSafeEqual, type ScryptOptions } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { isIP } from "node:net";
 import { SettingRepo } from "@main/store/repositories.js";
 import { MOBILE_LOGIN_SETTING_KEY, type MobileLoginStatus } from "@contracts/mobile";
 import { log } from "@main/lib/logger.js";
@@ -190,10 +191,15 @@ export function loginClientKey(req: IncomingMessage): string {
   const socket = normalizeIp(req.socket.remoteAddress) || "unknown";
   if (trustedProxies().has(socket)) {
     const cf = req.headers["cf-connecting-ip"];
-    if (typeof cf === "string" && cf.trim()) return cf.trim().slice(0, 64);
+    const cfIp = typeof cf === "string" ? normalizeIp(cf) : "";
+    // Only canonical IP identities are valid rate-limit keys. If an
+    // upstream proxy forwards arbitrary text as an address, letting that
+    // text pick the throttle bucket silently defeats per-client limits.
+    if (isIP(cfIp) !== 0) return cfIp;
     const xff = req.headers["x-forwarded-for"];
-    const first = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim();
-    if (first) return first.slice(0, 64);
+    const first = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0];
+    const xffIp = normalizeIp(first);
+    if (isIP(xffIp) !== 0) return xffIp;
   }
   return socket;
 }

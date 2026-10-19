@@ -8,7 +8,7 @@
  * the same encodings, caching headers and fallbacks as before.
  */
 import { createServer, request, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync } from "node:zlib";
@@ -152,6 +152,51 @@ console.log("D. legacy precompressed sibling");
   check("…and decodes to the file", decode(r) === LEGACY);
   const g = await get("/assets/legacy-abc123.js", "gzip");
   check("no .gz sibling → gzip compressed on demand", g.headers["content-encoding"] === "gzip" && decode(g) === LEGACY);
+}
+
+console.log("E0. renderer root must never follow symlinks to private files");
+{
+  // Keep the private sentinel inside the suite's own temporary root. Even
+  // vulnerable code cannot read a real user file in this regression test.
+  const privateDir = join(BOX, "private-not-web");
+  mkdirSync(privateDir, { recursive: true });
+  const sentinel = "SENSITIVE_FAKE_SETTING_MUST_NOT_LEAVE_HOST";
+  writeFileSync(join(privateDir, "secret.js"), sentinel.repeat(20));
+  writeFileSync(join(privateDir, "index.html"), "<html>" + sentinel + "</html>");
+  const link = join(WEB, "assets", "linked-private");
+  try {
+    symlinkSync(privateDir, link, process.platform === "win32" ? "junction" : "dir");
+    const leaked = await get("/assets/linked-private/secret.js");
+    check("★ public mobile HTTP must reject a directory junction outside the renderer root",
+      leaked.status === 403 && !leaked.body.toString().includes(sentinel), { status: leaked.status, body: leaked.body.toString().slice(0, 110) });
+    const leakedIndex = await get("/assets/linked-private");
+    check("★ directory index fallback must not read an outside symlink",
+      leakedIndex.status === 403 && !leakedIndex.body.toString().includes(sentinel), { status: leakedIndex.status });
+    const leakedCompressed = await get("/assets/linked-private/secret.js", BROWSER);
+    check("★ compressed asset response must not leak a symlink's private file",
+      leakedCompressed.status === 403, { status: leakedCompressed.status });
+  } catch (err) {
+    check("junction/symlink creation supported for this isolated test", false, String(err));
+  }
+  // Old bundles may include precompressed .br siblings. That fast path must
+  // not bypass the physical-containment check used for the original asset.
+  const safeSource = fakeJs("compressed-sibling-safe");
+  const safePath = join(WEB, "assets", "onlysafe.js");
+  const externalBr = join(privateDir, "hidden.br");
+  writeFileSync(safePath, safeSource);
+  writeFileSync(externalBr, brotliCompressSync(Buffer.from("FAKE_PRIVATE_BROTLI_DATA")));
+  try {
+    symlinkSync(externalBr, `${safePath}.br`, "file");
+    const result = await get("/assets/onlysafe.js", BROWSER);
+    check("★ precompressed .br symlink outside root cannot substitute arbitrary response bytes",
+      result.status === 200 && decode(result) === safeSource,
+      { status: result.status, actualPrefix: decode(result).slice(0, 90) });
+  } catch (err) {
+    // File symlinks on Windows require Developer Mode or SeCreateSymbolicLink.
+    // The junction assertions above are mandatory; never claim this optional
+    // branch passed when the test OS does not permit it.
+    console.log("SKIP file symlink variant (OS privileges): " + String(err));
+  }
 }
 
 console.log("E. build no longer emits .gz/.br copies");

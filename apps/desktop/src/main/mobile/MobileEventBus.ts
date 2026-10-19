@@ -29,7 +29,13 @@ export class MobileEventBus {
   /** Fan an event out to every current subscriber. Subscriber errors are
    *  swallowed — one dead client must not disrupt the others or the stream. */
   broadcast(e: RuntimeEvent): void {
-    for (const fn of this.subscribers) {
+    // Iterate a snapshot of the *start-of-broadcast* subscribers. Iterating
+    // the live Set lets a subscriber add another subscriber while handling a
+    // frame, causing the newcomer to receive an event from before it joined.
+    // A callback can even recursively register listeners and keep one
+    // broadcast alive indefinitely. Revocation still takes effect at once.
+    for (const fn of [...this.subscribers]) {
+      if (!this.subscribers.has(fn)) continue;
       try {
         fn(e);
       } catch {

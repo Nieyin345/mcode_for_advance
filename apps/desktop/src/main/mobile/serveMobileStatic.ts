@@ -45,6 +45,7 @@ import { extname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { app } from "electron";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { log } from "@main/lib/logger.js";
+import { pathWithin } from "@main/lib/realPathWithin.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -125,7 +126,7 @@ function servePairingPage(res: ServerResponse, root: string): void {
   try {
     const s = statSync(pairPath);
     if (s.isFile()) {
-      streamFile(res, pairPath, ".html", s.size);
+      streamFile(res, pairPath, ".html", s.size, undefined, root);
       return;
     }
   } catch {
@@ -189,7 +190,7 @@ export function serveMobileAsset(req: IncomingMessage, res: ServerResponse): voi
       rel = "/index.html";
       try {
         const idx = statSync(join(root, "index.html"));
-        streamFile(res, join(root, "index.html"), ".html", idx.size, acceptEncoding);
+        streamFile(res, join(root, "index.html"), ".html", idx.size, acceptEncoding, root);
         return;
       } catch {
         res.writeHead(404);
@@ -205,7 +206,7 @@ export function serveMobileAsset(req: IncomingMessage, res: ServerResponse): voi
     // directory request → index.html
     try {
       const idx = statSync(join(filePath, "index.html"));
-      streamFile(res, join(filePath, "index.html"), ".html", idx.size, acceptEncoding);
+      streamFile(res, join(filePath, "index.html"), ".html", idx.size, acceptEncoding, root);
       return;
     } catch {
       res.writeHead(404);
@@ -213,7 +214,7 @@ export function serveMobileAsset(req: IncomingMessage, res: ServerResponse): voi
       return;
     }
   }
-  streamFile(res, filePath, extname(rel), stat.size, acceptEncoding);
+  streamFile(res, filePath, extname(rel), stat.size, acceptEncoding, root);
 }
 
 /** Extensions worth compressing (JS/CSS dwarf everything else in size). */
@@ -242,13 +243,15 @@ function acceptedEncodings(ext: string, acceptEncoding: string | undefined): rea
 function pickPrecompressed(
   filePath: string,
   encodings: readonly Encoding[],
+  root: string,
 ): { path: string; encoding: Encoding; size: number } | null {
   for (const enc of encodings) {
     const suffix = enc === "br" ? ".br" : ".gz";
     const candidate = `${filePath}${suffix}`;
     try {
       const s = statSync(candidate);
-      if (s.isFile()) return { path: candidate, encoding: enc, size: s.size };
+      // A .br/.gz sibling can itself be a symlink outside the renderer root.
+      if (s.isFile() && pathWithin(root, candidate)) return { path: candidate, encoding: enc, size: s.size };
     } catch {
       // no precompressed copy — try the next encoding / give up
     }
@@ -329,12 +332,21 @@ function streamFile(
   filePath: string,
   ext: string,
   size: number,
-  acceptEncoding?: string,
+  acceptEncoding: string | undefined,
+  root: string,
 ): void {
+  // Lexical containment alone is insufficient: renderer/assets may contain
+  // a junction/symlink targeting arbitrary user files. This guard also covers
+  // pair.html and directory index.html fallbacks, not only ordinary assets.
+  if (!pathWithin(root, filePath)) {
+    res.writeHead(403);
+    res.end("forbidden");
+    return;
+  }
   const mime = MIME[ext.toLowerCase()] ?? "application/octet-stream";
   const isHtml = ext === ".html";
   const encodings = isHtml ? [] : acceptedEncodings(ext, acceptEncoding);
-  const compressed = pickPrecompressed(filePath, encodings);
+  const compressed = pickPrecompressed(filePath, encodings, root);
   if (!compressed && encodings.length > 0 && size >= MIN_COMPRESS_BYTES) {
     const enc = encodings[0];
     let mtimeMs = 0;
