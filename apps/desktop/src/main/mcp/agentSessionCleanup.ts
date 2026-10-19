@@ -15,6 +15,8 @@
  * `agentTools.ts` 那张大 import 图带过去。
  */
 
+import { safeErrorMessage } from "@main/lib/ipcError.js";
+
 type AgentSessionDisposer = (sessionId: string) => void;
 
 const disposers = new Set<AgentSessionDisposer>();
@@ -45,11 +47,18 @@ export function registerAgentShutdownHook(fn: () => void): () => void {
  * Windows 上子进程本来就不随父进程退出。不在这里杀,关掉 Mcode 后端口还被占着。
  */
 export function disposeAllAgentResources(): void {
-  for (const fn of shutdownHooks) {
+  // A hook can unregister another hook while running. Iterate the snapshot
+  // that existed at shutdown start, so no resource silently escapes cleanup.
+  for (const fn of [...shutdownHooks]) {
     try {
-      fn();
+      // A void callback can still return an accidental Promise at runtime.
+      const pending: unknown = (fn as () => unknown)();
+      if (pending && typeof (pending as PromiseLike<void>).then === "function") {
+        void Promise.resolve(pending).catch((err: unknown) =>
+          console.warn(`disposeAllAgentResources async failure: ${safeErrorMessage(err)}`));
+      }
     } catch (err) {
-      console.warn(`disposeAllAgentResources failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`disposeAllAgentResources failed: ${safeErrorMessage(err)}`);
     }
   }
 }
@@ -57,11 +66,15 @@ export function disposeAllAgentResources(): void {
 /** 释放该会话名下所有 agent 工具资源。单个管理器出错不影响其余几个,也不抛给调用方
  *  (调用方正走在删除流程里,不能因为清理失败半途而废)。 */
 export function disposeAgentSession(sessionId: string): void {
-  for (const fn of disposers) {
+  for (const fn of [...disposers]) {
     try {
-      fn(sessionId);
+      const pending: unknown = (fn as (id: string) => unknown)(sessionId);
+      if (pending && typeof (pending as PromiseLike<void>).then === "function") {
+        void Promise.resolve(pending).catch((err: unknown) =>
+          console.warn(`disposeAgentSession(${sessionId}) async failure: ${safeErrorMessage(err)}`));
+      }
     } catch (err) {
-      console.warn(`disposeAgentSession(${sessionId}) failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`disposeAgentSession(${sessionId}) failed: ${safeErrorMessage(err)}`);
     }
   }
 }
