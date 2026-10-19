@@ -1,22 +1,19 @@
 /**
  * Markdown rendering cache layer.
  *
- * Two cache tiers:
- *  1. codeHtmlCache — FNV-1a hash of (codeText + language) → shiki HTML string.
- *     LRU with max 500 entries AND max ~50 MB total HTML bytes.
- *  2. mdAstCache   — FNV-1a hash of full markdown text → remark AST (used to
- *     short-circuit react-markdown parsing for settled content). LRU with max
- *     500 entries, no byte cap (AST size is small).
+ * Two bounded LRU stores:
+ *  1. codeHtmlCache — an exact (codeText, language, theme) key → Shiki HTML;
+ *     max 500 entries and ~50 MB cached HTML bytes.
+ *  2. mdAstCache — a generic cache for serialized Markdown AST values;
+ *     max 500 entries and ~50 MB cached payload bytes.
  *
- * FNV-1a was chosen over SHA/MD5 because it is a ~15-line pure-JS function
- * with zero dependencies and fast enough for string-length hashing in the
- * critical render path.
+ * An FNV-1a helper is retained for non-identity checks, but its 32-bit
+ * collisions MUST NOT decide which user's code HTML gets rendered.
  */
 
 /* ──────────────────────────── FNV-1a hash ──────────────────────────── */
 
-/** FNV-1a 32-bit hash as a hex string (8 chars, collision-resistant for
- *  our use case — code blocks and markdown text). */
+/** Fast non-cryptographic 32-bit checksum (NOT unique or safe as a cache identity). */
 export function fnv1a(str: string): string {
   let hash = 0x811c9dc5; // FNV offset basis
   for (let i = 0; i < str.length; i++) {
@@ -169,23 +166,27 @@ export class CachedString {
 
 /* ────────────────────────── Cache instances ────────────────────────── */
 
-/** Cache for shiki-generated HTML strings. Key = fnv1a(codeText + lang). */
+/** Cache for Shiki HTML. Its key is an exact, unambiguous input tuple. */
 export const codeHtmlCache = new LRUCache<CachedString>(500, 52_428_800);
 
-/** Cache for parsed markdown AST strings (serialised JSON of the mdast
- *  produced by remark-parse). Only used for settled (non-streaming) content.
- *  Key = fnv1a(markdownText). */
+/** Cache for serialized Markdown AST strings. Callers must use exact input keys. */
 export const mdAstCache = new LRUCache<CachedString>(500, 52_428_800);
 
-/** Compute a cache key from code text + language tag + Shiki theme.
- *  The theme is included so a theme switch invalidates stale HTML and
- *  triggers re-highlighting instead of serving the wrong palette. */
+/** Identity must compare every input byte, not just a 32-bit checksum:
+ *  FNV collisions and delimiter-containing fields previously reused the
+ *  HTML generated for a different user's code block. JSON tuple encoding
+ *  makes field boundaries unambiguous even when text contains NULs. */
 export function codeCacheKey(text: string, lang: string, theme: string): string {
-  return fnv1a(text + "\0" + lang + "\0" + theme);
+  return JSON.stringify([text, lang, theme]);
 }
 
-/** Store shiki HTML in the code cache. */
+// Exact keys cost memory too. Large blocks can still be highlighted, but
+// bypass memoization rather than letting 500 huge keys live indefinitely.
+const MAX_CODE_CACHE_KEY_LENGTH = 65_536;
+
+/** Store Shiki HTML only when both the identity key and payload are bounded. */
 export function setCodeHtml(key: string, html: string): void {
+  if (key.length > MAX_CODE_CACHE_KEY_LENGTH) return;
   codeHtmlCache.set(key, new CachedString(html));
 }
 

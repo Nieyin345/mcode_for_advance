@@ -36,11 +36,17 @@ export function setLastCursor(
   filePath: string,
   pos: { line: number; column: number },
 ): void {
+  // Monaco coordinates are 1-based; legacy callers may still send zero
+  // while restoring an unset cursor. Normalize zero instead of breaking
+  // navigation/LRU callers, but reject negative, fractional or nonfinite input.
+  if (!Number.isSafeInteger(pos.line) || pos.line < 0 ||
+      !Number.isSafeInteger(pos.column) || pos.column < 0) return;
   // 按最近使用封顶。一条只有两个数字,但"这次开机点开过的每个文件"都留一条,
   // 在大仓库里翻一遍就是几千条,而其中绝大多数用户再也不会回去。删掉再插入
   // 是为了把这一条挪到队尾 —— Map 按插入序迭代,队头就是最久没碰过的那个。
   lastCursorByFile.delete(filePath);
-  lastCursorByFile.set(filePath, pos);
+  // Never store caller-owned mutable Selection / Position objects.
+  lastCursorByFile.set(filePath, { line: Math.max(1, pos.line), column: Math.max(1, pos.column) });
   while (lastCursorByFile.size > LAST_CURSOR_MAX) {
     const oldest: string | undefined = lastCursorByFile.keys().next().value;
     if (oldest === undefined) break;
@@ -57,5 +63,6 @@ export function getLastCursor(
     lastCursorByFile.delete(filePath);
     lastCursorByFile.set(filePath, pos);
   }
-  return pos;
+  // Never expose the mutable object inside the cache to another caller.
+  return pos ? { line: pos.line, column: pos.column } : undefined;
 }
