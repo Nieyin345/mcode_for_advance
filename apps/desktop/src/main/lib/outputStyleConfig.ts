@@ -100,7 +100,7 @@ function parseStyleFrontmatter(md: string): { name?: string; description?: strin
  *  CLI matches on; the filename (sans extension) is the fallback when the
  *  file has no frontmatter name. Unreadable files degrade to that same
  *  fallback instead of failing the whole list. */
-function listUserStyles(): OutputStyleEntry[] {
+function listUserStyles(includeAmbiguous = false): OutputStyleEntry[] {
   let files: string[];
   try {
     // A user-scope directory replaced by a junction must not silently load
@@ -123,7 +123,7 @@ function listUserStyles(): OutputStyleEntry[] {
       const stat = lstatSync(path);
       // A .md directory isn't a style, and even a readable symlink can
       // redirect the CLI's prompt to outside this selected style directory.
-      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512 * 1024) continue;
       const fm = parseStyleFrontmatter(readFileSync(path, "utf-8"));
       if (fm.name?.trim()) name = fm.name.trim();
       description = fm.description?.trim() || undefined;
@@ -134,7 +134,14 @@ function listUserStyles(): OutputStyleEntry[] {
     }
     out.push(description ? { id: name, source: "user", description } : { id: name, source: "user" });
   }
-  return out.sort((a, b) => a.id.localeCompare(b.id));
+  // The CLI selects custom styles by frontmatter name, not filename. Two
+  // different files claiming the same name have ambiguous loading order.
+  // Never show an option that may silently pick a different prompt than
+  // the one the user expects; both files must be disambiguated first.
+  const counts = new Map<string, number>();
+  for (const style of out) counts.set(style.id, (counts.get(style.id) ?? 0) + 1);
+  return (includeAmbiguous ? out : out.filter(style => counts.get(style.id) === 1))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** All selectable styles for the settings panel: version-gated built-ins in
@@ -143,8 +150,14 @@ function listUserStyles(): OutputStyleEntry[] {
  *  duplicate Select values would be ambiguous). */
 export function listOutputStyles(): OutputStyleEntry[] {
   const cliVersion = bundledCliVersion();
-  const userStyles = listUserStyles();
-  const userIds = new Set(userStyles.map((s) => s.id));
+  // Keep raw user names when deciding which builtins are shadowed. If two
+  // user files both claim "default", hiding those ambiguous custom files
+  // must NOT resurrect a builtin "default" that the CLI may never select.
+  const discovered = listUserStyles(true);
+  const counts = new Map<string, number>();
+  for (const style of discovered) counts.set(style.id, (counts.get(style.id) ?? 0) + 1);
+  const userStyles = discovered.filter(style => counts.get(style.id) === 1);
+  const userIds = new Set(discovered.map((s) => s.id));
   const builtins = BUILTIN_STYLES.filter(
     (s) =>
       !userIds.has(s.id) && (!s.minCliVersion || !cliVersion || versionAtLeast(cliVersion, s.minCliVersion)),
