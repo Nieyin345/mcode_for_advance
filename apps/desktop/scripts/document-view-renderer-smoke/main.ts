@@ -227,6 +227,22 @@ section("1. 编辑器页 URL 与 docId（纯函数）");
     "file:///home/u/mcode/genoffice/apps/sheets/out/renderer/index.html?mode=tab",
   );
   eq("形状不认识的 CLI 路径 → null（不猜 URL）", editorPageUrl("/opt/elsewhere/cli.cjs", "docs"), null);
+  // ARC-007 原厂 renderer 是受控资源，并非应被 Mcode 从零重建。
+  // 发布包的 CLI 与开发仓库布局不同；旧路径推导会返回 null，
+  // 即使将来打包原厂编辑器页面也根本无法加载。
+  eq("★ 随发行版 GenOffice CLI 目录推导原厂编辑器页（Windows）",
+    editorPageUrl("C:\\Program Files\\Mcode\\resources\\genoffice\\cli\\genoffice.cjs", "docs"),
+    "file:///C:/Program%20Files/Mcode/resources/genoffice/apps/docs/out/renderer/index.html?mode=tab");
+  eq("★ 随发行版 GenOffice CLI 目录推导原厂编辑器页（POSIX）",
+    editorPageUrl("/Applications/Mcode.app/Contents/Resources/genoffice/cli/genoffice.cjs", "slides"),
+    "file:///Applications/Mcode.app/Contents/Resources/genoffice/apps/slides/out/renderer/index.html?mode=tab");
+  eq("★ 开发仓库目录包含井号问号不会变成 URL fragment/query",
+    editorPageUrl("D:\\My #work?\\mcode\\genoffice\\packages\\cli\\dist\\genoffice.cjs", "docs"),
+    "file:///D:/My%20%23work%3F/mcode/genoffice/apps/docs/out/renderer/index.html?mode=tab");
+  eq("★ 只认真实 CLI 文件的完整后缀，不拼造非受信编辑器页",
+    editorPageUrl("C:\\Mcode\\resources\\genoffice\\cli\\bad.cjs", "docs"), null);
+  eq("★ 旧路径片段被后续文件名碰巧包含，不能取错误前缀",
+    editorPageUrl("/home/mcode/genoffice/packages/cli/dist/not-genoffice.cjs", "docs"), null);
 
   const id1 = stableDocId("/workspace/report.docx");
   const id2 = stableDocId("/workspace/report.docx");

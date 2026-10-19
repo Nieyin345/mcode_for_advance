@@ -142,31 +142,37 @@ export function hasHostOpenChannel(host: GenofficeEditorHost, slidesHost = false
 }
 
 /**
- * 从 CLI bundle 路径推出仓库根，再拼出编辑器页的 `file://` 地址。
+ * 用 GenOffice *原版*编辑器构建产物，不复制编辑内核。
  *
- * CLI 的固定位置是 `<repo>/genoffice/packages/cli/dist/genoffice.cjs`
- * （见 `main/document/genofficeCli.resolveGenofficeCliPath`），所以剥掉
- * `/genoffice/packages/cli/…` 之后的就是仓库根 —— 不再向渲染端要第二个"仓库根"
- * 通道（多一条路径来源就多一处会漂的真相）。
+ * CLI 的两种权威形状（见主进程 resolveGenofficeCliPath）：
+ *   开发：<repo>/genoffice/packages/cli/dist/genoffice.cjs
+ *   安装：<resources>/genoffice/cli/genoffice.cjs
+ * 但前者属于源仓快照、后者随安装包资源；两者不可混推。只接受这两个
+ * 完整文件后缀，避免路径里碰巧出现 /genoffice/packages/cli/ 就误导到其它页面。
  *
- * `?mode=tab` 是 vendor 编辑器页认识的参数（`Ribbon.tsx` 读它来让出窗口控制按钮
- * 的留白）；我们的视图里没有 tab strip，所以按 tab 模式渲染。
- *
- * 路径形状不认识时返回 `null`，调用方按"编辑器页未构建"显式报告 —— 不猜一个
- * 可能指向错误位置的 URL。
+ * 本函数只解决**定位**，不证明资源已经打包；发行版如未携带原厂
+ * apps/<host>/out/renderer，宿主必须按资源清单拒绝并报告缺失。
  */
 export function editorPageUrl(cliPath: string, host: GenofficeEditorHost): string | null {
   const normalized = cliPath.replace(/\\/g, "/");
-  const marker = "/genoffice/packages/cli/";
-  const at = normalized.indexOf(marker);
-  if (at <= 0) return null;
-  const repoRoot = normalized.slice(0, at);
-  const pagePath = `${repoRoot}/genoffice/apps/${host}/out/renderer/index.html`;
-  // Windows 盘符路径要三段斜杠（file:///D:/…）；POSIX 根路径本身以 / 开头，
-  // 直接 file:// + 编码后的绝对路径即可（file:///home/…）。
+  const devCli = "/genoffice/packages/cli/dist/genoffice.cjs";
+  const packagedCli = "/genoffice/cli/genoffice.cjs";
+  const suffix = normalized.endsWith(devCli) ? devCli
+    : normalized.endsWith(packagedCli) ? packagedCli
+    : null;
+  if (suffix === null) return null;
+  const installOrRepoRoot = normalized.slice(0, -suffix.length);
+  // Both source and staged release use the same vendor-relative apps/... tree.
+  const pagePath = `${installOrRepoRoot}/genoffice/apps/${host}/out/renderer/index.html`;
+  // encodeURI fails to encode # and ?, so spaces in workstation path names
+  // can turn into a fragment/query and break the original vendor page URL.
+  // Encode every path segment, preserving only a Windows drive-letter colon.
+  const encoded = pagePath.split("/").map((part, index) =>
+    index === 0 && /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)
+  ).join("/");
   const withScheme = /^[A-Za-z]:\//.test(pagePath)
-    ? `file:///${encodeURI(pagePath)}`
-    : `file://${encodeURI(pagePath)}`;
+    ? `file:///${encoded}`
+    : `file://${encoded}`;
   return `${withScheme}?mode=tab`;
 }
 
