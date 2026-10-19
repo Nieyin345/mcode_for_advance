@@ -410,6 +410,31 @@ function eq(name: string, actual: unknown, expected: unknown): void {
   // 直接测 applyToolBudget 的 token 分支。
   const tokenBudgeted = applyToolBudget(piCodeNoBudget, { maxTokens: 1 });
   check("★ 预算 maxTokens=1 → 只剩 floor(其余被 token 上限挡住)", tokenBudgeted.every((n) => ESSENTIAL_TOOL_NAMES.includes(bareToolName(n))) && tokenBudgeted.length >= 3, tokenBudgeted);
+
+  // The first alphabetic optional tool may be too expensive; smaller tools
+  // later must still be evaluated. A 'break' for token exhaustion wrongly
+  // hides otherwise affordable tools from all three provider adapters.
+  const synthetic = {
+    ...piCodeNoBudget,
+    selected: ["app_api_call", "app_api_describe", "app_api_list", "a_very_heavy", "b_light", "c_light"],
+    inventory: {
+      ...piCodeNoBudget.inventory,
+      tools: [
+        ...piCodeNoBudget.inventory.tools.filter(t => ESSENTIAL_TOOL_NAMES.includes(t.name)),
+        { name: "a_very_heavy", estimatedTokens: 100 },
+        { name: "b_light", estimatedTokens: 2 },
+        { name: "c_light", estimatedTokens: 2 },
+      ],
+    },
+  } as typeof piCodeNoBudget;
+  const floorCost = synthetic.inventory.tools.filter(t => ESSENTIAL_TOOL_NAMES.includes(t.name)).reduce((sum, t) => sum + t.estimatedTokens, 0);
+  const affordable = applyToolBudget(synthetic, { maxTokens: floorCost + 4 });
+  check("★ oversized first optional tool cannot hide later cheap tools",
+    affordable.includes("b_light") || affordable.includes("c_light"), affordable);
+  check("oversized optional tool remains excluded under token budget",
+    !affordable.includes("a_very_heavy"), affordable);
+  const countLimited = applyToolBudget(synthetic, { maxTools: 4 });
+  check("maxTools limit includes only one optional entry", countLimited.length === 4, countLimited);
 }
 
 /* ── 10. ★ 接线:三个 provider 真的调了共享选择层(不是只定义不调) ─────────────

@@ -87,10 +87,12 @@ export function applyToolBudget(
     kept.push(name);
     tokens += tokenByName.get(name) ?? 0;
   }
-  // 2) 其余按升序补入,触顶即停。
+  // 2) 其余按升序补入。数量达到上限可以停止，但某个工具
+  // token 太大时只能跳过它：后面的更小工具仍可能放进剩余预算。
   for (const name of selection.selected) {
     if (floor.has(bare(name))) continue;
-    if (!fits(name)) break;
+    if (budget.maxTools !== undefined && kept.length >= budget.maxTools) break;
+    if (!fits(name)) continue;
     kept.push(name);
     tokens += tokenByName.get(name) ?? 0;
   }
