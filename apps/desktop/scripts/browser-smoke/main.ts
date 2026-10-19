@@ -274,6 +274,45 @@ eq("正常历史仍可加入",
   JSON.parse(SettingRepo.get(HISTORY_KEY_FOR_URL_GUARD) ?? "[]").map((row: {url:string})=>row.url),
   ["https://good-after-invalid.test/path"]);
 
+console.log("\n浏览器归档:凭据、旧脏地址与异常标题三条安全边界");
+resetBookmarks();
+SettingRepo.set(HISTORY_KEY_FOR_URL_GUARD, "[]");
+const credentialUrl = "https://demo-user:secret-token@safe-host.test/private";
+Bookmarks.add(credentialUrl, "Secret-bearing URL");
+HistoryForUrlGuard.record(credentialUrl, "Secret-bearing URL");
+eq("★★ 收藏不将 URL 内嵌账号密码明文落盘", storedBookmarks(), []);
+eq("★★ 历史不将 URL 内嵌账号密码明文落盘",
+  SettingRepo.get(HISTORY_KEY_FOR_URL_GUARD), "[]");
+
+resetBookmarks();
+const invalidOldBookmark = JSON.stringify([{ url:"javascript:alert(1)", title:"unsafe", addedAt:1 }]);
+SettingRepo.set(BROWSER_BOOKMARKS_SETTING_KEY, invalidOldBookmark);
+let rejectedOldBookmark = false;
+try { Bookmarks.add("https://new.test", "new"); } catch { rejectedOldBookmark = true; }
+eq("★★ 旧档含脚本地址时拒绝读改写", rejectedOldBookmark, true);
+eq("★★ 旧档中的可疑地址字节原样保全", SettingRepo.get(BROWSER_BOOKMARKS_SETTING_KEY), invalidOldBookmark);
+
+const invalidOldHistory = JSON.stringify([{ url:"file:../../private", title:"unsafe", at:1 }]);
+SettingRepo.set(HISTORY_KEY_FOR_URL_GUARD, invalidOldHistory);
+let rejectedOldHistory = false;
+try { HistoryForUrlGuard.record("https://new.test", "new"); } catch { rejectedOldHistory = true; }
+eq("★★ 旧历史的伪 file 地址不得在新增时被默许", rejectedOldHistory, true);
+eq("★★ 旧历史可疑记录不被自动丢失", SettingRepo.get(HISTORY_KEY_FOR_URL_GUARD), invalidOldHistory);
+
+resetBookmarks();
+SettingRepo.set(HISTORY_KEY_FOR_URL_GUARD, "[]");
+Bookmarks.add("https://valid-title.test", 42 as unknown as string);
+HistoryForUrlGuard.record("https://valid-title.test", { corrupted: true } as unknown as string);
+eq("异常外部网页标题不会污染收藏结构", bookmarkRows()[0]?.title, "");
+eq("异常外部网页标题不会污染历史结构",
+  JSON.parse(SettingRepo.get(HISTORY_KEY_FOR_URL_GUARD) ?? "[]")[0]?.title, "");
+const excessiveTitle = "t".repeat(100_000);
+Bookmarks.add("https://bounded-title.test", excessiveTitle);
+HistoryForUrlGuard.record("https://bounded-title.test", excessiveTitle);
+eq("超长收藏标题截断防止配置膨胀", bookmarkRows()[0]?.title && String(bookmarkRows()[0]?.title).length, 4096);
+eq("超长历史标题也按同一上限截断",
+  JSON.parse(SettingRepo.get(HISTORY_KEY_FOR_URL_GUARD) ?? "[]")[0]?.title.length, 4096);
+
 console.log("\n收藏:上限");
 
 // 「上限类逻辑要在追加时滚动截断」。这里 MAX_ENTRIES = 100:加第 101 条之后,

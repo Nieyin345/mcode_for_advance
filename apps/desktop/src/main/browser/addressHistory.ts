@@ -12,7 +12,7 @@ import {
   type BrowserHistoryEntry,
 } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
-import { isStorableBrowserUrl, readStoredBrowserEntries } from "./storedEntries.js";
+import { isStorableBrowserUrl, normalizeStoredBrowserTitle, readStoredBrowserEntries } from "./storedEntries.js";
 
 /** Cap on stored entries. Navigation frequency is low, so the array stays
  *  small; 50 matches typical browser history dropdowns. */
@@ -36,7 +36,7 @@ export const AddressHistory = {
   record(url: string, title: string): void {
     if (!isStorableBrowserUrl(url)) return;
     const entries = read().filter((e) => e.url !== url);
-    entries.unshift({ url, title: title ?? "", at: Date.now() });
+    entries.unshift({ url, title: normalizeStoredBrowserTitle(title), at: Date.now() });
     write(entries);
   },
 

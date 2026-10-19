@@ -8,7 +8,7 @@
  */
 import { BROWSER_BOOKMARKS_SETTING_KEY, type BrowserBookmarkEntry } from "@contracts/ipc";
 import { SettingRepo } from "@main/store/repositories.js";
-import { isStorableBrowserUrl, readStoredBrowserEntries } from "./storedEntries.js";
+import { isStorableBrowserUrl, normalizeStoredBrowserTitle, readStoredBrowserEntries } from "./storedEntries.js";
 
 /** Cap on stored bookmarks. Bookmarking is deliberate and rare; 100 is far
  *  more than a panel dropdown shows and keeps the settings row bounded. */
@@ -32,7 +32,7 @@ export const Bookmarks = {
   add(url: string, title: string): void {
     if (!isStorableBrowserUrl(url)) return;
     const entries = read().filter((e) => e.url !== url);
-    entries.unshift({ url, title: title ?? "", addedAt: Date.now() });
+    entries.unshift({ url, title: normalizeStoredBrowserTitle(title), addedAt: Date.now() });
     write(entries);
   },
 

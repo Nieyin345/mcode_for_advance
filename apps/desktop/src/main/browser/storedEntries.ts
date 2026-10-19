@@ -13,6 +13,14 @@ import { SettingRepo } from "@main/store/repositories.js";
 
 export type BrowserEntryTimeField = "addedAt" | "at";
 
+/** All browser writers use one safe title boundary. Navigation events are
+ *  not typed IPC messages; a malformed title must not poison the archive.
+ *  The cap prevents a single hostile page title from swelling persisted JSON.
+ */
+export function normalizeStoredBrowserTitle(title: unknown): string {
+  return typeof title === "string" ? title.slice(0, 4096) : "";
+}
+
 /**
  * A scheme prefix alone is not a navigable address: "http:javascript" and
  * "file:../../private" passed the old regex and were persisted as bookmarks.
@@ -26,7 +34,9 @@ export function isStorableBrowserUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return parsed.hostname.length > 0;
+      // A URL with embedded credentials must never reach the plaintext
+      // browser settings row (history and bookmarks share this predicate).
+      return parsed.hostname.length > 0 && !parsed.username && !parsed.password;
     }
     if (parsed.protocol === "file:") {
       return parsed.pathname.length > 1;
@@ -44,7 +54,7 @@ function isStoredBrowserEntry(
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
   return typeof row.url === "string" &&
-    row.url.length > 0 &&
+    isStorableBrowserUrl(row.url) &&
     typeof row.title === "string" &&
     typeof row[timeField] === "number" &&
     Number.isFinite(row[timeField]) &&
