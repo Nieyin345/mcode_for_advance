@@ -17,7 +17,7 @@
  * bound command mid-recording. Capture + stopPropagation isolates the
  * recorder from both.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { Button, Kbd } from "@renderer/components/ui/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -32,6 +32,7 @@ import {
   unbindOverrideFor,
 } from "@renderer/lib/shortcuts.js";
 import { collectCommands } from "@renderer/lib/commands.js";
+import { recorderKeyDecision } from "./recorderCaptureKeys.js";
 import type { Accelerator } from "@contracts/ipc";
 import { IconRefresh, IconCheck } from "@renderer/lib/icons.js";
 
@@ -49,6 +50,10 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
   const [pending, setPending] = useState<Accelerator | null>(null);
   const [conflictLabel, setConflictLabel] = useState<string>("");
   const setShortcutRecording = useSessionStore((s) => s.setShortcutRecording);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const modifyButtonRef = useRef<HTMLButtonElement>(null);
+  const wasActiveRef = useRef(false);
 
   // Mirror the active (non-idle) state into the store's `shortcutRecording`
   // sentinel so the global keydown listener knows to stand down — otherwise a
@@ -57,6 +62,21 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
     setShortcutRecording(mode !== "idle");
     return () => setShortcutRecording(false);
   }, [mode, setShortcutRecording]);
+
+  // The previous Modify button unmounts as soon as capture starts. Give the
+  // replacement control real keyboard focus; restore it on exit, but never
+  // steal focus on the initial idle render of every row.
+  useEffect(() => {
+    if (mode === "recording") {
+      wasActiveRef.current = true;
+      cancelButtonRef.current?.focus();
+    } else if (mode === "conflict") {
+      confirmButtonRef.current?.focus();
+    } else if (wasActiveRef.current) {
+      wasActiveRef.current = false;
+      modifyButtonRef.current?.focus();
+    }
+  }, [mode]);
 
   /** Begin recording. Clears any prior pending chord. */
   const startRecording = useCallback(() => {
@@ -118,18 +138,18 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
   useEffect(() => {
     if (mode === "idle") return;
     const onKey = (e: KeyboardEvent) => {
-      // Always swallow the event while the recorder is open — we don't want
-      // the chord to also trigger a global shortcut or close the settings page.
+      const onActionButton = e.target === cancelButtonRef.current || e.target === confirmButtonRef.current;
+      const decision = recorderKeyDecision(mode, e, onActionButton);
+      // Tab must move focus; Enter/Space must activate our own Confirm/Cancel.
+      // Every other event stays isolated from the Settings and command layers.
+      if (decision === "pass") return;
       e.preventDefault();
       e.stopPropagation();
-
-      if (e.key === "Escape") {
+      if (decision === "cancel") {
         cancel();
         return;
       }
-      // In `conflict` mode we only care about Esc (handled above); any other
-      // key is swallowed but ignored so the prompt stays until the user picks.
-      if (mode !== "recording") return;
+      if (decision !== "capture" || e.repeat) return;
 
       const accel = eventToAccelerator(e);
       if (!accel) return; // pure modifier press — keep waiting for the main key.
@@ -153,11 +173,11 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
         <span className="text-[0.7857em] text-accent">
           {t("settings.shortcuts.conflict", { label: conflictLabel })}
         </span>
-        <Button variant="primary" size="sm" onClick={confirmOverwrite}>
+        <Button ref={confirmButtonRef} variant="primary" size="sm" onClick={confirmOverwrite}>
           <IconCheck size={11} />
           {t("settings.shortcuts.overwrite")}
         </Button>
-        <Button variant="ghost" size="sm" onClick={cancel}>
+        <Button ref={cancelButtonRef} variant="ghost" size="sm" onClick={cancel}>
           {t("common.cancel")}
         </Button>
       </div>
@@ -175,7 +195,7 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
         >
           {t("settings.shortcuts.recordingHint")}
         </kbd>
-        <Button variant="ghost" size="sm" onClick={cancel}>
+        <Button ref={cancelButtonRef} variant="ghost" size="sm" onClick={cancel}>
           {t("common.cancel")}
         </Button>
       </div>
@@ -190,7 +210,7 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
       ) : (
         <span className="text-[0.7857em] text-content-subtle">{t("settings.shortcuts.unbound")}</span>
       )}
-      <Button variant="outline" size="sm" onClick={startRecording}>
+      <Button ref={modifyButtonRef} variant="outline" size="sm" onClick={startRecording}>
         {t("settings.shortcuts.modify")}
       </Button>
       {effective && (

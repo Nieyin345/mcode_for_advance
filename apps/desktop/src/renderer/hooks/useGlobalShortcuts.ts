@@ -45,6 +45,14 @@ export function useGlobalShortcuts(): void {
       // its own capture listener consumes the event. Without this, pressing a
       // bound chord mid-recording would both record it AND fire its command.
       if (useSessionStore.getState().shortcutRecording) return;
+      // The gesture recorder also captures keyboard Esc/Tab/Confirm on this
+      // window. This global hook mounts earlier, so stopping propagation
+      // inside GestureRecorder alone cannot stop an already-run shortcut.
+      if (useSessionStore.getState().gestureRecording) return;
+
+      // Chinese/Japanese IME composition can emit synthetic Process/229
+      // keydown events. Never dispatch app commands until composition ends.
+      if (e.isComposing || e.key === "Process" || e.keyCode === 229) return;
 
       // Auto-repeat (holding the key down) must not re-fire toggle commands —
       // especially voice.dictation, whose second press stops the listen.

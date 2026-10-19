@@ -67,6 +67,7 @@ export function useMouseGestures(): void {
     let active = false; // stroke passed the start threshold — it's a gesture
     let cancelled = false; // Escape mid-stroke: finish quietly, fire nothing
     let points: GesturePoint[] = [];
+    let activePointerId: number | null = null;
     let prevCursor = "";
     let suppressMenuUntil = 0;
 
@@ -98,7 +99,7 @@ export function useMouseGestures(): void {
     /* ── transient listeners (attached while armed) ── */
 
     const onPointerMove = (e: PointerEvent) => {
-      if (!armed) return;
+      if (!armed || e.pointerId !== activePointerId) return;
       const start = points[0];
       const dx = e.clientX - start.x;
       const dy = e.clientY - start.y;
@@ -125,6 +126,7 @@ export function useMouseGestures(): void {
       armed = false;
       active = false;
       cancelled = false;
+      activePointerId = null;
       points = [];
       if (wasActive) {
         document.body.style.cursor = prevCursor;
@@ -135,9 +137,21 @@ export function useMouseGestures(): void {
     };
 
     const onPointerUp = (e: PointerEvent) => {
-      if (!armed) return;
+      if (!armed || e.pointerId !== activePointerId) return;
       const target = e.target instanceof Element ? e.target : null;
       const start = points[0];
+      // On a very fast stroke the release can be the first movement sample.
+      // Count it before judging whether the press ever became a gesture.
+      if (start && !active) {
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if (dx * dx + dy * dy >= GESTURE_START_THRESHOLD_PX * GESTURE_START_THRESHOLD_PX) {
+          active = true;
+          prevCursor = document.body.style.cursor;
+        }
+      }
+      if (points.length < MAX_POINTS) points.push({ x: e.clientX, y: e.clientY });
+      else points[points.length - 1] = { x: e.clientX, y: e.clientY };
       const seq = active ? recognizeGesture(points) : [];
       // Finalize the badge BEFORE endStroke fades it: the last segment may
       // complete exactly at release, and an unmatched stroke gets the
@@ -180,8 +194,8 @@ export function useMouseGestures(): void {
       if (cmd) void cmd.perform(state);
     };
 
-    const onPointerCancel = () => {
-      if (armed) endStroke();
+    const onPointerCancel = (e: PointerEvent) => {
+      if (armed && e.pointerId === activePointerId) endStroke();
     };
     const onBlur = () => {
       if (armed) endStroke();
@@ -209,6 +223,7 @@ export function useMouseGestures(): void {
     /* ── permanent listeners (while gestures are enabled) ── */
 
     const onPointerDown = (e: PointerEvent) => {
+      if (armed) return;
       if (!e.isPrimary) return;
       if (e.button !== triggerButton) return;
       // The settings-page gesture recorder owns the pointer while capturing.
@@ -221,6 +236,7 @@ export function useMouseGestures(): void {
       if (target.closest('[role="dialog"]')) return;
 
       armed = true;
+      activePointerId = e.pointerId;
       active = false;
       cancelled = false;
       points = [{ x: e.clientX, y: e.clientY }];
@@ -265,6 +281,7 @@ export function useMouseGestures(): void {
       armed = false;
       active = false;
       cancelled = false;
+      activePointerId = null;
       points = [];
     };
     // Re-subscribes when the user edits gesture settings; detached entirely

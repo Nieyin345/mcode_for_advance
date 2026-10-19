@@ -271,7 +271,7 @@ export function matchAccelerator(e: KeyboardEvent, a: Accelerator): boolean {
  *
  * The global shortcut listener uses this to decide: when the focus is in one
  * of these, only chords that include at least one modifier (cmd/ctrl/alt) are
- * intercepted; bare keys are left for the field to handle. This matches VS
+ * intercepted; bare keys and Shift-only text-selection chords pass to the field. This matches VS
  * Code: Cmd+B works inside the editor, but plain "b" just inserts a "b".
  */
 export function isEditableTarget(target: EventTarget | null): boolean {
@@ -287,11 +287,11 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 /**
  * Decide whether a chord should be dispatched when the focus is in an
  * editable element. We allow any chord that carries at least one modifier
- * (cmd/ctrl/alt) — those are reserved for app commands — and let everything
- * else through to the field.
+ * (cmd/ctrl/alt) — those are reserved for app commands — and let Shift-only
+ * editing/selection chords through to the field.
  */
 export function shouldDispatchInEditable(a: Accelerator): boolean {
-  return a.cmd || a.shift || a.alt || isFunctionKey(a.key);
+  return a.cmd || a.alt || isFunctionKey(a.key);
 }
 
 /** F1–F12 —— 不产生字符,单独绑定也不会和打字冲突。 */

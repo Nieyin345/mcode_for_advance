@@ -18,12 +18,13 @@
  * right-button stroke never opens a menu, and keydown, so Esc doesn't also
  * close the whole settings page (same isolation trick as ShortcutRecorder).
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { collectCommands } from "@renderer/lib/commands.js";
+import { recorderKeyDecision } from "./recorderCaptureKeys.js";
 import { drawGestureTrail, fadeGestureTrail, showGestureBadge } from "@renderer/lib/gestureTrail.js";
 import {
   MAX_POINTS,
@@ -52,6 +53,10 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
   const [mode, setMode] = useState<Mode>("idle");
   const [pending, setPending] = useState<GestureSequence | null>(null);
   const [conflictLabel, setConflictLabel] = useState<string>("");
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const modifyButtonRef = useRef<HTMLButtonElement>(null);
+  const wasActiveRef = useRef(false);
 
   // Mirror the active (non-idle) state into the store's `gestureRecording`
   // sentinel so the global gesture listener knows to stand down.
@@ -59,6 +64,18 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
     setGestureRecording(mode !== "idle" ? commandId : null);
     return () => setGestureRecording(null);
   }, [mode, commandId, setGestureRecording]);
+
+  useEffect(() => {
+    if (mode === "recording") {
+      wasActiveRef.current = true;
+      cancelButtonRef.current?.focus();
+    } else if (mode === "conflict") {
+      confirmButtonRef.current?.focus();
+    } else if (wasActiveRef.current) {
+      wasActiveRef.current = false;
+      modifyButtonRef.current?.focus();
+    }
+  }, [mode]);
 
   const startRecording = useCallback(() => {
     setPending(null);
@@ -118,16 +135,25 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
       useSessionStore.getState().gestureSettings.trigger === "middle" ? 1 : 2;
     let pts: GesturePoint[] = [];
     let dragging = false;
+    let activePointerId: number | null = null;
+    const resetStroke = () => {
+      dragging = false;
+      activePointerId = null;
+      pts = [];
+      fadeGestureTrail();
+    };
 
     const onDown = (e: PointerEvent) => {
-      if (!e.isPrimary || e.button !== button) return;
+      if (mode !== "recording" || !e.isPrimary || e.button !== button) return;
+      if (dragging) return;
       e.preventDefault();
       e.stopPropagation();
       dragging = true;
+      activePointerId = e.pointerId;
       pts = [{ x: e.clientX, y: e.clientY }];
     };
     const onMove = (e: PointerEvent) => {
-      if (!dragging) return;
+      if (!dragging || e.pointerId !== activePointerId) return;
       e.preventDefault();
       e.stopPropagation();
       if (pts.length < MAX_POINTS) pts.push({ x: e.clientX, y: e.clientY });
@@ -139,43 +165,57 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
       if (arrows) showGestureBadge(arrows, { x: e.clientX, y: e.clientY, matched: false });
     };
     const onUp = (e: PointerEvent) => {
-      if (!dragging) return;
+      if (!dragging || e.pointerId !== activePointerId) return;
       e.preventDefault();
       e.stopPropagation();
-      dragging = false;
-      fadeGestureTrail();
+      // Pointerup may be the only sample after a fast stroke or hard turn.
+      if (pts.length < MAX_POINTS) pts.push({ x: e.clientX, y: e.clientY });
+      else pts[pts.length - 1] = { x: e.clientX, y: e.clientY };
       const seq = recognizeGesture(pts);
+      resetStroke();
       // [] = press without a real stroke — keep waiting for a proper drag.
       if (seq.length === 0) return;
       commit(seq);
     };
+    const onCancel = (e: PointerEvent) => {
+      if (dragging && e.pointerId === activePointerId) resetStroke();
+    };
+    const onBlur = () => resetStroke();
     // Swallow menus for the whole capture (right-button strokes must never
     // open a context menu, on any platform's firing order).
     const onCtx = (e: MouseEvent) => {
+      if (mode !== "recording" || button !== 2) return;
       e.preventDefault();
       e.stopImmediatePropagation();
     };
     const onKey = (e: KeyboardEvent) => {
-      // Always swallow the event while the recorder is open — we don't want
-      // Esc to close the settings page underneath, and typing must not leak
-      // into fields while a chord-like capture is pending.
+      const onActionButton = e.target === cancelButtonRef.current || e.target === confirmButtonRef.current;
+      const decision = recorderKeyDecision(mode, e, onActionButton);
+      if (decision === "pass") return;
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === "Escape") cancel();
+      if (decision === "cancel") {
+        resetStroke();
+        cancel();
+      }
     };
 
     window.addEventListener("pointerdown", onDown, true);
     window.addEventListener("pointermove", onMove, true);
     window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
+    window.addEventListener("blur", onBlur);
     window.addEventListener("contextmenu", onCtx, true);
     window.addEventListener("keydown", onKey, true);
     return () => {
       window.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("pointermove", onMove, true);
       window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
+      window.removeEventListener("blur", onBlur);
       window.removeEventListener("contextmenu", onCtx, true);
       window.removeEventListener("keydown", onKey, true);
-      fadeGestureTrail();
+      resetStroke();
     };
   }, [mode, cancel, commit]);
 
@@ -185,11 +225,11 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
         <span className="text-[0.7857em] text-accent">
           {t("settings.gestures.conflict", { label: conflictLabel })}
         </span>
-        <Button variant="primary" size="sm" onClick={confirmOverwrite}>
+        <Button ref={confirmButtonRef} variant="primary" size="sm" onClick={confirmOverwrite}>
           <IconCheck size={11} />
           {t("settings.gestures.overwrite")}
         </Button>
-        <Button variant="ghost" size="sm" onClick={cancel}>
+        <Button ref={cancelButtonRef} variant="ghost" size="sm" onClick={cancel}>
           {t("common.cancel")}
         </Button>
       </div>
@@ -207,7 +247,7 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
         >
           {t("settings.gestures.recordingHint")}
         </kbd>
-        <Button variant="ghost" size="sm" onClick={cancel}>
+        <Button ref={cancelButtonRef} variant="ghost" size="sm" onClick={cancel}>
           {t("common.cancel")}
         </Button>
       </div>
@@ -232,7 +272,7 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
           {t("settings.gestures.unbound")}
         </span>
       )}
-      <Button variant="outline" size="sm" onClick={startRecording}>
+      <Button ref={modifyButtonRef} variant="outline" size="sm" onClick={startRecording}>
         {t("settings.gestures.modify")}
       </Button>
       {effective && (
