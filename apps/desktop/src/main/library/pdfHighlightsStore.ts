@@ -30,6 +30,9 @@ import { constants, copyFileSync, existsSync, linkSync, readFileSync, renameSync
 import { basename, dirname, join } from "node:path";
 import type { PdfHighlight } from "@contracts/library";
 import { validatePdfHighlight } from "@contracts/pdfHighlight";
+import { fileContentVersion } from "@main/lib/fileVersion.js";
+import { atomicReplaceFile } from "@main/lib/atomicFile.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 
 /** 高亮索引文件的后缀。点开头 + 原文件名，排序时自然挨着。 */
 const SIDECAR_SUFFIX = ".mcode-highlights.json";
@@ -221,28 +224,29 @@ export async function writeBackToFile(
     else usable.push(h);
   }
 
-  if (!existsSync(pdfPath)) return { written: 0, skipped };
+  // L2 Host integration: share ONE revision algorithm, ONE OS-level
+  // per-path lease and ONE audited atomic replacement with the existing
+  // document editor, file.writeFile and Agent document tools. This blocks
+  // competing Mcode processes from both accepting the same stale version.
+  return withOsFileLease(pdfPath, async (real) => {
+    const before = await fileContentVersion(real);
+    if (before === null) return { written: 0, skipped };
 
-  const out = await save(usable);
-  // Never trust a successful saveDocument() callback as proof of a valid
-  // document. Verify the exact output before creating/replacing any file.
-  await validateWrittenPdf(out);
-  const tmp = join(
-    dirname(pdfPath),
-    `.${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.tmp.pdf`,
-  );
-  try {
-    writeFileSync(tmp, out);
-    // ⚠️ 同目录 rename 才是原子的。跨盘的 rename 在 Windows 上会抛 EXDEV ——
-    //    所以临时文件必须落在**原文件的目录**里，不能放系统 temp。
-    renameSync(tmp, pdfPath);
-  } catch (err) {
-    try {
-      rmSync(tmp, { force: true });
-    } catch {
-      /* 尽力而为 */
+    const out = await save(usable);
+    // saveDocument() is untrusted; an accepted callback does not imply a PDF.
+    await validateWrittenPdf(out);
+
+    // External editors do not participate in Mcode's OS file lease. Recheck
+    // the actual disk bytes after every async save/parse operation before
+    // replacement; an updated file must be preserved and flagged as conflict.
+    const latest = await fileContentVersion(real);
+    if (latest !== before) {
+      throw new Error("PDF 已被其他写入者改动（版本冲突），请重新打开后再保存；原文件已保留");
     }
-    throw err;
-  }
-  return { written: usable.length, skipped, bytes: statSync(pdfPath).size };
+
+    // UUID, exclusive wx, fsync, file-mode and hardlink checks live in the
+    // shared Host primitive. Never revive a separate PDF-specific temp path.
+    await atomicReplaceFile(real, out);
+    return { written: usable.length, skipped, bytes: statSync(real).size };
+  });
 }

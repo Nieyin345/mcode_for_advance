@@ -88,6 +88,79 @@ try {
     check("★★ "+name+": immutable original backup preserved",readFileSync(original).equals(realBackup));
     check("★★ "+name+": no abandoned writeback tmp",!readdirSync(root).some(x=>x.endsWith(".tmp.pdf")));
   }
+  // Auditor E1 #1: the previous timestamp/Math.random temporary path can
+  // belong to another writer. Our write must neither overwrite nor unlink it.
+  const savedNow=Date.now;
+  const savedRandom=Math.random;
+  const fixedTime=424242424242;
+  const fixedRandom=0.123456789;
+  const collidedPdfTmp=join(root,
+    "."+fixedTime.toString(36)+"-"+fixedRandom.toString(36).slice(2,8)+".tmp.pdf");
+  const unrelatedTemp=Buffer.from("OTHER WRITER OWNS THIS TEMP FILE");
+  writeFileSync(collidedPdfTmp,unrelatedTemp);
+  let tmpWriteError="";
+  try {
+    Date.now=()=>fixedTime;
+    Math.random=()=>fixedRandom;
+    try{await writeBackToFile(pdf,[],async()=>validBytes.slice());}
+    catch(err){tmpWriteError=String(err);}
+  }finally{
+    Date.now=savedNow;
+    Math.random=savedRandom;
+  }
+  check("★★ unrelated writer's same-named temp remains intact",
+    existsSync(collidedPdfTmp) && readFileSync(collidedPdfTmp).equals(unrelatedTemp),
+    {exists:existsSync(collidedPdfTmp),tmpWriteError});
+  rmSync(collidedPdfTmp,{force:true});
+
+  // Auditor E1 #2: while awaiting saveDocument(), another process edits the
+  // source PDF. Our old PDF snapshot must not replace its newer bytes.
+  writeFileSync(pdf,validBytes);
+  const concurrentBytes=Buffer.concat([Buffer.from(validBytes),Buffer.from("\n% NEW WRITER CONTENT\n")]);
+  let conflictError="";
+  try {
+    await writeBackToFile(pdf,[],async()=>{
+      writeFileSync(pdf,concurrentBytes);
+      return validBytes.slice();
+    });
+  }catch(err){conflictError=String(err);}
+  check("★★ concurrent modification is explicitly refused",
+    /冲突|改动|版本|重新/.test(conflictError),conflictError);
+  check("★★ concurrent writer's updated PDF survives unmodified",
+    readFileSync(pdf).equals(concurrentBytes));
+  check("★★ concurrent failure left no PDF temp",
+    !readdirSync(root).some(x=>x.endsWith(".tmp.pdf")||x.endsWith(".mcode-tmp")));
+
+  // Two independent Mcode callers should share the Host's per-path OS
+  // lease, rather than each running saveDocument against the same revision.
+  let signalFirst!:()=>void;
+  let releaseFirst!:()=>void;
+  const firstEntered=new Promise<void>(resolve=>{signalFirst=resolve;});
+  const firstHold=new Promise<void>(resolve=>{releaseFirst=resolve;});
+  const firstWrite=writeBackToFile(pdf,[],async()=>{
+    signalFirst();
+    await firstHold;
+    return validBytes.slice();
+  });
+  await firstEntered;
+  let secondEntered=false;
+  const secondWrite=writeBackToFile(pdf,[],async()=>{
+    secondEntered=true;
+    return validBytes.slice();
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  check("★★ second Mcode writer cannot enter PDF save while first owns Host lease",
+    !secondEntered);
+  releaseFirst();
+  await firstWrite;
+  await secondWrite;
+  check("second Mcode writer proceeds after first releases lease",secondEntered);
+  check("Host file lease does not leave lock files after success",
+    !readdirSync(root).some(x=>x.endsWith(".mcode-lock")));
+
+  // The shared Host CAS and atomic file routine must continue to allow normal
+  // saves and preserve the established clean-original path.
   const valid=await writeBackToFile(pdf,[],async()=>validBytes.slice());
   check("normal real PDF writeback still succeeds",
     valid.written===0&&readFileSync(pdf).equals(Buffer.from(validBytes)),valid);
