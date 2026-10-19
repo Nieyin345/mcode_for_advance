@@ -119,6 +119,51 @@ for (const [label, raw] of [
   check(`${label} → 日志点明形状不符`, messagesAt("error")[0]?.includes("期望对象") === true, messagesAt("error")[0]);
 }
 
+// ─────────────────── §C2 值类型损坏与 JS 原型名陷阱 ───────────────────
+console.log("\n§C2 值类型损坏 / prototype 身份");
+reset();
+{
+  const KEY = "smokeMalformedValues";
+  const malformed = '{"good":"cipher", "unsafe":42}';
+  putRaw(KEY, malformed);
+  const out = readSecretMap(KEY, "类型校验");
+  check("★ JSON 对象的值不是字符串，整张表必须作为坏档显式拒用",
+    Object.keys(out).length === 0 && secretMapCorrupted(KEY), out);
+  check("★ 值类型坏档日志指向字段而不是泄漏凭据",
+    messagesAt("error").some((x) => x.includes("unsafe") && x.includes("类型校验")),
+    messagesAt("error"));
+  check("★ 类型坏档读取不能改盘上的原字节", SettingRepo.get(KEY) === malformed);
+
+  // Standard objects have inherited function keys, which can be mistaken
+  // for ciphertext if a model/provider id happens to be "constructor".
+  reset();
+  const SAFE_KEY = "smokePrototypeIds";
+  putRaw(SAFE_KEY, '{"safe":"cipher"}');
+  const safe = readSecretMap(SAFE_KEY, "原型边界");
+  check("★ 未配置的 constructor/toString id 不得凭原型链冒出凭据",
+    (safe as Record<string, unknown>)["constructor"] === undefined &&
+    (safe as Record<string, unknown>)["toString"] === undefined, safe);
+  check("★ 合法密钥不能因消除原型链而消失", safe.safe === "cipher");
+
+  reset();
+  const POISON_KEY = "smokePrototypeOwnKey";
+  putRaw(POISON_KEY, '{"__proto__":"cipher-own"}');
+  const own = readSecretMap(POISON_KEY, "原型边界");
+  check("★ 明确登记的 __proto__ id 是自己的密文而不是 JS 对象原型",
+    Object.getPrototypeOf(own) === null && Object.hasOwn(own, "__proto__") && own["__proto__"] === "cipher-own", own);
+
+  reset();
+  const WRITE_KEY = "smokeInvalidWrite";
+  putRaw(WRITE_KEY, '{"protected":"original"}');
+  let rejected = false;
+  try {
+    writeSecretMap(WRITE_KEY, { invalid: 17 } as unknown as Record<string, string>);
+  } catch { rejected = true; }
+  check("★ 写入非字符串密钥值必须拒绝（不能写坏已有表）", rejected);
+  check("★ 被拒的写入不修改磁盘上的旧凭据表",
+    SettingRepo.get(WRITE_KEY) === '{"protected":"original"}');
+}
+
 // ─────────────────── §D 未损坏时不报（防假修复）───────────────────
 console.log("\n§D 未损坏时保持安静");
 reset();

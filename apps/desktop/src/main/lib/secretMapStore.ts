@@ -36,6 +36,11 @@ export type SecretMap = Record<string, string>;
  */
 const corrupted = new Set<string>();
 
+/** Never expose Object.prototype members as model/provider credential ids. */
+function emptySecretMap(): SecretMap {
+  return Object.create(null) as SecretMap;
+}
+
 /**
  * 读一份密钥映射。
  *
@@ -46,18 +51,31 @@ const corrupted = new Set<string>();
  */
 export function readSecretMap(settingKey: string, label: string): SecretMap {
   const raw = readRaw(settingKey);
-  if (raw === null) return {};
+  if (raw === null) return emptySecretMap();
   try {
     const parsed: unknown = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as SecretMap;
+      // JSON.parse only checks syntax, not Record<string,string>. A numeric
+      // value would later be passed to Buffer.from(ciphertext, "base64") and
+      // crash the model call, while the old parser reported a healthy map.
+      // Build a null-prototype result to avoid inherited keys such as
+      // "constructor"/"toString" masquerading as configured credentials.
+      const result = emptySecretMap();
+      for (const [id, ciphertext] of Object.entries(parsed)) {
+        if (typeof ciphertext !== "string") {
+          markCorrupted(settingKey, label, `条目 ${JSON.stringify(id)} 的值类型为 ${typeof ciphertext}，期望字符串`);
+          return emptySecretMap();
+        }
+        result[id] = ciphertext;
+      }
+      return result;
     }
     // 合法 JSON 但不是「对象映射」——同样是损坏，同样要报。
     markCorrupted(settingKey, label, `顶层是 ${Array.isArray(parsed) ? "数组" : typeof parsed}，期望对象`);
-    return {};
+    return emptySecretMap();
   } catch (err) {
     markCorrupted(settingKey, label, (err as Error).message);
-    return {};
+    return emptySecretMap();
   }
 }
 
@@ -68,7 +86,19 @@ export function readSecretMap(settingKey: string, label: string): SecretMap {
  * 本文件只负责"这一份读写长什么样"。
  */
 export function writeSecretMap(settingKey: string, map: SecretMap): void {
-  SettingRepo.set(settingKey, JSON.stringify(map));
+  // Runtime callers are not necessarily typechecked (plugins / persisted
+  // inputs). Validate before touching the existing encrypted setting blob.
+  if (!map || typeof map !== "object" || Array.isArray(map)) {
+    throw new TypeError("secret map must be a string-valued object");
+  }
+  const safe = emptySecretMap();
+  for (const [id, value] of Object.entries(map)) {
+    if (typeof value !== "string") {
+      throw new TypeError(`secret map entry ${JSON.stringify(id)} must be a string`);
+    }
+    safe[id] = value;
+  }
+  SettingRepo.set(settingKey, JSON.stringify(safe));
 }
 
 /**
