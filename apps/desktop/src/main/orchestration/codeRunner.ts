@@ -30,6 +30,7 @@ import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeOutcome } from "@contracts/nodeTy
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
 import { spawnRun, MAX_LINE_BYTES } from "@main/lib/spawnRun.js";
 import { markTruncatedTail } from "@main/lib/outBuf.js";
+import { safeErrorMessage } from "@main/lib/ipcError.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
 
 export type CodeLanguage = "python" | "node" | "shell" | "powershell";
@@ -114,8 +115,29 @@ export async function runCodeNode(a: {
   signal: AbortSignal;
   onProgress?: (p: CodeProgress) => void;
 }): Promise<NodeOutcome> {
-  if (!a.code.trim()) return { status: "failed", summary: "", error: "代码节点没有填写代码" };
+  // Plugins and IPC callers may bypass the NodeInput builder. Validate the
+  // actual execution boundary too: malformed inputs must fail as NodeOutcome,
+  // never silently select shell / disable watchdog / reject the whole flow.
+  if (typeof a.code !== "string" || !a.code.trim()) {
+    return { status: "failed", summary: "", error: "代码节点没有填写有效代码文本" };
+  }
   if (a.signal.aborted) return { status: "cancelled", summary: "" };
+  if (a.language !== "python" && a.language !== "node"
+    && a.language !== "shell" && a.language !== "powershell") {
+    return { status: "failed", summary: "", error: "代码节点 language 无效，拒绝替换解释器" };
+  }
+  if (!Number.isSafeInteger(a.timeoutMs) || a.timeoutMs < 0 || a.timeoutMs > 2_147_483_647) {
+    return { status: "failed", summary: "", error: "代码节点 timeoutMs 必须是 0–2147483647 的整数毫秒" };
+  }
+  let stdinText: string;
+  try {
+    const json = JSON.stringify(a.input ?? null);
+    if (typeof json !== "string") throw new TypeError("input is not representable as JSON");
+    stdinText = json + "\n";
+  } catch (err) {
+    return { status: "failed", summary: "",
+      error: `代码节点 JSON stdin 输入无法序列化：${safeErrorMessage(err)}` };
+  }
 
   const dir = await mkdtemp(path.join(os.tmpdir(), "mcode-code-"));
   try {
@@ -146,7 +168,8 @@ export async function runCodeNode(a: {
         if (payload[1] === "progress" && value && typeof value === "object") {
           const v = value as Record<string, unknown>;
           a.onProgress?.({
-            ...(typeof v.percent === "number" && Number.isFinite(v.percent) ? { percent: v.percent } : {}),
+            ...(typeof v.percent === "number" && Number.isFinite(v.percent)
+              && v.percent >= 0 && v.percent <= 100 ? { percent: v.percent } : {}),
             ...(typeof v.message === "string" ? { message: v.message } : {}),
           });
         }
@@ -181,7 +204,7 @@ export async function runCodeNode(a: {
         : {}),
       ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
       // 输入永远给(哪怕是 `null`)—— 用户代码期望 stdin 上有一行 JSON。
-      stdin: JSON.stringify(a.input ?? null) + "\n",
+      stdin: stdinText,
       timeoutMs: a.timeoutMs,
       signal: a.signal,
       limitBytes: MAX_CAPTURE_BYTES,

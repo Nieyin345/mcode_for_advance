@@ -224,5 +224,101 @@ console.log("\nPython · 真起进程:代码节点用的就是解析器选中的
   }
 }
 
+console.log("\nDirect caller boundary · malformed language, timeout, code, stdin");
+{
+  // The NodeInput builder rejects these shapes, but plugin/IPC consumers can
+  // call runCodeNode directly. It must return a failed NodeOutcome instead of
+  // changing interpreter, disabling the timeout, or throwing a JSON error.
+  for (const language of ["ruby", "Powershell ", "toString"]) {
+    let outcome: Awaited<ReturnType<typeof runCodeNode>> | undefined;
+    let thrown: unknown;
+    try {
+      outcome = await runCodeNode({ code: "console.log('fixture');", language: language as "node",
+        timeoutMs: 1500, signal: controller().signal });
+    } catch (err) { thrown = err; }
+    check("★ unknown code language is rejected before any interpreter starts",
+      thrown === undefined && outcome?.status === "failed"
+        && /language|解释器|语言/.test(String(outcome.error)),
+      { language, status: outcome?.status, error: outcome?.error, thrown: String(thrown) });
+  }
+  for (const timeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.25, 2_147_483_648]) {
+    let outcome: Awaited<ReturnType<typeof runCodeNode>> | undefined;
+    let thrown: unknown;
+    try {
+      outcome = await runCodeNode({ code: "console.log('fixture');", language: "node",
+        timeoutMs, signal: controller().signal });
+    } catch (err) { thrown = err; }
+    check("★ invalid direct timeout cannot disable or corrupt the watchdog",
+      thrown === undefined && outcome?.status === "failed"
+        && /timeout|超时|毫秒/.test(String(outcome.error)),
+      { timeoutMs, status: outcome?.status, error: outcome?.error, thrown: String(thrown) });
+  }
+  const cyclic: { self?: unknown } = {};
+  cyclic.self = cyclic;
+  for (const input of [1n, cyclic]) {
+    let outcome: Awaited<ReturnType<typeof runCodeNode>> | undefined;
+    let thrown: unknown;
+    try {
+      outcome = await runCodeNode({ code: "console.log('fixture');", language: "node",
+        input, timeoutMs: 1500, signal: controller().signal });
+    } catch (err) { thrown = err; }
+    check("★ unencodable JSON stdin gets a structured failed outcome",
+      thrown === undefined && outcome?.status === "failed"
+        && /stdin|JSON|输入/.test(String(outcome.error)),
+      { status: outcome?.status, error: outcome?.error, thrown: String(thrown) });
+  }
+  let wrongCode: Awaited<ReturnType<typeof runCodeNode>> | undefined;
+  let codeThrown: unknown;
+  try {
+    wrongCode = await runCodeNode({ code: 42 as unknown as string,
+      language: "node", timeoutMs: 1000, signal: controller().signal });
+  } catch (err) { codeThrown = err; }
+  check("★ non-text direct code is rejected as a failed outcome, not a TypeError",
+    codeThrown === undefined && wrongCode?.status === "failed"
+      && /代码|code/.test(String(wrongCode.error)),
+    { status: wrongCode?.status, error: wrongCode?.error, thrown: String(codeThrown) });
+}
+
+console.log("\nProtocol progress · invalid percentage must not reach UI");
+{
+  const reports: Array<{percent?:number;message?:string}> = [];
+  const code = [
+    `console.log(${JSON.stringify(NODE_STDOUT_PROTOCOL_PREFIX + "progress ")}+JSON.stringify({percent:-5,message:"low"}));`,
+    `console.log(${JSON.stringify(NODE_STDOUT_PROTOCOL_PREFIX + "progress ")}+JSON.stringify({percent:130,message:"high"}));`,
+    `console.log(${JSON.stringify(NODE_STDOUT_PROTOCOL_PREFIX + "progress ")}+JSON.stringify({percent:33,message:"normal"}));`,
+  ].join("\n");
+  const outcome = await runCodeNode({ code, language:"node", timeoutMs:5000,
+    signal:controller().signal,onProgress:(p)=>reports.push(p) });
+  eq("progress fixture exits successfully",outcome.status,"success");
+  eq("progress callback receives three messages",reports.length,3);
+  check("★ negative progress never propagates an invalid UI percentage",reports[0]?.percent===undefined,reports);
+  check("★ progress over 100 never propagates an invalid UI percentage",reports[1]?.percent===undefined,reports);
+  eq("valid progress percentage remains intact",reports[2]?.percent,33);
+  eq("invalid percentage still keeps its diagnostic message",reports[1]?.message,"high");
+}
+
+// Plugin input serializers can throw arbitrary JS values; even the error
+// reporter must never reject the scheduler with a secondary TypeError.
+{
+  const nullProtoThrown=Object.create(null) as Record<string,unknown>;
+  const errorWithBadMessage=new Error("base");
+  Object.defineProperty(errorWithBadMessage,"message",{get(){throw nullProtoThrown;}});
+  for(const input of [
+    {toJSON(){throw nullProtoThrown;}},
+    {toJSON(){throw {toString(){throw Error("secondary");}};}},
+    {toJSON(){throw errorWithBadMessage;}}
+  ]) {
+    let outcome:Awaited<ReturnType<typeof runCodeNode>>|undefined;
+    let rejected:unknown;
+    try {outcome=await runCodeNode({code:"console.log(1)",language:"node",
+      input,timeoutMs:500,signal:controller().signal});}
+    catch(err){rejected=err;}
+    check("★ noncoercible thrown stdin serializer does not escape CodeRunner",
+      rejected===undefined&&outcome?.status==="failed"&&typeof outcome.error==="string"
+        &&outcome.error.includes("JSON"),
+      {status:outcome?.status,error:outcome?.error,rejected:rejected!==undefined});
+  }
+}
+
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${total} checks`);
 if (failures > 0) process.exit(1);
