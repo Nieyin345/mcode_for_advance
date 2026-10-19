@@ -43,21 +43,13 @@ export function isPlaintextNonLoopbackEndpoint(endpoint: string): boolean {
   if (schemeMatch === null) return true;
   const scheme = schemeMatch[1].toLowerCase();
   if (scheme !== "http") return false; // https / wss / 其它带:// 的都不算"明文 http"
-  // 取 host 部分(去 scheme、去 path/userinfo/port)。
-  let rest = raw.slice(schemeMatch[0].length);
-  const slash = rest.indexOf("/");
-  if (slash >= 0) rest = rest.slice(0, slash);
-  const at = rest.lastIndexOf("@"); // userinfo(罕见,但别把 host 判错)
-  if (at >= 0) rest = rest.slice(at + 1);
-  // IPv6 主机形如 [::1]:port。
-  let host: string;
-  if (rest.startsWith("[")) {
-    const end = rest.indexOf("]");
-    host = end >= 0 ? rest.slice(0, end + 1) : rest;
-  } else {
-    const colon = rest.indexOf(":");
-    host = colon >= 0 ? rest.slice(0, colon) : rest;
+  // Let the same WHATWG URL parser used by the browser decide the authority.
+  // Hand-splitting at the final @ misreads `http://remote?@localhost` as
+  // localhost and suppresses a warning for a REAL remote HTTP endpoint.
+  try {
+    const host = new URL(raw).hostname;
+    return host === "" || !isLoopbackHostname(host);
+  } catch {
+    return true; // malformed HTTP authority is never trusted as loopback
   }
-  if (host === "") return true; // `http://` 后面什么都没有 —— 拿不准,提示
-  return !isLoopbackHostname(host);
 }

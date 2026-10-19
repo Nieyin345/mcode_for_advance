@@ -78,7 +78,13 @@ export function useSuppressBrowserView(
     // frame later, once more after the entry transition settles (the
     // scale-95→100 starting style makes getBoundingClientRect read ~5% small
     // while animating), and on window resizes (the popup moves with it).
-    const remeasure = () => updateOccluder(id, measureUnion());
+    // A ref-aware popup can still be unmounted/collapsed at the next frame.
+    // Keep the same non-occluding sentinel we used at registration; turning
+    // this into null would suppress the browser despite no visible popup.
+    const remeasure = () => updateOccluder(
+      id,
+      list.length > 0 ? (measureUnion() ?? OCCLUDER_UNMEASURED) : null,
+    );
     const raf = requestAnimationFrame(remeasure);
     const settleTimer = window.setTimeout(remeasure, 120);
     window.addEventListener("resize", remeasure);

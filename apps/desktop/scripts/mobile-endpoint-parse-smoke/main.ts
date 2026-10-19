@@ -1,0 +1,15 @@
+import { isPlaintextNonLoopbackEndpoint as risk } from "../../src/renderer/lib/mobileEndpointRisk.js";
+let pass=0,fail=0;
+const eq=(name:string,actual:boolean,expected:boolean)=>{const ok=actual===expected;console.log((ok?"PASS ":"FAIL ")+name+(ok?"":` got=${actual} want=${expected}`));if(ok)pass++;else fail++;};
+eq("normal LAN plaintext shows warning",risk("http://192.168.50.2:8787"),true);
+eq("honest localhost no warning",risk("http://localhost:8787"),false);
+eq("IPv6 localhost no warning",risk("http://[::1]:8787"),false);
+eq("username localhost cannot mask real remote host",risk("http://localhost@evil.example:8787"),true);
+eq("query @localhost cannot hide remote origin",risk("http://evil.example?@localhost"),true);
+eq("fragment @localhost cannot hide remote origin",risk("http://evil.example#@localhost"),true);
+eq("malformed dotted 127 address must not suppress warning",risk("http://127.999.1.1:8787"),true);
+eq("localhost fragment @remote still localhost",risk("http://localhost:8787/#@evil.example"),false);
+eq("non-http encrypted transport no warning",risk("https://evil.example"),false);
+eq("unparseable HTTP host shows conservative warning",risk("http://%ZZ"),true);
+console.log(`mobile-endpoint-parse-smoke: ${pass}/${pass+fail}`);
+if(fail)process.exitCode=1;

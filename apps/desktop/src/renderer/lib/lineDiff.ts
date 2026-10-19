@@ -93,7 +93,9 @@ export function diffSummary(diff: ReadonlyArray<DiffLine>): { adds: number; dels
  *  comes from the final newline. */
 function splitLines(s: string): string[] {
   if (s === "") return [];
-  const parts = s.split("\n");
+  // Treat CRLF and LF as the same line boundary. Otherwise a Windows file
+  // rendered against an LF-formatted edit marks EVERY line as removed/added.
+  const parts = s.replace(/\r\n/g, "\n").split("\n");
   // If the text ends with `\n`, split produces a trailing "" — drop it
   // so an "old == new" file of just "\n" diffs to empty.
   if (parts.length > 0 && parts[parts.length - 1] === "" && s.endsWith("\n")) {

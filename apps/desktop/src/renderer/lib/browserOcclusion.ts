@@ -57,7 +57,9 @@ function notify(): void {
 export function rectOf(el: HTMLElement | null | undefined): OcclusionRect | null {
   if (!el || !el.isConnected) return null;
   const r = el.getBoundingClientRect();
-  if (r.width < 1 && r.height < 1) return null;
+  // A popup needs positive area on BOTH axes to occlude the OS view.
+  // A collapsed 0×200 portal must not hide the browser for one frame.
+  if (r.width < 1 || r.height < 1) return null;
   return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
 }
 

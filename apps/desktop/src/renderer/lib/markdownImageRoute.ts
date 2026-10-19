@@ -32,9 +32,22 @@ export function resolveMarkdownImageRoute(
   library: { id: string; rootAbs: string } | null | undefined,
 ): MarkdownImageRoute {
   if (library == null) return { kind: "project" };
-  const rel = relativePath(filePath, library.rootAbs);
-  const relIsSub =
-    rel !== "" && !rel.startsWith("..") && !/^[a-zA-Z]:/.test(rel) && !rel.startsWith("/");
-  if (!relIsSub) return { kind: "denied" };
-  return { kind: "library", relPath: rel };
+  const rel = relativePath(filePath, library.rootAbs).replace(/\\/g, "/");
+  // The renderer is not the authorization boundary (main-process
+  // library.readAsset is), but must never route a lexical escape as a valid
+  // library image. A segment named `..draft.png` IS a legal filename;
+  // reject only complete `..` path components and their underflow.
+  if (!rel || rel.startsWith("/") || /^[a-zA-Z]:/.test(rel)) return { kind: "denied" };
+  const segments: string[] = [];
+  for (const part of rel.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (segments.length === 0) return { kind: "denied" };
+      segments.pop();
+    } else {
+      segments.push(part);
+    }
+  }
+  if (segments.length === 0) return { kind: "denied" };
+  return { kind: "library", relPath: segments.join("/") };
 }

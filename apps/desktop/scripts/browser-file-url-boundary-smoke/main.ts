@@ -1,0 +1,12 @@
+import { localPathToFileUrl } from "../../src/renderer/lib/browserUrl.js";
+let pass=0,fail=0;
+const eq=(name:string,actual:unknown,expected:unknown)=>{const ok=actual===expected;console.log((ok?"PASS ":"FAIL ")+name+(ok?"":` got=${String(actual)} want=${String(expected)}`));if(ok)pass++;else fail++;};
+eq("UNC share is a file URL host",localPathToFileUrl(String.raw`\\server\share\note.html`),"file://server/share/note.html");
+eq("UNC spaces and CJK are path bytes",localPathToFileUrl(String.raw`\\server\share\汉 字#1.html`),"file://server/share/%E6%B1%89%20%E5%AD%97%231.html");
+eq("ordinary drive-path mapping unchanged",localPathToFileUrl(String.raw`C:\docs\note.html`),"file:///C:/docs/note.html");
+eq("POSIX trailing file-name spaces preserved",localPathToFileUrl("/tmp/report .html "),"file:///tmp/report%20.html%20");
+eq("POSIX leading file-name spaces preserved",localPathToFileUrl("/tmp/ report.html"),"file:///tmp/%20report.html");
+eq("literal question/hash are filename not URL delimiters",localPathToFileUrl("/tmp/a?#.txt"),"file:///tmp/a%3F%23.txt");
+eq("URL UNC hostname remains real host",new URL(localPathToFileUrl(String.raw`\\server\share\a.txt`)).host,"server");
+console.log(`browser-file-url-boundary-smoke: ${pass}/${pass+fail}`);
+if(fail)process.exitCode=1;
