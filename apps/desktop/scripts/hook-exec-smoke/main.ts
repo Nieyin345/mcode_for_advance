@@ -460,6 +460,65 @@ check(
 if (rebuilt.ok) rmSync(rebuilt.backupPath, { force: true });
 eq("整份坏掉(显式重建)之后是一份干净的", readHooks().hooks.length, 1);
 
+/* ── 【MC-051】旧洞补网：合法空文件 / 坏档删除 / 备份碰撞 / 并发恢复 ── */
+
+console.log("\nMC-051 原件保全:空文件和重建的边界");
+
+putOnDisk("  \n ");
+let emptySaved: ReturnType<typeof saveHook> | null = null;
+let emptyError: unknown = null;
+try { emptySaved = saveHook(hook({ id: "empty-file-hook" })); }
+catch (err) { emptyError = err; }
+check("★ 空白 hooks.json 是有效空配置，新增不能抛异常", emptyError === null, String(emptyError));
+check("★ 空白 hooks.json 可直接保存第一条 Hook", emptySaved?.ok === true, emptySaved);
+eq("★ 空文件保存后新 Hook 真能读回", readHooks().hooks.map((h) => h.id).join(), "empty-file-hook");
+
+putOnDisk(CORRUPT);
+const rejectedRemove = removeHook("not-in-corrupt-file");
+check("★ 整份坏档即使删除不存在的 Hook 也必须显式拒绝", rejectedRemove.ok === false, rejectedRemove);
+eq("★ 坏档删除失败不能改变原始字节", readFileSync(FILE, "utf-8"), CORRUPT);
+
+// 固定时间构造同名旧备份：旧实现 Date.now() 作唯一键且 writeFileSync 默认覆盖。
+// 重建必须创建新备份，不得将历史备份哨兵当本次备份覆盖。
+{
+  const oldNow = Date.now;
+  const frozen = 1720000000999;
+  const previousBackup = `${FILE}.corrupt-${frozen}.bak`;
+  const sentinel = "an earlier backup must not be overwritten";
+  writeFileSync(previousBackup, sentinel, "utf-8");
+  putOnDisk(CORRUPT);
+  let recovery: ReturnType<typeof rebuildCorruptHooksFile> | null = null;
+  try {
+    Date.now = () => frozen;
+    recovery = rebuildCorruptHooksFile();
+  } finally { Date.now = oldNow; }
+  check("★ 同一毫秒再次重建不覆盖历史备份", readFileSync(previousBackup, "utf-8") === sentinel);
+  check("★ 同时间戳重建必须使用新的备份路径", recovery?.ok === true && recovery.backupPath !== previousBackup, recovery);
+  check("★ 新备份是重建前真正的损坏原文", recovery?.ok === true && readFileSync(recovery.backupPath, "utf-8") === CORRUPT, recovery);
+  if (recovery?.ok && recovery.backupPath !== previousBackup) rmSync(recovery.backupPath, { force: true });
+  rmSync(previousBackup, { force: true });
+}
+
+// 在健康分类完成后、建立备份前发生一次合法外部修复：备份成功也不意味着
+// 可以覆盖别人新写好的健康配置。故障注入只作用于本套件的私有临时数据根。
+{
+  const oldNow = Date.now;
+  const healthy = JSON.stringify({ version: 1, hooks: [hook({ id: "external-recovered" })] });
+  putOnDisk(CORRUPT);
+  let changed = false;
+  let result: ReturnType<typeof rebuildCorruptHooksFile> | null = null;
+  try {
+    Date.now = () => {
+      if (!changed) { putOnDisk(healthy); changed = true; }
+      return 1720000001000;
+    };
+    result = rebuildCorruptHooksFile();
+  } finally { Date.now = oldNow; }
+  check("★ 重建过程中外部修好配置时必须拒绝覆盖", changed && result?.ok === false, result);
+  eq("★ 重建竞态不覆盖外部新配置字节", readFileSync(FILE, "utf-8"), healthy);
+  eq("★ 外部恢复的 Hook 仍然可读", readHooks().hooks.map((h) => h.id).join(), "external-recovered");
+}
+
 /* ── 匹配与"命令能不能跑"无关 ── */
 
 console.log("\n匹配不看命令跑不跑得起来");

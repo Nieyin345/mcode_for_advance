@@ -22,7 +22,7 @@
  * 临时文件再改名更简单也更安全:要么是旧的完整内容,要么是新的完整内容。
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { parseHooksFile, stripBom, validateHook, type HookSpec, type HooksFile } from "@contracts/hook";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -143,7 +143,12 @@ function writeRaw(items: readonly unknown[]): { ok: true } | { ok: false; error:
  */
 function readRawHooks(health: Extract<HooksFileHealth, { state: "missing" | "valid" }>): unknown[] {
   if (health.state === "missing") return [];
-  const raw = JSON.parse(stripBom(health.text)) as unknown;
+  const body = stripBom(health.text);
+  // classifyHooksFile accepts an empty/whitespace-only file as valid, and
+  // readHooks() treats it as zero hooks. Saving must use that same contract:
+  // JSON.parse("") used to throw instead of creating the first hook.
+  if (body.trim().length === 0) return [];
+  const raw = JSON.parse(body) as unknown;
   const list = (raw as { hooks?: unknown } | null)?.hooks;
   if (Array.isArray(list)) return list;
   // 顶层直接是数组也认 —— 与 `parseHooksFile` 同一条(用户手写最自然的写法),
@@ -238,9 +243,12 @@ export function rebuildCorruptHooksFile(
   if (originalText === null) {
     return { ok: false, error: `${HOOKS_FILENAME} 读不动,连备份都做不了 —— 请先处理文件权限` };
   }
-  const backupPath = `${hooksFilePath()}.corrupt-${Date.now()}.bak`;
+  // Never reuse an existing backup name: repeated rebuilds can happen within
+  // the same millisecond (or after a restored clock). The exclusive create
+  // also protects old backup bytes if a random name ever collides.
+  const backupPath = `${hooksFilePath()}.corrupt-${Date.now()}-${randomUUID()}.bak`;
   try {
-    writeFileSync(backupPath, originalText, "utf-8");
+    writeFileSync(backupPath, originalText, { encoding: "utf-8", flag: "wx" });
   } catch (err) {
     return { ok: false, error: `备份写不进去(${backupPath}):${(err as Error).message} —— 未重建,原文件未动` };
   }
@@ -254,6 +262,15 @@ export function rebuildCorruptHooksFile(
   }
   if (digest(backupText) !== digest(originalText)) {
     return { ok: false, error: `备份与原文 sha256 不一致(${backupPath})—— 未重建,原文件未动` };
+  }
+  // Re-read the authoritative source immediately before replacing it.
+  // A user can repair hooks.json in another editor while we prepare its
+  // backup. Never use a previously-corrupt snapshot to overwrite healthy or
+  // newer bytes. Cross-process writers still need an OS lease/CAS as a
+  // separate end-to-end gate; this check closes the deterministic stale read.
+  const current = classifyHooksFile();
+  if (current.state !== "corrupt" || current.text !== originalText) {
+    return { ok: false, error: `${HOOKS_FILENAME} 在备份期间已被外部修改或恢复—— 为保护最新内容,已取消重建;请重新加载后再试(备份位于 ${backupPath})` };
   }
   const written = writeRaw(next);
   if (!written.ok) return { ok: false, error: `重建写失败:${written.error}(原件已备份在 ${backupPath})` };
@@ -298,6 +315,11 @@ export function saveHook(spec: HookSpec): { ok: true } | { ok: false; error: str
  * 不该顺手带走旁边那条我还没看懂的。
  */
 export function removeHook(id: string): { ok: true } | { ok: false; error: string } {
+  // A corrupt file can parse as zero usable hooks, but removing an unknown id
+  // is NOT a successful operation in that state. Surface the same refusal as
+  // saveHook/commitHooks even when the target does not occur in the list.
+  const health = classifyHooksFile();
+  if (health.state === "corrupt" || health.state === "read_error") return corruptRefusal(health);
   const { hooks } = readHooks();
   const next = hooks.filter((h) => h.id !== id);
   if (next.length === hooks.length) return { ok: true };
