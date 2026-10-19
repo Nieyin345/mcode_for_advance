@@ -115,6 +115,26 @@ check("合法文档通过", good.ok, good);
 check("合法文档零错误零警告", good.errors.length === 0 && good.warnings.length === 0, good);
 check("转义与 {{user}} 不算坏引用", good.ok, good.errors);
 
+// ARC-006: scheduler.expandParams only renders top-level string fields.
+// Nested JSON examples / option tables remain literal data and must not be
+// treated by save-time validation as executable template references.
+const literalConfig = validateWorkflowDoc(doc([
+  node("A","mcode.main",SAY),
+  node("B","mcode.agent",{instruction:"valid instruction",
+    examples:["{{ghost.output}}"],
+    nested:{example:"{{ghost.output}}"},
+    outputVars:[{name:"out",example:"{{ghost.output}}"}],
+  }),
+],[edge("ab","A","B")]),OPTS);
+check("★ nested config strings are literal, not phantom template references",
+ !hasCode(literalConfig,"ref.unknown-node","B"),literalConfig.errors);
+const directTemplate = validateWorkflowDoc(doc([
+  node("A","mcode.main",SAY),
+  node("B","mcode.agent",{instruction:"{{ghost.output}}",examples:["ordinary"]}),
+],[edge("ab","A","B")]),OPTS);
+check("top-level string reference remains validated",
+ hasCode(directTemplate,"ref.unknown-node","B"),directTemplate.errors);
+
 /* ── 2. 图错误 ── */
 
 const cycle = validateWorkflowDoc(

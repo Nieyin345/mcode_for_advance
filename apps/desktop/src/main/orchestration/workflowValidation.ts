@@ -112,18 +112,14 @@ function templateRefs(text: string): string[] {
   return [...guarded.matchAll(/\{\{([^{}]*)\}\}/g)].map((m) => m[1] ?? "");
 }
 
-/** 节点参数里的**全部字符串值**(含数组与一层对象里的 —— 选项表、变量表都是字符串的家)。 */
+/** Save-time template validation scans precisely the strings that
+ * scheduler.expandParams actually renders (top-level string parameters).
+ * Nested arrays/objects are literal JSON data, including output examples.
+ * Dedicated condition rule refs are checked separately below.
+ */
 function* stringValuesOf(params: Record<string, unknown>): Generator<string> {
   for (const value of Object.values(params)) {
-    if (typeof value === "string") {
-      yield value;
-    } else if (Array.isArray(value)) {
-      for (const item of value) if (typeof item === "string") yield item;
-    } else if (typeof value === "object" && value !== null) {
-      for (const item of Object.values(value as Record<string, unknown>)) {
-        if (typeof item === "string") yield item;
-      }
-    }
+    if (typeof value === "string") yield value;
   }
 }
 
@@ -535,7 +531,8 @@ export function validateWorkflowDoc(
     }
     const upstream = upstreamClosure(forward.deps, node.id);
     // 结构化条件只扫描每条规则的 ref;比较的 value 始终是字面量。
-    // 通用字符串扫描只深入一层,本来拿不到 rules[].ref。
+    // 通用扫描与 scheduler.expandParams 同步，仅处理顶层字符串；
+    // rules[].ref 是条件语义的专门引用，必须额外检查。
     const references = [...stringValuesOf(node.params)];
     if (manifestOf(node)?.runner.kind === "condition") {
       const raw = node.params[NODE_CONDITION_EXPRESSION_KEY];

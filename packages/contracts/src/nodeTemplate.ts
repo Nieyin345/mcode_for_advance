@@ -302,7 +302,14 @@ function resolveOne(
     if (key.length === 0) {
       return { ok: false, error: `${where}:\`params.\` 后面要写参数名` };
     }
-    return { ok: true, text: stringify(node.params[key]) };
+    // Conditional references already use valueAt, which checks own keys at
+    // every depth. The prompt renderer must use that SAME lookup instead of
+    // reading inherited properties or silently expanding missing values to "".
+    const param = valueAt(node.params, key);
+    if (!param.found) {
+      return { ok: false, error: `${where}:\`{{${spec}}}\` 取不到 —— 节点「${name}」没有参数路径 \`${key}\`` };
+    }
+    return { ok: true, text: stringify(param.value) };
   }
 
   if (field.startsWith("outputs.")) {
@@ -320,13 +327,19 @@ function resolveOne(
 }
 
 /** 取某一步的一个产出变量。取不到的话,把**它实际有的那些**列出来。 */
-function pathParts(path: string): string[] {
-  return path.match(/[^.\[\]]+|\[(\d+)\]/g)?.map((part) => part.startsWith("[") ? part.slice(1, -1) : part) ?? [];
+function pathParts(path: string): string[] | null {
+  // Do not silently discard malformed syntax. Previously "items[]" and
+  // "items..name" were tokenized as valid shorter paths, so a broken/forged
+  // selector could read a different value without telling its caller.
+  if (!/^(?:[^.\[\]]+|\[\d+\])(?:\.[^.\[\]]+|\[\d+\])*$/.test(path)) return null;
+  return path.match(/[^.\[\]]+|\[(\d+)\]/g)?.map((part) => part.startsWith("[") ? part.slice(1, -1) : part) ?? null;
 }
 
 function valueAt(root: unknown, path: string): { found: boolean; value?: unknown } {
+  const parts = pathParts(path);
+  if (parts === null) return { found: false };
   let current: unknown = root;
-  for (const part of pathParts(path)) {
+  for (const part of parts) {
     if (Array.isArray(current)) {
       const index = Number(part);
       if (!Number.isInteger(index) || index < 0 || index >= current.length) return { found: false };
@@ -408,6 +421,16 @@ function conditionValue(value: unknown): ConditionRefRead {
     ? { ok: true, found: false }
     : { ok: true, found: true, value };
 }
+/** Missing path and *malformed* path are not the same condition. A typo in
+ * the selector must fail closed rather than silently selecting a false route.
+ */
+function conditionPathValue(root: unknown, path: string, ref: string): ConditionRefRead {
+  if (pathParts(path) === null) {
+    return { ok: false, error: `条件引用「${ref}」的路径语法无效` };
+  }
+  const found = valueAt(root, path);
+  return conditionValue(found.found ? found.value : undefined);
+}
 
 export function readConditionRef(ref: string, scope: NodeTemplateScope): ConditionRefRead {
   const match = /^\{\{([^{}]+)\}\}$/.exec(ref);
@@ -441,20 +464,21 @@ export function readConditionRef(ref: string, scope: NodeTemplateScope): Conditi
   if (field === "error") return conditionValue(node.outcome?.error);
   if (field.startsWith("params.")) {
     const path = field.slice("params.".length);
-    const found = valueAt(node.params, path);
-    return conditionValue(found.found ? found.value : undefined);
+    return conditionPathValue(node.params, path, ref);
   }
   if (field === "artifacts" || field.startsWith("artifacts.") || field.startsWith("artifacts[")) {
     const artifacts = node.artifacts ?? node.outcome?.artifacts ?? [];
     if (field === "artifacts") return conditionValue(artifacts);
-    const found = valueAt(artifacts, field.slice("artifacts".length).replace(/^\./, ""));
-    return conditionValue(found.found ? found.value : undefined);
+    return conditionPathValue(artifacts, field.slice("artifacts".length).replace(/^\./, ""), ref);
   }
   if (node.outcome?.status === "unselected") return { ok: true, found: false };
   if (node.outcome === undefined) return { ok: false, error: `条件引用「${ref}」的上游还没有结果` };
   if (field === "output") return conditionValue(node.outcome.summary);
   const key = field.startsWith("outputs.") ? field.slice("outputs.".length) : field;
   if (!key) return { ok: false, error: `条件引用「${ref}」没有填写产出字段` };
+  if (pathParts(key) === null) {
+    return { ok: false, error: `条件引用「${ref}」的产出路径语法无效` };
+  }
   const found = valueAt(node.outcome.outputs ?? {}, key);
   if (found.found) return conditionValue(found.value);
   return key === SUMMARY_OUTPUT_KEY ? conditionValue(node.outcome.summary) : { ok: true, found: false };
