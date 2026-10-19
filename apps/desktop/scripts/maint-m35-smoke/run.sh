@@ -13,6 +13,10 @@ if [[ -z "$ESBUILD" ]]; then echo 'Missing local esbuild; no network install' >&
   --alias:@renderer/lib/api.js=./scripts/maint-m35-smoke/stubs/api.ts \
   --alias:@renderer/lib/i18n/index.js=./scripts/maint-m35-smoke/stubs/i18n.ts \
   --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.cjs \
+  --alias:@main/store/repositories.js=./scripts/pdf-highlights-integrity-smoke/stubs/repositories.ts \
+  --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
+  --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
   --outfile="$OUT/main.mjs" --log-level=error
 status=0
 node "$OUT/main.mjs" || status=1
