@@ -24,7 +24,7 @@
  * 不删旧备份、不做目录配额、不碰 `<数据根>` 里的其它内容。保留策略是 Gate C 存储
  * 切片的事，本切片只保证"迁移之前，原文一定有一份可读的字节"。
  */
-import { mkdir } from "node:fs/promises";
+import { lstat, mkdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
@@ -65,6 +65,15 @@ export async function backupWorkflowDocBytes(
 ): Promise<WorkflowMigrationBackup> {
   const dir = join(dataRoot, WORKFLOW_MIGRATIONS_DIR);
   await mkdir(dir, { recursive: true });
+  // `mkdir({recursive:true})` does NOT reject an existing directory link.
+  // If this child is swapped for a junction/symlink, an apparently in-root
+  // backup is actually written outside the data root. Never follow it.
+  // The supplied dataRoot itself is a trusted host location; this enforces
+  // the owned migration-backup subdirectory boundary (not an OS sandbox).
+  const directory = await lstat(dir);
+  if (!directory.isDirectory() || directory.isSymbolicLink()) {
+    throw new Error("工作流迁移备份目录不是普通目录（拒绝符号链接或 junction）");
+  }
   const path = join(dir, backupFileName(id, options.at ?? new Date()));
   await atomicReplaceFile(path, bytes);
   return { path, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") };
