@@ -50,7 +50,10 @@ export function registerSessionCleanupHook(fn: SessionCleanupHook): () => void {
 /** 跑一遍全部收尾钩子。空表是合法的(没有谁登记时什么都不做)。
  *  单个钩子抛错不影响其余几个,也不抛给调用方(调用方正走在删除流程里)。 */
 export function runSessionCleanupHooks(sessionId: string): void {
-  for (const fn of hooks) {
+  // Freeze this deletion's observer set. A hook may register another callback
+  // while releasing its resources; that new callback must not be invoked for
+  // the deletion already in progress (or recursively expand the iterator).
+  for (const fn of [...hooks]) {
     try {
       fn(sessionId);
     } catch (err) {
@@ -68,7 +71,8 @@ export function registerProjectCleanupHook(fn: ProjectCleanupHook): () => void {
 /** 跑一遍全部项目收尾钩子。`projectPath` 是**删之前**读到的根路径。
  *  同 {@link runSessionCleanupHooks}:单个钩子抛错不拖垮其余几个,也不抛给调用方。 */
 export function runProjectCleanupHooks(projectId: string, projectPath: string): void {
-  for (const fn of projectHooks) {
+  // Registration changes during cleanup belong to a later deletion.
+  for (const fn of [...projectHooks]) {
     try {
       fn(projectId, projectPath);
     } catch (err) {
