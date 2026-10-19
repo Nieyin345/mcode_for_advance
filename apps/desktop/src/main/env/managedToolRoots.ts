@@ -15,7 +15,7 @@
  * `setToolRoot()`,在那之前这里一律返回空 —— 无头验证与 smoke harness 不会因为
  * 没注册而炸。
  */
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ToolchainToolId } from "@contracts/ipc";
 import { compareVersions } from "@main/runtimes/managedRuntimeRoots.js";
@@ -37,6 +37,8 @@ export function listToolVersions(tool: ToolchainToolId): string[] {
   const dir = join(toolRoot, tool);
   let entries: string[];
   try {
+    const family = lstatSync(dir);
+    if (!family.isDirectory() || family.isSymbolicLink()) return [];
     entries = readdirSync(dir);
   } catch {
     return [];
@@ -44,7 +46,8 @@ export function listToolVersions(tool: ToolchainToolId): string[] {
   const versions: string[] = [];
   for (const entry of entries) {
     try {
-      if (!statSync(join(dir, entry)).isDirectory()) continue;
+      const info = lstatSync(join(dir, entry));
+      if (!info.isDirectory() || info.isSymbolicLink()) continue;
     } catch {
       continue;
     }
@@ -79,13 +82,34 @@ export const MANAGED_TOOLS = ["pandoc", "latex"] as const;
  *     `aarch64-linux` / `x86_64-linuxmusl` …),所以**不去猜名字**:扫 bin 下面
  *     一层,看哪个目录里真有那个引擎。这样上游改了命名也不会静默失效。
  */
+/** A name ending .exe can be a directory or an external link; neither is
+ * a trusted managed tool. Only regular executable files within this install
+ * tree may be published to the session's PATH. */
+function runnableManagedFile(candidate: string): boolean {
+  try {
+    const info = lstatSync(candidate);
+    if (!info.isFile() || info.isSymbolicLink()) return false;
+    if (process.platform !== "win32") accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function findExecutableIn(tool: ToolchainToolId, versionDir: string): string | null {
   if (tool === "pandoc") {
     const exe = join(versionDir, exeName("pandoc"));
-    return existsSync(exe) ? exe : null;
+    return runnableManagedFile(exe) ? exe : null;
   }
   if (tool === "latex") {
     const binRoot = join(versionDir, "bin");
+    try {
+      const bin = lstatSync(binRoot);
+      // Even if platform and executable paths themselves are ordinary files,
+      // a junction at bin/ may redirect the entire managed tool outside
+      // the selected version directory.
+      if (!bin.isDirectory() || bin.isSymbolicLink()) return null;
+    } catch { return null; }
     let entries: string[];
     try {
       entries = readdirSync(binRoot);
@@ -93,8 +117,12 @@ function findExecutableIn(tool: ToolchainToolId, versionDir: string): string | n
       return null; // 还没解开 / 解坏了
     }
     for (const entry of entries) {
+      try {
+        const info = lstatSync(join(binRoot, entry));
+        if (!info.isDirectory() || info.isSymbolicLink()) continue;
+      } catch { continue; }
       const exe = join(binRoot, entry, exeName("xelatex"));
-      if (existsSync(exe)) return exe;
+      if (runnableManagedFile(exe)) return exe;
     }
     return null;
   }
