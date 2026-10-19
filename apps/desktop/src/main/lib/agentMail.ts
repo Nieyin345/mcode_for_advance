@@ -53,6 +53,7 @@
  * 投递能力由运行时**注册进来**(见 {@link setDeliveryPort}),这一层谁都不 import。
  * 与 `pendingBackflow.ts` 放在同一层、同一条理由。
  */
+import { randomUUID } from "node:crypto";
 import { SettingRepo, SessionRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 import type { Session } from "@contracts/session";
@@ -118,8 +119,9 @@ function announce(peerId: string, env: Envelope, outcome: MailNotice["outcome"])
   if (!port?.announce) return;
   try {
     port.announce(peerId, { fromName: env.fromName, fromId: env.fromId, kind: env.kind, text: env.text, re: env.re, outcome });
-  } catch (err) {
-    log.warn(`agentMail: 展示消息失败: ${(err as Error).message}`);
+  } catch {
+    // Port adapters may embed provider tokens/URLs in exception messages.
+    log.warn("agentMail: 展示消息失败(已隐藏底层异常文本)");
   }
 }
 
@@ -688,10 +690,9 @@ function saveAsks(asks: PendingAsk[]): void {
   // "它不属于任何会话"。
   const raw = loadRawAskArray();
   if (raw === null) {
-    // 整份不是数组/不是 JSON → 连"一条条元素"都没有,只能整份重写。显式报出来。
-    log.warn("agentMail: 挂账整份不是数组/不是 JSON,写回会覆盖原内容(无法按条保留)");
-    writeAskItems(asks);
-    return;
+    // 整份存档坏了时任何正常增量写入都必须 fail-closed：原始字节是唯一
+    // 可供人工修复的证据。旧版会把它直接用新提问覆盖，永久丢掉历史挂账。
+    throw new Error("AGENT_MAIL_STORAGE_CORRUPT:挂账存档不是合法数组，拒绝写回以免覆盖原字节");
   }
   const nextById = new Map(asks.map((a) => [a.askId, a]));
   const merged: unknown[] = [];
@@ -727,7 +728,11 @@ function saveAsks(asks: PendingAsk[]): void {
  * 那边有 `agent_peers` 里那句"有 N 条问了还没被回复"兜着,看得见。
  */
 export function recordAsk(ask: Omit<PendingAsk, "askId" | "at">): PendingAsk {
-  const askId = `ask_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  // randomUUID 不依赖有限时间精度或可被重复的 Math.random 值。
+  // 相同毫秒多条并发提问若 ID 撞车，会被 saveAsks 按 askId 合并而丢账。
+  // Keep historical identifier grammar (ask_[a-z0-9_]+): existing tool
+  // clients and saved replies may parse an ID from a transcript.
+  const askId = `ask_${randomUUID().replace(/-/g, "")}`;
   const full: PendingAsk = { ...ask, askId, at: Date.now() };
   const kept = [...loadAsks(), full];
   // 按时间留最近的那些(`loadAsks` 保持插入序,新的一定在末尾);条数与字节双限在 `saveAsks` 收口。
@@ -791,8 +796,21 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
 
   // ② **对方在跑** → 插播。插不进去(引擎不支持插话,Pi / Codex)就**排队** ——
   //    **绝不能落到"叫醒"那一档**:它已经在跑了,再"叫醒"是第二次开火。
-  if (port !== null && port.isRunning(peer.id)) {
-    if (port.inject(peer.id, body)) {
+  let running = false;
+  try {
+    running = port?.isRunning(peer.id) ?? false;
+  } catch {
+    log.warn(`agentMail: 查询会话 ${peer.id} 运行态失败，消息保守排队(已隐藏底层异常)`);
+    pushInbox(peer.id, body, env.kind === "notify" ? env.re : undefined);
+    bumpCount(peer.id, now);
+    announce(peer.id, env, "queued");
+    return { outcome: "queued", detail: "无法确认收件方运行状态，消息已保守排队，未尝试并发起轮" };
+  }
+  if (port !== null && running) {
+    let injected = false;
+    try { injected = port.inject(peer.id, body); }
+    catch { log.warn(`agentMail: 插播至 ${peer.id} 失败，转入队列(已隐藏底层异常)`); }
+    if (injected) {
       bumpCount(peer.id, now);
       announce(peer.id, env, "injected");
       return { outcome: "injected", detail: `已插进「${peer.name}」正在跑的那一轮,它下一个安全点就会看到。` };
@@ -810,7 +828,10 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
 
   // ③ 对方**空闲** —— 能不能替它起一轮,还要看图的管理状态/启动闸门(见 `canWake`)。
   //    管着的时候只能排队:节点会话的 `turn.done` 是调度器的完成信号,插一脚就废一步产出。
-  if (port === null || !port.canWake(peer.id)) {
+  let canWake = false;
+  try { canWake = port?.canWake(peer.id) ?? false; }
+  catch { log.warn(`agentMail: 查询 ${peer.id} 唤醒闸门失败，保守排队(已隐藏底层异常)`); }
+  if (!canWake) {
     pushInbox(peer.id, body, env.kind === "notify" ? env.re : undefined);
     bumpCount(peer.id, now);
     announce(peer.id, env, "queued");
@@ -828,8 +849,8 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
   //    wake 只传提示词,不能再传 body,否则同一封信会在 prompt 里出现两遍。
   pushInbox(peer.id, body, env.kind === "notify" ? env.re : undefined);
   let woke = false;
-  try { woke = port.wake(peer.id, WAKE_MAIL_PROMPT); }
-  catch (err) { log.warn(`agentMail: 叫醒 ${peer.id} 失败: ${(err as Error).message}`); }
+  try { woke = port?.wake(peer.id, WAKE_MAIL_PROMPT) ?? false; }
+  catch { log.warn(`agentMail: 叫醒 ${peer.id} 失败(已隐藏底层异常文本)`); }
   if (woke) {
     bumpCount(peer.id, now);
     announce(peer.id, env, "woke");

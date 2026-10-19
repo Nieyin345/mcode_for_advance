@@ -1895,5 +1895,74 @@ console.log("\n⑯c MC-052 同族:删会话只清可证明归属的挂账,读不
   }
 }
 
+/* ──────────────────── Pending-ask corruption and duplicate identity ──────────────────── */
+console.log("\n⑰ 挂账损坏、唯一身份和投递端口故障必须失败关闭");
+{
+  const KEY="agentMail.pendingAsks";
+  const main=mkSession({kind:"chat",title:"挂账一致性主对话"});
+  const target=mkSession({kind:"side",title:"挂账一致性节点",parentSessionId:main.id});
+  const ask={fromSessionId:main.id,fromName:"主对话",toSessionId:target.id,question:"SYNTHETIC QUESTION"};
+  const broken="{ SYNTHETIC BROKEN PERSISTENCE";
+  SettingRepo.set(KEY,broken);
+  let error:unknown;
+  try{recordAsk(ask);}catch(e){error=e;}
+  check("★ 坏 JSON 整份挂账必须拒绝新增提问,不能返回新 askId",error instanceof Error,error);
+  eq("★ 拒绝新增后原始坏 JSON 必须逐字节保留",SettingRepo.get(KEY),broken);
+  SettingRepo.delete(KEY);
+
+  // Force deterministic old Math.random + Date.now; legacy IDs collided,
+  // and saveAsks() silently erased or merged the older unanswered ask.
+  const oldNow=Date.now,oldRandom=Math.random;
+  let first="",second="";
+  try{
+    Date.now=()=>1234567890;
+    Math.random=()=>0.25;
+    first=recordAsk({...ask,question:"FIRST_UNANSWERED"}).askId;
+    second=recordAsk({...ask,question:"SECOND_UNANSWERED"}).askId;
+  }finally{Date.now=oldNow;Math.random=oldRandom;}
+  const stored=JSON.parse(SettingRepo.get(KEY)??"[]") as Array<{askId:string;question:string}>;
+  check("★ 同一时间同一随机值连续询问不得产生相同 askId",first!==second,{first,second});
+  check("★ 两条独立提问必须都能按各自 askId 找回",
+    stored.length===2 && stored.some(r=>r.askId===first&&r.question==="FIRST_UNANSWERED") &&
+    stored.some(r=>r.askId===second&&r.question==="SECOND_UNANSWERED"),stored);
+  SettingRepo.delete(KEY);
+
+  const peer:import("@main/lib/agentMail.js").Peer={
+    id:target.id,name:"挂账一致性节点",kind:"side",running:false
+  };
+  const envelope={fromName:"主对话",fromId:main.id,kind:"notify" as const,text:"PORT_FAILURE_PAYLOAD"};
+  const makePort=(failure:"isRunning"|"canWake"|"inject"|"wake")=>{
+    setDeliveryPort({
+      isRunning:()=>failure==="isRunning" ? (()=>{throw Error("SYNTHETIC_PORT_PRIVATE_AUTH_TOKEN");})() : failure==="inject",
+      inject:()=>{if(failure==="inject")throw Error("SYNTHETIC_PORT_PRIVATE_AUTH_TOKEN");return false;},
+      canWake:()=>failure==="canWake" ? (()=>{throw Error("SYNTHETIC_PORT_PRIVATE_AUTH_TOKEN");})() : true,
+      wake:()=>{if(failure==="wake")throw Error("SYNTHETIC_PORT_PRIVATE_AUTH_TOKEN");return false;},
+    });
+  };
+  const originalWrite=process.stderr.write.bind(process.stderr);
+  let logged="";
+  process.stderr.write=((chunk:unknown,...rest:unknown[])=>{
+    logged+=String(chunk);
+    return (originalWrite as (...args:unknown[])=>boolean)(chunk,...rest);
+  }) as typeof process.stderr.write;
+  try{
+    for(const failure of ["isRunning","canWake","inject","wake"] as const){
+      dropAgentMail(target.id);
+      makePort(failure);
+      let result:ReturnType<typeof deliver>|undefined;
+      let failed=false;
+      try{result=deliver(peer,envelope);}catch{failed=true;}
+      check(`★ 投递端口 ${failure} 异常不得使代理消息丢失`,
+        !failed && result?.outcome==="queued" && peekAgentMail(target.id).includes("PORT_FAILURE_PAYLOAD"),
+        {failure,result,failed});
+    }
+    check("★ 外部投递异常的原始错误文本不可泄漏到宿主持久化日志",
+      !logged.includes("SYNTHETIC_PORT_PRIVATE_AUTH_TOKEN"));
+  }finally{
+    process.stderr.write=originalWrite as typeof process.stderr.write;
+    setDeliveryPort(null);dropAgentMail(target.id);SettingRepo.delete(KEY);
+  }
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);
