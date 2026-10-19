@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const { createRequire, builtinModules } = require('node:module');
 const { spawnSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const { verifyPackagedGenofficeResources } = require('./check-genoffice-resources.cjs');
 const appDir = path.resolve(__dirname, '../..');
 const appRequire = createRequire(path.join(appDir, 'package.json'));
 const builtin = value => value === 'electron' || value === 'original-fs' || value.startsWith('node:') || builtinModules.includes(value);
@@ -94,6 +95,10 @@ function main() {
   assert.ok(process.argv[2], 'Pass the win-unpacked directory explicitly');
   const archive = path.join(unpacked, 'resources/app.asar');
   assert.ok(fs.existsSync(path.join(unpacked, 'Mcode.exe')), 'Unpacked executable is missing');
+  // Validate the copied resources, not only the pre-package staging tree.
+  // Default CI must contain an explicit unbundled marker and no stale sidecar.
+  // Opt-in installations must carry the complete CLI + PDFium dependency set.
+  const genofficeResources = verifyPackagedGenofficeResources(unpacked);
   const builderRequire = createRequire(appRequire.resolve('electron-builder'));
   const libRequire = createRequire(builderRequire.resolve('app-builder-lib'));
   const asar = libRequire('@electron/asar');
@@ -149,7 +154,7 @@ function main() {
   if (child.stdout) console.log(child.stdout.trim());
   assert.equal(child.status, 0, 'Isolated Electron package check failed: ' + (child.error?.message || child.stderr || 'see host.log'));
   assert.ok(fs.existsSync(path.join(fixture, 'native-result.json')), 'Native host exited without a result');
-  const result = { archive, asarBytes: fs.statSync(archive).size, entries: entries.length, pdfFiles, unpackedNative, importReferences: references.length, native: JSON.parse(fs.readFileSync(path.join(fixture, 'native-result.json'), 'utf8')) };
+  const result = { genoffice: genofficeResources, archive, asarBytes: fs.statSync(archive).size, entries: entries.length, pdfFiles, unpackedNative, importReferences: references.length, native: JSON.parse(fs.readFileSync(path.join(fixture, 'native-result.json'), 'utf8')) };
   fs.writeFileSync(path.join(fixture, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ asarBytes: result.asarBytes, entries: result.entries, pdfFiles, unpackedNative, importReferences: references.length }));
   console.log('PASS unpacked Windows package resources and isolated runtime gate');

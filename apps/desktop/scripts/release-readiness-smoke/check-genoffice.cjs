@@ -1,9 +1,10 @@
 /** ARC-007 release sidecar: all writes are confined to an isolated synthetic checkout. */
 const assert = require("node:assert/strict");
-const { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
+const { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");
-const { prepareGenofficeResources, assertWithin } = require("../../build/stage-genoffice-resources.cjs");
+const { prepareGenofficeResources, assertWithin, hashRendererTree } = require("../../build/stage-genoffice-resources.cjs");
+const { verifyPackagedGenofficeResources } = require("./check-genoffice-resources.cjs");
 
 const root = mkdtempSync(join(tmpdir(), "mcode-go-release-test-"));
 let checks = 0;
@@ -65,6 +66,110 @@ try {
     assert.equal(existsSync(join(ok.target, "licenses", "GenOffice-LICENSE")), true);
     assert.equal(existsSync(join(ok.target, "licenses", "PDFium-LICENSE")), true);
   });
+  const packageRoot = join(root, "fake-unpacked");
+  const installedResource = join(packageRoot, "resources", "genoffice");
+  mkdirSync(join(packageRoot, "resources"), { recursive: true });
+  cpSync(ok.target, installedResource, { recursive: true });
+  verify("post-pack gate verifies CLI, dependency tree, WASM and license resources", () => {
+    assert.deepEqual(verifyPackagedGenofficeResources(packageRoot), { bundled: true, editorsBundled: false });
+  });
+  verify("installed CLI junction is rejected", () => {
+    const cliDir = join(installedResource, "cli");
+    const saved = join(root, "saved-cli");
+    renameSync(cliDir, saved);
+    symlinkSync(saved, cliDir, process.platform === "win32" ? "junction" : "dir");
+    try {
+      assert.throws(() => verifyPackagedGenofficeResources(packageRoot));
+    } finally {
+      rmSync(cliDir, { recursive: true, force: true });
+      renameSync(saved, cliDir);
+    }
+  });
+  const editorNames = ["docs", "sheets", "slides", "pdf", "markdown", "html"];
+  verify("declared editors cannot pass post-pack check when files are missing", () => {
+    put(join(installedResource, "availability.json"), JSON.stringify({
+      format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: true, editors: editorNames,
+    }));
+    assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /docs|editor|renderer|missing/i);
+  });
+  for (const name of editorNames) {
+    const dir = join(installedResource, "apps", name, "out", "renderer");
+    put(join(dir, "index.html"), '<html><head><link rel="stylesheet" href="./assets/app.css"></head><body><script type="module" src="./assets/app.js"></script></body></html>');
+    put(join(dir, "assets", "app.css"), "html { color: black; }");
+    put(join(dir, "assets", "app.js"), "console.log('fixture');");
+  }
+  const lazyAsset = join(installedResource, "apps", "docs", "out", "renderer", "assets", "deferred.js");
+  put(lazyAsset, "original vendor lazy chunk");
+  put(join(installedResource, "availability.json"), JSON.stringify({
+    format: "mcode.genoffice.resources.v1", bundled: true,
+    editorsBundled: true, editors: editorNames,
+    editorAssetsSha256: Object.fromEntries(editorNames.map(name => [
+      name, hashRendererTree(join(installedResource, "apps", name, "out", "renderer")),
+    ])),
+  }));
+  verify("all six copied vendor editors pass post-pack resource gate", () => {
+    assert.deepEqual(verifyPackagedGenofficeResources(packageRoot), { bundled: true, editorsBundled: true });
+  });
+  verify("unlisted deferred vendor JS cannot change while post-pack gate stays green", () => {
+    const before = readFileSync(lazyAsset);
+    put(lazyAsset, "tampered! vendor lazy chunk");
+    try {
+      assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /digest|integrity|changed|docs/i);
+    } finally {
+      put(lazyAsset, before);
+    }
+  });
+  verify("packaged six editors cannot be supplied through a linked apps ancestor", () => {
+    const apps = join(installedResource, "apps");
+    const external = join(root, "external-vendor-apps");
+    renameSync(apps, external);
+    symlinkSync(external, apps, process.platform === "win32" ? "junction" : "dir");
+    try {
+      assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /link|symlink|junction|ancestor|directory|unsafe/i);
+    } finally {
+      rmSync(apps, { recursive: true, force: true });
+      renameSync(external, apps);
+    }
+  });
+  verify("packaged editor cannot be supplied through an intermediate out junction", () => {
+    const out = join(installedResource, "apps", "docs", "out");
+    const external = join(root, "external-docs-out");
+    renameSync(out, external);
+    symlinkSync(external, out, process.platform === "win32" ? "junction" : "dir");
+    try {
+      assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /link|symlink|junction|ancestor|directory|unsafe/i);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+      renameSync(external, out);
+    }
+  });
+  verify("missing asset from just one editor fails the entire package", () => {
+    const asset = join(installedResource, "apps", "slides", "out", "renderer", "assets", "app.js");
+    rmSync(asset);
+    assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /slides|app\.js|missing/i);
+    put(asset, "console.log('restored');");
+  });
+  verify("inconsistent editorsBundled false cannot hide stale vendor assets", () => {
+    put(join(installedResource, "availability.json"), JSON.stringify({
+      format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: false, editors: [],
+    }));
+    assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /stale|editor|apps/i);
+  });
+  verify("editor list cannot pretend a subset is the full six", () => {
+    put(join(installedResource, "availability.json"), JSON.stringify({
+      format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: true, editors: ["docs"],
+    }));
+    assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /six|editor|complete|list/i);
+  });
+  // Restore CLI-only fixture before subsequent checks.
+  rmSync(join(installedResource, "apps"), { recursive: true, force: true });
+  put(join(installedResource, "availability.json"), JSON.stringify({
+    format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: false, editors: [],
+  }));
+  verify("post-pack gate fails closed if packaged WASM disappears", () => {
+    rmSync(join(installedResource, "wasm", "pdfium.wasm"));
+    assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /WASM|pdfium|missing/i);
+  });
   verify("incomplete new vendor cannot replace previous valid staged bytes", () => {
     const cli = join(ok.target, "cli", "genoffice.cjs");
     const before = readFileSync(cli);
@@ -78,11 +183,22 @@ try {
     assert.equal(existsSync(join(ok.target, "cli", "genoffice.cjs")), false);
     assert.equal(existsSync(join(ok.target, "wasm", "pdfium.wasm")), false);
   });
+  verify("unbundled packaged resource marker rejects stale CLI payload", () => {
+    rmSync(installedResource, { recursive: true, force: true });
+    cpSync(ok.target, installedResource, { recursive: true });
+    assert.deepEqual(verifyPackagedGenofficeResources(packageRoot), { bundled: false, editorsBundled: false });
+    put(join(installedResource, "cli", "genoffice.cjs"), "stale");
+    assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /stale|unbundled|absent/i);
+  });
   const desktop = resolve(__dirname, "../..");
   verify("electron-builder ships staged assets outside ASAR as ordinary resources", () => {
     const yaml = readFileSync(join(desktop, "electron-builder.yml"), "utf8");
     assert.match(yaml, /from:\s*\.tmp\/genoffice-release/);
     assert.match(yaml, /to:\s*genoffice/);
+  });
+  verify("post-pack Windows gate invokes the actual sidecar resource verifier", () => {
+    const gate = readFileSync(join(desktop, "scripts", "release-readiness-smoke", "check-unpacked.cjs"), "utf8");
+    assert.ok(gate.includes("verifyPackagedGenofficeResources("), "Windows post-pack gate omitted GenOffice resources");
   });
   verify("package pipeline prepares resource staging before electron-builder", () => {
     const pkg = JSON.parse(readFileSync(join(desktop, "package.json"), "utf8"));

@@ -108,6 +108,18 @@ try {
       editorsBundled: true, editors: [...EDITOR_APPS],
     });
   });
+  verify("afterPack also rejects an in-resource apps ancestor junction", () => {
+    const apps = path.join(winResources, "apps");
+    const realApps = path.join(winResources, "apps-real");
+    fs.renameSync(apps, realApps);
+    fs.symlinkSync(realApps, apps, process.platform === "win32" ? "junction" : "dir");
+    try {
+      assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /symlink|junction|linked|unsafe|ancestor/i);
+    } finally {
+      fs.rmSync(apps, { recursive: true, force: true });
+      fs.renameSync(realApps, apps);
+    }
+  });
   verify("packager dropping one script fails release rather than delivering a white tab", () => {
     const script = path.join(winResources, "apps", "slides", "out", "renderer", "assets", "slides.js");
     fs.rmSync(script);
