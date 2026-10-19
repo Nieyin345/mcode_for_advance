@@ -203,6 +203,12 @@ export interface ClampedCellBudget {
  * 用户误以为拿到了完整表头行。
  */
 export function clampCellBudget(reqRows: number, reqCols: number, maxCells: number): ClampedCellBudget {
+  // Invalid caller/IPC numbers must not silently become NaN, Infinity or a
+  // 1-cell result that already exceeds a zero/negative resource budget.
+  if (!Number.isFinite(reqRows) || !Number.isFinite(reqCols) || !Number.isSafeInteger(maxCells)
+    || reqRows <= 0 || reqCols <= 0 || maxCells <= 0) {
+    throw new RangeError("单元格预算与请求行列必须是有限正数，预算必须为正整数");
+  }
   const rows = Math.max(1, Math.floor(reqRows));
   const cols = Math.max(1, Math.floor(reqCols));
   if (rows * cols <= maxCells) return { maxRows: rows, maxCols: cols, cellBudgetTruncated: false };
