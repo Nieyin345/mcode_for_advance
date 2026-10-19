@@ -7,7 +7,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  EDITOR_APPS, assertRendererAssetsReady, assertVendorTreeSafe,
+  EDITOR_APPS, assertRendererAssetsReady, assertVendorTreeSafe, hashRendererTree,
 } = require("./stage-genoffice-resources.cjs");
 
 function verifyPackagedGenofficeEditorAssets(resourceRoot) {
@@ -30,11 +30,21 @@ function verifyPackagedGenofficeEditorAssets(resourceRoot) {
   if (!info.bundled || JSON.stringify(info.editors) !== JSON.stringify(EDITOR_APPS)) {
     throw new Error("GenOffice six original editors require a complete CLI bundle and exact six-app manifest");
   }
+  const digests = info.editorAssetsSha256;
+  if (!digests || typeof digests !== "object" || Array.isArray(digests)
+    || JSON.stringify(Object.keys(digests).sort()) !== JSON.stringify([...EDITOR_APPS].sort())
+    || EDITOR_APPS.some((name) => typeof digests[name] !== "string"
+      || !/^[0-9a-f]{64}$/.test(digests[name]))) {
+    throw new Error("GenOffice original editor resource integrity manifest is missing or invalid");
+  }
   for (const name of EDITOR_APPS) {
     const renderer = path.join(root, "apps", name, "out", "renderer");
     if (!fs.statSync(renderer).isDirectory()) throw new Error("GenOffice " + name + " renderer directory missing");
     assertVendorTreeSafe(root, renderer);
     assertRendererAssetsReady(renderer, name);
+    if (hashRendererTree(renderer) !== digests[name]) {
+      throw new Error(`GenOffice ${name} renderer integrity digest mismatch (missing or changed vendor asset)`);
+    }
   }
   return { editorsBundled: true, editors: [...EDITOR_APPS] };
 }

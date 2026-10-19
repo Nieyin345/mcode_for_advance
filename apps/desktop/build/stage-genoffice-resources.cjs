@@ -13,7 +13,7 @@
  * electron-builder extraResources copies .tmp/genoffice-release => resources/genoffice.
  * All paths are app-local; never write to the user's Electron data directory.
  */
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const { isAbsolute, join, resolve, relative, sep } = require("node:path");
 const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
@@ -68,6 +68,48 @@ function assertRendererAssetsReady(renderer, name) {
       throw new Error(`GenOffice ${name} renderer script is not a local vendor asset`);
     }
   }
+}
+
+/**
+ * Hash the *entire* vendored renderer tree, not just index.html's script/link.
+ * Vite lazy imports, fonts and images may be required at runtime even though
+ * no HTML tag references them. Persist a digest of exactly what was staged;
+ * afterPack can then refuse truncated or silently modified release assets.
+ * No reliance on filesystem enumeration order or path separator.
+ */
+function hashRendererTree(root) {
+  const hash = createHash("sha256");
+  hash.update("mcode.genoffice.renderer.tree.v1\0");
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  function visit(dir, subpath = "") {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const rel = subpath ? `${subpath}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`GenOffice renderer has unsafe symlink: ${rel}`);
+      if (entry.isDirectory()) { visit(full, rel); continue; }
+      if (!entry.isFile()) throw new Error(`GenOffice renderer has unsupported filesystem object: ${rel}`);
+      hash.update(rel, "utf8");
+      hash.update("\0");
+      const fd = fs.openSync(full, "r");
+      try {
+        const size = fs.fstatSync(fd).size;
+        hash.update(String(size));
+        hash.update("\0");
+        let n, bytes = 0;
+        while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+          bytes += n;
+          hash.update(chunk.subarray(0, n));
+        }
+        if (bytes !== size) throw new Error(`GenOffice renderer changed during hash: ${rel}`);
+      } finally {
+        fs.closeSync(fd);
+      }
+      hash.update("\0");
+    }
+  }
+  visit(root);
+  return hash.digest("hex");
 }
 
 function prepareGenofficeResources({ appDir, repoRoot, include = false, includeEditors = false }) {
@@ -146,6 +188,11 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       bundled: include,
       editorsBundled: includeEditors,
       editors: includeEditors ? [...EDITOR_APPS] : [],
+      ...(includeEditors ? {
+        editorAssetsSha256: Object.fromEntries(editors.map(({ name }) => [
+          name, hashRendererTree(join(temp, "apps", name, "out", "renderer")),
+        ])),
+      } : {}),
     }) + "\n", "utf8");
     if (fs.existsSync(destination)) {
       fs.renameSync(destination, backup);
@@ -185,4 +232,4 @@ if (require.main === module) {
     process.exitCode = 1;
   }
 }
-module.exports = { prepareGenofficeResources, assertWithin, assertVendorTreeSafe, assertRendererAssetsReady, EDITOR_APPS };
+module.exports = { prepareGenofficeResources, assertWithin, assertVendorTreeSafe, assertRendererAssetsReady, hashRendererTree, EDITOR_APPS };

@@ -63,12 +63,15 @@ try {
     assert.deepEqual(fs.readFileSync(path.join(stage, "cli", "genoffice.cjs")), cliBefore);
   });
   makeRenderer("html");
+  put(path.join(renderDir("docs"), "assets", "deferred-vendor-chunk.js"), "imported vendor capability");
+  put(path.join(renderDir("docs"), "assets", "docs-extra-font.woff2"), Buffer.from([3, 4, 5, 6]));
   verify("all six vendor original renderer trees are staged unmodified", () => {
     const r = prepareGenofficeResources({ appDir, repoRoot, include: true, includeEditors: true });
     assert.equal(r.editorsBundled, true);
     const marker = JSON.parse(fs.readFileSync(path.join(stage, "availability.json"), "utf8"));
     assert.deepEqual(marker.editors, [...EDITOR_APPS]);
     assert.equal(marker.editorsBundled, true);
+    assert.deepEqual(Object.keys(marker.editorAssetsSha256 || {}).sort(), [...EDITOR_APPS].sort());
     for (const name of EDITOR_APPS) {
       assert.equal(fs.readFileSync(path.join(stage, "apps", name, "out/renderer/index.html"), "utf8"),
         `<html><script type="module" src="./assets/${name}.js"></script><link rel="stylesheet" href="./assets/${name}.css"></html>`);
@@ -110,6 +113,33 @@ try {
     fs.rmSync(script);
     assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /slides|missing|asset/i);
     put(script, "window.vendor = true;");
+  });
+  verify("post-pack rejects a missing deferred JS chunk not listed in index.html", () => {
+    const file = path.join(winResources, "apps", "docs", "out", "renderer", "assets", "deferred-vendor-chunk.js");
+    const original = fs.readFileSync(file);
+    fs.rmSync(file);
+    assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /docs|integrity|digest|missing/i);
+    put(file, original);
+  });
+  verify("post-pack rejects same-size edits to vendor JS or fonts", () => {
+    for (const file of [
+      path.join(winResources, "apps", "docs", "out", "renderer", "assets", "deferred-vendor-chunk.js"),
+      path.join(winResources, "apps", "docs", "out", "renderer", "assets", "docs-extra-font.woff2"),
+    ]) {
+      const original = fs.readFileSync(file);
+      fs.writeFileSync(file, Buffer.alloc(original.length, 42));
+      assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /docs|integrity|digest/i);
+      put(file, original);
+    }
+  });
+  verify("post-pack cannot accept opt-in marker with no editor file integrity proof", () => {
+    const manifest = path.join(winResources, "availability.json");
+    const original = fs.readFileSync(manifest);
+    const altered = JSON.parse(original.toString("utf8"));
+    delete altered.editorAssetsSha256;
+    fs.writeFileSync(manifest, JSON.stringify(altered));
+    assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /integrity|hash|digest/i);
+    put(manifest, original);
   });
   verify("post-pack marker cannot claim six editor UIs when only five are listed", () => {
     const manifest = path.join(winResources, "availability.json");
