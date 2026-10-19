@@ -248,8 +248,11 @@ export class PairingManager {
       };
     }
 
-    this.pending = null;
     const result = this.issueDevice(input.deviceName, endpoint);
+    // A damaged persisted device list must not consume a correctly-entered
+    // one-time pairing code: issueDevice refuses to overwrite it and the user
+    // can repair the setting without being forced to re-scan this QR.
+    this.pending = null;
     log.info(`mobile: device paired (${result.deviceId}, name=${input.deviceName})`);
     return { ok: true, result };
   }
@@ -292,7 +295,8 @@ export class PairingManager {
   /** List paired devices (token stripped) for the PC UI. */
   async listDevices(): Promise<PairedDevice[]> {
     await this.ready();
-    return this.readDevicesRaw().map(({ deviceToken: _token, ...rest }) => rest);
+    return this.readDevicesRaw().map(({ deviceId, name, pairedAt, lastSeenAt }) =>
+      ({ deviceId, name, pairedAt, lastSeenAt }));
   }
 
   /** Called after token authentication, without another await before subscribe.
@@ -331,14 +335,46 @@ export class PairingManager {
 
   private readDevicesRaw(): StoredPairedDevice[] {
     const raw = SettingRepo.get(MOBILE_PAIRED_DEVICES_SETTING_KEY);
-    if (!raw) return [];
+    if (raw === null || raw === "") return []; // Truly unconfigured only.
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (!Array.isArray(parsed)) return [];
-      return parsed as StoredPairedDevice[];
+      parsed = JSON.parse(raw);
     } catch {
-      return [];
+      throw new Error("已配对设备记录无法解析；拒绝认证和覆盖原始设备数据");
     }
+    if (!Array.isArray(parsed)) {
+      throw new Error("已配对设备记录格式损坏；拒绝认证和覆盖原始设备数据");
+    }
+    const ids = new Set<string>();
+    const tokens = new Set<string>();
+    const devices: StoredPairedDevice[] = [];
+    for (const row of parsed) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        throw new Error("已配对设备记录含无效项目；拒绝覆盖原始数据");
+      }
+      const d = row as Record<string, unknown>;
+      if (typeof d.deviceId !== "string" || !d.deviceId ||
+          typeof d.name !== "string" ||
+          !Number.isSafeInteger(d.pairedAt) || (d.pairedAt as number) < 0 ||
+          !Number.isSafeInteger(d.lastSeenAt) || (d.lastSeenAt as number) < 0 ||
+          typeof d.deviceToken !== "string" || !/^[a-f0-9]{64}$/i.test(d.deviceToken)) {
+        throw new Error("已配对设备记录的身份或令牌格式损坏；拒绝覆盖原始数据");
+      }
+      if (ids.has(d.deviceId) || tokens.has(d.deviceToken)) {
+        throw new Error("已配对设备记录含重复身份或令牌；拒绝覆盖原始数据");
+      }
+      ids.add(d.deviceId);
+      tokens.add(d.deviceToken);
+      // Project only approved fields, never forward unknown persisted metadata.
+      devices.push({
+        deviceId: d.deviceId,
+        name: d.name,
+        pairedAt: d.pairedAt as number,
+        lastSeenAt: d.lastSeenAt as number,
+        deviceToken: d.deviceToken,
+      });
+    }
+    return devices;
   }
 }
 

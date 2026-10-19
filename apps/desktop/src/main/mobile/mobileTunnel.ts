@@ -32,13 +32,12 @@ import { awaitDb } from "@main/store/db.js";
 import { encrypt, decrypt } from "@main/lib/secretStore.js";
 import { log } from "@main/lib/logger.js";
 import { createTunnelManager } from "@main/providers/bridge/tunnelManager.js";
-import { getMobileServer } from "./MobileHttpServer.js";
+import { getMobileServer } from "@main/mobile/MobileHttpServer.js";
+import { normalizeMobileTunnelHost } from "./mobileTunnelHost.js";
 
 const tunnel = createTunnelManager("mobile-tunnel");
 
-function normalizeHost(raw: string): string {
-  return raw.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-}
+const normalizeHost = normalizeMobileTunnelHost;
 
 function mobilePort(): number {
   return getMobileServer()?.port || MOBILE_DEFAULT_PORT;
@@ -191,14 +190,18 @@ export async function stopMobileTunnel(): Promise<MobileTunnelStatus> {
 /** 存配置;隧道正在跑且配置变了就按新配置重起,切到非 named 就停掉。 */
 export async function setMobileTunnelConfig(input: SetMobileTunnelInput): Promise<MobileTunnelStatus> {
   await awaitDb();
+  const normalizedHost = normalizeHost(input.hostname);
+  if (input.hostname.trim() && !normalizedHost) {
+    throw new Error("手机公网域名无效：只接受合法 DNS 域名，不支持用户信息、端口、IP 或 URL 查询参数");
+  }
   const before = { mode: readMode(), host: readHost(), token: readToken() };
   SettingRepo.set(MOBILE_TUNNEL_MODE_SETTING_KEY, input.mode);
-  SettingRepo.set(MOBILE_TUNNEL_HOSTNAME_SETTING_KEY, normalizeHost(input.hostname));
+  SettingRepo.set(MOBILE_TUNNEL_HOSTNAME_SETTING_KEY, normalizedHost);
   const token = (input.token ?? "").trim();
   if (input.clearToken) SettingRepo.set(MOBILE_TUNNEL_TOKEN_SETTING_KEY, "");
   else if (token) SettingRepo.set(MOBILE_TUNNEL_TOKEN_SETTING_KEY, encrypt(token));
   probe = null;
-  log.info(`mobile tunnel: config saved (mode=${input.mode}, host=${normalizeHost(input.hostname) || "-"})`);
+  log.info(`mobile tunnel: config saved (mode=${input.mode}, host=${normalizedHost || "-"})`);
 
   const phase = tunnel.status().phase;
   const active = phase === "starting" || phase === "ready" || phase === "reconnecting";

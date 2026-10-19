@@ -225,16 +225,29 @@ type Encoding = "br" | "gzip";
 /** Encodings the client accepts for this asset, best first (empty = serve raw). */
 function acceptedEncodings(ext: string, acceptEncoding: string | undefined): readonly Encoding[] {
   if (!COMPRESSIBLE_EXT.has(ext.toLowerCase())) return [];
-  const accept = (acceptEncoding ?? "").toLowerCase();
-  if (accept.includes("*")) {
-    // "any encoding" is rare from browsers; serve raw rather than guess — the
-    // raw copy is always present and correct.
-    return [];
+  const weights: Record<Encoding, number> = { br: 0, gzip: 0 };
+  const seen = new Set<Encoding>();
+  for (const item of (acceptEncoding ?? "").toLowerCase().split(",")) {
+    const [token, ...params] = item.split(";").map((s) => s.trim());
+    // Preserve the existing conservative wildcard policy: don't guess a
+    // compressor for "*", since the uncompressed representation is valid.
+    if (token === "*") return [];
+    if (token !== "br" && token !== "gzip") continue;
+    let quality = 1;
+    for (const param of params) {
+      const match = /^q\s*=\s*(0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.exec(param);
+      if (param.startsWith("q") || param.startsWith("Q")) {
+        quality = match ? Number(match[1]) : 0;
+        break;
+      }
+    }
+    // A repeated coding with a zero-quality declaration must not be
+    // resurrected by a later positive declaration.
+    weights[token] = seen.has(token) ? Math.min(weights[token], quality) : quality;
+    seen.add(token);
   }
-  const wantsBr = accept.includes("br");
-  const wantsGzip = accept.includes("gzip");
-  if (!wantsBr && !wantsGzip) return [];
-  return wantsBr ? (wantsGzip ? ["br", "gzip"] : ["br"]) : ["gzip"];
+  const supported: Encoding[] = (["br", "gzip"] as const).filter((enc) => weights[enc] > 0);
+  return supported.sort((a, b) => weights[b] - weights[a]);
 }
 
 /** Pick an existing precompressed sibling (`.br`/`.gz`) honoring the client's
@@ -295,8 +308,8 @@ function cachePut(key: string, buf: Buffer): void {
 
 /** Compressed bytes of `filePath` in `enc`, from cache or freshly compressed
  *  (concurrent requests for the same asset share one compression). */
-function compressOnDemand(filePath: string, enc: Encoding, size: number, mtimeMs: number): Promise<Buffer> {
-  const key = `${enc}\0${size}\0${mtimeMs}\0${filePath}`;
+function compressOnDemand(filePath: string, enc: Encoding, size: number, statSignature: string): Promise<Buffer> {
+  const key = `${enc}\0${statSignature}\0${filePath}`;
   const hit = cacheGet(key);
   if (hit) return Promise.resolve(hit);
   let pending = compressing.get(key);
@@ -349,13 +362,20 @@ function streamFile(
   const compressed = pickPrecompressed(filePath, encodings, root);
   if (!compressed && encodings.length > 0 && size >= MIN_COMPRESS_BYTES) {
     const enc = encodings[0];
-    let mtimeMs = 0;
+    let stamp: string;
     try {
-      mtimeMs = statSync(filePath).mtimeMs;
+      const s = statSync(filePath);
+      // mtime+size alone is insufficient: a dev rebuild can overwrite the
+      // bytes and restore the original mtime/length. ctime+inode make this
+      // cache key respond to both in-place rewrites and atomic replacements.
+      stamp = `${s.mtimeMs}:${s.ctimeMs}:${s.size}:${s.ino}`;
     } catch {
-      /* raced with a rebuild — the read below will fail and fall back */
+      // Could not establish a safe cache key. Avoid serving any previously
+      // compressed bytes; the raw stream will report a read error if needed.
+      streamRaw(res, filePath, mime, size, false, true);
+      return;
     }
-    compressOnDemand(filePath, enc, size, mtimeMs).then(
+    compressOnDemand(filePath, enc, size, stamp).then(
       (buf) => {
         if (res.headersSent || res.destroyed) return;
         res.writeHead(200, {

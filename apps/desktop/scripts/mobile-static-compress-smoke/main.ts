@@ -8,7 +8,7 @@
  * the same encodings, caching headers and fallbacks as before.
  */
 import { createServer, request, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, utimesSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync } from "node:zlib";
@@ -109,6 +109,30 @@ console.log("A. encodings");
   check("css compressed too", css.headers["content-encoding"] === "br" && decode(css) === readFileSync(join(WEB, "assets", "style-abc123.css"), "utf8"));
 }
 
+console.log("A2. RFC Accept-Encoding q weights and exact coding tokens");
+{
+  const gzipPreferred = await get("/assets/app-abc123.js", "br;q=0, gzip;q=1");
+  check("★ br;q=0 must NEVER send Brotli when gzip is permitted",
+    gzipPreferred.headers["content-encoding"] === "gzip" && decode(gzipPreferred) === APP,
+    gzipPreferred.headers["content-encoding"]);
+  const allRejected = await get("/assets/app-abc123.js", "gzip;q=0, br;q=0");
+  check("★ all supported codings rejected => uncompressed response",
+    !allRejected.headers["content-encoding"] && allRejected.body.toString() === APP,
+    allRejected.headers["content-encoding"]);
+  const qPreferred = await get("/assets/app-abc123.js", "gzip;q=0.9, br;q=0.2");
+  check("★ higher q gzip preferred to available Brotli",
+    qPreferred.headers["content-encoding"] === "gzip" && decode(qPreferred) === APP,
+    qPreferred.headers["content-encoding"]);
+  const duplicate = await get("/assets/app-abc123.js", "br;q=0, br;q=1, gzip;q=1");
+  check("★ contradictory duplicate coding declarations fail closed for Brotli",
+    duplicate.headers["content-encoding"] === "gzip" && decode(duplicate) === APP,
+    duplicate.headers["content-encoding"]);
+  const substringTrick = await get("/assets/app-abc123.js", "nobr, not-gzip");
+  check("★ unknown codings containing br/gzip cannot select compression",
+    !substringTrick.headers["content-encoding"] && substringTrick.body.toString() === APP,
+    substringTrick.headers["content-encoding"]);
+}
+
 console.log("B. things that must stay raw");
 {
   const h = await get("/", BROWSER);
@@ -143,6 +167,29 @@ console.log("C. cache");
   writeFileSync(join(WEB, "assets", "app-abc123.js"), CHANGED);
   const after = await get("/assets/app-abc123.js", BROWSER);
   check("rewritten file is recompressed, not served stale", decode(after) === CHANGED);
+}
+
+console.log("C2. same-size same-mtime dev rewrite invalidates compressed cache");
+{
+  const target = join(WEB, "assets", "same-stamp-abc123.js");
+  const stamp = new Date("2024-01-10T11:12:13.000Z");
+  const oldBody = "export const a=1;".repeat(900);
+  const newBody = "export const b=2;".repeat(900);
+  writeFileSync(target, oldBody);
+  utimesSync(target, stamp, stamp);
+  const initial = await get("/assets/same-stamp-abc123.js", BROWSER);
+  check("same-stamp case originally compressed", decode(initial) === oldBody && initial.headers["content-encoding"] === "br");
+  const oldStat = statSync(target);
+  writeFileSync(target, newBody);
+  utimesSync(target, stamp, stamp);
+  const nextStat = statSync(target);
+  check("regression really keeps mtime and byte-size identical",
+    oldStat.size === nextStat.size && oldStat.mtimeMs === nextStat.mtimeMs,
+    { oldSize: oldStat.size, newSize: nextStat.size, oldM: oldStat.mtimeMs, newM: nextStat.mtimeMs });
+  const changed = await get("/assets/same-stamp-abc123.js", BROWSER);
+  check("★ same-size+mtime file replacement cannot reuse stale compressed bytes",
+    decode(changed) === newBody && changed.headers["content-encoding"] === "br",
+    { expected: newBody.slice(0, 20), actual: decode(changed).slice(0, 20) });
 }
 
 console.log("D. legacy precompressed sibling");
