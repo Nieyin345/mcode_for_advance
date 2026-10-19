@@ -490,7 +490,9 @@ export interface ShellOpenResult {
  *  worktree groups, fetched in full — a directory holds few threads). */
 export const ProjectSessionsSchema = z.object({
   projectId: z.string(),
-  limit: z.number().int().positive().optional(),
+  // Bound renderer-requested pages; an enormous positive integer is still
+  // valid Zod input without max() and would materialize unbounded session rows.
+  limit: z.number().int().positive().max(1000).optional(),
   offset: z.number().int().nonnegative().optional(),
   archived: z.boolean().optional(),
   worktree: z.enum(["exclude", "only"]).optional(),
@@ -505,7 +507,7 @@ export type ProjectSessionsInput = z.infer<typeof ProjectSessionsSchema>;
  *  keeps counting the unfiltered aggregate after the user switches
  *  projects. */
 export const SessionListAllSchema = z.object({
-  limit: z.number().int().positive().optional(),
+  limit: z.number().int().positive().max(1000).optional(),
   offset: z.number().int().nonnegative().optional(),
   /** Project scope: only rows whose project_id is in this list. A plain
    *  project scope sends one id, a group scope its member ids. Absent =
@@ -548,7 +550,7 @@ export type SessionHasNodesInput = z.infer<typeof SessionHasNodesSchema>;
  *  active project's loaded page). Matches non-archived sessions only. */
 export const SessionSearchSchema = z.object({
   query: z.string(),
-  limit: z.number().int().positive().optional(),
+  limit: z.number().int().positive().max(200).optional(),
 });
 export type SessionSearchInput = z.infer<typeof SessionSearchSchema>;
 
@@ -568,7 +570,7 @@ export interface BookmarkSearchResult {
  *  non-null rows is fine at workspace scale. */
 export const BookmarkSearchSchema = z.object({
   query: z.string(),
-  limit: z.number().int().positive().optional(),
+  limit: z.number().int().positive().max(200).optional(),
 });
 export type BookmarkSearchInput = z.infer<typeof BookmarkSearchSchema>;
 
@@ -587,8 +589,10 @@ export const MessageRecordSchema = z.object({
 
 export const SessionMessagesSchema = z.object({
   sessionId: z.string(),
-  /** Page size. Omit for the legacy unpaginated path (all rows). */
-  limit: z.number().int().positive().optional(),
+  /** Page size. Omit for the legacy unpaginated path (all rows).
+   *  Explicit IPC pages must be bounded; otherwise LIMIT ?=1e9 would
+   *  accidentally fetch the whole conversation into renderer memory. */
+  limit: z.number().int().positive().max(500).optional(),
   /** Cursor: fetch the page strictly older than this (createdAt, id) pair.
    *  Omit on the first page (most recent). */
   beforeCreatedAt: z.number().optional(),
