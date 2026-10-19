@@ -62,17 +62,26 @@ export class ConversationQueue {
     task: (holdUntil: (settled: Promise<unknown>) => void) => Promise<T>,
   ): Promise<T> {
     const release = await this.acquire(key, signal);
-    let detached: Promise<unknown> | undefined;
+    // A single starting task can accept multiple provider turns. Keep the
+    // lease until ALL accepted turns settle, not just the last holdUntil call.
+    // Attach rejection handlers immediately: a provider can reject while the
+    // starting task is still awaiting its own callback, before finally runs.
+    const detached: Promise<void>[] = [];
     try {
       // Includes turns started outside this queue (user/agent mail).
       // The caller must include its provider-starting phase in isBusy.
       while (!signal.aborted && isBusy()) await pause(signal);
       if (signal.aborted) throw aborted();
-      return await task((settled) => { detached = settled; });
+      return await task((settled) => {
+        detached.push(Promise.resolve(settled).then(
+          () => undefined,
+          () => undefined,
+        ));
+      });
     } finally {
       // An already accepted auto-injection belongs to the target conversation,
       // not to the cancelled workflow. Never release its slot prematurely.
-      if (detached) void detached.then(release, release);
+      if (detached.length > 0) void Promise.all(detached).then(release, release);
       else release();
     }
   }

@@ -58,6 +58,48 @@ const signal = new AbortController().signal;
   rejection.resolve(); check("rejected detached provider also releases", await after);
 }
 {
+  // A detached injection can accept multiple provider turns while dispatching.
+  // The conversation lease must cover every accepted turn, not just the LAST
+  // holdUntil promise passed to the callback.
+  const first = gate(), second = gate(); const entered = gate(); let ran = false;
+  await q.run("multi-detached", signal, () => false, async (hold) => {
+    hold(first.promise);
+    hold(second.promise);
+    return "accepted";
+  });
+  const follower = q.run("multi-detached", signal, () => false, async () => { ran = true; entered.resolve(); });
+  second.resolve();
+  await sleep(35);
+  check("★ two detached turns retain lease while any accepted provider runs", !ran);
+  first.resolve();
+  await follower;
+  check("★ multi-turn detached lease drains after all providers settle", ran);
+}
+{
+  // A provider may reject while the starting task is still waiting for a
+  // callback: attach the rejection handler when holdUntil is invoked, not
+  // only in run()'s eventual finally (otherwise Node reports unhandledRejection).
+  const inFlight = gate(); const earlyReject = gate(); const errors: unknown[] = [];
+  const observe = (err: unknown): void => { errors.push(err); };
+  process.on("unhandledRejection", observe);
+  try {
+    const waitingTask = q.run("early-rejection", signal, () => false, async (hold) => {
+      hold(earlyReject.promise.then(() => { throw new Error("expected synthetic provider failure"); }));
+      await inFlight.promise;
+      return "accepted";
+    });
+    earlyReject.resolve();
+    await sleep(45);
+    check("★ already rejected accepted provider never emits an unhandled rejection", errors.length === 0);
+    inFlight.resolve();
+    await waitingTask;
+    const follow = await q.run("early-rejection", signal, () => false, async () => true);
+    check("★ early provider rejection still releases the lease", follow);
+  } finally {
+    process.removeListener("unhandledRejection", observe);
+  }
+}
+{
   // Real scheduler, the same fan-out that previously returned one busy failure.
   const manifest: NodeTypeManifest = {id:"mcode.conversation",manifestVersion:1,name:"Conversation",runner:{kind:"conversation"},capability:"read",params:[{key:"instruction",kind:"longtext",label:"Instruction",required:true}]};
   const doc: WorkflowDoc={id:"queue-regression",name:"fanout",builtin:false,updatedAt:0,nodes:["A","B","C"].map(id=>({id,type:id==="A"?"mcode.main":"mcode.conversation",title:id,params:{instruction:"Reply"},position:{x:0,y:0}})),edges:[{id:"ab",from:"A",to:"B"},{id:"ac",from:"A",to:"C"}]};
