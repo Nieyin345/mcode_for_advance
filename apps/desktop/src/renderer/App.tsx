@@ -220,6 +220,7 @@ export function App() {
   /** Draggable pane sizes + resize actions (from the store; persisted). */
   const leftWidthPct = useSessionStore((s) => s.leftWidthPct);
   const rightWidth = useSessionStore((s) => s.rightWidth);
+  const rightDock = useSessionStore((s) => s.rightDock);
   const bottomTerminalHeight = useSessionStore((s) => s.bottomTerminalHeight);
   const adjustLeftWidthPct = useSessionStore((s) => s.adjustLeftWidthPct);
   const adjustRightWidth = useSessionStore((s) => s.adjustRightWidth);
@@ -330,6 +331,7 @@ export function App() {
         widePanelOpen={widePanelOpen}
         widePanelPct={widePanelPct}
         rightWidth={rightWidth}
+        rightDock={rightDock}
         bottomTerminalHeight={bottomTerminalHeight}
         handleWidePanelResize={handleWidePanelResize}
         adjustRightWidth={adjustRightWidth}

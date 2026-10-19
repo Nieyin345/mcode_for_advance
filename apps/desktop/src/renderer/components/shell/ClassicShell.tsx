@@ -35,6 +35,7 @@ import { useFileViewStore } from "../../stores/fileViewStore.js";
 import { useI18n } from "../../lib/i18n/index.js";
 import type { ShellVariant } from "./shellPrefs.js";
 import { shouldMountUnifiedEditorHost } from "./editorMountPolicy.js";
+import { dockResizeDelta, type PaneDock } from "../layout/paneDock.js";
 
 // Lazy-load the Monaco-backed editor / diff dialog / plan viewer and the
 // read-only file preview (moved here verbatim from App.tsx) so the large
@@ -556,6 +557,7 @@ export interface ClassicShellProps {
   widePanelOpen: boolean;
   widePanelPct: number;
   rightWidth: number;
+  rightDock: PaneDock;
   bottomTerminalHeight: number;
   handleWidePanelResize: (deltaPx: number) => void;
   adjustRightWidth: (deltaPx: number) => void;
@@ -570,7 +572,15 @@ export interface ClassicShellProps {
  * `WorkspaceInertShell` 自己就地订阅 `settingsOpen`(与抽出前相同 —— 它是
  * 自订阅的 memo 包壳,设置开关只重渲染这一层)。
  */
-export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
+export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, rightDock, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
+  const setRightDock = useSessionStore((s) => s.setRightDock);
+  // Both rightWidth (px) and widePanelPct (%) currently subtract their drag
+  // input. The handle moves to the other side when docked left, so invert.
+  const handleDockedResize = (deltaPx: number) => {
+    const normalized = dockResizeDelta(deltaPx, rightDock);
+    if (widePanelOpen) handleWidePanelResize(normalized);
+    else adjustRightWidth(normalized);
+  };
   return (
     <WorkspaceInertShell variant={variant}>
       <WorkspaceSidebar
@@ -641,9 +651,11 @@ export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftW
             bottomTerminal={<BottomTerminalBar active={bottomTerminalOpen} />}
             bottomTerminalOpen={bottomTerminalOpen}
             rightWidth={rightWidth}
+            rightDock={rightDock}
+            onChangeRightDock={setRightDock}
             rightWidthPct={widePanelOpen ? widePanelPct : undefined}
             bottomTerminalHeight={bottomTerminalHeight}
-            onResizeRight={widePanelOpen ? handleWidePanelResize : adjustRightWidth}
+            onResizeRight={handleDockedResize}
             onResizeBottomTerminal={adjustBottomTerminalHeight}
             onResetRight={widePanelOpen ? resetWidePanelPct : resetRightWidth}
             onResetBottomTerminal={resetBottomTerminalHeight}

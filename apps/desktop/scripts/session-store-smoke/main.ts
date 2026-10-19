@@ -24,7 +24,8 @@ import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
 import type { Session } from "@contracts/session";
-import type { SkillInfo } from "@contracts/ipc";
+import { UI_PANE_WIDTHS_SETTING_KEY, type SkillInfo } from "@contracts/ipc";
+import { parsePaneDock } from "@renderer/components/layout/paneDock.js";
 import type { ContextSnapshot, SessionListEntry, TurnFileEntry } from "@contracts/runtime";
 
 const PROJECT = "p1";
@@ -2085,6 +2086,31 @@ console.log("\n[UI-036] 通知去重按身份:不同审批各出一张,同事件
   T.push({ kind: "info", title: "完成", body: "任务 A", sessionId: "s1" });
   eq("★ 无 dedupeKey:相同正文去重", useToastStore.getState().toasts.length, 2);
   useToastStore.getState().clear();
+}
+
+console.log("\n[ARC005 UIK7-039] 真实 Zustand 左右停靠的即时值与隔离 setting IPC 持久化");
+{
+  const saved: string[] = [];
+  setSettingSetStub(async (input: unknown) => {
+    const row = input as { key?: string; value?: string };
+    if (row.key === UI_PANE_WIDTHS_SETTING_KEY && typeof row.value === "string") {
+      saved.push(row.value);
+    }
+    return { ok: true };
+  });
+  // Only fake in-memory store/setting API are exercised, never user DB.
+  const s = useSessionStore.getState();
+  s.setRightDock("right");
+  s.setRightDock("left");
+  eq("停靠更新立即同步给真实 store", useSessionStore.getState().rightDock, "left");
+  s.setRightDock("left"); // no change should not enqueue a second persist
+  await new Promise((done) => setTimeout(done, 460));
+  check("★ 左侧停靠写入单条防抖 settings JSON", saved.length === 1, saved.length);
+  const restored = saved.length ? JSON.parse(saved[0]!) as Record<string, unknown> : {};
+  eq("★ 恢复后的停靠侧与用户设置一致", parsePaneDock(restored.dock), "left");
+  check("★ 老四个 pane 尺寸仍一并保存", ["leftPct", "right", "editor", "bottomTerminal"]
+    .every((key) => typeof restored[key] === "number" && Number.isFinite(restored[key])));
+  setSettingSetStub(null);
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

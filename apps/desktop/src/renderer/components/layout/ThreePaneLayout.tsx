@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type DragEvent, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { Divider } from "./Divider.js";
 import { shouldMountRightPane } from "./rightPaneKeepAlive.js";
+import { dockFlexOrder, dockSideAtPoint, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, type PaneDock } from "./paneDock.js";
 import type { ShellVariant } from "../shell/shellPrefs.js";
 
 interface Props {
@@ -15,6 +16,8 @@ interface Props {
   toolbar?: ReactNode;
   leftOpen: boolean;
   rightOpen: boolean;
+  rightDock?: PaneDock;
+  onChangeRightDock?: (side: PaneDock) => void;
   /** Bottom-bar terminal node (keep-alive: always mounted). */
   bottomTerminal?: ReactNode;
   /** Whether the bottom terminal bar is expanded. When false the bar collapses
@@ -64,6 +67,8 @@ export function ThreePaneLayout({
   toolbar,
   leftOpen,
   rightOpen,
+  rightDock = "right",
+  onChangeRightDock,
   bottomTerminal,
   bottomTerminalOpen = false,
   leftWidth,
@@ -84,6 +89,40 @@ export function ThreePaneLayout({
     if (rightOpen) setHasOpenedRight(true);
   }, [rightOpen]);
   const rightEverMounted = shouldMountRightPane(rightOpen, hasOpenedRight);
+  // Reordering stable flex children avoids remounting Chromium/Monaco/PTY.
+  const order = dockFlexOrder(rightDock);
+  const [dockPreview, setDockPreview] = useState<PaneDock | null>(null);
+  useEffect(() => {
+    const clearPreview = () => setDockPreview(null);
+    window.addEventListener("dragend", clearPreview);
+    window.addEventListener("drop", clearPreview);
+    return () => {
+      window.removeEventListener("dragend", clearPreview);
+      window.removeEventListener("drop", clearPreview);
+    };
+  }, []);
+  const handleDockDragOver = (e: DragEvent<HTMLElement>) => {
+    if (!rightOpen || !onChangeRightDock ||
+        !Array.from(e.dataTransfer.types).includes(PANE_DOCK_MIME)) return;
+    const bounds = e.currentTarget.getBoundingClientRect();
+    const side = dockSideAtPoint(e.clientX, bounds.left, bounds.width);
+    if (!side) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDockPreview((prior) => prior === side ? prior : side);
+  };
+  const handleDockDrop = (e: DragEvent<HTMLElement>) => {
+    if (!rightOpen || !onChangeRightDock ||
+        e.dataTransfer.getData(PANE_DOCK_MIME) !== RIGHT_PANE_DRAG_ID) return;
+    const bounds = e.currentTarget.getBoundingClientRect();
+    const side = dockSideAtPoint(e.clientX, bounds.left, bounds.width);
+    if (side) {
+      e.preventDefault();
+      e.stopPropagation();
+      onChangeRightDock(side);
+    }
+    setDockPreview(null);
+  };
   return (
     <>
       {/* Left sidebar — only used by the settings page since the workspace
@@ -120,8 +159,19 @@ export function ThreePaneLayout({
          Stacks the center content above an optional bottom terminal bar. */}
       <main className={cn(
         "relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden border-t border-edge-panel bg-surface",
-        variant === "workspace" ? "rounded-tl-[10px] rounded-bl-[10px]" : "rounded-tl-3xl rounded-bl-3xl",
-      )}>
+        variant === "workspace"
+          ? (rightDock === "left" ? "rounded-tr-[10px] rounded-br-[10px]" : "rounded-tl-[10px] rounded-bl-[10px]")
+          : (rightDock === "left" ? "rounded-tr-3xl rounded-br-3xl" : "rounded-tl-3xl rounded-bl-3xl"),
+      )} style={{ order: order.center }} onDragOver={handleDockDragOver}
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDockPreview(null); }}
+        onDrop={handleDockDrop}>
+        {dockPreview && (
+          <div data-testid="pane-dock-preview" data-dock-preview={dockPreview} aria-hidden="true"
+            className={cn(
+              "pointer-events-none absolute inset-y-0 z-50 w-1/2 border-2 border-dashed border-accent bg-accent/10",
+              dockPreview === "left" ? "left-0" : "right-0",
+            )} />
+        )}
         <div className="min-h-0 flex-1 overflow-hidden">{center}</div>
         {/* Bottom terminal bar — keep-alive: always rendered, height collapses
             to 0 when closed so PTYs/scrollback survive. overflow-hidden clips
@@ -151,11 +201,12 @@ export function ThreePaneLayout({
         )}
       </main>
 
-      {toolbar}
+      {toolbar && <div data-pane-toolbar="" className="flex h-full shrink-0" style={{ order: order.toolbar }}>{toolbar}</div>}
 
       {rightOpen && onResizeRight && (
         <Divider
           orientation="vertical"
+          className={rightDock === "left" ? "order-3" : "order-4"}
           onResize={onResizeRight}
           onDoubleClick={onResetRight}
         />
@@ -171,11 +222,12 @@ export function ThreePaneLayout({
           aria-hidden={!rightOpen}
           inert={!rightOpen}
           style={{
+            order: order.aside,
             width: rightWidthPct !== undefined ? `${rightWidthPct}%` : rightWidth,
             display: rightOpen ? "flex" : "none",
           }}
         >
-          <div className="min-h-0 flex-1 overflow-hidden border-l border-edge-panel/60">{right}</div>
+          <div className={cn("min-h-0 flex-1 overflow-hidden border-edge-panel/60", rightDock === "left" ? "border-r" : "border-l")}>{right}</div>
         </aside>
       )}
     </>

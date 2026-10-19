@@ -27,6 +27,7 @@ import { CustomTabView } from "@renderer/components/customUi/CustomTabView.js";
 import { useWorkspaceTarget } from "@renderer/components/customUi/useWorkspaceTarget.js";
 import { nextRailFocusIndex } from "./panelRailNavigation.js";
 import { CACHED_BUILTIN_RIGHT_TABS, prunePanelIds, rememberPanelId, rememberRightTab, shouldMountCachedBuiltin } from "./rightPanelKeepAlive.js";
+import { PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID } from "./paneDock.js";
 
 const NO_MODULES: never[] = [];
 
@@ -58,6 +59,11 @@ export function RightPanel() {
   const browserTabCount = useSessionStore((s) => s.browserTabCount);
   const widePanelOpen = useSessionStore((s) => s.widePanelOpen);
   const setWidePanelOpen = useSessionStore((s) => s.setWidePanelOpen);
+  const rightDock = useSessionStore((s) => s.rightDock);
+  const setRightDock = useSessionStore((s) => s.setRightDock);
+  const dockTitle = locale.startsWith("zh")
+    ? (rightDock === "left" ? "停靠到右侧（也可拖动）" : "停靠到左侧（也可拖动）")
+    : (rightDock === "left" ? "Dock panel right (or drag)" : "Dock panel left (or drag)");
   // 角标上的数:**当前对话**有几个节点在跑。订阅点在这里(而不是面板里)——
   // 面板没打开时角标也得对。
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
@@ -217,6 +223,22 @@ export function RightPanel() {
             );
           })}
         </div>
+        {/* Native HTML drag source + click/keyboard alternative. Drag this handle
+            onto the left/right half of the chat/editor to change the dock;
+            a click/Enter/Space toggles the same persistent side. */}
+        <button type="button" draggable
+          data-testid="right-pane-drag-handle"
+          title={dockTitle} aria-label={dockTitle}
+          onClick={() => setRightDock(rightDock === "left" ? "right" : "left")}
+          onDragStart={(e) => {
+            e.stopPropagation();
+            e.dataTransfer.setData(PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID);
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-accent"
+        >
+          <span aria-hidden="true" className="text-[15px] tracking-tighter">⋮⋮</span>
+        </button>
         {/* Wide-panel (3:7) mode - hide the left sidebar + center editor and
             split the workspace into this right panel (7/10) + the chat column
             (3/10). Toggled here, via the command palette / shortcut, or the

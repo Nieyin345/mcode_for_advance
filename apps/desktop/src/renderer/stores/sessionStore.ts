@@ -42,6 +42,7 @@ import { DISPLAY_MODE_SETTING_KEY, TAB_BAR_MULTI_ROW_SETTING_KEY, LEFTBAR_MODE_S
 import type { ThemeStyle } from "@contracts/theme";
 // 【ARC-005 V1】外壳偏好的默认值 + 防卫式解析(叶子模块,只 import 契约)。
 import { DEFAULT_SHELL_PREF, parseShellPref } from "@renderer/components/shell/shellPrefs.js";
+import { parsePaneDock } from "@renderer/components/layout/paneDock.js";
 
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -258,6 +259,7 @@ function schedulePaneWidthPersist(get: () => SessionState): void {
         value: JSON.stringify({
           leftPct: s.leftWidthPct,
           right: s.rightWidth,
+          dock: s.rightDock,
           bottomTerminal: s.bottomTerminalHeight,
           editor: s.editorWidthPct,
         }),
@@ -765,6 +767,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // ─────────────── I 布局（纯 UI） ───────────────
   leftWidthPct: LEFT_WIDTH_PCT_DEFAULT,
   rightWidth: 360,
+  rightDock: "right",
   bottomTerminalHeight: 280,
   editorWidthPct: 50,
   // ─────────────── L 引擎与模型 ───────────────
@@ -1407,7 +1410,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const paneRaw = ds[UI_PANE_WIDTHS_SETTING_KEY];
       if (paneRaw) {
         const parsed = JSON.parse(paneRaw) as Partial<{
-          leftPct: number; right: number; bottomTerminal: number; editor: number;
+          leftPct: number; right: number; dock: unknown; bottomTerminal: number; editor: number;
         }>;
         const patch: Partial<SessionState> = {};
         if (parsed && typeof parsed === "object") {
@@ -1426,6 +1429,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               centerRightRowWidth(get().leftOpen, leftPct),
             );
           }
+          // Unknown/legacy dock preference is mapped safely to the old right
+          // placement without moving/restoring any live browser/editor instance.
+          patch.rightDock = parsePaneDock(parsed.dock);
           if (Number.isFinite(parsed.bottomTerminal)) {
             patch.bottomTerminalHeight = clampBottomTerminalHeight(parsed.bottomTerminal!);
           }
@@ -4537,6 +4543,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // caller converted px via the container width.
     const next = clampLeftWidthPct(get().leftWidthPct + deltaPct);
     set({ leftWidthPct: next });
+    schedulePaneWidthPersist(get);
+  },
+  setRightDock: (dock) => {
+    const side = parsePaneDock(dock);
+    if (get().rightDock === side) return;
+    set({ rightDock: side });
     schedulePaneWidthPersist(get);
   },
   adjustRightWidth: (deltaPx) => {

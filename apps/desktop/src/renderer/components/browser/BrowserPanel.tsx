@@ -132,6 +132,7 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
   const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
   const setRightOpen = useSessionStore((s) => s.setRightOpen);
   const rightOpen = useSessionStore((s) => s.rightOpen);
+  const rightDock = useSessionStore((s) => s.rightDock);
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const projects = useSessionStore((s) => s.projects);
   const enqueueChatElement = useSessionStore((s) => s.enqueueChatElement);
@@ -707,6 +708,18 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
       }
     };
   }, []);
+
+  // CSS flex-order docking can move this native WebContentsView horizontally
+  // without changing its DOM stage size. ResizeObserver does NOT fire on
+  // positional-only moves. Resync the real main-process bounds after layout.
+  useEffect(() => {
+    if (mode !== "sidebar" || !isActive) return;
+    const frame = requestAnimationFrame(() => {
+      syncBounds();
+      reconcileRef.current();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [rightDock, mode, isActive, syncBounds]);
 
   // ResizeObserver -> syncBounds + occlusion reconcile (rAF-throttled inside).
   // Scroll events feed the same path. The reconcile rides along because the
