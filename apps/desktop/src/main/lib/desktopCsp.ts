@@ -3,6 +3,13 @@ import { PANEL_SCHEME } from "@contracts/customUiPanel";
  * default session. In particular, keep Document Server iframe headers intact. */
 export function desktopCsp(requestUrl: string, rendererUrl: string, officeOrigin = ""): string | null {
   const clean = (value: string): string => {
+    // WHATWG URL parsing silently drops TAB/LF/CR and leading/trailing
+    // whitespace. Comparing only the parsed result can accidentally apply
+    // the privileged renderer policy to a raw URL that wasn't the expected
+    // document. Refuse ambiguous forms before normalization.
+    if (value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
+      throw new Error("ambiguous renderer URL");
+    }
     const u = new URL(value);
     u.search = ""; u.hash = "";
     return u.href;

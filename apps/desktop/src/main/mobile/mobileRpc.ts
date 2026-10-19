@@ -84,6 +84,7 @@ import { uiLocale } from "@main/lib/dialogText.js";
 import {
   broadcastProjectsChanged,
   broadcastSessionChanged,
+  toSessionListEntry,
   broadcastSettingChanged,
 } from "@main/lib/sessionSync.js";
 import { deleteProjectEverywhere, deleteSessionEverywhere, SystemProjectDeleteError } from "@main/lib/rowDeletion.js";
@@ -159,14 +160,17 @@ const HANDLERS: Record<string, RpcHandler> = {
     });
     const total = SessionRepo.countByProject(input.projectId, archived, input.worktree);
     const hasMore = limit !== undefined ? offset + sessions.length < total : false;
-    return { sessions, hasMore, total };
+    // Keep mobile list payloads on the same explicit SessionListEntry allowlist
+    // as session.changed SSE. A full Session row includes turnFiles.before
+    // (whole source files) and SDK private state, which the sidebar never needs.
+    return { sessions: sessions.map(toSessionListEntry), hasMore, total };
   },
 
   // 一个对话里跑过的工作流步骤各自的会话。和桌面端 handler 同一份收口
   // (`SessionRepo.listNodesByParent`)—— 手机端能看到哪些步骤有会话,靠的就是这条。
   "session:listNodes": (raw) => {
     const input = SessionListNodesSchema.parse(raw);
-    return { sessions: SessionRepo.listNodesByParent(input.sessionId) };
+    return { sessions: SessionRepo.listNodesByParent(input.sessionId).map(toSessionListEntry) };
   },
 
   // 同桌面端那条:一个对话里有没有步骤留下过会话。手机端也看得到那个入口,
@@ -178,7 +182,7 @@ const HANDLERS: Record<string, RpcHandler> = {
 
   "session:search": (raw) => {    const input = SessionSearchSchema.parse(raw);
     const sessions = SessionRepo.searchByTitle(input.query, { limit: input.limit });
-    return { sessions };
+    return { sessions: sessions.map(toSessionListEntry) };
   },
 
   "session:searchBookmarks": (raw) => {
@@ -626,7 +630,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     return { session };
   },
 
-  "session:listPinned": () => ({ sessions: SessionRepo.listPinned() }),
+  "session:listPinned": () => ({ sessions: SessionRepo.listPinned().map(toSessionListEntry) }),
 
   "session:archive": (raw) => {
     const input = ArchiveSessionSchema.parse(raw);

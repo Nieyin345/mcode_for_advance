@@ -28,7 +28,7 @@ import { ProjectRepo } from "@main/store/repositories.js";
 import { isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
 import {
   loadSimpleGit,
-  findContainingProject,
+  isRepoPathContained,
   mapStatus,
   findGitRepos,
   generateCommitMessageForRepo,
@@ -41,7 +41,7 @@ import { registerMobileRpcHandlers, type RpcHandler } from "./mobileRpc.js";
 import { broadcastGitChanged } from "@main/lib/sessionSync.js";
 import { log } from "@main/lib/logger.js";
 
-const REFUSE = "仓库路径不在任何已添加的项目内";
+const REFUSE = "Git 仓库实际根目录不在任何已添加的项目内";
 
 const handlers: Record<string, RpcHandler> = {
   "git:discoverRepos": async (raw) => {
@@ -74,7 +74,7 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:status": async (raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { status: { branch: "", ahead: 0, behind: 0, files: [] } };
     }
     try {
@@ -89,7 +89,7 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:diff": async (raw) => {
     const input = GitDiffSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) return { patch: "" };
+    if (!(await isRepoPathContained(input.repoPath))) return { patch: "" };
     try {
       const git = (await loadSimpleGit())(input.repoPath);
       const args = input.staged ? ["--cached", "--", input.filePath] : ["--", input.filePath];
@@ -103,7 +103,7 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:stage": async (raw) => {
     const input = GitStageSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) return { ok: false, error: REFUSE };
+    if (!(await isRepoPathContained(input.repoPath))) return { ok: false, error: REFUSE };
     try {
       const git = (await loadSimpleGit())(input.repoPath);
       // 同桌面端 git:stage:`--` 之后才是路径,防以 `-` 开头的文件名被当成选项。
@@ -117,7 +117,7 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:unstage": async (raw) => {
     const input = GitUnstageSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) return { ok: false, error: REFUSE };
+    if (!(await isRepoPathContained(input.repoPath))) return { ok: false, error: REFUSE };
     try {
       const git = (await loadSimpleGit())(input.repoPath);
       await git.reset(input.filePaths.length > 0 ? ["--", ...input.filePaths] : []);
@@ -130,7 +130,7 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:commit": async (raw) => {
     const input = GitCommitSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) return { ok: false, error: REFUSE };
+    if (!(await isRepoPathContained(input.repoPath))) return { ok: false, error: REFUSE };
     try {
       const git = (await loadSimpleGit())(input.repoPath);
       await git.commit(input.message);
@@ -143,7 +143,7 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:push": async (raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) return { ok: false, error: REFUSE };
+    if (!(await isRepoPathContained(input.repoPath))) return { ok: false, error: REFUSE };
     try {
       const git = (await loadSimpleGit())(input.repoPath);
       await git.push();
@@ -156,7 +156,7 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:pull": async (raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) return { ok: false, error: REFUSE };
+    if (!(await isRepoPathContained(input.repoPath))) return { ok: false, error: REFUSE };
     try {
       const git = (await loadSimpleGit())(input.repoPath);
       try {
@@ -185,7 +185,7 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:listBranches": async (raw) => {
     const input = GitRepoPathSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) {
+    if (!(await isRepoPathContained(input.repoPath))) {
       return { branches: { current: "", detached: false, local: [], remote: [], tags: [] } };
     }
     try {
@@ -198,13 +198,13 @@ const handlers: Record<string, RpcHandler> = {
 
   "git:checkout": async (raw) => {
     const input = GitCheckoutSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) return { ok: false, error: REFUSE };
+    if (!(await isRepoPathContained(input.repoPath))) return { ok: false, error: REFUSE };
     return checkoutRef(input.repoPath, input.branch, input.newBranch);
   },
 
   "git:generateCommitMessage": async (raw) => {
     const input = GitGenerateCommitSchema.parse(raw);
-    if (!findContainingProject(input.repoPath)) return { ok: false, error: REFUSE };
+    if (!(await isRepoPathContained(input.repoPath))) return { ok: false, error: REFUSE };
     return generateCommitMessageForRepo({
       repoPath: input.repoPath,
       prompt: input.prompt,

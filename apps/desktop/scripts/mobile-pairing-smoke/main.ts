@@ -1001,6 +1001,65 @@ console.log("\n【MC-014】手机 RPC 幂等");
   rmSync(pathB, { recursive: true, force: true });
 }
 
+/* ────────────── 7c2. 手机清单不能发送全文/SDK 内部会话字段 ──────────────
+ * 全量 Session 含 turnFiles.before (可能是整份用户文件)、历史工具上下文，
+ * 但列表/全局搜索/置顶/节点导航只消费 SessionListEntry 字段。
+ * mobile SSE 已经白名单化，RPC 如果依旧直接把 SessionRepo.list* 序列化，
+ * 就成为另一条更大的跨端泄漏路径。
+ */
+console.log("\nMobile session list payload minimization");
+{
+  const { ProjectRepo, SessionRepo } = await import("@main/store/repositories.js");
+  const root = mkdtempSync(join(tmpdir(), "mcode-mobile-slim-list-"));
+  const now = Date.now();
+  ProjectRepo.create({ id: "slim-p", name: "slim-p", path: root, archived: false,
+    pinnedAt: null, sortOrder: 0, createdAt: now, updatedAt: now } as never);
+  SessionRepo.create({
+    id: "slim-s", projectId: "slim-p", providerId: "claude-sdk",
+    claudeSessionId: null, kind: "chat", parentSessionId: null, nodeId: null,
+    title: "SLIM_LIST_TEST", status: "idle", model: "default",
+    effort: "default", permissionMode: "default", workflowId: "default",
+    customModelId: null, envMode: "local", worktreePath: null,
+    archived: false, pinnedAt: null, contextSnapshot: null, todos: null,
+    subagents: null, planDraft: null, turnFiles: null, usageHistory: null,
+    bookmarks: null, subagentTranscripts: null, createdAt: now, updatedAt: now,
+  } as never);
+  const checkSlim = (label: string, entries: unknown[]) => {
+    const row = (entries as Array<Record<string, unknown>>).find((v) => v?.id === "slim-s");
+    check(label + " returned own session", !!row && row.title === "SLIM_LIST_TEST");
+    check("★ " + label + " strips heavy session fields",
+      !!row && !["turnFiles", "contextSnapshot", "subagentTranscripts", "todos", "usageHistory", "planDraft"]
+        .some((key) => Object.hasOwn(row, key)), row && Object.keys(row));
+  };
+  const fromProject = JSON.parse((await rpcTok(tA, "project:sessions",
+    { projectId: "slim-p", archived: false })).text) as { result: { sessions: unknown[] } };
+  checkSlim("project:sessions", fromProject.result.sessions);
+  const fromSearch = JSON.parse((await rpcTok(tA, "session:search",
+    { query: "SLIM_LIST_TEST" })).text) as { result: { sessions: unknown[] } };
+  checkSlim("session:search", fromSearch.result.sessions);
+  SessionRepo.setPinned("slim-s", true);
+  const fromPinned = JSON.parse((await rpcTok(tA, "session:listPinned", {})).text) as { result: { sessions: unknown[] } };
+  checkSlim("session:listPinned", fromPinned.result.sessions);
+  SessionRepo.create({
+    id: "slim-node", projectId: "slim-p", providerId: "claude-sdk",
+    claudeSessionId: null, kind: "node", parentSessionId: "slim-s", nodeId: "node-1",
+    title: "PRIVATE_NODE", status: "idle", model: "default", effort: "default",
+    permissionMode: "default", workflowId: "default", customModelId: null,
+    envMode: "local", worktreePath: null, archived: false, pinnedAt: null,
+    contextSnapshot: null, todos: null, subagents: null, planDraft: null,
+    turnFiles: null, usageHistory: null, bookmarks: null,
+    subagentTranscripts: null, createdAt: now, updatedAt: now,
+  } as never);
+  const nodeResult = JSON.parse((await rpcTok(tA, "session:listNodes",
+    { sessionId: "slim-s" })).text) as { result: { sessions: Array<Record<string, unknown>> } };
+  const nodeRow = nodeResult.result.sessions.find((row) => row.id === "slim-node");
+  check("session:listNodes retains node identity", nodeRow?.nodeId === "node-1", nodeRow);
+  check("★ session:listNodes drops heavy and internal state",
+    !!nodeRow && !["turnFiles", "contextSnapshot", "usageHistory", "todos"]
+      .some((key) => Object.hasOwn(nodeRow, key)), nodeRow && Object.keys(nodeRow));
+  rmSync(root, { recursive: true, force: true });
+}
+
 /* ────────────── 7d. sentinel 回答必须落在会话自己的工作树里 ──────────────
  *
  * 兜底路径(native AskUserQuestion 不可用时)的答案会作为**新一轮提示词**发出去。
@@ -1072,6 +1131,67 @@ console.log("\ndiscoverRepos:rootOnly");
   eq("rootOnly 时项目根不是仓库 → 返回空(与桌面一致)", rootOnlyRepos.length, 0);
 
   rmSync(rootNoRepo, { recursive: true, force: true });
+}
+
+/* ────────────── 7e2. git 不能穿过项目根操作其父仓库 ──────────────
+ * Git 从 cwd 往父目录搜索 .git。已登记项目是父仓库内一个普通子目录
+ * 时，仅检查 repoPath 在项目中是不够的：stage/commit/push/checkout
+ * 实际操作的是用户没有添加过的父仓库。桌面有共享的
+ * isRepoPathContained，手机全部 git RPC 必须复用。
+ */
+console.log("\nMobile Git: resolved repository containment");
+{
+  const { ProjectRepo } = await import("@main/store/repositories.js");
+  const { registerMobileGitRpc } = await import("@main/mobile/mobileGitRpc.js");
+  const outer = mkdtempSync(join(tmpdir(), "mcode-mobile-outside-git-"));
+  const child = join(outer, "only-authorized-project");
+  mkdirSync(child, { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", args, {
+    cwd: outer, encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "a@test",
+      GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "a@test" },
+  });
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(child, "work.txt"), "original\n");
+  git("add", "--", "only-authorized-project/work.txt");
+  git("commit", "-qm", "initial");
+  writeFileSync(join(child, "work.txt"), "changed\n");
+  const now = Date.now();
+  ProjectRepo.create({ id: "nested-boundary-p", name: "nested-boundary-p",
+    path: child, archived: false, pinnedAt: null, sortOrder: 0,
+    createdAt: now, updatedAt: now } as never);
+  registerMobileGitRpc();
+  const status = JSON.parse((await rpcTok(tA, "git:status",
+    { repoPath: child })).text) as { result: { status: { branch: string } } };
+  check("★ status must not reveal parent repo that is outside every authorized project",
+    status.result.status.branch === "", status.result);
+  const diff = JSON.parse((await rpcTok(tA, "git:diff",
+    { repoPath: child, filePath: "work.txt" })).text) as { result: { patch: string } };
+  check("★ diff cannot read unauthorised parent repository changes",
+    diff.result.patch === "", diff.result);
+  const stage = JSON.parse((await rpcTok(tA, "git:stage",
+    { repoPath: child, filePaths: ["work.txt"] })).text) as { result: { ok: boolean } };
+  check("★ stage cannot mutate an unregistered parent Git repository",
+    stage.result.ok === false, stage.result);
+  const branches = JSON.parse((await rpcTok(tA, "git:listBranches",
+    { repoPath: child })).text) as { result: { branches: { local: unknown[] } } };
+  check("★ listBranches cannot disclose parent repo refs",
+    branches.result.branches.local.length === 0, branches.result);
+  // A repo rooted INSIDE the authorized project remains a legitimate Git
+  // destination even though the parent directory also holds another repo.
+  const nestedGit = (...args: string[]) => execFileSync("git", args, {
+    cwd: child, encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "a@test",
+      GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "a@test" },
+  });
+  nestedGit("init", "-q", "-b", "main");
+  nestedGit("add", "--", "work.txt");
+  nestedGit("commit", "-qm", "legitimate");
+  const inside = JSON.parse((await rpcTok(tA, "git:status",
+    { repoPath: child })).text) as { result: { status: { branch: string } } };
+  check("a real nested Git repository is still authorized",
+    inside.result.status.branch === "main", inside.result);
+  rmSync(outer, { recursive: true, force: true });
 }
 
 /* ────────────── 7f. generateCommitMessage 的 scope 必须转发 ──────────────
