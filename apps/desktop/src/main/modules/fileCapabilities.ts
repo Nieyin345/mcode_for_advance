@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ResourceSchema, ResultSchema, type ModuleResource } from "@contracts/modules";
@@ -77,13 +78,42 @@ export async function resolveModuleResource(resource: ModuleResource, knownRoot:
   }
   const file = await realpath(resolve(resource.path));
   if (!within(root, file)) throw Error("资源在工作区之外");
-  if (!(await stat(file)).isFile()) throw Error("需要一个普通文件");
+  const detail = await stat(file);
+  if (!detail.isFile() || detail.nlink !== 1) throw Error("需要一个普通文件（拒绝跨工作区硬链接）");
   return file;
+}
+/** Open the exact inode that was authorized, not a different file swapped in
+ * after realpath/stat. A single hardlink to an outside path must also be denied:
+ * a correct-looking lexical path does not make its inode workspace-owned.
+ * This is bounded Node-level mitigation; an OS openat2-style directory anchor
+ * is still needed against malicious concurrent ancestor renames.
+ */
+async function openAuthorizedFile(
+  resource: ModuleResource,
+  knownRoot: (path: string) => boolean,
+) {
+  const authorized = await resolveModuleResource(resource, knownRoot);
+  const fd = await open(authorized, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await fd.stat();
+    if (!opened.isFile() || opened.nlink !== 1) throw Error("拒绝非普通文件或硬链接");
+    // Catch symlink / hardlink replacement after the initial authorization, and
+    // never use a pathname stat as the content actually read from this descriptor.
+    const checked = await resolveModuleResource(resource, knownRoot);
+    const current = await stat(checked);
+    if (checked !== authorized || !current.isFile() || current.nlink !== 1 ||
+        current.dev !== opened.dev || current.ino !== opened.ino) {
+      throw Error("文件在授权与打开期间已变化，拒绝读取");
+    }
+    return fd;
+  } catch (error) {
+    await fd.close();
+    throw error;
+  }
 }
 export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<ModuleResource>[] {
   const inspect = async (resource:ModuleResource, context:CapabilityContext) => {
-    const path=await resolveModuleResource(resource,knownRoot);
-    const file=await open(path,"r");
+    const file=await openAuthorizedFile(resource,knownRoot);
     try {
       const initial=await file.stat();
       if (!initial.isFile() || initial.size > 32*1024*1024) throw Error("文件检查仅限不超过 32 MiB 的普通文件");
@@ -100,7 +130,7 @@ export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<
       }
       const final=await file.stat();
       const current=await stat(await resolveModuleResource(resource,knownRoot));
-      if(final.size!==initial.size || final.mtimeMs!==initial.mtimeMs || current.ino!==initial.ino || current.dev!==initial.dev || current.mtimeMs!==initial.mtimeMs) throw Error("文件在检查期间发生变化,请重试");
+      if(bytes!==initial.size || final.size!==initial.size || final.mtimeMs!==initial.mtimeMs || final.ctimeMs!==initial.ctimeMs || current.ino!==initial.ino || current.dev!==initial.dev || current.mtimeMs!==initial.mtimeMs || current.ctimeMs!==initial.ctimeMs) throw Error("文件在检查期间发生变化,请重试");
       return {bytes,sha256:hash.digest("hex")};
     } finally {await file.close();}
   };
@@ -110,7 +140,13 @@ export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<
   const implementations: Record<string, Capability<ModuleResource>> = {
     "core.file.inspect": {id:"core.file.inspect",kind:"task",metadata:inspectionMetadata,input:ResourceSchema,output:ResultSchema,run:inspect},
     "core.file.info": {id:"core.file.info",kind:"query",metadata:fileInfoMetadata,input:ResourceSchema,output:ResultSchema,run:async resource=>{
-      const value=await stat(await resolveModuleResource(resource,knownRoot));return {bytes:value.size,modifiedAt:value.mtimeMs};
+      const file=await openAuthorizedFile(resource,knownRoot);
+      try {
+        const value=await file.stat();
+        return {bytes:value.size,modifiedAt:value.mtimeMs};
+      } finally {
+        await file.close();
+      }
     }},
   };
   return BUILTIN_CAPABILITY_CATALOGUE.map((entry) => {
