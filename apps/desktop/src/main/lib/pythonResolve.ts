@@ -30,22 +30,23 @@ import { findExecutables } from "./binPath.js";
 /** 找 python 解释器的候选名,与大多数人的 PATH 习惯一致。 */
 export const PYTHON_CANDIDATES = ["python", "python3", "py"] as const;
 
-/** 已知的**捆绑/嵌入型**解释器所属的程序。
+/** Known bundled interpreter directory layouts, not bare project names.
  *
- *  判据按**路径**认,不按文件名认:`match` 是 `normPathKey` 归一(小写、正斜杠)之后
- *  的路径子串,所以 Windows / macOS / Linux 的安装位置都覆盖得到。加新程序时加一行即可
- *  (值就是画在面板提示里的那个名字)。 */
+ * A user may work in a directory literally named "libreoffice" and place
+ * their own .venv inside it. Matching just /libreoffice/ silently demotes
+ * that healthy Python and may select LibreOffice's private Python instead.
+ * The installed native bundle lives in program/ (Win/Linux) or an .app's
+ * Contents/ tree (macOS), so match those structural segments. */
 const BUNDLED_INTERPRETERS: ReadonlyArray<{ match: string; owner: string }> = [
-  { match: "/libreoffice", owner: "LibreOffice" },
+  { match: "/libreoffice/program/", owner: "LibreOffice" },
+  { match: "/libreoffice.app/contents/", owner: "LibreOffice" },
 ];
 
 /** 这个解释器是不是某个程序自带的;是就返回那个程序名,否则 null。 */
 export function bundledInterpreterOwner(exe: string): string | null {
   const key = normPathKey(exe);
   for (const { match, owner } of BUNDLED_INTERPRETERS) {
-    // Match a complete installation-directory segment, not an unrelated
-    // `libreoffice-project` or `LibreOfficeExtensions` virtualenv directory.
-    if (key === match || key.includes(`${match}/`)) return owner;
+    if (key.includes(match)) return owner;
   }
   return null;
 }
