@@ -22,6 +22,12 @@ check("custom panel policy untouched", desktopCsp("mcode-panel://test/index.html
 check("unrelated local document policy untouched", desktopCsp("file:///tmp/other.html", own) === null);
 check("invalid office origin cannot inject directives", !desktopCsp(own, own, "javascript:alert(1)")!.includes("javascript"));
 check("clone limit exceeds old hard stop but remains finite", MARKET_CLONE_TIMEOUT_MS === 900000);
+const redactionInput = "fatal: Authorization: Bearer fake-only-login-token; response token=fake-only-access-token password=fake-only-pass";
+const redactedGit = safeGitMessage(redactionInput);
+check("Git log redacts Authorization bearer credentials", !redactedGit.includes("fake-only-login-token"));
+check("Git log redacts query-like access token", !redactedGit.includes("fake-only-access-token"));
+check("Git log redacts password key/value diagnostics", !redactedGit.includes("fake-only-pass"));
+check("Git credential scrubbing preserves non-secret failure reason", redactedGit.includes("fatal:") && redactedGit.includes("Authorization:"));
 check("Git diagnostics redact credentials/query", safeGitMessage("fatal: https://alice:secret@host.invalid/repo?token=hidden").includes("https://host.invalid/repo") && !safeGitMessage("https://alice:secret@host.invalid/repo?token=hidden").includes("hidden"));
 const root = await fs.mkdtemp(path.join(tmpdir(), "mcode-editor-market-"));
 const ok = (extra: Partial<SpawnRunResult> = {}): SpawnRunResult => ({ code: 0, signal: null, stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false, stdoutLineTruncated: false, stderrLineTruncated: false, killedBy: { timeout: false, abort: false }, ...extra });
@@ -55,6 +61,37 @@ try {
     check("refused proxy retry overrides Git config", opts.args!.includes("http.proxy=")); return ok();
   } });
   check("one refused-proxy retry", calls === 2);
+  // ARC-006: never let an unsuccessful clone or proxy retry recursively delete a
+  // target that another dialog/user already owns. All fixtures are disposable.
+  const existing = path.join(root, "already-present");
+  await fs.mkdir(existing);
+  await fs.writeFile(path.join(existing, "sentinel"), "user-owned");
+  let startedExisting = 0;
+  await assert.rejects(cloneMarketRepository("https://example.invalid/repo", existing, undefined, undefined, {
+    run: async () => { startedExisting++; return ok(); },
+  }), /exist|占用|已存在|destination/i);
+  check("existing clone destination rejects before running Git", startedExisting === 0);
+  check("existing destination bytes remain unchanged", await fs.readFile(path.join(existing, "sentinel"), "utf8") === "user-owned");
+  const contended = path.join(root, "concurrent-target");
+  let contendedCalls = 0;
+  await assert.rejects(cloneMarketRepository("https://example.invalid/repo", contended, undefined, undefined, {
+    run: async opts => {
+      contendedCalls++;
+      const gitTarget = opts.args!.at(-1)!;
+      await fs.mkdir(gitTarget, { recursive: true });
+      if (contendedCalls === 1) {
+        await fs.writeFile(path.join(gitTarget, "partial"), "partial clone");
+        await fs.mkdir(contended, { recursive: true });
+        await fs.writeFile(path.join(contended, "sentinel"), "other-agent");
+        return ok({ code: 128, stderr: "Failed to connect to 127.0.0.1 port 7897: Connection refused" });
+      }
+      await fs.writeFile(path.join(gitTarget, "cloned"), "new");
+      return ok();
+    },
+  }), /exist|占用|EEXIST|ENOTEMPTY|already/i);
+  check("proxy retry cannot erase a concurrently-created destination", await fs.readFile(path.join(contended, "sentinel"), "utf8") === "other-agent");
+  check("proxy retry really attempted a second clone", contendedCalls === 2);
+  check("failed clone leaves no staging directory", !(await fs.readdir(root)).some(name => name.includes("-clone-")));
   calls=0;
   await assert.rejects(cloneMarketRepository("https://example.invalid/repo",path.join(root,"auth"),undefined,undefined,{run:async()=>{calls++;return ok({code:128,stderr:"HTTP 407 Proxy Authentication Required"});}}), /407/);
   check("authentication failure never bypasses proxy", calls===1);
@@ -62,13 +99,42 @@ try {
   await fs.mkdir(destination);await fs.writeFile(path.join(destination,"old"),"keep");
   await assert.rejects(promoteMarketCatalog(staging,destination));
   check("failed promotion restores old catalog", await fs.readFile(path.join(destination,"old"),"utf8")==="keep");
+  const lockFile = destination + ".mcode-promote.lock";
+  const contender = path.join(root, "contender-stage");
+  await fs.mkdir(contender); await fs.writeFile(path.join(contender, "new"), "other");
+  await fs.writeFile(lockFile, "another updater owns this catalog");
+  await assert.rejects(promoteMarketCatalog(contender, destination), /busy|lock|占用|EEXIST/i);
+  check("catalog promotion refuses other updater's lock", await fs.readFile(path.join(destination,"old"),"utf8")==="keep");
+  check("locked promotion never consumes contender staging", await fs.readFile(path.join(contender,"new"),"utf8")==="other");
+  check("rejected promotion does not remove another updater's lock", await fs.readFile(lockFile,"utf8")==="another updater owns this catalog");
+  await fs.rm(lockFile);
+  await fs.rm(contender, { recursive:true, force:true });
   await fs.mkdir(staging);await fs.writeFile(path.join(staging,"new"),"new");await promoteMarketCatalog(staging,destination);
+  check("successful promotion releases its own lock", !(await fs.readdir(root)).some(name => name.endsWith(".mcode-promote.lock")));
   check("valid promotion replaces catalog",await fs.readFile(path.join(destination,"new"),"utf8")==="new");
   const messages: any[]=[];
   const sink=marketProgressFor({sender:{isDestroyed:()=>false,send:(...args:any[])=>messages.push(args)}} as any,"owner-id");
   sink?.({phase:"clone",message:"Receiving objects: 20%",elapsedMs:100});
   check("progress only sent to initiating sender with correlation",messages.length===1&&messages[0][1].payload.requestId==="owner-id");
   check("legacy calls need no progress channel",marketProgressFor({} as any)===undefined);
+  check("oversized renderer request correlation is not forwarded",
+    marketProgressFor({} as any,"a".repeat(10000)) === undefined);
+  check("control characters in renderer correlation are rejected",
+    marketProgressFor({} as any,"untrusted" + String.fromCharCode(10) + "separator") === undefined);
+  const frame: {url:string;isDestroyed:()=>boolean} = {url:"file:///app/settings.html",isDestroyed:()=>false};
+  const routed: any[] = [];
+  const sender = {isDestroyed:()=>false,mainFrame:frame,send:(...args:any[])=>routed.push(args)};
+  const route = marketProgressFor({sender,senderFrame:frame} as any,"frame-scoped");
+  route?.({phase:"clone",message:"valid first document",elapsedMs:100});
+  check("original market progress frame receives its own event",routed.length===1);
+  frame.url="file:///other/new-document.html";
+  route?.({phase:"clone",message:"must never leak after navigation",elapsedMs:110});
+  check("new document must not receive progress from previous frame",routed.length===1);
+  frame.url="file:///app/settings.html";
+  const nextFrame={url:frame.url,isDestroyed:()=>false};
+  sender.mainFrame=nextFrame;
+  route?.({phase:"clone",message:"must not leak after same-origin reload",elapsedMs:120});
+  check("reloaded frame must not receive old request progress",routed.length===1);
   let received="";
   const real = await spawnRun({command:process.execPath,args:["-e","process.stderr.write('Receiving: 25%\\r');setTimeout(()=>process.stderr.write('Receiving: 100%\\r'),25)"],timeoutMs:3000,signal:new AbortController().signal,limitBytes:4096,onStderrChunk:b=>{received+=b.toString();}});
   check("actual process CR streaming works",real.code===0&&received.includes("25%\r")&&received.includes("100%\r"));
