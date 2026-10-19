@@ -456,29 +456,30 @@ const slidesApi = {
    *
    *  页面不传 identity：`docId` 由宿主从 `event.sender` 反查（与打开/保存同一
    *  纪律）。宿主只接受这两个操作，其余编辑继续是诚实桩。vendor 主进程未装配时
-   *  宿主回 `{ ok:false, error }` 并点名原因 —— **不假装成功**。
+   *  宿主回 `{ ok:false, reason }`，preload 转为 vendor 的 null 失败值，
+   *  防止原版 Slides 页面把 truthy 拒绝信封误当成功的渲染树。
    *
    *  `sourceIndex`/`fitWidthPx` 等 vendor 参数由宿主固定（当前页之后插入、
    *  FIT_WIDTH=1280），页面给的值不参与决策；`slideIndex`/`elementId`/`text`
    *  原样转发给 vendor 执行器。 */
   addBlankSlide: (op: { sourceIndex?: number; fitWidthPx?: number }): Promise<{
-    slides?: unknown[];
-    index?: number;
-    ok?: boolean;
-    error?: string;
-  }> => {
+    slides: unknown[];
+    index: number;
+  } | null> => {
     void op;
-    return ipcRenderer.invoke(SLIDES_ADD_SLIDE_CHANNEL, {}) as Promise<{
+    return (ipcRenderer.invoke(SLIDES_ADD_SLIDE_CHANNEL, {}) as Promise<{
+      ok?: boolean;
       slides?: unknown[];
       index?: number;
-      ok?: boolean;
-      error?: string;
-    }>;
+    }>).then((reply) => {
+      if (reply?.ok !== true || !Array.isArray(reply.slides) ||
+          !Number.isInteger(reply.index) || reply.index! < 0 || reply.index! >= reply.slides.length) return null;
+      return { slides: reply.slides, index: reply.index! };
+    }).catch(() => null);
   },
   editText: (op: { slideIndex: number; sourceId: string; paragraphs?: unknown[] }): Promise<{
-    ok?: boolean;
-    error?: string;
-  }> => {
+    nodes: unknown[];
+  } | null> => {
     // vendor 的 `EditParagraph[]` 在本宿主只接受单 run 纯文本（见契约
     // `DocViewSlidesEditTextSchema.text`）；段落结构不转发。
     const paragraphs = Array.isArray(op?.paragraphs) ? op.paragraphs : [];
@@ -488,11 +489,13 @@ const slidesApi = {
         return Array.isArray(runs) ? runs.map((run) => String(run?.text ?? "")).join("") : "";
       })
       .join("\n");
-    return ipcRenderer.invoke(SLIDES_EDIT_TEXT_CHANNEL, {
+    return (ipcRenderer.invoke(SLIDES_EDIT_TEXT_CHANNEL, {
       slideIndex: op?.slideIndex,
       elementId: op?.sourceId,
       text,
-    }) as Promise<{ ok?: boolean; error?: string }>;
+    }) as Promise<{ ok?: boolean; nodes?: unknown[] }>).then((reply) =>
+      reply?.ok === true && Array.isArray(reply.nodes) ? reply as { nodes: unknown[] } : null,
+    ).catch(() => null);
   },
 
   /** 【ARC-007 P1/GA1】vendor `openPptxPath(path, fitWidthPx)`（preload:149 /
@@ -532,17 +535,23 @@ const slidesApi = {
     };
   },
 
-  /** 【ARC-007 P1/GA1】vendor `save()`（preload:357 / `slides:save`）的宿主对端：
-   *  把该视图会话里的 deck 写回**宿主打开的那份文件**。页面不传路径与字节 ——
-   *  vendor 的 `save()` 本来也不传（路径在 vendor 主进程的 session 里）。
-   *  失败形状与 vendor 对齐：`{ ok:false, error }`（`file-actions.ts:96-108` 读它）。 */
-  save: (): Promise<{ ok: boolean; path?: string; error?: string; slides?: unknown[] }> =>
-    ipcRenderer.invoke(SLIDES_SAVE_CHANNEL, {}) as Promise<{
+  /** 【ARC-007 P1/GA1】保存只写宿主当前会话文件，页面不传路径。
+   *  IPC 失败返回 `.reason`，vendor 只读 `.error`；统一翻译避免错误失声。 */
+  save: (): Promise<{ ok: boolean; path?: string; error?: string; slides?: unknown[]; bytes?: number }> =>
+    (ipcRenderer.invoke(SLIDES_SAVE_CHANNEL, {}) as Promise<{
       ok: boolean;
       path?: string;
       error?: string;
+      reason?: string;
       slides?: unknown[];
-    }>,
+      bytes?: number;
+    }>).then((reply) => reply?.ok === true ? reply : {
+      ok: false,
+      error: reply?.error ?? reply?.reason ?? "演示文稿保存失败",
+    }).catch((err: unknown) => ({
+      ok: false,
+      error: err instanceof Error ? err.message : "演示文稿保存失败",
+    })),
 
   // ── 空订阅 / 空数据（见上方注释的真实来源） ──
   onFontsChanged: noopUnsubscribe,
