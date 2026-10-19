@@ -413,6 +413,151 @@ if (process.platform === "win32") {
   );
 }
 
+/* ═══════════ 目标初始不存在，但覆盖意图+并发创建；Windows rename 不得跳过备份 ═══════════ */
+{
+  const d=sandbox();
+  const src=path.join(d,"src-race.txt"),dst=path.join(d,"dst-race.txt");
+  fs.writeFileSync(src,"SOURCE-NEW");
+  const before=fs.mutationCount();
+  // lstat(dst) sees ENOENT, then another process occupies dst BEFORE the
+  // original overwrite=true rename. It must go through backup/rollback path.
+  fs.armMutation("missing-lstat","dst-race.txt",()=>fs.writeFileSync(dst,"THIRD-PARTY"));
+  fs.armMutation("rename-backup","dst-race.txt",()=>{
+    fs.armFault("rename","src-race.txt",{code:"EPERM"});
+  });
+  const result=await moveFileSafe(src,dst,{overwrite:true});
+  const events=fs.mutationCount()-before;
+  fs.clearFault();
+  check("★ target created after ENOENT must trigger both preflight race and safe backup",events>=2,{events,result});
+  check("★ failed overwrite after concurrent target creation retains third-party bytes",
+    read(dst)==="THIRD-PARTY" && read(src)==="SOURCE-NEW" &&
+    !result.committed && bakEntries(d).length===0,{src:read(src),dst:read(dst),result,bak:bakEntries(d)});
+}
+
+/* ═══════════ COPYFILE_EXCL 跨卷复制后内容同长但已变异：不可删除源并宣布成功 ═══════════ */
+{
+  const d=sandbox();const src=path.join(d,"src-copy-integrity.txt"),dst=path.join(d,"dst-copy-integrity.txt");
+  fs.writeFileSync(src,"GOOD-DATA");
+  const m0=fs.mutationCount();
+  fs.armFault("link","src-copy-integrity.txt",{code:"EXDEV"});
+  fs.armMutation("copyFile-after","src-copy-integrity.txt",(args)=>fs.writeFileSync(args[1]!,"BAD--DATA"));
+  const result=await moveFileSafe(src,dst,{overwrite:false});
+  const hit=fs.mutationCount()-m0;
+  fs.clearFault();
+  check("★ post-copy equal-size mutation hook really ran",hit===1,{hit});
+  check("★ corrupt cross-volume no-clobber destination cannot delete good source",
+    read(src)==="GOOD-DATA" && read(dst)==="BAD--DATA" &&
+    !isMoveDurable(result) && result.phase==="PARTIALLY_APPLIED",
+    {src:read(src),dst:read(dst),result});
+}
+
+/* ═══════════ 覆盖跨卷 cp 阶段同长损坏必须阻止切换、保留旧目的和原源 ═══════════ */
+{
+  const d=sandbox();const src=path.join(d,"src-stage-integrity.txt"),dst=path.join(d,"dst-stage-integrity.txt");
+  fs.writeFileSync(src,"GOOD-DATA");fs.writeFileSync(dst,"OLD-SAFE");
+  const m0=fs.mutationCount();
+  fs.armFault("rename","src-stage-integrity.txt",{code:"EXDEV"});
+  fs.armMutation("cp-after","src-stage-integrity.txt",(args)=>fs.writeFileSync(args[1]!,"BAD--DATA"));
+  const result=await moveFileSafe(src,dst,{overwrite:true});
+  const hit=fs.mutationCount()-m0;
+  fs.clearFault();
+  check("★ EXDEV staged cp mutation hook triggered",hit===1,{hit});
+  check("★ equal-length staged copy corruption does not replace old destination or source",
+    read(src)==="GOOD-DATA" && read(dst)==="OLD-SAFE" && !isMoveDurable(result) &&
+    bakEntries(d).length===0 && tmpEntries(d).length===0,
+    {src:read(src),dst:read(dst),result,bak:bakEntries(d),tmp:tmpEntries(d)});
+}
+
+/* ═══════════ 目录跨卷复制不完整但 cp 没抛错：不得删整棵源树 ═══════════ */
+{
+  const d=sandbox();const src=path.join(d,"src-tree-integrity"),dst=path.join(d,"dst-tree-integrity");
+  fs.mkdirSync(path.join(src,"nested"),{recursive:true});
+  fs.writeFileSync(path.join(src,"nested","leaf.txt"),"LEAF-SAFE");
+  fs.mkdirSync(dst,{recursive:true});
+  fs.writeFileSync(path.join(dst,"old.txt"),"OLD-DIR");
+  const h0=fs.mutationCount();
+  fs.armFault("rename","src-tree-integrity",{code:"EXDEV"});
+  fs.armMutation("cp-after","src-tree-integrity",(args)=>{
+    fs.rmSync(path.join(args[1]!,"nested","leaf.txt"),{force:true});
+  });
+  const result=await moveFileSafe(src,dst,{overwrite:true});
+  const hit=fs.mutationCount()-h0;
+  fs.clearFault();
+  check("★ staged directory copy hole hook triggered",hit===1,{hit});
+  check("★ incomplete directory staged copy cannot replace old tree or delete source tree",
+    read(path.join(src,"nested","leaf.txt"))==="LEAF-SAFE" &&
+    read(path.join(dst,"old.txt"))==="OLD-DIR" &&
+    !isMoveDurable(result) && tmpEntries(d).length===0 && bakEntries(d).length===0,
+    {src:kindOf(src),dst:kindOf(dst),result,bak:bakEntries(d),tmp:tmpEntries(d)});
+}
+
+/* ═══════════ 目录 overwrite=false 的 EXDEV 复制必须检查目录树再删源 ═══════════ */
+{
+  const d=sandbox();const src=path.join(d,"src-dir-exdev"),dst=path.join(d,"dst-dir-exdev");
+  fs.mkdirSync(path.join(src,"nested"),{recursive:true});
+  fs.writeFileSync(path.join(src,"nested","leaf.txt"),"LEAF-SAFE");
+  const h0=fs.mutationCount();
+  fs.armFault("rename","src-dir-exdev",{code:"EXDEV"});
+  fs.armMutation("cp-after","src-dir-exdev",(args)=>{
+    fs.rmSync(path.join(args[1]!,"nested","leaf.txt"),{force:true});
+  });
+  const result=await moveFileSafe(src,dst,{overwrite:false});
+  const hit=fs.mutationCount()-h0;
+  fs.clearFault();
+  check("★ no-clobber directory EXDEV incomplete copy hook triggered",hit===1,{hit});
+  check("★ incomplete directory EXDEV keeps original source tree and reports partial state",
+    read(path.join(src,"nested","leaf.txt"))==="LEAF-SAFE" &&
+    kindOf(dst)==="dir" && !isMoveDurable(result) &&
+    result.phase==="PARTIALLY_APPLIED",
+    {src:kindOf(src),dst:kindOf(dst),result});
+}
+/* ═══════════ 正控：跨卷完整文件与目录树仍可提交并逐字节保留 ═══════════ */
+{
+  const d=sandbox(),src=path.join(d,"valid-cross-file.txt"),dst=path.join(d,"valid-cross-file-dst.txt");
+  fs.writeFileSync(src,"SAFE-TRANSFER");
+  const h0=fs.hits();
+  fs.armFault("link","valid-cross-file.txt",{code:"EXDEV"});
+  const result=await moveFileSafe(src,dst,{overwrite:false});
+  fs.clearFault();
+  check("正控 EXDEV file fault injected and valid full copy commits",
+    fs.hits()>h0 && isMoveDurable(result) && !fs.existsSync(src) && read(dst)==="SAFE-TRANSFER",
+    {result,src:read(src),dst:read(dst)});
+}
+{
+  const d=sandbox(),src=path.join(d,"valid-cross-tree"),dst=path.join(d,"valid-cross-tree-dst");
+  fs.mkdirSync(path.join(src,"nested"),{recursive:true});
+  fs.writeFileSync(path.join(src,"nested","one.txt"),"ONE");
+  fs.writeFileSync(path.join(src,"two.txt"),"TWO");
+  const h0=fs.hits();
+  fs.armFault("rename","valid-cross-tree",{code:"EXDEV"});
+  const result=await moveFileSafe(src,dst,{overwrite:false});
+  fs.clearFault();
+  check("正控 EXDEV full directory tree still commits with all leaf bytes",
+    fs.hits()>h0 && isMoveDurable(result) && !fs.existsSync(src) &&
+    read(path.join(dst,"nested","one.txt"))==="ONE" &&
+    read(path.join(dst,"two.txt"))==="TWO",
+    {result,tree:kindOf(dst)});
+}
+{
+  const d=sandbox(),src=path.join(d,"corrupt-leaf-tree"),dst=path.join(d,"corrupt-leaf-target");
+  fs.mkdirSync(path.join(src,"nested"),{recursive:true});
+  fs.writeFileSync(path.join(src,"nested","leaf.txt"),"GOOD-DATA");
+  fs.writeFileSync(dst,"OLD-DATA");
+  const m0=fs.mutationCount();
+  fs.armFault("rename","corrupt-leaf-tree",{code:"EXDEV"});
+  fs.armMutation("cp-after","corrupt-leaf-tree",(args)=>{
+    fs.writeFileSync(path.join(args[1]!,"nested","leaf.txt"),"BAD--DATA");
+  });
+  const result=await moveFileSafe(src,dst,{overwrite:true});
+  fs.clearFault();
+  check("★ nested same-size copied leaf corruption injection triggered",
+    fs.mutationCount()-m0===1);
+  check("★ nested equal-size corruption cannot delete source tree or old destination",
+    !isMoveDurable(result) && read(path.join(src,"nested","leaf.txt"))==="GOOD-DATA" &&
+    read(dst)==="OLD-DATA" && bakEntries(d).length===0 && tmpEntries(d).length===0,
+    {result,source:kindOf(src),destination:read(dst)});
+}
+
 fs.rmSync(MV, { recursive: true, force: true });
 
 console.log(`\n${passed}/${checks} 通过`);

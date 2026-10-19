@@ -22,6 +22,20 @@ import { promises as realPromises } from "fs";
 export * from "fs";
 
 type FaultKind = "rm" | "rename" | "link" | "copyFile";
+type Mutation = { kind: "missing-lstat" | "rename-backup" | "copyFile-after" | "cp-after"; match:string; action: (args:string[])=>void; remaining:number };
+const mutations:Mutation[]=[];
+let mutationHits=0;
+export function armMutation(kind:Mutation["kind"],match:string,action:(args:string[])=>void):void {
+  mutations.push({kind,match,action,remaining:1});
+}
+export function mutationCount():number {return mutationHits;}
+function mutate(kind:Mutation["kind"],args:string[]):void {
+  for (const m of mutations) {
+    if(m.kind===kind&&m.remaining>0&&args.some(a=>a.includes(m.match))) {
+      m.remaining--;mutationHits++;m.action(args);return;
+    }
+  }
+}
 
 interface Rule {
   kind: FaultKind;
@@ -51,6 +65,7 @@ export function armFault(
 
 export function clearFault(): void {
   rules.length = 0;
+  mutations.length=0;
 }
 
 /** 注入总共命中了几次(供「注入生效了吗」的守卫,防"空过"的假绿)。 */
@@ -81,6 +96,7 @@ const rmImpl = async (path: string, options?: unknown): Promise<void> => {
   return realPromises.rm(path, options as never);
 };
 const renameImpl = async (from: string, to: string): Promise<void> => {
+  if(to.includes(".mcode-move-bak-")) mutate("rename-backup",[from,to]);
   const r = hit("rename", [from, to]);
   if (r) throw injected("rename", r);
   return realPromises.rename(from, to);
@@ -93,16 +109,31 @@ const linkImpl = async (existing: string, newPath: string): Promise<void> => {
 const copyFileImpl = async (src: string, dest: string, mode?: number): Promise<void> => {
   const r = hit("copyFile", [src, dest]);
   if (r) throw injected("copyFile", r);
-  return realPromises.copyFile(src, dest, mode);
+  await realPromises.copyFile(src, dest, mode);
+  mutate("copyFile-after",[src,dest]);
 };
 
-/** 透传真实 `fs.promises`,只在 `rm` / `rename` / `link` / `copyFile` 上叠注入。 */
+const lstatImpl = (async (...args: Parameters<typeof realPromises.lstat>)=>{
+  try{return await realPromises.lstat(...args);}
+  catch(error) {
+    if((error as NodeJS.ErrnoException).code==="ENOENT") mutate("missing-lstat",[String(args[0])]);
+    throw error;
+  }
+}) as typeof realPromises.lstat;
+const cpImpl:typeof realPromises.cp=async(src,dest,opts):Promise<void>=>{
+  await realPromises.cp(src,dest,opts);
+  mutate("cp-after",[String(src),String(dest)]);
+};
+
+/** 透传真实 fs.promises, injecting only synthetic temporary fixture mutations. */
 export const promises: typeof realPromises = new Proxy(realPromises, {
   get(target, prop, receiver): unknown {
     if (prop === "rm") return rmImpl;
     if (prop === "rename") return renameImpl;
     if (prop === "link") return linkImpl;
     if (prop === "copyFile") return copyFileImpl;
+    if (prop === "lstat") return lstatImpl;
+    if (prop === "cp") return cpImpl;
     const v = Reflect.get(target, prop, receiver);
     return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
   },

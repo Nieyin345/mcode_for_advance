@@ -56,7 +56,7 @@
  * 绝不把「目标已就位但未收尾」当成 `DURABLE`。
  */
 import { constants as FS_CONSTANTS, promises as fs, type Stats } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { dirname, join, resolve, sep } from "node:path";
 import { platform } from "node:os";
 import type { CommitOutcome } from "@contracts/commit";
@@ -246,6 +246,53 @@ async function noClobberFile(src: string, dst: string): Promise<NoClobberOutcome
   }
 }
 
+/** Compare copied file bytes, not just size. Use bounded chunks rather than
+ * loading multi-gigabyte user files into the Electron main process heap.
+ * A mismatch/IO error MUST preserve the source for manual recovery. */
+async function digestFile(path: string): Promise<string> {
+  const handle = await fs.open(path, "r");
+  try {
+    const hash = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(256 * 1024);
+    while (true) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      hash.update(chunk.subarray(0, bytesRead));
+    }
+    return hash.digest("hex");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function copiedFileMatches(src: string, dst: string): Promise<boolean> {
+  const [source, target] = await Promise.all([fs.lstat(src), fs.lstat(dst)]);
+  if (!source.isFile() || !target.isFile() || source.size !== target.size) return false;
+  const [a, b] = await Promise.all([digestFile(src), digestFile(dst)]);
+  return a === b;
+}
+
+/** Verify the full copied directory tree BEFORE deleting the source.
+ * A successful fs.cp() does not prove every descendant arrived unchanged.
+ * Never follow a symlink while verifying: compare link targets as metadata. */
+async function copiedTreeMatches(src: string, dst: string): Promise<boolean> {
+  const [source, target] = await Promise.all([fs.lstat(src), fs.lstat(dst)]);
+  if (source.isFile()) return target.isFile() && copiedFileMatches(src, dst);
+  if (source.isSymbolicLink()) {
+    return target.isSymbolicLink() && (await fs.readlink(src)) === (await fs.readlink(dst));
+  }
+  if (!source.isDirectory() || !target.isDirectory()) return false;
+  const [sourceNames, targetNames] = await Promise.all([fs.readdir(src), fs.readdir(dst)]);
+  sourceNames.sort();
+  targetNames.sort();
+  if (sourceNames.length !== targetNames.length ||
+      sourceNames.some((name, i) => name !== targetNames[i])) return false;
+  for (const name of sourceNames) {
+    if (!(await copiedTreeMatches(join(src, name), join(dst, name)))) return false;
+  }
+  return true;
+}
+
 async function noClobberFileCrossDevice(src: string, dst: string): Promise<NoClobberOutcome> {
   try {
     await fs.copyFile(src, dst, FS_CONSTANTS.COPYFILE_EXCL);
@@ -256,6 +303,16 @@ async function noClobberFileCrossDevice(src: string, dst: string): Promise<NoClo
     // 如实报部分完成,绝不静默当成「没建出来」。
     const landed = await fs.lstat(dst).catch(() => null);
     return landed ? { status: "partial", error: e } : { status: "failed", error: e };
+  }
+  try {
+    if (!(await copiedFileMatches(src, dst))) {
+      return { status: "partial", error: Object.assign(
+        new Error("跨卷目标内容校验失败：已保留源，请人工检查并清理不一致目标"),
+        { code: "ECOPYVERIFY" },
+      ) };
+    }
+  } catch (error) {
+    return { status: "partial", error: error as NodeJS.ErrnoException };
   }
   try {
     await fs.rm(src, { force: true });
@@ -284,6 +341,16 @@ async function noClobberDir(src: string, dst: string): Promise<NoClobberOutcome>
       if (e2.code === "EEXIST" || e2.code === "ERR_FS_CP_EEXIST") return { status: "exists" };
       const landed = await fs.lstat(dst).catch(() => null);
       return landed ? { status: "partial", error: e2 } : { status: "failed", error: e2 };
+    }
+    try {
+      if (!(await copiedTreeMatches(src, dst))) {
+        return { status: "partial", error: Object.assign(
+          new Error("跨卷目录内容校验失败，已保留源；目标可能不完整，请人工处理"),
+          { code: "ECOPYVERIFY" },
+        ) };
+      }
+    } catch (error) {
+      return { status: "partial", error: error as NodeJS.ErrnoException };
     }
     try {
       await fs.rm(src, { recursive: true, force: true });
@@ -353,12 +420,8 @@ async function crossDeviceMove(src: string, dst: string): Promise<CrossResult> {
   }
   // 完整性校验:文件比大小;目录确认落盘。
   try {
-    const srcStat = await fs.lstat(src);
-    if (srcStat.isFile()) {
-      const [a, b] = await Promise.all([fs.stat(src), fs.stat(tmp)]);
-      if (!b.isFile() || a.size !== b.size) {
-        throw Object.assign(new Error(`跨卷复制校验失败:大小 ${a.size} vs ${b.size}`), { code: "ECOPYVERIFY" });
-      }
+    if (!(await copiedTreeMatches(src, tmp))) {
+      throw Object.assign(new Error("跨卷复制校验失败:文件或目录树内容不一致"), { code: "ECOPYVERIFY" });
     }
   } catch (err) {
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -435,23 +498,32 @@ export async function moveFileSafe(
     return mk(base, "PREPARED", { reason: "SOURCE_CONTAINED_IN_DESTINATION", message: `源位于目标的目录树内部,拒绝移动:${source} 在 ${destination} 之内` });
   }
 
-  const destStat = await fs.lstat(destination).catch(() => null);
+  let destStat = await fs.lstat(destination).catch(() => null);
   await fs.mkdir(dirname(destination), { recursive: true });
 
   /* ── 目标当前不存在 ── */
-  if (!destStat) {
-    if (!overwrite) {
-      // 严格 no-clobber:操作期间目标若被并发创建,拒绝而不是覆盖。
-      const verdict = await moveNoClobber(source, destination, srcStat);
-      if (verdict.status === "ok") {
-        return mk(base, "COMMITTED", { committed: true, sourcePreserved: false, message: `已移动 ${source} -> ${destination}` });
-      }
-      if (verdict.status === "exists") {
+  if (!destStat && (!overwrite || srcStat.isFile())) {
+    // 即使 overwrite=true，预检时目标不存在也不能直接用 win32 rename:
+    // 另一个进程可能在 lstat(ENOENT) 后抢先创建目标。文件走原子 link
+    // no-clobber；撞目标才在下面执行正式「先备份、再覆盖」协议。
+    const verdict = await moveNoClobber(source, destination, srcStat);
+    if (verdict.status === "ok") {
+      return mk(base, "COMMITTED", { committed: true, sourcePreserved: false, message: `已移动 ${source} -> ${destination}` });
+    }
+    if (verdict.status === "exists") {
+      if (!overwrite) {
         return mk(base, "PREPARED", { reason: "DESTINATION_EXISTS", message: `目标在操作过程中被创建,overwrite=false 不覆盖:${destination}` });
       }
+      destStat = await fs.lstat(destination).catch(() => null);
+      if (!destStat) {
+        return mk(base, "PREPARED", { reason: "DESTINATION_CHANGED", message: `并发目标在准备覆盖前再次改变，拒绝猜测:${destination}` });
+      }
+    } else {
       if (verdict.status === "partial") return partialSourceRemains(base, source, verdict.error);
       return mk(base, "PREPARED", { reason: verdict.error.code ?? "RENAME_FAILED", message: `移动失败(${verdict.error.code ?? verdict.error.message});源未改动` });
     }
+  }
+  if (!destStat) {
     try {
       await fs.rename(source, destination);
       return mk(base, "COMMITTED", { committed: true, sourcePreserved: false, message: `已移动 ${source} -> ${destination}` });
