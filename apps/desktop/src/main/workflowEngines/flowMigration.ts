@@ -464,6 +464,17 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
   const usedIds = new Set<string>();
   const nodeCollisions = collidingBases(doc.nodes.map((node) => node.id), "n");
   const edgeCollisions = collidingBases(doc.edges.map((edge) => edge.id), "l");
+  // Preallocate IDs in stable identity order. A hashed collision suffix can
+  // itself match another literal folded ID; allocating in visual node order
+  // changes runtime IDs when the user merely reorders the document.
+  const nodeIds = new Map<string, string>();
+  for (const id of [...new Set(doc.nodes.map((n) => n.id))].sort()) {
+    nodeIds.set(id, nodeRedIdOf("n", id, usedIds, nodeCollisions));
+  }
+  const edgeIds = new Map<string, string>();
+  for (const id of [...new Set(doc.edges.map((e) => e.id))].sort()) {
+    edgeIds.set(id, nodeRedIdOf("l", id, usedIds, edgeCollisions));
+  }
   const mapped: FlowMigrationReport["mapped"] = [];
   const unmapped: FlowMigrationReport["unmapped"] = [];
   const needsHumanDecision: FlowMigrationIssue[] = [];
@@ -482,7 +493,7 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     const manifest = types?.get(node.type);
     const kind: NodeRunnerKind | "unknown" = manifest?.runner.kind ?? "unknown";
     kindOf.set(node.id, kind);
-    const nodeRedId = nodeRedIdOf("n", node.id, usedIds, nodeCollisions);
+    const nodeRedId = nodeIds.get(node.id)!;
     const outDegree = doc.edges.filter((e) => e.from === node.id).length;
     const nodeUnknown = unknownKeysForNode(unknownPaths, index);
     const outPorts = outputPortCountOf(kind, outDegree);
@@ -624,7 +635,7 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     }
     const edgeUnknownKeys = unknownKeysForEdge(unknownPaths, index);
     const edgeUnknown = pickKeys(edge as unknown as Record<string, unknown>, edgeUnknownKeys);
-    const linkId = nodeRedIdOf("l", edge.id, usedIds, edgeCollisions);
+    const linkId = edgeIds.get(edge.id)!;
     const link: NodeRedLink = {
       id: linkId,
       source: sourceNr.id,
@@ -755,7 +766,35 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
   return { flow, report };
 }
 
-/* ── 反向：Node-RED flow → WorkflowDoc（只保证本迁移器的往返） ── */
+/* ── 反向：Node-RED flow → WorkflowDoc（以原生画布为事实源） ── */
+
+/** A migrated flow can retain the old Mcode link metadata after the user
+ * edits wires inside the actual Node-RED editor. Compare connection MULTISETS
+ * before accepting that sidecar: equal endpoints/ports (including duplicates)
+ * means annotations are still applicable; otherwise live wires win. */
+function sidecarMatchesNativeWires(nodes: readonly NodeRedNode[], links: readonly NodeRedLink[]): boolean {
+  const ids = new Set(nodes.map((n) => n.id));
+  const counts = new Map<string, number>();
+  const key = (source: string, port: number, target: string): string =>
+    JSON.stringify([source, port, target]);
+  for (const node of nodes) {
+    for (const [port, targets] of (node.wires ?? []).entries()) {
+      for (const target of targets) {
+        if (!ids.has(target)) return false;
+        const k = key(node.id, port, target);
+        counts.set(k, (counts.get(k) ?? 0) + 1);
+      }
+    }
+  }
+  for (const link of links) {
+    if (!ids.has(link.source) || !ids.has(link.target)) return false;
+    const k = key(link.source, link.sourcePort, link.target);
+    const remaining = counts.get(k) ?? 0;
+    if (remaining === 0) return false;
+    counts.set(k, remaining - 1);
+  }
+  return [...counts.values()].every((remaining) => remaining === 0);
+}
 
 /** 反向映射：Node-RED 节点 type → runner.kind（只覆盖 `NODE_RED_TYPE_OF_RUNNER` 的值）。 */
 const RUNNER_OF_NODE_RED_TYPE: ReadonlyMap<string, NodeRunnerKind> = new Map(
@@ -775,8 +814,13 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
   flow = structuredClone(flow);
   // 文档级元数据优先取 flow 顶层；从真引擎读回的数组没有顶层元数据 —— 它挂在 tab 上
   // （见正向迁移里 `(tab as ...)["x-mcode"] = docMeta`）。
-  const tabMeta = flow.nodes.find((n) => n.type === "tab")?.["x-mcode"] as NodeRedFlow["x-mcode"] | undefined;
+  const tab = flow.nodes.find((n) => n.type === "tab");
+  const tabMeta = tab?.["x-mcode"] as NodeRedFlow["x-mcode"] | undefined;
   const meta = flow["x-mcode"] ?? tabMeta;
+  // The real Node-RED tab label is the editable document title. Treat the
+  // x-mcode metadata as an original baseline, not an unchangeable override.
+  const liveName = tab?.label !== undefined && tab.label !== meta?.name
+    ? tab.label : (meta?.name ?? tab?.label ?? flow.label);
   const nrToMcodeNode = new Map<string, string>();
   const nodes: WorkflowNode[] = [];
   for (const nrNode of flow.nodes) {
@@ -786,11 +830,17 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
     const x = nrNode["x-mcode"];
     const nodeId = x?.nodeId ?? nrNode.id;
     nrToMcodeNode.set(nrNode.id, nodeId);
-    const position = x?.position ?? { x: nrNode.x ?? 0, y: nrNode.y ?? 0 };
+    const originalPosition = x?.position;
+    const moved = originalPosition !== undefined &&
+      (nrNode.x !== undefined && nrNode.x !== Math.round(originalPosition.x) ||
+       nrNode.y !== undefined && nrNode.y !== Math.round(originalPosition.y));
+    const position = moved
+      ? { x: nrNode.x ?? originalPosition!.x, y: nrNode.y ?? originalPosition!.y }
+      : (originalPosition ?? { x: nrNode.x ?? 0, y: nrNode.y ?? 0 });
     const node: WorkflowNode = {
       id: nodeId,
       type: x?.type ?? nrNode.type,
-      title: x?.title ?? nrNode.name ?? "",
+      title: nrNode.name ?? x?.title ?? "",
       params: x?.params ?? {},
       position: {
         x: position.x,
@@ -806,7 +856,7 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
   // 边：优先用 `links` sidecar（迁移器原样往返，含边级未知字段）；若 flow 来自真
   // Node-RED 的读回（没有 links），就从节点的 `wires` 重建 —— 真引擎的真相就是它。
   const edges: Array<WorkflowEdge & Record<string, unknown>> = [];
-  if (flow.links !== undefined) {
+  if (flow.links !== undefined && sidecarMatchesNativeWires(flow.nodes, flow.links)) {
     const links = [...flow.links].sort((a, b) => (a.source === b.source ? a.sourcePort - b.sourcePort : 0));
     for (const link of links) {
       const x = link["x-mcode-edge"];
@@ -821,7 +871,19 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
       edges.push(edge);
     }
   } else {
-    // 从 wires 重建：按节点文档顺序 + 端口顺序，node id 用 `e_<from>_<to>[_N]` 稳定生成。
+    // The real editor's wires are canonical; however an edit to ONE wire
+    // must not discard annotations/unknown fields of all OTHER unchanged
+    // edges. Match old metadata by actual (source, outputPort, target) with a
+    // consumed queue so duplicate parallel connections never reuse one ID.
+    const oldByConnection = new Map<string, NodeRedLink[]>();
+    const connectionKey = (source: string, port: number, target: string): string =>
+      JSON.stringify([source, port, target]);
+    for (const old of flow.links ?? []) {
+      const key = connectionKey(old.source, old.sourcePort, old.target);
+      const queue = oldByConnection.get(key) ?? [];
+      queue.push(old);
+      oldByConnection.set(key, queue);
+    }
     for (const nrNode of flow.nodes) {
       if (nrNode.wires === undefined) continue;
       const from = nrToMcodeNode.get(nrNode.id) ?? nrNode.id;
@@ -830,9 +892,18 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
         for (const targetNrId of targets) {
           const to = nrToMcodeNode.get(targetNrId) ?? targetNrId;
           n += 1;
-          const edgeId = `e_${from}_${to}${n > 1 ? `_${n}` : ""}`;
-          const label = nrNode.type === "switch" ? (port === 1 ? "false" : port === 0 ? "true" : undefined) : undefined;
-          edges.push({ id: edgeId, from, to, ...(label !== undefined ? { label } : {}) } as WorkflowEdge);
+          const saved = oldByConnection.get(connectionKey(nrNode.id, port, targetNrId))?.shift();
+          const metadata = saved?.["x-mcode-edge"];
+          const edgeId = metadata?.edgeId ?? `e_${from}_${to}${n > 1 ? `_${n}` : ""}`;
+          const label = metadata?.label ?? (nrNode.type === "switch"
+            ? (port === 1 ? "false" : port === 0 ? "true" : undefined)
+            : undefined);
+          edges.push({
+            id: edgeId, from, to,
+            ...(label !== undefined ? { label } : {}),
+            ...(metadata?.note !== undefined ? { note: metadata.note } : {}),
+            ...(metadata?.unknown ?? {}),
+          } as WorkflowEdge);
         }
       });
     }
@@ -840,7 +911,7 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
 
   return {
     id: meta?.docId ?? flow.id,
-    name: meta?.name ?? flow.label,
+    name: liveName,
     ...(meta?.description !== undefined ? { description: meta.description } : {}),
     ...(meta?.icon !== undefined ? { icon: meta.icon } : {}),
     ...(meta?.prompt !== undefined ? { prompt: meta.prompt } : {}),
