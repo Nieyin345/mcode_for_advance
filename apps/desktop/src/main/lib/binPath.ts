@@ -10,7 +10,7 @@
  * 所以这里绝不能拖进 `electron`(只有 node 内置 + `outBuf`)。
  */
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { decodeOutput } from "./outBuf.js";
 
 export interface ProbeResult {
@@ -30,6 +30,15 @@ export function runProbe(file: string, args: string[], timeoutMs = 10_000): Prom
   });
 }
 
+/** Native executable lookup command; `which` needs `-a` on POSIX.
+ * Plain `which python` only returns the first candidate, preventing the
+ * resolver from skipping an incompatible shim and finding a later interpreter. */
+export function lookupSpec(name: string, platform: string): { command: string; args: string[] } {
+  return platform === "win32"
+    ? { command: "where.exe", args: [name] }
+    : { command: "which", args: ["-a", name] };
+}
+
 /** 在 PATH 上找**所有**真实存在的同名可执行文件(按 `where`/`which` 给出的顺序)。
  *
  *  `where` 会列出 PATH 上所有同名项,而第一条**未必**是用户想要的那条(WindowsApps
@@ -38,13 +47,22 @@ export function runProbe(file: string, args: string[], timeoutMs = 10_000): Prom
 export async function findExecutables(name: string): Promise<string[]> {
   // Windows 用 where.exe,别的地方用 which。都不走 shell —— 参数里可能有用户
   // 路径,经 shell 解析就多了注入面。
-  const cmd = process.platform === "win32" ? "where.exe" : "which";
-  const res = await runProbe(cmd, [name]);
+  const { command, args } = lookupSpec(name, process.platform);
+  const res = await runProbe(command, args);
   if (!res.ok) return [];
   const out: string[] = [];
   for (const line of res.stdout.split(/\r?\n/)) {
     const p = line.trim();
-    if (p && existsSync(p)) out.push(p);
+    if (!p) continue;
+    try {
+      // A PATH entry may name a directory, dangling shim or non-executable
+      // POSIX file; those are not runnable Python/toolchain candidates.
+      if (!statSync(p).isFile()) continue;
+      if (process.platform !== "win32") accessSync(p, constants.X_OK);
+      out.push(p);
+    } catch {
+      // Stale/locked/unrunnable PATH candidates must not eclipse later ones.
+    }
   }
   return out;
 }
