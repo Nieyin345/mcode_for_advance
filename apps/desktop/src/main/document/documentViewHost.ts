@@ -92,8 +92,8 @@ import { withOsFileLease } from "@main/lib/osFileLease.js";
 // 本模块不能 import `pathGuard`（它会拉进 repositories → db → electron），
 // `realPathWithin` 就是为这种场景拆出来的零依赖叶子（已经给了 fileSnapshot 用）。
 import { physicalPath } from "@main/lib/realPathWithin.js";
-import { existsSync, rmSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { link, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { issueDocumentHandoff } from "./documentViewHandoff.js";
@@ -234,7 +234,8 @@ function safeNewDocName(raw: string): string {
  * 【ARC-007】在 `dir` 里为新文件分配一个**不存在的**路径：
  * `<stem>-<8位短随机>.docx`。与 vendor 的 `uniquePathIn` 同一职责（保证不覆盖），
  * 但用随机后缀而不是 `(1)` 计数 —— 并发两个保存不会抢同一个名字。
- * 8 位十六进制 + 最多 3 次重试；仍冲突则抛错（由调用方回 ok:false）。
+ * 8 位十六进制 + 最多 3 次重试仅负责选候选名；真正不覆盖别人的保证
+ * 来自 saveNewFile 用 fs.link 的 OS 原子 no-replace 提交，不是这里的 existsSync。
  */
 function uniquePathIn(dir: string, name: string): string {
   const stem = name.replace(/\.docx$/i, "");
@@ -1357,7 +1358,7 @@ export class DocumentViewHost {
    *    文档 = 没有可信目录，**拒绝**（`{ ok:false }`），不退回"主进程任意目录"。
    *  - **文件名**：`<页面给的 defaultName 的词干，清洗后>-<短随机>.docx`；清洗
    *    去掉路径分隔符/保留名/控制字符，空则 `untitled`。随机后缀保证不覆盖已有
-   *    文件（vendor 的 `uniquePathIn` 同一职责）。**页面给的字符串永远不会被当成
+   *    文件（vendor 的 `uniquePathIn` 同一职责；真正不覆盖由 OS fs.link 保证）。**页面给的字符串永远不会被当成
    *    路径**（`extname`/`basename` 语义只取名字，`join` 之后仍在目录内）。
    *  - **围栏**：目标路径生成后**再问一次 `withinWorkspace`**（目录可能已从工作区
    *    移除），并通过 `physicalPath` 归一确认父目录未被链接替换出工作区。
@@ -1415,15 +1416,36 @@ export class DocumentViewHost {
     if (physicalTarget === null || !withinWorkspace(physicalTarget)) {
       return { ok: false, reason: `新文档路径的物理位置不在已知工作区内：${target}` };
     }
-    // ⚠️ 顺序：**先写盘、后登记会话**。反过来的话，写失败时的回滚会连视图原有的
-    // 打开会话一起摘掉（claimOpenedPath 会先释放旧路径的会话），失败的新建会把
-    // 视图的既有文档变成"打开记录已失效"。随机文件名保证并发写在盘上不会撞。
+    // ⚠️ 顺序：**先原子发布、后登记会话**。反过来会把原本打开的会话提早摘掉。
+    // 随机文件名只是选候选路径，不能防第三方并发创建；OS link 才是 no-replace。
+    // 发布后若登记失败，不可按名字 rm（别的写者可能已修改该文件）。
     let revision: string | null;
     try {
       revision = await withOsFileLease(target, async (real): Promise<string | null> => {
-        await this.beforeAtomicReplace(real);
-        await atomicReplaceFile(real, bytes);
-        return fileContentVersion(real);
+        // The prior existsSync/random-name probe is not a lock. Another
+        // process can create this target after the probe but before a Win32
+        // rename, which silently overwrites their bytes. Reuse the shared
+        // atomicReplaceFile writer for a private staged copy, then publish it
+        // with the OS atomic no-replace primitive (hard-link / EEXIST).
+        // This is a thin Mcode Host commit adapter; GenOffice remains the
+        // document editor and the source of format semantics.
+        if (!withinWorkspace(real)) throw new Error("新文档目标已移出受信工作区，拒绝写入");
+        const staging = join(dirname(real), `.${randomUUID()}.mcode-stage`);
+        try {
+          await atomicReplaceFile(staging, bytes);
+          await this.beforeAtomicReplace(real);
+          // The await above may span a tab close, renderer crash or a document
+          // switch. A detached view must never publish an orphan file and
+          // then resurrect its ownership in claimOpenedPath.
+          if (this.views.get(docId) !== live || live.openedFilePath !== anchor ||
+              live.view.webContents.isDestroyed?.() === true) {
+            throw new Error("文档视图在保存期间被关闭或切换，已取消新建且保留原文档");
+          }
+          await link(staging, real); // existing file / symlink → EEXIST; never overwrite
+          return await fileContentVersion(real);
+        } finally {
+          await rm(staging, { force: true });
+        }
       });
     } catch (err) {
       if (err instanceof Error && /^FILE_VERSION_CONFLICT/.test(err.message)) {
@@ -1435,15 +1457,18 @@ export class DocumentViewHost {
       }
       return { ok: false, reason: `写入失败：${err instanceof Error ? err.message : String(err)}` };
     }
+    // The file is already visible to other processes. A second editor may
+    // update it between atomic link() and a rejected session claim; deleting
+    // by name here would remove THAT writer's newer data. Preserve the file
+    // and explicitly tell the user where to recover it. Safe automatic
+    // cleanup would require an OS atomic compare-and-unlink primitive.
+    if (this.views.get(docId) !== live || live.openedFilePath !== anchor ||
+        live.view.webContents.isDestroyed?.() === true) {
+      return { ok: false, reason: `文档视图在提交期间已关闭或切换，新建文件已保留在 ${target}，请人工确认` };
+    }
     const claim = this.claimOpenedPath(docId, target, live.view.webContents);
     if (!claim.ok) {
-      // 盘上已写出的新文件没有主人：同步删掉，不留孤儿（目标名是随机分配的，删除安全）。
-      try {
-        rmSync(target, { force: true });
-      } catch {
-        /* 删除失败只影响一次清理，不影响拒绝语义 */
-      }
-      return { ok: false, reason: claim.reason };
+      return { ok: false, reason: `${claim.reason}；新建文件可能已被其他写者接手，已保留在 ${target}，请人工确认` };
     }
     const advanced = Promise.resolve(revision);
     live.openedFilePath = target;

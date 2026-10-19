@@ -1903,5 +1903,145 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
   rmSync(outside18, { force: true });
 }
 
+/* ═════════════════ 19. FULL-1 原版 Docs saveDocxNew:no-clobber 物理并发 ═════════════════
+ * GenOffice 的 saveDocxNew 是宿主受控路径适配，不自行发明第二编辑器。
+ * uniquePathIn() 的 existsSync 仅是提示；另一进程可在检查后、提交前抢先建文件。
+ * 旧 atomicReplaceFile(tmp→rename) 会覆盖这份刚创建的第三方文件。
+ * 故障注入在生产已有 beforeAtomicReplace 接缝触发，所有 IO 仅用 mkdtemp。 */
+{
+  const fs19 = await import("node:fs");
+  const { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } = fs19;
+  const { tmpdir } = await import("node:os");
+  const { join: join19, basename: base19 } = await import("node:path");
+  const root19 = mkdtempSync(join19(tmpdir(), "mcode-genoffice-new-noclobber-"));
+  const oldDoc = join19(root19, "existing.docx");
+  writeFileSync(oldDoc, "OLD-PRESERVED");
+  let race = true;
+  let targeted = "";
+  let hookCount = 0;
+  const host19 = new DocumentViewHost({
+    getMainWindow: () => makeFakeWindow(),
+    createView: makeFakeView,
+    beforeAtomicReplace: async (target) => {
+      hookCount++;
+      targeted = target;
+      if (race) {
+        // Only a third-party process would know the generated random name
+        // after our initial existsSync. Deterministic phase injection.
+        writeFileSync(target, "THIRD-PARTY-MUST-SURVIVE");
+        race = false;
+      }
+    },
+  });
+  host19.open({docId:"new-doc-19",url:FILE_URL,bounds:BOUNDS,visible:true});
+  const initial = openAndCommit(host19, "new-doc-19", oldDoc, () => true);
+  check("FULL-1 前置：旧文档真实打开",initial.ok===true,initial);
+  const payload = new TextEncoder().encode("PK-MCODE-NEW-DOCX-BYTES");
+  const blocked=await host19.saveNewFile("new-doc-19",payload,()=>true,"draft.docx");
+  check("★ 跨进程抢先创建随机新文档路径后 saveDocxNew 必须拒绝覆盖",
+    blocked.ok===false,{blocked,targeted});
+  check("★ 抢先创建者的全部字节保留，无 rename 静默覆盖",
+    targeted!==""&&readFileSync(targeted,"utf8")==="THIRD-PARTY-MUST-SURVIVE",
+    {targeted,bytes:targeted?readFileSync(targeted,"utf8"):null});
+  check("★ 拒绝首次保存后原来打开的旧文档会话还在",
+    host19.sessionFor("new-doc-19")?.filePath===oldDoc&&readFileSync(oldDoc,"utf8")==="OLD-PRESERVED",
+    host19.sessionFor("new-doc-19"));
+  check("★ 失败时不遗留 staging 文档临时文件",
+    readdirSync(root19).every((entry)=>!entry.includes(".mcode-stage")&&!entry.includes(".mcode-tmp")),
+    readdirSync(root19));
+  const occupiedPath = targeted; // second save runs same probe hook with a new UUID
+  const good=await host19.saveNewFile("new-doc-19",payload,()=>true,"draft.docx");
+  check("★ 无并发时仍能首次创建完整的原生文档字节",
+    good.ok===true&&readFileSync(good.ok?good.filePath:oldDoc).equals(Buffer.from(payload)),good);
+  check("★ 成功后会话切换到宿主实际新建的目标路径",
+    good.ok===true&&host19.sessionFor("new-doc-19")?.filePath===good.filePath&&
+    base19(good.filePath).startsWith("draft-")&&hookCount===2,
+    {good,owner:host19.sessionFor("new-doc-19"),hookCount});
+  check("★ 先前并发抢先创建的文件没有在后续成功保存中被擦掉",
+    occupiedPath!==""&&readFileSync(occupiedPath,"utf8")==="THIRD-PARTY-MUST-SURVIVE");
+  host19.dispose();
+  rmSync(root19,{recursive:true,force:true});
+}
+
+/* ═════════════ 20. 视图关闭后迟到的首次保存不可创建孤儿文件 ═════════════ */
+{
+  const {mkdtempSync,writeFileSync,existsSync,rmSync}=await import("node:fs");
+  const {tmpdir}=await import("node:os");
+  const {join:join20}=await import("node:path");
+  const workspace20=mkdtempSync(join20(tmpdir(),"mcode-genoffice-closed-save-"));
+  const original=join20(workspace20,"original.docx");
+  writeFileSync(original,"ORIGINAL-BYTES");
+  let announceReached:()=>void=()=>{};
+  const reached=new Promise<void>(r=>{announceReached=r;});
+  let proceed:()=>void=()=>{};
+  const gate=new Promise<void>(r=>{proceed=r;});
+  let candidate="";
+  const host20=new DocumentViewHost({
+    getMainWindow:()=>makeFakeWindow(),
+    createView:makeFakeView,
+    beforeAtomicReplace:async(target)=>{
+      candidate=target;
+      announceReached();
+      await gate;
+    },
+  });
+  host20.open({docId:"close-in-flight",url:FILE_URL,bounds:BOUNDS,visible:true});
+  eq("关闭竞态前打开真实文档",openAndCommit(host20,"close-in-flight",original,()=>true),{ok:true});
+  const saving=host20.saveNewFile("close-in-flight",
+    new TextEncoder().encode("PK-DELAYED-NEW-DOCUMENT"),()=>true,"late.docx");
+  await reached;
+  check("★ 测试确实在首次保存落盘前截停",candidate!==""&&!existsSync(candidate),candidate);
+  host20.close("close-in-flight");
+  proceed();
+  const late=await saving;
+  check("★ 页面已关闭，迟到的新建文档请求必须失败",late.ok===false,late);
+  check("★ 页面已经关闭不能在磁盘留下无主新文件",candidate!==""&&!existsSync(candidate),candidate);
+  check("★ 页面关闭竞态保留原先的文档字节",existsSync(original));
+  host20.dispose();
+  rmSync(workspace20,{recursive:true,force:true});
+}
+
+/* ═════════════ 21. 登记失败回滚不能删除并发接手者的新内容 ═════════════
+ * New-file publication and in-memory claim cannot be one OS transaction.
+ * Simulate a later writer changing the new path before claim denies it:
+ * blindly rmSync(target) would delete their now-current bytes.
+ */
+{
+  const {mkdtempSync,writeFileSync,readFileSync,existsSync,rmSync}=await import("node:fs");
+  const {tmpdir}=await import("node:os");
+  const {join:join21}=await import("node:path");
+  const root21=mkdtempSync(join21(tmpdir(),"mcode-genoffice-claim-race-"));
+  const oldDoc=join21(root21,"opened.docx");
+  writeFileSync(oldDoc,"ORIGINAL-SAFE");
+  const host21=new DocumentViewHost({getMainWindow:()=>makeFakeWindow(),createView:makeFakeView});
+  host21.open({docId:"claim-race",url:FILE_URL,bounds:BOUNDS,visible:true});
+  eq("回滚竞态前打开真实原文档",openAndCommit(host21,"claim-race",oldDoc,()=>true),{ok:true});
+  let published="";
+  const mutable=host21 as unknown as {
+    claimOpenedPath:(docId:string,target:string,sender:unknown)=>{ok:boolean;reason?:string}
+  };
+  const originalClaim=mutable.claimOpenedPath.bind(host21);
+  mutable.claimOpenedPath=(docId,target,sender)=>{
+    if(target===oldDoc)return originalClaim(docId,target,sender);
+    published=target;
+    writeFileSync(target,"THIRD-PARTY-POST-PUBLISH-VERSION");
+    return {ok:false,reason:"SYNTHETIC_CONCURRENT_CLAIM_REJECT"};
+  };
+  const attempted=await host21.saveNewFile("claim-race",
+    new TextEncoder().encode("PK-NEW-DOCX"),()=>true,"race.docx");
+  check("★ 登记失败必须向调用方说明拒绝",attempted.ok===false,attempted);
+  check("★ 登记失败时不可盲删被另一写者更新的已创建文档",
+    published!==""&&existsSync(published)&&
+    readFileSync(published,"utf8")==="THIRD-PARTY-POST-PUBLISH-VERSION",
+    {published,attempted});
+  check("★ 登记失败后仍保留原打开文档身份和内容",
+    host21.sessionFor("claim-race")?.filePath===oldDoc&&readFileSync(oldDoc,"utf8")==="ORIGINAL-SAFE");
+  check("★ 无主文件必须在错误中披露留存位置，交由人处置",
+    attempted.ok===false&&published!==""&&attempted.reason.includes(published),
+    attempted);
+  host21.dispose();
+  rmSync(root21,{recursive:true,force:true});
+}
+
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
