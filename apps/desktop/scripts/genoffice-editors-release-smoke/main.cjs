@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { prepareGenofficeResources, EDITOR_APPS } = require("../../build/stage-genoffice-resources.cjs");
+const verifyAfterPack = require("../../build/verify-genoffice-editors-after-pack.cjs");
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "mcode-original-office-test-"));
 const repoRoot = path.join(base, "repo");
@@ -91,6 +92,42 @@ try {
     assert.deepEqual(fs.readFileSync(path.join(stage, "apps/docs/out/renderer/index.html")), previously);
   });
   put(path.join(renderDir("html"), "assets", "html.js"), "window.vendor = true;");
+  verify("Electron-builder hook actually configured", () => {
+    const config = fs.readFileSync(path.join(__dirname, "../../electron-builder.yml"), "utf8");
+    assert.match(config, /afterPack:\s*\.\/build\/verify-genoffice-editors-after-pack\.cjs/);
+  });
+  const winOut = path.join(base, "win-unpacked");
+  const winResources = path.join(winOut, "resources", "genoffice");
+  fs.mkdirSync(path.dirname(winResources), { recursive: true });
+  fs.cpSync(stage, winResources, { recursive: true });
+  verify("post-pack Windows resources contain six complete original editors", () => {
+    assert.deepEqual(verifyAfterPack({ appOutDir: winOut }), {
+      editorsBundled: true, editors: [...EDITOR_APPS],
+    });
+  });
+  verify("packager dropping one script fails release rather than delivering a white tab", () => {
+    const script = path.join(winResources, "apps", "slides", "out", "renderer", "assets", "slides.js");
+    fs.rmSync(script);
+    assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /slides|missing|asset/i);
+    put(script, "window.vendor = true;");
+  });
+  verify("post-pack marker cannot claim six editor UIs when only five are listed", () => {
+    const manifest = path.join(winResources, "availability.json");
+    const correct = fs.readFileSync(manifest, "utf8");
+    fs.writeFileSync(manifest, JSON.stringify({
+      format: "mcode.genoffice.resources.v1", bundled: true,
+      editorsBundled: true, editors: EDITOR_APPS.slice(0, 5),
+    }));
+    assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /six|manifest/i);
+    fs.writeFileSync(manifest, correct);
+  });
+  verify("macOS .app/Contents/Resources path uses the same vendor asset verifier", () => {
+    const macOut = path.join(base, "mac-arm64");
+    const appResources = path.join(macOut, "Mcode.app", "Contents", "Resources", "genoffice");
+    fs.mkdirSync(path.dirname(appResources), { recursive: true });
+    fs.cpSync(stage, appResources, { recursive: true });
+    assert.equal(verifyAfterPack({ appOutDir: macOut }).editorsBundled, true);
+  });
   verify("opt-out removes all previous editor assets and marks unavailable", () => {
     const r = prepareGenofficeResources({ appDir, repoRoot, include: false });
     assert.equal(r.bundled, false);
@@ -98,6 +135,15 @@ try {
     assert.equal(fs.existsSync(path.join(stage, "apps")), false);
     assert.equal(fs.existsSync(path.join(stage, "cli")), false);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(stage, "availability.json"), "utf8")).editors, []);
+  });
+  verify("post-pack CLI-only marker with no apps remains a valid fallback", () => {
+    const cliOnly = path.join(base, "linux-unpacked");
+    const resources = path.join(cliOnly, "resources", "genoffice");
+    fs.mkdirSync(path.dirname(resources), { recursive: true });
+    fs.cpSync(stage, resources, { recursive: true });
+    assert.deepEqual(verifyAfterPack({ appOutDir: cliOnly }), { editorsBundled: false });
+    fs.mkdirSync(path.join(resources, "apps"));
+    assert.throws(() => verifyAfterPack({ appOutDir: cliOnly }), /unexpected|assets/i);
   });
   verify("validates boolean options rather than treating untrusted strings as yes", () => {
     assert.throws(() => prepareGenofficeResources({ appDir, repoRoot, include: "true" }),

@@ -117,6 +117,12 @@ extraResources:
     filter:
       - "**/*"
 
+# ARC-007: post-copy gate rechecks the six ORIGINAL GenOffice renderer trees
+# when MCODE_INCLUDE_GENOFFICE_EDITORS=1. An opt-in package with one missing
+# index.html/entry JS must fail now, not ship a broken Office tab.
+# CLI-only/default packages remain valid and explicitly have editorsBundled=false.
+afterPack: ./build/verify-genoffice-editors-after-pack.cjs
+
 # node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
 # runtime. Unpack them from the asar so they can be require()'d from disk.
 #

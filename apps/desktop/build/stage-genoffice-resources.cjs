@@ -185,4 +185,4 @@ if (require.main === module) {
     process.exitCode = 1;
   }
 }
-module.exports = { prepareGenofficeResources, assertWithin, EDITOR_APPS };
+module.exports = { prepareGenofficeResources, assertWithin, assertVendorTreeSafe, assertRendererAssetsReady, EDITOR_APPS };
