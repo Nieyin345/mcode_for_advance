@@ -342,18 +342,33 @@ function saveRevision(path: string, raw: string, reason: string): void {
   const at = Date.now(), id = `${at}-${randomUUID()}`;
   writeFileSync(join(dir, id + ".json"), JSON.stringify({ version: 1, id, path, at, reason, raw }), { flag: "wx", mode: 0o600 });
 }
-export function memoryHistory(): { entries: Array<{ id: string; path: string; at: number; reason: string }>; truncated: number } {
+export function memoryHistory(): {
+  entries: Array<{ id: string; path: string; at: number; reason: string }>;
+  truncated: number;
+  /** Broken/unreadable entries among the newest 200 archived snapshots. */
+  unreadable: number;
+} {
   const dir = archiveRoot();
   let names: string[];
-  try { names = readdirSync(dir); } catch (err) { if ((err as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], truncated: 0 }; throw err; }
+  try { names = readdirSync(dir); } catch (err) { if ((err as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], truncated: 0, unreadable: 0 }; throw err; }
   // ⚠️ **截断要说出来。** 归档目录只增不减(见 `docs/memory-unification.md`:不自动清理旧归档),
   // 而「恢复记忆」的下拉框只吃这里的返回 —— 静默 `.slice(0, 200)` 会让用户以为更早的恢复点
   // 不存在。与 `manage.ts` 的 `nativeSources.truncatedSources` 同一口径:报出被挡掉的条数,
-  // 界面据此提示。损坏条目仍旧逐条丢(`catch`),但那种丢不计数 —— 它不是"被上限挡的"。
+  // 损坏条目**不能**在恢复入口静默消失。保留其他健康条目可预览，
+  // 同时把最新 200 条中的损坏/不可读恢复点数报告给用户；原字节绝不改动。
   const all = names.filter(name => /^[0-9]+-[a-f0-9-]+\.json$/.test(name)).sort().reverse();
+  let unreadable = 0;
   const entries = all.slice(0, 200)
-    .flatMap(name => { try { const v = readHistory(name.slice(0, -5)); return [{ id: v.id, path: v.path, at: v.at, reason: v.reason }]; } catch { return []; } });
-  return { entries, truncated: Math.max(0, all.length - 200) };
+    .flatMap(name => {
+      try {
+        const v = readHistory(name.slice(0, -5));
+        return [{ id: v.id, path: v.path, at: v.at, reason: v.reason }];
+      } catch {
+        unreadable += 1;
+        return [];
+      }
+    });
+  return { entries, truncated: Math.max(0, all.length - 200), unreadable };
 }
 export function readHistory(id: string): { id: string; path: string; at: number; reason: string; raw: string } {
   if (!/^[0-9]+-[a-f0-9-]+$/.test(id)) throw new Error("无效历史编号");

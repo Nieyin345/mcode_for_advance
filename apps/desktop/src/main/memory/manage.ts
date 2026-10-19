@@ -21,29 +21,47 @@ function directory(path: string): boolean {
  * 那份记忆不存在(与 `review.ts` 明确报 unreadable/tooLong 的口径对立)。所以这里把
  * "被上限挡掉多少"一并返回,由 list 那条路显式告诉用户。
  */
-function nativeSources(): { map: Map<string, string>; truncatedProjects: number; truncatedFiles: number } {
+function nativeSources(): {
+  map: Map<string, string>;
+  truncatedProjects: number;
+  truncatedFiles: number;
+  unreadable: number;
+} {
   const sources = new Map<string, string>();
   let truncatedProjects = 0;
   let truncatedFiles = 0;
+  let unreadable = 0;
   for (const owner of [".mcode", ".claude"]) {
     const base = join(homedir(), owner), root = join(base, "projects");
     if (!directory(base) || !directory(root)) continue;
-    const allSlugs = readdirSync(root).sort();
-    if (allSlugs.length > PROJECT_CAP) truncatedProjects += allSlugs.length - PROJECT_CAP;
-    for (const slug of allSlugs.slice(0, PROJECT_CAP)) {
-      if (!/^[A-Za-z0-9_-]+$/.test(slug)) continue;
+    // Count only eligible project ids toward the scanning cap. Otherwise
+    // hundreds of invalid names hide a real project further down the list.
+    const slugs = readdirSync(root).filter(slug => /^[A-Za-z0-9_-]+$/.test(slug)).sort();
+    if (slugs.length > PROJECT_CAP) truncatedProjects += slugs.length - PROJECT_CAP;
+    for (const slug of slugs.slice(0, PROJECT_CAP)) {
       const project = join(root, slug), memories = join(project, "memory");
       if (!directory(project) || !directory(memories)) continue;
-      const allFiles = readdirSync(memories).sort();
-      if (allFiles.length > FILE_CAP) truncatedFiles += allFiles.length - FILE_CAP;
-      for (const file of allFiles.slice(0, FILE_CAP)) {
-        if (!/^[^./\\][^/\\]*\.md$/.test(file)) continue;
-        const target = join(memories, file), stat = lstatSync(target);
-        if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= 524288) sources.set(`${owner}/${slug}/${file}`, target);
+      const candidates = readdirSync(memories).filter(file => /^[^./\\][^/\\]*\.md$/.test(file)).sort();
+      if (candidates.length > FILE_CAP) truncatedFiles += candidates.length - FILE_CAP;
+      for (const file of candidates.slice(0, FILE_CAP)) {
+        const target = join(memories, file);
+        try {
+          const stat = lstatSync(target);
+          if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= 524288) {
+            sources.set(`${owner}/${slug}/${file}`, target);
+          } else {
+            // An apparent .md path that is a directory, link, or too large
+            // cannot be used as a source. Do not pretend the scan was complete.
+            unreadable += 1;
+          }
+        } catch {
+          // File may disappear between readdir and lstat or be unreadable.
+          unreadable += 1;
+        }
       }
     }
   }
-  return { map: sources, truncatedProjects, truncatedFiles };
+  return { map: sources, truncatedProjects, truncatedFiles, unreadable };
 }
 function sourceText(id: string): string {
   if (id.startsWith("legacy:")) {
@@ -84,11 +102,15 @@ export function manageMemory(input: MemoryManageInput, visible?: (path: string) 
         // agent 就会看到「sources 空、却报了 N 个来源被截断」,等于知道本机存在它看不见的记忆源。
         // 桌面用户(无谓词)照旧看到真实截断数。
         truncatedSources: visible === undefined ? native.truncatedProjects + native.truncatedFiles : 0,
+        // Native CLI paths are outside an agent's visible-memory scope:
+        // their counts cannot be disclosed to a scoped model.
+        unreadableSources: visible === undefined ? native.unreadable : 0,
         history: history.entries.filter(e => canSee(e.path)),
         // 【MC-092】同理:`history.entries` 已按可见集合滤过,但 `history.truncated` 是**全局**归档
         // 超过 200 上限的数(含不可见项目的历史)—— 直接透出等于告诉 agent「另有 N 条你看不到的历史」。
         // 桌面用户照旧看到真实值;agent 侧归 0(它看得见的那些条目本身仍列在 history 里)。
-        historyTruncated: visible === undefined ? history.truncated : 0 };
+        historyTruncated: visible === undefined ? history.truncated : 0,
+        historyUnreadable: visible === undefined ? history.unreadable : 0 };
     }
     if (input.action === "history") {
       const h = readHistory(input.id);
