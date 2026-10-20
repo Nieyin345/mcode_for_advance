@@ -74,6 +74,14 @@ export class NodeInputBuilderRegistry {
   private readonly builders = new Map<string, NodeInputBuilder>();
 
   register(builder: NodeInputBuilder): this {
+    // Plug-in input builders are runtime values, not necessarily typed TS.
+    // Reject undispatchable names/handlers before they poison the registry.
+    if (!builder || typeof builder.kind !== "string" || !builder.kind ||
+        builder.kind.length > 256 || builder.kind !== builder.kind.trim() ||
+        /[\u0000-\u001f\u007f]/.test(builder.kind) ||
+        typeof builder.build !== "function") {
+      throw new Error("Invalid node input builder registration: kind and build required");
+    }
     if (this.builders.has(builder.kind)) {
       throw new Error(`Node input builder already registered: ${builder.kind}`);
     }
