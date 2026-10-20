@@ -3146,3 +3146,31 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
     transform: none;
   }
 }
+
+/* ═══════════ 【ARC-005 V2】View Transition（会话切换的共享元素过渡） ═══════════
+ *
+ * 上游用 View Transitions 做视图切换的共享元素过渡；Mcode 只在**同步的
+ * 状态切换**（selectSession；见 lib/viewTransition.ts）外包一层，
+ * 子树始终挂载（PTY/Monaco/草稿保活不变量不受影响）。
+ *
+ * ① 根快照用短交叉淡化（--dur-snap + --ease-out），避免默认 250ms 的"慢半拍"；
+ * ② 减少动效/总闸开启时由 JS 直接跳过过渡（不进入这里）；
+ * ③ 伪元素不受主题影响，不参与布局。
+ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-snap);
+  animation-timing-function: var(--ease-out);
+}
+::view-transition-old(root) {
+  animation-name: cds-vt-fade-out;
+}
+::view-transition-new(root) {
+  animation-name: cds-vt-fade-in;
+}
+@keyframes cds-vt-fade-out {
+  to { opacity: 0; }
+}
+@keyframes cds-vt-fade-in {
+  from { opacity: 0; }
+}

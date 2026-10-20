@@ -49,6 +49,7 @@ import { parseSavedPaneLayout } from "./paneLayoutPrefs.js";
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { inAppToastAllowed } from "@renderer/lib/notifPrefsCache.js";
+import { withViewTransition } from "@renderer/lib/viewTransition.js";
 // Pure helpers live in sessionStoreHelpers.ts (split for file size; see its header).
 import { CONTENT_FROZEN_EVENTS, EMPTY_BOOKMARKS, EMPTY_CODEX_MODELS, EMPTY_CUSTOM_MODELS, EMPTY_LAST_MODEL_BY_PROVIDER, EMPTY_MESSAGES, EMPTY_PI_MODELS, EMPTY_PROMPT_QUEUE, EMPTY_PROVIDERS, EMPTY_SESSIONS, EMPTY_SKILLS, EMPTY_SUBAGENTS, IDE_BUCKETS_PERSIST_DEBOUNCE_MS, LEFT_WIDTH_PCT_DEFAULT, LIVE_PLAN_ID, MESSAGE_PAGE_SIZE, NAV_HISTORY_CAP, PROVIDER_HEALTH_STALE_MS, RESYNC_AFTER_TURN_DELAY_MS, RGB_TRIPLET_RE, SESSION_PAGE_SIZE, STREAM_PAGE_SIZE, WIDE_PANEL_PCT_DEFAULT, WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER, WORKTREE_SESSIONS_FETCH_LIMIT, appendDelta, appendTurnCardBlock, applyDeltaEntries, applySessionDeletedState, applySessionPinnedState, avgIntervalMs, buildPlanKickoffPrompt, centerRightRowWidth, clampBottomTerminalHeight, clampEditorWidthPct, clampFontSize, clampLeftWidthPct, clampPasteTagThresholdChars, clampRightPanelFontSize, clampRightWidth, clampWidePanelPct, clampWorkflowMaxParallel, clearSessionDeltas, clearUpstreamIssue, coerceSlotsForProvider, commandNameForLocalOutput, currentNavEntryFor, deltaArrivals, deltaBuf, demotePreviousLatestTurnFiles, extractImagesFromToolResult, fetchProjectSessionBuckets, findOpenTurnLastAssistant, findSession, freezeLatestTurnFilesBlock, freezeOrPrunePlanBlocks, fromRecords, hasErrorInCurrentTurn, hasSelectableModel, hydrateBookmarks, hydrateCapsule, hydrateContextSnapshot, hydrateSubagentTranscripts, hydrateTurnFiles, hydrateUsageHistory, isCenterShowingDocument, isImagePath, isMarkdownPath, isPathWithinRoot, isSessionChatOnScreen, isSideChatSession, isUnsupportedPath, isValidRememberedModel, parseCustomCommandsByProject, patchSessionInCache, patchSessionRowBookmarks, pendingInterruptDone, persistComposerSelection, providerHealthRequestGate, recordDeltaArrival, reduceApprovalRequest, reduceGitChanged, reduceModeChange, reducePlanApprovalRequest, reducePlanUpdate, reduceProjectsChanged, reduceQuestionAsk, reduceRequestResolved, reduceSessionChanged, reduceSessionDeleted, reduceSettingChanged, reduceSubagentTranscript, reduceSubagentUpdate, reduceTodoUpdate, reduceTokenUsageUpdated, reduceUpstreamIssue, reduceUserMessage, reduceWorkflowNodeChoice, reduceWorkflowNodeProgress, reduceWorkflowNodeResult, reduceWorkflowNodeTranscript, reduceWorkflowNodeUsage, rememberedEntryOf, removeProjectFromState, resolveSendModel, resyncAfterTurn, sameNavEntry, sortPinnedByRecency, splitSessionSections, streamScopeQuery, surfaceRejectedCustomModelSend, syncConfigFromSession, syncLandedSessionIfChanged, toRecords, upsertLivePlanBlock, upsertLiveTurnFilesBlock, validateComposerSelection, worktreeFetchSeq } from "./sessionStoreHelpers.js";
 export type { BrowserTab, MobileViewerTarget, Block, TurnMeta, QueuedPrompt, PromptAttachment, PlanHandoffTarget, PromptImage, ComposerDraft, ChatMessage, TodoItem, PlanDraft, GitDiffDialogTab, EnvChoice, SessionState } from "./sessionStoreTypes.js";
@@ -2146,15 +2147,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     hydrateUsageHistory(set, get, sessionId);
     hydrateBookmarks(set, get, sessionId);
     hydrateSubagentTranscripts(set, get, sessionId);
-    set((s) => {
-      // Clear the unread badge - the user is now looking at this session.
-      // Activating a session also pulls the unified center bar back to the
-      // chat view (tabs displayMode).
-      if (!s.unreadBySession[sessionId])
-        return { activeSessionId: sessionId, centerTabFocus: "chat" as const };
-      const unreadBySession = { ...s.unreadBySession };
-      delete unreadBySession[sessionId];
-      return { activeSessionId: sessionId, unreadBySession, centerTabFocus: "chat" as const };
+    // 【ARC-005 V2】切换会话时用 View Transition 做快照过渡（上游共享元素
+    // 过渡的 Mcode 版）。只包**同步的 set** —— 历史加载在下面异步进行，
+    // 不能进快照，否则会拍到"加载中"。不支持该 API / 减少动效时同步执行。
+    withViewTransition(() => {
+      set((s) => {
+        // Clear the unread badge - the user is now looking at this session.
+        // Activating a session also pulls the unified center bar back to the
+        // chat view (tabs displayMode).
+        if (!s.unreadBySession[sessionId])
+          return { activeSessionId: sessionId, centerTabFocus: "chat" as const };
+        const unreadBySession = { ...s.unreadBySession };
+        delete unreadBySession[sessionId];
+        return { activeSessionId: sessionId, unreadBySession, centerTabFocus: "chat" as const };
+      });
     });
     // Gate on the hydration flag, NOT bucket existence: a bucket may already
     // exist having been created by ingestEvent from another client's turn
