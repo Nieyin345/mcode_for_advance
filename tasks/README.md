@@ -30,18 +30,18 @@
 
 | 编号 | 标题 | 类型 | 依赖 | 状态 |
 |---|---|---|---|---|
-| T01 | 真 Electron 逐屏视觉基线（浅/深/窄窗） | ARC-005 U1 | 无 | 部分完成（16/39 格实拍，工具已建；剩 23 格见 T12） |
+| T01 | 真 Electron 逐屏视觉基线（浅/深/窄窗） | ARC-005 U1 | 无 | ✅ 完成（后由 T12 补到 39/39） |
 | T02 | 自由 Pane 网格停靠与布局恢复 | ARC-005 核心缺口 | 无 | 未开始 |
 | T03 | ARC-006 Gate D：唯一执行器/触发器接线 | ARC-006 | 无 | 已完成（原派活范围；落盘为增量，见 T10） |
-| T04 | 手机远程全量 UI 对齐 | ARC-005 | 无 | 未开始 |
+| T04 | 手机远程全量 UI 对齐 | ARC-005 | 无 | ✅ 完成（96 断言，27 处 44px 修复；test:all 12 红与它无关） |
 | T05 | GenOffice Docs 全功能迁移（第二轮） | ARC-007 | 上游已具备 | 未开始 |
-| T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成 · **引入回归**（Windows 扩展全拒） |
+| T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（回归已由 T11 修好；OS 隔离仍未覆盖 Windows） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05 | 阻塞 |
-| T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | 未开始 |
+| T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
 | T09 | ~~AOCI 索引补录~~ | — | — | **已取消**（用户决定不再用 AOCI） |
-| T10 | executor owner 注册表落盘（增量，原派活未含） | ARC-006 | T03 | 未开始 |
-| T11 | Windows 上收窄 egress fail-closed（修 T06 回归） | MC-035 回归 | T06 | **未开始（最高优先）** |
-| T12 | 视觉基线补完：7 类高依赖屏的真实夹具 | ARC-005 U1 | T01 | 未开始（勿与 T02 并行） |
+| T10 | executor owner 注册表落盘（增量，原派活未含） | ARC-006 | T03 | ✅ 完成（81/81；跨进程 CAS 与部署回滚仍缺） |
+| T11 | Windows 上收窄 egress fail-closed（修 T06 回归） | MC-035 回归 | T06 | ✅ 完成（6/6；两套原红已复绿） |
+| T12 | 视觉基线补完：7 类高依赖屏的真实夹具 | ARC-005 U1 | T01 | ✅ 完成（39/39，0 data-missing） |
 
 状态取值：`未开始` / `进行中` / `待我核对` / `已完成` / `阻塞`。
 执行对话**不要**改这张表的「状态」列 —— 它由我维护。你只需在自己的任务文件里回写。
@@ -58,17 +58,19 @@
 
 ---
 
-## 当前已知回归（派活前必读）
+## 已修复的回归（留档）
 
-**T06 在 Windows 上把「所有未声明 network 权限的可执行扩展」拒之门外。**
-`permissionedProcessRunner.egressLaunch()` 在 `win32` 直接抛
-`egress_isolation_unavailable`，而 `ModuleHost` 对所有未声明 `network` 的扩展都会走这条路径。
-实测 `module-protocol-integrity-smoke` 与 `module-extension-lifecycle-smoke` 双双全红
-（`0 pass, 2 fail`）。
+**T06 曾在 Windows 上把「所有未声明 network 权限的可执行扩展」拒之门外**，
+`module-protocol-integrity-smoke` 与 `module-extension-lifecycle-smoke` 双双全红。
 
-这是**安全换兼容**的自觉取舍（fail-closed 比 fail-open 好），但产品上等于「Windows 用户
-一个扩展都装不了」。下一张卡应当是 **T11：Windows 上把 fail-closed 收窄到真正需要网络
-的扩展**，而不是撤掉隔离。
+**T11 已修复**（`5ac27b05`）：Windows 上不声明 network 的扩展恢复执行、走已有的
+`NETWORK_GUARD`；声明 network 的仍然拒绝。总控复核：两套原红现已 `3 pass, 0 fail`。
+
+**T10 附带修好了一个 harness 断链**：`executorOwnership.ts` 新增的落盘实现会拉入
+`@main/lib/dataRoot.js` / `logger.js`（都 import electron），而三套既有 smoke 的
+`run.sh` 没有 `--banner` 与这两个桩，导致 `executor-ownership`、`executor-owner-identity`、
+`flow-migration` 因 `Dynamic require of "child_process"` 全红。总控补了 banner + 桩，
+三套现为 17/17、9/9、249/249。
 
 ---
 
