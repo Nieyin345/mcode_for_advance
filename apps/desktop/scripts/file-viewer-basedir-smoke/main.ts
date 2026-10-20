@@ -61,7 +61,7 @@ const stub = {
     readFile: async () => ({ content: "# hi" }),
     readBinary: async () => ({ dataUrl: "" }),
   },
-  shell: { openFile: async () => ({ ok: true }) },
+  shell: { openFile: async (_args?: unknown): Promise<{ ok: boolean; error?: string }> => ({ ok: true }) },
   setting: { set: () => Promise.resolve({ ok: true }), get: () => Promise.resolve(null) },
 };
 const state = { entryRoot: "", uiDirectory: false };
@@ -149,6 +149,53 @@ console.log("\n【ARC-007】目录选文件和子PDF返回必须走文件预览�
     useFileViewStore.getState().dirty === false, useFileViewStore.getState());
   state.uiDirectory = false;
   setFileOpenGuard(null);
+}
+console.log("\n【ARC-005】迟到外部打开失败不能污染新的 FileViewer 目标");
+{
+  const projectA = { source: { kind: "project" as const, ref: "D:\\proj\\old-A.md" }, name: "old-A.md" };
+  const projectB = { source: { kind: "project" as const, ref: "D:\\proj\\new-B.md" }, name: "new-B.md" };
+  let resolveOld!: (result: { ok: boolean; error?: string }) => void;
+  stub.shell.openFile = () => new Promise(resolve => { resolveOld = resolve; });
+  useFileViewStore.setState({ target: projectA, dirty: false });
+  __mount(() => FileViewer({ target: useFileViewStore.getState().target! }));
+  await __flush();
+  const external = __nodes().find(n => n.type === "button" &&
+    typeof n.props.title === "string" && typeof n.props.onClick === "function");
+  check("project file renders an external-open control", !!external);
+  (external?.props.onClick as (() => void) | undefined)?.();
+  useFileViewStore.getState().open(projectB);
+  __render();
+  await __flush();
+  resolveOld({ ok: false, error: "OLD_A_ONLY_OPEN_FAILURE" });
+  await __flush();
+  check("★★ stale A external-open failure must not appear under B",
+    !__nodes().some(n => JSON.stringify(n.props.children ?? "").includes("OLD_A_ONLY_OPEN_FAILURE")),
+    { target: useFileViewStore.getState().target?.name,
+      oldErrorVisible: __nodes().some(n => JSON.stringify(n.props.children ?? "").includes("OLD_A_ONLY_OPEN_FAILURE")) });
+  // Even if the target remains the same, late failure of request #1 must not
+  // overwrite a newer successful request #2 triggered in the same UI frame.
+  let attempt = 0;
+  let failFirst!: (result: { ok: boolean; error?: string }) => void;
+  let succeedSecond!: (result: { ok: boolean; error?: string }) => void;
+  stub.shell.openFile = () => new Promise(resolve => {
+    attempt++;
+    if (attempt === 1) failFirst = resolve;
+    else succeedSecond = resolve;
+  });
+  useFileViewStore.setState({ target: projectA, dirty: false });
+  __mount(() => FileViewer({ target: useFileViewStore.getState().target! }));
+  await __flush();
+  const trigger = __nodes().find(n => n.type === "button" &&
+    typeof n.props.title === "string" && typeof n.props.onClick === "function")?.props.onClick as (() => void) | undefined;
+  trigger?.(); trigger?.();
+  succeedSecond({ ok: true });
+  await __flush();
+  failFirst({ ok: false, error: "SUPERSEDED_FIRST_LAUNCH" });
+  await __flush();
+  check("★★ obsolete first open must not overwrite newer successful launch",
+    attempt === 2 && !__nodes().some(n => JSON.stringify(n.props.children ?? "").includes("SUPERSEDED_FIRST_LAUNCH")),
+    { attempt });
+  stub.shell.openFile = async () => ({ ok: true });
 }
 console.log(`\nfile-viewer-basedir-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);

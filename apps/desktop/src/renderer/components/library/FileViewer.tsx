@@ -103,6 +103,13 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // One external-open request per current target owns its response; a newer
+  // click, file switch or unmount revokes an older pending Host result.
+  const externalOpenGeneration = useRef(0);
+  useEffect(() => {
+    setBusy(false);
+    return () => { externalOpenGeneration.current += 1; };
+  }, [target]);
   // A linked directory's target.name is the entry root, not its child file.
   // Use the active child identity for its title, kind and quoted context.
   const visibleName = relPath ? relPath.slice(relPath.lastIndexOf("/") + 1) : name;
@@ -267,15 +274,19 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     // —— 后者只允许**项目根目录本身**,文件路径会被主进程静默拒掉(从前 return void,
     // 调用方还无从知道),于是界面解除 busy 却什么也没打开。改走 openFile 并**消费结果**:
     // 失败就把原因显示出来,不再只 catch rejected promise。
-    if (target.source.kind !== "project") return;
+    if (target.source.kind !== "project" ||
+        useFileViewStore.getState().target !== target) return;
+    const request = ++externalOpenGeneration.current;
+    const stillCurrent = () => request === externalOpenGeneration.current &&
+      useFileViewStore.getState().target === target;
     setBusy(true);
     try {
       const res = await api.shell.openFile({ path: target.source.ref });
-      if (!res.ok) setError(res.error ?? "打开失败");
+      if (stillCurrent() && !res.ok) setError(res.error ?? "打开失败");
     } catch (err) {
-      setError((err as Error).message);
+      if (stillCurrent()) setError((err as Error).message);
     } finally {
-      setBusy(false);
+      if (stillCurrent()) setBusy(false);
     }
   }, [target]);
 
