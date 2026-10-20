@@ -177,3 +177,29 @@ T13 要做的就是把这一套套到 Node-RED 上，并且**先查清楚可行�
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T13 执行回写（调查卡；E1+E2，无产品代码改动）
+
+**交付提交 SHA**：`c5baed5b8a220ebee61b9eea8d622ca13856f569`（方案正文 `docs/planning/node-red-vendor-integration-map.md`）。本条结果回写通过单独 Git 提交保存，以避免写入尚未生成的自身 commit SHA。
+
+**改动文件**：① `docs/planning/node-red-vendor-integration-map.md`（新增，固定基线、许可/构建/体积证据、改动预算、扩展点/fork 对照、升级/回退、画布退场路线）；② `tasks/T13-node-red-vendor-investigation.md`（本段追加）。**未改** `apps/desktop/src/**`、`genoffice/**`、`WorkflowCanvas.tsx`、`.gitignore`；没有正式 `node-red/` vendor。所有实验只在 `.tmp/T13-* ` 中。
+
+**用户问题的逐项答复：**
+- **许可证**：Node-RED 5.0.8 根 `LICENSE` / `package.json` 与 `@node-red/editor-client` 为 **Apache-2.0，允许二开和再分发**，但要保留上游 LICENSE/NOTICE/署名、修改声明，并另审计第三方依赖；上游 tag 源码根无 `ee/`。
+- **构建**：`npm ci` **21.87 秒**；`npm run build` **2.17 秒**（其内部自报 1543ms），不使用 webpack，使用 concat+Sass+esbuild；未改 editor 源码可在核对 hash 后分发已编译产物，跳过本次 2.17s 编译；若改源必须重编。
+- **扩展**：对照表的 8 类能力可通过原厂节点包/annotations/hooks/storageModule/Host Admin 围栏实现；3 类严格附加诉求（native 连线属性可视化、全内部 DOM 拆分、同进程多 userDir）需要列明的上游源码 fork，其中后两类可通过 Mcode Host/多进程避免；强制所有内部部署入口统一可等待 Host 审批的特殊诉求也列了确切 fork 文件。
+- **体积**：原版固定源码的 build workspace **61.45 MiB**，其中 editor public **30.53 MiB**；同版本 production npm 依赖样本 **88.91 MiB raw / 22.22 MiB tar.gz**，作为新增发行资源代理估计；原厂 editor 全量重编 **+2.17s**。**真实 installer NSIS/DMG/ZIP 增量与 packaging stage 时间尚未测量**，不能用 gzip 数字冒充准确安装包增量。
+- **画布退场**：`WorkflowLibraryView.tsx:80,1169` 为唯一实际挂载，退场分**A 并存 → B 旧画布只读 → C 移除**；前置有安全 Editor 会话与 Node-RED 页面、MERGE-1 单存储/CAS/无损迁移、MERGE-2 原厂节点及 Agent 接口、MERGE-3/4 单触发/权限、真 Electron + Node-RED + 三 SDK 用户旅程。**当前没有全部满足，不能删**。
+- **npm fallback**：**保留可信的、同版的、显式用户选择的本地 npm fallback**；不得静默下载/切引擎、不得在 vendor 快照损坏或第三方节点未批准时绕过 fail-closed。
+
+**实际命令 / 结果：**
+1. `git ls-remote --tags --refs https://github.com/node-red/node-red.git "5.*"`、`git clone --depth 1 --branch 5.0.8 https://github.com/node-red/node-red.git .tmp/T13-node-red-5.0.8`、`git -C .tmp/T13-node-red-5.0.8 rev-parse HEAD` → **PASS**，锁定 `935b8d3e12ec8be064f3a72ac6547131f778a7b1`。
+2. `powershell -NoProfile -ExecutionPolicy Bypass -File ..\T13-benchmark.ps1`（cwd 为 `.tmp/T13-node-red-5.0.8`）→ `npm ci exit 0, 21.87s`；`npm run build exit 0, 2.17s`。即 **2 PASS/0 FAIL**。
+3. `powershell -NoProfile -ExecutionPolicy Bypass -File .tmp/T13-size.ps1 -Src .tmp/T13-node-red-5.0.8 -Prod .tmp/T13-prod` 与 `tar -czf .tmp/T13-prod-node-modules.tgz -C .tmp/T13-prod node_modules` → **PASS**，模块体积 93,233,298 bytes，压缩包 23,298,901 bytes。
+4. `powershell -NoProfile -ExecutionPolicy Bypass -File .tmp/T13-resolve-check.ps1` → 正常 **1 绿**（0）；撤 `NODE_PATH` 后 **1 红**（exit 1, `MODULE_NOT_FOUND`）；恢复后 **1 绿**（0），`bootstrap.cjs` SHA256 前后 `4E98E7131CC14CFE1F852F692083E52BF12B4E6F00508273F8CC16893C3330CA`，逐字节一致。此变异是隔离模拟，不修改产品源码。
+5. `node apps/desktop/scripts/run-smokes.mjs workflow-engine-runtime-smoke engine-node-readiness-smoke mcode-node-pack-smoke` → **3 suites PASS/0 FAIL**；日志 `apps/desktop/.tmp/smoke-runs/1792536381321-28796-kCd6yY`。
+6. `node .tmp/T13-doc-check.cjs` → 新调查文档 **7/7 条静态结构断言绿**；临时撤 `## 五、` 退场标题后 **1 条真红**；写回原字节后 **7/7 复绿**，`cmp=true`，SHA256 前后 `458e1dcc1f9e1643d828d42493f4eeaf055c86e062f2372dfec61f3c00fc25c9`。脚本在 finally 里恢复文档原字节。
+
+**验收自检**：①证据表 **满足（E1/E2）**；②每行预算文件数/行数与 smoke **满足**（是实施预算非实际改动量）；③扩展点与必须 fork 文件 **满足**；④阶段前置条件 **满足**；⑤**未完全达成**：有 raw/tar.gz 体积与 editor build 时间的可复现数值，但因为本卡禁止实际 vendor/installer 打包，**没有真实安装器字节差与完整构建流水线增量**；⑥Apache-2.0 二开许可 **满足（上游；第三方待审计）**；⑦规划对照文档 **已提交**。
+
+**未做/风险**：不伪报真实安装器、跨 OS、Node-RED Editor 在 Mcode Pane 的 U1、第三方 license/SBOM、数据迁移/回滚/安全审批和 ARC-006 整包完成；`node-red/` 源码正式 vendor 需后续确认，不在本卡越界开展。现场其他 AI 在开发其独立文件，本轮没有清理、暂存或改写他们的工作树。
