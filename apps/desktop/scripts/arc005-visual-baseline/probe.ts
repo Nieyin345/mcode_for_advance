@@ -46,7 +46,7 @@ const TOKENS = [
  "--radius-panel", "--composer-radius", "--radius-bubble", "--radius-control",
  "--radius-btn-xs", "--radius-btn-md", "--radius-dialog", "--radius-code",
  "--dur-fast", "--dur-snap", "--dur-base", "--dur-sheet", "--dur-slow",
- "--ease-out", "--ease-snap", "--ease-overshoot", "--spring-btn",
+ "--ease-out", "--ease-snap", "--ease-overshoot",
 ];
 type Row = { screen: string; title: string; condition: string; file: string; status: "CAPTURED" | "DATA_MISSING"; reason?: string; probe?: unknown };
 

@@ -154,7 +154,9 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   check("styles.css 引入了微动效", read("src/renderer/styles.css").includes('@import "./chat-motion.css";'));
 
   const cssAliases = read("src/renderer/styles.css");
-  check("★ 真弹簧用 linear() 采样(cubic-bezier 做不出二次回弹)", /--spring-btn:\s*linear\(0,\s*0\.2459/.test(cssAliases));
+  // 【反向】`--spring-btn` 曾经定义过但全仓零调用 —— 死 token 会让人以为哪里
+  // 有弹簧动画。断言它**不存在**；真要加弹簧时，定义与第一个调用点同批落地。
+  check("★ 没有无人调用的死弹簧 token", !/--spring-btn\s*:/.test(cssAliases));
   for (const a of ["--radius-panel:", "--composer-radius:", "--radius-bubble:", "--composer-shadow:", "--hairline:"]) {
     check("样式别名 " + a.replace(":", "") + " 已接", cssAliases.includes(a));
   }
