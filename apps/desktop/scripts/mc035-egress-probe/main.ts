@@ -16,7 +16,7 @@ const bodies: readonly [string, string][] = [
 let blocked = 0, notBlocked = 0, failed = 0;
 try {
   for (const [method, body] of bodies) {
-    const source = "({ inspect: async () => { try { " + body + " } catch(e) { const m=String(e&&e.message||e); return {text:/network_access_denied|ERR_ACCESS_DENIED|operation not permitted|EPERM|EACCES/.test(m)?\"blocked\":\"error:\"+(e.code||m).slice(0,100)} } } })";
+    const source = "({ inspect: async () => { try { " + body + " } catch(e) { const m=String(e&&e.message||e); return {text:((e&&e.code==='ERR_ACCESS_DENIED')||/network_access_denied|ERR_ACCESS_DENIED|operation not permitted|EPERM|EACCES/.test(m))?\"blocked\":\"error:\"+(e.code||m).slice(0,100)} } } })";
     let result: string;
     try {
       const answer = await runPermissionedProcess({ source, capability:"inspect", allowWrite:false,
@@ -25,7 +25,7 @@ try {
       result = String(answer.text || "error:no-result");
     } catch (e) {
       const m=String(e);
-      result = /egress_isolation_unavailable|network_guard_setup_failed|network_guard_integrity_failed/.test(m) ? "blocked" : "error:"+m.slice(0,115);
+      result = /egress_isolation_unavailable|network_guard_setup_failed|network_guard_integrity_failed|ERR_ACCESS_DENIED/.test(m) ? "blocked" : "error:"+m.slice(0,115);
     }
     if (result === "blocked") blocked++; else if (result === "connected" || result.startsWith("resolved-local:")) notBlocked++; else failed++;
     console.log("method="+method+" result="+result);

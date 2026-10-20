@@ -332,17 +332,32 @@ const VERIFY_BOOTSTRAP = [
 /** 核验结果:成功时给工厂声明的短名(诊断用),失败时给人能读懂的原因。 */
 export type ProgramVerification = { ok: true; declared: string[] } | { ok: false; reason: string };
 
-/**
- * OS egress isolation is mandatory for *unapproved* network access, including
- * install-time factory evaluation. A JS-only network hook is NOT a sandbox.
- * Linux user+net namespaces and macOS sandbox-exec are probed using a real TCP
- * attempt in a new OS-restricted child, before executing ANY extension source.
- *
- * Windows has no supported per-child AppContainer/WFP launch in this project.
- * Rejecting execution there is intentional: Job Objects do not block sockets,
- * and global firewall rules against node.exe would affect unrelated processes.
+/** OS egress is applied wherever available; Windows has only a JS network guard.
+ * The downgrade is explicit in the result, never represented as OS isolation.
+ * Linux/macOS still require a verified OS probe before executing untrusted code.
+ * A manifest that *declares* network is separately blocked on Windows at install
+ * and invocation (including restored manifests), rather than silently downgrading.
  */
 type EgressLaunch = { command: string; prefix: string[] };
+export type EgressMode = "explicitly-approved" | "js-guard-only" | "os-sandbox";
+/** Pure platform decision, for OS branch testing without pretending to run Linux on Windows. */
+export function egressMode(platform: NodeJS.Platform, allowNetwork: boolean): EgressMode {
+  if (allowNetwork) return "explicitly-approved";
+  return platform === "win32" ? "js-guard-only" : "os-sandbox";
+}
+/** Manifests that request network must not be installed or invoked on unsupported Windows.
+ * This also protects already-persisted manifests restored after upgrading Mcode. */
+export function requireNetworkExtensionSupport(): void {
+  if (process.platform === "win32") {
+    throw Error("egress_isolation_unavailable: 这台 Windows 机器没有可验证的 OS 网络沙箱，无法安装或运行声明 network 的可执行扩展；请在支持 OS 网络隔离的平台安装，或移除 network 权限。");
+  }
+}
+/** One launch decision for installer and runtime, never skip a required OS probe. */
+async function unapprovedNetworkLaunch(): Promise<EgressLaunch> {
+  return egressMode(process.platform, false) === "js-guard-only"
+    ? { command: process.execPath, prefix: [] }
+    : egressLaunch();
+}
 let cachedEgressLaunch: Promise<EgressLaunch> | undefined;
 const EGRESS_PROBE = String.raw`
 const net=require("node:net");
@@ -415,7 +430,7 @@ export async function verifyPermissionedProgram(
   // 扩展与引导程序仍同进程，关联值不代表 OS 沙箱或强隔离认证。
   const proof = randomBytes(32).toString("hex");
   let launch: EgressLaunch;
-  try { launch = await egressLaunch(); }
+  try { launch = await unapprovedNetworkLaunch(); }
   catch (e) { return { ok: false, reason: String(e) }; }
   const result = await spawnRun({
     command: launch.command,
@@ -506,11 +521,13 @@ export async function runPermissionedProcess(
     capability: options.capability,
     resource: options.resource,
   });
-  // Unapproved network requires a verified OS sandbox. The process-local JS
-  // guard remains as defence in depth; it is never treated as a fallback.
+  // Explicit network approval retains its existing direct path. Unapproved
+  // network on Linux/macOS still *requires* OS isolation; on Windows the guard
+  // runs alone, and that reduced guarantee is reported in every success reply.
+  const mode = egressMode(process.platform, options.allowNetwork === true);
   let launch: EgressLaunch = { command: process.execPath, prefix: [] };
-  if (options.allowNetwork !== true) {
-    try { launch = await egressLaunch(); }
+  if (mode !== "explicitly-approved") {
+    try { launch = await unapprovedNetworkLaunch(); }
     catch (e) { throw failure("isolated_denied", String(e)); }
   }
   const bootstrap = options.allowNetwork === true ? BOOTSTRAP : NETWORK_GUARD + BOOTSTRAP;
@@ -560,6 +577,16 @@ export async function runPermissionedProcess(
     const validated = ResultSchema.safeParse(reply.result);
     if (!validated.success) {
       throw failure("isolated_crash", "扩展程序返回值不符合 ModuleResult 合同（字段类型/大小/数量）。");
+    }
+    if (mode === "js-guard-only") {
+      // Added by the trusted parent, not supplied by the extension. This is part
+      // of the ModuleResult returned through ModuleHost / IPC for diagnostics.
+      const annotated = ResultSchema.safeParse({
+        ...validated.data,
+        _mcodeEgressIsolation: "js-guard-only; OS egress isolation unavailable",
+      });
+      if (!annotated.success) throw failure("isolated_crash", "扩展返回值没有空间携带必需的 Windows JS-only 网络隔离诊断");
+      return annotated.data;
     }
     return validated.data;
   }

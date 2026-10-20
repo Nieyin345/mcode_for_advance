@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   diagnoseEgressIsolation, verifyPermissionedProgram,
-  runPermissionedProcess, permissionedFailure,
+  runPermissionedProcess, permissionedFailure, egressMode, requireNetworkExtensionSupport,
 } from "../../src/main/modules/permissionedProcessRunner.js";
 
 let total = 0, failed = 0;
@@ -16,14 +16,41 @@ function check(name: string, expected: unknown, actual: unknown) {
 }
 const diagnostic = await diagnoseEgressIsolation();
 console.log("os-egress-capability: "+JSON.stringify(diagnostic));
+check("Linux no-network still selects verified OS isolation","os-sandbox",egressMode("linux",false));
+check("macOS no-network still selects verified OS isolation","os-sandbox",egressMode("darwin",false));
+check("Explicit approval bypasses network guard on all platforms","explicitly-approved",egressMode("win32",true));
 if (process.platform === "win32") {
   check("Windows never claims unsupported AppContainer/WFP isolation",false,diagnostic.supported);
+  check("Windows no-network chooses only JS guard","js-guard-only",egressMode("win32",false));
+  let rejection="";
+  try {requireNetworkExtensionSupport();}catch(e){rejection=String(e);}
+  check("Declared network permission is rejected on unsupported Windows",true,
+    /egress_isolation_unavailable.*Windows.*OS 网络沙箱/.test(rejection));
 } else {
   check("non-Windows capability probe returns explicit support or failure",true,
     diagnostic.supported || /egress_isolation_unavailable/.test(diagnostic.detail));
 }
 const verify = await verifyPermissionedProgram('({ inspect: async () => ({text:"UNTRUSTED_EXECUTED"}) })',["inspect"]);
-if (process.platform === "win32" || !diagnostic.supported) {
+if (process.platform === "win32") {
+  check("Windows JS-guard-only factory verification succeeds",true,verify.ok);
+  const attempt = await runPermissionedProcess({
+    source:'({inspect:async()=>({text:"normal"})})',
+    capability:"inspect",resource:{path:"not-a-real-file",projectPath:"."},
+    allowWrite:false,timeoutMs:4000,signal:new AbortController().signal,
+  }).then(value=>({ok:true as const,value}),error=>({ok:false as const,error}));
+  check("Windows benign extension executes with explicit JS-only diagnostic",true,
+    attempt.ok && attempt.value?.text==="normal" &&
+    attempt.value?._mcodeEgressIsolation==="js-guard-only; OS egress isolation unavailable");
+  const blocked = await runPermissionedProcess({
+    source:'({inspect:async()=>{try{require("node:net").connect(9,"127.0.0.1");return {text:"CONNECTED"}}catch(e){return {text:String(e.message)}}}})',
+    capability:"inspect",resource:{path:"not-a-real-file",projectPath:"."},
+    allowWrite:false,timeoutMs:4000,signal:new AbortController().signal,
+  }).then(value=>value,error=>({text:String(error)}));
+  check("Windows no-network execution enforces production NETWORK_GUARD",true,
+    String(blocked.text).includes("network_access_denied") &&
+    "_mcodeEgressIsolation" in blocked &&
+    blocked._mcodeEgressIsolation==="js-guard-only; OS egress isolation unavailable");
+} else if (!diagnostic.supported) {
   check("failed OS capability probe must reject factory installation",true,
     !verify.ok && /egress_isolation_unavailable/.test(verify.reason));
   const attempt = await runPermissionedProcess({

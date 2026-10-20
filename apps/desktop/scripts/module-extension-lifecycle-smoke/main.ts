@@ -634,6 +634,23 @@ try {
   }
 
   // ── 6e.【MC-035】网络是**逐次**批准:声明 network 的 query 能力每次执行都要过审批 ──
+  // Windows 当前没有可信 OS 网络沙箱，声明了网络权限的可执行模块在安装时就拒绝；
+  // 即使持久化旧模块被恢复，调用入口也要拒绝。其它平台继续核验逐次审批。
+  if (process.platform === "win32") {
+    const netManifest = manifestOf({ permissions: ["resource.read", "network"] });
+    const disk: string[] = [];
+    const netHost = makeHost({ approve: "allow", persist: async (manifests) => { disk.push(JSON.stringify(manifests)); } });
+    await rejects("★ Windows 声明 network 的可执行扩展安装时拒绝并说明 OS 隔离限制",
+      netHost.install(netManifest), /egress_isolation_unavailable.*Windows.*OS 网络沙箱/);
+    eq("★ Windows 被拒安装不落盘", disk.length, 0);
+    eq("★ Windows 被拒安装不注册能力", netHost.catalog().modules.length, 0);
+    const restored = makeHost({ approve: "allow", persist: async () => {} });
+    restored.restore(netManifest);
+    await rejects("★ Windows 旧清单恢复后仍不能调用需要网络的扩展",
+      restored.invoke({ moduleId: "user.lifecycle", contributionId: "convert",
+        resource: { projectPath: root, path: target }, requestId: "net-restored" }),
+      /egress_isolation_unavailable.*Windows.*OS 网络沙箱/);
+  } else {
   // 安装时声明只回答"有没有资格联网";装上之后每次调用都出网,用户再没有"这一次
   // 要不要"的选择。action 已被逐次审批覆盖,这里验的是 query/只读能力。
   {
@@ -682,6 +699,7 @@ try {
     await plainHost.install(manifestOf());
     await plainHost.invoke({ moduleId: "user.lifecycle", contributionId: "convert", resource: { projectPath: root, path: target }, requestId: "net-5" });
     eq("★ 没有 network 权限的只读能力不弹审批(不误伤普通读)", plainSeen.length, 0);
+  }
   }
 
   // ── 7. 卸载:能力撤销、再调用失败、磁盘清单移除 ───────────────────────

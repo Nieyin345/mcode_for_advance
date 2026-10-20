@@ -14,7 +14,7 @@ import {
   type ModuleWorkflowGrantRequest,
 } from "@contracts/moduleCapability";
 import { createIsolatedActionRun } from "./isolatedActionRunner.js";
-import { runPermissionedProcess, verifyPermissionedProgram } from "./permissionedProcessRunner.js";
+import { runPermissionedProcess, verifyPermissionedProgram, requireNetworkExtensionSupport } from "./permissionedProcessRunner.js";
 
 /** Windows/macOS 的文件系统大小写不敏感 —— 授权路径比对与幂等键据此折叠大小写
  *  (与 `lib/pathGuard.samePath` 同一平台判据;[MC-036])。 */
@@ -294,6 +294,7 @@ export class ModuleHost {
         run: async (resource, context) => {
           // 资源在 invoke 里已过 authorize;这里再解析出**真实路径**交给权限参数
           // (authorize 只判不返回)。逐次审批也已在 invoke 里完成 —— 不做第二套判定。
+          if (declaresNetwork(manifest.permissions)) requireNetworkExtensionSupport();
           const realPath = await this.resolveResourcePath(resource);
           return runPermissionedProcess({
             source, capability: short,
@@ -359,6 +360,9 @@ export class ModuleHost {
       const manifest = this.validate(raw);
       if (!manifest.id.startsWith("user.")) throw Error("External IDs must start with user.");
       if (!this.modules.has(manifest.id) && this.modules.size >= 32) throw Error("Module limit reached");
+      // Windows 不能安全提供声明 network 的扩展执行环境；安装阶段就给出明确指引。
+      // 重启恢复的旧清单也由 prepareProgramBindings 的执行口再次防守。
+      if (manifest.program !== undefined && declaresNetwork(manifest.permissions)) requireNetworkExtensionSupport();
       // 【MC-035】带执行程序的扩展:**落盘之前**先在受控进程里核验(求值工厂、确认每个
       // 被引用的短名都是函数)。核验不过 → 安装失败,清单不写、能力不注册、磁盘不变
       // (台账验收:"失败安装不污染注册表或磁盘")。
