@@ -39,12 +39,16 @@ export type MarketRegistryRead<T> =
  *              `{ bundles: [...] }`)传自己的说法,分类判据仍只有这一份。
  */
 export function classifyMarketRegistry<T>(
-  raw: string | null,
+  raw: unknown,
   parse: (value: unknown) => T[] | null,
   label: string,
   shapeError = `${label}记录顶层不是数组`,
 ): MarketRegistryRead<T> {
-  if (raw === null || raw.trim() === "") return { kind: "absent" };
+  if (raw === null) return { kind: "absent" };
+  // Settings rows can come from legacy SQLite data or untrusted extensions.
+  // A non-string runtime value is corrupt, never an empty marketplace baseline.
+  if (typeof raw !== "string") return { kind: "corrupt", reason: `${label}记录不是文本` };
+  if (raw.trim() === "") return { kind: "absent" };
   let value: unknown;
   try {
     value = JSON.parse(raw);
