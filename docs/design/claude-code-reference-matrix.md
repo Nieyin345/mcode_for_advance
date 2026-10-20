@@ -235,3 +235,42 @@ Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核�
 运行性反证：`ui-interaction-smoke` 使用真 Chromium + 真实编译 Tailwind CSS 的隔离 fixture，读取 `getComputedStyle`：classic Composer 20px、workspace Composer 14px、workspace New session ≥32px，stream padding 缩小、tree 行 ≥28px、tree 垂直 padding 4px，**同一个 textarea 节点及 KEEP DRAFT 文本在 classic→workspace→classic 往返保持**。这证明 CSS 作用域可计算与不卸载的样式层，不证明真实生产大应用下的全部 PTY/Monaco / Code 参考视觉 U1。
 
 最终验证：`node scripts/run-smokes.mjs workspace-shell-smoke design-tokens-smoke ui-interaction-smoke leftbar-render-smoke settings-layout-smoke terminal-panel-worktree-smoke` → **6/6 PASS**，本次末次 `apps/desktop pnpm exec tsc --noEmit` **PASS**（过程中其它 AI 并发改动过文档 mock 导致临时红，但末次已通过）。暂未跑全量 smoke/真 Electron 主窗口截图。高相似度剩余关键点仍是侧栏导航信息架构、真正自由 pane 拖放/弹出与布局恢复、顶栏/消息/审批/文件 UI 全状态 + 本机 Claude Code 参考图的 DPI/主题/中英文逐屏验收。ARC-005 开发、复核双空不变。
+
+## 十二、2026-10-20 ARC-005 V4 Electron 真机实测
+
+> 证据等级 U1（隔离环境中真 Electron + 真 App，未覆盖上游 Claude 安装版）。
+> **保留 §一原有“已实现/未实现/待测”判定词不变**。本节只增量记录实际截图与计算样式。
+> 复跑：`bash apps/desktop/scripts/arc005-visual-baseline/run.sh`；所有源数据存放于未提交的 `.tmp/arc005-visual/`。
+
+| 原矩阵行 | 浅色 1280×800 | 深色 1280×800 | 窄窗 1024×640 |
+|---|---|---|---|
+| 初始空会话 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 已有消息 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 工具运行中/完成/失败 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 权限审批 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 代码/文件 Diff | 未实测：data-missing（无带旧版本的真实文件 Diff 夹具：不伪造 Monaco diff） | 未实测：data-missing（无带旧版本的真实文件 Diff 夹具：不伪造 Monaco diff） | 未实测：data-missing（无带旧版本的真实文件 Diff 夹具：不伪造 Monaco diff） |
+| 侧聊 | 未实测：data-missing（右侧聊依赖独立 WorkflowBoard IPC；复用脚手架下真实面板会卸载，缺端到端夹具） | 未实测：data-missing（右侧聊依赖独立 WorkflowBoard IPC；复用脚手架下真实面板会卸载，缺端到端夹具） | 未实测：data-missing（右侧聊依赖独立 WorkflowBoard IPC；复用脚手架下真实面板会卸载，缺端到端夹具） |
+| 终端 | 未实测：data-missing（无独立 PTY 宿主：直接打开会触发原生终端创建，超出本隔离截图夹具范围） | 未实测：data-missing（无独立 PTY 宿主：直接打开会触发原生终端创建，超出本隔离截图夹具范围） | 未实测：data-missing（无独立 PTY 宿主：直接打开会触发原生终端创建，超出本隔离截图夹具范围） |
+| 文件编辑 | 未实测：data-missing（无可安全读取的已打开编辑器文件：不伪造内容） | 未实测：data-missing（无可安全读取的已打开编辑器文件：不伪造内容） | 未实测：data-missing（无可安全读取的已打开编辑器文件：不伪造内容） |
+| 预览 | 未实测：data-missing（无真实可预览文件夹具：不伪造 PDF/图片/Markdown） | 未实测：data-missing（无真实可预览文件夹具：不伪造 PDF/图片/Markdown） | 未实测：data-missing（无真实可预览文件夹具：不伪造 PDF/图片/Markdown） |
+| 并行会话侧栏 | 未实测：data-missing（StreamSidebar 是原有 Electron 焦点脚手架替身；不能当成真正并行会话侧栏截图） | 未实测：data-missing（StreamSidebar 是原有 Electron 焦点脚手架替身；不能当成真正并行会话侧栏截图） | 未实测：data-missing（StreamSidebar 是原有 Electron 焦点脚手架替身；不能当成真正并行会话侧栏截图） |
+| 项目切换 | 未实测：data-missing（LeftBar 为上游现成脚手架替身，项目列表不可见；需真实 LeftBar 的独立 Electron 环境） | 未实测：data-missing（LeftBar 为上游现成脚手架替身，项目列表不可见；需真实 LeftBar 的独立 Electron 环境） | 未实测：data-missing（LeftBar 为上游现成脚手架替身，项目列表不可见；需真实 LeftBar 的独立 Electron 环境） |
+| 设置菜单 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 窗口缩窄 | 未实测：data-missing（窗口未缩至 1024px） | 未实测：data-missing（窗口未缩至 1024px） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+
+本轮 39 格有 **16 张有效真实截图**、23 格 `data-missing`，不存在拿旧 PNG 或替身面板充数的情况。每格至少一个 JSON 存有 `snapshot.tokens` + 15 个目标元素的 `getComputedStyle`（不存在的目标 `present:false`），及 Electron 原生 DPI/窗口配置。由于复用的既有 Electron 脚手架故意替代了 LeftBar/StreamSidebar、且无 PTY/真实文件/WorkflowBoard 宿主，相关状态尚缺真用户旅程；不能将全部 ARC-005 判为完成。
+
+### 参考矩阵原先“待测”的 3 个窄窗格：实际采样
+
+| 原先待测的格子 | 真 Electron 计算样式原始实测值 | 能得出的结论 |
+|---|---|---|
+| 工具运行中/完成/失败 / 窄窗 | message: font-size=16px；line-height=24px；background-color=rgba(0, 0, 0, 0)；border-radius=0px；padding=0px；bounds=583.0×31.5；viewport=1024×614 | 已实测 Mcode DOM 与布局；**Claude 对应形态仍待用户安装版截图** |
+| 权限审批 / 窄窗 | approval: font-size=12px；line-height=16px；background-color=rgb(252, 252, 251)；border-radius=16px；padding=12px 16px；bounds=583.0×156.9；viewport=1024×614 | 已实测 Mcode DOM 与布局；**Claude 对应形态仍待用户安装版截图** |
+| 设置菜单 / 窄窗 | settings: font-size=16px；line-height=24px；background-color=rgb(249, 249, 247)；border-radius=0px；padding=0px；bounds=1024.0×614.3；viewport=1024×614 | 已实测 Mcode DOM 与布局；**Claude 对应形态仍待用户安装版截图** |
+
+### CSS 令牌比对与现场环境
+
+- 比对详情 `.tmp/arc005-visual/diff.md`：每条含 `Mcode token 原始值 / 上游解析值 / 矩阵原判定 / 实测 / 结论`，可以按同名 JSON 复核。唯一一种未登记差异是 **暗色 `--edge` 实测 `44 44 42` / `#2c2c2a`，矩阵 §二旧登记 `#c3c2b7`**；它在 13 个暗色屏格重复出现（13 条，不是 13 个独立根因）。
+- 既有 surface/text/edge 实色-vs-alpha、按钮/气泡圆角、动画曲线的差异仍按照 §二原判定如实记录；上游样本只是第三方逆向 CSS，不能冒充 Claude 官方真实屏幕。
+- `environment.json` 与 39 份 JSON：Electron 44.4.5；Windows 内核版本 10.0.22000；devicePixelRatio=1.75（175%）；正常条件请求 1280×800、窄窗请求 1024×640，DOM viewport 窄窗实为 1024×614（含窗口框架差）。
+- 本机取证未获取用户安装的 Claude Code/Desktop 对照图。参考矩阵原“待测”是**参考侧待测**，本轮仅增加 Mcode 侧实测值，不擅自关闭 ARC-005。
