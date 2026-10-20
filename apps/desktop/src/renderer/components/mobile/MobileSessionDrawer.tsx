@@ -314,7 +314,7 @@ export function MobileSessionDrawer({
 
         {/* Search */}
         <div className="shrink-0 px-3 pb-2 pt-1">
-          <div className="flex h-10 items-center gap-2 rounded-xl border border-edge bg-surface/60 px-3">
+          <div className="flex h-10 items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/60 px-3">
             <IconSearch size={16} className="shrink-0 text-content-subtle" />
             <input
               value={query}
@@ -811,7 +811,7 @@ function RenameSheet({
           <button
             type="button"
             onClick={onClose}
-            className="h-10 flex-1 rounded-xl border border-edge text-sm text-content-muted active:bg-surface-hover"
+            className="h-10 flex-1 rounded-[var(--radius-card)] border border-edge text-sm text-content-muted active:bg-surface-hover"
           >
             {t("common.cancel")}
           </button>
@@ -819,7 +819,7 @@ function RenameSheet({
             type="button"
             onClick={submit}
             disabled={!trimmed}
-            className="h-10 flex-1 rounded-xl bg-accent text-sm font-medium text-surface active:opacity-80 disabled:opacity-40"
+            className="h-10 flex-1 rounded-[var(--radius-card)] bg-accent text-sm font-medium text-surface active:opacity-80 disabled:opacity-40"
           >
             {t("common.save")}
           </button>

@@ -195,7 +195,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
         )}
 
         {showCodeForm && (
-          <div className="flex flex-col gap-3 rounded-xl border border-edge bg-surface-muted/50 p-4">
+          <div className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-edge bg-surface-muted/50 p-4">
             <label className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-content-muted">
                 {t("layout.verifyCode")}
@@ -224,7 +224,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
 
         {showPasswordForm && (
           <form
-            className="flex flex-col gap-3 rounded-xl border border-edge bg-surface-muted/50 p-4"
+            className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-edge bg-surface-muted/50 p-4"
             onSubmit={(e) => {
               e.preventDefault();
               void submitPassword();

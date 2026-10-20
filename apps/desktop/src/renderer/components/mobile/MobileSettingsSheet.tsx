@@ -123,7 +123,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                   type="button"
                   onClick={() => pickTheme(opt.value)}
                   className={cn(
-                    "flex h-16 flex-col items-center justify-center gap-1 rounded-xl border text-xs",
+                    "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-xs",
                     active
                       ? "border-accent bg-accent/10 text-accent"
                       : "border-edge bg-surface/50 text-content-muted hover:bg-surface-hover",
@@ -154,7 +154,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                   type="button"
                   onClick={() => void setDisplayMode(opt.value)}
                   className={cn(
-                    "flex h-16 flex-col items-center justify-center gap-1 rounded-xl border text-xs",
+                    "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-xs",
                     active
                       ? "border-accent bg-accent/10 text-accent"
                       : "border-edge bg-surface/50 text-content-muted hover:bg-surface-hover",
@@ -176,7 +176,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
           <span className="text-xs font-medium text-content-muted">
             {t("mobile.settings.connection")}
           </span>
-          <div className="flex items-center gap-2 rounded-xl border border-edge bg-surface/50 px-3 py-2.5 text-xs text-content-muted">
+          <div className="flex items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/50 px-3 py-2.5 text-xs text-content-muted">
             <IconLink size={14} className="shrink-0" />
             <span className="truncate">
               {t("mobile.settings.connectedTo", {

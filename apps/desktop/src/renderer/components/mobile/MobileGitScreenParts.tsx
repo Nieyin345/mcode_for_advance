@@ -183,7 +183,7 @@ export function BranchSheet({
 
         {/* Search — filters by branch/tag name and commit subject. */}
         <div className="shrink-0 px-4 pb-2 pt-1">
-          <div className="flex h-10 items-center gap-2 rounded-xl border border-edge bg-surface/60 px-3">
+          <div className="flex h-10 items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/60 px-3">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -222,13 +222,13 @@ export function BranchSheet({
                   if (e.key === "Enter") createNew();
                 }}
                 placeholder={t("ide.git.newBranchNamePlaceholder")}
-                className="h-10 min-w-0 flex-1 rounded-xl border border-input-edge bg-surface/60 px-3 text-base text-content outline-none focus:border-accent"
+                className="h-10 min-w-0 flex-1 rounded-[var(--radius-card)] border border-input-edge bg-surface/60 px-3 text-base text-content outline-none focus:border-accent"
               />
               <button
                 type="button"
                 onClick={createNew}
                 disabled={!newName.trim() || !!checkingOut}
-                className="h-10 shrink-0 rounded-xl border border-edge px-3 text-xs text-content active:bg-surface-hover disabled:opacity-50"
+                className="h-10 shrink-0 rounded-[var(--radius-card)] border border-edge px-3 text-xs text-content active:bg-surface-hover disabled:opacity-50"
               >
                 {t("ide.git.createBranchAction")}
               </button>
@@ -239,7 +239,7 @@ export function BranchSheet({
                   setNewName("");
                 }}
                 aria-label={t("mobile.git.cancelNewBranch")}
-                className="flex h-10 w-9 shrink-0 items-center justify-center rounded-xl text-content-muted active:bg-surface-hover"
+                className="flex h-10 w-9 shrink-0 items-center justify-center rounded-[var(--radius-card)] text-content-muted active:bg-surface-hover"
               >
                 <IconX size={15} />
               </button>
