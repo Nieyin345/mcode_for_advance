@@ -18,6 +18,7 @@ import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { cn } from "@renderer/lib/cn.js";
+import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import type { GitRepo, GitStatusResult, GitStatusCode, GitBranchInfo, GitBranchListResult } from "@contracts/ipc";
 import {
   IconGitBranch,
@@ -460,29 +461,27 @@ export function MobileGitScreen() {
             </div>
           ) : (
             <>
-          {/* segmented control */}
-          <div className="mb-2 flex shrink-0 gap-1 rounded-lg bg-surface-muted p-1 text-xs">
-            <button
-              type="button"
-              onClick={() => setTab("changes")}
-              className={cn(
-                "flex-1 rounded px-2 py-2",
-                tab === "changes" ? "bg-surface text-content shadow-sm" : "text-content-muted",
-              )}
-            >
-              {t("ide.git.changes")} {unstaged.length > 0 ? `(${unstaged.length})` : ""}
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("staged")}
-              className={cn(
-                "flex-1 rounded px-2 py-2",
-                tab === "staged" ? "bg-surface text-content shadow-sm" : "text-content-muted",
-              )}
-            >
-              {t("ide.git.staged")} {staged.length > 0 ? `(${staged.length})` : ""}
-            </button>
-          </div>
+          {/* 【ARC-005 V2】二选一改用共享 CDS 分段控件，与配对/抽屉/侧栏同一套
+              几何与磁吸物理。计数仍由 badge 承载。 */}
+          <Segmented
+            label={t("mobile.git.tabSwitch")}
+            size="md"
+            className="mb-2 shrink-0 [&_button]:py-2"
+            value={tab}
+            onChange={(v) => setTab(v as "changes" | "staged")}
+            items={[
+              {
+                id: "changes",
+                label: t("ide.git.changes"),
+                badge: unstaged.length > 0 ? unstaged.length : undefined,
+              },
+              {
+                id: "staged",
+                label: t("ide.git.staged"),
+                badge: staged.length > 0 ? staged.length : undefined,
+              },
+            ]}
+          />
 
           {/* file list */}
           <div className="min-h-0 flex-1 overflow-y-auto">

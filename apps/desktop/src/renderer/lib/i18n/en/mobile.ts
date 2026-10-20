@@ -16,6 +16,7 @@ export const en = {
 
   /* ── git: status glyphs ──
      One character each, so the badge column stays narrow on a phone. */
+  "mobile.git.tabSwitch": "Changes / staged switch",
   "mobile.git.status.modified": "M",
   "mobile.git.status.added": "A",
   "mobile.git.status.deleted": "D",

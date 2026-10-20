@@ -919,5 +919,13 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
     const dict = read(`src/renderer/lib/i18n/${loc}/mobile.ts`);
     check(`i18n ${loc} 有 mobile.pair.methodLabel`, dict.includes('"mobile.pair.methodLabel"'));
   }
+  // 手机 Git 的「变更 / 暂存」也走同一套分段控件（此前是自写按钮组）。
+  const mobileGit = read("src/renderer/components/mobile/MobileGitScreen.tsx");
+  check("★ 手机 Git 二选一复用 CDS Segmented", /<Segmented[\s\S]{0,400}?value=\{tab\}/.test(mobileGit));
+  check("★ 手机 Git 不再自写变更/暂存按钮组", !/tab === "changes" \? "bg-surface/.test(mobileGit));
+  for (const loc of ["zh", "en"]) {
+    const dict = read(`src/renderer/lib/i18n/${loc}/mobile.ts`);
+    check(`i18n ${loc} 有 mobile.git.tabSwitch`, dict.includes('"mobile.git.tabSwitch"'));
+  }
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

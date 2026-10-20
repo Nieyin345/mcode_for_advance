@@ -29,6 +29,7 @@ export const zh = {
   /* ── git: status glyphs ──
      Single-character badges in the file list. Kept as one character each so
      the row stays narrow on a phone; the column header carries the meaning. */
+  "mobile.git.tabSwitch": "变更 / 暂存切换",
   "mobile.git.status.modified": "改",
   "mobile.git.status.added": "增",
   "mobile.git.status.deleted": "删",
