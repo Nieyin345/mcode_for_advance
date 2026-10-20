@@ -16,6 +16,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { IconKey, IconLoader2, IconAlertCircle, IconDeviceMobile, IconEye, IconEyeOff } from "@renderer/lib/icons.js";
 import { fetchAuthMethods, loginWithPassword, pairWithCode } from "@renderer/lib/webApi.js";
@@ -165,7 +166,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
     <div className="flex h-full w-full flex-col items-center justify-center overflow-y-auto bg-surface px-6 py-8 text-content">
       <div className="flex w-full max-w-sm flex-col gap-5">
         <div className="flex flex-col items-center gap-2 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-surface-muted">
+          <div className="flex h-14 w-14 items-center justify-center rounded-[var(--radius-dialog)] bg-surface-muted">
             <IconDeviceMobile size={28} className="text-accent" />
           </div>
           <h1 className="text-lg font-semibold">{t("mobile.pair.title")}</h1>
@@ -177,21 +178,19 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
         </div>
 
         {canSwitch && (
-          <div className="flex rounded-lg bg-surface-muted p-1 text-sm">
-            {(["code", "password"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                className={cn(
-                  "flex-1 rounded-md py-1.5 transition-colors",
-                  mode === m ? "bg-surface font-medium text-content shadow-sm" : "text-content-muted",
-                )}
-              >
-                {m === "code" ? t("mobile.pair.useCode") : t("mobile.pair.usePassword")}
-              </button>
-            ))}
-          </div>
+          // 【ARC-005 V2】二选一改用共享 CDS 分段控件（与侧栏/手机抽屉同一套
+          // 几何与磁吸物理），不再各写一份「按钮 + 高亮底」。
+          <Segmented
+            label={t("mobile.pair.methodLabel")}
+            size="md"
+            className="[&_button]:py-1.5"
+            value={mode}
+            onChange={(v) => setMode(v as "code" | "password")}
+            items={[
+              { id: "code", label: t("mobile.pair.useCode") },
+              { id: "password", label: t("mobile.pair.usePassword") },
+            ]}
+          />
         )}
 
         {showCodeForm && (

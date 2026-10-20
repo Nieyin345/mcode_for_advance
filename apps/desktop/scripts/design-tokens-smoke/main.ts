@@ -910,5 +910,14 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   // 设置抽屉此前还漏了 CDS 圆角档（rounded-t-2xl），一并钉住。
   check("★ 设置面板圆角走 --radius-dialog",
     read("src/renderer/components/mobile/MobileSettingsSheet.tsx").includes("rounded-t-[var(--radius-dialog)]"));
+  // 配对页的二选一也走同一套分段控件 —— 此前是自写的「按钮 + 高亮底」，
+  // 与侧栏/抽屉的切换器几何不一致。
+  const pairing = read("src/renderer/components/mobile/PairingScreen.tsx");
+  check("★ 配对页二选一复用 CDS Segmented", /<Segmented[\s\S]{0,300}?value=\{mode\}/.test(pairing));
+  check("★ 配对页不再自写按钮高亮底", !/mode === m \? "bg-surface font-medium/.test(pairing));
+  for (const loc of ["zh", "en"]) {
+    const dict = read(`src/renderer/lib/i18n/${loc}/mobile.ts`);
+    check(`i18n ${loc} 有 mobile.pair.methodLabel`, dict.includes('"mobile.pair.methodLabel"'));
+  }
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

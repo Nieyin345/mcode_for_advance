@@ -105,6 +105,7 @@ export const en = {
   "mobile.pair.loginRequired": "Enter the account and password",
   "mobile.pair.useCode": "Pairing code",
   "mobile.pair.usePassword": "Account",
+  "mobile.pair.methodLabel": "Pairing method",
 
   /* ── relay (VPS forwarding) ── */
   "mobile.relay.connected": "Connected",

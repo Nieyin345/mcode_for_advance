@@ -122,6 +122,7 @@ export const zh = {
   "mobile.pair.loginRequired": "请输入账号和密码",
   "mobile.pair.useCode": "验证码配对",
   "mobile.pair.usePassword": "账号密码",
+  "mobile.pair.methodLabel": "配对方式",
 
   /* ── relay (VPS forwarding) ── */
   "mobile.relay.connected": "已连接",
