@@ -18,29 +18,14 @@
  * 没有任何东西会报出来。收在一处,以后改文案只有一处。
  */
 import { z } from "zod";
+import { safeErrorMessage } from "./safeErrorMessage.js";
+export { safeErrorMessage } from "./safeErrorMessage.js";
 
 /** zod 校验失败 → 一句人能读的「入参不合法(字段: 原因)」。 */
 export function describeInputError(err: z.ZodError): string {
   const first = err.issues[0];
   const where = first && first.path.length > 0 ? `${first.path.join(".")}: ` : "";
   return `入参不合法(${where}${first?.message ?? "没通过校验"})`;
-}
-
-/** Shared bounded fallback for arbitrary thrown values from plugins / SDKs.
- * JavaScript permits throwing Object.create(null), objects with a malicious
- * toString, and Error subclasses whose message getter throws. A handler's
- * catch must not trigger a second uncaught exception while reporting one. */
-export function safeErrorMessage(err: unknown): string {
-  try {
-    if (err instanceof Error) {
-      const msg: unknown = err.message;
-      return typeof msg === "string" && msg ? msg : "未知错误";
-    }
-    const text = String(err);
-    return text || "未知错误";
-  } catch {
-    return "未知错误";
-  }
 }
 
 /** `catch` 里唯一的出口。 */
