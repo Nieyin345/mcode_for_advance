@@ -40,7 +40,7 @@ import { PDFViewer, ZoomMode, type PDFViewerRef } from "@embedpdf/react-pdf-view
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { useFileViewStore, setFileSaveHandler } from "@renderer/stores/fileViewStore.js";
+import { useFileViewStore, setFileSaveHandler, type FileViewTarget } from "@renderer/stores/fileViewStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconExternalLink,
@@ -74,9 +74,12 @@ export function PdfPreview({
   bytes,
   filePath,
   onOpenExternal,
+  fileViewTarget,
 }: {
   item: Pick<LibraryItem, "id">;
   bytes?: Uint8Array;
+  /** Only the central FileViewer owns its global leave guard; other PDF panes must not steal it. */
+  fileViewTarget?: FileViewTarget;
   /**
    * PDF 在磁盘上的绝对路径。**只有它才能保存批注** ——
    * `library.writeHighlights` 按路径寻址（那条路要原子替换原文件 +
@@ -133,10 +136,19 @@ export function PdfPreview({
    */
   const markDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
-    useFileViewStore.getState().setDirty(dirty);
-  }, []);
-  // 卸载时清掉全局脏位(这份预览没了,它记的脏状态不该留给下一个文件)。
-  useEffect(() => () => useFileViewStore.getState().setDirty(false), []);  /**
+    // An IDE/side-pane PDF is not the file open in the central FileViewer.
+    // Old central listeners are also denied as soon as the current target changes.
+    if (fileViewTarget && useFileViewStore.getState().target === fileViewTarget) {
+      useFileViewStore.getState().setDirty(dirty);
+    }
+  }, [fileViewTarget]);
+  // A late unmount of A must not clear B's global unsaved state.
+  useEffect(() => () => {
+    if (fileViewTarget && useFileViewStore.getState().target === fileViewTarget) {
+      useFileViewStore.getState().setDirty(false);
+    }
+  }, [fileViewTarget]);
+  /**
    * `t` 走 ref，**不进**下面加载 effect 的依赖：那个 effect 一跑就 `setDocBytes(null)`，
    * 阅读器整个卸掉重载 —— 切一次界面语言，没保存的批注就没了。
    */
@@ -264,7 +276,10 @@ export function PdfPreview({
     }
     const operation = (async (): Promise<boolean> => {
       const savedEditEpoch = annotationEditEpochRef.current;
-      const stillCurrent = () => epoch === documentEpochRef.current;
+      // The FileViewer target can advance before React commits the next PDF
+      // effect, so documentEpoch alone is not a sufficient ownership test.
+      const stillCurrent = () => epoch === documentEpochRef.current &&
+        (!fileViewTarget || useFileViewStore.getState().target === fileViewTarget);
       setSaveState("saving");
       setSaveErr(null);
       try {
@@ -347,17 +362,21 @@ export function PdfPreview({
       // A's late completion must not tear down B's newer save slot.
       if (saveInFlightRef.current?.promise === operation) saveInFlightRef.current = null;
     }
-  }, [filePath, loadedRevision, t]);
+  }, [filePath, loadedRevision, t, fileViewTarget]);
 
   /**
    * 【UI-012】把"保存我"登记给 store —— 用户切文件/关预览时若这份 PDF 有未保存批注,
    * FileViewer 会弹「保存 / 放弃 / 取消」,选「保存」时调到这里。卸载时注销。
    */
   useEffect(() => {
-    // Release only this render's registration; a late cleanup must not
-    // unbind a newer PDF preview's save callback.
-    return setFileSaveHandler(save);
-  }, [save]);
+    // Only FileViewer owns the global Save/Discard/Cancel bridge. A separate
+    // IDE or detail PDF must never replace the central preview's save callback.
+    if (!fileViewTarget) return;
+    return setFileSaveHandler(() => {
+      if (useFileViewStore.getState().target !== fileViewTarget) return Promise.resolve(false);
+      return save();
+    });
+  }, [save, fileViewTarget]);
 
   /**
    * 给 EmbedPDF 的初始文档 —— 只在换文件时变，别每次重渲染都造新数组
@@ -412,13 +431,14 @@ export function PdfPreview({
     if (typeof annotation?.onAnnotationEvent !== "function") return;
     const sub = annotation.onAnnotationEvent((e) => {
       if (readyEpoch !== documentEpochRef.current) return;
+      if (fileViewTarget && useFileViewStore.getState().target !== fileViewTarget) return;
       if (e.type === "create" || e.type === "update" || e.type === "delete") {
         annotationEditEpochRef.current += 1;
         markDirty(true);
       }
     });
     unsubRef.current = typeof sub === "function" ? (sub as () => void) : null;
-  }, []);
+  }, [markDirty, fileViewTarget]);
 
   /** 撤销订阅。面板卸载/换文件时调，否则监听器会堆在这条会话上。 */
   useEffect(

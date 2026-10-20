@@ -23,7 +23,10 @@ export const api={library:{
 }};
 export const useToastStore={getState:()=>({push:()=>{}})};
 let dirty=false;
-export const useFileViewStore={getState:()=>({setDirty:(x:boolean)=>{dirty=x},dirty})};
+export const guardedTarget = {source:{kind:"project" as const,ref:"C:/fake-libraries/central.pdf"},name:"central.pdf"};
+let activeTarget: unknown = guardedTarget;
+export const setPreviewTarget = (target:unknown) => {activeTarget=target;};
+export const useFileViewStore={getState:()=>({setDirty:(x:boolean)=>{dirty=x},dirty,target:activeTarget})};
 export const setFileSaveHandler=(f:(()=>Promise<boolean>)|null)=>{saveHandler=f;return ()=>{if(saveHandler===f)saveHandler=null;};};
 export const cn=(...parts:unknown[])=>parts.filter(Boolean).join(" ");
 export const useI18n=()=>({t:(key:string)=>key});

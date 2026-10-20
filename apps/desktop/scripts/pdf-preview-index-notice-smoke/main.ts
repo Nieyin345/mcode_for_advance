@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { PdfPreview } from "@renderer/components/library/PdfPreviewImpl.js";
 import { __mount,__render,__flush,__text,__nodes } from "../preview-panel-smoke/fakeReact.js";
-import { responses,calls,writes,getSaveHandler,setWriteResponse,PDFViewer,useFileViewStore } from "./deps.js";
+import { responses,calls,writes,getSaveHandler,setWriteResponse,PDFViewer,useFileViewStore,guardedTarget,setPreviewTarget,setFileSaveHandler } from "./deps.js";
 
 type Reply={highlights:unknown[];error?:string;omittedCount?:number;revision?:string|null};
 let assertions=0,failures=0;
@@ -20,7 +20,7 @@ let path="C:/fake-libraries/damaged.pdf";
 const show=(p:string,respond:()=>Promise<Reply>)=>{
  path=p;responses.set(p,respond);
 };
-const render=()=>PdfPreview({item:{id:"paper-1"},filePath:path,bytes});
+const render=()=>PdfPreview({item:{id:"paper-1"},filePath:path,bytes,fileViewTarget:guardedTarget} as Parameters<typeof PdfPreview>[0]);
 show(path,async()=>({highlights:[],error:"批注索引 JSON 损坏，已保留原文件"}));
 __mount(render);
 await __flush();
@@ -321,6 +321,74 @@ attachExport(async()=>exported.buffer.slice(0),()=>{},()=>{reconnectClosed++});
 attachExport(async()=>exported.buffer.slice(0),()=>{},()=>{reconnectClosed++});
 check("★★ repeated vendor onReady cleans up the previous subscription",
  reconnectClosed===1,{reconnectClosed});
+
+// FileViewStore target can change before React executes the next PDF effect.
+// A still-pending export from A must not start a Host write against the old
+// path, and a late in-flight Host result must not report that B was saved.
+setPreviewTarget(guardedTarget);
+show("C:/fake-libraries/owner-save-A.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);await __flush();
+let finishOwnerExport!:(data:ArrayBuffer)=>void;
+attachExport(()=>new Promise(resolve=>{finishOwnerExport=resolve}));
+const ownerSave=getSaveHandler();
+if(!ownerSave)throw Error("central save handler missing");
+const ownerBeforeWrites=writes.length;
+const pendingOwnerExport=ownerSave();
+await Promise.resolve();await Promise.resolve();
+setPreviewTarget({source:{kind:"project",ref:"C:/fake-libraries/new-center.pdf"},name:"new-center.pdf"});
+if(finishOwnerExport)finishOwnerExport(exported.buffer.slice(0));
+const ownerExportResult=await pendingOwnerExport;
+check("★★ change of central target before React effect cancels stale PDF export",
+ ownerExportResult===false && writes.length===ownerBeforeWrites,
+ {ownerExportResult,ownerBeforeWrites,actualWrites:writes.length});
+setPreviewTarget(guardedTarget);
+show("C:/fake-libraries/owner-host-A.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);await __flush();
+attachExport(async()=>exported.buffer.slice(0));
+let completeHost!:(r:{ok:boolean})=>void;
+setWriteResponse(()=>new Promise(resolve=>{completeHost=resolve}));
+const hostOwner=getSaveHandler();if(!hostOwner)throw Error("host save handler missing");
+const pendingHost=hostOwner();
+for(let n=0;n<12 && !completeHost;n++)await new Promise(resolve=>setTimeout(resolve,0));
+check("owner save actually reached Host before the target changed",!!completeHost);
+setPreviewTarget({source:{kind:"project",ref:"C:/fake-libraries/new-host-center.pdf"},name:"new-host-center.pdf"});
+if(completeHost)completeHost({ok:true});
+const oldOwnerHostResult=await pendingHost;
+check("★★ old Host success cannot tell leave guard the newly selected PDF was saved",
+ oldOwnerHostResult===false,oldOwnerHostResult);
+setWriteResponse(async()=>({ok:true}));
+setPreviewTarget(guardedTarget);
+
+// The same EmbedPDF component is also used outside the central FileViewer
+// (FilePreview details and IDE editor). Those instances must not own the
+// single central unsaved-navigation guard or its save callback.
+show("C:/fake-libraries/standalone.pdf",async()=>({highlights:[],revision:null}));
+useFileViewStore.getState().setDirty(false);
+setFileSaveHandler(null);
+__mount(()=>PdfPreview({item:{id:"standalone"},filePath:path,bytes}));
+await __flush();
+let otherEvent!:(evt:{type:string})=>void;
+attachExport(async()=>exported.buffer.slice(0),cb=>{otherEvent=cb});
+check("★★ other PDF instances never hijack the central save handler",
+ getSaveHandler()===null,typeof getSaveHandler());
+if(otherEvent)otherEvent({type:"create"});
+check("★★ other PDF annotations cannot falsely mark central preview dirty",
+ useFileViewStore.getState().dirty===false,useFileViewStore.getState().dirty);
+
+// A central PDF listener can fire between fileViewStore.open(B) and the
+// next React effect. Even if its PDFium document epoch has not advanced yet,
+// the central target identity is no longer A and must reject A's event.
+setPreviewTarget(guardedTarget);
+show("C:/fake-libraries/stale-guard-owner.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);await __flush();
+let previousOwnerEvent!:(evt:{type:string})=>void;
+attachExport(async()=>exported.buffer.slice(0),cb=>{previousOwnerEvent=cb});
+useFileViewStore.getState().setDirty(false);
+setPreviewTarget({source:{kind:"project",ref:"C:/fake-libraries/another.pdf"},name:"another.pdf"});
+if(previousOwnerEvent)previousOwnerEvent({type:"update"});
+check("★★ old central PDF event cannot mark newly selected central file dirty before effects",
+ useFileViewStore.getState().dirty===false,useFileViewStore.getState().dirty);
+setPreviewTarget(guardedTarget);
 
 console.log("pdf-preview-index-notice-smoke:"+(assertions-failures)+"/"+assertions+" PASS");
 if(failures)process.exitCode=1;

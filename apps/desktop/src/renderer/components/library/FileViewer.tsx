@@ -401,6 +401,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       return (
         <PdfPreview
           item={itemOf(target)}
+          fileViewTarget={target}
           bytes={bytes}
           {...(data.filePath ? { filePath: data.filePath } : {})}
           onOpenExternal={openExternal}
