@@ -43,6 +43,11 @@ import type {
 /** 审批等待上限。安装是用户主动点的，界面一定在；给足但别无限等。 */
 export const NODE_INSTALL_APPROVAL_TIMEOUT_MS = 120_000;
 
+/** Limit outstanding cards: no scripted installer can accumulate unbounded
+ * long-lived approval timers and renderer prompts. This is a Host safeguard,
+ * independent of any package manager or Node-RED runtime implementation. */
+const MAX_PENDING_NODE_INSTALL_APPROVALS = 32;
+
 /** 发送端口（生产传 `sendToRenderer` 的包装；无头传假实现）。 */
 export interface NodeInstallApprovalSender {
   /** 把审批卡推给渲染端。返回 false = 窗口不在（fail-closed）。 */
@@ -75,6 +80,11 @@ export class NodeInstallApprovalBridge {
   request(card: Omit<WorkflowEngineNodeInstallApprovalMessage, "channel" | "requestId">, expectedSenderId: number): Promise<boolean> {
     // 不接受无身份/合成 IPC：Agent 不能通过随便填一个 requestId 获得真人授权。
     if (!Number.isSafeInteger(expectedSenderId) || expectedSenderId < 1) return Promise.resolve(false);
+    if (this.pending.size >= MAX_PENDING_NODE_INSTALL_APPROVALS) {
+      // Too many unanswered renderer cards: do not start another approval.
+      // A denied card is safer than an unbounded queue with timers.
+      return Promise.resolve(false);
+    }
     const requestId = randomUUID();
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
@@ -89,12 +99,18 @@ export class NodeInstallApprovalBridge {
       let delivered = false;
       try {
         delivered = this.sender.send({
+          // Runtime objects assembled from untrusted node manifests can carry
+          // extra keys even if TypeScript's Omit excludes them. The Host must
+          // own the routing channel and one-use approval identity.
+          ...card,
           channel: "workflowEngine:nodeInstallApproval",
           requestId,
-          ...card,
         }, expectedSenderId);
         // Sending can synchronously invoke an adapter callback. Ignore any
         // approval that arrived before its delivery was acknowledged.
+        // A transport adapter must explicitly acknowledge delivery with true.
+        // Truthy non-booleans are not proof that a real window received a card.
+        delivered = delivered === true;
         if (delivered) pending.delivered = true;
       } catch {
         // 窗口销毁与 send 抛异常都视作无审批端口；不能留下 pending。

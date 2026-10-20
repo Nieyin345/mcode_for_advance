@@ -80,5 +80,67 @@ check("★ genuine later response after acknowledged delivery succeeds",
   earlyBridge.resolve({ requestId: pendingEarlyId, approved: true }, A) === true);
 check("★ later response settles the request as approved", await pendingAfterDelivery === true);
 earlyBridge.dispose();
+// The approval card can be dynamically assembled from external install
+// metadata: TypeScript Omit does not remove runtime "channel"/"requestId".
+// The Host must own both fields even if the input object contains them.
+let deliveredChannel = "";
+let deliveredRequestId = "";
+let forgedBridge = new NodeInstallApprovalBridge({
+  send: (message) => {
+    deliveredChannel = message.channel;
+    deliveredRequestId = message.requestId;
+    return true;
+  },
+}, 100);
+const adversarialCard = { ...card,
+  channel: "customUi:unsafeOverride",
+  requestId: "attacker-chosen-request",
+} as typeof card;
+const forgedPending = forgedBridge.request(adversarialCard, A);
+check("★ untrusted card cannot override Host approval push channel",
+  deliveredChannel === "workflowEngine:nodeInstallApproval", deliveredChannel);
+check("★ untrusted card cannot override Host minted approval requestId",
+  deliveredRequestId !== "attacker-chosen-request" && /^[0-9a-f-]{36}$/.test(deliveredRequestId), deliveredRequestId);
+check("★ forged card requestId is not a valid approval ticket",
+  forgedBridge.resolve({requestId:"attacker-chosen-request",approved:true},A) === false);
+check("★ Host minted ID still allows the original trusted window to reject",
+  forgedBridge.resolve({requestId:deliveredRequestId,approved:false},A) === true &&
+  await forgedPending === false);
+forgedBridge.dispose();
+// Renderer delivery is an explicit boolean acknowledgement. A truthy non-boolean
+// from an unsafe adapter must not silently upgrade a request to "delivered".
+for (const badAck of ["sent", 1] as const) {
+  let badId = "";
+  const nonBooleanBridge = new NodeInstallApprovalBridge({
+    send: (message) => {
+      badId = message.requestId;
+      return badAck as never;
+    },
+  }, 20);
+  const unacknowledged = nonBooleanBridge.request(card, A);
+  check("★ nonboolean delivery "+String(badAck)+" must not authorize approval",
+    nonBooleanBridge.resolve({requestId:badId,approved:true},A)===false);
+  check("★ nonboolean delivery "+String(badAck)+" refuses without an authenticated renderer ack",
+    await unacknowledged === false);
+  nonBooleanBridge.dispose();
+}
+// A scripted/compromised UI must not allocate unlimited pending approval
+// promises and timers by rapidly starting installs without answering cards.
+const floodIds: string[] = [];
+const floodBridge = new NodeInstallApprovalBridge({
+  send: (message) => { floodIds.push(message.requestId); return true; },
+}, 500);
+const firstBatch = Array.from({length:32}, ()=>floodBridge.request(card,A));
+const overCapacity = floodBridge.request(card,A);
+const overflowId = floodIds[32] ?? "missing";
+check("★ bounded approval bridge does not dispatch card number 33",
+  floodIds.length===32, floodIds.length);
+check("★ an excess approval cannot be approved via a forged overflow ticket",
+  floodBridge.resolve({requestId:overflowId,approved:true},A)===false);
+floodBridge.dispose();
+check("all pending ordinary approvals are revoked when window closes",
+  (await Promise.all(firstBatch)).every(v=>v===false));
+check("★ excess approval fails closed without requiring renderer interaction",
+  await overCapacity===false);
 console.log(`mc057-approval-identity-smoke:${total-failures}/${total}`);
 if(failures)process.exitCode=1;
