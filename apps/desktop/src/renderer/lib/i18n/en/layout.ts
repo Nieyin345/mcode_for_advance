@@ -82,6 +82,9 @@ export const en = {
 
   /* ── stream sidebar (session-first left-bar view) ── */
   "layout.stream.switchToStream": "Switch to session stream view",
+  "layout.stream.viewSwitch": "Sidebar view",
+  "layout.stream.treeLabel": "Projects",
+  "layout.stream.streamLabel": "Sessions",
   "layout.stream.switchToTree": "Switch to project tree view",
   "layout.stream.scopeAll": "All projects",
   "layout.stream.scopeGroupCap": "Groups",

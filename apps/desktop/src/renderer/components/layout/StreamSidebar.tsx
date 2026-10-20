@@ -51,6 +51,7 @@ import {
   IconX,
 } from "@renderer/lib/icons.js";
 import { cn } from "@renderer/lib/cn.js";
+import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import { ScrollFade } from "@renderer/components/ui/cds/ScrollFade.js";
 import { StatusDot } from "@renderer/components/ui/cds/StatusDot.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
@@ -87,24 +88,39 @@ function formatRunningDuration(ms: number): string {
 
 /* ── Left↔stream view switch (mounted in BOTH sidebars' top strips) ── */
 
+/**
+ * 【ARC-005 V2】树形 ↔ 流式视图切换 —— 从「单按钮轮换」改为 **CDS 分段控件**
+ * （复用 `open-claude-ui` 的 SegmentedControl 几何：1px 轨道、滑动指示器、
+ * 120ms 磁吸、容器查询折叠文字）。
+ *
+ * 为什么换：两个视图是**并列的二选一**，单按钮轮换要求用户记住"现在在哪个
+ * 视图、点一下会去哪"；分段控件把两个选项同时摆出来，当前态由滑块位置直接
+ * 表达（与 Claude 桌面端的视图切换同形）。图标含义保持不变：项目树 / 会话流。
+ */
 export function LeftBarModeSwitch() {
   const { t } = useI18n();
   const mode = useSessionStore((s) => s.leftBarMode);
   const setLeftBarMode = useSessionStore((s) => s.setLeftBarMode);
   return (
-    <button
-      type="button"
-      onClick={() => void setLeftBarMode(mode === "tree" ? "stream" : "tree")}
-      className={cn(
-        "flex h-7 w-7 items-center justify-center rounded text-content-muted transition-colors",
-        "hover:bg-surface-hover hover:text-accent",
-      )}
-      style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-      title={mode === "tree" ? t("layout.stream.switchToStream") : t("layout.stream.switchToTree")}
-    >
-      {/* Destination-view glyph: shows the view clicking leads to, matching the tooltip. */}
-      {mode === "tree" ? <IconInbox size={18} className="shrink-0" /> : <IconListTree size={18} className="shrink-0" />}
-    </button>
+    <Segmented
+      label={t("layout.stream.viewSwitch")}
+      size="sm"
+      className="ml-auto shrink-0"
+      value={mode}
+      onChange={(v) => void setLeftBarMode(v as "tree" | "stream")}
+      items={[
+        {
+          id: "tree",
+          label: t("layout.stream.treeLabel"),
+          icon: <IconListTree size={13} />,
+        },
+        {
+          id: "stream",
+          label: t("layout.stream.streamLabel"),
+          icon: <IconInbox size={13} />,
+        },
+      ]}
+    />
   );
 }
 

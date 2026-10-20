@@ -91,6 +91,9 @@ export const zh = {
 
   /* ── stream sidebar (session-first left-bar view) ── */
   "layout.stream.switchToStream": "切换为会话流视图",
+  "layout.stream.viewSwitch": "侧栏视图",
+  "layout.stream.treeLabel": "项目",
+  "layout.stream.streamLabel": "会话",
   "layout.stream.switchToTree": "切换为项目树视图",
   "layout.stream.scopeAll": "全部项目",
   "layout.stream.scopeGroupCap": "分组",
