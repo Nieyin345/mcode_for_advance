@@ -892,5 +892,23 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
     /getPropertyValue\("--surface"\)/.test(theme) && !/syncThemeColorMeta[\s\S]{0,400}#[0-9a-f]{6}/i.test(theme));
 }
 
+
+  // 手机上的底部抽屉（会话抽屉、活动面板、Git 操作、设置）全部贴 bottom-0，
+  // 全面屏手势条会盖住最后一行；四张都必须把 --safe-bottom 加进底部留白。
+  for (const [file, label] of [
+    ["src/renderer/components/mobile/MobileSessionDrawer.tsx", "会话抽屉"],
+    ["src/renderer/components/mobile/ActivitySheet.tsx", "活动面板"],
+    ["src/renderer/components/mobile/MobileGitScreenParts.tsx", "Git 操作面板"],
+    ["src/renderer/components/mobile/MobileSettingsSheet.tsx", "设置面板"],
+  ] as const) {
+    const src = read(file);
+    const sheetTag = /className=(?:\{cn\(\s*)?"absolute inset-x-0 bottom-0[^"]*"/.exec(src)?.[0] ?? "";
+    check(`★ ${label}的底部留白含 --safe-bottom`, sheetTag.includes("--safe-bottom"));
+    // 反向正控：不许再写死 pb-2/pb-6（安全区加不进去，手势条照样压）。
+    check(`★ ${label}不再写死 pb-2/pb-6`, !/\bpb-(2|6)\b/.test(sheetTag), sheetTag.slice(0, 120));
+  }
+  // 设置抽屉此前还漏了 CDS 圆角档（rounded-t-2xl），一并钉住。
+  check("★ 设置面板圆角走 --radius-dialog",
+    read("src/renderer/components/mobile/MobileSettingsSheet.tsx").includes("rounded-t-[var(--radius-dialog)]"));
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

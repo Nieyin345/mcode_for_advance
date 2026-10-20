@@ -65,7 +65,7 @@ export function ActivitySheet({
         className="absolute inset-0 bg-black/40"
         onClick={onClose}
       />
-      <div className="absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col rounded-t-[var(--radius-dialog)] border-t border-edge bg-surface text-content shadow-[var(--shadow-popover)]">
+      <div className="absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col rounded-t-[var(--radius-dialog)] border-t border-edge bg-surface pb-[var(--safe-bottom,0px)] text-content shadow-[var(--shadow-popover)]">
         {/* Grabber handle — visual affordance for the sheet, matching the
             bottom-sheet idiom; dismissal is via scrim/back. */}
         <div className="flex shrink-0 justify-center pb-1 pt-2">

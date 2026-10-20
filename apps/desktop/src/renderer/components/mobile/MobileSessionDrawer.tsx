@@ -615,7 +615,7 @@ function SheetShell({
       />
       <div
         className={cn(
-          "absolute inset-x-0 bottom-0 rounded-t-[var(--radius-dialog)] border-t border-edge bg-surface-muted pb-2 shadow-[var(--shadow-popover)]",
+          "absolute inset-x-0 bottom-0 rounded-t-[var(--radius-dialog)] border-t border-edge bg-surface-muted pb-[calc(0.5rem+var(--safe-bottom,0px))] shadow-[var(--shadow-popover)]",
           "transition-transform duration-200 ease-out",
           entered ? "translate-y-0" : "translate-y-full",
         )}

@@ -165,7 +165,7 @@ export function BranchSheet({
         className="absolute inset-0 bg-black/40"
         onClick={onClose}
       />
-      <div className="absolute inset-x-0 bottom-0 flex max-h-[78vh] flex-col rounded-t-[var(--radius-dialog)] border-t border-edge bg-surface-muted shadow-[var(--shadow-popover)]">
+      <div className="absolute inset-x-0 bottom-0 flex max-h-[78vh] flex-col rounded-t-[var(--radius-dialog)] border-t border-edge bg-surface-muted pb-[var(--safe-bottom,0px)] shadow-[var(--shadow-popover)]">
         <div className="flex justify-center pb-1 pt-2">
           <span className="h-1 w-8 rounded-full bg-edge" />
         </div>
