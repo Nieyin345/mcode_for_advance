@@ -11,7 +11,7 @@ export const MARKET_CLONE_IDLE_MS = 3 * 60_000;
 const PROXY_REFUSED = /Failed to connect to (?:127\.0\.0\.1|localhost|\[?::1\]?)\s*port/i;
 
 export function safeGitMessage(text: string): string {
-  return text.replace(/https?:\/\/[^\s'"<>]+/gi, value => {
+  return text.replace(/(?:https?|ssh|ftp|git(?:\+https?|\+ssh)?):\/\/[^\s'"<>]+/gi, value => {
     try { const url = new URL(value); url.username = ""; url.password = ""; url.search = ""; url.hash = ""; return url.href; }
     catch { return "[URL]"; }
   }).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
