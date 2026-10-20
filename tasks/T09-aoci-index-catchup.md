@@ -137,3 +137,4 @@
 - **维护计数**：`aoci_maintain` 0 轮；最终 `remaining` 未知（文中 819 是历史记录，非本轮测量）；新条目 0，`S:-` 0（比例不适用）；`aoci_update_entry` 拒绝数 0（未提交）；`whole_index_tokens` 未能实测（文中 392693 为旧参考值）。
 - **验收结果**：① `aligned:true` / `remaining:0` **未达成**；② 10 条抽样 **未执行**；③ 未提交任何批次（无法验证整批原子性）；④ `safe_repair_action` **未执行**（无接口/响应）。未新增测试断言，变异验证及 `cmp` 不适用。
 - **改动及风险**：仅在本任务文件结果回写区记录阻塞，不修改源码、台账及 `aoci.txt`、`aoci.code.txt`、`aoci.meta.txt`、`.aoci/` 等受工具管理文件。索引积压未消除；既有 `.aoci/baseline.json` 工作树改动保留。提交 SHA 将在下一条回写中记录。
+- **本轮阻塞记录提交 SHA**：`71147781a1a23c8244e4d48e6b0019ac40e8b1cb`（仅任务日志提交，并非 AOCI 索引修复提交）。
