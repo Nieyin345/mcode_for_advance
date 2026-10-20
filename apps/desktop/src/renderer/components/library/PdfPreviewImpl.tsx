@@ -123,6 +123,9 @@ export function PdfPreview({
   // Annotation edits occurring while export/Host write is pending must stay
   // dirty even if the older snapshot commits successfully.
   const annotationEditEpochRef = useRef(0);
+  // One vendor subscription at a time. File switches and vendor re-ready
+  // both dispose the previous listener; stale callbacks remain epoch-guarded.
+  const unsubRef = useRef<(() => void) | null>(null);
   /**
    * 【UI-012】把「有未保存批注」同时写进**局部 ref**(组件内部判断用)与
    * `fileViewStore`(离开预览时由 FileViewer 读取并确认)。两处必须一起变 ——
@@ -143,6 +146,8 @@ export function PdfPreview({
   useEffect(() => {
     let cancelled = false;
     documentEpochRef.current += 1;
+    try { unsubRef.current?.(); } catch { /* vendor may already be destroyed */ }
+    unsubRef.current = null;
     setLoading(true);
     setError(null);
     setSaveState("idle");
@@ -361,6 +366,9 @@ export function PdfPreview({
     () => (docBytes ? [{ buffer: docBytes, name: "document.pdf" }] : []),
     [docBytes],
   );
+  // Capture this rendered vendor instance's epoch, not whatever file is
+  // current when its async onReady eventually fires.
+  const viewerEpoch = documentEpochRef.current;
 
   /**
    * viewer 就绪：**订阅批注变化**（用来记脏），并把这条登记进未保存表。
@@ -371,9 +379,6 @@ export function PdfPreview({
    * 就会发一次。把它也算脏的话，用户**什么都没做**就被告知"有未保存的批注"。
    * 这正是这个仓库反复踩过的形状：判据立在"机制动过"上，而不是"用户做过"上。
    */
-  /** 批注事件的取消订阅句柄。面板卸载/换文件时调。 */
-  const unsubRef = useRef<(() => void) | null>(null);
-
   /**
    * viewer 就绪：**订阅批注变化**（用来记脏）+ 收起加载态。
    *
@@ -390,7 +395,12 @@ export function PdfPreview({
    * 发一次。把它也算脏的话，用户什么都没做就被告知"有未保存的批注"。这正是这个仓库
    * 反复踩过的形状：判据立在"机制动过"上，而不是"用户做过"上。
    */
-  const handleReady = useCallback((registry: unknown) => {
+  const handleReady = useCallback((registry: unknown, readyEpoch: number) => {
+    // Old PDFium instances can emit their asynchronous onReady after a new
+    // file is selected. Never let A mark B ready or replace B's listener.
+    if (readyEpoch !== documentEpochRef.current) return;
+    try { unsubRef.current?.(); } catch { /* vendor already disposed */ }
+    unsubRef.current = null;
     setLoading(false);
     const getPlugin = (
       registry as { getPlugin?: (n: string) => { provides: () => unknown } | undefined } | null
@@ -400,6 +410,7 @@ export function PdfPreview({
       | undefined;
     if (typeof annotation?.onAnnotationEvent !== "function") return;
     const sub = annotation.onAnnotationEvent((e) => {
+      if (readyEpoch !== documentEpochRef.current) return;
       if (e.type === "create" || e.type === "update" || e.type === "delete") {
         annotationEditEpochRef.current += 1;
         markDirty(true);
@@ -536,7 +547,7 @@ export function PdfPreview({
               worker: false,
               documentManager: { initialDocuments },
             }}
-            onReady={handleReady}
+            onReady={(registry) => handleReady(registry, viewerEpoch)}
           />
         )}
       </div>

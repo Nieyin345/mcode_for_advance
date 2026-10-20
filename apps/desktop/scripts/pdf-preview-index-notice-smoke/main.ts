@@ -86,6 +86,7 @@ check("UI never tried to read the real user's PDF file",calls.length>=6,calls);
 function attachExport(
  saveResult:()=>Promise<ArrayBuffer>,
  onAnnotationListener?:(cb:(evt:{type:string})=>void)=>void,
+ onUnsubscribe?:()=>void,
 ):void {
  const el=__nodes().find(n=>n.type===PDFViewer);
  if(!el)throw Error("EmbedPDF viewer node missing: no save test");
@@ -95,7 +96,7 @@ function attachExport(
      ? {provides:()=>({saveAsCopy:()=>({toPromise:saveResult})})}
      : name==="annotation"
        ? {provides:()=>({onAnnotationEvent:(cb:(evt:{type:string})=>void)=>{
-           onAnnotationListener?.(cb);return ()=>{};
+           onAnnotationListener?.(cb);return ()=>{onUnsubscribe?.()};
          }})}
        : undefined,
  };
@@ -274,6 +275,52 @@ check("stale A returns false while B's independent save commits",
  {oldResult,newResult,final:writes.at(-1)});
 check("only the B document is submitted to Host after the switch",
  writes.at(-1)?.pdfPath==="C:/fake-libraries/epoch-B.pdf",writes.at(-1));
+
+// The same PDF preview component is reused across directory children. Vendor
+// onReady for A may fire late, and A's old subscription must not leave an
+// active callback that falsely marks the new B dirty or steals its listener.
+show("C:/fake-libraries/listener-A.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);await __flush();
+let oldAnnotation!:(evt:{type:string})=>void;
+let closedA=0;
+const originalReady=__nodes().find(n=>n.type===PDFViewer)?.props.onReady as
+ ((registry:unknown)=>void)|undefined;
+attachExport(async()=>exported.buffer.slice(0),cb=>{oldAnnotation=cb},()=>{closedA++});
+show("C:/fake-libraries/listener-B.pdf",async()=>({highlights:[],revision:null}));
+__render();await __flush();
+let newAnnotation!:(evt:{type:string})=>void;
+let closedB=0;
+attachExport(async()=>exported.buffer.slice(0),cb=>{newAnnotation=cb},()=>{closedB++});
+check("★★ switching file releases old vendor annotation subscription",
+ closedA===1,{closedA,closedB});
+useFileViewStore.getState().setDirty(false);
+if(oldAnnotation)oldAnnotation({type:"create"});
+check("★★ stale vendor annotation event cannot mark new PDF as dirty",
+ useFileViewStore.getState().dirty===false,useFileViewStore.getState().dirty);
+if(newAnnotation)newAnnotation({type:"create"});
+check("current vendor annotation events still mark the right PDF dirty",
+ useFileViewStore.getState().dirty===true);
+useFileViewStore.getState().setDirty(false);
+if(originalReady)originalReady({
+ getPlugin:(name:string)=>name==="annotation"
+   ? {provides:()=>({onAnnotationEvent:()=>()=>{closedA++}})}
+   : undefined,
+});
+check("★★ late onReady from removed PDF cannot replace current subscription",
+ closedB===0,{closedA,closedB});
+if(newAnnotation)newAnnotation({type:"update"});
+check("late onReady cannot disable newer PDF annotation events",
+ useFileViewStore.getState().dirty===true);
+
+// Same ready generation can be delivered twice after vendor internal reset.
+// Only the newest listener may remain active, with the old one unsubscribed.
+show("C:/fake-libraries/listener-reconnect.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);await __flush();
+let reconnectClosed=0;
+attachExport(async()=>exported.buffer.slice(0),()=>{},()=>{reconnectClosed++});
+attachExport(async()=>exported.buffer.slice(0),()=>{},()=>{reconnectClosed++});
+check("★★ repeated vendor onReady cleans up the previous subscription",
+ reconnectClosed===1,{reconnectClosed});
 
 console.log("pdf-preview-index-notice-smoke:"+(assertions-failures)+"/"+assertions+" PASS");
 if(failures)process.exitCode=1;
