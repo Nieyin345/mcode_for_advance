@@ -63,8 +63,8 @@ export function InfoHint({ children, size = 13, side = "top", className, label }
         <BaseTooltip.Positioner side={side} sideOffset={6} className="z-[70] outline-none">
           <BaseTooltip.Popup
             className={cn(
-              "max-w-[340px] select-text whitespace-pre-line rounded-md border border-edge bg-surface px-3 py-2",
-              "text-[12px] leading-relaxed text-content-muted shadow-lg",
+              "max-w-[340px] select-text whitespace-pre-line rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-3 py-2",
+              "text-[12px] leading-relaxed text-content-muted shadow-[var(--shadow-popover)]",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               // 【ARC-005】同 Tooltip.Popup：揭示时序读动效词表。
