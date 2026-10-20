@@ -75,7 +75,7 @@ import {
   type DocumentViewLike,
   type DocumentViewWebPreferences,
 } from "@main/document/documentViewHost.js";
-import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
+import { registerDocumentViewHandlers, isApprovedDocumentViewOpen } from "@main/ipc/documentView.js";
 import {
   DocumentViewCredentialBroker,
   EDITOR_CREDENTIAL_TTL_MS,
@@ -570,7 +570,7 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
     },
   } as unknown as IpcMain;
 
-  registerDocumentViewHandlers(fakeIpc, host, () => true);
+  registerDocumentViewHandlers(fakeIpc, host, () => true, undefined, () => true);
 
   const channels = [
     DOCUMENT_VIEW_OPEN_CHANNEL,
@@ -668,6 +668,107 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
 
 /* ══════════════════ 7. 接线（源码级，三层契约一致性） ══════════════════ */
 
+section("6b. 非受信 URL 不得打开带文档 preload 的原生视图");
+{
+  created.length = 0;
+  const win = makeFakeWindow();
+  const host = new DocumentViewHost({ getMainWindow: () => win, createView: makeFakeView });
+  const handlers = new Map<string, (evt: unknown, input: unknown) => unknown>();
+  const ipc = { handle: (ch: string, cb: (evt: unknown, input: unknown) => unknown) =>
+    { handlers.set(ch, cb); } } as unknown as IpcMain;
+  // A host policy rejecting all pages must be enforced *before* allocating a
+  // privileged native view. Old onOpen ignored this fifth authorization port.
+  registerDocumentViewHandlers(ipc, host, () => true, undefined, () => false);
+  const open = async (url: string, engine?: string) =>
+    await handlers.get(DOCUMENT_VIEW_OPEN_CHANNEL)!(null, {
+      docId: "untrusted-" + created.length, url, bounds: BOUNDS, visible: true,
+      ...(engine ? { workflowEngineId: engine } : {}),
+    }) as {ok: boolean; reason?: string};
+  for (const url of [
+    "file:///C:/Users/User/Downloads/untrusted.html",
+    "file:///C:/tmp/genoffice/apps/docs/out/renderer/index.html?mode=tab",
+    "http://127.0.0.1:8080/untrusted",
+    "http://localhost:3527/editor",
+  ]) {
+    const result = await open(url);
+    check("★ refused privileged view for unknown editor page " + url,
+      result.ok === false, result);
+  }
+  eq("★ every rejected origin leaves no native webContents allocation",created.length,0);
+  host.dispose();
+}
+
+// FULL-1: the positive native pages and negative lookalikes must use exactly
+// the same production helper installed by ipc/index.ts; a scheme-only filter
+// would also reject these cases but destroy useful GenOffice functionality.
+section("6c. 唯一真实 GenOffice 资源来源 + Node-RED 引擎绑定");
+{
+  const {resolve: resolvePath, join: joinPath} = await import("node:path");
+  const {pathToFileURL} = await import("node:url");
+  const root = resolvePath(process.cwd(), "../..");
+  const vendor = joinPath(root, "genoffice");
+  const cli = joinPath(vendor, "packages", "cli", "dist", "genoffice.cjs");
+  const docsUrl = pathToFileURL(joinPath(vendor, "apps", "docs", "out", "renderer", "index.html")).href + "?mode=tab";
+  const slidesUrl = pathToFileURL(joinPath(vendor, "apps", "slides", "out", "renderer", "index.html")).href + "?mode=tab";
+  const params = (url: string, extras: Record<string, unknown> = {}) =>
+    ({docId:"auth-p",url,visible:true,bounds:BOUNDS,...extras});
+  const isAllowed = (url: string, extras: Record<string, unknown> = {}, cliPath: string | null = cli): boolean =>
+    isApprovedDocumentViewOpen(params(url,extras) as Parameters<typeof isApprovedDocumentViewOpen>[0],cliPath);
+  check("★ native docs original renderer is admitted from host CLI provenance",isAllowed(docsUrl));
+  check("★ native slides original renderer is admitted only with slides adapter",isAllowed(slidesUrl,{editor:"slides"}));
+  check("★ downloaded lookalike with identical GenOffice subpath is NOT native source",
+    !isAllowed("file:///C:/tmp/genoffice/apps/docs/out/renderer/index.html?mode=tab"));
+  check("★ spoofed docs URL with editor=slides cannot acquire slides privileges",
+    !isAllowed(docsUrl,{editor:"slides"}));
+  check("★ spoofed slides HTML cannot acquire docs privileges",
+    !isAllowed(slidesUrl));
+  check("★ native files are unavailable when no installed CLI exists",
+    !isAllowed(docsUrl,{},null));
+  check("★ native source with injected fragment cannot gain privilege",
+    !isAllowed(docsUrl+"#evil"));
+  check("★ query cannot smuggle an alternate renderer mode",
+    !isAllowed(docsUrl+"&origin=other"));
+  check("★ same-prefix but untrusted HTML remains rejected",
+    !isAllowed(docsUrl.replace("index.html", "private.html")));
+  check("★ arbitrary loopback service without engine identity rejected",
+    !isAllowed("http://127.0.0.1:3527/editor"));
+  check("★ real Node-RED editor URL with identity reaches live credential broker",
+    isAllowed("http://127.0.0.1:3527/editor",{workflowEngineId:"node-red-1"},null));
+  check("★ workflow editor cannot attach Node-RED credentials to a file URL",
+    !isAllowed(docsUrl,{workflowEngineId:"node-red-1"}));
+  check("★ workflow engine editor cannot masquerade as native Slides",
+    !isAllowed("http://127.0.0.1:3527/editor",{editor:"slides",workflowEngineId:"node-red-1"}));
+  check("★ malformed CLI location cannot be elevated to native page",
+    !isAllowed(docsUrl,{},joinPath(root,"wrong","genoffice.cjs")));
+  const installedRoot = joinPath(root, "staged-app", "resources", "genoffice");
+  const installedCli = joinPath(installedRoot, "cli", "genoffice.cjs");
+  const installedDocs = pathToFileURL(joinPath(installedRoot, "apps", "docs", "out", "renderer", "index.html")).href + "?mode=tab";
+  const installedSlides = pathToFileURL(joinPath(installedRoot, "apps", "slides", "out", "renderer", "index.html")).href + "?mode=tab";
+  check("★ packaged GenOffice docs original renderer is accepted from native install path",
+    isAllowed(installedDocs,{},installedCli));
+  check("★ packaged GenOffice slides original renderer remains available",
+    isAllowed(installedSlides,{editor:"slides"},installedCli));
+  check("★ dev source renderer cannot masquerade as packaged native release",
+    !isAllowed(docsUrl,{},installedCli));
+
+  created.length = 0;
+  const host = new DocumentViewHost({getMainWindow: makeFakeWindow,createView: makeFakeView});
+  const handlers = new Map<string,(evt:unknown,raw:unknown)=>unknown>();
+  const ipc = {handle:(ch:string,fn:(evt:unknown,raw:unknown)=>unknown)=>{
+    handlers.set(ch,fn);
+  }} as unknown as IpcMain;
+  registerDocumentViewHandlers(ipc,host,()=>true,undefined,(x)=>isApprovedDocumentViewOpen(x,cli));
+  const open = async (url:string,extras:Record<string,unknown>={}) =>
+    await handlers.get(DOCUMENT_VIEW_OPEN_CHANNEL)!(null,params(url,extras)) as {ok:boolean};
+  check("★ actual IPC refuses a foreign local HTML before allocating native view",
+    (await open("file:///C:/tmp/untrusted.html")).ok===false && created.length===0);
+  check("★ actual IPC opens only the original native docs renderer",
+    (await open(docsUrl)).ok===true && created.length===1);
+  check("★ no workflow engine ID means localhost service cannot open",
+    (await open("http://localhost:3527/editor")).ok===false && created.length===1);
+  host.dispose();
+}
+
 section("7. 三层接线：preload / rpcMap / main 注册");
 {
   const appDir = process.cwd();
@@ -692,7 +793,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
     for (const key of ["open", "bounds", "show", "hide", "focus", "close", "list"]) {
       check(`RpcMap 声明了 documentView.${key}`, rpcMap.includes(`"documentView.${key}"`));
     }
-    check("ipc/index.ts 调用了 registerDocumentViewHandlers（带路径围栏）", /registerDocumentViewHandlers\(ipc, documentViewHost,/.test(index));
+    check("ipc/index.ts 装配真实 URL 来源与路径围栏", /registerDocumentViewHandlers\(\s*ipc,\s*documentViewHost,/.test(index) && index.includes("isApprovedDocumentViewOpen(input, resolveGenofficeCliPath(documentRepoRoot()))"));
     check("退出路径 dispose 文档视图宿主", readFileSync(join(appDir, "src/main/index.ts"), "utf8").includes("documentViewHost.dispose()"));
   }
 }
@@ -917,7 +1018,7 @@ section("7. 三层接线：preload / rpcMap / main 注册");
         handlers11.set(channel, listener);
       },
     } as unknown as IpcMain;
-    registerDocumentViewHandlers(fakeIpc11, host, () => true);
+    registerDocumentViewHandlers(fakeIpc11, host, () => true, undefined, () => true);
     const sender = (host as unknown as { views: Map<string, { view: { webContents: unknown } }> })
       .views.get("conf-1")?.view.webContents;
     const reply = (await handlers11.get("mcode:document-view:save")!(
@@ -1600,7 +1701,7 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
           handlers.set(channel, listener);
         },
       } as unknown as IpcMain;
-      registerDocumentViewHandlers(fakeIpc16, noHost, () => true, bareBridge);
+      registerDocumentViewHandlers(fakeIpc16, noHost, () => true, bareBridge, () => true);
       // 身份要先过：用真视图 + 真 sender，才落到"桥未装配"这一层。
       noHost.open({ docId: "bare-1", url: FILE_URL, bounds: BOUNDS, visible: true });
       const bareSender = (noHost as unknown as { views: Map<string, { view: { webContents: unknown } }> })
@@ -1639,7 +1740,7 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
           handlers.set(channel, listener);
         },
       } as unknown as IpcMain;
-      registerDocumentViewHandlers(fakeIpc16, host16, () => true, bridge);
+      registerDocumentViewHandlers(fakeIpc16, host16, () => true, bridge, () => true);
       // 真视图 + 真 sender（与生产同一条身份反查路径）。
       host16.open({ docId: "slides-1", url: FILE_URL, bounds: BOUNDS, visible: true });
       const live = (host16 as unknown as { views: Map<string, { view: { webContents: unknown } }> })

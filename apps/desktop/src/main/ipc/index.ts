@@ -1,7 +1,8 @@
 import { registerProjectInitHandlers } from "./projectInit.js";
 import { registerSceneHandlers } from "./scene.js";
-import { registerDocumentHandlers } from "./document.js";
-import { registerDocumentViewHandlers } from "./documentView.js";
+import { registerDocumentHandlers, documentRepoRoot } from "./document.js";
+import { registerDocumentViewHandlers, isApprovedDocumentViewOpen } from "./documentView.js";
+import { resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
 import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
@@ -158,7 +159,13 @@ export function registerIpcHandlers(): void {
     },
     getSession: () => session.defaultSession,
   }));
-  registerDocumentViewHandlers(ipc, documentViewHost, (p) => findContainingWorkspaceRoot(p) !== null);
+  registerDocumentViewHandlers(
+    ipc,
+    documentViewHost,
+    (p) => findContainingWorkspaceRoot(p) !== null,
+    slidesBridge,
+    (input) => isApprovedDocumentViewOpen(input, resolveGenofficeCliPath(documentRepoRoot())),
+  );
   // 【ARC-007 P1/GA1】slides 视图的打开/保存执行器 —— **按需加载** vendor 源码
   // （`genoffice/` 是 gitignored 快照）。加载不到 = 不装配，桥保持 fail-closed，
   // `document.capabilities.hosts.slides` 报 false（面板显式降级）—— 不假装能力存在。

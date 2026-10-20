@@ -2,7 +2,7 @@ import {slidesBridge,type SlidesEditExecutor} from "../../src/main/document/slid
 let yes=0,no=0;
 function ok(s:string,p:boolean,x:unknown){console.log((p?"PASS ":"FAIL ")+s+" "+JSON.stringify(x));p?yes++:no++;}
 const executor=(tag:number):SlidesEditExecutor=>({
-async addBlankSlide(){return {slideCount:tag,slides:[{id:tag}],index:tag-1};},
+async addBlankSlide(){return {slideCount:tag,slides:[{id:tag,nodes:[]}],index:tag-1};},
 async editText(){return {text:"vendor",renderedSlide:{nodes:[]}};},
 async openDeck(){return {openResult:{tag}};},
 async saveDeck(){return {bytes:tag};}

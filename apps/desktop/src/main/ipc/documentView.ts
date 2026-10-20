@@ -35,6 +35,8 @@
  */
 import type { IpcMain } from "electron";
 import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { readFile } from "node:fs/promises";
 import {
   IPC,
@@ -48,6 +50,7 @@ import {
   type DocViewListResult,
   type DocViewResult,
   type DocViewSlidesResult,
+  type DocViewOpenInput,
 } from "@contracts/ipc";
 import { recordRpcHandler } from "@main/appControl/registry.js";
 import { errText } from "@main/lib/ipcError.js";
@@ -70,6 +73,40 @@ function slidesFailed(err: unknown): DocViewSlidesResult {
  *  自己的常量（与 docs 的保存通道同一取向：页面不参与决策）。 */
 const SLIDES_FIT_WIDTH_PX = 1280;
 
+/** FULL-1: The renderer does NOT select what HTML receives the privileged
+ * GenOffice preload. Derive the one original vendor editor from the same
+ * canonical CLI path used by document.capabilities (L1 native app assets).
+ * Workflow pages instead require an engine identity, then the existing
+ * DocumentViewCredentialBroker checks the actual bound localhost port/token.
+ * Never infer trust merely from a file:// scheme or loopback hostname. */
+export function isApprovedDocumentViewOpen(input: DocViewOpenInput, cliPath: string | null): boolean {
+  let url: URL;
+  try { url = new URL(input.url); }
+  catch { return false; }
+  if (input.workflowEngineId) {
+    // The Host will still verify loopback and the broker's live engine/port.
+    return input.editor === undefined &&
+      (url.protocol === "http:" || url.protocol === "https:");
+  }
+  if (input.url.trim() !== input.url || /[\u0000-\u001f\u007f]/.test(input.url)) return false;
+  if (url.protocol !== "file:" || url.username || url.password || cliPath === null) return false;
+  const native = cliPath.replace(/\\/g, "/");
+  let root: string;
+  if (native.endsWith("/genoffice/packages/cli/dist/genoffice.cjs")) {
+    root = dirname(dirname(dirname(dirname(cliPath))));
+  } else if (native.endsWith("/genoffice/cli/genoffice.cjs")) {
+    root = dirname(dirname(cliPath));
+  } else {
+    return false;
+  }
+  const editor = input.editor === "slides" ? "slides" : "docs";
+  const allowed = pathToFileURL(join(root, "apps", editor, "out", "renderer", "index.html")).href;
+  // The native renderer's host=tab protocol is fixed by editorPageUrl.
+  // Paths with query tricks, fragment routing or a mismatched editor type
+  // cannot be elevated to a privileged Mcode WebContentsView.
+  return url.href === allowed + "?mode=tab";
+}
+
 export function registerDocumentViewHandlers(
   ipc: IpcMain,
   host: DocumentViewHost,
@@ -78,6 +115,9 @@ export function registerDocumentViewHandlers(
   /** 【ARC-007】slides 编辑桥（A 方案第一步）。省略 = 生产单例（默认未装配，
    *  所有调用 fail-closed）；无头套件注入假执行器验证转发与身份。 */
   slides: SlidesBridge = productionSlidesBridge,
+  /** Production must supply a Host-derived native-editor URL/engine policy.
+   * No callback is a hard deny, never implicit permission. */
+  authorizeOpen: (input: DocViewOpenInput) => boolean = () => false,
 ): void {
   /**
    * 【ARC-007 P0】**页面拉取已准备好的打开响应** —— vendor `openDocxPath` 的
@@ -167,7 +207,11 @@ export function registerDocumentViewHandlers(
   // 按 `(event: unknown, raw: unknown)` 声明即可结构兼容 recordRpcHandler。
   const onOpen = async (_evt: unknown, raw: unknown): Promise<DocViewResult> => {
     try {
-      return host.open(DocViewOpenSchema.parse(raw));
+      const input = DocViewOpenSchema.parse(raw);
+      if (!authorizeOpen(input)) {
+        return { ok: false, reason: "文档视图 URL 未匹配已安装的原厂编辑器或受信工作流引擎" };
+      }
+      return host.open(input);
     } catch (err) {
       return failed(err);
     }

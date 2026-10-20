@@ -91,6 +91,15 @@ export type SlidesSaveResult =
   | { ok: true; bytes: number }
   | { ok: false; reason: string };
 
+/** RenderSlide is owned by the original pptx-render package
+ * (genoffice/packages/pptx-render/src/render-tree.ts:567). The native canvas
+ * always dereferences .nodes. Validate only this required envelope here,
+ * leaving all other vendor-owned fields/algorithms untouched. */
+function hasNativeRenderNodes(value: unknown): boolean {
+  return value !== null && typeof value === "object" &&
+    Array.isArray((value as { nodes?: unknown }).nodes);
+}
+
 /** 「vendor 主进程未装配」的唯一文案 —— 套件按它断言 fail-closed。 */
 export const SLIDES_BRIDGE_UNAVAILABLE = "slides 编辑通道不可用：vendor 主进程未装配";
 
@@ -118,6 +127,7 @@ export class SlidesBridge {
       // native canvas requires a full slide list and an in-range new index.
       if (!Number.isSafeInteger(result.slideCount) || result.slideCount <= 0 ||
           !Array.isArray(result.slides) || result.slides.length !== result.slideCount ||
+          !result.slides.every(hasNativeRenderNodes) ||
           !Number.isSafeInteger(result.index) || result.index < 0 || result.index >= result.slideCount) {
         return { ok: false, reason: "加页失败：原厂未返回完整的幻灯片列表与页码" };
       }
@@ -141,7 +151,9 @@ export class SlidesBridge {
         return { ok: false, reason: "打开失败：vendor 解析器拒绝了该文件（坏档、旧版 .ppt 或不受支持的格式）" };
       }
       if (!result.openResult || typeof result.openResult !== "object" ||
-          !Array.isArray((result.openResult as { slides?: unknown }).slides)) {
+          (result.openResult as { path?: unknown }).path !== filePath ||
+          !Array.isArray((result.openResult as { slides?: unknown }).slides) ||
+          !(result.openResult as { slides: unknown[] }).slides.every(hasNativeRenderNodes)) {
         return { ok: false, reason: "打开失败：原厂未返回可渲染的幻灯片树" };
       }
       return { ok: true, openResult: result.openResult };
@@ -192,7 +204,7 @@ export class SlidesBridge {
       }
       // A text-only acknowledgement does not update the real native canvas.
       // Reject absent render nodes rather than reporting a phantom edit.
-      if (!result.renderedSlide || !Array.isArray(result.renderedSlide.nodes)) {
+      if (typeof result.text !== "string" || !hasNativeRenderNodes(result.renderedSlide)) {
         return { ok: false, reason: "改文字失败：原厂未返回可渲染的幻灯片节点" };
       }
       return { ...result.renderedSlide, ok: true, text: result.text };

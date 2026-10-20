@@ -25,12 +25,12 @@ for(const [label,invoke] of cases){
 const missing=new SlidesBridge(null);
 check("no vendor integration fails closed",JSON.stringify(await missing.addSlide(42,"view"))===JSON.stringify({ok:false,reason:SLIDES_BRIDGE_UNAVAILABLE}),await missing.addSlide(42,"view"));
 const normal=new SlidesBridge({
-async addBlankSlide(){return {slideCount:1,slides:[{id:"one"}],index:0};},
+async addBlankSlide(){return {slideCount:1,slides:[{id:"one",nodes:[]}],index:0};},
 async editText(){return {text:"new",renderedSlide:{nodes:[{id:"part"}]}};},
-async openDeck(){return {openResult:{slides:[{id:"one"}]}};},
+async openDeck(){return {openResult:{path:"/fixture/a.pptx",slides:[{id:"one",nodes:[]}]}};},
 async saveDeck(){return {bytes:120};}
 });
-check("vendor healthy add keeps full slides",JSON.stringify(await normal.addSlide(1,"view"))===JSON.stringify({ok:true,slideCount:1,slides:[{id:"one"}],index:0}),await normal.addSlide(1,"view"));
+check("vendor healthy add keeps full slides",JSON.stringify(await normal.addSlide(1,"view"))===JSON.stringify({ok:true,slideCount:1,slides:[{id:"one",nodes:[]}],index:0}),await normal.addSlide(1,"view"));
 check("vendor healthy save keeps byte count",(await normal.saveDeck(1,"view","/fixture/a.pptx")).ok===true,await normal.saveDeck(1,"view","/fixture/a.pptx"));
 check("vendor healthy open keeps result",(await normal.openDeck(1,"view","/fixture/a.pptx",1200)).ok===true,await normal.openDeck(1,"view","/fixture/a.pptx",1200));
 const raced=new SlidesBridge({
