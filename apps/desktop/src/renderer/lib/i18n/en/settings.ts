@@ -29,10 +29,10 @@ export const en = {
 
 
   // ── left nav group eyebrows (SettingsPage) ──
-  "settings.navGroup.general": "General",
-  "settings.navGroup.ai": "AI & Models",
-  "settings.navGroup.input": "Input & Alerts",
-  "settings.navGroup.workbench": "Workbench",
+  "settings.navGroup.common": "Common",
+  "settings.navGroup.engine": "Engines",
+  "settings.navGroup.docs": "Documents",
+  "settings.navGroup.extensions": "Extensions",
   "settings.navGroup.system": "System",
 
   // ── GeneralPanel ──

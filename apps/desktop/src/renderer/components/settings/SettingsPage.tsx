@@ -187,53 +187,19 @@ interface NavGroup {
 const SETTINGS_NAV_WIDTH = 240;
 
 const NAV_GROUPS: NavGroup[] = [
+  // 【ARC-005 V2】导航分组按台账要求重组为「常用 / 引擎 / 文档 / 扩展 / 系统」。
+  // 原来的五组（通用/AI 能力/输入与提醒/工作台/系统）保留全部条目与顺序，
+  // 只把归属改成用户找东西时的心智模型：
+  //   · 常用 —— 每次开局都会动的三页（常规、外观、输入与提醒）；
+  //   · 引擎 —— 三家 SDK、模型、工具面与记忆；
+  //   · 文档 —— 资料库、自定义 UI、Git/终端/浏览器/LSP、工作流与自动化；
+  //   · 扩展 —— 插件、技能、MCP、钩子；
+  //   · 系统 —— 场景部署、监控、用量、关于。
   {
-    labelKey: "settings.navGroup.general",
+    labelKey: "settings.navGroup.common",
     items: [
       { id: "general", labelKey: "settings.nav.general", icon: IconSettings },
       { id: "appearance", labelKey: "settings.nav.appearance", icon: IconPalette },
-    ],
-  },
-  {
-    labelKey: "settings.navGroup.ai",
-    items: [
-      { id: "custom-models", labelKey: "settings.nav.customModels", icon: IconRobot },
-      { id: "runtimes", labelKey: "settings.nav.runtimes", icon: IconPackage },
-      { id: "plugins", labelKey: "settings.nav.plugins", icon: IconPuzzle },
-      { id: "skills", labelKey: "settings.nav.skills", icon: IconSparkles },
-      // 自定义子代理那一页**删掉了**(2026-09-20,用户定的):它和「工作流 →
-      // 代理档案」是同一件事的两个入口 —— 那边现在能按节点类型分类地新建/编辑档案,
-      // 覆盖面比这一页宽。同一个东西两个地方改,迟早出现"这边改了那边没变"。
-      //
-      // ⚠️ **能力还在,只是没了界面入口。** Claude provider 的 `Options.agents`
-      // 照样被主进程读(那一条在 provider 里,与这一页无关);用户自己写在
-      // `~/.claude/agents/` 下的子代理也不受影响 —— 那些从来就不经过这一页。
-      // 被删掉的只有"在这个框里手写一份、存进数据根"那条路。
-      //
-      // 工作流紧挨着技能:两者都在回答"AI 按什么做事"(技能是动词,工作流是流程),
-      // 而节点类型由插件带来 —— 再往下一格就是插件。
-      { id: "workflows", labelKey: "settings.nav.workflows", icon: IconArrowsSplit },
-      // 自动化紧跟工作流:同一张图、同一个编辑器,差别只在**谁把它跑起来**
-      // (工作流跟着对话跑,自动化等一个事件)。排在一起,这个关系才看得出来 ——
-      // 隔着几格的话,"这两个页有什么关系"就得靠读文档回答了。
-      { id: "automation", labelKey: "settings.nav.automation", icon: IconBolt },
-      // 钩子跟在自动化后面:它们回答的都是"**什么时候**跑",而不是"跑什么"。
-      // 钩子比自动化更靠外一层 —— 它不属于任何一张图,对每一次对话、每一个工作流
-      // 节点都生效(见 `@contracts/hook`)。
-      { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
-      { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
-      // 远程主机信任紧跟 MCP:两者都在回答"这台机器愿意把凭据交给谁"。SSH 首连的
-      // 主机指纹审批从前没有界面入口(MC-014/MC-052 的洞),这一页就是那扇门。
-      { id: "agent-ssh", labelKey: "settings.nav.agentSsh", icon: IconShieldLock },
-      // 引擎工具紧挨着 MCP：两者都在回答"**模型能用哪些工具**"——MCP 管外部接入的，
-      // 这一页管引擎自带的（内置工具增减）。放一起，工具面才是一整块。
-      { id: "engine-tools", labelKey: "settings.nav.engineTools", icon: IconAdjustmentsHorizontal },
-      { id: "memory", labelKey: "settings.nav.memory", icon: IconNotebook },
-    ],
-  },
-  {
-    labelKey: "settings.navGroup.input",
-    items: [
       { id: "voice", labelKey: "settings.nav.voice", icon: IconMicrophone },
       { id: "shortcuts", labelKey: "settings.nav.shortcuts", icon: IconKeyboard },
       { id: "gestures", labelKey: "settings.nav.gestures", icon: IconHandMove },
@@ -241,8 +207,35 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    labelKey: "settings.navGroup.workbench",
+    labelKey: "settings.navGroup.engine",
     items: [
+      { id: "custom-models", labelKey: "settings.nav.customModels", icon: IconRobot },
+      { id: "runtimes", labelKey: "settings.nav.runtimes", icon: IconPackage },
+      { id: "engine-tools", labelKey: "settings.nav.engineTools", icon: IconAdjustmentsHorizontal },
+      { id: "memory", labelKey: "settings.nav.memory", icon: IconNotebook },
+    ],
+  },
+  {
+    labelKey: "settings.navGroup.extensions",
+    items: [
+      { id: "plugins", labelKey: "settings.nav.plugins", icon: IconPuzzle },
+      { id: "skills", labelKey: "settings.nav.skills", icon: IconSparkles },
+      // 钩子与自动化同属"什么时候跑"，但钩子不属于任何一张图，对每次对话/节点
+      // 都生效；它跟着扩展走（由插件/用户脚本提供），因此留在本组。
+      { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
+      { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
+      // 远程主机信任紧跟 MCP:两者都在回答"这台机器愿意把凭据交给谁"。SSH 首连的
+      // 主机指纹审批从前没有界面入口(MC-014/MC-052 的洞),这一页就是那扇门。
+      { id: "agent-ssh", labelKey: "settings.nav.agentSsh", icon: IconShieldLock },
+    ],
+  },
+  {
+    labelKey: "settings.navGroup.docs",
+    items: [
+      // 工作流/自动化是"AI 按什么流程做事"，与文档/编辑器同属工作台产出物；
+      // 两者排在一起，同一张图、同一个编辑器，差别只在谁把它跑起来。
+      { id: "workflows", labelKey: "settings.nav.workflows", icon: IconArrowsSplit },
+      { id: "automation", labelKey: "settings.nav.automation", icon: IconBolt },
       // 数据根与资料库设置合并在同一个入口;入口名保留「文档管理」,内容先显示
       // 数据位置,再配置文档如何供 AI 使用。旧 data-root 深链在初始化时映射到这里。
       { id: "library-types", labelKey: "settings.nav.libraryTypes", icon: IconBook },

@@ -32,10 +32,10 @@ export const zh = {
 
 
   // ── left nav group eyebrows (SettingsPage) ──
-  "settings.navGroup.general": "通用",
-  "settings.navGroup.ai": "AI 能力",
-  "settings.navGroup.input": "输入与提醒",
-  "settings.navGroup.workbench": "工作台",
+  "settings.navGroup.common": "常用",
+  "settings.navGroup.engine": "引擎",
+  "settings.navGroup.docs": "文档",
+  "settings.navGroup.extensions": "扩展",
   "settings.navGroup.system": "系统",
 
   // ── GeneralPanel ──
