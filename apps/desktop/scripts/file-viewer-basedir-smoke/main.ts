@@ -44,6 +44,11 @@ const stub = {
   library: {
     readFile: async (input: { id: string; relPath?: string; which?: string }) => {
       calls.push({ fn: "readFile", input });
+      if (state.uiDirectory) {
+        return input.relPath
+          ? { content: { type: "binary" as const, mime: "application/pdf", base64: "JVBERi0xLjQ=" } }
+          : { content: { type: "dir" as const, files: [{ name: "chapter.pdf", isDir: false }] } };
+      }
       return { content: { type: "text" as const, text: "# md\n![](images/1.png)" } };
     },
     entryPath: async (input: { id: string; which?: string }) => {
@@ -59,12 +64,18 @@ const stub = {
   shell: { openFile: async () => ({ ok: true }) },
   setting: { set: () => Promise.resolve({ ok: true }), get: () => Promise.resolve(null) },
 };
-const state = { entryRoot: "" };
+const state = { entryRoot: "", uiDirectory: false };
 (globalThis as Record<string, unknown>).window = { api: stub };
 
-const { loadViewData } = await import("@renderer/components/library/FileViewer.js");
+const { FileViewer, loadViewData } = await import("@renderer/components/library/FileViewer.js");
+const { useFileViewStore, setFileOpenGuard } = await import("@renderer/stores/fileViewStore.js");
+const { __mount, __render, __flush, __nodes } = await import("./fakeReact.js");
 
 const ROOT = "D:\\lib\\my-tree"; // 条目根(linked 目录)
+const currentChild = (): string | null => {
+  const target = useFileViewStore.getState().target;
+  return target?.source.kind === "library" ? target.source.relPath ?? null : null;
+};
 
 console.log("\n【MC-086】目录 linked 里翻进子文件 → baseDir 是 md 自己的目录");
 {
@@ -90,5 +101,54 @@ console.log("\n【MC-086】目录 linked 里翻进子文件 → baseDir 是 md �
   eq("④ 项目 md 的 baseDir 仍是它自己所在目录", (r4.data as { baseDir?: string }).baseDir, "D:\\proj\\sub");
 }
 
+console.log("\n【ARC-007】目录选文件和子PDF返回必须走文件预览唯一导航");
+{
+  state.uiDirectory = true;
+  state.entryRoot = ROOT;
+  const rootTarget = { source: { kind: "library" as const, ref: "linked-tree" }, name: "my-tree" };
+  useFileViewStore.setState({ target: rootTarget, dirty: false });
+  __mount(() => FileViewer({ target: useFileViewStore.getState().target! }));
+  await __flush();
+  const folderEntry = __nodes().find(n => n.type === "button" && JSON.stringify(n.props.children).includes("chapter.pdf"));
+  check("directory view presents the nested child entry", typeof folderEntry?.props.onClick === "function");
+  (folderEntry?.props.onClick as (() => void) | undefined)?.();
+  __render(); // React's first commit for the new target, before async fetch settles
+  check("★★ old directory children must not paint under a newly selected PDF target",
+    !__nodes().some(n => n.type === "button" && JSON.stringify(n.props.children).includes("chapter.pdf")),
+    __nodes().filter(n => n.type === "button").map(n => n.props.title ?? n.props.children));
+  check("★★ clicking a directory child must make it a distinct store navigation target",
+    useFileViewStore.getState().target?.source.kind === "library" &&
+    currentChild() === "chapter.pdf",
+    useFileViewStore.getState().target);
+  // Render the navigated PDF as a real FileViewer root, then simulate an
+  // unsaved vendor annotation. The child must expose a way back to its folder,
+  // and back must ask the SAME dirty-confirmation owner as any other exit.
+  useFileViewStore.setState({
+    target: { source: { kind: "library", ref: "linked-tree", relPath: "chapter.pdf" }, name: "my-tree" },
+    dirty: true,
+  });
+  __render();
+  await __flush();
+  check("nested child title is its own filename, not the library root",
+    __nodes().some(n => n.type === "span" && n.props.title === "chapter.pdf"));
+  const buttons = __nodes().filter(n => n.type === "button");
+  const back = buttons.find(n => typeof n.props.title === "string" && typeof n.props.onClick === "function");
+  check("★★ a nested PDF has an explicit return-to-parent control", typeof back?.props.onClick === "function");
+  let prompted = 0;
+  let resume: (() => void) | undefined;
+  setFileOpenGuard((_next, proceed) => { prompted++; resume = proceed; });
+  (back?.props.onClick as (() => void) | undefined)?.();
+  check("★★ returning from unsaved child PDF waits for the central leave dialog",
+    prompted === 1 && useFileViewStore.getState().target?.source.kind === "library" &&
+    currentChild() === "chapter.pdf",
+    { prompted, current: useFileViewStore.getState().target });
+  resume?.();
+  check("confirmed return restores directory root target, clearing child's dirty marker",
+    useFileViewStore.getState().target?.source.kind === "library" &&
+    currentChild() === null &&
+    useFileViewStore.getState().dirty === false, useFileViewStore.getState());
+  state.uiDirectory = false;
+  setFileOpenGuard(null);
+}
 console.log(`\nfile-viewer-basedir-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);

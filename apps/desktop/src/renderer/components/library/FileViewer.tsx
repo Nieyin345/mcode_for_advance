@@ -38,7 +38,7 @@ import {
   IconFolder,
   IconLoader2,
 } from "@renderer/lib/icons.js";
-import { type FileViewTarget, setFileOpenGuard, saveCurrentPreview } from "@renderer/stores/fileViewStore.js";
+import { type FileViewTarget, useFileViewStore, setFileOpenGuard, saveCurrentPreview } from "@renderer/stores/fileViewStore.js";
 import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
 import { documentKindOf } from "@contracts/documentKind";
 import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
@@ -81,11 +81,21 @@ function base64ToBytes(base64: string): Uint8Array {
 
 export function FileViewer({ target }: { target: FileViewTarget }) {
   const { t } = useI18n();
-  /** 文献库目录条目:正在往下翻到哪一层(`/` 分隔)。模版那一支恒为 null。 */
-  const [relPath, setRelPath] = useState<string | null>(
-    target.source.kind === "library" ? (target.source.relPath ?? null) : null,
-  );
+  // The store target is the ONLY navigation identity. A parallel local
+  // relPath would bypass the central unsaved-annotation confirmation.
+  const relPath = target.source.kind === "library" ? (target.source.relPath ?? null) : null;
+  const navigateLibraryPath = useCallback((next: string | null) => {
+    if (target.source.kind !== "library" ||
+        useFileViewStore.getState().target !== target) return;
+    useFileViewStore.getState().open({
+      ...target,
+      source: { ...target.source, relPath: next ?? undefined },
+    });
+  }, [target]);
   const [data, setData] = useState<ViewData | null>(null);
+  // A prior document's bytes can survive the first render after target
+  // changes, before the new fetch effect runs. Bind bytes to their target.
+  const [loadedTarget, setLoadedTarget] = useState<FileViewTarget | null>(null);
   const [name, setName] = useState(target.name);
   /** 这个文件的**绝对路径**（拿得到时）—— 引用要用它说清"文件在哪"（见 `quoteTo`）。
    *  条目那一支要从 id 换一次；换不出来（手机端 shim）就是 null，降级成只给文件名。 */
@@ -93,6 +103,9 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // A linked directory's target.name is the entry root, not its child file.
+  // Use the active child identity for its title, kind and quoted context.
+  const visibleName = relPath ? relPath.slice(relPath.lastIndexOf("/") + 1) : name;
 
   /**
    * **在文件里选一段文字 → 引用给某条对话**（2026-09-21）。
@@ -197,8 +210,8 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         text: quoted,
         origin: {
           kind: "file",
-          filePath: absPath ?? name,
-          name,
+          filePath: absPath ?? visibleName,
+          name: visibleName,
         },
       });
       useSessionStore.getState().quoteIntoComposer(t2.id, tag);
@@ -208,12 +221,11 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         sessionId: t2.id,
       });
     },
-    [t, absPath, name],
+    [t, absPath, visibleName],
   );
 
   // 换目标回到根 —— 上一个目录里翻到一半的子文件对这一条没有意义。
   useEffect(() => {
-    setRelPath(target.source.kind === "library" ? (target.source.relPath ?? null) : null);
     setName(target.name);
     // 换文件了旧路径就作废 —— 不然引用时会拿上一个文件的路径。
     setAbsPath(null);
@@ -228,11 +240,15 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         const next = await loadViewData(target, relPath);
         if (!cancelled) {
           setData(next.data);
+          setLoadedTarget(target);
           if (next.name !== undefined) setName(next.name);
           setAbsPath(next.absPath ?? null);
         }
       } catch (err) {
-        if (!cancelled) setError((err as Error).message);
+        if (!cancelled) {
+          setLoadedTarget(target);
+          setError((err as Error).message);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -272,9 +288,18 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   //    (见文件头那段)—— 画一个按下去什么都不发生的按钮比没有更坏。
   const header = (
     <div className="flex shrink-0 items-center gap-1.5 border-b border-edge px-3 py-1.5">
+      {relPath !== null && target.source.kind === "library" && (
+        <button
+          title={t("library.file.back")}
+          onClick={() => navigateLibraryPath(relPath.includes("/") ? relPath.slice(0, relPath.lastIndexOf("/")) : null)}
+          className={headerBtn}
+        >
+          <IconArrowLeft size={13} />
+        </button>
+      )}
       <IconFile size={13} className="shrink-0 text-content-subtle" />
-      <span className="min-w-0 flex-1 truncate text-xs text-content" title={name}>
-        {name}
+      <span className="min-w-0 flex-1 truncate text-xs text-content" title={visibleName}>
+        {visibleName}
       </span>
       {/* 「用系统程序打开」**只给项目文件那一支**（2026-09-21）—— 它走
           `shell.openPath`（自带项目根围栏）。文献库那一侧还没有对应的 RPC，
@@ -293,7 +318,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   );
 
   const body = (() => {
-    if (loading) {
+    if (loading || loadedTarget !== target) {
       return (
         <div className="flex flex-1 items-center justify-center text-content-subtle">
           <IconLoader2 size={14} className="animate-spin" />
@@ -322,17 +347,8 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       return (
         <div className="flex min-h-0 flex-1 flex-col">
           {relPath !== null && (
-            <div className="flex shrink-0 items-center gap-1 border-b border-edge px-2 py-1">
-              <button
-                onClick={() => setRelPath(relPath.includes("/") ? relPath.slice(0, relPath.lastIndexOf("/")) : null)}
-                className="flex items-center gap-1 rounded px-1 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
-              >
-                <IconArrowLeft size={12} />
-                {t("library.file.back")}
-              </button>
-              <span className="min-w-0 truncate font-mono text-[0.7857em] text-content-subtle">
-                {relPath}
-              </span>
+            <div className="shrink-0 truncate border-b border-edge px-3 py-1 font-mono text-[0.7857em] text-content-subtle">
+              {relPath}
             </div>
           )}
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -344,7 +360,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
               data.files.map((f) => (
                 <button
                   key={f.name}
-                  onClick={() => setRelPath(relPath === null ? f.name : `${relPath}/${f.name}`)}
+                  onClick={() => navigateLibraryPath(relPath === null ? f.name : `${relPath}/${f.name}`)}
                   className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-hover hover:text-content"
                 >
                   {f.isDir ? (
@@ -371,7 +387,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       // md 走聊天那套渲染(标题/表格/代码块都在);其余原样等宽摆出来。
       // ⚠️ 不把 .tex / .cls 之类也塞进 Markdown 渲染:`#` 在 LaTeX 里是宏参数,
       //    重排之后那份源码就没法读了。
-      if (documentKindOf(name) === "markdown") {
+      if (documentKindOf(visibleName) === "markdown") {
         return (
           // ⚠️ **滚动容器交给 `ChunkedMarkdown` 自己**（`scroll="self"` 是默认值）。
           //    这一层只给尺寸（`min-h-0 flex-1`），**不能**再写 `overflow-y-auto` ——
@@ -406,13 +422,13 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         <div className="min-h-0 flex-1 overflow-auto p-3">
           <img
             src={`data:${mime};base64,${data.base64}`}
-            alt={name}
+            alt={visibleName}
             className="mx-auto max-h-full max-w-full"
           />
         </div>
       );
     }
-    if (mime === "application/pdf" || documentKindOf(name) === "pdf") {
+    if (mime === "application/pdf" || documentKindOf(visibleName) === "pdf") {
       return (
         <PdfPreview
           item={itemOf(target)}
@@ -423,7 +439,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         />
       );
     }
-    if (isOnlyOfficeSupportedPath(name)) {
+    if (isOnlyOfficeSupportedPath(visibleName)) {
       if (!data.filePath) {
         return (
           <div className="flex flex-1 items-start justify-center p-6">
