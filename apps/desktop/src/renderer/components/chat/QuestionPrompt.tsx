@@ -246,7 +246,7 @@ export function QuestionPrompt({
                       "flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
                       selected
                         ? "border-accent bg-accent/10"
-                        : "border-edge bg-surface hover:border-accent/60 hover:bg-accent/5",
+                        : "border-edge bg-surface hover:bg-surface-hover",
                     )}
                     title={opt.description}
                   >

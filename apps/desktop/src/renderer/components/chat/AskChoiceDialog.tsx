@@ -184,7 +184,7 @@ export function AskChoiceDialog() {
                   "cursor-pointer rounded border px-2.5 py-1.5 text-left transition-colors disabled:cursor-default",
                   picked === o.id
                     ? "border-accent bg-accent/15 text-content"
-                    : "border-edge text-content-muted hover:border-accent/50 hover:text-content",
+                    : "border-edge text-content-muted hover:border-edge hover:text-content",
                 )}
               >
                 <div className="text-content">{o.label}</div>

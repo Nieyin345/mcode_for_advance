@@ -164,7 +164,7 @@ export function WorktreeModeChip({
             "inline-flex select-none items-center gap-1.5 rounded-md px-2 py-1 text-xs outline-none transition-colors duration-100",
             "hover:bg-surface-hover",
             on
-              ? "text-accent hover:bg-accent/10"
+              ? "text-accent hover:bg-surface-hover"
               : "text-content-muted hover:text-content",
           )}
           title={

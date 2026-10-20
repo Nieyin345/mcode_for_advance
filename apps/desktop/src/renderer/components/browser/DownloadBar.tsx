@@ -110,7 +110,7 @@ export function DownloadBar({ items, onOpen, onReveal, onDismiss }: DownloadBarP
                   e.stopPropagation();
                   onReveal(d.downloadId);
                 }}
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-accent/70 transition-colors hover:bg-accent/30 hover:text-accent"
+                className="inline-flex h-4 w-4 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
               >
                 <IconFolderOpen size={11} />
               </button>

@@ -186,7 +186,7 @@ export function LibrarySections() {
             }}
             // 与列表行同高同圆角、同样"悬停才给底" —— 它是这一片的**行尾动作**,
             // 不是一条内容,所以文字用字幕色、悬停才提亮成强调色。
-            className="flex w-full items-center gap-1 rounded px-1 py-1 text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-accent [font-size:var(--rp-fs-md)]"
+            className="flex w-full items-center gap-1 rounded px-1 py-1 text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content [font-size:var(--rp-fs-md)]"
           >
             <IconPlus size={12} className="shrink-0" />
             {t("library.group.new")}

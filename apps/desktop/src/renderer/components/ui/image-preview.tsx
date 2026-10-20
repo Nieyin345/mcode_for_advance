@@ -289,7 +289,7 @@ export function ImageWithPreview({
         onClick={() => setOpen(true)}
         title={t("layout.image.clickToView")}
         className={cn(
-          "group relative block w-fit overflow-hidden rounded-lg border border-edge bg-surface-muted/60 shadow-sm transition-all hover:border-accent/60 hover:shadow-md",
+          "group relative block w-fit overflow-hidden rounded-lg border border-edge bg-surface-muted/60 shadow-sm transition-all hover:border-edge/80 hover:shadow-md",
           className,
         )}
       >

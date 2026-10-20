@@ -658,7 +658,7 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
                       type="button"
                       onClick={() => setNewBranchOpen(true)}
                       title={t("ide.git.newBranch")}
-                      className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-content-muted transition-colors hover:bg-surface-muted hover:text-accent"
+                      className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-content-muted transition-colors hover:bg-surface-muted hover:text-content"
                     >
                       <IconPlus size={11} />
                     </button>

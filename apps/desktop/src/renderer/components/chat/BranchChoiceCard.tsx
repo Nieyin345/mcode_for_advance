@@ -125,7 +125,7 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
                   "cursor-pointer rounded border px-2 py-1 transition-colors disabled:cursor-default",
                   picked === o.id
                     ? "border-accent bg-accent/15 text-content"
-                    : "border-edge text-content-muted hover:border-accent/50 hover:text-content",
+                    : "border-edge text-content-muted hover:border-edge hover:text-content",
                 )}
               >
                 {o.label}

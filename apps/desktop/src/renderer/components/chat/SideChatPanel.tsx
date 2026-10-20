@@ -379,7 +379,7 @@ function MainSessionRow({
         type="button"
         onClick={(e) => onChooseProfile(e.currentTarget.getBoundingClientRect())}
         title={t("sideChat.newChat")}
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
       >
         <IconPlus size={13} />
       </button>

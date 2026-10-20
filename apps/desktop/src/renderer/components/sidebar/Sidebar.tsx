@@ -105,7 +105,7 @@ export function HeaderAction({
       onClick={onClick}
       title={title}
       aria-label={title}
-      className="flex items-center rounded px-1 py-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent focus-visible:ring-2 focus-visible:ring-accent-strong"
+      className="flex items-center rounded px-1 py-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content focus-visible:ring-2 focus-visible:ring-accent-strong"
     >
       {children}
     </button>

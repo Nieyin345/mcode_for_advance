@@ -111,7 +111,7 @@ export function ProviderDropdown({ compact = false }: { compact?: boolean }) {
       type="button"
       className={cn(
         "composer-chip composer-provider-chip flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ease-out",
-        "text-content-muted hover:scale-105 hover:bg-accent/10 hover:text-accent active:scale-95",
+        "text-content-muted hover:scale-105 hover:bg-surface-hover hover:text-content active:scale-95",
       )}
       data-compact={compact ? "1" : "0"}
       title={t("chat.provider.selectTitle")}

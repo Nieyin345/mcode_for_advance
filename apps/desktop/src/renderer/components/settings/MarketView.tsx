@@ -296,7 +296,7 @@ export function MarketView({
                 >
                   <IconRefresh
                     size={13}
-                    className={cn("text-content-subtle hover:text-accent", catalog.refreshing && "animate-spin")}
+                    className={cn("text-content-subtle hover:text-content", catalog.refreshing && "animate-spin")}
                   />
                 </Button>
               )}

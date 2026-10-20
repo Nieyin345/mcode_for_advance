@@ -548,7 +548,7 @@ export function MobileGitScreen() {
                 disabled={!repoPath || staged.length === 0}
                 title={genLoading ? t("ide.git.stopGenerate") : t("ide.git.generateHint")}
                 aria-label={genLoading ? t("ide.git.stopGenerate") : t("ide.git.generateHint")}
-                className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-edge px-2 py-1.5 text-xs text-content-muted transition-colors hover:bg-surface-hover hover:text-accent disabled:opacity-40"
+                className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-edge px-2 py-1.5 text-xs text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
               >
                 {genLoading ? (
                   <>

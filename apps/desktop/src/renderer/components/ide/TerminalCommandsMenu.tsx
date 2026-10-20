@@ -151,7 +151,7 @@ export function TerminalCommandsMenu({
                     <div className="flex shrink-0 items-center opacity-0 group-hover:opacity-100 data-[highlighted]:opacity-100">
                       <button
                         type="button"
-                        className="rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-accent"
+                        className="rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-content"
                         title={t("ide.term.runInCurrent")}
                         onClick={() => onRun(cmd.command)}
                       >

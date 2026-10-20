@@ -274,7 +274,7 @@ function MicButtonDesktop({
       }
       className={cn(
         "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out",
-        "hover:scale-110 hover:bg-accent/10 hover:text-accent active:scale-95",
+        "hover:scale-110 hover:bg-surface-hover hover:text-content active:scale-95",
         listening && "bg-accent/10 text-accent hover:text-accent",
         "disabled:scale-100 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted",
       )}

@@ -1593,7 +1593,7 @@ function MarketplaceCatalog({
         >
           <IconRefresh
             size={13}
-            className={cn("text-content-subtle hover:text-accent", fetching && "animate-spin")}
+            className={cn("text-content-subtle hover:text-content", fetching && "animate-spin")}
           />
         </Button>
         {/* Shipped catalogs carry no remove action (the main process refuses it

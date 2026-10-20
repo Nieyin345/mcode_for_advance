@@ -51,7 +51,7 @@ export function PickedElementsBar({ items, onRemove, onClear, onAdd }: PickedEle
               type="button"
               aria-label={t("common.remove")}
               onClick={() => onRemove(i)}
-              className="ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded text-accent/70 transition-colors hover:bg-accent/30 hover:text-accent"
+              className="ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
             >
               <IconX size={10} />
             </button>

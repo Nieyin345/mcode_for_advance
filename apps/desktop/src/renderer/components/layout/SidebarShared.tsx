@@ -295,7 +295,7 @@ export function ArchivedRow({
         onClick={(e) => { e.stopPropagation(); onRestore(); }}
         className={cn(
           "shrink-0 rounded px-1 text-content-subtle transition-colors [font-size:var(--rp-fs-sm)]",
-          "hover:text-accent",
+          "hover:text-content",
         )}
         title={t("layout.restoreToList")}
       >

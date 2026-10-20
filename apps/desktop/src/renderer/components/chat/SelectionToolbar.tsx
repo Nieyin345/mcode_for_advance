@@ -162,7 +162,7 @@ export function SelectionToolbar({
         type="button"
         onClick={() => onAskSideChat(state)}
         title={t("chatStream.bookmark.askSideChat")}
-        className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
+        className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
       >
         <IconMessages size={12} />
       </button>

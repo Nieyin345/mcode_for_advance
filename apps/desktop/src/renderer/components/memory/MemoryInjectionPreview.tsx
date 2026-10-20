@@ -29,7 +29,7 @@ export function MemoryInjectionPreview({ receipts }: { receipts?: MemoryInjectio
                 data-memory-receipt={r.id}
                 className="rounded border border-edge bg-surface-subtle/30 p-2 text-xs"
               >
-                <summary className="cursor-pointer font-medium text-content hover:text-accent">
+                <summary className="cursor-pointer font-medium text-content hover:text-content-muted">
                   <span>{displayName}</span>
                   <span className="ml-2 font-normal text-content-muted">
                     ({r.kind === "node" ? `${t("memory.assistant.injectionsNode", { id: r.nodeId ?? "" })} · ` : ""}

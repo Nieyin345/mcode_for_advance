@@ -45,7 +45,7 @@ export const ContentTagChip = forwardRef<
         "composer-tag-in inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors",
         open
           ? "border-accent bg-accent/20 text-accent"
-          : "border-accent/40 bg-accent/10 text-accent hover:border-accent/70 hover:bg-accent/20",
+          : "border-edge bg-surface-muted/60 text-content-muted hover:border-edge hover:bg-surface-hover hover:text-content",
       )}
     >
       <button
@@ -87,7 +87,7 @@ export const ContentTagChip = forwardRef<
         onClick={onRemove}
         title={t("chat.tag.removeTitle")}
         aria-label={t("chat.tag.removeTitle")}
-        className="ml-0.5 flex h-4 w-4 items-center justify-center rounded text-accent/70 transition-colors hover:bg-accent/30 hover:text-accent"
+        className="ml-0.5 flex h-4 w-4 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
       >
         <IconX size={11} />
       </button>

@@ -215,7 +215,7 @@ export function InsertVarMenu({
       <Menu.Trigger
         className={cn(
           "mt-1 inline-flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[0.7143em]",
-          "text-content-muted transition-colors hover:border-accent hover:text-accent",
+          "text-content-muted transition-colors hover:border-edge hover:text-content",
         )}
       >
         <IconBraces size={12} />
@@ -902,7 +902,7 @@ function MultiRefValue({
         title={t(open ? "settings.workflows.paramRefCollapse" : "settings.workflows.paramRefExpand")}
         className={cn(
           "flex w-full items-center gap-1.5 rounded border border-edge bg-surface px-2 py-1 text-left text-[0.7857em] transition-colors",
-          missing.length > 0 ? "border-warning/60 hover:border-warning" : "hover:border-accent/60",
+          missing.length > 0 ? "border-warning/60 hover:border-warning" : "hover:border-edge/80",
         )}
       >
         <span className={cn("min-w-0 flex-1 truncate", selected.length === 0 && "text-content-muted")}>

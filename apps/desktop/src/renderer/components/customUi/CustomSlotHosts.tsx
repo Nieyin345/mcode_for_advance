@@ -229,7 +229,7 @@ function SelectionCustomButtonsInner({ text, onDone }: { text: string; onDone?: 
               }}
               title={label}
               aria-label={label}
-              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
+              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
             >
               <Icon size={12} />
             </button>

@@ -373,7 +373,7 @@ export function ModelListSection({
         <span className="text-[0.7857em] font-medium text-content-muted">
           {t("settings.customModels.modelListTitle", { n: count })}
         </span>
-        <button type="button" onClick={onAdd} className="flex items-center gap-1 text-[0.7857em] text-accent hover:text-accent/80">
+        <button type="button" onClick={onAdd} className="flex items-center gap-1 text-[0.7857em] text-content-muted hover:text-content">
           <IconPlus size={11} /> {t("settings.customModels.addModel")}
         </button>
       </div>

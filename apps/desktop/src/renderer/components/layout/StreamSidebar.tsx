@@ -756,7 +756,7 @@ function StreamSidebarBase() {
                   onClick={() => void loadMoreStreamSessions()}
                   className={cn(
                     "w-full rounded px-2.5 py-1.5 text-left text-content-subtle transition-colors [font-size:var(--rp-fs-sm)]",
-                    "hover:bg-surface-hover/60 hover:text-accent",
+                    "hover:bg-surface-hover/60 hover:text-content",
                   )}
                 >
                   {t("layout.stream.showMore", {

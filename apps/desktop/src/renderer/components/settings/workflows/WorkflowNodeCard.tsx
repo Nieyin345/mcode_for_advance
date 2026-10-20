@@ -239,7 +239,7 @@ export function WorkflowNodeCard({
           ? "border-danger ring-1 ring-danger/40"
           : connectHint !== null || selected
             ? "border-accent ring-1 ring-accent/40"
-            : "border-edge hover:border-accent/50",
+            : "border-edge hover:border-edge/80",
       )}
     >
       {/* 左边缘那道竖条 —— 四种执行方式最一眼能认出来的那处不同。圆角自己带:外层
@@ -302,7 +302,7 @@ export function WorkflowNodeCard({
           "absolute cursor-crosshair rounded-full border bg-surface transition-[opacity,background-color,border-color]",
           connectHint === "source"
             ? "border-accent bg-accent opacity-100"
-            : "border-edge opacity-60 group-hover:border-accent group-hover:opacity-100",
+            : "border-edge opacity-60 group-hover:border-edge/80 group-hover:opacity-100",
         )}
       />
     </div>

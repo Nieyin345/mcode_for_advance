@@ -68,8 +68,8 @@ export function SidebarQuickActions({
 
   return (
     <div className="mb-2 flex flex-col gap-1" data-sidebar-quick-actions="">
-      {/* 新建会话 — neutral resting state (no persistent highlight), accent
-          only on hover so it doesn't read as an "active/selected" row. */}
+      {/* 新建会话 — 静止态与 hover 都不染品牌色：它只是「能点」，不是
+          「正在跑」也不是「被选中」。与下方搜索入口保持同一套中性 hover。 */}
       <button
         type="button"
         data-sidebar-quick-action="new"
@@ -89,7 +89,7 @@ export function SidebarQuickActions({
           "flex w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors",
           "[font-size:var(--right-panel-font-size)]",
           canNewSession
-            ? "text-content-muted hover:bg-accent/10 hover:text-accent"
+            ? "text-content-muted hover:bg-surface-hover hover:text-content"
             : "cursor-not-allowed text-content-subtle opacity-50",
         )}
       >
@@ -103,7 +103,7 @@ export function SidebarQuickActions({
       </button>
 
       {/* 搜索 — entry to the unified Ctrl+K palette. Mirrors 新建会话's
-          neutral rest + accent-on-hover so the two read as a matched pair. */}
+          neutral rest + neutral hover so the two read as a matched pair. */}
       {showSearch && (
         <button
           type="button"

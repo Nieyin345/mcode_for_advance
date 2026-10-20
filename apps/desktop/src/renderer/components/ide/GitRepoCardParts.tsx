@@ -206,7 +206,7 @@ export function CommitBox({
               title={generating ? t("ide.git.stopGenerate") : t("ide.git.generateHint")}
               className={cn(
                 "group/generate flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors",
-                "hover:bg-surface-hover hover:text-accent disabled:opacity-40",
+                "hover:bg-surface-hover hover:text-content disabled:opacity-40",
               )}
             >
               {generating ? (
@@ -409,7 +409,7 @@ export function BranchGroup({
               title={t("ide.git.mergeIntoBranch")}
               className={cn(
                 "flex h-5 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-opacity",
-                "opacity-0 hover:bg-surface-hover hover:text-accent group-hover:opacity-100",
+                "opacity-0 hover:bg-surface-hover hover:text-content group-hover:opacity-100",
               )}
             >
               <IconGitMerge size={11} />
