@@ -434,11 +434,11 @@ export function UnifiedTabsBar() {
               className={cn(
                 // Matches the file-tab chip look — the plan view is an
                 // editor-kind tab in the post-divider group.
-                "group flex max-w-[160px] cursor-pointer select-none items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] transition-colors",
+                "group flex max-w-[160px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors",
                 // Same flexible/natural split as the file tabs above.
                 multiRow ? "min-w-[170px] flex-1" : "min-w-0 shrink-0",
                 planTabActive && editorFocused
-                  ? "bg-accent/15 text-content ring-1 ring-inset ring-accent/40 dark:text-accent"
+                  ? "bg-surface-hover font-medium text-content ring-1 ring-inset ring-edge/70"
                   : "bg-surface-muted/60 text-content-muted hover:bg-surface-hover/70 hover:text-content",
               )}
             >
@@ -489,10 +489,10 @@ export function UnifiedTabsBar() {
                 setCenterTabFocus("editor");
               }}
               className={cn(
-                "group flex max-w-[200px] cursor-pointer select-none items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] transition-colors",
+                "group flex max-w-[200px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors",
                 multiRow ? "min-w-[170px] flex-1" : "min-w-0 shrink-0",
                 fileViewFocused
-                  ? "bg-accent/15 text-content ring-1 ring-inset ring-accent/40 dark:text-accent"
+                  ? "bg-surface-hover font-medium text-content ring-1 ring-inset ring-edge/70"
                   : "bg-surface-muted/60 text-content-muted hover:bg-surface-hover/70 hover:text-content",
               )}
             >
