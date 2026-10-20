@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { crc32 } from "node:zlib";
 import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
 import { convertFile, docsRead, sheetRead, resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
@@ -288,6 +289,21 @@ try {
  const damagedIdatCrc=Buffer.from(validChunkedPng);damagedIdatCrc[52]^=1;
  const damagedIhdrCrc=Buffer.from(validChunkedPng);damagedIhdrCrc[32]^=1;
  const giantIdatLength=Buffer.from(validChunkedPng);giantIdatLength.writeUInt32BE(0xffffffff,33);
+ // A CRC-clean chunk is not automatically a valid PNG: reject malformed vendor
+ // IHDR declarations, unsupported critical chunks and noncontiguous IDAT runs.
+ const pngChunk=(name:string,data:Buffer)=>{
+   const b=Buffer.alloc(12+data.length);
+   b.writeUInt32BE(data.length,0);b.write(name,4,4,"ascii");data.copy(b,8);
+   b.writeUInt32BE(crc32(b.subarray(4,8+data.length)),8+data.length);
+   return b;
+ };
+ const patchIhdr=(pos:number,value:number)=>{
+   const b=Buffer.from(validChunkedPng);b[pos]=value;
+   b.writeUInt32BE(crc32(b.subarray(12,29)),29);return b;
+ };
+ const originalIdat=validChunkedPng.subarray(41,52);
+ const pngParts=(middle:Buffer[])=>Buffer.concat([validChunkedPng.subarray(0,33),...middle,validChunkedPng.subarray(validChunkedPng.length-12)]);
+ const interruptedIdatPng=pngParts([pngChunk("IDAT",originalIdat.subarray(0,5)),pngChunk("tEXt",Buffer.from("key\0value")),pngChunk("IDAT",originalIdat.subarray(5))]);
  const pngVariants=[
    ["IHDR only",validChunkedPng.subarray(0,33)],
    ["IDAT CRC corruption",damagedIdatCrc],
@@ -297,6 +313,13 @@ try {
    ["missing IEND",validChunkedPng.subarray(0,validChunkedPng.length-12)],
    ["trailing bytes",Buffer.concat([validChunkedPng,Buffer.from("AFTER_IEND")])],
    ["duplicate IHDR",Buffer.concat([validChunkedPng.subarray(0,33),validChunkedPng.subarray(8,33),validChunkedPng.subarray(33)])],
+   ["invalid bit depth for grayscale-alpha",patchIhdr(24,4)],
+   ["unsupported IHDR compression",patchIhdr(26,1)],
+   ["unsupported IHDR filter",patchIhdr(27,1)],
+   ["unsupported IHDR interlace",patchIhdr(28,2)],
+   ["unknown critical chunk",pngParts([pngChunk("ABCD",Buffer.from("unknown")),pngChunk("IDAT",originalIdat)])],
+   ["noncontiguous IDAT sequence",interruptedIdatPng],
+   ["late PLTE after IDAT",pngParts([pngChunk("IDAT",originalIdat),pngChunk("PLTE",Buffer.from([0,0,0]))])],
  ] as const;
  for(const [reason,png] of pngVariants) await test("★ GenOffice PDFium refuses "+reason+" rather than returning forged PNG",async()=>{
    const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
@@ -308,6 +331,19 @@ try {
      const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
      assert.equal(r.isError,true,reason+": "+text(r));
      assert.match(text(r),/PNG|图像|CRC|截断|IEND|chunk|无效/);
+   }finally{configureDocumentRepoRoot(null);}
+ });
+ await test("★ legal contiguous IDAT chunks plus ancillary metadata are accepted",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   const withMetadata=pngParts([pngChunk("tEXt",Buffer.from("key\0value")),pngChunk("IDAT",originalIdat.subarray(0,5)),pngChunk("IDAT",originalIdat.subarray(5))]);
+   writeFileSync(fakeCli,`const fs=require("node:fs"),path=require("node:path");const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}));}else{const file=path.join(a[a.indexOf("--out")+1],"valid.png");fs.writeFileSync(file,Buffer.from("${withMetadata.toString("base64")}","base64"));console.log(JSON.stringify({status:"ok",detail:{files:[{page:1,path:file,width:1,height:1}]}}));}`);
+   configureDocumentRepoRoot(root);
+   try{
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const result=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.ok(!result.isError,text(result));
+     const image=result.content.find(c=>c.type==="image");
+     assert.ok(image&&image.type==="image",text(result));
    }finally{configureDocumentRepoRoot(null);}
  });
  await test("★ malformed PNG containing only IHDR dimensions must not be reported as image",async()=>{

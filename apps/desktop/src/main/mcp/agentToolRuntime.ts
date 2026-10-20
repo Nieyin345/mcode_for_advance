@@ -612,6 +612,9 @@ function verifyPngContainer(bytes: Buffer): { width: number; height: number } {
   let hasIhdr = false;
   let hasIdat = false;
   let hasIend = false;
+  let hasPlte = false;
+  let idatEnded = false;
+  let colorType = -1;
   let width = 0;
   let height = 0;
   while (offset < bytes.length) {
@@ -629,17 +632,41 @@ function verifyPngContainer(bytes: Buffer): { width: number; height: number } {
       if (chunk !== "IHDR" || len !== 13) throw new Error("GenOffice PNG 第一个 chunk 必须是完整 IHDR");
       width = bytes.readUInt32BE(offset + 8);
       height = bytes.readUInt32BE(offset + 12);
+      const bitDepth = bytes[offset + 16];
+      colorType = bytes[offset + 17]!;
+      const validDepths = colorType === 0 ? [1, 2, 4, 8, 16]
+        : colorType === 2 || colorType === 4 || colorType === 6 ? [8, 16]
+          : colorType === 3 ? [1, 2, 4, 8] : [];
+      if (!validDepths.includes(bitDepth!) || bytes[offset + 18] !== 0
+          || bytes[offset + 19] !== 0 || ![0, 1].includes(bytes[offset + 20]!)) {
+        throw new Error("GenOffice PNG IHDR 色彩/位深/压缩/滤波/隔行参数无效");
+      }
       hasIhdr = true;
     } else if (chunk === "IHDR") {
       throw new Error("GenOffice PNG 出现重复 IHDR");
+    } else if (chunk === "PLTE") {
+      // Indexed PNG requires one palette before IDAT; grayscale cannot use one.
+      if (hasPlte || hasIdat || colorType === 0 || colorType === 4
+          || len === 0 || len % 3 !== 0 || len > 768) {
+        throw new Error("GenOffice PNG PLTE 调色板顺序或长度无效");
+      }
+      hasPlte = true;
     } else if (chunk === "IDAT") {
+      if (idatEnded || (colorType === 3 && !hasPlte)) {
+        throw new Error("GenOffice PNG IDAT 必须连续且索引色必须先有 PLTE");
+      }
       hasIdat ||= len > 0;
     } else if (chunk === "IEND") {
       if (!hasIdat || len !== 0) throw new Error("GenOffice PNG 缺少有效 IDAT 或 IEND 长度异常");
       if (end !== bytes.length) throw new Error("GenOffice PNG IEND 后存在额外数据");
       hasIend = true;
       break;
+    } else if (chunk.charCodeAt(0) >= 65 && chunk.charCodeAt(0) <= 90) {
+      // Unrecognized uppercase-first (critical) chunks require decoder support.
+      // Ignore only ancillary chunks, whose first letter is lowercase.
+      throw new Error(`GenOffice PNG 未知关键 chunk ${chunk}`);
     }
+    if (hasIdat && chunk !== "IDAT") idatEnded = true;
     offset = end;
   }
   if (!hasIhdr || !hasIdat || !hasIend) throw new Error("GenOffice PNG 不完整：缺少 IHDR/IDAT/IEND");
