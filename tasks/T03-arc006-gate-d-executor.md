@@ -126,3 +126,46 @@
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-20 执行结果（T03，已由总控核对）
+
+- **提交**：`14880aeff0aba3067c8d5735d2cf5ee69d3386cf`（`fix(arc-006): close production Node-RED executor ownership gate`），12 个文件 +792/−47，未 push。
+- **改动文件**：
+  - 生产：`orchestration/runner.ts`、`orchestration/automationRunner.ts`、
+    `workflowEngines/executorOwnership.ts`、`nodeRedOwnership.ts`、`registry.ts`、`runtimeSupervisor.ts`
+  - 测试：新增 `executor-gate-d-smoke/`；改 `automation-smoke`、`mcode-node-pack-smoke`、
+    `node-live-smoke`、`node-red-e2e-smoke`
+- **命令与结果**（日志 `apps/desktop/.tmp/smoke-runs/1792488865257-18524-n5U7Wx/`，27 个日志文件已核实存在）：
+  - `executor-gate-d-smoke` 62/62
+  - `automation-smoke` 820/820
+  - `node-red-e2e-smoke` 103/103
+  - `mcode-node-pack-smoke` 175/175
+  - 关联 27/27 suites PASS；Desktop + Contracts tsc PASS；git diff check PASS
+- **变异验证**：关键 mutation 分别出现 17/31、51/54、818/820 失败，恢复后重跑全绿，`cmp` 校验还原。
+- **总控独立核对（不是复跑，是读源码核对接线）**：
+  - `runner.ts:971` 调 `sharedExecutorOwnership.acquireExecution(doc.id, "mcode")`，
+    失败即 `throw` 并带可读原因（`工作流被另一执行器占用，拒绝双执行`）；
+  - `runner.ts:2722-2723` 在 `finally` 里 `ownership.release()` —— 异常路径不会漏放。
+  - `executorOwnership.ts` 中 `acquireExecution` 内部包 `claim` / `release`，签名一致。
+- **本任务「验收判据」达成情况**：
+  1. ✅ owner 注册表重启后仍生效 —— **未在本片达成**：本片仍是 `sharedExecutorOwnership`
+     进程内注册表；持久化 owner 文件未落地（见下方「未完成」）。
+  2. ⚠️ owner 文件损坏 → 重新推导 —— 同上，未落地。
+  3. ✅ 触发源唯一性：`executor-gate-d-smoke` 覆盖 cron/文件/事件/手动四类，含"被拒"方向。
+  4. ✅ 迁移开关：本次未新增开关（沿用"引擎未启动时旧 runner 仍跑"的现状），
+     行为与既有 `automation-smoke` 一致。
+  5. ✅ 现有相关 smoke 全绿。
+  6. ✅ 双包 tsc 干净。
+  7. ✅ 变异验证已做（三组数字如上）。
+
+**结论：T03 部分完成（E1+E2 生产接线切片）。** 判据 1、2（owner **落盘**）未达成，
+这是任务文件里写明的核心要求之一，因此本任务不能标「已完成」，标「部分完成／待补」。
+
+### 未完成（转下一张任务卡）
+
+- **owner 注册表落盘**：仍是进程内。进程重启后 owner 丢失，切换期"同一 cron 响两遍"
+  的防线在重启窗口里不存在。
+- 崩溃一致性（owner 文件与 flows.json 的写入顺序）未设计。
+- 真实三引擎 / 真 Electron 操作旅程 / 跨进程 CAS / 第三方独立复核均未做。
+
+→ 这些已写成 **T10**（见 `tasks/T10-executor-ownership-persistence.md`）。
