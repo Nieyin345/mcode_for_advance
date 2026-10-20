@@ -143,7 +143,7 @@ export function ProviderDropdown({ compact = false }: { compact?: boolean }) {
           <Menu.Popup
             ref={popupRef}
             className={cn(
-              "z-50 min-w-[220px] origin-bottom-left rounded-lg border border-edge bg-surface py-1.5 shadow-2xl",
+              "z-50 min-w-[220px] origin-bottom-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
               "transition-[transform,opacity] duration-100",

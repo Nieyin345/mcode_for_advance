@@ -182,7 +182,7 @@ function MessageCustomMenuInner({ id, role, text }: { id: string; role: "user" |
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="bottom" align={role === "user" ? "end" : "start"} sideOffset={4}>
-          <Menu.Popup className="z-50 min-w-[160px] rounded-md border border-edge bg-surface py-1 shadow-2xl">
+          <Menu.Popup className="z-50 min-w-[160px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]">
             {visible.map((item) => {
               const Icon = iconOf(item);
               return (

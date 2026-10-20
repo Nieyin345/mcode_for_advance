@@ -209,7 +209,7 @@ export function ProjectBranchIndicator({
             <Menu.Positioner side={compact ? "bottom" : "top"} align="start" sideOffset={6}>
               <Menu.Popup
                 className={cn(
-                  "z-50 flex max-h-[320px] w-[300px] max-w-[320px] min-w-[240px] flex-col rounded-md border border-edge bg-surface py-1 shadow-2xl",
+                  "z-50 flex max-h-[320px] w-[300px] max-w-[320px] min-w-[240px] flex-col rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
                   "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                   "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                   "transition-[transform,opacity] duration-100",

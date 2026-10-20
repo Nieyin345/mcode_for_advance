@@ -330,7 +330,7 @@ function WatchPanel({
       <div
         ref={panelRef}
         style={style}
-        className="z-50 w-[340px] max-w-[calc(100vw-16px)] rounded-lg border border-edge bg-surface p-3 shadow-2xl"
+        className="z-50 w-[340px] max-w-[calc(100vw-16px)] rounded-[var(--radius-btn-xs)] border border-edge bg-surface p-3 shadow-[var(--shadow-popover)]"
         // 点面板别落到 backdrop 上。
         onClick={(e) => e.stopPropagation()}
       >

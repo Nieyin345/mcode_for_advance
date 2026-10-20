@@ -168,7 +168,7 @@ export function WorkflowDropdown({ layout = "pill" }: { layout?: "pill" | "row" 
           <Menu.Popup
             ref={popupRef}
             className={cn(
-              "min-w-[260px] rounded-lg border border-edge bg-surface py-1 shadow-2xl",
+              "min-w-[260px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
               cascade ? "origin-top-left" : "origin-bottom-left",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",

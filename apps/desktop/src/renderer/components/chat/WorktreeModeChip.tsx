@@ -196,7 +196,7 @@ export function WorktreeModeChip({
             <Menu.Popup
               ref={popupRef}
               className={cn(
-                "z-50 min-w-[240px] rounded-lg border border-edge bg-surface py-1 shadow-2xl",
+                "z-50 min-w-[240px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
                 cascade ? "origin-top-left" : "origin-bottom-left",
                 "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                 "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
