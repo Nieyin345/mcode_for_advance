@@ -67,7 +67,7 @@ export function ComposerToolbarToggle({ sessionId }: { sessionId: string }) {
               ref={popupRef}
               className={cn(
                 // overflow-visible: let portaled child menus escape the box.
-                "z-50 overflow-visible rounded-xl border border-edge bg-surface p-1.5 shadow-2xl",
+                "z-50 overflow-visible rounded-[var(--radius-btn-xs)] border border-edge bg-surface p-1.5 shadow-[var(--shadow-popover)]",
                 "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                 "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                 "transition-[transform,opacity] duration-100",

@@ -125,7 +125,7 @@ export function ContextStatsPopover({
         style={style}
         className={cn(
           "z-50 w-[380px] max-w-[calc(100vw-16px)]",
-          "overflow-hidden rounded-lg border border-edge bg-surface shadow-2xl",
+          "overflow-hidden rounded-[var(--radius-btn-xs)] border border-edge bg-surface shadow-[var(--shadow-popover)]",
         )}
         // Stop-click so interacting with the panel doesn't hit the backdrop.
         onClick={(e) => e.stopPropagation()}

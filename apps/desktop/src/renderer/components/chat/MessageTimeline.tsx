@@ -257,7 +257,7 @@ function TimelineDash({
         <div
           className={cn(
             "absolute left-full top-1/2 z-40 ml-2 w-72 -translate-y-1/2",
-            "rounded-lg border border-edge bg-surface p-3 shadow-2xl",
+            "rounded-[var(--radius-btn-xs)] border border-edge bg-surface p-3 shadow-[var(--shadow-popover)]",
           )}
         >
           <div className="mb-1.5 flex items-center gap-1.5 border-b border-edge pb-1.5">

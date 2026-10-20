@@ -273,7 +273,7 @@ export function ModelDropdown({
           <Menu.Popup
             ref={popupRef}
             className={cn(
-              "z-50 min-w-[260px] rounded-lg border border-edge bg-surface py-1.5 shadow-2xl",
+              "z-50 min-w-[260px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
               cascade ? "origin-top-left" : "origin-bottom-left",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
@@ -357,7 +357,7 @@ export function ModelDropdown({
                           <Menu.Popup
                             ref={subPopupRef}
                             className={cn(
-                              "z-50 min-w-[220px] origin-left rounded-lg border border-edge bg-surface py-1.5 shadow-2xl",
+                              "z-50 min-w-[220px] origin-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
                               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                               "transition-[transform,opacity] duration-100",
@@ -433,7 +433,7 @@ export function ModelDropdown({
                           <Menu.Popup
                             ref={subPopupRef}
                             className={cn(
-                              "z-50 min-w-[220px] origin-left rounded-lg border border-edge bg-surface py-1.5 shadow-2xl",
+                              "z-50 min-w-[220px] origin-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
                               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                               "transition-[transform,opacity] duration-100",
@@ -526,7 +526,7 @@ export function ModelDropdown({
                           <Menu.Popup
                             ref={subPopupRef}
                             className={cn(
-                              "z-50 min-w-[220px] origin-left rounded-lg border border-edge bg-surface py-1.5 shadow-2xl",
+                              "z-50 min-w-[220px] origin-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
                               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                               "transition-[transform,opacity] duration-100",

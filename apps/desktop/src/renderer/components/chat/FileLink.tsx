@@ -29,7 +29,7 @@ import { IconLoader2, IconAlertTriangle } from "@renderer/lib/icons.js";
 
 /** Shared menu styling - mirrors OpenTabsBar/FileTree for consistency. */
 const MENU_POPUP_CLASS = cn(
-  "z-50 min-w-[220px] max-w-[400px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+  "z-50 min-w-[220px] max-w-[400px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
   "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
   "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
   "transition-[transform,opacity] duration-100",
