@@ -18,7 +18,7 @@
 | 前缀 | 数量 | 归属 |
 |---|---|---|
 | `docs:*` | 33 | **本卡 + T05b** |
-| `ai:*` | 12 | **T05c（明确不要）** |
+| `ai:*` | 12 | **T05c（默认拒绝 + 显式审批后可用，不删）** |
 | `win:*` | 3 | Mcode 自己已有窗口管理，不迁 |
 | `files:*` | 3 | **T05b（需权限）** |
 | `app:*` | 1 | 归 Mcode 宿主 |
@@ -92,7 +92,10 @@
 - **T05b**：`docs:pick-image`、`docs:save-image-as`、`docs:pick-export-images-target`、
   `docs:printers`、`docs:print`、`docs:take-export-pdf`、`files:pick`、`files:add`、
   `files:read-image` —— 全是原生对话框/打印/图片 IO，要权限与审批。
-- **T05c**：全部 12 个 `ai:*` —— 云 AI，用户明确不要。
+- **T05c**：全部 12 个 `ai:*` —— 云 AI。**不是"不要"，是"默认拒绝 + 显式审批后可用"。**
+  台账第 5 条写死：上游功能要保留为可受控调用的能力，风险能力显式受限/告知，
+  **不得静默删除或平行直连**。GenOffice 的 AI 面板必须能经 Mcode 的三 SDK / 审批
+  跑起来，而不是被删掉。
 - **不迁**：`win:*`（Mcode 自己有）、`docs:altchunk-html-to-docx`（等 T05b 评估）。
 
 ---

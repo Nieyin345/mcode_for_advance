@@ -14,6 +14,21 @@
 
 用户明确要求：**Node-RED 按 GenOffice 的模式集成源码，不是 npm 下载包。**
 
+**版本已由台账锁定：Node-RED 5.0.8。** 台账（2026-10-19 强制实施指令第 3 条）原文：
+
+> 以 Node-RED 5.0.8 已核验源码的 `editor-client + runtime + registry + nodes`
+> 为**最终唯一画布、执行内核、flow 存储与触发归属**……原 Mcode runner/scheduler/
+> automation 暂作为安全迁移来源，**不新写另一个通用 flow 编辑器/执行器**，
+> **不长期双写/双触发**。
+
+**终态（台账已写死，本卡不得偏离）**：
+
+- 唯一画布 = Node-RED 原版 `editor-client`
+- 唯一执行内核 = Node-RED runtime
+- 唯一 flow 存储 = 原版 storage adapter
+- **`WorkflowCanvas.tsx`（685 行手写画布）必须退场**
+- 现有 `runner/scheduler/automation` 只作迁移来源，不长期并存
+
 现状（已核实）：
 
 ```ts
