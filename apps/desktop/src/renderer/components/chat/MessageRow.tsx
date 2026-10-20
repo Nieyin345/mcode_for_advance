@@ -313,7 +313,7 @@ export const MessageRow = memo(function MessageRow({
           title={isUser ? fmtFullDateTime(msg.createdAt) : undefined}
           className={
             isUser
-              ? "user-bubble-fill overflow-hidden rounded-[13px_13px_5px_13px] px-3 py-2 text-content [font-size:var(--chat-font-size)]" +
+              ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] rounded-br-[5px] px-3 py-2 text-content [font-size:var(--chat-font-size)]" +
                 (freshBubble ? " chat-bubble-in" : "")
               : "text-content [font-size:var(--chat-font-size)]"
           }
@@ -535,7 +535,7 @@ function UserMessageEditor({
   const canSubmit = text.trim().length > 0;
 
   return (
-    <div className="user-bubble-fill rounded-lg border border-accent/40 px-3 py-2 [font-size:var(--chat-font-size)]">
+    <div className="user-bubble-fill rounded-[var(--radius-bubble)] border border-accent/40 px-3 py-2 [font-size:var(--chat-font-size)]">
       {/* Attachment chips (read-only) - mirror the composer's chip-above-textarea
           layout. Only shown if the original message had attachments. These are
           non-interactive previews (the attachments are preserved as-is on
