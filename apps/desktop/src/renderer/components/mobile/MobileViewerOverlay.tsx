@@ -34,11 +34,11 @@ export function MobileViewerOverlay() {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-surface">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-2">
+      <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-edge px-2">
         <button
           type="button"
           onClick={close}
-          className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-content-muted hover:bg-surface-muted"
+          className="flex min-h-11 items-center gap-1 rounded-[var(--radius-btn-md)] px-2 text-xs text-content-muted hover:bg-surface-muted"
         >
           <IconArrowUp size={14} className="rotate-[-90deg]" />
           {t("mobile.file.back")}

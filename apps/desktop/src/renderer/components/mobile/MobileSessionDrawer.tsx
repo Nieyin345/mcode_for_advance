@@ -288,12 +288,12 @@ export function MobileSessionDrawer({
             files/git). */}
         <div className="flex shrink-0 items-center gap-1 px-3 pb-1 pt-3">
           {/* 【ARC-005 V2】与桌面侧栏共用 CDS 分段控件（同一份几何与磁吸物理）；
-              手机端只放大尺寸（h-9 → 由 size="md" 的 32px + 父级 scale 承载），
+              手机端只在调用处设 44px 触控目标（不改共享组件），
               不另写一套皮肤。 */}
           <Segmented
             label={t("layout.stream.viewSwitch")}
             size="md"
-            className="min-w-0 flex-1 [&_button]:h-9 [&_button]:text-sm"
+            className="h-11 min-w-0 flex-1 [&_button]:min-h-11 [&_button]:text-sm"
             value={view}
             onChange={(v) => onPickView(v as MobileView)}
             items={NAV_ITEMS.map(({ id, labelKey, icon: NavIcon }) => ({
@@ -306,7 +306,7 @@ export function MobileSessionDrawer({
             type="button"
             aria-label={t("common.close")}
             onClick={onClose}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted active:bg-surface-hover"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted active:bg-surface-hover"
           >
             <IconX size={18} />
           </button>
@@ -314,7 +314,7 @@ export function MobileSessionDrawer({
 
         {/* Search */}
         <div className="shrink-0 px-3 pb-2 pt-1">
-          <div className="flex h-10 items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/60 px-3">
+          <div className="flex min-h-11 items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/60 px-3">
             <IconSearch size={16} className="shrink-0 text-content-subtle" />
             <input
               value={query}
@@ -322,7 +322,7 @@ export function MobileSessionDrawer({
               placeholder={t("mobile.drawer.searchThreads")}
               // text-base (16px): iOS Safari zooms the viewport on focusing
               // an input rendered below 16px — keep it at the threshold.
-              className="min-w-0 flex-1 bg-transparent text-base text-content outline-none placeholder:text-content-subtle"
+              className="min-h-11 min-w-0 flex-1 bg-transparent text-base text-content outline-none placeholder:text-content-subtle"
             />
             {searching ? (
               <IconLoader2 size={14} className="shrink-0 animate-spin text-content-subtle" />
@@ -331,7 +331,7 @@ export function MobileSessionDrawer({
                 type="button"
                 aria-label={t("ide.search.clear")}
                 onClick={() => setQuery("")}
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-subtle active:bg-surface-hover"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-content-subtle active:bg-surface-hover"
               >
                 <IconX size={14} />
               </button>
@@ -347,7 +347,7 @@ export function MobileSessionDrawer({
             <button
               type="button"
               onClick={() => startNewSession(newSessionProjectId)}
-              className="flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] bg-accent text-sm font-medium text-surface active:opacity-80"
+              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] bg-accent text-sm font-medium text-surface active:opacity-80"
             >
               <IconPlus size={16} className="shrink-0" />
               <span className="shrink-0">{t("layout.newSession")}</span>
@@ -385,7 +385,7 @@ export function MobileSessionDrawer({
                   <button
                     type="button"
                     onClick={() => setPinnedOpen(!pinnedOpen)}
-                    className="flex min-h-[40px] w-full items-center gap-1.5 rounded-lg px-3 text-xs font-medium uppercase tracking-wide text-content-subtle active:bg-surface-hover"
+                    className="flex min-h-11 w-full items-center gap-1.5 rounded-[var(--radius-btn-md)] px-3 text-xs font-medium uppercase tracking-wide text-content-subtle active:bg-surface-hover"
                   >
                     <IconChevronRight
                       size={14}
@@ -439,7 +439,7 @@ export function MobileSessionDrawer({
                                 <button
                                   type="button"
                                   onClick={() => void loadMoreSessions(p.id).catch(reportActionFailure)}
-                                  className="flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm text-content-subtle active:bg-surface-hover"
+                                  className="flex min-h-[44px] w-full items-center rounded-[var(--radius-btn-md)] px-3 text-left text-sm text-content-subtle active:bg-surface-hover"
                                 >
                                   {t("layout.loadMore")}
                                   {total > sessions.length
@@ -462,7 +462,7 @@ export function MobileSessionDrawer({
                   <button
                     type="button"
                     onClick={() => setArchiveOpen((v) => !v)}
-                    className="flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 text-left active:bg-surface-hover"
+                    className="flex min-h-[44px] w-full items-center gap-2 rounded-[var(--radius-btn-md)] px-3 text-left active:bg-surface-hover"
                   >
                     <IconChevronRight
                       size={14}
@@ -805,13 +805,13 @@ function RenameSheet({
           }}
           onFocus={(e) => (e.target as HTMLInputElement).select()}
           // text-base (16px) — see the search input's iOS zoom note.
-          className="h-11 rounded-lg px-3 font-sans text-base"
+          className="h-11 rounded-[var(--radius-btn-md)] px-3 font-sans text-base"
         />
         <div className="mt-3 flex gap-2">
           <button
             type="button"
             onClick={onClose}
-            className="h-10 flex-1 rounded-[var(--radius-card)] border border-edge text-sm text-content-muted active:bg-surface-hover"
+            className="h-11 flex-1 rounded-[var(--radius-btn-md)] border border-edge text-sm text-content-muted active:bg-surface-hover"
           >
             {t("common.cancel")}
           </button>
@@ -819,7 +819,7 @@ function RenameSheet({
             type="button"
             onClick={submit}
             disabled={!trimmed}
-            className="h-10 flex-1 rounded-[var(--radius-card)] bg-accent text-sm font-medium text-surface active:opacity-80 disabled:opacity-40"
+            className="h-11 flex-1 rounded-[var(--radius-btn-md)] bg-accent text-sm font-medium text-surface active:opacity-80 disabled:opacity-40"
           >
             {t("common.save")}
           </button>
@@ -857,7 +857,7 @@ function SessionRow({
         type="button"
         onClick={onPick}
         className={cn(
-          "flex min-h-[48px] min-w-0 flex-1 items-center gap-2.5 rounded-lg py-1.5 pl-3 pr-1 text-left active:bg-surface-hover",
+          "flex min-h-[48px] min-w-0 flex-1 items-center gap-2.5 rounded-[var(--radius-btn-md)] py-1.5 pl-3 pr-1 text-left active:bg-surface-hover",
           active && "bg-surface-hover",
         )}
       >
@@ -886,7 +886,7 @@ function SessionRow({
         type="button"
         aria-label={t("mobile.drawer.moreActions")}
         onClick={onMore}
-        className="flex w-11 shrink-0 items-center justify-center self-stretch rounded-lg text-content-subtle active:bg-surface-hover"
+        className="flex w-11 shrink-0 items-center justify-center self-stretch rounded-[var(--radius-btn-md)] text-content-subtle active:bg-surface-hover"
       >
         <IconDotsVertical size={18} />
       </button>
@@ -921,7 +921,7 @@ function ProjectHeader({
       <button
         type="button"
         onClick={onToggle}
-        className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-lg px-3 text-left active:bg-surface-hover"
+        className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-btn-md)] px-3 text-left active:bg-surface-hover"
       >
         <IconChevronRight
           size={14}
@@ -938,7 +938,7 @@ function ProjectHeader({
         type="button"
         aria-label={t("layout.newSessionHere")}
         onClick={onNewSession}
-        className="flex w-11 shrink-0 items-center justify-center self-stretch rounded-lg text-content-subtle active:bg-surface-hover"
+        className="flex w-11 shrink-0 items-center justify-center self-stretch rounded-[var(--radius-btn-md)] text-content-subtle active:bg-surface-hover"
       >
         <IconPlus size={18} />
       </button>
@@ -968,7 +968,7 @@ function ArchivedRow({
         type="button"
         aria-label={t("mobile.drawer.archivedActions")}
         onClick={onMore}
-        className="flex w-11 shrink-0 items-center justify-center self-stretch rounded-lg text-content-subtle active:bg-surface-hover"
+        className="flex w-11 shrink-0 items-center justify-center self-stretch rounded-[var(--radius-btn-md)] text-content-subtle active:bg-surface-hover"
       >
         <IconDotsVertical size={18} />
       </button>

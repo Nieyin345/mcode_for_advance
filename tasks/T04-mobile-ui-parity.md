@@ -120,3 +120,15 @@
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 T04 执行结果
+
+- **触及范围**：`apps/desktop/src/renderer/components/mobile/` 11 个组件与新建的 `apps/desktop/scripts/mobile-viewport-smoke/`。无主进程、webApi 签名、桌面共享组件或新 UI 依赖改动。
+- **CDS 语义**：按钮、输入及卡片按用途分别使用 `--radius-btn-md`、`--radius-card`；配对页使用共享 `Input` 和已有 `Segmented`；文件页空状态、加载态改用共享 `EmptyState`、`Spinner`；隧道成功信号改为 `success`，Git 当前分支由 accent 改为中性选中态。保留 Git added 类型色、实际运行/关注提示用 accent。针对 `components/mobile` 的扫描仅剩 `MobileGitScreen.tsx` 的 Git added 合法白名单与 `PatchView.tsx` 的历史色阶**注释**。
+- **旧红**：真实 Chromium 几何夹具在 375×812、768×1024 两种尺寸初次执行，配对页 4、设置页 2、文件页 3、Git 页 12、分支弹层 3，共 **24 个不同的可见触控目标高度低于 44px**（两个视口均复现；按项目语义为遗漏而非有意设计）。补充操作路径覆盖后又发现重命名弹层取消/保存 **2** 个、活动弹层抓手 **1** 个，共累计识别并修复 **27 个**不同触控目标。修复后通过本套几何扫描，不再出现低于 44px 的可见输入/按钮。
+- **新绿**：`node scripts/mobile-viewport-smoke/main.mjs`，真实 Windows Chromium CDP，两视口共 **96 断言通过、0 失败**；场景覆盖配对、设置、会话抽屉开关、行操作弹层、重命名、文件、Git、分支切换、文件预览、移动预览、活动弹层；检查水平溢出、可见控件几何尺寸、底部安全区 CSS 计算值及 React 异常。这是**真实浏览器视口模拟**，并非 iPhone/iPad 物理真机验收，也不是仅源码 grep；尚不能代表 iOS Safari 原生安全区及软键盘行为。
+- **变异验证**：`set MCODE_T04_MUTATE_SAFE=1&& node scripts/mobile-viewport-smoke/main.mjs`（Windows cmd，`apps/desktop`），仅临时测试 bundle 把设置弹层 `pb-[calc(1.5rem+var(--safe-bottom,0px))]` 改为 `pb-0`，375×812 和 768×1024 的 `settings safe-area padding >=24px` 各失败一次，**exit 1 / 96 断言中 2 红**，原源码不动。其他三个安全区弹层按场景分别要求探针必须存在且 computed padding 达标。
+- **手机专属回归**：`node scripts/run-smokes.mjs mobile-viewport-smoke mobile-api-surface-smoke mobile-pairing-smoke ui-interaction-smoke design-tokens-smoke` 全绿（5 pass，0 fail）。其中特意重跑 `mobile-api-surface-smoke` 作为手机 RPC 覆盖的显式检查；本任务未新增 RPC。
+- **双包类型**：仓库根执行 `pnpm typecheck`，3 turbo tasks successful、退出码 0，包含 contracts/desktop。
+- **全量回归（验收判据 4 未达成）**：仓库根 `pnpm test:all` **退出 1**；脚本自身 12 tests passed，497 套 smoke 中 **485 通过、12 失败**：`maint-m22-smoke`、`collaboration-commit-audit-smoke`、`document-router-smoke`、`executor-owner-identity-smoke`、`executor-ownership-smoke`、`flow-migration-smoke`、`html-preview-electron-smoke`、`maint-m07-smoke`、`maint-m35-smoke`、`automation-smoke`、`release-readiness-smoke`、`updater-tools-smoke`。其中能直接识别的外因包括缺失 `build/collaboration-commit-audit.cjs`、其他领域断言失败和 Windows/Electron bundle dynamic require 问题。这些失败不在 T04 文件边界，按任务要求没有越界修改。完整日志：`apps/desktop/.tmp/smoke-runs/1792532476323-31316-Z20lvs`；五套定向全绿日志：`apps/desktop/.tmp/smoke-runs/1792533105605-29920-JlgqM4`。
+- **尚存手机端功能差异（并非本任务视觉范围）**：独立网页认证配对和 HTTP/SSE 传输，不是桌面 preload；没有 Electron 标题栏/三栏工作区、右侧 IDE、终端和内嵌浏览器；文件页以只读查看替代桌面的 Monaco/LSP 编辑；手机设置仅保留主题/标签模式/配对管理；手机抽屉不支持本机文件夹选项目、分组拖拽排序；会话显示仅挂载当前活动聊天面板，不保活桌面那样的多后台 pane。这些由 `AppMobile.tsx` 与移动壳实现刻意保留，未在 T04 引入行为修改。

@@ -73,7 +73,7 @@ export function ActivitySheet({
             type="button"
             onClick={onClose}
             aria-label={t("chatStream.activity.close")}
-            className="grid h-4 w-full place-items-center"
+            className="grid h-11 w-full place-items-center"
           >
             <span className="h-1 w-8 rounded-full bg-edge" />
           </button>

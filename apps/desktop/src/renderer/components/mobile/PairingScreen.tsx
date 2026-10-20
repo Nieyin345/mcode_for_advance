@@ -16,6 +16,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { Input } from "@renderer/components/ui/index.js";
 import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { IconKey, IconLoader2, IconAlertCircle, IconDeviceMobile, IconEye, IconEyeOff } from "@renderer/lib/icons.js";
@@ -47,7 +48,7 @@ function defaultDeviceName(t: Translator): string {
 }
 
 const INPUT_CLS =
-  "w-full rounded-lg border border-input-edge bg-surface px-3 py-2.5 text-base text-content outline-none focus:border-accent";
+  "min-h-11 w-full rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2.5 text-base text-content outline-none focus:border-accent";
 
 export function PairingScreen({ onPaired }: { onPaired: () => void }) {
   const { t } = useI18n();
@@ -140,12 +141,12 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
       <span className="text-xs font-medium text-content-muted">
         {t("mobile.pair.deviceName")}
       </span>
-      <input
+      <Input
         value={deviceName}
         onChange={(e) => setDeviceName(e.target.value)}
         placeholder={t("mobile.pair.deviceNamePlaceholder")}
         maxLength={64}
-        className="w-full rounded-lg border border-input-edge bg-surface px-3 py-2 text-base text-content outline-none focus:border-accent"
+        className="min-h-11 w-full rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-base text-content outline-none focus:border-accent"
       />
     </label>
   );
@@ -158,7 +159,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
   );
 
   const submitBtnCls = cn(
-    "flex h-10 items-center justify-center gap-1.5 rounded-lg bg-accent text-sm font-medium text-surface",
+    "flex h-11 items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] bg-accent text-sm font-medium text-surface",
     "hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50",
   );
 
@@ -183,7 +184,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
           <Segmented
             label={t("mobile.pair.methodLabel")}
             size="md"
-            className="[&_button]:py-1.5"
+            className="h-11 [&_button]:min-h-11"
             value={mode}
             onChange={(v) => setMode(v as "code" | "password")}
             items={[
@@ -199,14 +200,14 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
               <span className="text-xs font-medium text-content-muted">
                 {t("layout.verifyCode")}
               </span>
-              <input
+              <Input
                 value={code}
                 onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 8))}
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 autoFocus
                 placeholder="••••••"
-                className="w-full rounded-lg border border-input-edge bg-surface px-3 py-2.5 text-center font-mono text-xl tracking-[0.4em] text-content outline-none focus:border-accent"
+                className="min-h-11 w-full rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2.5 text-center font-mono text-xl tracking-[0.4em] text-content outline-none focus:border-accent"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void submitCode();
                 }}
@@ -231,7 +232,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
           >
             <label className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-content-muted">{t("mobile.pair.username")}</span>
-              <input
+              <Input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
@@ -246,7 +247,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
             <label className="flex flex-col gap-1.5">
               <span className="text-xs font-medium text-content-muted">{t("mobile.pair.password")}</span>
               <div className="relative">
-                <input
+                <Input
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   type={showPassword ? "text" : "password"}
@@ -257,7 +258,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-content-muted"
+                  className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-content-muted"
                   aria-label={showPassword ? t("mobile.pair.hidePassword") : t("mobile.pair.showPassword")}
                 >
                   {showPassword ? <IconEyeOff size={16} /> : <IconEye size={16} />}

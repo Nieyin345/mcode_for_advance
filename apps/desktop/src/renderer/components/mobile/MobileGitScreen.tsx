@@ -94,7 +94,7 @@ export function MobileGitScreen() {
     if (!ta) return;
     ta.style.height = "auto";
     const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 18;
-    ta.style.height = `${Math.max(Math.min(ta.scrollHeight, lineHeight * 4), 30)}px`;
+    ta.style.height = `${Math.max(Math.min(ta.scrollHeight, lineHeight * 4), 44)}px`;
   }, [message]);
   const [busy, setBusy] = useState<string | null>(null);
   const [genLoading, setGenLoading] = useState(false);
@@ -334,7 +334,7 @@ export function MobileGitScreen() {
         <button
           type="button"
           onClick={() => void refresh()}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-content-muted active:bg-surface-muted"
+          className="flex h-11 w-11 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted active:bg-surface-muted"
           title={t("common.refresh")}
           aria-label={t("common.refresh")}
         >
@@ -353,7 +353,7 @@ export function MobileGitScreen() {
             <select
               value={repoPath ?? ""}
               onChange={(e) => setRepoPath(e.target.value)}
-              className="mb-2 w-full rounded-lg border border-input-edge bg-surface px-2 py-1.5 text-xs text-content outline-none"
+              className="mb-2 min-h-11 w-full rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-2 py-1.5 text-xs text-content outline-none"
             >
               {repos.map((r) => (
                 <option key={r.path} value={r.path}>
@@ -378,7 +378,7 @@ export function MobileGitScreen() {
                   onClick={() => setBranchSheetOpen(true)}
                   disabled={!!busy || !repoPath}
                   title={t("ide.git.switchBranch")}
-                  className="flex min-w-0 items-center gap-1.5 rounded-lg py-1 pl-1 pr-1.5 active:bg-surface-hover disabled:opacity-50"
+                  className="flex min-h-11 min-w-0 items-center gap-1.5 rounded-[var(--radius-btn-md)] py-1 pl-1 pr-1.5 active:bg-surface-hover disabled:opacity-50"
                 >
                   <IconGitBranch size={13} className="shrink-0" />
                   <span className="min-w-0 max-w-[38vw] truncate font-mono text-content">
@@ -408,7 +408,7 @@ export function MobileGitScreen() {
                 onClick={() => void pull()}
                 disabled={!!busy || !repoPath}
                 title={t("mobile.git.pullHint")}
-                className="flex h-9 shrink-0 items-center gap-1 rounded-lg border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
               >
                 {busy === "pull" ? (
                   <IconLoader2 size={12} className="animate-spin" />
@@ -422,7 +422,7 @@ export function MobileGitScreen() {
                 onClick={() => void push()}
                 disabled={!!busy || !repoPath}
                 title={t("mobile.git.pushHint")}
-                className="flex h-9 shrink-0 items-center gap-1 rounded-lg border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
               >
                 {busy === "push" ? (
                   <IconLoader2 size={12} className="animate-spin" />
@@ -436,7 +436,7 @@ export function MobileGitScreen() {
                 onClick={() => void sync()}
                 disabled={!!busy || !repoPath}
                 title={t("mobile.git.syncHint")}
-                className="flex h-9 shrink-0 items-center gap-1 rounded-lg border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
               >
                 {busy === "sync" ? (
                   <IconLoader2 size={12} className="animate-spin" />
@@ -466,7 +466,7 @@ export function MobileGitScreen() {
           <Segmented
             label={t("mobile.git.tabSwitch")}
             size="md"
-            className="mb-2 shrink-0 [&_button]:py-2"
+            className="mb-2 h-11 shrink-0 [&_button]:min-h-11"
             value={tab}
             onChange={(v) => setTab(v as "changes" | "staged")}
             items={[
@@ -505,7 +505,7 @@ export function MobileGitScreen() {
                     <button
                       type="button"
                       onClick={() => setDiffPath({ path: f.path, staged: tab === "staged" })}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-xs text-content"
+                      className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 truncate text-left text-xs text-content"
                       title={f.path}
                     >
                       <IconFile size={12} className="shrink-0 text-content-subtle" />
@@ -515,7 +515,7 @@ export function MobileGitScreen() {
                       type="button"
                       onClick={() => (tab === "changes" ? void stage(f.path) : void unstage(f.path))}
                       disabled={!!busy}
-                      className="h-8 shrink-0 rounded-lg border border-edge px-3 text-[11px] text-content-muted active:bg-surface-hover disabled:opacity-50"
+                      className="h-11 shrink-0 rounded-[var(--radius-btn-md)] border border-edge px-3 text-[11px] text-content-muted active:bg-surface-hover disabled:opacity-50"
                     >
                       {tab === "changes" ? t("ide.git.stage") : t("common.cancel")}
                     </button>
@@ -538,7 +538,7 @@ export function MobileGitScreen() {
               onChange={(e) => setMessage(e.target.value)}
               placeholder={t("mobile.git.commitPlaceholder")}
               rows={1}
-              className="mb-2 w-full resize-none overflow-hidden rounded-lg border border-input-edge bg-surface-muted px-2 py-1.5 text-xs leading-relaxed text-content outline-none focus:border-accent"
+              className="mb-2 min-h-11 w-full resize-none overflow-hidden rounded-[var(--radius-btn-md)] border border-input-edge bg-surface-muted px-2 py-1.5 text-xs leading-relaxed text-content outline-none focus:border-accent"
             />
             {commitGenModel && (
               <button
@@ -547,7 +547,7 @@ export function MobileGitScreen() {
                 disabled={!repoPath || staged.length === 0}
                 title={genLoading ? t("ide.git.stopGenerate") : t("ide.git.generateHint")}
                 aria-label={genLoading ? t("ide.git.stopGenerate") : t("ide.git.generateHint")}
-                className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-edge px-2 py-1.5 text-xs text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
+                className="mb-2 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] border border-edge px-2 py-1.5 text-xs text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
               >
                 {genLoading ? (
                   <>
@@ -568,7 +568,7 @@ export function MobileGitScreen() {
                 type="button"
                 onClick={() => void commit(false)}
                 disabled={!!busy || staged.length === 0 || !message.trim()}
-                className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-edge px-2 py-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+                className="flex min-h-11 flex-1 items-center justify-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2 py-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
               >
                 {busy === "commit" ? <IconLoader2 size={12} className="animate-spin" /> : <IconCheck size={12} />}
                 {t("ide.git.commit")}
@@ -577,7 +577,7 @@ export function MobileGitScreen() {
                 type="button"
                 onClick={() => void commit(true)}
                 disabled={!!busy || staged.length === 0 || !message.trim()}
-                className="flex flex-[1.4] items-center justify-center gap-1 rounded-lg bg-accent px-2 py-2.5 text-xs font-semibold text-surface disabled:opacity-40"
+                className="flex min-h-11 flex-[1.4] items-center justify-center gap-1 rounded-[var(--radius-btn-md)] bg-accent px-2 py-2.5 text-xs font-semibold text-surface disabled:opacity-40"
               >
                 {busy === "commit+push" ? <IconLoader2 size={12} className="animate-spin" /> : <IconCheck size={12} />}
                 {t("ide.git.commitAndPush")}

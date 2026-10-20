@@ -102,7 +102,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-muted hover:bg-surface-hover"
+            className="flex h-11 w-11 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted hover:bg-surface-hover"
           >
             <IconX size={16} />
           </button>
@@ -189,14 +189,14 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
               <button
                 type="button"
                 onClick={unpair}
-                className="flex h-8 flex-1 items-center justify-center rounded-lg bg-danger px-3 text-xs font-medium text-surface"
+                className="flex h-11 flex-1 items-center justify-center rounded-[var(--radius-btn-md)] bg-danger px-3 text-xs font-medium text-surface"
               >
                 {t("mobile.settings.confirmUnpair")}
               </button>
               <button
                 type="button"
                 onClick={() => setUnpairConfirm(false)}
-                className="flex h-8 flex-1 items-center justify-center rounded-lg border border-edge px-3 text-xs text-content-muted"
+                className="flex h-11 flex-1 items-center justify-center rounded-[var(--radius-btn-md)] border border-edge px-3 text-xs text-content-muted"
               >
                 {t("common.cancel")}
               </button>
@@ -205,7 +205,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
             <button
               type="button"
               onClick={() => setUnpairConfirm(true)}
-              className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-edge px-3 text-xs text-danger hover:bg-surface-hover"
+              className="flex h-11 items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] border border-edge px-3 text-xs text-danger hover:bg-surface-hover"
             >
               <IconUnlink size={14} />
               {t("mobile.settings.unpair")}

@@ -52,11 +52,11 @@ export function FileViewerOverlay({
   const { t } = useI18n();
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-surface">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-2">
+      <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-edge px-2">
         <button
           type="button"
           onClick={onClose}
-          className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-content-muted hover:bg-surface-muted"
+          className="flex min-h-11 items-center gap-1 rounded-[var(--radius-btn-md)] px-2 text-xs text-content-muted hover:bg-surface-muted"
         >
           <IconArrowUp size={14} className="rotate-[-90deg]" />
           {t("mobile.file.back")}
@@ -191,7 +191,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
           type="button"
           onClick={() => setSourceView((v) => !v)}
           title={sourceView ? t("ide.viewer.mdPreview") : t("ide.viewer.mdSource")}
-          className="absolute bottom-4 right-4 z-10 flex h-8 items-center gap-1.5 rounded-full border border-edge bg-surface-muted/90 px-3 text-xs text-content-muted shadow-lg backdrop-blur hover:bg-surface-hover active:bg-surface-hover"
+          className="absolute bottom-4 right-4 z-10 flex h-11 items-center gap-1.5 rounded-full border border-edge bg-surface-muted/90 px-3 text-xs text-content-muted shadow-lg backdrop-blur hover:bg-surface-hover active:bg-surface-hover"
         >
           {sourceView ? <IconEye size={14} /> : <IconCode size={14} />}
           {sourceView ? t("ide.viewer.mdPreview") : t("ide.viewer.mdSource")}

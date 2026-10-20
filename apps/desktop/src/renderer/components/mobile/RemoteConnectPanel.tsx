@@ -284,7 +284,7 @@ export function RemoteConnectPanel() {
       </div>
 
       {/* Start on launch toggle */}
-      <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-edge bg-surface-muted/30 px-3 py-2.5">
+      <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface-muted/30 px-3 py-2.5">
         <Switch checked={autoStart} onCheckedChange={handleAutoStartChange} label={t("layout.relayAutoStart")} />
         <span className="min-w-0 flex-1 text-xs text-content">{t("layout.relayAutoStart")}</span>
         <span className="shrink-0 text-[11px] text-content-subtle">
@@ -294,7 +294,7 @@ export function RemoteConnectPanel() {
 
       {/* VPS config form (shown when not connected) */}
       {!isConnected && (
-        <div className="flex flex-col gap-3 rounded-lg border border-edge bg-surface-muted/30 p-4">
+        <div className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-edge bg-surface-muted/30 p-4">
           <div className="grid grid-cols-2 gap-3">
             <label className="col-span-2 flex flex-col gap-1">
               <span className="text-xs font-medium text-content-muted">{t("mobile.relay.host")}</span>
@@ -302,7 +302,7 @@ export function RemoteConnectPanel() {
                 value={form.host}
                 onChange={(e) => setForm({ ...form, host: e.target.value })}
                 placeholder={t("mobile.relay.hostPlaceholder")}
-                className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -311,7 +311,7 @@ export function RemoteConnectPanel() {
               <input
                 value={form.sshPort}
                 onChange={(e) => setForm({ ...form, sshPort: e.target.value.replace(/\D/g, "") })}
-                className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -320,7 +320,7 @@ export function RemoteConnectPanel() {
               <input
                 value={form.username}
                 onChange={(e) => setForm({ ...form, username: e.target.value })}
-                className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -330,7 +330,7 @@ export function RemoteConnectPanel() {
                 value={form.hostKeyFingerprint}
                 onChange={(e) => setForm({ ...form, hostKeyFingerprint: e.target.value })}
                 placeholder="SHA256:..."
-                className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
                 spellCheck={false}
               />
@@ -343,7 +343,7 @@ export function RemoteConnectPanel() {
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
                 placeholder={t("mobile.relay.passwordPlaceholder")}
-                className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -352,7 +352,7 @@ export function RemoteConnectPanel() {
               <input
                 value={form.publicPort}
                 onChange={(e) => setForm({ ...form, publicPort: e.target.value.replace(/\D/g, "") })}
-                className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -390,7 +390,7 @@ export function RemoteConnectPanel() {
       )}
 
       {/* Status + connect/disconnect */}
-      <div className="flex items-center gap-3 rounded-lg border border-edge bg-surface-muted/50 px-3 py-2.5">
+      <div className="flex items-center gap-3 rounded-[var(--radius-card)] border border-edge bg-surface-muted/50 px-3 py-2.5">
         <IconServer
           size={20}
           className={cn(
@@ -441,7 +441,7 @@ export function RemoteConnectPanel() {
       {isConnected && pairingUrl && (
         <div className="flex gap-4 border-t border-edge pt-4">
           <div className="flex flex-col items-center gap-2">
-            <div className="rounded-lg border border-edge bg-white p-2">
+            <div className="rounded-[var(--radius-card)] border border-edge bg-white p-2">
               {qrDataUrl ? (
                 <img src={qrDataUrl} alt={t("mobile.relay.qrAlt")} className="h-[150px] w-[150px]" />
               ) : (

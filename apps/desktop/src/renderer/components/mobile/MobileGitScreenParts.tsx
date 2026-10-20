@@ -169,13 +169,13 @@ export function BranchSheet({
         <div className="flex justify-center pb-1 pt-2">
           <span className="h-1 w-8 rounded-full bg-edge" />
         </div>
-        <div className="flex h-9 shrink-0 items-center justify-between px-4">
+        <div className="flex min-h-11 shrink-0 items-center justify-between px-4">
           <span className="text-sm font-semibold text-content">{t("ide.git.switchBranch")}</span>
           <button
             type="button"
             onClick={onClose}
             aria-label={t("common.close")}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-content-muted active:bg-surface-hover"
+            className="flex h-11 w-11 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted active:bg-surface-hover"
           >
             <IconX size={16} />
           </button>
@@ -183,14 +183,14 @@ export function BranchSheet({
 
         {/* Search — filters by branch/tag name and commit subject. */}
         <div className="shrink-0 px-4 pb-2 pt-1">
-          <div className="flex h-10 items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/60 px-3">
+          <div className="flex min-h-11 items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/60 px-3">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("ide.git.searchBranches")}
               // text-base: iOS Safari zooms on focus below 16px (same as the
               // drawer's search box).
-              className="min-w-0 flex-1 bg-transparent text-base text-content outline-none placeholder:text-content-subtle"
+              className="min-h-11 min-w-0 flex-1 bg-transparent text-base text-content outline-none placeholder:text-content-subtle"
             />
             {query && (
               <button
@@ -222,13 +222,13 @@ export function BranchSheet({
                   if (e.key === "Enter") createNew();
                 }}
                 placeholder={t("ide.git.newBranchNamePlaceholder")}
-                className="h-10 min-w-0 flex-1 rounded-[var(--radius-card)] border border-input-edge bg-surface/60 px-3 text-base text-content outline-none focus:border-accent"
+                className="h-11 min-w-0 flex-1 rounded-[var(--radius-btn-md)] border border-input-edge bg-surface/60 px-3 text-base text-content outline-none focus:border-accent"
               />
               <button
                 type="button"
                 onClick={createNew}
                 disabled={!newName.trim() || !!checkingOut}
-                className="h-10 shrink-0 rounded-[var(--radius-card)] border border-edge px-3 text-xs text-content active:bg-surface-hover disabled:opacity-50"
+                className="h-11 shrink-0 rounded-[var(--radius-btn-md)] border border-edge px-3 text-xs text-content active:bg-surface-hover disabled:opacity-50"
               >
                 {t("ide.git.createBranchAction")}
               </button>
@@ -239,7 +239,7 @@ export function BranchSheet({
                   setNewName("");
                 }}
                 aria-label={t("mobile.git.cancelNewBranch")}
-                className="flex h-10 w-9 shrink-0 items-center justify-center rounded-[var(--radius-card)] text-content-muted active:bg-surface-hover"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted active:bg-surface-hover"
               >
                 <IconX size={15} />
               </button>
@@ -249,7 +249,7 @@ export function BranchSheet({
               type="button"
               onClick={() => setCreating(true)}
               disabled={!!checkingOut}
-              className="flex min-h-[40px] w-full items-center gap-1.5 rounded-lg px-1 text-left text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+              className="flex min-h-11 w-full items-center gap-1.5 rounded-[var(--radius-btn-md)] px-1 text-left text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
             >
               <IconPlus size={14} className="shrink-0" />
               {t("ide.git.newBranch")}
@@ -294,7 +294,7 @@ export function BranchSheet({
                         disabled={!!checkingOut}
                         className={cn(
                           "flex min-h-[44px] w-full items-center gap-2.5 px-4 text-left active:bg-surface-hover disabled:opacity-60",
-                          b.current && "text-accent",
+                          b.current && "font-medium text-content",
                         )}
                       >
                         {switching ? (
@@ -308,7 +308,7 @@ export function BranchSheet({
                           <span
                             className={cn(
                               "block truncate font-mono text-xs",
-                              b.current ? "text-accent" : "text-content",
+                              "text-content",
                             )}
                           >
                             {b.name}
@@ -351,14 +351,14 @@ export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss
   };
 
   return (
-    <div className="mb-2 flex items-start gap-1 rounded-lg border border-danger/30 bg-danger/10 px-2 py-1.5 text-xs text-danger">
+    <div className="mb-2 flex items-start gap-1 rounded-[var(--radius-card)] border border-danger/30 bg-danger/10 px-2 py-1.5 text-xs text-danger">
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-all">{message}</span>
       <button
         type="button"
         onClick={() => void copy()}
         aria-label={copied ? t("common.copied") : t("mobile.git.copyError")}
         title={copied ? t("common.copied") : t("mobile.git.copyError")}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-danger/70 hover:bg-danger/10 hover:text-danger"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-danger/70 hover:bg-danger/10 hover:text-danger"
       >
         {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
       </button>
@@ -367,7 +367,7 @@ export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss
         onClick={onDismiss}
         aria-label={t("mobile.git.dismissError")}
         title={t("mobile.git.dismissError")}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-danger/70 hover:bg-danger/10 hover:text-danger"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-danger/70 hover:bg-danger/10 hover:text-danger"
       >
         <IconX size={13} />
       </button>
@@ -420,7 +420,7 @@ export function DiffOverlay({
         <button
           type="button"
           onClick={onClose}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-content-muted hover:bg-surface-muted"
+          className="flex h-11 w-11 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted hover:bg-surface-muted"
           aria-label={t("common.close")}
         >
           <IconX size={16} />

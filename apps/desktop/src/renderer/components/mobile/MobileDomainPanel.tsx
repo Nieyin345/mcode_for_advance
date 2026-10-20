@@ -222,7 +222,7 @@ export function MobileDomainPanel() {
         <p
           className={cn(
             "rounded border px-2.5 py-1.5 text-[0.6875rem] leading-relaxed",
-            tunnelNote.tone === "ok" && "border-accent/30 bg-accent/5 text-accent",
+            tunnelNote.tone === "ok" && "border-success/30 bg-success/5 text-success",
             tunnelNote.tone === "warn" && "border-warning/40 bg-warning/10 text-warning",
             tunnelNote.tone === "info" && "border-edge bg-surface/40 text-content-subtle",
           )}

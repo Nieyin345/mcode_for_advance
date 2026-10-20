@@ -12,14 +12,14 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useRpc } from "@renderer/hooks/useRpc.js";
-import { Button, ErrorNote } from "@renderer/components/ui/index.js";
+import { Button, EmptyState, ErrorNote, Spinner } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { FileViewerOverlay } from "./MobileFileViewer.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconFolder, IconFolderOpen, IconFile, IconChevronRight, IconArrowUp, IconLoader2 } from "@renderer/lib/icons.js";
+import { IconFolder, IconFolderOpen, IconFile, IconChevronRight, IconArrowUp } from "@renderer/lib/icons.js";
 
 /** Full-screen read-only file viewer: images render inline; text files render
  *  through the shared Markdown fenced-code path (shiki highlighting). */
@@ -74,9 +74,7 @@ export function MobileFilesScreen() {
   if (!project) {
     return (
       <ScreenShell title={t("layout.nav.files")}>
-        <div className="p-6 text-center text-xs text-content-subtle">
-          {t("browser.selectProjectFirst")}
-        </div>
+        <EmptyState title={t("browser.selectProjectFirst")} />
       </ScreenShell>
     );
   }
@@ -89,7 +87,7 @@ export function MobileFilesScreen() {
           <button
             type="button"
             onClick={up}
-            className="flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-content-muted hover:bg-surface-muted"
+            className="flex min-h-11 shrink-0 items-center gap-0.5 rounded-[var(--radius-btn-md)] px-2 text-content-muted hover:bg-surface-muted"
             title={t("mobile.files.up")}
           >
             <IconArrowUp size={13} />
@@ -105,7 +103,7 @@ export function MobileFilesScreen() {
                 setOpenFile(null);
               }}
               className={cn(
-                "max-w-[9rem] truncate rounded px-1 py-0.5",
+                "flex min-h-11 max-w-[9rem] items-center truncate rounded-[var(--radius-btn-md)] px-2",
                 i === stack.length - 1
                   ? "font-medium text-content"
                   : "text-content-muted hover:bg-surface-muted",
@@ -125,19 +123,17 @@ export function MobileFilesScreen() {
           </ErrorNote>
         ) : entries === null ? (
           <div className="flex h-full items-center justify-center text-content-subtle">
-            <IconLoader2 size={16} className="animate-spin" />
+            <Spinner size="sm" />
           </div>
         ) : entries.length === 0 ? (
-          <div className="p-6 text-center text-xs text-content-subtle">
-            {t("ide.files.emptyDir")}
-          </div>
+          <EmptyState title={t("ide.files.emptyDir")} />
         ) : (
           entries.map((e) => (
             <button
               key={e.path}
               type="button"
               onClick={() => descend(e)}
-              className="flex w-full items-center gap-2 border-b border-edge/60 px-3 py-2.5 text-left hover:bg-surface-muted"
+              className="flex min-h-11 w-full items-center gap-2 border-b border-edge/60 px-3 py-2.5 text-left hover:bg-surface-muted"
             >
               {e.isDir ? (
                 <IconFolder size={16} className="shrink-0 text-content-muted" />
@@ -162,7 +158,7 @@ function ScreenShell({ title, children }: { title: string; children: React.React
   const { t } = useI18n();
   return (
     <div className="flex h-full min-w-0 min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3">
+      <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-edge px-3">
         <span className="text-sm font-medium text-content">{title}</span>
         <span className="flex-1" />
         <span className="flex items-center gap-1 text-[10px] text-content-subtle">
