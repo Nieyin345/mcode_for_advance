@@ -791,11 +791,14 @@ section("16. 【ARC-005】每个被消费的语义 token 都真的有定义");
   for (const m of cssAll.matchAll(/(--[a-z0-9-]+)\s*:/gi)) defined.add(m[1]);
 
   // 运行时写入的变量：品牌色覆盖（AppearancePanel 内联 style）、滚动羽化
-  // 四边（ScrollFade 组件用 style.setProperty 写）、xterm 光标（同上）。
+  // 四边（ScrollFade 组件用 style.setProperty 写）。
+  //
+  // `--terminal-cursor-color` 曾在这里，但它没有任何消费方：xterm 走 ITheme
+  // 对象（canvas 绘制），不读 CSS 变量。白名单里留一个没人写的名字会让这条
+  // 扫描对"注册了但没人用"的属性失明，已随 @property 一起删除。
   const RUNTIME_WRITTEN = new Set([
     "--accent", "--accent-strong", "--brand-clay", "--brand-clay-strong",
     "--sf-top", "--sf-bottom", "--sf-left", "--sf-right",
-    "--terminal-cursor-color",
   ]);
 
   // 只扫「本仓库命名的语义族」—— 不扫 Tailwind/第三方自带的（--tw-*、--radix-*）。
@@ -1036,6 +1039,15 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   const skeleton = skeletonSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
   check("★ 共享 Skeleton 使用 CDS 扫光", skeleton.includes("cds-skeleton"));
   check("★ 共享 Skeleton 不再用 animate-pulse", !/animate-pulse/.test(skeleton));
+  // @property 注册只留**有消费方**的四个滚动羽化边。注册一个没人读的
+  // 类型化属性不会让任何东西可插值，只会给后来者制造"这里在动"的错觉。
+  const cssForProps = read("src/renderer/styles.css") + "\n" + read("src/renderer/tokens.cds.css");
+  const registered = [...cssForProps.matchAll(/@property\s+(--[a-z0-9-]+)/g)].map((m) => m[1]);
+  check("★ @property 只注册 ScrollFade 四边",
+    registered.length === 4 && registered.every((t) => t.startsWith("--sf-")), registered);
+  for (const dead of ["--cds-dot-scale", "--terminal-cursor-color"]) {
+    check(`★ 无消费方的 @property ${dead} 未被注册`, !registered.includes(dead));
+  }
 }
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

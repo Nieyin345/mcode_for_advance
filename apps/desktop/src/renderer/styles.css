@@ -3093,17 +3093,20 @@ html[data-reduce-motion="true"] .cds-quiet-dots > i {
  * 类型化属性，所以滚动羽化、进度条、光晕这些能平滑过渡。
  *
  * 这里先注册 Mcode 真正在动的几组（不照抄上游 90 个装饰性属性）：
- *  - 滚动羽化四边（ScrollFade 用；长度类型，默认 0）；
- *  - 状态点呼吸（数字类型）；
- *  - 终端光标（颜色类型，跟随主题切换时平滑过渡）。
+ *  - 滚动羽化四边（ScrollFade 用；长度类型，默认 0）。
+ *
+ * **刻意不注册**（曾经注册过、确认没有消费方后删除，别再加回来）：
+ *  - `--cds-dot-scale`：状态点的呼吸直接写在 `@keyframes cds-clay-breathe`
+ *    的 `transform: scale()` 里，没有经过自定义属性，注册它不会让任何东西
+ *    变成可插值，只是多一条没有读者的声明；
+ *  - `--terminal-cursor-color`：xterm 的配色走 `ITheme` 对象（canvas 绘制，
+ *    CSS 管不到），不读任何 CSS 变量。
  * 注册是纯增量：不支持 `@property` 的引擎忽略整块，行为退回今天的样子。
  */
 @property --sf-top { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @property --sf-bottom { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @property --sf-left { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @property --sf-right { syntax: "<length>"; inherits: false; initial-value: 0px; }
-@property --cds-dot-scale { syntax: "<number>"; inherits: false; initial-value: 1; }
-@property --terminal-cursor-color { syntax: "<color>"; inherits: true; initial-value: transparent; }
 
 /* ── 【ARC-005 V2】CDS 组件的强制高对比适配（上游 6 处，原 1 处） ──
  * forced-colors 下 UA 丢弃 box-shadow 与背景渐变：状态点会变成不可见的
