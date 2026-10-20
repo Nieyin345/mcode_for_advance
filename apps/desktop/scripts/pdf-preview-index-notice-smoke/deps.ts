@@ -24,7 +24,7 @@ export const api={library:{
 export const useToastStore={getState:()=>({push:()=>{}})};
 let dirty=false;
 export const useFileViewStore={getState:()=>({setDirty:(x:boolean)=>{dirty=x},dirty})};
-export const setFileSaveHandler=(f:(()=>Promise<boolean>)|null)=>{saveHandler=f};
+export const setFileSaveHandler=(f:(()=>Promise<boolean>)|null)=>{saveHandler=f;return ()=>{if(saveHandler===f)saveHandler=null;};};
 export const cn=(...parts:unknown[])=>parts.filter(Boolean).join(" ");
 export const useI18n=()=>({t:(key:string)=>key});
 export const PDFViewer=(_props:unknown)=>null;

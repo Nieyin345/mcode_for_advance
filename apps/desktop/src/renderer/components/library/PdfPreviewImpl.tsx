@@ -354,8 +354,9 @@ export function PdfPreview({
    * FileViewer 会弹「保存 / 放弃 / 取消」,选「保存」时调到这里。卸载时注销。
    */
   useEffect(() => {
-    setFileSaveHandler(save);
-    return () => setFileSaveHandler(null);
+    // Release only this render's registration; a late cleanup must not
+    // unbind a newer PDF preview's save callback.
+    return setFileSaveHandler(save);
   }, [save]);
 
   /**

@@ -123,6 +123,61 @@ console.log("\n【UI-012】「保存我」回调登记与调用");
   check("没有登记保存回调时返回 false(不假装保存成功)", none === false);
 }
 
+console.log("\n【UI-012】重入打开相同目标与旧离开确认令牌");
+{
+  reset();
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  check("★★ reopening the same file cannot silently erase unsaved annotations", hasUnsavedChanges() === true);
+}
+{
+  reset();
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  const pending: Array<{ next: string | null; proceed: () => void }> = [];
+  setFileOpenGuard((next, proceed) => {
+    pending.push({ next: next?.source.kind === "library" ? next.source.ref : null, proceed });
+  });
+  useFileViewStore.getState().open(libTarget("b.pdf"));
+  useFileViewStore.getState().open(libTarget("c.pdf"));
+  pending[0]?.proceed();
+  check("★★ older confirmation must not navigate over the newer pending request", refOf() === "a.pdf", { target: refOf(), pending: pending.length });
+  pending[1]?.proceed();
+  check("the newest confirmation still navigates to the intended file", refOf() === "c.pdf", refOf());
+  useFileViewStore.getState().setDirty(true);
+  pending[1]?.proceed();
+  check("replayed confirmation cannot reset a document dirtied since navigation",
+    refOf() === "c.pdf" && hasUnsavedChanges() === true,
+    { target: refOf(), dirty: hasUnsavedChanges() });
+}
+{
+  reset();
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  let obsolete: (() => void) | undefined;
+  setFileOpenGuard((_next, proceed) => { obsolete = proceed; });
+  useFileViewStore.getState().close();
+  setFileOpenGuard(null);
+  useFileViewStore.getState().open(libTarget("c.pdf"));
+  obsolete?.();
+  check("★★ stale close confirmation cannot discard a newer preview", refOf() === "c.pdf", refOf());
+}
+console.log("\n【UI-012】旧 PDF 实例 cleanup 不得注销新保存回调");
+{
+  reset();
+  const calls: string[] = [];
+  const leaveA = setFileSaveHandler(async () => { calls.push("A"); return true; });
+  const leaveB = setFileSaveHandler(async () => { calls.push("B"); return true; });
+  if (typeof leaveA === "function") leaveA();
+  const newResult = await saveCurrentPreview();
+  check("★★ stale PDF cleanup keeps the latest preview's save handler",
+    newResult === true && calls.join(",") === "B", { newResult, calls });
+  if (typeof leaveB === "function") leaveB();
+  const after = await saveCurrentPreview();
+  check("unmount of active preview removes its own handler", after === false, after);
+}
+
 console.log(`\nfile-view-unsaved-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);
 

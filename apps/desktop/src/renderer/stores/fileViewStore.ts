@@ -105,15 +105,23 @@ export function hasUnsavedChanges(): boolean {
  */
 let openGuard: ((next: FileViewTarget | null, proceed: () => void) => void) | null = null;
 let saveCurrent: (() => Promise<boolean>) | null = null;
+// A delayed leave dialog can outlive its source file or be superseded by
+// another navigation request. Only the latest request can commit a transition.
+let leaveRequestSeq = 0;
 
 /** 登记/注销离开确认(FileViewer 挂载时登记、卸载时传 null)。 */
 export function setFileOpenGuard(guard: ((next: FileViewTarget | null, proceed: () => void) => void) | null): void {
   openGuard = guard;
 }
 
-/** 当前预览登记"保存我"的回调(PDF 预览挂载时登记,卸载时传 null)。 */
-export function setFileSaveHandler(save: (() => Promise<boolean>) | null): void {
+/** Register the active preview save handler. The returned disposer is identity-guarded:
+ * an older PDF instance unmounting after a newer mount may not clear the new handler.
+ * Explicit null registration remains supported by existing callers/tests. */
+export function setFileSaveHandler(save: (() => Promise<boolean>) | null): () => void {
   saveCurrent = save;
+  return () => {
+    if (saveCurrent === save) saveCurrent = null;
+  };
 }
 
 /** 用户选了「保存」时调用 —— 返回是否成功(失败则不切换)。 */
@@ -151,12 +159,17 @@ export const useFileViewStore = create<FileViewState>((set) => ({
   open: (target) => {
     // 在写入之前先看一眼中间是不是已经在显示文档 —— set 之后这个判据永远为真。
     const prevTarget = useFileViewStore.getState().target;
+    const request = ++leaveRequestSeq;
+    // Reopening the currently edited file refreshes its target metadata but
+    // must not clear edits. It also supersedes any prior leave confirmation.
+    const sameFile = prevTarget !== null && sameTarget(prevTarget, target);
     // 【UI-012】真正执行切换这一下。有未保存改动时，先由登记进来的离开确认
     //(`setFileOpenGuard`，FileViewer 挂载时登记)**问过用户**再走到这里 ——
     // 从前无论如何都静默 `set({ target })`，于是没点「保存批注」就切文件时，
     // 内存里的批注无声消失。确认通过(或本就没有未保存改动)才真正切。
     const proceed = (): void => {
-      set({ target, dirty: false });
+      if (request !== leaveRequestSeq || useFileViewStore.getState().target !== prevTarget) return;
+      set({ target, dirty: sameFile ? useFileViewStore.getState().dirty : false });
       void import("./sessionStore.js").then(({ useSessionStore, isCenterShowingDocument }) => {
         const st = useSessionStore.getState();
         // **例外（2026-09-27）**：主页面本来就是文档页（上一份预览还在，或正开着可编辑
@@ -175,7 +188,7 @@ export const useFileViewStore = create<FileViewState>((set) => ({
       useFileViewStore.getState().dirty &&
       openGuard !== null &&
       prevTarget !== null &&
-      !sameTarget(prevTarget, target)
+      !sameFile
     ) {
       openGuard(target, proceed);
       return;
@@ -184,7 +197,12 @@ export const useFileViewStore = create<FileViewState>((set) => ({
   },
   close: () => {
     // 【UI-012】关预览也是"离开当前文件" —— 有未保存改动时同样先问，别静默丢掉。
-    const proceed = (): void => set({ target: null, dirty: false });
+    const previous = useFileViewStore.getState().target;
+    const request = ++leaveRequestSeq;
+    const proceed = (): void => {
+      if (request !== leaveRequestSeq || useFileViewStore.getState().target !== previous) return;
+      set({ target: null, dirty: false });
+    };
     if (useFileViewStore.getState().dirty && openGuard !== null && useFileViewStore.getState().target !== null) {
       openGuard(null, proceed);
       return;
