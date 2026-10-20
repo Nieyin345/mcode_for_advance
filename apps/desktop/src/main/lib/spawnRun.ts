@@ -349,6 +349,45 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   if (cwd !== undefined && (typeof cwd !== "string" || !cwd.trim() || cwd.includes("\0"))) {
     return empty({ spawnError: new Error("spawnRun cwd 必须是有效工作目录字符串") });
   }
+  // In particular, shell="false" is truthy in JavaScript and would run a
+  // command under a shell despite the calling extension's declared intent.
+  // Likewise malformed output-mode flags must not bypass protocol parsing.
+  for (const [name, raw] of [
+    ["shell", options.shell], ["mergeStreams", options.mergeStreams],
+    ["rawOutput", options.rawOutput],
+  ] as const) {
+    if (raw !== undefined && typeof raw !== "boolean") {
+      return empty({ spawnError: new Error(`spawnRun ${name} 必须是布尔值`) });
+    }
+  }
+  for (const [name, callback] of [
+    ["onStdoutLine", options.onStdoutLine],
+    ["onStderrLine", options.onStderrLine],
+    ["onStdoutChunk", options.onStdoutChunk],
+    ["onStderrChunk", options.onStderrChunk],
+  ] as const) {
+    if (callback !== undefined && typeof callback !== "function") {
+      return empty({ spawnError: new Error(`spawnRun ${name} 必须是函数`) });
+    }
+  }
+  // Runtime callers can bypass TypeScript's ProcessEnv type. Never let Node
+  // silently coerce a numeric/array environment or allow embedded NUL bytes.
+  // Keep undefined values and Windows-provided environment names intact.
+  if (env !== undefined) {
+    if (env === null || typeof env !== "object" || Array.isArray(env)) {
+      return empty({ spawnError: new Error("spawnRun env 必须是环境变量对象") });
+    }
+    try {
+      for (const [name, value] of Object.entries(env)) {
+        if (!name || name.includes("\0") ||
+          (value !== undefined && (typeof value !== "string" || value.includes("\0")))) {
+          return empty({ spawnError: new Error("spawnRun env 包含无效变量名或非文本值") });
+        }
+      }
+    } catch (cause) {
+      return empty({ spawnError: new Error(`spawnRun env 读取失败：${safeErrorMessage(cause)}`) });
+    }
+  }
 
   // AbortSignal is an OS-child lifetime authority, not an optional duck type.
   // A null, fabricated object or throwing getter previously made spawnRun
@@ -392,9 +431,25 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   }
 
   let spawnError: Error | undefined;
-  child.on("error", (err: Error) => {
-    spawnError = err;
+  let outputFailed = false;
+  // Hook implementations are supplied by plugins / workflow protocol adapters.
+  // Their exceptions are untrusted: a data-event exception otherwise escapes
+  // EventEmitter, crashes the host or silently leaves a successful exitCode.
+  const failOutput = (cause: unknown): void => {
+    if (outputFailed) return;
+    outputFailed = true;
+    spawnError = new Error(`spawnRun 输出处理失败：${safeErrorMessage(cause)}`);
+    killTree(child);
+  };
+  child.on("error", (err: unknown) => {
+    if (spawnError === undefined) spawnError = new Error(safeErrorMessage(err));
   });
+
+  // A pipe can emit its own "error" (EPIPE, destroyed stream) without the
+  // ChildProcess emitting "error". An unhandled EventEmitter error would
+  // otherwise crash the entire Electron main process.
+  child.stdout?.on("error", failOutput);
+  child.stderr?.on("error", failOutput);
 
   const out = new OutBuf(limitBytes);
   const err = new OutBuf(limitBytes);
@@ -424,26 +479,35 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   };
 
   child.stdout?.on("data", (chunk: Buffer) => {
-    options.onStdoutChunk?.(chunk);
-    if (options.rawOutput) { out.push(chunk); return; }
-    const { lines, rest, truncated } = splitLines(outRest, chunk, maxLineBytes);
-    outRest = rest;
-    if (truncated) outLineTruncated = true;
-    for (const line of lines) feed(line, options.onStdoutLine, out, true);
+    if (outputFailed) return;
+    try {
+      options.onStdoutChunk?.(chunk);
+      if (options.rawOutput) { out.push(chunk); return; }
+      const { lines, rest, truncated } = splitLines(outRest, chunk, maxLineBytes);
+      outRest = rest;
+      if (truncated) outLineTruncated = true;
+      for (const line of lines) feed(line, options.onStdoutLine, out, true);
+    } catch (cause) {
+      failOutput(cause);
+    }
   });
   child.stderr?.on("data", (chunk: Buffer) => {
-    options.onStderrChunk?.(chunk);
-    if (options.rawOutput) { (mergeStreams ? out : err).push(chunk); return; }
-    const { lines, rest, truncated } = splitLines(errRest, chunk, maxLineBytes);
-    errRest = rest;
-    if (truncated) errLineTruncated = true;
-    if (mergeStreams) {
-      // 合并模式:stderr 也并进**同一个**缓冲 —— 命令节点只有一段"输出尾部",
-      // 它不分来源。行仍然逐行过 hook,所以协议行在任一线上都能被认出来。
-      for (const line of lines) feed(line, options.onStderrLine ?? options.onStdoutLine, out, true);
-      return;
+    if (outputFailed) return;
+    try {
+      options.onStderrChunk?.(chunk);
+      if (options.rawOutput) { (mergeStreams ? out : err).push(chunk); return; }
+      const { lines, rest, truncated } = splitLines(errRest, chunk, maxLineBytes);
+      errRest = rest;
+      if (truncated) errLineTruncated = true;
+      if (mergeStreams) {
+        // 合并模式:stderr 也并进**同一个**缓冲。
+        for (const line of lines) feed(line, options.onStderrLine ?? options.onStdoutLine, out, true);
+        return;
+      }
+      for (const line of lines) feed(line, options.onStderrLine, err, true);
+    } catch (cause) {
+      failOutput(cause);
     }
-    for (const line of lines) feed(line, options.onStderrLine, err, true);
   });
 
   const timer =
@@ -463,21 +527,28 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   // Cover aborts racing between the initial check and listener registration.
   if (nativeAbortState(signal) === true) onAbort();
 
-  if (stdin !== undefined && child.stdin) {
-    try {
-      child.stdin.end(stdin);
-    } catch {
-      // 写不进去(进程已经退了)—— 不是错误,继续等它退出。
-    }
-  }
-
-  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+  // Register completion BEFORE writing stdin. Some third-party/embedded
+  // SpawnFns emit a child "error" synchronously inside stdin.end(); if the
+  // completion listener is installed afterwards, the Promise hangs forever.
+  const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
     (resolve) => {
       child.once("exit", (code, sig) => resolve({ code, signal: sig }));
-      // `error` 之后不会再有 `exit`(进程压根没起来)—— 不接这一下会永远挂着。
       child.once("error", () => resolve({ code: null, signal: null }));
     },
   );
+
+  if (stdin !== undefined && child.stdin) {
+    child.stdin.on("error", failOutput);
+    try {
+      child.stdin.end(stdin);
+    } catch (cause) {
+      // A synchronous closed-pipe failure means supplied input was not
+      // delivered. Never report a fake successful execution.
+      failOutput(cause);
+    }
+  }
+
+  const exit = await completion;
 
   if (timer !== undefined) clearTimeout(timer);
   EventTarget.prototype.removeEventListener.call(signal, "abort", onAbort);
@@ -511,20 +582,25 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
 
   // 残行(没有以换行结尾的最后一段)也要交出去 —— 一个只写了一句不带换行的脚本,
   // 输出全在这一段里。**不补换行**(它本来就没有)。
-  if (outRest.length > 0) feed(outRest, options.onStdoutLine, out, false);
+  if (outRest.length > 0 && !outputFailed) {
+    try { feed(outRest, options.onStdoutLine, out, false); }
+    catch (cause) { failOutput(cause); }
+  }
   // ⚠️ **合并模式下 stderr 的残行也要进同一个缓冲。** 从前这里写的是
   // `if (errRest.length > 0 && !mergeStreams)`,于是合并时 stderr 末尾那段**没换行**的
   // 输出被整个丢掉 —— 流式到达的行进得去、残留的尾巴进不去。而一句
   // `console.error("...")`(不带 `\n`)恰恰是最常见的写法,在命令节点里就**看不见**,
   // 偏偏它多半正是那句失败原因。合并模式该走 out(见上面 data 里那两支的同一取舍)。
-  if (errRest.length > 0) {
-    if (mergeStreams) feed(errRest, options.onStderrLine ?? options.onStdoutLine, out, false);
-    else feed(errRest, options.onStderrLine, err, false);
+  if (errRest.length > 0 && !outputFailed) {
+    try {
+      if (mergeStreams) feed(errRest, options.onStderrLine ?? options.onStdoutLine, out, false);
+      else feed(errRest, options.onStderrLine, err, false);
+    } catch (cause) { failOutput(cause); }
   }
 
   return {
-    code: exit.code,
-    signal: exit.signal,
+    code: outputFailed ? null : exit.code,
+    signal: outputFailed ? null : exit.signal,
     stdout: out.text(),
     stderr: mergeStreams ? "" : err.text(),
     stdoutTruncated: out.truncated,

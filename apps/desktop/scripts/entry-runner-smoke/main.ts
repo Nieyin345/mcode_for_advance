@@ -161,7 +161,12 @@ function fakeChild(stdinSink: string[]): ChildProcess & {
   (ee as { pid?: number }).pid = 4242;
   (ee as { stdout?: EventEmitter }).stdout = new EventEmitter();
   (ee as { stderr?: EventEmitter }).stderr = new EventEmitter();
-  (ee as { stdin?: unknown }).stdin = { end: (chunk: string) => { stdinSink.push(String(chunk)); } };
+  // A real writable stdin is also an EventEmitter and can emit EPIPE. The
+  // fake must preserve that interface so the shared process owner can install
+  // its error handler instead of leaving a tested-only mismatch.
+  const stdin = new EventEmitter() as EventEmitter & { end: (chunk: string) => void };
+  stdin.end = (chunk: string) => { stdinSink.push(String(chunk)); };
+  (ee as { stdin?: unknown }).stdin = stdin;
   (ee as { kill?: () => void }).kill = () => {};
   ee.emitExit = (code, signal) => {
     ee.emit("exit", code, signal);

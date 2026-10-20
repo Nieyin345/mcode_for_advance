@@ -669,5 +669,267 @@ console.log("\nDirect command API rejects forged cancellation before spawn");
   }
   eq("★ malformed direct command signals launch no child",launches,0);
 }
+console.log("\nShared spawnRun · external output/protocol hook exceptions fail closed");
+{
+  const phases = [
+    "stdout-line", "stderr-line", "stdout-chunk", "stderr-chunk",
+    "stdout-tail", "stderr-tail",
+  ] as const;
+  for (const phase of phases) {
+    let emitterThrew = false;
+    const bad = Object.create(null) as Error;
+    const child = fakeChild();
+    const spawn = (() => {
+      queueMicrotask(() => {
+        try {
+          const stream = phase.startsWith("stdout") ? child.stdout : child.stderr;
+          (stream as EventEmitter).emit("data",
+            Buffer.from(phase.endsWith("tail") ? "partial-without-newline" : "progress-line\n"));
+        } catch {
+          emitterThrew = true;
+        }
+        (child as unknown as {emitExit:(c:number|null,s:NodeJS.Signals|null)=>void}).emitExit(0,null);
+      });
+      return child;
+    }) as unknown as SpawnFn;
+    let run:Awaited<ReturnType<typeof spawnRun>>|undefined;
+    let rejected=false;
+    const hook = (): never => { throw bad; };
+    try {
+      run = await spawnRun({
+        command:"mock-stream", timeoutMs:0, limitBytes:4000,
+        signal:controller().signal, spawn,
+        ...(phase === "stdout-line" || phase === "stdout-tail" ? { onStdoutLine:hook } : {}),
+        ...(phase === "stderr-line" || phase === "stderr-tail" ? { onStderrLine:hook } : {}),
+        ...(phase === "stdout-chunk" ? { onStdoutChunk:hook } : {}),
+        ...(phase === "stderr-chunk" ? { onStderrChunk:hook } : {}),
+      });
+    } catch { rejected = true; }
+    check("★ output hook cannot crash event loop or turn hook failure into successful result: "+phase,
+      !emitterThrew && !rejected && run?.code === null
+      && run.spawnError instanceof Error && typeof run.spawnError.message === "string",
+      {phase, emitterThrew, rejected, code:run?.code, error:run?.spawnError?.message});
+  }
+}
+
+console.log("\nShared process stdio error events cannot crash the Host");
+{
+  for (const stream of ["stdout", "stderr", "stdin"] as const) {
+    let emitterThrew = false;
+    const child = fakeChild() as ChildProcess & {
+      stdin: EventEmitter & { end: (text: string) => void };
+      emitExit: (c:number|null,s:NodeJS.Signals|null)=>void;
+    };
+    if (stream === "stdin") {
+      const stdin = new EventEmitter() as EventEmitter & {end:(text:string)=>void};
+      stdin.end = () => queueMicrotask(() => {
+        try { stdin.emit("error", new Error("EPIPE")); }
+        catch { emitterThrew=true; }
+        child.emitExit(0,null);
+      });
+      (child as unknown as {stdin:typeof stdin}).stdin = stdin;
+    }
+    const spawn = (() => {
+      if (stream !== "stdin") queueMicrotask(() => {
+        try { (child[stream] as EventEmitter).emit("error", new Error("STREAM_BREAK")); }
+        catch { emitterThrew=true; }
+        child.emitExit(0,null);
+      });
+      return child;
+    }) as unknown as SpawnFn;
+    let result:Awaited<ReturnType<typeof spawnRun>>|undefined;
+    let rejected=false;
+    try {
+      result=await spawnRun({command:"mock-stream",timeoutMs:0,limitBytes:2048,
+        signal:controller().signal,spawn,
+        ...(stream==="stdin" ? {stdin:"stream input"} : {})});
+    } catch {rejected=true;}
+    check("★ child "+stream+" stream errors are reported and cannot escape EventEmitter",
+      !rejected && !emitterThrew && result?.code===null
+      && result.spawnError instanceof Error,
+      {stream, emitterThrew, rejected, code:result?.code,error:result?.spawnError?.message});
+  }
+}
+
+console.log("\nShared spawnRun · synchronous child error while writing stdin");
+{
+  const child = fakeChild() as ChildProcess & {
+    stdin: EventEmitter & {end:(text:string)=>void};
+  };
+  // Match real Node ChildProcess: exitCode/signalCode start at null.
+  (child as unknown as {exitCode:number|null}).exitCode = null;
+  (child as unknown as {signalCode:NodeJS.Signals|null}).signalCode = null;
+  const stdin = new EventEmitter() as EventEmitter & {end:(text:string)=>void};
+  stdin.end = () => {
+    // Custom/embedded SpawnFns can deliver an error synchronously here.
+    // The exit/error completion promise must already be listening.
+    child.emit("error", new Error("EPIPE-during-stdin"));
+  };
+  (child as unknown as {stdin:typeof stdin}).stdin = stdin;
+  const spawn = (() => child) as unknown as SpawnFn;
+  const operation = spawnRun({
+    command:"mock-sync-error", timeoutMs:0, limitBytes:500,
+    signal:controller().signal, spawn, stdin:"payload",
+  });
+  const settled = await Promise.race([
+    operation.then((result) => ({kind:"settled" as const,result})),
+    new Promise<{kind:"timed-out"}>((resolve) =>
+      setTimeout(() => resolve({kind:"timed-out"}), 100)),
+  ]);
+  check("★ sync child.error during stdin cannot strand the run forever",
+    settled.kind==="settled" && settled.result.code===null &&
+      settled.result.spawnError instanceof Error,
+    settled.kind==="settled"
+      ? {kind:settled.kind,code:settled.result.code,error:settled.result.spawnError?.message}
+      : {kind:settled.kind});
+}
+
+console.log("\nReal Node process · output observer throws a noncoercible value");
+{
+  const run = await spawnRun({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('hook-failure\\n')"],
+    timeoutMs: 4000,
+    limitBytes: 4096,
+    signal: controller().signal,
+    onStdoutLine: () => { throw Object.create(null); },
+  });
+  check("★ real OS child output callback exception reports failed instead of successful exit",
+    run.code === null && run.spawnError instanceof Error &&
+      /输出处理失败/.test(run.spawnError.message) && !run.killedBy.timeout,
+    {code:run.code,error:run.spawnError?.message,killedBy:run.killedBy});
+}
+
+console.log("\nShared SpawnPort · pipe errors and untrusted execution-mode options");
+{
+  // stdin can throw EPIPE after a child exits early. stdout and stderr can
+  // independently report stream errors. None may escape as unhandled events.
+  for (const stream of ["stdout", "stderr", "stdin"] as const) {
+    const child = fakeChild();
+    let emittedError = false;
+    const pipeError = new Error(stream+" simulated pipe EPIPE");
+    if (stream === "stdin") {
+      const fakeInput = new EventEmitter() as EventEmitter & {end:(s:string)=>void};
+      fakeInput.end = () => { fakeInput.emit("error",pipeError); };
+      (child as {stdin?:unknown}).stdin = fakeInput;
+    }
+    const spawn = (() => {
+      queueMicrotask(() => {
+        if (stream !== "stdin") {
+          try { (child[stream] as EventEmitter).emit("error",pipeError); }
+          catch { emittedError = true; }
+        }
+        (child as unknown as {emitExit:(c:number|null,s:NodeJS.Signals|null)=>void}).emitExit(0,null);
+      });
+      return child;
+    }) as unknown as SpawnFn;
+    let rejected = false;
+    let result: Awaited<ReturnType<typeof spawnRun>> | undefined;
+    try { result = await spawnRun({command:"fake child",timeoutMs:0,limitBytes:400,
+      signal:controller().signal,spawn,
+      ...(stream === "stdin" ? {stdin:"data"} : {})}); }
+    catch { rejected = true; }
+    check("★ pipe error must produce failed result, never an unhandled event: "+stream,
+      !emittedError && !rejected && result?.code===null && result.spawnError instanceof Error,
+      {stream,emittedError,rejected,code:result?.code,error:result?.spawnError?.message});
+  }
+}
+{
+  // Direct plugin/IPC callers bypass the typed schema. Truthy values must
+  // not change the executor into shell mode or raw/merged output silently.
+  const flags: Array<{label:string;patch:Record<string,unknown>}> = [
+    {label:"shell string false",patch:{shell:"false"}},
+    {label:"shell number one",patch:{shell:1}},
+    {label:"mergeStreams string false",patch:{mergeStreams:"false"}},
+    {label:"rawOutput string false",patch:{rawOutput:"false"}},
+    {label:"nonfunction onStdoutLine",patch:{onStdoutLine:"sentinel"}},
+    {label:"nonfunction onStderrChunk",patch:{onStderrChunk:42}},
+  ];
+  for (const {label,patch} of flags) {
+    let launches=0;
+    const spawn=(()=>{
+      launches++;
+      const child=fakeChild();
+      queueMicrotask(()=>{
+        (child as unknown as {emitExit:(c:number|null,s:NodeJS.Signals|null)=>void}).emitExit(0,null);
+      });
+      return child;
+    }) as unknown as SpawnFn;
+    let rejected=false;
+    let result:Awaited<ReturnType<typeof spawnRun>>|undefined;
+    try {
+      result=await spawnRun({command:"no execution",timeoutMs:0,limitBytes:500,
+        signal:controller().signal,spawn,...patch} as unknown as Parameters<typeof spawnRun>[0]);
+    } catch {rejected=true;}
+    check("★ malformed shared spawn option rejected before spawning: "+label,
+      !rejected&&launches===0&&result?.code===null&&result.spawnError instanceof Error,
+      {label,launches,rejected,code:result?.code,error:result?.spawnError?.message});
+  }
+}
+
+console.log("\nShared SpawnPort · environment contract must be checked before native launch");
+{
+  const cases: Array<{label:string;env:unknown}> = [
+    {label:"string env",env:"PATH=injected"},
+    {label:"array env",env:["PATH=injected"]},
+    {label:"numeric env value",env:{PATH:123}},
+    {label:"null env value",env:{PATH:null}},
+    {label:"NUL env key",env:{"EVIL\0KEY":"value"}},
+    {label:"NUL env value",env:{PATH:"ok\0bad"}},
+  ];
+  for (const {label,env} of cases) {
+    let launches=0;
+    const spawn=(()=>{
+      launches++;
+      const child=fakeChild();
+      queueMicrotask(()=>(child as unknown as {
+        emitExit:(c:number|null,s:NodeJS.Signals|null)=>void
+      }).emitExit(0,null));
+      return child;
+    }) as unknown as SpawnFn;
+    let result:Awaited<ReturnType<typeof spawnRun>>|undefined;
+    let rejected=false;
+    try {
+      result=await spawnRun({command:"no env execution",timeoutMs:0,limitBytes:200,
+        signal:controller().signal,env:env as NodeJS.ProcessEnv,spawn});
+    } catch { rejected=true; }
+    check("★ malformed environment rejected before process creation: "+label,
+      !rejected && launches===0 && result?.code===null && result.spawnError instanceof Error,
+      {label,launches,rejected,code:result?.code,error:result?.spawnError?.message});
+  }
+}
+
+// Preserve legitimate inherited OS environments and native execution flags.
+{
+  const validEnv: NodeJS.ProcessEnv = { SAFE_PATH: "C:/isolated", UNSET: undefined };
+  let captured: NodeJS.ProcessEnv | undefined;
+  const spawn=((_cmd:string,_args:string[],opts:{env?:NodeJS.ProcessEnv})=>{
+    captured=opts.env;
+    const child=fakeChild();
+    queueMicrotask(()=>(child as unknown as {
+      emitExit:(c:number|null,s:NodeJS.Signals|null)=>void
+    }).emitExit(0,null));
+    return child;
+  }) as unknown as SpawnFn;
+  const result=await spawnRun({command:"valid-env",env:validEnv,shell:false,
+    rawOutput:false,mergeStreams:false,timeoutMs:0,limitBytes:400,
+    signal:controller().signal,spawn});
+  check("★ valid environment with an optional undefined var and boolean flags still runs",
+    result.code===0 && captured===validEnv && !result.spawnError,
+    {code:result.code,error:result.spawnError?.message});
+  const hostileEnv:NodeJS.ProcessEnv={SAFE_PATH:"ok"};
+  Object.defineProperty(hostileEnv,"TRAP",{enumerable:true,get(){throw Object.create(null);}});
+  let launches=0;
+  const badSpawn=(()=>{launches++;return fakeChild();}) as unknown as SpawnFn;
+  let hostileResult:Awaited<ReturnType<typeof spawnRun>>|undefined;
+  let rejected=false;
+  try{hostileResult=await spawnRun({command:"no getter invocation from native process",
+    env:hostileEnv,timeoutMs:0,limitBytes:400,
+    signal:controller().signal,spawn:badSpawn});}catch{rejected=true;}
+  check("★ noncoercible environment getter failure returns safe error before OS launch",
+    !rejected && launches===0 && hostileResult?.spawnError instanceof Error,
+    {launches,rejected,error:hostileResult?.spawnError?.message});
+}
+
 console.log(`\n${total - failures}/${total} checks passed${failures === 0 ? "" : ` — ${failures} FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
