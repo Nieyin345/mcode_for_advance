@@ -135,3 +135,36 @@
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 · T14 执行回写
+
+- **第 0 步**：依据 `npm view @theia/plugin-ext-vscode@1.76.0` 只读元数据，
+  发现 **19 个直接依赖**；Theia 文档确认 `plugin-vscode-init.ts` 只包装
+  已由 `plugin-ext` 创建的宿主 API，不能无宿主独立拆用。许可为
+  `EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0`；
+  本片无 Theia/VSIX 下载/链接/分发，因此没有新引入许可证文件。
+  降级为成熟 VS Code API 约定 + 本仓 ModuleHost 的狭义薄映射（没有新增 `vscode.d.ts`）。
+- **第 1 步**：L2 五类与依赖/权限/既有通路对照表见
+  `docs/planning/extension-vscode-compat.md` §6。
+- **第 2 步**：只扩 `vscodeL1Bridge.ts`：
+  单文件 `workspace.fs.readFile/writeFile`、只读配置、
+  通知 DTO/可信宿主端口、只读编辑器命令注册、
+  诊断 DTO/可信宿主端口；全部通过同一
+  `VscodeL1Bridge.executeCommand → ModuleHost.invoke`，
+  即 `authorize + requestApproval + permissioned child`，
+  不添加第二权限通道，不改变 L1 的用户可见行为。
+- **第 3 步**：在现有 `vscode-l1-smoke` 内追加断言，
+  正常/未授权/越界五类覆盖，编辑器命令另有越界拒绝；
+  结果 **25/25 PASS**，兼容的 L1 旧断言全绿。
+  当前源码目录实际有 **13** 套 `module-*-smoke`（并非卡片所写 17）；
+  13 套加 `vscode-l1-smoke`，**14/14 suites PASS**。
+  双包 `tsc --noEmit` 均 exit 0。
+- **变异 E1**：撤掉显式写授权检查，`vscode-l1-smoke` 从
+  25/25 变 **24/25**；撤掉 URI 单资源路径围栏后变 **22/25**；
+  源码逐字节恢复，源文件 SHA256 =
+  `f6117bc18bc6a12017621281e3f0d2f7821338b526b00ece29537e4ef94bb900`。
+- **判据/remaining**：1、2、3、4、6、7 在本片受限 API/E1 意义下有证据；
+  **第 5 条字面未能证明 17 套**（仓库只存在 13 套，13/13 通过）。
+  实际可用 L2 仍限于单资源快照：文件写入缺 CAS，编辑器
+  `editor.edit` 不支持，通知/诊断需可信应用端真正接 UI/LSP，
+  配置没有变化监听；这些不是完整 VS Code API/真实 Electron U1 的完成声明。

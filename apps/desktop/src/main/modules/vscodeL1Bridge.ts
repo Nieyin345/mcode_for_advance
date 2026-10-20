@@ -28,6 +28,32 @@ const packageSchema = z.object({
 
 export type VscodeStatusBarSnapshot = { text: string; tooltip: string; command: string | null };
 
+/**
+ * Opt-in, single-resource L2 adapter ports. The actual Settings/Toast/diagnostics
+ * services are owned by the trusted caller, NOT the VSIX process or this bridge.
+ * Absent ports fail closed when an extension attempts to publish the corresponding DTO.
+ * This is deliberately not a general VS Code API implementation.
+ */
+export interface VscodeL2Ports {
+  /** Non-secret, per-extension SettingRepo projection, taken by a trusted host. */
+  configuration?: Record<string, string | number | boolean>;
+  /** Requests ModuleHost's existing resource.write/action approval on EVERY invocation. */
+  fileWrite?: boolean;
+  notify?: (message: { kind: "info" | "warning"; text: string }) => Promise<void>;
+  publishDiagnostics?: (snapshot: { name: string; path: string; messages: string[] }) => Promise<void>;
+}
+
+const l2ConfigSchema = z.record(z.union([z.string().max(1000), z.number().finite(), z.boolean()]))
+  .refine(value => Object.keys(value).length <= 32, "Too many extension configuration keys");
+
+const l2NotificationsSchema = z.array(z.object({
+  kind: z.enum(["info", "warning"]), text: z.string().min(1).max(256),
+}).strict()).max(4);
+const l2DiagnosticsSchema = z.array(z.object({
+  name: z.string().min(1).max(80), path: z.string().min(1).max(4096),
+  messages: z.array(z.string().min(1).max(256)).max(8),
+}).strict()).max(4);
+
 /** Only ZIP STORE with exact offsets and CRC32; no traversal, symlinks, decompression or other entries. */
 export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; source: string } {
   if (archive.length < 100 || archive.length > 128 * 1024) throw Error("VSIX size out of L1 bounds");
@@ -100,14 +126,118 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
  * is a returned snapshot, NOT a live widget; only commands declared in contributes
  * are eligible. Unsupported vscode API access throws rather than silently no-ops.
  */
-function childProgram(entry: string, command: string): string {
+/**
+ * L2 is a small opt-in API-to-ModuleResource adapter, not a VS Code extension
+ * runtime. File operations are bound to the ONE already-authorized resource;
+ * the real Node permissioned child is still ModuleHost's sole executor.
+ * Editor edit transactions and long-lived diagnostics are NOT emulated.
+ */
+function childL2Snippet(command: string, section: string, configuration: Record<string, string | number | boolean>, fileWrite: boolean): string {
+  return `
+      const l2Notifications = [], l2Diagnostics = [];
+      const l2Fs = require("node:fs");
+      const l2Uri = Object.freeze({
+        file: (fsPath) => {
+          if (typeof fsPath !== "string" || fsPath.length > 4096) throw Error("L2 invalid file URI");
+          return Object.freeze({ scheme: "file", fsPath });
+        }
+      });
+      const l2Path = (uri) => {
+        if (!uri || uri.scheme !== "file" || uri.fsPath !== resource.path)
+          throw Error("L2 scope denied: URI differs from authorized resource");
+        return resource.path;
+      };
+      const l2Notify = (kind, text) => {
+        if (typeof text !== "string" || !text.trim() || text.length > 256 || l2Notifications.length >= 4)
+          throw Error("L2 notification out of bounds");
+        l2Notifications.push({ kind, text });
+        return Promise.resolve(undefined);
+      };
+      const l2Configuration = Object.freeze(${JSON.stringify(configuration)});
+      const l2 = Object.freeze({
+        Uri: l2Uri,
+        workspace: Object.freeze({
+          fs: Object.freeze({
+            readFile: async (uri) => {
+              const bytes = l2Fs.readFileSync(l2Path(uri));
+              if (bytes.byteLength > 1024 * 1024) throw Error("L2 read exceeds 1 MiB");
+              return new Uint8Array(bytes);
+            },
+            writeFile: async (uri, bytes) => {
+              if (!${JSON.stringify(fileWrite)}) throw Error("L2 resource.write permission required");
+              const path = l2Path(uri);
+              if (!(bytes instanceof Uint8Array) || bytes.byteLength > 1024 * 1024)
+                throw Error("L2 write requires Uint8Array <= 1 MiB");
+              l2Fs.writeFileSync(path, bytes);
+            }
+          }),
+          getConfiguration: (requested) => {
+            if (requested !== undefined && requested !== ${JSON.stringify(section)})
+              throw Error("L2 configuration namespace denied");
+            return Object.freeze({
+              get: (key, defaultValue) => {
+                if (typeof key !== "string" || !/^[a-zA-Z][a-zA-Z0-9._-]{0,79}$/.test(key))
+                  throw Error("L2 configuration key invalid");
+                return Object.prototype.hasOwnProperty.call(l2Configuration, key)
+                  ? l2Configuration[key] : defaultValue;
+              },
+              has: (key) => Object.prototype.hasOwnProperty.call(l2Configuration, key)
+            });
+          }
+        }),
+        window: Object.freeze({
+          showInformationMessage: (text) => l2Notify("info", text),
+          showWarningMessage: (text) => l2Notify("warning", text)
+        }),
+        commands: Object.freeze({
+          registerTextEditorCommand: (id, callback) => {
+            if (id !== ${JSON.stringify(command)} || typeof callback !== "function" || handlers.has(id))
+              throw Error("L2 editor command undeclared or duplicate");
+            handlers.set(id, async (selected) => callback(Object.freeze({
+              document: Object.freeze({
+                uri: l2Uri.file(selected.path),
+                getText: () => l2Fs.readFileSync(selected.path, "utf8")
+              }),
+              edit: () => { throw Error("L2 editor edit transactions unsupported"); }
+            })));
+            return { dispose() { handlers.delete(id); } };
+          }
+        }),
+        languages: Object.freeze({
+          createDiagnosticCollection: (name) => {
+            if (typeof name !== "string" || !name.trim() || name.length > 80)
+              throw Error("L2 invalid diagnostic collection name");
+            if (l2Diagnostics.length >= 4) throw Error("L2 too many diagnostic collections");
+            const record = { name, path: resource.path, messages: [] };
+            l2Diagnostics.push(record);
+            return Object.freeze({
+              set: (uri, entries) => {
+                l2Path(uri);
+                if (!Array.isArray(entries) || entries.length > 8 ||
+                    entries.some(x => !x || typeof x.message !== "string" || !x.message.trim() || x.message.length > 256))
+                  throw Error("L2 diagnostics out of bounds");
+                record.messages = entries.map(x => x.message);
+              },
+              clear: () => { record.messages = []; },
+              dispose: () => { record.messages = []; }
+            });
+          }
+        })
+      });
+  `;
+}
+
+function childProgram(entry: string, command: string, l2?: { section: string; configuration: Record<string, string | number | boolean>; fileWrite: boolean }): string {
   return `({
     run: async (resource) => {
       const handlers = new Map();
       const statusBars = [];
       const disposables = [];
+      ${l2 ? childL2Snippet(command, l2.section, l2.configuration, l2.fileWrite) : "const l2 = null;"}
       const vscode = Object.freeze({
+        ...(l2 ? { Uri: l2.Uri, workspace: l2.workspace, languages: l2.languages } : {}),
         commands: Object.freeze({
+          ...(l2 ? l2.commands : {}),
           registerCommand: (id, handler) => {
             if (id !== ${JSON.stringify(command)} || typeof handler !== "function" || handlers.has(id)) {
               throw Error("Undeclared or duplicate VS Code command");
@@ -117,6 +247,7 @@ function childProgram(entry: string, command: string): string {
           }
         }),
         window: Object.freeze({
+          ...(l2 ? l2.window : {}),
           createStatusBarItem: () => {
             if (statusBars.length) throw Error("L1 permits one status bar item");
             const item = { text: "", tooltip: "", command: undefined, visible: false,
@@ -147,7 +278,11 @@ function childProgram(entry: string, command: string): string {
         message: typeof value === "string" ? value.slice(0, 4096) : JSON.stringify(value ?? null).slice(0, 4096),
         statusBarText: bar ? String(bar.text).slice(0, 4096) : "",
         statusBarTooltip: bar ? String(bar.tooltip).slice(0, 4096) : "",
-        statusBarCommand: bar && bar.command === ${JSON.stringify(command)} ? bar.command : ""
+        statusBarCommand: bar && bar.command === ${JSON.stringify(command)} ? bar.command : "",
+        ...(l2 ? {
+          l2Notifications: JSON.stringify(l2Notifications),
+          l2Diagnostics: JSON.stringify(l2Diagnostics)
+        } : {})
       };
     }
   })`;
@@ -160,10 +295,11 @@ export class VscodeL1Bridge {
     readonly moduleId: string,
     readonly commandId: string,
     private readonly installedManifest: string,
+    private readonly l2?: VscodeL2Ports,
   ) {}
 
   /** Trusted host entry only. Explicit install consent is required; never expose directly to an agent/renderer. */
-  static async install(host: ModuleHost, archive: Uint8Array, consent: { confirmReadAccess: boolean; confirmExecutableCode: boolean }): Promise<VscodeL1Bridge> {
+  static async install(host: ModuleHost, archive: Uint8Array, consent: { confirmReadAccess: boolean; confirmExecutableCode: boolean }, l2?: VscodeL2Ports): Promise<VscodeL1Bridge> {
     const { packageJson, source } = readMinimalVsix(archive);
     const pkg = packageSchema.parse(packageJson);
     const commandId = pkg.contributes.commands[0].command;
@@ -176,10 +312,11 @@ export class VscodeL1Bridge {
     if (source.length > 24 * 1024) throw Error("VSIX entry exceeds the L1 source limit");
     const moduleId = "user." + pkg.publisher + "." + pkg.name;
     const title = pkg.displayName ?? pkg.name;
+    const configuration = l2ConfigSchema.parse(l2?.configuration ?? {});
     const manifest = {
       apiVersion: 1, id: moduleId, version: pkg.version,
       title: { zh: title, en: title },
-      permissions: ["resource.read"],
+      permissions: l2?.fileWrite ? ["resource.read", "resource.write"] : ["resource.read"],
       contributions: [{
         id: "run", slot: "files.context", capability: "module.run",
         title: { zh: pkg.contributes.commands[0].title, en: pkg.contributes.commands[0].title },
@@ -188,11 +325,13 @@ export class VscodeL1Bridge {
           { key: "statusBarText", title: { zh: "状态", en: "Status" } },
         ] },
       }],
-      program: { source: childProgram(source, commandId), timeoutMs: 10_000 },
+      program: { source: childProgram(source, commandId, l2 ? {
+        section: pkg.publisher + "." + pkg.name, configuration, fileWrite: l2.fileWrite === true,
+      } : undefined), timeoutMs: 10_000 },
     };
     const checked = ModuleInstallSchema.parse({ manifest, ...consent });
     await host.install(checked.manifest);
-    return new VscodeL1Bridge(host, moduleId, commandId, JSON.stringify(checked.manifest));
+    return new VscodeL1Bridge(host, moduleId, commandId, JSON.stringify(checked.manifest), l2);
   }
 
   /** Prevent a stale adapter from targeting a replaced same-ID extension. */
@@ -207,6 +346,19 @@ export class VscodeL1Bridge {
     if (!this.isCurrent()) throw Error("VSIX module removed or replaced; adapter must be reloaded");
     const reply = await this.host.invoke({ moduleId: this.moduleId, contributionId: "run", resource, requestId });
     if (reply.type === "result") {
+      if (this.l2) {
+        const notifications = l2NotificationsSchema.parse(JSON.parse(String(reply.value.l2Notifications)));
+        const diagnostics = l2DiagnosticsSchema.parse(JSON.parse(String(reply.value.l2Diagnostics)));
+        for (const notice of notifications) {
+          if (!this.l2.notify) throw Error("L2 notification host port unavailable");
+          await this.l2.notify(notice);
+        }
+        for (const diagnostic of diagnostics) {
+          if (diagnostic.path !== resource.path) throw Error("L2 diagnostic scope denied");
+          if (!this.l2.publishDiagnostics) throw Error("L2 diagnostics host port unavailable");
+          await this.l2.publishDiagnostics(diagnostic);
+        }
+      }
       const text = reply.value.statusBarText;
       const tooltip = reply.value.statusBarTooltip;
       const command = reply.value.statusBarCommand;
