@@ -490,7 +490,7 @@ export function SidebarMenu({
           <Menu.Popup
             style={{ minWidth }}
             className={cn(
-              "origin-top-left rounded-md border border-edge bg-surface py-1 shadow-2xl",
+              "origin-top-left rounded-[var(--radius-btn-md)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
             )}

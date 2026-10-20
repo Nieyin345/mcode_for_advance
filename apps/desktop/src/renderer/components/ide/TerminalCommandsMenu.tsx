@@ -108,7 +108,7 @@ export function TerminalCommandsMenu({
           <Menu.Positioner side="top" align="end" sideOffset={4}>
             <Menu.Popup
               className={cn(
-                "z-50 min-w-[260px] origin-bottom-right rounded-md border border-edge bg-surface py-1 shadow-2xl",
+                "z-50 min-w-[260px] origin-bottom-right rounded-[var(--radius-btn-md)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
                 "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                 "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                 "transition-[transform,opacity] duration-100",

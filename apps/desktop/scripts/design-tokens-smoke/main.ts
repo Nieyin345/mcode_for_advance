@@ -777,5 +777,72 @@ section("15. 【ARC-005】HTML 本地预览入口（工作区围栏 + 复用浏�
   }
 }
 
+section("16. 【ARC-005】每个被消费的语义 token 都真的有定义");
+{
+  // 判据来自一个真实缺陷：`dialog.tsx` 写着 `shadow-[var(--shadow-lg)]`，
+  // 而 styles.css 里**只定义过 --shadow-popover** —— 未定义的自定义属性让
+  // 整条 box-shadow 在计算值阶段失效，所有弹窗实际都没有阴影，却没有任何
+  // 门禁会红。这里做系统性扫描：渲染端每个 `var(--x)` 引用，若 `--x` 是
+  // 本仓库自有的 token（出现在任何 `--x:` 声明里，或属于受管的语义族），
+  // 就必须在 styles.css / tokens.cds.css 的某处有定义（或由 TS 运行时写入，
+  // 见白名单）。
+  const cssAll = read("src/renderer/styles.css") + "\n" + read("src/renderer/tokens.cds.css");
+  const defined = new Set<string>();
+  for (const m of cssAll.matchAll(/(--[a-z0-9-]+)\s*:/gi)) defined.add(m[1]);
+
+  // 运行时写入的变量：品牌色覆盖（AppearancePanel 内联 style）、滚动羽化
+  // 四边（ScrollFade 组件用 style.setProperty 写）、xterm 光标（同上）。
+  const RUNTIME_WRITTEN = new Set([
+    "--accent", "--accent-strong", "--brand-clay", "--brand-clay-strong",
+    "--sf-top", "--sf-bottom", "--sf-left", "--sf-right",
+    "--terminal-cursor-color",
+  ]);
+
+  // 只扫「本仓库命名的语义族」—— 不扫 Tailwind/第三方自带的（--tw-*、--radix-*）。
+  const OWNED_PREFIX = /^--(cds|m|sk|chat|rp|right-panel|composer|dur|ease|spring|shadow|radius|sf|terminal|diff|git-lane|focus|hairline|edge|surface|content|accent|danger|warning|success|info|code|panel|input|brand|bubble|space|font|text|border)/;
+
+  const srcFiles: string[] = [];
+  const walk = (dir: string): void => {
+    const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+    for (const name of readdirSync(join(root, dir))) {
+      const rel = `${dir}/${name}`;
+      const st = statSync(join(root, rel));
+      if (st.isDirectory()) walk(rel);
+      else if (/\.(tsx?|css)$/.test(name)) srcFiles.push(rel);
+    }
+  };
+  walk("src/renderer");
+
+  const missing = new Map<string, string[]>(); // token → 引用它的文件
+  for (const file of srcFiles) {
+    const src = read(file);
+    // 只取 var() 的**第一个参数**，并记下有没有 fallback：
+    //  - `var(--x, 64rem)` 带回落值时，即使 --x 未定义也不会让整条声明失效
+    //    （--chat-max-w 就是这种「用户自定义可选」变量），不列为缺陷；
+    //  - 名字里带 `${` 是模板拼出来的动态 token（`--git-lane-${i}`），跳过；
+    //  - 以 `-` 结尾或形如 `-N` 的是文档/注释里的占位名，跳过。
+    for (const m of src.matchAll(/var\(\s*(--[a-z0-9-]+)(\s*,[^)]*)?\)/gi)) {
+      const tok = m[1];
+      const hasFallback = m[2] !== undefined;
+      if (hasFallback) continue;
+      if (!OWNED_PREFIX.test(tok)) continue;
+      if (tok.endsWith("-") || /-N$/.test(tok)) continue;
+      if (defined.has(tok) || RUNTIME_WRITTEN.has(tok)) continue;
+      // 同文件内自己定义的（组件内联 <style> 或局部 :root）也算有定义。
+      if (new RegExp(`${tok}\\s*:`).test(src)) continue;
+      const list = missing.get(tok) ?? [];
+      if (!list.includes(file)) list.push(file);
+      missing.set(tok, list);
+    }
+  }
+  check("★ 所有被引用的自有 token 都有定义（--shadow-lg 缺定义就是这样漏掉的）",
+    missing.size === 0, Object.fromEntries(missing));
+
+  // 反向正控：确认扫描**不是空过** —— styles.css 里必须能认出 shadow 族，
+  // 且上面那个真实缺陷的 token 现在确实被定义。
+  check("★ 扫描基线：--shadow-popover 被认出为已定义", defined.has("--shadow-popover"));
+  check("★ --shadow-lg 已定义（Dialog 阴影不再是死声明）", defined.has("--shadow-lg"));
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

@@ -1020,6 +1020,11 @@ body {
   --radius-pill: var(--m-radius-pill);
   --shadow-card: var(--m-shadow-sm);
   --shadow-popover: var(--m-shadow-popover);
+  /* 弹窗（Dialog / CommandPalette）用的更大一层。此前 `dialog.tsx` 写着
+   * `shadow-[var(--shadow-lg)]`，但这个 token **从未定义** —— 未定义的
+   * 自定义属性会让整条 box-shadow 在计算时失效，所有弹窗实际没有阴影。
+   * 补上游对应的深一档；sketch/kraft 在各自主题块里另有覆盖。 */
+  --shadow-lg: var(--m-shadow-lg);
   --hairline: var(--m-ring-hairline);
 
   --focus-ring:
