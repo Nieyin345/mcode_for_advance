@@ -516,6 +516,50 @@ console.log("\n源会话的引擎没注册:必须拒绝,不得悄悄换成默认
   check("★ 拒绝时不留半成品(源会话原样)", SessionRepo.get("s_ghost")?.claudeSessionId === "cli-ghost");
 }
 
+console.log("\nFULL-1 Saga:不可信本地读取异常不能在构造补偿原因时二次崩溃");
+{
+  const originalList = MessageRepo.listBySession;
+  // SDK already produced cli-fork. Then the main DB/message adapter throws
+  // ANY JS value, including null or an Error with a throwing message getter.
+  // This must still reach deleteSession, not leak the provider's new history.
+  const exoticErrors: Array<{label:string,error:unknown}> = [
+    {label:"null throw",error:null},
+    {label:"message getter throws",error:Object.defineProperty(new Error("masked"),"message",{
+      get(){throw Object.create(null);}
+    })},
+  ];
+  for (const sample of exoticErrors) {
+    const provider = fakeClaude();
+    const sessionsBefore = countSessions();
+    const orphansBefore = ForkOrphanRepo.countForSource("s_src");
+    (MessageRepo as typeof MessageRepo).listBySession = (() => {throw sample.error;}) as typeof MessageRepo.listBySession;
+    let thrown:unknown = Symbol("did-not-throw");
+    try {
+      await forkSession("s_src", "应补偿本地异常的一份");
+    } catch(err) { thrown=err; }
+    finally {MessageRepo.listBySession=originalList;}
+    check(`★ ${sample.label}: 主调用方保留原始本地异常，不让次生 TypeError 覆盖`,
+      thrown===sample.error,{observedType:typeof thrown,originalIdentity:thrown===sample.error});
+    eq(`★ ${sample.label}: SDK 成功后必须调用补偿删除一次`,provider.deleteCalls.length,1);
+    eq(`★ ${sample.label}: 只删 fork 出的提供商会话`,provider.deleteCalls[0]?.providerSessionId,"cli-fork");
+    eq(`★ ${sample.label}: 本地会话事务无孤立副本`,countSessions(),sessionsBefore);
+    eq(`★ ${sample.label}: 删除成功不造孤儿登记`,ForkOrphanRepo.countForSource("s_src"),orphansBefore);
+  }
+
+  // A provider without deleteSession must still record its orphan even when
+  // the primary local exception itself has no .message property.
+  const noDelete = fakeClaude({deleteSession:undefined});
+  const orphanBefore = ForkOrphanRepo.countForSource("s_src");
+  (MessageRepo as typeof MessageRepo).listBySession = (() => {throw null;}) as typeof MessageRepo.listBySession;
+  let thrown:unknown=Symbol("did-not-throw");
+  try {await forkSession("s_src","孤儿也必须登记");}
+  catch(err){thrown=err;}
+  finally{MessageRepo.listBySession=originalList;}
+  check("★ null thrown during local fork still preserves original rejection",thrown===null);
+  eq("★ no SDK delete API + exotic local error must persist an orphan",ForkOrphanRepo.countForSource("s_src"),orphanBefore+1);
+  eq("★ no SDK delete API is never silently replaced with fake delete",noDelete.deleteCalls.length,0);
+}
+
 console.log(`\n${total - failures}/${total} 通过`);
 if (failures > 0) {
   console.log(`${failures} 条失败`);

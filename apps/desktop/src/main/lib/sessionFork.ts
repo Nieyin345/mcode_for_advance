@@ -44,6 +44,7 @@ import { providerRegistry } from "@main/providers/registry.js";
 import { compensateProviderFork } from "@main/store/forkOrphans.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { log } from "@main/lib/logger.js";
+import { safeErrorMessage } from "@main/lib/safeErrorMessage.js";
 import { uid } from "@main/utils.js";
 import type { Session } from "@contracts/session";
 
@@ -141,7 +142,7 @@ export async function forkSession(sourceId: string, title: string): Promise<Sess
     } catch (err) {
       log.error(
         `session fork failed at provider: ${source.id} (provider=${source.providerId}, ` +
-          `cli session=${source.claudeSessionId}, cwd=${cwd}): ${(err as Error).message}`,
+          `cli session=${source.claudeSessionId}, cwd=${cwd}): ${safeErrorMessage(err)}`,
       );
       throw err;
     }
@@ -223,7 +224,7 @@ export async function forkSession(sourceId: string, title: string): Promise<Sess
         providerId: source.providerId,
         cwd,
         deleteSession: providerDeleteSession,
-        cause: `本地写入新会话行/消息失败:${(err as Error).message}`,
+        cause: `本地写入新会话行/消息失败:${safeErrorMessage(err)}`,
       });
     }
     throw err;
