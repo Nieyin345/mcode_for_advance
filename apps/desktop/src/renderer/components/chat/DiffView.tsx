@@ -26,7 +26,7 @@ export function DiffView({
   const { t } = useI18n();
   if (diff.length === 0) {
     return (
-      <div className="rounded bg-surface-muted/60 p-2 text-content-subtle [font-size:var(--chat-fs-xs)]">
+      <div className="rounded-[var(--radius-code)] bg-surface-muted/60 p-2 text-content-subtle [font-size:var(--chat-fs-xs)]">
         {t("chatStream.diff.noChanges")}
       </div>
     );
@@ -38,7 +38,8 @@ export function DiffView({
   const rows = annotateDiffWithLineNumbers(diff);
 
   return (
-    <div className={cn("overflow-auto rounded bg-surface-muted/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]", scrollClassName)}>
+    // 【ARC-005 V2】代码/Diff 圆角走 CDS 的 --radius-code（12px），与代码块一致。
+    <div className={cn("overflow-auto rounded-[var(--radius-code)] bg-surface-muted/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]", scrollClassName)}>
       {rows.map((d, i) => {
         // 【ARC-005】Diff 行色走 --diff-* token（styles.css 的 .diff-add /
         // .diff-del / .diff-context）：原先这里硬编码 `bg-red-500/15
