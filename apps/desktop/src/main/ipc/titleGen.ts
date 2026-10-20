@@ -41,6 +41,7 @@ import { resolveModelForGitOp } from "@main/ipc/git.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import { log } from "@main/lib/logger.js";
+import { safeErrorMessage } from "@main/lib/safeErrorMessage.js";
 import { parseModel } from "@main/lib/visionRelayCore.js";
 
 /** Fixed system prompt - never overridden. Guarantees a clean short title. */
@@ -153,7 +154,7 @@ export async function generateSessionTitle(
     if (SettingRepo.get(UI_TITLE_GEN_ENABLED_SETTING_KEY) !== "on" || !firstPrompt.trim()) return null;
     stored = SettingRepo.get(UI_TITLE_GEN_MODEL_SETTING_KEY);
   } catch (err) {
-    log.warn(`titleGen: settings unavailable for ${session.id}: ${(err as Error).message || String(err)}`);
+    log.warn(`titleGen: settings unavailable for ${session.id}: ${safeErrorMessage(err)}`);
     return null;
   }
   const choice = parseModel(stored);
@@ -279,7 +280,7 @@ export async function generateSessionTitle(
     log.info(`titleGen: generated title for ${session.id}: "${title}"`);
     return title;
   } catch (err) {
-    const msg = (err as Error).message || String(err);
+    const msg = safeErrorMessage(err);
     log.warn(`titleGen: failed for ${session.id}: ${msg}`);
     return null;
   } finally {
@@ -289,7 +290,7 @@ export async function generateSessionTitle(
     } catch (err) {
       // A bridge teardown error after a successful title save must not
       // turn background generation into an unhandled rejected promise.
-      log.warn(`titleGen: bridge cleanup failed: ${(err as Error).message || String(err)}`);
+      log.warn(`titleGen: bridge cleanup failed: ${safeErrorMessage(err)}`);
     }
   }
 }

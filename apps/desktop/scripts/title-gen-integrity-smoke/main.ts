@@ -78,5 +78,36 @@ finally{delete process.env.MCODE_SMOKE_VISION_MESSAGES;}
 check("SDK 只流了 assistant 没有终态 result 时不得写标题",
   partialTitle===null&&session.title===beforePartial,{partialTitle,stored:session.title,beforePartial});
 
+// Reviewer E1: fire-and-forget title updates cannot reject just because
+// the settings SDK or gateway teardown throws a non-coercible JS value.
+const repo = SettingRepo as typeof SettingRepo & {get: (key:string)=>string|null};
+const originalGet = repo.get;
+let exoticSettingsThrow=false, exoticSettingsOut:string|null=null;
+repo.get=()=>{throw Object.create(null);};
+try {exoticSettingsOut=await generateSessionTitle(session,"exotic DB fault");}
+catch{exoticSettingsThrow=true;}
+finally{repo.get=originalGet;}
+check("★ null-prototype setting throw must return null, not reject a background title job",
+  !exoticSettingsThrow && exoticSettingsOut===null,{exoticSettingsThrow,exoticSettingsOut});
+
+SettingRepo.set(UI_TITLE_GEN_MODEL_SETTING_KEY,"@claude");
+process.env.MCODE_SMOKE_THROW_EXOTIC="1";
+let sdkExoticThrow=false, sdkExoticTitle:string|null=null;
+try{sdkExoticTitle=await generateSessionTitle(session,"exotic SDK fault");}
+catch{sdkExoticThrow=true;}
+finally{delete process.env.MCODE_SMOKE_THROW_EXOTIC;}
+check("★ non-coercible SDK throw must return null without breaking background turn",
+  !sdkExoticThrow && sdkExoticTitle===null,{sdkExoticThrow,sdkExoticTitle});
+
+SettingRepo.set(UI_TITLE_GEN_MODEL_SETTING_KEY,"cfg-1:vision");
+process.env.MCODE_SMOKE_RELEASE_EXOTIC="1";
+let bridgeExoticThrow=false, bridgeExoticTitle:string|null=null;
+try{bridgeExoticTitle=await generateSessionTitle(session,"successful title but cleanup exotic");}
+catch{bridgeExoticThrow=true;}
+finally{delete process.env.MCODE_SMOKE_RELEASE_EXOTIC;}
+check("★ non-coercible bridge cleanup throw cannot overwrite a saved good title",
+  !bridgeExoticThrow && typeof bridgeExoticTitle==="string" && session.title===bridgeExoticTitle,
+  {bridgeExoticThrow,bridgeExoticTitle,stored:session.title});
+
 console.log(`title-gen-integrity-smoke: ${pass}/${pass+fail}`);
 if(fail)process.exitCode=1;
