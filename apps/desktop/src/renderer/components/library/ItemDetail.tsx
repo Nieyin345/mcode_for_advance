@@ -299,7 +299,7 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
       )}
 
       {error && (
-        <div className="mb-1.5 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[0.7857em] text-red-600 dark:text-red-400">
+        <div className="mb-1.5 rounded border border-danger/40 bg-danger/10 px-2 py-1 text-[0.7857em] text-danger">
           {error}
         </div>
       )}
@@ -332,7 +332,7 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
               {l.suppressedReason && (
                 <span
                   title={t("library.links.suppressed", { reason: l.suppressedReason })}
-                  className="inline-flex shrink-0 items-center gap-0.5 text-[0.7143em] text-amber-600 dark:text-amber-400"
+                  className="inline-flex shrink-0 items-center gap-0.5 text-[0.7143em] text-warning"
                 >
                   <IconEyeOff size={11} />
                   {l.suppressedReason}

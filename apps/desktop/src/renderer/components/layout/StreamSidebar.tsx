@@ -1234,7 +1234,7 @@ function StreamCard({
               </span>
               {worktreeUnmerged && (
                 <span className="flex shrink-0 items-center gap-1 text-[9.5px] text-warning" title={t("layout.stream.unmerged")}>
-                  <span className="h-[5px] w-[5px] rounded-full bg-[#d97706] dark:bg-[#f59e0b]" aria-hidden />
+                  <span className="h-[5px] w-[5px] rounded-full bg-warning" aria-hidden />
                   {t("layout.stream.unmerged")}
                 </span>
               )}

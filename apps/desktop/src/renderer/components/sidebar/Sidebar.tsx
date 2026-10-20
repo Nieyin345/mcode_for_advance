@@ -346,7 +346,7 @@ export function RowAction({
       aria-label={title}
       className={cn(
         "rounded p-0.5 text-content-subtle hover:bg-surface focus-visible:ring-2 focus-visible:ring-accent-strong",
-        danger ? "hover:text-red-500" : "hover:text-content",
+        danger ? "hover:text-danger" : "hover:text-content",
       )}
     >
       {children}
@@ -433,7 +433,7 @@ export function InlineInputRow({
         />
       </div>
       {children}
-      {error && <div className="pl-4 pt-0.5 text-[0.7143em] text-red-500">{error}</div>}
+      {error && <div className="pl-4 pt-0.5 text-[0.7143em] text-danger">{error}</div>}
     </li>
   );
 }
@@ -533,7 +533,7 @@ export function MenuAction({
       disabled={disabled}
       className={cn(
         MENU_ITEM_CLASS,
-        danger && "hover:text-red-500",
+        danger && "hover:text-danger",
         disabled && "cursor-not-allowed opacity-40",
       )}
     >

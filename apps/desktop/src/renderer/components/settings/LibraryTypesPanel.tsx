@@ -346,14 +346,14 @@ export function LibraryTypesPanel() {
 
 
       {saved && !saveError && (
-        <div className="text-[0.7857em] text-emerald-600 dark:text-emerald-400">
+        <div className="text-[0.7857em] text-success">
           {t("settings.libraryTypes.saved")}
         </div>
       )}
       {/* 保存失败:显示 error 原文(后端原话;分类逐条的失败各占一行) */}
-      {saveError && <div className="whitespace-pre-wrap break-all text-[0.7857em] text-red-500">{saveError}</div>}
+      {saveError && <div className="whitespace-pre-wrap break-all text-[0.7857em] text-danger">{saveError}</div>}
       {loadError && (
-        <div className="break-all text-[0.7857em] text-red-500">
+        <div className="break-all text-[0.7857em] text-danger">
           {t("settings.libraryTypes.loadFailed", { error: loadError })}
         </div>
       )}

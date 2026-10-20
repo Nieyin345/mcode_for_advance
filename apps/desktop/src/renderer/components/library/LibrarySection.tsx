@@ -145,11 +145,11 @@ export function MiniInput({
           // 单用（新建大类那种）时也只是一个不长的框。
           // `6rem`：用户说「窄一点，现在太宽了」。分类名通常就几个字。
           "w-[6rem] rounded border bg-surface px-2 py-1 text-xs text-content focus:outline-none",
-          error ? "border-red-500" : "border-accent",
+          error ? "border-danger" : "border-accent",
         )}
       />
       {children}
-      {error && <div className="pt-0.5 text-[0.7143em] text-red-500">{error}</div>}
+      {error && <div className="pt-0.5 text-[0.7143em] text-danger">{error}</div>}
     </div>
   );
 }
@@ -1602,7 +1602,7 @@ export function LibrarySection({
 
       {/* 菜单动作(删除等)的失败提示 —— 那时没有输入行可挂,统一落在这里 */}
       {manageError && !creatingGroup && !renamingGroup && (
-        <div className="px-2 pb-1 text-[0.7857em] text-red-500">{manageError}</div>
+        <div className="px-2 pb-1 text-[0.7857em] text-danger">{manageError}</div>
       )}
 
       {/* 「全部显示」开着时**只画条目**:连回收站都不画 —— 用户要的是"只显示

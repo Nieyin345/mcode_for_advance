@@ -231,7 +231,7 @@ export function FilePreview({
     if (error) {
       return (
         <div className="flex h-full items-start justify-center p-6">
-          <span className="break-all text-center text-xs text-red-500">{error}</span>
+          <span className="break-all text-center text-xs text-danger">{error}</span>
         </div>
       );
     }
@@ -288,7 +288,7 @@ export function FilePreview({
     if (content.type === "unsupported") {
       return (
         <div className="flex h-full items-start justify-center p-6">
-          <span className="break-all text-center text-xs text-red-500">{content.error}</span>
+          <span className="break-all text-center text-xs text-danger">{content.error}</span>
         </div>
       );
     }
@@ -339,7 +339,7 @@ export function FilePreview({
       if (!filePath) {
         return (
           <div className="flex h-full items-start justify-center p-6">
-            <span className="text-center text-xs text-red-500">{t("ide.office.openFailed")}</span>
+            <span className="text-center text-xs text-danger">{t("ide.office.openFailed")}</span>
           </div>
         );
       }
