@@ -344,12 +344,40 @@ export async function readResponseWithinBudget(res: Response, budget: ReadBudget
       }
       if (step.done) break;
       const value = step.value!;
-      bytesRead += value.byteLength;
-      text += decoder.decode(value, { stream: true });
-      if (bytesRead > budget.maxDecodedBytes || text.length >= budget.maxOutputChars) {
-        truncated = true;
-        // 主动断连;cancel 自己报错无所谓(外层 catch 与 truncated 短路都会兜住)——这里
-        // 只表达"不再需要这条连接",不把它的失败当成读取失败。
+      // ReadableStream can deliver a huge single chunk (including an
+      // already-decompressed chunk). Decoding it *before* checking the quota
+      // defeats the memory bound even though the returned text is sliced.
+      // Decode in small pieces, never accepting more bytes than remain.
+      for (let offset = 0; offset < value.byteLength;) {
+        const remainingBytes = budget.maxDecodedBytes - bytesRead;
+        const remainingChars = budget.maxOutputChars - text.length;
+        if (remainingBytes <= 0 || remainingChars <= 0) {
+          truncated = true;
+          break;
+        }
+        // UTF-8 needs at most 4 bytes/code point. Even when the character
+        // quota is tiny, allow enough bytes to finish multibyte characters.
+        const size = Math.min(value.byteLength - offset, remainingBytes,
+          Math.max(4, remainingChars * 4), 4096);
+        const decoded = decoder.decode(value.subarray(offset, offset + size), { stream: true });
+        offset += size;
+        bytesRead += size;
+        if (decoded.length > remainingChars) {
+          let accepted = decoded.slice(0, remainingChars);
+          // Never return half of a UTF-16 surrogate pair at the boundary.
+          if (/[\uD800-\uDBFF]$/.test(accepted)) accepted = accepted.slice(0, -1);
+          text += accepted;
+          truncated = true;
+          break;
+        }
+        text += decoded;
+        if (bytesRead >= budget.maxDecodedBytes || text.length >= budget.maxOutputChars) {
+          truncated = true;
+          break;
+        }
+      }
+      if (truncated) {
+        // Active budget cancellation is not an upstream read failure.
         await reader.cancel().catch(() => undefined);
         break;
       }
