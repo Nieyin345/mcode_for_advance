@@ -1,7 +1,8 @@
 /** MC-058: engine identity file cannot silently alias another file via hard/symbolic links.
  * All bytes under mkdtemp: never launch Node-RED or read actual credentials.
  */
-import { existsSync, lstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { existsSync, lstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEngineLaunchSpec, NODE_RED_MIN_NODE } from "@main/workflowEngines/runtimeSupervisor.js";
@@ -67,6 +68,34 @@ try {
     !!first.env?.NODE_RED_CREDENTIAL_SECRET &&
     first.env.NODE_RED_CREDENTIAL_SECRET === second.env?.NODE_RED_CREDENTIAL_SECRET &&
     first.probeIdentity?.adminToken === second.probeIdentity?.adminToken);
+  // 已有身份成功 lstat 后，open 发生短暂 ENOENT。旧实现会误当首次安装，
+  // 创建临时密钥并悄悄继续。隔离的虚构文件未删除、未触碰真实用户身份。
+  const raced = fixture("raced-open-after-lstat");
+  raced.make();
+  const identityPath = join(raced.dir, ".engine-secret");
+  const firstBytes = readFileSync(identityPath, "utf8");
+  const originalOpen = fs.openSync;
+  let racedOpen = false;
+  fs.openSync = ((file: string, flags: string | number, mode?: number) => {
+    if (String(file) === identityPath && !racedOpen) {
+      racedOpen = true;
+      const err = new Error("MC058_TEST_TRANSIENT_ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    }
+    return originalOpen(file, flags as number, mode);
+  }) as typeof fs.openSync;
+  syncBuiltinESMExports();
+  let rejected = false;
+  try { raced.make(); } catch { rejected = true; }
+  finally {
+    fs.openSync = originalOpen;
+    syncBuiltinESMExports();
+  }
+  check("★ 旧文件 lstat 成功后 open ENOENT 必拒绝，不能误当首次安装",
+    racedOpen && rejected);
+  check("★ 读取竞态不会改变已有真实虚构身份字节",
+    readFileSync(identityPath, "utf8") === firstBytes);
   poison("secret", "hard");
   poison("token", "hard");
   poison("secret", "symbolic");

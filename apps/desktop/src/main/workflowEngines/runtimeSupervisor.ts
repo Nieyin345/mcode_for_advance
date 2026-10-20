@@ -718,6 +718,9 @@ export function createEngineLaunchSpec(options: EngineLaunchSpecOptions): Engine
  * 不校验旧的非空密钥是否 64 位十六进制：历史版本/用户可能使用自定义密钥。
  */
 function readOrCreateSecret(path: string): string {
+  // 只允许初次 lstat 自身返回 ENOENT 后签发新身份；既存档案通过 lstat，
+  // 随后 open/read 时遭竞态删除或临时 ENOENT 绝不能被解释成全新安装。
+  let initiallyAbsent = false;
   const readExisting = (): string => {
     // 【MC-058】发布采用 hard-link 原子 no-replace，极短时间内同时存在
     // staging + 最终路径两条链接（nlink=2）。这不是可直接信任的状态；
@@ -725,7 +728,13 @@ function readOrCreateSecret(path: string): string {
     // 同步启动接口中最多等待 8×5ms，避免跨 OS 进程竞争时的误报坏档。
     const linkSettling = new Int32Array(new SharedArrayBuffer(4));
     for (let attempt = 0; attempt < 9; attempt++) {
-      const original = lstatSync(path);
+      let original: ReturnType<typeof lstatSync>;
+      try {
+        original = lstatSync(path);
+      } catch (err) {
+        if (attempt === 0 && (err as NodeJS.ErrnoException).code === "ENOENT") initiallyAbsent = true;
+        throw err;
+      }
       if (!original.isFile() || original.nlink !== 1) {
         if (original.isFile() && original.nlink === 2 && attempt < 8) {
           Atomics.wait(linkSettling, 0, 0, 5);
@@ -759,7 +768,7 @@ function readOrCreateSecret(path: string): string {
   try {
     return readExisting();
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT" || !initiallyAbsent) throw err;
   }
   mkdirSync(dirname(path), { recursive: true });
   const value = randomBytes(32).toString("hex");
