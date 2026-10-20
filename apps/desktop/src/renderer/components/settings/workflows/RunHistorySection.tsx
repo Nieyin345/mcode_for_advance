@@ -3,6 +3,7 @@ import type { ComponentType } from "react";
 import type { AutomationRunEntry } from "@contracts/ipc";
 import type { NodeOutcomeStatus } from "@contracts/nodeType";
 import { cn } from "@renderer/lib/cn.js";
+import { StatusDot } from "@renderer/components/ui/cds/StatusDot.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { IconAlertTriangle, IconCircleCheck, IconCircleOff, IconLoader2 } from "@renderer/lib/icons.js";
 import { formatFullTime, formatRelativeTime } from "@renderer/lib/time.js";
@@ -33,7 +34,11 @@ export function RunHistorySection({ runs, loading = false, failed = false }: {
       const Icon = meta?.Icon ?? IconCircleOff;
       return <details key={run.runId} data-run-id={run.runId} data-run-status={run.status} className="rounded border border-edge bg-surface p-2" open={run.status === "running" || run.status === "failed"}>
         <summary className="flex cursor-pointer flex-wrap items-center gap-1.5 text-[0.7143em]">
-          <Icon size={12} className={cn("shrink-0", meta?.tone)}/>
+          {/* 【ARC-005 V2】运行中改用 CDS 呼吸点（转圈图标在长列表里与
+              "加载中"混淆）；其余状态保留语义图标。 */}
+          {run.status === "running"
+            ? <StatusDot kind="running" />
+            : <Icon size={12} className={cn("shrink-0", meta?.tone)}/>}
           <span className={cn("font-medium", meta?.tone)}>{meta ? t(meta.labelKey) : run.status}</span>
           <time className="text-content-subtle" title={formatFullTime(run.startedAt)}>{formatRelativeTime(run.startedAt)}</time>
           <span className="text-content-muted">{t("settings.automation.settledCount", { n: run.steps.length })}</span>
