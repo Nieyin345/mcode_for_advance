@@ -51,6 +51,7 @@ import {
   IconX,
 } from "@renderer/lib/icons.js";
 import { cn } from "@renderer/lib/cn.js";
+import { ScrollFade } from "@renderer/components/ui/cds/ScrollFade.js";
 import { StatusDot } from "@renderer/components/ui/cds/StatusDot.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { projectDisplayColor, projectInitial } from "@renderer/lib/projectAvatar.js";
@@ -721,7 +722,9 @@ function StreamSidebarBase() {
       </div>
 
       {/* Flat list: pinned cards ─ hairline ─ live cards ─ show more. */}
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+      {/* 【ARC-005 V2】滚动容器换成 CDS ScrollFade：内容溢出时上下边缘按上游
+          7 档非线性 alpha 羽化（28px），不溢出时保持完全清晰。 */}
+      <ScrollFade className="min-h-0 flex-1 pb-2">
         {liveSessions.length === 0 && pinnedList.length === 0 ? (
           <div className="px-2 py-8 text-center text-content-subtle [font-size:var(--rp-fs-sm)]">
             {t("layout.stream.empty")}
@@ -808,7 +811,7 @@ function StreamSidebarBase() {
         <div className="mt-3">
           <LibrarySections />
         </div>
-      </div>
+      </ScrollFade>
 
       {/* Footer — same dock as the tree view. */}
       <div className="mt-2 flex shrink-0 items-center gap-1 border-t border-edge pt-1.5">
