@@ -46,7 +46,7 @@
  * `readToken` / `runningPort` / `getSession` / `now` 都是注入端口：无头套件用假
  * session 捕获监听器、用假时钟推进过期；生产装配在 `ipc/index.ts`。
  */
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** 编辑器凭据注入的**空闲**租约。活跃请求会滑动续期；空闲超过它 → 停止注入（页面 401）。 */
@@ -119,11 +119,30 @@ interface Binding {
 
 /** 从引擎数据目录读控制面令牌（只读；缺失/空 → null）。不创建、不写盘、不记日志。 */
 export function readEngineAdminToken(dataDir: string): string | null {
+  let fd: number | null = null;
   try {
-    const value = readFileSync(join(dataDir, ".engine-admin-token"), "utf8").trim();
-    return value !== "" ? value : null;
+    // Reuse the engine supervisor's identity discipline: a linked root or
+    // token file must not redirect the Host broker to external credentials.
+    const root = lstatSync(dataDir);
+    if (!root.isDirectory() || root.isSymbolicLink()) return null;
+    const path = join(dataDir, ".engine-admin-token");
+    const original = lstatSync(path);
+    if (!original.isFile() || original.isSymbolicLink() ||
+        original.nlink !== 1 || original.size > 4096) return null;
+    fd = openSync(path, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 ||
+        opened.size > 4096 || opened.dev !== original.dev || opened.ino !== original.ino) return null;
+    const value = readFileSync(fd, "utf8").trim();
+    // New runtime identities are 64-char hex, but the original supervisor
+    // intentionally preserves valid legacy/custom tokens. Keep compatibility
+    // while refusing whitespace/control characters which are unsafe in a
+    // Bearer header, and cap on-disk reads to a sane header-sized budget.
+    return /^[\x21-\x7e]+$/.test(value) ? value : null;
   } catch {
     return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
   }
 }
 
@@ -148,6 +167,9 @@ function editorOrigin(rawUrl: string):
   }
   if (!LOOPBACK_HOSTS.has(parsed.hostname)) {
     return { ok: false, reason: `编辑器凭据只注入到本机回环地址，拒绝远程主机：${parsed.hostname || "(空)"}` };
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    return { ok: false, reason: "编辑器地址不能携带 URL 用户名或密码" };
   }
   const port = parsed.port === "" ? 0 : Number(parsed.port);
   if (!Number.isInteger(port) || port <= 0) {

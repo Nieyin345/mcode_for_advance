@@ -3,7 +3,10 @@
  * and the GenOffice Docs native one-time byte handoff, without Electron,
  * host data roots, network, upstream credentials, or a second editor core.
  */
-import { DocumentViewCredentialBroker } from "../../src/main/document/documentViewCredentialBroker.js";
+import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { DocumentViewCredentialBroker, readEngineAdminToken } from "../../src/main/document/documentViewCredentialBroker.js";
 import {
   issueDocumentHandoff, takeDocumentHandoff, pendingDocumentHandoffCount,
 } from "../../src/main/document/documentViewHandoff.js";
@@ -69,5 +72,49 @@ check("★ 原厂限制最多8个待取响应，9次打开应淘汰最旧的",pe
 check("原厂 oldest-first 淘汰应让第一个 token 失效",takeDocumentHandoff(urls[0]!)===null);
 check("其余8个原生 URL 都能一次性读取",urls.slice(1).every((u,i)=>takeDocumentHandoff(u)?.[0]===i+1));
 check("全部取走后零个未消费响应",pendingDocumentHandoffCount()===0);
+// Real NTFS files, isolated tmpdir. The same token used for the running
+// engine should not be readable via a hardlink/symlink masquerading as the
+// Host-owned .engine-admin-token, nor from an invalid oversized token file.
+const tempRoot = mkdtempSync(join(tmpdir(), "mcode-editor-token-"));
+try {
+  const owned = join(tempRoot, "owned");
+  const outside = join(tempRoot, "outside");
+  mkdirSync(owned);
+  mkdirSync(outside);
+  const tokenPath = join(owned, ".engine-admin-token");
+  const originalToken = "a".repeat(64);
+  writeFileSync(tokenPath, originalToken);
+  check("legitimate runtime-issued 64hex token loads",readEngineAdminToken(owned)===originalToken);
+  writeFileSync(tokenPath, "legacy-admin-token.with_custom_format");
+  check("runtime supervisor legacy custom token remains usable",
+    readEngineAdminToken(owned)==="legacy-admin-token.with_custom_format");
+  rmSync(tokenPath);
+  const secretOutside = join(outside, "sensitive.txt");
+  writeFileSync(secretOutside, "b".repeat(64));
+  linkSync(secretOutside,tokenPath);
+  check("★ hardlinked external token cannot grant Node-RED admin credentials",readEngineAdminToken(owned)===null);
+  check("external secret bytes remain unchanged",readFileSync(secretOutside,"utf8")==="b".repeat(64));
+  rmSync(tokenPath);
+  try {
+    symlinkSync(secretOutside,tokenPath,"file");
+    check("★ symlinked external token cannot grant Node-RED admin credentials",readEngineAdminToken(owned)===null);
+    rmSync(tokenPath);
+  } catch (err) { console.log("SKIP token symlink (OS privilege):",String(err)); }
+  writeFileSync(tokenPath, originalToken+"\r\nEVIL\r\nheader");
+  check("★ embedded newline invalid token never reaches Authorization header",readEngineAdminToken(owned)===null);
+  writeFileSync(tokenPath,"x".repeat(1024*1024));
+  check("★ oversized admin-token file is rejected before loading megabytes",readEngineAdminToken(owned)===null);
+  const linkedRoot = join(tempRoot,"linked-root");
+  try {
+    symlinkSync(owned,linkedRoot,process.platform==="win32"?"junction":"dir");
+    check("★ junction root cannot redirect token read to another directory",readEngineAdminToken(linkedRoot)===null);
+  } catch (err) {console.log("SKIP token-root junction (OS privilege):",String(err));}
+} finally {rmSync(tempRoot,{recursive:true,force:true});}
+const userinfoBroker = new DocumentViewCredentialBroker({
+ runningPort:()=>1880,readToken:()=> "live-token",
+ getSession:()=>({webRequest:{onBeforeSendHeaders(){}}}),
+});
+check("★ editor URL must not contain HTTP Basic-Auth userinfo even on loopback",
+  !userinfoBroker.prepare({engineId:"node-red-local",url:"http://foreign:password@127.0.0.1:1880/"}).ok);
 console.log(`native-host-boundary-smoke: ${pass}/${pass+fail}`);
 if(fail) process.exitCode=1;
