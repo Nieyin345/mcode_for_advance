@@ -139,13 +139,17 @@ div:has(> [role="menu"]) {
    * diff tallies, status labels). Dark keeps its 400/500 shades, which pass
    * from the other side on near-black. Icons/dots only need the 3:1
    * non-text bar, but sharing the darker token keeps light chrome coherent. */
-  /* 【ARC-005】Claude 的陶土橙先作为**备选品牌色**单独暴露，不替换 --accent：
-   * clay #d97757 作小字号文字只有 ~3.1:1，而 `text-accent` 有 311 处，直接换会
-   * 跌破 AA。是否把品牌色整体切到 clay 是产品决定（等用户对照截图）。 */
-  --brand-clay: var(--m-orange-350); /* #eb6834 可作强调底/大图标 */
-  --brand-clay-strong: var(--m-orange-500); /* #ae461c ≈ 5.5:1 可作文字 */
-  --accent: 5 150 105; /* emerald-600 — brand: buttons, icons, focus rings */
-  --accent-strong: 4 120 87; /* emerald-700 — small accent TEXT (≥4.5:1) */
+  /* 【ARC-005 2026-10-20 用户拍板】**品牌色切换为 Claude 陶土橙**。
+   * 取值不是上游 `--cds-clay`(#d97757)：它在亮色底上只有 3.04:1，而本项目
+   * `text-accent` 有 342 处、`text-accent-strong` 18 处，直接换会跌破 AA。
+   * 改用同一 orange 色阶里**既能作底也能作文字**的两档：
+   *   --accent        = orange-450 #c25124 → 4.55:1 on #fcfcfb（AA 正文）
+   *   --accent-strong = orange-500 #ae461c → 5.54:1（小字仍清晰）
+   * 明暗两套各自过 AA；色相与 Claude 一致，只是压深到可读档位。 */
+  --accent: 194 81 36; /* #c25124 — brand: buttons, icons, focus rings */
+  --accent-strong: 174 70 28; /* #ae461c — small accent TEXT (≥4.5:1) */
+  --brand-clay: var(--m-orange-350); /* 上游原始陶土色，保留给大图标/装饰面 */
+  --brand-clay-strong: var(--m-orange-500);
   /* Inline code span foreground — plain body color on BOTH themes (GitHub
    * convention): the recess background already marks the span as code, so the
    * text itself stays neutral. Light dropped the accent tint after emerald-600
@@ -296,9 +300,10 @@ div:has(> [role="menu"]) {
   --edge: var(--m-gray-750); /* #2c2c2a */
   --panel-edge: var(--m-gray-750); /* mirrors --edge */
   --input-edge: var(--m-gray-700); /* #383835 — brighter than --edge */
-  --accent-strong: 16 185 129; /* emerald-500 — dark accent is already ~6.6:1
-                                 * on the slate surface, so the small-text
-                                 * variant can simply mirror it */
+  /* 【ARC-005 2026-10-20】暗色品牌色：orange-300 #ec835a → 6.92:1 on #151515，
+   * 小字与图形同一档即可（与旧 emerald 的做法一致）。 */
+  --accent: 236 131 90; /* #ec835a */
+  --accent-strong: 236 131 90; /* mirrors --accent (same rule as the old emerald) */
   --danger: 248 113 113; /* red-400 */
   --warning: 251 191 36; /* amber-400 */
   --info: 167 139 250; /* violet-400 */
@@ -2402,8 +2407,8 @@ html.sketch:not(.dark) {
   --edge: 199 189 168; /* #c7bda8 铅笔灰 */
   --panel-edge: 214 205 186; /* #d6cdba 结构分隔线(比 edge 浅一档) */
   --input-edge: 178 167 144; /* #b2a790 输入框描边(比 edge 深一档) */
-  --accent: 8 140 105; /* #088c69 微降饱和的墨绿 */
-  --accent-strong: 6 118 88; /* #067658 */
+  --accent: 154 78 38; /* #9a4e26 纸面上的暖赭(与品牌陶土同族,压深保 AA) */
+  --accent-strong: 126 61 28; /* #7e3d1c */
   --danger: 199 62 52;
   --warning: 173 108 16;
   --info: 112 78 196;
@@ -2429,8 +2434,8 @@ html.sketch.dark {
   --edge: 105 90 70; /* #695a46 粉笔线 */
   --panel-edge: 95 81 63; /* #5f513f 结构分隔线 */
   --input-edge: 128 112 88; /* #807058 输入框描边(比 edge 亮一档) */
-  --accent: 64 190 142; /* #40be8e 粉笔绿 */
-  --accent-strong: 64 190 142; /* 深色底上已够对比,镜像 accent(同 .dark 惯例) */
+  --accent: 226 150 110; /* #e2966e 牛皮纸上的粉笔陶土 */
+  --accent-strong: 226 150 110; /* 深色底上已够对比,镜像 accent(同 .dark 惯例) */
   --danger: 240 116 100;
   --warning: 235 178 80;
   --info: 168 142 245;

@@ -177,8 +177,14 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   check("★ 暗色 --surface 指到 --m-gray-850", /--surface:\s*var\(--m-gray-850\)/.test(css));
   check("★ 亮色 --content 指到 --m-gray-850", /--content:\s*var\(--m-gray-850\)/.test(css));
   check("★ 暗色 --content 指到 --m-gray-20", /--content:\s*var\(--m-gray-20\)/.test(css));
-  check("★ --accent 仍是 emerald(未擅自换成陶土橙)", /--accent:\s*5 150 105;/.test(css));
-  check("陶土橙作为备选品牌色暴露", css.includes("--brand-clay:") && css.includes("--brand-clay-strong:"));
+  // 【ARC-005 2026-10-20 用户拍板】品牌色已切到陶土橙。断言不再是「保持 emerald」，
+  // 而是「切了、且切到过 AA 的那两档」：亮色 orange-450 (4.55:1) / orange-500 (5.54:1)，
+  // 暗色 orange-300 (6.92:1)。上游 #d97757 只有 3.04:1，**不得**被直接拿来当 accent。
+  check("★ 亮色 --accent 是过 AA 的陶土橙 orange-450", /--accent:\s*194 81 36;/.test(css));
+  check("★ 亮色 --accent-strong 是 orange-500", /--accent-strong:\s*174 70 28;/.test(css));
+  check("★ 暗色 --accent 是 orange-300", /--accent:\s*236 131 90;/.test(css));
+  check("★ 未把 3.04:1 的上游 clay 直接当 accent", !/--accent:\s*217 119 87;/.test(css));
+  check("上游原始陶土色仍作为装饰品牌色暴露", css.includes("--brand-clay:") && css.includes("--brand-clay-strong:"));
   // 用户气泡接到 Claude 的陶土浅底(亮/暗各一档),alpha 已按实色调高。
   check("★ 亮色用户气泡指到 --m-orange-100", /--user-bubble:\s*var\(--m-orange-100\)/.test(css));
   check("★ 暗色用户气泡指到 --m-orange-850", /--user-bubble:\s*var\(--m-orange-850\)/.test(css));

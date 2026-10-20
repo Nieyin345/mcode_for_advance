@@ -39,8 +39,9 @@ import { CustomCssSection, TypographySection } from "./AppearanceExtras.js";
 /** Default font size shown when no override is set (matches styles.css). */
 const DEFAULT_FONT_SIZE = 14;
 
-/** Hex of the default accent color (emerald-600). Used as the picker fallback. */
-const DEFAULT_ACCENT_HEX = "#059669";
+/** Hex of the default accent color (orange-450, the AA-passing Claude clay
+ *  used in styles.css since 2026-10-20). Used as the picker fallback. */
+const DEFAULT_ACCENT_HEX = "#c25124";
 
 /** Hex of the default user-message bg color (zinc-500, neutral gray). Used as
  *  the picker fallback. Matches the --user-bubble default in styles.css. */
@@ -60,20 +61,19 @@ const USER_BUBBLE_PRESETS: { nameKey: MessageId; triplet: string; hex: string }[
 ];
 
 /** Curated accent presets. `triplet` is what we persist; `hex` drives the swatch.
- *  The first entry (emerald) is the default and stays saturated for brand
+ *  The first entry (clay) is the default and stays saturated for brand
  *  identity; the rest are softened tints (lifted lightness, middling
  *  saturation) so they read as calm chips instead of glaring ones — kinder on
  *  the eyes in dark mode. Trade-off: very soft accents reduce white-on-accent
  *  legibility on filled buttons (those prefer a darker accent). */
 const ACCENT_PRESETS: { nameKey: MessageId; triplet: string; hex: string }[] = [
-  { nameKey: "settings.appearance.colorEmerald", triplet: "5 150 105", hex: "#059669" }, // emerald-600 (default, kept saturated)
+  { nameKey: "settings.appearance.colorOrange", triplet: "194 81 36", hex: "#c25124" }, // orange-450 (default, AA on light)
   { nameKey: "settings.appearance.colorSky", triplet: "111 182 224", hex: "#6fb6e0" }, // soft sky
   { nameKey: "settings.appearance.colorIndigo", triplet: "139 151 232", hex: "#8b97e8" }, // soft indigo
   { nameKey: "settings.appearance.colorTeal", triplet: "94 200 184", hex: "#5ec8b8" }, // soft teal
   { nameKey: "settings.appearance.colorViolet", triplet: "184 156 230", hex: "#b89ce6" }, // soft violet
   { nameKey: "settings.appearance.colorPink", triplet: "244 168 168", hex: "#f4a8a8" }, // soft rose
   { nameKey: "settings.appearance.colorAmber", triplet: "243 201 105", hex: "#f3c969" }, // soft amber
-  { nameKey: "settings.appearance.colorOrange", triplet: "246 165 107", hex: "#f6a56b" }, // soft orange
 ];
 
 const THEME_OPTIONS: { value: ThemeName; labelKey: MessageId; icon: ReactNode }[] = [
