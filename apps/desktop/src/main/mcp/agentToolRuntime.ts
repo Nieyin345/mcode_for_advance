@@ -613,6 +613,8 @@ function verifyPngContainer(bytes: Buffer): { width: number; height: number } {
   let hasIdat = false;
   let hasIend = false;
   let hasPlte = false;
+  let paletteEntries = 0;
+  let hasTransparency = false;
   let idatEnded = false;
   let colorType = -1;
   let width = 0;
@@ -623,7 +625,7 @@ function verifyPngContainer(bytes: Buffer): { width: number; height: number } {
     // Avoid additions from untrusted chunk lengths until the bounds pass.
     if (len > bytes.length - offset - 12) throw new Error("GenOffice PNG chunk 长度超出文件范围");
     const chunk = bytes.toString("ascii", offset + 4, offset + 8);
-    if (!/^[A-Za-z]{4}$/.test(chunk)) throw new Error("GenOffice PNG chunk 类型无效");
+    if (!/^[A-Za-z]{2}[A-Z][A-Za-z]$/.test(chunk)) throw new Error("GenOffice PNG chunk 类型/保留位无效");
     const end = offset + len + 12;
     if (crc32(bytes.subarray(offset + 4, offset + 8 + len)) !== bytes.readUInt32BE(offset + 8 + len)) {
       throw new Error(`GenOffice PNG ${chunk} CRC 校验失败`);
@@ -646,11 +648,23 @@ function verifyPngContainer(bytes: Buffer): { width: number; height: number } {
       throw new Error("GenOffice PNG 出现重复 IHDR");
     } else if (chunk === "PLTE") {
       // Indexed PNG requires one palette before IDAT; grayscale cannot use one.
-      if (hasPlte || hasIdat || colorType === 0 || colorType === 4
-          || len === 0 || len % 3 !== 0 || len > 768) {
+      if (hasPlte || hasIdat || hasTransparency || colorType === 0 || colorType === 4
+          || len === 0 || len % 3 !== 0 || len > 768
+          || (colorType === 3 && len / 3 > (1 << bytes[24]!))) {
         throw new Error("GenOffice PNG PLTE 调色板顺序或长度无效");
       }
       hasPlte = true;
+      paletteEntries = len / 3;
+    } else if (chunk === "tRNS") {
+      // The vendor encoder may emit transparency, but its chunk is not a
+      // free-form optional payload: it belongs before IDAT and after PLTE.
+      const validLength = colorType === 0 ? len === 2
+        : colorType === 2 ? len === 6
+          : colorType === 3 && hasPlte && len >= 1 && len <= paletteEntries;
+      if (hasTransparency || hasIdat || !validLength) {
+        throw new Error("GenOffice PNG tRNS 透明度字段位置或长度无效");
+      }
+      hasTransparency = true;
     } else if (chunk === "IDAT") {
       if (idatEnded || (colorType === 3 && !hasPlte)) {
         throw new Error("GenOffice PNG IDAT 必须连续且索引色必须先有 PLTE");

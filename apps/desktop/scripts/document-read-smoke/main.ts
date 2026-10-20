@@ -304,6 +304,12 @@ try {
  const originalIdat=validChunkedPng.subarray(41,52);
  const pngParts=(middle:Buffer[])=>Buffer.concat([validChunkedPng.subarray(0,33),...middle,validChunkedPng.subarray(validChunkedPng.length-12)]);
  const interruptedIdatPng=pngParts([pngChunk("IDAT",originalIdat.subarray(0,5)),pngChunk("tEXt",Buffer.from("key\0value")),pngChunk("IDAT",originalIdat.subarray(5))]);
+ const indexedHeader=patchIhdr(25,3);
+ const indexedBitOne=Buffer.from(indexedHeader);indexedBitOne[24]=1;
+ indexedBitOne.writeUInt32BE(crc32(indexedBitOne.subarray(12,29)),29);
+ const indexedParts=(chunks:Buffer[])=>Buffer.concat([indexedBitOne.subarray(0,33),...chunks,validChunkedPng.subarray(validChunkedPng.length-12)]);
+ const twoEntryPalette=pngChunk("PLTE",Buffer.from([0,0,0,255,255,255]));
+ const paletteTooLarge=pngChunk("PLTE",Buffer.from([0,0,0,1,1,1,2,2,2]));
  const pngVariants=[
    ["IHDR only",validChunkedPng.subarray(0,33)],
    ["IDAT CRC corruption",damagedIdatCrc],
@@ -320,6 +326,13 @@ try {
    ["unknown critical chunk",pngParts([pngChunk("ABCD",Buffer.from("unknown")),pngChunk("IDAT",originalIdat)])],
    ["noncontiguous IDAT sequence",interruptedIdatPng],
    ["late PLTE after IDAT",pngParts([pngChunk("IDAT",originalIdat),pngChunk("PLTE",Buffer.from([0,0,0]))])],
+   ["indexed bit-depth 1 with three palette entries",indexedParts([paletteTooLarge,pngChunk("IDAT",originalIdat)])],
+   ["indexed oversized transparency palette",indexedParts([twoEntryPalette,pngChunk("tRNS",Buffer.from([0,0,0])),pngChunk("IDAT",originalIdat)])],
+   ["indexed transparency without PLTE",indexedParts([pngChunk("tRNS",Buffer.from([0])),twoEntryPalette,pngChunk("IDAT",originalIdat)])],
+   ["duplicate transparency chunk",indexedParts([twoEntryPalette,pngChunk("tRNS",Buffer.from([0])),pngChunk("tRNS",Buffer.from([255])),pngChunk("IDAT",originalIdat)])],
+   ["transparency after IDAT",indexedParts([twoEntryPalette,pngChunk("IDAT",originalIdat),pngChunk("tRNS",Buffer.from([0]))])],
+   ["transparency on alpha channel color type",pngParts([pngChunk("tRNS",Buffer.from([0,0])),pngChunk("IDAT",originalIdat)])],
+   ["lowercase reserved chunk type letter",pngParts([pngChunk("texT",Buffer.from("x")),pngChunk("IDAT",originalIdat)])],
  ] as const;
  for(const [reason,png] of pngVariants) await test("★ GenOffice PDFium refuses "+reason+" rather than returning forged PNG",async()=>{
    const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
