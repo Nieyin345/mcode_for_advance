@@ -3,9 +3,10 @@
  * state and fake vendor UI. E1 for user-visible annotation-index diagnostics;
  * this intentionally does not claim real Electron GUI U1.
  */
+import { createHash } from "node:crypto";
 import { PdfPreview } from "@renderer/components/library/PdfPreviewImpl.js";
 import { __mount,__render,__flush,__text,__nodes } from "../preview-panel-smoke/fakeReact.js";
-import { responses,calls } from "./deps.js";
+import { responses,calls,writes,getSaveHandler,setWriteResponse,PDFViewer,useFileViewStore } from "./deps.js";
 
 type Reply={highlights:unknown[];error?:string;omittedCount?:number;revision?:string|null};
 let assertions=0,failures=0;
@@ -77,6 +78,143 @@ if(resolveOld)resolveOld({highlights:[],error:"OUTDATED_DOCUMENT_WARNING"});
 await __flush();
 check("★★ late warning from previous file cannot paint current document",
  !__text().includes("OUTDATED_DOCUMENT_WARNING"),__text());
-check("UI never tried to write or read the real user's PDF file",calls.length>=6,calls);
+check("UI never tried to read the real user's PDF file",calls.length>=6,calls);
+
+// UI-012: An outstanding export/save promise for file A is still alive when
+// the same preview component is reused for B. The late A promise must never
+// write an old snapshot after switch, or mark B clean/saved.
+function attachExport(
+ saveResult:()=>Promise<ArrayBuffer>,
+ onAnnotationListener?:(cb:(evt:{type:string})=>void)=>void,
+):void {
+ const el=__nodes().find(n=>n.type===PDFViewer);
+ if(!el)throw Error("EmbedPDF viewer node missing: no save test");
+ const ref=el.props.ref as {current:unknown};
+ const registry={
+   getPlugin:(name:string)=>name==="export"
+     ? {provides:()=>({saveAsCopy:()=>({toPromise:saveResult})})}
+     : name==="annotation"
+       ? {provides:()=>({onAnnotationEvent:(cb:(evt:{type:string})=>void)=>{
+           onAnnotationListener?.(cb);return ()=>{};
+         }})}
+       : undefined,
+ };
+ ref.current={registry:Promise.resolve(registry)};
+ const ready=el.props.onReady as ((arg:unknown)=>void)|undefined;
+ ready?.(registry);
+}
+show("C:/fake-libraries/export-pending-A.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);
+await __flush();
+let finishExport!:(buffer:ArrayBuffer)=>void;
+attachExport(()=>new Promise(resolve=>{finishExport=resolve}));
+const exportSave=getSaveHandler();
+if(!exportSave)throw Error("production save handler was not registered");
+const exportPending=exportSave();
+await Promise.resolve();
+await Promise.resolve();
+show("C:/fake-libraries/export-pending-B.pdf",async()=>({highlights:[],revision:null}));
+__render();
+await __flush();
+const beforeExportWrites=writes.length;
+useFileViewStore.getState().setDirty(true);
+if(finishExport)finishExport(new Uint8Array([37,80,68,70,45,49,10]).buffer);
+const oldExportOk=await exportPending;
+await __flush();
+check("★★ late export from previous PDF cannot start a Host IPC write",
+ writes.length===beforeExportWrites && oldExportOk===false,{beforeExportWrites,writes,oldExportOk});
+check("★★ late export from previous PDF cannot clear new PDF dirty state",
+ useFileViewStore.getState().dirty===true,useFileViewStore.getState().dirty);
+
+// Even when file A's IPC was already sent, A's late success must never stamp
+// file B as saved, update B's CAS revision, or clear B's dirty indication.
+show("C:/fake-libraries/ipc-pending-A.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);
+await __flush();
+attachExport(async()=>new Uint8Array([37,80,68,70,45,49,10]).buffer);
+let finishIpc!:(result:{ok:boolean})=>void;
+setWriteResponse(()=>new Promise(resolve=>{finishIpc=resolve}));
+const ipcSave=getSaveHandler();
+if(!ipcSave)throw Error("second save handler missing");
+const ipcPending=ipcSave();
+for(let n=0;n<12 && !finishIpc;n++)await new Promise(r=>setTimeout(r,0));
+check("old PDF had actually dispatched the pending IPC before navigation",
+ !!finishIpc && writes.at(-1)?.pdfPath==="C:/fake-libraries/ipc-pending-A.pdf",writes.at(-1));
+show("C:/fake-libraries/ipc-pending-B.pdf",async()=>({highlights:[],revision:null}));
+__render();
+await __flush();
+useFileViewStore.getState().setDirty(true);
+if(finishIpc)finishIpc({ok:true});
+await ipcPending;
+await __flush();
+check("★★ stale Host success must not mark the new document saved",
+ !__text().includes("library.pdfViewer.savedToast"),__text());
+check("★★ stale Host success must not clear the new document dirty status",
+ useFileViewStore.getState().dirty===true,useFileViewStore.getState().dirty);
+setWriteResponse(async()=>({ok:true}));
+
+// Normal user action must still save and advance exactly the revision the
+// vendor exported, otherwise the next manual save would fail the Host CAS.
+show("C:/fake-libraries/normal-save.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);
+await __flush();
+const exported=new Uint8Array([37,80,68,70,45,49,46,55,10,37,37,69,79,70,10,37]);
+attachExport(async()=>exported.buffer.slice(0));
+const normalSave=getSaveHandler();
+if(!normalSave)throw Error("normal save handler missing");
+const beforeNormal=writes.length;
+const normalOk=await normalSave();
+await __flush();
+check("normal EmbedPDF export invokes Host once and reports saved",
+ normalOk===true && writes.length===beforeNormal+1 &&
+ __text().includes("library.pdfViewer.savedToast"),{normalOk,text:__text(),writes});
+const exportedHash=createHash("sha256").update(exported).digest("hex");
+const savedHandler=getSaveHandler();
+if(!savedHandler)throw Error("post-save handler missing");
+const secondOk=await savedHandler();
+await __flush();
+check("success advances the saved PDF CAS revision for the next edit",
+ secondOk && writes.at(-1)?.expectedRevision===exportedHash,
+ {secondOk,last:writes.at(-1),exportedHash});
+
+// User modifies PDFium annotations while an older snapshot is still being
+// exported. Host may commit that snapshot, but new edits remain unsaved and
+// any navigation guard must receive false instead of a misleading success.
+show("C:/fake-libraries/edits-during-save.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);
+await __flush();
+let annotationEvent!:(event:{type:string})=>void;
+let finishEditedExport!:(data:ArrayBuffer)=>void;
+attachExport(
+ ()=>new Promise(resolve=>{finishEditedExport=resolve}),
+ cb=>{annotationEvent=cb},
+);
+const saveWithEdit=getSaveHandler();
+if(!saveWithEdit)throw Error("mid-save edit handler missing");
+const pendingEdited=saveWithEdit();
+await Promise.resolve();
+await Promise.resolve();
+if(annotationEvent)annotationEvent({type:"create"});
+check("a new annotation event makes the live viewer dirty",useFileViewStore.getState().dirty===true);
+if(finishEditedExport)finishEditedExport(exported.buffer.slice(0));
+const midSaveResult=await pendingEdited;
+await __flush();
+check("★★ saving an older snapshot cannot clear edits added during the save",
+ useFileViewStore.getState().dirty===true,useFileViewStore.getState().dirty);
+check("★★ a partial snapshot save must not report success to navigation guard",
+ midSaveResult===false&&!__text().includes("library.pdfViewer.savedToast"),
+ {midSaveResult,text:__text()});
+check("UI explicitly asks user to save newer annotation edits again",
+ __text().includes("新批注")||__text().includes("再次保存"),__text());
+attachExport(async()=>exported.buffer.slice(0));
+const resave=getSaveHandler();
+if(!resave)throw Error("retry save handler missing");
+const retryOK=await resave();
+await __flush();
+check("retry without newer changes finally marks annotation state clean",
+ retryOK===true && useFileViewStore.getState().dirty===false
+ && __text().includes("library.pdfViewer.savedToast"),
+ {retryOK,dirty:useFileViewStore.getState().dirty,text:__text()});
+
 console.log("pdf-preview-index-notice-smoke:"+(assertions-failures)+"/"+assertions+" PASS");
 if(failures)process.exitCode=1;

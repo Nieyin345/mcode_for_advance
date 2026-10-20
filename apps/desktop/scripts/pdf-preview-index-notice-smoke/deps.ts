@@ -2,6 +2,11 @@
 type HighlightsReply = {highlights:unknown[];error?:string;omittedCount?:number;revision?:string|null};
 export const calls:string[]=[];
 export const responses=new Map<string,()=>Promise<HighlightsReply>>();
+export const writes:Array<{pdfPath:string;bytesBase64:string;expectedRevision:string}>=[];
+let onWrite=async (_input:unknown):Promise<{ok:boolean;error?:string}>=>({ok:true});
+export const setWriteResponse=(fn:(input:unknown)=>Promise<{ok:boolean;error?:string}>)=>{onWrite=fn};
+export let saveHandler:(()=>Promise<boolean>)|null=null;
+export const getSaveHandler=()=>saveHandler;
 export const api={library:{
   readPdf:async()=>{throw new Error("fixture supplies PDF bytes: no user library read");},
   readHighlights:async({pdfPath}:{pdfPath:string}):Promise<HighlightsReply>=>{
@@ -10,13 +15,16 @@ export const api={library:{
     if(!handler)throw Error("unexpected index lookup "+pdfPath);
     return handler();
   },
-  writeHighlights:async()=>{throw Error("no real writes in render-only smoke")},
+  writeHighlights:async(input:{pdfPath:string;bytesBase64:string;expectedRevision:string})=>{
+    writes.push(input);
+    return onWrite(input);
+  },
   openFile:async()=>({ok:false,error:"disabled in test"}),
 }};
 export const useToastStore={getState:()=>({push:()=>{}})};
 let dirty=false;
 export const useFileViewStore={getState:()=>({setDirty:(x:boolean)=>{dirty=x},dirty})};
-export const setFileSaveHandler=(_f:unknown)=>{};
+export const setFileSaveHandler=(f:(()=>Promise<boolean>)|null)=>{saveHandler=f};
 export const cn=(...parts:unknown[])=>parts.filter(Boolean).join(" ");
 export const useI18n=()=>({t:(key:string)=>key});
 export const PDFViewer=(_props:unknown)=>null;

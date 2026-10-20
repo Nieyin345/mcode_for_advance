@@ -101,6 +101,9 @@ export function PdfPreview({
   const [nonce, setNonce] = useState(0);
   const [docBytes, setDocBytes] = useState<ArrayBuffer | null>(null);
   const [loadedRevision, setLoadedRevision] = useState<string | null>(null);
+  // Each path / document load has one generation. A pending PDFium export or
+  // Host IPC response from an old document must not mutate the next page.
+  const documentEpochRef = useRef(0);
   const [indexWarning, setIndexWarning] = useState<string | null>(null);
   const [indexReload, setIndexReload] = useState(0);
   /** 保存（把批注导出并写回文件）的状态机。 */
@@ -114,6 +117,9 @@ export function PdfPreview({
    * 所以只认 `create` / `update` / `delete` 三种 —— 见下面那个订阅。
    */
   const dirtyRef = useRef(false);
+  // Annotation edits occurring while export/Host write is pending must stay
+  // dirty even if the older snapshot commits successfully.
+  const annotationEditEpochRef = useRef(0);
   /**
    * 【UI-012】把「有未保存批注」同时写进**局部 ref**(组件内部判断用)与
    * `fileViewStore`(离开预览时由 FileViewer 读取并确认)。两处必须一起变 ——
@@ -133,8 +139,11 @@ export function PdfPreview({
 
   useEffect(() => {
     let cancelled = false;
+    documentEpochRef.current += 1;
     setLoading(true);
     setError(null);
+    setSaveState("idle");
+    setSaveErr(null);
     setLoadedRevision(null);
     setDocBytes(null);
 
@@ -171,7 +180,7 @@ export function PdfPreview({
     return () => {
       cancelled = true;
     };
-  }, [item.id, bytes, nonce]);
+  }, [item.id, bytes, filePath, nonce]);
 
   // The Host's versioned annotation sidecar can be corrupted independently of
   // PDFium's embedded annotations. Its read IPC reports error/omittedCount,
@@ -239,11 +248,15 @@ export function PdfPreview({
    */
   const save = useCallback(async (): Promise<boolean> => {
     if (!filePath) return false;
+    const epoch = documentEpochRef.current;
+    const savedEditEpoch = annotationEditEpochRef.current;
+    const stillCurrent = () => epoch === documentEpochRef.current;
     setSaveState("saving");
     setSaveErr(null);
     try {
       if (!loadedRevision) throw new Error("PDF 原始版本尚未确认，请重新打开文件再保存");
       const registry = await viewerRef.current?.registry;
+      if (!stillCurrent()) return false;
       /**
        * ⚠️ **不能写成 `registry.getPlugin("export")?.provides()`。**
        *
@@ -269,6 +282,9 @@ export function PdfPreview({
 
       // `Task` → Promise。它自己的 `toPromise()` 就是干这个的。
       const buf = await saveAsCopy.call(plugin).toPromise();
+      // A new file/child PDF has superseded the old preview. Do not send the
+      // orphaned export to Host, even if PDFium returned perfectly valid data.
+      if (!stillCurrent()) return false;
       if (!buf || buf.byteLength === 0) throw new Error(t("library.pdfViewer.saveFailed"));
 
       // 字节 → base64。分块拼，别用 `String.fromCharCode(...arr)` ——
@@ -280,19 +296,33 @@ export function PdfPreview({
         bin += String.fromCharCode(...u8.subarray(i, i + CHUNK));
       }
       const exportedRevision = await pdfRevision(toArrayBuffer(u8));
+      if (!stillCurrent()) return false;
       const r = await api.library.writeHighlights({
         pdfPath: filePath,
         bytesBase64: btoa(bin),
         expectedRevision: loadedRevision,
       });
+      if (!stillCurrent()) return false; // Old Host response cannot stamp B as saved.
       if (!r.ok) throw new Error(r.error ?? t("library.pdfViewer.saveFailed"));
       setLoadedRevision(exportedRevision);
+      if (annotationEditEpochRef.current !== savedEditEpoch) {
+        // The saved snapshot predates edits the user made while waiting.
+        // Do not clear unsaved state or let navigation treat this as a full
+        // save; retain the current viewer, advance CAS and request retry.
+        setSaveState("error");
+        setSaveErr("保存过程中出现新批注：之前的快照已写入，但新批注尚未保存，请再次保存");
+        return false;
+      }
       setSaveState("saved");
       markDirty(false);
       return true;
     } catch (err) {
-      setSaveState("error");
-      setSaveErr((err as Error).message);
+      // An old failed save may arrive after navigation; its error belongs to
+      // A, not the newly selected B's UI or dirty-state ledger.
+      if (stillCurrent()) {
+        setSaveState("error");
+        setSaveErr((err as Error).message);
+      }
       return false;
     }
   }, [filePath, loadedRevision, t]);
@@ -354,6 +384,7 @@ export function PdfPreview({
     if (typeof annotation?.onAnnotationEvent !== "function") return;
     const sub = annotation.onAnnotationEvent((e) => {
       if (e.type === "create" || e.type === "update" || e.type === "delete") {
+        annotationEditEpochRef.current += 1;
         markDirty(true);
       }
     });
