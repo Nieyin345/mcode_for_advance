@@ -348,7 +348,7 @@ function RailButton({
       className={cn(
         "flex h-7 w-7 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors",
         active
-          ? "bg-accent/15 text-accent"
+          ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
           : "text-content-muted hover:bg-surface-hover hover:text-content",
       )}
     >

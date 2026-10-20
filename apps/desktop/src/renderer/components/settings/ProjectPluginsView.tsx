@@ -137,7 +137,7 @@ export function ProjectPluginsView({
                     <span
                       className={cn(
                         "shrink-0 rounded px-1 text-[9px] leading-tight",
-                        custom ? "bg-accent/15 text-accent" : "bg-surface-hover text-content-subtle",
+                        custom ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "bg-surface-hover text-content-subtle",
                       )}
                       title={custom ? undefined : t("settings.plugins.projectFollowHint", {
                         state: r.globalEnabled ? t("settings.plugins.projectGlobalOn") : t("settings.plugins.projectGlobalOff"),
@@ -167,7 +167,7 @@ export function ProjectPluginsView({
                         className={cn(
                           "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight transition-colors",
                           delivered
-                            ? "bg-accent/15 text-accent"
+                            ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                             : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
                           !capable && "opacity-40",
                         )}

@@ -183,7 +183,7 @@ function GroupEngineSwitches({
             }}
             className={cn(
               "rounded px-1 leading-4 text-[9px] font-semibold transition-colors",
-              allOn && !blocked ? "bg-accent/15 text-accent" : "text-content-subtle/50 line-through hover:text-content-subtle",
+              allOn && !blocked ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "text-content-subtle/50 line-through hover:text-content-subtle",
               blocked && "border border-dashed border-warning/60",
               busy && "opacity-50",
             )}
@@ -235,7 +235,7 @@ function RowEngineSwitches({
             aria-pressed={on && !blocked}
             className={cn(
               "rounded px-1 leading-4 text-[9px] font-semibold transition-colors",
-              on && !blocked ? "bg-accent/15 text-accent" : "text-content-subtle/50 line-through hover:text-content-subtle",
+              on && !blocked ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "text-content-subtle/50 line-through hover:text-content-subtle",
               blocked && "border border-dashed border-warning/60",
               busy && "opacity-50",
             )}
@@ -1136,7 +1136,7 @@ export function SkillsPanel() {
                 onClick={() => setGroupMode("bundle")}
                 className={cn(
                   "rounded px-1.5 py-0.5 normal-case tracking-normal transition-colors",
-                  groupMode === "bundle" ? "bg-accent/15 text-accent" : "hover:text-content",
+                  groupMode === "bundle" ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "hover:text-content",
                 )}
               >
                 {t("settings.skills.modeBundle")}
@@ -1146,7 +1146,7 @@ export function SkillsPanel() {
                 onClick={() => setGroupMode("engine")}
                 className={cn(
                   "rounded px-1.5 py-0.5 normal-case tracking-normal transition-colors",
-                  groupMode === "engine" ? "bg-accent/15 text-accent" : "hover:text-content",
+                  groupMode === "engine" ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "hover:text-content",
                 )}
               >
                 {t("settings.skills.modeEngine")}

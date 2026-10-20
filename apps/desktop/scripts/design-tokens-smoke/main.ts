@@ -933,6 +933,51 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   // 分段控件的 title 透传：文字被容器查询折叠成图标后，title 是唯一说明。
   const segmented = read("src/renderer/components/ui/cds/Segmented.tsx");
   check("★ Segmented 支持 title 透传", /title\?: string/.test(segmented) && /title=\{tab\.title\}/.test(segmented));
+
+  // 「选中/开关已开」不得再染品牌色（accent 只留给运行中/需要注意）。
+  // 逐文件找 `bg-accent/15 text-accent` —— 允许的只有：保存成功提示、
+  // ActivityConsole 的运行中行、TurnFlowPanel 的步骤标记、手机 Git 的
+  // added 语义色、CustomModelsPanel 的桥接状态。
+  const ACTIVE_ACCENT_ALLOWED = [
+    // 运行中 / 成功提示
+    "chat/ActivityConsole.tsx",
+    "chat/PlanViewer.tsx",   // saved toast
+    "chat/PlanStreamBlock.tsx",
+    "chat/MessageBlocks.tsx",
+    "ide/FileEditor.tsx",    // saved toast
+    "mobile/MobileGitScreen.tsx",     // added 是增行语义色
+    "settings/CustomModelsPanel.tsx", // 桥接连接状态
+    // **分类身份色**（不是选中态）：活动节点的四类、工具类别色板、用户消息
+    // 步骤标记 —— 与 git lane 同性质，颜色本身在表达"这是哪一类"。
+    "chat/activityShared.ts",
+    "ide/turnFlowModel.ts",
+    "ide/TurnFlowPanel.tsx",
+  ];
+  const offenders: string[] = [];
+  const scan = (dir: string): void => {
+    const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+    for (const name of readdirSync(join(root, dir))) {
+      const rel = `${dir}/${name}`;
+      const st = statSync(join(root, rel));
+      if (st.isDirectory()) {
+        // 必须递归：settings/workflows/ 等子目录里的开关同样是选中态。
+        // 变异验证抓到过——只扫一层时，把 SkillsPanel 改回品牌色断言照样绿。
+        scan(rel);
+        continue;
+      }
+      if (/\.[jt]sx?$/.test(name)) {
+        const src = read(rel);
+        if (/bg-accent\/15 text-accent/.test(src) && !ACTIVE_ACCENT_ALLOWED.some((a) => rel.endsWith(a))) {
+          offenders.push(rel);
+        }
+      }
+    }
+  };
+  scan("src/renderer/components");
+  check("★ 选中/开关态不再使用 bg-accent/15 品牌淡底", offenders.length === 0, offenders);
+  // 反向正控：白名单里的确实还在用（否则白名单本身失效、断言空过）。
+  check("★ 白名单正控：运行中/成功提示仍用品牌色",
+    read("src/renderer/components/chat/ActivityConsole.tsx").includes("bg-accent/15"));
 }
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

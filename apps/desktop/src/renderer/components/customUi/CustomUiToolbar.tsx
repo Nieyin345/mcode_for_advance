@@ -97,7 +97,7 @@ export function CustomUiToolbar() {
               aria-label={label}
               className={cn(
                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors",
-                active ? "bg-accent/15 text-accent" : "text-content-muted hover:bg-surface-hover hover:text-content",
+                active ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "text-content-muted hover:bg-surface-hover hover:text-content",
               )}
             >
               <Icon size={16} className="shrink-0" />

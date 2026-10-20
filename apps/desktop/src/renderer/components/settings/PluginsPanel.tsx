@@ -270,7 +270,7 @@ export function PluginEngineKeys({
               "rounded px-1.5 py-0.5 text-[10px] font-semibold leading-tight transition-colors",
               on
                 ? plugin.enabled
-                  ? "bg-accent/15 text-accent"
+                  ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                   : "bg-surface-hover text-content-muted"
                 : can
                   ? "text-content-subtle line-through hover:text-content-muted"

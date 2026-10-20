@@ -425,7 +425,7 @@ export function SearchDialog() {
                 className={cn(
                   "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
                   caseSensitive
-                    ? "bg-accent/15 text-accent"
+                    ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                     : "text-content-subtle hover:bg-surface-hover hover:text-content",
                 )}
               >

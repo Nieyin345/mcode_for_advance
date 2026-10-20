@@ -699,7 +699,7 @@ export function NodeSection({
                 <span
                   className={cn(
                     "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border",
-                    on ? "border-accent bg-accent/15 text-accent" : "border-edge",
+                    on ? "border-edge/80 bg-surface-hover text-content" : "border-edge",
                   )}
                 >
                   {on && <IconCheck size={10} />}

@@ -195,7 +195,8 @@ export function SkillNodesView({
                     className={cn(
                       "flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition-colors",
                       "hover:bg-surface-hover/60",
-                      selected && "bg-accent/15",
+                      // 选中是「用户在这里」，不是运行中/需要注意 —— 走 CDS 选中语言。
+                      selected && "bg-surface-hover text-content ring-1 ring-inset ring-edge/70",
                     )}
                   >
                     {u.kind === "workflow" ? (

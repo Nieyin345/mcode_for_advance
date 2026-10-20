@@ -164,7 +164,11 @@ check(
   selWorkflow[0]?.text.includes("好的工作流") === true && selWorkflow[0]?.text.includes("档案甲") === false,
   selWorkflow,
 );
-check("★ 选中行带区分样式 bg-accent/15", selWorkflow[0]?.className.includes("bg-accent/15") === true, selWorkflow);
+check("★ 选中行带区分样式（surface-hover + 发丝环，不用品牌色）",
+  selWorkflow[0]?.className.includes("bg-surface-hover") === true
+    && selWorkflow[0]?.className.includes("ring-1") === true
+    && selWorkflow[0]?.className.includes("bg-accent/15") === false,
+  selWorkflow);
 
 mountView({ selectedRef: { kind: "profile", refId: "p_1" } });
 await __flush();

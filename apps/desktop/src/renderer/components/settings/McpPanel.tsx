@@ -168,7 +168,7 @@ function EngineVisibilityChips({
             className={cn(
               "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight transition-colors",
               on && !blocked
-                ? "bg-accent/15 text-accent"
+                ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                 : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
               blocked && "border border-dashed border-warning/60",
             )}
