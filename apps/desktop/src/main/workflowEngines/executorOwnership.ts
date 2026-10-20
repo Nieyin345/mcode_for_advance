@@ -137,7 +137,17 @@ export function decideClaim(
 
 /** 登记参数的合法性（防空键：空 flowId 不能成为"没人拥有"之外的第二条路）。 */
 function validateFlowId(flowId: unknown): flowId is string {
-  return typeof flowId === "string" && flowId.trim().length > 0;
+  // Host-owned workflow IDs are opaque (do not normalize), but must never
+  // introduce control characters into logs/lookup keys or unbounded records.
+  return typeof flowId === "string" &&
+    flowId.length <= 512 && flowId.trim().length > 0 &&
+    !/[\u0000-\u001f\u007f]/.test(flowId);
+}
+
+function invalidFlowIdDisplay(value: unknown): string {
+  // Never coerce an untrusted object in an error path. Object.create(null)
+  // has no toString and would otherwise crash the only owner registry.
+  return typeof value === "string" ? value.slice(0, 120) : "<非法类型>";
 }
 
 /**
@@ -160,8 +170,8 @@ export class ExecutorOwnershipRegistry {
     if (!validateFlowId(flowId)) {
       return {
         ok: false,
-        flowId: String(flowId),
-        reason: `flowId 不能为空（收到 ${JSON.stringify(flowId)}）`,
+        flowId: invalidFlowIdDisplay(flowId),
+        reason: "flowId 非法：必须是非空、无控制字符且不超过 512 字符的字符串",
         conflict: null,
       };
     }
@@ -169,7 +179,7 @@ export class ExecutorOwnershipRegistry {
       return {
         ok: false,
         flowId,
-        reason: `未知的 executor owner：${JSON.stringify(owner)}（只允许 ${EXECUTOR_OWNERS.join(" / ")}）`,
+        reason: `未知的 executor owner（只允许 ${EXECUTOR_OWNERS.join(" / ")}）`,
         conflict: null,
       };
     }
@@ -211,7 +221,7 @@ export class ExecutorOwnershipRegistry {
   /** 释放归属。**只有当前 owner** 能释放（陈旧的一方不能偷走所有权）。 */
   release(flowId: string, owner: ExecutorOwner): ExecutorReleaseResult {
     if (!validateFlowId(flowId)) {
-      return { ok: false, flowId: String(flowId), reason: "flowId 不能为空" };
+      return { ok: false, flowId: invalidFlowIdDisplay(flowId), reason: "flowId 非法，拒绝释放执行归属" };
     }
     const current = this.store.get(flowId);
     if (current === null) {
