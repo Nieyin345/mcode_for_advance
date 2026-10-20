@@ -267,6 +267,15 @@ try {
     check("valid OpenAI tool call response still confirms API connectivity", r.ok, r);
   }
 
+  {
+    for (const model of ["", "x".repeat(8192), "fake-model" + String.fromCharCode(10) + "injected"]) {
+      const count = seen.length;
+      const r = await probeEndpoint({ baseUrl: base, apiKey: "fake-only", model });
+      check("bad model identifier is refused before sending credentials to a gateway",
+        !r.ok && seen.length === count, { error: r.error, sent: seen.length - count });
+    }
+  }
+
   /* ── 3. Network response abuse guards: bytes/redirect/body deadline ── */
   {
     seen.length = 0;
@@ -329,7 +338,7 @@ try {
 
   /* ── 4. 地址守门 ── */
   console.log("\n3. 地址守门(相对地址 / 非法协议一律拒)");
-  for (const bad of ["not-a-url", "ftp://x/y", "file:///etc/passwd", base + "/v1?token=test-only", base + "/v1#fragment", "http://user:password@127.0.0.1:" + port]) {
+  for (const bad of ["not-a-url", "ftp://x/y", "file:///etc/passwd", " " + base, base + String.fromCharCode(10), base + "/v1?token=test-only", base + "/v1#fragment", "http://user:password@127.0.0.1:" + port]) {
     let threw = false;
     try {
       await listEndpointModels({ baseUrl: bad });

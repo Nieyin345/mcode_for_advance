@@ -38,6 +38,11 @@ export interface EndpointProbeResult {
 
 /** 地址合法吗：必须是 http(s) 绝对地址。 */
 function assertHttpUrl(raw: string): URL {
+  // WHATWG URL silently strips CR/LF/TAB and leading/trailing whitespace.
+  // The endpoint used on the wire must be exactly what the user supplied.
+  if (typeof raw !== "string" || raw.trim() !== raw || /[\u0000-\u001f\u007f]/.test(raw)) {
+    throw new Error("端点 URL 含空白或控制字符");
+  }
   let url: URL;
   try {
     url = new URL(raw);
@@ -233,6 +238,14 @@ export async function probeEndpoint(args: {
   anthropicVersion?: boolean;
   timeoutMs?: number;
 }): Promise<EndpointProbeResult> {
+  let model: string;
+  try {
+    if (typeof args.model !== "string") throw new Error("missing model");
+    model = validModelId(args.model);
+    if (!model) throw new Error("empty model");
+  } catch {
+    return { ok: false, error: "模型 ID 为空、过长或包含控制字符" };
+  }
   const base = assertHttpUrl(args.baseUrl).toString();
   const timeoutMs = args.timeoutMs ?? ENDPOINT_PROBE_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("请求超时参数无效");
@@ -303,7 +316,7 @@ export async function probeEndpoint(args: {
               || (typeof message.refusal === "string" && message.refusal.length > 0);
           });
         if (record?.error === undefined && (protocol === "anthropic" ? hasAnthropicReply : hasOpenAiReply)) {
-          return { ok: true, detail: `连接成功(${args.model})` };
+          return { ok: true, detail: `连接成功(${model})` };
         }
       } catch { /* Invalid JSON cannot prove a model responded. */ }
       return { ok: false, error: "端点返回成功状态，但没有有效的模型响应" };
@@ -321,14 +334,14 @@ export async function probeEndpoint(args: {
   // Anthropic Messages 形态（始终带 anthropic-version —— 这条路由本来就是 Anthropic 的）。
   const anthropic = await attempt(
     joinUrl(base, "/v1/messages"),
-    { model: args.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+    { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
     { "anthropic-version": "2023-06-01" },
     "anthropic",
   );
   if (anthropic.ok) return anthropic;
   const openai = await attempt(
     joinUrl(base, "/v1/chat/completions"),
-    { model: args.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+    { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
     {},
     "openai",
   );
