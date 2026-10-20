@@ -1783,6 +1783,11 @@ button.chat-ledger-head:hover {
  * The three presets are spread wide enough that switching is immediately
  * perceptible: compact packs messages tightly, comfortable is the balanced
  * default, cozy gives generous breathing room between turns. */
+/* 【ARC-005 V2】**阅读行高对齐上游 CDS**：上游正文 `--chat-leading: 1.42857`
+ * （反编译取证），而 Mcode 原三档 1.5/1.6/1.75 来自旧版自选。这里把三档整体
+ * 压向上游值，同时保留档位差（紧凑 1.42 / 舒适 1.45 / 宽松 1.6），既贴合
+ * Claude 桌面的阅读密度，也不丢用户已有的三档选择。
+ * 只改行高，不动字号与间距 —— 字号由 --chat-font-size 单独控制。 */
 :root,
 [data-chat-density="comfortable"] {
   --chat-row-gap-assistant: 0.75rem; /* 12px (was mt-3) */
@@ -1792,7 +1797,7 @@ button.chat-ledger-head:hover {
   --chat-md-gap-sm: 0.375rem;        /* 6px  */
   --chat-md-gap-md: 0.5rem;          /* 8px  */
   --chat-md-gap-lg: 0.75rem;         /* 12px */
-  --chat-md-leading: 1.6;            /* = --chat-line-height default */
+  --chat-md-leading: 1.45;           /* CDS 上游 1.42857,取整到 1.45 */
 }
 [data-chat-density="compact"] {
   --chat-row-gap-assistant: 0.25rem; /* 4px */
@@ -1802,7 +1807,7 @@ button.chat-ledger-head:hover {
   --chat-md-gap-sm: 0.25rem;         /* 4px */
   --chat-md-gap-md: 0.375rem;        /* 6px */
   --chat-md-gap-lg: 0.5rem;          /* 8px */
-  --chat-md-leading: 1.5;
+  --chat-md-leading: 1.42;           /* 接近上游 1.42857 */
 }
 [data-chat-density="cozy"] {
   --chat-row-gap-assistant: 1.75rem; /* 28px */
@@ -1812,7 +1817,7 @@ button.chat-ledger-head:hover {
   --chat-md-gap-sm: 0.625rem;        /* 10px */
   --chat-md-gap-md: 0.875rem;        /* 14px */
   --chat-md-gap-lg: 1.25rem;         /* 20px */
-  --chat-md-leading: 1.75;
+  --chat-md-leading: 1.6;            /* 宽松档,比上游略松 */
 }
 
 /* ───────────── Composer action row · mini pill (方案 B, single-pill) ─────────────
