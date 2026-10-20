@@ -83,6 +83,27 @@ check("double-click split handle uses 50/50 snap",()=>{
   assert.ok(layout.includes("width * (1 - SPLIT_SNAP_RATIO)"));
   assert.ok(layout.includes("onDoubleClick={() => {"));
 });
+check("★ 50/50 吸附走直接设定，不走 delta 双重取反",()=>{
+  // 行为判据：单靠源码里有 `width * (1 - SPLIT_SNAP_RATIO)` 证明不了落点是 50%。
+  // delta 链路会经 dockResizeDelta 与 adjustRightWidth 内部各取反一次，
+  // rightDock === "left" 时符号抵消错位。必须存在直接设定路径并被使用。
+  assert.ok(layout.includes("onSetRightWidth(target)"),
+    "双击必须优先走 onSetRightWidth(直接设宽)");
+  assert.ok(layout.includes("if (onSetRightWidth) { onSetRightWidth(target); return; }"),
+    "直接设定必须在 delta 兜底之前 return");
+  assert.ok(!/onDoubleClick[\s\S]{0,600}?onResizeRight\(rightDock === "left" \(target - current\) : current - target\)\s*;\s*\}\}/.test(layout)
+    || layout.indexOf("onSetRightWidth(target)") < layout.indexOf('onResizeRight(rightDock === "left" ? target - current'),
+    "delta 兜底只能排在直接设定之后");
+});
+check("★ setRightWidthPx 直接落值并用同一套夹取",()=>{
+  assert.ok(store.includes("setRightWidthPx: (px) =>"),
+    "store 必须有直接设定 action");
+  const body = store.slice(store.indexOf("setRightWidthPx: (px) =>"));
+  assert.ok(body.slice(0, 400).includes("clampRightWidth(px,"),
+    "直接设定仍须经过 clampRightWidth（min 240 / 80% 分享）");
+  assert.ok(body.slice(0, 400).includes("schedulePaneWidthPersist(get, \"rightWidth\")"),
+    "直接设定必须走同一持久化队列");
+});
 check("root drag attribute and iframe/browser pointer shield",()=>{
   assert.ok(layout.includes('data-pane-dragging={paneDragging ? "true" : undefined}'));
   assert.ok(layout.includes('data-pane-iframe-shield="" className="pointer-events-none'));

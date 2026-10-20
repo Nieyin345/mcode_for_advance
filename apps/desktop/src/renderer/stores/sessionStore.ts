@@ -4613,6 +4613,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ rightWidth: next });
     schedulePaneWidthPersist(get, "rightWidth");
   },
+  setRightWidthPx: (px) => {
+    // 【T02】双击 50/50 吸附：直接设定，不经 delta。
+    // `clampRightWidth` 仍然生效（它守的是 min 240 / max 80% 分享），
+    // 这里只是绕开「delta → dockResizeDelta → -deltaPx」这条会双重取反的链路。
+    const s = get();
+    const next = clampRightWidth(px, centerRightRowWidth(s.leftOpen, s.leftWidthPct));
+    set({ rightWidth: next });
+    schedulePaneWidthPersist(get, "rightWidth");
+  },
   adjustBottomTerminalHeight: (deltaPx) => {
     // Divider sits on TOP of the terminal. Dragging the handle DOWN (delta>0)
     // pushes it toward the terminal, so the terminal SHRINKS — same sign flip

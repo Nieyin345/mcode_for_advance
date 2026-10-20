@@ -561,6 +561,8 @@ export interface ClassicShellProps {
   bottomTerminalHeight: number;
   handleWidePanelResize: (deltaPx: number) => void;
   adjustRightWidth: (deltaPx: number) => void;
+  /** 【T02】双击 50/50 吸附：直接设像素宽，绕开 delta 的双重取反。 */
+  setRightWidthPx: (px: number) => void;
   adjustBottomTerminalHeight: (deltaPx: number) => void;
   resetWidePanelPct: () => void;
   resetRightWidth: () => void;
@@ -572,7 +574,7 @@ export interface ClassicShellProps {
  * `WorkspaceInertShell` 自己就地订阅 `settingsOpen`(与抽出前相同 —— 它是
  * 自订阅的 memo 包壳,设置开关只重渲染这一层)。
  */
-export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, rightDock, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
+export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, rightDock, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, setRightWidthPx, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
   const setRightDock = useSessionStore((s) => s.setRightDock);
   const paneLayout = useSessionStore((s) => s.paneLayout);
   const moveLayoutPane = useSessionStore((s) => s.moveLayoutPane);
@@ -661,6 +663,7 @@ export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftW
             rightWidthPct={widePanelOpen ? widePanelPct : undefined}
             bottomTerminalHeight={bottomTerminalHeight}
             onResizeRight={handleDockedResize}
+            onSetRightWidth={setRightWidthPx}
             onResizeBottomTerminal={adjustBottomTerminalHeight}
             onResetRight={widePanelOpen ? resetWidePanelPct : resetRightWidth}
             onResetBottomTerminal={resetBottomTerminalHeight}

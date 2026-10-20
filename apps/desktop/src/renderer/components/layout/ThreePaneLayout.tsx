@@ -44,6 +44,8 @@ interface Props {
   bottomTerminalHeight?: number;
   onResizeLeft?: (deltaPx: number) => void;
   onResizeRight?: (deltaPx: number) => void;
+  /** 【T02】双击 50/50 吸附用：直接设目标像素宽。不传则退化为 delta 路径。 */
+  onSetRightWidth?: (px: number) => void;
   onResizeBottomTerminal?: (deltaPx: number) => void;
   onResetLeft?: () => void;
   onResetRight?: () => void;
@@ -98,6 +100,7 @@ export function ThreePaneLayout({
   bottomTerminalHeight,
   onResizeLeft,
   onResizeRight,
+  onSetRightWidth,
   onResizeBottomTerminal,
   onResetLeft,
   onResetRight,
@@ -229,9 +232,13 @@ export function ThreePaneLayout({
           if (!(e.target as HTMLElement).closest('[data-divider="vertical"]') || !onResizeRight) return;
           const width = e.currentTarget.getBoundingClientRect().width;
           if (width <= 0) return;
-          const current = rightWidthPct === undefined ? (rightWidth ?? 360) : width * rightWidthPct / 100;
           const target = width * (1 - SPLIT_SNAP_RATIO);
           e.preventDefault(); e.stopPropagation();
+          // 【T02】直接设目标宽度，不走 delta：
+          // delta 会经 `dockResizeDelta` 与 `adjustRightWidth` 内部各取反一次，
+          // 在 rightDock === "left" 时两次抵消错位，吸附落点就不是 50%。
+          if (onSetRightWidth) { onSetRightWidth(target); return; }
+          const current = rightWidthPct === undefined ? (rightWidth ?? 360) : width * rightWidthPct / 100;
           onResizeRight(rightDock === "left" ? target - current : current - target);
         }}
         onPointerDownCapture={(e) => {

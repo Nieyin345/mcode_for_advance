@@ -224,6 +224,7 @@ export function App() {
   const bottomTerminalHeight = useSessionStore((s) => s.bottomTerminalHeight);
   const adjustLeftWidthPct = useSessionStore((s) => s.adjustLeftWidthPct);
   const adjustRightWidth = useSessionStore((s) => s.adjustRightWidth);
+  const setRightWidthPx = useSessionStore((s) => s.setRightWidthPx);
   const adjustBottomTerminalHeight = useSessionStore((s) => s.adjustBottomTerminalHeight);
   const resetLeftWidthPct = useSessionStore((s) => s.resetLeftWidthPct);
   const resetRightWidth = useSessionStore((s) => s.resetRightWidth);
@@ -335,6 +336,7 @@ export function App() {
         bottomTerminalHeight={bottomTerminalHeight}
         handleWidePanelResize={handleWidePanelResize}
         adjustRightWidth={adjustRightWidth}
+        setRightWidthPx={setRightWidthPx}
         adjustBottomTerminalHeight={adjustBottomTerminalHeight}
         resetWidePanelPct={resetWidePanelPct}
         resetRightWidth={resetRightWidth}

@@ -1623,6 +1623,10 @@ export interface SessionState {
   adjustLeftWidthPct: (deltaPct: number) => void;
   /** Apply an incremental delta to the right panel width. */
   adjustRightWidth: (deltaPx: number) => void;
+  /** 【T02】双击 50/50 吸附用：直接设定右栏像素宽，不走 delta 链路。
+   *  delta 路径会经过 `dockResizeDelta` 与 `adjustRightWidth` 内部各一次取反，
+   *  在 rightDock === "left" 时符号抵消错误，导致吸附落点不是 50%。 */
+  setRightWidthPx: (px: number) => void;
   /** Apply an incremental delta to the bottom terminal height. */
   adjustBottomTerminalHeight: (deltaPx: number) => void;
   /** Apply an incremental delta to the editor-column percentage. The delta
