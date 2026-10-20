@@ -166,7 +166,7 @@ export function UpdateNotification() {
     <div
       role="status"
       className={cn(
-        "pointer-events-auto w-80 rounded-md border border-edge border-l-2 border-l-accent bg-surface px-3 py-2.5 shadow-lg",
+        "pointer-events-auto w-80 rounded-[var(--radius-btn-xs)] border border-edge border-l-2 border-l-accent bg-surface px-3 py-2.5 shadow-[var(--shadow-popover)]",
         "animate-[home-fade-up_160ms_ease-out]",
       )}
     >

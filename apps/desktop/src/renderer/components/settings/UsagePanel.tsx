@@ -364,7 +364,7 @@ export function UsagePanel() {
                     {tip && (
                       <div
                         ref={tipRef}
-                        className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md border border-edge bg-surface px-2.5 py-1.5 text-[11px] text-content shadow-lg"
+                        className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-1.5 text-[11px] text-content shadow-[var(--shadow-popover)]"
                         style={{ left: tip.x, top: tip.y - 6 }}
                       >
                         {tip.text}

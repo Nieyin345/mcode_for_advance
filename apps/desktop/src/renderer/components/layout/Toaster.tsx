@@ -69,7 +69,7 @@ function ToastCard({ toast }: { toast: ToastItem }) {
       data-toast-id={toast.id}
       role={meta.role}
       className={cn(
-        "group pointer-events-auto flex w-80 items-start gap-2 rounded-md border border-edge border-l-2 bg-surface px-3 py-2.5 shadow-lg",
+        "group pointer-events-auto flex w-80 items-start gap-2 rounded-[var(--radius-btn-xs)] border border-edge border-l-2 bg-surface px-3 py-2.5 shadow-[var(--shadow-popover)]",
         "transition-colors",
         meta.accent,
       )}
