@@ -54,7 +54,7 @@ function SelectTrigger({ className, children, ...props }: SelectTriggerProps) {
   return (
     <BaseSelect.Trigger
       className={cn(
-        "flex items-center gap-1 rounded-md border border-edge bg-surface px-2.5 py-1.5 text-xs text-content outline-none transition-colors",
+        "flex items-center gap-1 rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-1.5 text-xs text-content outline-none transition-colors",
         "hover:bg-surface-muted focus:border-accent",
         "data-[popup-open]:border-accent",
         className,
@@ -107,7 +107,7 @@ function SelectPopup({ className, ...props }: SelectPopupProps) {
   return (
     <BaseSelect.Popup
       className={cn(
-        "origin-top rounded-md border border-edge bg-surface py-1 shadow-lg",
+        "origin-top rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
         "data-[ending-style]:scale-y-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-y-95 data-[starting-style]:opacity-0",
         // 【ARC-005】浮层揭示走动效词表（styles.css）：--dur-snap = 120ms「揭示」档，
         // --ease-out = 标准出场曲线。不写裸毫秒类 —— 词表外的时长会在统一改
