@@ -19,3 +19,9 @@ export const writeFile = real.writeFile.bind(real);
 export const unlink = real.unlink.bind(real);
 export const mkdir = real.mkdir.bind(real);
 export const lstat = real.lstat.bind(real);
+// The real restore path now shares the Host's atomic writer, whose own
+// node:fs/promises usage must remain native. Only readFile above is fault-
+// injected for the race; the atomic leaf must not be accidentally stubbed.
+export const open = real.open.bind(real);
+export const rename = real.rename.bind(real);
+export const rm = real.rm.bind(real);

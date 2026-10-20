@@ -27,12 +27,13 @@
  * (accidental file overwrite / wrong edits) without taking on a
  * dependency.
  */
-import { lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { lstat, readFile, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { TurnFileEntry } from "@contracts/runtime";
 import { msysToWindowsPath } from "@main/lib/msysPath.js";
 import { pathWithin } from "@main/lib/realPathWithin.js";
+import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 
 /** Strict decoder for pre-turn snapshots: throws on invalid UTF-8 instead of
  *  substituting U+FFFD, and keeps a leading BOM (like readFile "utf-8") so a
@@ -159,8 +160,11 @@ export class FileSnapshot {
         // exists:false so restore can unlink.
         if (generation === this.generation) this.originals.set(abs, { absPath: abs, exists: false, content: "" });
       } else {
-        // EACCES, EISDIR, etc. — not safe to restore later, so skip.
-        // Logged so devs can see it without crashing the stream.
+        // EACCES / EISDIR / EPERM do NOT prove absence. If the tool later
+        // replaces the directory or an unreadable file with writable bytes,
+        // a second pre-hook must not capture those post-edit bytes as the
+        // original. Suppress retry for this turn; clear() permits a new one.
+        if (generation === this.generation) this.unrestorable.add(abs);
         console.warn(`FileSnapshot: skip ${abs} (${code ?? (err as Error).message})`);
       }
     }
@@ -475,10 +479,12 @@ export async function restoreFiles(
         continue;
       }
       if (entry.kind === "modified") {
-        // Ensure parent dir exists in case the user (or another tool)
-        // deleted it mid-turn.
-        await mkdir(dirname(path), { recursive: true });
-        await writeFile(path, entry.before, "utf-8");
+        // The target was lstat-validated just above: it already exists.
+        // Truncating it with writeFile destroys the current bytes if disk
+        // write/fsync crashes mid-way. Reuse the one Host atomic writer
+        // (same-directory random wx stage, sync, rename, no in-place fallback)
+        // so a failed restore preserves the file still on disk.
+        await atomicReplaceFile(path, entry.before);
       } else {
         try {
           await unlink(path);

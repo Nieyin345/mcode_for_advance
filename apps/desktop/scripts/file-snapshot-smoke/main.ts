@@ -412,6 +412,34 @@ try {
     eq("小文件仍是精确计数 dels=1", fs2[0]?.dels, 1);
   }
 
+  console.log("\n【FULL-1】首次快照不是 ENOENT 时后续同轮不能捕获写后的数据");
+  {
+    const pathInTurn = "unreadable-then-replaced";
+    const dir = join(WS, pathInTurn);
+    mkdirSync(dir);
+    const snap = new FileSnapshot();
+    // Real readFile(directory) throws EISDIR/EPERM on supported platforms.
+    // This is NOT evidence that the pathname was absent at turn start.
+    await snap.recordPre(WS, pathInTurn);
+    rmSync(dir, {recursive:true});
+    write(pathInTurn, "TOOL_ALREADY_WROTE");
+    await snap.recordPre(WS, pathInTurn);
+    // The unsafe second capture would record TOOL_ALREADY_WROTE as if it
+    // existed at turn start. A later change makes that false "before" visible.
+    write(pathInTurn, "TOOL_LATER_UPDATE");
+    eq("★ directory read failure must permanently suppress second pre-turn snapshot", snap.size, 0);
+    eq("★ failed first read cannot forge a rewind card with post-edit before", (await snap.freeze()).length, 0);
+    eq("even with no rewind card the latest user file remains untouched", read(pathInTurn), "TOOL_LATER_UPDATE");
+
+    // A NEW turn must be able to take a real snapshot after clear, otherwise
+    // the bad original is permanently excluded for the entire session.
+    snap.clear();
+    await snap.recordPre(WS, pathInTurn);
+    write(pathInTurn, "NEXT_TURN");
+    const next = await snap.freeze();
+    eq("clear starts a fresh generation and permits a valid pre-turn snapshot", next[0]?.before, "TOOL_LATER_UPDATE");
+  }
+
   console.log("\n【MC-008】并发 recordPre 只捕获首次内容");
   {
     write("race.txt", "ORIGINAL");

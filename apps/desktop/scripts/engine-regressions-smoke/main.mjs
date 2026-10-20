@@ -502,11 +502,16 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
     // —— 所以把那个叶子也一并编译出来、把 import 指过去（叶子本身只 import node:*,
     // 不需要再替换任何东西）。
     writeFileSync(join(temp, "realPathWithin.mjs"), compile(readFileSync(join(lib, "realPathWithin.ts"), "utf8")));
+    // FileSnapshot.restoreFiles now imports the ORIGINAL atomicFile.ts leaf.
+    // Compile that exact production module here instead of weakening the test
+    // by removing the new Host atomic-save dependency from the snapshot.
+    writeFileSync(join(temp, "atomicFile.mjs"), compile(readFileSync(join(lib, "atomicFile.ts"), "utf8")));
     writeFileSync(join(temp, "snapshot.mjs"), compile(
       readFileSync(join(lib, "fileSnapshot.ts"), "utf8"),
       [
         ['"@main/lib/msysPath.js"', '"./msys.mjs"'],
         ['"@main/lib/realPathWithin.js"', '"./realPathWithin.mjs"'],
+        ['"@main/lib/atomicFile.js"', '"./atomicFile.mjs"'],
       ],
     ));
     writeFileSync(join(temp, "bashGuard.mjs"), compile(
