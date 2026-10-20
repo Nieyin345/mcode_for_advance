@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
+import { StatusDot } from "@renderer/components/ui/cds/StatusDot.js";
 import { api } from "@renderer/lib/api.js";
 import {
   IconPlus,
@@ -351,15 +352,16 @@ export function TerminalPanel({ active }: { active: boolean }) {
                   }}
                   title={s.detail ? `${sessionTitle} - ${s.detail}` : sessionTitle}
                 >
-                  <span
-                    className={cn(
-                      "mr-1 inline-block h-1.5 w-1.5 rounded-full",
-                      s.status === "running" && "bg-accent",
-                      s.status === "starting" && "bg-warning",
-                      s.status === "exited" && "bg-content-subtle",
-                      s.status === "error" && "bg-danger",
-                    )}
-                  />
+                  {/* 【ARC-005 V2】终端标签状态点改用 CDS StatusDot：
+                      运行/启动中 = 呼吸点，出错 = 红点，已退出 = 静态灰点
+                      （与侧栏会话行、首屏自动化卡片同一套 6px 几何）。 */}
+                  {(s.status === "running" || s.status === "starting") && (
+                    <StatusDot kind="running" className="mr-1" />
+                  )}
+                  {s.status === "error" && <StatusDot kind="error" className="mr-1" />}
+                  {s.status === "exited" && (
+                    <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-content-subtle" aria-hidden />
+                  )}
                   {sessionTitle}
                 </button>
                 <button
