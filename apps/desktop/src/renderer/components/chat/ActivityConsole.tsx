@@ -141,7 +141,9 @@ function FilterChip({
         <span
           className={cn(
             "rounded-full px-1 text-[9px] tabular-nums",
-            active ? "bg-accent/15 text-accent-strong" : "bg-surface-muted text-content-muted",
+            // 【ARC-005 V2】计数徽标不再用 accent 淡底：accent 只留给运行/注意
+            // 信号；选中态由外层按钮的底色表达，徽标保持中性。
+            active ? "bg-surface-hover text-content" : "bg-surface-muted text-content-muted",
           )}
         >
           {n}
