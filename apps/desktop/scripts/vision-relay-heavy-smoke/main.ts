@@ -64,6 +64,86 @@ delete process.env["MCODE_SMOKE_VISION_THROW"];
 const PNG = "iVBORw0KGgoAAAANSUhEUg=="; // 一小段 base64（内容不重要，形状才重要）
 
 try {
+  /* ═════ 设置 DB 异常时不能把隐式 Promise rejection 当模型无视觉 ═════ */
+  console.log("\n§0 设置数据库不可用时按显式失败合同返回");
+  {
+    const repo = SettingRepo as typeof SettingRepo & { get: (key: string) => string | null };
+    const oldGet = repo.get;
+    const delivered = reset();
+    let configThrows = false;
+    let configured = true;
+    let describeThrows = false;
+    let result: Awaited<ReturnType<typeof describeImage>> | null = null;
+    repo.get = () => { throw new Error("fixture: vision settings read I/O failure"); };
+    try {
+      try { configured = visionRelayConfigured(); } catch { configThrows = true; }
+      try { result = await describeImage({ imageBase64: PNG, mimeType: "image/png" }); }
+      catch { describeThrows = true; }
+    } finally {
+      repo.get = oldGet;
+    }
+    check("★ 库无法读取时 visionRelayConfigured fail-closed 为 false、不抛",
+      !configThrows && configured === false, {configThrows, configured});
+    check("★ describeImage 设置读取失败返回 ok:false 而非抛 Promise rejection",
+      !describeThrows && result?.ok === false, {describeThrows,result});
+    check("★ 真正的读取错误不能冒充未配置；错误里要有原始 I/O 线索",
+      result?.ok === false && /settings read I\/O failure/.test(result.error), result);
+    check("★ 设置读取出错不发 SDK/网关网络调用", delivered.calls === 0, delivered.calls);
+  }
+
+  /* ═════ 审核 BLOCKER: DB / SDK / bridge 抛出无法 String() 的对象 ═════ */
+  console.log("\n§0B 恶意非 Error 抛值不能破坏合同/并发控制");
+  {
+    const repo = SettingRepo as typeof SettingRepo & { get: (key: string) => string | null };
+    const oldGet = repo.get;
+    let configured: boolean | null = null, configThrown = false, describeThrown = false;
+    let result: Awaited<ReturnType<typeof describeImage>> | null = null;
+    const d = reset();
+    repo.get = () => { throw Object.create(null); };
+    try {
+      try { configured = visionRelayConfigured(); } catch { configThrown = true; }
+      try { result = await describeImage({ imageBase64: PNG, mimeType: "image/png" }); }
+      catch { describeThrown = true; }
+    } finally { repo.get = oldGet; }
+    check("★ null-prototype DB throw 不会让已配置能力检查二次抛出",
+      !configThrown && configured === false, {configThrown,configured});
+    check("★ null-prototype DB throw 返回显式 ok:false 而不是 Promise reject",
+      !describeThrown && result?.ok === false, {describeThrown,result});
+    check("★ 配置异常时没有触发任何 SDK 查询",d.calls===0,d.calls);
+  }
+  {
+    SettingRepo.set(UI_VISION_RELAY_MODEL_SETTING_KEY, "cfg-1:vision");
+    process.env["MCODE_SMOKE_THROW_EXOTIC"]="1";
+    const results: Array<Awaited<ReturnType<typeof describeImage>> | null> = [];
+    let thrown = 0;
+    try {
+      for(let i=0;i<4;i++) {
+        try {results.push(await describeImage({imageBase64:PNG,mimeType:"image/png"}));}
+        catch {thrown++;results.push(null);}
+      }
+    } finally {delete process.env["MCODE_SMOKE_THROW_EXOTIC"];}
+    check("★ SDK 恶意抛值四次都返回 ok:false 而不拒绝 Promise",
+      thrown===0 && results.every(r=>r?.ok===false),{thrown,results});
+    check("★ SDK 恶意异常四次后并发额度仍能立即复用",
+      (await describeImage({imageBase64:PNG,mimeType:"image/png"})).ok===true);
+  }
+  {
+    SettingRepo.set(UI_VISION_RELAY_MODEL_SETTING_KEY, "cfg-1:vision");
+    process.env["MCODE_SMOKE_RELEASE_EXOTIC"]="1";
+    let thrown=0;
+    const results: Array<Awaited<ReturnType<typeof describeImage>>|null>=[];
+    try {
+      for(let i=0;i<4;i++) {
+        try {results.push(await describeImage({imageBase64:PNG,mimeType:"image/png"}));}
+        catch {thrown++;results.push(null);}
+      }
+    } finally { delete process.env["MCODE_SMOKE_RELEASE_EXOTIC"]; }
+    check("★ bridge 恶意清理异常不覆盖四次已经完成的视觉描述",
+      thrown===0 && results.every(r=>r?.ok===true),{thrown,results});
+    check("★ bridge 恶意清理异常后并发槽位归还",
+      (await describeImage({imageBase64:PNG,mimeType:"image/png"})).ok===true);
+  }
+
   /* ═════════════ §A 未配置 → 能力不存在，不拿空模型名去请求 ═════════════ */
   console.log("\n§A 未配置视觉中继模型");
   {
@@ -159,6 +239,54 @@ try {
     check("★ 超过并发上限 → 明确拒绝（不静默排队）", over.ok === false && /最多/.test(over.error), over);
     const settled = await Promise.all(inflight);
     check("○ 上限内的三个都正常返回（上限没误伤）", settled.every((s) => s.ok === true), settled.map((s) => s.ok));
+  }
+
+  /* ═════ 桥退出错误:返回已得描述，归还并发额度 ═════ */
+  console.log("\n§F2 bridge 清理失败不能吞掉模型已给出的描述");
+  {
+    SettingRepo.set(UI_VISION_RELAY_MODEL_SETTING_KEY, "cfg-1:vision");
+    process.env["MCODE_SMOKE_RELEASE_THROW"] = "1";
+    let thrown = 0;
+    const results: Array<Awaited<ReturnType<typeof describeImage>> | null> = [];
+    try {
+      for (let i=0;i<4;i++) {
+        try {results.push(await describeImage({imageBase64: PNG, mimeType:"image/png"}));}
+        catch { thrown++; results.push(null); }
+      }
+    } finally {
+      delete process.env["MCODE_SMOKE_RELEASE_THROW"];
+    }
+    check("★ 网关 bridge 清理故障不覆盖已生成的4段描述",
+      thrown===0 && results.every(r=>r?.ok===true),{thrown,results});
+    check("★ bridge 清理异常后没有槽位泄漏，可继续正常转述",
+      (await describeImage({imageBase64:PNG,mimeType:"image/png"})).ok===true);
+  }
+
+
+  /* ═════ SDK 有 assistant 文本但最终 result.is_error 不得冒充图片描述成功 ═════ */
+  console.log("\n§H result.is_error: 先有 text 后失败");
+  {
+    SettingRepo.set(UI_VISION_RELAY_MODEL_SETTING_KEY, "cfg-1:vision");
+    process.env.MCODE_SMOKE_VISION_MESSAGES=JSON.stringify([{type:"assistant",message:{content:[{type:"text",text:"API Error: 401 Unauthorized"}]}},{type:"result",is_error:true,subtype:"error_during_execution",result:"SDK failed authentication"}]);
+    let result:Awaited<ReturnType<typeof describeImage>>|null=null;
+    try{result=await describeImage({imageBase64:PNG,mimeType:"image/png"});}
+    finally{delete process.env.MCODE_SMOKE_VISION_MESSAGES;}
+    check("★ 视觉中继必须尊重最终 SDK is_error，不能把错误文字当作视觉内容",
+      result?.ok===false,result);
+  }
+
+
+  /* ═════ SDK 缺少终态 result 也是失败（途中被中断） ═════ */
+  {
+    SettingRepo.set(UI_VISION_RELAY_MODEL_SETTING_KEY, "cfg-1:vision");
+    process.env.MCODE_SMOKE_VISION_MESSAGES=JSON.stringify([
+      {type:"assistant",message:{content:[{type:"text",text:"unfinished vision draft"}]}},
+    ]);
+    let partial:Awaited<ReturnType<typeof describeImage>>|null=null;
+    try{partial=await describeImage({imageBase64:PNG,mimeType:"image/png"});}
+    finally{delete process.env.MCODE_SMOKE_VISION_MESSAGES;}
+    check("★ 中继只收部分 assistant 未见 SDK 成功 result 不得输出图像结论",
+      partial?.ok===false,partial);
   }
 
   /* ═════════════ §G 诚实边界 ═════════════ */

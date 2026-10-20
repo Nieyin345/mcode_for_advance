@@ -57,6 +57,7 @@ import { resolveModelForGitOp } from "@main/ipc/git.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import { log } from "@main/lib/logger.js";
+import { safeErrorMessage } from "@main/lib/safeErrorMessage.js";
 
 export type { RelayMime };
 
@@ -87,7 +88,14 @@ export type DescribeImageResult =
  * 而不是先试一次再失败(免得白等一次超时,也免得给模型指一条走不通的路)。
  */
 export function visionRelayConfigured(): boolean {
-  return parseModel(SettingRepo.get(UI_VISION_RELAY_MODEL_SETTING_KEY)) !== null;
+  try {
+    return parseModel(SettingRepo.get(UI_VISION_RELAY_MODEL_SETTING_KEY)) !== null;
+  } catch (err) {
+    // "Configured" is a boolean UI capability check. An unreadable settings
+    // DB cannot be treated as an enabled model, and must not crash the UI.
+    log.warn(`visionRelay: cannot read configured model: ${safeErrorMessage(err)}`);
+    return false;
+  }
 }
 
 /**
@@ -97,7 +105,14 @@ export function visionRelayConfigured(): boolean {
  * **任何情况下都不返回空描述冒充成功。**
  */
 export async function describeImage(args: DescribeImageArgs): Promise<DescribeImageResult> {
-  const choice = parseModel(SettingRepo.get(UI_VISION_RELAY_MODEL_SETTING_KEY));
+  let choice: ReturnType<typeof parseModel>;
+  try {
+    choice = parseModel(SettingRepo.get(UI_VISION_RELAY_MODEL_SETTING_KEY));
+  } catch (err) {
+    // Distinguish "not configured" from "configuration is unreadable": the
+    // caller must receive a useful error, not an unhandled rejected Promise.
+    return { ok: false, error: `视觉中继设置读取失败:${safeErrorMessage(err)}` };
+  }
   if (!choice) {
     return { ok: false, error: "未配置视觉中继模型(设置 → 通用 → 视觉中继)" };
   }
@@ -144,6 +159,7 @@ export async function describeImage(args: DescribeImageArgs): Promise<DescribeIm
     });
 
     let out = "";
+    let completed = false;
     for await (const m of q) {
       if (m.type === "assistant") {
         const content = (m as { message?: { content?: Array<{ type: string; text?: string }> } }).message?.content;
@@ -154,8 +170,19 @@ export async function describeImage(args: DescribeImageArgs): Promise<DescribeIm
             .join("\n");
         }
       }
-      if (m.type === "result") break;
+      if (m.type === "result") {
+        const result = m as { is_error?: boolean; result?: unknown; subtype?: string };
+        if (result.is_error) {
+          const cause = typeof result.result === "string" && result.result.trim()
+            ? result.result.trim()
+            : result.subtype ?? "模型调用失败";
+          return { ok: false, error: `视觉中继模型调用失败:${cause}` };
+        }
+        completed = true;
+        break;
+      }
     }
+    if (!completed) return { ok: false, error: "视觉中继模型流中断，未收到 SDK 成功结果" };
 
     const text = out.trim().replace(/^```\w*\n?/, "").replace(/\n?```$/, "").trim();
     if (!text) {
@@ -167,7 +194,7 @@ export async function describeImage(args: DescribeImageArgs): Promise<DescribeIm
     }
     return { ok: true, text, model: label };
   } catch (err) {
-    const msg = (err as Error).message || String(err);
+    const msg = safeErrorMessage(err);
     log.warn(`visionRelay: describeImage failed: ${msg}`);
     if (ac.signal.aborted) {
       return { ok: false, error: `视觉转述超时(超过 ${Math.round(RELAY_TIMEOUT_MS / 1000)} 秒)` };
@@ -179,7 +206,14 @@ export async function describeImage(args: DescribeImageArgs): Promise<DescribeIm
     return { ok: false, error: `视觉转述失败:${msg}` };
   } finally {
     clearTimeout(timer);
-    releaseBridge?.();
-    inFlight--;
+    try {
+      releaseBridge?.();
+    } catch (err) {
+      // A teardown failure must not replace an already returned image
+      // description or strand the in-flight concurrency allowance.
+      log.warn(`visionRelay: bridge cleanup failed: ${safeErrorMessage(err)}`);
+    } finally {
+      inFlight--;
+    }
   }
 }

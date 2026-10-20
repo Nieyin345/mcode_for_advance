@@ -51,6 +51,8 @@ function sequence(): unknown[] {
 }
 
 async function* messages(): AsyncGenerator<unknown> {
+  // Simulate a third-party SDK rejection that cannot be stringified.
+  if (process.env["MCODE_SMOKE_THROW_EXOTIC"] === "1") throw Object.create(null);
   if (process.env["MCODE_SMOKE_VISION_THROW"]) {
     throw new Error(process.env["MCODE_SMOKE_VISION_THROW"]);
   }

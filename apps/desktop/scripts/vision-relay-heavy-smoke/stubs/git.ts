@@ -21,7 +21,12 @@ export async function resolveModelForGitOp(
     return {
       ok: true,
       config: { id: customModelId, protocol: "anthropic", baseUrl: "http://127.0.0.1:0", model: "vision-model" },
-      releaseBridge: () => {},
+      releaseBridge: () => {
+        if (process.env["MCODE_SMOKE_RELEASE_EXOTIC"] === "1") throw Object.create(null);
+        if (process.env["MCODE_SMOKE_RELEASE_THROW"] === "1") {
+          throw new Error("fixture: releaseBridge cleanup failed");
+        }
+      },
     };
   }
   return { ok: false, error: "找不到指定的模型配置" };
