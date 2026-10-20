@@ -1869,7 +1869,9 @@ button.chat-ledger-head:hover {
   height: 1.75rem;            /* 28px — matches the chip row's visual height */
   padding: 0 0.1875rem;
   border: 1px solid rgb(var(--edge));
-  border-radius: 0.5625rem;   /* 9px */
+  /* 【ARC-005 V2】圆角走 CDS 控件档（与 Segmented 轨道同源），不再是
+   * 9px 的一次性字面量。 */
+  border-radius: var(--radius-btn-xs);
   background: rgb(var(--surface-muted) / 0.6);
   flex: none;
   min-width: 0;
@@ -1882,7 +1884,7 @@ button.chat-ledger-head:hover {
   padding: 0 0.4375rem;
   border: none;
   background: none;
-  border-radius: 0.375rem;
+  border-radius: var(--radius-btn-xs);
   cursor: pointer;
   white-space: nowrap;
   font-size: 0.75rem;
