@@ -85,7 +85,9 @@ function TooltipPopup({ className, ...props }: TooltipPopupProps) {
   return (
     <BaseTooltip.Popup
       className={cn(
-        "max-w-xs rounded-md border border-edge bg-surface px-2.5 py-2 text-[11px] text-content shadow-lg",
+        // 【ARC-005 V2】圆角走 CDS 小控件档（--radius-btn-xs 6px），阴影走
+        // 上游 popover 档（--shadow-popover，含发丝内环），与菜单/下拉一致。
+        "max-w-xs rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-2 text-[11px] text-content shadow-[var(--shadow-popover)]",
         "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
         "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
         // 【ARC-005】揭示时长/曲线读动效词表（--dur-snap「揭示」档 + --ease-out），
