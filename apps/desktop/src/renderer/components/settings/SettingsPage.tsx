@@ -362,8 +362,11 @@ export function SettingsPage() {
                     <button
                       key={item.id}
                       onClick={() => setActive(item.id)}
+                      // 【ARC-005 V2】导航项改用 CDS 控件档圆角与 32px 行高，
+                      // 与侧栏会话行、分段控件同一密度；激活态保留左侧 accent 竖条
+                      // （颜色之外的第二个可辨信号）。
                       className={cn(
-                        "relative flex w-full items-center gap-2 rounded px-3 py-2 text-left transition-colors",
+                        "relative flex h-8 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-3 text-left transition-colors",
                         isActive
                           ? "bg-surface-hover font-medium text-content"
                           : "text-content-muted hover:bg-surface-hover hover:text-content",
