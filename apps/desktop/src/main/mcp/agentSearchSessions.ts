@@ -46,6 +46,8 @@ interface SearchSession {
   finishedAt: number | null;
   error: string | null;
   stopped: boolean;
+  /** Once the owner is gone, in-flight start/read must fail, never return a stale page. */
+  disposed: boolean;
   /**
    * 【MC-027】**这次搜索有没有漏搜到地方**(某目录 readdir 失败、某文件打不开、
    * 或撞了深度上限)。`false` 才是「完整无命中」;`true` 表示结果可能不全,
@@ -183,7 +185,7 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
 
   async function waitForProgress(s: SearchSession, baseline: number, waitMs: number): Promise<void> {
     const deadline = Date.now() + Math.max(0, Math.min(waitMs, 5_000));
-    while (Date.now() < deadline && s.status === "running" && s.results.length <= baseline) {
+    while (Date.now() < deadline && !s.disposed && s.status === "running" && s.results.length <= baseline) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
@@ -219,6 +221,7 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
         finishedAt: null,
         error: null,
         stopped: false,
+        disposed: false,
         partial: false,
         skippedPaths: [],
         skippedCount: 0,
@@ -232,6 +235,7 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
         contextLines: Math.max(0, Math.min(input.contextLines ?? 0, 5)),
       });
       await waitForProgress(state, 0, input.waitMs ?? 250);
+      if (state.disposed) throw new Error(`搜索会话 ${state.id} 已销毁，搜索结果不再有效`);
       return page(state, 0, input.firstPageLength ?? 50);
     },
 
@@ -239,6 +243,7 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
       const s = owned(input.ownerSessionId, input.searchId);
       const offset = Math.max(0, input.offset ?? 0);
       await waitForProgress(s, offset, input.waitMs ?? 0);
+      if (s.disposed) throw new Error(`搜索会话 ${s.id} 已销毁，不能继续读取`);
       return page(s, offset, input.length ?? 100);
     },
 
@@ -276,7 +281,10 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
     disposeOwner(ownerSessionId) {
       for (const [id, s] of [...sessions]) {
         if (s.ownerSessionId !== ownerSessionId) continue;
-        if (s.status === "running") s.stopped = true;
+        s.disposed = true;
+        s.stopped = true;
+        if (s.status === "running") s.status = "stopped";
+        s.finishedAt ??= Date.now();
         sessions.delete(id);
       }
     },
@@ -303,7 +311,14 @@ async function runSearch(
     } else {
       throw new Error(`搜索起点不是普通文件或目录:${state.root}`);
     }
-    if (state.status === "running") state.status = state.stopped ? "stopped" : "completed";
+    if (state.status === "running") {
+      // Reaching a hard cap does not prove the remaining tree/lines were scanned.
+      // Fail closed on completeness (even if the last match happened at EOF).
+      if (state.results.length >= state.maxResults) {
+        recordSkip(state, state.root, state.root, `max_results=${state.maxResults} 上限，剩余内容可能未搜索`);
+      }
+      state.status = state.stopped ? "stopped" : "completed";
+    }
   } catch (err) {
     if (state.status === "running") {
       state.status = "error";
@@ -394,11 +409,11 @@ async function visitFile(
   rel: string,
   opts: { canRead?: (absolutePath: string) => boolean; matcher: (value: string) => boolean; fileMatcher: RegExp | null; includeHidden: boolean; contextLines: number },
 ): Promise<void> {
-  if (opts.canRead && !opts.canRead(abs)) return;
+  if (state.stopped || opts.canRead && !opts.canRead(abs)) return;
   if (opts.fileMatcher && !opts.fileMatcher.test(rel)) return;
   state.scannedFiles += 1;
   if (state.type === "files") {
-    if (opts.matcher(path.basename(rel)) || opts.matcher(rel)) state.results.push(rel);
+    if (!state.stopped && (opts.matcher(path.basename(rel)) || opts.matcher(rel))) state.results.push(rel);
     return;
   }
 

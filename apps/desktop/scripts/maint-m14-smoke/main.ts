@@ -512,6 +512,48 @@ async function main(): Promise<void> {
   await rejectsWith("disposeOwner 后 A 的旧 search_id 读不到", () => searches.read({ ownerSessionId: A, searchId: s1.searchId }), /没有这个搜索会话/);
   eq("disposeOwner 不波及 B 的搜索", searches.list(B).length, 1);
 
+  // C2a Two in-flight operations already hold the session object when an
+  // owner is evicted. The old code drops Map entries but resolves both stale
+  // start/read promises as if the revoked owner were still authenticated.
+  {
+    const isolated = createAgentSearchSessions();
+    const owner = "search-inflight-owner";
+    const startPromise = isolated.start({
+      ownerSessionId: owner, type: "content", pattern: "NO_MATCH_C2A",
+      root: searchRoot, literalSearch: true, waitMs: 2_000,
+    });
+    const id = isolated.list(owner)[0]?.searchId ?? "";
+    check("★ 搜索开始后有可撤销的 running 会话", id.startsWith("search_"), id);
+    const readPromise = isolated.read({
+      ownerSessionId: owner, searchId: id, offset: 50_000, waitMs: 2_000,
+    });
+    isolated.disposeOwner(owner);
+    await rejectsWith("★ owner 撤销期间在途 search_start 必须失败而非返回过期结果",
+      () => startPromise, /搜索会话.*已销毁/);
+    await rejectsWith("★ owner 撤销期间在途 search_read 必须失败而非返回过期结果",
+      () => readPromise, /搜索会话.*已销毁/);
+    eq("★ 撤销后没有残留搜索会话", isolated.list(owner).length, 0);
+  }
+
+  // C2b A result cap means that subsequent files/lines have not necessarily
+  // been searched. It cannot be reported as a complete result set.
+  {
+    const isolated = createAgentSearchSessions();
+    for (const type of ["files", "content"] as const) {
+      const start = await isolated.start({
+        ownerSessionId: "search-budget-owner", type, pattern: type === "files" ? "note" : "needle",
+        root: searchRoot, literalSearch: true, maxResults: 1, waitMs: 2_000,
+      });
+      const result = await isolated.read({ ownerSessionId: "search-budget-owner",
+        searchId: start.searchId, offset: 1, waitMs: 2_000 });
+      check(`★ ${type} 搜索达 max_results 后明确标 partial 及未搜完原因`,
+        result.totalResults === 1 && result.partial && result.skippedCount > 0
+          && result.skippedPaths.some((v) => v.includes("max_results")),
+        result);
+    }
+    isolated.disposeOwner("search-budget-owner");
+  }
+
   // C3 【MC-063】**端点全局搜索容量**:用注入的小全局上限验它按**总量**挡。
   {
     const cappedSearches = createAgentSearchSessions({ maxSessionsTotal: 2 });
