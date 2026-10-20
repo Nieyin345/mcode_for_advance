@@ -3111,3 +3111,38 @@ html[data-reduce-motion="true"] .cds-quiet-dots > i {
 html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
   transition: none;
 }
+
+/* ═══════════ 【ARC-005 V2】Composer 的 CDS 形态（workspace 作用域） ═══════════
+ *
+ * 上游 ChatComposer 的三条规范（`code-examples/ChatComposer.tsx`）：
+ *  1. 外框 20px 圆角 + **三态双环弥散投影**（resting / hover / focus-within）；
+ *  2. 原生 `field-sizing: content` 自适应伸缩（min 48px / max 384px）；
+ *  3. 发送按钮按压弹簧（`active:scale-95`）。
+ *
+ * Mcode 已有 resting/focus 两态，缺 hover 态与按压反馈；这里补齐，并只在
+ * workspace 变体下生效（classic 保持现有手感）。
+ */
+[data-ui-shell-variant="workspace"] .composer-card:hover:not(:focus-within) {
+  border-color: rgb(var(--input-edge) / 0.75);
+  box-shadow: var(--composer-shadow-focus);
+}
+[data-ui-shell-variant="workspace"] .composer-card:focus-within {
+  box-shadow: var(--composer-shadow-focus);
+}
+/* 发送按钮：弹簧按压（上游 active:scale-95）。只作用于 .composer-send，
+ * 不影响卡片内其它小按钮。 */
+[data-ui-shell-variant="workspace"] .composer-send:not(:disabled):active {
+  transform: scale(0.95);
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-snap);
+}
+/* 编辑器自适应高度：上游 min 48px / max 384px。Mcode 现为 3rem/18rem，
+ * workspace 下对齐上游下限，上限保留 18rem（比上游松，长提示不早出滚动条）。 */
+[data-ui-shell-variant="workspace"] .composer-host .ProseMirror {
+  min-height: 3rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] .composer-send:not(:disabled):active {
+    transform: none;
+  }
+}
