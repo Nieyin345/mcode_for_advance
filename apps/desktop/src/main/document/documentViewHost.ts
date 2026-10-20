@@ -302,6 +302,8 @@ interface LiveDocumentView {
   /** 【ARC-007 P0】页面经 `reportCloseCheck` 上报的脏标记（vendor 每次编辑/保存
    *  后都报）。`confirmDocumentReplace` 的真实来源。 */
   pageDirty: boolean;
+  /** Each new dirty report invalidates a pending human discard confirmation. */
+  pageDirtyEpoch: number;
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -548,6 +550,7 @@ export class DocumentViewHost {
       pendingOpen: null,
       slidesOpen: null,
       pageDirty: false,
+      pageDirtyEpoch: 0,
     };
 
     try {
@@ -1043,18 +1046,31 @@ export class DocumentViewHost {
   > {
     const target = this.slidesSaveTarget(docId, withinWorkspace);
     if (!target.ok) return target;
+    // Vendor does the actual PPTX write; this method only acknowledges it.
+    // Capture the exact owner BEFORE awaits, so a close or document switch
+    // cannot redirect its old revision into a newer independent session.
+    const live = this.views.get(docId);
+    const session = this.sessionOf(docId);
+    if (!live || !session) {
+      return { ok: false, reason: "保存目标的文档会话已失效，拒绝提交版本回执" };
+    }
     let bytes = 0;
+    let revision: string | null;
     try {
       const info = await stat(target.filePath);
       bytes = info.size;
+      revision = await fileContentVersion(target.filePath);
     } catch (err) {
       return { ok: false, reason: `保存后无法读取文件：${err instanceof Error ? err.message : String(err)}` };
     }
-    const revision = await fileContentVersion(target.filePath);
-    const live = this.views.get(docId)!;
-    const session = this.sessionOf(docId);
-    if (session !== null) session.revision = Promise.resolve(revision);
-    live.openedFileRevision = Promise.resolve(revision);
+    if (this.views.get(docId) !== live || this.sessionOf(docId) !== session ||
+        live.openedFilePath !== target.filePath || live.view.webContents.isDestroyed?.() === true ||
+        !withinWorkspace(target.filePath)) {
+      return { ok: false, reason: "演示文稿在保存回执等待期间已关闭、切换或失去工作区权限，拒绝更新版本" };
+    }
+    const advanced = Promise.resolve(revision);
+    session.revision = advanced;
+    live.openedFileRevision = advanced;
     live.lastFailure = undefined;
     live.lastSaveConflict = undefined;
     log.info(`document view slides-save: committed ${docId} ${target.filePath} (${bytes} bytes)`);
@@ -1079,7 +1095,20 @@ export class DocumentViewHost {
     if (!live) return false;
     if (!live.pageDirty) return true;
     if (this.confirmDirty === null) return false;
-    return this.confirmDirty({ docId, filePath: live.openedFilePath ?? live.pendingOpen?.filePath ?? null });
+    // The response to a dialog belongs to ONE view, document and edit epoch.
+    // While it is visible the user may close/switch documents or keep editing:
+    // a stale "Discard" must not authorize the newer unsaved state.
+    const epoch = live.pageDirtyEpoch;
+    const filePath = live.openedFilePath ?? live.pendingOpen?.filePath ?? null;
+    const session = this.sessionOf(docId);
+    const confirmed = await this.confirmDirty({ docId, filePath });
+    return confirmed === true &&
+      this.views.get(docId) === live &&
+      live.view.webContents.isDestroyed?.() !== true &&
+      this.sessionOf(docId) === session &&
+      (live.openedFilePath ?? live.pendingOpen?.filePath ?? null) === filePath &&
+      live.pageDirty === true &&
+      live.pageDirtyEpoch === epoch;
   }
 
   /**
@@ -1101,6 +1130,7 @@ export class DocumentViewHost {
     const live = this.views.get(docId);
     if (!live) return;
     live.pageDirty = dirty === true;
+    live.pageDirtyEpoch += 1;
   }
 
   /** 【ARC-007 P0】只读诊断：这个视图当前的待打开请求（没有则 null）。 */
@@ -1320,9 +1350,25 @@ export class DocumentViewHost {
         // 诊断/测试接缝：生产是 no-op；回归网在这里把"胜者持锁窗口"拉长以做真并发断言。
         await this.beforeAtomicReplace(real);
 
+        // The editor may have been closed, rebound to another document or
+        // removed from its workspace while waiting for the lease / above await.
+        // This is the final authorization boundary before disk mutation.
+        if (this.views.get(docId) !== live || this.sessionOf(docId) !== session ||
+            live.openedFilePath !== target || live.view.webContents.isDestroyed?.() === true ||
+            !withinWorkspace(real)) {
+          return { ok: false, reason: "文档会话在等待保存期间已关闭、切换或失去工作区权限，拒绝旧保存写盘" };
+        }
+
         // 与 `file.writeFile` 共用同一份原子替换（`@main/lib/atomicFile`）。
         await atomicReplaceFile(real, bytes);
         const revision = await fileContentVersion(real);
+        // A close during the OS write cannot undo the already-published bytes.
+        // In that case report the retained file explicitly, but NEVER restore
+        // an obsolete session/revision into a different live document.
+        if (this.views.get(docId) !== live || this.sessionOf(docId) !== session ||
+            live.openedFilePath !== target || live.view.webContents.isDestroyed?.() === true) {
+          return { ok: false, reason: `保存期间文档视图已关闭或切换；磁盘文件已保留在 ${target}，请重新打开确认` };
+        }
         // 保存成功后，本视图的"打开时版本"推进到刚写下的这一版 —— 用户连续保存两次
         // （第二次基于第一次的结果）不该被自己的上一次保存判成冲突。会话表里的
         // 权威 revision 必须**一起**推进（两个字段同一个 Promise 对象，见 openPath）。

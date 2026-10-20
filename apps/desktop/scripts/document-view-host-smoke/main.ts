@@ -2116,5 +2116,142 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
   rmSync(root21,{recursive:true,force:true});
 }
 
+/* ═════════════ 22. FULL-1 文档保存 await 时会话撤销/切换 ═════════════
+ * A GenOffice tab may be closed or rebound while a cross-process OS lease
+ * and the save's beforeAtomicReplace hook are pending. The stale old editor
+ * must not write bytes after its host ownership has been revoked.
+ */
+{
+  const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: join22 } = await import("node:path");
+  const root22 = mkdtempSync(join22(tmpdir(), "mcode-genoffice-save-revoke-"));
+  const original = join22(root22, "first.docx");
+  const replacement = join22(root22, "second.docx");
+  writeFileSync(original, "FIRST-ORIGINAL", "utf8");
+  writeFileSync(replacement, "SECOND-ORIGINAL", "utf8");
+
+  for (const reason of ["close", "switch", "workspace-revoke"] as const) {
+    writeFileSync(original, "FIRST-ORIGINAL", "utf8");
+    let unblock: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => { unblock = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const host22 = new DocumentViewHost({
+      getMainWindow: () => makeFakeWindow(),
+      createView: makeFakeView,
+      beforeAtomicReplace: async () => { entered?.(); await held; },
+    });
+    const docId = "live-save-" + reason;
+    eq("FULL-1 打开基线文档", host22.open({ docId, url: FILE_URL, bounds: BOUNDS, visible: true }), { ok: true });
+    eq("FULL-1 登记当前会话", openAndCommit(host22, docId, original), { ok: true });
+    let permitted = true;
+    const pending = host22.saveOpenedFile(docId,
+      new TextEncoder().encode("STALE-SAVE-SHOULD-NOT-COMMIT"), () => permitted);
+    await started;
+    if (reason === "close") host22.close(docId);
+    if (reason === "switch") {
+      const moved = openAndCommit(host22, docId, replacement);
+      check("★ 等待中的旧保存让位后可以绑定新文档", moved.ok === true, moved);
+    }
+    if (reason === "workspace-revoke") permitted = false;
+    unblock?.();
+    const result = await pending;
+    check("★ 执行前所有权失效不可发布陈旧文档保存：" + reason,
+      result.ok === false, result);
+    eq("★ 上一份真实文档字节在撤销后保持原样：" + reason,
+      readFileSync(original, "utf8"), "FIRST-ORIGINAL");
+    if (reason === "switch") {
+      eq("★ 新文档没有被旧请求写入", readFileSync(replacement, "utf8"), "SECOND-ORIGINAL");
+      eq("★ 等待旧请求返回后仍保持新会话身份", host22.sessionFor(docId)?.filePath, replacement);
+    }
+    host22.dispose();
+  }
+  rmSync(root22, { recursive: true, force: true });
+}
+
+/* ═════════════ 23. Slides 保存后的异步回执不许复活/污染新会话 ═════════════
+ * The vendor is still the only PPTX writer. This Host helper merely advances
+ * the Mcode revision; it must not attribute an old save to a newly reopened
+ * view or update another document's revision after an awaited stat/hash.
+ */
+{
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: join23 } = await import("node:path");
+  const root23=mkdtempSync(join23(tmpdir(),"mcode-slides-save-session-"));
+  const a=join23(root23,"deck-old.pptx");
+  const b=join23(root23,"deck-new.pptx");
+  writeFileSync(a,"DECK-A-ORIGINAL");
+  writeFileSync(b,"DECK-B-ORIGINAL");
+  for(const reason of ["closed","switched","workspace-revoked"] as const) {
+    const docId="slides-late-"+reason;
+    let within=true;
+    const host=new DocumentViewHost({getMainWindow:()=>makeFakeWindow(),createView:makeFakeView});
+    eq("slides 异步场景准备视图",host.open({docId,url:FILE_URL,bounds:BOUNDS,visible:true,editor:"slides"}),{ok:true});
+    eq("slides 绑定原始 deck",openAndCommit(host,docId,a),{ok:true});
+    const save=host.recordSlidesSave(docId,()=>within);
+    if(reason==="closed") host.close(docId);
+    if(reason==="switched") {
+      const newOpen=openAndCommit(host,docId,b);
+      check("★ slides 延迟回执期间可以由独立新文档接管视图",newOpen.ok===true,newOpen);
+    }
+    if(reason==="workspace-revoked")within=false;
+    let result:Awaited<ReturnType<typeof host.recordSlidesSave>>|undefined;
+    let thrown:unknown;
+    try { result=await save; } catch(err) { thrown=err; }
+    check("★ 旧 slides 回执必须安全拒绝且不产生未捕获错误："+reason,
+      thrown===undefined && result?.ok===false,
+      {result,thrown:String(thrown)});
+    if(reason==="switched") {
+      eq("★ 旧 slides 回执不修改新文档会话路径",host.sessionFor(docId)?.filePath,b);
+      const {createHash}=await import("node:crypto");
+      eq("★ 旧 slides 回执不修改新文档 revision",
+        await host.sessionFor(docId)?.revision,
+        createHash("sha256").update("DECK-B-ORIGINAL").digest("hex"));
+    }
+    host.dispose();
+  }
+  rmSync(root23,{recursive:true,force:true});
+}
+
+/* ═════════════ 24. FULL-1 异步真人替换确认代次不可复用 ═════════════
+ * The user can continue typing, close, or switch tabs while a dirty-document
+ * confirmation dialog is pending. An old consent cannot authorize discarding
+ * edits made AFTER the consent request or in a different document.
+ */
+{
+  const { mkdtempSync,writeFileSync,rmSync }=await import("node:fs");
+  const { tmpdir }=await import("node:os");
+  const { join: join24 }=await import("node:path");
+  const root24=mkdtempSync(join24(tmpdir(),"mcode-dirty-approval-"));
+  const a=join24(root24,"before.docx");
+  const b=join24(root24,"after.docx");
+  writeFileSync(a,"DOCUMENT-A");
+  writeFileSync(b,"DOCUMENT-B");
+  for(const scenario of ["close","switch","new-edit"] as const) {
+    const host=new DocumentViewHost({getMainWindow:()=>makeFakeWindow(),createView:makeFakeView});
+    const docId="approval-"+scenario;
+    eq("等待确认前视图打开",host.open({docId,url:FILE_URL,bounds:BOUNDS,visible:true}),{ok:true});
+    eq("等待确认前绑定文档A",openAndCommit(host,docId,a),{ok:true});
+    host.reportPageDirty(docId,true);
+    let resolveDecision!: (allowed:boolean)=>void;
+    const decision=new Promise<boolean>((resolve)=>{resolveDecision=resolve;});
+    host.setConfirmDirty(async()=>decision);
+    const pending=host.confirmDocumentReplace(docId);
+    if(scenario==="close") host.close(docId);
+    if(scenario==="switch") {
+      const swapped=openAndCommit(host,docId,b);
+      check("★ 同docId可在弹窗等待时切换到文档B",swapped.ok===true,swapped);
+    }
+    if(scenario==="new-edit") host.reportPageDirty(docId,true);
+    resolveDecision(true);
+    eq("★ 等待期间视图/文档/未保存编辑代次已改变，旧同意不可再次授权："+scenario,
+      await pending,false);
+    host.dispose();
+  }
+  rmSync(root24,{recursive:true,force:true});
+}
+
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
