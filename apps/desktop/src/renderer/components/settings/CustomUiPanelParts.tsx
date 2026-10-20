@@ -232,7 +232,7 @@ export function ItemEditor({
                     onClick={() => set("icon", draft.icon === name ? "" : name)}
                     className={cn(
                       "rounded border p-1.5",
-                      draft.icon === name ? "border-accent bg-accent/10 text-accent" : "border-edge text-content-muted hover:bg-surface-muted",
+                      draft.icon === name ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "border-edge text-content-muted hover:bg-surface-muted",
                     )}
                   >
                     <Icon size={14} />
@@ -301,7 +301,7 @@ export function ItemEditor({
                   onClick={() => set("actionType", type)}
                   className={cn(
                     "rounded-md border px-2.5 py-1 text-xs",
-                    draft.actionType === type ? "border-accent bg-accent/10 text-accent" : "border-edge text-content-muted hover:bg-surface-muted",
+                    draft.actionType === type ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "border-edge text-content-muted hover:bg-surface-muted",
                   )}
                 >
                   {t(

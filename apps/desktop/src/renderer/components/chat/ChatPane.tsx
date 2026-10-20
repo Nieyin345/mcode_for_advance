@@ -3423,7 +3423,7 @@ function ChatPaneForSession({
                                 onClick={() => void sendQueuedPromptNow(sessionId, item.id)}
                                 title={t("chat.queue.sendNowTitle")}
                                 aria-label={t("chat.queue.sendNow")}
-                                className="flex h-3.5 w-3.5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-accent/20 hover:text-accent"
+                                className="flex h-3.5 w-3.5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
                               >
                                 <IconBolt size={10} />
                               </button>
@@ -3471,7 +3471,7 @@ function ChatPaneForSession({
                               <button
                                 type="button"
                                 onClick={() => void sendQueuedPromptNow(sessionId, item.id)}
-                                className="inline-flex items-center gap-1 rounded bg-accent/15 px-1.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/25"
+                                className="inline-flex items-center gap-1 rounded bg-surface-hover px-1.5 py-1 text-[11px] font-medium text-content ring-1 ring-inset ring-edge/70 transition-colors hover:text-content"
                               >
                                 <IconBolt size={11} /> {t("chat.queue.sendNow")}
                               </button>

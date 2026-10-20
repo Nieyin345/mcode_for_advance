@@ -399,7 +399,7 @@ function McpMarketInstallDialog({
                       className={cn(
                         "rounded border px-2.5 py-1 text-[0.92em] transition-colors",
                         o.id === option?.id
-                          ? "border-accent bg-accent/10 font-medium text-accent"
+                          ? "border-edge/80 bg-surface-hover font-medium text-content ring-1 ring-inset ring-edge/70"
                           : "border-edge bg-surface text-content-muted hover:text-content",
                       )}
                     >

@@ -689,7 +689,7 @@ export function EngineRuntimePanel({ active: activeTab = true }: { active?: bool
                 className={cn(
                   "rounded border px-2 py-1 font-mono text-[0.7857em]",
                   activeRow
-                    ? "border-accent bg-accent/10 text-accent"
+                    ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                     : "border-edge bg-surface text-content-muted hover:text-content",
                 )}
               >

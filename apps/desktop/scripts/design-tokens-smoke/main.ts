@@ -975,6 +975,57 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   };
   scan("src/renderer/components");
   check("★ 选中/开关态不再使用 bg-accent/15 品牌淡底", offenders.length === 0, offenders);
+
+  // 同一判据的淡底变体：`bg-accent/10`。允许项 = 需要"注意/运行中"的信号
+  // （下载条、已选元素条、计划/侧聊的待处理提示、选择引用、恢复/合并向导
+  // 的注意力图标、拖放目标、手势录制中的按键、LSP 成功已改 success）。
+  const TINT10_ALLOWED = [
+    "browser/DownloadBar.tsx",
+    "browser/PickedElementsBar.tsx",
+    "chat/ContentTagChip.tsx",
+    "chat/MessageBlocks.tsx",
+    "chat/MessageRow.tsx",
+    "chat/QuestionPrompt.tsx",
+    "chat/SelectionQuoteMenu.tsx",
+    "chat/SideChatPanel.tsx",
+    "chat/SelectionToolbar.tsx",
+    "chat/WorktreeMergeBackParts.tsx",
+    "ide/GitRepoCard.tsx",
+    "layout/ThreePaneLayout.tsx",       // 拖放目标
+    "settings/AboutPanel.tsx",          // 品牌大图标
+    "settings/GestureRecorder.tsx",     // 录制中
+    "settings/LspLanguagesPanel.tsx",   // 服务器状态徽标
+    "chat/PlanViewer.tsx",
+    "chat/PlanStreamBlock.tsx",
+    "chat/BranchChoiceCard.tsx",
+    "chat/ChatPane.tsx",
+    "ide/SearchDialog.tsx",
+    "layout/CommandPalette.tsx",
+    "chat/MicButton.tsx",               // 录音中
+    "settings/RuntimesPanel.tsx",       // 安装中 / 已安装
+    "settings/ShortcutRecorder.tsx",    // 录制中
+    "settings/PluginsPanel.tsx",        // 插件生态身份色
+    "settings/workflows/WorkflowNodeCard.tsx", // 节点类型身份色
+    "ui/badge.tsx",                     // accent 变体定义本身
+  ];
+  const tint10: string[] = [];
+  const scan10 = (dir: string): void => {
+    const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+    for (const name of readdirSync(join(root, dir))) {
+      const rel = `${dir}/${name}`;
+      const st = statSync(join(root, rel));
+      if (st.isDirectory()) { scan10(rel); continue; }
+      if (!/\.[jt]sx?$/.test(name)) continue;
+      const src = read(rel);
+      // 只看**非 hover** 的淡底：hover:bg-accent/10 已在第一批全部改中性。
+      if (/[^:]bg-accent\/10/.test(src.replace(/hover:bg-accent\/10/g, ""))
+        && !TINT10_ALLOWED.some((a) => rel.endsWith(a))) {
+        tint10.push(rel);
+      }
+    }
+  };
+  scan10("src/renderer/components");
+  check("★ 未登记的白名单外 bg-accent/10 淡底为零", tint10.length === 0, tint10);
   // 反向正控：白名单里的确实还在用（否则白名单本身失效、断言空过）。
   check("★ 白名单正控：运行中/成功提示仍用品牌色",
     read("src/renderer/components/chat/ActivityConsole.tsx").includes("bg-accent/15"));

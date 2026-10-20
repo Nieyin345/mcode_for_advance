@@ -189,7 +189,7 @@ export function ConfirmDialog({
             <span
               className={cn(
                 "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
-                danger ? "bg-danger/10 text-danger" : "bg-accent/10 text-accent",
+                danger ? "bg-danger/10 text-danger" : "bg-surface-hover text-content-muted",
               )}
             >
               <IconAlertTriangle size={16} />

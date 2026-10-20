@@ -302,7 +302,7 @@ function Row({
       title={label}
       className={cn(
         "flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
-        pressed ? "bg-accent/10" : "hover:bg-surface-hover/70",
+        pressed ? "bg-surface-hover text-content" : "hover:bg-surface-hover/70",
       )}
     >
       {lead && <span className="flex w-4 shrink-0 items-center justify-center">{lead}</span>}

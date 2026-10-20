@@ -278,7 +278,7 @@ export function MarketView({
                 {catalog.kind}
               </span>
               {catalog.builtin && (
-                <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[0.72em] text-accent-strong">
+                <span className="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[0.72em] text-content-muted">
                   {t("settings.plugins.mpBuiltin")}
                 </span>
               )}
@@ -336,7 +336,7 @@ export function MarketView({
                     )}
                   </div>
                   {row.installed ? (
-                    <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[0.75em] text-accent-strong">
+                    <span className="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[0.75em] text-content-muted">
                       {t("settings.plugins.mpInstalled")}
                     </span>
                   ) : (

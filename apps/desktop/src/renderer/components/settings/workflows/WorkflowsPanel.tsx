@@ -172,7 +172,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
                   className={cn(
                     "rounded border px-2 py-1 text-[0.7857em] transition-colors",
                     active
-                      ? "border-accent bg-accent/10 font-medium text-accent"
+                      ? "border-edge/80 bg-surface-hover font-medium text-content ring-1 ring-inset ring-edge/70"
                       : "border-edge bg-surface text-content-muted hover:bg-surface-hover/60 hover:text-content",
                   )}
                 >

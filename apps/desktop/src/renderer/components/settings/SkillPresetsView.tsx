@@ -349,7 +349,7 @@ function PresetEditor({
                 className={cn(
                   "flex items-center gap-1 rounded border px-1.5 py-0.5 text-[0.8571em] transition-colors",
                   on
-                    ? "border-accent bg-accent/10 font-medium text-accent"
+                    ? "border-edge/80 bg-surface-hover font-medium text-content ring-1 ring-inset ring-edge/70"
                     : "border-edge text-content-muted hover:bg-surface-hover/60",
                 )}
               >

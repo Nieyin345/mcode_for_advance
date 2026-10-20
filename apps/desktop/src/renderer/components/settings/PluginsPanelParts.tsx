@@ -1571,7 +1571,7 @@ function MarketplaceCatalog({
           {marketplace.sourceKind === "git" ? "git" : t("settings.plugins.source.local-dir")}
         </span>
         {marketplace.builtin && (
-          <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[0.72em] text-accent-strong">
+          <span className="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[0.72em] text-content-muted">
             {t("settings.plugins.mpBuiltin")}
           </span>
         )}
@@ -1644,7 +1644,7 @@ function MarketplaceCatalog({
               )}
             </div>
             {entry.installed ? (
-              <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[0.75em] text-accent-strong">
+              <span className="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[0.75em] text-content-muted">
                 {t("settings.plugins.mpInstalled")}
               </span>
             ) : (
@@ -1702,7 +1702,7 @@ function MarketEntryEngines({ entry }: { entry: PluginMarketplaceState["plugins"
             className={cn(
               "rounded px-1 py-px text-[10px] font-medium leading-tight",
               can
-                ? "bg-accent/10 text-accent"
+                ? "bg-surface-hover text-content"
                 : "text-content-subtle/50 line-through",
             )}
           >

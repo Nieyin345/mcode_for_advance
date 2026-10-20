@@ -462,7 +462,7 @@ function LanguageRow({
           className={cn(
             "mt-1.5 flex items-center gap-1.5 rounded px-2 py-1 text-[0.7857em]",
             healthResult.startsWith("✓")
-              ? "bg-accent/10 text-accent"
+              ? "bg-success/10 text-success"
               : "bg-danger/10 text-danger",
           )}
         >

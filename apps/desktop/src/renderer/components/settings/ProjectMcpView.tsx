@@ -229,7 +229,7 @@ export function ProjectMcpView({
                   key={s.name}
                   className={cn(
                     "flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[0.7857em]",
-                    on ? "border-accent bg-accent/10 text-accent" : "border-edge text-content-muted",
+                    on ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "border-edge text-content-muted",
                     inProject && "cursor-default opacity-50",
                   )}
                   title={inProject ? t("settings.mcp.projectCopyExists") : s.detail}

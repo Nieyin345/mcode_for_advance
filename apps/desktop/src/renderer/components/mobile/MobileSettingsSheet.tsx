@@ -125,7 +125,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                   className={cn(
                     "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-xs",
                     active
-                      ? "border-accent bg-accent/10 text-accent"
+                      ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                       : "border-edge bg-surface/50 text-content-muted hover:bg-surface-hover",
                   )}
                 >
@@ -156,7 +156,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                   className={cn(
                     "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-xs",
                     active
-                      ? "border-accent bg-accent/10 text-accent"
+                      ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                       : "border-edge bg-surface/50 text-content-muted hover:bg-surface-hover",
                   )}
                 >
