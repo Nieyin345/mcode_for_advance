@@ -26,7 +26,7 @@
  */
 import { lstat, mkdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { join, parse, relative, resolve, sep } from "node:path";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 
 /** 备份目录名（相对数据根）。 */
@@ -50,6 +50,42 @@ export function backupFileName(id: string, at: Date): string {
 }
 
 /**
+ * Reject links in the ENTIRE managed root chain before creating anything.
+ * lstat(dataRoot) alone is insufficient: recursive mkdir would traverse an
+ * ancestor Junction and first create directories outside the Host data root.
+ * Build one component at a time, never recursively following an unchecked
+ * parent. This is a fail-closed path guard, NOT protection against an OS-level
+ * attacker racing a verified directory replacement between syscalls.
+ */
+async function ensureRegularRootPath(dataRoot: string): Promise<string> {
+  const absolute = resolve(dataRoot);
+  const volumeRoot = parse(absolute).root;
+  let current = volumeRoot;
+  const parts = relative(volumeRoot, absolute).split(sep).filter(Boolean);
+  for (const part of [null, ...parts]) {
+    if (part !== null) current = join(current, part);
+    try {
+      const info = await lstat(current);
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw new Error("工作流数据根路径包含非普通目录或符号链接/junction");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || part === null) throw error;
+      try {
+        await mkdir(current);
+      } catch (createError) {
+        if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
+      }
+      const created = await lstat(current);
+      if (!created.isDirectory() || created.isSymbolicLink()) {
+        throw new Error("工作流数据根路径创建时遭到链接替换");
+      }
+    }
+  }
+  return absolute;
+}
+
+/**
  * 备份一份工作流文档的**原始字节**。
  *
  * @param dataRoot 数据根（`<root>/workflow-migrations/` 会在需要时创建）
@@ -63,16 +99,15 @@ export async function backupWorkflowDocBytes(
   bytes: Uint8Array,
   options: { at?: Date } = {},
 ): Promise<WorkflowMigrationBackup> {
-  // Validate the supplied managed root BEFORE recursive mkdir of its child.
-  // Otherwise an attacker-replaced dataRoot Junction causes our first write
-  // to create workflow-migrations outside the Host's intended data root.
-  await mkdir(dataRoot, { recursive: true });
-  const rootInfo = await lstat(dataRoot);
-  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
-    throw new Error("工作流数据根不是普通目录（拒绝符号链接或 junction）");
+  // Validate every ancestor BEFORE mkdir can follow a junction. The returned
+  // path is absolute, including when a caller supplies a relative data root.
+  const verifiedRoot = await ensureRegularRootPath(dataRoot);
+  const dir = join(verifiedRoot, WORKFLOW_MIGRATIONS_DIR);
+  try {
+    await mkdir(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-  const dir = join(dataRoot, WORKFLOW_MIGRATIONS_DIR);
-  await mkdir(dir, { recursive: true });
   // `mkdir({recursive:true})` does NOT reject an existing directory link.
   // If this child is swapped for a junction/symlink, an apparently in-root
   // backup is actually written outside the data root. Never follow it.
