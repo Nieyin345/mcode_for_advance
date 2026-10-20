@@ -10,14 +10,25 @@ function windowsAlias(name: string): boolean {
 /** Safe directory segments for legacy managed worktrees. No filesystem calls. */
 export function worktreeRepoSegment(repoBasename: string): string {
   const sanitized = repoBasename.replace(/[^A-Za-z0-9._-]+/g, '-');
-  if (sanitized === '' || sanitized === '.' || sanitized === '..') return 'repo';
-  if (windowsAlias(sanitized)) {
-    // Make a stable, distinct safe path rather than silently alias CON,
-    // trailing-dot names or the entire parent directory.
-    const shortHash = createHash('sha256').update(repoBasename).digest('hex').slice(0, 8);
-    return `repo-${sanitized}-${shortHash}`;
+  if (repoBasename === '' || repoBasename === '.' || repoBasename === '..') return 'repo';
+  // Preserve the path of EXISTING normal repositories: old managed worktrees
+  // are persisted under this name. But never let distinct unusual names
+  // silently collide after replacing arbitrary Unicode/punctuation with "-".
+  // A perfectly legal 300-character basename also exceeds a single NTFS/
+  // POSIX directory component; suffix the short hash before truncating.
+  if (sanitized === repoBasename && !windowsAlias(sanitized) &&
+      sanitized.length <= 255 && Buffer.byteLength(sanitized, 'utf8') <= 255) {
+    return sanitized;
   }
-  return sanitized;
+  const tag = createHash('sha256').update(repoBasename).digest('hex').slice(0, 12);
+  const unsafeAlias = windowsAlias(sanitized);
+  const prefix = unsafeAlias ? 'repo-' : '';
+  const core = (sanitized.replace(/[.]+$/g, '').replace(/^-+|-+$/g, '') || 'repo');
+  const suffix = `-${tag}`;
+  // All characters in core/prefix/suffix are ASCII after sanitization, so
+  // both UTF-8 bytes and Windows UTF-16 units have the same component limit.
+  const maxCore = 255 - prefix.length - suffix.length;
+  return `${prefix}${core.slice(0, maxCore)}${suffix}`;
 }
 
 /** Preserve legacy last-12 format for normal session IDs but refuse names

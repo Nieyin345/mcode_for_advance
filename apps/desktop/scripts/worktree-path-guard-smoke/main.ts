@@ -26,5 +26,20 @@ for(const name of ['CON','NUL','aux.txt','COM1','lpt9.log','abc.','...']) {
   check(`session ${name} cannot become Windows alias`, rejects(()=>worktreeSessionSegment(name)));
 }
 check('two unsafe repo names do not alias after sanitization',worktreeRepoSegment('foo.')!==worktreeRepoSegment('foo..'));
+// New E1: two distinct repos must never silently share managed worktree root
+// due to sanitizing characters to the same dash.
+check('★ distinct whitespace/punctuation repo names cannot alias',
+  worktreeRepoSegment('my project') !== worktreeRepoSegment('my+project'));
+check('★ unsafe name must not alias a literal already-safe dashed basename',
+  worktreeRepoSegment('my project') !== worktreeRepoSegment('my-project'));
+check('★ different Unicode-only repository names must remain distinct',
+  worktreeRepoSegment('物理仿真') !== worktreeRepoSegment('量子网络'));
+check('★ long repository basenames must fit 255 UTF-8 bytes and Windows UTF-16 units',
+  Buffer.byteLength(worktreeRepoSegment('a'.repeat(300)), 'utf8') <= 255 &&
+  worktreeRepoSegment('a'.repeat(300)).length <= 255);
+check('★ two long repo names sharing first 300 characters must not alias',
+  worktreeRepoSegment('a'.repeat(300)+'one') !== worktreeRepoSegment('a'.repeat(300)+'two'));
+check('existing safe short basename keeps old on-disk path',
+  worktreeRepoSegment('normal.Repo-v2') === 'normal.Repo-v2');
 console.log(`worktree-path-guard-smoke: ${pass}/${pass+fail}`);
 if(fail)process.exitCode=1;
