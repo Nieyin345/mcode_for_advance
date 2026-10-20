@@ -184,13 +184,10 @@ export const useFileViewStore = create<FileViewState>((set) => ({
     };
     // 有未保存改动 + 有人在看当前预览 → 交给它弹确认(保存/放弃/取消);
     // 切到**同一个**目标不必问(没有任何东西会丢)。
-    if (
-      useFileViewStore.getState().dirty &&
-      openGuard !== null &&
-      prevTarget !== null &&
-      !sameFile
-    ) {
-      openGuard(target, proceed);
+    if (useFileViewStore.getState().dirty && prevTarget !== null && !sameFile) {
+      // A missing/dialog-unmounted guard is NOT permission to discard edits.
+      // Keep the current file intact until an actual confirmation is available.
+      if (openGuard !== null) openGuard(target, proceed);
       return;
     }
     proceed();
@@ -203,9 +200,9 @@ export const useFileViewStore = create<FileViewState>((set) => ({
       if (request !== leaveRequestSeq || useFileViewStore.getState().target !== previous) return;
       set({ target: null, dirty: false });
     };
-    if (useFileViewStore.getState().dirty && openGuard !== null && useFileViewStore.getState().target !== null) {
-      openGuard(null, proceed);
-      return;
+    if (useFileViewStore.getState().dirty && previous !== null) {
+      if (openGuard !== null) openGuard(null, proceed);
+      return; // Missing confirmation UI must never erase unsaved annotations.
     }
     proceed();
   },

@@ -159,6 +159,9 @@ console.log("\n【UI-012】重入打开相同目标与旧离开确认令牌");
   setFileOpenGuard((_next, proceed) => { obsolete = proceed; });
   useFileViewStore.getState().close();
   setFileOpenGuard(null);
+  // A separate, explicit discard has already cleared A's unsaved flag.
+  // Otherwise the missing dialog must now fail closed, not navigate to C.
+  useFileViewStore.getState().setDirty(false);
   useFileViewStore.getState().open(libTarget("c.pdf"));
   obsolete?.();
   check("★★ stale close confirmation cannot discard a newer preview", refOf() === "c.pdf", refOf());
@@ -176,6 +179,30 @@ console.log("\n【UI-012】旧 PDF 实例 cleanup 不得注销新保存回调");
   if (typeof leaveB === "function") leaveB();
   const after = await saveCurrentPreview();
   check("unmount of active preview removes its own handler", after === false, after);
+}
+
+console.log("\n【UI-012】确认桥缺席时未保存改动必须 fail-closed");
+{
+  reset();
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  // FileViewer may be between mounts, or its dialog registration may have
+  // been torn down unexpectedly. Absence of UI approval cannot mean discard.
+  setFileOpenGuard(null);
+  useFileViewStore.getState().open(libTarget("b.pdf"));
+  check("★★ missing confirmation handler may not silently switch away from dirty PDF",
+    refOf() === "a.pdf" && hasUnsavedChanges(), { target: refOf(), dirty: hasUnsavedChanges() });
+  useFileViewStore.getState().close();
+  check("★★ missing confirmation handler may not silently close dirty PDF",
+    refOf() === "a.pdf" && hasUnsavedChanges(), { target: refOf(), dirty: hasUnsavedChanges() });
+  // The positive control matters: only unsaved exits fail closed, not first
+  // opens or ordinary clean documents.
+  useFileViewStore.getState().setDirty(false);
+  useFileViewStore.getState().open(libTarget("b.pdf"));
+  check("clean file can still switch without an active confirmation dialog", refOf() === "b.pdf", refOf());
+  useFileViewStore.getState().close();
+  check("clean file can still close without an active confirmation dialog",
+    useFileViewStore.getState().target === null, useFileViewStore.getState().target);
 }
 
 console.log(`\nfile-view-unsaved-smoke:${checks - failures}/${checks} 通过`);
