@@ -13,8 +13,8 @@
 ## 怎么用（你）
 
 1. 从下面表格挑一个**未开始**的任务。
-2. 复制 `_PROMPT_TEMPLATE.md` 里的整段指令。
-3. 把里面唯一的占位符 `<TASK_FILE>` 换成该任务的路径，例如
+2. 打开 [`_PROMPT_TEMPLATE.md`](_PROMPT_TEMPLATE.md)，复制代码块里的整段指令。
+3. 把里面唯一一处 `tasks/XXXX.md` 换成该任务的路径，例如
    `tasks/T01-electron-visual-baseline.md`。
 4. 发给一个全新对话。它会自己读任务文件、读台账规则、干活、回写结果。
 5. 做完之后回来告诉我编号，我核对结果与台账，决定是否放行。
