@@ -16,6 +16,7 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { cn } from "@renderer/lib/cn.js";
+import { ScrollFade } from "@renderer/components/ui/cds/ScrollFade.js";
 import { LibrarySections, LibraryTrashRow } from "@renderer/components/library/LibrarySectionParts.js";
 import {
   IconFolder,
@@ -767,7 +768,7 @@ function LeftBarBase({
           flattened display order AND supports cross-group drag-to-reassign
           (handled live in onDragOver). Group headers are droppable targets
           (not draggable) so dropping a project on a header moves it there. */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <ScrollFade className="min-h-0 flex-1">
         {/* ── 折起来之后**项目树整块收掉**（2026-09-21）──
             ⚠️ 上一版的箭头**只转向、不折内容**：`projectsCollapsed` 只用在那个
             `IconChevronRight` 上，从来没拿去藏过东西。用户报「项目的折叠不能用」
@@ -934,7 +935,7 @@ function LeftBarBase({
         <div className="mt-3">
           <LibrarySections />
         </div>
-      </div>
+      </ScrollFade>
 
       {/* ── 回收站：**钉在左栏最底部**，不跟上面的列表一起滚（2026-09-21）──
           用户的原话：「回收站是固定到页面最下面的…不是随着我的文件的折叠而上下移动」，
