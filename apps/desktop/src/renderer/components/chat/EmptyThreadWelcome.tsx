@@ -34,6 +34,7 @@
 import { useMemo, type ComponentType, type ReactNode } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
+import { StatusDot } from "@renderer/components/ui/cds/StatusDot.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { fmtTokens } from "@renderer/lib/contextWindow.js";
@@ -220,10 +221,9 @@ function StartPoints() {
                 key={f.key}
                 id={f.key}
                 lead={
-                  <span
-                    aria-hidden
-                    className={cn("h-1.5 w-1.5 rounded-full", failure ? "bg-danger" : "bg-success")}
-                  />
+                  // 【ARC-005 V2】状态点改用 CDS StatusDot（6px，与侧栏/工具卡同源）；
+                  // 失败用 error 态，正常用 ready 态。
+                  <StatusDot kind={failure ? "error" : "ready"} />
                 }
                 label={f.title}
                 meta={
