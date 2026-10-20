@@ -86,6 +86,14 @@ export function resolveGenofficeCliPath(repoRoot: string, resourcesDir?: string)
   const resources = resourcesDir ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   if (resources !== undefined) {
     if (!isAbsolute(resources)) return null;
+    const devResources = resourcesDir === undefined
+      && (process as NodeJS.Process & { defaultApp?: boolean }).defaultApp === true;
+    try {
+      const stat = lstatSync(resources);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT" || !devResources) return null;
+    }
     const base = join(resources, "genoffice");
     // Electron development may have an unrelated resourcesPath without a
     // GenOffice stage. An EXPLICIT packaged root, however, must never fall
@@ -300,6 +308,21 @@ export async function pdfRender(
     options.signal ? { signal: options.signal } : {});
 }
 
+/** Serialize before invoking the original GenOffice CLI. JSON cycles, BigInt
+ * and oversized operation sets are refused rather than crashing IPC or
+ * spawning a child with unbounded stdin. */
+function editorOpsStdin(ops: unknown): string | null {
+  try {
+    const json = JSON.stringify(ops);
+    return typeof json === "string" && Buffer.byteLength(json, "utf8") <= 32 * 1024 * 1024 ? json : null;
+  } catch {
+    return null;
+  }
+}
+function refusedEditorOps(): GenofficeResult {
+  return { ok: false, kind: "refused", envelope: null, reason: "编辑操作不是有效 JSON，或超过 32MiB 输入上限" };
+}
+
 /** `docs apply`：按 ops 编辑 docx。`dryRun` 只演练不写盘。 */
 export async function docsApply(
   ports: GenofficePorts,
@@ -309,11 +332,13 @@ export async function docsApply(
 ): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "文档路径");
   if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const stdin = editorOpsStdin(ops);
+  if (stdin === null) return refusedEditorOps();
   const args = ["docs", "apply", file, "--ops", "-", "--json"];
   if (options.dryRun) args.push("--dry-run");
   if (options.track) args.push("--track");
   return invoke(ports, args, {
-    stdin: JSON.stringify(ops),
+    stdin,
     ...(options.signal ? { signal: options.signal } : {}),
   });
 }
@@ -359,10 +384,12 @@ export async function slidesApply(
 ): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "演示文稿路径");
   if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const stdin = editorOpsStdin(ops);
+  if (stdin === null) return refusedEditorOps();
   const args = ["slides", "apply", file, "--ops", "-", "--json"];
   if (options.dryRun) args.push("--dry-run");
   return invoke(ports, args, {
-    stdin: JSON.stringify(ops),
+    stdin,
     ...(options.signal ? { signal: options.signal } : {}),
   });
 }
@@ -376,10 +403,12 @@ export async function sheetApply(
 ): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "表格路径");
   if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const stdin = editorOpsStdin(ops);
+  if (stdin === null) return refusedEditorOps();
   const args = ["sheet", "apply", file, "--ops", "-", "--json"];
   if (options.dryRun) args.push("--dry-run");
   return invoke(ports, args, {
-    stdin: JSON.stringify(ops),
+    stdin,
     ...(options.signal ? { signal: options.signal } : {}),
   });
 }

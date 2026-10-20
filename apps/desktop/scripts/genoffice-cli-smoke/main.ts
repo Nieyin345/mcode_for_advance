@@ -20,13 +20,15 @@
  *
  * Run: scripts/genoffice-cli-smoke/run.sh
  */
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, renameSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import {
   convertFile,
   docsApply,
+  sheetApply,
+  slidesApply,
   docsRead,
   pdfRender,
   resolveGenofficeCliPath,
@@ -78,6 +80,15 @@ if (cliPath === null) {
       format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: false, editors: [],
     }));
     eq("★ 安装版同一个 resolver 找到 GenOffice sidecar", resolveGenofficeCliPath(fakeRepoRoot, fakeResources), packagedCli);
+    // Replacing resources/ itself with an NTFS junction escapes the installed
+    // app before the verifier ever reaches genoffice/cli or wasm/.
+    const linkedResources = join(root, "external-sidecar-resources");
+    renameSync(fakeResources, linkedResources);
+    symlinkSync(linkedResources, fakeResources, process.platform === "win32" ? "junction" : "dir");
+    check("packaged resources root junction cannot redirect CLI execution outside app",
+      resolveGenofficeCliPath(fakeRepoRoot, fakeResources) === null);
+    rmSync(fakeResources, { recursive: true, force: true });
+    renameSync(linkedResources, fakeResources);
     eq("未预置资源且 checkout 没 vendor → unavailable", resolveGenofficeCliPath(fakeRepoRoot, join(root, "no-resources")), null);
     eq("现有开发 checkout 快照路径仍可读", resolveGenofficeCliPath(repoRoot), cliPath);
 
@@ -109,6 +120,29 @@ if (cliPath === null) {
         if ((e as NodeJS.ErrnoException).code !== "EPERM") throw e;
         console.log("  SKIP junction 测试: OS 未授予符号链接权限");
       }
+    }
+
+    /* ── 1b. Untrusted editor operations must fail as data, not throw IPC ── */
+    {
+      const badCli = { ...ports, cliPath: join(root, "no-such-cli.cjs") };
+      const circular: { op: string; self?: unknown } = { op: "insert" };
+      circular.self = circular;
+      for (const [name, invoke] of [
+        ["docs", (ops: unknown) => docsApply(badCli, join(root, "circular.docx"), ops)],
+        ["slides", (ops: unknown) => slidesApply(badCli, join(root, "circular.pptx"), ops)],
+        ["sheet", (ops: unknown) => sheetApply(badCli, join(root, "circular.xlsx"), ops)],
+      ] as const) {
+        const r = await invoke(circular);
+        check(name + " circular ops is rejected before serialization/spawn, never throws",
+          !r.ok && r.kind === "refused", r);
+      }
+      const huge = [{ op: "insert", text: "x".repeat(33 * 1024 * 1024) }];
+      const oversize = await docsApply(badCli, join(root, "huge.docx"), huge);
+      check("oversize editor ops refused before invoking child process", !oversize.ok && oversize.kind === "refused", oversize);
+      const multibyte = [{ op: "insert", text: "中".repeat(12 * 1024 * 1024) }];
+      const utf8OverBudget = await sheetApply(badCli, join(root, "huge-unicode.xlsx"), multibyte);
+      check("UTF-8 byte budget rejects oversized Chinese text before spawn (not UTF-16 char count)",
+        !utf8OverBudget.ok && utf8OverBudget.kind === "refused", utf8OverBudget);
     }
 
     /* ── 2. 真实往返:md → docx → read → apply → read ── */
