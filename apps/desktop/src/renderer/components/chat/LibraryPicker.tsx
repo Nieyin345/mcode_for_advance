@@ -21,6 +21,7 @@ import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { api } from "@renderer/lib/api.js";
 import type { LibraryCollection, LibraryItem } from "@contracts/library";
 import { IconBook, IconCheck, IconChevronRight, IconFileText, IconSearch } from "@renderer/lib/icons.js";
+import { buildLibraryPickerRows, selectedLibraryPickerEntries } from "./libraryPickerRows.js";
 
 /** 三个库的文案 id。库名在不同库里可以重名,所以列表上必须标出它属于哪个库。 */
 
@@ -69,10 +70,21 @@ export function LibraryPicker({
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  // Captured on selection, so changing/clearing the search never drops a
+  // selected item whose title disappeared from the current result page.
+  const [selectedLabels, setSelectedLabels] = useState<Map<string, string>>(() => new Map());
+  const [confirmError, setConfirmError] = useState(false);
+  const [searchItems, setSearchItems] = useState<LibraryItem[]>([]);
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [searchResultQuery, setSearchResultQuery] = useState("");
+  const [searchPending, setSearchPending] = useState(false);
+  const [searchFailed, setSearchFailed] = useState(false);
+  const [searchRetry, setSearchRetry] = useState(0);
+  const searchGenerationRef = useRef(0);
   /** 展开的分类 id —— 展开后列出这个分类里的条目,可以单独挑一篇。 */
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   /** 展开时才拉的条目缓存。 */
-  const [itemsOf, setItemsOf] = useState<Record<string, LibraryItem[] | "loading">>({});
+  const [itemsOf, setItemsOf] = useState<Record<string, LibraryItem[] | "loading" | "error">>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -97,17 +109,19 @@ export function LibraryPicker({
     if (loadedRef.current.has(id)) return;
     loadedRef.current.add(id);
     const generation = requestGenerationRef.current;
-    setItemsOf((prev) => ({ ...prev, [id]: prev[id] ?? "loading" }));
+    setItemsOf((prev) => ({ ...prev, [id]: "loading" }));
     void api.library
       .list({ collectionId: id, limit: 200 })
       .then((res) => {
         if (generation !== requestGenerationRef.current) return;
         setItemsOf((cur) => ({ ...cur, [id]: res.items }));
       })
-      // 拉不到就当空列表，但旧一轮失败不能清掉新一轮结果。
+      // Never render a failed read as a genuinely empty collection. Allow a
+      // retry with the original upstream library.list API and same identity.
       .catch(() => {
         if (generation !== requestGenerationRef.current) return;
-        setItemsOf((cur) => ({ ...cur, [id]: [] }));
+        loadedRef.current.delete(id);
+        setItemsOf((cur) => ({ ...cur, [id]: "error" }));
       });
   };
 
@@ -119,6 +133,8 @@ export function LibraryPicker({
       setQuery("");
       setActiveIdx(0);
       setSelected(new Set());
+      setSelectedLabels(new Map());
+      setConfirmError(false);
       // `autoExpandItems` 时**预展开**（见那个 prop 的说明），并**同时把条目拉回来** ——
       // 只标展开不拉,用户会以为"没东西可挑"。
       // ⚠️ 展开要在 `collections` 到位之后才有意义，所以不只在这里设一次 ——
@@ -137,43 +153,63 @@ export function LibraryPicker({
     return undefined;
   }, [open, loadCollections]);
 
+  // Search the trusted native library.list across ALL collections. The old
+  // client-side filter only searched collection names; it could never find a
+  // title in an unopened/differently named collection. This is one host RPC,
+  // not a second search engine or a loop of up to N collection requests.
+  useEffect(() => {
+    const generation = ++searchGenerationRef.current;
+    const searchQuery = query.trim();
+    if (!open || !searchQuery) {
+      setSearchItems([]);
+      setSearchTotal(0);
+      setSearchResultQuery("");
+      setSearchPending(false);
+      setSearchFailed(false);
+      return;
+    }
+    setSearchResultQuery(searchQuery);
+    setSearchItems([]);
+    setSearchTotal(0);
+    setSearchPending(true);
+    setSearchFailed(false);
+    const timer = window.setTimeout(() => {
+      void api.library.list({ query: searchQuery, limit: 200 })
+        .then((result) => {
+          if (generation !== searchGenerationRef.current) return;
+          setSearchItems(result.items);
+          setSearchTotal(result.total);
+          setSearchPending(false);
+        })
+        .catch(() => {
+          if (generation !== searchGenerationRef.current) return;
+          setSearchFailed(true);
+          setSearchPending(false);
+        });
+    }, 120);
+    return () => {
+      searchGenerationRef.current++;
+      window.clearTimeout(timer);
+    };
+  }, [open, query, searchRetry]);
+
   /**
    * 按库分组的行序列:先是「文献」那一组,再「教材」,再「笔记」。
    *
    * 分组而不是平铺的理由:分类名只在**自己的库里**唯一,平铺会出现两个「第一章」;
    * 分组之后"它属于哪个库"由标题行交代,行尾就不用再挂一个库名标签了。
    */
-  const rows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const out: Array<{
-      key: string;
-      header?: string;
-      collection?: LibraryCollection;
-      item?: LibraryItem;
-    }> = [];
-    const matched = q
-      ? collections.filter((c) => c.name.toLowerCase().includes(q))
-      : collections;
-    {
-      // 搜索时空列表直接不画
-      if (matched.length === 0) return out;
-      for (const c of matched) {
-        out.push({ key: `c:${c.id}`, collection: c });
-        // 展开了才列出条目;搜索时也列出来(用户搜的就是某一篇的标题)
-        const items = itemsOf[c.id];
-        if (!expanded.has(c.id) && !q) continue;
-        if (items === "loading") {
-          out.push({ key: `l:${c.id}`, header: t("common.loading") });
-          continue;
-        }
-        for (const item of items ?? []) {
-          if (q && !item.title.toLowerCase().includes(q)) continue;
-          out.push({ key: `i:${item.id}`, item });
-        }
-      }
-    }
-    return out;
-  }, [collections, query, expanded, itemsOf]);
+  const searchQuery = query.trim();
+  // Synchronously hide the previous query’s result on the first render of a
+  // new query, before useEffect starts the new request.
+  const searchCurrent = searchResultQuery === searchQuery;
+  const searchLoading = !!searchQuery && (!searchCurrent || searchPending);
+  const searchError = !!searchQuery && searchCurrent && searchFailed;
+  const rows = useMemo(() => buildLibraryPickerRows({
+    collections, itemsOf, expanded, query,
+    searchItems: searchCurrent ? searchItems : [],
+    loadingLabel: t("common.loading"), errorLabel: t("common.error"),
+  }), [collections, query, expanded, itemsOf, searchItems, searchCurrent, t]);
 
   /**
    * 只含**可选中**的项 —— 分类与条目都可以选,分组标题和"加载中"行不参与键盘导航。
@@ -201,6 +237,9 @@ export function LibraryPicker({
 
   const toggle = (key: string) => {
     if (excluded.has(key)) return;
+    setConfirmError(false);
+    const name = nameByKey.get(key);
+    if (name !== undefined) setSelectedLabels((prev) => new Map(prev).set(key, name));
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -235,11 +274,12 @@ export function LibraryPicker({
     const map = new Map<string, string>();
     for (const c of collections) map.set(`c:${c.id}`, c.name);
     for (const items of Object.values(itemsOf)) {
-      if (items === "loading") continue;
+      if (!Array.isArray(items)) continue;
       for (const item of items) map.set(`i:${item.id}`, item.title);
     }
+    for (const item of searchItems) map.set(`i:${item.id}`, item.title);
     return map;
-  }, [collections, itemsOf]);
+  }, [collections, itemsOf, searchItems]);
 
   const confirm = () => {
     if (selected.size === 0) {
@@ -248,10 +288,12 @@ export function LibraryPicker({
     }
     // **从与搜索无关的名字表里取**（见 `nameByKey`）—— 勾完再改搜索词时,被过滤掉的
     // 那几条仍然是勾选状态,不能悄悄丢掉,也不能拿不到名字。
-    const picked: Array<{ key: string; name: string }> = [];
-    for (const key of selected) {
-      const name = nameByKey.get(key);
-      if (name !== undefined) picked.push({ key, name });
+    const picked = selectedLibraryPickerEntries(selected, selectedLabels);
+    // Missing labels indicate a stale or invalid identity, not successful
+    // attachment. Never silently drop part of a multi-selection.
+    if (picked.length !== selected.size) {
+      setConfirmError(true);
+      return;
     }
     onPick(picked);
     onClose();
@@ -288,6 +330,9 @@ export function LibraryPicker({
         onClose();
         return;
       }
+      // Search-status UI hides list rows while a request is pending/failed.
+      // Its previously derived options must not remain keyboard-selectable.
+      if (searchLoading || searchError) return;
       if (e.key === "ArrowDown") {
         if (options.length === 0) return;
         e.preventDefault();
@@ -314,7 +359,7 @@ export function LibraryPicker({
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, options, activeIdx, selected, excluded, onClose]);
+  }, [open, options, activeIdx, selected, excluded, onClose, searchLoading, searchError]);
 
   // 点外部关闭(与 FileMentionPicker 同款:document mousedown + ref.contains)
   useEffect(() => {
@@ -364,8 +409,17 @@ export function LibraryPicker({
         )}
       </div>
 
+      {confirmError && (
+        <div className="px-3 py-1 text-[11px] text-danger" role="alert">{t("common.error")}</div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
-        {options.length === 0 ? (
+        {searchLoading || searchError ? (
+          <div className="flex items-center gap-2 px-3 py-4 text-[12px] text-content-subtle">
+            {searchError ? (
+              <>{t("common.error")} <button type="button" className="underline" onClick={() => setSearchRetry((v) => v + 1)}>{t("common.retry")}</button></>
+            ) : t("common.loading")}
+          </div>
+        ) : options.length === 0 ? (
           <div className="px-3 py-4 text-center text-[12px] text-content-subtle">
             {query.trim() ? t("library.list.noMatch") : t("library.list.emptyHint")}
           </div>
@@ -375,11 +429,11 @@ export function LibraryPicker({
             // 分组标题:说明"下面这些是哪个库的"。不可选中 —— 它只是路牌。
             if (row.header !== undefined) {
               return (
-                <div
-                  key={row.key}
-                  className="px-2.5 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wider text-content-subtle"
-                >
+                <div key={row.key} className="flex items-center gap-2 px-2.5 pb-0.5 pt-2 text-[10px] font-medium text-content-subtle">
                   {row.header}
+                  {row.errorCollectionId && (
+                    <button type="button" className="underline" onClick={() => loadItems(row.errorCollectionId!)}>{t("common.retry")}</button>
+                  )}
                 </div>
               );
             }
@@ -454,6 +508,11 @@ export function LibraryPicker({
               </div>
             );
           })
+        )}
+        {searchQuery && searchCurrent && !searchLoading && !searchError && searchTotal > searchItems.length && (
+          <div className="px-3 py-1 text-[11px] text-content-subtle" role="status">
+            {t("common.search")}: {searchItems.length} / {searchTotal}
+          </div>
         )}
       </div>
     </div>

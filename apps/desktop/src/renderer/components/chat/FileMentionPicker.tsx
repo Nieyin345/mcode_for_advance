@@ -47,6 +47,9 @@ export function FileMentionPicker({
   const { t } = useI18n();
   const [files, setFiles] = useState<FileSearchEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [pickError, setPickError] = useState(false);
+  const [searchRetry, setSearchRetry] = useState(0);
   const [activeIdx, setActiveIdx] = useState(0);
   // Keep selected file identities, not only paths from the currently filtered
   // search page: multi-query attachment must not silently drop earlier picks.
@@ -57,21 +60,30 @@ export function FileMentionPicker({
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const reqIdRef = useRef(0);
+  // The native OS chooser may remain open after this picker closes/switches
+  // projects. Its late result belongs only to the episode that opened it.
+  const selectionGenerationRef = useRef(0);
   const exclude = new Set(excludePaths);
 
   const effectiveQuery = mode === "attach" ? localQuery : query ?? "";
 
   // Reset transient state when reopened.
   useEffect(() => {
-    if (open) {
-      setSelectedEntries(new Map());
-      setLocalQuery("");
-      setActiveIdx(0);
-      if (mode === "attach") {
-        // Focus the inline search input shortly after mount.
-        requestAnimationFrame(() => inputRef.current?.focus());
-      }
+    selectionGenerationRef.current++;
+    if (!open) return;
+    setSelectedEntries(new Map());
+    setLocalQuery("");
+    setActiveIdx(0);
+    setPickError(false);
+    setSearchError(false);
+    if (mode === "attach") {
+      const raf = requestAnimationFrame(() => inputRef.current?.focus());
+      return () => {
+        selectionGenerationRef.current++;
+        cancelAnimationFrame(raf);
+      };
     }
+    return () => { selectionGenerationRef.current++; };
   }, [open, mode, projectPath]);
 
   // Keep the selection on the first row while the user types, mirroring the
@@ -90,11 +102,13 @@ export function FileMentionPicker({
     if (!open || !projectPath) {
       setFiles([]);
       setLoading(false);
+      setSearchError(false);
       return;
     }
     // Do not allow Enter/Tab to pick a result from a previous query or root.
     setFiles([]);
     setLoading(true);
+    setSearchError(false);
     const t = window.setTimeout(() => {
       void api.file
         .search({
@@ -112,13 +126,14 @@ export function FileMentionPicker({
           if (reqIdRef.current !== myId) return;
           setFiles([]);
           setLoading(false);
+          setSearchError(true);
         });
     }, DEBOUNCE_MS);
     return () => {
       reqIdRef.current++;
       window.clearTimeout(t);
     };
-  }, [open, projectPath, effectiveQuery]);
+  }, [open, projectPath, effectiveQuery, searchRetry]);
 
   // Keep active row in view.
   useEffect(() => {
@@ -148,11 +163,13 @@ export function FileMentionPicker({
 
   const confirmAttach = useCallback(() => {
     const picked = Array.from(selectedEntries.values()).filter((f) => !exclude.has(f.path));
-    if (picked.length === 0 && files[activeIdx] && !exclude.has(files[activeIdx].path)) {
-      onPick([files[activeIdx]]);
+    if (selectedEntries.size > 0) {
+      if (picked.length > 0) onPick(picked);
+      // If the host excluded every selected path after selection, do not
+      // silently attach an unrelated active row as a fallback.
       return;
     }
-    if (picked.length > 0) onPick(picked);
+    if (files[activeIdx] && !exclude.has(files[activeIdx].path)) onPick([files[activeIdx]]);
   }, [files, selectedEntries, exclude, activeIdx, onPick]);
 
   /** Open the native OS file picker so the user can attach files from OUTSIDE
@@ -163,13 +180,21 @@ export function FileMentionPicker({
    *  `relativePath` is set to the full path (there's no project root to relativize
    *  against); the chip only shows `name` anyway. */
   const handlePickExternal = useCallback(async () => {
-    const { paths } = await api.pickFiles({});
-    if (paths.length === 0) return; // user canceled
-    const mapped: FileSearchEntry[] = paths.map((p) => {
-      const segs = p.split(/[/\\]/);
-      return { name: segs[segs.length - 1] || p, path: p, relativePath: p };
-    });
-    onPick(mapped);
+    const generation = selectionGenerationRef.current;
+    setPickError(false);
+    try {
+      const { paths } = await api.pickFiles({});
+      if (selectionGenerationRef.current !== generation) return;
+      if (paths.length === 0) return; // user canceled
+      const mapped: FileSearchEntry[] = paths.map((p) => {
+        const segs = p.split(/[/\\]/);
+        return { name: segs[segs.length - 1] || p, path: p, relativePath: p };
+      });
+      onPick(mapped);
+    } catch {
+      if (selectionGenerationRef.current !== generation) return;
+      setPickError(true);
+    }
   }, [onPick]);
 
   // Keyboard handling is owned by the parent textarea (so focus stays there),
@@ -313,7 +338,7 @@ export function FileMentionPicker({
       {mode === "attach" && (
         <button
           type="button"
-          onClick={handlePickExternal}
+          onClick={() => void handlePickExternal()}
           className={cn(
             "mx-1.5 mt-1.5 flex items-center gap-1.5 rounded-md border border-dashed border-edge px-2 py-1.5 text-left text-[12px] text-content-muted",
             "transition-colors hover:border-accent/60 hover:bg-accent/10 hover:text-accent",
@@ -326,10 +351,19 @@ export function FileMentionPicker({
         </button>
       )}
 
+      {pickError && mode === "attach" && (
+        <div className="px-3 py-1 text-[11px] text-danger" role="alert">
+          {t("common.error")} <button type="button" className="underline" onClick={() => void handlePickExternal()}>{t("common.retry")}</button>
+        </div>
+      )}
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1">
         {!projectPath ? (
           <div className="px-3 py-6 text-center text-[12px] text-content-subtle">
             {t("chat.mention.openProjectFirst")}
+          </div>
+        ) : searchError ? (
+          <div className="flex items-center gap-2 px-3 py-6 text-[12px] text-danger" role="alert">
+            {t("common.error")} <button type="button" className="underline" onClick={() => setSearchRetry((v) => v + 1)}>{t("common.retry")}</button>
           </div>
         ) : loading && files.length === 0 ? (
           <div className="flex items-center justify-center gap-1.5 px-3 py-6 text-[12px] text-content-subtle">
