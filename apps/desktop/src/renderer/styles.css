@@ -3079,3 +3079,35 @@ html[data-reduce-motion="true"] .cds-quiet-dots > i {
 @property --sf-right { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @property --cds-dot-scale { syntax: "<number>"; inherits: false; initial-value: 1; }
 @property --terminal-cursor-color { syntax: "<color>"; inherits: true; initial-value: transparent; }
+
+/* ── 【ARC-005 V2】CDS 组件的强制高对比适配（上游 6 处，原 1 处） ──
+ * forced-colors 下 UA 丢弃 box-shadow 与背景渐变：状态点会变成不可见的
+ * 透明块、骨架扫光消失导致"没有加载提示"、Segment 的滑块与轨道不可分。
+ * 这里为三个新组件补不依赖颜色的可辨形状。 */
+@media (forced-colors: active) {
+  .cds-status-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+    outline: 1px solid CanvasText;
+  }
+  .cds-skeleton {
+    outline: 1px dashed CanvasText;
+    outline-offset: -1px;
+  }
+  .cds-skeleton::after {
+    animation: none;
+  }
+  [data-cds-segmented] {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+  [data-cds-segmented] [role="tab"][aria-selected="true"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+
+/* ── 减少动效：CDS 组件与上游一致地停掉所有装饰动画 ── */
+html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
+  transition: none;
+}
