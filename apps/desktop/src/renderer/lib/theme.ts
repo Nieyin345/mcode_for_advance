@@ -31,6 +31,7 @@ export function applyThemeClass(effective: EffectiveTheme): void {
   if (isDark) root.classList.add("dark");
   else root.classList.remove("dark");
   window.setTimeout(() => root.classList.remove("theme-transition"), THEME_TRANSITION_MS);
+  syncThemeColorMeta();
 }
 
 /**
@@ -67,6 +68,7 @@ export function initFoucGuard(): void {
   } catch {
     // localStorage unavailable (or disabled) - stay classic; hydration fixes.
   }
+  syncThemeColorMeta();
 }
 
 /**
@@ -76,8 +78,36 @@ export function initFoucGuard(): void {
  * recipes, the handwriting font stack and the icon wobble filter all live
  * there. Also refreshed into the localStorage cache the FOUC guard reads.
  */
+/**
+ * 【ARC-005 V2】把手机浏览器地址栏 / 状态栏的颜色同步到**实际生效**主题。
+ *
+ * index.html 里的两条 `<meta name="theme-color">` 只是按 OS 偏好做的首帧
+ * 猜测（那时还读不到 SQLite 偏好，也还不知道 sketch/kraft 主题与自定义
+ * 品牌色）。这里从 `--surface` 的计算值生成真正的色值并写进 meta：
+ *   - 主题切换（`applyThemeClass`）后调用；
+ *   - sketch/kraft 切换（`applyThemeStyle`）后调用；
+ *   - 自定义 CSS 注入后由设置面板调用。
+ *
+ * 读 `--surface` 而不是写死浅/深两值：它是 "R G B" 三元组，sketch/kraft 与
+ * 未来任何主题都会自动跟随。桌面 Electron 也有这个 API，但无副作用
+ * （没有浏览器栏），不必特判平台。
+ */
+export function syncThemeColorMeta(): void {
+  if (typeof document === "undefined") return;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim();
+  const parts = raw.split(/\s+/);
+  if (parts.length !== 3 || !parts.every((p) => /^\d{1,3}$/.test(p))) return;
+  const color = `rgb(${parts.join(", ")})`;
+  // 两条 media-variant meta 都改写：浏览器按当前媒体查询取其中一条，保持
+  // 两者同步可以让用户切到系统深色时，地址栏在新主题生效前就已经是深色。
+  for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
+    meta.content = color;
+  }
+}
+
 export function applyThemeStyle(style: ThemeStyle): void {
   document.documentElement.classList.toggle("sketch", style === "sketch");
+  syncThemeColorMeta();
   try {
     localStorage.setItem(THEME_STYLE_CACHE_KEY, style);
   } catch {

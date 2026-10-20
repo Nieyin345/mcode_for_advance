@@ -844,5 +844,53 @@ section("16. 【ARC-005】每个被消费的语义 token 都真的有定义");
   check("★ --shadow-lg 已定义（Dialog 阴影不再是死声明）", defined.has("--shadow-lg"));
 }
 
+section("17. 【ARC-005】手机端安全区与浏览器栏配色");
+{
+  const html = read("src/renderer/index.html");
+  // viewport-fit=cover 是 iOS 上 env(safe-area-inset-*) 非零的前提；
+  // 少了它，下面所有 --safe-* 在 iPhone 上恒为 0，刘海照样压内容。
+  check("★ viewport 带 viewport-fit=cover", /viewport-fit=cover/.test(html));
+  check("★ 有 theme-color meta（首帧按 OS 偏好）", (html.match(/name="theme-color"/g) ?? []).length >= 2);
+
+  const css = read("src/renderer/styles.css");
+  for (const tok of ["--safe-top", "--safe-bottom", "--safe-left", "--safe-right"]) {
+    check(`★ styles.css 定义 ${tok}`, new RegExp(`${tok}:\\s*env\\(safe-area-inset`).test(css));
+  }
+
+  // 消费侧：根容器用四边，对话框背板随顶部栏一起下移。
+  const appMobile = read("src/renderer/AppMobile.tsx");
+  for (const tok of ["--safe-top", "--safe-bottom", "--safe-left", "--safe-right"]) {
+    check(`★ AppMobile 消费 ${tok}`, appMobile.includes(`var(${tok})`));
+  }
+  const dialog = read("src/renderer/components/ui/dialog.tsx");
+  check("★ Dialog 背板把安全区算进 top",
+    /top-\[calc\(2\.5rem\+var\(--safe-top,0px\)\)\]/.test(dialog));
+
+  // theme-color 必须跟着**实际生效**主题走，而不是停在 index.html 的 OS 猜测值：
+  // 否则 sketch/kraft 与自定义品牌色下，手机地址栏是一条异色。
+  const theme = read("src/renderer/lib/theme.ts");
+  /** 取某个函数**自己的函数体**（到下一个顶格 `}` 为止）。
+   *
+   * 变异验证抓到的教训：先前写成「`applyThemeClass` 之后 600 字符内出现
+   * syncThemeColorMeta()」—— 撤掉函数体内的调用后，**下一个函数的调用**
+   * 仍落在窗口里，断言照样绿。判据必须按函数体边界，不能按字符距离。 */
+  const bodyOf = (name: string): string => {
+    const at = theme.indexOf(`export function ${name}`);
+    if (at < 0) return "";
+    const end = theme.indexOf("\n}\n", at);
+    return end < 0 ? "" : theme.slice(at, end);
+  };
+  check("★ theme.ts 导出 syncThemeColorMeta", /export function syncThemeColorMeta/.test(theme));
+  check("★ 主题类切换后同步（applyThemeClass 函数体内）",
+    bodyOf("applyThemeClass").includes("syncThemeColorMeta()"));
+  check("★ sketch/kraft 切换后同步（applyThemeStyle 函数体内）",
+    bodyOf("applyThemeStyle").includes("syncThemeColorMeta()"));
+  check("★ 首帧 FOUC guard 末尾同步一次（initFoucGuard 函数体内）",
+    bodyOf("initFoucGuard").includes("syncThemeColorMeta()"));
+  // 颜色取自 --surface 的计算值（三元组），不是写死两套 hex —— 新主题自动跟随。
+  check("★ 颜色读 --surface 而非写死 hex",
+    /getPropertyValue\("--surface"\)/.test(theme) && !/syncThemeColorMeta[\s\S]{0,400}#[0-9a-f]{6}/i.test(theme));
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
