@@ -274,3 +274,20 @@ Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核�
 - 既有 surface/text/edge 实色-vs-alpha、按钮/气泡圆角、动画曲线的差异仍按照 §二原判定如实记录；上游样本只是第三方逆向 CSS，不能冒充 Claude 官方真实屏幕。
 - `environment.json` 与 39 份 JSON：Electron 44.4.5；Windows 内核版本 10.0.22000；devicePixelRatio=1.75（175%）；正常条件请求 1280×800、窄窗请求 1024×640，DOM viewport 窄窗实为 1024×614（含窗口框架差）。
 - 本机取证未获取用户安装的 Claude Code/Desktop 对照图。参考矩阵原“待测”是**参考侧待测**，本轮仅增加 Mcode 侧实测值，不擅自关闭 ARC-005。
+
+### 2026-10-21 T12 补拍：原 23 个缺格
+
+本轮将 `LeftBar` / `StreamSidebar` 从原焦点脚手架占位恢复为真实组件，针对其余面板在真 App 上叠加**逐张标明来源的隔离视觉夹具**。现可获得 **39/39 张真实 Electron capturePage PNG + 39/39 份 JSON**（较 T01 新增 **23 张**），缺格为 0；**“照片由 Electron 真拍”不等于“内容没有桩”**。
+
+| T01 缺失屏 | 浅/深/窄窗补拍结果 | 本轮覆盖的可验证内容 |
+|---|---|---|
+| Diff | 3/3，`real-lineDiff-DiffView` | `.tmp` 内两份真实虚构文本经生产 `lineDiff` + `DiffView` 出图，未起 Monaco |
+| 侧聊 | 3/3，`sidechat-partial` | 真实 `WorkflowBoardPanel` 的隔离展示/错误边界；无真实运行与订阅 IPC |
+| 终端 | 3/3，`static-terminal` | 静态终端框架、字号、token 背景/前景；**非** PTY 证据 |
+| 文件编辑 | 3/3，`stub-editor` | 虚构源码只读展示；**非** Monaco 编辑器功能证据 |
+| 预览 | 3/3，`real-markdown-renderer` | 生产 Markdown 组件渲染；不含 PDF、图片 |
+| 并行会话侧栏 | 3/3，`real-StreamSidebar` | 真实流式组件 + 3 条虚构会话 |
+| 项目切换 | 3/3，`real-LeftBar` | 真实树形组件 + 2 个虚构项目 |
+| 窗口缩窄浅/深 | 2/2，`stub-editor+real-layout` | 实际 BrowserWindow 1024×640，左右栏展开 + 只读编辑器桩，文件名中的 1280 只表示所属主题条件 |
+
+所有新增 PNG 的同名 JSON 都有顶层 `fixture`；无未注明来源的面板替身。复核 `.tmp/arc005-visual/manifest.json`、`environment.json`、`diff.md`：比较结果仍是 **637 一致 / 247 已知差异 / 13 未登记差异**（只有暗色 `--edge` 的同一旧矩阵根因，**没有新增未登记差异**）。恶意改写 `empty-light-1280.json` 的 `--surface` 为 `255 0 255` 后变为 14，逐字节还原后回到 13，证据在 `.tmp/arc005-visual/mutation-t12.json`。仍**不能**宣称上游 Claude 安装版逐屏相符或侧聊/PTY/Monaco/PDF 等完整用户旅程通过，§一和旧 V4 数据保留原样。

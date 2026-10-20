@@ -51,10 +51,8 @@ const abs = (rel) => join(root, rel).replaceAll("\\", "/");
 const stubs = {
   [abs("lib/api.ts")]: "export const api=window.labApi;",
   [abs("lib/monacoSetup.ts")]: "export const monacoSetup=()=>{};export default {};",
-  [abs("components/layout/LeftBar.tsx")]:
-    'export const LeftBar=()=>window.React.createElement("div",{"data-testid":"left-bar"},"左栏占位");',
-  [abs("components/layout/StreamSidebar.tsx")]:
-    'export const StreamSidebar=()=>window.React.createElement("div",{"data-testid":"stream-sidebar"},"流式侧栏占位");',
+  // T12: keep the real LeftBar and StreamSidebar. Supply isolated API fixtures
+  // instead of hiding the real project/session tree behind placeholder divs.
 };
 
 const esbuild = await import(pathToFileURL(pkg("esbuild@", "esbuild/lib/main.js")).href);
@@ -65,13 +63,14 @@ writeFileSync(entry, `
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {App} from ${JSON.stringify(join(root, "App.tsx").replaceAll("\\", "/"))};
+import {Arc005FixturePanels} from ${JSON.stringify(join(suite, "fixture-panels.tsx").replaceAll("\\", "/"))};
 import {useSessionStore} from ${JSON.stringify(join(root, "stores/sessionStore.ts").replaceAll("\\", "/"))};
 import {useToastStore} from ${JSON.stringify(join(root, "stores/toastStore.ts").replaceAll("\\", "/"))};
 window.React=React;
 window.__store=useSessionStore;
 window.__toast=useToastStore;
 try{
-  createRoot(document.getElementById('root')).render(<App/>);
+  createRoot(document.getElementById('root')).render(<><App/><Arc005FixturePanels/></>);
   window.__mounted=true;
 }catch(e){
   window.__mountError=String(e&&e.stack||e);
@@ -191,6 +190,21 @@ try {
   checks = [];
 }
 const failed = checks.filter((c) => c.status !== "PASS" && c.status !== "DATA_MISSING");
+// T12 provenance gate: an Electron screenshot alone cannot authenticate a
+// renderer fixture. Every captured PNG must have a typed JSON provenance.
+for (const check of checks) {
+  if (check.status !== "PASS") continue;
+  const jsonPath = join(dir, check.name + ".json");
+  const pngPath = join(dir, check.name + ".png");
+  try {
+    const sample = JSON.parse(readFileSync(jsonPath, "utf8"));
+    if (!existsSync(pngPath) || typeof sample.fixture !== "string" || !sample.fixture) {
+      failed.push({ ...check, reason: "captured scene missing PNG or fixture provenance" });
+    }
+  } catch (error) {
+    failed.push({ ...check, reason: "captured scene missing JSON: " + String(error) });
+  }
+}
 const complete = checks.length === 39 && failed.length === 0;
 const result = { dir, exitCode: run.status, signal: run.signal, checks: checks.length, failed, complete };
 writeFileSync(join(dir, "result.json"), JSON.stringify(result, null, 2));

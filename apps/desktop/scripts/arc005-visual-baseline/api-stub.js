@@ -42,7 +42,14 @@
     session: {
       listPinned: function () { return Promise.resolve({ sessions: [] }); },
       list: function () { return Promise.resolve({ sessions: [] }); },
+      listAll: function () { var a = window.__arcFixture; return Promise.resolve({ sessions: a ? a.sessions : [], total: a ? a.sessions.length : 0, hasMore: false }); },
     },
+    file: new Proxy({ listDir: function () { return Promise.resolve({ entries: [] }); } }, {
+      get: function (target, key) { return target[key] || function () { return Promise.resolve({}); }; }
+    }),
+    git: new Proxy({ worktreeList: function () { return Promise.resolve({ worktrees: [] }); } }, {
+      get: function (target, key) { return target[key] || function () { return Promise.resolve({}); }; }
+    }),
     customModel: { list: function () { return Promise.resolve({ models: [] }); } },
     outputStyle: { list: function () { return Promise.resolve({ styles: [] }); } },
     workflow: {

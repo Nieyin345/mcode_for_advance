@@ -1,43 +1,69 @@
-# ARC-005 V4 · 真 Electron 截图与 computed styles
+# ARC-005 / T12 V4 — 真 Electron 视觉基线（含明确标注的夹具）
 
-从仓库根执行：
+从仓库根目录运行：
 
 ```bash
 bash apps/desktop/scripts/arc005-visual-baseline/run.sh
+node apps/desktop/scripts/arc005-visual-baseline/compare.mjs
+npx tsc --noEmit -p apps/desktop/tsconfig.json
 ```
 
-不使用新依赖：基于 `settings-focus-electron-smoke` 的真 App + Zustand
-+ 打包 Tailwind + 独立 Electron 用户数据目录实现（仅四处既有 stub：
-lib/api、monacoSetup、LeftBar、StreamSidebar），Electron 自带的
-`webContents.capturePage()` 生成真正 PNG。未改渲染端和主进程产品代码。
+仅使用现成 Electron/esbuild/Tailwind/React 依赖。根组件始终是**真实 App**
+和真实 Zustand store，LeftBar / StreamSidebar **不再用占位组件替换**；
+只为 `lib/api` 和 `monacoSetup` 保留已有构建桩。项目、会话、Git worktree、
+文件树等 API 使用 `api-stub.js` 的独立虚构数据响应；无真实数据目录访问，
+无真实 PTY/Monaco worker 创建。
 
-39 格（13 个矩阵行 × 浅/深/1024×640）逐格写入
-`../../../../.tmp/arc005-visual/<screen>-<condition>-<width>.json`；
-对应场景真实渲染且 `capturePage()` 有像素才生成同名 PNG，
-否则 JSON 必须含 `data-missing` 和失败理由，并写入 `manifest.json`。
-不把空白图、其它场景图冒充缺失状态。截图时使用独立的虚构项目/会话，
-不读取用户项目；需要真实文件、PTY/浏览器宿主时无法安全夹具化则显式缺失。
+## 39 格的证据属性
 
-每格 JSON：`snapshot.measured` 有 15 个固定选择器的真实元素
-getComputedStyle（不存在的条目标 `present:false`），含 fontSize /
-lineHeight / color / backgroundColor / borderRadius / padding / bounds；
-`snapshot.tokens` 记录根 CSS 变量原始计算结果；
-`environment.json` 记录 Electron、Windows、devicePixelRatio、缺图计数。
+每格按 `<screen>-<condition>-<nominal-width>.json/.png` 输出到
+`.tmp/arc005-visual/`。截图均由真实 Electron `capturePage()` 生成，
+但 **capturePage 是真的，并不意味着面板的每个内部功能也是真的**。
+每个 JSON 都有顶层 `fixture`，实际渲染 DOM 的 `data-arc-fixture` 也有对应类型：
 
-`compare.mjs` 只比较参考矩阵第二节登记的 surface/content/edge，
-第四节圆角与第五节动效。引用
-`open-claude-ui/code-examples/cds-theme.css` 值；对矩阵已登记的故意差异
-只标「已知差异（矩阵已登记，理由见矩阵）」。
-超出矩阵登记实测值的变动标「未登记差异」，以退出码 2 失败。
-可传 `--out path` 输出隔离的变异报告。默认输出
-`.tmp/arc005-visual/diff.md`，不把逆向参考当成用户安装版 Claude 实机。
+| 场景 | fixture | 取证边界 |
+|---|---|---|
+| empty/messages/tools/approval/settings | `real-app` | 真 App + store，内容是虚构的 |
+| parallel | `real-StreamSidebar` | 真实侧栏组件，三条假会话及运行状态 |
+| projects | `real-LeftBar` | 真实项目树，两个假项目 |
+| diff | `real-lineDiff-DiffView` | `.tmp` 下 v1.ts、v2.ts 两版，真实 `lineDiff` 计算与 `DiffView` 渲染；不是 Monaco 编辑器 |
+| preview | `real-markdown-renderer` | 真生产 `Markdown` 渲染；尚未验证 PDF/图片 |
+| terminal | `static-terminal` | 只验证 token/排版；**没有 PTY** |
+| editor | `stub-editor` | 假只读源码面板；**不是 Monaco** |
+| sidechat | `sidechat-partial` | 真 `WorkflowBoardPanel` 尝试渲染；数据/订阅来自空 stub，无真实 workflow IPC/运行，错误边界保留框架 |
+| narrow-window | `stub-editor+real-layout` | 强制实际窗口 1024×640，打开左栏/右栏并覆盖只读编辑器桩；light/dark 也在 1024 实拍 |
 
-变异操作仅限 .tmp 中的 JSON：备份目标 JSON → 将其中
-`snapshot.tokens["--surface"]` 改成 `255 0 255` →
-`node .../compare.mjs --out ...` 期望非零且出现「未登记差异」 →
-还原并逐字节 `cmp` 验证。**不要改产品 CSS**。
+**特别注意：** 文件名中的 `light-1280` / `dark-1280` 对 `narrow-window`
+代表**主题条件**，不是实际 viewport；实际 window size 见 JSON
+`requested`、`snapshot.viewport`。其他行按命名窗口尺寸拍摄。
 
-注意：原矩阵 §十一已记录 workspace 下 composer radius 14px；
-此比较器比对 root token 而非给 workspace UI 强加旧 20px。
-V4 只能验证本机 Mcode 截图；没有用户 Claude 安装版对照截图时，
-不将视觉相似度标记成通过。
+每张 JSON 都写入 `snapshot.measured`（固定 16 个选择器的
+`getComputedStyle`，不出现标 `present:false`），
+`snapshot.tokens`（根令牌原值），`probe`（DOM 验证）
+和 `deviceScaleFactor`。没有安全场景或渲染失败仍写
+`data-missing` 及原因；不会用其它截图顶替。
+
+## compare 和变异验证
+
+`compare.mjs` 仅比对参考矩阵 §二/四/五已经登记的
+surface/content/edge、圆角及动效；生成 `.tmp/arc005-visual/diff.md`。
+目前保留 **13 次暗色 --edge 的旧矩阵偏差**（单一根因），
+因此比较器退出码 **2 代表发现真实未登记差异**，不是截图失败。
+`run.sh` 会保留该证据而不会吞掉其它类型错误。
+
+T12 的 token 变异验证保存在
+`.tmp/arc005-visual/mutation-t12.json`；
+暂时把 `empty-light-1280.json` 的
+`snapshot.tokens["--surface"]` 改为 `255 0 255` 后，
+未登记差异应从 13 增为 14；还原后回到 13，原/还原
+文件 SHA-256 与字节比较相同。
+
+## 仍未覆盖的功能
+
+- 侧聊的 live WorkflowBoard IPC 和真实异步运行未被夹具提供；
+  如要验业务互动，需产品级真 preload/主进程工作流订阅环境，
+  仅在本测试目录添 stub 不等价。
+- 编辑器真实 Monaco worker、PTY 的会话生命周期、PDF 和图片预览
+  不是本批视觉夹具的证据。后续验收不能拿静态桩代替 U1 功能结论。
+- 仅代表本机 Mcode 的真实 Electron 画面；未取得用户安装版 Claude
+  Desktop 的逐屏参照图，不据此宣称 ARC-005 视觉整体一致。

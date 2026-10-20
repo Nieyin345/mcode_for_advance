@@ -5,7 +5,7 @@
  */
 import { BrowserWindow, nativeTheme, ipcMain, app } from "electron";
 import { join } from "node:path";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const SCREENS = [
@@ -37,7 +37,8 @@ const SELECTORS: ReadonlyArray<[string, string]> = [
   ["settings", ".settings-root"],
   ["terminal", ".xterm, [data-testid='bottom-terminal-bar']"],
   ["editor", ".monaco-editor"],
-  ["preview", "[data-testid*='preview'], [class*='pdf-preview']"],
+  ["preview", "[data-testid='arc005-real-markdown'], [data-testid*='preview'], [class*='pdf-preview']"],
+  ["fixture", "[data-testid='arc005-fixture-panel']"],
 ];
 const TOKENS = [
  "--surface", "--surface-muted", "--surface-hover", "--content",
@@ -51,6 +52,14 @@ type Row = { screen: string; title: string; condition: string; file: string; sta
 
 export async function runArc005VisualProbe(dir: string): Promise<void> {
   mkdirSync(dir, { recursive: true });
+  // Two real, isolated text file versions. The renderer itself computes the
+  // diff through production lineDiff + DiffView; never hard-code diff rows.
+  const beforePath = join(dir, "v1.ts");
+  const afterPath = join(dir, "v2.ts");
+  writeFileSync(beforePath, "export const state = 'before';\nexport const value = 1;\n");
+  writeFileSync(afterPath, "export const state = 'after';\nexport const value = 2;\n");
+  const diffBefore = readFileSync(beforePath, "utf8");
+  const diffAfter = readFileSync(afterPath, "utf8");
   const results: Row[] = [];
   const errors: string[] = [];
   const stamp = (row: Row) => {
@@ -105,10 +114,13 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
         expandedProjects:{p1:true,p2:true}, messagesBySession:{s1:[],s2:[],s3:[]},
         historyLoadedBySession:{s1:true,s2:true,s3:true}, runningBySession:{},
         pendingApprovals:[], leftOpen:true, rightOpen:false,
+        streamSessions:[], streamDirty:false, streamHasMore:false, streamTotal:0,
+        worktreeInfoByRepo:{}, gitChangeVersionByRepo:{}, pinnedSessions:[],
         bottomTerminalOpen:false, settingsOpen:false,
         centerTabFocus:'chat', displayMode:'tabs', leftBarMode:'tree', locale:'zh'
       });
       window.__arcReset = () => {
+        window.__arcShowFixture?.('');
         const a = window.__arcFixture;
         s.getState().setSettingsOpen(false);
         s.getState().setBottomTerminalOpen(false);
@@ -119,6 +131,8 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           historyLoadedBySession:{s1:true,s2:true,s3:true},
           runningBySession:{},pendingApprovals:[],
           rightPanelTab:'files',leftBarMode:'tree', centerTabFocus:'chat',
+          streamSessions:[],streamDirty:false,streamTotal:0,streamHasMore:false,
+          leftOpen:true,rightOpen:false,
           ideOpenFilesByProject:{},ideActiveFileByProject:{},
           gitDiffDialogOpen:false,settingsOpen:false,displayMode:'tabs'
         });
@@ -133,6 +147,8 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
       await sleep(300);
       for (const [screen, title] of SCREENS) {
         const file = `${screen}-${condition.id}-${condition.width}`;
+        if (screen === 'narrow-window') win.setSize(1024, 640);
+        else win.setSize(condition.width, condition.height);
         let probe: { ok: boolean; reason?: string; value?: unknown } = { ok: false, reason: "unprobed" };
         try {
           await js("window.__arcReset()");
@@ -164,23 +180,50 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
                 input:{command:'echo ARC005-ONLY'},description:'隔离测试命令（不执行）'
               }]});
             }
-            else if (id === 'diff') return result(false,'无带旧版本的真实文件 Diff 夹具：不伪造 Monaco diff');
-            else if (id === 'sidechat') return result(false,'右侧聊依赖独立 WorkflowBoard IPC；复用脚手架下真实面板会卸载，缺端到端夹具');
-            else if (id === 'terminal') return result(false,'无独立 PTY 宿主：直接打开会触发原生终端创建，超出本隔离截图夹具范围');
-            else if (id === 'editor') return result(false,'无可安全读取的已打开编辑器文件：不伪造内容');
-            else if (id === 'preview') return result(false,'无真实可预览文件夹具：不伪造 PDF/图片/Markdown');
+            else if (id === 'diff') {
+              window.__arcShowFixture?.('diff', ${JSON.stringify(diffBefore)}, ${JSON.stringify(diffAfter)});
+            }
+            else if (id === 'sidechat') {
+              window.__arcShowFixture?.('sidechat');
+            }
+            else if (id === 'terminal') {
+              window.__arcShowFixture?.('terminal');
+            }
+            else if (id === 'editor') {
+              window.__arcShowFixture?.('editor');
+            }
+            else if (id === 'preview') {
+              window.__arcShowFixture?.('preview');
+            }
             else if (id === 'parallel') {
               st.getState().setLeftBarMode('stream');
-              st.setState({streamSessions:a.sessions.slice(0,2),streamDirty:false});
-              return result(false,'StreamSidebar 是原有 Electron 焦点脚手架替身；不能当成真正并行会话侧栏截图');
+              st.setState({streamSessions:a.sessions,streamDirty:false,streamTotal:3,streamHasMore:false,
+                runningBySession:{s2:true},runningTurnStartedAt:{s2:Date.now()-65000}});
             }
             else if (id === 'projects') {
-              return result(false,'LeftBar 为上游现成脚手架替身，项目列表不可见；需真实 LeftBar 的独立 Electron 环境');
+              st.setState({sessions:a.sessions,projects:a.projects,expandedProjects:{p1:true,p2:true},leftBarMode:'tree'});
             }
             else if (id === 'settings') st.getState().setSettingsOpen(true);
-            else if (id === 'narrow-window') return result(innerWidth <= 1024, innerWidth <= 1024 ? undefined : '窗口未缩至 1024px',innerWidth);
+            else if (id === 'narrow-window') {
+              st.setState({leftOpen:true,rightOpen:true,rightPanelTab:'files',leftBarMode:'tree'});
+              window.__arcShowFixture?.('editor');
+            }
             await new Promise(r=>setTimeout(r,300));
             const q = (sel) => !![...document.querySelectorAll(sel)].find(e=>e.getClientRects().length);
+            if (['diff','terminal','editor','preview','sidechat'].includes(id)) {
+              const panel = document.querySelector('[data-testid="arc005-fixture-panel"]');
+              const kind = panel?.getAttribute('data-arc-fixture');
+              const present = !!panel && panel.getBoundingClientRect().width > 0;
+              const healthy = id === 'diff' ? !!document.querySelector('.diff-add') && !!document.querySelector('.diff-del')
+                : id === 'preview' ? !!document.querySelector('[data-testid="arc005-real-markdown"] strong')
+                : id === 'terminal' ? !!document.querySelector('[data-testid="arc005-static-terminal"]')
+                : id === 'editor' ? !!document.querySelector('[data-testid="arc005-stub-editor"] code')
+                : !!document.querySelector('[data-testid="arc005-sidechat-partial"]');
+              return result(present && healthy, '指定面板没有渲染出验证节点', {fixture:kind});
+            }
+            if (id === 'projects') return result(document.body.textContent.includes('视觉探针项目 A') && document.body.textContent.includes('视觉探针项目 B'), '真实项目树没有两个项目', {fixture:'real-LeftBar'});
+            if (id === 'parallel') return result(document.body.textContent.includes('并行会话 B') && document.body.textContent.includes('切换目标项目'), '真实流式侧栏没有多会话行', {fixture:'real-StreamSidebar'});
+            if (id === 'narrow-window') return result(innerWidth <= 1024 && !!document.querySelector('[data-testid="arc005-stub-editor"]'), '组合窄窗未达到 1024px 或编辑器桩未出现', {fixture:'stub-editor+real-layout',width:innerWidth});
             if (id === 'messages') return result(document.body.textContent.includes('视觉基线记录真实界面'), '消息正文未出现在真实 App');
             if (id === 'tools') return result(q('[data-tool-id],[data-testid*="tool"],[class*="tool-card"]'), '工具卡 DOM 未出现在真实 App');
             if (id === 'approval') return result(q('[role="alertdialog"]'), '审批卡没有出现');
@@ -197,6 +240,9 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           probe = { ok: false, reason: "scene error: " + String(e) };
           errors.push(file + ": " + String(e));
         }
+        // Reassert theme immediately before measurement: the real sidebar's
+        // async theme hydration can race with a condition transition.
+        await js(`document.documentElement.classList.toggle('dark', ${condition.dark})`);
         const snapshot = await js<unknown>(`(() => {
           const selectors = ${JSON.stringify(SELECTORS)};
           const tokens = ${JSON.stringify(TOKENS)};
@@ -217,7 +263,9 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             textSample:document.body.innerText.slice(0,400)};
         })()`);
         const metadata = {
-          schema:1,screen,title,condition:condition.id,requested:{width:condition.width,height:condition.height,dark:condition.dark},
+          schema:1,screen,title,condition:condition.id,
+          fixture: (probe.value as {fixture?:string}|undefined)?.fixture ?? (probe.ok ? 'real-app' : null),
+          requested:{width:screen==='narrow-window'?1024:condition.width,height:screen==='narrow-window'?640:condition.height,dark:condition.dark},
           electron:process.versions.electron,windows:process.getSystemVersion?.()??process.platform,
           // devicePixelRatio 只能从渲染进程读；BrowserWindow.getContentBounds 恒存在，
           // 用它当条件会让 TS 判成恒真（TS2774）。真正可能失败的是 js() 本身，
