@@ -112,7 +112,7 @@ export interface PermissionedProcessOptions {
  * `allowNetwork=true` 时整段跳过(扩展拿到的就是原始模块对象)。
  */
 const NETWORK_GUARD = String.raw`
-(function installNetworkGuard(){
+const mcodeNetworkGuardSelfCheck = (function installNetworkGuard(){
   try {
     const DENY_MARKER = Symbol("mcode-network-denied");
     const deny = (what) => {
@@ -121,19 +121,16 @@ const NETWORK_GUARD = String.raw`
       return blocked;
     };
     // 【MC-035】原型方法替换的**通用形状**:own-property 优先(不覆盖继承来的实现);
-    // 属性不存在时跳过。prototype 本身可能不可写(极少),逐项在 try/catch 里吞掉 ——
-    // 拦截装不上不应让扩展进程起不来,但已装上的部分照样生效。
+    // 不存在的可选入口跳过;已存在但拦截失败必须 fail-closed。
     const wrapOwn = (proto, key, what) => {
-      try {
-        if (proto && typeof proto[key] === "function") proto[key] = deny(what);
-      } catch (e) {}
+      if (!proto || typeof proto[key] !== "function") return;
+      const blocked = deny(what);
+      try { proto[key] = blocked; }
+      catch (e) { throw Error("network_guard_setup_failed: " + what + ": " + String(e)); }
+      if (proto[key] !== blocked) throw Error("network_guard_setup_failed: " + what + " non-writable");
     };
     const wrapAll = (obj, keys, prefix) => {
-      for (const key of keys) {
-        try {
-          if (obj && typeof obj[key] === "function") obj[key] = deny(prefix + key);
-        } catch (e) {}
-      }
+      for (const key of keys) wrapOwn(obj, key, prefix + key);
     };
     for (const name of ["http","https","http2"]) {
       try {
@@ -148,12 +145,10 @@ const NETWORK_GUARD = String.raw`
         }
         // globalAgent 的 createConnection 钉成自有属性(防御性:部分版本在构造时绑定,
         // 不查原型;直接钉住那个对象更稳)。
-        try {
-          if (mod.globalAgent && typeof mod.globalAgent.createConnection === "function") {
-            mod.globalAgent.createConnection = deny(name + ".globalAgent.createConnection");
-          }
-        } catch (e) {}
-      } catch (e) { /* 模块不在(老版本) — 忽略 */ }
+        wrapOwn(mod.globalAgent, "createConnection", name + ".globalAgent.createConnection");
+      } catch (e) {
+        if (name !== "http2" || !/ERR_UNKNOWN_BUILTIN_MODULE|MODULE_NOT_FOUND/.test(String(e))) throw e;
+      }
     }
     try {
       const net = require("node:net");
@@ -163,13 +158,9 @@ const NETWORK_GUARD = String.raw`
       wrapOwn(net.Socket && net.Socket.prototype, "connect", "net.Socket.prototype.connect");
       // net 内部连接实现的符号键(运行时私有,拿不到就跳过;它挡的是
       // tls.connect 内部对同一实现的直接调用)。
-      try {
-        const internalKey = Symbol.for("nodejs.internal.net.Socket.prototype.connect");
-        if (typeof net.Socket.prototype[internalKey] === "function") {
-          net.Socket.prototype[internalKey] = deny("net.Socket(内部 connect)");
-        }
-      } catch (e) {}
-    } catch (e) {}
+      const internalKey = Symbol.for("nodejs.internal.net.Socket.prototype.connect");
+      wrapOwn(net.Socket.prototype, internalKey, "net.Socket(内部 connect)");
+    } catch (e) { throw e; }
     try {
       const tls = require("node:tls");
       // 【MC-035】tls.connect 与 TLSSocket 的原型方法。守卫从前完全没提 node:tls ——
@@ -178,7 +169,7 @@ const NETWORK_GUARD = String.raw`
       // 自有替换作为纵深:依赖别的替换被改动时不至于一起失效。
       wrapAll(tls, ["connect","createConnection"], "tls.");
       wrapOwn(tls.TLSSocket && tls.TLSSocket.prototype, "connect", "tls.TLSSocket.prototype.connect");
-    } catch (e) {}
+    } catch (e) { throw e; }
     try {
       const dgram = require("node:dgram");
       // 【MC-035】dgram:createSocket 从模块导出拦;new dgram.Socket + send/sendto 走
@@ -188,7 +179,7 @@ const NETWORK_GUARD = String.raw`
       wrapOwn(dgram.Socket && dgram.Socket.prototype, "send", "dgram.Socket.prototype.send");
       wrapOwn(dgram.Socket && dgram.Socket.prototype, "sendto", "dgram.Socket.prototype.sendto");
       wrapOwn(dgram.Socket && dgram.Socket.prototype, "connect", "dgram.Socket.prototype.connect");
-    } catch (e) {}
+    } catch (e) { throw e; }
     try {
       const dns = require("node:dns");
       const DNS_QUERIES = [
@@ -217,7 +208,7 @@ const NETWORK_GUARD = String.raw`
             }
           }
         }
-      } catch (e) {}
+      } catch (e) { throw e; }
       const Resolver = dns.Resolver;
       if (Resolver && Resolver.prototype) {
         for (const key of Object.getOwnPropertyNames(Resolver.prototype)) {
@@ -227,7 +218,7 @@ const NETWORK_GUARD = String.raw`
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { throw e; }
     for (const key of ["fetch","WebSocket","EventSource"]) {
       if (typeof globalThis[key] === "function") globalThis[key] = deny(key);
     }
@@ -250,6 +241,19 @@ const NETWORK_GUARD = String.raw`
     requireDenied(require("node:dgram"), "createSocket", "dgram");
     requireDenied(require("node:dns"), "lookup", "dns");
     if (typeof globalThis.fetch === "function") requireDenied(globalThis, "fetch", "globalThis");
+    // Captured in the trusted bootstrap lexical scope, not on globalThis.
+    const invariant = () => {
+      requireDenied(require("node:http"), "request", "http");
+      requireDenied(require("node:https"), "request", "https");
+      requireDenied(require("node:net"), "connect", "net");
+      requireDenied(require("node:net").Socket.prototype, "connect", "net.Socket.prototype");
+      requireDenied(require("node:tls"), "connect", "tls");
+      requireDenied(require("node:dgram"), "createSocket", "dgram");
+      requireDenied(require("node:dns"), "lookup", "dns");
+      if (typeof globalThis.fetch === "function") requireDenied(globalThis, "fetch", "globalThis");
+    };
+    invariant();
+    return invariant;
   } catch (e) {
     throw new Error("network_guard_setup_failed: " + String(e && e.message || e));
   }
@@ -269,11 +273,15 @@ const BOOTSTRAP = [
   'process.stdin.on("data",c=>{raw+=c;if(raw.length>MAX){process.stdout.write("@@mcode:ext-result "+JSON.stringify({ok:false,code:"input",message:"payload too large"})+"\\n");process.exit(0);}});',
   'process.stdin.on("end",()=>{ let p; try{p=JSON.parse(raw);}catch(e){process.stdout.write("@@mcode:ext-result "+JSON.stringify({ok:false,code:"input",message:String(e&&e.message||e)})+"\\n");return;}',
   '  (async()=>{ const protocolWrite=process.stdout.write.bind(process.stdout); try{',
+  '    if(typeof mcodeNetworkGuardSelfCheck==="function")mcodeNetworkGuardSelfCheck();',
+  '    const guardTimer=typeof mcodeNetworkGuardSelfCheck==="function"?setInterval(()=>{try{mcodeNetworkGuardSelfCheck()}catch(e){process.stderr.write("network_guard_integrity_failed: "+String(e)+"\\n");process.exit(78)}},50):null;',
+  '    if(guardTimer)guardTimer.unref();',
   '    const factory=(0,eval)("("+p.source+")");',
   '    if(!factory||typeof factory!=="object")throw Error("扩展程序工厂没有求出对象");',
   '    const fn=factory[p.capability];',
   '    if(typeof fn!=="function")throw Error("扩展程序没有声明能力 "+p.capability);',
   '    const result=await fn(p.resource);',
+  '    if(typeof mcodeNetworkGuardSelfCheck==="function")mcodeNetworkGuardSelfCheck();',
   '    protocolWrite("@@mcode:ext-result "+JSON.stringify({ok:true,result,proof:p.proof})+"\\n");',
   '  }catch(e){',
   '    const message=String(e&&e.message||e);',
@@ -308,6 +316,9 @@ const VERIFY_BOOTSTRAP = [
   'process.stdin.on("data",c=>{raw+=c;if(raw.length>MAX){process.stdout.write("@@mcode:ext-verify "+JSON.stringify({ok:false,message:"payload too large"})+"\\n");process.exit(0);}});',
   'process.stdin.on("end",()=>{ let p; try{p=JSON.parse(raw);}catch(e){process.stdout.write("@@mcode:ext-verify "+JSON.stringify({ok:false,message:String(e&&e.message||e),proof:p && p.proof})+"\\n");return;}',
   '  (async()=>{ const protocolWrite=process.stdout.write.bind(process.stdout); try{',
+  '    if(typeof mcodeNetworkGuardSelfCheck==="function")mcodeNetworkGuardSelfCheck();',
+  '    const guardTimer=typeof mcodeNetworkGuardSelfCheck==="function"?setInterval(()=>{try{mcodeNetworkGuardSelfCheck()}catch(e){process.stderr.write("network_guard_integrity_failed: "+String(e)+"\\n");process.exit(78)}},50):null;',
+  '    if(guardTimer)guardTimer.unref();',
   '    const factory=(0,eval)("("+p.source+")");',
   '    if(!factory||typeof factory!=="object"||Array.isArray(factory))throw Error("扩展程序工厂没有求出对象");',
   '    const declared=Object.keys(factory);',
@@ -320,6 +331,73 @@ const VERIFY_BOOTSTRAP = [
 
 /** 核验结果:成功时给工厂声明的短名(诊断用),失败时给人能读懂的原因。 */
 export type ProgramVerification = { ok: true; declared: string[] } | { ok: false; reason: string };
+
+/**
+ * OS egress isolation is mandatory for *unapproved* network access, including
+ * install-time factory evaluation. A JS-only network hook is NOT a sandbox.
+ * Linux user+net namespaces and macOS sandbox-exec are probed using a real TCP
+ * attempt in a new OS-restricted child, before executing ANY extension source.
+ *
+ * Windows has no supported per-child AppContainer/WFP launch in this project.
+ * Rejecting execution there is intentional: Job Objects do not block sockets,
+ * and global firewall rules against node.exe would affect unrelated processes.
+ */
+type EgressLaunch = { command: string; prefix: string[] };
+let cachedEgressLaunch: Promise<EgressLaunch> | undefined;
+const EGRESS_PROBE = String.raw`
+const net=require("node:net");
+const socket=net.connect({host:"127.0.0.1",port:9});
+const timer=setTimeout(()=>{console.log("MCODE_OS_EGRESS=TIMEOUT");process.exit(18)},1000);
+socket.on("connect",()=>{clearTimeout(timer);console.log("MCODE_OS_EGRESS=CONNECTED");process.exit(19)});
+socket.on("error",e=>{
+  clearTimeout(timer);
+  console.log("MCODE_OS_EGRESS="+e.code);
+  process.exitCode=["ENETUNREACH","EHOSTUNREACH","EPERM","EACCES"].includes(e.code)?0:20;
+});
+`;
+async function egressLaunch(): Promise<EgressLaunch> {
+  if (!cachedEgressLaunch) cachedEgressLaunch = (async () => {
+    let launch: EgressLaunch;
+    if (process.platform === "linux") {
+      launch = {
+        command: "/usr/bin/unshare",
+        prefix: ["--user", "--map-root-user", "--net", "--", process.execPath],
+      };
+    } else if (process.platform === "darwin") {
+      launch = {
+        command: "/usr/bin/sandbox-exec",
+        prefix: ["-p", "(version 1)\\n(allow default)\\n(deny network*)", process.execPath],
+      };
+    } else {
+      throw Error("egress_isolation_unavailable: 当前系统没有可验证的独立进程 OS 网络沙箱(" + process.platform + ")，拒绝执行未授权网络的扩展");
+    }
+    const probe = await spawnRun({
+      command: launch.command, args: [...launch.prefix, "-e", EGRESS_PROBE],
+      env: permissionedEnv(), stdin: "", timeoutMs: 2500,
+      signal: new AbortController().signal, limitBytes: 8192,
+    });
+    const verified = probe.code === 0 &&
+      /^MCODE_OS_EGRESS=(ENETUNREACH|EHOSTUNREACH|EPERM|EACCES)$/m.test(probe.stdout) &&
+      !probe.spawnError && !probe.killedBy.timeout && !probe.stdoutTruncated;
+    if (!verified) {
+      throw Error("egress_isolation_unavailable: OS 沙箱探针未证明网络被内核阻断(exit=" +
+        String(probe.code) + "; " +
+        (probe.spawnError?.message ?? probe.stdout.trim() ?? probe.stderr.trim()).slice(0, 200) + ")");
+    }
+    return launch;
+  })();
+  return cachedEgressLaunch;
+}
+
+/** Read-only, real OS capability probe (no extension code is evaluated). */
+export async function diagnoseEgressIsolation(): Promise<{ supported: boolean; detail: string }> {
+  try {
+    const launch = await egressLaunch();
+    return { supported: true, detail: "OS probe verified: " + launch.command };
+  } catch (error) {
+    return { supported: false, detail: String(error) };
+  }
+}
 
 /**
  * 在受控进程里求值一次工厂源码,确认清单引用的每个短名都是函数。
@@ -336,11 +414,14 @@ export async function verifyPermissionedProgram(
   // 每次核验用独立随机关联值；阻断仅伪造一条 stdout 结果并 exit(0) 的旧反例。
   // 扩展与引导程序仍同进程，关联值不代表 OS 沙箱或强隔离认证。
   const proof = randomBytes(32).toString("hex");
+  let launch: EgressLaunch;
+  try { launch = await egressLaunch(); }
+  catch (e) { return { ok: false, reason: String(e) }; }
   const result = await spawnRun({
-    command: process.execPath,
+    command: launch.command,
     // 【MC-035】安装核验本身会求值不受信工厂；此时尚无逐次网络批准。
     // 与正式执行共用同一网络防护，不允许工厂借核验期先行外传。
-    args: ["--permission", "-e", NETWORK_GUARD + VERIFY_BOOTSTRAP],
+    args: [...launch.prefix, "--permission", "-e", NETWORK_GUARD + VERIFY_BOOTSTRAP],
     env: permissionedEnv(),
     stdin: JSON.stringify({ source, capabilities, proof }),
     timeoutMs,
@@ -351,7 +432,7 @@ export async function verifyPermissionedProgram(
   if (result.killedBy.timeout) return { ok: false, reason: "核验进程超时(可能不是可求值的工厂)" };
   // 【MC-035】安装期未受信代码也能打印协议行；失败退出或协议被截断不得判成功。
   if (result.code !== 0 || result.stdoutTruncated || result.stdoutLineTruncated) {
-    return { ok: false, reason: "核验进程异常退出或输出截断(exit=" + String(result.code) + ")" };
+    return { ok: false, reason: "核验进程异常退出或输出截断(exit=" + String(result.code) + "): " + result.stderr.trim().slice(-400) };
   }
   // 不受信工厂也能打印 @@mcode 前缀；有多条结果行即协议污染，绝不选最后一条。
   const replyLines = result.stdout.split("\n").filter((line) => line.startsWith("@@mcode:ext-verify "));
@@ -425,13 +506,18 @@ export async function runPermissionedProcess(
     capability: options.capability,
     resource: options.resource,
   });
-  // 【MC-035】网络拦截**先于**工厂求值:未声明网络的扩展拿到的 http/net/fetch 已被
-  // 替换成抛错函数。声明并批准了就是原样(见 NETWORK_GUARD 的注释)。
+  // Unapproved network requires a verified OS sandbox. The process-local JS
+  // guard remains as defence in depth; it is never treated as a fallback.
+  let launch: EgressLaunch = { command: process.execPath, prefix: [] };
+  if (options.allowNetwork !== true) {
+    try { launch = await egressLaunch(); }
+    catch (e) { throw failure("isolated_denied", String(e)); }
+  }
   const bootstrap = options.allowNetwork === true ? BOOTSTRAP : NETWORK_GUARD + BOOTSTRAP;
   // 单行协议在 `spawnRun` 里按字节切行;上限给足一个结果窗(32 个字段 × 4 KiB 余量)。
   const result = await spawnRun({
-    command: process.execPath,
-    args: [...permissionArgs(options.resource.path, options.allowWrite), "-e", bootstrap],
+    command: launch.command,
+    args: [...launch.prefix, ...permissionArgs(options.resource.path, options.allowWrite), "-e", bootstrap],
     env: permissionedEnv(),
     stdin: payload,
     timeoutMs: options.timeoutMs,
@@ -450,7 +536,7 @@ export async function runPermissionedProcess(
   if (result.code !== 0 || result.stdoutTruncated || result.stdoutLineTruncated) {
     throw failure(
       "isolated_crash",
-      "扩展执行进程异常退出或协议输出截断(exit=" + String(result.code) + ")。",
+      "扩展执行进程异常退出或协议输出截断(exit=" + String(result.code) + ")。" + result.stderr.trim().slice(-400),
     );
   }
   // 【MC-035】多个协议前缀说明扩展自己伪造/重放了返回行。
