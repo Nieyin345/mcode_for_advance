@@ -43,6 +43,7 @@ import {
   type EngineNodeRecord,
 } from "./engineNodeRegistry.js";
 import { declaresNetwork } from "@contracts/modules";
+import { safeErrorMessage } from "@main/lib/safeErrorMessage.js";
 
 /** 安装请求的**元数据**（调用方能表达的全部事实）。
  *
@@ -104,7 +105,12 @@ export type EngineNodeInstallOutcome =
 async function existingHash(registry: EngineNodeRegistry, name: string): Promise<
   { ok: true; hash: string | null } | { ok: false; reason: string }
 > {
-  const state = await registry.readState();
+  let state: Awaited<ReturnType<EngineNodeRegistry["readState"]>>;
+  try {
+    state = await registry.readState();
+  } catch (error) {
+    return { ok: false, reason: `可执行体清单读取失败，拒绝安装：${safeErrorMessage(error)}` };
+  }
   if (state.kind === "corrupt") {
     return { ok: false, reason: `可执行体清单已损坏，拒绝安装：${state.reason}` };
   }
@@ -196,7 +202,7 @@ export async function installEngineNode(options: {
     return {
       ok: false,
       code: "approval_denied",
-      reason: `安装审批被拒绝或失败：${error instanceof Error ? error.message : String(error)}`,
+      reason: `安装审批被拒绝或失败：${safeErrorMessage(error)}`,
     };
   }
   if (!approved) {
@@ -213,7 +219,12 @@ export async function installEngineNode(options: {
     capabilities: meta.capabilities,
     approvedByUser: true,
   };
-  const result = await registry.installFromDirectory(installMeta, sourceDir);
+  let result: Awaited<ReturnType<EngineNodeRegistry["installFromDirectory"]>>;
+  try {
+    result = await registry.installFromDirectory(installMeta, sourceDir);
+  } catch (error) {
+    return { ok: false, code: "install_failed", reason: `节点包安装失败：${safeErrorMessage(error)}` };
+  }
   if (!result.ok) {
     // 校验/落盘失败：按 invalid（形状/哈希）或 install_failed（写盘）分类，调用方据此给话术。
     const code = /落盘失败|写盘|暂存目录/.test(result.reason) ? "install_failed" : "invalid";
