@@ -13,6 +13,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { Select } from "@renderer/components/ui/index.js";
+import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import { IconFolderOpen } from "@renderer/lib/icons.js";
 
 export interface ScopeTabItem<T extends string> {
@@ -21,20 +22,6 @@ export interface ScopeTabItem<T extends string> {
   count?: number;
 }
 
-function moveTabFocus(event: React.KeyboardEvent<HTMLButtonElement>): void {
-  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-  const tabs = Array.from(
-    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
-  );
-  if (tabs.length === 0) return;
-  event.preventDefault();
-  const current = Math.max(0, tabs.indexOf(event.currentTarget));
-  const next = event.key === "Home" ? 0
-    : event.key === "End" ? tabs.length - 1
-    : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-  tabs[next]?.focus();
-  tabs[next]?.click();
-}
 
 export function ScopeTabs<T extends string>({
   items,
@@ -47,34 +34,21 @@ export function ScopeTabs<T extends string>({
   onChange: (id: T) => void;
   className?: string;
 }) {
+  // 【ARC-005 V2】与侧栏/手机共用 CDS Segmented（同一份 1px 轨道、滑动指示器、
+  // 120ms 磁吸、容器查询折叠）。count 走 badge 槽；键盘左右键由 Segmented 提供，
+  // 原先这里手写的那份焦点移动随之退役（不再有第二套 tablist 实现）。
   return (
-    <div className={cn("flex gap-1", className)} role="tablist">
-      {items.map((item) => {
-        const active = item.id === value;
-        return (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            tabIndex={active ? 0 : -1}
-            onKeyDown={moveTabFocus}
-            onClick={() => onChange(item.id)}
-            className={cn(
-              "rounded border px-2.5 py-1 text-[0.8571em] transition-colors",
-              active
-                ? "border-accent bg-accent/10 font-medium text-accent"
-                : "border-edge bg-surface text-content-muted hover:bg-surface-hover/60 hover:text-content",
-            )}
-          >
-            {item.label}
-            {item.count !== undefined && item.count > 0 && (
-              <span className="ml-1.5 tabular-nums text-content-subtle">{item.count}</span>
-            )}
-          </button>
-        );
-      })}
-    </div>
+    <Segmented
+      className={className}
+      label="scope"
+      value={value}
+      onChange={(id) => onChange(id as T)}
+      items={items.map((item) => ({
+        id: item.id,
+        label: item.label,
+        ...(item.count !== undefined && item.count > 0 ? { badge: item.count } : {}),
+      }))}
+    />
   );
 }
 
