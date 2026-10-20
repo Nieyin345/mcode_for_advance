@@ -162,7 +162,7 @@ export function RightPanel() {
           the accent token. 顺序 / 显隐 / 自定义页签都来自「设置 → 自定义 UI →
           右栏页签」;宽屏按钮是布局开关,不参与排,固定在最右。 */}
       <div
-        className="flex h-9 shrink-0 flex-row items-center gap-1 border-b border-edge bg-surface px-1.5"
+        className="flex h-9 shrink-0 flex-row items-center gap-1 border-b border-edge/60 bg-surface px-1.5"
         onContextMenu={(e) => {
           e.preventDefault();
           openCustomUiSettings("rightPanel.tab");
@@ -249,7 +249,7 @@ export function RightPanel() {
             e.dataTransfer.setData(PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID);
             e.dataTransfer.effectAllowed = "move";
           }}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-accent"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-accent"
         >
           <span aria-hidden="true" className="text-[15px] tracking-tighter">⋮⋮</span>
         </button>
@@ -346,7 +346,7 @@ function RailButton({
       aria-label={title}
       aria-pressed={active}
       className={cn(
-        "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+        "flex h-7 w-7 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors",
         active
           ? "bg-accent/15 text-accent"
           : "text-content-muted hover:bg-surface-hover hover:text-content",
