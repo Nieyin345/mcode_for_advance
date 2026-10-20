@@ -231,7 +231,7 @@ export function ProjectNode(props: ProjectNodeProps) {
           onClick={onNewSession}
           className={cn(
             "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
-            "hover:text-accent group-hover:opacity-100 group-focus-within:opacity-100",
+            "hover:text-content group-hover:opacity-100 group-focus-within:opacity-100",
           )}
           title={t("layout.newSessionHere")}
           aria-label={t("layout.newSessionHere")}
@@ -288,7 +288,7 @@ export function ProjectNode(props: ProjectNodeProps) {
                 onClick={onLoadMore}
                 className={cn(
                   "w-full rounded px-2 py-1 text-left text-content-subtle transition-colors [font-size:var(--rp-fs-md)]",
-                  "hover:bg-surface-hover/60 hover:text-accent",
+                  "hover:bg-surface-hover/60 hover:text-content",
                 )}
               >
                 {t("layout.loadMore")}
@@ -669,7 +669,7 @@ function WorktreeGroupNode({
           onClick={onNewSession}
           className={cn(
             "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
-            "hover:text-accent group-hover:opacity-100 group-focus-within:opacity-100",
+            "hover:text-content group-hover:opacity-100 group-focus-within:opacity-100",
           )}
           title={t("layout.newSessionInWorktree")}
           aria-label={t("layout.newSessionInWorktree")}
@@ -935,7 +935,7 @@ export function GroupNode({
         </Menu.Root>
         <button
           onClick={onRenameGroup}
-          className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:text-accent group-hover:opacity-100 group-focus-within:opacity-100"
+          className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:text-content group-hover:opacity-100 group-focus-within:opacity-100"
           title={t("layout.renameGroup")}
           aria-label={t("layout.renameGroup")}
         >

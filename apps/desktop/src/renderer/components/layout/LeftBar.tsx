@@ -752,8 +752,8 @@ function LeftBarBase({
               // Always visible when there are no projects so the user has a
               // clear entry point to add one (no empty placeholder row anymore).
               projects.length === 0
-                ? "opacity-100 hover:text-accent"
-                : "opacity-0 hover:text-accent group-hover:opacity-100 group-focus-within:opacity-100",
+                ? "opacity-100 hover:text-content"
+                : "opacity-0 hover:text-content group-hover:opacity-100 group-focus-within:opacity-100",
             )}
             title={t("layout.addProject")}
             aria-label={t("layout.addProject")}

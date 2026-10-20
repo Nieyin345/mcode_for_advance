@@ -90,7 +90,7 @@ export function MobileConnectButton() {
         className={cn(
           "flex w-full items-center gap-2 rounded-lg px-1 py-2 transition-colors",
           "[font-size:var(--right-panel-font-size)]",
-          "text-content-muted hover:bg-accent/10 hover:text-accent",
+          "text-content-muted hover:bg-surface-hover hover:text-content",
           open && "bg-accent/10 text-accent",
         )}
         title={t("layout.connectPhone")}
