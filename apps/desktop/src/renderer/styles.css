@@ -2289,6 +2289,16 @@ button.chat-ledger-head:hover {
   font-size: 16px;
 }
 
+/* 【ARC-005 V2】安全区。手机用浏览器打开局域网页面，全面屏的刘海与底部手势条
+ * 会压住 h-dvh 布局的两端。index.html 已加 viewport-fit=cover（iOS 不加时
+ * env() 恒为 0）。桌面/无刘海设备上这些值就是 0，不影响既有像素。 */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
 /* ───────────── Image lightbox ─────────────
  * Fullscreen image viewer opened by ImageWithPreview. Three parts: a scrim, the
  * picture, and ONE control bar docked below the picture (see image-preview.tsx

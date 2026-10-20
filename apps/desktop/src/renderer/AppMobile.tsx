@@ -142,7 +142,16 @@ function MobileShell() {
   }, [activeSessionId, sessionsByProject, pinnedSessions]);
 
   return (
-    <div className="flex h-full w-full flex-col bg-surface text-content">
+    <div
+      className="flex h-full w-full flex-col bg-surface text-content"
+      // 【ARC-005 V2】全面屏安全区：桌面/无刘海设备上这些值是 0，不影响既有布局。
+      style={{
+        paddingTop: "var(--safe-top)",
+        paddingBottom: "var(--safe-bottom)",
+        paddingLeft: "var(--safe-left)",
+        paddingRight: "var(--safe-right)",
+      }}
+    >
       {/* Top bar — kept at exactly h-10 (40px) so the shared Dialog backdrop
           (`top-10` in components/ui/dialog.tsx) still aligns with the shell
           chrome without platform-specific CSS. bg-surface-muted (same as the

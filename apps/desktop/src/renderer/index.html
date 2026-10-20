@@ -9,7 +9,12 @@
          keyboard instead of being covered. Inert on iOS Safari / desktop
          Chromium; iOS focus-zoom is handled by the [data-shell="mobile"]
          font-size guard in styles.css. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <!-- 手机浏览器地址栏 / 状态栏颜色。这里的两条是按 OS 偏好的**首帧猜测**；
+         React 挂载后 syncThemeColorMeta() 会按 Mcode 实际生效主题改写
+         （sketch/kraft 与自定义品牌色都能跟上）。桌面 Electron 不用它。 -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fcfcfb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151515" />
     <title>Mcode</title>
     <!--
       FOUC guard: the .dark class is applied to <html> BEFORE React mounts by

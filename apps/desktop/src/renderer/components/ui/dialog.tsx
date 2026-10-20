@@ -59,7 +59,9 @@ function DialogBackdrop({ className, ...props }: DialogBackdropProps) {
         // modal is open. Without this the mask tints the titlebar grey and
         // captures clicks on the drag area, while the native caption buttons
         // (drawn above the webview) stay clickable - an inconsistent look.
-        "fixed inset-x-0 top-10 bottom-0 z-50 bg-black/60 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0 transition-opacity",
+        // 【ARC-005 V2】top-10 对齐的是 40px 顶部栏；手机全面屏在栏上方还有
+        // 一条状态栏安全区，背板要跟栏一起下移。桌面 --safe-top 恒 0，像素不变。
+        "fixed inset-x-0 top-[calc(2.5rem+var(--safe-top,0px))] bottom-0 z-50 bg-black/60 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0 transition-opacity",
         className,
       )}
       {...props}
