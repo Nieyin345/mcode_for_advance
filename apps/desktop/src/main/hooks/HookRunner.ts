@@ -626,8 +626,22 @@ class HookRunner {
       // change time so the new inode is never mistaken for the old contents.
       // Reading/hash-parsing the whole file on every SDK event is unnecessary.
       stamp = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`;
-    } catch {
-      stamp = null; // 文件不在 = 一条钩子都没有(正常状态)
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      if (error.code !== "ENOENT") {
+        // A permission / I/O / metadata failure is NOT "hooks.json missing".
+        // Fail closed instead of executing stale cached commands or treating a
+        // transient read fault as an empty but healthy configuration. Keep a
+        // stable error fingerprint so repeated SDK events don't flood logs;
+        // the next successful stat always triggers a fresh load.
+        const failedStamp = `stat_error:${error.code ?? "unknown"}:${error.message}`;
+        if (this.cache.stamp !== failedStamp) {
+          this.cache = { hooks: [], stamp: failedStamp };
+          log.warn(`[hooks] ${file} 状态读取失败,已暂停 Hook 执行:${error.message}`);
+        }
+        return [];
+      }
+      stamp = null; // 只有 ENOENT 才是正常的「文件不存在」
     }
     if (stamp !== this.cache.stamp) {
       const { hooks, problems } = readHooks();

@@ -168,6 +168,29 @@ function makeCmd(opts: { tag: string; sleepMs?: number }): { command: string; hi
   };
 }
 
+/** A real-process barrier for maxConcurrency tests. Two children must both enter
+ * the command before either may exit. This tests admitted concurrency without
+ * depending on process startup vs sleep timing under parallel smoke load. */
+function makeBarrierCmd(tag: string): { command: string; hits: () => number; completed: () => number; release: () => void } {
+  const marker = join(WORK, `hits-${tag}.txt`);
+  const gate = join(WORK, `release-${tag}.txt`);
+  const done = join(WORK, `done-${tag}.txt`);
+  const script = join(WORK, `hook-${tag}.js`);
+  writeFileSync(script, [
+    `const fs = require("node:fs");`,
+    `const [file, gate, done] = process.argv.slice(2);`,
+    `fs.appendFileSync(file, "x");`,
+    `const poll = setInterval(() => { if (fs.existsSync(gate)) { clearInterval(poll); fs.appendFileSync(done, "x"); process.exit(0); } }, 20);`,
+    `setTimeout(() => { console.error("barrier never released"); process.exit(2); }, 25000).unref();`,
+  ].join("\n"), "utf8");
+  return {
+    command: `node "${script}" "${marker}" "${gate}" "${done}"`,
+    hits: () => existsSync(marker) ? readFileSync(marker, "utf8").length : 0,
+    completed: () => existsSync(done) ? readFileSync(done, "utf8").length : 0,
+    release: () => writeFileSync(gate, "go", "utf8"),
+  };
+}
+
 function spec(over: Partial<HookSpec> & { command: string; tag: string }): HookSpec {
   return {
     id: makeHookId(),
@@ -367,6 +390,44 @@ eq("新钩子生效", g.hits(), 1);
   rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_stamp_after", input: {}, requiresApproval: false } satisfies RuntimeEvent);
   await until("mtime 不变时第二份 Hook 也真的生效", () => second.hits() === 1, 18000);
   eq("新命令生效后旧命令不能再执行", first.hits(), 1);
+}
+
+/* ──────────────── 5b. hooks.json stat 故障≠文件不存在 ──────────────── */
+{
+  const { createRequire, syncBuiltinESMExports } = await import("node:module");
+  const fsModule = createRequire(import.meta.url)("node:fs") as { statSync: typeof import("node:fs")["statSync"] };
+  const originalStat = fsModule.statSync;
+  const cmd = makeCmd({ tag: "stat-read-failure" });
+  const hook = spec({ command: cmd.command, tag: "stat-read-failure" });
+  writeHooks([hook]);
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_stat_healthy", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("正常文件状态下 Hook 真执行", () => cmd.hits() === 1, 8000);
+  let injected = 0;
+  // Patch only the hooks.json metadata lookup in this isolated smoke. No
+  // permission changes or production user files are involved.
+  fsModule.statSync = ((path: Parameters<typeof originalStat>[0], options?: unknown) => {
+    if (String(path) === hooksFilePath()) {
+      injected += 1;
+      throw Object.assign(new Error("FAKE_HOOK_STAT_EACCES"), { code: "EACCES" });
+    }
+    return originalStat(path, options as never);
+  }) as typeof originalStat;
+  syncBuiltinESMExports();
+  try {
+    rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_stat_eacces", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+    await until("受控 stat EACCES 故障确实命中", () => injected >= 1, 2500);
+    const current = hookRunner as unknown as { cache: { hooks: HookSpec[]; stamp: string | null } };
+    eq("EACCES 必须 fail-closed 清空当前可执行 Hook，而非保留旧定义", current.cache.hooks.length, 0);
+    check("EACCES 不得标为普通 missing（须有可追踪故障签名）",
+      typeof current.cache.stamp === "string" && current.cache.stamp.includes("stat_error"), current.cache.stamp);
+    await new Promise((r) => setTimeout(r, 400));
+    eq("元数据读取失败绝不再次启动先前缓存的命令", cmd.hits(), 1);
+  } finally {
+    fsModule.statSync = originalStat;
+    syncBuiltinESMExports();
+  }
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_stat_recovered", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await until("stat 权限恢复后原 Hook 又能正常执行", () => cmd.hits() === 2, 8000);
 }
 
 /* ──────────────── 6. 环与坏东西 ──────────────── */
@@ -625,10 +686,40 @@ async function matrixRun(
 //    "上限 2 → 恰好 2 个并发"这条断言,**在旧的 Set 实现下必红** —— 它才是这次改动
 //    真正新增的能力,而不是"把已有的默认换个写法"。
 {
-  const r = await matrixRun("mx-conc2", { kind: "BEST_EFFORT", maxConcurrency: 2 }, 100);
-  eq("maxConcurrency=2 → 恰好 2 个并发(旧 Set 只给 1)", r.hits, 2);
-  eq("上限 2:accepted 2", r.counts.accepted, 2);
-  eq("上限 2:其余 98 丢", r.counts.dropped, 98);
+  // The old sleep-based matrix assertion could observe only one process if the
+  // second child started after the first had exited on a heavily loaded host.
+  // Here both children block on the same gate, so even a slow child startup
+  // cannot change the observed concurrency. A one-slot regression stays red.
+  const cmd = makeBarrierCmd("mx-conc2");
+  const hook = spec({
+    command: cmd.command, tag: "mx-conc2",
+    deliveryPolicy: { kind: "BEST_EFFORT", maxConcurrency: 2 },
+  });
+  await new Promise((r) => setTimeout(r, 1100));
+  writeHooks([hook]);
+  for (let i = 0; i < 100; i += 1) {
+    rt.emit({
+      type: "tool.use", sessionId: SESSION, toolName: "Write",
+      toolCallId: `mx-conc2_${i}`, input: {}, requiresApproval: false,
+    } satisfies RuntimeEvent);
+  }
+  try {
+    await until("两个被允许的 Hook 子进程都已进入同步门", () => cmd.hits() >= 2, 20000);
+    await until("100 次事件全记账（不是只看最先启动的一条）",
+      () => {
+        const c = hookRunner.deliveryCountsOf(hook.id);
+        return c !== undefined && c.accepted + c.dropped === 100;
+      }, 5000);
+    const counts = hookRunner.deliveryCountsOf(hook.id);
+    eq("maxConcurrency=2 → 恰好 2 个并发(旧 Set 只给 1)", cmd.hits(), 2);
+    eq("上限 2:accepted 2", counts?.accepted, 2);
+    eq("上限 2:其余 98 丢", counts?.dropped, 98);
+    eq("两个进程开门前均未结束", cmd.completed(), 0);
+  } finally {
+    // A failed assertion must not leave blocked child processes in the smoke.
+    cmd.release();
+  }
+  await until("两个并发 Hook 在开门后都成功收口", () => cmd.completed() === 2, 12000);
 }
 
 // ── AT_MOST_ONCE —— 不可重复(只 1 个),允许明确丢。
@@ -884,7 +975,10 @@ console.log("\n去抖窗口(debounceMs):COALESCE 在窗口内把连续触发合�
   // 窗口没到(才 150ms < 400ms):**一个进程都不该起** —— 这正是"去抖"与"立即跑"的分界。
   await new Promise((r) => setTimeout(r, 150));
   eq("窗口内:一条都没跑(攒着,不是每条都立即跑)", cmd.hits(), 0);
-  await until("窗口末尾兑现一次", () => cmd.hits() >= 1, 4000);
+  // Child startup can be delayed by other parallel smoke suites; the early
+  // 150ms no-spawn check enforces debounce semantics, while this is just an
+  // eventual-completion deadline (not a timing assertion).
+  await until("窗口末尾兑现一次", () => cmd.hits() >= 1, 12000);
   await new Promise((r) => setTimeout(r, 800)); // 若会多跑,这里该看见
   eq("5 次连续触发合并成 1 次运行", cmd.hits(), 1);
   eq("全部 5 条并入合并(coalesced=5)", hookRunner.deliveryCountsOf(hook.id)?.coalesced, 5);
@@ -917,7 +1011,7 @@ console.log("\n去抖窗口(debounceMs):COALESCE 在窗口内把连续触发合�
   emitOne(1); // t≈300:重置窗口 → 该到 t≈700 才兑现
   await new Promise((r) => setTimeout(r, 200)); // t≈500:旧窗口(400)已过,重置窗口还没到
   eq("新事件把窗口重置(尾去抖:从最后一次触发起算)", cmd.hits(), 0);
-  await until("重置后的窗口末尾兑现", () => cmd.hits() >= 1, 4000);
+  await until("重置后的窗口末尾兑现", () => cmd.hits() >= 1, 12000);
   await new Promise((r) => setTimeout(r, 800));
   eq("窗口顺延后仍只跑 1 次", cmd.hits(), 1);
 }
