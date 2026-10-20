@@ -14,7 +14,7 @@ export function interactiveRoute(sessionId: string, next: (id: string) => string
       return sessionId;
     }
     if (parent === undefined || parent === null) return id;
-    if (typeof parent !== "string" || !parent.trim() || /[\u0000-\u001f\u007f]/.test(parent)) {
+    if (typeof parent !== "string" || parent.length > 512 || !parent.trim() || parent !== parent.trim() || /[\u0000-\u001f\u007f]/.test(parent)) {
       return sessionId;
     }
     id = parent;
