@@ -140,3 +140,16 @@ PDF 与图片可以用同目录下的**仓库内已有静态资源**（`src/rend
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 执行结果（T12，39/39 视觉夹具已拍）
+
+- 源码/矩阵提交：`8529b206beb2ea40b2225ddb810693afb45489b6`（仅涉及 T12 许可的视觉脚本目录及参考矩阵 V4 新增节；未修改任何产品源码、未推送）。
+- 改动文件：`apps/desktop/scripts/arc005-visual-baseline/{api-stub.js,build.mjs,probe.ts,fixture-panels.tsx,README.md}`；`docs/design/claude-code-reference-matrix.md` 只在 §十二 V4 末尾追加补拍说明。任务文件本回写独立提交。
+- 实测命令与原始证据：`"C:\\Program Files\\Git\\bin\\bash.exe" apps/desktop/scripts/arc005-visual-baseline/run.sh`，**exit 0**；`.tmp/arc005-visual/run.log`，`.tmp/arc005-visual/manifest.json`，`.tmp/arc005-visual/checks.json`，`.tmp/arc005-visual/environment.json`，`.tmp/arc005-visual/result.json`，`.tmp/arc005-visual/diff.md`。**39 PASS / 0 DATA_MISSING / 0 FAIL**；39 张真 Electron PNG，39 份同名含顶层 `fixture` 的 JSON；较 T01 的 16 张新增 **23 张**。注意 PNG 是真 Electron 拍摄，部分内部面板是刻意标明的展示桩，不能据此冒充真交互。
+- 夹具分类：`parallel` 3 张真实 `StreamSidebar` + 虚构会话；`projects` 3 张真实 `LeftBar` + 虚构项目；`diff` 3 张使用 `.tmp/arc005-visual/v1.ts` / `v2.ts` 两版内容，生产 `lineDiff` + `DiffView` 真渲染（`real-lineDiff-DiffView`）；`preview` 3 张用生产 Markdown 真渲染（`real-markdown-renderer`）；`terminal` 3 张静态 `static-terminal`，不启动 PTY；`editor` 3 张 `stub-editor`，不加载 Monaco worker；`sidechat` 3 张标 `sidechat-partial`，尝试真正 `WorkflowBoardPanel` 但无 live workflow IPC，不能宣称实时侧聊；`narrow-window` 补 2 张浅/深（`stub-editor+real-layout`），实窗均 1024×640 + 左右栏及只读编辑器桩。
+- sidechat 尚缺：完整 WorkflowBoard 主进程 IPC/数据订阅与真实运行数据；现有桩只能保留面板框架或错误边界。要验实时业务交互需独立的生产 preload + workflow engine 宿主环境，**不应在本 T12 边界内改产品源码**。同理 PTY、Monaco、PDF/图片预览仍不属于这些视觉快照验证的功能范围。
+- 与旧 T01 比较：`node apps/desktop/scripts/arc005-visual-baseline/compare.mjs` **exit 2（发现已有差异的预期退出码）**，报告 **637 一致 / 247 已知差异 / 13 未登记差异**；13 次全是暗色 `--edge=44 44 42` 对旧矩阵 `#c3c2b7` 的单一既有根因，**新增未登记差异=0**。不能冒充 Claude 安装版真机对照。
+- 类型检查：`npx tsc --noEmit -p apps/desktop/tsconfig.json` **exit 0**、无诊断；`git diff --check` **exit 0**。
+- 变异验证：`node .tmp/arc005-visual/mutation-t12.mjs` **exit 0**。把 `empty-light-1280.json` 的 `snapshot.tokens["--surface"]` 临时改为 `255 0 255`，compare 的未登记差异 **13→14**（报告在 `compare-mutated-t12.md`），还原后 **14→13**；原始与还原 JSON 完全逐字节相同（Buffer/cmp=true），SHA-256 均 `43c9ee0c43ff0fdb5f5062038566f977ce53da223fc7fa494bc986e766a336af`；证据 `.tmp/arc005-visual/mutation-t12.json`。
+- 剩余未拍格：**0/39**；仍存在的功能覆盖限制如上，均在快照 `fixture` 字段明确标注；所有原 T01 视觉/语义判定保留不改。
+- 六项验收判据：**#1—#6 均达成**（按 T12 的“隔离视觉夹具”边界；不构成 ARC-005 整包交付/独立复核通过）。
