@@ -56,12 +56,19 @@ export function Spinner({ className, size, label, ...props }: SpinnerProps) {
 
 export interface SkeletonProps extends React.HTMLAttributes<HTMLDivElement> {}
 
-/** Pulsing placeholder block. Size it with className (`h-16`, `w-40`, …). */
+/**
+ * Placeholder block for a panel whose layout is already known.
+ *
+ * 【ARC-005 V2】改用 CDS 骨架的**斜向扫光**（`.cds-skeleton`，105°/2s，
+ * styles.css 已带 reduce-motion 与 forced-colors 覆盖），不再用 Tailwind
+ * `animate-pulse`。名字与调用点不变：仓库里几十处 `<Skeleton className>` 不用改。
+ * 形态仍由调用方给（`h-16`、`w-40`…）。
+ */
 export function Skeleton({ className, ...props }: SkeletonProps) {
   return (
     <div
       aria-hidden
-      className={cn("animate-pulse rounded-md bg-surface-muted", className)}
+      className={cn("cds-skeleton rounded-[var(--radius-btn-xs)] bg-surface-muted", className)}
       {...props}
     />
   );

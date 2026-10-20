@@ -1029,6 +1029,13 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   // 反向正控：白名单里的确实还在用（否则白名单本身失效、断言空过）。
   check("★ 白名单正控：运行中/成功提示仍用品牌色",
     read("src/renderer/components/chat/ActivityConsole.tsx").includes("bg-accent/15"));
+  // 共享 Skeleton 必须走 CDS 扫光，不许回退 animate-pulse —— 两套加载观感
+  // 同时存在会让"同一个面板等待中"看起来像两个产品。
+  // 比较前先剥注释：注释里提到 animate-pulse（解释"不再用它"）不该判红。
+  const skeletonSrc = read("src/renderer/components/ui/spinner.tsx");
+  const skeleton = skeletonSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  check("★ 共享 Skeleton 使用 CDS 扫光", skeleton.includes("cds-skeleton"));
+  check("★ 共享 Skeleton 不再用 animate-pulse", !/animate-pulse/.test(skeleton));
 }
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
