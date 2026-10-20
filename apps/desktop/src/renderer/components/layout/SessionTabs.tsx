@@ -406,10 +406,13 @@ export function SortableSessionTab({
       aria-setsize={setSize}
       title={title}
       className={cn(
-        // Uniform chip style shared with editor file tabs (rounded-md +
-        // resting bg). In the unified tab strip the two kinds are told
-        // apart by the vertical divider between the groups, not by shape.
-        "group flex max-w-[200px] cursor-pointer select-none items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] transition-colors",
+        // Uniform chip style shared with editor file tabs. In the unified tab
+        // strip the two kinds are told apart by the vertical divider between
+        // the groups, not by shape.
+        // 【ARC-005 V2】圆角走 CDS 控件档；激活态从 accent 淡底改成
+        // surface-hover + 发丝环 —— 与侧栏会话行、终端标签、分段控件同一
+        // 语言（accent 只留给"正在运行/需要注意"的信号，不再标记选中态）。
+        "group flex max-w-[200px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors",
         // Multi-row: flex-1 (basis 0 + grow) lets tabs stretch between the
         // shared 170px min floor and the max cap above — line-breaking uses
         // the floor, so tabs share one line whenever they can fit shrunk,
@@ -417,7 +420,7 @@ export function SortableSessionTab({
         // fixed natural-width chips inside the horizontally scrolling strip.
         multiRow ? "min-w-[170px] flex-1" : "min-w-0 shrink-0",
         isActive
-          ? "bg-accent/15 text-content ring-1 ring-inset ring-accent/40 dark:text-accent"
+          ? "bg-surface-hover font-medium text-content ring-1 ring-inset ring-edge/70"
           : "bg-surface-muted/60 text-content-muted hover:bg-surface-hover/70 hover:text-content",
         isDragging && "shadow-lg",
       )}
