@@ -252,6 +252,9 @@ export function createAgentSearchSessions(options?: { maxSessionsTotal?: number 
       if (s.status === "running") {
         s.stopped = true;
         s.status = "stopped";
+        // Stopping an unfinished traversal is a partial search regardless of
+        // how many results were already returned. Do not report full coverage.
+        recordSkip(s, s.root, s.root, "stop requested; 搜索提前停止，仍有内容未验证");
         s.finishedAt = Date.now();
       }
       return page(s, 0, 100);
@@ -480,6 +483,9 @@ async function visitFile(
     recordSkip(state, state.root, abs, errnoText(err));
     return;
   }
+  // Once stop() reported a terminal snapshot, do not append unfinished
+  // context matches after that snapshot was already handed to the caller.
+  if (state.stopped) return;
   for (const p of pending) {
     if (state.results.length >= state.maxResults) break;
     state.results.push(`${rel}:${p.n}\n${p.lines.join("\n")}`);

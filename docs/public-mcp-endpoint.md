@@ -87,7 +87,7 @@ https://<隧道域名>/mcp/<密钥>
 - `agent_ssh_connect` 未就绪时返回 `isError=true`；已经创建连接记录的结果包含 `connection_id`、`state`、`last_error`、`reconnect_attempt`。认证/配置错误不会自动重试；网络中断可沿用原来明确配置的凭据重连。改变认证字段不会误用旧的已认证连接。
 - `agent_remote_job_logs.max_bytes` 范围为 **4–60000**，小于 4 明确报错，以容纳完整 UTF-8 字符。继续读取使用返回的 `next_cursor`。任务结束不等于日志已读尽，应同时检查是否仍有未读日志。
 - `agent_process_stop` 是受当前对话身份约束的可重试停止请求，不是任意 OS PID kill 或立即退出的保证；Windows 进程树停止可能暂时返回真实 `running`，客户端应使用 `agent_process_read` 的游标查询直到 `stopped/timed_out/exited`。重复 stop 不会叠加终止请求，不会把已超时的进程重新标成“用户停止”；停止请求一旦发出，不再接收 stdin 写入。对话销毁或应用退出会主动唤醒其在途 read/stop 并明确报告会话失效，不能等待到最长 55 秒后返回已经失效的旧结果。以上为隔离无头行为，真实跨 OS 子进程树停止仍需 U1 验证。
-- `agent_search_start`、`agent_search_read` 的结果只对当前搜索会话 owner 有效：会话被删除时，即使后台搜索/轮询早已开始，也会明确报“搜索会话已销毁”，不能继续将其旧结果返回成功。`max_results` 是返回/扫描预算，不是“全盘已经搜索完”的保证；只要命中上限，`partial=true` 并在 `skippedPaths` 标注 `max_results`，即使 `status=completed` 也不能据此认定无更多匹配。无命中且 `partial=false` 才具备本次扫描完整性的含义；这不替代文件系统真实权限与跨 OS U1 验证。
+- `agent_search_start`、`agent_search_read` 的结果只对当前搜索会话 owner 有效：会话被删除时，即使后台搜索/轮询早已开始，也会明确报“搜索会话已销毁”，不能继续将其旧结果返回成功。`max_results` 是返回/扫描预算，不是“全盘已经搜索完”的保证；只要命中上限，`partial=true` 并在 `skippedPaths` 标注 `max_results`，即使 `status=completed` 也不能据此认定无更多匹配。无命中且 `partial=false` 才具备本次扫描完整性的含义；这不替代文件系统真实权限与跨 OS U1 验证。 用户主动调用 `agent_search_stop` 也表示提前取消扫描，结果会保留 `status=stopped` 且标记 `partial=true`、记录 `stop requested` 原因；重复停止不会重复计数，停止后未完成的正文上下文不会再补写进已返回的结果。
 
 ### 开关的实际效果
 

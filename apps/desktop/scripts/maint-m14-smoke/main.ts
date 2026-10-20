@@ -554,6 +554,31 @@ async function main(): Promise<void> {
     isolated.disposeOwner("search-budget-owner");
   }
 
+  // C2c A user-initiated stop is not a completed tree scan. The existing
+  // status=stopped distinction is necessary but insufficient: consumers
+  // checking partial=false otherwise conclude the search was exhaustive.
+  {
+    const isolated = createAgentSearchSessions();
+    for (const type of ["files", "content"] as const) {
+      const owner = `manual-stop-${type}`;
+      const pendingStart = isolated.start({ ownerSessionId: owner,
+        type, pattern: "NEVER_MATCH_STOP", root: searchRoot, literalSearch: true, waitMs: 2_000 });
+      const id = isolated.list(owner)[0]?.searchId ?? "";
+      const stopped = isolated.stop(owner, id);
+      const returned = await pendingStart;
+      check(`★ ${type} 主动停止后结果必须如实标记 partial`,
+        stopped.status === "stopped" && stopped.partial && stopped.skippedCount > 0
+          && stopped.skippedPaths.some((v) => v.includes("stop")),
+        stopped);
+      check(`★ ${type} 已停止的在途 start 不能谎称已完整扫描`,
+        returned.status === "stopped" && returned.partial
+          && returned.skippedCount === stopped.skippedCount, returned);
+      eq(`★ ${type} 手动停止前无结果时不得停止后补写搜索结果`,
+        isolated.list(owner)[0]?.totalResults ?? -1, 0);
+      isolated.disposeOwner(owner);
+    }
+  }
+
   // C3 【MC-063】**端点全局搜索容量**:用注入的小全局上限验它按**总量**挡。
   {
     const cappedSearches = createAgentSearchSessions({ maxSessionsTotal: 2 });
