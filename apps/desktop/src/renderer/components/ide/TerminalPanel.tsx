@@ -333,9 +333,9 @@ export function TerminalPanel({ active }: { active: boolean }) {
               <div
                 key={s.key}
                 className={cn(
-                  "group flex max-w-[9rem] shrink-0 items-center gap-0.5 rounded-full px-2 py-1 text-[11px] transition-colors",
+                  "group flex max-w-[9rem] shrink-0 items-center gap-0.5 rounded-[var(--radius-btn-xs)] px-2 py-1 text-[11px] transition-colors",
                   isActive
-                    ? "bg-accent/15 text-accent"
+                    ? "bg-surface-hover font-medium text-content"
                     : "text-content-subtle hover:bg-surface-muted/50 hover:text-content-muted",
                 )}
               >
@@ -512,7 +512,7 @@ function IconBtn({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content",
+        "rounded-[var(--radius-btn-xs)] p-1 text-content-subtle hover:bg-surface-hover hover:text-content",
         "disabled:pointer-events-none disabled:opacity-40",
       )}
     >
