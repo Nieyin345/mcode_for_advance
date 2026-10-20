@@ -521,7 +521,7 @@ export function CommandPalette() {
           aria-label={t("common.search")}
           className={cn(
             "fixed left-1/2 top-[12vh] z-50 w-[min(92vw,640px)] -translate-x-1/2",
-            "overflow-hidden rounded-xl border border-edge bg-surface shadow-2xl",
+            "overflow-hidden rounded-[var(--radius-dialog)] border border-edge bg-surface shadow-[var(--shadow-popover)]",
             "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
             "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
             "transition-[transform,opacity] duration-150",
