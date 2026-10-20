@@ -271,7 +271,7 @@ async function main(): Promise<void> {
 
   // B3 stop 终结状态,并且幂等。
   let stopped = await procs.stop({ ownerSessionId: A, processId: started.processId });
-  // stop() deliberately waits at most 1s; Windows process-tree termination
+  // stop() deliberately waits at most 3s; Windows process-tree termination
   // can finish later. Read the real terminal state with a bounded wait rather
   // than treating the stop-request acknowledgement as synchronous exit.
   const stopDeadline = Date.now() + 5_000;

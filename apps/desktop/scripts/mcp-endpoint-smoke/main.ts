@@ -2728,7 +2728,10 @@ const processStarted = await host.callTool(
     command:
       `node -e "process.stdin.setEncoding('utf8');process.stdin.on('data',d=>console.log('persistent-smoke:'+d.trim()));console.log('process-ready')"`,
     wait_ms: 500,
-    timeout_ms: 15_000,
+    // This sentinel lives across the later 2s and 6s long-poll checks. 15s
+    // wall-clock lifetime expires under CI contention before the stop test.
+    // Keep its cap independent from the deliberately short-lived fixtures.
+    timeout_ms: 60_000,
   },
   { sessionId: "s1" },
 );
@@ -2961,10 +2964,24 @@ const processStopped = await host.callTool(
   { sessionId: "s1" },
 );
 eq("停止自己创建的进程属于安全清理,不审批", approvalCalls.length, 0);
+// Windows taskkill is asynchronous under process-tree contention. stop()
+// truthfully returns status=running if the OS has not yet emitted close.
+// Do not mistake an acknowledged stop request for final termination.
+let observedStopStatus = processStopped.structuredContent?.status;
+let lastStopResult = processStopped;
+const stopDeadline = Date.now() + 8_000;
+while (observedStopStatus === "running" && Date.now() < stopDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  lastStopResult = await host.callTool(
+    "agent_process_read", { process_id: processId, cursor: 0, wait_ms: 0 },
+    { sessionId: "s1" },
+  );
+  observedStopStatus = lastStopResult.structuredContent?.status;
+}
 check(
-  "agent_process_stop 最终不再是 running",
-  !processStopped.text.includes("status: running"),
-  processStopped.text,
+  "agent_process_stop 请求后最终由真实 close 确认 stopped",
+  observedStopStatus === "stopped",
+  lastStopResult.text,
 );
 
 approvalCalls.length = 0;

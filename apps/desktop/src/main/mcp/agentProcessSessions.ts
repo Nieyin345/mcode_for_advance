@@ -479,7 +479,11 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
         session.forcedStatus = "stopped";
         append(session, "\n[process stop requested]\n");
         terminate(session);
-        await waitForExit(session, 1_000);
+        // Windows taskkill /T may be queued behind other child-tree cleanup.
+        // Wait a little longer for the actual ChildProcess close event, but
+        // never manufacture a terminal status if the OS has not confirmed it:
+        // a still-running result remains observable/retryable by read/stop.
+        await waitForExit(session, 3_000);
       }
       return snapshot(session, cursor, input.maxChars);
     },
