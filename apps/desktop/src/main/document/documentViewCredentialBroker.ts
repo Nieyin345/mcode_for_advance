@@ -47,13 +47,16 @@
  * session 捕获监听器、用假时钟推进过期；生产装配在 `ipc/index.ts`。
  */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, parse, relative, resolve, sep } from "node:path";
 
 /** 编辑器凭据注入的**空闲**租约。活跃请求会滑动续期；空闲超过它 → 停止注入（页面 401）。 */
 export const EDITOR_CREDENTIAL_TTL_MS = 30 * 60_000;
 
-/** 回环主机白名单 —— 与 `documentViewHost.checkDocumentViewUrl` 同一套（不另写第二份判据）。 */
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+/** AdminAuth is more restrictive than the general document URL gate.
+ * RuntimeSupervisor explicitly binds its actual engine socket to 127.0.0.1.
+ * localhost may resolve to ::1 and a *different* process on the same port,
+ * so a mere port match must not confer this engine's bearer credentials. */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1"]);
 
 /** Electron `session.webRequest.onBeforeSendHeaders` 的最小面（套件可注入假实现）。 */
 export interface EditorCredentialSessionLike {
@@ -117,15 +120,38 @@ interface Binding {
   expiresAt: number;
 }
 
+/** Only ordinary directories may lead to the Host-owned token.
+ * Validating just dataDir itself misses an ancestor Junction. This is
+ * fail-closed path identity checking, not an OS-proof protection from a
+ * same-user attacker swapping parent directories between syscalls. */
+function regularTokenRoot(dataDir: string): string | null {
+  const absolute = resolve(dataDir);
+  const volume = parse(absolute).root;
+  let cursor = volume;
+  for (const segment of [null, ...relative(volume, absolute).split(sep).filter(Boolean)]) {
+    if (segment !== null) cursor = join(cursor, segment);
+    const stat = lstatSync(cursor);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+  }
+  return absolute;
+}
+
+function validAdminBearer(value: unknown): value is string {
+  // Keep legacy printable custom tokens supported by RuntimeSupervisor, but
+  // never put control characters or unbounded values into HTTP headers.
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 &&
+    /^[\x21-\x7e]+$/.test(value);
+}
+
 /** 从引擎数据目录读控制面令牌（只读；缺失/空 → null）。不创建、不写盘、不记日志。 */
 export function readEngineAdminToken(dataDir: string): string | null {
   let fd: number | null = null;
   try {
     // Reuse the engine supervisor's identity discipline: a linked root or
     // token file must not redirect the Host broker to external credentials.
-    const root = lstatSync(dataDir);
-    if (!root.isDirectory() || root.isSymbolicLink()) return null;
-    const path = join(dataDir, ".engine-admin-token");
+    const root = regularTokenRoot(dataDir);
+    if (root === null) return null;
+    const path = join(root, ".engine-admin-token");
     const original = lstatSync(path);
     if (!original.isFile() || original.isSymbolicLink() ||
         original.nlink !== 1 || original.size > 4096) return null;
@@ -138,7 +164,7 @@ export function readEngineAdminToken(dataDir: string): string | null {
     // intentionally preserves valid legacy/custom tokens. Keep compatibility
     // while refusing whitespace/control characters which are unsafe in a
     // Bearer header, and cap on-disk reads to a sane header-sized budget.
-    return /^[\x21-\x7e]+$/.test(value) ? value : null;
+    return validAdminBearer(value) ? value : null;
   } catch {
     return null;
   } finally {
@@ -333,8 +359,8 @@ export class DocumentViewCredentialBroker implements EditorCredentialPort {
       };
     }
     const token = this.ports.readToken(engineId);
-    if (token === null || token === "") {
-      return { ok: false, reason: `工作流引擎 ${engineId} 还没有控制面令牌（先在面板里启动一次引擎）` };
+    if (!validAdminBearer(token)) {
+      return { ok: false, reason: `工作流引擎 ${engineId} 没有安全可用的控制面令牌（请重新启动引擎）` };
     }
     return { ok: true, origin: parsed.origin, token, port };
   }
