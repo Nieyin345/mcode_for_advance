@@ -1044,6 +1044,17 @@ body {
  * Compact them without hiding status/branch/approval affordances. */
 [data-ui-shell-variant="workspace"] {
   --composer-radius: 14px; /* v2 comfortable; classic remains generated v1 20px */
+  /* 【ARC-005 V2】**尺寸档位**（上游 data-size 的 Mcode 版）。
+   * 上游用一条规则翻转整套 --cds-h-control / --cds-pad-* / --cds-icon；
+   * Mcode 的组件已经用 Tailwind 尺寸工具类写死，这里先用**变量**接住
+   * 最常用的三档（控件高/行内边距/图标），供新组件消费，不强行改老组件。
+   * 值取自上游 24/32/40 控件档与 4/8/12 间距档。 */
+  --control-h-xs: 24px;
+  --control-h-md: 32px;
+  --control-h-lg: 40px;
+  --control-pad-x: 10px;
+  --control-pad-y: 5px;
+  --control-icon: 14px;
 }
 [data-ui-shell-variant="workspace"] [data-sidebar-quick-actions] {
   gap: 3px;
