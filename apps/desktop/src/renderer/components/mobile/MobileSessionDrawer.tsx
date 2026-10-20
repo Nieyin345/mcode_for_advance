@@ -31,6 +31,7 @@ import { useCallback, useEffect, useMemo, useState, type ComponentType } from "r
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import { api } from "@renderer/lib/api.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { formatRelativeTime } from "@renderer/lib/time.js";
@@ -286,24 +287,21 @@ export function MobileSessionDrawer({
             "where am I" cue; the chat segment is the way back from
             files/git). */}
         <div className="flex shrink-0 items-center gap-1 px-3 pb-1 pt-3">
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 rounded-xl bg-surface/60 p-0.5">
-            {NAV_ITEMS.map(({ id, labelKey, icon: NavIcon }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => onPickView(id)}
-                className={cn(
-                  "flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg text-sm active:bg-surface-hover/60",
-                  view === id
-                    ? "bg-surface-hover font-medium text-accent"
-                    : "text-content-muted",
-                )}
-              >
-                <NavIcon size={15} className="shrink-0" />
-                <span className="truncate">{t(labelKey)}</span>
-              </button>
-            ))}
-          </div>
+          {/* 【ARC-005 V2】与桌面侧栏共用 CDS 分段控件（同一份几何与磁吸物理）；
+              手机端只放大尺寸（h-9 → 由 size="md" 的 32px + 父级 scale 承载），
+              不另写一套皮肤。 */}
+          <Segmented
+            label={t("layout.stream.viewSwitch")}
+            size="md"
+            className="min-w-0 flex-1 [&_button]:h-9 [&_button]:text-sm"
+            value={view}
+            onChange={(v) => onPickView(v as MobileView)}
+            items={NAV_ITEMS.map(({ id, labelKey, icon: NavIcon }) => ({
+              id,
+              label: t(labelKey),
+              icon: <NavIcon size={15} />,
+            }))}
+          />
           <button
             type="button"
             aria-label={t("common.close")}
