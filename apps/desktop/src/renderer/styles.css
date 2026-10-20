@@ -3061,6 +3061,15 @@ html[data-reduce-motion="true"] .cds-quiet-dots > i {
   border-top-color: transparent;
 }
 
+/* 顶栏与标签条的横向分隔线在 workspace 下也走发丝档（半透明 + 0.5px），
+ * 与竖分隔一致；classic 不变。 */
+[data-ui-shell-variant="workspace"] [data-cds-titlebar] {
+  border-bottom-color: rgb(var(--edge) / 0.55);
+}
+[data-ui-shell-variant="workspace"] [data-cds-titlebar] > div:first-child {
+  border-bottom-width: 0.5px;
+}
+
 /* 卡片/面板在 workspace 下统一用 CDS 面板圆角（10px）与发丝阴影。 */
 [data-ui-shell-variant="workspace"] [data-arc005-starter-card] {
   border-radius: var(--radius-panel);
