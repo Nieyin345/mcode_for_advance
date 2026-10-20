@@ -3060,3 +3060,22 @@ html[data-reduce-motion="true"] .cds-quiet-dots > i {
 [data-ui-shell-variant="workspace"] [data-arc005-starter-card] {
   border-radius: var(--radius-panel);
 }
+
+/* ═══════════ 【ARC-005 V2】`@property` 注册（上游 90 处，Mcode 此前 0 处） ═══════════
+ *
+ * 逆向报告 §3.4：未注册的自定义属性是「不可动画」的 —— 浏览器只把它们当字符串，
+ * 在 transition/animation 里不会插值。Claude 桌面端把要参与过渡的值注册成
+ * 类型化属性，所以滚动羽化、进度条、光晕这些能平滑过渡。
+ *
+ * 这里先注册 Mcode 真正在动的几组（不照抄上游 90 个装饰性属性）：
+ *  - 滚动羽化四边（ScrollFade 用；长度类型，默认 0）；
+ *  - 状态点呼吸（数字类型）；
+ *  - 终端光标（颜色类型，跟随主题切换时平滑过渡）。
+ * 注册是纯增量：不支持 `@property` 的引擎忽略整块，行为退回今天的样子。
+ */
+@property --sf-top { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --sf-bottom { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --sf-left { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --sf-right { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --cds-dot-scale { syntax: "<number>"; inherits: false; initial-value: 1; }
+@property --terminal-cursor-color { syntax: "<color>"; inherits: true; initial-value: transparent; }
