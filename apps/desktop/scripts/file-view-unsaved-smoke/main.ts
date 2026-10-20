@@ -265,6 +265,39 @@ console.log("\n【UI-012/ARC-005】迟到的打开后侧栏展开不可覆盖后
     { rightOpen: useSessionStore.getState().rightOpen, tab: useSessionStore.getState().rightPanelTab });
 }
 
+console.log("\n【UI-012】旧确认桥卸载/替换时已颁发的 proceed 必须撤销");
+{
+  reset();
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  let oldProceed: (() => void) | undefined;
+  const unmount = setFileOpenGuard((_next, proceed) => { oldProceed = proceed; });
+  useFileViewStore.getState().open(libTarget("b.pdf"));
+  unmount();
+  oldProceed?.();
+  check("★★ unmounted confirmation must not discard dirty A",
+    refOf() === "a.pdf" && hasUnsavedChanges(), { target: refOf(), dirty: hasUnsavedChanges() });
+}
+{
+  reset();
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  let oldProceed: (() => void) | undefined;
+  const oldDispose = setFileOpenGuard((_next, proceed) => { oldProceed = proceed; });
+  useFileViewStore.getState().open(libTarget("b.pdf"));
+  let liveProceed: (() => void) | undefined;
+  const liveDispose = setFileOpenGuard((_next, proceed) => { liveProceed = proceed; });
+  oldProceed?.();
+  check("★★ replacing viewer A with B invalidates A's pending confirmation",
+    refOf() === "a.pdf" && hasUnsavedChanges(), { target: refOf(), dirty: hasUnsavedChanges() });
+  oldDispose();
+  useFileViewStore.getState().open(libTarget("c.pdf"));
+  liveProceed?.();
+  check("new viewer B's confirmation still commits its own navigation",
+    refOf() === "c.pdf", refOf());
+  liveDispose();
+}
+
 console.log(`\nfile-view-unsaved-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);
 

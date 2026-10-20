@@ -108,14 +108,22 @@ let saveCurrent: (() => Promise<boolean>) | null = null;
 // A delayed leave dialog can outlive its source file or be superseded by
 // another navigation request. Only the latest request can commit a transition.
 let leaveRequestSeq = 0;
+// A confirmation belongs to the FileViewer instance that presented it.
+// Replacing/unmounting the UI revokes outstanding callbacks, without
+// invalidating unrelated asynchronous initial-open side-pane effects.
+let leaveGuardGeneration = 0;
 
 /** 登记/注销离开确认(FileViewer 挂载时登记、卸载时传 null)。 */
 export function setFileOpenGuard(guard: ((next: FileViewTarget | null, proceed: () => void) => void) | null): () => void {
+  if (openGuard !== guard) leaveGuardGeneration += 1;
   openGuard = guard;
   // React can mount B's FileViewer before A's old effect cleanup runs.
   // Only that old registration may be disposed; never unlink the new dialog.
   return () => {
-    if (openGuard === guard) openGuard = null;
+    if (openGuard === guard) {
+      openGuard = null;
+      leaveGuardGeneration += 1;
+    }
   };
 }
 
@@ -165,6 +173,8 @@ export const useFileViewStore = create<FileViewState>((set) => ({
     // 在写入之前先看一眼中间是不是已经在显示文档 —— set 之后这个判据永远为真。
     const prevTarget = useFileViewStore.getState().target;
     const request = ++leaveRequestSeq;
+    const guardGeneration = leaveGuardGeneration;
+    const needsConfirmation = useFileViewStore.getState().dirty && prevTarget !== null && !sameTarget(prevTarget, target);
     // Reopening the current file is a true no-op: changing target identity
     // would rerun FileViewer's [target] fetch and reload PDFium over edits.
     // Still invalidate any older pending leave confirmation above.
@@ -176,6 +186,7 @@ export const useFileViewStore = create<FileViewState>((set) => ({
     // 内存里的批注无声消失。确认通过(或本就没有未保存改动)才真正切。
     const proceed = (): void => {
       if (request !== leaveRequestSeq || useFileViewStore.getState().target !== prevTarget) return;
+      if (needsConfirmation && guardGeneration !== leaveGuardGeneration) return;
       set({ target, dirty: false });
       void import("./sessionStore.js").then(({ useSessionStore, isCenterShowingDocument }) => {
         // Opening the side pane is a consequence of THIS navigation, not an
@@ -194,7 +205,7 @@ export const useFileViewStore = create<FileViewState>((set) => ({
     };
     // 有未保存改动 + 有人在看当前预览 → 交给它弹确认(保存/放弃/取消);
     // 切到**同一个**目标不必问(没有任何东西会丢)。
-    if (useFileViewStore.getState().dirty && prevTarget !== null && !sameFile) {
+    if (needsConfirmation) {
       // A missing/dialog-unmounted guard is NOT permission to discard edits.
       // Keep the current file intact until an actual confirmation is available.
       if (openGuard !== null) openGuard(target, proceed);
@@ -206,11 +217,14 @@ export const useFileViewStore = create<FileViewState>((set) => ({
     // 【UI-012】关预览也是"离开当前文件" —— 有未保存改动时同样先问，别静默丢掉。
     const previous = useFileViewStore.getState().target;
     const request = ++leaveRequestSeq;
+    const guardGeneration = leaveGuardGeneration;
+    const needsConfirmation = useFileViewStore.getState().dirty && previous !== null;
     const proceed = (): void => {
       if (request !== leaveRequestSeq || useFileViewStore.getState().target !== previous) return;
+      if (needsConfirmation && guardGeneration !== leaveGuardGeneration) return;
       set({ target: null, dirty: false });
     };
-    if (useFileViewStore.getState().dirty && previous !== null) {
+    if (needsConfirmation) {
       if (openGuard !== null) openGuard(null, proceed);
       return; // Missing confirmation UI must never erase unsaved annotations.
     }
