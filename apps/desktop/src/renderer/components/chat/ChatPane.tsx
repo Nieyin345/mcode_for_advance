@@ -65,6 +65,7 @@ import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
 import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
 import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor.js";
+import { CdsSkeleton } from "@renderer/components/ui/cds/CdsSkeleton.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
@@ -332,30 +333,29 @@ function EmptyCenterPane() {
  *  (user bubble → assistant paragraph → compact tool row) so the layout
  *  doesn't jump when actual content replaces it. */
 function HistorySkeleton() {
+  // 【ARC-005 V2】骨架块改用 CDS 斜向扫光（上游 StatusIndicators 同款 2s/105°）。
+  // 布局节奏保持原样（用户气泡 → 助手段落 → 工具行 → 段落），加载完成时
+  // 换成真实内容不跳。
   return (
-    <div className="animate-pulse space-y-8" aria-hidden>
-      {/* User message bubble (right-aligned, accent-tinted) */}
+    <div className="space-y-8" aria-hidden>
       <div className="flex justify-end">
         <div className="w-2/5 space-y-2 rounded-lg bg-surface-muted p-3">
-          <div className="h-3 w-full rounded bg-surface-muted" />
-          <div className="h-3 w-3/5 rounded bg-surface-muted" />
+          <CdsSkeleton className="h-3 w-full" />
+          <CdsSkeleton className="h-3 w-3/5" />
         </div>
       </div>
-      {/* Assistant reply (left, plain paragraphs) */}
       <div className="space-y-2.5">
-        <div className="h-3 w-full rounded bg-surface-muted" />
-        <div className="h-3 w-11/12 rounded bg-surface-muted" />
-        <div className="h-3 w-4/6 rounded bg-surface-muted" />
+        <CdsSkeleton className="h-3 w-full" />
+        <CdsSkeleton className="h-3 w-11/12" />
+        <CdsSkeleton className="h-3 w-4/6" />
       </div>
-      {/* Compact tool-call row */}
       <div className="flex items-center gap-2">
-        <div className="h-5 w-40 rounded bg-surface-muted" />
-        <div className="h-3 w-24 rounded bg-surface-muted/70" />
+        <CdsSkeleton className="h-5 w-40" />
+        <CdsSkeleton className="h-3 w-24" />
       </div>
-      {/* Another assistant paragraph */}
       <div className="space-y-2.5">
-        <div className="h-3 w-5/6 rounded bg-surface-muted" />
-        <div className="h-3 w-2/5 rounded bg-surface-muted" />
+        <CdsSkeleton className="h-3 w-5/6" />
+        <CdsSkeleton className="h-3 w-2/5" />
       </div>
     </div>
   );
