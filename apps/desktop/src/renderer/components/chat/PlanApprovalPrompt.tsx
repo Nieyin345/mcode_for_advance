@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useSessionStore, type PlanHandoffTarget } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
+import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, Input, Select } from "@renderer/components/ui/index.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
@@ -249,22 +250,15 @@ export function PlanApprovalPrompt({
             : t("chat.planApproval.approveTitle");
   const primaryDisabled = exec !== "current" && !(exec === "remodel" ? remodelSelected : newSessionSelected);
 
-  const segButton = (mode: ExecMode, label: string, title: string) => (
-    <button
-      key={mode}
-      type="button"
-      title={title}
-      onClick={() => setExec(mode)}
-      className={cn(
-        "rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors",
-        exec === mode
-          ? "bg-surface text-accent shadow-sm"
-          : "text-content-muted hover:text-content",
-      )}
-    >
-      {label}
-    </button>
-  );
+  // 【ARC-005 V2】三选一改用共享 CDS 分段控件（同一套几何/磁吸/键盘）。
+  // 说明文字仍走每项的 title：分段控件内部按钮带 title 透传。
+  const execItems = [
+    { id: "current", label: t("chat.planApproval.execCurrent"), title: t("chat.planApproval.execCurrentTitle") },
+    ...(canRemodel
+      ? [{ id: "remodel", label: t("chat.planApproval.execRemodel"), title: t("chat.planApproval.execRemodelTitle") }]
+      : []),
+    { id: "newSession", label: t("chat.planApproval.execNewSession"), title: t("chat.planApproval.execNewSessionTitle") },
+  ];
 
   const renderModelSelect = (
     selected: HandoffModelOption | null,
@@ -322,11 +316,14 @@ export function PlanApprovalPrompt({
         <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-content-subtle">
           {t("chat.planApproval.execLabel")}
         </span>
-        <div className="flex items-center gap-0.5 rounded-lg bg-surface-muted p-0.5">
-          {segButton("current", t("chat.planApproval.execCurrent"), t("chat.planApproval.execCurrentTitle"))}
-          {canRemodel && segButton("remodel", t("chat.planApproval.execRemodel"), t("chat.planApproval.execRemodelTitle"))}
-          {segButton("newSession", t("chat.planApproval.execNewSession"), t("chat.planApproval.execNewSessionTitle"))}
-        </div>
+        <Segmented
+          label={t("chat.planApproval.execLabel")}
+          size="sm"
+          className="[&_button]:px-2 [&_button]:text-[11px]"
+          value={exec}
+          onChange={(v) => setExec(v as ExecMode)}
+          items={execItems}
+        />
         {exec === "remodel" && renderModelSelect(remodelSelected, remodelOptions, setRemodelKey)}
         {exec === "newSession" && (
           <>

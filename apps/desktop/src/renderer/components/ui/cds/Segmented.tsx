@@ -24,6 +24,9 @@ export interface SegmentedItem {
   label: ReactNode;
   icon?: ReactNode;
   badge?: string | number;
+  /** 悬停提示。分段控件把文字折叠成图标时（窄容器），title 是唯一还能
+   *  说明这一项是什么的线索。 */
+  title?: string;
 }
 
 export interface SegmentedProps {
@@ -101,6 +104,7 @@ export function Segmented({ items, value, onChange, size = "md", className, labe
             type="button"
             role="tab"
             aria-selected={active}
+            title={tab.title}
             tabIndex={active ? 0 : -1}
             data-active={active ? "" : undefined}
             onClick={() => onChange(tab.id)}

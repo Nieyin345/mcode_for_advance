@@ -890,8 +890,6 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   // 颜色取自 --surface 的计算值（三元组），不是写死两套 hex —— 新主题自动跟随。
   check("★ 颜色读 --surface 而非写死 hex",
     /getPropertyValue\("--surface"\)/.test(theme) && !/syncThemeColorMeta[\s\S]{0,400}#[0-9a-f]{6}/i.test(theme));
-}
-
 
   // 手机上的底部抽屉（会话抽屉、活动面板、Git 操作、设置）全部贴 bottom-0，
   // 全面屏手势条会盖住最后一行；四张都必须把 --safe-bottom 加进底部留白。
@@ -927,5 +925,14 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
     const dict = read(`src/renderer/lib/i18n/${loc}/mobile.ts`);
     check(`i18n ${loc} 有 mobile.git.tabSwitch`, dict.includes('"mobile.git.tabSwitch"'));
   }
+  // 计划审批的「执行方式」三选一也走共享分段控件。
+  const plan = read("src/renderer/components/chat/PlanApprovalPrompt.tsx");
+  check("★ 计划审批三选一复用 CDS Segmented", /<Segmented[\s\S]{0,300}?value=\{exec\}/.test(plan));
+  check("★ 计划审批不再自写 segButton 高亮底",
+    !/const segButton = /.test(plan) && !/exec === mode[\s\S]{0,40}?bg-surface text-accent/.test(plan));
+  // 分段控件的 title 透传：文字被容器查询折叠成图标后，title 是唯一说明。
+  const segmented = read("src/renderer/components/ui/cds/Segmented.tsx");
+  check("★ Segmented 支持 title 透传", /title\?: string/.test(segmented) && /title=\{tab\.title\}/.test(segmented));
+}
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
