@@ -1476,9 +1476,16 @@ export interface RpcMap {
     error?: string;
     /** Invalid individual entries omitted from the readable portion. */
     omittedCount?: number;
+    /** SHA-256 for this exact index snapshot; null means first save. */
+    revision?: string | null;
   }>;
   /** **只写索引**（PDF 旁边那份 JSON）—— 划一笔就走这条，几毫秒，不动 PDF。 */
-  "library.saveHighlights": (input: PdfHighlightsSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  "library.saveHighlights": (input: PdfHighlightsSaveInput) => Promise<{
+    ok: boolean;
+    error?: string;
+    /** New SHA after a successful write; use for subsequent CAS edits. */
+    revision?: string;
+  }>;
   /**
    * 把高亮**写回 PDF 文件本身**（真 `/Highlight` 批注）。
    *

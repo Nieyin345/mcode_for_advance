@@ -94,7 +94,7 @@ import {
   highlightsPathFor,
   originalPathFor,
   readHighlightsDetailed,
-  writeHighlights,
+  saveHighlightsVersioned,
   writeBackToFile,
 } from "@main/library/pdfHighlightsStore.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
@@ -972,17 +972,22 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    * 不动 PDF 本身。用户定的用法是"划一下先存、写回延后"：每划一笔都重写整篇 PDF
    * （论文十几 MB）又慢又危险。
    */
-  ipcMain.handle(IPC.LIBRARY_SAVE_HIGHLIGHTS, (_evt, raw) => {
+  ipcMain.handle(IPC.LIBRARY_SAVE_HIGHLIGHTS, async (_evt, raw) => {
     const input = PdfHighlightsSaveSchema.parse(raw);
     if (!highlightPathAllowed(input.pdfPath)) {
       return { ok: false, error: "这个位置不允许写入" };
     }
+    if (input.expectedRevision === undefined) {
+      return { ok: false, error: "缺少批注索引原始版本，请重新载入后保存" };
+    }
     if (!existsSync(input.pdfPath)) return { ok: false, error: "文件不在了" };
     try {
-      writeHighlights(input.pdfPath, input.highlights as PdfHighlight[]);
-      return { ok: true };
+      const saved = await saveHighlightsVersioned(
+        input.pdfPath, input.highlights as PdfHighlight[], input.expectedRevision,
+      );
+      return { ok: true, revision: saved.revision };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 

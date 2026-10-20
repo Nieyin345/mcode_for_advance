@@ -148,7 +148,7 @@ try {
   writeFileSync(linkedPdf, "%PDF-outside");
   const L = LibraryRepo.upsert({ title: "库外 linked PDF", entryMode: "linked", filePath: linkedPdf });
   eq("linked PDF 已入库", LibraryRepo.get(L.id)?.filePath, linkedPdf);
-  const s1 = await saveHighlights({ pdfPath: linkedPdf, highlights: [] });
+  const s1 = await saveHighlights({ pdfPath: linkedPdf, highlights: [], expectedRevision: null });
   eq("已入库的 linked PDF 可保存高亮索引", s1.ok, true);
   const stranger = join(SRC, "stranger.pdf");
   writeFileSync(stranger, "%PDF-stranger");

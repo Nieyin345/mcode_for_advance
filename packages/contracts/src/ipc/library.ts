@@ -269,6 +269,9 @@ export type PdfHighlightsReadInput = z.infer<typeof PdfHighlightsReadSchema>;
 export const PdfHighlightsSaveSchema = z.object({
   pdfPath: z.string().min(1),
   highlights: z.array(z.unknown()),
+  /** SHA-256 returned by readHighlights, or explicit null only if index absent.
+   * Optional solely to parse legacy callers and return ok:false (fail closed). */
+  expectedRevision: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
 });
 export type PdfHighlightsSaveInput = z.infer<typeof PdfHighlightsSaveSchema>;
 

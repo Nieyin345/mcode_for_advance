@@ -99,11 +99,14 @@ export interface PdfHighlightsReadResult {
   highlights: PdfHighlight[];
   error?: string;
   omittedCount?: number;
+  /** SHA-256 of exact sidecar bytes, null only when no index exists.
+   * Missing means its identity is unsafe/unreadable: writes must fail closed. */
+  revision?: string | null;
 }
 
 export function readHighlightsDetailed(pdfPath: string): PdfHighlightsReadResult {
   const path = highlightsPathFor(pdfPath);
-  if (!existsSync(path)) return { highlights: [] };
+  if (!existsSync(path)) return { highlights: [], revision: null };
 
   // The index is another independent file beside the authorized PDF.
   // Its sibling name is not proof that its contents are authorized; reuse
@@ -112,18 +115,22 @@ export function readHighlightsDetailed(pdfPath: string): PdfHighlightsReadResult
   if (!bytes.ok || !bytes.bytes) {
     return { highlights: [], error: `批注索引无法安全读取：${bytes.error ?? "磁盘读取失败"}；已保留原文件` };
   }
+  // Hash the SAME bounded descriptor snapshot the client sees. A separate
+  // fileContentVersion() here can race with another writer and return a
+  // revision of different bytes than those actually decoded.
+  const revision = createHash("sha256").update(bytes.bytes).digest("hex");
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.bytes));
   } catch {
-    return { highlights: [], error: "批注索引 JSON 损坏或编码无效，已保留原文件，请备份后修复" };
+    return { highlights: [], revision, error: "批注索引 JSON 损坏或编码无效，已保留原文件，请备份后修复" };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { highlights: [], error: "批注索引结构无效，已保留原文件" };
+    return { highlights: [], revision, error: "批注索引结构无效，已保留原文件" };
   }
   const record = parsed as { version?: unknown; highlights?: unknown };
   if ((record.version !== undefined && record.version !== 1) || !Array.isArray(record.highlights)) {
-    return { highlights: [], error: "批注索引版本或列表格式无效，已保留原文件" };
+    return { highlights: [], revision, error: "批注索引版本或列表格式无效，已保留原文件" };
   }
 
   const highlights: PdfHighlight[] = [];
@@ -139,7 +146,7 @@ export function readHighlightsDetailed(pdfPath: string): PdfHighlightsReadResult
     }
     omittedCount++;
   }
-  return omittedCount ? { highlights, omittedCount } : { highlights };
+  return omittedCount ? { highlights, omittedCount, revision } : { highlights, revision };
 }
 
 /** Legacy callers keep the same filtered array, backed by the single
@@ -215,6 +222,37 @@ export function writeHighlights(pdfPath: string, highlights: PdfHighlight[]): vo
     }
     throw err;
   }
+}
+
+/**
+ * Standalone sidecar save uses the same Host OS file lease as PDF writeback.
+ * Every caller must supply the sidecar revision obtained from readHighlights:
+ * null explicitly means missing, while an omitted revision is NOT consent to
+ * overwrite whichever writer last edited the file.
+ *
+ * Mcode processes serialize by the PDF path. A non-cooperative external
+ * writer can still race at the final rename; not an OS-wide arbitrary-CAS.
+ */
+export async function saveHighlightsVersioned(
+  pdfPath: string,
+  highlights: PdfHighlight[],
+  expectedRevision: string | null,
+): Promise<{ revision: string }> {
+  return withOsFileLease(pdfPath, async (real) => {
+    const snapshot = readHighlightsDetailed(real);
+    if (snapshot.revision === undefined) {
+      throw new Error(snapshot.error ?? "无法确认批注索引的文件版本，拒绝覆盖");
+    }
+    if (snapshot.revision !== expectedRevision) {
+      throw new Error("批注索引已被其他窗口或进程修改（版本冲突），请重新载入后保存");
+    }
+    writeHighlights(real, highlights);
+    const revision = await fileContentVersion(highlightsPathFor(real));
+    if (revision === null) {
+      throw new Error("批注索引保存后文件丢失，请检查磁盘并重新载入");
+    }
+    return { revision };
+  });
 }
 
 /** Validate with the same upstream pdf.js parser that opens the document in

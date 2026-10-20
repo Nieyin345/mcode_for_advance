@@ -138,7 +138,7 @@ rmSync(injectedBackup,{force:true});
 const readHighlightsHandler=handlers.get(IPC.LIBRARY_READ_HIGHLIGHTS);
 if(!readHighlightsHandler)throw Error("real readHighlights IPC handler missing");
 const readIndex=async () => await Promise.resolve(readHighlightsHandler(null,{pdfPath:pdf})) as
- {highlights:unknown[];error?:string;omittedCount?:number};
+ {highlights:unknown[];error?:string;omittedCount?:number;revision?:string|null};
 writeFileSync(sidecar,JSON.stringify({version:1,highlights:[]}));
 const healthyIndex=await readIndex();
 check("normal empty versioned sidecar has no false corruption warning",
@@ -150,6 +150,8 @@ check("★★ corrupted JSON sidecar explicitly reports unreadable instead of si
  !!damagedIndex.error && damagedIndex.highlights.length===0,damagedIndex);
 check("★★ corrupt index raw bytes remain available for user recovery",
  readFileSync(sidecar,"utf8")===malformedBytes);
+check("damaged JSON also returns its exact recoverable byte revision",
+ damagedIndex.revision===sha(Buffer.from(malformedBytes)),damagedIndex);
 writeFileSync(sidecar,JSON.stringify({version:1,highlights:"unexpected string"}));
 const wrongShape=await readIndex();
 check("★★ wrong highlights top-level shape is explicitly reported",
@@ -177,8 +179,9 @@ rmSync(sidecar,{force:true});
 // persists an invalid record that the very next read silently drops.
 const saveHandler=handlers.get(IPC.LIBRARY_SAVE_HIGHLIGHTS);
 if(!saveHandler)throw Error("real SAVE_HIGHLIGHTS IPC handler missing");
-const saveIndex=async (rows:unknown[])=>await Promise.resolve(saveHandler(null,{pdfPath:pdf,highlights:rows})) as
- {ok:boolean;error?:string};
+const saveIndex=async (rows:unknown[])=>await Promise.resolve(saveHandler(null,{
+ pdfPath:pdf,highlights:rows,expectedRevision:existsSync(sidecar)?sha(readFileSync(sidecar)):null,
+})) as {ok:boolean;error?:string;revision?:string};
 writeFileSync(sidecar,JSON.stringify({version:1,highlights:[validRow]}));
 const safeBefore=readFileSync(sidecar);
 const malformedSave=await saveIndex([validRow,{id:"INVALID_ONLY"}]);
@@ -204,6 +207,67 @@ rmSync(sidecar,{force:true});
 const saveGood=await saveIndex([validRow]);
 check("normal validated annotation index saves through production IPC",
  saveGood.ok && (await readIndex()).highlights.length===1,saveGood);
+
+// Two windows loaded the identical index revision. A and B each change
+// different annotations; without CAS the later B overwrites A without notice.
+const versionA=await readIndex();
+const diskSha=sha(readFileSync(sidecar));
+check("★★ read IPC returns the exact loaded index SHA-256 for CAS",
+ versionA.revision===diskSha,{revision:versionA.revision,diskSha});
+const writer1={...validRow,id:"window-one",comment:"saved from first window"};
+const writer2={...validRow,id:"window-two",comment:"stale second window"};
+const sendVersioned=async(rows:unknown[],expectedRevision:string|null|undefined)=>await Promise.resolve(
+ saveHandler(null,{
+   pdfPath:pdf,highlights:rows,
+   ...(expectedRevision===undefined?{}:{expectedRevision}),
+ })
+) as {ok:boolean;error?:string;revision?:string};
+const firstCommitted=await sendVersioned([writer1],diskSha);
+check("first window may save against the exact loaded index SHA",firstCommitted.ok,firstCommitted);
+const firstBytes=readFileSync(sidecar);
+const secondCommitted=await sendVersioned([writer2],diskSha);
+check("★★ second window stale revision is rejected instead of overwriting first",
+ !secondCommitted.ok && /冲突|版本|重新/.test(secondCommitted.error??""),secondCommitted);
+check("★★ stale second window cannot lose first editor's annotation bytes",
+ readFileSync(sidecar).equals(firstBytes));
+const withoutVersion=await sendVersioned([writer2],undefined);
+check("★★ legacy missing index revision fails closed rather than last-writer-wins",
+ !withoutVersion.ok && readFileSync(sidecar).equals(firstBytes),withoutVersion);
+const withCurrent=await sendVersioned([writer2],sha(firstBytes));
+check("second window can save after explicitly re-reading new revision",withCurrent.ok,withCurrent);
+const newRead=await readIndex();
+check("★★ successful write returns the same new SHA seen by fresh readers",
+ withCurrent.revision===sha(readFileSync(sidecar)) &&
+ newRead.revision===withCurrent.revision,{save:withCurrent,read:newRead});
+
+rmSync(sidecar,{force:true});
+const absent=await readIndex();
+check("★★ missing index explicitly returns revision:null (first-write identity)",
+ absent.revision===null,absent);
+const create=await sendVersioned([writer1],null);
+check("first index creation succeeds only with explicit null revision",create.ok,create);
+const nullStale=await sendVersioned([writer2],null);
+check("★★ second index creation cannot overwrite after another writer won",
+ !nullStale.ok && readFileSync(sidecar).includes(Buffer.from("window-one")),nullStale);
+
+// Same revision, concurrently issued through the SAME production IPC:
+ // OS lease must make precisely one successful winner, not both.
+const concurrentRevision=(await readIndex()).revision;
+if(typeof concurrentRevision!=="string")throw Error("index revision absent for race test");
+const raceFirst={...validRow,id:"race-A",comment:"first race edit"};
+const raceSecond={...validRow,id:"race-B",comment:"second race edit"};
+const [racedA,racedB]=await Promise.all([
+ sendVersioned([raceFirst],concurrentRevision),
+ sendVersioned([raceSecond],concurrentRevision),
+]);
+check("★★ racing same-version writes accept exactly one committed editor",
+ Number(racedA.ok)+Number(racedB.ok)===1,{racedA,racedB});
+const finalData=readFileSync(sidecar,"utf8");
+check("winner's index persists and rejected editor cannot overwrite",
+ finalData.includes(racedA.ok?"race-A":"race-B"),
+ {racedA,racedB,finalData});
+check("racing writers always release the Host OS lease",
+ !existsSync(pdf+".mcode-lock"));
 
 closeDb();
 console.log("library-pdf-writeback-host-smoke:"+(count-errors)+"/"+count+" PASS");
