@@ -113,18 +113,23 @@ let leaveRequestSeq = 0;
 // Replacing/unmounting the UI revokes outstanding callbacks, without
 // invalidating unrelated asynchronous initial-open side-pane effects.
 let leaveGuardGeneration = 0;
+// Registrations, not callback equality, own these global single-slot bridges.
+// React can register the very same stable function more than once.
+let openGuardRegistration = 0;
+let saveHandlerRegistration = 0;
 
 /** 登记/注销离开确认(FileViewer 挂载时登记、卸载时传 null)。 */
 export function setFileOpenGuard(guard: ((next: FileViewTarget | null, proceed: () => void) => void) | null): () => void {
-  if (openGuard !== guard) leaveGuardGeneration += 1;
+  const registration = ++openGuardRegistration;
+  leaveGuardGeneration += 1;
   openGuard = guard;
-  // React can mount B's FileViewer before A's old effect cleanup runs.
-  // Only that old registration may be disposed; never unlink the new dialog.
+  // A's cleanup may run after B re-registered the same function object.
+  // Only the exact registration that installed this guard may remove it.
   return () => {
-    if (openGuard === guard) {
-      openGuard = null;
-      leaveGuardGeneration += 1;
-    }
+    if (openGuardRegistration !== registration) return;
+    openGuardRegistration += 1;
+    openGuard = null;
+    leaveGuardGeneration += 1;
   };
 }
 
@@ -132,9 +137,12 @@ export function setFileOpenGuard(guard: ((next: FileViewTarget | null, proceed: 
  * an older PDF instance unmounting after a newer mount may not clear the new handler.
  * Explicit null registration remains supported by existing callers/tests. */
 export function setFileSaveHandler(save: (() => Promise<boolean>) | null): () => void {
+  const registration = ++saveHandlerRegistration;
   saveCurrent = save;
   return () => {
-    if (saveCurrent === save) saveCurrent = null;
+    if (saveHandlerRegistration !== registration) return;
+    saveHandlerRegistration += 1;
+    saveCurrent = null;
   };
 }
 
@@ -143,10 +151,13 @@ export async function saveCurrentPreview(): Promise<boolean> {
   // A missing handler, a failed save, or an outdated snapshot must never be
   // interpreted by FileViewer as consent to abandon unsaved annotations.
   const save = saveCurrent;
+  const registration = saveHandlerRegistration;
   if (save === null) return false;
   try {
     const saved = await save();
-    if (saved !== true) return false;
+    // A's late success must not count as success for B's newly registered
+    // preview, even when B reused the same stable callback function.
+    if (registration !== saveHandlerRegistration || saved !== true) return false;
     if (useFileViewStore.getState().dirty) {
       useToastStore.getState().push({
         kind: "error",

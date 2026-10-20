@@ -333,6 +333,57 @@ console.log("\n【UI-012】保存回调异常与伪成功不得使脏文件离�
   useToastStore.getState().clear();
 }
 
+console.log("\n【UI-012】同一稳定回调复注册必须用登记代次而非函数相等判断 owner");
+{
+  reset();
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  let captured: (() => void) | undefined;
+  let guardInvocations = 0;
+  const stableGuard = (_next: FileViewTarget | null, proceed: () => void) => {
+    guardInvocations++;
+    captured = proceed;
+  };
+  const releaseA = setFileOpenGuard(stableGuard);
+  useFileViewStore.getState().open(libTarget("b.pdf")); // A's pending dialog
+  const oldPending = captured;
+  const releaseB = setFileOpenGuard(stableGuard); // B reused same function
+  oldPending?.();
+  check("★★ same-function guard re-registration invalidates A's captured confirmation",
+    refOf() === "a.pdf" && hasUnsavedChanges(), { target: refOf(), dirty: hasUnsavedChanges() });
+  releaseA();
+  useFileViewStore.getState().open(libTarget("c.pdf"));
+  check("★★ A's cleanup must not unbind B even if it registered identical function",
+    guardInvocations === 2 && refOf() === "a.pdf",
+    { guardInvocations, target: refOf() });
+  releaseB();
+}
+{
+  reset();
+  let saveCount = 0;
+  const stableSave = async () => { saveCount++; return true; };
+  const releaseA = setFileSaveHandler(stableSave);
+  const releaseB = setFileSaveHandler(stableSave);
+  releaseA();
+  const result = await saveCurrentPreview();
+  check("★★ save callback identity reused across mounts still belongs to newest registration",
+    result === true && saveCount === 1, { result, saveCount });
+  releaseB();
+  check("current registration cleanup still unregisters callback",
+    (await saveCurrentPreview()) === false);
+}
+{
+  reset();
+  let finishOld!: (ok: boolean) => void;
+  setFileSaveHandler(() => new Promise(resolve => { finishOld = resolve; }));
+  const pendingOld = saveCurrentPreview();
+  setFileSaveHandler(async () => true);
+  finishOld(true);
+  const staleOk = await pendingOld;
+  check("★★ late save success from a replaced registration cannot authorize navigation",
+    staleOk === false, staleOk);
+}
+
 console.log(`\nfile-view-unsaved-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);
 
