@@ -2320,12 +2320,11 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     } finally { runner.dispose(); }
   }
 
-  /* ── ①c 盘上的表坏了不抛,按「什么都没记」处理 ── */
+  /* ── ①c 盘上的定时去重表损坏时，启动不断，但定时派发必须 fail-closed ── */
 
   {
-    // 与 `SettingRepo` 那边的降级口径一致(见 `loadWatchTemplates`:setting 是用户数据,
-    // 可能被手改坏 —— 坏的丢掉、按空处理,不让整个面板挂掉)。这里的口径是
-    // `readLastMinutes`:读不回来当空表,退化成"重启后可能多跑一次"。
+    // 保留用户原始损坏字节，而不是把 bad JSON 当空表写回并重放。
+    // 主执行器可以启动以便用户修复，其定时调度不可产生外部副作用。
     resetRuns();
     const wf = nextId();
     const nodeId = "t_badjson";
@@ -2335,7 +2334,7 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       params: {
         [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
         [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
-        task: "坏表也要能起",
+        task: "坏表需要报告并阻止定时副作用",
       },
     });
 
@@ -2347,39 +2346,30 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     // 一条 FAIL 都打不出来)—— 那种形状看不出是哪条断言在红,也就谈不上"确认红"。包成
     // 一个可判的失败,红的时候才有 `FAIL 坏 JSON:不当成抛错…` 这一行。
     const at = 3_000_000 * 60_000;
-    // 冻在 `at` 再 start:启动那一跳(MC-021)会为 `* * * * *` 在**这一分钟**跑一次并
-    // 记下去重;下面再 onTick 同一分钟就该命中去重、不再多跑。所以两次合起来**恰好一次**。
+    // start() 会立刻 tick；损坏后那一次也必须被拒绝。
     const bad = await withClockAsync(at, () => startRunner()).then(
       (r) => ({ runner: r, error: null as string | null }),
       (err: unknown) => ({ runner: null, error: (err as Error).message }),
     );
     check(
-      "坏 JSON:不当成抛错(表读不回来就按空的走)",
+      "坏 JSON:应用可启动以供检查，但不自动派发",
       bad.error === null,
       bad.error ?? "没抛",
     );
     if (bad.runner !== null) {
       const r1 = bad.runner;
-      // ⚠️ `start()` 会当场 tick 一次(MC-021),在 `at` 这一分钟跑过一次 —— 因此起手时
-      // 表里有**本分钟这一条**(坏表被当空表读了,但启动那一跳又写了一条)。判据从"空表"
-      // 改成"除本分钟外没有别的记录":那才真正验到"坏表没被当数据读进来"。
-      const bootMinute = Math.floor(at / 60_000);
-      check(
-        "坏 JSON:当空表(只余启动那一跳写下的本分钟记录)",
-        [...r1.lastMinute.values()].every((m) => m === bootMinute),
-        [...r1.lastMinute.entries()],
-      );
+      check("坏 JSON:内存里没有被伪造的新去重记录", r1.lastMinute.size === 0, [...r1.lastMinute.entries()]);
       withClock(at, () => r1.onTick());
       eq(
-        "坏 JSON 之后照常触发(退化成「重启后可能多跑一次」,但不静默停摆)",
+        "坏 JSON 之后拒绝定时派发，而不是执行一次",
         runsOfNode(nodeId).length,
-        1,
+        0,
       );
       r1.dispose();
     } else {
       // 抛了就没法接着往后验 —— 把后面两条也各记一条红,免得"少跑了"看起来像"没红"。
-      check("坏 JSON:当空表(这条触发器照挂上)", false, "start() 抛了,拿不到实例");
-      check("坏 JSON 之后照常触发(退化成「重启后可能多跑一次」,但不静默停摆)", false, "同上");
+      check("坏 JSON:实例可启动供用户修复", false, "start() 抛了,拿不到实例");
+      check("坏 JSON 之后拒绝定时派发", false, "同上");
     }
 
     // ② 是合法 JSON,但形状不对(数组 / 值是字符串 / 值是 NaN)。
@@ -2391,17 +2381,12 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     ] as const) {
       SettingRepo.set(LAST_MINUTE_KEY, bad);
       const r = await startRunner();
-      // 同①c:坏形状被当空表,但 `start()` 的启动 tick 会为 `* * * * *` 写下本分钟一条。
-      const bootMinute = Math.floor(Date.now() / 60_000);
-      check(
-        `坏形状(${what}):当空表,不抛`,
-        [...r.lastMinute.values()].every((m) => m === bootMinute),
-        [...r.lastMinute.entries()],
-      );
+      check(`坏形状(${what}):不创建虚假的去重记录`, r.lastMinute.size === 0, [...r.lastMinute.entries()]);
+      eq(`坏形状(${what}):原始字节保留`, SettingRepo.get(LAST_MINUTE_KEY), bad);
       r.dispose();
     }
 
-    // ③ 对照:一份**形状对**的表照常读回来(别把降级写成"一律丢")。
+    // ③ 对照:一份**形状对**的表照常读回来(别把 fail-closed 写成"一律丢")。
     // 注意 `start()` 的启动 tick 会为 `* * * * *` 写下本分钟一条,所以只断言 `wf_ok:t`
     // 那条被读了回来,而不是整张表的大小。
     SettingRepo.set(LAST_MINUTE_KEY, JSON.stringify({ "wf_ok:t": 42 }));
@@ -4226,7 +4211,95 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     cleanRunner.dispose();
     SettingRepo.set(key, "{}");
     SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    // 活跃进程读过有效领取后，另一个写入者可以删除整行，或将其
+    // 替换成合法但丢掉所有历史的 {}。两者均不能当作首次安装重跑。
+    for (const tamperKind of ["deleted", "valid-but-erased"] as const) {
+      resetRuns();
+      SettingRepo.set(key, "{}");
+      SettingRepo.set(LAST_MINUTE_KEY, "{}");
+      const startMinute = minute + (tamperKind === "deleted" ? 3 : 6);
+      const active = await withClockAsync(startMinute * 60_000, () => startRunner());
+      await sleep(20);
+      const ran = runsOfNode(node).length;
+      check(`前置:${tamperKind} 例在破坏账本前确实运行`, ran === 1, runsOfNode(node));
+      if (tamperKind === "deleted") SettingRepo.delete(key);
+      else SettingRepo.set(key, "{}");
+      const expectedRaw = tamperKind === "deleted" ? null : "{}";
+      withClock((startMinute + 1) * 60_000, () => active.onTick());
+      eq(`★ ${tamperKind}:有效历史被移走后不得重发`, runsOfNode(node).length, ran);
+      eq(`★ ${tamperKind}:原始现场不应被新领取覆盖`, SettingRepo.get(key), expectedRaw);
+      check(`★ ${tamperKind}:用户事实应表明领取账本不一致`,
+        (active.statusOf(wf)[0]?.lastError ?? "").includes("领取账本"), active.statusOf(wf));
+      active.dispose();
+    }
+    SettingRepo.set(key, "{}");
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
   }
+
+    // 另一张派发前耐久去重表 lastMinute 若坏掉，不能静默当空账：
+    // 即使 durable 领取账本当前健康且为空，也不得执行并覆盖坏原件。
+    for (const corruptionPhase of ["startup", "live"] as const) {
+      resetRuns();
+      const scheduleKey = "automation.triggerClaims";
+      const damagedLastMinute = '{"wf:step":';
+      SettingRepo.set(scheduleKey, "{}");
+      SettingRepo.set(LAST_MINUTE_KEY, corruptionPhase === "startup" ? damagedLastMinute : "{}");
+      const wf = nextId(), node = "t_last_minute_corrupt_" + corruptionPhase;
+      makeAutomation({ workflowId: wf, nodeId: node, params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+        [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+        task: "去重账本损坏不能重复外部执行",
+      } });
+      const checkMinute = 50_001_000 + (corruptionPhase === "startup" ? 10 : 20);
+      const runner = await withClockAsync(checkMinute * 60_000, () => startRunner());
+      if (corruptionPhase === "live") {
+        await sleep(20);
+        const baseRuns = runsOfNode(node).length;
+        check("正控:运行期间变坏前确实运行", baseRuns === 1);
+        SettingRepo.set(LAST_MINUTE_KEY, damagedLastMinute);
+        withClock((checkMinute + 1) * 60_000, () => runner.onTick());
+        eq("★ 运行中去重账本损坏不能重新派发", runsOfNode(node).length, baseRuns);
+      } else {
+        withClock(checkMinute * 60_000, () => runner.onTick());
+        eq("★ 启动时去重账本损坏不能派发", runsOfNode(node).length, 0);
+      }
+      eq("★ 损坏的 lastMinute 原字节必须保留", SettingRepo.get(LAST_MINUTE_KEY), damagedLastMinute);
+      check("★ lastMinute 错误须在事实里可见",
+        (runner.statusOf(wf)[0]?.lastError ?? "").includes("去重账本"), runner.statusOf(wf));
+      runner.dispose();
+      SettingRepo.set(scheduleKey, "{}");
+      SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    }
+
+    // 即便仍是合法 JSON，若另一 writer 删掉/清空已派发分钟，
+    // 当前进程的内存去重快照也不能被偷偷重置。
+    for (const tamper of ["deleted", "erased-valid-json"] as const) {
+      resetRuns();
+      SettingRepo.set("automation.triggerClaims", "{}");
+      SettingRepo.set(LAST_MINUTE_KEY, "{}");
+      const wf = nextId(), node = "t_last_minute_lost_" + tamper;
+      makeAutomation({ workflowId: wf, nodeId: node, params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+        [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+        task: "已记去重历史被清空不可重发",
+      } });
+      const m = 50_002_000 + (tamper === "deleted" ? 0 : 3);
+      const runner = await withClockAsync(m * 60_000, () => startRunner());
+      await sleep(20);
+      const before = runsOfNode(node).length;
+      eq("正控:lastMinute 丢失前已成功触发", before, 1);
+      if (tamper === "deleted") SettingRepo.delete(LAST_MINUTE_KEY);
+      else SettingRepo.set(LAST_MINUTE_KEY, "{}");
+      const damagedRaw = tamper === "deleted" ? null : "{}";
+      withClock((m + 1) * 60_000, () => runner.onTick());
+      eq(`★ ${tamper}:去重历史丢失后不得再发`, runsOfNode(node).length, before);
+      eq(`★ ${tamper}:去重历史丢失原始现场保全`, SettingRepo.get(LAST_MINUTE_KEY), damagedRaw);
+      check(`★ ${tamper}:拒派发原因在事实可见`,
+        (runner.statusOf(wf)[0]?.lastError ?? "").includes("去重账本"), runner.statusOf(wf));
+      runner.dispose();
+    }
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    SettingRepo.set("automation.triggerClaims", "{}");
 
   /* ── 文件监听:编辑器式保存(写临时文件再 rename)只触发一次 ──
    *

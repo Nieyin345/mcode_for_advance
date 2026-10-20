@@ -173,6 +173,8 @@ class AutomationRunner {
    * 之后这一份就是内存里的真相,写由 `rememberLastMinute` 负责(它按分钟落一次盘)。
    */
   private lastMinute = new Map<string, number>();
+  /** 去重历史损坏或与当前已认可快照不一致时，停止一切 schedule 派发。 */
+  private lastMinutesReadable = true;
   /**
    * **定时触发的 durable 领取账本**(MC-051,见 {@link TRIGGER_CLAIMS_SETTING_KEY})。
    *
@@ -897,20 +899,10 @@ class AutomationRunner {
     // 先补挂:目录在两次 tick 之间回来了的话,这一跳就把它接上(MC-020)。它只对
     // `watcher === null` 且退避到点的目录动手,不会成为高频轮询。
     this.retryWatchers();
-    // 不只检查启动时读盘：另一个 writer 在进程运行期间改坏 durable
-    // 领取账本时，也必须在本分钟去重表的首次写入之前发现并锁住派发。
-    // 只校验存档形状，不把重新读取的值直接覆盖当前正在结算的内存 Map。
-    if (this.triggerClaimsReadable) {
-      try {
-        const raw = SettingRepo.get(TRIGGER_CLAIMS_SETTING_KEY);
-        if (raw !== null && !isTriggerClaims(JSON.parse(raw))) {
-          throw new Error("领取账本形状不正确");
-        }
-      } catch (err) {
-        this.triggerClaimsReadable = false;
-        log.error(`[automation] 运行中定时领取账本损坏或不可读：拒绝后续定时派发并保留原件:${String(err)}`);
-      }
-    }
+    // 别把另一个写者删除/换成合法空 JSON 的历史当成空白首次安装。
+    // 要在本分钟 lastMinute 的首次持久写入之前检查内容一致性。
+    this.validateTriggerClaimsStore();
+    this.validateLastMinutesStore();
     const now = new Date();
     const minute = Math.floor(now.getTime() / 60_000);
     for (const trigger of this.all()) {
@@ -918,8 +910,10 @@ class AutomationRunner {
       if (!cronMatches(trigger.spec.cron, now)) continue;
       // 旧版坏 JSON 变空 Map 后会照常派发，并把坏原件覆盖成新领取，
       // 丢失 crash/CLAIMED 的去重事实。必须在 lastMinute 第一笔写盘之前挡住。
-      if (!this.triggerClaimsReadable) {
-        this.skip(trigger, "定时领取账本损坏或不可读，已拒绝派发；请先检查并恢复原始存档");
+      if (!this.triggerClaimsReadable || !this.lastMinutesReadable) {
+        this.skip(trigger, !this.triggerClaimsReadable
+          ? "定时领取账本损坏或不可读，已拒绝派发；请先检查并恢复原始存档"
+          : "定时去重账本损坏或与历史不一致，已拒绝派发；请先检查并恢复原始存档");
         continue;
       }
       const key = triggerKey(trigger);
@@ -993,6 +987,7 @@ class AutomationRunner {
     minute: number | null,
     protectedMinute = Math.floor(Date.now() / 60_000),
   ): void {
+    if (!this.validateLastMinutesStore()) return;
     if (minute === null) {
       if (!this.lastMinute.has(key)) return;
       this.lastMinute.delete(key);
@@ -1025,6 +1020,7 @@ class AutomationRunner {
    * 落盘与异步记账写出去的是同一张表,不会互相覆盖出"历史忽多忽少"。
    */
   private rememberLastMinuteDurable(key: string, minute: number, protectedMinute: number): boolean {
+    if (!this.validateLastMinutesStore()) return false;
     if (this.lastMinute.get(key) === minute) return true; // 本分钟已记过(同 tick 第二跳)→ 直接放行
     const prev = this.lastMinute.get(key);
     this.lastMinute.set(key, minute);
@@ -1079,7 +1075,9 @@ class AutomationRunner {
    * **拒绝派发**(不是转圈重试)。
    */
   private writeTriggerClaimDurable(claimId: string, claim: TriggerClaim): boolean {
-    if (!this.triggerClaimsReadable) return false;
+    // 定时 tick 之外，恢复/异步结算也可能走此方法；写盘之前再次核对，
+    // 避免用过时 Map 覆盖另一个 writer 的持久化历史。
+    if (!this.validateTriggerClaimsStore()) return false;
     const prev = this.triggerClaims.get(claimId);
     // **单调性**:终态(`SUCCEEDED`/`FAILED`/`UNCERTAIN`)不许被迟到的 `CLAIMED` 覆盖回去
     // (见文件头那条"崩溃点不能被后来的内存值骗到")。终态之间可以互相推进(正常路径不会,
@@ -1132,6 +1130,43 @@ class AutomationRunner {
       else SettingRepo.set(key, priorRaw);
     } catch (err) {
       log.error(`[automation] 回滚 settings 行「${key}」失败,本进程内存可能已污染:${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * 核对内存领取快照和存档**内容**，不只是 JSON 形状。
+   * 只有从未写过领取（内存 Map 空）时，真正缺失的 Setting 才是首次安装。
+   * 拒绝外部删除、合法形状但丢行、同键状态倒退或另一 writer 插入新行：
+   * 这些都不能被当前旧快照覆盖；绝不在此尝试自动修补/合并。
+   *
+   * 此闸门阻止可见的错账；跨 OS 进程在读/commit 之间替换仍需数据库 CAS/锁。
+   */
+  private validateTriggerClaimsStore(): boolean {
+    if (!this.triggerClaimsReadable) return false;
+    try {
+      const raw = SettingRepo.get(TRIGGER_CLAIMS_SETTING_KEY);
+      if (raw === null && this.triggerClaims.size !== 0) {
+        throw new Error("领取历史记录在运行期间消失");
+      }
+      const parsed: unknown = raw === null ? {} : JSON.parse(raw);
+      if (!isTriggerClaims(parsed)) {
+        throw new Error("领取账本 JSON 形状不正确");
+      }
+      const entries = Object.entries(parsed);
+      if (entries.length !== this.triggerClaims.size || entries.some(([id, item]) => {
+        const current = this.triggerClaims.get(id);
+        return current === undefined
+          || current.status !== item.status
+          || current.minute !== item.minute
+          || current.at !== item.at;
+      })) {
+        throw new Error("领取账本与当前已确认的历史记录不一致");
+      }
+      return true;
+    } catch (err) {
+      this.triggerClaimsReadable = false;
+      log.error(`[automation] 定时领取账本损坏、丢失或被并行覆盖：已暂停定时派发且保留原件:${String(err)}`);
+      return false;
     }
   }
 
@@ -1514,8 +1549,8 @@ class AutomationRunner {
   }
 
   /**
-   * 把 `lastMinute` 写进 settings。**写不进去只记一行日志** —— 这一份坏掉不该让
-   * 定时触发整个停摆(它只影响"重启后可能多跑一次"这一种退化)。
+   * 把 `lastMinute` 写进 settings。写不进去会记录失败；
+   * 已检测到原始记录损坏时不得再写，避免抹掉用户的去重事实。
    *
    * ## 上限是给谁准备的
    *
@@ -1526,6 +1561,8 @@ class AutomationRunner {
    * 现生成的),但攒着就是白占一次整库重写的字节。所以修剪放在写入前,按"最久没跑过"丢。
    */
   private writeLastMinutes(protectedMinute: number): void {
+    // 已检测出坏账时不能通过配置刷新/恢复路径再次覆盖原始证据。
+    if (!this.lastMinutesReadable) return;
     try {
       // Retain every key for the current tick. Only OTHER minutes compete for
       // the historical budget; the same retained rows go to memory and settings.
@@ -1548,29 +1585,51 @@ class AutomationRunner {
   }
 
   /**
-   * 读回上一次进程留下的那张表。**读不回来当空表**,不抛(同 `db.ts` 的 `persist`
-   * 与 `automationStatus` 的读法:执行器启动时的一处坏数据不该让整个自动化挂不上)。
-   *
-   * ⚠️ **`SettingRepo.get` 在库还没就绪时会抛**(`getDb()` 的"called before initDb
-   * resolved")。本执行器由 `main/index.ts` 在 `awaitDb()` 之后才 `start()`,所以正常
-   * 走到这里是就绪的;但这条读被包在 try 里,是为了让"顺序被改动过"这件事表现为
-   * "重启后可能多跑一次",而不是让整个 `start()` 炸掉、所有触发器一条都不挂。
+   * 读回上次进程的耐久去重历史。不存在才视为首次初始化；损坏/拒读
+   * 保留原始 Settings 字节，锁住 schedule 的派发，但不让整个 UI/执行器启动失败。
+   * 数据库尚未就绪也会被记录为阻断，不能退化成允许重复外部副作用。
    */
-  private readLastMinutes(): Map<string, number> {
+  private validateLastMinutesStore(): boolean {
+    if (!this.lastMinutesReadable) return false;
     try {
       const raw = SettingRepo.get(LAST_MINUTE_SETTING_KEY);
-      if (raw === null || raw.length === 0) return new Map();
+      if (raw === null && this.lastMinute.size !== 0) {
+        throw new Error("已认可的去重历史在运行期间消失");
+      }
+      const parsed: unknown = raw === null ? {} : JSON.parse(raw);
+      if (!isLastMinutes(parsed)) throw new Error("去重历史形状不正确");
+      const entries = Object.entries(parsed);
+      if (entries.length !== this.lastMinute.size || entries.some(([key, value]) =>
+        this.lastMinute.get(key) !== value
+      )) {
+        throw new Error("去重历史与内存中的已认可记录不一致");
+      }
+      return true;
+    } catch (err) {
+      this.lastMinutesReadable = false;
+      log.error(`[automation] 定时去重账本损坏、丢失或被并行更改：暂停定时派发并保留原件:${String(err)}`);
+      return false;
+    }
+  }
+
+  private readLastMinutes(): Map<string, number> {
+    this.lastMinutesReadable = true;
+    try {
+      const raw = SettingRepo.get(LAST_MINUTE_SETTING_KEY);
+      if (raw === null) return new Map();
       const parsed: unknown = JSON.parse(raw);
       if (!isLastMinutes(parsed)) {
         // setting 是用户数据,可能被手改坏 —— 坏的一整份丢掉(与 `loadWatchTemplates`
         // 逐条过 schema 同一个立场,只是这里没有"坏的那一条还能用"这回事:
         // 一格坏值就让整张表当空,代价只是重启后可能多跑一次)。
-        log.warn("[automation] 定时去重表读不回来(形状不对),当空表");
+        this.lastMinutesReadable = false;
+        log.error("[automation] 定时去重账本损坏(形状不对)：暂停全部定时派发并保留原件");
         return new Map();
       }
       return new Map(Object.entries(parsed));
     } catch (err) {
-      log.warn(`[automation] 定时去重表读不回来,当空表:${(err as Error).message}`);
+      this.lastMinutesReadable = false;
+      log.error(`[automation] 定时去重账本损坏或不可读：暂停全部定时派发并保留原件:${(err as Error).message}`);
       return new Map();
     }
   }
