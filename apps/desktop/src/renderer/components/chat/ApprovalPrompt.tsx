@@ -121,7 +121,7 @@ export function ApprovalPrompt({
       role="alertdialog"
       aria-label={t("chat.approval.aria", { provider: providerName })}
       className={cn(
-        "mb-2 rounded-2xl border border-edge-input bg-surface px-4 py-3 text-xs text-content shadow-2xl",
+        "mb-2 rounded-[var(--radius-dialog)] border border-edge-input bg-surface px-4 py-3 text-xs text-content shadow-2xl",
         "animate-[qa-sheet-in_140ms_ease-out]",
       )}
     >

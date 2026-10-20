@@ -173,7 +173,7 @@ export function QuestionPrompt({
       aria-modal="false"
       aria-label={t("chat.question.aria", { provider: providerName })}
       className={cn(
-        "mb-2 flex max-h-[60vh] flex-col overflow-hidden rounded-2xl",
+        "mb-2 flex max-h-[60vh] flex-col overflow-hidden rounded-[var(--radius-dialog)]",
         "border border-edge-input bg-surface text-xs text-content shadow-2xl",
         "animate-[qa-sheet-in_140ms_ease-out]",
       )}
