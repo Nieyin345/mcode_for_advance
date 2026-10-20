@@ -17,6 +17,7 @@ import { createInterface as createReadlineInterface } from "node:readline";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { crc32 } from "node:zlib";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 import { pathWithin as realPathWithin } from "@main/lib/realPathWithin.js";
 import { text, image } from "./sdk.js";
@@ -597,6 +598,54 @@ async function findBundledGenofficeCli(): Promise<string | null> {
   return resolveGenofficeCliPath(root) ?? resolveGenofficeCliPath(path.resolve(root, "../.."));
 }
 
+/**
+ * Sanity-check the vendor's *encoded PNG*, not its pixels. The MIME signature
+ * plus IHDR dimensions alone accepted fake 33-byte images and corrupt IDAT
+ * payloads. CRC and chunk-order checks are bounded by the existing 6 MiB cap;
+ * there is deliberately no decompression or independent image/PDF renderer.
+ */
+function verifyPngContainer(bytes: Buffer): { width: number; height: number } {
+  if (bytes.length < 57 || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
+    throw new Error("GenOffice PNG 无效：文件头不完整或缺少 IDAT/IEND");
+  }
+  let offset = 8;
+  let hasIhdr = false;
+  let hasIdat = false;
+  let hasIend = false;
+  let width = 0;
+  let height = 0;
+  while (offset < bytes.length) {
+    if (bytes.length - offset < 12) throw new Error("GenOffice PNG chunk 被截断");
+    const len = bytes.readUInt32BE(offset);
+    // Avoid additions from untrusted chunk lengths until the bounds pass.
+    if (len > bytes.length - offset - 12) throw new Error("GenOffice PNG chunk 长度超出文件范围");
+    const chunk = bytes.toString("ascii", offset + 4, offset + 8);
+    if (!/^[A-Za-z]{4}$/.test(chunk)) throw new Error("GenOffice PNG chunk 类型无效");
+    const end = offset + len + 12;
+    if (crc32(bytes.subarray(offset + 4, offset + 8 + len)) !== bytes.readUInt32BE(offset + 8 + len)) {
+      throw new Error(`GenOffice PNG ${chunk} CRC 校验失败`);
+    }
+    if (!hasIhdr) {
+      if (chunk !== "IHDR" || len !== 13) throw new Error("GenOffice PNG 第一个 chunk 必须是完整 IHDR");
+      width = bytes.readUInt32BE(offset + 8);
+      height = bytes.readUInt32BE(offset + 12);
+      hasIhdr = true;
+    } else if (chunk === "IHDR") {
+      throw new Error("GenOffice PNG 出现重复 IHDR");
+    } else if (chunk === "IDAT") {
+      hasIdat ||= len > 0;
+    } else if (chunk === "IEND") {
+      if (!hasIdat || len !== 0) throw new Error("GenOffice PNG 缺少有效 IDAT 或 IEND 长度异常");
+      if (end !== bytes.length) throw new Error("GenOffice PNG IEND 后存在额外数据");
+      hasIend = true;
+      break;
+    }
+    offset = end;
+  }
+  if (!hasIhdr || !hasIdat || !hasIend) throw new Error("GenOffice PNG 不完整：缺少 IHDR/IDAT/IEND");
+  return { width, height };
+}
+
 /** Vendor PDFium page renderer; temp output is deleted before returning. */
 async function renderWithGenoffice(input: {
   abs: string; page: number; maxDimension: number; renderer?: "auto" | "native" | "genoffice";
@@ -672,14 +721,7 @@ async function renderWithGenoffice(input: {
     }
     const bytes = await fs.readFile(real);
     await ensureUnchanged();
-    // PNG requires an 8-byte signature and a complete 25-byte IHDR chunk
-    // including its CRC. A 24-byte forged prefix is NOT a renderable image.
-    if (bytes.length < 33 || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a"
-        || bytes.readUInt32BE(8) !== 13 || bytes.toString("ascii", 12, 16) !== "IHDR") {
-      throw new Error("GenOffice 返回的 PNG 头/IHDR 无效或文件被截断");
-    }
-    const width = bytes.readUInt32BE(16);
-    const height = bytes.readUInt32BE(20);
+    const { width, height } = verifyPngContainer(bytes);
     if ((rendered.width !== undefined && rendered.width !== width)
         || (rendered.height !== undefined && rendered.height !== height)) {
       throw new Error("GenOffice PNG 尺寸与渲染信封元数据不一致");

@@ -284,6 +284,32 @@ try {
      assert.equal(exact.isError,true,text(exact));assert.match(text(exact),/render|PDFium|不可用|disabled/);
    } finally {configureDocumentRepoRoot(null);}
  });
+ const validChunkedPng=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9RYVFHYAAAAASUVORK5CYII=","base64");
+ const damagedIdatCrc=Buffer.from(validChunkedPng);damagedIdatCrc[52]^=1;
+ const damagedIhdrCrc=Buffer.from(validChunkedPng);damagedIhdrCrc[32]^=1;
+ const giantIdatLength=Buffer.from(validChunkedPng);giantIdatLength.writeUInt32BE(0xffffffff,33);
+ const pngVariants=[
+   ["IHDR only",validChunkedPng.subarray(0,33)],
+   ["IDAT CRC corruption",damagedIdatCrc],
+   ["IHDR CRC corruption",damagedIhdrCrc],
+   ["oversized IDAT chunk length",giantIdatLength],
+   ["IEND before IDAT",Buffer.concat([validChunkedPng.subarray(0,33),validChunkedPng.subarray(validChunkedPng.length-12)])],
+   ["missing IEND",validChunkedPng.subarray(0,validChunkedPng.length-12)],
+   ["trailing bytes",Buffer.concat([validChunkedPng,Buffer.from("AFTER_IEND")])],
+   ["duplicate IHDR",Buffer.concat([validChunkedPng.subarray(0,33),validChunkedPng.subarray(8,33),validChunkedPng.subarray(33)])],
+ ] as const;
+ for(const [reason,png] of pngVariants) await test("★ GenOffice PDFium refuses "+reason+" rather than returning forged PNG",async()=>{
+   const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
+   mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
+   writeFileSync(fakeCli,`const fs=require("node:fs"),path=require("node:path");const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}));}else{const file=path.join(a[a.indexOf("--out")+1],"image.png");fs.writeFileSync(file,Buffer.from("${png.toString("base64")}","base64"));console.log(JSON.stringify({status:"ok",detail:{files:[{page:1,path:file,width:1,height:1}]}}));}`);
+   configureDocumentRepoRoot(root);
+   try{
+     const render=specs.find(x=>x.name==="agent_render_pdf_page")!;
+     const r=await render.handler(z.object(render.inputSchema).parse({path:"paper.pdf",page:1,renderer:"genoffice",max_dimension:600}),{sessionId:"document-fixture"});
+     assert.equal(r.isError,true,reason+": "+text(r));
+     assert.match(text(r),/PNG|图像|CRC|截断|IEND|chunk|无效/);
+   }finally{configureDocumentRepoRoot(null);}
+ });
  await test("★ malformed PNG containing only IHDR dimensions must not be reported as image",async()=>{
    const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
    mkdirSync(join(root,"genoffice","packages","cli","dist"),{recursive:true});
@@ -297,7 +323,7 @@ try {
  });
  await test("★ GenOffice rejects duplicate rendered page artifacts",async()=>{
    const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
-   const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9H8kAAAAASUVORK5CYII=";
+   const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9RYVFHYAAAAASUVORK5CYII=";
    writeFileSync(fakeCli,`const fs=require("node:fs"),path=require("node:path");const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}));}else{const file=path.join(a[a.indexOf("--out")+1],"valid.png");fs.writeFileSync(file,Buffer.from("${png}","base64"));console.log(JSON.stringify({status:"ok",detail:{files:[{page:1,path:file,width:1,height:1},{page:1,path:file,width:1,height:1}]}}));}`);
    configureDocumentRepoRoot(root);
    try {
@@ -331,7 +357,7 @@ try {
  });
  await test("★ GenOffice rejects PNG whose actual size contradicts vendor envelope",async()=>{
    const fakeCli=join(root,"genoffice","packages","cli","dist","genoffice.cjs");
-   const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9H8kAAAAASUVORK5CYII=";
+   const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9RYVFHYAAAAASUVORK5CYII=";
    writeFileSync(fakeCli,`const fs=require("node:fs"),path=require("node:path");const a=process.argv.slice(2);if(a[0]==="pdf"){console.log(JSON.stringify({status:"ok",summary:"dimensions",detail:{pages:3,pages_read:[{page:1,width_pt:595,height_pt:842}]}}));}else{const out=a[a.indexOf("--out")+1],file=path.join(out,"image.png");fs.writeFileSync(file,Buffer.from("${png}","base64"));console.log(JSON.stringify({status:"ok",summary:"wrong dimensions",detail:{files:[{page:1,path:file,width:2,height:1}]}}));}`);
    configureDocumentRepoRoot(root);
    try {
