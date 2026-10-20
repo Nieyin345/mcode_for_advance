@@ -25,7 +25,18 @@
 2. **vendor API 的主进程对端缺失不可用空桩糊弄**：见 `GenofficeViewHostPane.tsx` 原来的 `workbook:select`、`slides:open-path` 对端诊断；必须选择原主进程业务处理代码经最小安全 Bridge 复用或在合法 Host 服务里重接同一原引擎，无须重新实现 `WorkbookFile` / `OpenResult` 或错误地返回空数组当做「没有动画/备注」。
 3. **AI 面与审批闭环缺口**：GenOffice 原版 AI Ask/文档内编辑不能通过「Mcode 另有聊天」直接算等价；把原版编辑工具的 *操作接口* 经 Mcode 三 SDK Agent/能力目录适配，真实展示应用修改、Diff、Accept/Reject/Undo，禁止拷贝 GenOffice 独立凭据和 Agent loop。
 4. **可靠性与许可**：打开→编辑→改后版本→保存/另存→关闭→重开、格式保真、原字节保留、并发外部修改/冲突拒写、虚构大文件/原生 sidecar；测试中不能把真 DOM 挂载当作文件格式编辑成功。历史格式转换需与 vendor 路由及许可证逐项核验，Rust/Native sidecar 必须作为可用性单独报告。
-5. **工作分配/认领**：文档 owner 依本表从源文件逐项接功能；打包 owner 接发布资源+验收；UI owner 只接主题/Pane/Tab/焦点；流程 owner 用唯一 Node-RED runtime；扩展 owner 优先源码复用与成熟 host shim。任何 owner 先查 `audit-ledgers/collaboration/README.md`、`coord.py locks`、`git status` 并 claim 文件，跨组消息用 `messages` Reply-To。
+5. **工作分配/认领**：文档 owner 依本表从源文件逐项接功能；打包 owner 接发布资源+验收；UI owner 只接主题/Pane/Tab/焦点；流程 owner 用唯一 Node-RED runtime；扩展 owner 优先源码复用与成熟 host shim。改动前先查 `git status` 并确认文件归属；跨组依赖直接登记在统一台账（协作协议已于 2026-10-20 删除）。
+
+## 2026-10-20 用户拍板：在 vendor 源码上直接二开（覆盖本表「B 方案/桥接替身」的过渡做法）
+
+用户追问「为什么要复制他的代码，为什么不能在他的代码上二开，直接改他的代码」。现场核查确认 `genoffice/` 是完整 git clone（自带 `.git`，仅被根 `.gitignore` 排除），因此**直接改 = 在该仓库建分支**，无需复制。定案：
+
+1. `git -C genoffice checkout -b mcode/integration`；Mcode 改动以少量、带注释、可 `rebase` 的提交落在上游源码上。
+2. **只改边界**：各 `apps/*/src/preload/index.ts` 增加 channel 策略表（默认拒绝、白名单放行；文件对话框/任意路径读写/AI/附件/剪贴板写改指向 Mcode 围栏服务）；`apps/*/src/main` 的注册入口整理为可被 Mcode `require` 的 `register*Ipc()`（slides 已由 `slides-edit-smoke` 12/12 证明可行）。编辑器核心（分页/表格/公式/渲染树/导出器）一律不重写。
+3. **随原生链打通删除 Mcode 替身**：`documentViewPreload.ts` 手写 docs 桩、`slidesExecutor.ts` 自建 DeckSession/会话 Map、`slidesBridge` 里重复的上游业务逻辑。
+4. **升级**：`rebase` 上游 + 重跑 GenOffice 自带 `apps/<app>/tests` + `document-view-*`/`slides-*`/真 Electron 探针。补丁运维待定：导出 `patches/mcode-integration/*.patch` 入库，或提交固定分支+重建脚本（未定前该分支只在本机）。
+5. **首步试点**：仅 Docs —— vendor preload + 策略表替换手写 preload，注册 vendor docs handler，真 Electron 打开→编辑→保存→重开；通过后按 Slides → Sheets → PDF → MD → HTML 滚动。
+6. 边界不变：不引入 GenOffice Agent loop/账号/云 AI/第二套存储；不碰 `ee/`；复用不豁免真人审批、路径围栏、许可核验与失败回滚。
 
 ## 最小回归与分阶段放行
 
