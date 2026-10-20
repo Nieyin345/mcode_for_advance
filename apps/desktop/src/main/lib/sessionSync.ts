@@ -61,8 +61,19 @@ export function toSessionListEntry(s: Session): SessionListEntry {
  *  `emit` (session-list mutations, pending-request resolutions) — both
  *  transports receive the same envelope the in-turn stream uses. */
 export function broadcastRuntimeEvent(e: RuntimeEvent): void {
-  sendToRenderer(IPC.CLAUDE_EVENT, { channel: IPC.CLAUDE_EVENT, sessionId: e.sessionId, event: e });
-  mobileEventBus.broadcast(e);
+  // Client transports are independent. A renderer can disappear after the
+  // database mutation, while paired phones still need that committed change.
+  // Neither failed fanout is allowed to abort the other or misreport the write.
+  try {
+    sendToRenderer(IPC.CLAUDE_EVENT, { channel: IPC.CLAUDE_EVENT, sessionId: e.sessionId, event: e });
+  } catch {
+    console.warn("桌面会话同步事件投递失败（窗口可能已关闭）");
+  }
+  try {
+    mobileEventBus.broadcast(e);
+  } catch {
+    console.warn("移动端会话同步事件投递失败（客户端可能已断开）");
+  }
 }
 
 /** A session row was created or mutated — upsert it on every client. */
@@ -86,7 +97,11 @@ export function broadcastSessionDeleted(sessionId: string): void {
  *     `MobileHttpServer` skips the frame for that same device. */
 export function broadcastSettingChanged(key: string, value: string, originDeviceId?: string): void {
   if (originDeviceId === undefined) {
-    mobileEventBus.broadcast({ type: "setting.changed", sessionId: "", key, value });
+    try {
+      mobileEventBus.broadcast({ type: "setting.changed", sessionId: "", key, value });
+    } catch {
+      console.warn("移动端设置同步事件投递失败（客户端可能已断开）");
+    }
     return;
   }
   broadcastRuntimeEvent({ type: "setting.changed", sessionId: "", key, value, originDeviceId });
