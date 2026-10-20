@@ -347,7 +347,7 @@ export function MobileSessionDrawer({
             <button
               type="button"
               onClick={() => startNewSession(newSessionProjectId)}
-              className="flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-accent text-sm font-medium text-surface active:opacity-80"
+              className="flex h-10 w-full items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] bg-accent text-sm font-medium text-surface active:opacity-80"
             >
               <IconPlus size={16} className="shrink-0" />
               <span className="shrink-0">{t("layout.newSession")}</span>
@@ -615,7 +615,7 @@ function SheetShell({
       />
       <div
         className={cn(
-          "absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-edge bg-surface-muted pb-2 shadow-2xl",
+          "absolute inset-x-0 bottom-0 rounded-t-[var(--radius-dialog)] border-t border-edge bg-surface-muted pb-2 shadow-[var(--shadow-popover)]",
           "transition-transform duration-200 ease-out",
           entered ? "translate-y-0" : "translate-y-full",
         )}
