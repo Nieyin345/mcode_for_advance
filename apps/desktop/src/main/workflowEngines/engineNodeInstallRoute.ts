@@ -101,22 +101,29 @@ export type EngineNodeInstallOutcome =
   | { ok: true; entry: EngineNodeRecord; approval: "granted" }
   | { ok: false; reason: string; code: "invalid" | "approval_denied" | "approval_unavailable" | "duplicate" | "install_failed" };
 
-/** 当前同名包的哈希。坏清单必须保留诊断，不能伪装成"从未安装"。 */
+/** Host-only snapshot of the target package identity. The pending-remove
+ * marker is a revocation transaction, never a re-installable "installed"
+ * state. Re-read after human consent to detect changes during async approval.
+ * This is a pre-install guard; the registry owns its separate atomic publish. */
 async function existingHash(registry: EngineNodeRegistry, name: string): Promise<
-  { ok: true; hash: string | null } | { ok: false; reason: string }
+  { ok: true; hash: string | null; fingerprint: string } | { ok: false; reason: string }
 > {
-  let state: Awaited<ReturnType<EngineNodeRegistry["readState"]>>;
   try {
-    state = await registry.readState();
+    const state = await registry.readState();
+    if (state.kind === "corrupt") {
+      return { ok: false, reason: `可执行体清单已损坏，拒绝安装：${state.reason}` };
+    }
+    if (state.kind === "absent") return { ok: true, hash: null, fingerprint: "absent" };
+    if (state.kind !== "ok") return { ok: false, reason: "节点包清单状态未知，拒绝安装" };
+    const existing = state.entries.find((entry) => entry.name === name);
+    if (existing?.state === "pending-remove") {
+      return { ok: false, reason: `节点包 ${name} 正在撤销批准/卸载，必须先完成清理才能重新申请安装` };
+    }
+    return { ok: true, hash: existing?.sha256 ?? null,
+      fingerprint: JSON.stringify(existing ?? null) };
   } catch (error) {
     return { ok: false, reason: `可执行体清单读取失败，拒绝安装：${safeErrorMessage(error)}` };
   }
-  if (state.kind === "corrupt") {
-    return { ok: false, reason: `可执行体清单已损坏，拒绝安装：${state.reason}` };
-  }
-  return { ok: true, hash: state.kind === "ok"
-    ? (state.entries.find((entry) => entry.name === name)?.sha256 ?? null)
-    : null };
 }
 
 /**
@@ -144,6 +151,15 @@ export async function installEngineNode(options: {
   // the exact version/capabilities being approved. Otherwise the caller may
   // mutate meta.capabilities while the approval Promise is pending and install
   // a network-enabled executable after the user saw a no-network card.
+  // Approval cards are UI messages, not arbitrary documents. Bound every
+  // caller-controlled field before cloning arrays or asking a real window.
+  // Large values otherwise consume Host/renderer resources and can make the
+  // user unable to meaningfully inspect which executable they are approving.
+  const MAX_CARD_NAME_CHARS = 256;
+  const MAX_CARD_FIELD_CHARS = 512;
+  const MAX_CARD_SOURCE_CHARS = 4096;
+  const MAX_CARD_CAPABILITIES = 64;
+  const MAX_CARD_CAPABILITY_CHARS = 128;
   let meta: EngineNodeInstallMeta;
   try {
     const incoming: unknown = options.meta;
@@ -151,13 +167,14 @@ export async function installEngineNode(options: {
       return { ok: false, code: "invalid", reason: "节点包安装元数据必须是对象" };
     }
     const value = incoming as EngineNodeInstallMeta;
-    if (typeof value.name !== "string" || value.name.trim() === ""
-      || typeof value.version !== "string" || value.version.trim() === ""
-      || typeof value.source !== "string" || value.source.trim() === ""
+    if (typeof value.name !== "string" || value.name.trim() === "" || value.name.length > MAX_CARD_NAME_CHARS
+      || typeof value.version !== "string" || value.version.trim() === "" || value.version.length > MAX_CARD_FIELD_CHARS
+      || typeof value.source !== "string" || value.source.trim() === "" || value.source.length > MAX_CARD_SOURCE_CHARS
       || typeof value.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.sha256)
-      || typeof value.license !== "string" || value.license.trim() === ""
-      || !Array.isArray(value.capabilities)
-      || !value.capabilities.every((capability) => typeof capability === "string" && capability !== "")) {
+      || typeof value.license !== "string" || value.license.trim() === "" || value.license.length > MAX_CARD_FIELD_CHARS
+      || !Array.isArray(value.capabilities) || value.capabilities.length > MAX_CARD_CAPABILITIES
+      || !value.capabilities.every((capability) => typeof capability === "string"
+        && capability !== "" && capability.length <= MAX_CARD_CAPABILITY_CHARS)) {
       return { ok: false, code: "invalid", reason: "节点包安装元数据不合法，拒绝发送审批卡" };
     }
     meta = {
@@ -207,6 +224,16 @@ export async function installEngineNode(options: {
   }
   if (!approved) {
     return { ok: false, code: "approval_denied", reason: "用户没有批准安装这个可执行节点包（未落盘任何字节）" };
+  }
+
+  // Renderer approval is tied to the state the human reviewed. The request
+  // can remain pending while another window revokes/removes/installs the same
+  // executable. A stale positive click must never authorize the new state.
+  const afterApproval = await existingHash(registry, meta.name);
+  if (!afterApproval.ok || afterApproval.fingerprint !== prior.fingerprint) {
+    return { ok: false, code: "invalid",
+      reason: !afterApproval.ok ? afterApproval.reason
+        : "节点安装清单在审批期间发生变化，旧审批已失效；请重新检查并申请安装" };
   }
 
   // 端口点头后才填 `approvedByUser: true` —— 这个位是**审批事实**，不是调用方声明。
