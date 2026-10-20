@@ -1079,10 +1079,18 @@ const BlockView = memo(function BlockView({
     }
 
     case "thinking":
+      // 【ARC-005 V2】思考块改为 CDS 形态（复用 open-claude-ui 的
+      // ThinkingAccordion 交互物理）：生成中强制展开并显示三点波浪，
+      // 完成后退还折叠权；正文用 CSS Grid 0fr↔1fr 展开，避免高度抖动。
       return (
-        <Collapsible label={t("chatStream.thinking")} hint={summarize(block.text)} defaultOpen={defaultOpen}>
+        <ThinkingAccordion
+          label={t("chatStream.thinking")}
+          hint={summarize(block.text)}
+          live={liveTurn === true}
+          defaultOpen={defaultOpen}
+        >
           {block.text}
-        </Collapsible>
+        </ThinkingAccordion>
       );
 
     case "tool_use":
@@ -1749,7 +1757,72 @@ function GenericToolCard({
   );
 }
 
-/** A collapsible section (used for thinking blocks). */
+/**
+ * 【ARC-005 V2】思考块 —— 复用 `open-claude-ui/code-examples/ThinkingAccordion.tsx`
+ * 的交互物理（MIT，REA 逆向）：
+ *  - 生成中**强制展开**（剥夺折叠权），避免流式输出时剧烈视口跳动；
+ *  - 头部左侧是 3 点 1.9s 波浪（`.cds-quiet-dots`，延迟 0/0.15/0.3s）；
+ *  - 完成后交还用户折叠权，箭头旋转；
+ *  - 正文用 `grid-template-rows: 0fr↔1fr` + `cubic-bezier(.19,1,.22,1)`，
+ *    高度过渡不抖动。
+ * 与上游的唯一差别是颜色/字号接 Mcode 语义 token，以及沿用本文件的
+ * `toggleHoldPosition`（折叠时保持滚动位置，见该函数注释）。
+ */
+function ThinkingAccordion({
+  label,
+  hint,
+  live,
+  defaultOpen = false,
+  children,
+}: {
+  label: string;
+  hint: string;
+  live: boolean;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const isOpen = live || open;
+  return (
+    <div className="[font-size:var(--chat-fs-sm)]" data-cds-thinking={live ? "live" : "done"}>
+      <button
+        onClick={(e) => {
+          // 生成中剥夺折叠权（上游同一互斥物理）。
+          if (live) return;
+          toggleHoldPosition(e, setOpen);
+        }}
+        aria-expanded={isOpen}
+        className={
+          "flex w-full items-center gap-2 rounded-md py-1.5 text-left text-content-muted hover:bg-surface-muted/40 " +
+          (live ? "cursor-default" : "")
+        }
+      >
+        {live ? (
+          <span className="cds-quiet-dots shrink-0" aria-hidden="true">
+            <i /><i /><i />
+          </span>
+        ) : (
+          <IconBulb size={13} className="shrink-0 text-content-subtle" />
+        )}
+        <span className="shrink-0 whitespace-nowrap font-medium text-content-muted">{label}</span>
+        <span className="min-w-0 flex-1 truncate text-content-subtle">{hint}</span>
+        {!live && <Chevron open={isOpen} className="ml-auto" />}
+      </button>
+      <div
+        className="grid transition-[grid-template-rows] duration-200 [transition-timing-function:var(--ease-expand)]"
+        style={{ gridTemplateRows: isOpen ? "1fr" : "0fr" }}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className="max-h-80 overflow-y-auto border-l border-edge py-2 pl-2 text-content-muted">
+            <p className="whitespace-pre-wrap break-words">{children as unknown as string}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A collapsible section (used by group headers). */
 function Collapsible({
   label,
   hint,

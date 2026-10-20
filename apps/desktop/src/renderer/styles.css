@@ -2894,3 +2894,104 @@ html.sketch.dark body::after {
     outline-style: dashed;
   }
 }
+
+/* ═══════════ 【ARC-005 V2】CDS 组件层（复用 open-claude-ui，MIT） ═══════════
+ *
+ * 几何/动效参数逐条来自上游 `code-examples/`（REA 对 Claude 桌面端的反编译
+ * 取证），颜色全部改指 Mcode 已有的语义 token —— 品牌色已切到同族陶土橙，
+ * 所以观感与上游一致，但不引入第二套色板。
+ *
+ * 动效一律受两个总闸约束：`html[data-reduce-motion="true"]`（应用内开关）与
+ * `@media (prefers-reduced-motion: reduce)`（系统设置），见本文件前面的总闸规则。
+ */
+
+/* ── 状态点（StatusIndicators.tsx：6px、呼吸/闪烁） ── */
+.cds-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: rgb(var(--accent));
+}
+.cds-status-dot[data-cds-status-dot="ready"] {
+  background: rgb(var(--accent));
+}
+.cds-status-dot[data-cds-status-dot="error"] {
+  background: rgb(var(--danger));
+}
+.cds-status-dot[data-cds-status-dot="running"] {
+  background: rgb(var(--accent));
+  animation: cds-dot-blink 1.2s ease-in-out infinite;
+}
+.cds-status-dot[data-cds-status-dot="clay"] {
+  background: rgb(var(--brand-clay));
+  animation: cds-clay-breathe 3s ease-in-out infinite;
+}
+@keyframes cds-dot-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@keyframes cds-clay-breathe {
+  0%, 100% { transform: scale(0.86); filter: brightness(0.96); }
+  50% { transform: scale(1); filter: brightness(1.06); }
+}
+
+/* ── 骨架屏（StatusIndicators.tsx：2.0s / 105° 斜向扫光） ── */
+.cds-skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: rgb(var(--surface-muted));
+}
+.cds-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    rgb(var(--content) / 0.06) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: cds-skeleton-sweep 2s linear infinite;
+}
+@keyframes cds-skeleton-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+/* ── 思考三点波浪（ThinkingAccordion.tsx：3px 点、间距 3.5px、1.9s） ── */
+.cds-quiet-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3.5px;
+}
+.cds-quiet-dots > i {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgb(var(--accent));
+  animation: cds-dot-wave 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+.cds-quiet-dots > i:nth-child(2) { animation-delay: 0.15s; }
+.cds-quiet-dots > i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes cds-dot-wave {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.55; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+
+/* ── 减少动效总闸 ── */
+html[data-reduce-motion="true"] .cds-status-dot,
+html[data-reduce-motion="true"] .cds-skeleton::after,
+html[data-reduce-motion="true"] .cds-quiet-dots > i {
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cds-status-dot,
+  .cds-skeleton::after,
+  .cds-quiet-dots > i {
+    animation: none !important;
+  }
+}
