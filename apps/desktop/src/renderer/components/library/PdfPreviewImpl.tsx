@@ -101,6 +101,8 @@ export function PdfPreview({
   const [nonce, setNonce] = useState(0);
   const [docBytes, setDocBytes] = useState<ArrayBuffer | null>(null);
   const [loadedRevision, setLoadedRevision] = useState<string | null>(null);
+  const [indexWarning, setIndexWarning] = useState<string | null>(null);
+  const [indexReload, setIndexReload] = useState(0);
   /** 保存（把批注导出并写回文件）的状态机。 */
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveErr, setSaveErr] = useState<string | null>(null);
@@ -170,6 +172,33 @@ export function PdfPreview({
       cancelled = true;
     };
   }, [item.id, bytes, nonce]);
+
+  // The Host's versioned annotation sidecar can be corrupted independently of
+  // PDFium's embedded annotations. Its read IPC reports error/omittedCount,
+  // but a viewer that never surfaces those fields would silently pretend the
+  // sidecar is empty. This is a warning, not a reason to hide the real PDF.
+  useEffect(() => {
+    let cancelled = false;
+    setIndexWarning(null);
+    if (!filePath) return;
+    void (async () => {
+      try {
+        const index = await api.library.readHighlights({ pdfPath: filePath });
+        if (cancelled) return;
+        if (index.error) {
+          setIndexWarning(index.error);
+        } else if ((index.omittedCount ?? 0) > 0) {
+          setIndexWarning(`批注索引有 ${index.omittedCount} 条无效记录已跳过；原索引文件已保留，请检查后再编辑`);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const detail = err instanceof Error ? err.message : String(err);
+          setIndexWarning(`批注索引读取失败：${detail}`);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [filePath, indexReload]);
 
   const open = useCallback(() => {
     if (onOpenExternal) onOpenExternal();
@@ -403,6 +432,19 @@ export function PdfPreview({
               {saveErr}
             </span>
           )}
+        </div>
+      )}
+      {indexWarning && (
+        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1 text-[0.7857em] text-amber-700 dark:text-amber-300">
+          <span className="min-w-0 flex-1">{indexWarning}</span>
+          <button
+            type="button"
+            data-index-retry={true}
+            onClick={() => setIndexReload((n) => n + 1)}
+            className="shrink-0 rounded border border-edge px-2 py-0.5 hover:bg-surface-hover"
+          >
+            重新检查索引
+          </button>
         </div>
       )}
 
