@@ -4,6 +4,10 @@ export const calls:string[]=[];
 export const responses=new Map<string,()=>Promise<HighlightsReply>>();
 export const writes:Array<{pdfPath:string;bytesBase64:string;expectedRevision:string}>=[];
 let onWrite=async (_input:unknown):Promise<{ok:boolean;error?:string}>=>({ok:true});
+let onExternalOpen=async ():Promise<{ok:boolean;error?:string}>=>({ok:false,error:"disabled in test"});
+export const setExternalOpenResponse=(fn:()=>Promise<{ok:boolean;error?:string}>)=>{onExternalOpen=fn};
+export const externalOpenToasts:Array<{kind:string;title:string;body?:string}>=[];
+export const resetExternalOpenToasts=()=>{externalOpenToasts.length=0};
 export const setWriteResponse=(fn:(input:unknown)=>Promise<{ok:boolean;error?:string}>)=>{onWrite=fn};
 export let saveHandler:(()=>Promise<boolean>)|null=null;
 export const getSaveHandler=()=>saveHandler;
@@ -19,9 +23,9 @@ export const api={library:{
     writes.push(input);
     return onWrite(input);
   },
-  openFile:async()=>({ok:false,error:"disabled in test"}),
+  openFile:async()=>onExternalOpen(),
 }};
-export const useToastStore={getState:()=>({push:()=>{}})};
+export const useToastStore={getState:()=>({push:(entry:{kind:string;title:string;body?:string})=>{externalOpenToasts.push(entry)}})};
 let dirty=false;
 export const guardedTarget = {source:{kind:"project" as const,ref:"C:/fake-libraries/central.pdf"},name:"central.pdf"};
 let activeTarget: unknown = guardedTarget;

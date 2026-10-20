@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { PdfPreview } from "@renderer/components/library/PdfPreviewImpl.js";
 import { __mount,__render,__flush,__text,__nodes } from "../preview-panel-smoke/fakeReact.js";
-import { responses,calls,writes,getSaveHandler,setWriteResponse,PDFViewer,useFileViewStore,guardedTarget,setPreviewTarget,setFileSaveHandler } from "./deps.js";
+import { responses,calls,writes,getSaveHandler,setWriteResponse,PDFViewer,useFileViewStore,guardedTarget,setPreviewTarget,setFileSaveHandler,setExternalOpenResponse,externalOpenToasts,resetExternalOpenToasts } from "./deps.js";
 
 type Reply={highlights:unknown[];error?:string;omittedCount?:number;revision?:string|null};
 let assertions=0,failures=0;
@@ -389,6 +389,70 @@ if(previousOwnerEvent)previousOwnerEvent({type:"update"});
 check("★★ old central PDF event cannot mark newly selected central file dirty before effects",
  useFileViewStore.getState().dirty===false,useFileViewStore.getState().dirty);
 setPreviewTarget(guardedTarget);
+
+
+// When the embedded viewer fails to load, the fallback "Open in OS" button
+// must never yield an unhandled rejection or leak an old PDF's late error to B.
+console.log("\n【ARC-007】PDF fallback external-open errors and stale results");
+const renderFallback=()=>PdfPreview({
+  item:{id:"paper-1"},filePath:path,fileViewTarget:guardedTarget,
+} as Parameters<typeof PdfPreview>[0]);
+const fallbackButton=()=>__nodes().find(n=>n.type==="button" &&
+  JSON.stringify(n.props.children??"").includes("library.pdfViewer.openExternal"));
+show("C:/fake-libraries/fallback-failed.pdf",async()=>({highlights:[],revision:null}));
+__mount(renderFallback);
+await __flush();
+check("load-failed PDF displays a fallback OS-open control",
+ typeof fallbackButton()?.props.onClick === "function");
+resetExternalOpenToasts();
+const unhandled:unknown[]=[];
+const onUnhandled=(e:unknown)=>{unhandled.push(e)};
+process.on("unhandledRejection",onUnhandled);
+setExternalOpenResponse(async()=>{throw new Error("FAKE_PRIVATE_CALLBACK_DETAILS")});
+(fallbackButton()?.props.onClick as (()=>void)|undefined)?.();
+await new Promise(resolve=>setTimeout(resolve,0));
+check("★★ rejected external-open IPC is handled without unhandled rejection",
+ unhandled.length===0,unhandled.map(String));
+check("★★ rejected external-open IPC gives a visible safe error",
+ externalOpenToasts.some(t=>t.kind==="error" && !t.body?.includes("FAKE_PRIVATE_CALLBACK_DETAILS")),
+ externalOpenToasts);
+process.off("unhandledRejection",onUnhandled);
+
+resetExternalOpenToasts();
+setExternalOpenResponse(async()=>({ok:false,error:"FAKE_MISSING_PDF"}));
+(fallbackButton()?.props.onClick as (()=>void)|undefined)?.();
+await __flush();
+check("Host-reported missing PDF remains visibly disclosed",
+ externalOpenToasts.some(t=>t.body?.includes("FAKE_MISSING_PDF")),externalOpenToasts);
+
+resetExternalOpenToasts();
+let finishFallback!:(result:{ok:boolean;error?:string})=>void;
+setExternalOpenResponse(()=>new Promise(resolve=>{finishFallback=resolve}));
+show("C:/fake-libraries/fallback-A.pdf",async()=>({highlights:[],revision:null}));
+__render();await __flush();
+(fallbackButton()?.props.onClick as (()=>void)|undefined)?.();
+show("C:/fake-libraries/fallback-B.pdf",async()=>({highlights:[],revision:null}));
+__render();await __flush();
+if(finishFallback)finishFallback({ok:false,error:"STALE_A_FALLBACK"});
+await __flush();
+check("★★ A fallback response must not alert after B supersedes the PDF",
+ !externalOpenToasts.some(t=>t.body?.includes("STALE_A_FALLBACK")),externalOpenToasts);
+
+resetExternalOpenToasts();
+const renderCustom=()=>PdfPreview({
+  item:{id:"paper-1"},filePath:path,fileViewTarget:guardedTarget,
+  onOpenExternal:()=>{throw new Error("FAKE_PRIVATE_CUSTOM_CALLBACK")},
+} as Parameters<typeof PdfPreview>[0]);
+__mount(renderCustom);await __flush();
+let syncThrown=false;
+try{(fallbackButton()?.props.onClick as (()=>void)|undefined)?.()}catch{syncThrown=true}
+check("★★ custom host external-open callback errors cannot escape the PDF event handler",
+ !syncThrown,syncThrown);
+check("custom callback error is shown safely without raw exception details",
+ externalOpenToasts.some(t=>t.kind==="error" && !t.body?.includes("FAKE_PRIVATE_CUSTOM_CALLBACK")),
+ externalOpenToasts);
+setExternalOpenResponse(async()=>({ok:true}));
+resetExternalOpenToasts();
 
 console.log("pdf-preview-index-notice-smoke:"+(assertions-failures)+"/"+assertions+" PASS");
 if(failures)process.exitCode=1;

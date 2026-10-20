@@ -107,6 +107,9 @@ export function PdfPreview({
   // Each path / document load has one generation. A pending PDFium export or
   // Host IPC response from an old document must not mutate the next page.
   const documentEpochRef = useRef(0);
+  const externalOpenSeqRef = useRef(0);
+  // A detached PDF must not deliver an old shell-open failure to its successor.
+  useEffect(() => () => { externalOpenSeqRef.current += 1; }, []);
   // The toolbar and the "save before navigation" guard can invoke save()
   // concurrently. Coalesce one in-flight save per document generation.
   const saveInFlightRef = useRef<{ epoch: number; promise: Promise<boolean> } | null>(null);
@@ -230,22 +233,41 @@ export function PdfPreview({
   }, [filePath, indexReload]);
 
   const open = useCallback(() => {
-    if (onOpenExternal) onOpenExternal();
-    // 兜底那条走 `library.openFile`,它带原因回 `{ok:false}`(文件不在了 / 还没关联
-    // 文件 / `shell.openPath` 失败)。这一格只在**内置阅读器已经渲染失败**时才出现,
-    // 用户就是来看"到底怎么了"的 —— 再静默一次等于什么都告诉他不了。
-    else {
-      void api.library.openFile({ id: item.id, which: "pdf" }).then((res) => {
-        if (!res.ok) {
+    // The vendor viewer's fallback button may outlive its document while
+    // async shell IPC is pending. One callback (and target) owns its result.
+    const epoch = documentEpochRef.current;
+    const request = ++externalOpenSeqRef.current;
+    const current = () => request === externalOpenSeqRef.current &&
+      epoch === documentEpochRef.current &&
+      (!fileViewTarget || useFileViewStore.getState().target === fileViewTarget);
+    if (!current()) return;
+    void (async () => {
+      try {
+        if (onOpenExternal) {
+          await onOpenExternal();
+          return;
+        }
+        const res = await api.library.openFile({ id: item.id, which: "pdf" });
+        if (current() && !res.ok) {
           useToastStore.getState().push({
             kind: "error",
             title: t("library.openExternalFailed"),
             body: res.error ?? "",
           });
         }
-      });
-    }
-  }, [onOpenExternal, item.id, t]);
+      } catch {
+        // The external host may synchronously throw or reject; never leave an
+        // unhandled promise or echo arbitrary private exception details.
+        if (current()) {
+          useToastStore.getState().push({
+            kind: "error",
+            title: t("library.openExternalFailed"),
+            body: "无法打开文件，请检查文件是否仍然存在并重试。",
+          });
+        }
+      }
+    })();
+  }, [onOpenExternal, item.id, t, fileViewTarget]);
 
   /**
    * **保存批注** —— 让 EmbedPDF 导出一份带批注的 PDF，交给主进程写回原文件。
