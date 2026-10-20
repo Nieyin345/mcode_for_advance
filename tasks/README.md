@@ -45,6 +45,7 @@
 | T10 | executor owner 注册表落盘（增量，原派活未含） | ARC-006 | T03 | ✅ 完成（81/81；跨进程 CAS 与部署回滚仍缺） |
 | T11 | Windows 上收窄 egress fail-closed（修 T06 回归） | MC-035 回归 | T06 | ✅ 完成（6/6；两套原红已复绿） |
 | T12 | 视觉基线补完：7 类高依赖屏的真实夹具 | ARC-005 U1 | T01 | ✅ 完成（39/39，0 data-missing） |
+| T13 | Node-RED 源码集成调查（按 GenOffice 模式） | ARC-006 | 无 | 未开始（纯调查，不改产品代码） |
 
 状态取值：`未开始` / `进行中` / `待我核对` / `已完成` / `阻塞`。
 执行对话**不要**改这张表的「状态」列 —— 它由我维护。你只需在自己的任务文件里回写。
@@ -86,6 +87,27 @@
 - **T05c 明确不要的**（云 AI、用户身份、遥测）—— 只需在 `mcode-ipc.ts` 写清为什么不要。
 
 拆分工作我可以直接做，你说一声。
+
+### 用户拍板：Node-RED 按 GenOffice 模式 vendor 源码（2026-10-21）
+
+用户明确：**要 Node-RED 的源码集成，不是 npm 下载包。**
+
+现状（已核实）：`runtimeSupervisor.ts:737` 要求
+`<dataRoot>/workflow-engines/node-red/node_modules/node-red/` 存在，
+即「用户机器上 npm install 一份」。**改不了它**，所以我们另写了 685 行的
+`WorkflowCanvas.tsx` —— 两套画布并存。
+
+改用 GenOffice 模式（`genoffice/` 的做法）：
+vendor 独立 Git + 固定基线 commit + `mcode/integration` 分支 + 补丁存
+`patches/node-red/` + `.gitignore` 排除 + 只改边界文件。
+
+**关键收益**：能改它的编辑器，把 Mcode 的节点类型、审批标记、执行 owner
+直接做进去 —— `WorkflowCanvas.tsx` 才有机会退场。
+
+先派 **T13 调查卡**（不改产品代码），查清构建链、改动面、扩展点、体积代价、
+许可证，再决定动不动手。
+
+---
 
 ### 已完成的「复用审计」（2026-10-21）
 
