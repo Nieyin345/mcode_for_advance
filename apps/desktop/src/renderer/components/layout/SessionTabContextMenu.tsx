@@ -29,7 +29,7 @@ export function SessionTabContextMenu({
     <Menu.Root open={!!ctxMenu} onOpenChange={(open) => { if (!open) onClose(); }}>
       <Menu.Portal>
         <Menu.Positioner anchor={anchor} side="bottom" align="start" sideOffset={4}>
-          <Menu.Popup className="z-50 min-w-[176px] rounded-md border border-edge bg-surface py-1 shadow-2xl">
+          <Menu.Popup className="z-50 min-w-[176px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]">
             <Menu.Item className={itemClass} onClick={() => select("one")}>
               <IconX size={14} aria-hidden className="shrink-0" />
               <span>{t("common.close")}</span>
