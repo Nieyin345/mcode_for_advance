@@ -20,12 +20,51 @@
  * 原子了），而是清理临时文件后如实抛错，由调用方报 `ok:false`。
  */
 import { randomUUID } from "node:crypto";
-import { lstat, open as openFile, rename, rm } from "node:fs/promises";
+import { lstat, open as openFile, rename, rm } from "fs/promises";
+import { closeSync, fchmodSync, fsyncSync, lstatSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 
 /** 原子替换 `filePath` 的内容。
  *
  *  `content` 接受字符串（UTF-8，与旧调用方一致）或字节数组（文档视图保存二进制）。
  *  临时文件与目标同目录 —— 跨卷 rename 会失败，同目录才保证原子。 */
+
+/**
+ * Synchronous twin for ownership's synchronous CAS store interface.
+ * The async API cannot be awaited from ExecutorOwnershipStore.insert/remove.
+ * Keep the exact same temp-file/fsync/rename security boundary.
+ */
+export function atomicReplaceFileSync(filePath: string, content: string | Uint8Array): void {
+  const tmp = `${filePath}.${randomUUID()}.mcode-tmp`;
+  let mode = 0o600;
+  try {
+    const existing = lstatSync(filePath);
+    if (!existing.isFile() || existing.nlink !== 1) {
+      throw new Error("原子保存目标必须是独立普通文件（拒绝目录、符号链接或硬链接）");
+    }
+    mode = existing.mode & 0o777;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  let fd: number | undefined;
+  try {
+    fd = openSync(tmp, "wx", mode);
+    const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
+    let written = 0;
+    while (written < bytes.length) written += writeSync(fd, bytes, written, bytes.length - written);
+    if (process.platform !== "win32") fchmodSync(fd, mode);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(tmp, filePath);
+  } catch (err) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* best effort */ }
+    }
+    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw err;
+  }
+}
+
 export async function atomicReplaceFile(filePath: string, content: string | Uint8Array): Promise<void> {
   const tmp = `${filePath}.${randomUUID()}.mcode-tmp`;
   // 直接用 wx 默认权限(0666 & umask)创建，会在原有 0600 文件 rename 后放宽

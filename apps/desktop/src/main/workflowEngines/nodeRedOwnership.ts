@@ -70,7 +70,7 @@ export function claimNativeFlows(ownership: ExecutorOwnershipRegistry, flowIds: 
   try {
     for (const flowId of flowIds) {
       const claim = ownership.claim(flowId, "node-red", { reason: "Node-RED runtime starting", now: Date.now });
-      if (!claim.ok || claim.alreadyOwned) {
+      if (!claim.ok || (claim.alreadyOwned && !ownership.adoptRecoveredNativeClaim(flowId))) {
         throw new Error(!claim.ok ? claim.reason : "Node-RED flow「" + flowId + "」已有同端 owner，但本进程无租约");
       }
       acquired.push(flowId);

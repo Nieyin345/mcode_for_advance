@@ -1,7 +1,8 @@
 /** Gate D production path: isolated Node-RED flows.json + fake EngineRuntime ports.
  * Actual ownership, parsing, registry and process lifecycle; no Electron/user DB.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { FileExecutorOwnershipStore, OWNERSHIP_FILE } from "@main/workflowEngines/fileExecutorOwnershipStore.js";
 import { join } from "node:path";
 import { ExecutorOwnershipRegistry, InMemoryExecutorOwnershipStore, sharedExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
 import { ProductionWorkflowEngineRegistry } from "@main/workflowEngines/registry.js";
@@ -61,6 +62,63 @@ const flowsPath = join(dir, "flows.json");
 writeFileSync(flowsPath, JSON.stringify(nativeFlow(flowId)), "utf8");
 const runtime = prod.get("node-red")!;
 const options = { engineId: "node-red", command: "node", args: () => [], dataDir: dir };
+
+
+// T10. Real-disk claims: reboot, compare-and-insert, corrupt archive, fail-closed
+// recovery, stale native claims. Fixtures live under the smoke-only data root.
+{
+  const storeDir = join(ROOT, "t10-ownership");
+  mkdirSync(storeDir, { recursive: true });
+  const native = "t10-native";
+  const nativePath = join(storeDir, "flows.json");
+  writeFileSync(nativePath, JSON.stringify(nativeFlow(native)), "utf8");
+  const firstStore = new FileExecutorOwnershipStore(storeDir);
+  const firstRegistry = new ExecutorOwnershipRegistry(firstStore);
+  check("T10 native flow reconstructed on first boot", firstRegistry.executorOwnerOf(native) === "node-red");
+  check("T10 explicit mcode owner persisted", firstRegistry.claim("t10-legacy", "mcode").ok);
+  const ownerPath = join(storeDir, OWNERSHIP_FILE);
+  const persisted = readFileSync(ownerPath, "utf8");
+
+  const duplicate = firstStore.insert({ flowId: "t10-legacy", owner: "node-red" });
+  eq("T10 existing insert rejects second owner", duplicate, false);
+  eq("T10 failed insert does not mutate bytes", readFileSync(ownerPath, "utf8"), persisted);
+  eq("T10 failed insert leaves old owner", firstRegistry.executorOwnerOf("t10-legacy"), "mcode");
+
+  const restarted = new ExecutorOwnershipRegistry(new FileExecutorOwnershipStore(storeDir));
+  eq("T10 new registry after restart retains real disk mcode owner", restarted.executorOwnerOf("t10-legacy"), "mcode");
+  eq("T10 new registry retains native owner", restarted.executorOwnerOf(native), "node-red");
+
+  const broken = "{not-owner-json";
+  writeFileSync(ownerPath, broken, "utf8");
+  const recoveredStore = new FileExecutorOwnershipStore(storeDir);
+  const retained = readdirSync(storeDir).filter((file) => file.startsWith(OWNERSHIP_FILE + ".corrupt-"));
+  check("T10 corrupted owner original archived byte-for-byte",
+    retained.some((file) => readFileSync(join(storeDir, file), "utf8") === broken), retained);
+  eq("T10 damaged archive rebuilds native ownership from flows", recoveredStore.get(native)?.owner, "node-red");
+  check("T10 corruption emits visible diagnostic", recoveredStore.diagnostics().events.some((event) => event.kind === "corrupt"));
+  const damagedRegistry = new ExecutorOwnershipRegistry(recoveredStore);
+  eq("T10 unknown flow is NOT silently assumed node-red", damagedRegistry.executorOwnerOf("t10-unknown"), null);
+  check("T10 missing owner is NOT silently assigned to mcode after corruption",
+    !damagedRegistry.claim("t10-unknown", "mcode").ok);
+
+  const bothDir = join(ROOT, "t10-both-corrupt");
+  mkdirSync(bothDir, { recursive: true });
+  writeFileSync(join(bothDir, "flows.json"), "{broken-flows", "utf8");
+  writeFileSync(join(bothDir, OWNERSHIP_FILE), broken, "utf8");
+  const bothStore = new FileExecutorOwnershipStore(bothDir);
+  const both = new ExecutorOwnershipRegistry(bothStore);
+  eq("T10 double corruption gives an empty registry", both.list().length, 0);
+  check("T10 double corruption emits flows-invalid diagnostic",
+    bothStore.diagnostics().events.some((event) => event.kind === "flows-invalid"));
+  check("T10 double corruption rejects legacy runner takeover", !both.acquireExecution("t10-unknown", "mcode").ok);
+
+  // A native tab deleted from the durable flow graph must not retain its old
+  // ownership forever (but legacy-only mcode claims are not Node-RED tabs).
+  writeFileSync(nativePath, "[]", "utf8");
+  const staleStore = new FileExecutorOwnershipStore(storeDir);
+  eq("T10 stale native claim released during boot reconciliation", staleStore.get(native), null);
+  check("T10 stale native claim emits diagnostic", staleStore.diagnostics().events.some((event) => event.kind === "stale"));
+}
 
 // 1. Production EngineRuntime.start is guarded, not merely the IPC facade.
 check("★ mcode first owner claim", registry.claim(flowId, "mcode").ok);
@@ -151,7 +209,7 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
 // 9. Authenticated native deploy: parent owns the new document BEFORE deploy,
 // rolls back on failure, and keeps the old owner until Node-RED confirms 2xx.
 {
-  const live = new ExecutorOwnershipRegistry(new InMemoryExecutorOwnershipStore());
+  const live = new ExecutorOwnershipRegistry(new FileExecutorOwnershipStore(dir));
   let deliver: ((message: unknown) => void) | undefined;
   const replies: Array<{ id?: string; ok?: boolean; reason?: string }> = [];
   const bridgePorts: EngineRuntimePorts = {
@@ -199,6 +257,12 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   deliver?.({ kind: "mcode-deploy-final", id: "abort", success: false });
   eq("★ failed deploy rolls back new claim", live.executorOwnerOf("gate-d-abort"), null);
   eq("★ failed deploy keeps current flow", live.executorOwnerOf("gate-d-next"), "node-red");
+  eq("T10 failed deploy rollback left memory and disk exactly consistent",
+    JSON.stringify(JSON.parse(readFileSync(join(dir, OWNERSHIP_FILE), "utf8")).records),
+    JSON.stringify(live.list()));
+  eq("T10 failed deploy did not leave aborted native claim on disk",
+    JSON.parse(readFileSync(join(dir, OWNERSHIP_FILE), "utf8")).records.some(
+      (entry: { flowId: string }) => entry.flowId === "gate-d-abort"), false);
 
   deliver?.({ kind: "mcode-deploy-prepare", id: "uncertain", flows: [
     { id: "uncertain-tab", type: "tab", "x-mcode": { docId: "gate-d-uncertain" } },
@@ -238,6 +302,6 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   for (const fn of [...lateExitHandlers]) fn(9, null);
   eq("★ late confirmed process exit eventually releases claim", stuckStore.executorOwnerOf(flowId), null);
 }
-eq("★ shared registry has no accidental fixture state", sharedExecutorOwnership.executorOwnerOf(flowId), null);
+eq("★ shared registry lazily reconciles its real native flows.json", sharedExecutorOwnership.executorOwnerOf(flowId), "node-red");
 console.log("executor-gate-d-smoke: " + (total - failed) + "/" + total + " 通过");
 if (failed) process.exitCode = 1;

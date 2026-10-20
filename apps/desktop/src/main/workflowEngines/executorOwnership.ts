@@ -40,6 +40,11 @@
  * {@link ExecutorOwnershipRegistry} 只是在注入的 store 上做原子插入/删除。
  */
 
+import { lstatSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { dataRoot } from "@main/lib/dataRoot.js";
+import { FileExecutorOwnershipStore } from "./fileExecutorOwnershipStore.js";
+
 /** 谁执行这条 flow。只有两端 —— 新端要进来必须先改这里（有意封闭）。 */
 export const EXECUTOR_OWNERS = ["mcode", "node-red"] as const;
 export type ExecutorOwner = (typeof EXECUTOR_OWNERS)[number];
@@ -68,6 +73,10 @@ export interface ExecutorOwnershipStore {
   /** 只有 owner 匹配才删除；返回是否真的删了。 */
   remove(flowId: string, owner: ExecutorOwner): boolean;
   list(): ExecutorOwnershipRecord[];
+  /** Optional fail-closed guard for recovered but unverified disk state. */
+  refuseLegacy?(): string | null;
+  /** A boot-restored native reservation may be consumed once by its engine. */
+  takeRecoveredNativeClaim?(flowId: string): boolean;
 }
 
 /** 内存实现（本片唯一实现；生产落盘版将来替换它，接口不变）。 */
@@ -186,6 +195,8 @@ export class ExecutorOwnershipRegistry {
         conflict: null,
       };
     }
+    const refusal = owner === "mcode" ? this.store.refuseLegacy?.() : null;
+    if (refusal) return { ok: false, flowId, reason: refusal, conflict: null };
     const existing = this.store.get(flowId);
     const decision = decideClaim(existing, owner);
     if (!decision.ok) {
@@ -232,6 +243,8 @@ export class ExecutorOwnershipRegistry {
   acquireExecution(flowId: string, owner: ExecutorOwner):
     | { ok: true; release: () => void }
     | { ok: false; reason: string } {
+    const refusal = owner === "mcode" ? this.store.refuseLegacy?.() : null;
+    if (refusal) return { ok: false, reason: refusal };
     const inFlight = this.executions.get(flowId);
     if (inFlight !== undefined) {
       if (inFlight.owner !== owner || this.executorOwnerOf(flowId) !== owner) {
@@ -294,6 +307,11 @@ export class ExecutorOwnershipRegistry {
     return { ok: true, flowId, owner };
   }
 
+  /** Admit only a verified native claim that was restored on this process boot. */
+  adoptRecoveredNativeClaim(flowId: string): boolean {
+    return this.store.takeRecoveredNativeClaim?.(flowId) ?? false;
+  }
+
   /** 当前全部登记（诊断/界面用；顺序为登记顺序）。 */
   list(): ExecutorOwnershipRecord[] {
     return this.store.list();
@@ -305,5 +323,40 @@ export function createInMemoryExecutorOwnership(): ExecutorOwnershipRegistry {
   return new ExecutorOwnershipRegistry(new InMemoryExecutorOwnershipStore());
 }
 
+/**
+ * Lazy disk binding: importing the singleton in a headless test never touches
+ * a real data root. Production first use resolves the very same Node-RED
+ * engine directory as registry.dataDirOf("node-red").
+ */
+class LazyFileExecutorOwnershipStore implements ExecutorOwnershipStore {
+  private active: FileExecutorOwnershipStore | null = null;
+
+  private store(): FileExecutorOwnershipStore {
+    if (this.active) return this.active;
+    const root = dataRoot();
+    // No implicit trust of a replaced junction inside the managed engine tree.
+    for (const path of [root, join(root, "workflow-engines"), join(root, "workflow-engines", "node-red")]) {
+      try {
+        const stat = lstatSync(path);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("受管引擎目录不是独立目录：" + path);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        mkdirSync(path);
+        const stat = lstatSync(path);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("受管引擎目录状态不可验证：" + path);
+      }
+    }
+    this.active = new FileExecutorOwnershipStore(join(root, "workflow-engines", "node-red"));
+    return this.active;
+  }
+  get(flowId: string): ExecutorOwnershipRecord | null { return this.store().get(flowId); }
+  insert(record: ExecutorOwnershipRecord): boolean { return this.store().insert(record); }
+  remove(flowId: string, owner: ExecutorOwner): boolean { return this.store().remove(flowId, owner); }
+  list(): ExecutorOwnershipRecord[] { return this.store().list(); }
+  refuseLegacy(): string | null { return this.store().refuseLegacy(); }
+  takeRecoveredNativeClaim(flowId: string): boolean { return this.store().takeRecoveredNativeClaim(flowId); }
+  diagnostics() { return this.store().diagnostics(); }
+}
+
 /** The one per-main-process registry shared by native runtime, legacy runs and automation. */
-export const sharedExecutorOwnership = createInMemoryExecutorOwnership();
+export const sharedExecutorOwnership = new ExecutorOwnershipRegistry(new LazyFileExecutorOwnershipStore());
