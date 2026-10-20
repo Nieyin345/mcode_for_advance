@@ -5,7 +5,7 @@
  * candidates via `api.file.search` with a debounced query. Keyboard:
  * ↑↓ move, Enter/Tab confirm, Esc close.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { openEscapeLayer, claimEscape, isTopEscapeLayer } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -49,6 +49,8 @@ export function FileMentionPicker({
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState(false);
   const [pickError, setPickError] = useState(false);
+  const [pickPending, setPickPending] = useState(false);
+  const pickPendingRef = useRef(false);
   const [searchRetry, setSearchRetry] = useState(0);
   const [activeIdx, setActiveIdx] = useState(0);
   // Keep selected file identities, not only paths from the currently filtered
@@ -64,13 +66,24 @@ export function FileMentionPicker({
   // projects. Its late result belongs only to the episode that opened it.
   const selectionGenerationRef = useRef(0);
   const exclude = new Set(excludePaths);
+  const eligibleSelectedCount = [...selectedEntries.keys()].filter((path) => !exclude.has(path)).length;
 
   const effectiveQuery = mode === "attach" ? localQuery : query ?? "";
+  // Match results to BOTH the project and query in the same render. The
+  // passive search effect runs after commit, so without this key a fast Enter
+  // can still select rows from the previous query in the intervening frame.
+  const searchKey = JSON.stringify([projectPath, effectiveQuery.trim()]);
+  const [completedSearchKey, setCompletedSearchKey] = useState<string | null>(null);
+  const visibleFiles = completedSearchKey === searchKey ? files : [];
+  const searchInFlight = !!projectPath && (loading || completedSearchKey !== searchKey);
+  const currentSearchError = searchError && completedSearchKey === searchKey;
 
   // Reset transient state when reopened.
   useEffect(() => {
     selectionGenerationRef.current++;
+    pickPendingRef.current = false;
     if (!open) return;
+    setPickPending(false);
     setSelectedEntries(new Map());
     setLocalQuery("");
     setActiveIdx(0);
@@ -80,11 +93,27 @@ export function FileMentionPicker({
       const raf = requestAnimationFrame(() => inputRef.current?.focus());
       return () => {
         selectionGenerationRef.current++;
+        pickPendingRef.current = false;
         cancelAnimationFrame(raf);
       };
     }
-    return () => { selectionGenerationRef.current++; };
+    return () => {
+      selectionGenerationRef.current++;
+      pickPendingRef.current = false;
+    };
   }, [open, mode, projectPath]);
+
+  // A file can become attached elsewhere while this menu stays open.
+  // Reconcile that external exclusion with its pending local selection; the
+  // Add N label must never promise files that cannot be added anymore.
+  useEffect(() => {
+    setSelectedEntries((prev) => {
+      if ([...prev.keys()].every((path) => !exclude.has(path))) return prev;
+      return new Map([...prev].filter(([path]) => !exclude.has(path)));
+    });
+    // The caller may provide a new exclusion array after each attachment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [excludePaths]);
 
   // Keep the selection on the first row while the user types, mirroring the
   // SlashCommandPicker. The debounced search also resets on result, but this
@@ -101,11 +130,13 @@ export function FileMentionPicker({
     const myId = ++reqIdRef.current;
     if (!open || !projectPath) {
       setFiles([]);
+      setCompletedSearchKey(null);
       setLoading(false);
       setSearchError(false);
       return;
     }
     // Do not allow Enter/Tab to pick a result from a previous query or root.
+    setCompletedSearchKey(null);
     setFiles([]);
     setLoading(true);
     setSearchError(false);
@@ -119,12 +150,14 @@ export function FileMentionPicker({
         .then((res) => {
           if (reqIdRef.current !== myId) return;
           setFiles(res.files ?? []);
+          setCompletedSearchKey(searchKey);
           setActiveIdx(0);
           setLoading(false);
         })
         .catch(() => {
           if (reqIdRef.current !== myId) return;
           setFiles([]);
+          setCompletedSearchKey(searchKey);
           setLoading(false);
           setSearchError(true);
         });
@@ -133,7 +166,7 @@ export function FileMentionPicker({
       reqIdRef.current++;
       window.clearTimeout(t);
     };
-  }, [open, projectPath, effectiveQuery, searchRetry]);
+  }, [open, projectPath, effectiveQuery, searchKey, searchRetry]);
 
   // Keep active row in view.
   useEffect(() => {
@@ -142,7 +175,7 @@ export function FileMentionPicker({
     if (!root) return;
     const el = root.querySelector<HTMLElement>(`[data-idx="${activeIdx}"]`);
     el?.scrollIntoView({ block: "nearest" });
-  }, [activeIdx, open, files]);
+  }, [activeIdx, open, visibleFiles]);
 
   const confirmMention = useCallback(
     (file: FileSearchEntry) => {
@@ -169,8 +202,9 @@ export function FileMentionPicker({
       // silently attach an unrelated active row as a fallback.
       return;
     }
-    if (files[activeIdx] && !exclude.has(files[activeIdx].path)) onPick([files[activeIdx]]);
-  }, [files, selectedEntries, exclude, activeIdx, onPick]);
+    if (searchInFlight || currentSearchError) return;
+    if (visibleFiles[activeIdx] && !exclude.has(visibleFiles[activeIdx].path)) onPick([visibleFiles[activeIdx]]);
+  }, [visibleFiles, selectedEntries, exclude, activeIdx, onPick, searchInFlight, currentSearchError]);
 
   /** Open the native OS file picker so the user can attach files from OUTSIDE
    *  the project root (unlike `file.search`, which main scopes to known
@@ -180,7 +214,12 @@ export function FileMentionPicker({
    *  `relativePath` is set to the full path (there's no project root to relativize
    *  against); the chip only shows `name` anyway. */
   const handlePickExternal = useCallback(async () => {
+    // Ref flips synchronously, before React rerenders the disabled button.
+    // A double-click or two keyboard activations must not open two OS dialogs.
+    if (pickPendingRef.current) return;
+    pickPendingRef.current = true;
     const generation = selectionGenerationRef.current;
+    setPickPending(true);
     setPickError(false);
     try {
       const { paths } = await api.pickFiles({});
@@ -194,6 +233,12 @@ export function FileMentionPicker({
     } catch {
       if (selectionGenerationRef.current !== generation) return;
       setPickError(true);
+    } finally {
+      // Late completion from a previous open must not unlock a new chooser.
+      if (selectionGenerationRef.current === generation) {
+        pickPendingRef.current = false;
+        setPickPending(false);
+      }
     }
   }, [onPick]);
 
@@ -212,7 +257,7 @@ export function FileMentionPicker({
     return () => closeEscapeLayer();
   }, [open]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       // IME composition keys (candidate confirm / pinyin Space) belong to the
@@ -238,6 +283,7 @@ export function FileMentionPicker({
         onClose();
         return;
       }
+      if (searchInFlight || currentSearchError) return;
       if (e.key === "ArrowDown") {
         if (files.length === 0) return;
         e.preventDefault();
@@ -256,7 +302,7 @@ export function FileMentionPicker({
         e.preventDefault();
         e.stopPropagation();
         if (mode === "mention") {
-          const f = files[activeIdx];
+          const f = visibleFiles[activeIdx];
           if (f) confirmMention(f);
         } else {
           confirmAttach();
@@ -266,7 +312,7 @@ export function FileMentionPicker({
     // Capture so we beat textarea Enter-to-send.
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, files, activeIdx, mode, confirmMention, confirmAttach, onClose]);
+  }, [open, files, visibleFiles, activeIdx, mode, confirmMention, confirmAttach, onClose, searchInFlight, currentSearchError]);
 
   // Click outside the picker to close. Mirrors the ModelDropdown / TagPopover
   // pattern (document mousedown + ref.contains). Escape is already handled by
@@ -316,13 +362,13 @@ export function FileMentionPicker({
             placeholder={t("chat.mention.searchPlaceholder")}
             className="h-6 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle"
           />
-          {selectedEntries.size > 0 && (
+          {eligibleSelectedCount > 0 && (
             <button
               type="button"
               className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-surface hover:brightness-110"
               onClick={confirmAttach}
             >
-              {t("chat.mention.addN", { n: selectedEntries.size })}
+              {t("chat.mention.addN", { n: eligibleSelectedCount })}
             </button>
           )}
         </div>
@@ -339,6 +385,7 @@ export function FileMentionPicker({
         <button
           type="button"
           onClick={() => void handlePickExternal()}
+          disabled={pickPending}
           className={cn(
             "mx-1.5 mt-1.5 flex items-center gap-1.5 rounded-md border border-dashed border-edge px-2 py-1.5 text-left text-[12px] text-content-muted",
             "transition-colors hover:border-accent/60 hover:bg-accent/10 hover:text-accent",
@@ -353,7 +400,7 @@ export function FileMentionPicker({
 
       {pickError && mode === "attach" && (
         <div className="px-3 py-1 text-[11px] text-danger" role="alert">
-          {t("common.error")} <button type="button" className="underline" onClick={() => void handlePickExternal()}>{t("common.retry")}</button>
+          {t("common.error")} <button type="button" className="underline" disabled={pickPending} onClick={() => void handlePickExternal()}>{t("common.retry")}</button>
         </div>
       )}
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1">
@@ -361,21 +408,21 @@ export function FileMentionPicker({
           <div className="px-3 py-6 text-center text-[12px] text-content-subtle">
             {t("chat.mention.openProjectFirst")}
           </div>
-        ) : searchError ? (
+        ) : currentSearchError ? (
           <div className="flex items-center gap-2 px-3 py-6 text-[12px] text-danger" role="alert">
             {t("common.error")} <button type="button" className="underline" onClick={() => setSearchRetry((v) => v + 1)}>{t("common.retry")}</button>
           </div>
-        ) : loading && files.length === 0 ? (
+        ) : searchInFlight && visibleFiles.length === 0 ? (
           <div className="flex items-center justify-center gap-1.5 px-3 py-6 text-[12px] text-content-subtle">
             <IconLoader2 size={14} className="animate-spin" />
             {t("chat.mention.searching")}
           </div>
-        ) : files.length === 0 ? (
+        ) : visibleFiles.length === 0 ? (
           <div className="px-3 py-6 text-center text-[12px] text-content-subtle">
             {t("chat.mention.noMatch")}
           </div>
         ) : (
-          files.map((f, idx) => {
+          visibleFiles.map((f, idx) => {
             const already = exclude.has(f.path);
             const isActive = idx === activeIdx;
             const isSel = selectedEntries.has(f.path);

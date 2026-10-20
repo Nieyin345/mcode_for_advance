@@ -124,12 +124,24 @@ export async function runSettingsFocusProbe(dir: string): Promise<void> {
   );
   await delay(500); // 设置页懒加载 + 面板落地
 
-  /** 派发一次**真实** Tab 键（Electron 输入管线 → Chromium 焦点遍历）。 */
+  /**
+   * sendInputEvent bypasses OS foreground activation. Another concurrent
+   * Electron process can steal focus from this fully transparent/offscreen
+   * window; Chromium will still advance to a FocusGuard, but Base UI cannot
+   * receive the real focus event while document.hasFocus() is false.
+   * Re-activate and PROVE foreground ownership before each physical Tab;
+   * never report a focus-ownership product regression from a blurred window.
+   */
   const pressTab = async (shift: boolean): Promise<void> => {
+    if (!(await js<boolean>("document.hasFocus()"))) {
+      win?.focus();
+      await until(() => js<boolean>("document.hasFocus()"), "Electron OS foreground focus before Tab", 3000);
+    }
     const modifiers: Array<"shift"> = shift ? ["shift"] : [];
     wc.sendInputEvent({ type: "keyDown", keyCode: "Tab", modifiers });
     wc.sendInputEvent({ type: "keyUp", keyCode: "Tab", modifiers });
     await delay(120);
+    assert(await js<boolean>("document.hasFocus()"), "Focus U1 infrastructure interruption: Electron window lost OS focus during Tab (not an app trap escape)");
   };
 
   /** 焦点现场：activeElement 是否在设置层里 / 是否在 inert 后台里。 */
@@ -449,9 +461,9 @@ export async function runSettingsFocusProbe(dir: string): Promise<void> {
     assert(!f.inInert, "focus fell into the inert workspace: " + JSON.stringify(f));
   });
 
-  await check("★ 嵌套弹窗内 Tab 不逃回设置层/后台（连续五次都在弹窗内）", async () => {
+  await check("★ 嵌套弹窗内 Tab 不逃回设置层/后台（连续十二次都在弹窗内）", async () => {
     const trail: Array<{ step: number; inDialog: boolean; inInert: boolean }> = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 12; i++) {
       await pressTab(false);
       const f = await js<{ inDialog: boolean; inInert: boolean }>(`(() => {
         const a = document.activeElement;
@@ -464,6 +476,23 @@ export async function runSettingsFocusProbe(dir: string): Promise<void> {
       })()`);
       trail.push({ step: i + 1, inDialog: f.inDialog, inInert: f.inInert });
       console.log("TRAIL " + (i + 1) + " " + where);
+      // Base UI 1.6.0 intentionally moves through an invisible FocusGuard
+      // then queues focus on the next frame. An OS-blurred window never
+      // receives that focus event; pressTab already verifies foreground focus.
+    }
+    assert(trail.every((t) => t.inDialog && !t.inInert), JSON.stringify(trail));
+  });
+
+  await check("★ 嵌套弹窗 Shift+Tab 反向焦点循环六次保持在最内层", async () => {
+    const trail: Array<{ step: number; inDialog: boolean; inInert: boolean }> = [];
+    for (let i = 0; i < 6; i++) {
+      await pressTab(true);
+      const f = await js<{ inDialog: boolean; inInert: boolean }>(`(() => {
+        const a = document.activeElement;
+        const dlg = document.querySelector("[role=dialog]");
+        return { inDialog: !!(dlg && a && dlg.contains(a)), inInert: !!(a && a.closest && a.closest("[inert]")) };
+      })()`);
+      trail.push({ step: i + 1, inDialog: f.inDialog, inInert: f.inInert });
     }
     assert(trail.every((t) => t.inDialog && !t.inInert), JSON.stringify(trail));
   });
