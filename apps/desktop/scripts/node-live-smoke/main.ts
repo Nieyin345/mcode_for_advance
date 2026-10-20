@@ -83,6 +83,7 @@ const { ProjectRepo, SessionRepo, WorkflowRepo } = await import("@main/store/rep
  */
 const runner = await import("@main/orchestration/runner.js");
 const { startWorkflowRun, cancelWorkflowRun } = runner;
+const { sharedExecutorOwnership } = await import("@main/workflowEngines/executorOwnership.js");
 /** 实现里那两个窗口。撤掉实现时回落成默认值 —— 断言测的是**行为**,不是这两个数。 */
 const NODE_PROGRESS_TICK_MS = (runner as { NODE_PROGRESS_TICK_MS?: number }).NODE_PROGRESS_TICK_MS ?? 1_000;
 const NODE_PROGRESS_HEARTBEAT_MS =
@@ -173,6 +174,8 @@ SessionRepo.create(parentSession());
 
 const first = await startRun(PARENT);
 const NODE_SESSION = first.nodeSession;
+eq("★ Gate D: genuine manual workflow holds shared owner during async work", sharedExecutorOwnership.executorOwnerOf(WORKFLOW_ID), "mcode");
+check("★ Gate D: native runtime cannot claim a manual workflow while it is running", !sharedExecutorOwnership.claim(WORKFLOW_ID, "node-red").ok);
 
 check("节点跑在**隐藏子会话**里,不是主对话", NODE_SESSION !== PARENT, { bound: [...rt.boundSessions] });
 
@@ -294,6 +297,7 @@ if (typeof emit !== "function") {
 
 rt.finishTurn(NODE_SESSION);
 await first.done;
+eq("★ Gate D: real manual workflow releases owner after completion", sharedExecutorOwnership.executorOwnerOf(WORKFLOW_ID), null);
 await sleep(200);
 
 const afterResult = sentEvents().findIndex(

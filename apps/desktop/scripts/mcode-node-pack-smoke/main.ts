@@ -789,7 +789,8 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
   console.log(`  期望 node-red: ${NODE_RED_PKG}`);
   console.log(`  期望节点包: ${PACK_BUNDLE} / ${TYPES_BUNDLE}`);
 } else {
-  const { ProductionWorkflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
+  const { ProductionWorkflowEngineRegistry, OwnedNodeRedRuntime } = await import("@main/workflowEngines/registry.js");
+  const { createInMemoryExecutorOwnership } = await import("@main/workflowEngines/executorOwnership.js");
   const { EngineRuntime, defaultEngineRuntimePorts } = await import("@main/workflowEngines/runtimeSupervisor.js");
   const { MCODE_NODE_PACK_TYPES, allNodeHtml } = await import("@main/workflowEngines/mcodeNodeTypes.js");
 
@@ -948,7 +949,8 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
         return child;
       },
     };
-    const runtime = new EngineRuntime("node-red", ports);
+    const nativeOwnership = createInMemoryExecutorOwnership();
+    const runtime = new OwnedNodeRedRuntime("node-red", ports, nativeOwnership);
     try {
       const status = await runtime.start({
         engineId: "node-red",
@@ -983,6 +985,22 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       const probeIn = { id: "in_probe_all", type: "http in", z: "tab_probe_all", url: "/all-kinds", method: "get", upload: false, swaggerDoc: "", x: 100, y: 900, wires: [["out_probe_all"]] };
       const probeOut = { id: "out_probe_all", type: "http response", z: "tab_probe_all", x: 300, y: 900, wires: [] };
       const deployFlows = [...migrated.flow.nodes, probeTab, probeIn, probeOut];
+      // Gate D REAL Node-RED: an authenticated Admin deploy cannot skip the
+      // parent ownership barrier, yet ordinary deploy works after release.
+      check("★ Gate D: legacy mcode owner reserves doc before native Admin deploy",
+        nativeOwnership.claim(doc.id, "mcode").ok);
+      const deniedDeploy = await fetch(`http://127.0.0.1:${port}/flows`, {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2" },
+        body: JSON.stringify({ flows: deployFlows }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      check("★ Gate D: REAL authenticated Node-RED HTTP deploy rejects conflicting owner (423)",
+        deniedDeploy.status === 423, { status: deniedDeploy.status, text: await deniedDeploy.text() });
+      check("★ Gate D: rejected deploy retains legacy owner (no stealing)",
+        nativeOwnership.executorOwnerOf(doc.id) === "mcode");
+      check("★ Gate D: legacy owner can release before real native deploy",
+        nativeOwnership.release(doc.id, "mcode").ok);
       try {
         rmSync(join(userDir, "node-runs.jsonl"), { force: true });
       } catch {

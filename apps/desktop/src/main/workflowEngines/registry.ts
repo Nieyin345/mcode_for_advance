@@ -60,6 +60,8 @@
  * 这里不新造第二套授权入口 —— `launchSpec` 只**读**标记，不提供写 API。
  */
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { sharedExecutorOwnership, type ExecutorOwnershipRegistry } from "./executorOwnership.js";
+import { nativeFlowIds, nativeFlowIdsOfNodes, claimNativeFlows } from "./nodeRedOwnership.js";
 import { join, relative, sep } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { bindProjectDirectoryIdentity, resolveProjectFlowDir } from "./projectFlowDir.js";
@@ -72,6 +74,8 @@ import {
   NODE_RED_MIN_NODE,
   type EngineRuntime as EngineRuntimeType,
   type EngineRuntimeStatus,
+  type EngineRuntimePorts,
+  type EngineStartOptions,
 } from "./runtimeSupervisor.js";
 import type { WorkflowEngineLaunchSpec, WorkflowEngineRegistry } from "@main/ipc/workflowEngine.js";
 
@@ -115,6 +119,114 @@ RED.init(server, {
   logging: { console: { level: "warn" } },
 });
 
+// Gate D: a *real* Node-RED admin deploy must reserve owners in the parent
+// process BEFORE RED.httpAdmin can apply a new flow. The child cannot edit the
+// registry and the parent cannot trust a deploy until Node-RED reports 2xx.
+const pendingDeploys = new Map();
+let deploySequence = 0;
+process.on("message", function (message) {
+  if (!message || message.kind !== "mcode-deploy-reply") return;
+  const pending = pendingDeploys.get(message.id);
+  if (!pending) return;
+  pendingDeploys.delete(message.id);
+  pending(message);
+});
+const parseDeploy = express.json({ limit: "10mb" });
+// Native single-flow admin endpoints and unhandled flow-changing verbs would
+// bypass the parent reservation protocol. Fail closed, retaining the normal
+// Node-RED 401 response for requests with no valid admin token.
+app.use(function (req, res, next) {
+  const write = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+  const single = req.path === "/flow" || req.path.startsWith("/flow/");
+  const unsupportedBulk = (req.path === "/flows" || req.path.startsWith("/flows/"))
+    && !(req.path === "/flows" && req.method === "POST");
+  if (write && (single || unsupportedBulk)
+      && req.headers.authorization === "Bearer " + adminToken && adminToken !== "") {
+    res.status(423).json({ error: "Use Host-mediated POST /flows to deploy" });
+    return;
+  }
+  next();
+});
+app.use("/flows", function (req, res, next) {
+  if (req.method !== "POST") return next();
+  // The normal Node-RED adminAuth remains authoritative. Do not reserve
+  // anything for an unauthenticated request; let Admin return its own 401.
+  if (adminToken === "" || req.headers.authorization !== "Bearer " + adminToken) return next();
+  if (typeof process.send !== "function") {
+    res.status(423).json({ error: "Host ownership IPC unavailable" });
+    return;
+  }
+  parseDeploy(req, res, function (parseError) {
+    if (parseError) { next(parseError); return; }
+    const parsed = req.body;
+    const flows = Array.isArray(parsed) ? parsed : parsed && parsed.flows;
+    if (!Array.isArray(flows)) {
+      res.status(400).json({ error: "Expected Node-RED flows array" });
+      return;
+    }
+    const id = String(++deploySequence);
+    let finished = false;
+    const final = function (success, uncertain) {
+      if (finished) return;
+      finished = true;
+      try { process.send({ kind: "mcode-deploy-final", id, success, uncertain: !!uncertain }); } catch (_) {}
+    };
+    const timer = setTimeout(function () {
+      const cb = pendingDeploys.get(id);
+      if (!cb) return;
+      pendingDeploys.delete(id);
+      final(false);
+      res.status(423).json({ error: "Host ownership response timed out" });
+    }, 5000);
+    pendingDeploys.set(id, function (answer) {
+      clearTimeout(timer);
+      if (!answer.ok) {
+        final(false);
+        res.status(423).json({ error: answer.reason || "Executor owner conflict" });
+        return;
+      }
+      res.once("finish", function () {
+        const success = res.statusCode >= 200 && res.statusCode < 300;
+        // 409 = Node-RED revision CAS rejection (no apply). Other error
+        // statuses might follow a partially applied flow: retain reservations.
+        final(success, !success && res.statusCode !== 409);
+      });
+      res.once("close", function () { final(false, true); });
+      next();
+    });
+    try {
+      process.send({ kind: "mcode-deploy-prepare", id, flows }, function (err) {
+        if (err && pendingDeploys.has(id)) {
+          clearTimeout(timer);
+          pendingDeploys.delete(id);
+          final(false);
+          res.status(423).json({ error: "Host ownership IPC failed" });
+        }
+      });
+    } catch (_) {
+      clearTimeout(timer);
+      pendingDeploys.delete(id);
+      final(false);
+      res.status(423).json({ error: "Host ownership IPC failed" });
+    }
+  });
+});
+// Single-flow Admin mutation endpoints bypass POST /flows; disallow them until
+// they can use the same Host ownership handshake (no silent native redeploy).
+app.use(function (req, res, next) {
+  const mutation = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+  if (mutation && (req.path === "/flow" || req.path.startsWith("/flow/") ||
+      (req.path.startsWith("/flows/") && req.path !== "/flows"))) {
+    res.status(423).json({ error: "Use owner-verified POST /flows for deployment" });
+    return;
+  }
+  next();
+});
+process.on("disconnect", function () {
+  // A killed/crashed Electron main process must not leave an orphan Node-RED
+  // engine executing old cron, file or event triggers with no parent owner.
+  process.exit(0);
+});
 app.use("/", RED.httpAdmin);
 app.use("/api", RED.httpNode);
 
@@ -212,8 +324,111 @@ export function isFlowTrusted(dataDir: string): boolean {
   }
 }
 
+/** Production runtime owns each native tab from before spawn to child exit. */
+export class OwnedNodeRedRuntime extends EngineRuntime {
+  private ownedFlowIds: string[] = [];
+  private pendingDeploy: { id: string; flowIds: string[]; added: string[] } | null = null;
+  constructor(engineId: string, ports: EngineRuntimePorts, private readonly ownership: ExecutorOwnershipRegistry) {
+    super(engineId, ports);
+    this.onTerminated(() => this.releaseOwned());
+  }
+
+  private releaseOwned(): void {
+    const ids = [...this.ownedFlowIds, ...(this.pendingDeploy?.added ?? [])];
+    this.ownedFlowIds = [];
+    this.pendingDeploy = null;
+    for (const flowId of new Set(ids)) {
+      const released = this.ownership.release(flowId, "node-red");
+      if (!released.ok) log.warn(`[workflow-engine] Node-RED owner release failed: ${released.reason}`);
+    }
+  }
+
+  /** Parent-side authorization for Node-RED's *real* POST /flows: claim the
+   * candidate flow set BEFORE native deployment; only after 2xx commit may
+   * abandoned native claims be released. A failed deploy rolls back new claims.
+   * The child never chooses an owner; it only submits nodes for Host validation.
+   */
+  private onDeployMessage(message: unknown, send: (response: unknown) => void): void {
+    if (message === null || typeof message !== "object" || Array.isArray(message)) return;
+    const msg = message as Record<string, unknown>;
+    const id = msg["id"];
+    if (typeof id !== "string" || id.length === 0 || id.length > 100) return;
+    if (msg["kind"] === "mcode-deploy-final") {
+      const pending = this.pendingDeploy;
+      if (pending === null || pending.id !== id) return;
+      this.pendingDeploy = null;
+      if (msg["success"] === true) {
+        for (const oldId of this.ownedFlowIds) {
+          if (!pending.flowIds.includes(oldId)) {
+            const result = this.ownership.release(oldId, "node-red");
+            if (!result.ok) log.warn(`Native owner release failed: ${result.reason}`);
+          }
+        }
+        this.ownedFlowIds = pending.flowIds;
+      } else if (msg["uncertain"] === true) {
+        // The client may disconnect after native deployment has begun. It is
+        // unsafe to give its flows to Mcode until this engine actually stops.
+        this.ownedFlowIds = [...new Set([...this.ownedFlowIds, ...pending.flowIds])];
+        log.warn("Native deploy result uncertain; retained all executor claims until engine stop");
+      } else {
+        for (const flowId of pending.added) {
+          const result = this.ownership.release(flowId, "node-red");
+          if (!result.ok) log.warn(`Native deploy rollback failed: ${result.reason}`);
+        }
+      }
+      return;
+    }
+    if (msg["kind"] !== "mcode-deploy-prepare") return;
+    const reject = (reason: string): void => send({ kind: "mcode-deploy-reply", id, ok: false, reason });
+    if (this.status().state !== "running" || this.pendingDeploy !== null) {
+      reject("Native deploy blocked: engine not running or another deploy is pending");
+      return;
+    }
+    let nextIds: string[];
+    try { nextIds = nativeFlowIdsOfNodes(msg["flows"]); }
+    catch (err) { reject(err instanceof Error ? err.message : String(err)); return; }
+    const added: string[] = [];
+    try {
+      for (const flowId of nextIds) {
+        if (this.ownedFlowIds.includes(flowId)) continue;
+        const claim = this.ownership.claim(flowId, "node-red", { reason: "authenticated native Node-RED deploy" });
+        if (!claim.ok || claim.alreadyOwned) throw new Error(!claim.ok ? claim.reason : `已有未签发租约：${flowId}`);
+        added.push(flowId);
+      }
+    } catch (err) {
+      for (const flowId of added) this.ownership.release(flowId, "node-red");
+      reject(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    this.pendingDeploy = { id, flowIds: nextIds, added };
+    send({ kind: "mcode-deploy-reply", id, ok: true });
+  }
+
+  override async start(options: EngineStartOptions): Promise<EngineRuntimeStatus> {
+    const state = this.status().state;
+    if (state === "running" || state === "starting") return super.start(options);
+    if (this.ownedFlowIds.length > 0) throw new Error("旧引擎租约未释放，拒绝再次启动");
+    this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir));
+    try {
+      const status = await super.start({
+        ...options,
+        onMessage: (message, respond) => this.onDeployMessage(message, respond),
+      });
+      if (status.state !== "running" && status.state !== "starting" && !this.hasLiveChild()) this.releaseOwned();
+      return status;
+    } catch (err) {
+      if (!this.hasLiveChild()) this.releaseOwned();
+      throw err;
+    }
+  }
+}
+
 export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry {
   private readonly runtimes = new Map<string, EngineRuntimeType>();
+  constructor(
+    private readonly runtimePorts: EngineRuntimePorts = defaultEngineRuntimePorts,
+    private readonly ownership: ExecutorOwnershipRegistry = sharedExecutorOwnership,
+  ) {}
   /** 每个引擎的数据目录（首次 launchSpec 时创建）。 */
   private readonly dataDirs = new Map<string, string>();
 
@@ -225,7 +440,7 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     if (!(ENGINE_IDS as readonly string[]).includes(engineId)) return null;
     let runtime = this.runtimes.get(engineId);
     if (runtime === undefined) {
-      runtime = new EngineRuntime(engineId, defaultEngineRuntimePorts);
+      runtime = new OwnedNodeRedRuntime(engineId, this.runtimePorts, this.ownership);
       this.runtimes.set(engineId, runtime);
     }
     return runtime;
@@ -337,6 +552,12 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     }
   }
 
+  /** process 'exit' is synchronous: terminate children and release claims now. */
+  terminateOnProcessExit(): void {
+    for (const runtime of this.runtimes.values()) runtime.terminateOnProcessExit();
+    this.runtimes.clear();
+  }
+
   /** 退出路径：停掉所有引擎，不留孤儿进程。 */
   async dispose(): Promise<void> {
     for (const runtime of this.runtimes.values()) {
@@ -352,3 +573,4 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
 
 /** 生产单例（与 `documentViewHost` 同一种装配方式）。 */
 export const workflowEngineRegistry = new ProductionWorkflowEngineRegistry();
+process.once("exit", () => workflowEngineRegistry.terminateOnProcessExit());

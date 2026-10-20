@@ -116,6 +116,7 @@ import { setWorkflowReloader } from "./reloadRequest.js";
 import { hasActiveRun, startWorkflowRun } from "./runner.js";
 import {
   createInMemoryExecutorOwnership,
+  sharedExecutorOwnership,
   type ExecutorOwnershipRegistry,
 } from "@main/workflowEngines/executorOwnership.js";
 
@@ -249,13 +250,15 @@ class AutomationRunner {
    * `fire()` 派发前 claim、`dispose()` 与 `apply()` 里 release。**Node-RED 侧启动
    * 入口本片不改**（下一片）。
    */
-  private executorOwnership: ExecutorOwnershipRegistry = createInMemoryExecutorOwnership();
+  private executorOwnership: ExecutorOwnershipRegistry = sharedExecutorOwnership;
   /** 本 runner 当前已登记为 `mcode` owner 的 flowId（只放行 release 自己登记过的）。 */
   private claimedFlowIds = new Set<string>();
 
   /** 装配/测试注入 executor owner 注册表（传 null 复位为进程内内存版）。 */
   setExecutorOwnership(registry: ExecutorOwnershipRegistry | null): void {
-    this.executorOwnership = registry ?? createInMemoryExecutorOwnership();
+    // Never orphan live claims in the old store when tests or a host replace it.
+    for (const id of [...this.claimedFlowIds]) this.releaseExecutorOwner(id);
+    this.executorOwnership = registry ?? sharedExecutorOwnership;
     this.claimedFlowIds.clear();
   }
 

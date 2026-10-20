@@ -125,6 +125,7 @@ import { criteriaSectionForNodes, injectEntryCriteria } from "./criteriaInject.j
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
 import { createBuiltinExecutionEngine, createWorkflowInputBuilder } from "./executionEngine.js";
+import { sharedExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
 import { conversationQueue } from "./conversationQueue.js";
 import { libraryRoot } from "@main/library/paths.js";
 import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
@@ -965,6 +966,11 @@ export async function startWorkflowRun(args: {
     return null;
   }
 
+  // Every legacy workflow entry, not only the automation trigger path, must
+  // hold the same owner through async startup, cancellation and completion.
+  const ownership = sharedExecutorOwnership.acquireExecution(doc.id, "mcode");
+  if (!ownership.ok) throw new Error(`工作流被另一执行器占用，拒绝双执行：${ownership.reason}`);
+  try {
   // Capture ancestry before the first await; reused automation sessions may change later.
   const automationOrigin = session.kind === "automation"
     ? snapshotAutomationOrigin({ workflowIds: readAutomationEventChain(session) })
@@ -2713,6 +2719,9 @@ export async function startWorkflowRun(args: {
   }
 
   return result;
+  } finally {
+    ownership.release();
+  }
 }
 
 /**

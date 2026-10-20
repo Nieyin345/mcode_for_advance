@@ -157,6 +157,9 @@ function invalidFlowIdDisplay(value: unknown): string {
  * 本片：`new ExecutorOwnershipRegistry(new InMemoryExecutorOwnershipStore())`。
  */
 export class ExecutorOwnershipRegistry {
+  /** A running legacy workflow holds its owner through asynchronous execution,
+   * even if its automation trigger is removed while that run is in flight. */
+  private readonly executions = new Map<string, { owner: ExecutorOwner; count: number; transient: boolean; releaseRequested: boolean }>();
   constructor(private readonly store: ExecutorOwnershipStore) {}
 
   /** 这条 flow 归谁执行；未登记 → `null`（调用方必须显式处理，不允许默认落端）。 */
@@ -196,6 +199,13 @@ export class ExecutorOwnershipRegistry {
       };
     }
     if (decision.alreadyOwned) {
+      // An automation registration promotes an in-flight-only claim into a
+      // persistent trigger owner; a running lease cannot do that implicitly.
+      const lease = this.executions.get(flowId);
+      if (lease?.owner === owner) {
+        lease.transient = false;
+        lease.releaseRequested = false;
+      }
       return { ok: true, flowId, owner, alreadyOwned: true };
     }
     const record: ExecutorOwnershipRecord = {
@@ -218,6 +228,38 @@ export class ExecutorOwnershipRegistry {
     return { ok: true, flowId, owner, alreadyOwned: false };
   }
 
+  /** Hold a running workflow until completion, separate from persistent trigger claims. */
+  acquireExecution(flowId: string, owner: ExecutorOwner):
+    | { ok: true; release: () => void }
+    | { ok: false; reason: string } {
+    const inFlight = this.executions.get(flowId);
+    if (inFlight !== undefined) {
+      if (inFlight.owner !== owner || this.executorOwnerOf(flowId) !== owner) {
+        return { ok: false, reason: `flow「${flowId}」运行归属与现有 owner 冲突` };
+      }
+      inFlight.count++;
+    } else {
+      const result = this.claim(flowId, owner, { reason: "legacy workflow run", now: Date.now });
+      if (!result.ok) return { ok: false, reason: result.reason };
+      this.executions.set(flowId, {
+        owner, count: 1, transient: !result.alreadyOwned, releaseRequested: false,
+      });
+    }
+    let released = false;
+    return { ok: true, release: () => {
+      if (released) return;
+      released = true;
+      const lease = this.executions.get(flowId);
+      if (lease === undefined || lease.owner !== owner) return;
+      if (--lease.count !== 0) return;
+      this.executions.delete(flowId);
+      if (lease.transient || lease.releaseRequested) {
+        const result = this.release(flowId, owner);
+        if (!result.ok) throw new Error(result.reason);
+      }
+    } };
+  }
+
   /** 释放归属。**只有当前 owner** 能释放（陈旧的一方不能偷走所有权）。 */
   release(flowId: string, owner: ExecutorOwner): ExecutorReleaseResult {
     if (!validateFlowId(flowId)) {
@@ -233,6 +275,12 @@ export class ExecutorOwnershipRegistry {
         flowId,
         reason: `「${flowId}」当前归 ${current.owner}，${owner} 不能释放（先由 ${current.owner} 释放）`,
       };
+    }
+    const lease = this.executions.get(flowId);
+    if (lease?.owner === owner && lease.count > 0) {
+      // Trigger shutdown must not make an active workflow available to Node-RED.
+      lease.releaseRequested = true;
+      return { ok: true, flowId, owner };
     }
     // 不能把持久化存储的拒删 / 并发变化伪装成已释放，否则切换执行端时
     // 两侧会基于虚假的成功结论继续部署，最终出现双执行或卡住的归属。
@@ -256,3 +304,6 @@ export class ExecutorOwnershipRegistry {
 export function createInMemoryExecutorOwnership(): ExecutorOwnershipRegistry {
   return new ExecutorOwnershipRegistry(new InMemoryExecutorOwnershipStore());
 }
+
+/** The one per-main-process registry shared by native runtime, legacy runs and automation. */
+export const sharedExecutorOwnership = createInMemoryExecutorOwnership();

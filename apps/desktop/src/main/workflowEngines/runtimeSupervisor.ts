@@ -133,6 +133,9 @@ export interface EngineChildProcess {
   /** 进程退出时回调（正常/异常都算）。 */
   onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
   onError(listener: (err: Error) => void): void;
+  /** Structured private IPC (Node/Electron child only). Optional for headless fake children. */
+  onMessage?(listener: (message: unknown) => void): void;
+  sendMessage?(message: unknown): boolean;
   /** 最近若干行输出（诊断用；宿主不解析它）。 */
   tailOutput(): string;
 }
@@ -163,6 +166,8 @@ export interface EngineStartOptions {
   probeIdentity?: { adminToken: string };
   /** 就绪探测的总超时。 */
   readyTimeoutMs?: number;
+  /** Private parent/child protocol; installed before readiness probing. */
+  onMessage?: (message: unknown, respond: (response: unknown) => void) => void;
   /** stop 时等 SIGTERM 的宽限；超时再强杀。 */
   stopGraceMs?: number;
 }
@@ -279,6 +284,13 @@ function wrapChild(child: ChildProcess, limit = 8000): EngineChildProcess {
     onError(listener) {
       child.once("error", listener);
     },
+    onMessage(listener) {
+      child.on("message", listener);
+    },
+    sendMessage(message) {
+      if (!child.connected) return false;
+      return child.send(message as Parameters<typeof child.send>[0]);
+    },
     tailOutput() {
       return tail;
     },
@@ -292,6 +304,10 @@ export class EngineRuntime {
   private reason: string | null = null;
   private child: EngineChildProcess | null = null;
   private starting: Promise<EngineRuntimeStatus> | null = null;
+  private stopping = false;
+
+  /** A failed launch can still have a live child awaiting OS exit. */
+  protected hasLiveChild(): boolean { return this.child !== null; }
   /** 启动世代：每次 start +1，stop 也 +1（作废在途启动）。见文件头「迟到的成功」。 */
   private epoch = 0;
   // 单次 EngineRuntime 对象的唯一随机前缀；多个 runtime 对象各自从
@@ -300,6 +316,20 @@ export class EngineRuntime {
   private readonly instanceSeed = randomBytes(16).toString("hex");
   private readonly engineId: string;
   private readonly ports: EngineRuntimePorts;
+  private readonly terminalListeners = new Set<() => void>();
+
+  /** Includes asynchronous child crash, startup failure and normal stop. */
+  onTerminated(listener: () => void): () => void {
+    this.terminalListeners.add(listener);
+    return () => this.terminalListeners.delete(listener);
+  }
+
+  private notifyTerminated(): void {
+    for (const listener of this.terminalListeners) {
+      try { listener(); }
+      catch (err) { log.warn(`[workflow-engine:${this.engineId}] 终止监听失败：${err instanceof Error ? err.message : String(err)}`); }
+    }
+  }
 
   constructor(engineId: string, ports: EngineRuntimePorts) {
     this.engineId = engineId;
@@ -315,6 +345,7 @@ export class EngineRuntime {
 
   /** 启动（幂等：已在跑/正在起时返回当前状态）。 */
   async start(options: EngineStartOptions): Promise<EngineRuntimeStatus> {
+    if (this.stopping) throw new Error("引擎尚在停止过程中，不允许并行启动");
     if (this.state === "running") return this.status();
     if (this.starting !== null) return this.starting;
     const epoch = ++this.epoch;
@@ -373,20 +404,35 @@ export class EngineRuntime {
       return this.status();
     }
     this.child = child;
+    if (options.onMessage !== undefined) {
+      child.onMessage?.((message) => {
+        if (this.child !== child) return;
+        options.onMessage?.(message, (response) => {
+          if (this.child !== child) return;
+          child.sendMessage?.(response);
+        });
+      });
+    }
     let exited = false;
     child.onExit((code, signal) => {
       exited = true;
       if (this.child !== child) return; // 旧实例的迟到事件
       this.child = null;
       this.port = null;
+      if (this.stopping) return; // stop() waits for this confirmed exit itself.
       if (this.state === "running" || this.state === "starting") {
         this.state = "failed";
         this.reason = `引擎进程意外退出（code=${code ?? "?"} signal=${signal ?? "-"}）`;
         log.warn(`[workflow-engine:${this.engineId}] ${this.reason}\n${child.tailOutput().slice(-1500)}`);
       }
+      // Also release a claim after an earlier timeout / failed kill once
+      // the OS finally confirms the child is gone.
+      this.notifyTerminated();
     });
     child.onError((err) => {
       if (this.child !== child) return;
+      // SIGKILL is only a request; keep ownership until OS exit is confirmed.
+      try { child.kill("SIGKILL"); } catch { /* owner is still held */ }
       this.fail(`引擎进程错误：${err.message}`);
     });
 
@@ -404,6 +450,9 @@ export class EngineRuntime {
       controller.abort();
       // stop 在探测期间发生 → 迟到的成功不得把状态改回 running（也不得误杀已停进程）。
       if (this.epoch !== epoch) return this.status();
+      // A child can exit while an in-flight probe still resolves true. The
+      // exit listener already released its executor owner: never resurrect it.
+      if (exited || this.child !== child) return this.status();
       if (ok) {
         this.state = "running";
         log.info(`[workflow-engine:${this.engineId}] ready on 127.0.0.1:${port}`);
@@ -413,53 +462,73 @@ export class EngineRuntime {
       if (this.epoch !== epoch) return this.status();
     }
     if (this.epoch !== epoch) return this.status();
-    // 超时：把进程收掉再报失败（留着会变成一个没人管的监听端口）。
-    this.terminateChild();
+    // Timeout: request SIGKILL, but NEVER release the owner until the child
+    // actually exits (kill() returning true is not an exit confirmation).
+    try { child.kill("SIGKILL"); } catch { /* keep the claim until later exit */ }
     return this.fail(`引擎在 ${readyTimeoutMs}ms 内没有就绪`);
   }
 
   /** 停止（幂等）。先 SIGTERM，宽限期后强杀。 */
   async stop(graceMs = DEFAULT_STOP_GRACE_MS): Promise<EngineRuntimeStatus> {
-    // 作废所有在途启动：迟到的探针成功/失败都不能再把状态改回去（见文件头）。
-    this.epoch += 1;
-    this.starting = null;
-    const child = this.child;
-    if (child === null) {
+    if (this.stopping) return this.status();
+    this.stopping = true;
+    try {
+      // Invalidate in-flight startup without accidentally reopening a race.
+      this.epoch += 1;
+      this.starting = null;
+      const child = this.child;
+      if (child === null) {
+        this.state = "stopped";
+        this.port = null;
+        this.notifyTerminated();
+        return this.status();
+      }
+      const confirmedExit = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const done = (exited: boolean): void => {
+          if (settled) return;
+          settled = true;
+          resolve(exited);
+        };
+        child.onExit(() => done(true));
+        try { child.kill("SIGTERM"); }
+        catch { done(false); return; }
+        void this.ports.sleep(graceMs).then(() => {
+          if (settled) return;
+          try { child.kill("SIGKILL"); } catch { /* may still be alive */ }
+          // If SIGKILL never produces an exit callback, remain failed and
+          // hold ownership; restarting would risk two simultaneously live flows.
+          void this.ports.sleep(200).then(() => done(false));
+        });
+      });
+      if (!confirmedExit) {
+        this.state = "failed";
+        this.reason = "停止引擎后未确认子进程退出，保留 flow owner 并拒绝重新启动";
+        this.port = null;
+        log.warn(`[workflow-engine:${this.engineId}] ${this.reason}`);
+        return this.status();
+      }
+      this.child = null;
       this.state = "stopped";
       this.port = null;
+      this.reason = null;
+      log.info(`[workflow-engine:${this.engineId}] stopped`);
+      this.notifyTerminated();
       return this.status();
+    } finally {
+      this.stopping = false;
     }
-    this.child = null; // 让退出事件知道是主动停的
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const done = (): void => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
-      child.onExit(() => done());
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        done();
-        return;
-      }
-      void this.ports.sleep(graceMs).then(() => {
-        if (settled) return;
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* 已经死了 */
-        }
-        // 再给一小段收尾，避免 stop() 在进程真正退出前返回。
-        void this.ports.sleep(200).then(done);
-      });
-    });
+  }
+
+  /** Synchronous last line of defence for Node/Electron process exit hooks. */
+  terminateOnProcessExit(): void {
+    ++this.epoch;
+    this.starting = null;
+    this.terminateChild();
     this.state = "stopped";
     this.port = null;
     this.reason = null;
-    log.info(`[workflow-engine:${this.engineId}] stopped`);
-    return this.status();
+    this.notifyTerminated();
   }
 
   /** 强制收掉子进程（超时/失败路径用）。 */
@@ -479,6 +548,9 @@ export class EngineRuntime {
     this.reason = reason;
     this.port = null;
     log.warn(`[workflow-engine:${this.engineId}] ${reason}`);
+    // A failed/timeout process may still be executing; release only after
+    // its exit event. Launch failures before spawn have no such child.
+    if (this.child === null) this.notifyTerminated();
     return this.status();
   }
 }
@@ -489,7 +561,8 @@ export const defaultEngineRuntimePorts: EngineRuntimePorts = {
     const child = nodeSpawn(spec.command, spec.args, {
       cwd: spec.cwd,
       env: spec.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      // IPC is a private ownership preflight for Node-RED Admin deploys.
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
       windowsHide: true,
       // 不经过 shell：命令是宿主给的，参数里可能有用户路径，shell 会二次解释。
       shell: false,

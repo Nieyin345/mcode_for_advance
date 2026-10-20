@@ -62,7 +62,8 @@ import {
   type EngineRuntimePorts,
   type EngineSpawnSpec,
 } from "@main/workflowEngines/runtimeSupervisor.js";
-import { ProductionWorkflowEngineRegistry } from "@main/workflowEngines/registry.js";
+import { ProductionWorkflowEngineRegistry, OwnedNodeRedRuntime } from "@main/workflowEngines/registry.js";
+import { createInMemoryExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
 import {
   checkEngineRequestUrl,
   defaultNodeRedFetch,
@@ -388,7 +389,7 @@ try {
 
   // —— A3. 真启动（生产 EngineRuntime + 生产端口分配 + 真探测） ——
   const portsA = recordingPorts();
-  runtimeA = new EngineRuntime(NODE_RED_ENGINE_ID, portsA);
+  runtimeA = new OwnedNodeRedRuntime(NODE_RED_ENGINE_ID, portsA, createInMemoryExecutorOwnership());
   let statusA = await runtimeA.start({
     engineId: NODE_RED_ENGINE_ID,
     dataDir: launch.dataDir,
@@ -515,7 +516,7 @@ try {
   check("★ 重启前：宿主仍未写可信标记 → env 仍是 untrusted",
     launch !== null && launch.env?.MCODE_ENGINE_TRUSTED === "0");
   const portsA2 = recordingPorts();
-  runtimeA = new EngineRuntime(NODE_RED_ENGINE_ID, portsA2);
+  runtimeA = new OwnedNodeRedRuntime(NODE_RED_ENGINE_ID, portsA2, createInMemoryExecutorOwnership());
   statusA = await runtimeA.start({
     engineId: NODE_RED_ENGINE_ID,
     dataDir: launch!.dataDir,
@@ -552,7 +553,7 @@ try {
   check("★ 宿主写下可信标记后 env 变成 trusted（MCODE_ENGINE_TRUSTED=1）",
     launch !== null && launch.env?.MCODE_ENGINE_TRUSTED === "1");
   const portsA3 = recordingPorts();
-  runtimeA = new EngineRuntime(NODE_RED_ENGINE_ID, portsA3);
+  runtimeA = new OwnedNodeRedRuntime(NODE_RED_ENGINE_ID, portsA3, createInMemoryExecutorOwnership());
   statusA = await runtimeA.start({
     engineId: NODE_RED_ENGINE_ID,
     dataDir: launch!.dataDir,
@@ -649,7 +650,7 @@ try {
   const launchB = { ...generatedB, dataDir: fixtureUserDir };
 
   const portsB = recordingPorts();
-  runtimeB = new EngineRuntime(NODE_RED_ENGINE_ID, portsB);
+  runtimeB = new OwnedNodeRedRuntime(NODE_RED_ENGINE_ID, portsB, createInMemoryExecutorOwnership());
   const statusB = await runtimeB.start({
     engineId: NODE_RED_ENGINE_ID,
     dataDir: launchB.dataDir,
@@ -928,7 +929,7 @@ console.log("\nC. Gate C：迁移器产物 → 真 Node-RED 部署/读回（未�
   check("★【Gate C】生产 launchSpec 可用", launchC !== null);
   if (launchC !== null) {
     const portsC = recordingPorts();
-    const runtimeC = new EngineRuntime(NODE_RED_ENGINE_ID, portsC);
+    const runtimeC = new OwnedNodeRedRuntime(NODE_RED_ENGINE_ID, portsC, createInMemoryExecutorOwnership());
     let childC: EngineChildProcess | undefined;
     const userDirC = mkdtempSync(join(INSTALLED, "gatec-user-"));
     try {

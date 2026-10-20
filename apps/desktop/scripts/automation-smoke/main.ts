@@ -123,6 +123,7 @@ import { automationRunner } from "@main/orchestration/automationRunner.js";
 import {
   InMemoryExecutorOwnershipStore,
   ExecutorOwnershipRegistry,
+  sharedExecutorOwnership,
 } from "@main/workflowEngines/executorOwnership.js";
 import { resetRuns, runs, runsOfNode, setRunBusy, setRunStatusForNode } from "./stubs/runner.js";
 import { failNextExclusiveCreate, disarmExclusiveCreate } from "./stubs/fsSync.js";
@@ -5046,6 +5047,29 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
     } finally {
       r.dispose();
     }
+  }
+
+  // Gate D production: the default automation uses the same singleton as
+  // Node-RED and the manual workflow entry, not a private mock registry.
+  {
+    const wf = nextOwnershipId();
+    makeOwnerAutomation(wf, "t_gate_d_default");
+    const r = new RunnerCtor();
+    check("★ Gate D: native engine owns default automation's flow", sharedExecutorOwnership.claim(wf, "node-red").ok);
+    resetRuns();
+    try {
+      await r.start();
+      const blocked = await r.runNow(wf, "t_gate_d_default");
+      check("★ Gate D: default cron/file/event dispatcher rejects Node-RED owner, dispatch count stays zero",
+        blocked.ok === false && runsOfNode("t_gate_d_default").length === 0,
+        { blocked, dispatched: runsOfNode("t_gate_d_default").length });
+      check("★ Gate D: competing trigger says which owner rejected it",
+        (blocked.error ?? "").includes("node-red"), blocked);
+    } finally {
+      r.dispose();
+      sharedExecutorOwnership.release(wf, "node-red");
+    }
+    eq("★ Gate D: disposing denied automation never steals native owner", sharedExecutorOwnership.executorOwnerOf(wf), null);
   }
 
   // ★ 工作流被删/不再是自动化 → apply 释放（不经 dispose）。
