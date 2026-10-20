@@ -86,7 +86,7 @@ export function SidebarQuickActions({
               : t("layout.needProject")
         }
         className={cn(
-          "flex w-full items-center gap-2 rounded-lg px-1 py-2 transition-colors",
+          "flex w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors",
           "[font-size:var(--right-panel-font-size)]",
           canNewSession
             ? "text-content-muted hover:bg-accent/10 hover:text-accent"
@@ -111,9 +111,9 @@ export function SidebarQuickActions({
           onClick={() => setCommandPaletteOpen(true)}
           title={t("layout.palette.placeholder.all")}
           className={cn(
-            "flex w-full items-center gap-2 rounded-lg px-1 py-2 transition-colors",
+            "flex w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors",
             "[font-size:var(--right-panel-font-size)]",
-            "text-content-muted hover:bg-accent/10 hover:text-accent",
+            "text-content-muted hover:bg-surface-hover hover:text-content",
           )}
         >
           <IconSearch size={16} className="shrink-0" />
